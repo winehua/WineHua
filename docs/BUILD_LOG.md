@@ -112,6 +112,26 @@ $CLANG --target=x86_64-linux-ohos --sysroot=$SYSROOT \
 - **原因**: musl 不提供 `epoll_pwait2` (glibc 2.6+)
 - **修复**: 创建 `musl_compat.c` 弱符号 stub，返回 `ENOSYS`。Wine 代码在 `epoll_pwait2` 失败时会自动 fallback 到 `epoll_wait`。
 
+### 错误 6: `fatal error: 'unixlib.h' file not found` (ntdll/unix)
+- **原因**: 缺少 `-I$WINE/include/wine` 头文件路径
+- **修复**: 添加 `-I$(SRCDIR)/include/wine` 编译标志
+
+### 错误 7: `field has incomplete type 'enum NONCLIENT_BUTTON_TYPE'` (ntdll/unix)
+- **原因**: `ntuser.h` → `winuser.h` 的 include 顺序问题，`NONCLIENT_BUTTON_TYPE` 在 `ntuser.h` 中引用但定义在 `winuser.h` 中
+- **修复**: 添加 `-D_NTSYSTEM_` 和 `-D__WINESRC__` 编译标志（与 native build 保持一致）
+
+### 错误 8: 使用 Makefile 的正确方式
+- **关键**: 需要用 `make CFLAGS="..."` 传递完整的编译标志，包括 `-D_NTSYSTEM_`, `-D__WINESRC__`, `-DFAR=`, `-fPIC` 等
+- **成功命令**:
+```bash
+make CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
+     CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -DWINE_UNIX_LIB \
+     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
+     -fPIC -fasynchronous-unwind-tables" \
+     LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
+     dlls/ntdll/ntdll.so
+```
+
 ### 警告 (非阻塞)
 - `-Wlogical-op`, `-Wno-packed-not-aligned`, `-Wshift-overflow=2` — clang 不识别这些 gcc 特有 warning flags。仅警告，不影响编译。后续可用 `-Wno-unknown-warning-option` 消除。
 
