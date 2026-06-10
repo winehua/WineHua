@@ -223,3 +223,35 @@ make CC="$CLANG --target=$TARGET --sysroot=$SYSROOT -D__MUSL__" \
      LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
      server/wineserver
 ```
+
+---
+
+## 7. PE DLLs 整合 (2026-06-11)
+
+从 native build 复制 PE DLLs 到 OHOS 输出:
+
+| 组件 | 来源 | 数量 |
+|------|------|------|
+| PE DLLs (.dll) | `build-native/dlls/` | 615 |
+| PE Executables (.exe) | `build-native/programs/` | 109 |
+| Unix .so | `build-ohos/dlls/` | 22 |
+| wineserver | `build-ohos/server/` | 1 |
+
+**输出目录结构**:
+```
+out/wine/
+├── bin/wineserver          # OHOS 编译
+├── bin/*.exe               # PE (native build, 可复用)
+├── lib/wine/ntdll.so       # OHOS 编译
+├── lib/wine/*.so           # OHOS 编译 (22 个)
+└── lib/wine/*.dll          # PE (native build, 615 个)
+```
+
+## 8. clang 警告清理
+
+移除 Makefile 中的 gcc 特有 warning flags:
+- `-Wlogical-op` → 删除
+- `-Wno-packed-not-aligned` → 删除
+- `-Wshift-overflow=2` → `-Wshift-overflow`
+
+脚本: `scripts/fix_warnings.sh`
