@@ -41,8 +41,8 @@ Phase 1: x86_64 (musl 适配)          Phase 2: ARM64 (交叉架构)
 
 | 任务 | 状态 | 预计工作量 |
 |------|------|-----------|
-| ntdll.so OHOS 编译 | ✅ | 已完成 (key: `-D_NTSYSTEM_`) |
-| 其他 Unix .so 编译 | ⬜ | 3-5 天 |
+| ntdll.so OHOS 编译 | ✅ | 已完成 |
+| 其他 Unix .so 编译 | ✅ | 22/22 编译通过 (win32u, ws2_32, mountmgr, 等) |
 | PE DLLs 整合 (从 native build) | ⬜ | 1 天 |
 | clang WARN_FLAGS 清理 | 🟡 | 1 天 |
 
