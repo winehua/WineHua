@@ -1,0 +1,24 @@
+# Build artifacts
+thirdparty/wine/build-native/
+thirdparty/wine/build-ohos/
+thirdparty/box64/build*/
+thirdparty/hangover/build*/
+
+# Temp files
+*.o
+*.a
+*.d
+*.dll
+*.exe
+.deps/
+.libs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
