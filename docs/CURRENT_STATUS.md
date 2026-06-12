@@ -141,19 +141,31 @@ find_builtin_dll: dll_dir + "/x86_64-windows/" + "ntdll.dll"
 ```
 out/hnp_combined/opt/winebox/
 ├── bin/
-│   ├── wine              # musl loader
-│   ├── wineserver        # x86_64 musl
-│   ├── box64             # ARM64 native
-│   ├── ntdll.so          # Unix side
-│   ├── *.so              # 其他 Unix .so (22个)
-│   └── x86_64-windows/   # PE DLL (615个)
-│       ├── ntdll.dll
-│       ├── kernel32.dll
+│   ├── wine                  # musl loader
+│   ├── wineserver            # x86_64 musl
+│   ├── box64                 # ARM64 native
+│   ├── ntdll.so              # ⚠️ 必须在 bin/，wine loader 硬编码同目录加载
+│   ├── *.exe                 # PE stubs (114个)
+│   ├── x86_64-windows/       # PE DLL (615个)
+│   │   ├── ntdll.dll
+│   │   ├── kernel32.dll
+│   │   └── ...
+│   └── x86_64-unix/          # Unix .so (22个) — load_builtin_unixlib 拼接路径
+│       ├── avicap32.so
+│       ├── crypt32.so
+│       ├── ws2_32.so
 │       └── ...
 ├── lib/x86_64/
-│   └── libc.so           # musl 运行时
-└── share/wine/nls/       # NLS 文件
+│   └── libc.so               # musl 运行时
+└── share/wine/nls/           # NLS 文件
 ```
+
+**重要**: `ntdll.so` 必须留在 `bin/`，不能移入 `x86_64-unix/`。
+
+| 文件 | 位置 | 加载方式 |
+|------|------|---------|
+| `ntdll.so` | `bin/` | wine loader `dlopen("ntdll.so")` (loader/main.c:161) |
+| `ws2_32.so` 等 | `bin/x86_64-unix/` | `load_builtin_unixlib` 拼接 `dll_dir + "/x86_64-unix/" + name` |
 
 ## 部署流程
 

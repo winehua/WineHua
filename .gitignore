@@ -1,9 +1,3 @@
-# Build artifacts
-thirdparty/wine/build-native/
-thirdparty/wine/build-ohos/
-thirdparty/box64/build*/
-thirdparty/hangover/build*/
-
 # Temp files
 *.o
 *.a
@@ -27,6 +21,13 @@ Thumbs.db
 .temp/
 
 # Build output
+build/
 out/
-thirdparty/wine/build-native/
-thirdparty/wine/build-ohos/
+
+# HAP project (separate repo)
+HonWine/
+
+# Third-party submodule build artifacts
+thirdparty/wine/build-*/
+thirdparty/wine/*.bak
+thirdparty/box64/build*/

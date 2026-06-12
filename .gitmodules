@@ -1,3 +1,6 @@
 [submodule "thirdparty/wine"]
 	path = thirdparty/wine
 	url = https://github.com/wine-mirror/wine.git
+[submodule "thirdparty/box64"]
+	path = thirdparty/box64
+	url = https://github.com/ptitSeb/box64.git
