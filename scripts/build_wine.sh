@@ -52,9 +52,10 @@ build_wineserver() {
     log "--- 编译 wineserver (含 OHOS 修复) ---"
     local out="$BUILD_DIR/wine_server"
     local wine_include="-I$WINE_SRC/include -I$WINE_SRC/include/wine -I$WINE_SRC/server -I$WINE_SRC/build-ohos/include"
-    local srv_cflags="$CLANG --target=$TARGET --sysroot=$SYSROOT -D__MUSL__ -D_GNU_SOURCE \
+    local srv_cflags="--target=$TARGET --sysroot=$SYSROOT -D__MUSL__ -D_GNU_SOURCE \
         -DWINE_UNIX_LIB -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
-        -D__ANDROID__ -fPIC $wine_include"
+        -D__ANDROID__ -DBINDIR=\"/opt/winebox/bin\" -DDATADIR=\"/opt/winebox/share\" \
+        -fPIC $wine_include"
 
     if [ -f "$out/wineserver" ]; then
         log "wineserver 已编译，跳过"
