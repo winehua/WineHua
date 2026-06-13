@@ -7,9 +7,8 @@ source "$SCRIPT_DIR/env.sh"
 # ============================================================
 package_hnp() {
     log "=== 打包 HNP ==="
-    # zip -1 比 hnpcli 快 5 倍 (34s vs 171s), 文件仅大 11%
-    cd "$STAGING_DIR/.."
-    zip -1qr "$OUT_DIR/winebox.hnp" staging
+    mkdir -p "$OUT_DIR"
+    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n winebox -v 0.1.0
     ls -lh "$OUT_DIR/winebox.hnp"
 }
 
@@ -18,6 +17,7 @@ package_hap() {
     local unsigned_hap="$HONWINE/entry/build/default/outputs/default/entry-default-unsigned.hap"
     local signed_hap="$HONWINE/entry/build/default/outputs/default/entry-default-signed.hap"
 
+    mkdir -p "$HONWINE/entry/hnp/arm64-v8a"
     cp "$OUT_DIR/winebox.hnp" "$HONWINE/entry/hnp/arm64-v8a/honwine.hnp"
 
     cd "$HONWINE"
