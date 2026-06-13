@@ -128,6 +128,34 @@ BMP 输出路径: `/storage/Users/currentUser/workspace/wine/wine_surface_*.bmp`
 
 ## 已知问题
 
+### ⚠️ kernel32.dll 加载失败: symlink 权限不足 (EACCES)
+
+**状态**: 根因已确认，修复方案待实施
+
+**症状**: NAPI 启动 Wine 时 `could not load kernel32.dll, status c0000135`
+
+**根因链**:
+1. Wine 首次启动时 `setup_config_dir()` (`dlls/ntdll/unix/server.c:1353`) 调用 `symlink()` 创建 `dosdevices/c:` 和 `dosdevices/z:`
+2. NAPI 沙箱中 `symlink()` 返回 `errno=13 (EACCES)` — 应用没有创建符号链接的权限
+3. `dosdevices/` 目录为空 → `get_drives_info()` 返回 `nb_drives=0`
+4. 所有 DOS 驱动映射 (`\??\C:\`, `\??\Z:\`) 无法解析
+5. `search_dll_file` 和 `find_builtin_without_file` 都失败 → kernel32 加载失败
+
+**日志证据**:
+```
+get_drives_info: nb_drives=0                                          # 无任何驱动
+[symlink-test] symlink() FAILED: errno=13 (EACCES)                    # NAPI 沙箱禁止 symlink
+```
+
+**终端对比**: 终端运行在同一 WINEPREFIX，`dosdevices/c:` 和 `z:` 已由之前运行创建，`nb_drives=2`，正常工作。
+
+**修复方向**:
+- A) HNP 打包时预创建 dosdevices 目录结构（符号链接在打包时创建，运行时直接使用）
+- B) Wine 源码中 `symlink()` 失败时 fallback 到普通文件格式的 dosdevice
+- C) 全面使用 `\??\unix\` 路径绕过 dosdevices 依赖
+
+**相关文件**: `dlls/ntdll/unix/server.c:1349-1355`, `dlls/ntdll/unix/file.c:2322-2365`
+
 ### dnsapi / nsiproxy: musl 不兼容 (编译时跳过)
 
 | 文件 | 问题 |
@@ -157,7 +185,21 @@ BMP 输出路径: `/storage/Users/currentUser/workspace/wine/wine_surface_*.bmp`
 | `build-ohos/` configure | `--prefix=/opt/winebox --libdir='${prefix}'` | 路径计算 |
 | `build-ohos/` 编译 | `-D__ANDROID__` | /tmp → WINEPREFIX socket |
 | `build-ohos/` configure | 启用 FreeType (`SONAME_LIBFREETYPE`) | 字体渲染 |
-| `server/musl_compat.c` | `epoll_pwait2` stub | musl 不提供 |
+| `dlls/ntdll/unix/file.c` | `get_nt_and_unix_names()`: `\??\unix\` 路径 `find_drive_nt_root` 失败时 `status=SUCCESS` | OHOS: 无 dosdevices 时 `\??\unix\` 兜底 |
+| `dlls/ntdll/unix/file.c` | `unix_to_nt_file_name()`: 允许 `STATUS_OBJECT_PATH_NOT_FOUND` 走 `\??\unix\` fallback | OHOS: 空 WINEPREFIX fallback |
+| `dlls/ntdll/unix/file.c` | `get_drives_info()`: 增加 ERR 日志 | 诊断 dosdevices 扫描 |
+| `dlls/ntdll/unix/file.c` | `get_dos_device()`: 增加 ERR 日志 | 诊断 DOS 设备解析 |
+| `dlls/ntdll/unix/file.c` | `nt_to_unix_file_name_no_root()`: 增加 ERR 日志 | 诊断 NT→Unix 路径转换 |
+| `dlls/ntdll/unix/file.c` | `unix_to_nt_file_name()`: fallback 后 `status=STATUS_SUCCESS` | OHOS: 修复 WINEDLLDIR 等环境变量未设置 |
+| `dlls/ntdll/unix/server.c` | `setup_config_dir()`: symlink 失败时打印 errno | 诊断 NAPI 沙箱 symlink 权限 |
+| `dlls/ntdll/unix/env.c` | `add_path_var()`: 增加 ERR 日志 | 诊断环境变量设置 |
+| `dlls/ntdll/loader.c` | 全路径 ERR 日志: find_dll_file / search_dll_file / open_dll_file / open_known_dll | 诊断 PE 侧 DLL 搜索 |
+| `dlls/ntdll/unix/loader.c` | `find_builtin_dll()`: 增加 ERR 日志 | 诊断 builtin DLL 搜索 |
+| `box64/src/main.c` | BOX64-ENV dump: CWD/exe/argv/env | 诊断两边的环境差异 |
+| `napi_init.cpp` | 环境变量: HOME=/storage/Users/currentUser, 添加 PATH, TMPDIR | 对齐终端环境 |
+| `napi_init.cpp` | symlink 权限测试: 两个测试用例 + errno 输出 | 确认 NAPI 沙箱 symlink 权限 |
+| `server/main.c` | `#define PACKAGE_VERSION` via config.h | OHOS 交叉编译配置补全 |
+| `build-ohos/include/config.h` | `PACKAGE_VERSION="10.0"`, `PACKAGE_STRING="Wine 10.0"` | OHOS 交叉编译配置补全 |
 
 ---
 

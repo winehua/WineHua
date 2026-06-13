@@ -100,6 +100,12 @@ exec "$DIR/box64" "$DIR/wine" "$@"
 SCRIPT
 chmod +x "$BIN/wine.sh"
 
+# ---- mmap 测试工具 (终端版) ----
+if [ -f "$ROOT/.temp/mmap_test" ]; then
+    cp "$ROOT/.temp/mmap_test" "$BIN/"
+    log "  mmap_test (终端版) → bin/"
+fi
+
 log "HNP 布局组装完成"
 echo ""
 echo "  $BIN/"
