@@ -114,7 +114,12 @@ log "=== 构建 Wine ==="
 
 # 应用补丁
 cd "$WINE_SRC"
-git am "$PATCHES_DIR"/*.patch 2>/dev/null || true
+if git log --oneline -10 | grep -q "ohos:"; then
+    log "Wine 补丁已应用，跳过"
+else
+    log "应用 Wine 补丁..."
+    git am "$PATCHES_DIR"/*.patch
+fi
 
 build_native_tools
 build_ohos_unix

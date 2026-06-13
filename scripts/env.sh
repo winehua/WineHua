@@ -59,7 +59,8 @@ c_link_args = ['--target=$TARGET', '--sysroot=$SYSROOT', '-fuse-ld=lld', '-L$SYS
 pkg_config_path = ['$SYSROOT_EXT/usr/lib/pkgconfig', '$SYSROOT/usr/lib/pkgconfig']
 
 [properties]
-sys_root = '$SYSROOT'
+# 不设 sys_root: 编译器 --sysroot 已在 c_args/c_link_args 中，
+# sysroot-ext 的 .pc 使用绝对路径，无需额外拼接。
 
 [host_machine]
 system = 'linux'
@@ -70,16 +71,14 @@ XEOF
     echo "$cross"
 }
 
-# meson 构建: 解决 clock skew (本地 fs 时钟快于 NFS)
+# meson 构建: touch 源码避免 NFS clock skew
 meson_build() {
     local build="$1" src="$2"
     shift 2
     local cross="$(gen_cross_file)"
-    # 先 --wipe 创建目录结构 (忽略 clock skew)
-    meson setup "$build" "$src" --cross-file "$cross" "$@" --wipe 2>/dev/null || true
-    # 修正文件时间戳
-    find "$build" -type f -exec touch {} + 2>/dev/null || true
-    # 再 setup 一次，目录已存在跳过 clock skew 检查
+    # 源码时间戳可能来自 NFS (比本地时钟快), touch 到本地时间
+    find "$src" -type f -exec touch {} + 2>/dev/null || true
+    mkdir -p "$build"
     meson setup "$build" "$src" --cross-file "$cross" "$@"
 }
 

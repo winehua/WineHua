@@ -66,6 +66,7 @@ build_libxml2() {
         -DLIBXML2_WITH_LZMA=OFF -DLIBXML2_WITH_ZLIB=OFF -DLIBXML2_WITH_ICONV=OFF \
         -DCMAKE_INSTALL_PREFIX="$build/install"
     cmake --build "$build"
+    cmake --install "$build"
     cp "$build/libxml2.so.2.12.0" "$SYSROOT_EXT_LIB/libxml2.so.2"
     cp -r "$build/install/include/libxml2/libxml" "$SYSROOT_EXT_INC/"
     cat > "$SYSROOT_EXT_PC/libxml-2.0.pc" << EOF
@@ -88,11 +89,6 @@ build_xkbcommon() {
     log "--- xkbcommon + xkbregistry ---"
     find "$src" -type f -exec touch -d '2 seconds ago' {} + 2>/dev/null || true
     meson_build "$build" "$src" \
-        --cross-file "$(gen_cross_file)" \
-        -Denable-x11=false -Denable-wayland=true \
-        -Denable-xkbregistry=true -Denable-docs=false \
-    meson_build "$build" "$src" \
-        --cross-file "$(gen_cross_file)" \
         -Denable-x11=false -Denable-wayland=true \
         -Denable-xkbregistry=true -Denable-docs=false
     ninja -C "$build"
