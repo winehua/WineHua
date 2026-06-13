@@ -1,5 +1,4 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { router } from '@kit.ArkUI';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -21,8 +20,7 @@ struct Index {
     });
   }
 
-  // 启动 Wayland compositor + Wine
-  startWine = () => {
+  startWine = (): void => {
     this.message = '启动 Wayland compositor...';
     const ok: boolean = testNapi.startServer(SOCK);
     hilog.info(DOMAIN, 'wine', 'wayland server: %{public}s', ok ? 'OK' : 'FAIL');
@@ -48,41 +46,31 @@ struct Index {
 
   build() {
     Column() {
-      Text(this.message)
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .margin({ bottom: 10 })
+      // 顶部工具栏: 按钮 + 状态 一行
+      Row() {
+        Button('启动 Wine')
+          .fontSize(14)
+          .onClick(this.startWine)
 
-      Text(`状态: ${this.state}`)
-        .fontSize(14)
-        .fontColor('#888')
-        .margin({ bottom: 20 })
+        Text(this.state == 'active' ? '● 运行中' : '○ 待机')
+          .fontSize(13)
+          .fontColor(this.state == 'active' ? '#4f4' : '#888')
+          .margin({ left: 12 })
+      }
+      .width('100%')
+      .height(36)
+      .padding({ left: 12, right: 12 })
+      .backgroundColor('#1a1a1a')
+      .alignItems(VerticalAlign.Center)
 
-      Button('启动 Wine')
-        .onClick(this.startWine)
-        .margin({ bottom: 10 })
-
-      Button('打开终端')
-        .onClick(() => router.pushUrl({ url: 'pages/TerminalPage' }))
-        .margin({ bottom: 10 })
-
-      Button('mmap 权限测试')
-        .onClick(() => {
-          const r: string = testNapi.runMmapTests();
-          hilog.info(DOMAIN, 'wine', 'mmap test result:\n%{public}s', r);
-          this.message = 'mmap 测试完成, 查看 hilog';
-        })
-        .margin({ bottom: 20 })
-
-      // XComponent — 承载 EGL/GLES 渲染
+      // XComponent — 占满剩余空间
       XComponent({ id: 'wine-xc', type: XComponentType.SURFACE, controller: this.controller, libraryname: 'entry' })
         .width('100%')
-        .height('60%')
+        .layoutWeight(1)
         .backgroundColor('#000')
     }
     .width('100%')
     .height('100%')
-    .padding(20)
-    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#000')
   }
 }
