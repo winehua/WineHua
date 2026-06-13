@@ -1,7 +1,7 @@
 # Wine for HarmonyOS — 当前状态
 
 > 更新: 2026-06-14
-> 状态: ✅ `cmd.exe /c echo hello` 通过 | ✅ notepad.exe GUI 渲染通过 | ✅ NAPI 沙箱中运行
+> 状态: ✅ cmd.exe 通过 | ✅ notepad.exe GUI | ✅ NAPI 沙箱 | ✅ Wayland 渲染上屏
 
 ---
 
@@ -13,19 +13,29 @@
 
 输出 `hello`
 
-### 2. GUI 程序 (headless) ✅
+### 2. GUI 程序 (headless BMP) ✅
 
 `WINEPREFIX=/data/local/tmp/.wine ./bin/box64 ./bin/wine ./bin/notepad.exe`
 
 窗口正确渲染至 offscreen BMP，文字正常显示。
-
-BMP 输出路径: `/storage/Users/currentUser/workspace/wine/wine_surface_*.bmp`
 
 ### 3. NAPI 沙箱中运行 ✅
 
 app.hackeris.honwine HAP 在 NAPI 沙箱中启动 Wine，notepad.exe 成功输出窗口位图。
 
 dosdevices 符号链接不可用（OHOS 不允许 symlink），通过 `__OHOS__` 编译标志实现全覆盖 fallback。
+
+### 4. Wayland 渲染到鸿蒙原生 XComponent ✅
+
+Wine 窗口内容通过 Wayland 协议 → 嵌入式 compositor → EGL/GLES → 鸿蒙 XComponent 上屏。
+
+**架构**: Wine(winewayland.drv) → Wayland socket → 嵌入式 compositor (HAP ARM64) → EGL Renderer → XComponent
+
+**关键修复**:
+- PE 侧 `winewayland.drv` 构建 + 打包
+- `wl_subcompositor` + `wp_viewporter` + `wl_output` compositor 协议实现
+- OHOS 驱动加载绕过 PnP（`WAYLAND_DISPLAY` 直接触发 `NtUserLoadDriver`）
+- `LD_LIBRARY_PATH` 传入 envp（winewayland.so 的 ELF 依赖链需要动态链接器查找）
 
 ---
 
