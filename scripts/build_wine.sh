@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 # Wine 编译标志 (Unix .so + wineserver)
-WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -DWINE_UNIX_LIB \
+WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
     -fPIC -fasynchronous-unwind-tables"
 
@@ -76,7 +76,7 @@ build_wineserver() {
     local wine_include="-I$WINE_SRC/include -I$WINE_SRC/include/wine -I$WINE_SRC/server -I$WINE_SRC/build-ohos/include"
     local srv_cflags="--target=$TARGET --sysroot=$SYSROOT -D__MUSL__ -D_GNU_SOURCE \
         -DWINE_UNIX_LIB -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
-        -D__ANDROID__ -DBINDIR=\"/opt/winebox/bin\" -DDATADIR=\"/opt/winebox/share\" \
+        -D__ANDROID__ -D__OHOS__ -DBINDIR=\"/opt/winebox/bin\" -DDATADIR=\"/opt/winebox/share\" \
         -fPIC $wine_include"
 
     mkdir -p "$out"
