@@ -9,7 +9,7 @@
 #   - 通过源码内标记注释判断是否已打过, 幂等
 #   - 任一条失败立即退出 (set -e)
 #
-# 参考: Box64 OHOS 移植/scripts/patches.sh
+# 设计参考
 
 set -e
 

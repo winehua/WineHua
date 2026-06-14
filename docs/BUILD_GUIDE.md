@@ -110,7 +110,7 @@ Box64 在 OHOS ARM64 上检测到 39 位地址空间，wine 的 TEB 预分配 (`
 ```bash
 # 依赖
 export BOX64_SRC=/src/ohos/wineohos/.temp/box64
-export PATCH_DIR=/src/ohos/wineohos/.temp/Box64 OHOS 移植
+export PATCH_DIR=/path/to/box64-ohos-patches
 
 # 应用 HarmonyOS patches
 cd $PATCH_DIR

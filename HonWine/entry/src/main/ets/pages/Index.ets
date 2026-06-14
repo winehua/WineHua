@@ -11,7 +11,6 @@ const WINE_LIB = `${WINE_BIN}/bin/x86_64-unix`;
 struct Index {
   @State message: string = 'Wine for HarmonyOS';
   @State state: string = 'idel';
-  controller: XComponentController = new XComponentController();
 
   aboutToAppear(): void {
     testNapi.setStateCallback((s: string) => {
@@ -46,7 +45,6 @@ struct Index {
 
   build() {
     Column() {
-      // 顶部工具栏: 按钮 + 状态 一行
       Row() {
         Button('启动 Wine')
           .fontSize(14)
@@ -62,15 +60,9 @@ struct Index {
       .padding({ left: 12, right: 12 })
       .backgroundColor('#1a1a1a')
       .alignItems(VerticalAlign.Center)
-
-      // XComponent — 占满剩余空间
-      XComponent({ id: 'wine-xc', type: XComponentType.SURFACE, controller: this.controller, libraryname: 'entry' })
-        .width('100%')
-        .layoutWeight(1)
-        .backgroundColor('#000')
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#000')
+    .backgroundColor('#111')
   }
 }

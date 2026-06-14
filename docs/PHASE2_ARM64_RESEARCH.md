@@ -150,6 +150,6 @@ Phase 2a-3: Box64 as Wine PE DLL
 |------|-----|------|
 | llvm-mingw (ARM64) | github.com/mstorsjo/llvm-mingw | PE 交叉编译 |
 | by-laws llvm-mingw | github.com/bylaws/llvm-mingw | ARM64EC PE 交叉编译 |
-| Box64 OHOS 移植 | 参考文档 OHOS 移植 | Box64 OHOS port 参考 |
+| Box64 OHOS 移植 | 见第三方参考 | 20+ patch, 14/14 测试通过 |
 | Hangover | github.com/AndreRH/hangover | Wine+Emu 集成方案 |
 | FEX-Emu | github.com/FEX-Emu/FEX | x86_64→ARM64 模拟 |

@@ -21,7 +21,7 @@ precision mediump float;
 in vec2 vUV;
 out vec4 oColor;
 uniform sampler2D uTex;
-void main() { oColor = texture(uTex, vUV).bgra; }
+void main() { oColor = vec4(texture(uTex, vUV).bgr, 1.0); }
 )";
 
 static GLuint CompileShader(GLenum type, const char* src) {

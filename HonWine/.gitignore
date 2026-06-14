@@ -10,3 +10,6 @@
 /.clang-tidy
 **/.test
 /.appanalyzer
+/.ohos
+/entry/libs
+/build-profile.json5
