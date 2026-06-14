@@ -29,6 +29,10 @@ export class WineWindowManager {
     return WineWindowManager.instance;
   }
 
+  getMainWindow(): window.Window | null {
+    return this.mainWindow;
+  }
+
   async init(windowStage: window.WindowStage): Promise<void> {
     this.windowStage = windowStage;
     this.mainWindow = windowStage.getMainWindowSync();
