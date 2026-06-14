@@ -8,24 +8,37 @@
 #include <functional>
 #include <atomic>
 #include <cstdint>
+#include <unordered_map>
 
 // 最小 Wayland Compositor: wl_compositor + wl_surface + wl_shm
 class WaylandServer {
 public:
     using StateCb = std::function<void(const char*)>;
+    // toplevel 回调: (toplevelId, eventName, jsonData)
+    // events: "created", "destroyed", "title", "configure"
+    using ToplevelCb = std::function<void(uint32_t, const char*, const char*)>;
 
     static WaylandServer* GetInstance();
 
     bool Start(const std::string& socketPath);
     void Stop();
 
-    // EglRenderer 调用: 取最新一帧像素
+    // EglRenderer 调用: 取最新一帧像素 (deprecated, 用 TakeToplevelFrame)
     bool TakeFrame(std::vector<uint8_t>& outPixels, int& w, int& h);
+    // 取指定 toplevel 的最新帧
+    bool TakeToplevelFrame(uint32_t toplevelId, std::vector<uint8_t>& outPixels, int& w, int& h);
 
     // 状态回调 (首帧到达 → 通知 ArkTS)
     void SetStateCallback(StateCb cb) { stateCb_ = std::move(cb); }
     void FireState(const char* s) { if (stateCb_) stateCb_(s); }
     void ResetFirstFrame() { firstFrame_ = false; }
+
+    // toplevel 回调 (xdg_toplevel 生命周期 → 通知 ArkTS 创建/销毁窗口)
+    void SetToplevelCallback(ToplevelCb cb) { toplevelCb_ = std::move(cb); }
+    void FireToplevelEvent(uint32_t id, const char* event, const char* jsonData = "{}");
+
+    // 生成唯一 toplevel ID
+    uint32_t NextToplevelId() { return nextToplevelId_++; }
 
     // ── wayland 协议实现 ──
     static void compositor_bind(wl_client*, void*, uint32_t, uint32_t);
@@ -82,14 +95,22 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
 
-    // 帧缓冲 (surface_commit → TakeFrame)
+    // 全局帧缓冲 (deprecated, 保留兼容)
     std::mutex mutex_;
     std::vector<uint8_t> pixels_;
     int width_ = 0, height_ = 0;
     std::atomic<bool> dirty_{false};
 
+    // toplevel 帧缓冲: toplevelId → pixels
+    std::mutex toplevelMutex_;
+    std::unordered_map<uint32_t, std::vector<uint8_t>> toplevelPixels_;
+    std::unordered_map<uint32_t, int> toplevelW_, toplevelH_;
+    std::unordered_map<uint32_t, bool> toplevelDirty_;
+
     StateCb stateCb_;
+    ToplevelCb toplevelCb_;
     std::atomic<bool> firstFrame_{false};
+    std::atomic<uint32_t> nextToplevelId_{1};
 };
 
 // wl_surface 的每个实例携带的数据
@@ -97,4 +118,15 @@ struct SurfaceData {
     wl_resource* surface = nullptr;
     wl_resource* pendingBuffer = nullptr;
     std::vector<wl_resource*> frameCallbacks;
+
+    // per-surface pixel buffer
+    std::vector<uint8_t> pixels;
+    int w = 0, h = 0;
+    bool dirty = false;
+
+    // toplevel identity
+    uint32_t toplevelId = 0;
+    bool hasToplevel = false;
+    std::string title;
+    int x = 0, y = 0, winW = 640, winH = 480;
 };

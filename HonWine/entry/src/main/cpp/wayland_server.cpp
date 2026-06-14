@@ -218,7 +218,13 @@ void WaylandServer::output_bind(wl_client* client, void* data, uint32_t version,
 }
 
 // ── surface 实现 ──
-void WaylandServer::surface_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
+    if (sd && sd->hasToplevel) {
+        GetInstance()->FireToplevelEvent(sd->toplevelId, "destroyed");
+    }
+    wl_resource_destroy(r);
+}
 
 void WaylandServer::surface_attach(wl_client*, wl_resource* surfRes, wl_resource* buffer, int32_t, int32_t) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surfRes));
@@ -247,7 +253,15 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         wl_shm_buffer_begin_access(shm);
         const uint8_t* src = static_cast<const uint8_t*>(wl_shm_buffer_get_data(shm));
 
+        // per-surface buffer
+        sd->pixels.resize(stride * h);
+        std::memcpy(sd->pixels.data(), src, stride * h);
+        sd->w = w;
+        sd->h = h;
+        sd->dirty = true;
+
         auto* self = GetInstance();
+        // global framebuffer (deprecated, keep for backward compat)
         {
             std::lock_guard<std::mutex> lk(self->mutex_);
             self->pixels_.resize(stride * h);
@@ -255,6 +269,17 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
             self->width_ = w;
             self->height_ = h;
             self->dirty_ = true;
+        }
+        // toplevel framebuffer
+        if (sd->hasToplevel) {
+            std::lock_guard<std::mutex> lk(self->toplevelMutex_);
+            self->toplevelPixels_[sd->toplevelId].resize(stride * h);
+            std::memcpy(self->toplevelPixels_[sd->toplevelId].data(), src, stride * h);
+            self->toplevelW_[sd->toplevelId] = w;
+            self->toplevelH_[sd->toplevelId] = h;
+            self->toplevelDirty_[sd->toplevelId] = true;
+            OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d",
+                        sd->toplevelId, w, h, stride);
         }
         wl_shm_buffer_end_access(shm);
     }
@@ -286,4 +311,20 @@ bool WaylandServer::TakeFrame(std::vector<uint8_t>& out, int& w, int& h) {
     h = height_;
     dirty_ = false;
     return true;
+}
+
+bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, int& w, int& h) {
+    std::lock_guard<std::mutex> lk(toplevelMutex_);
+    auto it = toplevelDirty_.find(id);
+    if (it == toplevelDirty_.end() || !it->second) return false;
+    out = toplevelPixels_[id];
+    w = toplevelW_[id];
+    h = toplevelH_[id];
+    toplevelDirty_[id] = false;
+    return true;
+}
+
+void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char* jsonData) {
+    OH_LOG_INFO(LOG_APP, "[MW] FireToplevel id=%{public}u event=%{public}s data=%{public}s", id, event, jsonData);
+    if (toplevelCb_) toplevelCb_(id, event, jsonData);
 }

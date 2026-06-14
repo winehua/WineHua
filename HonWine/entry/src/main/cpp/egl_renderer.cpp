@@ -42,6 +42,7 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
     window_ = window;
     width_ = w;
     height_ = h;
+    ownsContext_ = true;
 
     // 1. EGL display + context
     display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -54,7 +55,7 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
         OH_LOG_ERROR(LOG_APP, "[EGL] eglInitialize failed: 0x%{public}x", eglGetError());
         return false;
     }
-    OH_LOG_INFO(LOG_APP, "[EGL] %{public}d.%{public}d", major, minor);
+    OH_LOG_INFO(LOG_APP, "[EGL] %{public}d.%{public}d (primary)", major, minor);
 
     EGLConfig cfg;
     EGLint nCfg;
@@ -77,6 +78,48 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
         return false;
     }
 
+    running_ = true;
+    thread_ = std::thread(&EglRenderer::RenderLoop, this);
+    return true;
+}
+
+bool EglRenderer::InitShared(EGLDisplay sharedDisplay, EGLContext sharedContext,
+                              OHNativeWindow* window, int w, int h, uint32_t toplevelId) {
+    window_ = window;
+    width_ = w;
+    height_ = h;
+    display_ = sharedDisplay;
+    toplevelId_ = toplevelId;
+    ownsContext_ = false;
+
+    EGLConfig cfg;
+    EGLint nCfg;
+    EGLint attrs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_NONE
+    };
+    eglChooseConfig(display_, attrs, &cfg, 1, &nCfg);
+
+    // 共享 primary EGLContext
+    EGLint ctxAttrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    context_ = eglCreateContext(display_, cfg, sharedContext, ctxAttrs);
+    if (context_ == EGL_NO_CONTEXT) {
+        OH_LOG_ERROR(LOG_APP, "[EGL] eglCreateContext (shared) failed: 0x%{public}x (toplevel=%{public}u)",
+                     eglGetError(), toplevelId);
+        return false;
+    }
+
+    surface_ = eglCreateWindowSurface(display_, cfg,
+                                       reinterpret_cast<EGLNativeWindowType>(window_), nullptr);
+    if (surface_ == EGL_NO_SURFACE) {
+        OH_LOG_ERROR(LOG_APP, "[EGL] eglCreateWindowSurface failed: 0x%{public}x (toplevel=%{public}u)",
+                     eglGetError(), toplevelId);
+        return false;
+    }
+
+    OH_LOG_INFO(LOG_APP, "[EGL] toplevel #%{public}u renderer (shared ctx) init ok", toplevelId);
     running_ = true;
     thread_ = std::thread(&EglRenderer::RenderLoop, this);
     return true;
@@ -111,13 +154,25 @@ void EglRenderer::RenderLoop() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // 5. 渲染循环: 60fps, 每帧检查 WaylandServer 是否有新帧
+    // 5. 渲染循环: 60fps, 每帧按 toplevelId 取帧
     FpsCounter fps("render");
     std::vector<uint8_t> px;
     int fw = 0, fh = 0;
+    int loopCount = 0;
 
     while (running_) {
-        if (WaylandServer::GetInstance()->TakeFrame(px, fw, fh) && fw > 0 && fh > 0) {
+        bool haveFrame = false;
+        if (toplevelId_ != 0) {
+            haveFrame = WaylandServer::GetInstance()->TakeToplevelFrame(toplevelId_, px, fw, fh);
+        } else {
+            haveFrame = WaylandServer::GetInstance()->TakeFrame(px, fw, fh);
+        }
+
+        if (haveFrame && fw > 0 && fh > 0) {
+            if (loopCount < 3) {
+                OH_LOG_INFO(LOG_APP, "[MW-RNDR] toplevelId=%{public}u frame %{public}dx%{public}d loop=%{public}d",
+                            toplevelId_, fw, fh, loopCount);
+            }
             glBindTexture(GL_TEXTURE_2D, texture_);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0,
                          GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -140,6 +195,7 @@ void EglRenderer::RenderLoop() {
 
         eglSwapBuffers(display_, surface_);
         fps.Tick();
+        loopCount++;
         usleep(16667); // ~60fps
     }
 }
@@ -149,9 +205,18 @@ void EglRenderer::Shutdown() {
     if (thread_.joinable()) thread_.join();
     if (display_ != EGL_NO_DISPLAY) {
         eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (surface_ != EGL_NO_SURFACE) eglDestroySurface(display_, surface_);
-        if (context_ != EGL_NO_CONTEXT) eglDestroyContext(display_, context_);
-        eglTerminate(display_);
-        display_ = EGL_NO_DISPLAY;
+        if (surface_ != EGL_NO_SURFACE) {
+            eglDestroySurface(display_, surface_);
+            surface_ = EGL_NO_SURFACE;
+        }
+        // 只有 primary renderer 才销毁 context 和 display
+        if (ownsContext_) {
+            if (context_ != EGL_NO_CONTEXT) {
+                eglDestroyContext(display_, context_);
+                context_ = EGL_NO_CONTEXT;
+            }
+            eglTerminate(display_);
+            display_ = EGL_NO_DISPLAY;
+        }
     }
 }

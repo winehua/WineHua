@@ -903,6 +903,95 @@ static napi_value TermClose(napi_env, napi_callback_info) {
     return nullptr;
 }
 
+// ── Toplevel 回调 → ArkTS ──
+static napi_threadsafe_function gToplevelTsfn = nullptr;
+
+struct ToplevelEvent {
+    uint32_t id;
+    std::string event;
+    std::string data;
+};
+
+static void CallJsToplevel(napi_env env, napi_value cb, void*, void* raw) {
+    auto* ev = static_cast<ToplevelEvent*>(raw);
+    if (env && cb && ev) {
+        OH_LOG_INFO(LOG_APP, "[MW-TSCB] calling JS toplevel cb: id=%{public}u event=%{public}s data=%{public}s",
+                    ev->id, ev->event.c_str(), ev->data.c_str());
+        napi_value undef, args[3];
+        napi_get_undefined(env, &undef);
+        napi_create_uint32(env, ev->id, &args[0]);
+        napi_create_string_utf8(env, ev->event.c_str(), NAPI_AUTO_LENGTH, &args[1]);
+        napi_create_string_utf8(env, ev->data.c_str(), NAPI_AUTO_LENGTH, &args[2]);
+        napi_call_function(env, undef, cb, 3, args, nullptr);
+    }
+    delete ev;
+}
+
+// ── NAPI: setToplevelCallback ──
+static napi_value SetToplevelCallback(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (gToplevelTsfn) {
+        napi_release_threadsafe_function(gToplevelTsfn, napi_tsfn_release);
+        gToplevelTsfn = nullptr;
+    }
+
+    napi_value name;
+    napi_create_string_utf8(env, "WLToplevel", NAPI_AUTO_LENGTH, &name);
+    napi_create_threadsafe_function(env, args[0], nullptr, name,
+                                     0, 1, nullptr, nullptr, nullptr, CallJsToplevel, &gToplevelTsfn);
+
+    WaylandServer::GetInstance()->SetToplevelCallback([](uint32_t id, const char* event, const char* data) {
+        if (gToplevelTsfn) {
+            OH_LOG_INFO(LOG_APP, "[MW-TSCB] enqueue toplevel cb: id=%{public}u event=%{public}s", id, event);
+            auto* ev = new ToplevelEvent{id, event ? event : "", data ? data : "{}"};
+            napi_call_threadsafe_function(gToplevelTsfn, ev, napi_tsfn_blocking);
+        } else {
+            OH_LOG_WARN(LOG_APP, "[MW-TSCB] toplevel cb dropped (tsfn not ready): id=%{public}u event=%{public}s",
+                        id, event);
+        }
+    });
+
+    return nullptr;
+}
+
+// ── NAPI: setPendingToplevel ── (ArkTS 创建子窗口前调用, 告诉 C++ 下一个 XComponent 属于哪个 toplevel)
+static napi_value SetPendingToplevel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    napi_get_value_uint32(env, args[0], &id);
+    PluginManager::GetInstance()->SetPendingToplevel(id);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] setPendingToplevel id=%{public}u", id);
+    return nullptr;
+}
+
+// ── NAPI: destroyToplevel ── (ArkTS 关闭子窗口后调用)
+static napi_value DestroyToplevel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    napi_get_value_uint32(env, args[0], &id);
+    PluginManager::GetInstance()->DestroyToplevel(id);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyToplevel id=%{public}u", id);
+    return nullptr;
+}
+
+// ── NAPI: sendToplevelClose ── (通知 Wine 关闭窗口) ──
+static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    napi_get_value_uint32(env, args[0], &id);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u (stub)", id);
+    return nullptr;
+}
+
 // ── NAPI: initXComponent ── (从 aboutToAppear 调用, 此时 XComponent 已就绪)
 static napi_value InitXComponent(napi_env env, napi_callback_info /*info*/) {
     if (gEnv && gExports) {
@@ -923,6 +1012,10 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"stopClient",     nullptr, StopClient,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopAll",        nullptr, StopAll,        nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setStateCallback", nullptr, SetStateCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setToplevelCallback", nullptr, SetToplevelCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"destroyToplevel", nullptr, DestroyToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"initXComponent", nullptr, InitXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runMmapTests",  nullptr, RunMmapTests,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},

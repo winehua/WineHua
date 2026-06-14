@@ -1,7 +1,10 @@
 #include <wayland-server-core.h>
 #include "include/xdg-shell-server-protocol.h"
+#include "wayland_server.h"
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <cstdio>
 
 #undef LOG_TAG
 #define LOG_TAG "WL_Xdg"
@@ -18,8 +21,16 @@ struct XdgSurface {
 // ── xdg_toplevel 实现 (最小: 记录 title, 其余空) ──
 static void tl_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
 static void tl_set_parent(wl_client*, wl_resource*, wl_resource*) {}
-static void tl_set_title(wl_client*, wl_resource*, const char* title) {
+static void tl_set_title(wl_client*, wl_resource* tlRes, const char* title) {
     OH_LOG_INFO(LOG_APP, "[XDG] title=%{public}s", title ? title : "(null)");
+    auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(tlRes));
+    if (!xdg || !xdg->wlSurface) return;
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+    if (!sd) return;
+    sd->title = title ? title : "";
+    char json[512];
+    snprintf(json, sizeof(json), "{\"title\":\"%s\"}", sd->title.c_str());
+    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "title", json);
 }
 static void tl_set_app_id(wl_client*, wl_resource*, const char* appId) {
     OH_LOG_INFO(LOG_APP, "[XDG] app_id=%{public}s", appId ? appId : "(null)");
@@ -53,7 +64,16 @@ static const struct xdg_toplevel_interface kToplevelImpl = {
 };
 
 // ── xdg_surface 实现 ──
-static void xs_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+static void xs_destroy(wl_client*, wl_resource* r) {
+    auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(r));
+    if (d && d->wlSurface) {
+        auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
+        if (sd && sd->hasToplevel) {
+            WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "destroyed");
+        }
+    }
+    wl_resource_destroy(r);
+}
 
 static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) {
     auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(xsRes));
@@ -62,6 +82,18 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
                                           wl_resource_get_version(xsRes), id);
     d->xdgToplevel = tl;
     wl_resource_set_implementation(tl, &kToplevelImpl, d, nullptr);
+
+    // 关联 SurfaceData: 分配 toplevelId, 标记 hasToplevel
+    if (d->wlSurface) {
+        auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
+        if (sd && !sd->hasToplevel) {
+            sd->hasToplevel = true;
+            sd->toplevelId = WaylandServer::GetInstance()->NextToplevelId();
+            OH_LOG_INFO(LOG_APP, "[MW] xs_get_toplevel -> id=%{public}u (first toplevel for this surface)", sd->toplevelId);
+            WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "created",
+                "{\"w\":640,\"h\":480}");
+        }
+    }
 
     // 发 toplevel configure (activated), 然后 xdg_surface configure
     wl_array states;
