@@ -61,24 +61,15 @@ void PluginManager::OnSurfaceCreated(OH_NativeXComponent* component, void* windo
                 (self->mainRenderer_ && self->mainRenderer_->IsValid()) ? "yes" : "no");
 
     if (self->pendingToplevelId_ != 0) {
-        // 子窗口: 创建 shared renderer (共享主窗口 EGL context)
+        // 子窗口: 独立 EGLContext (避免多线程共享 context 导致渲染交错)
         uint32_t tid = self->pendingToplevelId_;
         self->pendingToplevelId_ = 0;
 
-        auto* main = self->GetMainRenderer();
-        if (main && main->IsValid()) {
-            auto r = std::make_unique<EglRenderer>();
-            r->InitShared(main->GetDisplay(), main->GetContext(),
-                          reinterpret_cast<OHNativeWindow*>(window), (int)w, (int)h, tid);
-            self->toplevelRenderers_[tid] = std::move(r);
-            OH_LOG_INFO(LOG_APP, "[MW-Surface] toplevel #%{public}u renderer created (SHARED context)", tid);
-        } else {
-            OH_LOG_WARN(LOG_APP, "[MW-Surface] main NOT ready, standalone renderer for toplevel #%{public}u", tid);
-            auto r = std::make_unique<EglRenderer>();
-            r->Init(reinterpret_cast<OHNativeWindow*>(window), (int)w, (int)h);
-            r->SetToplevelId(tid);
-            self->toplevelRenderers_[tid] = std::move(r);
-        }
+        auto r = std::make_unique<EglRenderer>();
+        r->Init(reinterpret_cast<OHNativeWindow*>(window), (int)w, (int)h);
+        r->SetToplevelId(tid);
+        self->toplevelRenderers_[tid] = std::move(r);
+        OH_LOG_INFO(LOG_APP, "[MW-Surface] toplevel #%{public}u renderer created (INDEPENDENT context)", tid);
     } else {
         // 主窗口: 创建 primary renderer (仅当不存在时)
         if (self->mainRenderer_ && self->mainRenderer_->IsValid()) {

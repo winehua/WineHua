@@ -42,7 +42,6 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
     window_ = window;
     width_ = w;
     height_ = h;
-    ownsContext_ = true;
 
     // 1. EGL display + context
     display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -84,55 +83,6 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
         OH_LOG_INFO(LOG_APP, "[EGL-Init] primary: req=%{public}dx%{public}d eglSurface=%{public}dx%{public}d", w, h, sw, sh);
     }
 
-    running_ = true;
-    thread_ = std::thread(&EglRenderer::RenderLoop, this);
-    return true;
-}
-
-bool EglRenderer::InitShared(EGLDisplay sharedDisplay, EGLContext sharedContext,
-                              OHNativeWindow* window, int w, int h, uint32_t toplevelId) {
-    window_ = window;
-    width_ = w;
-    height_ = h;
-    display_ = sharedDisplay;
-    toplevelId_ = toplevelId;
-    ownsContext_ = false;
-
-    EGLConfig cfg;
-    EGLint nCfg;
-    EGLint attrs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-        EGL_NONE
-    };
-    eglChooseConfig(display_, attrs, &cfg, 1, &nCfg);
-
-    // 共享 primary EGLContext
-    EGLint ctxAttrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
-    context_ = eglCreateContext(display_, cfg, sharedContext, ctxAttrs);
-    if (context_ == EGL_NO_CONTEXT) {
-        OH_LOG_ERROR(LOG_APP, "[EGL] eglCreateContext (shared) failed: 0x%{public}x (toplevel=%{public}u)",
-                     eglGetError(), toplevelId);
-        return false;
-    }
-
-    surface_ = eglCreateWindowSurface(display_, cfg,
-                                       reinterpret_cast<EGLNativeWindowType>(window_), nullptr);
-    if (surface_ == EGL_NO_SURFACE) {
-        OH_LOG_ERROR(LOG_APP, "[EGL] eglCreateWindowSurface failed: 0x%{public}x (toplevel=%{public}u)",
-                     eglGetError(), toplevelId);
-        return false;
-    }
-
-    {
-        EGLint sw = 0, sh = 0;
-        eglQuerySurface(display_, surface_, EGL_WIDTH, &sw);
-        eglQuerySurface(display_, surface_, EGL_HEIGHT, &sh);
-        OH_LOG_INFO(LOG_APP, "[EGL-Init] toplevel #%{public}u: req=%{public}dx%{public}d eglSurface=%{public}dx%{public}d",
-                    toplevelId, w, h, sw, sh);
-    }
-    OH_LOG_INFO(LOG_APP, "[EGL] toplevel #%{public}u renderer (shared ctx) init ok", toplevelId);
     running_ = true;
     thread_ = std::thread(&EglRenderer::RenderLoop, this);
     return true;
@@ -257,14 +207,12 @@ void EglRenderer::Shutdown() {
             eglDestroySurface(display_, surface_);
             surface_ = EGL_NO_SURFACE;
         }
-        // 只有 primary renderer 才销毁 context 和 display
-        if (ownsContext_) {
-            if (context_ != EGL_NO_CONTEXT) {
-                eglDestroyContext(display_, context_);
-                context_ = EGL_NO_CONTEXT;
-            }
-            eglTerminate(display_);
-            display_ = EGL_NO_DISPLAY;
+        // 每个 renderer 独立 EGLContext, 各自销毁
+        if (context_ != EGL_NO_CONTEXT) {
+            eglDestroyContext(display_, context_);
+            context_ = EGL_NO_CONTEXT;
         }
+        eglTerminate(display_);
+        display_ = EGL_NO_DISPLAY;
     }
 }

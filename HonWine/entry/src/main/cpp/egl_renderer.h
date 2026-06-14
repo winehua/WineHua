@@ -8,17 +8,12 @@
 #include <cstdint>
 
 // 最小 EGL 渲染器: 从 WaylandServer 取帧 → GL 纹理 → XComponent 上屏
+// 每个实例拥有独立的 EGLDisplay + EGLContext (不做共享, 避免多线程竞争)
 class EglRenderer {
 public:
-    // 主渲染器: 创建 EGL display + context (primary)
     bool Init(OHNativeWindow* window, int w, int h);
-    // 共享渲染器: 共享 primary EGL context, 渲染指定 toplevel
-    bool InitShared(EGLDisplay sharedDisplay, EGLContext sharedContext,
-                    OHNativeWindow* window, int w, int h, uint32_t toplevelId);
     void Shutdown();
 
-    EGLDisplay GetDisplay() const { return display_; }
-    EGLContext GetContext() const { return context_; }
     uint32_t GetToplevelId() const { return toplevelId_; }
     void SetToplevelId(uint32_t id) { toplevelId_ = id; }
     void SetSize(int w, int h) { width_ = w; height_ = h; }
@@ -41,5 +36,4 @@ private:
     std::atomic<bool> running_{false};
 
     uint32_t toplevelId_ = 0;
-    bool ownsContext_ = true;  // false if shared from primary
 };
