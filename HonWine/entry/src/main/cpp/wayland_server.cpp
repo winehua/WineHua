@@ -249,23 +249,62 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         int32_t w = wl_shm_buffer_get_width(shm);
         int32_t h = wl_shm_buffer_get_height(shm);
         int32_t stride = wl_shm_buffer_get_stride(shm);
+        int32_t rowBytes = w * 4;  // 紧密排列的每行字节数
 
         wl_shm_buffer_begin_access(shm);
         const uint8_t* src = static_cast<const uint8_t*>(wl_shm_buffer_get_data(shm));
 
-        // per-surface buffer
-        sd->pixels.resize(stride * h);
-        std::memcpy(sd->pixels.data(), src, stride * h);
-        sd->w = w;
-        sd->h = h;
+        // 确定实际内容区域: 优先用 window_geometry, 否则全 buffer
+        int contentW = w, contentH = h;
+        int contentOffX = 0, contentOffY = 0;
+        if (sd->hasWindowGeometry && sd->geoW > 0 && sd->geoH > 0) {
+            contentW = sd->geoW;
+            contentH = sd->geoH;
+            contentOffX = sd->geoX;
+            contentOffY = sd->geoY;
+            OH_LOG_INFO(LOG_APP, "[MW-GEO] using window_geometry: src=%{public}dx%{public}d geo=(%{public}d,%{public}d %{public}dx%{public}d)",
+                        w, h, contentOffX, contentOffY, contentW, contentH);
+        }
+
+        // 复制像素时 strip stride padding, 只提取 content 区域
+        int contentRowBytes = contentW * 4;
+        bool strideMismatch = (stride != rowBytes);
+        if (strideMismatch) {
+            OH_LOG_WARN(LOG_APP, "[MW-STRIDE] stride mismatch! w=%{public}d h=%{public}d stride=%{public}d rowBytes=%{public}d",
+                        w, h, stride, rowBytes);
+        }
+        auto copyTight = [&](std::vector<uint8_t>& dst) {
+            dst.resize(contentRowBytes * contentH);
+            uint8_t* d = dst.data();
+            const uint8_t* rowStart = src + contentOffY * stride + contentOffX * 4;
+            for (int32_t y = 0; y < contentH; y++) {
+                std::memcpy(d, rowStart + y * stride, contentRowBytes);
+                d += contentRowBytes;
+            }
+        };
+
+        // per-surface buffer (全量, 兼容)
+        auto copyTightFull = [&](std::vector<uint8_t>& dst) {
+            dst.resize(rowBytes * h);
+            uint8_t* d = dst.data();
+            for (int32_t y = 0; y < h; y++) {
+                std::memcpy(d, src + y * stride, rowBytes);
+                d += rowBytes;
+            }
+        };
+        copyTightFull(sd->pixels);
+        sd->w = contentW;
+        sd->h = contentH;
         sd->dirty = true;
+        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
+                    w, h, stride, sd->pixels.size(), contentW, contentH,
+                    sd->hasWindowGeometry ? "yes" : "no");
 
         auto* self = GetInstance();
         // global framebuffer (deprecated, keep for backward compat)
         {
             std::lock_guard<std::mutex> lk(self->mutex_);
-            self->pixels_.resize(stride * h);
-            std::memcpy(self->pixels_.data(), src, stride * h);
+            copyTightFull(self->pixels_);
             self->width_ = w;
             self->height_ = h;
             self->dirty_ = true;
@@ -273,24 +312,23 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         // toplevel framebuffer
         if (sd->hasToplevel) {
             std::lock_guard<std::mutex> lk(self->toplevelMutex_);
-            self->toplevelPixels_[sd->toplevelId].resize(stride * h);
-            std::memcpy(self->toplevelPixels_[sd->toplevelId].data(), src, stride * h);
-            self->toplevelW_[sd->toplevelId] = w;
-            self->toplevelH_[sd->toplevelId] = h;
+            copyTight(self->toplevelPixels_[sd->toplevelId]);
+            self->toplevelW_[sd->toplevelId] = contentW;
+            self->toplevelH_[sd->toplevelId] = contentH;
             self->toplevelDirty_[sd->toplevelId] = true;
-            OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d",
-                        sd->toplevelId, w, h, stride);
+            OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
+                        sd->toplevelId, contentW, contentH, stride, self->toplevelPixels_[sd->toplevelId].size());
 
             // 检测尺寸变化 → 通知 ArkTS 调整子窗口
             int lastW = self->toplevelLastReportedW_[sd->toplevelId];
             int lastH = self->toplevelLastReportedH_[sd->toplevelId];
-            if (w != lastW || h != lastH) {
-                self->toplevelLastReportedW_[sd->toplevelId] = w;
-                self->toplevelLastReportedH_[sd->toplevelId] = h;
+            if (contentW != lastW || contentH != lastH) {
+                self->toplevelLastReportedW_[sd->toplevelId] = contentW;
+                self->toplevelLastReportedH_[sd->toplevelId] = contentH;
                 char json[64];
-                snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", w, h);
+                snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", contentW, contentH);
                 OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u size changed: %{public}dx%{public}d → ArkTS",
-                            sd->toplevelId, w, h);
+                            sd->toplevelId, contentW, contentH);
                 self->FireToplevelEvent(sd->toplevelId, "resize", json);
             }
         }
@@ -323,6 +361,7 @@ bool WaylandServer::TakeFrame(std::vector<uint8_t>& out, int& w, int& h) {
     w = width_;
     h = height_;
     dirty_ = false;
+    OH_LOG_INFO(LOG_APP, "[MW-TAKE] global frame %{public}dx%{public}d px=%{public}zu", w, h, out.size());
     return true;
 }
 
@@ -334,6 +373,7 @@ bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, in
     w = toplevelW_[id];
     h = toplevelH_[id];
     toplevelDirty_[id] = false;
+    OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu", id, w, h, out.size());
     return true;
 }
 

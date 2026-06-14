@@ -19,6 +19,8 @@ export class WineWindowManager {
   private toplevels: Map<number, ToplevelInfo> = new Map();
   // 设备显示密度 (用于缩放子窗口, 匹配主窗口的物理大小)
   private displayScale: number = 1.0;
+  // 子窗口创建完成前到达的 pending 事件 (key: toplevelId)
+  private pendingEvents: Map<number, Array<[string, string]>> = new Map();
 
   static getInstance(): WineWindowManager {
     if (!WineWindowManager.instance) {
@@ -43,6 +45,7 @@ export class WineWindowManager {
     testNapi.setToplevelCallback((id: number, event: string, data: string) => {
       hilog.info(DOMAIN, 'WineWM', '[MW] cb toplevel #%{public}d event=%{public}s data=%{public}s',
         id, event, data);
+      // 不 await, 让事件排队串行处理 (JS 主线程单线程, 自然串行)
       this.onToplevelEvent(id, event, data);
     });
 
@@ -52,11 +55,31 @@ export class WineWindowManager {
   private onToplevelEvent(id: number, event: string, data: string): void {
     switch (event) {
       case 'created':
-        this.createSubWindow(id, data);
+        this.createSubWindow(id, data).then(() => {
+          hilog.info(DOMAIN, 'WineWM', '[MW] sub-window #%{public}d fully ready', id);
+        });
         break;
       case 'destroyed':
         this.destroySubWindow(id);
         break;
+      case 'title':
+      case 'resize':
+        // 子窗口可能还没创建完, 暂存事件等创建完后 apply
+        if (this.toplevels.has(id) && this.toplevels.get(id)!.subWindow) {
+          this.applyEvent(id, event, data);
+        } else {
+          hilog.info(DOMAIN, 'WineWM', '[MW] queue pending event #%{public}d %{public}s (window not ready)',
+            id, event);
+          let q = this.pendingEvents.get(id);
+          if (!q) { q = []; this.pendingEvents.set(id, q); }
+          q.push([event, data]);
+        }
+        break;
+    }
+  }
+
+  private applyEvent(id: number, event: string, data: string): void {
+    switch (event) {
       case 'title':
         this.updateTitle(id, data);
         break;
@@ -119,16 +142,46 @@ export class WineWindowManager {
       );
 
       await subWin.loadContent('pages/WineWindow');
-      // 子窗口 resize 的是外框尺寸, XComponent 内容区 = 外框 - 标题栏
-      await subWin.resize(scaledW, scaledH);
-      await subWin.showWindow();
 
-      // 估算标题栏偏移 (子窗口外框 - XComponent 内容区), 按缩放修正
-      // 观察值: 480-420=60, 640-580≈60 (unscaled)
-      const titleBarOffset = Math.round(60 * this.displayScale);
+      // 估算标题栏偏移 (子窗口外框 - XComponent 内容区)
+      // 标题栏高度是固定 vp 值, 不随 DPI 缩放 (观察值: ~60vp)
+      const titleBarOffset = 60;
 
-      // 存储
+      // 存储 (先登记, 让 pending resize 能找到 info)
       this.toplevels.set(id, { id, title, subWindow: subWin, titleBarOffset: titleBarOffset });
+
+      // 先处理积压的 resize 事件, 调整到正确尺寸再显示 (避免闪烁)
+      let wasResized = false;
+      const pending = this.pendingEvents.get(id);
+      if (pending) {
+        this.pendingEvents.delete(id);
+        hilog.info(DOMAIN, 'WineWM', '[MW] applying %{public}d pending events for #%{public}d before show',
+          pending.length, id);
+        for (let i = 0; i < pending.length; i++) {
+          if (pending[i][0] === 'resize') wasResized = true;
+          this.applyEvent(id, pending[i][0], pending[i][1]);
+        }
+      }
+
+      // 如果没收到 resize, 用默认大小; 否则 resize 已完成
+      const info = this.toplevels.get(id);
+      if (info && info.subWindow) {
+        if (!wasResized) {
+          await info.subWindow.resize(scaledW, scaledH);
+        }
+
+        // 设为直角窗口 (避免圆角裁剪 Wine 内容)
+        try {
+          await info.subWindow.setWindowCornerRadius(0);
+          hilog.info(DOMAIN, 'WineWM', '[MW] sub-window #%{public}d corner radius set to 0', id);
+        } catch (_) {
+          hilog.warn(DOMAIN, 'WineWM', '[MW] sub-window #%{public}d setWindowCornerRadius not supported', id);
+        }
+
+        // 所有就绪后再显示 (避免默认大小→resize 的闪烁)
+        await info.subWindow.showWindow();
+        hilog.info(DOMAIN, 'WineWM', '[MW] sub-window #%{public}d shown after resize', id);
+      }
 
       // 监听子窗口关闭
       subWin.on('windowEvent', (eventType: number) => {

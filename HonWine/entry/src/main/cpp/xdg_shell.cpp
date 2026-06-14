@@ -108,7 +108,19 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
 }
 
 static void xs_get_popup(wl_client*, wl_resource*, uint32_t, wl_resource*, wl_resource*) {}
-static void xs_set_window_geometry(wl_client*, wl_resource*, int32_t, int32_t, int32_t, int32_t) {}
+static void xs_set_window_geometry(wl_client*, wl_resource* xsRes, int32_t x, int32_t y, int32_t w, int32_t h) {
+    auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(xsRes));
+    if (!d || !d->wlSurface) return;
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
+    if (!sd) return;
+    sd->hasWindowGeometry = true;
+    sd->geoX = x;
+    sd->geoY = y;
+    sd->geoW = w;
+    sd->geoH = h;
+    OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
+                sd->toplevelId, x, y, w, h);
+}
 static void xs_ack_configure(wl_client*, wl_resource*, uint32_t) {}
 
 static const struct xdg_surface_interface kSurfaceImpl = {

@@ -77,6 +77,12 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
         OH_LOG_ERROR(LOG_APP, "[EGL] eglCreateWindowSurface failed: 0x%{public}x", eglGetError());
         return false;
     }
+    {
+        EGLint sw = 0, sh = 0;
+        eglQuerySurface(display_, surface_, EGL_WIDTH, &sw);
+        eglQuerySurface(display_, surface_, EGL_HEIGHT, &sh);
+        OH_LOG_INFO(LOG_APP, "[EGL-Init] primary: req=%{public}dx%{public}d eglSurface=%{public}dx%{public}d", w, h, sw, sh);
+    }
 
     running_ = true;
     thread_ = std::thread(&EglRenderer::RenderLoop, this);
@@ -119,6 +125,13 @@ bool EglRenderer::InitShared(EGLDisplay sharedDisplay, EGLContext sharedContext,
         return false;
     }
 
+    {
+        EGLint sw = 0, sh = 0;
+        eglQuerySurface(display_, surface_, EGL_WIDTH, &sw);
+        eglQuerySurface(display_, surface_, EGL_HEIGHT, &sh);
+        OH_LOG_INFO(LOG_APP, "[EGL-Init] toplevel #%{public}u: req=%{public}dx%{public}d eglSurface=%{public}dx%{public}d",
+                    toplevelId, w, h, sw, sh);
+    }
     OH_LOG_INFO(LOG_APP, "[EGL] toplevel #%{public}u renderer (shared ctx) init ok", toplevelId);
     running_ = true;
     thread_ = std::thread(&EglRenderer::RenderLoop, this);
@@ -153,6 +166,8 @@ void EglRenderer::RenderLoop() {
     glBindTexture(GL_TEXTURE_2D, texture_);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     // 5. 渲染循环: 60fps, 每帧按 toplevelId 取帧
     FpsCounter fps("render");
@@ -169,16 +184,49 @@ void EglRenderer::RenderLoop() {
         }
 
         if (haveFrame && fw > 0 && fh > 0) {
-            if (loopCount < 3) {
-                OH_LOG_INFO(LOG_APP, "[MW-RNDR] toplevelId=%{public}u frame %{public}dx%{public}d loop=%{public}d",
-                            toplevelId_, fw, fh, loopCount);
-            }
             glBindTexture(GL_TEXTURE_2D, texture_);
+            int rowLen = (int)px.size() / fh / 4;
+            if (rowLen != fw) {
+                OH_LOG_WARN(LOG_APP, "[MW-RNDR] UNPACK_ROW_LENGTH rowLen=%{public}d fw=%{public}d px=%{public}zu fh=%{public}d",
+                            rowLen, fw, px.size(), fh);
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLen);
+            }
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0,
                          GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            if (rowLen != fw) {
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            }
         }
 
-        glViewport(0, 0, width_, height_);
+        // 计算 letterbox 视口: 保持内容宽高比, 居中于 EGL surface
+        // 注意: 即使未取到新帧, 上一帧的 fw/fh 仍有效
+        int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
+        if (fw > 0 && fh > 0) {
+            float contentAspect = (float)fw / (float)fh;
+            float surfaceAspect = (float)width_ / (float)height_;
+            if (contentAspect > surfaceAspect) {
+                // 内容更宽 → fit by width, 上下留黑边
+                vpW = width_;
+                vpH = (int)(width_ / contentAspect + 0.5f);
+                vpY = (height_ - vpH) / 2;
+            } else {
+                // 内容更高 → fit by height, 左右留黑边
+                vpH = height_;
+                vpW = (int)(height_ * contentAspect + 0.5f);
+                vpX = (width_ - vpW) / 2;
+            }
+        }
+        glViewport(vpX, vpY, vpW, vpH);
+
+        // 诊断: viewport vs frame vs surface
+        if (loopCount < 10) {
+            EGLint surfW = 0, surfH = 0;
+            eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
+            eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
+            OH_LOG_INFO(LOG_APP, "[MW-RNDR] diag#%{public}d tl=%{public}u have=%{public}d vp=(%{public}d,%{public}d %{public}dx%{public}d) surf=%{public}dx%{public}d frame=%{public}dx%{public}d px=%{public}zu",
+                        loopCount, toplevelId_, haveFrame ? 1 : 0,
+                        vpX, vpY, vpW, vpH, surfW, surfH, fw, fh, px.size());
+        }
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
 

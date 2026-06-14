@@ -130,4 +130,8 @@ struct SurfaceData {
     bool hasToplevel = false;
     std::string title;
     int x = 0, y = 0, winW = 640, winH = 480;
+
+    // xdg_surface window geometry (content area within buffer), 默认全 buffer
+    bool hasWindowGeometry = false;
+    int geoX = 0, geoY = 0, geoW = 0, geoH = 0;
 };
