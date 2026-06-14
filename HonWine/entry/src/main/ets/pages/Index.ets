@@ -36,12 +36,12 @@ struct Index {
       SOCK,
       `${WINE_BIN}/bin:${WINE_LIB}`
     );
-    hilog.info(DOMAIN, 'wine', 'wine pid: %{public}d', pid);
-    if (pid <= 0) {
+    hilog.info(DOMAIN, 'wine', 'launch result: %{public}d (0=async ok)', pid);
+    if (pid < 0) {
       this.message = 'Wine 启动失败';
       return;
     }
-    this.message = `Wine running, pid=${pid}`;
+    this.message = 'Wine 后台启动中...';
   }
 
   build() {

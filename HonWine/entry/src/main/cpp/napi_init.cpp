@@ -148,148 +148,99 @@ static napi_value StartServer(napi_env env, napi_callback_info info) {
     return r;
 }
 
-// ── NAPI: launchClient ──
-static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    char exePath[1024] = {}, sockPath[512] = {}, libPath[1024] = {};
-    napi_get_value_string_utf8(env, args[0], exePath, sizeof(exePath), nullptr);
-
-    // argv
-    uint32_t n = 0;
-    napi_get_array_length(env, args[1], &n);
-    std::vector<std::string> argvStrs;
-    argvStrs.reserve(n > 0 ? n : 1);
-    for (uint32_t i = 0; i < n; ++i) {
-        napi_value el;
-        napi_get_element(env, args[1], i, &el);
-        char buf[1024] = {};
-        napi_get_value_string_utf8(env, el, buf, sizeof(buf), nullptr);
-        argvStrs.emplace_back(buf);
-    }
-    if (argvStrs.empty()) argvStrs.emplace_back(exePath);
-
-    napi_get_value_string_utf8(env, args[2], sockPath, sizeof(sockPath), nullptr);
-    napi_get_value_string_utf8(env, args[3], libPath, sizeof(libPath), nullptr);
-
-    OH_LOG_INFO(LOG_APP, "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s",
-                exePath, sockPath, libPath);
-
-    // 保证可执行 (同 参考项目)
-    if (access(exePath, X_OK) != 0) chmod(exePath, 0755);
-    if (argvStrs.size() >= 2 && !argvStrs[1].empty() && argvStrs[1][0] == '/') {
-        if (access(argvStrs[1].c_str(), X_OK) != 0)
-            chmod(argvStrs[1].c_str(), 0755);
-    }
-
-    // ── symlink 权限测试已确认: errno=13 (EACCES), NAPI 沙箱不支持 symlink ──
-
-    // 组装环境变量 (最小集合, 不污染父进程)
-    std::string sp(sockPath);
-    auto p = sp.find_last_of('/');
-    std::string sockDir = (p == std::string::npos) ? "/tmp" : sp.substr(0, p);
-    std::string sockName = (p == std::string::npos) ? sp : sp.substr(p + 1);
-
-    OH_LOG_INFO(LOG_APP, "[Launch] WAYLAND_DISPLAY=%{public}s XDG_RUNTIME_DIR=%{public}s",
-                sockName.c_str(), sockDir.c_str());
-
-    std::string envXdg  = "XDG_RUNTIME_DIR=" + sockDir;
-    std::string envWld  = "WAYLAND_DISPLAY=" + sockName;
-    std::string envLdp  = "LD_LIBRARY_PATH=" + std::string(libPath);
-    std::string envHome = "HOME=/storage/Users/currentUser";
-    std::string envWinePrefix = "WINEPREFIX=/data/storage/el2/base/files";
-    std::string envBoxLog = "BOX64_LOG=1";
-    std::string envBoxNoBanner = "BOX64_NOBANNER=0";
-    std::string envPath = "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin";
-    std::string envTmpdir = "TMPDIR=/storage/Users/currentUser";
-    char* envp[] = {
-        (char*)envXdg.c_str(),
-        (char*)envWld.c_str(),
-        (char*)envLdp.c_str(),
-        (char*)envHome.c_str(),
-        (char*)envWinePrefix.c_str(),
-        (char*)envBoxLog.c_str(),
-        (char*)envBoxNoBanner.c_str(),
-        (char*)envPath.c_str(),
-        (char*)envTmpdir.c_str(),
-        nullptr,
-    };
-
-    // fork + exec — 模拟终端操作: cd 到 winebox/bin, 相对路径启动, stderr→文件
+// ── NAPI: launchClient (异步: wineserver→wineboot→wine 在后台线程, 不阻塞 JS 主线程) ──
+struct LaunchParams {
+    std::string exePath;
+    std::string sockPath;
+    std::string libPath;
+    std::string sockDir;
+    std::string sockName;
     std::string wineboxBin;
-    {
-        std::string ep(exePath);
-        auto pos = ep.find_last_of('/');
-        wineboxBin = (pos != std::string::npos) ? ep.substr(0, pos) : ep;
-    }
+    std::vector<std::string> envStrs;  // 持有 envp 字符串
+    std::vector<char*> envp;           // 指向 envStrs
+    int pipefd[2] = {-1, -1};
+};
 
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        OH_LOG_ERROR(LOG_APP, "[Launch] pipe failed: %{public}s", strerror(errno));
-        napi_value r;
-        napi_create_int32(env, -1, &r);
-        return r;
-    }
-    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
-    signal(SIGCHLD, SIG_IGN);
+static void LaunchThreadFunc(LaunchParams* p) {
+    OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
+
+    // 组装 envp 环境变量
+    p->envStrs = {
+        "XDG_RUNTIME_DIR=" + p->sockDir,
+        "WAYLAND_DISPLAY=" + p->sockName,
+        "LD_LIBRARY_PATH=" + p->libPath,
+        "HOME=/storage/Users/currentUser",
+        "WINEPREFIX=/data/storage/el2/base/files",
+        "BOX64_LOG=1",
+        "BOX64_NOBANNER=0",
+        "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin",
+        "TMPDIR=/storage/Users/currentUser",
+    };
+    for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
+    p->envp.push_back(nullptr);
 
     mkdir("/storage/Users/currentUser/workspace/wine", 0755);
-    // 创建 WINEPREFIX, wineserver 需要 chdir 进去
     mkdir("/data/storage/el2/base/files", 0755);
 
-    // ── 先启动 wineserver (APP 直接子进程, depth=1, 可以 PROT_EXEC) ──
-    std::string envBoxNoDynarec = "BOX64_DYNAREC=0";
-    char* wsEnvp[] = {
-        (char*)envXdg.c_str(),
-        (char*)envWld.c_str(),
-        (char*)envLdp.c_str(),
-        (char*)envHome.c_str(),
-        (char*)envWinePrefix.c_str(),
-        (char*)envBoxLog.c_str(),
-        (char*)envBoxNoBanner.c_str(),
-        (char*)envBoxNoDynarec.c_str(),
-        (char*)envPath.c_str(),
-        (char*)envTmpdir.c_str(),
-        nullptr,
-    };
-    int wsErrFd = open("/storage/Users/currentUser/workspace/wine/wineserver_logs.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
-    pid_t wsPid = fork();
-    if (wsPid == 0) {
-        dup2(wsErrFd, STDERR_FILENO);
-        if (wsErrFd > 2) close(wsErrFd);
-        CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
-        for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
-        prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
-        chdir(wineboxBin.c_str());
-        const char* wsArgv[] = {"./box64", "./wineserver", nullptr};
-        execve("./box64", (char* const*)wsArgv, wsEnvp);
-        fprintf(stderr, "wineserver execve failed: %s\n", strerror(errno));
-        _exit(127);
-    }
-    if (wsErrFd > 2) close(wsErrFd);
-
-    if (wsPid > 0) {
-        OH_LOG_INFO(LOG_APP, "[Launch] wineserver pid=%{public}d, 等待初始化...", wsPid);
-        usleep(1500000); // 1.5s
+    // 通知 ArkTS: wineserver 启动中
+    if (gStateTsfn) {
+        napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
     }
 
-    // ── 先独立运行 wineboot --init，等前缀初始化完成 ──
+    // ── 启动 wineserver ──
     {
-        OH_LOG_INFO(LOG_APP, "[Launch] running wineboot --init...");
+        std::vector<std::string> wsEnvStrs = p->envStrs;
+        wsEnvStrs.push_back("BOX64_DYNAREC=0");
+        std::vector<char*> wsEnvp;
+        for (auto& s : wsEnvStrs) wsEnvp.push_back((char*)s.c_str());
+        wsEnvp.push_back(nullptr);
+
+        int wsErrFd = open("/storage/Users/currentUser/workspace/wine/wineserver_logs.txt",
+                           O_WRONLY|O_CREAT|O_TRUNC, 0644);
+        pid_t wsPid = fork();
+        if (wsPid == 0) {
+            dup2(wsErrFd, STDERR_FILENO);
+            if (wsErrFd > 2) close(wsErrFd);
+            CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
+            for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
+            prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
+            chdir(p->wineboxBin.c_str());
+            const char* wsArgv[] = {"./box64", "./wineserver", nullptr};
+            execve("./box64", (char* const*)wsArgv, wsEnvp.data());
+            _exit(127);
+        }
+        if (wsErrFd > 2) close(wsErrFd);
+
+        if (wsPid > 0) {
+            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d, waiting 1.5s...", wsPid);
+            usleep(1500000);
+        } else {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver fork failed");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
+            delete p;
+            return;
+        }
+    }
+
+    if (gStateTsfn) {
+        napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
+    }
+
+    // ── wineboot --init ──
+    {
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init...");
         pid_t bootPid = fork();
         if (bootPid == 0) {
             CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineboot", 0, 0, 0);
-            chdir(wineboxBin.c_str());
+            chdir(p->wineboxBin.c_str());
             const char* bootArgv[] = {"./box64", "./wine", "./wineboot", "--init", nullptr};
             int bootFd = open("/storage/Users/currentUser/workspace/wine/wineboot_logs.txt",
                               O_WRONLY|O_CREAT|O_TRUNC, 0644);
             if (bootFd >= 0) dup2(bootFd, STDERR_FILENO);
-            execve("./box64", (char* const*)bootArgv, (char* const*)envp);
-            fprintf(stderr, "wineboot execve failed: %s\n", strerror(errno));
+            execve("./box64", (char* const*)bootArgv, p->envp.data());
             _exit(127);
         }
         if (bootPid > 0) {
@@ -299,58 +250,108 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
                 if (wr > 0) break;
                 if (wr < 0 && errno != EINTR) break;
                 if (i > 0 && i % 30 == 0)
-                    OH_LOG_INFO(LOG_APP, "[Launch] wineboot --init still running (%{public}ds)...", i);
+                    OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init still running (%{public}ds)...", i);
                 sleep(1);
             }
             if (kill(bootPid, 0) == 0) {
-                OH_LOG_WARN(LOG_APP, "[Launch] wineboot --init timeout (300s), killing");
+                OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init timeout (300s), killing");
                 kill(bootPid, SIGKILL);
                 waitpid(bootPid, &bootStatus, 0);
             }
             int code = WIFEXITED(bootStatus) ? WEXITSTATUS(bootStatus) : -1;
-            OH_LOG_INFO(LOG_APP, "[Launch] wineboot --init done, exit=%{public}d", code);
+            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done, exit=%{public}d", code);
         }
     }
 
-    // ── 再启动 wine (也是 APP 直接子进程, depth=1) ──
+    if (gStateTsfn) {
+        napi_call_threadsafe_function(gStateTsfn, strdup("wine-starting"), napi_tsfn_blocking);
+    }
+
+    // ── 启动 wine ──
     pid_t pid = fork();
     if (pid == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        // stderr → 文件, 方便抓完整 Box64/Wine 日志
-        int errfd = open("/storage/Users/currentUser/workspace/wine/notepad_logs.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+        close(p->pipefd[0]);
+        dup2(p->pipefd[1], STDOUT_FILENO);
+        int errfd = open("/storage/Users/currentUser/workspace/wine/notepad_logs.txt",
+                         O_WRONLY|O_CREAT|O_TRUNC, 0644);
         if (errfd >= 0) dup2(errfd, STDERR_FILENO);
-        if (pipefd[1] > 2) close(pipefd[1]);
+        if (p->pipefd[1] > 2) close(p->pipefd[1]);
         prctl(PR_SET_NAME, "wl-client", 0, 0, 0);
         CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
         for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
-
-        chdir(wineboxBin.c_str());
-
-        // 终端里跑的命令: ./box64 ./wine ./notepad.exe
+        chdir(p->wineboxBin.c_str());
         const char* cargv[] = {"./box64", "./wine", "./notepad.exe", nullptr};
-        execve("./box64", (char* const*)cargv, envp);
-        fprintf(stderr, "execve failed: %s\n", strerror(errno));
+        execve("./box64", (char* const*)cargv, p->envp.data());
         _exit(127);
     }
 
-    if (pid < 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
+    if (pid > 0) {
+        close(p->pipefd[1]);
+        gClientPid = pid;
+        gReaderRunning = true;
+        std::thread(ReaderThread, p->pipefd[0]).detach();
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wine pid=%{public}d, reader started", pid);
+
+        if (gStateTsfn) {
+            napi_call_threadsafe_function(gStateTsfn, strdup("wine-running"), napi_tsfn_blocking);
+        }
+    } else {
+        close(p->pipefd[0]);
+        close(p->pipefd[1]);
+        OH_LOG_ERROR(LOG_APP, "[Launch-Async] wine fork failed");
+        if (gStateTsfn)
+            napi_call_threadsafe_function(gStateTsfn, strdup("wine-failed"), napi_tsfn_blocking);
+    }
+
+    delete p;
+}
+
+static napi_value LaunchClient(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    auto* p = new LaunchParams();
+
+    char buf[1024] = {};
+    napi_get_value_string_utf8(env, args[0], buf, sizeof(buf), nullptr);
+    p->exePath = buf;
+    napi_get_value_string_utf8(env, args[2], buf, sizeof(buf), nullptr);
+    p->sockPath = buf;
+    napi_get_value_string_utf8(env, args[3], buf, sizeof(buf), nullptr);
+    p->libPath = buf;
+
+    OH_LOG_INFO(LOG_APP, "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s (async)",
+                p->exePath.c_str(), p->sockPath.c_str(), p->libPath.c_str());
+
+    // 保证可执行
+    if (access(p->exePath.c_str(), X_OK) != 0) chmod(p->exePath.c_str(), 0755);
+
+    // 提取 sockDir, sockName, wineboxBin
+    auto pos = p->sockPath.find_last_of('/');
+    p->sockDir = (pos == std::string::npos) ? "/tmp" : p->sockPath.substr(0, pos);
+    p->sockName = (pos == std::string::npos) ? p->sockPath : p->sockPath.substr(pos + 1);
+    pos = p->exePath.find_last_of('/');
+    p->wineboxBin = (pos != std::string::npos) ? p->exePath.substr(0, pos) : p->exePath;
+
+    // 创建 pipe
+    if (pipe(p->pipefd) != 0) {
+        OH_LOG_ERROR(LOG_APP, "[Launch] pipe failed: %{public}s", strerror(errno));
+        delete p;
         napi_value r;
         napi_create_int32(env, -1, &r);
         return r;
     }
+    fcntl(p->pipefd[0], F_SETFD, FD_CLOEXEC);
+    signal(SIGCHLD, SIG_IGN);
 
-    close(pipefd[1]);
-    gClientPid = pid;
-    gReaderRunning = true;
-    std::thread(ReaderThread, pipefd[0]).detach();
+    // 启动后台线程: wineserver → wineboot --init → wine
+    std::thread(LaunchThreadFunc, p).detach();
 
-    OH_LOG_INFO(LOG_APP, "[Launch] wine pid=%{public}d, reader thread started", pid);
+    OH_LOG_INFO(LOG_APP, "[Launch] background thread started, returning to JS");
 
     napi_value r;
-    napi_create_int32(env, pid, &r);
+    napi_create_int32(env, 0, &r);
     return r;
 }
 
