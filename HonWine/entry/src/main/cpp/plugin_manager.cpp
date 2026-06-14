@@ -45,8 +45,10 @@ void PluginManager::Export(napi_env env, napi_value exports) {
         OH_LOG_INFO(LOG_APP, "[MW-Export] MAIN XComponent registered: %{public}p", nxc);
     } else {
         subXComponents_.insert(nxc);
-        OH_LOG_INFO(LOG_APP, "[MW-Export] SUB XComponent registered: %{public}p (total subs: %{public}zu)",
-                    nxc, subXComponents_.size());
+        // 存储 XComponent → toplevelId 映射, OnSurfaceChanged 时用于查找 renderer
+        xcToToplevelId_[nxc] = pendingToplevelId_;
+        OH_LOG_INFO(LOG_APP, "[MW-Export] SUB XComponent registered: %{public}p → toplevel #%{public}u (total subs: %{public}zu)",
+                    nxc, pendingToplevelId_, subXComponents_.size());
     }
 }
 
@@ -90,7 +92,31 @@ void PluginManager::OnSurfaceCreated(OH_NativeXComponent* component, void* windo
     }
 }
 
-void PluginManager::OnSurfaceChanged(OH_NativeXComponent*, void*) {}
+void PluginManager::OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
+    uint64_t w = 0, h = 0;
+    OH_NativeXComponent_GetXComponentSize(component, window, &w, &h);
+    auto* self = GetInstance();
+    OH_LOG_INFO(LOG_APP, "[MW-Surface] changed component=%{public}p size=%{public}llux%{public}llu",
+                component, w, h);
+
+    if (component == self->mainXComponent_) {
+        if (self->mainRenderer_ && self->mainRenderer_->IsValid()) {
+            self->mainRenderer_->SetSize((int)w, (int)h);
+            OH_LOG_INFO(LOG_APP, "[MW-Surface] main renderer resized to %{public}llux%{public}llu", w, h);
+        }
+    } else {
+        auto it = self->xcToToplevelId_.find(component);
+        if (it != self->xcToToplevelId_.end()) {
+            uint32_t tid = it->second;
+            auto rit = self->toplevelRenderers_.find(tid);
+            if (rit != self->toplevelRenderers_.end() && rit->second->IsValid()) {
+                rit->second->SetSize((int)w, (int)h);
+                OH_LOG_INFO(LOG_APP, "[MW-Surface] toplevel #%{public}u renderer resized to %{public}llux%{public}llu",
+                            tid, w, h);
+            }
+        }
+    }
+}
 
 void PluginManager::OnSurfaceDestroyed(OH_NativeXComponent* component, void*) {
     auto* self = GetInstance();

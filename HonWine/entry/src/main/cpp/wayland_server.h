@@ -106,6 +106,7 @@ private:
     std::unordered_map<uint32_t, std::vector<uint8_t>> toplevelPixels_;
     std::unordered_map<uint32_t, int> toplevelW_, toplevelH_;
     std::unordered_map<uint32_t, bool> toplevelDirty_;
+    std::unordered_map<uint32_t, int> toplevelLastReportedW_, toplevelLastReportedH_;
 
     StateCb stateCb_;
     ToplevelCb toplevelCb_;

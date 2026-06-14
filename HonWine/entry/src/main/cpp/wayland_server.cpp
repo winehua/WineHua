@@ -280,6 +280,19 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
             self->toplevelDirty_[sd->toplevelId] = true;
             OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d",
                         sd->toplevelId, w, h, stride);
+
+            // 检测尺寸变化 → 通知 ArkTS 调整子窗口
+            int lastW = self->toplevelLastReportedW_[sd->toplevelId];
+            int lastH = self->toplevelLastReportedH_[sd->toplevelId];
+            if (w != lastW || h != lastH) {
+                self->toplevelLastReportedW_[sd->toplevelId] = w;
+                self->toplevelLastReportedH_[sd->toplevelId] = h;
+                char json[64];
+                snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", w, h);
+                OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u size changed: %{public}dx%{public}d → ArkTS",
+                            sd->toplevelId, w, h);
+                self->FireToplevelEvent(sd->toplevelId, "resize", json);
+            }
         }
         wl_shm_buffer_end_access(shm);
     }

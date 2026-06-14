@@ -37,6 +37,8 @@ private:
     // 区分主/子 XComponent: 第一个注册的是主窗口, 后续是子窗口
     OH_NativeXComponent* mainXComponent_ = nullptr;
     std::set<OH_NativeXComponent*> subXComponents_;
+    // XComponent → toplevelId 映射 (解决 OnSurfaceChanged resize 时找不到 renderer)
+    std::unordered_map<OH_NativeXComponent*, uint32_t> xcToToplevelId_;
 
     OH_NativeXComponent_Callback callback_{};
 };

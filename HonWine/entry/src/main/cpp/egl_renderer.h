@@ -21,6 +21,7 @@ public:
     EGLContext GetContext() const { return context_; }
     uint32_t GetToplevelId() const { return toplevelId_; }
     void SetToplevelId(uint32_t id) { toplevelId_ = id; }
+    void SetSize(int w, int h) { width_ = w; height_ = h; }
     bool IsValid() const { return running_; }
 
 private:
