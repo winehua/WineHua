@@ -3,7 +3,7 @@ import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
 const SOCK = '/data/storage/el2/base/files/wine-wayland';
-const WINE_BIN = '/data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox';
+const WINE_BIN = '/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine';
 const WINE_LIB = `${WINE_BIN}/bin/x86_64-unix`;
 
 @Entry

@@ -155,7 +155,7 @@ struct LaunchParams {
     std::string libPath;
     std::string sockDir;
     std::string sockName;
-    std::string wineboxBin;
+    std::string honwineBin;
     std::vector<std::string> envStrs;  // 持有 envp 字符串
     std::vector<char*> envp;           // 指向 envStrs
     int pipefd[2] = {-1, -1};
@@ -204,7 +204,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
             CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
-            chdir(p->wineboxBin.c_str());
+            chdir(p->honwineBin.c_str());
             const char* wsArgv[] = {"./box64", "./wineserver", nullptr};
             execve("./box64", (char* const*)wsArgv, wsEnvp.data());
             _exit(127);
@@ -235,7 +235,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
             CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineboot", 0, 0, 0);
-            chdir(p->wineboxBin.c_str());
+            chdir(p->honwineBin.c_str());
             const char* bootArgv[] = {"./box64", "./wine", "./wineboot", "--init", nullptr};
             int bootFd = open("/storage/Users/currentUser/workspace/wine/wineboot_logs.txt",
                               O_WRONLY|O_CREAT|O_TRUNC, 0644);
@@ -279,7 +279,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
         prctl(PR_SET_NAME, "wl-client", 0, 0, 0);
         CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
         for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
-        chdir(p->wineboxBin.c_str());
+        chdir(p->honwineBin.c_str());
         const char* cargv[] = {"./box64", "./wine", "./notepad.exe", nullptr};
         execve("./box64", (char* const*)cargv, p->envp.data());
         _exit(127);
@@ -327,12 +327,12 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
     // 保证可执行
     if (access(p->exePath.c_str(), X_OK) != 0) chmod(p->exePath.c_str(), 0755);
 
-    // 提取 sockDir, sockName, wineboxBin
+    // 提取 sockDir, sockName, honwineBin
     auto pos = p->sockPath.find_last_of('/');
     p->sockDir = (pos == std::string::npos) ? "/tmp" : p->sockPath.substr(0, pos);
     p->sockName = (pos == std::string::npos) ? p->sockPath : p->sockPath.substr(pos + 1);
     pos = p->exePath.find_last_of('/');
-    p->wineboxBin = (pos != std::string::npos) ? p->exePath.substr(0, pos) : p->exePath;
+    p->honwineBin = (pos != std::string::npos) ? p->exePath.substr(0, pos) : p->exePath;
 
     // 创建 pipe
     if (pipe(p->pipefd) != 0) {
@@ -704,7 +704,7 @@ static napi_value RunMmapTests(napi_env env, napi_callback_info) {
         posix_spawn_file_actions_adddup2(&actions, fd[1], STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&actions, fd[1], STDERR_FILENO);
         pid_t pid;
-        const char* spawn_bin = "/data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox/bin/mmap_test";
+        const char* spawn_bin = "/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine/bin/mmap_test";
         char* argv[] = { (char*)spawn_bin, NULL };
         extern char** environ;
         int ret = posix_spawn(&pid, spawn_bin, &actions, NULL, argv, environ);
@@ -839,7 +839,7 @@ static napi_value TermRun(napi_env env, napi_callback_info info) {
         CloseInheritedFds(STDIN_FILENO, STDOUT_FILENO);
         setenv("HOME", "/storage/Users/currentUser", 1);
         setenv("PATH", "/data/app/bin:/data/service/hnp/bin:/bin:/usr/local/bin:/usr/bin:/system/bin:/vendor/bin", 1);
-        setenv("LD_LIBRARY_PATH", "/data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox/bin/x86_64-unix", 1);
+        setenv("LD_LIBRARY_PATH", "/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine/bin/x86_64-unix", 1);
         setenv("TERM", "xterm", 1);
         chdir("/storage/Users/currentUser");
         execl("/bin/sh", "/bin/sh", nullptr);

@@ -8,8 +8,8 @@ source "$SCRIPT_DIR/env.sh"
 package_hnp() {
     log "=== 打包 HNP ==="
     mkdir -p "$OUT_DIR"
-    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n winebox -v 0.1.0
-    ls -lh "$OUT_DIR/winebox.hnp"
+    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n honwine -v 0.1.0
+    ls -lh "$OUT_DIR/honwine.hnp"
 }
 
 package_hap() {
@@ -18,7 +18,7 @@ package_hap() {
     local signed_hap="$HONWINE/entry/build/default/outputs/default/entry-default-signed.hap"
 
     mkdir -p "$HONWINE/entry/hnp/arm64-v8a"
-    cp "$OUT_DIR/winebox.hnp" "$HONWINE/entry/hnp/arm64-v8a/honwine.hnp"
+    cp "$OUT_DIR/honwine.hnp" "$HONWINE/entry/hnp/arm64-v8a/honwine.hnp"
 
     cd "$HONWINE"
     hvigorw assembleHap
@@ -45,7 +45,7 @@ deploy() {
 
     log "部署完成。测试命令:"
     echo ""
-    echo "  cd /data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox"
+    echo "  cd /data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine"
     echo "  rm -rf /data/local/tmp/.wine"
     echo '  WINEPREFIX=/data/local/tmp/.wine ./bin/box64 ./bin/wine ./bin/cmd.exe /c echo hello 2>&1'
 }

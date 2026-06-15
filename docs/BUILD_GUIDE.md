@@ -138,32 +138,32 @@ ninja box64
 ```bash
 OUT=out/hnp_combined
 rm -rf $OUT
-mkdir -p $OUT/opt/winebox/bin $OUT/opt/winebox/lib/x86_64 $OUT/opt/winebox/share/wine/nls
+mkdir -p $OUT/opt/honwine/bin $OUT/opt/honwine/lib/x86_64 $OUT/opt/honwine/share/wine/nls
 
 # 所有二进制放在 bin/ (标准 Wine 布局)
-cp build-ohos/loader/wine           $OUT/opt/winebox/bin/   # musl 版本
-cp /tmp/wine_server/wineserver      $OUT/opt/winebox/bin/   # 含 __ANDROID__ 修复
-cp /tmp/box64_build/box64           $OUT/opt/winebox/bin/   # ARM64 原生
+cp build-ohos/loader/wine           $OUT/opt/honwine/bin/   # musl 版本
+cp /tmp/wine_server/wineserver      $OUT/opt/honwine/bin/   # 含 __ANDROID__ 修复
+cp /tmp/box64_build/box64           $OUT/opt/honwine/bin/   # ARM64 原生
 
 # Wine PE DLLs + Unix .so (从 native build)
-cp build-native/dlls/**/*.dll       $OUT/opt/winebox/bin/
-cp build-ohos/dlls/**/*.so          $OUT/opt/winebox/bin/
+cp build-native/dlls/**/*.dll       $OUT/opt/honwine/bin/
+cp build-ohos/dlls/**/*.so          $OUT/opt/honwine/bin/
 
 # x86_64 musl 运行时
-cp $SYSROOT/usr/lib/x86_64-linux-ohos/libc.so $OUT/opt/winebox/lib/x86_64/
+cp $SYSROOT/usr/lib/x86_64-linux-ohos/libc.so $OUT/opt/honwine/lib/x86_64/
 
 # NLS 文件 (Unicode 支持)
-cp build-native/nls/*.nls           $OUT/opt/winebox/share/wine/nls/
+cp build-native/nls/*.nls           $OUT/opt/honwine/share/wine/nls/
 
 # 启动脚本
-cat > $OUT/opt/winebox/bin/wine.sh << 'SCRIPT'
+cat > $OUT/opt/honwine/bin/wine.sh << 'SCRIPT'
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")" && pwd)"
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 export BOX64_LD_LIBRARY_PATH="$DIR:$DIR/../lib/x86_64"
 exec "$DIR/box64" "$DIR/wine" "$@"
 SCRIPT
-chmod +x $OUT/opt/winebox/bin/wine.sh
+chmod +x $OUT/opt/honwine/bin/wine.sh
 ```
 
 ---
@@ -174,14 +174,14 @@ chmod +x $OUT/opt/winebox/bin/wine.sh
 HNPCLI=$OHOS_SDK/../toolchains/hnpcli
 
 cat > $OUT/hnp.json << 'EOF'
-{"type":"hnp-config","name":"winebox","version":"0.1.0","install":{"links":[
-  {"source":"./opt/winebox/bin/wine.sh","target":"wine"},
-  {"source":"./opt/winebox/bin/box64","target":"box64"}
+{"type":"hnp-config","name":"honwine","version":"0.1.0","install":{"links":[
+  {"source":"./opt/honwine/bin/wine.sh","target":"wine"},
+  {"source":"./opt/honwine/bin/box64","target":"box64"}
 ]}}
 EOF
 
-$HNPCLI pack -i $OUT -o out -n winebox -v 0.1.0
-# 产物: out/winebox.hnp (~250MB)
+$HNPCLI pack -i $OUT -o out -n honwine -v 0.1.0
+# 产物: out/honwine.hnp (~250MB)
 ```
 
 ---
@@ -192,7 +192,7 @@ $HNPCLI pack -i $OUT -o out -n winebox -v 0.1.0
 cd HonWine
 
 # 1. 放置 HNP
-cp ../out/winebox.hnp entry/hnp/arm64-v8a/honwine.hnp
+cp ../out/honwine.hnp entry/hnp/arm64-v8a/honwine.hnp
 
 # 2. 构建 HAP
 hvigorw assembleHap
@@ -220,10 +220,10 @@ hdc shell aa start -a EntryAbility -b app.hackeris.honwine
 
 ## 6. 设备端运行
 
-HAP 安装后，HNP 自动提取到 `/data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox/`:
+HAP 安装后，HNP 自动提取到 `/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine/`:
 
 ```bash
-cd /data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox
+cd /data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine
 export WINEPREFIX=/data/local/tmp/.wine
 rm -rf $WINEPREFIX
 ./bin/box64 ./bin/wine ./bin/cmd.exe
@@ -255,12 +255,12 @@ rm -rf $WINEPREFIX
 
 ```
 out/
-├── winebox.hnp          247MB   HNP 安装包 (含 Box64 + Wine + 依赖)
-├── winebox-arm64.tar.gz 238MB   tar.gz 备用分发
+├── honwine.hnp          247MB   HNP 安装包 (含 Box64 + Wine + 依赖)
+├── honwine-arm64.tar.gz 238MB   tar.gz 备用分发
 ├── box64-ohos-arm64      29MB   Box64 ARM64 二进制
 ├── wineserver            894K   x86_64 musl wineserver
 └── hnp_combined/              HNP 构建临时目录
-    └── opt/winebox/
+    └── opt/honwine/
         ├── bin/          750 文件  (wine, wineserver, box64, PE DLLs, .so)
         ├── lib/x86_64/   libc.so  (x86_64 musl 运行时)
         └── share/wine/nls/ 76 NLS 文件

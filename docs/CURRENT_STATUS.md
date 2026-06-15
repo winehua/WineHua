@@ -88,7 +88,7 @@ OHOS NAPI 沙箱禁止 `symlink()` 系统调用 (EACCES)。Wine 依赖 `dosdevic
 Box64 39 位地址空间下 `MEM_TOP_DOWN` 行为异常，fallback 到 `anon_mmap_alloc()` 直接 mmap。
 
 ### 2. 路径计算错误
-**configure**: `--prefix=/opt/winebox --libdir='${prefix}'`
+**configure**: `--prefix=/opt/honwine --libdir='${prefix}'`
 
 ### 3. Noexec 文件系统
 **文件**: `dlls/ntdll/unix/virtual.c`
@@ -161,7 +161,7 @@ wineboot 执行 wine.inf 时 `start_services_process error 267`，不影响 note
 | `dlls/ntdll/unix/file.c` | `get_nt_and_unix_names()`: `ntdll_wcstoumbs` 后 null 终止 | 修复随机垃圾字符导致文件找不到 |
 | `dlls/ntdll/unix/env.c` | `add_path_var()`: 诊断日志 (已注释) | 诊断环境变量设置 |
 | `dlls/ntdll/loader.c` | PE 侧 DLL 搜索诊断日志 (已注释) | 诊断 PE 侧 DLL 搜索 |
-| `build-ohos/` configure | `--prefix=/opt/winebox --libdir='${prefix}'` | 路径计算 |
+| `build-ohos/` configure | `--prefix=/opt/honwine --libdir='${prefix}'` | 路径计算 |
 | `build-ohos/` 编译 | `-D__ANDROID__ -D__OHOS__` | OHOS 平台编译标志 |
 | `build-ohos/` configure | 启用 FreeType (`SONAME_LIBFREETYPE`) | 字体渲染 |
 | `napi_init.cpp` | 环境变量 (HOME, PATH, WINEDEBUG 等) | 对齐终端环境 |
@@ -173,7 +173,7 @@ wineboot 执行 wine.inf 时 `start_services_process error 267`，不影响 note
 
 ```bash
 --host=x86_64-linux-ohos
---prefix=/opt/winebox
+--prefix=/opt/honwine
 --libdir='${prefix}'
 --with-wine-tools=../build-native
 --with-mingw=gcc
@@ -186,7 +186,7 @@ FreeType 交叉编译: `cmake -DOHOS_ARCH=x86_64 -DBUILD_SHARED_LIBS=ON`，SONAM
 ## HNP 布局
 
 ```
-out/staging/opt/winebox/
+out/staging/opt/honwine/
 ├── bin/
 │   ├── wine                  # musl loader
 │   ├── wineserver            # x86_64 musl
@@ -232,7 +232,7 @@ bash scripts/package.sh deploy    # 推送到设备并安装
 ## 设备测试命令
 
 ```bash
-cd /data/service/hnp/winebox.org/winebox_0.1.0/opt/winebox
+cd /data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine
 rm -rf /data/local/tmp/.wine
 WINEPREFIX=/data/local/tmp/.wine ./bin/box64 ./bin/wine ./bin/cmd.exe /c echo hello 2>&1
 ```
