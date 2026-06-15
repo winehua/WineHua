@@ -20,6 +20,17 @@ struct XdgSurface {
 
 // ── xdg_toplevel 实现 (最小: 记录 title, 其余空) ──
 static void tl_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+static void tl_resource_destroy(wl_resource* r) {
+    // ★ 当 Wine 客户端销毁 toplevel 时, 清理 WaylandServer 中的注册
+    // 避免 SendToplevelClose 访问已释放的野指针
+    auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(r));
+    if (d && d->wlSurface) {
+        auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
+        if (sd) {
+            WaylandServer::GetInstance()->UnregisterToplevelResource(sd->toplevelId);
+        }
+    }
+}
 static void tl_set_parent(wl_client*, wl_resource*, wl_resource*) {}
 static void tl_set_title(wl_client*, wl_resource* tlRes, const char* title) {
     OH_LOG_INFO(LOG_APP, "[XDG] title=%{public}s", title ? title : "(null)");
@@ -81,7 +92,7 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
     wl_resource* tl = wl_resource_create(client, &xdg_toplevel_interface,
                                           wl_resource_get_version(xsRes), id);
     d->xdgToplevel = tl;
-    wl_resource_set_implementation(tl, &kToplevelImpl, d, nullptr);
+    wl_resource_set_implementation(tl, &kToplevelImpl, d, tl_resource_destroy);
 
     // 关联 SurfaceData: 分配 toplevelId, 标记 hasToplevel
     if (d->wlSurface) {

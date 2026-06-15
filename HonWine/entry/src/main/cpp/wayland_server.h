@@ -42,6 +42,7 @@ public:
 
     // toplevel resource 映射 (用于 SendToplevelClose → xdg_toplevel_send_close)
     void RegisterToplevelResource(uint32_t toplevelId, wl_resource* tl);
+    void UnregisterToplevelResource(uint32_t toplevelId);
     void SendToplevelClose(uint32_t toplevelId);
 
     // ── wayland 协议实现 ──

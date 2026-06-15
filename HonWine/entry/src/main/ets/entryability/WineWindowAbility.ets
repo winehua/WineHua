@@ -12,93 +12,144 @@ export default class WineWindowAbility extends UIAbility {
   private cleanedUp: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    const params = want.parameters ?? {};
-    this.toplevelId = Number(params.toplevelId) || 0;
-    const title = params.title as string ?? '';
+    try {
+      const params = want.parameters ?? {};
+      this.toplevelId = Number(params.toplevelId) || 0;
+      const title = params.title as string ?? '';
 
-    hilog.info(DOMAIN, TAG, 'onCreate: toplevelId=%{public}d title="%{public}s" launchReason=%{public}d params=%{public}s',
-      this.toplevelId, title, launchParam.launchReason, JSON.stringify(params));
+      hilog.info(DOMAIN, TAG, '[WWA] ▶ onCreate: tl=%{public}d title="%{public}s" launchReason=%{public}d params=%{public}s',
+        this.toplevelId, title, launchParam.launchReason, JSON.stringify(params));
 
-    if (this.toplevelId === 0) {
-      hilog.error(DOMAIN, TAG, 'onCreate: no toplevelId in want.parameters, terminating');
-      this.context.terminateSelf();
-      return;
+      if (this.toplevelId === 0) {
+        hilog.error(DOMAIN, TAG, '[WWA] ✗ no toplevelId, terminating self');
+        this.context.terminateSelf();
+        return;
+      }
+
+      // 检查是否在启动期间已经被销毁
+      if (WineWindowManager.getInstance().isDestroyed(this.toplevelId)) {
+        hilog.warn(DOMAIN, TAG, '[WWA] ✗ #%{public}d already destroyed, terminating self', this.toplevelId);
+        this.context.terminateSelf();
+        return;
+      }
+
+      // 注册 context (供 WineWindowManager 调 terminateSelf)
+      WineWindowManager.getInstance().registerAbility(this.toplevelId, this.context);
+
+      hilog.info(DOMAIN, TAG, '[WWA] onCreate ✓ tl=%{public}d', this.toplevelId);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '[WWA] ✗ onCreate EXCEPTION tl=%{public}d: %{public}s',
+        this.toplevelId, JSON.stringify(e));
     }
-
-    // 检查是否在启动期间已经被销毁
-    if (WineWindowManager.getInstance().isDestroyed(this.toplevelId)) {
-      hilog.warn(DOMAIN, TAG, '#%{public}d already marked destroyed before onCreate, terminating', this.toplevelId);
-      this.context.terminateSelf();
-      return;
-    }
-
-    // 注册 context (供 WineWindowManager 调 terminateSelf)
-    WineWindowManager.getInstance().registerAbility(this.toplevelId, this.context);
-
-    hilog.info(DOMAIN, TAG, '#%{public}d onCreate ✓', this.toplevelId);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    hilog.info(DOMAIN, TAG, '#%{public}d onWindowStageCreate', this.toplevelId);
+    hilog.info(DOMAIN, TAG, '[WWA] ▶ onWindowStageCreate tl=%{public}d cleanedUp=%{public}s',
+      this.toplevelId, this.cleanedUp ? 'yes' : 'no');
 
-    // ★ 关键: 必须在 loadContent 之前设置 pending toplevel
-    hilog.info(DOMAIN, TAG, '#%{public}d → setPendingToplevel', this.toplevelId);
-    testNapi.setPendingToplevel(this.toplevelId);
+    // 检查是否已清理
+    if (this.cleanedUp) {
+      hilog.warn(DOMAIN, TAG, '[WWA] ✗ #%{public}d already cleaned up, skipping onWindowStageCreate', this.toplevelId);
+      return;
+    }
 
-    let mainWindow = windowStage.getMainWindowSync();
-    hilog.info(DOMAIN, TAG, '#%{public}d mainWindow=%{public}s', this.toplevelId, mainWindow ? 'ok' : 'NULL');
+    try {
+      // ★ 关键: 必须在 loadContent 之前设置 pending toplevel
+      hilog.info(DOMAIN, TAG, '[WWA] → setPendingToplevel(%{public}d)', this.toplevelId);
+      testNapi.setPendingToplevel(this.toplevelId);
 
-    // 注册 Window 引用 (供 WineWindowManager 直接操作 resize/title)
-    WineWindowManager.getInstance().registerWindow(this.toplevelId, mainWindow);
+      let mainWindow = windowStage.getMainWindowSync();
+      hilog.info(DOMAIN, TAG, '[WWA] mainWindow=%{public}s', mainWindow ? 'ok' : 'NULL');
 
-    // 应用已经在 WineWindowManager 中积压的 pending 事件 (resize/title)
-    WineWindowManager.getInstance().flushPendingEvents(this.toplevelId);
-
-    hilog.info(DOMAIN, TAG, '#%{public}d → loadContent pages/WineWindow...', this.toplevelId);
-    windowStage.loadContent('pages/WineWindow', (err) => {
-      if (err.code) {
-        hilog.error(DOMAIN, TAG, '#%{public}d loadContent FAILED: %{public}s',
-          this.toplevelId, JSON.stringify(err));
+      if (!mainWindow) {
+        hilog.error(DOMAIN, TAG, '[WWA] ✗ #%{public}d getMainWindowSync returned NULL!', this.toplevelId);
         return;
       }
-      hilog.info(DOMAIN, TAG, '#%{public}d loadContent ✓', this.toplevelId);
-    });
 
-    // 监听窗口事件 (关闭 / 最小化 / 最大化等)
-    mainWindow.on('windowEvent', (eventType: number) => {
-      hilog.info(DOMAIN, TAG, '#%{public}d windowEvent type=%{public}d', this.toplevelId, eventType);
-      if (eventType === window.WindowEventType.WINDOW_DESTROYED) {
-        hilog.info(DOMAIN, TAG, '#%{public}d ▶ WINDOW_DESTROYED (user closed)', this.toplevelId);
-        this.cleanup();
-      }
-    });
+      // 注册 Window 引用
+      WineWindowManager.getInstance().registerWindow(this.toplevelId, mainWindow);
 
-    hilog.info(DOMAIN, TAG, '#%{public}d onWindowStageCreate ✓', this.toplevelId);
+      // 应用 pending 事件
+      WineWindowManager.getInstance().flushPendingEvents(this.toplevelId);
+
+      // 监听窗口事件 (关闭 / 最小化 / 最大化等)
+      mainWindow.on('windowEvent', (eventType: number) => {
+        hilog.info(DOMAIN, TAG, '[WWA] #%{public}d windowEvent type=%{public}d', this.toplevelId, eventType);
+        if (eventType === window.WindowEventType.WINDOW_DESTROYED) {
+          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d ▶ WINDOW_DESTROYED (user closed)', this.toplevelId);
+          this.cleanup();
+        }
+      });
+
+      hilog.info(DOMAIN, TAG, '[WWA] → loadContent pages/WineWindow...');
+      windowStage.loadContent('pages/WineWindow', (err) => {
+        if (err.code) {
+          hilog.error(DOMAIN, TAG, '[WWA] ✗ #%{public}d loadContent FAILED: %{public}s',
+            this.toplevelId, JSON.stringify(err));
+          return;
+        }
+        hilog.info(DOMAIN, TAG, '[WWA] loadContent ✓ tl=%{public}d', this.toplevelId);
+        // ★ loadContent 后窗口装饰已就绪, 可获取标题栏高度
+        WineWindowManager.getInstance().onAfterLoadContent(this.toplevelId);
+      });
+
+      hilog.info(DOMAIN, TAG, '[WWA] onWindowStageCreate ✓ tl=%{public}d', this.toplevelId);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '[WWA] ✗ onWindowStageCreate EXCEPTION tl=%{public}d: %{public}s',
+        this.toplevelId, JSON.stringify(e));
+    }
   }
 
   onForeground(): void {
-    hilog.info(DOMAIN, TAG, '#%{public}d onForeground', this.toplevelId);
+    hilog.info(DOMAIN, TAG, '[WWA] onForeground tl=%{public}d', this.toplevelId);
   }
 
   onBackground(): void {
-    hilog.info(DOMAIN, TAG, '#%{public}d onBackground', this.toplevelId);
+    hilog.info(DOMAIN, TAG, '[WWA] onBackground tl=%{public}d', this.toplevelId);
   }
 
   onDestroy(): void {
-    hilog.info(DOMAIN, TAG, '#%{public}d onDestroy (cleanedUp=%{public}s)',
+    hilog.info(DOMAIN, TAG, '[WWA] ▶ onDestroy tl=%{public}d (cleanedUp=%{public}s)',
       this.toplevelId, this.cleanedUp ? 'yes' : 'no');
-    if (!this.cleanedUp) {
-      this.cleanup();
+    try {
+      if (!this.cleanedUp) {
+        this.cleanup();
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '[WWA] ✗ onDestroy EXCEPTION tl=%{public}d: %{public}s',
+        this.toplevelId, JSON.stringify(e));
     }
-    hilog.info(DOMAIN, TAG, '#%{public}d onDestroy ✓', this.toplevelId);
+    hilog.info(DOMAIN, TAG, '[WWA] onDestroy ✓ tl=%{public}d', this.toplevelId);
   }
 
   private cleanup(): void {
-    if (this.cleanedUp) return;
+    if (this.cleanedUp) {
+      hilog.warn(DOMAIN, TAG, '[WWA] cleanup tl=%{public}d: already cleaned, skip', this.toplevelId);
+      return;
+    }
     this.cleanedUp = true;
-    hilog.info(DOMAIN, TAG, '#%{public}d cleanup: sendToplevelClose + destroyToplevel + unregister', this.toplevelId);
-    testNapi.sendToplevelClose(this.toplevelId);
-    testNapi.destroyToplevel(this.toplevelId);
-    WineWindowManager.getInstance().unregisterAbility(this.toplevelId);
+    hilog.info(DOMAIN, TAG, '[WWA] ▶ cleanup tl=%{public}d START: sendToplevelClose → destroyToplevel → unregisterAbility',
+      this.toplevelId);
+    try {
+      testNapi.sendToplevelClose(this.toplevelId);
+      hilog.info(DOMAIN, TAG, '[WWA] cleanup tl=%{public}d: sendToplevelClose done', this.toplevelId);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '[WWA] ✗ cleanup sendToplevelClose EXCEPTION tl=%{public}d: %{public}s',
+        this.toplevelId, JSON.stringify(e));
+    }
+    try {
+      testNapi.destroyToplevel(this.toplevelId);
+      hilog.info(DOMAIN, TAG, '[WWA] cleanup tl=%{public}d: destroyToplevel done', this.toplevelId);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '[WWA] ✗ cleanup destroyToplevel EXCEPTION tl=%{public}d: %{public}s',
+        this.toplevelId, JSON.stringify(e));
+    }
+    try {
+      WineWindowManager.getInstance().unregisterAbility(this.toplevelId);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, '[WWA] ✗ cleanup unregisterAbility EXCEPTION tl=%{public}d: %{public}s',
+        this.toplevelId, JSON.stringify(e));
+    }
+    hilog.info(DOMAIN, TAG, '[WWA] cleanup tl=%{public}d DONE', this.toplevelId);
   }
 }

@@ -389,6 +389,16 @@ void WaylandServer::RegisterToplevelResource(uint32_t toplevelId, wl_resource* t
     OH_LOG_INFO(LOG_APP, "[MW] RegisterToplevelResource id=%{public}u tl=%{public}p", toplevelId, tl);
 }
 
+void WaylandServer::UnregisterToplevelResource(uint32_t toplevelId) {
+    std::lock_guard<std::mutex> lk(toplevelResMutex_);
+    auto it = toplevelResources_.find(toplevelId);
+    if (it != toplevelResources_.end()) {
+        OH_LOG_INFO(LOG_APP, "[MW] UnregisterToplevelResource id=%{public}u tl=%{public}p (Wine destroyed toplevel)",
+                    toplevelId, it->second);
+        toplevelResources_.erase(it);
+    }
+}
+
 void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
     wl_resource* tl = nullptr;
     {

@@ -1,4 +1,5 @@
 #include "plugin_manager.h"
+#include "wayland_server.h"
 #include <native_window/external_window.h>
 #include <set>
 
@@ -14,23 +15,30 @@ PluginManager* PluginManager::GetInstance() {
 void PluginManager::Export(napi_env env, napi_value exports) {
     napi_value xcVal = nullptr;
     napi_status st = napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &xcVal);
-    OH_LOG_INFO(LOG_APP, "[MW-Export] status=%{public}d pendingToplevel=%{public}u", st, pendingToplevelId_);
+    OH_LOG_INFO(LOG_APP, "[MW-Export] ▶ status=%{public}d pendingToplevel=%{public}u existXC=%{public}zu existRender=%{public}zu",
+                st, pendingToplevelId_, subXComponents_.size(), toplevelRenderers_.size());
     if (st != napi_ok) {
-        OH_LOG_WARN(LOG_APP, "[Plugin] no XComponent in exports");
+        OH_LOG_WARN(LOG_APP, "[MW-Export] ✗ no XComponent in exports (status=%{public}d)", st);
         return;
     }
 
     napi_valuetype type;
     napi_typeof(env, xcVal, &type);
-    OH_LOG_INFO(LOG_APP, "[Plugin] XComponent type=%{public}d (napi_object=%{public}d)", type, napi_object);
+    OH_LOG_INFO(LOG_APP, "[MW-Export] XComponent type=%{public}d (napi_object=%{public}d)", type, napi_object);
 
     OH_NativeXComponent* nxc = nullptr;
     napi_status uw = napi_unwrap(env, xcVal, reinterpret_cast<void**>(&nxc));
-    OH_LOG_INFO(LOG_APP, "[Plugin] napi_unwrap: status=%{public}d ptr=%{public}p", uw, nxc);
+    OH_LOG_INFO(LOG_APP, "[MW-Export] napi_unwrap: status=%{public}d ptr=%{public}p", uw, nxc);
 
     if (uw != napi_ok || !nxc) {
-        OH_LOG_WARN(LOG_APP, "[MW-Export] unwrap failed (status=%{public}d)", uw);
+        OH_LOG_WARN(LOG_APP, "[MW-Export] ✗ unwrap failed (status=%{public}d)", uw);
         return;
+    }
+
+    // 检查是否已注册 (防止重复注册)
+    if (subXComponents_.count(nxc)) {
+        OH_LOG_WARN(LOG_APP, "[MW-Export] ⚠ XComponent %{public}p ALREADY registered (pendingToplevel=%{public}u), updating mapping",
+                    nxc, pendingToplevelId_);
     }
 
     callback_.OnSurfaceCreated   = OnSurfaceCreated;
@@ -42,8 +50,8 @@ void PluginManager::Export(napi_env env, napi_value exports) {
     // 所有 XComponent 都属于子窗口 (主界面已无 XComponent)
     subXComponents_.insert(nxc);
     xcToToplevelId_[nxc] = pendingToplevelId_;
-    OH_LOG_INFO(LOG_APP, "[MW-Export] XComponent registered: %{public}p → toplevel #%{public}u (total: %{public}zu)",
-                nxc, pendingToplevelId_, subXComponents_.size());
+    OH_LOG_INFO(LOG_APP, "[MW-Export] ✓ XComponent %{public}p → toplevel #%{public}u (total xc=%{public}zu renderers=%{public}zu)",
+                nxc, pendingToplevelId_, subXComponents_.size(), toplevelRenderers_.size());
 }
 
 void PluginManager::OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
@@ -64,6 +72,10 @@ void PluginManager::OnSurfaceCreated(OH_NativeXComponent* component, void* windo
             r->SetToplevelId(tid);
             self->toplevelRenderers_[tid] = std::move(r);
             OH_LOG_INFO(LOG_APP, "[MW-Surface] ✓ toplevel #%{public}u renderer created (total=%{public}zu)", tid, self->toplevelRenderers_.size());
+            // ★ 通知 ArkTS surface 的物理像素尺寸, 用于动态计算标题栏高度
+            char json[64];
+            snprintf(json, sizeof(json), "{\"w\":%llu,\"h\":%llu}", w, h);
+            WaylandServer::GetInstance()->FireToplevelEvent(tid, "surface", json);
         } else {
             OH_LOG_ERROR(LOG_APP, "[MW-Surface] ✗ toplevel #%{public}u EglRenderer::Init FAILED", tid);
         }
@@ -87,6 +99,10 @@ void PluginManager::OnSurfaceChanged(OH_NativeXComponent* component, void* windo
             rit->second->SetSize((int)w, (int)h);
             OH_LOG_INFO(LOG_APP, "[MW-Surface] toplevel #%{public}u renderer resized to %{public}llux%{public}llu",
                         tid, w, h);
+            // ★ 每次 surface 大小变化都回报给 ArkTS, 用于 titleBarH 校准
+            char json[64];
+            snprintf(json, sizeof(json), "{\"w\":%llu,\"h\":%llu}", w, h);
+            WaylandServer::GetInstance()->FireToplevelEvent(tid, "surface", json);
         }
     }
 }
@@ -113,5 +129,16 @@ void PluginManager::DestroyToplevel(uint32_t toplevelId) {
     } else {
         OH_LOG_WARN(LOG_APP, "[MW-Destroy] toplevel #%{public}u NOT found (remaining: %{public}zu)",
                     toplevelId, toplevelRenderers_.size());
+    }
+
+    // 清理残留的 XComponent → toplevelId 映射
+    for (auto xit = xcToToplevelId_.begin(); xit != xcToToplevelId_.end(); ) {
+        if (xit->second == toplevelId) {
+            OH_LOG_INFO(LOG_APP, "[MW-Destroy] cleaned stale xcToToplevel: %{public}p → #%{public}u",
+                        xit->first, xit->second);
+            xit = xcToToplevelId_.erase(xit);
+        } else {
+            ++xit;
+        }
     }
 }

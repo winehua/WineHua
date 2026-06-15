@@ -1,6 +1,7 @@
 #include <napi/native_api.h>
 #include "wayland_server.h"
 #include "plugin_manager.h"
+#include "egl_renderer.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -19,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 #undef LOG_TAG
@@ -32,6 +34,7 @@ static napi_threadsafe_function gStateTsfn = nullptr;
 static std::string gSockPath;
 static napi_env gEnv = nullptr;
 static napi_ref gExports = nullptr;
+static std::mutex gExportsMutex;
 
 // ── fork/exec 后关闭继承的 fd ──
 static void CloseInheritedFds(int keep1, int keep2) {
@@ -996,18 +999,45 @@ static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
 
 // ── NAPI: initXComponent ── (从 aboutToAppear 调用, 此时 XComponent 已就绪)
 static napi_value InitXComponent(napi_env env, napi_callback_info /*info*/) {
-    if (gEnv && gExports) {
-        napi_value exports;
-        napi_get_reference_value(gEnv, gExports, &exports);
-        OH_LOG_INFO(LOG_APP, "[NAPI] initXComponent: retrying PluginManager::Export");
-        PluginManager::GetInstance()->Export(gEnv, exports);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent called, gEnv=%{public}p gExports=%{public}p curEnv=%{public}p",
+                gEnv, gExports, env);
+    {
+        std::lock_guard<std::mutex> lk(gExportsMutex);
+        if (gEnv && gExports) {
+            napi_value exports;
+            napi_status s = napi_get_reference_value(gEnv, gExports, &exports);
+            OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent: get_reference status=%{public}d", s);
+            if (s == napi_ok) {
+                PluginManager::GetInstance()->Export(gEnv, exports);
+                OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent: Export done ✓");
+                return nullptr;
+            }
+        }
     }
+    // 回退: 直接在当前 env 查找 XComponent
+    OH_LOG_WARN(LOG_APP, "[MW-NAPI] initXComponent: stored ref not available, trying current exports");
+    // 无法从 env 直接获取 exports, 依赖 Init 中的 Export 已注册
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent: done (fallback - relies on Init)");
+    return nullptr;
+}
+
+// ── NAPI: setDisplayScale ── (传入设备 densityPixels, 供渲染层计算 viewport)
+static napi_value SetDisplayScale(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    double scale;
+    napi_get_value_double(env, args[0], &scale);
+    EglRenderer::SetGlobalDisplayScale((float)scale);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] setDisplayScale = %.2f", scale);
     return nullptr;
 }
 
 // ── 模块注册 ──
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] ▶ Init called, env=%{public}p", env);
+
     napi_property_descriptor desc[] = {
         {"startServer",    nullptr, StartServer,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"launchClient",   nullptr, LaunchClient,   nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1020,6 +1050,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"initXComponent", nullptr, InitXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runMmapTests",  nullptr, RunMmapTests,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setDisplayScale", nullptr, SetDisplayScale, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termSend",      nullptr, TermSend,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termResize",    nullptr, TermResize,   nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1027,8 +1058,19 @@ static napi_value Init(napi_env env, napi_value exports) {
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 
+    // ★ 保存 env 和 exports，供后续 initXComponent 调用使用
+    // 先释放旧引用
+    if (gExports) {
+        napi_delete_reference(gEnv, gExports);
+        gExports = nullptr;
+    }
+    gEnv = env;
+    napi_create_reference(env, exports, 1, &gExports);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] saved gEnv=%{public}p gExports=%{public}p", gEnv, gExports);
+
     // libraryname='entry' 保证 XComponent 在 exports 中, Init 时即可注册
     PluginManager::GetInstance()->Export(env, exports);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] Init complete ✓");
     return exports;
 }
 EXTERN_C_END

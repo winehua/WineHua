@@ -9,10 +9,7 @@ struct WineWindow {
   controller: XComponentController = new XComponentController();
 
   aboutToAppear(): void {
-    hilog.info(DOMAIN, 'WineWindow', 'aboutToAppear: calling initXComponent...');
-    // 注册子窗口 XComponent 的 native callback（PluginManager::Export 会获取当前 exports 上的 XComponent）
-    testNapi.initXComponent();
-    hilog.info(DOMAIN, 'WineWindow', 'aboutToAppear: initXComponent returned ✓');
+    hilog.info(DOMAIN, 'WineWindow', '▶ aboutToAppear');
   }
 
   build() {
@@ -26,6 +23,17 @@ struct WineWindow {
         .width('100%')
         .height('100%')
         .backgroundColor('#000')
+        .onLoad(() => {
+          // ★ onLoad 在 native XComponent 加载完成后触发,
+          // 此时 Init 已经调用完毕, exports 已包含正确的 XComponent
+          hilog.info(DOMAIN, 'WineWindow', '▶ onLoad: calling initXComponent (post-Init)...');
+          try {
+            testNapi.initXComponent();
+            hilog.info(DOMAIN, 'WineWindow', 'onLoad: initXComponent returned ✓');
+          } catch (e) {
+            hilog.error(DOMAIN, 'WineWindow', '✗ onLoad initXComponent EXCEPTION: %{public}s', JSON.stringify(e));
+          }
+        })
     }
     .width('100%')
     .height('100%')

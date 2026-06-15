@@ -2,11 +2,36 @@
 #include "wayland_server.h"
 #include "fps_counter.h"
 #include <vector>
+#include <mutex>
 #include <unistd.h>
 
 #undef LOG_TAG
 #define LOG_TAG "WL_EGL"
 #include <hilog/log.h>
+
+// ── 共享 EGLDisplay: 整个进程只初始化一次, 避免反复 init/terminate 导致 GPU 驱动竞争 ──
+static EGLDisplay gSharedDisplay = EGL_NO_DISPLAY;
+static std::once_flag gDisplayOnce;
+
+float EglRenderer::globalDisplayScale_ = 1.0f;
+
+EGLDisplay EglRenderer::GetSharedDisplay() {
+    std::call_once(gDisplayOnce, []() {
+        gSharedDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (gSharedDisplay == EGL_NO_DISPLAY) {
+            OH_LOG_ERROR(LOG_APP, "[EGL] eglGetDisplay FAILED");
+            return;
+        }
+        EGLint major, minor;
+        if (!eglInitialize(gSharedDisplay, &major, &minor)) {
+            OH_LOG_ERROR(LOG_APP, "[EGL] eglInitialize FAILED: 0x%{public}x", eglGetError());
+            gSharedDisplay = EGL_NO_DISPLAY;
+            return;
+        }
+        OH_LOG_INFO(LOG_APP, "[EGL] shared display init ✓ EGL %{public}d.%{public}d", major, minor);
+    });
+    return gSharedDisplay;
+}
 
 // ── 全屏 quad 着色器 (Wayland ARGB = BGRA 内存序, 像素着色器中 swizzle) ──
 static const char* kVS = R"(#version 300 es
@@ -45,18 +70,12 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
 
     OH_LOG_INFO(LOG_APP, "[EGL] Init tl=%{public}u req=%{public}dx%{public}d", toplevelId_, w, h);
 
-    // 1. EGL display + context
-    display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    // 1. 使用共享 EGLDisplay (全进程只 init 一次)
+    display_ = GetSharedDisplay();
     if (display_ == EGL_NO_DISPLAY) {
-        OH_LOG_ERROR(LOG_APP, "[EGL] eglGetDisplay failed tl=%{public}u", toplevelId_);
+        OH_LOG_ERROR(LOG_APP, "[EGL] shared display unavailable tl=%{public}u", toplevelId_);
         return false;
     }
-    EGLint major, minor;
-    if (!eglInitialize(display_, &major, &minor)) {
-        OH_LOG_ERROR(LOG_APP, "[EGL] eglInitialize failed tl=%{public}u: 0x%{public}x", toplevelId_, eglGetError());
-        return false;
-    }
-    OH_LOG_INFO(LOG_APP, "[EGL] tl=%{public}u EGL %{public}d.%{public}d", toplevelId_, major, minor);
 
     EGLConfig cfg;
     EGLint nCfg;
@@ -159,34 +178,21 @@ void EglRenderer::RenderLoop() {
             }
         }
 
-        // 计算 letterbox 视口: 保持内容宽高比, 居中于 EGL surface
-        // 注意: 即使未取到新帧, 上一帧的 fw/fh 仍有效
-        int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
-        if (fw > 0 && fh > 0) {
-            float contentAspect = (float)fw / (float)fh;
-            float surfaceAspect = (float)width_ / (float)height_;
-            if (contentAspect > surfaceAspect) {
-                // 内容更宽 → fit by width, 上下留黑边
-                vpW = width_;
-                vpH = (int)(width_ / contentAspect + 0.5f);
-                vpY = (height_ - vpH) / 2;
-            } else {
-                // 内容更高 → fit by height, 左右留黑边
-                vpH = height_;
-                vpW = (int)(height_ * contentAspect + 0.5f);
-                vpX = (width_ - vpW) / 2;
-            }
+        // 获取 EGL surface 实际大小并铺满渲染
+        EGLint surfW = 0, surfH = 0;
+        eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
+        eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
+        if (surfW > 0 && surfH > 0) {
+            width_ = surfW;
+            height_ = surfH;
         }
-        glViewport(vpX, vpY, vpW, vpH);
+        glViewport(0, 0, width_, height_);
 
-        // 诊断: viewport vs frame vs surface
+        // 诊断: 全表面渲染, 不做 letterbox
         if (loopCount < 10) {
-            EGLint surfW = 0, surfH = 0;
-            eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
-            eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
-            OH_LOG_INFO(LOG_APP, "[MW-RNDR] diag#%{public}d tl=%{public}u have=%{public}d vp=(%{public}d,%{public}d %{public}dx%{public}d) surf=%{public}dx%{public}d frame=%{public}dx%{public}d px=%{public}zu",
+            OH_LOG_INFO(LOG_APP, "[MW-RNDR] diag#%{public}d tl=%{public}u have=%{public}d surface=%{public}dx%{public}d frame=%{public}dx%{public}d px=%{public}zu",
                         loopCount, toplevelId_, haveFrame ? 1 : 0,
-                        vpX, vpY, vpW, vpH, surfW, surfH, fw, fh, px.size());
+                        width_, height_, fw, fh, px.size());
         }
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -223,7 +229,8 @@ void EglRenderer::Shutdown() {
             eglDestroyContext(display_, context_);
             context_ = EGL_NO_CONTEXT;
         }
-        eglTerminate(display_);
-        display_ = EGL_NO_DISPLAY;
+        // ★ 不调 eglTerminate: 共享 display 由进程生命周期管理
+        // 避免反复 init/terminate 导致 GPU 驱动竞争, 偶发性 SIGSEGV
+        OH_LOG_INFO(LOG_APP, "[EGL] tl=%{public}u Shutdown ✓ (display retained)", toplevelId_);
     }
 }

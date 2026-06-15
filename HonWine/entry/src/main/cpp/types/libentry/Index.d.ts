@@ -3,6 +3,11 @@ export const launchClient: (exePath: string, argv: string[], sockPath: string, l
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;
+export const setToplevelCallback: (cb: (id: number, event: string, data: string) => void) => void;
+export const setPendingToplevel: (id: number) => void;
+export const destroyToplevel: (id: number) => void;
+export const sendToplevelClose: (id: number) => void;
+export const setDisplayScale: (scale: number) => void;
 export const initXComponent: () => void;
 export const runMmapTests: () => string;
 export const termRun: (cols: number, rows: number, cb: (data: ArrayBuffer) => void, onExit: () => void) => number;
