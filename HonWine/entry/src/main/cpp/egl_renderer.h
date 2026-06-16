@@ -53,6 +53,7 @@ private:
     int frameW_ = 0, frameH_ = 0;  // Wine 帧内容尺寸 (坐标转换)
     int vpX_ = 0, vpY_ = 0, vpW_ = 0, vpH_ = 0;  // Letterbox 视口 (保持宽高比)
     int bufW_ = 0, bufH_ = 0;  // 上次 SET_BUFFER_GEOMETRY 的值, 避免重复调用
+    int lastLoggedW_ = 0, lastLoggedH_ = 0;  // 上次输出 resize 日志时的 surface 尺寸
     std::thread thread_;
     std::atomic<bool> running_{false};
 

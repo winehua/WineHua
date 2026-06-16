@@ -212,7 +212,7 @@ void EglRenderer::RenderLoop() {
             glViewport(0, 0, width_, height_);
         }
 
-        // 诊断: 显示 surface -> frame -> viewport 的完整映射关系
+        // 诊断: 前10帧详细打印 surface -> frame -> viewport 完整映射
         if (loopCount < 10) {
             int barTop = vpY_;
             int barBot = height_ - vpY_ - vpH_;
@@ -225,6 +225,14 @@ void EglRenderer::RenderLoop() {
                         width_, height_, sA, fw, fh, fA,
                         vpW_, vpH_, vpX_, vpY_,
                         barLeft, barRight, barTop, barBot);
+        }
+
+        // surface 变化时打印 XComponent → Wine 尺寸映射 (与 ArkTS MW-RESIZE 共用关键字)
+        if ((width_ != lastLoggedW_ || height_ != lastLoggedH_) && loopCount >= 10) {
+            lastLoggedW_ = width_;
+            lastLoggedH_ = height_;
+            OH_LOG_INFO(LOG_APP, "[MW-RESIZE] tl=%{public}u surface=%{public}dx%{public}d frame=%{public}dx%{public}d",
+                        toplevelId_, width_, height_, fw, fh);
         }
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);

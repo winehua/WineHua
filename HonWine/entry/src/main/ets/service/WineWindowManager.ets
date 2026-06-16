@@ -13,8 +13,7 @@ export class WineWindowManager {
   private uiAbilityContext: common.UIAbilityContext | null = null;
   // 设备显示密度 + 屏幕尺寸 (用于缩放)
   private displayScale: number = 1.0;
-  private displayWidth: number = 1920;
-  private displayHeight: number = 1080;
+  private scaleBoost: number = 1.0;  // 放大系数, 使 effectiveScale = displayScale × boost = 2.0
   // 标题栏 + 边框总高度 (VP), 用于窗口 resize
   // = getWindowDecorHeight() + decorBorderOffset
   private measuredTitleBarH: number = 56;
@@ -83,15 +82,18 @@ export class WineWindowManager {
     try {
       const d = display.getDefaultDisplaySync();
       this.displayScale = d.densityPixels;
-      this.displayWidth = d.width;
-      this.displayHeight = d.height;
-      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d scale=%{public}s',
-        this.displayWidth, this.displayHeight, this.displayScale.toFixed(2));
-      //  传给 C++ 渲染层, 用于 SET_BUFFER_GEOMETRY 和 viewport 计算
-      testNapi.setDisplayScale(this.displayScale);
+      this.scaleBoost = 2.0 / this.displayScale;  // 使 effectiveScale = 2.0
+      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=2.0',
+        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2));
+      // 传给 C++ 渲染层 effective scale = 2.0
+      testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
+      hilog.info(DOMAIN, TAG, '[MW] initialized scale=%{public}s display=%{public}dx%{public}d',
+        this.displayScale.toFixed(2), d.width, d.height);
     } catch (_) {
-      this.displayScale = 1.0;
-      hilog.warn(DOMAIN, TAG, '[MW] display query failed, using scale=1.0');
+      this.displayScale = 1.61;
+      this.scaleBoost = 2.0 / 1.61;
+      hilog.warn(DOMAIN, TAG, '[MW] display query failed, using displayScale=1.61 boost=1.24');
+      testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
     }
 
     hilog.info(DOMAIN, TAG, '[MW] registering toplevel callback...');
@@ -101,9 +103,6 @@ export class WineWindowManager {
       this.onToplevelEvent(id, event, data);
     });
     hilog.info(DOMAIN, TAG, '[MW] toplevel callback registered OK');
-
-    hilog.info(DOMAIN, TAG, '[MW] initialized scale=%{public}s display=%{public}dx%{public}d',
-      this.displayScale.toFixed(2), this.displayWidth, this.displayHeight);
   }
 
   // -- WineWindowAbility 调用: 注册 / 注销 --
@@ -331,13 +330,14 @@ export class WineWindowManager {
           const h = obj.h as number;
           if (w && h) {
             const barH = 0; //  标题栏已通过 setWindowDecorVisible(false) 隐藏
-            const winW = Math.round(w * this.displayScale);
-            const winH = Math.round(h * this.displayScale + barH);
+            const s = this.displayScale * this.scaleBoost;  // effective scale = 2.0
+            const winW = Math.round(w * s);
+            const winH = Math.round(h * s + barH);
             //  保存目标尺寸, 供 surface 事件校准 titleBarH + 重新 resize
             this.lastResizeTargetH.set(toplevelId, winH);
             this.lastResizeWineDim.set(toplevelId, [w, h]);
-            hilog.info(DOMAIN, TAG, '[MW] resize #%{public}d: wine=%{public}dx%{public}d -> window=%{public}dx%{public}d (scale=%{public}s bar=%{public}d)',
-              toplevelId, w, h, winW, winH, this.displayScale.toFixed(2), barH);
+            hilog.info(DOMAIN, TAG, '[MW-RESIZE] tl=%{public}d wine=%{public}dx%{public}d window=%{public}dx%{public}d scale=%{public}s',
+              toplevelId, w, h, winW, winH, s.toFixed(1));
             win.resize(winW, winH);
           }
         } catch (e) {
