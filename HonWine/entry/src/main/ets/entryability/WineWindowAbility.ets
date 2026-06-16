@@ -89,15 +89,17 @@ export default class WineWindowAbility extends UIAbility {
           return;
         }
         hilog.info(DOMAIN, TAG, '[WWA] loadContent OK tl=%{public}d', this.toplevelId);
-        //  隐藏系统标题栏 -- 必须在 loadContent 之后调用
+        //  窗口装饰配置 -- 必须在 loadContent 之后调用
         try {
           const mw = windowStage.getMainWindowSync();
           if (mw) {
+            mw.setWindowTitleButtonVisible(false, false, false);
             mw.setWindowDecorVisible(false);
-            hilog.info(DOMAIN, TAG, '[WWA] setWindowDecorVisible(false) OK');
+            mw.setWindowDecorHeight(40);
+            hilog.info(DOMAIN, TAG, '[WWA] window decor config OK');
           }
         } catch (e) {
-          hilog.warn(DOMAIN, TAG, '[WWA] setWindowDecorVisible failed: %{public}s', JSON.stringify(e));
+          hilog.warn(DOMAIN, TAG, '[WWA] window decor config failed: %{public}s', JSON.stringify(e));
         }
         //  loadContent 后窗口装饰已就绪, 可获取标题栏高度
         WineWindowManager.getInstance().onAfterLoadContent(this.toplevelId);
