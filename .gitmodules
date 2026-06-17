@@ -1,9 +1,9 @@
 [submodule "thirdparty/wine"]
 	path = thirdparty/wine
-	url = https://github.com/wine-mirror/wine.git
+	url = git@github.com:honwine/wine.git
 [submodule "thirdparty/box64"]
 	path = thirdparty/box64
-	url = https://github.com/ptitSeb/box64.git
+	url = git@github.com:honwine/box64.git
 [submodule "thirdparty/wayland"]
 	path = thirdparty/wayland
 	url = https://gitlab.freedesktop.org/wayland/wayland.git
