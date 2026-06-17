@@ -1,5 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import { OH2EVDEV } from '../common/KeyMap';
+import { mapMouseButton } from '../common/MouseMap';
 
 const DOMAIN = 0x0000;
 
@@ -28,7 +30,7 @@ struct WineWindow {
         .height('100%')
         .backgroundColor('#000')
         .onLoad(() => {
-          hilog.info(DOMAIN, 'WineWindow', ' onLoad: calling initXComponent (post-Init)...');
+          hilog.info(DOMAIN, 'WineWindow', ' onLoad: calling initXComponent...');
           try {
             testNapi.initXComponent();
             hilog.info(DOMAIN, 'WineWindow', 'onLoad: initXComponent returned OK');
@@ -42,29 +44,38 @@ struct WineWindow {
     .backgroundColor('#000')
     .focusable(true)
     .defaultFocus(true)
-    // -- 输入事件绑定在父 Stack 上 --
-    //  HarmonyOS 自动把触控转为 Mouse 事件, 不需要同时监听 .onTouch
-    // (否则同一点击触发两次: Touch + Mouse -> Wine 收到双重 PRESS/RELEASE)
+
+    // -- 鼠标事件 --
     .onMouse((event: MouseEvent) => {
       if (this.toplevelId <= 0) return;
-      //  vp2px: MouseEvent 坐标是 vp, 需要转 px 才能和 surface 物理尺寸对齐
       const px = vp2px(event.x);
       const py = vp2px(event.y);
+      const btn = mapMouseButton(event.button);
       if (event.action !== MouseAction.Move) {
-        hilog.info(DOMAIN, 'WineWindow', '[CLICK-PIPE]  [ArkTS-Mouse] tl=%{public}d action=%{public}d vp=(%{public}d,%{public}d) px=(%{public}d,%{public}d) btn=%{public}d', this.toplevelId, event.action, Math.round(event.x), Math.round(event.y), Math.round(px), Math.round(py), event.button);
+        hilog.info(DOMAIN, 'WineWindow', '[Input] MOUSE tl=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=0x%{public}x',
+          this.toplevelId, event.action, Math.round(px), Math.round(py), btn);
       }
-      testNapi.forwardMouseEvent(this.toplevelId, event.action, px, py, event.button);
+      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn);
     })
+
+    // -- 键盘事件 --
     .onKeyEvent((event: KeyEvent) => {
       if (this.toplevelId <= 0) return;
       event.stopPropagation();
-      hilog.info(DOMAIN, 'WineWindow', '[KBD-PIPE]  [ArkTS] tl=%{public}d keyCode=%{public}d type=%{public}d (0=Down 1=Up)', this.toplevelId, event.keyCode, event.type);
-      testNapi.forwardKeyEvent(this.toplevelId, event.keyCode, event.type);
+      const evdevCode = OH2EVDEV[event.keyCode] ?? 0;
+      if (evdevCode === 0) {
+        hilog.warn(DOMAIN, 'WineWindow', '[Input] KEY unmapped ohosCode=%{public}d', event.keyCode);
+        return;
+      }
+      const pressed = (event.type === KeyType.Down);
+      hilog.info(DOMAIN, 'WineWindow', '[Input] KEY tl=%{public}d ohos=%{public}d→evdev=%{public}d %{public}s',
+        this.toplevelId, event.keyCode, evdevCode, pressed ? 'DOWN' : 'UP');
+      testNapi.sendKeyEvent(this.toplevelId, evdevCode, pressed);
     })
+
     .onAreaChange((_o: Area, n: Area) => {
       this.surfacePxW = vp2px(n.width as number);
       this.surfacePxH = vp2px(n.height as number);
-      hilog.info(DOMAIN, 'WineWindow', '[CLICK-PIPE]  [ArkTS-Area] tl=%{public}d surfacePx=%{public}dx%{public}d', this.toplevelId, this.surfacePxW, this.surfacePxH);
     })
   }
 }

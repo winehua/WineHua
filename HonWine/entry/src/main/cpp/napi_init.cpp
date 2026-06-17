@@ -1,6 +1,7 @@
 #include <napi/native_api.h>
 #include "wayland_server.h"
 #include "plugin_manager.h"
+#include "input_manager.h"
 #include "egl_renderer.h"
 
 #include <unistd.h>
@@ -1042,6 +1043,35 @@ static napi_value SetDisplayScale(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- Input forwarding NAPI (unified InputManager path) --
+static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 5;
+    napi_value args[5];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 5) return nullptr;
+    uint32_t tl; int32_t action; double px, py; int32_t button;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &action);
+    napi_get_value_double(env, args[2], &px);
+    napi_get_value_double(env, args[3], &py);
+    napi_get_value_int32(env, args[4], &button);
+    InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button);
+    return nullptr;
+}
+
+static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    uint32_t tl; int32_t evdevCode; bool pressed;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &evdevCode);
+    napi_get_value_bool(env, args[2], &pressed);
+    InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
+    return nullptr;
+}
+
 // -- 模块注册 --
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
@@ -1061,10 +1091,9 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"initXComponent", nullptr, InitXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runMmapTests",  nullptr, RunMmapTests,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale", nullptr, SetDisplayScale, nullptr, nullptr, nullptr, napi_default, nullptr},
-        // ArkTS input forwarding (uitest + real device)
-        {"forwardTouchEvent", nullptr, PluginManager::ForwardTouchEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"forwardMouseEvent", nullptr, PluginManager::ForwardMouseEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"forwardKeyEvent", nullptr, PluginManager::ForwardKeyEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        // ArkTS input forwarding (new unified InputManager path)
+        {"sendPointerEvent", nullptr, SendPointerEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termSend",      nullptr, TermSend,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termResize",    nullptr, TermResize,   nullptr, nullptr, nullptr, napi_default, nullptr},

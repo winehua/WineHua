@@ -25,6 +25,7 @@ add_library(entry SHARED
     egl_renderer.cpp
     plugin_manager.cpp
     seat.cpp
+    input_manager.cpp
     xdg_shell.cpp
     xdg-shell-protocol.c
     viewporter-server-protocol.c

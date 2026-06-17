@@ -8,6 +8,7 @@
 #include <cstdint>
 
 // XComponent 生命周期管理, 为每个 toplevel 创建独立的 EglRenderer
+// 输入事件已移至 InputManager 统一管理
 class PluginManager {
 public:
     static PluginManager* GetInstance();
@@ -21,32 +22,24 @@ public:
     static void OnSurfaceChanged(OH_NativeXComponent*, void* window);
     static void OnSurfaceDestroyed(OH_NativeXComponent*, void*);
 
-    // 输入事件回调 (native 注册, 用于 real device)
-    static void DispatchTouchEvent(OH_NativeXComponent*, void*);
-    static void OnMouseEvent(OH_NativeXComponent*, void*);
-    static void OnKeyEvent(OH_NativeXComponent*, void*);
-
-    // 辅助: toplevelId -> EglRenderer 查找
+    // 辅助: toplevelId -> EglRenderer 查找 (InputManager 坐标转换使用)
     EglRenderer* GetRendererForToplevel(uint32_t tid);
 
-    // 输入事件转发 (ArkTS NAPI 路径, 用于 uitest + real device)
-    static napi_value ForwardTouchEvent(napi_env env, napi_callback_info info);
-    static napi_value ForwardMouseEvent(napi_env env, napi_callback_info info);
-    static napi_value ForwardKeyEvent(napi_env env, napi_callback_info info);
+    // Native 键盘回调: XComponent 会抢占焦点, Stack.onKeyEvent 不触发
+    // 必须走 native callback 接收键盘事件, 转发到 InputManager
+    static void OnNativeKeyEvent(OH_NativeXComponent*, void*);
 
 private:
     PluginManager() = default;
 
     // 每个 toplevel 一个独立 EGLContext 渲染器
     std::unordered_map<uint32_t, std::unique_ptr<EglRenderer>> toplevelRenderers_;
-    // ArkTS 在创建子窗口前调用 setPendingToplevel, native 在 OnSurfaceCreated 消费
     uint32_t pendingToplevelId_ = 0;
-    uint32_t currentToplevelId_ = 0;  // 持久保存, 供 ArkTS WineWindow 查询
+    uint32_t currentToplevelId_ = 0;
 
     // 跟踪 XComponent -> toplevelId 映射
     std::set<OH_NativeXComponent*> subXComponents_;
     std::unordered_map<OH_NativeXComponent*, uint32_t> xcToToplevelId_;
 
     OH_NativeXComponent_Callback callback_{};
-    OH_NativeXComponent_MouseEvent_Callback mouseCallback_{};
 };

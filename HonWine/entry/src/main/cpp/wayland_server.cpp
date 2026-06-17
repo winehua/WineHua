@@ -1,5 +1,6 @@
 #include "wayland_server.h"
 #include "seat.h"
+#include "input_manager.h"
 #include "fps_counter.h"
 #include "include/viewporter-server-protocol.h"
 #include "include/xdg-shell-server-protocol.h"
@@ -122,7 +123,8 @@ bool WaylandServer::Start(const std::string& socketPath) {
     wl_global_create(display_, &wp_viewporter_interface, 1, this, viewporter_bind);
     wl_global_create(display_, &wl_output_interface, 3, this, output_bind);
     Seat::GetInstance()->Register(display_);
-    OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat)");
+    InputManager::GetInstance()->Initialize(display_);
+    OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat+input)");
 
     running_ = true;
     firstFrame_ = false;
@@ -134,6 +136,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
 void WaylandServer::Stop() {
     if (!running_) return;
     running_ = false;
+    InputManager::GetInstance()->Shutdown();
     Seat::GetInstance()->Unregister();
     if (display_) wl_display_terminate(display_);
     if (thread_.joinable()) thread_.join();
@@ -361,10 +364,19 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     sd->frameCallbacks.clear();
     sd->pendingBuffer = nullptr;
 
-    // 首帧通知
+    // 首帧通知 + 预设 pointer/keyboard focus (参考 HarmonyBox)
     bool expected = false;
     if (GetInstance()->firstFrame_.compare_exchange_strong(expected, true)) {
         GetInstance()->FireState("active");
+        // 预设 focus: Wine 在用户操作前就需要 enter
+        // 安全检查: 只有 resource 已创建才注入 (否则 Inject*Enter 内部会 DROP)
+        uint32_t tl = sd->toplevelId;
+        if (Seat::GetInstance()->HasPointerResource()) {
+            InputManager::GetInstance()->InjectPointerEnter(tl, surfRes, wl_fixed_from_int(0), wl_fixed_from_int(0));
+        }
+        if (Seat::GetInstance()->HasKeyboardResource()) {
+            InputManager::GetInstance()->InjectKeyboardEnter(tl, surfRes);
+        }
     }
 }
 
