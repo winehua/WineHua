@@ -1,45 +1,51 @@
 #pragma once
-#include <napi/native_api.h>
-#include <ace/xcomponent/native_interface_xcomponent.h>
 #include "egl_renderer.h"
 #include <unordered_map>
-#include <set>
 #include <memory>
 #include <cstdint>
+#include <queue>
 
-// XComponent 生命周期管理, 为每个 toplevel 创建独立的 EglRenderer
-// 输入事件已移至 InputManager 统一管理
+// surfaceId 驱动的 XComponent 管理
+//
+// 每个 XComponent 通过自定义 Controller 回调拿到的 surfaceId 是唯一的,
+// 不再共享 libraryname → exports 对象, 从根本上消除多窗口 XComponent 冲突。
+//
+// 架构:
+//   WineWindow.ets (XComponentController.onSurfaceCreated)
+//     → NAPI createRenderer(toplevelId, surfaceId)
+//     → PluginManager::CreateRenderer → OH_NativeWindow_CreateNativeWindowFromSurfaceId
+//     → EglRenderer::Init(nativeWindow, 1, 1) → 共享 EGLDisplay + 独立 EGLContext
+//   WineWindow.ets (XComponentController.onSurfaceChanged)
+//     → NAPI resizeRenderer(toplevelId, w, h)
+//     → PluginManager::ResizeRenderer → EglRenderer::SetSize
+//   WineWindow.ets (XComponentController.onSurfaceDestroyed)
+//     → NAPI destroyRenderer(toplevelId) → DestroyToplevel
+//
+// 键盘事件仅通过 Stack.onKeyEvent → NAPI sendKeyEvent → InputManager 路径,
+// 不再使用 OH_NativeXComponent_RegisterKeyEventCallback。
 class PluginManager {
 public:
     static PluginManager* GetInstance();
-    void Export(napi_env env, napi_value exports);
 
-    void SetPendingToplevel(uint32_t toplevelId) { pendingToplevelId_ = toplevelId; currentToplevelId_ = toplevelId; }
-    uint32_t GetCurrentToplevelId() const { return currentToplevelId_; }
+    // surfaceId 驱动的渲染器生命周期
+    void CreateRenderer(uint32_t toplevelId, int64_t surfaceId);
+    void ResizeRenderer(uint32_t toplevelId, int w, int h);
     void DestroyToplevel(uint32_t toplevelId);
 
-    static void OnSurfaceCreated(OH_NativeXComponent*, void* window);
-    static void OnSurfaceChanged(OH_NativeXComponent*, void* window);
-    static void OnSurfaceDestroyed(OH_NativeXComponent*, void*);
+    // pending toplevelId 队列: Ability 在 loadContent 前入队
+    // WineWindow.aboutToAppear 同步出队 (FIFO, 无竞态)
+    void SetPendingToplevel(uint32_t id) { pendingToplevelQueue_.push(id); }
+    uint32_t DequeuePendingToplevel();
 
     // 辅助: toplevelId -> EglRenderer 查找 (InputManager 坐标转换使用)
     EglRenderer* GetRendererForToplevel(uint32_t tid);
-
-    // Native 键盘回调: XComponent 会抢占焦点, Stack.onKeyEvent 不触发
-    // 必须走 native callback 接收键盘事件, 转发到 InputManager
-    static void OnNativeKeyEvent(OH_NativeXComponent*, void*);
 
 private:
     PluginManager() = default;
 
     // 每个 toplevel 一个独立 EGLContext 渲染器
     std::unordered_map<uint32_t, std::unique_ptr<EglRenderer>> toplevelRenderers_;
-    uint32_t pendingToplevelId_ = 0;
-    uint32_t currentToplevelId_ = 0;
 
-    // 跟踪 XComponent -> toplevelId 映射
-    std::set<OH_NativeXComponent*> subXComponents_;
-    std::unordered_map<OH_NativeXComponent*, uint32_t> xcToToplevelId_;
-
-    OH_NativeXComponent_Callback callback_{};
+    // pending queue: Ability 入队, WineWindow.aboutToAppear 出队 (FIFO 无竞态)
+    std::queue<uint32_t> pendingToplevelQueue_;
 };

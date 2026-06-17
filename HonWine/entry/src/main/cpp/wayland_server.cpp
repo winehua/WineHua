@@ -234,6 +234,9 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
             std::lock_guard<std::mutex> lk(self->toplevelSurfaceMutex_);
             self->toplevelSurfaceMap_.erase(sd->toplevelId);
         }
+        // 重置 InputManager 焦点: 防止后续 Inject*Leave 引用已销毁的 surface
+        // (否则 Wine 收到 invalid object 协议错误 → 断开连接)
+        InputManager::GetInstance()->OnSurfaceDestroyed(r);
         self->FireToplevelEvent(sd->toplevelId, "destroyed");
     }
     wl_resource_destroy(r);

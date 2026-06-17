@@ -148,6 +148,25 @@ void InputManager::ResetKeyboardEnter() {
     OH_LOG_INFO(LOG_APP, "[Input] ResetKeyboardEnter OK");
 }
 
+void InputManager::OnSurfaceDestroyed(wl_resource* surface) {
+    // surface 已被 Wine 销毁, 如果仍持有引用并在后续 Inject*Leave 中使用,
+    // 会导致 Wayland 协议错误 "invalid object" → Wine 断开连接
+    if (pointerFocusedSurface_ == surface) {
+        OH_LOG_INFO(LOG_APP, "[Input] OnSurfaceDestroyed: clearing pointer focus (surface=%{public}p was tl=%{public}u)",
+                    surface, pointerFocusedToplevel_.load());
+        pointerFocusedToplevel_ = 0;
+        pointerFocusedSurface_ = nullptr;
+        pointerEnterSerial_ = 0;
+    }
+    if (keyboardFocusedSurface_ == surface) {
+        OH_LOG_INFO(LOG_APP, "[Input] OnSurfaceDestroyed: clearing keyboard focus (surface=%{public}p was tl=%{public}u)",
+                    surface, keyboardFocusedToplevel_.load());
+        keyboardEntered_ = false;
+        keyboardFocusedToplevel_ = 0;
+        keyboardFocusedSurface_ = nullptr;
+    }
+}
+
 // ========================================================================
 //  Button bitmask 辅助
 // ========================================================================
@@ -454,6 +473,14 @@ void InputManager::InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fixe
         OH_LOG_WARN(LOG_APP, "[Input] InjectEnter DROP nPtrs=%{public}zu surf=%{public}p", ptrs.size(), surface);
         return;
     }
+
+    // 防御: surface 可能在入队后到 flush 前被 Wine 销毁
+    // 通过 toplevelSurfaceMap_ 验证 surface 仍然有效
+    if (!WaylandServer::GetInstance()->GetSurfaceForToplevel(tl)) {
+        OH_LOG_WARN(LOG_APP, "[Input] InjectEnter DROP tl=%{public}u: surface no longer in map (destroyed before flush?)", tl);
+        return;
+    }
+
     pointerFocusedToplevel_ = tl;
     pointerFocusedSurface_ = surface;
     uint32_t s = serial_++;
@@ -527,6 +554,13 @@ void InputManager::InjectKeyboardEnter(uint32_t tl, wl_resource* surface) {
         OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP nKbds=%{public}zu surf=%{public}p", kbds.size(), surface);
         return;
     }
+
+    // 防御: surface 可能在入队后到 flush 前被 Wine 销毁
+    if (!WaylandServer::GetInstance()->GetSurfaceForToplevel(tl)) {
+        OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP tl=%{public}u: surface no longer in map (destroyed before flush?)", tl);
+        return;
+    }
+
     keyboardFocusedToplevel_ = tl;
     keyboardFocusedSurface_ = surface;
     keyboardEntered_ = true;

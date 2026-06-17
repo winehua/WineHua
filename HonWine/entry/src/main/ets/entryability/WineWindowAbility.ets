@@ -54,7 +54,7 @@ export default class WineWindowAbility extends UIAbility {
     }
 
     try {
-      //  关键: 必须在 loadContent 之前设置 pending toplevel
+      //  设置 pending toplevel, WineWindow.aboutToAppear 同步读取 (loadContent 期间同步调用)
       hilog.info(DOMAIN, TAG, '[WWA] -> setPendingToplevel(%{public}d)', this.toplevelId);
       testNapi.setPendingToplevel(this.toplevelId);
 

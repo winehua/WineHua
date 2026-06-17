@@ -21,7 +21,6 @@
 #include <string>
 #include <thread>
 #include <atomic>
-#include <mutex>
 #include <vector>
 
 #undef LOG_TAG
@@ -33,9 +32,6 @@ static pid_t gClientPid = -1;
 static std::atomic<bool> gReaderRunning{false};
 static napi_threadsafe_function gStateTsfn = nullptr;
 static std::string gSockPath;
-static napi_env gEnv = nullptr;
-static napi_ref gExports = nullptr;
-static std::mutex gExportsMutex;
 
 // -- fork/exec 后关闭继承的 fd --
 static void CloseInheritedFds(int keep1, int keep2) {
@@ -968,16 +964,16 @@ static napi_value SetToplevelCallback(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-// -- NAPI: getCurrentToplevelId -- (WineWindow 查询自己的 toplevelId)
+// -- NAPI: getCurrentToplevelId -- (WineWindow.aboutToAppear 同步读取, 无竞态)
 static napi_value GetCurrentToplevelId(napi_env env, napi_callback_info info) {
-    uint32_t id = PluginManager::GetInstance()->GetCurrentToplevelId();
+    uint32_t id = PluginManager::GetInstance()->DequeuePendingToplevel();
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] getCurrentToplevelId = %{public}u", id);
     napi_value r;
     napi_create_uint32(env, id, &r);
     return r;
 }
 
-// -- NAPI: setPendingToplevel -- (ArkTS 创建子窗口前调用, 告诉 C++ 下一个 XComponent 属于哪个 toplevel)
+// -- NAPI: setPendingToplevel -- (WineWindowAbility 在 loadContent 前调用)
 static napi_value SetPendingToplevel(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -1013,27 +1009,59 @@ static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-// -- NAPI: initXComponent -- (从 aboutToAppear 调用, 此时 XComponent 已就绪)
-static napi_value InitXComponent(napi_env env, napi_callback_info /*info*/) {
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent called, gEnv=%{public}p gExports=%{public}p curEnv=%{public}p",
-                gEnv, gExports, env);
-    {
-        std::lock_guard<std::mutex> lk(gExportsMutex);
-        if (gEnv && gExports) {
-            napi_value exports;
-            napi_status s = napi_get_reference_value(gEnv, gExports, &exports);
-            OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent: get_reference status=%{public}d", s);
-            if (s == napi_ok) {
-                PluginManager::GetInstance()->Export(gEnv, exports);
-                OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent: Export done OK");
-                return nullptr;
-            }
-        }
+// -- NAPI: createRenderer -- (XComponentController.onSurfaceCreated 调用)
+static napi_value CreateRenderer(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: need 2 args (toplevelId, surfaceId)");
+        return nullptr;
     }
-    // 回退: 直接在当前 env 查找 XComponent
-    OH_LOG_WARN(LOG_APP, "[MW-NAPI] initXComponent: stored ref not available, trying current exports");
-    // 无法从 env 直接获取 exports, 依赖 Init 中的 Export 已注册
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] initXComponent: done (fallback - relies on Init)");
+    uint32_t tid = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    int64_t surfaceId = 0;
+    bool lossless = true;
+    napi_status s = napi_get_value_bigint_int64(env, args[1], &surfaceId, &lossless);
+    if (s != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: BIGINT parse failed status=%{public}d", s);
+        return nullptr;
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] createRenderer tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
+    PluginManager::GetInstance()->CreateRenderer(tid, surfaceId);
+    return nullptr;
+}
+
+// -- NAPI: resizeRenderer -- (XComponentController.onSurfaceChanged 调用)
+static napi_value ResizeRenderer(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] resizeRenderer: need 3 args (toplevelId, w, h)");
+        return nullptr;
+    }
+    uint32_t tid = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    int32_t w = 0, h = 0;
+    napi_get_value_int32(env, args[1], &w);
+    napi_get_value_int32(env, args[2], &h);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
+    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
+    return nullptr;
+}
+
+// -- NAPI: destroyRenderer -- (XComponentController.onSurfaceDestroyed 调用)
+static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t tid = 0;
+    if (argc >= 1) {
+        napi_get_value_uint32(env, args[0], &tid);
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
+    PluginManager::GetInstance()->DestroyToplevel(tid);
     return nullptr;
 }
 
@@ -1094,10 +1122,13 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"destroyToplevel", nullptr, DestroyToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"initXComponent", nullptr, InitXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
+        // surfaceId 驱动的渲染器管理 (XComponentController 回调)
+        {"createRenderer",  nullptr, CreateRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"resizeRenderer",  nullptr, ResizeRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"destroyRenderer", nullptr, DestroyRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runMmapTests",  nullptr, RunMmapTests,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale", nullptr, SetDisplayScale, nullptr, nullptr, nullptr, napi_default, nullptr},
-        // ArkTS input forwarding (new unified InputManager path)
+        // ArkTS input forwarding (unified InputManager path)
         {"sendPointerEvent", nullptr, SendPointerEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1107,18 +1138,9 @@ static napi_value Init(napi_env env, napi_value exports) {
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 
-    // 保存 env 和 exports，供后续 initXComponent 调用使用
-    // 先释放旧引用
-    if (gExports) {
-        napi_delete_reference(gEnv, gExports);
-        gExports = nullptr;
-    }
-    gEnv = env;
-    napi_create_reference(env, exports, 1, &gExports);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] saved gEnv=%{public}p gExports=%{public}p", gEnv, gExports);
-
-    // libraryname='entry' 保证 XComponent 在 exports 中, Init 时即可注册
-    PluginManager::GetInstance()->Export(env, exports);
+    // surfaceId 架构: 不再使用 libraryname='entry', XComponent 通过
+    // 自定义 Controller 回调拿到 surfaceId, 由 createRenderer/renderer 管理。
+    // 不再需要保存 gEnv/gExports, 不再依赖 XComponent exports 对象。
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] Init complete OK");
     return exports;
 }

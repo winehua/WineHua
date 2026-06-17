@@ -273,4 +273,10 @@ void EglRenderer::Shutdown() {
         // 避免反复 init/terminate 导致 GPU 驱动竞争, 偶发性 SIGSEGV
         OH_LOG_INFO(LOG_APP, "[EGL] tl=%{public}u Shutdown OK (display retained)", toplevelId_);
     }
+    // surfaceId 创建的 native window 在这里销毁 (EglRenderer 持有 window_ 指针)
+    if (window_) {
+        OH_NativeWindow_DestroyNativeWindow(window_);
+        window_ = nullptr;
+        OH_LOG_INFO(LOG_APP, "[EGL] tl=%{public}u native window destroyed", toplevelId_);
+    }
 }

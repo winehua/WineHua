@@ -55,6 +55,10 @@ public:
     void ResetPointerEnter();
     void ResetKeyboardEnter();
 
+    // surface 销毁时重置焦点, 防止后续 Inject*Leave 引用已销毁的 surface
+    // 如果不重置, 会导致 Wayland 协议错误 "invalid object" → Wine 断开连接
+    void OnSurfaceDestroyed(wl_resource* surface);
+
     // -- Focus 查询 (线程安全) --
     bool HasPointerFocus() const { return pointerFocusedToplevel_.load() != 0; }
     bool NeedsPointerEnter() const;
