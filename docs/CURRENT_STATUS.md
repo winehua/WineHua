@@ -50,6 +50,24 @@ Wine (x86_64, Box64)
               └── EGL Renderer → XComponent
 ```
 
+### XComponent 管理 (surfaceId 架构)
+
+```
+WineWindow.ets
+  WineXComponentController (无 libraryname)
+    onSurfaceCreated(sid) → NAPI createRenderer(toplevelId, BigInt(sid))
+    onSurfaceChanged(sid, rect) → NAPI resizeRenderer(toplevelId, w, h)
+    onSurfaceDestroyed(sid) → NAPI destroyRenderer(toplevelId)
+           ↓
+PluginManager::CreateRenderer(toplevelId, surfaceId)
+  → OH_NativeWindow_CreateNativeWindowFromSurfaceId(surfaceId, &win)
+  → EglRenderer::Init(win, 1, 1)  // 共享 EGLDisplay + 独立 EGLContext
+  → RenderLoop → WaylandServer::TakeToplevelFrame → eglSwapBuffers
+```
+
+每个 XComponent 通过自定义 Controller 独立获取 surfaceId，不设 libraryname，
+从根本消除了多窗口 exports 共享冲突。键盘仅走 `Stack.onKeyEvent` 路径。
+
 ---
 
 ## 核心修复清单
@@ -87,6 +105,9 @@ Wine 键盘驱动初始化需要 `/usr/share/X11/xkb`。xkeyboard-config 通过 
 | 9 | 鼠标 action 常量 | 对齐 ArkTS MouseAction |
 | 10 | 键盘 enter 时机 | 首键自动 enter |
 | 11 | Wine 键盘 init 失败 | XKB 数据打包 + XKB_CONFIG_ROOT |
+| 12 | xdg_surface use-after-free 崩溃 | wl_resource_set_implementation destroy 回调 + pending auto-destroy |
+| 13 | pointer leave 引用已销毁 surface → Wine 退出 | InputManager::OnSurfaceDestroyed 清理焦点, inject 前校验 |
+| 14 | 多窗口 XComponent exports 冲突 (黑色窗口) | surfaceId + XComponentController 替代 libraryname |
 
 ---
 
