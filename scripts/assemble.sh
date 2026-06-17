@@ -100,6 +100,15 @@ cp "$HNP_LAYOUT/bin/x86_64-unix/libfreetype.so" "$BIN/"
 # Wine 内置字体 (TrueType)
 mkdir -p "$HNP_LAYOUT/share/wine/fonts"
 cp "$WINE_SRC/fonts/"*.ttf "$HNP_LAYOUT/share/wine/fonts/"
+# XKB 键盘布局数据 (Wine 键盘驱动初始化必需, 由 build_xkbconfig.sh 安装到 sysroot-ext)
+mkdir -p "$HNP_LAYOUT/share/X11"
+if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
+    cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$HNP_LAYOUT/share/X11/"
+    log "  xkb: $(du -sh "$HNP_LAYOUT/share/X11/xkb" | cut -f1)"
+else
+    warn "xkb 数据未找到 ($SYSROOT_EXT_SHARE/X11/xkb), 请先运行: bash scripts/build_xkbconfig.sh"
+fi
+
 log "  fonts: $(ls "$HNP_LAYOUT/share/wine/fonts" | wc -l) .ttf files"
 cp "$WINE_SRC/build-native/nls/"*.nls "$HNP_LAYOUT/share/wine/nls/"
 mkdir -p "$HNP_LAYOUT/share/wine/winmd"

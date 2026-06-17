@@ -438,7 +438,9 @@ void InputManager::FlushQueue() {
             case InputEvent::KBD_MODIFIERS: InjectKeyboardModifiers(ev.mod_depressed, ev.mod_latched, ev.mod_locked, ev.mod_group); break;
         }
     }
-    if (display_) wl_display_flush_clients(display_);
+    if (display_) {
+        wl_display_flush_clients(display_);
+    }
 }
 
 // ========================================================================
@@ -558,12 +560,22 @@ void InputManager::InjectKeyboardKey(uint32_t key, uint32_t state) {
         return;
     }
     uint32_t s = serial_++;
-    OH_LOG_INFO(LOG_APP, "[Input] InjectKey evdev=%{public}u state=%{public}u serial=%{public}u n=%{public}zu",
-                key, state, s, kbds.size());
+    int nSent = 0;
+    struct wl_client* focusClient = keyboardFocusedSurface_ ? wl_resource_get_client(keyboardFocusedSurface_) : nullptr;
     for (auto* kbd : kbds) {
         if (kbd) {
-            wl_keyboard_send_key(kbd, s, NowMs(), key, state);
+            // 只发给已 enter 的 client (与 InjectKbdEnter 一致), 避免无 focused_hwnd 的 client 收到无效 key
+            if (focusClient && wl_resource_get_client(kbd) == focusClient) {
+                wl_keyboard_send_key(kbd, s, NowMs(), key, state);
+                nSent++;
+            }
         }
+    }
+    if (nSent == 0) {
+        OH_LOG_WARN(LOG_APP, "[Input] InjectKey DROP evdev=%{public}u: no kbd with focus (nTotal=%{public}zu)", key, kbds.size());
+    } else {
+        OH_LOG_INFO(LOG_APP, "[Input] InjectKey evdev=%{public}u state=%{public}u serial=%{public}u sent=%{public}d",
+                    key, state, s, nSent);
     }
 }
 

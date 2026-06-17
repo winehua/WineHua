@@ -22,3 +22,6 @@
 [submodule "thirdparty/freetype"]
 	path = thirdparty/freetype
 	url = https://github.com/freetype/freetype.git
+[submodule "thirdparty/xkeyboard-config"]
+	path = thirdparty/xkeyboard-config
+	url = https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config.git

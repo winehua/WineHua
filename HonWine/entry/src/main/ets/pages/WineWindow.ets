@@ -29,6 +29,7 @@ struct WineWindow {
         .width('100%')
         .height('100%')
         .backgroundColor('#000')
+        .focusable(false)
         .onLoad(() => {
           hilog.info(DOMAIN, 'WineWindow', ' onLoad: calling initXComponent...');
           try {
@@ -60,6 +61,9 @@ struct WineWindow {
 
     // -- 键盘事件 --
     .onKeyEvent((event: KeyEvent) => {
+      // 无条件日志: 确认真相 — .onKeyEvent 到底有没有触发?
+      hilog.info(DOMAIN, 'WineWindow', '[KBD-DEBUG] onKeyEvent FIRED! keyCode=%{public}d type=%{public}d tl=%{public}d',
+        event.keyCode, event.type, this.toplevelId);
       if (this.toplevelId <= 0) return;
       event.stopPropagation();
       const evdevCode = OH2EVDEV[event.keyCode] ?? 0;

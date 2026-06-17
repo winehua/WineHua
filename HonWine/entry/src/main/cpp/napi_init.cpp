@@ -168,6 +168,10 @@ struct LaunchParams {
 static void LaunchThreadFunc(LaunchParams* p) {
     OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
 
+    // 计算 XKB 数据路径: honwineBin = .../opt/honwine/bin → xkbDir = .../opt/honwine/share/X11/xkb
+    std::string xkbDir = p->honwineBin + "/../share/X11/xkb";
+    OH_LOG_INFO(LOG_APP, "[Launch-Async] XKB_CONFIG_ROOT=%{public}s", xkbDir.c_str());
+
     // 组装 envp 环境变量
     p->envStrs = {
         "XDG_RUNTIME_DIR=" + p->sockDir,
@@ -177,6 +181,8 @@ static void LaunchThreadFunc(LaunchParams* p) {
         "WINEPREFIX=/data/storage/el2/base/files",
         "BOX64_LOG=1",
         "BOX64_NOBANNER=0",
+        "WINEDEBUG=+waylanddrv",
+        "XKB_CONFIG_ROOT=" + xkbDir,
         "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin",
         "TMPDIR=/storage/Users/currentUser",
     };

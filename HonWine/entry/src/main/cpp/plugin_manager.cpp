@@ -47,11 +47,13 @@ void PluginManager::Export(napi_env env, napi_value exports) {
     callback_.OnSurfaceCreated   = OnSurfaceCreated;
     callback_.OnSurfaceChanged   = OnSurfaceChanged;
     callback_.OnSurfaceDestroyed = OnSurfaceDestroyed;
-    callback_.DispatchTouchEvent = nullptr;  // 输入全部走 Stack ArkTS -> NAPI, 不注册 native 输入回调
+    callback_.DispatchTouchEvent = nullptr;  // 触控/鼠标事件走 Stack ArkTS -> NAPI
     OH_NativeXComponent_RegisterCallback(nxc, &callback_);
 
-    // 所有输入事件统一走 Stack ArkTS NAPI → InputManager
-    // 实测: Stack.onKeyEvent 可正常接收键盘事件, 不需 native callback
+    // XComponent 的 SURFACE 类型会抢占键盘焦点, 导致 Stack.onKeyEvent 不触发
+    // 必须注册 native 键盘回调 (via OH_NativeXComponent_RegisterKeyEventCallback)
+    OH_NativeXComponent_RegisterKeyEventCallback(nxc, OnNativeKeyEvent);
+    OH_LOG_INFO(LOG_APP, "[MW-Export] keyboard callback registered via RegisterKeyEventCallback");
 
     // 所有 XComponent 都属于子窗口 (主界面已无 XComponent)
     subXComponents_.insert(nxc);
