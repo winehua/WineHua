@@ -8,8 +8,8 @@ source "$SCRIPT_DIR/env.sh"
 package_hnp() {
     log "=== 打包 HNP ==="
     mkdir -p "$OUT_DIR"
-    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n honwine -v 0.1.0 || { err "hnpcli pack 失败"; return 1; }
-    ls -lh "$OUT_DIR/honwine.hnp"
+    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n winehua -v 0.1.0 || { err "hnpcli pack 失败"; return 1; }
+    ls -lh "$OUT_DIR/winehua.hnp"
 }
 
 package_hap() {
@@ -18,7 +18,7 @@ package_hap() {
     local signed_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
 
     mkdir -p "$WINEHUA/entry/hnp/arm64-v8a"
-    cp "$OUT_DIR/honwine.hnp" "$WINEHUA/entry/hnp/arm64-v8a/honwine.hnp"
+    cp "$OUT_DIR/winehua.hnp" "$WINEHUA/entry/hnp/arm64-v8a/winehua.hnp"
 
     cd "$WINEHUA"
     hvigorw assembleHap || { err "hvigorw assembleHap 失败"; return 1; }
@@ -43,7 +43,7 @@ deploy() {
 
     log "=== 部署到 $device ==="
     hdc tconn "$device" || { err "hdc tconn 失败"; }
-    hdc shell bm uninstall -n app.hackeris.honwine 2>/dev/null || true
+    hdc shell bm uninstall -n app.hackeris.winehua 2>/dev/null || true
     hdc file send "$hap" /data/local/tmp/ || { err "hdc file send 失败"; }
     hdc shell bm install -p /data/local/tmp/entry-default-signed.hap -r || { err "bm install 失败"; }
 

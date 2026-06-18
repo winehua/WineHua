@@ -172,7 +172,7 @@ struct LaunchParams {
 static void LaunchThreadFunc(LaunchParams* p) {
     OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
 
-    // 计算 XKB 数据路径: winehuaBin = .../opt/honwine/bin → xkbDir = .../opt/honwine/share/X11/xkb
+    // 计算 XKB 数据路径: winehuaBin = .../opt/winehua/bin → xkbDir = .../opt/winehua/share/X11/xkb
     std::string xkbDir = p->winehuaBin + "/../share/X11/xkb";
     OH_LOG_INFO(LOG_APP, "[Launch-Async] XKB_CONFIG_ROOT=%{public}s", xkbDir.c_str());
 
@@ -793,7 +793,7 @@ static napi_value RunMmapTests(napi_env env, napi_callback_info) {
         posix_spawn_file_actions_adddup2(&actions, fd[1], STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&actions, fd[1], STDERR_FILENO);
         pid_t pid;
-        const char* spawn_bin = "/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine/bin/mmap_test";
+        const char* spawn_bin = "/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua/bin/mmap_test";
         char* argv[] = { (char*)spawn_bin, NULL };
         extern char** environ;
         int ret = posix_spawn(&pid, spawn_bin, &actions, NULL, argv, environ);
@@ -928,7 +928,7 @@ static napi_value TermRun(napi_env env, napi_callback_info info) {
         CloseInheritedFds(STDIN_FILENO, STDOUT_FILENO);
         setenv("HOME", "/storage/Users/currentUser", 1);
         setenv("PATH", "/data/app/bin:/data/service/hnp/bin:/bin:/usr/local/bin:/usr/bin:/system/bin:/vendor/bin", 1);
-        setenv("LD_LIBRARY_PATH", "/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine/bin/x86_64-unix", 1);
+        setenv("LD_LIBRARY_PATH", "/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua/bin/x86_64-unix", 1);
         setenv("TERM", "xterm", 1);
         chdir("/storage/Users/currentUser");
         execl("/bin/sh", "/bin/sh", nullptr);

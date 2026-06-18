@@ -84,7 +84,7 @@
     ],
     "hnpPackages": [
       {
-        "package": "honwine.hnp",
+        "package": "winehua.hnp",
         "type": "public"
       }
     ]

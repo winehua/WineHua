@@ -1,6 +1,6 @@
 #!/bin/bash
 # build_arm64_native.sh — Wayland compositor 所需的 ARM64 二进制依赖
-# 产物: WineHua/entry/libs/arm64-v8a/ (.so) + HonWine/entry/src/main/cpp/include/ (头文件)
+# 产物: WineHua/entry/libs/arm64-v8a/ (.so) + WineHua/entry/src/main/cpp/include/ (头文件)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"

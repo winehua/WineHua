@@ -154,7 +154,7 @@ void Seat::seat_get_keyboard(wl_client* client, wl_resource* seatRes, uint32_t i
     }
 
     // XKB_V1 keymap: 通过 shm_open 传递 xkb keymap fd 给 Wine
-    const char* shm_name = "/honwine_keymap";
+    const char* shm_name = "/winehua_keymap";
     int fd = shm_open(shm_name, O_CREAT | O_RDWR, 0644);
     if (fd >= 0) {
         shm_unlink(shm_name);

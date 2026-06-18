@@ -374,7 +374,7 @@ export class WineWindowManager {
     }
 
     const want: Want = {
-      bundleName: 'app.hackeris.honwine',
+      bundleName: 'app.hackeris.winehua',
       abilityName: 'WineWindowAbility',
       parameters: { toplevelId: id, title: title }
     };

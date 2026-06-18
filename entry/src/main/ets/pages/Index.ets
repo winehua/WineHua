@@ -4,7 +4,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 
 const DOMAIN = 0x0000;
 const SOCK = '/data/storage/el2/base/files/.wine/wine-wayland';
-const WINE_BIN = '/data/service/hnp/honwine.org/honwine_0.1.0/opt/honwine';
+const WINE_BIN = '/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua';
 const WINE_LIB = `${WINE_BIN}/bin/x86_64-unix`;
 const BOX64 = `${WINE_BIN}/bin/box64`;
 const BIN_DIR = `${WINE_BIN}/bin`;

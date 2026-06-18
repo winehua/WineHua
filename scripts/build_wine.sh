@@ -69,7 +69,7 @@ build_ohos_unix() {
 
         CC="gcc" ../configure \
             --host=x86_64-linux-ohos \
-            --prefix=/opt/honwine \
+            --prefix=/opt/winehua \
             --libdir='${prefix}' \
             --with-wine-tools=../build-native \
             --with-mingw=gcc \
@@ -92,7 +92,7 @@ build_wineserver() {
     local wine_include="-I$WINE_SRC/include -I$WINE_SRC/include/wine -I$WINE_SRC/server -I$WINE_SRC/build-ohos/include"
     local srv_cflags="--target=$TARGET --sysroot=$SYSROOT -D__MUSL__ -D_GNU_SOURCE \
         -DWINE_UNIX_LIB -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
-        -D__ANDROID__ -D__OHOS__ -DBINDIR=\"/opt/honwine/bin\" -DDATADIR=\"/opt/honwine/share\" \
+        -D__ANDROID__ -D__OHOS__ -DBINDIR=\"/opt/winehua/bin\" -DDATADIR=\"/opt/winehua/share\" \
         -fPIC $wine_include"
 
     mkdir -p "$out"
