@@ -8,7 +8,7 @@ const DOMAIN = 0x0000;
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
@@ -30,6 +30,11 @@ export default class EntryAbility extends UIAbility {
       if (err.code) {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
+      }
+      // loadContent 成功后隐藏窗口装饰
+      let mainWin = windowStage.getMainWindowSync();
+      if (mainWin) {
+        mainWin.setWindowDecorVisible(false);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });
