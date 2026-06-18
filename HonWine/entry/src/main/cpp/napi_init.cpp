@@ -337,7 +337,21 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     napi_get_value_string_utf8(env, args[2], libPath, sizeof(libPath), nullptr);
     napi_get_value_string_utf8(env, args[3], wineExe, sizeof(wineExe), nullptr);
 
-    OH_LOG_INFO(LOG_APP, "[Wine] runWineExe bin=%{public}s exe=%{public}s", binDir, wineExe);
+    // drive_c/windows/ 下的 exe 是 Wine 内置程序的桩文件, Wine 无法直接通过
+    // Unix 绝对路径打开, 需要取 basename 让 Wine 从内置目录搜索
+    std::string exePath(wineExe);
+    {
+        std::string lower = exePath;
+        for (auto& c : lower) c = tolower(c);
+        if (lower.find("/drive_c/windows/") != std::string::npos) {
+            auto slash = exePath.find_last_of('/');
+            if (slash != std::string::npos) {
+                exePath = "./" + exePath.substr(slash + 1);
+            }
+        }
+    }
+
+    OH_LOG_INFO(LOG_APP, "[Wine] runWineExe bin=%{public}s exe=%{public}s (final=%{public}s)", binDir, wineExe, exePath.c_str());
 
     std::string sockStr(sockPath);
     auto pos = sockStr.find_last_of('/');
@@ -362,11 +376,20 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     for (auto& s : envStrs) envp.push_back((char*)s.c_str());
     envp.push_back(nullptr);
 
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        OH_LOG_ERROR(LOG_APP, "[Wine] pipe failed: %{public}s", strerror(errno));
+        return nullptr;
+    }
+    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
     signal(SIGCHLD, SIG_IGN);
 
-    std::string exePath(wineExe);
     pid_t pid = fork();
     if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        if (pipefd[1] > 2) close(pipefd[1]);
         for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
         prctl(PR_SET_NAME, "wl-client", 0, 0, 0);
         CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
@@ -377,9 +400,15 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     }
 
     if (pid > 0) {
-        OH_LOG_INFO(LOG_APP, "[Wine] wine pid=%{public}d exe=%{public}s", pid, wineExe);
+        close(pipefd[1]);
+        gClientPid = pid;
+        gReaderRunning = true;
+        std::thread(ReaderThread, pipefd[0]).detach();
+        OH_LOG_INFO(LOG_APP, "[Wine] wine pid=%{public}d exe=%{public}s reader started", pid, wineExe);
         if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("wine-running"), napi_tsfn_blocking);
     } else {
+        close(pipefd[0]);
+        close(pipefd[1]);
         OH_LOG_ERROR(LOG_APP, "[Wine] wine fork failed");
         if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("wine-failed"), napi_tsfn_blocking);
     }
