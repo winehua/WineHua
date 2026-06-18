@@ -32,9 +32,6 @@ SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
 SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
-# 补丁
-PATCHES_DIR="$ROOT/patches"
-
 # HAP 项目
 HONWINE="$ROOT"
 
