@@ -48,6 +48,10 @@ public:
     void SendToplevelClose(uint32_t toplevelId);
     // 鸿蒙侧恢复最小化窗口时调用: 清除 minimized 标志 + 发 configure 通知 Wine
     void NotifyWindowRestored(uint32_t toplevelId);
+    // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染
+    void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h);
+    // 设置输出尺寸 (替换硬编码 1280x720)
+    void SetOutputSize(int32_t w, int32_t h) { outputW_ = w; outputH_ = h; }
 
     // -- wayland 协议实现 --
     static void compositor_bind(wl_client*, void*, uint32_t, uint32_t);
@@ -130,6 +134,10 @@ private:
     // toplevelId -> wl_surface 映射 (input focus 查找)
     std::unordered_map<uint32_t, wl_resource*> toplevelSurfaceMap_;
     std::mutex toplevelSurfaceMutex_;
+
+    // 输出尺寸 (ArkTS 初始化时通过 SetOutputSize 设置)
+    int32_t outputW_ = 1280;
+    int32_t outputH_ = 720;
 };
 
 // wl_surface 的每个实例携带的数据
@@ -158,8 +166,9 @@ struct SurfaceData {
     int32_t subsurfaceX = 0, subsurfaceY = 0; // wl_subsurface.set_position
     bool isSubsurface = false;
 
-    // minimize state
+    // window states
     bool minimized = false;
+    bool maximized = false;
 
     // xdg_toplevel resize 约束 (0 = 无限制)
     bool hasSizeLimits = false;

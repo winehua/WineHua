@@ -25,6 +25,10 @@ class WineXComponentController extends XComponentController {
       this.toplevelId, surfaceId, JSON.stringify(rect));
     try {
       testNapi.resizeRenderer(this.toplevelId, rect.surfaceWidth, rect.surfaceHeight);
+      // surface 是物理像素, Wine 需要逻辑坐标 (effectiveScale=2.0)
+      const w = Math.round(rect.surfaceWidth / 2.0);
+      const h = Math.round(rect.surfaceHeight / 2.0);
+      testNapi.notifyToplevelResize(this.toplevelId, w, h);
     } catch (e) {
       hilog.error(DOMAIN, 'WineWindow', 'ERR onSurfaceChanged resizeRenderer: %{public}s', JSON.stringify(e));
     }

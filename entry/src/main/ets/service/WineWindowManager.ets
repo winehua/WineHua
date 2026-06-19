@@ -40,6 +40,8 @@ export class WineWindowManager {
   private lastResizeTargetH: Map<number, number> = new Map();
   // toplevelId -> 最近一次 resize 的 wine 原始尺寸 (用于校准后重新 resize)
   private lastResizeWineDim: Map<number, [number, number]> = new Map();
+  // toplevelId -> 最大化前的尺寸 (recover 后手动恢复)
+  private lastPreMaximizeDim: Map<number, [number, number]> = new Map();
   // toplevelId -> 最近一次设置的标题 (loadContent 后会重置, 需要重新 apply)
   private lastTitles: Map<number, string> = new Map();
 
@@ -87,6 +89,9 @@ export class WineWindowManager {
         d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2));
       // 传给 C++ 渲染层 effective scale = 2.0
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
+      // 传真实屏幕尺寸给 Wine (wine 坐标系)
+      const s = this.displayScale * this.scaleBoost;
+      testNapi.setOutputSize(Math.round(d.width / s), Math.round(d.height / s));
       hilog.info(DOMAIN, TAG, '[MW] initialized scale=%{public}s display=%{public}dx%{public}d',
         this.displayScale.toFixed(2), d.width, d.height);
     } catch (_) {
@@ -135,6 +140,7 @@ export class WineWindowManager {
     this.surfaceSizes.delete(toplevelId);
     this.lastResizeTargetH.delete(toplevelId);
     this.lastResizeWineDim.delete(toplevelId);
+    this.lastPreMaximizeDim.delete(toplevelId);
     this.lastTitles.delete(toplevelId);
     hilog.info(DOMAIN, TAG, '[MW]  unregisterAbility #%{public}d (hadCtx=%{public}s hadWin=%{public}s hadPend=%{public}s hadStart=%{public}s hadSurf=%{public}s hadResizeTarget=%{public}s hadWineDim=%{public}s hadTitle=%{public}s)',
       toplevelId, hadCtx ? 'yes' : 'no', hadWin ? 'yes' : 'no',
@@ -297,6 +303,8 @@ export class WineWindowManager {
         break;
       case 'minimized':
       case 'restored':
+      case 'maximized':
+      case 'unmaximized':
       case 'limits':
         if (this.windows.has(id)) {
           this.applyEvent(id, event, data);
@@ -389,6 +397,31 @@ export class WineWindowManager {
         hilog.info(DOMAIN, TAG, '[MW] showWindow #%{public}d', toplevelId);
         win.showWindow().catch((e: Error) => {
           hilog.warn(DOMAIN, TAG, '[MW] showWindow #%{public}d failed: %{public}s', toplevelId, JSON.stringify(e));
+        });
+        break;
+      case 'maximized':
+        hilog.info(DOMAIN, TAG, '[MW] maximize #%{public}d', toplevelId);
+        const preDim = this.lastResizeWineDim.get(toplevelId);
+        if (preDim) {
+          this.lastPreMaximizeDim.set(toplevelId, [preDim[0], preDim[1]]);
+        }
+        win.maximize().catch((e: Error) => {
+          hilog.warn(DOMAIN, TAG, '[MW] maximize #%{public}d failed: %{public}s', toplevelId, JSON.stringify(e));
+        });
+        break;
+      case 'unmaximized':
+        hilog.info(DOMAIN, TAG, '[MW] recover #%{public}d (unmaximize)', toplevelId);
+        win.recover().then(() => {
+          const wd = this.lastPreMaximizeDim.get(toplevelId);
+          if (wd) {
+            const s = this.displayScale * this.scaleBoost;
+            hilog.info(DOMAIN, TAG, '[MW] unmaximize resize to wine=%{public}dx%{public}d window=%{public}dx%{public}d',
+              wd[0], wd[1], Math.round(wd[0] * s), Math.round(wd[1] * s));
+            return win.resize(Math.round(wd[0] * s), Math.round(wd[1] * s));
+          }
+          return Promise.resolve();
+        }).catch((e: Error) => {
+          hilog.warn(DOMAIN, TAG, '[MW] unmaximize #%{public}d failed: %{public}s', toplevelId, JSON.stringify(e));
         });
         break;
     }

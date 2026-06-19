@@ -259,12 +259,18 @@ void WaylandServer::output_bind(wl_client* client, void* data, uint32_t version,
     OH_LOG_INFO(LOG_APP, "[WL] wl_output bound v=%{public}u", version);
     wl_resource* res = wl_resource_create(client, &wl_output_interface, version, id);
     wl_resource_set_implementation(res, &kOutputImpl, data, nullptr);
-    // 发送虚拟显示器信息: 1280x720, 96DPI
-    wl_output_send_geometry(res, 0, 0, 340, 190,
+    auto* self = static_cast<WaylandServer*>(data);
+    // 发送虚拟显示器信息 (尺寸由 ArkTS 初始化时设置)
+    int32_t pw = self->outputW_, ph = self->outputH_;
+    int32_t physW = pw * 340 / 1280;  // 约 96DPI 物理尺寸
+    int32_t physH = ph * 190 / 720;
+    OH_LOG_INFO(LOG_APP, "[WL] output_bind: %{public}dx%{public}d (phys %{public}dx%{public}d)",
+                pw, ph, physW, physH);
+    wl_output_send_geometry(res, 0, 0, physW, physH,
                             WL_OUTPUT_SUBPIXEL_UNKNOWN, "Wine", "Virtual",
                             WL_OUTPUT_TRANSFORM_NORMAL);
     wl_output_send_mode(res, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
-                        1280, 720, 60000);
+                        pw, ph, 60000);
     if (version >= 2) wl_output_send_scale(res, 1);
     if (version >= 4) {
         wl_output_send_name(res, "Wine-Virtual-0");
@@ -585,6 +591,41 @@ void WaylandServer::NotifyWindowRestored(uint32_t toplevelId) {
     xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
 
     OH_LOG_INFO(LOG_APP, "[MW] NotifyWindowRestored id=%{public}u → xdg configure ACTIVE", toplevelId);
+}
+
+void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h) {
+    wl_resource* tl = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(toplevelResMutex_);
+        auto it = toplevelResources_.find(toplevelId);
+        if (it != toplevelResources_.end()) tl = it->second;
+    }
+    if (!tl) return;
+
+    auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tl));
+    if (!td || !td->xdgSurface) return;
+    auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
+    if (!xdg) return;
+
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+
+    wl_array states;
+    wl_array_init(&states);
+    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
+    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+    if (sd && sd->maximized) {
+        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
+        *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
+    }
+    xdg_toplevel_send_configure(tl, w, h, &states);
+    wl_array_release(&states);
+
+    wl_client* client = wl_resource_get_client(tl);
+    wl_display* dpy = wl_client_get_display(client);
+    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+
+    OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u → %{public}dx%{public}d maximized=%{public}s",
+                toplevelId, w, h, (sd && sd->maximized) ? "yes" : "no");
 }
 
 // -- toplevelId -> wl_surface 映射 (供 Seat::InjectPointerEnter 查找) --

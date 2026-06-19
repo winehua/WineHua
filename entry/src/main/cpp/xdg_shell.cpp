@@ -97,8 +97,33 @@ static void tl_set_maximized(wl_client*, wl_resource* tlRes) {
         WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "restored");
         OH_LOG_INFO(LOG_APP, "[XDG] tl_set_maximized → restore tl=%{public}u", sd->toplevelId);
     }
+    sd->maximized = true;
+    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "maximized");
+    OH_LOG_INFO(LOG_APP, "[XDG] tl_set_maximized tl=%{public}u", sd->toplevelId);
 }
-static void tl_unset_maximized(wl_client*, wl_resource*) {}
+static void tl_unset_maximized(wl_client* client, wl_resource* tlRes) {
+    auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
+    if (!td || !td->xdgSurface) return;
+    auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
+    if (!xdg || !xdg->wlSurface) return;
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+    if (!sd) return;
+
+    sd->maximized = false;
+
+    // 立即回 configure (0,0=client 自选尺寸), 避免 Wine 死等新配置
+    wl_array states;
+    wl_array_init(&states);
+    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
+    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+    xdg_toplevel_send_configure(tlRes, 0, 0, &states);
+    wl_array_release(&states);
+    wl_display* dpy = wl_client_get_display(client);
+    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+
+    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "unmaximized");
+    OH_LOG_INFO(LOG_APP, "[XDG] tl_unset_maximized tl=%{public}u → configure(0,0,ACTIVE)", sd->toplevelId);
+}
 static void tl_set_fullscreen(wl_client*, wl_resource*, wl_resource*) {}
 static void tl_unset_fullscreen(wl_client*, wl_resource*) {}
 static void tl_set_minimized(wl_client*, wl_resource* tlRes) {

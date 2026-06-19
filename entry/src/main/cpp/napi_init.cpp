@@ -1279,6 +1279,18 @@ static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
 }
 
 // -- NAPI: setDisplayScale -- (传入设备 densityPixels, 供渲染层计算 viewport)
+static napi_value SetOutputSize(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    int32_t w, h;
+    napi_get_value_int32(env, args[0], &w);
+    napi_get_value_int32(env, args[1], &h);
+    WaylandServer::GetInstance()->SetOutputSize(w, h);
+    return nullptr;
+}
+
 static napi_value SetDisplayScale(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -1341,6 +1353,19 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
     OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
                 tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
     InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
+    return nullptr;
+}
+
+static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    uint32_t tl; int32_t w, h;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &w);
+    napi_get_value_int32(env, args[2], &h);
+    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h);
     return nullptr;
 }
 
@@ -1446,12 +1471,14 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"resizeRenderer",  nullptr, ResizeRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"destroyRenderer", nullptr, DestroyRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runMmapTests",  nullptr, RunMmapTests,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setOutputSize",   nullptr, SetOutputSize,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale", nullptr, SetDisplayScale, nullptr, nullptr, nullptr, napi_default, nullptr},
         // ArkTS input forwarding (unified InputManager path)
         {"sendPointerEvent", nullptr, SendPointerEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendScrollEvent",   nullptr, SendScrollEvent,   nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setToplevelVisible",nullptr, SetToplevelVisible,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getProcessList",   nullptr, GetProcessList,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"killProcess",     nullptr, KillProcess,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
