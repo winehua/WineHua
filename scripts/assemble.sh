@@ -122,6 +122,17 @@ cp "$WINE_SRC/build-native/include/"*.winmd "$HNP_LAYOUT/share/wine/winmd/"
 log "  winmd: $(ls "$HNP_LAYOUT/share/wine/winmd" | wc -l) .winmd files"
 cp "$WINE_SRC/build-native/loader/wine.inf" "$HNP_LAYOUT/share/wine/"
 
+# OHOS: 无 fontconfig, Wine 内置字体 glyph metrics 不足.
+# 将 Windows 默认字体映射到 HarmonyOS 系统字体.
+# 插入到 wine.inf 的 [Fonts] section 末尾.
+sed -i '/^\[MCI\]$/i\
+;; OHOS font substitutes\
+HKLM,%FontSubStr%,"System",,"HarmonyOS Sans"\
+HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
+HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans"\
+HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
+HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$HNP_LAYOUT/share/wine/wine.inf"
+
 # ---- 启动脚本 ----
 cat > "$BIN/wine.sh" << 'SCRIPT'
 #!/bin/sh
