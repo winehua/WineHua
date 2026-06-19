@@ -295,6 +295,15 @@ export class WineWindowManager {
           hilog.info(DOMAIN, TAG, '[MW]   pending queue size now: %{public}d', q.length);
         }
         break;
+      case 'limits':
+        if (this.windows.has(id)) {
+          this.applyEvent(id, event, data);
+        } else {
+          let q = this.pendingEvents.get(id);
+          if (!q) { q = []; this.pendingEvents.set(id, q); }
+          q.push([event, data]);
+        }
+        break;
       default:
         hilog.warn(DOMAIN, TAG, '[MW] unknown event #%{public}d %{public}s', id, event);
         break;
@@ -342,6 +351,30 @@ export class WineWindowManager {
           }
         } catch (e) {
           hilog.warn(DOMAIN, TAG, '[MW] applyEvent resize parse error: %{public}s', JSON.stringify(e));
+        }
+        break;
+      case 'limits':
+        try {
+          const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
+          const minW = obj.minW as number;
+          const minH = obj.minH as number;
+          const maxW = obj.maxW as number;
+          const maxH = obj.maxH as number;
+          const s = this.displayScale * this.scaleBoost;
+          const limits: window.WindowLimits = {};
+          if (minW > 0) limits.minWidth = Math.round(minW * s);
+          if (minH > 0) limits.minHeight = Math.round(minH * s);
+          if (maxW > 0) limits.maxWidth = Math.round(maxW * s);
+          if (maxH > 0) limits.maxHeight = Math.round(maxH * s);
+          hilog.info(DOMAIN, TAG, '[MW-LIMITS] tl=%{public}d min=%{public}dx%{public}d max=%{public}dx%{public}d',
+            toplevelId, limits.minWidth ?? 0, limits.minHeight ?? 0,
+            limits.maxWidth ?? 0, limits.maxHeight ?? 0);
+          win.setWindowLimits(limits).catch((e: Error) => {
+            hilog.warn(DOMAIN, TAG, '[MW] setWindowLimits #%{public}d failed: %{public}s',
+              toplevelId, JSON.stringify(e));
+          });
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, '[MW] applyEvent limits parse error: %{public}s', JSON.stringify(e));
         }
         break;
     }

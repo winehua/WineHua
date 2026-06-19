@@ -155,4 +155,9 @@ struct SurfaceData {
     wl_resource* parentSurface = nullptr;     // 父 wl_surface (仅 subsurface)
     int32_t subsurfaceX = 0, subsurfaceY = 0; // wl_subsurface.set_position
     bool isSubsurface = false;
+
+    // xdg_toplevel resize 约束 (0 = 无限制)
+    bool hasSizeLimits = false;
+    int32_t minWidth = 0, minHeight = 0;
+    int32_t maxWidth = 0, maxHeight = 0;
 };

@@ -58,8 +58,46 @@ static void tl_set_app_id(wl_client*, wl_resource*, const char* appId) {
 static void tl_show_window_menu(wl_client*, wl_resource*, wl_resource*, uint32_t, int32_t, int32_t) {}
 static void tl_move(wl_client*, wl_resource*, wl_resource*, uint32_t) {}
 static void tl_resize(wl_client*, wl_resource*, wl_resource*, uint32_t, uint32_t) {}
-static void tl_set_max_size(wl_client*, wl_resource*, int32_t, int32_t) {}
-static void tl_set_min_size(wl_client*, wl_resource*, int32_t, int32_t) {}
+static void fire_limits_event(SurfaceData* sd) {
+    if (!sd || sd->toplevelId == 0) return;
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"minW\":%d,\"minH\":%d,\"maxW\":%d,\"maxH\":%d}",
+             sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
+    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "limits", json);
+}
+
+static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h) {
+    auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
+    if (!td || !td->xdgSurface) return;
+    auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
+    if (!xdg || !xdg->wlSurface) return;
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+    if (!sd) return;
+
+    sd->minWidth = w;
+    sd->minHeight = h;
+    sd->hasSizeLimits = true;
+    OH_LOG_INFO(LOG_APP, "[XDG] tl_set_min_size toplevel=%{public}u %{public}dx%{public}d",
+                sd->toplevelId, w, h);
+    fire_limits_event(sd);
+}
+
+static void tl_set_max_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h) {
+    auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
+    if (!td || !td->xdgSurface) return;
+    auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
+    if (!xdg || !xdg->wlSurface) return;
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+    if (!sd) return;
+
+    sd->maxWidth = w;
+    sd->maxHeight = h;
+    sd->hasSizeLimits = true;
+    OH_LOG_INFO(LOG_APP, "[XDG] tl_set_max_size toplevel=%{public}u %{public}dx%{public}d",
+                sd->toplevelId, w, h);
+    fire_limits_event(sd);
+}
 static void tl_set_maximized(wl_client*, wl_resource*) {}
 static void tl_unset_maximized(wl_client*, wl_resource*) {}
 static void tl_set_fullscreen(wl_client*, wl_resource*, wl_resource*) {}
