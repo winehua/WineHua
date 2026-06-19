@@ -57,7 +57,6 @@ struct Index {
       }
     });
     this.refreshPrefix();
-
     setTimeout(() => {
       if (this.state === 'idle') {
         hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');

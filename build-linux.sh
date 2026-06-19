@@ -19,8 +19,25 @@ export DEVECO_SDK_HOME=$TOOL_HOME/sdk
 export OHOS_SDK_HOME=$TOOL_HOME/sdk/default/openharmony
 export PATH=$TOOL_HOME/bin:$PATH
 export PATH=$TOOL_HOME/tool/node/bin:$PATH
-export OHOS_ARCH=aarch64
-export OHOS_ABI=arm64-v8a
+
+# ── 架构选择 ──
+ARCH="${1:-arm64}"
+case "$ARCH" in
+    arm64)
+        export OHOS_ARCH=aarch64
+        export OHOS_ABI=arm64-v8a
+        ;;
+    x86_64)
+        export OHOS_ARCH=x86_64
+        export OHOS_ABI=x86_64
+        ;;
+    *)
+        echo "用法: $0 [arm64|x86_64] [-b|-s|-p]"
+        echo "  arm64   构建 arm64-v8a 目标 (默认)"
+        echo "  x86_64  构建 x86_64 目标"
+        exit 1
+        ;;
+esac
 
 build_winehua_hap() {
 	hvigorw assembleHap
@@ -41,7 +58,8 @@ sign_winehua() {
 }
 
 helpusage() {
-	echo "Usage: $(basename $0)"
+	echo "Usage: $(basename $0) [arch] [options]"
+	echo "    arch: arm64 (默认) | x86_64"
 	echo "    -b		Build WineHua HNPs and HAP"
 	echo "    -s		Sign WineHua HAP Package, needed setup Key Signing in DevEco Studio"
 	echo "    -p		Push WineHua HAP to device"

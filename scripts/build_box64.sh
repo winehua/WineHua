@@ -6,6 +6,11 @@ source "$SCRIPT_DIR/env.sh"
 
 log "=== 构建 Box64 ==="
 
+if [ "${NATIVE_ARCH:-arm64-v8a}" != "arm64-v8a" ]; then
+    log "Box64 仅 arm64 需要 (当前 NATIVE_ARCH=$NATIVE_ARCH)，跳过"
+    exit 0
+fi
+
 cd "$BOX64_SRC"
 
 # CMake + Ninja (ninja 自行处理增量)

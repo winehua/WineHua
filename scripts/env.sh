@@ -10,7 +10,39 @@ export PATH="$TOOL_HOME/bin:$TOOL_HOME/tool/node/bin:$PATH"
 
 CLANG="$OHOS_SDK/native/llvm/bin/clang"
 SYSROOT="$OHOS_SDK/native/sysroot"
+
+# ── Native 层架构 (鸿蒙设备 CPU, HAP .so 的目标) ──
+# arm64-v8a: 真机 (AArch64)
+# x86_64:    模拟器 / x86_64 设备
+NATIVE_ARCH="${NATIVE_ARCH:-arm64-v8a}"
+
+# ── Wine 模拟层目标 (始终 x86_64, Wine 本身是 x86_64 ELF) ──
 TARGET="x86_64-linux-ohos"
+
+# 根据 NATIVE_ARCH 推导 Native 层 LLVM target / meson cpu
+case "$NATIVE_ARCH" in
+    arm64-v8a)
+        NATIVE_TARGET="aarch64-linux-ohos"
+        NATIVE_CPU_FAMILY="aarch64"
+        NATIVE_CPU="aarch64"
+        ;;
+    x86_64)
+        NATIVE_TARGET="x86_64-linux-ohos"
+        NATIVE_CPU_FAMILY="x86_64"
+        NATIVE_CPU="x86_64"
+        ;;
+    all)
+        # 双架构模式: 仅在 package.sh 构建 HAP 时使用
+        # NATIVE_TARGET/NATIVE_CPU_FAMILY 不适用
+        NATIVE_TARGET=""
+        NATIVE_CPU_FAMILY=""
+        NATIVE_CPU=""
+        ;;
+    *)
+        echo "ERROR: 不支持的 NATIVE_ARCH: $NATIVE_ARCH (可选: arm64-v8a, x86_64, all)"
+        exit 1
+        ;;
+esac
 
 # 工具
 HNPCLI="$OHOS_SDK/toolchains/hnpcli"
@@ -34,6 +66,9 @@ SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
 # HAP 项目
 WINEHUA="$ROOT"
+
+# Native 层 libs 目录
+NATIVE_LIBS="$WINEHUA/entry/libs/$NATIVE_ARCH"
 
 # 编译并行
 JOBS=${JOBS:-$(nproc)}

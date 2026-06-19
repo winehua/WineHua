@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-log "=== 组装 HNP 布局 ==="
+log "=== 组装 HNP 布局 ($NATIVE_ARCH) ==="
 
 # staging 目录每次重建
 rm -rf "$STAGING_DIR"
@@ -26,11 +26,31 @@ else
     err "wineserver 未找到！请先执行: bash scripts/build_wine.sh"
 fi
 
-# box64: 保留已有 (/build/box64_build 优于已安装的)
-if [ -f "$BUILD_DIR/box64_build/box64" ]; then
-    cp "$BUILD_DIR/box64_build/box64" "$BIN/"
-elif [ ! -f "$BIN/box64" ]; then
-    err "box64 未找到！请先执行: bash scripts/build_box64.sh"
+# box64: arm64 用真实 box64 二进制, x86_64 用 passthrough 包装器
+# (C++ 代码硬编码 execve("./box64",...) 调用, 不能简单跳过)
+if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
+    if [ -f "$BUILD_DIR/box64_build/box64" ]; then
+        cp "$BUILD_DIR/box64_build/box64" "$BIN/"
+    elif [ ! -f "$BIN/box64" ]; then
+        err "box64 未找到！请先执行: bash scripts/build_box64.sh"
+    fi
+    log "  box64 → bin/ (arm64, 真实二进制)"
+else
+    # x86_64: box64 是 passthrough 包装器, 直接 exec 原生二进制
+    cat > "$BIN/box64" << 'BOXWRAP'
+#!/bin/sh
+# x86_64 passthrough: box64 调用 → 直接运行原生二进制
+# C++ 代码调用格式: ./box64 <program> [args...]
+# 注意: 不使用 dirname (Wine 隔离环境可能没有)
+DIR="${0%/*}"
+[ "$DIR" = "$0" ] && DIR="."
+[ $# -lt 1 ] && { echo "Usage: $0 <program> [args...]" >&2; exit 1; }
+prog="$1"
+shift
+exec "$DIR/$prog" "$@"
+BOXWRAP
+    chmod +x "$BIN/box64"
+    log "  box64 → bin/ (x86_64 passthrough wrapper)"
 fi
 
 # ---- ntdll.so (必须在 bin/ — wine loader 硬编码加载) ----
@@ -134,14 +154,27 @@ HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$HNP_LAYOUT/share/wine/wine.inf"
 
 # ---- 启动脚本 ----
-cat > "$BIN/wine.sh" << 'SCRIPT'
+# arm64: 用 box64 翻译执行 wine (x86_64 → arm64)
+# x86_64: 直接原生执行 wine
+if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
+    cat > "$BIN/wine.sh" << 'SCRIPT'
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")" && pwd)"
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 export BOX64_LD_LIBRARY_PATH="$DIR:$DIR/x86_64-unix:$DIR/../lib/x86_64"
 exec "$DIR/box64" "$DIR/wine" "$@"
 SCRIPT
+else
+    cat > "$BIN/wine.sh" << 'SCRIPT'
+#!/bin/sh
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+export LD_LIBRARY_PATH="$DIR:$DIR/x86_64-unix:$DIR/../lib/x86_64"
+exec "$DIR/wine" "$@"
+SCRIPT
+fi
 chmod +x "$BIN/wine.sh"
+log "  wine.sh ($NATIVE_ARCH)"
 
 # ---- mmap 测试工具 (终端版) ----
 if [ -f "$ROOT/.temp/mmap_test" ]; then
@@ -149,7 +182,7 @@ if [ -f "$ROOT/.temp/mmap_test" ]; then
     log "  mmap_test (终端版) → bin/"
 fi
 
-log "HNP 布局组装完成"
+log "HNP 布局组装完成 ($NATIVE_ARCH)"
 echo ""
 echo "  $BIN/"
 echo "  ├── wine, wineserver, box64"
