@@ -109,16 +109,7 @@ build_wineserver() {
         $CLANG $srv_cflags -c -o "$out/$(basename "$f" .c).o" "$f"
     done
 
-    # musl compat stub: epoll_pwait2
-    cat > "$out/musl_compat.c" << 'EOF'
-#define _GNU_SOURCE
-#include <sys/epoll.h>
-#include <errno.h>
-int epoll_pwait2(int fd, struct epoll_event *ev, int n,
-                 const struct timespec *ts, const sigset_t *s)
-{ errno=ENOSYS; return -1; }
-EOF
-    $CLANG $srv_cflags -c -o "$out/musl_compat.o" "$out/musl_compat.c"
+    # musl_compat.c 已在 WINE_SRC/server/ 中, 遍历编译时已打包
 
     $CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld \
         -o "$out/wineserver" "$out"/*.o -lm
