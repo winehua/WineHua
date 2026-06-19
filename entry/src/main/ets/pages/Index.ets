@@ -33,7 +33,6 @@ struct Index {
       hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
       this.state = s;
 
-      // 解析 pid:state 格式 (多进程消息)
       const colonIdx = s.indexOf(':');
       const pid = colonIdx >= 0 ? parseInt(s.substring(0, colonIdx)) : -1;
       const stateMsg = colonIdx >= 0 ? s.substring(colonIdx + 1) : s;
@@ -48,7 +47,6 @@ struct Index {
         this.refreshProcessList();
       } else if (stateMsg == 'exited') {
         this.refreshProcessList();
-        // 如果还有运行中的进程, 保持 running 状态
         const running = this.processList.filter(p => p.state === 'running');
         if (running.length === 0) {
           this.statusText = '已就绪';
@@ -60,7 +58,6 @@ struct Index {
     });
     this.refreshPrefix();
 
-    // 自动初始化: 始终在启动后 1s 初始化 Wine (startServer+launchClient)
     setTimeout(() => {
       if (this.state === 'idle') {
         hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
@@ -186,110 +183,109 @@ struct Index {
   build() {
     Row() {
       // ============================================================
-      //  侧边栏 (可折叠)
+      //  侧边栏
       // ============================================================
-        Column() {
-          // -- Wine 环境状态 --
-          Text('Wine 环境')
-            .fontWeight(FontWeight.Bold).fontColor('#999')
-            .width('100%').padding({ top: 10, bottom: 2, left: 10 })
+      Column() {
+        // -- Wine 环境状态 --
+        Text('Wine 环境')
+          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .width('100%').padding({ top: 12, bottom: 6 })
 
-          Row() {
-            Circle({ width: 6, height: 6 })
-              .fill(this.prefixReady ? '#4f4' : '#f84')
-              .margin({ right: 4 })
-            Text(this.statusText)
-              
-              .fontColor(this.state == 'wine-running' ? '#4f4' :
-                         this.state == 'exited' ? '#f84' :
-                         this.prefixReady ? '#8cf' : '#888')
-              .layoutWeight(1)
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .width('100%').padding({ left: 10, right: 8, bottom: 8 })
-          .alignItems(VerticalAlign.Center)
-
-          Divider().color('#2a2a2a').width('100%')
-
-          // -- 快速操作 --
-          Text('快速操作')
-            .fontWeight(FontWeight.Bold).fontColor('#999')
-            .width('100%').padding({ top: 8, bottom: 4, left: 10 })
-
-          if (!this.prefixReady) {
-            Button('初始化 Wine')
-              .width('100%').height(32).backgroundColor('#285')
-              .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
-              .onClick(this.doInit)
-              .margin({ bottom: 4, left: 6, right: 6 })
-          } else {
-            Button('重置 Wine')
-              .width('100%').height(32).backgroundColor('#633')
-              .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
-              .onClick(this.doReset)
-              .margin({ bottom: 4, left: 6, right: 6 })
-            Button('重新初始化')
-              .width('100%').height(32).backgroundColor('#383')
-              .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
-              .onClick(this.doInit)
-              .margin({ bottom: 4, left: 6, right: 6 })
-          }
-
-          Divider().color('#2a2a2a').width('100%')
-
-          // -- 运行中进程 --
-          Row() {
-            Text('运行中进程')
-              .fontWeight(FontWeight.Bold).fontColor('#999')
-              .layoutWeight(1)
-            Button({ type: ButtonType.Circle, stateEffect: true }) {
-              Text('↻')
-            }
-            .width(24).height(24).backgroundColor('#333')
-            .onClick(this.refreshProcessList)
-          }
-          .width('100%').padding({ top: 8, bottom: 4, left: 10, right: 4 })
-          .alignItems(VerticalAlign.Center)
-
-          if (this.processList.length > 0) {
-            List({ space: 1 }) {
-              ForEach(this.processList, (proc: ProcessInfo) => {
-                ListItem() {
-                  Row() {
-                    Column() {
-                      Text(proc.name)
-                        .fontColor('#dfd')
-                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    }
-                    .layoutWeight(1).alignItems(HorizontalAlign.Start)
-
-                    if (proc.state === 'running') {
-                      Circle({ width: 5, height: 5 }).fill('#4f4').margin({ right: 8 })
-                    }
-                    Text('✕')
-                      .fontColor('#f55').width(20).textAlign(TextAlign.Center)
-                      .onClick(() => this.doKillProcess(proc.pid))
-                  }
-                  .width('100%').padding({ left: 10, right: 4, top: 5, bottom: 5 })
-                  .alignItems(VerticalAlign.Center)
-                }
-                .backgroundColor('#1e1e1e')
-              })
-            }
-            .width('100%').layoutWeight(1)
-            .scrollBar(BarState.Off)
-          } else {
-            Text(this.prefixReady ? '无运行中进程' : 'Wine 未初始化')
-              .fontColor('#555')
-              .width('100%').padding({ left: 10, top: 4 })
-          }
+        Row() {
+          Circle({ width: 8, height: 8 })
+            .fill(this.prefixReady ? '#4f4' : '#f84')
+            .margin({ right: 6 })
+          Text(this.statusText)
+            .fontColor(this.state == 'wine-running' ? '#4f4' :
+                       this.state == 'exited' ? '#f84' :
+                       this.prefixReady ? '#8cf' : '#888')
+            .layoutWeight(1)
+            .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        .width(190).height('100%')
-        .backgroundColor('#141414')
-        .padding({ top: 4 })
+        .width('100%').padding({ bottom: 12 })
+        .alignItems(VerticalAlign.Center)
 
-        // -- 侧边栏分隔线 --
-        Divider().vertical(true).color('#2a2a2a').height('100%')
+        Divider().color('#2a2a2a').width('100%')
+
+        // -- 快速操作 --
+        Text('快速操作')
+          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .width('100%').padding({ top: 12, bottom: 8 })
+
+        if (!this.prefixReady) {
+          Button('初始化 Wine')
+            .width('100%').backgroundColor('#285')
+            .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
+            .onClick(this.doInit)
+            .margin({ bottom: 8 })
+        } else {
+          Button('重置 Wine')
+            .width('100%').backgroundColor('#633')
+            .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
+            .onClick(this.doReset)
+            .margin({ bottom: 8 })
+          Button('重启 Wine')
+            .width('100%').backgroundColor('#652')
+            .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
+            .onClick(this.doInit)
+            .margin({ bottom: 8 })
+        }
+
+        Divider().color('#2a2a2a').width('100%')
+
+        // -- 运行中进程 --
+        Row() {
+          Text('运行中进程')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .layoutWeight(1)
+          Button({ type: ButtonType.Circle, stateEffect: true }) {
+            Text('↻')
+          }
+          .width(28).height(28).backgroundColor('#333')
+          .onClick(this.refreshProcessList)
+        }
+        .width('100%').padding({ top: 12, bottom: 8 })
+        .alignItems(VerticalAlign.Center)
+
+        if (this.processList.length > 0) {
+          List({ space: 1 }) {
+            ForEach(this.processList, (proc: ProcessInfo) => {
+              ListItem() {
+                Row() {
+                  Column() {
+                    Text(proc.name)
+                      .fontColor('#dfd')
+                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }
+                  .layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                  if (proc.state === 'running') {
+                    Circle({ width: 6, height: 6 }).fill('#4f4').margin({ right: 10 })
+                  }
+                  Text('✕')
+                    .fontColor('#f55')
+                    .onClick(() => this.doKillProcess(proc.pid))
+                }
+                .width('100%').padding({ top: 10, bottom: 10 })
+                .alignItems(VerticalAlign.Center)
+              }
+              .backgroundColor('#1e1e1e')
+            })
+          }
+          .width('100%').layoutWeight(1)
+          .scrollBar(BarState.Off)
+        } else {
+          Text(this.prefixReady ? '无运行中进程' : 'Wine 未初始化')
+            .fontColor('#555')
+            .width('100%').padding({ top: 8 })
+        }
+      }
+      .width(300).height('100%')
+      .backgroundColor('#141414')
+      .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+
+      // -- 侧边栏分隔线 --
+      Divider().vertical(true).color('#2a2a2a').height('100%')
 
       // ============================================================
       //  右侧主内容区
@@ -301,15 +297,14 @@ struct Index {
             .fontWeight(FontWeight.Bold).fontColor('#fff')
 
           Text(this.statusText)
-            
             .fontColor(this.state == 'wine-running' ? '#4f4' :
                        this.state == 'exited' ? '#f84' :
                        this.prefixReady ? '#8cf' : '#888')
-            .margin({ left: 10 }).layoutWeight(1)
+            .margin({ left: 12 }).layoutWeight(1)
             .maxLines(1)
         }
-        .width('100%').height(38)
-        .padding({ left: 6, right: 12 })
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
         .backgroundColor('#1a1a1a')
         .alignItems(VerticalAlign.Center)
 
@@ -318,36 +313,35 @@ struct Index {
           Row() {
             if (this.curDir != DRIVE_C) {
               Button('← 上级目录')
-                .height(26).backgroundColor('#333')
+                .backgroundColor('#333')
                 .onClick(this.goUp)
             }
             Text(this.relPath())
               .fontColor('#888')
-              .margin({ left: 8 }).layoutWeight(1)
+              .margin({ left: 10 }).layoutWeight(1)
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
-          .width('100%').padding({ left: 8, right: 12, top: 4, bottom: 2 })
+          .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 6 })
 
           List({ space: 1 }) {
             ForEach(this.entries, (name: string) => {
               ListItem() {
                 Row() {
                   Text(this.isDir(this.curDir + '/' + name) ? '📁' : (this.isExe(name) ? '▶' : '  '))
-                    .width(24)
+                    .width(28)
                   Text(name)
-                    
                     .fontColor(this.isExe(name) ? '#dfd' :
                                this.isDir(this.curDir + '/' + name) ? '#8cf' : '#888')
                     .layoutWeight(1)
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                   if (this.isExe(name)) {
                     Button('启动')
-                      .height(28)
+                      .height(32)
                       .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
                       .onClick(() => this.doRun(name))
                   }
                 }
-                .width('100%').padding({ left: 8, right: 6, top: 6, bottom: 6 })
+                .width('100%').height(44).padding({ left: 14, right: 14 })
                 .alignItems(VerticalAlign.Center)
                 .onClick(() => {
                   if (this.isDir(this.curDir + '/' + name)) {
