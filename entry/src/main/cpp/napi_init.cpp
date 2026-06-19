@@ -200,7 +200,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
         napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
     }
 
-    // -- 启动 wineserver --
+    // -- 启动 wineserver (capture stderr for diagnostics) --
     {
         std::vector<std::string> wsEnvStrs = p->envStrs;
         wsEnvStrs.push_back("BOX64_DYNAREC=0");
@@ -208,8 +208,19 @@ static void LaunchThreadFunc(LaunchParams* p) {
         for (auto& s : wsEnvStrs) wsEnvp.push_back((char*)s.c_str());
         wsEnvp.push_back(nullptr);
 
+        int wsPipe[2];
+        bool wsPipeOk = (pipe(wsPipe) == 0);
+        if (!wsPipeOk) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver pipe failed: %{public}s", strerror(errno));
+        }
+
         pid_t wsPid = fork();
         if (wsPid == 0) {
+            if (wsPipeOk) {
+                close(wsPipe[0]);
+                dup2(wsPipe[1], STDERR_FILENO);
+                if (wsPipe[1] > 2) close(wsPipe[1]);
+            }
             CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
@@ -220,9 +231,39 @@ static void LaunchThreadFunc(LaunchParams* p) {
         }
         if (wsPid > 0) {
             OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d, waiting 1.5s...", wsPid);
+            if (wsPipeOk) {
+                close(wsPipe[1]);
+                // Start background reader thread for wineserver stderr
+                int wsReadFd = wsPipe[0];
+                std::thread([wsReadFd, wsPid]() {
+                    char buf[4096];
+                    std::string pending;
+                    while (true) {
+                        ssize_t n = read(wsReadFd, buf, sizeof(buf) - 1);
+                        if (n > 0) {
+                            buf[n] = 0;
+                            pending.append(buf, n);
+                            size_t pos;
+                            while ((pos = pending.find('\n')) != std::string::npos) {
+                                std::string line = pending.substr(0, pos);
+                                if (!line.empty())
+                                    OH_LOG_INFO(LOG_APP, "[wineserver-stderr] %{public}s", line.c_str());
+                                pending.erase(0, pos + 1);
+                            }
+                        } else {
+                            if (n == 0 || (n < 0 && errno != EINTR)) break;
+                        }
+                    }
+                    if (!pending.empty())
+                        OH_LOG_INFO(LOG_APP, "[wineserver-stderr] %{public}s", pending.c_str());
+                    close(wsReadFd);
+                    OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver pid=%{public}d: stderr pipe closed (process exited?)", wsPid);
+                }).detach();
+            }
             usleep(1500000);
         } else {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver fork failed");
+            if (wsPipeOk) { close(wsPipe[0]); close(wsPipe[1]); }
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
             delete p;
@@ -234,11 +275,21 @@ static void LaunchThreadFunc(LaunchParams* p) {
         napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
     }
 
-    // -- wineboot --init --
+    // -- wineboot --init (capture stderr via pipe for diagnostics) --
     {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init...");
+        int bootPipe[2];
+        if (pipe(bootPipe) != 0) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot pipe failed: %{public}s", strerror(errno));
+        }
         pid_t bootPid = fork();
         if (bootPid == 0) {
+            // Child: redirect stderr to pipe, keep stdout to hilog
+            if (bootPipe[0] >= 0 && bootPipe[1] >= 0) {
+                close(bootPipe[0]);
+                dup2(bootPipe[1], STDERR_FILENO);
+                if (bootPipe[1] > 2) close(bootPipe[1]);
+            }
             CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineboot", 0, 0, 0);
@@ -248,22 +299,60 @@ static void LaunchThreadFunc(LaunchParams* p) {
             _exit(127);
         }
         if (bootPid > 0) {
-            int bootStatus = 0;
-            for (int i = 0; i < 300; i++) {
-                pid_t wr = waitpid(bootPid, &bootStatus, WNOHANG);
-                if (wr > 0) break;
-                if (wr < 0 && errno != EINTR) break;
-                if (i > 0 && i % 30 == 0)
-                    OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init still running (%{public}ds)...", i);
-                sleep(1);
-            }
-            if (kill(bootPid, 0) == 0) {
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init timeout (300s), killing");
-                kill(bootPid, SIGKILL);
+            if (bootPipe[0] >= 0 && bootPipe[1] >= 0) {
+                close(bootPipe[1]);
+                // Read stderr in a thread while waiting for wineboot to finish.
+                // 使用 shared_ptr 避免函数返回后栈变量被释放导致 SIGSEGV.
+                auto bootDone = std::make_shared<std::atomic<bool>>(false);
+                int bootPipeRd = bootPipe[0];
+                std::thread([bootDone, bootPipeRd]() {
+                    char buf[4096];
+                    std::string pending;
+                    while (!*bootDone) {
+                        ssize_t n = read(bootPipeRd, buf, sizeof(buf) - 1);
+                        if (n > 0) {
+                            buf[n] = 0;
+                            pending.append(buf, n);
+                            size_t pos;
+                            while ((pos = pending.find('\n')) != std::string::npos) {
+                                std::string line = pending.substr(0, pos);
+                                if (!line.empty())
+                                    OH_LOG_INFO(LOG_APP, "[wineboot-stderr] %{public}s", line.c_str());
+                                pending.erase(0, pos + 1);
+                            }
+                        } else {
+                            if (n == 0 || (n < 0 && errno != EINTR)) break;
+                        }
+                    }
+                    if (!pending.empty())
+                        OH_LOG_INFO(LOG_APP, "[wineboot-stderr] %{public}s", pending.c_str());
+                    close(bootPipeRd);
+                }).detach();
+
+                int bootStatus = 0;
+                for (int i = 0; i < 300; i++) {
+                    pid_t wr = waitpid(bootPid, &bootStatus, WNOHANG);
+                    if (wr > 0) break;
+                    if (wr < 0 && errno != EINTR) break;
+                    if (i > 0 && i % 30 == 0)
+                        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init still running (%{public}ds)...", i);
+                    sleep(1);
+                }
+                *bootDone = true;
+                if (kill(bootPid, 0) == 0) {
+                    OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init timeout (300s), killing");
+                    kill(bootPid, SIGKILL);
+                    waitpid(bootPid, &bootStatus, 0);
+                }
+                int code = WIFEXITED(bootStatus) ? WEXITSTATUS(bootStatus) : -1;
+                OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done, exit=%{public}d", code);
+            } else {
+                // Fallback without pipe
+                int bootStatus = 0;
                 waitpid(bootPid, &bootStatus, 0);
+                int code = WIFEXITED(bootStatus) ? WEXITSTATUS(bootStatus) : -1;
+                OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done (no pipe), exit=%{public}d", code);
             }
-            int code = WIFEXITED(bootStatus) ? WEXITSTATUS(bootStatus) : -1;
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done, exit=%{public}d", code);
         }
     }
 

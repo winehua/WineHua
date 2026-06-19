@@ -36,6 +36,15 @@ struct Index {
       }
     });
     this.refreshPrefix();
+
+    // 自动初始化: 始终在启动后 1s 初始化 Wine (startServer+launchClient)
+    // 避免重装后 prefix 目录残留导致跳过初始化
+    setTimeout(() => {
+      if (this.state === 'idle') {
+        hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
+        this.doInit();
+      }
+    }, 1000);
   }
 
   private refreshPrefix = (): void => {

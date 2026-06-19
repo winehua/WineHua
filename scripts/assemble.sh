@@ -44,7 +44,7 @@ for so in "$WINE_SRC/build-ohos/dlls/"*/*.so; do
 done
 log "  x86_64-unix: $(ls "$BIN/x86_64-unix" | wc -l) .so files"
 
-# ---- x86_64-windows/ (PE DLL + graphics driver .drv) ----
+# ---- x86_64-windows/ (PE DLL + .drv + .exe + .sys) ----
 mkdir -p "$BIN/x86_64-windows"
 for dll in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.dll; do
     cp "$dll" "$BIN/x86_64-windows/"
@@ -52,7 +52,13 @@ done
 for drv in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.drv; do
     cp "$drv" "$BIN/x86_64-windows/"
 done
-log "  x86_64-windows: $(ls "$BIN/x86_64-windows" | wc -l) DLL/DRV files"
+for exe in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.exe; do
+    cp "$exe" "$BIN/x86_64-windows/"
+done
+for sys in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.sys; do
+    cp "$sys" "$BIN/x86_64-windows/"
+done
+log "  x86_64-windows: $(ls "$BIN/x86_64-windows" | wc -l) DLL/DRV/EXE/SYS files"
 
 # ---- *.exe stubs ----
 for exe in "$WINE_SRC/build-native/programs/"*/x86_64-windows/*.exe; do
