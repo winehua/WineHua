@@ -41,10 +41,17 @@ public:
     // pressed: true=按下, false=释放
     void SendKeyEvent(uint32_t toplevelId, int evdevCode, bool pressed);
 
+    // axis: 0=垂直(SCROLL_VERTICAL), 1=水平(SCROLL_HORIZONTAL)
+    // value: 轴值 (正值=向下/向右, 负值=向上/向左)
+    // scrollStep: ArkTS AxisEvent.scrollStep
+    // px/py: 鼠标在组件上的物理像素坐标
+    void SendScrollEvent(uint32_t toplevelId, int axis, double value, int scrollStep, double px, double py);
+
     // -- Wayland 线程注入 (由 FlushQueue 调用) --
     void InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fixed_t sx, wl_fixed_t sy);
     void InjectPointerMotion(wl_fixed_t sx, wl_fixed_t sy);
     void InjectPointerButton(uint32_t button, uint32_t state);
+    void InjectPointerAxis(int axis, wl_fixed_t value);
     void InjectPointerLeave();
     void InjectKeyboardEnter(uint32_t tl, wl_resource* surface);
     void InjectKeyboardKey(uint32_t key, uint32_t state);
@@ -75,13 +82,16 @@ private:
 
     // -- 事件队列 (NAPI → Wayland 线程) --
     struct InputEvent {
-        enum Type { PTR_ENTER, PTR_LEAVE, PTR_MOTION, PTR_BUTTON,
+        enum Type { PTR_ENTER, PTR_LEAVE, PTR_MOTION, PTR_BUTTON, PTR_AXIS,
                     KBD_ENTER, KBD_LEAVE, KBD_KEY, KBD_MODIFIERS } type;
         uint32_t tl = 0;
         wl_resource* surface = nullptr;
         wl_fixed_t x = 0, y = 0;
         uint32_t btn_or_key = 0;
         uint32_t state = 0;
+        // axis fields
+        int axis = 0;           // 0=vertical, 1=horizontal
+        wl_fixed_t axis_value = 0;
         // modifiers fields
         uint32_t mod_depressed = 0, mod_latched = 0, mod_locked = 0, mod_group = 0;
     };
@@ -94,6 +104,7 @@ private:
 
     void Enqueue(InputEvent::Type type, uint32_t tl, wl_resource* surface,
                  wl_fixed_t x, wl_fixed_t y, uint32_t btn_or_key, uint32_t state);
+    void EnqueueModifiers();  // 入队当前 modifiers_depressed_ 等状态
     void FlushQueue();
     static int OnPipeReadable(int fd, uint32_t mask, void* data);
 

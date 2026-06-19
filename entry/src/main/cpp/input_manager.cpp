@@ -372,27 +372,87 @@ void InputManager::SendKeyEvent(uint32_t tl, int evdevCode, bool pressed) {
             keyboardEntered_ = true;
             Enqueue(InputEvent::KBD_ENTER, tl, surf, 0, 0, 0, 0);
             // 发送初始 modifier 状态
-            InputEvent mev;
-            mev.type = InputEvent::KBD_MODIFIERS;
-            mev.mod_depressed = modifiers_depressed_;
-            mev.mod_latched = modifiers_latched_;
-            mev.mod_locked = modifiers_locked_;
-            mev.mod_group = modifiers_group_;
-            {
-                std::lock_guard<std::mutex> lk(queueMutex_);
-                queue_.push_back(mev);
-            }
+            EnqueueModifiers();
         }
     }
 
-    // 追踪 modifier 状态
+    // 追踪 modifier 状态 → 同步到 Wine
     if (IsModifierKey(evdevCode)) {
         UpdateModifiers(evdevCode, pressed);
+        EnqueueModifiers();  // 每次修饰键变化都同步, Wine 需要最新的 modifier state
     }
 
     // 入队 key 事件
     uint32_t state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
     Enqueue(InputEvent::KBD_KEY, 0, nullptr, 0, 0, evdevCode, state);
+}
+
+void InputManager::EnqueueModifiers() {
+    InputEvent ev;
+    ev.type = InputEvent::KBD_MODIFIERS;
+    ev.mod_depressed = modifiers_depressed_;
+    ev.mod_latched = modifiers_latched_;
+    ev.mod_locked = modifiers_locked_;
+    ev.mod_group = modifiers_group_;
+    {
+        std::lock_guard<std::mutex> lk(queueMutex_);
+        queue_.push_back(ev);
+    }
+    if (pipeWrite_ >= 0) {
+        char c = 1;
+        ssize_t n = write(pipeWrite_, &c, 1);
+        if (n < 0 && errno != EAGAIN) {
+            OH_LOG_WARN(LOG_APP, "[Input] pipe write FAIL errno=%{public}d", errno);
+        }
+    }
+}
+
+void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scrollStep,
+                                    double px, double py) {
+    auto* seat = Seat::GetInstance();
+    if (!seat->HasPointerResource()) return;
+
+    // 坐标转换
+    wl_fixed_t wx, wy;
+    CoordTransform(px, py, tl, &wx, &wy);
+
+    // Wayland axis value 用 wl_fixed_t (256 精度)
+    // HarmonyOS AxisEvent 的 value 是浮点数, 每个 notch 通常 ±1.0
+    wl_fixed_t val = wl_fixed_from_double(value);
+
+    OH_LOG_INFO(LOG_APP, "[Input] SCROLL tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d"
+                " px=(%{public}.0f,%{public}.0f) wine=(%{public}.1f,%{public}.1f) ptrRes=%{public}d",
+                tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py,
+                wl_fixed_to_double(wx), wl_fixed_to_double(wy),
+                seat->HasPointerResource());
+
+    // 确保指针已 enter (和 MOVE 同样的逻辑)
+    if (NeedsPointerEnter() || pointerFocusedToplevel_.load() != tl) {
+        wl_resource* surf = WaylandServer::GetInstance()->GetSurfaceForToplevel(tl);
+        if (surf) {
+            if (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl)
+                Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
+            Enqueue(InputEvent::PTR_ENTER, tl, surf, wx, wy, 0, 0);
+        }
+    }
+
+    // 入队 axis 事件
+    {
+        InputEvent ev;
+        ev.type = InputEvent::PTR_AXIS;
+        ev.axis = axis;
+        ev.axis_value = val;
+        ev.tl = tl;
+        std::lock_guard<std::mutex> lk(queueMutex_);
+        queue_.push_back(ev);
+    }
+    if (pipeWrite_ >= 0) {
+        char c = 1;
+        ssize_t n = write(pipeWrite_, &c, 1);
+        if (n < 0 && errno != EAGAIN) {
+            OH_LOG_WARN(LOG_APP, "[Input] pipe write FAIL errno=%{public}d", errno);
+        }
+    }
 }
 
 // ========================================================================
@@ -444,6 +504,10 @@ void InputManager::FlushQueue() {
                         break;
                     case InputEvent::PTR_MOTION:
                         last = ev; continue;  // 只保留最后一个
+                    case InputEvent::PTR_AXIS:
+                        skip = (last.axis == ev.axis);  // 同轴替换, 保留最后一个
+                        if (skip) { last = ev; continue; }
+                        break;
                     case InputEvent::PTR_ENTER:
                         skip = (last.tl == ev.tl && last.surface == ev.surface);
                         break;
@@ -470,6 +534,7 @@ void InputManager::FlushQueue() {
                             wl_fixed_to_double(ev.x), wl_fixed_to_double(ev.y));
                 InjectPointerMotion(ev.x, ev.y); break;
             case InputEvent::PTR_BUTTON:  InjectPointerButton(ev.btn_or_key, ev.state); break;
+            case InputEvent::PTR_AXIS:    InjectPointerAxis(ev.axis, ev.axis_value); break;
             case InputEvent::KBD_ENTER:   InjectKeyboardEnter(ev.tl, ev.surface); break;
             case InputEvent::KBD_LEAVE:   InjectKeyboardLeave(); break;
             case InputEvent::KBD_KEY:     InjectKeyboardKey(ev.btn_or_key, ev.state); break;
@@ -552,6 +617,24 @@ void InputManager::InjectPointerButton(uint32_t button, uint32_t state) {
             wl_pointer_send_frame(ptr);
         }
     }
+}
+
+void InputManager::InjectPointerAxis(int axis, wl_fixed_t value) {
+    auto ptrs = Seat::GetInstance()->GetAllPointerResources();
+    if (ptrs.empty()) { return; }
+    uint32_t axisEnum = (axis == 0) ? WL_POINTER_AXIS_VERTICAL_SCROLL
+                                    : WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+    int nSent = 0;
+    uint32_t t = NowMs();
+    for (auto* ptr : ptrs) {
+        if (ptr) {
+            wl_pointer_send_axis(ptr, t, axisEnum, value);
+            wl_pointer_send_frame(ptr);
+            nSent++;
+        }
+    }
+    OH_LOG_INFO(LOG_APP, "[Input] InjectAxis %{public}s val=%{public}.1f t=%{public}u sent=%{public}d",
+                axis == 0 ? "VERT" : "HORIZ", wl_fixed_to_double(value), t, nSent);
 }
 
 void InputManager::InjectPointerLeave() {

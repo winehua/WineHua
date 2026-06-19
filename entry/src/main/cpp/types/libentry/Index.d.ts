@@ -17,6 +17,7 @@ export const resizeRenderer: (toplevelId: number, width: number, height: number)
 export const destroyRenderer: (toplevelId: number) => void;
 export const sendPointerEvent: (toplevelId: number, action: number, px: number, py: number, button: number) => void;
 export const sendKeyEvent: (toplevelId: number, evdevCode: number, pressed: boolean) => void;
+export const sendScrollEvent: (toplevelId: number, axis: number, value: number, scrollStep: number, px: number, py: number) => void;
 export const runMmapTests: () => string;
 export const termRun: (cols: number, rows: number, cb: (data: ArrayBuffer) => void, onExit: () => void) => number;
 export const termSend: (data: ArrayBuffer) => void;

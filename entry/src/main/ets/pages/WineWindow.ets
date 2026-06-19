@@ -106,6 +106,26 @@ struct WineWindow {
       testNapi.sendKeyEvent(this.toplevelId, evdevCode, pressed);
     })
 
+    // -- 滚轮事件 (轴事件, API 17+) --
+    .onAxisEvent((event?: AxisEvent) => {
+      if (this.toplevelId <= 0 || !event) return;
+      const px = vp2px(event.x);
+      const py = vp2px(event.y);
+      const vert = event.getVerticalAxisValue();
+      const horiz = event.getHorizontalAxisValue();
+      const step = event.scrollStep ?? 0;
+      if (vert !== 0) {
+        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] SCROLL tl=%{public}d vert=%{public}f step=%{public}d px=(%{public}d,%{public}d)',
+          this.toplevelId, vert, step, Math.round(px), Math.round(py));
+        testNapi.sendScrollEvent(this.toplevelId, 0, vert, step, px, py);
+      }
+      if (horiz !== 0) {
+        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] SCROLL tl=%{public}d horiz=%{public}f step=%{public}d px=(%{public}d,%{public}d)',
+          this.toplevelId, horiz, step, Math.round(px), Math.round(py));
+        testNapi.sendScrollEvent(this.toplevelId, 1, horiz, step, px, py);
+      }
+    })
+
     .onAreaChange((_o: Area, n: Area) => {
       this.surfacePxW = vp2px(n.width as number);
       this.surfacePxH = vp2px(n.height as number);

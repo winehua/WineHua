@@ -1270,6 +1270,24 @@ static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
+    size_t argc = 6;
+    napi_value args[6];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 6) return nullptr;
+    uint32_t tl; int32_t axis; double value; int32_t scrollStep; double px; double py;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &axis);
+    napi_get_value_double(env, args[2], &value);
+    napi_get_value_int32(env, args[3], &scrollStep);
+    napi_get_value_double(env, args[4], &px);
+    napi_get_value_double(env, args[5], &py);
+    OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
+                tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
+    InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
+    return nullptr;
+}
+
 // -- 模块注册 --
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
@@ -1298,6 +1316,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         // ArkTS input forwarding (unified InputManager path)
         {"sendPointerEvent", nullptr, SendPointerEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"sendScrollEvent",  nullptr, SendScrollEvent,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termSend",      nullptr, TermSend,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termResize",    nullptr, TermResize,   nullptr, nullptr, nullptr, napi_default, nullptr},
