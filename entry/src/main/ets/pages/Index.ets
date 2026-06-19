@@ -10,6 +10,13 @@ const BOX64 = `${WINE_BIN}/bin/box64`;
 const BIN_DIR = `${WINE_BIN}/bin`;
 const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
 
+interface ProcessInfo {
+  pid: number;
+  name: string;
+  path: string;
+  state: string;
+}
+
 @Entry
 @Component
 struct Index {
@@ -19,26 +26,41 @@ struct Index {
   @State curDir: string = DRIVE_C;
   @State entries: string[] = [];
   @State dirStack: string[] = [];
+  @State processList: ProcessInfo[] = [];
 
   aboutToAppear(): void {
     testNapi.setStateCallback((s: string) => {
       hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
       this.state = s;
-      if (s == 'wineserver-starting' || s == 'wineboot-starting') {
+
+      // 解析 pid:state 格式 (多进程消息)
+      const colonIdx = s.indexOf(':');
+      const pid = colonIdx >= 0 ? parseInt(s.substring(0, colonIdx)) : -1;
+      const stateMsg = colonIdx >= 0 ? s.substring(colonIdx + 1) : s;
+
+      if (stateMsg == 'wineserver-starting' || stateMsg == 'wineboot-starting') {
         this.statusText = 'Wine 正在初始化...';
-      } else if (s == 'wine-ready') {
+      } else if (stateMsg == 'wine-ready') {
         this.statusText = '已就绪';
         this.refreshPrefix();
-      } else if (s == 'wine-running') {
+      } else if (stateMsg == 'wine-running') {
         this.statusText = '运行中';
-      } else if (s == 'exited') {
-        this.statusText = '已退出';
+        this.refreshProcessList();
+      } else if (stateMsg == 'exited') {
+        this.refreshProcessList();
+        // 如果还有运行中的进程, 保持 running 状态
+        const running = this.processList.filter(p => p.state === 'running');
+        if (running.length === 0) {
+          this.statusText = '已就绪';
+        }
+      } else if (stateMsg == 'wine-failed') {
+        this.statusText = '启动失败';
+        this.refreshProcessList();
       }
     });
     this.refreshPrefix();
 
     // 自动初始化: 始终在启动后 1s 初始化 Wine (startServer+launchClient)
-    // 避免重装后 prefix 目录残留导致跳过初始化
     setTimeout(() => {
       if (this.state === 'idle') {
         hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
@@ -51,18 +73,32 @@ struct Index {
     try {
       this.prefixReady = testNapi.checkWinePrefix() as boolean;
       if (this.prefixReady) {
-        this.statusText = '已就绪';
         this.curDir = DRIVE_C;
         this.dirStack = [];
         this.listDir(DRIVE_C);
       } else {
-        this.statusText = '未初始化';
         this.entries = [];
       }
     } catch (e) {
       this.prefixReady = false;
-      this.statusText = '未初始化';
       this.entries = [];
+    }
+  }
+
+  private refreshProcessList = (): void => {
+    try {
+      this.processList = testNapi.getProcessList() as ProcessInfo[];
+    } catch (e) {
+      this.processList = [];
+    }
+  }
+
+  private doKillProcess = (pid: number): void => {
+    try {
+      testNapi.killProcess(pid);
+      setTimeout(() => this.refreshProcessList(), 500);
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'killProcess error: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -117,7 +153,6 @@ struct Index {
       this.statusText = '启动服务失败';
       return;
     }
-    // launchClient 现在只做 wineserver + wineboot --init
     testNapi.launchClient(BOX64, [], SOCK, `${WINE_BIN}/bin:${WINE_LIB}`);
   }
 
@@ -127,6 +162,7 @@ struct Index {
       testNapi.resetWinePrefix();
       this.state = 'idle';
       this.prefixReady = false;
+      this.processList = [];
       this.entries = [];
       this.statusText = '已清空';
       setTimeout(() => this.doInit(), 500);
@@ -148,103 +184,192 @@ struct Index {
   }
 
   build() {
-    Column() {
-      // -- 顶部标题栏 --
-      Row() {
-        Text($r('app.string.app_name'))
-          .fontSize(15).fontWeight(FontWeight.Bold).fontColor('#fff')
-        Text(this.statusText)
-          .fontSize(13)
-          .fontColor(this.state == 'wine-running' ? '#4f4' :
-                     this.state == 'exited' ? '#f84' :
-                     this.prefixReady ? '#8cf' : '#888')
-          .margin({ left: 12 }).layoutWeight(1)
-      }
-      .width('100%').height(38)
-      .padding({ left: 12, right: 12 })
-      .backgroundColor('#1a1a1a')
-      .alignItems(VerticalAlign.Center)
+    Row() {
+      // ============================================================
+      //  侧边栏 (可折叠)
+      // ============================================================
+        Column() {
+          // -- Wine 环境状态 --
+          Text('Wine 环境')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 10, bottom: 2, left: 10 })
 
-      // -- 操作按钮 --
-      Row() {
-        if (!this.prefixReady) {
-          Button('初始化 Wine')
-            .fontSize(14)
-            .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
-            .onClick(this.doInit)
-        } else {
           Row() {
-            Button('重置 Wine 环境')
-              .fontSize(13).backgroundColor('#833')
+            Circle({ width: 6, height: 6 })
+              .fill(this.prefixReady ? '#4f4' : '#f84')
+              .margin({ right: 4 })
+            Text(this.statusText)
+              
+              .fontColor(this.state == 'wine-running' ? '#4f4' :
+                         this.state == 'exited' ? '#f84' :
+                         this.prefixReady ? '#8cf' : '#888')
+              .layoutWeight(1)
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .width('100%').padding({ left: 10, right: 8, bottom: 8 })
+          .alignItems(VerticalAlign.Center)
+
+          Divider().color('#2a2a2a').width('100%')
+
+          // -- 快速操作 --
+          Text('快速操作')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 8, bottom: 4, left: 10 })
+
+          if (!this.prefixReady) {
+            Button('初始化 Wine')
+              .width('100%').height(32).backgroundColor('#285')
+              .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
+              .onClick(this.doInit)
+              .margin({ bottom: 4, left: 6, right: 6 })
+          } else {
+            Button('重置 Wine')
+              .width('100%').height(32).backgroundColor('#633')
               .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
               .onClick(this.doReset)
-              .margin({ right: 8 })
-            Text('|')
-              .fontSize(13).fontColor('#555').margin({ left: 4, right: 4 })
+              .margin({ bottom: 4, left: 6, right: 6 })
             Button('重新初始化')
-              .fontSize(13).backgroundColor('#444')
+              .width('100%').height(32).backgroundColor('#383')
               .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
               .onClick(this.doInit)
+              .margin({ bottom: 4, left: 6, right: 6 })
           }
-        }
-      }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 4 })
-      .justifyContent(FlexAlign.Start)
 
-      // -- 文件浏览器 --
-      if (this.prefixReady) {
-        Row() {
-          if (this.curDir != DRIVE_C) {
-            Button('← 上级目录')
-              .fontSize(12).height(28).backgroundColor('#333')
-              .onClick(this.goUp)
+          Divider().color('#2a2a2a').width('100%')
+
+          // -- 运行中进程 --
+          Row() {
+            Text('运行中进程')
+              .fontWeight(FontWeight.Bold).fontColor('#999')
+              .layoutWeight(1)
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              Text('↻')
+            }
+            .width(24).height(24).backgroundColor('#333')
+            .onClick(this.refreshProcessList)
           }
-          Text(this.relPath())
-            .fontSize(12).fontColor('#888')
-            .margin({ left: 8 }).layoutWeight(1)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .width('100%').padding({ left: 12, right: 12, top: 6, bottom: 2 })
+          .width('100%').padding({ top: 8, bottom: 4, left: 10, right: 4 })
+          .alignItems(VerticalAlign.Center)
 
-        List({ space: 1 }) {
-          ForEach(this.entries, (name: string) => {
-            ListItem() {
-              Row() {
-                Text(this.isDir(this.curDir + '/' + name) ? '📁' : (this.isExe(name) ? '▶' : '  '))
-                  .fontSize(14).width(24)
-                Text(name)
-                  .fontSize(13)
-                  .fontColor(this.isExe(name) ? '#dfd' :
-                             this.isDir(this.curDir + '/' + name) ? '#8cf' : '#888')
-                  .layoutWeight(1)
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                if (this.isExe(name)) {
-                  Button('启动')
-                    .fontSize(12).height(28)
-                    .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
-                    .onClick(() => this.doRun(name))
+          if (this.processList.length > 0) {
+            List({ space: 1 }) {
+              ForEach(this.processList, (proc: ProcessInfo) => {
+                ListItem() {
+                  Row() {
+                    Column() {
+                      Text(proc.name)
+                        .fontColor('#dfd')
+                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    }
+                    .layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                    if (proc.state === 'running') {
+                      Circle({ width: 5, height: 5 }).fill('#4f4').margin({ right: 8 })
+                    }
+                    Text('✕')
+                      .fontColor('#f55').width(20).textAlign(TextAlign.Center)
+                      .onClick(() => this.doKillProcess(proc.pid))
+                  }
+                  .width('100%').padding({ left: 10, right: 4, top: 5, bottom: 5 })
+                  .alignItems(VerticalAlign.Center)
                 }
-              }
-              .width('100%').padding({ left: 12, right: 8, top: 6, bottom: 6 })
-              .alignItems(VerticalAlign.Center)
-              .onClick(() => {
-                if (this.isDir(this.curDir + '/' + name)) {
-                  this.enterDir(name);
-                }
+                .backgroundColor('#1e1e1e')
               })
             }
-            .backgroundColor('#1e1e1e')
-          })
+            .width('100%').layoutWeight(1)
+            .scrollBar(BarState.Off)
+          } else {
+            Text(this.prefixReady ? '无运行中进程' : 'Wine 未初始化')
+              .fontColor('#555')
+              .width('100%').padding({ left: 10, top: 4 })
+          }
         }
-        .width('100%').layoutWeight(1)
-      } else {
-        Column() {
-          Text('需要先初始化 Wine 环境')
-            .fontSize(13).fontColor('#666')
+        .width(190).height('100%')
+        .backgroundColor('#141414')
+        .padding({ top: 4 })
+
+        // -- 侧边栏分隔线 --
+        Divider().vertical(true).color('#2a2a2a').height('100%')
+
+      // ============================================================
+      //  右侧主内容区
+      // ============================================================
+      Column() {
+        // -- 标题栏 --
+        Row() {
+          Text($r('app.string.app_name'))
+            .fontWeight(FontWeight.Bold).fontColor('#fff')
+
+          Text(this.statusText)
+            
+            .fontColor(this.state == 'wine-running' ? '#4f4' :
+                       this.state == 'exited' ? '#f84' :
+                       this.prefixReady ? '#8cf' : '#888')
+            .margin({ left: 10 }).layoutWeight(1)
+            .maxLines(1)
         }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        .width('100%').height(38)
+        .padding({ left: 6, right: 12 })
+        .backgroundColor('#1a1a1a')
+        .alignItems(VerticalAlign.Center)
+
+        // -- 文件浏览器 --
+        if (this.prefixReady) {
+          Row() {
+            if (this.curDir != DRIVE_C) {
+              Button('← 上级目录')
+                .height(26).backgroundColor('#333')
+                .onClick(this.goUp)
+            }
+            Text(this.relPath())
+              .fontColor('#888')
+              .margin({ left: 8 }).layoutWeight(1)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .width('100%').padding({ left: 8, right: 12, top: 4, bottom: 2 })
+
+          List({ space: 1 }) {
+            ForEach(this.entries, (name: string) => {
+              ListItem() {
+                Row() {
+                  Text(this.isDir(this.curDir + '/' + name) ? '📁' : (this.isExe(name) ? '▶' : '  '))
+                    .width(24)
+                  Text(name)
+                    
+                    .fontColor(this.isExe(name) ? '#dfd' :
+                               this.isDir(this.curDir + '/' + name) ? '#8cf' : '#888')
+                    .layoutWeight(1)
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  if (this.isExe(name)) {
+                    Button('启动')
+                      .height(28)
+                      .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
+                      .onClick(() => this.doRun(name))
+                  }
+                }
+                .width('100%').padding({ left: 8, right: 6, top: 6, bottom: 6 })
+                .alignItems(VerticalAlign.Center)
+                .onClick(() => {
+                  if (this.isDir(this.curDir + '/' + name)) {
+                    this.enterDir(name);
+                  }
+                })
+              }
+              .backgroundColor('#1e1e1e')
+            })
+          }
+          .width('100%').layoutWeight(1)
+        } else {
+          Column() {
+            Text('需要先初始化 Wine 环境')
+              .fontColor('#555')
+          }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        }
       }
+      .layoutWeight(1).height('100%')
+      .backgroundColor('#111')
     }
-    .width('100%').height('100%').backgroundColor('#111')
+    .width('100%').height('100%')
   }
 }

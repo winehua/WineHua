@@ -28,8 +28,65 @@
 #include <hilog/log.h>
 
 // -- 全局状态 --
-static pid_t gClientPid = -1;
-static std::atomic<bool> gReaderRunning{false};
+// -- 多进程注册表 (替换旧的 gClientPid/gReaderRunning) --
+struct WineProcessEntry {
+    pid_t pid;
+    std::string exeBasename;       // "notepad.exe"
+    std::string exeFullPath;       // drive_c 完整路径
+    bool running;
+    int stdoutFd;
+    std::shared_ptr<std::atomic<bool>> readerActive;
+};
+
+static std::mutex gProcMutex;
+static std::vector<WineProcessEntry> gProcRegistry;
+
+// -- 注册表辅助函数 --
+static WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd) {
+    std::lock_guard<std::mutex> lock(gProcMutex);
+    std::string basename = exeFullPath;
+    auto slash = basename.find_last_of('/');
+    if (slash != std::string::npos) basename = basename.substr(slash + 1);
+    gProcRegistry.push_back({
+        .pid = pid,
+        .exeBasename = basename,
+        .exeFullPath = exeFullPath,
+        .running = true,
+        .stdoutFd = stdoutFd,
+        .readerActive = std::make_shared<std::atomic<bool>>(true)
+    });
+    OH_LOG_INFO(LOG_APP, "[ProcReg] add pid=%{public}d name=%{public}s total=%{public}zu",
+                pid, basename.c_str(), gProcRegistry.size());
+    return &gProcRegistry.back();
+}
+
+static void RemoveProcess(pid_t pid) {
+    std::lock_guard<std::mutex> lock(gProcMutex);
+    for (auto it = gProcRegistry.begin(); it != gProcRegistry.end(); ++it) {
+        if (it->pid == pid) {
+            OH_LOG_INFO(LOG_APP, "[ProcReg] remove pid=%{public}d name=%{public}s total=%{public}zu→%{public}zu",
+                        pid, it->exeBasename.c_str(), gProcRegistry.size(), gProcRegistry.size() - 1);
+            it->running = false;
+            if (it->stdoutFd >= 0) { close(it->stdoutFd); it->stdoutFd = -1; }
+            gProcRegistry.erase(it);
+            return;
+        }
+    }
+}
+
+static void KillAllProcesses() {
+    std::lock_guard<std::mutex> lock(gProcMutex);
+    for (auto& entry : gProcRegistry) {
+        if (entry.running) {
+            OH_LOG_INFO(LOG_APP, "[ProcReg] killAll pid=%{public}d name=%{public}s",
+                        entry.pid, entry.exeBasename.c_str());
+            *(entry.readerActive) = false;
+            kill(entry.pid, SIGTERM);
+            if (entry.stdoutFd >= 0) { close(entry.stdoutFd); entry.stdoutFd = -1; }
+        }
+    }
+}
+
 static napi_threadsafe_function gStateTsfn = nullptr;
 static std::string gSockPath;
 
@@ -112,11 +169,11 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     };
 }
 
-// -- 客户端 stdout/stderr 读取线程 --
-static void ReaderThread(int fd) {
+// -- 客户端 stdout/stderr 读取线程 (每个进程独立) --
+static void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> active) {
     char buf[2048];
     std::string pending;
-    while (gReaderRunning) {
+    while (*active) {
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
         if (n > 0) {
             buf[n] = 0;
@@ -124,7 +181,7 @@ static void ReaderThread(int fd) {
             size_t pos;
             while ((pos = pending.find('\n')) != std::string::npos) {
                 std::string line = pending.substr(0, pos);
-                OH_LOG_INFO(LOG_APP, "[wine] %{public}s", line.c_str());
+                OH_LOG_INFO(LOG_APP, "[wine:%{public}d] %{public}s", pid, line.c_str());
                 pending.erase(0, pos + 1);
             }
         } else if (n == 0) {
@@ -135,18 +192,23 @@ static void ReaderThread(int fd) {
         }
     }
     if (!pending.empty()) {
-        OH_LOG_INFO(LOG_APP, "[wine] %{public}s", pending.c_str());
+        OH_LOG_INFO(LOG_APP, "[wine:%{public}d] %{public}s", pid, pending.c_str());
     }
     close(fd);
-    // 子进程已退出，通知 ArkTS
-    if (gClientPid > 0) {
-        int status;
-        waitpid(gClientPid, &status, 0);
-        LogProcessExit("wine", gClientPid, status);
-        gClientPid = -1;
-        if (gStateTsfn) {
-            napi_call_threadsafe_function(gStateTsfn, strdup("exited"), napi_tsfn_blocking);
-        }
+
+    // 回收子进程
+    int status;
+    waitpid(pid, &status, 0);
+    LogProcessExit("wine", pid, status);
+
+    // 从注册表移除
+    RemoveProcess(pid);
+
+    // 通知 ArkTS
+    if (gStateTsfn) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d:exited", pid);
+        napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
     }
 }
 
@@ -465,16 +527,19 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
 
     if (pid > 0) {
         close(pipefd[1]);
-        gClientPid = pid;
-        gReaderRunning = true;
-        std::thread(ReaderThread, pipefd[0]).detach();
+        auto* entry = AddProcess(pid, wineExe, pipefd[0]);
+        std::thread(ReaderThread, pipefd[0], pid, entry->readerActive).detach();
         OH_LOG_INFO(LOG_APP, "[Wine] wine pid=%{public}d exe=%{public}s reader started", pid, wineExe);
-        if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("wine-running"), napi_tsfn_blocking);
+        if (gStateTsfn) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "%d:wine-running", pid);
+            napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
+        }
     } else {
         close(pipefd[0]);
         close(pipefd[1]);
         OH_LOG_ERROR(LOG_APP, "[Wine] wine fork failed");
-        if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("wine-failed"), napi_tsfn_blocking);
+        if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("-1:wine-failed"), napi_tsfn_blocking);
     }
     return nullptr;
 }
@@ -509,8 +574,7 @@ static void RmDir(const char* path) {
 
 static napi_value ResetWinePrefix(napi_env env, napi_callback_info info) {
     OH_LOG_INFO(LOG_APP, "[NAPI] resetWinePrefix called");
-    gReaderRunning = false;
-    if (gClientPid > 0) { kill(gClientPid, SIGTERM); gClientPid = -1; }
+    KillAllProcesses();
     const char* prefix = "/data/storage/el2/base/files/.wine";
     RmDir(prefix);
     mkdir(prefix, 0755);
@@ -894,24 +958,16 @@ static napi_value RunMmapTests(napi_env env, napi_callback_info) {
     return nullptr;
 }
 
-// -- NAPI: stopClient --
+// -- NAPI: stopClient — 杀掉所有 Wine 进程 --
 static napi_value StopClient(napi_env, napi_callback_info) {
-    gReaderRunning = false;
-    if (gClientPid > 0) {
-        kill(gClientPid, SIGTERM);
-        gClientPid = -1;
-    }
+    KillAllProcesses();
     WaylandServer::GetInstance()->ResetFirstFrame();
     return nullptr;
 }
 
-// -- NAPI: stopAll --
+// -- NAPI: stopAll — 杀掉所有 Wine 进程 + 停 Wayland server --
 static napi_value StopAll(napi_env, napi_callback_info) {
-    gReaderRunning = false;
-    if (gClientPid > 0) {
-        kill(gClientPid, SIGTERM);
-        gClientPid = -1;
-    }
+    KillAllProcesses();
     WaylandServer::GetInstance()->Stop();
     return nullptr;
 }
@@ -1288,6 +1344,69 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- NAPI: getProcessList — 返回运行中进程列表 --
+static napi_value GetProcessList(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(gProcMutex);
+
+    napi_value arr;
+    napi_create_array_with_length(env, gProcRegistry.size(), &arr);
+
+    for (size_t i = 0; i < gProcRegistry.size(); i++) {
+        const auto& entry = gProcRegistry[i];
+        napi_value obj;
+        napi_create_object(env, &obj);
+
+        napi_value pidVal, nameVal, pathVal, stateVal;
+        napi_create_int32(env, entry.pid, &pidVal);
+        napi_create_string_utf8(env, entry.exeBasename.c_str(), NAPI_AUTO_LENGTH, &nameVal);
+        napi_create_string_utf8(env, entry.exeFullPath.c_str(), NAPI_AUTO_LENGTH, &pathVal);
+        napi_create_string_utf8(env, entry.running ? "running" : "exited",
+                                NAPI_AUTO_LENGTH, &stateVal);
+
+        napi_property_descriptor props[] = {
+            {"pid",   nullptr, nullptr, nullptr, nullptr, pidVal,   napi_default, nullptr},
+            {"name",  nullptr, nullptr, nullptr, nullptr, nameVal,  napi_default, nullptr},
+            {"path",  nullptr, nullptr, nullptr, nullptr, pathVal,  napi_default, nullptr},
+            {"state", nullptr, nullptr, nullptr, nullptr, stateVal, napi_default, nullptr},
+        };
+        napi_define_properties(env, obj, sizeof(props)/sizeof(props[0]), props);
+        napi_set_element(env, arr, i, obj);
+    }
+
+    OH_LOG_INFO(LOG_APP, "[NAPI] getProcessList returned %{public}zu processes", gProcRegistry.size());
+    return arr;
+}
+
+// -- NAPI: killProcess — 杀掉指定进程 --
+static napi_value KillProcess(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+
+    int32_t pid = 0;
+    napi_get_value_int32(env, args[0], &pid);
+    OH_LOG_INFO(LOG_APP, "[NAPI] killProcess pid=%{public}d", pid);
+
+    {
+        std::lock_guard<std::mutex> lock(gProcMutex);
+        for (auto& entry : gProcRegistry) {
+            if (entry.pid == pid && entry.running) {
+                OH_LOG_INFO(LOG_APP, "[NAPI] killProcess found pid=%{public}d name=%{public}s",
+                            pid, entry.exeBasename.c_str());
+                *(entry.readerActive) = false;
+                kill(pid, SIGTERM);
+                if (entry.stdoutFd >= 0) { close(entry.stdoutFd); entry.stdoutFd = -1; }
+                break;
+            }
+        }
+    }
+
+    napi_value r;
+    napi_get_boolean(env, true, &r);
+    return r;
+}
+
 // -- 模块注册 --
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
@@ -1317,6 +1436,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendPointerEvent", nullptr, SendPointerEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendScrollEvent",  nullptr, SendScrollEvent,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getProcessList",  nullptr, GetProcessList,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"killProcess",     nullptr, KillProcess,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termSend",      nullptr, TermSend,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"termResize",    nullptr, TermResize,   nullptr, nullptr, nullptr, napi_default, nullptr},
