@@ -183,7 +183,8 @@ struct Index {
 
   private refreshPrefix = (): void => {
     try {
-      this.prefixReady = testNapi.checkWinePrefix() as boolean;
+      let names = fs.listFileSync(DRIVE_C);
+      this.prefixReady = names.length > 0;
       if (this.prefixReady) {
         this.curDir = DRIVE_C;
         this.dirStack = [];
@@ -197,16 +198,19 @@ struct Index {
     }
   }
 
-  // wineboot 后台异步初始化 prefix，轮询直到 drive_c 就绪
+  // wineboot 后台异步初始化 prefix，轮询直到 drive_c 有内容
   private waitForPrefix = async (): Promise<void> => {
     for (let i = 0; i < 90; i++) {
-      this.prefixReady = testNapi.checkWinePrefix() as boolean;
-      if (this.prefixReady) {
-        this.curDir = DRIVE_C;
-        this.dirStack = [];
-        this.listDir(DRIVE_C);
-        return;
-      }
+      try {
+        let names = fs.listFileSync(DRIVE_C);
+        if (names.length > 0) {
+          this.prefixReady = true;
+          this.curDir = DRIVE_C;
+          this.dirStack = [];
+          this.listDir(DRIVE_C);
+          return;
+        }
+      } catch (e) { /* drive_c 还没出现 */ }
       await new Promise<void>(r => setTimeout(r, 1000));
     }
     // 超时，仍然尝试刷新一次

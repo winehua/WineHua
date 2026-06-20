@@ -340,8 +340,8 @@ static void LaunchThreadFunc(LaunchParams* p) {
     // -- 启动 wineserver --
 #ifdef PAD_MODE
     {
-        // 注意: 不加 -p，wineserver 会在无客户端 3 秒后退出（用来验证重启逻辑）
-        std::string wsEntryParams = p->winehuaBin + "|wineserver|-f";
+        // -f: 前台模式, -p: 持久模式 (无客户端也不退出，避免竞态)
+        std::string wsEntryParams = p->winehuaBin + "|wineserver|-f|-p";
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver args=%{public}s", wsEntryParams.c_str());
         NativeChildProcess_Args wsArgs = {};
         wsArgs.entryParams = const_cast<char*>(wsEntryParams.c_str());
@@ -570,8 +570,7 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
         struct sockaddr_un addr;
         memset(&addr, 0, sizeof(addr));
         addr.sun_family = AF_UNIX;
-        const char *broker_path = getenv("PROCESSBROKER");
-        strcpy(addr.sun_path, broker_path ? broker_path : "/data/storage/el2/base/files/.wine_broker");
+        strcpy(addr.sun_path, getenv("PROCESSBROKER"));
         if (connect(broker_fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
             OH_LOG_ERROR(LOG_APP, "[Wine] broker connect failed: %{public}s", strerror(errno));
             close(broker_fd);
@@ -663,11 +662,26 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-// -- NAPI: checkWinePrefix -- 检测 .wine 是否已初始化 --
+// -- NAPI: checkWinePrefix -- 检测 .wine/drive_c 是否已初始化且有内容 --
 static napi_value CheckWinePrefix(napi_env env, napi_callback_info info) {
-    struct stat st;
-    bool ok = stat("/data/storage/el2/base/files/.wine/drive_c", &st) == 0 && S_ISDIR(st.st_mode);
-    OH_LOG_INFO(LOG_APP, "[Wine] checkWinePrefix: drive_c=%{public}s", ok ? "yes" : "no");
+    const char *prefix = getenv("WINEPREFIX");
+    if (!prefix) prefix = "/data/storage/el2/base/files/.wine";
+    char drive_c[512];
+    snprintf(drive_c, sizeof(drive_c), "%s/drive_c", prefix);
+
+    bool ok = false;
+    DIR *d = opendir(drive_c);
+    if (d) {
+        struct dirent *e;
+        int count = 0;
+        while ((e = readdir(d)) != nullptr) {
+            if (e->d_name[0] == '.') continue;
+            count++;
+        }
+        closedir(d);
+        ok = (count > 0);
+    }
+    OH_LOG_INFO(LOG_APP, "[Wine] checkWinePrefix: drive_c ready=%{public}s", ok ? "yes" : "no");
     napi_value r;
     napi_get_boolean(env, ok, &r);
     return r;
