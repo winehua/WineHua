@@ -44,6 +44,26 @@ case "$NATIVE_ARCH" in
         ;;
 esac
 
+# ── 设备类型 ──
+# pc:  普通鸿蒙设备 (有 execve, 有 HNP)
+# pad: 鸿蒙 Pad (fork-only, 无 execve, 无 HNP)
+DEVICE_TYPE="${DEVICE_TYPE:-pc}"
+
+# ── 设备上的 Wine 运行时根目录 ──
+if [ "$DEVICE_TYPE" = "pad" ]; then
+    WINE_DEVICE_ROOT="/data/storage/el2/base/files/wine"
+else
+    WINE_DEVICE_ROOT="/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua"
+fi
+
+# ── 传给 C++ 的 Pad 编译宏 ──
+# CMakeLists.txt 根据此变量添加 -DPAD_MODE
+if [ "$DEVICE_TYPE" = "pad" ]; then
+    export PAD_CFLAGS="-DPAD_MODE"
+else
+    export PAD_CFLAGS=""
+fi
+
 # 工具
 HNPCLI="$OHOS_SDK/toolchains/hnpcli"
 

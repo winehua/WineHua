@@ -1,13 +1,47 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { zlib } from '@kit.BasicServicesKit';
 
 const DOMAIN = 0x0000;
 const SOCK = '/data/storage/el2/base/files/.wine/wine-wayland';
-const WINE_BIN = '/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua';
-const WINE_LIB = `${WINE_BIN}/bin/x86_64-unix`;
-const BOX64 = `${WINE_BIN}/bin/box64`;
-const BIN_DIR = `${WINE_BIN}/bin`;
+const FILES_BASE = '/data/storage/el2/base/files';
+
+// PC 模式 (HNP): Wine 运行时由系统挂载到 /data/service/hnp/
+const WINE_BIN_PC = '/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua/bin';
+const WINE_LIB_PC = `${WINE_BIN_PC}/x86_64-unix`;
+
+// Pad 模式 (无 HNP): Wine 运行时从 rawfile 解压到 files/
+const WINE_ROOT_PAD = `${FILES_BASE}/wine`;
+const WINE_BIN_PAD = `${WINE_ROOT_PAD}/bin`;
+const WINE_LIB_PAD = `${WINE_BIN_PAD}/x86_64-unix`;
+
+// 运行时检测: 如果 HNP 路径不存在则使用 Pad 路径
+let WINE_BIN = WINE_BIN_PC;
+let WINE_LIB = WINE_LIB_PC;
+let BIN_DIR = WINE_BIN;
+let BOX64 = `${WINE_BIN}/box64`;
+
+function detectWinePath(): void {
+  try {
+    if (fs.accessSync(WINE_BIN_PC)) {
+      // PC 模式 (HNP)
+      WINE_BIN = WINE_BIN_PC;
+      WINE_LIB = WINE_LIB_PC;
+      BIN_DIR = WINE_BIN;
+      BOX64 = `${WINE_BIN}/box64`;
+      hilog.info(DOMAIN, 'wine', 'detectWinePath: PC mode (HNP)');
+      return;
+    }
+  } catch (_) {}
+  // Pad 模式 (无 HNP)
+  WINE_BIN = WINE_BIN_PAD;
+  WINE_LIB = WINE_LIB_PAD;
+  BIN_DIR = WINE_BIN;
+  BOX64 = `${WINE_BIN}/box64`;
+  hilog.info(DOMAIN, 'wine', 'detectWinePath: Pad mode (rawfile)');
+}
+
 const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
 
 interface ProcessInfo {
@@ -29,6 +63,8 @@ struct Index {
   @State processList: ProcessInfo[] = [];
 
   aboutToAppear(): void {
+    detectWinePath();
+
     testNapi.setStateCallback((s: string) => {
       hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
       this.state = s;
@@ -41,7 +77,8 @@ struct Index {
         this.statusText = 'Wine 正在初始化...';
       } else if (stateMsg == 'wine-ready') {
         this.statusText = '已就绪';
-        this.refreshPrefix();
+        // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
+        this.waitForPrefix();
       } else if (stateMsg == 'wine-running') {
         this.statusText = '运行中';
         this.refreshProcessList();
@@ -57,12 +94,91 @@ struct Index {
       }
     });
     this.refreshPrefix();
-    setTimeout(() => {
+    setTimeout(async () => {
       if (this.state === 'idle') {
+        // 确保 HOME 目录存在 (Z: 映射目标)
+        const zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua';
+        if (!fs.accessSync(zHome)) {
+          fs.mkdirSync(zHome, true);
+          hilog.info(DOMAIN, 'wine', 'auto-init: created HOME=%{public}s', zHome);
+        }
+        // 检查是否需要解压数据文件
+        hilog.info(DOMAIN, 'wine', 'auto-init: check PC path=%{public}s', WINE_BIN_PC);
+        const isPC = fs.accessSync(WINE_BIN_PC);
+        hilog.info(DOMAIN, 'wine', 'auto-init: isPC=%{public}s', String(isPC));
+        if (!isPC) {
+          this.statusText = '解压数据...';
+          hilog.info(DOMAIN, 'wine', 'auto-init: extracting wine data...');
+          await this.extractWineData();
+        }
         hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
         this.doInit();
       }
     }, 1000);
+  }
+
+  // Pad: 从 rawfile 取出 wine-data.zip → zlib.decompressFile 解压到 files/wine/
+  // 使用 getRawFdSync 流式读取，避免 249MB 一次加载到内存导致 OOM
+  private async extractWineData(): Promise<void> {
+    const marker = `${WINE_ROOT_PAD}/share/wine/wine.inf`;
+    hilog.info(DOMAIN, 'wine', 'extract: check marker=%{public}s', marker);
+    try {
+      if (fs.accessSync(marker)) {
+        hilog.info(DOMAIN, 'wine', 'extract: already done (marker exists)');
+        return;
+      }
+    } catch (_) {}
+    hilog.info(DOMAIN, 'wine', 'extract: marker not found, start extracting');
+
+    try {
+      const ctx = getContext(this);
+      const rm = ctx.resourceManager;
+
+      // 流式拷贝: getRawFdSync 获取 fd → 分块读取 → 写入临时文件
+      hilog.info(DOMAIN, 'wine', 'extract: getRawFdSync wine-data.zip...');
+      const rawFd = rm.getRawFdSync('wine-data.zip');
+      hilog.info(DOMAIN, 'wine', 'extract: rawFd fd=%{public}d offset=%{public}d length=%{public}d',
+        rawFd.fd, rawFd.offset, rawFd.length);
+
+      const tmpZip = `${FILES_BASE}/wine-data.zip`;
+      hilog.info(DOMAIN, 'wine', 'extract: writing tmpZip=%{public}s (stream)', tmpZip);
+      const dst = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+
+      const CHUNK = 4 * 1024 * 1024; // 4MB 分块
+      const buf = new ArrayBuffer(CHUNK);
+      let pos = rawFd.offset;
+      const end = rawFd.offset + rawFd.length;
+      let totalWritten = 0;
+
+      while (pos < end) {
+        const toRead = Math.min(CHUNK, end - pos);
+        const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+        if (n <= 0) break;
+        fs.writeSync(dst.fd, buf, { length: n });
+        pos += n;
+        totalWritten += n;
+      }
+      fs.closeSync(dst);
+      rm.closeRawFdSync('wine-data.zip');
+      hilog.info(DOMAIN, 'wine', 'extract: stream copy ok, totalWritten=%{public}d', totalWritten);
+
+      // 确保目标目录存在
+      fs.mkdirSync(WINE_ROOT_PAD, true);
+      hilog.info(DOMAIN, 'wine', 'extract: calling decompressFile → %{public}s', WINE_ROOT_PAD);
+      await zlib.decompressFile(tmpZip, WINE_ROOT_PAD, {});
+      hilog.info(DOMAIN, 'wine', 'extract: decompress ok');
+
+      // 验证
+      if (fs.accessSync(marker)) {
+        hilog.info(DOMAIN, 'wine', 'extract: verified, marker exists');
+      } else {
+        hilog.warn(DOMAIN, 'wine', 'extract: marker still missing after decompress!');
+      }
+      this.statusText = '已解压';
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'extract FAIL: %{public}s', JSON.stringify(e));
+      this.statusText = '解压失败';
+    }
   }
 
   private refreshPrefix = (): void => {
@@ -79,6 +195,22 @@ struct Index {
       this.prefixReady = false;
       this.entries = [];
     }
+  }
+
+  // wineboot 后台异步初始化 prefix，轮询直到 drive_c 就绪
+  private waitForPrefix = async (): Promise<void> => {
+    for (let i = 0; i < 90; i++) {
+      this.prefixReady = testNapi.checkWinePrefix() as boolean;
+      if (this.prefixReady) {
+        this.curDir = DRIVE_C;
+        this.dirStack = [];
+        this.listDir(DRIVE_C);
+        return;
+      }
+      await new Promise<void>(r => setTimeout(r, 1000));
+    }
+    // 超时，仍然尝试刷新一次
+    this.refreshPrefix();
   }
 
   private refreshProcessList = (): void => {
@@ -100,7 +232,9 @@ struct Index {
 
   private listDir = (path: string): void => {
     try {
+      hilog.info(DOMAIN, 'wine', 'listDir: path=%{public}s', path);
       let names = fs.listFileSync(path);
+      hilog.info(DOMAIN, 'wine', 'listDir: got %{public}d entries', names.length);
       names.sort((a, b) => {
         let aIsDir = this.isDir(path + '/' + a);
         let bIsDir = this.isDir(path + '/' + b);
@@ -149,7 +283,7 @@ struct Index {
       this.statusText = '启动服务失败';
       return;
     }
-    testNapi.launchClient(BOX64, [], SOCK, `${WINE_BIN}/bin:${WINE_LIB}`);
+    testNapi.launchClient(BOX64, [], SOCK, `${BIN_DIR}:${WINE_LIB}`);
   }
 
   private doReset = (): void => {

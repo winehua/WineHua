@@ -178,21 +178,66 @@ case "$cmd" in
             NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
         fi
         ;;
+    pad)
+        # Pad 构建 (fork-only, 无 HNP, 无 execve)
+        export DEVICE_TYPE=pad
+        run_deps
+        run_wine
+        [ "$NATIVE_ARCH" = "arm64-v8a" ] && run_box64 || true
+        for_each_arch run_native
+        for_each_arch_assemble_pad() {
+            if [ "$arch" = "all" ]; then
+                NATIVE_ARCH=arm64-v8a bash "$SCRIPTS/assemble.sh"
+                NATIVE_ARCH=x86_64 bash "$SCRIPTS/assemble.sh"
+            else
+                NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/assemble.sh"
+            fi
+        }
+        for_each_arch_assemble_pad
+        NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
+        log "Pad HAP 构建完成"
+        ;;
+    pad-hap)
+        # Pad 仅 HAP (只改 ArkTS/napi_init.cpp 时用，跳过 Wine 重编译)
+        export DEVICE_TYPE=pad
+        for_each_arch run_native
+        for_each_arch_assemble_pad() {
+            if [ "$arch" = "all" ]; then
+                NATIVE_ARCH=arm64-v8a bash "$SCRIPTS/assemble.sh"
+                NATIVE_ARCH=x86_64 bash "$SCRIPTS/assemble.sh"
+            else
+                NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/assemble.sh"
+            fi
+        }
+        for_each_arch_assemble_pad
+        NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
+        log "Pad HAP 构建完成"
+        ;;
+    pad-deploy)
+        export DEVICE_TYPE=pad
+        bash "$SCRIPTS/package.sh" deploy "$device_ip"
+        ;;
     *)
-        echo "用法: $0 {full|deps|native|wine|box64|assemble|hnp|hap|deploy|quick} [device_ip] [arch]"
+        echo "用法: $0 {full|deps|native|wine|box64|assemble|hnp|hap|deploy|quick|pad|pad-deploy} [device_ip] [arch]"
         echo ""
         echo "  arch: arm64 (默认) | x86_64 | all"
         echo ""
-        echo "  full       全量构建 (首次使用)"
-        echo "  deps       模拟层交叉编译依赖 (Wine用, x86_64-linux-ohos)"
-        echo "  native     Native compositor 依赖 (按架构)"
-        echo "  wine       构建 Wine"
-        echo "  box64      构建 Box64 (仅 arm64)"
-        echo "  assemble   组装 HNP 布局 (按架构)"
-        echo "  hnp        打包 HNP (按架构)"
-        echo "  hap        构建 HAP + 签名 (按架构)"
-        echo "  deploy     推送到设备并安装"
-        echo "  quick      快速: assemble → hnp → hap → deploy"
+        echo "  PC 命令 (有 execve, 有 HNP):"
+        echo "    full       全量构建 (首次使用)"
+        echo "    deps       模拟层交叉编译依赖"
+        echo "    native     Native compositor 依赖"
+        echo "    wine       构建 Wine"
+        echo "    box64      构建 Box64 (仅 arm64)"
+        echo "    assemble   组装 HNP 布局"
+        echo "    hnp        打包 HNP"
+        echo "    hap        构建 HAP + 签名"
+        echo "    deploy     推送到设备并安装"
+        echo "    quick      快速: assemble → hnp → hap → deploy"
+        echo ""
+        echo "  Pad 命令 (fork-only, 无 HNP):"
+        echo "    pad <arch>        构建 Pad HAP (arm64|x86_64)"
+        echo "    pad-hap <arch>    仅 Pad HAP (只改 ArkTS/native 时用)"
+        echo "    pad-deploy <ip>   推送并安装"
         exit 1
         ;;
 esac

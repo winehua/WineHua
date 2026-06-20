@@ -5,8 +5,10 @@
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
-      "2in1"
+      "2in1",
+      "tablet"
     ],
+    "compressNativeLibs": false,
     "requestPermissions": [
       {
         "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY"
@@ -80,12 +82,6 @@
         "exported": false,
         "launchType": "multiton",
         "removeMissionAfterTerminate": true
-      }
-    ],
-    "hnpPackages": [
-      {
-        "package": "winehua.hnp",
-        "type": "public"
       }
     ]
   }

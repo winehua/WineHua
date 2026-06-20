@@ -53,6 +53,35 @@ package_hap() {
 
     set_abi_filters
 
+    # Pad: 移除 hnpPackages 配置 + 注入 PAD_MODE 编译宏
+    if [ "$DEVICE_TYPE" = "pad" ]; then
+        local module_json="$WINEHUA/entry/src/main/module.json5"
+        python3 -c "
+import re
+with open('$module_json', 'r') as f:
+    content = f.read()
+# 移除 hnpPackages 块 (含前导逗号)
+content = re.sub(r',?\s*\"hnpPackages\"\s*:\s*\[[^][]*\]', '', content)
+with open('$module_json', 'w') as f:
+    f.write(content)
+"
+        log "  已移除 hnpPackages 配置"
+
+        # 通过 cppFlags 注入 PAD_MODE (hvigorw 不会透传环境变量给 CMake)
+        local profile="$WINEHUA/entry/build-profile.json5"
+        python3 -c "
+import re
+with open('$profile', 'r') as f:
+    content = f.read()
+# 仅当不存在时注入 -DPAD_MODE
+if '-DPAD_MODE' not in content:
+    content = re.sub(r'\"cppFlags\"\s*:\s*\"', '\"cppFlags\": \"-DPAD_MODE ', content)
+with open('$profile', 'w') as f:
+    f.write(content)
+"
+        log "  已注入 -DPAD_MODE 到 cppFlags"
+    fi
+
     # 清理非目标架构的 native libs (hvigorw ProcessLibs 会打包所有 libs/)
     local libs_root="$WINEHUA/entry/libs"
     if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
@@ -68,15 +97,20 @@ package_hap() {
     cd "$WINEHUA/entry"
     # 清理非目标架构的 HNP (hvigorw 不处理 hnp/, 所以这时清理即可)
     local hnp_root="$WINEHUA/entry/hnp"
-    if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
-        rm -rf "$hnp_root/x86_64"
-    elif [ "$NATIVE_ARCH" = "x86_64" ]; then
-        rm -rf "$hnp_root/arm64-v8a"
-    fi
-    # NATIVE_ARCH=all 时保留两个架构
+    if [ "$DEVICE_TYPE" = "pad" ]; then
+        # Pad: 完全移除 hnp/ 目录 (Pad 不支持 HNP)
+        rm -rf "$hnp_root"
+    else
+        if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
+            rm -rf "$hnp_root/x86_64"
+        elif [ "$NATIVE_ARCH" = "x86_64" ]; then
+            rm -rf "$hnp_root/arm64-v8a"
+        fi
+        # NATIVE_ARCH=all 时保留两个架构
 
-    # 将 HNP 目录打包进 HAP (hvigorw 不会自动处理 hnp/)
-    zip -r "$unsigned_hap" hnp
+        # 将 HNP 目录打包进 HAP (hvigorw 不会自动处理 hnp/)
+        zip -r "$unsigned_hap" hnp
+    fi
 
     cd "$WINEHUA"
     python3 sign.py "$unsigned_hap" "$signed_hap"
@@ -105,9 +139,22 @@ deploy() {
 
 # ---- main ----
 case "${1:-}" in
-    hnp)  package_hnp ;;
+    hnp)
+        if [ "$DEVICE_TYPE" = "pad" ]; then
+            log "Pad 模式: 跳过 HNP 打包"
+        else
+            package_hnp
+        fi
+        ;;
     hap)  package_hap ;;
     deploy) deploy "${2:-}" ;;
-    all)  package_hnp && package_hap && deploy "${2:-}" ;;
+    all)
+        if [ "$DEVICE_TYPE" = "pad" ]; then
+            log "Pad 模式: 跳过 HNP 打包"
+            package_hap && deploy "${2:-}"
+        else
+            package_hnp && package_hap && deploy "${2:-}"
+        fi
+        ;;
     *)    echo "用法: $0 {hnp|hap|deploy|all} [device_ip]" >&2; exit 1 ;;
 esac

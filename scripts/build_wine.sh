@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/env.sh"
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
-    -fPIC -fasynchronous-unwind-tables"
+    -fPIC -fasynchronous-unwind-tables $PAD_CFLAGS"
 
 build_native_tools() {
     log "--- Native 构建 (winegcc + PE DLLs) ---"
@@ -89,31 +89,62 @@ build_ohos_unix() {
 build_wineserver() {
     log "--- 编译 wineserver (含 OHOS 修复) ---"
     local out="$BUILD_DIR/wine_server"
+    # Pad: 数据文件在应用 sandbox 内, 路径不同
+    local bindir datadir
+    if [ "$DEVICE_TYPE" = "pad" ]; then
+        bindir="$WINE_DEVICE_ROOT/bin"
+        datadir="$WINE_DEVICE_ROOT/share"
+    else
+        bindir="/opt/winehua/bin"
+        datadir="/opt/winehua/share"
+    fi
     local wine_include="-I$WINE_SRC/include -I$WINE_SRC/include/wine -I$WINE_SRC/server -I$WINE_SRC/build-ohos/include"
     local srv_cflags="--target=$TARGET --sysroot=$SYSROOT -D__MUSL__ -D_GNU_SOURCE \
         -DWINE_UNIX_LIB -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
-        -D__ANDROID__ -D__OHOS__ -DBINDIR=\"/opt/winehua/bin\" -DDATADIR=\"/opt/winehua/share\" \
+        -D__ANDROID__ -D__OHOS__ -DBINDIR=\"$bindir\" -DDATADIR=\"$datadir\" \
         -fPIC $wine_include"
 
     mkdir -p "$out"
     local need_rebuild=0
-    if [ ! -f "$out/wineserver" ]; then
+    # Pad x86_64 检查 libwineserver.so, 其他检查 wineserver
+    local target_binary="$out/wineserver"
+    if [ "$DEVICE_TYPE" = "pad" ] && [ "$NATIVE_ARCH" = "x86_64" ]; then
+        target_binary="$out/libwineserver.so"
+    fi
+    if [ ! -f "$target_binary" ]; then
         need_rebuild=1
     else
         for f in $WINE_SRC/server/*.c; do
-            [ "$f" -nt "$out/wineserver" ] && { need_rebuild=1; break; }
+            [ "$f" -nt "$target_binary" ] && { need_rebuild=1; break; }
         done
     fi
-    if [ $need_rebuild -eq 0 ]; then return; fi
+    if [ $need_rebuild -eq 0 ]; then
+        # Pad x86_64: 确保 libwineserver.so 已复制到 NATIVE_LIBS
+        if [ -f "$out/libwineserver.so" ] && [ ! -f "$NATIVE_LIBS/libwineserver.so" ]; then
+            cp "$out/libwineserver.so" "$NATIVE_LIBS/"
+        fi
+        return
+    fi
     for f in $WINE_SRC/server/*.c; do
         $CLANG $srv_cflags -c -o "$out/$(basename "$f" .c).o" "$f"
     done
 
     # musl_compat.c 已在 WINE_SRC/server/ 中, 遍历编译时已打包
 
-    $CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld \
-        -o "$out/wineserver" "$out"/*.o -lm
-    log "wineserver: $out/wineserver"
+    # x86_64 Pad: 编译为共享库 (fork+dlopen 替代 execve)
+    if [ "$DEVICE_TYPE" = "pad" ] && [ "$NATIVE_ARCH" = "x86_64" ]; then
+        log "  wineserver → libwineserver.so (Pad x86_64)"
+        $CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld \
+            -shared -Wl,-soname,libwineserver.so \
+            -o "$out/libwineserver.so" "$out"/*.o -lm
+        mkdir -p "$NATIVE_LIBS"
+        cp "$out/libwineserver.so" "$NATIVE_LIBS/"
+        log "  → $NATIVE_LIBS/libwineserver.so"
+    else
+        $CLANG --target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld \
+            -o "$out/wineserver" "$out"/*.o -lm
+        log "wineserver: $out/wineserver"
+    fi
 }
 
 # ---- main ----

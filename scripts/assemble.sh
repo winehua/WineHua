@@ -4,7 +4,196 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-log "=== 组装 HNP 布局 ($NATIVE_ARCH) ==="
+# ============================================================
+# Pad 模式: 无 HNP — 文件分流到 libs/ + rawfile/
+# ============================================================
+assemble_pad() {
+    log "=== 组装 Pad 布局 ($NATIVE_ARCH, 无 HNP) ==="
+
+    local wine_data="$STAGING_DIR/wine-data"
+    rm -rf "$STAGING_DIR"
+    rm -rf "$wine_data"
+    mkdir -p "$wine_data/bin/x86_64-windows"
+    mkdir -p "$wine_data/bin/x86_64-unix"
+    mkdir -p "$wine_data/share/wine/nls"
+    mkdir -p "$wine_data/share/wine/fonts"
+    mkdir -p "$wine_data/share/wine/winmd"
+    mkdir -p "$wine_data/share/X11"
+
+    # -- 1. 原生 .so → libs/$NATIVE_ARCH/ (由各 build 脚本完成) --
+    mkdir -p "$NATIVE_LIBS"
+
+    if [ "$NATIVE_ARCH" = "x86_64" ]; then
+        # x86_64 Pad: Wine .so 是原生架构, 直接放 libs/
+        log "  → Wine .so → libs/x86_64/"
+
+        # 所有 Wine Unix .so → libs/x86_64/ (系统 linker 通过文件名搜索)
+        for so in "$WINE_SRC/build-ohos/dlls/"*/*.so; do
+            cp "$so" "$NATIVE_LIBS/"
+        done
+        log "    Wine .so: $(ls "$WINE_SRC/build-ohos/dlls/"*/*.so 2>/dev/null | wc -l) files"
+
+        # 交叉编译依赖 → libs/x86_64/
+        _pick_lib_pad() {
+            local name="$1" soname="$2" linker="${3:-}"
+            local dest="$NATIVE_LIBS"
+            if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
+                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
+            elif [ -f "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" ]; then
+                cp "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" "$dest/$soname"
+            else
+                warn "$soname 未找到"
+                return 0
+            fi
+            if [ -n "$linker" ] && [ ! -f "$dest/$linker" ]; then
+                cp "$dest/$soname" "$dest/$linker"
+            fi
+        }
+        _pick_lib_pad "libfreetype.so.6.20.2"       "libfreetype.so.6"   "libfreetype.so"
+        _pick_lib_pad "libz.so"                      "libz.so"
+        _pick_lib_pad "libwayland-client.so.0.22.0"  "libwayland-client.so.0"
+        _pick_lib_pad "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
+        _pick_lib_pad "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
+        _pick_lib_pad "libxml2.so.2.12.0"            "libxml2.so.2"
+        _pick_lib_pad "libffi.so.8.1.4"              "libffi.so.8"
+        log "    交叉编译依赖 → libs/x86_64/x86_64-unix/"
+
+        # libc.so → libs/x86_64/
+        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$NATIVE_LIBS/"
+
+        # libfreetype (dlopen 按名查找需要放在 bin/ 同级)
+        cp "$NATIVE_LIBS/x86_64-unix/libfreetype.so.6" "$NATIVE_LIBS/"
+        cp "$NATIVE_LIBS/x86_64-unix/libfreetype.so" "$NATIVE_LIBS/"
+
+        # libwineserver.so (Pad fork+dlopen 入口)
+        if [ -f "$BUILD_DIR/wine_server/libwineserver.so" ]; then
+            cp "$BUILD_DIR/wine_server/libwineserver.so" "$NATIVE_LIBS/"
+            log "    libwineserver.so → libs/x86_64/"
+        else
+            warn "libwineserver.so 未找到！请先执行: bash scripts/build_wine.sh"
+        fi
+    elif [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
+        # arm64 Pad: Wine .so 是 x86_64, 不放 libs/, 放 rawfile zip
+        # libbox64.so 由 build_box64.sh 放入 NATIVE_LIBS
+        log "  → Wine x86_64 .so → rawfile zip"
+
+        # ntdll.so → rawfile
+        cp "$WINE_SRC/build-ohos/dlls/ntdll/ntdll.so" "$wine_data/bin/"
+
+        # x86_64-unix/ .so → rawfile
+        for so in "$WINE_SRC/build-ohos/dlls/"*/*.so; do
+            [ "$(basename "$so")" = "ntdll.so" ] && continue
+            cp "$so" "$wine_data/bin/x86_64-unix/"
+        done
+
+        # 交叉编译依赖 → rawfile
+        _pick_lib_pad_rf() {
+            local name="$1" soname="$2" linker="${3:-}"
+            local dest="$wine_data/bin/x86_64-unix"
+            if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
+                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
+            elif [ -f "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" ]; then
+                cp "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" "$dest/$soname"
+            else
+                warn "$soname 未找到"
+                return 0
+            fi
+            if [ -n "$linker" ] && [ ! -f "$dest/$linker" ]; then
+                cp "$dest/$soname" "$dest/$linker"
+            fi
+        }
+        _pick_lib_pad_rf "libfreetype.so.6.20.2"       "libfreetype.so.6"   "libfreetype.so"
+        _pick_lib_pad_rf "libz.so"                      "libz.so"
+        _pick_lib_pad_rf "libwayland-client.so.0.22.0"  "libwayland-client.so.0"
+        _pick_lib_pad_rf "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
+        _pick_lib_pad_rf "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
+        _pick_lib_pad_rf "libxml2.so.2.12.0"            "libxml2.so.2"
+        _pick_lib_pad_rf "libffi.so.8.1.4"              "libffi.so.8"
+
+        # libfreetype → bin/ (box64 按名 dlopen 搜索路径: .)
+        cp "$wine_data/bin/x86_64-unix/libfreetype.so.6" "$wine_data/bin/"
+        cp "$wine_data/bin/x86_64-unix/libfreetype.so" "$wine_data/bin/"
+
+        # libc.so
+        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_data/bin/"
+
+        # wine + wineserver (x86_64 ELF, 由 box64 加载)
+        cp "$WINE_SRC/build-ohos/loader/wine" "$wine_data/bin/"
+        if [ -f "$BUILD_DIR/wine_server/wineserver" ]; then
+            cp "$BUILD_DIR/wine_server/wineserver" "$wine_data/bin/"
+        elif [ -f "$WINE_SRC/build-ohos/server/wineserver" ]; then
+            cp "$WINE_SRC/build-ohos/server/wineserver" "$wine_data/bin/"
+        fi
+    fi
+
+    # -- 2. PE DLL + 数据文件 → rawfile (两种架构共用) --
+    # x86_64-windows/
+    for dll in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.dll; do
+        cp "$dll" "$wine_data/bin/x86_64-windows/"
+    done
+    for drv in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.drv; do
+        cp "$drv" "$wine_data/bin/x86_64-windows/"
+    done
+    for exe in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.exe; do
+        cp "$exe" "$wine_data/bin/x86_64-windows/"
+    done
+    for sys in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.sys; do
+        cp "$sys" "$wine_data/bin/x86_64-windows/"
+    done
+    log "  x86_64-windows → $(ls "$wine_data/bin/x86_64-windows" | wc -l) files"
+
+    # *.exe stubs → rawfile
+    for exe in "$WINE_SRC/build-native/programs/"*/x86_64-windows/*.exe; do
+        cp "$exe" "$wine_data/bin/"
+    done
+
+    # fonts
+    cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
+    # NLS
+    cp "$WINE_SRC/build-native/nls/"*.nls "$wine_data/share/wine/nls/"
+    # winmd
+    cp "$WINE_SRC/build-native/include/"*.winmd "$wine_data/share/wine/winmd/"
+    # wine.inf (含 OHOS font substitutes)
+    cp "$WINE_SRC/build-native/loader/wine.inf" "$wine_data/share/wine/"
+    sed -i '/^\[MCI\]$/i\
+;; OHOS font substitutes\
+HKLM,%FontSubStr%,"System",,"HarmonyOS Sans"\
+HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
+HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans"\
+HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
+HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$wine_data/share/wine/wine.inf"
+    # XKB
+    if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
+        cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
+    fi
+
+    # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
+    local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
+    mkdir -p "$rawfile_dir"
+    local zip_name="wine-data.zip"
+    cd "$wine_data"
+    rm -f "$STAGING_DIR/$zip_name"
+    zip -r "$STAGING_DIR/$zip_name" . -x '*.git*'
+    cp "$STAGING_DIR/$zip_name" "$rawfile_dir/"
+    log "  $zip_name → rawfile/ ($(du -h "$rawfile_dir/$zip_name" | cut -f1))"
+
+    log "Pad 布局组装完成 ($NATIVE_ARCH)"
+    echo ""
+    echo "  libs/$NATIVE_ARCH/"
+    ls -la "$NATIVE_LIBS/" 2>/dev/null || echo "    (empty)"
+    echo "  rawfile/$zip_name"
+}
+
+log "=== 组装布局 ($NATIVE_ARCH, $DEVICE_TYPE) ==="
+
+if [ "$DEVICE_TYPE" = "pad" ]; then
+    assemble_pad
+    exit 0
+fi
+
+# ============================================================
+# 以下为 PC 模式 HNP 布局 (不变)
+# ============================================================
 
 # staging 目录每次重建
 rm -rf "$STAGING_DIR"
