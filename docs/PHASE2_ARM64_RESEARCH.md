@@ -1,32 +1,34 @@
-# Phase 2 预研: Wine on HarmonyOS ARM64
+# ARM64 Pad 方案: Box64 .so 跨架构模拟
 
-> 更新: 2026-06-18
-> 当前架构: Wine x86_64 + Box64 (ARM64 翻译)
+> 更新: 2026-06-22
+> 状态: ✅ 已实现
 
 ---
 
 ## 1. 核心概念
 
-**场景**: HarmonyOS ARM64 设备上运行 Windows x86_64 程序。
+**场景**: HarmonyOS ARM64 Pad 设备上运行 Windows x86_64 程序。
 
-当前方案：**Box64 全模拟** — Wine 编译为 x86_64 (musl)，Box64 将整个 Wine 进程的 x86_64 指令翻译为 ARM64。Wine 本身不做 ARM64 原生编译。
+方案：**Box64 编译为共享库 (box64.so)** — Wine 编译为 x86_64 (musl)，Box64 .so 由 NCP 子进程 dlopen 加载，`box64_hmos_main()` 在同一进程内模拟执行 x86_64 Wine ELF。
 
 ```
 ┌────────────────────────────────────────────────────┐
-│          HarmonyOS ARM64 设备                       │
+│          HarmonyOS ARM64 Pad                        │
 │                                                    │
-│  Windows x86_64 .exe                               │
-│      │                                             │
-│      ▼                                             │
-│  Wine x86_64 (musl)                                │
-│      │                                             │
-│      ▼                                             │
-│  Box64 (x86_64 → ARM64 Dynarec)                    │
-│      │                                             │
-│      ▼                                             │
-│  OHOS Kernel (ARM64, Linux)                        │
+│  NCP 子进程 (appspawn)                              │
+│    wine_child.so: Main()                           │
+│      dlopen("box64.so") → box64_hmos_main()        │
+│        ↓                                           │
+│  Wine x86_64 ELF + PE DLLs (rawfile zip 解压)      │
+│        ↓ Box64 (x86_64 → ARM64 Dynarec)            │
+│        ↓ winewayland.drv                           │
+│  嵌入式 Wayland compositor → XComponent            │
 └────────────────────────────────────────────────────┘
 ```
+
+编译：`cmake -DLIBBOX64_SO=ON`，产物 `box64.so` 放入 `entry/libs/arm64-v8a/`。  
+运行时：`wine_child.cpp` 中 `setenv("USE_LIBBOX64", "1")` 通知 Wine 侧适配 entryParams。
+wineserver 编为 x86_64 PIE，同样由 Box64 加载，保持与 Wine 架构一致。
 
 ---
 

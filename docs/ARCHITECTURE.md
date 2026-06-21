@@ -73,6 +73,10 @@
 └──────────────────────────────────────────────────────────┘
 ```
 
+ARM64 Pad 下，Box64 编译为共享库 (box64.so)，由 NCP 子进程 `wine_child.so:Main()` dlopen 加载，
+`box64_hmos_main()` 在同一进程内模拟执行 x86_64 Wine ELF。编译宏 `LIBBOX64_SO` 控制。
+x86_64 Pad 下 Wine 原生 .so 直接由系统 linker 加载，无需 Box64。
+
 ### 关键适配
 
 | 组件 | 说明 |
