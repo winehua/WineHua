@@ -50,10 +50,6 @@ target_link_libraries(entry PUBLIC
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
 )
 
-# Demo: 验证 OH_Ability_StartNativeChildProcess API 的最小子进程 .so
-add_library(child_demo SHARED child_demo.cpp)
-target_link_libraries(child_demo PUBLIC libhilog_ndk.z.so libchild_process.so)
-
 # Wine 子进程入口 .so (OH_Ability_StartNativeChildProcess 启动)
 add_library(wine_child SHARED wine_child.cpp)
 target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)

@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <time.h>
 
 // 从 stderr pipe 读取 Wine 内部日志，同时转发到 hilog 和文件
 struct stderr_ctx { int fd; int fileFd; };
@@ -153,8 +154,15 @@ extern "C" void Main(NativeChildProcess_Args args)
     pipe(errPipe);
     dup2(errPipe[1], STDERR_FILENO);
     close(errPipe[1]);
-    int errFile = open("/data/storage/el2/base/files/wine_stderr.log",
-                       O_WRONLY | O_CREAT | O_APPEND, 0666);
+    mkdir("/data/storage/el2/base/temp", 0755);
+    time_t now = time(nullptr);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char logPath[128];
+    snprintf(logPath, sizeof(logPath),
+             "/data/storage/el2/base/temp/wine_stderr_%04d%02d%02d.log",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    int errFile = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0666);
     // 写分隔标记，确认本进程的日志从哪开始
     if (errFile >= 0) {
         dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
