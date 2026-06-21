@@ -13,9 +13,6 @@
 #include <sys/un.h>
 #include <dirent.h>
 #include <fcntl.h>
-#include <poll.h>
-#include <pty.h>
-#include <termios.h>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -1151,157 +1148,6 @@ static napi_value StopAll(napi_env, napi_callback_info) {
     return nullptr;
 }
 
-// -- 终端实现 -- fork + pipe (不用 pty, OHOS 沙箱不允许 /dev/ptmx) --
-static int gTermOutFd = -1;  // 读子进程 stdout
-static int gTermInFd = -1;   // 写子进程 stdin
-static pid_t gTermPid = -1;
-static napi_threadsafe_function gTermOnData = nullptr;
-static napi_threadsafe_function gTermOnExit = nullptr;
-static std::atomic<bool> gTermRunning{false};
-
-static void TermOnDataCB(napi_env env, napi_value cb, void*, void* data) {
-    char* buf = static_cast<char*>(data);
-    size_t len = strlen(buf);
-    napi_value ab; char* out;
-    napi_create_arraybuffer(env, len, (void**)&out, &ab);
-    memcpy(out, buf, len);
-    napi_value global;
-    napi_get_global(env, &global);
-    napi_call_function(env, global, cb, 1, &ab, nullptr);
-    free(buf);
-}
-
-static void TermOnExitCB(napi_env env, napi_value cb, void*, void*) {
-    napi_value global;
-    napi_get_global(env, &global);
-    napi_call_function(env, global, cb, 0, nullptr, nullptr);
-}
-
-static void TerminalWorker() {
-    OH_LOG_INFO(LOG_APP, "[TERM] worker started, outFd=%{public}d", gTermOutFd);
-    while (gTermRunning) {
-        pollfd fds[1] = {{gTermOutFd, POLLIN, 0}};
-        int pr = poll(fds, 1, 100);
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (pr == 0) continue;
-        char buf[1024];
-        ssize_t r = read(gTermOutFd, buf, sizeof(buf) - 1);
-        if (r > 0) {
-            buf[r] = 0;
-            if (gTermOnData) {
-                char* copy = strdup(buf);
-                napi_call_threadsafe_function(gTermOnData, copy, napi_tsfn_nonblocking);
-            }
-        } else break;
-    }
-    OH_LOG_INFO(LOG_APP, "[TERM] worker exiting, calling onExit");
-    if (gTermOnExit)
-        napi_call_threadsafe_function(gTermOnExit, nullptr, napi_tsfn_nonblocking);
-}
-
-static napi_value TermRun(napi_env env, napi_callback_info info) {
-    // 先关掉旧的
-    if (gTermRunning) {
-        gTermRunning = false;
-        if (gTermPid > 0) { kill(gTermPid, SIGKILL); gTermPid = -1; }
-        if (gTermOutFd >= 0) { close(gTermOutFd); gTermOutFd = -1; }
-        if (gTermInFd >= 0) { close(gTermInFd); gTermInFd = -1; }
-        if (gTermOnData) { napi_release_threadsafe_function(gTermOnData, napi_tsfn_release); gTermOnData = nullptr; }
-        if (gTermOnExit) { napi_release_threadsafe_function(gTermOnExit, napi_tsfn_release); gTermOnExit = nullptr; }
-    }
-
-    size_t argc = 4; napi_value args[4];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    int32_t cols, rows;
-    napi_get_value_int32(env, args[0], &cols);
-    napi_get_value_int32(env, args[1], &rows);
-    OH_LOG_INFO(LOG_APP, "[TERM] TermRun cols=%{public}d rows=%{public}d", cols, rows);
-
-    int pin[2], pout[2];
-    if (pipe(pin) < 0 || pipe(pout) < 0) {
-        OH_LOG_INFO(LOG_APP, "[TERM] pipe failed errno=%{public}d", errno);
-        return nullptr;
-    }
-
-    pid_t pid = fork();
-    OH_LOG_INFO(LOG_APP, "[TERM] fork pid=%{public}d errno=%{public}d", pid, errno);
-    if (pid == 0) {
-        close(pin[1]); close(pout[0]);
-        dup2(pin[0], STDIN_FILENO);
-        dup2(pout[1], STDOUT_FILENO);
-        dup2(pout[1], STDERR_FILENO);
-        close(pin[0]); close(pout[1]);
-        CloseInheritedFds(STDIN_FILENO, STDOUT_FILENO);
-        setenv("HOME", "/storage/Users/currentUser", 1);
-        setenv("PATH", "/data/app/bin:/data/service/hnp/bin:/bin:/usr/local/bin:/usr/bin:/system/bin:/vendor/bin", 1);
-        setenv("LD_LIBRARY_PATH", "/data/service/hnp/winehua.org/winehua_0.1.0/opt/winehua/bin/x86_64-unix", 1);
-        setenv("TERM", "xterm", 1);
-        chdir("/storage/Users/currentUser");
-        execl("/bin/sh", "/bin/sh", nullptr);
-        _exit(127);
-    }
-
-    close(pin[0]); close(pout[1]);
-    gTermInFd = pin[1];
-    gTermOutFd = pout[0];
-    gTermPid = pid;
-
-    fcntl(gTermOutFd, F_SETFL, fcntl(gTermOutFd, F_GETFL) | O_NONBLOCK);
-
-    napi_value cbname;
-    napi_create_string_utf8(env, "termOnData", NAPI_AUTO_LENGTH, &cbname);
-    napi_create_threadsafe_function(env, args[2], nullptr, cbname, 0, 1, nullptr, nullptr, nullptr,
-                                    TermOnDataCB, &gTermOnData);
-    napi_create_string_utf8(env, "termOnExit", NAPI_AUTO_LENGTH, &cbname);
-    napi_create_threadsafe_function(env, args[3], nullptr, cbname, 0, 1, nullptr, nullptr, nullptr,
-                                    TermOnExitCB, &gTermOnExit);
-
-    gTermRunning = true;
-    std::thread(TerminalWorker).detach();
-
-    napi_value ret; napi_create_int32(env, pid, &ret);
-    return ret;
-}
-
-static napi_value TermSend(napi_env env, napi_callback_info info) {
-    size_t argc = 1; napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    void* data; size_t len;
-    napi_get_arraybuffer_info(env, args[0], &data, &len);
-    if (gTermInFd >= 0) {
-        // hterm 发的是 \r, 没有 PTY 不会自动转 \n, 这里手动转换
-        char* buf = (char*)data;
-        for (size_t i = 0; i < len; i++) {
-            if (buf[i] == '\r') buf[i] = '\n';
-        }
-        ssize_t w = write(gTermInFd, data, len);
-        OH_LOG_INFO(LOG_APP, "[TERM] TermSend len=%{public}zu written=%{public}zd", len, w);
-    }
-    return nullptr;
-}
-
-static napi_value TermResize(napi_env env, napi_callback_info info) {
-    // pipe 模式不支持 resize, 只打日志
-    size_t argc = 2; napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    OH_LOG_INFO(LOG_APP, "[TERM] TermResize (no-op in pipe mode)");
-    return nullptr;
-}
-
-static napi_value TermClose(napi_env, napi_callback_info) {
-    OH_LOG_INFO(LOG_APP, "[TERM] TermClose");
-    gTermRunning = false;
-    if (gTermPid > 0) { kill(gTermPid, SIGKILL); gTermPid = -1; }
-    if (gTermOutFd >= 0) { close(gTermOutFd); gTermOutFd = -1; }
-    if (gTermInFd >= 0) { close(gTermInFd); gTermInFd = -1; }
-    if (gTermOnData) { napi_release_threadsafe_function(gTermOnData, napi_tsfn_release); gTermOnData = nullptr; }
-    if (gTermOnExit) { napi_release_threadsafe_function(gTermOnExit, napi_tsfn_release); gTermOnExit = nullptr; }
-    return nullptr;
-}
-
 // -- Toplevel 回调 -> ArkTS --
 static napi_threadsafe_function gToplevelTsfn = nullptr;
 
@@ -1711,10 +1557,6 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getProcessList",   nullptr, GetProcessList,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"killProcess",     nullptr, KillProcess,     nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"termRun",       nullptr, TermRun,      nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"termSend",      nullptr, TermSend,     nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"termResize",    nullptr, TermResize,   nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"termClose",     nullptr, TermClose,    nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

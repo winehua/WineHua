@@ -94,27 +94,8 @@ struct Index {
       }
     });
     this.refreshPrefix();
-    setTimeout(async () => {
-      if (this.state === 'idle') {
-        // 确保 HOME 目录存在 (Z: 映射目标)
-        const zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua';
-        if (!fs.accessSync(zHome)) {
-          fs.mkdirSync(zHome, true);
-          hilog.info(DOMAIN, 'wine', 'auto-init: created HOME=%{public}s', zHome);
-        }
-        // 检查是否需要解压数据文件
-        hilog.info(DOMAIN, 'wine', 'auto-init: check PC path=%{public}s', WINE_BIN_PC);
-        const isPC = fs.accessSync(WINE_BIN_PC);
-        hilog.info(DOMAIN, 'wine', 'auto-init: isPC=%{public}s', String(isPC));
-        if (!isPC) {
-          this.statusText = '解压数据...';
-          hilog.info(DOMAIN, 'wine', 'auto-init: extracting wine data...');
-          await this.extractWineData();
-        }
-        hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
-        this.doInit();
-      }
-    }, 1000);
+    // 下一帧自动初始化 (避免阻塞 UI 首次渲染)
+    setTimeout(() => this.doInit(), 0);
   }
 
   // Pad: 从 rawfile 取出 wine-data.zip → zlib.decompressFile 解压到 files/wine/
@@ -280,7 +261,23 @@ struct Index {
     }
   }
 
-  private doInit = (): void => {
+  private doInit = async (): Promise<void> => {
+    // 确保 HOME 目录存在 (Z: 映射目标)
+    const zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua';
+    if (!fs.accessSync(zHome)) {
+      fs.mkdirSync(zHome, true);
+      hilog.info(DOMAIN, 'wine', 'auto-init: created HOME=%{public}s', zHome);
+    }
+    // Pad: 检查是否需要解压 wine 数据文件
+    hilog.info(DOMAIN, 'wine', 'auto-init: check PC path=%{public}s', WINE_BIN_PC);
+    const isPC = fs.accessSync(WINE_BIN_PC);
+    hilog.info(DOMAIN, 'wine', 'auto-init: isPC=%{public}s', String(isPC));
+    if (!isPC) {
+      this.statusText = '解压数据...';
+      hilog.info(DOMAIN, 'wine', 'auto-init: extracting wine data...');
+      await this.extractWineData();
+    }
+    hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
     this.statusText = '启动服务...';
     const ok: boolean = testNapi.startServer(SOCK);
     if (!ok) {
@@ -403,13 +400,14 @@ struct Index {
                     .fontColor('#f55')
                     .onClick(() => this.doKillProcess(proc.pid))
                 }
-                .width('100%').padding({ top: 10, bottom: 10 })
+                .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 10 })
                 .alignItems(VerticalAlign.Center)
               }
               .backgroundColor('#1e1e1e')
             })
           }
           .width('100%').layoutWeight(1)
+          .margin({ left: -14, right: -14 })
           .scrollBar(BarState.Off)
         } else {
           Text(this.prefixReady ? '无运行中进程' : 'Wine 未初始化')

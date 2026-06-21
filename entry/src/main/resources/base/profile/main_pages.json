@@ -1,7 +1,6 @@
 {
   "src": [
     "pages/Index",
-    "pages/TerminalPage",
     "pages/WineWindow",
     "pages/DesktopWindow"
   ]
