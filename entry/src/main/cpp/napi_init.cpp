@@ -160,17 +160,16 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                               const std::string& binDir) {
     std::string shareDir = binDir + "/../share";
     std::string xkbDir = shareDir + "/X11/xkb";
-    return {
+    std::vector<std::string> env = {
         "XDG_RUNTIME_DIR=" + sockDir,
         "WAYLAND_DISPLAY=" + sockName,
-        "LD_LIBRARY_PATH=" + libPath,
         "HOME=/storage/Users/currentUser/Download/app.hackeris.winehua",
         "WINEPREFIX=/data/storage/el2/base/files/.wine",
         "WINEDATADIR=" + shareDir + "/wine", // Wine 数据文件 (nls, wine.inf)
-        "WINEDLLDIR=" + binDir + "/x86_64-unix", // Wine Unix .so (libs/)
-        "WINEDLLDIR0=" + binDir + "/x86_64-windows", // PE DLL 目录 (find_builtin_without_file 用)
+        "WINEDLLDIR=" + binDir + "/x86_64-unix", // Wine Unix .so
+        "WINEDLLDIR0=" + binDir + "/x86_64-windows", // PE DLL 目录
         "WINEDLLDIR1=" + binDir,                      // PE EXE 目录
-        "WINEDLLPATH=" + binDir + "/x86_64-windows:" + binDir, // PE DLL + EXE (wineboot等) 在 rawfile 解压目录
+        "WINEDLLPATH=" + binDir + "/x86_64-windows:" + binDir, // PE DLL + EXE
         "BOX64_LOG=1",
         "BOX64_NOBANNER=0",
         "WINEDEBUG=+wineboot,+module",
@@ -179,6 +178,16 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir,
         "TMPDIR=/data/storage/el2/base/cache",
     };
+#ifdef __aarch64__
+    // ARM64: x86_64 .so 由 Box64 加载，不在系统 LD_LIBRARY_PATH
+    // LD_LIBRARY_PATH 只包含 ARM64 原生 .so
+    env.push_back("LD_LIBRARY_PATH=" + libPath);
+    env.push_back("BOX64_LD_LIBRARY_PATH=" + binDir + "/x86_64-unix");
+#else
+    // x86_64: 系统 linker 直接加载 x86_64 OHOS .so
+    env.push_back("LD_LIBRARY_PATH=" + libPath + ":" + binDir + "/x86_64-unix");
+#endif
+    return env;
 }
 
 // -- 客户端 stdout/stderr 读取线程 (每个进程独立) --

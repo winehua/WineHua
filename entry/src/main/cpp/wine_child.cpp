@@ -29,6 +29,7 @@ static void* stderr_reader_thread(void* arg) {
     auto* ctx = (stderr_ctx*)arg;
     char buf[4096];
     ssize_t n;
+    OH_LOG_INFO(LOG_APP, "[WineChild-stderr] reader thread started, fd=%{public}d", ctx->fd);
     while ((n = read(ctx->fd, buf, sizeof(buf) - 1)) > 0) {
         // 写文件
         if (ctx->fileFd >= 0) write(ctx->fileFd, buf, n);
@@ -54,8 +55,18 @@ static void setup_wine_env(const char* binDir)
     std::string shareDir = std::string(binDir) + "/../share";
     std::string libDir = std::string(binDir) + "/x86_64-unix";
 
-    // 关键：系统 linker 搜索 ntdll.so 和依赖 .so 的路径
+#ifdef __aarch64__
+    // ARM64: x86_64 .so 由 Box64 加载，不在系统 LD_LIBRARY_PATH
+    // LD_LIBRARY_PATH 只包含 ARM64 原生 .so
+    setenv("LD_LIBRARY_PATH",
+           "/data/app/bin:/usr/local/lib:/system/lib64/module:/system/lib64", 1);
+    // Box64 用它自己的搜索路径加载 x86_64 .so
+    setenv("BOX64_LD_LIBRARY_PATH", libDir.c_str(), 1);
+    setenv("BOX64_EMULATED_LIBS", "libc.so", 1);
+#else
+    // x86_64: 系统 linker 直接加载 x86_64 OHOS .so
     setenv("LD_LIBRARY_PATH", libDir.c_str(), 1);
+#endif
 
     setenv("HOME", "/storage/Users/currentUser/Download/app.hackeris.winehua", 1);
     setenv("XDG_RUNTIME_DIR", "/data/storage/el2/base/files/.wine", 1);
@@ -78,13 +89,14 @@ static void setup_wine_env(const char* binDir)
     setenv("WINEDLLDIR0", (std::string(binDir) + "/x86_64-windows").c_str(), 1);
     setenv("WINEDLLDIR1", binDir, 1);
     setenv("WINEDLLPATH", (std::string(binDir) + "/x86_64-windows:" + binDir).c_str(), 1);
-    setenv("BOX64_LOG", "1", 1);
+    setenv("BOX64_LOG", "3", 1);
     setenv("BOX64_NOBANNER", "0", 1);
+    setenv("BOX64_SHOWSEGV", "1", 1);
     setenv("PATH", (std::string("/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:")
                     + binDir + "/x86_64-windows:" + binDir).c_str(), 1);
     setenv("TMPDIR", "/data/storage/el2/base/cache", 1);
     setenv("XDG_RUNTIME_DIR", "/data/storage/el2/base/files/.wine", 1);
-    setenv("WINEDEBUG", "+wineboot,+module", 1);
+    setenv("WINEDEBUG", "+all", 1);
 }
 
 extern "C" void Main(NativeChildProcess_Args args)
@@ -147,8 +159,46 @@ extern "C" void Main(NativeChildProcess_Args args)
     pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
     pthread_detach(tid);
 
-    // 4. dlopen ntdll.so → __wine_main
-    //    ntdll.so 在 libs/x86_64/ 中，系统 linker 自动搜索
+#ifdef __aarch64__
+    // ARM64 Pad: dlopen box64.so → Box64 模拟 x86_64 wine ELF
+    OH_LOG_INFO(LOG_APP, "[WineChild] dlopen box64.so (ARM64 Box64 path)...");
+    void* box64_lib = dlopen("box64.so", RTLD_NOW);
+    if (!box64_lib) {
+        OH_LOG_ERROR(LOG_APP, "[WineChild] dlopen(box64.so) failed: %{public}s", dlerror());
+        free(buf);
+        return;
+    }
+
+    auto* box64_main = (int (*)(int, const char**, char**))dlsym(box64_lib, "box64_hmos_main");
+    if (!box64_main) {
+        OH_LOG_ERROR(LOG_APP, "[WineChild] dlsym(box64_hmos_main) failed: %{public}s", dlerror());
+        dlclose(box64_lib);
+        free(buf);
+        return;
+    }
+
+    // Build argv: ["box64-hmos-inprocess", "/path/to/wine", wine_args...]
+    // argv[0] = box64 marker, argv[1] = x86_64 wine ELF full path, argv[2+] = wine arguments
+    std::string winePath = std::string(binDir) + "/wine";
+    int box64_argc = argc + 2;
+    const char** box64_argv = new const char*[box64_argc + 1];
+    box64_argv[0] = "box64";
+    box64_argv[1] = winePath.c_str();
+    for (int i = 0; i < argc; i++)
+        box64_argv[i + 2] = argv[i];
+    box64_argv[box64_argc] = nullptr;
+
+    OH_LOG_INFO(LOG_APP, "[WineChild] calling box64_hmos_main argc=%{public}d wine=%{public}s",
+                box64_argc, winePath.c_str());
+
+    int box64_rc = box64_main(box64_argc, box64_argv, environ);
+    OH_LOG_INFO(LOG_APP, "[WineChild] box64_hmos_main returned rc=%{public}d", box64_rc);
+
+    delete[] box64_argv;
+    dlclose(box64_lib);
+    free(buf);
+#else
+    // x86_64 Pad: dlopen ntdll.so → __wine_main (原生系统 linker 加载)
     OH_LOG_INFO(LOG_APP, "[WineChild] dlopen ntdll.so...");
     void* ntdll = dlopen("ntdll.so", RTLD_NOW);
     if (!ntdll) {
@@ -178,6 +228,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     OH_LOG_INFO(LOG_APP, "[WineChild] timeout waiting for Wine exit");
     dlclose(ntdll);
     free(buf);
+#endif
 }
 
 // wineserver 子进程入口
@@ -199,17 +250,15 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step3: chdir(%{public}s)...", binDir);
     chdir(binDir);
 
-    // stderr → 直接写文件 (appspawn 子进程的副线程 hilog 不可用)
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step4: open stderr file...");
-    int wsErrFile = open("/data/storage/el2/base/files/wine_stderr.log",
-                         O_WRONLY | O_CREAT | O_APPEND, 0666);
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step4: open ret=%{public}d errno=%{public}d",
-                wsErrFile, wsErrFile < 0 ? errno : 0);
-    if (wsErrFile >= 0) {
-        dprintf(wsErrFile, "\n=== ws pid=%d ===\n", getpid());
-        dup2(wsErrFile, STDERR_FILENO);
-        close(wsErrFile);
-    }
+    // stderr → pipe → hilog (appspawn 子进程中 stdio 不可用)
+    int errPipe[2];
+    pipe(errPipe);
+    dup2(errPipe[1], STDERR_FILENO);
+    close(errPipe[1]);
+    auto* ctx = new stderr_ctx{errPipe[0], -1};  // 只写 hilog，不写文件
+    pthread_t tid;
+    pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
+    pthread_detach(tid);
 
     // 收集 argv: "wineserver" "-f" ...
     int argc2 = 0;
@@ -224,16 +273,16 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
         argv2[2] = nullptr;
         argc2 = 2;
     }
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step5: argv argc=%d argv[0]=%s", argc2, argv2[0]);
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws step4: argv argc=%d argv[0]=%s", argc2, argv2[0]);
 
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step6: dlopen libwineserver.so...");
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws step5: dlopen libwineserver.so...");
     void* h = dlopen("libwineserver.so", RTLD_NOW);
     if (!h) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlopen(libwineserver.so) failed: %{public}s", dlerror());
         free(buf);
         return;
     }
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step7: dlsym main...");
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws step6: dlsym main...");
     auto* ws_main = (int (*)(int, char**))dlsym(h, "main");
     if (!ws_main) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlsym(main) failed: %{public}s", dlerror());
@@ -241,15 +290,16 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
         free(buf);
         return;
     }
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step8: calling ws_main(%d, [...]), WINEPREFIX=%{public}s",
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws step7: calling ws_main(%d, [...]), WINEPREFIX=%{public}s",
                 argc2, getenv("WINEPREFIX"));
     int wsRc = ws_main(argc2, argv2);
     fprintf(stderr, "OHOS-WS-POST: ws_main returned rc=%d\n", wsRc);
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step9: ws_main returned rc=%{public}d errno=%{public}d",
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws step8: ws_main returned rc=%{public}d errno=%{public}d",
                 wsRc, errno);
     // ws_main 不应返回，若返回则等一阵再退出方便抓日志
     for (int i = 0; i < 30; i++) sleep(1);
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step10: wineserver process exiting");
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws step9: wineserver process exiting");
     dlclose(h);
     free(buf);
 }
+

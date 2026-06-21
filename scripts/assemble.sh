@@ -74,7 +74,7 @@ assemble_pad() {
         fi
     elif [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
         # arm64 Pad: Wine .so 是 x86_64, 不放 libs/, 放 rawfile zip
-        # libbox64.so 由 build_box64.sh 放入 NATIVE_LIBS
+        # box64.so 由 build_box64.sh 放入 NATIVE_LIBS
         log "  → Wine x86_64 .so → rawfile zip"
 
         # ntdll.so → rawfile
@@ -114,8 +114,9 @@ assemble_pad() {
         cp "$wine_data/bin/x86_64-unix/libfreetype.so.6" "$wine_data/bin/"
         cp "$wine_data/bin/x86_64-unix/libfreetype.so" "$wine_data/bin/"
 
-        # libc.so
+        # libc.so → bin/ (当前目录) + x86_64-unix/ (BOX64_LD_LIBRARY_PATH)
         cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_data/bin/"
+        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_data/bin/x86_64-unix/"
 
         # wine + wineserver (x86_64 ELF, 由 box64 加载)
         cp "$WINE_SRC/build-ohos/loader/wine" "$wine_data/bin/"
