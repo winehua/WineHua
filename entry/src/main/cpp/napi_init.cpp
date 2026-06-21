@@ -174,6 +174,7 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "BOX64_LOG=1",
         "BOX64_NOBANNER=0",
         "WINEDEBUG=+wineboot,+module",
+        "WINE_MONO=never",  // 跳过 Mono 安装 (OHOS 无网络, 会卡住)
         "XKB_CONFIG_ROOT=" + xkbDir,
         "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir,
         "TMPDIR=/data/storage/el2/base/cache",
@@ -1540,6 +1541,33 @@ static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// Desktop 模式: 将 toplevel 提到 Z-order 最顶层
+static napi_value RaiseToplevel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    uint32_t tl;
+    napi_get_value_uint32(env, args[0], &tl);
+    WaylandServer::GetInstance()->RaiseToplevel(tl);
+    return nullptr;
+}
+
+// Desktop 模式: 查找 Wine 桌面坐标 (x,y) 处最上层的 toplevel
+static napi_value FindToplevelAt(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    int32_t x, y;
+    napi_get_value_int32(env, args[0], &x);
+    napi_get_value_int32(env, args[1], &y);
+    uint32_t id = WaylandServer::GetInstance()->FindToplevelAt(x, y);
+    napi_value result;
+    napi_create_uint32(env, id, &result);
+    return result;
+}
+
 static napi_value SetToplevelVisible(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
@@ -1651,6 +1679,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendScrollEvent",   nullptr, SendScrollEvent,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getProcessList",   nullptr, GetProcessList,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"killProcess",     nullptr, KillProcess,     nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -5,6 +5,7 @@
 #include "fps_counter.h"
 #include "include/viewporter-server-protocol.h"
 #include "include/xdg-shell-server-protocol.h"
+#include <algorithm>
 #include <cstring>
 #include <ctime>
 #include <cerrno>
@@ -237,7 +238,7 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
     if (!sd) return;
     sd->subsurfaceX = x;
     sd->subsurfaceY = y;
-    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] set_position: child=%p pos=(%d,%d)",
+    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] set_position: child=%{public}p pos=(%{public}d,%{public}d)",
                 childSurf, x, y);
 }
 
@@ -282,6 +283,8 @@ void WaylandServer::output_bind(wl_client* client, void* data, uint32_t version,
 // -- surface 实现 --
 void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
+    OH_LOG_INFO(LOG_APP, "[MW-Life] surface_destroy surf=%{public}p hasToplevel=%{public}d toplevelId=%{public}u isSubsurface=%{public}d",
+                r, sd ? sd->hasToplevel : 0, sd ? sd->toplevelId : 0, sd ? sd->isSubsurface : 0);
     if (sd && sd->hasToplevel) {
         // 清理 surface 映射
         auto* self = GetInstance();
@@ -301,6 +304,17 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
             self->SetDesktopRootToplevelId(0);
         }
         self->FireToplevelEvent(sd->toplevelId, "destroyed");
+    }
+    // subsurface 销毁: 清除 layer + 标记 root dirty 触发重绘 (移除残留像素)
+    if (sd && sd->isSubsurface) {
+        auto* self = GetInstance();
+        std::lock_guard<std::mutex> lk(self->toplevelMutex_);
+        for (auto it = self->subsurfaceLayers_.begin(); it != self->subsurfaceLayers_.end(); ) {
+            if (it->surface == r) it = self->subsurfaceLayers_.erase(it);
+            else ++it;
+        }
+        if (self->IsDesktopMode() && self->desktopRootToplevelId_ > 0)
+            self->toplevelDirty_[self->desktopRootToplevelId_] = true;
     }
     wl_resource_destroy(r);
 }
@@ -340,15 +354,17 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         if (sd->hasWindowGeometry && sd->geoW > 0 && sd->geoH > 0) {
             contentW = sd->geoW;
             contentH = sd->geoH;
-            // PAD_MODE: geoX/geoY 可能超出 buffer 范围 → 是桌面坐标而非内容偏移
-            if (sd->geoX >= 0 && sd->geoX < w && sd->geoY >= 0 && sd->geoY < h) {
-                // 标准 Wayland: 内容偏移在 buffer 内部
-                contentOffX = sd->geoX;
-                contentOffY = sd->geoY;
-            } else {
-                // PAD_MODE: geoX/geoY 是虚拟桌面中的屏幕位置
+            if (sd->hasToplevel) {
+                // PAD_MODE: toplevel content 永远从 buffer 原点开始,
+                // geoX/geoY 是虚拟桌面屏幕位置
+                contentOffX = 0;
+                contentOffY = 0;
                 screenX = sd->geoX;
                 screenY = sd->geoY;
+            } else {
+                // subsurface: geoX/geoY 是相对父 surface 的内容偏移
+                contentOffX = sd->geoX;
+                contentOffY = sd->geoY;
             }
             OH_LOG_INFO(LOG_APP, "[MW-GEO] using window_geometry: src=%{public}dx%{public}d geo=(%{public}d,%{public}d %{public}dx%{public}d) screen=(%{public}d,%{public}d)",
                         w, h, contentOffX, contentOffY, contentW, contentH, screenX, screenY);
@@ -411,6 +427,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
             self->toplevelX_[sd->toplevelId] = screenX;
             self->toplevelY_[sd->toplevelId] = screenY;
             self->toplevelDirty_[sd->toplevelId] = true;
+            // 新 toplevel 加到 Z-order 顶层
+            if (self->IsDesktopMode() && sd->toplevelId != self->desktopRootToplevelId_) {
+                auto zit = std::find(self->toplevelZOrder_.begin(), self->toplevelZOrder_.end(), sd->toplevelId);
+                if (zit == self->toplevelZOrder_.end()) self->toplevelZOrder_.push_back(sd->toplevelId);
+            }
             OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
                         sd->toplevelId, contentW, contentH, stride, self->toplevelPixels_[sd->toplevelId].size());
 
@@ -436,7 +457,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
             if (contentW >= self->outputW_ * 8 / 10 && contentH >= self->outputH_ * 8 / 10) {
                 OH_LOG_INFO(LOG_APP, "[MW] switching desktop root: #%{public}u -> #%{public}u (%{public}dx%{public}d)",
                             rootId, sd->toplevelId, contentW, contentH);
+                // 更新渲染器的 toplevel 映射 (InputManager 坐标转换依赖)
+                PluginManager::GetInstance()->MoveRendererToToplevel(rootId, sd->toplevelId);
                 self->SetDesktopRootToplevelId(sd->toplevelId);
+                // 通知 ArkTS 更新 root ID
+                self->FireToplevelEvent(sd->toplevelId, "desktop_root", "{}");
                 rootId = sd->toplevelId;
             }
             if (rootId > 0) {
@@ -444,52 +469,56 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
                 self->toplevelDirty_[rootId] = true;
             }
         }
-        // subsurface 合成: 将 popup 像素合成到父 toplevel 的 framebuffer
-        // 解决右键菜单/下拉菜单无法显示的问题
+        // subsurface: Desktop 模式存 layer 信息, 多窗口模式合成到父 toplevel
         if (sd->isSubsurface && sd->parentSurface && sd->pixels.size() > 0) {
             auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
             if (parentSd && parentSd->hasToplevel) {
                 uint32_t parentId = parentSd->toplevelId;
-                std::lock_guard<std::mutex> lk(self->toplevelMutex_);
-                auto it = self->toplevelPixels_.find(parentId);
-                if (it != self->toplevelPixels_.end()) {
-                    int parentW = self->toplevelW_[parentId];
-                    int parentH = self->toplevelH_[parentId];
-                    int popupW = sd->w;
-                    int popupH = sd->h;
-                    // subsurface 坐标是相对父 surface 原始 buffer 的,
-                    // 但 toplevelPixels_ 是 window_geometry 裁剪后的 tight buffer,
-                    // 需要减去父 surface 的 geo 偏移
-                    int popupX = sd->subsurfaceX - parentSd->geoX;
-                    int popupY = sd->subsurfaceY - parentSd->geoY;
-
-                    // 计算 popup 与父 framebuffer 的可见交集 (裁剪超出窗口的部分)
-                    int srcX = (popupX < 0) ? -popupX : 0;
-                    int srcY = (popupY < 0) ? -popupY : 0;
-                    int dstX = (popupX > 0) ? popupX : 0;
-                    int dstY = (popupY > 0) ? popupY : 0;
-                    int copyW = popupW - srcX;
-                    int copyH = popupH - srcY;
-                    if (dstX + copyW > parentW) copyW = parentW - dstX;
-                    if (dstY + copyH > parentH) copyH = parentH - dstY;
-
-                    if (copyW > 0 && copyH > 0) {
-                        auto& parentBuf = it->second;
-                        for (int y = 0; y < copyH; y++) {
-                            for (int x = 0; x < copyW; x++) {
-                                int srcIdx = ((srcY + y) * popupW + (srcX + x)) * 4;
-                                int dstIdx = ((dstY + y) * parentW + (dstX + x)) * 4;
-                                //  popup buffer 是 XRGB (byte3 非 alpha):
-                                //  内容像素 byte3=0, padding 像素 byte3=255
-                                //  跳过 padding 像素
-                                if (sd->pixels[srcIdx + 3] == 255) continue;
-                                std::memcpy(&parentBuf[dstIdx], &sd->pixels[srcIdx], 4);
+                if (self->IsDesktopMode()) {
+                    // Desktop 模式: 存 layer, 在 TakeToplevelFrame 中合成 (不污染 toplevelPixels_)
+                    std::lock_guard<std::mutex> lk(self->toplevelMutex_);
+                    SubsurfaceLayer layer;
+                    layer.surface = surfRes;  // 用 subsurface 自己的 surface 做 key
+                    layer.w = sd->w;
+                    layer.h = sd->h;
+                    layer.x = self->toplevelX_[parentId] + sd->subsurfaceX;
+                    layer.y = self->toplevelY_[parentId] + sd->subsurfaceY;
+                    layer.pixels = std::move(sd->pixels);
+                    // 替换已有 layer
+                    bool found = false;
+                    for (auto& l : self->subsurfaceLayers_) {
+                        if (l.surface == surfRes) { l = std::move(layer); found = true; break; }
+                    }
+                    if (!found) self->subsurfaceLayers_.push_back(std::move(layer));
+                    self->toplevelDirty_[self->desktopRootToplevelId_] = true;
+                    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] stored layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
+                                sd->w, sd->h, layer.x, layer.y, parentId);
+                } else {
+                    // 多窗口模式: 直接合成到父 toplevel
+                    std::lock_guard<std::mutex> lk(self->toplevelMutex_);
+                    auto it = self->toplevelPixels_.find(parentId);
+                    if (it != self->toplevelPixels_.end()) {
+                        int parentW = self->toplevelW_[parentId];
+                        int parentH = self->toplevelH_[parentId];
+                        int popupX = sd->subsurfaceX - parentSd->geoX;
+                        int popupY = sd->subsurfaceY - parentSd->geoY;
+                        int srcX = (popupX < 0) ? -popupX : 0;
+                        int srcY = (popupY < 0) ? -popupY : 0;
+                        int dstX = (popupX > 0) ? popupX : 0;
+                        int dstY = (popupY > 0) ? popupY : 0;
+                        int copyW = sd->w - srcX;
+                        int copyH = sd->h - srcY;
+                        if (dstX + copyW > parentW) copyW = parentW - dstX;
+                        if (dstY + copyH > parentH) copyH = parentH - dstY;
+                        if (copyW > 0 && copyH > 0) {
+                            auto& targetBuf = it->second;
+                            for (int y = 0; y < copyH; y++) {
+                                int srcRowStart = ((srcY + y) * sd->w + srcX) * 4;
+                                int dstRowStart = ((dstY + y) * parentW + dstX) * 4;
+                                std::memcpy(&targetBuf[dstRowStart], &sd->pixels[srcRowStart], copyW * 4);
                             }
+                            self->toplevelDirty_[parentId] = true;
                         }
-                        self->toplevelDirty_[parentId] = true;
-                        OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] composited popup %{public}dx%{public}d at (%{public}d,%{public}d) -> toplevel #%{public}u parent=%{public}dx%{public}d visible=%{public}dx%{public}d+%{public}d,%{public}d",
-                                    popupW, popupH, popupX, popupY, parentId, parentW, parentH,
-                                    copyW, copyH, dstX, dstY);
                     }
                 }
             }
@@ -556,12 +585,15 @@ bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, in
         // （否则下次合成时上次写入的子窗口像素会残留）
         std::vector<uint8_t> composited = rit->second;
 
-        for (auto& [childId, childPx] : toplevelPixels_) {
+        // 按 Z-order 合成: 先合成的在后面, 后合成的覆盖前面
+        for (uint32_t childId : toplevelZOrder_) {
             if (childId == id) continue;
+            if (toplevelPixels_.find(childId) == toplevelPixels_.end()) continue;
+            int cw = toplevelW_[childId], ch = toplevelH_[childId];
+            if (cw == rootW && ch == rootH) continue;
+            auto& childPx = toplevelPixels_[childId];
             int childW = toplevelW_[childId];
             int childH = toplevelH_[childId];
-            // 跳过与 root 相同大小的 toplevel (旧的 root 重建后残留)
-            if (childW == rootW && childH == rootH) continue;
             int posX = toplevelX_[childId];
             int posY = toplevelY_[childId];
             // 计算子窗口在 root framebuffer 中的可见区域
@@ -582,6 +614,37 @@ bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, in
             }
         }
 
+        // 合成 subsurface 弹出层 (菜单/popup)
+        for (auto& layer : subsurfaceLayers_) {
+            if (layer.w <= 0 || layer.h <= 0) continue;
+            size_t expectSz = (size_t)layer.w * layer.h * 4;
+            if (layer.pixels.size() < expectSz) {
+                OH_LOG_WARN(LOG_APP, "[MW-SUBSURF] layer size mismatch: w=%{public}d h=%{public}d px=%{public}zu expected=%{public}zu",
+                            layer.w, layer.h, layer.pixels.size(), expectSz);
+                continue;
+            }
+            int srcX = (layer.x < 0) ? -layer.x : 0;
+            int srcY = (layer.y < 0) ? -layer.y : 0;
+            int dstX = (layer.x > 0) ? layer.x : 0;
+            int dstY = (layer.y > 0) ? layer.y : 0;
+            int copyW = layer.w - srcX;
+            int copyH = layer.h - srcY;
+            if (dstX + copyW > rootW) copyW = rootW - dstX;
+            if (dstY + copyH > rootH) copyH = rootH - dstY;
+            if (copyW <= 0 || copyH <= 0) continue;
+            for (int y = 0; y < copyH; y++) {
+                for (int x = 0; x < copyW; x++) {
+                    int srcIdx = ((srcY + y) * layer.w + (srcX + x)) * 4;
+                    int dstIdx = ((dstY + y) * rootW + (dstX + x)) * 4;
+                    // bounds check (防止崩溃导致 mutex 死锁)
+                    if (srcIdx + 3 >= (int)layer.pixels.size()) continue;
+                    if (dstIdx + 3 >= (int)composited.size()) continue;
+                    if (layer.pixels[srcIdx + 3] == 255) continue;
+                    memcpy(&composited[dstIdx], &layer.pixels[srcIdx], 4);
+                }
+            }
+        }
+
         out = std::move(composited);
         w = rootW;
         h = rootH;
@@ -599,6 +662,14 @@ bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, in
     toplevelDirty_[id] = false;
     OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu", id, w, h, out.size());
     return true;
+}
+
+void WaylandServer::RaiseToplevel(uint32_t id) {
+    std::lock_guard<std::mutex> lk(toplevelMutex_);
+    auto it = std::find(toplevelZOrder_.begin(), toplevelZOrder_.end(), id);
+    if (it != toplevelZOrder_.end()) toplevelZOrder_.erase(it);
+    toplevelZOrder_.push_back(id);
+    toplevelDirty_[desktopRootToplevelId_] = true;
 }
 
 void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char* jsonData) {
@@ -630,7 +701,8 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     toplevelX_.erase(toplevelId);
     toplevelY_.erase(toplevelId);
     toplevelDirty_.erase(toplevelId);
-    // Desktop mode: 子窗口销毁后需要重新合成 root
+    auto zit = std::find(toplevelZOrder_.begin(), toplevelZOrder_.end(), toplevelId);
+    if (zit != toplevelZOrder_.end()) toplevelZOrder_.erase(zit);
     if (IsDesktopMode() && toplevelId != desktopRootToplevelId_) {
         if (desktopRootToplevelId_ > 0) toplevelDirty_[desktopRootToplevelId_] = true;
     }
@@ -652,6 +724,24 @@ void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
     } else {
         OH_LOG_WARN(LOG_APP, "[MW] SendToplevelClose id=%{public}u NOT found", toplevelId);
     }
+}
+
+uint32_t WaylandServer::FindToplevelAt(int x, int y) {
+    std::lock_guard<std::mutex> lk(toplevelMutex_);
+    uint32_t bestId = desktopRootToplevelId_;
+    // 遍历所有子 toplevel, 找包含 (x,y) 且 ID 最大的 (z-order: 越晚创建越在上)
+    for (auto& [id, w] : toplevelW_) {
+        if (id == desktopRootToplevelId_) continue;
+        if (toplevelPixels_.find(id) == toplevelPixels_.end()) continue;
+        int tx = toplevelX_[id];
+        int ty = toplevelY_[id];
+        int tw = toplevelW_[id];
+        int th = toplevelH_[id];
+        if (x >= tx && x < tx + tw && y >= ty && y < ty + th) {
+            if (id > bestId) bestId = id;
+        }
+    }
+    return bestId;
 }
 
 void WaylandServer::NotifyWindowRestored(uint32_t toplevelId) {
@@ -736,5 +826,7 @@ wl_resource* WaylandServer::GetSurfaceForToplevel(uint32_t toplevelId) {
     std::lock_guard<std::mutex> lk(toplevelSurfaceMutex_);
     auto it = toplevelSurfaceMap_.find(toplevelId);
     if (it != toplevelSurfaceMap_.end()) return it->second;
+    OH_LOG_WARN(LOG_APP, "[MW] GetSurfaceForToplevel #%{public}u NOT FOUND (map size=%{public}zu)",
+                toplevelId, toplevelSurfaceMap_.size());
     return nullptr;
 }

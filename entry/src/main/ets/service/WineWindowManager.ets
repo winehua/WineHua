@@ -95,20 +95,39 @@ export class WineWindowManager {
       hilog.info(DOMAIN, TAG, '[MW] deviceType=%{public}s → MANAGED MODE', deviceInfo.deviceType);
     }
 
-    // 获取设备显示密度
+    // 获取设备显示密度 + 主窗口可用区域
     try {
       const d = display.getDefaultDisplaySync();
       this.displayScale = d.densityPixels;
       this.scaleBoost = 2.0 / this.displayScale;  // 使 effectiveScale = 2.0
       hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=2.0',
         d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2));
-      // 传给 C++ 渲染层 effective scale = 2.0
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
-      // 传真实屏幕尺寸给 Wine (wine 坐标系)
+
+      // Wine 输出尺寸
       const s = this.displayScale * this.scaleBoost;
-      testNapi.setOutputSize(Math.round(d.width / s), Math.round(d.height / s));
-      hilog.info(DOMAIN, TAG, '[MW] initialized scale=%{public}s display=%{public}dx%{public}d',
-        this.displayScale.toFixed(2), d.width, d.height);
+      let outW = Math.round(d.width / s);
+      let outH = Math.round(d.height / s);
+      // Pad 桌面模式: 用主窗口实际可用区域替代屏幕尺寸
+      // (屏幕含状态栏, XComponent 实际可渲染区域小, 用屏幕尺寸会导致宽高比不匹配)
+      if (this.isDesktopMode && this.mainWindow) {
+        try {
+          const props = this.mainWindow.getWindowProperties();
+          const winRect = props.windowRect;
+          const sysAvoid = this.mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+          const navAvoid = this.mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+          const availW = winRect.width;
+          const availH = winRect.height - sysAvoid.topRect.height - navAvoid.bottomRect.height;
+          outW = Math.round(availW / s);
+          outH = Math.round(availH / s);
+          hilog.info(DOMAIN, TAG, '[MW] desktop: window %{public}dx%{public}d avoid(top=%{public}d navBot=%{public}d) → avail %{public}dx%{public}d → output %{public}dx%{public}d',
+            winRect.width, winRect.height, sysAvoid.topRect.height, navAvoid.bottomRect.height,
+            Math.round(availW), Math.round(availH), outW, outH);
+        } catch (_) {
+          hilog.warn(DOMAIN, TAG, '[MW] avoid area query failed, using display size');
+        }
+      }
+      testNapi.setOutputSize(outW, outH);
     } catch (_) {
       this.displayScale = 1.61;
       this.scaleBoost = 2.0 / 1.61;
@@ -509,13 +528,10 @@ export class WineWindowManager {
     hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d', id);
     this.destroyed.add(id);
 
-    // Desktop 模式: root 销毁 → 关闭 DesktopAbility
+    // Desktop 模式: root 销毁 → 等新 root 出现 (不销毁渲染器, 不关 Ability)
     if (this.isDesktopMode && id === this.desktopRootId) {
-      hilog.info(DOMAIN, TAG, '[MW] -> destroyToplevel #%{public}d (desktop root)', id);
-      testNapi.destroyToplevel(id);
-      this.desktopRootId = 0;
-      this.desktopAbilityRunning = false;
-      this.unregisterAbility(id);
+      hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed, keep old ID for input', id);
+      // 保留旧 rootId 用于输入, 不调 destroyToplevel, 等 C++ 侧自动切换
       return;
     }
     // Desktop 模式: 非 root toplevel 销毁, C++ 自动停止合成

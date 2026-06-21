@@ -168,9 +168,12 @@ static const struct xdg_toplevel_interface kToplevelImpl = {
 // -- xdg_surface 实现 --
 static void xs_destroy(wl_client*, wl_resource* r) {
     auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(r));
+    OH_LOG_INFO(LOG_APP, "[MW-Life] xs_destroy xdg=%{public}p wlSurf=%{public}p",
+                r, d ? d->wlSurface : nullptr);
     if (d && d->wlSurface) {
         auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
         if (sd && sd->hasToplevel) {
+            OH_LOG_INFO(LOG_APP, "[MW-Life] xs_destroy → OnToplevelDestroyed tl=%{public}u", sd->toplevelId);
             WaylandServer::GetInstance()->OnToplevelDestroyed(sd->toplevelId);
             WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "destroyed");
         }

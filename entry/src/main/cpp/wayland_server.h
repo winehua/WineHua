@@ -56,6 +56,13 @@ public:
     void SetOutputSize(int32_t w, int32_t h) { outputW_ = w; outputH_ = h; }
     int32_t outputW_ = 1280;
     int32_t outputH_ = 720;
+    // Desktop 模式: 在合成帧中查找包含 (x,y) 的 toplevel (用于输入路由)
+    uint32_t FindToplevelAt(int x, int y);
+    // Desktop 模式: 提到 Z-order 最顶层
+    void RaiseToplevel(uint32_t id);
+    // 读取 toplevel 桌面坐标 (InputManager 坐标转换用)
+    int GetToplevelX(uint32_t id) { std::lock_guard<std::mutex> lk(toplevelMutex_); return toplevelX_[id]; }
+    int GetToplevelY(uint32_t id) { std::lock_guard<std::mutex> lk(toplevelMutex_); return toplevelY_[id]; }
     // Desktop 合成模式 (Tablet): 全部 toplevel 合成到一个 root framebuffer
     void SetDesktopMode(bool on) { desktopMode_ = on; }
     bool IsDesktopMode() const { return desktopMode_; }
@@ -148,6 +155,14 @@ private:
     // Desktop 合成模式
     bool desktopMode_ = false;
     uint32_t desktopRootToplevelId_ = 0;
+    // subsurface 合成层 (不写入 toplevelPixels_, 避免污染)
+    struct SubsurfaceLayer {
+        wl_resource* surface = nullptr;
+        std::vector<uint8_t> pixels;
+        int x = 0, y = 0, w = 0, h = 0;
+    };
+    std::vector<SubsurfaceLayer> subsurfaceLayers_;
+    std::vector<uint32_t> toplevelZOrder_;  // 前景→背景
 };
 
 // wl_surface 的每个实例携带的数据

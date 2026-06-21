@@ -112,6 +112,11 @@ void InputManager::Shutdown() {
 wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
                                          wl_fixed_t* outX, wl_fixed_t* outY) {
     auto* r = PluginManager::GetInstance()->GetRendererForToplevel(tl);
+    // Desktop 模式 fallback: root 切换后可能用旧 ID 查 renderer
+    if (!r && WaylandServer::GetInstance()->IsDesktopMode()) {
+        uint32_t rootId = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
+        if (rootId != tl) r = PluginManager::GetInstance()->GetRendererForToplevel(rootId);
+    }
     if (!r) {
         OH_LOG_WARN(LOG_APP, "[Input] CoordTransform: no renderer for tl=%{public}u", tl);
         *outX = 0; *outY = 0;
@@ -286,7 +291,15 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
 
     // 坐标转换
     wl_fixed_t wx, wy;
-    CoordTransform(px, py, tl, &wx, &wy);
+    auto* ws = WaylandServer::GetInstance();
+    if (ws->IsDesktopMode() && tl != ws->GetDesktopRootToplevelId()) {
+        // 子 toplevel: 用 root renderer 转换, 再减 toplevel 桌面偏移
+        CoordTransform(px, py, ws->GetDesktopRootToplevelId(), &wx, &wy);
+        wx -= wl_fixed_from_int(ws->GetToplevelX(tl));
+        wy -= wl_fixed_from_int(ws->GetToplevelY(tl));
+    } else {
+        CoordTransform(px, py, tl, &wx, &wy);
+    }
 
     OH_LOG_INFO(LOG_APP, "[Input] PTR action=%{public}d tl=%{public}u btn=0x%{public}x px=(%{public}.0f,%{public}.0f)"
                 " wine=(%{public}.0f,%{public}.0f) ptrRes=%{public}d needsEnter=%{public}d pressedBits=0x%{public}x",
@@ -298,7 +311,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         case ACT_PRESS: {
             // 每次都发 enter: Wine 在两次点击间需要新的 pointer focus
             {
-                wl_resource* surf = WaylandServer::GetInstance()->GetSurfaceForToplevel(tl);
+                wl_resource* surf = ws->GetSurfaceForToplevel(tl);
                 if (surf) {
                     if (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl)
                         Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);

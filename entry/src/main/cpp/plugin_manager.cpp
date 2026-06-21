@@ -19,6 +19,8 @@ uint32_t PluginManager::DequeuePendingToplevel() {
 }
 
 void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
+    OH_LOG_INFO(LOG_APP, "[MW-Life] CreateRenderer tl=%{public}u count=%{public}zu→%{public}zu",
+                toplevelId, toplevelRenderers_.size(), toplevelRenderers_.size() + 1);
     OH_LOG_INFO(LOG_APP, "[MW-Create] toplevel=%{public}u surfaceId=%{public}ld existRender=%{public}zu",
                 toplevelId, surfaceId, toplevelRenderers_.size());
 
@@ -71,6 +73,8 @@ void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
 }
 
 void PluginManager::DestroyToplevel(uint32_t toplevelId) {
+    OH_LOG_INFO(LOG_APP, "[MW-Life] DestroyRenderer tl=%{public}u count=%{public}zu→%{public}zu",
+                toplevelId, toplevelRenderers_.size(), toplevelRenderers_.size() > 0 ? toplevelRenderers_.size() - 1 : 0);
     auto it = toplevelRenderers_.find(toplevelId);
     if (it != toplevelRenderers_.end()) {
         it->second->Shutdown();
@@ -87,4 +91,17 @@ EglRenderer* PluginManager::GetRendererForToplevel(uint32_t tid) {
     auto rit = toplevelRenderers_.find(tid);
     if (rit == toplevelRenderers_.end()) return nullptr;
     return rit->second.get();
+}
+
+void PluginManager::MoveRendererToToplevel(uint32_t oldId, uint32_t newId) {
+    OH_LOG_INFO(LOG_APP, "[MW-Life] MoveRenderer tl %{public}u→%{public}u", oldId, newId);
+    if (oldId == newId) { OH_LOG_WARN(LOG_APP, "[MW-Life] MoveRenderer SKIP: old==new"); return; }
+    auto it = toplevelRenderers_.find(oldId);
+    if (it == toplevelRenderers_.end()) {
+        OH_LOG_WARN(LOG_APP, "[MW-Life] MoveRenderer old tl=%{public}u NOT FOUND", oldId);
+        return;
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-Plug] MoveRenderer tl #%{public}u -> #%{public}u", oldId, newId);
+    toplevelRenderers_[newId] = std::move(it->second);
+    toplevelRenderers_.erase(it);
 }
