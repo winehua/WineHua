@@ -96,7 +96,7 @@ static void setup_wine_env(const char* binDir)
     setenv("BOX64_SHOWSEGV", "1", 1);
 #ifdef __aarch64__
     // 标记 Box64 in-process 模式，供 x86_64 wine 代码 (process.c) 运行时判断
-    setenv("WINE_BOX64_INPROCESS", "1", 1);
+    setenv("USE_LIBBOX64", "1", 1);
 #endif
     setenv("PATH", (std::string("/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:")
                     + binDir + "/x86_64-windows:" + binDir).c_str(), 1);

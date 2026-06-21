@@ -29,7 +29,7 @@ if [ "$DEVICE_TYPE" = "pad" ]; then
         -DOHOS_PLATFORM=OHOS \
         -DCMAKE_BUILD_TYPE=Release \
         -DARM_DYNAREC=ON \
-        -DBOX64_HMOS_INPROCESS=ON \
+        -DLIBBOX64_SO=ON \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     ninja box64_hmos_core
     cp "$BUILD_DIR/box64_build/box64.so" "$NATIVE_LIBS/"
