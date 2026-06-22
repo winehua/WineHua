@@ -795,7 +795,10 @@ static napi_value ResetWinePrefix(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+
+#ifdef DEBUG_MMAP_TEST
 // -- NAPI: mmap 全量权限测试 (覆盖 Box64 + Wine 所有模式) --
+// 仅调试时启用: cmake -DDEBUG_MMAP_TEST=ON
 #include <sys/mman.h>
 #include <spawn.h>
 #include <sys/syscall.h>
@@ -1170,6 +1173,7 @@ static napi_value RunMmapTests(napi_env env, napi_callback_info) {
     L("===== 测试完成 =====");
     return nullptr;
 }
+#endif // DEBUG_MMAP_TEST
 
 // -- NAPI: stopClient — 杀掉所有 Wine 进程 --
 static napi_value StopClient(napi_env, napi_callback_info) {
@@ -1579,7 +1583,9 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"createRenderer",  nullptr, CreateRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resizeRenderer",  nullptr, ResizeRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"destroyRenderer", nullptr, DestroyRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
+#ifdef DEBUG_MMAP_TEST
         {"runMmapTests",  nullptr, RunMmapTests,  nullptr, nullptr, nullptr, napi_default, nullptr},
+#endif
         {"setOutputSize",   nullptr, SetOutputSize,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale",  nullptr, SetDisplayScale,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDesktopMode",   nullptr, SetDesktopMode,   nullptr, nullptr, nullptr, napi_default, nullptr},
