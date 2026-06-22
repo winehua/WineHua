@@ -141,10 +141,10 @@ wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
     wl_fixed_t wy = wl_fixed_from_double((py - vpY) * fh / vpH);
     *outX = wx; *outY = wy;
 
-    OH_LOG_INFO(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
-                " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f)",
-                px, py, vpX, vpY, vpW, vpH, surfW, surfH, fw, fh,
-                wl_fixed_to_double(wx), wl_fixed_to_double(wy));
+    OH_LOG_DEBUG(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
+                 " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f)",
+                 px, py, vpX, vpY, vpW, vpH, surfW, surfH, fw, fh,
+                 wl_fixed_to_double(wx), wl_fixed_to_double(wy));
     return wx;
 }
 
