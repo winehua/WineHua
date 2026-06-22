@@ -153,11 +153,10 @@ void Seat::seat_get_keyboard(wl_client* client, wl_resource* seatRes, uint32_t i
         self->kbdCount_.store((int)self->keyboardResources_.size());
     }
 
-    // XKB_V1 keymap: 通过 shm_open 传递 xkb keymap fd 给 Wine
-    const char* shm_name = "/winehua_keymap";
-    int fd = shm_open(shm_name, O_CREAT | O_RDWR, 0644);
+    // XKB_V1 keymap: 通过匿名 fd 传递 xkb keymap 给 Wine
+    // memfd_create 创建匿名共享内存, 无全局命名空间, 多客户端天然隔离
+    int fd = memfd_create("winehua_keymap", MFD_CLOEXEC);
     if (fd >= 0) {
-        shm_unlink(shm_name);
         if (ftruncate(fd, _tmp_keymap_xkb_len) == 0) {
             void* map = mmap(nullptr, _tmp_keymap_xkb_len, PROT_WRITE, MAP_SHARED, fd, 0);
             if (map != MAP_FAILED) {
@@ -178,7 +177,7 @@ void Seat::seat_get_keyboard(wl_client* client, wl_resource* seatRes, uint32_t i
             wl_keyboard_send_keymap(kbd, WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP, 0, 0);
         }
     } else {
-        OH_LOG_ERROR(LOG_APP, "[Seat] wl_keyboard shm_open failed (errno=%{public}d), fallback to NO_KEYMAP", errno);
+        OH_LOG_ERROR(LOG_APP, "[Seat] wl_keyboard memfd_create failed (errno=%{public}d), fallback to NO_KEYMAP", errno);
         wl_keyboard_send_keymap(kbd, WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP, 0, 0);
     }
     wl_keyboard_send_repeat_info(kbd, 40, 400);
