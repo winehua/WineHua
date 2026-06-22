@@ -12,6 +12,7 @@
  */
 #include "broker.h"
 #include "wait_utils.h"
+#include "wine_constants.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -29,7 +30,7 @@
 #define LOG_TAG "WL_Broker"
 #include <hilog/log.h>
 
-static const char* kBrokerSocketPath = "/data/storage/el2/base/files/.wine_broker";
+static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
 
 static std::atomic<bool> gBrokerRunning{false};
 

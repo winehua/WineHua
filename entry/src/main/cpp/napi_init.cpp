@@ -3,6 +3,7 @@
 #include "plugin_manager.h"
 #include "input_manager.h"
 #include "egl_renderer.h"
+#include "wine_constants.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -163,7 +164,7 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "XDG_RUNTIME_DIR=" + sockDir,
         "WAYLAND_DISPLAY=" + sockName,
         "HOME=/storage/Users/currentUser/Download/app.hackeris.winehua",
-        "WINEPREFIX=/data/storage/el2/base/files/.wine",
+        "WINEPREFIX=" WINE_PREFIX,
         "WINEDATADIR=" + shareDir + "/wine", // Wine 数据文件 (nls, wine.inf)
         "WINEDLLDIR=" + binDir + "/x86_64-unix", // Wine Unix .so
         "WINEDLLDIR0=" + binDir + "/x86_64-windows", // PE DLL 目录
@@ -180,7 +181,7 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "WINE_MONO=never",  // 跳过 Mono 安装 (OHOS 无网络, 会卡住)
         "XKB_CONFIG_ROOT=" + xkbDir,
         "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir,
-        "TMPDIR=/data/storage/el2/base/cache",
+        "TMPDIR=" WINE_TMPDIR,
     };
 #ifdef __aarch64__
     // ARM64: x86_64 .so 由 Box64 加载，不在系统 LD_LIBRARY_PATH
@@ -335,7 +336,7 @@ struct LaunchParams {
 
 // 轮询 wineserver socket 是否就绪 (信号驱动, 避免盲等)
 static bool IsWineserverSocketReady() {
-    const char* prefix = "/data/storage/el2/base/files/.wine";
+    const char* prefix = WINE_PREFIX;
     char sockDir[512];
     snprintf(sockDir, sizeof(sockDir), "%s/.wineserver", prefix);
     DIR* d = opendir(sockDir);
@@ -363,7 +364,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
     for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
     p->envp.push_back(nullptr);
 
-    mkdir("/data/storage/el2/base/files/.wine", 0755);
+    mkdir(WINE_PREFIX, 0755);
     mkdir("/storage/Users/currentUser/Download/app.hackeris.winehua", 0755);
 
     // 通知 ArkTS: wineserver 启动中
@@ -459,7 +460,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
     StartBrokerServer();
 
     // 设置 PROCESSBROKER 环境变量，所有 Wine 进程统一从 env 读取 broker socket 路径
-    setenv("PROCESSBROKER", "/data/storage/el2/base/files/.wine_broker", 1);
+    setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
 
 #ifdef PAD_MODE
     // -- wineboot --init via OH_Ability_StartNativeChildProcess --
@@ -491,7 +492,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
             // 启动 explorer desktop shell，尺寸匹配输出
             // 等待 wineboot 创建 drive_c (explorer 需要枚举桌面文件)
             if (!WaitFor("wine prefix drive_c", []() {
-                DIR* d = opendir("/data/storage/el2/base/files/.wine/drive_c");
+                DIR* d = opendir(WINE_PREFIX "/drive_c");
                 if (d) { closedir(d); return true; }
                 return false;
             }, 10000, 200)) {
@@ -745,7 +746,7 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
 // -- NAPI: checkWinePrefix -- 检测 .wine/drive_c 是否已初始化且有内容 --
 static napi_value CheckWinePrefix(napi_env env, napi_callback_info info) {
     const char *prefix = getenv("WINEPREFIX");
-    if (!prefix) prefix = "/data/storage/el2/base/files/.wine";
+    if (!prefix) prefix = WINE_PREFIX;
     char drive_c[512];
     snprintf(drive_c, sizeof(drive_c), "%s/drive_c", prefix);
 
@@ -788,7 +789,7 @@ static void RmDir(const char* path) {
 static napi_value ResetWinePrefix(napi_env env, napi_callback_info info) {
     OH_LOG_INFO(LOG_APP, "[NAPI] resetWinePrefix called");
     KillAllProcesses();
-    const char* prefix = "/data/storage/el2/base/files/.wine";
+    const char* prefix = WINE_PREFIX;
     RmDir(prefix);
     mkdir(prefix, 0755);
     OH_LOG_INFO(LOG_APP, "[NAPI] resetWinePrefix: %{public}s cleared and recreated", prefix);

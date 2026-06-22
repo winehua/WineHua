@@ -21,6 +21,7 @@
 #include <string>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include "wine_constants.h"
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
@@ -70,9 +71,9 @@ static void setup_wine_env(const char* binDir)
 #endif
 
     setenv("HOME", "/storage/Users/currentUser/Download/app.hackeris.winehua", 1);
-    setenv("XDG_RUNTIME_DIR", "/data/storage/el2/base/files/.wine", 1);
+    setenv("XDG_RUNTIME_DIR", WINE_PREFIX, 1);
     setenv("WAYLAND_DISPLAY", "wine-wayland", 1);
-    setenv("WINEPREFIX", "/data/storage/el2/base/files/.wine", 1);
+    setenv("WINEPREFIX", WINE_PREFIX, 1);
     // PROCESSBROKER: appspawn 子进程不继承父 env，从 WINEPREFIX 推导 broker socket 路径，
     // 保证 wineserver / wineboot 等所有子进程都能拿到，与主进程 napi_init.cpp 中的值一致。
     {
@@ -103,8 +104,8 @@ static void setup_wine_env(const char* binDir)
 #endif
     setenv("PATH", (std::string("/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:")
                     + binDir + "/x86_64-windows:" + binDir).c_str(), 1);
-    setenv("TMPDIR", "/data/storage/el2/base/cache", 1);
-    setenv("XDG_RUNTIME_DIR", "/data/storage/el2/base/files/.wine", 1);
+    setenv("TMPDIR", WINE_TMPDIR, 1);
+    setenv("XDG_RUNTIME_DIR", WINE_PREFIX, 1);
     setenv("WINEDEBUG", "-all", 1);  // -all=关闭全部调试频道
 }
 
@@ -146,7 +147,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     setup_wine_env(binDir);
 
     // 确保 WINEPREFIX 目录存在
-    mkdir("/data/storage/el2/base/files/.wine", 0755);
+    mkdir(WINE_PREFIX, 0755);
 
     // Wine 期望从 bin 目录运行（相对路径等）
     chdir(binDir);
@@ -156,13 +157,13 @@ extern "C" void Main(NativeChildProcess_Args args)
     pipe(errPipe);
     dup2(errPipe[1], STDERR_FILENO);
     close(errPipe[1]);
-    mkdir("/data/storage/el2/base/temp", 0755);
+    mkdir(WINE_LOG_DIR, 0755);
     time_t now = time(nullptr);
     struct tm tm;
     localtime_r(&now, &tm);
     char logPath[128];
     snprintf(logPath, sizeof(logPath),
-             "/data/storage/el2/base/temp/wine_stderr_%04d%02d%02d.log",
+             WINE_LOG_DIR "/wine_stderr_%04d%02d%02d.log",
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
     int errFile = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0666);
     // 写分隔标记，确认本进程的日志从哪开始
@@ -266,10 +267,10 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     if (!binDir) { free(buf); return; }
 
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step1: setting env...");
-    setenv("WINEPREFIX", "/data/storage/el2/base/files/.wine", 1);
+    setenv("WINEPREFIX", WINE_PREFIX, 1);
     setenv("WINEDEBUG", "-all", 1);
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step2: mkdir...");
-    mkdir("/data/storage/el2/base/files/.wine", 0755);
+    mkdir(WINE_PREFIX, 0755);
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step3: chdir(%{public}s)...", binDir);
     chdir(binDir);
 
