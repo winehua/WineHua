@@ -147,6 +147,7 @@ void EglRenderer::RenderLoop() {
     int fw = 0, fh = 0;
     int loopCount = 0;
     bool firstFrameLogged = false;
+    bool rendered = false;  // 首帧已渲染后, 无新帧时跳过 GPU 绘制
 
     OH_LOG_INFO(LOG_APP, "[MW-RNDR] tl=%{public}u render loop started", toplevelId_);
 
@@ -191,6 +192,14 @@ void EglRenderer::RenderLoop() {
             if (rowLen != fw) {
                 glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
             }
+            rendered = true;
+        }
+
+        // 无新帧且已渲染过首帧 → 跳过 GPU 绘制, 静态桌面节省 GPU 功耗
+        if (!haveFrame && rendered) {
+            usleep(16667);
+            loopCount++;
+            continue;
         }
 
         // 获取 EGL surface 实际大小
@@ -263,7 +272,7 @@ void EglRenderer::RenderLoop() {
         eglSwapBuffers(display_, surface_);
         fps.Tick();
         loopCount++;
-        usleep(16667); // ~60fps
+        usleep(16667);
     }
 }
 
