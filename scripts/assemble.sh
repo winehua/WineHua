@@ -34,6 +34,7 @@ assemble_pad() {
         log "    Wine .so: $(ls "$WINE_SRC/build-ohos/dlls/"*/*.so 2>/dev/null | wc -l) files"
 
         # 交叉编译依赖 → libs/x86_64/
+        # (系统 linker 自动搜索此路径, 无需 x86_64-unix 子目录)
         _pick_lib_pad() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$NATIVE_LIBS"
@@ -56,14 +57,12 @@ assemble_pad() {
         _pick_lib_pad "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
         _pick_lib_pad "libxml2.so.2.12.0"            "libxml2.so.2"
         _pick_lib_pad "libffi.so.8.1.4"              "libffi.so.8"
-        log "    交叉编译依赖 → libs/x86_64/x86_64-unix/"
+        log "    交叉编译依赖 → libs/x86_64/"
 
         # libc.so → libs/x86_64/
         cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$NATIVE_LIBS/"
 
-        # libfreetype (dlopen 按名查找需要放在 bin/ 同级)
-        cp "$NATIVE_LIBS/x86_64-unix/libfreetype.so.6" "$NATIVE_LIBS/"
-        cp "$NATIVE_LIBS/x86_64-unix/libfreetype.so" "$NATIVE_LIBS/"
+        # libfreetype 已由 _pick_lib_pad 放入 libs/x86_64/，系统 linker 可直接找到
 
         # libwineserver.so (Pad fork+dlopen 入口)
         if [ -f "$BUILD_DIR/wine_server/libwineserver.so" ]; then
