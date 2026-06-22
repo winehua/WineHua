@@ -536,11 +536,9 @@ void InputManager::FlushQueue() {
                         skip = (last.btn_or_key == ev.btn_or_key && last.state == ev.state);
                         break;
                     case InputEvent::PTR_MOTION:
-                        last = ev; continue;  // 只保留最后一个
-                    case InputEvent::PTR_AXIS:
-                        skip = (last.axis == ev.axis);  // 同轴替换, 保留最后一个
-                        if (skip) { last = ev; continue; }
-                        break;
+                        last = ev; continue;  // 只保留最后一个坐标 (绝对位置)
+                    // PTR_AXIS 不去重: 每个值是累积滚动距离, 丢中间值 = 丢滚动量
+                    // 快速滚轮/触控板会产生连续 axis 事件, 必须全部送达 Wine
                     case InputEvent::PTR_ENTER:
                         skip = (last.tl == ev.tl && last.surface == ev.surface);
                         break;
