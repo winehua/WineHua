@@ -247,20 +247,13 @@ extern "C" void Main(NativeChildProcess_Args args)
     OH_LOG_INFO(LOG_APP, "[WineChild] calling __wine_main");
     wine_main(argc, argv);
 
-    // __wine_main → start_main_thread 启动了 Wine 主线程后立即返回。
-    // Main() 不能返回——appspawn 会立即杀进程，Wine 主线程没机会跑。
-    // Wine 主线程跑完 wineboot 后会调用 ExitProcess(0) 杀掉整个进程，
-    // 所以我们只需等待。用 alarm+pasue 替代 sleep 循环；
-    // ExitProcess 会在正常路径杀掉本进程，alarm 仅作兜底。
-    OH_LOG_INFO(LOG_APP, "[WineChild] __wine_main returned, waiting for Wine main thread...");
-    alarm(600);
-    while (true) pause();
-
-    OH_LOG_INFO(LOG_APP, "[WineChild] timeout waiting for Wine exit");
-    // 不 dlclose(ntdll): 与 ARM64 Box64 路径同理 — __wine_main 内部通过
-    // Wine 的 atexit 机制注册了清理回调, 回调地址在 ntdll.so 代码段内。
-    // dlclose 卸载 ntdll 后, 后续 atexit 触发时引用已卸载代码 → SIGSEGV。
-    // 进程即将退出 (ExitProcess 或 alarm 超时), OS 会回收一切, 无需手动卸载。
+    // __wine_main → start_main_thread → server_init_process_done →
+    // signal_start_thread (汇编实现, 劫持控制流跳入 Wine 代码)
+    // → 正常情况下永不返回。走到这里说明 Wine 启动异常。
+    // 不能 dlclose(ntdll): __wine_main 在调用 signal_start_thread 之前
+    // 已执行 virtual_init/init_environment/server_init_process_done,
+    // 这些可能注册了 atexit 回调 → dlclose 后退出时 SIGSEGV。
+    OH_LOG_ERROR(LOG_APP, "[WineChild] __wine_main returned unexpectedly! Wine init FAILED");
     free(buf);
 #endif
 }
@@ -376,13 +369,11 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step7: calling ws_main(%d, [...]), WINEPREFIX=%{public}s",
                 argc2, getenv("WINEPREFIX"));
     int wsRc = ws_main(argc2, argv2);
-    fprintf(stderr, "OHOS-WS-POST: ws_main returned rc=%d\n", wsRc);
-    OH_LOG_INFO(LOG_APP, "[WineChild] ws step8: ws_main returned rc=%{public}d errno=%{public}d",
-                wsRc, errno);
-    // ws_main 不应返回，若返回则等一阵再退出方便抓日志
-    alarm(30);
-    while (true) pause();
-    // 不 dlclose(h): ws_main 不应返回; 若返回进程即将退出, OS 回收
+    // server_main() 是无限事件循环, 正常情况下永不返回
+    // 不能 dlclose(h): server_main 内部已注册 atexit 回调,
+    // dlclose 后进程退出时引用已卸载代码 → SIGSEGV.
+    OH_LOG_ERROR(LOG_APP, "[WineChild] ws_main returned rc=%{public}d — wineserver died unexpectedly",
+                  wsRc);
 #endif
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step9: wineserver process exiting");
     free(buf);
