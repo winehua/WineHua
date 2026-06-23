@@ -152,6 +152,29 @@ static bool ShouldSuppressWineLogLine(const std::string& line) {
            line.find("http://www.freetype.org") != std::string::npos;
 }
 
+static void NotifyProcessExited(pid_t pid) {
+    if (gStateTsfn) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d:exited", pid);
+        napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
+    }
+}
+
+static void StartDetachedProcessWatcher(pid_t pid, const char* tag) {
+    std::thread([pid, tag]() {
+        int status = 0;
+        pid_t waited = waitpid(pid, &status, 0);
+        if (waited < 0) {
+            OH_LOG_WARN(LOG_APP, "[%{public}s] waitpid failed for %{public}d: %{public}s",
+                        tag, pid, strerror(errno));
+        } else {
+            LogProcessExit(tag, pid, status);
+        }
+        RemoveProcess(pid);
+        NotifyProcessExited(pid);
+    }).detach();
+}
+
 // -- stderr pipe reader (后台线程, 逐行日志) --
 // done 为 nullptr 时永不停止 (适合 wineserver 等持久进程)
 static void StartStderrLogger(int fd, const char* tag,
@@ -398,19 +421,19 @@ static void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> a
     close(fd);
 
     // 回收子进程
-    int status;
-    waitpid(pid, &status, 0);
-    LogProcessExit("wine", pid, status);
+    int status = 0;
+    pid_t waited = waitpid(pid, &status, 0);
+    if (waited < 0) {
+        OH_LOG_WARN(LOG_APP, "[wine] waitpid failed for %{public}d: %{public}s", pid, strerror(errno));
+    } else {
+        LogProcessExit("wine", pid, status);
+    }
 
     // 从注册表移除
     RemoveProcess(pid);
 
     // 通知 ArkTS
-    if (gStateTsfn) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "%d:exited", pid);
-        napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
-    }
+    NotifyProcessExited(pid);
 }
 
 // -- State 回调 -> ArkTS --
@@ -762,8 +785,6 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
     pos = p->exePath.find_last_of('/');
     p->winehuaBin = (pos != std::string::npos) ? p->exePath.substr(0, pos) : p->exePath;
 
-    signal(SIGCHLD, SIG_IGN);
-
     // 启动后台线程: wineserver -> wineboot --init
     std::thread(LaunchThreadFunc, p).detach();
 
@@ -880,6 +901,7 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
 
         pid_t pid = response[0];
         AddProcess(pid, wineExe, -1);
+        StartDetachedProcessWatcher(pid, "broker-child");
         OH_LOG_INFO(LOG_APP, "[Wine] wine pid=%{public}d exe=%{public}s (via broker)", pid, wineExe);
         if (gStateTsfn) {
             char msg[64];
@@ -895,8 +917,6 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
-    signal(SIGCHLD, SIG_IGN);
-
     pid_t pid = fork();
     if (pid == 0) {
         close(pipefd[0]);
