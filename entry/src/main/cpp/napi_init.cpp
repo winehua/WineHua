@@ -123,6 +123,21 @@ static void LogProcessExit(const char* tag, pid_t pid, int status) {
     }
 }
 
+// -- SIGCHLD handler: reap NCP child processes spawned by broker --
+static void sigchld_handler(int) {
+    int status;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        LogProcessExit("broker-child", pid, status);
+        RemoveProcess(pid);
+        if (gStateTsfn) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "%d:exited", pid);
+            napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
+        }
+    }
+}
+
 // -- stderr pipe reader (后台线程, 逐行日志) --
 // done 为 nullptr 时永不停止 (适合 wineserver 等持久进程)
 static void StartStderrLogger(int fd, const char* tag,
@@ -581,7 +596,7 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
     pos = p->exePath.find_last_of('/');
     p->winehuaBin = (pos != std::string::npos) ? p->exePath.substr(0, pos) : p->exePath;
 
-    signal(SIGCHLD, SIG_IGN);
+    signal(SIGCHLD, sigchld_handler);
 
     // 启动后台线程: wineserver -> wineboot --init
     std::thread(LaunchThreadFunc, p).detach();
@@ -710,7 +725,7 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
-    signal(SIGCHLD, SIG_IGN);
+    signal(SIGCHLD, sigchld_handler);
 
     pid_t pid = fork();
     if (pid == 0) {
