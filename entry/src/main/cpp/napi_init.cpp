@@ -181,10 +181,12 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "HOME=/storage/Users/currentUser/Download/app.hackeris.winehua",
         "WINEPREFIX=" WINE_PREFIX,
         "WINEDATADIR=" + shareDir + "/wine", // Wine 数据文件 (nls, wine.inf)
+#ifdef PAD_MODE
         "WINEDLLDIR=" + binDir + "/x86_64-unix", // Wine Unix .so
         "WINEDLLDIR0=" + binDir + "/x86_64-windows", // PE DLL 目录
         "WINEDLLDIR1=" + binDir,                      // PE EXE 目录
         "WINEDLLPATH=" + binDir + "/x86_64-windows:" + binDir, // PE DLL + EXE
+#endif
         // Box64 日志级别: 0=无 (3=DEBUG 会产生 300K+ 行 stderr, 拖慢初始化)
         "BOX64_LOG=0",
         "BOX64_NOBANNER=1",
@@ -474,12 +476,14 @@ static void LaunchThreadFunc(LaunchParams* p) {
         napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
     }
 
+#ifdef PAD_MODE
     // 启动 Process Broker（在主进程上下文监听请求，
     // 让 wineboot 内部的 spawn_process 可以通过 Unix socket 请求子进程创建）
     StartBrokerServer();
 
     // 设置 PROCESSBROKER 环境变量，所有 Wine 进程统一从 env 读取 broker socket 路径
     setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
+#endif
 
 #ifdef PAD_MODE
     // -- wineboot --init via OH_Ability_StartNativeChildProcess --

@@ -306,7 +306,7 @@ struct Index {
   private doRun = (name: string): void => {
     this.statusText = '启动中...';
     let exePath = this.curDir + '/' + name;
-    testNapi.runWineExe(BIN_DIR, SOCK, `${WINE_BIN}/bin:${WINE_LIB}`, exePath);
+    testNapi.runWineExe(BIN_DIR, SOCK, `${WINE_BIN}:${WINE_LIB}`, exePath);
   }
 
   private relPath = (): string => {
