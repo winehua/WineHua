@@ -163,7 +163,7 @@ case "$cmd" in
     deploy)
         run_deploy
         ;;
-    quick)
+    quick|full)
         run_deps
         run_wine
         run_box64
@@ -174,19 +174,7 @@ case "$cmd" in
         else
             NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
         fi
-        run_deploy
-        ;;
-    full|all_cmd)
-        run_deps
-        run_wine
-        run_box64
-        for_each_arch run_native
-        for_each_arch_assemble_and_hnp
-        if [ "$arch" = "all" ]; then
-            NATIVE_ARCH=all bash "$SCRIPTS/package.sh" hap
-        else
-            NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
-        fi
+        [ "$cmd" = "quick" ] && run_deploy || true
         ;;
     pad)
         # Pad 构建 (fork-only, 无 HNP, 无 execve)
