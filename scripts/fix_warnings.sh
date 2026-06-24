@@ -12,7 +12,7 @@ for flag in "Wlogical-op" "Wno-packed-not-aligned"; do
     sed -i "s/-$flag//g" Makefile
 done
 
-# Fix -Wshift-overflow=2 → -Wshift-overflow
+# Fix -Wshift-overflow=2 鈫?-Wshift-overflow
 sed -i 's/-Wshift-overflow=2/-Wshift-overflow/g' Makefile
 
 echo "Done. Warnings cleaned."

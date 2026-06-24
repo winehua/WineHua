@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Wine for HarmonyOS — Build & Package Script (Phase 1: x86_64)
+# Wine for HarmonyOS 鈥?Build & Package Script (Phase 1: x86_64)
 #
-# 用法:
+# 鐢ㄦ硶:
 #   bash scripts/build_wine_ohos.sh [--clean] [--package]
 #
-# 输出:
-#   out/wine/   — 完整 Wine 发行版 (bin + lib)
-#   out/wine.hnp — HNP 安装包 (需要 hnpcli)
+# 杈撳嚭:
+#   out/wine/   鈥?瀹屾暣 Wine 鍙戣鐗?(bin + lib)
+#   out/wine.hnp 鈥?HNP 瀹夎鍖?(闇€瑕?hnpcli)
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -67,7 +67,7 @@ build_native() {
             --without-x --without-freetype --without-alsa \
             --without-opengl --without-vulkan
     fi
-    make -j$(nproc)
+    make -j"${JOBS:-$(nproc)}"
     echo "    Native build complete"
     cd "$ROOT"
 }
@@ -121,7 +121,7 @@ build_ohos() {
     cd "$OHOS_BUILD"
 
     # Build all Unix .so files (continue on error for PE-only targets)
-    make -k -j$(nproc) \
+    make -k -j"${JOBS:-$(nproc)}" \
         CC="$CC_OHOS" \
         CFLAGS="$CFLAGS_OHOS" \
         LDFLAGS="$LDFLAGS_OHOS" \
@@ -210,7 +210,7 @@ EOFHNP
 # Main
 # ================================================================
 echo "============================================"
-echo " Wine for HarmonyOS — Build Script"
+echo " Wine for HarmonyOS 鈥?Build Script"
 echo " Target: $TARGET | SDK: $OHOS_SDK"
 echo "============================================"
 echo ""

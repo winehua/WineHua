@@ -19,6 +19,14 @@
     {
       "name": "documents_permission",
       "value": "Access ~/Documents"
+    },
+    {
+      "name": "user_file_permission",
+      "value": "Access files selected by the user"
+    },
+    {
+      "name": "file_access_persist_permission",
+      "value": "Keep access to selected files"
     }
   ]
 }

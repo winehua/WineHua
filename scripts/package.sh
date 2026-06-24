@@ -1,160 +1,389 @@
 #!/bin/bash
-# package.sh — HNP 打包 + HAP 构建 + 签名 + 部署
+# package.sh - HNP packaging, HAP build/sign and deploy helpers.
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-# ============================================================
-# 工具函数: 动态设置 abiFilters
-set_abi_filters() {
-    # 根据 NATIVE_ARCH 写 build-profile.json5 的 abiFilters
-    local profile="$WINEHUA/entry/build-profile.json5"
-    if [ ! -f "$profile" ]; then
-        err "build-profile.json5 未找到: $profile"
+ENTRY_PROFILE="$WINEHUA/entry/build-profile.json5"
+HVIGOR_BUILD_CACHE_DIR="$OUT_DIR/hvigor-build"
+HVIGOR_STOP_DAEMON_ON_BUILD="${HVIGOR_STOP_DAEMON_ON_BUILD:-0}"
+HVIGOR_CLEAN_CACHE_ON_BUILD="${HVIGOR_CLEAN_CACHE_ON_BUILD:-0}"
+HVIGOR_ENABLE_PARALLEL="${HVIGOR_ENABLE_PARALLEL:-1}"
+HVIGOR_ENABLE_INCREMENTAL="${HVIGOR_ENABLE_INCREMENTAL:-1}"
+HVIGOR_ENABLE_DAEMON="${HVIGOR_ENABLE_DAEMON:-1}"
+TEMP_ROOT=""
+ENTRY_PROFILE_BACKUP=""
+declare -a RESTORE_MOVES=()
+
+cleanup() {
+    local item from to
+
+    if [ -n "$ENTRY_PROFILE_BACKUP" ] && [ -f "$ENTRY_PROFILE_BACKUP" ]; then
+        cp "$ENTRY_PROFILE_BACKUP" "$ENTRY_PROFILE"
+        rm -f "$ENTRY_PROFILE_BACKUP"
     fi
 
+    for item in "${RESTORE_MOVES[@]}"; do
+        from="${item%%:*}"
+        to="${item#*:}"
+        if [ -e "$from" ]; then
+            mkdir -p "$(dirname "$to")"
+            rm -rf "$to"
+            mv "$from" "$to"
+        fi
+    done
+
+    if [ -n "$TEMP_ROOT" ] && [ -d "$TEMP_ROOT" ]; then
+        rm -rf "$TEMP_ROOT"
+    fi
+}
+
+trap cleanup EXIT
+
+ensure_temp_root() {
+    if [ -z "$TEMP_ROOT" ]; then
+        mkdir -p "$BUILD_DIR"
+        TEMP_ROOT="$(mktemp -d "$BUILD_DIR/package.XXXXXX")"
+    fi
+}
+
+backup_entry_profile() {
+    if [ -n "$ENTRY_PROFILE_BACKUP" ]; then
+        return 0
+    fi
+
+    [ -f "$ENTRY_PROFILE" ] || err "entry/build-profile.json5 not found: $ENTRY_PROFILE"
+    ensure_temp_root
+    ENTRY_PROFILE_BACKUP="$TEMP_ROOT/entry.build-profile.json5"
+    cp "$ENTRY_PROFILE" "$ENTRY_PROFILE_BACKUP"
+}
+
+set_abi_filters() {
     local abi_value
+
+    backup_entry_profile
+
     if [ "$NATIVE_ARCH" = "all" ]; then
         abi_value='"arm64-v8a", "x86_64"'
     else
         abi_value="\"$NATIVE_ARCH\""
     fi
 
-    # 用 python 正则替换, 支持多行 abiFilters
-    python3 -c "
+    python3 - <<PY
 import re
-with open('$profile', 'r') as f:
-    content = f.read()
-content = re.sub(r'\"abiFilters\"\s*:\s*\[[^\]]*\]', '\"abiFilters\": [$abi_value]', content)
-with open('$profile', 'w') as f:
-    f.write(content)
-"
+from pathlib import Path
+
+profile = Path(r"$ENTRY_PROFILE")
+content = profile.read_text(encoding="utf-8")
+updated = re.sub(r'"abiFilters"\s*:\s*\[[^\]]*\]', f'"abiFilters": [$abi_value]', content, count=1)
+if updated != content:
+    profile.write_text(updated, encoding="utf-8")
+PY
     log "abiFilters: [$abi_value]"
 }
 
-# ============================================================
-package_hnp() {
-    log "=== 打包 HNP ($NATIVE_ARCH) ==="
-    mkdir -p "$OUT_DIR"
-    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n winehua -v 0.1.0 || { err "hnpcli pack 失败"; return 1; }
+stash_path() {
+    local original="$1"
+    local stash_name="$2"
+    local stash_path
 
-    # HNP 按架构存放
-    local hnp_dir="$WINEHUA/entry/hnp/$NATIVE_ARCH"
-    mkdir -p "$hnp_dir"
-    cp "$OUT_DIR/winehua.hnp" "$hnp_dir/winehua.hnp"
-    ls -lh "$hnp_dir/winehua.hnp"
+    [ -e "$original" ] || return 0
+    ensure_temp_root
+    stash_path="$TEMP_ROOT/$stash_name"
+    rm -rf "$stash_path"
+    mv "$original" "$stash_path"
+    RESTORE_MOVES+=("$stash_path:$original")
 }
 
-# ============================================================
-package_hap() {
-    log "=== 打包 HAP ($NATIVE_ARCH) ==="
-    local unsigned_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-unsigned.hap"
-    local signed_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
-
-    set_abi_filters
-
-    # Pad: 移除 hnpPackages 配置 + 注入 PAD_MODE 编译宏
-    if [ "$DEVICE_TYPE" = "pad" ]; then
-        local module_json="$WINEHUA/entry/src/main/module.json5"
-        python3 -c "
-import re
-with open('$module_json', 'r') as f:
-    content = f.read()
-# 移除 hnpPackages 块 (含前导逗号)
-content = re.sub(r',?\s*\"hnpPackages\"\s*:\s*\[[^][]*\]', '', content)
-with open('$module_json', 'w') as f:
-    f.write(content)
-"
-        log "  已移除 hnpPackages 配置"
-
-        # 通过 cppFlags 注入 PAD_MODE (hvigorw 不会透传环境变量给 CMake)
-        local profile="$WINEHUA/entry/build-profile.json5"
-        python3 -c "
-import re
-with open('$profile', 'r') as f:
-    content = f.read()
-# 仅当不存在时注入 -DPAD_MODE
-if '-DPAD_MODE' not in content:
-    content = re.sub(r'\"cppFlags\"\s*:\s*\"', '\"cppFlags\": \"-DPAD_MODE ', content)
-with open('$profile', 'w') as f:
-    f.write(content)
-"
-        log "  已注入 -DPAD_MODE 到 cppFlags"
+hide_non_target_artifacts() {
+    if [ "$NATIVE_ARCH" = "all" ]; then
+        return 0
     fi
 
-    # 清理非目标架构的 native libs (hvigorw ProcessLibs 会打包所有 libs/)
-    local libs_root="$WINEHUA/entry/libs"
     if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
-        rm -rf "$libs_root/x86_64"
-    elif [ "$NATIVE_ARCH" = "x86_64" ]; then
-        rm -rf "$libs_root/arm64-v8a"
-    fi
-    # NATIVE_ARCH=all 时保留两个架构
-
-    cd "$WINEHUA"
-    hvigorw assembleHap || { err "hvigorw assembleHap 失败"; return 1; }
-
-    cd "$WINEHUA/entry"
-    # 清理非目标架构的 HNP (hvigorw 不处理 hnp/, 所以这时清理即可)
-    local hnp_root="$WINEHUA/entry/hnp"
-    if [ "$DEVICE_TYPE" = "pad" ]; then
-        # Pad: 完全移除 hnp/ 目录 (Pad 不支持 HNP)
-        rm -rf "$hnp_root"
+        stash_path "$WINEHUA/entry/libs/x86_64" "libs.x86_64"
+        stash_path "$WINEHUA/entry/hnp/x86_64" "hnp.x86_64"
     else
-        if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
-            rm -rf "$hnp_root/x86_64"
-        elif [ "$NATIVE_ARCH" = "x86_64" ]; then
-            rm -rf "$hnp_root/arm64-v8a"
-        fi
-        # NATIVE_ARCH=all 时保留两个架构
+        stash_path "$WINEHUA/entry/libs/arm64-v8a" "libs.arm64-v8a"
+        stash_path "$WINEHUA/entry/hnp/arm64-v8a" "hnp.arm64-v8a"
+    fi
+}
 
-        # 将 HNP 目录打包进 HAP (hvigorw 不会自动处理 hnp/)
-        zip -r "$unsigned_hap" hnp
+prepare_pad_build() {
+    local module_json="$WINEHUA/entry/src/main/module.json5"
+
+    python3 - <<PY
+import re
+from pathlib import Path
+
+module_json = Path(r"$module_json")
+content = module_json.read_text(encoding="utf-8")
+content = re.sub(r',?\s*"hnpPackages"\s*:\s*\[[^][]*\]', '', content)
+if content != module_json.read_text(encoding="utf-8"):
+    module_json.write_text(content, encoding="utf-8")
+PY
+
+    python3 - <<PY
+import re
+from pathlib import Path
+
+profile = Path(r"$ENTRY_PROFILE")
+content = profile.read_text(encoding="utf-8")
+if "-DPAD_MODE" not in content:
+    content = re.sub(r'"cppFlags"\s*:\s*"', '"cppFlags": "-DPAD_MODE ', content, count=1)
+    profile.write_text(content, encoding="utf-8")
+PY
+}
+
+get_hnp_payload_paths() {
+    if [ "$NATIVE_ARCH" = "all" ]; then
+        printf '%s\n' "hnp/arm64-v8a/winehua.hnp" "hnp/x86_64/winehua.hnp"
+    else
+        printf '%s\n' "hnp/$NATIVE_ARCH/winehua.hnp"
+    fi
+}
+
+verify_hnp_payload_in_hap() {
+    local hap_path="$1"
+    shift
+
+    python3 - "$hap_path" "$@" <<'PY'
+import sys
+import zipfile
+
+hap_path = sys.argv[1]
+required = sys.argv[2:]
+
+with zipfile.ZipFile(hap_path) as archive:
+    names = set(archive.namelist())
+
+missing = [name for name in required if name not in names]
+if missing:
+    raise SystemExit("missing HNP payload entries: " + ", ".join(missing))
+PY
+}
+
+inject_hnp_payload_into_hap() {
+    local hap_path="$1"
+    local payloads=()
+    local payload
+
+    while IFS= read -r payload; do
+        [ -n "$payload" ] || continue
+        payloads+=("$payload")
+    done < <(get_hnp_payload_paths)
+
+    [ "${#payloads[@]}" -gt 0 ] || err "no HNP payloads resolved for $NATIVE_ARCH"
+
+    for payload in "${payloads[@]}"; do
+        [ -f "$WINEHUA/entry/$payload" ] || err "HNP payload missing: $WINEHUA/entry/$payload"
+    done
+
+    (
+        cd "$WINEHUA/entry"
+        zip -q "$hap_path" "${payloads[@]}"
+    ) || err "zip hnp into hap failed"
+
+    verify_hnp_payload_in_hap "$hap_path" "${payloads[@]}" || err "HNP payload verification failed: $hap_path"
+}
+
+package_hnp() {
+    log "=== package HNP ($NATIVE_ARCH) ==="
+    if [ "$DEVICE_TYPE" = "pad" ]; then
+        log "pad mode skips HNP packaging"
+        return 0
     fi
 
-    cd "$WINEHUA"
-    python3 sign.py "$unsigned_hap" "$signed_hap"
+    local assemble_stamp="$OUT_DIR/.assemble-${DEVICE_TYPE}-${NATIVE_ARCH}.stamp"
+    local staged_hnp="$OUT_DIR/winehua.hnp"
+    local hnp_dir="$WINEHUA/entry/hnp/$NATIVE_ARCH"
+    local final_hnp="$hnp_dir/winehua.hnp"
+
+    if [ -f "$assemble_stamp" ] && [ -f "$final_hnp" ] && [ "$final_hnp" -nt "$assemble_stamp" ]; then
+        mkdir -p "$OUT_DIR"
+        if [ ! -f "$staged_hnp" ] || [ "$final_hnp" -nt "$staged_hnp" ]; then
+            cp "$final_hnp" "$staged_hnp"
+        fi
+        log "HNP package already up to date ($NATIVE_ARCH)"
+        ls -lh "$final_hnp"
+        return 0
+    fi
+
+    mkdir -p "$OUT_DIR"
+    "$HNPCLI" pack -i "$STAGING_DIR" -o "$OUT_DIR" -n winehua -v 0.1.0 || err "hnpcli pack failed"
+
+    mkdir -p "$hnp_dir"
+    cp "$staged_hnp" "$final_hnp"
+    ls -lh "$final_hnp"
+}
+
+package_hap() {
+    local legacy_hap_dir="$WINEHUA/entry/build/default/outputs/default"
+    local hvigor_status=0
+    local hvigor_signed_hap=""
+    local hvigor_args=()
+    local unsigned_hap=""
+    local staged_signed_hap=""
+    local signed_hap="$legacy_hap_dir/entry-default-signed.hap"
+
+    log "=== package HAP ($NATIVE_ARCH) ==="
+    set_abi_filters
+    hide_non_target_artifacts
+    if [ "$DEVICE_TYPE" = "pad" ]; then
+        prepare_pad_build
+    fi
+    if [ "$HVIGOR_CLEAN_CACHE_ON_BUILD" = "1" ]; then
+        rm -rf "$HVIGOR_BUILD_CACHE_DIR"
+    fi
+    mkdir -p "$HVIGOR_BUILD_CACHE_DIR"
+    hvigor_args=(--mode module)
+    if [ "$HVIGOR_ENABLE_PARALLEL" = "1" ]; then
+        hvigor_args+=(--parallel)
+    fi
+    if [ "$HVIGOR_ENABLE_INCREMENTAL" = "1" ]; then
+        hvigor_args+=(--incremental)
+    fi
+    if [ "$HVIGOR_ENABLE_DAEMON" = "1" ]; then
+        hvigor_args+=(--daemon)
+    fi
+    hvigor_args+=(
+        -p product=default
+        -p buildMode=debug
+        -p ohos.buildDir="$HVIGOR_BUILD_CACHE_DIR"
+        -p build-cache-dir="$HVIGOR_BUILD_CACHE_DIR"
+        assembleHap
+    )
+
+    (
+        cd "$WINEHUA"
+        if [ "$HVIGOR_STOP_DAEMON_ON_BUILD" = "1" ]; then
+            "$HVIGORW" --stop-daemon >/dev/null 2>&1 || true
+        fi
+        "$HVIGORW" "${hvigor_args[@]}"
+    ) || hvigor_status=$?
+
+    unsigned_hap="$(find "$legacy_hap_dir" "$HVIGOR_BUILD_CACHE_DIR" -type f -name 'entry-default-unsigned.hap' 2>/dev/null | head -n 1 || true)"
+    hvigor_signed_hap="$(find "$legacy_hap_dir" "$HVIGOR_BUILD_CACHE_DIR" -type f -name 'entry-default-signed.hap' 2>/dev/null | head -n 1 || true)"
+    if [ "$hvigor_status" -ne 0 ]; then
+        if [ -n "$unsigned_hap" ]; then
+            warn "hvigorw assembleHap exited with status $hvigor_status after producing an unsigned HAP; continuing with manual signing"
+        else
+            err "hvigorw assembleHap failed"
+        fi
+    fi
+
+    if [ "$hvigor_status" -eq 0 ] && [ -n "$hvigor_signed_hap" ]; then
+        if [ "$DEVICE_TYPE" != "pad" ]; then
+            if verify_hnp_payload_in_hap "$hvigor_signed_hap" $(get_hnp_payload_paths); then
+                log "hvigor signed HAP already contains HNP payloads"
+            else
+                warn "hvigor signed HAP lost HNP payloads; falling back to unsigned HAP injection + manual signing"
+                hvigor_signed_hap=""
+            fi
+        fi
+        if [ -n "$hvigor_signed_hap" ]; then
+            if [ "$hvigor_signed_hap" != "$signed_hap" ]; then
+                mkdir -p "$legacy_hap_dir"
+                cp "$hvigor_signed_hap" "$signed_hap"
+            fi
+            ls -lh "$signed_hap"
+            log "HAP build complete via hvigor signing ($NATIVE_ARCH)"
+            return 0
+        fi
+    fi
+
+    [ -n "$unsigned_hap" ] || err "unsigned HAP not found under $HVIGOR_BUILD_CACHE_DIR"
+    staged_signed_hap="$(dirname "$unsigned_hap")/entry-default-signed.hap"
+
+    if [ "$DEVICE_TYPE" != "pad" ]; then
+        if verify_hnp_payload_in_hap "$unsigned_hap" $(get_hnp_payload_paths); then
+            log "unsigned HAP already contains HNP payloads"
+        else
+            inject_hnp_payload_into_hap "$unsigned_hap"
+        fi
+    fi
+
+    (
+        cd "$WINEHUA"
+        python3 sign.py "$unsigned_hap" "$staged_signed_hap"
+    ) || err "HAP signing failed"
+
+    if [ "$DEVICE_TYPE" != "pad" ]; then
+        verify_hnp_payload_in_hap "$staged_signed_hap" $(get_hnp_payload_paths) || err "signed HAP lost HNP payload"
+    fi
+
+    mkdir -p "$legacy_hap_dir"
+    if [ "$staged_signed_hap" != "$signed_hap" ]; then
+        cp "$staged_signed_hap" "$signed_hap"
+    fi
 
     ls -lh "$signed_hap"
-    log "HAP 构建 + 签名完成 ($NATIVE_ARCH)"
+    log "HAP build and signing complete ($NATIVE_ARCH)"
 }
 
-# ============================================================
-deploy() {
-    local device="${1:-192.168.1.4:38879}"
-    local hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
+resolve_deploy_target() {
+    local requested="${1:-}"
+    local targets=()
+    local line
 
-    if [ ! -f "$hap" ]; then
-        err "HAP 文件不存在: $hap"
+    if [ -n "$requested" ] && [ "$requested" != "emulator" ]; then
+        case "$requested" in
+            *:*|[0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                log "connecting target via hdc tconn: $requested"
+                "$HDC" tconn "$requested" || err "hdc tconn failed: $requested"
+                printf '%s\n' "$requested"
+                return 0
+                ;;
+            *)
+                printf '%s\n' "$requested"
+                return 0
+                ;;
+        esac
     fi
 
-    log "=== 部署到 $device ==="
-    hdc tconn "$device" || { err "hdc tconn 失败"; }
-    hdc shell bm uninstall -n app.hackeris.winehua 2>/dev/null || true
-    hdc file send "$hap" /data/local/tmp/ || { err "hdc file send 失败"; }
-    hdc shell bm install -p /data/local/tmp/entry-default-signed.hap -r || { err "bm install 失败"; }
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        [ "$line" = "[Empty]" ] && continue
+        targets+=("${line%% *}")
+    done < <("$HDC" list targets 2>/dev/null || true)
 
-    log "部署完成"
+    if [ "${#targets[@]}" -eq 0 ]; then
+        err "no HDC targets found. Start the emulator or pass an explicit target/IP."
+    fi
+
+    if [ "${#targets[@]}" -gt 1 ]; then
+        err "multiple HDC targets found (${targets[*]}). Pass an explicit target key or ip:port."
+    fi
+
+    printf '%s\n' "${targets[0]}"
 }
 
-# ---- main ----
+deploy() {
+    local requested="${1:-}"
+    local hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
+    local target
+
+    [ -f "$hap" ] || err "signed HAP does not exist: $hap"
+    target="$(resolve_deploy_target "$requested")"
+
+    log "=== deploy to $target ==="
+    "$HDC" -t "$target" uninstall -n app.hackeris.winehua 2>/dev/null || true
+    "$HDC" -t "$target" install -r "$hap" || err "hdc install failed"
+
+    log "deploy complete"
+}
+
 case "${1:-}" in
-    hnp)
-        if [ "$DEVICE_TYPE" = "pad" ]; then
-            log "Pad 模式: 跳过 HNP 打包"
-        else
-            package_hnp
-        fi
-        ;;
-    hap)  package_hap ;;
+    hnp)    package_hnp ;;
+    hap)    package_hap ;;
     deploy) deploy "${2:-}" ;;
     all)
         if [ "$DEVICE_TYPE" = "pad" ]; then
-            log "Pad 模式: 跳过 HNP 打包"
             package_hap && deploy "${2:-}"
         else
             package_hnp && package_hap && deploy "${2:-}"
         fi
         ;;
-    *)    echo "用法: $0 {hnp|hap|deploy|all} [device_ip]" >&2; exit 1 ;;
+    *)      echo "usage: $0 {hnp|hap|deploy|all} [target|ip:port]" >&2; exit 1 ;;
 esac

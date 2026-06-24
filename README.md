@@ -1,127 +1,101 @@
-# WineHua — Wine on HarmonyOS
+# WineHua
 
-在 HarmonyOS (OpenHarmony) 设备上运行 Windows x86_64 程序，通过 Box64 指令翻译，嵌入 Wayland compositor 渲染窗口。
+在 HarmonyOS / OpenHarmony 设备上运行 Windows x86_64 程序的实验性工程。当前主线是 `Wine + 内嵌 Wayland compositor`，并按目标架构决定是否需要 `Box64`。
 
 ![运行效果](docs/images/run_wine_example.jpg)
 
 ## 支持平台
 
 | 平台 | Wine | Box64 | 进程模型 | 打包方式 |
-|------|------|-------|---------|---------|
-| arm64 PC (emulator) | x86_64 (musl) | box64 可执行文件 | execve | HNP |
-| arm64 Pad (emulator) | x86_64 (musl) | box64.so (dlopen) | NCP appspawn | rawfile zip |
-| x86_64 PC emulator | x86_64 (musl) | - | execve | HNP |
-| x86_64 Pad emulator | x86_64 (musl) .so | - | NCP appspawn | rawfile zip |
+| --- | --- | --- | --- | --- |
+| arm64 PC (emulator) | x86_64 (musl) | box64 可执行文件 | `execve` | HNP |
+| arm64 Pad (emulator) | x86_64 (musl) | `box64.so` | NCP appspawn | rawfile zip |
+| x86_64 PC emulator | x86_64 (musl) | 不需要 | `execve` | HNP |
+| x86_64 Pad emulator | x86_64 (musl) `.so` | 不需要 | NCP appspawn | rawfile zip |
 
-PC 设备有 execve 和 HNP 包管理；Pad 设备仅 fork、无 execve，通过 OHOS NativeChildProcess (appspawn) 启动子进程，产物放在 rawfile zip 中运行时解压。
+## 当前构建体系
 
-## 架构
+- 默认宿主已经切到 `MSYS2`
+- `WSL` 仍保留为 fallback 和回归路径
+- DevEco / OpenHarmony SDK、`hvigorw`、`hnpcli`、`hdc` 继续复用 Windows 侧安装
+- Windows 统一外层入口是 `scripts/rebuild_harmony.ps1`
+- 内层单 shell 编排入口是 `scripts/rebuild_harmony.sh`
+- DevEco 直接点击构建也已接入仓库内的 SDK overlay / Java / Node 环境补齐
 
-```
-Windows PE (x86_64)
-    ↓ Box64 (x86_64 → ARM64 指令翻译)
-Wine (x86_64, musl libc)
-    ↓ winewayland.drv
-嵌入式 Wayland compositor (ARM64 原生, HAP 进程内)
-    ├── WaylandServer (wl_compositor, xdg_shell, wl_seat)
-    ├── InputManager  (鼠标/键盘事件注入)
-    └── EglRenderer  (EGL/GLES → XComponent 上屏)
-```
+构建体系说明见 [docs/MSYS2_BUILD_SYSTEM.md](docs/MSYS2_BUILD_SYSTEM.md)。
 
-arm64 Pad 下 Box64 编译为 **共享库 (box64.so)**，由 NCP 子进程 dlopen 加载，通过 `box64_hmos_main()` 在同一进程内模拟执行 x86_64 Wine ELF。编译宏 `LIBBOX64_SO` 控制此模式，运行时通过 `USE_LIBBOX64` 环境变量通知 Wine 侧适配 entryParams 格式。
+## 推荐命令
 
-## 当前状态
+首次准备:
 
-| 功能 | 状态 |
-|------|------|
-| ARM64 Pad Box64 .so 方案 | ✅ |
-| x86_64 Pad Wine .so 方案 | ✅ |
-| Explorer 桌面 | ✅ |
-| GUI 程序 (notepad 等) | ✅ |
-| NAPI 沙箱运行 | ✅ |
-| 多窗口 | ✅ |
-| 鼠标 / 键盘输入 | ✅ |
-| 音频 | ❌ |
-
-## 构建
-
-依赖 [Command Line Tools](https://developer.huawei.com/consumer/cn/download/) 命令行工具 (`hvigorw`)，通过 `TOOL_HOME` 环境变量定位。
-
-```bash
-# PC 构建 (execve + HNP)
-bash build.sh quick <device_ip>          # arm64 PC (默认)
-bash build.sh quick <device_ip> x86_64   # x86_64 PC
-
-# Pad 构建 (fork-only, rawfile zip)
-bash build.sh pad arm64                  # arm64 Pad
-bash build.sh pad x86_64                 # x86_64 Pad
-
-# Pad 增量构建 (只改 ArkTS/native 时)
-bash build.sh pad-hap arm64
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_msys2.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 -Backend msys2 -Mode doctor -Arch x86_64
 ```
 
-## 讨论交流
+完整构建:
 
-WeChat 二维码
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 -Backend msys2 -Mode full -Arch x86_64 -Target 127.0.0.1:5555
+```
 
-<img src="docs/images/wechat_qrcode.png" width="300">
+日常增量:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 -Backend msys2 -Mode incremental -Arch x86_64 -Target 127.0.0.1:5555
+```
+
+WSL fallback:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 -Backend wsl -Mode doctor -Arch x86_64
+```
+
+## 当前主线目标
+
+- `x86_64 + HarmonyOS 2in1 / pc_all` 模拟器
+- HNP + 已签名 HAP 产物
+- `wineserver`、`wineboot --init`、`notepad.exe` 主链验证
+
+## 产物路径
+
+- Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`
+- HNP:
+  - `entry/hnp/x86_64/winehua.hnp`
+  - `entry/hnp/arm64-v8a/winehua.hnp`
+
+## 文档入口
+
+- [docs/ONBOARDING.md](docs/ONBOARDING.md): 第一次接手仓库先看这里
+- [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md): 当前推荐构建、打包、安装、日志流程
+- [docs/MSYS2_BUILD_SYSTEM.md](docs/MSYS2_BUILD_SYSTEM.md): MSYS2 构建体系、脚本分层、SDK overlay、DevEco 直构建
+- [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md): 当前能力、限制和验收状态
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): 代码主链路和运行时结构
+- [docs/README.md](docs/README.md): 文档索引
 
 ## 目录结构
 
-```
+```text
 WineHua/
-├── entry/src/main/
-│   ├── cpp/                   # Native C++: Wayland compositor, EGL, Input
-│   │   ├── napi_init.cpp      # NAPI 桥接 + wine/wineserver/broker 进程管理
-│   │   ├── wine_child.cpp     # NCP 子进程入口 (Main/WineserverMain)
-│   │   ├── wayland_server.cpp # 嵌入式 Wayland compositor
-│   │   ├── egl_renderer.cpp   # EGL/GLES 渲染器
-│   │   ├── input_manager.cpp  # 鼠标/键盘事件注入
-│   │   ├── plugin_manager.cpp # surfaceId 驱动 XComponent 管理
-│   │   ├── xdg_shell.cpp      # xdg-shell 协议实现
-│   │   └── seat.cpp           # wl_seat + keycode 映射
-│   ├── ets/pages/
-│   │   ├── Index.ets          # 主界面 (侧边栏 + 桌面)
-│   │   ├── WineWindow.ets     # Wine 子窗口
-│   │   └── DesktopWindow.ets  # 桌面窗口
-│   └── ets/model/
-│       └── WineWindowManager.ets  # 窗口生命周期管理
-├── build.sh                   # 统一构建入口
-├── scripts/
-│   ├── env.sh                 # 环境变量 (NATIVE_ARCH, DEVICE_TYPE, 工具链)
-│   ├── build_deps.sh          # 交叉编译依赖
-│   ├── build_wine.sh          # Wine 构建
-│   ├── build_box64.sh         # Box64 构建 (可执行文件 / .so)
-│   ├── assemble.sh            # PC: HNP 布局 / Pad: rawfile zip + libs/
-│   └── package.sh             # HNP/HAP 打包
-├── docs/                      # 详细文档
-│   ├── CURRENT_STATUS.md      # 当前状态 & 修复清单
-│   ├── ARCHITECTURE.md        # 架构详解
-│   └── BUILD_GUIDE.md         # 构建指南
-└── thirdparty/                # git submodule
-    ├── wine/                  # winehua/wine (fork)
-    ├── box64/                 # winehua/box64 (fork)
-    ├── freetype/
-    ├── wayland/
-    ├── libxkbcommon/
-    └── xkeyboard-config/
+├─ entry/src/main/cpp/          # Native C++: NAPI, Wayland compositor, renderer, input
+├─ entry/src/main/ets/          # ArkTS UI, window model, ability entry
+├─ scripts/
+│  ├─ env.sh                    # 共享环境解析 + host adapter
+│  ├─ build_*.sh                # deps / wine / box64 / native 等底层步骤
+│  ├─ assemble.sh               # HNP / rawfile 运行时布局
+│  ├─ package.sh                # HNP / HAP 打包、签名、校验
+│  ├─ rebuild_harmony.sh        # 内层单 shell 编排入口
+│  ├─ rebuild_harmony.ps1       # Windows 宿主统一入口
+│  ├─ bootstrap_msys2.ps1       # MSYS2 初次安装和补包
+│  ├─ inject_hnp_into_hap.ps1   # unsigned HAP 注入 HNP
+│  ├─ ensure_hnp_signed_hap.ps1 # signed HAP 校验 / 必要时重签
+│  └─ deveco_hvigor_env.js      # DevEco 直构建时补 SDK overlay / Java / Node 环境
+├─ docs/                        # 构建、状态、架构和研究文档
+└─ thirdparty/                  # git submodule: wine / box64 / freetype / wayland / xkb 等
 ```
 
-## 关键适配
+## 交流
 
-- **Box64**: x86_64 → ARM64 指令翻译 (Dynarec)，Pad 下编译为 .so (LIBBOX64_SO) 由 NCP 子进程 dlopen 加载
-- **Wayland compositor**: HAP 进程内嵌入式 compositor，不依赖外部 Wayland 服务
-- **NCP appspawn**: Pad 通过 `OH_Ability_StartNativeChildProcess` 创建子进程，绕过无 execve 限制
-- **surfaceId 架构**: 通过 `XComponentController` 回调获取 surfaceId，解决多窗口冲突
-- **noexec 文件系统**: 可执行段用匿名 mmap + pread 替代文件映射
-- **dosdevices symlink**: OHOS 沙箱禁止 symlink()，fallback 到 drive_c
-- **XKB 键盘**: xkeyboard-config 打包到 rawfile/HNP，通过 `XKB_CONFIG_ROOT` 指向
+WeChat 二维码:
 
-## 日志
-
-所有 Wine 输出（stdout + stderr）重定向到 hilog + 文件：
-
-```bash
-# Pad 设备
-hdc -t <device_ip> hilog | grep -E '\[wine\]|WineChild|WL_NAPI|WL_Input'
-```
+<img src="docs/images/wechat_qrcode.png" width="300">

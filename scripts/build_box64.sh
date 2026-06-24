@@ -31,7 +31,7 @@ if [ "$DEVICE_TYPE" = "pad" ]; then
         -DARM_DYNAREC=ON \
         -DLIBBOX64_SO=ON \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-    ninja box64_hmos_core
+    ninja -j"$JOBS" box64_hmos_core
     cp "$BUILD_DIR/box64_build/box64.so" "$NATIVE_LIBS/"
     log "Box64 → $NATIVE_LIBS/box64.so"
 else
@@ -45,6 +45,6 @@ else
         -DCMAKE_BUILD_TYPE=Release \
         -DARM_DYNAREC=ON \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-    ninja box64
+    ninja -j"$JOBS" box64
     log "Box64 构建完成 (executable)"
 fi

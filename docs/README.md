@@ -1,39 +1,38 @@
-# Wine for HarmonyOS — 技术文档
+# WineHua 文档索引
 
-## 项目概述
+> 更新日期: 2026-06-24
 
-将 Wine 移植到 HarmonyOS (OpenHarmony)，使 Windows 程序在鸿蒙系统上运行。
+## 先看这些
 
-当前架构：Wine (x86_64, musl) + Box64 (ARM64) → Wayland compositor → 鸿蒙 XComponent 上屏。
+- [ONBOARDING.md](ONBOARDING.md): 新机器或第一次接手仓库时的最短上手路径
+- [BUILD_GUIDE.md](BUILD_GUIDE.md): 当前推荐的构建、打包、安装、日志流程
+- [MSYS2_BUILD_SYSTEM.md](MSYS2_BUILD_SYSTEM.md): MSYS2 构建体系、脚本职责、SDK overlay、DevEco 直构建
+- [CURRENT_STATUS.md](CURRENT_STATUS.md): 当前能力、主线目标、已知限制
+- [ARCHITECTURE.md](ARCHITECTURE.md): 代码结构、Wayland compositor、NAPI 与窗口模型
 
-## 文档索引
+## 当前默认构建入口
 
-### 当前状态
-- **[CURRENT_STATUS.md](CURRENT_STATUS.md)** — 里程碑、已修复问题、源码修改清单、HNP 布局
+- Windows 宿主统一入口: `scripts/rebuild_harmony.ps1`
+- 默认 backend: `MSYS2`
+- fallback backend: `WSL`
+- 首次准备 MSYS2: `scripts/bootstrap_msys2.ps1`
+- 底层单步入口: `build.sh`
 
-### 架构与构建
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Wine 内部架构、Wayland compositor 设计
-- **[BUILD_GUIDE.md](BUILD_GUIDE.md)** — 构建环境、步骤、产物说明
+推荐顺序是先看 `ONBOARDING.md`，再用 `rebuild_harmony.ps1`；只有在需要拆解单步排查时才直接调用 `build.sh`。
 
-### 技术分析
-- **[WINE_MUSL_GLIBC_DIFF.md](WINE_MUSL_GLIBC_DIFF.md)** — glibc → musl 逐项适配分析
-- **[NOEXEC_MMAP_ANALYSIS.md](NOEXEC_MMAP_ANALYSIS.md)** — noexec 文件系统上 mmap+PROT_EXEC 问题深度分析
-- **[OHOS_MMAP_ANALYSIS.md](OHOS_MMAP_ANALYSIS.md)** — OHOS mmap 权限调研报告
+## 迁移后的心智模型
 
-### 规划与预研
-- **[UNCERTAINTIES.md](UNCERTAINTIES.md)** — 剩余技术风险和待解决问题
-- **[PHASE2_ARM64_RESEARCH.md](PHASE2_ARM64_RESEARCH.md)** — ARM64 交叉架构预研
-- **[SOURCE_MANAGEMENT.md](SOURCE_MANAGEMENT.md)** — Wine/Box64 源码管理 (fork + submodule)
+- `scripts/rebuild_harmony.sh` 仍然是唯一的内层编排入口
+- `deps -> wine -> native -> hnp -> hap` 必须在同一个 shell 内完成
+- `MSYS2` 负责 bash / pacman / autotools / meson / cmake / ninja 等宿主工具
+- DevEco / OpenHarmony SDK、`hvigorw`、`hnpcli`、`hdc` 继续复用 Windows 侧安装
+- DevEco IDE 直接构建会通过 `hvigorfile.ts` + `scripts/deveco_hvigor_env.js` 自动补齐 SDK overlay / Java / Node 环境
+- `WSL` 还保留着，主要用于回归验证和应急 fallback
 
-## 关键里程碑
+## 其他文档
 
-| 日期 | 里程碑 |
-|------|--------|
-| 2026-06-11 | wineserver 交叉编译通过 |
-| 2026-06-12 | cmd.exe 在设备上运行 |
-| 2026-06-13 | notepad.exe GUI headless 验证 |
-| 2026-06-14 | NAPI 沙箱 + Wayland 渲染上屏 |
-| 2026-06-15 | multiton 多窗口架构 + 输入框架 |
-| 2026-06-18 | 键盘输入修复 (XKB 数据打包 + 完整链路) |
-| 2026-06-21 | ARM64 Pad Box64 .so 方案完成，prctl SIGSEGV 修复 |
-| 2026-06-22 | Box64/Wine 日志收敛、环境变量重命名、Terminal 清理 |
+- [SOURCE_MANAGEMENT.md](SOURCE_MANAGEMENT.md): `thirdparty/` submodule 管理
+- [NOEXEC_MMAP_ANALYSIS.md](NOEXEC_MMAP_ANALYSIS.md): `noexec` 与可执行映射问题分析
+- [OHOS_MMAP_ANALYSIS.md](OHOS_MMAP_ANALYSIS.md): OHOS `mmap` 行为研究
+- [WINE_MUSL_GLIBC_DIFF.md](WINE_MUSL_GLIBC_DIFF.md): musl / glibc 差异记录
+- [UNCERTAINTIES.md](UNCERTAINTIES.md): 历史风险和未决问题

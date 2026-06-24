@@ -1,78 +1,78 @@
-# ARM64 Pad 方案: Box64 .so 跨架构模拟
+# ARM64 Pad 鏂规: Box64 .so 璺ㄦ灦鏋勬ā鎷?
 
-> 更新: 2026-06-22
-> 状态: ✅ 已实现
-
----
-
-## 1. 核心概念
-
-**场景**: HarmonyOS ARM64 Pad 设备上运行 Windows x86_64 程序。
-
-方案：**Box64 编译为共享库 (box64.so)** — Wine 编译为 x86_64 (musl)，Box64 .so 由 NCP 子进程 dlopen 加载，`box64_hmos_main()` 在同一进程内模拟执行 x86_64 Wine ELF。
-
-```
-┌────────────────────────────────────────────────────┐
-│          HarmonyOS ARM64 Pad                        │
-│                                                    │
-│  NCP 子进程 (appspawn)                              │
-│    wine_child.so: Main()                           │
-│      dlopen("box64.so") → box64_hmos_main()        │
-│        ↓                                           │
-│  Wine x86_64 ELF + PE DLLs (rawfile zip 解压)      │
-│        ↓ Box64 (x86_64 → ARM64 Dynarec)            │
-│        ↓ winewayland.drv                           │
-│  嵌入式 Wayland compositor → XComponent            │
-└────────────────────────────────────────────────────┘
-```
-
-编译：`cmake -DLIBBOX64_SO=ON`，产物 `box64.so` 放入 `entry/libs/arm64-v8a/`。  
-运行时：`wine_child.cpp` 中 `setenv("USE_LIBBOX64", "1")` 通知 Wine 侧适配 entryParams。
-wineserver 编为 x86_64 PIE，同样由 Box64 加载，保持与 Wine 架构一致。
+> 鏇存柊: 2026-06-22
+> 鐘舵€? 鉁?宸插疄鐜?
 
 ---
 
-## 2. 编译验证 (2026-06-11)
+## 1. 鏍稿績姒傚康
 
-ARM64 wineserver + ntdll/unix 已成功交叉编译：
+**鍦烘櫙**: HarmonyOS ARM64 Pad 璁惧涓婅繍琛?Windows x86_64 绋嬪簭銆?
 
-| 组件 | 结果 |
+鏂规锛?*Box64 缂栬瘧涓哄叡浜簱 (box64.so)** 鈥?Wine 缂栬瘧涓?x86_64 (musl)锛孊ox64 .so 鐢?NCP 瀛愯繘绋?dlopen 鍔犺浇锛宍box64_hmos_main()` 鍦ㄥ悓涓€杩涚▼鍐呮ā鎷熸墽琛?x86_64 Wine ELF銆?
+
+```
+鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+鈹?         HarmonyOS ARM64 Pad                        鈹?
+鈹?                                                   鈹?
+鈹? NCP 瀛愯繘绋?(appspawn)                              鈹?
+鈹?   wine_child.so: Main()                           鈹?
+鈹?     dlopen("box64.so") 鈫?box64_hmos_main()        鈹?
+鈹?       鈫?                                          鈹?
+鈹? Wine x86_64 ELF + PE DLLs (rawfile zip 瑙ｅ帇)      鈹?
+鈹?       鈫?Box64 (x86_64 鈫?ARM64 Dynarec)            鈹?
+鈹?       鈫?winewayland.drv                           鈹?
+鈹? 宓屽叆寮?Wayland compositor 鈫?XComponent            鈹?
+鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+```
+
+缂栬瘧锛歚cmake -DLIBBOX64_SO=ON`锛屼骇鐗?`box64.so` 鏀惧叆 `entry/libs/arm64-v8a/`銆?
+杩愯鏃讹細`wine_child.cpp` 涓?`setenv("USE_LIBBOX64", "1")` 閫氱煡 Wine 渚ч€傞厤 entryParams銆?
+wineserver 缂栦负 x86_64 PIE锛屽悓鏍风敱 Box64 鍔犺浇锛屼繚鎸佷笌 Wine 鏋舵瀯涓€鑷淬€?
+
+---
+
+## 2. 缂栬瘧楠岃瘉 (2026-06-11)
+
+ARM64 wineserver + ntdll/unix 宸叉垚鍔熶氦鍙夌紪璇戯細
+
+| 缁勪欢 | 缁撴灉 |
 |------|------|
-| wineserver | ✅ ARM aarch64, `ld-musl-aarch64.so.1` |
-| ntdll/unix | ✅ 15/21 编译通过 (6 个需 configure 头文件) |
+| wineserver | 鉁?ARM aarch64, `ld-musl-aarch64.so.1` |
+| ntdll/unix | 鉁?15/21 缂栬瘧閫氳繃 (6 涓渶 configure 澶存枃浠? |
 
-Phase 1 的 x86_64 编译配方对 ARM64 完全适用，只需改 target triple。
+Phase 1 鐨?x86_64 缂栬瘧閰嶆柟瀵?ARM64 瀹屽叏閫傜敤锛屽彧闇€鏀?target triple銆?
 
 ---
 
-## 3. 已有资源
+## 3. 宸叉湁璧勬簮
 
-| 组件 | 状态 | 说明 |
+| 缁勪欢 | 鐘舵€?| 璇存槑 |
 |------|------|------|
-| Box64 on OHOS ARM64 | ✅ | Dynarec 模式正常运行 |
-| OHOS ARM64 SDK | ✅ | `aarch64-linux-ohos` 完整可用 |
-| Wine x86_64 on Box64 | ✅ | 当前生产路径 |
-| Wayland compositor | ✅ | ARM64 原生编译 |
-| XKB 键盘数据 | ✅ | 架构无关，已打包到 HNP |
+| Box64 on OHOS ARM64 | 鉁?| Dynarec 妯″紡姝ｅ父杩愯 |
+| OHOS ARM64 SDK | 鉁?| `aarch64-linux-ohos` 瀹屾暣鍙敤 |
+| Wine x86_64 on Box64 | 鉁?| 褰撳墠鐢熶骇璺緞 |
+| Wayland compositor | 鉁?| ARM64 鍘熺敓缂栬瘧 |
+| XKB 閿洏鏁版嵁 | 鉁?| 鏋舵瀯鏃犲叧锛屽凡鎵撳寘鍒?HNP |
 
 ---
 
-## 4. 待解决问题
+## 4. 寰呰В鍐抽棶棰?
 
-### Box64 fork 子进程 RWX 失败
-- **问题**: Box64 fork 子进程无法创建 PROT_EXEC 内存 (EINVAL)
-- **影响**: wineserver 等子进程受限制
-- **缓解**: wineserver 使用 NAPI 原生 fork 绕过
+### Box64 fork 瀛愯繘绋?RWX 澶辫触
+- **闂**: Box64 fork 瀛愯繘绋嬫棤娉曞垱寤?PROT_EXEC 鍐呭瓨 (EINVAL)
+- **褰卞搷**: wineserver 绛夊瓙杩涚▼鍙楅檺鍒?
+- **缂撹В**: wineserver 浣跨敤 NAPI 鍘熺敓 fork 缁曡繃
 
-### Wine ARM64 原生 (未来)
-- 如需 Wine ARM64 原生编译，需要 `aarch64-w64-mingw32` 工具链交叉编译 PE DLL
-- 当前 x86_64 + Box64 方案已满足基本需求，ARM64 原生暂不必要
+### Wine ARM64 鍘熺敓 (鏈潵)
+- 濡傞渶 Wine ARM64 鍘熺敓缂栬瘧锛岄渶瑕?`aarch64-w64-mingw32` 宸ュ叿閾句氦鍙夌紪璇?PE DLL
+- 褰撳墠 x86_64 + Box64 鏂规宸叉弧瓒冲熀鏈渶姹傦紝ARM64 鍘熺敓鏆備笉蹇呰
 
 ---
 
-## 5. 技术决策
+## 5. 鎶€鏈喅绛?
 
-| 日期 | 决策 | 原因 |
+| 鏃ユ湡 | 鍐崇瓥 | 鍘熷洜 |
 |------|------|------|
-| 2026-06 | 使用 Box64 全模拟而非 ARM64 原生 Wine | Box64 OHOS 已有成熟移植，立即可用 |
-| 2026-06 | Wayland compositor 用 ARM64 原生 | 性能关键路径，需与 XComponent 直接交互 |
+| 2026-06 | 浣跨敤 Box64 鍏ㄦā鎷熻€岄潪 ARM64 鍘熺敓 Wine | Box64 OHOS 宸叉湁鎴愮啛绉绘锛岀珛鍗冲彲鐢?|
+| 2026-06 | Wayland compositor 鐢?ARM64 鍘熺敓 | 鎬ц兘鍏抽敭璺緞锛岄渶涓?XComponent 鐩存帴浜や簰 |

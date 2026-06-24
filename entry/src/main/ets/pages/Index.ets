@@ -20,7 +20,7 @@ const WINE_LIB_PAD = `${WINE_BIN_PAD}/x86_64-unix`;
 let WINE_BIN = WINE_BIN_PC;
 let WINE_LIB = WINE_LIB_PC;
 let BIN_DIR = WINE_BIN;
-let BOX64 = `${WINE_BIN}/box64`;
+let LAUNCHER_BIN = `${WINE_BIN}/wine`;
 
 function detectWinePath(): void {
   try {
@@ -29,7 +29,7 @@ function detectWinePath(): void {
       WINE_BIN = WINE_BIN_PC;
       WINE_LIB = WINE_LIB_PC;
       BIN_DIR = WINE_BIN;
-      BOX64 = `${WINE_BIN}/box64`;
+      LAUNCHER_BIN = `${WINE_BIN}/wine`;
       hilog.info(DOMAIN, 'wine', 'detectWinePath: PC mode (HNP)');
       return;
     }
@@ -38,7 +38,7 @@ function detectWinePath(): void {
   WINE_BIN = WINE_BIN_PAD;
   WINE_LIB = WINE_LIB_PAD;
   BIN_DIR = WINE_BIN;
-  BOX64 = `${WINE_BIN}/box64`;
+  LAUNCHER_BIN = `${WINE_BIN}/box64`;
   hilog.info(DOMAIN, 'wine', 'detectWinePath: Pad mode (rawfile)');
 }
 
@@ -284,7 +284,7 @@ struct Index {
       this.statusText = '启动服务失败';
       return;
     }
-    testNapi.launchClient(BOX64, [], SOCK, `${BIN_DIR}:${WINE_LIB}`);
+    testNapi.launchClient(LAUNCHER_BIN, [], SOCK, `${BIN_DIR}:${WINE_LIB}`);
   }
 
   private doReset = (): void => {
@@ -306,7 +306,7 @@ struct Index {
   private doRun = (name: string): void => {
     this.statusText = '启动中...';
     let exePath = this.curDir + '/' + name;
-    testNapi.runWineExe(BIN_DIR, SOCK, `${WINE_BIN}/bin:${WINE_LIB}`, exePath);
+    testNapi.runWineExe(BIN_DIR, SOCK, `${BIN_DIR}:${WINE_LIB}`, exePath);
   }
 
   private relPath = (): string => {

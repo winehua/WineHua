@@ -26,6 +26,7 @@ Thumbs.db
 # Build output (root)
 build/
 out/
+/prebuilt-runtime/
 
 # HAP project
 /node_modules
@@ -49,4 +50,5 @@ thirdparty/wine/*.bak
 thirdparty/box64/build*/
 thirdparty/freetype-VER-2-13-3/
 /entry/hnp
+/runlogs/
 entry/src/main/resources/rawfile/wine-data.zip

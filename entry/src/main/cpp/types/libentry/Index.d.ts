@@ -13,6 +13,8 @@ export const checkWinePrefix: () => boolean;
 export const resetWinePrefix: () => void;
 export const setOutputSize: (w: number, h: number) => void;
 export const setDisplayScale: (scale: number) => void;
+export const setDesktopMode: (enabled: boolean) => void;
+export const getDesktopRootId: () => number;
 export const createRenderer: (toplevelId: number, surfaceId: BigInt) => void;
 export const resizeRenderer: (toplevelId: number, width: number, height: number) => void;
 export const destroyRenderer: (toplevelId: number) => void;
@@ -20,6 +22,8 @@ export const sendPointerEvent: (toplevelId: number, action: number, px: number, 
 export const sendKeyEvent: (toplevelId: number, evdevCode: number, pressed: boolean) => void;
 export const sendScrollEvent: (toplevelId: number, axis: number, value: number, scrollStep: number, px: number, py: number) => void;
 export const notifyToplevelResize: (toplevelId: number, w: number, h: number) => void;
+export const findToplevelAt: (x: number, y: number) => number;
+export const raiseToplevel: (toplevelId: number) => void;
 export const setToplevelVisible: (toplevelId: number, visible: boolean) => void;
 export const getProcessList: () => Array<{pid: number, name: string, path: string, state: string}>;
 export const killProcess: (pid: number) => boolean;

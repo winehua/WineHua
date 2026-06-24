@@ -99,3 +99,33 @@ x86_64 Pad 下 Wine 原生 .so 直接由系统 linker 加载，无需 Box64。
 
 4 层 fallback: `epoll_pwait2` → `epoll_wait` → `kqueue` → `poll()`  
 HarmonyOS 使用 epoll (Linux 内核)，`epoll_pwait2` 在 musl 上 stub 返回 ENOSYS 后自动 fallback。
+
+---
+
+## 5. 当前音频路径
+
+当前音频主线是:
+
+```mermaid
+flowchart LR
+    A["Win32 App"] --> B["Wine mmdevapi"]
+    B --> C["wineohos.drv"]
+    C --> D["控制面: IPC"]
+    C --> E["数据面: Shared Memory Ring"]
+    D --> F["Host AudioBroker"]
+    E --> F
+    F --> G["OH_AudioRenderer"]
+    G --> H["Speaker"]
+```
+
+关键点:
+
+- 宿主 native 进程独占 `OH_AudioRenderer`
+- Wine 侧只负责提交 PCM
+- 控制面走 broker
+- 数据面走共享内存
+- 多进程混频在宿主侧完成
+
+更详细的实现细节、日志策略和多格式验证边界见:
+
+- [AUDIO_ARCHITECTURE.md](AUDIO_ARCHITECTURE.md)

@@ -1,6 +1,9 @@
 #!/bin/bash
-# build_all.sh — 全量构建: Box64 → Wine → 组装 → HNP → HAP → 部署
+# Legacy helper kept for low-level experiments.
+# Prefer scripts/rebuild_harmony.ps1 or scripts/rebuild_harmony.sh for the
+# supported MSYS2 / WSL build flow.
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 

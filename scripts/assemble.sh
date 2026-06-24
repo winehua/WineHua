@@ -1,184 +1,220 @@
 #!/bin/bash
-# assemble.sh — 组装 HNP 打包临时目录
 set -euo pipefail
+shopt -s nullglob
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-# ============================================================
-# Pad 模式: 无 HNP — 文件分流到 libs/ + rawfile/
-# ============================================================
+count_files() {
+    local dir="$1"
+    if [ ! -d "$dir" ]; then
+        echo 0
+        return 0
+    fi
+    find "$dir" -maxdepth 1 -type f | wc -l
+}
+
+path_newer_than_stamp() {
+    local stamp="$1"
+    local path="$2"
+
+    [ -e "$path" ] || return 1
+    [ -f "$stamp" ] || return 0
+
+    if [ -d "$path" ]; then
+        find "$path" -type f -newer "$stamp" -print -quit 2>/dev/null | grep -q .
+        return $?
+    fi
+
+    [ "$path" -nt "$stamp" ]
+}
+
+assemble_inputs_changed() {
+    local stamp="$1"
+    shift
+    local path=""
+
+    [ -f "$stamp" ] || return 0
+
+    for path in "$@"; do
+        if path_newer_than_stamp "$stamp" "$path"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+write_assemble_stamp() {
+    local stamp="$1"
+    mkdir -p "$(dirname "$stamp")"
+    printf '%s\n' "$NATIVE_ARCH $DEVICE_TYPE $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stamp"
+}
+
+copy_find_matches() {
+    local src_root="$1"
+    local dest="$2"
+    shift 2
+    local copied=0
+    local path
+
+    while IFS= read -r -d '' path; do
+        cp "$path" "$dest/"
+        copied=$((copied + 1))
+    done < <(find "$src_root" -path '*/x86_64-windows/*' -type f \( "$@" \) -print0)
+
+    echo "$copied"
+}
+
+pick_runtime_lib() {
+    local name="$1"
+    local soname="$2"
+    local linker="${3:-}"
+    local dest="$4"
+    local candidate=""
+
+    for candidate in \
+        "$NATIVE_LIBS/$soname" \
+        "$NATIVE_LIBS/$name" \
+        "$SYSROOT_EXT_LIB/$soname" \
+        "$SYSROOT_EXT_LIB/$name" \
+        "$SYSROOT/usr/lib/x86_64-linux-ohos/$soname" \
+        "$SYSROOT/usr/lib/x86_64-linux-ohos/$name"; do
+        [ -f "$candidate" ] || continue
+        cp "$candidate" "$dest/$soname"
+        break
+    done
+
+    if [ ! -f "$dest/$soname" ]; then
+        warn "$soname not found for runtime staging"
+        return 0
+    fi
+
+    if [ -n "$linker" ] && [ ! -f "$dest/$linker" ]; then
+        cp "$dest/$soname" "$dest/$linker"
+    fi
+}
+
+bundle_alarm_wav() {
+    local dest="$1"
+    if [ -f "$ROOT/assets/windows-media/Alarm01.wav" ]; then
+        cp "$ROOT/assets/windows-media/Alarm01.wav" "$dest/Alarm01.wav"
+    else
+        warn "Alarm01.wav not found at $ROOT/assets/windows-media/Alarm01.wav"
+    fi
+}
+
 assemble_pad() {
-    log "=== 组装 Pad 布局 ($NATIVE_ARCH, 无 HNP) ==="
+    log "=== Assemble Pad layout ($NATIVE_ARCH) ==="
 
     local wine_data="$STAGING_DIR/wine-data"
-    rm -rf "$STAGING_DIR"
-    rm -rf "$wine_data"
-    mkdir -p "$wine_data/bin/x86_64-windows"
-    mkdir -p "$wine_data/bin/x86_64-unix"
-    mkdir -p "$wine_data/share/wine/nls"
-    mkdir -p "$wine_data/share/wine/fonts"
-    mkdir -p "$wine_data/share/wine/winmd"
-    mkdir -p "$wine_data/share/X11"
+    local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
+    local zip_name="wine-data.zip"
+    local wine_bin="$wine_data/bin"
+    local wine_unix="$wine_bin/x86_64-unix"
+    local wine_win="$wine_bin/x86_64-windows"
+    local aarch64_lib="$SYSROOT_EXT/usr/lib/$NATIVE_TARGET"
 
-    # -- 1. 原生 .so → libs/$NATIVE_ARCH/ (由各 build 脚本完成) --
-    mkdir -p "$NATIVE_LIBS"
+    rm -rf "$STAGING_DIR" "$wine_data"
+    mkdir -p "$wine_unix" "$wine_win" "$wine_data/share/wine/nls" \
+        "$wine_data/share/wine/fonts" "$wine_data/share/wine/winmd" \
+        "$wine_data/share/X11" "$NATIVE_LIBS"
 
     if [ "$NATIVE_ARCH" = "x86_64" ]; then
-        # x86_64 Pad: Wine .so 是原生架构, 直接放 libs/
-        log "  → Wine .so → libs/x86_64/"
-
-        # 所有 Wine Unix .so → libs/x86_64/ (系统 linker 通过文件名搜索)
         for so in "$WINE_SRC/build-ohos/dlls/"*/*.so; do
             cp "$so" "$NATIVE_LIBS/"
         done
-        log "    Wine .so: $(ls "$WINE_SRC/build-ohos/dlls/"*/*.so 2>/dev/null | wc -l) files"
 
-        # 交叉编译依赖 → libs/x86_64/
-        # (系统 linker 自动搜索此路径, 无需 x86_64-unix 子目录)
-        _pick_lib_pad() {
-            local name="$1" soname="$2" linker="${3:-}"
-            local dest="$NATIVE_LIBS"
-            if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
-                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
-            elif [ -f "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" ]; then
-                cp "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" "$dest/$soname"
-            else
-                warn "$soname 未找到"
-                return 0
-            fi
-            if [ -n "$linker" ] && [ ! -f "$dest/$linker" ]; then
-                cp "$dest/$soname" "$dest/$linker"
-            fi
-        }
-        _pick_lib_pad "libfreetype.so.6.20.2"       "libfreetype.so.6"   "libfreetype.so"
-        _pick_lib_pad "libz.so"                      "libz.so"
-        _pick_lib_pad "libwayland-client.so.0.22.0"  "libwayland-client.so.0"
-        _pick_lib_pad "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
-        _pick_lib_pad "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
-        _pick_lib_pad "libxml2.so.2.12.0"            "libxml2.so.2"
-        _pick_lib_pad "libffi.so.8.1.4"              "libffi.so.8"
-        log "    交叉编译依赖 → libs/x86_64/"
-
-        # libc.so → libs/x86_64/
+        pick_runtime_lib "libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libz.so" "libz.so" "" "$NATIVE_LIBS"
+        pick_runtime_lib "libwayland-client.so.0.22.0" "libwayland-client.so.0" "libwayland-client.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libwayland-server.so.0.22.0" "libwayland-server.so.0" "libwayland-server.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libffi.so.8.1.4" "libffi.so.8" "libffi.so" "$NATIVE_LIBS"
         cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$NATIVE_LIBS/"
 
-        # libfreetype 已由 _pick_lib_pad 放入 libs/x86_64/，系统 linker 可直接找到
-
-        # libwineserver.so (Pad fork+dlopen 入口)
         if [ -f "$BUILD_DIR/wine_server/libwineserver.so" ]; then
             cp "$BUILD_DIR/wine_server/libwineserver.so" "$NATIVE_LIBS/"
-            log "    libwineserver.so → libs/x86_64/"
         else
-            warn "libwineserver.so 未找到！请先执行: bash scripts/build_wine.sh"
+            warn "libwineserver.so not found for x86_64 pad build"
         fi
-    elif [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
-        # arm64 Pad: Wine .so 是 x86_64, 不放 libs/, 放 rawfile zip
-        # box64.so 由 build_box64.sh 放入 NATIVE_LIBS
-        log "  → Wine x86_64 .so → rawfile zip"
+    else
+        pick_runtime_lib "libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so" "$wine_unix"
+        pick_runtime_lib "libz.so" "libz.so" "" "$wine_unix"
+        pick_runtime_lib "libwayland-client.so.0.22.0" "libwayland-client.so.0" "libwayland-client.so" "$wine_unix"
+        pick_runtime_lib "libwayland-server.so.0.22.0" "libwayland-server.so.0" "libwayland-server.so" "$wine_unix"
+        pick_runtime_lib "libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so" "$wine_unix"
+        pick_runtime_lib "libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so" "$wine_unix"
+        pick_runtime_lib "libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so" "$wine_unix"
+        pick_runtime_lib "libffi.so.8.1.4" "libffi.so.8" "libffi.so" "$wine_unix"
 
-        # ARM64 原生库 → libs/arm64-v8a/ (Box64 dlopen bridge libraries)
-        # Box64 模拟 x86_64 时需要加载 ARM64 原生的 freetype/xkbcommon 等,
-        # 系统 linker 搜索 libs/arm64-v8a/
-        local aarch64_lib="$SYSROOT_EXT/usr/lib/$NATIVE_TARGET"
-        _pick_arm64_native() {
-            local soname="$1" linker="${2:-}"
-            if [ -f "$aarch64_lib/$soname" ]; then
-                cp "$aarch64_lib/$soname" "$NATIVE_LIBS/$soname"
-            else
-                warn "ARM64 原生库 $soname 未找到, 跳过"
-                return 0
-            fi
-            if [ -n "$linker" ] && [ ! -f "$NATIVE_LIBS/$linker" ]; then
-                cp "$aarch64_lib/$soname" "$NATIVE_LIBS/$linker"  # HAP 不支持 symlink, 实体复制
-            fi
-        }
-        # Box64 native bridge libs: soname 文件 + linker 名拷贝
-        _pick_arm64_native "libfreetype.so.6"   "libfreetype.so"
-        _pick_arm64_native "libxkbcommon.so.0"   "libxkbcommon.so"
-        _pick_arm64_native "libxkbregistry.so.0" "libxkbregistry.so"
-        _pick_arm64_native "libxml2.so.2"        "libxml2.so"
-        _pick_arm64_native "libwayland-client.so.0" "libwayland-client.so"
-        _pick_arm64_native "libwayland-server.so.0" "libwayland-server.so"
-        _pick_arm64_native "libffi.so.8"         "libffi.so"
+        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_bin/"
+        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_unix/"
 
-        # ntdll.so → rawfile
-        cp "$WINE_SRC/build-ohos/dlls/ntdll/ntdll.so" "$wine_data/bin/"
-
-        # x86_64-unix/ .so → rawfile
         for so in "$WINE_SRC/build-ohos/dlls/"*/*.so; do
-            [ "$(basename "$so")" = "ntdll.so" ] && continue
-            cp "$so" "$wine_data/bin/x86_64-unix/"
+            if [ "$(basename "$so")" = "ntdll.so" ]; then
+                cp "$so" "$wine_bin/"
+            else
+                cp "$so" "$wine_unix/"
+            fi
+        done
+        cp "$WINE_SRC/build-ohos/loader/wine" "$wine_bin/"
+
+        if [ -f "$BUILD_DIR/wine_server/wineserver" ]; then
+            cp "$BUILD_DIR/wine_server/wineserver" "$wine_bin/"
+        elif [ -f "$WINE_SRC/build-ohos/server/wineserver" ]; then
+            cp "$WINE_SRC/build-ohos/server/wineserver" "$wine_bin/"
+        fi
+
+        for lib in \
+            libfreetype.so.6 libfreetype.so \
+            libxkbcommon.so.0 libxkbcommon.so \
+            libxkbregistry.so.0 libxkbregistry.so \
+            libxml2.so.2 libxml2.so \
+            libwayland-client.so.0 libwayland-client.so \
+            libwayland-server.so.0 libwayland-server.so \
+            libffi.so.8 libffi.so; do
+            [ -f "$wine_unix/$lib" ] || continue
+            cp "$wine_unix/$lib" "$wine_bin/"
         done
 
-        # 交叉编译依赖 → rawfile
-        _pick_lib_pad_rf() {
-            local name="$1" soname="$2" linker="${3:-}"
-            local dest="$wine_data/bin/x86_64-unix"
-            if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
-                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
-            elif [ -f "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" ]; then
-                cp "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" "$dest/$soname"
-            else
-                warn "$soname 未找到"
-                return 0
-            fi
-            if [ -n "$linker" ] && [ ! -f "$dest/$linker" ]; then
-                cp "$dest/$soname" "$dest/$linker"
-            fi
-        }
-        _pick_lib_pad_rf "libfreetype.so.6.20.2"       "libfreetype.so.6"   "libfreetype.so"
-        _pick_lib_pad_rf "libz.so"                      "libz.so"
-        _pick_lib_pad_rf "libwayland-client.so.0.22.0"  "libwayland-client.so.0"
-        _pick_lib_pad_rf "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
-        _pick_lib_pad_rf "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
-        _pick_lib_pad_rf "libxml2.so.2.12.0"            "libxml2.so.2"
-        _pick_lib_pad_rf "libffi.so.8.1.4"              "libffi.so.8"
-
-        # libfreetype → bin/ (box64 按名 dlopen 搜索路径: .)
-        cp "$wine_data/bin/x86_64-unix/libfreetype.so.6" "$wine_data/bin/"
-        cp "$wine_data/bin/x86_64-unix/libfreetype.so" "$wine_data/bin/"
-
-        # libc.so → bin/ (当前目录) + x86_64-unix/ (BOX64_LD_LIBRARY_PATH)
-        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_data/bin/"
-        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$wine_data/bin/x86_64-unix/"
-
-        # wine + wineserver (x86_64 ELF, 由 box64 加载)
-        cp "$WINE_SRC/build-ohos/loader/wine" "$wine_data/bin/"
-        if [ -f "$BUILD_DIR/wine_server/wineserver" ]; then
-            cp "$BUILD_DIR/wine_server/wineserver" "$wine_data/bin/"
-        elif [ -f "$WINE_SRC/build-ohos/server/wineserver" ]; then
-            cp "$WINE_SRC/build-ohos/server/wineserver" "$wine_data/bin/"
+        if [ -d "$aarch64_lib" ]; then
+            for lib in \
+                libfreetype.so.6 libxkbcommon.so.0 libxkbregistry.so.0 \
+                libxml2.so.2 libwayland-client.so.0 libwayland-server.so.0 \
+                libffi.so.8; do
+                [ -f "$aarch64_lib/$lib" ] || continue
+                cp "$aarch64_lib/$lib" "$NATIVE_LIBS/$lib"
+            done
+            for pair in \
+                "libfreetype.so.6:libfreetype.so" \
+                "libxkbcommon.so.0:libxkbcommon.so" \
+                "libxkbregistry.so.0:libxkbregistry.so" \
+                "libxml2.so.2:libxml2.so" \
+                "libwayland-client.so.0:libwayland-client.so" \
+                "libwayland-server.so.0:libwayland-server.so" \
+                "libffi.so.8:libffi.so"; do
+                src="${pair%%:*}"
+                dst="${pair#*:}"
+                [ -f "$NATIVE_LIBS/$src" ] || continue
+                cp "$NATIVE_LIBS/$src" "$NATIVE_LIBS/$dst"
+            done
         fi
     fi
 
-    # -- 2. PE DLL + 数据文件 → rawfile (两种架构共用) --
-    # x86_64-windows/
-    for dll in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.dll; do
-        cp "$dll" "$wine_data/bin/x86_64-windows/"
-    done
-    for drv in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.drv; do
-        cp "$drv" "$wine_data/bin/x86_64-windows/"
-    done
-    for exe in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.exe; do
-        cp "$exe" "$wine_data/bin/x86_64-windows/"
-    done
-    for sys in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.sys; do
-        cp "$sys" "$wine_data/bin/x86_64-windows/"
-    done
-    log "  x86_64-windows → $(ls "$wine_data/bin/x86_64-windows" | wc -l) files"
+    copy_find_matches "$WINE_SRC/build-ohos/dlls" "$wine_win" \
+        -name '*.dll' -o -name '*.drv' -o -name '*.exe' -o -name '*.sys' \
+        -o -name '*.cpl' -o -name '*.ocx' -o -name '*.tlb' -o -name '*.ax' \
+        -o -name '*.acm' -o -name '*.com' >/dev/null
+    copy_find_matches "$WINE_SRC/build-ohos/programs" "$wine_win" \
+        -name '*.exe' -o -name '*.com' >/dev/null
+    bundle_alarm_wav "$wine_win"
 
-    # *.exe stubs → rawfile
-    for exe in "$WINE_SRC/build-native/programs/"*/x86_64-windows/*.exe; do
-        cp "$exe" "$wine_data/bin/"
-    done
-
-    # fonts
     cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
-    # NLS
     cp "$WINE_SRC/build-native/nls/"*.nls "$wine_data/share/wine/nls/"
-    # winmd
     cp "$WINE_SRC/build-native/include/"*.winmd "$wine_data/share/wine/winmd/"
-    # wine.inf (含 OHOS font substitutes)
     cp "$WINE_SRC/build-native/loader/wine.inf" "$wine_data/share/wine/"
     sed -i '/^\[MCI\]$/i\
 ;; OHOS font substitutes\
@@ -187,75 +223,108 @@ HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans"\
 HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$wine_data/share/wine/wine.inf"
-    # XKB
+
     if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
-        cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
+        cp -rL "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
     fi
 
-    # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
-    local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"
-    local zip_name="wine-data.zip"
-    cd "$wine_data"
-    rm -f "$STAGING_DIR/$zip_name"
-    zip -r "$STAGING_DIR/$zip_name" . -x '*.git*'
+    (
+        cd "$wine_data"
+        rm -f "$STAGING_DIR/$zip_name"
+        zip -qr "$STAGING_DIR/$zip_name" .
+    )
     cp "$STAGING_DIR/$zip_name" "$rawfile_dir/"
-    log "  $zip_name → rawfile/ ($(du -h "$rawfile_dir/$zip_name" | cut -f1))"
-
-    log "Pad 布局组装完成 ($NATIVE_ARCH)"
-    echo ""
-    echo "  libs/$NATIVE_ARCH/"
-    ls -la "$NATIVE_LIBS/" 2>/dev/null || echo "    (empty)"
-    echo "  rawfile/$zip_name"
+    log "pad rawfile -> $rawfile_dir/$zip_name"
 }
 
-log "=== 组装布局 ($NATIVE_ARCH, $DEVICE_TYPE) ==="
+log "=== Assemble layout ($NATIVE_ARCH, $DEVICE_TYPE) ==="
 
+BIN="$HNP_LAYOUT/bin"
+UNIX_DIR="$BIN/x86_64-unix"
+WIN_DIR="$BIN/x86_64-windows"
+LIB_DIR="$HNP_LAYOUT/lib/x86_64"
+SHARE_WINE="$HNP_LAYOUT/share/wine"
+
+ASSEMBLE_STAMP="$OUT_DIR/.assemble-${DEVICE_TYPE}-${NATIVE_ARCH}.stamp"
+ASSEMBLE_PROBE="$HNP_LAYOUT/bin/wine"
 if [ "$DEVICE_TYPE" = "pad" ]; then
-    assemble_pad
+    ASSEMBLE_PROBE="$STAGING_DIR/wine-data.zip"
+fi
+
+ASSEMBLE_INPUTS=(
+    "$WINE_SRC/build-ohos/loader/wine"
+    "$WINE_SRC/build-ohos/dlls"
+    "$WINE_SRC/build-ohos/programs"
+    "$WINE_SRC/fonts"
+    "$WINE_SRC/build-native/nls"
+    "$WINE_SRC/build-native/include"
+    "$WINE_SRC/build-native/loader/wine.inf"
+    "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so"
+    "$SYSROOT_EXT_LIB"
+    "$SYSROOT_EXT_SHARE/X11/xkb"
+    "$ROOT/assets/windows-media/Alarm01.wav"
+    "$ROOT/.temp/mmap_test"
+)
+if [ -f "$BUILD_DIR/wine_server/wineserver" ]; then
+    ASSEMBLE_INPUTS+=("$BUILD_DIR/wine_server/wineserver")
+elif [ -f "$WINE_SRC/build-ohos/server/wineserver" ]; then
+    ASSEMBLE_INPUTS+=("$WINE_SRC/build-ohos/server/wineserver")
+fi
+if [ -f "$BUILD_DIR/wine_server/libwineserver.so" ]; then
+    ASSEMBLE_INPUTS+=("$BUILD_DIR/wine_server/libwineserver.so")
+fi
+if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
+    ASSEMBLE_INPUTS+=(
+        "$BUILD_DIR/box64_build/box64"
+        "$SYSROOT_EXT/usr/lib/$NATIVE_TARGET"
+    )
+fi
+
+if [ -f "$ASSEMBLE_STAMP" ] && [ -e "$ASSEMBLE_PROBE" ] && ! assemble_inputs_changed "$ASSEMBLE_STAMP" "${ASSEMBLE_INPUTS[@]}"; then
+    log "HNP layout already up to date ($NATIVE_ARCH)"
+    echo
+    if [ "$DEVICE_TYPE" = "pad" ]; then
+        echo "  rawfile: $STAGING_DIR/wine-data.zip"
+    else
+        echo "  $BIN/"
+        echo "  core: wine, wineserver, box64"
+        echo "  ntdll.so: wine loader runtime"
+        echo "  x86_64-windows/: $(count_files "$WIN_DIR") files"
+        echo "  x86_64-unix/: $(count_files "$UNIX_DIR") files"
+    fi
     exit 0
 fi
 
-# ============================================================
-# 以下为 PC 模式 HNP 布局 (不变)
-# ============================================================
+if [ "$DEVICE_TYPE" = "pad" ]; then
+    assemble_pad
+    write_assemble_stamp "$ASSEMBLE_STAMP"
+    exit 0
+fi
 
-# staging 目录每次重建
 rm -rf "$STAGING_DIR"
-mkdir -p "$HNP_LAYOUT/bin"
-mkdir -p "$HNP_LAYOUT/lib/x86_64"
-mkdir -p "$HNP_LAYOUT/share/wine/nls"
+mkdir -p "$BIN" "$UNIX_DIR" "$WIN_DIR" "$LIB_DIR" \
+    "$SHARE_WINE/nls" "$SHARE_WINE/fonts" "$SHARE_WINE/winmd" "$HNP_LAYOUT/share/X11"
 
-BIN="$HNP_LAYOUT/bin"
-
-# ---- 主二进制 ----
 cp "$WINE_SRC/build-ohos/loader/wine" "$BIN/"
 
-# wineserver: 优先手动编译版 (含 __ANDROID__), 回退 make 版
 if [ -f "$BUILD_DIR/wine_server/wineserver" ]; then
     cp "$BUILD_DIR/wine_server/wineserver" "$BIN/"
 elif [ -f "$WINE_SRC/build-ohos/server/wineserver" ]; then
     cp "$WINE_SRC/build-ohos/server/wineserver" "$BIN/"
 else
-    err "wineserver 未找到！请先执行: bash scripts/build_wine.sh"
+    err "wineserver not found; run bash scripts/build_wine.sh first"
 fi
 
-# box64: arm64 用真实 box64 二进制, x86_64 用 passthrough 包装器
-# (C++ 代码硬编码 execve("./box64",...) 调用, 不能简单跳过)
 if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
     if [ -f "$BUILD_DIR/box64_build/box64" ]; then
         cp "$BUILD_DIR/box64_build/box64" "$BIN/"
-    elif [ ! -f "$BIN/box64" ]; then
-        err "box64 未找到！请先执行: bash scripts/build_box64.sh"
+    else
+        err "box64 not found; run bash scripts/build_box64.sh first"
     fi
-    log "  box64 → bin/ (arm64, 真实二进制)"
 else
-    # x86_64: box64 是 passthrough 包装器, 直接 exec 原生二进制
-    cat > "$BIN/box64" << 'BOXWRAP'
+    cat > "$BIN/box64" <<'BOXWRAP'
 #!/bin/sh
-# x86_64 passthrough: box64 调用 → 直接运行原生二进制
-# C++ 代码调用格式: ./box64 <program> [args...]
-# 注意: 不使用 dirname (Wine 隔离环境可能没有)
 DIR="${0%/*}"
 [ "$DIR" = "$0" ] && DIR="."
 [ $# -lt 1 ] && { echo "Usage: $0 <program> [args...]" >&2; exit 1; }
@@ -264,163 +333,99 @@ shift
 exec "$DIR/$prog" "$@"
 BOXWRAP
     chmod +x "$BIN/box64"
-    log "  box64 → bin/ (x86_64 passthrough wrapper)"
 fi
 
-# ---- ntdll.so (必须在 bin/ — wine loader 硬编码加载) ----
 cp "$WINE_SRC/build-ohos/dlls/ntdll/ntdll.so" "$BIN/"
-
-# ---- x86_64-unix/ (其他 .so — load_builtin_unixlib 拼接路径) ----
-mkdir -p "$BIN/x86_64-unix"
 for so in "$WINE_SRC/build-ohos/dlls/"*/*.so; do
     [ "$(basename "$so")" = "ntdll.so" ] && continue
-    cp "$so" "$BIN/x86_64-unix/"
+    cp "$so" "$UNIX_DIR/"
 done
-log "  x86_64-unix: $(ls "$BIN/x86_64-unix" | wc -l) .so files"
 
-# ---- x86_64-windows/ (PE DLL + .drv + .exe + .sys) ----
-mkdir -p "$BIN/x86_64-windows"
-for dll in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.dll; do
-    cp "$dll" "$BIN/x86_64-windows/"
-done
-for drv in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.drv; do
-    cp "$drv" "$BIN/x86_64-windows/"
-done
-for exe in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.exe; do
-    cp "$exe" "$BIN/x86_64-windows/"
-done
-for sys in "$WINE_SRC/build-native/dlls/"*/x86_64-windows/*.sys; do
-    cp "$sys" "$BIN/x86_64-windows/"
-done
-log "  x86_64-windows: $(ls "$BIN/x86_64-windows" | wc -l) DLL/DRV/EXE/SYS files"
+copy_find_matches "$WINE_SRC/build-ohos/dlls" "$WIN_DIR" \
+    -name '*.dll' -o -name '*.drv' -o -name '*.exe' -o -name '*.sys' \
+    -o -name '*.cpl' -o -name '*.ocx' -o -name '*.tlb' -o -name '*.ax' \
+    -o -name '*.acm' -o -name '*.com' >/dev/null
+copy_find_matches "$WINE_SRC/build-ohos/programs" "$WIN_DIR" \
+    -name '*.exe' -o -name '*.com' >/dev/null
+bundle_alarm_wav "$WIN_DIR"
 
-# ---- *.exe stubs ----
-for exe in "$WINE_SRC/build-native/programs/"*/x86_64-windows/*.exe; do
-    cp "$exe" "$BIN/"
-done
-log "  *.exe stubs: $(ls "$BIN"/*.exe 2>/dev/null | wc -l) files"
+cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$LIB_DIR/"
 
-# ---- ARM64 原生桥接库 (PC/HNP) + libc + 交叉编译依赖 + NLS + wine.inf + fonts ----
-# ARM64 native bridge libs for Box64 in HNP package
+pick_runtime_lib "libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so" "$UNIX_DIR"
+pick_runtime_lib "libz.so" "libz.so" "" "$UNIX_DIR"
+pick_runtime_lib "libwayland-client.so.0.22.0" "libwayland-client.so.0" "libwayland-client.so" "$UNIX_DIR"
+pick_runtime_lib "libwayland-server.so.0.22.0" "libwayland-server.so.0" "libwayland-server.so" "$UNIX_DIR"
+pick_runtime_lib "libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so" "$UNIX_DIR"
+pick_runtime_lib "libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so" "$UNIX_DIR"
+pick_runtime_lib "libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so" "$UNIX_DIR"
+pick_runtime_lib "libffi.so.8.1.4" "libffi.so.8" "libffi.so" "$UNIX_DIR"
+
 if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
-    local aarch64_lib="$SYSROOT_EXT/usr/lib/$NATIVE_TARGET"
     mkdir -p "$HNP_LAYOUT/lib/arm64-v8a"
-    _pc_pick_arm64_native() {
-        local soname="$1" linker="${2:-}"
-        [ -f "$aarch64_lib/$soname" ] || { warn "ARM64 native lib $soname not found"; return 0; }
-        cp "$aarch64_lib/$soname" "$HNP_LAYOUT/lib/arm64-v8a/$soname"
-        [ -n "$linker" ] && [ ! -f "$HNP_LAYOUT/lib/arm64-v8a/$linker" ] && \
-            cp "$aarch64_lib/$soname" "$HNP_LAYOUT/lib/arm64-v8a/$linker"
-    }
-    _pc_pick_arm64_native "libfreetype.so.6"   "libfreetype.so"
-    _pc_pick_arm64_native "libxkbcommon.so.0"   "libxkbcommon.so"
-    _pc_pick_arm64_native "libxkbregistry.so.0" "libxkbregistry.so"
-    _pc_pick_arm64_native "libxml2.so.2"        "libxml2.so"
-    _pc_pick_arm64_native "libwayland-client.so.0" "libwayland-client.so"
-    _pc_pick_arm64_native "libffi.so.8"         "libffi.so"
-    log "  ARM64 native bridge libs -> lib/arm64-v8a/"
+    local_aarch64_lib="$SYSROOT_EXT/usr/lib/$NATIVE_TARGET"
+    for pair in \
+        "libfreetype.so.6:libfreetype.so" \
+        "libxkbcommon.so.0:libxkbcommon.so" \
+        "libxkbregistry.so.0:libxkbregistry.so" \
+        "libxml2.so.2:libxml2.so" \
+        "libwayland-client.so.0:libwayland-client.so" \
+        "libffi.so.8:libffi.so"; do
+        src="${pair%%:*}"
+        dst="${pair#*:}"
+        [ -f "$local_aarch64_lib/$src" ] || continue
+        cp "$local_aarch64_lib/$src" "$HNP_LAYOUT/lib/arm64-v8a/$src"
+        cp "$local_aarch64_lib/$src" "$HNP_LAYOUT/lib/arm64-v8a/$dst"
+    done
 fi
 
-cp "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so" "$HNP_LAYOUT/lib/x86_64/"
-
-# 交叉编译依赖 → bin/x86_64-unix/ (文件名 = ELF SONAME)
-# 来源: sysroot-ext (标准) 或 SDK sysroot (回退, 旧版)
-pick_lib() {
-    local name="$1"
-    local soname="$2"
-    local linker="${3:-}"
-    local dest="$HNP_LAYOUT/bin/x86_64-unix"
-    if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
-        cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
-    elif [ -f "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" ]; then
-        cp "$SYSROOT/usr/lib/x86_64-linux-ohos/$name" "$dest/$soname"
-    else
-        warn "$soname 未找到"
-        return 0
-    fi
-    # 创建无版本号别名 (dlopen("libfoo.so") 按名查找需要, 不能用 symlink)
-    if [ -n "$linker" ] && [ ! -f "$dest/$linker" ]; then
-        cp "$dest/$soname" "$dest/$linker"
-    fi
-}
-
-pick_lib "libfreetype.so.6.20.2"        "libfreetype.so.6"   "libfreetype.so"
-pick_lib "libz.so"                      "libz.so"
-pick_lib "libwayland-client.so.0.22.0"  "libwayland-client.so.0"
-pick_lib "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
-pick_lib "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
-pick_lib "libxml2.so.2.12.0"            "libxml2.so.2"
-pick_lib "libffi.so.8.1.4"              "libffi.so.8"
-log "  交叉编译依赖 → bin/x86_64-unix/"
-
-# libfreetype 需要同时放在 bin/ (Box64 按名 dlopen 搜索路径: .)
-cp "$HNP_LAYOUT/bin/x86_64-unix/libfreetype.so.6" "$BIN/"
-cp "$HNP_LAYOUT/bin/x86_64-unix/libfreetype.so" "$BIN/"
-
-# Wine 内置字体 (TrueType)
-mkdir -p "$HNP_LAYOUT/share/wine/fonts"
-cp "$WINE_SRC/fonts/"*.ttf "$HNP_LAYOUT/share/wine/fonts/"
-# XKB 键盘布局数据 (Wine 键盘驱动初始化必需, 由 build_xkbconfig.sh 安装到 sysroot-ext)
-mkdir -p "$HNP_LAYOUT/share/X11"
-if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
-    cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$HNP_LAYOUT/share/X11/"
-    log "  xkb: $(du -sh "$HNP_LAYOUT/share/X11/xkb" | cut -f1)"
-else
-    warn "xkb 数据未找到 ($SYSROOT_EXT_SHARE/X11/xkb), 请先运行: bash scripts/build_xkbconfig.sh"
-fi
-
-log "  fonts: $(ls "$HNP_LAYOUT/share/wine/fonts" | wc -l) .ttf files"
-cp "$WINE_SRC/build-native/nls/"*.nls "$HNP_LAYOUT/share/wine/nls/"
-mkdir -p "$HNP_LAYOUT/share/wine/winmd"
-cp "$WINE_SRC/build-native/include/"*.winmd "$HNP_LAYOUT/share/wine/winmd/"
-log "  winmd: $(ls "$HNP_LAYOUT/share/wine/winmd" | wc -l) .winmd files"
-cp "$WINE_SRC/build-native/loader/wine.inf" "$HNP_LAYOUT/share/wine/"
-
-# OHOS: 无 fontconfig, Wine 内置字体 glyph metrics 不足.
-# 将 Windows 默认字体映射到 HarmonyOS 系统字体.
-# 插入到 wine.inf 的 [Fonts] section 末尾.
+cp "$WINE_SRC/fonts/"*.ttf "$SHARE_WINE/fonts/"
+cp "$WINE_SRC/build-native/nls/"*.nls "$SHARE_WINE/nls/"
+cp "$WINE_SRC/build-native/include/"*.winmd "$SHARE_WINE/winmd/"
+cp "$WINE_SRC/build-native/loader/wine.inf" "$SHARE_WINE/"
 sed -i '/^\[MCI\]$/i\
 ;; OHOS font substitutes\
 HKLM,%FontSubStr%,"System",,"HarmonyOS Sans"\
 HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans"\
 HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
-HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$HNP_LAYOUT/share/wine/wine.inf"
+HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$SHARE_WINE/wine.inf"
 
-# ---- 启动脚本 ----
-# arm64: 用 box64 翻译执行 wine (x86_64 → arm64)
-# x86_64: 直接原生执行 wine
+if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
+    cp -rL "$SYSROOT_EXT_SHARE/X11/xkb" "$HNP_LAYOUT/share/X11/"
+fi
+
 if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
-    cat > "$BIN/wine.sh" << 'SCRIPT'
+    cat > "$BIN/wine.sh" <<'SCRIPT'
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")" && pwd)"
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+export WINEDLLPATH="$DIR"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=}"
 export BOX64_LD_LIBRARY_PATH="$DIR:$DIR/x86_64-unix:$DIR/../lib/x86_64"
 exec "$DIR/box64" "$DIR/wine" "$@"
 SCRIPT
 else
-    cat > "$BIN/wine.sh" << 'SCRIPT'
+    cat > "$BIN/wine.sh" <<'SCRIPT'
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")" && pwd)"
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+export WINEDLLPATH="$DIR"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=}"
 export LD_LIBRARY_PATH="$DIR:$DIR/x86_64-unix:$DIR/../lib/x86_64"
 exec "$DIR/wine" "$@"
 SCRIPT
 fi
 chmod +x "$BIN/wine.sh"
-log "  wine.sh ($NATIVE_ARCH)"
 
-# ---- mmap 测试工具 (终端版) ----
 if [ -f "$ROOT/.temp/mmap_test" ]; then
     cp "$ROOT/.temp/mmap_test" "$BIN/"
-    log "  mmap_test (终端版) → bin/"
 fi
 
-log "HNP 布局组装完成 ($NATIVE_ARCH)"
-echo ""
+log "HNP layout ready ($NATIVE_ARCH)"
+echo
 echo "  $BIN/"
-echo "  ├── wine, wineserver, box64"
-echo "  ├── ntdll.so                  ← wine loader 直接加载"
-echo "  ├── *.exe                     ← PE stubs ($(ls "$BIN"/*.exe 2>/dev/null | wc -l) files)"
-echo "  ├── x86_64-windows/           ← PE DLL ($(ls "$BIN/x86_64-windows" | wc -l) files)"
-echo "  └── x86_64-unix/              ← Unix .so ($(ls "$BIN/x86_64-unix" | wc -l) files)"
+echo "  core: wine, wineserver, box64"
+echo "  ntdll.so: wine loader runtime"
+echo "  x86_64-windows/: $(count_files "$WIN_DIR") files"
+echo "  x86_64-unix/: $(count_files "$UNIX_DIR") files"
+write_assemble_stamp "$ASSEMBLE_STAMP"

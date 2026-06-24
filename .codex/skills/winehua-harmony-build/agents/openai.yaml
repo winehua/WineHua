@@ -1,0 +1,4 @@
+interface:
+  display_name: "WineHua Build"
+  short_description: "Fast build and deploy workflow for WineHua."
+  default_prompt: "Use $winehua-harmony-build to rebuild WineHua, deploy it to a HarmonyOS target, and diagnose build or runtime issues."

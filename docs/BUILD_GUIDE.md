@@ -1,146 +1,245 @@
-# Wine for HarmonyOS — 构建指南
+# WineHua 构建指南
 
-> 最后更新: 2026-06-22
+> 更新日期: 2026-06-24
 
----
+这份文档只讲当前主线、可复现、推荐维护的构建路径。
 
-## 环境
+## 结论先说
 
-- WSL2 Ubuntu 26.04
-- OHOS SDK (`/apps/harmony`)
-- 设备: ARM64 / x86_64 HarmonyOS Pad/PC
+当前推荐入口有两层:
 
----
+- Windows 宿主统一入口: `scripts/rebuild_harmony.ps1`
+- 内层单 shell 编排入口: `scripts/rebuild_harmony.sh`
 
-## 平台速查
+默认 backend 已切到 `MSYS2`，`WSL` 仍保留为 fallback。
 
-| 平台 | 构建命令 | Wine | Box64 | 打包 |
-|------|---------|------|-------|------|
-| arm64 PC | `bash build.sh quick <ip>` | x86_64 (musl) | box64 可执行文件 | HNP |
-| x86_64 PC | `bash build.sh quick <ip> x86_64` | x86_64 (musl) | passthrough | HNP |
-| arm64 Pad | `bash build.sh pad arm64` | x86_64 (musl) | box64.so | rawfile zip |
-| x86_64 Pad | `bash build.sh pad x86_64` | x86_64 (musl) .so | 无 | rawfile zip |
+体系说明见 [MSYS2_BUILD_SYSTEM.md](MSYS2_BUILD_SYSTEM.md)。
 
-PC 有 execve，Wine/Box64 编为可执行文件，HNP 打包。  
-Pad 仅 fork、无 execve，Wine 文件放入 rawfile zip 运行时解压，Box64 编为 .so 由 NCP 子进程 dlopen。
+## 首次准备
 
----
-
-## 子命令
-
-### PC 命令 (有 execve, HNP 打包)
-
-| 命令 | 说明 |
-|------|------|
-| `bash build.sh deps` | 构建交叉编译依赖 |
-| `bash build.sh wine` | 构建 Wine |
-| `bash build.sh box64` | 构建 Box64 (仅 arm64 需要) |
-| `bash build.sh hap` | 编译 ArkTS + Native → .hap → 签名 |
-| `bash build.sh deploy <ip>` | 推送 HAP + 安装 |
-| `bash build.sh quick <ip>` | deps → wine → box64 → assemble → hnp → hap → deploy |
-
-### Pad 命令 (fork-only, rawfile zip)
-
-| 命令 | 说明 |
-|------|------|
-| `bash build.sh pad <arch>` | 完整构建 Pad HAP (arm64 / x86_64) |
-| `bash build.sh pad-hap <arch>` | 仅 HAP (只改 ArkTS/native 时，跳过 Wine 重编译) |
-| `bash build.sh pad-deploy <ip>` | 推送并安装 |
-
----
-
-## 增量构建
-
-### PC
+### 1. 初始化 submodule
 
 ```bash
-# 只改 ArkTS
-bash build.sh quick <device_ip>
-
-# 改了 Wine C 源码 → 需要 make 重编 .so, 然后 quick
-# (build.sh wine 会完整重编, 可手动增量 make 加速)
+git submodule update --init --recursive
 ```
 
-### Pad
+说明:
+
+- `thirdparty/freetype/subprojects/dlg` 当前仍可能是 warning，不是主线阻塞项
+
+### 2. 准备 MSYS2
+
+在 Windows 宿主运行:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap_msys2.ps1
+```
+
+这个脚本会:
+
+- 如缺少 `C:\msys64`，自动下载并解压 MSYS2 base
+- 按官方要求执行两次 `pacman --noconfirm -Syuu`
+- 安装仓库所需的 `git`、`make`、`pkgconf`、`python`、`perl`、`zip`、`unzip`、`libtool`、`autoconf-wrapper`、`automake-wrapper`、`patch`、`diffutils`、`cmake`、`meson`、`ninja`
+
+### 3. 跑 doctor
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Backend msys2 `
+  -Mode doctor `
+  -Arch x86_64
+```
+
+`doctor` 应至少能解析出:
+
+- `HOST_SHELL`
+- `OHOS_SDK`
+- `HVIGORW`
+- `NODE_BIN`
+- `JAVA_BIN`
+- `HNPCLI`
+- `HDC`
+- `CLANG`
+
+## 日常命令
+
+### Windows 宿主默认路径
+
+完整重建:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Backend msys2 `
+  -Mode full `
+  -Arch x86_64 `
+  -Target 127.0.0.1:5555
+```
+
+日常增量:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Backend msys2 `
+  -Mode incremental `
+  -Arch x86_64 `
+  -Target 127.0.0.1:5555
+```
+
+只重做 Wine:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Backend msys2 `
+  -Mode wine `
+  -Arch x86_64 `
+  -Target 127.0.0.1:5555
+```
+
+只重打包:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Backend msys2 `
+  -Mode package `
+  -Arch x86_64 `
+  -Target 127.0.0.1:5555
+```
+
+只重装当前 HAP:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Mode deploy `
+  -Target 127.0.0.1:5555
+```
+
+只看日志:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Mode logs `
+  -Target 127.0.0.1:5555
+```
+
+### WSL fallback
+
+如需回退旧链路验证:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rebuild_harmony.ps1 `
+  -Backend wsl `
+  -Mode doctor `
+  -Arch x86_64
+```
+
+或在 WSL 内只做构建:
 
 ```bash
-# 只改 ArkTS / napi_init.cpp
-bash build.sh pad-hap arm64
-
-# 改了 Wine C 源码 → 必须先 build.sh pad arm64 完整构建
-
-# 改了 Box64 C 源码
-bash build.sh box64        # 重编 box64.so
-bash build.sh pad-hap arm64 # 重新打包 HAP
+bash scripts/rebuild_harmony.sh doctor x86_64
+bash scripts/rebuild_harmony.sh full x86_64
+bash scripts/rebuild_harmony.sh incremental x86_64
+bash scripts/rebuild_harmony.sh wine x86_64
+bash scripts/rebuild_harmony.sh package x86_64
 ```
 
----
+把 `x86_64` 换成 `arm64` 或 `all` 即可。
 
-## 产物说明
+## DevEco 直接构建
 
-### PC (HNP 布局)
+现在 DevEco 直接运行:
 
-```
-out/staging/opt/winehua/
-├── bin/
-│   ├── wine, wineserver, box64
-│   ├── ntdll.so
-│   ├── *.exe                  (PE stubs)
-│   ├── x86_64-windows/        (PE DLL)
-│   └── x86_64-unix/           (Unix .so)
-├── lib/x86_64/
-│   └── libc.so
-└── share/
-    ├── wine/ (nls/, fonts/, wine.inf)
-    └── X11/xkb/
+```text
+node.exe hvigorw.js --mode module ... assembleHap
 ```
 
-### Pad (rawfile zip + libs/)
+也会自动补齐:
 
-```
-entry/
-├── libs/arm64-v8a/            (ARM64 原生 .so)
-│   ├── box64.so               (Box64 .so, dlopen 加载)
-│   ├── libwine_child.so       (NCP 子进程入口)
-│   └── libentry.so            (NAPI 桥接)
-├── libs/x86_64/               (x86_64 原生 .so, x86_64 Pad)
-│   ├── ntdll.so, kernelbase.so, ...
-│   └── libwineserver.so
-└── resources/rawfile/
-    └── wine-data.zip           (运行时解压)
-        ├── bin/
-        │   ├── wine, wineserver (x86_64 ELF)
-        │   ├── ntdll.so
-        │   ├── *.exe
-        │   ├── x86_64-windows/
-        │   └── x86_64-unix/
-        └── share/
-            ├── wine/
-            └── X11/xkb/
-```
+- `DEVECO_SDK_HOME`
+- `OHOS_BASE_SDK_HOME`
+- `JAVA_HOME`
+- `NODE_HOME`
+- `PATH`
 
-arm64 Pad 下 Wine x86_64 .so 全部在 zip 内由 Box64 加载，libs/ 只放 ARM64 原生 .so。
-x86_64 Pad 下 Wine .so 直接放 libs/ 由系统 linker 加载。
+并将 SDK 解析指向仓库内的 `out/sdk-links/harmonyos-sdk-root` overlay。
 
----
+对应实现:
 
-## 环境变量
+- 根 `hvigorfile.ts`
+- `scripts/deveco_hvigor_env.js`
+- `entry/hvigorfile.ts`
 
-构建时关键变量（由 `build.sh` 自动设置）：
+所以现在有两条可用入口:
 
-| 变量 | PC 默认 | Pad 默认 | 说明 |
-|------|---------|---------|------|
-| `DEVICE_TYPE` | (空) | `pad` | 触发 assemble.sh 走 Pad 分支 |
-| `NATIVE_ARCH` | `arm64-v8a` / `x86_64` | 同左 | 原生 .so 架构 |
-| `WINE_SRC` | `thirdparty/wine` | 同左 | Wine 源码路径 |
+- 推荐维护入口: `scripts/rebuild_harmony.ps1`
+- IDE 直接构建入口: DevEco 的 `assembleHap`
 
-运行时关键变量（由 `wine_child.cpp` / `napi_init.cpp` 设置）：
+## `Mode` 怎么选
 
-| 变量 | 作用 |
-|------|------|
-| `LIBBOX64_SO` | Box64 cmake flag，编 .so 时设为 ON |
-| `USE_LIBBOX64` | 运行时标记，通知 Wine process.c 调整 entryParams |
-| `BOX64_LD_LIBRARY_PATH` | Box64 搜索 x86_64 .so 的路径 |
-| `BOX64_LOG` | Box64 日志级别 (0=关闭, 生产环境) |
-| `WINEDEBUG` | Wine 调试频道 (-all=关闭) |
-| `XKB_CONFIG_ROOT` | XKB 键盘布局数据路径 |
+- `full`
+  - `thirdparty/` 变了
+  - `scripts/env.sh` 变了
+  - `scripts/build_*.sh` 变了
+  - Wine / Box64 / sysroot-ext 相关依赖变了
+  - 换机器、换 SDK、切 backend 后第一次完整构建
+
+- `incremental`
+  - `entry/src/main/cpp`
+  - ArkTS 页面、窗口管理
+  - `assemble.sh`
+  - `package.sh`
+  - HNP / HAP 打包与签名逻辑
+
+- `wine`
+  - 只改了 `thirdparty/wine/`
+  - 希望复用现有 `deps/native` 产物，只重做 `wine -> hnp -> hap`
+
+- `package`
+  - 只改 HNP / HAP 组装
+  - 只改 ABI 过滤
+  - 只改签名逻辑
+
+- `deploy`
+  - 当前 HAP 已存在，只需要重装
+
+- `logs`
+  - 当前应用已装好，只需要抓 `hilog`
+
+- `doctor`
+  - 优先确认工具链、submodule、SDK 路径和 `hdc` 目标是否健康
+
+## 关键规则
+
+### 1. 不要拆成多个 shell
+
+无论是 `MSYS2` 还是 `WSL`，都不要把 `deps / wine / native / hnp / hap` 拆成多个独立 shell。
+
+### 2. 多目标时显式传 `-Target`
+
+PC 模拟器推荐直接写 `127.0.0.1:5555`。
+
+### 3. `package` / `incremental` 可能自动补前置产物
+
+如前置产物缺失，脚本会自动补 `deps`、`wine`、`box64`、`native`。
+
+如果明确要 fail-fast:
+
+- Windows 宿主入口加 `-NoAutoHeal`
+- 内层 shell 入口加 `--no-auto-heal`
+
+## 产物路径
+
+- Signed HAP:
+  - `entry/build/default/outputs/default/entry-default-signed.hap`
+
+- HNP:
+  - `entry/hnp/x86_64/winehua.hnp`
+  - `entry/hnp/arm64-v8a/winehua.hnp`
+
+## 验收顺序
+
+- `doctor` 能跑通
+- 目标架构的 `winehua.hnp` 存在
+- `entry-default-signed.hap` 存在
+- `hdc install -r` 成功
+- `aa start -b app.hackeris.winehua -a EntryAbility` 成功
+- `x86_64` 主链中 `notepad.exe` 能启动

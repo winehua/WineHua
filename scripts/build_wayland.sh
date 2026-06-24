@@ -1,5 +1,5 @@
 #!/bin/bash
-# build_wayland.sh — Wayland + wayland-protocols 交叉编译 → sysroot-ext
+# build_wayland.sh 鈥?Wayland + wayland-protocols 浜ゅ弶缂栬瘧 鈫?sysroot-ext
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
@@ -8,46 +8,104 @@ WL_SRC="$ROOT/thirdparty/wayland"
 WP_SRC="$ROOT/thirdparty/wayland-protocols"
 WL_BUILD="$BUILD_DIR/wayland_build"
 
-# 确保 native wayland-scanner 可用
-SCANNER=/usr/local/bin/wayland-scanner
+# Ensure a host-native wayland-scanner is available without requiring root.
+SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
     if [ -x "$SCANNER" ]; then return 0; fi
-    log "--- 编译 wayland-scanner (native) ---"
-    mkdir -p /tmp/wayland_native
-    meson setup /tmp/wayland_native "$WL_SRC" \
-        --prefix /usr/local -Ddocumentation=false -Dtests=false --buildtype=release
-    ninja -C /tmp/wayland_native
-    ninja -C /tmp/wayland_native install
-    log "wayland-scanner: $(which wayland-scanner)"
+    log "--- 缂栬瘧 wayland-scanner (native) ---"
+    local host_build="$BUILD_DIR/wayland_native"
+    rm -rf "$host_build"
+    mkdir -p "$HOST_TOOLS_DIR"
+    meson setup "$host_build" "$WL_SRC" \
+        --prefix "$HOST_TOOLS_DIR" -Ddocumentation=false -Dtests=false --buildtype=release
+    ninja -C "$host_build"
+    meson install -C "$host_build"
+    log "wayland-scanner: $SCANNER"
 }
 
-log "=== 构建 Wayland (x86_64) ==="
+ensure_target_libffi() {
+    local src="$ROOT/thirdparty/libffi"
+    local build="$BUILD_DIR/libffi_build"
 
-if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
+    if [ -f "$SYSROOT_EXT_LIB/libffi.so.8" ] && [ -f "$SYSROOT_EXT_INC/ffi.h" ] && [ -f "$SYSROOT_EXT_PC/libffi.pc" ]; then
+        return 0
+    fi
+
+    log "--- libffi (for wayland) ---"
+    mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$build"
+    # Windows-synced trees may leave libffi text files with CRLF, which breaks WSL shell execution.
+    python3 - "$src" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+for path in root.rglob("*"):
+    if not path.is_file():
+        continue
+    data = path.read_bytes()
+    if b"\0" in data or b"\r" not in data:
+        continue
+    path.write_bytes(data.replace(b"\r\n", b"\n"))
+PY
+    cd "$build"
+    "$src/autogen.sh" 2>/dev/null || true
+    CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
+    CFLAGS="-O2 -fPIC -D__MUSL__" \
+    LDFLAGS="-fuse-ld=lld" \
+    "$src/configure" --host=x86_64-unknown-linux-musl --prefix="$build/install" --disable-docs --disable-dependency-tracking
+    make -j"$JOBS"
+    make install
+    cp "$build/install/lib/libffi.so.8.1.4" "$SYSROOT_EXT_LIB/libffi.so.8"
+    cp "$build/install/lib/libffi.so.8.1.4" "$SYSROOT_EXT_LIB/libffi.so"
+    cp "$build/install/include/ffi.h" "$SYSROOT_EXT_INC/"
+    cp "$build/install/include/ffitarget.h" "$SYSROOT_EXT_INC/"
+    cat > "$SYSROOT_EXT_PC/libffi.pc" << EOF
+prefix=$SYSROOT_EXT/usr
+includedir=\${prefix}/include
+libdir=\${prefix}/lib/x86_64-linux-ohos
+Name: libffi
+Description: Library supporting Foreign Function Interfaces
+Version: 3.4.6
+Libs: -L\${libdir} -lffi
+Cflags: -I\${includedir}
+EOF
+}
+
+log "=== 鏋勫缓 Wayland (x86_64) ==="
+
+if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so" ] \
+   && [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
+   && [ -f "$SYSROOT_EXT_LIB/libwayland-server.so" ] \
+   && [ -f "$SYSROOT_EXT_LIB/libwayland-server.so.0" ] \
    && [ -f "$SYSROOT_EXT_INC/wayland-client.h" ] \
+   && [ -f "$SYSROOT_EXT_INC/wayland-version.h" ] \
    && [ -f "$SYSROOT_EXT_PC/wayland-client.pc" ]; then
-    log "Wayland 已就绪，跳过"
+    log "Wayland 宸插氨缁紝璺宠繃"
     exit 0
 fi
 
 build_scanner
+ensure_target_libffi
 
 mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$SYSROOT_EXT_SHARE"
 mkdir -p "$WL_BUILD"
 
-# 1. 交叉编译 wayland (client + egl)
+# 1. 浜ゅ弶缂栬瘧 wayland (client + egl)
 meson_build "$WL_BUILD/x86_64" "$WL_SRC" \
     -Ddocumentation=false -Dtests=false -Dscanner=false
 ninja -C "$WL_BUILD/x86_64"
 
-# 安装 .so (文件名 = SONAME)
+# 瀹夎 .so (鏂囦欢鍚?= SONAME)
+cp "$WL_BUILD/x86_64/src/libwayland-client.so.0.22.0" "$SYSROOT_EXT_LIB/libwayland-client.so"
 cp "$WL_BUILD/x86_64/src/libwayland-client.so.0.22.0" "$SYSROOT_EXT_LIB/libwayland-client.so.0"
+cp "$WL_BUILD/x86_64/src/libwayland-server.so.0.22.0" "$SYSROOT_EXT_LIB/libwayland-server.so"
 cp "$WL_BUILD/x86_64/src/libwayland-server.so.0.22.0" "$SYSROOT_EXT_LIB/libwayland-server.so.0"
 
-# 头文件
+# 澶存枃浠?
 cp "$WL_SRC/src/wayland-client.h" \
    "$WL_SRC/src/wayland-client-core.h" \
    "$WL_SRC/src/wayland-util.h" \
+   "$WL_BUILD/x86_64/src/wayland-version.h" \
    "$WL_BUILD/x86_64/src/wayland-client-protocol.h" \
    "$SYSROOT_EXT_INC/"
 
@@ -56,13 +114,13 @@ meson_build "$WL_BUILD/protocols" "$WP_SRC" \
     -Dtests=false
 ninja -C "$WL_BUILD/protocols"
 
-# 安装协议 XML 到 sysroot-ext
+# 瀹夎鍗忚 XML 鍒?sysroot-ext
 mkdir -p "$SYSROOT_EXT_SHARE/wayland-protocols/stable/xdg-shell" \
          "$SYSROOT_EXT_SHARE/wayland"
 cp "$WP_SRC/stable/xdg-shell/xdg-shell.xml" "$SYSROOT_EXT_SHARE/wayland-protocols/stable/xdg-shell/"
 cp "$WL_SRC/protocol/wayland.xml" "$SYSROOT_EXT_SHARE/wayland/"
 
-# .pc 文件
+# .pc 鏂囦欢
 cat > "$SYSROOT_EXT_PC/wayland-client.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
@@ -85,4 +143,4 @@ Description: Wayland protocol files
 Version: 1.32
 EOF
 
-log "Wayland → sysroot-ext"
+log "Wayland 鈫?sysroot-ext"

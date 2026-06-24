@@ -1,5 +1,5 @@
 #!/bin/bash
-# build_freetype.sh — FreeType 交叉编译 → sysroot-ext
+# build_freetype.sh 鈥?FreeType 浜ゅ弶缂栬瘧 鈫?sysroot-ext
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
@@ -7,12 +7,12 @@ source "$SCRIPT_DIR/env.sh"
 FT_SRC="$ROOT/thirdparty/freetype"
 FT_BUILD="$BUILD_DIR/freetype_build"
 
-log "=== 构建 FreeType (x86_64) ==="
+log "=== 鏋勫缓 FreeType (x86_64) ==="
 
 if [ -f "$SYSROOT_EXT_LIB/libfreetype.so.6" ] \
    && [ -d "$SYSROOT_EXT_INC/freetype2" ] \
    && [ -f "$SYSROOT_EXT_PC/freetype2.pc" ]; then
-    log "FreeType 已就绪，跳过"
+    log "FreeType 宸插氨缁紝璺宠繃"
     exit 0
 fi
 
@@ -22,11 +22,11 @@ mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC"
 mkdir -p "$FT_BUILD"
 cd "$FT_BUILD"
 
+TOOLCHAIN_FILE="$(gen_cmake_toolchain x86_64 "$TARGET" "x86_64")"
+
 cmake "$FT_SRC" \
     -GNinja \
-    -DCMAKE_TOOLCHAIN_FILE="$OHOS_SDK/native/build/cmake/ohos.toolchain.cmake" \
-    -DOHOS_ARCH=x86_64 \
-    -DOHOS_PLATFORM=OHOS \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_BUILD_TYPE=Release \
     -DFT_DISABLE_BROTLI=ON \
     -DFT_DISABLE_HARFBUZZ=ON \
@@ -38,7 +38,7 @@ cmake "$FT_SRC" \
 ninja
 ninja install
 
-# 安装到 sysroot-ext (文件名 = SONAME)
+# 瀹夎鍒?sysroot-ext (鏂囦欢鍚?= SONAME)
 cp "$FT_BUILD"/install/lib/libfreetype.so.6.20.2 "$SYSROOT_EXT_LIB/libfreetype.so.6"
 cp -r "$FT_BUILD"/install/include/freetype2 "$SYSROOT_EXT_INC/"
 cat > "$SYSROOT_EXT_PC/freetype2.pc" << EOF
@@ -53,4 +53,4 @@ Libs: -L\${libdir} -lfreetype
 Cflags: -I\${includedir}/freetype2
 EOF
 
-log "FreeType → sysroot-ext ($SYSROOT_EXT_LIB/libfreetype.so.6)"
+log "FreeType 鈫?sysroot-ext ($SYSROOT_EXT_LIB/libfreetype.so.6)"
