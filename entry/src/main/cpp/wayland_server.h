@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 
 // 最小 Wayland Compositor: wl_compositor + wl_surface + wl_shm
 class WaylandServer {
@@ -160,9 +161,11 @@ private:
         wl_resource* surface = nullptr;
         std::vector<uint8_t> pixels;
         int x = 0, y = 0, w = 0, h = 0;
+        uint32_t parentToplevel = 0;  // 所属 toplevel (input 路由用)
     };
     std::vector<SubsurfaceLayer> subsurfaceLayers_;
     std::vector<uint32_t> toplevelZOrder_;  // 前景→背景
+    std::unordered_set<uint32_t> backgroundLayers_; // 渲染层, 不接收输入 (被切换掉的旧 root)
 };
 
 // wl_surface 的每个实例携带的数据

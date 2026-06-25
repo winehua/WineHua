@@ -453,16 +453,22 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
             sd->toplevelId != self->GetDesktopRootToplevelId()) {
             uint32_t rootId = self->GetDesktopRootToplevelId();
             // 如果 toplevel 尺寸匹配桌面输出（>=80%），说明 explorer 重建了桌面窗口
-            // 更新 root 以使用最新帧
             if (contentW >= self->outputW_ * 8 / 10 && contentH >= self->outputH_ * 8 / 10) {
-                OH_LOG_INFO(LOG_APP, "[MW] switching desktop root: #%{public}u -> #%{public}u (%{public}dx%{public}d)",
-                            rootId, sd->toplevelId, contentW, contentH);
-                // 更新渲染器的 toplevel 映射 (InputManager 坐标转换依赖)
-                PluginManager::GetInstance()->MoveRendererToToplevel(rootId, sd->toplevelId);
-                self->SetDesktopRootToplevelId(sd->toplevelId);
-                // 通知 ArkTS 更新 root ID
-                self->FireToplevelEvent(sd->toplevelId, "desktop_root", "{}");
-                rootId = sd->toplevelId;
+                if (rootId == 0) {
+                    // 首个全尺寸 toplevel → 设为桌面 root
+                    OH_LOG_INFO(LOG_APP, "[MW] initial desktop root: #%{public}u (%{public}dx%{public}d)",
+                                sd->toplevelId, contentW, contentH);
+                    PluginManager::GetInstance()->MoveRendererToToplevel(0, sd->toplevelId);
+                    self->SetDesktopRootToplevelId(sd->toplevelId);
+                    self->FireToplevelEvent(sd->toplevelId, "desktop_root", "{}");
+                    rootId = sd->toplevelId;
+                } else {
+                    // 已有 root, 新全尺寸 toplevel 作为渲染背景层, 不切换 root
+                    // (切换会导致菜单/任务栏无法点击 — 旧 root 有完整子窗口树)
+                    OH_LOG_INFO(LOG_APP, "[MW] extra full-size toplevel #%{public}u -> background layer (root stays #%{public}u)",
+                                sd->toplevelId, rootId);
+                    self->backgroundLayers_.insert(sd->toplevelId);
+                }
             }
             if (rootId > 0) {
                 std::lock_guard<std::mutex> lk(self->toplevelMutex_);
@@ -484,6 +490,7 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
                     layer.x = self->toplevelX_[parentId] + sd->subsurfaceX;
                     layer.y = self->toplevelY_[parentId] + sd->subsurfaceY;
                     layer.pixels = std::move(sd->pixels);
+                    layer.parentToplevel = parentId;
                     // 替换已有 layer
                     bool found = false;
                     for (auto& l : self->subsurfaceLayers_) {
@@ -586,10 +593,8 @@ bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, in
         bool hasChildren = false;
         for (uint32_t cid : toplevelZOrder_) {
             if (cid != id && toplevelPixels_.count(cid)) {
-                if (toplevelW_[cid] != rootW || toplevelH_[cid] != rootH) {
-                    hasChildren = true;
-                    break;
-                }
+                hasChildren = true;
+                break;
             }
         }
         if (!hasChildren && subsurfaceLayers_.empty()) {
@@ -606,12 +611,14 @@ bool WaylandServer::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, in
         // （否则下次合成时上次写入的子窗口像素会残留）
         std::vector<uint8_t> composited = rit->second;
 
-        // 按 Z-order 合成: 先合成的在后面, 后合成的覆盖前面
+        // 按 Z-order 合成: 先合成的在后面, 后合成的覆盖前面。
+        // Wine explorer 会创建多个全尺寸 toplevel (#1=背景层, #3=新桌面),
+        // #1 需合成到 root 之上以显示桌面背景, 不因同尺寸跳过。
         for (uint32_t childId : toplevelZOrder_) {
             if (childId == id) continue;
+            if (backgroundLayers_.count(childId)) continue;  // 背景层, 只渲染到 root 之下
             if (toplevelPixels_.find(childId) == toplevelPixels_.end()) continue;
             int cw = toplevelW_[childId], ch = toplevelH_[childId];
-            if (cw == rootW && ch == rootH) continue;
             auto& childPx = toplevelPixels_[childId];
             int childW = toplevelW_[childId];
             int childH = toplevelH_[childId];
@@ -722,6 +729,7 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     toplevelX_.erase(toplevelId);
     toplevelY_.erase(toplevelId);
     toplevelDirty_.erase(toplevelId);
+    backgroundLayers_.erase(toplevelId);
     auto zit = std::find(toplevelZOrder_.begin(), toplevelZOrder_.end(), toplevelId);
     if (zit != toplevelZOrder_.end()) toplevelZOrder_.erase(zit);
     if (IsDesktopMode() && toplevelId != desktopRootToplevelId_) {
@@ -750,11 +758,11 @@ void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
 uint32_t WaylandServer::FindToplevelAt(int x, int y) {
     std::lock_guard<std::mutex> lk(toplevelMutex_);
     // 从 Z-order 顶层向底层遍历, 返回第一个命中 (即最顶层窗口)
-    // 注意: 不能用 toplevel ID 大小代替 Z-order,
-    // 窗口被点击 raise 后 ID 不变但 Z-order 变了
+    uint32_t rootId = desktopRootToplevelId_;
     for (auto it = toplevelZOrder_.rbegin(); it != toplevelZOrder_.rend(); ++it) {
         uint32_t id = *it;
-        if (id == desktopRootToplevelId_) continue;
+        if (id == rootId) continue;
+        if (backgroundLayers_.count(id)) continue;  // 背景层, 只渲染不接收输入
         if (toplevelPixels_.find(id) == toplevelPixels_.end()) continue;
         int tx = toplevelX_[id];
         int ty = toplevelY_[id];
@@ -764,7 +772,7 @@ uint32_t WaylandServer::FindToplevelAt(int x, int y) {
             return id;
         }
     }
-    return desktopRootToplevelId_;
+    return rootId;
 }
 
 void WaylandServer::NotifyWindowRestored(uint32_t toplevelId) {
