@@ -477,15 +477,20 @@ static void LaunchThreadFunc(LaunchParams* p) {
 #endif
 
 #ifdef PAD_MODE
-    // -- wineboot --init via OH_Ability_StartNativeChildProcess --
-    {
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init via appspawn...");
+    // 检查 Wine prefix 是否已初始化 (二次启动时跳过 wineboot)
+    bool prefixReady = []() {
+        DIR* d = opendir(WINE_PREFIX "/drive_c");
+        if (d) { closedir(d); return true; }
+        return false;
+    }();
+
+    if (!prefixReady) {
+        // -- wineboot --init (仅首次启动) --
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix not ready, running wineboot --init...");
 
 #ifdef __aarch64__
-        // ARM64 Box64: argv[0]=winePath (Box64 提供), argv[1]=wineboot
         std::string entryParams = p->winehuaBin + "|wineboot|--init";
 #else
-        // x86_64: argv[0]=wine, argv[1]=wineboot
         std::string entryParams = p->winehuaBin + "|wine|wineboot|--init";
 #endif
 
@@ -501,38 +506,60 @@ static void LaunchThreadFunc(LaunchParams* p) {
             "libwine_child.so:Main", childArgs, options, &childPid);
 
         if (ret == NCP_NO_ERROR) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot done, pid=%{public}d", childPid);
-
-            // 启动 explorer desktop shell，尺寸匹配输出
-            // 等待 wineboot 创建 drive_c (explorer 需要枚举桌面文件)
+            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
+            // 等待 wineboot 创建 drive_c
             if (!WaitFor("wine prefix drive_c", []() {
                 DIR* d = opendir(WINE_PREFIX "/drive_c");
                 if (d) { closedir(d); return true; }
                 return false;
-            }, 10000, 200)) {
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] drive_c not ready, launching explorer anyway");
+            }, 30000, 200)) {
+                OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot drive_c timeout, abort");
+                if (gStateTsfn)
+                    napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                delete p;
+                return;
             }
-            auto* ws = WaylandServer::GetInstance();
-            int dw = ws->outputW_ > 0 ? ws->outputW_ : 1280;
-            int dh = ws->outputH_ > 0 ? ws->outputH_ : 720;
-            char desktopArg[128];
-            snprintf(desktopArg, sizeof(desktopArg), "/desktop=shell,%dx%d", dw, dh);
-#ifdef __aarch64__
-            std::string exEntry = p->winehuaBin + "|explorer|" + desktopArg;
-#else
-            std::string exEntry = p->winehuaBin + "|wine|explorer|" + desktopArg;
-#endif
-            NativeChildProcess_Args exArgs = {};
-            exArgs.entryParams = const_cast<char*>(exEntry.c_str());
-            NativeChildProcess_Options exOpts = {};
-            exOpts.isolationMode = NCP_ISOLATION_MODE_NORMAL;
-            int32_t exPid = -1;
-            auto exRet = OH_Ability_StartNativeChildProcess(
-                "libwine_child.so:Main", exArgs, exOpts, &exPid);
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop pid=%{public}d ret=%{public}d",
-                        exPid, (int)exRet);
-        } else
+            // 轮询等 wineboot 进程退出 (NCP 异步, 不能用 waitpid)
+            char procPath[64];
+            snprintf(procPath, sizeof(procPath), "/proc/%d", childPid);
+            OH_LOG_INFO(LOG_APP, "[Launch-Async] waiting for wineboot pid=%{public}d to exit...", childPid);
+            for (int i = 0; i < 120; i++) {
+                if (access(procPath, F_OK) != 0) break;
+                usleep(500000);
+            }
+            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot completed");
+        } else {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot FAILED ret=%{public}d", (int)ret);
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+            delete p;
+            return;
+        }
+    } else {
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix already initialized, skipping wineboot");
+    }
+
+    // -- explorer desktop shell (首次和二次启动共用) --
+    {
+        auto* ws = WaylandServer::GetInstance();
+        int dw = ws->outputW_ > 0 ? ws->outputW_ : 1280;
+        int dh = ws->outputH_ > 0 ? ws->outputH_ : 720;
+        char desktopArg[128];
+        snprintf(desktopArg, sizeof(desktopArg), "/desktop=shell,%dx%d", dw, dh);
+#ifdef __aarch64__
+        std::string exEntry = p->winehuaBin + "|explorer|" + desktopArg;
+#else
+        std::string exEntry = p->winehuaBin + "|wine|explorer|" + desktopArg;
+#endif
+        NativeChildProcess_Args exArgs = {};
+        exArgs.entryParams = const_cast<char*>(exEntry.c_str());
+        NativeChildProcess_Options exOpts = {};
+        exOpts.isolationMode = NCP_ISOLATION_MODE_NORMAL;
+        int32_t exPid = -1;
+        auto exRet = OH_Ability_StartNativeChildProcess(
+            "libwine_child.so:Main", exArgs, exOpts, &exPid);
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop pid=%{public}d ret=%{public}d",
+                    exPid, (int)exRet);
     }
 #else
     // -- wineboot --init (PC: fork + execve ./box64) --

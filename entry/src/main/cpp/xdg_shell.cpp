@@ -40,15 +40,12 @@ static void tl_set_title(wl_client*, wl_resource* tlRes, const char* title) {
 }
 static void tl_set_app_id(wl_client*, wl_resource* tlRes, const char* appId) {
     OH_LOG_INFO(LOG_APP, "[XDG] app_id=%{public}s", appId ? appId : "(null)");
-    auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
-    if (td && appId && strstr(appId, "explorer")) {
-        auto* server = WaylandServer::GetInstance();
-        if (server->IsDesktopMode() && server->GetDesktopRootToplevelId() == 0) {
-            server->SetDesktopRootToplevelId(td->toplevelId);
-            server->FireToplevelEvent(td->toplevelId, "desktop_root", "{}");
-            OH_LOG_INFO(LOG_APP, "[XDG] desktop root toplevel #%{public}u", td->toplevelId);
-        }
-    }
+    //  不再在这里立即设置 desktop_root:
+    // explorer 启动时会创建多个 toplevel (#1=临时窗口, #3=实际桌面),
+    // 如果 #1 先拿到 desktop_root, 后续 #3 切换时 DesktopAbility 已绑定到 #1,
+    // 导致渲染脱节 → 白屏。
+    // 改为由 surface_commit 中 >=80% 输出尺寸的条件来决定桌面 root,
+    // 确保只有真正的全屏桌面 toplevel 才成为 root。
 }
 static void tl_show_window_menu(wl_client*, wl_resource*, wl_resource*, uint32_t, int32_t, int32_t) {}
 static void tl_move(wl_client*, wl_resource*, wl_resource*, uint32_t) {}
