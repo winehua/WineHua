@@ -3,6 +3,8 @@
 #include "plugin_manager.h"
 #include "input_manager.h"
 #include "egl_renderer.h"
+#include "audio_broker.h"
+#include "audio_ipc_protocol.h"
 #include "wine_constants.h"
 #include "wine_env.h"
 
@@ -19,6 +21,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
+#include <algorithm>
+#include <initializer_list>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -96,15 +100,31 @@ static void KillAllProcesses() {
 static napi_threadsafe_function gStateTsfn = nullptr;
 static std::string gSockPath;
 
+static int CreateAudioBootstrapFd(const std::string& runtimeDir) {
+    if (!winehua::AudioBroker::GetInstance().EnsureStarted(runtimeDir)) {
+        OH_LOG_ERROR(LOG_APP, "[AudioBroker] failed to start for runtimeDir=%{public}s", runtimeDir.c_str());
+        return -1;
+    }
+    int fd = winehua::AudioBroker::GetInstance().CreateBootstrapHandle();
+    if (fd < 0) {
+        OH_LOG_ERROR(LOG_APP, "[AudioBroker] failed to create bootstrap FD for runtimeDir=%{public}s", runtimeDir.c_str());
+        return -1;
+    }
+    OH_LOG_INFO(LOG_APP, "[AudioBroker] bootstrap ready runtimeDir=%{public}s", runtimeDir.c_str());
+    return fd;
+}
+
 // -- fork/exec 后关闭继承的 fd --
-static void CloseInheritedFds(int keep1, int keep2) {
+static void CloseInheritedFds(std::initializer_list<int> keepFds) {
     DIR* d = opendir("/proc/self/fd");
     if (!d) return;
     int dfd = dirfd(d);
     dirent* e;
     while ((e = readdir(d))) {
         int fd = atoi(e->d_name);
-        if (fd > 2 && fd != dfd && fd != keep1 && fd != keep2) close(fd);
+        if (fd <= 2 || fd == dfd) continue;
+        if (std::find(keepFds.begin(), keepFds.end(), fd) != keepFds.end()) continue;
+        close(fd);
     }
     closedir(d);
 }
@@ -173,7 +193,8 @@ static void StartStderrLogger(int fd, const char* tag,
 static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                               const std::string& sockName,
                                               const std::string& libPath,
-                                              const std::string& binDir) {
+                                              const std::string& binDir,
+                                              int audioBootstrapFd) {
     std::string shareDir = binDir + "/../share";
     std::string xkbDir = shareDir + "/X11/xkb";
     std::vector<std::string> env = {
@@ -205,6 +226,11 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // x86_64: 系统 linker 直接加载 x86_64 OHOS .so
     env.push_back("LD_LIBRARY_PATH=" + libPath + ":" + binDir + "/x86_64-unix");
 #endif
+    if (audioBootstrapFd >= 0) {
+        env.push_back("WINE_OHOS_AUDIO_ENABLE=1");
+        env.push_back("WINE_OHOS_AUDIO_BOOTSTRAP_FD=" + std::to_string(audioBootstrapFd));
+        env.push_back("WINE_OHOS_AUDIO_PROTOCOL_VERSION=" + std::to_string(WINEHUA_AUDIO_PROTOCOL_VERSION));
+    }
     return env;
 }
 
@@ -373,7 +399,8 @@ static void LaunchThreadFunc(LaunchParams* p) {
                 (p->winehuaBin + "/../share/X11/xkb").c_str());
 
     // 组装 envp 环境变量
-    p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin);
+    int audioBootstrapFd = CreateAudioBootstrapFd(p->sockDir);
+    p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin, audioBootstrapFd);
     for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
     p->envp.push_back(nullptr);
 
@@ -433,7 +460,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
                 dup2(wsPipe[1], STDERR_FILENO);
                 if (wsPipe[1] > 2) close(wsPipe[1]);
             }
-            CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
+            CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
             chdir(p->winehuaBin.c_str());
@@ -455,6 +482,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
         } else {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver fork failed");
             if (wsPipeOk) { close(wsPipe[0]); close(wsPipe[1]); }
+            if (audioBootstrapFd >= 0) close(audioBootstrapFd);
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
             delete p;
@@ -567,13 +595,17 @@ static void LaunchThreadFunc(LaunchParams* p) {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init...");
         pid_t bootPid = fork();
         if (bootPid == 0) {
-            CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
+            CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineboot", 0, 0, 0);
             chdir(p->winehuaBin.c_str());
             const char* bootArgv[] = {"./box64", "./wine", "./wineboot", "--init", nullptr};
             execve("./box64", (char* const*)bootArgv, p->envp.data());
             _exit(127);
+        }
+        if (audioBootstrapFd >= 0) {
+            close(audioBootstrapFd);
+            audioBootstrapFd = -1;
         }
         if (bootPid > 0) {
             int bootStatus = 0;
@@ -668,7 +700,11 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     std::string sockDir = (pos == std::string::npos) ? "/tmp" : sockStr.substr(0, pos);
     std::string sockName = (pos == std::string::npos) ? sockStr : sockStr.substr(pos + 1);
 
-    std::vector<std::string> envStrs = BuildWineEnv(sockDir, sockName, libPath, binDir);
+    int audioBootstrapFd = -1;
+#ifndef PAD_MODE
+    audioBootstrapFd = CreateAudioBootstrapFd(sockDir);
+#endif
+    std::vector<std::string> envStrs = BuildWineEnv(sockDir, sockName, libPath, binDir, audioBootstrapFd);
     std::vector<char*> envp;
     for (auto& s : envStrs) envp.push_back((char*)s.c_str());
     envp.push_back(nullptr);
@@ -757,12 +793,14 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
         if (pipefd[1] > 2) close(pipefd[1]);
         for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
         prctl(PR_SET_NAME, "wl-client", 0, 0, 0);
-        CloseInheritedFds(STDOUT_FILENO, STDERR_FILENO);
+        CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
         chdir(binDir);
         const char* cargv[] = {"./box64", "./wine", exePath.c_str(), nullptr};
         execve("./box64", (char* const*)cargv, envp.data());
         _exit(127);
     }
+
+    if (audioBootstrapFd >= 0) close(audioBootstrapFd);
 
     if (pid > 0) {
         close(pipefd[1]);
