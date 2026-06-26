@@ -1,6 +1,6 @@
 [submodule "thirdparty/wine"]
 	path = thirdparty/wine
-	url = https://github.com/winehua/wine.git
+	url = https://github.com/yifengling0/wine-1.git
 [submodule "thirdparty/box64"]
 	path = thirdparty/box64
 	url = https://github.com/winehua/box64.git
