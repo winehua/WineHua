@@ -34,6 +34,7 @@ out/
 /local.properties
 **/build
 /.hvigor
+/entry/.hvigor/
 .cxx
 /.clangd
 /.clang-format
@@ -52,3 +53,7 @@ thirdparty/freetype-VER-2-13-3/
 /entry/hnp
 /runlogs/
 entry/src/main/resources/rawfile/wine-data.zip
+/tmp/
+/__pycache__/
+/$null
+*.pyc
