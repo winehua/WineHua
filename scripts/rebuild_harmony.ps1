@@ -9,7 +9,7 @@ and collects logs from a target device or emulator.
 
 .PARAMETER Mode
 Build or runtime action to execute. Supported values:
-doctor, full, incremental, wine, package, deploy, logs.
+doctor, full, incremental, wine, wine-smoke, guest-gfx, package, deploy, logs.
 
 .PARAMETER Backend
 Host backend selection: auto, msys2, or wsl.
@@ -22,7 +22,7 @@ HDC target key or ip:port. Use auto only when exactly one target is visible.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('doctor', 'full', 'incremental', 'wine', 'package', 'deploy', 'logs')]
+    [ValidateSet('doctor', 'full', 'incremental', 'wine', 'wine-smoke', 'guest-gfx', 'package', 'deploy', 'logs')]
     [string]$Mode = 'incremental',
 
     [ValidateSet('x86_64', 'arm64', 'all')]
@@ -52,7 +52,7 @@ $BuildScript = Join-Path $RepoRoot 'scripts\rebuild_harmony.sh'
 $SignedHap = Join-Path $RepoRoot 'entry\build\default\outputs\default\entry-default-signed.hap'
 $BundleName = 'app.hackeris.winehua'
 $AbilityName = 'EntryAbility'
-$LogPattern = 'wine|winehua_audio_smoke|MediaReg|AudioBroker|quartz|mci|mp3dmod|devenum|Alarm01|testTag|MW-NAPI|WL-|WineWM|cmd\.exe|notepad\.exe|c0000135|wineboot|wineserver|Mono|Gecko|prefix'
+$LogPattern = 'wine|winehua_audio_smoke|winehua_graphics_smoke|MediaReg|AudioBroker|quartz|mci|mp3dmod|devenum|Alarm01|testTag|MW-NAPI|WL-|WineWM|cmd\.exe|notepad\.exe|c0000135|wineboot|wineserver|Mono|Gecko|prefix'
 
 function Write-Info {
     param([string]$Message)
@@ -406,6 +406,36 @@ switch ($Mode) {
 
     'wine' {
         Invoke-Build -ModeName 'wine' -ArchName $Arch -DisableAutoHeal:$NoAutoHeal
+        if (-not $SkipInstall) {
+            $resolvedTarget = Resolve-Target -ToolPath $ResolvedHdc -RequestedTarget $Target
+            Install-Hap -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget
+            if (-not $SkipLaunch) {
+                Start-App -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget
+            }
+            if (-not $SkipLogs) {
+                Start-Sleep -Seconds $WaitSeconds
+                Show-Logs -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget
+            }
+        }
+    }
+
+    'wine-smoke' {
+        Invoke-Build -ModeName 'wine-smoke' -ArchName $Arch -DisableAutoHeal:$NoAutoHeal
+        if (-not $SkipInstall) {
+            $resolvedTarget = Resolve-Target -ToolPath $ResolvedHdc -RequestedTarget $Target
+            Install-Hap -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget
+            if (-not $SkipLaunch) {
+                Start-App -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget
+            }
+            if (-not $SkipLogs) {
+                Start-Sleep -Seconds $WaitSeconds
+                Show-Logs -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget
+            }
+        }
+    }
+
+    'guest-gfx' {
+        Invoke-Build -ModeName 'guest-gfx' -ArchName $Arch -DisableAutoHeal:$NoAutoHeal
         if (-not $SkipInstall) {
             $resolvedTarget = Resolve-Target -ToolPath $ResolvedHdc -RequestedTarget $Target
             Install-Hap -ToolPath $ResolvedHdc -ResolvedTarget $resolvedTarget

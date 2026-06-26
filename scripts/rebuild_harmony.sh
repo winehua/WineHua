@@ -7,6 +7,8 @@ ARCH_INPUT="${2:-x86_64}"
 shift $(( $# >= 1 ? 1 : 0 ))
 shift $(( $# >= 1 ? 1 : 0 ))
 AUTO_HEAL=1
+HEARTBEAT_INTERVAL="${REBUILD_HEARTBEAT_INTERVAL:-20}"
+LOG_DIR="${REBUILD_LOG_DIR:-$ROOT/tmp/rebuild-logs}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -30,6 +32,113 @@ log() {
 die() {
     printf '[rebuild] ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+strip_ansi() {
+    printf '%s' "$1" | sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g'
+}
+
+format_duration() {
+    local total="${1:-0}"
+    local h=$(( total / 3600 ))
+    local m=$(( (total % 3600) / 60 ))
+    local s=$(( total % 60 ))
+
+    if [ "$h" -gt 0 ]; then
+        printf '%02dh%02dm%02ds\n' "$h" "$m" "$s"
+    elif [ "$m" -gt 0 ]; then
+        printf '%02dm%02ds\n' "$m" "$s"
+    else
+        printf '%02ds\n' "$s"
+    fi
+}
+
+status_prefix() {
+    local status_root="$1"
+    printf '%s\n' "$status_root"
+}
+
+status_set() {
+    local status_root="$1"
+    local key="$2"
+    shift 2
+    mkdir -p "$(dirname "$status_root")"
+    printf '%s\n' "$*" > "${status_root}.${key}"
+}
+
+status_get() {
+    local status_root="$1"
+    local key="$2"
+    local path="${status_root}.${key}"
+    [ -f "$path" ] || return 1
+    cat "$path"
+}
+
+update_step_status_from_line() {
+    local status_root="$1"
+    local line="$2"
+    local clean target
+
+    clean="$(strip_ansi "$line")"
+    [ -n "$clean" ] || return 0
+
+    status_set "$status_root" last_ts "$(date +%s)"
+
+    case "$clean" in
+        "[BUILD]"*)
+            status_set "$status_root" detail "$clean"
+            ;;
+        "[rebuild]"*)
+            status_set "$status_root" detail "$clean"
+            ;;
+        make:\ ***)
+            status_set "$status_root" detail "$clean"
+            ;;
+    esac
+
+    target="$(printf '%s\n' "$clean" | sed -n 's/.* -c -o \([^ ]*\).*/\1/p' | head -n 1)"
+    if [ -z "$target" ]; then
+        target="$(printf '%s\n' "$clean" | sed -n 's/.* -o \([^ ]*\.\(so\|dll\|exe\|a\|lib\|fon\|res\|hap\|hnp\)\).*/\1/p' | head -n 1)"
+    fi
+    if [ -n "$target" ]; then
+        status_set "$status_root" target "$target"
+    fi
+}
+
+heartbeat_monitor() {
+    local step="$1"
+    local arch="$2"
+    local status_root="$3"
+    local start_ts="$4"
+    local pid="$5"
+    local build_log="$6"
+    local now last_ts elapsed idle detail target
+
+    [ "$HEARTBEAT_INTERVAL" -gt 0 ] 2>/dev/null || return 0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "$HEARTBEAT_INTERVAL" || break
+        kill -0 "$pid" 2>/dev/null || break
+
+        now="$(date +%s)"
+        last_ts="$(status_get "$status_root" last_ts 2>/dev/null || printf '%s\n' "$start_ts")"
+        detail="$(status_get "$status_root" detail 2>/dev/null || true)"
+        target="$(status_get "$status_root" target 2>/dev/null || true)"
+        elapsed="$(format_duration $(( now - start_ts )))"
+        idle="$(format_duration $(( now - last_ts )))"
+
+        log "still running: step=$step arch=$arch elapsed=$elapsed idle=$idle${detail:+ detail=\"$detail\"}${target:+ target=$target} log=$build_log"
+    done
+}
+
+stream_build_log() {
+    local build_log="$1"
+    local status_root="$2"
+
+    tail -n +1 -F "$build_log" 2>/dev/null | while IFS= read -r line; do
+        printf '%s\n' "$line"
+        update_step_status_from_line "$status_root" "$line"
+    done
 }
 
 need_cmd() {
@@ -82,7 +191,13 @@ has_deps_artifacts() {
 has_wine_artifacts() {
     [ -f "$ROOT/thirdparty/wine/build-ohos/loader/wine" ] &&
     [ -f "$ROOT/thirdparty/wine/build-ohos/dlls/ntdll/ntdll.so" ] &&
-    [ -f "$ROOT/thirdparty/wine/build-native/loader/wine.inf" ]
+    [ -f "$ROOT/thirdparty/wine/build-native/loader/wine.inf" ] &&
+    [ -f "$ROOT/thirdparty/wine/build-ohos/dlls/kernel32/x86_64-windows/kernel32.dll" ] &&
+    [ -f "$ROOT/thirdparty/wine/build-ohos/dlls/kernelbase/x86_64-windows/kernelbase.dll" ] &&
+    [ -f "$ROOT/thirdparty/wine/build-ohos/programs/wineboot/x86_64-windows/wineboot.exe" ] &&
+    [ -f "$ROOT/thirdparty/wine/build-ohos/programs/explorer/x86_64-windows/explorer.exe" ] &&
+    [ -f "$ROOT/thirdparty/wine/build-ohos/programs/winehua_audio_smoke/x86_64-windows/winehua_audio_smoke.exe" ] &&
+    [ -f "$ROOT/thirdparty/wine/build-ohos/programs/winehua_graphics_smoke/x86_64-windows/winehua_graphics_smoke.exe" ]
 }
 
 has_box64_artifacts() {
@@ -122,9 +237,49 @@ check_submodules() {
 run_build_step() {
     local step="$1"
     local arch="$2"
+    local stamp build_log status_root start_ts build_pid tail_pid heartbeat_pid rc
 
     log "==> build.sh $step $arch"
-    bash "$ROOT/build.sh" "$step" "$arch"
+    mkdir -p "$LOG_DIR"
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    build_log="$LOG_DIR/${MODE}-${step}-${arch}-${stamp}.log"
+    status_root="$LOG_DIR/${MODE}-${step}-${arch}-${stamp}.status"
+    start_ts="$(date +%s)"
+
+    status_set "$status_root" step "$step"
+    status_set "$status_root" arch "$arch"
+    status_set "$status_root" start_ts "$start_ts"
+    status_set "$status_root" last_ts "$start_ts"
+    status_set "$status_root" detail "[rebuild] queued: build.sh $step $arch"
+    log "progress log: $build_log"
+
+    (
+        stdbuf -oL -eL bash "$ROOT/build.sh" "$step" "$arch" >"$build_log" 2>&1
+    ) &
+    build_pid=$!
+
+    stream_build_log "$build_log" "$status_root" &
+    tail_pid=$!
+
+    heartbeat_monitor "$step" "$arch" "$status_root" "$start_ts" "$build_pid" "$build_log" &
+    heartbeat_pid=$!
+
+    set +e
+    wait "$build_pid"
+    rc=$?
+    set -e
+
+    sleep 1
+    kill "$tail_pid" "$heartbeat_pid" 2>/dev/null || true
+    wait "$tail_pid" 2>/dev/null || true
+    wait "$heartbeat_pid" 2>/dev/null || true
+
+    if [ "$rc" -ne 0 ]; then
+        log "step failed: step=$step arch=$arch exit=$rc log=$build_log"
+        return "$rc"
+    fi
+
+    log "step complete: step=$step arch=$arch elapsed=$(format_duration $(( $(date +%s) - start_ts )))"
 }
 
 ensure_deps() {
@@ -275,6 +430,8 @@ Usage:
   bash scripts/rebuild_harmony.sh full [x86_64|arm64|all]
   bash scripts/rebuild_harmony.sh incremental [x86_64|arm64|all]
   bash scripts/rebuild_harmony.sh wine [x86_64|arm64|all]
+  bash scripts/rebuild_harmony.sh wine-smoke [x86_64|arm64|all]
+  bash scripts/rebuild_harmony.sh guest-gfx [x86_64|arm64|all]
   bash scripts/rebuild_harmony.sh package [x86_64|arm64|all]
 
 Modes:
@@ -282,6 +439,8 @@ Modes:
   full         deps -> wine -> (box64 if needed) -> native -> hnp -> hap
   incremental  native -> hnp -> hap
   wine         wine -> hnp -> hap
+  wine-smoke   rebuild only programs/winehua_graphics_smoke.exe -> hnp -> hap
+  guest-gfx    rebuild guest-side Mesa/VirGL bundle -> hnp -> hap
   package      hnp -> hap
 
 Notes:
@@ -290,6 +449,8 @@ Notes:
   - Use incremental when ArkTS/native/package glue changed.
   - Pass --no-auto-heal when you want fail-fast incremental behavior instead of
     silently falling back to deps/wine/native rebuilds.
+  - Long-running steps emit a heartbeat every 20 seconds by default.
+    Override with REBUILD_HEARTBEAT_INTERVAL=<seconds>; set 0 to disable.
 EOF
 }
 
@@ -328,6 +489,27 @@ case "$MODE" in
         prepare_prereq native "$ARCH"
         run_build_step wine "$ARCH"
         run_build_step hnp "$ARCH"
+        run_build_step hap "$ARCH"
+        print_artifacts "$ARCH"
+        ;;
+    wine-smoke)
+        check_submodules
+        prepare_prereq deps "$ARCH"
+        prepare_prereq box64 "$ARCH"
+        prepare_prereq native "$ARCH"
+        require_wine "$ARCH"
+        run_build_step wine-smoke "$ARCH"
+        run_build_step hnp "$ARCH"
+        run_build_step hap "$ARCH"
+        print_artifacts "$ARCH"
+        ;;
+    guest-gfx)
+        check_submodules
+        prepare_prereq deps "$ARCH"
+        prepare_prereq wine "$ARCH"
+        prepare_prereq box64 "$ARCH"
+        prepare_prereq native "$ARCH"
+        run_build_step guest-gfx "$ARCH"
         run_build_step hap "$ARCH"
         print_artifacts "$ARCH"
         ;;

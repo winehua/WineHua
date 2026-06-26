@@ -1,10 +1,11 @@
 #!/bin/bash
-# build_xkbcommon.sh 鈥?libffi + libxml2 + xkbcommon 鈫?sysroot-ext
+# Build libffi, libxml2, xkbcommon, and xkbregistry into sysroot-ext.
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-log "=== 鏋勫缓 xkbcommon 渚濊禆 (x86_64) ==="
+log "=== Build xkbcommon dependencies (x86_64) ==="
 
 if [ -f "$SYSROOT_EXT_LIB/libxkbcommon.so" ] \
    && [ -f "$SYSROOT_EXT_LIB/libxkbcommon.so.0" ] \
@@ -17,13 +18,12 @@ if [ -f "$SYSROOT_EXT_LIB/libxkbcommon.so" ] \
    && [ -f "$SYSROOT_EXT_PC/libxml-2.0.pc" ] \
    && [ -d "$SYSROOT_EXT_INC/xkbcommon" ] \
    && [ -f "$SYSROOT_EXT_PC/xkbcommon.pc" ]; then
-    log "xkbcommon 渚濊禆宸插氨缁紝璺宠繃"
+    log "xkbcommon stack already available in sysroot-ext"
     exit 0
 fi
 
 mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC"
 
-# 鈹€鈹€ 1. libffi 鈹€鈹€
 build_libffi() {
     local src="$ROOT/thirdparty/libffi"
     local build="$BUILD_DIR/libffi_build"
@@ -50,7 +50,7 @@ PY
     CFLAGS="-O2 -fPIC -D__MUSL__" \
     LDFLAGS="-fuse-ld=lld" \
     "$src/configure" --host=x86_64-unknown-linux-musl --prefix="$build/install" --disable-docs --disable-dependency-tracking
-    make -j$JOBS && make install
+    make -j"$JOBS" && make install
     cp "$build/install/lib/libffi.so.8.1.4" "$SYSROOT_EXT_LIB/libffi.so.8"
     cp "$build/install/lib/libffi.so.8.1.4" "$SYSROOT_EXT_LIB/libffi.so"
     cp "$build/install/include/ffi.h" "$SYSROOT_EXT_INC/"
@@ -67,7 +67,6 @@ Cflags: -I\${includedir}
 EOF
 }
 
-# 鈹€鈹€ 2. libxml2 鈹€鈹€
 build_libxml2() {
     local src="$ROOT/thirdparty/libxml2"
     local build="$BUILD_DIR/libxml2_build"
@@ -101,7 +100,6 @@ Cflags: -I\${includedir}/libxml2
 EOF
 }
 
-# 鈹€鈹€ 3. xkbcommon 鈹€鈹€
 build_xkbcommon() {
     local src="$ROOT/thirdparty/libxkbcommon"
     local build="$BUILD_DIR/xkbcommon_build"
@@ -146,4 +144,4 @@ build_libffi
 build_libxml2
 build_xkbcommon
 
-log "xkbcommon 渚濊禆 鈫?sysroot-ext"
+log "xkbcommon stack installed into sysroot-ext"

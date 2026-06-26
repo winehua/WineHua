@@ -1,23 +1,25 @@
 #!/bin/bash
 #
-# build.sh — Wine for HarmonyOS 构建入口
+# Low-level WineHua build entrypoint.
+# Prefer scripts/rebuild_harmony.ps1 or scripts/rebuild_harmony.sh for normal use.
 #
-# 用法:
+# Usage:
 #   ./build.sh {command} [device_ip] [arch]
 #
-# arch: arm64 (默认) | x86_64 | all
+# arch: arm64 | x86_64 | all
 #
-# 命令:
-#   full       全量构建 (含依赖)
-#   deps       模拟层交叉编译依赖 (Wine用, x86_64-linux-ohos)
-#   native     Native compositor 依赖 (按架构)
-#   wine       构建 Wine
-#   box64      构建 Box64 (仅 arm64)
-#   assemble   组装 HNP 布局 (按架构)
-#   hnp        打包 HNP (按架构)
-#   hap        构建 HAP + 签名 (按架构)
-#   deploy     推送到设备并安装
-#   quick      assemble → hnp → hap → deploy
+# Commands:
+#   full       Full build
+#   deps       Build x86_64 OHOS sysroot-ext dependencies
+#   native     Build native compositor pieces per arch
+#   wine       Build Wine
+#   guest-gfx  Build + package the guest-side Mesa/VirGL receiver bundle per arch
+#   box64      Build Box64
+#   assemble   Assemble HNP layout per arch
+#   hnp        Package HNP per arch
+#   hap        Build and sign HAP
+#   deploy     Install to target device
+#   quick      assemble -> hnp -> hap -> deploy
 #
 set -euo pipefail
 
@@ -26,7 +28,7 @@ SCRIPTS="$ROOT/scripts"
 
 DEFAULT_IP="192.168.1.4:38879"
 
-# ── 参数解析 ──
+# Argument parsing
 cmd="${1:-}"
 device_ip="${DEFAULT_IP}"
 arch="arm64"
@@ -49,17 +51,17 @@ case $# in
         ;;
 esac
 
-# ── 验证 arch ──
+# Validate arch
 case "$arch" in
     arm64) NATIVE_ARCH="arm64-v8a" ;;
     x86_64) NATIVE_ARCH="x86_64" ;;
     all) ;;
-    *) echo "错误: arch 必须是 arm64 | x86_64 | all"; exit 1 ;;
+    *) echo "Error: arch must be arm64 | x86_64 | all"; exit 1 ;;
 esac
 
 export NATIVE_ARCH
 
-# ── 工具函数 ──
+# Helpers
 log()  { echo -e "\033[32m[BUILD]\033[0m $*"; }
 warn() { echo -e "\033[33m[WARN]\033[0m $*"; }
 
@@ -78,7 +80,37 @@ run_deps() {
 }
 
 run_wine() {
-    bash "$SCRIPTS/build_wine.sh"
+    ENABLE_OPENGL="${ENABLE_OPENGL:-1}" bash "$SCRIPTS/build_wine.sh"
+}
+
+run_wine_smoke() {
+    local want_opengl="${ENABLE_OPENGL:-1}"
+    local wine_cfg="$ROOT/thirdparty/wine/build-ohos/config.log"
+    local wine_config_h="$ROOT/thirdparty/wine/build-ohos/include/config.h"
+
+    if [ "$want_opengl" = "1" ] && {
+        [ ! -f "$wine_cfg" ] ||
+        ! grep -q -- '--with-opengl' "$wine_cfg" ||
+        [ ! -f "$wine_config_h" ] ||
+        ! grep -q '^#define HAVE_LIBWAYLAND_EGL 1' "$wine_config_h"
+    }; then
+        log "wine-smoke requested with OpenGL, but current Wine build is not OpenGL-ready; rebuilding Wine first"
+        ENABLE_OPENGL="$want_opengl" bash "$SCRIPTS/build_wine.sh"
+        return
+    fi
+
+    WINE_BUILD_SCOPE=graphics-smoke ENABLE_OPENGL="$want_opengl" bash "$SCRIPTS/build_wine.sh"
+}
+
+run_guest_gfx() {
+    local a="${1:-arm64-v8a}"
+
+    if [ "$a" = "x86_64" ]; then
+        NATIVE_ARCH="$a" bash "$SCRIPTS/build_ohos_guest_gfx.sh"
+    else
+        warn "guest_gfx source build currently targets x86_64 Wine userland only; packaging existing bundle for $a"
+        NATIVE_ARCH="$a" bash "$SCRIPTS/build_guest_gfx.sh"
+    fi
 }
 
 run_box64() {
@@ -99,7 +131,7 @@ run_deploy() {
     bash "$SCRIPTS/package.sh" deploy "$device_ip"
 }
 
-# ── 多架构迭代 ──
+# Multi-arch helpers
 for_each_arch() {
     local fn="$1"
     if [ "$arch" = "all" ]; then
@@ -110,13 +142,13 @@ for_each_arch() {
     fi
 }
 
-# assemble + hnp 必须配对 (assemble 会清除 staging 目录)
+# assemble + hnp must stay paired because assemble resets staging
 for_each_arch_assemble_and_hnp() {
     if [ "$arch" = "all" ]; then
-        log "=== 架构: arm64-v8a (assemble + hnp) ==="
+        log "=== arch: arm64-v8a (assemble + hnp) ==="
         NATIVE_ARCH=arm64-v8a bash "$SCRIPTS/assemble.sh"
         NATIVE_ARCH=arm64-v8a bash "$SCRIPTS/package.sh" hnp
-        log "=== 架构: x86_64 (assemble + hnp) ==="
+        log "=== arch: x86_64 (assemble + hnp) ==="
         NATIVE_ARCH=x86_64 bash "$SCRIPTS/assemble.sh"
         NATIVE_ARCH=x86_64 bash "$SCRIPTS/package.sh" hnp
     else
@@ -125,7 +157,7 @@ for_each_arch_assemble_and_hnp() {
     fi
 }
 
-# Pad assemble (pad / pad-hap 共用)
+# Pad assemble helper shared by pad / pad-hap
 for_each_arch_assemble_pad() {
     if [ "$arch" = "all" ]; then
         NATIVE_ARCH=arm64-v8a bash "$SCRIPTS/assemble.sh"
@@ -135,7 +167,7 @@ for_each_arch_assemble_pad() {
     fi
 }
 
-# ── 命令处理 ──
+# Command handling
 case "$cmd" in
     deps)
         run_deps
@@ -146,15 +178,22 @@ case "$cmd" in
     wine)
         run_wine
         ;;
+    wine-smoke)
+        run_wine_smoke
+        ;;
+    guest-gfx)
+        for_each_arch run_guest_gfx
+        for_each_arch_assemble_and_hnp
+        ;;
     box64)
         run_box64
         ;;
     assemble)
-        # all 模式下 assemble + hnp 配对, 避免 staging 被覆盖
+        # Keep all-mode assemble paired with hnp to avoid staging overwrite.
         for_each_arch_assemble_and_hnp
         ;;
     hnp)
-        # hnp 自动先 assemble (确保 staging 对应当前架构)
+        # hnp also runs assemble so staging matches the current arch.
         for_each_arch_assemble_and_hnp
         ;;
     hap)
@@ -189,7 +228,7 @@ case "$cmd" in
         fi
         ;;
     pad)
-        # Pad 构建 (fork-only, 无 HNP, 无 execve)
+        # Pad build path: fork-only, no HNP, no execve path.
         export DEVICE_TYPE=pad
         run_deps
         run_wine
@@ -197,41 +236,43 @@ case "$cmd" in
         for_each_arch run_native
         for_each_arch_assemble_pad
         NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
-        log "Pad HAP 构建完成"
+        log "Pad HAP build complete"
         ;;
     pad-hap)
-        # Pad 仅 HAP (只改 ArkTS/napi_init.cpp 时用，跳过 Wine 重编译)
+        # Pad HAP-only rebuild for ArkTS or native glue changes.
         export DEVICE_TYPE=pad
         for_each_arch run_native
         for_each_arch_assemble_pad
         NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPTS/package.sh" hap
-        log "Pad HAP 构建完成"
+        log "Pad HAP build complete"
         ;;
     pad-deploy)
         export DEVICE_TYPE=pad
         bash "$SCRIPTS/package.sh" deploy "$device_ip"
         ;;
     *)
-        echo "用法: $0 {full|deps|native|wine|box64|assemble|hnp|hap|deploy|quick|pad|pad-deploy} [device_ip] [arch]"
+        echo "Usage: $0 {full|deps|native|wine|wine-smoke|guest-gfx|box64|assemble|hnp|hap|deploy|quick|pad|pad-deploy} [device_ip] [arch]"
         echo ""
-        echo "  arch: arm64 (默认) | x86_64 | all"
+        echo "  arch: arm64 | x86_64 | all"
         echo ""
-        echo "  PC 命令 (有 execve, 有 HNP):"
-        echo "    full       全量构建 (首次使用)"
-        echo "    deps       模拟层交叉编译依赖"
-        echo "    native     Native compositor 依赖"
-        echo "    wine       构建 Wine"
-        echo "    box64      构建 Box64 (仅 arm64)"
-        echo "    assemble   组装 HNP 布局"
-        echo "    hnp        打包 HNP"
-        echo "    hap        构建 HAP + 签名"
-        echo "    deploy     推送到设备并安装"
-        echo "    quick      快速: assemble → hnp → hap → deploy"
+        echo "  PC commands:"
+        echo "    full       Full build"
+        echo "    deps       Build sysroot-ext deps"
+        echo "    native     Build native compositor deps"
+        echo "    wine       Build Wine"
+        echo "    wine-smoke Rebuild only programs/winehua_graphics_smoke.exe"
+        echo "    guest-gfx  Build + repackage guest-side Mesa/VirGL bundle -> hnp"
+        echo "    box64      Build Box64"
+        echo "    assemble   Assemble HNP layout"
+        echo "    hnp        Package HNP"
+        echo "    hap        Build and sign HAP"
+        echo "    deploy     Install to target"
+        echo "    quick      assemble -> hnp -> hap -> deploy"
         echo ""
-        echo "  Pad 命令 (fork-only, 无 HNP):"
-        echo "    pad <arch>        构建 Pad HAP (arm64|x86_64)"
-        echo "    pad-hap <arch>    仅 Pad HAP (只改 ArkTS/native 时用)"
-        echo "    pad-deploy <ip>   推送并安装"
+        echo "  Pad commands:"
+        echo "    pad <arch>        Build Pad HAP (arm64|x86_64)"
+        echo "    pad-hap <arch>    Rebuild Pad HAP only"
+        echo "    pad-deploy <ip>   Install to target"
         exit 1
         ;;
 esac

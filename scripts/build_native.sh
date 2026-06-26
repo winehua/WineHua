@@ -20,6 +20,64 @@ materialize_native_alias() {
     cp "$NATIVE_LIBS/$source_name" "$NATIVE_LIBS/$alias_name"
 }
 
+copy_installed_soname() {
+    local install_root="$1"
+    local soname="$2"
+    local alias_name="${3:-}"
+    local src="$install_root/lib/$soname"
+    local fallback=""
+
+    if [ ! -f "$src" ]; then
+        fallback="$(find "$install_root/lib" -maxdepth 1 -type f -name "${soname}*" | sort | head -n 1)"
+        [ -n "$fallback" ] || err "missing installed library: $src"
+        log "installed soname $soname missing, falling back to $(basename "$fallback")"
+        src="$fallback"
+    fi
+
+    cp -L "$src" "$NATIVE_LIBS/$soname"
+    if [ -n "$alias_name" ]; then
+        materialize_native_alias "$soname" "$alias_name"
+    fi
+}
+
+find_python_with_yaml() {
+    local win_python=""
+    local host_python=""
+    local local_app_data=""
+    local local_python=""
+
+    if python3 -c 'import yaml' >/dev/null 2>&1; then
+        command -v python3
+        return 0
+    fi
+
+    local_app_data="$(normalize_host_path_input "${LOCALAPPDATA:-}")"
+    if [ -n "$local_app_data" ]; then
+        local_python="$local_app_data/Python/bin/python.exe"
+        if [ -x "$local_python" ] && "$local_python" -c 'import yaml' >/dev/null 2>&1; then
+            printf '%s\n' "$local_python"
+            return 0
+        fi
+    fi
+
+    if [ "$HOST_SHELL" = "msys2" ] && command -v where.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+        while IFS= read -r win_python; do
+            [ -n "$win_python" ] || continue
+            case "$win_python" in
+                *WindowsApps*) continue ;;
+            esac
+
+            host_python="$(cygpath -u "$win_python")"
+            if "$host_python" -c 'import yaml' >/dev/null 2>&1; then
+                printf '%s\n' "$host_python"
+                return 0
+            fi
+        done < <(where.exe python 2>/dev/null | tr -d '\r')
+    fi
+
+    return 1
+}
+
 gen_native_cross() {
     local cross="$NATIVE_BUILD/ohos-${NATIVE_ARCH}-cross.txt"
     local ffi_prefix="$NATIVE_BUILD/libffi/install"
@@ -116,6 +174,93 @@ build_wayland() {
     log "wayland ($NATIVE_ARCH) -> $NATIVE_LIBS"
 }
 
+build_libepoxy() {
+    if [ ! -f "$NATIVE_LIBS/libepoxy.so.0" ]; then
+        log "--- libepoxy ($NATIVE_ARCH) ---"
+        local src="$ROOT/thirdparty/libepoxy"
+        local build="$NATIVE_BUILD/libepoxy"
+        local cross
+
+        [ -d "$src" ] || err "thirdparty/libepoxy is missing"
+
+        cross="$(gen_native_cross)"
+
+        rm -rf "$build"
+        meson setup "$build" "$src" \
+            --cross-file "$cross" \
+            --prefix "$build/install" \
+            --libdir lib \
+            -Dglx=no \
+            -Degl=yes \
+            -Dx11=false \
+            -Ddocs=false \
+            -Dtests=false
+
+        ninja -C "$build"
+        meson install -C "$build"
+
+        copy_installed_soname "$build/install" "libepoxy.so.0" "libepoxy.so"
+    else
+        log "libepoxy ($NATIVE_ARCH) already present"
+    fi
+
+    log "libepoxy ($NATIVE_ARCH) -> $NATIVE_LIBS"
+}
+
+build_virglrenderer() {
+    if [ ! -f "$NATIVE_LIBS/libvirglrenderer.so.1" ] || [ ! -x "$NATIVE_LIBS/virgl_test_server" ]; then
+        log "--- virglrenderer ($NATIVE_ARCH) ---"
+        local src="$ROOT/thirdparty/virglrenderer"
+        local build="$NATIVE_BUILD/virglrenderer"
+        local cross
+        local epoxy_pc="$NATIVE_BUILD/libepoxy/install/lib/pkgconfig"
+        local python_with_yaml=""
+        local python_wrapper_dir="$NATIVE_BUILD/python-with-yaml"
+
+        [ -d "$src" ] || err "thirdparty/virglrenderer is missing"
+        [ -d "$epoxy_pc" ] || err "libepoxy pkg-config directory is missing: $epoxy_pc"
+        python_with_yaml="$(find_python_with_yaml)" || err "python3 with PyYAML is required to build virglrenderer"
+
+        cross="$(gen_native_cross)"
+
+        mkdir -p "$python_wrapper_dir"
+        cat > "$python_wrapper_dir/python3" <<EOF
+#!/bin/sh
+exec "$python_with_yaml" "\$@"
+EOF
+        chmod +x "$python_wrapper_dir/python3"
+
+        export PATH="$python_wrapper_dir:$PATH"
+        export PKG_CONFIG_PATH="$epoxy_pc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+        rm -rf "$build"
+        meson setup "$build" "$src" \
+            --cross-file "$cross" \
+            --prefix "$build/install" \
+            --libdir lib \
+            -Dplatforms=egl \
+            -Dexternal-egl-without-gbm=true \
+            -Dvtest=true \
+            -Dvenus=false \
+            -Dvideo=false \
+            -Dtests=false \
+            -Dfuzzer=false \
+            -Dtracing=none
+
+        ninja -C "$build"
+        meson install -C "$build"
+
+        copy_installed_soname "$build/install" "libvirglrenderer.so.1" "libvirglrenderer.so"
+        [ -f "$build/install/bin/virgl_test_server" ] || err "virgl_test_server was not produced at $build/install/bin/virgl_test_server"
+        cp "$build/install/bin/virgl_test_server" "$NATIVE_LIBS/virgl_test_server"
+        chmod +x "$NATIVE_LIBS/virgl_test_server"
+    else
+        log "virglrenderer ($NATIVE_ARCH) already present"
+    fi
+
+    log "virglrenderer ($NATIVE_ARCH) -> $NATIVE_LIBS"
+}
+
 build_protocols() {
     local proto_c="$WINEHUA/entry/src/main/cpp/xdg-shell-protocol.c"
     if [ -f "$proto_c" ]; then
@@ -167,6 +312,8 @@ install_headers() {
 
 build_libffi
 build_wayland
+build_libepoxy
+build_virglrenderer
 build_protocols
 install_headers
 

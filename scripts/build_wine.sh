@@ -8,6 +8,32 @@ WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNI
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
     -fPIC -fasynchronous-unwind-tables $PAD_CFLAGS"
 
+ENABLE_OPENGL="${ENABLE_OPENGL:-0}"
+ENABLE_VULKAN="${ENABLE_VULKAN:-0}"
+WINE_BUILD_SCOPE="${WINE_BUILD_SCOPE:-full}"
+NATIVE_ENABLE_OPENGL=0
+NATIVE_ENABLE_VULKAN=0
+WINE_NATIVE_GRAPHICS_ARGS=(--without-opengl --without-vulkan)
+WINE_OHOS_GRAPHICS_ARGS=()
+if [ "$ENABLE_OPENGL" = "1" ]; then
+    WINE_OHOS_GRAPHICS_ARGS+=(--with-opengl)
+else
+    WINE_OHOS_GRAPHICS_ARGS+=(--without-opengl)
+fi
+
+case "$WINE_BUILD_SCOPE" in
+    full|graphics-smoke)
+        ;;
+    *)
+        err "unsupported WINE_BUILD_SCOPE=$WINE_BUILD_SCOPE (expected: full | graphics-smoke)"
+        ;;
+esac
+if [ "$ENABLE_VULKAN" = "1" ]; then
+    WINE_OHOS_GRAPHICS_ARGS+=(--with-vulkan)
+else
+    WINE_OHOS_GRAPHICS_ARGS+=(--without-vulkan)
+fi
+
 find_readelf() {
     if command -v llvm-readelf >/dev/null 2>&1; then
         command -v llvm-readelf
@@ -83,6 +109,8 @@ refresh_wine_configure() {
         need_regen=1
     elif ! grep -q 'programs/winehua_audio_smoke' "$WINE_SRC/configure" 2>/dev/null; then
         need_regen=1
+    elif ! grep -q 'programs/winehua_graphics_smoke' "$WINE_SRC/configure" 2>/dev/null; then
+        need_regen=1
     fi
 
     if [ "$need_regen" -eq 0 ]; then
@@ -150,9 +178,87 @@ disable_host_pkg() {
     fi
 }
 
+configure_ohos_graphics_env() {
+    if [ "$ENABLE_OPENGL" != "1" ]; then
+        return 0
+    fi
+
+    export WAYLAND_EGL_CFLAGS="-I$SYSROOT_EXT_INC"
+    export WAYLAND_EGL_LIBS="-L$SYSROOT_EXT_LIB -lwayland-egl"
+    export ac_cv_header_wayland_egl_h=yes
+    export ac_cv_lib_wayland_egl_wl_egl_window_create=yes
+    export EGL_CFLAGS=""
+    export EGL_LIBS="-lEGL"
+    export ac_cv_header_EGL_egl_h=yes
+    export ac_cv_lib_soname_EGL="libEGL.so"
+    log "Experimental OpenGL path enabled for Wine build"
+}
+
+build_dir_matches_graphics_args() {
+    local build_dir="$1"
+    local want_opengl="$2"
+    local want_vulkan="$3"
+    local cfg="$build_dir/config.log"
+
+    [ -f "$cfg" ] || return 1
+
+    if [ "$want_opengl" = "1" ]; then
+        grep -q -- '--with-opengl' "$cfg" || return 1
+    else
+        grep -q -- '--without-opengl' "$cfg" || return 1
+    fi
+
+    if [ "$want_vulkan" = "1" ]; then
+        grep -q -- '--with-vulkan' "$cfg" || return 1
+    else
+        grep -q -- '--without-vulkan' "$cfg" || return 1
+    fi
+
+    return 0
+}
+
+build_dir_has_wrong_host_path_style() {
+    local build_dir="$1"
+    local cfg="$build_dir/config.log"
+
+    [ -f "$cfg" ] || return 1
+
+    if [ "$HOST_SHELL" = "msys2" ] && grep -q '/mnt/[A-Za-z]/' "$cfg"; then
+        return 0
+    fi
+
+    if [ "$HOST_SHELL" = "wsl" ] && grep -qE '(^|[ =])/[A-Za-z]/' "$cfg"; then
+        return 0
+    fi
+
+    return 1
+}
+
+prepare_wine_build_dir() {
+    local build_dir="$1"
+    local want_opengl="$2"
+    local want_vulkan="$3"
+    local reason=""
+
+    if [ -f "$build_dir/Makefile" ]; then
+        if ! build_dir_matches_graphics_args "$build_dir" "$want_opengl" "$want_vulkan"; then
+            reason="graphics configure flags changed"
+        elif build_dir_has_wrong_host_path_style "$build_dir"; then
+            reason="host path style changed"
+        fi
+    fi
+
+    if [ -n "$reason" ]; then
+        log "Reconfiguring $(basename "$build_dir") because $reason"
+        remove_tree "$build_dir"
+    fi
+
+    mkdir -p "$build_dir"
+}
+
 build_native_tools() {
     log "--- Build native Wine tools ---"
-    mkdir -p "$WINE_SRC/build-native"
+    prepare_wine_build_dir "$WINE_SRC/build-native" "$NATIVE_ENABLE_OPENGL" "$NATIVE_ENABLE_VULKAN"
     cd "$WINE_SRC/build-native"
     if [ ! -f "Makefile" ]; then
         if configure_host_pkg \
@@ -212,23 +318,78 @@ build_native_tools() {
                 ac_cv_lib_soname_xkbregistry
         fi
 
+        if [ "$NATIVE_ENABLE_OPENGL" = "1" ]; then
+            if configure_host_pkg \
+                wayland-egl \
+                WAYLAND_EGL_CFLAGS \
+                WAYLAND_EGL_LIBS \
+                ac_cv_header_wayland_egl_h \
+                ac_cv_lib_wayland_egl_wl_egl_window_create; then
+                log "Host wayland-egl support detected via pkg-config"
+            else
+                warn "Host wayland-egl support not found; native Wine OpenGL helpers may stay disabled"
+                disable_host_pkg \
+                    ac_cv_header_wayland_egl_h \
+                    ac_cv_lib_wayland_egl_wl_egl_window_create \
+                    WAYLAND_EGL_CFLAGS \
+                    WAYLAND_EGL_LIBS
+            fi
+        fi
+
         export WAYLAND_SCANNER="$WAYLAND_SCANNER"
         ../configure --enable-win64 --disable-tests \
             --without-x --without-freetype --without-alsa \
-            --without-opengl --without-vulkan
+            "${WINE_NATIVE_GRAPHICS_ARGS[@]}"
     fi
-    make -j"$JOBS" tools/winebuild tools/widl tools/winegcc tools/wine/wine
+
+    make -j"$JOBS" \
+        tools/winebuild/winebuild.exe \
+        tools/widl/widl.exe \
+        tools/winegcc/winegcc.exe \
+        tools/wrc/wrc.exe \
+        tools/wmc/wmc.exe \
+        tools/sfnt2fon/sfnt2fon.exe \
+        tools/make_xftmpl.exe
+
+    make -j"$JOBS" \
+        loader/wine.inf \
+        nls/all \
+        include/all
+
+    if [ ! -f tools/wine/wine.exe ]; then
+        warn "Creating placeholder native tools/wine/wine.exe for cross-build dependencies"
+        mkdir -p tools/wine
+        : > tools/wine/wine.exe
+    fi
 }
 
 build_ohos_unix() {
     log "--- Build OHOS Wine unix side ---"
+    local make_env
+    local final_targets=()
+    local required_pe=()
+    local pe_path=""
+    local need_reconfigure=0
 
-    mkdir -p "$WINE_SRC/build-ohos"
+    prepare_wine_build_dir "$WINE_SRC/build-ohos" "$ENABLE_OPENGL" "$ENABLE_VULKAN"
     cd "$WINE_SRC/build-ohos"
 
-    if [ ! -f "Makefile" ] || ! grep -q '#define SONAME_LIBFREETYPE' include/config.h 2>/dev/null \
-       || ! grep -q '#define SONAME_LIBWAYLAND_CLIENT' include/config.h 2>/dev/null \
-       || ! grep -Eq 'dlls/wineohos\.drv/wineohos\.so:.*dlls/wineohos\.drv/ohos_audio_client\.o' Makefile 2>/dev/null; then
+    if [ ! -f "Makefile" ]; then
+        need_reconfigure=1
+    elif [ "$WINE_BUILD_SCOPE" != "graphics-smoke" ] && {
+        ! grep -q '#define SONAME_LIBFREETYPE' include/config.h 2>/dev/null ||
+        ! grep -q '#define SONAME_LIBWAYLAND_CLIENT' include/config.h 2>/dev/null ||
+        ! grep -Eq 'dlls/wineohos\.drv/wineohos\.so:.*dlls/wineohos\.drv/ohos_audio_client\.o' Makefile 2>/dev/null
+    }; then
+        need_reconfigure=1
+    elif [ "$WINE_BUILD_SCOPE" = "graphics-smoke" ] && {
+        ! grep -q '#define SONAME_LIBFREETYPE' include/config.h 2>/dev/null ||
+        ! grep -Eq 'dlls/wineohos\.drv/wineohos\.so:.*dlls/wineohos\.drv/ohos_audio_client\.o' Makefile 2>/dev/null
+    }; then
+        warn "Reusing existing build-ohos for graphics-smoke despite missing full runtime markers"
+    fi
+
+    if [ "$need_reconfigure" -eq 1 ]; then
         export FREETYPE_CFLAGS="-I$SYSROOT_EXT_INC/freetype2"
         export FREETYPE_LIBS="-L$SYSROOT_EXT_LIB -lfreetype"
         export ac_cv_header_ft2build_h=yes
@@ -248,6 +409,7 @@ build_ohos_unix() {
         export XKBREGISTRY_CFLAGS="-I$SYSROOT_EXT_INC"
         export XKBREGISTRY_LIBS="-L$SYSROOT_EXT_LIB -lxkbregistry"
         export WAYLAND_SCANNER="$WAYLAND_SCANNER"
+        configure_ohos_graphics_env
 
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CXX="$CLANGXX --target=$TARGET --sysroot=$SYSROOT" \
@@ -263,15 +425,50 @@ build_ohos_unix() {
             --with-mingw=gcc \
             --disable-tests \
             --without-x --without-alsa \
-            --without-opengl --without-vulkan
+            "${WINE_OHOS_GRAPHICS_ARGS[@]}"
         sed -i 's/#define HAVE_LINUX_NTSYNC_H 1/\/\* OHOS \*\/\n#undef HAVE_LINUX_NTSYNC_H/' include/config.h
         sed -i 's/#define HAVE_NETIPX_IPX_H 1/\/\* OHOS \*\/\n#undef HAVE_NETIPX_IPX_H/' include/config.h
     fi
 
-    make -k -j"$JOBS" \
-        CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
-        CFLAGS="$WINE_CFLAGS -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \
-        LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET -L$SYSROOT_EXT_LIB" || true
+    make_env=(
+        CC="$CLANG --target=$TARGET --sysroot=$SYSROOT"
+        CFLAGS="$WINE_CFLAGS -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2"
+        LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET -L$SYSROOT_EXT_LIB"
+    )
+
+    if [ "$WINE_BUILD_SCOPE" = "graphics-smoke" ]; then
+        log "Fast Wine scope enabled: rebuilding graphics smoke target only"
+        final_targets=(
+            programs/winehua_graphics_smoke/x86_64-windows/winehua_graphics_smoke.exe
+        )
+        required_pe=(
+            "$WINE_SRC/build-ohos/programs/winehua_graphics_smoke/x86_64-windows/winehua_graphics_smoke.exe"
+        )
+    else
+        make -k -j"$JOBS" "${make_env[@]}" || true
+        final_targets=(
+            dlls/kernel32/x86_64-windows/kernel32.dll
+            dlls/kernelbase/x86_64-windows/kernelbase.dll
+            programs/wineboot/x86_64-windows/wineboot.exe
+            programs/explorer/x86_64-windows/explorer.exe
+            programs/winehua_audio_smoke/x86_64-windows/winehua_audio_smoke.exe
+            programs/winehua_graphics_smoke/x86_64-windows/winehua_graphics_smoke.exe
+        )
+        required_pe=(
+            "$WINE_SRC/build-ohos/dlls/kernel32/x86_64-windows/kernel32.dll"
+            "$WINE_SRC/build-ohos/dlls/kernelbase/x86_64-windows/kernelbase.dll"
+            "$WINE_SRC/build-ohos/programs/wineboot/x86_64-windows/wineboot.exe"
+            "$WINE_SRC/build-ohos/programs/explorer/x86_64-windows/explorer.exe"
+            "$WINE_SRC/build-ohos/programs/winehua_audio_smoke/x86_64-windows/winehua_audio_smoke.exe"
+            "$WINE_SRC/build-ohos/programs/winehua_graphics_smoke/x86_64-windows/winehua_graphics_smoke.exe"
+        )
+    fi
+
+    make -j"$JOBS" "${make_env[@]}" "${final_targets[@]}"
+
+    for pe_path in "${required_pe[@]}"; do
+        [ -f "$pe_path" ] || err "missing required Wine PE artifact after build: $pe_path"
+    done
 }
 
 build_wineserver() {
@@ -347,7 +544,11 @@ build_wineserver() {
 log "=== Build Wine ==="
 
 describe_ohaudio_runtime_profile
-normalize_wine_scripts
+if [ "$WINE_BUILD_SCOPE" = "graphics-smoke" ]; then
+    log "Fast Wine scope enabled: skipping source normalization scan"
+else
+    normalize_wine_scripts
+fi
 refresh_wine_configure
 build_native_tools
 build_ohos_unix

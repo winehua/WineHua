@@ -41,6 +41,10 @@ is_windows_style_path() {
     [[ "${1:-}" =~ ^[A-Za-z]:[\\/].*$ ]]
 }
 
+is_wsl_style_path() {
+    [[ "${1:-}" =~ ^/mnt/[A-Za-z]/.*$ ]]
+}
+
 detect_host_shell() {
     if [ -n "${MSYSTEM:-}" ] && command -v cygpath >/dev/null 2>&1; then
         printf 'msys2\n'
@@ -102,11 +106,48 @@ convert_windows_path_for_host() {
     printf '%s\n' "$value"
 }
 
+convert_wsl_path_for_host() {
+    local value="${1:-}"
+    local drive=""
+    local rest=""
+
+    [ -n "$value" ] || return 0
+    if ! is_wsl_style_path "$value"; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+
+    case "$HOST_SHELL" in
+        msys2)
+            if [[ "$value" =~ ^/mnt/([A-Za-z])/(.*)$ ]]; then
+                drive="${BASH_REMATCH[1],,}"
+                rest="${BASH_REMATCH[2]}"
+                if [ -n "$rest" ]; then
+                    printf '/%s/%s\n' "$drive" "$rest"
+                else
+                    printf '/%s\n' "$drive"
+                fi
+                return 0
+            fi
+            ;;
+        wsl)
+            printf '%s\n' "$value"
+            return 0
+            ;;
+    esac
+
+    printf '%s\n' "$value"
+}
+
 normalize_host_path_input() {
     local value="${1:-}"
     [ -n "$value" ] || return 0
     if is_windows_style_path "$value"; then
         convert_windows_path_for_host "$value"
+        return 0
+    fi
+    if is_wsl_style_path "$value"; then
+        convert_wsl_path_for_host "$value"
         return 0
     fi
     printf '%s\n' "$value"
@@ -336,7 +377,7 @@ export SDK_MAP_HMS_TO=""
 export WINDOWS_EXE_EXTRA_PATHS="${WINDOWS_EXE_EXTRA_PATHS:-}"
 export RESTOOL_PLUGIN_DIR="${RESTOOL_PLUGIN_DIR:-}"
 
-if [ -f "$SDK_PKG_JSON" ] && command -v python3 >/dev/null 2>&1; then
+if [ "${WINEHUA_ENV_MINIMAL:-0}" != "1" ] && [ -f "$SDK_PKG_JSON" ] && command -v python3 >/dev/null 2>&1; then
     SDK_PKG_PATH="$(python3 - "$SDK_PKG_JSON" <<'PY'
 import json
 import sys
@@ -368,12 +409,26 @@ PY
         HOS_OVERLAY_PROBE_WEBPACK="$HOS_ETS_LOADER_LAYOUT_DIR/node_modules/webpack/bin/webpack.js"
         HOS_OVERLAY_PROBE_SDK_PKG="$HOS_SDK_LAYOUT_DIR/sdk-pkg.json"
         HOS_OVERLAY_PROBE_HMS="$HOS_HMS_LAYOUT_DIR"
+        HOS_OVERLAY_PROBE_LLVM_WRAPPER="$HOS_NATIVE_LLVM_LAYOUT_DIR/bin/clang"
+        HOS_OVERLAY_PROBE_TOOLCHAIN_WRAPPER="$HOS_OHOS_TOOLCHAIN_DIR/hnpcli"
+        HOS_OVERLAY_WRAPPER_SENTINEL="$ROOT/scripts/wsl_exe_wrapper.sh"
+        HOS_OVERLAY_WRAPPERS_OK=1
         NEED_SDK_OVERLAY_REBUILD=1
 
         mkdir -p "$HOS_SDK_LAYOUT_DIR"
         mkdir -p "$HOS_BISHENG_WRAPPER_DIR" "$HOS_CMAKE_LAYOUT_DIR/bin" "$HOS_NATIVE_LAYOUT_DIR/build-tools"
         if [ "$HOST_SHELL" != "msys2" ]; then
             mkdir -p "$HOS_HMS_CMAKE_LAYOUT_DIR"
+        fi
+
+        if [ -f "$HOS_OVERLAY_PROBE_LLVM_WRAPPER" ] \
+           && [ -f "$HOS_OVERLAY_PROBE_TOOLCHAIN_WRAPPER" ]; then
+            if ! grep -Fq "$HOS_OVERLAY_WRAPPER_SENTINEL" "$HOS_OVERLAY_PROBE_LLVM_WRAPPER" 2>/dev/null \
+               || ! grep -Fq "$HOS_OVERLAY_WRAPPER_SENTINEL" "$HOS_OVERLAY_PROBE_TOOLCHAIN_WRAPPER" 2>/dev/null; then
+                HOS_OVERLAY_WRAPPERS_OK=0
+            fi
+        else
+            HOS_OVERLAY_WRAPPERS_OK=0
         fi
 
         if [ -f "$HOS_OVERLAY_STAMP" ] \
@@ -384,7 +439,8 @@ PY
            && [ -f "$HOS_OVERLAY_PROBE_TOOL" ] \
            && [ -f "$HOS_OVERLAY_PROBE_CMAKE" ] \
            && [ -f "$HOS_OVERLAY_PROBE_LOADER" ] \
-           && [ -f "$HOS_OVERLAY_PROBE_WEBPACK" ]; then
+           && [ -f "$HOS_OVERLAY_PROBE_WEBPACK" ] \
+           && [ "$HOS_OVERLAY_WRAPPERS_OK" = "1" ]; then
             NEED_SDK_OVERLAY_REBUILD=0
         fi
 
@@ -479,6 +535,13 @@ EOF
             if [ -d "$OHOS_SDK_SOURCE/ets/build-tools/ets-loader" ]; then
                 src_ets_loader="$(realpath -m "$OHOS_SDK_SOURCE/ets/build-tools/ets-loader")"
                 dst_ets_loader="$(realpath -m "$HOS_ETS_LOADER_LAYOUT_DIR")"
+                if [ "$HOST_SHELL" != "msys2" ] \
+                   && { [ -L "$HOS_ETS_LOADER_LAYOUT_DIR" ] || [ "$src_ets_loader" = "$dst_ets_loader" ]; }; then
+                    remove_tree "$HOS_ETS_LOADER_LAYOUT_DIR"
+                    mkdir -p "$HOS_ETS_LOADER_LAYOUT_DIR"
+                    sync_directory_copy "$OHOS_SDK_SOURCE/ets/build-tools/ets-loader" "$HOS_ETS_LOADER_LAYOUT_DIR"
+                    dst_ets_loader="$(realpath -m "$HOS_ETS_LOADER_LAYOUT_DIR")"
+                fi
                 if [ "$src_ets_loader" != "$dst_ets_loader" ]; then
                     if [ "$HOST_SHELL" = "msys2" ]; then
                         # Windows hvigor/node can already consume build-win + .exe directly.
@@ -667,19 +730,23 @@ maybe_prepend_path "$ORIG_OHOS_BASE_SDK_HOME_REAL/previewer/common/bin"
 WINDOWS_EXE_EXTRA_PATHS="${WINDOWS_EXE_EXTRA_PATHS:+$WINDOWS_EXE_EXTRA_PATHS:}$ORIG_DEVECO_SDK_HOME_REAL/hms/toolchains/lib:$ORIG_OHOS_BASE_SDK_HOME_REAL/previewer/common/bin"
 export WINDOWS_EXE_EXTRA_PATHS
 
-RESTOOL_PLUGIN_DIR="$SDK_LINK_DIR/restool-plugin-lib"
-remove_tree "$RESTOOL_PLUGIN_DIR"
-mkdir -p "$RESTOOL_PLUGIN_DIR"
+if [ "${WINEHUA_ENV_MINIMAL:-0}" != "1" ]; then
+    RESTOOL_PLUGIN_DIR="$SDK_LINK_DIR/restool-plugin-lib"
+    remove_tree "$RESTOOL_PLUGIN_DIR"
+    mkdir -p "$RESTOOL_PLUGIN_DIR"
 
-for asset in "$ORIG_DEVECO_SDK_HOME_REAL/hms/toolchains/lib"/*; do
-    [ -f "$asset" ] || continue
-    cp -f "$asset" "$RESTOOL_PLUGIN_DIR/"
-done
+    for asset in "$ORIG_DEVECO_SDK_HOME_REAL/hms/toolchains/lib"/*; do
+        [ -f "$asset" ] || continue
+        cp -f "$asset" "$RESTOOL_PLUGIN_DIR/"
+    done
 
-for asset in "$ORIG_OHOS_BASE_SDK_HOME_REAL/previewer/common/bin"/*; do
-    [ -f "$asset" ] || continue
-    cp -f "$asset" "$RESTOOL_PLUGIN_DIR/"
-done
+    for asset in "$ORIG_OHOS_BASE_SDK_HOME_REAL/previewer/common/bin"/*; do
+        [ -f "$asset" ] || continue
+        cp -f "$asset" "$RESTOOL_PLUGIN_DIR/"
+    done
+else
+    RESTOOL_PLUGIN_DIR=""
+fi
 
 export RESTOOL_PLUGIN_DIR
 export PATH

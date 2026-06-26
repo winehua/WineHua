@@ -66,6 +66,27 @@ copy_find_matches() {
     echo "$copied"
 }
 
+copy_required_files() {
+    local dest="$1"
+    local label="$2"
+    shift 2
+
+    if [ "$#" -eq 0 ]; then
+        err "missing $label for assembly; run bash scripts/build_wine.sh first"
+    fi
+
+    cp "$@" "$dest/"
+}
+
+copy_required_file() {
+    local src="$1"
+    local dest="$2"
+    local label="$3"
+
+    [ -e "$src" ] || err "missing $label for assembly: $src"
+    cp "$src" "$dest/"
+}
+
 pick_runtime_lib() {
     local name="$1"
     local soname="$2"
@@ -114,6 +135,9 @@ assemble_pad() {
     local wine_unix="$wine_bin/x86_64-unix"
     local wine_win="$wine_bin/x86_64-windows"
     local aarch64_lib="$SYSROOT_EXT/usr/lib/$NATIVE_TARGET"
+    local font_files=("$WINE_SRC/fonts/"*.ttf)
+    local nls_files=("$WINE_SRC/build-native/nls/"*.nls)
+    local winmd_files=("$WINE_SRC/build-native/include/"*.winmd)
 
     rm -rf "$STAGING_DIR" "$wine_data"
     mkdir -p "$wine_unix" "$wine_win" "$wine_data/share/wine/nls" \
@@ -129,6 +153,7 @@ assemble_pad() {
         pick_runtime_lib "libz.so" "libz.so" "" "$NATIVE_LIBS"
         pick_runtime_lib "libwayland-client.so.0.22.0" "libwayland-client.so.0" "libwayland-client.so" "$NATIVE_LIBS"
         pick_runtime_lib "libwayland-server.so.0.22.0" "libwayland-server.so.0" "libwayland-server.so" "$NATIVE_LIBS"
+        pick_runtime_lib "libwayland-egl.so.1.22.0" "libwayland-egl.so.1" "libwayland-egl.so" "$NATIVE_LIBS"
         pick_runtime_lib "libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so" "$NATIVE_LIBS"
         pick_runtime_lib "libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so" "$NATIVE_LIBS"
         pick_runtime_lib "libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so" "$NATIVE_LIBS"
@@ -145,6 +170,7 @@ assemble_pad() {
         pick_runtime_lib "libz.so" "libz.so" "" "$wine_unix"
         pick_runtime_lib "libwayland-client.so.0.22.0" "libwayland-client.so.0" "libwayland-client.so" "$wine_unix"
         pick_runtime_lib "libwayland-server.so.0.22.0" "libwayland-server.so.0" "libwayland-server.so" "$wine_unix"
+        pick_runtime_lib "libwayland-egl.so.1.22.0" "libwayland-egl.so.1" "libwayland-egl.so" "$wine_unix"
         pick_runtime_lib "libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so" "$wine_unix"
         pick_runtime_lib "libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so" "$wine_unix"
         pick_runtime_lib "libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so" "$wine_unix"
@@ -170,6 +196,7 @@ assemble_pad() {
 
         for lib in \
             libfreetype.so.6 libfreetype.so \
+            libwayland-egl.so.1 libwayland-egl.so \
             libxkbcommon.so.0 libxkbcommon.so \
             libxkbregistry.so.0 libxkbregistry.so \
             libxml2.so.2 libxml2.so \
@@ -212,10 +239,10 @@ assemble_pad() {
         -name '*.exe' -o -name '*.com' >/dev/null
     bundle_alarm_wav "$wine_win"
 
-    cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
-    cp "$WINE_SRC/build-native/nls/"*.nls "$wine_data/share/wine/nls/"
-    cp "$WINE_SRC/build-native/include/"*.winmd "$wine_data/share/wine/winmd/"
-    cp "$WINE_SRC/build-native/loader/wine.inf" "$wine_data/share/wine/"
+    copy_required_files "$wine_data/share/wine/fonts" "Wine font files" "${font_files[@]}"
+    copy_required_files "$wine_data/share/wine/nls" "build-native NLS files" "${nls_files[@]}"
+    copy_required_files "$wine_data/share/wine/winmd" "build-native WinMD files" "${winmd_files[@]}"
+    copy_required_file "$WINE_SRC/build-native/loader/wine.inf" "$wine_data/share/wine" "build-native loader/wine.inf"
     sed -i '/^\[MCI\]$/i\
 ;; OHOS font substitutes\
 HKLM,%FontSubStr%,"System",,"HarmonyOS Sans"\
@@ -263,6 +290,8 @@ ASSEMBLE_INPUTS=(
     "$SYSROOT/usr/lib/x86_64-linux-ohos/libc.so"
     "$SYSROOT_EXT_LIB"
     "$SYSROOT_EXT_SHARE/X11/xkb"
+    "$NATIVE_LIBS"
+    "$ROOT/prebuilt/guest_gfx"
     "$ROOT/assets/windows-media/Alarm01.wav"
     "$ROOT/.temp/mmap_test"
 )
@@ -305,6 +334,10 @@ fi
 rm -rf "$STAGING_DIR"
 mkdir -p "$BIN" "$UNIX_DIR" "$WIN_DIR" "$LIB_DIR" \
     "$SHARE_WINE/nls" "$SHARE_WINE/fonts" "$SHARE_WINE/winmd" "$HNP_LAYOUT/share/X11"
+
+font_files=("$WINE_SRC/fonts/"*.ttf)
+nls_files=("$WINE_SRC/build-native/nls/"*.nls)
+winmd_files=("$WINE_SRC/build-native/include/"*.winmd)
 
 cp "$WINE_SRC/build-ohos/loader/wine" "$BIN/"
 
@@ -355,10 +388,33 @@ pick_runtime_lib "libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so" "$U
 pick_runtime_lib "libz.so" "libz.so" "" "$UNIX_DIR"
 pick_runtime_lib "libwayland-client.so.0.22.0" "libwayland-client.so.0" "libwayland-client.so" "$UNIX_DIR"
 pick_runtime_lib "libwayland-server.so.0.22.0" "libwayland-server.so.0" "libwayland-server.so" "$UNIX_DIR"
+pick_runtime_lib "libwayland-egl.so.1.22.0" "libwayland-egl.so.1" "libwayland-egl.so" "$UNIX_DIR"
 pick_runtime_lib "libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so" "$UNIX_DIR"
 pick_runtime_lib "libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so" "$UNIX_DIR"
 pick_runtime_lib "libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so" "$UNIX_DIR"
 pick_runtime_lib "libffi.so.8.1.4" "libffi.so.8" "libffi.so" "$UNIX_DIR"
+pick_runtime_lib "libepoxy.so.0" "libepoxy.so.0" "libepoxy.so" "$UNIX_DIR"
+pick_runtime_lib "libvirglrenderer.so.1" "libvirglrenderer.so.1" "libvirglrenderer.so" "$UNIX_DIR"
+
+if [ -f "$NATIVE_LIBS/virgl_test_server" ]; then
+    cp "$NATIVE_LIBS/virgl_test_server" "$BIN/"
+    chmod +x "$BIN/virgl_test_server"
+else
+    warn "virgl_test_server not found in $NATIVE_LIBS; VirGL host transport will stay unavailable"
+fi
+
+GUEST_GFX_SRC="$ROOT/prebuilt/guest_gfx/$NATIVE_ARCH"
+if [ -d "$GUEST_GFX_SRC" ]; then
+    mkdir -p "$BIN/guest_gfx"
+    cp -rL "$GUEST_GFX_SRC"/. "$BIN/guest_gfx/"
+    if [ -f "$BIN/guest_gfx/winehua-guest-gfx.env" ]; then
+        echo "[INFO] staged guest 3D receiver bundle from $GUEST_GFX_SRC"
+    else
+        warn "guest_gfx bundle copied from $GUEST_GFX_SRC but winehua-guest-gfx.env is missing"
+    fi
+else
+    warn "guest_gfx bundle not found in $GUEST_GFX_SRC; Windows OpenGL/DX will keep using stock wayland/EGL"
+fi
 
 if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
     mkdir -p "$HNP_LAYOUT/lib/arm64-v8a"
@@ -378,10 +434,10 @@ if [ "$NATIVE_ARCH" = "arm64-v8a" ]; then
     done
 fi
 
-cp "$WINE_SRC/fonts/"*.ttf "$SHARE_WINE/fonts/"
-cp "$WINE_SRC/build-native/nls/"*.nls "$SHARE_WINE/nls/"
-cp "$WINE_SRC/build-native/include/"*.winmd "$SHARE_WINE/winmd/"
-cp "$WINE_SRC/build-native/loader/wine.inf" "$SHARE_WINE/"
+copy_required_files "$SHARE_WINE/fonts" "Wine font files" "${font_files[@]}"
+copy_required_files "$SHARE_WINE/nls" "build-native NLS files" "${nls_files[@]}"
+copy_required_files "$SHARE_WINE/winmd" "build-native WinMD files" "${winmd_files[@]}"
+copy_required_file "$WINE_SRC/build-native/loader/wine.inf" "$SHARE_WINE" "build-native loader/wine.inf"
 sed -i '/^\[MCI\]$/i\
 ;; OHOS font substitutes\
 HKLM,%FontSubStr%,"System",,"HarmonyOS Sans"\

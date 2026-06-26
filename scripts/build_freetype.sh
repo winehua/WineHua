@@ -1,18 +1,19 @@
 #!/bin/bash
-# build_freetype.sh 鈥?FreeType 浜ゅ弶缂栬瘧 鈫?sysroot-ext
+# Build FreeType into sysroot-ext for the x86_64 OHOS Wine target.
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 FT_SRC="$ROOT/thirdparty/freetype"
 FT_BUILD="$BUILD_DIR/freetype_build"
 
-log "=== 鏋勫缓 FreeType (x86_64) ==="
+log "=== Build FreeType (x86_64) ==="
 
 if [ -f "$SYSROOT_EXT_LIB/libfreetype.so.6" ] \
    && [ -d "$SYSROOT_EXT_INC/freetype2" ] \
    && [ -f "$SYSROOT_EXT_PC/freetype2.pc" ]; then
-    log "FreeType 宸插氨缁紝璺宠繃"
+    log "FreeType already available in sysroot-ext"
     exit 0
 fi
 
@@ -38,7 +39,7 @@ cmake "$FT_SRC" \
 ninja
 ninja install
 
-# 瀹夎鍒?sysroot-ext (鏂囦欢鍚?= SONAME)
+# Copy the built shared library and headers into sysroot-ext.
 cp "$FT_BUILD"/install/lib/libfreetype.so.6.20.2 "$SYSROOT_EXT_LIB/libfreetype.so.6"
 cp -r "$FT_BUILD"/install/include/freetype2 "$SYSROOT_EXT_INC/"
 cat > "$SYSROOT_EXT_PC/freetype2.pc" << EOF
@@ -53,4 +54,4 @@ Libs: -L\${libdir} -lfreetype
 Cflags: -I\${includedir}/freetype2
 EOF
 
-log "FreeType 鈫?sysroot-ext ($SYSROOT_EXT_LIB/libfreetype.so.6)"
+log "FreeType installed into sysroot-ext ($SYSROOT_EXT_LIB/libfreetype.so.6)"
