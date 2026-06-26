@@ -28,3 +28,9 @@
 [submodule "thirdparty/virglrenderer"]
 	path = thirdparty/virglrenderer
 	url = https://github.com/winehua/virglrenderer.git
+[submodule "thirdparty/mesa-ohos"]
+	path = thirdparty/mesa-ohos
+	url = https://github.com/winehua/mesa-ohos.git
+[submodule "thirdparty/libdrm-ohos"]
+	path = thirdparty/libdrm-ohos
+	url = https://github.com/winehua/libdrm-ohos.git
