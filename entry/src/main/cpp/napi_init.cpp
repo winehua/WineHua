@@ -4,6 +4,7 @@
 #include "input_manager.h"
 #include "egl_renderer.h"
 #include "audio_broker.h"
+#include "graphics_broker.h"
 #include "wine_constants.h"
 
 #include <unistd.h>
@@ -220,6 +221,17 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     std::string shareDir = binDir + "/../share";
     std::string xkbDir = shareDir + "/X11/xkb";
     std::string runtimeLibPath = binDir + ":" + binDir + "/x86_64-unix:" + binDir + "/../lib/x86_64";
+    winehua::GraphicsBackendState graphicsState = winehua::GraphicsBroker::GetInstance().GetState();
+    std::string guestReceiverLibDir;
+    bool useGuestReceiverRuntime = graphicsState.active == winehua::GraphicsBackend::Virgl;
+
+    if (useGuestReceiverRuntime && graphicsState.guestReceiverPresent && !graphicsState.guestReceiverRuntimeDir.empty()) {
+        guestReceiverLibDir = graphicsState.guestReceiverRuntimeDir + "/lib";
+        if (access(guestReceiverLibDir.c_str(), F_OK) == 0) {
+            runtimeLibPath = guestReceiverLibDir + ":" + runtimeLibPath;
+        }
+    }
+
     std::vector<std::string> env = {
         "XDG_RUNTIME_DIR=" + sockDir,
         "WAYLAND_DISPLAY=" + sockName,
@@ -256,6 +268,7 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         env.push_back("WINE_OHOS_AUDIO_BOOTSTRAP_FD=" + std::to_string(audioBootstrapFd));
         env.push_back("WINE_OHOS_AUDIO_PROTOCOL_VERSION=" + std::to_string(WINEHUA_AUDIO_PROTOCOL_VERSION));
     }
+    winehua::GraphicsBroker::GetInstance().AppendWineEnv(env);
 #ifdef __aarch64__
     // ARM64: x86_64 .so 由 Box64 加载，不在系统 LD_LIBRARY_PATH
     // LD_LIBRARY_PATH 只包含 ARM64 原生 .so
@@ -265,6 +278,12 @@ static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // x86_64: 系统 linker 直接加载 x86_64 OHOS .so
     env.push_back("LD_LIBRARY_PATH=" + runtimeLibPath);
 #endif
+    OH_LOG_INFO(LOG_APP,
+                "[WineEnv] backend=%{public}s guestMode=%{public}s guestLib=%{public}s runtimeLibPath=%{public}s",
+                winehua::GraphicsBroker::BackendName(graphicsState.active),
+                graphicsState.guestReceiverMode.empty() ? "stock-egl" : graphicsState.guestReceiverMode.c_str(),
+                guestReceiverLibDir.empty() ? "(none)" : guestReceiverLibDir.c_str(),
+                runtimeLibPath.c_str());
     return env;
 }
 
@@ -363,6 +382,66 @@ static bool InstallBundledFile(const std::string& src,
     return CopyFileContents(src, dst, mode);
 }
 
+static std::string BasenameOfPath(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) return path;
+    return path.substr(slash + 1);
+}
+
+static bool IsGraphicsSmokeExePath(const std::string& path) {
+    std::string name = BasenameOfPath(path);
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return name == "winehua_graphics_smoke.exe";
+}
+
+static void LogGraphicsBackendStateForLaunch(const char* tag) {
+    winehua::GraphicsBackendState state = winehua::GraphicsBroker::GetInstance().GetState();
+    OH_LOG_INFO(LOG_APP,
+                "[%{public}s] graphics requested=%{public}s active=%{public}s runtimeReady=%{public}s "
+                "guestReceiver=%{public}s(%{public}s) virglSocketReady=%{public}s virglLibraryPresent=%{public}s virglSmoke=%{public}s/%{public}s "
+                "transport=%{public}s",
+                tag,
+                winehua::GraphicsBroker::BackendName(state.requested),
+                winehua::GraphicsBroker::BackendName(state.active),
+                state.runtimeReady ? "true" : "false",
+                state.guestReceiverPresent ? "true" : "false",
+                state.guestReceiverMode.empty() ? "stock-egl" : state.guestReceiverMode.c_str(),
+                state.virglSocketReady ? "true" : "false",
+                state.virglLibraryPresent ? "true" : "false",
+                state.virglSmokeAttempted ? "attempted" : "skipped",
+                state.virglSmokeSucceeded ? "ok" : "fallback",
+                state.frameTransportMode.c_str());
+    if (!state.virglSmokeError.empty()) {
+        OH_LOG_WARN(LOG_APP, "[%{public}s] virgl smoke error: %{public}s", tag, state.virglSmokeError.c_str());
+    }
+    if (!state.lastError.empty()) {
+        OH_LOG_WARN(LOG_APP, "[%{public}s] graphics note: %{public}s", tag, state.lastError.c_str());
+    }
+}
+
+static void AppendWineLaunchArgsFromJs(napi_env env, napi_value value, std::vector<std::string>& outArgs) {
+    bool isArray = false;
+    uint32_t length = 0;
+
+    if (napi_is_array(env, value, &isArray) != napi_ok || !isArray) return;
+    if (napi_get_array_length(env, value, &length) != napi_ok) return;
+
+    for (uint32_t i = 0; i < length; ++i) {
+        napi_value item;
+        if (napi_get_element(env, value, i, &item) != napi_ok) continue;
+
+        size_t strLen = 0;
+        if (napi_get_value_string_utf8(env, item, nullptr, 0, &strLen) != napi_ok) continue;
+
+        std::string arg(strLen + 1, '\0');
+        size_t copied = 0;
+        if (napi_get_value_string_utf8(env, item, arg.data(), strLen + 1, &copied) != napi_ok) continue;
+        arg.resize(copied);
+        outArgs.push_back(std::move(arg));
+    }
+}
+
 static void CleanupLegacyDriveZSampleMirror() {
     const std::string driveZRoot = "/data/storage/el2/base/files/.wine/dosdevices/z:";
     const std::string legacySample = driveZRoot + "/Documents/Media/Alarm01.wav";
@@ -387,12 +466,15 @@ static void CleanupLegacyDriveZSampleMirror() {
 static void InstallBundledWineSamples(const std::string& binDir) {
     const std::string sampleExeSrc = binDir + "/x86_64-windows/winehua_audio_smoke.exe";
     const std::string sampleExeDst = "/data/storage/el2/base/files/.wine/drive_c/winehua_audio_smoke.exe";
+    const std::string graphicsExeSrc = binDir + "/x86_64-windows/winehua_graphics_smoke.exe";
+    const std::string graphicsExeDst = "/data/storage/el2/base/files/.wine/drive_c/winehua_graphics_smoke.exe";
     const std::string alarmSrc = binDir + "/x86_64-windows/Alarm01.wav";
     const std::string alarmDriveCDst = "/data/storage/el2/base/files/.wine/drive_c/Documents/Media/Alarm01.wav";
     const std::string alarmLocalDst = "/data/storage/el2/base/files/.wine/drive_c/Alarm01.wav";
 
     CleanupLegacyDriveZSampleMirror();
     InstallBundledFile(sampleExeSrc, sampleExeDst, 0755, "sample exe");
+    InstallBundledFile(graphicsExeSrc, graphicsExeDst, 0755, "graphics smoke exe");
     InstallBundledFile(alarmSrc, alarmDriveCDst, 0644, "Alarm01.wav");
     InstallBundledFile(alarmSrc, alarmLocalDst, 0644, "Alarm01.wav");
 }
@@ -493,6 +575,7 @@ static napi_value StartServer(napi_env env, napi_callback_info info) {
         if (pos != std::string::npos) {
             sockDir = sockDir.substr(0, pos);
             mkdir(sockDir.c_str(), 0755);
+            winehua::GraphicsBroker::GetInstance().EnsureStarted(sockDir);
         }
     }
     gSockPath = path;
@@ -538,38 +621,62 @@ struct LaunchParams {
 
 // 轮询 wineserver socket 是否就绪 (信号驱动, 避免盲等)
 static bool IsWineserverSocketReady() {
-    const char* prefix = WINE_PREFIX;
-    char sockDir[512];
-    snprintf(sockDir, sizeof(sockDir), "%s/.wineserver", prefix);
-    DIR* d = opendir(sockDir);
-    if (!d) return false;
-    bool found = false;
-    struct dirent* de;
-    while ((de = readdir(d))) {
-        if (de->d_name[0] == '.') continue;
-        char sockPath[1024];
-        snprintf(sockPath, sizeof(sockPath), "%s/%s/socket", sockDir, de->d_name);
-        struct stat st;
-        if (stat(sockPath, &st) == 0 && S_ISSOCK(st.st_mode)) { found = true; break; }
-    }
-    closedir(d);
-    return found;
+    auto hasSocketUnder = [](const char* sockDir) -> bool {
+        DIR* d = opendir(sockDir);
+        if (!d) return false;
+
+        bool found = false;
+        struct dirent* de = nullptr;
+        while ((de = readdir(d))) {
+            if (de->d_name[0] == '.') continue;
+            char sockPath[1024];
+            struct stat st = {};
+            snprintf(sockPath, sizeof(sockPath), "%s/%s/socket", sockDir, de->d_name);
+            if (stat(sockPath, &st) == 0 && S_ISSOCK(st.st_mode)) {
+                found = true;
+                break;
+            }
+        }
+
+        closedir(d);
+        return found;
+    };
+
+    char prefixSockDir[512];
+    snprintf(prefixSockDir, sizeof(prefixSockDir), "%s/.wineserver", WINE_PREFIX);
+    if (hasSocketUnder(prefixSockDir)) return true;
+
+    char tmpSockDir[512];
+    snprintf(tmpSockDir, sizeof(tmpSockDir), "/tmp/.wine-%u", getuid());
+    return hasSocketUnder(tmpSockDir);
+}
+
+static bool IsWinePrefixFilesystemReady() {
+    struct stat st = {};
+    if (stat(WINE_PREFIX "/drive_c/windows", &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+    if (stat(WINE_PREFIX "/drive_c/windows/system32", &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+    return true;
 }
 
 static bool IsWinePrefixReadyInternal() {
-    DIR* d = opendir(WINE_PREFIX "/drive_c");
-    if (!d) return false;
-
-    bool ready = false;
-    struct dirent* e = nullptr;
-    while ((e = readdir(d)) != nullptr) {
-        if (e->d_name[0] == '.') continue;
-        ready = true;
-        break;
+    struct stat st = {};
+    if (stat(WINE_PREFIX "/drive_c/windows", &st) != 0 || !S_ISDIR(st.st_mode)) {
+        OH_LOG_WARN(LOG_APP, "[Wine] prefix check: missing drive_c/windows");
+        return false;
     }
-
-    closedir(d);
-    return ready;
+    if (stat(WINE_PREFIX "/drive_c/windows/system32", &st) != 0 || !S_ISDIR(st.st_mode)) {
+        OH_LOG_WARN(LOG_APP, "[Wine] prefix check: missing drive_c/windows/system32");
+        return false;
+    }
+    if (access(WINE_PREFIX "/system.reg", F_OK) != 0) {
+        OH_LOG_WARN(LOG_APP, "[Wine] prefix check: missing system.reg");
+        return false;
+    }
+    if (access(WINE_PREFIX "/user.reg", F_OK) != 0) {
+        OH_LOG_WARN(LOG_APP, "[Wine] prefix check: missing user.reg");
+        return false;
+    }
+    return true;
 }
 
 static void LaunchThreadFunc(LaunchParams* p) {
@@ -582,6 +689,8 @@ static void LaunchThreadFunc(LaunchParams* p) {
 #ifndef PAD_MODE
     audioBootstrapFd = CreateAudioBootstrapFd(p->sockDir);
 #endif
+    winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(p->winehuaBin);
+    winehua::GraphicsBroker::GetInstance().EnsureStarted(p->sockDir);
     p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin, audioBootstrapFd);
     for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
     p->envp.push_back(nullptr);
@@ -646,7 +755,7 @@ static void LaunchThreadFunc(LaunchParams* p) {
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
             chdir(p->winehuaBin.c_str());
-            const char* wsArgv[] = {"./wineserver", nullptr};
+            const char* wsArgv[] = {"./wineserver", "-f", "-p", nullptr};
             execve("./wineserver", (char* const*)wsArgv, wsEnvp.data());
             _exit(127);
         }
@@ -753,8 +862,18 @@ static void LaunchThreadFunc(LaunchParams* p) {
     // -- wineboot --init (PC/x86_64: fork + execve native wine) --
     if (!prefixReady) {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init...");
+        bool winebootOk = false;
+        int bootPipe[2];
+        bool bootPipeOk = (pipe(bootPipe) == 0);
+        if (!bootPipeOk)
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot pipe failed: %{public}s", strerror(errno));
         pid_t bootPid = fork();
         if (bootPid == 0) {
+            if (bootPipeOk) {
+                close(bootPipe[0]);
+                dup2(bootPipe[1], STDERR_FILENO);
+                if (bootPipe[1] > 2) close(bootPipe[1]);
+            }
             CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
             for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
             prctl(PR_SET_NAME, "wl-wineboot", 0, 0, 0);
@@ -768,17 +887,36 @@ static void LaunchThreadFunc(LaunchParams* p) {
             audioBootstrapFd = -1;
         }
         if (bootPid > 0) {
+            if (bootPipeOk) {
+                close(bootPipe[1]);
+                StartStderrLogger(bootPipe[0], "wineboot-stderr");
+            }
             int bootStatus = 0;
             waitpid(bootPid, &bootStatus, 0);
             LogProcessExit("wineboot", bootPid, bootStatus);
+            winebootOk = WIFEXITED(bootStatus) && WEXITSTATUS(bootStatus) == 0;
+        } else if (bootPipeOk) {
+            close(bootPipe[0]);
+            close(bootPipe[1]);
         }
 
-        if (!WaitFor("wine prefix drive_c", []() {
-            DIR* d = opendir(WINE_PREFIX "/drive_c");
-            if (d) { closedir(d); return true; }
-            return false;
-        }, 10000, 200)) {
-            OH_LOG_WARN(LOG_APP, "[Launch-Async] drive_c not ready after wineboot");
+        if (!WaitFor("wine prefix initialized", IsWinePrefixReadyInternal, 10000, 200)) {
+            if (IsWinePrefixFilesystemReady()) {
+                OH_LOG_WARN(LOG_APP,
+                            "[Launch-Async] registry markers still missing after wineboot, "
+                            "but drive_c/windows/system32 exists; continuing for runtime validation");
+            } else {
+                OH_LOG_ERROR(LOG_APP, "[Launch-Async] prefix markers missing after wineboot");
+                winebootOk = false;
+            }
+        }
+
+        if (!winebootOk) {
+            if (gStateTsfn) {
+                napi_call_threadsafe_function(gStateTsfn, strdup("wine-failed"), napi_tsfn_blocking);
+            }
+            delete p;
+            return;
         }
     }
 #endif
@@ -832,8 +970,8 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
 
 // -- NAPI: runWineExe -- 启动 wine <exe> (需先完成初始化) --
 static napi_value RunWineExe(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
+    size_t argc = 5;
+    napi_value args[5];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc < 4) return nullptr;
 
@@ -863,6 +1001,10 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
 
     OH_LOG_INFO(LOG_APP, "[Wine] runWineExe bin=%{public}s exe=%{public}s (final=%{public}s)", binDir, wineExe, exePath.c_str());
 
+    std::vector<std::string> wineArgs;
+    wineArgs.push_back(exePath);
+    if (argc >= 5) AppendWineLaunchArgsFromJs(env, args[4], wineArgs);
+
     std::string sockStr(sockPath);
     auto pos = sockStr.find_last_of('/');
     std::string sockDir = (pos == std::string::npos) ? "/tmp" : sockStr.substr(0, pos);
@@ -871,8 +1013,35 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
 #ifndef PAD_MODE
     audioBootstrapFd = CreateAudioBootstrapFd(sockDir);
 #endif
+    auto& graphicsBroker = winehua::GraphicsBroker::GetInstance();
+    bool isGraphicsSmoke = IsGraphicsSmokeExePath(exePath);
+    bool restoreGraphicsBackend = false;
+    winehua::GraphicsBackend previousRequestedBackend = winehua::GraphicsBackend::Shm;
+
+    graphicsBroker.SetWineRuntimeBinaryDir(binDir);
+    if (isGraphicsSmoke) {
+        winehua::GraphicsBackendState stateBefore = graphicsBroker.GetState();
+        previousRequestedBackend = stateBefore.requested;
+        if (stateBefore.requested != winehua::GraphicsBackend::Virgl) {
+            graphicsBroker.SetRequestedBackend(winehua::GraphicsBackend::Virgl);
+            restoreGraphicsBackend = true;
+            OH_LOG_INFO(LOG_APP, "[Wine] temporarily switching graphics backend to virgl for graphics smoke");
+        }
+    }
+    graphicsBroker.EnsureStarted(sockDir);
+    if (isGraphicsSmoke) LogGraphicsBackendStateForLaunch("Wine");
 
     std::vector<std::string> envStrs = BuildWineEnv(sockDir, sockName, libPath, binDir, audioBootstrapFd);
+    if (restoreGraphicsBackend) {
+        graphicsBroker.SetRequestedBackend(previousRequestedBackend);
+        OH_LOG_INFO(LOG_APP, "[Wine] restored graphics backend after graphics smoke env setup");
+    }
+    if (isGraphicsSmoke) {
+        envStrs.push_back("WINEHUA_GRAPHICS_FORCE_GL=1");
+        envStrs.push_back("WINEHUA_OPENGL_DIAG=1");
+        envStrs.push_back("EGL_LOG_LEVEL=debug");
+        OH_LOG_INFO(LOG_APP, "[Wine] forcing graphics smoke to continue into OpenGL diagnostics");
+    }
     std::vector<char*> envp;
     for (auto& s : envStrs) envp.push_back((char*)s.c_str());
     envp.push_back(nullptr);
@@ -881,10 +1050,11 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     // Pad: 通过 Process Broker + StartNativeChildProcess 创建子进程
     {
 #ifdef __aarch64__
-        std::string entryParams = std::string(binDir) + "|" + exePath;
+        std::string entryParams = std::string(binDir);
 #else
-        std::string entryParams = std::string(binDir) + "|wine|" + exePath;
+        std::string entryParams = std::string(binDir) + "|wine";
 #endif
+        for (const auto& arg : wineArgs) entryParams += "|" + arg;
         OH_LOG_INFO(LOG_APP, "[Wine] runWineExe via broker: %{public}s", entryParams.c_str());
 
         int broker_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -952,6 +1122,14 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+    std::vector<std::string> nativeArgStorage;
+    nativeArgStorage.reserve(wineArgs.size() + 1);
+    nativeArgStorage.emplace_back("./wine");
+    nativeArgStorage.insert(nativeArgStorage.end(), wineArgs.begin(), wineArgs.end());
+    std::vector<char*> nativeArgv;
+    nativeArgv.reserve(nativeArgStorage.size() + 1);
+    for (auto& arg : nativeArgStorage) nativeArgv.push_back(arg.data());
+    nativeArgv.push_back(nullptr);
     pid_t pid = fork();
     if (pid == 0) {
         close(pipefd[0]);
@@ -962,8 +1140,7 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
         prctl(PR_SET_NAME, "wl-client", 0, 0, 0);
         CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
         chdir(binDir);
-        const char* cargv[] = {"./wine", exePath.c_str(), nullptr};
-        execve("./wine", (char* const*)cargv, envp.data());
+        execve("./wine", nativeArgv.data(), envp.data());
         _exit(127);
     }
 
@@ -1416,6 +1593,7 @@ static napi_value StopClient(napi_env, napi_callback_info) {
 // -- NAPI: stopAll — 杀掉所有 Wine 进程 + 停 Wayland server --
 static napi_value StopAll(napi_env, napi_callback_info) {
     KillAllProcesses();
+    winehua::GraphicsBroker::GetInstance().Stop();
     WaylandServer::GetInstance()->Stop();
     return nullptr;
 }
@@ -1597,6 +1775,78 @@ static napi_value SetDisplayScale(napi_env env, napi_callback_info info) {
     EglRenderer::SetGlobalDisplayScale((float)scale);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] setDisplayScale = %.2f", scale);
     return nullptr;
+}
+
+static napi_value SetGraphicsBackend(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    napi_value result;
+    napi_get_boolean(env, false, &result);
+    if (argc < 1) return result;
+
+    char backendName[32] = {};
+    napi_get_value_string_utf8(env, args[0], backendName, sizeof(backendName), nullptr);
+
+    winehua::GraphicsBackend backend;
+    if (!winehua::GraphicsBroker::ParseBackendName(backendName, &backend)) {
+        OH_LOG_WARN(LOG_APP, "[GFX-NAPI] unknown backend %{public}s", backendName);
+        return result;
+    }
+
+    winehua::GraphicsBroker::GetInstance().SetRequestedBackend(backend);
+    if (!gSockPath.empty()) {
+        std::string sockDir = gSockPath;
+        auto pos = sockDir.find_last_of('/');
+        if (pos != std::string::npos) {
+            sockDir = sockDir.substr(0, pos);
+            winehua::GraphicsBroker::GetInstance().EnsureStarted(sockDir);
+        }
+    }
+
+    OH_LOG_INFO(LOG_APP, "[GFX-NAPI] requested backend=%{public}s",
+                winehua::GraphicsBroker::BackendName(backend));
+    napi_get_boolean(env, true, &result);
+    return result;
+}
+
+static napi_value GetGraphicsBackendState(napi_env env, napi_callback_info) {
+    winehua::GraphicsBackendState state = winehua::GraphicsBroker::GetInstance().GetState();
+
+    napi_value obj;
+    napi_create_object(env, &obj);
+
+    auto set_string = [&](const char* key, const std::string& value) {
+        napi_value str;
+        napi_create_string_utf8(env, value.c_str(), NAPI_AUTO_LENGTH, &str);
+        napi_set_named_property(env, obj, key, str);
+    };
+    auto set_bool = [&](const char* key, bool value) {
+        napi_value v;
+        napi_get_boolean(env, value, &v);
+        napi_set_named_property(env, obj, key, v);
+    };
+
+    set_string("requested", winehua::GraphicsBroker::BackendName(state.requested));
+    set_string("active", winehua::GraphicsBroker::BackendName(state.active));
+    set_bool("runtimeReady", state.runtimeReady);
+    set_bool("guestReceiverPresent", state.guestReceiverPresent);
+    set_string("guestReceiverRuntimeDir", state.guestReceiverRuntimeDir);
+    set_string("guestReceiverMode", state.guestReceiverMode);
+    set_string("guestReceiverError", state.guestReceiverError);
+    set_bool("virglSocketReady", state.virglSocketReady);
+    set_bool("virglLibraryPresent", state.virglLibraryPresent);
+    set_bool("virglSmokeAttempted", state.virglSmokeAttempted);
+    set_bool("virglSmokeSucceeded", state.virglSmokeSucceeded);
+    set_bool("zeroCopyFramePath", state.zeroCopyFramePath);
+    set_string("runtimeDir", state.runtimeDir);
+    set_string("virglSocketPath", state.virglSocketPath);
+    set_string("virglLibraryPath", state.virglLibraryPath);
+    set_string("frameTransportMode", state.frameTransportMode);
+    set_string("virglSmokeError", state.virglSmokeError);
+    set_string("lastError", state.lastError);
+    return obj;
 }
 
 static napi_value SetDesktopMode(napi_env env, napi_callback_info info) {
@@ -1819,6 +2069,8 @@ static napi_value Init(napi_env env, napi_value exports) {
 #endif
         {"setOutputSize",   nullptr, SetOutputSize,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale",  nullptr, SetDisplayScale,  nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setGraphicsBackend", nullptr, SetGraphicsBackend, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getGraphicsBackendState", nullptr, GetGraphicsBackendState, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDesktopMode",   nullptr, SetDesktopMode,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getDesktopRootId", nullptr, GetDesktopRootId, nullptr, nullptr, nullptr, napi_default, nullptr},
         // ArkTS input forwarding (unified InputManager path)

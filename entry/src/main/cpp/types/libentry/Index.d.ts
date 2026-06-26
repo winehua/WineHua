@@ -8,11 +8,32 @@ export const setPendingToplevel: (id: number) => void;
 export const getCurrentToplevelId: () => number;
 export const destroyToplevel: (id: number) => void;
 export const sendToplevelClose: (id: number) => void;
-export const runWineExe: (binDir: string, sockPath: string, libPath: string, exePath: string) => void;
+export const runWineExe: (binDir: string, sockPath: string, libPath: string, exePath: string, argv?: string[]) => void;
 export const checkWinePrefix: () => boolean;
 export const resetWinePrefix: () => void;
 export const setOutputSize: (w: number, h: number) => void;
 export const setDisplayScale: (scale: number) => void;
+export const setGraphicsBackend: (backend: string) => boolean;
+export const getGraphicsBackendState: () => {
+  requested: string,
+  active: string,
+  runtimeReady: boolean,
+  guestReceiverPresent: boolean,
+  guestReceiverRuntimeDir: string,
+  guestReceiverMode: string,
+  guestReceiverError: string,
+  virglSocketReady: boolean,
+  virglLibraryPresent: boolean,
+  virglSmokeAttempted: boolean,
+  virglSmokeSucceeded: boolean,
+  zeroCopyFramePath: boolean,
+  runtimeDir: string,
+  virglSocketPath: string,
+  virglLibraryPath: string,
+  frameTransportMode: string,
+  virglSmokeError: string,
+  lastError: string
+};
 export const setDesktopMode: (enabled: boolean) => void;
 export const getDesktopRootId: () => number;
 export const createRenderer: (toplevelId: number, surfaceId: BigInt) => void;

@@ -1,0 +1,5 @@
+source=/mnt/d/Work/WineHua/out/guest_gfx_install/x86_64
+mode=virpipe
+platform=unknown
+arch=x86_64
+built_at=2026-06-25T08:58:28Z

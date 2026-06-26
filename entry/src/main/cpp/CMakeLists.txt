@@ -29,6 +29,7 @@ add_library(entry SHARED
     audio_broker.cpp
     audio_ipc_server.cpp
     audio_stream.cpp
+    graphics_broker.cpp
     napi_init.cpp
     broker.cpp
     wayland_server.cpp

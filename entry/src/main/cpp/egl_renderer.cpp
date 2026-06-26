@@ -1,4 +1,5 @@
 #include "egl_renderer.h"
+#include "graphics_broker.h"
 #include "wayland_server.h"
 #include "fps_counter.h"
 #include <vector>
@@ -154,14 +155,8 @@ void EglRenderer::RenderLoop() {
     while (running_) {
         bool haveFrame = false;
         uint32_t useToplevel = toplevelId_;
-        WaylandServer* ws = WaylandServer::GetInstance();
-        // Desktop mode: root toplevel may be recreated, always use current ID
-        if (ws->IsDesktopMode()) useToplevel = ws->GetDesktopRootToplevelId();
-        if (useToplevel != 0) {
-            haveFrame = ws->TakeToplevelFrame(useToplevel, px, fw, fh);
-        } else {
-            haveFrame = ws->TakeFrame(px, fw, fh);
-        }
+        haveFrame = winehua::GraphicsBroker::GetInstance().TakeFrameForToplevel(
+            toplevelId_, px, fw, fh, &useToplevel);
 
         if (haveFrame && fw > 0 && fh > 0) {
             // 存储帧尺寸供输入坐标转换
