@@ -209,7 +209,7 @@ static void StartStderrLogger(int fd, const char* tag,
 static const char* GetWineDebugValue() {
     const char* overrideValue = std::getenv("WINEHUA_WINEDEBUG");
     if (overrideValue && overrideValue[0]) return overrideValue;
-    return "-all";
+    return "-all,warn+all,trace+ohosaudio";
 }
 
 // -- 构建 Wine 环境变量 (wineserver/wineboot/wine 共用) --
@@ -393,6 +393,13 @@ static bool IsGraphicsSmokeExePath(const std::string& path) {
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return name == "winehua_graphics_smoke.exe";
+}
+
+static bool IsAudioSmokeExePath(const std::string& path) {
+    std::string name = BasenameOfPath(path);
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return name == "winehua_audio_smoke.exe";
 }
 
 static void LogGraphicsBackendStateForLaunch(const char* tag) {
@@ -1014,10 +1021,12 @@ static napi_value RunWineExe(napi_env env, napi_callback_info info) {
     audioBootstrapFd = CreateAudioBootstrapFd(sockDir);
 #endif
     auto& graphicsBroker = winehua::GraphicsBroker::GetInstance();
+    bool isAudioSmoke = IsAudioSmokeExePath(exePath);
     bool isGraphicsSmoke = IsGraphicsSmokeExePath(exePath);
     bool restoreGraphicsBackend = false;
     winehua::GraphicsBackend previousRequestedBackend = winehua::GraphicsBackend::Shm;
 
+    if (isAudioSmoke) InstallBundledWineSamples(binDir);
     graphicsBroker.SetWineRuntimeBinaryDir(binDir);
     if (isGraphicsSmoke) {
         winehua::GraphicsBackendState stateBefore = graphicsBroker.GetState();

@@ -53,6 +53,13 @@ static void* stderr_reader_thread(void* arg) {
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "WineChild"
 
+static const char* GetWineDebugValue()
+{
+    const char* overrideValue = std::getenv("WINEHUA_WINEDEBUG");
+    if (overrideValue && overrideValue[0]) return overrideValue;
+    return "-all,warn+all,trace+ohosaudio";
+}
+
 static void setup_wine_env(const char* binDir)
 {
     std::string shareDir = std::string(binDir) + "/../share";
@@ -116,7 +123,7 @@ static void setup_wine_env(const char* binDir)
                     + binDir + "/x86_64-windows:" + binDir).c_str(), 1);
     setenv("TMPDIR", WINE_TMPDIR, 1);
     setenv("XDG_RUNTIME_DIR", WINE_PREFIX, 1);
-    setenv("WINEDEBUG", "-all", 1);  // -all=关闭全部调试频道
+    setenv("WINEDEBUG", GetWineDebugValue(), 1);
 }
 
 extern "C" void Main(NativeChildProcess_Args args)
@@ -155,6 +162,7 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // 3. 设置 Wine 环境变量
     setup_wine_env(binDir);
+    OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", GetWineDebugValue());
 
     // 确保 WINEPREFIX 目录存在
     mkdir(WINE_PREFIX, 0755);
@@ -271,7 +279,8 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
 
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step1: setting env...");
     setenv("WINEPREFIX", WINE_PREFIX, 1);
-    setenv("WINEDEBUG", "-all", 1);
+    setenv("WINEDEBUG", GetWineDebugValue(), 1);
+    OH_LOG_INFO(LOG_APP, "[WineChild] ws WINEDEBUG=%{public}s", GetWineDebugValue());
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step2: mkdir...");
     mkdir(WINE_PREFIX, 0755);
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step3: chdir(%{public}s)...", binDir);
