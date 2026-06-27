@@ -1,9 +1,11 @@
 [submodule "thirdparty/wine"]
 	path = thirdparty/wine
 	url = git@github.com:winehua/wine.git
+	branch = master
 [submodule "thirdparty/box64"]
 	path = thirdparty/box64
 	url = git@github.com:winehua/box64.git
+	branch = main
 [submodule "thirdparty/wayland"]
 	path = thirdparty/wayland
 	url = https://gitlab.freedesktop.org/wayland/wayland.git
