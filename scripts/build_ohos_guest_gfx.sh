@@ -26,10 +26,6 @@ PACKAGE_BUNDLE=1
 FETCH_IF_MISSING=1
 CLEAN=0
 
-log()  { echo -e "\033[32m[BUILD]\033[0m $*"; }
-warn() { echo -e "\033[33m[WARN]\033[0m $*"; }
-err()  { echo -e "\033[31m[ERROR]\033[0m $*"; exit 1; }
-
 usage() {
     cat <<'EOF'
 Usage:
@@ -57,8 +53,7 @@ Notes:
       MESA_LOADER_DRIVER_OVERRIDE=swrast
       GALLIUM_DRIVER=virpipe
   - Preferred source roots are thirdparty/mesa and thirdparty/libdrm.
-  - If those managed trees are missing, the script reuses scripts/fetch_ohos_mesa.sh
-    and clones into tmp/ohos-mesa-sparse by default.
+  - Requires thirdparty/mesa and thirdparty/libdrm submodules (gitee OpenHarmony mirrors).
 EOF
 }
 
@@ -240,10 +235,6 @@ read_pkgconfig_version() {
     sed -n 's/^Version:[[:space:]]*//p' "$pc_file" | head -n 1
 }
 
-is_wsl() {
-    grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null || grep -qi microsoft /proc/version 2>/dev/null
-}
-
 is_native_elf() {
     local target="$1"
     # If the file is an ELF binary (not .exe), it can run natively on Linux
@@ -385,31 +376,6 @@ XEOF
     printf '%s\n' "$cross"
 }
 
-fetch_default_source_root() {
-    local mesa_root=""
-    local fetched_root="$ROOT/tmp/ohos-mesa-sparse"
-
-    mesa_root="$(find_first_existing_dir \
-        "$ROOT/tmp/ohos-mesa-sparse" \
-        "$ROOT/tmp/ohos-guest-gfx-src/third_party_mesa3d" \
-        || true)"
-    # thirdparty/mesa 是不完整的 OHOS 补丁树, 不能直接用于构建。
-    # 当本地无完整源码时, 通过 fetch_ohos_mesa.sh 拉取 OpenHarmony Mesa 完整仓。
-    if [ -z "$mesa_root" ]; then
-        [ "$FETCH_IF_MISSING" -eq 1 ] || return 1
-
-        log "OHOS Mesa source not found locally; fetching official source tree" >&2
-        WINEHUA_OHOS_MESA_SRC_ROOT="$ROOT/tmp" \
-        WINEHUA_OHOS_MESA_DIR_NAME="ohos-mesa-sparse" \
-        bash "$SCRIPT_DIR/fetch_ohos_mesa.sh" --mesa-only >&2
-
-        [ -d "$fetched_root" ] || err "Mesa source fetch completed but source root is still missing: $fetched_root"
-        printf '%s\n' "$fetched_root"
-        return 0
-    fi
-    printf '%s\n' "$mesa_root"
-}
-
 ensure_mesa_source_layout() {
     local repo_root="$1"
     local sparse_list=""
@@ -438,32 +404,6 @@ ensure_mesa_source_layout() {
 
     [ -f "$repo_root/include/meson.build" ] || err "Mesa source checkout is still incomplete (include/meson.build missing): $repo_root"
     [ -d "$repo_root/bin" ] || err "Mesa source checkout is still incomplete (bin/ missing): $repo_root"
-}
-
-fetch_default_libdrm_root() {
-    local libdrm_root=""
-    local fetched_root="$ROOT/tmp/third_party_libdrm"
-
-    libdrm_root="$(find_first_existing_dir \
-        "$ROOT/thirdparty/libdrm" \
-        "$ROOT/tmp/third_party_libdrm" \
-        "$ROOT/tmp/ohos-guest-gfx-src/third_party_libdrm" \
-        || true)"
-    if [ -n "$libdrm_root" ]; then
-        printf '%s\n' "$libdrm_root"
-        return 0
-    fi
-
-    [ "$FETCH_IF_MISSING" -eq 1 ] || return 1
-
-    log "OHOS libdrm source not found locally; fetching official source tree" >&2
-    WINEHUA_OHOS_MESA_SRC_ROOT="$ROOT/tmp" \
-    WINEHUA_OHOS_MESA_DIR_NAME="ohos-mesa-sparse" \
-    WINEHUA_OHOS_LIBDRM_DIR_NAME="third_party_libdrm" \
-    bash "$SCRIPT_DIR/fetch_ohos_mesa.sh" >&2
-
-    [ -d "$fetched_root" ] || err "libdrm source fetch completed but source root is still missing: $fetched_root"
-    printf '%s\n' "$fetched_root"
 }
 
 fetch_modern_wayland_protocols_root() {
@@ -511,11 +451,7 @@ ensure_target_libdrm() {
             "$ROOT/tmp/ohos-guest-gfx-src/third_party_libdrm" \
             || true)"
     fi
-    if [ -z "$LIBDRM_SOURCE_ROOT" ]; then
-        LIBDRM_SOURCE_ROOT="$(fetch_default_libdrm_root)"
-    fi
-
-    [ -d "$LIBDRM_SOURCE_ROOT" ] || err "libdrm source root does not exist: $LIBDRM_SOURCE_ROOT"
+    [ -d "$LIBDRM_SOURCE_ROOT" ] || err "libdrm source root does not exist: $LIBDRM_SOURCE_ROOT (check thirdparty/libdrm submodule)"
     [ -f "$LIBDRM_SOURCE_ROOT/meson.build" ] || err "libdrm source root is not valid (meson.build missing): $LIBDRM_SOURCE_ROOT"
 
     if [ "$CLEAN" -eq 1 ]; then
@@ -750,19 +686,7 @@ WAYLAND_PROTOCOLS_SOURCE_ROOT="$(normalize_host_path_input "$WAYLAND_PROTOCOLS_S
 BUILD_ROOT="$(normalize_host_path_input "$BUILD_ROOT")"
 INSTALL_ROOT="$(normalize_host_path_input "$INSTALL_ROOT")"
 
-if [ -z "$SOURCE_ROOT" ]; then
-    SOURCE_ROOT="$(find_first_existing_dir \
-        "$ROOT/tmp/ohos-mesa-sparse" \
-        "$ROOT/tmp/ohos-guest-gfx-src/third_party_mesa3d" \
-        || true)"
-fi
-# thirdparty/mesa 是不完整的 OHOS 补丁树, 跳过。
-# 当本地无完整 Mesa 源码时, 自动 fetch 到 tmp/ohos-mesa-sparse。
-if [ -z "$SOURCE_ROOT" ]; then
-    SOURCE_ROOT="$(fetch_default_source_root)"
-fi
-
-[ -d "$SOURCE_ROOT" ] || err "Mesa source root does not exist: $SOURCE_ROOT"
+[ -d "$SOURCE_ROOT" ] || err "Mesa source root does not exist: $SOURCE_ROOT (check thirdparty/mesa submodule)"
 [ -f "$SOURCE_ROOT/meson.build" ] || err "Mesa source root is not valid (meson.build missing): $SOURCE_ROOT"
 ensure_mesa_source_layout "$SOURCE_ROOT"
 

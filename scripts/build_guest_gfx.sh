@@ -3,61 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-log()  { echo -e "\033[32m[BUILD]\033[0m $*"; }
-warn() { echo -e "\033[33m[WARN]\033[0m $*"; }
-err()  { echo -e "\033[31m[ERROR]\033[0m $*"; exit 1; }
-
-is_windows_style_path() {
-    [[ "${1:-}" =~ ^[A-Za-z]:[\\/].*$ ]]
-}
-
-detect_host_shell() {
-    if [ -n "${MSYSTEM:-}" ] && command -v cygpath >/dev/null 2>&1; then
-        printf 'msys2\n'
-        return 0
-    fi
-
-    if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null || grep -qi microsoft /proc/version 2>/dev/null; then
-        printf 'wsl\n'
-        return 0
-    fi
-
-    printf 'posix\n'
-}
-
-HOST_SHELL="$(detect_host_shell)"
-
-normalize_host_path_input() {
-    local value="${1:-}"
-    local drive=""
-    local rest=""
-
-    [ -n "$value" ] || return 0
-    if ! is_windows_style_path "$value"; then
-        printf '%s\n' "$value"
-        return 0
-    fi
-
-    case "$HOST_SHELL" in
-        wsl)
-            if [[ "$value" =~ ^([A-Za-z]):[\\/](.*)$ ]]; then
-                drive="${BASH_REMATCH[1],,}"
-                rest="${BASH_REMATCH[2]//\\//}"
-                printf '/mnt/%s/%s\n' "$drive" "$rest"
-                return 0
-            fi
-            ;;
-        msys2)
-            if command -v cygpath >/dev/null 2>&1; then
-                cygpath -u "$value"
-                return 0
-            fi
-            ;;
-    esac
-
-    printf '%s\n' "$value"
-}
+source "$SCRIPT_DIR/env.sh"
 
 remove_tree() {
     local path="$1"
@@ -84,8 +30,7 @@ Notes:
     prebuilt/guest_gfx/<arch>/ so assemble.sh can stage it into the HNP.
   - The install root must contain OHOS-target runtime files, not regular Linux
     desktop libraries from WSL/Ubuntu.
-  - Prefer managed source trees under thirdparty/; fallback fetching is still
-    available through bash scripts/fetch_ohos_mesa.sh.
+  - Requires thirdparty/mesa and thirdparty/libdrm submodules (gitee OpenHarmony mirrors).
   - BUILD_INFO.txt records the Mesa/libdrm source roots and Git HEADs when the
     caller provides those source paths.
   - For Step 1 VirGL/vtest smoke, use --mode virpipe.
@@ -126,31 +71,6 @@ done
 if [ "$NATIVE_ARCH" = "all" ]; then
     err "build_guest_gfx.sh requires a concrete NATIVE_ARCH (x86_64 or arm64-v8a)"
 fi
-
-if [ -n "$INSTALL_ROOT" ]; then
-    INSTALL_ROOT="$(normalize_host_path_input "$INSTALL_ROOT")"
-fi
-if [ -n "$MESA_SOURCE_ROOT" ]; then
-    MESA_SOURCE_ROOT="$(normalize_host_path_input "$MESA_SOURCE_ROOT")"
-fi
-if [ -n "$LIBDRM_SOURCE_ROOT" ]; then
-    LIBDRM_SOURCE_ROOT="$(normalize_host_path_input "$LIBDRM_SOURCE_ROOT")"
-fi
-OUTPUT_ROOT="$(normalize_host_path_input "$OUTPUT_ROOT")"
-
-find_first_existing_dir() {
-    local candidate=""
-
-    for candidate in "$@"; do
-        [ -n "${candidate:-}" ] || continue
-        if [ -d "$candidate" ]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-
-    return 1
-}
 
 find_first_existing_file() {
     local candidate=""
