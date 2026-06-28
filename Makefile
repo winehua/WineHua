@@ -39,13 +39,21 @@ WINE_SENTINEL   := $(BUILD_DIR)/wine-native/tools/winegcc/winegcc
 .PHONY: all
 all: hap
 
+# 确保 stamps 目录存在
+$(STAMPS):
+	mkdir -p $(STAMPS)
+
+# 确保架构子目录存在
+$(STAMPS)/arm64-v8a $(STAMPS)/x86_64:
+	mkdir -p $@
+
 # ============================================================
 # deps — 交叉编译依赖 → build/sysroot-ext/ (架构无关)
 # ============================================================
 .PHONY: deps
 deps: $(STAMPS)/deps
 
-$(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/env.sh
+$(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/env.sh | $(STAMPS)
 	@if [ -f $@ ] && [ -f $(DEPS_SENTINEL) ] && \
 	    ! find $(ROOT)/thirdparty/freetype \
 	           $(ROOT)/thirdparty/libffi \
@@ -74,7 +82,7 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/env.sh
 .PHONY: wine
 wine: $(STAMPS)/wine-$(CONFIG)
 
-$(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps
+$(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps | $(STAMPS)
 	@if [ -f $@ ] && [ -f $(WINE_SENTINEL) ] && \
 	    ! find $(ROOT)/thirdparty/wine \
 	           -newer $@ -type f \
@@ -95,7 +103,7 @@ $(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/d
 .PHONY: box64
 box64: $(STAMPS)/box64-arm64-v8a-$(DEVICE_TYPE)
 
-$(STAMPS)/box64-arm64-v8a-$(DEVICE_TYPE): $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh
+$(STAMPS)/box64-arm64-v8a-$(DEVICE_TYPE): $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh | $(STAMPS)
 	@if [ "$(NATIVE_ARCH)" = "x86_64" ]; then \
 	    echo "  [box64] skip (x86_64)"; \
 	    mkdir -p $(dir $@) && touch $@; \
@@ -124,7 +132,7 @@ define native_rule
 .PHONY: native-$(1)
 native-$(1): $$(STAMPS)/$(1)/native
 
-$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh
+$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
 	@sentinel="$(NATIVE_SENTINEL_$(subst -,_,$(1)))"; \
 	if [ -f $$@ ] && [ -f "$$$$sentinel" ] && \
 	    ! find $(ROOT)/thirdparty/wayland \
@@ -157,13 +165,13 @@ assemble-$(1)-pc:  $$(STAMPS)/$(1)/assemble-pc
 assemble-$(1)-pad: $$(STAMPS)/$(1)/assemble-pad
 
 $$(STAMPS)/$(1)/assemble-pc: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh \
-	$$(STAMPS)/wine-$(1)-pc $$(STAMPS)/$(1)/native
+	$$(STAMPS)/wine-$(1)-pc $$(STAMPS)/$(1)/native | $$(STAMPS)/$(1)
 	@echo "=== assemble ($(1), pc) ==="
 	NATIVE_ARCH=$(1) DEVICE_TYPE=pc bash $(SCRIPTS)/assemble.sh
 	@touch $$@
 
 $$(STAMPS)/$(1)/assemble-pad: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh \
-	$$(STAMPS)/wine-$(1)-pad $$(STAMPS)/$(1)/native
+	$$(STAMPS)/wine-$(1)-pad $$(STAMPS)/$(1)/native | $$(STAMPS)/$(1)
 	@echo "=== assemble ($(1), pad) ==="
 	NATIVE_ARCH=$(1) DEVICE_TYPE=pad bash $(SCRIPTS)/assemble.sh
 	@touch $$@
@@ -184,7 +192,7 @@ define hnp_rule
 .PHONY: hnp-$(1)
 hnp-$(1): $$(STAMPS)/$(1)/hnp
 
-$$(STAMPS)/$(1)/hnp: $(SCRIPTS)/package.sh $$(STAMPS)/$(1)/assemble-pc
+$$(STAMPS)/$(1)/hnp: $(SCRIPTS)/package.sh $$(STAMPS)/$(1)/assemble-pc | $$(STAMPS)/$(1)
 	@echo "=== hnp ($(1)) ==="
 	NATIVE_ARCH=$(1) DEVICE_TYPE=pc bash $(SCRIPTS)/package.sh hnp
 	@touch $$@
@@ -192,10 +200,13 @@ endef
 $(foreach a,arm64-v8a x86_64,$(eval $(call hnp_rule,$(a))))
 
 # ============================================================
-# hap — HAP 构建 + 签名
+# hap — HAP 构建 + 签名 (PC: 含 HNP, Pad: rawfile)
 # ============================================================
 .PHONY: hap
 hap: assemble
+ifeq ($(DEVICE_TYPE),pc)
+hap: hnp
+endif
 	@echo "=== hap ($(CONFIG)) ==="
 	bash $(SCRIPTS)/package.sh hap
 	@echo ""

@@ -149,7 +149,8 @@ install_headers() {
 
 # ── 5. libepoxy (VirGL host 渲染器依赖, EGL 函数加载) ──
 build_libepoxy() {
-    if [ -f "$NATIVE_LIBS/libepoxy.so.0" ]; then
+    local epoxy_pc="$NATIVE_BUILD/libepoxy/install/lib/pkgconfig"
+    if [ -f "$NATIVE_LIBS/libepoxy.so.0" ] && [ -d "$epoxy_pc" ]; then
         log "libepoxy ($NATIVE_ARCH) 已就绪，跳过"
         return 0
     fi

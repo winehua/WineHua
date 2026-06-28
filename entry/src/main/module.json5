@@ -46,6 +46,12 @@
         }
       }
     ],
+    "hnpPackages": [
+      {
+        "package": "winehua.hnp",
+        "type": "public"
+      }
+    ],
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
