@@ -8,11 +8,12 @@
 #include "graphics_broker.h"
 #include "wine_constants.h"
 #include "wine_env.h"
+#include "wine_process.h"
+#include "wine_launch.h"
 
 #include <unistd.h>
 #include <signal.h>
 #include <sys/prctl.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -21,317 +22,18 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include <cerrno>
-#include <algorithm>
-#include <initializer_list>
 #include <string>
 #include <thread>
 #include <atomic>
-#include <vector>
 #include <dlfcn.h>
 
 #undef LOG_TAG
 #define LOG_TAG "WL_NAPI"
 #include <hilog/log.h>
 
-#include "broker.h"
-
-#include "wait_utils.h"
-
-// -- 全局状态 --
-// -- 多进程注册表 (替换旧的 gClientPid/gReaderRunning) --
-struct WineProcessEntry {
-    pid_t pid;
-    std::string exeBasename;       // "notepad.exe"
-    std::string exeFullPath;       // drive_c 完整路径
-    bool running;
-    int stdoutFd;
-    std::shared_ptr<std::atomic<bool>> readerActive;
-};
-
-static std::mutex gProcMutex;
-static std::vector<WineProcessEntry> gProcRegistry;
-
-// -- 注册表辅助函数 --
-static WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd) {
-    std::lock_guard<std::mutex> lock(gProcMutex);
-    std::string basename = exeFullPath;
-    auto slash = basename.find_last_of('/');
-    if (slash != std::string::npos) basename = basename.substr(slash + 1);
-    gProcRegistry.push_back({
-        .pid = pid,
-        .exeBasename = basename,
-        .exeFullPath = exeFullPath,
-        .running = true,
-        .stdoutFd = stdoutFd,
-        .readerActive = std::make_shared<std::atomic<bool>>(true)
-    });
-    OH_LOG_INFO(LOG_APP, "[ProcReg] add pid=%{public}d name=%{public}s total=%{public}zu",
-                pid, basename.c_str(), gProcRegistry.size());
-    return &gProcRegistry.back();
-}
-
-static void RemoveProcess(pid_t pid) {
-    std::lock_guard<std::mutex> lock(gProcMutex);
-    for (auto it = gProcRegistry.begin(); it != gProcRegistry.end(); ++it) {
-        if (it->pid == pid) {
-            OH_LOG_INFO(LOG_APP, "[ProcReg] remove pid=%{public}d name=%{public}s total=%{public}zu→%{public}zu",
-                        pid, it->exeBasename.c_str(), gProcRegistry.size(), gProcRegistry.size() - 1);
-            it->running = false;
-            if (it->stdoutFd >= 0) { close(it->stdoutFd); it->stdoutFd = -1; }
-            gProcRegistry.erase(it);
-            return;
-        }
-    }
-}
-
-static void KillAllProcesses() {
-    std::lock_guard<std::mutex> lock(gProcMutex);
-    for (auto& entry : gProcRegistry) {
-        if (entry.running) {
-            OH_LOG_INFO(LOG_APP, "[ProcReg] killAll pid=%{public}d name=%{public}s",
-                        entry.pid, entry.exeBasename.c_str());
-            *(entry.readerActive) = false;
-            kill(entry.pid, SIGKILL);
-            if (entry.stdoutFd >= 0) { close(entry.stdoutFd); entry.stdoutFd = -1; }
-        }
-    }
-}
-
-static napi_threadsafe_function gStateTsfn = nullptr;
-static std::string gSockPath;
-
-static int CreateAudioBootstrapFd(const std::string& runtimeDir) {
-    if (!winehua::AudioBroker::GetInstance().EnsureStarted(runtimeDir)) {
-        OH_LOG_ERROR(LOG_APP, "[AudioBroker] failed to start for runtimeDir=%{public}s", runtimeDir.c_str());
-        return -1;
-    }
-    int fd = winehua::AudioBroker::GetInstance().CreateBootstrapHandle();
-    if (fd < 0) {
-        OH_LOG_ERROR(LOG_APP, "[AudioBroker] failed to create bootstrap FD for runtimeDir=%{public}s", runtimeDir.c_str());
-        return -1;
-    }
-    OH_LOG_INFO(LOG_APP, "[AudioBroker] bootstrap ready runtimeDir=%{public}s", runtimeDir.c_str());
-    return fd;
-}
-
-// -- fork/exec 后关闭继承的 fd --
-static void CloseInheritedFds(std::initializer_list<int> keepFds) {
-    DIR* d = opendir("/proc/self/fd");
-    if (!d) return;
-    int dfd = dirfd(d);
-    dirent* e;
-    while ((e = readdir(d))) {
-        int fd = atoi(e->d_name);
-        if (fd <= 2 || fd == dfd) continue;
-        if (std::find(keepFds.begin(), keepFds.end(), fd) != keepFds.end()) continue;
-        close(fd);
-    }
-    closedir(d);
-}
-
-// -- 进程退出状态日志 (统一 WIFSIGNALED/WIFEXITED 检测) --
-static void LogProcessExit(const char* tag, pid_t pid, int status) {
-    if (WIFSIGNALED(status)) {
-        int sig = WTERMSIG(status);
-        OH_LOG_ERROR(LOG_APP, "[%{public}s] CRASH pid=%{public}d signal=%{public}d(%{public}s) core=%{public}d",
-                     tag, pid, sig, strsignal(sig), WCOREDUMP(status) ? 1 : 0);
-    } else if (WIFEXITED(status)) {
-        OH_LOG_INFO(LOG_APP, "[%{public}s] process %{public}d exited code=%{public}d",
-                    tag, pid, WEXITSTATUS(status));
-    } else {
-        OH_LOG_WARN(LOG_APP, "[%{public}s] process %{public}d terminated status=0x%{public}x",
-                    tag, pid, status);
-    }
-}
-
-// -- SIGCHLD handler: reap NCP child processes spawned by broker --
-static void sigchld_handler(int) {
-    int status;
-    pid_t pid;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        LogProcessExit("broker-child", pid, status);
-        RemoveProcess(pid);
-        if (gStateTsfn) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "%d:exited", pid);
-            napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
-        }
-    }
-}
-
-// -- stderr pipe reader (后台线程, 逐行日志) --
-// done 为 nullptr 时永不停止 (适合 wineserver 等持久进程)
-static void StartStderrLogger(int fd, const char* tag,
-                              std::shared_ptr<std::atomic<bool>> done = nullptr) {
-    std::thread([fd, tag, done]() {
-        char buf[4096];
-        std::string pending;
-        while (true) {
-            if (done && *done) break;
-            ssize_t n = read(fd, buf, sizeof(buf) - 1);
-            if (n > 0) {
-                buf[n] = 0;
-                pending.append(buf, n);
-                size_t pos;
-                while ((pos = pending.find('\n')) != std::string::npos) {
-                    std::string line = pending.substr(0, pos);
-                    if (!line.empty())
-                        OH_LOG_INFO(LOG_APP, "[%{public}s] %{public}s", tag, line.c_str());
-                    pending.erase(0, pos + 1);
-                }
-            } else {
-                if (n == 0 || (n < 0 && errno != EINTR)) break;
-            }
-        }
-        if (!pending.empty())
-            OH_LOG_INFO(LOG_APP, "[%{public}s] %{public}s", tag, pending.c_str());
-        close(fd);
-    }).detach();
-}
-
-// -- 构建 Wine 环境变量 (wineserver/wineboot/wine 共用) --
-static std::vector<std::string> BuildWineEnv(const std::string& sockDir,
-                                              const std::string& sockName,
-                                              const std::string& libPath,
-                                              const std::string& binDir,
-                                              int audioBootstrapFd) {
-    std::string shareDir = binDir + "/../share";
-    std::string xkbDir = shareDir + "/X11/xkb";
-    std::string runtimeLibPath = binDir + ":" + binDir + "/x86_64-unix:" + binDir + "/../lib/x86_64";
-    winehua::GraphicsBackendState graphicsState = winehua::GraphicsBroker::GetInstance().GetState();
-    std::string guestReceiverLibDir;
-    bool useGuestReceiverRuntime = graphicsState.active == winehua::GraphicsBackend::Virgl;
-
-    if (useGuestReceiverRuntime && graphicsState.guestReceiverPresent && !graphicsState.guestReceiverRuntimeDir.empty()) {
-        guestReceiverLibDir = graphicsState.guestReceiverRuntimeDir + "/lib";
-        if (access(guestReceiverLibDir.c_str(), F_OK) == 0) {
-            runtimeLibPath = guestReceiverLibDir + ":" + runtimeLibPath;
-        }
-    }
-
-    std::vector<std::string> env = {
-        "XDG_RUNTIME_DIR=" + sockDir,
-        "WAYLAND_DISPLAY=" + sockName,
-        "HOME=/storage/Users/currentUser/Download/app.hackeris.winehua",
-        "WINEPREFIX=" WINE_PREFIX,
-        "WINEDATADIR=" + shareDir + "/wine", // Wine 数据文件 (nls, wine.inf)
-#ifdef PAD_MODE
-        "WINEDLLDIR=" + binDir + "/x86_64-unix", // Wine Unix .so
-        "WINEDLLDIR0=" + binDir + "/x86_64-windows", // PE DLL 目录
-        "WINEDLLDIR1=" + binDir,                      // PE EXE 目录
-        "WINEDLLPATH=" + binDir + "/x86_64-windows:" + binDir, // PE DLL + EXE
-#endif
-        // Wine 调试通道: -all=关闭全部 (+wineboot,+module 等会产生大量 trace)
-        "WINEDEBUG=-all",
-        "WINE_MONO=never",  // 跳过 Mono 安装 (OHOS 无网络, 会卡住)
-        "XKB_CONFIG_ROOT=" + xkbDir,
-        "PATH=/usr/local/bin:/data/app/bin:/data/service/hnp/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir,
-        "TMPDIR=" WINE_TMPDIR,
-    };
-    AppendBox64PerfStrings(env);
-#ifdef __aarch64__
-    // ARM64: x86_64 .so 由 Box64 加载，不在系统 LD_LIBRARY_PATH
-    // LD_LIBRARY_PATH 只包含 ARM64 原生 .so
-    env.push_back("LD_LIBRARY_PATH=" + libPath);
-    env.push_back("BOX64_LD_LIBRARY_PATH=" + runtimeLibPath);
-#else
-    // x86_64: 系统 linker 直接加载 x86_64 OHOS .so
-    env.push_back("LD_LIBRARY_PATH=" + runtimeLibPath);
-#endif
-    if (audioBootstrapFd >= 0) {
-        env.push_back("WINE_OHOS_AUDIO_ENABLE=1");
-        env.push_back("WINE_OHOS_AUDIO_BOOTSTRAP_FD=" + std::to_string(audioBootstrapFd));
-        env.push_back("WINE_OHOS_AUDIO_PROTOCOL_VERSION=" + std::to_string(WINEHUA_AUDIO_PROTOCOL_VERSION));
-    }
-    // Guest GPU 库路径 + VirGL socket 等
-    winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(binDir);
-    winehua::GraphicsBroker::GetInstance().AppendWineEnv(env);
-
-    OH_LOG_INFO(LOG_APP,
-                "[WineEnv] backend=%{public}s guestMode=%{public}s guestLib=%{public}s runtimeLibPath=%{public}s",
-                winehua::GraphicsBroker::BackendName(graphicsState.active),
-                graphicsState.guestReceiverMode.empty() ? "stock-egl" : graphicsState.guestReceiverMode.c_str(),
-                guestReceiverLibDir.empty() ? "(none)" : guestReceiverLibDir.c_str(),
-                runtimeLibPath.c_str());
-    return env;
-}
-
-// -- Graphics 辅助函数 --
-static std::string BasenameOfPath(const std::string& path) {
-    size_t slash = path.find_last_of("/\\");
-    if (slash == std::string::npos) return path;
-    return path.substr(slash + 1);
-}
-
-static bool IsGraphicsSmokeExePath(const std::string& path) {
-    std::string name = BasenameOfPath(path);
-    std::transform(name.begin(), name.end(), name.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return name == "winehua_graphics_smoke.exe";
-}
-
-static void LogGraphicsBackendStateForLaunch(const char* tag) {
-    winehua::GraphicsBackendState state = winehua::GraphicsBroker::GetInstance().GetState();
-    OH_LOG_INFO(LOG_APP,
-                "[%{public}s] graphics requested=%{public}s active=%{public}s runtimeReady=%{public}s "
-                "guestReceiver=%{public}s(%{public}s) virglSocketReady=%{public}s virglLibraryPresent=%{public}s",
-                tag,
-                winehua::GraphicsBroker::BackendName(state.requested),
-                winehua::GraphicsBroker::BackendName(state.active),
-                state.runtimeReady ? "true" : "false",
-                state.guestReceiverPresent ? "true" : "false",
-                state.guestReceiverMode.empty() ? "stock-egl" : state.guestReceiverMode.c_str(),
-                state.virglSocketReady ? "true" : "false",
-                state.virglLibraryPresent ? "true" : "false");
-    if (!state.virglSmokeError.empty())
-        OH_LOG_WARN(LOG_APP, "[%{public}s] virgl smoke error: %{public}s", tag, state.virglSmokeError.c_str());
-    if (!state.lastError.empty())
-        OH_LOG_WARN(LOG_APP, "[%{public}s] graphics note: %{public}s", tag, state.lastError.c_str());
-}
-
-// -- 客户端 stdout/stderr 读取线程 (每个进程独立) --
-static void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> active) {
-    char buf[2048];
-    std::string pending;
-    while (*active) {
-        ssize_t n = read(fd, buf, sizeof(buf) - 1);
-        if (n > 0) {
-            buf[n] = 0;
-            pending.append(buf, n);
-            size_t pos;
-            while ((pos = pending.find('\n')) != std::string::npos) {
-                std::string line = pending.substr(0, pos);
-                OH_LOG_INFO(LOG_APP, "[wine:%{public}d] %{public}s", pid, line.c_str());
-                pending.erase(0, pos + 1);
-            }
-        } else if (n == 0) {
-            break;
-        } else {
-            if (errno == EINTR) continue;
-            break;
-        }
-    }
-    if (!pending.empty()) {
-        OH_LOG_INFO(LOG_APP, "[wine:%{public}d] %{public}s", pid, pending.c_str());
-    }
-    close(fd);
-
-    // 回收子进程
-    int status;
-    waitpid(pid, &status, 0);
-    LogProcessExit("wine", pid, status);
-
-    // 从注册表移除
-    RemoveProcess(pid);
-
-    // 通知 ArkTS
-    if (gStateTsfn) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "%d:exited", pid);
-        napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
-    }
-}
+// -- 全局状态 (NAPI 层, 被 wine_process / wine_launch 引用) --
+napi_threadsafe_function gStateTsfn = nullptr;
+std::string gSockPath;
 
 // -- State 回调 -> ArkTS --
 static void CallJsState(napi_env env, napi_value cb, void*, void* data) {
@@ -402,284 +104,6 @@ static napi_value StartServer(napi_env env, napi_callback_info info) {
     napi_value r;
     napi_get_boolean(env, ok, &r);
     return r;
-}
-
-// -- NAPI: launchClient (异步: wineserver->wineboot->wine 在后台线程, 不阻塞 JS 主线程) --
-#ifdef PAD_MODE
-// Pad: 从 envp 重建 environ (fork 后 __wine_main / main 从 environ 读环境变量)
-static void rebuild_environ(char* const* envp) {
-    // 直接替换 environ 指针 (musl 不支持 clearenv)
-    extern char** environ;
-    environ = (char**)envp;
-}
-
-#endif // PAD_MODE
-struct LaunchParams {
-    std::string exePath;
-    std::string sockPath;
-    std::string libPath;
-    std::string sockDir;
-    std::string sockName;
-    std::string winehuaBin;
-    std::vector<std::string> envStrs;  // 持有 envp 字符串
-    std::vector<char*> envp;           // 指向 envStrs
-};
-
-#ifdef PAD_MODE
-#include <AbilityKit/native_child_process.h>
-#endif
-
-// 轮询 wineserver socket 是否就绪 (信号驱动, 避免盲等)
-static bool IsWineserverSocketReady() {
-    const char* prefix = WINE_PREFIX;
-    char sockDir[512];
-    snprintf(sockDir, sizeof(sockDir), "%s/.wineserver", prefix);
-    DIR* d = opendir(sockDir);
-    if (!d) return false;
-    bool found = false;
-    struct dirent* de;
-    while ((de = readdir(d))) {
-        if (de->d_name[0] == '.') continue;
-        char sockPath[1024];
-        snprintf(sockPath, sizeof(sockPath), "%s/%s/socket", sockDir, de->d_name);
-        struct stat st;
-        if (stat(sockPath, &st) == 0 && S_ISSOCK(st.st_mode)) { found = true; break; }
-    }
-    closedir(d);
-    return found;
-}
-
-static void LaunchThreadFunc(LaunchParams* p) {
-    OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
-    OH_LOG_INFO(LOG_APP, "[Launch-Async] XKB_CONFIG_ROOT=%{public}s",
-                (p->winehuaBin + "/../share/X11/xkb").c_str());
-
-    // 初始化 GraphicsBroker (guest GPU 验证，默认 Shm 后端不阻塞)
-    winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(p->winehuaBin);
-    winehua::GraphicsBroker::GetInstance().EnsureStarted(p->sockDir);
-
-    // 组装 envp 环境变量
-    int audioBootstrapFd = CreateAudioBootstrapFd(p->sockDir);
-    p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin, audioBootstrapFd);
-    for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
-    p->envp.push_back(nullptr);
-
-    mkdir(WINE_PREFIX, 0755);
-    mkdir("/storage/Users/currentUser/Download/app.hackeris.winehua", 0755);
-
-    // 通知 ArkTS: wineserver 启动中
-    if (gStateTsfn) {
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
-    }
-
-    // -- 启动 wineserver --
-#ifdef PAD_MODE
-    {
-        // -f: 前台模式, -p: 持久模式 (无客户端也不退出，避免竞态)
-        std::string wsEntryParams = p->winehuaBin + "|wineserver|-f|-p|--no-auto-close";
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver args=%{public}s", wsEntryParams.c_str());
-        NativeChildProcess_Args wsArgs = {};
-        wsArgs.entryParams = const_cast<char*>(wsEntryParams.c_str());
-        NativeChildProcess_Options wsOpts = {};
-        wsOpts.isolationMode = NCP_ISOLATION_MODE_NORMAL;
-        int32_t wsChildPid = -1;
-        auto wsRet = OH_Ability_StartNativeChildProcess(
-            "libwine_child.so:WineserverMain", wsArgs, wsOpts, &wsChildPid);
-        if (wsRet == NCP_NO_ERROR) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d (via appspawn)", wsChildPid);
-        } else {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver StartNativeChildProcess FAILED ret=%{public}d", (int)wsRet);
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
-            delete p;
-            return;
-        }
-        // 等待 wineserver socket 就绪 (信号驱动)
-        if (!WaitFor("wineserver socket", IsWineserverSocketReady, 5000, 100)) {
-            OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
-                        "wineboot will recover via server_connect retry+start_server");
-        }
-    }
-#else
-    // PC: fork + execve
-    {
-        std::vector<std::string> wsEnvStrs = p->envStrs;
-        std::vector<char*> wsEnvp;
-        for (auto& s : wsEnvStrs) wsEnvp.push_back((char*)s.c_str());
-        wsEnvp.push_back(nullptr);
-
-        int wsPipe[2];
-        bool wsPipeOk = (pipe(wsPipe) == 0);
-        if (!wsPipeOk)
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver pipe failed: %{public}s", strerror(errno));
-
-        pid_t wsPid = fork();
-        if (wsPid == 0) {
-            if (wsPipeOk) {
-                close(wsPipe[0]);
-                dup2(wsPipe[1], STDERR_FILENO);
-                if (wsPipe[1] > 2) close(wsPipe[1]);
-            }
-            CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
-            for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
-            prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
-            chdir(p->winehuaBin.c_str());
-            const char* wsArgv[] = {"./box64", "./wineserver", nullptr};
-            execve("./box64", (char* const*)wsArgv, wsEnvp.data());
-            _exit(127);
-        }
-        if (wsPid > 0) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d", wsPid);
-            if (wsPipeOk) {
-                close(wsPipe[1]);
-                StartStderrLogger(wsPipe[0], "wineserver-stderr");
-            }
-            // 等待 wineserver socket 就绪 (信号驱动)
-            if (!WaitFor("wineserver socket (PC)", IsWineserverSocketReady, 5000, 100)) {
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
-                            "wineboot will recover via server_connect retry");
-            }
-        } else {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver fork failed");
-            if (wsPipeOk) { close(wsPipe[0]); close(wsPipe[1]); }
-            if (audioBootstrapFd >= 0) close(audioBootstrapFd);
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
-            delete p;
-            return;
-        }
-    }
-#endif
-
-    if (gStateTsfn) {
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
-    }
-
-#ifdef PAD_MODE
-    // 启动 Process Broker（在主进程上下文监听请求，
-    // 让 wineboot 内部的 spawn_process 可以通过 Unix socket 请求子进程创建）
-    StartBrokerServer();
-
-    // 设置 PROCESSBROKER 环境变量，所有 Wine 进程统一从 env 读取 broker socket 路径
-    setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
-#endif
-
-#ifdef PAD_MODE
-    // 检查 Wine prefix 是否已初始化 (二次启动时跳过 wineboot)
-    bool prefixReady = []() {
-        DIR* d = opendir(WINE_PREFIX "/drive_c");
-        if (d) { closedir(d); return true; }
-        return false;
-    }();
-
-    if (!prefixReady) {
-        // -- wineboot --init (仅首次启动) --
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix not ready, running wineboot --init...");
-
-#ifdef __aarch64__
-        std::string entryParams = p->winehuaBin + "|wineboot|--init";
-#else
-        std::string entryParams = p->winehuaBin + "|wine|wineboot|--init";
-#endif
-
-        NativeChildProcess_Args childArgs = {};
-        childArgs.entryParams = const_cast<char*>(entryParams.c_str());
-        childArgs.fdList.head = nullptr;
-
-        NativeChildProcess_Options options = {};
-        options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
-
-        int32_t childPid = -1;
-        auto ret = OH_Ability_StartNativeChildProcess(
-            "libwine_child.so:Main", childArgs, options, &childPid);
-
-        if (ret == NCP_NO_ERROR) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
-            // 等待 wineboot 创建 drive_c
-            if (!WaitFor("wine prefix drive_c", []() {
-                DIR* d = opendir(WINE_PREFIX "/drive_c");
-                if (d) { closedir(d); return true; }
-                return false;
-            }, 30000, 200)) {
-                OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot drive_c timeout, abort");
-                if (gStateTsfn)
-                    napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
-                delete p;
-                return;
-            }
-            // 轮询等 wineboot 进程退出 (NCP 异步, 不能用 waitpid)
-            char procPath[64];
-            snprintf(procPath, sizeof(procPath), "/proc/%d", childPid);
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] waiting for wineboot pid=%{public}d to exit...", childPid);
-            for (int i = 0; i < 120; i++) {
-                if (access(procPath, F_OK) != 0) break;
-                usleep(500000);
-            }
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot completed");
-        } else {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot FAILED ret=%{public}d", (int)ret);
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
-            delete p;
-            return;
-        }
-    } else {
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix already initialized, skipping wineboot");
-    }
-
-    // -- explorer desktop shell (首次和二次启动共用) --
-    {
-        auto* ws = WaylandServer::GetInstance();
-        int dw = ws->outputW_ > 0 ? ws->outputW_ : 1280;
-        int dh = ws->outputH_ > 0 ? ws->outputH_ : 720;
-        char desktopArg[128];
-        snprintf(desktopArg, sizeof(desktopArg), "/desktop=shell,%dx%d", dw, dh);
-#ifdef __aarch64__
-        std::string exEntry = p->winehuaBin + "|explorer|" + desktopArg;
-#else
-        std::string exEntry = p->winehuaBin + "|wine|explorer|" + desktopArg;
-#endif
-        NativeChildProcess_Args exArgs = {};
-        exArgs.entryParams = const_cast<char*>(exEntry.c_str());
-        NativeChildProcess_Options exOpts = {};
-        exOpts.isolationMode = NCP_ISOLATION_MODE_NORMAL;
-        int32_t exPid = -1;
-        auto exRet = OH_Ability_StartNativeChildProcess(
-            "libwine_child.so:Main", exArgs, exOpts, &exPid);
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop pid=%{public}d ret=%{public}d",
-                    exPid, (int)exRet);
-    }
-#else
-    // -- wineboot --init (PC: fork + execve ./box64) --
-    {
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init...");
-        pid_t bootPid = fork();
-        if (bootPid == 0) {
-            CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
-            for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
-            prctl(PR_SET_NAME, "wl-wineboot", 0, 0, 0);
-            chdir(p->winehuaBin.c_str());
-            const char* bootArgv[] = {"./box64", "./wine", "./wineboot", "--init", nullptr};
-            execve("./box64", (char* const*)bootArgv, p->envp.data());
-            _exit(127);
-        }
-        if (audioBootstrapFd >= 0) {
-            close(audioBootstrapFd);
-            audioBootstrapFd = -1;
-        }
-        if (bootPid > 0) {
-            int bootStatus = 0;
-            waitpid(bootPid, &bootStatus, 0);
-            LogProcessExit("wineboot", bootPid, bootStatus);
-        }
-    }
-#endif
-
-    if (gStateTsfn) {
-        napi_call_threadsafe_function(gStateTsfn, strdup("wine-ready"), napi_tsfn_blocking);
-    }
-
-    delete p;
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
@@ -1668,13 +1092,13 @@ static napi_value SetToplevelVisible(napi_env env, napi_callback_info info) {
 
 // -- NAPI: getProcessList — 返回运行中进程列表 --
 static napi_value GetProcessList(napi_env env, napi_callback_info info) {
-    std::lock_guard<std::mutex> lock(gProcMutex);
+    auto snapshot = GetProcessListSnapshot();
 
     napi_value arr;
-    napi_create_array_with_length(env, gProcRegistry.size(), &arr);
+    napi_create_array_with_length(env, snapshot.size(), &arr);
 
-    for (size_t i = 0; i < gProcRegistry.size(); i++) {
-        const auto& entry = gProcRegistry[i];
+    for (size_t i = 0; i < snapshot.size(); i++) {
+        const auto& entry = snapshot[i];
         napi_value obj;
         napi_create_object(env, &obj);
 
@@ -1695,7 +1119,7 @@ static napi_value GetProcessList(napi_env env, napi_callback_info info) {
         napi_set_element(env, arr, i, obj);
     }
 
-    OH_LOG_INFO(LOG_APP, "[NAPI] getProcessList returned %{public}zu processes", gProcRegistry.size());
+    OH_LOG_INFO(LOG_APP, "[NAPI] getProcessList returned %{public}zu processes", snapshot.size());
     return arr;
 }
 
@@ -1710,19 +1134,8 @@ static napi_value KillProcess(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[0], &pid);
     OH_LOG_INFO(LOG_APP, "[NAPI] killProcess pid=%{public}d", pid);
 
-    {
-        std::lock_guard<std::mutex> lock(gProcMutex);
-        for (auto& entry : gProcRegistry) {
-            if (entry.pid == pid && entry.running) {
-                OH_LOG_INFO(LOG_APP, "[NAPI] killProcess found pid=%{public}d name=%{public}s",
-                            pid, entry.exeBasename.c_str());
-                *(entry.readerActive) = false;
-                kill(pid, SIGKILL);
-                if (entry.stdoutFd >= 0) { close(entry.stdoutFd); entry.stdoutFd = -1; }
-                break;
-            }
-        }
-    }
+    kill(pid, SIGKILL);
+    RemoveProcess(pid);
 
     napi_value r;
     napi_get_boolean(env, true, &r);

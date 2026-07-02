@@ -31,6 +31,9 @@ add_library(entry SHARED
     audio_stream.cpp
     graphics_broker.cpp
     napi_init.cpp
+	    wine_process.cpp
+	    wine_env.cpp
+	    wine_launch.cpp
     broker.cpp
     wayland_server.cpp
     egl_renderer.cpp
