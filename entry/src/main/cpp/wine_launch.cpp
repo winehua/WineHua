@@ -58,30 +58,9 @@ static bool IsWineserverSocketReady() {
     return found;
 }
 
-void LaunchThreadFunc(LaunchParams* p) {
-    OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
-    OH_LOG_INFO(LOG_APP, "[Launch-Async] XKB_CONFIG_ROOT=%{public}s",
-                (p->winehuaBin + "/../share/X11/xkb").c_str());
-
-    // 初始化 GraphicsBroker
-    winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(p->winehuaBin);
-    winehua::GraphicsBroker::GetInstance().EnsureStarted(p->sockDir);
-
-    // 组装 envp 环境变量
-    int audioBootstrapFd = CreateAudioBootstrapFd(p->sockDir);
-    p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin, audioBootstrapFd);
-    for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
-    p->envp.push_back(nullptr);
-
-    mkdir(WINE_PREFIX, 0755);
-    mkdir("/storage/Users/currentUser/Download/app.hackeris.winehua", 0755);
-
-    if (gStateTsfn) {
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
-    }
-
-    // -- 启动 wineserver --
 #ifdef PAD_MODE
+static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd) {
+    // -- wineserver via NCP --
     {
         std::string wsEntryParams = p->winehuaBin + "|wineserver|-f|-p|--no-auto-close";
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver args=%{public}s", wsEntryParams.c_str());
@@ -92,78 +71,26 @@ void LaunchThreadFunc(LaunchParams* p) {
         int32_t wsChildPid = -1;
         auto wsRet = OH_Ability_StartNativeChildProcess(
             "libwine_child.so:WineserverMain", wsArgs, wsOpts, &wsChildPid);
-        if (wsRet == NCP_NO_ERROR) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d (via appspawn)", wsChildPid);
-        } else {
+        if (wsRet != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver StartNativeChildProcess FAILED ret=%{public}d", (int)wsRet);
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
-            delete p;
-            return;
+            return false;
         }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d (via appspawn)", wsChildPid);
         if (!WaitFor("wineserver socket", IsWineserverSocketReady, 5000, 100)) {
             OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
                         "wineboot will recover via server_connect retry+start_server");
         }
     }
-#else
-    // PC: fork + execve
-    {
-        std::vector<std::string> wsEnvStrs = p->envStrs;
-        std::vector<char*> wsEnvp;
-        for (auto& s : wsEnvStrs) wsEnvp.push_back((char*)s.c_str());
-        wsEnvp.push_back(nullptr);
 
-        int wsPipe[2];
-        bool wsPipeOk = (pipe(wsPipe) == 0);
-        if (!wsPipeOk)
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver pipe failed: %{public}s", strerror(errno));
-
-        pid_t wsPid = fork();
-        if (wsPid == 0) {
-            if (wsPipeOk) {
-                close(wsPipe[0]);
-                dup2(wsPipe[1], STDERR_FILENO);
-                if (wsPipe[1] > 2) close(wsPipe[1]);
-            }
-            CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
-            for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
-            prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
-            chdir(p->winehuaBin.c_str());
-            const char* wsArgv[] = {"./box64", "./wineserver", nullptr};
-            execve("./box64", (char* const*)wsArgv, wsEnvp.data());
-            _exit(127);
-        }
-        if (wsPid > 0) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d", wsPid);
-            if (wsPipeOk) {
-                close(wsPipe[1]);
-                StartStderrLogger(wsPipe[0], "wineserver-stderr");
-            }
-            if (!WaitFor("wineserver socket (PC)", IsWineserverSocketReady, 5000, 100)) {
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
-                            "wineboot will recover via server_connect retry");
-            }
-        } else {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver fork failed");
-            if (wsPipeOk) { close(wsPipe[0]); close(wsPipe[1]); }
-            if (audioBootstrapFd >= 0) close(audioBootstrapFd);
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
-            delete p;
-            return;
-        }
-    }
-#endif
-
-    if (gStateTsfn) {
+    if (gStateTsfn)
         napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
-    }
 
-#ifdef PAD_MODE
     StartBrokerServer();
     setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
 
+    // -- wineboot --init --
     bool prefixReady = []() {
         DIR* d = opendir(WINE_PREFIX "/drive_c");
         if (d) { closedir(d); return true; }
@@ -172,13 +99,11 @@ void LaunchThreadFunc(LaunchParams* p) {
 
     if (!prefixReady) {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix not ready, running wineboot --init...");
-
 #ifdef __aarch64__
         std::string entryParams = p->winehuaBin + "|wineboot|--init";
 #else
         std::string entryParams = p->winehuaBin + "|wine|wineboot|--init";
 #endif
-
         NativeChildProcess_Args childArgs = {};
         childArgs.entryParams = const_cast<char*>(entryParams.c_str());
         childArgs.fdList.head = nullptr;
@@ -187,35 +112,30 @@ void LaunchThreadFunc(LaunchParams* p) {
         int32_t childPid = -1;
         auto ret = OH_Ability_StartNativeChildProcess(
             "libwine_child.so:Main", childArgs, options, &childPid);
-
-        if (ret == NCP_NO_ERROR) {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
-            if (!WaitFor("wine prefix drive_c", []() {
-                DIR* d = opendir(WINE_PREFIX "/drive_c");
-                if (d) { closedir(d); return true; }
-                return false;
-            }, 30000, 200)) {
-                OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot drive_c timeout, abort");
-                if (gStateTsfn)
-                    napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
-                delete p;
-                return;
-            }
-            char procPath[64];
-            snprintf(procPath, sizeof(procPath), "/proc/%d", childPid);
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] waiting for wineboot pid=%{public}d to exit...", childPid);
-            for (int i = 0; i < 120; i++) {
-                if (access(procPath, F_OK) != 0) break;
-                usleep(500000);
-            }
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot completed");
-        } else {
+        if (ret != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot FAILED ret=%{public}d", (int)ret);
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
-            delete p;
-            return;
+            return false;
         }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
+        if (!WaitFor("wine prefix drive_c", []() {
+            DIR* d = opendir(WINE_PREFIX "/drive_c");
+            if (d) { closedir(d); return true; }
+            return false;
+        }, 30000, 200)) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot drive_c timeout, abort");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+            return false;
+        }
+        char procPath[64];
+        snprintf(procPath, sizeof(procPath), "/proc/%d", childPid);
+        for (int i = 0; i < 120; i++) {
+            if (access(procPath, F_OK) != 0) break;
+            usleep(500000);
+        }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot completed");
     } else {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix already initialized, skipping wineboot");
     }
@@ -242,8 +162,56 @@ void LaunchThreadFunc(LaunchParams* p) {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop pid=%{public}d ret=%{public}d",
                     exPid, (int)exRet);
     }
+    return true;
+}
 #else
-    // -- wineboot --init (PC: fork + execve ./box64) --
+static bool LaunchPcMode(LaunchParams* p, int audioBootstrapFd) {
+    // -- wineserver via fork + execve --
+    {
+        std::vector<std::string> wsEnvStrs = p->envStrs;
+        std::vector<char*> wsEnvp;
+        for (auto& s : wsEnvStrs) wsEnvp.push_back((char*)s.c_str());
+        wsEnvp.push_back(nullptr);
+        int wsPipe[2];
+        bool wsPipeOk = (pipe(wsPipe) == 0);
+        if (!wsPipeOk)
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver pipe failed: %{public}s", strerror(errno));
+
+        pid_t wsPid = fork();
+        if (wsPid == 0) {
+            if (wsPipeOk) {
+                close(wsPipe[0]); dup2(wsPipe[1], STDERR_FILENO);
+                if (wsPipe[1] > 2) close(wsPipe[1]);
+            }
+            CloseInheritedFds({STDOUT_FILENO, STDERR_FILENO, audioBootstrapFd});
+            for (int s = 1; s < 32; ++s) signal(s, SIG_DFL);
+            prctl(PR_SET_NAME, "wl-wineserver", 0, 0, 0);
+            chdir(p->winehuaBin.c_str());
+            const char* wsArgv[] = {"./box64", "./wineserver", nullptr};
+            execve("./box64", (char* const*)wsArgv, wsEnvp.data());
+            _exit(127);
+        }
+        if (wsPid > 0) {
+            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d", wsPid);
+            if (wsPipeOk) { close(wsPipe[1]); StartStderrLogger(wsPipe[0], "wineserver-stderr"); }
+            if (!WaitFor("wineserver socket (PC)", IsWineserverSocketReady, 5000, 100)) {
+                OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
+                            "wineboot will recover via server_connect retry");
+            }
+        } else {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver fork failed");
+            if (wsPipeOk) { close(wsPipe[0]); close(wsPipe[1]); }
+            if (audioBootstrapFd >= 0) close(audioBootstrapFd);
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
+            return false;
+        }
+    }
+
+    if (gStateTsfn)
+        napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
+
+    // -- wineboot --init via fork + execve --
     {
         OH_LOG_INFO(LOG_APP, "[Launch-Async] running wineboot --init...");
         pid_t bootPid = fork();
@@ -266,11 +234,38 @@ void LaunchThreadFunc(LaunchParams* p) {
             LogProcessExit("wineboot", bootPid, bootStatus);
         }
     }
+    return true;
+}
 #endif
 
-    if (gStateTsfn) {
+void LaunchThreadFunc(LaunchParams* p) {
+    OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
+    OH_LOG_INFO(LOG_APP, "[Launch-Async] XKB_CONFIG_ROOT=%{public}s",
+                (p->winehuaBin + "/../share/X11/xkb").c_str());
+
+    winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(p->winehuaBin);
+    winehua::GraphicsBroker::GetInstance().EnsureStarted(p->sockDir);
+
+    int audioBootstrapFd = CreateAudioBootstrapFd(p->sockDir);
+    p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin, audioBootstrapFd);
+    for (auto& s : p->envStrs) p->envp.push_back((char*)s.c_str());
+    p->envp.push_back(nullptr);
+
+    mkdir(WINE_PREFIX, 0755);
+    mkdir("/storage/Users/currentUser/Download/app.hackeris.winehua", 0755);
+
+    if (gStateTsfn)
+        napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
+
+    bool ok = false;
+#ifdef PAD_MODE
+    ok = LaunchPadMode(p, audioBootstrapFd);
+#else
+    ok = LaunchPcMode(p, audioBootstrapFd);
+#endif
+
+    if (ok && gStateTsfn)
         napi_call_threadsafe_function(gStateTsfn, strdup("wine-ready"), napi_tsfn_blocking);
-    }
 
     delete p;
 }
