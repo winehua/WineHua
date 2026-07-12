@@ -316,7 +316,8 @@ static void BrokerThreadFunc()
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, kBrokerSocketPath);
+    strncpy(addr.sun_path, kBrokerSocketPath, sizeof(addr.sun_path) - 1);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
     if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         OH_LOG_ERROR(LOG_APP, "[Broker] bind(%{public}s) failed: %{public}s",
