@@ -59,7 +59,8 @@ build_libffi() {
     "$src/autogen.sh" 2>/dev/null || true
     if [ "$HOST_OS" = "Darwin" ]; then
         CC="$OHOS_SDK/native/llvm/bin/clang" CCAS="$OHOS_SDK/native/llvm/bin/clang" \
-        AR="$OHOS_SDK/native/llvm/bin/llvm-ar" RANLIB=: \
+        AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
+        RANLIB="$OHOS_SDK/native/llvm/bin/llvm-ranlib" \
         NM="$OHOS_SDK/native/llvm/bin/llvm-nm" LD="$OHOS_SDK/native/llvm/bin/ld.lld" \
         CFLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -O2 -fPIC -D__MUSL__" \
         LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$NATIVE_TARGET" \

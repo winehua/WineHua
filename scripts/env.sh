@@ -97,6 +97,7 @@ SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 if [ "$HOST_OS" = "Darwin" ]; then
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-$(command -v pkg-config || true)}"
     export WAYLAND_SCANNER="${WAYLAND_SCANNER:-$BUILD_DIR/host-tools/bin/wayland-scanner}"
+    [ -n "${PKG_CONFIG_BIN:-}" ] || err "pkg-config not found in PATH; run: brew install pkg-config"
 else
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-/usr/bin/pkg-config}"
     export WAYLAND_SCANNER="${WAYLAND_SCANNER:-/usr/local/bin/wayland-scanner}"

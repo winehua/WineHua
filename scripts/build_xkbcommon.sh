@@ -38,7 +38,8 @@ build_libffi() {
     mkdir -p "$build" && cd "$build"
     "$src/autogen.sh" 2>/dev/null || true
     if [ "$HOST_OS" = "Darwin" ]; then
-        CC="$CLANG" CCAS="$CLANG" AR="$OHOS_SDK/native/llvm/bin/llvm-ar" RANLIB=: \
+        CC="$CLANG" CCAS="$CLANG" AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
+        RANLIB="$OHOS_SDK/native/llvm/bin/llvm-ranlib" \
         NM="$OHOS_SDK/native/llvm/bin/llvm-nm" LD="$OHOS_SDK/native/llvm/bin/ld.lld" \
         CFLAGS="--target=$TARGET --sysroot=$SYSROOT -O2 -fPIC -D__MUSL__" \
         LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
