@@ -331,6 +331,11 @@ setup_build_env() {
     fi
     [ -x "$WAYLAND_SCANNER" ] || err "wayland-scanner not found; install wayland-dev or set WAYLAND_SCANNER"
 
+    if [ "$HOST_OS" = "Darwin" ]; then
+        export PKG_CONFIG_PATH="$HOST_TOOLS_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+        export PKG_CONFIG_PATH_FOR_BUILD="$HOST_TOOLS_DIR/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
+    fi
+
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-$(command -v pkg-config || true)}"
     [ -n "$PKG_CONFIG_BIN" ] || err "pkg-config not found in PATH"
     # 强制 pkg-config 只搜索 OHOS sysroot, 防止 host 库泄漏 (如 libz.so.1)

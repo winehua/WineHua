@@ -9,15 +9,27 @@ WP_SRC="$ROOT/thirdparty/wayland-protocols"
 WL_BUILD="$BUILD_DIR/wayland_build"
 
 # 确保 native wayland-scanner 可用
-SCANNER=/usr/local/bin/wayland-scanner
+SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
     if [ -x "$SCANNER" ]; then return 0; fi
     log "--- 编译 wayland-scanner (native) ---"
-    mkdir -p /tmp/wayland_native
-    meson setup /tmp/wayland_native "$WL_SRC" \
-        --prefix /usr/local -Ddocumentation=false -Dtests=false --buildtype=release
-    ninja -C /tmp/wayland_native
-    ninja -C /tmp/wayland_native install
+    if [ "$HOST_OS" = "Darwin" ]; then
+        local host_build="$BUILD_DIR/wayland_native"
+        local host_prefix="$BUILD_DIR/host-tools"
+        mkdir -p "$host_build" "$host_prefix"
+        meson setup "$host_build" "$WL_SRC" \
+            --prefix "$host_prefix" \
+            -Dlibraries=false -Dscanner=true -Ddtd_validation=false \
+            -Ddocumentation=false -Dtests=false --buildtype=release
+        ninja -C "$host_build"
+        ninja -C "$host_build" install
+    else
+        mkdir -p /tmp/wayland_native
+        meson setup /tmp/wayland_native "$WL_SRC" \
+            --prefix /usr/local -Ddocumentation=false -Dtests=false --buildtype=release
+        ninja -C /tmp/wayland_native
+        ninja -C /tmp/wayland_native install
+    fi
     log "wayland-scanner: $(which wayland-scanner)"
 }
 
@@ -32,6 +44,11 @@ if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
 fi
 
 build_scanner
+
+if [ "$HOST_OS" = "Darwin" ]; then
+    export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
+fi
 
 mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$SYSROOT_EXT_SHARE"
 mkdir -p "$WL_BUILD"

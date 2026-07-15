@@ -25,12 +25,17 @@ build_native_tools() {
         export ac_cv_lib_xkbregistry_rxkb_context_new=yes
         export ac_cv_header_ft2build_h=yes
         export ac_cv_lib_soname_freetype="libfreetype.so.6"
-        export FREETYPE_CFLAGS="-I/usr/include/freetype2"
-        export FREETYPE_LIBS="-lfreetype"
-        export WAYLAND_SCANNER=/usr/local/bin/wayland-scanner
-        "$WINE_SRC/configure" --enable-win64 --disable-tests \
-            --without-x --without-alsa \
-            --without-opengl --without-vulkan
+        if [ "$HOST_OS" = "Darwin" ]; then
+            export FREETYPE_CFLAGS="$("$PKG_CONFIG_BIN" --cflags freetype2)"
+            export FREETYPE_LIBS="$("$PKG_CONFIG_BIN" --libs freetype2)"
+            "$WINE_SRC/configure" --enable-archs=x86_64 --disable-tests \
+                --without-x --without-alsa --without-opengl --without-vulkan
+        else
+            export FREETYPE_CFLAGS="-I/usr/include/freetype2"
+            export FREETYPE_LIBS="-lfreetype"
+            "$WINE_SRC/configure" --enable-win64 --disable-tests \
+                --without-x --without-alsa --without-opengl --without-vulkan
+        fi
     fi
     # 只编译 OHOS 交叉构建实际需要的 host 工具 (~44 .o 文件)
     # 不编 DLL (PE/fake-module 和 Unix .so), 砍掉 ~90% 编译时间
@@ -80,12 +85,21 @@ build_ohos_unix() {
         export XKBCOMMON_LIBS="-L$SYSROOT_EXT_LIB -lxkbcommon"
         export XKBREGISTRY_CFLAGS="-I$SYSROOT_EXT_INC"
         export XKBREGISTRY_LIBS="-L$SYSROOT_EXT_LIB -lxkbregistry"
-        export WAYLAND_SCANNER=/usr/local/bin/wayland-scanner
+        local pkg_config=/usr/bin/pkg-config
+        if [ "$HOST_OS" = "Darwin" ]; then
+            local guest_gfx_prefix="$BUILD_DIR/guest_gfx_install/x86_64"
+            export EGL_CFLAGS="-I$guest_gfx_prefix/include"
+            export EGL_LIBS="-L$guest_gfx_prefix/lib -lEGL"
+            export ac_cv_lib_soname_EGL="libEGL.so.1"
+            export WAYLAND_EGL_CFLAGS="-I$SYSROOT_EXT_INC"
+            export WAYLAND_EGL_LIBS="-L$SYSROOT_EXT_LIB -lwayland-egl"
+            pkg_config="$PKG_CONFIG_BIN"
+        fi
 
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CFLAGS="${WINE_CFLAGS:-} -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \
         LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET -L$SYSROOT_EXT_LIB" \
-        PKG_CONFIG=/usr/bin/pkg-config \
+        PKG_CONFIG="$pkg_config" \
         PKG_CONFIG_PATH="$SYSROOT_EXT_PC" \
         "$WINE_SRC/configure" \
             --host=x86_64-linux-ohos \

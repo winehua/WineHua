@@ -6,6 +6,10 @@ source "$SCRIPT_DIR/env.sh"
 
 log "=== 构建 xkbcommon 依赖 (x86_64) ==="
 
+if [ "$HOST_OS" = "Darwin" ]; then
+    export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
+fi
+
 if [ -f "$SYSROOT_EXT_LIB/libxkbcommon.so.0" ] \
    && [ -f "$SYSROOT_EXT_LIB/libxkbcommon.so" ] \
    && [ -f "$SYSROOT_EXT_LIB/libxkbregistry.so.0" ] \
@@ -33,10 +37,17 @@ build_libffi() {
     log "--- libffi ---"
     mkdir -p "$build" && cd "$build"
     "$src/autogen.sh" 2>/dev/null || true
-    CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
-    CFLAGS="-O2 -fPIC -D__MUSL__" \
-    LDFLAGS="-fuse-ld=lld" \
-    "$src/configure" --host=x86_64-linux-gnu --prefix="$build/install" --disable-docs
+    if [ "$HOST_OS" = "Darwin" ]; then
+        CC="$CLANG" CCAS="$CLANG" AR="$OHOS_SDK/native/llvm/bin/llvm-ar" RANLIB=: \
+        NM="$OHOS_SDK/native/llvm/bin/llvm-nm" LD="$OHOS_SDK/native/llvm/bin/ld.lld" \
+        CFLAGS="--target=$TARGET --sysroot=$SYSROOT -O2 -fPIC -D__MUSL__" \
+        LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
+        "$src/configure" --host=x86_64-linux-gnu --prefix="$build/install" --disable-docs
+    else
+        CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" CFLAGS="-O2 -fPIC -D__MUSL__" \
+        LDFLAGS="-fuse-ld=lld" \
+        "$src/configure" --host=x86_64-linux-gnu --prefix="$build/install" --disable-docs
+    fi
     make -j$JOBS && make install
     cp "$build/install/lib/libffi.so.8.1.4" "$SYSROOT_EXT_LIB/libffi.so.8"
     cp "$build/install/include/ffi.h" "$SYSROOT_EXT_INC/"

@@ -2,11 +2,42 @@
 # 不要直接执行此文件
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export HOST_OS="${HOST_OS:-$(uname -s)}"
 
 # OHOS SDK
+# On macOS, DevEco command-line-tools exposes `ohpm` (or `hvigorw`) from its
+# bin directory. Resolve that executable from PATH instead of hardcoding an
+# installation directory, then derive both TOOL_HOME and OHOS_SDK from it.
+if [ "$HOST_OS" = "Darwin" ] && [ -z "${TOOL_HOME:-}" ]; then
+    for cli in ohpm hvigorw; do
+        cli_path="$(command -v "$cli" 2>/dev/null || true)"
+        if [ -n "$cli_path" ] && [ -x "$cli_path" ]; then
+            candidate_home="$(cd -P "$(dirname "$cli_path")/.." && pwd)"
+            if [ -d "$candidate_home/sdk/default/openharmony" ]; then
+                export TOOL_HOME="$candidate_home"
+                break
+            fi
+        fi
+    done
+fi
+if [ "$HOST_OS" = "Darwin" ] && [ -z "${OHOS_SDK:-}" ] \
+   && [ -d "${TOOL_HOME:-}/sdk/default/openharmony" ]; then
+    export OHOS_SDK="$TOOL_HOME/sdk/default/openharmony"
+fi
+if [ "$HOST_OS" = "Darwin" ] && [ -z "${OHOS_SDK:-}" ]; then
+    echo "ERROR: 未找到 HarmonyOS command-line-tools。请将其 bin 目录加入 PATH，或设置 OHOS_SDK。" >&2
+    return 1 2>/dev/null || exit 1
+fi
 export OHOS_SDK="${OHOS_SDK:-/apps/harmony/sdk/default/openharmony}"
 export TOOL_HOME="${TOOL_HOME:-/apps/harmony}"
 export PATH="$TOOL_HOME/bin:$TOOL_HOME/tool/node/bin:$PATH"
+
+if [ "$HOST_OS" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    HOMEBREW_BISON_BIN="$(brew --prefix bison 2>/dev/null || true)/bin"
+    if [ -x "$HOMEBREW_BISON_BIN/bison" ]; then
+        export PATH="$HOMEBREW_BISON_BIN:$PATH"
+    fi
+fi
 
 CLANG="$OHOS_SDK/native/llvm/bin/clang"
 SYSROOT="$OHOS_SDK/native/sysroot"
@@ -62,6 +93,16 @@ SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
 SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
+# Linux/Windows-under-WSL retain the project's original paths.  macOS uses a
+# project-local scanner and the pkg-config found in its active toolchain.
+if [ "$HOST_OS" = "Darwin" ]; then
+    export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-$(command -v pkg-config || true)}"
+    export WAYLAND_SCANNER="${WAYLAND_SCANNER:-$BUILD_DIR/host-tools/bin/wayland-scanner}"
+else
+    export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-/usr/bin/pkg-config}"
+    export WAYLAND_SCANNER="${WAYLAND_SCANNER:-/usr/local/bin/wayland-scanner}"
+fi
+
 # HAP 项目
 WINEHUA="$ROOT"
 
@@ -69,7 +110,16 @@ WINEHUA="$ROOT"
 NATIVE_LIBS="$WINEHUA/entry/libs/$NATIVE_ARCH"
 
 # 编译并行
-JOBS=${JOBS:-$(nproc)}
+if [ -z "${JOBS:-}" ]; then
+    if command -v nproc >/dev/null 2>&1; then
+        JOBS="$(nproc)"
+    elif command -v sysctl >/dev/null 2>&1; then
+        JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+    else
+        JOBS=4
+    fi
+fi
+export JOBS
 
 # 生成 meson cross file (路径依赖 ROOT, 不能硬编码)
 gen_cross_file() {
@@ -80,8 +130,8 @@ c = '$OHOS_SDK/native/llvm/bin/clang'
 cpp = '$OHOS_SDK/native/llvm/bin/clang++'
 ar = '$OHOS_SDK/native/llvm/bin/llvm-ar'
 strip = '$OHOS_SDK/native/llvm/bin/llvm-strip'
-pkg-config = '/usr/bin/pkg-config'
-wayland-scanner = '/usr/local/bin/wayland-scanner'
+pkg-config = '$PKG_CONFIG_BIN'
+wayland-scanner = '$WAYLAND_SCANNER'
 
 [built-in options]
 c_args = ['--target=$TARGET', '--sysroot=$SYSROOT', '-I$SYSROOT_EXT_INC']

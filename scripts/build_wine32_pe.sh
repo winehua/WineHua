@@ -27,6 +27,11 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
+if [ "$HOST_OS" = "Darwin" ] && [ -f "Makefile" ]; then
+    WAYLAND_SCANNER="$WAYLAND_SCANNER" perl -pi -e \
+        's{/usr/local/bin/wayland-scanner}{$ENV{WAYLAND_SCANNER}}g' Makefile config.status
+fi
+
 if [ ! -f "Makefile" ]; then
     log "Configuring Wine 32-bit PE..."
     # 照抄 64-bit OHOS 构建 (build_wine.sh:20-30 + 79-83).
@@ -54,7 +59,11 @@ if [ ! -f "Makefile" ]; then
     export WAYLAND_CLIENT_LIBS="-lwayland-client"
     export XKBCOMMON_LIBS="-lxkbcommon"
     export XKBREGISTRY_LIBS="-lxkbregistry"
-    export WAYLAND_SCANNER=/usr/local/bin/wayland-scanner
+    if [ "$HOST_OS" = "Darwin" ]; then
+        export ac_cv_path_WAYLAND_SCANNER="$WAYLAND_SCANNER"
+    else
+        export WAYLAND_SCANNER=/usr/local/bin/wayland-scanner
+    fi
     "$WINE_SRC/configure" \
         --host=i686-w64-mingw32 \
         --with-wine-tools="$WINE_TOOLS" \

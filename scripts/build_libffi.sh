@@ -20,10 +20,17 @@ mkdir -p "$BUILD" "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC"
 cd "$BUILD"
 
 (cd "$SRC" && ./autogen.sh) || err "libffi autogen.sh 失败"
-CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
-CFLAGS="-O2 -fPIC -D__MUSL__" \
-LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
-"$SRC/configure" --host=x86_64-linux-gnu --prefix="$BUILD/install" --disable-docs
+if [ "$HOST_OS" = "Darwin" ]; then
+    CC="$CLANG" CCAS="$CLANG" AR="$OHOS_SDK/native/llvm/bin/llvm-ar" RANLIB=: \
+    NM="$OHOS_SDK/native/llvm/bin/llvm-nm" LD="$OHOS_SDK/native/llvm/bin/ld.lld" \
+    CFLAGS="--target=$TARGET --sysroot=$SYSROOT -O2 -fPIC -D__MUSL__" \
+    LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
+    "$SRC/configure" --host=x86_64-linux-gnu --prefix="$BUILD/install" --disable-docs
+else
+    CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" CFLAGS="-O2 -fPIC -D__MUSL__" \
+    LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
+    "$SRC/configure" --host=x86_64-linux-gnu --prefix="$BUILD/install" --disable-docs
+fi
 
 make -j$JOBS && make install
 

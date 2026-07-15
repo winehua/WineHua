@@ -250,7 +250,22 @@ assemble_pad() {
     fi
     # wine.inf (含 OHOS font substitutes)
     cp "$BUILD_DIR/wine-ohos/loader/wine.inf" "$wine_data/share/wine/"
-    sed -i '/^\[MCI\]$/i\
+    if [ "$HOST_OS" = "Darwin" ]; then
+        # BSD sed requires an argument after -i, unlike GNU sed.
+        local wine_inf="$wine_data/share/wine/wine.inf"
+        local wine_inf_tmp="$wine_inf.tmp"
+        sed '/^\[MCI\]$/i\
+;; OHOS font substitutes\
+HKLM,%FontSubStr%,"System",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"MS Shell Dlg",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"MS Shell Dlg 2",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
+HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
+HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$wine_inf" > "$wine_inf_tmp"
+        mv "$wine_inf_tmp" "$wine_inf"
+    else
+        sed -i '/^\[MCI\]$/i\
 ;; OHOS font substitutes\
 HKLM,%FontSubStr%,"System",,"HarmonyOS Sans SC"\
 HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans SC"\
@@ -259,6 +274,7 @@ HKLM,%FontSubStr%,"MS Shell Dlg 2",,"HarmonyOS Sans SC"\
 HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"' "$wine_data/share/wine/wine.inf"
+    fi
     # XKB
     if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
         cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"

@@ -9,6 +9,10 @@ source "$SCRIPT_DIR/env.sh"
 NATIVE_TARGET="${NATIVE_TARGET:-aarch64-linux-ohos}"
 WINEHUA_INC="$WINEHUA/entry/src/main/cpp/include"
 NATIVE_BUILD="$BUILD_DIR/native_${NATIVE_ARCH}"
+if [ "$HOST_OS" = "Darwin" ]; then
+    export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
+fi
 
 log "=== 构建 Native 依赖 ($NATIVE_ARCH: $NATIVE_TARGET) ==="
 
@@ -24,7 +28,7 @@ c = '$OHOS_SDK/native/llvm/bin/clang'
 cpp = '$OHOS_SDK/native/llvm/bin/clang++'
 ar = '$OHOS_SDK/native/llvm/bin/llvm-ar'
 strip = '$OHOS_SDK/native/llvm/bin/llvm-strip'
-pkg-config = '/usr/bin/pkg-config'
+pkg-config = '$PKG_CONFIG_BIN'
 
 [built-in options]
 c_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-I$ffi_prefix/include']
@@ -53,10 +57,18 @@ build_libffi() {
     cd "$build"
 
     "$src/autogen.sh" 2>/dev/null || true
-    CC="$OHOS_SDK/native/llvm/bin/clang --target=$NATIVE_TARGET --sysroot=$SYSROOT" \
-    CFLAGS="-O2 -fPIC -D__MUSL__" \
-    LDFLAGS="-fuse-ld=lld" \
-    "$src/configure" --host=${NATIVE_CPU}-linux-gnu --prefix="$build/install" --disable-docs
+    if [ "$HOST_OS" = "Darwin" ]; then
+        CC="$OHOS_SDK/native/llvm/bin/clang" CCAS="$OHOS_SDK/native/llvm/bin/clang" \
+        AR="$OHOS_SDK/native/llvm/bin/llvm-ar" RANLIB=: \
+        NM="$OHOS_SDK/native/llvm/bin/llvm-nm" LD="$OHOS_SDK/native/llvm/bin/ld.lld" \
+        CFLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -O2 -fPIC -D__MUSL__" \
+        LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$NATIVE_TARGET" \
+        "$src/configure" --host=${NATIVE_CPU}-linux-gnu --prefix="$build/install" --disable-docs
+    else
+        CC="$OHOS_SDK/native/llvm/bin/clang --target=$NATIVE_TARGET --sysroot=$SYSROOT" \
+        CFLAGS="-O2 -fPIC -D__MUSL__" LDFLAGS="-fuse-ld=lld" \
+        "$src/configure" --host=${NATIVE_CPU}-linux-gnu --prefix="$build/install" --disable-docs
+    fi
 
     make -j$JOBS && make install
 
@@ -221,7 +233,7 @@ build_protocols() {
     fi
 
     log "--- 生成 Wayland 协议文件 ---"
-    local scanner="/usr/local/bin/wayland-scanner"
+    local scanner="$WAYLAND_SCANNER"
 
     # wayland core protocol
     local wl_xml="$ROOT/thirdparty/wayland/protocol/wayland.xml"
