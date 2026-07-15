@@ -4,21 +4,21 @@
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export HOST_OS="${HOST_OS:-$(uname -s)}"
 
-# OHOS SDK
-# On macOS, DevEco command-line-tools exposes `ohpm` (or `hvigorw`) from its
-# bin directory. Resolve that executable from PATH instead of hardcoding an
-# installation directory, then derive both TOOL_HOME and OHOS_SDK from it.
+# 鸿蒙 SDK
+# macOS 下直接从 PATH 查找命令行工具目录，并推导相关路径。
 if [ "$HOST_OS" = "Darwin" ] && [ -z "${TOOL_HOME:-}" ]; then
-    for cli in ohpm hvigorw; do
-        cli_path="$(command -v "$cli" 2>/dev/null || true)"
-        if [ -n "$cli_path" ] && [ -x "$cli_path" ]; then
-            candidate_home="$(cd -P "$(dirname "$cli_path")/.." && pwd)"
-            if [ -d "$candidate_home/sdk/default/openharmony" ]; then
-                export TOOL_HOME="$candidate_home"
-                break
-            fi
+    old_ifs="$IFS"
+    IFS=:
+    for bin_dir in $PATH; do
+        [ -n "$bin_dir" ] || bin_dir=.
+        candidate_home="$(cd -P "$bin_dir/.." 2>/dev/null && pwd || true)"
+        if { [ -e "$bin_dir/ohpm" ] || [ -e "$bin_dir/hvigorw" ]; } \
+           && [ -d "$candidate_home/sdk/default/openharmony" ]; then
+            export TOOL_HOME="$candidate_home"
+            break
         fi
     done
+    IFS="$old_ifs"
 fi
 if [ "$HOST_OS" = "Darwin" ] && [ -z "${OHOS_SDK:-}" ] \
    && [ -d "${TOOL_HOME:-}/sdk/default/openharmony" ]; then
@@ -93,8 +93,7 @@ SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
 SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
-# Linux/Windows-under-WSL retain the project's original paths.  macOS uses a
-# project-local scanner and the pkg-config found in its active toolchain.
+# Linux/WSL 保留原路径；macOS 使用项目内扫描器和当前工具链的 pkg-config。
 if [ "$HOST_OS" = "Darwin" ]; then
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-$(command -v pkg-config || true)}"
     export WAYLAND_SCANNER="${WAYLAND_SCANNER:-$BUILD_DIR/host-tools/bin/wayland-scanner}"
