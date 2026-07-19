@@ -237,7 +237,7 @@ read_pkgconfig_version() {
 }
 
 is_native_elf() {
-    local target="$1"
+    local target="$(realpath "$1")"
     # If the file is an ELF binary (not .exe), it can run natively on Linux
     [ -f "$target" ] && file -b "$target" 2>/dev/null | grep -qi 'ELF'
 }
