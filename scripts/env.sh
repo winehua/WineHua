@@ -102,8 +102,8 @@ SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
 SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
-# Linux/WSL 保留原路径；macOS 使用项目内扫描器和当前工具链的 pkg-config。
-if [ "$HOST_OS" = "Darwin" ]; then
+# Linux/WSL 保留原路径；macOS/HarmonyOS 使用项目内扫描器和当前工具链的 pkg-config。
+if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-$(command -v pkg-config || true)}"
     export WAYLAND_SCANNER="${WAYLAND_SCANNER:-$BUILD_DIR/host-tools/bin/wayland-scanner}"
     [ -n "${PKG_CONFIG_BIN:-}" ] || err "pkg-config not found in PATH; run: brew install pkg-config"

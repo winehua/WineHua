@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/env.sh"
 NATIVE_TARGET="${NATIVE_TARGET:-aarch64-linux-ohos}"
 WINEHUA_INC="$WINEHUA/entry/src/main/cpp/include"
 NATIVE_BUILD="$BUILD_DIR/native_${NATIVE_ARCH}"
-if [ "$HOST_OS" = "Darwin" ]; then
+if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
 fi
