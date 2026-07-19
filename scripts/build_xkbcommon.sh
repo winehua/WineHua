@@ -1,6 +1,7 @@
 #!/bin/bash
 # build_xkbcommon.sh — libffi + libxml2 + xkbcommon → sysroot-ext
 set -euo pipefail
+TMPDIR="${TMPDIR:-/tmp}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
@@ -111,15 +112,15 @@ build_xkbcommon() {
     ninja -C "$build"
 
     # 安装 (DESTDIR, 然后拷贝到 sysroot-ext)
-    DESTDIR=/tmp/xkc ninja -C "$build" install
-    find /tmp/xkc -name "libxkbcommon.so.0.0.0" -exec cp {} "$SYSROOT_EXT_LIB/libxkbcommon.so.0" \;
-    find /tmp/xkc -name "libxkbregistry.so.0.0.0" -exec cp {} "$SYSROOT_EXT_LIB/libxkbregistry.so.0" \;
+    DESTDIR=$TMPDIR/xkc ninja -C "$build" install
+    find $TMPDIR/xkc -name "libxkbcommon.so.0.0.0" -exec cp {} "$SYSROOT_EXT_LIB/libxkbcommon.so.0" \;
+    find $TMPDIR/xkc -name "libxkbregistry.so.0.0.0" -exec cp {} "$SYSROOT_EXT_LIB/libxkbregistry.so.0" \;
     ln -sf libxkbcommon.so.0 "$SYSROOT_EXT_LIB/libxkbcommon.so"
     ln -sf libxkbregistry.so.0 "$SYSROOT_EXT_LIB/libxkbregistry.so"
-    find /tmp/xkc -path "*/include/xkbcommon" -type d | while read d; do
+    find $TMPDIR/xkc -path "*/include/xkbcommon" -type d | while read d; do
         cp -r "$d" "$SYSROOT_EXT_INC/"
     done
-    rm -rf /tmp/xkc
+    rm -rf $TMPDIR/xkc
     cat > "$SYSROOT_EXT_PC/xkbcommon.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
