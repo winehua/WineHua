@@ -113,7 +113,7 @@ build_ohos_unix() {
         export XKBREGISTRY_CFLAGS="-I$SYSROOT_EXT_INC"
         export XKBREGISTRY_LIBS="-L$SYSROOT_EXT_LIB -lxkbregistry"
         local pkg_config=/usr/bin/pkg-config
-        if [ "$HOST_OS" = "Darwin" ]; then
+        if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
             local guest_gfx_prefix="$BUILD_DIR/guest_gfx_install/x86_64"
             export EGL_CFLAGS="-I$guest_gfx_prefix/include"
             export EGL_LIBS="-L$guest_gfx_prefix/lib -lEGL"
@@ -121,6 +121,11 @@ build_ohos_unix() {
             export WAYLAND_EGL_CFLAGS="-I$SYSROOT_EXT_INC"
             export WAYLAND_EGL_LIBS="-L$SYSROOT_EXT_LIB -lwayland-egl"
             pkg_config="$PKG_CONFIG_BIN"
+        fi
+        if [ "$HOST_OS" = "HarmonyOS" ]; then
+            MINGW_CC="$LLVM_MINGW/bin/clang"
+        else
+            MINGW_CC="gcc"
         fi
 
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
@@ -134,7 +139,7 @@ build_ohos_unix() {
             --prefix=/opt/winehua \
             --libdir='${prefix}' \
             --with-wine-tools="$BUILD_DIR/wine-native" \
-            --with-mingw=gcc \
+            --with-mingw="$MINGW_CC" \
             --disable-tests \
             --without-x --without-alsa \
             --with-opengl --with-vulkan
