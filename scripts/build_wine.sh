@@ -25,7 +25,7 @@ build_native_tools() {
         export ac_cv_lib_xkbregistry_rxkb_context_new=yes
         export ac_cv_header_ft2build_h=yes
         export ac_cv_lib_soname_freetype="libfreetype.so.6"
-        if [ "$HOST_OS" = "Darwin" ]; then
+        if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
             export FREETYPE_CFLAGS="$("$PKG_CONFIG_BIN" --cflags freetype2)"
             export FREETYPE_LIBS="$("$PKG_CONFIG_BIN" --libs freetype2)"
             "$CONFIGURE_BIN" --srcdir="$WINE_SRC" --enable-archs=x86_64 --disable-tests \
