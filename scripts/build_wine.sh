@@ -123,6 +123,10 @@ build_ohos_unix() {
             pkg_config="$PKG_CONFIG_BIN"
         fi
         if [ "$HOST_OS" = "HarmonyOS" ]; then
+            ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+            GUEST_GFX_ROOT="${WINEHUA_GUEST_GFX_INSTALL_ROOT:-$ROOT/build/guest_gfx_install/x86_64}"
+            export CROSSCFLAGS="-I$GUEST_GFX_ROOT/include"
+
             MINGW_CC="$LLVM_MINGW/bin/clang"
         else
             MINGW_CC="gcc"
