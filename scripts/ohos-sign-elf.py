@@ -145,15 +145,15 @@ def main() -> None:
         "--resign", action="store_true",
         help="Remove .codesign section then re-sign"
     )
-    parser.add_argument("directory", help="Root directory to scan")
+    parser.add_argument("path", help="File or directory to process")
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Only list ELF files that would be processed, without making changes"
     )
     args = parser.parse_args()
 
-    if not os.path.isdir(args.directory):
-        print(f"Error: {args.directory} is not a directory", file=sys.stderr)
+    if not os.path.isdir(args.path) and not os.path.lexists(args.path):
+        print(f"Error: {args.path} is not a file or directory", file=sys.stderr)
         sys.exit(1)
 
     do_unsign = args.unsign or args.resign
@@ -162,13 +162,19 @@ def main() -> None:
     mode = " (DRY RUN)" if args.dry_run else ""
     print(f"Scanning and processing with up to {MAX_WORKERS} threads{mode}")
 
+    if not os.path.isdir(args.path):
+        if not os.path.islink(args.path) and is_elf(args.path):
+            process_file(args.path, do_unsign, do_sign, args.dry_run)
+        print("Done.")
+        return
+
     scan_slots = threading.Semaphore(MAX_WORKERS)
     tracker = _ScanTracker()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as sign_pool:
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as scan_pool:
-            for entry in os.listdir(args.directory):
-                entry_path = os.path.join(args.directory, entry)
+            for entry in os.listdir(args.path):
+                entry_path = os.path.join(args.path, entry)
                 scan_slots.acquire()
                 tracker.add()
                 scan_pool.submit(
