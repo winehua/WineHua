@@ -85,7 +85,11 @@ def sign_elf(filepath: str) -> None:
         print(f"SIGNED: {filepath}")
 
 
-def process_file(filepath: str, do_unsign: bool, do_sign: bool) -> None:
+def process_file(filepath: str, do_unsign: bool, do_sign: bool, dry_run: bool) -> None:
+    if dry_run:
+        action = "UNSIGN" if do_unsign else "SIGN"
+        print(f"WOULD_{action}: {filepath}")
+        return
     if do_unsign:
         unsign_elf(filepath)
     if do_sign:
@@ -93,7 +97,7 @@ def process_file(filepath: str, do_unsign: bool, do_sign: bool) -> None:
 
 
 def walk_and_submit(path: str, sign_executor: concurrent.futures.ThreadPoolExecutor,
-                    do_unsign: bool, do_sign: bool,
+                    do_unsign: bool, do_sign: bool, dry_run: bool,
                     scan_pool: concurrent.futures.ThreadPoolExecutor,
                     scan_slots: threading.Semaphore,
                     tracker: _ScanTracker) -> None:
@@ -102,7 +106,7 @@ def walk_and_submit(path: str, sign_executor: concurrent.futures.ThreadPoolExecu
     try:
         if os.path.isfile(path):
             if not os.path.islink(path) and is_elf(path):
-                sign_executor.submit(process_file, path, do_unsign, do_sign)
+                sign_executor.submit(process_file, path, do_unsign, do_sign, dry_run)
             return
         for dirpath, dirnames, filenames in os.walk(path):
             # Try to offload subdirectories to idle scan threads.
@@ -113,7 +117,7 @@ def walk_and_submit(path: str, sign_executor: concurrent.futures.ThreadPoolExecu
                     tracker.add()
                     scan_pool.submit(
                         walk_and_submit, subdir,
-                        sign_executor, do_unsign, do_sign,
+                        sign_executor, do_unsign, do_sign, dry_run,
                         scan_pool, scan_slots, tracker,
                     )
             for filename in filenames:
@@ -122,7 +126,7 @@ def walk_and_submit(path: str, sign_executor: concurrent.futures.ThreadPoolExecu
                     continue
                 if not is_elf(filepath):
                     continue
-                sign_executor.submit(process_file, filepath, do_unsign, do_sign)
+                sign_executor.submit(process_file, filepath, do_unsign, do_sign, dry_run)
     finally:
         scan_slots.release()
         tracker.done()
@@ -142,6 +146,10 @@ def main() -> None:
         help="Remove .codesign section then re-sign"
     )
     parser.add_argument("directory", help="Root directory to scan")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Only list ELF files that would be processed, without making changes"
+    )
     args = parser.parse_args()
 
     if not os.path.isdir(args.directory):
@@ -151,7 +159,8 @@ def main() -> None:
     do_unsign = args.unsign or args.resign
     do_sign = not args.unsign  # sign by default, or on --resign
 
-    print(f"Scanning and processing with up to {MAX_WORKERS} threads")
+    mode = " (DRY RUN)" if args.dry_run else ""
+    print(f"Scanning and processing with up to {MAX_WORKERS} threads{mode}")
 
     scan_slots = threading.Semaphore(MAX_WORKERS)
     tracker = _ScanTracker()
@@ -164,7 +173,7 @@ def main() -> None:
                 tracker.add()
                 scan_pool.submit(
                     walk_and_submit, entry_path,
-                    sign_pool, do_unsign, do_sign,
+                    sign_pool, do_unsign, do_sign, args.dry_run,
                     scan_pool, scan_slots, tracker,
                 )
             tracker.mark_submitted()
