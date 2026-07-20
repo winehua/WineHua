@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
+set -x
 
 export HOST_OS="HarmonyOS"
 export PKG_CONFIG_BIN="$(command -v pkg-config)"
+export CC=clang
+export CXX=clang++
+
+{ set +x; } 2>/dev/null
 
 # 临时构建目录，必须位于 HMDFS 之外
 BUILD_DIR="${BUILD_DIR:-/data/storage/el2/base/files/WineHua-build}"
