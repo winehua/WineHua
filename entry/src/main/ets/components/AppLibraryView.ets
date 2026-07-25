@@ -1,6 +1,7 @@
 import { AppLibraryService, AppEntry } from '../service/AppLibraryService';
 import { WineEnvService } from '../service/WineEnvService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
+import { promptAction } from '@kit.ArkUI';
 
 // 应用库页: 已收藏 exe 列表 (M1 无图标)。断点形态: lg 五列 Grid 大卡 / sm·md 现 List。
 // 点击条目启动; 右键(PC)/长按(Pad)弹同一份 bindContextMenu (启动/打开所在目录/从库中移除),
@@ -92,7 +93,25 @@ export struct AppLibraryView {
   }
 
   build() {
-    Stack() {
+    Column() {
+      // 顶行: 标题 + 扫描快捷方式入口 (M3, 手动触发, 结果 toast)
+      Row() {
+        Text('应用库')
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+        Text('扫描快捷方式')
+          .fontColor($r('app.color.accent'))
+          .padding({ left: 12, top: 4, bottom: 4 })
+          .onClick(() => {
+            const added = this.lib.scanShortcuts();
+            promptAction.showToast({ message: added > 0 ? `新增 ${added} 个应用` : '没有发现新快捷方式' });
+          })
+      }
+      .width('100%')
+      .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+
+      Stack() {
       if (this.entries.length == 0) {
         Column() {
           Text('应用库为空')
@@ -122,9 +141,15 @@ export struct AppLibraryView {
           ForEach(this.entries, (entry: AppEntry) => {
             GridItem() {
               Column() {
-                Text('▶')
-                  .fontSize(32)
-                  .fontColor($r('app.color.accent'))
+                // 图标 (M3): 提取完成前回退 ▶
+                if (entry.icon) {
+                  Image(`file://${entry.icon}`)
+                    .width(40).height(40)
+                } else {
+                  Text('▶')
+                    .fontSize(32)
+                    .fontColor($r('app.color.accent'))
+                }
                 Text(entry.name)
                   .fontColor($r('app.color.accent_soft'))
                   .margin({ top: 8 })
@@ -153,7 +178,12 @@ export struct AppLibraryView {
           ForEach(this.entries, (entry: AppEntry) => {
             ListItem() {
               Row() {
-                Text('▶').width(28)
+                if (entry.icon) {
+                  Image(`file://${entry.icon}`)
+                    .width(24).height(24).margin({ right: 6 })
+                } else {
+                  Text('▶').width(28)
+                }
                 Text(entry.name)
                   .fontColor($r('app.color.accent_soft'))
                   .layoutWeight(1)
@@ -176,7 +206,11 @@ export struct AppLibraryView {
         .scrollBar(BarState.Off)
         .backgroundColor($r('app.color.window_bg'))
       }
+      }
+      .layoutWeight(1).width('100%')
     }
     .width('100%').height('100%')
+    // 根容器统一背景: 启动器下层是桌面 XComponent, 根透明会透出桌面 (顶行/分支不再单设)
+    .backgroundColor($r('app.color.window_bg'))
   }
 }

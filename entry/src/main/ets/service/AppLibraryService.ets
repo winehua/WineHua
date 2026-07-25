@@ -3,14 +3,18 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import testNapi from 'libentry.so';
 import { WineEnvService, SOCK, WINE_BIN, WINE_LIB } from './WineEnvService';
+import { IconExtractor } from './IconExtractor';
+import { LnkScanner, LnkTarget } from './LnkScanner';
 
 const DOMAIN = 0x0000;
 const STORE_NAME = 'app_library';
 const KEY_ENTRIES = 'entries';
+const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 
 export interface AppEntry {
   path: string;
   name: string;
+  icon?: string; // 图标 PNG 缓存路径 (IconExtractor 异步提取, 完成前为空, UI 回退 ▶)
 }
 
 // 应用库服务: 收藏的 exe 列表, preferences 持久化 (store 'app_library', 单 key 'entries' 存 JSON)。
@@ -64,19 +68,56 @@ export class AppLibraryService {
       hilog.error(DOMAIN, 'wine', 'app library load fail: %{public}s', JSON.stringify(e));
       this.entries = [];
     }
+    // 存量条目补图标 (老数据无 icon 字段, 首次启动后台逐个提取)
+    for (const e of this.entries) {
+      if (!e.icon) {
+        this.fillIcon(e.path);
+      }
+    }
   }
 
   // name 取文件名去 .exe 后缀; 按 path 去重, 已存在则忽略
   add(path: string): void {
+    const fileName = path.substring(path.lastIndexOf('/') + 1);
+    const name = fileName.toLowerCase().endsWith('.exe') ? fileName.substring(0, fileName.length - 4) : fileName;
+    this.addNamed(path, name);
+  }
+
+  addNamed(path: string, name: string): void {
     if (this.has(path)) {
       return;
     }
-    const fileName = path.substring(path.lastIndexOf('/') + 1);
-    const name = fileName.toLowerCase().endsWith('.exe') ? fileName.substring(0, fileName.length - 4) : fileName;
     this.entries = this.entries.concat([{ path: path, name: name }]);
     this.sortEntries();
     this.persist();
     this.notify();
+    this.fillIcon(path);
+  }
+
+  // 扫描 Start Menu / Desktop 的 .lnk 入库 (M3, 手动触发), 返回新增数量
+  scanShortcuts(): number {
+    const found: LnkTarget[] = LnkScanner.getInstance().scan(WINE_PREFIX, WineEnvService.getInstance().zHome);
+    let added = 0;
+    for (const t of found) {
+      if (!this.has(t.target)) {
+        this.addNamed(t.target, t.name);
+        added++;
+      }
+    }
+    return added;
+  }
+
+  // 异步提取 exe 图标 → 更新 entry.icon 并持久化 (完成前 UI 显示默认 ▶)
+  private fillIcon(path: string): void {
+    IconExtractor.getInstance().extract(path).then((icon: string) => {
+      if (!icon || !this.has(path)) {
+        return;
+      }
+      this.entries = this.entries.map((e: AppEntry): AppEntry =>
+        e.path == path ? { path: e.path, name: e.name, icon: icon } : e);
+      this.persist();
+      this.notify();
+    }).catch(() => {});
   }
 
   remove(path: string): void {

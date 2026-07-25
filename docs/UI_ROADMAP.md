@@ -165,9 +165,10 @@ Layer 0: DesktopLayer（DesktopWindow.ets 原样抽组件，桌面运行期间�
 
 - **M1**：Step 1-4 现有界面重构（含 3.5 Pad 单 Ability 化；仅 Step 3.5
   涉及 WineWindowManager/module.json5 的 ArkTS 改动，不碰 native）
-- **M2**：新功能 4（日志页）+ 5（每应用配置/虚拟桌面）——低成本高确定性；
+- **M2**：新功能 4（日志页，用户裁定跳过）+ 5（每应用配置/虚拟桌面，暂缓）——低成本高确定性；
   虚拟桌面模式可能绕过一批窗口/全屏难题（一键导入已暂缓，移出 M2）
-- **M3**：新功能 2（图标 + lnk 扫描）——应用库成型
+- **M3**：新功能 2（图标 + lnk 扫描）——应用库成型（已完成：ArkTS 自实现
+  PE .rsrc 图标提取含 DIB→PNG；Start Menu/Desktop lnk 扫描手动触发入库）
 - **M4**：新功能 1（触摸输入映射）——Pad 大工程，单独立项
 - 第二/三梯队其余项视反馈插入
 
