@@ -383,60 +383,60 @@ struct Index {
       Column() {
         // -- Wine 环境状态 --
         Text('Wine 环境')
-          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .fontWeight(FontWeight.Bold).fontColor($r('app.color.text_secondary'))
           .width('100%').padding({ top: 12, bottom: 6 })
 
         Row() {
           Circle({ width: 8, height: 8 })
-            .fill(this.prefixReady ? '#4f4' : '#f84')
+            .fill(this.prefixReady ? $r('app.color.state_ok') : $r('app.color.state_warn'))
             .margin({ right: 6 })
           Text(this.statusText)
-            .fontColor(this.state == 'wine-running' ? '#4f4' :
-                       this.state == 'exited' ? '#f84' :
-                       this.prefixReady ? '#8cf' : '#888')
+            .fontColor(this.state == 'wine-running' ? $r('app.color.state_ok') :
+                       this.state == 'exited' ? $r('app.color.state_warn') :
+                       this.prefixReady ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
             .layoutWeight(1)
             .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
         .width('100%').padding({ bottom: 12 })
         .alignItems(VerticalAlign.Center)
 
-        Divider().color('#2a2a2a').width('100%')
+        Divider().color($r('app.color.divider')).width('100%')
 
         // -- 快速操作 --
         Text('快速操作')
-          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .fontWeight(FontWeight.Bold).fontColor($r('app.color.text_secondary'))
           .width('100%').padding({ top: 12, bottom: 8 })
 
         if (!this.prefixReady) {
           Button('初始化 Wine')
-            .width('100%').backgroundColor('#285')
+            .width('100%').backgroundColor($r('app.color.action_primary'))
             .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
             .onClick(this.doInit)
             .margin({ bottom: 8 })
         } else {
           Button('重置 Wine')
-            .width('100%').backgroundColor('#633')
+            .width('100%').backgroundColor($r('app.color.action_danger'))
             .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
             .onClick(this.doReset)
             .margin({ bottom: 8 })
           Button('重启 Wine')
-            .width('100%').backgroundColor('#652')
+            .width('100%').backgroundColor($r('app.color.action_warning'))
             .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting' && this.state != 'wine-running')
             .onClick(this.doInit)
             .margin({ bottom: 8 })
         }
 
-        Divider().color('#2a2a2a').width('100%')
+        Divider().color($r('app.color.divider')).width('100%')
 
         // -- 运行中进程 --
         Row() {
           Text('运行中进程')
-            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .fontWeight(FontWeight.Bold).fontColor($r('app.color.text_secondary'))
             .layoutWeight(1)
           Button({ type: ButtonType.Circle, stateEffect: true }) {
             Text('↻')
           }
-          .width(28).height(28).backgroundColor('#333')
+          .width(28).height(28).backgroundColor($r('app.color.control_bg'))
           .onClick(this.refreshProcessList)
         }
         .width('100%').padding({ top: 12, bottom: 8 })
@@ -449,22 +449,22 @@ struct Index {
                 Row() {
                   Column() {
                     Text(proc.name)
-                      .fontColor('#dfd')
+                      .fontColor($r('app.color.accent_soft'))
                       .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                   }
                   .layoutWeight(1).alignItems(HorizontalAlign.Start)
 
                   if (proc.state === 'running') {
-                    Circle({ width: 6, height: 6 }).fill('#4f4').margin({ right: 10 })
+                    Circle({ width: 6, height: 6 }).fill($r('app.color.state_ok')).margin({ right: 10 })
                   }
                   Text('✕')
-                    .fontColor('#f55')
+                    .fontColor($r('app.color.danger'))
                     .onClick(() => this.doKillProcess(proc.pid))
                 }
                 .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 10 })
                 .alignItems(VerticalAlign.Center)
               }
-              .backgroundColor('#1e1e1e')
+              .backgroundColor($r('app.color.card_bg'))
             })
           }
           .width('100%').layoutWeight(1)
@@ -472,16 +472,16 @@ struct Index {
           .scrollBar(BarState.Off)
         } else {
           Text(this.prefixReady ? '无运行中进程' : 'Wine 未初始化')
-            .fontColor('#555')
+            .fontColor($r('app.color.text_disabled'))
             .width('100%').padding({ top: 8 })
         }
       }
       .width(300).height('100%')
-      .backgroundColor('#141414')
+      .backgroundColor($r('app.color.panel_bg'))
       .padding({ left: 14, right: 14, top: 10, bottom: 10 })
 
       // -- 侧边栏分隔线 --
-      Divider().vertical(true).color('#2a2a2a').height('100%')
+      Divider().vertical(true).color($r('app.color.divider')).height('100%')
 
       // ============================================================
       //  右侧主内容区
@@ -490,18 +490,18 @@ struct Index {
         // -- 标题栏 --
         Row() {
           Text($r('app.string.app_name'))
-            .fontWeight(FontWeight.Bold).fontColor('#fff')
+            .fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
 
           Text(this.statusText)
-            .fontColor(this.state == 'wine-running' ? '#4f4' :
-                       this.state == 'exited' ? '#f84' :
-                       this.prefixReady ? '#8cf' : '#888')
+            .fontColor(this.state == 'wine-running' ? $r('app.color.state_ok') :
+                       this.state == 'exited' ? $r('app.color.state_warn') :
+                       this.prefixReady ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
             .margin({ left: 12 }).layoutWeight(1)
             .maxLines(1)
         }
         .width('100%')
         .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-        .backgroundColor('#1a1a1a')
+        .backgroundColor($r('app.color.header_bg'))
         .alignItems(VerticalAlign.Center)
 
         // -- 文件浏览器 --
@@ -509,11 +509,11 @@ struct Index {
           Row() {
             if (this.curDir != DRIVE_C) {
               Button('← 上级目录')
-                .backgroundColor('#333')
+                .backgroundColor($r('app.color.control_bg'))
                 .onClick(this.goUp)
             }
             Text(this.relPath())
-              .fontColor('#888')
+              .fontColor($r('app.color.text_tertiary'))
               .margin({ left: 10 }).layoutWeight(1)
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
@@ -526,8 +526,8 @@ struct Index {
                   Text(this.isDir(this.curDir + '/' + name) ? '📁' : (this.isExe(name) ? '▶' : '  '))
                     .width(28)
                   Text(name)
-                    .fontColor(this.isExe(name) ? '#dfd' :
-                               this.isDir(this.curDir + '/' + name) ? '#8cf' : '#888')
+                    .fontColor(this.isExe(name) ? $r('app.color.accent_soft') :
+                               this.isDir(this.curDir + '/' + name) ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
                     .layoutWeight(1)
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                   if (this.isExe(name)) {
@@ -545,20 +545,20 @@ struct Index {
                   }
                 })
               }
-              .backgroundColor('#1e1e1e')
+              .backgroundColor($r('app.color.card_bg'))
             })
           }
           .width('100%').layoutWeight(1)
         } else {
           Column() {
             Text('需要先初始化 Wine 环境')
-              .fontColor('#555')
+              .fontColor($r('app.color.text_disabled'))
           }
           .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
         }
       }
       .layoutWeight(1).height('100%')
-      .backgroundColor('#111')
+      .backgroundColor($r('app.color.window_bg'))
     }
     .width('100%').height('100%')
     if (this.initOverlayVisible && !this.prefixReady) {
@@ -566,25 +566,25 @@ struct Index {
         LoadingProgress()
           .width(42)
           .height(42)
-          .color('#7db8ff')
+          .color($r('app.color.accent'))
           .margin({ bottom: 18 })
         Text('正在准备 Wine')
           .fontSize(20)
           .fontWeight(FontWeight.Medium)
-          .fontColor('#f4f7fb')
+          .fontColor($r('app.color.text_primary'))
           .margin({ bottom: 8 })
         Text(this.initOverlayText)
           .fontSize(15)
-          .fontColor('#aeb8c6')
+          .fontColor($r('app.color.text_secondary'))
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .width(360)
       .padding({ left: 28, right: 28, top: 26, bottom: 26 })
-      .backgroundColor('#20242b')
+      .backgroundColor($r('app.color.overlay_bg'))
       .borderRadius(8)
       .alignItems(HorizontalAlign.Center)
-      .shadow({ radius: 18, color: '#66000000', offsetX: 0, offsetY: 8 })
+      .shadow({ radius: 18, color: $r('app.color.shadow'), offsetX: 0, offsetY: 8 })
     }
     }
     .width('100%').height('100%')
