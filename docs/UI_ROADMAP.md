@@ -69,9 +69,11 @@ ets/pages/Index.ets    // 瘦壳：Tabs(应用库/任务/文件/环境) + 四组
 
 应用库条目来源（用户已裁定）：
 
-- **M1 仅手动添加**：文件浏览 Tab 的 exe 行内"加入应用库"，PC 拖拽入库
-  （Step 4），Pad 长按菜单（Step 4）。首启应用库为空，空态必须给出引导
+- **M1 仅手动添加**：文件浏览 Tab 的 exe 行内"加入应用库"；条目右键(PC)/
+  长按(Pad)菜单（Step 4）。首启应用库为空，空态必须给出引导
   （"去文件页把 exe 加入应用库"）
+- **已移除**：拖拽 .exe 入库（Step 4 实现后 PC 实测不生效，用户裁定
+  暂不需要，代码已删）
 - **M3 增加 lnk 扫描**：解析 winemenubuilder 写入 Start Menu 的 .lnk，
   按目标路径与手动条目去重合并，自带规范名称与图标
 - **暂缓**：drive_c 自动扫描（噪音过滤成本高）、安装包运行后的
@@ -118,7 +120,7 @@ Layer 0: DesktopLayer（DesktopWindow.ets 原样抽组件，桌面运行期间�
 
 - 引入 BreakpointSystem（mediaquery）
 - PC（2in1）：md 以下底部 TabBar 单栏，md 以上 Navigation 左导航右内容；
-  exe 卡片 bindContextMenu 右键菜单；支持拖拽 .exe 入库（onDrop）；hover 态
+  exe 卡片 bindContextMenu 右键菜单；hover 态
 - Pad（tablet）：固定侧边 TabBar，触摸目标 ≥48vp；应用库 Grid 大卡栅格；
   长按呼出同一 bindContextMenu；"任务"页展示运行中窗口
 
@@ -220,8 +222,8 @@ Layer 0: DesktopLayer（DesktopWindow.ets 原样抽组件，桌面运行期间�
 
 ### Step 4：断点 + 分形态
 
-- 改动：BreakpointSystem；PC Navigation/右键/拖拽/hover；
-  Pad 侧 Tab/大卡栅格/长按/≥48vp
+- 改动：BreakpointSystem；PC Navigation/右键/hover；
+  Pad 侧 Tab/大卡栅格/长按/≥48vp（拖拽入库实现后实测不生效，已移除）
 - 验证：Pad + PC x86_64 模拟器双端回归（PC 窗口拉宽拉窄）
 - commit：`feat(ui): 断点自适应与 PC/Pad 分形态交互`
 

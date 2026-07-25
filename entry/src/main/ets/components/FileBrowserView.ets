@@ -17,6 +17,8 @@ export struct FileBrowserView {
   @State curDir: string = DRIVE_C;
   @State entries: string[] = [];
   @State dirStack: string[] = [];
+  // 外部定位目录请求 (Index 注入, 应用库"打开所在目录"联动); 消费后自清空
+  @Link @Watch('onFilesDirRequest') filesDirRequest: string;
 
   private env: WineEnvService = WineEnvService.getInstance();
   private lib: AppLibraryService = AppLibraryService.getInstance();
@@ -76,6 +78,35 @@ export struct FileBrowserView {
 
   private isDir = (path: string): boolean => {
     try { return fs.statSync(path).isDirectory(); } catch (_) { return false; }
+  }
+
+  private pathExists = (path: string): boolean => {
+    try { return fs.accessSync(path); } catch (_) { return false; }
+  }
+
+  // 外部定位: 只接受 DRIVE_C 内 (含等于 DRIVE_C) 的目录; 存在且为目录则重建 dirStack 并 listDir
+  private onFilesDirRequest(): void {
+    const target: string = this.filesDirRequest;
+    if (target.length == 0) {
+      return;
+    }
+    this.filesDirRequest = '';
+    if (!target.startsWith(DRIVE_C) || !this.pathExists(target) || !this.isDir(target)) {
+      return;
+    }
+    // dirStack 重建: 从 DRIVE_C 逐级 push 到 target 的父级, 保证"← 上级目录"可一路退回 C:\
+    this.dirStack = [];
+    if (target != DRIVE_C) {
+      let p: string = DRIVE_C;
+      const segs: string[] = target.substring(DRIVE_C.length + 1).split('/');
+      for (let i = 0; i < segs.length - 1; i++) {
+        this.dirStack.push(p);
+        p = p + '/' + segs[i];
+      }
+      this.dirStack.push(p);
+    }
+    this.curDir = target;
+    this.listDir(target);
   }
 
   private isExe = (name: string): boolean => {
@@ -158,6 +189,7 @@ export struct FileBrowserView {
               }
               .width('100%').height(44).padding({ left: 14, right: 14 })
               .alignItems(VerticalAlign.Center)
+              .hoverEffect(HoverEffect.Highlight)
               .onClick(() => {
                 if (this.isDir(this.curDir + '/' + name)) {
                   this.enterDir(name);

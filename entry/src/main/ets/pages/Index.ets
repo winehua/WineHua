@@ -8,6 +8,7 @@ import { EnvPanel } from '../components/EnvPanel';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
 import { HomeBall } from '../components/HomeBall';
+import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -29,6 +30,10 @@ struct Index {
   @State desktopActive: boolean = false;
   @State desktopRootId: number = 0;
   @State @Watch('onLauncherVisibleChange') launcherVisible: boolean = true;
+  // -- 断点镜像 (Step 4): sm 底部 Tabs / md·lg 左侧导航 --
+  @State bp: Breakpoint = 'lg';
+  // 应用库"打开所在目录"联动: 目录路径经此 @State 传给 FileBrowserView (@Link), 消费后自清空
+  @State filesDirRequest: string = '';
 
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
@@ -65,6 +70,12 @@ struct Index {
     this.proc.bindEnv(env);
     env.init(getContext(this));
     AppLibraryService.getInstance().init(getContext(this));
+    // 断点镜像: 订阅 BreakpointSystem (update 由根 Stack onAreaChange 喂入)
+    const bps = BreakpointSystem.getInstance();
+    bps.subscribe(() => {
+      this.bp = bps.current;
+    });
+    this.bp = bps.current;
     mirror();
     // 按当前 launcherVisible 应用一次沉浸 (初始 true = 显示状态栏)
     this.applyImmersiveMode();
@@ -117,11 +128,57 @@ struct Index {
     }
   }
 
+  // 切换主区页签: sm 壳走 TabsController (底部 TabBar), md/lg 壳直接 set currentIndex (Stack visibility)
+  private switchTab(index: number): void {
+    this.currentIndex = index;
+    if (this.bp == 'sm') {
+      this.tabsController.changeIndex(index);
+    }
+  }
+
+  // 应用库"打开所在目录": 置 filesDirRequest 并切到文件页 (index 2), 两种壳同一入口
+  private openDirInFiles(dirPath: string): void {
+    this.filesDirRequest = dirPath;
+    this.switchTab(2);
+  }
+
   @Builder
   tabBarItem(title: string, index: number) {
     Text(title)
       .fontColor(this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary'))
       .padding({ top: 12, bottom: 12 })
+  }
+
+  // 应用库页 (sm/md/lg 两壳共用一份定义, 保证联动行为一致)
+  @Builder
+  appLibraryContent() {
+    AppLibraryView({
+      onNavigateToFiles: (): void => {
+        this.switchTab(2);
+      },
+      onOpenDir: (dirPath: string): void => {
+        this.openDirInFiles(dirPath);
+      }
+    })
+  }
+
+  // 侧导航项 (md/lg 壳): 选中项文字 accent + 左侧 3vp accent 竖条, 未选 text_secondary; 行高 48vp
+  @Builder
+  sideNavItem(title: string, index: number) {
+    Row() {
+      Column()
+        .width(3).height(20)
+        .backgroundColor($r('app.color.accent'))
+        .visibility(this.currentIndex == index ? Visibility.Visible : Visibility.Hidden)
+      Text(title)
+        .fontColor(this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary'))
+        .margin({ left: 13 })
+    }
+    .width('100%').height(48)
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      this.currentIndex = index;
+    })
   }
 
   build() {
@@ -160,39 +217,67 @@ struct Index {
       .backgroundColor($r('app.color.header_bg'))
       .alignItems(VerticalAlign.Center)
 
-      // -- 四 Tab: 应用库 / 任务 / 文件 / 环境 --
-      Tabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {
-        TabContent() {
-          AppLibraryView({
-            onNavigateToFiles: (): void => {
-              this.currentIndex = 2;
-              this.tabsController.changeIndex(2);
+      // -- 四 Tab: 应用库 / 任务 / 文件 / 环境 (断点双壳: sm 底部 Tabs / md·lg 左侧导航 + 右内容) --
+      if (this.bp == 'sm') {
+        Tabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {
+          TabContent() {
+            this.appLibraryContent()
+          }
+          .tabBar(this.tabBarItem('应用库', 0))
+
+          TabContent() {
+            TaskListView()
+          }
+          .tabBar(this.tabBarItem('任务', 1))
+
+          TabContent() {
+            FileBrowserView({ filesDirRequest: $filesDirRequest })
+          }
+          .tabBar(this.tabBarItem('文件', 2))
+
+          TabContent() {
+            EnvPanel()
+          }
+          .tabBar(this.tabBarItem('环境', 3))
+        }
+        .barMode(BarMode.Fixed)
+        .barBackgroundColor($r('app.color.panel_bg'))
+        .onChange((index: number) => {
+          this.currentIndex = index;
+        })
+        .layoutWeight(1)
+      } else {
+        Row() {
+          // 侧导航 (宽 200vp)
+          Column() {
+            this.sideNavItem('应用库', 0)
+            this.sideNavItem('任务', 1)
+            this.sideNavItem('文件', 2)
+            this.sideNavItem('环境', 3)
+          }
+          .width(200).height('100%')
+          .backgroundColor($r('app.color.panel_bg'))
+
+          // 四 view 常驻 Stack, visibility 切换 (保状态, 与启动器 overlay 同款思路)
+          Stack() {
+            // @Builder 返回 void 不能挂属性, 包一层 Column 再切 visibility
+            Column() {
+              this.appLibraryContent()
             }
-          })
+            .width('100%').height('100%')
+            .visibility(this.currentIndex == 0 ? Visibility.Visible : Visibility.Hidden)
+            TaskListView()
+              .visibility(this.currentIndex == 1 ? Visibility.Visible : Visibility.Hidden)
+            FileBrowserView({ filesDirRequest: $filesDirRequest })
+              .visibility(this.currentIndex == 2 ? Visibility.Visible : Visibility.Hidden)
+            EnvPanel()
+              .visibility(this.currentIndex == 3 ? Visibility.Visible : Visibility.Hidden)
+          }
+          .layoutWeight(1).height('100%')
         }
-        .tabBar(this.tabBarItem('应用库', 0))
-
-        TabContent() {
-          TaskListView()
-        }
-        .tabBar(this.tabBarItem('任务', 1))
-
-        TabContent() {
-          FileBrowserView()
-        }
-        .tabBar(this.tabBarItem('文件', 2))
-
-        TabContent() {
-          EnvPanel()
-        }
-        .tabBar(this.tabBarItem('环境', 3))
+        .width('100%')
+        .layoutWeight(1)
       }
-      .barMode(BarMode.Fixed)
-      .barBackgroundColor($r('app.color.panel_bg'))
-      .onChange((index: number) => {
-        this.currentIndex = index;
-      })
-      .layoutWeight(1)
     }
     .width('100%').height('100%')
     .visibility(this.launcherVisible ? Visibility.Visible : Visibility.Hidden)
@@ -232,5 +317,9 @@ struct Index {
     }
     }
     .width('100%').height('100%')
+    // 断点喂入: Area.width 单位 vp, BreakpointSystem 内部去重 (变化才 notify)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      BreakpointSystem.getInstance().update(newValue.width as number);
+    })
   }
 }
