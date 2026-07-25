@@ -49,10 +49,10 @@ mediaquery 驱动），而不是按 deviceType 写两套 UI。设备形态分叉
 ets/service/
   WineEnvService.ets      // state 回调、prefixReady、init/reset/restart
   ProcessService.ets      // 进程列表刷新、kill
-  AppLibraryService.ets   // 用户收藏条目（手动添加），preferences 持久化
 ```
 
 `testNapi.setStateCallback` 从页面搬入 service，页面只订阅状态。
+（实施时 AppLibraryService 延后到 Step 3 与其视图同建——Step 2 无消费者。）
 
 ### Step 3：IA 重构——应用库首页 + 组件拆分
 
