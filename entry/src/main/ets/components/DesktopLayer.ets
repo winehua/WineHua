@@ -36,9 +36,10 @@ class DesktopController extends XComponentController {
   }
 }
 
-@Entry
+// 原桌面页内容原样迁入 (Step 3.5: 双 Ability → 单 Ability 三层页面,
+// @Entry 页 → Index 内常驻组件)。XComponent id 保持 'wine_desktop_xc' 不变。
 @Component
-struct DesktopPage {
+export struct DesktopLayer {
   controller: DesktopController = new DesktopController();
   // 触控状态机: IDLE → PENDING → (DRAGGING | 长按 | 点击)
   // 双指进入 SCROLLING 模式, 覆盖单指状态
@@ -126,20 +127,20 @@ struct DesktopPage {
 
               if (this.twoFingerTl > 0) {
                 // 垂直滚动
-                while (Math.abs(this.twoFingerAccumY) >= DesktopPage.SCROLL_STEP_PX) {
+                while (Math.abs(this.twoFingerAccumY) >= DesktopLayer.SCROLL_STEP_PX) {
                   const sign = this.twoFingerAccumY > 0 ? 1 : -1;
-                  testNapi.sendScrollEvent(this.twoFingerTl, 0, sign, DesktopPage.SCROLL_STEP_PX, midX, midY);
-                  this.twoFingerAccumY -= sign * DesktopPage.SCROLL_STEP_PX;
+                  testNapi.sendScrollEvent(this.twoFingerTl, 0, sign, DesktopLayer.SCROLL_STEP_PX, midX, midY);
+                  this.twoFingerAccumY -= sign * DesktopLayer.SCROLL_STEP_PX;
                   if (++this.scrollLogCounter % 5 === 0) {
                     hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] SCROLL-V tl=%{public}d',
                       this.twoFingerTl);
                   }
                 }
                 // 水平滚动
-                while (Math.abs(this.twoFingerAccumX) >= DesktopPage.SCROLL_STEP_PX) {
+                while (Math.abs(this.twoFingerAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
                   const sign = this.twoFingerAccumX > 0 ? 1 : -1;
-                  testNapi.sendScrollEvent(this.twoFingerTl, 1, sign, DesktopPage.SCROLL_STEP_PX, midX, midY);
-                  this.twoFingerAccumX -= sign * DesktopPage.SCROLL_STEP_PX;
+                  testNapi.sendScrollEvent(this.twoFingerTl, 1, sign, DesktopLayer.SCROLL_STEP_PX, midX, midY);
+                  this.twoFingerAccumX -= sign * DesktopLayer.SCROLL_STEP_PX;
                 }
               }
             }
@@ -183,7 +184,7 @@ struct DesktopPage {
 
             const dist = Math.abs(px - this.touchStartPx) + Math.abs(py - this.touchStartPy);
 
-            if (this.touchPending && dist >= DesktopPage.DRAG_THRESHOLD) {
+            if (this.touchPending && dist >= DesktopLayer.DRAG_THRESHOLD) {
               // 进入拖拽模式: 补发 Press (Down 时未发)
               const btnLeft = mapMouseButton(1);
               this.touchPending = false;
@@ -218,7 +219,7 @@ struct DesktopPage {
               this.touchPending = false;
               const elapsed = Date.now() - this.touchStartTime;
 
-              if (elapsed >= DesktopPage.LONG_PRESS_MS) {
+              if (elapsed >= DesktopLayer.LONG_PRESS_MS) {
                 // 长按 → 右键
                 const btnRight = mapMouseButton(2);
                 this.lastTapTime = 0; // 长按打断双击序列
@@ -231,8 +232,8 @@ struct DesktopPage {
                 const btnLeft = mapMouseButton(1);
                 const now = Date.now();
                 const dist = Math.abs(this.pendingPx - this.lastTapPx) + Math.abs(this.pendingPy - this.lastTapPy);
-                const isDoubleTap = (this.lastTapTime > 0 && (now - this.lastTapTime) < DesktopPage.DOUBLE_TAP_MS
-                                    && dist < DesktopPage.DOUBLE_TAP_DIST && this.pendingTl === this.lastTapTl);
+                const isDoubleTap = (this.lastTapTime > 0 && (now - this.lastTapTime) < DesktopLayer.DOUBLE_TAP_MS
+                                    && dist < DesktopLayer.DOUBLE_TAP_DIST && this.pendingTl === this.lastTapTl);
 
                 if (isDoubleTap) {
                   // 双击: 两个连续点击使用同一位置

@@ -2,7 +2,6 @@
   "src": [
     "pages/Index",
     "pages/WineWindow",
-    "pages/DesktopWindow",
     "pages/WinePopup"
   ]
 }

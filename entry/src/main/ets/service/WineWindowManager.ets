@@ -47,9 +47,25 @@ export class WineWindowManager {
   // -- Desktop 模式 (Tablet) --
   private isDesktopMode: boolean = false;
   private desktopRootId: number = 0;
-  private desktopAbilityRunning: boolean = false;
+  // 单 Ability 三层页面: 桌面已激活 (一旦 true 不再翻回, 复刻旧桌面 Ability 永不关闭语义)
+  desktopActive: boolean = false;
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
+
+  // 极简订阅 (与 WineEnvService 同款): 桌面状态变化后逐个调用
+  private listeners: Array<() => void> = [];
+
+  subscribe(listener: () => void): void {
+    if (!this.listeners.includes(listener)) {
+      this.listeners.push(listener);
+    }
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
 
   // toplevelId -> 聚合状态 (WineWindowEntry)
   private entries: Map<number, WineWindowEntry> = new Map();
@@ -299,10 +315,14 @@ export class WineWindowManager {
         }
         break;
       case 'desktop_root':
-        // Tablet: C++ 识别到 explorer desktop → 打开 DesktopAbility
-        hilog.info(DOMAIN, TAG, '[MW] desktop_root toplevel #%{public}d → start DesktopAbility', id);
+        // Tablet: C++ 识别到 explorer desktop → Index 三层页面挂载 DesktopLayer
+        hilog.info(DOMAIN, TAG, '[MW] desktop_root toplevel #%{public}d → desktopActive', id);
         this.desktopRootId = id;
-        this.startDesktopAbility(id);
+        if (!this.desktopActive) {
+          this.desktopActive = true;
+        }
+        // 非首次仅 rootId 更新也 notify (Index 镜像刷新)
+        this.notify();
         break;
       case 'destroyed':
         hilog.info(DOMAIN, TAG, '[MW] -> onToplevelDestroyed(#%{public}d)', id);
@@ -662,28 +682,6 @@ export class WineWindowManager {
     }
     this.unregisterAbility(id);
     hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d done', id);
-  }
-
-  // Desktop 模式: 打开 DesktopAbility
-  private startDesktopAbility(rootId: number): void {
-    // singleton 模式: 重复 startAbility 不会创建新实例, 只会触发 onNewWant
-    if (!this.desktopAbilityRunning) {
-      this.desktopAbilityRunning = true;
-    }
-    try {
-      const want: Want = {
-        bundleName: 'app.hackeris.winehua',
-        abilityName: 'DesktopAbility',
-        parameters: { toplevelId: rootId }
-      };
-      this.uiAbilityContext!.startAbility(want).catch((err: Error) => {
-        hilog.error(DOMAIN, TAG, '[MW] startAbility(DesktopAbility) failed: %{public}s',
-          JSON.stringify(err));
-      });
-      hilog.info(DOMAIN, TAG, '[MW] startAbility(DesktopAbility) #%{public}d OK', rootId);
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, '[MW] startDesktopAbility error: %{public}s', JSON.stringify(e));
-    }
   }
 
   getDesktopRootId(): number { return this.desktopRootId; }
