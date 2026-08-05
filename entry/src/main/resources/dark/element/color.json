@@ -3,6 +3,90 @@
     {
       "name": "start_window_background",
       "value": "#000000"
+    },
+    {
+      "name": "window_bg",
+      "value": "#FF111111"
+    },
+    {
+      "name": "panel_bg",
+      "value": "#FF141414"
+    },
+    {
+      "name": "header_bg",
+      "value": "#FF1A1A1A"
+    },
+    {
+      "name": "card_bg",
+      "value": "#FF1E1E1E"
+    },
+    {
+      "name": "overlay_bg",
+      "value": "#FF20242B"
+    },
+    {
+      "name": "divider",
+      "value": "#FF2A2A2A"
+    },
+    {
+      "name": "control_bg",
+      "value": "#FF333333"
+    },
+    {
+      "name": "text_primary",
+      "value": "#FFFFFFFF"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#FF999999"
+    },
+    {
+      "name": "text_tertiary",
+      "value": "#FF888888"
+    },
+    {
+      "name": "text_disabled",
+      "value": "#FF555555"
+    },
+    {
+      "name": "accent",
+      "value": "#FF7DB8FF"
+    },
+    {
+      "name": "accent_soft",
+      "value": "#FFDDFFDD"
+    },
+    {
+      "name": "state_ok",
+      "value": "#FF44FF44"
+    },
+    {
+      "name": "state_warn",
+      "value": "#FFFF8844"
+    },
+    {
+      "name": "state_info",
+      "value": "#FF88CCFF"
+    },
+    {
+      "name": "danger",
+      "value": "#FFFF5555"
+    },
+    {
+      "name": "action_primary",
+      "value": "#FF228855"
+    },
+    {
+      "name": "action_danger",
+      "value": "#FF663333"
+    },
+    {
+      "name": "action_warning",
+      "value": "#FF665522"
+    },
+    {
+      "name": "shadow",
+      "value": "#66000000"
     }
   ]
 }

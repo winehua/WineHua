@@ -1,0 +1,666 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { common } from '@kit.AbilityKit';
+import testNapi from 'libentry.so';
+import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
+import { zlib } from '@kit.BasicServicesKit';
+import { ProcessService, ProcessInfo } from './ProcessService';
+import { SmokeLaunchRequest, SmokeRunner, defaultSmokeRequest, parseSmokeRequest,
+  syncManagedSmoke } from './SmokeRunner';
+
+const DOMAIN = 0x0000;
+const FILES_BASE = '/data/storage/el2/base/files';
+// doInit 与页面 doRun 连同一个 wineserver socket (reuse 模式;
+// 自动化 clean 模式使用 this.sockPath, 见 updateLaunchRequest)
+export const SOCK = '/data/storage/el2/base/files/.wine/wine-wayland';
+
+// Wine 运行时从 rawfile 解压到 files/
+const WINE_ROOT = `${FILES_BASE}/wine`;
+export const WINE_BIN = `${WINE_ROOT}/bin`;
+export const WINE_LIB = `${WINE_BIN}/x86_64-unix`;
+const BIN_DIR = WINE_BIN;
+const BOX64 = `${WINE_BIN}/box64`;
+
+// 页面文件浏览器以 C: 盘为根
+export const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
+const WINE_SMOKE_PREFIX = `${FILES_BASE}/.wine-smoke`;
+// 自动化模式的受管 HOME (Z: 映射目标): 沙箱内路径, 永不弹 picker
+const WINE_AUTOMATION_HOME = `${FILES_BASE}/home`;
+
+function pathExists(path: string): boolean {
+  try {
+    fs.accessSync(path);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function ensureDirectory(path: string): boolean {
+  try {
+    if (!pathExists(path)) {
+      fs.mkdirSync(path, true);
+    }
+    return pathExists(path);
+  } catch (e) {
+    hilog.warn(DOMAIN, 'wine', 'mkdir failed path=%{public}s err=%{public}s', path, JSON.stringify(e));
+    return false;
+  }
+}
+
+function readTextIfExists(path: string): string {
+  try {
+    if (!pathExists(path)) return '';
+    const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+    try {
+      const buf = new ArrayBuffer(65536);
+      const count = fs.readSync(file.fd, buf);
+      const bytes = new Uint8Array(buf, 0, count);
+      let text = '';
+      for (let i = 0; i < bytes.length; ++i) text += String.fromCharCode(bytes[i]);
+      return text.trim();
+    } finally {
+      fs.closeSync(file);
+    }
+  } catch (_) {
+    return '';
+  }
+}
+
+function writeTextFile(path: string, text: string): void {
+  const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+  try {
+    fs.writeSync(file.fd, text);
+  } finally {
+    fs.closeSync(file);
+  }
+}
+
+function removePathRecursive(path: string): void {
+  const st = fs.statSync(path);
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    fs.unlinkSync(path);
+    return;
+  }
+  const names = fs.listFileSync(path);
+  for (const name of names) {
+    removePathRecursive(`${path}/${name}`);
+  }
+  fs.rmdirSync(path);
+}
+
+// Wine 环境生命周期服务: 检测/解压 wine 数据、启动/重置 wineserver、跟踪 prefix 状态。
+// 原 Index.ets 的非 UI 逻辑原样迁入; 页面经 subscribe 镜像状态字段, service 不感知 UI。
+// 自动化 (smoke/game) 启动参数来自 EntryAbility.publishLaunchRequest 写入的 AppStorage,
+// 在 init 时读取并参数化 doInit (免 picker 的 Z: home、clean prefix、D3D 后端等)。
+export class WineEnvService {
+  private static instance: WineEnvService | null = null;
+
+  static getInstance(): WineEnvService {
+    if (!WineEnvService.instance) {
+      WineEnvService.instance = new WineEnvService();
+    }
+    return WineEnvService.instance;
+  }
+
+  // -- 页面镜像的状态 (任何变化后 notify) --
+  state: string = 'idle';
+  prefixReady: boolean = false;
+  statusText: string = '检测中...';
+  initOverlayText: string = '';
+  initOverlayVisible: boolean = false;
+  // 最近一次 native state 原始字符串, ProcessService 据冒号后缀联动刷新进程列表
+  lastStateMsg: string = '';
+  zHome: string = '/storage/Users/currentUser/Download';
+
+  private hasRawfileWineData: boolean = false;
+  private ctx: common.Context | null = null;
+  private initialized: boolean = false;
+  private listeners: Array<() => void> = [];
+
+  // -- 自动化启动参数 (EntryAbility want → AppStorage → init 读取) --
+  private smokeRequest: SmokeLaunchRequest = defaultSmokeRequest();
+  private automationMode: boolean = false;
+  private gameTestMode: boolean = false;
+  private prefixMode: string = 'reuse';
+  private prefixRoot: string = `${FILES_BASE}/.wine`;
+  private driveC: string = DRIVE_C;
+  private sockPath: string = SOCK;
+  private d3dBackend: string = 'dxvk_legacy';
+  private perfProfile: string = 'baseline';
+  private smokeStarted: boolean = false;
+  private cleanPrefixPrepared: boolean = false;
+  private gameStarted: boolean = false;
+  // game 模式参数 (winehua.game.*)
+  private gamePath: string = '';
+  private gameArguments: string[] = [];
+  private d3dEnvKeys: string[] = [];
+  private d3dEnvValues: string[] = [];
+  private gameClickTitlePrefix: string = '';
+  private gameClickButtonText: string = '';
+  private gameClickDelayMs: number = 1500;
+  private gameClickClientXPermille: number = -1;
+  private gameClickClientYPermille: number = -1;
+
+  // 极简订阅: 状态变化后逐个调用
+  subscribe(listener: () => void): void {
+    this.listeners.push(listener);
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+
+  // 读取 EntryAbility 发布到 AppStorage 的启动请求 (mode=smoke/game/'')
+  private updateLaunchRequest(): void {
+    this.smokeRequest = parseSmokeRequest(AppStorage.get<string>('winehua.smoke.request') ?? '');
+    this.automationMode = this.smokeRequest.mode === 'smoke';
+    this.gameTestMode = this.smokeRequest.mode === 'game';
+    this.prefixMode = this.smokeRequest.prefixMode;
+    this.prefixRoot = this.prefixMode === 'clean' ? WINE_SMOKE_PREFIX : `${FILES_BASE}/.wine`;
+    this.driveC = `${this.prefixRoot}/drive_c`;
+    this.sockPath = `${this.prefixRoot}/wine-wayland`;
+    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_legacy';
+    this.d3dBackend = backend === 'dxvk_legacy' ? 'dxvk_legacy' : 'wined3d';
+    this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
+    this.gamePath = AppStorage.get<string>('winehua.game.path') ?? '';
+    this.gameArguments = AppStorage.get<string[]>('winehua.game.args') ?? [];
+    this.d3dEnvKeys = AppStorage.get<string[]>('winehua.game.d3d_env_keys') ?? [];
+    this.d3dEnvValues = AppStorage.get<string[]>('winehua.game.d3d_env_values') ?? [];
+    this.gameClickTitlePrefix = AppStorage.get<string>('winehua.game.click_title_prefix') ?? '';
+    this.gameClickButtonText = AppStorage.get<string>('winehua.game.click_button_text') ?? '';
+    this.gameClickDelayMs = AppStorage.get<number>('winehua.game.click_delay_ms') ?? 1500;
+    this.gameClickClientXPermille = AppStorage.get<number>('winehua.game.click_client_x_permille') ?? -1;
+    this.gameClickClientYPermille = AppStorage.get<number>('winehua.game.click_client_y_permille') ?? -1;
+  }
+
+  // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)
+  init(ctx: common.Context): void {
+    if (this.initialized) {
+      return;
+    }
+    this.initialized = true;
+    this.ctx = ctx;
+    this.updateLaunchRequest();
+
+    this.hasRawfileWineData = this.detectRawfileWineData();
+
+    testNapi.setStateCallback(this.onNativeState);
+    this.refreshPrefix();
+    // 下一帧自动初始化 (避免阻塞 UI 首次渲染)
+    setTimeout(() => this.doInit(), 0);
+  }
+
+  // 页面 doRun 启动 exe 前的状态提示 (原页面直写 statusText, 现统一由 service 持有)
+  setStatusText(text: string): void {
+    this.statusText = text;
+    this.notify();
+  }
+
+  // native state 回调, 分支逻辑与原页面实现一致
+  private onNativeState = (s: string): void => {
+    hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
+    this.state = s;
+    this.lastStateMsg = s;
+
+    const colonIdx = s.indexOf(':');
+    const pid = colonIdx >= 0 ? parseInt(s.substring(0, colonIdx)) : -1;
+    const stateMsg = colonIdx >= 0 ? s.substring(colonIdx + 1) : s;
+
+    if (stateMsg == 'wineserver-starting' || stateMsg == 'wineboot-starting') {
+      this.setInitStatus('Wine 正在初始化...', true);
+    } else if (stateMsg == 'wine-ready') {
+      this.setInitStatus('已就绪', false);
+      // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
+      this.waitForPrefix();
+    } else if (stateMsg == 'wine-running') {
+      this.setInitStatus('运行中', false);
+      // notify 内 ProcessService 联动 refresh (原 refreshProcessList)
+      this.notify();
+    } else if (stateMsg == 'exited') {
+      // notify 内 ProcessService 先联动 refresh (原 refreshProcessList 在分支最前),
+      // 这里再读刷新后的列表判断是否还有 running 进程
+      this.notify();
+      const running = ProcessService.getInstance().processList.filter(p => p.state === 'running');
+      if (running.length === 0) {
+        this.setInitStatus('已就绪', false);
+      }
+    } else if (stateMsg == 'wine-failed') {
+      this.setInitStatus('启动失败', false);
+    }
+  }
+
+  private detectRawfileWineData(): boolean {
+    const rm = this.ctx!.resourceManager;
+    try {
+      const rawFd = rm.getRawFdSync('wine-data.zip');
+      hilog.info(DOMAIN, 'wine', 'rawfile: wine-data.zip exists len=%{public}d', rawFd.length);
+      rm.closeRawFdSync('wine-data.zip');
+      return true;
+    } catch (_) {
+      hilog.info(DOMAIN, 'wine', 'rawfile: wine-data.zip not packaged');
+      return false;
+    }
+  }
+
+  private readRawfileText(name: string): string {
+    const rm = this.ctx!.resourceManager;
+    try {
+      const rawFd = rm.getRawFdSync(name);
+      try {
+        const data = new ArrayBuffer(rawFd.length);
+        const count = fs.readSync(rawFd.fd, data, { offset: rawFd.offset, length: rawFd.length });
+        const bytes = new Uint8Array(data, 0, count);
+        let text = '';
+        for (let i = 0; i < bytes.length; ++i) text += String.fromCharCode(bytes[i]);
+        return text.trim();
+      } finally {
+        rm.closeRawFdSync(name);
+      }
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // 打包 manifest 与已解压运行时不一致 → 需要刷新 (覆盖安装后升级 wine 数据)
+  private runtimeNeedsRefresh(): boolean {
+    if (!pathExists(`${WINE_ROOT}/share/wine/wine.inf`)) return true;
+    const packaged = this.readRawfileText('wine-runtime-manifest.json');
+    if (!packaged) return false;
+    return packaged !== readTextIfExists(`${WINE_ROOT}/.winehua-runtime-manifest.json`);
+  }
+
+  private setInitStatus(text: string, visible: boolean): void {
+    this.statusText = text;
+    this.initOverlayText = text;
+    this.initOverlayVisible = visible;
+    this.notify();
+  }
+
+  // Pad: 从 rawfile 取出 wine-data.zip → zlib.decompressFile 解压到 files/wine/
+  // 使用 getRawFdSync 流式读取，避免 249MB 一次加载到内存导致 OOM
+  private async extractWineData(): Promise<void> {
+    const marker = `${WINE_ROOT}/share/wine/wine.inf`;
+    const packagedManifest = this.readRawfileText('wine-runtime-manifest.json');
+    hilog.info(DOMAIN, 'wine', 'extract: check marker=%{public}s', marker);
+    if (!this.runtimeNeedsRefresh()) {
+      hilog.info(DOMAIN, 'wine', 'extract: runtime manifest matches');
+      return;
+    }
+    hilog.info(DOMAIN, 'wine', 'extract: runtime missing or changed, start managed refresh');
+
+    const rm = this.ctx!.resourceManager;
+    const rawFd = rm.getRawFdSync('wine-data.zip');
+
+    try {
+      // 流式拷贝: getRawFdSync 获取 fd → 分块读取 → 写入临时文件
+      hilog.info(DOMAIN, 'wine', 'extract: rawFd fd=%{public}d offset=%{public}d length=%{public}d',
+        rawFd.fd, rawFd.offset, rawFd.length);
+
+      const tmpZip = `${FILES_BASE}/wine-data.zip`;
+      hilog.info(DOMAIN, 'wine', 'extract: writing tmpZip=%{public}s (stream)', tmpZip);
+      const dst = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+
+      const CHUNK = 4 * 1024 * 1024; // 4MB 分块
+      const buf = new ArrayBuffer(CHUNK);
+      let pos = rawFd.offset;
+      const end = rawFd.offset + rawFd.length;
+      let totalWritten = 0;
+
+      while (pos < end) {
+        const toRead = Math.min(CHUNK, end - pos);
+        const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+        if (n <= 0) break;
+        fs.writeSync(dst.fd, buf, { length: n });
+        pos += n;
+        totalWritten += n;
+      }
+      fs.closeSync(dst);
+      hilog.info(DOMAIN, 'wine', 'extract: stream copy ok, totalWritten=%{public}d', totalWritten);
+
+      // files/wine 是受管运行时: 目录级原子刷新, 不碰 .wine / .wine-smoke prefix
+      if (pathExists(WINE_ROOT)) removePathRecursive(WINE_ROOT);
+      // 确保目标目录存在
+      fs.mkdirSync(WINE_ROOT, true);
+      hilog.info(DOMAIN, 'wine', 'extract: calling decompressFile → %{public}s', WINE_ROOT);
+      await zlib.decompressFile(tmpZip, WINE_ROOT, {});
+      hilog.info(DOMAIN, 'wine', 'extract: decompress ok');
+
+      // 验证
+      if (fs.accessSync(marker)) {
+        hilog.info(DOMAIN, 'wine', 'extract: verified, marker exists');
+        if (packagedManifest) writeTextFile(`${WINE_ROOT}/.winehua-runtime-manifest.json`, packagedManifest);
+      } else {
+        hilog.warn(DOMAIN, 'wine', 'extract: marker still missing after decompress!');
+      }
+      this.setStatusText('已解压');
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'extract FAIL: %{public}s', JSON.stringify(e));
+      this.setStatusText('解压失败');
+    } finally {
+      rm.closeRawFdSync('wine-data.zip');
+    }
+  }
+
+  private refreshPrefix = (): void => {
+    try {
+      this.prefixReady = testNapi.checkWinePrefix(this.prefixMode);
+    } catch (e) {
+      this.prefixReady = false;
+    }
+    // prefixReady 变化后的目录联动 (curDir/dirStack/listDir/清空 entries)
+    // 由页面镜像时检测边沿自行处理, service 不碰页面字段
+    this.notify();
+  }
+
+  // wineboot 后台异步初始化 prefix，轮询直到 registry 和核心目录完整
+  private waitForPrefix = async (): Promise<void> => {
+    for (let i = 0; i < 90; i++) {
+      try {
+        if (testNapi.checkWinePrefix(this.prefixMode)) {
+          this.prefixReady = true;
+          this.initOverlayVisible = false;
+          this.notify();
+          this.startRequestedSmoke();
+          this.startRequestedGame();
+          return;
+        }
+      } catch (e) { /* prefix 还没初始化完成 */ }
+      await new Promise<void>(r => setTimeout(r, 1000));
+    }
+    // 超时，仍然尝试刷新一次
+    this.refreshPrefix();
+    if (this.prefixReady) {
+      this.initOverlayVisible = false;
+      this.notify();
+      this.startRequestedSmoke();
+      this.startRequestedGame();
+    } else {
+      this.setInitStatus('Wine 前缀初始化超时', false);
+      hilog.error(DOMAIN, 'wine', 'prefix remained unavailable after initialization timeout');
+    }
+  }
+
+  doInit = async (): Promise<void> => {
+    if (!this.ctx) {
+      return;
+    }
+    // HOME 目录 (Z: 映射目标): 自动化模式用沙箱内受管 HOME 永不弹 picker;
+    // game 模式指到桌面会话同一受管目录 (Z: 可见已安装游戏);
+    // 普通模式经 DocumentViewPicker 取 Download 路径
+    if (this.automationMode) {
+      this.zHome = `${WINE_AUTOMATION_HOME}/`;
+    } else if (this.gameTestMode) {
+      this.zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua/';
+    } else {
+      const documentViewPicker = new picker.DocumentViewPicker(this.ctx);
+      let documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+      const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
+      this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
+    }
+    // HDC shell 无权删除应用沙箱文件, clean 烟测 prefix 必须由 App 自己重置,
+    // 且要在 server/socket 启动之前完成
+    if (this.automationMode && this.prefixMode === 'clean' && !this.cleanPrefixPrepared) {
+      this.setInitStatus('正在创建干净测试环境...', true);
+      const resetOk = testNapi.resetWinePrefix('clean') as boolean;
+      if (!resetOk) {
+        this.setInitStatus('干净测试环境重置失败', false);
+        hilog.error(DOMAIN, 'SmokeRunner', 'App-owned clean prefix reset failed');
+        return;
+      }
+      this.cleanPrefixPrepared = true;
+      this.prefixReady = false;
+      hilog.info(DOMAIN, 'SmokeRunner', 'App-owned clean prefix reset completed');
+    }
+    hilog.info(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
+    const gamesDir = `${this.zHome}games`;
+    if (!ensureDirectory(gamesDir)) {
+      this.setInitStatus('创建 games 目录失败', false);
+      return;
+    }
+    hilog.info(DOMAIN, 'wine', 'auto-init: games directory=%{public}s', gamesDir);
+    // 检查是否需要解压 wine 数据文件 (打包 manifest 变化 → 目录级刷新)
+    hilog.info(DOMAIN, 'wine', 'auto-init: check marker=%{public}s', `${WINE_ROOT}/share/wine/wine.inf`);
+    if (this.runtimeNeedsRefresh()) {
+      this.setInitStatus('解压数据...', true);
+      hilog.info(DOMAIN, 'wine', 'auto-init: extracting wine data...');
+      await this.extractWineData();
+    }
+    /* C:\smoke 位于持久 prefix 内而非可替换的 files/wine 运行时里。
+     * 每次启动刷新这棵 manifest 树, 防止覆盖安装后继续跑旧的测试二进制。 */
+    if (!syncManagedSmoke(this.prefixMode)) {
+      this.setInitStatus('测试程序同步失败', false);
+      hilog.error(DOMAIN, 'wine', 'auto-init: managed C:\\smoke synchronization failed');
+      return;
+    }
+    hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
+    this.setInitStatus('启动服务...', true);
+    testNapi.setHostShadowProfile(this.perfProfile);
+    const ok: boolean = testNapi.startServer(this.sockPath);
+    if (!ok) {
+      this.setInitStatus('启动服务失败', false);
+      return;
+    }
+    testNapi.launchClient(BOX64, [], this.sockPath, `${BIN_DIR}:${WINE_LIB}`, this.zHome,
+      this.automationMode, this.prefixMode, this.d3dBackend);
+  }
+
+  doReset = (): void => {
+    this.setInitStatus('正在清空...', true);
+    try {
+      testNapi.resetWinePrefix(this.prefixMode);
+      this.state = 'idle';
+      this.prefixReady = false;
+      ProcessService.getInstance().clear(); // 原 this.processList = []
+      // 原 this.entries = [] 由页面检测 prefixReady true→false 边沿后自行清空
+      this.setInitStatus('已清空', false);
+      setTimeout(() => this.doInit(), 500);
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'reset error: %{public}s', JSON.stringify(e));
+      this.setInitStatus('清空失败', false);
+    }
+  }
+
+  // ---- 自动化烟测 / 游戏启动 (waitForPrefix 就绪后触发, 各只执行一次) ----
+
+  private startRequestedSmoke = (): void => {
+    if (!this.automationMode || this.smokeStarted) return;
+    this.smokeStarted = true;
+    const runner = new SmokeRunner(this.smokeRequest, (text: string) => {
+      this.statusText = text;
+      this.initOverlayText = text;
+      this.notify();
+    }, this.perfProfile);
+    runner.run().catch((error: Object) => {
+      this.setStatusText('Smoke: infrastructure failure');
+      hilog.error(DOMAIN, 'SmokeRunner', 'suite failed: %{public}s', JSON.stringify(error));
+    });
+  }
+
+  private startRequestedGame = (): void => {
+    if (!this.gameTestMode || this.gameStarted || this.gamePath.length === 0) return;
+    this.gameStarted = true;
+    this.setStatusText(`Launching ${this.d3dBackend}: ${this.gamePath}`);
+    const gamePath = this.gamePath;
+    const result = testNapi.runWineProgram({
+      windowsExePath: gamePath,
+      // AppStorage 取出的数组是可观察代理, 过 N-API 前切一刀成普通数组,
+      // 保证 napi_is_array 能枚举全部游戏参数
+      argv: this.gameArguments.slice(),
+      environment: this.d3dLaunchEnvironment(),
+      workingDirectory: this.windowsParentDirectory(gamePath),
+      prefixMode: 'reuse',
+      d3dBackend: this.d3dBackend,
+      presentBackend: this.d3dPresentBackend(),
+      automationMode: false
+    }) as ProcessInfo;
+    hilog.info(DOMAIN, 'GameTest',
+      'game launch path=%{public}s argc=%{public}d env=%{public}d backend=%{public}s perf=%{public}s '
+        + 'pid=%{public}d status=%{public}s',
+      gamePath, this.gameArguments.length, this.d3dEnvKeys.length,
+      this.d3dBackend, this.perfProfile,
+      result.pid, result.state);
+    if (this.gameClickTitlePrefix.length > 0 && this.gameClickButtonText.length > 0) {
+      const titlePrefix = this.gameClickTitlePrefix;
+      const buttonText = this.gameClickButtonText;
+      const delayMs = this.gameClickDelayMs;
+      const clickXPermille = this.gameClickClientXPermille;
+      const clickYPermille = this.gameClickClientYPermille;
+      setTimeout(() => {
+        const driverArguments = ['--attach', '--title-prefix', titlePrefix,
+          '--button-text', buttonText, '--timeout-ms', '60000'];
+        if (clickXPermille >= 0 && clickYPermille >= 0) {
+          driverArguments.push('--client-x-permille', `${clickXPermille}`,
+            '--client-y-permille', `${clickYPermille}`);
+        }
+        const driverResult = testNapi.runWineProgram({
+          windowsExePath: 'C:\\smoke\\x64\\winehua_win32_driver.exe',
+          argv: driverArguments,
+          environment: {},
+          workingDirectory: 'C:\\smoke\\x64',
+          prefixMode: 'reuse',
+          d3dBackend: this.d3dBackend,
+          presentBackend: this.d3dPresentBackend(),
+          automationMode: false
+        }) as ProcessInfo;
+        hilog.info(DOMAIN, 'GameTest',
+          'click driver title=%{public}s button=%{public}s relative=%{public}d,%{public}d '
+            + 'pid=%{public}d status=%{public}s',
+          titlePrefix, buttonText, clickXPermille, clickYPermille,
+          driverResult.pid, driverResult.state);
+      }, delayMs);
+    }
+  }
+
+  private windowsParentDirectory(path: string): string {
+    const separator = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+    return separator > 2 ? path.substring(0, separator) : 'C:\\';
+  }
+
+  // DXVK Legacy 启动环境: 日志 + Venus 共享内存 ring 的 Box64 屏障约束 +
+  // perf profile 对应的一组 VN_/VKR_/DXVK_ 开关, 最后叠加 want 携带的显式覆盖项
+  private d3dLaunchEnvironment(): Record<string, string> {
+    if (this.d3dBackend !== 'dxvk_legacy') return {};
+    ensureDirectory(`${this.driveC}/smoke/results/desktop-dxvk`);
+    const environment: Record<string, string> = {
+      'DXVK_LOG_LEVEL': 'warn',
+      'DXVK_LOG_PATH': 'C:\\smoke\\results\\desktop-dxvk',
+      'WINEDEBUG': '-all',
+      /* Venus 在 x86_64 guest 与 ARM64 renderer 之间用共享内存命令环。
+       * Box64 激进的弱屏障模式可能破坏 ring 期望的 x86 定序, 最终损坏随机
+       * Vulkan 命令。该约束只作用于 DXVK/Venus 进程。 */
+      'BOX64_DYNAREC_WEAKBARRIER': '0',
+      'WINEHUA_PERF_PROFILE': this.perfProfile
+    };
+    if (this.perfProfile === 'shadow-precise-strong-ring-trace')
+      environment['VN_WINEHUA_PRESENT_TRACE'] = '1';
+    if (this.perfProfile === 'direct-fence-wait')
+      environment['VN_WINEHUA_DIRECT_FENCE_WAIT'] = '1';
+    else if (this.perfProfile === 'no-remote-sync')
+      environment['VN_WINEHUA_REMOTE_MEMORY_SYNC'] = '0';
+    else if (this.perfProfile === 'no-dynamic-flush')
+      environment['DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED'] = '0';
+    else if (this.perfProfile === 'fence-feedback')
+      environment['VN_PERF'] = '';
+    else if (this.perfProfile === 'shadow-none') {
+      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'none';
+      environment['VKR_WINEHUA_SHADOW_TRACE'] = '0';
+    } else if (this.perfProfile === 'shadow-trace') {
+      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'full';
+      environment['VKR_WINEHUA_SHADOW_TRACE'] = '1';
+      /* game Want 在部分 Harmony 版本上无法可靠携带任意 env 数组,
+       * 复用显式诊断 profile 作为有界 trace 开关, 保证 Heaven
+       * render-pass 排查可复现。 */
+      environment['DXVK_WINEHUA_TRACE_SAMPLED'] = '1';
+      environment['DXVK_WINEHUA_TRACE_FLOW'] = '1';
+    } else if (this.perfProfile === 'shadow-to-host-explicit') {
+      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'to-host-explicit';
+      environment['VKR_WINEHUA_SHADOW_TRACE'] = '0';
+    } else if (this.perfProfile === 'shadow-precise' ||
+      this.perfProfile === 'shadow-precise-single-ring' ||
+      this.perfProfile === 'shadow-precise-sync-submit' ||
+      this.perfProfile === 'shadow-precise-strong-ring' ||
+      this.perfProfile === 'shadow-precise-legacy-host-sync' ||
+      this.perfProfile === 'shadow-precise-dirty-ring' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-no-upload' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-no-upload-fast' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-inline-upload' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-coverage-sort' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-coverage-sort-sampled' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-coverage-poll' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-alias-cover' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-serialized' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-descriptor-serialized' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-frame-assoc-trace' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-present-image-trace' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-perf' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-gpu-frame-profile' ||
+      this.perfProfile === 'shadow-precise-dirty-ring-frame-timeline' ||
+      this.perfProfile === 'shadow-precise-strong-ring-trace' ||
+      this.perfProfile === 'shadow-precise-strong-ring-perf' ||
+      this.perfProfile === 'shadow-precise-strong-ring-async-present' ||
+      this.perfProfile === 'shadow-precise-strong-ring-fence-poll' ||
+      this.perfProfile === 'shadow-precise-strong-ring-mailbox' ||
+      this.perfProfile === 'shadow-precise-direct-fence' ||
+      this.perfProfile === 'shadow-precise-retain-shmem' ||
+      this.perfProfile === 'shadow-precise-cpu-upload') {
+      environment['DXVK_WINEHUA_PRECISE_SHADOW'] = '1';
+      environment['DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED'] = '1';
+      environment['VN_WINEHUA_REMOTE_MEMORY_SYNC'] = '1';
+      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'precise';
+      environment['VKR_WINEHUA_SHADOW_TRACE'] =
+        this.perfProfile === 'shadow-precise-strong-ring-trace' ? '1' : '0';
+      if (this.perfProfile === 'shadow-precise-single-ring')
+        environment['VN_PERF'] = 'no_fence_feedback,no_query_feedback,no_multi_ring';
+      if (this.perfProfile === 'shadow-precise-sync-submit')
+        environment['VN_PERF'] =
+          'no_fence_feedback,no_query_feedback,no_async_queue_submit';
+      if (this.perfProfile === 'shadow-precise-strong-ring' ||
+        this.perfProfile === 'shadow-precise-legacy-host-sync' ||
+        this.perfProfile === 'shadow-precise-dirty-ring' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-no-upload' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-no-upload-fast' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-inline-upload' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-coverage-sort' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-coverage-sort-sampled' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-coverage-poll' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-alias-cover' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-serialized' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-inline-upload-descriptor-serialized' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-frame-assoc-trace' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-present-image-trace' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-perf' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-gpu-frame-profile' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-frame-timeline' ||
+        this.perfProfile === 'shadow-precise-strong-ring-trace' ||
+        this.perfProfile === 'shadow-precise-strong-ring-perf' ||
+        this.perfProfile === 'shadow-precise-strong-ring-async-present' ||
+        this.perfProfile === 'shadow-precise-strong-ring-fence-poll' ||
+        this.perfProfile === 'shadow-precise-strong-ring-mailbox')
+        environment['VN_WINEHUA_STRONG_RING_BARRIER'] = '1';
+      if (this.perfProfile === 'shadow-precise-strong-ring-perf' ||
+        this.perfProfile === 'shadow-precise-dirty-ring-perf')
+        environment['VN_WINEHUA_PERF_SUMMARY'] = '1';
+      if (this.perfProfile === 'shadow-precise-direct-fence')
+        environment['VN_WINEHUA_DIRECT_FENCE_WAIT'] = '1';
+      if (this.perfProfile === 'shadow-precise-dirty-ring-frame-assoc-trace')
+        environment['WINEHUA_DXVK_TRACE_CAMERA'] = '1';
+      if (this.perfProfile === 'shadow-precise-dirty-ring-present-image-trace')
+        environment['WINEHUA_DXVK_TRACE_PRESENT_IMAGE'] = '1';
+      if (this.perfProfile === 'shadow-precise-retain-shmem')
+        environment['VN_WINEHUA_DEFER_SHMEM_UNREF'] = '1';
+      if (this.perfProfile === 'shadow-precise-cpu-upload')
+        environment['VKR_WINEHUA_GPU_UPLOAD'] = '0';
+    }
+    const overrideCount = Math.min(this.d3dEnvKeys.length, this.d3dEnvValues.length);
+    for (let index = 0; index < overrideCount; ++index) {
+      environment[this.d3dEnvKeys[index]] = this.d3dEnvValues[index];
+    }
+    return environment;
+  }
+
+  private d3dPresentBackend(): string {
+    return this.d3dBackend === 'dxvk_legacy' ? 'venus_broker_present' : 'virgl_compositor';
+  }
+}

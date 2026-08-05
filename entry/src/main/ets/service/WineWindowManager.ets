@@ -48,10 +48,27 @@ export class WineWindowManager {
   private isDesktopMode: boolean = false;
   private automationMode: boolean = false;
   private desktopRootId: number = 0;
-  private desktopAbilityRunning: boolean = false;
-  private desktopAbilityCtx: common.UIAbilityContext | null = null;
+  // 单 Ability 三层页面: 桌面已激活 → Index 挂载 DesktopLayer 盖住启动器。
+  // root 销毁时翻回 false (等效旧双 Ability 时代"root 销毁关闭 DesktopAbility
+  // 回主页面"的语义), 新 desktop_root 事件再置 true
+  desktopActive: boolean = false;
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
+
+  // 极简订阅 (与 WineEnvService 同款): 桌面状态变化后逐个调用
+  private listeners: Array<() => void> = [];
+
+  subscribe(listener: () => void): void {
+    if (!this.listeners.includes(listener)) {
+      this.listeners.push(listener);
+    }
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
 
   // toplevelId -> 聚合状态 (WineWindowEntry)
   private entries: Map<number, WineWindowEntry> = new Map();
@@ -313,10 +330,14 @@ export class WineWindowManager {
         }
         break;
       case 'desktop_root':
-        // Tablet: C++ 识别到 explorer desktop → 打开 DesktopAbility
-        hilog.info(DOMAIN, TAG, '[MW] desktop_root toplevel #%{public}d → start DesktopAbility', id);
+        // Tablet: C++ 识别到 explorer desktop → Index 三层页面挂载 DesktopLayer
+        hilog.info(DOMAIN, TAG, '[MW] desktop_root toplevel #%{public}d → desktopActive', id);
         this.desktopRootId = id;
-        this.startDesktopAbility(id);
+        if (!this.desktopActive) {
+          this.desktopActive = true;
+        }
+        // 非首次仅 rootId 更新也 notify (Index 镜像刷新)
+        this.notify();
         break;
       case 'destroyed':
         hilog.info(DOMAIN, TAG, '[MW] -> onToplevelDestroyed(#%{public}d)', id);
@@ -637,17 +658,15 @@ export class WineWindowManager {
     hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d', id);
     this.destroyed.add(id);
 
-    // Desktop 模式: root 销毁 → 关闭 DesktopAbility, 回到主页面
+    // Desktop 模式: root 销毁 → 翻回启动器层 (单 Ability 无 DesktopAbility 可关,
+    // desktopActive=false 让 Index 卸载 DesktopLayer 并显示启动器)
     if (this.isDesktopMode && id === this.desktopRootId) {
-      hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed, closing DesktopAbility', id);
+      hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed, back to launcher', id);
       this.desktopRootId = 0;
-      if (this.desktopAbilityCtx) {
-        this.desktopAbilityCtx.terminateSelf().catch((err: Error) => {
-          hilog.warn(DOMAIN, TAG, '[MW] ERR terminateSelf DesktopAbility: %{public}s', JSON.stringify(err));
-        });
-        this.desktopAbilityCtx = null;
+      if (this.desktopActive) {
+        this.desktopActive = false;
+        this.notify();
       }
-      this.desktopAbilityRunning = false;
       return;
     }
     // Desktop 模式: 非 root toplevel 销毁, C++ 自动停止合成
@@ -685,39 +704,5 @@ export class WineWindowManager {
     hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d done', id);
   }
 
-  // Desktop 模式: 打开 DesktopAbility
-  private startDesktopAbility(rootId: number): void {
-    // singleton 模式: 重复 startAbility 不会创建新实例, 只会触发 onNewWant
-    if (!this.desktopAbilityRunning) {
-      this.desktopAbilityRunning = true;
-    }
-    try {
-      const want: Want = {
-        bundleName: 'app.hackeris.winehua',
-        abilityName: 'DesktopAbility',
-        parameters: { toplevelId: rootId }
-      };
-      this.uiAbilityContext!.startAbility(want).catch((err: Error) => {
-        hilog.error(DOMAIN, TAG, '[MW] startAbility(DesktopAbility) failed: %{public}s',
-          JSON.stringify(err));
-      });
-      hilog.info(DOMAIN, TAG, '[MW] startAbility(DesktopAbility) #%{public}d OK', rootId);
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, '[MW] startDesktopAbility error: %{public}s', JSON.stringify(e));
-    }
-  }
-
   getDesktopRootId(): number { return this.desktopRootId; }
-
-  // DesktopAbility 注册/注销其 UIAbilityContext, 用于 root 销毁时 terminateSelf
-  registerDesktopAbility(ctx: common.UIAbilityContext): void {
-    hilog.info(DOMAIN, TAG, '[MW] registerDesktopAbility');
-    this.desktopAbilityCtx = ctx;
-  }
-
-  unregisterDesktopAbility(): void {
-    hilog.info(DOMAIN, TAG, '[MW] unregisterDesktopAbility');
-    this.desktopAbilityCtx = null;
-    this.desktopAbilityRunning = false;
-  }
 }
