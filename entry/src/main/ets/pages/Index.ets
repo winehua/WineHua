@@ -42,6 +42,15 @@ struct Index {
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
   private tabsController: TabsController = new TabsController();
+  // 五导航图标 (与 tabBarItem/sideNavItem 的 index 一一对应):
+  // 应用库/运行中/文件/环境/设置 — 系统符号, 替代纯文字导航
+  private readonly navIcons: Resource[] = [
+    $r('sys.symbol.square_grid_2x2'),
+    $r('sys.symbol.play_circle'),
+    $r('sys.symbol.folder'),
+    $r('sys.symbol.archivebox'),
+    $r('sys.symbol.gearshape')
+  ];
 
   aboutToAppear(): void {
     const env = this.env;
@@ -151,11 +160,24 @@ struct Index {
     this.switchTab(2);
   }
 
+  // 状态点/状态文字配色 (标题栏与环境页同款规则)
+  private stateColor(): Resource {
+    return this.state == 'wine-running' ? $r('app.color.state_ok') :
+           this.state == 'exited' ? $r('app.color.state_warn') :
+           this.prefixReady ? $r('app.color.state_info') : $r('app.color.text_tertiary');
+  }
+
   @Builder
   tabBarItem(title: string, index: number) {
-    Text(title)
-      .fontColor(this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary'))
-      .padding({ top: 12, bottom: 12 })
+    Column({ space: 2 }) {
+      SymbolGlyph(this.navIcons[index])
+        .fontSize(20)
+        .fontColor([this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary')])
+      Text(title)
+        .fontSize(10)
+        .fontColor(this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary'))
+    }
+    .padding({ top: 6, bottom: 6 })
   }
 
   // 应用库页 (sm/md/lg 两壳共用一份定义, 保证联动行为一致)
@@ -177,20 +199,23 @@ struct Index {
     TaskListView()
   }
 
-  // 侧导航项 (md/lg 壳): 选中项文字 accent + 左侧 3vp accent 竖条, 未选 text_secondary; 行高 48vp
+  // 侧导航项 (md/lg 壳): 图标+文字; 选中项为 accent 淡底圆角块
+  // (替代旧版左侧 3vp 竖条 — 竖条选中态太弱); 行高 48vp, 圆角 8
   @Builder
   sideNavItem(title: string, index: number) {
-    Row() {
-      Column()
-        .width(3).height(20)
-        .backgroundColor($r('app.color.accent'))
-        .visibility(this.currentIndex == index ? Visibility.Visible : Visibility.Hidden)
+    Row({ space: 10 }) {
+      SymbolGlyph(this.navIcons[index])
+        .fontSize(20)
+        .fontColor([this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary')])
       Text(title)
+        .fontSize(14)
         .fontColor(this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary'))
-        .margin({ left: 13 })
     }
     .width('100%').height(48)
+    .padding({ left: 12 })
     .alignItems(VerticalAlign.Center)
+    .backgroundColor(this.currentIndex == index ? $r('app.color.accent_bg') : Color.Transparent)
+    .borderRadius(8)
     .onClick(() => {
       this.currentIndex = index;
     })
@@ -209,22 +234,33 @@ struct Index {
         Text($r('app.string.app_name'))
           .fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
 
+        // 状态点 + 状态文字 (环境页同款状态色)
+        Circle({ width: 8, height: 8 })
+          .fill(this.stateColor())
+          .margin({ left: 10 })
         Text(this.statusText)
-          .fontColor(this.state == 'wine-running' ? $r('app.color.state_ok') :
-                     this.state == 'exited' ? $r('app.color.state_warn') :
-                     this.prefixReady ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
-          .margin({ left: 12 }).layoutWeight(1)
+          .fontSize(13)
+          .fontColor(this.stateColor())
+          .margin({ left: 6 }).layoutWeight(1)
           .maxLines(1)
 
         // 回桌面可见入口 (Step 3.5): 仅桌面激活时显示。
         // 与 onBackPress、启动程序自动回桌面并列的第三条返回路径。
         if (this.desktopActive) {
-          Text('回桌面 ⌂')
-            .fontColor($r('app.color.accent'))
-            .padding({ left: 12, top: 4, bottom: 4 })
-            .onClick(() => {
-              this.launcherVisible = false;
-            })
+          Row({ space: 4 }) {
+            SymbolGlyph($r('sys.symbol.house'))
+              .fontSize(16)
+              .fontColor([$r('app.color.accent')])
+            Text('回桌面')
+              .fontSize(14)
+              .fontColor($r('app.color.accent'))
+          }
+          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+          .backgroundColor($r('app.color.control_bg'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.launcherVisible = false;
+          })
         }
       }
       .width('100%')
@@ -269,7 +305,7 @@ struct Index {
         .layoutWeight(1)
       } else {
         Row() {
-          // 侧导航 (宽 200vp)
+          // 侧导航 (宽 200vp): 内边距让选中圆角块不贴边
           Column() {
             this.sideNavItem('应用库', 0)
             this.sideNavItem('运行中', 1)
@@ -278,6 +314,7 @@ struct Index {
             this.sideNavItem('设置', 4)
           }
           .width(200).height('100%')
+          .padding({ left: 8, right: 8, top: 8 })
           .backgroundColor($r('app.color.panel_bg'))
 
           // 五 view 常驻 Stack, visibility 切换 (保状态, 与启动器 overlay 同款思路)

@@ -46,41 +46,45 @@ export struct HomeBall {
   build() {
     // 外层 Stack 撑满并对齐右上; hitTestBehavior(Transparent) 使空白处触摸穿透到桌面层
     Stack() {
-      Text('⌂')
-        .fontSize(24)
-        .fontColor(Color.White)
-        .textAlign(TextAlign.Center)
-        .width(HomeBall.SIZE)
-        .height(HomeBall.SIZE)
-        .borderRadius(HomeBall.SIZE / 2)
-        .backgroundColor(Color.Black)
-        .opacity(0.35)
-        .margin({ top: this.marginTop, right: HomeBall.MARGIN_RIGHT })
-        .offset({ x: this.offsetX, y: this.offsetY })
-        .gesture(
-          GestureGroup(GestureMode.Parallel,
-            TapGesture()
-              .onAction(() => {
-                this.onHome?.();
-              }),
-            PanGesture()
-              .onActionStart(() => {
-                this.ensureScreenSize();
-                this.panStartX = this.offsetX;
-                this.panStartY = this.offsetY;
-              })
-              .onActionUpdate((ev: GestureEvent) => {
-                // 限制球心在屏幕内: center ∈ [SIZE/2, screen - SIZE/2]
-                const half = HomeBall.SIZE / 2;
-                const cx0 = this.screenW - HomeBall.MARGIN_RIGHT - half;
-                const cy0 = this.marginTop + half;
-                const tx = this.panStartX + ev.offsetX;
-                const ty = this.panStartY + ev.offsetY;
-                this.offsetX = Math.min(Math.max(tx, half - cx0), this.screenW - half - cx0);
-                this.offsetY = Math.min(Math.max(ty, half - cy0), this.screenH - half - cy0);
-              })
-          )
+      // 球体: 系统 house 符号 + 半透明黑底 + 阴影 (旧版 ⌂ 字符在浅色壁纸下几乎不可见)
+      Column() {
+        SymbolGlyph($r('sys.symbol.house_fill'))
+          .fontSize(24)
+          .fontColor([Color.White])
+      }
+      .width(HomeBall.SIZE)
+      .height(HomeBall.SIZE)
+      .justifyContent(FlexAlign.Center)
+      .borderRadius(HomeBall.SIZE / 2)
+      .backgroundColor(Color.Black)
+      .opacity(0.45)
+      .shadow({ radius: 8, color: '#66000000', offsetX: 0, offsetY: 2 })
+      .margin({ top: this.marginTop, right: HomeBall.MARGIN_RIGHT })
+      .offset({ x: this.offsetX, y: this.offsetY })
+      .gesture(
+        GestureGroup(GestureMode.Parallel,
+          TapGesture()
+            .onAction(() => {
+              this.onHome?.();
+            }),
+          PanGesture()
+            .onActionStart(() => {
+              this.ensureScreenSize();
+              this.panStartX = this.offsetX;
+              this.panStartY = this.offsetY;
+            })
+            .onActionUpdate((ev: GestureEvent) => {
+              // 限制球心在屏幕内: center ∈ [SIZE/2, screen - SIZE/2]
+              const half = HomeBall.SIZE / 2;
+              const cx0 = this.screenW - HomeBall.MARGIN_RIGHT - half;
+              const cy0 = this.marginTop + half;
+              const tx = this.panStartX + ev.offsetX;
+              const ty = this.panStartY + ev.offsetY;
+              this.offsetX = Math.min(Math.max(tx, half - cx0), this.screenW - half - cx0);
+              this.offsetY = Math.min(Math.max(ty, half - cy0), this.screenH - half - cy0);
+            })
         )
+      )
     }
     .width('100%')
     .height('100%')

@@ -1,5 +1,5 @@
 import { deviceInfo } from '@kit.BasicServicesKit';
-import { promptAction } from '@kit.ArkUI';
+import { promptAction, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
 import { WineEnvService } from '../service/WineEnvService';
 
 const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
@@ -15,6 +15,8 @@ export struct EnvPanel {
   @State zHome: string = '';
   // 渲染策略镜像 (dxvk_legacy / wined3d); 切换后提示需重启引擎才生效
   @State d3dBackend: string = 'dxvk_legacy';
+  // SegmentButton 选中项 (@Link 双向): 0=dxvk_legacy 1=wined3d, 与 d3dBackend 同步
+  @State backendSel: number[] = [0];
   @State restartHint: boolean = false;
   @State devExpanded: boolean = false;
   @State perfProfile: string = 'baseline';
@@ -27,6 +29,11 @@ export struct EnvPanel {
     this.statusText = this.env.statusText;
     this.zHome = this.env.zHome;
     this.d3dBackend = this.env.getD3dBackend();
+    // 派生选中项; 仅在值变化时赋值, 避免 notify 覆盖用户刚点击的 @Link 状态
+    const sel = this.d3dBackend == 'dxvk_legacy' ? 0 : 1;
+    if (this.backendSel[0] != sel) {
+      this.backendSel = [sel];
+    }
     this.perfProfile = this.env.getPerfProfile();
   }
 
@@ -46,7 +53,8 @@ export struct EnvPanel {
     return this.state == 'wineserver-starting' || this.state == 'wineboot-starting';
   }
 
-  // 渲染策略切换: 仅写配置 (service 内持久化), 重启 Wine 引擎后生效
+  // 渲染策略分段控件: 系统预置 SegmentButton 胶囊单选 (替代手写双 Button 行);
+  // 切换仅写配置 (service 内持久化), 重启 Wine 引擎后生效
   private selectBackend(backend: string): void {
     if (backend == this.d3dBackend) {
       return;
@@ -98,20 +106,6 @@ export struct EnvPanel {
     });
   }
 
-  // 渲染策略分段项 (无现成 Segmented 控件, 双 Button 行模拟)
-  @Builder
-  backendOption(label: string, value: string) {
-    Text(label)
-      .fontSize(14)
-      .fontColor(this.d3dBackend == value ? $r('app.color.header_bg') : $r('app.color.text_secondary'))
-      .textAlign(TextAlign.Center)
-      .padding({ top: 8, bottom: 8 })
-      .layoutWeight(1)
-      .backgroundColor(this.d3dBackend == value ? $r('app.color.accent') : $r('app.color.control_bg'))
-      .borderRadius(6)
-      .onClick(() => this.selectBackend(value))
-  }
-
   build() {
     Scroll() {
       Column({ space: 14 }) {
@@ -136,10 +130,16 @@ export struct EnvPanel {
             .fontSize(13)
             .fontColor($r('app.color.text_secondary'))
             .width('100%')
-          Row({ space: 8 }) {
-            this.backendOption('DXVK (推荐)', 'dxvk_legacy')
-            this.backendOption('WineD3D', 'wined3d')
-          }
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              buttons: [{ text: 'DXVK (推荐)' }, { text: 'WineD3D' }],
+              multiply: false
+            }),
+            selectedIndexes: $backendSel,
+            onItemClicked: (index: number) => {
+              this.selectBackend(index == 0 ? 'dxvk_legacy' : 'wined3d');
+            }
+          })
           .width('100%')
           Text('DXVK 性能更好; 个别程序异常时可试 WineD3D')
             .fontSize(12)
@@ -214,8 +214,9 @@ export struct EnvPanel {
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_secondary'))
               .layoutWeight(1)
-            Text(this.devExpanded ? '▾' : '▸')
-              .fontColor($r('app.color.text_secondary'))
+            SymbolGlyph(this.devExpanded ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
+              .fontSize(16)
+              .fontColor([$r('app.color.text_secondary')])
           }
           .width('100%')
           .padding({ top: 4, bottom: 4 })

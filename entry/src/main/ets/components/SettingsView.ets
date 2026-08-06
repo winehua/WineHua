@@ -1,8 +1,12 @@
 import { bundleManager } from '@kit.AbilityKit';
+import { ComposeListItem } from '@kit.ArkUI';
 import { WineEnvService } from '../service/WineEnvService';
 import { WineWindowManager } from '../service/WineWindowManager';
 
 // 设置页 (设计 4.6, 骨架版): 显示/开发者/关于三卡。
+// 行用系统预置 ComposeListItem (左标题+右值), 统一行高/间距/字级。
+// 注: ComposeListItem 不宜挂通用属性 (会落到额外生成的 __Common__ 节点上),
+// 故卡片外观由外层 Column 承担。
 // 说明: 应用调色板目前只有深色一套, 主题切换与 DPI 缩放、输入设置
 // (手柄模拟/触控板, 设计 P4/P5) 后续版本开放 — 这里只做诚实占位, 不假开关。
 @Component
@@ -36,22 +40,14 @@ export struct SettingsView {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Row() {
-            Text('主题')
-              .fontColor($r('app.color.text_secondary'))
-              .layoutWeight(1)
-            Text('深色')
-              .fontColor($r('app.color.text_tertiary'))
-          }
-          .width('100%')
-          Row() {
-            Text('DPI 缩放 (全局)')
-              .fontColor($r('app.color.text_secondary'))
-              .layoutWeight(1)
-            Text(`${this.effectiveScale}x`)
-              .fontColor($r('app.color.text_tertiary'))
-          }
-          .width('100%')
+          ComposeListItem({
+            contentItem: { primaryText: '主题' },
+            operateItem: { text: '深色' }
+          })
+          ComposeListItem({
+            contentItem: { primaryText: 'DPI 缩放 (全局)' },
+            operateItem: { text: `${this.effectiveScale}x` }
+          })
           Text('浅色主题与缩放调节将在后续版本开放')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
@@ -60,7 +56,7 @@ export struct SettingsView {
         .width('100%')
         .padding(14)
         .backgroundColor($r('app.color.card_bg'))
-        .borderRadius(8)
+        .borderRadius(12)
 
         // ══ 开发者 ══
         Column({ space: 8 }) {
@@ -68,24 +64,14 @@ export struct SettingsView {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Row() {
-            Text('诊断 profile')
-              .fontColor($r('app.color.text_secondary'))
-              .layoutWeight(1)
-            Text(this.perfProfile)
-              .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
-          }
-          .width('100%')
-          Row() {
-            Text('渲染后端')
-              .fontColor($r('app.color.text_secondary'))
-              .layoutWeight(1)
-            Text(this.d3dBackend)
-              .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
-          }
-          .width('100%')
+          ComposeListItem({
+            contentItem: { primaryText: '诊断 profile' },
+            operateItem: { text: this.perfProfile }
+          })
+          ComposeListItem({
+            contentItem: { primaryText: '渲染后端' },
+            operateItem: { text: this.d3dBackend }
+          })
           Text('自动化测试经 hdc 以 want 参数启动 (winehua.mode=smoke)')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
@@ -94,7 +80,7 @@ export struct SettingsView {
         .width('100%')
         .padding(14)
         .backgroundColor($r('app.color.card_bg'))
-        .borderRadius(8)
+        .borderRadius(12)
 
         // ══ 关于 ══
         Column({ space: 8 }) {
@@ -102,14 +88,10 @@ export struct SettingsView {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Row() {
-            Text('万花境')
-              .fontColor($r('app.color.text_secondary'))
-              .layoutWeight(1)
-            Text(this.versionName ? `v${this.versionName}` : '')
-              .fontColor($r('app.color.text_tertiary'))
-          }
-          .width('100%')
+          ComposeListItem({
+            contentItem: { primaryText: '万花境' },
+            operateItem: { text: this.versionName ? `v${this.versionName}` : '' }
+          })
           Text('开源组件')
             .fontColor($r('app.color.text_secondary'))
             .width('100%')
@@ -122,7 +104,7 @@ export struct SettingsView {
         .width('100%')
         .padding(14)
         .backgroundColor($r('app.color.card_bg'))
-        .borderRadius(8)
+        .borderRadius(12)
       }
       .width('100%')
       .padding(14)

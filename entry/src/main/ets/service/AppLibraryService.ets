@@ -26,9 +26,8 @@ export interface AppEntry {
   path: string;
   name: string;
   icon?: string; // 图标 PNG 缓存路径 (IconExtractor 异步提取, 完成前为空, UI 回退 ▶)
-  favorite?: boolean;  // 收藏 (筛选 chips)
-  lastRun?: number;    // 最近启动时间戳 ms (0/缺省 = 未运行过)
-  builtin?: boolean;   // 内建工具 (wine 自带, 角标"内建"; 不可移除/隐藏)
+  favorite?: boolean;  // 收藏 (筛选 chips, 条目上显示"收藏"标签)
+  builtin?: boolean;   // 内建工具 (wine 自带, 标签"内建"; 不可移除/隐藏)
   hidden?: boolean;    // 用户隐藏 (各 chips 均不显示, "已隐藏"chip 可见)
   config?: AppConfig;  // 单应用配置 (缺省 = 全部跟随全局)
 }
@@ -39,7 +38,6 @@ interface AppEntryPatch {
   name?: string;
   icon?: string;
   favorite?: boolean;
-  lastRun?: number;
   builtin?: boolean;
   hidden?: boolean;
   config?: AppConfig;
@@ -56,7 +54,8 @@ interface BuiltinTool {
 // (loader/wine.inf.in) 只把它装进 C:\windows, 不装 system32。
 // 路径为 native 形式 (与文件页入库/lnk 扫描一致), 仅在文件存在时加入。
 const BUILTIN_TOOLS: BuiltinTool[] = [
-  { name: 'Wine 桌面', exe: 'windows/system32/explorer.exe' },
+  { name: '文件管理器', exe: 'windows/system32/explorer.exe' },
+  { name: '记事本', exe: 'windows/system32/notepad.exe' },
   { name: 'Wine 配置', exe: 'windows/system32/winecfg.exe' },
   { name: '注册表编辑器', exe: 'windows/regedit.exe' },
   { name: '任务管理器', exe: 'windows/system32/taskmgr.exe' },
@@ -162,7 +161,6 @@ export class AppLibraryService {
       name: patch.name !== undefined ? patch.name : e.name,
       icon: patch.icon !== undefined ? patch.icon : e.icon,
       favorite: patch.favorite !== undefined ? patch.favorite : e.favorite,
-      lastRun: patch.lastRun !== undefined ? patch.lastRun : e.lastRun,
       builtin: patch.builtin !== undefined ? patch.builtin : e.builtin,
       hidden: patch.hidden !== undefined ? patch.hidden : e.hidden,
       config: patch.config !== undefined ? patch.config : e.config,
@@ -238,7 +236,16 @@ export class AppLibraryService {
     let added = false;
     for (const tool of BUILTIN_TOOLS) {
       const path = `${driveC}/${tool.exe}`;
-      if (this.has(path)) {
+      const existing = this.entries.find((e: AppEntry) => e.path == path);
+      if (existing) {
+        // 内建改名迁移: 已入库条目名字持久化在 preferences, 不更新则老设备
+        // 永远显示旧名 (如 "Wine 桌面"→"文件管理器")。只动 builtin 条目,
+        // 用户自行入库的同路径条目不碰
+        if (existing.builtin && existing.name != tool.name) {
+          this.entries = this.entries.map((e: AppEntry): AppEntry =>
+            e.path == path ? this.withField(e, { name: tool.name }) : e);
+          changed = true;
+        }
         continue;
       }
       if (!this.fileExists(path)) {
@@ -287,20 +294,10 @@ export class AppLibraryService {
   // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env),
   // 把用户可理解的 AppConfig 翻译成底层 argv/environment/d3dBackend。
   // 无配置时行为与旧 runWineExe 路径等价 (全局 d3dBackend, 无额外 env)。
-  // 记录 lastRun (最近运行 chip)
   launch(path: string): void {
     const env = WineEnvService.getInstance();
     env.setStatusText('启动中...');
-    let cfg: AppConfig | undefined;
-    this.entries = this.entries.map((e: AppEntry): AppEntry => {
-      if (e.path != path) {
-        return e;
-      }
-      cfg = e.config;
-      return this.withField(e, { lastRun: Date.now() });
-    });
-    this.persist();
-    this.notify();
+    const cfg: AppConfig | undefined = this.entries.find((e: AppEntry) => e.path == path)?.config;
     // 图形渲染: 应用覆盖 → 全局默认。presentBackend 从 d3dBackend 派生
     // (与 WineEnvService.d3dPresentBackend 同规则, 不作为独立用户开关)
     const d3dBackend = cfg?.graphics == 'wined3d' ? 'wined3d'
@@ -343,6 +340,90 @@ export class AppLibraryService {
   private windowsParentDir(winPath: string): string {
     const sep = Math.max(winPath.lastIndexOf('\\'), winPath.lastIndexOf('/'));
     return sep > 2 ? winPath.substring(0, sep) : 'C:\\';
+  }
+
+  // Windows 形式路径 → native (toWindowsPath 的逆运算): C:\ → prefix drive_c,
+  // Z:\ → zHome; 已是 native ("/" 开头) 原样返回; 裸文件名/"desktop" 等无路径
+  // 信息的返回 '' (调用方走 basename 匹配兜底)
+  nativePathOf(path: string): string {
+    if (!path) {
+      return '';
+    }
+    if (path.startsWith('/')) {
+      return path;
+    }
+    const m = /^([A-Za-z]):[\\/](.*)$/.exec(path);
+    if (!m) {
+      return '';
+    }
+    const rest = m[2].split('\\').join('/');
+    const drive = m[1].toUpperCase();
+    if (drive == 'C') {
+      return `${WINE_PREFIX}/drive_c/${rest}`;
+    }
+    if (drive == 'Z') {
+      const zHome = WineEnvService.getInstance().zHome;
+      const zRoot = zHome.endsWith('/') ? zHome : `${zHome}/`;
+      return `${zRoot}${rest}`;
+    }
+    return '';
+  }
+
+  // 运行中进程图标 (任务列表): 应用库条目命中 (规范化路径精确 → basename 忽略
+  // 大小写, Windows 语义) 直接借图标; 库外但文件存在则按需提取进会话缓存
+  // (不持久化不入库 — explorer 双击启动的 exe 不该污染应用库)。
+  // 返回 '' = 暂无; 可提取时已后台触发, 完成后 notify 刷新
+  iconForProc(procPath: string): string {
+    if (!procPath) {
+      return '';
+    }
+    const nativePath = this.nativePathOf(procPath);
+    if (nativePath) {
+      const hit = this.entries.find((e: AppEntry) => e.path == nativePath);
+      if (hit?.icon) {
+        return hit.icon;
+      }
+    }
+    const base = procPath.substring(Math.max(procPath.lastIndexOf('/'), procPath.lastIndexOf('\\')) + 1)
+      .toLowerCase();
+    if (base) {
+      const hit = this.entries.find((e: AppEntry) =>
+        e.path.substring(e.path.lastIndexOf('/') + 1).toLowerCase() == base);
+      if (hit?.icon) {
+        return hit.icon;
+      }
+    }
+    if (nativePath) {
+      const cached = this.procIconCache[nativePath];
+      if (cached !== undefined) {
+        return cached;
+      }
+      this.extractProcIcon(nativePath);
+    }
+    return '';
+  }
+
+  // 进程图标会话缓存 (nativePath → png, '' = 提取失败不再重试):
+  // 应用库外 exe (explorer 内双击 / 游戏子进程), 随进程生命周期, 不持久化
+  private procIconCache: Record<string, string> = {};
+  private procIconExtracting: string[] = [];
+
+  private extractProcIcon(nativePath: string): void {
+    if (this.procIconExtracting.indexOf(nativePath) >= 0 || !this.fileExists(nativePath)) {
+      return;
+    }
+    this.procIconExtracting.push(nativePath);
+    IconExtractor.getInstance().extract(nativePath).then((icon: string) => {
+      this.procIconExtracting = this.procIconExtracting.filter((p: string) => p != nativePath);
+      // 失败也缓存空串, 否则每次 notify 都重试一遍失败提取
+      this.procIconCache[nativePath] = icon;
+      if (icon) {
+        this.notify();
+      }
+    }).catch(() => {
+      this.procIconExtracting = this.procIconExtracting.filter((p: string) => p != nativePath);
+      this.procIconCache[nativePath] = '';
+    });
   }
 
   // 启动参数按空白切分 (v1 不支持引号包裹的带空格参数)

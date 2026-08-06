@@ -2,6 +2,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { WineEnvService, DRIVE_C } from '../service/WineEnvService';
 import { AppLibraryService, AppEntry } from '../service/AppLibraryService';
+import { EmptyState } from './EmptyState';
 
 const DOMAIN = 0x0000;
 
@@ -142,6 +143,63 @@ export struct FileBrowserView {
     return false;
   }
 
+  // 行类别: 每行算一次, 供图标/颜色/点击行为使用 (替代逐处重复 isDir 调用)
+  private rowKind = (name: string): 'dir' | 'exe' | 'other' => {
+    if (this.isDir(this.curDir + '/' + name)) {
+      return 'dir';
+    }
+    return this.isExe(name) ? 'exe' : 'other';
+  }
+
+  // exe 行长按菜单: 行内只留"启动"按钮, 其余操作收进这里 (窄屏不再挤占文件名)
+  @Builder
+  exeMenu(name: string) {
+    Menu() {
+      MenuItem({ content: '启动' })
+        .onChange(() => {
+          this.lib.launch(this.curDir + '/' + name);
+        })
+      if (!this.inLibrary(this.curDir + '/' + name)) {
+        MenuItem({ content: '加入应用库' })
+          .onChange(() => {
+            this.lib.add(this.curDir + '/' + name);
+          })
+      }
+    }
+  }
+
+  // 文件行内容 (exe 与 dir/other 共用; bindContextMenu 不接受 undefined,
+  // 故菜单按行类别在 ListItem 上条件挂载, 行体不变)
+  @Builder
+  fileRow(name: string) {
+    Row() {
+      // 行首图标: 系统符号 (文件夹/可执行/普通文件)
+      SymbolGlyph(this.rowKind(name) == 'dir' ? $r('sys.symbol.folder_fill') :
+                  this.rowKind(name) == 'exe' ? $r('sys.symbol.play_fill') : $r('sys.symbol.doc'))
+        .fontSize(20)
+        .fontColor([this.rowKind(name) == 'dir' ? $r('app.color.state_info') :
+                    this.rowKind(name) == 'exe' ? $r('app.color.accent') : $r('app.color.text_tertiary')])
+        .width(28)
+      Text(name)
+        .fontColor(this.rowKind(name) == 'exe' ? $r('app.color.text_primary') :
+                   this.rowKind(name) == 'dir' ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
+        .layoutWeight(1)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (this.rowKind(name) == 'exe') {
+        Button('启动')
+          .height(32)
+          .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
+          .onClick(() => this.lib.launch(this.curDir + '/' + name))
+      } else if (this.rowKind(name) == 'dir') {
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(16)
+          .fontColor([$r('app.color.text_tertiary')])
+      }
+    }
+    .width('100%').height(44).padding({ left: 14, right: 14 })
+    .alignItems(VerticalAlign.Center)
+  }
+
   build() {
     Column() {
       if (this.prefixReady) {
@@ -160,50 +218,34 @@ export struct FileBrowserView {
 
         List({ space: 1 }) {
           ForEach(this.entries, (name: string) => {
-            ListItem() {
-              Row() {
-                Text(this.isDir(this.curDir + '/' + name) ? '📁' : (this.isExe(name) ? '▶' : '  '))
-                  .width(28)
-                Text(name)
-                  .fontColor(this.isExe(name) ? $r('app.color.accent_soft') :
-                             this.isDir(this.curDir + '/' + name) ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
-                  .layoutWeight(1)
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                if (this.isExe(name)) {
-                  Button('启动')
-                    .height(32)
-                    .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
-                    .onClick(() => this.lib.launch(this.curDir + '/' + name))
-                  if (this.inLibrary(this.curDir + '/' + name)) {
-                    Text('已在库中')
-                      .fontSize(13)
-                      .fontColor($r('app.color.text_disabled'))
-                      .margin({ left: 10 })
-                  } else {
-                    Button('加入应用库')
-                      .height(32)
-                      .margin({ left: 8 })
-                      .onClick(() => this.lib.add(this.curDir + '/' + name))
-                  }
-                }
+            if (this.rowKind(name) == 'exe') {
+              ListItem() {
+                this.fileRow(name)
               }
-              .width('100%').height(44).padding({ left: 14, right: 14 })
-              .alignItems(VerticalAlign.Center)
+              .backgroundColor($r('app.color.card_bg'))
+              .hoverEffect(HoverEffect.Highlight)
+              .bindContextMenu(this.exeMenu(name), ResponseType.LongPress)
+            } else {
+              ListItem() {
+                this.fileRow(name)
+              }
+              .backgroundColor($r('app.color.card_bg'))
               .hoverEffect(HoverEffect.Highlight)
               .onClick(() => {
-                if (this.isDir(this.curDir + '/' + name)) {
+                if (this.rowKind(name) == 'dir') {
                   this.enterDir(name);
                 }
               })
             }
-            .backgroundColor($r('app.color.card_bg'))
           }, (name: string) => name)
         }
         .width('100%').layoutWeight(1)
       } else {
         Column() {
-          Text('需要先初始化 Wine 环境')
-            .fontColor($r('app.color.text_disabled'))
+          EmptyState({
+            icon: $r('sys.symbol.archivebox'),
+            title: '需要先初始化 Wine 环境'
+          })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }

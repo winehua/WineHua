@@ -40,14 +40,16 @@ static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
 
 static std::atomic<bool> gBrokerRunning{false};
 
-// -- 从 entryParams 解析进程名 (登记到任务列表用) --
+// -- 从 entryParams 解析进程 exe 路径 (登记到任务列表用) --
 // broker 加了 homeDir 前缀后 entryParams 形如
 //   "homeDir|binDir|[wine]|argv0|argv1|...|__env=K=V|..."
 // 或 guest/host ELF / desktop 标记路径。跳过 homeDir/binDir (前两个 '/' 段) 与
-// wine/__winehua_* 标记段, 取第一个可执行段 basename (兼容 '/' 与 '\\')。
+// wine/__winehua_* 标记段, 取第一个可执行段的完整形式 (Windows 路径 C:\... /
+// native 绝对路径; AddProcess 自取 basename 作显示名)。早期版本只存 basename,
+// 任务列表拿不到真实路径, 无法按路径匹配应用库图标或按需提取图标。
 // 取不到时回退 "wine"。
-static std::string ParseProcessName(const char* entryParams) {
-    std::string name = "wine";
+static std::string ParseProcessPath(const char* entryParams) {
+    std::string path = "wine";
     const std::string params = entryParams ? entryParams : "";
     size_t pos = 0;
     int slashSegsLeft = 2;  // homeDir + binDir, 均以 '/' 开头
@@ -58,25 +60,21 @@ static std::string ParseProcessName(const char* entryParams) {
         if (!seg.empty()) {
             if (seg.rfind("__env=", 0) == 0) break;  // env 段结束 argv
             if (guestElfNext) {  // __winehua_guest_elf__ 后的绝对路径即 exe
-                auto slash = seg.find_last_of("/\\");
-                if (slash != std::string::npos) seg = seg.substr(slash + 1);
-                if (!seg.empty()) name = seg;
+                path = seg;
                 break;
             }
             if (seg[0] == '/' && slashSegsLeft > 0) { --slashSegsLeft; }
             else if (seg == "wine" || seg == "__winehua_desktop__") { /* 标记段 */ }
             else if (seg == "__winehua_guest_elf__" || seg == "__winehua_host_elf__") { guestElfNext = true; }
             else {
-                auto slash = seg.find_last_of("/\\");
-                if (slash != std::string::npos) seg = seg.substr(slash + 1);
-                if (!seg.empty()) name = seg;
+                path = seg;
                 break;
             }
         }
         if (end == std::string::npos) break;
         pos = end + 1;
     }
-    return name;
+    return path;
 }
 
 // 处理单个请求: recvmsg(entryParams + fd) → StartNativeChildProcess → sendmsg(childPid, status)
@@ -232,7 +230,7 @@ static void HandleRequest(int conn_fd)
         // (ohos_broker_spawn_child / loader.c 自启 wineserver) 都汇到 broker。
         // 统一登记使 explorer 里双击的 exe 出现在任务列表; App 侧调用者随后
         // 会用更准确的路径 AddProcess 覆盖 (AddProcess 同 pid 幂等)。
-        AddProcess(childPid, ParseProcessName(fullParams.c_str()), -1);
+        AddProcess(childPid, ParseProcessPath(fullParams.c_str()), -1);
     }
 
     free(entryParamsCopy);
