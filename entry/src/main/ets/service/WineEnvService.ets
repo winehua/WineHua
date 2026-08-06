@@ -27,9 +27,10 @@ const WINE_SMOKE_PREFIX = `${FILES_BASE}/.wine-smoke`;
 const WINE_AUTOMATION_HOME = `${FILES_BASE}/home`;
 
 function pathExists(path: string): boolean {
+  // accessSync 是布尔语义: 文件不存在返回 false, 只有权限/参数类错误才抛
+  // 异常 — 不能写成 "try 住就算存在" (那样缺失文件会被误判为存在)
   try {
-    fs.accessSync(path);
-    return true;
+    return fs.accessSync(path);
   } catch (_) {
     return false;
   }
@@ -111,6 +112,9 @@ export class WineEnvService {
   // 最近一次 native state 原始字符串, ProcessService 据冒号后缀联动刷新进程列表
   lastStateMsg: string = '';
   zHome: string = '/storage/Users/currentUser/Download';
+  // 初始化失败标记: doInit 各失败分支置位, 首启引导据此显示 重试/重置 入口
+  // (仅靠 statusText 一行文字用户无法自救); doInit 开始 / wine-ready 时清除
+  initFailed: boolean = false;
 
   private hasRawfileWineData: boolean = false;
   private ctx: common.Context | null = null;
@@ -150,6 +154,23 @@ export class WineEnvService {
     for (const listener of this.listeners) {
       listener();
     }
+  }
+
+  // 环境页渲染策略/开发者分区展示当前生效值 (updateLaunchRequest 写入)
+  getD3dBackend(): string { return this.d3dBackend; }
+  getPerfProfile(): string { return this.perfProfile; }
+  isAutomation(): boolean { return this.automationMode; }
+
+  // 环境页"渲染策略"切换: 持久化偏好 + 同步 AppStorage 生效值 + 重读启动参数。
+  // 仅写入配置 — 已在运行的 Wine 不受影响, 重启引擎后生效 (UI 负责提示)
+  setD3dPreference(backend: string): void {
+    const selected = backend === 'dxvk_legacy' ? 'dxvk_legacy' : 'wined3d';
+    PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
+    AppStorage.set<string>('winehua.d3d.preference', selected);
+    AppStorage.set<string>('winehua.d3d.backend', selected);
+    this.updateLaunchRequest();
+    hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
+    this.notify();
   }
 
   // 读取 EntryAbility 发布到 AppStorage 的启动请求 (mode=smoke/game/'')
@@ -198,25 +219,33 @@ export class WineEnvService {
     this.notify();
   }
 
-  // native state 回调, 分支逻辑与原页面实现一致
+  // native state 回调, 分支逻辑与原页面实现一致。
+  // 注意: native 发来的串部分带 pid 前缀 ("1234:wine-running"/"-1:wine-failed"),
+  // 部分不带 ("wine-ready")。state 存冒号后缀的干净状态名, 供 UI 直接比较
+  // (历史 bug: state 存原始串, 'wine-running' 等比较永不成立);
+  // lastStateMsg 保留原始串 (ProcessService 自行解析后缀)
   private onNativeState = (s: string): void => {
     hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
-    this.state = s;
     this.lastStateMsg = s;
 
     const colonIdx = s.indexOf(':');
-    const pid = colonIdx >= 0 ? parseInt(s.substring(0, colonIdx)) : -1;
     const stateMsg = colonIdx >= 0 ? s.substring(colonIdx + 1) : s;
+    this.state = stateMsg;
 
     if (stateMsg == 'wineserver-starting' || stateMsg == 'wineboot-starting') {
       this.setInitStatus('Wine 正在初始化...', true);
     } else if (stateMsg == 'wine-ready') {
+      this.initFailed = false;
       this.setInitStatus('已就绪', false);
       // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
       this.waitForPrefix();
     } else if (stateMsg == 'wine-running') {
       this.setInitStatus('运行中', false);
       // notify 内 ProcessService 联动 refresh (原 refreshProcessList)
+      this.notify();
+    } else if (stateMsg == 'process-updated') {
+      // broker 登记的进程进出 (桌面 Start 菜单等路径启动的程序只发此消息,
+      // 不发 wine-running) → notify, ProcessService 节流刷新任务列表
       this.notify();
     } else if (stateMsg == 'exited') {
       // notify 内 ProcessService 先联动 refresh (原 refreshProcessList 在分支最前),
@@ -377,15 +406,24 @@ export class WineEnvService {
       this.startRequestedSmoke();
       this.startRequestedGame();
     } else {
-      this.setInitStatus('Wine 前缀初始化超时', false);
+      this.failInit('Wine 前缀初始化超时');
       hilog.error(DOMAIN, 'wine', 'prefix remained unavailable after initialization timeout');
     }
+  }
+
+  // 初始化失败统一定式: 标记 initFailed + overlay 保持可见 —
+  // 首启引导 overlay 据此把 spinner 换成 重试/重置 入口 (设计 4.8:
+  // 每个失败点给自救入口, 不允许只显示一行错误文字)
+  private failInit(text: string): void {
+    this.initFailed = true;
+    this.setInitStatus(text, true);
   }
 
   doInit = async (): Promise<void> => {
     if (!this.ctx) {
       return;
     }
+    this.initFailed = false;
     // HOME 目录 (Z: 映射目标): 自动化模式用沙箱内受管 HOME 永不弹 picker;
     // game 模式指到桌面会话同一受管目录 (Z: 可见已安装游戏);
     // 普通模式经 DocumentViewPicker 取 Download 路径
@@ -405,7 +443,7 @@ export class WineEnvService {
       this.setInitStatus('正在创建干净测试环境...', true);
       const resetOk = testNapi.resetWinePrefix('clean') as boolean;
       if (!resetOk) {
-        this.setInitStatus('干净测试环境重置失败', false);
+        this.failInit('干净测试环境重置失败');
         hilog.error(DOMAIN, 'SmokeRunner', 'App-owned clean prefix reset failed');
         return;
       }
@@ -416,7 +454,7 @@ export class WineEnvService {
     hilog.info(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
     const gamesDir = `${this.zHome}games`;
     if (!ensureDirectory(gamesDir)) {
-      this.setInitStatus('创建 games 目录失败', false);
+      this.failInit('创建 games 目录失败');
       return;
     }
     hilog.info(DOMAIN, 'wine', 'auto-init: games directory=%{public}s', gamesDir);
@@ -430,7 +468,7 @@ export class WineEnvService {
     /* C:\smoke 位于持久 prefix 内而非可替换的 files/wine 运行时里。
      * 每次启动刷新这棵 manifest 树, 防止覆盖安装后继续跑旧的测试二进制。 */
     if (!syncManagedSmoke(this.prefixMode)) {
-      this.setInitStatus('测试程序同步失败', false);
+      this.failInit('测试程序同步失败');
       hilog.error(DOMAIN, 'wine', 'auto-init: managed C:\\smoke synchronization failed');
       return;
     }
@@ -439,7 +477,7 @@ export class WineEnvService {
     testNapi.setHostShadowProfile(this.perfProfile);
     const ok: boolean = testNapi.startServer(this.sockPath);
     if (!ok) {
-      this.setInitStatus('启动服务失败', false);
+      this.failInit('启动服务失败');
       return;
     }
     testNapi.launchClient(BOX64, [], this.sockPath, `${BIN_DIR}:${WINE_LIB}`, this.zHome,
@@ -459,6 +497,79 @@ export class WineEnvService {
     } catch (e) {
       hilog.error(DOMAIN, 'wine', 'reset error: %{public}s', JSON.stringify(e));
       this.setInitStatus('清空失败', false);
+    }
+  }
+
+  // 停止全部 Windows 会话 (环境页"会话维护"卡 + 运行中页顶部共用):
+  // native stopAll 结束 wineserver 及全部 wine 进程, 桌面 root 随之销毁 →
+  // WineWindowManager 翻回启动器
+  stopAllSessions(): void {
+    hilog.info(DOMAIN, 'wine', 'stopAllSessions');
+    try {
+      testNapi.stopAll();
+      this.setStatusText('已停止全部会话');
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'stopAll error: %{public}s', JSON.stringify(e));
+      this.setStatusText('停止会话失败');
+    }
+  }
+
+  // 导出日志 (环境页"会话维护"卡): 打包沙箱日志到 Download 应用目录, 供问题反馈。
+  // 汇总 状态头 + temp/cache 下的日志文件 (总量封顶 512KB, 单文件 128KB 截断),
+  // 返回输出路径 ('' = 失败, UI toast 提示)
+  exportLogs(): string {
+    const CAP_TOTAL = 512 * 1024;
+    const CAP_FILE = 128 * 1024;
+    let bundle = `WineHua 日志导出 ${new Date().toLocaleString()}\n` +
+      `state=${this.state} prefixReady=${this.prefixReady} status=${this.statusText}\n` +
+      `d3dBackend=${this.d3dBackend} perfProfile=${this.perfProfile} zHome=${this.zHome}\n\n`;
+    let total = bundle.length;
+    const dirs = ['/data/storage/el2/base/temp', '/data/storage/el2/base/cache'];
+    for (const dir of dirs) {
+      let names: string[] = [];
+      try {
+        names = fs.listFileSync(dir);
+      } catch (_) { continue; }
+      for (const name of names) {
+        // 只收文本日志, 跳过二进制/目录
+        if (!/\.(log|txt)$/i.test(name)) continue;
+        const path = `${dir}/${name}`;
+        let text = '';
+        try {
+          const st = fs.statSync(path);
+          if (!st.isFile()) continue;
+          const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+          try {
+            const size = Math.min(Number(st.size), CAP_FILE);
+            const buf = new ArrayBuffer(size);
+            const count = fs.readSync(file.fd, buf);
+            const bytes = new Uint8Array(buf, 0, count);
+            let s = '';
+            for (let i = 0; i < bytes.length; ++i) s += String.fromCharCode(bytes[i]);
+            text = s;
+          } finally {
+            fs.closeSync(file);
+          }
+        } catch (_) { continue; }
+        if (total + text.length > CAP_TOTAL) {
+          bundle += `---- ${path} (跳过: 超出总量上限) ----\n\n`;
+          continue;
+        }
+        bundle += `---- ${path} ----\n${text}\n\n`;
+        total += text.length;
+      }
+    }
+    try {
+      const outDir = '/storage/Users/currentUser/Download/app.hackeris.winehua';
+      ensureDirectory(outDir);
+      const ts = new Date().getTime();
+      const outPath = `${outDir}/winehua-logs-${ts}.log`;
+      writeTextFile(outPath, bundle);
+      hilog.info(DOMAIN, 'wine', 'exportLogs → %{public}s (%{public}d bytes)', outPath, total);
+      return outPath;
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'exportLogs fail: %{public}s', JSON.stringify(e));
+      return '';
     }
   }
 

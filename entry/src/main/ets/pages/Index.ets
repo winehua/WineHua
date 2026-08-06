@@ -5,6 +5,7 @@ import { AppLibraryView } from '../components/AppLibraryView';
 import { TaskListView } from '../components/TaskListView';
 import { FileBrowserView } from '../components/FileBrowserView';
 import { EnvPanel } from '../components/EnvPanel';
+import { SettingsView } from '../components/SettingsView';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
 import { HomeBall } from '../components/HomeBall';
@@ -24,6 +25,8 @@ struct Index {
   @State statusText: string = '检测中...';
   @State initOverlayVisible: boolean = false;
   @State initOverlayText: string = '';
+  // 初始化失败 (首启引导 4.8): overlay 把 spinner 换成 重试/重置 入口
+  @State initFailed: boolean = false;
   @State currentIndex: number = 0;
   // -- 桌面三层 (Step 3.5): Layer0 DesktopLayer / Layer1 启动器 / Layer2 HomeBall --
   // desktopActive 由 WineWindowManager 驱动: desktop_root 出现置 true,
@@ -48,6 +51,7 @@ struct Index {
       this.statusText = env.statusText;
       this.initOverlayText = env.initOverlayText;
       this.initOverlayVisible = env.initOverlayVisible;
+      this.initFailed = env.initFailed;
       // 启动程序自动回桌面: 桌面已激活时新程序启动 → 切回桌面层
       const msg = env.lastStateMsg;
       const colonIdx = msg.indexOf(':');
@@ -167,6 +171,12 @@ struct Index {
     })
   }
 
+  // 运行中页 (两壳共用一份定义, 保证行为一致)
+  @Builder
+  taskListContent() {
+    TaskListView()
+  }
+
   // 侧导航项 (md/lg 壳): 选中项文字 accent + 左侧 3vp accent 竖条, 未选 text_secondary; 行高 48vp
   @Builder
   sideNavItem(title: string, index: number) {
@@ -222,7 +232,8 @@ struct Index {
       .backgroundColor($r('app.color.header_bg'))
       .alignItems(VerticalAlign.Center)
 
-      // -- 四 Tab: 应用库 / 任务 / 文件 / 环境 (断点双壳: sm 底部 Tabs / md·lg 左侧导航 + 右内容) --
+      // -- 五导航 (设计 §3): 应用库 / 运行中 / 文件 / 环境 / 设置
+      // (断点双壳: sm 底部 Tabs / md·lg 左侧导航 + 右内容) --
       if (this.bp == 'sm') {
         Tabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {
           TabContent() {
@@ -231,9 +242,9 @@ struct Index {
           .tabBar(this.tabBarItem('应用库', 0))
 
           TabContent() {
-            TaskListView()
+            this.taskListContent()
           }
-          .tabBar(this.tabBarItem('任务', 1))
+          .tabBar(this.tabBarItem('运行中', 1))
 
           TabContent() {
             FileBrowserView({ filesDirRequest: $filesDirRequest })
@@ -244,6 +255,11 @@ struct Index {
             EnvPanel()
           }
           .tabBar(this.tabBarItem('环境', 3))
+
+          TabContent() {
+            SettingsView()
+          }
+          .tabBar(this.tabBarItem('设置', 4))
         }
         .barMode(BarMode.Fixed)
         .barBackgroundColor($r('app.color.panel_bg'))
@@ -256,14 +272,15 @@ struct Index {
           // 侧导航 (宽 200vp)
           Column() {
             this.sideNavItem('应用库', 0)
-            this.sideNavItem('任务', 1)
+            this.sideNavItem('运行中', 1)
             this.sideNavItem('文件', 2)
             this.sideNavItem('环境', 3)
+            this.sideNavItem('设置', 4)
           }
           .width(200).height('100%')
           .backgroundColor($r('app.color.panel_bg'))
 
-          // 四 view 常驻 Stack, visibility 切换 (保状态, 与启动器 overlay 同款思路)
+          // 五 view 常驻 Stack, visibility 切换 (保状态, 与启动器 overlay 同款思路)
           Stack() {
             // @Builder 返回 void 不能挂属性, 包一层 Column 再切 visibility
             Column() {
@@ -271,12 +288,17 @@ struct Index {
             }
             .width('100%').height('100%')
             .visibility(this.currentIndex == 0 ? Visibility.Visible : Visibility.Hidden)
-            TaskListView()
-              .visibility(this.currentIndex == 1 ? Visibility.Visible : Visibility.Hidden)
+            Column() {
+              this.taskListContent()
+            }
+            .width('100%').height('100%')
+            .visibility(this.currentIndex == 1 ? Visibility.Visible : Visibility.Hidden)
             FileBrowserView({ filesDirRequest: $filesDirRequest })
               .visibility(this.currentIndex == 2 ? Visibility.Visible : Visibility.Hidden)
             EnvPanel()
               .visibility(this.currentIndex == 3 ? Visibility.Visible : Visibility.Hidden)
+            SettingsView()
+              .visibility(this.currentIndex == 4 ? Visibility.Visible : Visibility.Hidden)
           }
           .layoutWeight(1).height('100%')
         }
@@ -294,24 +316,67 @@ struct Index {
         }
       })
     }
-    // init overlay 原样置顶
+    // init overlay 原样置顶 (首启引导 4.8: 阶段文案; 失败给 重试/重置 入口)
     if (this.initOverlayVisible && !this.prefixReady) {
       Column() {
-        LoadingProgress()
-          .width(42)
-          .height(42)
-          .color($r('app.color.accent'))
-          .margin({ bottom: 18 })
-        Text('正在准备 Wine')
-          .fontSize(20)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ bottom: 8 })
-        Text(this.initOverlayText)
-          .fontSize(15)
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.initFailed) {
+          Text('初始化失败')
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.danger'))
+            .margin({ bottom: 8 })
+          Text(this.initOverlayText)
+            .fontSize(15)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ bottom: 18 })
+          Row({ space: 12 }) {
+            Button('重试')
+              .layoutWeight(1)
+              .backgroundColor($r('app.color.accent'))
+              .onClick(() => {
+                this.env.doInit();
+              })
+            Button('重置环境')
+              .layoutWeight(1)
+              .backgroundColor($r('app.color.action_danger'))
+              .onClick(() => {
+                AlertDialog.show({
+                  title: '重置 Wine prefix',
+                  message: '将清空整个 Wine 容器（包括所有已安装程序和存档），且不可恢复。确定继续？',
+                  primaryButton: {
+                    value: '取消',
+                    action: () => {}
+                  },
+                  secondaryButton: {
+                    value: '重置',
+                    fontColor: $r('app.color.danger'),
+                    action: () => {
+                      this.env.doReset();
+                    }
+                  }
+                });
+              })
+          }
+          .width('100%')
+        } else {
+          LoadingProgress()
+            .width(42)
+            .height(42)
+            .color($r('app.color.accent'))
+            .margin({ bottom: 18 })
+          Text('正在准备 Wine')
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .margin({ bottom: 8 })
+          Text(this.initOverlayText)
+            .fontSize(15)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
       }
       .width(360)
       .padding({ left: 28, right: 28, top: 26, bottom: 26 })
