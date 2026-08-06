@@ -1,4 +1,4 @@
-import { AppLibraryService, AppEntry } from '../service/AppLibraryService';
+import { AppLibraryService, AppEntry, AppConfig } from '../service/AppLibraryService';
 import { WineEnvService } from '../service/WineEnvService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { promptAction } from '@kit.ArkUI';
@@ -48,9 +48,121 @@ struct RenameDialog {
   }
 }
 
+// 单应用配置对话框 (MenuItem"配置"弹出): 图形渲染/兼容模式/启动参数三项,
+// 全部可缺省 (跟随全局)。刻意不做裸环境变量等无法翻译为用户语言的开关
+@CustomDialog
+struct ConfigDialog {
+  controller?: CustomDialogController;
+  entryName: string = '';
+  initialGraphics: string = 'global'; // 'global' | 'dxvk' | 'wined3d'
+  initialCompat: boolean = false;
+  initialArgs: string = '';
+  onDone: (graphics: string, compat: boolean, args: string) => void = () => {};
+  @State graphics: string = 'global';
+  @State compat: boolean = false;
+  @State args: string = '';
+
+  aboutToAppear(): void {
+    this.graphics = this.initialGraphics;
+    this.compat = this.initialCompat;
+    this.args = this.initialArgs;
+  }
+
+  @Builder
+  graphicsOption(label: string, value: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.graphics == value ? $r('app.color.header_bg') : $r('app.color.text_secondary'))
+      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+      .backgroundColor(this.graphics == value ? $r('app.color.accent') : $r('app.color.control_bg'))
+      .borderRadius(8)
+      .onClick(() => {
+        this.graphics = value;
+      })
+  }
+
+  build() {
+    Column({ space: 16 }) {
+      Text(`配置 · ${this.entryName}`)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+
+      Column({ space: 8 }) {
+        Text('图形渲染')
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+        Row({ space: 8 }) {
+          this.graphicsOption('跟随全局', 'global')
+          this.graphicsOption('硬件加速', 'dxvk')
+          this.graphicsOption('兼容渲染', 'wined3d')
+        }
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      Row() {
+        Column({ space: 2 }) {
+          Text('兼容模式')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+          Text('应用闪退或画面异常时开启，运行速度会变慢')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+        Toggle({ type: ToggleType.Switch, isOn: this.compat })
+          .onChange((isOn: boolean) => {
+            this.compat = isOn;
+          })
+      }
+      .width('100%')
+
+      Column({ space: 8 }) {
+        Text('启动参数')
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+        TextInput({ placeholder: '如 -windowed，留空为无', text: this.initialArgs })
+          .onChange((value: string) => {
+            this.args = value;
+          })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      Row({ space: 12 }) {
+        // 恢复默认只重置本对话框的选项, 仍需点保存生效 (防误触)
+        Button('恢复默认')
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.control_bg'))
+          .onClick(() => {
+            this.graphics = 'global';
+            this.compat = false;
+            this.args = '';
+          })
+        Button('取消')
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.control_bg'))
+          .onClick(() => this.controller?.close())
+        Button('保存')
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.accent'))
+          .onClick(() => {
+            this.onDone(this.graphics, this.compat, this.args);
+            this.controller?.close();
+          })
+      }
+      .width('100%')
+    }
+    .padding(18)
+    .backgroundColor($r('app.color.overlay_bg'))
+    .borderRadius(12)
+  }
+}
+
 // 应用库页 (设计 4.1): 标题 + 扫描入口 + 筛选 chips + 卡片网格 (lg) / 列表 (sm·md)。
 // 卡片: 图标/名称/路径副标题/内建角标; 单击启动 (带启动反馈), 长按(PC 右键)菜单:
-// 启动/收藏/重命名/隐藏/打开所在目录/从列表移除 (内建工具不可隐藏/移除)。
+// 启动/收藏/重命名/配置/隐藏/打开所在目录/从列表移除 (内建工具不可隐藏/移除)。
 @Component
 export struct AppLibraryView {
   @State entries: AppEntry[] = [];
@@ -71,6 +183,7 @@ export struct AppLibraryView {
   private env: WineEnvService = WineEnvService.getInstance();
   private launchTimer: number = -1;
   private renameController: CustomDialogController | null = null;
+  private configController: CustomDialogController | null = null;
   // 上一次镜像到的原始 state 串 (启动反馈状态机的迁移检测, 见 mirror)
   private prevRawMsg: string = '';
 
@@ -184,6 +297,36 @@ export struct AppLibraryView {
     this.renameController.open();
   }
 
+  // 单应用配置: 读取现值作初值; 保存时把 'global'/false/空串 归一为缺省
+  // (字段不写 = 跟随全局, 持久化 JSON 保持干净)
+  private openConfig(entry: AppEntry): void {
+    const cfg = entry.config;
+    this.configController = new CustomDialogController({
+      builder: ConfigDialog({
+        entryName: entry.name,
+        initialGraphics: cfg?.graphics ?? 'global',
+        initialCompat: cfg?.compat ?? false,
+        initialArgs: cfg?.args ?? '',
+        onDone: (graphics: string, compat: boolean, args: string) => {
+          const config: AppConfig = {};
+          if (graphics != 'global') {
+            config.graphics = graphics;
+          }
+          if (compat) {
+            config.compat = true;
+          }
+          const trimmed = args.trim();
+          if (trimmed) {
+            config.args = trimmed;
+          }
+          this.lib.setConfig(entry.path, config);
+        }
+      }),
+      autoCancel: true
+    });
+    this.configController.open();
+  }
+
   // exe 路径 → 所在目录 (去掉最后一段文件名)
   private dirOf(path: string): string {
     const idx = path.lastIndexOf('/');
@@ -226,6 +369,10 @@ export struct AppLibraryView {
       MenuItem({ content: '重命名' })
         .onChange(() => {
           this.openRename(entry);
+        })
+      MenuItem({ content: '配置' })
+        .onChange(() => {
+          this.openConfig(entry);
         })
       if (!entry.builtin) {
         MenuItem({ content: entry.hidden ? '取消隐藏' : '隐藏' })

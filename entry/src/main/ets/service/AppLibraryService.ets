@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import testNapi from 'libentry.so';
-import { WineEnvService, SOCK, WINE_BIN, WINE_LIB } from './WineEnvService';
+import { WineEnvService } from './WineEnvService';
 import { IconExtractor } from './IconExtractor';
 import { LnkScanner, LnkTarget } from './LnkScanner';
 
@@ -11,6 +11,16 @@ const DOMAIN = 0x0000;
 const STORE_NAME = 'app_library';
 const KEY_ENTRIES = 'entries';
 const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
+
+// 单应用配置 (P2): 只收能翻译为用户语言的组合 — 图形渲染 / 兼容模式 / 启动参数。
+// 字段全可选, 缺省 = 跟随全局或默认行为 (继承: 全局 → 应用两级)。
+// 刻意不暴露裸环境变量 / WINEDEBUG / presentBackend 等底层开关
+// (无法翻译成用户可理解的语义, 用户决策: 不好翻译的暂不支持)
+export interface AppConfig {
+  graphics?: string;  // 'dxvk'(硬件加速) | 'wined3d'(兼容渲染); 缺省 = 跟随全局 d3dBackend
+  compat?: boolean;   // 兼容模式: BOX64 保守 dynarec 组合 (应用闪退/异常时开启, 速度变慢)
+  args?: string;      // 启动参数, 空格分隔 (如 "-windowed")
+}
 
 export interface AppEntry {
   path: string;
@@ -20,6 +30,7 @@ export interface AppEntry {
   lastRun?: number;    // 最近启动时间戳 ms (0/缺省 = 未运行过)
   builtin?: boolean;   // 内建工具 (wine 自带, 角标"内建"; 不可移除/隐藏)
   hidden?: boolean;    // 用户隐藏 (各 chips 均不显示, "已隐藏"chip 可见)
+  config?: AppConfig;  // 单应用配置 (缺省 = 全部跟随全局)
 }
 
 // withField 的可选覆盖项 (ArkTS 不用 Partial 以保持显式)
@@ -31,6 +42,7 @@ interface AppEntryPatch {
   lastRun?: number;
   builtin?: boolean;
   hidden?: boolean;
+  config?: AppConfig;
 }
 
 // 内建工具条目描述 (ArkTS 要求显式类型, 不用匿名对象字面量)
@@ -153,6 +165,7 @@ export class AppLibraryService {
       lastRun: patch.lastRun !== undefined ? patch.lastRun : e.lastRun,
       builtin: patch.builtin !== undefined ? patch.builtin : e.builtin,
       hidden: patch.hidden !== undefined ? patch.hidden : e.hidden,
+      config: patch.config !== undefined ? patch.config : e.config,
     };
   }
 
@@ -263,15 +276,78 @@ export class AppLibraryService {
     return false;
   }
 
-  // 原 Index.doRun: 先置状态提示, 再拉起 exe; 记录 lastRun (最近运行 chip)
+  // 更新单应用配置 (配置对话框保存, 整体替换; 字段全缺省 = 全跟随全局)
+  setConfig(path: string, config: AppConfig): void {
+    this.entries = this.entries.map((e: AppEntry): AppEntry =>
+      e.path == path ? this.withField(e, { config: config }) : e);
+    this.persist();
+    this.notify();
+  }
+
+  // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env),
+  // 把用户可理解的 AppConfig 翻译成底层 argv/environment/d3dBackend。
+  // 无配置时行为与旧 runWineExe 路径等价 (全局 d3dBackend, 无额外 env)。
+  // 记录 lastRun (最近运行 chip)
   launch(path: string): void {
     const env = WineEnvService.getInstance();
     env.setStatusText('启动中...');
-    this.entries = this.entries.map((e: AppEntry): AppEntry =>
-      e.path == path ? this.withField(e, { lastRun: Date.now() }) : e);
+    let cfg: AppConfig | undefined;
+    this.entries = this.entries.map((e: AppEntry): AppEntry => {
+      if (e.path != path) {
+        return e;
+      }
+      cfg = e.config;
+      return this.withField(e, { lastRun: Date.now() });
+    });
     this.persist();
     this.notify();
-    testNapi.runWineExe(WINE_BIN, SOCK, `${WINE_BIN}:${WINE_LIB}`, path, env.zHome);
+    // 图形渲染: 应用覆盖 → 全局默认。presentBackend 从 d3dBackend 派生
+    // (与 WineEnvService.d3dPresentBackend 同规则, 不作为独立用户开关)
+    const d3dBackend = cfg?.graphics == 'wined3d' ? 'wined3d'
+      : cfg?.graphics == 'dxvk' ? 'dxvk_legacy' : env.getD3dBackend();
+    // 兼容模式: box64 经典排障组合 (保守 safeflags + 关闭大块编译, 牺牲速度
+    // 换稳定)。经 UpsertEnvLine 覆盖 BuildWineEnv 基线, 只作用于本进程
+    const environment: Record<string, string> = {};
+    if (cfg?.compat) {
+      environment['BOX64_DYNAREC_SAFEFLAGS'] = '2';
+      environment['BOX64_DYNAREC_BIGBLOCK'] = '0';
+    }
+    const winPath = this.toWindowsPath(path, env.zHome);
+    testNapi.runWineProgram({
+      windowsExePath: winPath,
+      argv: this.splitArgs(cfg?.args ?? ''),
+      environment: environment,
+      workingDirectory: this.windowsParentDir(winPath),
+      prefixMode: 'reuse',
+      d3dBackend: d3dBackend,
+      presentBackend: d3dBackend == 'dxvk_legacy' ? 'venus_broker_present' : 'virgl_compositor',
+      automationMode: false
+    });
+  }
+
+  // native 路径 → Windows 形式: prefix drive_c → C:\, Z: 宿主目录 → Z:\。
+  // 都不匹配则原样返回 (native 侧 NativePathToWindows 对 drive_c 再兜底, 幂等)
+  private toWindowsPath(path: string, zHome: string): string {
+    const driveRoot = `${WINE_PREFIX}/drive_c/`;
+    if (path.startsWith(driveRoot)) {
+      return `C:\\${path.substring(driveRoot.length).split('/').join('\\')}`;
+    }
+    // zHome 结尾斜杠归一, 避免 "/Download" 误匹配 "/DownloadApp/..."
+    const zRoot = zHome.endsWith('/') ? zHome : `${zHome}/`;
+    if (path.startsWith(zRoot)) {
+      return `Z:\\${path.substring(zRoot.length).split('/').join('\\')}`;
+    }
+    return path;
+  }
+
+  private windowsParentDir(winPath: string): string {
+    const sep = Math.max(winPath.lastIndexOf('\\'), winPath.lastIndexOf('/'));
+    return sep > 2 ? winPath.substring(0, sep) : 'C:\\';
+  }
+
+  // 启动参数按空白切分 (v1 不支持引号包裹的带空格参数)
+  private splitArgs(args: string): string[] {
+    return args.trim().split(/\s+/).filter((s: string) => s.length > 0);
   }
 
   private sortEntries(): void {
