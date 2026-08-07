@@ -95,7 +95,7 @@ export struct FileBrowserView {
   private renameController: CustomDialogController | null = null;
 
   private mirrorEnv = (): void => {
-    this.state = this.env.state;
+    this.state = this.env.engineState;
     this.prefixReady = this.env.prefixReady;
 
     // prefix 就绪/失效时的目录联动 (边沿检测后只触发一次)
@@ -497,6 +497,18 @@ export struct FileBrowserView {
     });
   }
 
+  // exe 启动统一入口 (行内按钮与长按菜单同判据): 引擎 ready 才放行,
+  // 受理失败给 toast; 受理后的闪退检测在应用库启动反馈里 (文件页无加载态)
+  private launchExe(path: string): void {
+    if (this.env.engineState != 'ready') {
+      return;
+    }
+    const pid = this.lib.launch(path);
+    if (pid <= 0) {
+      this.toast('启动失败，可到环境页切换渲染策略后重试');
+    }
+  }
+
   // ---- 菜单与行 ----
 
   // 长按(PC 右键)菜单: exe 多 启动/加入应用库 两项, 文件操作全行可用
@@ -506,7 +518,7 @@ export struct FileBrowserView {
       if (this.rowKind(name) == 'exe') {
         MenuItem({ content: '启动' })
           .onChange(() => {
-            this.lib.launch(this.fullPath(name));
+            this.launchExe(this.fullPath(name));
           })
         if (!this.inLibrary(this.fullPath(name))) {
           MenuItem({ content: '加入应用库' })
@@ -554,8 +566,8 @@ export struct FileBrowserView {
       if (this.rowKind(name) == 'exe') {
         Button('启动')
           .height(32)
-          .enabled(this.state != 'wineserver-starting' && this.state != 'wineboot-starting')
-          .onClick(() => this.lib.launch(this.fullPath(name)))
+          .enabled(this.state == 'ready')
+          .onClick(() => this.launchExe(this.fullPath(name)))
       } else if (this.rowKind(name) == 'dir') {
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(16)

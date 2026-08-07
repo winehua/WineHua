@@ -1,5 +1,6 @@
 import { AppLibraryService, AppEntry, AppConfig } from '../service/AppLibraryService';
 import { WineEnvService } from '../service/WineEnvService';
+import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { EmptyState } from './EmptyState';
 import { promptAction, ChipGroup, ChipGroupItemOptions, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
@@ -77,8 +78,6 @@ interface EntryItemSpec {
 @Component
 export struct AppLibraryView {
   @State entries: AppEntry[] = [];
-  // env.state 镜像: 启动守卫 (wine 初始化中禁止启动) + 启动反馈状态机输入
-  @State envState: string = 'idle';
   @State prefixReady: boolean = false;
   // 断点镜像: lg → Grid 大卡, sm/md → List
   @State bp: Breakpoint = 'lg';
@@ -87,7 +86,11 @@ export struct AppLibraryView {
   @State searchText: string = '';
   // Grid columnsTemplate: 随可用宽度自适应 (300vp/列, 1~4 列)
   @State gridCols: string = '1fr 1fr';
-  // 启动反馈: 点击后卡片进入加载态, wine-running 即成功; wine-failed 或超时给失败对话框
+  // 启动反馈: 点击后卡片进入加载态。成功 = 受理 pid 3s 后仍在进程表
+  // (getProcessList 只含 running, 闪退进程届时已被 ProcMon 摘除);
+  // 失败 = 受理即失败 / evt:launch-failed / 该 pid 的 evt:proc-exited。
+  // 不再用 wine-running 当成功信号 — 它的语义只是"broker 受理 spawn",
+  // 闪退程序会被误判成功
   @State launchingPath: string = '';
   // -- 单应用配置半模态状态 (openConfig 填初值, saveConfig 归一缺省后落库) --
   @State showConfig: boolean = false;
@@ -104,38 +107,41 @@ export struct AppLibraryView {
   private lib: AppLibraryService = AppLibraryService.getInstance();
   private env: WineEnvService = WineEnvService.getInstance();
   private launchTimer: number = -1;
+  private launchingPid: number = -1;
   private renameController: CustomDialogController | null = null;
-  // 上一次镜像到的原始 state 串 (启动反馈状态机的迁移检测, 见 mirror)
-  private prevRawMsg: string = '';
 
   private mirror = (): void => {
     const wasReady = this.prefixReady;
     this.entries = this.lib.entries;
-    this.envState = this.env.state;
     this.prefixReady = this.env.prefixReady;
     // prefix 就绪 false→true 边沿: 补内建工具入库 (service 内部幂等,
     // 边沿触发避免 mirror↔notify 反馈回路)
     if (this.prefixReady && !wasReady) {
       this.lib.ensureBuiltinTools();
     }
-    // 启动反馈状态机: wine-running = 窗口已弹 (成功信号); wine-failed = 失败。
-    // 判定依据原始 state 串变化 (每次启动 native 发新的 "pid:wine-running") —
-    // 不能比较干净状态名: 已有程序在跑时 state 本来就是 'wine-running',
-    // 再启动第二个不发生状态名迁移, 会漏判成功
-    const raw = this.env.lastStateMsg;
-    if (this.launchingPath && raw != this.prevRawMsg) {
-      if (this.envState == 'wine-running') {
-        this.clearLaunching();
-      } else if (this.envState == 'wine-failed') {
-        this.failLaunching('程序启动失败。可尝试切换渲染策略（环境页）后重试');
+  }
+
+  // 启动反馈事件流: 只关心本次受理 pid 的退出与全局 launch-failed
+  private onLaunchEvent = (evt: string): void => {
+    if (!this.launchingPath) {
+      return;
+    }
+    if (evt == 'launch-failed') {
+      this.failLaunching('程序启动失败。可尝试切换渲染策略（环境页）后重试');
+      return;
+    }
+    if (evt.startsWith('proc-exited:')) {
+      const pid = Number(evt.substring(12));
+      if (pid == this.launchingPid) {
+        this.failLaunching('程序启动后闪退。可尝试切换渲染策略（环境页）或开启兼容模式后重试');
       }
     }
-    this.prevRawMsg = raw;
   }
 
   aboutToAppear(): void {
     this.lib.subscribe(this.mirror);
     this.env.subscribe(this.mirror);
+    this.env.subscribeEvents(this.onLaunchEvent);
     const bps = BreakpointSystem.getInstance();
     bps.subscribe(() => {
       this.bp = bps.current;
@@ -146,6 +152,7 @@ export struct AppLibraryView {
 
   private clearLaunching(): void {
     this.launchingPath = '';
+    this.launchingPid = -1;
     if (this.launchTimer >= 0) {
       clearTimeout(this.launchTimer);
       this.launchTimer = -1;
@@ -173,18 +180,32 @@ export struct AppLibraryView {
   }
 
   private launch(entry: AppEntry): void {
-    if (this.envState == 'wineserver-starting' || this.envState == 'wineboot-starting') {
+    // 判据 = 状态机 ready (涵盖 prefix 就绪/wineserver 健康), 不再各自比对状态串
+    if (!this.env.canLaunch()) {
       return;
     }
     this.clearLaunching();
+    const pid = this.lib.launch(entry.path);
+    if (pid <= 0) {
+      this.failLaunching('程序启动失败。可尝试切换渲染策略（环境页）后重试');
+      return;
+    }
     this.launchingPath = entry.path;
-    // 超时兜底: 15s 内既无 running 也无 failed, 提示后清除加载态
+    this.launchingPid = pid;
+    // 3s 存活判成功: 闪退进程此时已被 ProcMon (1Hz) 摘除; proc-exited 事件
+    // 先到则立即判失败 (见 onLaunchEvent)
     this.launchTimer = setTimeout(() => {
-      if (this.launchingPath == entry.path) {
-        this.failLaunching('未检测到程序窗口弹出。程序可能已闪退，或与当前渲染策略不兼容');
+      if (!this.launchingPath) {
+        return;
       }
-    }, 15000);
-    this.lib.launch(entry.path);
+      const alive = ProcessService.getInstance().processList
+        .some((p: ProcessInfo) => p.pid == this.launchingPid);
+      if (alive) {
+        this.clearLaunching();
+      } else {
+        this.failLaunching('程序启动后闪退。可尝试切换渲染策略（环境页）或开启兼容模式后重试');
+      }
+    }, 3000);
   }
 
   private confirmRemove(entry: AppEntry): void {

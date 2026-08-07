@@ -10,6 +10,8 @@ const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 @Component
 export struct EnvPanel {
   @State state: string = 'idle';
+  @State sessionAlive: boolean = false;
+  @State busy: boolean = false;
   @State prefixReady: boolean = false;
   @State statusText: string = '检测中...';
   @State zHome: string = '';
@@ -24,7 +26,9 @@ export struct EnvPanel {
   private env: WineEnvService = WineEnvService.getInstance();
 
   private mirror = (): void => {
-    this.state = this.env.state;
+    this.state = this.env.engineState;
+    this.sessionAlive = this.env.sessionAlive;
+    this.busy = this.env.isBusy();
     this.prefixReady = this.env.prefixReady;
     this.statusText = this.env.statusText;
     this.zHome = this.env.zHome;
@@ -42,15 +46,18 @@ export struct EnvPanel {
     this.mirror();
   }
 
-  // 状态文本配色, 与原标题栏/侧边栏同一套规则
+  // 状态文本配色, 与标题栏同一套规则: 失败红 / 运行绿 / 就绪或进行中蓝 / 未启动灰
   private statusColor(): Resource {
-    return this.state == 'wine-running' ? $r('app.color.state_ok') :
-           this.state == 'exited' ? $r('app.color.state_warn') :
-           this.prefixReady ? $r('app.color.state_info') : $r('app.color.text_tertiary');
-  }
-
-  private engineBusy(): boolean {
-    return this.state == 'wineserver-starting' || this.state == 'wineboot-starting';
+    if (this.state == 'failed') {
+      return $r('app.color.danger');
+    }
+    if (this.state == 'ready') {
+      return this.sessionAlive ? $r('app.color.state_ok') : $r('app.color.state_info');
+    }
+    if (this.state == 'starting' || this.state == 'stopping') {
+      return $r('app.color.state_info');
+    }
+    return $r('app.color.text_tertiary');
   }
 
   // 渲染策略分段控件: 系统预置 SegmentButton 胶囊单选 (替代手写双 Button 行);
@@ -94,6 +101,7 @@ export struct EnvPanel {
         fontColor: $r('app.color.danger'),
         action: () => {
           this.env.stopAllSessions();
+          promptAction.showToast({ message: '正在停止全部会话...' });
         }
       }
     });
@@ -163,18 +171,20 @@ export struct EnvPanel {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Button(this.prefixReady ? '重启 Wine 引擎' : '初始化 Wine')
+          Button(this.sessionAlive ? '重启 Wine 引擎' : (this.prefixReady ? '启动 Wine 引擎' : '初始化 Wine'))
             .width('100%').backgroundColor($r('app.color.action_primary'))
-            .enabled(!this.engineBusy() && this.state != 'wine-running')
+            // 判据 = 状态机: 仅 空闲/就绪/失败 可进入; 会话存活时走
+            // restartEngine 编排 (先停后启), 不再直接 doInit 双开桌面
+            .enabled(!this.busy &&
+              (this.state == 'idle' || this.state == 'ready' || this.state == 'failed'))
             .onClick(() => {
               this.restartHint = false;
-              this.env.doInit();
+              this.env.restartEngine();
             })
           Button('停止全部 Windows 会话')
             .width('100%').backgroundColor($r('app.color.action_warning'))
-            // 引擎活着即可用: 仅桌面会话(无用户程序)时 state 不是 wine-running,
-            // 但桌面本身就是该停的会话
-            .enabled(!this.engineBusy() && this.prefixReady)
+            // 判据 = 会话存活 (桌面 root 或用户进程), 与 prefix 文件就绪无关
+            .enabled(this.sessionAlive && !this.busy)
             .onClick(() => this.confirmStopAll())
           Button('导出日志')
             .width('100%').backgroundColor($r('app.color.control_bg'))
@@ -198,7 +208,8 @@ export struct EnvPanel {
           Button('重置 Wine prefix')
             .width('100%').backgroundColor($r('app.color.action_danger'))
             .fontColor($r('app.color.danger'))
-            .enabled(!this.engineBusy() && this.state != 'wine-running')
+            // 编排内含"先停会话再删 prefix", 任何非忙状态都可用
+            .enabled(!this.busy)
             .onClick(() => this.confirmReset())
         }
         .width('100%')

@@ -23,6 +23,7 @@ const TAG = 'Index';
 struct Index {
   // -- 镜像自 service 的状态 (订阅驱动, 见 aboutToAppear) --
   @State state: string = 'idle';
+  @State sessionAlive: boolean = false;
   @State prefixReady: boolean = false;
   @State statusText: string = '检测中...';
   @State initOverlayVisible: boolean = false;
@@ -57,21 +58,22 @@ struct Index {
   aboutToAppear(): void {
     const env = this.env;
     const mirror = () => {
-      this.state = env.state;
+      this.state = env.engineState;
+      this.sessionAlive = env.sessionAlive;
       this.prefixReady = env.prefixReady;
       this.statusText = env.statusText;
       this.initOverlayText = env.initOverlayText;
       this.initOverlayVisible = env.initOverlayVisible;
       this.initFailed = env.initFailed;
-      // 启动程序自动回桌面: 桌面已激活时新程序启动 → 切回桌面层
-      const msg = env.lastStateMsg;
-      const colonIdx = msg.indexOf(':');
-      const suffix = colonIdx >= 0 ? msg.substring(colonIdx + 1) : msg;
-      if (suffix == 'wine-running' && this.desktopActive) {
-        this.launcherVisible = false;
-      }
     };
     env.subscribe(mirror);
+    // 启动程序自动回桌面: 桌面已激活时新程序被受理 (evt:launch-accepted) → 切回桌面层。
+    // 走事件而非状态串: 状态机不再携带 pid 前缀, 也避免 process-updated 误触发
+    env.subscribeEvents((evt: string) => {
+      if (evt.startsWith('launch-accepted') && this.desktopActive) {
+        this.launcherVisible = false;
+      }
+    });
     // 桌面状态订阅: desktopActive false→true 时盖住启动器
     // (复刻"桌面出现即盖住启动器"), rootId 镜像进 @State
     const wm = WineWindowManager.getInstance();
@@ -163,11 +165,18 @@ struct Index {
     this.switchTab(2);
   }
 
-  // 状态点/状态文字配色 (标题栏与环境页同款规则)
+  // 状态点/状态文字配色 (与环境页同款规则): 失败红 / 运行绿 / 就绪或进行中蓝 / 未启动灰
   private stateColor(): Resource {
-    return this.state == 'wine-running' ? $r('app.color.state_ok') :
-           this.state == 'exited' ? $r('app.color.state_warn') :
-           this.prefixReady ? $r('app.color.state_info') : $r('app.color.text_tertiary');
+    if (this.state == 'failed') {
+      return $r('app.color.danger');
+    }
+    if (this.state == 'ready') {
+      return this.sessionAlive ? $r('app.color.state_ok') : $r('app.color.state_info');
+    }
+    if (this.state == 'starting' || this.state == 'stopping') {
+      return $r('app.color.state_info');
+    }
+    return $r('app.color.text_tertiary');
   }
 
   @Builder
@@ -358,8 +367,10 @@ struct Index {
       // 覆盖层自门控 (InputSettingsService.gamepadEnabled), 未开时不渲染
       GamepadOverlay()
     }
-    // init overlay 原样置顶 (首启引导 4.8: 阶段文案; 失败给 重试/重置 入口)
-    if (this.initOverlayVisible && !this.prefixReady) {
+    // init overlay 原样置顶 (首启引导 4.8: 阶段文案; 失败给 重试/重置 入口)。
+    // 显隐只由状态机管理 (state:ready 才隐藏) — 曾附加 !prefixReady 条件,
+    // 暖启动时整个初始化/重启编排过程没有任何可见反馈
+    if (this.initOverlayVisible) {
       Column() {
         if (this.initFailed) {
           Text('初始化失败')
@@ -378,7 +389,9 @@ struct Index {
               .layoutWeight(1)
               .backgroundColor($r('app.color.accent'))
               .onClick(() => {
-                this.env.doInit();
+                // 走编排重启而非裸 doInit: 失败时可能已有半个会话
+                // (explorer 已起但 prefix 轮询超时等), 裸 doInit 会双开桌面
+                this.env.restartEngine();
               })
             Button('重置环境')
               .layoutWeight(1)

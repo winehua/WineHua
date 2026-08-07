@@ -389,7 +389,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         !EnsureWow64Files(p->winehuaBin, p->prefixDir)) {
         OH_LOG_ERROR(LOG_APP, "[Launch-Async] external-PE prefix preparation failed");
         if (gStateTsfn)
-            napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+            napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
         return false;
     }
 
@@ -408,7 +408,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         if (wsRet != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver StartNativeChildProcess FAILED ret=%{public}d", (int)wsRet);
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d (via appspawn)", wsChildPid);
@@ -419,7 +419,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     }
 
     if (gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineboot"), napi_tsfn_blocking);
 
     gBrokerHomeDir = p->homeDir;
     StartBrokerServer();
@@ -438,6 +438,11 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         } else {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] cannot create prefix init marker: %{public}s",
                          initMarker.c_str());
+            /* 失败必须发声: 此前这里静默 return false, LaunchThreadFunc 不再发任何
+             * 消息, ArkTS 永久停在 "正在初始化" spinner 且无重试入口。 */
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"),
+                                              napi_tsfn_blocking);
             return false;
         }
         auto* ws = WaylandServer::GetInstance();
@@ -466,7 +471,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         if (ret != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot FAILED ret=%{public}d", (int)ret);
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
@@ -489,7 +494,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot hung for %{public}d s, abort",
                          kWinebootHangMs / 1000);
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         /* wineboot 已退出: registry 仍在 wineserver flush 途中 (实测落盘延迟
@@ -499,7 +504,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
                      60000, 200)) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot exited but prefix incomplete, abort");
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot completed (%{public}d s)", aliveMs / 1000);
@@ -595,7 +600,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
             ws->PromotePendingDesktopRoot();
             /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
              * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
-             * surface。等待桌面根 toplevel 就绪后再发 wine-ready,
+             * surface。等待桌面根 toplevel 就绪后再发 state:ready,
              * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
             if (!WaitFor("explorer desktop root", [ws]() {
                     return ws->GetDesktopRootToplevelId() != 0;
@@ -646,13 +651,13 @@ void LaunchThreadFunc(LaunchParams* p) {
     mkdir(p->prefixDir.c_str(), 0755);
 
     if (gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineserver"), napi_tsfn_blocking);
 
     bool ok = false;
     ok = LaunchPadMode(p, audioBootstrapFd, serializedEnv);
 
     if (ok && gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("wine-ready"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn, strdup("state:ready"), napi_tsfn_blocking);
 
     delete p;
 }

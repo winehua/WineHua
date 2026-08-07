@@ -4,6 +4,7 @@ import { preferences } from '@kit.ArkData';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import testNapi from 'libentry.so';
 import { WineEnvService } from './WineEnvService';
+import { ProcessInfo } from './ProcessService';
 import { IconExtractor } from './IconExtractor';
 import { LnkScanner, LnkTarget } from './LnkScanner';
 
@@ -294,9 +295,10 @@ export class AppLibraryService {
   // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env),
   // 把用户可理解的 AppConfig 翻译成底层 argv/environment/d3dBackend。
   // 无配置时行为与旧 runWineExe 路径等价 (全局 d3dBackend, 无额外 env)。
-  launch(path: string): void {
+  // 返回 broker 受理的 pid (<=0 = 受理失败, 调用方立即报启动失败);
+  // 受理只表示进程拉起, 闪退检测由调用方订阅 evt:proc-exited 完成
+  launch(path: string): number {
     const env = WineEnvService.getInstance();
-    env.setStatusText('启动中...');
     const cfg: AppConfig | undefined = this.entries.find((e: AppEntry) => e.path == path)?.config;
     // 图形渲染: 应用覆盖 → 全局默认。presentBackend 从 d3dBackend 派生
     // (与 WineEnvService.d3dPresentBackend 同规则, 不作为独立用户开关)
@@ -310,7 +312,7 @@ export class AppLibraryService {
       environment['BOX64_DYNAREC_BIGBLOCK'] = '0';
     }
     const winPath = this.toWindowsPath(path, env.zHome);
-    testNapi.runWineProgram({
+    const result = testNapi.runWineProgram({
       windowsExePath: winPath,
       argv: this.splitArgs(cfg?.args ?? ''),
       environment: environment,
@@ -319,7 +321,8 @@ export class AppLibraryService {
       d3dBackend: d3dBackend,
       presentBackend: d3dBackend == 'dxvk_legacy' ? 'venus_broker_present' : 'virgl_compositor',
       automationMode: false
-    });
+    }) as ProcessInfo;
+    return result && result.pid > 0 ? result.pid : -1;
   }
 
   // native 路径 → Windows 形式: prefix drive_c → C:\, Z: 宿主目录 → Z:\。

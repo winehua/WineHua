@@ -13,9 +13,12 @@ export interface ProcessInfo {
 
 // wine 内部系统进程 (broker 已全量登记): 运行中页只显示用户程序,
 // 隐藏 wineserver/services 等服务进程。AddProcess 登记的是 basename。
+// winehua_keep 是桌面保活驻留 (桌面销毁后仍 Sleep 永驻), 属基础设施;
+// 不过滤它进程列表永不为空, "全部退出" 判定永远不成立
 const SYSTEM_PROC_BLACKLIST: string[] = [
   'wineserver', 'services.exe', 'csrss.exe', 'winedevice.exe',
   'plugplay.exe', 'svchost.exe', 'rpcss.exe', 'wineboot.exe',
+  'winehua_keep.exe',
 ];
 
 // Wine 进程列表服务: 原 Index.ets 的 refreshProcessList/doKillProcess 原样迁入。
@@ -34,7 +37,7 @@ export class ProcessService {
 
   private listeners: Array<() => void> = [];
   private envBound: boolean = false;
-  // 刷新节流: wine 内部进程高频进出时会触发大量 process-updated,
+  // 刷新节流: wine 内部进程高频进出时会触发大量 proc-updated 事件,
   // 合并到 300ms 内一次刷新, 避免 UI 反复重建列表 (master 同款策略)
   private refreshPending: boolean = false;
   private refreshTimer: number = -1;
@@ -77,7 +80,7 @@ export class ProcessService {
     this.notify();
   }
 
-  // 节流刷新: 状态消息驱动 (process-updated 高频), 手动 ↻ 走 refresh 直刷
+  // 节流刷新: 引擎事件驱动 (proc-updated 高频), 手动 ↻ 走 refresh 直刷
   private refreshThrottled = (): void => {
     if (this.refreshPending) {
       return;
@@ -90,19 +93,15 @@ export class ProcessService {
     }, 300);
   }
 
-  // 订阅 WineEnvService: 进程相关状态 (含 broker 登记的 process-updated)
-  // 到达时节流刷新; 复刻 master refreshProcessList 的触发消息集 + 300ms 合并
+  // 订阅引擎事件: 进程相关事件 (含 broker 登记的 proc-updated) 到达时节流刷新;
+  // 复刻 master refreshProcessList 的触发集 + 300ms 合并
   bindEnv(env: WineEnvService): void {
     if (this.envBound) {
       return;
     }
     this.envBound = true;
-    env.subscribe(() => {
-      const s = env.lastStateMsg;
-      const colonIdx = s.indexOf(':');
-      const stateMsg = colonIdx >= 0 ? s.substring(colonIdx + 1) : s;
-      if (stateMsg == 'wine-running' || stateMsg == 'exited' || stateMsg == 'wine-failed' ||
-        stateMsg == 'process-updated') {
+    env.subscribeEvents((evt: string) => {
+      if (evt.startsWith('proc-') || evt.startsWith('launch-')) {
         this.refreshThrottled();
       }
     });

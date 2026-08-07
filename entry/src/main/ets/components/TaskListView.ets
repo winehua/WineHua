@@ -3,7 +3,7 @@ import { AppLibraryService } from '../service/AppLibraryService';
 import { EmptyState } from './EmptyState';
 
 // 运行中页: 会话卡片 (图标/名称/状态点/结束操作)。
-// 卡片无点击行为 (回桌面走悬浮条 Home / 标题栏"回桌面"), "结束"直接 kill;
+// 卡片无点击行为 (回桌面走悬浮条 Home / 标题栏"回桌面"), "结束"二次确认后 kill;
 // 不提供"停止全部"(批量操作误伤面大, 逐个结束更可控)。
 // 下拉刷新: Refresh 包 List (Pad 触控场景); ↻ 按钮保留 (PC 无下拉习惯)。
 // 注: 曾有的"开发者·进程列表"折叠区已删除 — native getProcessList 只返回
@@ -94,11 +94,26 @@ export struct TaskListView {
                   Circle({ width: 8, height: 8 })
                     .fill($r('app.color.state_ok'))
                     .margin({ right: 10 })
-                  // 结束: 直接 kill (旧版 ✕ 的同款行为)
+                  // 结束: 二次确认后 kill (与环境页"停止全部"同级别确认 —
+                  // 未保存数据会丢失, 上架标准不允许无确认直接杀)
                   Text('结束')
                     .fontColor($r('app.color.danger'))
                     .padding({ left: 12, top: 6, bottom: 6 })
-                    .onClick(() => this.proc.kill(proc.pid))
+                    .onClick(() => {
+                      AlertDialog.show({
+                        title: '结束程序',
+                        message: `确定结束「${proc.name}」吗？未保存的数据会丢失。`,
+                        primaryButton: {
+                          value: '取消',
+                          action: () => {}
+                        },
+                        secondaryButton: {
+                          value: '结束',
+                          fontColor: $r('app.color.danger'),
+                          action: () => this.proc.kill(proc.pid)
+                        }
+                      });
+                    })
                 }
                 .width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
                 .alignItems(VerticalAlign.Center)

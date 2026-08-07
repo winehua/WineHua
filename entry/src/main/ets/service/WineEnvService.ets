@@ -4,6 +4,7 @@ import testNapi from 'libentry.so';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
+import { WineWindowManager } from './WineWindowManager';
 import { SmokeLaunchRequest, SmokeRunner, defaultSmokeRequest, parseSmokeRequest,
   syncManagedSmoke } from './SmokeRunner';
 
@@ -90,9 +91,12 @@ function removePathRecursive(path: string): void {
 }
 
 // Wine 环境生命周期服务: 检测/解压 wine 数据、启动/重置 wineserver、跟踪 prefix 状态。
-// 原 Index.ets 的非 UI 逻辑原样迁入; 页面经 subscribe 镜像状态字段, service 不感知 UI。
-// 自动化 (smoke/game) 启动参数来自 EntryAbility.publishLaunchRequest 写入的 AppStorage,
-// 在 init 时读取并参数化 doInit (免 picker 的 Z: home、clean prefix、D3D 后端等)。
+// 持有引擎状态机 (engineState, 仅 native state:* 消息迁移) 与会话存活派生
+// (sessionAlive = 桌面 root || 进程在跑), UI 的状态文案与按钮使能全部以此为准;
+// native evt:* 瞬时事件经 subscribeEvents 转发 (ProcessService/启动反馈),
+// 事件永不迁移状态机。自动化 (smoke/game) 启动参数来自 EntryAbility.publishLaunchRequest
+// 写入的 AppStorage, 在 init 时读取并参数化 doInit (免 picker 的 Z: home、clean prefix、
+// D3D 后端等)。
 export class WineEnvService {
   private static instance: WineEnvService | null = null;
 
@@ -104,22 +108,37 @@ export class WineEnvService {
   }
 
   // -- 页面镜像的状态 (任何变化后 notify) --
-  state: string = 'idle';
+  // 引擎持久状态机: 仅被 native state:* 消息迁移 (idle/starting/ready/stopping/failed)。
+  // evt:* 瞬时事件 (进程进出/启动受理) 永不触碰它 — 历史 bug: 事件写进状态字段,
+  // process-updated 到达后 state != 'wine-running', 运行中的程序旁重启/重置按钮意外解锁
+  engineState: string = 'idle';
+  // engineState 细节: starting → wineserver/wineboot; failed → 失败阶段
+  engineStage: string = '';
   prefixReady: boolean = false;
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
-  // 最近一次 native state 原始字符串, ProcessService 据冒号后缀联动刷新进程列表
-  lastStateMsg: string = '';
   zHome: string = '/storage/Users/currentUser/Download';
-  // 初始化失败标记: doInit 各失败分支置位, 首启引导据此显示 重试/重置 入口
-  // (仅靠 statusText 一行文字用户无法自救); doInit 开始 / wine-ready 时清除
+  // 初始化失败标记: doInit 各失败分支与 state:failed 置位, 首启引导据此显示
+  // 重试/重置 入口 (仅靠 statusText 一行文字用户无法自救); doInit 开始 / state:ready 时清除
   initFailed: boolean = false;
+  // 会话存活派生: 桌面 root 存在 || 用户进程在跑 (镜像自 WineWindowManager /
+  // ProcessService, 见 init 的订阅)。按钮使能判据, 不再拿 state 串当代理
+  sessionAlive: boolean = false;
+  desktopActive: boolean = false;
+  runningCount: number = 0;
+  // doInit 防重入: 覆盖 picker→解压→launchClient 全异步段 (首启解压可达数分钟),
+  // 由 state:ready / state:failed / failInit 清除
+  initBusy: boolean = false;
+  // 重启/重置/停止编排进行中 (stopAll → 等会话清空 → 后续动作), 期间禁止一切会话操作
+  opBusy: boolean = false;
 
   private hasRawfileWineData: boolean = false;
   private ctx: common.Context | null = null;
   private initialized: boolean = false;
   private listeners: Array<() => void> = [];
+  // 事件订阅 (evt:* 瞬时消息, 参数为去掉 'evt:' 前缀的事件体, 如 'proc-exited:1234')
+  private eventListeners: Array<(evt: string) => void> = [];
 
   // -- 自动化启动参数 (EntryAbility want → AppStorage → init 读取) --
   private smokeRequest: SmokeLaunchRequest = defaultSmokeRequest();
@@ -150,10 +169,54 @@ export class WineEnvService {
     this.listeners.push(listener);
   }
 
+  // 事件订阅: native evt:* 瞬时消息 (进程进出/启动受理/启动失败)
+  subscribeEvents(listener: (evt: string) => void): void {
+    this.eventListeners.push(listener);
+  }
+
+  private emitEvent(evt: string): void {
+    for (const listener of this.eventListeners) {
+      listener(evt);
+    }
+  }
+
   private notify(): void {
+    // 派生状态集中在这里重算, 保证任何镜像读到的都是最新值
+    this.sessionAlive = this.desktopActive || this.runningCount > 0;
+    this.recomputeStatus();
     for (const listener of this.listeners) {
       listener();
     }
+  }
+
+  // 引擎状态文案派生: 单一事实来源是 engineState + sessionAlive, 瞬时操作回执
+  // 不再写 statusText (历史问题: "已停止全部会话" 等回执永久驻留标题栏)。
+  // 自动化/游戏模式的进度文案由 SmokeRunner/game 自管, 不覆盖
+  private recomputeStatus(): void {
+    if (this.automationMode || this.gameTestMode) {
+      return;
+    }
+    if (this.engineState == 'starting' || this.initBusy) {
+      this.statusText = this.initOverlayText || '正在初始化...';
+    } else if (this.engineState == 'ready') {
+      this.statusText = this.sessionAlive ? '运行中' : '已就绪';
+    } else if (this.engineState == 'stopping') {
+      this.statusText = '正在停止...';
+    } else if (this.engineState == 'failed') {
+      this.statusText = '启动失败';
+    } else {
+      this.statusText = this.prefixReady ? '已就绪' : '未初始化';
+    }
+  }
+
+  // 按钮使能判据 (EnvPanel / 应用库 / 文件页统一走这两个, 不再各自比较 state 串)
+  isBusy(): boolean {
+    return this.initBusy || this.opBusy || this.engineState == 'starting' ||
+      this.engineState == 'stopping';
+  }
+
+  canLaunch(): boolean {
+    return this.engineState == 'ready' && !this.isBusy();
   }
 
   // 环境页渲染策略/开发者分区展示当前生效值 (updateLaunchRequest 写入)
@@ -209,54 +272,76 @@ export class WineEnvService {
 
     testNapi.setStateCallback(this.onNativeState);
     this.refreshPrefix();
+    // 会话存活镜像: 进程列表 / 桌面 root 变化 → notify 内重算 sessionAlive。
+    // 这两项是"运行中/已就绪"与按钮使能的判据来源
+    const proc = ProcessService.getInstance();
+    proc.subscribe(() => {
+      this.runningCount = proc.processList.filter((p: ProcessInfo) => p.state === 'running').length;
+      this.notify();
+    });
+    const wm = WineWindowManager.getInstance();
+    wm.subscribe(() => {
+      this.desktopActive = wm.desktopActive;
+      this.notify();
+    });
     // 下一帧自动初始化 (避免阻塞 UI 首次渲染)
     setTimeout(() => this.doInit(), 0);
   }
 
-  // 页面 doRun 启动 exe 前的状态提示 (原页面直写 statusText, 现统一由 service 持有)
+  // 自动化/游戏模式专用的状态文案直写 (SmokeRunner/game 自管进度文案;
+  // 普通模式 statusText 由 recomputeStatus 派生, 直写会在下一次 notify 被覆盖)
   setStatusText(text: string): void {
     this.statusText = text;
     this.notify();
   }
 
-  // native state 回调, 分支逻辑与原页面实现一致。
-  // 注意: native 发来的串部分带 pid 前缀 ("1234:wine-running"/"-1:wine-failed"),
-  // 部分不带 ("wine-ready")。state 存冒号后缀的干净状态名, 供 UI 直接比较
-  // (历史 bug: state 存原始串, 'wine-running' 等比较永不成立);
-  // lastStateMsg 保留原始串 (ProcessService 自行解析后缀)
+  // native 消息入口: 按协议前缀分发 — state:* 迁移引擎状态机 (唯一写入口),
+  // evt:* 作为瞬时事件转发给事件订阅方 (ProcessService 刷新 / 启动反馈),
+  // 事件永不触碰 engineState
   private onNativeState = (s: string): void => {
     hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
-    this.lastStateMsg = s;
+    if (s.startsWith('state:')) {
+      this.handleEngineState(s.substring(6));
+    } else if (s.startsWith('evt:')) {
+      this.emitEvent(s.substring(4));
+    } else {
+      hilog.warn(DOMAIN, 'wine', 'unknown engine message: %{public}s', s);
+    }
+    this.notify();
+  }
 
-    const colonIdx = s.indexOf(':');
-    const stateMsg = colonIdx >= 0 ? s.substring(colonIdx + 1) : s;
-    this.state = stateMsg;
-
-    if (stateMsg == 'wineserver-starting' || stateMsg == 'wineboot-starting') {
-      this.setInitStatus('Wine 正在初始化...', true);
-    } else if (stateMsg == 'wine-ready') {
+  private handleEngineState(body: string): void {
+    const sep = body.indexOf(':');
+    const name = sep >= 0 ? body.substring(0, sep) : body;
+    const detail = sep >= 0 ? body.substring(sep + 1) : '';
+    if (name == 'starting') {
+      this.engineState = 'starting';
+      this.engineStage = detail;
       this.initFailed = false;
+      this.setInitStatus('Wine 正在初始化...', true);
+    } else if (name == 'ready') {
+      this.engineState = 'ready';
+      this.engineStage = '';
+      this.initFailed = false;
+      this.initBusy = false;
+      this.opBusy = false;
       this.setInitStatus('已就绪', false);
       // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
       this.waitForPrefix();
-    } else if (stateMsg == 'wine-running') {
-      this.setInitStatus('运行中', false);
-      // notify 内 ProcessService 联动 refresh (原 refreshProcessList)
-      this.notify();
-    } else if (stateMsg == 'process-updated') {
-      // broker 登记的进程进出 (桌面 Start 菜单等路径启动的程序只发此消息,
-      // 不发 wine-running) → notify, ProcessService 节流刷新任务列表
-      this.notify();
-    } else if (stateMsg == 'exited') {
-      // notify 内 ProcessService 先联动 refresh (原 refreshProcessList 在分支最前),
-      // 这里再读刷新后的列表判断是否还有 running 进程
-      this.notify();
-      const running = ProcessService.getInstance().processList.filter(p => p.state === 'running');
-      if (running.length === 0) {
-        this.setInitStatus('已就绪', false);
-      }
-    } else if (stateMsg == 'wine-failed') {
-      this.setInitStatus('启动失败', false);
+    } else if (name == 'failed') {
+      // 覆盖 wineserver/wineboot 等全部启动失败 — 此前 ArkTS 没有这两个分支,
+      // 首启失败会永久停在初始化 spinner 且无重试入口
+      this.engineState = 'failed';
+      this.engineStage = detail;
+      this.failInit(`Wine 引擎启动失败 (${detail || 'unknown'})`);
+    } else if (name == 'stopping') {
+      this.engineState = 'stopping';
+    } else if (name == 'stopped') {
+      this.engineState = 'idle';
+      this.engineStage = '';
+      this.opBusy = false;
+    } else {
+      hilog.warn(DOMAIN, 'wine', 'unknown engine state: %{public}s', body);
     }
   }
 
@@ -363,10 +448,10 @@ export class WineEnvService {
       } else {
         hilog.warn(DOMAIN, 'wine', 'extract: marker still missing after decompress!');
       }
-      this.setStatusText('已解压');
     } catch (e) {
+      // 解压失败不直写状态文案: 继续走下去 native 会因运行时缺失发
+      // state:failed, 由状态机统一呈现失败 + 重试入口
       hilog.error(DOMAIN, 'wine', 'extract FAIL: %{public}s', JSON.stringify(e));
-      this.setStatusText('解压失败');
     } finally {
       rm.closeRawFdSync('wine-data.zip');
     }
@@ -413,9 +498,16 @@ export class WineEnvService {
 
   // 初始化失败统一定式: 标记 initFailed + overlay 保持可见 —
   // 首启引导 overlay 据此把 spinner 换成 重试/重置 入口 (设计 4.8:
-  // 每个失败点给自救入口, 不允许只显示一行错误文字)
+  // 每个失败点给自救入口, 不允许只显示一行错误文字)。
+  // engineState 一并落成 'failed': 失败是终态, 否则 'stopping'/'starting'
+  // 残留的 busy 判据会把所有按钮永久锁死 (软锁)
   private failInit(text: string): void {
     this.initFailed = true;
+    this.initBusy = false;
+    this.opBusy = false;
+    if (this.engineState == 'starting' || this.engineState == 'stopping') {
+      this.engineState = 'failed';
+    }
     this.setInitStatus(text, true);
   }
 
@@ -423,6 +515,13 @@ export class WineEnvService {
     if (!this.ctx) {
       return;
     }
+    // 防重入: picker/解压/startServer 全程可达数分钟 (首启解压 249MB),
+    // 期间重复进入会并发解压、目录级刷新 runtime, 后果是运行时损坏
+    if (this.initBusy || this.opBusy || this.engineState == 'starting') {
+      hilog.warn(DOMAIN, 'wine', 'doInit re-entry blocked (busy)');
+      return;
+    }
+    this.initBusy = true;
     this.initFailed = false;
     // HOME 目录 (Z: 映射目标): 自动化模式用沙箱内受管 HOME 永不弹 picker;
     // game 模式指到桌面会话同一受管目录 (Z: 可见已安装游戏);
@@ -433,7 +532,18 @@ export class WineEnvService {
       this.zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua/';
     } else {
       const documentViewPicker = new picker.DocumentViewPicker(this.ctx);
-      let documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+      // DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
+      // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
+      let documentSaveResult: string[] = [];
+      try {
+        documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+      } catch (e) {
+        hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
+      }
+      if (!documentSaveResult || documentSaveResult.length == 0) {
+        this.failInit('获取下载目录失败');
+        return;
+      }
       const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
       this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
     }
@@ -484,34 +594,114 @@ export class WineEnvService {
       this.automationMode, this.prefixMode, this.d3dBackend);
   }
 
+  // 重置 prefix (编排式): 有会话先停止并等清空, 再删 prefix, 最后自动重新初始化。
+  // 全程 opBusy, 按钮矩阵据此禁用一切会话操作 — 旧版运行中可直接重置,
+  // 等于在活着的 wineserver/explorer 脚下删 prefix
   doReset = (): void => {
-    this.setInitStatus('正在清空...', true);
-    try {
-      testNapi.resetWinePrefix(this.prefixMode);
-      this.state = 'idle';
-      this.prefixReady = false;
-      ProcessService.getInstance().clear(); // 原 this.processList = []
-      // 原 this.entries = [] 由页面检测 prefixReady true→false 边沿后自行清空
-      this.setInitStatus('已清空', false);
-      setTimeout(() => this.doInit(), 500);
-    } catch (e) {
-      hilog.error(DOMAIN, 'wine', 'reset error: %{public}s', JSON.stringify(e));
-      this.setInitStatus('清空失败', false);
+    if (this.isBusy()) {
+      hilog.warn(DOMAIN, 'wine', 'doReset blocked (busy)');
+      return;
     }
+    this.opBusy = true;
+    (async (): Promise<void> => {
+      try {
+        if (this.sessionAlive) {
+          this.engineState = 'stopping';
+          this.setInitStatus('正在停止会话...', true);
+          try {
+            testNapi.stopAll();
+          } catch (e) {
+            hilog.error(DOMAIN, 'wine', 'reset stopAll error: %{public}s', JSON.stringify(e));
+          }
+          await this.waitForSessionStop(10000);
+        }
+        this.setInitStatus('正在清空...', true);
+        try {
+          testNapi.resetWinePrefix(this.prefixMode);
+        } catch (e) {
+          hilog.error(DOMAIN, 'wine', 'reset error: %{public}s', JSON.stringify(e));
+          this.failInit('清空失败');
+          return;
+        }
+        this.engineState = 'idle';
+        this.engineStage = '';
+        this.prefixReady = false;
+        ProcessService.getInstance().clear();
+        /* 注意: 阶段2 之前 stopAll 不杀主 wineserver (它未登记进程注册表),
+         * 其内存 registry 仍属旧 prefix, reset 后的 doInit 会静默复用它
+         * (socket 锁) — 阶段2 把 wineserver 纳入 stopAll 后才真正干净 */
+        this.setInitStatus('已清空', false);
+        setTimeout(() => this.doInit(), 500);
+      } finally {
+        this.opBusy = false;
+      }
+    })();
   }
 
-  // 停止全部 Windows 会话 (环境页"会话维护"卡 + 运行中页顶部共用):
-  // native stopAll 结束 wineserver 及全部 wine 进程, 桌面 root 随之销毁 →
-  // WineWindowManager 翻回启动器
-  stopAllSessions(): void {
-    hilog.info(DOMAIN, 'wine', 'stopAllSessions');
-    try {
-      testNapi.stopAll();
-      this.setStatusText('已停止全部会话');
-    } catch (e) {
-      hilog.error(DOMAIN, 'wine', 'stopAll error: %{public}s', JSON.stringify(e));
-      this.setStatusText('停止会话失败');
+  // 重启引擎 (环境页按钮): 有会话先编排停止再初始化, 无会话直接初始化。
+  // 修历史 bug: 桌面存活时直接 doInit 会再 spawn 一套 wineserver/explorer
+  // → 双桌面同时渲染, 界面卡死
+  restartEngine(): void {
+    if (this.isBusy()) {
+      return;
     }
+    if (!this.sessionAlive) {
+      this.doInit();
+      return;
+    }
+    this.opBusy = true;
+    (async (): Promise<void> => {
+      this.engineState = 'stopping';
+      this.setInitStatus('正在停止会话...', true);
+      try {
+        testNapi.stopAll();
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'restart stopAll error: %{public}s', JSON.stringify(e));
+      }
+      await this.waitForSessionStop(10000);
+      this.engineState = 'idle';
+      this.opBusy = false;
+      this.doInit();
+    })();
+  }
+
+  // 停止完成判定 (阶段1 近似): 桌面 root 销毁 + 可见进程表清空。
+  // 轮询而非事件: ProcMon 1Hz + ArkTS 300ms 节流, 典型 1~2s 完成; 超时硬放行
+  // (阶段2 native 会发 state:stopped 事件取代轮询)
+  private async waitForSessionStop(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const running = ProcessService.getInstance().processList
+        .filter((p: ProcessInfo) => p.state === 'running').length;
+      if (!this.desktopActive && running == 0) {
+        return;
+      }
+      await new Promise<void>(r => setTimeout(r, 300));
+    }
+    hilog.warn(DOMAIN, 'wine', 'waitForSessionStop timeout, proceeding anyway');
+  }
+
+  // 停止全部 Windows 会话 (环境页"会话维护"卡): native stopAll 杀全部登记进程 +
+  // 停 Wayland server, 桌面 root 随之销毁 → WineWindowManager 翻回启动器。
+  // 异步等进程表清空后状态归零; 期间 opBusy 禁用重启/重置
+  stopAllSessions(): void {
+    if (this.opBusy) {
+      return;
+    }
+    this.opBusy = true;
+    (async (): Promise<void> => {
+      this.engineState = 'stopping';
+      this.notify();
+      try {
+        testNapi.stopAll();
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'stopAll error: %{public}s', JSON.stringify(e));
+      }
+      await this.waitForSessionStop(10000);
+      this.engineState = 'idle';
+      this.opBusy = false;
+      this.notify();
+    })();
   }
 
   // 导出日志 (环境页"会话维护"卡): 打包沙箱日志到 Download 应用目录, 供问题反馈。
@@ -521,7 +711,7 @@ export class WineEnvService {
     const CAP_TOTAL = 512 * 1024;
     const CAP_FILE = 128 * 1024;
     let bundle = `WineHua 日志导出 ${new Date().toLocaleString()}\n` +
-      `state=${this.state} prefixReady=${this.prefixReady} status=${this.statusText}\n` +
+      `engineState=${this.engineState} stage=${this.engineStage} prefixReady=${this.prefixReady} status=${this.statusText}\n` +
       `d3dBackend=${this.d3dBackend} perfProfile=${this.perfProfile} zHome=${this.zHome}\n\n`;
     let total = bundle.length;
     const dirs = ['/data/storage/el2/base/temp', '/data/storage/el2/base/cache'];

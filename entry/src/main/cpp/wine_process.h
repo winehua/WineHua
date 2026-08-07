@@ -24,6 +24,12 @@ struct WineProcessEntry {
 };
 
 // -- NAPI threadsafe 回调 (由 napi_init.cpp 设置) --
+// 消息协议 (native → ArkTS, 单向): 分两类, ArkTS 侧按前缀分发, 不做启发式猜测。
+//   state:<name>[:<detail>]  引擎持久状态迁移 (状态机语义):
+//     state:starting:wineserver|wineboot  state:ready  state:failed:<stage>
+//   evt:<name>[:<pid>]       瞬时事件 (不迁移状态):
+//     evt:launch-accepted:<pid>  evt:launch-failed
+//     evt:proc-updated  evt:proc-exited:<pid>
 extern napi_threadsafe_function gStateTsfn;
 extern std::string gSockPath;
 

@@ -286,7 +286,9 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     if (gStateTsfn)
     {
         char state[64];
-        snprintf(state, sizeof(state), "%d:wine-running", pid);
+        // broker 已受理 spawn — 仅表示进程拉起, 不代表窗口出现 (闪退检测靠
+        // evt:proc-exited, 见 ArkTS 启动反馈状态机)
+        snprintf(state, sizeof(state), "evt:launch-accepted:%d", pid);
         napi_call_threadsafe_function(gStateTsfn, strdup(state), napi_tsfn_blocking);
     }
     return pid;
@@ -716,7 +718,7 @@ napi_value RunWineExe(napi_env env, napi_callback_info info)
         pid_t pid = SpawnViaBroker(entryParams, wineEnv);
         if (pid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Wine] broker spawn failed");
-            if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("-1:wine-failed"), napi_tsfn_blocking);
+            if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("evt:launch-failed"), napi_tsfn_blocking);
             return nullptr;
         }
 
@@ -724,7 +726,7 @@ napi_value RunWineExe(napi_env env, napi_callback_info info)
         OH_LOG_INFO(LOG_APP, "[Wine] wine pid=%{public}d exe=%{public}s (via broker)", pid, wineExe);
         if (gStateTsfn) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "%d:wine-running", pid);
+            snprintf(msg, sizeof(msg), "evt:launch-accepted:%d", pid);
             napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
         }
     }

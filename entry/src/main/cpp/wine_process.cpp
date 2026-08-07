@@ -66,10 +66,10 @@ WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdo
                 pid, basename.c_str(), gProcRegistry.size());
     EnsureMonitorRunning();
     // 通知 ArkTS 刷新进程列表: wine 内部自启的子进程 (走 broker 登记) 没有
-    // 调用者发 wine-running, 必须在这里统一发一次, 否则新程序不出现在任务列表。
-    // ArkTS 侧对 process-updated 做了节流, 高频进出的系统进程不会触发大量刷新。
+    // 调用者发 evt:launch-accepted, 必须在这里统一发一次, 否则新程序不出现在任务列表。
+    // ArkTS 侧对 proc-updated 做了节流, 高频进出的系统进程不会触发大量刷新。
     if (gStateTsfn) {
-        napi_call_threadsafe_function(gStateTsfn, strdup("0:process-updated"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn, strdup("evt:proc-updated"), napi_tsfn_blocking);
     }
     return &gProcRegistry.back();
 }
@@ -143,7 +143,7 @@ void sigchld_handler(int) {
         RemoveProcess(pid);
         if (gStateTsfn) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "%d:exited", pid);
+            snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
             napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
         }
     }
@@ -178,7 +178,7 @@ static void ProcessMonitorLoop() {
             RemoveProcess(pid);
             if (gStateTsfn) {
                 char msg[64];
-                snprintf(msg, sizeof(msg), "%d:exited", pid);
+                snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
                 napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
             }
         }
@@ -229,7 +229,7 @@ void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> active) 
 
     if (gStateTsfn) {
         char msg[64];
-        snprintf(msg, sizeof(msg), "%d:exited", pid);
+        snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
         napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
     }
 }

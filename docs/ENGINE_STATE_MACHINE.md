@@ -93,7 +93,8 @@ SmokeRunner / automation 同步适配新协议（可随时推翻，不构成设�
   - 初始化/重启：`idle|ready|failed` 且非 busy；sessionAlive 时文案「重启 Wine 引擎」，
     动作 = stopAll → 等 engine-stopped → doInit（全程 busy）。
   - 停止全部：`sessionAlive` 时可用（不再用 prefixReady 当代理）。
-  - 重置 prefix：仅无会话时可用；动作编排 stop → reset → init，全程 busy。
+  - 重置 prefix：动作编排 stop → reset → init，全程 busy（实现时放宽为
+    "任何非忙状态可用"——停止编排已保证不踩活会话）。
   - 启动（应用库/文件页/长按菜单统一）：`engineState=='ready'`。
 - 启动成功判据：spawn 后 3s 内未收到该 pid 的 evt:proc-exited；desktop 模式可进一步
   关联 toplevel 事件。闪退 → 失败对话框（含导出日志入口）。
