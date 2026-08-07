@@ -35,6 +35,9 @@
 - `exited` 分支读 300ms 节流刷新前的旧列表（WineEnvService.ets:254 vs ProcessService.ets:81），
   最后一个进程退出后状态卡「运行中」。
 - root 销毁 ≠ 会话结束：desktopActive=false 时 wineserver/services/keep 全在跑。
+  【2026-08-07 更正】此观察有误：桌面**主动退出**时 wineserver 会跟随退出
+  （explorer 先走、wineserver 后走），桌面退出即会话终结。该错误前提使阶段2
+  一度把正常退出误报 `state:failed:wineserver`，修正见 §3 阶段2 补充。
 
 ### 1.5 启动成功判据不准
 - `wine-running` 语义 = broker 受理 spawn（wine_exe.cpp:279-291），不是窗口出现；
@@ -56,17 +59,22 @@
                launchClient               LaunchPadMode 成功 + wineserver 存活复查
   idle ─────────────────────► starting ────────────────────────────► ready
    ▲                              │                                   │
-   │                              │ 任一步骤致命失败                   │ wineserver 死亡
-   │                              ▼                                   ▼
-   │                           failed ◄───────────────────────────────┘
-   │ state:stopped               │ (消息带阶段: wineserver/wineboot/graphics/desktop)
-   │ (注册表进程全死 zombie 感知
-   │  + wineserver 死 + wayland 停)
-  stopping ◄──── stopAll ◄───────┘
+   │                              │ 任一步骤致命失败                   │ wineserver 崩溃
+   │                              ▼                                   │ (桌面主动退出带动
+   │                           failed ◄───────────────────────────────┤  跟随退出属正常终结
+   │ state:stopped               │ (消息带阶段: wineserver/wineboot/   │  → state:stopped)
+   │ (注册表进程全死 zombie 感知  │  graphics/desktop)                  │
+   │  + wineserver 死 + wayland 停)                                    │
+  stopping ◄──── stopAll ◄───────┴──── desktop 主动退出 ──────────────┘
 ```
 
 - 「完全退出」唯一判据：注册表进程全死（zombie 感知等待）且 wineserver 死且
   Wayland server 停 → 发一次 `state:stopped`。root 窗口销毁只是「桌面关闭」事件。
+- wineserver 死亡按死法分流（ProcMon）：`gShutdownRequested`（stopAll 等主动
+  停止）→ 由 drain 发 `state:stopped`；`gDesktopSessionEnded`（desktop root 先
+  销毁——桌面主动退出时 explorer 先走、wineserver 跟随退出）→ 扫尾残余进程后
+  同样按 `state:stopped` 收口（正常会话终结，不是故障）；其余才是崩溃 →
+  `state:failed:wineserver`。
 - desktop root 15s 超时不再硬放行装死：发 `state:ready-degraded`，UI 显示
   「桌面准备中…」，root 出现后补发 `evt:desktop-ready` 升级正式 ready。
 
@@ -128,6 +136,12 @@ SmokeRunner / automation 同步适配新协议（可随时推翻，不构成设�
   暖启动播种失败由"仅记日志"改为 state:failed:wineboot。）
 - ArkTS：重启/重置/停止改等 `state:stopped`（一次性 waiter，10s 超时硬放行为
   安全网）；wineserver 死亡 → failed 态 + 重试/重置入口（沿用 failInit）。
+- 【补充】桌面主动退出带动 wineserver 跟随退出 = 正常会话终结，不能误报
+  failed：desktop root 销毁（WaylandServer::OnToplevelDestroyed）置
+  `gDesktopSessionEnded`，ProcMon 锚点死亡时该标记置位 → KillAllProcesses
+  扫尾（winehua_keep 等残余）+ NotifyWhenSessionDrained 发 `state:stopped`；
+  标记未置位才报 `state:failed:wineserver`。PC 窗口模式无 desktop root，
+  标记永不置位，崩溃判定不变。
 - 验证：stopAll 后 ps 确认 wineserver 死；kill -9 wineserver UI 立即失败态；
   重启拿到干净会话（新 wineserver pid）。
 

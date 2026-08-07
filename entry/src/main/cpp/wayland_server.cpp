@@ -234,6 +234,10 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] desktop root toplevel #%{public}u destroyed, clearing root",
                         toplevelId);
             desktopRootToplevelId_ = 0;
+            // 桌面会话由 explorer 主动结束: 随后 wineserver 跟随退出属正常终结,
+            // ProcMon 据此按 state:stopped 收口而非误报 failed (仅 desktop 模式
+            // 有 root, PC 窗口模式不会走到这)
+            MarkDesktopSessionEnded();
         }
         // 被抓取窗口销毁 → 复位 move grab, 防止悬空 grab 吞掉后续 motion
         if (moveGrab_.GetToplevelId() == toplevelId) {

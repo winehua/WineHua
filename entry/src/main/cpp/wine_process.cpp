@@ -34,6 +34,12 @@ static std::vector<WineProcessEntry> gProcRegistry;
 // 停止编排完成后仍保持 — 此后注册表里已无存活会话, 迟到的死亡检测同样不该报失败。
 static std::atomic<pid_t> gWineserverPid{-1};
 static std::atomic<bool> gShutdownRequested{false};
+// gDesktopSessionEnded: desktop 根 toplevel 已销毁 (explorer 主动结束桌面会话)。
+// 桌面主动退出时 wineserver 会跟随退出 (explorer 先走、wineserver 后走) — 这是
+// 正常会话终结而非崩溃, ProcMon 据此把锚点死亡按 state:stopped 收口而非误报
+// state:failed:wineserver。只在 RegisterWineserver (新会话建立) 时清除。
+// PC 窗口模式没有 desktop root, 此标记永不置位, 崩溃判定行为不变。
+static std::atomic<bool> gDesktopSessionEnded{false};
 
 static uint64_t TimestampMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -59,11 +65,16 @@ bool IsProcessAliveNotZombie(pid_t pid) {
 void RegisterWineserver(pid_t pid) {
     gWineserverPid.store(pid);
     gShutdownRequested.store(false);
+    gDesktopSessionEnded.store(false);
     AddProcess(pid, "wineserver", -1);
 }
 
 pid_t GetWineserverPid() {
     return gWineserverPid.load();
+}
+
+void MarkDesktopSessionEnded() {
+    gDesktopSessionEnded.store(true);
 }
 
 // -- 注册表辅助函数 --
@@ -250,11 +261,22 @@ static void ProcessMonitorLoop() {
                 snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
                 napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
             }
-            // 主 wineserver 死亡 = 引擎失败 (桌面/全部客户端随之失效);
-            // stopAll 等主动停止 (gShutdownRequested) 期间不上报 — 那不是故障
+            // 主 wineserver 死亡, 按死法分三种收口:
+            // 1) gShutdownRequested (stopAll/reset 主动停止): StopAll 末尾的
+            //    drain 会发 state:stopped, 这里不动
+            // 2) gDesktopSessionEnded (桌面主动退出带动 wineserver 跟随退出,
+            //    explorer 先走 wineserver 后走): 正常会话终结不是崩溃 — 扫尾
+            //    残余进程 (winehua_keep 等) 后按正常停止发 state:stopped
+            // 3) 其余 = 非预期死亡: 报 state:failed:wineserver (引擎故障)
             if (pid == gWineserverPid.load(std::memory_order_acquire)) {
                 gWineserverPid.store(-1, std::memory_order_release);
-                if (!gShutdownRequested.load(std::memory_order_acquire) && gStateTsfn) {
+                if (gShutdownRequested.load(std::memory_order_acquire)) {
+                    // 主动停止编排中, state:stopped 由 StopAll 的 drain 发
+                } else if (gDesktopSessionEnded.load(std::memory_order_acquire)) {
+                    OH_LOG_INFO(LOG_APP, "[ProcMon] wineserver exited after desktop session end, clean stop");
+                    KillAllProcesses();
+                    NotifyWhenSessionDrained();
+                } else if (gStateTsfn) {
                     OH_LOG_ERROR(LOG_APP, "[ProcMon] wineserver died unexpectedly, emit state:failed:wineserver");
                     napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
                                                   napi_tsfn_blocking);

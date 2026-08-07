@@ -27,7 +27,9 @@ struct WineProcessEntry {
 // 消息协议 (native → ArkTS, 单向): 分两类, ArkTS 侧按前缀分发, 不做启发式猜测。
 //   state:<name>[:<detail>]  引擎持久状态迁移 (状态机语义):
 //     state:starting:wineserver|wineboot  state:ready  state:failed:<stage>
-//     state:stopped   stopAll 编排完成 (注册表进程全死 zombie 感知 + wineserver 死)
+//     state:stopped   会话终结 (注册表进程全死 zombie 感知 + wineserver 死);
+//         两个触发点: stopAll 编排完成 / 桌面主动退出带动 wineserver 跟随退出
+//         (正常终结, desktop root 先销毁 — 由 gDesktopSessionEnded 判别)
 //     state:ready-degraded   桌面根 15s 未就绪的降级 ready (仅 desktop 模式;
 //         root 出现后由 evt:desktop-ready 升级为正式 ready)
 //   state:failed:wineserver 的另一触发点: ProcMon 检测到主 wineserver 非预期
@@ -51,6 +53,10 @@ void KillAllProcesses();
 // KillAllProcesses 可杀) 并记为会话锚点, 其非预期死亡 → state:failed:wineserver
 void RegisterWineserver(pid_t pid);
 pid_t GetWineserverPid();
+// desktop 根 toplevel 销毁时调用 (WaylandServer::OnToplevelDestroyed):
+// 标记桌面会话已由 explorer 主动结束 — 随后 wineserver 跟随退出属正常终结,
+// ProcMon 按 state:stopped 收口而非误报 state:failed:wineserver
+void MarkDesktopSessionEnded();
 // 后台 zombie 感知等待注册表进程 (含 wineserver) 全部死亡, 完成发一次
 // state:stopped — ArkTS 重启/重置/停止编排的继续条件 (stopAll 末尾调用)
 void NotifyWhenSessionDrained();
