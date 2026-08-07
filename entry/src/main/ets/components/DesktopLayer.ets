@@ -1,6 +1,8 @@
+import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { InputSettingsService } from '../service/InputSettingsService';
 import { OH2EVDEV } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 
@@ -81,6 +83,241 @@ export struct DesktopLayer {
   // hover 移动抽样日志计数
   private hoverLogCounter: number = 0;
 
+  // ── 触摸模拟鼠标 (触控板模式, 悬浮条开关; InputSettingsService 镜像) ──
+  // 开启后单指手势状态机整体旁路: 滑动=相对位移移虚拟光标, 点按=左键,
+  // 长按=右键, 双击后按住拖动=拖拽, 双指拖动=滚动(作用于光标处)。
+  // 两套语义不能混用 — 直接触控"指哪点哪", 触控板"光标在哪点哪"。
+  @State private touchpadOn: boolean = false;
+  // 虚拟光标指示点位置 (vp, position 左上角语义); 屏外负值=不显示
+  @State private cursorVpX: number = -100;
+  @State private cursorVpY: number = -100;
+  private vcX: number = 0;   // 虚拟光标 (物理 px)
+  private vcY: number = 0;
+  private vcInit: boolean = false;
+  private scrWPx: number = 0;
+  private scrHPx: number = 0;
+  private cursorSpeed: number = 1.0;
+  private input: InputSettingsService = InputSettingsService.getInstance();
+  // 触控板手势状态 (与直接触控状态机字段互不共用)
+  private tpDown: boolean = false;
+  private tpDownX: number = 0;   // Down 时触摸点 (vp)
+  private tpDownY: number = 0;
+  private tpLastX: number = 0;
+  private tpLastY: number = 0;
+  private tpDownTime: number = 0;
+  private tpMoved: boolean = false;
+  private tpDragArmed: boolean = false;  // 双击后按住: 拖拽预备
+  private tpDragging: boolean = false;
+  private tpDragTl: number = 0;
+  private tpLastTapTime: number = 0;
+  private tpLastTapVcX: number = 0;
+  private tpLastTapVcY: number = 0;
+  private tpTwoFinger: boolean = false;
+  private tpTwoFingerLastMidX: number = 0;
+  private tpTwoFingerLastMidY: number = 0;
+  private tpScrollAccumX: number = 0;
+  private tpScrollAccumY: number = 0;
+
+  aboutToAppear(): void {
+    this.input.subscribe(this.mirrorInput);
+    this.mirrorInput();
+  }
+
+  private mirrorInput = (): void => {
+    this.touchpadOn = this.input.touchpadEnabled;
+    this.cursorSpeed = this.input.cursorSpeed;
+    if (this.touchpadOn && !this.vcInit) {
+      // 虚拟光标初始位置: 屏幕中心
+      this.ensureScreenPx();
+      this.vcX = this.scrWPx / 2;
+      this.vcY = this.scrHPx / 2;
+      this.vcInit = true;
+      this.syncCursorIndicator();
+    }
+  }
+
+  private ensureScreenPx(): void {
+    if (this.scrWPx > 0) return;
+    try {
+      const d = display.getDefaultDisplaySync();
+      this.scrWPx = d.width;
+      this.scrHPx = d.height;
+    } catch (_) {
+      this.scrWPx = 1280;
+      this.scrHPx = 800;
+    }
+  }
+
+  private syncCursorIndicator(): void {
+    // 指示点为 14vp 圆, position 是左上角坐标 → 减半径使圆心对正光标
+    this.cursorVpX = px2vp(this.vcX) - 7;
+    this.cursorVpY = px2vp(this.vcY) - 7;
+  }
+
+  private tlAtCursor(): number {
+    return (testNapi.findToplevelAt(Math.round(this.vcX), Math.round(this.vcY)) as number) ?? 0;
+  }
+
+  private clickAtCursor(btn: number): void {
+    const tl = this.tlAtCursor();
+    if (tl <= 0) return;
+    testNapi.raiseToplevel(tl);
+    const x = Math.round(this.vcX);
+    const y = Math.round(this.vcY);
+    testNapi.sendPointerEvent(tl, MouseAction.Press, x, y, btn);
+    testNapi.sendPointerEvent(tl, MouseAction.Release, x, y, btn);
+  }
+
+  private resetTouchpadState(): void {
+    if (this.tpDragging && this.tpDragTl > 0) {
+      testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Release,
+        Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
+    }
+    this.tpDown = false;
+    this.tpMoved = false;
+    this.tpDragArmed = false;
+    this.tpDragging = false;
+    this.tpDragTl = 0;
+    this.tpTwoFinger = false;
+    this.tpLastTapTime = 0;
+  }
+
+  // 触控板模式 onTouch 总入口 (touchpadOn 时替代单/双指手势状态机)
+  private handleTouchpad(ev: TouchEvent): void {
+    // 物理鼠标合成 touch 旁路 (与直接触控同一守卫; onMouse Press 里负责清态)
+    if (this.mouseLeftActive) return;
+    this.ensureScreenPx();
+
+    // 双指: 滚动作用于光标处 (触控板语义), 并打断单指/拖拽
+    if (ev.touches.length >= 2) {
+      let midX = 0, midY = 0;
+      for (let i = 0; i < ev.touches.length; i++) {
+        midX += vp2px(ev.touches[i].x);
+        midY += vp2px(ev.touches[i].y);
+      }
+      midX /= ev.touches.length;
+      midY /= ev.touches.length;
+      if (!this.tpTwoFinger) {
+        if (this.tpDragging && this.tpDragTl > 0) {
+          testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Release,
+            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
+        }
+        this.tpDown = false;
+        this.tpDragging = false;
+        this.tpDragTl = 0;
+        this.tpDragArmed = false;
+        this.tpTwoFinger = true;
+        this.tpTwoFingerLastMidX = midX;
+        this.tpTwoFingerLastMidY = midY;
+        this.tpScrollAccumX = 0;
+        this.tpScrollAccumY = 0;
+      } else {
+        this.tpScrollAccumY += this.tpTwoFingerLastMidY - midY;
+        this.tpScrollAccumX += midX - this.tpTwoFingerLastMidX;
+        this.tpTwoFingerLastMidX = midX;
+        this.tpTwoFingerLastMidY = midY;
+        const tl = this.tlAtCursor();
+        if (tl > 0) {
+          while (Math.abs(this.tpScrollAccumY) >= DesktopLayer.SCROLL_STEP_PX) {
+            const sign = this.tpScrollAccumY > 0 ? 1 : -1;
+            testNapi.sendScrollEvent(tl, 0, sign, DesktopLayer.SCROLL_STEP_PX,
+              Math.round(this.vcX), Math.round(this.vcY));
+            this.tpScrollAccumY -= sign * DesktopLayer.SCROLL_STEP_PX;
+          }
+          while (Math.abs(this.tpScrollAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
+            const sign = this.tpScrollAccumX > 0 ? 1 : -1;
+            testNapi.sendScrollEvent(tl, 1, sign, DesktopLayer.SCROLL_STEP_PX,
+              Math.round(this.vcX), Math.round(this.vcY));
+            this.tpScrollAccumX -= sign * DesktopLayer.SCROLL_STEP_PX;
+          }
+        }
+      }
+      return;
+    }
+    if (this.tpTwoFinger) {
+      this.tpTwoFinger = false;
+      return;
+    }
+
+    const t = ev.changedTouches[0];
+    if (!t) return;
+
+    if (ev.type === TouchType.Down) {
+      this.tpDown = true;
+      this.tpMoved = false;
+      this.tpDownX = t.x;
+      this.tpDownY = t.y;
+      this.tpLastX = t.x;
+      this.tpLastY = t.y;
+      this.tpDownTime = Date.now();
+      // 双击后按住 → 拖拽预备 (标准触控板 drag 手势: 第二次 Down 且光标没怎么挪)
+      const dvc = Math.abs(this.vcX - this.tpLastTapVcX) + Math.abs(this.vcY - this.tpLastTapVcY);
+      this.tpDragArmed = this.tpLastTapTime > 0
+        && (Date.now() - this.tpLastTapTime) < DesktopLayer.DOUBLE_TAP_MS
+        && dvc < DesktopLayer.DOUBLE_TAP_DIST * 2;
+    } else if (ev.type === TouchType.Move) {
+      if (!this.tpDown) return;
+      const dxPx = vp2px(t.x - this.tpLastX) * this.cursorSpeed;
+      const dyPx = vp2px(t.y - this.tpLastY) * this.cursorSpeed;
+      this.tpLastX = t.x;
+      this.tpLastY = t.y;
+      if (dxPx == 0 && dyPx == 0) return;
+      if (!this.tpMoved) {
+        const moved = Math.abs(vp2px(t.x - this.tpDownX)) + Math.abs(vp2px(t.y - this.tpDownY));
+        if (moved >= DesktopLayer.DRAG_THRESHOLD) {
+          this.tpMoved = true;
+        }
+      }
+      this.vcX = Math.min(Math.max(this.vcX + dxPx, 0), this.scrWPx);
+      this.vcY = Math.min(Math.max(this.vcY + dyPx, 0), this.scrHPx);
+      this.syncCursorIndicator();
+      if (this.tpDragArmed && !this.tpDragging && this.tpMoved) {
+        // 拖拽开始: 在光标处按下左键
+        this.tpDragging = true;
+        this.tpDragTl = this.tlAtCursor();
+        if (this.tpDragTl > 0) {
+          testNapi.raiseToplevel(this.tpDragTl);
+          testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Press,
+            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
+        }
+      }
+      const moveTl = this.tpDragging ? this.tpDragTl : this.tlAtCursor();
+      if (moveTl > 0) {
+        testNapi.sendPointerEvent(moveTl, MouseAction.Move,
+          Math.round(this.vcX), Math.round(this.vcY), 0);
+      }
+    } else if (ev.type === TouchType.Up) {
+      if (!this.tpDown) return;
+      this.tpDown = false;
+      if (this.tpDragging) {
+        if (this.tpDragTl > 0) {
+          testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Release,
+            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
+        }
+        this.tpDragging = false;
+        this.tpDragTl = 0;
+        this.tpDragArmed = false;
+        this.tpLastTapTime = 0;
+        return;
+      }
+      this.tpDragArmed = false;
+      if (!this.tpMoved) {
+        const elapsed = Date.now() - this.tpDownTime;
+        if (elapsed >= DesktopLayer.LONG_PRESS_MS) {
+          this.clickAtCursor(mapMouseButton(2));
+          this.tpLastTapTime = 0;
+        } else {
+          this.clickAtCursor(mapMouseButton(1));
+          this.tpLastTapTime = Date.now();
+          this.tpLastTapVcX = this.vcX;
+          this.tpLastTapVcY = this.vcY;
+        }
+      }
+    } else if (ev.type === TouchType.Cancel) {
+      this.resetTouchpadState();
+    }
+  }
+
   build() {
     Stack() {
       XComponent({
@@ -92,6 +329,11 @@ export struct DesktopLayer {
       // ── 触控处理: 单指→左键/右键/拖拽, 双指→滚轮 ──
       .onTouch((ev: TouchEvent) => {
         try {
+          // 触控板模式: 走独立相对位移语义, 旁路下方直接触控状态机
+          if (this.touchpadOn) {
+            this.handleTouchpad(ev);
+            return;
+          }
           // ── 双指滚动 ──
           if (ev.touches.length >= 2) {
             // 取消单指状态
@@ -327,9 +569,11 @@ export struct DesktopLayer {
             if (ev.action === MouseAction.Press) {
               this.mouseLeftActive = true;
               // 竞态: 合成 touch 可能先一步进入 PENDING/DRAG, 静默清除
-              // (其后续 Move/Up 会被 mouseLeftActive 拦截, 不会双发)
+              // (其后续 Move/Up 会被 mouseLeftActive 拦截, 不会双发);
+              // 触控板模式同理清态 (合成 touch 可能先一步 Down)
               this.touchPending = false;
               this.isDragging = false;
+              this.resetTouchpadState();
               const tl: number = testNapi.findToplevelAt(px, py) as number;
               if (tl <= 0) {
                 this.leftBtnTl = 0;
@@ -399,6 +643,16 @@ export struct DesktopLayer {
         if (vert !== 0) testNapi.sendScrollEvent(tl, 0, vert, step, wpx, wpy);
         if (horiz !== 0) testNapi.sendScrollEvent(tl, 1, horiz, step, wpx, wpy);
       })
+
+      // ── 触控板虚拟光标指示 (不响应触摸, 纯展示) ──
+      if (this.touchpadOn) {
+        Circle({ width: 14, height: 14 })
+          .fill('#66FFFFFF')
+          .stroke(Color.White)
+          .strokeWidth(1.5)
+          .position({ x: this.cursorVpX, y: this.cursorVpY })
+          .hitTestBehavior(HitTestMode.None)
+      }
     }
     .width('100%').height('100%').backgroundColor('#000')
   }

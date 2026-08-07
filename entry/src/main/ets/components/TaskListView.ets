@@ -3,7 +3,7 @@ import { AppLibraryService } from '../service/AppLibraryService';
 import { EmptyState } from './EmptyState';
 
 // 运行中页: 会话卡片 (图标/名称/状态点/结束操作)。
-// 卡片无点击行为 (回桌面走 HomeBall / 标题栏"回桌面"), "结束"直接 kill;
+// 卡片无点击行为 (回桌面走悬浮条 Home / 标题栏"回桌面"), "结束"直接 kill;
 // 不提供"停止全部"(批量操作误伤面大, 逐个结束更可控)。
 // 下拉刷新: Refresh 包 List (Pad 触控场景); ↻ 按钮保留 (PC 无下拉习惯)。
 // 注: 曾有的"开发者·进程列表"折叠区已删除 — native getProcessList 只返回

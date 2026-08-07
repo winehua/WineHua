@@ -8,7 +8,9 @@ import { EnvPanel } from '../components/EnvPanel';
 import { SettingsView } from '../components/SettingsView';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
-import { HomeBall } from '../components/HomeBall';
+import { FloatingBar } from '../components/FloatingBar';
+import { GamepadOverlay } from '../components/GamepadOverlay';
+import { InputSettingsService } from '../service/InputSettingsService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -28,7 +30,7 @@ struct Index {
   // 初始化失败 (首启引导 4.8): overlay 把 spinner 换成 重试/重置 入口
   @State initFailed: boolean = false;
   @State currentIndex: number = 0;
-  // -- 桌面三层 (Step 3.5): Layer0 DesktopLayer / Layer1 启动器 / Layer2 HomeBall --
+  // -- 桌面三层 (Step 3.5): Layer0 DesktopLayer / Layer1 启动器 / Layer2 FloatingBar --
   // desktopActive 由 WineWindowManager 驱动: desktop_root 出现置 true,
   // root 销毁 (会话停止) 翻回 false 回到启动器
   @State desktopActive: boolean = false;
@@ -88,6 +90,7 @@ struct Index {
     this.proc.bindEnv(env);
     env.init(getContext(this));
     AppLibraryService.getInstance().init(getContext(this));
+    InputSettingsService.getInstance().init(getContext(this));
     // 断点镜像: 订阅 BreakpointSystem (update 由根 Stack onAreaChange 喂入)
     const bps = BreakpointSystem.getInstance();
     bps.subscribe(() => {
@@ -345,13 +348,15 @@ struct Index {
     }
     .width('100%').height('100%')
     .visibility(this.launcherVisible ? Visibility.Visible : Visibility.Hidden)
-    // Layer 2: 悬浮球 (仅桌面激活且启动器隐藏时可见)
+    // Layer 2: 桌面悬浮条 + 手柄覆盖层 (仅桌面激活且启动器隐藏时可见)
     if (this.desktopActive && !this.launcherVisible) {
-      HomeBall({
+      FloatingBar({
         onHome: (): void => {
           this.launcherVisible = true;
         }
       })
+      // 覆盖层自门控 (InputSettingsService.gamepadEnabled), 未开时不渲染
+      GamepadOverlay()
     }
     // init overlay 原样置顶 (首启引导 4.8: 阶段文案; 失败给 重试/重置 入口)
     if (this.initOverlayVisible && !this.prefixReady) {
