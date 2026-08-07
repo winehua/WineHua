@@ -76,6 +76,11 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "WINEDLLPATH=" + dllPath,
         "WINEDEBUG=-all",
         "LANG=" + wineLang + ".UTF-8",
+        // OHOS musl 无 locale 数据, setlocale 激活失败返回 "C";
+        // Wine 的 unix_to_win_locale 遇 "C" 只读 LC_ALL 兜底 (ntdll/unix/env.c),
+        // 单设 LANG 无效, 必须补 LC_ALL 才能解析出对应 LCID (0x0804 zh-CN),
+        // 与 LANG 同取设置页 wineLang (zh_CN/en_US)
+        "LC_ALL=" + wineLang + ".UTF-8",
         "XKB_CONFIG_ROOT=" + xkbDir,
         "PATH=/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir,
         "TMPDIR=" WINE_TMPDIR,
