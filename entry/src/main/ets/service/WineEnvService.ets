@@ -130,7 +130,7 @@ export class WineEnvService {
   // doInit 防重入: 覆盖 picker→解压→launchClient 全异步段 (首启解压可达数分钟),
   // 由 state:ready / state:failed / failInit 清除
   initBusy: boolean = false;
-  // 重启/重置/停止编排进行中 (stopAll → 等会话清空 → 后续动作), 期间禁止一切会话操作
+  // 重启/重置/停止编排进行中 (stopAll → 等 state:stopped → 后续动作), 期间禁止一切会话操作
   opBusy: boolean = false;
 
   private hasRawfileWineData: boolean = false;
@@ -139,6 +139,8 @@ export class WineEnvService {
   private listeners: Array<() => void> = [];
   // 事件订阅 (evt:* 瞬时消息, 参数为去掉 'evt:' 前缀的事件体, 如 'proc-exited:1234')
   private eventListeners: Array<(evt: string) => void> = [];
+  // 等待 state:stopped 的一次性回调 (重启/重置/停止编排), 由 handleEngineState 兑现
+  private stopWaiters: Array<() => void> = [];
 
   // -- 自动化启动参数 (EntryAbility want → AppStorage → init 读取) --
   private smokeRequest: SmokeLaunchRequest = defaultSmokeRequest();
@@ -329,17 +331,24 @@ export class WineEnvService {
       // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
       this.waitForPrefix();
     } else if (name == 'failed') {
-      // 覆盖 wineserver/wineboot 等全部启动失败 — 此前 ArkTS 没有这两个分支,
-      // 首启失败会永久停在初始化 spinner 且无重试入口
+      // 覆盖启动失败 (wineserver spawn/wineboot) 与运行中主 wineserver 非预期
+      // 死亡 (ProcMon 上报) — 失败统一进 failInit: overlay 给 重试/重置 入口,
+      // 此前首启失败会永久停在初始化 spinner 无自救入口
       this.engineState = 'failed';
       this.engineStage = detail;
       this.failInit(`Wine 引擎启动失败 (${detail || 'unknown'})`);
     } else if (name == 'stopping') {
       this.engineState = 'stopping';
     } else if (name == 'stopped') {
+      // native 停止编排完成 (注册表进程全死 zombie 感知 + wineserver 死 +
+      // Wayland 停)。注意不在此清 opBusy: 重启/重置编排还有后续动作
+      // (doInit/删 prefix), 由各编排自己在完成时清
       this.engineState = 'idle';
       this.engineStage = '';
-      this.opBusy = false;
+      const waiters = this.stopWaiters.splice(0);
+      for (const resolve of waiters) {
+        resolve();
+      }
     } else {
       hilog.warn(DOMAIN, 'wine', 'unknown engine state: %{public}s', body);
     }
@@ -594,7 +603,8 @@ export class WineEnvService {
       this.automationMode, this.prefixMode, this.d3dBackend);
   }
 
-  // 重置 prefix (编排式): 有会话先停止并等清空, 再删 prefix, 最后自动重新初始化。
+  // 重置 prefix (编排式): 有会话先停止并等 state:stopped (native 确认注册表进程
+  // 全死 zombie 感知 + wineserver 死), 再删 prefix, 最后自动重新初始化。
   // 全程 opBusy, 按钮矩阵据此禁用一切会话操作 — 旧版运行中可直接重置,
   // 等于在活着的 wineserver/explorer 脚下删 prefix
   doReset = (): void => {
@@ -613,7 +623,7 @@ export class WineEnvService {
           } catch (e) {
             hilog.error(DOMAIN, 'wine', 'reset stopAll error: %{public}s', JSON.stringify(e));
           }
-          await this.waitForSessionStop(10000);
+          await this.waitForEngineStopped(10000);
         }
         this.setInitStatus('正在清空...', true);
         try {
@@ -627,9 +637,9 @@ export class WineEnvService {
         this.engineStage = '';
         this.prefixReady = false;
         ProcessService.getInstance().clear();
-        /* 注意: 阶段2 之前 stopAll 不杀主 wineserver (它未登记进程注册表),
-         * 其内存 registry 仍属旧 prefix, reset 后的 doInit 会静默复用它
-         * (socket 锁) — 阶段2 把 wineserver 纳入 stopAll 后才真正干净 */
+        // state:stopped 已确认主 wineserver 被杀干净, 随后的 doInit 会 spawn
+        // 全新 wineserver — 阶段1 遗留的"旧 wineserver 内存 registry 复用
+        // 旧 prefix"问题自此消除
         this.setInitStatus('已清空', false);
         setTimeout(() => this.doInit(), 500);
       } finally {
@@ -658,32 +668,40 @@ export class WineEnvService {
       } catch (e) {
         hilog.error(DOMAIN, 'wine', 'restart stopAll error: %{public}s', JSON.stringify(e));
       }
-      await this.waitForSessionStop(10000);
+      await this.waitForEngineStopped(10000);
       this.engineState = 'idle';
       this.opBusy = false;
       this.doInit();
     })();
   }
 
-  // 停止完成判定 (阶段1 近似): 桌面 root 销毁 + 可见进程表清空。
-  // 轮询而非事件: ProcMon 1Hz + ArkTS 300ms 节流, 典型 1~2s 完成; 超时硬放行
-  // (阶段2 native 会发 state:stopped 事件取代轮询)
-  private async waitForSessionStop(timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const running = ProcessService.getInstance().processList
-        .filter((p: ProcessInfo) => p.state === 'running').length;
-      if (!this.desktopActive && running == 0) {
-        return;
-      }
-      await new Promise<void>(r => setTimeout(r, 300));
-    }
-    hilog.warn(DOMAIN, 'wine', 'waitForSessionStop timeout, proceeding anyway');
+  // 停止完成判定 (阶段2 起为事件): native stopAll 在注册表进程全死
+  // (zombie 感知) + 主 wineserver 死 + Wayland 停之后发一次 state:stopped,
+  // 这里挂一次性回调等它 — 取代阶段1 的"桌面销毁 + 进程表空"轮询
+  // (ProcMon 1Hz + ArkTS 300ms 节流的近似判据)。超时硬放行仅作安全网:
+  // native 卡死时不至于把 UI 软锁在 stopping
+  private waitForEngineStopped(timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (!done) {
+          done = true;
+          resolve();
+        }
+      };
+      this.stopWaiters.push(finish);
+      setTimeout(() => {
+        if (!done) {
+          hilog.warn(DOMAIN, 'wine', 'waitForEngineStopped timeout, proceeding anyway');
+          finish();
+        }
+      }, timeoutMs);
+    });
   }
 
   // 停止全部 Windows 会话 (环境页"会话维护"卡): native stopAll 杀全部登记进程 +
-  // 停 Wayland server, 桌面 root 随之销毁 → WineWindowManager 翻回启动器。
-  // 异步等进程表清空后状态归零; 期间 opBusy 禁用重启/重置
+  // 主 wineserver + 停 Wayland server, 桌面 root 随之销毁 → WineWindowManager
+  // 翻回启动器。等 state:stopped 后状态归零; 期间 opBusy 禁用重启/重置
   stopAllSessions(): void {
     if (this.opBusy) {
       return;
@@ -697,7 +715,7 @@ export class WineEnvService {
       } catch (e) {
         hilog.error(DOMAIN, 'wine', 'stopAll error: %{public}s', JSON.stringify(e));
       }
-      await this.waitForSessionStop(10000);
+      await this.waitForEngineStopped(10000);
       this.engineState = 'idle';
       this.opBusy = false;
       this.notify();

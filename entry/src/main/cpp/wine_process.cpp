@@ -27,6 +27,14 @@
 static std::mutex gProcMutex;
 static std::vector<WineProcessEntry> gProcRegistry;
 
+// -- 主 wineserver 会话锚点 --
+// gShutdownRequested: 任何 KillAllProcesses (stopAll/stopClient/resetWinePrefix)
+// 都意味着主 wineserver 的死亡是主动停止而非引擎故障, ProcMon 据此抑制
+// state:failed:wineserver 上报; 只在 RegisterWineserver (新会话建立) 时清除,
+// 停止编排完成后仍保持 — 此后注册表里已无存活会话, 迟到的死亡检测同样不该报失败。
+static std::atomic<pid_t> gWineserverPid{-1};
+static std::atomic<bool> gShutdownRequested{false};
+
 static uint64_t TimestampMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count());
@@ -34,6 +42,29 @@ static uint64_t TimestampMs() {
 
 // 前向声明
 static void EnsureMonitorRunning();
+
+bool IsProcessAliveNotZombie(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE* f = fopen(path, "r");
+    if (!f) return false;                       // /proc 消失 = 已退出
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char* rp = strrchr(buf, ')');               // state 字段在最后一个 ')' 之后
+    return !(rp && rp[2] == 'Z');               // 僵尸 = 已退出
+}
+
+void RegisterWineserver(pid_t pid) {
+    gWineserverPid.store(pid);
+    gShutdownRequested.store(false);
+    AddProcess(pid, "wineserver", -1);
+}
+
+pid_t GetWineserverPid() {
+    return gWineserverPid.load();
+}
 
 // -- 注册表辅助函数 --
 WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd) {
@@ -92,6 +123,8 @@ void RemoveProcess(pid_t pid, int exitCode, const std::string& exitCodeSource) {
 }
 
 void KillAllProcesses() {
+    // 主动停止标记: 之后主 wineserver 的死亡检测 (ProcMon) 不再报 state:failed
+    gShutdownRequested.store(true);
     std::lock_guard<std::mutex> lock(gProcMutex);
     for (auto& entry : gProcRegistry) {
         if (entry.running) {
@@ -102,6 +135,42 @@ void KillAllProcesses() {
             if (entry.stdoutFd >= 0) { close(entry.stdoutFd); entry.stdoutFd = -1; }
         }
     }
+}
+
+// stopAll 末尾调用: 后台 zombie 感知等待注册表进程 (含主 wineserver) 全部死亡,
+// 完成发一次 state:stopped (蓝图「完全退出」判据的进程侧; Wayland server 由
+// 调用方在此之前同步停掉)。30s 封顶兜底: SIGKILL 下进程卡 D-state 不死时
+// 不至于永不发声 (ArkTS 侧另有超时硬放行, 双保险)。
+void NotifyWhenSessionDrained() {
+    std::thread([]() {
+        constexpr int kDrainTimeoutMs = 30000;
+        int waitedMs = 0;
+        while (waitedMs < kDrainTimeoutMs) {
+            bool anyAlive = false;
+            {
+                std::lock_guard<std::mutex> lock(gProcMutex);
+                for (const auto& entry : gProcRegistry) {
+                    if (entry.running && IsProcessAliveNotZombie(entry.pid)) {
+                        anyAlive = true;
+                        break;
+                    }
+                }
+            }
+            if (!anyAlive) break;
+            usleep(100000);
+            waitedMs += 100;
+        }
+        if (waitedMs >= kDrainTimeoutMs) {
+            OH_LOG_ERROR(LOG_APP, "[ProcReg] drain wait timeout: process survived SIGKILL");
+        }
+        gWineserverPid.store(-1);
+        OH_LOG_INFO(LOG_APP, "[ProcReg] session drained in %{public}d ms, emit state:stopped",
+                    waitedMs);
+        if (gStateTsfn) {
+            napi_call_threadsafe_function(gStateTsfn, strdup("state:stopped"),
+                                          napi_tsfn_blocking);
+        }
+    }).detach();
 }
 
 // -- 进程退出状态日志 --
@@ -152,6 +221,8 @@ void sigchld_handler(int) {
 // -- NCP 进程存活监控 --
 // NCP 子进程由 appspawn 创建，不是主进程的 fork() 子进程，
 // SIGCHLD 收不到它们的退出事件。通过 /proc/<pid> 轮询检测退出。
+// 判活必须 zombie 感知 (fork 模式子进程退出后 /proc 不立即消失),
+// 否则已退出的进程会被长期误判为存活。
 static std::atomic<bool> gMonitorRunning{false};
 static std::thread gMonitorThread;
 
@@ -165,9 +236,7 @@ static void ProcessMonitorLoop() {
             std::lock_guard<std::mutex> lock(gProcMutex);
             for (const auto& entry : gProcRegistry) {
                 if (!entry.running) continue;
-                char procPath[64];
-                snprintf(procPath, sizeof(procPath), "/proc/%d", entry.pid);
-                if (access(procPath, F_OK) != 0) {
+                if (!IsProcessAliveNotZombie(entry.pid)) {
                     exitedPids.push_back(entry.pid);
                 }
             }
@@ -180,6 +249,16 @@ static void ProcessMonitorLoop() {
                 char msg[64];
                 snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
                 napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
+            }
+            // 主 wineserver 死亡 = 引擎失败 (桌面/全部客户端随之失效);
+            // stopAll 等主动停止 (gShutdownRequested) 期间不上报 — 那不是故障
+            if (pid == gWineserverPid.load(std::memory_order_acquire)) {
+                gWineserverPid.store(-1, std::memory_order_release);
+                if (!gShutdownRequested.load(std::memory_order_acquire) && gStateTsfn) {
+                    OH_LOG_ERROR(LOG_APP, "[ProcMon] wineserver died unexpectedly, emit state:failed:wineserver");
+                    napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
+                                                  napi_tsfn_blocking);
+                }
             }
         }
     }

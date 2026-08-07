@@ -27,6 +27,9 @@ struct WineProcessEntry {
 // 消息协议 (native → ArkTS, 单向): 分两类, ArkTS 侧按前缀分发, 不做启发式猜测。
 //   state:<name>[:<detail>]  引擎持久状态迁移 (状态机语义):
 //     state:starting:wineserver|wineboot  state:ready  state:failed:<stage>
+//     state:stopped   stopAll 编排完成 (注册表进程全死 zombie 感知 + wineserver 死)
+//   state:failed:wineserver 的另一触发点: ProcMon 检测到主 wineserver 非预期
+//     死亡 (stopAll/KillAllProcesses 主动停止期间不上报)
 //   evt:<name>[:<pid>]       瞬时事件 (不迁移状态):
 //     evt:launch-accepted:<pid>  evt:launch-failed
 //     evt:proc-updated  evt:proc-exited:<pid>
@@ -38,6 +41,19 @@ WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdo
 void RemoveProcess(pid_t pid, int exitCode = -1,
                    const std::string& exitCodeSource = "unknown");
 void KillAllProcesses();
+
+// -- 主 wineserver 会话锚点 --
+// LaunchPadMode spawn wineserver 成功后登记: 加入进程注册表 (ProcMon 监视,
+// KillAllProcesses 可杀) 并记为会话锚点, 其非预期死亡 → state:failed:wineserver
+void RegisterWineserver(pid_t pid);
+pid_t GetWineserverPid();
+// 后台 zombie 感知等待注册表进程 (含 wineserver) 全部死亡, 完成发一次
+// state:stopped — ArkTS 重启/重置/停止编排的继续条件 (stopAll 末尾调用)
+void NotifyWhenSessionDrained();
+
+// fork 模式下子进程退出先变僵尸、/proc/<pid> 不消失（NCP 模式由 appspawn 立即 reap）。
+// 存活检测必须识别僵尸，否则把已退出的进程误判为存活 (wineboot 等待/ProcMon 共用)。
+bool IsProcessAliveNotZombie(pid_t pid);
 
 // -- 进程注册表只读访问 (供 NAPI handler) --
 std::vector<WineProcessEntry> GetProcessListSnapshot();

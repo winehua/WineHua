@@ -58,20 +58,8 @@ bool IsWinePrefixInitialized() {
     return IsWinePrefixInitialized(WINE_PREFIX);
 }
 
-// fork 模式下子进程退出先变僵尸、/proc/<pid> 不消失（NCP 模式由 appspawn 立即 reap）。
-// 存活检测必须识别僵尸，否则 wineboot 等待会白等到 kWinebootHangMs 超时。
-static bool IsProcessAliveNotZombie(pid_t pid) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
-    FILE* f = fopen(path, "r");
-    if (!f) return false;                       // /proc 消失 = 已退出
-    char buf[512];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = 0;
-    char* rp = strrchr(buf, ')');               // state 字段在最后一个 ')' 之后
-    return !(rp && rp[2] == 'Z');               // 僵尸 = 已退出
-}
+// IsProcessAliveNotZombie 已移至 wine_process.cpp (ProcMon / 停止编排共用),
+// 声明见 wine_process.h。
 
 // -- WoW64 syswow64 预填充辅助 --
 static bool EnsureDir(const std::string& path, mode_t mode)
@@ -412,6 +400,10 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d (via appspawn)", wsChildPid);
+        // 登记主 wineserver 为会话锚点: 入进程注册表 (PC 窗口 / Pad 桌面两条
+        // 路径共用此唯一 spawn 点, 一处登记全覆盖) → ProcMon 监视其存活,
+        // 非预期死亡上报 state:failed:wineserver; KillAllProcesses 也能杀到它
+        RegisterWineserver(wsChildPid);
         if (!WaitFor("wineserver socket", [p]() { return IsWineserverSocketReady(p->prefixDir); }, 5000, 100)) {
             OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
                         "wineboot will recover via server_connect retry+start_server");
@@ -537,20 +529,34 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         if (ret != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init FAILED ret=%{public}d",
                          (int)ret);
-        } else {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init pid=%{public}d", childPid);
-            /* 与首启相同的等待纪律: wineboot 活着就继续等, 大超时仅作挂死
-             * 安全网。wineboot 退出即 SetEvent, explorer 即可放行。 */
-            char procPath[64];
-            snprintf(procPath, sizeof(procPath), "/proc/%d", childPid);
-            constexpr int kWinebootHangMs = 3 * 60 * 1000;
-            int aliveMs = 0;
-            while (IsProcessAliveNotZombie(childPid) && aliveMs < kWinebootHangMs) {
-                usleep(500000);
-                aliveMs += 500;
-            }
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done (%{public}d ms)",
-                        aliveMs);
+            /* 播种失败必须上报, 不能再只记日志放行: 缺少这次 wineboot,
+             * explorer 的 run_wineboot 永远等不到 boot 事件, 桌面出不来但
+             * 状态机曾照样发 state:ready (静默失败)。注意 NCP 子进程由
+             * appspawn 立即 reap, host 拿不到退出码 — 可判定的终点就是
+             * "spawn 成功 + wineboot 退出后 wineserver 仍存活"。 */
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"),
+                                              napi_tsfn_blocking);
+            return false;
+        }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init pid=%{public}d", childPid);
+        /* 与首启相同的等待纪律: wineboot 活着就继续等, 大超时仅作挂死
+         * 安全网。wineboot 退出即 SetEvent, explorer 即可放行。 */
+        constexpr int kWinebootHangMs = 3 * 60 * 1000;
+        int aliveMs = 0;
+        while (IsProcessAliveNotZombie(childPid) && aliveMs < kWinebootHangMs) {
+            usleep(500000);
+            aliveMs += 500;
+        }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done (%{public}d ms)",
+                    aliveMs);
+        // wineboot 已退出: 若它因 wineserver 死亡而失败, 后续 explorer/ready 全是空转
+        if (!IsProcessAliveNotZombie(GetWineserverPid())) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver not alive after wineboot seed, abort");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
+                                              napi_tsfn_blocking);
+            return false;
         }
     }
 
@@ -655,6 +661,20 @@ void LaunchThreadFunc(LaunchParams* p) {
 
     bool ok = false;
     ok = LaunchPadMode(p, audioBootstrapFd, serializedEnv);
+
+    /* state:ready 前最后一次健康复查: explorer 桌面根等待可达 15s, 期间
+     * wineserver 若已崩溃, 此前照样发 ready → UI 显示"已就绪"但引擎已死
+     * (静默失败)。stage 命名 wineserver, 与 ProcMon 的非预期死亡上报一致。 */
+    if (ok) {
+        pid_t wsPid = GetWineserverPid();
+        if (wsPid <= 0 || !IsProcessAliveNotZombie(wsPid)) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver not alive at ready checkpoint, refuse ready");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
+                                              napi_tsfn_blocking);
+            ok = false;
+        }
+    }
 
     if (ok && gStateTsfn)
         napi_call_threadsafe_function(gStateTsfn, strdup("state:ready"), napi_tsfn_blocking);

@@ -59,14 +59,14 @@
    │                              │ 任一步骤致命失败                   │ wineserver 死亡
    │                              ▼                                   ▼
    │                           failed ◄───────────────────────────────┘
-   │ engine-stopped              │ (消息带阶段: wineserver/wineboot/graphics/desktop)
+   │ state:stopped               │ (消息带阶段: wineserver/wineboot/graphics/desktop)
    │ (注册表进程全死 zombie 感知
    │  + wineserver 死 + wayland 停)
   stopping ◄──── stopAll ◄───────┘
 ```
 
 - 「完全退出」唯一判据：注册表进程全死（zombie 感知等待）且 wineserver 死且
-  Wayland server 停 → 发一次 `engine-stopped`。root 窗口销毁只是「桌面关闭」事件。
+  Wayland server 停 → 发一次 `state:stopped`。root 窗口销毁只是「桌面关闭」事件。
 - desktop root 15s 超时不再硬放行装死：发 `wine-ready-degraded`，UI 显示
   「桌面准备中…」，root 出现后补发 `desktop-ready`。
 
@@ -77,6 +77,8 @@
 - `state:<name>` — 引擎持久状态迁移，仅状态机可写：
   `state:starting` / `state:ready` / `state:ready-degraded` / `state:stopping` /
   `state:stopped` / `state:failed:<stage>`
+  （`state:failed:wineserver` 有两个触发点：启动流程存活复查失败，以及 ProcMon
+  检测到运行中主 wineserver 非预期死亡；stopAll 等主动停止期间不上报）
 - `evt:<name>` — 瞬时事件：
   `evt:proc-added:<pid>:<name>` / `evt:proc-exited:<pid>` / `evt:launch-accepted:<pid>` /
   `evt:launch-failed` / `evt:desktop-ready` / `evt:desktop-closed`
@@ -112,12 +114,18 @@ SmokeRunner / automation 同步适配新协议（可随时推翻，不构成设�
 - 验证：arm64 + x86_64 构建；Pad 回归：运行中按钮不误解锁、重启无双桌面、
   杀进程状态复位、失败 overlay 有重试。
 
-### 阶段 2：native 会话终结信号
-- wineserver pid 登记 + ProcMon 监视；死亡发 evt + state:failed。
-- KillAllProcesses 连 wineserver 一起杀；zombie 感知等待全死后发 engine-stopped；
-  ProcMon 判活改 IsProcessAliveNotZombie。
-- 修静默失败：marker 失败发消息、wineboot 退出码检查、wine-ready 前复查 wineserver 存活。
-- ArkTS：重启/重置改等 engine-stopped；wineserver 死亡 → failed 态 + 重启入口。
+### 阶段 2：native 会话终结信号（已实现）
+- wineserver pid 登记 + ProcMon 监视；死亡发 evt + state:failed:wineserver
+  （ProcMon 1Hz 检测；stopAll/KillAllProcesses 主动停止期间由
+  gShutdownRequested 抑制上报）。
+- KillAllProcesses 连 wineserver 一起杀（登记后自动覆盖）；zombie 感知等待全死后
+  发一次 `state:stopped`（30s 封顶兜底）；ProcMon 判活改 IsProcessAliveNotZombie。
+- 修静默失败：marker 失败发消息（阶段1已做）、wineboot 结果检查、state:ready 前
+  复查 wineserver 存活。（实现注记：NCP 子进程由 appspawn 立即 reap，host 拿不到
+  wineboot 退出码；可判定终点 = spawn 成功 + wineboot 退出后 wineserver 仍存活，
+  暖启动播种失败由"仅记日志"改为 state:failed:wineboot。）
+- ArkTS：重启/重置/停止改等 `state:stopped`（一次性 waiter，10s 超时硬放行为
+  安全网）；wineserver 死亡 → failed 态 + 重试/重置入口（沿用 failInit）。
 - 验证：stopAll 后 ps 确认 wineserver 死；kill -9 wineserver UI 立即失败态；
   重启拿到干净会话（新 wineserver pid）。
 

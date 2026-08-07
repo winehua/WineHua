@@ -446,11 +446,15 @@ static napi_value StopClient(napi_env, napi_callback_info) {
     return nullptr;
 }
 
-// -- NAPI: stopAll — 杀掉所有 Wine 进程 + 停 Wayland server --
+// -- NAPI: stopAll — 杀掉所有 Wine 进程 (含主 wineserver) + 停 Wayland server --
 static napi_value StopAll(napi_env, napi_callback_info) {
     KillAllProcesses();
     winehua::GraphicsBroker::GetInstance().Stop();
     WaylandServer::GetInstance()->Stop();
+    // 会话终结信号: zombie 感知等待全部死亡后发一次 state:stopped —
+    // ArkTS 重启/重置/停止编排以它为继续条件 (取代阶段1 的进程表轮询)。
+    // 放在 Wayland Stop (同步 join) 之后, 保证"完全退出"判据三项齐备才发声
+    NotifyWhenSessionDrained();
     return nullptr;
 }
 
