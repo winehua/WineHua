@@ -54,7 +54,7 @@ export struct EnvPanel {
     if (this.state == 'ready') {
       return this.sessionAlive ? $r('app.color.state_ok') : $r('app.color.state_info');
     }
-    if (this.state == 'starting' || this.state == 'stopping') {
+    if (this.state == 'starting' || this.state == 'stopping' || this.state == 'ready-degraded') {
       return $r('app.color.state_info');
     }
     return $r('app.color.text_tertiary');
@@ -173,10 +173,12 @@ export struct EnvPanel {
             .width('100%')
           Button(this.sessionAlive ? '重启 Wine 引擎' : (this.prefixReady ? '启动 Wine 引擎' : '初始化 Wine'))
             .width('100%').backgroundColor($r('app.color.action_primary'))
-            // 判据 = 状态机: 仅 空闲/就绪/失败 可进入; 会话存活时走
-            // restartEngine 编排 (先停后启), 不再直接 doInit 双开桌面
+            // 判据 = 状态机: 仅 空闲/就绪/降级/失败 可进入; 会话存活时走
+            // restartEngine 编排 (先停后启), 不再直接 doInit 双开桌面。
+            // ready-degraded 必须可重启: 桌面一直没起来时这是用户自救入口
             .enabled(!this.busy &&
-              (this.state == 'idle' || this.state == 'ready' || this.state == 'failed'))
+              (this.state == 'idle' || this.state == 'ready' || this.state == 'failed' ||
+                this.state == 'ready-degraded'))
             .onClick(() => {
               this.restartHint = false;
               this.env.restartEngine();

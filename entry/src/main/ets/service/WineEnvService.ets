@@ -94,7 +94,8 @@ function removePathRecursive(path: string): void {
 // 持有引擎状态机 (engineState, 仅 native state:* 消息迁移) 与会话存活派生
 // (sessionAlive = 桌面 root || 进程在跑), UI 的状态文案与按钮使能全部以此为准;
 // native evt:* 瞬时事件经 subscribeEvents 转发 (ProcessService/启动反馈),
-// 事件永不迁移状态机。自动化 (smoke/game) 启动参数来自 EntryAbility.publishLaunchRequest
+// 事件除 desktop-ready 补票升级 ready-degraded 外永不迁移状态机。
+// 自动化 (smoke/game) 启动参数来自 EntryAbility.publishLaunchRequest
 // 写入的 AppStorage, 在 init 时读取并参数化 doInit (免 picker 的 Z: home、clean prefix、
 // D3D 后端等)。
 export class WineEnvService {
@@ -202,6 +203,8 @@ export class WineEnvService {
       this.statusText = this.initOverlayText || '正在初始化...';
     } else if (this.engineState == 'ready') {
       this.statusText = this.sessionAlive ? '运行中' : '已就绪';
+    } else if (this.engineState == 'ready-degraded') {
+      this.statusText = '桌面准备中...';
     } else if (this.engineState == 'stopping') {
       this.statusText = '正在停止...';
     } else if (this.engineState == 'failed') {
@@ -297,15 +300,21 @@ export class WineEnvService {
     this.notify();
   }
 
-  // native 消息入口: 按协议前缀分发 — state:* 迁移引擎状态机 (唯一写入口),
-  // evt:* 作为瞬时事件转发给事件订阅方 (ProcessService 刷新 / 启动反馈),
-  // 事件永不触碰 engineState
+  // native 消息入口: 按协议前缀分发 — state:* 迁移引擎状态机,
+  // evt:* 作为瞬时事件转发给事件订阅方 (ProcessService 刷新 / 启动反馈);
+  // 唯一例外: evt:desktop-ready 把 ready-degraded 补票升级为 ready (蓝图 §2.2)
   private onNativeState = (s: string): void => {
     hilog.info(DOMAIN, 'wine', 'state: %{public}s', s);
     if (s.startsWith('state:')) {
       this.handleEngineState(s.substring(6));
     } else if (s.startsWith('evt:')) {
-      this.emitEvent(s.substring(4));
+      const body = s.substring(4);
+      // "evt 永不迁移状态机"的唯一例外 (蓝图 §2.2): desktop-ready 把
+      // ready-degraded 补票升级为正式 ready; 其余状态收到它是无害空转
+      if (body == 'desktop-ready' && this.engineState == 'ready-degraded') {
+        this.enterReady();
+      }
+      this.emitEvent(body);
     } else {
       hilog.warn(DOMAIN, 'wine', 'unknown engine message: %{public}s', s);
     }
@@ -322,14 +331,19 @@ export class WineEnvService {
       this.initFailed = false;
       this.setInitStatus('Wine 正在初始化...', true);
     } else if (name == 'ready') {
-      this.engineState = 'ready';
+      this.enterReady();
+    } else if (name == 'ready-degraded') {
+      // 桌面根 15s 未就绪 (仅 desktop 模式): 引擎活着但桌面没起来 — 进行中
+      // 而非就绪。canLaunch 不放行 (程序抢跑会死在 DXGI 初始化); root 出现后
+      // native 补发 evt:desktop-ready 升级。注意 overlay 必须隐去而非留驻:
+      // 模态 overlay 会挡住环境页重启按钮, 桌面一直没起来时用户将无自救入口
+      // (进行中文案由 recomputeStatus 经 statusText 呈现)
+      this.engineState = 'ready-degraded';
       this.engineStage = '';
       this.initFailed = false;
       this.initBusy = false;
       this.opBusy = false;
-      this.setInitStatus('已就绪', false);
-      // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
-      this.waitForPrefix();
+      this.setInitStatus('桌面准备中...', false);
     } else if (name == 'failed') {
       // 覆盖启动失败 (wineserver spawn/wineboot) 与运行中主 wineserver 非预期
       // 死亡 (ProcMon 上报) — 失败统一进 failInit: overlay 给 重试/重置 入口,
@@ -352,6 +366,19 @@ export class WineEnvService {
     } else {
       hilog.warn(DOMAIN, 'wine', 'unknown engine state: %{public}s', body);
     }
+  }
+
+  // 进入正式 ready 的统一定式: state:ready 与 evt:desktop-ready (degraded
+  // 补票升级) 共用 — 清 busy/失败标记, 隐去 overlay, 轮询等 drive_c 就绪
+  private enterReady(): void {
+    this.engineState = 'ready';
+    this.engineStage = '';
+    this.initFailed = false;
+    this.initBusy = false;
+    this.opBusy = false;
+    this.setInitStatus('已就绪', false);
+    // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
+    this.waitForPrefix();
   }
 
   private detectRawfileWineData(): boolean {

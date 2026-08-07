@@ -67,8 +67,8 @@
 
 - 「完全退出」唯一判据：注册表进程全死（zombie 感知等待）且 wineserver 死且
   Wayland server 停 → 发一次 `state:stopped`。root 窗口销毁只是「桌面关闭」事件。
-- desktop root 15s 超时不再硬放行装死：发 `wine-ready-degraded`，UI 显示
-  「桌面准备中…」，root 出现后补发 `desktop-ready`。
+- desktop root 15s 超时不再硬放行装死：发 `state:ready-degraded`，UI 显示
+  「桌面准备中…」，root 出现后补发 `evt:desktop-ready` 升级正式 ready。
 
 ### 2.2 消息协议重构（test 设施不作兼容约束）
 
@@ -82,6 +82,8 @@
 - `evt:<name>` — 瞬时事件：
   `evt:proc-added:<pid>:<name>` / `evt:proc-exited:<pid>` / `evt:launch-accepted:<pid>` /
   `evt:launch-failed` / `evt:desktop-ready` / `evt:desktop-closed`
+  （「evt 不迁移状态」的唯一例外：ArkTS 用 `evt:desktop-ready` 把 ready-degraded
+  补票升级为 ready——root 后补只是事件，state:* 发射点统一收口在 LaunchThreadFunc）
 
 SmokeRunner / automation 同步适配新协议（可随时推翻，不构成设计约束）。
 
@@ -129,10 +131,21 @@ SmokeRunner / automation 同步适配新协议（可随时推翻，不构成设�
 - 验证：stopAll 后 ps 确认 wineserver 死；kill -9 wineserver UI 立即失败态；
   重启拿到干净会话（新 wineserver pid）。
 
-### 阶段 3：就绪/启动判定精细化
-- desktop root 超时 → state:ready-degraded + evt:desktop-ready 后补。
-- 启动成功 = 3s 存活（+ desktop 模式 toplevel 关联）。
-- PC 窗口模式 explorer spawn 失败纳入判定；init overlay 模态化。
+### 阶段 3：就绪/启动判定精细化（已实现）
+- desktop root 15s 超时 → `state:ready-degraded`（仅 desktop 模式；UI 显示
+  「桌面准备中…」进行中文案，canLaunch 不放行——程序抢跑会死于 DXGI 初始化，
+  重启按钮保持可用作自救入口）；root 出现后由 WaylandServer FireToplevelEvent
+  的 desktop_root 钩子补发 `evt:desktop-ready`，ArkTS 升级为正式 ready。
+  ready 前 wineserver 存活复查优先于降级：等待期间 wineserver 死亡只报
+  failed，不补发 degraded 覆盖。
+- 启动成功 = 3s 存活（阶段1已落地：AppLibraryView 受理 pid 3s 后仍在进程表
+  = 成功，proc-exited/launch-failed = 失败）。desktop 模式 toplevel 关联未做，
+  列为已知限制：toplevel 事件走 WineWindowManager 通道且不携带 spawn pid，
+  关联需另建映射，3s 存活判据已覆盖闪退场景。
+- explorer spawn 失败纳入判定：PC 窗口模式与 desktop 模式 shell 的 spawn
+  失败（exPid<=0）均立即 `state:failed:desktop`（不再静默 ready / 白等 15s）；
+  init overlay 模态化（全屏半透明遮罩吞触摸——此前只是居中卡片，初始化期间
+  还能点到背后的启动器按钮）。
 - 验证：闪退程序出失败提示；慢设备桌面延迟文案正确。
 
 ## 4. 施工纪律

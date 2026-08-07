@@ -25,6 +25,10 @@
       "value": "#FF20242B"
     },
     {
+      "name": "overlay_mask",
+      "value": "#99000000"
+    },
+    {
       "name": "divider",
       "value": "#FF2A2A2A"
     },

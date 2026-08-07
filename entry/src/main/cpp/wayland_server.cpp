@@ -3,6 +3,7 @@
 #include "input_manager.h"
 #include "xdg_shell.h"
 #include "fps_counter.h"
+#include "wine_process.h"
 #include "compositor/debug_assert.h"
 #include "include/xdg-shell-server-protocol.h"
 #include <algorithm>
@@ -191,6 +192,15 @@ bool WaylandServer::ProcessMoveGrabMotion(wl_fixed_t wx, wl_fixed_t wy) {
 void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char* jsonData) {
     OH_LOG_INFO(LOG_APP, "[MW] FireToplevel id=%{public}u event=%{public}s data=%{public}s", id, event, jsonData);
     if (toplevelCb_) toplevelCb_(id, event, jsonData);
+    /* 桌面根出现 = 引擎消息通道的 evt:desktop-ready: LaunchPadMode 的 15s
+     * root 等待超时后状态机停在 ready-degraded, 靠这个补票升级为正式 ready。
+     * 挂在统一的 FireToplevelEvent 而非 LaunchPadMode 等待循环 — root 在任意
+     * 时刻出现 (含慢设备超时后姗姗来迟) 都能补发; ArkTS 只在 degraded 态消费,
+     * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。 */
+    if (!strcmp(event, "desktop_root") && gStateTsfn) {
+        napi_call_threadsafe_function(gStateTsfn, strdup("evt:desktop-ready"),
+                                      napi_tsfn_blocking);
+    }
 }
 
 void WaylandServer::RegisterToplevelResource(uint32_t toplevelId, wl_resource* tl) {

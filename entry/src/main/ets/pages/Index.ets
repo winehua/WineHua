@@ -173,7 +173,7 @@ struct Index {
     if (this.state == 'ready') {
       return this.sessionAlive ? $r('app.color.state_ok') : $r('app.color.state_info');
     }
-    if (this.state == 'starting' || this.state == 'stopping') {
+    if (this.state == 'starting' || this.state == 'stopping' || this.state == 'ready-degraded') {
       return $r('app.color.state_info');
     }
     return $r('app.color.text_tertiary');
@@ -371,6 +371,9 @@ struct Index {
     // 显隐只由状态机管理 (state:ready 才隐藏) — 曾附加 !prefixReady 条件,
     // 暖启动时整个初始化/重启编排过程没有任何可见反馈
     if (this.initOverlayVisible) {
+      // 模态化: 全屏半透明遮罩吞掉所有触摸 — 此前 overlay 只是居中的 360vp
+      // 卡片, 初始化/停止编排期间用户还能点到背后的启动器按钮 (重入风险)
+      Column() {
       Column() {
         if (this.initFailed) {
           Text('初始化失败')
@@ -439,6 +442,10 @@ struct Index {
       .borderRadius(8)
       .alignItems(HorizontalAlign.Center)
       .shadow({ radius: 18, color: $r('app.color.shadow'), offsetX: 0, offsetY: 8 })
+      }
+      .width('100%').height('100%')
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor($r('app.color.overlay_mask'))
     }
     }
     .width('100%').height('100%')

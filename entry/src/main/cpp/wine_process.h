@@ -28,11 +28,15 @@ struct WineProcessEntry {
 //   state:<name>[:<detail>]  引擎持久状态迁移 (状态机语义):
 //     state:starting:wineserver|wineboot  state:ready  state:failed:<stage>
 //     state:stopped   stopAll 编排完成 (注册表进程全死 zombie 感知 + wineserver 死)
+//     state:ready-degraded   桌面根 15s 未就绪的降级 ready (仅 desktop 模式;
+//         root 出现后由 evt:desktop-ready 升级为正式 ready)
 //   state:failed:wineserver 的另一触发点: ProcMon 检测到主 wineserver 非预期
 //     死亡 (stopAll/KillAllProcesses 主动停止期间不上报)
 //   evt:<name>[:<pid>]       瞬时事件 (不迁移状态):
 //     evt:launch-accepted:<pid>  evt:launch-failed
 //     evt:proc-updated  evt:proc-exited:<pid>
+//     evt:desktop-ready   桌面根 toplevel 出现 (WaylandServer FireToplevelEvent
+//         的 desktop_root 钩子补发; 唯一例外: ArkTS 用它把 ready-degraded 升级为 ready)
 extern napi_threadsafe_function gStateTsfn;
 extern std::string gSockPath;
 

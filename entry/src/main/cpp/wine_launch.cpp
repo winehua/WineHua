@@ -360,7 +360,7 @@ static void PrepareDesktopSessionGraphicsEnv(const LaunchParams& params)
 // 避免在 wine_launch.cpp 复制第二份 broker 协议实现。
 
 static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
-                          const std::string& serializedEnv) {
+                          const std::string& serializedEnv, bool* desktopDegraded) {
     // serializedEnv 之前用于 NCP 直启 explorer 时嵌入 entryParams；
     // explorer 桌面模式已改为走 broker（通过 SpawnViaBroker 传输 env），
     // 此参数不再使用。
@@ -601,19 +601,30 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         // broker 自动添加 homeDir 前缀、序列化 env、创建 audio bootstrap fd
         int32_t exPid = SpawnViaBroker(exEntry, explorerEnv);
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop pid=%{public}d (via broker)", exPid);
-        if (exPid > 0) {
-            AddProcess(exPid, "desktop", -1);
-            ws->PromotePendingDesktopRoot();
-            /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
-             * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
-             * surface。等待桌面根 toplevel 就绪后再发 state:ready,
-             * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
-            if (!WaitFor("explorer desktop root", [ws]() {
-                    return ws->GetDesktopRootToplevelId() != 0;
-                }, 15000, 100)) {
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready; "
-                            "continuing after bounded readiness wait");
-            }
+        if (exPid <= 0) {
+            // desktop shell spawn 失败: root 永远不会出现, 白等 15s 也是降级 —
+            // 直接失败上报 (静默失败修复: 此前仅记日志, 照样发 state:ready)
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] explorer desktop spawn FAILED");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:desktop"),
+                                              napi_tsfn_blocking);
+            return false;
+        }
+        AddProcess(exPid, "desktop", -1);
+        ws->PromotePendingDesktopRoot();
+        /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
+         * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
+         * surface。等待桌面根 toplevel 就绪后再发 state:ready,
+         * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
+        if (!WaitFor("explorer desktop root", [ws]() {
+                return ws->GetDesktopRootToplevelId() != 0;
+            }, 15000, 100)) {
+            /* 超时不再装死放行: 降级 ready-degraded (UI 显示"桌面准备中…"),
+             * root 出现后由 desktop_root 钩子补发 evt:desktop-ready,
+             * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。 */
+            OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready in 15s; "
+                        "launch will report ready-degraded");
+            *desktopDegraded = true;
         }
     }
     else
@@ -631,6 +642,14 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         int32_t exPid = SpawnWineProgram(options);
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer window pid=%{public}d (broker path)",
                     exPid);
+        // PC 窗口模式 explorer spawn 零判定修复: 失败必须上报而非静默 ready
+        if (exPid <= 0) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] explorer window spawn FAILED");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:desktop"),
+                                              napi_tsfn_blocking);
+            return false;
+        }
     }
     return true;
 }
@@ -660,11 +679,13 @@ void LaunchThreadFunc(LaunchParams* p) {
         napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineserver"), napi_tsfn_blocking);
 
     bool ok = false;
-    ok = LaunchPadMode(p, audioBootstrapFd, serializedEnv);
+    bool desktopDegraded = false;
+    ok = LaunchPadMode(p, audioBootstrapFd, serializedEnv, &desktopDegraded);
 
     /* state:ready 前最后一次健康复查: explorer 桌面根等待可达 15s, 期间
      * wineserver 若已崩溃, 此前照样发 ready → UI 显示"已就绪"但引擎已死
-     * (静默失败)。stage 命名 wineserver, 与 ProcMon 的非预期死亡上报一致。 */
+     * (静默失败)。stage 命名 wineserver, 与 ProcMon 的非预期死亡上报一致。
+     * 该复查优先于 ready-degraded: wineserver 已死时绝不补发降级把 failed 盖掉 */
     if (ok) {
         pid_t wsPid = GetWineserverPid();
         if (wsPid <= 0 || !IsProcessAliveNotZombie(wsPid)) {
@@ -676,8 +697,11 @@ void LaunchThreadFunc(LaunchParams* p) {
         }
     }
 
+    // 状态迁移统一在此收口: ready / ready-degraded 只此一个发射点
     if (ok && gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("state:ready"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn,
+            strdup(desktopDegraded ? "state:ready-degraded" : "state:ready"),
+            napi_tsfn_blocking);
 
     delete p;
 }
