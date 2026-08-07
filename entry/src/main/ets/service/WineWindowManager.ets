@@ -5,6 +5,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ArgbWindowManager } from './ArgbWindowManager';
+import { DisplaySettingsService } from './DisplaySettingsService';
 
 const DOMAIN = 0x0000;
 const TAG = 'WineWM';
@@ -33,7 +34,7 @@ export class WineWindowManager {
   private uiAbilityContext: common.UIAbilityContext | null = null;
   // 设备显示密度 + 屏幕尺寸 (用于缩放)
   private displayScale: number = 1.0;
-  private scaleBoost: number = 1.0;  // 放大系数, 使 effectiveScale = displayScale × boost = 2.0
+  private scaleBoost: number = 1.0;  // 放大系数, effectiveScale = displayScale × boost, 目标值来自 DisplaySettingsService (默认 2.0)
   // 标题栏 + 边框总高度 (VP), 用于窗口 resize
   // = getWindowDecorHeight() + decorBorderOffset
   private measuredTitleBarH: number = 56;
@@ -135,12 +136,19 @@ export class WineWindowManager {
     }
 
     // 获取设备显示密度 + 主窗口可用区域
+    // 目标 effectiveScale 取自用户设置 (DisplaySettingsService, 默认 2.0),
+    // 仅此处 (启动) 读取一次 — 运行中改设置不影响当前会话, 设置页已注明"重启生效"。
+    const displaySettings = DisplaySettingsService.getInstance();
+    if (this.uiAbilityContext) {
+      displaySettings.init(this.uiAbilityContext);
+    }
+    const targetScale = displaySettings.scale;
     try {
       const d = display.getDefaultDisplaySync();
       this.displayScale = d.densityPixels;
-      this.scaleBoost = 2.0 / this.displayScale;  // 使 effectiveScale = 2.0
-      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=2.0',
-        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2));
+      this.scaleBoost = targetScale / this.displayScale;
+      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=%{public}s',
+        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2), targetScale.toFixed(2));
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
 
       // Wine 输出尺寸: 沉浸模式下 avoid area 为 0, 直接用显示尺寸
@@ -152,8 +160,9 @@ export class WineWindowManager {
       testNapi.setOutputSize(outW, outH);
     } catch (_) {
       this.displayScale = 1.61;
-      this.scaleBoost = 2.0 / 1.61;
-      hilog.warn(DOMAIN, TAG, '[MW] display query failed, using displayScale=1.61 boost=1.24');
+      this.scaleBoost = targetScale / 1.61;
+      hilog.warn(DOMAIN, TAG, '[MW] display query failed, using displayScale=1.61 boost=%{public}s',
+        this.scaleBoost.toFixed(2));
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
     }
 
@@ -501,7 +510,7 @@ export class WineWindowManager {
           const h = obj.h as number;
           if (w && h) {
             const barH = 0; //  标题栏已通过 setWindowDecorVisible(false) 隐藏
-            const s = this.displayScale * this.scaleBoost;  // effective scale = 2.0
+            const s = this.displayScale * this.scaleBoost;  // effective scale (启动时定, 默认 2.0)
             const winW = Math.round(w * s);
             const winH = Math.round(h * s + barH);
             //  保存目标尺寸, 供 surface 事件校准 titleBarH + 重新 resize
