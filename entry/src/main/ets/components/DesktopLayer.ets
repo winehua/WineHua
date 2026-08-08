@@ -660,9 +660,10 @@ export struct DesktopLayer {
 
       // ── 触控板虚拟光标指示 (不响应触摸, 纯展示) ──
       if (this.touchpadOn) {
+        // 描边不用纯白: 白色背景 (记事本等) 下光标会整个消失, 用浅灰保证可辨
         Circle({ width: 14, height: 14 })
           .fill('#66FFFFFF')
-          .stroke(Color.White)
+          .stroke('#FFB3B3B3')
           .strokeWidth(1.5)
           .position({ x: this.cursorVpX, y: this.cursorVpY })
           .hitTestBehavior(HitTestMode.None)

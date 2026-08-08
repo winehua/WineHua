@@ -68,8 +68,8 @@ struct RenameDialog {
   }
 }
 
-// 应用库页 (设计 4.1): 搜索 + 标题/扫描菜单 + ChipGroup 分类 (最近使用/收藏/开始菜单/
-// 内建/外部导入) + 卡片网格 (lg, 列数随宽自适应) / 列表 (sm·md)。
+// 应用库页 (设计 4.1): 搜索框 (右侧"扫描"菜单) + ChipGroup 分类 (最近使用/收藏/
+// 开始菜单/内建/外部导入) + 卡片网格 (lg, 列数随宽自适应) / 列表 (sm·md)。
 // 条目 (网格卡片与列表行共用 entryItem): 左图标, 右侧两行 — 名称 / exe 文件名 +
 // 类型标签 ("内建"·"收藏"小胶囊); 单击启动 (加载态为半透明遮罩+转圈),
 // 长按(PC 右键)菜单: 启动/收藏/重命名/配置/隐藏/打开所在目录/从列表移除 (内建工具不可隐藏/移除)。
@@ -380,7 +380,7 @@ export struct AppLibraryView {
     }
   }
 
-  // 扫描菜单 (顶行"扫描"点击弹出): 两个入库来源分别对应一个分类 ——
+  // 扫描菜单 (搜索框右侧"扫描"点击弹出): 两个入库来源分别对应一个分类 ——
   // 开始菜单 = lnk 解析 (scanShortcuts), 外部导入 = Z: 目录 exe (scanZExes)
   @Builder
   scanMenu() {
@@ -631,27 +631,23 @@ export struct AppLibraryView {
 
   build() {
     Column() {
-      // 顶行: 标题 + 扫描入口 (菜单: 扫描开始菜单 / 扫描 Z: 目录)
+      // 首行: 搜索框 + 扫描入口 (扫描固定最右; 菜单: 扫描开始菜单 / 扫描 Z: 目录)。
+      // 页头不放"应用库"大标题 — 侧栏已标识当前页, 标题只占纵向空间
       Row() {
-        Text('应用库')
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
+        Search({ placeholder: '搜索应用名称或路径' })
+          .height(36)
           .layoutWeight(1)
+          .onChange((value: string) => {
+            this.searchText = value.trim();
+          })
         Text('扫描')
           .fontColor($r('app.color.accent'))
           .padding({ left: 12, top: 4, bottom: 4 })
           .bindMenu(this.scanMenu())
       }
       .width('100%')
-      .padding({ left: 14, right: 14, top: 8, bottom: 4 })
-
-      // 搜索框 (设计 §3 欠账落地): 按名称/路径过滤
-      Search({ placeholder: '搜索应用名称或路径' })
-        .height(36)
-        .margin({ left: 14, right: 14, top: 4 })
-        .onChange((value: string) => {
-          this.searchText = value.trim();
-        })
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: 14, right: 14, top: 8 })
 
       // 筛选 chips: 系统预置 ChipGroup, 单选
       ChipGroup({
@@ -675,7 +671,7 @@ export struct AppLibraryView {
             title: this.emptyTitle(),
             desc: this.emptyDesc()
           })
-          // 可扫描的分类在空态给出直达按钮 (顶行"扫描"菜单的替身, 减少发现成本)
+          // 可扫描的分类在空态给出直达按钮 (搜索框旁"扫描"菜单的替身, 减少发现成本)
           if (!this.searchText && (this.chip == 'startmenu' || this.chip == 'import')) {
             Row({ space: 12 }) {
               if (this.chip == 'startmenu') {

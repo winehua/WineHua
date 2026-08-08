@@ -162,7 +162,7 @@ export struct FloatingBar {
             this.barButton($r('sys.symbol.gearshape'), false, () => {
               this.showSettings = true;
             })
-            this.barButton('手柄', this.gamepadOn, () => {
+            this.barButton($r('sys.symbol.record_circle'), this.gamepadOn, () => {
               this.input.setGamepad(!this.gamepadOn);
             })
             this.barButton($r('sys.symbol.hand_draw'), this.touchpadOn, () => {
@@ -206,7 +206,12 @@ export struct FloatingBar {
           })
       )
       .bindSheet($$this.showSettings, this.settingsSheet(), {
-        height: SheetSize.MEDIUM,
+        // title 让系统渲染标题栏: 关闭钮收进标题栏右侧固定位, 内容区整体
+        // 下移 — 从结构上不存在重叠 (不要无 title 裸开 showClose, 那样关闭
+        // 钮悬浮在内容区右上角, 会压住内容行右端)
+        title: { title: '输入设置' },
+        // 内容只有几行, 用自适应高度 — MEDIUM 固定半屏会留出大片空白
+        height: SheetSize.FIT_CONTENT,
         showClose: true
       })
     }

@@ -730,17 +730,6 @@ export struct FileBrowserView {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
       .margin({ left: 6 })
-      // Z: 行尾"系统文件管理"入口 (打开系统自带文件管理器定位到该目录);
-      // 按钮 onClick 消费点击, 不会冒泡成行点击 (进入目录)
-      if (root.key == 'Z') {
-        Button('系统文件管理')
-          .height(32)
-          .fontSize(12)
-          .backgroundColor($r('app.color.control_bg'))
-          .onClick(() => {
-            this.openInFileManager(root.path);
-          })
-      }
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(16)
         .fontColor([$r('app.color.text_tertiary')])
@@ -785,13 +774,16 @@ export struct FileBrowserView {
                 this.openInFileManager(this.curDir);
               })
           }
-          Button('导入')
-            .height(32)
-            .margin({ left: 8 })
-            .backgroundColor($r('app.color.accent'))
-            .onClick(() => {
-              this.importFiles();
-            })
+          // "导入"只在进入目录后出现 — 首页(根选择)顶行保持干净, 仅留路径文本
+          if (!this.atRootList) {
+            Button('导入')
+              .height(32)
+              .margin({ left: 8 })
+              .backgroundColor($r('app.color.accent'))
+              .onClick(() => {
+                this.importFiles();
+              })
+          }
         }
         .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 6 })
 
