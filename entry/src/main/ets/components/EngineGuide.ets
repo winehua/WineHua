@@ -92,7 +92,6 @@ export struct EngineGuide {
       } else if (this.state == 'failed') {
         Row({ space: 12 }) {
           Button('重试')
-            .backgroundColor($r('app.color.accent'))
             .fontColor(Color.White)
             .onClick(() => this.onStartEngine())
           Button('重置环境')
@@ -103,13 +102,11 @@ export struct EngineGuide {
         .margin({ top: 14 })
       } else if (this.state == 'ready-degraded') {
         Button('重启引擎')
-          .backgroundColor($r('app.color.accent'))
           .fontColor(Color.White)
           .margin({ top: 14 })
           .onClick(() => this.onStartEngine())
       } else if (this.state == 'idle') {
         Button('启动引擎')
-          .backgroundColor($r('app.color.accent'))
           .fontColor(Color.White)
           .margin({ top: 14 })
           .onClick(() => this.onStartEngine())

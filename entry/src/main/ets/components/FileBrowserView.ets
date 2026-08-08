@@ -68,7 +68,6 @@ struct FileRenameDialog {
           .onClick(() => this.controller?.close())
         Button('确定')
           .layoutWeight(1)
-          .backgroundColor($r('app.color.accent'))
           .onClick(() => {
             this.onDone(this.text);
             this.controller?.close();
@@ -779,9 +778,9 @@ export struct FileBrowserView {
           }
           // 浏览 Z: 内部时: 标题栏给"系统文件管理"入口 (打开当前目录)
           if (!this.atRootList && this.rootOf(this.curDir)?.key == 'Z') {
+            // 字号与顶栏其它按钮一致 (默认), 曾单独设 12 显得大小不一
             Button('系统文件管理')
               .height(32)
-              .fontSize(12)
               .margin({ left: 8 })
               .backgroundColor($r('app.color.control_bg'))
               .onClick(() => {
@@ -793,7 +792,6 @@ export struct FileBrowserView {
             Button('导入')
               .height(32)
               .margin({ left: 8 })
-              .backgroundColor($r('app.color.accent'))
               .onClick(() => {
                 this.importFiles();
               })

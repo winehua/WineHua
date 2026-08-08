@@ -514,7 +514,6 @@ struct Index {
           Row({ space: 12 }) {
             Button('重试')
               .layoutWeight(1)
-              .backgroundColor($r('app.color.accent'))
               .onClick(() => {
                 // 走编排重启而非裸 doInit: 失败时可能已有半个会话
                 // (explorer 已起但 prefix 轮询超时等), 裸 doInit 会双开桌面

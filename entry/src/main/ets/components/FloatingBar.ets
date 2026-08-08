@@ -116,7 +116,6 @@ export struct FloatingBar {
         .fontColor($r('app.color.text_tertiary'))
       Button('编辑手柄布局')
         .width('100%')
-        .backgroundColor($r('app.color.accent'))
         .onClick(() => {
           // 防重入: 编辑页已开时不再重复 beginLayoutEdit (避免覆盖快照)
           if (!this.input.editingLayout) {

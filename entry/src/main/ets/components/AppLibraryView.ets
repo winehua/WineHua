@@ -61,7 +61,6 @@ struct RenameDialog {
           .onClick(() => this.controller?.close())
         Button('确定')
           .layoutWeight(1)
-          .backgroundColor($r('app.color.accent'))
           .onClick(() => {
             this.onDone(this.text);
             this.controller?.close();
@@ -570,7 +569,6 @@ export struct AppLibraryView {
           })
         Button('保存')
           .layoutWeight(1)
-          .backgroundColor($r('app.color.accent'))
           .onClick(() => {
             this.saveConfig();
           })
