@@ -445,12 +445,17 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         // session can leave Wayland/audio/graphics services half initialized.
         const char* desktopTag =
             (ws->IsDesktopMode() || p->automationMode) ? "__winehua_desktop__|" : "";
+        // wineboot 语言跟随设置页 wineLang (zh_CN/en_US), 与桌面会话一致:
+        // entryParams 内 __env 覆盖 setup_wine_env 基线; LANG/LC_ALL 必须同设
+        // (musl 无 locale 数据, Wine 只读 LC_ALL 兜底解析 LCID)
+        const std::string wbLangEnv = "|__env=LANG=" + p->wineLang + ".UTF-8" +
+            "|__env=LC_ALL=" + p->wineLang + ".UTF-8";
 #ifdef __aarch64__
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" + desktopTag +
-            "wineboot|--init|__env=WINEPREFIX=" + p->prefixDir;
+            "wineboot|--init|__env=WINEPREFIX=" + p->prefixDir + wbLangEnv;
 #else
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" + desktopTag +
-            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir;
+            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir + wbLangEnv;
 #endif
         // 注意: wineboot --init 只需要初始化 prefix, 不传完整环境变量以节省 entryParams 长度
         NativeChildProcess_Args childArgs = {};
@@ -518,7 +523,8 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
          * force=false, 仅当 wine.inf 时间戳变化 (升级) 才重装。 */
         OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix ready; seeding wineboot boot event (--init)...");
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" +
-            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir;
+            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir +
+            "|__env=LANG=" + p->wineLang + ".UTF-8|__env=LC_ALL=" + p->wineLang + ".UTF-8";
         NativeChildProcess_Args childArgs = {};
         childArgs.entryParams = const_cast<char*>(entryParams.c_str());
         NativeChildProcess_Options options = {};
