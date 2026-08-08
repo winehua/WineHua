@@ -46,7 +46,7 @@ export class WineWindowManager {
   private barCalibrationCount: number = 0;
 
   // -- Desktop 模式 (Tablet) --
-  private isDesktopMode: boolean = false;
+  isDesktopMode: boolean = false;
   private automationMode: boolean = false;
   private desktopRootId: number = 0;
   // 单 Ability 三层页面: 桌面已激活 → Index 挂载 DesktopLayer 盖住启动器。

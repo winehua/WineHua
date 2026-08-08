@@ -152,6 +152,11 @@ export class WineEnvService {
   // 桌面 root 的 renderer surface 校准完成（WineWindowManager 镜像）—
   // ensureDesktop 放行程序的判据: root 出现 ≠ 桌面真正显示
   desktopSurfaceReady: boolean = false;
+  // 桌面模式 (Tablet/Phone compositor shell, WineWindowManager 镜像)。
+  // PC 窗口模式 (managed) 无桌面壳, 程序独立窗口 — ensureDesktop 只在桌面模式下
+  // 有意义, managed 模式直接放行 (旧实现拉起的只是文件管理器窗口, 且等不到
+  // desktop_root/desktopSurfaceReady 判据, 25s 超时误报"桌面启动失败")
+  desktopMode: boolean = false;
   runningCount: number = 0;
   // doInit 防重入: 覆盖 picker→解压→launchClient 全异步段 (首启解压可达数分钟),
   // 由 state:ready / state:failed / failInit 清除
@@ -346,6 +351,7 @@ export class WineEnvService {
     wm.subscribe(() => {
       this.desktopActive = wm.desktopActive;
       this.desktopSurfaceReady = wm.desktopSurfaceReady;
+      this.desktopMode = wm.isDesktopMode;
       this.notify();
     });
     // 自动初始化仅限自动化/游戏测试模式 (want 驱动的无人值守场景, 没人
@@ -806,6 +812,12 @@ export class WineEnvService {
   // 连现有 wineserver，桌面 root 出现后 native 发 state:ready）。
   // 返回 true = 桌面已就绪；false = 拉起失败/超时。
   async ensureDesktop(): Promise<boolean> {
+    // PC 窗口模式 (managed, 非 tablet/phone): 程序是独立窗口, 没有桌面壳概念,
+    // 不需要拉起 explorer desktop shell — 直接放行 (旧实现调 doInit 只拉起文件
+    // 管理器窗口, 且等不到 desktop_root/desktopSurfaceReady, 25s 超时误报失败)
+    if (!this.desktopMode) {
+      return true;
+    }
     if (this.sessionAlive && this.desktopSurfaceReady) {
       return true;
     }
