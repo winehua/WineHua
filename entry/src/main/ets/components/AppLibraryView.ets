@@ -602,7 +602,13 @@ export struct AppLibraryView {
   @Builder
   gridCard(entry: AppEntry) {
     Stack() {
-      this.entryItem({ entry: entry, iconSize: 44, loadingAsIcon: false })
+      // 水平 padding 必须挂在内容层而非 Stack 根: 子组件 100% 宽相对父容器
+      // 扣除 padding 后的内容区, 挂根部会让遮罩左右各缺 12vp 露边
+      Row() {
+        this.entryItem({ entry: entry, iconSize: 44, loadingAsIcon: false })
+      }
+      .width('100%').height('100%')
+      .padding({ left: 12, right: 12 })
       if (this.launchingPath == entry.path) {
         Column() {
           LoadingProgress()
@@ -616,7 +622,6 @@ export struct AppLibraryView {
       }
     }
     .width('100%').height(76)
-    .padding({ left: 12, right: 12 })
     .backgroundColor($r('app.color.card_bg'))
     .borderRadius(12)
     // 手势挂在卡片实体节点上 (与重构前一致): GridItem 是虚拟容器,
