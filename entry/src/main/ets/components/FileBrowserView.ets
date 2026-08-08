@@ -4,9 +4,10 @@ import { promptAction } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { WineEnvService, DRIVE_C } from '../service/WineEnvService';
-import { AppLibraryService, AppEntry } from '../service/AppLibraryService';
+import { AppLibraryService, AppEntry, LaunchOverrides } from '../service/AppLibraryService';
 import { IconExtractor } from '../service/IconExtractor';
 import { EngineGuide } from './EngineGuide';
+import { CustomLaunchDialog } from './CustomLaunchDialog';
 
 const DOMAIN = 0x0000;
 const TAG = 'Files';
@@ -103,6 +104,7 @@ export struct FileBrowserView {
   // 上一次的 prefixReady 镜像值, 用于边沿检测 (避免每次 notify 都重复 listDir)
   private prevPrefixReady: boolean = false;
   private renameController: CustomDialogController | null = null;
+  private customLaunchController: CustomDialogController | null = null;
 
   private mirrorEnv = (): void => {
     this.state = this.env.engineState;
@@ -599,8 +601,9 @@ export struct FileBrowserView {
 
   // exe 启动统一入口 (行内按钮与长按菜单同判据): 引擎未启动则先按需拉起
   // (懒初始化), ready 才放行; 受理失败给 toast; 受理后的闪退检测在应用库
-  // 启动反馈里 (文件页无加载态)
-  private async launchExe(path: string): Promise<void> {
+  // 启动反馈里 (文件页无加载态)。overrides = 自定义启动临时参数 (渲染策略+
+  // 兼容模式档位, 不持久化), 行内"启动"按钮不传 = 跟随全局
+  private async launchExe(path: string, overrides?: LaunchOverrides): Promise<void> {
     if (this.env.engineState != 'ready') {
       // 编排/后台自动启动进行中: 明确提示稍后再试, 不抢跑;
       // 否则拉起引擎 (首启可达数分钟, toast 预告)
@@ -623,10 +626,27 @@ export struct FileBrowserView {
         return;
       }
     }
-    const pid = this.lib.launch(path);
+    const pid = this.lib.launch(path, overrides);
     if (pid <= 0) {
       this.toast('启动失败，可到环境页切换渲染策略后重试');
     }
+  }
+
+  // 自定义启动 (右键菜单 exe 分支): 弹窗选渲染策略 + 兼容模式档位 → 按临时
+  // 参数启动一次 (不持久化)。onLaunch 里 launchExe(fullPath, { graphics, compatMode })
+  private customLaunch(entry: FileEntry): void {
+    const path = this.fullPath(entry.name);
+    this.customLaunchController = new CustomDialogController({
+      builder: CustomLaunchDialog({
+        exeName: entry.name,
+        onLaunch: (graphics?: 'dxvk' | 'wined3d',
+                   compatMode?: 'compat' | 'balanced' | 'perf') => {
+          this.launchExe(path, { graphics: graphics, compatMode: compatMode });
+        }
+      }),
+      autoCancel: true
+    });
+    this.customLaunchController.open();
   }
 
   // ---- 菜单与行 ----
@@ -639,6 +659,10 @@ export struct FileBrowserView {
         MenuItem({ content: '启动' })
           .onChange(() => {
             this.launchExe(this.fullPath(entry.name));
+          })
+        MenuItem({ content: '自定义启动' })
+          .onChange(() => {
+            this.customLaunch(entry);
           })
         if (!this.inLibrary(this.fullPath(entry.name))) {
           MenuItem({ content: '加入应用库' })
@@ -679,7 +703,7 @@ export struct FileBrowserView {
           .margin({ right: 2 })
       } else {
         SymbolGlyph(this.rowKindOf(entry) == 'dir' ? $r('sys.symbol.folder_fill') :
-                    this.rowKindOf(entry) == 'exe' ? $r('sys.symbol.play_fill') : $r('sys.symbol.doc'))
+                    this.rowKindOf(entry) == 'exe' ? $r('sys.symbol.square_grid_2x2') : $r('sys.symbol.doc'))
           .fontSize(20)
           .fontColor([this.rowKindOf(entry) == 'dir' ? $r('app.color.state_info') :
                       this.rowKindOf(entry) == 'exe' ? $r('app.color.accent') : $r('app.color.text_tertiary')])

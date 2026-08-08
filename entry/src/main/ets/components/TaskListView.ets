@@ -86,7 +86,7 @@ export struct TaskListView {
                     Image(`file://${this.iconOf(proc)}`)
                       .width(32).height(32).margin({ right: 10 })
                   } else {
-                    SymbolGlyph($r('sys.symbol.play_fill'))
+                    SymbolGlyph($r('sys.symbol.square_grid_2x2'))
                       .fontSize(24)
                       .fontColor([$r('app.color.accent')])
                       .width(32).margin({ right: 10 })

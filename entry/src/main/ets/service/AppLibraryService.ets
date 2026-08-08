@@ -17,13 +17,12 @@ const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 const SCAN_MAX_DEPTH = 6;
 const SCAN_MAX_EXE = 200;
 
-// 单应用配置 (P2): 只收能翻译为用户语言的组合 — 图形渲染 / 兼容模式。
-// 字段全可选, 缺省 = 跟随全局或默认行为 (继承: 全局 → 应用两级)。
-// 刻意不暴露裸环境变量 / WINEDEBUG / presentBackend 等底层开关
-// (无法翻译成用户可理解的语义, 用户决策: 不好翻译的暂不支持)
-export interface AppConfig {
-  graphics?: string;  // 'dxvk'(硬件加速) | 'wined3d'(兼容渲染); 缺省 = 跟随全局 d3dBackend
-  compat?: boolean;   // 兼容模式: BOX64 保守 dynarec 组合 (应用闪退/异常时开启, 速度变慢)
+// 自定义启动临时参数 (弹窗选一次, 不持久化): graphics 渲染策略覆盖,
+// compatMode 兼容模式档位; 字段全可选, 缺省 = 跟随全局 (不注入覆盖)。
+// ArkTS 禁止内联对象字面量作类型声明, 故抽成显式 interface
+export interface LaunchOverrides {
+  graphics?: 'dxvk' | 'wined3d';
+  compatMode?: 'compat' | 'balanced' | 'perf';
 }
 
 export interface AppEntry {
@@ -37,7 +36,6 @@ export interface AppEntry {
                        // 缺省 (老数据) 按 'import' 归类 — 见 sourceOf, 不做持久化迁移
   lastRun?: number;    // 最近一次受理成功的启动时刻 epoch ms ("最近使用"分类依据;
                        // 只记应用库/文件页经本服务 launch 的启动, explorer 内双击不计)
-  config?: AppConfig;  // 单应用配置 (缺省 = 全部跟随全局)
 }
 
 // withField 的可选覆盖项 (ArkTS 不用 Partial 以保持显式)
@@ -50,7 +48,6 @@ interface AppEntryPatch {
   hidden?: boolean;
   source?: string;
   lastRun?: number;
-  config?: AppConfig;
 }
 
 // 扫描结果: added=新入库条目数, classified=已在库但本次被归到"开始菜单"的数量
@@ -322,7 +319,6 @@ export class AppLibraryService {
       hidden: patch.hidden !== undefined ? patch.hidden : e.hidden,
       source: patch.source !== undefined ? patch.source : e.source,
       lastRun: patch.lastRun !== undefined ? patch.lastRun : e.lastRun,
-      config: patch.config !== undefined ? patch.config : e.config,
     };
   }
 
@@ -442,28 +438,20 @@ export class AppLibraryService {
     return false;
   }
 
-  // 更新单应用配置 (配置对话框保存, 整体替换; 字段全缺省 = 全跟随全局)
-  setConfig(path: string, config: AppConfig): void {
-    this.entries = this.entries.map((e: AppEntry): AppEntry =>
-      e.path == path ? this.withField(e, { config: config }) : e);
-    this.persist();
-    this.notify();
-  }
-
-  // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env),
-  // 把用户可理解的 AppConfig 翻译成底层 environment/d3dBackend。
-  // 无配置时行为与旧 runWineExe 路径等价 (全局 d3dBackend, 无额外 env)。
+  // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env)。
+  // overrides 为"自定义启动"临时参数 (弹窗选一次, 不持久化):
+  //   graphics    'wined3d'→WineD3D, 'dxvk'→DXVK; undefined = 跟随全局 d3dBackend
+  //   compatMode  'compat'(全保守) / 'perf'(激进) / 'balanced'(= 全局基线, 不注入);
+  //               undefined = 跟随全局 (不注入 BOX64_DYNAREC 覆盖)
+  // 覆盖经 UpsertEnvLine 压过 BuildWineEnv 基线, 只作用于本进程。
   // 返回 broker 受理的 pid (<=0 = 受理失败, 调用方立即报启动失败);
   // 受理只表示进程拉起, 闪退检测由调用方订阅 evt:proc-exited 完成
-  launch(path: string): number {
+  launch(path: string, overrides?: LaunchOverrides): number {
     const env = WineEnvService.getInstance();
-    const cfg: AppConfig | undefined = this.entries.find((e: AppEntry) => e.path == path)?.config;
-    // 图形渲染: 应用覆盖 → 全局默认。presentBackend 从 d3dBackend 派生
+    // 图形渲染: 临时覆盖 → 全局默认。presentBackend 从 d3dBackend 派生
     // (与 WineEnvService.d3dPresentBackend 同规则, 不作为独立用户开关)
-    const d3dBackend = cfg?.graphics == 'wined3d' ? 'wined3d'
-      : cfg?.graphics == 'dxvk' ? 'dxvk_legacy' : env.getD3dBackend();
-    // 兼容模式: box64 经典排障组合 (保守 safeflags + 关闭大块编译, 牺牲速度
-    // 换稳定)。经 UpsertEnvLine 覆盖 BuildWineEnv 基线, 只作用于本进程
+    const d3dBackend = overrides?.graphics == 'wined3d' ? 'wined3d'
+      : overrides?.graphics == 'dxvk' ? 'dxvk_legacy' : env.getD3dBackend();
     const environment: Record<string, string> = {};
     // 语言设置对程序直启逐进程注入 (桌面会话内由 explorer 继承, 此处兜底
     // 覆盖 BuildWineEnv 基线); UpsertEnvLine 保证它压过 native 默认值。
@@ -472,9 +460,19 @@ export class AppLibraryService {
     // 默认 zh_CN, 程序永远是中文
     environment['LANG'] = `${env.getWineLang()}.UTF-8`;
     environment['LC_ALL'] = `${env.getWineLang()}.UTF-8`;
-    if (cfg?.compat) {
+    // 兼容模式档位 → BOX64 dynarec 覆盖 (仅 arm64 生效; 映射见 usage_cn.json,
+    // 'balanced'/undefined = 全局基线 SAFEFLAGS=1+BIGBLOCK=3+CALLRET=2+
+    // FORWARD=1024+WEAKBARRIER=2, 不注入覆盖)
+    const compatMode = overrides?.compatMode ?? 'global';
+    if (compatMode == 'compat') {
       environment['BOX64_DYNAREC_SAFEFLAGS'] = '2';
       environment['BOX64_DYNAREC_BIGBLOCK'] = '0';
+      environment['BOX64_DYNAREC_CALLRET'] = '0';
+      environment['BOX64_DYNAREC_FORWARD'] = '0';
+      environment['BOX64_DYNAREC_WEAKBARRIER'] = '0';
+    } else if (compatMode == 'perf') {
+      environment['BOX64_DYNAREC_SAFEFLAGS'] = '0';
+      environment['BOX64_DYNAREC_FORWARD'] = '2048';
     }
     const winPath = this.toWindowsPath(path, env.zHome);
     const result = testNapi.runWineProgram({

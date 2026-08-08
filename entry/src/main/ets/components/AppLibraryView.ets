@@ -1,10 +1,11 @@
-import { AppLibraryService, AppEntry, AppConfig, ScanMarks } from '../service/AppLibraryService';
+import { AppLibraryService, AppEntry, ScanMarks, LaunchOverrides } from '../service/AppLibraryService';
 import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { EmptyState } from './EmptyState';
 import { EngineGuide } from './EngineGuide';
-import { promptAction, ChipGroup, ChipGroupItemOptions, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
+import { CustomLaunchDialog } from './CustomLaunchDialog';
+import { promptAction, ChipGroup, ChipGroupItemOptions } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const DOMAIN = 0x0000;
@@ -17,11 +18,6 @@ const TAG = 'AppLibraryView';
 // 前两者为动态视图 (lastRun 时间戳 / favorite 旗标, 与来源正交),
 // 后三者按入库来源互斥归类 (sourceOf: builtin 旗标 > source 字段, 老数据缺省 import)
 // 控件: 系统预置 ChipGroup (@kit.ArkUI, API 12+)
-
-// 单应用配置 (菜单"配置"弹半模态): 图形渲染/兼容模式两项,
-// 全部可缺省 (跟随全局)。刻意不做裸环境变量等无法翻译为用户语言的开关。
-// 容器: bindSheet 半模态 (内容会随版本增多, 半模态空间比 CustomDialog 大、层级更轻)
-const GRAPHICS_KINDS: Array<string> = ['global', 'dxvk', 'wined3d'];
 
 // 初始 chip 自动挑选优先级 (注意与展示顺序不同: 外部导入排在内建之前 — 需求指定;
 // 展示顺序见 chipDefs, 两者独立)。hidden 不参与: 它是找回入口, 不该成为首屏
@@ -107,12 +103,6 @@ export struct AppLibraryView {
   // 扫描进行中状态由 AppLibraryService 持有 (scanning/scanLabel), 全窗遮罩
   // 渲染在 Index 根 Stack — 要盖住侧栏, 页面内遮罩只覆盖内容区 (bindContentCover
   // 方案实测不弹出, 且拦截范围不够); 本页只经 runScan 触发扫描
-  // -- 单应用配置半模态状态 (openConfig 填初值, saveConfig 归一缺省后落库) --
-  @State showConfig: boolean = false;
-  @State cfgGraphicsSel: number[] = [0];
-  @State cfgCompat: boolean = false;
-  private cfgEntryPath: string = '';
-  private cfgEntryName: string = '';
   // 初始 chip 是否已自动挑选过 (见 pickInitialChip)
   private chipAutoPicked: boolean = false;
   // 空态"去文件页"回调, 由 Index 注入 (切换 Tabs 到文件页), 有才显示按钮
@@ -125,6 +115,7 @@ export struct AppLibraryView {
   private launchTimer: number = -1;
   private launchingPid: number = -1;
   private renameController: CustomDialogController | null = null;
+  private customLaunchController: CustomDialogController | null = null;
 
   private mirror = (): void => {
     const wasReady = this.prefixReady;
@@ -225,7 +216,7 @@ export struct AppLibraryView {
     });
   }
 
-  private async launch(entry: AppEntry): Promise<void> {
+  private async launch(entry: AppEntry, overrides?: LaunchOverrides): Promise<void> {
     // launchingPath 兼作防重入 — 引擎拉起/ensureDesktop 等待窗口期重复点击
     // 不会启动多个实例
     if (this.launchingPath) {
@@ -257,7 +248,7 @@ export struct AppLibraryView {
       }
     }
     this.clearLaunching();
-    const pid = this.lib.launch(entry.path);
+    const pid = this.lib.launch(entry.path, overrides);
     if (pid <= 0) {
       this.failLaunching('程序启动失败。可尝试切换渲染策略（环境页）后重试');
       return;
@@ -311,30 +302,20 @@ export struct AppLibraryView {
     this.renameController.open();
   }
 
-  // 单应用配置: 读取现值作初值打开半模态; 保存时把 'global'/false 归一为缺省
-  // (字段不写 = 跟随全局, 持久化 JSON 保持干净)
-  private openConfig(entry: AppEntry): void {
-    const cfg = entry.config;
-    this.cfgEntryPath = entry.path;
-    this.cfgEntryName = entry.name;
-    const g = cfg?.graphics ?? 'global';
-    const gi = GRAPHICS_KINDS.indexOf(g);
-    this.cfgGraphicsSel = [gi >= 0 ? gi : 0];
-    this.cfgCompat = cfg?.compat ?? false;
-    this.showConfig = true;
-  }
-
-  private saveConfig(): void {
-    const config: AppConfig = {};
-    const kind = GRAPHICS_KINDS[this.cfgGraphicsSel[0] ?? 0];
-    if (kind != 'global') {
-      config.graphics = kind as 'dxvk' | 'wined3d';
-    }
-    if (this.cfgCompat) {
-      config.compat = true;
-    }
-    this.lib.setConfig(this.cfgEntryPath, config);
-    this.showConfig = false;
+  // 自定义启动: 弹窗选渲染策略 + 兼容模式档位 → 按临时参数启动一次 (不持久化)。
+  // onLaunch 里 this.launch(entry, { graphics, compatMode }) 透传弹窗选择
+  private customLaunch(entry: AppEntry): void {
+    this.customLaunchController = new CustomDialogController({
+      builder: CustomLaunchDialog({
+        exeName: entry.name,
+        onLaunch: (graphics?: 'dxvk' | 'wined3d',
+                   compatMode?: 'compat' | 'balanced' | 'perf') => {
+          this.launch(entry, { graphics: graphics, compatMode: compatMode });
+        }
+      }),
+      autoCancel: true
+    });
+    this.customLaunchController.open();
   }
 
   // exe 路径 → 所在目录 (去掉最后一段文件名)
@@ -486,9 +467,9 @@ export struct AppLibraryView {
         .onChange(() => {
           this.openRename(entry);
         })
-      MenuItem({ content: '配置' })
+      MenuItem({ content: '自定义启动' })
         .onChange(() => {
-          this.openConfig(entry);
+          this.customLaunch(entry);
         })
       if (!entry.builtin) {
         MenuItem({ content: entry.hidden ? '取消隐藏' : '隐藏' })
@@ -514,70 +495,6 @@ export struct AppLibraryView {
     }
   }
 
-  // 单应用配置半模态内容 (bindSheet builder)
-  @Builder
-  configSheet() {
-    Column({ space: 16 }) {
-      Text(`配置 · ${this.cfgEntryName}`)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-
-      Column({ space: 8 }) {
-        Text('图形渲染')
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-        SegmentButton({
-          options: SegmentButtonOptions.capsule({
-            buttons: [{ text: '跟随全局' }, { text: 'DXVK' }, { text: 'WineD3D' }],
-            multiply: false
-          }),
-          selectedIndexes: $cfgGraphicsSel,
-          onItemClicked: (index: number) => {
-            this.cfgGraphicsSel = [index];
-          }
-        })
-      }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
-
-      Row() {
-        Column({ space: 2 }) {
-          Text('兼容模式')
-            .fontSize(13)
-            .fontColor($r('app.color.text_secondary'))
-          Text('应用闪退或画面异常时开启，运行速度会变慢')
-            .fontSize(11)
-            .fontColor($r('app.color.text_tertiary'))
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
-        Toggle({ type: ToggleType.Switch, isOn: this.cfgCompat })
-          .onChange((isOn: boolean) => {
-            this.cfgCompat = isOn;
-          })
-      }
-      .width('100%')
-
-      Row({ space: 12 }) {
-        // 恢复默认只重置本表单的选项, 仍需点保存生效 (防误触)
-        Button('恢复默认')
-          .layoutWeight(1)
-          .backgroundColor($r('app.color.control_bg'))
-          .onClick(() => {
-            this.cfgGraphicsSel = [0];
-            this.cfgCompat = false;
-          })
-        Button('保存')
-          .layoutWeight(1)
-          .onClick(() => {
-            this.saveConfig();
-          })
-      }
-      .width('100%')
-    }
-    .padding({ left: 18, right: 18, top: 8, bottom: 24 })
-  }
-
   // 条目内容 (Grid 卡片与 sm/md 列表行共用, 参考 .temp/ui 设计稿):
   // 左图标, 右侧两行 — 上行名称, 下行 exe 文件名 + 类型标签 ("内建"·"收藏" 小胶囊)
   @Builder
@@ -591,8 +508,8 @@ export struct AppLibraryView {
         Image(`file://${$$.entry.icon}`)
           .width($$.iconSize).height($$.iconSize)
       } else {
-        // 无图标占位: 系统播放符号 (历史沿用 ▶ 语义)
-        SymbolGlyph($r('sys.symbol.play_fill'))
+        // 无图标占位: 系统网格符号 (启动器入口语义, 同任务列表/文件页 exe 行)
+        SymbolGlyph($r('sys.symbol.square_grid_2x2'))
           .fontSize($$.iconSize - 8)
           .fontColor([$r('app.color.accent')])
           .width($$.iconSize).height($$.iconSize)
@@ -820,12 +737,5 @@ export struct AppLibraryView {
     .width('100%').height('100%')
     // 根容器统一背景: 启动器下层是桌面 XComponent, 根透明会透出桌面 (顶行/分支不再单设)
     .backgroundColor($r('app.color.window_bg'))
-    // 单应用配置半模态 (替代原 CustomDialog: 配置项会增多, 半模态空间更大层级更轻)
-    .bindSheet($$this.showConfig, this.configSheet(), {
-      height: SheetSize.FIT_CONTENT,
-      dragBar: true,
-      showClose: true,
-      backgroundColor: $r('app.color.overlay_bg')
-    })
   }
 }
