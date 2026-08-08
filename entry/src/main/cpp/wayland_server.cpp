@@ -417,13 +417,13 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     wl_display* dpy = wl_client_get_display(client);
     xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
 
-    // 桌面 root 尺寸变化 → 同步更新 output 尺寸, 影响:
-    //   - wl_output 上报的物理尺寸
-    //   - xdg_toplevel_set_maximized / set_max_size 的基准值
-    //   - FindToplevelAt / RaiseToplevel 的边界判断
+    // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时
+    // setOutputSize (display 物理尺寸 / effectiveScale), root 的 resize 只反映
+    // ArkUI surface 波动 — 桌面退出时 launcherVisible 翻 true, 窗口退出全屏,
+    // XComponent 高度 1840→1683, 反写会把错误高度残留进 output, 下次热重启
+    // explorer 用 /desktop=shell,WxH 建桌面就少了这段高度 (上下被裁)。
     if (Policy().RootCompositing() && toplevelId == desktopRootToplevelId_) {
-        SetOutputSize(w, h);
-        OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize root=%{public}u → output %{public}dx%{public}d",
+        OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize root=%{public}u (output untouched) %{public}dx%{public}d",
                     toplevelId, w, h);
     } else {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u → %{public}dx%{public}d maximized=%{public}s",

@@ -57,6 +57,10 @@ export class WineWindowManager {
   // desktop_root 只是 toplevel 出现，renderer 就绪晚数秒 — ensureDesktop
   // 等这个信号再放行程序启动，否则程序窗口抢占桌面渲染初始化会闪退
   desktopSurfaceReady: boolean = false;
+  // 启动器可见性镜像 (Index @Watch 同步): 非桌面态时窗口退出全屏,
+  // XComponent surface 高度随系统栏波动 — DesktopLayer.onSurfaceChanged
+  // 据此跳过 root resize, 避免把中间态高度发给 Wine 桌面 (热重启残留 bug)
+  desktopLauncherVisible: boolean = true;
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
 
@@ -107,6 +111,10 @@ export class WineWindowManager {
       hilog.info(DOMAIN, TAG, '[MW-DUMP]   entry #%{public}d: win=%{public}s starting=%{public}s events=%{public}d',
         id, e.win ? 'yes' : 'no', e.starting ? 'yes' : 'no', e.events.length);
     });
+  }
+
+  setDesktopLauncherVisible(v: boolean): void {
+    this.desktopLauncherVisible = v;
   }
 
   setAutomationMode(enabled: boolean): void {

@@ -124,6 +124,9 @@ struct Index {
   }
 
   private onLauncherVisibleChange(): void {
+    // 镜像给 DesktopLayer 判据: 启动器可见时窗口退出全屏, XComponent 高度
+    // 波动, 桌面 root 不应跟随 resize (否则热重启桌面高度残留错误值)
+    WineWindowManager.getInstance().setDesktopLauncherVisible(this.launcherVisible);
     this.applyImmersiveMode();
   }
 

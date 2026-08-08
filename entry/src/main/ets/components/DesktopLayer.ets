@@ -29,6 +29,12 @@ class DesktopController extends XComponentController {
     if (rootId > 0) {
       try {
         testNapi.resizeRenderer(rootId, rect.surfaceWidth, rect.surfaceHeight);
+        // 启动器可见 (窗口退出全屏) 时 surface 高度随系统栏波动 (1840→1683):
+        // 跳过 root resize, 否则中间态高度会缩小 Wine 桌面, 且退出后残留
+        // 进 output, 热重启桌面高度出错 (上下被裁)
+        if (WineWindowManager.getInstance().desktopLauncherVisible) {
+          return;
+        }
         // 统一经 getEffectiveScale, 不再硬编码 2.0
         const s = WineWindowManager.getInstance().getEffectiveScale();
         testNapi.notifyToplevelResize(rootId,
