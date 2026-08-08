@@ -223,6 +223,11 @@ public:
 private:
     WaylandServer() = default;
     void EventLoop();
+    // stopAll 主动清空全部 toplevel: SIGKILL 强杀 Wine 后 client 断开事件
+    // 未被 dispatch (wl_display_terminate 提前终止事件循环), 依赖断开事件触发
+    // 的 OnToplevelDestroyed 不执行 → toplevel 残留 (重启后旧窗口画面共存、
+    // 占 zOrder、不响应事件)。此处显式遍历逐个收口并补发 destroyed 给 ArkTS。
+    void DestroyAllToplevels();
 
     // -- surface_commit 分段 (Phase 3B, 实现在 wl_core.cpp) --
     // 协议语义见各函数定义处注释; ShmCommitInfo 在 surface_data.h
