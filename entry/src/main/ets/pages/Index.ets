@@ -13,7 +13,7 @@ import { GamepadLayoutEditor } from '../components/GamepadLayoutEditor';
 import { KeyboardOverlay } from '../components/KeyboardOverlay';
 import { InputSettingsService } from '../service/InputSettingsService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
-import { window } from '@kit.ArkUI';
+import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -33,12 +33,29 @@ struct Index {
   // 初始化失败 (首启引导 4.8): overlay 把 spinner 换成 重试/重置 入口
   @State initFailed: boolean = false;
   @State currentIndex: number = 0;
-  // -- 桌面三层 (Step 3.5): Layer0 DesktopLayer / Layer1 启动器 / Layer2 FloatingBar --
-  // desktopActive 由 WineWindowManager 驱动: desktop_root 出现置 true,
+  // -- 桌面三层 (Step 3.5 改): 启动器置底 / 桌面层容器 (悬浮窗态小窗缩略 /
+  // 全屏态铺满) / FloatingBar+覆盖层 --
+  // desktopActive 由 WineWindowManager 驱动: desktop_root 出现置 true (不再
+  // 自动全屏 — 桌面以悬浮窗缩略显示, 点悬浮窗/启动程序才进全屏),
   // root 销毁 (会话停止) 翻回 false 回到启动器
   @State desktopActive: boolean = false;
   @State desktopRootId: number = 0;
   @State @Watch('onLauncherVisibleChange') launcherVisible: boolean = true;
+  // -- 桌面悬浮窗 (Pad): 默认右上角缩略显示, 可拖动挪位 --
+  // 位置用 position 绝对坐标 (vp, 相对根 Stack 左上角), 不用 align+offset:
+  // align 对根 Stack 的非全尺寸子组件偶发不生效 (悬浮窗落到屏幕中央), 且
+  // offset 钳制按"右上角基准"算会拖不到最右。position 坐标直接表达实际
+  // 位置, 钳制基于屏幕范围, 无歧义。
+  @State floatPosX: number = 0;
+  @State floatPosY: number = 0;
+  private floatPanStartX: number = 0;
+  private floatPanStartY: number = 0;
+  private screenW: number = 0;
+  private screenH: number = 0;
+  private static readonly FLOAT_W: number = 216;
+  private static readonly FLOAT_H: number = 135;
+  private static readonly FLOAT_MARGIN_TOP: number = 80;
+  private static readonly FLOAT_MARGIN_RIGHT: number = 12;
   // -- 断点镜像 (Step 4): sm 底部 Tabs / md·lg 左侧导航 --
   @State bp: Breakpoint = 'lg';
   // 应用库"打开所在目录"联动: 目录路径经此 @State 传给 FileBrowserView (@Link), 消费后自清空
@@ -86,16 +103,14 @@ struct Index {
         this.launcherVisible = false;
       }
     });
-    // 桌面状态订阅: desktopActive false→true 时盖住启动器
-    // (复刻"桌面出现即盖住启动器"), rootId 镜像进 @State
+    // 桌面状态订阅: desktopActive false→true 时保持启动器可见 — 桌面以
+    // 悬浮窗缩略显示 (点悬浮窗/启动程序才进全屏), 不再像旧版
+    // "桌面出现即盖住启动器"; root 销毁时翻回启动器, rootId 镜像进 @State
     const wm = WineWindowManager.getInstance();
     wm.subscribe(() => {
-      const wasActive = this.desktopActive;
       this.desktopActive = wm.desktopActive;
       this.desktopRootId = wm.getDesktopRootId();
-      if (!wasActive && this.desktopActive) {
-        this.launcherVisible = false;
-      } else if (wasActive && !this.desktopActive) {
+      if (!this.desktopActive) {
         // 桌面 root 销毁 (会话停止/退出): 翻回启动器, 否则 DesktopLayer
         // 卸载后只剩黑屏
         this.launcherVisible = true;
@@ -135,14 +150,23 @@ struct Index {
     }
     // 按当前 launcherVisible 应用一次沉浸 (初始 true = 显示状态栏)
     this.applyImmersiveMode();
+    // 悬浮窗拖动钳制的屏幕尺寸 (vp) + 初始位置右上角
+    try {
+      const d = display.getDefaultDisplaySync();
+      this.screenW = px2vp(d.width);
+      this.screenH = px2vp(d.height);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'screen size query failed: %{public}s', JSON.stringify(e));
+      this.screenW = 640;
+      this.screenH = 400;
+    }
+    this.floatPosX = this.screenW - Index.FLOAT_W - Index.FLOAT_MARGIN_RIGHT;
+    this.floatPosY = Index.FLOAT_MARGIN_TOP;
   }
 
-  // 返回键: 启动器覆盖桌面时 → 回桌面层 (消耗事件); 否则系统默认
+  // 返回键: 一律走系统默认 (退出 app)。悬浮窗模式不再回全屏桌面 —
+  // 进全屏只通过显式入口: 点悬浮窗 / 启动程序自动全屏
   onBackPress(): boolean {
-    if (this.desktopActive && this.launcherVisible) {
-      this.launcherVisible = false;
-      return true;
-    }
     return false;
   }
 
@@ -271,11 +295,8 @@ struct Index {
 
   build() {
     Stack() {
-    // Layer 0: 桌面层 (desktopActive 期间挂载, root 销毁 desktopActive 翻回后卸载)
-    if (this.desktopActive && this.desktopRootId > 0) {
-      DesktopLayer()
-    }
-    // Layer 1: 启动器 (visibility 显隐, 树常驻不销毁)
+    // Layer 0: 启动器 (visibility 显隐, 树常驻不销毁; 置底 — 桌面层在其上,
+    // 悬浮窗态桌面小窗浮于启动器上方, 全屏态启动器 Hidden 不参与绘制)
     Column() {
       // -- 标题栏 --
       Row() {
@@ -294,25 +315,7 @@ struct Index {
 
         // 引擎启动入口不在标题栏: 首启由 EngineGuide 引导, 二次进入后台
         // 自动拉起, 失败/降级由 EngineGuide 与设置页承接
-
-        // 回桌面可见入口 (Step 3.5): 仅桌面激活时显示。
-        // 与 onBackPress、启动程序自动回桌面并列的第三条返回路径。
-        if (this.desktopActive) {
-          Row({ space: 4 }) {
-            SymbolGlyph($r('sys.symbol.house'))
-              .fontSize(16)
-              .fontColor([$r('app.color.accent')])
-            Text('回桌面')
-              .fontSize(14)
-              .fontColor($r('app.color.accent'))
-          }
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .backgroundColor($r('app.color.control_bg'))
-          .borderRadius(8)
-          .onClick(() => {
-            this.launcherVisible = false;
-          })
-        }
+        // 进全屏桌面只经悬浮窗点击 / 启动程序自动全屏 — 不再提供标题栏"回桌面"按钮
       }
       .width('100%')
       .padding({ left: 14, right: this.titleBarRightPadding, top: 10, bottom: 10 })
@@ -388,6 +391,64 @@ struct Index {
     }
     .width('100%').height('100%')
     .visibility(this.launcherVisible ? Visibility.Visible : Visibility.Hidden)
+    // Layer 1: 桌面层容器 — 悬浮窗态 (launcherVisible) = 216×135 缩略窗浮于
+    // 启动器右上角 (点击任意处进全屏 / 按住拖动挪位); 全屏态 = 铺满全屏。
+    // 缩略显示依赖 renderer letterbox (ComputeFitRect) 等比缩放全屏 Wine 帧;
+    // 悬浮态 desktopLauncherVisible=true 让 DesktopLayer.onSurfaceChanged 跳过
+    // root resize, Wine 桌面分辨率保持全屏不被小窗带歪。
+    if (this.desktopActive && this.desktopRootId > 0) {
+      Stack() {
+        DesktopLayer({ floating: this.launcherVisible })
+        // 悬浮态交互层: 全尺寸透明, Block 拦截不穿透到桌面 XComponent —
+        // 轻点 onClick 进全屏, 按住 PanGesture 拖动 (FloatingBar 同款手势并存)
+        if (this.launcherVisible) {
+          Stack() {
+            Row({ space: 4 }) {
+              Text('点击进入桌面 · 按住拖动')
+                .fontSize(11)
+                .fontColor(Color.White)
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+            .padding({ top: 3, bottom: 3 })
+            .backgroundColor('#66000000')
+            .position({ x: 0, y: Index.FLOAT_H - 26 })
+            .hitTestBehavior(HitTestMode.None)
+          }
+          .width('100%').height('100%')
+          .onClick(() => {
+            this.launcherVisible = false;
+          })
+          .gesture(
+            PanGesture()
+              .onActionStart(() => {
+                this.floatPanStartX = this.floatPosX;
+                this.floatPanStartY = this.floatPosY;
+              })
+              .onActionUpdate((ev: GestureEvent) => {
+                // 钳制基于实际坐标: 悬浮窗左上角 ∈ [0, screen - FLOAT]
+                const maxX = Math.max(this.screenW - Index.FLOAT_W, 0);
+                const maxY = Math.max(this.screenH - Index.FLOAT_H, 0);
+                this.floatPosX = Math.min(Math.max(this.floatPanStartX + ev.offsetX, 0), maxX);
+                this.floatPosY = Math.min(Math.max(this.floatPanStartY + ev.offsetY, 0), maxY);
+              })
+          )
+          .hitTestBehavior(HitTestMode.Block)
+        }
+      }
+      .width(this.launcherVisible ? Index.FLOAT_W : '100%')
+      .height(this.launcherVisible ? Index.FLOAT_H : '100%')
+      // position 绝对定位 (vp, 相对根 Stack 左上角): 初始右上角, 拖动时浮
+      // 动窗跟手指走, 全屏态 0,0 无影响 (宽度铺满)
+      .position(this.launcherVisible
+        ? { x: this.floatPosX, y: this.floatPosY }
+        : { x: 0, y: 0 })
+      .borderRadius(this.launcherVisible ? 12 : 0)
+      .clip(this.launcherVisible)
+      .border({ width: this.launcherVisible ? 1 : 0, color: '#66FFFFFF' })
+      .shadow({ radius: this.launcherVisible ? 12 : 0,
+        color: '#66000000', offsetX: 0, offsetY: this.launcherVisible ? 4 : 0 })
+    }
     // Layer 2: 桌面悬浮条 + 手柄覆盖层 (仅桌面激活且启动器隐藏时可见)
     if (this.desktopActive && !this.launcherVisible) {
       FloatingBar({

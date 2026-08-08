@@ -56,6 +56,14 @@ class DesktopController extends XComponentController {
 // @Entry 页 → Index 内常驻组件)。XComponent id 保持 'wine_desktop_xc' 不变。
 @Component
 export struct DesktopLayer {
+  // 悬浮窗态 (Index 桌面层容器处于小窗缩略显示): 桌面 XComponent 所有输入
+  // 一律旁路 — 点击进全屏/拖动由 Index 悬浮交互层统一处理, 本组件不转发
+  // 输入给 Wine (悬浮态小窗缩略渲染 + 输入命中映射由 renderer letterbox
+  // ComputeFitRect 保证, 全屏态恢复后正常)。
+  // 必须 @Prop 单向同步: 用普通属性时, 悬浮↔全屏切换 (Index 容器尺寸变但
+  // 本组件实例不重建) floating 停留在旧值 true, 全屏态输入被持续旁路 —
+  // 表现为"桌面在更新但点不动"。
+  @Prop floating: boolean = false;
   controller: DesktopController = new DesktopController();
   // 触控状态机: IDLE → PENDING → (DRAGGING | 长按 | 点击)
   // 双指进入 SCROLLING 模式, 覆盖单指状态
@@ -343,6 +351,10 @@ export struct DesktopLayer {
       // ── 触控处理: 单指→左键/右键/拖拽, 双指→滚轮 ──
       .onTouch((ev: TouchEvent) => {
         try {
+          // 悬浮窗态: 输入旁路 (点击/拖动由 Index 悬浮交互层接管)
+          if (this.floating) {
+            return;
+          }
           // 触控板模式: 走独立相对位移语义, 旁路下方直接触控状态机
           if (this.touchpadOn) {
             this.handleTouchpad(ev);
@@ -549,6 +561,10 @@ export struct DesktopLayer {
       // (触屏长按合成右键不受影响)。
       .onMouse((ev: MouseEvent) => {
         try {
+          // 悬浮窗态: 输入旁路 (物理鼠标同样不转发给 Wine)
+          if (this.floating) {
+            return;
+          }
           // ── hover 移动直通 (指针跟随/高亮/tooltip/光标形状依赖 WM_MOUSEMOVE) ──
           if (ev.action === MouseAction.Move) {
             // touch 手势进行中: 左键按住移动等由 onTouch 状态机发 motion
@@ -636,6 +652,7 @@ export struct DesktopLayer {
 
       // ── 键盘事件 ──
       .onKeyEvent((ev: KeyEvent) => {
+        if (this.floating) return;  // 悬浮窗态: 输入旁路
         const rootId = WineWindowManager.getInstance().getDesktopRootId();
         if (rootId <= 0) return;
         ev.stopPropagation();
@@ -646,6 +663,7 @@ export struct DesktopLayer {
 
       // ── 滚轮事件 ──
       .onAxisEvent((ev?: AxisEvent) => {
+        if (this.floating) return;  // 悬浮窗态: 输入旁路
         const rootId = WineWindowManager.getInstance().getDesktopRootId();
         if (rootId <= 0 || !ev) return;
         const wpx = Math.round(vp2px(ev.x));
