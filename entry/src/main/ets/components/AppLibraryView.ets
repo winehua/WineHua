@@ -706,11 +706,15 @@ export struct AppLibraryView {
       } else if (this.bp == 'lg') {
         // lg 卡片栅格 (Pad 全屏 / PC 宽窗): 横向双行卡片较宽, 按 300vp/列取 1~4 列
         Grid() {
+          // key 带上会变的显示字段 (名称/收藏/图标): ArkUI ForEach 同 key 复用
+          // 子项不重跑 builder, 而 entry.name 等是普通对象字段非状态变量, 重命名
+          // 后 key 不变则界面永久滞留旧名 (需手动刷新才显示的根因; TaskListView
+          // 图标 key 同款先例)。launchingPath 是 @State 走细粒度订阅, 无需进 key
           ForEach(this.filtered(), (entry: AppEntry) => {
             GridItem() {
               this.gridCard(entry)
             }
-          }, (entry: AppEntry) => entry.path)
+          }, (entry: AppEntry) => `${entry.path}|${entry.name}|${entry.favorite ? 1 : 0}|${entry.icon ?? ''}`)
         }
         .columnsTemplate(this.gridCols)
         .columnsGap(12)
@@ -743,7 +747,8 @@ export struct AppLibraryView {
               .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress)
             }
             .backgroundColor($r('app.color.card_bg'))
-          }, (entry: AppEntry) => entry.path)
+            // key 规则同上方 Grid 分支注释 (带名称/收藏/图标, 强制变更行重建)
+          }, (entry: AppEntry) => `${entry.path}|${entry.name}|${entry.favorite ? 1 : 0}|${entry.icon ?? ''}`)
         }
         .width('100%').height('100%')
         .scrollBar(BarState.Off)
