@@ -159,7 +159,7 @@ export struct FloatingBar {
             this.barButton({ content: $r('sys.symbol.gearshape'), active: false, onTap: () => {
               this.showSettings = true;
             } })
-            this.barButton({ content: $r('sys.symbol.record_circle'), active: this.gamepadOn, onTap: () => {
+            this.barButton({ content: $r('sys.symbol.keyboard_thumbmode'), active: this.gamepadOn, onTap: () => {
               this.input.setGamepad(!this.gamepadOn);
             } })
             this.barButton({ content: $r('sys.symbol.keyboard_square'), active: this.keyboardOn, onTap: () => {
