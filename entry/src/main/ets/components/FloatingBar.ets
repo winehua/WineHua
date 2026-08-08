@@ -29,8 +29,6 @@ export struct FloatingBar {
   @State private keyboardOn: boolean = false;
   @State private cursorSpeed: number = 1.0;
   @State private showSettings: boolean = false;
-  // 布局编辑态镜像 (驱动"编辑手柄布局/完成编辑"按钮文案; 直接读 service 字段不刷新)
-  @State private editingLayout: boolean = false;
   // 拖动偏移与初始上边距 (与 HomeBall 同一套语义)
   @State private offsetX: number = 0;
   @State private offsetY: number = 0;
@@ -51,7 +49,6 @@ export struct FloatingBar {
     this.gamepadOn = this.input.gamepadEnabled;
     this.keyboardOn = this.input.keyboardEnabled;
     this.cursorSpeed = this.input.cursorSpeed;
-    this.editingLayout = this.input.editingLayout;
   }
 
   private ensureScreenSize(): void {
@@ -96,8 +93,8 @@ export struct FloatingBar {
     .onClick($$.onTap)
   }
 
-  // 输入设置半模态 (设计 4.7: 手柄布局编辑入口 + 光标速度等少量项;
-  // 布局编辑器在编辑态覆盖层上进行, 见 GamepadOverlay)
+  // 输入设置半模态 (设计: 光标速度 + 手柄布局编辑入口; 布局编辑在独立全屏
+  // 编辑页 GamepadLayoutEditor 进行 — 不需要先开手柄开关, 重置布局也挪进编辑页)
   @Builder
   settingsSheet() {
     Column({ space: 16 }) {
@@ -114,31 +111,20 @@ export struct FloatingBar {
           // 拖动中只更新生效值 (镜像即时刷速度), 松手/点按才落盘
           this.input.setCursorSpeed(value, mode != SliderChangeMode.Moving);
         })
-      Text('手柄布局与按键映射：先开「手柄」开关显示覆盖层，再点下方进入编辑。')
+      Text('手柄覆盖层开关在悬浮条红点按钮；布局编辑进全屏页，不需要先开开关。')
         .fontSize(12)
         .fontColor($r('app.color.text_tertiary'))
-      Row({ space: 12 }) {
-        Button(this.editingLayout ? '完成编辑' : '编辑手柄布局')
-          .layoutWeight(1)
-          .enabled(this.gamepadOn)
-          .backgroundColor($r('app.color.accent'))
-          .onClick(() => {
-            const next = !this.editingLayout;
-            this.input.setEditingLayout(next);
-            // 进入编辑态时收起半模态, 露出覆盖层; 完成时留在启动器外不动
-            if (next) {
-              this.showSettings = false;
-            }
-          })
-        Button('重置布局')
-          .layoutWeight(1)
-          .enabled(this.gamepadOn)
-          .backgroundColor($r('app.color.control_bg'))
-          .onClick(() => {
-            this.input.resetLayout();
-          })
-      }
-      .width('100%')
+      Button('编辑手柄布局')
+        .width('100%')
+        .backgroundColor($r('app.color.accent'))
+        .onClick(() => {
+          // 防重入: 编辑页已开时不再重复 beginLayoutEdit (避免覆盖快照)
+          if (!this.input.editingLayout) {
+            this.input.beginLayoutEdit();
+          }
+          // 进全屏编辑页, 收起半模态
+          this.showSettings = false;
+        })
     }
     .width('100%')
     .padding({ left: 20, right: 20, top: 18, bottom: 24 })
@@ -196,6 +182,10 @@ export struct FloatingBar {
       }
       .margin({ top: this.marginTop, right: FloatingBar.MARGIN_RIGHT })
       .offset({ x: this.offsetX, y: this.offsetY })
+      // 阻断点击穿透到桌面: 根容器 Transparent, 按钮 onClick 触发的同时同一击
+      // 仍透传成桌面点击 (窗口失焦); BLOCK_HIERARCHY 只阻断悬浮条自身区域,
+      // 悬浮条外空白仍穿透桌面 (同 KeyboardOverlay/手柄控件的解法)
+      .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
       .onAreaChange((_oldValue: Area, newValue: Area) => {
         this.barW = newValue.width as number;
         this.barH = newValue.height as number;

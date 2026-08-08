@@ -11,6 +11,7 @@ const KEY_SPEED = 'cursorSpeed';
 const KEY_BUTTONS = 'padButtons';
 const KEY_ZONES = 'padZones';
 const KEY_KB_POS = 'keyboardPos';
+const KEY_INTRO = 'layoutEditIntroShown';
 
 // 手柄可改键按钮 (方向键区/摇杆键位固定在 GamepadOverlay: 方向键/WASD,
 // v1 不开放重映射 — "逐键配置"覆盖 8 个动作键已满足主流 RPG/RTS)
@@ -27,6 +28,13 @@ export interface PadZone {
   id: string;    // 'dpad' | 'stick'
   relX: number;
   relY: number;
+}
+
+// 布局快照 (进入编辑页时深拷贝, 取消编辑时恢复); 显式类型规避
+// arkts-no-obj-literals-as-types
+export interface LayoutSnapshot {
+  buttons: PadButton[];
+  zones: PadZone[];
 }
 
 // 重映射候选键 (evdev code): 覆盖常用确认/取消/技能/方向键
@@ -70,8 +78,9 @@ function defaultZones(): PadZone[] {
 // 输入设置 (全局, 不做单应用覆盖 — 用户决策): 触摸模拟鼠标 / 游戏手柄模拟 /
 // 模拟键盘开关、光标速度、手柄布局与按键映射、键盘面板位置。preferences 持久化;
 // 悬浮条开关、DesktopLayer 触控路由、GamepadOverlay / KeyboardOverlay 均经
-// subscribe 镜像。editingLayout 为编辑态瞬态标记 (布局编辑期间覆盖层控件变为
-// 可拖动), 不持久化。
+// subscribe 镜像。editingLayout 为全屏布局编辑页瞬态标记 (打开期间控件变为可拖动
+// /可改键), 不持久化; 与 gamepadEnabled 解耦 — 编辑页不需要先开手柄开关。
+// 进入编辑页时拍 buttons/zones 快照 (layoutSnapshot), "取消"恢复快照丢改动。
 export class InputSettingsService {
   private static instance: InputSettingsService | null = null;
 
@@ -91,11 +100,18 @@ export class InputSettingsService {
   cursorSpeed: number = 1.0;
   buttons: PadButton[] = defaultButtons();
   zones: PadZone[] = defaultZones();
+  // 全屏布局编辑页开关 (瞬态, 不持久化); 与 gamepadEnabled 解耦
   editingLayout: boolean = false;
+  // 进入编辑页后是否改过布局 (驱动"取消"是否需要确认弹窗)
+  layoutDirty: boolean = false;
+  // 首用引导是否看过 (持久化)
+  introShown: boolean = false;
 
   private store: preferences.Preferences | null = null;
   private initialized: boolean = false;
   private listeners: Array<() => void> = [];
+  // 进入编辑页时的布局快照 (取消编辑时恢复), 编辑中不更新
+  private layoutSnapshot: LayoutSnapshot | null = null;
 
   subscribe(listener: () => void): void {
     if (this.listeners.indexOf(listener) >= 0) {
@@ -120,6 +136,7 @@ export class InputSettingsService {
       this.touchpadEnabled = this.store.getSync(KEY_TOUCHPAD, false) as boolean;
       this.gamepadEnabled = this.store.getSync(KEY_GAMEPAD, false) as boolean;
       this.keyboardEnabled = this.store.getSync(KEY_KEYBOARD, false) as boolean;
+      this.introShown = this.store.getSync(KEY_INTRO, false) as boolean;
       this.cursorSpeed = this.store.getSync(KEY_SPEED, 1.0) as number;
       const kbPosJson = this.store.getSync(KEY_KB_POS, '') as string;
       if (kbPosJson) {
@@ -174,10 +191,7 @@ export class InputSettingsService {
 
   setGamepad(enabled: boolean): void {
     this.gamepadEnabled = enabled;
-    // 关覆盖层时强制退出布局编辑态, 避免遗留"看得见但不可玩"的编辑覆盖层
-    if (!enabled) {
-      this.editingLayout = false;
-    }
+    // 不再强退布局编辑态: 编辑页是全屏模态 (盖住悬浮条), 不受覆盖层开关门控
     this.persist();
     this.notify();
   }
@@ -205,12 +219,56 @@ export class InputSettingsService {
     this.notify();
   }
 
-  setEditingLayout(editing: boolean): void {
-    this.editingLayout = editing;
+  // 进入全屏布局编辑页: 拍快照 (取消时恢复), 置脏标记与编辑态。不依赖手柄开关。
+  beginLayoutEdit(): void {
+    this.layoutSnapshot = {
+      buttons: JSON.parse(JSON.stringify(this.buttons)) as PadButton[],
+      zones: JSON.parse(JSON.stringify(this.zones)) as PadZone[]
+    };
+    this.layoutDirty = false;
+    this.editingLayout = true;
     this.notify();
   }
 
+  // 完成编辑: 改动已即改即存, 仅关编辑态并清快照
+  finishLayoutEdit(): void {
+    this.editingLayout = false;
+    this.layoutSnapshot = null;
+    this.notify();
+  }
+
+  // 取消编辑: 恢复进入时的快照 (必须 persist, 否则重启读到改动值), 关编辑态
+  cancelLayoutEdit(): void {
+    if (this.layoutSnapshot) {
+      this.buttons = this.layoutSnapshot.buttons;
+      this.zones = this.layoutSnapshot.zones;
+      this.persist();
+    }
+    this.editingLayout = false;
+    this.layoutSnapshot = null;
+    this.notify();
+  }
+
+  // 冲突检测: 返回占用指定键的其他按钮 id (排除自身), 无则空串
+  findKeyOwner(code: number, excludeId: string): string {
+    const hit = this.buttons.find((b: PadButton) => b.key == code && b.id != excludeId);
+    return hit ? hit.id : '';
+  }
+
+  markIntroShown(): void {
+    this.introShown = true;
+    if (this.store) {
+      try {
+        this.store.putSync(KEY_INTRO, true);
+        this.store.flush();
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'input settings intro persist fail: %{public}s', JSON.stringify(e));
+      }
+    }
+  }
+
   updateButtonPos(id: string, relX: number, relY: number): void {
+    this.layoutDirty = true;
     this.buttons = this.buttons.map((b: PadButton): PadButton =>
       b.id == id ? { id: b.id, label: b.label, relX: relX, relY: relY, key: b.key } : b);
     this.persist();
@@ -218,6 +276,7 @@ export class InputSettingsService {
   }
 
   updateButtonKey(id: string, key: number): void {
+    this.layoutDirty = true;
     this.buttons = this.buttons.map((b: PadButton): PadButton =>
       b.id == id ? { id: b.id, label: b.label, relX: b.relX, relY: b.relY, key: key } : b);
     this.persist();
@@ -225,6 +284,7 @@ export class InputSettingsService {
   }
 
   updateZonePos(id: string, relX: number, relY: number): void {
+    this.layoutDirty = true;
     this.zones = this.zones.map((z: PadZone): PadZone =>
       z.id == id ? { id: z.id, relX: relX, relY: relY } : z);
     this.persist();
@@ -232,6 +292,7 @@ export class InputSettingsService {
   }
 
   resetLayout(): void {
+    this.layoutDirty = true;
     this.buttons = defaultButtons();
     this.zones = defaultZones();
     this.persist();

@@ -9,6 +9,7 @@ import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
 import { FloatingBar } from '../components/FloatingBar';
 import { GamepadOverlay } from '../components/GamepadOverlay';
+import { GamepadLayoutEditor } from '../components/GamepadLayoutEditor';
 import { KeyboardOverlay } from '../components/KeyboardOverlay';
 import { InputSettingsService } from '../service/InputSettingsService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
@@ -375,6 +376,12 @@ struct Index {
       GamepadOverlay()
       // 模拟键盘覆盖层, 同款自门控 (keyboardEnabled); 置于手柄之上
       KeyboardOverlay()
+    }
+    // Layer 3: 全屏手柄布局编辑页 (模态, 盖住悬浮条与游戏画面防误触)。
+    // 仅桌面激活时挂载; 组件内部按 editingLayout 自门控, 桌面退出时随卸载
+    // 自动收口 (aboutToDisappear 兜底 finishLayoutEdit)
+    if (this.desktopActive) {
+      GamepadLayoutEditor()
     }
     // 扫描/字体导入全窗遮罩 (镜像 AppLibraryService.scanning / WineEnvService
     // .fontImporting): 半透明罩吞掉期间的一切触摸, 防误操作与状态交错;
