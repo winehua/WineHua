@@ -166,7 +166,9 @@ export struct FileBrowserView {
             name: n,
             isDir: st.isDirectory(),
             size: st.isDirectory() ? -1 : Number(st.size),
-            mtime: Number(st.mtime),
+            // statSync 的 mtime 单位是秒 (非毫秒), 直接喂给 Date 会显示成
+            // 1970-01-21 之类的假日期 — 这里统一乘 1000 转成毫秒时间戳
+            mtime: Number(st.mtime) * 1000,
             icon: ''
           });
         } catch (_) {
@@ -212,7 +214,7 @@ export struct FileBrowserView {
     return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[u]}`;
   }
 
-  // 修改时间: YYYY-MM-DD HH:mm (本地时间)
+  // 修改时间: YYYY-MM-DD HH:mm (本地时间); mtime 无效 (<=0) 时留空
   private fmtTime(ms: number): string {
     if (ms <= 0) {
       return '';
@@ -687,16 +689,24 @@ export struct FileBrowserView {
         .width(126).fontSize(11)
         .fontColor($r('app.color.text_tertiary'))
         .textAlign(TextAlign.End).maxLines(1)
-      if (this.rowKindOf(entry) == 'exe') {
-        Button('启动')
-          .height(32)
-          .enabled(this.state == 'ready')
-          .onClick(() => this.launchExe(this.fullPath(entry.name)))
-      } else if (this.rowKindOf(entry) == 'dir') {
-        SymbolGlyph($r('sys.symbol.chevron_right'))
-          .fontSize(16)
-          .fontColor([$r('app.color.text_tertiary')])
+      // 行尾操作槽: 固定宽度 + 右对齐, 非 exe 行也保留同样宽度 —
+      // 否则无"启动"按钮的行, 大小/时间列相对 exe 行整体右移错位
+      Row() {
+        if (this.rowKindOf(entry) == 'exe') {
+          Button('启动')
+            .height(32)
+            .enabled(this.state == 'ready')
+            .onClick(() => this.launchExe(this.fullPath(entry.name)))
+        } else if (this.rowKindOf(entry) == 'dir') {
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('app.color.text_tertiary')])
+        }
       }
+      .width(88)
+      .margin({ left: 14 })
+      .justifyContent(FlexAlign.End)
+      .alignItems(VerticalAlign.Center)
     }
     .width('100%').height(44).padding({ left: 14, right: 14 })
     .alignItems(VerticalAlign.Center)
