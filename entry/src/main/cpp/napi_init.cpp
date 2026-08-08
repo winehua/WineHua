@@ -847,18 +847,22 @@ static napi_value GetProcessList(napi_env env, napi_callback_info info) {
         napi_value obj;
         napi_create_object(env, &obj);
 
-        napi_value pidVal, nameVal, pathVal, stateVal;
+        napi_value pidVal, nameVal, pathVal, stateVal, shellVal;
         napi_create_int32(env, entry.pid, &pidVal);
         napi_create_string_utf8(env, entry.exeBasename.c_str(), NAPI_AUTO_LENGTH, &nameVal);
         napi_create_string_utf8(env, entry.exeFullPath.c_str(), NAPI_AUTO_LENGTH, &pathVal);
         napi_create_string_utf8(env, entry.running ? "running" : "exited",
                                 NAPI_AUTO_LENGTH, &stateVal);
+        // 桌面 root 出现前加入的会话基础进程 (desktop + 桌面前的 explorer 等),
+        // ArkTS 据此隐藏"结束"操作防误操作破坏桌面运行
+        napi_get_boolean(env, entry.desktopShell, &shellVal);
 
         napi_property_descriptor props[] = {
             {"pid",   nullptr, nullptr, nullptr, nullptr, pidVal,   napi_default, nullptr},
             {"name",  nullptr, nullptr, nullptr, nullptr, nameVal,  napi_default, nullptr},
             {"path",  nullptr, nullptr, nullptr, nullptr, pathVal,  napi_default, nullptr},
             {"state", nullptr, nullptr, nullptr, nullptr, stateVal, napi_default, nullptr},
+            {"desktopShell", nullptr, nullptr, nullptr, nullptr, shellVal, napi_default, nullptr},
         };
         napi_define_properties(env, obj, sizeof(props)/sizeof(props[0]), props);
         napi_set_element(env, arr, i, obj);

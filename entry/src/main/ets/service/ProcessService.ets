@@ -9,6 +9,9 @@ export interface ProcessInfo {
   name: string;
   path: string;
   state: string;
+  // 桌面 root 出现前加入的会话基础进程 (desktop + 桌面前的 explorer 等),
+  // native 在桌面首次出现时打标, 结束会破坏桌面运行, 隐藏"结束"操作。
+  desktopShell: boolean;
 }
 
 // wine 内部系统进程 (broker 已全量登记): 运行中页只显示用户程序,
@@ -62,6 +65,15 @@ export class ProcessService {
       this.processList = [];
     }
     this.notify();
+  }
+
+  // 桌面 shell 基础进程不可由用户结束: desktopShell 由 native 在桌面 root 首次
+  // 出现时对"当时 running 的进程"统一打标 (desktop + 桌面出现前加入的多个
+  // explorer.exe), 基于时间边界而非进程名 — 桌面出现后手动启动的 explorer
+  // 文件管理器不受影响, 仍可正常结束。结束任一基础进程都会破坏桌面运行
+  // (会话错乱/热重启污染), 运行中页据此隐藏结束操作, 防用户误操作。
+  isKillable(proc: ProcessInfo): boolean {
+    return !proc.desktopShell;
   }
 
   // 原 doKillProcess

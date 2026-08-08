@@ -95,35 +95,46 @@ export struct TaskListView {
                     .fill($r('app.color.state_ok'))
                     .margin({ right: 10 })
                   // 结束: 二次确认后 kill (与环境页"停止全部"同级别确认 —
-                  // 未保存数据会丢失, 上架标准不允许无确认直接杀)
-                  Text('结束')
-                    .fontColor($r('app.color.danger'))
-                    .padding({ left: 12, top: 6, bottom: 6 })
-                    .onClick(() => {
-                      AlertDialog.show({
-                        title: '结束程序',
-                        message: `确定结束「${proc.name}」吗？未保存的数据会丢失。`,
-                        primaryButton: {
-                          value: '取消',
-                          action: () => {}
-                        },
-                        secondaryButton: {
-                          value: '结束',
-                          fontColor: $r('app.color.danger'),
-                          action: () => this.proc.kill(proc.pid)
-                        }
-                      });
-                    })
+                  // 未保存数据会丢失, 上架标准不允许无确认直接杀)。
+                  // 桌面 shell 基础进程除外 (native 在桌面首次出现时打标的
+                  // desktopShell 进程): 结束会破坏桌面运行, 故隐藏结束按钮,
+                  // 以灰色"桌面"标签替代说明。
+                  if (this.proc.isKillable(proc)) {
+                    Text('结束')
+                      .fontColor($r('app.color.danger'))
+                      .padding({ left: 12, top: 6, bottom: 6 })
+                      .onClick(() => {
+                        AlertDialog.show({
+                          title: '结束程序',
+                          message: `确定结束「${proc.name}」吗？未保存的数据会丢失。`,
+                          primaryButton: {
+                            value: '取消',
+                            action: () => {}
+                          },
+                          secondaryButton: {
+                            value: '结束',
+                            fontColor: $r('app.color.danger'),
+                            action: () => this.proc.kill(proc.pid)
+                          }
+                        });
+                      })
+                  } else {
+                    Text('桌面')
+                      .fontSize(12)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .padding({ left: 12, top: 6, bottom: 6 })
+                  }
                 }
                 .width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
                 .alignItems(VerticalAlign.Center)
               }
               .backgroundColor($r('app.color.card_bg'))
               .borderRadius(12)
-            // key 带图标状态: ArkUI ForEach 同 key 复用子项不重跑 builder —
-            // 图标异步提取完成后 key 变化, 强制该行重建, 否则第一次渲染的
-            // 回退 ▶ 会永久滞留 (Pal2 提取成功却不显示的根因)
-            }, (proc: ProcessInfo) => `${proc.pid}|${this.iconOf(proc)}`)
+            // key 带图标状态 + desktopShell: ArkUI ForEach 同 key 复用子项不重跑
+            // builder — 图标异步提取完成后 key 变化强制重建 (否则回退 ▶ 永久滞留,
+            // Pal2 根因); desktopShell 同理: 桌面首次出现时从 false 变 true, key
+            // 不变则行复用, "结束"按钮不会切换为"桌面"标签 (保护失效的症状)
+            }, (proc: ProcessInfo) => `${proc.pid}|${this.iconOf(proc)}|${proc.desktopShell}`)
           }
           .width('100%')
           .padding({ left: 14, right: 14 })

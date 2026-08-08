@@ -197,9 +197,14 @@ void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char
      * 挂在统一的 FireToplevelEvent 而非 LaunchPadMode 等待循环 — root 在任意
      * 时刻出现 (含慢设备超时后姗姗来迟) 都能补发; ArkTS 只在 degraded 态消费,
      * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。 */
-    if (!strcmp(event, "desktop_root") && gStateTsfn) {
-        napi_call_threadsafe_function(gStateTsfn, strdup("evt:desktop-ready"),
-                                      napi_tsfn_blocking);
+    if (!strcmp(event, "desktop_root")) {
+        // 桌面 root 首次出现: 把当前 running 的进程标记为桌面 shell 基础进程
+        // (desktop + 桌面出现前加入的 explorer 等), ArkTS 据此隐藏"结束"防误操作。
+        MarkDesktopShellProcesses();
+        if (gStateTsfn) {
+            napi_call_threadsafe_function(gStateTsfn, strdup("evt:desktop-ready"),
+                                          napi_tsfn_blocking);
+        }
     }
 }
 

@@ -40,6 +40,11 @@ static std::atomic<bool> gShutdownRequested{false};
 // state:failed:wineserver。只在 RegisterWineserver (新会话建立) 时清除。
 // PC 窗口模式没有 desktop root, 此标记永不置位, 崩溃判定行为不变。
 static std::atomic<bool> gDesktopSessionEnded{false};
+// gDesktopShellMarked: 桌面 root 首次出现时标记过 "桌面 shell 基础进程" 集合后
+// 置位。root 重建 (explorer 重连重新提交 root) 不重复标记, 避免把已在跑的用户
+// 程序误标为不可结束。BeginDesktopSession (每次桌面会话 spawn explorer 前) 清除,
+// 热重启复用旧 wineserver 也能在新 root 出现时重新标记。
+static std::atomic<bool> gDesktopShellMarked{false};
 
 static uint64_t TimestampMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -89,6 +94,26 @@ pid_t GetWineserverPid() {
 
 void MarkDesktopSessionEnded() {
     gDesktopSessionEnded.store(true);
+}
+
+void BeginDesktopSession() {
+    gDesktopShellMarked.store(false);
+}
+
+void MarkDesktopShellProcesses() {
+    bool expected = false;
+    if (!gDesktopShellMarked.compare_exchange_strong(expected, true)) {
+        return;  // 已标记过 (root 重建), 不重复
+    }
+    std::lock_guard<std::mutex> lock(gProcMutex);
+    size_t count = 0;
+    for (auto& entry : gProcRegistry) {
+        if (entry.running) {
+            entry.desktopShell = true;
+            count++;
+        }
+    }
+    OH_LOG_INFO(LOG_APP, "[ProcReg] desktop shell processes marked: %{public}zu running", count);
 }
 
 // -- 注册表辅助函数 --

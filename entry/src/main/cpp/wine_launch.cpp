@@ -576,6 +576,9 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     {
         auto* ws = WaylandServer::GetInstance();
         ws->SetDesktopRootRecognitionEnabled(true);
+        // 新桌面会话开始: 清除上次会话的桌面 shell 标记守卫, 使本次 root 出现时
+        // 重新标记基础进程 (desktop + explorer 等) 为不可由用户结束。
+        BeginDesktopSession();
         int dw = ws->outputW_ > 0 ? ws->outputW_ : 1280;
         int dh = ws->outputH_ > 0 ? ws->outputH_ : 720;
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop size: outputW=%{public}d outputH=%{public}d → %{public}dx%{public}d",
