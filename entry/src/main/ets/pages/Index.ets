@@ -13,6 +13,7 @@ import { GamepadLayoutEditor } from '../components/GamepadLayoutEditor';
 import { KeyboardOverlay } from '../components/KeyboardOverlay';
 import { InputSettingsService } from '../service/InputSettingsService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
+import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -51,6 +52,9 @@ struct Index {
   @State fontImporting: boolean = false;
   // 引擎编排进行中 (镜像 env.isBusy()): 标题栏"启动引擎"按钮的禁用判据
   @State engineBusy: boolean = false;
+  // 标题栏右侧避让系统按钮 (PC/2in1): 动态取系统窗口按钮宽度,
+  // Pad 无系统按钮 (getTitleButtonRect 失败/width=0) 回落默认 14
+  @State titleBarRightPadding: number = 14;
 
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
@@ -116,6 +120,22 @@ struct Index {
     });
     this.bp = bps.current;
     mirror();
+    // 标题栏右侧避让系统窗口控制按钮 (PC/2in1): 动态取系统按钮宽度,
+    // Pad 无系统按钮 (getTitleButtonRect 失败/width=0) 回落默认 14
+    try {
+      const tbmw = wm.getMainWindow();
+      if (tbmw) {
+        const tbRect = tbmw.getTitleButtonRect();
+        if (tbRect && tbRect.width > 0) {
+          this.titleBarRightPadding = tbRect.width + 4;
+        }
+        tbmw.on('windowTitleButtonRectChange', (r: window.TitleButtonRect) => {
+          this.titleBarRightPadding = (r && r.width > 0) ? r.width + 4 : 14;
+        });
+      }
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'titleButtonRect query failed: %{public}s', JSON.stringify(e));
+    }
     // 按当前 launcherVisible 应用一次沉浸 (初始 true = 显示状态栏)
     this.applyImmersiveMode();
   }
@@ -323,7 +343,7 @@ struct Index {
         }
       }
       .width('100%')
-      .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+      .padding({ left: 14, right: this.titleBarRightPadding, top: 10, bottom: 10 })
       .backgroundColor($r('app.color.header_bg'))
       .alignItems(VerticalAlign.Center)
 
