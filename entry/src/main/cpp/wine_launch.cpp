@@ -642,32 +642,10 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     }
     else
     {
-        // 非桌面模式: 启动 explorer 文件管理器窗口 — 与 Index.ets 手动启动
-        // explorer (runWineProgram → SpawnWineProgram) 走完全相同的 broker
-        // 路径 (绝对路径 + per-process env + broker 通道)。早期 NCP 直启
-        // 裸名 "wine explorer" 在非桌面模式被 Wine 当作 shell 启动, 不创建
-        // 文件管理器窗口。
-        ProgramOptions options;
-        options.windowsExePath = "C:\\windows\\explorer.exe";
-        options.prefixMode = (p->prefixDir == WINE_SMOKE_PREFIX) ? "clean" : "reuse";
-        options.d3dBackend = p->d3dBackend;
-        // 语言设置: 桌面模式 explorer 由 p->envStrs 携带 LANG/LC_ALL, 此路径
-        // 绕开了它, 必须逐进程注入, 否则 PC 窗口模式的 explorer 永远是基线中文。
-        // LANG 与 LC_ALL 必须同设: musl 下 Wine 只读 LC_ALL 兜底解析 LCID
-        options.environment.push_back("LANG=" + p->wineLang + ".UTF-8");
-        options.environment.push_back("LC_ALL=" + p->wineLang + ".UTF-8");
-        options.automationMode = false;
-        int32_t exPid = SpawnWineProgram(options);
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer window pid=%{public}d (broker path)",
-                    exPid);
-        // PC 窗口模式 explorer spawn 零判定修复: 失败必须上报而非静默 ready
-        if (exPid <= 0) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] explorer window spawn FAILED");
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:desktop"),
-                                              napi_tsfn_blocking);
-            return false;
-        }
+        // 非桌面模式 (PC/2in1): 程序是独立窗口, 无需文件管理器窗口 — 用户
+        // 需要时从应用库/文件浏览器手动启动 explorer。拉起引擎只保证
+        // wineserver + wine 数据就绪, 不再自动 spawn explorer 窗口。
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] managed mode: explorer not auto-spawned");
     }
     return true;
 }
