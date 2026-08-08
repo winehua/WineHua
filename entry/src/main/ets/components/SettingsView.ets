@@ -206,7 +206,7 @@ export struct SettingsView {
           .width('100%')
           // Slider 交互 (同悬浮条"光标速度"): 拖动中只更新显示值 (即时预览),
           // 松手/点按才落盘, 避免拖动过程频繁写 preferences
-          Slider({ value: this.displaySettings.scale, min: 0.75, max: 3.0, step: 0.25 })
+          Slider({ value: this.displaySettings.scale, min: 1.0, max: 3.0, step: 0.25 })
             .onChange((value: number, mode: SliderChangeMode) => {
               this.scaleText = this.fmtScale(value);
               if (mode != SliderChangeMode.Moving) {

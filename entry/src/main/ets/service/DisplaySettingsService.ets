@@ -6,7 +6,8 @@ const DOMAIN: number = 0x0000;
 const STORE_NAME: string = 'display_settings';
 const KEY_SCALE: string = 'scale';
 const DEFAULT_SCALE: number = 2.0;
-const MIN_SCALE: number = 0.75;
+// 范围 [1, 3] (用户决策: 0.75 档位取消); 旧版本存过的 <1 值由 clamp 收敛到 1.0
+const MIN_SCALE: number = 1.0;
 const MAX_SCALE: number = 3.0;
 
 // 供设置页选择器循环的预设档位 (非强制, setScale 只 clamp 不吸附)
