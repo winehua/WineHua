@@ -528,7 +528,7 @@ export struct AppLibraryView {
           .fontColor($r('app.color.text_secondary'))
         SegmentButton({
           options: SegmentButtonOptions.capsule({
-            buttons: [{ text: '跟随全局' }, { text: '硬件加速' }, { text: '兼容渲染' }],
+            buttons: [{ text: '跟随全局' }, { text: 'DXVK' }, { text: 'WineD3D' }],
             multiply: false
           }),
           selectedIndexes: $cfgGraphicsSel,
