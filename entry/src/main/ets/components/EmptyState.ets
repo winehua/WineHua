@@ -4,10 +4,13 @@
 // 注: 不用系统 ExceptionPrompt — 它语义偏网络异常。
 @Component
 export struct EmptyState {
+  // 必须 @Prop (父组件单向同步): 普通成员变量只在首次构造时赋值,
+  // 父组件重渲染若复用本实例 (同一 if 分支内), 文案会停留在旧值 —
+  // 应用库五分类切换空态时实测踩到 (切到"外部导入"仍显示"最近使用"文案)
   // 系统符号资源, 如 $r('sys.symbol.square_grid_2x2'); 由调用方按场景指定
-  icon: Resource = $r('sys.symbol.inbox');
-  title: string = '';
-  desc: string = '';
+  @Prop icon: Resource = $r('sys.symbol.inbox');
+  @Prop title: string = '';
+  @Prop desc: string = '';
 
   build() {
     Column({ space: 10 }) {

@@ -1,12 +1,18 @@
-import { AppLibraryService, AppEntry, AppConfig } from '../service/AppLibraryService';
+import { AppLibraryService, AppEntry, AppConfig, ScanMarks } from '../service/AppLibraryService';
 import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { EmptyState } from './EmptyState';
 import { promptAction, ChipGroup, ChipGroupItemOptions, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
-// 筛选 chips (设计 4.1): all/favorite/builtin;
-// 有隐藏条目时追加 hidden ("已隐藏" — 否则"隐藏"菜单项成单向陷阱, 无法找回)
+const DOMAIN = 0x0000;
+const TAG = 'AppLibraryView';
+
+// 分类 chips (设计 4.1): 最近使用/收藏/开始菜单/内建/外部导入;
+// 有隐藏条目时追加 hidden ("已隐藏" — 否则"隐藏"菜单项成单向陷阱, 无法找回)。
+// 前两者为动态视图 (lastRun 时间戳 / favorite 旗标, 与来源正交),
+// 后三者按入库来源互斥归类 (sourceOf: builtin 旗标 > source 字段, 老数据缺省 import)
 // 控件: 系统预置 ChipGroup (@kit.ArkUI, API 12+)
 
 // 单应用配置 (菜单"配置"弹半模态): 图形渲染/兼容模式/启动参数三项,
@@ -62,8 +68,8 @@ struct RenameDialog {
   }
 }
 
-// 应用库页 (设计 4.1): 搜索 + 标题/扫描入口 + ChipGroup 筛选 + 卡片网格 (lg, 列数随宽自适应)
-// / 列表 (sm·md)。
+// 应用库页 (设计 4.1): 搜索 + 标题/扫描菜单 + ChipGroup 分类 (最近使用/收藏/开始菜单/
+// 内建/外部导入) + 卡片网格 (lg, 列数随宽自适应) / 列表 (sm·md)。
 // 条目 (网格卡片与列表行共用 entryItem): 左图标, 右侧两行 — 名称 / exe 文件名 +
 // 类型标签 ("内建"·"收藏"小胶囊); 单击启动 (加载态为半透明遮罩+转圈),
 // 长按(PC 右键)菜单: 启动/收藏/重命名/配置/隐藏/打开所在目录/从列表移除 (内建工具不可隐藏/移除)。
@@ -81,7 +87,7 @@ export struct AppLibraryView {
   @State prefixReady: boolean = false;
   // 断点镜像: lg → Grid 大卡, sm/md → List
   @State bp: Breakpoint = 'lg';
-  @State chip: string = 'all';
+  @State chip: string = 'recent';
   // 搜索关键字 (名称/路径子串, 大小写不敏感)
   @State searchText: string = '';
   // Grid columnsTemplate: 随可用宽度自适应 (300vp/列, 1~4 列)
@@ -92,6 +98,9 @@ export struct AppLibraryView {
   // 不再用 wine-running 当成功信号 — 它的语义只是"broker 受理 spawn",
   // 闪退程序会被误判成功
   @State launchingPath: string = '';
+  // 扫描进行中状态由 AppLibraryService 持有 (scanning/scanLabel), 全窗遮罩
+  // 渲染在 Index 根 Stack — 要盖住侧栏, 页面内遮罩只覆盖内容区 (bindContentCover
+  // 方案实测不弹出, 且拦截范围不够); 本页只经 runScan 触发扫描
   // -- 单应用配置半模态状态 (openConfig 填初值, saveConfig 归一缺省后落库) --
   @State showConfig: boolean = false;
   @State cfgGraphicsSel: number[] = [0];
@@ -293,28 +302,33 @@ export struct AppLibraryView {
     return idx >= 0 ? path.substring(idx + 1) : path;
   }
 
-  // 当前 chip + 搜索关键字过滤后的条目
+  // 当前 chip + 搜索关键字过滤后的条目。
+  // 有搜索词时跨分类全局搜 (五分类互斥后, 片内搜索会让"明明在库的应用"
+  // 在别的分类下搜不到, 比不过滤更迷惑); 隐藏条目不参与全局搜索
   private filtered(): AppEntry[] {
-    let list: AppEntry[];
-    switch (this.chip) {
-      case 'favorite':
-        list = this.entries.filter((e: AppEntry) => e.favorite && !e.hidden);
-        break;
-      case 'builtin':
-        list = this.entries.filter((e: AppEntry) => e.builtin && !e.hidden);
-        break;
-      case 'hidden':
-        list = this.entries.filter((e: AppEntry) => e.hidden);
-        break;
-      default:
-        list = this.entries.filter((e: AppEntry) => !e.hidden);
-    }
     const kw = this.searchText.toLowerCase();
     if (kw) {
-      list = list.filter((e: AppEntry) =>
-        e.name.toLowerCase().includes(kw) || e.path.toLowerCase().includes(kw));
+      return this.entries.filter((e: AppEntry) => !e.hidden &&
+        (e.name.toLowerCase().includes(kw) || e.path.toLowerCase().includes(kw)));
     }
-    return list;
+    switch (this.chip) {
+      case 'recent':
+        // filter 返回新数组, 原地 sort 安全; lastRun 新→旧
+        return this.entries.filter((e: AppEntry) => e.lastRun !== undefined && !e.hidden)
+          .sort((a: AppEntry, b: AppEntry) => (b.lastRun ?? 0) - (a.lastRun ?? 0));
+      case 'favorite':
+        return this.entries.filter((e: AppEntry) => e.favorite && !e.hidden);
+      case 'startmenu':
+        return this.entries.filter((e: AppEntry) => this.lib.sourceOf(e) == 'lnk' && !e.hidden);
+      case 'builtin':
+        return this.entries.filter((e: AppEntry) => e.builtin && !e.hidden);
+      case 'import':
+        return this.entries.filter((e: AppEntry) => this.lib.sourceOf(e) == 'import' && !e.hidden);
+      case 'hidden':
+        return this.entries.filter((e: AppEntry) => e.hidden);
+      default:
+        return this.entries.filter((e: AppEntry) => !e.hidden);
+    }
   }
 
   private hasHidden(): boolean {
@@ -324,14 +338,89 @@ export struct AppLibraryView {
   // chip 定义 (kind + 文案): hidden 项仅在有隐藏条目或正处于 hidden 时出现
   private chipDefs(): ChipDef[] {
     const defs: ChipDef[] = [
-      { kind: 'all', label: '全部' },
+      { kind: 'recent', label: '最近使用' },
       { kind: 'favorite', label: '收藏' },
-      { kind: 'builtin', label: '内建工具' }
+      { kind: 'startmenu', label: '开始菜单' },
+      { kind: 'builtin', label: '内建' },
+      { kind: 'import', label: '外部导入' }
     ];
     if (this.hasHidden() || this.chip == 'hidden') {
       defs.push({ kind: 'hidden', label: '已隐藏' });
     }
     return defs;
+  }
+
+  // 各分类空态文案 (有搜索词时统一为"没有匹配")
+  private emptyTitle(): string {
+    if (this.searchText) {
+      return '没有匹配的应用';
+    }
+    switch (this.chip) {
+      case 'recent': return '还没有运行记录';
+      case 'favorite': return '还没有收藏';
+      case 'startmenu': return '没有开始菜单快捷方式';
+      case 'builtin': return '内建工具未就绪';
+      case 'import': return '还没有导入的应用';
+      case 'hidden': return '没有隐藏的应用';
+      default: return '应用库为空';
+    }
+  }
+
+  private emptyDesc(): string {
+    if (this.searchText) {
+      return '';
+    }
+    switch (this.chip) {
+      case 'recent': return '从应用库或文件页启动应用后，会显示在这里';
+      case 'favorite': return '长按应用卡片，选择「收藏」';
+      case 'startmenu': return '安装 Windows 程序后，扫描它的开始菜单快捷方式';
+      case 'builtin': return '环境初始化完成后自动加入';
+      case 'import': return '把 Windows 程序放入下载目录 (Z:)，或在文件页导入';
+      default: return '';
+    }
+  }
+
+  // 扫描菜单 (顶行"扫描"点击弹出): 两个入库来源分别对应一个分类 ——
+  // 开始菜单 = lnk 解析 (scanShortcuts), 外部导入 = Z: 目录 exe (scanZExes)
+  @Builder
+  scanMenu() {
+    Menu() {
+      MenuItem({ content: '扫描开始菜单' })
+        .onChange(() => {
+          this.runScan('lnk');
+        })
+      MenuItem({ content: '扫描 Z: 目录' })
+        .onChange(() => {
+          this.runScan('z');
+        })
+    }
+  }
+
+  // 扫描统一入口 (菜单与空态按钮共用)。扫描期间 Index 根 Stack 的全窗遮罩
+  // 拦触摸 (状态由 service 持有), 防扫描中误操作造成状态交错; lib.scanning
+  // 兼作防重入。扫描内部是异步 fs (LnkScanner/collectExe 均为 Promise 版),
+  // 事件循环保持活性 — 遮罩转圈动画能正常播放; 若用同步 API, 遮罩自己都会冻结
+  private async runScan(kind: string): Promise<void> {
+    if (this.lib.scanning) {
+      return;
+    }
+    const t0 = Date.now();
+    hilog.info(DOMAIN, TAG, 'runScan start kind=%{public}s', kind);
+    try {
+      if (kind == 'lnk') {
+        const r: ScanMarks = await this.lib.scanShortcuts();
+        promptAction.showToast({
+          message: r.added > 0 ? `新增 ${r.added} 个应用`
+            : r.classified > 0 ? `${r.classified} 个应用归入开始菜单`
+            : '没有发现新快捷方式'
+        });
+      } else {
+        const added = await this.lib.scanZExes();
+        promptAction.showToast({ message: added > 0 ? `新增 ${added} 个应用` : '没有发现新程序' });
+      }
+    } finally {
+      hilog.info(DOMAIN, TAG, 'runScan end kind=%{public}s elapsed=%{public}dms', kind, Date.now() - t0);
+    }
   }
 
   // 条目菜单 (右键与长按通用, 设计 4.1)
@@ -542,19 +631,16 @@ export struct AppLibraryView {
 
   build() {
     Column() {
-      // 顶行: 标题 + 扫描快捷方式入口 (手动触发, 结果 toast)
+      // 顶行: 标题 + 扫描入口 (菜单: 扫描开始菜单 / 扫描 Z: 目录)
       Row() {
         Text('应用库')
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .layoutWeight(1)
-        Text('扫描快捷方式')
+        Text('扫描')
           .fontColor($r('app.color.accent'))
           .padding({ left: 12, top: 4, bottom: 4 })
-          .onClick(() => {
-            const added = this.lib.scanShortcuts();
-            promptAction.showToast({ message: added > 0 ? `新增 ${added} 个应用` : '没有发现新快捷方式' });
-          })
+          .bindMenu(this.scanMenu())
       }
       .width('100%')
       .padding({ left: 14, right: 14, top: 8, bottom: 4 })
@@ -586,26 +672,33 @@ export struct AppLibraryView {
         Column() {
           EmptyState({
             icon: $r('sys.symbol.square_grid_2x2'),
-            title: this.chip == 'all' && !this.searchText ? '应用库为空' : '没有匹配的应用',
-            desc: this.chip == 'all' && !this.searchText
-              ? '把 Windows 程序放入下载目录，或在文件页导入，然后点重新扫描' : ''
+            title: this.emptyTitle(),
+            desc: this.emptyDesc()
           })
-          if (this.chip == 'all' && !this.searchText) {
+          // 可扫描的分类在空态给出直达按钮 (顶行"扫描"菜单的替身, 减少发现成本)
+          if (!this.searchText && (this.chip == 'startmenu' || this.chip == 'import')) {
             Row({ space: 12 }) {
-              Button('重新扫描')
-                .backgroundColor($r('app.color.control_bg'))
-                .onClick(() => {
-                  const added = this.lib.scanShortcuts();
-                  promptAction.showToast({ message: added > 0 ? `新增 ${added} 个应用` : '没有发现新快捷方式' });
-                })
-              if (this.onNavigateToFiles) {
-                Button('去文件页')
+              if (this.chip == 'startmenu') {
+                Button('扫描开始菜单')
                   .backgroundColor($r('app.color.control_bg'))
                   .onClick(() => {
-                    if (this.onNavigateToFiles) {
-                      this.onNavigateToFiles();
-                    }
+                    this.runScan('lnk');
                   })
+              } else {
+                Button('扫描 Z: 目录')
+                  .backgroundColor($r('app.color.control_bg'))
+                  .onClick(() => {
+                    this.runScan('z');
+                  })
+                if (this.onNavigateToFiles) {
+                  Button('去文件页')
+                    .backgroundColor($r('app.color.control_bg'))
+                    .onClick(() => {
+                      if (this.onNavigateToFiles) {
+                        this.onNavigateToFiles();
+                      }
+                    })
+                }
               }
             }
             .margin({ top: 8 })

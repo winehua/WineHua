@@ -5,8 +5,10 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN = 0x0000;
 const TAG = 'IconExtractor';
 
-// 图标缓存目录: 每个 exe 提取一次, 后续直接读缓存文件
-const CACHE_DIR = '/data/storage/el2/base/files/icons';
+// 图标缓存目录: 每个 exe 提取一次, 后续直接读缓存文件。
+// 放 cache 而非 files: 图标是从 exe 可再生推导的中间产物, 系统清 cache 后
+// 重新提取即可, 不该占用持久文件区 (files 下改名/删除的 exe 会积累孤儿 PNG)
+const CACHE_DIR = '/data/storage/el2/base/cache/icons';
 
 const RT_ICON = 3;
 const RT_GROUP_ICON = 14;
@@ -53,7 +55,17 @@ export class IconExtractor {
     const outPath = `${CACHE_DIR}/${this.cacheName(exePath)}`;
     try {
       if (fs.accessSync(outPath)) {
-        return outPath;
+        // 覆盖安装的同名 exe (mtime 更新) 会让缓存图标变旧 — 用 mtime 判定:
+        // 缓存 PNG 不比 exe 新 → 重新提取。stat 失败按有效处理 (防御)
+        try {
+          const exeSt = fs.statSync(exePath);
+          const iconSt = fs.statSync(outPath);
+          if (Number(iconSt.mtime) >= Number(exeSt.mtime)) {
+            return outPath;
+          }
+        } catch (_) {
+          return outPath;
+        }
       }
       const fd = fs.openSync(exePath, fs.OpenMode.READ_ONLY).fd;
       try {

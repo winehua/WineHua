@@ -13,6 +13,10 @@ const STORE_NAME = 'app_library';
 const KEY_ENTRIES = 'entries';
 const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 
+// Z: 递归扫描上限: 防病态目录树 (海量小文件/死循环软链) 把 UI 线程拖住
+const SCAN_MAX_DEPTH = 6;
+const SCAN_MAX_EXE = 200;
+
 // 单应用配置 (P2): 只收能翻译为用户语言的组合 — 图形渲染 / 兼容模式 / 启动参数。
 // 字段全可选, 缺省 = 跟随全局或默认行为 (继承: 全局 → 应用两级)。
 // 刻意不暴露裸环境变量 / WINEDEBUG / presentBackend 等底层开关
@@ -27,9 +31,13 @@ export interface AppEntry {
   path: string;
   name: string;
   icon?: string; // 图标 PNG 缓存路径 (IconExtractor 异步提取, 完成前为空, UI 回退 ▶)
-  favorite?: boolean;  // 收藏 (筛选 chips, 条目上显示"收藏"标签)
+  favorite?: boolean;  // 收藏 (正交旗标, 任意来源都可收藏)
   builtin?: boolean;   // 内建工具 (wine 自带, 标签"内建"; 不可移除/隐藏)
-  hidden?: boolean;    // 用户隐藏 (各 chips 均不显示, "已隐藏"chip 可见)
+  hidden?: boolean;    // 用户隐藏 (各分类均不显示, "已隐藏"分类可见)
+  source?: string;     // 入库来源: 'lnk'=开始菜单扫描, 'import'=外部导入 (文件页/Z: 扫描)。
+                       // 缺省 (老数据) 按 'import' 归类 — 见 sourceOf, 不做持久化迁移
+  lastRun?: number;    // 最近一次受理成功的启动时刻 epoch ms ("最近使用"分类依据;
+                       // 只记应用库/文件页经本服务 launch 的启动, explorer 内双击不计)
   config?: AppConfig;  // 单应用配置 (缺省 = 全部跟随全局)
 }
 
@@ -41,7 +49,17 @@ interface AppEntryPatch {
   favorite?: boolean;
   builtin?: boolean;
   hidden?: boolean;
+  source?: string;
+  lastRun?: number;
   config?: AppConfig;
+}
+
+// 扫描结果: added=新入库条目数, classified=已在库但本次被归到"开始菜单"的数量
+// (老数据/手动导入的条目被 lnk 扫描命中时 source 升级为 'lnk' — 该 exe 确实
+// 有开始菜单快捷方式, 属事实性归类, 不算新增)
+export interface ScanMarks {
+  added: number;
+  classified: number;
 }
 
 // 内建工具条目描述 (ArkTS 要求显式类型, 不用匿名对象字面量)
@@ -78,6 +96,12 @@ export class AppLibraryService {
   }
 
   entries: AppEntry[] = [];
+
+  // 扫描进行中状态 (服务持有, 与 WineEnvService.initOverlayText 同款先例):
+  // Index 根 Stack 据此渲染全窗遮罩 — 遮罩必须盖住侧栏, 不能由各页面自管
+  // (曾用页面内 bindContentCover, 实测不弹出的同时触摸拦截范围也只覆盖内容区)
+  scanning: boolean = false;
+  scanLabel: string = '';
 
   private store: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -123,35 +147,163 @@ export class AppLibraryService {
     }
   }
 
-  // name 取文件名去 .exe 后缀; 按 path 去重, 已存在则忽略
-  add(path: string): void {
+  // name 取文件名去 .exe 后缀
+  private exeNameOf(path: string): string {
     const fileName = path.substring(path.lastIndexOf('/') + 1);
-    const name = fileName.toLowerCase().endsWith('.exe') ? fileName.substring(0, fileName.length - 4) : fileName;
-    this.addNamed(path, name);
+    return fileName.toLowerCase().endsWith('.exe') ? fileName.substring(0, fileName.length - 4) : fileName;
   }
 
-  addNamed(path: string, name: string): void {
+  // 按 path 去重, 已存在则忽略
+  add(path: string): void {
+    this.addNamed(path, this.exeNameOf(path));
+  }
+
+  addNamed(path: string, name: string, source: string = 'import'): void {
     if (this.has(path)) {
       return;
     }
-    this.entries = this.entries.concat([{ path: path, name: name }]);
+    this.entries = this.entries.concat([{ path: path, name: name, source: source }]);
     this.sortEntries();
     this.persist();
     this.notify();
     this.fillIcon(path);
   }
 
-  // 扫描 Start Menu / Desktop 的 .lnk 入库 (M3, 手动触发), 返回新增数量
-  scanShortcuts(): number {
-    const found: LnkTarget[] = LnkScanner.getInstance().scan(WINE_PREFIX, WineEnvService.getInstance().zHome);
-    let added = 0;
-    for (const t of found) {
-      if (!this.has(t.target)) {
-        this.addNamed(t.target, t.name);
-        added++;
+  // 扫描类入口的批量落库: 一次 concat/sort/persist/notify。
+  // 逐条 addNamed 会让 persist (整组 JSON flush) 与 notify (整页重渲染)
+  // 各跑 N 遍 — 200 条目是 4 万次级写放大, UI 明显抖动
+  private addBulk(fresh: AppEntry[]): void {
+    if (fresh.length == 0) {
+      return;
+    }
+    this.entries = this.entries.concat(fresh);
+    this.sortEntries();
+    this.persist();
+    this.notify();
+    for (const e of fresh) {
+      this.fillIcon(e.path);
+    }
+  }
+
+  // 扫描 Start Menu / Desktop 的 .lnk 入库 (M3, 手动触发; 异步 IO 不卡 UI)。
+  // 已在库的非内建条目被命中时 source 升级为 'lnk' (该 exe 确有开始菜单
+  // 快捷方式, 属事实性归类; 用户手动 import 的同路径条目也照此处理)
+  async scanShortcuts(): Promise<ScanMarks> {
+    this.beginScan('正在扫描开始菜单…');
+    try {
+      const found: LnkTarget[] = await LnkScanner.getInstance().scan(WINE_PREFIX, WineEnvService.getInstance().zHome);
+      const marks: ScanMarks = { added: 0, classified: 0 };
+      const fresh: AppEntry[] = [];
+      const upgraded: string[] = [];
+      for (const t of found) {
+        const existing = this.entries.find((e: AppEntry) => e.path == t.target);
+        if (!existing) {
+          // 同次扫描 Desktop 与 Start Menu 可能命中同目标, fresh 内也要去重
+          if (!fresh.some((f: AppEntry) => f.path == t.target)) {
+            fresh.push({ path: t.target, name: t.name, source: 'lnk' });
+            marks.added++;
+          }
+          continue;
+        }
+        if (!existing.builtin && existing.source != 'lnk' && upgraded.indexOf(t.target) < 0) {
+          upgraded.push(t.target);
+          marks.classified++;
+        }
+      }
+      if (upgraded.length > 0) {
+        this.entries = this.entries.map((e: AppEntry): AppEntry =>
+          upgraded.indexOf(e.path) >= 0 ? this.withField(e, { source: 'lnk' }) : e);
+        // fresh 为空时 addBulk 不会跑, 归类变更要自行落库/通知
+        if (fresh.length == 0) {
+          this.persist();
+          this.notify();
+        }
+      }
+      this.addBulk(fresh);
+      return marks;
+    } finally {
+      this.endScan();
+    }
+  }
+
+  // 扫描 Z: (zHome 下载目录) 下的 .exe 入库为"外部导入" (手动触发; 异步 IO)。
+  // 递归遍历, 跳过 . 开头目录; 深度/总量设上限 (SCAN_MAX_DEPTH/SCAN_MAX_EXE)
+  // 防病态目录树拖住扫描。已在库 (含隐藏) 的跳过, 返回新增数量
+  async scanZExes(): Promise<number> {
+    const zHome = WineEnvService.getInstance().zHome;
+    if (!zHome) {
+      return 0;
+    }
+    this.beginScan('正在扫描 Z: 目录…');
+    try {
+      const root = zHome.endsWith('/') ? zHome.substring(0, zHome.length - 1) : zHome;
+      const found: string[] = [];
+      await this.collectExe(root, 0, found);
+      const fresh: AppEntry[] = [];
+      for (const p of found) {
+        if (!this.has(p)) {
+          fresh.push({ path: p, name: this.exeNameOf(p), source: 'import' });
+        }
+      }
+      this.addBulk(fresh);
+      return fresh.length;
+    } finally {
+      this.endScan();
+    }
+  }
+
+  // 扫描状态开合 (try/finally 保证异常路径也复位): 置位即 notify,
+  // Index 根 Stack 的全窗遮罩跟随显隐
+  private beginScan(label: string): void {
+    this.scanning = true;
+    this.scanLabel = label;
+    this.notify();
+  }
+
+  private endScan(): void {
+    this.scanning = false;
+    this.notify();
+  }
+
+  private async collectExe(dir: string, depth: number, out: string[]): Promise<void> {
+    if (depth > SCAN_MAX_DEPTH || out.length >= SCAN_MAX_EXE) {
+      return;
+    }
+    let names: string[];
+    try {
+      names = await fs.listFile(dir);
+    } catch (e) {
+      return; // 目录不可读属正常 (权限/已删除), 跳过
+    }
+    for (const name of names) {
+      if (out.length >= SCAN_MAX_EXE) {
+        return;
+      }
+      if (name.startsWith('.')) {
+        continue;
+      }
+      const full = `${dir}/${name}`;
+      let isDir = false;
+      try {
+        isDir = (await fs.stat(full)).isDirectory();
+      } catch (e) {
+        continue;
+      }
+      if (isDir) {
+        await this.collectExe(full, depth + 1, out);
+      } else if (name.toLowerCase().endsWith('.exe')) {
+        out.push(full);
       }
     }
-    return added;
+  }
+
+  // 条目来源归类: 内建看 builtin 旗标, 其余看 source 字段;
+  // 老数据无 source 一律按 'import' (免持久化迁移, lnk 条目重扫后自然归位)
+  sourceOf(e: AppEntry): string {
+    if (e.builtin) {
+      return 'builtin';
+    }
+    return e.source ?? 'import';
   }
 
   // 复制 entry 并覆盖指定字段 (可选字段 undefined 保留原值) —
@@ -164,6 +316,8 @@ export class AppLibraryService {
       favorite: patch.favorite !== undefined ? patch.favorite : e.favorite,
       builtin: patch.builtin !== undefined ? patch.builtin : e.builtin,
       hidden: patch.hidden !== undefined ? patch.hidden : e.hidden,
+      source: patch.source !== undefined ? patch.source : e.source,
+      lastRun: patch.lastRun !== undefined ? patch.lastRun : e.lastRun,
       config: patch.config !== undefined ? patch.config : e.config,
     };
   }
@@ -322,7 +476,24 @@ export class AppLibraryService {
       presentBackend: d3dBackend == 'dxvk_legacy' ? 'venus_broker_present' : 'virgl_compositor',
       automationMode: false
     }) as ProcessInfo;
-    return result && result.pid > 0 ? result.pid : -1;
+    if (result && result.pid > 0) {
+      this.markLaunched(path);
+      return result.pid;
+    }
+    return -1;
+  }
+
+  // 记录启动时刻 ("最近使用"分类的排序依据)。仅受理成功才记 — 受理失败
+  // /闪退不代表用户真的"用"了它; 库外路径 (文件页直接启动未入库 exe) 跳过
+  private markLaunched(path: string): void {
+    if (!this.has(path)) {
+      return;
+    }
+    const now = Date.now();
+    this.entries = this.entries.map((e: AppEntry): AppEntry =>
+      e.path == path ? this.withField(e, { lastRun: now }) : e);
+    this.persist();
+    this.notify();
   }
 
   // native 路径 → Windows 形式: prefix drive_c → C:\, Z: 宿主目录 → Z:\。

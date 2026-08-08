@@ -23,15 +23,17 @@ export class LnkScanner {
     return LnkScanner.instance;
   }
 
-  // prefixDir: wine prefix 根 (…/files/.wine); zHome: Z: 映射的宿主目录
-  scan(prefixDir: string, zHome: string): LnkTarget[] {
+  // prefixDir: wine prefix 根 (…/files/.wine); zHome: Z: 映射的宿主目录。
+  // 全异步 IO (fs.listFile/stat 等 Promise 版): 调用方在 UI 线程 await,
+  // 同步 API 在目录大时会冻结 UI (连"正在扫描"的转圈动画都画不出来)
+  async scan(prefixDir: string, zHome: string): Promise<LnkTarget[]> {
     const driveC = `${prefixDir}/drive_c`;
     const roots: string[] = [
       `${driveC}/ProgramData/Microsoft/Windows/Start Menu/Programs`,
       `${driveC}/users/Public/Desktop`
     ];
     try {
-      const users = fs.listFileSync(`${driveC}/users`);
+      const users = await fs.listFile(`${driveC}/users`);
       for (const u of users) {
         if (u == 'Public') {
           continue;
@@ -44,16 +46,16 @@ export class LnkScanner {
     }
     const out: LnkTarget[] = [];
     for (const root of roots) {
-      this.scanDir(root, driveC, zHome, out);
+      await this.scanDir(root, driveC, zHome, out);
     }
     hilog.info(DOMAIN, TAG, 'scan done: %{public}d usable lnk(s)', out.length);
     return out;
   }
 
-  private scanDir(dir: string, driveC: string, zHome: string, out: LnkTarget[]): void {
+  private async scanDir(dir: string, driveC: string, zHome: string, out: LnkTarget[]): Promise<void> {
     let names: string[];
     try {
-      names = fs.listFileSync(dir);
+      names = await fs.listFile(dir);
     } catch (e) {
       return; // 目录不存在属正常 (未安装任何程序时)
     }
@@ -61,34 +63,34 @@ export class LnkScanner {
       const full = `${dir}/${name}`;
       let isDir = false;
       try {
-        isDir = fs.statSync(full).isDirectory();
+        isDir = (await fs.stat(full)).isDirectory();
       } catch (e) {
         continue;
       }
       if (isDir) {
-        this.scanDir(full, driveC, zHome, out);
+        await this.scanDir(full, driveC, zHome, out);
         continue;
       }
       if (!name.toLowerCase().endsWith('.lnk')) {
         continue;
       }
-      const parsed = this.parseLnk(full, driveC, zHome);
+      const parsed = await this.parseLnk(full, driveC, zHome);
       if (parsed) {
         out.push(parsed);
       }
     }
   }
 
-  private parseLnk(path: string, driveC: string, zHome: string): LnkTarget | null {
+  private async parseLnk(path: string, driveC: string, zHome: string): Promise<LnkTarget | null> {
     let fd = -1;
     try {
-      const st = fs.statSync(path);
+      const st = await fs.stat(path);
       if (st.size < 76 || st.size > 1024 * 1024) {
         return null;
       }
-      fd = fs.openSync(path, fs.OpenMode.READ_ONLY).fd;
+      fd = (await fs.open(path, fs.OpenMode.READ_ONLY)).fd;
       const buf = new ArrayBuffer(st.size);
-      if (fs.readSync(fd, buf, { offset: 0, length: st.size }) < st.size) {
+      if (await fs.read(fd, buf, { offset: 0, length: st.size }) < st.size) {
         return null;
       }
       const dv = new DataView(buf);
@@ -181,7 +183,7 @@ export class LnkScanner {
         pos += byteLen;
       }
       // Windows 路径 → native
-      const native = this.resolveWinPath(target, driveC, zHome);
+      const native = await this.resolveWinPath(target, driveC, zHome);
       if (!native || !native.toLowerCase().endsWith('.exe')) {
         return null;
       }
@@ -239,7 +241,7 @@ export class LnkScanner {
 
   // "C:\foo\bar.exe" → drive_c/foo/bar.exe; "Z:\a\b.exe" → zHome/a/b.exe。
   // 逐段大小写不敏感: 每段在父目录 listFile 里找 lowercase 匹配项。
-  private resolveWinPath(winPath: string, driveC: string, zHome: string): string {
+  private async resolveWinPath(winPath: string, driveC: string, zHome: string): Promise<string> {
     const m = winPath.match(/^([A-Za-z]):[\\\/](.*)$/);
     if (!m) {
       return '';
@@ -261,7 +263,7 @@ export class LnkScanner {
       }
       let found = '';
       try {
-        const names = fs.listFileSync(cur);
+        const names = await fs.listFile(cur);
         const lower = seg.toLowerCase();
         for (const n of names) {
           if (n.toLowerCase() == lower) {
@@ -279,7 +281,7 @@ export class LnkScanner {
     }
     // 确认最终是已存在的文件
     try {
-      return fs.statSync(cur).isFile() ? cur : '';
+      return (await fs.stat(cur)).isFile() ? cur : '';
     } catch (e) {
       return '';
     }

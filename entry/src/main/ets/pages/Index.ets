@@ -41,6 +41,11 @@ struct Index {
   @State bp: Breakpoint = 'lg';
   // 应用库"打开所在目录"联动: 目录路径经此 @State 传给 FileBrowserView (@Link), 消费后自清空
   @State filesDirRequest: string = '';
+  // 扫描全窗遮罩 (镜像自 AppLibraryService): 与 init overlay 同款条件层方案 —
+  // 页面内 bindContentCover 实测不弹出且盖不住侧栏, 故状态上提到服务、
+  // 遮罩渲染在根 Stack (init overlay 保持最顶)
+  @State scanning: boolean = false;
+  @State scanLabel: string = '';
 
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
@@ -91,7 +96,12 @@ struct Index {
     });
     this.proc.bindEnv(env);
     env.init(getContext(this));
-    AppLibraryService.getInstance().init(getContext(this));
+    const lib = AppLibraryService.getInstance();
+    lib.init(getContext(this));
+    lib.subscribe(() => {
+      this.scanning = lib.scanning;
+      this.scanLabel = lib.scanLabel;
+    });
     InputSettingsService.getInstance().init(getContext(this));
     // 断点镜像: 订阅 BreakpointSystem (update 由根 Stack onAreaChange 喂入)
     const bps = BreakpointSystem.getInstance();
@@ -366,6 +376,30 @@ struct Index {
       })
       // 覆盖层自门控 (InputSettingsService.gamepadEnabled), 未开时不渲染
       GamepadOverlay()
+    }
+    // 扫描全窗遮罩 (镜像 AppLibraryService.scanning): 半透明罩吞掉扫描期间的
+    // 一切触摸, 防误操作与扫描状态交错; 居中卡片样式与 init overlay 一致;
+    // 位于 init overlay 之下 (初始化优先级更高)
+    if (this.scanning) {
+      Column() {
+      Column({ space: 18 }) {
+        LoadingProgress()
+          .width(42).height(42)
+          .color($r('app.color.accent'))
+        Text(this.scanLabel)
+          .fontSize(15)
+          .fontColor($r('app.color.text_secondary'))
+      }
+      .width(360)
+      .padding({ left: 28, right: 28, top: 26, bottom: 26 })
+      .backgroundColor($r('app.color.overlay_bg'))
+      .borderRadius(8)
+      .alignItems(HorizontalAlign.Center)
+      .shadow({ radius: 18, color: $r('app.color.shadow'), offsetX: 0, offsetY: 8 })
+      }
+      .width('100%').height('100%')
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor($r('app.color.overlay_mask'))
     }
     // init overlay 原样置顶 (首启引导 4.8: 阶段文案; 失败给 重试/重置 入口)。
     // 显隐只由状态机管理 (state:ready 才隐藏) — 曾附加 !prefixReady 条件,

@@ -165,7 +165,7 @@ export struct FloatingBar {
             this.barButton('手柄', this.gamepadOn, () => {
               this.input.setGamepad(!this.gamepadOn);
             })
-            this.barButton('触控', this.touchpadOn, () => {
+            this.barButton($r('sys.symbol.hand_draw'), this.touchpadOn, () => {
               this.input.setTouchpad(!this.touchpadOn);
             })
             this.barButton($r('sys.symbol.chevron_right'), false, () => {

@@ -5,6 +5,7 @@ import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { WineEnvService, DRIVE_C } from '../service/WineEnvService';
 import { AppLibraryService, AppEntry } from '../service/AppLibraryService';
+import { IconExtractor } from '../service/IconExtractor';
 import { EmptyState } from './EmptyState';
 
 const DOMAIN = 0x0000;
@@ -16,6 +17,16 @@ const TAG = 'Files';
 // 长按(PC 右键)菜单; 剪切跨盘(C: 沙箱 ↔ Z: 共享存储)renameSync 会失败,
 // 回退为递归复制+删除。导入 = 系统文件选择器把 exe/lnk 拷入 Z:\ 根,
 // exe 同时自动入库 (设计原文"触发重新扫描"的可感知效果就是应用库出现新条目)。
+// 列表条目: 一次 statSync 全量取回 (含大小/修改时间), 避免排序与渲染重复 stat。
+// icon 为 IconExtractor 提取的 PNG 缓存路径, '' = 未提取 (UI 回退系统符号)
+interface FileEntry {
+  name: string;
+  isDir: boolean;
+  size: number;     // 字节; 目录为 -1 (大小列仅文件显示)
+  mtime: number;    // 毫秒时间戳
+  icon: string;     // PNG 缓存路径或 ''
+}
+
 interface DriveRoot {
   key: string;      // 'C' | 'Z'
   label: string;    // 显示名 "C:\" / "Z:\"
@@ -79,7 +90,7 @@ export struct FileBrowserView {
   @State libEntries: AppEntry[] = [];
   // -- 页面自有状态 --
   @State curDir: string = DRIVE_C;
-  @State entries: string[] = [];
+  @State entries: FileEntry[] = [];
   @State dirStack: string[] = [];
   // true = 根选择视图 (C:\ / Z:\ 两个节点); false = 在某根内浏览
   @State atRootList: boolean = true;
@@ -146,21 +157,101 @@ export struct FileBrowserView {
   private listDir = (path: string): void => {
     try {
       let names = fs.listFileSync(path);
-      names.sort((a, b) => {
-        let aIsDir = this.isDir(path + '/' + a);
-        let bIsDir = this.isDir(path + '/' + b);
-        if (aIsDir && !bIsDir) return -1;
-        if (!aIsDir && bIsDir) return 1;
-        if (!aIsDir && !bIsDir) {
-          let aExe = a.toLowerCase().endsWith('.exe') ? 0 : 1;
-          let bExe = b.toLowerCase().endsWith('.exe') ? 0 : 1;
-          return aExe - bExe || a.localeCompare(b);
+      // 一次 stat 全量: 大小/修改时间/目录判定一起取, 不再为排序逐项重复 stat
+      const list: FileEntry[] = [];
+      for (const n of names) {
+        try {
+          const st = fs.statSync(path + '/' + n);
+          list.push({
+            name: n,
+            isDir: st.isDirectory(),
+            size: st.isDirectory() ? -1 : Number(st.size),
+            mtime: Number(st.mtime),
+            icon: ''
+          });
+        } catch (_) {
+          list.push({ name: n, isDir: false, size: -1, mtime: 0, icon: '' });
         }
-        return a.localeCompare(b);
+      }
+      list.sort((a, b) => {
+        if (a.isDir && !b.isDir) return -1;
+        if (!a.isDir && b.isDir) return 1;
+        if (!a.isDir && !b.isDir) {
+          let aExe = this.isExe(a.name) ? 0 : 1;
+          let bExe = this.isExe(b.name) ? 0 : 1;
+          return aExe - bExe || a.name.localeCompare(b.name);
+        }
+        return a.name.localeCompare(b.name);
       });
-      this.entries = names;
+      this.entries = list;
+      this.loadIcons();
     } catch (e) {
       this.entries = [];
+    }
+  }
+
+  // ---- 列格式化 ----
+
+  // 文件大小: B/KB/MB/GB/TB; 目录 (size<0) 显示 — (仅针对文件)
+  private fmtSize(size: number): string {
+    if (size < 0) {
+      return '—';
+    }
+    if (size < 1024) {
+      return `${size} B`;
+    }
+    const units: string[] = ['KB', 'MB', 'GB', 'TB'];
+    let v = size;
+    let u = -1;
+    while (v >= 1024 && u < units.length - 1) {
+      v /= 1024;
+      u++;
+    }
+    return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[u]}`;
+  }
+
+  // 修改时间: YYYY-MM-DD HH:mm (本地时间)
+  private fmtTime(ms: number): string {
+    if (ms <= 0) {
+      return '';
+    }
+    const d = new Date(ms);
+    const p = (v: number): string => (v < 10 ? '0' : '') + v;
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  // ---- exe 图标 (复用应用库的 IconExtractor: PE 解析 + PNG 缓存) ----
+
+  // 提取失败记忆 (非 @State, 只防重试不触发渲染)
+  private iconFail: Set<string> = new Set();
+
+  // 对当前目录的 exe 异步提取图标: 每批 4 个, 批间让出一帧, 目录 exe 多时
+  // UI 不卡; IconExtractor 内部按路径哈希磁盘缓存, 重复进目录秒回
+  private async loadIcons(): Promise<void> {
+    const paths: string[] = [];
+    for (const e of this.entries) {
+      if (!e.isDir && this.isExe(e.name) && !e.icon && !this.iconFail.has(this.fullPath(e.name))) {
+        paths.push(this.fullPath(e.name));
+      }
+    }
+    const dir = this.curDir;
+    for (let i = 0; i < paths.length; i += 4) {
+      const batch = paths.slice(i, i + 4);
+      await Promise.all(batch.map(async (p: string) => {
+        const icon = await IconExtractor.getInstance().extract(p);
+        // 提取期间用户可能已切换目录: 只更新当前目录的对应行, 防错配
+        if (this.curDir != dir) {
+          return;
+        }
+        if (!icon) {
+          this.iconFail.add(p);
+          return;
+        }
+        const name = p.substring(p.lastIndexOf('/') + 1);
+        this.entries = this.entries.map((e: FileEntry) =>
+          e.name == name && !e.icon ?
+            { name: e.name, isDir: e.isDir, size: e.size, mtime: e.mtime, icon: icon } : e);
+      }));
     }
   }
 
@@ -257,12 +348,9 @@ export struct FileBrowserView {
     return false;
   }
 
-  // 行类别: 每行算一次, 供图标/颜色/点击行为使用 (替代逐处重复 isDir 调用)
-  private rowKind = (name: string): 'dir' | 'exe' | 'other' => {
-    if (this.isDir(this.curDir + '/' + name)) {
-      return 'dir';
-    }
-    return this.isExe(name) ? 'exe' : 'other';
+  // 行类别: 基于 listDir 已取回的 isDir, 不再重复 stat
+  private rowKindOf = (entry: FileEntry): 'dir' | 'exe' | 'other' => {
+    return entry.isDir ? 'dir' : (this.isExe(entry.name) ? 'exe' : 'other');
   }
 
   private toast(msg: string): void {
@@ -336,11 +424,11 @@ export struct FileBrowserView {
     }
   }
 
-  private confirmDelete(name: string): void {
-    const kind = this.rowKind(name);
+  private confirmDelete(entry: FileEntry): void {
+    const kind = this.rowKindOf(entry);
     AlertDialog.show({
       title: '删除' + (kind == 'dir' ? '目录' : '文件'),
-      message: `将删除 ${name}` + (kind == 'dir' ? ' 及其全部内容' : '') + '，且不可恢复。确定继续？',
+      message: `将删除 ${entry.name}` + (kind == 'dir' ? ' 及其全部内容' : '') + '，且不可恢复。确定继续？',
       primaryButton: {
         value: '取消',
         action: () => {}
@@ -350,7 +438,7 @@ export struct FileBrowserView {
         fontColor: $r('app.color.danger'),
         action: () => {
           try {
-            this.deleteRecursive(this.fullPath(name));
+            this.deleteRecursive(this.fullPath(entry.name));
             this.listDir(this.curDir);
           } catch (e) {
             hilog.error(DOMAIN, TAG, 'delete fail: %{public}s', JSON.stringify(e));
@@ -521,62 +609,79 @@ export struct FileBrowserView {
 
   // 长按(PC 右键)菜单: exe 多 启动/加入应用库 两项, 文件操作全行可用
   @Builder
-  fileMenu(name: string) {
+  fileMenu(entry: FileEntry) {
     Menu() {
-      if (this.rowKind(name) == 'exe') {
+      if (this.rowKindOf(entry) == 'exe') {
         MenuItem({ content: '启动' })
           .onChange(() => {
-            this.launchExe(this.fullPath(name));
+            this.launchExe(this.fullPath(entry.name));
           })
-        if (!this.inLibrary(this.fullPath(name))) {
+        if (!this.inLibrary(this.fullPath(entry.name))) {
           MenuItem({ content: '加入应用库' })
             .onChange(() => {
-              this.lib.add(this.fullPath(name));
+              this.lib.add(this.fullPath(entry.name));
             })
         }
       }
       MenuItem({ content: '重命名' })
         .onChange(() => {
-          this.openRename(name);
+          this.openRename(entry.name);
         })
       MenuItem({ content: '复制' })
         .onChange(() => {
-          this.setClip(name, false);
+          this.setClip(entry.name, false);
         })
       MenuItem({ content: '剪切' })
         .onChange(() => {
-          this.setClip(name, true);
+          this.setClip(entry.name, true);
         })
       MenuItem({ content: '删除' })
         .onChange(() => {
-          this.confirmDelete(name);
+          this.confirmDelete(entry);
         })
     }
   }
 
   // 文件行内容 (exe 与 dir/other 共用; bindContextMenu 不接受 undefined,
-  // 故菜单按行类别在 ListItem 上条件挂载, 行体不变)
+  // 故菜单按行类别在 ListItem 上条件挂载, 行体不变)。
+  // 列布局: 图标 | 名称(自适应) | 大小(仅文件) | 修改时间 | 操作
   @Builder
-  fileRow(name: string) {
+  fileRow(entry: FileEntry) {
     Row() {
-      // 行首图标: 系统符号 (文件夹/可执行/普通文件)
-      SymbolGlyph(this.rowKind(name) == 'dir' ? $r('sys.symbol.folder_fill') :
-                  this.rowKind(name) == 'exe' ? $r('sys.symbol.play_fill') : $r('sys.symbol.doc'))
-        .fontSize(20)
-        .fontColor([this.rowKind(name) == 'dir' ? $r('app.color.state_info') :
-                    this.rowKind(name) == 'exe' ? $r('app.color.accent') : $r('app.color.text_tertiary')])
-        .width(28)
-      Text(name)
-        .fontColor(this.rowKind(name) == 'exe' ? $r('app.color.text_primary') :
-                   this.rowKind(name) == 'dir' ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
+      // 行首图标: exe 有提取图标用提取的 PNG, 否则系统符号占位
+      if (this.rowKindOf(entry) == 'exe' && entry.icon) {
+        Image(`file://${entry.icon}`)
+          .width(26).height(26)
+          .margin({ right: 2 })
+      } else {
+        SymbolGlyph(this.rowKindOf(entry) == 'dir' ? $r('sys.symbol.folder_fill') :
+                    this.rowKindOf(entry) == 'exe' ? $r('sys.symbol.play_fill') : $r('sys.symbol.doc'))
+          .fontSize(20)
+          .fontColor([this.rowKindOf(entry) == 'dir' ? $r('app.color.state_info') :
+                      this.rowKindOf(entry) == 'exe' ? $r('app.color.accent') : $r('app.color.text_tertiary')])
+          .width(28)
+      }
+      Text(entry.name)
+        .fontColor(this.rowKindOf(entry) == 'exe' ? $r('app.color.text_primary') :
+                   this.rowKindOf(entry) == 'dir' ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
         .layoutWeight(1)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      if (this.rowKind(name) == 'exe') {
+      // 大小列 (仅文件; 目录显示 —)
+      Text(this.rowKindOf(entry) == 'dir' ? '—' : this.fmtSize(entry.size))
+        .width(72).fontSize(11)
+        .fontColor($r('app.color.text_tertiary'))
+        .textAlign(TextAlign.End).maxLines(1)
+      // 修改时间列
+      Text(this.fmtTime(entry.mtime))
+        .width(126).fontSize(11)
+        .fontColor($r('app.color.text_tertiary'))
+        .textAlign(TextAlign.End).maxLines(1)
+      if (this.rowKindOf(entry) == 'exe') {
         Button('启动')
           .height(32)
           .enabled(this.state == 'ready')
-          .onClick(() => this.launchExe(this.fullPath(name)))
-      } else if (this.rowKind(name) == 'dir') {
+          .onClick(() => this.launchExe(this.fullPath(entry.name)))
+      } else if (this.rowKindOf(entry) == 'dir') {
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(16)
           .fontColor([$r('app.color.text_tertiary')])
@@ -680,28 +785,28 @@ export struct FileBrowserView {
           .width('100%').layoutWeight(1)
         } else {
           List({ space: 1 }) {
-            ForEach(this.entries, (name: string) => {
-              if (this.rowKind(name) == 'exe') {
+            ForEach(this.entries, (entry: FileEntry) => {
+              if (this.rowKindOf(entry) == 'exe') {
                 ListItem() {
-                  this.fileRow(name)
+                  this.fileRow(entry)
                 }
                 .backgroundColor($r('app.color.card_bg'))
                 .hoverEffect(HoverEffect.Highlight)
-                .bindContextMenu(this.fileMenu(name), ResponseType.LongPress)
+                .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress)
               } else {
                 ListItem() {
-                  this.fileRow(name)
+                  this.fileRow(entry)
                 }
                 .backgroundColor($r('app.color.card_bg'))
                 .hoverEffect(HoverEffect.Highlight)
-                .bindContextMenu(this.fileMenu(name), ResponseType.LongPress)
+                .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress)
                 .onClick(() => {
-                  if (this.rowKind(name) == 'dir') {
-                    this.enterDir(name);
+                  if (entry.isDir) {
+                    this.enterDir(entry.name);
                   }
                 })
               }
-            }, (name: string) => name)
+            }, (entry: FileEntry) => entry.name)
           }
           .width('100%').layoutWeight(1)
         }
