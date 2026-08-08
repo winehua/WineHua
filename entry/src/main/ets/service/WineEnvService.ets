@@ -220,7 +220,7 @@ export class WineEnvService {
     }
   }
 
-  // 按钮使能判据 (EnvPanel / 应用库 / 文件页统一走这两个, 不再各自比较 state 串)
+  // 按钮使能判据 (设置页 / 应用库 / 文件页统一走这两个, 不再各自比较 state 串)
   isBusy(): boolean {
     return this.initBusy || this.opBusy || this.engineState == 'starting' ||
       this.engineState == 'stopping';

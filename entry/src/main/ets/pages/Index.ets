@@ -4,7 +4,6 @@ import { AppLibraryService } from '../service/AppLibraryService';
 import { AppLibraryView } from '../components/AppLibraryView';
 import { TaskListView } from '../components/TaskListView';
 import { FileBrowserView } from '../components/FileBrowserView';
-import { EnvPanel } from '../components/EnvPanel';
 import { SettingsView } from '../components/SettingsView';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
@@ -50,13 +49,12 @@ struct Index {
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
   private tabsController: TabsController = new TabsController();
-  // 五导航图标 (与 tabBarItem/sideNavItem 的 index 一一对应):
-  // 应用库/运行中/文件/环境/设置 — 系统符号, 替代纯文字导航
+  // 四导航图标 (与 tabBarItem/sideNavItem 的 index 一一对应):
+  // 应用库/运行中/文件/设置 — 系统符号, 替代纯文字导航
   private readonly navIcons: Resource[] = [
     $r('sys.symbol.square_grid_2x2'),
     $r('sys.symbol.play_circle'),
     $r('sys.symbol.folder'),
-    $r('sys.symbol.archivebox'),
     $r('sys.symbol.gearshape')
   ];
 
@@ -293,7 +291,7 @@ struct Index {
       .backgroundColor($r('app.color.header_bg'))
       .alignItems(VerticalAlign.Center)
 
-      // -- 五导航 (设计 §3): 应用库 / 运行中 / 文件 / 环境 / 设置
+      // -- 四导航 (设计 §3): 应用库 / 运行中 / 文件 / 设置
       // (断点双壳: sm 底部 Tabs / md·lg 左侧导航 + 右内容) --
       if (this.bp == 'sm') {
         Tabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {
@@ -313,14 +311,9 @@ struct Index {
           .tabBar(this.tabBarItem('文件', 2))
 
           TabContent() {
-            EnvPanel()
-          }
-          .tabBar(this.tabBarItem('环境', 3))
-
-          TabContent() {
             SettingsView()
           }
-          .tabBar(this.tabBarItem('设置', 4))
+          .tabBar(this.tabBarItem('设置', 3))
         }
         .barMode(BarMode.Fixed)
         .barBackgroundColor($r('app.color.panel_bg'))
@@ -335,8 +328,7 @@ struct Index {
             this.sideNavItem('应用库', 0)
             this.sideNavItem('运行中', 1)
             this.sideNavItem('文件', 2)
-            this.sideNavItem('环境', 3)
-            this.sideNavItem('设置', 4)
+            this.sideNavItem('设置', 3)
           }
           .width(200).height('100%')
           .padding({ left: 8, right: 8, top: 8 })
@@ -357,10 +349,8 @@ struct Index {
             .visibility(this.currentIndex == 1 ? Visibility.Visible : Visibility.Hidden)
             FileBrowserView({ filesDirRequest: $filesDirRequest })
               .visibility(this.currentIndex == 2 ? Visibility.Visible : Visibility.Hidden)
-            EnvPanel()
-              .visibility(this.currentIndex == 3 ? Visibility.Visible : Visibility.Hidden)
             SettingsView()
-              .visibility(this.currentIndex == 4 ? Visibility.Visible : Visibility.Hidden)
+              .visibility(this.currentIndex == 3 ? Visibility.Visible : Visibility.Hidden)
           }
           .layoutWeight(1).height('100%')
         }

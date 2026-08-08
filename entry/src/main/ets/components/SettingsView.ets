@@ -1,85 +1,66 @@
 import { bundleManager } from '@kit.AbilityKit';
-import { ComposeListItem } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { ComposeListItem, promptAction, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
 import { WineEnvService } from '../service/WineEnvService';
-import { DisplaySettingsService, SCALE_PRESETS } from '../service/DisplaySettingsService';
+import { DisplaySettingsService } from '../service/DisplaySettingsService';
 
-// 缩放选择对话框: 预设档位单选, 点选即存 (DisplaySettingsService.setScale)。
-// 仅启动时生效 (WineWindowManager.init 读取), 故对话框内注明"重启应用后生效"。
-@CustomDialog
-struct ScalePickerDialog {
-  controller?: CustomDialogController;
-  current: number = 2.0;
-  onPick: (scale: number) => void = () => {};
+const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 
-  private fmt(v: number): string {
-    return `${Math.round(v * 100) / 100}x`;
-  }
-
-  build() {
-    Column({ space: 6 }) {
-      Text('DPI 缩放 (全局)')
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .width('100%')
-        .margin({ bottom: 6 })
-      ForEach(SCALE_PRESETS, (preset: number) => {
-        Row() {
-          Text(this.fmt(preset))
-            .fontColor($r('app.color.text_primary'))
-          Blank()
-          if (Math.abs(preset - this.current) < 0.001) {
-            Text('✓')
-              .fontColor($r('app.color.accent'))
-              .fontWeight(FontWeight.Medium)
-          }
-        }
-        .width('100%')
-        .padding({ top: 10, bottom: 10, left: 12, right: 12 })
-        .borderRadius(8)
-        .backgroundColor(Math.abs(preset - this.current) < 0.001 ?
-          $r('app.color.control_bg') : Color.Transparent)
-        .onClick(() => {
-          this.onPick(preset);
-          this.controller?.close();
-        })
-      })
-      Text('重启应用后生效')
-        .fontSize(12)
-        .fontColor($r('app.color.text_tertiary'))
-        .width('100%')
-        .margin({ top: 8 })
-    }
-    .padding(18)
-    .backgroundColor($r('app.color.overlay_bg'))
-    .borderRadius(12)
-  }
-}
-
-// 设置页 (设计 4.6, 骨架版): 显示/开发者/关于三卡。
+// 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · 会话维护 ·
+// 危险区) / 开发者折叠 / 关于。原环境页 (EnvPanel) 三卡 + 开发者折叠区整体并入本页,
+// 主界面导航收敛为 应用库/运行中/文件/设置 四项。
 // 行用系统预置 ComposeListItem (左标题+右值), 统一行高/间距/字级。
 // 注: ComposeListItem 不宜挂通用属性 (会落到额外生成的 __Common__ 节点上),
 // 故卡片外观由外层 Column 承担。
 // 说明: 应用调色板目前只有深色一套, 主题切换后续版本开放。
-// DPI 缩放可编辑 (全局, 重启应用后生效, 见 DisplaySettingsService);
-// 输入设置在桌面悬浮条与布局编辑里 (设计 P4/P5 已落地)。
+// DPI 缩放用 Slider 交互 (同悬浮条"光标速度"), 全局生效, 重启应用后生效
+// (见 DisplaySettingsService); 输入设置在桌面悬浮条与布局编辑里 (设计 P4/P5 已落地)。
 @Component
 export struct SettingsView {
-  @State versionName: string = '';
-  @State perfProfile: string = 'baseline';
+  // -- 环境状态镜像 (订阅驱动, 原 EnvPanel) --
+  @State state: string = 'idle';
+  @State sessionAlive: boolean = false;
+  @State busy: boolean = false;
+  @State prefixReady: boolean = false;
+  @State statusText: string = '检测中...';
+  @State zHome: string = '';
+  // 渲染策略镜像 (dxvk_legacy / wined3d); 切换后提示需重启引擎才生效
   @State d3dBackend: string = 'dxvk_legacy';
+  // SegmentButton 选中项 (@Link 双向): 0=dxvk_legacy 1=wined3d, 与 d3dBackend 同步
+  @State backendSel: number[] = [0];
+  @State restartHint: boolean = false;
+  @State devExpanded: boolean = false;
+  @State perfProfile: string = 'baseline';
+  // -- 显示/关于 --
+  @State versionName: string = '';
   @State scaleText: string = '';
 
   private env: WineEnvService = WineEnvService.getInstance();
   private displaySettings: DisplaySettingsService = DisplaySettingsService.getInstance();
-  private scaleController: CustomDialogController | null = null;
+
+  private mirror = (): void => {
+    this.state = this.env.engineState;
+    this.sessionAlive = this.env.sessionAlive;
+    this.busy = this.env.isBusy();
+    this.prefixReady = this.env.prefixReady;
+    this.statusText = this.env.statusText;
+    this.zHome = this.env.zHome;
+    this.d3dBackend = this.env.getD3dBackend();
+    // 派生选中项; 仅在值变化时赋值, 避免 notify 覆盖用户刚点击的 @Link 状态
+    const sel = this.d3dBackend == 'dxvk_legacy' ? 0 : 1;
+    if (this.backendSel[0] != sel) {
+      this.backendSel = [sel];
+    }
+    this.perfProfile = this.env.getPerfProfile();
+  }
 
   private fmtScale(v: number): string {
     return `${Math.round(v * 100) / 100}x`;
   }
 
   aboutToAppear(): void {
-    this.perfProfile = this.env.getPerfProfile();
-    this.d3dBackend = this.env.getD3dBackend();
+    this.env.subscribe(this.mirror);
+    this.mirror();
     this.scaleText = this.fmtScale(this.displaySettings.scale);
     bundleManager.getBundleInfoForSelf(
       bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION
@@ -90,41 +71,101 @@ export struct SettingsView {
     });
   }
 
-  // 每次打开前重建 controller: builder 参数在创建时快照,
-  // 复用旧 controller 会让"当前档位"高亮停留在上次值
-  private openScalePicker(): void {
-    this.scaleController = new CustomDialogController({
-      builder: ScalePickerDialog({
-        current: this.displaySettings.scale,
-        onPick: (scale: number) => {
-          this.displaySettings.setScale(scale);
-          this.scaleText = this.fmtScale(scale);
+  // 状态文本配色, 与标题栏同一套规则: 失败红 / 运行绿 / 就绪或进行中蓝 / 未启动灰
+  private statusColor(): Resource {
+    if (this.state == 'failed') {
+      return $r('app.color.danger');
+    }
+    if (this.state == 'ready') {
+      return this.sessionAlive ? $r('app.color.state_ok') : $r('app.color.state_info');
+    }
+    if (this.state == 'starting' || this.state == 'stopping' || this.state == 'ready-degraded') {
+      return $r('app.color.state_info');
+    }
+    return $r('app.color.text_tertiary');
+  }
+
+  // 渲染策略分段控件: 系统预置 SegmentButton 胶囊单选 (替代手写双 Button 行);
+  // 切换仅写配置 (service 内持久化), 重启 Wine 引擎后生效
+  private selectBackend(backend: string): void {
+    if (backend == this.d3dBackend) {
+      return;
+    }
+    this.env.setD3dPreference(backend);
+    this.restartHint = true;
+  }
+
+  private confirmReset(): void {
+    AlertDialog.show({
+      title: '重置 Wine prefix',
+      message: '将清空整个 Wine 容器（包括所有已安装程序和存档），且不可恢复。确定继续？',
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '重置',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          this.env.doReset();
         }
-      }),
-      customStyle: true
+      }
     });
-    this.scaleController.open();
+  }
+
+  private confirmStopAll(): void {
+    AlertDialog.show({
+      title: '停止全部 Windows 会话',
+      message: '将结束所有正在运行的 Windows 程序（未保存数据会丢失）。确定继续？',
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '停止全部',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          this.env.stopAllSessions();
+          promptAction.showToast({ message: '正在停止全部会话...' });
+        }
+      }
+    });
+  }
+
+  private doExportLogs(): void {
+    const path = this.env.exportLogs();
+    promptAction.showToast({
+      message: path ? `日志已导出:\n${path}` : '日志导出失败'
+    });
   }
 
   build() {
     Scroll() {
       Column({ space: 14 }) {
-        // ══ 显示 ══
+        // ══ 卡 1: 显示 (置顶) ══
         Column({ space: 8 }) {
           Text('显示')
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          ComposeListItem({
-            contentItem: { primaryText: '主题' },
-            operateItem: { text: '深色' }
-          })
-          ComposeListItem({
-            contentItem: { primaryText: 'DPI 缩放 (全局)' },
-            operateItem: { text: this.scaleText }
-          })
-            .onClick(() => this.openScalePicker())
-          Text('缩放调节重启应用后生效; 浅色主题将在后续版本开放')
+          Row() {
+            Text('DPI 缩放 (全局)')
+              .fontColor($r('app.color.text_primary'))
+              .layoutWeight(1)
+            Text(this.scaleText)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          .width('100%')
+          // Slider 交互 (同悬浮条"光标速度"): 拖动中只更新显示值 (即时预览),
+          // 松手/点按才落盘, 避免拖动过程频繁写 preferences
+          Slider({ value: this.displaySettings.scale, min: 0.75, max: 3.0, step: 0.25 })
+            .onChange((value: number, mode: SliderChangeMode) => {
+              this.scaleText = this.fmtScale(value);
+              if (mode != SliderChangeMode.Moving) {
+                this.displaySettings.setScale(value);
+              }
+            })
+          Text('缩放调节重启应用后生效')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
@@ -134,29 +175,150 @@ export struct SettingsView {
         .backgroundColor($r('app.color.card_bg'))
         .borderRadius(12)
 
-        // ══ 开发者 ══
-        Column({ space: 8 }) {
-          Text('开发者')
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
+        // ══ 卡 2: Wine 引擎 (原环境页) ══
+        Column({ space: 10 }) {
+          Row() {
+            Circle({ width: 8, height: 8 })
+              .fill(this.prefixReady ? $r('app.color.state_ok') : $r('app.color.state_warn'))
+              .margin({ right: 6 })
+            Text('Wine 引擎')
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .layoutWeight(1)
+            Text(this.statusText)
+              .fontSize(13)
+              .fontColor(this.statusColor())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .width('100%').alignItems(VerticalAlign.Center)
+
+          Text('渲染策略')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
             .width('100%')
-          ComposeListItem({
-            contentItem: { primaryText: '诊断 profile' },
-            operateItem: { text: this.perfProfile }
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              buttons: [{ text: 'DXVK (推荐)' }, { text: 'WineD3D' }],
+              multiply: false
+            }),
+            selectedIndexes: $backendSel,
+            onItemClicked: (index: number) => {
+              this.selectBackend(index == 0 ? 'dxvk_legacy' : 'wined3d');
+            }
           })
-          ComposeListItem({
-            contentItem: { primaryText: '渲染后端' },
-            operateItem: { text: this.d3dBackend }
-          })
-          Text('自动化测试经 hdc 以 want 参数启动 (winehua.mode=smoke)')
+          .width('100%')
+          Text('DXVK 性能更好; 个别程序异常时可试 WineD3D')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
+          if (this.restartHint) {
+            Text('渲染策略已更改, 重启 Wine 引擎后生效')
+              .fontSize(12)
+              .fontColor($r('app.color.state_warn'))
+              .width('100%')
+          }
         }
         .width('100%')
         .padding(14)
         .backgroundColor($r('app.color.card_bg'))
-        .borderRadius(12)
+        .borderRadius(8)
+
+        // ══ 卡 3: 会话维护 (原环境页) ══
+        Column({ space: 10 }) {
+          Text('会话维护')
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Button(this.sessionAlive ? '重启 Wine 引擎' : (this.prefixReady ? '启动 Wine 引擎' : '初始化 Wine'))
+            .width('100%').backgroundColor($r('app.color.action_primary'))
+            // 判据 = 状态机: 仅 空闲/就绪/降级/失败 可进入; 会话存活时走
+            // restartEngine 编排 (先停后启), 不再直接 doInit 双开桌面。
+            // ready-degraded 必须可重启: 桌面一直没起来时这是用户自救入口
+            .enabled(!this.busy &&
+              (this.state == 'idle' || this.state == 'ready' || this.state == 'failed' ||
+                this.state == 'ready-degraded'))
+            .onClick(() => {
+              this.restartHint = false;
+              this.env.restartEngine();
+            })
+          Button('停止全部 Windows 会话')
+            .width('100%').backgroundColor($r('app.color.action_warning'))
+            // 判据 = 会话存活 (桌面 root 或用户进程), 与 prefix 文件就绪无关
+            .enabled(this.sessionAlive && !this.busy)
+            .onClick(() => this.confirmStopAll())
+          Button('导出日志')
+            .width('100%').backgroundColor($r('app.color.control_bg'))
+            .onClick(() => this.doExportLogs())
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('app.color.card_bg'))
+        .borderRadius(8)
+
+        // ══ 卡 4: 危险区 (红色, 原环境页) ══
+        Column({ space: 10 }) {
+          Text('危险区')
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.danger'))
+            .width('100%')
+          Text('重置会删除容器内全部应用数据, 操作不可恢复')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+          Button('重置 Wine prefix')
+            .width('100%').backgroundColor($r('app.color.action_danger'))
+            .fontColor($r('app.color.danger'))
+            // 编排内含"先停会话再删 prefix", 任何非忙状态都可用
+            .enabled(!this.busy)
+            .onClick(() => this.confirmReset())
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('app.color.card_bg'))
+        .borderRadius(8)
+        .border({ width: 1, color: $r('app.color.action_danger') })
+
+        // ══ 开发者 (折叠, 原环境页折叠区 + 原设置页诊断行去重合并) ══
+        Column() {
+          Row() {
+            Text('开发者')
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_secondary'))
+              .layoutWeight(1)
+            SymbolGlyph(this.devExpanded ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
+              .fontSize(16)
+              .fontColor([$r('app.color.text_secondary')])
+          }
+          .width('100%')
+          .padding({ top: 4, bottom: 4 })
+          .onClick(() => {
+            this.devExpanded = !this.devExpanded;
+          })
+          if (this.devExpanded) {
+            Text(`诊断 profile: ${this.perfProfile}`)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
+              .width('100%').margin({ top: 6 })
+            Text(`渲染后端: ${this.d3dBackend}`)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
+              .width('100%').margin({ top: 4 })
+            Text(`Prefix: ${WINE_PREFIX}`)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
+              .width('100%').margin({ top: 4 })
+            Text(`Z: 映射: ${this.zHome}`)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
+              .width('100%').margin({ top: 4 })
+            Text(`设备类型: ${deviceInfo.deviceType}`)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
+              .width('100%').margin({ top: 4 })
+            Text('自动化测试经 hdc 以 want 参数启动 (winehua.mode=smoke)')
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
+              .width('100%').margin({ top: 8 })
+          }
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('app.color.card_bg'))
+        .borderRadius(8)
 
         // ══ 关于 ══
         Column({ space: 8 }) {
