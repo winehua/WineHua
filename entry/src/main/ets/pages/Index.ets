@@ -45,6 +45,8 @@ struct Index {
   // 遮罩渲染在根 Stack (init overlay 保持最顶)
   @State scanning: boolean = false;
   @State scanLabel: string = '';
+  // 字体导入遮罩 (镜像自 WineEnvService): 与扫描遮罩共用同一条件层
+  @State fontImporting: boolean = false;
 
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
@@ -68,6 +70,7 @@ struct Index {
       this.initOverlayText = env.initOverlayText;
       this.initOverlayVisible = env.initOverlayVisible;
       this.initFailed = env.initFailed;
+      this.fontImporting = env.fontImporting;
     };
     env.subscribe(mirror);
     // 启动程序自动回桌面: 桌面已激活时新程序被受理 (evt:launch-accepted) → 切回桌面层。
@@ -370,16 +373,16 @@ struct Index {
       // 覆盖层自门控 (InputSettingsService.gamepadEnabled), 未开时不渲染
       GamepadOverlay()
     }
-    // 扫描全窗遮罩 (镜像 AppLibraryService.scanning): 半透明罩吞掉扫描期间的
-    // 一切触摸, 防误操作与扫描状态交错; 居中卡片样式与 init overlay 一致;
-    // 位于 init overlay 之下 (初始化优先级更高)
-    if (this.scanning) {
+    // 扫描/字体导入全窗遮罩 (镜像 AppLibraryService.scanning / WineEnvService
+    // .fontImporting): 半透明罩吞掉期间的一切触摸, 防误操作与状态交错;
+    // 居中卡片样式与 init overlay 一致; 位于 init overlay 之下 (初始化优先级更高)
+    if (this.scanning || this.fontImporting) {
       Column() {
       Column({ space: 18 }) {
         LoadingProgress()
           .width(42).height(42)
           .color($r('app.color.accent'))
-        Text(this.scanLabel)
+        Text(this.fontImporting ? '正在导入字体，请稍候...' : this.scanLabel)
           .fontSize(15)
           .fontColor($r('app.color.text_secondary'))
       }

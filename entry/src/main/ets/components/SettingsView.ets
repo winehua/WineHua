@@ -1,14 +1,16 @@
 import { bundleManager } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { ComposeListItem, promptAction, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
+import { fileUri, picker } from '@kit.CoreFileKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WineEnvService } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
 
 const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 
-// 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · 会话维护 ·
-// 危险区) / 开发者折叠 / 关于。原环境页 (EnvPanel) 三卡 + 开发者折叠区整体并入本页,
-// 主界面导航收敛为 应用库/运行中/文件/设置 四项。
+// 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · Windows 字体 ·
+// 会话维护 · 危险区) / 开发者折叠 / 关于。原环境页 (EnvPanel) 三卡 + 开发者折叠区
+// 整体并入本页, 主界面导航收敛为 应用库/运行中/文件/设置 四项。
 // 行用系统预置 ComposeListItem (左标题+右值), 统一行高/间距/字级。
 // 注: ComposeListItem 不宜挂通用属性 (会落到额外生成的 __Common__ 节点上),
 // 故卡片外观由外层 Column 承担。
@@ -33,6 +35,8 @@ export struct SettingsView {
   @State wineLang: string = 'zh_CN';
   @State restartHint: boolean = false;
   @State langRestartHint: boolean = false;
+  // 字体导入进行中 (镜像 WineEnvService.fontImporting): 按钮使能 + 文案
+  @State fontImporting: boolean = false;
   @State devExpanded: boolean = false;
   @State perfProfile: string = 'baseline';
   // -- 显示/关于 --
@@ -61,6 +65,7 @@ export struct SettingsView {
       this.langSel = [langSel];
     }
     this.perfProfile = this.env.getPerfProfile();
+    this.fontImporting = this.env.fontImporting;
   }
 
   private fmtScale(v: number): string {
@@ -157,6 +162,31 @@ export struct SettingsView {
     });
   }
 
+  // Windows 字体导入: 用户把 C:\Windows\Fonts 打包为 zip 选入, 解压拷入
+  // prefix 的 windows\Fonts (实现在 service; 全程全窗遮罩, 见 Index 根 Stack)。
+  // 后缀不在 picker 侧过滤 (同文件页"导入"的教训: 系统筛选有翻车风险), 选中后校验
+  private pickFontsZip(): void {
+    const docPicker = new picker.DocumentViewPicker(getContext(this));
+    docPicker.select({ maxSelectNumber: 1 }).then((uris: string[]) => {
+      if (!uris || uris.length == 0) {
+        return;
+      }
+      let name = '';
+      try {
+        name = new fileUri.FileUri(uris[0]).name;
+      } catch (_) { /* 名字取不到不挡路, 交给 service 按内容校验 */ }
+      if (name != '' && !name.toLowerCase().endsWith('.zip')) {
+        promptAction.showToast({ message: '请选择 zip 格式的字体包' });
+        return;
+      }
+      this.env.importFontsZip(uris[0]).then((msg: string) => {
+        promptAction.showToast({ message: msg });
+      });
+    }).catch((e: Object) => {
+      hilog.error(0x0000, 'SettingsView', 'fonts picker fail: %{public}s', JSON.stringify(e));
+    });
+  }
+
   build() {
     Scroll() {
       Column({ space: 14 }) {
@@ -187,6 +217,34 @@ export struct SettingsView {
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
+
+          // Wine 语言 (从 Wine 引擎卡移入, 同属显示/区域设置):
+          // 切换仅写配置, 重启 Wine 引擎后生效
+          Text('Wine 语言')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              buttons: [{ text: '中文' }, { text: 'English' }],
+              multiply: false
+            }),
+            selectedIndexes: $langSel,
+            onItemClicked: (index: number) => {
+              this.selectLang(index == 0 ? 'zh_CN' : 'en_US');
+            }
+          })
+          .width('100%')
+          Text('影响 Windows 程序的界面语言与区域格式')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+          if (this.langRestartHint) {
+            Text('语言已更改, 重启 Wine 引擎后生效')
+              .fontSize(12)
+              .fontColor($r('app.color.state_warn'))
+              .width('100%')
+          }
         }
         .width('100%')
         .padding(14)
@@ -235,39 +293,38 @@ export struct SettingsView {
               .fontColor($r('app.color.state_warn'))
               .width('100%')
           }
-
-          Text('Wine 语言')
-            .fontSize(13)
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-          SegmentButton({
-            options: SegmentButtonOptions.capsule({
-              buttons: [{ text: '中文' }, { text: 'English' }],
-              multiply: false
-            }),
-            selectedIndexes: $langSel,
-            onItemClicked: (index: number) => {
-              this.selectLang(index == 0 ? 'zh_CN' : 'en_US');
-            }
-          })
-          .width('100%')
-          Text('影响 Windows 程序的界面语言与区域格式')
-            .fontSize(12)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-          if (this.langRestartHint) {
-            Text('语言已更改, 重启 Wine 引擎后生效')
-              .fontSize(12)
-              .fontColor($r('app.color.state_warn'))
-              .width('100%')
-          }
         }
         .width('100%')
         .padding(14)
         .backgroundColor($r('app.color.card_bg'))
         .borderRadius(8)
 
-        // ══ 卡 3: 会话维护 (原环境页) ══
+        // ══ 卡 3: Windows 字体 ══
+        Column({ space: 10 }) {
+          Text('Windows 字体')
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text('将 Windows 的 C:\\Windows\\Fonts 目录打包为 zip 后导入，解决程序缺字体、显示方块的问题（导入前会校验包内容确为 Fonts 目录备份）')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+          Button(this.fontImporting ? '正在导入...' : '选择 zip 字体包导入')
+            .width('100%').backgroundColor($r('app.color.control_bg'))
+            // 需 prefix 已就绪 (目标目录在 drive_c 下); 导入中防重入
+            .enabled(this.prefixReady && !this.fontImporting)
+            .onClick(() => this.pickFontsZip())
+          Text('导入后新启动的 Windows 程序即可使用，运行中的程序需重启')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor($r('app.color.card_bg'))
+        .borderRadius(8)
+
+        // ══ 卡 4: 会话维护 (原环境页) ══
         Column({ space: 10 }) {
           Text('会话维护')
             .fontWeight(FontWeight.Medium)
@@ -300,7 +357,7 @@ export struct SettingsView {
         .backgroundColor($r('app.color.card_bg'))
         .borderRadius(8)
 
-        // ══ 卡 4: 危险区 (红色, 原环境页) ══
+        // ══ 卡 5: 危险区 (红色, 原环境页) ══
         Column({ space: 10 }) {
           Text('危险区')
             .fontWeight(FontWeight.Medium)
