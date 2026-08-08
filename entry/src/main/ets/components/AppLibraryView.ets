@@ -15,7 +15,7 @@ const TAG = 'AppLibraryView';
 // 后三者按入库来源互斥归类 (sourceOf: builtin 旗标 > source 字段, 老数据缺省 import)
 // 控件: 系统预置 ChipGroup (@kit.ArkUI, API 12+)
 
-// 单应用配置 (菜单"配置"弹半模态): 图形渲染/兼容模式/启动参数三项,
+// 单应用配置 (菜单"配置"弹半模态): 图形渲染/兼容模式两项,
 // 全部可缺省 (跟随全局)。刻意不做裸环境变量等无法翻译为用户语言的开关。
 // 容器: bindSheet 半模态 (内容会随版本增多, 半模态空间比 CustomDialog 大、层级更轻)
 const GRAPHICS_KINDS: Array<string> = ['global', 'dxvk', 'wined3d'];
@@ -85,6 +85,8 @@ interface EntryItemSpec {
 export struct AppLibraryView {
   @State entries: AppEntry[] = [];
   @State prefixReady: boolean = false;
+  // 引擎编排进行中镜像 (env.isBusy): 引导按钮 loading/禁用判据
+  @State engineBusy: boolean = false;
   // 断点镜像: lg → Grid 大卡, sm/md → List
   @State bp: Breakpoint = 'lg';
   @State chip: string = 'recent';
@@ -105,7 +107,6 @@ export struct AppLibraryView {
   @State showConfig: boolean = false;
   @State cfgGraphicsSel: number[] = [0];
   @State cfgCompat: boolean = false;
-  @State cfgArgs: string = '';
   private cfgEntryPath: string = '';
   private cfgEntryName: string = '';
   // 空态"去文件页"回调, 由 Index 注入 (切换 Tabs 到文件页), 有才显示按钮
@@ -123,6 +124,7 @@ export struct AppLibraryView {
     const wasReady = this.prefixReady;
     this.entries = this.lib.entries;
     this.prefixReady = this.env.prefixReady;
+    this.engineBusy = this.env.isBusy();
     // prefix 就绪 false→true 边沿: 补内建工具入库 (service 内部幂等,
     // 边沿触发避免 mirror↔notify 反馈回路)
     if (this.prefixReady && !wasReady) {
@@ -273,7 +275,7 @@ export struct AppLibraryView {
     this.renameController.open();
   }
 
-  // 单应用配置: 读取现值作初值打开半模态; 保存时把 'global'/false/空串 归一为缺省
+  // 单应用配置: 读取现值作初值打开半模态; 保存时把 'global'/false 归一为缺省
   // (字段不写 = 跟随全局, 持久化 JSON 保持干净)
   private openConfig(entry: AppEntry): void {
     const cfg = entry.config;
@@ -283,7 +285,6 @@ export struct AppLibraryView {
     const gi = GRAPHICS_KINDS.indexOf(g);
     this.cfgGraphicsSel = [gi >= 0 ? gi : 0];
     this.cfgCompat = cfg?.compat ?? false;
-    this.cfgArgs = cfg?.args ?? '';
     this.showConfig = true;
   }
 
@@ -295,10 +296,6 @@ export struct AppLibraryView {
     }
     if (this.cfgCompat) {
       config.compat = true;
-    }
-    const trimmed = this.cfgArgs.trim();
-    if (trimmed) {
-      config.args = trimmed;
     }
     this.lib.setConfig(this.cfgEntryPath, config);
     this.showConfig = false;
@@ -362,6 +359,55 @@ export struct AppLibraryView {
       defs.push({ kind: 'hidden', label: '已隐藏' });
     }
     return defs;
+  }
+
+  // 引擎未就绪引导 (prefix 未初始化): EmptyState + 启动引擎按钮。
+  // engineBusy (初始化/停止编排中) 转圈等待; engineState=='ready' 但 prefix
+  // 还在后台建 (wineboot 轮询中) 时显示等待文案, 不提供按钮 (避免误重启引擎);
+  // prefix 就绪后 mirror 触发本分支移除, 自动切回正常内容区。
+  @Builder
+  startupGuide() {
+    Column({ space: 4 }) {
+      EmptyState({
+        icon: $r('sys.symbol.play_circle'),
+        title: this.engineBusy ? '正在初始化 Wine 引擎...'
+          : this.env.engineState == 'ready' ? '正在准备环境...'
+          : '引擎未初始化',
+        desc: this.engineBusy
+          ? '首次启动需解压数据并创建环境，请稍候'
+          : this.env.engineState == 'ready'
+            ? '环境初始化完成后即可使用'
+            : '启动引擎后可浏览内建工具与已安装应用'
+      })
+      if (this.engineBusy) {
+        Row({ space: 6 }) {
+          LoadingProgress()
+            .width(16).height(16)
+            .color($r('app.color.accent'))
+          Text(this.env.engineState == 'stopping' ? '停止中...' : '正在初始化...')
+            .fontSize(14)
+            .fontColor($r('app.color.text_secondary'))
+        }
+        .margin({ top: 14 })
+      } else if (this.env.engineState == 'idle' || this.env.engineState == 'failed') {
+        Button('启动引擎')
+          .backgroundColor($r('app.color.accent'))
+          .fontColor(Color.White)
+          .margin({ top: 14 })
+          .onClick(() => this.onStartEngine())
+      }
+    }
+    .width('100%').height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor($r('app.color.window_bg'))
+  }
+
+  private onStartEngine(): void {
+    // isBusy 防重入 (restartEngine 内部也有, 双保险)
+    if (this.env.isBusy()) {
+      return;
+    }
+    this.env.restartEngine();
   }
 
   // 各分类空态文案 (有搜索词时统一为"没有匹配")
@@ -525,18 +571,6 @@ export struct AppLibraryView {
       }
       .width('100%')
 
-      Column({ space: 8 }) {
-        Text('启动参数')
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-        TextInput({ placeholder: '如 -windowed，留空为无', text: this.cfgArgs })
-          .onChange((value: string) => {
-            this.cfgArgs = value;
-          })
-      }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
-
       Row({ space: 12 }) {
         // 恢复默认只重置本表单的选项, 仍需点保存生效 (防误触)
         Button('恢复默认')
@@ -545,7 +579,6 @@ export struct AppLibraryView {
           .onClick(() => {
             this.cfgGraphicsSel = [0];
             this.cfgCompat = false;
-            this.cfgArgs = '';
           })
         Button('保存')
           .layoutWeight(1)
@@ -686,7 +719,12 @@ export struct AppLibraryView {
       .padding({ left: 14, right: 14, top: 6, bottom: 8 })
 
       Stack() {
-      if (this.filtered().length == 0) {
+      // 引擎未就绪引导 (prefix 未初始化): 优先于空态显示 — 首次启动时
+      // entries 为空, 空态文案 (如"还没有运行记录") 会误导用户以为没应用,
+      // 实际是需要先启动引擎初始化环境 (解压数据 + 建 prefix)
+      if (!this.prefixReady) {
+        this.startupGuide()
+      } else if (this.filtered().length == 0) {
         Column() {
           EmptyState({
             icon: $r('sys.symbol.square_grid_2x2'),

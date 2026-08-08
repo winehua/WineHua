@@ -17,14 +17,13 @@ const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 const SCAN_MAX_DEPTH = 6;
 const SCAN_MAX_EXE = 200;
 
-// 单应用配置 (P2): 只收能翻译为用户语言的组合 — 图形渲染 / 兼容模式 / 启动参数。
+// 单应用配置 (P2): 只收能翻译为用户语言的组合 — 图形渲染 / 兼容模式。
 // 字段全可选, 缺省 = 跟随全局或默认行为 (继承: 全局 → 应用两级)。
 // 刻意不暴露裸环境变量 / WINEDEBUG / presentBackend 等底层开关
 // (无法翻译成用户可理解的语义, 用户决策: 不好翻译的暂不支持)
 export interface AppConfig {
   graphics?: string;  // 'dxvk'(硬件加速) | 'wined3d'(兼容渲染); 缺省 = 跟随全局 d3dBackend
   compat?: boolean;   // 兼容模式: BOX64 保守 dynarec 组合 (应用闪退/异常时开启, 速度变慢)
-  args?: string;      // 启动参数, 空格分隔 (如 "-windowed")
 }
 
 export interface AppEntry {
@@ -452,7 +451,7 @@ export class AppLibraryService {
   }
 
   // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env),
-  // 把用户可理解的 AppConfig 翻译成底层 argv/environment/d3dBackend。
+  // 把用户可理解的 AppConfig 翻译成底层 environment/d3dBackend。
   // 无配置时行为与旧 runWineExe 路径等价 (全局 d3dBackend, 无额外 env)。
   // 返回 broker 受理的 pid (<=0 = 受理失败, 调用方立即报启动失败);
   // 受理只表示进程拉起, 闪退检测由调用方订阅 evt:proc-exited 完成
@@ -476,7 +475,7 @@ export class AppLibraryService {
     const winPath = this.toWindowsPath(path, env.zHome);
     const result = testNapi.runWineProgram({
       windowsExePath: winPath,
-      argv: this.splitArgs(cfg?.args ?? ''),
+      argv: [],
       environment: environment,
       workingDirectory: this.windowsParentDir(winPath),
       prefixMode: 'reuse',
@@ -606,11 +605,6 @@ export class AppLibraryService {
       this.procIconExtracting = this.procIconExtracting.filter((p: string) => p != nativePath);
       this.procIconCache[nativePath] = '';
     });
-  }
-
-  // 启动参数按空白切分 (v1 不支持引号包裹的带空格参数)
-  private splitArgs(args: string): string[] {
-    return args.trim().split(/\s+/).filter((s: string) => s.length > 0);
   }
 
   private sortEntries(): void {
