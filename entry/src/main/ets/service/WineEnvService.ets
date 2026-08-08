@@ -241,7 +241,8 @@ export class WineEnvService {
     } else if (this.engineState == 'failed') {
       this.statusText = '启动失败';
     } else {
-      this.statusText = this.prefixReady ? '已就绪' : '未初始化';
+      // idle (含懒初始化后未启动): prefix 就绪只说明初始化过, 引擎并未在跑
+      this.statusText = this.prefixReady ? '未启动' : '未初始化';
     }
   }
 
@@ -347,8 +348,12 @@ export class WineEnvService {
       this.desktopSurfaceReady = wm.desktopSurfaceReady;
       this.notify();
     });
-    // 下一帧自动初始化 (避免阻塞 UI 首次渲染)
-    setTimeout(() => this.doInit(), 0);
+    // 自动初始化仅限自动化/游戏测试模式 (want 驱动的无人值守场景, 没人
+    // 点按钮)。普通模式懒初始化: 首启解压 249MB 可达数分钟, 冷启动白等 —
+    // 由标题栏"启动引擎"或首次启动 app 经 ensureEngineReady 按需拉起
+    if (this.automationMode || this.gameTestMode) {
+      setTimeout(() => this.doInit(), 0);
+    }
   }
 
   // 自动化/游戏模式专用的状态文案直写 (SmokeRunner/game 自管进度文案;
@@ -770,6 +775,29 @@ export class WineEnvService {
       this.opBusy = false;
       this.doInit();
     })();
+  }
+
+  // 按需拉起引擎 (懒初始化入口): 标题栏"启动引擎"按钮与启动 app 前调用。
+  // ready 直返; idle/failed 走 restartEngine 编排后等 state:ready — 首启含
+  // 249MB 解压可达数分钟, 300s 超时仅作安全网, 正常失败路径都经 failInit
+  // 给出 initFailed/failed 信号提前返回。busy (初始化/停止编排进行中)
+  // 直返 false — 调用方 UI 已做防重入, 不与编排抢跑
+  async ensureEngineReady(): Promise<boolean> {
+    if (this.engineState == 'ready') {
+      return true;
+    }
+    if (this.isBusy()) {
+      return false;
+    }
+    this.restartEngine();
+    const deadline = Date.now() + 300000;
+    while (this.engineState != 'ready' && Date.now() < deadline) {
+      if (this.initFailed || this.engineState == 'failed') {
+        return false;
+      }
+      await new Promise<void>((r) => setTimeout(r, 200));
+    }
+    return this.engineState == 'ready';
   }
 
   // 已就绪但无桌面会话时，先拉起桌面外壳（explorer desktop shell），

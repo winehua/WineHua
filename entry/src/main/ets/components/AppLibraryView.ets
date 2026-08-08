@@ -189,10 +189,24 @@ export struct AppLibraryView {
   }
 
   private async launch(entry: AppEntry): Promise<void> {
-    // 判据 = 状态机 ready (涵盖 prefix 就绪/wineserver 健康), 不再各自比对状态串;
-    // launchingPath 兼作防重入 — ensureDesktop 等待窗口期重复点击不会启动多个实例
-    if (!this.env.canLaunch() || this.launchingPath) {
+    // launchingPath 兼作防重入 — 引擎拉起/ensureDesktop 等待窗口期重复点击
+    // 不会启动多个实例
+    if (this.launchingPath) {
       return;
+    }
+    if (!this.env.canLaunch()) {
+      // 引擎未就绪 (懒初始化): 点 app 即隐含启动引擎意图 — 进加载态拉起
+      // 引擎后走原流程; 编排进行中 (isBusy) 不抢跑, 避免与编排交错
+      if (this.env.isBusy()) {
+        return;
+      }
+      this.launchingPath = entry.path;   // 占位: 卡片进入加载态 + 防重入
+      this.launchingPid = -1;
+      const ready = await this.env.ensureEngineReady();
+      if (!ready) {
+        this.failLaunching('Wine 引擎启动失败。可尝试到设置页重启引擎或重置环境后重试');
+        return;   // failLaunching 内部 clearLaunching 清占位
+      }
     }
     // 已就绪但无桌面会话：先拉起桌面，避免程序启动后只有程序窗口没有桌面
     if (!this.env.sessionAlive) {

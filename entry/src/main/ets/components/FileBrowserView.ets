@@ -598,11 +598,21 @@ export struct FileBrowserView {
     });
   }
 
-  // exe 启动统一入口 (行内按钮与长按菜单同判据): 引擎 ready 才放行,
-  // 受理失败给 toast; 受理后的闪退检测在应用库启动反馈里 (文件页无加载态)
+  // exe 启动统一入口 (行内按钮与长按菜单同判据): 引擎未启动则先按需拉起
+  // (懒初始化), ready 才放行; 受理失败给 toast; 受理后的闪退检测在应用库
+  // 启动反馈里 (文件页无加载态)
   private async launchExe(path: string): Promise<void> {
     if (this.env.engineState != 'ready') {
-      return;
+      // 懒初始化: 编排进行中不抢跑; 否则拉起引擎 (首启可达数分钟, toast 预告)
+      if (this.env.isBusy()) {
+        return;
+      }
+      this.toast('正在启动 Wine 引擎...');
+      const ready = await this.env.ensureEngineReady();
+      if (!ready) {
+        this.toast('Wine 引擎启动失败，可到设置页重启引擎后重试');
+        return;
+      }
     }
     // 已就绪但无桌面会话：先拉起桌面（与应用库启动同规则），避免程序只有自己窗口没有桌面
     if (!this.env.sessionAlive) {
