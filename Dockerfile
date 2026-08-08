@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y \
     build-essential cmake ninja-build meson \
     bison flex autoconf automake libtool libltdl-dev \
     pkgconf zip git file python3 python3-pip glslang-tools \
+    # gettext (msgfmt): Wine po 翻译资源硬依赖 (build_wine.sh 缺失即 exit 1);
+    # curl/wget: 构建期下载 (mono msi 等)
+    gettext curl wget \
     # wayland-scanner 原生构建 (生成 Wayland 协议代码)
     libexpat1-dev libxml2-dev libffi-dev \
     # sfnt2fon 字体工具 (Wine .fon 生成)

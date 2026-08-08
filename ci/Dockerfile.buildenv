@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
         build-essential cmake ninja-build meson \
         bison flex autoconf automake libtool libltdl-dev \
         pkgconf zip git file python3 python3-pip glslang-tools \
+        gettext curl wget \
         libexpat1-dev libxml2-dev libffi-dev \
         libfreetype-dev \
         gcc-mingw-w64-i686 g++-mingw-w64-i686 \
@@ -73,7 +74,7 @@ RUN /apps/harmony/bin/hvigorw --version >/dev/null 2>&1 || true
 # ---- 验证关键工具/文件都在 ----
 # 增加 ltdl.m4 断言, 防止未来 apt/依赖变动再次让它悄悄消失
 RUN set -eux; \
-    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator; \
+    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget; \
     test -f /apps/harmony/sdk/default/openharmony/native/llvm/bin/clang; \
     test -f /apps/harmony/bin/hvigorw; \
     test -f /usr/share/aclocal/ltdl.m4; \

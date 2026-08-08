@@ -135,7 +135,9 @@ jobs:
 
       # ---- 兜底: 确保预构建 buildenv 含当前源码所需工具 ----
       # libltdl-dev 是 Wine 依赖; glslangValidator 是 DXVK 配置阶段生成
-      # 内置 SPIR-V 的硬依赖. Dockerfile 已同步声明, 镜像更新后这里 no-op.
+      # 内置 SPIR-V 的硬依赖; gettext (msgfmt) 是 Wine po 翻译资源硬依赖
+      # (build_wine.sh 缺失即 exit 1); curl/wget 供构建期下载 (mono msi 等).
+      # Dockerfile 已同步声明, 镜像更新后这里 no-op.
       - name: Ensure CI build dependencies present
         run: |
           packages=()
@@ -144,6 +146,15 @@ jobs:
           fi
           if ! command -v glslangValidator >/dev/null 2>&1; then
             packages+=(glslang-tools)
+          fi
+          if ! command -v msgfmt >/dev/null 2>&1; then
+            packages+=(gettext)
+          fi
+          if ! command -v curl >/dev/null 2>&1; then
+            packages+=(curl)
+          fi
+          if ! command -v wget >/dev/null 2>&1; then
+            packages+=(wget)
           fi
           if [ "${#packages[@]}" -gt 0 ]; then
             echo "Installing missing CI packages: ${packages[*]}"
@@ -195,10 +206,11 @@ jobs:
           NATIVE_ARCH: arm64-v8a
           BUILD_GUEST_GFX: '1'
           BUILD_GUEST_VULKAN: '1'
-          # CI 容器镜像无 curl/wget, mono msi 下载必然失败 → 关闭 mono:
-          # build_deps 不下载 mono msi, assemble.sh 也不打包 .cpl (含 appwiz.cpl).
-          # mono 缺失时 mscoree → control.exe 加载 appwiz.cpl 失败立即退出,
-          # 不再弹 DialogBoxW 卡死 wineboot. 代价: CI 产物 .NET 应用/控制面板不可用.
+          # CI 主动关闭 mono: 避免 mono msi 外网大下载拖慢流水线且引入
+          # 不稳定, 并精简产物 — build_deps 不下载 mono msi, assemble.sh
+          # 也不打包 .cpl (含 appwiz.cpl). mono 缺失时 mscoree →
+          # control.exe 加载 appwiz.cpl 失败立即退出, 不再弹 DialogBoxW
+          # 卡死 wineboot. 代价: CI 产物 .NET 应用/控制面板不可用.
           # 本地 make 默认 BUILD_WINE_MONO=1 (build_deps.sh ${BUILD_WINE_MONO:-1},
           # 有 curl 正常下载), 且 assemble.sh 打包 cpl, 产物完整.
           BUILD_WINE_MONO: '0'
