@@ -513,11 +513,20 @@ export class AppLibraryService {
       return `C:\\${path.substring(driveRoot.length).split('/').join('\\')}`;
     }
     // zHome 结尾斜杠归一, 避免 "/Download" 误匹配 "/DownloadApp/..."
-    const zRoot = zHome.endsWith('/') ? zHome : `${zHome}/`;
-    if (path.startsWith(zRoot)) {
+    // zHome 为空时 zRoot 置 '' — 空串是任意路径前缀, 会把所有 native 路径
+    // ("/" 开头) 误判成 Z: 盘, 此时跳过 Z: 分支保持原生
+    const zRoot = zHome ? (zHome.endsWith('/') ? zHome : `${zHome}/`) : '';
+    if (zRoot && path.startsWith(zRoot)) {
       return `Z:\\${path.substring(zRoot.length).split('/').join('\\')}`;
     }
     return path;
+  }
+
+  // UI 展示用: native 绝对路径 → Windows 形式 (C:\ / Z:\)。
+  // zHome 未就绪时 C: 盘仍正确转换 (不依赖 zHome); Z: 盘暂保持原生, zHome
+  // 就绪后页面订阅 env notify 会自动刷新为 Z:\ 形式
+  windowsPathOf(path: string): string {
+    return this.toWindowsPath(path, WineEnvService.getInstance().zHome);
   }
 
   private windowsParentDir(winPath: string): string {

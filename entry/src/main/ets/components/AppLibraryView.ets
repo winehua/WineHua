@@ -324,12 +324,6 @@ export struct AppLibraryView {
     return idx > 0 ? path.substring(0, idx) : path;
   }
 
-  // exe 文件名 (路径最后一段) — 条目副标题
-  private baseName(path: string): string {
-    const idx = path.lastIndexOf('/');
-    return idx >= 0 ? path.substring(idx + 1) : path;
-  }
-
   // 当前 chip + 搜索关键字过滤后的条目。
   // 有搜索词时跨分类全局搜 (五分类互斥后, 片内搜索会让"明明在库的应用"
   // 在别的分类下搜不到, 比不过滤更迷惑); 隐藏条目不参与全局搜索
@@ -496,7 +490,8 @@ export struct AppLibraryView {
   }
 
   // 条目内容 (Grid 卡片与 sm/md 列表行共用, 参考 .temp/ui 设计稿):
-  // 左图标, 右侧两行 — 上行名称, 下行 exe 文件名 + 类型标签 ("内建"·"收藏" 小胶囊)
+  // 左图标, 右侧两行 — 上行名称, 下行绝对路径 (Windows 形式 C:\ / Z:\, 超长省略)
+  // + 类型标签 ("内建"·"收藏" 小胶囊)
   @Builder
   entryItem($$: EntryItemSpec) {
     Row({ space: 10 }) {
@@ -520,11 +515,15 @@ export struct AppLibraryView {
           .fontColor($r('app.color.text_primary'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Row({ space: 6 }) {
-          Text(this.baseName($$.entry.path))
+          Text(this.lib.windowsPathOf($$.entry.path))
             .fontSize(11)
             .fontColor($r('app.color.text_tertiary'))
             .layoutWeight(1)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            // 绝对路径是无空格连续串, 默认 BREAK_WORD 按"单词"截断会整串
+            // 省略 (只剩 "C:"); BREAK_ALL 按字符截断, 末尾省略号用满右侧空间
+            .wordBreak(WordBreak.BREAK_ALL)
           if ($$.entry.builtin) {
             Text('内建')
               .fontSize(9)
