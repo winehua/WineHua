@@ -111,7 +111,7 @@ export struct FloatingBar {
           // 拖动中只更新生效值 (镜像即时刷速度), 松手/点按才落盘
           this.input.setCursorSpeed(value, mode != SliderChangeMode.Moving);
         })
-      Text('手柄覆盖层开关在悬浮条红点按钮；布局编辑进全屏页，不需要先开开关。')
+      Text('手柄开关在悬浮条上（开启时高亮）；编辑布局无需先开开关，点下方按钮进入。')
         .fontSize(12)
         .fontColor($r('app.color.text_tertiary'))
       Button('编辑手柄布局')
