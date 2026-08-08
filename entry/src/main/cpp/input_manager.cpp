@@ -457,20 +457,27 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // → motion_internal, 相对模式只丢弃 motion 不丢弃 enter) — 点击
             // 瞬间游戏内光标瞬移到设备绝对位置 (实测偏移量 = 光标距屏幕
             // 中心的偏移)。相对模式聚焦持续有效, 无需重发 enter。
+            // 注意: 只在"目标 surface == 已聚焦 surface"时跳 — 桌面 explorer
+            // 启动会误入相对模式 (SetCursorPos+ClipCursor 全屏组合被判定为
+            // 指针约束), 点任务栏 (不同 surface) 时若跳 enter, button 会沿用
+            // 旧 enter serial 发给桌面 root, 首次点击失效 (开始菜单不弹)。
+            // 目标 surface 不同 → 必须重发 enter (relSkipEnter=false)。
+            wl_resource* pressTargetSurf =
+                targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
             const bool relSkipEnter = PointerExtras::GetInstance()->HasRelativePointer() &&
-                                      pointerFocusedSurface_.load() != nullptr;
+                                      pointerFocusedSurface_.load() != nullptr &&
+                                      pointerFocusedSurface_.load() == pressTargetSurf;
             if (!relSkipEnter) {
-                wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
-                if (surf) {
+                if (pressTargetSurf) {
                     // desktop: surface 级比较 (菜单层与父窗口同 toplevelId);
                     // 其余模式保持 toplevel 级比较 (一窗一 surface, 语义等价)
                     wl_resource* focused = pointerFocusedSurface_.load();
                     const bool needLeave = targetSurf
-                        ? (focused != nullptr && focused != surf)
+                        ? (focused != nullptr && focused != pressTargetSurf)
                         : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
                     if (needLeave)
                         Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
-                    Enqueue(InputEvent::PTR_ENTER, tl, surf, wx, wy, 0, 0);
+                    Enqueue(InputEvent::PTR_ENTER, tl, pressTargetSurf, wx, wy, 0, 0);
                 }
             }
             Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
