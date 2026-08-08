@@ -179,10 +179,21 @@ export struct AppLibraryView {
     });
   }
 
-  private launch(entry: AppEntry): void {
-    // 判据 = 状态机 ready (涵盖 prefix 就绪/wineserver 健康), 不再各自比对状态串
-    if (!this.env.canLaunch()) {
+  private async launch(entry: AppEntry): Promise<void> {
+    // 判据 = 状态机 ready (涵盖 prefix 就绪/wineserver 健康), 不再各自比对状态串;
+    // launchingPath 兼作防重入 — ensureDesktop 等待窗口期重复点击不会启动多个实例
+    if (!this.env.canLaunch() || this.launchingPath) {
       return;
+    }
+    // 已就绪但无桌面会话：先拉起桌面，避免程序启动后只有程序窗口没有桌面
+    if (!this.env.sessionAlive) {
+      this.launchingPath = entry.path;   // 占位: 卡片进入加载态 + 防重入
+      this.launchingPid = -1;
+      const ok = await this.env.ensureDesktop();
+      if (!ok) {
+        this.failLaunching('桌面启动失败。可尝试到环境页重启引擎后重试');
+        return;   // failLaunching 内部 clearLaunching 清占位
+      }
     }
     this.clearLaunching();
     const pid = this.lib.launch(entry.path);

@@ -119,7 +119,10 @@ export class WineEnvService {
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
-  zHome: string = '/storage/Users/currentUser/Download';
+  // 初始为空串 = "未设置"（首启走 picker 填充）；重跑 doInit 时复用已设置的
+  // / 结尾真实路径。切勿给非空默认值 — 会导致 !zHome 永假、picker 被跳过、
+  // gamesDir 拼接出 /storage/Users/currentUser/Downloadgames 这种错误路径
+  zHome: string = '';
   // 初始化失败标记: doInit 各失败分支与 state:failed 置位, 首启引导据此显示
   // 重试/重置 入口 (仅靠 statusText 一行文字用户无法自救); doInit 开始 / state:ready 时清除
   initFailed: boolean = false;
@@ -127,6 +130,9 @@ export class WineEnvService {
   // ProcessService, 见 init 的订阅)。按钮使能判据, 不再拿 state 串当代理
   sessionAlive: boolean = false;
   desktopActive: boolean = false;
+  // 桌面 root 的 renderer surface 校准完成（WineWindowManager 镜像）—
+  // ensureDesktop 放行程序的判据: root 出现 ≠ 桌面真正显示
+  desktopSurfaceReady: boolean = false;
   runningCount: number = 0;
   // doInit 防重入: 覆盖 picker→解压→launchClient 全异步段 (首启解压可达数分钟),
   // 由 state:ready / state:failed / failInit 清除
@@ -287,6 +293,7 @@ export class WineEnvService {
     const wm = WineWindowManager.getInstance();
     wm.subscribe(() => {
       this.desktopActive = wm.desktopActive;
+      this.desktopSurfaceReady = wm.desktopSurfaceReady;
       this.notify();
     });
     // 下一帧自动初始化 (避免阻塞 UI 首次渲染)
@@ -567,21 +574,24 @@ export class WineEnvService {
     } else if (this.gameTestMode) {
       this.zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua/';
     } else {
-      const documentViewPicker = new picker.DocumentViewPicker(this.ctx);
-      // DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
-      // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
-      let documentSaveResult: string[] = [];
-      try {
-        documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
-      } catch (e) {
-        hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
+      // 已设置过 Z home（重启引擎 / 已就绪补拉桌面路径）直接复用，跳过 picker
+      if (!this.zHome) {
+        const documentViewPicker = new picker.DocumentViewPicker(this.ctx);
+        // DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
+        // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
+        let documentSaveResult: string[] = [];
+        try {
+          documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+        } catch (e) {
+          hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
+        }
+        if (!documentSaveResult || documentSaveResult.length == 0) {
+          this.failInit('获取下载目录失败');
+          return;
+        }
+        const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
+        this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
       }
-      if (!documentSaveResult || documentSaveResult.length == 0) {
-        this.failInit('获取下载目录失败');
-        return;
-      }
-      const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
-      this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
     }
     // HDC shell 无权删除应用沙箱文件, clean 烟测 prefix 必须由 App 自己重置,
     // 且要在 server/socket 启动之前完成
@@ -700,6 +710,37 @@ export class WineEnvService {
       this.opBusy = false;
       this.doInit();
     })();
+  }
+
+  // 已就绪但无桌面会话时，先拉起桌面外壳（explorer desktop shell），
+  // 供启动程序前调用：避免程序窗口单独出现而没有桌面。
+  // 复用 doInit 热重启路径（sessionAlive=false → launchClient spawn 新 explorer
+  // 连现有 wineserver，桌面 root 出现后 native 发 state:ready）。
+  // 返回 true = 桌面已就绪；false = 拉起失败/超时。
+  async ensureDesktop(): Promise<boolean> {
+    if (this.sessionAlive && this.desktopSurfaceReady) {
+      return true;
+    }
+    if (this.engineState != 'ready') {
+      return false;
+    }
+    await this.doInit();
+    // 就绪判据 = root 出现（desktopActive → sessionAlive）&& renderer surface
+    // 校准完成（desktopSurfaceReady）。只等 root 不够: desktop_root 是 toplevel
+    // 出现, renderer 就绪晚数秒 — 立即放行程序会抢占桌面渲染初始化导致程序
+    // 闪退 (实测: 程序窗口出现在 [MW-Resize] renderer resized OK 之前即被
+    // Wine 销毁)。两信号都经 WineWindowManager → 镜像 → notify 重算。
+    // 失败信号用 initFailed（doInit 各失败分支与 native state:failed 都经 failInit 置位；
+    // engineState 在 doInit 早期失败时可能仍是 ready，不能作失败判据）
+    const timeoutMs = 25000;
+    const deadline = Date.now() + timeoutMs;
+    while ((!this.sessionAlive || !this.desktopSurfaceReady) && Date.now() < deadline) {
+      if (this.initFailed) {
+        return false;
+      }
+      await new Promise<void>((r) => setTimeout(r, 150));
+    }
+    return this.sessionAlive && this.desktopSurfaceReady;
   }
 
   // 停止完成判定 (阶段2 起为事件): native stopAll 在注册表进程全死

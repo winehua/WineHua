@@ -499,9 +499,17 @@ export struct FileBrowserView {
 
   // exe 启动统一入口 (行内按钮与长按菜单同判据): 引擎 ready 才放行,
   // 受理失败给 toast; 受理后的闪退检测在应用库启动反馈里 (文件页无加载态)
-  private launchExe(path: string): void {
+  private async launchExe(path: string): Promise<void> {
     if (this.env.engineState != 'ready') {
       return;
+    }
+    // 已就绪但无桌面会话：先拉起桌面（与应用库启动同规则），避免程序只有自己窗口没有桌面
+    if (!this.env.sessionAlive) {
+      const ok = await this.env.ensureDesktop();
+      if (!ok) {
+        this.toast('桌面启动失败，可到环境页重启引擎后重试');
+        return;
+      }
     }
     const pid = this.lib.launch(path);
     if (pid <= 0) {

@@ -53,6 +53,10 @@ export class WineWindowManager {
   // root 销毁时翻回 false (等效旧双 Ability 时代"root 销毁关闭 DesktopAbility
   // 回主页面"的语义), 新 desktop_root 事件再置 true
   desktopActive: boolean = false;
+  // 桌面 root 的 XComponent surface 校准完成（renderer 就绪）才置 true。
+  // desktop_root 只是 toplevel 出现，renderer 就绪晚数秒 — ensureDesktop
+  // 等这个信号再放行程序启动，否则程序窗口抢占桌面渲染初始化会闪退
+  desktopSurfaceReady: boolean = false;
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
 
@@ -342,6 +346,7 @@ export class WineWindowManager {
         // Tablet: C++ 识别到 explorer desktop → Index 三层页面挂载 DesktopLayer
         hilog.info(DOMAIN, TAG, '[MW] desktop_root toplevel #%{public}d → desktopActive', id);
         this.desktopRootId = id;
+        this.desktopSurfaceReady = false;   // 新 root: renderer 尚未就绪
         if (!this.desktopActive) {
           this.desktopActive = true;
         }
@@ -361,6 +366,12 @@ export class WineWindowManager {
           const sw = obj.w as number;
           const sh = obj.h as number;
           if (sw && sh && this.displayScale > 0) {
+            // 桌面 root surface 有有效尺寸 = renderer 校准完成（WL_Plugin
+            // [MW-Resize] renderer resized OK 的 JS 侧回报）→ 桌面真正可显示
+            if (id === this.desktopRootId && !this.desktopSurfaceReady) {
+              this.desktopSurfaceReady = true;
+              this.notify();
+            }
             hilog.info(DOMAIN, TAG, '[MW] surface #%{public}d: physical=%{public}dx%{public}d scale=%{public}s',
               id, sw, sh, this.displayScale.toFixed(2));
 
@@ -672,6 +683,7 @@ export class WineWindowManager {
     if (this.isDesktopMode && id === this.desktopRootId) {
       hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed, back to launcher', id);
       this.desktopRootId = 0;
+      this.desktopSurfaceReady = false;
       if (this.desktopActive) {
         this.desktopActive = false;
         this.notify();
