@@ -466,8 +466,12 @@ export class AppLibraryService {
     // 换稳定)。经 UpsertEnvLine 覆盖 BuildWineEnv 基线, 只作用于本进程
     const environment: Record<string, string> = {};
     // 语言设置对程序直启逐进程注入 (桌面会话内由 explorer 继承, 此处兜底
-    // 覆盖 BuildWineEnv 基线); UpsertEnvLine 保证它压过 native 默认值
+    // 覆盖 BuildWineEnv 基线); UpsertEnvLine 保证它压过 native 默认值。
+    // 必须 LANG 与 LC_ALL 同设: musl 无 locale 数据, setlocale(LANG) 失败返回
+    // "C", Wine 只读 LC_ALL 兜底解析 LCID — 只改 LANG 则 LC_ALL 停留 BuildWineEnv
+    // 默认 zh_CN, 程序永远是中文
     environment['LANG'] = `${env.getWineLang()}.UTF-8`;
+    environment['LC_ALL'] = `${env.getWineLang()}.UTF-8`;
     if (cfg?.compat) {
       environment['BOX64_DYNAREC_SAFEFLAGS'] = '2';
       environment['BOX64_DYNAREC_BIGBLOCK'] = '0';

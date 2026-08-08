@@ -651,9 +651,11 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         options.windowsExePath = "C:\\windows\\explorer.exe";
         options.prefixMode = (p->prefixDir == WINE_SMOKE_PREFIX) ? "clean" : "reuse";
         options.d3dBackend = p->d3dBackend;
-        // 语言设置: 桌面模式 explorer 由 p->envStrs 携带 LANG, 此路径绕开了它,
-        // 必须逐进程注入, 否则 PC 窗口模式的 explorer 永远是基线中文
+        // 语言设置: 桌面模式 explorer 由 p->envStrs 携带 LANG/LC_ALL, 此路径
+        // 绕开了它, 必须逐进程注入, 否则 PC 窗口模式的 explorer 永远是基线中文。
+        // LANG 与 LC_ALL 必须同设: musl 下 Wine 只读 LC_ALL 兜底解析 LCID
         options.environment.push_back("LANG=" + p->wineLang + ".UTF-8");
+        options.environment.push_back("LC_ALL=" + p->wineLang + ".UTF-8");
         options.automationMode = false;
         int32_t exPid = SpawnWineProgram(options);
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer window pid=%{public}d (broker path)",
