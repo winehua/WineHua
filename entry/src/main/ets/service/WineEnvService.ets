@@ -1,5 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
 import testNapi from 'libentry.so';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
@@ -158,8 +159,12 @@ export class WineEnvService {
   private driveC: string = DRIVE_C;
   private sockPath: string = SOCK;
   private d3dBackend: string = 'dxvk_legacy';
-  // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效
+  // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效。
+  // 持久化走 preferences API (同 DisplaySettingsService) — 不用 PersistentStorage:
+  // 实测本应用 persistProp 在冷启动时不从磁盘恢复值 (haps/entry/files/
+  // persistent_storage 明明有值仍返回默认值), 原因未查明, 绕开
   private wineLang: string = 'zh_CN';
+  private settingsStore: preferences.Preferences | null = null;
   private perfProfile: string = 'baseline';
   private smokeStarted: boolean = false;
   private cleanPrefixPrepared: boolean = false;
@@ -238,13 +243,19 @@ export class WineEnvService {
   getPerfProfile(): string { return this.perfProfile; }
   isAutomation(): boolean { return this.automationMode; }
 
-  // 设置页"Wine 语言"切换: 持久化偏好 + 重读启动参数 (同 setD3dPreference)。
+  // 设置页"Wine 语言"切换: 持久化 (preferences API, putSync+flush 直写磁盘)。
   // 仅写入配置 — 已在运行的 Wine 进程不受影响, 重启引擎后生效 (UI 负责提示)
   setWineLangPreference(lang: string): void {
     const selected = lang === 'en_US' ? 'en_US' : 'zh_CN';
-    PersistentStorage.persistProp<string>('winehua.lang.preference', selected);
-    AppStorage.set<string>('winehua.lang.preference', selected);
-    this.updateLaunchRequest();
+    this.wineLang = selected;
+    if (this.settingsStore) {
+      try {
+        this.settingsStore.putSync('lang', selected);
+        this.settingsStore.flush();
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'lang persist fail: %{public}s', JSON.stringify(e));
+      }
+    }
     hilog.info(DOMAIN, 'wine', 'Wine language selected=%{public}s', selected);
     this.notify();
   }
@@ -272,8 +283,6 @@ export class WineEnvService {
     this.sockPath = `${this.prefixRoot}/wine-wayland`;
     const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_legacy';
     this.d3dBackend = backend === 'dxvk_legacy' ? 'dxvk_legacy' : 'wined3d';
-    const lang = AppStorage.get<string>('winehua.lang.preference') ?? 'zh_CN';
-    this.wineLang = lang === 'en_US' ? 'en_US' : 'zh_CN';
     this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
     this.gamePath = AppStorage.get<string>('winehua.game.path') ?? '';
     this.gameArguments = AppStorage.get<string[]>('winehua.game.args') ?? [];
@@ -293,6 +302,14 @@ export class WineEnvService {
     }
     this.initialized = true;
     this.ctx = ctx;
+    // 语言偏好: preferences API 直读 (同 DisplaySettingsService 模式), 缺省中文
+    try {
+      this.settingsStore = preferences.getPreferencesSync(ctx, { name: 'wine_settings' });
+      const savedLang = this.settingsStore.getSync('lang', 'zh_CN') as string;
+      this.wineLang = savedLang === 'en_US' ? 'en_US' : 'zh_CN';
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'lang settings load fail: %{public}s', JSON.stringify(e));
+    }
     this.updateLaunchRequest();
 
     this.hasRawfileWineData = this.detectRawfileWineData();
