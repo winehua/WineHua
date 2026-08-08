@@ -5,6 +5,15 @@ import { InputSettingsService } from '../service/InputSettingsService';
 const DOMAIN = 0x0000;
 const TAG = 'FloatingBar';
 
+// barButton 入参。必须整体作为单个对象字面量传给 @Builder (按引用传递),
+// active 变化才会触发按钮 UI 刷新; 拆成多个基本类型参数是按值传递, 会被
+// 快照冻结 — 开关点击后不高亮、重启才显示正确状态, 就是踩的这个坑
+interface BarBtnSpec {
+  content: Resource | string;
+  active: boolean;
+  onTap: () => void;
+}
+
 // 桌面悬浮条 (设计 4.7): 收纳态为单个 ‹ 球 (沿用 HomeBall 的拖动/初始位),
 // 展开态为一排入口 — Home / 输入设置 / 游戏手柄模拟(开关) / 触摸模拟鼠标(开关) /
 // 收纳 ›。开关状态直接体现在按钮配色上 (accent 底 = 开)。
@@ -66,23 +75,23 @@ export struct FloatingBar {
 
   // 展开态按钮: 图标或文字 + 可选 accent 底 (开关"开"态)
   @Builder
-  barButton(content: Resource | string, active: boolean, onTap: () => void) {
+  barButton($$: BarBtnSpec) {
     Column() {
-      if (typeof content === 'string') {
-        Text(content)
+      if (typeof $$.content === 'string') {
+        Text($$.content)
           .fontSize(13)
-          .fontColor(active ? Color.White : $r('app.color.text_primary'))
+          .fontColor($$.active ? Color.White : $r('app.color.text_primary'))
       } else {
-        SymbolGlyph(content)
+        SymbolGlyph($$.content)
           .fontSize(20)
-          .fontColor([active ? Color.White : $r('app.color.text_primary')])
+          .fontColor([$$.active ? Color.White : $r('app.color.text_primary')])
       }
     }
     .width(40).height(40)
     .justifyContent(FlexAlign.Center)
     .borderRadius(20)
-    .backgroundColor(active ? $r('app.color.accent') : Color.Transparent)
-    .onClick(onTap)
+    .backgroundColor($$.active ? $r('app.color.accent') : Color.Transparent)
+    .onClick($$.onTap)
   }
 
   // 输入设置半模态 (设计 4.7: 手柄布局编辑入口 + 光标速度等少量项;
@@ -156,21 +165,21 @@ export struct FloatingBar {
         } else {
           // 展开态: Home / 输入设置 / 手柄 / 触控板 / 收纳
           Row({ space: 4 }) {
-            this.barButton($r('sys.symbol.house_fill'), false, () => {
+            this.barButton({ content: $r('sys.symbol.house_fill'), active: false, onTap: () => {
               this.onHome?.();
-            })
-            this.barButton($r('sys.symbol.gearshape'), false, () => {
+            } })
+            this.barButton({ content: $r('sys.symbol.gearshape'), active: false, onTap: () => {
               this.showSettings = true;
-            })
-            this.barButton($r('sys.symbol.record_circle'), this.gamepadOn, () => {
+            } })
+            this.barButton({ content: $r('sys.symbol.record_circle'), active: this.gamepadOn, onTap: () => {
               this.input.setGamepad(!this.gamepadOn);
-            })
-            this.barButton($r('sys.symbol.hand_draw'), this.touchpadOn, () => {
+            } })
+            this.barButton({ content: $r('sys.symbol.hand_draw'), active: this.touchpadOn, onTap: () => {
               this.input.setTouchpad(!this.touchpadOn);
-            })
-            this.barButton($r('sys.symbol.chevron_right'), false, () => {
+            } })
+            this.barButton({ content: $r('sys.symbol.chevron_right'), active: false, onTap: () => {
               this.expanded = false;
-            })
+            } })
           }
           .padding({ left: 6, right: 6 })
           .height(FloatingBar.BALL + 8)
