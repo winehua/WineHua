@@ -51,6 +51,9 @@ struct Index {
   @State floatPosY: number = 0;
   private floatPanStartX: number = 0;
   private floatPanStartY: number = 0;
+  // 缩放过渡动画进行中 (setLauncherVisible 期间): 屏蔽 PanGesture 拖动,
+  // 防止动画中改写 floatPosX/Y 打断 position 补间或残留污染坐标
+  private transitioning: boolean = false;
   private screenW: number = 0;
   private screenH: number = 0;
   private static readonly FLOAT_W: number = 216;
@@ -107,7 +110,7 @@ struct Index {
     // 走事件而非状态串: 状态机不再携带 pid 前缀, 也避免 process-updated 误触发
     env.subscribeEvents((evt: string) => {
       if (evt.startsWith('launch-accepted') && this.desktopActive) {
-        this.launcherVisible = false;
+        this.setLauncherVisible(false);
       }
     });
     // 桌面状态订阅: desktopActive false→true 时保持启动器可见 — 桌面以
@@ -120,7 +123,7 @@ struct Index {
       if (!this.desktopActive) {
         // 桌面 root 销毁 (会话停止/退出): 翻回启动器, 否则 DesktopLayer
         // 卸载后只剩黑屏
-        this.launcherVisible = true;
+        this.setLauncherVisible(true);
       }
     });
     this.proc.bindEnv(env);
@@ -177,6 +180,28 @@ struct Index {
   // 进全屏只通过显式入口: 点悬浮窗 / 启动程序自动全屏
   onBackPress(): boolean {
     return false;
+  }
+
+  // 缩放过渡动画: 显式动画包裹 launcherVisible 翻转, 闭包内状态驱动
+  // 宽/高/位置/圆角/边框/阴影全部属性一次过渡 (FastOutSlowIn=窗口展开/
+  // 收起标准曲线)。拖动改 floatPosX/Y 不经此闭包 → 无补间拖尾, 保持跟手。
+  // onFinish 只清 transitioning 防护位 (拖动屏蔽), 不含时序依赖逻辑。
+  private setLauncherVisible(v: boolean): void {
+    this.transitioning = true;
+    this.getUIContext().animateTo(
+      {
+        duration: 300,
+        // 凌厉快展: LinearOutSlowIn (cubic-bezier(0,0,0.2,1)) 启动即全速、
+        // 尾部缓停 — 对比 FastOutSlowIn (慢-快-慢) 启动偏慢, 展开没劲
+        curve: Curve.LinearOutSlowIn,
+        onFinish: () => {
+          this.transitioning = false;
+        }
+      },
+      () => {
+        this.launcherVisible = v;
+      }
+    );
   }
 
   private onLauncherVisibleChange(): void {
@@ -435,7 +460,7 @@ struct Index {
           }
           .width('100%').height('100%')
           .onClick(() => {
-            this.launcherVisible = false;
+            this.setLauncherVisible(false);
           })
           .gesture(
             PanGesture()
@@ -444,6 +469,9 @@ struct Index {
                 this.floatPanStartY = this.floatPosY;
               })
               .onActionUpdate((ev: GestureEvent) => {
+                // 缩放过渡动画中屏蔽拖动: 动画中改写 floatPosX/Y 会打断
+                // position 补间且残留污染坐标 (下次悬浮窗态位置错乱)
+                if (this.transitioning) return;
                 // 钳制基于实际坐标: 悬浮窗左上角 ∈ [0, screen - FLOAT]
                 const maxX = Math.max(this.screenW - Index.FLOAT_W, 0);
                 const maxY = Math.max(this.screenH - this.floatH, 0);
@@ -462,7 +490,9 @@ struct Index {
         ? { x: this.floatPosX, y: this.floatPosY }
         : { x: 0, y: 0 })
       .borderRadius(this.launcherVisible ? 12 : 0)
-      .clip(this.launcherVisible)
+      // clip 恒 true: 动画期间 borderRadius 12→0 渐变需持续裁剪, 否则圆角
+      // 区域露出方角背景; 全屏态 borderRadius=0 + clip(true) 无可见副作用
+      .clip(true)
       .border({ width: this.launcherVisible ? 1 : 0, color: '#66FFFFFF' })
       .shadow({ radius: this.launcherVisible ? 12 : 0,
         color: '#66000000', offsetX: 0, offsetY: this.launcherVisible ? 4 : 0 })
@@ -471,7 +501,7 @@ struct Index {
     if (this.desktopActive && !this.launcherVisible) {
       FloatingBar({
         onHome: (): void => {
-          this.launcherVisible = true;
+          this.setLauncherVisible(true);
         }
       })
       // 覆盖层自门控 (InputSettingsService.gamepadEnabled), 未开时不渲染
