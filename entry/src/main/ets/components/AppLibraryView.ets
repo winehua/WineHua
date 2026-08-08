@@ -12,6 +12,8 @@ const TAG = 'AppLibraryView';
 
 // 分类 chips (设计 4.1): 最近使用/收藏/开始菜单/内建/外部导入;
 // 有隐藏条目时追加 hidden ("已隐藏" — 否则"隐藏"菜单项成单向陷阱, 无法找回)。
+// 初始选中不由展示顺序决定: pickInitialChip 按 CHIP_AUTO_PRIORITY 挑第一个
+// 非空分类, 避免首屏落在空分类上
 // 前两者为动态视图 (lastRun 时间戳 / favorite 旗标, 与来源正交),
 // 后三者按入库来源互斥归类 (sourceOf: builtin 旗标 > source 字段, 老数据缺省 import)
 // 控件: 系统预置 ChipGroup (@kit.ArkUI, API 12+)
@@ -20,6 +22,10 @@ const TAG = 'AppLibraryView';
 // 全部可缺省 (跟随全局)。刻意不做裸环境变量等无法翻译为用户语言的开关。
 // 容器: bindSheet 半模态 (内容会随版本增多, 半模态空间比 CustomDialog 大、层级更轻)
 const GRAPHICS_KINDS: Array<string> = ['global', 'dxvk', 'wined3d'];
+
+// 初始 chip 自动挑选优先级 (注意与展示顺序不同: 外部导入排在内建之前 — 需求指定;
+// 展示顺序见 chipDefs, 两者独立)。hidden 不参与: 它是找回入口, 不该成为首屏
+const CHIP_AUTO_PRIORITY: Array<string> = ['recent', 'favorite', 'startmenu', 'import', 'builtin'];
 
 // chip 定义 (ArkTS 禁止内联对象类型, 需显式 interface)
 interface ChipDef {
@@ -108,6 +114,8 @@ export struct AppLibraryView {
   @State cfgCompat: boolean = false;
   private cfgEntryPath: string = '';
   private cfgEntryName: string = '';
+  // 初始 chip 是否已自动挑选过 (见 pickInitialChip)
+  private chipAutoPicked: boolean = false;
   // 空态"去文件页"回调, 由 Index 注入 (切换 Tabs 到文件页), 有才显示按钮
   onNavigateToFiles?: () => void;
   // "打开所在目录"回调, 由 Index 注入 (定位文件页到目录), 有才显示该菜单项
@@ -127,6 +135,36 @@ export struct AppLibraryView {
     // 边沿触发避免 mirror↔notify 反馈回路)
     if (this.prefixReady && !wasReady) {
       this.lib.ensureBuiltinTools();
+    }
+    this.pickInitialChip();
+  }
+
+  // 初始 chip 自动挑选: 按 CHIP_AUTO_PRIORITY 选第一个有内容的分类, 避免默认
+  // 落在空分类 (如全新安装的"最近使用") 让用户首屏面对空界面。
+  // 仅在"能挑到非空分类"时置位; 全空则保持 recent (空态文案带引导), 不置位 —
+  // 后续入库 (如 prefix 就绪边沿内建工具落库) 触发的 mirror 会再试。
+  // 用户手动切换 chip 时也置位 (见 ChipGroup onChange), 之后不再抢夺选择
+  private pickInitialChip(): void {
+    if (this.chipAutoPicked) {
+      return;
+    }
+    const vis = this.entries.filter((e: AppEntry) => !e.hidden);
+    const nonEmpty = (kind: string): boolean => {
+      switch (kind) {
+        case 'recent': return vis.some((e: AppEntry) => e.lastRun !== undefined);
+        case 'favorite': return vis.some((e: AppEntry) => e.favorite);
+        case 'startmenu': return vis.some((e: AppEntry) => this.lib.sourceOf(e) == 'lnk');
+        case 'import': return vis.some((e: AppEntry) => this.lib.sourceOf(e) == 'import');
+        case 'builtin': return vis.some((e: AppEntry) => e.builtin);
+        default: return false;
+      }
+    };
+    for (const kind of CHIP_AUTO_PRIORITY) {
+      if (nonEmpty(kind)) {
+        this.chip = kind;
+        this.chipAutoPicked = true;
+        return;
+      }
     }
   }
 
@@ -668,6 +706,8 @@ export struct AppLibraryView {
           // 单选再点已选项时回调空数组, 忽略以保留当前选中
           if (sel.length > 0) {
             this.chip = this.chipDefs()[sel[0]].kind;
+            // 手动选择后即锁定, pickInitialChip 不再覆盖 (见该函数注释)
+            this.chipAutoPicked = true;
           }
         }
       })
