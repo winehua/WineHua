@@ -655,10 +655,13 @@ export struct AppLibraryView {
       .padding({ left: 14, right: 14, top: 8 })
 
       // 筛选 chips: 系统预置 ChipGroup, 单选
+      // chipGroupPadding 控制上下内边距 (默认 14vp), 设小值压缩行高;
+      // 实测确认是否生效 (此前清零疑似被外层 padding 干扰)
       ChipGroup({
         items: this.chipDefs().map((d): ChipGroupItemOptions => ({ label: { text: d.label } })),
         selectedIndexes: [Math.max(0, this.chipDefs().findIndex((d) => d.kind == this.chip))],
         multiple: false,
+        chipGroupPadding: { top: 2, bottom: 2 },
         onChange: (sel: Array<number>) => {
           // 单选再点已选项时回调空数组, 忽略以保留当前选中
           if (sel.length > 0) {

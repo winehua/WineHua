@@ -78,8 +78,13 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
   { name: 'Wine 配置', exe: 'windows/system32/winecfg.exe' },
   { name: '注册表编辑器', exe: 'windows/regedit.exe' },
   { name: '任务管理器', exe: 'windows/system32/taskmgr.exe' },
-  { name: '命令提示符', exe: 'windows/system32/cmd.exe' },
   { name: '控制面板', exe: 'windows/system32/control.exe' },
+  // wine 自带小工具 (system32 的 exe stub, 设备实测存在)
+  { name: '扫雷', exe: 'windows/system32/winemine.exe' },
+  { name: 'winefile', exe: 'windows/system32/winefile.exe' },
+  // 烟测程序 (C:\smoke 在持久 prefix 内, 每次启动由 syncManagedSmoke 刷新)
+  { name: 'Graphics Smoke', exe: 'smoke/x64/winehua_graphics_smoke.exe' },
+  { name: 'D3d Smoke', exe: 'smoke/x64/winehua_d3d_switch_cube.exe' },
 ];
 
 // 应用库服务: 收藏的 exe 列表, preferences 持久化 (store 'app_library', 单 key 'entries' 存 JSON)。
