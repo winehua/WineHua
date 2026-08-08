@@ -429,7 +429,7 @@ export struct SettingsView {
             .fontColor($r('app.color.text_primary'))
             .width('100%')
           ComposeListItem({
-            contentItem: { primaryText: '万花境' },
+            contentItem: { primaryText: '万花' },
             operateItem: { text: this.versionName ? `v${this.versionName}` : '' }
           })
           Text('开源组件')
