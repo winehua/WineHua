@@ -15,8 +15,8 @@ interface BarBtnSpec {
 }
 
 // 桌面悬浮条 (设计 4.7): 收纳态为单个 ‹ 球 (沿用 HomeBall 的拖动/初始位),
-// 展开态为一排入口 — Home / 输入设置 / 游戏手柄模拟(开关) / 触摸模拟鼠标(开关) /
-// 收纳 ›。开关状态直接体现在按钮配色上 (accent 底 = 开)。
+// 展开态为一排入口 — Home / 输入设置 / 游戏手柄模拟(开关) / 模拟键盘(开关) /
+// 触摸模拟鼠标(开关) / 收纳 ›。开关状态直接体现在按钮配色上 (accent 底 = 开)。
 // 拖动: 收纳态整球可拖; 展开态拖容器空白处 (按钮 onClick 与容器 PanGesture 并存,
 // 轻点走按钮, 按住移动走拖动)。
 // 注意: 不提供退出/软键盘入口 (设计决策: 关闭会话走"运行中"页)。
@@ -26,6 +26,7 @@ export struct FloatingBar {
   @State private expanded: boolean = false;
   @State private touchpadOn: boolean = false;
   @State private gamepadOn: boolean = false;
+  @State private keyboardOn: boolean = false;
   @State private cursorSpeed: number = 1.0;
   @State private showSettings: boolean = false;
   // 布局编辑态镜像 (驱动"编辑手柄布局/完成编辑"按钮文案; 直接读 service 字段不刷新)
@@ -48,6 +49,7 @@ export struct FloatingBar {
   private mirrorInput = (): void => {
     this.touchpadOn = this.input.touchpadEnabled;
     this.gamepadOn = this.input.gamepadEnabled;
+    this.keyboardOn = this.input.keyboardEnabled;
     this.cursorSpeed = this.input.cursorSpeed;
     this.editingLayout = this.input.editingLayout;
   }
@@ -173,6 +175,9 @@ export struct FloatingBar {
             } })
             this.barButton({ content: $r('sys.symbol.record_circle'), active: this.gamepadOn, onTap: () => {
               this.input.setGamepad(!this.gamepadOn);
+            } })
+            this.barButton({ content: $r('sys.symbol.keyboard_square'), active: this.keyboardOn, onTap: () => {
+              this.input.setKeyboard(!this.keyboardOn);
             } })
             this.barButton({ content: $r('sys.symbol.hand_draw'), active: this.touchpadOn, onTap: () => {
               this.input.setTouchpad(!this.touchpadOn);

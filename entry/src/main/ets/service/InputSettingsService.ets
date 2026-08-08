@@ -6,9 +6,11 @@ const DOMAIN = 0x0000;
 const STORE_NAME = 'input_settings';
 const KEY_TOUCHPAD = 'touchpadEnabled';
 const KEY_GAMEPAD = 'gamepadEnabled';
+const KEY_KEYBOARD = 'keyboardEnabled';
 const KEY_SPEED = 'cursorSpeed';
 const KEY_BUTTONS = 'padButtons';
 const KEY_ZONES = 'padZones';
+const KEY_KB_POS = 'keyboardPos';
 
 // 手柄可改键按钮 (方向键区/摇杆键位固定在 GamepadOverlay: 方向键/WASD,
 // v1 不开放重映射 — "逐键配置"覆盖 8 个动作键已满足主流 RPG/RTS)
@@ -65,10 +67,11 @@ function defaultZones(): PadZone[] {
   ];
 }
 
-// 输入设置 (全局, 不做单应用覆盖 — 用户决策): 触摸模拟鼠标 / 游戏手柄模拟开关、
-// 光标速度、手柄布局与按键映射。preferences 持久化; 悬浮条开关、DesktopLayer
-// 触控路由、GamepadOverlay 均经 subscribe 镜像。editingLayout 为编辑态瞬态
-// 标记 (布局编辑期间覆盖层控件变为可拖动), 不持久化。
+// 输入设置 (全局, 不做单应用覆盖 — 用户决策): 触摸模拟鼠标 / 游戏手柄模拟 /
+// 模拟键盘开关、光标速度、手柄布局与按键映射、键盘面板位置。preferences 持久化;
+// 悬浮条开关、DesktopLayer 触控路由、GamepadOverlay / KeyboardOverlay 均经
+// subscribe 镜像。editingLayout 为编辑态瞬态标记 (布局编辑期间覆盖层控件变为
+// 可拖动), 不持久化。
 export class InputSettingsService {
   private static instance: InputSettingsService | null = null;
 
@@ -81,6 +84,10 @@ export class InputSettingsService {
 
   touchpadEnabled: boolean = false;
   gamepadEnabled: boolean = false;
+  // 模拟键盘 (KeyboardOverlay): 开关 + 面板中心相对屏坐标 (持久化)
+  keyboardEnabled: boolean = false;
+  kbRelX: number = 0.5;
+  kbRelY: number = 0.9;
   cursorSpeed: number = 1.0;
   buttons: PadButton[] = defaultButtons();
   zones: PadZone[] = defaultZones();
@@ -112,7 +119,16 @@ export class InputSettingsService {
       this.store = preferences.getPreferencesSync(ctx, { name: STORE_NAME });
       this.touchpadEnabled = this.store.getSync(KEY_TOUCHPAD, false) as boolean;
       this.gamepadEnabled = this.store.getSync(KEY_GAMEPAD, false) as boolean;
+      this.keyboardEnabled = this.store.getSync(KEY_KEYBOARD, false) as boolean;
       this.cursorSpeed = this.store.getSync(KEY_SPEED, 1.0) as number;
+      const kbPosJson = this.store.getSync(KEY_KB_POS, '') as string;
+      if (kbPosJson) {
+        const pos = JSON.parse(kbPosJson) as Record<string, number>;
+        if (typeof pos['relX'] === 'number' && typeof pos['relY'] === 'number') {
+          this.kbRelX = pos['relX'];
+          this.kbRelY = pos['relY'];
+        }
+      }
       const buttonsJson = this.store.getSync(KEY_BUTTONS, '') as string;
       if (buttonsJson) {
         const list = JSON.parse(buttonsJson) as PadButton[];
@@ -139,9 +155,11 @@ export class InputSettingsService {
     try {
       this.store.putSync(KEY_TOUCHPAD, this.touchpadEnabled);
       this.store.putSync(KEY_GAMEPAD, this.gamepadEnabled);
+      this.store.putSync(KEY_KEYBOARD, this.keyboardEnabled);
       this.store.putSync(KEY_SPEED, this.cursorSpeed);
       this.store.putSync(KEY_BUTTONS, JSON.stringify(this.buttons));
       this.store.putSync(KEY_ZONES, JSON.stringify(this.zones));
+      this.store.putSync(KEY_KB_POS, JSON.stringify({ relX: this.kbRelX, relY: this.kbRelY }));
       this.store.flush();
     } catch (e) {
       hilog.error(DOMAIN, 'wine', 'input settings persist fail: %{public}s', JSON.stringify(e));
@@ -160,6 +178,19 @@ export class InputSettingsService {
     if (!enabled) {
       this.editingLayout = false;
     }
+    this.persist();
+    this.notify();
+  }
+
+  setKeyboard(enabled: boolean): void {
+    this.keyboardEnabled = enabled;
+    this.persist();
+    this.notify();
+  }
+
+  updateKeyboardPos(relX: number, relY: number): void {
+    this.kbRelX = relX;
+    this.kbRelY = relY;
     this.persist();
     this.notify();
   }
