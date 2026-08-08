@@ -28,7 +28,11 @@ export struct SettingsView {
   @State d3dBackend: string = 'dxvk_legacy';
   // SegmentButton 选中项 (@Link 双向): 0=dxvk_legacy 1=wined3d, 与 d3dBackend 同步
   @State backendSel: number[] = [0];
+  // Wine 语言分段选中项: 0=中文(zh_CN) 1=English(en_US), 与 wineLang 同步
+  @State langSel: number[] = [0];
+  @State wineLang: string = 'zh_CN';
   @State restartHint: boolean = false;
+  @State langRestartHint: boolean = false;
   @State devExpanded: boolean = false;
   @State perfProfile: string = 'baseline';
   // -- 显示/关于 --
@@ -50,6 +54,11 @@ export struct SettingsView {
     const sel = this.d3dBackend == 'dxvk_legacy' ? 0 : 1;
     if (this.backendSel[0] != sel) {
       this.backendSel = [sel];
+    }
+    this.wineLang = this.env.getWineLang();
+    const langSel = this.wineLang == 'en_US' ? 1 : 0;
+    if (this.langSel[0] != langSel) {
+      this.langSel = [langSel];
     }
     this.perfProfile = this.env.getPerfProfile();
   }
@@ -95,9 +104,18 @@ export struct SettingsView {
     this.restartHint = true;
   }
 
+  // Wine 语言切换: 同渲染策略, 仅写配置, 重启 Wine 引擎后生效
+  private selectLang(lang: string): void {
+    if (lang == this.wineLang) {
+      return;
+    }
+    this.env.setWineLangPreference(lang);
+    this.langRestartHint = true;
+  }
+
   private confirmReset(): void {
     AlertDialog.show({
-      title: '重置 Wine prefix',
+      title: '重置 Wine 引擎',
       message: '将清空整个 Wine 容器（包括所有已安装程序和存档），且不可恢复。确定继续？',
       primaryButton: {
         value: '取消',
@@ -115,7 +133,7 @@ export struct SettingsView {
 
   private confirmStopAll(): void {
     AlertDialog.show({
-      title: '停止全部 Windows 会话',
+      title: '强制停止 Wine 引擎',
       message: '将结束所有正在运行的 Windows 程序（未保存数据会丢失）。确定继续？',
       primaryButton: {
         value: '取消',
@@ -217,6 +235,32 @@ export struct SettingsView {
               .fontColor($r('app.color.state_warn'))
               .width('100%')
           }
+
+          Text('Wine 语言')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              buttons: [{ text: '中文' }, { text: 'English' }],
+              multiply: false
+            }),
+            selectedIndexes: $langSel,
+            onItemClicked: (index: number) => {
+              this.selectLang(index == 0 ? 'zh_CN' : 'en_US');
+            }
+          })
+          .width('100%')
+          Text('影响 Windows 程序的界面语言与区域格式')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+          if (this.langRestartHint) {
+            Text('语言已更改, 重启 Wine 引擎后生效')
+              .fontSize(12)
+              .fontColor($r('app.color.state_warn'))
+              .width('100%')
+          }
         }
         .width('100%')
         .padding(14)
@@ -239,9 +283,10 @@ export struct SettingsView {
                 this.state == 'ready-degraded'))
             .onClick(() => {
               this.restartHint = false;
+              this.langRestartHint = false;
               this.env.restartEngine();
             })
-          Button('停止全部 Windows 会话')
+          Button('强制停止 Wine 引擎')
             .width('100%').backgroundColor($r('app.color.action_warning'))
             // 判据 = 会话存活 (桌面 root 或用户进程), 与 prefix 文件就绪无关
             .enabled(this.sessionAlive && !this.busy)
@@ -265,7 +310,7 @@ export struct SettingsView {
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
-          Button('重置 Wine prefix')
+          Button('重置 Wine 引擎')
             .width('100%').backgroundColor($r('app.color.action_danger'))
             .fontColor($r('app.color.danger'))
             // 编排内含"先停会话再删 prefix", 任何非忙状态都可用

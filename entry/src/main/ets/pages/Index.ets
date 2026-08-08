@@ -428,7 +428,7 @@ struct Index {
               .backgroundColor($r('app.color.action_danger'))
               .onClick(() => {
                 AlertDialog.show({
-                  title: '重置 Wine prefix',
+                  title: '重置 Wine 引擎',
                   message: '将清空整个 Wine 容器（包括所有已安装程序和存档），且不可恢复。确定继续？',
                   primaryButton: {
                     value: '取消',

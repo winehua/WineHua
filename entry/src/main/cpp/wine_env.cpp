@@ -38,7 +38,8 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& binDir,
                                       int audioBootstrapFd,
                                       const std::string& homeDir,
-                                      const std::string& prefixDir) {
+                                      const std::string& prefixDir,
+                                      const std::string& wineLang) {
     std::string shareDir = binDir + "/../share";
     std::string xkbDir = shareDir + "/X11/xkb";
     std::string midiSoundfontPath = binDir + "/../audio/winehua-gm.sf2";
@@ -74,7 +75,7 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "WINEDLLDIR2=" + binDir,
         "WINEDLLPATH=" + dllPath,
         "WINEDEBUG=-all",
-        "LANG=zh_CN.UTF-8",
+        "LANG=" + wineLang + ".UTF-8",
         "XKB_CONFIG_ROOT=" + xkbDir,
         "PATH=/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir,
         "TMPDIR=" WINE_TMPDIR,

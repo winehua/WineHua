@@ -461,6 +461,9 @@ export class AppLibraryService {
     // 兼容模式: box64 经典排障组合 (保守 safeflags + 关闭大块编译, 牺牲速度
     // 换稳定)。经 UpsertEnvLine 覆盖 BuildWineEnv 基线, 只作用于本进程
     const environment: Record<string, string> = {};
+    // 语言设置对程序直启逐进程注入 (桌面会话内由 explorer 继承, 此处兜底
+    // 覆盖 BuildWineEnv 基线); UpsertEnvLine 保证它压过 native 默认值
+    environment['LANG'] = `${env.getWineLang()}.UTF-8`;
     if (cfg?.compat) {
       environment['BOX64_DYNAREC_SAFEFLAGS'] = '2';
       environment['BOX64_DYNAREC_BIGBLOCK'] = '0';

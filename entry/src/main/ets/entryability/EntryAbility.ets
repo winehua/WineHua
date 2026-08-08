@@ -195,6 +195,7 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PersistentStorage.persistProp<string>('winehua.d3d.preference', 'dxvk_legacy');
+    PersistentStorage.persistProp<string>('winehua.lang.preference', 'zh_CN');
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     } catch (err) {

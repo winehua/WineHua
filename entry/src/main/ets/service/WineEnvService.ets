@@ -158,6 +158,8 @@ export class WineEnvService {
   private driveC: string = DRIVE_C;
   private sockPath: string = SOCK;
   private d3dBackend: string = 'dxvk_legacy';
+  // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效
+  private wineLang: string = 'zh_CN';
   private perfProfile: string = 'baseline';
   private smokeStarted: boolean = false;
   private cleanPrefixPrepared: boolean = false;
@@ -232,8 +234,20 @@ export class WineEnvService {
 
   // 环境页渲染策略/开发者分区展示当前生效值 (updateLaunchRequest 写入)
   getD3dBackend(): string { return this.d3dBackend; }
+  getWineLang(): string { return this.wineLang; }
   getPerfProfile(): string { return this.perfProfile; }
   isAutomation(): boolean { return this.automationMode; }
+
+  // 设置页"Wine 语言"切换: 持久化偏好 + 重读启动参数 (同 setD3dPreference)。
+  // 仅写入配置 — 已在运行的 Wine 进程不受影响, 重启引擎后生效 (UI 负责提示)
+  setWineLangPreference(lang: string): void {
+    const selected = lang === 'en_US' ? 'en_US' : 'zh_CN';
+    PersistentStorage.persistProp<string>('winehua.lang.preference', selected);
+    AppStorage.set<string>('winehua.lang.preference', selected);
+    this.updateLaunchRequest();
+    hilog.info(DOMAIN, 'wine', 'Wine language selected=%{public}s', selected);
+    this.notify();
+  }
 
   // 环境页"渲染策略"切换: 持久化偏好 + 同步 AppStorage 生效值 + 重读启动参数。
   // 仅写入配置 — 已在运行的 Wine 不受影响, 重启引擎后生效 (UI 负责提示)
@@ -258,6 +272,8 @@ export class WineEnvService {
     this.sockPath = `${this.prefixRoot}/wine-wayland`;
     const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_legacy';
     this.d3dBackend = backend === 'dxvk_legacy' ? 'dxvk_legacy' : 'wined3d';
+    const lang = AppStorage.get<string>('winehua.lang.preference') ?? 'zh_CN';
+    this.wineLang = lang === 'en_US' ? 'en_US' : 'zh_CN';
     this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
     this.gamePath = AppStorage.get<string>('winehua.game.path') ?? '';
     this.gameArguments = AppStorage.get<string[]>('winehua.game.args') ?? [];
@@ -646,7 +662,7 @@ export class WineEnvService {
       return;
     }
     testNapi.launchClient(BOX64, [], this.sockPath, `${BIN_DIR}:${WINE_LIB}`, this.zHome,
-      this.automationMode, this.prefixMode, this.d3dBackend);
+      this.automationMode, this.prefixMode, this.d3dBackend, this.wineLang);
   }
 
   // 重置 prefix (编排式): 有会话先停止并等 state:stopped (native 确认注册表进程
