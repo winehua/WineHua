@@ -119,9 +119,9 @@ export class WineEnvService {
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
-  // 初始为空串 = "未设置"（首启走 picker 填充）；重跑 doInit 时复用已设置的
-  // / 结尾真实路径。切勿给非空默认值 — 会导致 !zHome 永假、picker 被跳过、
-  // gamesDir 拼接出 /storage/Users/currentUser/Downloadgames 这种错误路径
+  // 初始为空串 = "未设置"；唯一写入入口 acquireZHome (doInit 开头调用),
+  // 重跑 doInit 时复用已设置的 / 结尾真实路径。切勿给非空默认值 —
+  // 会导致 !zHome 永假、picker 被跳过、gamesDir 拼出 .../Downloadgames 错误路径
   zHome: string = '';
   // 初始化失败标记: doInit 各失败分支与 state:failed 置位, 首启引导据此显示
   // 重试/重置 入口 (仅靠 statusText 一行文字用户无法自救); doInit 开始 / state:ready 时清除
@@ -554,6 +554,39 @@ export class WineEnvService {
     this.setInitStatus(text, true);
   }
 
+  // zHome (Z: 映射目标) 的唯一获取入口, doInit 开头调用一次, 其它代码只读不写。
+  // 契约: 返回 true 时 zHome 必为非空 "/"-结尾路径; 三个来源 — 自动化模式用
+  // 沙箱内受管 HOME 永不弹 picker; game 模式指到桌面会话同一受管目录
+  // (Z: 可见已安装游戏); 普通模式经 DocumentViewPicker 取 Download 路径,
+  // 已设置过则直接复用 (重启引擎/已就绪补拉桌面不再走 picker)。
+  // 赋值后必须 notify: prefixReady 可能经 waitForPrefix 先于本方法完成置真
+  // (桌面会话存活时几乎秒回), 常驻页面已在用 '' 渲染, 需一次刷新拿真实路径
+  private async acquireZHome(ctx: common.Context): Promise<boolean> {
+    if (this.automationMode) {
+      this.zHome = `${WINE_AUTOMATION_HOME}/`;
+    } else if (this.gameTestMode) {
+      this.zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua/';
+    } else if (!this.zHome) {
+      const documentViewPicker = new picker.DocumentViewPicker(ctx);
+      // DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
+      // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
+      let documentSaveResult: string[] = [];
+      try {
+        documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+      } catch (e) {
+        hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
+      }
+      if (!documentSaveResult || documentSaveResult.length == 0) {
+        return false;
+      }
+      const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
+      this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
+    }
+    hilog.info(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
+    this.notify();
+    return true;
+  }
+
   doInit = async (): Promise<void> => {
     if (!this.ctx) {
       return;
@@ -566,32 +599,9 @@ export class WineEnvService {
     }
     this.initBusy = true;
     this.initFailed = false;
-    // HOME 目录 (Z: 映射目标): 自动化模式用沙箱内受管 HOME 永不弹 picker;
-    // game 模式指到桌面会话同一受管目录 (Z: 可见已安装游戏);
-    // 普通模式经 DocumentViewPicker 取 Download 路径
-    if (this.automationMode) {
-      this.zHome = `${WINE_AUTOMATION_HOME}/`;
-    } else if (this.gameTestMode) {
-      this.zHome = '/storage/Users/currentUser/Download/app.hackeris.winehua/';
-    } else {
-      // 已设置过 Z home（重启引擎 / 已就绪补拉桌面路径）直接复用，跳过 picker
-      if (!this.zHome) {
-        const documentViewPicker = new picker.DocumentViewPicker(this.ctx);
-        // DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
-        // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
-        let documentSaveResult: string[] = [];
-        try {
-          documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
-        } catch (e) {
-          hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
-        }
-        if (!documentSaveResult || documentSaveResult.length == 0) {
-          this.failInit('获取下载目录失败');
-          return;
-        }
-        const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
-        this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
-      }
+    if (!await this.acquireZHome(this.ctx)) {
+      this.failInit('获取下载目录失败');
+      return;
     }
     // HDC shell 无权删除应用沙箱文件, clean 烟测 prefix 必须由 App 自己重置,
     // 且要在 server/socket 启动之前完成
@@ -607,11 +617,6 @@ export class WineEnvService {
       this.prefixReady = false;
       hilog.info(DOMAIN, 'SmokeRunner', 'App-owned clean prefix reset completed');
     }
-    hilog.info(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
-    // zHome 是 doInit 内异步赋值的, 而 prefixReady 可能经 waitForPrefix 先置真
-    // (桌面会话存活时几乎秒回) — 常驻页面 (文件页根列表) 已在用 '' 渲染,
-    // 必须 notify 一次让它们拿到真实 Z: 路径
-    this.notify();
     const gamesDir = `${this.zHome}games`;
     if (!ensureDirectory(gamesDir)) {
       this.failInit('创建 games 目录失败');
