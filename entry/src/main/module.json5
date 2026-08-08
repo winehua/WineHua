@@ -42,6 +42,9 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "launchType": "singleton",
+        // 强制横屏 (宽屏设备保持宽>高不旋转, 直板机转横屏):
+        // 参考官方窗口旋转指南 — 固定方向类型 LANDSCAPE, 游戏类应用标准做法
+        "orientation": "landscape",
         "skills": [
           {
             "entities": [
