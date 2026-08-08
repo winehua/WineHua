@@ -163,6 +163,11 @@ export class WineEnvService {
   initBusy: boolean = false;
   // 重启/重置/停止编排进行中 (stopAll → 等 state:stopped → 后续动作), 期间禁止一切会话操作
   opBusy: boolean = false;
+  // 后台自动启动 (二次进入 app 且 prefix 已就绪时, init 自动拉起引擎):
+  // 抑制 init overlay 模态弹窗 — 进度只经 statusText/EngineGuide 呈现,
+  // 失败也不弹 overlay, 由 EngineGuide 的 failed 分支承接自救 (重试/重置)。
+  // 仅 init 的自动拉起置位, enterReady/failInit/ready-degraded 时清除
+  private bgStart: boolean = false;
 
   private hasRawfileWineData: boolean = false;
   private ctx: common.Context | null = null;
@@ -206,6 +211,15 @@ export class WineEnvService {
   // 极简订阅: 状态变化后逐个调用
   subscribe(listener: () => void): void {
     this.listeners.push(listener);
+  }
+
+  // 退订: EngineGuide 这类随状态反复挂载/卸载的组件必须 aboutToDisappear
+  // 退订, 否则每次进出引导页都往 listeners 里积一份闭包
+  unsubscribe(listener: () => void): void {
+    const i = this.listeners.indexOf(listener);
+    if (i >= 0) {
+      this.listeners.splice(i, 1);
+    }
   }
 
   // 事件订阅: native evt:* 瞬时消息 (进程进出/启动受理/启动失败)
@@ -354,11 +368,22 @@ export class WineEnvService {
       this.desktopMode = wm.isDesktopMode;
       this.notify();
     });
-    // 自动初始化仅限自动化/游戏测试模式 (want 驱动的无人值守场景, 没人
-    // 点按钮)。普通模式懒初始化: 首启解压 249MB 可达数分钟, 冷启动白等 —
-    // 由标题栏"启动引擎"或首次启动 app 经 ensureEngineReady 按需拉起
+    // 自动初始化分三种情形:
+    // 1) 自动化/游戏测试模式 (want 驱动无人值守): 无条件立即 doInit;
+    // 2) 普通模式且 prefix 已就绪 (二次进入): 后台自动拉起引擎 (bgStart
+    //    抑制 overlay, 用户无感), 就绪前点 exe 由 UI 侧 toast 拦截;
+    // 3) 普通模式无 prefix (首启): 懒初始化 — 首启解压 249MB 可达数分钟,
+    //    由 EngineGuide 引导用户显式启动, 前台 overlay 阻塞至 prefix 就绪
     if (this.automationMode || this.gameTestMode) {
       setTimeout(() => this.doInit(), 0);
+    } else if (this.prefixReady) {
+      setTimeout(() => {
+        // sessionAlive 防御: app 进程重启但 wineserver 会话仍在时, 不编排重启
+        if (!this.isBusy() && this.engineState == 'idle' && !this.sessionAlive) {
+          this.bgStart = true;
+          this.restartEngine();
+        }
+      }, 0);
     }
   }
 
@@ -398,7 +423,8 @@ export class WineEnvService {
       this.engineState = 'starting';
       this.engineStage = detail;
       this.initFailed = false;
-      this.setInitStatus('Wine 正在初始化...', true);
+      // bgStart (后台自动拉起) 不弹模态 overlay, 进度只进 statusText
+      this.setInitStatus('Wine 正在初始化...', !this.bgStart);
     } else if (name == 'ready') {
       this.enterReady();
     } else if (name == 'ready-degraded') {
@@ -412,6 +438,7 @@ export class WineEnvService {
       this.initFailed = false;
       this.initBusy = false;
       this.opBusy = false;
+      this.bgStart = false;
       this.setInitStatus('桌面准备中...', false);
     } else if (name == 'failed') {
       // 覆盖启动失败 (wineserver spawn/wineboot) 与运行中主 wineserver 非预期
@@ -445,6 +472,7 @@ export class WineEnvService {
     this.initFailed = false;
     this.initBusy = false;
     this.opBusy = false;
+    this.bgStart = false;
     this.setInitStatus('已就绪', false);
     // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
     this.waitForPrefix();
@@ -613,7 +641,26 @@ export class WineEnvService {
     if (this.engineState == 'starting' || this.engineState == 'stopping') {
       this.engineState = 'failed';
     }
-    this.setInitStatus(text, true);
+    // 后台自动启动 (bgStart) 失败不弹模态 overlay — 对用户无感的承诺;
+    // 启动器内 EngineGuide 的 failed 分支承接 重试/重置 自救
+    this.setInitStatus(text, !this.bgStart);
+    this.bgStart = false;
+  }
+
+  // prefix 是否已在盘上 (drive_c 存在): 引导"首次/二次进入"文案分野 —
+  // 首次启动含解压数据+建 prefix, 耗时显著多于暖启动, 需提前给耗时预期
+  hasPrefixOnDisk(): boolean {
+    return pathExists(this.driveC);
+  }
+
+  // 失败 overlay 的"返回启动器"出口: 仅失败终态且无任何编排时可关 —
+  // busy 期间 overlay 必须常驻 (模态防重入); initFailed 保持置真,
+  // 关闭后启动器内 EngineGuide 承接 failed 引导 (重试/重置环境)
+  dismissFailedInit(): void {
+    if (this.initFailed && !this.isBusy()) {
+      this.initOverlayVisible = false;
+      this.notify();
+    }
   }
 
   // zHome (Z: 映射目标) 的唯一获取入口, doInit 开头调用一次, 其它代码只读不写。
@@ -688,7 +735,7 @@ export class WineEnvService {
     // 检查是否需要解压 wine 数据文件 (打包 manifest 变化 → 目录级刷新)
     hilog.info(DOMAIN, 'wine', 'auto-init: check marker=%{public}s', `${WINE_ROOT}/share/wine/wine.inf`);
     if (this.runtimeNeedsRefresh()) {
-      this.setInitStatus('解压数据...', true);
+      this.setInitStatus('解压数据...', !this.bgStart);
       hilog.info(DOMAIN, 'wine', 'auto-init: extracting wine data...');
       await this.extractWineData();
     }
@@ -700,7 +747,7 @@ export class WineEnvService {
       return;
     }
     hilog.info(DOMAIN, 'wine', 'auto-init: starting Wine...');
-    this.setInitStatus('启动服务...', true);
+    this.setInitStatus('启动服务...', !this.bgStart);
     testNapi.setHostShadowProfile(this.perfProfile);
     const ok: boolean = testNapi.startServer(this.sockPath);
     if (!ok) {

@@ -6,7 +6,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { WineEnvService, DRIVE_C } from '../service/WineEnvService';
 import { AppLibraryService, AppEntry } from '../service/AppLibraryService';
 import { IconExtractor } from '../service/IconExtractor';
-import { EmptyState } from './EmptyState';
+import { EngineGuide } from './EngineGuide';
 
 const DOMAIN = 0x0000;
 const TAG = 'Files';
@@ -603,8 +603,10 @@ export struct FileBrowserView {
   // 启动反馈里 (文件页无加载态)
   private async launchExe(path: string): Promise<void> {
     if (this.env.engineState != 'ready') {
-      // 懒初始化: 编排进行中不抢跑; 否则拉起引擎 (首启可达数分钟, toast 预告)
+      // 编排/后台自动启动进行中: 明确提示稍后再试, 不抢跑;
+      // 否则拉起引擎 (首启可达数分钟, toast 预告)
       if (this.env.isBusy()) {
+        this.toast('Wine 正在启动中，稍后再试');
         return;
       }
       this.toast('正在启动 Wine 引擎...');
@@ -842,13 +844,9 @@ export struct FileBrowserView {
           .width('100%').layoutWeight(1)
         }
       } else {
-        Column() {
-          EmptyState({
-            icon: $r('sys.symbol.archivebox'),
-            title: '需要先初始化 Wine 环境'
-          })
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        // 引擎未就绪共享引导 (idle/failed/busy/准备中 各态自渲染),
+        // 替代原单行空态 ("需要先初始化 Wine 环境" 无动作入口)
+        EngineGuide()
       }
     }
     .width('100%').height('100%')

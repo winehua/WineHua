@@ -3,6 +3,7 @@ import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { EmptyState } from './EmptyState';
+import { EngineGuide } from './EngineGuide';
 import { promptAction, ChipGroup, ChipGroupItemOptions, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
@@ -85,8 +86,6 @@ interface EntryItemSpec {
 export struct AppLibraryView {
   @State entries: AppEntry[] = [];
   @State prefixReady: boolean = false;
-  // 引擎编排进行中镜像 (env.isBusy): 引导按钮 loading/禁用判据
-  @State engineBusy: boolean = false;
   // 断点镜像: lg → Grid 大卡, sm/md → List
   @State bp: Breakpoint = 'lg';
   @State chip: string = 'recent';
@@ -124,7 +123,6 @@ export struct AppLibraryView {
     const wasReady = this.prefixReady;
     this.entries = this.lib.entries;
     this.prefixReady = this.env.prefixReady;
-    this.engineBusy = this.env.isBusy();
     // prefix 就绪 false→true 边沿: 补内建工具入库 (service 内部幂等,
     // 边沿触发避免 mirror↔notify 反馈回路)
     if (this.prefixReady && !wasReady) {
@@ -197,9 +195,10 @@ export struct AppLibraryView {
       return;
     }
     if (!this.env.canLaunch()) {
-      // 引擎未就绪 (懒初始化): 点 app 即隐含启动引擎意图 — 进加载态拉起
-      // 引擎后走原流程; 编排进行中 (isBusy) 不抢跑, 避免与编排交错
+      // 引擎未就绪: 编排/后台自动启动进行中 (isBusy) 明确提示稍后再试,
+      // 不与编排抢跑; 否则点 app 即隐含启动引擎意图 — 进加载态拉起引擎后走原流程
       if (this.env.isBusy()) {
+        promptAction.showToast({ message: 'Wine 正在启动中，稍后再试' });
         return;
       }
       this.launchingPath = entry.path;   // 占位: 卡片进入加载态 + 防重入
@@ -359,55 +358,6 @@ export struct AppLibraryView {
       defs.push({ kind: 'hidden', label: '已隐藏' });
     }
     return defs;
-  }
-
-  // 引擎未就绪引导 (prefix 未初始化): EmptyState + 启动引擎按钮。
-  // engineBusy (初始化/停止编排中) 转圈等待; engineState=='ready' 但 prefix
-  // 还在后台建 (wineboot 轮询中) 时显示等待文案, 不提供按钮 (避免误重启引擎);
-  // prefix 就绪后 mirror 触发本分支移除, 自动切回正常内容区。
-  @Builder
-  startupGuide() {
-    Column({ space: 4 }) {
-      EmptyState({
-        icon: $r('sys.symbol.play_circle'),
-        title: this.engineBusy ? '正在初始化 Wine 引擎...'
-          : this.env.engineState == 'ready' ? '正在准备环境...'
-          : '引擎未初始化',
-        desc: this.engineBusy
-          ? '首次启动需解压数据并创建环境，请稍候'
-          : this.env.engineState == 'ready'
-            ? '环境初始化完成后即可使用'
-            : '启动引擎后可浏览内建工具与已安装应用'
-      })
-      if (this.engineBusy) {
-        Row({ space: 6 }) {
-          LoadingProgress()
-            .width(16).height(16)
-            .color($r('app.color.accent'))
-          Text(this.env.engineState == 'stopping' ? '停止中...' : '正在初始化...')
-            .fontSize(14)
-            .fontColor($r('app.color.text_secondary'))
-        }
-        .margin({ top: 14 })
-      } else if (this.env.engineState == 'idle' || this.env.engineState == 'failed') {
-        Button('启动引擎')
-          .backgroundColor($r('app.color.accent'))
-          .fontColor(Color.White)
-          .margin({ top: 14 })
-          .onClick(() => this.onStartEngine())
-      }
-    }
-    .width('100%').height('100%')
-    .justifyContent(FlexAlign.Center)
-    .backgroundColor($r('app.color.window_bg'))
-  }
-
-  private onStartEngine(): void {
-    // isBusy 防重入 (restartEngine 内部也有, 双保险)
-    if (this.env.isBusy()) {
-      return;
-    }
-    this.env.restartEngine();
   }
 
   // 各分类空态文案 (有搜索词时统一为"没有匹配")
@@ -719,11 +669,11 @@ export struct AppLibraryView {
       .padding({ left: 14, right: 14, top: 6, bottom: 8 })
 
       Stack() {
-      // 引擎未就绪引导 (prefix 未初始化): 优先于空态显示 — 首次启动时
-      // entries 为空, 空态文案 (如"还没有运行记录") 会误导用户以为没应用,
-      // 实际是需要先启动引擎初始化环境 (解压数据 + 建 prefix)
+      // 引擎未就绪引导 (共享 EngineGuide, prefix 未初始化): 优先于空态显示 —
+      // 首次启动时 entries 为空, 空态文案 (如"还没有运行记录") 会误导用户
+      // 以为没应用, 实际是需要先启动引擎初始化环境 (解压数据 + 建 prefix)
       if (!this.prefixReady) {
-        this.startupGuide()
+        EngineGuide()
       } else if (this.filtered().length == 0) {
         Column() {
           EmptyState({

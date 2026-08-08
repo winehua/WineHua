@@ -330,7 +330,7 @@ export struct SettingsView {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Button(this.sessionAlive ? '重启 Wine 引擎' : (this.prefixReady ? '启动 Wine 引擎' : '初始化 Wine'))
+          Button((this.sessionAlive || this.state == 'ready' || this.state == 'ready-degraded') ? '重启引擎' : '启动引擎')
             .width('100%').backgroundColor($r('app.color.action_primary'))
             // 判据 = 状态机: 仅 空闲/就绪/降级/失败 可进入; 会话存活时走
             // restartEngine 编排 (先停后启), 不再直接 doInit 双开桌面。

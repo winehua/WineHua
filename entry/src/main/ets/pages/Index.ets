@@ -50,8 +50,6 @@ struct Index {
   @State scanLabel: string = '';
   // 字体导入遮罩 (镜像自 WineEnvService): 与扫描遮罩共用同一条件层
   @State fontImporting: boolean = false;
-  // 引擎编排进行中 (镜像 env.isBusy()): 标题栏"启动引擎"按钮的禁用判据
-  @State engineBusy: boolean = false;
   // 标题栏右侧避让系统按钮 (PC/2in1): 动态取系统窗口按钮宽度,
   // Pad 无系统按钮 (getTitleButtonRect 失败/width=0) 回落默认 14
   @State titleBarRightPadding: number = 14;
@@ -79,7 +77,6 @@ struct Index {
       this.initOverlayVisible = env.initOverlayVisible;
       this.initFailed = env.initFailed;
       this.fontImporting = env.fontImporting;
-      this.engineBusy = env.isBusy();
     };
     env.subscribe(mirror);
     // 启动程序自动回桌面: 桌面已激活时新程序被受理 (evt:launch-accepted) → 切回桌面层。
@@ -295,33 +292,8 @@ struct Index {
           .margin({ left: 6 }).layoutWeight(1)
           .maxLines(1)
 
-        // 启动引擎入口 (懒初始化): 引擎未运行时显示 — 点击经 restartEngine
-        // 编排拉起 (无会话直通 doInit); 编排中禁用并换文案。引擎在跑
-        // (含仅 ready 无桌面) 时不显示, 状态由左侧状态点/文案表达。
-        // 与"回桌面"天然互斥: desktopActive ⇒ sessionAlive ⇒ 此按钮隐藏
-        if (!this.sessionAlive && this.state != 'ready') {
-          Row({ space: 4 }) {
-            if (this.engineBusy) {
-              LoadingProgress()
-                .width(14).height(14)
-                .color($r('app.color.text_secondary'))
-            } else {
-              SymbolGlyph($r('sys.symbol.play_circle'))
-                .fontSize(16)
-                .fontColor([$r('app.color.accent')])
-            }
-            Text(this.engineBusy ? (this.state == 'stopping' ? '停止中...' : '启动中...') : '启动引擎')
-              .fontSize(14)
-              .fontColor(this.engineBusy ? $r('app.color.text_secondary') : $r('app.color.accent'))
-          }
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .backgroundColor($r('app.color.control_bg'))
-          .borderRadius(8)
-          .enabled(!this.engineBusy)
-          .onClick(() => {
-            this.env.restartEngine();
-          })
-        }
+        // 引擎启动入口不在标题栏: 首启由 EngineGuide 引导, 二次进入后台
+        // 自动拉起, 失败/降级由 EngineGuide 与设置页承接
 
         // 回桌面可见入口 (Step 3.5): 仅桌面激活时显示。
         // 与 onBackPress、启动程序自动回桌面并列的第三条返回路径。
@@ -509,6 +481,15 @@ struct Index {
               })
           }
           .width('100%')
+          // 失败终态的出口: overlay 常驻会把用户困在卡片上 (连设置页导出日志/
+          // 改渲染策略都够不到); 返回后由启动器内 EngineGuide 承接 failed 引导
+          Text('返回启动器')
+            .fontSize(14)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ top: 16 })
+            .onClick(() => {
+              this.env.dismissFailedInit();
+            })
         } else {
           LoadingProgress()
             .width(42)

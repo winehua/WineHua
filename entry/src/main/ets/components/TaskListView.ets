@@ -1,6 +1,8 @@
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { AppLibraryService } from '../service/AppLibraryService';
+import { WineEnvService } from '../service/WineEnvService';
 import { EmptyState } from './EmptyState';
+import { EngineGuide } from './EngineGuide';
 
 // 运行中页: 会话卡片 (图标/名称/状态点/结束操作)。
 // 卡片无点击行为 (回桌面走悬浮条 Home / 标题栏"回桌面"), "结束"二次确认后 kill;
@@ -16,8 +18,12 @@ export struct TaskListView {
   @State processList: ProcessInfo[] = [];
   // Refresh 下拉刷新状态 ($$ 双向绑定)
   @State refreshing: boolean = false;
+  // 引擎状态镜像: 空列表时区分 "引擎在跑但没程序" (原空态) 与
+  // "引擎未跑/启动中/失败" (共享 EngineGuide 引导)
+  @State engineState: string = 'idle';
 
   private proc: ProcessService = ProcessService.getInstance();
+  private env: WineEnvService = WineEnvService.getInstance();
 
   private mirror = (): void => {
     // 截新数组: 本 mirror 同时挂在 AppLibraryService 上 (进程图标异步提取完成
@@ -25,13 +31,19 @@ export struct TaskListView {
     this.processList = this.proc.processList.slice();
   }
 
+  private mirrorEnv = (): void => {
+    this.engineState = this.env.engineState;
+  }
+
   aboutToAppear(): void {
     this.proc.subscribe(this.mirror);
     // 进程图标经 AppLibraryService 解析 (库内借用 / 库外按需提取), 提取完成
     // 经其 notify 刷新, 必须订阅
     AppLibraryService.getInstance().subscribe(this.mirror);
+    this.env.subscribe(this.mirrorEnv);
     this.proc.refresh();
     this.mirror();
+    this.mirrorEnv();
   }
 
   private runningList(): ProcessInfo[] {
@@ -145,7 +157,8 @@ export struct TaskListView {
           this.proc.refresh();
           this.refreshing = false;
         })
-      } else {
+      } else if (this.engineState == 'ready' || this.engineState == 'ready-degraded') {
+        // 引擎在跑但没程序: 原空态
         Column() {
           EmptyState({
             icon: $r('sys.symbol.play_circle'),
@@ -153,6 +166,13 @@ export struct TaskListView {
           })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else {
+        // 引擎未跑/启动中/失败: 共享引导 — 此前一律显示"没有正在运行的
+        // Windows 程序", 引擎未启动时会误导用户以为程序已退出
+        Column() {
+          EngineGuide()
+        }
+        .width('100%').layoutWeight(1)
       }
     }
     .width('100%').height('100%')
