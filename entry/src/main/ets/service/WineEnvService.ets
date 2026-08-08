@@ -608,6 +608,10 @@ export class WineEnvService {
       hilog.info(DOMAIN, 'SmokeRunner', 'App-owned clean prefix reset completed');
     }
     hilog.info(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
+    // zHome 是 doInit 内异步赋值的, 而 prefixReady 可能经 waitForPrefix 先置真
+    // (桌面会话存活时几乎秒回) — 常驻页面 (文件页根列表) 已在用 '' 渲染,
+    // 必须 notify 一次让它们拿到真实 Z: 路径
+    this.notify();
     const gamesDir = `${this.zHome}games`;
     if (!ensureDirectory(gamesDir)) {
       this.failInit('创建 games 目录失败');

@@ -186,6 +186,8 @@ export struct FileBrowserView {
       this.entries = list;
       this.loadIcons();
     } catch (e) {
+      // 曾静默吞错 — Z: 路径未就绪/权限异常时页面空白无任何线索
+      hilog.error(DOMAIN, TAG, 'listDir fail: %{public}s err=%{public}s', path, JSON.stringify(e));
       this.entries = [];
     }
   }
@@ -302,10 +304,19 @@ export struct FileBrowserView {
   }
 
   private enterRoot(root: DriveRoot): void {
+    // 路径在点击时重新解析, 不用渲染期快照 root.path: 桌面会话已存活时
+    // prefixReady 经 waitForPrefix 秒置真, 而 zHome 要等 doInit 的 picker
+    // 异步返回才赋值 — 窗口期内快照的 Z: path 是 '', 进入即空目录且
+    // rootOf 失配 (路径栏空白、无"系统文件管理"按钮), 只能返回重进
+    const path = root.key == 'Z' ? this.zRoot() : root.path;
+    if (!path) {
+      this.toast('Z: 目录尚未就绪，请稍候重试');
+      return;
+    }
     this.dirStack = [];
-    this.curDir = root.path;
+    this.curDir = path;
     this.atRootList = false;
-    this.listDir(root.path);
+    this.listDir(path);
   }
 
   private backToRootList(): void {
