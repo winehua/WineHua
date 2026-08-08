@@ -5,6 +5,7 @@ import { AppLibraryView } from '../components/AppLibraryView';
 import { TaskListView } from '../components/TaskListView';
 import { FileBrowserView } from '../components/FileBrowserView';
 import { SettingsView } from '../components/SettingsView';
+import { AboutView } from '../components/AboutView';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
 import { FloatingBar } from '../components/FloatingBar';
@@ -74,13 +75,14 @@ struct Index {
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
   private tabsController: TabsController = new TabsController();
-  // 四导航图标 (与 tabBarItem/sideNavItem 的 index 一一对应):
-  // 应用库/运行中/文件/设置 — 系统符号, 替代纯文字导航
+  // 五导航图标 (与 tabBarItem/sideNavItem 的 index 一一对应):
+  // 应用库/运行中/文件/设置/关于 — 系统符号, 替代纯文字导航
   private readonly navIcons: Resource[] = [
     $r('sys.symbol.square_grid_2x2'),
     $r('sys.symbol.play_circle'),
     $r('sys.symbol.folder'),
-    $r('sys.symbol.gearshape')
+    $r('sys.symbol.gearshape'),
+    $r('sys.symbol.info_circle')
   ];
 
   aboutToAppear(): void {
@@ -322,7 +324,7 @@ struct Index {
       .backgroundColor($r('app.color.header_bg'))
       .alignItems(VerticalAlign.Center)
 
-      // -- 四导航 (设计 §3): 应用库 / 运行中 / 文件 / 设置
+      // -- 五导航 (设计 §3): 应用库 / 运行中 / 文件 / 设置 / 关于
       // (断点双壳: sm 底部 Tabs / md·lg 左侧导航 + 右内容) --
       if (this.bp == 'sm') {
         Tabs({ barPosition: BarPosition.End, controller: this.tabsController, index: this.currentIndex }) {
@@ -345,6 +347,11 @@ struct Index {
             SettingsView()
           }
           .tabBar(this.tabBarItem('设置', 3))
+
+          TabContent() {
+            AboutView()
+          }
+          .tabBar(this.tabBarItem('关于', 4))
         }
         .barMode(BarMode.Fixed)
         .barBackgroundColor($r('app.color.panel_bg'))
@@ -360,6 +367,7 @@ struct Index {
             this.sideNavItem('运行中', 1)
             this.sideNavItem('文件', 2)
             this.sideNavItem('设置', 3)
+            this.sideNavItem('关于', 4)
           }
           .width(200).height('100%')
           .padding({ left: 8, right: 8, top: 8 })
@@ -382,6 +390,8 @@ struct Index {
               .visibility(this.currentIndex == 2 ? Visibility.Visible : Visibility.Hidden)
             SettingsView()
               .visibility(this.currentIndex == 3 ? Visibility.Visible : Visibility.Hidden)
+            AboutView()
+              .visibility(this.currentIndex == 4 ? Visibility.Visible : Visibility.Hidden)
           }
           .layoutWeight(1).height('100%')
         }

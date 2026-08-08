@@ -1,19 +1,14 @@
-import { bundleManager } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
-import { ComposeListItem, promptAction, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
+import { promptAction, SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
 import { fileUri, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WineEnvService } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
 
-const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
-
 // 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · Windows 字体 ·
-// 会话维护 · 危险区) / 开发者折叠 / 关于。原环境页 (EnvPanel) 三卡 + 开发者折叠区
-// 整体并入本页, 主界面导航收敛为 应用库/运行中/文件/设置 四项。
-// 行用系统预置 ComposeListItem (左标题+右值), 统一行高/间距/字级。
-// 注: ComposeListItem 不宜挂通用属性 (会落到额外生成的 __Common__ 节点上),
-// 故卡片外观由外层 Column 承担。
+// 会话维护 · 危险区)。原环境页 (EnvPanel) 三卡整体并入本页; 原"关于"卡片与
+// "开发者/系统信息"折叠区已摘出为独立导航页 (AboutView), 主界面导航为
+// 应用库/运行中/文件/设置/关于 五项。
+// 卡片外观由外层 Column 承担。
 // 说明: 应用调色板目前只有深色一套, 主题切换后续版本开放。
 // DPI 缩放用 Slider 交互 (同悬浮条"光标速度"), 全局生效, 重启应用后生效
 // (见 DisplaySettingsService); 输入设置在桌面悬浮条与布局编辑里 (设计 P4/P5 已落地)。
@@ -25,7 +20,6 @@ export struct SettingsView {
   @State busy: boolean = false;
   @State prefixReady: boolean = false;
   @State statusText: string = '检测中...';
-  @State zHome: string = '';
   // 渲染策略镜像 (dxvk_legacy / wined3d); 切换后提示需重启引擎才生效
   @State d3dBackend: string = 'dxvk_legacy';
   // SegmentButton 选中项 (@Link 双向): 0=dxvk_legacy 1=wined3d, 与 d3dBackend 同步
@@ -37,10 +31,7 @@ export struct SettingsView {
   @State langRestartHint: boolean = false;
   // 字体导入进行中 (镜像 WineEnvService.fontImporting): 按钮使能 + 文案
   @State fontImporting: boolean = false;
-  @State devExpanded: boolean = false;
-  @State perfProfile: string = 'baseline';
-  // -- 显示/关于 --
-  @State versionName: string = '';
+  // -- 显示 --
   @State scaleText: string = '';
 
   private env: WineEnvService = WineEnvService.getInstance();
@@ -52,7 +43,6 @@ export struct SettingsView {
     this.busy = this.env.isBusy();
     this.prefixReady = this.env.prefixReady;
     this.statusText = this.env.statusText;
-    this.zHome = this.env.zHome;
     this.d3dBackend = this.env.getD3dBackend();
     // 派生选中项; 仅在值变化时赋值, 避免 notify 覆盖用户刚点击的 @Link 状态
     const sel = this.d3dBackend == 'dxvk_legacy' ? 0 : 1;
@@ -64,7 +54,6 @@ export struct SettingsView {
     if (this.langSel[0] != langSel) {
       this.langSel = [langSel];
     }
-    this.perfProfile = this.env.getPerfProfile();
     this.fontImporting = this.env.fontImporting;
   }
 
@@ -76,13 +65,6 @@ export struct SettingsView {
     this.env.subscribe(this.mirror);
     this.mirror();
     this.scaleText = this.fmtScale(this.displaySettings.scale);
-    bundleManager.getBundleInfoForSelf(
-      bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION
-    ).then((info: bundleManager.BundleInfo) => {
-      this.versionName = info.versionName;
-    }).catch(() => {
-      this.versionName = '';
-    });
   }
 
   // 状态文本配色, 与标题栏同一套规则: 失败红 / 运行绿 / 就绪或进行中蓝 / 未启动灰
@@ -380,71 +362,6 @@ export struct SettingsView {
         .borderRadius(8)
         .border({ width: 1, color: $r('app.color.action_danger') })
 
-        // ══ 开发者 (折叠, 原环境页折叠区 + 原设置页诊断行去重合并) ══
-        Column() {
-          Row() {
-            Text('开发者')
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_secondary'))
-              .layoutWeight(1)
-            SymbolGlyph(this.devExpanded ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
-              .fontSize(16)
-              .fontColor([$r('app.color.text_secondary')])
-          }
-          .width('100%')
-          .padding({ top: 4, bottom: 4 })
-          .onClick(() => {
-            this.devExpanded = !this.devExpanded;
-          })
-          if (this.devExpanded) {
-            Text(`诊断 profile: ${this.perfProfile}`)
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              .width('100%').margin({ top: 6 })
-            Text(`渲染后端: ${this.d3dBackend}`)
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              .width('100%').margin({ top: 4 })
-            Text(`Prefix: ${WINE_PREFIX}`)
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              .width('100%').margin({ top: 4 })
-            Text(`Z: 映射: ${this.zHome}`)
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              .width('100%').margin({ top: 4 })
-            Text(`设备类型: ${deviceInfo.deviceType}`)
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              .width('100%').margin({ top: 4 })
-            Text('自动化测试经 hdc 以 want 参数启动 (winehua.mode=smoke)')
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              .width('100%').margin({ top: 8 })
-          }
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('app.color.card_bg'))
-        .borderRadius(8)
-
-        // ══ 关于 ══
-        Column({ space: 8 }) {
-          Text('关于')
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
-            .width('100%')
-          ComposeListItem({
-            contentItem: { primaryText: '万花' },
-            operateItem: { text: this.versionName ? `v${this.versionName}` : '' }
-          })
-          Text('开源组件')
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-            .margin({ top: 4 })
-          Text('Wine · Box64 · DXVK · VirGL Renderer · Mesa')
-            .fontSize(12)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor($r('app.color.card_bg'))
-        .borderRadius(12)
       }
       .width('100%')
       .padding(14)
