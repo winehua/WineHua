@@ -63,6 +63,20 @@ bool IsProcessAliveNotZombie(pid_t pid) {
 }
 
 void RegisterWineserver(pid_t pid) {
+    /* 热重启/复用场景: 若已有存活的旧 wineserver (旧会话锚点), 保持旧锚点。
+     * wine 单实例语义下, 新 spawn 的 wineserver 检测到旧实例会连接后正常退出
+     * —— 这不是引擎故障 (master 同款: wineserver 不登记, 新实例退出无感)。
+     * 仅当旧锚点已死 (冷启动 / stopAll 杀干净 / 引擎崩溃后重建) 才接管为新锚点,
+     * 否则 ProcMon 会把"新实例正常退出"误判为 state:failed:wineserver。
+     * 新 pid 仍 AddProcess 登记 (ProcMon 监视 + KillAllProcesses 可杀),
+     * 只是不作为会话锚点判定死法。 */
+    pid_t existing = gWineserverPid.load(std::memory_order_acquire);
+    if (existing > 0 && IsProcessAliveNotZombie(existing)) {
+        OH_LOG_INFO(LOG_APP, "[ProcReg] wineserver %{public}d alive, keep anchor; new spawn %{public}d will attach",
+                    existing, pid);
+        AddProcess(pid, "wineserver", -1);
+        return;
+    }
     gWineserverPid.store(pid);
     gShutdownRequested.store(false);
     gDesktopSessionEnded.store(false);

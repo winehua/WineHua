@@ -550,9 +550,13 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done (%{public}d ms)",
                     aliveMs);
-        // wineboot 已退出: 若它因 wineserver 死亡而失败, 后续 explorer/ready 全是空转
-        if (!IsProcessAliveNotZombie(GetWineserverPid())) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver not alive after wineboot seed, abort");
+        // wineboot 已退出: 若它因 wineserver 死亡而失败, 后续 explorer/ready 全是空转。
+        // 判定用"wineserver socket 就绪"而非 GetWineserverPid() 存活: 热重启时旧
+        // wineserver 可能仍存活 (wine 单实例, 新 spawn 的 wineserver 连接旧实例后
+        // 正常退出), 此时 GetWineserverPid 指向新 pid 已死但 socket 仍在旧实例手里 —
+        // 以 socket 就绪为准 (master 同款判定, 不误报热重启为 failed)。
+        if (!IsWineserverSocketReady(p->prefixDir)) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver socket not ready after wineboot seed, abort");
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
                                               napi_tsfn_blocking);
@@ -685,11 +689,13 @@ void LaunchThreadFunc(LaunchParams* p) {
     /* state:ready 前最后一次健康复查: explorer 桌面根等待可达 15s, 期间
      * wineserver 若已崩溃, 此前照样发 ready → UI 显示"已就绪"但引擎已死
      * (静默失败)。stage 命名 wineserver, 与 ProcMon 的非预期死亡上报一致。
-     * 该复查优先于 ready-degraded: wineserver 已死时绝不补发降级把 failed 盖掉 */
+     * 该复查优先于 ready-degraded: wineserver 已死时绝不补发降级把 failed 盖掉。
+     * 判定用 socket 就绪而非 GetWineserverPid 存活: 热重启复用旧 wineserver 时,
+     * 新 spawn 的实例连接旧实例后正常退出, GetWineserverPid 指向新 pid 会误判 —
+     * socket 是否就绪才真正代表"当前有 wineserver 在服务" (master 同款语义)。 */
     if (ok) {
-        pid_t wsPid = GetWineserverPid();
-        if (wsPid <= 0 || !IsProcessAliveNotZombie(wsPid)) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver not alive at ready checkpoint, refuse ready");
+        if (!IsWineserverSocketReady(p->prefixDir)) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver socket not ready at ready checkpoint, refuse ready");
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
                                               napi_tsfn_blocking);
