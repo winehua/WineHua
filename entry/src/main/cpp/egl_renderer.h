@@ -95,6 +95,8 @@ private:
     int zeroCopyLayerW_ = 0;
     int zeroCopyLayerH_ = 0;
     bool zeroCopyRegistered_ = false;
+    // 无新帧跳过 swap 的累计次数 (诊断: 帧合成后多久没上屏)
+    uint64_t skipFrames_ = 0;
     bool zeroCopyListenerSet_ = false;
     bool zeroCopyReadyPublished_ = false;
     bool zeroCopyHasFrame_ = false;

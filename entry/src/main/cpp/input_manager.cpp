@@ -203,6 +203,31 @@ void InputManager::ResetKeyboardEnter() {
     OH_LOG_INFO(LOG_APP, "[Input] ResetKeyboardEnter OK");
 }
 
+void InputManager::ResetSessionState() {
+    // Wine 会话结束后的全量状态复位。残留风险: 焦点指向已销毁的 toplevel;
+    // 按下/修饰键残留会让新会话卡键 (会话结束时 Ctrl 按着, 新会话所有按键
+    // 都带 Ctrl); 指针位置/相对增量基线污染新会话首次操作。只清状态不发
+    // 事件 — client 已断开, send 到已销毁 surface 会触发协议错误。
+    ResetPointerEnter();
+    ResetKeyboardEnter();
+    pressedButtons_ = 0;
+    modifiers_depressed_ = 0;
+    modifiers_latched_ = 0;
+    modifiers_locked_ = 0;
+    modifiers_group_ = 0;
+    lastGlobalPtrX_ = 0;
+    lastGlobalPtrY_ = 0;
+    lastLocalX_ = 0;
+    lastLocalY_ = 0;
+    hasLastLocal_ = false;
+    lastPressMs_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(visibleMutex_);
+        toplevelVisible_.clear();
+    }
+    OH_LOG_INFO(LOG_APP, "[Input] session state reset (focus/buttons/modifiers/position/visible)");
+}
+
 void InputManager::OnSurfaceDestroyed(wl_resource* surface) {
     // surface 已被 Wine 销毁, 如果仍持有引用并在后续 Inject*Leave 中使用,
     // 会导致 Wayland 协议错误 "invalid object" → Wine 断开连接

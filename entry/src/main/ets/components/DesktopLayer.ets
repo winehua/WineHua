@@ -9,8 +9,15 @@ import { mapMouseButton } from '../common/MouseMap';
 const DOMAIN = 0x0000;
 
 class DesktopController extends XComponentController {
+  // 缓存创建时的 rootId: onSurfaceDestroyed 回调时 WineWindowManager 的
+  // desktopRootId 可能已被清零 (桌面退出流程先清 rootId 再卸载本组件),
+  // 用缓存值才能配对销毁 renderer — 否则旧 root 的 renderer 泄漏, 热重启
+  // 后新旧两个 renderer 抢同一 root 的合成帧, 表现为画面「滞后一拍」
+  private lastRootId: number = 0;
+
   onSurfaceCreated(surfaceId: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
+    this.lastRootId = rootId;
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceCreated rootId=%{public}d surfaceId=%{public}s', rootId, surfaceId);
     if (rootId > 0) {
       try { testNapi.createRenderer(rootId, BigInt(surfaceId)); } catch (_) {}
@@ -30,10 +37,11 @@ class DesktopController extends XComponentController {
     }
   }
   onSurfaceDestroyed(_s: string): void {
-    const rootId = WineWindowManager.getInstance().getDesktopRootId();
-    hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed rootId=%{public}d', rootId);
-    if (rootId > 0) {
-      try { testNapi.destroyRenderer(rootId); } catch (_) {}
+    const cached = this.lastRootId;
+    this.lastRootId = 0;
+    hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed lastRootId=%{public}d', cached);
+    if (cached > 0) {
+      try { testNapi.destroyRenderer(cached); } catch (_) {}
     }
   }
 }

@@ -441,7 +441,10 @@ static napi_value StopHostVulkanProbeNapi(napi_env env, napi_callback_info) {
 // -- NAPI: stopClient — 杀掉所有 Wine 进程 --
 static napi_value StopClient(napi_env, napi_callback_info) {
     KillAllProcesses();
-    WaylandServer::GetInstance()->ResetFirstFrame();
+    // 会话终结统一收口 (与桌面退出同路径): 杀进程后进程级一次性状态全部
+    // 复位, 下次引擎启动从冷启动基线开始 (StopAll 走 WaylandServer::Stop
+    // 全量重建, 无需这里处理)
+    WaylandServer::GetInstance()->ResetSessionState();
     winehua::GraphicsBroker::GetInstance().Stop();
     return nullptr;
 }

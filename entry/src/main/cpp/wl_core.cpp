@@ -715,8 +715,16 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
     }
     if (cr.moveRendererTo)
         PluginManager::GetInstance()->MoveRendererToToplevel(cr.moveRendererFrom, cr.moveRendererTo);
-    if (cr.fireDesktopRoot)
+    if (cr.fireDesktopRoot) {
+        // 新 root 出现: 重置首帧标记, 让 FinishCommit 重新注入 pointer/keyboard
+        // focus。热重启 (keep anchor 复用旧 wineserver) 的首帧标记由会话结束
+        // 的 ResetSessionState 统一复位; 这里防御会话内 root 切换 — pending
+        // root 机制下旧 root 可能尚未销毁, 会话结束清理不会触发, firstFrame_
+        // 仍是 true 会导致新 root 首帧不注入 enter, 桌面不激活 (症状: 桌面
+        // 只在点击时才刷新, regedit 打开内容不完整, 菜单弹出后释放即关)
+        ResetFirstFrame();
         FireToplevelEvent(sd->toplevelId, "desktop_root", "{}");
+    }
 }
 
 // subsurface 帧分发: Desktop 模式存 layer 在 TakeToplevelFrame 中合成;
