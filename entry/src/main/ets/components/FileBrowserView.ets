@@ -822,6 +822,8 @@ export struct FileBrowserView {
                 // 点击, 点空白仅关闭菜单, 与系统文件管理器行为一致
                 .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress,
                   { modalMode: ModalMode.TARGET_WINDOW })
+                .bindContextMenu(this.fileMenu(entry), ResponseType.RightClick,
+                  { modalMode: ModalMode.TARGET_WINDOW })
               } else {
                 ListItem() {
                   this.fileRow(entry)
@@ -830,6 +832,8 @@ export struct FileBrowserView {
                 .hoverEffect(HoverEffect.Highlight)
                 // modalMode 同上方 exe 分支: 菜单外点击仅关菜单, 不穿透下层
                 .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress,
+                  { modalMode: ModalMode.TARGET_WINDOW })
+                .bindContextMenu(this.fileMenu(entry), ResponseType.RightClick,
                   { modalMode: ModalMode.TARGET_WINDOW })
                 .onClick(() => {
                   if (entry.isDir) {

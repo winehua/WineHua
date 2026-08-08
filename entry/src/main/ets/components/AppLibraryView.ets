@@ -665,7 +665,10 @@ export struct AppLibraryView {
     .onClick(() => this.launch(entry))
     .hoverEffect(HoverEffect.Highlight)
     // modalMode 同 FileBrowserView 注: 默认点击穿透下层, TARGET_WINDOW 菜单外点击仅关菜单
+    // 平板长按 + PC 右键双触发: 不同 ResponseType 独立绑定互不覆盖
     .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress,
+      { modalMode: ModalMode.TARGET_WINDOW })
+    .bindContextMenu(this.entryMenu(entry), ResponseType.RightClick,
       { modalMode: ModalMode.TARGET_WINDOW })
   }
 
@@ -799,6 +802,8 @@ export struct AppLibraryView {
               .hoverEffect(HoverEffect.Highlight)
               // modalMode 同上方 Grid 分支注释
               .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress,
+                { modalMode: ModalMode.TARGET_WINDOW })
+              .bindContextMenu(this.entryMenu(entry), ResponseType.RightClick,
                 { modalMode: ModalMode.TARGET_WINDOW })
             }
             .backgroundColor($r('app.color.card_bg'))
