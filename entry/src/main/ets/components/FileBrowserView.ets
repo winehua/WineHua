@@ -747,7 +747,9 @@ export struct FileBrowserView {
       if (this.prefixReady) {
         Row() {
           if (!this.atRootList) {
+            // 与右侧"粘贴/系统文件管理/导入"统一 32 高度, 避免默认 40 显得突兀
             Button('← 上级目录')
+              .height(32)
               .backgroundColor($r('app.color.control_bg'))
               .onClick(this.goUp)
           }
@@ -805,14 +807,20 @@ export struct FileBrowserView {
                 }
                 .backgroundColor($r('app.color.card_bg'))
                 .hoverEffect(HoverEffect.Highlight)
-                .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress)
+                // modalMode: 默认 AUTO 当前等同 NONE — 菜单外点击穿透给下层
+                // (其它行/目录会同时响应). TARGET_WINDOW 使应用窗口不接收菜单外
+                // 点击, 点空白仅关闭菜单, 与系统文件管理器行为一致
+                .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress,
+                  { modalMode: ModalMode.TARGET_WINDOW })
               } else {
                 ListItem() {
                   this.fileRow(entry)
                 }
                 .backgroundColor($r('app.color.card_bg'))
                 .hoverEffect(HoverEffect.Highlight)
-                .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress)
+                // modalMode 同上方 exe 分支: 菜单外点击仅关菜单, 不穿透下层
+                .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress,
+                  { modalMode: ModalMode.TARGET_WINDOW })
                 .onClick(() => {
                   if (entry.isDir) {
                     this.enterDir(entry.name);

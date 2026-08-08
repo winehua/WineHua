@@ -626,13 +626,17 @@ export struct AppLibraryView {
     // 长按手势派发与实体节点不同, 挂 GridItem 上实测长按菜单不弹出
     .onClick(() => this.launch(entry))
     .hoverEffect(HoverEffect.Highlight)
-    .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress)
+    // modalMode 同 FileBrowserView 注: 默认点击穿透下层, TARGET_WINDOW 菜单外点击仅关菜单
+    .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress,
+      { modalMode: ModalMode.TARGET_WINDOW })
   }
 
   build() {
     Column() {
       // 首行: 搜索框 + 扫描入口 (扫描固定最右; 菜单: 扫描开始菜单 / 扫描 Z: 目录)。
       // 页头不放"应用库"大标题 — 侧栏已标识当前页, 标题只占纵向空间
+      // 间距必须加在"扫描"侧: layoutWeight(1) 组件的 margin / 父容器 space 在剩余
+      // 空间分配时不扣除, 加在 Search 上会被吸收 (两版实测均无效)
       Row() {
         Search({ placeholder: '搜索应用名称或路径' })
           .height(36)
@@ -642,8 +646,9 @@ export struct AppLibraryView {
           })
         Text('扫描')
           .fontColor($r('app.color.accent'))
-          .padding({ left: 12, top: 4, bottom: 4 })
-          .bindMenu(this.scanMenu())
+          .padding({ left: 16, top: 4, bottom: 4 })
+          // modalMode 同 bindContextMenu 处注释: 默认菜单外点击穿透下层
+          .bindMenu(this.scanMenu(), { modalMode: ModalMode.TARGET_WINDOW })
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
@@ -744,7 +749,9 @@ export struct AppLibraryView {
               // 手势挂在行实体节点上 (与重构前一致, 见 Grid 卡片同注)
               .onClick(() => this.launch(entry))
               .hoverEffect(HoverEffect.Highlight)
-              .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress)
+              // modalMode 同上方 Grid 分支注释
+              .bindContextMenu(this.entryMenu(entry), ResponseType.LongPress,
+                { modalMode: ModalMode.TARGET_WINDOW })
             }
             .backgroundColor($r('app.color.card_bg'))
             // key 规则同上方 Grid 分支注释 (带名称/收藏/图标, 强制变更行重建)
