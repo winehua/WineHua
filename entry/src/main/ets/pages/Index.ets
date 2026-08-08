@@ -54,7 +54,12 @@ struct Index {
   private screenW: number = 0;
   private screenH: number = 0;
   private static readonly FLOAT_W: number = 216;
-  private static readonly FLOAT_H: number = 135;
+  // 悬浮窗高度 (vp): 不写死 — 按屏幕比例随 FLOAT_W 折算 (aboutToAppear),
+  // 与 Wine 桌面帧比例严格一致 (桌面分辨率 = setOutputSize(物理屏/scale),
+  // 比例恒等于物理屏比例)。比例不匹配时 renderer letterbox (ComputeFitRect)
+  // 保比例缩放会在小窗内补出黑边。初值 135 仅作屏幕查询失败的回落
+  // (对应回落分辨率 640x400 的比例)。
+  @State floatH: number = 135;
   private static readonly FLOAT_MARGIN_TOP: number = 80;
   private static readonly FLOAT_MARGIN_RIGHT: number = 12;
   // -- 断点镜像 (Step 4): sm 底部 Tabs / md·lg 左侧导航 --
@@ -162,6 +167,8 @@ struct Index {
       this.screenW = 640;
       this.screenH = 400;
     }
+    // 悬浮窗高度随屏幕比例折算: 与桌面帧比例一致, 消除 letterbox 黑边
+    this.floatH = Math.round(Index.FLOAT_W * this.screenH / this.screenW);
     this.floatPosX = this.screenW - Index.FLOAT_W - Index.FLOAT_MARGIN_RIGHT;
     this.floatPosY = Index.FLOAT_MARGIN_TOP;
   }
@@ -401,9 +408,10 @@ struct Index {
     }
     .width('100%').height('100%')
     .visibility(this.launcherVisible ? Visibility.Visible : Visibility.Hidden)
-    // Layer 1: 桌面层容器 — 悬浮窗态 (launcherVisible) = 216×135 缩略窗浮于
-    // 启动器右上角 (点击任意处进全屏 / 按住拖动挪位); 全屏态 = 铺满全屏。
-    // 缩略显示依赖 renderer letterbox (ComputeFitRect) 等比缩放全屏 Wine 帧;
+    // Layer 1: 桌面层容器 — 悬浮窗态 (launcherVisible) = FLOAT_W×floatH 缩略
+    // 窗浮于启动器右上角 (点击任意处进全屏 / 按住拖动挪位); 全屏态 = 铺满全屏。
+    // 缩略显示依赖 renderer letterbox (ComputeFitRect) 等比缩放全屏 Wine 帧,
+    // floatH 按屏幕比例折算保证小窗与桌面帧同比例 (无 letterbox 黑边);
     // 悬浮态 desktopLauncherVisible=true 让 DesktopLayer.onSurfaceChanged 跳过
     // root resize, Wine 桌面分辨率保持全屏不被小窗带歪。
     if (this.desktopActive && this.desktopRootId > 0) {
@@ -422,7 +430,7 @@ struct Index {
             .justifyContent(FlexAlign.Center)
             .padding({ top: 3, bottom: 3 })
             .backgroundColor('#66000000')
-            .position({ x: 0, y: Index.FLOAT_H - 26 })
+            .position({ x: 0, y: this.floatH - 26 })
             .hitTestBehavior(HitTestMode.None)
           }
           .width('100%').height('100%')
@@ -438,7 +446,7 @@ struct Index {
               .onActionUpdate((ev: GestureEvent) => {
                 // 钳制基于实际坐标: 悬浮窗左上角 ∈ [0, screen - FLOAT]
                 const maxX = Math.max(this.screenW - Index.FLOAT_W, 0);
-                const maxY = Math.max(this.screenH - Index.FLOAT_H, 0);
+                const maxY = Math.max(this.screenH - this.floatH, 0);
                 this.floatPosX = Math.min(Math.max(this.floatPanStartX + ev.offsetX, 0), maxX);
                 this.floatPosY = Math.min(Math.max(this.floatPanStartY + ev.offsetY, 0), maxY);
               })
@@ -447,7 +455,7 @@ struct Index {
         }
       }
       .width(this.launcherVisible ? Index.FLOAT_W : '100%')
-      .height(this.launcherVisible ? Index.FLOAT_H : '100%')
+      .height(this.launcherVisible ? this.floatH : '100%')
       // position 绝对定位 (vp, 相对根 Stack 左上角): 初始右上角, 拖动时浮
       // 动窗跟手指走, 全屏态 0,0 无影响 (宽度铺满)
       .position(this.launcherVisible
