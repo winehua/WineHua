@@ -20,6 +20,9 @@ struct Index {
   private env = WineEnvService.getInstance();
   // -- 页面镜像 (WineEnvService notify 驱动) --
   @State state: string = 'idle';
+  // 会话存活派生 (desktopActive || 用户进程在跑, service 内重算) —
+  // "运行中/已就绪"文案与配色判据 (对齐 main-ui 状态机设计)
+  @State sessionAlive: boolean = false;
   @State prefixReady: boolean = false;
   @State statusText: string = '检测中...';
   @State initOverlayVisible: boolean = false;
@@ -44,6 +47,7 @@ struct Index {
     const env = this.env;
     const mirror = (): void => {
       this.state = env.engineState;
+      this.sessionAlive = env.sessionAlive;
       this.prefixReady = env.prefixReady;
       this.statusText = env.statusText;
       this.initOverlayText = env.initOverlayText;
@@ -214,8 +218,23 @@ struct Index {
     }
   }
 
+  // 重置确认弹窗 (对齐 main-ui 设置页): 重置会清空整个 Wine 容器, 误触不可逆
   private quickReset = (): void => {
-    this.env.doReset();
+    AlertDialog.show({
+      title: '重置 Wine 引擎',
+      message: '将清空整个 Wine 容器（包括所有已安装程序和存档），且不可恢复。确定继续？',
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '重置',
+        fontColor: '#ff5555',
+        action: () => {
+          this.env.doReset();
+        }
+      }
+    });
   }
 
   private quickRestart = (): void => {
@@ -288,15 +307,41 @@ struct Index {
     }
   }
 
+  // 状态配色 (对齐 main-ui 状态机设计): 失败红 / 运行绿 / 就绪·进行中蓝 / 未启动灰。
+  // ready 按 sessionAlive 分色: 有会话=运行中绿, 无会话=已就绪蓝;
+  // ready-degraded (桌面准备中) 是进行中而非就绪, 用蓝不用绿
   private statusColor(): string {
-    if (this.state == 'ready' || this.state == 'ready-degraded') return '#4f4';
     if (this.state == 'failed') return '#f84';
-    if (this.state == 'starting' || this.state == 'stopping') return '#8cf';
-    return this.prefixReady ? '#8cf' : '#888';
+    if (this.state == 'ready') {
+      return this.sessionAlive ? '#4f4' : '#8cf';
+    }
+    if (this.state == 'starting' || this.state == 'stopping' || this.state == 'ready-degraded') {
+      return '#8cf';
+    }
+    return '#888';
   }
 
+  // 状态指示 (对齐 main-ui): 引擎 busy (初始化/解压/编排) 或 starting/stopping
+  // 用转圈动画 (语义=不确定时长等待); 其余状态回退 8vp 状态圆点
+  @Builder
+  statusIndicator() {
+    if (this.state == 'starting' || this.state == 'stopping' || this.initBusy || this.opBusy) {
+      LoadingProgress()
+        .width(14)
+        .height(14)
+        .color('#7db8ff')
+        .margin({ right: 6 })
+    } else {
+      Circle({ width: 8, height: 8 })
+        .fill(this.statusColor())
+        .margin({ right: 6 })
+    }
+  }
+
+  // 按钮使能判据 (对齐 main-ui 状态机设计): 统一走 service 的 isBusy()
+  // (initBusy/opBusy + starting/stopping 状态串), 不在页面里自造判据
   private engineBusy(): boolean {
-    return this.initBusy || this.opBusy;
+    return this.env.isBusy();
   }
 
   build() {
@@ -312,9 +357,7 @@ struct Index {
           .width('100%').padding({ top: 12, bottom: 6 })
 
         Row() {
-          Circle({ width: 8, height: 8 })
-            .fill(this.prefixReady ? '#4f4' : '#f84')
-            .margin({ right: 6 })
+          this.statusIndicator()
           Text(this.statusText)
             .fontColor(this.statusColor())
             .layoutWeight(1)
@@ -442,21 +485,6 @@ struct Index {
       //  右侧主内容区
       // ============================================================
       Column() {
-        // -- 标题栏 --
-        Row() {
-          Text($r('app.string.app_name'))
-            .fontWeight(FontWeight.Bold).fontColor('#fff')
-
-          Text(this.statusText)
-            .fontColor(this.statusColor())
-            .margin({ left: 12 }).layoutWeight(1)
-            .maxLines(1)
-        }
-        .width('100%')
-        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-        .backgroundColor('#1a1a1a')
-        .alignItems(VerticalAlign.Center)
-
         // -- 文件浏览器 --
         if (this.prefixReady) {
           Row() {
@@ -514,8 +542,47 @@ struct Index {
       .backgroundColor('#111')
     }
     .width('100%').height('100%')
-    if (this.initOverlayVisible && !this.prefixReady) {
+    // init overlay 显隐只由状态机管理 (state:ready 才隐藏) — 曾附加
+    // !prefixReady 条件, 暖启动/热重启时整个编排过程没有任何可见反馈。
+    // 模态化: 全屏半透明遮罩吞掉所有触摸, 初始化/停止编排期间防止点重
+    // 背后的操作按钮 (重入风险)。失败给 重试/重置 自救入口 (对齐 main-ui)
+    if (this.initOverlayVisible) {
       Column() {
+      Column() {
+      if (this.initFailed) {
+        Text('初始化失败')
+          .fontSize(20)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#ff5555')
+          .margin({ bottom: 8 })
+        Text(this.initOverlayText)
+          .fontSize(15)
+          .fontColor('#aeb8c6')
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ bottom: 18 })
+        Row({ space: 12 }) {
+          Button('重试')
+            .layoutWeight(1)
+            // 走编排重启而非裸 doInit: 失败时可能已有半个会话
+            // (explorer 已起但 prefix 轮询超时等), 裸 doInit 会双开桌面
+            .onClick(() => this.env.restartEngine())
+          Button('重置环境')
+            .layoutWeight(1)
+            .backgroundColor('#633')
+            .onClick(this.quickReset)
+        }
+        .width('100%')
+        // 失败终态的出口: overlay 常驻会把用户困在卡片上; 关闭后由侧栏
+        // 按钮矩阵承接自救 (重置/重启/初始化) — 同 main-ui "返回启动器"语义
+        Text('关闭')
+          .fontSize(14)
+          .fontColor('#aeb8c6')
+          .margin({ top: 16 })
+          .onClick(() => {
+            this.env.dismissFailedInit();
+          })
+      } else {
         LoadingProgress()
           .width(42)
           .height(42)
@@ -532,12 +599,17 @@ struct Index {
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
+      }
       .width(360)
       .padding({ left: 28, right: 28, top: 26, bottom: 26 })
       .backgroundColor('#20242b')
       .borderRadius(8)
       .alignItems(HorizontalAlign.Center)
       .shadow({ radius: 18, color: '#66000000', offsetX: 0, offsetY: 8 })
+      }
+      .width('100%').height('100%')
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor('#99000000')
     }
     }
     .width('100%').height('100%')
