@@ -1,7 +1,8 @@
 export const startServer: (sockPath: string) => boolean;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
-  homeDir: string, automationMode?: boolean, prefixMode?: string, d3dBackend?: string) => number;
+  homeDir: string, automationMode?: boolean, prefixMode?: string, d3dBackend?: string,
+  wineLang?: string) => number;
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;
@@ -70,7 +71,7 @@ export const sendScrollEvent: (toplevelId: number, axis: number, value: number, 
 export const notifyToplevelResize: (toplevelId: number, w: number, h: number) => void;
 export const takeWindowMask: (toplevelId: number) => { w: number, h: number, buffer: ArrayBuffer } | null;
 export const setToplevelVisible: (toplevelId: number, visible: boolean) => void;
-export const getProcessList: () => Array<{pid: number, name: string, path: string, state: string}>;
+export const getProcessList: () => Array<{pid: number, name: string, path: string, state: string, desktopShell: boolean}>;
 export const killProcess: (pid: number) => boolean;
 export const termRun: (cols: number, rows: number, cb: (data: ArrayBuffer) => void, onExit: () => void) => number;
 export const termSend: (data: ArrayBuffer) => void;

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <atomic>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 // InputManager: 统一输入事件管理器
@@ -62,6 +63,12 @@ public:
     // -- 状态重置 (Seat resource destroy 时调用) --
     void ResetPointerEnter();
     void ResetKeyboardEnter();
+
+    // -- Wine 会话终结统一收口 (WaylandServer::ResetSessionState 调用) --
+    // 全量复位会话级状态 (焦点/按键/修饰键/指针位置/可见性表), 使下一次
+    // 引擎启动 (冷/热) 从与冷启动一致的基线开始 — 热重启复用同一进程,
+    // 任何"只清不重置"的字段都会跨会话残留 (卡键/修饰键污染/焦点漂移)
+    void ResetSessionState();
 
     // surface 销毁时重置焦点, 防止后续 Inject*Leave 引用已销毁的 surface
     // 如果不重置, 会导致 Wayland 协议错误 "invalid object" → Wine 断开连接

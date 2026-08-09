@@ -311,7 +311,6 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     std::string midiSoundfontPath = std::string(binDir) + "/../audio/winehua-gm.sf2";
     setenv("MIDI_SOUNDFONT_PATH", midiSoundfontPath.c_str(), 1);
     setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
-    setenv("LANG", "zh_CN.UTF-8", 1);
 }
 
 static void apply_entry_param_env_overrides(const std::vector<std::string>& envOverrides)

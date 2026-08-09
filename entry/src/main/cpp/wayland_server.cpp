@@ -3,6 +3,7 @@
 #include "input_manager.h"
 #include "xdg_shell.h"
 #include "fps_counter.h"
+#include "wine_process.h"
 #include "compositor/debug_assert.h"
 #include "include/xdg-shell-server-protocol.h"
 #include <algorithm>
@@ -87,6 +88,12 @@ bool WaylandServer::Start(const std::string& socketPath) {
 void WaylandServer::Stop() {
     if (!running_) return;
     running_ = false;
+    // 主动清空全部 toplevel: stopAll 强杀 Wine 进程时, wl_display_terminate
+    // 在 client 断开事件被 dispatch 之前终止事件循环, 依赖断开事件触发的
+    // OnToplevelDestroyed 不会执行 → ToplevelManager 残留旧 toplevel (重启后
+    // 旧窗口画面共存、占 zOrder、不响应事件)。此处显式遍历逐个收口并补发
+    // destroyed 通知给 ArkTS (让 Wine 子窗口正确关闭)
+    DestroyAllToplevels();
     InputManager::GetInstance()->Shutdown();
     Seat::GetInstance()->Unregister();
     if (display_) wl_display_terminate(display_);
@@ -115,6 +122,28 @@ void WaylandServer::EventLoop() {
             OH_LOG_INFO(LOG_APP, "[WL-STAT] toplevels=%{public}zu surfaces=%{public}zu renderers=%{public}zu",
                         toplevelMgr_.ToplevelResourceCount(), toplevelMgr_.ToplevelSurfaceCount(), renderers);
         }
+    }
+}
+
+void WaylandServer::DestroyAllToplevels() {
+    // 收集 id (锁内), 逐个收口 (锁外): OnToplevelDestroyed 内部重新拿锁,
+    // FireToplevelEvent 发 ArkTS 事件不应持 compositor 锁。模拟正常 client
+    // 断开路径 (wl_core.cpp surface_destroy) 的清理 + destroyed 通知 —
+    // stopAll 强杀 Wine 后该路径不执行, 导致 toplevel 残留 + ArkTS 子窗口不关。
+    // 桌面 root 在内时 OnToplevelDestroyed 内部会 ResetSessionState (幂等)。
+    std::vector<uint32_t> ids;
+    {
+        auto lk = toplevelMgr_.Lock();
+        for (const auto& [id, state] : toplevelMgr_.toplevels()) {
+            (void)state;
+            ids.push_back(id);
+        }
+    }
+    OH_LOG_INFO(LOG_APP, "[MW] DestroyAllToplevels: %{public}zu toplevel(s) teardown",
+                ids.size());
+    for (uint32_t id : ids) {
+        OnToplevelDestroyed(id);
+        FireToplevelEvent(id, "destroyed");
     }
 }
 
@@ -191,6 +220,20 @@ bool WaylandServer::ProcessMoveGrabMotion(wl_fixed_t wx, wl_fixed_t wy) {
 void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char* jsonData) {
     OH_LOG_INFO(LOG_APP, "[MW] FireToplevel id=%{public}u event=%{public}s data=%{public}s", id, event, jsonData);
     if (toplevelCb_) toplevelCb_(id, event, jsonData);
+    /* 桌面根出现 = 引擎消息通道的 evt:desktop-ready: LaunchPadMode 的 15s
+     * root 等待超时后状态机停在 ready-degraded, 靠这个补票升级为正式 ready。
+     * 挂在统一的 FireToplevelEvent 而非 LaunchPadMode 等待循环 — root 在任意
+     * 时刻出现 (含慢设备超时后姗姗来迟) 都能补发; ArkTS 只在 degraded 态消费,
+     * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。 */
+    if (!strcmp(event, "desktop_root")) {
+        // 桌面 root 首次出现: 把当前 running 的进程标记为桌面 shell 基础进程
+        // (desktop + 桌面出现前加入的 explorer 等), ArkTS 据此隐藏"结束"防误操作。
+        MarkDesktopShellProcesses();
+        if (gStateTsfn) {
+            napi_call_threadsafe_function(gStateTsfn, strdup("evt:desktop-ready"),
+                                          napi_tsfn_blocking);
+        }
+    }
 }
 
 void WaylandServer::RegisterToplevelResource(uint32_t toplevelId, wl_resource* tl) {
@@ -209,6 +252,7 @@ void WaylandServer::UnregisterToplevelResource(uint32_t toplevelId) {
 
 void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     std::vector<uint32_t> cascadePopups;
+    bool wasDesktopRoot = false;
     {
         auto lk = toplevelMgr_.Lock();
         toplevelMgr_.EraseToplevelLocked(toplevelId);
@@ -224,6 +268,11 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] desktop root toplevel #%{public}u destroyed, clearing root",
                         toplevelId);
             desktopRootToplevelId_ = 0;
+            wasDesktopRoot = true;
+            // 桌面会话由 explorer 主动结束: 随后 wineserver 跟随退出属正常终结,
+            // ProcMon 据此按 state:stopped 收口而非误报 failed (仅 desktop 模式
+            // 有 root, PC 窗口模式不会走到这)
+            MarkDesktopSessionEnded();
         }
         // 被抓取窗口销毁 → 复位 move grab, 防止悬空 grab 吞掉后续 motion
         if (moveGrab_.GetToplevelId() == toplevelId) {
@@ -243,12 +292,31 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
         // 已无 toplevel 身份的 surface。嵌套锁序同 RemovePopupDataLocked。
         toplevelMgr_.UnmapToplevelSurface(toplevelId);
     }
+    // 桌面会话终结统一收口 (锁外): 重置进程级一次性状态, 使下次引擎启动
+    // (热重启连旧 wineserver) 与冷启动同基线 — 状态生命周期按「Wine 会话」
+    // 而非「进程」建模。stopClient 路径由 napi_init 显式调用同函数。
+    // 注意: 不在 Wayland 线程销毁 renderer (DestroyToplevel → Shutdown →
+    // join 渲染线程 — 渲染线程可能卡在 eglSwapBuffers 等不可中断点,
+    // 同步 join 会永久阻塞 Wayland 事件循环, 热重启 explorer 连接无人
+    // 处理, 桌面永远起不来)。root renderer 的销毁由 ArkTS DesktopLayer
+    // onSurfaceDestroyed 负责 (缓存 rootId 配对销毁, 与创建对称)
+    if (wasDesktopRoot) ResetSessionState();
     // 通知 ArkTS 销毁 popup 子窗口 (锁外触发)
     for (uint32_t pid : cascadePopups) {
         char json[64];
         snprintf(json, sizeof(json), "{\"popupId\":%u}", pid);
         FireToplevelEvent(toplevelId, "popup_hide", json);
     }
+}
+
+void WaylandServer::ResetSessionState() {
+    // Wine 会话终结统一收口。只重置「进程级一次性/漂移状态」— 随 toplevel
+    // 销毁自愈的字段 (root/pending/taskbar, OnToplevelDestroyed 锁内清理)
+    // 不在这里重复, 避免锁外写非 atomic 字段与锁内读的竞态。
+    firstFrame_ = false;   // 热重启不重走 Start, 不重置则新会话首帧不注入 focus
+    moveGrab_.EndMoveGrab(toplevelMgr_);  // 幂等兜底 (grab 窗口非 root 时已随销毁复位)
+    InputManager::GetInstance()->ResetSessionState();
+    OH_LOG_INFO(LOG_APP, "[MW] session state reset (firstFrame/grab/input focus+keys)");
 }
 
 // RemovePopupDataLocked 已移至 ToplevelManager (compositor/toplevel_manager.cpp)
@@ -382,13 +450,13 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     wl_display* dpy = wl_client_get_display(client);
     xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
 
-    // 桌面 root 尺寸变化 → 同步更新 output 尺寸, 影响:
-    //   - wl_output 上报的物理尺寸
-    //   - xdg_toplevel_set_maximized / set_max_size 的基准值
-    //   - FindToplevelAt / RaiseToplevel 的边界判断
+    // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时
+    // setOutputSize (display 物理尺寸 / effectiveScale), root 的 resize 只反映
+    // ArkUI surface 波动 — 桌面退出时 launcherVisible 翻 true, 窗口退出全屏,
+    // XComponent 高度 1840→1683, 反写会把错误高度残留进 output, 下次热重启
+    // explorer 用 /desktop=shell,WxH 建桌面就少了这段高度 (上下被裁)。
     if (Policy().RootCompositing() && toplevelId == desktopRootToplevelId_) {
-        SetOutputSize(w, h);
-        OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize root=%{public}u → output %{public}dx%{public}d",
+        OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize root=%{public}u (output untouched) %{public}dx%{public}d",
                     toplevelId, w, h);
     } else {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u → %{public}dx%{public}d maximized=%{public}s",

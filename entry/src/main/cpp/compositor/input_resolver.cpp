@@ -68,12 +68,14 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
         static uint32_t sLastPicked = 0;
         if (fullscreenId != sLastPicked) {
             sLastPicked = fullscreenId;
+            int layerW = 0, layerH = 0;
+            const bool hasZC = compositor_.GetZeroCopyContentSizeLocked(fullscreenId, layerW, layerH);
             OH_LOG_INFO(LOG_APP,
                 "[Input] fs-pick tl=#%{public}u pri=%{public}llu zc=%{public}d"
-                " preFs=%{public}dx%{public}d buf=%{public}dx%{public}d → content=%{public}dx%{public}d",
+                " layer=%{public}dx%{public}d buf=%{public}dx%{public}d → content=%{public}dx%{public}d",
                 fullscreenId, static_cast<unsigned long long>(zst->FsPriority()),
-                compositor_.HasZeroCopyLayerForToplevelLocked(fullscreenId) ? 1 : 0,
-                zst->PreFsW(), zst->PreFsH(), zst->Width(), zst->Height(),
+                hasZC ? 1 : 0,
+                layerW, layerH, zst->Width(), zst->Height(),
                 transform.srcW, transform.srcH);
         }
     }

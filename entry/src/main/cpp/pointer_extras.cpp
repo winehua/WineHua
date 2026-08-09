@@ -238,6 +238,13 @@ bool PointerExtras::HasRelativePointer() const {
 void PointerExtras::SendRelativeMotion(double dx, double dy) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (relativePointers_.empty()) return;
+    // 系统性链路日志 (断点 5): 相对增量广播 — 确认增量实际发到 wine (对象数
+    // >0), 与 input_manager 差分 (断点 4) 配对; 高频抽样 120:1 (拖动只看趋势,
+    // 防刷爆 hilog — 测试需全量时改这里)
+    static uint32_t sRelMvLogN = 0;
+    if (++sRelMvLogN % 120 == 0)
+        OH_LOG_INFO(LOG_APP, "[PtrExt] rel_motion d=(%{public}.1f,%{public}.1f) objs=%{public}zu",
+                    dx, dy, relativePointers_.size());
     // 无加速输入设备: unaccel = accel 同值; utime 用单调时钟微秒 (wine 侧
     // 只读增量, 不读时间戳, 发 0 亦可 — 保留时间供诊断)
     const uint64_t us = std::chrono::duration_cast<std::chrono::microseconds>(

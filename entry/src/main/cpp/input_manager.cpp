@@ -146,10 +146,15 @@ wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
     wl_fixed_t wy = wl_fixed_from_double(FitUnmapDisplayY(lb, py));
     *outX = wx; *outY = wy;
 
-    OH_LOG_DEBUG(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
-                 " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f)",
-                 px, py, lb.offX, lb.offY, lb.dstW, lb.dstH, surfW, surfH, lb.srcW, lb.srcH,
-                 wl_fixed_to_double(wx), wl_fixed_to_double(wy));
+    // 系统性链路日志 (断点 1): letterbox 逆映射是"物理像素→桌面坐标"的关键,
+    // DEBUG 级别 release 下被滤掉 → 升 INFO + MOVE 高频抽样。分析鼠标问题时
+    // 与 TARGET 日志 (断点 2) 配对看: 此处输出桌面逻辑坐标, 后者换算到窗口局部
+    static uint32_t sCoordLogN = 0;
+    if (++sCoordLogN % 120 == 0)
+        OH_LOG_INFO(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
+                     " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f) n=%{public}u",
+                     px, py, lb.offX, lb.offY, lb.dstW, lb.dstH, surfW, surfH, lb.srcW, lb.srcH,
+                     wl_fixed_to_double(wx), wl_fixed_to_double(wy), sCoordLogN);
     return wx;
 }
 
@@ -201,6 +206,31 @@ void InputManager::ResetKeyboardEnter() {
     keyboardFocusedToplevel_ = 0;
     keyboardFocusedSurface_ = nullptr;
     OH_LOG_INFO(LOG_APP, "[Input] ResetKeyboardEnter OK");
+}
+
+void InputManager::ResetSessionState() {
+    // Wine 会话结束后的全量状态复位。残留风险: 焦点指向已销毁的 toplevel;
+    // 按下/修饰键残留会让新会话卡键 (会话结束时 Ctrl 按着, 新会话所有按键
+    // 都带 Ctrl); 指针位置/相对增量基线污染新会话首次操作。只清状态不发
+    // 事件 — client 已断开, send 到已销毁 surface 会触发协议错误。
+    ResetPointerEnter();
+    ResetKeyboardEnter();
+    pressedButtons_ = 0;
+    modifiers_depressed_ = 0;
+    modifiers_latched_ = 0;
+    modifiers_locked_ = 0;
+    modifiers_group_ = 0;
+    lastGlobalPtrX_ = 0;
+    lastGlobalPtrY_ = 0;
+    lastLocalX_ = 0;
+    lastLocalY_ = 0;
+    hasLastLocal_ = false;
+    lastPressMs_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(visibleMutex_);
+        toplevelVisible_.clear();
+    }
+    OH_LOG_INFO(LOG_APP, "[Input] session state reset (focus/buttons/modifiers/position/visible)");
 }
 
 void InputManager::OnSurfaceDestroyed(wl_resource* surface) {
@@ -360,10 +390,28 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             const double localY = (logicalY - target.originY) / target.scale;
             wx = wl_fixed_from_double(localX);
             wy = wl_fixed_from_double(localY);
+            // 系统性链路日志 (断点 2): 目标解析结果 — 手指桌面坐标命中哪个窗口/
+            // 区域, 全屏时 origin+scale 即 fit 几何 (内容/黑边), local 是最终
+            // 注入的 wine 坐标。PRESS/RELEASE 全量 (点按诊断核心), MOVE 高频
+            // 抽样 120:1 (拖动只看轨迹趋势, 防刷爆 hilog — 测试需全量时改这里)
+            static uint32_t sTargetLogN = 0;
+            if (action != ACT_MOVE || ++sTargetLogN % 120 == 0)
+                OH_LOG_INFO(LOG_APP, "[Input] TARGET a=%{public}d px=(%{public}.0f,%{public}.0f) → tl=%{public}u"
+                            " surf=%{public}p swallow=%{public}d origin=(%{public}d,%{public}d) scale=%{public}.2f"
+                            " → local=(%{public}.1f,%{public}.1f)",
+                            action, logicalX, logicalY, target.toplevelId,
+                            static_cast<void*>(target.surface),
+                            target.swallow ? 1 : 0, target.originX, target.originY,
+                            target.scale, localX, localY);
         } else {
             // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标)
             wx = wl_fixed_from_double(logicalX - ws->GetToplevelX(tl));
             wy = wl_fixed_from_double(logicalY - ws->GetToplevelY(tl));
+            // 目标 surface 不可用是异常路径 (正常应命中 root), WARN 全量
+            OH_LOG_WARN(LOG_APP, "[Input] TARGET-FALLBACK a=%{public}d px=(%{public}.0f,%{public}.0f) tl=%{public}u"
+                        " → local=(%{public}.1f,%{public}.1f) (no surf)",
+                        action, logicalX, logicalY, tl,
+                        logicalX - ws->GetToplevelX(tl), logicalY - ws->GetToplevelY(tl));
         }
     } else {
         CoordTransform(px, py, tl, &wx, &wy);
@@ -389,17 +437,27 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     // 增量累积。host 不做模式判断 — 绝对 motion 照常注入 (相对模式下被 wine
     // 丢弃), 同时把注入坐标 (surface 局部空间) 差分出增量, 有 relative 对象
     // 就入队 REL_MOTION 转发。对象存在 ⇔ wine 判定当前为相对模式。
-    // 基准只在 MOVE 时更新: PRESS/RELEASE 不发增量也不该移动基准, 否则按下
-    // 瞬间的坐标跳变会污染后续增量 (wine 侧位置并未因 press 变化)。
+    // 基准在 MOVE 与「PRESS 的 enter 定位」时更新 — 两者都真实改变 wine
+    // 光标位置 (enter 是相对模式下唯一被消费的绝对坐标); 其余 PRESS/RELEASE
+    // 不发增量也不移动基准, 避免按下瞬间坐标跳变污染后续增量。
     if (action == ACT_MOVE) {
         const double localX = wl_fixed_to_double(wx);
         const double localY = wl_fixed_to_double(wy);
         if (hasLastLocal_) {
             const double dx = localX - lastLocalX_;
             const double dy = localY - lastLocalY_;
-            if ((dx != 0 || dy != 0) && PointerExtras::GetInstance()->HasRelativePointer())
+            if ((dx != 0 || dy != 0) && PointerExtras::GetInstance()->HasRelativePointer()) {
                 Enqueue(InputEvent::REL_MOTION, 0, nullptr,
                         wl_fixed_from_double(dx), wl_fixed_from_double(dy), 0, 0);
+                // 系统性链路日志 (断点 4): 相对模式增量差分 — 相对模式下绝对
+                // motion 被 wine 丢弃, 增量是光标唯一移动来源; 高频抽样 120:1
+                // (拖动只看增量趋势, 与 SendRelativeMotion 断点 5 配对; 测试需
+                // 全量时改这里)
+                static uint32_t sRelLogN = 0;
+                if (++sRelLogN % 120 == 0)
+                    OH_LOG_INFO(LOG_APP, "[Input] REL d=(%{public}.1f,%{public}.1f) base=(%{public}.1f,%{public}.1f)",
+                                dx, dy, lastLocalX_, lastLocalY_);
+            }
         }
         lastLocalX_ = localX;
         lastLocalY_ = localY;
@@ -426,27 +484,37 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
 
     switch (action) {
         case ACT_PRESS: {
-            // 每次都发 enter: Wine 在两次点击间需要新的 pointer focus。
-            // 相对模式 (relative_pointer 对象存在) 且聚焦已建立时跳过:
-            // wine 的 enter 处理会把光标跳到 enter 坐标 (pointer_handle_enter
-            // → motion_internal, 相对模式只丢弃 motion 不丢弃 enter) — 点击
-            // 瞬间游戏内光标瞬移到设备绝对位置 (实测偏移量 = 光标距屏幕
-            // 中心的偏移)。相对模式聚焦持续有效, 无需重发 enter。
-            const bool relSkipEnter = PointerExtras::GetInstance()->HasRelativePointer() &&
-                                      pointerFocusedSurface_.load() != nullptr;
-            if (!relSkipEnter) {
-                wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
-                if (surf) {
-                    // desktop: surface 级比较 (菜单层与父窗口同 toplevelId);
-                    // 其余模式保持 toplevel 级比较 (一窗一 surface, 语义等价)
-                    wl_resource* focused = pointerFocusedSurface_.load();
-                    const bool needLeave = targetSurf
-                        ? (focused != nullptr && focused != surf)
-                        : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
-                    if (needLeave)
-                        Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
-                    Enqueue(InputEvent::PTR_ENTER, tl, surf, wx, wy, 0, 0);
-                }
+            // 每次点击都重发 enter 定位: 触摸屏是绝对定位设备, 点按 =
+            // "光标跳到手指位置再点击" — wine 的 pointer_handle_enter 更新
+            // 光标绝对位置。方向 A (wayland_pointer.c 静默校准): 相对模式下
+            // enter 走 NtUserSetCursorPos 静默路径, 只更新 wineserver 光标
+            // 位置不产生硬件输入 — 读绝对位置的老游戏 (红警2/模拟邻居) 点按
+            // 定位正常, 真 dinput 视角游戏 (PAL2) 增量差分通道不受污染
+            // (曾需 tapPositioning 开关二选一, 已删除: 两类游戏现在同时正常)。
+            // 桌面模式需 surface 级比较 (菜单层与父窗口同 toplevelId), 其余
+            // 模式保持 toplevel 级比较 (一窗一 surface, 语义等价)。
+            wl_resource* pressTargetSurf =
+                targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
+            // 系统性链路日志 (断点 3): relMode 仅诊断 (相对模式下 enter 走
+            // 静默校准, 行为与绝对模式一致)
+            OH_LOG_INFO(LOG_APP, "[Input] PRESS-ENTER tl=%{public}u surf=%{public}p"
+                        " relMode=%{public}d focused=%{public}p",
+                        tl, static_cast<void*>(pressTargetSurf),
+                        PointerExtras::GetInstance()->HasRelativePointer() ? 1 : 0,
+                        static_cast<void*>(pointerFocusedSurface_.load()));
+            if (pressTargetSurf) {
+                wl_resource* focused = pointerFocusedSurface_.load();
+                const bool needLeave = targetSurf
+                    ? (focused != nullptr && focused != pressTargetSurf)
+                    : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
+                if (needLeave)
+                    Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
+                Enqueue(InputEvent::PTR_ENTER, tl, pressTargetSurf, wx, wy, 0, 0);
+                // enter 定位真实改变 wine 光标位置 — 保持增量基线与 wine
+                // 光标一致, 防后续拖动漂移
+                lastLocalX_ = wl_fixed_to_double(wx);
+                lastLocalY_ = wl_fixed_to_double(wy);
+                hasLastLocal_ = true;
             }
             Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
             if (button) {

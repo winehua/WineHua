@@ -809,6 +809,7 @@ void EglRenderer::RenderLoop() {
             eglQuerySurface(display_, surface_, EGL_HEIGHT, &curH);
             if (curW == width_ && curH == height_) {
                 loopCount++;
+                ++skipFrames_;   // 诊断: 统计跳过 swap 的帧数
                 if (!waitForFrameTick()) break;
                 continue;
             }
@@ -973,6 +974,15 @@ void EglRenderer::RenderLoop() {
         const bool swapOk = eglSwapBuffers(display_, surface_) == EGL_TRUE;
         const uint64_t frameEndedUs = PerfNowUs();
         if (haveFrame) {
+            // 诊断: 每帧有帧 swap 都打印 — 对齐合成(MW-TAKE)时刻与上屏(swap)时刻,
+            // skip 累计 = 自上次上屏以来跳过多少次无帧循环 (帧被延迟多久)
+            OH_LOG_INFO(LOG_APP,
+                        "[MW-SWAP] tl=%{public}u loop=%{public}llu f=%{public}d/%{public}d/%{public}d skip=%{public}llu take=%{public}lluus swap=%{public}lluus",
+                        useToplevel, static_cast<unsigned long long>(loopCount),
+                        cpuFrame ? 1 : 0, zeroCopyFrame ? 1 : 0, zeroCopyGeometryFrame ? 1 : 0,
+                        static_cast<unsigned long long>(skipFrames_), takeUs,
+                        frameEndedUs - swapStartedUs);
+            skipFrames_ = 0;
             perf.Add(useToplevel, takeUs, uploadUs, frameEndedUs - swapStartedUs,
                      frameEndedUs - frameStartedUs, cpuFrame ? px.size() : 0, swapOk);
         }

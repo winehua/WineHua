@@ -55,19 +55,22 @@ inline int FitSizeDisplayH(const FitRect& t, int64_t h) { return t.srcH > 0 ? st
 inline double FitUnmapDisplayX(const FitRect& t, double px) { return t.dstW > 0 ? (px - t.offX) * t.srcW / t.dstW : 0.0; }
 inline double FitUnmapDisplayY(const FitRect& t, double py) { return t.dstH > 0 ? (py - t.offY) * t.srcH / t.dstH : 0.0; }
 
-// 全屏输入逆映射的内容尺寸选择 (渲染侧全屏几何的镜像):
-// - ZC 游戏 (toplevel 带 zero-copy GL 层): 全屏后 buffer 被 Wine 扩到输出尺寸,
-//   但画面是 GL 层按游戏内部分辨率渲染的 → 用 preFs (全屏前尺寸 = 游戏分辨率)
+// 全屏内容尺寸选择 (渲染/输入共用单一权威源, 渲染侧全屏几何的镜像):
+// - ZC 游戏 (toplevel 带 zero-copy GL 层): 画面是 GL 层按实际内容几何渲染的,
+//   全屏后 buffer 被 Wine 扩到输出尺寸但画面不变 → 用 layer 几何
+//   (zero-copy subsurface 层实际内容尺寸, vpDst 裁剪后 = egl_renderer 渲染
+//   视口同源值)。用 layer 而非「全屏前尺寸快照」: 后者只是窗口尺寸的近似,
+//   与画面真实内容可失配 (viewport 裁剪 / 游戏先扩 buffer 再 set_fullscreen),
+//   曾导致输入逆映射与渲染显示基准分裂 → 全屏游戏光标常数平移偏移。
 // - SHM 游戏: buffer 即画面, 扩到输出尺寸后内容填满整个 buffer → 用 buffer 尺寸
-// preFs 无效或与 buffer 同尺寸时两种解释等价, 恒用 buffer。
-// hasZeroCopyLayer 由调用方遍历合成层得到 (非纯函数部分, 故作参数传入)。
-inline void SelectFullscreenContentSize(int32_t preFsW, int32_t preFsH,
+// hasZeroCopyLayer 与 layerW/H 由调用方遍历合成层得到 (非纯函数部分, 故作
+// 参数传入); layer 无效 (0) 时退化用 buffer (与渲染视口层几何不可用一致)。
+inline void SelectFullscreenContentSize(int32_t layerW, int32_t layerH,
                                         int32_t bufW, int32_t bufH,
                                         bool hasZeroCopyLayer,
                                         int& outW, int& outH)
 {
-    const bool usePreFs = hasZeroCopyLayer && preFsW > 0 && preFsH > 0 &&
-                          (preFsW != bufW || preFsH != bufH);
-    outW = usePreFs ? preFsW : bufW;
-    outH = usePreFs ? preFsH : bufH;
+    const bool useLayer = hasZeroCopyLayer && layerW > 0 && layerH > 0;
+    outW = useLayer ? layerW : bufW;
+    outH = useLayer ? layerH : bufH;
 }

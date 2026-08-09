@@ -68,7 +68,17 @@ public:
     // 状态回调 (首帧到达 -> 通知 ArkTS)
     void SetStateCallback(StateCb cb) { stateCb_ = std::move(cb); }
     void FireState(const char* s) { if (stateCb_) stateCb_(s); }
+    // 会话内 root 切换防御: 新 root 出现时重置首帧标记 (pending root 机制下
+    // 旧 root 可能未销毁, 会话结束的 ResetSessionState 不会触发), 让新 root
+    // 首帧重新注入 focus。见 CheckDesktopRootOnCommit 的 fireDesktopRoot 分支
     void ResetFirstFrame() { firstFrame_ = false; }
+    // Wine 会话终结统一收口 (desktop root 销毁 / stopClient 时调用):
+    // 重置进程级一次性状态 (firstFrame_/输入焦点/按键/修饰键), 使下一次
+    // 引擎启动 (冷/热) 从与冷启动一致的基线开始 — 状态生命周期按「Wine
+    // 会话」建模, 而非按「进程」建模。热重启复用同一进程/同一 WaylandServer,
+    // 任何只初始化一次的字段都会跨会话残留 (firstFrame_ 曾导致热重启桌面
+    // 永不激活)。注意: 调用方须不在 toplevelMgr_ 锁内 (EndMoveGrab/Input 会拿锁)
+    void ResetSessionState();
 
     // toplevel 回调 (xdg_toplevel 生命周期 -> 通知 ArkTS 创建/销毁窗口)
     void SetToplevelCallback(ToplevelCb cb) { toplevelCb_ = std::move(cb); }
@@ -213,6 +223,11 @@ public:
 private:
     WaylandServer() = default;
     void EventLoop();
+    // stopAll 主动清空全部 toplevel: SIGKILL 强杀 Wine 后 client 断开事件
+    // 未被 dispatch (wl_display_terminate 提前终止事件循环), 依赖断开事件触发
+    // 的 OnToplevelDestroyed 不执行 → toplevel 残留 (重启后旧窗口画面共存、
+    // 占 zOrder、不响应事件)。此处显式遍历逐个收口并补发 destroyed 给 ArkTS。
+    void DestroyAllToplevels();
 
     // -- surface_commit 分段 (Phase 3B, 实现在 wl_core.cpp) --
     // 协议语义见各函数定义处注释; ShmCommitInfo 在 surface_data.h

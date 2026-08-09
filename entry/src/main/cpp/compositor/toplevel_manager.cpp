@@ -13,13 +13,6 @@ void ToplevelManager::ToplevelState::ApplyFullscreen(bool on) {
     fullscreen_ = on;
     // 全屏窗口锚定桌面原点: 合成按保比例缩放铺满, 不再使用浮动位置
     if (on && hasPosition_) AnchorToOrigin();
-    if (on) {
-        // 快照全屏前内容尺寸: Wine 回 configure 后 buffer 可能扩为输出尺寸,
-        // 但 ZC 游戏内部分辨率不变, 输入逆映射须用全屏前尺寸
-        // (input_resolver 全屏分支, 选择逻辑见 geometry.h)
-        if (preFsW_ == 0 && w_ > 0) preFsW_ = w_;
-        if (preFsH_ == 0 && h_ > 0) preFsH_ = h_;
-    }
     // 不变式守卫 (类注释): 全屏 toplevel 锚定 (0,0)
     MW_ASSERT(!on || !hasPosition_ || (x_ == 0 && y_ == 0),
               "fullscreen toplevel must be anchored at (0,0)");

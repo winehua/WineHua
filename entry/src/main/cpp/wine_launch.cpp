@@ -58,20 +58,8 @@ bool IsWinePrefixInitialized() {
     return IsWinePrefixInitialized(WINE_PREFIX);
 }
 
-// fork 模式下子进程退出先变僵尸、/proc/<pid> 不消失（NCP 模式由 appspawn 立即 reap）。
-// 存活检测必须识别僵尸，否则 wineboot 等待会白等到 kWinebootHangMs 超时。
-static bool IsProcessAliveNotZombie(pid_t pid) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
-    FILE* f = fopen(path, "r");
-    if (!f) return false;                       // /proc 消失 = 已退出
-    char buf[512];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = 0;
-    char* rp = strrchr(buf, ')');               // state 字段在最后一个 ')' 之后
-    return !(rp && rp[2] == 'Z');               // 僵尸 = 已退出
-}
+// IsProcessAliveNotZombie 已移至 wine_process.cpp (ProcMon / 停止编排共用),
+// 声明见 wine_process.h。
 
 // -- WoW64 syswow64 预填充辅助 --
 static bool EnsureDir(const std::string& path, mode_t mode)
@@ -372,7 +360,7 @@ static void PrepareDesktopSessionGraphicsEnv(const LaunchParams& params)
 // 避免在 wine_launch.cpp 复制第二份 broker 协议实现。
 
 static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
-                          const std::string& serializedEnv) {
+                          const std::string& serializedEnv, bool* desktopDegraded) {
     // serializedEnv 之前用于 NCP 直启 explorer 时嵌入 entryParams；
     // explorer 桌面模式已改为走 broker（通过 SpawnViaBroker 传输 env），
     // 此参数不再使用。
@@ -389,7 +377,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         !EnsureWow64Files(p->winehuaBin, p->prefixDir)) {
         OH_LOG_ERROR(LOG_APP, "[Launch-Async] external-PE prefix preparation failed");
         if (gStateTsfn)
-            napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+            napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
         return false;
     }
 
@@ -408,10 +396,14 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         if (wsRet != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver StartNativeChildProcess FAILED ret=%{public}d", (int)wsRet);
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineserver pid=%{public}d (via appspawn)", wsChildPid);
+        // 登记主 wineserver 为会话锚点: 入进程注册表 (PC 窗口 / Pad 桌面两条
+        // 路径共用此唯一 spawn 点, 一处登记全覆盖) → ProcMon 监视其存活,
+        // 非预期死亡上报 state:failed:wineserver; KillAllProcesses 也能杀到它
+        RegisterWineserver(wsChildPid);
         if (!WaitFor("wineserver socket", [p]() { return IsWineserverSocketReady(p->prefixDir); }, 5000, 100)) {
             OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver socket not detected, "
                         "wineboot will recover via server_connect retry+start_server");
@@ -419,7 +411,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     }
 
     if (gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-starting"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineboot"), napi_tsfn_blocking);
 
     gBrokerHomeDir = p->homeDir;
     StartBrokerServer();
@@ -438,6 +430,11 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         } else {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] cannot create prefix init marker: %{public}s",
                          initMarker.c_str());
+            /* 失败必须发声: 此前这里静默 return false, LaunchThreadFunc 不再发任何
+             * 消息, ArkTS 永久停在 "正在初始化" spinner 且无重试入口。 */
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"),
+                                              napi_tsfn_blocking);
             return false;
         }
         auto* ws = WaylandServer::GetInstance();
@@ -448,12 +445,17 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         // session can leave Wayland/audio/graphics services half initialized.
         const char* desktopTag =
             (ws->IsDesktopMode() || p->automationMode) ? "__winehua_desktop__|" : "";
+        // wineboot 语言跟随设置页 wineLang (zh_CN/en_US), 与桌面会话一致:
+        // entryParams 内 __env 覆盖 setup_wine_env 基线; LANG/LC_ALL 必须同设
+        // (musl 无 locale 数据, Wine 只读 LC_ALL 兜底解析 LCID)
+        const std::string wbLangEnv = "|__env=LANG=" + p->wineLang + ".UTF-8" +
+            "|__env=LC_ALL=" + p->wineLang + ".UTF-8";
 #ifdef __aarch64__
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" + desktopTag +
-            "wineboot|--init|__env=WINEPREFIX=" + p->prefixDir;
+            "wineboot|--init|__env=WINEPREFIX=" + p->prefixDir + wbLangEnv;
 #else
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" + desktopTag +
-            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir;
+            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir + wbLangEnv;
 #endif
         // 注意: wineboot --init 只需要初始化 prefix, 不传完整环境变量以节省 entryParams 长度
         NativeChildProcess_Args childArgs = {};
@@ -466,7 +468,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         if (ret != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot FAILED ret=%{public}d", (int)ret);
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
@@ -489,7 +491,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot hung for %{public}d s, abort",
                          kWinebootHangMs / 1000);
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         /* wineboot 已退出: registry 仍在 wineserver flush 途中 (实测落盘延迟
@@ -499,7 +501,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
                      60000, 200)) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot exited but prefix incomplete, abort");
             if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("wineboot-failed"), napi_tsfn_blocking);
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot completed (%{public}d s)", aliveMs / 1000);
@@ -521,7 +523,8 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
          * force=false, 仅当 wine.inf 时间戳变化 (升级) 才重装。 */
         OH_LOG_INFO(LOG_APP, "[Launch-Async] prefix ready; seeding wineboot boot event (--init)...");
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" +
-            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir;
+            "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir +
+            "|__env=LANG=" + p->wineLang + ".UTF-8|__env=LC_ALL=" + p->wineLang + ".UTF-8";
         NativeChildProcess_Args childArgs = {};
         childArgs.entryParams = const_cast<char*>(entryParams.c_str());
         NativeChildProcess_Options options = {};
@@ -532,20 +535,38 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         if (ret != NCP_NO_ERROR) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init FAILED ret=%{public}d",
                          (int)ret);
-        } else {
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init pid=%{public}d", childPid);
-            /* 与首启相同的等待纪律: wineboot 活着就继续等, 大超时仅作挂死
-             * 安全网。wineboot 退出即 SetEvent, explorer 即可放行。 */
-            char procPath[64];
-            snprintf(procPath, sizeof(procPath), "/proc/%d", childPid);
-            constexpr int kWinebootHangMs = 3 * 60 * 1000;
-            int aliveMs = 0;
-            while (IsProcessAliveNotZombie(childPid) && aliveMs < kWinebootHangMs) {
-                usleep(500000);
-                aliveMs += 500;
-            }
-            OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done (%{public}d ms)",
-                        aliveMs);
+            /* 播种失败必须上报, 不能再只记日志放行: 缺少这次 wineboot,
+             * explorer 的 run_wineboot 永远等不到 boot 事件, 桌面出不来但
+             * 状态机曾照样发 state:ready (静默失败)。注意 NCP 子进程由
+             * appspawn 立即 reap, host 拿不到退出码 — 可判定的终点就是
+             * "spawn 成功 + wineboot 退出后 wineserver 仍存活"。 */
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"),
+                                              napi_tsfn_blocking);
+            return false;
+        }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init pid=%{public}d", childPid);
+        /* 与首启相同的等待纪律: wineboot 活着就继续等, 大超时仅作挂死
+         * 安全网。wineboot 退出即 SetEvent, explorer 即可放行。 */
+        constexpr int kWinebootHangMs = 3 * 60 * 1000;
+        int aliveMs = 0;
+        while (IsProcessAliveNotZombie(childPid) && aliveMs < kWinebootHangMs) {
+            usleep(500000);
+            aliveMs += 500;
+        }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] wineboot --init done (%{public}d ms)",
+                    aliveMs);
+        // wineboot 已退出: 若它因 wineserver 死亡而失败, 后续 explorer/ready 全是空转。
+        // 判定用"wineserver socket 就绪"而非 GetWineserverPid() 存活: 热重启时旧
+        // wineserver 可能仍存活 (wine 单实例, 新 spawn 的 wineserver 连接旧实例后
+        // 正常退出), 此时 GetWineserverPid 指向新 pid 已死但 socket 仍在旧实例手里 —
+        // 以 socket 就绪为准 (master 同款判定, 不误报热重启为 failed)。
+        if (!IsWineserverSocketReady(p->prefixDir)) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver socket not ready after wineboot seed, abort");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
+                                              napi_tsfn_blocking);
+            return false;
         }
     }
 
@@ -561,6 +582,9 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     {
         auto* ws = WaylandServer::GetInstance();
         ws->SetDesktopRootRecognitionEnabled(true);
+        // 新桌面会话开始: 清除上次会话的桌面 shell 标记守卫, 使本次 root 出现时
+        // 重新标记基础进程 (desktop + explorer 等) 为不可由用户结束。
+        BeginDesktopSession();
         int dw = ws->outputW_ > 0 ? ws->outputW_ : 1280;
         int dh = ws->outputH_ > 0 ? ws->outputH_ : 720;
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop size: outputW=%{public}d outputH=%{public}d → %{public}dx%{public}d",
@@ -590,36 +614,38 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         // broker 自动添加 homeDir 前缀、序列化 env、创建 audio bootstrap fd
         int32_t exPid = SpawnViaBroker(exEntry, explorerEnv);
         OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer desktop pid=%{public}d (via broker)", exPid);
-        if (exPid > 0) {
-            AddProcess(exPid, "desktop", -1);
-            ws->PromotePendingDesktopRoot();
-            /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
-             * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
-             * surface。等待桌面根 toplevel 就绪后再发 wine-ready,
-             * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
-            if (!WaitFor("explorer desktop root", [ws]() {
-                    return ws->GetDesktopRootToplevelId() != 0;
-                }, 15000, 100)) {
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready; "
-                            "continuing after bounded readiness wait");
-            }
+        if (exPid <= 0) {
+            // desktop shell spawn 失败: root 永远不会出现, 白等 15s 也是降级 —
+            // 直接失败上报 (静默失败修复: 此前仅记日志, 照样发 state:ready)
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] explorer desktop spawn FAILED");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:desktop"),
+                                              napi_tsfn_blocking);
+            return false;
+        }
+        AddProcess(exPid, "desktop", -1);
+        ws->PromotePendingDesktopRoot();
+        /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
+         * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
+         * surface。等待桌面根 toplevel 就绪后再发 state:ready,
+         * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
+        if (!WaitFor("explorer desktop root", [ws]() {
+                return ws->GetDesktopRootToplevelId() != 0;
+            }, 15000, 100)) {
+            /* 超时不再装死放行: 降级 ready-degraded (UI 显示"桌面准备中…"),
+             * root 出现后由 desktop_root 钩子补发 evt:desktop-ready,
+             * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。 */
+            OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready in 15s; "
+                        "launch will report ready-degraded");
+            *desktopDegraded = true;
         }
     }
     else
     {
-        // 非桌面模式: 启动 explorer 文件管理器窗口 — 与 Index.ets 手动启动
-        // explorer (runWineProgram → SpawnWineProgram) 走完全相同的 broker
-        // 路径 (绝对路径 + per-process env + broker 通道)。早期 NCP 直启
-        // 裸名 "wine explorer" 在非桌面模式被 Wine 当作 shell 启动, 不创建
-        // 文件管理器窗口。
-        ProgramOptions options;
-        options.windowsExePath = "C:\\windows\\explorer.exe";
-        options.prefixMode = (p->prefixDir == WINE_SMOKE_PREFIX) ? "clean" : "reuse";
-        options.d3dBackend = p->d3dBackend;
-        options.automationMode = false;
-        int32_t exPid = SpawnWineProgram(options);
-        OH_LOG_INFO(LOG_APP, "[Launch-Async] explorer window pid=%{public}d (broker path)",
-                    exPid);
+        // 非桌面模式 (PC/2in1): 程序是独立窗口, 无需文件管理器窗口 — 用户
+        // 需要时从应用库/文件浏览器手动启动 explorer。拉起引擎只保证
+        // wineserver + wine 数据就绪, 不再自动 spawn explorer 窗口。
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] managed mode: explorer not auto-spawned");
     }
     return true;
 }
@@ -639,20 +665,41 @@ void LaunchThreadFunc(LaunchParams* p) {
     // children inherit the active receiver rather than an early SHM snapshot.
     PrepareDesktopSessionGraphicsEnv(*p);
     p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin,
-                               audioBootstrapFd, p->homeDir, p->prefixDir);
+                               audioBootstrapFd, p->homeDir, p->prefixDir, p->wineLang);
     AppendD3dBackendEnv(p->envStrs, p->d3dBackend, p->winehuaBin);
     const std::string serializedEnv = SerializeEnvToEntryParams(p->envStrs);
 
     mkdir(p->prefixDir.c_str(), 0755);
 
     if (gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("wineserver-starting"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineserver"), napi_tsfn_blocking);
 
     bool ok = false;
-    ok = LaunchPadMode(p, audioBootstrapFd, serializedEnv);
+    bool desktopDegraded = false;
+    ok = LaunchPadMode(p, audioBootstrapFd, serializedEnv, &desktopDegraded);
 
+    /* state:ready 前最后一次健康复查: explorer 桌面根等待可达 15s, 期间
+     * wineserver 若已崩溃, 此前照样发 ready → UI 显示"已就绪"但引擎已死
+     * (静默失败)。stage 命名 wineserver, 与 ProcMon 的非预期死亡上报一致。
+     * 该复查优先于 ready-degraded: wineserver 已死时绝不补发降级把 failed 盖掉。
+     * 判定用 socket 就绪而非 GetWineserverPid 存活: 热重启复用旧 wineserver 时,
+     * 新 spawn 的实例连接旧实例后正常退出, GetWineserverPid 指向新 pid 会误判 —
+     * socket 是否就绪才真正代表"当前有 wineserver 在服务" (master 同款语义)。 */
+    if (ok) {
+        if (!IsWineserverSocketReady(p->prefixDir)) {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver socket not ready at ready checkpoint, refuse ready");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
+                                              napi_tsfn_blocking);
+            ok = false;
+        }
+    }
+
+    // 状态迁移统一在此收口: ready / ready-degraded 只此一个发射点
     if (ok && gStateTsfn)
-        napi_call_threadsafe_function(gStateTsfn, strdup("wine-ready"), napi_tsfn_blocking);
+        napi_call_threadsafe_function(gStateTsfn,
+            strdup(desktopDegraded ? "state:ready-degraded" : "state:ready"),
+            napi_tsfn_blocking);
 
     delete p;
 }

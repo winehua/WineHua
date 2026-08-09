@@ -266,8 +266,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8] = {};
+    size_t argc = 9;
+    napi_value args[9] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -296,6 +296,13 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         if (!strcmp(d3dBackend, "wined3d") || !strncmp(d3dBackend, "dxvk_", 5))
             p->d3dBackend = d3dBackend;
     }
+    if (argc >= 9) {
+        // 设置页 "Wine 语言": 仅接受白名单值, 非法/缺省保持 zh_CN
+        char wineLang[16] = {};
+        napi_get_value_string_utf8(env, args[8], wineLang, sizeof(wineLang), nullptr);
+        if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "en_US"))
+            p->wineLang = wineLang;
+    }
     // 向后兼容: 旧调用未传 homeDir 时使用默认路径
     if (p->homeDir.empty()) {
         p->homeDir = "/storage/Users/currentUser/Download";
@@ -305,7 +312,8 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
                 "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s home=%{public}s prefix=%{public}s automation=%{public}s (async)",
                 p->exePath.c_str(), p->sockPath.c_str(), p->libPath.c_str(), p->homeDir.c_str(),
                 p->prefixDir.c_str(), p->automationMode ? "true" : "false");
-    OH_LOG_INFO(LOG_APP, "[Launch] desktop D3D backend=%{public}s", p->d3dBackend.c_str());
+    OH_LOG_INFO(LOG_APP, "[Launch] desktop D3D backend=%{public}s lang=%{public}s",
+                p->d3dBackend.c_str(), p->wineLang.c_str());
 
     // 保证可执行
     if (access(p->exePath.c_str(), X_OK) != 0) chmod(p->exePath.c_str(), 0755);
@@ -441,16 +449,23 @@ static napi_value StopHostVulkanProbeNapi(napi_env env, napi_callback_info) {
 // -- NAPI: stopClient — 杀掉所有 Wine 进程 --
 static napi_value StopClient(napi_env, napi_callback_info) {
     KillAllProcesses();
-    WaylandServer::GetInstance()->ResetFirstFrame();
+    // 会话终结统一收口 (与桌面退出同路径): 杀进程后进程级一次性状态全部
+    // 复位, 下次引擎启动从冷启动基线开始 (StopAll 走 WaylandServer::Stop
+    // 全量重建, 无需这里处理)
+    WaylandServer::GetInstance()->ResetSessionState();
     winehua::GraphicsBroker::GetInstance().Stop();
     return nullptr;
 }
 
-// -- NAPI: stopAll — 杀掉所有 Wine 进程 + 停 Wayland server --
+// -- NAPI: stopAll — 杀掉所有 Wine 进程 (含主 wineserver) + 停 Wayland server --
 static napi_value StopAll(napi_env, napi_callback_info) {
     KillAllProcesses();
     winehua::GraphicsBroker::GetInstance().Stop();
     WaylandServer::GetInstance()->Stop();
+    // 会话终结信号: zombie 感知等待全部死亡后发一次 state:stopped —
+    // ArkTS 重启/重置/停止编排以它为继续条件 (取代阶段1 的进程表轮询)。
+    // 放在 Wayland Stop (同步 join) 之后, 保证"完全退出"判据三项齐备才发声
+    NotifyWhenSessionDrained();
     return nullptr;
 }
 
@@ -832,18 +847,22 @@ static napi_value GetProcessList(napi_env env, napi_callback_info info) {
         napi_value obj;
         napi_create_object(env, &obj);
 
-        napi_value pidVal, nameVal, pathVal, stateVal;
+        napi_value pidVal, nameVal, pathVal, stateVal, shellVal;
         napi_create_int32(env, entry.pid, &pidVal);
         napi_create_string_utf8(env, entry.exeBasename.c_str(), NAPI_AUTO_LENGTH, &nameVal);
         napi_create_string_utf8(env, entry.exeFullPath.c_str(), NAPI_AUTO_LENGTH, &pathVal);
         napi_create_string_utf8(env, entry.running ? "running" : "exited",
                                 NAPI_AUTO_LENGTH, &stateVal);
+        // 桌面 root 出现前加入的会话基础进程 (desktop + 桌面前的 explorer 等),
+        // ArkTS 据此隐藏"结束"操作防误操作破坏桌面运行
+        napi_get_boolean(env, entry.desktopShell, &shellVal);
 
         napi_property_descriptor props[] = {
             {"pid",   nullptr, nullptr, nullptr, nullptr, pidVal,   napi_default, nullptr},
             {"name",  nullptr, nullptr, nullptr, nullptr, nameVal,  napi_default, nullptr},
             {"path",  nullptr, nullptr, nullptr, nullptr, pathVal,  napi_default, nullptr},
             {"state", nullptr, nullptr, nullptr, nullptr, stateVal, napi_default, nullptr},
+            {"desktopShell", nullptr, nullptr, nullptr, nullptr, shellVal, napi_default, nullptr},
         };
         napi_define_properties(env, obj, sizeof(props)/sizeof(props[0]), props);
         napi_set_element(env, arr, i, obj);

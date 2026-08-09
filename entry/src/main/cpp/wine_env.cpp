@@ -38,7 +38,8 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& binDir,
                                       int audioBootstrapFd,
                                       const std::string& homeDir,
-                                      const std::string& prefixDir) {
+                                      const std::string& prefixDir,
+                                      const std::string& wineLang) {
     std::string shareDir = binDir + "/../share";
     std::string xkbDir = shareDir + "/X11/xkb";
     std::string midiSoundfontPath = binDir + "/../audio/winehua-gm.sf2";
@@ -74,7 +75,12 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "WINEDLLDIR2=" + binDir,
         "WINEDLLPATH=" + dllPath,
         "WINEDEBUG=-all",
-        "LANG=zh_CN.UTF-8",
+        "LANG=" + wineLang + ".UTF-8",
+        // OHOS musl 无 locale 数据, setlocale 激活失败返回 "C";
+        // Wine 的 unix_to_win_locale 遇 "C" 只读 LC_ALL 兜底 (ntdll/unix/env.c),
+        // 单设 LANG 无效, 必须补 LC_ALL 才能解析出对应 LCID (0x0804 zh-CN),
+        // 与 LANG 同取设置页 wineLang (zh_CN/en_US)
+        "LC_ALL=" + wineLang + ".UTF-8",
         "XKB_CONFIG_ROOT=" + xkbDir,
         "PATH=/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir,
         "TMPDIR=" WINE_TMPDIR,
@@ -103,6 +109,10 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // NOTE: 桌面模式下 wine_child.cpp 也会通过 __winehua_desktop__ token 设置同值（冗余保险）
     env.push_back(std::string("WINEHUA_DESKTOP_MODE=") +
                   (WaylandServer::GetInstance()->IsDesktopMode() ? "1" : "0"));
+    // 相对模式 enter 静默校准 (方向 A) 启用开关: wine 侧只在显式 "1" 时启用。
+    // 默认注入 "1" (静默校准 = 默认行为, 三游戏验证通过); 排查问题时改 "0"
+    // (或删除本行 = 未设置) 回退硬件绝对移动路径。
+    env.push_back("WINEWAYLAND_ENTER_SILENT=1");
     // ==== Layer 5: 图形状态 ====
     // NOTE: BOX64_EMULATED_LIBS (ARM64) 在 DXVK 路径下会被 AppendD3dBackendEnv 覆盖
     winehua::GraphicsBroker::GetInstance().AppendWineEnv(env);
