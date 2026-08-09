@@ -895,7 +895,6 @@ export class WineEnvService {
       return false;
     }
     this.opBusy = true;
-    return true;
     (async (): Promise<void> => {
       try {
         if (this.sessionAlive) {
@@ -932,6 +931,8 @@ export class WineEnvService {
         this.opBusy = false;
       }
     })();
+    // 编排启动后才返回 (同步置 opBusy 防重入): 返回 false = busy 拦截
+    return true;
   }
 
   // 重启引擎 (环境页按钮): 有会话先编排停止再初始化, 无会话直接初始化。
