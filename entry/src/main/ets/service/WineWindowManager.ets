@@ -45,13 +45,35 @@ export class WineWindowManager {
   private barCalibrationCount: number = 0;
 
   // -- Desktop 模式 (Tablet) --
-  private isDesktopMode: boolean = false;
+  isDesktopMode: boolean = false;  // 公开: WineEnvService 镜像
   private automationMode: boolean = false;
   private desktopRootId: number = 0;
   private desktopAbilityRunning: boolean = false;
   private desktopAbilityCtx: common.UIAbilityContext | null = null;
+  // 桌面 root 存在信号 (WineEnvService 镜像 → sessionAlive 判定):
+  // desktop_root 事件置 true, root 销毁置 false
+  desktopActive: boolean = false;
+  // 桌面 root 的 XComponent surface 校准完成（renderer 就绪）才置 true。
+  // desktop_root 只是 toplevel 出现，renderer 就绪晚数秒 — ensureDesktop
+  // 等这个信号再放行程序启动，否则程序窗口抢占桌面渲染初始化会闪退
+  desktopSurfaceReady: boolean = false;
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
+
+  // 极简订阅 (与 WineEnvService 同款): 桌面状态变化后逐个调用
+  private listeners: Array<() => void> = [];
+
+  subscribe(listener: () => void): void {
+    if (!this.listeners.includes(listener)) {
+      this.listeners.push(listener);
+    }
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
 
   // toplevelId -> 聚合状态 (WineWindowEntry)
   private entries: Map<number, WineWindowEntry> = new Map();
@@ -316,7 +338,10 @@ export class WineWindowManager {
         // Tablet: C++ 识别到 explorer desktop → 打开 DesktopAbility
         hilog.info(DOMAIN, TAG, '[MW] desktop_root toplevel #%{public}d → start DesktopAbility', id);
         this.desktopRootId = id;
+        this.desktopSurfaceReady = false;   // 新 root: renderer 尚未就绪
+        this.desktopActive = true;          // 桌面激活信号 (WineEnvService 镜像)
         this.startDesktopAbility(id);
+        this.notify();
         break;
       case 'destroyed':
         hilog.info(DOMAIN, TAG, '[MW] -> onToplevelDestroyed(#%{public}d)', id);
@@ -331,6 +356,12 @@ export class WineWindowManager {
           const sw = obj.w as number;
           const sh = obj.h as number;
           if (sw && sh && this.displayScale > 0) {
+            // 桌面 root surface 有有效尺寸 = renderer 校准完成（WL_Plugin
+            // [MW-Resize] renderer resized OK 的 JS 侧回报）→ 桌面真正可显示
+            if (id === this.desktopRootId && !this.desktopSurfaceReady) {
+              this.desktopSurfaceReady = true;
+              this.notify();
+            }
             hilog.info(DOMAIN, TAG, '[MW] surface #%{public}d: physical=%{public}dx%{public}d scale=%{public}s',
               id, sw, sh, this.displayScale.toFixed(2));
 
@@ -641,6 +672,8 @@ export class WineWindowManager {
     if (this.isDesktopMode && id === this.desktopRootId) {
       hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed, closing DesktopAbility', id);
       this.desktopRootId = 0;
+      this.desktopSurfaceReady = false;
+      this.desktopActive = false;
       if (this.desktopAbilityCtx) {
         this.desktopAbilityCtx.terminateSelf().catch((err: Error) => {
           hilog.warn(DOMAIN, TAG, '[MW] ERR terminateSelf DesktopAbility: %{public}s', JSON.stringify(err));
@@ -648,6 +681,7 @@ export class WineWindowManager {
         this.desktopAbilityCtx = null;
       }
       this.desktopAbilityRunning = false;
+      this.notify();
       return;
     }
     // Desktop 模式: 非 root toplevel 销毁, C++ 自动停止合成

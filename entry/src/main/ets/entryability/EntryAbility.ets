@@ -195,6 +195,8 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PersistentStorage.persistProp<string>('winehua.d3d.preference', 'dxvk_legacy');
+    // 注: Wine 语言偏好不走 PersistentStorage (冷启动不恢复磁盘值, 实测),
+    // 由 WineEnvService.init 用 preferences API 自行加载
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     } catch (err) {
