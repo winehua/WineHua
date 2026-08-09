@@ -55,6 +55,14 @@ build_native_tools() {
         tools/make_xftmpl \
         tools/wmc/wmc \
         tools/sfnt2fon/sfnt2fon
+
+    # 确保 wrc 能加载 locale.nls (翻译资源编译需要)。build_native_tools
+    # 只编 host 工具, 不跑生成 nls 数据的 make 规则, 故手动 symlink
+    # 源码 nls 到 wine-native/nls/ (wrc 硬编码从 ../nls 找)
+    mkdir -p "$BUILD_DIR/wine-native/nls"
+    for nlsf in "$WINE_SRC"/nls/*.nls; do
+        ln -sf "$nlsf" "$BUILD_DIR/wine-native/nls/$(basename "$nlsf")"
+    done
 }
 
 build_ohos_unix() {
@@ -197,6 +205,14 @@ build_wineserver() {
 
 # ---- main ----
 log "=== 构建 Wine ==="
+
+# 检查 gettext 工具 (msgfmt)。缺失时 wine configure 会禁用 po 翻译,
+# 产物 PE 资源只有英文 (中文/多语言 UI 依赖 msgfmt 编翻译语言块)
+if ! command -v msgfmt >/dev/null 2>&1; then
+    log "ERROR: msgfmt (gettext) 未安装, wine 翻译资源不会编译"
+    log "  请安装: apt-get install -y gettext  或  brew install gettext"
+    exit 1
+fi
 
 # 从 configure.ac 重新生成 configure 到构建目录 (不污染源码树)
 # 我们的 configure.ac 新增了 wineohos.drv 等模块的 WINE_CONFIG_MAKEFILE
