@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
 const STORE_NAME = 'input_settings';
@@ -8,6 +9,7 @@ const KEY_TOUCHPAD = 'touchpadEnabled';
 const KEY_GAMEPAD = 'gamepadEnabled';
 const KEY_KEYBOARD = 'keyboardEnabled';
 const KEY_SPEED = 'cursorSpeed';
+const KEY_TAP_POS = 'tapPositioning';
 const KEY_BUTTONS = 'padButtons';
 const KEY_ZONES = 'padZones';
 const KEY_KB_POS = 'keyboardPos';
@@ -98,6 +100,12 @@ export class InputSettingsService {
   kbRelX: number = 0.5;
   kbRelY: number = 0.9;
   cursorSpeed: number = 1.0;
+  // 相对模式点按定位 (FloatingBar 设置面板开关): 开 = 被 wine 判为相对模式
+  // 的隐藏光标游戏点按时, 光标跳到手指位置 (适合内部读绝对的模拟邻居类);
+  // 关 = 点按不移动光标 (适合真 dinput 视角类 PAL2, 防视角/光标瞬移)。
+  // 与其它设置不同, 此项要落到 C++ (input_manager 的 relSkipEnter 判定) —
+  // 经 testNapi.setTapPositioning 同步, 见 init/setTapPositioning。默认开。
+  tapPositioning: boolean = true;
   buttons: PadButton[] = defaultButtons();
   zones: PadZone[] = defaultZones();
   // 全屏布局编辑页开关 (瞬态, 不持久化); 与 gamepadEnabled 解耦
@@ -138,6 +146,9 @@ export class InputSettingsService {
       this.keyboardEnabled = this.store.getSync(KEY_KEYBOARD, false) as boolean;
       this.introShown = this.store.getSync(KEY_INTRO, false) as boolean;
       this.cursorSpeed = this.store.getSync(KEY_SPEED, 1.0) as number;
+      this.tapPositioning = this.store.getSync(KEY_TAP_POS, true) as boolean;
+      // 启动即推给 C++: 配置在 wine 会话建立前就位, relSkipEnter 判定读到正确值
+      this.syncTapPositioningToNative();
       const kbPosJson = this.store.getSync(KEY_KB_POS, '') as string;
       if (kbPosJson) {
         const pos = JSON.parse(kbPosJson) as Record<string, number>;
@@ -174,6 +185,7 @@ export class InputSettingsService {
       this.store.putSync(KEY_GAMEPAD, this.gamepadEnabled);
       this.store.putSync(KEY_KEYBOARD, this.keyboardEnabled);
       this.store.putSync(KEY_SPEED, this.cursorSpeed);
+      this.store.putSync(KEY_TAP_POS, this.tapPositioning);
       this.store.putSync(KEY_BUTTONS, JSON.stringify(this.buttons));
       this.store.putSync(KEY_ZONES, JSON.stringify(this.zones));
       this.store.putSync(KEY_KB_POS, JSON.stringify({ relX: this.kbRelX, relY: this.kbRelY }));
@@ -217,6 +229,25 @@ export class InputSettingsService {
       this.persist();
     }
     this.notify();
+  }
+
+  // 相对模式点按定位: 持久化 + 通知订阅者 (FloatingBar 开关 UI 镜像) +
+  // 同步 C++ (input_manager relSkipEnter 判定实时读取, 无需重启会话)
+  setTapPositioning(enabled: boolean): void {
+    this.tapPositioning = enabled;
+    this.persist();
+    this.notify();
+    this.syncTapPositioningToNative();
+  }
+
+  // 推送到 C++ (PointerExtras::SetTapPositioning): init 后与变更时各一次,
+  // wine 会话启动前即就位; native 调用失败不影响 ArkTS 侧状态与持久化
+  private syncTapPositioningToNative(): void {
+    try {
+      testNapi.setTapPositioning(this.tapPositioning);
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'sync tapPositioning fail: %{public}s', JSON.stringify(e));
+    }
   }
 
   // 进入全屏布局编辑页: 拍快照 (取消时恢复), 置脏标记与编辑态。不依赖手柄开关。

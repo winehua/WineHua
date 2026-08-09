@@ -183,6 +183,14 @@ private:
     double lastLocalX_ = 0, lastLocalY_ = 0;
     bool hasLastLocal_ = false;
 
+    // 相对模式 (relSkipEnter) 下 PRESS 的 button 延迟判定 (拖动 vs 点击):
+    // PRESS 时若相对模式跳过 enter (光标原位), button 不立即注入, 缓存于此;
+    // 下一个事件是 MOVE (拖动开始, 视角旋转不该点击) 则吞掉, 是 RELEASE
+    // (点按, PAL2 菜单/确认) 则补发。绝对模式不受影响 (正常按住拖动)。
+    // 仅 SendPointerEvent 所在线程 (ArkTS NAPI) 访问, 无需加锁。
+    uint32_t pendingPressButton_ = 0;
+    uint32_t pendingPressTl_ = 0;
+
     // 最近一次按下时刻 (ACT_RELEASE 的脉冲拉伸计时, 见 input_manager.cpp)
     std::atomic<uint32_t> lastPressMs_{0};
 };

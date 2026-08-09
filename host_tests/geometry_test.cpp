@@ -104,24 +104,25 @@ int main()
         CHECK(t.dstH == 563, "dst rounding is lround, not trunc");
     }
 
-    // 9. 全屏内容尺寸选择 (ZC 游戏 preFs / SHM 游戏 buffer)
+    // 9. 全屏内容尺寸选择 (ZC 游戏 zero-copy 层几何 / SHM 游戏 buffer)
     {
         int w = 0, h = 0;
-        // ZC 游戏: buffer 扩到输出尺寸, 内容仍是全屏前分辨率 → preFs
+        // ZC 游戏: 画面在 zero-copy 层, 内容 = 层实际几何 (与渲染视口同源,
+        // 修复 preFs 快照与层几何失配导致的光标常数平移偏移)
         SelectFullscreenContentSize(640, 480, 1400, 920, true, w, h);
-        CHECK(w == 640 && h == 480, "ZC game uses preFs");
+        CHECK(w == 640 && h == 480, "ZC game uses layer geometry");
+        // ZC 层几何与 buffer 同尺寸 (窗口化全屏): 等价, 用 layer (== buffer)
+        SelectFullscreenContentSize(1400, 920, 1400, 920, true, w, h);
+        CHECK(w == 1400 && h == 920, "layer==buffer uses layer");
         // SHM 游戏: buffer 即画面, 填满整个 buffer → buffer 尺寸
         SelectFullscreenContentSize(640, 480, 1400, 920, false, w, h);
         CHECK(w == 1400 && h == 920, "SHM game uses buffer");
-        // preFs 未快照 (0): 无法区分, 恒用 buffer
+        // layer 几何未就绪 (0): 退化用 buffer
         SelectFullscreenContentSize(0, 0, 1400, 920, true, w, h);
-        CHECK(w == 1400 && h == 920, "no preFs snapshot uses buffer");
-        // preFs 与 buffer 同尺寸 (窗口化全屏): 两种解释等价, 用 buffer
-        SelectFullscreenContentSize(1400, 920, 1400, 920, true, w, h);
-        CHECK(w == 1400 && h == 920, "same size uses buffer");
-        // preFs 部分无效: 恒用 buffer
+        CHECK(w == 1400 && h == 920, "no layer geometry uses buffer");
+        // layer 部分无效: 恒用 buffer
         SelectFullscreenContentSize(640, 0, 1400, 920, true, w, h);
-        CHECK(w == 1400 && h == 920, "half-valid preFs uses buffer");
+        CHECK(w == 1400 && h == 920, "half-valid layer uses buffer");
     }
 
     // 10. A 1280x800 virtual frame fits a 1280x720 panel without distortion.

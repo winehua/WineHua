@@ -146,10 +146,15 @@ wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
     wl_fixed_t wy = wl_fixed_from_double(FitUnmapDisplayY(lb, py));
     *outX = wx; *outY = wy;
 
-    OH_LOG_DEBUG(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
-                 " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f)",
-                 px, py, lb.offX, lb.offY, lb.dstW, lb.dstH, surfW, surfH, lb.srcW, lb.srcH,
-                 wl_fixed_to_double(wx), wl_fixed_to_double(wy));
+    // 系统性链路日志 (断点 1): letterbox 逆映射是"物理像素→桌面坐标"的关键,
+    // DEBUG 级别 release 下被滤掉 → 升 INFO + MOVE 高频抽样。分析鼠标问题时
+    // 与 TARGET 日志 (断点 2) 配对看: 此处输出桌面逻辑坐标, 后者换算到窗口局部
+    static uint32_t sCoordLogN = 0;
+    if (++sCoordLogN % 120 == 0)
+        OH_LOG_INFO(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
+                     " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f) n=%{public}u",
+                     px, py, lb.offX, lb.offY, lb.dstW, lb.dstH, surfW, surfH, lb.srcW, lb.srcH,
+                     wl_fixed_to_double(wx), wl_fixed_to_double(wy), sCoordLogN);
     return wx;
 }
 
@@ -385,10 +390,28 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             const double localY = (logicalY - target.originY) / target.scale;
             wx = wl_fixed_from_double(localX);
             wy = wl_fixed_from_double(localY);
+            // 系统性链路日志 (断点 2): 目标解析结果 — 手指桌面坐标命中哪个窗口/
+            // 区域, 全屏时 origin+scale 即 fit 几何 (内容/黑边), local 是最终
+            // 注入的 wine 坐标。PRESS/RELEASE 全量 (点按诊断核心), MOVE 高频
+            // 抽样 120:1 (拖动只看轨迹趋势, 防刷爆 hilog — 测试需全量时改这里)
+            static uint32_t sTargetLogN = 0;
+            if (action != ACT_MOVE || ++sTargetLogN % 120 == 0)
+                OH_LOG_INFO(LOG_APP, "[Input] TARGET a=%{public}d px=(%{public}.0f,%{public}.0f) → tl=%{public}u"
+                            " surf=%{public}p swallow=%{public}d origin=(%{public}d,%{public}d) scale=%{public}.2f"
+                            " → local=(%{public}.1f,%{public}.1f)",
+                            action, logicalX, logicalY, target.toplevelId,
+                            static_cast<void*>(target.surface),
+                            target.swallow ? 1 : 0, target.originX, target.originY,
+                            target.scale, localX, localY);
         } else {
             // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标)
             wx = wl_fixed_from_double(logicalX - ws->GetToplevelX(tl));
             wy = wl_fixed_from_double(logicalY - ws->GetToplevelY(tl));
+            // 目标 surface 不可用是异常路径 (正常应命中 root), WARN 全量
+            OH_LOG_WARN(LOG_APP, "[Input] TARGET-FALLBACK a=%{public}d px=(%{public}.0f,%{public}.0f) tl=%{public}u"
+                        " → local=(%{public}.1f,%{public}.1f) (no surf)",
+                        action, logicalX, logicalY, tl,
+                        logicalX - ws->GetToplevelX(tl), logicalY - ws->GetToplevelY(tl));
         }
     } else {
         CoordTransform(px, py, tl, &wx, &wy);
@@ -414,17 +437,35 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     // 增量累积。host 不做模式判断 — 绝对 motion 照常注入 (相对模式下被 wine
     // 丢弃), 同时把注入坐标 (surface 局部空间) 差分出增量, 有 relative 对象
     // 就入队 REL_MOTION 转发。对象存在 ⇔ wine 判定当前为相对模式。
-    // 基准只在 MOVE 时更新: PRESS/RELEASE 不发增量也不该移动基准, 否则按下
-    // 瞬间的坐标跳变会污染后续增量 (wine 侧位置并未因 press 变化)。
+    // 基准在 MOVE 与「PRESS 的 enter 定位」时更新 — 两者都真实改变 wine
+    // 光标位置 (enter 是相对模式下唯一被消费的绝对坐标); 其余 PRESS/RELEASE
+    // 不发增量也不移动基准, 避免按下瞬间坐标跳变污染后续增量。
     if (action == ACT_MOVE) {
+        if (pendingPressButton_) {
+            // PRESS 后跟 MOVE = 拖动开始: 吞掉延迟 button (视角拖动不点击),
+            // 后续 MOVE 只走 REL_MOTION 增量旋转视角
+            OH_LOG_INFO(LOG_APP, "[Input] PRESS-DEFER swallow btn=0x%{public}x (drag start)",
+                        pendingPressButton_);
+            pendingPressButton_ = 0;
+            pendingPressTl_ = 0;
+        }
         const double localX = wl_fixed_to_double(wx);
         const double localY = wl_fixed_to_double(wy);
         if (hasLastLocal_) {
             const double dx = localX - lastLocalX_;
             const double dy = localY - lastLocalY_;
-            if ((dx != 0 || dy != 0) && PointerExtras::GetInstance()->HasRelativePointer())
+            if ((dx != 0 || dy != 0) && PointerExtras::GetInstance()->HasRelativePointer()) {
                 Enqueue(InputEvent::REL_MOTION, 0, nullptr,
                         wl_fixed_from_double(dx), wl_fixed_from_double(dy), 0, 0);
+                // 系统性链路日志 (断点 4): 相对模式增量差分 — 相对模式下绝对
+                // motion 被 wine 丢弃, 增量是光标唯一移动来源; 高频抽样 120:1
+                // (拖动只看增量趋势, 与 SendRelativeMotion 断点 5 配对; 测试需
+                // 全量时改这里)
+                static uint32_t sRelLogN = 0;
+                if (++sRelLogN % 120 == 0)
+                    OH_LOG_INFO(LOG_APP, "[Input] REL d=(%{public}.1f,%{public}.1f) base=(%{public}.1f,%{public}.1f)",
+                                dx, dy, lastLocalX_, lastLocalY_);
+            }
         }
         lastLocalX_ = localX;
         lastLocalY_ = localY;
@@ -451,22 +492,35 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
 
     switch (action) {
         case ACT_PRESS: {
-            // 每次都发 enter: Wine 在两次点击间需要新的 pointer focus。
-            // 相对模式 (relative_pointer 对象存在) 且聚焦已建立时跳过:
-            // wine 的 enter 处理会把光标跳到 enter 坐标 (pointer_handle_enter
-            // → motion_internal, 相对模式只丢弃 motion 不丢弃 enter) — 点击
-            // 瞬间游戏内光标瞬移到设备绝对位置 (实测偏移量 = 光标距屏幕
-            // 中心的偏移)。相对模式聚焦持续有效, 无需重发 enter。
-            // 注意: 只在"目标 surface == 已聚焦 surface"时跳 — 桌面 explorer
-            // 启动会误入相对模式 (SetCursorPos+ClipCursor 全屏组合被判定为
-            // 指针约束), 点任务栏 (不同 surface) 时若跳 enter, button 会沿用
-            // 旧 enter serial 发给桌面 root, 首次点击失效 (开始菜单不弹)。
-            // 目标 surface 不同 → 必须重发 enter (relSkipEnter=false)。
+            // 每次点击都重发 enter 定位, 但真相对模式 (dinput 视角类游戏如
+            // PAL2, wine needs_relative) 由用户配置决定跳过: 触摸屏是绝对
+            // 定位设备, 点按 = "光标跳到手指位置再点击" — wine 的
+            // pointer_handle_enter 无条件调 motion_internal 设置光标绝对位置
+            // (相对模式只丢绝对 motion 不丢 enter), 这是绝对模式游戏 (RTS 如
+            // 红警2 / 模拟邻居) 点按定位的实现途径。但真相对模式游戏点击时
+            // 光标被拉到手指位置会造成视角/光标瞬移 (PAL2 实测)。
+            // 判定: 绝对模式 (无 relative 对象) 恒点按定位; 相对模式按用户
+            // 配置 tapPositioning — 开 = 也重发 enter (适合被 wine 误判为
+            // 相对但内部读绝对的模拟邻居类), 关 = 跳过, 靠 REL_MOTION 增量
+            // 移动, 点按保持光标原位 (适合真 dinput 视角类 PAL2)。relSkipEnter
+            // (8089968+d63342f): 跳过仅当目标 surface == 已聚焦 surface; 不同
+            // surface (桌面点任务栏) 必须重发 enter, 否则 button 沿用旧 enter
+            // serial 首次点击失效。
             wl_resource* pressTargetSurf =
                 targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
             const bool relSkipEnter = PointerExtras::GetInstance()->HasRelativePointer() &&
+                                      !PointerExtras::GetInstance()->TapPositioning() &&
                                       pointerFocusedSurface_.load() != nullptr &&
                                       pointerFocusedSurface_.load() == pressTargetSurf;
+            // 系统性链路日志 (断点 3): enter 决策 — relMode(是否相对模式)+
+            // tapPos(用户配置)+焦点状态共同决定 PRESS 是否重发 enter 定位
+            // (相对模式下 enter 是唯一被 wine 消费的绝对定位, 跳过后光标原位)
+            OH_LOG_INFO(LOG_APP, "[Input] PRESS-ENTER tl=%{public}u surf=%{public}p"
+                        " relMode=%{public}d tapPos=%{public}d skip=%{public}d focused=%{public}p",
+                        tl, static_cast<void*>(pressTargetSurf),
+                        PointerExtras::GetInstance()->HasRelativePointer() ? 1 : 0,
+                        PointerExtras::GetInstance()->TapPositioning() ? 1 : 0,
+                        relSkipEnter ? 1 : 0, static_cast<void*>(pointerFocusedSurface_.load()));
             if (!relSkipEnter) {
                 if (pressTargetSurf) {
                     // desktop: surface 级比较 (菜单层与父窗口同 toplevelId);
@@ -478,18 +532,39 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                     if (needLeave)
                         Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
                     Enqueue(InputEvent::PTR_ENTER, tl, pressTargetSurf, wx, wy, 0, 0);
+                    // enter 定位真实改变 wine 光标位置 (绝对模式消费绝对坐标;
+                    // 真相对模式跳过 enter 不执行此同步) — 保持增量基线与
+                    // wine 光标一致, 防后续拖动漂移
+                    lastLocalX_ = wl_fixed_to_double(wx);
+                    lastLocalY_ = wl_fixed_to_double(wy);
+                    hasLastLocal_ = true;
                 }
             }
             Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
+            // 相对模式 (relSkipEnter) 下 button 延迟判定: PRESS 不立即注入, 缓存
+            // 等下一个事件 — MOVE(拖动开始, 视角旋转不该点击) 吞掉, RELEASE
+            // (点按, PAL2 菜单/确认) 补发, 见 MOVE/RELEASE 分支。绝对模式不受影响。
             if (button) {
-                unsigned bit = ButtonToBit(button);
-                if (bit < 32) {
-                    pressedButtons_ |= (1u << bit);
-                    OH_LOG_INFO(LOG_APP, "[Input] BTN_PRESS btn=0x%{public}x bit=%{public}u pressedBits=0x%{public}x",
-                                button, bit, pressedButtons_);
+                if (relSkipEnter) {
+                    // 防御: 上一未判定的 button 残留 (异常路径) — 丢弃视为拖动
+                    if (pendingPressButton_) {
+                        OH_LOG_WARN(LOG_APP, "[Input] PRESS-DEFER stale btn=0x%{public}x dropped",
+                                    pendingPressButton_);
+                    }
+                    pendingPressButton_ = button;
+                    pendingPressTl_ = tl;
+                    OH_LOG_INFO(LOG_APP, "[Input] PRESS-DEFER btn=0x%{public}x (await MOVE=swallow / RELEASE=commit)",
+                                button);
+                } else {
+                    unsigned bit = ButtonToBit(button);
+                    if (bit < 32) {
+                        pressedButtons_ |= (1u << bit);
+                        OH_LOG_INFO(LOG_APP, "[Input] BTN_PRESS btn=0x%{public}x bit=%{public}u pressedBits=0x%{public}x",
+                                    button, bit, pressedButtons_);
+                    }
+                    lastPressMs_ = NowMs();  // 脉冲拉伸计时基准 (见 ACT_RELEASE)
+                    Enqueue(InputEvent::PTR_BUTTON, 0, nullptr, 0, 0, button, WL_POINTER_BUTTON_STATE_PRESSED);
                 }
-                lastPressMs_ = NowMs();  // 脉冲拉伸计时基准 (见 ACT_RELEASE)
-                Enqueue(InputEvent::PTR_BUTTON, 0, nullptr, 0, 0, button, WL_POINTER_BUTTON_STATE_PRESSED);
             }
 
             //  键盘焦点跟随点击 (P0-1 + P0-3)
@@ -511,6 +586,22 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             break;
         }
         case ACT_RELEASE: {
+            if (pendingPressButton_) {
+                // PRESS 后跟 RELEASE = 点按 (非拖动): 补发延迟 button 的
+                // PRESSED, 与下方 RELEASED 构成完整点击 — PAL2 菜单/确认仍可用
+                // (pressedBits 置位让下方释放逻辑识别; 脉冲拉伸同见下方注释)
+                unsigned pbit = ButtonToBit(pendingPressButton_);
+                if (pbit < 32) {
+                    pressedButtons_ |= (1u << pbit);
+                    OH_LOG_INFO(LOG_APP, "[Input] PRESS-DEFER commit btn=0x%{public}x (tap)",
+                                pendingPressButton_);
+                }
+                lastPressMs_ = NowMs();
+                Enqueue(InputEvent::PTR_BUTTON, pendingPressTl_, nullptr, 0, 0,
+                        pendingPressButton_, WL_POINTER_BUTTON_STATE_PRESSED);
+                pendingPressButton_ = 0;
+                pendingPressTl_ = 0;
+            }
             // ArkTS RELEASE 的 button 字段始终为 0x0
             // 从 pressedButtons_ bitmask 中查找被按下的按钮并释放
             unsigned bit = ButtonToBit(button);

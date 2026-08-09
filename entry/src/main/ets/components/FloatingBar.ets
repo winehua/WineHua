@@ -28,6 +28,7 @@ export struct FloatingBar {
   @State private gamepadOn: boolean = false;
   @State private keyboardOn: boolean = false;
   @State private cursorSpeed: number = 1.0;
+  @State private tapPositioningOn: boolean = true;
   @State private showSettings: boolean = false;
   // 拖动偏移与初始上边距 (与 HomeBall 同一套语义)
   @State private offsetX: number = 0;
@@ -49,6 +50,7 @@ export struct FloatingBar {
     this.gamepadOn = this.input.gamepadEnabled;
     this.keyboardOn = this.input.keyboardEnabled;
     this.cursorSpeed = this.input.cursorSpeed;
+    this.tapPositioningOn = this.input.tapPositioning;
   }
 
   private ensureScreenSize(): void {
@@ -111,6 +113,19 @@ export struct FloatingBar {
           // 拖动中只更新生效值 (镜像即时刷速度), 松手/点按才落盘
           this.input.setCursorSpeed(value, mode != SliderChangeMode.Moving);
         })
+      Row() {
+        Text('相对模式点按定位')
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.tapPositioningOn })
+          .onChange((on: boolean) => {
+            this.input.setTapPositioning(on);
+          })
+      }
+      .width('100%')
+      Text('开：点哪里，光标就到哪里；关：点按不移动光标，靠拖动控制（适合靠光标方向控制视角的游戏）。')
+        .fontSize(12)
+        .fontColor($r('app.color.text_tertiary'))
       Text('手柄开关在悬浮条上（开启时高亮）；编辑布局无需先开开关，点下方按钮进入。')
         .fontSize(12)
         .fontColor($r('app.color.text_tertiary'))

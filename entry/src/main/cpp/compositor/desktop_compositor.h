@@ -145,9 +145,9 @@ public:
                                             ToplevelManager& tmgr);
 
     // 全屏内容 fit 几何 (渲染/输入共用): 内部做全屏内容尺寸选择
-    // (SelectFullscreenContentSize: ZC 游戏用 preFs 分辨率, SHM 用 buffer
-    // 尺寸) + ComputeFitRect — 该规则的唯一实现, 替换两侧各自组合。
-    // 调用方须已持有 tmgr mutex; 找不到 toplevel state 返回 false。
+    // (SelectFullscreenContentSize: ZC 游戏用 zero-copy 层实际内容几何,
+    // SHM 用 buffer 尺寸) + ComputeFitRect — 该规则的唯一实现, 替换两侧
+    // 各自组合。调用方须已持有 tmgr mutex; 找不到 toplevel state 返回 false。
     bool ComputeFullscreenFitLocked(uint32_t toplevelId, int rootW, int rootH,
                                     FitRect& out) const;
 
@@ -194,6 +194,12 @@ public:
     // toplevel 是否有 zero-copy GL 层 (ZC 游戏判定: 全屏渲染/输入映射分流用,
     // 调用方须已持有 tmgr mutex)
     bool HasZeroCopyLayerForToplevelLocked(uint32_t id) const;
+    // 取 toplevel 的 zero-copy subsurface 层实际内容尺寸 (vpDst 裁剪后,
+    // 与 GetZeroCopyLayerInfo / egl_renderer 渲染视口同规则) — 全屏内容
+    // 尺寸的单一权威源, 输入 fit 与渲染视口同源才保证逆映射严格互逆。
+    // 返回是否有 ZC 层; 无 ZC 层时 outW/outH 保持 0 (SelectFullscreenContentSize
+    // 退化为 buffer 尺寸)。调用方须已持有 tmgr mutex。
+    bool GetZeroCopyContentSizeLocked(uint32_t toplevelId, int& outW, int& outH) const;
 
 private:
     ToplevelManager& tmgr_;

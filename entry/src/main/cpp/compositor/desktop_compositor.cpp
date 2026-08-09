@@ -113,6 +113,24 @@ bool DesktopCompositor::HasZeroCopyLayerForToplevelLocked(uint32_t id) const
     return false;
 }
 
+bool DesktopCompositor::GetZeroCopyContentSizeLocked(uint32_t toplevelId,
+                                                     int& outW, int& outH) const
+{
+    // 与 HasZeroCopyLayerForToplevelLocked 同一层集合判定; 内容尺寸取
+    // vpDst 裁剪后几何, 与 GetZeroCopyLayerInfo (egl_renderer 渲染视口
+    // 缓存 zeroCopyLayerW_/H_ 的来源) 完全同规则 — 保证输入 fit 与渲染
+    // 显示严格互逆。
+    for (const auto& layer : subsurfaceLayers_) {
+        if (layer.parentToplevel != toplevelId ||
+            !zeroCopySurfaceKeys_.count(layer.surfaceKey))
+            continue;
+        outW = layer.vpDstW > 0 ? layer.vpDstW : layer.w;
+        outH = layer.vpDstH > 0 ? layer.vpDstH : layer.h;
+        return true;
+    }
+    return false;
+}
+
 std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)
 {
     std::vector<CompositorLayer> layers;
@@ -295,18 +313,21 @@ uint32_t DesktopCompositor::PickFullscreenLayerLocked(
 bool DesktopCompositor::ComputeFullscreenFitLocked(uint32_t toplevelId, int rootW, int rootH,
                                                    FitRect& out) const
 {
-    // 全屏内容尺寸选择 (ZC 游戏用 preFs 分辨率, SHM 用 buffer 尺寸) +
-    // 保比例 fit 的唯一实现 — 替换渲染 (TakeToplevelFrame) 与输入
+    // 全屏内容尺寸选择 (ZC 游戏用 zero-copy 层实际内容几何, SHM 用 buffer
+    // 尺寸) + 保比例 fit 的唯一实现 — 替换渲染 (TakeToplevelFrame) 与输入
     // (FindInputTargetAt / SurfaceLocalToDesktop) 各自的组合。
     // 注: 合成侧此前直接用 buffer 尺寸 (ZC 分支填黑不消费 transform,
     // SHM 分支与 SelectFullscreenContentSize 结果等价); 统一后 ZC 游戏
-    // 的 transform 按 preFs 计算 — 与输入命中/GPU 层几何一致 (修正而非
-    // 回归: 输入侧一直用 preFs, 见 input_resolver 全屏分支注释)。
+    // 的 transform 按 layer 几何计算 — 与输入命中/GPU 层几何同源 (修正
+    // 而非回归: 旧输入侧用 preFs 快照, 与渲染 layer 几何可失配, 曾导致
+    // 全屏游戏光标常数平移偏移, 见 geometry.h SelectFullscreenContentSize
+    // 注释; preFs 已从输入路径移除)。
     const auto* st = tmgr_.FindToplevelLocked(toplevelId);
     if (!st) return false;
+    int layerW = 0, layerH = 0;
+    const bool hasZC = GetZeroCopyContentSizeLocked(toplevelId, layerW, layerH);
     int contentW = 0, contentH = 0;
-    SelectFullscreenContentSize(st->PreFsW(), st->PreFsH(), st->Width(), st->Height(),
-                                HasZeroCopyLayerForToplevelLocked(toplevelId),
+    SelectFullscreenContentSize(layerW, layerH, st->Width(), st->Height(), hasZC,
                                 contentW, contentH);
     return ComputeFitRect(rootW, rootH, contentW, contentH, out);
 }

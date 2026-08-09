@@ -14,6 +14,7 @@
 #include "wine_exe.h"
 #include "host_vulkan_probe.h"
 #include "phone_adapter/phone_adapter.h"
+#include "pointer_extras.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -658,6 +659,18 @@ static napi_value SetDesktopMode(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+static napi_value SetTapPositioning(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        bool on;
+        napi_get_value_bool(env, args[0], &on);
+        PointerExtras::GetInstance()->SetTapPositioning(on);
+    }
+    return nullptr;
+}
+
 static napi_value SetPhoneMode(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -927,6 +940,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setOutputSize",   nullptr, SetOutputSize,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale",  nullptr, SetDisplayScale,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDesktopMode",   nullptr, SetDesktopMode,   nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setTapPositioning", nullptr, SetTapPositioning, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPhoneMode",     nullptr, SetPhoneMode,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getDesktopRootId", nullptr, GetDesktopRootId, nullptr, nullptr, nullptr, napi_default, nullptr},
         // ArkTS input forwarding (unified InputManager path)

@@ -97,16 +97,9 @@ public:
         bool IsFullscreen() const { return fullscreen_; }
         void SetMinimized(bool v) { minimized_ = v; }
         void SetBackground(bool v) { isBackground_ = v; }
-        // 全屏状态转换: 置位/清除 + 锚定 (0,0) + preFs 快照 + 不变式断言。
+        // 全屏状态转换: 置位/清除 + 锚定 (0,0) + 不变式断言。
         // 实现 in toplevel_manager.cpp (断言依赖 debug_assert.h)
         void ApplyFullscreen(bool on);
-
-        // -- 全屏辅助 --
-        // ZC 游戏 (画面在 zero-copy GL 层) 全屏后 buffer 被 Wine 扩到输出尺寸,
-        // 但游戏内部分辨率不变, 输入逆映射须用全屏前尺寸; SHM 游戏 buffer 即
-        // 画面, 直接用 w/h。选择逻辑是 geometry.h 的纯函数, 两侧共用。
-        int32_t PreFsW() const { return preFsW_; }  // 全屏前内容尺寸快照
-        int32_t PreFsH() const { return preFsH_; }
 
         // -- 全屏优先级序号 (取号规则与局限见 4.3 上方注释) --
         uint64_t FsPriority() const { return fsPriority_; }
@@ -140,7 +133,6 @@ public:
         bool minimized_ = false;        // 桌面合成时跳过最小化窗口
         bool isBackground_ = false;     // 渲染层, 不接收输入 (被切换掉的旧 root)
         bool fullscreen_ = false;
-        int32_t preFsW_ = 0, preFsH_ = 0;  // 全屏前内容尺寸快照
         uint64_t fsPriority_ = 0;       // 全屏优先级序号 (规则见 fsPriority 注释)
         WindowMask mask_;               // mask.w==0 = 从未生成
     };

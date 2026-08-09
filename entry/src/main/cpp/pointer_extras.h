@@ -46,6 +46,14 @@ public:
     void SendRelativeMotion(double dx, double dy);
     bool HasRelativePointer() const;
 
+    // 相对模式点按定位 (用户配置, FloatingBar 设置面板开关, 经 NAPI 同步):
+    // 相对模式下 PRESS 是否重发 enter 把光标定位到手指位置。开 = 点按定位
+    // (适合被 wine 误判为相对但内部读绝对的模拟邻居类); 关 = 点按不移动
+    // 光标 (适合真 dinput 视角类 PAL2, 防点按时视角/光标瞬移)。判定方
+    // (input_manager 的 relSkipEnter) 读此值; 默认开。任何线程可调。
+    void SetTapPositioning(bool on);
+    bool TapPositioning() const;
+
     // -- 协议接口实现 (public: wl 接口表在类外初始化, 与 wayland_server.h 同例) --
     // zwp_pointer_constraints_v1
     static void constr_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
@@ -86,6 +94,8 @@ private:
     // 已创建的 zwp_relative_pointer_v1 对象 (wine 相对模式时存在, 至多一个:
     // wine 用 process_wayland.pointer.wl_pointer 固定绑定; 多对象时全部广播)
     std::vector<wl_resource*> relativePointers_;
+    // 相对模式点按定位 (见 public 注释); mutex_ 保护, 默认开
+    bool tapPositioning_ = true;
 
     // 约束资源析构共通处理: 摘掉条目, 如有 hint 则把逻辑指针移到 hint
     static void OnConstraintResourceDestroyed(wl_resource* r);
