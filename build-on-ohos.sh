@@ -72,13 +72,20 @@ set -x
 export PATH="$OHOS_SDK/native/build-tools/cmake/bin:$OHOS_SDK/native/llvm/bin:$LLVM_MINGW/bin:$PATH"
 { set +x; } 2>/dev/null
 
-# workaround with brew bash + cat issue
-CAT="$(command -v cat)"
-if [ "$CAT" = "$(brew --prefix)/bin/cat" ]; then
-    echo "$CAT 会导致 cat: -: Broken pipe 报错，即将自动重命名"
-    echo "详见: https://atomgit.com/org/Harmonybrew/discussions/6"
+# workaround with brew bash + cat and cp issue
+# brew cat 会导致 cat: -: Broken pipe 报错，详见: https://atomgit.com/org/Harmonybrew/discussions/6
+# brew cp 会导致 libffi.so.8 复制失败并得到损坏的文件，报错如下：
+# cp: error deallocating '……/WineHua/entry/libs/arm64-v8a/libffi.so.8': Permission denied
+# 并且报错后cp依然以状态码0退出，所以编译不会失败，但最终得到的hap会闪退。
+CAT_PATH="$(command -v cat)"
+CP_PATH="$(command -v cp)"
+if [ "$CAT_PATH" = "$(brew --prefix)/bin/cat" ] || [ "$CP_PATH" = "$(brew --prefix)/bin/cp" ]; then
+    echo "调整 PATH 让系统 cat 和 cp 命令优先级更高，避免 brew 的 cat 和 cp 命令导致编译失败"
     set -x
-    mv "$CAT" "$CAT.bak"
+    mkdir -p "$BUILD_DIR/ohos-bin"
+    ln -sf /usr/bin/cat "$BUILD_DIR/ohos-bin/"
+    ln -sf /usr/bin/cp "$BUILD_DIR/ohos-bin/"
+    export PATH="$BUILD_DIR/ohos-bin:$PATH"
     { set +x; } 2>/dev/null
 fi
 
