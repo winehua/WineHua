@@ -42,7 +42,7 @@ fi
 export OHOS_SDK
 
 # check llvm-mingw
-if [ -z "$LLVM_MINGW" ] || ! [ -d "$OHOS_SDK" ]; then
+if [ -z "$LLVM_MINGW" ] || ! [ -d "$LLVM_MINGW" ]; then
     echo "Please set the environment variable LLVM_MINGW:"
     echo "    export LLVM_MINGW=/path/to/llvm-mingw"
     echo "You can download it from https://github.com/SwimmingTiger/llvm-mingw/releases"
