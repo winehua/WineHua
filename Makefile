@@ -292,6 +292,7 @@ $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(
 		    [ -f "$$$$libs_dir/libfreetype.so.6" ] && \
 		    [ -f "$$$$libs_dir/libxkbcommon.so.0" ] && \
 		    [ -f "$$$$libs_dir/libxml2.so.2" ] && \
+		    [ -f "$$$$libs_dir/libffi.so.8" ] && \
 		    [ -f "$$$$libs_dir/libwinehua_vtest_server.so" ] && \
 	    ! [ "$(SCRIPTS)/build_native.sh" -nt $$@ ] && \
 	    ! find $(ROOT)/thirdparty/wayland \
