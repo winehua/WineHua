@@ -190,9 +190,9 @@ meson_build() {
 }
 
 # 日志
-log()  { echo -e "\033[32m[BUILD]\033[0m $*"; }
-warn() { echo -e "\033[33m[WARN]\033[0m $*"; }
-err()  { echo -e "\033[31m[ERROR]\033[0m $*"; exit 1; }
+log()  { echo -e "\033[32m[BUILD]\033[0m $*" >&2; }
+warn() { echo -e "\033[33m[WARN]\033[0m $*" >&2; }
+err()  { echo -e "\033[31m[ERROR]\033[0m $*" >&2; exit 1; }
 
 # ── 共享工具函数 ──
 find_first_existing_dir() {
