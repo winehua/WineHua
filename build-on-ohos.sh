@@ -118,3 +118,66 @@ fi
 set -x
 mkdir -p "$TMPDIR"
 make NATIVE_ARCH=arm64-v8a "$@"
+rc=$?
+{ set +x; } 2>/dev/null
+
+if [ "$rc" -ne 0 ]; then
+    echo "[ERROR] make 失败 (exit=$rc), 跳过 ELF 完整性检查"
+    exit "$rc"
+fi
+
+# ELF 完整性检查 (make 完成后): 只校验最终生成的 unsigned HAP 内的 .so 未被截断。
+# 历史教训: harmonybrew coreutils cp 写 HMDFS 时对部分 ELF 报 "error deallocating"
+# 但退出码为 0 (非致命警告), 只写入前 10240 字节 → 截断的 libffi.so.8 静默进 HAP,
+# 导致 app 启动时 loader mmap 越界 → SIGBUS。
+check_elf_integrity() {
+    echo "[CHECK] === ELF 完整性检查 (最终 HAP) ==="
+    local arch="${NATIVE_ARCH:-arm64-v8a}"
+    python3 - "$arch" <<'PYEOF'
+import struct, os, sys, glob, zipfile
+arch = sys.argv[1]
+
+def elf_ok(d):
+    if len(d) < 64 or d[:4] != b"\x7fELF":
+        return None  # 非 ELF, 跳过
+    e_phoff = struct.unpack_from("<Q", d, 0x20)[0]
+    eps = struct.unpack_from("<H", d, 0x36)[0]
+    np = struct.unpack_from("<H", d, 0x38)[0]
+    mx = 0
+    for i in range(np):
+        o = e_phoff + i * eps
+        if o + 56 > len(d):
+            break
+        if struct.unpack_from("<I", d, o)[0] == 1:  # PT_LOAD
+            mx = max(mx, struct.unpack_from("<Q", d, o + 8)[0] + struct.unpack_from("<Q", d, o + 32)[0])
+    return mx <= len(d)
+
+bad = []
+checked = 0
+hap = "entry/build/default/outputs/default/entry-default-unsigned.hap"
+if not os.path.isfile(hap):
+    print(f"[CHECK] 未找到最终 HAP: {hap} (构建未产出, 视为失败)")
+    sys.exit(1)
+with zipfile.ZipFile(hap) as z:
+    for n in z.namelist():
+        if n.startswith(f"libs/{arch}/"):
+            ok = elf_ok(z.read(n))
+            if ok is None:
+                continue
+            checked += 1
+            if not ok:
+                bad.append(f"HAP:{n}")
+
+print(f"[CHECK] 检查 {checked} 个 ELF (HAP libs/{arch})")
+if bad:
+    print("[CHECK] !! 发现截断/损坏的 ELF:")
+    for b in bad:
+        print("  !! " + b)
+    sys.exit(1)
+print("[CHECK] 全部完整 ✓")
+sys.exit(0)
+PYEOF
+}
+
+check_elf_integrity
+exit $?
