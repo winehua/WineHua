@@ -12,6 +12,26 @@ export CXX=clang++
 BUILD_DIR="${BUILD_DIR:-/data/storage/el2/base/files/WineHua-build}"
 TMPDIR="$BUILD_DIR/tmp"
 
+# check TOOL_HOME
+if [ -z "$TOOL_HOME" ] || ! [ -d "$TOOL_HOME" ]; then
+    echo "Please set the environment variable TOOL_HOME:"
+    echo "    export TOOL_HOME=/path/to/command-line-tools"
+    echo "You can download it from https://github.com/SwimmingTiger/command-line-tools/releases"
+    exit 1
+fi
+export TOOL_HOME
+
+set -x
+# add hvigorw and binary-sign-tool to PATH
+export PATH="$TOOL_HOME/bin:$TOOL_HOME/sdk/default/openharmony/toolchains/lib:$PATH"
+{ set +x; } 2>/dev/null
+
+if [ -z "$OHOS_SDK" ]; then
+    set -x
+    OHOS_SDK="$TOOL_HOME/sdk/default/openharmony"
+    { set +x; } 2>/dev/null
+fi
+
 # find uname-is-linux and ohos-sdk prefix from brew
 BREW="$(command -v brew)"
 if [ "$BREW" != "" ]; then
