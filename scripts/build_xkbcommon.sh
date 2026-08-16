@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/env.sh"
 
 log "=== 构建 xkbcommon 依赖 (x86_64) ==="
 
-if [ "$HOST_OS" = "Darwin" ]; then
+if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
 fi
 
