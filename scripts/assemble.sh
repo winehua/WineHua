@@ -482,15 +482,20 @@ assemble_pad() {
     # The primary Wine build uses --enable-archs=i386,x86_64.  Its PE import
     # libraries are both emitted under wine-ohos; wine-i386-pe is an obsolete
     # standalone build directory and does not exist in a clean CI checkout.
-    local vulkan_import_x64="$BUILD_DIR/wine-ohos/dlls/vulkan-1/x86_64-windows/libvulkan-1.a"
-    local vulkan_import_x86="$BUILD_DIR/wine-ohos/dlls/vulkan-1/i386-windows/libvulkan-1.a"
-    [ -s "$vulkan_import_x64" ] || err "Wine x64 Vulkan import library missing: $vulkan_import_x64"
+    # 架构参数化: wine 构建目录为 wine-ohos-$WINE_ARCH (build_wine.sh)。
+    # arm64 原生 wine (--enable-archs=arm64ec,aarch64,i386) 无 x86_64-windows PE,
+    # 此时跳过依赖 x64 import lib 的 smoke (gpu_diagnostics/dxvk26_requirements x64);
+    # 仅 x86_64 方案 (--enable-archs=i386,x86_64) 才产出 x86_64-windows。
+    local vulkan_import_x64="$wine_build_dir/dlls/vulkan-1/x86_64-windows/libvulkan-1.a"
+    local vulkan_import_x86="$wine_build_dir/dlls/vulkan-1/i386-windows/libvulkan-1.a"
     [ -s "$vulkan_import_x86" ] || err "Wine x86 Vulkan import library missing: $vulkan_import_x86"
     local diagnostics_source="$WINEHUA/smoke/winehua_gpu_diagnostics.c"
-    x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
-        "$smoke_dir/x64/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
-        "$vulkan_import_x64" \
-        -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
+    if [ -s "$vulkan_import_x64" ]; then
+        x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
+            "$smoke_dir/x64/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
+            "$vulkan_import_x64" \
+            -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
+    fi
     i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
         "$smoke_dir/x86/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
         "$vulkan_import_x86" \
@@ -507,9 +512,11 @@ assemble_pad() {
     # x86_64 Loader -> Venus transport as a Windows DXVK process, without
     # adding a second Windows Vulkan SDK dependency to the image.
     local dxvk26_requirements_source="$WINEHUA/smoke/winehua_dxvk26_requirements.c"
-    x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
-        "$smoke_dir/x64/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
-        "$vulkan_import_x64" -luser32 -lcomctl32 -lgdi32
+    if [ -s "$vulkan_import_x64" ]; then
+        x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
+            "$smoke_dir/x64/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
+            "$vulkan_import_x64" -luser32 -lcomctl32 -lgdi32
+    fi
     i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
         "$smoke_dir/x86/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
         "$vulkan_import_x86" -luser32 -lcomctl32 -lgdi32
@@ -606,9 +613,17 @@ assemble_pad() {
     d3d1164_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d11_smoke.exe" | awk '{print $1}')"
     d3d864_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d8_smoke.exe" | awk '{print $1}')"
     cube64_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d_switch_cube.exe" | awk '{print $1}')"
-    diagnostics64_sha="$(sha256sum "$smoke_dir/x64/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
+    if [ -s "$vulkan_import_x64" ]; then
+        diagnostics64_sha="$(sha256sum "$smoke_dir/x64/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
+    else
+        diagnostics64_sha=""
+    fi
     driver64_sha="$(sha256sum "$smoke_dir/x64/winehua_win32_driver.exe" | awk '{print $1}')"
-    requirements64_sha="$(sha256sum "$smoke_dir/x64/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
+    if [ -s "$vulkan_import_x64" ]; then
+        requirements64_sha="$(sha256sum "$smoke_dir/x64/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
+    else
+        requirements64_sha=""
+    fi
     audio32_sha="$(sha256sum "$smoke_dir/x86/winehua_audio_smoke.exe" | awk '{print $1}')"
     graphics32_sha="$(sha256sum "$smoke_dir/x86/winehua_graphics_smoke.exe" | awk '{print $1}')"
     vulkan32_sha="$(sha256sum "$smoke_dir/x86/winehua_vulkan_smoke.exe" | awk '{print $1}')"
