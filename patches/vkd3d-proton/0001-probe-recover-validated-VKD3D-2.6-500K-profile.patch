@@ -1,0 +1,717 @@
+From e7463ccbe6ae8f0f2e4ae59d3b01fd9ce71fa948 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Tue, 4 Aug 2026 18:45:50 +0800
+Subject: [PATCH 1/5] probe: recover validated VKD3D 2.6 500K profile
+
+---
+ libs/vkd3d/meta.c                    |  15 +-
+ libs/vkd3d/resource.c                |  37 ++-
+ libs/vkd3d/state.c                   |  40 ++-
+ libs/vkd3d/vkd3d_private.h           |   8 +
+ meson.build                          |   8 +
+ meson_options.txt                    |   1 +
+ tests/meson.build                    |   9 +
+ tests/vkd3d_limited_500k_microtest.c | 417 +++++++++++++++++++++++++++
+ 8 files changed, 523 insertions(+), 12 deletions(-)
+ create mode 100644 tests/vkd3d_limited_500k_microtest.c
+
+diff --git a/libs/vkd3d/meta.c b/libs/vkd3d/meta.c
+index d28b6fa6..d8501ef4 100644
+--- a/libs/vkd3d/meta.c
++++ b/libs/vkd3d/meta.c
+@@ -1361,6 +1361,13 @@ void vkd3d_meta_get_predicate_pipeline(struct vkd3d_meta_ops *meta_ops,
+     info->data_size = predicate_ops->data_sizes[command_type];
+ }
+
++static bool vkd3d_winehua_disable_query_meta(void)
++{
++    const char *value = getenv("VKD3D_WINEHUA_DISABLE_QUERY_META");
++
++    return value && value[0] == '1' && !value[1];
++}
++
+ HRESULT vkd3d_meta_ops_init(struct vkd3d_meta_ops *meta_ops, struct d3d12_device *device)
+ {
+     HRESULT hr;
+@@ -1380,8 +1387,14 @@ HRESULT vkd3d_meta_ops_init(struct vkd3d_meta_ops *meta_ops, struct d3d12_device
+     if (FAILED(hr = vkd3d_swapchain_ops_init(&meta_ops->swapchain, device)))
+         goto fail_swapchain_ops;
+
+-    if (FAILED(hr = vkd3d_query_ops_init(&meta_ops->query, device)))
++    if (vkd3d_winehua_disable_query_meta())
++    {
++        WARN("VKD3D_WINEHUA_DISABLE_QUERY_META=1; query meta operations are unavailable.\n");
++    }
++    else if (FAILED(hr = vkd3d_query_ops_init(&meta_ops->query, device)))
++    {
+         goto fail_query_ops;
++    }
+
+     if (FAILED(hr = vkd3d_predicate_ops_init(&meta_ops->predicate, device)))
+         goto fail_predicate_ops;
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index 72fbb39c..be3d475f 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -1511,15 +1511,31 @@ static HRESULT STDMETHODCALLTYPE d3d12_resource_GetDevice(d3d12_resource_iface *
+     return d3d12_device_query_interface(resource->device, iid, device);
+ }
+
++static bool vkd3d_winehua_force_coherent_map_sync(void)
++{
++    const char *value = getenv("VKD3D_WINEHUA_FORCE_COHERENT_MAP_SYNC");
++
++    return value && value[0] == '1' && !value[1];
++}
++
+ static bool d3d12_resource_get_mapped_memory_range(struct d3d12_resource *resource,
+         UINT subresource, const D3D12_RANGE *range, VkMappedMemoryRange *vk_mapped_range)
+ {
+     const struct d3d12_device *device = resource->device;
++    VkDeviceSize atom_size;
++    VkDeviceSize range_end;
+
+     if (range && range->End <= range->Begin)
+         return false;
+
+-    if (device->memory_properties.memoryTypes[resource->mem.device_allocation.vk_memory_type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
++    /* WineHua's OHOS vtest transport uses distinct Host and Guest mappings.
++     * A Host-coherent allocation therefore still needs an explicit command to
++     * propagate data through the shadow bridge. This is opt-in for the
++     * isolated capability probe; normal Vulkan coherent-memory semantics keep
++     * the fast path below. */
++    if ((device->memory_properties.memoryTypes[resource->mem.device_allocation.vk_memory_type].propertyFlags
++            & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
++            !vkd3d_winehua_force_coherent_map_sync())
+         return false;
+
+     vk_mapped_range->sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+@@ -1543,6 +1559,14 @@ static bool d3d12_resource_get_mapped_memory_range(struct d3d12_resource *resour
+         vk_mapped_range->size = range->End - range->Begin;
+     }
+
++    /* D3D12 map ranges are byte-granular, while non-coherent Vulkan cache
++     * operations must cover whole nonCoherentAtomSize units. */
++    atom_size = device->device_info.properties2.properties.limits.nonCoherentAtomSize;
++    range_end = vk_mapped_range->offset + vk_mapped_range->size;
++    vk_mapped_range->offset &= ~(atom_size - 1);
++    range_end = min(align(range_end, atom_size), resource->mem.device_allocation.size);
++    vk_mapped_range->size = range_end - vk_mapped_range->offset;
++
+     return true;
+ }
+
+@@ -1627,6 +1651,18 @@ static HRESULT STDMETHODCALLTYPE d3d12_resource_Map(d3d12_resource_iface *iface,
+         TRACE("Returning pointer %p.\n", *data);
+     }
+
++    /* Mark upload allocations as CPU-written even when an application keeps
++     * the D3D12 resource persistently mapped and never calls Unmap. Venus uses
++     * this explicit flush as write intent and publishes the current contents
++     * immediately before queue submission. Readback heaps are deliberately
++     * excluded so stale Guest shadow data cannot overwrite Host GPU writes. */
++    if (vkd3d_winehua_force_coherent_map_sync()
++            && resource->heap_properties.Type == D3D12_HEAP_TYPE_UPLOAD)
++    {
++        const D3D12_RANGE write_intent_range = {0, 1};
++        d3d12_resource_flush_range(resource, sub_resource, &write_intent_range);
++    }
++
+     d3d12_resource_invalidate_range(resource, sub_resource, read_range);
+     return S_OK;
+ }
+@@ -5857,6 +5893,17 @@ HRESULT d3d12_descriptor_heap_create(struct d3d12_device *device,
+         return E_INVALIDARG;
+     }
+
++#ifdef VKD3D_EXPERIMENTAL_LIMITED_RESOURCE_VIEW_HEAPS
++    if ((desc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
++            && desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
++            && desc->NumDescriptors > VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT)
++    {
++        WARN("Experimental 500K profile rejects shader-visible CBV/SRV/UAV heaps larger than %u descriptors.\n",
++                VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT);
++        return E_INVALIDARG;
++    }
++#endif
++
+     max_descriptor_count = (UINT32_MAX - sizeof(*object)) / descriptor_size;
+     if (desc->NumDescriptors > max_descriptor_count)
+     {
+diff --git a/libs/vkd3d/state.c b/libs/vkd3d/state.c
+index a4eb6f62..53e1cddb 100644
+--- a/libs/vkd3d/state.c
++++ b/libs/vkd3d/state.c
+@@ -4596,11 +4596,12 @@ static uint32_t d3d12_max_descriptor_count_from_heap_type(D3D12_DESCRIPTOR_HEAP_
+     {
+         case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
+             if (vkd3d_descriptor_debug_active_qa_checks())
+-                return 1000000 + VKD3D_DESCRIPTOR_DEBUG_NUM_PAD_DESCRIPTORS;
+-            return 1000000;
++                return VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT
++                        + VKD3D_DESCRIPTOR_DEBUG_NUM_PAD_DESCRIPTORS;
++            return VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT;
+
+         case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
+-            return 2048;
++            return VKD3D_MAX_SHADER_VISIBLE_SAMPLER_DESCRIPTOR_COUNT;
+
+         default:
+             ERR("Invalid descriptor heap type %d.\n", heap_type);
+@@ -4934,25 +4935,41 @@ static uint32_t vkd3d_bindless_state_get_bindless_flags(struct d3d12_device *dev
+             !device_info->descriptor_indexing_features.descriptorBindingVariableDescriptorCount)
+         return 0;
+
+-    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindSampledImages >= 1000000 &&
++    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindSamplers >=
++            VKD3D_MAX_SHADER_VISIBLE_SAMPLER_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindSamplers >=
++            VKD3D_MAX_SHADER_VISIBLE_SAMPLER_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindSampledImages >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindSampledImages >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
+             device_info->descriptor_indexing_features.descriptorBindingSampledImageUpdateAfterBind &&
+             device_info->descriptor_indexing_features.descriptorBindingUniformTexelBufferUpdateAfterBind &&
+             device_info->descriptor_indexing_features.shaderSampledImageArrayNonUniformIndexing &&
+             device_info->descriptor_indexing_features.shaderUniformTexelBufferArrayNonUniformIndexing)
+         flags |= VKD3D_BINDLESS_SAMPLER | VKD3D_BINDLESS_SRV;
+
+-    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindStorageImages >= 1000000 &&
++    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindStorageImages >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindStorageImages >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
+             device_info->descriptor_indexing_features.descriptorBindingStorageImageUpdateAfterBind &&
+             device_info->descriptor_indexing_features.descriptorBindingStorageTexelBufferUpdateAfterBind &&
+             device_info->descriptor_indexing_features.shaderStorageImageArrayNonUniformIndexing &&
+             device_info->descriptor_indexing_features.shaderStorageTexelBufferArrayNonUniformIndexing)
+         flags |= VKD3D_BINDLESS_UAV;
+
+-    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= 1000000 &&
++    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindUniformBuffers >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindUniformBuffers >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
+             device_info->descriptor_indexing_features.descriptorBindingUniformBufferUpdateAfterBind &&
+             device_info->descriptor_indexing_features.shaderUniformBufferArrayNonUniformIndexing)
+         flags |= VKD3D_BINDLESS_CBV;
+-    else if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= 1000000 &&
++    else if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindStorageBuffers >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindStorageBuffers >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
+             device_info->descriptor_indexing_features.descriptorBindingStorageBufferUpdateAfterBind &&
+             device_info->descriptor_indexing_features.shaderStorageBufferArrayNonUniformIndexing)
+         flags |= VKD3D_BINDLESS_CBV | VKD3D_BINDLESS_CBV_AS_SSBO;
+@@ -4960,9 +4977,12 @@ static uint32_t vkd3d_bindless_state_get_bindless_flags(struct d3d12_device *dev
+     /* Normally, we would be able to use SSBOs conditionally even when maxSSBOAlignment > 4, but
+      * applications (RE2 being one example) are of course buggy and don't match descriptor and shader usage of resources,
+      * so we cannot rely on alignment analysis to select the appropriate resource type. */
+-    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= 1000000 &&
+-        device_info->descriptor_indexing_features.descriptorBindingStorageBufferUpdateAfterBind &&
+-        device_info->properties2.properties.limits.minStorageBufferOffsetAlignment <= 16)
++    if (device_info->descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindStorageBuffers >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindStorageBuffers >=
++            VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT &&
++            device_info->descriptor_indexing_features.descriptorBindingStorageBufferUpdateAfterBind &&
++            device_info->properties2.properties.limits.minStorageBufferOffsetAlignment <= 16)
+     {
+         flags |= VKD3D_BINDLESS_RAW_SSBO;
+
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index 687bafc9..c39de9d5 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -57,6 +57,14 @@
+ #define VKD3D_MAX_BINDLESS_DESCRIPTOR_SETS 8u
+ #define VKD3D_MAX_MUTABLE_DESCRIPTOR_TYPES 6u
+
++#define VKD3D_MAX_SHADER_VISIBLE_SAMPLER_DESCRIPTOR_COUNT 2048u
++
++#ifdef VKD3D_EXPERIMENTAL_LIMITED_RESOURCE_VIEW_HEAPS
++#define VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT 500000u
++#else
++#define VKD3D_MAX_SHADER_VISIBLE_RESOURCE_VIEW_DESCRIPTOR_COUNT 1000000u
++#endif
++
+ #define VKD3D_PIPELINE_BIND_POINT_COUNT 2u
+
+ #define VKD3D_TILE_SIZE 65536
+diff --git a/meson.build b/meson.build
+index f9e813c5..9e39f0be 100644
+--- a/meson.build
++++ b/meson.build
+@@ -19,6 +19,7 @@ enable_d3d12             = get_option('enable_d3d12')
+ enable_profiling         = get_option('enable_profiling')
+ enable_renderdoc         = get_option('enable_renderdoc')
+ enable_descriptor_qa     = get_option('enable_descriptor_qa')
++enable_limited_resource_view_heaps = get_option('enable_limited_resource_view_heaps')
+ enable_trace             = get_option('enable_trace')
+
+ if enable_d3d12 == 'auto'
+@@ -60,6 +61,13 @@ if enable_descriptor_qa
+   add_project_arguments('-DVKD3D_ENABLE_DESCRIPTOR_QA', language : 'c')
+ endif
+
++if enable_limited_resource_view_heaps
++  if enable_descriptor_qa
++    error('The 500K resource-view profile does not support descriptor QA padding.')
++  endif
++  add_project_arguments('-DVKD3D_EXPERIMENTAL_LIMITED_RESOURCE_VIEW_HEAPS', language : 'c')
++endif
++
+ if not enable_trace
+   add_project_arguments('-DVKD3D_NO_TRACE_MESSAGES', language : 'c')
+ endif
+diff --git a/meson_options.txt b/meson_options.txt
+index 3f4f6eff..dd669e0a 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -4,4 +4,5 @@ option('enable_d3d12',            type : 'combo',   value : 'auto', choices : ['
+ option('enable_profiling',        type : 'boolean', value : false)
+ option('enable_renderdoc',        type : 'boolean', value : false)
+ option('enable_descriptor_qa',    type : 'boolean', value : false)
++option('enable_limited_resource_view_heaps', type : 'boolean', value : false)
+ option('enable_trace',            type : 'combo',   value : 'auto', choices : ['false', 'true', 'auto'])
+diff --git a/tests/meson.build b/tests/meson.build
+index 1e25ce11..e0a93dc2 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -62,3 +62,12 @@ executable('descriptor-performance', 'descriptor_performance.c',
+   c_args              : vkd3d_test_flags,
+   override_options    : [ 'c_std='+vkd3d_c_std ],
+   link_with           : [ d3d12_test_utils_lib ])
++
++if enable_limited_resource_view_heaps
++  executable('vkd3d-limited-500k-microtest', 'vkd3d_limited_500k_microtest.c',
++    dependencies        : vkd3d_test_deps,
++    include_directories : vkd3d_private_includes,
++    install             : false,
++    c_args              : vkd3d_test_flags,
++    override_options    : [ 'c_std='+vkd3d_c_std ])
++endif
+diff --git a/tests/vkd3d_limited_500k_microtest.c b/tests/vkd3d_limited_500k_microtest.c
+new file mode 100644
+index 00000000..1732c314
+--- /dev/null
++++ b/tests/vkd3d_limited_500k_microtest.c
+@@ -0,0 +1,417 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * Default-off experimental validation for 500K resource-view descriptor heaps.
++ */
++
++#define COBJMACROS
++#include "vkd3d_win32.h"
++#include "vkd3d_d3d12.h"
++
++#include <errno.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE 500000u
++#define VKD3D_LIMITED_COPY_BUFFER_SIZE 256u
++
++static D3D12_RESOURCE_DESC vkd3d_limited_buffer_desc(UINT64 size)
++{
++    D3D12_RESOURCE_DESC desc;
++
++    memset(&desc, 0, sizeof(desc));
++    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    desc.Width = size;
++    desc.Height = 1;
++    desc.DepthOrArraySize = 1;
++    desc.MipLevels = 1;
++    desc.Format = DXGI_FORMAT_UNKNOWN;
++    desc.SampleDesc.Count = 1;
++    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    return desc;
++}
++
++static void vkd3d_limited_report_failure(const char *operation, HRESULT hr)
++{
++    fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: %s returned %#lx.\n", operation, hr);
++}
++
++static const char *vkd3d_limited_find_argument(int argc, char **argv, const char *name)
++{
++    int i;
++
++    for (i = 1; i + 1 < argc; i++)
++    {
++        if (!strcmp(argv[i], name))
++            return argv[i + 1];
++    }
++
++    return NULL;
++}
++
++static int vkd3d_limited_parse_descriptor_count(int argc, char **argv, UINT *descriptor_count)
++{
++    const char *argument = vkd3d_limited_find_argument(argc, argv, "--descriptor-count");
++    char *end;
++    unsigned long value;
++
++    if (!argument)
++    {
++        *descriptor_count = VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE;
++        return 1;
++    }
++
++    errno = 0;
++    value = strtoul(argument, &end, 10);
++    if (errno || !end || *end || value > VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE)
++    {
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: --descriptor-count must be 0 through %u.\n",
++                VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE);
++        return 0;
++    }
++
++    *descriptor_count = (UINT)value;
++    return 1;
++}
++
++static void vkd3d_limited_dump_bytes(const char *label, const uint8_t *bytes, size_t byte_count)
++{
++    size_t i;
++
++    fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST %s:", label);
++    for (i = 0; i < byte_count; ++i)
++        fprintf(stderr, " %02x", bytes[i]);
++    fputc('\n', stderr);
++}
++
++static void vkd3d_limited_write_result(const char *path, int status, const char *stage)
++{
++    FILE *file;
++
++    if (!path || !(file = fopen(path, "wb")))
++        return;
++
++    fprintf(file, "{\"status\":\"%s\",\"stage\":\"%s\",\"message\":\"%s\"}\n",
++            status ? "FAIL" : "PASS", stage,
++            status ? "see Wine stderr for the failed 500K microtest operation"
++                    : "500K descriptor heap and D3D12 copy/readback passed");
++    fclose(file);
++}
++
++/*
++ * Keep this separate from the final result. The process may fault while Wine
++ * tears down Vulkan objects, so the checkpoint establishes how far the actual
++ * D3D12 work progressed without treating a faulty process exit as a pass.
++ */
++static void vkd3d_limited_write_checkpoint(const char *path, const char *state, const char *stage)
++{
++    FILE *file;
++
++    if (!path || !(file = fopen(path, "wb")))
++        return;
++
++    fprintf(file, "{\"state\":\"%s\",\"stage\":\"%s\"}\\n", state, stage);
++    fclose(file);
++}
++
++int main(int argc, char **argv)
++{
++    static const uint8_t expected[] = {
++        0x56, 0x4b, 0x44, 0x33, 0x44, 0x2d, 0x35, 0x30,
++        0x30, 0x4b, 0x2d, 0x43, 0x4f, 0x50, 0x59, 0x00,
++    };
++    D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc;
++    D3D12_COMMAND_QUEUE_DESC queue_desc;
++    D3D12_HEAP_PROPERTIES heap_properties;
++    D3D12_RESOURCE_BARRIER barrier;
++    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc;
++    D3D12_CPU_DESCRIPTOR_HANDLE descriptor;
++    D3D12_RANGE read_range;
++    D3D12_RANGE write_range;
++    D3D12_RESOURCE_DESC buffer_desc;
++    ID3D12GraphicsCommandList *command_list = NULL;
++    ID3D12CommandAllocator *command_allocator = NULL;
++    ID3D12CommandQueue *command_queue = NULL;
++    ID3D12DescriptorHeap *descriptor_heap = NULL;
++    ID3D12DescriptorHeap *oversized_descriptor_heap = NULL;
++    ID3D12Fence *fence = NULL;
++    ID3D12Device *device = NULL;
++    ID3D12Resource *upload = NULL;
++    ID3D12Resource *resource = NULL;
++    ID3D12Resource *readback = NULL;
++    ID3D12CommandList *command_lists[1];
++    PFN_D3D12_CREATE_DEVICE create_device;
++    const char *result_path = vkd3d_limited_find_argument(argc, argv, "--result");
++    const char *checkpoint_path = vkd3d_limited_find_argument(argc, argv, "--checkpoint");
++    const char *stage = "loader";
++    HMODULE d3d12_module = NULL;
++    HANDLE completion_event = NULL;
++    char module_path[MAX_PATH];
++    void *mapped_data = NULL;
++    HRESULT hr = E_FAIL;
++    UINT descriptor_count;
++    UINT increment_size;
++    int status = 1;
++
++    vkd3d_limited_write_checkpoint(checkpoint_path, "RUNNING", "startup");
++
++    if (!vkd3d_limited_parse_descriptor_count(argc, argv, &descriptor_count))
++        goto done;
++
++    fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST CONFIG: descriptor_count=%u.\n", descriptor_count);
++
++    if (!(d3d12_module = LoadLibraryA("d3d12.dll")))
++    {
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: could not load d3d12.dll.\n");
++        goto done;
++    }
++
++    if (GetModuleFileNameA(d3d12_module, module_path, sizeof(module_path)))
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST DLL: %s\n", module_path);
++
++    if (!(create_device = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(d3d12_module, "D3D12CreateDevice")))
++    {
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: D3D12CreateDevice export is missing.\n");
++        goto done;
++    }
++
++    stage = "device";
++    if (FAILED(hr = create_device(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&device)))
++    {
++        vkd3d_limited_report_failure("D3D12CreateDevice", hr);
++        goto done;
++    }
++
++    if (descriptor_count)
++    {
++        memset(&descriptor_heap_desc, 0, sizeof(descriptor_heap_desc));
++        descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
++        descriptor_heap_desc.NumDescriptors = descriptor_count;
++        descriptor_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
++        stage = "descriptor-heap";
++        if (FAILED(hr = ID3D12Device_CreateDescriptorHeap(device, &descriptor_heap_desc,
++                &IID_ID3D12DescriptorHeap, (void **)&descriptor_heap)))
++        {
++            vkd3d_limited_report_failure("CreateDescriptorHeap", hr);
++            goto done;
++        }
++
++        if (descriptor_count == VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE)
++        {
++            descriptor_heap_desc.NumDescriptors = VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE + 1;
++            if ((hr = ID3D12Device_CreateDescriptorHeap(device, &descriptor_heap_desc,
++                    &IID_ID3D12DescriptorHeap, (void **)&oversized_descriptor_heap)) != E_INVALIDARG)
++            {
++                vkd3d_limited_report_failure("CreateDescriptorHeap(500001) expected E_INVALIDARG", hr);
++                goto done;
++            }
++            if (oversized_descriptor_heap)
++            {
++                fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: CreateDescriptorHeap(500001) returned an object.\n");
++                goto done;
++            }
++        }
++    }
++
++    memset(&queue_desc, 0, sizeof(queue_desc));
++    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
++    if (FAILED(hr = ID3D12Device_CreateCommandQueue(device, &queue_desc,
++            &IID_ID3D12CommandQueue, (void **)&command_queue)))
++    {
++        vkd3d_limited_report_failure("CreateCommandQueue", hr);
++        goto done;
++    }
++
++    if (FAILED(hr = ID3D12Device_CreateCommandAllocator(device, D3D12_COMMAND_LIST_TYPE_DIRECT,
++            &IID_ID3D12CommandAllocator, (void **)&command_allocator)))
++    {
++        vkd3d_limited_report_failure("CreateCommandAllocator", hr);
++        goto done;
++    }
++
++    if (FAILED(hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
++            command_allocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&command_list)))
++    {
++        vkd3d_limited_report_failure("CreateCommandList", hr);
++        goto done;
++    }
++
++    memset(&heap_properties, 0, sizeof(heap_properties));
++    heap_properties.Type = D3D12_HEAP_TYPE_UPLOAD;
++    buffer_desc = vkd3d_limited_buffer_desc(VKD3D_LIMITED_COPY_BUFFER_SIZE);
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc,
++            D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void **)&upload)))
++    {
++        vkd3d_limited_report_failure("CreateCommittedResource(upload)", hr);
++        goto done;
++    }
++
++    read_range.Begin = 0;
++    read_range.End = 0;
++    if (FAILED(hr = ID3D12Resource_Map(upload, 0, &read_range, &mapped_data)))
++    {
++        vkd3d_limited_report_failure("Map(upload)", hr);
++        goto done;
++    }
++    memcpy(mapped_data, expected, sizeof(expected));
++    write_range.Begin = 0;
++    write_range.End = sizeof(expected);
++    ID3D12Resource_Unmap(upload, 0, &write_range);
++    mapped_data = NULL;
++
++    heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
++    buffer_desc = vkd3d_limited_buffer_desc(VKD3D_LIMITED_COPY_BUFFER_SIZE);
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc,
++            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&resource)))
++    {
++        vkd3d_limited_report_failure("CreateCommittedResource(default)", hr);
++        goto done;
++    }
++
++    heap_properties.Type = D3D12_HEAP_TYPE_READBACK;
++    buffer_desc = vkd3d_limited_buffer_desc(VKD3D_LIMITED_COPY_BUFFER_SIZE);
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc,
++            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&readback)))
++    {
++        vkd3d_limited_report_failure("CreateCommittedResource(readback)", hr);
++        goto done;
++    }
++
++    if (descriptor_heap)
++    {
++        increment_size = ID3D12Device_GetDescriptorHandleIncrementSize(device,
++                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++        descriptor = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(descriptor_heap);
++        descriptor.ptr += (SIZE_T)(descriptor_count - 1) * increment_size;
++        memset(&cbv_desc, 0, sizeof(cbv_desc));
++        cbv_desc.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(upload);
++        cbv_desc.SizeInBytes = VKD3D_LIMITED_COPY_BUFFER_SIZE;
++        ID3D12Device_CreateConstantBufferView(device, &cbv_desc, descriptor);
++    }
++
++    stage = "copy";
++    ID3D12GraphicsCommandList_CopyBufferRegion(command_list, resource, 0, upload, 0, sizeof(expected));
++    memset(&barrier, 0, sizeof(barrier));
++    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    barrier.Transition.pResource = resource;
++    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    ID3D12GraphicsCommandList_ResourceBarrier(command_list, 1, &barrier);
++    ID3D12GraphicsCommandList_CopyBufferRegion(command_list, readback, 0, resource, 0, sizeof(expected));
++
++    if (FAILED(hr = ID3D12GraphicsCommandList_Close(command_list)))
++    {
++        vkd3d_limited_report_failure("Close(command list)", hr);
++        goto done;
++    }
++
++    command_lists[0] = (ID3D12CommandList *)command_list;
++    ID3D12CommandQueue_ExecuteCommandLists(command_queue, 1, command_lists);
++
++    if (FAILED(hr = ID3D12Device_CreateFence(device, 0, D3D12_FENCE_FLAG_NONE,
++            &IID_ID3D12Fence, (void **)&fence)))
++    {
++        vkd3d_limited_report_failure("CreateFence", hr);
++        goto done;
++    }
++
++    if (FAILED(hr = ID3D12CommandQueue_Signal(command_queue, fence, 1)))
++    {
++        vkd3d_limited_report_failure("Signal(fence)", hr);
++        goto done;
++    }
++
++    if (ID3D12Fence_GetCompletedValue(fence) < 1)
++    {
++        if (!(completion_event = CreateEventA(NULL, FALSE, FALSE, NULL)))
++        {
++            fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: CreateEvent failed.\n");
++            goto done;
++        }
++
++        if (FAILED(hr = ID3D12Fence_SetEventOnCompletion(fence, 1, completion_event)))
++        {
++            vkd3d_limited_report_failure("SetEventOnCompletion", hr);
++            goto done;
++        }
++
++        if (WaitForSingleObject(completion_event, INFINITE) != WAIT_OBJECT_0)
++        {
++            fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: fence wait failed.\n");
++            goto done;
++        }
++    }
++
++    read_range.Begin = 0;
++    read_range.End = sizeof(expected);
++    stage = "readback";
++    if (FAILED(hr = ID3D12Resource_Map(readback, 0, &read_range, &mapped_data)))
++    {
++        vkd3d_limited_report_failure("Map(readback)", hr);
++        goto done;
++    }
++
++    if (memcmp(mapped_data, expected, sizeof(expected)))
++    {
++        const uint8_t *actual = mapped_data;
++        size_t mismatch_index;
++
++        for (mismatch_index = 0; mismatch_index < sizeof(expected); ++mismatch_index)
++        {
++            if (actual[mismatch_index] != expected[mismatch_index])
++                break;
++        }
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: readback bytes differ at offset %zu, expected %02x, actual %02x.\n",
++                mismatch_index, expected[mismatch_index], actual[mismatch_index]);
++        vkd3d_limited_dump_bytes("EXPECTED", expected, sizeof(expected));
++        vkd3d_limited_dump_bytes("ACTUAL", actual, sizeof(expected));
++        goto done;
++    }
++    ID3D12Resource_Unmap(readback, 0, NULL);
++    mapped_data = NULL;
++
++    printf("VKD3D_LIMITED_500K_MICROTEST PASS\n");
++    stage = "complete";
++    status = 0;
++
++done:
++    vkd3d_limited_write_checkpoint(checkpoint_path,
++            status ? "FAIL" : "PASS_PENDING_TEARDOWN", stage);
++    if (mapped_data && readback)
++        ID3D12Resource_Unmap(readback, 0, NULL);
++    if (completion_event)
++        CloseHandle(completion_event);
++    if (fence)
++        ID3D12Fence_Release(fence);
++    if (readback)
++        ID3D12Resource_Release(readback);
++    if (resource)
++        ID3D12Resource_Release(resource);
++    if (upload)
++        ID3D12Resource_Release(upload);
++    if (command_list)
++        ID3D12GraphicsCommandList_Release(command_list);
++    if (command_allocator)
++        ID3D12CommandAllocator_Release(command_allocator);
++    if (command_queue)
++        ID3D12CommandQueue_Release(command_queue);
++    if (descriptor_heap)
++        ID3D12DescriptorHeap_Release(descriptor_heap);
++    if (oversized_descriptor_heap)
++        ID3D12DescriptorHeap_Release(oversized_descriptor_heap);
++    if (device)
++        ID3D12Device_Release(device);
++    if (d3d12_module)
++        FreeLibrary(d3d12_module);
++
++    /* A passing readback is insufficient if object teardown faults. */
++    vkd3d_limited_write_result(result_path, status, stage);
++
++    return status;
++}

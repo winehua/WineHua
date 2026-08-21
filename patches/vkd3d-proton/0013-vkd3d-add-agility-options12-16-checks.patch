@@ -1,0 +1,178 @@
+From 5e2c988049f1702ae93ffeb9d37ad2ffdaf38d80 Mon Sep 17 00:00:00 2001
+From: Sherief Farouk <sherief.personal@gmail.com>
+Date: Wed, 11 Jan 2023 18:51:20 -0800
+Subject: [PATCH] vkd3d: Added Agility SDK 1.608 level feature checks.
+
+A Win32 app on Win32 bundling Agility SDK 1.608 would see feature checks for
+up to OPTIONS16 never fail, but currently when running that app under Proton
+checks for anything beyond OPTIONS11 would return a failure HRESULT -
+something that never happens on Win32. This patch prevents seemingly unreachable
+code paths from triggering under Proton.
+
+Less sus more grep.
+---
+ include/vkd3d_d3d12.idl | 48 ++++++++++++++++++++++++
+ libs/vkd3d/device.c     | 81 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 129 insertions(+)
+
+diff --git a/include/vkd3d_d3d12.idl b/include/vkd3d_d3d12.idl
+index 5b42a53e..fd3078c3 100644
+--- a/include/vkd3d_d3d12.idl
++++ b/include/vkd3d_d3d12.idl
+@@ -485,6 +485,49 @@ typedef struct D3D12_FEATURE_DATA_D3D12_OPTIONS11
+     BOOL AtomicInt64OnDescriptorHeapResourceSupported;
+ } D3D12_FEATURE_DATA_D3D12_OPTIONS11;
+ 
++typedef enum D3D12_TRI_STATE
++{
++    D3D12_TRI_STATE_UNKNOWN = -1,
++    D3D12_TRI_STATE_FALSE = 0,
++    D3D12_TRI_STATE_TRUE = 1,
++} D3D12_TRI_STATE;
++
++typedef struct D3D12_FEATURE_DATA_D3D12_OPTIONS12
++{
++    D3D12_TRI_STATE MSPrimitivesPipelineStatisticIncludesCulledPrimitives;
++    BOOL EnhancedBarriersSupported;
++    BOOL RelaxedFormatCastingSupported;
++} D3D12_FEATURE_DATA_D3D12_OPTIONS12;
++
++typedef struct D3D12_FEATURE_DATA_D3D12_OPTIONS13
++{
++    BOOL UnrestrictedBufferTextureCopyPitchSupported;
++    BOOL UnrestrictedVertexElementAlignmentSupported;
++    BOOL InvertedViewportHeightFlipsYSupported;
++    BOOL InvertedViewportDepthFlipsZSupported;
++    BOOL TextureCopyBetweenDimensionsSupported;
++    BOOL AlphaBlendFactorSupported;
++} D3D12_FEATURE_DATA_D3D12_OPTIONS13;
++
++typedef struct D3D12_FEATURE_DATA_D3D12_OPTIONS14
++{
++    BOOL AdvancedTextureOpsSupported;
++    BOOL WriteableMSAATexturesSupported;
++    BOOL IndependentFrontAndBackStencilRefMaskSupported;
++} D3D12_FEATURE_DATA_D3D12_OPTIONS14;
++
++typedef struct D3D12_FEATURE_DATA_D3D12_OPTIONS15
++{
++    BOOL TriangleFanSupported;
++    BOOL DynamicIndexBufferStripCutSupported;
++} D3D12_FEATURE_DATA_D3D12_OPTIONS15;
++
++typedef struct D3D12_FEATURE_DATA_D3D12_OPTIONS16
++{
++    BOOL DynamicDepthBiasSupported;
++    BOOL Reserved;
++} D3D12_FEATURE_DATA_D3D12_OPTIONS16;
++
+ typedef struct D3D12_FEATURE_DATA_FORMAT_SUPPORT
+ {
+     DXGI_FORMAT Format;
+@@ -2029,6 +2072,11 @@ typedef enum D3D12_FEATURE
+     D3D12_FEATURE_D3D12_OPTIONS9 = 37,
+     D3D12_FEATURE_D3D12_OPTIONS10 = 39,
+     D3D12_FEATURE_D3D12_OPTIONS11 = 40,
++    D3D12_FEATURE_D3D12_OPTIONS12 = 41,
++    D3D12_FEATURE_D3D12_OPTIONS13 = 42,
++    D3D12_FEATURE_D3D12_OPTIONS14 = 43,
++    D3D12_FEATURE_D3D12_OPTIONS15 = 44,
++    D3D12_FEATURE_D3D12_OPTIONS16 = 45,
+ } D3D12_FEATURE;
+ 
+ typedef struct D3D12_MEMCPY_DEST
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 02269496..a6a54275 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -4091,6 +4091,87 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
+             return S_OK;
+         }
+ 
++        case D3D12_FEATURE_D3D12_OPTIONS12:
++        {
++            D3D12_FEATURE_DATA_D3D12_OPTIONS12 *data = feature_data;
++
++            if (feature_data_size != sizeof(*data))
++            {
++                WARN("Invalid size %u.\n", feature_data_size);
++                return E_INVALIDARG;
++            }
++
++            data->MSPrimitivesPipelineStatisticIncludesCulledPrimitives = D3D12_TRI_STATE_UNKNOWN;
++            data->EnhancedBarriersSupported = FALSE;
++            data->RelaxedFormatCastingSupported = FALSE;
++            return S_OK;
++        }
++
++        case D3D12_FEATURE_D3D12_OPTIONS13:
++        {
++            D3D12_FEATURE_DATA_D3D12_OPTIONS13 *data = feature_data;
++
++            if (feature_data_size != sizeof(*data))
++            {
++                WARN("Invalid size %u.\n", feature_data_size);
++                return E_INVALIDARG;
++            }
++
++            data->UnrestrictedBufferTextureCopyPitchSupported = FALSE;
++            data->UnrestrictedVertexElementAlignmentSupported = FALSE;
++            data->InvertedViewportHeightFlipsYSupported = FALSE;
++            data->InvertedViewportDepthFlipsZSupported = FALSE;
++            data->TextureCopyBetweenDimensionsSupported = FALSE;
++            data->AlphaBlendFactorSupported = FALSE;
++            return S_OK;
++        }
++
++        case D3D12_FEATURE_D3D12_OPTIONS14:
++        {
++            D3D12_FEATURE_DATA_D3D12_OPTIONS14 *data = feature_data;
++
++            if (feature_data_size != sizeof(*data))
++            {
++                WARN("Invalid size %u.\n", feature_data_size);
++                return E_INVALIDARG;
++            }
++
++            data->AdvancedTextureOpsSupported = FALSE;
++            data->WriteableMSAATexturesSupported = FALSE;
++            data->IndependentFrontAndBackStencilRefMaskSupported = FALSE;
++            return S_OK;
++        }
++
++        case D3D12_FEATURE_D3D12_OPTIONS15:
++        {
++            D3D12_FEATURE_DATA_D3D12_OPTIONS15 *data = feature_data;
++
++            if (feature_data_size != sizeof(*data))
++            {
++                WARN("Invalid size %u.\n", feature_data_size);
++                return E_INVALIDARG;
++            }
++
++            data->TriangleFanSupported = FALSE;
++            data->DynamicIndexBufferStripCutSupported = FALSE;
++            return S_OK;
++        }
++
++        case D3D12_FEATURE_D3D12_OPTIONS16:
++        {
++            D3D12_FEATURE_DATA_D3D12_OPTIONS16 *data = feature_data;
++
++            if (feature_data_size != sizeof(*data))
++            {
++                WARN("Invalid size %u.\n", feature_data_size);
++                return E_INVALIDARG;
++            }
++
++            data->DynamicDepthBiasSupported = FALSE;
++            data->Reserved = FALSE;
++            return S_OK;
++        }
++
+         case D3D12_FEATURE_QUERY_META_COMMAND:
+         {
+             D3D12_FEATURE_DATA_QUERY_META_COMMAND *data = feature_data;
+-- 
+2.43.0
+

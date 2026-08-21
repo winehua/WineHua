@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include <window_manager/oh_window.h>
+
 #undef LOG_TAG
 #define LOG_TAG "WL_PtrExt"
 #include <hilog/log.h>
@@ -89,6 +91,9 @@ void PointerExtras::constr_lock_pointer(wl_client*, wl_resource*, uint32_t id,
     zwp_locked_pointer_v1_send_locked(res);
     OH_LOG_INFO(LOG_APP, "[PtrExt] LOCK pointer on surf=%{public}p lifetime=%{public}u",
                 static_cast<void*>(surface), lifetime);
+    // Lock 约束 = 游戏进入相对模式 (隐藏光标无限转视角) — 同步冻结+隐藏
+    // host 系统光标 (见 pointer_extras.h 注释)
+    self->ApplyHostCursorLock(true);
 }
 
 void PointerExtras::constr_confine_pointer(wl_client*, wl_resource*, uint32_t id,
@@ -154,6 +159,10 @@ void PointerExtras::OnConstraintResourceDestroyed(wl_resource* r) {
     // (协议: set_cursor_position_hint 的既定用途)
     if (gone.type == ConstraintType::Lock && gone.hasHint) {
         InputManager::GetInstance()->OnPointerWarp(gone.surface, gone.hintX, gone.hintY);
+    }
+    // Lock 约束销毁 (游戏退出相对模式 / wine 断连) → 还原 host 系统光标
+    if (gone.type == ConstraintType::Lock) {
+        self->ApplyHostCursorLock(false);
     }
     OH_LOG_INFO(LOG_APP, "[PtrExt] constraint destroyed type=%{public}d surf=%{public}p hint=%{public}d",
                 static_cast<int>(gone.type), static_cast<void*>(gone.surface),
@@ -273,4 +282,59 @@ PointerExtras::ConstraintType PointerExtras::ConstraintFor(wl_resource* surface)
         return c.type;
     }
     return ConstraintType::None;
+}
+
+// ========================================================================
+//  Host 光标锁定 (OH_WindowManager_LockCursor + ets 隐藏光标)
+// ========================================================================
+
+void PointerExtras::RegisterHostWindow(int32_t windowId) {
+    if (windowId <= 0) return;
+    auto* self = GetInstance();
+    std::lock_guard<std::mutex> lk(self->mutex_);
+    auto& v = self->hostWindowIds_;
+    if (std::find(v.begin(), v.end(), windowId) == v.end()) {
+        v.push_back(windowId);
+        OH_LOG_INFO(LOG_APP, "[PtrExt] host window registered: %{public}d (total=%{public}zu)",
+                    windowId, v.size());
+    }
+}
+
+void PointerExtras::SetPointerLockCallback(std::function<void(bool)> cb) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    lockCallback_ = std::move(cb);
+}
+
+void PointerExtras::ApplyHostCursorLock(bool lock) {
+    std::function<void(bool)> cb;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (lock) {
+            // 重入守卫: 同 surface 重建约束会再次走 lock 路径, 已锁则跳过
+            if (lockedWindowId_ != 0) return;
+            // LockCursor 仅对获焦窗口生效 (失焦窗口返回 STATE_ABNORMAL),
+            // 逐个尝试已注册窗口, 成功即停并记下窗口 id 供解锁用
+            for (int32_t id : hostWindowIds_) {
+                const int32_t ret = OH_WindowManager_LockCursor(id, false);  // false = 光标冻结不跟随
+                if (ret == 0) {  // WM_ERROR_OK
+                    lockedWindowId_ = id;
+                    OH_LOG_INFO(LOG_APP, "[PtrExt] host cursor LOCKED win=%{public}d", id);
+                    break;
+                }
+                OH_LOG_WARN(LOG_APP, "[PtrExt] LockCursor win=%{public}d failed ret=%{public}d", id, ret);
+            }
+            // 全部失败 (无获焦窗口/系统 <API22) 不阻断: rawDelta 相对位移
+            // 通道 (InputManager) 不依赖冻结仍工作; 光标照常隐藏 (相对模式下
+            // 游戏自绘光标, 可见的系统光标只剩干扰)
+        } else {
+            if (lockedWindowId_ == 0) return;
+            const int32_t ret = OH_WindowManager_UnlockCursor(lockedWindowId_);
+            OH_LOG_INFO(LOG_APP, "[PtrExt] host cursor UNLOCKED win=%{public}d ret=%{public}d",
+                        lockedWindowId_, ret);
+            lockedWindowId_ = 0;
+        }
+        cb = lockCallback_;
+    }
+    // tsfn 回调放锁外触发, 防 ets 侧重入
+    if (cb) cb(lock);
 }

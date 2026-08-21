@@ -80,21 +80,33 @@ if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
     WINE_MONO_VER="11.1.0"
     WINE_MONO_MSI="wine-mono-${WINE_MONO_VER}-x86.msi"
     WINE_MONO_URL="https://dl.winehq.org/wine/wine-mono/${WINE_MONO_VER}/${WINE_MONO_MSI}"
+    WINE_MONO_SHA256="deb0341431f8260b209fff6bc79ddcc5414b97f8e9236ab9fbdca4ce59e0a9b9"
     # mono msi 架构无关, 放架构无关路径 (不依赖 WINE_ARCH, 跨方案/跨架构共享)
     WINE_MONO_DIR="$BUILD_DIR/wine-mono"
     WINE_MONO_PATH="$WINE_MONO_DIR/$WINE_MONO_MSI"
-    if [ ! -f "$WINE_MONO_PATH" ]; then
+    if [ ! -s "$WINE_MONO_PATH" ] || ! echo "$WINE_MONO_SHA256  $WINE_MONO_PATH" | sha256sum -c --status; then
         log "=== 下载 Wine Mono ${WINE_MONO_VER} ==="
         mkdir -p "$WINE_MONO_DIR"
+        WINE_MONO_TMP="$WINE_MONO_PATH.download"
+        rm -f "$WINE_MONO_TMP"
         if command -v curl >/dev/null 2>&1; then
-            curl -L -o "$WINE_MONO_PATH" "$WINE_MONO_URL" || warn "Wine Mono 下载失败, .NET 应用将无法运行"
+            curl --fail --location --retry 3 --output "$WINE_MONO_TMP" "$WINE_MONO_URL" || \
+                err "Wine Mono 下载失败"
         elif command -v wget >/dev/null 2>&1; then
-            wget -O "$WINE_MONO_PATH" "$WINE_MONO_URL" || warn "Wine Mono 下载失败"
+            wget -O "$WINE_MONO_TMP" "$WINE_MONO_URL" || err "Wine Mono 下载失败"
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+                "$WINE_MONO_URL" "$WINE_MONO_TMP" || err "Wine Mono 下载失败"
         else
-            warn "无 curl/wget, 跳过 Wine Mono"
+            err "无 curl/wget/python3, 无法准备默认 Wine Mono 运行时"
         fi
-        [ -f "$WINE_MONO_PATH" ] && log "Wine Mono → $WINE_MONO_PATH"
+        echo "$WINE_MONO_SHA256  $WINE_MONO_TMP" | sha256sum -c --status || \
+            err "Wine Mono SHA-256 校验失败"
+        mv "$WINE_MONO_TMP" "$WINE_MONO_PATH"
     fi
+    echo "$WINE_MONO_SHA256  $WINE_MONO_PATH" | sha256sum -c --status || \
+        err "Wine Mono 产物缺失或损坏"
+    log "Wine Mono → $WINE_MONO_PATH"
 else
     log "Wine Mono: SKIP (设置 BUILD_WINE_MONO=1 启用 .NET 运行时)"
 fi

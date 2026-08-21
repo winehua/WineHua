@@ -1,0 +1,500 @@
+From 5dd42d711dd069929d4666c51dc63e7d1e6a9dc6 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 02:42:44 +0800
+Subject: [PATCH 4/5] test: add cross-queue D3D12 microtest
+
+---
+ tests/meson.build                  |   7 +
+ tests/vkd3d_multiqueue_microtest.c | 467 +++++++++++++++++++++++++++++
+ 2 files changed, 474 insertions(+)
+ create mode 100644 tests/vkd3d_multiqueue_microtest.c
+
+diff --git a/tests/meson.build b/tests/meson.build
+index e0a93dc2..dc79727e 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -70,4 +70,11 @@ if enable_limited_resource_view_heaps
+     install             : false,
+     c_args              : vkd3d_test_flags,
+     override_options    : [ 'c_std='+vkd3d_c_std ])
++
++  executable('vkd3d-multiqueue-microtest', 'vkd3d_multiqueue_microtest.c',
++    dependencies        : vkd3d_test_deps,
++    include_directories : vkd3d_private_includes,
++    install             : false,
++    c_args              : vkd3d_test_flags,
++    override_options    : [ 'c_std='+vkd3d_c_std ])
+ endif
+diff --git a/tests/vkd3d_multiqueue_microtest.c b/tests/vkd3d_multiqueue_microtest.c
+new file mode 100644
+index 00000000..84d5adb7
+--- /dev/null
++++ b/tests/vkd3d_multiqueue_microtest.c
+@@ -0,0 +1,467 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * Default-off cross-queue validation for the WineHua VKD3D experiment.
++ */
++
++#define COBJMACROS
++#include "vkd3d_win32.h"
++#include "vkd3d_d3d12.h"
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#define VKD3D_MULTIQUEUE_BYTE_COUNT 256u
++#define VKD3D_MULTIQUEUE_WAIT_TIMEOUT_MS 120000u
++
++static D3D12_RESOURCE_DESC vkd3d_multiqueue_buffer_desc(UINT64 size)
++{
++    D3D12_RESOURCE_DESC desc;
++
++    memset(&desc, 0, sizeof(desc));
++    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    desc.Width = size;
++    desc.Height = 1;
++    desc.DepthOrArraySize = 1;
++    desc.MipLevels = 1;
++    desc.Format = DXGI_FORMAT_UNKNOWN;
++    desc.SampleDesc.Count = 1;
++    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    return desc;
++}
++
++static const char *vkd3d_multiqueue_find_argument(int argc, char **argv, const char *name)
++{
++    int i;
++
++    for (i = 1; i + 1 < argc; ++i)
++    {
++        if (!strcmp(argv[i], name))
++            return argv[i + 1];
++    }
++
++    return NULL;
++}
++
++static void vkd3d_multiqueue_report_failure(const char *operation, HRESULT hr)
++{
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: %s returned %#lx.\n", operation, hr);
++}
++
++static void vkd3d_multiqueue_write_checkpoint(const char *path, const char *state,
++        const char *stage, UINT copy_submissions, UINT direct_submissions, UINT cross_queue_waits)
++{
++    FILE *file;
++
++    if (!path || !(file = fopen(path, "wb")))
++        return;
++
++    fprintf(file, "{\"state\":\"%s\",\"stage\":\"%s\","
++            "\"copyQueueSubmissions\":%u,\"directQueueSubmissions\":%u,"
++            "\"crossQueueWaits\":%u}\n", state, stage,
++            copy_submissions, direct_submissions, cross_queue_waits);
++    fclose(file);
++}
++
++static int vkd3d_multiqueue_write_result(const char *path, int status, const char *stage,
++        UINT copy_submissions, UINT direct_submissions, UINT cross_queue_waits,
++        UINT bytes_verified)
++{
++    FILE *file;
++
++    if (!path || !(file = fopen(path, "wb")))
++        return 0;
++
++    fprintf(file, "{\"status\":\"%s\",\"stage\":\"%s\","
++            "\"queuePath\":\"copy-direct-copy\",\"copyQueueSubmissions\":%u,"
++            "\"directQueueSubmissions\":%u,\"crossQueueWaits\":%u,"
++            "\"bytesVerified\":%u}\n", status ? "FAIL" : "PASS", stage,
++            copy_submissions, direct_submissions, cross_queue_waits, bytes_verified);
++    return fclose(file) == 0;
++}
++
++static int vkd3d_multiqueue_wait_for_fence(ID3D12Fence *fence, UINT64 value, HANDLE event)
++{
++    HRESULT hr;
++    DWORD wait_result;
++
++    if (ID3D12Fence_GetCompletedValue(fence) >= value)
++        return 1;
++
++    if (FAILED(hr = ID3D12Fence_SetEventOnCompletion(fence, value, event)))
++    {
++        vkd3d_multiqueue_report_failure("SetEventOnCompletion", hr);
++        return 0;
++    }
++
++    wait_result = WaitForSingleObject(event, VKD3D_MULTIQUEUE_WAIT_TIMEOUT_MS);
++    if (wait_result != WAIT_OBJECT_0)
++    {
++        fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: fence wait returned %#lx.\n",
++                wait_result);
++        return 0;
++    }
++
++    return 1;
++}
++
++static void vkd3d_multiqueue_dump_bytes(const char *label, const uint8_t *bytes, size_t count)
++{
++    size_t i;
++
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST %s:", label);
++    for (i = 0; i < count; ++i)
++        fprintf(stderr, " %02x", bytes[i]);
++    fputc('\n', stderr);
++}
++
++static int vkd3d_multiqueue_validate_bytes(const uint8_t *actual,
++        const uint8_t *expected, size_t count)
++{
++    size_t i;
++
++    if (!memcmp(actual, expected, count))
++        return 1;
++
++    for (i = 0; i < count && actual[i] == expected[i]; ++i)
++        ;
++
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: readback differs at offset %zu, "
++            "expected %02x, actual %02x.\n", i, expected[i], actual[i]);
++    vkd3d_multiqueue_dump_bytes("EXPECTED", expected, count);
++    vkd3d_multiqueue_dump_bytes("ACTUAL", actual, count);
++    return 0;
++}
++
++int main(int argc, char **argv)
++{
++    D3D12_COMMAND_QUEUE_DESC queue_desc;
++    D3D12_HEAP_PROPERTIES heap_properties;
++    D3D12_RESOURCE_DESC buffer_desc;
++    D3D12_RESOURCE_BARRIER barriers[2];
++    D3D12_RANGE read_range;
++    D3D12_RANGE write_range;
++    ID3D12CommandQueue *copy_queue = NULL;
++    ID3D12CommandQueue *direct_queue = NULL;
++    ID3D12CommandAllocator *copy_upload_allocator = NULL;
++    ID3D12CommandAllocator *direct_allocator = NULL;
++    ID3D12CommandAllocator *copy_readback_allocator = NULL;
++    ID3D12GraphicsCommandList *copy_upload_list = NULL;
++    ID3D12GraphicsCommandList *direct_list = NULL;
++    ID3D12GraphicsCommandList *copy_readback_list = NULL;
++    ID3D12CommandList *command_lists[1];
++    ID3D12Resource *upload = NULL;
++    ID3D12Resource *default_a = NULL;
++    ID3D12Resource *default_b = NULL;
++    ID3D12Resource *readback = NULL;
++    ID3D12Fence *fence = NULL;
++    ID3D12Device *device = NULL;
++    PFN_D3D12_CREATE_DEVICE create_device;
++    const char *result_path = vkd3d_multiqueue_find_argument(argc, argv, "--result");
++    const char *checkpoint_path = vkd3d_multiqueue_find_argument(argc, argv, "--checkpoint");
++    const char *stage = "startup";
++    HMODULE d3d12_module = NULL;
++    HANDLE completion_event = NULL;
++    uint8_t expected[VKD3D_MULTIQUEUE_BYTE_COUNT];
++    char module_path[MAX_PATH];
++    void *mapped_data = NULL;
++    HRESULT hr = E_FAIL;
++    UINT copy_submissions = 0;
++    UINT direct_submissions = 0;
++    UINT cross_queue_waits = 0;
++    UINT bytes_verified = 0;
++    unsigned int i;
++    int status = 1;
++
++    for (i = 0; i < sizeof(expected); ++i)
++        expected[i] = (uint8_t)(((i * 37u) + 0x5au) ^ (i >> 1));
++
++    vkd3d_multiqueue_write_checkpoint(checkpoint_path, "RUNNING", stage,
++            copy_submissions, direct_submissions, cross_queue_waits);
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST CONFIG: bytes=%u "
++            "queue_path=copy-direct-copy expected_cross_queue_waits=2.\n",
++            VKD3D_MULTIQUEUE_BYTE_COUNT);
++
++    stage = "loader";
++    if (!(d3d12_module = LoadLibraryA("d3d12.dll")))
++    {
++        fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: could not load d3d12.dll.\n");
++        goto done;
++    }
++    if (GetModuleFileNameA(d3d12_module, module_path, sizeof(module_path)))
++        fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST DLL: %s\n", module_path);
++    if (!(create_device = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(d3d12_module,
++            "D3D12CreateDevice")))
++    {
++        fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: D3D12CreateDevice export is missing.\n");
++        goto done;
++    }
++
++    stage = "device";
++    if (FAILED(hr = create_device(NULL, D3D_FEATURE_LEVEL_11_0,
++            &IID_ID3D12Device, (void **)&device)))
++    {
++        vkd3d_multiqueue_report_failure("D3D12CreateDevice", hr);
++        goto done;
++    }
++
++    memset(&queue_desc, 0, sizeof(queue_desc));
++    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
++    stage = "copy-queue";
++    if (FAILED(hr = ID3D12Device_CreateCommandQueue(device, &queue_desc,
++            &IID_ID3D12CommandQueue, (void **)&copy_queue)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommandQueue(copy)", hr);
++        goto done;
++    }
++    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
++    stage = "direct-queue";
++    if (FAILED(hr = ID3D12Device_CreateCommandQueue(device, &queue_desc,
++            &IID_ID3D12CommandQueue, (void **)&direct_queue)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommandQueue(direct)", hr);
++        goto done;
++    }
++
++    stage = "command-objects";
++    if (FAILED(hr = ID3D12Device_CreateCommandAllocator(device, D3D12_COMMAND_LIST_TYPE_COPY,
++            &IID_ID3D12CommandAllocator, (void **)&copy_upload_allocator)) ||
++            FAILED(hr = ID3D12Device_CreateCommandAllocator(device, D3D12_COMMAND_LIST_TYPE_DIRECT,
++            &IID_ID3D12CommandAllocator, (void **)&direct_allocator)) ||
++            FAILED(hr = ID3D12Device_CreateCommandAllocator(device, D3D12_COMMAND_LIST_TYPE_COPY,
++            &IID_ID3D12CommandAllocator, (void **)&copy_readback_allocator)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommandAllocator", hr);
++        goto done;
++    }
++    if (FAILED(hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_COPY,
++            copy_upload_allocator, NULL, &IID_ID3D12GraphicsCommandList,
++            (void **)&copy_upload_list)) ||
++            FAILED(hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
++            direct_allocator, NULL, &IID_ID3D12GraphicsCommandList,
++            (void **)&direct_list)) ||
++            FAILED(hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_COPY,
++            copy_readback_allocator, NULL, &IID_ID3D12GraphicsCommandList,
++            (void **)&copy_readback_list)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommandList", hr);
++        goto done;
++    }
++
++    buffer_desc = vkd3d_multiqueue_buffer_desc(sizeof(expected));
++    memset(&heap_properties, 0, sizeof(heap_properties));
++    heap_properties.Type = D3D12_HEAP_TYPE_UPLOAD;
++    stage = "upload-resource";
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
++            NULL, &IID_ID3D12Resource, (void **)&upload)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommittedResource(upload)", hr);
++        goto done;
++    }
++    read_range.Begin = 0;
++    read_range.End = 0;
++    if (FAILED(hr = ID3D12Resource_Map(upload, 0, &read_range, &mapped_data)))
++    {
++        vkd3d_multiqueue_report_failure("Map(upload)", hr);
++        goto done;
++    }
++    memcpy(mapped_data, expected, sizeof(expected));
++    write_range.Begin = 0;
++    write_range.End = sizeof(expected);
++    ID3D12Resource_Unmap(upload, 0, &write_range);
++    mapped_data = NULL;
++
++    heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
++    stage = "default-resources";
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST,
++            NULL, &IID_ID3D12Resource, (void **)&default_a)) ||
++            FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST,
++            NULL, &IID_ID3D12Resource, (void **)&default_b)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommittedResource(default)", hr);
++        goto done;
++    }
++    heap_properties.Type = D3D12_HEAP_TYPE_READBACK;
++    stage = "readback-resource";
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++            D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST,
++            NULL, &IID_ID3D12Resource, (void **)&readback)))
++    {
++        vkd3d_multiqueue_report_failure("CreateCommittedResource(readback)", hr);
++        goto done;
++    }
++
++    stage = "record-copy-upload";
++    ID3D12GraphicsCommandList_CopyBufferRegion(copy_upload_list, default_a, 0,
++            upload, 0, sizeof(expected));
++    if (FAILED(hr = ID3D12GraphicsCommandList_Close(copy_upload_list)))
++    {
++        vkd3d_multiqueue_report_failure("Close(copy upload list)", hr);
++        goto done;
++    }
++
++    stage = "record-direct";
++    memset(barriers, 0, sizeof(barriers));
++    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    barriers[0].Transition.pResource = default_a;
++    barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    ID3D12GraphicsCommandList_ResourceBarrier(direct_list, 1, &barriers[0]);
++    ID3D12GraphicsCommandList_CopyBufferRegion(direct_list, default_b, 0,
++            default_a, 0, sizeof(expected));
++    barriers[1] = barriers[0];
++    barriers[1].Transition.pResource = default_b;
++    ID3D12GraphicsCommandList_ResourceBarrier(direct_list, 1, &barriers[1]);
++    if (FAILED(hr = ID3D12GraphicsCommandList_Close(direct_list)))
++    {
++        vkd3d_multiqueue_report_failure("Close(direct list)", hr);
++        goto done;
++    }
++
++    stage = "record-copy-readback";
++    ID3D12GraphicsCommandList_CopyBufferRegion(copy_readback_list, readback, 0,
++            default_b, 0, sizeof(expected));
++    if (FAILED(hr = ID3D12GraphicsCommandList_Close(copy_readback_list)))
++    {
++        vkd3d_multiqueue_report_failure("Close(copy readback list)", hr);
++        goto done;
++    }
++
++    stage = "fence";
++    if (FAILED(hr = ID3D12Device_CreateFence(device, 0, D3D12_FENCE_FLAG_NONE,
++            &IID_ID3D12Fence, (void **)&fence)))
++    {
++        vkd3d_multiqueue_report_failure("CreateFence", hr);
++        goto done;
++    }
++    if (!(completion_event = CreateEventA(NULL, FALSE, FALSE, NULL)))
++    {
++        fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: CreateEvent failed.\n");
++        goto done;
++    }
++
++    stage = "submit-copy-upload";
++    command_lists[0] = (ID3D12CommandList *)copy_upload_list;
++    ID3D12CommandQueue_ExecuteCommandLists(copy_queue, 1, command_lists);
++    ++copy_submissions;
++    if (FAILED(hr = ID3D12CommandQueue_Signal(copy_queue, fence, 1)))
++    {
++        vkd3d_multiqueue_report_failure("Signal(copy, 1)", hr);
++        goto done;
++    }
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST STEP: copy upload submitted, fence=1.\n");
++
++    stage = "direct-wait-copy";
++    if (FAILED(hr = ID3D12CommandQueue_Wait(direct_queue, fence, 1)))
++    {
++        vkd3d_multiqueue_report_failure("Wait(direct <- copy, 1)", hr);
++        goto done;
++    }
++    ++cross_queue_waits;
++    command_lists[0] = (ID3D12CommandList *)direct_list;
++    ID3D12CommandQueue_ExecuteCommandLists(direct_queue, 1, command_lists);
++    ++direct_submissions;
++    if (FAILED(hr = ID3D12CommandQueue_Signal(direct_queue, fence, 2)))
++    {
++        vkd3d_multiqueue_report_failure("Signal(direct, 2)", hr);
++        goto done;
++    }
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST STEP: direct waited for copy and submitted, fence=2.\n");
++
++    stage = "copy-wait-direct";
++    if (FAILED(hr = ID3D12CommandQueue_Wait(copy_queue, fence, 2)))
++    {
++        vkd3d_multiqueue_report_failure("Wait(copy <- direct, 2)", hr);
++        goto done;
++    }
++    ++cross_queue_waits;
++    command_lists[0] = (ID3D12CommandList *)copy_readback_list;
++    ID3D12CommandQueue_ExecuteCommandLists(copy_queue, 1, command_lists);
++    ++copy_submissions;
++    if (FAILED(hr = ID3D12CommandQueue_Signal(copy_queue, fence, 3)))
++    {
++        vkd3d_multiqueue_report_failure("Signal(copy, 3)", hr);
++        goto done;
++    }
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST STEP: copy waited for direct and submitted readback, fence=3.\n");
++
++    stage = "cpu-fence";
++    if (!vkd3d_multiqueue_wait_for_fence(fence, 3, completion_event))
++        goto done;
++
++    stage = "readback";
++    read_range.Begin = 0;
++    read_range.End = sizeof(expected);
++    if (FAILED(hr = ID3D12Resource_Map(readback, 0, &read_range, &mapped_data)))
++    {
++        vkd3d_multiqueue_report_failure("Map(readback)", hr);
++        goto done;
++    }
++    if (!vkd3d_multiqueue_validate_bytes(mapped_data, expected, sizeof(expected)))
++        goto done;
++    bytes_verified = sizeof(expected);
++    ID3D12Resource_Unmap(readback, 0, NULL);
++    mapped_data = NULL;
++
++    printf("VKD3D_MULTIQUEUE_MICROTEST PASS\n");
++    stage = "complete";
++    status = 0;
++
++done:
++    vkd3d_multiqueue_write_checkpoint(checkpoint_path,
++            status ? "FAIL" : "PASS_PENDING_TEARDOWN", stage,
++            copy_submissions, direct_submissions, cross_queue_waits);
++    if (mapped_data && readback)
++        ID3D12Resource_Unmap(readback, 0, NULL);
++    if (completion_event)
++        CloseHandle(completion_event);
++    if (readback)
++        ID3D12Resource_Release(readback);
++    if (default_b)
++        ID3D12Resource_Release(default_b);
++    if (default_a)
++        ID3D12Resource_Release(default_a);
++    if (upload)
++        ID3D12Resource_Release(upload);
++    if (copy_readback_list)
++        ID3D12GraphicsCommandList_Release(copy_readback_list);
++    if (direct_list)
++        ID3D12GraphicsCommandList_Release(direct_list);
++    if (copy_upload_list)
++        ID3D12GraphicsCommandList_Release(copy_upload_list);
++    if (copy_readback_allocator)
++        ID3D12CommandAllocator_Release(copy_readback_allocator);
++    if (direct_allocator)
++        ID3D12CommandAllocator_Release(direct_allocator);
++    if (copy_upload_allocator)
++        ID3D12CommandAllocator_Release(copy_upload_allocator);
++    if (fence)
++        ID3D12Fence_Release(fence);
++    if (direct_queue)
++        ID3D12CommandQueue_Release(direct_queue);
++    if (copy_queue)
++        ID3D12CommandQueue_Release(copy_queue);
++    if (device)
++        ID3D12Device_Release(device);
++    if (d3d12_module)
++        FreeLibrary(d3d12_module);
++
++    if (!vkd3d_multiqueue_write_result(result_path, status, stage,
++            copy_submissions, direct_submissions, cross_queue_waits, bytes_verified))
++    {
++        fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FAIL: could not persist final result.\n");
++        return 1;
++    }
++    fprintf(stderr, "VKD3D_MULTIQUEUE_MICROTEST FINAL: status=%s stage=%s "
++            "result_written=1 copy_submissions=%u direct_submissions=%u "
++            "cross_queue_waits=%u bytes_verified=%u.\n",
++            status ? "FAIL" : "PASS", stage, copy_submissions,
++            direct_submissions, cross_queue_waits, bytes_verified);
++
++    return status;
++}

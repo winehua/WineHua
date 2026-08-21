@@ -38,7 +38,13 @@ public:
     // action: ArkTS MouseAction (Press=1, Release=2, Move=3)
     // px/py: 已转为物理像素的坐标
     // button: 已由 ArkTS MouseMap 映射的 evdev button code (0x110/0x111/0x112)
-    void SendPointerEvent(uint32_t toplevelId, int action, double px, double py, int button);
+    // rawDx/rawDy: ArkTS MouseEvent.rawDeltaX/Y (API15+, 鼠标硬件原始增量,
+    //   物理移动距离单位, 非像素) — 仅 Move 有效, 其余事件/触屏路径传 0。
+    //   是相对模式 (dinput 视角) 的真实位移源, 见 ACT_MOVE 处理
+    // fromMouse: 来自物理鼠标 onMouse 通道 (触屏 onTouch 路径传 false) —
+    //   相对模式下区分点击语义, 见 ACT_PRESS 处理
+    void SendPointerEvent(uint32_t toplevelId, int action, double px, double py, int button,
+                          double rawDx = 0, double rawDy = 0, bool fromMouse = false);
 
     // evdevCode: 已由 ArkTS KeyMap 映射的 evdev keycode
     // pressed: true=按下, false=释放
@@ -186,6 +192,18 @@ private:
      */
     double lastLocalX_ = 0, lastLocalY_ = 0;
     bool hasLastLocal_ = false;
+
+    /*
+     * rawDelta → surface 局部坐标 的比例标定: rawDelta 是"鼠标物理移动距离"
+     * 单位 (鸿蒙文档明确非屏幕像素), 与局部坐标的比例随设备/DPI/加速曲线
+     * 变化, 只能靠实测估计。策略: 在光标未钳制的移动上按轴累积
+     * Σ|绝对差分| / Σ|rawDelta| (单侧钳制的"沿边缘滑动"样本该轴不参与,
+     * 避免低估); 累积量过 warmup 阈值后才信任, 之后持续滑动修正。
+     * 仅 SendPointerEvent 所在线程 (ArkTS NAPI) 访问, 无需加锁。
+     */
+    void UpdateRawScale(double rawDx, double rawDy, double diffDx, double diffDy);
+    double rawScale_ = 1.0;  // 标定收敛前的默认值 (单位相差不多时即合理)
+    double rawAccumX_ = 0, absAccumX_ = 0, rawAccumY_ = 0, absAccumY_ = 0;
 
     // 最近一次按下时刻 (ACT_RELEASE 的脉冲拉伸计时, 见 input_manager.cpp)
     std::atomic<uint32_t> lastPressMs_{0};

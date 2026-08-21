@@ -18,6 +18,11 @@
         "name": "ohos.permission.INTERNET"
       },
       {
+        // 游戏相对模式 (dinput 无限转视角) 时锁定/冻结系统光标;
+        // normal 级 system_grant, 声明即可, 无弹窗
+        "name": "ohos.permission.LOCK_WINDOW_CURSOR"
+      },
+      {
         "name": "ohos.permission.MICROPHONE",
         "reason": "$string:microphone_permission",
         "usedScene": {
@@ -42,9 +47,9 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "launchType": "singleton",
-        // 强制横屏 (宽屏设备保持宽>高不旋转, 直板机转横屏):
-        // 参考官方窗口旋转指南 — 固定方向类型 LANDSCAPE, 游戏类应用标准做法
-        "orientation": "landscape",
+        // Probe UI: allow phone portrait/landscape. Master still forces
+        // landscape for dedicated game windows via compositor/window policy.
+        "orientation": "auto_rotation",
         "skills": [
           {
             "entities": [
@@ -66,6 +71,7 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
         "launchType": "singleton",
+        "orientation": "auto_rotation",
         "removeMissionAfterTerminate": true
       },
       {
@@ -78,6 +84,7 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
         "launchType": "multiton",
+        "orientation": "auto_rotation",
         "removeMissionAfterTerminate": true
       },
       {

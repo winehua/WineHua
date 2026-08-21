@@ -1,0 +1,60 @@
+From 5ad6e31c1759e627a43fdad48a8e0803f415dca1 Mon Sep 17 00:00:00 2001
+From: WineHua <winehua@example.invalid>
+Date: Fri, 7 Aug 2026 03:20:00 +0800
+Subject: [PATCH] vkd3d: accept non-NULL empty pipeline library blobs
+
+The Microsoft D3D12PipelineStateCache sample maps an empty file and passes
+the resulting non-NULL data pointer together with a zero blob length. Native
+D3D12 treats this as an empty pipeline library, but VKD3D returned
+E_INVALIDARG and prevented the sample from starting.
+
+The blob is only read when its length is nonzero, so accept this form and add
+coverage for the official sample's call pattern.
+---
+ libs/vkd3d/cache.c       | 3 ---
+ tests/d3d12_pso_blob.c   | 8 ++++++++
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/libs/vkd3d/cache.c b/libs/vkd3d/cache.c
+index 8ce2a9c1..d38c0f3a 100644
+--- a/libs/vkd3d/cache.c
++++ b/libs/vkd3d/cache.c
+@@ -1681,9 +1681,6 @@ static HRESULT d3d12_pipeline_library_init(struct d3d12_pipeline_library *pipeli
+     pipeline_library->ID3D12PipelineLibrary_iface.lpVtbl = &d3d12_pipeline_library_vtbl;
+     pipeline_library->refcount = 1;
+ 
+-    if (!blob_length && blob)
+-        return E_INVALIDARG;
+-
+     if ((rc = rwlock_init(&pipeline_library->mutex)))
+         return hresult_from_errno(rc);
+ 
+diff --git a/tests/d3d12_pso_blob.c b/tests/d3d12_pso_blob.c
+index 2bb89fb4..3f9da697 100644
+--- a/tests/d3d12_pso_blob.c
++++ b/tests/d3d12_pso_blob.c
+@@ -130,6 +130,7 @@ void test_pipeline_library(void)
+     ID3D12Device1 *device1;
+     void *serialized_data;
+     ID3D12Device *device;
++    uint8_t empty_blob = 0;
+     HRESULT hr;
+ 
+ #if 0
+@@ -188,6 +189,13 @@ void test_pipeline_library(void)
+         return;
+     }
+ 
++    /* Memory-mapped empty files have a valid pointer but no library data. */
++    hr = ID3D12Device1_CreatePipelineLibrary(device1, &empty_blob, 0,
++            &IID_ID3D12PipelineLibrary, (void **)&pipeline_library);
++    ok(hr == S_OK, "Failed to create pipeline library from non-NULL empty blob, hr %#x.\n", hr);
++    if (hr == S_OK)
++        ID3D12PipelineLibrary_Release(pipeline_library);
++
+     /* Test adding pipelines to an empty pipeline library */
+     hr = ID3D12Device1_CreatePipelineLibrary(device1, NULL, 0, &IID_ID3D12PipelineLibrary, (void**)&pipeline_library);
+     ok(hr == S_OK, "Failed to create pipeline library, hr %#x.\n", hr);
+-- 
+2.43.0
+

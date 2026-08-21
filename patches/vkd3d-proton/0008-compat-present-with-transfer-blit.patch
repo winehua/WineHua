@@ -1,0 +1,140 @@
+From 912e6318689a844edc76333f21ca3d16a57c77f0 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 20:05:00 +0800
+Subject: [PATCH] compat: present swapchain image with transfer blit
+
+---
+ libs/vkd3d/swapchain.c | 106 +++++++++++++++++++++++++++++++++----------------
+ 1 file changed, 70 insertions(+), 36 deletions(-)
+
+diff --git a/libs/vkd3d/swapchain.c b/libs/vkd3d/swapchain.c
+index 3a1db2c..2d86640 100644
+--- a/libs/vkd3d/swapchain.c
++++ b/libs/vkd3d/swapchain.c
+@@ -1063,54 +1063,88 @@ static VkResult d3d12_swapchain_record_swapchain_blit(struct d3d12_swapchain *s
+ 
+     VK_CALL(vkCmdEndRenderPass2KHR(vk_cmd_buffer, &subpass_end_info));
+ 
+-    /* Diagnostic only: write the exact image returned by
+-     * vkGetSwapchainImagesKHR after the meta render pass has ended. This
+-     * bypasses the framebuffer, image-view, pipeline and descriptor paths,
+-     * but keeps the real command buffer, queue submit, signal semaphore,
+-     * Wine present bridge and Host Presenter copy. */
++    /* Maleoon/Venus compatibility path for the isolated WineHua profile.
++     * The regular fullscreen meta render pass completes without an error but
++     * does not update the private Wine swapchain image on the affected stack.
++     * Transfer the real D3D12 back buffer into that exact image while keeping
++     * the existing acquire, queue submit, fence, signal semaphore and present
++     * ordering unchanged. */
+     {
+-        VkImageMemoryBarrier barrier;
++        VkImageMemoryBarrier barriers[2];
+         VkImageSubresourceRange range;
+-        VkClearColorValue colour;
++        VkImageBlit2KHR blit;
++        VkBlitImageInfo2KHR blit_info;
+ 
+         memset(&range, 0, sizeof(range));
+         range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+         range.levelCount = 1;
+         range.layerCount = 1;
+ 
+-        memset(&barrier, 0, sizeof(barrier));
+-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+-        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+-        barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+-        barrier.image = swapchain->vk_swapchain_images[dst_index];
+-        barrier.subresourceRange = range;
++        memset(barriers, 0, sizeof(barriers));
++        barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
++        barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
++        barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++        barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++        barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++        barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        barriers[0].image = swapchain->vk_images[src_index];
++        barriers[0].subresourceRange = range;
++
++        barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
++        barriers[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
++        barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++        barriers[1].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
++        barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++        barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        barriers[1].image = swapchain->vk_swapchain_images[dst_index];
++        barriers[1].subresourceRange = range;
+         VK_CALL(vkCmdPipelineBarrier(vk_cmd_buffer,
+-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
++                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
++                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+-                0, NULL, 0, NULL, 1, &barrier));
+-
+-        memset(&colour, 0, sizeof(colour));
+-        colour.float32[0] = 1.0f;
+-        colour.float32[1] = 0.0f;
+-        colour.float32[2] = 0.75f;
+-        colour.float32[3] = 1.0f;
+-        VK_CALL(vkCmdClearColorImage(vk_cmd_buffer,
+-                swapchain->vk_swapchain_images[dst_index],
+-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+-                &colour, 1, &range));
+-
+-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+-        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+-        barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
++                0, NULL, 0, NULL, ARRAY_SIZE(barriers), barriers));
++
++        memset(&blit, 0, sizeof(blit));
++        blit.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2_KHR;
++        blit.pNext = NULL;
++        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++        blit.srcSubresource.layerCount = 1;
++        blit.srcOffsets[1].x = swapchain->desc.Width;
++        blit.srcOffsets[1].y = swapchain->desc.Height;
++        blit.srcOffsets[1].z = 1;
++        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++        blit.dstSubresource.layerCount = 1;
++        blit.dstOffsets[1].x = swapchain->vk_swapchain_width;
++        blit.dstOffsets[1].y = swapchain->vk_swapchain_height;
++        blit.dstOffsets[1].z = 1;
++
++        memset(&blit_info, 0, sizeof(blit_info));
++        blit_info.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2_KHR;
++        blit_info.pNext = NULL;
++        blit_info.srcImage = swapchain->vk_images[src_index];
++        blit_info.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++        blit_info.dstImage = swapchain->vk_swapchain_images[dst_index];
++        blit_info.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++        blit_info.regionCount = 1;
++        blit_info.pRegions = &blit;
++        blit_info.filter = VK_FILTER_NEAREST;
++        VK_CALL(vkCmdBlitImage2KHR(vk_cmd_buffer, &blit_info));
++
++        barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++        barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++        barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++        barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++        barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++        barriers[1].dstAccessMask = 0;
++        barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++        barriers[1].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+         VK_CALL(vkCmdPipelineBarrier(vk_cmd_buffer,
+                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+-                0, NULL, 0, NULL, 1, &barrier));
++                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
++                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
++                0, NULL, 0, NULL, ARRAY_SIZE(barriers), barriers));
+     }
+ 
+     if ((vr = VK_CALL(vkEndCommandBuffer(vk_cmd_buffer))) < 0)
+-- 
+2.51.1.windows.1

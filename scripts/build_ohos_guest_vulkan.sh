@@ -1135,6 +1135,7 @@ fi
 
 loader_sha="$(sha256sum "$OUTPUT_ROOT/lib/libvulkan.so.1" | awk '{print $1}')"
 icd_sha="$(sha256sum "$OUTPUT_ROOT/lib/libvulkan_virtio.so" | awk '{print $1}')"
+mesa_commit="$(git -c safe.directory="$ROOT/thirdparty/mesa" -C "$ROOT/thirdparty/mesa" rev-parse HEAD)"
 smoke_sha="$(sha256sum "$OUTPUT_ROOT/bin/libwinehua_guest_vulkan_smoke.so" | awk '{print $1}')"
 probe_sha="$(sha256sum "$OUTPUT_ROOT/bin/libvenus_sampled_image_probe.so" | awk '{print $1}')"
 replay_sha="$(sha256sum "$OUTPUT_ROOT/bin/libvenus_spirv_replay.so" | awk '{print $1}')"
@@ -1148,6 +1149,16 @@ cat > "$OUTPUT_ROOT/manifest.json" <<EOF
   "loaderCommit": "$LOADER_COMMIT",
   "headersVersion": "$HEADERS_TAG",
   "headersCommit": "$HEADERS_COMMIT",
+  "guestMesaVersion": "$(cat "$ROOT/thirdparty/mesa/VERSION")",
+  "guestMesaCommit": "$mesa_commit",
+  "transportRequirements": {
+    "remoteMemoryShadow": true,
+    "multiRing": false,
+    "fenceFeedback": false,
+    "queryFeedback": false,
+    "semaphoreFeedback": true,
+    "modernRequiresSynchronousTimelineQueries": true
+  },
   "files": {
     "bin/libwinehua_guest_vulkan_smoke.so": "$smoke_sha",
     "bin/libvenus_sampled_image_probe.so": "$probe_sha",
@@ -1165,7 +1176,7 @@ loader_tag=$LOADER_TAG
 loader_commit=$LOADER_COMMIT
 headers_tag=$HEADERS_TAG
 headers_commit=$HEADERS_COMMIT
-mesa_commit=$(git -c safe.directory="$ROOT/thirdparty/mesa" -C "$ROOT/thirdparty/mesa" rev-parse HEAD)
+mesa_commit=$mesa_commit
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 

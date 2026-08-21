@@ -25,7 +25,7 @@ build_native_tools() {
         export ac_cv_lib_xkbregistry_rxkb_context_new=yes
         export ac_cv_header_ft2build_h=yes
         export ac_cv_lib_soname_freetype="libfreetype.so.6"
-        if [ "$HOST_OS" = "Darwin" ]; then
+        if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
             export FREETYPE_CFLAGS="$("$PKG_CONFIG_BIN" --cflags freetype2)"
             export FREETYPE_LIBS="$("$PKG_CONFIG_BIN" --libs freetype2)"
             "$CONFIGURE_BIN" --srcdir="$WINE_SRC" --enable-archs=x86_64 --disable-tests \
@@ -119,7 +119,7 @@ build_ohos_unix() {
         export XKBREGISTRY_CFLAGS="-I$SYSROOT_EXT_INC"
         export XKBREGISTRY_LIBS="-L$SYSROOT_EXT_LIB -lxkbregistry"
         local pkg_config=/usr/bin/pkg-config
-        if [ "$HOST_OS" = "Darwin" ]; then
+        if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
             local guest_gfx_prefix="$BUILD_DIR/guest_gfx_install/x86_64"
             export EGL_CFLAGS="-I$guest_gfx_prefix/include"
             export EGL_LIBS="-L$guest_gfx_prefix/lib -lEGL"
@@ -127,6 +127,15 @@ build_ohos_unix() {
             export WAYLAND_EGL_CFLAGS="-I$SYSROOT_EXT_INC"
             export WAYLAND_EGL_LIBS="-L$SYSROOT_EXT_LIB -lwayland-egl"
             pkg_config="$PKG_CONFIG_BIN"
+        fi
+        if [ "$HOST_OS" = "HarmonyOS" ]; then
+            ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+            GUEST_GFX_ROOT="${WINEHUA_GUEST_GFX_INSTALL_ROOT:-$ROOT/build/guest_gfx_install/x86_64}"
+            export CROSSCFLAGS="-I$GUEST_GFX_ROOT/include"
+
+            MINGW_CC="$LLVM_MINGW/bin/clang"
+        else
+            MINGW_CC="gcc"
         fi
 
         if [ "$WINE_ARCH" = "aarch64" ]; then
@@ -160,7 +169,7 @@ build_ohos_unix() {
                 --prefix=/opt/winehua \
                 --libdir='${prefix}' \
                 --with-wine-tools="$BUILD_DIR/wine-native" \
-                --with-mingw=gcc \
+                --with-mingw="$MINGW_CC" \
                 --disable-tests \
                 --without-x --without-alsa \
                 --with-opengl --with-vulkan

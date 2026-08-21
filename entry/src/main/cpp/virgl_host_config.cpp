@@ -95,14 +95,23 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
     const bool explicitToHost = config.shadowMode == "to-host-explicit";
     const bool preciseDirty = config.shadowMode == "precise-dirty";
     const bool precise = config.shadowMode == "precise" || preciseDirty;
+    const bool bgraArrayTrace =
+        config.shadowTrace == "inline-gpu-upload-bgra-array-trace";
     const bool frameAssocTrace =
-        config.shadowTrace == "inline-gpu-upload-frame-assoc-trace";
-    const bool presentImageTrace = config.shadowTrace == "present-image-trace";
+        config.shadowTrace == "inline-gpu-upload-frame-assoc-trace" ||
+        bgraArrayTrace;
+    /* Gate C is an isolated diagnostic profile. Keep its mapped-memory and
+     * direct-fence semantics while tracing the exact private swapchain image
+     * across the guest, vtest and Host presenter boundary. */
+    const bool presentImageTrace = config.shadowTrace == "present-image-trace" ||
+        config.shadowTrace == "vkd3d-gate-c";
     const bool gpuFrameProfile = config.shadowTrace == "gpu-frame-profile";
     const bool frameTimeline = config.shadowTrace == "frame-timeline";
     const bool sampledPerf =
         config.shadowTrace == "inline-gpu-upload-coverage-sort-sampled";
     const bool captureTrace = config.shadowTrace == "1" || frameAssocTrace;
+    const bool forceGpuUpload = config.shadowTrace == "gpu-upload" ||
+        config.shadowTrace == "gpu-upload-wait";
     const bool noGpuUploadFast = config.shadowTrace == "no-gpu-upload-fast";
     const bool noGpuUpload = config.shadowTrace == "no-gpu-upload" || noGpuUploadFast;
     const bool serializedGpuUpload =
@@ -115,6 +124,10 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
         config.shadowTrace == "inline-gpu-upload-descriptor-serialized";
     const bool inlineGpuUpload = config.shadowTrace == "inline-gpu-upload" ||
         serializedGpuUpload || coverageSort || descriptorSerialized || frameAssocTrace;
+    /* Flush handling and queue submission both mutate the same dirty-range
+     * generation. Inline upload is only correct when those operations cannot
+     * overlap, including the Vulkan 1.3 QueueSubmit2 path used by modern DXVK. */
+    const bool generationSerialized = inlineGpuUpload;
     const bool perfSummary = config.shadowTrace == "perf" ||
         config.shadowTrace == "no-gpu-upload" || descriptorSerialized;
     const bool presentPerfSummary = perfSummary || gpuFrameProfile ||
@@ -122,11 +135,12 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
     const bool boundBufferList = config.shadowTrace == "perf";
     const bool cpuShadowUpload = config.shadowTrace == "cpu-upload";
     const bool legacyHostSync = config.shadowTrace == "legacy-host-sync";
+    const bool gateCTrace = config.shadowTrace == "vkd3d-gate-c";
     const std::string fromHostMode = explicitToHost ? "full" :
         (precise ? "precise" : config.shadowMode);
     const std::string toHostMode = explicitToHost || (precise && !preciseDirty)
         ? "explicit" : "full";
-    const std::string sampledTrace = precise && !frameAssocTrace ? "0" : "1";
+    const std::string sampledTrace = sampledPerf || !precise || frameAssocTrace ? "1" : "0";
 
     std::string params = config.helperPath + "|" + config.socketPath;
     AppendEnv(params, "LD_LIBRARY_PATH", config.libraryPath);
@@ -135,16 +149,27 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
     AppendEnv(params, "VTEST_SYNC_GL_FINISH", "1");
     AppendEnv(params, "WINEHUA_VIRGL_SYNC_MODE", config.syncMode);
     AppendEnv(params, "WINEHUA_VIRGL_LOG_PATH", config.logPath);
+    AppendEnv(params, "WINEHUA_VKD3D_GATE_C_TRACE", gateCTrace ? "1" : "0");
     AppendEnv(params, "WINEHUA_VKR_TRACE_SAMPLED", sampledTrace);
     AppendEnv(params, "WINEHUA_VKR_TRACE_CAPTURE", captureTrace ? "1" : "0");
     AppendEnv(params, "WINEHUA_VKR_TRACE_CAPTURE_LIMIT", captureTrace ? "20000" : "512");
     AppendEnv(params, "WINEHUA_RESOURCE_TRACE", captureTrace ? "1" : "0");
-    AppendEnv(params, "WINEHUA_VKR_TRACE_UBO_IDENTITY", frameAssocTrace ? "focused" : "0");
+    /* Capture traces are diagnostic-only. Include precise mapped-buffer
+     * identities so a global-buffer upload can be reconciled with its source
+     * range without changing queue or transfer behavior. */
+    AppendEnv(params, "WINEHUA_VKR_TRACE_UBO_IDENTITY",
+              frameAssocTrace ? "focused" : (captureTrace ? "1" : "0"));
     AppendEnv(params, "WINEHUA_VKR_TRACE_PRESENT_IMAGE", presentImageTrace ? "1" : "0");
-    AppendEnv(params, "WINEHUA_VKR_TRACE_PIPELINE", captureTrace ? "1" : "0");
+    AppendEnv(params, "WINEHUA_VK_PRESENT_TRACE", presentImageTrace ? "1" : "0");
+    /* Keep Host source replacement disabled while Gate C validates that the
+     * Guest VKD3D submit itself writes the private swapchain image. */
+    AppendEnv(params, "WINEHUA_VENUS_FORCE_SOURCE_CLEAR", "0");
+    AppendEnv(params, "WINEHUA_VKR_TRACE_PIPELINE",
+              (captureTrace || gateCTrace) ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_SHADOW_FROM_HOST", fromHostMode);
     AppendEnv(params, "VKR_WINEHUA_SHADOW_TO_HOST", toHostMode);
     AppendEnv(params, "VKR_WINEHUA_SHADOW_TRACE", captureTrace ? "1" : "0");
+    AppendEnv(params, "VKR_WINEHUA_BGRA_ARRAY_RGBA", bgraArrayTrace ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_PERF_SUMMARY", perfSummary ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_PERF_SAMPLE_INTERVAL", sampledPerf ? "120" : "0");
     AppendEnv(params, "VKR_WINEHUA_FRAME_TIMELINE_INTERVAL", frameTimeline ? "120" : "0");
@@ -154,14 +179,14 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
               presentPerfSummary ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_GPU_UPLOAD",
               noGpuUpload || cpuShadowUpload || legacyHostSync ? "0" :
-              (captureTrace ? "1" : "auto"));
+              ((forceGpuUpload || inlineGpuUpload || captureTrace) ? "1" : "auto"));
     AppendEnv(params, "VKR_WINEHUA_GPU_UPLOAD_WAIT", config.gpuUploadWait);
     AppendEnv(params, "VKR_WINEHUA_GPU_UPLOAD_INLINE", inlineGpuUpload ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_COVERAGE_SORT", coverageSort ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_GPU_UPLOAD_SERIALIZE",
               serializedGpuUpload ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_SHADOW_GENERATION_SERIALIZE",
-              frameAssocTrace ? "1" : "0");
+              generationSerialized ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_DESCRIPTOR_UPDATE_SERIALIZE",
               descriptorSerialized ? "1" : "0");
     AppendEnv(params, "VKR_WINEHUA_SHADOW_DIRTY_LIST", legacyHostSync ? "0" : "1");
@@ -170,7 +195,12 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
               (legacyHostSync || noGpuUploadFast) ? "0" : "1");
     AppendEnv(params, "VKR_WINEHUA_SHADOW_MERGE_RANGES", config.shadowMergeRanges);
     AppendEnv(params, "VKR_WINEHUA_SHADOW_COVER_UPLOAD", aliasCover ? "1" : "0");
-    AppendEnv(params, "WINEHUA_VKR_PRESENT_STAGE_TRACE", captureTrace ? "1" : "0");
+    AppendEnv(params, "WINEHUA_VKR_PRESENT_STAGE_TRACE",
+              (captureTrace || presentImageTrace) ? "1" : "0");
+    AppendEnv(params, "WINEHUA_VKR_PRESENT_PREWAIT",
+              frameAssocTrace ? "1" : "0");
+    AppendEnv(params, "WINEHUA_VKR_SUBMIT_POSTWAIT",
+              frameAssocTrace ? "1" : "0");
     AppendEnv(params, "WINEHUA_VENUS_PRESENT_MODE", config.presentMode);
     AppendEnv(params, "EGL_PLATFORM", "surfaceless");
     if (config.syncMode == "egl-thread")
@@ -178,7 +208,12 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
 
     launch->entryParams = std::move(params);
     launch->fingerprint = FingerprintVirglHostConfig(config);
-    launch->forwardPerfSummary = perfSummary || frameTimeline || sampledPerf;
+    /* Gate C memory records are written by the in-process renderer to its
+     * private log. Forward only filtered vkd3d-gate-c records so a device
+     * run can prove the exact flush/invalidate order through hilog without
+     * exposing unrelated application data or requiring sandbox access. */
+    launch->forwardPerfSummary = perfSummary || frameTimeline || sampledPerf ||
+        gateCTrace;
     if (error) error->clear();
     return true;
 }

@@ -6,7 +6,7 @@
 
 | 文件 | 用途 |
 |------|------|
-| `run_regression.py` | 回归套件运行器：本机 `make` 构建 → 校验 HAP payload → `hdc install` → smoke 模式启动 → 固定帧截图校验 → D3D11 覆盖率 / capability 矩阵 → 归档结果 |
+| `run_regression.py` | 回归套件运行器：Docker HAP 构建 → 校验 HAP payload → `hdc install` → smoke 模式启动 → 固定帧截图校验 → D3D11 覆盖率 / capability 矩阵 → 归档结果 |
 | `validate_frame.py` | PIL/numpy 像素校验（`rgba-quadrants-v1-rotations`、`d3d11-cube-color-depth-v1`），`run_regression.py` 直接 import |
 
 > 2026-08-01 整理说明：Phase 2 DXVK 调查期的一次性工具（Heaven A/B 启动脚本、帧序测量、UBO/present 身份链 trace 分析脚本）已删除，可从 git 历史找回。调查期 suite/profile 也不再是合法参数。
@@ -14,8 +14,8 @@
 ## 前置条件
 
 - **python3 + numpy + pillow**：`pip3 install numpy pillow`
-- **hdc（Linux 版）**：`WINEHUA_HDC` 环境变量指向可执行文件，或已加入 PATH
-- **本机可 `make NATIVE_ARCH=arm64-v8a`**（WSL 构建环境，见 docs/BUILD_ENV.md）
+- **hdc**：`WINEHUA_HDC` 环境变量指向 Windows HDC 或已加入 PATH
+- **Docker**：可访问 `winehua-master-ext4` 容器；构建始终在容器的 `/data/src/winehua` 中完成
 - **真机**：Pad USB/IP 直连（`hdc list targets` 可见）
 
 ## 用法
@@ -47,7 +47,7 @@ python3 automation/run_regression.py --suite core --skip-build
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `--suite` | `core` | `core audio opengl d3d8 d3d9 wine-vulkan wine-vulkan-present venus venus-sampled venus-depth-cube-array-2d-golden dxvk dxvk-long dxvk-dynamic capabilities all long` |
+| `--suite` | `core` | `core audio opengl d3d8 d3d9 wine-vulkan wine-vulkan-present venus venus-sampled venus-depth-cube-array-2d-golden dxvk dxvk-long dxvk-dynamic gpu-diagnostics dxvk26-requirements dxvk-modern-baseline dxvk-modern-long capabilities all long` |
 | `--prefix` | `reuse` | `reuse`（复用 prefix）/ `clean`（App UID 下重建 prefix） |
 | `--perf-profile` | `shadow-precise-dirty-ring-inline-upload-coverage-sort` | 产品 profile；诊断可选 `shadow-precise-dirty-ring-frame-timeline` |
 | `--runs` | 1 | 重复运行次数 |
@@ -67,6 +67,9 @@ python3 automation/run_regression.py --suite core --skip-build
 - **dxvk**：D3D11 完整功能矩阵（feature level、texture/descriptor/subresource/3D/UAV/BC、固定帧 cube、零 CPU readback/upload、无 WineD3D fallback）
 - **dxvk-long**：长时间稳定性（默认 1 小时）
 - **dxvk-dynamic**：dynamic constant buffer 专项
+- **gpu-diagnostics**：报告 Guest Vulkan、DXVK DLL 实际加载路径和 D3D11 device 状态
+- **dxvk26-requirements**：DXVK 2.6.2 所需的 Guest/Wine Vulkan 1.3 transport 资格 probe
+- **dxvk-modern-baseline / dxvk-modern-long**：能力门控的 DXVK 2.6.2 x86/x64 baseline、Cube 与长稳回归；Vulkan 1.2 设备应报告 `UNSUPPORTED`，不会伪造能力
 - **capabilities**：Host Vulkan vs Venus 能力规范化 + hash + 差异矩阵
 - **all / long**：组合套件
 

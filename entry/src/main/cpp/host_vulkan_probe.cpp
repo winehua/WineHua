@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
@@ -22,6 +23,8 @@
 #include <utility>
 #include <unistd.h>
 #include <vector>
+
+#include "../../../../smoke/vkd3d_capability_audit.h"
 
 #undef LOG_TAG
 #define LOG_TAG "WL_VK_PROBE"
@@ -100,6 +103,7 @@ struct ProbeMetrics {
 struct ProbeCaps {
     uint32_t loaderApiVersion = VK_API_VERSION_1_0;
     VkPhysicalDeviceProperties properties{};
+    VkPhysicalDeviceVulkan12Properties vulkan12Properties{};
     VkPhysicalDeviceFeatures features{};
     VkSurfaceCapabilitiesKHR surface{};
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -119,11 +123,19 @@ struct ProbeCaps {
     bool astc4x4 = false;
     bool astc8x8 = false;
     bool descriptorIndexing = false;
+    bool bufferDeviceAddress = false;
     bool scalarBlockLayout = false;
     bool robustness2 = false;
     bool transformFeedback = false;
     bool shaderInt8 = false;
     bool timelineSemaphore = false;
+    bool timelineRoundTripAttempted = false;
+    bool timelineRoundTripPassed = false;
+    VkResult timelineCreateResult = VK_NOT_READY;
+    VkResult timelineSubmitResult = VK_NOT_READY;
+    VkResult timelineWaitResult = VK_NOT_READY;
+    VkResult timelineCounterResult = VK_NOT_READY;
+    uint64_t timelineObservedValue = 0;
     bool synchronization2 = false;
     bool dynamicRendering = false;
     bool maintenance4 = false;
@@ -134,6 +146,7 @@ struct ProbeCaps {
     bool customBorderColorExtension = false;
     bool customBorderColors = false;
     bool customBorderColorWithoutFormat = false;
+    std::string capabilityAudit;
 };
 
 double Percentile(std::vector<double> values, double percentile)
@@ -187,6 +200,15 @@ std::string MakeResult(const std::string& runId, const char* status, const char*
         << "    \"tessellationShader\": " << (caps.features.tessellationShader ? "true" : "false") << ",\n"
         << "    \"multiDrawIndirect\": " << (caps.features.multiDrawIndirect ? "true" : "false") << ",\n"
         << "    \"descriptorIndexing\": " << (caps.descriptorIndexing ? "true" : "false") << ",\n"
+        << "    \"bufferDeviceAddress\": " << (caps.bufferDeviceAddress ? "true" : "false") << ",\n"
+        << "    \"updateAfterBindLimits\": {\"maxUpdateAfterBindDescriptorsInAllPools\":"
+        << caps.vulkan12Properties.maxUpdateAfterBindDescriptorsInAllPools
+        << ",\"maxDescriptorSetUpdateAfterBindSampledImages\":"
+        << caps.vulkan12Properties.maxDescriptorSetUpdateAfterBindSampledImages
+        << ",\"maxDescriptorSetUpdateAfterBindStorageImages\":"
+        << caps.vulkan12Properties.maxDescriptorSetUpdateAfterBindStorageImages
+        << ",\"maxDescriptorSetUpdateAfterBindStorageBuffers\":"
+        << caps.vulkan12Properties.maxDescriptorSetUpdateAfterBindStorageBuffers << "},\n"
         << "    \"scalarBlockLayout\": " << (caps.scalarBlockLayout ? "true" : "false") << ",\n"
         << "    \"robustness2\": " << (caps.robustness2 ? "true" : "false") << ",\n"
         << "    \"transformFeedback\": " << (caps.transformFeedback ? "true" : "false") << ",\n"
@@ -194,6 +216,14 @@ std::string MakeResult(const std::string& runId, const char* status, const char*
         << "    \"shaderInt16\": " << (caps.features.shaderInt16 ? "true" : "false") << ",\n"
         << "    \"shaderInt64\": " << (caps.features.shaderInt64 ? "true" : "false") << ",\n"
         << "    \"timelineSemaphore\": " << (caps.timelineSemaphore ? "true" : "false") << ",\n"
+        << "    \"timelineRoundTrip\": {\"attempted\":"
+        << (caps.timelineRoundTripAttempted ? "true" : "false")
+        << ",\"passed\":" << (caps.timelineRoundTripPassed ? "true" : "false")
+        << ",\"createResult\":" << caps.timelineCreateResult
+        << ",\"submitResult\":" << caps.timelineSubmitResult
+        << ",\"waitResult\":" << caps.timelineWaitResult
+        << ",\"counterResult\":" << caps.timelineCounterResult
+        << ",\"observedValue\":" << caps.timelineObservedValue << "},\n"
         << "    \"synchronization2\": " << (caps.synchronization2 ? "true" : "false") << ",\n"
         << "    \"dynamicRendering\": " << (caps.dynamicRendering ? "true" : "false") << ",\n"
         << "    \"maintenance4\": " << (caps.maintenance4 ? "true" : "false") << ",\n"
@@ -215,6 +245,8 @@ std::string MakeResult(const std::string& runId, const char* status, const char*
         << "    \"astc4x4\": " << (caps.astc4x4 ? "true" : "false") << ",\n"
         << "    \"astc8x8\": " << (caps.astc8x8 ? "true" : "false") << "\n"
         << "  },\n"
+        << "  \"capabilityAudit\": "
+        << (caps.capabilityAudit.empty() ? "{}" : caps.capabilityAudit) << ",\n"
         << "  \"metrics\": {"
         << "\"cpuReadBytes\":0,\"cpuUploadBytes\":0,"
         << "\"gpuCopyCount\":" << metrics.gpuCopyCount << ","
@@ -272,6 +304,7 @@ public:
         const char* failure = nullptr;
         bool unsupported = false;
         if (!InitInstance(failure, unsupported) || !InitDevice(failure, unsupported) ||
+            !RunTimelineRoundTrip(failure, unsupported) ||
             !CreateSwapchain(failure, unsupported) || !CreateCommands(failure)) {
             PublishResult(runId_, unsupported ? "UNSUPPORTED" : "FAIL",
                           failure ? failure : "Host Vulkan initialization failed", caps_, metrics_, true);
@@ -337,7 +370,9 @@ private:
         caps_.astc8x8 = formatSupported(VK_FORMAT_ASTC_8x8_UNORM_BLOCK);
 
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        VkPhysicalDeviceVulkan11Features vulkan11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
         VkPhysicalDeviceVulkan12Features vulkan12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan13Features vulkan13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceRobustness2FeaturesEXT robustness2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
         VkPhysicalDeviceTransformFeedbackFeaturesEXT transformFeedback{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
         VkPhysicalDeviceSynchronization2Features synchronization2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
@@ -364,26 +399,38 @@ private:
         const bool hasMaintenance6 = HasExtension(extensions, VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
         const bool hasCustomBorderColor = HasExtension(
             extensions, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        append(vulkan11, caps_.properties.apiVersion >= VK_API_VERSION_1_1);
         append(vulkan12, api12);
+        append(vulkan13, api13);
         append(robustness2, hasRobustness2);
         append(transformFeedback, hasTransformFeedback);
-        append(synchronization2, hasSynchronization2);
-        append(dynamicRendering, hasDynamicRendering);
-        append(maintenance4, hasMaintenance4);
+        append(synchronization2, !api13 && hasSynchronization2);
+        append(dynamicRendering, !api13 && hasDynamicRendering);
+        append(maintenance4, !api13 && hasMaintenance4);
         append(maintenance5, hasMaintenance5);
         append(maintenance6, hasMaintenance6);
         append(customBorderColor, hasCustomBorderColor);
         vkGetPhysicalDeviceFeatures2(physical_, &features2);
+        VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        VkPhysicalDeviceIDProperties idProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+        caps_.vulkan12Properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+        properties2.pNext = &caps_.vulkan12Properties;
+        caps_.vulkan12Properties.pNext = &idProperties;
+        vkGetPhysicalDeviceProperties2(physical_, &properties2);
 
         caps_.descriptorIndexing = api12 && vulkan12.descriptorIndexing;
+        caps_.bufferDeviceAddress = api12 && vulkan12.bufferDeviceAddress;
         caps_.scalarBlockLayout = api12 && vulkan12.scalarBlockLayout;
         caps_.shaderInt8 = api12 && vulkan12.shaderInt8;
         caps_.timelineSemaphore = api12 && vulkan12.timelineSemaphore;
         caps_.robustness2 = hasRobustness2 && robustness2.robustBufferAccess2;
         caps_.transformFeedback = hasTransformFeedback && transformFeedback.transformFeedback;
-        caps_.synchronization2 = hasSynchronization2 && synchronization2.synchronization2;
-        caps_.dynamicRendering = hasDynamicRendering && dynamicRendering.dynamicRendering;
-        caps_.maintenance4 = hasMaintenance4 && maintenance4.maintenance4;
+        caps_.synchronization2 = api13 ? vulkan13.synchronization2 :
+            (hasSynchronization2 && synchronization2.synchronization2);
+        caps_.dynamicRendering = api13 ? vulkan13.dynamicRendering :
+            (hasDynamicRendering && dynamicRendering.dynamicRendering);
+        caps_.maintenance4 = api13 ? vulkan13.maintenance4 :
+            (hasMaintenance4 && maintenance4.maintenance4);
         caps_.maintenance5 = hasMaintenance5 && maintenance5.maintenance5;
         caps_.maintenance6 = hasMaintenance6 && maintenance6.maintenance6;
         caps_.presentWait = HasExtension(extensions, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
@@ -393,6 +440,13 @@ private:
             customBorderColor.customBorderColors;
         caps_.customBorderColorWithoutFormat = hasCustomBorderColor &&
             customBorderColor.customBorderColorWithoutFormat;
+        if (char *audit = winehua_vkd3d_capability_audit(
+                physical_, extensions.data(), static_cast<uint32_t>(extensions.size()),
+                &vulkan11, &vulkan12, &vulkan13, &caps_.vulkan12Properties, &idProperties)) {
+            caps_.capabilityAudit.assign(audit);
+            free(audit);
+        }
+        caps_.vulkan12Properties.pNext = nullptr;
     }
 
     bool InitInstance(const char*& failure, bool& unsupported)
@@ -415,7 +469,9 @@ private:
         const char* enabled[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_OHOS_SURFACE_EXTENSION_NAME};
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.pApplicationName = "WineHua Host Vulkan Smoke";
-        app.apiVersion = std::min(caps_.loaderApiVersion, VK_API_VERSION_1_1);
+        // Negotiate the same Vulkan generation as Venus so its advertised
+        // timeline semaphore capability is exercised natively as well.
+        app.apiVersion = std::min(caps_.loaderApiVersion, VK_API_VERSION_1_3);
         VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         create.pApplicationInfo = &app;
         create.enabledExtensionCount = 2;
@@ -492,17 +548,84 @@ private:
             queues.push_back(queue);
         }
         const char* extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        VkPhysicalDeviceVulkan12Features vulkan12{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        if (caps_.timelineSemaphore)
+            vulkan12.timelineSemaphore = VK_TRUE;
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         create.queueCreateInfoCount = static_cast<uint32_t>(queues.size());
         create.pQueueCreateInfos = queues.data();
         create.enabledExtensionCount = 1;
         create.ppEnabledExtensionNames = &extension;
+        create.pNext = caps_.timelineSemaphore ? &vulkan12 : nullptr;
         if (vkCreateDevice(physical_, &create, nullptr, &device_) != VK_SUCCESS) {
             failure = "vkCreateDevice failed";
             return false;
         }
         vkGetDeviceQueue(device_, caps_.graphicsQueueFamily, 0, &graphicsQueue_);
         vkGetDeviceQueue(device_, caps_.presentQueueFamily, 0, &presentQueue_);
+        return true;
+    }
+
+    bool RunTimelineRoundTrip(const char*& failure, bool& unsupported)
+    {
+        caps_.timelineRoundTripAttempted = true;
+        if (!caps_.timelineSemaphore) {
+            failure = "Host Vulkan does not expose timelineSemaphore";
+            unsupported = true;
+            return false;
+        }
+
+        const uint64_t expectedValue = 1;
+        VkSemaphoreTypeCreateInfo timelineType{
+            VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+        timelineType.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        semaphoreInfo.pNext = &timelineType;
+        VkSemaphore semaphore = VK_NULL_HANDLE;
+        caps_.timelineCreateResult = vkCreateSemaphore(device_, &semaphoreInfo,
+                                                       nullptr, &semaphore);
+        if (caps_.timelineCreateResult != VK_SUCCESS) {
+            failure = "Host vkCreateSemaphore(timeline) failed";
+            return false;
+        }
+
+        VkTimelineSemaphoreSubmitInfo timelineSubmit{
+            VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+        timelineSubmit.signalSemaphoreValueCount = 1;
+        timelineSubmit.pSignalSemaphoreValues = &expectedValue;
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.pNext = &timelineSubmit;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &semaphore;
+        caps_.timelineSubmitResult = vkQueueSubmit(graphicsQueue_, 1, &submit,
+                                                   VK_NULL_HANDLE);
+        if (caps_.timelineSubmitResult != VK_SUCCESS) {
+            vkDestroySemaphore(device_, semaphore, nullptr);
+            failure = "Host vkQueueSubmit(timeline signal) failed";
+            return false;
+        }
+
+        VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+        waitInfo.semaphoreCount = 1;
+        waitInfo.pSemaphores = &semaphore;
+        waitInfo.pValues = &expectedValue;
+        caps_.timelineWaitResult = vkWaitSemaphores(device_, &waitInfo,
+                                                     UINT64_C(500000000));
+        if (caps_.timelineWaitResult == VK_SUCCESS) {
+            caps_.timelineCounterResult = vkGetSemaphoreCounterValue(
+                device_, semaphore, &caps_.timelineObservedValue);
+        }
+        caps_.timelineRoundTripPassed =
+            caps_.timelineWaitResult == VK_SUCCESS &&
+            caps_.timelineCounterResult == VK_SUCCESS &&
+            caps_.timelineObservedValue >= expectedValue;
+        vkDestroySemaphore(device_, semaphore, nullptr);
+
+        if (!caps_.timelineRoundTripPassed) {
+            failure = "Host timeline semaphore signal/wait/counter round-trip failed";
+            return false;
+        }
         return true;
     }
 

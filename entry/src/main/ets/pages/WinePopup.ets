@@ -315,7 +315,7 @@ struct WinePopup {
         hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] POPUP-MOUSE popup=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=0x%{public}x',
           this.popupId, event.action, Math.round(px), Math.round(py), btn);
       }
-      testNapi.sendPointerEvent(this.popupId, event.action, px, py, btn);
+      testNapi.sendPointerEvent(this.popupId, event.action, px, py, btn, event.rawDeltaX, event.rawDeltaY, true);
     })
   }
 }

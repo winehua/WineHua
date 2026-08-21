@@ -103,11 +103,11 @@
 - **不变式**：`GetInstanceProcAddr(NULL)` 路径也要能解析该符号；-ENOSYS 回退语义必须保留（virgl 后端/非 vtest 环境不崩）。
 - **验证方法**：编译 + 链接检查导出符号。
 
-### src/virtio/vulkan/vn_device_memory.c: map_offset / VN_WINEHUA_REMOTE_MEMORY_SYNC
-- **为什么存在**：OHOS vtest 用 shadow 文件映射而非直接映射 host VkDeviceMemory，`vn_renderer_bo_flush` 只对本地映射有效。`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 时：①新增 `map_offset` 记录（上游只有 map_end）；②Unmap 时对 HOST_COHERENT 内存自动 flush 全映射区间（shadow 下 coherent 写不进 host dirty 列表）；③Flush/Invalidate 额外走 Venus 协议 `vn_call_vk*` 让宿主更新映射。
+### src/virtio/vulkan/vn_device_memory.c/h、vn_device.c/h、vn_queue.c: remote/persistent map 同步
+- **为什么存在**：OHOS vtest 用 shadow 文件映射而非直接映射 host VkDeviceMemory，`vn_renderer_bo_flush` 只对本地映射有效。`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 时：①新增 `map_offset` 记录（上游只有 map_end）；②Unmap 时对 HOST_COHERENT 内存自动 flush 全映射区间（shadow 下 coherent 写不进 host dirty 列表）；③Flush/Invalidate 额外走 Venus 协议 `vn_call_vk*` 让宿主更新映射。VKD3D 的 upload heap 会长期保持映射，常量/实例数据没有 Unmap 边界；`VN_WINEHUA_PERSISTENT_MAP_SYNC=1` 因而在 device 上追踪当前映射的 coherent allocations，并在 QueueSubmit/QueueSubmit2 进入宿主前通过同一协议发布映射范围。
 - **依赖的上游行为**：`vn_FlushMappedMemoryRanges` 的 bo flush 分支、`VK_WHOLE_SIZE` 语义。
-- **不变式**：`map_offset/map_end` 与上游 `map_end` 的初始化/清零位置一致（Unmap 清零）；开关默认关时 `vn_FlushMappedMemoryRanges` 仍返回 VK_SUCCESS 且行为与上游一致。
-- **验证方法**：`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 跑 DXVK 游戏（该路径是 WineHua 默认影子内存模式）；关掉后上游回归。
+- **不变式**：`map_offset/map_end` 与上游 `map_end` 的初始化/清零位置一致（Unmap 清零）；mapped list 的加入、移除和提交遍历由 device mutex 保护；persistent 开关必须保持默认关闭且仅由 VKD3D profile 注入，DXVK 路径不能承担逐提交 flush；任一开关关闭时上游同步语义不变。
+- **验证方法**：`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 跑 DXVK 游戏；`REMOTE_MEMORY_SYNC=1 + PERSISTENT_MAP_SYNC=1` 跑 vkd3d-proton `triangle.exe` 与持续映射常量/实例缓冲的 `gears.exe`，确认齿轮连续旋转、Host 日志有 submit 前 flush 且无 device loss/全局 wait；关闭 persistent 开关回归 DXVK 默认路径。
 
 ### 诊断打点组（vn_command_buffer.c / vn_descriptor_set.c / vn_image.c / vn_pipeline.c / vn_query_pool.c）
 - **为什么存在**：guest 对象身份追踪。①`WINEHUA_DXVK_TRACE_CAMERA=1`：CmdBindDescriptorSets 打印 guest cmd/set 句柄↔Venus id（10 万条上限节流）；②`DXVK_WINEHUA_TRACE_SAMPLED=1`：UpdateDescriptorSets（含 template 展开）打印 image 类 descriptor 写入 + CreateImage/ImageView 打印 id 映射——用于 DXVK 采样器/相机场景定位"采样错图"类问题；③`WINEHUA_VKR_TRACE_PIPELINE=1`：CreateGraphicsPipelines 打印创建参数与结果；④vn_query_pool.c：GetQueryPoolResults 计时进 ring perf（`VN_RING_PERF_RPC_QUERY_RESULTS`）。

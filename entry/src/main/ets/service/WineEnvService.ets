@@ -177,7 +177,8 @@ export class WineEnvService {
   private prefixRoot: string = `${FILES_BASE}/.wine`;
   private driveC: string = DRIVE_C;
   private sockPath: string = SOCK;
-  private d3dBackend: string = 'dxvk_legacy';
+  private d3dBackend: string = 'vkd3d_limited_500k';
+  private dxvkBackend: string = 'dxvk_legacy';
   // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效。
   // 持久化走 preferences API (同 DisplaySettingsService) — 不用 PersistentStorage:
   // 实测本应用 persistProp 在冷启动时不从磁盘恢复值 (haps/entry/files/
@@ -268,6 +269,16 @@ export class WineEnvService {
 
   // 环境页渲染策略/开发者分区展示当前生效值 (updateLaunchRequest 写入)
   getD3dBackend(): string { return this.d3dBackend; }
+  getDxvkBackend(): string { return this.dxvkBackend; }
+
+  private normalizeD3dBackend(backend: string): string {
+    return backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
+      backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
+  }
+
+  private normalizeDxvkBackend(backend: string): string {
+    return backend === 'dxvk_modern_2_6' ? 'dxvk_modern_2_6' : 'dxvk_legacy';
+  }
   getWineLang(): string { return this.wineLang; }
   getPerfProfile(): string { return this.perfProfile; }
   isAutomation(): boolean { return this.automationMode; }
@@ -292,12 +303,34 @@ export class WineEnvService {
   // 环境页"渲染策略"切换: 持久化偏好 + 同步 AppStorage 生效值 + 重读启动参数。
   // 仅写入配置 — 已在运行的 Wine 不受影响, 重启引擎后生效 (UI 负责提示)
   setD3dPreference(backend: string): void {
-    const selected = backend === 'dxvk_legacy' ? 'dxvk_legacy' : 'wined3d';
+    const selected = this.normalizeD3dBackend(backend);
     PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.backend', selected);
+    if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
+      this.setDxvkPreference(selected);
+      return;
+    }
     this.updateLaunchRequest();
     hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
+    this.notify();
+  }
+
+  setDxvkPreference(backend: string): void {
+    const selected = this.normalizeDxvkBackend(backend);
+    PersistentStorage.persistProp<string>('winehua.dxvk.preference', selected);
+    AppStorage.set<string>('winehua.dxvk.preference', selected);
+    AppStorage.set<string>('winehua.dxvk.backend', selected);
+    const d3d = this.normalizeD3dBackend(
+      AppStorage.get<string>('winehua.d3d.backend') ?? selected);
+    if (d3d === 'wined3d' || d3d.indexOf('dxvk_') === 0) {
+      PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
+      AppStorage.set<string>('winehua.d3d.preference', selected);
+      AppStorage.set<string>('winehua.d3d.backend', selected);
+    }
+    this.updateLaunchRequest();
+    hilog.info(DOMAIN, 'GameTest', 'DXVK backend selected=%{public}s d3d12=%{public}s',
+      selected, this.d3dBackend);
     this.notify();
   }
 
@@ -310,8 +343,10 @@ export class WineEnvService {
     this.prefixRoot = this.prefixMode === 'clean' ? WINE_SMOKE_PREFIX : `${FILES_BASE}/.wine`;
     this.driveC = `${this.prefixRoot}/drive_c`;
     this.sockPath = `${this.prefixRoot}/wine-wayland`;
-    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_legacy';
-    this.d3dBackend = backend === 'dxvk_legacy' ? 'dxvk_legacy' : 'wined3d';
+    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k';
+    this.d3dBackend = this.normalizeD3dBackend(backend);
+    this.dxvkBackend = this.normalizeDxvkBackend(
+      AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
     this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
     this.gamePath = AppStorage.get<string>('winehua.game.path') ?? '';
     this.gameArguments = AppStorage.get<string[]>('winehua.game.args') ?? [];
@@ -899,7 +934,7 @@ export class WineEnvService {
       return;
     }
     testNapi.launchClient(BOX64, [], this.sockPath, `${BIN_DIR}:${WINE_LIB}`, this.zHome,
-      this.automationMode, this.prefixMode, this.d3dBackend, this.wineLang);
+      this.automationMode, this.prefixMode, this.d3dBackend, this.dxvkBackend, this.wineLang);
   }
 
   // 重置 prefix (编排式): 有会话先停止并等 state:stopped (native 确认注册表进程
@@ -1109,7 +1144,9 @@ export class WineEnvService {
   startDeveloperSmoke(): void {
     this.smokeRequest = {
       mode: 'smoke', runId: `developer-${Date.now()}`, suite: 'core',
-      prefixMode: 'reuse', longSeconds: 3600, batchMappedFlush: false
+      prefixMode: 'reuse', longSeconds: 3600, batchMappedFlush: false,
+      experimentId: '', experimentExecutable: '', experimentResultName: '',
+      experimentSourceUrl: ''
     };
     this.automationMode = true;
     this.gameTestMode = false;
@@ -1149,6 +1186,7 @@ export class WineEnvService {
       workingDirectory: this.windowsParentDirectory(gamePath),
       prefixMode: 'reuse',
       d3dBackend: this.d3dBackend,
+      dxvkBackend: this.dxvkBackend,
       presentBackend: this.d3dPresentBackend(),
       automationMode: false
     }) as ProcessInfo;
@@ -1178,6 +1216,7 @@ export class WineEnvService {
           workingDirectory: 'C:\\smoke\\x64',
           prefixMode: 'reuse',
           d3dBackend: this.d3dBackend,
+          dxvkBackend: this.dxvkBackend,
           presentBackend: this.d3dPresentBackend(),
           automationMode: false
         }) as ProcessInfo;
@@ -1195,11 +1234,36 @@ export class WineEnvService {
     return separator > 2 ? path.substring(0, separator) : 'C:\\';
   }
 
-  // DXVK Legacy 启动环境: 日志 + Venus 共享内存 ring 的 Box64 屏障约束 +
-  // perf profile 对应的一组 VN_/VKR_/DXVK_ 开关, 最后叠加 want 携带的显式覆盖项
+  private applyD3dEnvOverrides(environment: Record<string, string>): Record<string, string> {
+    const overrideCount = Math.min(this.d3dEnvKeys.length, this.d3dEnvValues.length);
+    for (let index = 0; index < overrideCount; ++index) {
+      environment[this.d3dEnvKeys[index]] = this.d3dEnvValues[index];
+    }
+    return environment;
+  }
+
+  // DXVK 启动环境: 日志 + Venus 共享内存 ring 的 Box64 屏障约束 +
+  // perf profile 对应的一组 VN_/VKR_/DXVK_ 开关, 最后叠加 want 携带的显式覆盖项。
+  // VKD3D 混合路由的 overlay 由 C++ AppendD3dBackendEnv 注入, 这里只补 DXVK 诊断。
   private d3dLaunchEnvironment(): Record<string, string> {
-    if (this.d3dBackend !== 'dxvk_legacy') return {};
+    if (this.d3dBackend.indexOf('dxvk_') !== 0) {
+      return this.applyD3dEnvOverrides({});
+    }
     ensureDirectory(`${this.driveC}/windows/temp`);
+    if (this.d3dBackend === 'dxvk_modern_2_6') {
+      const modernEnv: Record<string, string> = {
+        'DXVK_LOG_LEVEL': 'warn',
+        'DXVK_LOG_PATH': 'C:\\windows\\temp',
+        'WINEDEBUG': '-all',
+        'BOX64_DYNAREC_WEAKBARRIER': '0',
+        'WINEHUA_PERF_PROFILE': this.perfProfile,
+        'VN_WINEHUA_STRONG_RING_BARRIER': '1',
+        'DXVK_WINEHUA_TRACE_SAMPLED': '0',
+        'DXVK_WINEHUA_TRACE_FLOW': '0',
+        'DXVK_WINEHUA_TRACE_API': '0'
+      };
+      return this.applyD3dEnvOverrides(modernEnv);
+    }
     const environment: Record<string, string> = {
       'DXVK_LOG_LEVEL': 'info',
       'DXVK_LOG_PATH': 'C:\\windows\\temp',
@@ -1310,14 +1374,11 @@ export class WineEnvService {
       if (this.perfProfile === 'shadow-precise-cpu-upload')
         environment['VKR_WINEHUA_GPU_UPLOAD'] = '0';
     }
-    const overrideCount = Math.min(this.d3dEnvKeys.length, this.d3dEnvValues.length);
-    for (let index = 0; index < overrideCount; ++index) {
-      environment[this.d3dEnvKeys[index]] = this.d3dEnvValues[index];
-    }
-    return environment;
+    return this.applyD3dEnvOverrides(environment);
   }
 
   private d3dPresentBackend(): string {
-    return this.d3dBackend === 'dxvk_legacy' ? 'venus_broker_present' : 'virgl_compositor';
+    return this.d3dBackend.indexOf('dxvk_') === 0 || this.d3dBackend === 'vkd3d_limited_500k' ?
+      'venus_broker_present' : 'virgl_compositor';
   }
 }

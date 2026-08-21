@@ -212,14 +212,130 @@ void UpsertEnvLine(std::vector<std::string>& env, const std::string& line)
 
 void AppendD3dBackendEnv(std::vector<std::string>& env,
                          const std::string& d3dBackend,
+                         const std::string& dxvkBackend,
                          const std::string& binDir)
 {
+    if (d3dBackend == "vkd3d_limited_500k")
+    {
+        const bool modern26 = dxvkBackend == "dxvk_modern_2_6";
+        const std::string dxvkRuntimeProfile = modern26 ? "modern-2.6" : "legacy";
+        const std::string overlayRoot = std::string(WINE_RUNTIME_ROOT) +
+            "/vkd3d/limited-500k";
+        const std::string overlay64 = overlayRoot + "/x64";
+        const std::string dxvkRoot = std::string(WINE_RUNTIME_ROOT) +
+            "/dxvk/" + dxvkRuntimeProfile;
+        const std::string dxvk64 = dxvkRoot + "/x64";
+        const std::string dxvk86 = dxvkRoot + "/x86";
+        const std::string guestVulkanRoot = binDir + "/guest_vulkan";
+        const std::string guestVulkanLib = guestVulkanRoot + "/lib";
+        const std::string guestVulkanIcd = guestVulkanRoot +
+            "/share/vulkan/icd.d/venus_icd.x86_64.json";
+        const std::string box64LibraryPath = guestVulkanLib + ":" +
+            binDir + "/guest_gfx/lib:" + binDir + ":" +
+            binDir + "/x86_64-unix:" + std::string(WINE_RUNTIME_ROOT) +
+            "/lib/x86_64";
+        /* Keep VKD3D first for d3d12, then the independently selected DXVK
+         * overlays for d3d11/dxgi. The Wine loader gives both overlay
+         * families priority over an application's private DLL directory. */
+        const std::string wineDllPath = overlay64 + ":" + dxvk64 + ":" +
+            dxvk86 + ":" + binDir + "/x86_64-windows:" +
+            binDir + "/i386-windows:" + binDir;
+        const std::vector<std::string> managed = {
+            "WINEHUA_D3D_BACKEND=" + d3dBackend,
+            "WINEHUA_VKD3D_ROOT=" + overlayRoot,
+            "WINEHUA_VKD3D_PROFILE=limited-500k",
+            "WINEHUA_VKD3D_VERSION=2.6",
+            "WINEHUA_DXVK_ROOT=" + dxvkRoot,
+            "WINEHUA_DXVK_PROFILE=" + dxvkRuntimeProfile,
+            "WINEHUA_DXVK_VERSION=" + std::string(modern26 ? "2.6.2" : "1.10.3"),
+            /* Product sessions use the qualified precise mapping contract
+             * without enabling the Gate C trace selector. Direct fence waits
+             * remain enabled explicitly below. */
+            "WINEHUA_PERF_PROFILE=shadow-precise",
+            "WINEHUA_VULKAN_RUNTIME=1",
+            "WINEHUA_VULKAN_LOADER_ARCH=x86_64",
+            "WINEHUA_VENUS_ICD_ARCH=x86_64",
+#ifdef __aarch64__
+            "USE_LIBBOX64=1",
+            "BOX64_LD_LIBRARY_PATH=" + box64LibraryPath,
+            "BOX64_EMULATED_LIBS=libvulkan.so:libvulkan.so.1:"
+                "libEGL.so:libEGL.so.1:libGLESv2.so:libGLESv2.so.2:"
+                "libGLESv1_CM.so:libGLESv1_CM.so.1:libGL.so:libGL.so.1:"
+                "libwayland-client.so:libwayland-client.so.0:libwayland-server.so:"
+                "libwayland-server.so.0:libwayland-egl.so:libwayland-egl.so.1:"
+                "libdrm.so:libdrm.so.2:libffi.so:libffi.so.8:"
+                "libglib-2.0.so:libglib-2.0.so.0:"
+                "libgobject-2.0.so:libgobject-2.0.so.0:"
+                "libgio-2.0.so:libgio-2.0.so.0:"
+                "libgmodule-2.0.so:libgmodule-2.0.so.0:"
+                "libgstreamer-1.0.so:libgstreamer-1.0.so.0:"
+                "libgstbase-1.0.so:libgstbase-1.0.so.0:"
+                "libgstvideo-1.0.so:libgstvideo-1.0.so.0:"
+                "libgstaudio-1.0.so:libgstaudio-1.0.so.0:"
+                "libgsttag-1.0.so:libgsttag-1.0.so.0:"
+                "libgstpbutils-1.0.so:libgstpbutils-1.0.so.0:"
+                "libgstallocators-1.0.so:libgstallocators-1.0.so.0:"
+                "libgstapp-1.0.so:libgstapp-1.0.so.0:"
+                "libgstcontroller-1.0.so:libgstcontroller-1.0.so.0:"
+                "libgstfft-1.0.so:libgstfft-1.0.so.0:"
+                "libgstnet-1.0.so:libgstnet-1.0.so.0:"
+                "libgstriff-1.0.so:libgstriff-1.0.so.0:"
+                "libgstrtp-1.0.so:libgstrtp-1.0.so.0:"
+                "libgstrtsp-1.0.so:libgstrtsp-1.0.so.0:"
+                "libgstsdp-1.0.so:libgstsdp-1.0.so.0:"
+                "libgstcodecparsers-1.0.so:libgstcodecparsers-1.0.so.0:"
+                "libgstmpegts-1.0.so:libgstmpegts-1.0.so.0:"
+                "libxml2.so:libxml2.so.2:libz.so:libz.so.1",
+            "BOX64_DYNAREC_WEAKBARRIER=0",
+#endif
+            "VK_DRIVER_FILES=" + guestVulkanIcd,
+            "VK_ICD_FILENAMES=" + guestVulkanIcd,
+            "VN_DEBUG=vtest",
+            "VN_PERF=" + std::string(modern26
+                ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
+                : "no_fence_feedback,no_query_feedback,no_multi_ring"),
+            "VN_WINEHUA_STRONG_RING_BARRIER=1",
+            "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
+            "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
+            "VN_WINEHUA_DIRECT_FENCE_WAIT=1",
+            "VKR_WINEHUA_SHADOW_FROM_HOST=precise",
+            "VKD3D_WINEHUA_FORCE_COHERENT_MAP_SYNC=1",
+            "WINEDLLOVERRIDES=d3d12=n;d3d11=n;dxgi=n",
+            "WINEDLLPATH=" + wineDllPath,
+            "WINEDLLDIR0=" + overlay64,
+            "WINEDLLDIR1=" + dxvk64,
+            "WINEDLLDIR2=" + dxvk86,
+            /* ntdll stops scanning WINEDLLDIRn at the first missing index.
+             * Keep Wine's PE runtime directories contiguous after the D3D
+             * overlays so their imports can still resolve system DLLs. */
+            "WINEDLLDIR3=" + binDir + "/x86_64-windows",
+            "WINEDLLDIR4=" + binDir + "/i386-windows",
+            "WINEDLLDIR5=" + binDir,
+        };
+        for (const std::string& line : managed) UpsertEnvLine(env, line);
+        if (!modern26)
+        {
+            const std::vector<std::string> legacyCompatibility = {
+                "WINEHUA_DXVK_RELAXED_FEATURES=1",
+                "DXVK_WINEHUA_COMMAND_QUERY_RESET=1",
+                "DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED=1",
+                "DXVK_WINEHUA_EMULATE_RGBA8_SNORM_RT=auto",
+                "DXVK_WINEHUA_BATCH_MAPPED_FLUSH=1",
+            };
+            for (const std::string& line : legacyCompatibility) UpsertEnvLine(env, line);
+        }
+        return;
+    }
     if (d3dBackend.rfind("dxvk_", 0) != 0) return;
 
     std::string profile = d3dBackend.substr(strlen("dxvk_"));
     if (profile.empty()) profile = "legacy";
+    const bool legacy = profile == "legacy";
+    const bool modern26 = profile == "modern_2_6";
+    if (!legacy && !modern26) return;
+    const std::string runtimeProfile = modern26 ? "modern-2.6" : "legacy";
     const std::string overlayRoot = std::string(WINE_RUNTIME_ROOT) +
-        "/dxvk/" + profile;
+        "/dxvk/" + runtimeProfile;
     const std::string overlay64 = overlayRoot + "/x64";
     const std::string overlay86 = overlayRoot + "/x86";
     const std::string guestVulkanRoot = binDir + "/guest_vulkan";
@@ -244,9 +360,8 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
     const std::vector<std::string> managed = {
         "WINEHUA_D3D_BACKEND=" + d3dBackend,
         "WINEHUA_DXVK_ROOT=" + overlayRoot,
-        "WINEHUA_DXVK_PROFILE=" + profile,
-        "WINEHUA_DXVK_VERSION=1.10.3",
-        "WINEHUA_DXVK_RELAXED_FEATURES=1",
+        "WINEHUA_DXVK_PROFILE=" + runtimeProfile,
+        "WINEHUA_DXVK_VERSION=" + std::string(modern26 ? "2.6.2" : "1.10.3"),
         "WINEHUA_VULKAN_RUNTIME=1",
         "WINEHUA_VULKAN_LOADER_ARCH=" WINE_WINE_ARCH,
         "WINEHUA_VENUS_ICD_ARCH=" WINE_WINE_ARCH,
@@ -297,23 +412,25 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         /* Host GPU writes to Venus feedback buffers are not automatically
          * visible through WineHua's explicit Guest/Host shadow mapping.
          * Query the real Host objects instead of polling stale Guest words. */
-        "VN_PERF=no_fence_feedback,no_query_feedback",
+        /* This Guest Mesa/Host virglrenderer runtime uses WineHua's remote
+         * shared-ring transport. Per-thread Venus rings can corrupt that
+         * transport (the Host decoder observes an invalid command length),
+         * so advertise the runtime capability here for every DXVK version.
+         * Re-enable multi-ring only after a replacement Venus runtime passes
+         * the x86/x64 command-stream qualification gate. */
+        "VN_PERF=" + std::string(modern26
+            ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
+            : "no_fence_feedback,no_query_feedback,no_multi_ring"),
         "WINEDLLOVERRIDES=d3d11=n;dxgi=n",
-        "DXVK_WINEHUA_COMMAND_QUERY_RESET=1",
-        "DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED=1",
-        /* Prefer the native RGBA8 SNORM render-target path. On devices such
-         * as Maleoon where sampling is supported but color attachment usage
-         * is not, DXVK may substitute its qualified RGBA16F backing image.
-         * Per-process diagnostics can still override this with 0. */
-        "DXVK_WINEHUA_EMULATE_RGBA8_SNORM_RT=auto",
-        /* This path is qualified by the command-list ownership and continuous
-         * Heaven gates. Keep per-range statistics opt-in so production avoids
-         * diagnostic bookkeeping and log I/O. */
-        "DXVK_WINEHUA_BATCH_MAPPED_FLUSH=1",
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,
         "WINEDLLDIR0=" + overlay64,
         "WINEDLLDIR1=" + overlay86,
+        /* Preserve the contiguous Wine PE runtime search path after the
+         * selected DXVK overlays. */
+        "WINEDLLDIR2=" + binDir + "/x86_64-windows",
+        "WINEDLLDIR3=" + binDir + "/i386-windows",
+        "WINEDLLDIR4=" + binDir,
     };
     for (const std::string& line : managed) UpsertEnvLine(env, line);
     OH_LOG_INFO(LOG_APP, "[WineEnv] DXVK WINEDLLPATH=%{public}s", wineDllPath.c_str());
@@ -326,6 +443,19 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         UpsertEnvLine(env, "VK_ICD_FILENAMES=" + guestVulkanIcd);
     }
 #endif
+    if (!legacy) return;
+
+    const std::vector<std::string> legacyCompatibility = {
+        "WINEHUA_DXVK_RELAXED_FEATURES=1",
+        "DXVK_WINEHUA_COMMAND_QUERY_RESET=1",
+        "DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED=1",
+        /* Prefer the native RGBA8 SNORM render-target path. On devices such
+         * as Maleoon where sampling is supported but color attachment usage
+         * is not, DXVK may substitute its qualified RGBA16F backing image. */
+        "DXVK_WINEHUA_EMULATE_RGBA8_SNORM_RT=auto",
+        "DXVK_WINEHUA_BATCH_MAPPED_FLUSH=1",
+    };
+    for (const std::string& line : legacyCompatibility) UpsertEnvLine(env, line);
 }
 
 static bool ShouldSerializeEntryParamEnv(const std::string& envLine) {

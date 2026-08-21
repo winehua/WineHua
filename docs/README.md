@@ -20,6 +20,13 @@
 - **[CROSS_FORK_CONTRACTS.md](CROSS_FORK_CONTRACTS.md)** — 跨仓库私有契约（OpenGL 链路：shm 页 / present 协议 / 环境变量 / ready 标记 / 回调 / IPC；Vulkan 链路：surface tag / vn_winehua_present / VK_PRESENT 协议 / 设备释放回调；各含两端代码索引与失效表现）
 - **[AUDIO_ARCHITECTURE.md](AUDIO_ARCHITECTURE.md)** — 音频架构
 - **[DXVK_MODERN_UPGRADE_READINESS.md](DXVK_MODERN_UPGRADE_READINESS.md)** — DXVK 2.x/VKD3D 升级能力矩阵、迁移清单与准入门禁
+- **[VKD3D_LIMITED_500K_PLAN.md](VKD3D_LIMITED_500K_PLAN.md)** - VKD3D 2.6 limited-500K official D3D12 profile, gates, and device evidence
+- **[VKD3D_DESCRIPTOR_500K_910_20260804.md](VKD3D_DESCRIPTOR_500K_910_20260804.md)** — 910 设备 500K 末槽 GPU descriptor 三次真机证据
+- **[VKD3D_BDA_910_20260805.md](VKD3D_BDA_910_20260805.md)** — 910 设备 BDA/GPUVA 三次真机证据
+- **[VKD3D_GRAPHICS_SMOKE_910_20260805.md](VKD3D_GRAPHICS_SMOKE_910_20260805.md)** — 910 设备 VKD3D 物理显示 1000 帧三次真机证据
+- **[VKD3D_READBACK_REVALIDATION_910_20260806.md](VKD3D_READBACK_REVALIDATION_910_20260806.md)** - persistent-map readback regression root cause and post-fix 910 revalidation checkpoint
+- **[VKD3D_MULTIQUEUE_910_20260805.md](VKD3D_MULTIQUEUE_910_20260805.md)** — 910 设备 D3D12 COPY/DIRECT 跨队列同步三次真机证据
+- **[VKD3D_DXVK_REGRESSION_910_20260805.md](VKD3D_DXVK_REGRESSION_910_20260805.md)** — VKD3D 隔离分支的 DXVK Legacy 全量回归与 Modern 独立失败记录
 
 ### 构建
 - **[BUILD_GUIDE.md](BUILD_GUIDE.md)** — 构建步骤、产物说明

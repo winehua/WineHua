@@ -1,0 +1,839 @@
+From 10ca989dbdbcab4905f5a99c9e40f8943f803241 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 17:10:17 +0800
+Subject: [PATCH] test: verify visible animated D3D12 smoke
+
+---
+ tests/vkd3d_graphics_smoketest.c | 603 ++++++++++++++++++++++++++++---
+ 1 file changed, 547 insertions(+), 56 deletions(-)
+
+diff --git a/tests/vkd3d_graphics_smoketest.c b/tests/vkd3d_graphics_smoketest.c
+index 8471f6f..5a0a930 100644
+--- a/tests/vkd3d_graphics_smoketest.c
++++ b/tests/vkd3d_graphics_smoketest.c
+@@ -29,6 +29,16 @@
+ #define VKD3D_GRAPHICS_SMOKE_MAX_HOLD_MS 300000u
+ #define VKD3D_GRAPHICS_SMOKE_PIXEL_TOLERANCE 8u
+ #define VKD3D_GRAPHICS_SMOKE_MIN_GEOMETRY_PERCENT 1u
++#define VKD3D_GRAPHICS_SMOKE_BLOCK_COUNT 3u
++#define VKD3D_GRAPHICS_SMOKE_VERTICES_PER_BLOCK 6u
++#define VKD3D_GRAPHICS_SMOKE_VERTEX_COUNT \
++        (VKD3D_GRAPHICS_SMOKE_BLOCK_COUNT * VKD3D_GRAPHICS_SMOKE_VERTICES_PER_BLOCK)
++
++struct graphics_smoke_vertex
++{
++    struct demo_vec3 position;
++    struct demo_vec4 colour;
++};
+ 
+ typedef HRESULT (WINAPI *graphics_smoke_serialize_root_signature)(
+         const D3D12_ROOT_SIGNATURE_DESC *desc, D3D_ROOT_SIGNATURE_VERSION version,
+@@ -51,9 +61,36 @@ struct graphics_smoke
+     unsigned int target_frames;
+     unsigned int rendered_frames;
+     unsigned int hold_ms;
++    float rotation_cos;
++    float rotation_sin;
+     uint64_t start_ms;
++    uint64_t render_start_ms;
++    uint64_t startup_ms;
+     uint64_t elapsed_ms;
+ 
++    bool feature_query_verified;
++    bool advanced_feature_query_verified;
++    D3D_FEATURE_LEVEL max_feature_level;
++    D3D_SHADER_MODEL shader_model;
++    D3D_ROOT_SIGNATURE_VERSION root_signature_version;
++    D3D12_RESOURCE_BINDING_TIER resource_binding_tier;
++    D3D12_RESOURCE_HEAP_TIER resource_heap_tier;
++    D3D12_TILED_RESOURCES_TIER tiled_resources_tier;
++    D3D12_CONSERVATIVE_RASTERIZATION_TIER conservative_rasterization_tier;
++    D3D12_RENDER_PASS_TIER render_pass_tier;
++    D3D12_RAYTRACING_TIER raytracing_tier;
++    D3D12_VARIABLE_SHADING_RATE_TIER variable_shading_rate_tier;
++    D3D12_MESH_SHADER_TIER mesh_shader_tier;
++    D3D12_SAMPLER_FEEDBACK_TIER sampler_feedback_tier;
++    bool typed_uav_load_additional_formats;
++    bool rovs_supported;
++    bool wave_ops;
++    bool int64_shader_ops;
++    unsigned int wave_lane_count_min;
++    unsigned int wave_lane_count_max;
++    unsigned int gpu_va_bits_per_resource;
++    unsigned int gpu_va_bits_per_process;
++
+     ID3D12Device *device;
+     ID3D12CommandQueue *command_queue;
+     struct demo_swapchain *swapchain;
+@@ -65,12 +102,19 @@ struct graphics_smoke
+     ID3D12PipelineState *pipeline_state;
+     ID3D12GraphicsCommandList *command_list;
+     ID3D12Resource *vertex_buffer;
++    struct graphics_smoke_vertex *mapped_vertices;
+     D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view;
+     ID3D12Resource *frame_readback;
+     D3D12_PLACED_SUBRESOURCE_FOOTPRINT frame_footprint;
+     UINT64 frame_readback_size;
+     unsigned int non_clear_pixels;
++    unsigned int readback_checks;
++    uint64_t first_frame_hash;
++    uint64_t last_frame_hash;
+     bool frame_verified;
++    bool animation_verified;
++    bool buffer_copy_verified;
++    bool fence_verified;
+     ID3D12Fence *fence;
+     HANDLE fence_event;
+     UINT64 fence_value;
+@@ -126,12 +170,20 @@ static void graphics_smoke_checkpoint(struct graphics_smoke *smoke,
+         const char *state, const char *stage)
+ {
+     FILE *file;
++    uint64_t elapsed_ms = 0;
++    double fps = 0.0;
+ 
+     if (!smoke->checkpoint_path || !(file = fopen(smoke->checkpoint_path, "wb")))
+         return;
+ 
+-    fprintf(file, "{\"state\":\"%s\",\"stage\":\"%s\",\"frames\":%u}\n",
+-            state, stage, smoke->rendered_frames);
++    if (smoke->render_start_ms)
++        elapsed_ms = graphics_smoke_now_ms() - smoke->render_start_ms;
++    if (elapsed_ms)
++        fps = (double)smoke->rendered_frames * 1000.0 / (double)elapsed_ms;
++    fprintf(file,
++            "{\"state\":\"%s\",\"stage\":\"%s\",\"frames\":%u,"
++            "\"target_frames\":%u,\"elapsed_ms\":%" PRIu64 ",\"fps\":%.3f}\n",
++            state, stage, smoke->rendered_frames, smoke->target_frames, elapsed_ms, fps);
+     fclose(file);
+ }
+ 
+@@ -144,41 +196,73 @@ static void graphics_smoke_set_stage(struct graphics_smoke *smoke, const char *s
+ 
+ static bool graphics_smoke_result(struct graphics_smoke *smoke, bool passed)
+ {
+-    FILE *file;
++    FILE *file = stderr;
++    const char *prefix = "VKD3D_GRAPHICS_SMOKE RESULT: ";
++    bool close_file = false;
+     double fps = 0.0;
+ 
+     if (smoke->elapsed_ms)
+         fps = (double)smoke->rendered_frames * 1000.0 / (double)smoke->elapsed_ms;
+ 
+-    if (!smoke->result_path)
+-    {
+-        fprintf(stderr,
+-                "VKD3D_GRAPHICS_SMOKE RESULT: {\"status\":\"%s\",\"stage\":\"%s\","
+-                "\"frames\":%u,\"target_frames\":%u,\"elapsed_ms\":%" PRIu64 ","
+-                "\"fps\":%.3f,\"width\":%u,\"height\":%u,\"hold_ms\":%u,"
+-                "\"frame_verified\":%s,\"non_clear_pixels\":%u,"
+-                "\"exit_reason\":\"%s\",\"exit_message\":%u}\n",
+-                passed ? "PASS" : "FAIL", smoke->stage, smoke->rendered_frames,
+-                smoke->target_frames, smoke->elapsed_ms, fps, smoke->width, smoke->height,
+-                smoke->hold_ms, smoke->frame_verified ? "true" : "false",
+-                smoke->non_clear_pixels, smoke->exit_reason, smoke->exit_message);
+-        return true;
+-    }
+-    if (!(file = fopen(smoke->result_path, "wb")))
+-        return false;
++    if (smoke->result_path)
++    {
++        if (!(file = fopen(smoke->result_path, "wb")))
++            return false;
++        prefix = "";
++        close_file = true;
++    }
+ 
+     fprintf(file,
+-            "{\"status\":\"%s\",\"stage\":\"%s\",\"frames\":%u,"
+-            "\"target_frames\":%u,\"elapsed_ms\":%" PRIu64 ",\"fps\":%.3f,"
++            "%s{\"status\":\"%s\",\"stage\":\"%s\",\"frames\":%u,"
++            "\"target_frames\":%u,\"startup_ms\":%" PRIu64 ","
++            "\"elapsed_ms\":%" PRIu64 ",\"fps\":%.3f,"
+             "\"width\":%u,\"height\":%u,\"sync_interval\":%u,\"hold_ms\":%u,"
+-            "\"frame_verified\":%s,\"non_clear_pixels\":%u,"
++            "\"frame_verified\":%s,\"animation_verified\":%s,"
++            "\"buffer_copy_verified\":%s,\"fence_verified\":%s,"
++            "\"readback_checks\":%u,\"non_clear_pixels\":%u,"
++            "\"first_frame_hash\":\"%016" PRIx64 "\","
++            "\"last_frame_hash\":\"%016" PRIx64 "\","
++            "\"feature_query_verified\":%s,\"advanced_feature_query_verified\":%s,"
++            "\"max_feature_level\":%u,\"shader_model\":%u,"
++            "\"root_signature_version\":%u,\"resource_binding_tier\":%u,"
++            "\"resource_heap_tier\":%u,\"tiled_resources_tier\":%u,"
++            "\"conservative_rasterization_tier\":%u,\"render_pass_tier\":%u,"
++            "\"raytracing_tier\":%u,\"variable_shading_rate_tier\":%u,"
++            "\"mesh_shader_tier\":%u,\"sampler_feedback_tier\":%u,"
++            "\"typed_uav_load_additional_formats\":%s,\"rovs_supported\":%s,"
++            "\"wave_ops\":%s,\"int64_shader_ops\":%s,"
++            "\"wave_lane_count_min\":%u,\"wave_lane_count_max\":%u,"
++            "\"gpu_va_bits_per_resource\":%u,\"gpu_va_bits_per_process\":%u,"
+             "\"exit_reason\":\"%s\",\"exit_message\":%u}\n",
+-            passed ? "PASS" : "FAIL", smoke->stage, smoke->rendered_frames,
+-            smoke->target_frames, smoke->elapsed_ms, fps, smoke->width, smoke->height,
++            prefix, passed ? "PASS" : "FAIL", smoke->stage, smoke->rendered_frames,
++            smoke->target_frames, smoke->startup_ms, smoke->elapsed_ms, fps,
++            smoke->width, smoke->height,
+             smoke->sync_interval, smoke->hold_ms,
+-            smoke->frame_verified ? "true" : "false", smoke->non_clear_pixels,
++            smoke->frame_verified ? "true" : "false",
++            smoke->animation_verified ? "true" : "false",
++            smoke->buffer_copy_verified ? "true" : "false",
++            smoke->fence_verified ? "true" : "false", smoke->readback_checks,
++            smoke->non_clear_pixels, smoke->first_frame_hash, smoke->last_frame_hash,
++            smoke->feature_query_verified ? "true" : "false",
++            smoke->advanced_feature_query_verified ? "true" : "false",
++            (unsigned int)smoke->max_feature_level, (unsigned int)smoke->shader_model,
++            (unsigned int)smoke->root_signature_version,
++            (unsigned int)smoke->resource_binding_tier,
++            (unsigned int)smoke->resource_heap_tier,
++            (unsigned int)smoke->tiled_resources_tier,
++            (unsigned int)smoke->conservative_rasterization_tier,
++            (unsigned int)smoke->render_pass_tier, (unsigned int)smoke->raytracing_tier,
++            (unsigned int)smoke->variable_shading_rate_tier,
++            (unsigned int)smoke->mesh_shader_tier,
++            (unsigned int)smoke->sampler_feedback_tier,
++            smoke->typed_uav_load_additional_formats ? "true" : "false",
++            smoke->rovs_supported ? "true" : "false",
++            smoke->wave_ops ? "true" : "false",
++            smoke->int64_shader_ops ? "true" : "false",
++            smoke->wave_lane_count_min, smoke->wave_lane_count_max,
++            smoke->gpu_va_bits_per_resource, smoke->gpu_va_bits_per_process,
+             smoke->exit_reason, smoke->exit_message);
+-    return fclose(file) == 0;
++    return !close_file || fclose(file) == 0;
+ }
+ 
+ static bool graphics_smoke_fail(struct graphics_smoke *smoke, const char *stage, HRESULT hr)
+@@ -238,6 +322,107 @@ static void graphics_smoke_close_window(struct graphics_smoke *smoke)
+     PostQuitMessage(0);
+ }
+ 
++static void graphics_smoke_set_vertex(struct graphics_smoke_vertex *vertex,
++        float x, float y, const struct demo_vec4 *colour)
++{
++    demo_vec3_set(&vertex->position, x, y, 0.0f);
++    vertex->colour = *colour;
++}
++
++static void graphics_smoke_write_block(struct graphics_smoke *smoke,
++        unsigned int first_vertex, float center_x, float center_y,
++        float half_width, float half_height, float rotation_cos, float rotation_sin,
++        const struct demo_vec4 colours[4])
++{
++    static const unsigned int indices[VKD3D_GRAPHICS_SMOKE_VERTICES_PER_BLOCK] =
++    {
++        0, 1, 2, 0, 2, 3,
++    };
++    const float local_x[4] = {-half_width, -half_width, half_width, half_width};
++    const float local_y[4] = {-half_height, half_height, half_height, -half_height};
++    const float aspect_scale = (float)smoke->height / (float)smoke->width;
++    float transformed_x[4];
++    float transformed_y[4];
++    unsigned int i;
++
++    for (i = 0; i < 4; ++i)
++    {
++        const float rotated_x = local_x[i] * rotation_cos - local_y[i] * rotation_sin;
++        const float rotated_y = local_x[i] * rotation_sin + local_y[i] * rotation_cos;
++        transformed_x[i] = center_x + rotated_x * aspect_scale;
++        transformed_y[i] = center_y + rotated_y;
++    }
++
++    for (i = 0; i < ARRAY_SIZE(indices); ++i)
++    {
++        const unsigned int corner = indices[i];
++        graphics_smoke_set_vertex(&smoke->mapped_vertices[first_vertex + i],
++                transformed_x[corner], transformed_y[corner], &colours[corner]);
++    }
++}
++
++static bool graphics_smoke_update_vertices(struct graphics_smoke *smoke)
++{
++    static const struct demo_vec4 block_colours[VKD3D_GRAPHICS_SMOKE_BLOCK_COUNT][4] =
++    {
++        {
++            {1.00f, 0.10f, 0.10f, 1.0f}, {1.00f, 0.90f, 0.05f, 1.0f},
++            {0.05f, 0.90f, 1.00f, 1.0f}, {0.95f, 0.10f, 1.00f, 1.0f},
++        },
++        {
++            {0.10f, 1.00f, 0.15f, 1.0f}, {0.10f, 0.45f, 1.00f, 1.0f},
++            {1.00f, 1.00f, 1.00f, 1.0f}, {0.45f, 1.00f, 0.10f, 1.0f},
++        },
++        {
++            {1.00f, 0.35f, 0.05f, 1.0f}, {0.65f, 0.10f, 1.00f, 1.0f},
++            {1.00f, 0.95f, 0.20f, 1.0f}, {0.15f, 0.80f, 1.00f, 1.0f},
++        },
++    };
++    D3D12_RANGE read_range = {0, 0};
++    D3D12_RANGE written_range =
++    {
++        0, sizeof(*smoke->mapped_vertices) * VKD3D_GRAPHICS_SMOKE_VERTEX_COUNT,
++    };
++    HRESULT hr;
++    const float c = smoke->rotation_cos;
++    const float s = smoke->rotation_sin;
++    const float c2 = c * c - s * s;
++    const float s2 = 2.0f * c * s;
++    const float c3 = c2 * c - s2 * s;
++    const float s3 = s2 * c + c2 * s;
++
++    if (FAILED(hr = ID3D12Resource_Map(smoke->vertex_buffer, 0, &read_range,
++            (void **)&smoke->mapped_vertices)))
++        return graphics_smoke_fail(smoke, "vertex_map", hr);
++
++    graphics_smoke_write_block(smoke, 0, 0.0f, 0.0f, 0.50f, 0.28f,
++            c, s, block_colours[0]);
++    graphics_smoke_write_block(smoke, VKD3D_GRAPHICS_SMOKE_VERTICES_PER_BLOCK,
++            -0.58f, 0.48f, 0.21f, 0.21f, c2, -s2, block_colours[1]);
++    graphics_smoke_write_block(smoke, 2 * VKD3D_GRAPHICS_SMOKE_VERTICES_PER_BLOCK,
++            0.58f, -0.48f, 0.21f, 0.21f, c3, s3, block_colours[2]);
++
++    /* WineHua's Venus transport mirrors host-visible memory explicitly. Give
++     * Unmap the precise write range so this valid D3D12 upload reaches the GPU
++     * before the following draw instead of remaining only in the guest map. */
++    ID3D12Resource_Unmap(smoke->vertex_buffer, 0, &written_range);
++    smoke->mapped_vertices = NULL;
++    return true;
++}
++
++static void graphics_smoke_advance_rotation(struct graphics_smoke *smoke)
++{
++    /* 0.04 radians per submitted frame: clearly visible at 60+ FPS without
++     * depending on CRT trigonometry or a frame-time sleep. */
++    static const float step_cos = 0.9992001067f;
++    static const float step_sin = 0.0399893342f;
++    const float next_cos = smoke->rotation_cos * step_cos - smoke->rotation_sin * step_sin;
++    const float next_sin = smoke->rotation_sin * step_cos + smoke->rotation_cos * step_sin;
++
++    smoke->rotation_cos = next_cos;
++    smoke->rotation_sin = next_sin;
++}
++
+ static bool graphics_smoke_create_assets(struct graphics_smoke *smoke)
+ {
+     static const D3D12_INPUT_ELEMENT_DESC input_layout[] =
+@@ -247,27 +432,15 @@ static bool graphics_smoke_create_assets(struct graphics_smoke *smoke)
+         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
+             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+     };
+-    static const struct
+-    {
+-        struct demo_vec3 position;
+-        struct demo_vec4 colour;
+-    } vertices[] =
+-    {
+-        {{ 0.0f,  0.25f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+-        {{ 0.25f, -0.25f, 0.0f}, {0.0f, 1.0f, 0.0f, 1.0f}},
+-        {{-0.25f, -0.25f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
+-    };
+     D3D12_ROOT_SIGNATURE_DESC root_signature_desc;
+     D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline_desc;
+     D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc;
+     D3D12_RESOURCE_DESC resource_desc;
+     D3D12_HEAP_PROPERTIES heap_properties;
+-    D3D12_RANGE read_range = {0, 0};
+     D3D12_HEAP_PROPERTIES readback_heap_desc;
+     D3D12_RESOURCE_DESC readback_resource_desc;
+     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle;
+     ID3DBlob *root_signature_blob;
+-    void *mapped_data;
+     HRESULT hr;
+     unsigned int i;
+ 
+@@ -325,7 +498,7 @@ static bool graphics_smoke_create_assets(struct graphics_smoke *smoke)
+     heap_properties.VisibleNodeMask = 1;
+     memset(&resource_desc, 0, sizeof(resource_desc));
+     resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-    resource_desc.Width = sizeof(vertices);
++    resource_desc.Width = sizeof(*smoke->mapped_vertices) * VKD3D_GRAPHICS_SMOKE_VERTEX_COUNT;
+     resource_desc.Height = 1;
+     resource_desc.DepthOrArraySize = 1;
+     resource_desc.MipLevels = 1;
+@@ -337,14 +510,12 @@ static bool graphics_smoke_create_assets(struct graphics_smoke *smoke)
+             NULL, &IID_ID3D12Resource, (void **)&smoke->vertex_buffer)))
+         return graphics_smoke_fail(smoke, "vertex_buffer", hr);
+     graphics_smoke_set_stage(smoke, "vertex_map");
+-    if (FAILED(hr = ID3D12Resource_Map(smoke->vertex_buffer, 0, &read_range, &mapped_data)))
+-        return graphics_smoke_fail(smoke, "vertex_map", hr);
+-    memcpy(mapped_data, vertices, sizeof(vertices));
+-    ID3D12Resource_Unmap(smoke->vertex_buffer, 0, NULL);
++    if (!graphics_smoke_update_vertices(smoke))
++        return false;
+     smoke->vertex_buffer_view.BufferLocation =
+             ID3D12Resource_GetGPUVirtualAddress(smoke->vertex_buffer);
+-    smoke->vertex_buffer_view.StrideInBytes = sizeof(*vertices);
+-    smoke->vertex_buffer_view.SizeInBytes = sizeof(vertices);
++    smoke->vertex_buffer_view.StrideInBytes = sizeof(*smoke->mapped_vertices);
++    smoke->vertex_buffer_view.SizeInBytes = resource_desc.Width;
+ 
+     graphics_smoke_set_stage(smoke, "rtv_heap");
+     memset(&rtv_heap_desc, 0, sizeof(rtv_heap_desc));
+@@ -422,9 +593,282 @@ static bool graphics_smoke_wait_frame(struct graphics_smoke *smoke)
+         if (demo_wait_event(smoke->fence_event, 10000) != WAIT_OBJECT_0)
+             return graphics_smoke_fail(smoke, "fence_wait", E_FAIL);
+     }
++    smoke->fence_verified = true;
+     return true;
+ }
+ 
++static bool graphics_smoke_query_features(struct graphics_smoke *smoke)
++{
++    static const D3D_FEATURE_LEVEL requested_feature_levels[] =
++    {
++        D3D_FEATURE_LEVEL_12_1,
++        D3D_FEATURE_LEVEL_12_0,
++        D3D_FEATURE_LEVEL_11_1,
++        D3D_FEATURE_LEVEL_11_0,
++    };
++    static const D3D_SHADER_MODEL requested_shader_models[] =
++    {
++        D3D_SHADER_MODEL_6_6,
++        D3D_SHADER_MODEL_6_5,
++        D3D_SHADER_MODEL_6_4,
++        D3D_SHADER_MODEL_6_3,
++        D3D_SHADER_MODEL_6_2,
++        D3D_SHADER_MODEL_6_1,
++        D3D_SHADER_MODEL_6_0,
++        D3D_SHADER_MODEL_5_1,
++    };
++    D3D12_FEATURE_DATA_FEATURE_LEVELS feature_levels;
++    D3D12_FEATURE_DATA_D3D12_OPTIONS options;
++    D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1;
++    D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5;
++    D3D12_FEATURE_DATA_D3D12_OPTIONS6 options6;
++    D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7;
++    D3D12_FEATURE_DATA_ROOT_SIGNATURE root_signature;
++    D3D12_FEATURE_DATA_SHADER_MODEL shader_model;
++    D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT gpu_va;
++    bool options5_ok, options6_ok, options7_ok;
++    HRESULT hr = E_FAIL;
++    unsigned int i;
++
++    graphics_smoke_set_stage(smoke, "feature_levels");
++    memset(&feature_levels, 0, sizeof(feature_levels));
++    feature_levels.NumFeatureLevels = ARRAY_SIZE(requested_feature_levels);
++    feature_levels.pFeatureLevelsRequested = requested_feature_levels;
++    if (FAILED(hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_FEATURE_LEVELS, &feature_levels, sizeof(feature_levels))))
++        return graphics_smoke_fail(smoke, "feature_levels", hr);
++    smoke->max_feature_level = feature_levels.MaxSupportedFeatureLevel;
++
++    graphics_smoke_set_stage(smoke, "feature_options");
++    memset(&options, 0, sizeof(options));
++    if (FAILED(hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))))
++        return graphics_smoke_fail(smoke, "feature_options", hr);
++    smoke->resource_binding_tier = options.ResourceBindingTier;
++    smoke->resource_heap_tier = options.ResourceHeapTier;
++    smoke->tiled_resources_tier = options.TiledResourcesTier;
++    smoke->conservative_rasterization_tier = options.ConservativeRasterizationTier;
++    smoke->typed_uav_load_additional_formats = options.TypedUAVLoadAdditionalFormats;
++    smoke->rovs_supported = options.ROVsSupported;
++
++    graphics_smoke_set_stage(smoke, "feature_root_signature");
++    memset(&root_signature, 0, sizeof(root_signature));
++    root_signature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
++    hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_ROOT_SIGNATURE, &root_signature, sizeof(root_signature));
++    if (FAILED(hr))
++    {
++        root_signature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
++        hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++                D3D12_FEATURE_ROOT_SIGNATURE, &root_signature, sizeof(root_signature));
++    }
++    if (FAILED(hr))
++        return graphics_smoke_fail(smoke, "feature_root_signature", hr);
++    smoke->root_signature_version = root_signature.HighestVersion;
++
++    graphics_smoke_set_stage(smoke, "feature_shader_model");
++    memset(&shader_model, 0, sizeof(shader_model));
++    for (i = 0; i < ARRAY_SIZE(requested_shader_models); ++i)
++    {
++        shader_model.HighestShaderModel = requested_shader_models[i];
++        hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++                D3D12_FEATURE_SHADER_MODEL, &shader_model, sizeof(shader_model));
++        if (SUCCEEDED(hr))
++            break;
++    }
++    if (FAILED(hr))
++        return graphics_smoke_fail(smoke, "feature_shader_model", hr);
++    smoke->shader_model = shader_model.HighestShaderModel;
++
++    graphics_smoke_set_stage(smoke, "feature_gpu_va");
++    memset(&gpu_va, 0, sizeof(gpu_va));
++    if (FAILED(hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT, &gpu_va, sizeof(gpu_va))))
++        return graphics_smoke_fail(smoke, "feature_gpu_va", hr);
++    smoke->gpu_va_bits_per_resource = gpu_va.MaxGPUVirtualAddressBitsPerResource;
++    smoke->gpu_va_bits_per_process = gpu_va.MaxGPUVirtualAddressBitsPerProcess;
++
++    graphics_smoke_set_stage(smoke, "feature_options1");
++    memset(&options1, 0, sizeof(options1));
++    if (FAILED(hr = ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1))))
++        return graphics_smoke_fail(smoke, "feature_options1", hr);
++    smoke->wave_ops = options1.WaveOps;
++    smoke->int64_shader_ops = options1.Int64ShaderOps;
++    smoke->wave_lane_count_min = options1.WaveLaneCountMin;
++    smoke->wave_lane_count_max = options1.WaveLaneCountMax;
++    smoke->feature_query_verified = true;
++
++    memset(&options5, 0, sizeof(options5));
++    options5_ok = SUCCEEDED(ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)));
++    memset(&options6, 0, sizeof(options6));
++    options6_ok = SUCCEEDED(ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_D3D12_OPTIONS6, &options6, sizeof(options6)));
++    memset(&options7, 0, sizeof(options7));
++    options7_ok = SUCCEEDED(ID3D12Device_CheckFeatureSupport(smoke->device,
++            D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7)));
++    smoke->render_pass_tier = options5.RenderPassesTier;
++    smoke->raytracing_tier = options5.RaytracingTier;
++    smoke->variable_shading_rate_tier = options6.VariableShadingRateTier;
++    smoke->mesh_shader_tier = options7.MeshShaderTier;
++    smoke->sampler_feedback_tier = options7.SamplerFeedbackTier;
++    smoke->advanced_feature_query_verified = options5_ok && options6_ok && options7_ok;
++
++    fprintf(stderr,
++            "VKD3D_GRAPHICS_SMOKE FEATURES: feature_level=%#x shader_model=%#x "
++            "root_signature=%u binding_tier=%u heap_tier=%u wave_ops=%u int64=%u "
++            "gpu_va=%u/%u advanced_queries=%u.\n",
++            smoke->max_feature_level, smoke->shader_model, smoke->root_signature_version,
++            smoke->resource_binding_tier, smoke->resource_heap_tier,
++            smoke->wave_ops ? 1 : 0, smoke->int64_shader_ops ? 1 : 0,
++            smoke->gpu_va_bits_per_resource, smoke->gpu_va_bits_per_process,
++            smoke->advanced_feature_query_verified ? 1 : 0);
++    return true;
++}
++
++static bool graphics_smoke_verify_buffer_transfer(struct graphics_smoke *smoke)
++{
++    enum { buffer_size = 4096 };
++    ID3D12Resource *upload = NULL;
++    ID3D12Resource *default_buffer = NULL;
++    ID3D12Resource *readback = NULL;
++    D3D12_HEAP_PROPERTIES heap_properties;
++    D3D12_RESOURCE_DESC resource_desc;
++    D3D12_RESOURCE_BARRIER barrier;
++    D3D12_RANGE empty_range = {0, 0};
++    D3D12_RANGE upload_written_range = {0, buffer_size};
++    D3D12_RANGE read_range = {0, buffer_size};
++    uint8_t *mapped;
++    bool passed = false;
++    unsigned int i;
++    HRESULT hr;
++
++    memset(&resource_desc, 0, sizeof(resource_desc));
++    resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    resource_desc.Width = buffer_size;
++    resource_desc.Height = 1;
++    resource_desc.DepthOrArraySize = 1;
++    resource_desc.MipLevels = 1;
++    resource_desc.Format = DXGI_FORMAT_UNKNOWN;
++    resource_desc.SampleDesc.Count = 1;
++    resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++
++    graphics_smoke_set_stage(smoke, "buffer_upload_create");
++    memset(&heap_properties, 0, sizeof(heap_properties));
++    heap_properties.Type = D3D12_HEAP_TYPE_UPLOAD;
++    heap_properties.CreationNodeMask = 1;
++    heap_properties.VisibleNodeMask = 1;
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(smoke->device,
++            &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
++            D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource,
++            (void **)&upload)))
++    {
++        graphics_smoke_fail(smoke, "buffer_upload_create", hr);
++        goto done;
++    }
++
++    graphics_smoke_set_stage(smoke, "buffer_default_create");
++    heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(smoke->device,
++            &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
++            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource,
++            (void **)&default_buffer)))
++    {
++        graphics_smoke_fail(smoke, "buffer_default_create", hr);
++        goto done;
++    }
++
++    graphics_smoke_set_stage(smoke, "buffer_readback_create");
++    heap_properties.Type = D3D12_HEAP_TYPE_READBACK;
++    if (FAILED(hr = ID3D12Device_CreateCommittedResource(smoke->device,
++            &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
++            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource,
++            (void **)&readback)))
++    {
++        graphics_smoke_fail(smoke, "buffer_readback_create", hr);
++        goto done;
++    }
++
++    graphics_smoke_set_stage(smoke, "buffer_upload_map");
++    if (FAILED(hr = ID3D12Resource_Map(upload, 0, &empty_range, (void **)&mapped)))
++    {
++        graphics_smoke_fail(smoke, "buffer_upload_map", hr);
++        goto done;
++    }
++    for (i = 0; i < buffer_size; ++i)
++        mapped[i] = (uint8_t)((i * 37u + 11u) & 0xffu);
++    ID3D12Resource_Unmap(upload, 0, &upload_written_range);
++
++    graphics_smoke_set_stage(smoke, "buffer_copy_record");
++    if (FAILED(hr = ID3D12CommandAllocator_Reset(smoke->command_allocator)))
++    {
++        graphics_smoke_fail(smoke, "buffer_copy_allocator_reset", hr);
++        goto done;
++    }
++    if (FAILED(hr = ID3D12GraphicsCommandList_Reset(smoke->command_list,
++            smoke->command_allocator, NULL)))
++    {
++        graphics_smoke_fail(smoke, "buffer_copy_list_reset", hr);
++        goto done;
++    }
++    ID3D12GraphicsCommandList_CopyBufferRegion(smoke->command_list,
++            default_buffer, 0, upload, 0, buffer_size);
++    memset(&barrier, 0, sizeof(barrier));
++    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    barrier.Transition.pResource = default_buffer;
++    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    ID3D12GraphicsCommandList_ResourceBarrier(smoke->command_list, 1, &barrier);
++    ID3D12GraphicsCommandList_CopyBufferRegion(smoke->command_list,
++            readback, 0, default_buffer, 0, buffer_size);
++    if (FAILED(hr = ID3D12GraphicsCommandList_Close(smoke->command_list)))
++    {
++        graphics_smoke_fail(smoke, "buffer_copy_list_close", hr);
++        goto done;
++    }
++    ID3D12CommandQueue_ExecuteCommandLists(smoke->command_queue, 1,
++            (ID3D12CommandList **)&smoke->command_list);
++    if (!graphics_smoke_wait_frame(smoke))
++        goto done;
++
++    graphics_smoke_set_stage(smoke, "buffer_readback_compare");
++    if (FAILED(hr = ID3D12Resource_Map(readback, 0, &read_range, (void **)&mapped)))
++    {
++        graphics_smoke_fail(smoke, "buffer_readback_map", hr);
++        goto done;
++    }
++    for (i = 0; i < buffer_size; ++i)
++    {
++        uint8_t expected = (uint8_t)((i * 37u + 11u) & 0xffu);
++        if (mapped[i] != expected)
++        {
++            fprintf(stderr,
++                    "VKD3D_GRAPHICS_SMOKE BUFFER_MISMATCH: offset=%u expected=%u actual=%u.\n",
++                    i, expected, mapped[i]);
++            ID3D12Resource_Unmap(readback, 0, &empty_range);
++            graphics_smoke_fail(smoke, "buffer_readback_mismatch", E_FAIL);
++            goto done;
++        }
++    }
++    ID3D12Resource_Unmap(readback, 0, &empty_range);
++    smoke->buffer_copy_verified = true;
++    fprintf(stderr,
++            "VKD3D_GRAPHICS_SMOKE BUFFER_COPY: verified_bytes=%u upload_default_readback=PASS.\n",
++            buffer_size);
++    passed = true;
++
++done:
++    if (readback)
++        ID3D12Resource_Release(readback);
++    if (default_buffer)
++        ID3D12Resource_Release(default_buffer);
++    if (upload)
++        ID3D12Resource_Release(upload);
++    return passed;
++}
++
+ static unsigned int graphics_smoke_channel_delta(uint8_t a, uint8_t b)
+ {
+     return a > b ? a - b : b - a;
+@@ -440,6 +884,8 @@ static bool graphics_smoke_verify_frame(struct graphics_smoke *smoke)
+     void *mapped_data;
+     unsigned int minimum_pixels;
+     unsigned int x, y;
++    uint64_t hash = UINT64_C(1469598103934665603);
++    bool final_frame = smoke->rendered_frames + 1u == smoke->target_frames;
+     HRESULT hr;
+ 
+     read_range.Begin = 0;
+@@ -465,6 +911,13 @@ static bool graphics_smoke_verify_frame(struct graphics_smoke *smoke)
+                     graphics_smoke_channel_delta(pixel[2], clear_pixel[2]) >
+                         VKD3D_GRAPHICS_SMOKE_PIXEL_TOLERANCE)
+                 ++smoke->non_clear_pixels;
++
++            /* Hash only visible texels and exclude placed-footprint row
++             * padding so the value is stable across drivers. */
++            hash ^= pixel[0]; hash *= UINT64_C(1099511628211);
++            hash ^= pixel[1]; hash *= UINT64_C(1099511628211);
++            hash ^= pixel[2]; hash *= UINT64_C(1099511628211);
++            hash ^= pixel[3]; hash *= UINT64_C(1099511628211);
+         }
+     }
+     fprintf(stderr,
+@@ -475,6 +928,14 @@ static bool graphics_smoke_verify_frame(struct graphics_smoke *smoke)
+             smoke->non_clear_pixels, smoke->width * smoke->height);
+     ID3D12Resource_Unmap(smoke->frame_readback, 0, &written_range);
+ 
++    if (!smoke->readback_checks)
++        smoke->first_frame_hash = hash;
++    smoke->last_frame_hash = hash;
++    smoke->readback_checks++;
++    fprintf(stderr,
++            "VKD3D_GRAPHICS_SMOKE READBACK_HASH: check=%u hash=%016" PRIx64 ".\n",
++            smoke->readback_checks, hash);
++
+     minimum_pixels = smoke->width * smoke->height *
+             VKD3D_GRAPHICS_SMOKE_MIN_GEOMETRY_PERCENT / 100u;
+     if (!minimum_pixels)
+@@ -482,6 +943,15 @@ static bool graphics_smoke_verify_frame(struct graphics_smoke *smoke)
+     if (smoke->non_clear_pixels < minimum_pixels)
+         return graphics_smoke_fail(smoke, "frame_readback_no_geometry", E_FAIL);
+ 
++    if (final_frame)
++    {
++        if (smoke->target_frames > 1u && smoke->readback_checks < 2u)
++            return graphics_smoke_fail(smoke, "frame_readback_missing_animation_check", E_FAIL);
++        if (smoke->target_frames > 1u && smoke->first_frame_hash == smoke->last_frame_hash)
++            return graphics_smoke_fail(smoke, "frame_readback_static_animation", E_FAIL);
++        smoke->animation_verified = true;
++    }
++
+     smoke->frame_verified = true;
+     return true;
+ }
+@@ -497,11 +967,18 @@ static void graphics_smoke_render_frame(struct demo_window *window, void *user_d
+     D3D12_TEXTURE_COPY_LOCATION copy_source;
+     float clear_colour[4];
+     bool verify_frame;
++    bool readback_frame;
+     HRESULT hr;
+ 
+     if (smoke->rendered_frames >= smoke->target_frames)
+         return;
+     verify_frame = smoke->rendered_frames + 1u == smoke->target_frames;
++    readback_frame = verify_frame ||
++            smoke->rendered_frames + 1u == (smoke->target_frames + 2u) / 3u;
++
++    /* The previous submission has been fenced before this callback runs. */
++    if (!graphics_smoke_update_vertices(smoke))
++        goto done;
+ 
+     if (FAILED(hr = ID3D12CommandAllocator_Reset(smoke->command_allocator)))
+     {
+@@ -541,9 +1018,9 @@ static void graphics_smoke_render_frame(struct demo_window *window, void *user_d
+     rtv_handle = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(smoke->rtv_heap);
+     rtv_handle.ptr += smoke->frame_index * smoke->rtv_descriptor_size;
+     ID3D12GraphicsCommandList_OMSetRenderTargets(smoke->command_list, 1, &rtv_handle, FALSE, NULL);
+-    clear_colour[0] = 0.15f + 0.10f * (float)(smoke->rendered_frames % 3);
+-    clear_colour[1] = 0.20f;
+-    clear_colour[2] = 0.35f;
++    clear_colour[0] = 0.015f;
++    clear_colour[1] = 0.020f;
++    clear_colour[2] = 0.045f;
+     clear_colour[3] = 1.0f;
+     ID3D12GraphicsCommandList_ClearRenderTargetView(smoke->command_list, rtv_handle,
+             clear_colour, 0, NULL);
+@@ -551,13 +1028,14 @@ static void graphics_smoke_render_frame(struct demo_window *window, void *user_d
+             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+     ID3D12GraphicsCommandList_IASetVertexBuffers(smoke->command_list, 0, 1,
+             &smoke->vertex_buffer_view);
+-    ID3D12GraphicsCommandList_DrawInstanced(smoke->command_list, 3, 1, 0, 0);
++    ID3D12GraphicsCommandList_DrawInstanced(smoke->command_list,
++            VKD3D_GRAPHICS_SMOKE_VERTEX_COUNT, 1, 0, 0);
+ 
+     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    barrier.Transition.StateAfter = verify_frame ? D3D12_RESOURCE_STATE_COPY_SOURCE :
++    barrier.Transition.StateAfter = readback_frame ? D3D12_RESOURCE_STATE_COPY_SOURCE :
+             D3D12_RESOURCE_STATE_PRESENT;
+     ID3D12GraphicsCommandList_ResourceBarrier(smoke->command_list, 1, &barrier);
+-    if (verify_frame)
++    if (readback_frame)
+     {
+         memset(&copy_destination, 0, sizeof(copy_destination));
+         copy_destination.pResource = smoke->frame_readback;
+@@ -588,10 +1066,11 @@ static void graphics_smoke_render_frame(struct demo_window *window, void *user_d
+     }
+     if (!graphics_smoke_wait_frame(smoke))
+         goto done;
+-    if (verify_frame && !graphics_smoke_verify_frame(smoke))
++    if (readback_frame && !graphics_smoke_verify_frame(smoke))
+         goto done;
+ 
+     smoke->rendered_frames++;
++    graphics_smoke_advance_rotation(smoke);
+     smoke->frame_index = demo_swapchain_get_current_back_buffer_index(smoke->swapchain);
+     fprintf(stderr, "VKD3D_GRAPHICS_SMOKE FRAME: %u/%u.\n",
+             smoke->rendered_frames, smoke->target_frames);
+@@ -599,7 +1078,7 @@ static void graphics_smoke_render_frame(struct demo_window *window, void *user_d
+ 
+     if (smoke->rendered_frames == smoke->target_frames)
+     {
+-        smoke->elapsed_ms = graphics_smoke_now_ms() - smoke->start_ms;
++        smoke->elapsed_ms = graphics_smoke_now_ms() - smoke->render_start_ms;
+         smoke->stage = "complete";
+         graphics_smoke_checkpoint(smoke, "PASSED", "complete");
+         if (!smoke->hold_ms)
+@@ -761,6 +1240,8 @@ static bool graphics_smoke_load_pipeline(struct graphics_smoke *smoke)
+     if (FAILED(hr = smoke->create_device(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device,
+             (void **)&smoke->device)))
+         return graphics_smoke_fail(smoke, "device", hr);
++    if (!graphics_smoke_query_features(smoke))
++        return false;
+ 
+     graphics_smoke_set_stage(smoke, "command_queue");
+     memset(&queue_desc, 0, sizeof(queue_desc));
+@@ -783,7 +1264,9 @@ static bool graphics_smoke_load_pipeline(struct graphics_smoke *smoke)
+             D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
+             (void **)&smoke->command_allocator)))
+         return graphics_smoke_fail(smoke, "command_allocator", hr);
+-    return graphics_smoke_create_assets(smoke);
++    if (!graphics_smoke_create_assets(smoke))
++        return false;
++    return graphics_smoke_verify_buffer_transfer(smoke);
+ }
+ 
+ static void graphics_smoke_cleanup(struct graphics_smoke *smoke)
+@@ -840,6 +1323,8 @@ int main(int argc, char **argv)
+     smoke.sync_interval = VKD3D_GRAPHICS_SMOKE_DEFAULT_SYNC_INTERVAL;
+     smoke.target_frames = VKD3D_GRAPHICS_SMOKE_DEFAULT_FRAMES;
+     smoke.hold_ms = VKD3D_GRAPHICS_SMOKE_DEFAULT_HOLD_MS;
++    smoke.rotation_cos = 1.0f;
++    smoke.rotation_sin = 0.0f;
+     smoke.stage = "startup";
+     smoke.exit_reason = "none";
+     smoke.result_path = graphics_smoke_argument(argc, argv, "--result");
+@@ -905,9 +1390,13 @@ int main(int argc, char **argv)
+         goto cleanup_window;
+ 
+     fprintf(stderr, "VKD3D_GRAPHICS_SMOKE DEVICE: initialized.\n");
++    smoke.render_start_ms = graphics_smoke_now_ms();
++    smoke.startup_ms = smoke.render_start_ms - smoke.start_ms;
+     graphics_smoke_run_loop(&smoke);
+     passed = smoke.rendered_frames == smoke.target_frames && !smoke.failure_hr &&
+-            smoke.frame_verified;
++            smoke.feature_query_verified && smoke.buffer_copy_verified &&
++            smoke.fence_verified && smoke.frame_verified &&
++            (smoke.target_frames == 1u || smoke.animation_verified);
+     if (passed)
+         graphics_smoke_hold_frame(&smoke);
+ 
+@@ -917,7 +1406,9 @@ cleanup_window:
+ cleanup_demo:
+     demo_cleanup(&smoke.demo);
+ done:
+-    if (!smoke.elapsed_ms && smoke.start_ms)
++    if (!smoke.elapsed_ms && smoke.render_start_ms)
++        smoke.elapsed_ms = graphics_smoke_now_ms() - smoke.render_start_ms;
++    else if (!smoke.elapsed_ms && smoke.start_ms)
+         smoke.elapsed_ms = graphics_smoke_now_ms() - smoke.start_ms;
+     if (passed)
+         smoke.stage = "complete";
+-- 
+2.51.1.windows.1
+

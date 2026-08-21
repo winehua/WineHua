@@ -1,7 +1,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
 
@@ -24,6 +24,18 @@ export default class DesktopAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '[DWA] onWindowStageCreate tl=%{public}d', this.toplevelId);
+    if (deviceInfo.deviceType === 'phone') {
+      try {
+        const mainWindow = windowStage.getMainWindowSync();
+        mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION).then(() => {
+          hilog.info(DOMAIN, TAG, '[DWA] phone auto-rotation enabled');
+        }).catch((e: BusinessError) => {
+          hilog.warn(DOMAIN, TAG, '[DWA] phone auto-rotation failed: %{public}s', JSON.stringify(e));
+        });
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, '[DWA] phone auto-rotation setup failed: %{public}s', JSON.stringify(e));
+      }
+    }
     windowStage.loadContent('pages/DesktopWindow', (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, '[DWA] loadContent FAILED: %{public}s', JSON.stringify(err));
@@ -35,6 +47,8 @@ export default class DesktopAbility extends UIAbility {
       try {
         const mw = windowStage.getMainWindowSync();
         if (mw) {
+          // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
+          testNapi.registerHostWindow(mw.getWindowProperties().id);
           mw.setWindowLayoutFullScreen(true).catch((e: BusinessError) => {
             hilog.error(DOMAIN, TAG, '[DWA] fullScreen failed: %{public}s', JSON.stringify(e));
           });

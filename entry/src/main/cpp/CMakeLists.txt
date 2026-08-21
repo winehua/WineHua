@@ -39,6 +39,7 @@ add_library(entry SHARED
     audio_stream.cpp
     graphics_broker.cpp
     virgl_host_config.cpp
+    experiment_payload.cpp
     napi_init.cpp
     wine_process.cpp
     wine_env.cpp
@@ -70,11 +71,13 @@ add_library(entry SHARED
     input_manager.cpp
     pointer_extras.cpp
     xdg_shell.cpp
+    text_input.cpp
     xdg-shell-protocol.c
     viewporter-server-protocol.c
     pointer-warp-v1-protocol.c
     pointer-constraints-unstable-v1-protocol.c
     relative-pointer-unstable-v1-protocol.c
+    text-input-unstable-v3-protocol.c
 )
 
 target_link_libraries(entry PUBLIC
@@ -90,6 +93,7 @@ target_link_libraries(entry PUBLIC
     libchild_process.so
     libipc_capi.so
     libohaudio.so
+    libnative_window_manager.so
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
 )
 

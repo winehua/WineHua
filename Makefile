@@ -20,12 +20,14 @@ GUEST_ARCH ?= $(WINE_ARCH)
 # 需要 dlopen 的关键 guest 库由 assemble 复制到 entry/libs/<NATIVE_ARCH> (el1 bundle)
 BUILD_GUEST_GFX ?= 1
 BUILD_GUEST_VULKAN ?= 1
+BUILD_WINE_MONO ?= 1
 TARGET_SDK_VERSION ?= 6.1.0(23)
 COMPATIBLE_SDK_VERSION ?= 6.1.0(23)
 export NATIVE_ARCH
 export GUEST_ARCH
 export BUILD_GUEST_GFX
 export BUILD_GUEST_VULKAN
+export BUILD_WINE_MONO
 export TARGET_SDK_VERSION
 export COMPATIBLE_SDK_VERSION
 
@@ -44,6 +46,22 @@ DXVK_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll
 DXVK_STAMP := $(STAMPS)/dxvk-legacy
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
+DXVK_MODERN_ARTIFACTS := \
+	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/dxgi.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/dxgi.dll
+DXVK_MODERN_STAMP := $(STAMPS)/dxvk-modern-2.6
+DXVK_MODERN_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk-modern/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk-modern -maxdepth 1 -type f 2>/dev/null)
+VKD3D_PROTON_ARTIFACTS := \
+	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/d3d12.dll \
+	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
+	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/triangle.exe \
+	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/gears.exe \
+	$(BUILD_DIR)/vkd3d-proton/limited-500k/manifest.json
+VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k
+VKD3D_PROTON_SOURCE_INPUTS := $(shell find $(ROOT)/patches/vkd3d-proton -type f 2>/dev/null; \
+	find $(ROOT)/thirdparty/vkd3d-proton -maxdepth 2 -type f 2>/dev/null)
 
 # 架构列表 (NATIVE_ARCH=all 已移除: 单一 WINE_ARCH 无法同时满足 arm64 原生与
 # box64+wine 两个 arm64 assemble, 双架构请分别 make NATIVE_ARCH=x86_64 / arm64-v8a)
@@ -54,6 +72,7 @@ DEPS_SENTINEL   := $(BUILD_DIR)/sysroot-ext/usr/lib/$(WINE_ARCH)-linux-ohos/libf
 WINE_SENTINEL   := $(BUILD_DIR)/wine-native/tools/winegcc/winegcc
 GUEST_GFX_SENTINEL := $(BUILD_DIR)/guest_gfx/$(GUEST_ARCH)/winehua-guest-gfx.env
 GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
+WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-ohos/share/wine/mono/wine-mono-11.1.0-x86.msi
 HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
 
 # Guest runtime build scripts can also be invoked directly while iterating on
@@ -82,9 +101,37 @@ $(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
 # packaging a partial or truncated DXVK install.
 $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 	@test -s "$@" || { echo "ERROR: DXVK artifact missing after build: $@" >&2; exit 1; }
+
+# ============================================================
+# dxvk-modern — WineHua DXVK 2.6.2 compatibility profile (x64 + x86)
+# ============================================================
+.PHONY: dxvk-modern
+dxvk-modern: $(DXVK_MODERN_STAMP)
+
+$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(DXVK_MODERN_SOURCE_INPUTS) | $(STAMPS)
+	@echo "=== dxvk modern 2.6 ==="
+	bash $(SCRIPTS)/build_dxvk_modern.sh
+	touch $@
+
+$(DXVK_MODERN_ARTIFACTS): $(DXVK_MODERN_STAMP)
+	@test -s "$@" || { echo "ERROR: DXVK Modern artifact missing after build: $@" >&2; exit 1; }
 ifeq ($(BUILD_GUEST_VULKAN),1)
 ASSEMBLE_GUEST_INPUTS += $(wildcard $(GUEST_VULKAN_SENTINEL))
 endif
+
+# ============================================================
+# vkd3d-proton — x64-only, explicit, default-off 2.6 limited-500K profile
+# ============================================================
+.PHONY: vkd3d-proton
+vkd3d-proton: $(VKD3D_PROTON_STAMP)
+
+$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_INPUTS) | $(STAMPS)
+	@echo "=== vkd3d-proton 2.6 limited-500K ==="
+	bash $(SCRIPTS)/build_vkd3d_proton.sh
+	touch $@
+
+$(VKD3D_PROTON_ARTIFACTS): $(VKD3D_PROTON_STAMP)
+	@test -s "$@" || { echo "ERROR: VKD3D-Proton artifact missing after build: $@" >&2; exit 1; }
 
 # ============================================================
 # 默认目标
@@ -174,8 +221,12 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	if [ "$(BUILD_GUEST_VULKAN)" = "1" ] && [ ! -f "$(GUEST_VULKAN_SENTINEL)" ]; then \
 	    guest_vulkan_ready=0; \
 	fi; \
+	mono_ready=1; \
+	if [ "$(BUILD_WINE_MONO)" = "1" ] && [ ! -s "$(WINE_MONO_SENTINEL)" ]; then \
+	    mono_ready=0; \
+	fi; \
 	if [ -f $@ ] && [ -f $(DEPS_SENTINEL) ] && [ "$$guest_gfx_ready" = "1" ] && \
-	    [ "$$guest_vulkan_ready" = "1" ] && \
+	    [ "$$guest_vulkan_ready" = "1" ] && [ "$$mono_ready" = "1" ] && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_gfx.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_vulkan.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_gnutls.sh" -nt $@ ] && \
@@ -351,6 +402,7 @@ $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(
 		    [ -f "$$$$libs_dir/libxkbcommon.so.0" ] && \
 		    [ -f "$$$$libs_dir/libxml2.so.2" ] && \
 		    [ -f "$$$$libs_dir/libwayland-server.so.0" ] && \
+		    [ -f "$$$$libs_dir/libffi.so.8" ] && \
 		    [ -f "$$$$libs_dir/libwinehua_vtest_server.so" ] && \
 	    ! [ "$(SCRIPTS)/build_native.sh" -nt $$@ ] && \
 	    ! find $(ROOT)/thirdparty/wayland \
@@ -381,9 +433,12 @@ define assemble_rule
 
 assemble-$(1): $$(STAMPS)/$(1)/assemble
 
-$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) \
+$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
+	$(VKD3D_PROTON_ARTIFACTS) \
 	$(ROOT)/smoke/winehua_d3d8_smoke.c \
 	$(ROOT)/smoke/winehua_d3d_switch_cube.c \
+	$(ROOT)/smoke/winehua_gpu_diagnostics.c \
+	$(ROOT)/smoke/winehua_dxvk26_requirements.c \
 	$(ROOT)/smoke/winehua_win32_driver.c \
 	$$(STAMPS)/deps $$(STAMPS)/wine-$(1)-$(WINE_ARCH) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \

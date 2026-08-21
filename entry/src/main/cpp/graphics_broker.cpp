@@ -85,6 +85,7 @@ using VirglInProcessRunFn = int (*)(
     const char*, const char*, const char*, const char*, const char*,
     const char*, const char*, const char*, const char*, const char*,
     const char*);
+using VirglInProcessStopFn = int (*)();
 using VirglInProcessAttachFn = int (*)(uint64_t, uint64_t, uint32_t, OHNativeWindow*);
 using VirglInProcessDetachFn = int (*)(uint64_t);
 using VirglInProcessSetFramePeriodFn = int (*)(uint64_t, uint64_t);
@@ -205,13 +206,15 @@ bool GraphicsBroker::StartVirglInProcessHostLocked(const VirglHostConfig& config
 
     auto runFn = reinterpret_cast<VirglInProcessRunFn>(
         dlsym(virglInProcessHandle_, "WinehuaVirgl_RunConfiguredHost"));
+    virglInProcessStop_ = dlsym(virglInProcessHandle_, "WinehuaVirgl_RequestStop");
     virglInProcessAttach_ = dlsym(virglInProcessHandle_, "WinehuaVirgl_AttachSurfaceTarget");
     virglInProcessDetach_ = dlsym(virglInProcessHandle_, "WinehuaVirgl_DetachSurfaceTarget");
     virglInProcessSetFramePeriod_ = dlsym(
         virglInProcessHandle_, "WinehuaVirgl_SetSurfaceFramePeriod");
     virglInProcessQuery_ = dlsym(virglInProcessHandle_, "WinehuaVirgl_QuerySurfaces");
     virglInProcessReset_ = dlsym(virglInProcessHandle_, "WinehuaVirgl_ResetSurfaces");
-    if (!runFn || !virglInProcessAttach_ || !virglInProcessDetach_ ||
+    if (!runFn || !virglInProcessStop_ ||
+        !virglInProcessAttach_ || !virglInProcessDetach_ ||
         !virglInProcessSetFramePeriod_ || !virglInProcessQuery_ || !virglInProcessReset_)
     {
         const char* error = dlerror();
@@ -245,7 +248,6 @@ bool GraphicsBroker::StartVirglInProcessHostLocked(const VirglHostConfig& config
             config.shadowMergeRanges.c_str(),
             config.descriptorUpdateSerialize.c_str(),
             config.gpuUploadWait.c_str());
-        virglServerRunning_.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> ipcLock(virglIpcMutex_);
             virglIpcConfigured_ = false;
@@ -253,6 +255,8 @@ bool GraphicsBroker::StartVirglInProcessHostLocked(const VirglHostConfig& config
         OH_LOG_WARN(LOG_APP,
                     "[GraphicsBroker] phone in-process VirGL host exited result=%{public}d config=0x%{public}llx",
                     result, static_cast<unsigned long long>(configHash));
+        virglServerRunning_.store(false, std::memory_order_release);
+        virglIpcCondition_.notify_all();
     }).detach();
     return true;
 }
@@ -740,6 +744,7 @@ void GraphicsBroker::Stop()
     bool serverUsesNcp = false;
     bool serverUsesIpc = false;
     bool serverUsesInProcess = false;
+    VirglInProcessStopFn inProcessStopFn = nullptr;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -752,9 +757,8 @@ void GraphicsBroker::Stop()
         serverUsesIpc = virglServerUsesIpc_;
         if (serverUsesInProcess)
         {
-            virglServerPid_ = -1;
-            virglServerUsesInProcess_.store(false, std::memory_order_release);
-            virglServerRunning_.store(false, std::memory_order_release);
+            inProcessStopFn = reinterpret_cast<VirglInProcessStopFn>(
+                virglInProcessStop_);
             virglSocketReady_ = false;
         }
         else
@@ -771,9 +775,59 @@ void GraphicsBroker::Stop()
 
     if (serverUsesInProcess)
     {
-        std::lock_guard<std::mutex> ipcLock(virglIpcMutex_);
-        ResetVirglInProcessSurfacesLocked();
-        if (!socketPath.empty()) unlink(socketPath.c_str());
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::seconds(5);
+        int requestResult = 0;
+
+        /* The broker marks the host running immediately before launching its
+         * thread. Retry until virgl_child has entered its matching run so an
+         * immediate Stop cannot miss that narrow scheduling window. */
+        while (virglServerRunning_.load(std::memory_order_acquire) &&
+               requestResult == 0 &&
+               std::chrono::steady_clock::now() < deadline)
+        {
+            if (inProcessStopFn)
+                requestResult = inProcessStopFn();
+            if (requestResult == 0)
+            {
+                std::unique_lock<std::mutex> ipcLock(virglIpcMutex_);
+                virglIpcCondition_.wait_for(
+                    ipcLock, std::chrono::milliseconds(10), [this]() {
+                        return !virglServerRunning_.load(std::memory_order_acquire);
+                    });
+            }
+        }
+
+        std::unique_lock<std::mutex> ipcLock(virglIpcMutex_);
+        const bool exited = virglIpcCondition_.wait_until(
+            ipcLock, deadline, [this]() {
+                return !virglServerRunning_.load(std::memory_order_acquire);
+            });
+        if (exited)
+            ResetVirglInProcessSurfacesLocked();
+        ipcLock.unlock();
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (exited)
+            {
+                virglServerPid_ = -1;
+                virglServerUsesInProcess_.store(false, std::memory_order_release);
+                virglServerRunning_.store(false, std::memory_order_release);
+                virglServerUsesNcp_ = false;
+                virglServerUsesIpc_ = false;
+                lastError_.clear();
+            }
+            else
+            {
+                lastError_ = "timed out waiting for in-process VirGL host shutdown";
+            }
+        }
+
+        if (exited && !socketPath.empty()) unlink(socketPath.c_str());
+        OH_LOG_INFO(LOG_APP,
+                    "[GraphicsBroker] in-process VirGL stop request=%{public}d exited=%{public}d",
+                    requestResult, exited ? 1 : 0);
         return;
     }
     if (serverUsesIpc)
@@ -1192,7 +1246,10 @@ void GraphicsBroker::StartVirglSocketServerLocked()
                         syncMode.c_str());
             syncMode = "egl-thread";
         }
-        const std::string virglLogPath = "/data/storage/el2/base/cache/winehua_virgl_host.log";
+        const char* requestedLogPath = getenv("WINEHUA_VIRGL_HOST_LOG_PATH");
+        const std::string virglLogPath = requestedLogPath && requestedLogPath[0]
+            ? requestedLogPath
+            : "/data/storage/el2/base/cache/winehua_virgl_host.log";
         const bool phoneMode = PhoneAdapter_IsPhoneMode();
         const char* requestedShadowMode =
             getenv("WINEHUA_VIRGL_HOST_SHADOW_MODE");

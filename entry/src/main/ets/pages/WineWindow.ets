@@ -1,6 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
-import { OH2EVDEV } from '../common/KeyMap';
+import { EVDEV_KEY_ENTER, OH2EVDEV } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 import { WineWindowManager } from '../service/WineWindowManager';
 
@@ -83,6 +83,11 @@ struct WineWindow {
   private twoFingerLastMidX: number = 0;
   private twoFingerLastMidY: number = 0;
   private twoFingerAccumY: number = 0;
+  // 回车 down 时间戳 (毫秒): 软键盘/IME 场景系统吞 KeyDown 只派发 KeyUp,
+  // onKeyEvent 收到无配对 up 时补发完整 down+up, 保证 Wine 触发按键
+  private lastEnterDownTs: number = 0;
+  // 无配对 up 的判定窗口: 窗口内收到 up 视为正常配对的抬起, 不补发
+  private static readonly ENTER_SYNTH_WINDOW_MS: number = 1000;
   private twoFingerAccumX: number = 0;
   private static readonly SCROLL_STEP_PX: number = 40; // 物理像素/滚动步, winewayland.drv 只处理 discrete
   private scrollLogCounter: number = 0;
@@ -363,7 +368,7 @@ struct WineWindow {
         hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE tl=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=0x%{public}x',
           this.toplevelId, event.action, Math.round(px), Math.round(py), btn);
       }
-      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn);
+      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn, event.rawDeltaX, event.rawDeltaY, true);
     })
 
     // -- 键盘事件 --
@@ -378,8 +383,19 @@ struct WineWindow {
         return;
       }
       const pressed = (event.type === KeyType.Down);
-      hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY ohos=%{public}d->evdev=%{public}d %{public}s',
+      hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY tl=%{public}d ohos=%{public}d->evdev=%{public}d %{public}s',
         this.toplevelId, event.keyCode, evdevCode, pressed ? 'DOWN' : 'UP');
+      // 回车补发: 软键盘/IME 场景系统吞掉 KeyDown 只派发 KeyUp (onKeyEvent
+      // 无配对 down) → Wine 收不到按下不触发。收到回车 up 且窗口内无 down
+      // 记录时补发完整 down+up (sendFunctionKey 注入已移除, 统一在此兜底)
+      if (evdevCode === EVDEV_KEY_ENTER) {
+        if (pressed) {
+          this.lastEnterDownTs = Date.now();
+        } else if (Date.now() - this.lastEnterDownTs > WineWindow.ENTER_SYNTH_WINDOW_MS) {
+          hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] ENTER SYNTH down (missing down)');
+          testNapi.sendKeyEvent(this.toplevelId, EVDEV_KEY_ENTER, true);
+        }
+      }
       testNapi.sendKeyEvent(this.toplevelId, evdevCode, pressed);
     })
 

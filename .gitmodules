@@ -47,6 +47,13 @@
 	path = thirdparty/dxvk
 	url = https://github.com/winehua/dxvk.git
 	branch = dxvk-legacy-1.10.3
+[submodule "thirdparty/dxvk-modern"]
+	path = thirdparty/dxvk-modern
+	url = https://github.com/winehua/dxvk.git
+	branch = dxvk-modern-2.6
+[submodule "thirdparty/vkd3d-proton"]
+	path = thirdparty/vkd3d-proton
+	url = https://github.com/HansKristian-Work/vkd3d-proton.git
 [submodule "thirdparty/gmp"]
 	path = thirdparty/gmp
 	url = https://github.com/alisw/GMP.git

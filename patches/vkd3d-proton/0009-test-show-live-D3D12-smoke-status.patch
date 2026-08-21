@@ -1,0 +1,97 @@
+From 16d986c08e0df2dafb4df7a9ea966fb00df03bb8 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 20:20:00 +0800
+Subject: [PATCH] test: show live D3D12 smoke status
+
+Keep queried capabilities visibly separate from the core operations that the
+smoke actually executes. The final title deliberately asks for a physical
+display check because a successful DXGI Present return cannot prove that the
+user saw the expected pixels.
+---
+ tests/vkd3d_graphics_smoketest.c | 57 ++++++++++++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/tests/vkd3d_graphics_smoketest.c b/tests/vkd3d_graphics_smoketest.c
+index 5a0a930..1dc4343 100644
+--- a/tests/vkd3d_graphics_smoketest.c
++++ b/tests/vkd3d_graphics_smoketest.c
+@@ -194,6 +194,55 @@ static void graphics_smoke_set_stage(struct graphics_smoke *smoke, const char *s
+     graphics_smoke_checkpoint(smoke, "RUNNING", stage);
+ }
+ 
++static const char *graphics_smoke_feature_level_name(D3D_FEATURE_LEVEL level)
++{
++    switch (level)
++    {
++        case D3D_FEATURE_LEVEL_12_1:
++            return "12_1";
++        case D3D_FEATURE_LEVEL_12_0:
++            return "12_0";
++        case D3D_FEATURE_LEVEL_11_1:
++            return "11_1";
++        case D3D_FEATURE_LEVEL_11_0:
++            return "11_0";
++        default:
++            return "?";
++    }
++}
++
++static const char *graphics_smoke_root_signature_name(D3D_ROOT_SIGNATURE_VERSION version)
++{
++    switch (version)
++    {
++        case D3D_ROOT_SIGNATURE_VERSION_1_1:
++            return "1.1";
++        case D3D_ROOT_SIGNATURE_VERSION_1_0:
++            return "1.0";
++        default:
++            return "?";
++    }
++}
++
++static void graphics_smoke_update_window_title(struct graphics_smoke *smoke,
++        const char *core_state)
++{
++    uint64_t elapsed_ms = smoke->render_start_ms
++            ? graphics_smoke_now_ms() - smoke->render_start_ms : 0;
++    double fps = elapsed_ms
++            ? (double)smoke->rendered_frames * 1000.0 / (double)elapsed_ms : 0.0;
++    char title[256];
++
++    snprintf(title, sizeof(title),
++            "D3D12 %s | %u/%u | %.1f FPS | queried FL%s SM%u.%u RS%s",
++            core_state, smoke->rendered_frames, smoke->target_frames, fps,
++            graphics_smoke_feature_level_name(smoke->max_feature_level),
++            (unsigned int)smoke->shader_model >> 4,
++            (unsigned int)smoke->shader_model & 0xf,
++            graphics_smoke_root_signature_name(smoke->root_signature_version));
++    SetWindowTextA(smoke->window->hwnd, title);
++}
++
+ static bool graphics_smoke_result(struct graphics_smoke *smoke, bool passed)
+ {
+     FILE *file = stderr;
+@@ -1075,6 +1124,13 @@ static void graphics_smoke_render_frame(struct demo_window *window, void *user_d
+     fprintf(stderr, "VKD3D_GRAPHICS_SMOKE FRAME: %u/%u.\n",
+             smoke->rendered_frames, smoke->target_frames);
+     graphics_smoke_checkpoint(smoke, "RUNNING", "present");
++    if (smoke->rendered_frames == 1u || !(smoke->rendered_frames % 30u) ||
++            smoke->rendered_frames == smoke->target_frames)
++    {
++        graphics_smoke_update_window_title(smoke,
++                smoke->rendered_frames == smoke->target_frames
++                ? "CORE PASS; DISPLAY CHECK" : "CORE RUN");
++    }
+ 
+     if (smoke->rendered_frames == smoke->target_frames)
+     {
+@@ -1392,6 +1448,7 @@ int main(int argc, char **argv)
+     fprintf(stderr, "VKD3D_GRAPHICS_SMOKE DEVICE: initialized.\n");
+     smoke.render_start_ms = graphics_smoke_now_ms();
+     smoke.startup_ms = smoke.render_start_ms - smoke.start_ms;
++    graphics_smoke_update_window_title(&smoke, "CORE READY");
+     graphics_smoke_run_loop(&smoke);
+     passed = smoke.rendered_frames == smoke.target_frames && !smoke.failure_hr &&
+             smoke.feature_query_verified && smoke.buffer_copy_verified &&
+-- 
+2.51.1.windows.1

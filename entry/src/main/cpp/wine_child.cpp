@@ -207,6 +207,20 @@ static const char *active_wine_prefix()
     return prefix && prefix[0] ? prefix : WINE_PREFIX;
 }
 
+static void refresh_wine_session_paths()
+{
+    const char *prefix = active_wine_prefix();
+    std::string brokerPath(prefix);
+    const size_t slash = brokerPath.find_last_of('/');
+
+    setenv("XDG_RUNTIME_DIR", prefix, 1);
+    if (slash == std::string::npos)
+        brokerPath = ".wine_broker";
+    else
+        brokerPath.replace(slash + 1, std::string::npos, ".wine_broker");
+    setenv("PROCESSBROKER", brokerPath.c_str(), 1);
+}
+
 static bool wine_directory_to_native(const char *path, const char *homeDir, std::string *out)
 {
     std::string dir = trim_quotes(path);
@@ -321,17 +335,9 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
 
     if (homeDir && homeDir[0])
         setenv("HOME", homeDir, 1);
-    setenv("XDG_RUNTIME_DIR", WINE_PREFIX, 1);
     setenv("WAYLAND_DISPLAY", "wine-wayland", 1);
     setenv("WINEPREFIX", WINE_PREFIX, 1);
-    // PROCESSBROKER: appspawn 子进程不继承父 env，从 WINEPREFIX 推导 broker socket 路径，
-    // 保证 wineserver / wineboot 等所有子进程都能拿到，与主进程 napi_init.cpp 中的值一致。
-    {
-        char brokerPath[512];
-        snprintf(brokerPath, sizeof(brokerPath), "%s/../.wine_broker",
-                 getenv("WINEPREFIX"));
-        setenv("PROCESSBROKER", brokerPath, 1);
-    }
+    refresh_wine_session_paths();
     setenv("WINEDATADIR", (shareDir + "/wine").c_str(), 1);
     setenv("XKB_CONFIG_ROOT", (shareDir + "/X11/xkb").c_str(), 1);
     // WINEBINDIR/WINEUNIXDIR 覆盖 init_paths() 中基于 dladdr(ntdll.so) 推算的错误路径
@@ -367,7 +373,6 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     setenv("PATH", (std::string("/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:")
                     + binDir + "/" WINE_PE_SUBDIR ":" + binDir + "/i386-windows:" + binDir).c_str(), 1);
     setenv("TMPDIR", WINE_TMPDIR, 1);
-    setenv("XDG_RUNTIME_DIR", WINE_PREFIX, 1);
     std::string midiSoundfontPath = std::string(binDir) + "/../audio/winehua-gm.sf2";
     setenv("MIDI_SOUNDFONT_PATH", midiSoundfontPath.c_str(), 1);
     setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
@@ -681,6 +686,10 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+    // WINEPREFIX is a per-session override. Derive paths only after the final
+    // value is known, and avoid a "prefix/../" path whose intermediate prefix
+    // may not exist after a clean install.
+    refresh_wine_session_paths();
 
     if (!hostElfMode) {
         reassert_arch_wine_runtime_env(binDir);
@@ -778,6 +787,9 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     int errPipe[2];
     pipe(errPipe);
+    const char* automation = getenv("WINEHUA_AUTOMATION");
+    if (automation && !strcmp(automation, "1"))
+        dup2(errPipe[1], STDOUT_FILENO);
     dup2(errPipe[1], STDERR_FILENO);
     close(errPipe[1]);
     mkdir(WINE_LOG_DIR, 0755);

@@ -17,7 +17,46 @@ source "$SCRIPT_DIR/env.sh"
 # (build_one 每次 rm -rf 重建但 STAGING 不清空) → gnutls configure 链接到旧架构 nettle
 # 报 "Nettle lacks rsa_sec_decrypt"。master 仅 x86_64 无此问题; feature/arm64 引入 aarch64 后必现。
 STAGING="$BUILD_DIR/gnutls_staging-$WINE_ARCH"
-GNULIB_DIR="$ROOT/thirdparty/gnutls/gnulib"   # gnutls 的 gnulib submodule, 共享给 libtasn1
+TARBALL_DIR="$BUILD_DIR/gnutls_tarballs"
+
+# release tarball 源: 自带 configure/Makefile.in, 免 gnulib bootstrap。
+# git 树的 bootstrap 依赖 gnulib 且与 libtasn1 等库存在版本错配
+# (src/gl/lib/malloc.c.diff 打不上, 且 build-aux 生成不全/软链断链),
+# fresh clone 下无法一次构建成功 → 改用同版本官方 release tarball,
+# 语义等价且可复现。
+fetch_tarball() {
+    local name="$1" primary="$2" fallback="$3"
+    local out="$TARBALL_DIR/$name"
+    local archive="$TARBALL_DIR/$(basename "$primary")"
+    # 幂等: configure 就位才算就绪 (防上次解压中断留下不完整目录被误判)
+    if [ -f "$out/configure" ]; then return 0; fi
+    mkdir -p "$TARBALL_DIR"
+    if ! curl -fL --retry 3 -o "$archive" "$primary"; then
+        [ -n "$fallback" ] || err "下载 $name 失败: $primary"
+        log "--- $name 首选源失败, 回退: $fallback ---"
+        curl -fL --retry 3 -o "$archive" "$fallback" || err "下载 $name 失败: $fallback"
+    fi
+    case "$archive" in
+        *.tar.xz) tar -xJf "$archive" -C "$TARBALL_DIR" ;;
+        *) tar -xzf "$archive" -C "$TARBALL_DIR" ;;
+    esac
+    # GNU release tarball 顶层目录即 <name>-<version>, 直接推导;
+    # 不再次 tar -t (xz 归档需 -tJ, 避免误用 gzip 报错)
+    if [ ! -d "$out" ]; then
+        local base="${archive##*/}"
+        local top="${base%.tar.*}"
+        [ -n "$top" ] && [ -d "$TARBALL_DIR/$top" ] && mv "$TARBALL_DIR/$top" "$out"
+    fi
+    log "--- $name 就绪: $out ---"
+}
+
+# GNU 库首选国内 mirror (Ustc, ~1MB/s), 官方 ftp.gnu.org 作 fallback;
+# gnutls 无 GNU mirror, 用 gnupg.org 官方源 (实测速度快)
+fetch_tarball gmp "https://mirrors.ustc.edu.cn/gnu/gmp/gmp-6.2.1.tar.xz" "https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz"
+fetch_tarball nettle "https://mirrors.ustc.edu.cn/gnu/nettle/nettle-3.10.2.tar.gz" "https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz"
+fetch_tarball libtasn1 "https://mirrors.ustc.edu.cn/gnu/libtasn1/libtasn1-4.20.0.tar.gz" "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.20.0.tar.gz"
+fetch_tarball libunistring "https://mirrors.ustc.edu.cn/gnu/libunistring/libunistring-1.3.tar.xz" "https://ftp.gnu.org/gnu/libunistring/libunistring-1.3.tar.xz"
+fetch_tarball gnutls "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.3.tar.xz" ""
 
 # 幂等跳过: 5 个库的关键产物全部就位
 idempotent_done() {
@@ -63,33 +102,10 @@ stage_pc() {
     cp "$STAGING"/lib/pkgconfig/"$1" "$SYSROOT_EXT_PC/" 2>/dev/null || true
 }
 
-# configure 生成 (git 树无 configure 时才跑; bootstrap 只跑一次)
-bootstrap_source() {
-    local src="$1" mode="$2"
-    [ -f "$src/configure" ] && return 0
-    log "--- 生成 $src configure ($mode) ---"
-    # 规避 NFS clock skew (autotools 生成文件 mtime 可能比源码旧 → configure 报错)
-    find "$src" -type f -exec touch {} + 2>/dev/null || true
-    case "$mode" in
-        nettle)
-            (cd "$src" && ./.bootstrap)
-            ;;
-        autogen)
-            (cd "$src" && GNULIB_SRCDIR="$GNULIB_DIR" ./autogen.sh)
-            ;;
-        gnulib)
-            # --no-git: 不递归 clone/update submodule (devel/libtasn1 等无用子模块)
-            (cd "$src" && ./bootstrap --skip-po --no-git --gnulib-srcdir="$GNULIB_DIR")
-            ;;
-    esac
-    find "$src" -type f -exec touch {} + 2>/dev/null || true
-}
-
 build_one() {
-    local name="$1" src="$2" bootstrap="$3"; shift 3
+    local name="$1" src="$2"; shift 2
     local build="$BUILD_DIR/${name}_build"
     log "--- 构建 $name ---"
-    bootstrap_source "$src" "$bootstrap"
     rm -rf "$build"
     mkdir -p "$build"
     cd "$build"
@@ -117,13 +133,13 @@ build_one() {
             ;;
         gnutls)
             # ASN.1 tab 生成需要 asn1Parser (交叉二进制, 宿主不可运行)。
-            # 复用同版本 (3.8.3) CrossOver release 树的预生成文件 → build 树,
-            # touch 保证比 .asn 新, 防止 make 重新生成。
+            # release tarball 自带同版本 (3.8.3) 预生成 tab 文件 (mtime
+            # 比 .asn 新) → 复制到 build 树, touch 保证比 .asn 新, 防止
+            # make 用交叉 asn1Parser 重新生成。
             mkdir -p "$build/lib"
             for t in gnutls_asn1_tab.c pkix_asn1_tab.c; do
-                if [ -f "$ROOT/.temp/crossover/gnutls/gnutls/lib/$t" ] \
-                   && [ ! -f "$build/lib/$t" ]; then
-                    cp "$ROOT/.temp/crossover/gnutls/gnutls/lib/$t" "$build/lib/$t"
+                if [ ! -f "$build/lib/$t" ] && [ -f "$src/lib/$t" ]; then
+                    cp "$src/lib/$t" "$build/lib/$t"
                 fi
                 [ -f "$build/lib/$t" ] && touch "$build/lib/$t"
             done
@@ -146,28 +162,28 @@ build_one() {
 }
 
 # ── 1. gmp (nettle 的 bignum 后端) ──
-build_one gmp "$ROOT/thirdparty/gmp" none \
+build_one gmp "$TARBALL_DIR/gmp" \
     --disable-assembly --enable-cxx=no --disable-dependency-tracking
 stage_libs libgmp
 stage_headers gmp.h
 stage_pc gmp.pc
 
 # ── 2. libtasn1 (gnutls 的 ASN.1 解析) ──
-build_one libtasn1 "$ROOT/thirdparty/libtasn1" gnulib \
+build_one libtasn1 "$TARBALL_DIR/libtasn1" \
     --disable-doc --disable-dependency-tracking --disable-tests
 stage_libs libtasn1
 stage_headers libtasn1.h
 stage_pc libtasn1.pc
 
 # ── 3. libunistring (gnutls 的字符串/IDN 依赖) ──
-build_one libunistring "$ROOT/thirdparty/libunistring" autogen \
+build_one libunistring "$TARBALL_DIR/libunistring" \
     --disable-dependency-tracking --without-libiconv-prefix
 stage_libs libunistring
 stage_headers unistring
 stage_pc libunistring.pc
 
 # ── 4. nettle (+hogweed, gnutls 的 crypto 后端) ──
-build_one nettle "$ROOT/thirdparty/nettle" nettle \
+build_one nettle "$TARBALL_DIR/nettle" \
     --disable-documentation --disable-openssl --disable-assembler \
     --disable-dependency-tracking
 stage_libs libnettle
@@ -177,7 +193,7 @@ stage_pc nettle.pc
 stage_pc hogweed.pc
 
 # ── 5. gnutls (schannel 的 TLS 后端) ──
-build_one gnutls "$ROOT/thirdparty/gnutls" gnulib \
+build_one gnutls "$TARBALL_DIR/gnutls" \
     --disable-doc --disable-tools --disable-tests --disable-full-test-suite --disable-gtk-doc --disable-cxx \
     --disable-guile --disable-valgrind-tests --disable-code-coverage \
     --without-p11-kit --without-tpm --without-brotli --without-zstd \

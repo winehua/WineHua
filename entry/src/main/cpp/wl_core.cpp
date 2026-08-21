@@ -11,6 +11,7 @@
 #include "input_manager.h"
 #include "plugin_manager.h"
 #include "pointer_extras.h"
+#include "text_input.h"
 #include "compositor/compositor_utils.h"
 #include "compositor/compositor_constants.h"
 #include "include/viewporter-server-protocol.h"
@@ -461,6 +462,39 @@ static void CopyShmContentTight(const ShmCommitInfo& fi, std::vector<uint8_t>& d
     }
 }
 
+// wp_viewport destination is the logical surface size. Wine may attach an
+// aligned SHM buffer whose source rectangle is smaller than that destination
+// (for example 640 pixels scaled to a 652-pixel decorated window). Preserve
+// all BGRA channels while scaling so ARGB window masks keep their alpha.
+static void CopyToplevelContent(const SurfaceData* sd, ShmCommitInfo& fi,
+                                std::vector<uint8_t>& dst) {
+    const int sourceW = fi.contentW;
+    const int sourceH = fi.contentH;
+    const int logicalW = sd->vpDstW > 0 ? sd->vpDstW : sourceW;
+    const int logicalH = sd->vpDstH > 0 ? sd->vpDstH : sourceH;
+
+    if (logicalW == sourceW && logicalH == sourceH) {
+        CopyShmContentTight(fi, dst);
+    } else {
+        dst.resize(static_cast<size_t>(logicalW) * logicalH * 4);
+        const uint8_t* source = fi.src + fi.contentOffY * fi.stride + fi.contentOffX * 4;
+        for (int y = 0; y < logicalH; ++y) {
+            const int sourceY = std::min(sourceH - 1,
+                static_cast<int>((static_cast<int64_t>(y) * sourceH) / logicalH));
+            const uint8_t* sourceRow = source + static_cast<size_t>(sourceY) * fi.stride;
+            uint8_t* destinationRow = dst.data() + static_cast<size_t>(y) * logicalW * 4;
+            for (int x = 0; x < logicalW; ++x) {
+                const int sourceX = std::min(sourceW - 1,
+                    static_cast<int>((static_cast<int64_t>(x) * sourceW) / logicalW));
+                std::memcpy(destinationRow + x * 4, sourceRow + sourceX * 4, 4);
+            }
+        }
+    }
+
+    fi.contentW = logicalW;
+    fi.contentH = logicalH;
+}
+
 // 紧凑拷贝全 buffer (subsurface 帧 staging / deprecated 全局帧缓冲用)
 static void CopyShmBufferTight(const ShmCommitInfo& fi, std::vector<uint8_t>& dst) {
     const int rowBytes = fi.bufW * 4;
@@ -577,7 +611,9 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     toplevelMgr_.MapToplevelSurface(sd->toplevelId, surfRes);
     auto lk = toplevelMgr_.Lock();
     auto& st = toplevelMgr_.EnsureToplevelLocked(sd->toplevelId);  // 首次 commit 在此建档
-    CopyShmContentTight(fi, st.FrameData());
+    CopyToplevelContent(sd, fi, st.FrameData());
+    sd->w = fi.contentW;
+    sd->h = fi.contentH;
     st.SetContentSize(fi.contentW, fi.contentH);
     if (sd->toplevelId == desktopRootToplevelId_) {
         desktopCompositor_.IncrementDesktopRootFrameSerial();
@@ -1115,4 +1151,6 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
     // dinput 老游戏的指针扩展 (warp 回中/指针约束; relative 故意不注册,
     // 见 pointer_extras.h 头注释)
     PointerExtras::GetInstance()->Register(display);
+    // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
+    TextInput::GetInstance()->Register(display);
 }

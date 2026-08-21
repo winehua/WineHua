@@ -22,6 +22,8 @@ PCRE2_SRC="$ROOT/thirdparty/pcre2"
 # 直接用它, 无需外部 .temp/crossover staging。
 BASE_SRC="$ROOT/thirdparty/gstreamer/subprojects/gst-plugins-base"
 GOOD_SRC="$ROOT/thirdparty/gstreamer/subprojects/gst-plugins-good"
+BAD_SRC="$ROOT/thirdparty/gstreamer/subprojects/gst-plugins-bad"
+UGLY_SRC="$ROOT/thirdparty/gstreamer/subprojects/gst-plugins-ugly"
 LIBAV_SRC="$ROOT/thirdparty/gstreamer/subprojects/gst-libav"
 FFMPEG_SRC="$BUILD_DIR/ffmpeg_src"
 
@@ -244,8 +246,9 @@ for pc in gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.
 done
 
 # ── 5. gst-plugins-good (demuxer: qtdemux/matroskademux/typefind 等) ──
+# 幂等以 qtdemux 所在库 libgstisomp4.so 为准 (无独立 libgstqtdemux.so)
 if [ ! -d "$GST_LIBDIR/gstreamer-1.0" ] || \
-   [ ! -f "$GST_LIBDIR/gstreamer-1.0/libgstqtdemux.so" ]; then
+   [ ! -f "$GST_LIBDIR/gstreamer-1.0/libgstisomp4.so" ]; then
     log "--- 构建 gst-plugins-good ---"
     build="$BUILD_DIR/gst_good_build"
     rm -rf "$build"
@@ -267,6 +270,58 @@ if [ ! -d "$GST_LIBDIR/gstreamer-1.0" ] || \
     stage_pcs
 else
     log "gst-plugins-good 已就绪，跳过"
+fi
+
+# ── 5b. gst-plugins-bad (h264parse 等视频解析插件) ──
+# H.264 (AVC) in MP4: qtdemux 输出 video/x-h264(stream-format=avc)，需
+# h264parse 转 byte-stream 后 avdec_h264 (libav) 才能解码。缺它会导致
+# decodebin 协商失败 → caps not fixed → 播放失败。
+# 用 -Dauto_features=disabled + 显式 enabled 只编无外部依赖的插件
+# (h264parse 是 videoparsers 的元素, 插件文件名为 libgstvideoparsersbad.so)。
+if [ -d "$BAD_SRC" ] && \
+   [ ! -f "$GST_LIBDIR/gstreamer-1.0/libgstvideoparsersbad.so" ]; then
+    log "--- 构建 gst-plugins-bad (h264parse 等) ---"
+    build="$BUILD_DIR/gst_bad_build"
+    rm -rf "$build"
+    # CUDA 库 (gst-libs/gst/cuda) 用 C++ 编译, OHOS musl 交叉链接缺 libstdc++
+    # 符号; 无 meson option 可禁用。构建期临时 sed 注释 (幂等, 不污染子模块
+    # 提交; 若子模块工作树被还原, 本 sed 下次构建自动重新应用)。
+    sed -i "s/^subdir('cuda')/# subdir('cuda') # disabled: musl C++ link/" \
+        "$BAD_SRC/gst-libs/gst/meson.build"
+    meson setup "$build" "$BAD_SRC" --cross-file "$(gen_cross_file)" \
+        --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos --wrap-mode=nofallback \
+        -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \
+        -Dauto_features=disabled -Dgpl=disabled -Dexamples=disabled -Dtests=disabled \
+        -Dvideoparsers=enabled -Dasfmux=enabled \
+        -Dmpegdemux=enabled -Dmpegtsdemux=enabled -Dmidi=enabled -Daiff=enabled
+    meson compile -C "$build" -j "$JOBS"
+    DESTDIR=/ meson install -C "$build"
+    stage_pcs
+    log "gst-plugins-bad 构建完成 (h264parse 等)"
+else
+    log "gst-plugins-bad 已就绪或不可用，跳过"
+fi
+
+# ── 5c. gst-plugins-ugly (asfdemux: WMV/ASF 播放) ──
+# 吉里吉里等游戏的 MV 常为 WMV (ASF 容器)。ASF demuxer (asfdemux) 在
+# gst-plugins-ugly (rank=SECONDARY, decodebin 自动选用), 不在 bad。
+# bad 的 asfparse (rank=NONE) 只做 parse 不解 ES, decodebin 不会用它。
+if [ -d "$UGLY_SRC" ] && \
+   [ ! -f "$GST_LIBDIR/gstreamer-1.0/libgstasf.so" ]; then
+    log "--- 构建 gst-plugins-ugly (asfdemux) ---"
+    build="$BUILD_DIR/gst_ugly_build"
+    rm -rf "$build"
+    meson setup "$build" "$UGLY_SRC" --cross-file "$(gen_cross_file)" \
+        --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos --wrap-mode=nofallback \
+        -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \
+        -Dauto_features=disabled -Dgpl=disabled -Dnls=disabled -Dtests=disabled -Ddoc=disabled \
+        -Dasfdemux=enabled
+    meson compile -C "$build" -j "$JOBS"
+    DESTDIR=/ meson install -C "$build"
+    stage_pcs
+    log "gst-plugins-ugly 构建完成 (asfdemux)"
+else
+    log "gst-plugins-ugly 已就绪或不可用，跳过"
 fi
 
 # ── 6. FFmpeg + gst-libav (通用解码: H.264/VP9/AAC 等) ──

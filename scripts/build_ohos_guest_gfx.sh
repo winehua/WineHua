@@ -241,7 +241,7 @@ read_pkgconfig_version() {
 }
 
 is_native_elf() {
-    local target="$1"
+    local target="$(realpath "$1")"
     # If the file is an ELF binary (not .exe), it can run natively on Linux
     [ -f "$target" ] && file -b "$target" 2>/dev/null | grep -qi 'ELF'
 }
@@ -336,7 +336,7 @@ setup_build_env() {
     fi
     [ -x "$WAYLAND_SCANNER" ] || err "wayland-scanner not found; install wayland-dev or set WAYLAND_SCANNER"
 
-    if [ "$HOST_OS" = "Darwin" ]; then
+    if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
         export PKG_CONFIG_PATH="$HOST_TOOLS_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
         export PKG_CONFIG_PATH_FOR_BUILD="$HOST_TOOLS_DIR/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
     fi

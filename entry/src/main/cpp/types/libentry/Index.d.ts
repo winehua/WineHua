@@ -2,11 +2,17 @@ export const startServer: (sockPath: string) => boolean;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
   homeDir: string, automationMode?: boolean, prefixMode?: string, d3dBackend?: string,
-  wineLang?: string) => number;
+  dxvkBackend?: string, wineLang?: string) => number;
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;
 export const setToplevelCallback: (cb: (id: number, event: string, data: string) => void) => void;
+export const setImeCallback: (cb: (active: number, x: number, y: number, w: number, h: number) => void) => void;
+export const registerHostWindow: (windowId: number) => void;
+export const setPointerLockCallback: (cb: (locked: boolean) => void) => void;
+export const sendImeCommit: (text: string) => void;
+export const sendImePreedit: (text: string, start: number, end: number) => void;
+export const imeBackspace: () => void;
 export const setPendingToplevel: (id: number) => void;
 export const getCurrentToplevelId: () => number;
 export const destroyToplevel: (id: number) => void;
@@ -19,6 +25,7 @@ export interface WineProgramOptions {
   workingDirectory: string;
   prefixMode: string;
   d3dBackend: string;
+  dxvkBackend?: string;
   presentBackend: string;
   automationMode: boolean;
 }
@@ -54,6 +61,8 @@ export const queryWineProcess: (pid: number) => WineProcessHandle;
 export const terminateWineProcess: (pid: number) => boolean;
 export const checkWinePrefix: (prefixMode?: string) => boolean;
 export const resetWinePrefix: (prefixMode?: string) => boolean;
+export const stageExperimentPayload: (experimentId: string, names: string[], hashes: string[],
+  prefixMode: string, sourceUrl?: string) => boolean;
 export const runHostVulkanProbe: (surfaceId: bigint, runId: string) => boolean;
 export const stopHostVulkanProbe: () => boolean;
 export const setOutputSize: (w: number, h: number) => void;
@@ -65,7 +74,7 @@ export const raiseToplevel: (toplevelId: number) => void;
 export const createRenderer: (toplevelId: number, surfaceId: BigInt) => void;
 export const resizeRenderer: (toplevelId: number, width: number, height: number) => void;
 export const destroyRenderer: (toplevelId: number) => void;
-export const sendPointerEvent: (toplevelId: number, action: number, px: number, py: number, button: number) => void;
+export const sendPointerEvent: (toplevelId: number, action: number, px: number, py: number, button: number, rawDeltaX?: number, rawDeltaY?: number, fromMouse?: boolean) => void;
 export const sendKeyEvent: (toplevelId: number, evdevCode: number, pressed: boolean) => void;
 export const sendScrollEvent: (toplevelId: number, axis: number, value: number, scrollStep: number, px: number, py: number) => void;
 export const notifyToplevelResize: (toplevelId: number, w: number, h: number) => void;

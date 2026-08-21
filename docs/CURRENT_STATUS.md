@@ -35,9 +35,9 @@ Host-broker 音频引擎：Wine 侧通过 IPC + ring buffer 传输 PCM，宿主�
 
 guest Mesa (virpipe Gallium driver) → Unix socket → virgl_test_server (NCP 子进程) → virglrenderer → host EGL。zero-copy 显示路径已落地（`virgl_texture+surface_queue+external_oes`，见 [OPENGL_VIRGL_DESIGN.md](OPENGL_VIRGL_DESIGN.md)）。DXVK 稳定后 WineD3D/VirGL 为显式 fallback。
 
-### 8. DXVK 1.10.3 stable baseline ✅
+### 8. DXVK profiles ✅
 
-guest DXVK 1.10.3 (D3D11) → Wine Vulkan → Mesa Venus (vtest) → virglrenderer Venus → host Vulkan present。产品 profile: `shadow-precise-dirty-ring-inline-upload-coverage-sort`。910/920 双设备 `dxvk` suite 全 PASS（FE 11.0、BC 采样、MSAA、compute/UAV、675 帧 cube 序列 `angleRegressions=0`）。详见 [PHASE2_DXVK_STATUS_MEMO.md](PHASE2_DXVK_STATUS_MEMO.md)。
+guest DXVK (D3D11) → Wine Vulkan → Mesa Venus (vtest) → virglrenderer Venus → host Vulkan present。Maleoon 920 使用已经完成 WineHua 适配并经过真实 D3D11 游戏验证的 DXVK 2.6.2，其已观察兼容性不低于 1.10.x；DXVK 1.10.3 保留为 910/Vulkan 1.2 设备的稳定回退。DXVK 选档与 VKD3D 选档相互独立，不能因 VKD3D descriptor 门槛而降低 920 的 D3D11 路径。详见 [DXVK_MODERN_UPGRADE_READINESS.md](DXVK_MODERN_UPGRADE_READINESS.md)。
 
 ### 9. Compositor 状态重构完成 ✅
 
@@ -53,7 +53,7 @@ NCP 子进程 (appspawn)
     ├─ arm64: dlopen("box64.so") → box64_hmos_main() → Wine x86_64 ELF
     └─ x86_64: dlopen("ntdll.so") → __wine_main()
     └─ 渲染路径（D3D11 应用）:
-         DXVK 1.10.3 (guest) → winevulkan → Mesa Venus → vtest socket
+         DXVK 2.6.2 (920) / 1.10.3 fallback (guest) → winevulkan → Mesa Venus → vtest socket
          → virglrenderer Venus → host Vulkan → venus_surface_presenter → XComponent
     └─ 渲染路径（OpenGL 应用, fallback）:
          Wine OpenGL → guest Mesa virpipe → vtest socket
@@ -132,3 +132,39 @@ make NATIVE_ARCH=x86_64
 - [PHASE2_DXVK_STATUS_MEMO.md](./PHASE2_DXVK_STATUS_MEMO.md) — DXVK 活文档
 - [BUILD_GUIDE.md](./BUILD_GUIDE.md) — 构建指南
 - [.claude/rules/submodule-workflow.md](../.claude/rules/submodule-workflow.md) — Submodule 管理方案
+
+
+### 10. VKD3D-Proton 2.6 limited-500K official D3D12 profile
+
+The recorded Maleoon 910 qualification is now integrated as the product D3D12
+default. The qualified 910 session loads VKD3D-Proton 2.6 for d3d12.dll and
+DXVK 1.10.3 for d3d11.dll and dxgi.dll because 910 cannot admit DXVK 2.6.2.
+This is not a version dependency: on 920, D3D11 remains on the adapted,
+game-validated DXVK 2.6.2 path while D3D12 independently uses the qualified
+VKD3D profile. The VKD3D profile is x64-only, caps shader-visible resource
+descriptors at 500,000, and does not advertise Query Meta support. The official
+VKD3D triangle and gears demos rendered successfully on 910, alongside the
+descriptor, Gate C, BDA, multi-queue, physical-present, and DXVK regression
+evidence.
+
+Normal UI and `game` launches inherit this mixed product default and use the
+qualified precise mapped-memory contract without Gate C, ring-notify, or
+persistent-map trace output. The manual DX12 smoke and automated Gate C runs
+select `shadow-precise-direct-fence` explicitly when those diagnostics are
+required.
+
+A capability, host-driver, Mesa/Venus, or Wine runtime change requires the
+capability audit and real-device gates to be repeated before shipping a new
+runtime payload.
+
+### Revalidation checkpoint (2026-08-06)
+
+The persistent-map synchronization change requires a fresh Gate C validation
+before real game testing. Two clean uninstall/reinstall runs on Maleoon 910
+reached the readback compare stage but failed with
+`buffer_readback_mismatch` (`offset=0 expected=11 actual=0`); no frame count was
+credited. The VKD3D `triangle.exe` and `gears.exe` demos still rendered, and the
+clean-prefix DXVK Legacy x86/x64 plus cube regression remained passing. The
+readback synchronization direction is therefore still under investigation,
+and the product must remain on the isolated branch with no game qualification
+or remote push until accurate smoke passes again.

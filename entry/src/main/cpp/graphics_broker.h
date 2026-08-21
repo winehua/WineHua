@@ -131,6 +131,7 @@ private:
     std::atomic<bool> virglServerRunning_{false};
     std::atomic<bool> vulkanPresentMode_{false};
     void* virglInProcessHandle_ = nullptr;
+    void* virglInProcessStop_ = nullptr;
     void* virglInProcessAttach_ = nullptr;
     void* virglInProcessDetach_ = nullptr;
     void* virglInProcessSetFramePeriod_ = nullptr;

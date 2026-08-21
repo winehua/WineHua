@@ -3,9 +3,12 @@ name: Build HAP (arm64-v8a, unsigned)
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
+      - feature/vkd3d-capability-probe
     tags:
-      - 'v*'                    # v0.1.0, v1.2.3-rc1 等, 推 tag 会额外触发 release job
+      - 'dev-*'                 # 开发版 (直接发布, 不占 Latest 徽章)
+      - 'rc-*'                  # RC 版 (占 Latest 徽章)
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -16,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag (留空则只构建不发布)'
+        description: 'Release tag (dev-xx / rc-xx, 留空则只构建不发布)'
         required: false
         type: string
 
@@ -65,6 +68,20 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # actions/checkout recursive + fetch-depth:1 有时不会把 vkd3d-proton
+      # 的嵌套 Khronos/dxil-spirv 子模块落到工作树, 构建脚本会在 1 秒内退出.
+      - name: Ensure nested graphics submodules
+        run: |
+          set -euo pipefail
+          git submodule update --init --recursive
+          test -f thirdparty/dxvk-modern/include/vulkan/include/vulkan/vulkan.h
+          test -f thirdparty/dxvk-modern/include/spirv/include/spirv/unified1/spirv.hpp
+          test -f thirdparty/vkd3d-proton/subprojects/Vulkan-Headers/include/vulkan/vulkan.h
+          test -f thirdparty/vkd3d-proton/subprojects/SPIRV-Headers/include/spirv/unified1/spirv.h
+          test -f thirdparty/vkd3d-proton/subprojects/dxil-spirv/meson.build
+          git -C thirdparty/vkd3d-proton submodule status
+          git -C thirdparty/vkd3d-proton status --porcelain --untracked-files=no --ignore-submodules=dirty || true
 
       # ---- 绕过签名: 用 stub 替换 sign.py ----
       # scripts/package.sh 最后会调 `python3 sign.py <unsigned> <signed>`,
@@ -136,7 +153,8 @@ jobs:
       # ---- 兜底: 确保预构建 buildenv 含当前源码所需工具 ----
       # libltdl-dev 是 Wine 依赖; glslangValidator 是 DXVK 配置阶段生成
       # 内置 SPIR-V 的硬依赖; gettext (msgfmt) 是 Wine po 翻译资源硬依赖
-      # (build_wine.sh 缺失即 exit 1); curl/wget 供构建期下载 (mono msi 等).
+      # (build_wine.sh 缺失即 exit 1); curl/wget 供构建期下载 (mono msi 等);
+      # mingw-w64-tools 提供 VKD3D meson 需要的 widl.
       # Dockerfile 已同步声明, 镜像更新后这里 no-op.
       - name: Ensure CI build dependencies present
         run: |
@@ -161,6 +179,9 @@ jobs:
           if ! command -v makeinfo >/dev/null 2>&1; then
             packages+=(texinfo)
           fi
+          if ! command -v x86_64-w64-mingw32-widl >/dev/null 2>&1; then
+            packages+=(mingw-w64-tools)
+          fi
           if [ "${#packages[@]}" -gt 0 ]; then
             echo "Installing missing CI packages: ${packages[*]}"
             apt-get update
@@ -180,6 +201,7 @@ jobs:
           glslangValidator --version | head -1
           x86_64-w64-mingw32-g++ --version | head -1
           i686-w64-mingw32-g++ --version | head -1
+          x86_64-w64-mingw32-widl -V | head -1
           java -version 2>&1 | head -1
           echo "== OHOS SDK =="
           ls /apps/harmony/sdk/default/openharmony/native/llvm/bin/clang
@@ -187,9 +209,9 @@ jobs:
           echo "== nproc =="
           nproc
 
-      # 先单独构建运行时组件再打 HAP: 运行时构建失败与打包失败分开上报.
-      # 顶层 Makefile 在非 CI 构建中同样以该产物作为 assemble 前置依赖.
-      - name: Build guest graphics runtime (x64 + x86)
+      # 先单独构建两个 DXVK runtime 再打 HAP。这样 Modern 的交叉编译失败
+      # 不会被误报为通用 HAP 打包失败；assemble 仍以它们为硬依赖。
+      - name: Build DXVK Legacy runtime (x64 + x86)
         run: |
           set -euxo pipefail
           make NATIVE_ARCH=arm64-v8a dxvk
@@ -205,6 +227,47 @@ jobs:
                build/dxvk/legacy/x86/bin/d3d11.dll \
                build/dxvk/legacy/x86/bin/dxgi.dll
           sha256sum build/dxvk/legacy/{x64,x86}/bin/{d3d11,dxgi}.dll
+
+      - name: Build DXVK Modern runtime (x64 + x86)
+        run: |
+          set -euxo pipefail
+          make NATIVE_ARCH=arm64-v8a dxvk-modern
+          for dll in \
+            build/dxvk/modern-2.6/x64/bin/d3d11.dll \
+            build/dxvk/modern-2.6/x64/bin/dxgi.dll \
+            build/dxvk/modern-2.6/x86/bin/d3d11.dll \
+            build/dxvk/modern-2.6/x86/bin/dxgi.dll; do
+            test -s "$dll"
+          done
+          file build/dxvk/modern-2.6/x64/bin/d3d11.dll \
+               build/dxvk/modern-2.6/x64/bin/dxgi.dll \
+               build/dxvk/modern-2.6/x86/bin/d3d11.dll \
+               build/dxvk/modern-2.6/x86/bin/dxgi.dll
+          sha256sum build/dxvk/modern-2.6/{x64,x86}/bin/{d3d11,dxgi}.dll
+
+      - name: Build VKD3D-Proton runtime (x64 limited-500K)
+        run: |
+          set -euxo pipefail
+          make NATIVE_ARCH=arm64-v8a vkd3d-proton
+          for artifact in \
+            build/vkd3d-proton/limited-500k/x64/d3d12.dll \
+            build/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
+            build/vkd3d-proton/limited-500k/x64/triangle.exe \
+            build/vkd3d-proton/limited-500k/x64/gears.exe \
+            build/vkd3d-proton/limited-500k/manifest.json; do
+            test -s "$artifact"
+          done
+          file build/vkd3d-proton/limited-500k/x64/d3d12.dll \
+               build/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
+               build/vkd3d-proton/limited-500k/x64/triangle.exe \
+               build/vkd3d-proton/limited-500k/x64/gears.exe
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path("build/vkd3d-proton/limited-500k/manifest.json").read_text())
+          assert manifest["profile"] == "limited-500k", manifest
+          print("[vkd3d] profile=%s commit=%s" % (manifest["profile"], manifest["upstreamCommit"]))
+          PY
 
       - name: Build HAP
         env:
@@ -253,9 +316,20 @@ jobs:
           import zipfile
 
           hap_path = os.environ["HAP_PATH"]
-          expected_commit = subprocess.check_output(
-              ["git", "-C", "thirdparty/dxvk", "rev-parse", "HEAD"], text=True
-          ).strip()
+          expected_runtimes = {
+              "legacy": {
+                  "version": "1.10.3",
+                  "commit": subprocess.check_output(
+                      ["git", "-C", "thirdparty/dxvk", "rev-parse", "HEAD"], text=True
+                  ).strip(),
+              },
+              "modern-2.6": {
+                  "version": "2.6.2",
+                  "commit": subprocess.check_output(
+                      ["git", "-C", "thirdparty/dxvk-modern", "rev-parse", "HEAD"], text=True
+                  ).strip(),
+              },
+          }
 
           with zipfile.ZipFile(hap_path) as hap:
               payload = hap.read("resources/rawfile/wine-data.zip")
@@ -268,30 +342,39 @@ jobs:
               runtime_manifest["payloadSha256"], payload_sha
           )
 
-          required = {
-              "dxvk/legacy/x64/d3d11.dll": 0x8664,
-              "dxvk/legacy/x64/dxgi.dll": 0x8664,
-              "dxvk/legacy/x86/d3d11.dll": 0x014C,
-              "dxvk/legacy/x86/dxgi.dll": 0x014C,
-          }
           with zipfile.ZipFile(io.BytesIO(payload)) as wine_data:
               dxvk_manifest = json.loads(wine_data.read("dxvk/manifest.json"))
-              assert dxvk_manifest["profile"] == "legacy"
-              assert dxvk_manifest["version"] == "1.10.3"
-              assert dxvk_manifest["commit"] == expected_commit, (
-                  dxvk_manifest["commit"], expected_commit
-              )
-              for name, expected_machine in required.items():
-                  image = wine_data.read(name)
-                  assert len(image) > 4096, (name, len(image))
-                  assert image[:2] == b"MZ", name
-                  pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
-                  assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
-                  machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
-                  assert machine == expected_machine, (
-                      name, hex(machine), hex(expected_machine)
+              assert dxvk_manifest["schemaVersion"] == 2
+              assert dxvk_manifest["backend"] == "dxvk"
+              assert dxvk_manifest["defaultProfile"] == "legacy"
+              runtimes = dxvk_manifest["runtimes"]
+              assert set(runtimes) == set(expected_runtimes), runtimes.keys()
+
+              for profile, expected in expected_runtimes.items():
+                  runtime = runtimes[profile]
+                  assert runtime["version"] == expected["version"], runtime
+                  assert runtime["commit"] == expected["commit"], (
+                      profile, runtime["commit"], expected["commit"]
                   )
-                  print(f"[dxvk] {name}: machine={machine:#06x} size={len(image)}")
+                  assert runtime["state"], (profile, runtime)
+                  assert isinstance(runtime["requiredCapabilities"], dict), runtime
+                  for arch, expected_machine in (("x64", 0x8664), ("x86", 0x014C)):
+                      for dll in ("d3d11.dll", "dxgi.dll"):
+                          name = f"dxvk/{profile}/{arch}/{dll}"
+                          image = wine_data.read(name)
+                          assert len(image) > 4096, (name, len(image))
+                          assert image[:2] == b"MZ", name
+                          pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                          assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                          machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                          assert machine == expected_machine, (
+                              name, hex(machine), hex(expected_machine)
+                          )
+                          assert runtime[arch][dll] == hashlib.sha256(image).hexdigest(), name
+                          print(
+                              f"[dxvk/{profile}] {name}: "
+                              f"machine={machine:#06x} size={len(image)}"
+                          )
 
               # 仅 PE DLL 在 ARM64 HarmonyOS 上不可运行, 需同 payload 内的
               # Vulkan 依赖链文件齐全才能工作, 一并校验.
@@ -308,7 +391,35 @@ jobs:
                   assert image, name
                   print(f"[vulkan] {name}: size={len(image)}")
 
-          print(f"[dxvk] commit={expected_commit}")
+              vkd3d_manifest = json.loads(wine_data.read("vkd3d/manifest.json"))
+              assert vkd3d_manifest["profile"] == "limited-500k", vkd3d_manifest
+              vkd3d_commit = subprocess.check_output(
+                  ["git", "-C", "thirdparty/vkd3d-proton", "rev-parse", "HEAD"],
+                  text=True,
+              ).strip()
+              assert vkd3d_manifest["upstreamCommit"] == vkd3d_commit, (
+                  vkd3d_manifest["upstreamCommit"], vkd3d_commit
+              )
+              for name, expected_machine in (
+                  ("vkd3d/limited-500k/x64/d3d12.dll", 0x8664),
+                  ("smoke/x64/winehua_d3d12_smoke.exe", 0x8664),
+                  ("smoke/x64/triangle.exe", 0x8664),
+                  ("smoke/x64/gears.exe", 0x8664),
+              ):
+                  image = wine_data.read(name)
+                  assert len(image) > 4096, (name, len(image))
+                  assert image[:2] == b"MZ", name
+                  pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                  assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                  machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                  assert machine == expected_machine, (
+                      name, hex(machine), hex(expected_machine)
+                  )
+                  print(f"[vkd3d] {name}: machine={machine:#06x} size={len(image)}")
+              print(f"[vkd3d] commit={vkd3d_commit}")
+
+          for profile, expected in expected_runtimes.items():
+              print(f"[dxvk/{profile}] commit={expected['commit']}")
           print(f"[dxvk] wine-data.zip sha256={payload_sha}")
           PY
 
@@ -340,7 +451,7 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-26.04
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+    if: startsWith(github.ref, 'refs/tags/dev-') || startsWith(github.ref, 'refs/tags/rc-') || github.event.inputs.release_tag != ''
 
     steps:
       - name: Checkout (for changelog)
@@ -348,7 +459,7 @@ jobs:
         with:
           fetch-depth: 0        # 需要历史 commit 生成 changelog
 
-      - name: Determine release tag
+      - name: Determine release tag & Latest ownership
         id: tag
         run: |
           if [ -n "${{ github.event.inputs.release_tag }}" ]; then
@@ -356,8 +467,16 @@ jobs:
           else
             tag="${GITHUB_REF#refs/tags/}"
           fi
+          # Latest 徽章归属: rc-* 占, dev-* 不占
+          # (GitHub 规则: prerelease 不能是 latest, 故两种 tag 均不标 pre,
+          #  由 make_latest 参数控制 Latest 徽章)
+          case "$tag" in
+            dev-*) make_latest=false ;;
+            *)     make_latest=true ;;
+          esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Resolved release tag: $tag"
+          echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $tag (make_latest=$make_latest)"
 
       - name: Download HAP artifact
         uses: actions/download-artifact@v4
@@ -407,6 +526,8 @@ jobs:
           body_path: changelog.md
           files: release-assets/*.hap
           draft: false
-          # -rc / -beta / -alpha 后缀自动标记为 pre-release
-          prerelease: ${{ contains(steps.tag.outputs.tag, '-rc') || contains(steps.tag.outputs.tag, '-beta') || contains(steps.tag.outputs.tag, '-alpha') }}
+          # dev-*/rc-* 均不标 pre-release (GitHub 规则: prerelease 不能是 latest)
+          prerelease: false
+          # Latest 徽章: rc-* 占, dev-* 不占
+          make_latest: ${{ steps.tag.outputs.make_latest }}
           fail_on_unmatched_files: true

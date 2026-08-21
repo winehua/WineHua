@@ -17,6 +17,7 @@
 #include "wine_process.h"
 // 由 LaunchPadMode 在启动 Broker 前设置
 std::string gBrokerHomeDir;
+std::string gBrokerPrefixDir;
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -169,10 +170,16 @@ static void HandleRequest(int conn_fd)
         }
     }
 
-    // 5) 构造 NativeChildProcess 参数
-    // 复制 entryParams 并加上 homeDir 前缀 (与 LaunchPadMode 新格式一致)
+    // 5) 构造 NativeChildProcess 参数。
+    // Wine 服务进程会把创建者的环境重新序列化给 broker，但 NCP 不会继承
+    // LaunchPad 的环境。把会话 prefix 放在最后，使 clean smoke 的
+    // .wine-smoke 覆盖可能残留的默认 .wine 值。
     std::string fullParams = gBrokerHomeDir.empty() ? entryParamsRaw
                             : (gBrokerHomeDir + "|" + entryParamsRaw);
+    if (!gBrokerPrefixDir.empty())
+        fullParams += "|__env=WINEPREFIX=" + gBrokerPrefixDir;
+    OH_LOG_INFO(LOG_APP, "[Broker] dispatch prefix=%{public}s",
+                gBrokerPrefixDir.empty() ? "(inherited)" : gBrokerPrefixDir.c_str());
     char* entryParamsCopy = strdup(fullParams.c_str());
 
     // 建 fd 链表: 名字取自 FDS 行; 无 FDS 行且恰好 1 个 fd 时回退旧命名 wineserver_sock

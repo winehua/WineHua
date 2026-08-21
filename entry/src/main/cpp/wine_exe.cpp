@@ -245,17 +245,19 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
         sockDir, sockName, libPath, binDir, -1, homeDir, prefixDir);
     /* Product defaults first, then per-run settings. Smoke and game launches
      * must be able to select their own log directory and diagnostics. */
-    AppendD3dBackendEnv(envStrs, options.d3dBackend, binDir);
-    for (const std::string& line : options.environment) UpsertEnvLine(envStrs,line);
-    UpsertEnvLine(envStrs,"WINEHUA_D3D_BACKEND=" + options.d3dBackend);
-    UpsertEnvLine(envStrs,"WINEHUA_PRESENT_BACKEND=" + options.presentBackend);
-    UpsertEnvLine(envStrs,std::string("WINEHUA_AUTOMATION=") + (options.automationMode ? "1" : "0"));
+    AppendD3dBackendEnv(envStrs, options.d3dBackend, options.dxvkBackend, binDir);
+    for (const std::string& line : options.environment) UpsertEnvLine(envStrs, line);
+    UpsertEnvLine(envStrs, "WINEHUA_D3D_BACKEND=" + options.d3dBackend);
+    UpsertEnvLine(envStrs, "WINEHUA_PRESENT_BACKEND=" + options.presentBackend);
+    UpsertEnvLine(envStrs, std::string("WINEHUA_AUTOMATION=") +
+                  (options.automationMode ? "1" : "0"));
     /* desktop 模式: 将进程接入 explorer 创建的 shell desktop, 使其窗口
      * 出现在任务栏 (与 RunWineExe 路径对称, 重构 runWineProgram 时遗漏). */
     if (WaylandServer::GetInstance()->IsDesktopMode())
         UpsertEnvLine(envStrs,"WINEHUA_DESKTOP=shell");
     /* DXVK is a managed WineHua runtime overlay, never a game-provided DLL. */
-    if (options.d3dBackend.rfind("dxvk_", 0) == 0)
+    if (options.d3dBackend.rfind("dxvk_", 0) == 0 ||
+        options.d3dBackend == "vkd3d_limited_500k")
         OH_LOG_INFO(LOG_APP, "[WineProgram] managed D3D backend=%{public}s",
                     options.d3dBackend.c_str());
 #ifdef __aarch64__
@@ -506,7 +508,13 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     options.windowsExePath = GetString(env, args[0], "windowsExePath");
     options.workingDirectory = GetString(env, args[0], "workingDirectory");
     options.prefixMode = GetString(env, args[0], "prefixMode", "reuse");
-    options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_legacy");
+    options.d3dBackend = GetString(env, args[0], "d3dBackend", "vkd3d_limited_500k");
+    const std::string impliedDxvkBackend = options.d3dBackend == "dxvk_modern_2_6"
+        ? "dxvk_modern_2_6" : "dxvk_legacy";
+    options.dxvkBackend = GetString(env, args[0], "dxvkBackend", impliedDxvkBackend.c_str());
+    if (options.dxvkBackend != "dxvk_legacy" &&
+        options.dxvkBackend != "dxvk_modern_2_6")
+        options.dxvkBackend = impliedDxvkBackend;
     options.presentBackend = GetString(env, args[0], "presentBackend", "virgl_compositor");
     options.automationMode = GetBool(env, args[0], "automationMode", false);
     ReadStringArray(env, args[0], "argv", &options.argv);
@@ -653,7 +661,15 @@ napi_value TerminateWineProcess(napi_env env, napi_callback_info info)
     int32_t pid = -1;
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc >= 1) napi_get_value_int32(env, args[0], &pid);
-    bool ok = pid > 0 && kill(pid, SIGKILL) == 0;
+    OH_LOG_WARN(LOG_APP,
+                "[WineProgram] terminateWineProcess requested pid=%{public}d signal=SIGKILL",
+                pid);
+    const bool ok = pid > 0 && kill(pid, SIGKILL) == 0;
+    if (!ok) {
+        OH_LOG_WARN(LOG_APP,
+                    "[WineProgram] terminateWineProcess failed pid=%{public}d errno=%{public}d(%{public}s)",
+                    pid, errno, strerror(errno));
+    }
     if (ok) RemoveProcess(pid, -1, "unknown");
     napi_value result;
     napi_get_boolean(env, ok, &result);

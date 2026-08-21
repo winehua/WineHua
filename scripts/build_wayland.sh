@@ -13,7 +13,7 @@ SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
     if [ -x "$SCANNER" ]; then return 0; fi
     log "--- 编译 wayland-scanner (native) ---"
-    if [ "$HOST_OS" = "Darwin" ]; then
+    if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
         local host_build="$BUILD_DIR/wayland_native"
         local host_prefix="$BUILD_DIR/host-tools"
         mkdir -p "$host_build" "$host_prefix"
@@ -23,6 +23,11 @@ build_scanner() {
             -Ddocumentation=false -Dtests=false --buildtype=release
         ninja -C "$host_build"
         ninja -C "$host_build" install
+
+        # 安装时的 strip 操作破坏了 OHOS SDK clang 的自动签名，所以在 HarmonyOS 上需要重新签名才能运行
+        if [ "$HOST_OS" = "HarmonyOS" ]; then
+            "$SCRIPT_DIR/ohos-sign-elf.py" "$host_prefix"
+        fi
     else
         mkdir -p /tmp/wayland_native
         meson setup /tmp/wayland_native "$WL_SRC" \
@@ -45,7 +50,7 @@ fi
 
 build_scanner
 
-if [ "$HOST_OS" = "Darwin" ]; then
+if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
 fi

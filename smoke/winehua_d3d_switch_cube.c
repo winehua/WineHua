@@ -329,7 +329,7 @@ static void write_automation_result(const char *status_override, const char *mes
     FILE *fp;
     const char *status = status_override ? status_override :
         (g_app.renderer_ready && SUCCEEDED(g_app.present_result) &&
-        g_app.total_frame_count > 0 ? "PASS" : "FAIL");
+        g_app.total_frame_count >= (g_app.automation ? 60u : 1u) ? "PASS" : "FAIL");
     const char *message = message_override ? message_override :
         (g_app.renderer_ready ? "cube rendered and presented" : g_app.status);
 
@@ -1056,6 +1056,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
     ShowWindow(g_app.hwnd, show_cmd);
     UpdateWindow(g_app.hwnd);
     switch_renderer(initial_renderer);
+    /* D3D/Vulkan initialization can consume most of a short automation run.
+     * Start both the duration and animation clocks only after the renderer is
+     * ready so the visual gate always observes a sustained render sequence. */
+    if (g_app.renderer_ready) {
+        g_app.run_start_ms = GetTickCount64();
+        QueryPerformanceCounter(&g_app.start_qpc);
+    }
     /* WM_SIZE is delivered during CreateWindow/ShowWindow. The initial
      * renderer already uses those final dimensions, so do not immediately
      * destroy and recreate its fresh DXGI swapchain. */
@@ -1086,5 +1093,5 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
     write_automation_result(NULL, NULL);
     release_renderer();
     return g_app.renderer_ready && SUCCEEDED(g_app.present_result) &&
-        g_app.total_frame_count > 0 ? 0 : 1;
+        g_app.total_frame_count >= (g_app.automation ? 60u : 1u) ? 0 : 1;
 }

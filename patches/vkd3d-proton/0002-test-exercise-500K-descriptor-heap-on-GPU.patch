@@ -1,0 +1,328 @@
+From 57b45529c6556543b072b27d8eaddcf360805b04 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Tue, 4 Aug 2026 19:09:15 +0800
+Subject: [PATCH 2/5] test: exercise 500K descriptor heap on GPU
+
+---
+ tests/vkd3d_limited_500k_microtest.c | 215 ++++++++++++++++++++++++---
+ 1 file changed, 195 insertions(+), 20 deletions(-)
+
+diff --git a/tests/vkd3d_limited_500k_microtest.c b/tests/vkd3d_limited_500k_microtest.c
+index 1732c314..9385b296 100644
+--- a/tests/vkd3d_limited_500k_microtest.c
++++ b/tests/vkd3d_limited_500k_microtest.c
+@@ -17,6 +17,46 @@
+ #define VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE 500000u
+ #define VKD3D_LIMITED_COPY_BUFFER_SIZE 256u
+
++/*
++ * ByteAddressBuffer t0;
++ * ByteAddressBuffer t4 : register(t4);
++ * RWByteAddressBuffer u0;
++ * RWByteAddressBuffer u2 : register(u2);
++ * uint size;
++ * uint size2;
++ *
++ * [numthreads(1, 1, 1)]
++ * void main()
++ * {
++ *     uint i;
++ *     for (i = 0; i < size; ++i)
++ *         u0.Store(4 * i, t0.Load(4 * i));
++ *     for (i = 0; i < size2; ++i)
++ *         u2.Store(4 * i, t4.Load(4 * i));
++ * }
++ */
++static const DWORD vkd3d_limited_descriptor_cs[] =
++{
++    0x43425844, 0x8d2646b7, 0xeb60d9ee, 0x33ccd6ed, 0x5557e649, 0x00000001, 0x0000023c, 0x00000003,
++    0x0000002c, 0x0000003c, 0x0000004c, 0x4e475349, 0x00000008, 0x00000000, 0x00000008, 0x4e47534f,
++    0x00000008, 0x00000000, 0x00000008, 0x58454853, 0x000001e8, 0x00050050, 0x0000007a, 0x0100086a,
++    0x04000059, 0x00208e46, 0x00000000, 0x00000001, 0x030000a1, 0x00107000, 0x00000000, 0x030000a1,
++    0x00107000, 0x00000004, 0x0300009d, 0x0011e000, 0x00000000, 0x0300009d, 0x0011e000, 0x00000002,
++    0x02000068, 0x00000001, 0x0400009b, 0x00000001, 0x00000001, 0x00000001, 0x05000036, 0x00100012,
++    0x00000000, 0x00004001, 0x00000000, 0x01000030, 0x08000050, 0x00100022, 0x00000000, 0x0010000a,
++    0x00000000, 0x0020800a, 0x00000000, 0x00000000, 0x03040003, 0x0010001a, 0x00000000, 0x07000029,
++    0x00100022, 0x00000000, 0x0010000a, 0x00000000, 0x00004001, 0x00000002, 0x890000a5, 0x800002c2,
++    0x00199983, 0x00100042, 0x00000000, 0x0010001a, 0x00000000, 0x00107006, 0x00000000, 0x070000a6,
++    0x0011e012, 0x00000000, 0x0010001a, 0x00000000, 0x0010002a, 0x00000000, 0x0700001e, 0x00100012,
++    0x00000000, 0x0010000a, 0x00000000, 0x00004001, 0x00000001, 0x01000016, 0x05000036, 0x00100012,
++    0x00000000, 0x00004001, 0x00000000, 0x01000030, 0x08000050, 0x00100022, 0x00000000, 0x0010000a,
++    0x00000000, 0x0020801a, 0x00000000, 0x00000000, 0x03040003, 0x0010001a, 0x00000000, 0x07000029,
++    0x00100022, 0x00000000, 0x0010000a, 0x00000000, 0x00004001, 0x00000002, 0x890000a5, 0x800002c2,
++    0x00199983, 0x00100042, 0x00000000, 0x0010001a, 0x00000000, 0x00107006, 0x00000004, 0x070000a6,
++    0x0011e012, 0x00000002, 0x0010001a, 0x00000000, 0x0010002a, 0x00000000, 0x0700001e, 0x00100012,
++    0x00000000, 0x0010000a, 0x00000000, 0x00004001, 0x00000001, 0x01000016, 0x0100003e,
++};
++
+ static D3D12_RESOURCE_DESC vkd3d_limited_buffer_desc(UINT64 size)
+ {
+     D3D12_RESOURCE_DESC desc;
+@@ -65,9 +105,10 @@ static int vkd3d_limited_parse_descriptor_count(int argc, char **argv, UINT *des
+
+     errno = 0;
+     value = strtoul(argument, &end, 10);
+-    if (errno || !end || *end || value > VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE)
++    if (errno || !end || *end || value > VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE ||
++            (value && value < 5))
+     {
+-        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: --descriptor-count must be 0 through %u.\n",
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: --descriptor-count must be 0 or 5 through %u.\n",
+                 VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE);
+         return 0;
+     }
+@@ -86,18 +127,18 @@ static void vkd3d_limited_dump_bytes(const char *label, const uint8_t *bytes, si
+     fputc('\n', stderr);
+ }
+
+-static void vkd3d_limited_write_result(const char *path, int status, const char *stage)
++static int vkd3d_limited_write_result(const char *path, int status, const char *stage)
+ {
+     FILE *file;
+
+     if (!path || !(file = fopen(path, "wb")))
+-        return;
++        return 0;
+
+     fprintf(file, "{\"status\":\"%s\",\"stage\":\"%s\",\"message\":\"%s\"}\n",
+             status ? "FAIL" : "PASS", stage,
+             status ? "see Wine stderr for the failed 500K microtest operation"
+-                    : "500K descriptor heap and D3D12 copy/readback passed");
+-    fclose(file);
++                    : "500K descriptor heap GPU read and D3D12 copy/readback passed");
++    return fclose(file) == 0;
+ }
+
+ /*
+@@ -112,7 +153,7 @@ static void vkd3d_limited_write_checkpoint(const char *path, const char *state,
+     if (!path || !(file = fopen(path, "wb")))
+         return;
+
+-    fprintf(file, "{\"state\":\"%s\",\"stage\":\"%s\"}\\n", state, stage);
++    fprintf(file, "{\"state\":\"%s\",\"stage\":\"%s\"}\n", state, stage);
+     fclose(file);
+ }
+
+@@ -123,11 +164,17 @@ int main(int argc, char **argv)
+         0x30, 0x4b, 0x2d, 0x43, 0x4f, 0x50, 0x59, 0x00,
+     };
+     D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc;
++    D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc;
++    D3D12_ROOT_SIGNATURE_DESC root_signature_desc;
++    D3D12_DESCRIPTOR_RANGE descriptor_ranges[2];
++    D3D12_ROOT_PARAMETER root_parameters[3];
+     D3D12_COMMAND_QUEUE_DESC queue_desc;
+     D3D12_HEAP_PROPERTIES heap_properties;
+     D3D12_RESOURCE_BARRIER barrier;
+-    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc;
+-    D3D12_CPU_DESCRIPTOR_HANDLE descriptor;
++    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
++    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
++    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor;
++    D3D12_GPU_DESCRIPTOR_HANDLE gpu_descriptor;
+     D3D12_RANGE read_range;
+     D3D12_RANGE write_range;
+     D3D12_RESOURCE_DESC buffer_desc;
+@@ -136,11 +183,15 @@ int main(int argc, char **argv)
+     ID3D12CommandQueue *command_queue = NULL;
+     ID3D12DescriptorHeap *descriptor_heap = NULL;
+     ID3D12DescriptorHeap *oversized_descriptor_heap = NULL;
++    ID3D12RootSignature *root_signature = NULL;
++    ID3D12PipelineState *pipeline_state = NULL;
+     ID3D12Fence *fence = NULL;
+     ID3D12Device *device = NULL;
+     ID3D12Resource *upload = NULL;
+     ID3D12Resource *resource = NULL;
++    ID3D12Resource *descriptor_output = NULL;
+     ID3D12Resource *readback = NULL;
++    ID3DBlob *root_signature_blob = NULL;
+     ID3D12CommandList *command_lists[1];
+     PFN_D3D12_CREATE_DEVICE create_device;
+     const char *result_path = vkd3d_limited_find_argument(argc, argv, "--result");
+@@ -152,7 +203,7 @@ int main(int argc, char **argv)
+     void *mapped_data = NULL;
+     HRESULT hr = E_FAIL;
+     UINT descriptor_count;
+-    UINT increment_size;
++    UINT increment_size = 0;
+     int status = 1;
+
+     vkd3d_limited_write_checkpoint(checkpoint_path, "RUNNING", "startup");
+@@ -284,26 +335,136 @@ int main(int argc, char **argv)
+
+     if (descriptor_heap)
+     {
++        heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
++        buffer_desc = vkd3d_limited_buffer_desc(VKD3D_LIMITED_COPY_BUFFER_SIZE);
++        buffer_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++        stage = "descriptor-output";
++        if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++                D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++                NULL, &IID_ID3D12Resource, (void **)&descriptor_output)))
++        {
++            vkd3d_limited_report_failure("CreateCommittedResource(descriptor output)", hr);
++            goto done;
++        }
++
+         increment_size = ID3D12Device_GetDescriptorHandleIncrementSize(device,
+                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+-        descriptor = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(descriptor_heap);
+-        descriptor.ptr += (SIZE_T)(descriptor_count - 1) * increment_size;
+-        memset(&cbv_desc, 0, sizeof(cbv_desc));
+-        cbv_desc.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(upload);
+-        cbv_desc.SizeInBytes = VKD3D_LIMITED_COPY_BUFFER_SIZE;
+-        ID3D12Device_CreateConstantBufferView(device, &cbv_desc, descriptor);
++
++        cpu_descriptor = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(descriptor_heap);
++        cpu_descriptor.ptr += 2 * increment_size;
++        memset(&uav_desc, 0, sizeof(uav_desc));
++        uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
++        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
++        uav_desc.Buffer.NumElements = VKD3D_LIMITED_COPY_BUFFER_SIZE / sizeof(uint32_t);
++        uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
++        ID3D12Device_CreateUnorderedAccessView(device, descriptor_output, NULL, &uav_desc, cpu_descriptor);
++
++        cpu_descriptor = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(descriptor_heap);
++        cpu_descriptor.ptr += (SIZE_T)(descriptor_count - 1) * increment_size;
++        memset(&srv_desc, 0, sizeof(srv_desc));
++        srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
++        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
++        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++        srv_desc.Buffer.NumElements = VKD3D_LIMITED_COPY_BUFFER_SIZE / sizeof(uint32_t);
++        srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
++        ID3D12Device_CreateShaderResourceView(device, resource, &srv_desc, cpu_descriptor);
++
++        memset(descriptor_ranges, 0, sizeof(descriptor_ranges));
++        descriptor_ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++        descriptor_ranges[0].NumDescriptors = 5;
++        descriptor_ranges[0].BaseShaderRegister = 0;
++        descriptor_ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
++        descriptor_ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
++        descriptor_ranges[1].NumDescriptors = 3;
++        descriptor_ranges[1].BaseShaderRegister = 0;
++        descriptor_ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
++
++        memset(root_parameters, 0, sizeof(root_parameters));
++        root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++        root_parameters[0].DescriptorTable.NumDescriptorRanges = 1;
++        root_parameters[0].DescriptorTable.pDescriptorRanges = &descriptor_ranges[0];
++        root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++        root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++        root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
++        root_parameters[1].DescriptorTable.pDescriptorRanges = &descriptor_ranges[1];
++        root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++        root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++        root_parameters[2].Constants.ShaderRegister = 0;
++        root_parameters[2].Constants.Num32BitValues = 2;
++        root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++
++        memset(&root_signature_desc, 0, sizeof(root_signature_desc));
++        root_signature_desc.NumParameters = 3;
++        root_signature_desc.pParameters = root_parameters;
++        stage = "descriptor-root-signature";
++        if (FAILED(hr = D3D12SerializeRootSignature(&root_signature_desc,
++                D3D_ROOT_SIGNATURE_VERSION_1_0, &root_signature_blob, NULL)))
++        {
++            vkd3d_limited_report_failure("D3D12SerializeRootSignature", hr);
++            goto done;
++        }
++        if (FAILED(hr = ID3D12Device_CreateRootSignature(device, 0,
++                ID3D10Blob_GetBufferPointer(root_signature_blob),
++                ID3D10Blob_GetBufferSize(root_signature_blob),
++                &IID_ID3D12RootSignature, (void **)&root_signature)))
++        {
++            vkd3d_limited_report_failure("CreateRootSignature", hr);
++            goto done;
++        }
++        ID3D10Blob_Release(root_signature_blob);
++        root_signature_blob = NULL;
++
++        memset(&pipeline_desc, 0, sizeof(pipeline_desc));
++        pipeline_desc.pRootSignature = root_signature;
++        pipeline_desc.CS.pShaderBytecode = vkd3d_limited_descriptor_cs;
++        pipeline_desc.CS.BytecodeLength = sizeof(vkd3d_limited_descriptor_cs);
++        stage = "descriptor-pipeline";
++        if (FAILED(hr = ID3D12Device_CreateComputePipelineState(device, &pipeline_desc,
++                &IID_ID3D12PipelineState, (void **)&pipeline_state)))
++        {
++            vkd3d_limited_report_failure("CreateComputePipelineState", hr);
++            goto done;
++        }
+     }
+
+-    stage = "copy";
++    stage = descriptor_heap ? "descriptor-gpu" : "copy";
+     ID3D12GraphicsCommandList_CopyBufferRegion(command_list, resource, 0, upload, 0, sizeof(expected));
+     memset(&barrier, 0, sizeof(barrier));
+     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+     barrier.Transition.pResource = resource;
+     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    barrier.Transition.StateAfter = descriptor_heap
++            ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
+     ID3D12GraphicsCommandList_ResourceBarrier(command_list, 1, &barrier);
+-    ID3D12GraphicsCommandList_CopyBufferRegion(command_list, readback, 0, resource, 0, sizeof(expected));
++
++    if (descriptor_heap)
++    {
++        ID3D12GraphicsCommandList_SetComputeRootSignature(command_list, root_signature);
++        ID3D12GraphicsCommandList_SetPipelineState(command_list, pipeline_state);
++        ID3D12GraphicsCommandList_SetDescriptorHeaps(command_list, 1, &descriptor_heap);
++
++        gpu_descriptor = ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(descriptor_heap);
++        gpu_descriptor.ptr += (UINT64)(descriptor_count - 5) * increment_size;
++        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(command_list, 0, gpu_descriptor);
++        gpu_descriptor = ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(descriptor_heap);
++        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(command_list, 1, gpu_descriptor);
++        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(command_list, 2, 0, 0);
++        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(command_list, 2,
++                sizeof(expected) / sizeof(uint32_t), 1);
++        ID3D12GraphicsCommandList_Dispatch(command_list, 1, 1, 1);
++
++        barrier.Transition.pResource = descriptor_output;
++        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        ID3D12GraphicsCommandList_ResourceBarrier(command_list, 1, &barrier);
++        ID3D12GraphicsCommandList_CopyBufferRegion(command_list, readback, 0,
++                descriptor_output, 0, sizeof(expected));
++    }
++    else
++    {
++        ID3D12GraphicsCommandList_CopyBufferRegion(command_list, readback, 0, resource, 0, sizeof(expected));
++    }
+
+     if (FAILED(hr = ID3D12GraphicsCommandList_Close(command_list)))
+     {
+@@ -389,8 +550,16 @@ done:
+         CloseHandle(completion_event);
+     if (fence)
+         ID3D12Fence_Release(fence);
++    if (root_signature_blob)
++        ID3D10Blob_Release(root_signature_blob);
++    if (pipeline_state)
++        ID3D12PipelineState_Release(pipeline_state);
++    if (root_signature)
++        ID3D12RootSignature_Release(root_signature);
+     if (readback)
+         ID3D12Resource_Release(readback);
++    if (descriptor_output)
++        ID3D12Resource_Release(descriptor_output);
+     if (resource)
+         ID3D12Resource_Release(resource);
+     if (upload)
+@@ -411,7 +580,13 @@ done:
+         FreeLibrary(d3d12_module);
+
+     /* A passing readback is insufficient if object teardown faults. */
+-    vkd3d_limited_write_result(result_path, status, stage);
++    if (!vkd3d_limited_write_result(result_path, status, stage))
++    {
++        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: could not persist final result.\n");
++        return 1;
++    }
++    fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FINAL: status=%s stage=%s result_written=1.\n",
++            status ? "FAIL" : "PASS", stage);
+
+     return status;
+ }

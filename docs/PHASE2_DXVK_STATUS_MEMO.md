@@ -211,4 +211,3 @@ Before trusting a rebuilt package:
 3. Verify guest Vulkan/DRI binaries are x86-64 and host libraries are AArch64.
 4. Install through the Linux hdc and require install bundle successfully.
 5. Capture a physical device screenshot and archive logs.
-

@@ -25,6 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # 它本是 libtool 的 Recommends 依赖, 但 Ubuntu 官方 docker base image 默认
 # 关闭 Recommends 安装, 所以不显式声明就不会被拉入, 导致 aclocal 找不到
 # ltdl.m4 里的 LT_SYS_SYMBOL_USCORE 宏, 让 libffi autogen.sh 失败.
+# mingw-w64-tools 提供 x86_64-w64-mingw32-widl, VKD3D meson 交叉文件硬依赖它.
 RUN apt-get update && apt-get install -y \
         build-essential cmake ninja-build meson \
         bison flex autoconf automake libtool libltdl-dev \
@@ -37,6 +38,7 @@ RUN apt-get update && apt-get install -y \
         libfreetype-dev \
         gcc-mingw-w64-i686 g++-mingw-w64-i686 \
         gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+        mingw-w64-tools \
         default-jdk \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -77,7 +79,7 @@ RUN /apps/harmony/bin/hvigorw --version >/dev/null 2>&1 || true
 # ---- 验证关键工具/文件都在 ----
 # 增加 ltdl.m4 断言, 防止未来 apt/依赖变动再次让它悄悄消失
 RUN set -eux; \
-    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget makeinfo; \
+    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget makeinfo x86_64-w64-mingw32-widl; \
     test -f /apps/harmony/sdk/default/openharmony/native/llvm/bin/clang; \
     test -f /apps/harmony/bin/hvigorw; \
     test -f /usr/share/aclocal/ltdl.m4; \

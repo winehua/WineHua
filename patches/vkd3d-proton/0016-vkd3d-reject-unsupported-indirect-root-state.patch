@@ -1,0 +1,328 @@
+From 2a618c2277d1ca0f26c20667770f9eb67fc1d78a Mon Sep 17 00:00:00 2001
+From: WineHua <winehua@example.invalid>
+Date: Fri, 7 Aug 2026 03:25:00 +0800
+Subject: [PATCH] vkd3d: reject unsupported indirect root state safely
+
+Backport the v2.6-era CreateCommandSignature validation from upstream
+444aaa22.  The old path ignored non-action records and submitted a draw
+from offset zero.  For a CBV plus DRAW signature this interpreted the GPU
+virtual address as VkDrawIndirectCommand and could lose the Vulkan device.
+
+Maleoon 920 exposes no NV or EXT device-generated-commands extension, so
+VKD3D 2.6 cannot apply per-command root descriptors correctly.  Preserve
+DRAW-only, DRAW_INDEXED-only and DISPATCH-only signatures, but reject root
+state, vertex/index buffer state and unsupported action types with
+E_NOTIMPL after validating the signature structure.  This reports the real
+capability boundary instead of rendering incorrectly or crashing the GPU.
+---
+ libs/vkd3d/command.c       | 127 +++++++++++++++++++++++++++++++++++---
+ libs/vkd3d/device.c        |   5 +-
+ libs/vkd3d/vkd3d_private.h |   4 +-
+ tests/d3d12_device.c       |  57 +++++++++++++++++
+ 4 files changed, 183 insertions(+), 10 deletions(-)
+
+diff --git a/libs/vkd3d/command.c b/libs/vkd3d/command.c
+index 47ee1a55..b8f0650d 100644
+--- a/libs/vkd3d/command.c
++++ b/libs/vkd3d/command.c
+@@ -9271,6 +9271,11 @@ static void STDMETHODCALLTYPE d3d12_command_list_ExecuteIndirect(d3d12_command_l
+         return;
+     }
+ 
++    /* Signatures accepted by this implementation have exactly one action.
++     * Keep the action offset explicit so nonzero-prefix records are never
++     * interpreted as Vulkan draw or dispatch arguments. */
++    arg_buffer_offset += sig_impl->argument_buffer_offset;
++
+     for (i = 0; i < signature_desc->NumArgumentDescs; ++i)
+     {
+         const D3D12_INDIRECT_ARGUMENT_DESC *arg_desc = &signature_desc->pArgumentDescs[i];
+@@ -11958,36 +11963,151 @@ CONST_VTBL struct ID3D12CommandSignatureVtbl d3d12_command_signature_vtbl =
+     d3d12_command_signature_GetDevice,
+ };
+ 
+-HRESULT d3d12_command_signature_create(struct d3d12_device *device, const D3D12_COMMAND_SIGNATURE_DESC *desc,
++HRESULT d3d12_command_signature_create(struct d3d12_device *device, struct d3d12_root_signature *root_signature,
++        const D3D12_COMMAND_SIGNATURE_DESC *desc,
+         struct d3d12_command_signature **signature)
+ {
+     struct d3d12_command_signature *object;
++    bool requires_root_signature = false;
++    uint32_t argument_buffer_offset = 0;
++    uint32_t signature_size = 0;
++    bool unsupported = false;
++    bool has_action = false;
+     unsigned int i;
++    bool is_action;
+     HRESULT hr;
+ 
+     for (i = 0; i < desc->NumArgumentDescs; ++i)
+     {
+         const D3D12_INDIRECT_ARGUMENT_DESC *argument_desc = &desc->pArgumentDescs[i];
++        is_action = false;
++
+         switch (argument_desc->Type)
+         {
+             case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW:
++                argument_buffer_offset = signature_size;
++                signature_size += sizeof(D3D12_DRAW_ARGUMENTS);
++                is_action = true;
++                break;
++
+             case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED:
++                argument_buffer_offset = signature_size;
++                signature_size += sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
++                is_action = true;
++                break;
++
+             case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH:
+-                if (i != desc->NumArgumentDescs - 1)
+-                {
+-                    WARN("Draw/dispatch must be the last element of a command signature.\n");
+-                    return E_INVALIDARG;
+-                }
++                argument_buffer_offset = signature_size;
++                signature_size += sizeof(D3D12_DISPATCH_ARGUMENTS);
++                is_action = true;
++                break;
++
++            case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS:
++                argument_buffer_offset = signature_size;
++                signature_size += sizeof(D3D12_DISPATCH_RAYS_DESC);
++                is_action = true;
++                unsupported = true;
++                FIXME("Unsupported indirect dispatch rays.\n");
++                break;
++
++            case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH:
++                argument_buffer_offset = signature_size;
++                signature_size += sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
++                is_action = true;
++                unsupported = true;
++                FIXME("Unsupported indirect dispatch mesh.\n");
++                break;
++
++            case D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT:
++                requires_root_signature = true;
++                signature_size += argument_desc->Constant.Num32BitValuesToSet * sizeof(uint32_t);
++                unsupported = true;
++                FIXME("Unsupported indirect argument type CONSTANT.\n");
++                break;
++
++            case D3D12_INDIRECT_ARGUMENT_TYPE_SHADER_RESOURCE_VIEW:
++            case D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW:
++            case D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW:
++                requires_root_signature = true;
++                /* The command signature payload is not aligned. */
++                signature_size += sizeof(D3D12_GPU_VIRTUAL_ADDRESS);
++                unsupported = true;
++                FIXME("Unsupported indirect root descriptor type: %u.\n", argument_desc->Type);
++                break;
++
++            case D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW:
++                /* The command signature payload is not aligned. */
++                signature_size += sizeof(D3D12_VERTEX_BUFFER_VIEW);
++                unsupported = true;
++                FIXME("Unsupported indirect VBV.\n");
++                break;
++
++            case D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW:
++                /* The command signature payload is not aligned. */
++                signature_size += sizeof(D3D12_INDEX_BUFFER_VIEW);
++                unsupported = true;
++                FIXME("Unsupported indirect IBV.\n");
+                 break;
++
+             default:
++                unsupported = true;
++                FIXME("Unsupported indirect argument type: %u.\n", argument_desc->Type);
+                 break;
+         }
++
++        if (is_action)
++        {
++            if (has_action)
++            {
++                ERR("Using multiple action commands per command signature is invalid.\n");
++                return E_INVALIDARG;
++            }
++
++            if (i != desc->NumArgumentDescs - 1)
++            {
++                WARN("Action command must be the last element of a command signature.\n");
++                return E_INVALIDARG;
++            }
++
++            has_action = true;
++        }
++    }
++
++    if (!has_action)
++    {
++        ERR("Command signature must have exactly one action command.\n");
++        return E_INVALIDARG;
++    }
++
++    if (desc->ByteStride < signature_size)
++    {
++        ERR("Command signature stride %u must be at least %u bytes.\n",
++                desc->ByteStride, signature_size);
++        return E_INVALIDARG;
++    }
++
++    if (requires_root_signature && !root_signature)
++    {
++        ERR("Command signature requires root signature, but is not provided.\n");
++        return E_INVALIDARG;
++    }
++    else if (!requires_root_signature && root_signature)
++    {
++        ERR("Command signature does not require root signature, root signature must be NULL.\n");
++        return E_INVALIDARG;
++    }
++
++    if (unsupported)
++    {
++        FIXME("Command signature requires unsupported indirect argument handling.\n");
++        return E_NOTIMPL;
+     }
+ 
+     if (!(object = vkd3d_malloc(sizeof(*object))))
+         return E_OUTOFMEMORY;
+ 
+     object->ID3D12CommandSignature_iface.lpVtbl = &d3d12_command_signature_vtbl;
++    object->argument_buffer_offset = argument_buffer_offset;
+     object->refcount = 1;
+ 
+     object->desc = *desc;
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 8655c018..e5bf20dd 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -4339,9 +4339,10 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_SetStablePowerState(d3d12_device_i
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateCommandSignature(d3d12_device_iface *iface,
+-        const D3D12_COMMAND_SIGNATURE_DESC *desc, ID3D12RootSignature *root_signature,
++        const D3D12_COMMAND_SIGNATURE_DESC *desc, ID3D12RootSignature *root_signature_iface,
+         REFIID iid, void **command_signature)
+ {
++    struct d3d12_root_signature *root_signature = impl_from_ID3D12RootSignature(root_signature_iface);
+     struct d3d12_device *device = impl_from_ID3D12Device(iface);
+     struct d3d12_command_signature *object;
+     HRESULT hr;
+@@ -4349,7 +4350,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateCommandSignature(d3d12_devic
+     TRACE("iface %p, desc %p, root_signature %p, iid %s, command_signature %p.\n",
+             iface, desc, root_signature, debugstr_guid(iid), command_signature);
+ 
+-    if (FAILED(hr = d3d12_command_signature_create(device, desc, &object)))
++    if (FAILED(hr = d3d12_command_signature_create(device, root_signature, desc, &object)))
+         return hr;
+ 
+     return return_interface(&object->ID3D12CommandSignature_iface,
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index 299f28e4..0bad3f01 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -2304,13 +2304,15 @@ struct d3d12_command_signature
+     LONG refcount;
+ 
+     D3D12_COMMAND_SIGNATURE_DESC desc;
++    uint32_t argument_buffer_offset;
+ 
+     struct d3d12_device *device;
+ 
+     struct vkd3d_private_store private_store;
+ };
+ 
+-HRESULT d3d12_command_signature_create(struct d3d12_device *device, const D3D12_COMMAND_SIGNATURE_DESC *desc,
++HRESULT d3d12_command_signature_create(struct d3d12_device *device, struct d3d12_root_signature *root_signature,
++        const D3D12_COMMAND_SIGNATURE_DESC *desc,
+         struct d3d12_command_signature **signature);
+ 
+ static inline struct d3d12_command_signature *impl_from_ID3D12CommandSignature(ID3D12CommandSignature *iface)
+diff --git a/tests/d3d12_device.c b/tests/d3d12_device.c
+index 43c21947..5071e2a3 100644
+--- a/tests/d3d12_device.c
++++ b/tests/d3d12_device.c
+@@ -739,6 +739,7 @@ void test_create_command_signature(void)
+     D3D12_INDIRECT_ARGUMENT_DESC argument_desc[3];
+     D3D12_COMMAND_SIGNATURE_DESC signature_desc;
+     ID3D12CommandSignature *command_signature;
++    ID3D12RootSignature *root_signature;
+     ID3D12Device *device;
+     unsigned int i;
+     ULONG refcount;
+@@ -750,6 +751,7 @@ void test_create_command_signature(void)
+         return;
+     }
+ 
++    memset(argument_desc, 0, sizeof(argument_desc));
+     signature_desc.ByteStride = 1024;
+     signature_desc.NumArgumentDescs = ARRAY_SIZE(argument_desc);
+     signature_desc.pArgumentDescs = argument_desc;
+@@ -780,6 +782,62 @@ void test_create_command_signature(void)
+             NULL, &IID_ID3D12CommandSignature, (void **)&command_signature);
+     ok(hr == E_INVALIDARG, "Got unexpected hr %#x.\n", hr);
+ 
++    signature_desc.NumArgumentDescs = 1;
++    for (i = 0; i < 3; ++i)
++    {
++        static const D3D12_INDIRECT_ARGUMENT_TYPE action_types[] =
++        {
++            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
++            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
++            D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
++        };
++        static const UINT action_sizes[] =
++        {
++            sizeof(D3D12_DRAW_ARGUMENTS),
++            sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
++            sizeof(D3D12_DISPATCH_ARGUMENTS),
++        };
++
++        argument_desc[0].Type = action_types[i];
++        signature_desc.ByteStride = action_sizes[i];
++        hr = ID3D12Device_CreateCommandSignature(device, &signature_desc,
++                NULL, &IID_ID3D12CommandSignature, (void **)&command_signature);
++        ok(hr == S_OK, "Failed to create action-only signature %u, hr %#x.\n", i, hr);
++        if (SUCCEEDED(hr))
++            ID3D12CommandSignature_Release(command_signature);
++    }
++
++    root_signature = create_cb_root_signature(device, 0, D3D12_SHADER_VISIBILITY_ALL, 0);
++
++    memset(argument_desc, 0, sizeof(argument_desc));
++    argument_desc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
++    argument_desc[0].ConstantBufferView.RootParameterIndex = 0;
++    argument_desc[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
++    signature_desc.ByteStride = sizeof(D3D12_GPU_VIRTUAL_ADDRESS) + sizeof(D3D12_DRAW_ARGUMENTS);
++    signature_desc.NumArgumentDescs = 2;
++
++    hr = ID3D12Device_CreateCommandSignature(device, &signature_desc,
++            NULL, &IID_ID3D12CommandSignature, (void **)&command_signature);
++    ok(hr == E_INVALIDARG, "Got unexpected hr %#x for missing root signature.\n", hr);
++
++    hr = ID3D12Device_CreateCommandSignature(device, &signature_desc,
++            root_signature, &IID_ID3D12CommandSignature, (void **)&command_signature);
++    ok(hr == E_NOTIMPL, "Got unexpected hr %#x for unsupported CBV + DRAW signature.\n", hr);
++
++    --signature_desc.ByteStride;
++    hr = ID3D12Device_CreateCommandSignature(device, &signature_desc,
++            root_signature, &IID_ID3D12CommandSignature, (void **)&command_signature);
++    ok(hr == E_INVALIDARG, "Got unexpected hr %#x for short indirect stride.\n", hr);
++
++    argument_desc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
++    signature_desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
++    signature_desc.NumArgumentDescs = 1;
++    hr = ID3D12Device_CreateCommandSignature(device, &signature_desc,
++            root_signature, &IID_ID3D12CommandSignature, (void **)&command_signature);
++    ok(hr == E_INVALIDARG, "Got unexpected hr %#x for unnecessary root signature.\n", hr);
++
++    ID3D12RootSignature_Release(root_signature);
++
+     refcount = ID3D12Device_Release(device);
+     ok(!refcount, "ID3D12Device has %u references left.\n", (unsigned int)refcount);
+ }
+-- 
+2.43.0

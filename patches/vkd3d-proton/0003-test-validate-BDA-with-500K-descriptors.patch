@@ -1,0 +1,258 @@
+From f74c040a29688cd1e437bf089fd6548b89b00504 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Tue, 4 Aug 2026 19:42:04 +0800
+Subject: [PATCH 3/5] test: validate BDA with 500K descriptors
+
+---
+ tests/vkd3d_limited_500k_microtest.c | 152 ++++++++++++++++++++++++---
+ 1 file changed, 136 insertions(+), 16 deletions(-)
+
+diff --git a/tests/vkd3d_limited_500k_microtest.c b/tests/vkd3d_limited_500k_microtest.c
+index 9385b296..92d9e697 100644
+--- a/tests/vkd3d_limited_500k_microtest.c
++++ b/tests/vkd3d_limited_500k_microtest.c
+@@ -16,6 +16,7 @@
+
+ #define VKD3D_LIMITED_MAX_RESOURCE_VIEW_HEAP_SIZE 500000u
+ #define VKD3D_LIMITED_COPY_BUFFER_SIZE 256u
++#define VKD3D_LIMITED_BDA_READBACK_OFFSET 64u
+
+ /*
+  * ByteAddressBuffer t0;
+@@ -127,6 +128,27 @@ static void vkd3d_limited_dump_bytes(const char *label, const uint8_t *bytes, si
+     fputc('\n', stderr);
+ }
+
++static int vkd3d_limited_validate_bytes(const char *label, const uint8_t *actual,
++        const uint8_t *expected, size_t byte_count)
++{
++    size_t mismatch_index;
++
++    if (!memcmp(actual, expected, byte_count))
++        return 1;
++
++    for (mismatch_index = 0; mismatch_index < byte_count; ++mismatch_index)
++    {
++        if (actual[mismatch_index] != expected[mismatch_index])
++            break;
++    }
++    fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: %s bytes differ at offset %zu, "
++            "expected %02x, actual %02x.\n", label, mismatch_index,
++            expected[mismatch_index], actual[mismatch_index]);
++    vkd3d_limited_dump_bytes("EXPECTED", expected, byte_count);
++    vkd3d_limited_dump_bytes(label, actual, byte_count);
++    return 0;
++}
++
+ static int vkd3d_limited_write_result(const char *path, int status, const char *stage)
+ {
+     FILE *file;
+@@ -137,7 +159,7 @@ static int vkd3d_limited_write_result(const char *path, int status, const char *
+     fprintf(file, "{\"status\":\"%s\",\"stage\":\"%s\",\"message\":\"%s\"}\n",
+             status ? "FAIL" : "PASS", stage,
+             status ? "see Wine stderr for the failed 500K microtest operation"
+-                    : "500K descriptor heap GPU read and D3D12 copy/readback passed");
++                    : "requested D3D12 GPU operations and byte readback passed");
+     return fclose(file) == 0;
+ }
+
+@@ -167,7 +189,7 @@ int main(int argc, char **argv)
+     D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc;
+     D3D12_ROOT_SIGNATURE_DESC root_signature_desc;
+     D3D12_DESCRIPTOR_RANGE descriptor_ranges[2];
+-    D3D12_ROOT_PARAMETER root_parameters[3];
++    D3D12_ROOT_PARAMETER root_parameters[5];
+     D3D12_COMMAND_QUEUE_DESC queue_desc;
+     D3D12_HEAP_PROPERTIES heap_properties;
+     D3D12_RESOURCE_BARRIER barrier;
+@@ -184,12 +206,15 @@ int main(int argc, char **argv)
+     ID3D12DescriptorHeap *descriptor_heap = NULL;
+     ID3D12DescriptorHeap *oversized_descriptor_heap = NULL;
+     ID3D12RootSignature *root_signature = NULL;
++    ID3D12RootSignature *bda_root_signature = NULL;
+     ID3D12PipelineState *pipeline_state = NULL;
++    ID3D12PipelineState *bda_pipeline_state = NULL;
+     ID3D12Fence *fence = NULL;
+     ID3D12Device *device = NULL;
+     ID3D12Resource *upload = NULL;
+     ID3D12Resource *resource = NULL;
+     ID3D12Resource *descriptor_output = NULL;
++    ID3D12Resource *bda_output = NULL;
+     ID3D12Resource *readback = NULL;
+     ID3DBlob *root_signature_blob = NULL;
+     ID3D12CommandList *command_lists[1];
+@@ -202,6 +227,8 @@ int main(int argc, char **argv)
+     char module_path[MAX_PATH];
+     void *mapped_data = NULL;
+     HRESULT hr = E_FAIL;
++    D3D12_GPU_VIRTUAL_ADDRESS input_va;
++    D3D12_GPU_VIRTUAL_ADDRESS output_va;
+     UINT descriptor_count;
+     UINT increment_size = 0;
+     int status = 1;
+@@ -425,6 +452,71 @@ int main(int argc, char **argv)
+             vkd3d_limited_report_failure("CreateComputePipelineState", hr);
+             goto done;
+         }
++
++        heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
++        buffer_desc = vkd3d_limited_buffer_desc(VKD3D_LIMITED_COPY_BUFFER_SIZE);
++        buffer_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++        stage = "bda-output";
++        if (FAILED(hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
++                D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++                NULL, &IID_ID3D12Resource, (void **)&bda_output)))
++        {
++            vkd3d_limited_report_failure("CreateCommittedResource(BDA output)", hr);
++            goto done;
++        }
++
++        /* The shared shader declares t0/u0 as well as the BDA path at t4/u2.
++         * Bind every static declaration; size=0 keeps t0/u0 inactive here. */
++        memset(root_parameters, 0, sizeof(root_parameters));
++        root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
++        root_parameters[0].Descriptor.ShaderRegister = 0;
++        root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++        root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
++        root_parameters[1].Descriptor.ShaderRegister = 4;
++        root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++        root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
++        root_parameters[2].Descriptor.ShaderRegister = 0;
++        root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++        root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
++        root_parameters[3].Descriptor.ShaderRegister = 2;
++        root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++        root_parameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++        root_parameters[4].Constants.ShaderRegister = 0;
++        root_parameters[4].Constants.Num32BitValues = 2;
++        root_parameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++
++        memset(&root_signature_desc, 0, sizeof(root_signature_desc));
++        root_signature_desc.NumParameters = 5;
++        root_signature_desc.pParameters = root_parameters;
++        stage = "bda-root-signature";
++        if (FAILED(hr = D3D12SerializeRootSignature(&root_signature_desc,
++                D3D_ROOT_SIGNATURE_VERSION_1_0, &root_signature_blob, NULL)))
++        {
++            vkd3d_limited_report_failure("D3D12SerializeRootSignature(BDA)", hr);
++            goto done;
++        }
++        if (FAILED(hr = ID3D12Device_CreateRootSignature(device, 0,
++                ID3D10Blob_GetBufferPointer(root_signature_blob),
++                ID3D10Blob_GetBufferSize(root_signature_blob),
++                &IID_ID3D12RootSignature, (void **)&bda_root_signature)))
++        {
++            vkd3d_limited_report_failure("CreateRootSignature(BDA)", hr);
++            goto done;
++        }
++        ID3D10Blob_Release(root_signature_blob);
++        root_signature_blob = NULL;
++
++        memset(&pipeline_desc, 0, sizeof(pipeline_desc));
++        pipeline_desc.pRootSignature = bda_root_signature;
++        pipeline_desc.CS.pShaderBytecode = vkd3d_limited_descriptor_cs;
++        pipeline_desc.CS.BytecodeLength = sizeof(vkd3d_limited_descriptor_cs);
++        stage = "bda-pipeline";
++        if (FAILED(hr = ID3D12Device_CreateComputePipelineState(device, &pipeline_desc,
++                &IID_ID3D12PipelineState, (void **)&bda_pipeline_state)))
++        {
++            vkd3d_limited_report_failure("CreateComputePipelineState(BDA)", hr);
++            goto done;
++        }
+     }
+
+     stage = descriptor_heap ? "descriptor-gpu" : "copy";
+@@ -460,6 +552,32 @@ int main(int argc, char **argv)
+         ID3D12GraphicsCommandList_ResourceBarrier(command_list, 1, &barrier);
+         ID3D12GraphicsCommandList_CopyBufferRegion(command_list, readback, 0,
+                 descriptor_output, 0, sizeof(expected));
++
++        stage = "bda-gpu";
++        input_va = ID3D12Resource_GetGPUVirtualAddress(resource);
++        output_va = ID3D12Resource_GetGPUVirtualAddress(bda_output);
++        if (!input_va || !output_va)
++        {
++            fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: BDA returned a zero GPU virtual address.\n");
++            goto done;
++        }
++        ID3D12GraphicsCommandList_SetComputeRootSignature(command_list, bda_root_signature);
++        ID3D12GraphicsCommandList_SetPipelineState(command_list, bda_pipeline_state);
++        ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(command_list, 0, input_va);
++        ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(command_list, 1, input_va);
++        ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(command_list, 2, output_va);
++        ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(command_list, 3, output_va);
++        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(command_list, 4, 0, 0);
++        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(command_list, 4,
++                sizeof(expected) / sizeof(uint32_t), 1);
++        ID3D12GraphicsCommandList_Dispatch(command_list, 1, 1, 1);
++
++        barrier.Transition.pResource = bda_output;
++        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        ID3D12GraphicsCommandList_ResourceBarrier(command_list, 1, &barrier);
++        ID3D12GraphicsCommandList_CopyBufferRegion(command_list, readback,
++                VKD3D_LIMITED_BDA_READBACK_OFFSET, bda_output, 0, sizeof(expected));
+     }
+     else
+     {
+@@ -510,7 +628,8 @@ int main(int argc, char **argv)
+     }
+
+     read_range.Begin = 0;
+-    read_range.End = sizeof(expected);
++    read_range.End = descriptor_heap
++            ? VKD3D_LIMITED_BDA_READBACK_OFFSET + sizeof(expected) : sizeof(expected);
+     stage = "readback";
+     if (FAILED(hr = ID3D12Resource_Map(readback, 0, &read_range, &mapped_data)))
+     {
+@@ -518,21 +637,16 @@ int main(int argc, char **argv)
+         goto done;
+     }
+
+-    if (memcmp(mapped_data, expected, sizeof(expected)))
++    stage = descriptor_heap ? "readback-descriptor" : "readback-copy";
++    if (!vkd3d_limited_validate_bytes("DESCRIPTOR", mapped_data, expected, sizeof(expected)))
++        goto done;
++    if (descriptor_heap)
+     {
+-        const uint8_t *actual = mapped_data;
+-        size_t mismatch_index;
++        const uint8_t *bda_actual = (const uint8_t *)mapped_data + VKD3D_LIMITED_BDA_READBACK_OFFSET;
+
+-        for (mismatch_index = 0; mismatch_index < sizeof(expected); ++mismatch_index)
+-        {
+-            if (actual[mismatch_index] != expected[mismatch_index])
+-                break;
+-        }
+-        fprintf(stderr, "VKD3D_LIMITED_500K_MICROTEST FAIL: readback bytes differ at offset %zu, expected %02x, actual %02x.\n",
+-                mismatch_index, expected[mismatch_index], actual[mismatch_index]);
+-        vkd3d_limited_dump_bytes("EXPECTED", expected, sizeof(expected));
+-        vkd3d_limited_dump_bytes("ACTUAL", actual, sizeof(expected));
+-        goto done;
++        stage = "readback-bda";
++        if (!vkd3d_limited_validate_bytes("BDA", bda_actual, expected, sizeof(expected)))
++            goto done;
+     }
+     ID3D12Resource_Unmap(readback, 0, NULL);
+     mapped_data = NULL;
+@@ -552,14 +666,20 @@ done:
+         ID3D12Fence_Release(fence);
+     if (root_signature_blob)
+         ID3D10Blob_Release(root_signature_blob);
++    if (bda_pipeline_state)
++        ID3D12PipelineState_Release(bda_pipeline_state);
+     if (pipeline_state)
+         ID3D12PipelineState_Release(pipeline_state);
++    if (bda_root_signature)
++        ID3D12RootSignature_Release(bda_root_signature);
+     if (root_signature)
+         ID3D12RootSignature_Release(root_signature);
+     if (readback)
+         ID3D12Resource_Release(readback);
+     if (descriptor_output)
+         ID3D12Resource_Release(descriptor_output);
++    if (bda_output)
++        ID3D12Resource_Release(bda_output);
+     if (resource)
+         ID3D12Resource_Release(resource);
+     if (upload)

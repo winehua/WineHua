@@ -99,6 +99,12 @@ bool PresentPerfSummaryEnabled()
     return summary && summary[0] == '1' && !summary[1];
 }
 
+bool ForceSourceClearEnabled()
+{
+    const char* value = std::getenv("WINEHUA_VENUS_FORCE_SOURCE_CLEAR");
+    return value && value[0] == '1' && !value[1];
+}
+
 /* This is deliberately a presenter-only timestamp, not a scene GPU timer.
  * Sample it sparsely so the timeline profile retains the production path on
  * all ordinary frames. */
@@ -397,9 +403,13 @@ struct VenusSurfaceQueueTarget::Impl {
 
         VkImageMemoryBarrier sourceToTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         sourceToTransfer.srcAccessMask = SourceAccess(sourceLayout);
-        sourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        const bool forceSourceClear = ForceSourceClearEnabled();
+        sourceToTransfer.dstAccessMask = forceSourceClear
+            ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT;
         sourceToTransfer.oldLayout = sourceLayout;
-        sourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        sourceToTransfer.newLayout = forceSourceClear
+            ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+            : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         sourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         sourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         sourceToTransfer.image = sourceImage;
@@ -430,6 +440,30 @@ struct VenusSurfaceQueueTarget::Impl {
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                              0, nullptr, 0, nullptr,
                              static_cast<uint32_t>(before.size()), before.data());
+
+        if (forceSourceClear) {
+            const VkClearColorValue colour = {{1.0f, 0.0f, 0.75f, 1.0f}};
+            const VkImageSubresourceRange range = {
+                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(frame.command, sourceImage,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &colour, 1, &range);
+
+            VkImageMemoryBarrier sourceClearToRead{
+                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            sourceClearToRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceClearToRead.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            sourceClearToRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            sourceClearToRead.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            sourceClearToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            sourceClearToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            sourceClearToRead.image = sourceImage;
+            sourceClearToRead.subresourceRange = range;
+            vkCmdPipelineBarrier(frame.command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                 0, nullptr, 0, nullptr, 1,
+                                 &sourceClearToRead);
+        }
 
         if (useBlit_) {
             VkImageBlit blit{};

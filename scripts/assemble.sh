@@ -122,7 +122,8 @@ assemble_pad() {
                   libgstnet-1.0.so.0 libgstvideo-1.0.so.0 libgstaudio-1.0.so.0 \
                   libgsttag-1.0.so.0 libgstpbutils-1.0.so.0 libgstallocators-1.0.so.0 \
                   libgstapp-1.0.so.0 libgstfft-1.0.so.0 libgstriff-1.0.so.0 \
-                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0; do
+                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0 \
+                  libgstcodecparsers-1.0.so.0 libgstmpegts-1.0.so.0; do
             _pick_lib_pad "$so" "$so"
         done
         log "    交叉编译依赖 → libs/x86_64/"
@@ -237,7 +238,8 @@ assemble_pad() {
                   libgstnet-1.0.so.0 libgstvideo-1.0.so.0 libgstaudio-1.0.so.0 \
                   libgsttag-1.0.so.0 libgstpbutils-1.0.so.0 libgstallocators-1.0.so.0 \
                   libgstapp-1.0.so.0 libgstfft-1.0.so.0 libgstriff-1.0.so.0 \
-                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0; do
+                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0 \
+                  libgstcodecparsers-1.0.so.0 libgstmpegts-1.0.so.0; do
             # box64 按 SONAME 解析依赖时可能查找无版本名 (libgstvideo-1.0.so),
             # 与 gnutls 链一致补上无版本软链, 否则 winegstreamer dlopen 报
             # "Error loading shared library libgstvideo-1.0.so: No such file"
@@ -477,6 +479,22 @@ assemble_pad() {
     i686-w64-mingw32-gcc -O2 -s -mwindows -o \
         "$smoke_dir/x86/winehua_d3d_switch_cube.exe" "$cube_source" \
         -ld3d9 -ld3d11 -ldxgi -ld3dcompiler -luuid -lshell32 -luser32 -lgdi32 -lm
+    # The primary Wine build uses --enable-archs=i386,x86_64.  Its PE import
+    # libraries are both emitted under wine-ohos; wine-i386-pe is an obsolete
+    # standalone build directory and does not exist in a clean CI checkout.
+    local vulkan_import_x64="$BUILD_DIR/wine-ohos/dlls/vulkan-1/x86_64-windows/libvulkan-1.a"
+    local vulkan_import_x86="$BUILD_DIR/wine-ohos/dlls/vulkan-1/i386-windows/libvulkan-1.a"
+    [ -s "$vulkan_import_x64" ] || err "Wine x64 Vulkan import library missing: $vulkan_import_x64"
+    [ -s "$vulkan_import_x86" ] || err "Wine x86 Vulkan import library missing: $vulkan_import_x86"
+    local diagnostics_source="$WINEHUA/smoke/winehua_gpu_diagnostics.c"
+    x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
+        "$smoke_dir/x64/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
+        "$vulkan_import_x64" \
+        -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
+    i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
+        "$smoke_dir/x86/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
+        "$vulkan_import_x86" \
+        -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
     local d3d8_source="$WINEHUA/smoke/winehua_d3d8_smoke.c"
     x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
         "$smoke_dir/x64/winehua_d3d8_smoke.exe" "$d3d8_source" \
@@ -484,6 +502,17 @@ assemble_pad() {
     i686-w64-mingw32-gcc -O2 -s -mwindows -o \
         "$smoke_dir/x86/winehua_d3d8_smoke.exe" "$d3d8_source" \
         -luser32 -lgdi32
+    # This deliberately links Wine's own PE Vulkan import library.  The
+    # requirements probe must exercise the same vulkan-1 -> winevulkan ->
+    # x86_64 Loader -> Venus transport as a Windows DXVK process, without
+    # adding a second Windows Vulkan SDK dependency to the image.
+    local dxvk26_requirements_source="$WINEHUA/smoke/winehua_dxvk26_requirements.c"
+    x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
+        "$smoke_dir/x64/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
+        "$vulkan_import_x64" -luser32 -lcomctl32 -lgdi32
+    i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
+        "$smoke_dir/x86/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
+        "$vulkan_import_x86" -luser32 -lcomctl32 -lgdi32
     local win32_driver_source="$WINEHUA/smoke/winehua_win32_driver.c"
     x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
         "$smoke_dir/x64/winehua_win32_driver.exe" "$win32_driver_source" \
@@ -510,11 +539,51 @@ assemble_pad() {
     cp "$dxvk_root/x64/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
     cp "$dxvk_root/x86/bin/d3d11.dll" "$wine_data/dxvk/legacy/x86/d3d11.dll"
     cp "$dxvk_root/x86/bin/dxgi.dll" "$wine_data/dxvk/legacy/x86/dxgi.dll"
+    local dxvk_modern_root="$DXVK_MODERN_BUILD_ROOT"
+    [ -f "$dxvk_modern_root/x64/bin/d3d11.dll" ] || err "DXVK Modern x64 d3d11.dll missing: $dxvk_modern_root/x64/bin/d3d11.dll"
+    [ -f "$dxvk_modern_root/x64/bin/dxgi.dll" ] || err "DXVK Modern x64 dxgi.dll missing: $dxvk_modern_root/x64/bin/dxgi.dll"
+    [ -f "$dxvk_modern_root/x86/bin/d3d11.dll" ] || err "DXVK Modern x86 d3d11.dll missing: $dxvk_modern_root/x86/bin/d3d11.dll"
+    [ -f "$dxvk_modern_root/x86/bin/dxgi.dll" ] || err "DXVK Modern x86 dxgi.dll missing: $dxvk_modern_root/x86/bin/dxgi.dll"
+    mkdir -p "$wine_data/dxvk/modern-2.6/x64" "$wine_data/dxvk/modern-2.6/x86"
+    cp "$dxvk_modern_root/x64/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
+    cp "$dxvk_modern_root/x64/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
+    cp "$dxvk_modern_root/x86/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x86/d3d11.dll"
+    cp "$dxvk_modern_root/x86/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x86/dxgi.dll"
+    local vkd3d_root="$VKD3D_PROTON_BUILD_ROOT/limited-500k"
+    [ -f "$vkd3d_root/x64/d3d12.dll" ] || err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
+    [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \
+        err "VKD3D-Proton x64 graphics smoke missing: $vkd3d_root/x64/winehua-d3d12-smoke.exe"
+    [ -f "$vkd3d_root/manifest.json" ] || err "VKD3D-Proton manifest missing: $vkd3d_root/manifest.json"
+    # Keep the upstream VKD3D-Proton demos available as ordinary managed
+    # C:\\smoke programs. They are test assets, not runtime DLLs.
+    # Prefer demos built with this limited-500K profile so CI does not depend
+    # on the gitignored .temp payload used by older local trees.
+    local vkd3d_demo_triangle="$vkd3d_root/x64/triangle.exe"
+    local vkd3d_demo_gears="$vkd3d_root/x64/gears.exe"
+    if [ ! -f "$vkd3d_demo_triangle" ] || [ ! -f "$vkd3d_demo_gears" ]; then
+        local vkd3d_upstream_demos="$WINEHUA/.temp/vkd3d-upstream-demos-20260806-payload"
+        vkd3d_demo_triangle="$vkd3d_upstream_demos/triangle.exe"
+        vkd3d_demo_gears="$vkd3d_upstream_demos/gears.exe"
+    fi
+    [ -f "$vkd3d_demo_triangle" ] || \
+        err "VKD3D-Proton triangle demo missing: $vkd3d_demo_triangle"
+    [ -f "$vkd3d_demo_gears" ] || \
+        err "VKD3D-Proton gears demo missing: $vkd3d_demo_gears"
+    cp "$vkd3d_demo_triangle" "$smoke_dir/x64/triangle.exe"
+    cp "$vkd3d_demo_gears" "$smoke_dir/x64/gears.exe"
+    local vkd3d_upstream_triangle_sha vkd3d_upstream_gears_sha
+    vkd3d_upstream_triangle_sha="$(sha256sum "$smoke_dir/x64/triangle.exe" | awk '{print $1}')"
+    vkd3d_upstream_gears_sha="$(sha256sum "$smoke_dir/x64/gears.exe" | awk '{print $1}')"
+    mkdir -p "$wine_data/vkd3d/limited-500k/x64"
+    cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
+    cp "$vkd3d_root/manifest.json" "$wine_data/vkd3d/manifest.json"
+    cp "$vkd3d_root/x64/winehua-d3d12-smoke.exe" \
+        "$smoke_dir/x64/winehua_d3d12_smoke.exe"
     # The DXVK binaries are runtime-owned overlays.  Do not place them next
     # to the smoke executables: that would make the test layout look like a
     # game distribution and would force real games to carry WineHua-specific
     # DLLs.  SpawnWineProgram exposes this versioned directory through
-    # WINEDLLPATH only for a selected dxvk_* backend.
+    # WINEDLLPATH for the selected DXVK or mixed VKD3D backend.
     local smoke_program
     for smoke_program in winehua_audio_smoke winehua_graphics_smoke winehua_vulkan_smoke winehua_d3d11_smoke; do
         local smoke64="$wine_build_dir/programs/$smoke_program/$smoke_src_dir/$smoke_program.exe"
@@ -527,22 +596,26 @@ assemble_pad() {
         cp "$smoke64" "$smoke_dir/x64/$smoke_program.exe"
         cp "$smoke32" "$smoke_dir/x86/$smoke_program.exe"
     done
-    local audio64_sha graphics64_sha vulkan64_sha d3d1164_sha d3d864_sha cube64_sha driver64_sha
-    local audio32_sha graphics32_sha vulkan32_sha d3d1132_sha d3d832_sha cube32_sha driver32_sha
+    local audio64_sha graphics64_sha vulkan64_sha d3d1164_sha d3d864_sha cube64_sha diagnostics64_sha driver64_sha requirements64_sha
+    local audio32_sha graphics32_sha vulkan32_sha d3d1132_sha d3d832_sha cube32_sha diagnostics32_sha driver32_sha requirements32_sha
     local storage_write_sha storage_read_sha image_fetch_sha combined_sample_sha separated_sample_sha
+    local vkd3d64_d3d12_sha vkd3d64_smoke_sha
     audio64_sha="$(sha256sum "$smoke_dir/x64/winehua_audio_smoke.exe" | awk '{print $1}')"
     graphics64_sha="$(sha256sum "$smoke_dir/x64/winehua_graphics_smoke.exe" | awk '{print $1}')"
     vulkan64_sha="$(sha256sum "$smoke_dir/x64/winehua_vulkan_smoke.exe" | awk '{print $1}')"
     d3d1164_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d11_smoke.exe" | awk '{print $1}')"
     d3d864_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d8_smoke.exe" | awk '{print $1}')"
     cube64_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d_switch_cube.exe" | awk '{print $1}')"
+    diagnostics64_sha="$(sha256sum "$smoke_dir/x64/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
     driver64_sha="$(sha256sum "$smoke_dir/x64/winehua_win32_driver.exe" | awk '{print $1}')"
+    requirements64_sha="$(sha256sum "$smoke_dir/x64/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
     audio32_sha="$(sha256sum "$smoke_dir/x86/winehua_audio_smoke.exe" | awk '{print $1}')"
     graphics32_sha="$(sha256sum "$smoke_dir/x86/winehua_graphics_smoke.exe" | awk '{print $1}')"
     vulkan32_sha="$(sha256sum "$smoke_dir/x86/winehua_vulkan_smoke.exe" | awk '{print $1}')"
     d3d1132_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d11_smoke.exe" | awk '{print $1}')"
     d3d832_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d8_smoke.exe" | awk '{print $1}')"
     cube32_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d_switch_cube.exe" | awk '{print $1}')"
+    diagnostics32_sha="$(sha256sum "$smoke_dir/x86/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
     driver32_sha="$(sha256sum "$smoke_dir/x86/winehua_win32_driver.exe" | awk '{print $1}')"
     # venus shader 资产: 随 guest_vulkan bundle 打包 (源驱动)
     if [ -f "$smoke_dir/assets/venus_storage_write.spv" ]; then
@@ -554,37 +627,84 @@ assemble_pad() {
     else
         storage_write_sha="" storage_read_sha="" image_fetch_sha="" combined_sample_sha="" separated_sample_sha=""
     fi
-    local dxvk_commit
+    requirements32_sha="$(sha256sum "$smoke_dir/x86/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
+    # vkd3d-proton 仅在显式构建 (make vkd3d-proton) 时存在; 未构建则 manifest 记空
+    if [ -f "$wine_data/vkd3d/limited-500k/x64/d3d12.dll" ]; then
+        vkd3d64_d3d12_sha="$(sha256sum "$wine_data/vkd3d/limited-500k/x64/d3d12.dll" | awk '{print $1}')"
+    else
+        vkd3d64_d3d12_sha=""
+    fi
+    if [ -f "$smoke_dir/x64/winehua_d3d12_smoke.exe" ]; then
+        vkd3d64_smoke_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d12_smoke.exe" | awk '{print $1}')"
+    else
+        vkd3d64_smoke_sha=""
+    fi
+    local smoke_suite_version="phase2-vulkan-dxvk-v10-vkd3d-default"
+    local dxvk_commit dxvk_modern_commit mesa_commit virglrenderer_commit
+    local guest_venus_icd_sha host_virglrenderer_sha venus_runtime_id
     dxvk_commit="$(git -c safe.directory="$DXVK_SRC" -C "$DXVK_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
+    dxvk_modern_commit="$(git -c safe.directory="$DXVK_MODERN_SRC" -C "$DXVK_MODERN_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
+    mesa_commit="$(git -c safe.directory="$ROOT/thirdparty/mesa" -C "$ROOT/thirdparty/mesa" rev-parse HEAD 2>/dev/null || echo unknown)"
+    virglrenderer_commit="$(git -c safe.directory="$ROOT/thirdparty/virglrenderer" -C "$ROOT/thirdparty/virglrenderer" rev-parse HEAD 2>/dev/null || echo unknown)"
+    guest_venus_icd_sha="$(sha256sum "$BUILD_DIR/guest_vulkan/$guest_arch/lib/libvulkan_virtio.so" | awk '{print $1}')"
+    host_virglrenderer_sha="$(sha256sum "$ROOT/entry/libs/$NATIVE_ARCH/libvirglrenderer.so.1" | awk '{print $1}')"
+    venus_runtime_id="venus-${guest_venus_icd_sha:0:12}-${host_virglrenderer_sha:0:12}"
     local dxvk64_d3d11_sha dxvk64_dxgi_sha dxvk32_d3d11_sha dxvk32_dxgi_sha
+    local dxvkmodern64_d3d11_sha dxvkmodern64_dxgi_sha dxvkmodern32_d3d11_sha dxvkmodern32_dxgi_sha
     dxvk64_d3d11_sha="$(sha256sum "$wine_data/dxvk/legacy/x64/d3d11.dll" | awk '{print $1}')"
     dxvk64_dxgi_sha="$(sha256sum "$wine_data/dxvk/legacy/x64/dxgi.dll" | awk '{print $1}')"
     dxvk32_d3d11_sha="$(sha256sum "$wine_data/dxvk/legacy/x86/d3d11.dll" | awk '{print $1}')"
     dxvk32_dxgi_sha="$(sha256sum "$wine_data/dxvk/legacy/x86/dxgi.dll" | awk '{print $1}')"
+    dxvkmodern64_d3d11_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x64/d3d11.dll" | awk '{print $1}')"
+    dxvkmodern64_dxgi_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x64/dxgi.dll" | awk '{print $1}')"
+    dxvkmodern32_d3d11_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x86/d3d11.dll" | awk '{print $1}')"
+    dxvkmodern32_dxgi_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x86/dxgi.dll" | awk '{print $1}')"
     cat > "$wine_data/dxvk/manifest.json" <<EOF
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "backend": "dxvk",
-  "profile": "legacy",
+  "defaultProfile": "legacy",
   "runtimeRoot": "dxvk",
-  "version": "1.10.3",
-  "commit": "$dxvk_commit",
-  "requiredCapabilities": {
-    "vulkanApi": "1.1",
-    "bcFormats": false,
-    "descriptorIndexing": false
+  "venusRuntime": {
+    "id": "$venus_runtime_id",
+    "guestMesaCommit": "$mesa_commit",
+    "guestIcdSha256": "$guest_venus_icd_sha",
+    "hostVirglrendererCommit": "$virglrenderer_commit",
+    "hostVirglrendererSha256": "$host_virglrenderer_sha",
+    "transportCapabilities": {
+      "remoteMemoryShadow": true,
+      "multiRing": false,
+      "fenceFeedback": false,
+      "queryFeedback": false,
+      "semaphoreFeedback": true,
+      "modernRequiresSynchronousTimelineQueries": true
+    }
   },
   "runtimes": {
-    "x64": {"d3d11.dll": "$dxvk64_d3d11_sha", "dxgi.dll": "$dxvk64_dxgi_sha"},
-    "x86": {"d3d11.dll": "$dxvk32_d3d11_sha", "dxgi.dll": "$dxvk32_dxgi_sha"}
+    "legacy": {
+      "version": "1.10.3",
+      "commit": "$dxvk_commit",
+      "state": "stable",
+      "requiredCapabilities": {"vulkanApi": "1.1", "bcFormats": false, "descriptorIndexing": false},
+      "x64": {"d3d11.dll": "$dxvk64_d3d11_sha", "dxgi.dll": "$dxvk64_dxgi_sha"},
+      "x86": {"d3d11.dll": "$dxvk32_d3d11_sha", "dxgi.dll": "$dxvk32_dxgi_sha"}
+    },
+    "modern-2.6": {
+      "version": "2.6.2",
+      "commit": "$dxvk_modern_commit",
+      "state": "adapted-game-validated-capability-gated",
+      "requiredCapabilities": {"vulkanApi": "1.3", "robustness2": true, "dynamicRendering": true, "maintenance4": true},
+      "x64": {"d3d11.dll": "$dxvkmodern64_d3d11_sha", "dxgi.dll": "$dxvkmodern64_dxgi_sha"},
+      "x86": {"d3d11.dll": "$dxvkmodern32_d3d11_sha", "dxgi.dll": "$dxvkmodern32_dxgi_sha"}
+    }
   }
 }
 EOF
     cat > "$smoke_dir/manifest.json" <<EOF
 {
   "schemaVersion": 1,
-  "suiteVersion": "phase2-vulkan-dxvk-legacy-v6-d3d8-d3d9",
-  "enabledSuites": ["core", "audio", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk"],
+  "suiteVersion": "$smoke_suite_version",
+  "enabledSuites": ["core", "audio", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk", "gpu-diagnostics", "dxvk26-requirements", "dxvk-modern-baseline"],
   "managedRoot": "C:\\\\smoke",
   "files": {
     "x64/winehua_audio_smoke.exe": "$audio64_sha",
@@ -593,14 +713,21 @@ EOF
     "x64/winehua_d3d11_smoke.exe": "$d3d1164_sha",
     "x64/winehua_d3d8_smoke.exe": "$d3d864_sha",
     "x64/winehua_d3d_switch_cube.exe": "$cube64_sha",
+    "x64/winehua_gpu_diagnostics.exe": "$diagnostics64_sha",
     "x64/winehua_win32_driver.exe": "$driver64_sha",
+    "x64/winehua_dxvk26_requirements.exe": "$requirements64_sha",
+    "x64/winehua_d3d12_smoke.exe": "$vkd3d64_smoke_sha",
+    "x64/triangle.exe": "$vkd3d_upstream_triangle_sha",
+    "x64/gears.exe": "$vkd3d_upstream_gears_sha",
     "x86/winehua_audio_smoke.exe": "$audio32_sha",
     "x86/winehua_graphics_smoke.exe": "$graphics32_sha",
     "x86/winehua_vulkan_smoke.exe": "$vulkan32_sha",
     "x86/winehua_d3d11_smoke.exe": "$d3d1132_sha",
     "x86/winehua_d3d8_smoke.exe": "$d3d832_sha",
     "x86/winehua_d3d_switch_cube.exe": "$cube32_sha",
+    "x86/winehua_gpu_diagnostics.exe": "$diagnostics32_sha",
     "x86/winehua_win32_driver.exe": "$driver32_sha",
+    "x86/winehua_dxvk26_requirements.exe": "$requirements32_sha",
     "assets/venus_storage_write.spv": "$storage_write_sha",
     "assets/venus_storage_read.spv": "$storage_read_sha",
     "assets/venus_image_fetch.spv": "$image_fetch_sha",
@@ -610,6 +737,7 @@ EOF
 }
 EOF
     log "  managed smoke payload → smoke/{x64,x86}"
+    log "  VKD3D-Proton 2.6 limited-500K (default mixed D3D12 profile) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
 
     # fonts
     cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
@@ -617,10 +745,17 @@ EOF
     cp "$wine_build_dir/nls/"*.nls "$wine_data/share/wine/nls/"
     # winmd
     cp "$wine_build_dir/include/"*.winmd "$wine_data/share/wine/winmd/"
-    # Wine Mono (.NET 运行时) — build_deps.sh 下载到架构无关的 build/wine-mono
-    if ls "$BUILD_DIR/wine-mono/"*.msi >/dev/null 2>&1; then
-        cp "$BUILD_DIR/wine-mono/"*.msi "$wine_data/share/wine/mono/"
+    # Wine Mono (.NET 运行时) — build_deps.sh 下载到架构无关的 build/wine-mono.
+    # Default builds require the exact MSI expected by mscoree/appwiz; an empty
+    # directory would otherwise leave wineboot in an interactive installer
+    # forever on first launch.
+    local wine_mono_msi="$BUILD_DIR/wine-mono/wine-mono-11.1.0-x86.msi"
+    if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
+        [ -s "$wine_mono_msi" ] || err "Wine Mono MSI missing: $wine_mono_msi"
+        cp "$wine_mono_msi" "$wine_data/share/wine/mono/"
         log "    wine-mono.msi → rawfile share/wine/mono/"
+    else
+        log "    Wine Mono: SKIP (BUILD_WINE_MONO=0)"
     fi
     # wine.inf (含 OHOS font substitutes)
     cp "$wine_build_dir/loader/wine.inf" "$wine_data/share/wine/"
@@ -797,7 +932,7 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
   "schemaVersion": 1,
   "payload": "wine-data.zip",
   "payloadSha256": "$payload_sha",
-  "smokeSuiteVersion": "phase2-vulkan-b3-v1"
+  "smokeSuiteVersion": "$smoke_suite_version"
 }
 EOF
     log "  $zip_name → rawfile/ ($(du -h "$rawfile_dir/$zip_name" | cut -f1))"

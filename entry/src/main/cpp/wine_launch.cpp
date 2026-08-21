@@ -40,6 +40,24 @@ static bool FileHasData(const char* path) {
     return stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
 }
 
+static bool FileContainsExactRecord(const std::string& path, const char* expected)
+{
+    FILE* file = fopen(path.c_str(), "r");
+    if (!file) return false;
+    char record[64] = {};
+    const size_t expectedLength = strlen(expected);
+    size_t length = fread(record, 1, sizeof(record), file);
+    fclose(file);
+
+    // Older test builds wrote the token through the Windows text CRT, which
+    // transparently appended CRLF. Keep those valid completed prefixes usable
+    // while requiring the exact token itself.
+    while (length > expectedLength &&
+           (record[length - 1] == '\n' || record[length - 1] == '\r'))
+        --length;
+    return length == expectedLength && !memcmp(record, expected, expectedLength);
+}
+
 static bool DirExists(const char* path) {
     struct stat st;
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
@@ -84,7 +102,10 @@ static bool EnsureDirRecursive(const std::string& path, mode_t mode)
     return EnsureDir(path, mode);
 }
 
-static bool EnsureExternalPePrefixSkeleton(const std::string& prefixDir)
+static bool CopyFileIfNeeded(const std::string& src, const std::string& dst);
+
+static bool EnsureExternalPePrefixSkeleton(const std::string& binDir,
+                                           const std::string& prefixDir)
 {
     // The external-PE runtime resolves 64-bit Windows binaries from
     // x86_64-windows instead of copying them into drive_c.  wineboot therefore
@@ -101,6 +122,18 @@ static bool EnsureExternalPePrefixSkeleton(const std::string& prefixDir)
     bool ok = true;
     for (const char* suffix : suffixes)
         ok = EnsureDirRecursive(prefixDir + suffix, 0777) && ok;
+
+    /* Shell explorer resolves programs supplied after /desktop through the
+     * Windows search path, not the external x86_64-windows PE directory.
+     * Keep the one desktop-only helper in the native system32 location so a
+     * missing helper cannot make wineserver close an otherwise valid shell. */
+    const std::string keepSrc = binDir + "/winehua_keep.exe";
+    const std::string keepDst = prefixDir + "/drive_c/windows/system32/winehua_keep.exe";
+    if (!CopyFileIfNeeded(keepSrc, keepDst)) {
+        OH_LOG_ERROR(LOG_APP, "[Launch-Async] desktop keep helper missing or stale: %{public}s -> %{public}s",
+                     keepSrc.c_str(), keepDst.c_str());
+        ok = false;
+    }
 
     OH_LOG_WARN(LOG_APP, "[Launch-Async] external-PE prefix skeleton %{public}s",
                 ok ? "ready" : "failed");
@@ -259,10 +292,22 @@ static std::string FindLaunchEnvironmentValue(const LaunchParams& params,
     return {};
 }
 
+static bool UsesVulkanD3dBackend(const std::string& backend)
+{
+    return backend.rfind("dxvk_", 0) == 0 ||
+           backend == "vkd3d_limited_500k";
+}
+
+static bool UsesDxvkOverlay(const std::string& backend)
+{
+    return backend.rfind("dxvk_", 0) == 0 ||
+           backend == "vkd3d_limited_500k";
+}
+
 static void AppendStableDesktopDxvkEnv(std::vector<std::string>& env,
                                        const LaunchParams& params)
 {
-    if (params.d3dBackend.rfind("dxvk_", 0) != 0) return;
+    if (!UsesDxvkOverlay(params.d3dBackend)) return;
 
     /* SetHostShadowProfile carries the selected diagnostic profile through
      * the host-side broker environment before Explorer is launched.  Keep
@@ -313,7 +358,23 @@ static void AppendStableDesktopDxvkEnv(std::vector<std::string>& env,
     if (selectedProfile == "shadow-precise-dirty-ring-inline-upload-descriptor-serialized") {
         UpsertEnvLine(env, "VKR_WINEHUA_DESCRIPTOR_UPDATE_SERIALIZE=1");
     }
-    UpsertEnvLine(env, "VN_WINEHUA_STRONG_RING_BARRIER=1");
+    const std::string strongRing =
+        FindLaunchEnvironmentValue(params, "VN_WINEHUA_STRONG_RING_BARRIER");
+    UpsertEnvLine(env, "VN_WINEHUA_STRONG_RING_BARRIER=" +
+                  (strongRing.empty() ? "1" : strongRing));
+    if (params.d3dBackend == "dxvk_modern_2_6" ||
+        (params.d3dBackend == "vkd3d_limited_500k" &&
+         params.dxvkBackend == "dxvk_modern_2_6")) {
+        const char* traceKeys[] = {
+            "DXVK_WINEHUA_TRACE_SAMPLED",
+            "DXVK_WINEHUA_TRACE_FLOW",
+            "DXVK_WINEHUA_TRACE_API",
+        };
+        for (const char* key : traceKeys) {
+            const std::string value = FindLaunchEnvironmentValue(params, key);
+            env.push_back(std::string(key) + "=" + (value.empty() ? "0" : value));
+        }
+    }
     if (guestPerf) {
         UpsertEnvLine(env, "VN_WINEHUA_PERF_SUMMARY=1");
         UpsertEnvLine(env, "VN_WINEHUA_PERF_LOG=/storage/Users/currentUser/Download/app.hackeris.winehua/winehua_guest_ring_perf.log");
@@ -329,7 +390,7 @@ static void PrepareDesktopSessionGraphicsEnv(const LaunchParams& params)
     auto& gb = winehua::GraphicsBroker::GetInstance();
     gb.SetWineRuntimeBinaryDir(params.winehuaBin);
     gb.SetRequestedBackend(winehua::GraphicsBackend::Virgl);
-    gb.SetVulkanPresentMode(params.d3dBackend.rfind("dxvk_", 0) == 0);
+    gb.SetVulkanPresentMode(UsesVulkanD3dBackend(params.d3dBackend));
     gb.EnsureStarted(params.sockDir);
 
     winehua::GraphicsBackendState state = gb.GetState();
@@ -344,7 +405,7 @@ static void PrepareDesktopSessionGraphicsEnv(const LaunchParams& params)
 
     std::vector<std::string> env;
     gb.AppendWineEnv(env);
-    AppendD3dBackendEnv(env, params.d3dBackend, params.winehuaBin);
+    AppendD3dBackendEnv(env, params.d3dBackend, params.dxvkBackend, params.winehuaBin);
     AppendStableDesktopDxvkEnv(env, params);
     /* The broker now receives the finalized environment through the
      * serialized __env entryParams channel. Keep this helper side-effect
@@ -370,7 +431,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     // Prefix registry and user data survive runtime upgrades, while the
     // syswow64 PE files are managed copies. Validate them before wineserver
     // starts so an interrupted prior refresh cannot leave a zero-length DLL.
-    if (!EnsureExternalPePrefixSkeleton(p->prefixDir) ||
+    if (!EnsureExternalPePrefixSkeleton(p->winehuaBin, p->prefixDir) ||
         !EnsureWow64Files(p->winehuaBin, p->prefixDir)) {
         OH_LOG_ERROR(LOG_APP, "[Launch-Async] external-PE prefix preparation failed");
         if (gStateTsfn)
@@ -379,9 +440,14 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
     }
 
     // -- wineserver via NCP --
-    // wineserver 走 WineserverMain 入口 (wine_child.cpp), __env= 覆盖会被解析
+    // NCP does not inherit the app environment. WineserverMain parses
+    // __env=, so pass the selected prefix explicitly; otherwise a clean smoke
+    // wineserver can fall back to the normal .wine prefix.
     {
-        std::string wsEntryParams = p->homeDir + "|" + p->winehuaBin + "|wineserver|-f|-p";
+        std::string wsEntryParams = p->homeDir + "|" + p->winehuaBin +
+            "|wineserver|-f|-p|__env=WINEPREFIX=" + p->prefixDir;
+        if (p->prefixDir == WINE_SMOKE_PREFIX)
+            wsEntryParams += "|__env=WINEHUA_PROCESS_EXIT_TELEMETRY=1";
         OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver args=%{public}s", wsEntryParams.c_str());
         NativeChildProcess_Args wsArgs = {};
         wsArgs.entryParams = const_cast<char*>(wsEntryParams.c_str());
@@ -411,6 +477,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineboot"), napi_tsfn_blocking);
 
     gBrokerHomeDir = p->homeDir;
+    gBrokerPrefixDir = p->prefixDir;
     StartBrokerServer();
     setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
 
@@ -434,21 +501,41 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
                                               napi_tsfn_blocking);
             return false;
         }
+        // wineboot derives this prefix-root path from WINECONFIGDIR, the same
+        // dynamic Windows path it already uses for .update-timestamp. Do not
+        // rely on WINEPREFIX or a custom launcher variable being imported.
+        const std::string winebootStatus =
+            p->prefixDir + "/.winehua-wineboot-init-status";
+        unlink(winebootStatus.c_str());
+        if (FILE* request = fopen(winebootStatus.c_str(), "wb")) {
+            static constexpr char token[] = "wineboot-init-request";
+            const bool written = fwrite(token, 1, sizeof(token) - 1, request) == sizeof(token) - 1;
+            const bool closed = fclose(request) == 0;
+            if (!written || !closed) {
+                OH_LOG_ERROR(LOG_APP,
+                             "[Launch-Async] cannot publish wineboot completion request: %{public}s",
+                             winebootStatus.c_str());
+                unlink(winebootStatus.c_str());
+                return false;
+            }
+        } else {
+            OH_LOG_ERROR(LOG_APP,
+                         "[Launch-Async] cannot create wineboot completion request: %{public}s",
+                         winebootStatus.c_str());
+            return false;
+        }
         auto* ws = WaylandServer::GetInstance();
         ws->SetDesktopRootRecognitionEnabled(false);
         // 首启 wineboot 期间抑制窗口创建事件 (PC 窗口模式): 初始化等待窗
-        // 不创建独立 OHOS 窗口 — 与 Pad 桌面模式 (初始化阶段 root 未渲染,
-        // 窗口天然不可见) 对齐。wineboot 完成后恢复。
+        // 不创建独立 OHOS 窗口 — 与 Pad 桌面模式对齐。wineboot 完成后恢复。
         ws->SetToplevelEventSuppressed(true);
-        // wineboot creates shell-owned helper windows while initializing a fresh
-        // prefix.  Keep those helpers on the desktop path even when the smoke
-        // suite itself uses managed windows; otherwise the first clean-prefix
-        // session can leave Wayland/audio/graphics services half initialized.
+        // The bootstrap worker creates shell-owned helper windows before the
+        // requested test starts. Give only those helpers desktop-root routing.
+        const bool bootstrapNeedsDesktopSurfaces =
+            p->automationMode && p->prefixDir == WINE_SMOKE_PREFIX;
         const char* desktopTag =
-            (ws->IsDesktopMode() || p->automationMode) ? "__winehua_desktop__|" : "";
-        // wineboot 语言跟随设置页 wineLang (zh_CN/en_US), 与桌面会话一致:
-        // entryParams 内 __env 覆盖 setup_wine_env 基线; LANG/LC_ALL 必须同设
-        // (musl 无 locale 数据, Wine 只读 LC_ALL 兜底解析 LCID)
+            (ws->IsDesktopMode() || bootstrapNeedsDesktopSurfaces) ?
+                "__winehua_desktop__|" : "";
         const std::string wbLangEnv = "|__env=LANG=" + p->wineLang + ".UTF-8" +
             "|__env=LC_ALL=" + p->wineLang + ".UTF-8";
         // box64 (方案②): 不带 wine 前缀 — box64 会把 entryParams argv[0] 放到 guest
@@ -462,6 +549,12 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         std::string entryParams = p->homeDir + "|" + p->winehuaBin + "|" + desktopTag +
             "wine|wineboot|--init|__env=WINEPREFIX=" + p->prefixDir + wbLangEnv;
 #endif
+        if (p->automationMode && p->prefixDir == WINE_SMOKE_PREFIX) {
+            // A clean, headless verification prefix has no use for optional
+            // .NET/HTML components. Avoid their interactive download dialogs.
+            entryParams += "|__env=WINEDLLOVERRIDES=mscoree,mshtml=";
+            entryParams += "|__env=WINEHUA_BOOTSTRAP_PHASE=clean-automation";
+        }
         // 注意: wineboot --init 只需要初始化 prefix, 不传完整环境变量以节省 entryParams 长度
         NativeChildProcess_Args childArgs = {};
         childArgs.entryParams = const_cast<char*>(entryParams.c_str());
@@ -500,17 +593,22 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
                 napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
-        /* wineboot 已退出: registry 仍在 wineserver flush 途中 (实测落盘延迟
-         * 稳定 ~13s), 宽限窗口等文件就绪 — 文件到位即通过, 不会满等 */
-        if (!WaitFor("wine prefix",
-                     [&p]() { return IsWinePrefixInitialized(p->prefixDir); },
-                     60000, 200)) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot exited but prefix incomplete, abort");
+        /* The NCP wrapper can finish before the broker-launched wineboot.exe.
+         * Require both Wine's final success marker and the durable prefix
+         * contents; early registry files alone are not a valid init result. */
+        if (!WaitFor("wineboot completion",
+                     [&p, &winebootStatus]() {
+                         return FileContainsExactRecord(winebootStatus, "wineboot-init-ok") &&
+                                IsWinePrefixInitialized(p->prefixDir);
+                     }, 60000, 200)) {
+            OH_LOG_ERROR(LOG_APP,
+                         "[Launch-Async] wineboot did not report successful completion; prefix remains unready");
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
         OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot completed (%{public}d s)", aliveMs / 1000);
+        unlink(winebootStatus.c_str());
         unlink(initMarker.c_str());
         ws->SetDesktopRootRecognitionEnabled(true);
         ws->SetToplevelEventSuppressed(false);
@@ -620,7 +718,8 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
         /* 附带 winehua_keep.exe: 加入 shell desktop 并持久运行,
          * 避免最后一个用户应用退出后 wineserver 自动关闭桌面.
          * 仅 Pad 桌面模式需要, Phone 模式走单窗口, 无需此逻辑. */
-        snprintf(desktopArg, sizeof(desktopArg), "/desktop=shell,%dx%d|winehua_keep.exe", dw, dh);
+        snprintf(desktopArg, sizeof(desktopArg),
+                 "/desktop=shell,%dx%d|C:\\windows\\system32\\winehua_keep.exe", dw, dh);
 
         // 构造 env: 基线 + 刷新图形状态 + DXVK overlay + 桌面稳定性配置.
         // 这相当于之前 AppendDesktopD3dEntryEnv 的逻辑，收敛到 broker env channel。
@@ -630,7 +729,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd,
             winehua::GraphicsBroker::GetInstance().AppendWineEnv(freshGraphics);
             for (const auto& line : freshGraphics) UpsertEnvLine(explorerEnv, line);
         }
-        AppendD3dBackendEnv(explorerEnv, p->d3dBackend, p->winehuaBin);
+        AppendD3dBackendEnv(explorerEnv, p->d3dBackend, p->dxvkBackend, p->winehuaBin);
         AppendStableDesktopDxvkEnv(explorerEnv, *p);
 
         // wine 前缀 token: box64 (方案②) 不带 (argv[0] 会落到 guest main_argv[1]
@@ -687,7 +786,7 @@ void LaunchThreadFunc(LaunchParams* p) {
 
     auto& graphicsBroker = winehua::GraphicsBroker::GetInstance();
     graphicsBroker.SetWineRuntimeBinaryDir(p->winehuaBin);
-    graphicsBroker.SetVulkanPresentMode(p->d3dBackend.rfind("dxvk_", 0) == 0);
+    graphicsBroker.SetVulkanPresentMode(UsesVulkanD3dBackend(p->d3dBackend));
     graphicsBroker.EnsureStarted(p->sockDir);
 
     int audioBootstrapFd = CreateAudioBootstrapFd(p->sockDir);
@@ -696,7 +795,7 @@ void LaunchThreadFunc(LaunchParams* p) {
     PrepareDesktopSessionGraphicsEnv(*p);
     p->envStrs = BuildWineEnv(p->sockDir, p->sockName, p->libPath, p->winehuaBin,
                                audioBootstrapFd, p->homeDir, p->prefixDir, p->wineLang);
-    AppendD3dBackendEnv(p->envStrs, p->d3dBackend, p->winehuaBin);
+    AppendD3dBackendEnv(p->envStrs, p->d3dBackend, p->dxvkBackend, p->winehuaBin);
     const std::string serializedEnv = SerializeEnvToEntryParams(p->envStrs);
 
     mkdir(p->prefixDir.c_str(), 0755);

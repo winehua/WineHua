@@ -1,7 +1,8 @@
 import { common, Want } from '@kit.AbilityKit';
 import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
+import { pointer } from '@kit.InputKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ArgbWindowManager } from './ArgbWindowManager';
@@ -71,9 +72,11 @@ export class WineWindowManager {
   // desktop_root 事件置 true, root 销毁置 false
   desktopActive: boolean = false;
   // 桌面 root 的 XComponent surface 校准完成（renderer 就绪）才置 true。
-  // desktop_root 只是 toplevel 出现，renderer 就绪晚数秒 — ensureDesktop
-  // 等这个信号再放行程序启动，否则程序窗口抢占桌面渲染初始化会闪退
   desktopSurfaceReady: boolean = false;
+  // Optional exact-title gate for an explicitly requested visible managed
+  // window. Clean-prefix bootstrap helpers must stay headless so they cannot
+  // steal the foreground from EntryAbility before the requested program starts.
+  private managedToplevelTitleFilter: string = '';
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
 
@@ -136,21 +139,23 @@ export class WineWindowManager {
   //   PC (2in1) + automation (smoke) → 融合 (managed, 无 explorer)
   //   PC + 设置虚拟桌面 → 桌面合成器 + 独立 VirtualDesktopAbility 窗口
   //   PC + 设置融合 (默认) → managed 多窗口
-  // 引擎每次启动前调用 (WineEnvService.doInit) — 设置页切换后"重启引擎"
-  // 即生效。若只在 init 判定, 重启引擎会沿用启动时旧模式 (改融合后桌面
-  // 窗口依旧出现)
   applyModePolicy(): void {
     const isPadOrPhone = deviceInfo.deviceType === 'tablet' || deviceInfo.deviceType === 'phone';
     this.isDesktopMode = !this.automationMode &&
       (isPadOrPhone || DesktopModeService.getInstance().mode === 'virtual');
     this.desktopSeparateWindow = this.isDesktopMode && !isPadOrPhone;
-    // 同步 C++: explorer 是否启动由 IsDesktopMode 决定 (wine_launch.cpp)
     testNapi.setDesktopMode(this.isDesktopMode);
     hilog.info(DOMAIN, TAG,
       '[MW] mode policy: type=%{public}s automation=%{public}s → %{public}s (separateWindow=%{public}s)',
       deviceInfo.deviceType, this.automationMode ? 'true' : 'false',
       this.isDesktopMode ? 'DESKTOP MODE' : 'MANAGED MODE',
       this.desktopSeparateWindow ? 'yes' : 'no');
+  }
+
+  setManagedToplevelTitleFilter(title: string): void {
+    this.managedToplevelTitleFilter = title;
+    hilog.info(DOMAIN, TAG, '[MW] managed toplevel title filter=%{public}s',
+      title.length > 0 ? title : '<disabled>');
   }
 
   async init(windowStage: window.WindowStage, abilityContext: common.UIAbilityContext): Promise<void> {
@@ -197,6 +202,28 @@ export class WineWindowManager {
       this.onToplevelEvent(id, event, data);
     });
     hilog.info(DOMAIN, TAG, '[MW] toplevel callback registered OK');
+
+    // dinput 相对模式 (游戏隐藏光标无限转视角) 的 host 侧配套:
+    // 注册主窗口 id 供 native OH_WindowManager_LockCursor 冻结光标;
+    // 锁定状态回调里隐藏/恢复系统光标 (隐藏能力只有 ArkTS API)
+    if (this.mainWindow) {
+      testNapi.registerHostWindow(this.mainWindow.getWindowProperties().id);
+    }
+    testNapi.setPointerLockCallback((locked: boolean) => {
+      hilog.info(DOMAIN, TAG, '[MW] pointer lock → setPointerVisible(%{public}s)', String(!locked));
+      pointer.setPointerVisible(!locked).catch((e: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, '[MW] setPointerVisible failed: %{public}s', JSON.stringify(e));
+      });
+    });
+
+    // A launcher resume recreates EntryAbility while the Wine desktop root can
+    // still be alive.  No new desktop_root event is emitted in that case, so
+    // explicitly bring the existing desktop compositor back to the foreground.
+    if (this.isDesktopMode && this.desktopRootId > 0) {
+      hilog.info(DOMAIN, TAG, '[MW] restoring existing DesktopAbility root=%{public}d',
+        this.desktopRootId);
+      this.startDesktopAbility(this.desktopRootId);
+    }
   }
 
   // -- WineWindowAbility 调用: 注册 / 注销 --
@@ -355,6 +382,12 @@ export class WineWindowManager {
       return;
     }
     const e = this.ensureEntry(id);
+    if (event === 'title') {
+      try {
+        const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
+        if (obj.title) e.title = obj.title as string;
+      } catch (_) { /* applyEvent will report malformed title data if a window is created */ }
+    }
     e.events.push([event, data]);
     hilog.info(DOMAIN, TAG, '[MW] -> queue pending #%{public}d %{public}s (window not ready, queue=%{public}d)',
       id, event, e.events.length);
@@ -369,6 +402,11 @@ export class WineWindowManager {
       case 'created':
         if (this.isDesktopMode) {
           hilog.info(DOMAIN, TAG, '[MW] Desktop mode: toplevel #%{public}d created, skipping Ability', id);
+        } else if (this.managedToplevelTitleFilter.length > 0 &&
+          this.entries.get(id)?.title !== this.managedToplevelTitleFilter) {
+          hilog.info(DOMAIN, TAG,
+            '[MW] managed toplevel #%{public}d title="%{public}s" suppressed; waiting for "%{public}s"',
+            id, this.entries.get(id)?.title ?? '', this.managedToplevelTitleFilter);
         } else {
           hilog.info(DOMAIN, TAG, '[MW] -> startWineWindowAbility(#%{public}d)', id);
           this.startWineWindowAbility(id, data);
@@ -846,6 +884,15 @@ export class WineWindowManager {
     } catch (e) {
       hilog.error(DOMAIN, TAG, '[MW] startDesktopAbility error: %{public}s', JSON.stringify(e));
     }
+  }
+
+  restoreDesktopIfRunning(): void {
+    if (!this.isDesktopMode || this.desktopRootId <= 0) return;
+    // A new Want foregrounds EntryAbility even though the desktop compositor
+    // remains alive. Re-starting the singleton moves that existing desktop
+    // back to the foreground without recreating or stopping the Wine session.
+    hilog.info(DOMAIN, TAG, '[MW] refocusing DesktopAbility root=%{public}d', this.desktopRootId);
+    this.startDesktopAbility(this.desktopRootId);
   }
 
   getDesktopRootId(): number { return this.desktopRootId; }

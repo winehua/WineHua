@@ -1,5 +1,6 @@
 #include "wayland_server.h"
 #include "seat.h"
+#include "text_input.h"
 #include "input_manager.h"
 #include "xdg_shell.h"
 #include "fps_counter.h"
@@ -96,6 +97,7 @@ void WaylandServer::Stop() {
     DestroyAllToplevels();
     InputManager::GetInstance()->Shutdown();
     Seat::GetInstance()->Unregister();
+    TextInput::GetInstance()->Unregister();
     if (display_) wl_display_terminate(display_);
     if (thread_.joinable()) thread_.join();
     if (display_) {

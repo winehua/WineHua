@@ -1,0 +1,108 @@
+From 5be8bc9098d334b8f9a52b731ab4effc534bce31 Mon Sep 17 00:00:00 2001
+From: WineHua <winehua@example.invalid>
+Date: Thu, 6 Aug 2026 20:00:00 +0800
+Subject: [PATCH] vkd3d: resolve query values without shaderInt64
+
+Maleoon 920 returns Vulkan query results as 64-bit values but does not expose
+shaderInt64. Keep the 64-bit storage layout as two 32-bit words and perform
+the resolve arithmetic with ordinary uint operations.
+---
+ libs/vkd3d/shaders/cs_resolve_binary_queries.comp | 13 +++++++------
+ libs/vkd3d/shaders/cs_resolve_query.comp          | 17 +++++++++++------
+ 2 files changed, 18 insertions(+), 12 deletions(-)
+
+--- a/libs/vkd3d/shaders/cs_resolve_query.comp
++++ b/libs/vkd3d/shaders/cs_resolve_query.comp
+@@ -1,19 +1,17 @@
+ #version 450
+ 
+-#extension GL_ARB_gpu_shader_int64 : require
+-
+ layout(local_size_x = 64) in;
+ 
+ layout(constant_id = 0) const uint c_field_count = 1;
+ 
+ layout(std430, binding = 0)
+ buffer dst_queries_t {
+-  uint64_t dst_queries[];
++  uvec2 dst_queries[];
+ };
+ 
+ layout(std430, binding = 1)
+ readonly buffer src_queries_t {
+-  uint64_t src_queries[];
++  uvec2 src_queries[];
+ };
+ 
+ struct query_map_entry_t {
+@@ -33,6 +31,12 @@
+   uint entry_offset;
+ };
+ 
++uvec2 add_u64(uvec2 a, uvec2 b) {
++  uint low = a.x + b.x;
++  uint carry = low < a.x ? 1u : 0u;
++  return uvec2(low, a.y + b.y + carry);
++}
++
+ void main() {
+   uint thread_id = gl_GlobalInvocationID.x;
+ 
+@@ -42,7 +46,7 @@
+   // The query map is an array of linked lists, with the
+   // first query_count entries guaranteed to be list heads
+   query_map_entry_t entry = map.entries[thread_id + entry_offset];
+-  uint64_t dst_data[c_field_count];
++  uvec2 dst_data[c_field_count];
+ 
+   // By copying the first query we get the reset for free
+   for (uint i = 0; i < c_field_count; i++)
+@@ -53,10 +57,11 @@
+     entry = map.entries[entry.next + entry_offset];
+ 
+     for (uint i = 0; i < c_field_count; i++)
+-      dst_data[i] += src_queries[c_field_count * entry.src_index + i];
++      dst_data[i] = add_u64(dst_data[i],
++          src_queries[c_field_count * entry.src_index + i]);
+   }
+ 
+   // dst_index has the same value for all entries in the list
+   for (uint i = 0; i < c_field_count; i++)
+     dst_queries[c_field_count * entry.dst_index + i] = dst_data[i];
+-}
+\ No newline at end of file
++}
+--- a/libs/vkd3d/shaders/cs_resolve_binary_queries.comp
++++ b/libs/vkd3d/shaders/cs_resolve_binary_queries.comp
+@@ -1,17 +1,15 @@
+ #version 450
+ 
+-#extension GL_ARB_gpu_shader_int64 : require
+-
+ layout(local_size_x = 64) in;
+ 
+ layout(std430, binding = 0)
+ writeonly buffer dst_buffer_t {
+-  uint64_t dst_queries[];
++  uvec2 dst_queries[];
+ };
+ 
+ layout(std430, binding = 1)
+ readonly buffer src_buffer_t {
+-  uint64_t src_queries[];
++  uvec2 src_queries[];
+ };
+ 
+ layout(push_constant)
+@@ -24,6 +22,9 @@
+ void main() {
+   uint thread_id = gl_GlobalInvocationID.x;
+ 
+-  if (thread_id < query_count)
+-    dst_queries[dst_index + thread_id] = min(src_queries[src_index + thread_id], uint64_t(1u));
++  if (thread_id < query_count) {
++    uvec2 value = src_queries[src_index + thread_id];
++    dst_queries[dst_index + thread_id] = (value.x != 0u || value.y != 0u) ?
++        uvec2(1u, 0u) : uvec2(0u, 0u);
++  }
+ }

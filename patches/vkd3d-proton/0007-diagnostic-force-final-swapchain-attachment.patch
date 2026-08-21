@@ -1,0 +1,71 @@
+From 762111f4ec66b3a48631823f63ab4c272b89f8b5 Mon Sep 17 00:00:00 2001
+From: yifengling0 <yifengling0@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 18:31:00 +0800
+Subject: [PATCH] diagnostic: force final swapchain image transfer colour
+
+---
+ libs/vkd3d/swapchain.c | 51 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/libs/vkd3d/swapchain.c b/libs/vkd3d/swapchain.c
+index 5697903..3a1db2c 100644
+--- a/libs/vkd3d/swapchain.c
++++ b/libs/vkd3d/swapchain.c
+@@ -1062,4 +1062,55 @@ static VkResult d3d12_swapchain_record_swapchain_blit(struct d3d12_swapchain *s
+     VK_CALL(vkCmdDraw(vk_cmd_buffer, 3, 1, 0, 0));
++
+     VK_CALL(vkCmdEndRenderPass2KHR(vk_cmd_buffer, &subpass_end_info));
++
++    /* Diagnostic only: write the exact image returned by
++     * vkGetSwapchainImagesKHR after the meta render pass has ended. This
++     * bypasses the framebuffer, image-view, pipeline and descriptor paths,
++     * but keeps the real command buffer, queue submit, signal semaphore,
++     * Wine present bridge and Host Presenter copy. */
++    {
++        VkImageMemoryBarrier barrier;
++        VkImageSubresourceRange range;
++        VkClearColorValue colour;
++
++        memset(&range, 0, sizeof(range));
++        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++        range.levelCount = 1;
++        range.layerCount = 1;
++
++        memset(&barrier, 0, sizeof(barrier));
++        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
++        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
++        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++        barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
++        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++        barrier.image = swapchain->vk_swapchain_images[dst_index];
++        barrier.subresourceRange = range;
++        VK_CALL(vkCmdPipelineBarrier(vk_cmd_buffer,
++                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
++                VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
++                0, NULL, 0, NULL, 1, &barrier));
++
++        memset(&colour, 0, sizeof(colour));
++        colour.float32[0] = 1.0f;
++        colour.float32[1] = 0.0f;
++        colour.float32[2] = 0.75f;
++        colour.float32[3] = 1.0f;
++        VK_CALL(vkCmdClearColorImage(vk_cmd_buffer,
++                swapchain->vk_swapchain_images[dst_index],
++                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++                &colour, 1, &range));
++
++        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
++        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++        barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
++        VK_CALL(vkCmdPipelineBarrier(vk_cmd_buffer,
++                VK_PIPELINE_STAGE_TRANSFER_BIT,
++                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
++                0, NULL, 0, NULL, 1, &barrier));
++    }
+ 
+     if ((vr = VK_CALL(vkEndCommandBuffer(vk_cmd_buffer))) < 0)
+-- 
+2.51.1.windows.1

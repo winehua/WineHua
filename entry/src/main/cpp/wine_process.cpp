@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
+#include <climits>
 #include <algorithm>
 #include <atomic>
 #include <set>
@@ -191,6 +192,64 @@ void MarkDesktopShellProcesses() {
     OH_LOG_WARN(LOG_APP, "[ProcReg] desktop shell processes marked: %{public}zu running", count);
 }
 
+static bool ReadProcessParent(pid_t pid, pid_t* parent)
+{
+    char path[64];
+    char buffer[512];
+    char* rightParen;
+    FILE* file;
+    size_t length;
+    int parsedParent;
+
+    if (!parent || pid <= 0) return false;
+    snprintf(path, sizeof(path), "/proc/%d/stat", static_cast<int>(pid));
+    file = fopen(path, "r");
+    if (!file) return false;
+    length = fread(buffer, 1, sizeof(buffer) - 1, file);
+    fclose(file);
+    if (!length) return false;
+    buffer[length] = '\0';
+    rightParen = strrchr(buffer, ')');
+    if (!rightParen || sscanf(rightParen + 2, "%*c %d", &parsedParent) != 1)
+        return false;
+    *parent = static_cast<pid_t>(parsedParent);
+    return true;
+}
+
+static std::vector<pid_t> SnapshotProcessDescendants(pid_t root)
+{
+    std::vector<pid_t> roots;
+    std::vector<pid_t> descendants;
+    DIR* proc;
+
+    if (root <= 0) return descendants;
+    roots.push_back(root);
+    for (size_t index = 0; index < roots.size(); ++index)
+    {
+        proc = opendir("/proc");
+        if (!proc) break;
+        while (dirent* entry = readdir(proc))
+        {
+            char* end;
+            long value;
+            pid_t parent;
+            pid_t pid;
+
+            if (entry->d_name[0] < '1' || entry->d_name[0] > '9') continue;
+            value = strtol(entry->d_name, &end, 10);
+            if (*end || value <= 0 || value > INT_MAX) continue;
+            pid = static_cast<pid_t>(value);
+            if (!ReadProcessParent(pid, &parent) || parent != roots[index]) continue;
+            if (std::find(descendants.begin(), descendants.end(), pid) != descendants.end())
+                continue;
+            descendants.push_back(pid);
+            roots.push_back(pid);
+        }
+        closedir(proc);
+    }
+    return descendants;
+}
+
 // -- 注册表辅助函数 --
 WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd) {
     std::lock_guard<std::mutex> lock(gProcMutex);
@@ -250,15 +309,45 @@ void RemoveProcess(pid_t pid, int exitCode, const std::string& exitCodeSource) {
 void KillAllProcesses() {
     // 主动停止标记: 之后主 wineserver 的死亡检测 (ProcMon) 不再报 state:failed
     gShutdownRequested.store(true);
-    std::lock_guard<std::mutex> lock(gProcMutex);
-    for (auto& entry : gProcRegistry) {
-        if (entry.running) {
+    std::vector<pid_t> trackedPids;
+    {
+        std::lock_guard<std::mutex> lock(gProcMutex);
+        for (auto& entry : gProcRegistry) {
+            if (!entry.running) continue;
             OH_LOG_WARN(LOG_APP, "[ProcReg] killAll pid=%{public}d name=%{public}s",
                         entry.pid, entry.exeBasename.c_str());
             *(entry.readerActive) = false;
+            trackedPids.push_back(entry.pid);
             KillChildProcess(entry.pid);
             if (entry.stdoutFd >= 0) { close(entry.stdoutFd); entry.stdoutFd = -1; }
         }
+    }
+
+    const pid_t self = getpid();
+    std::vector<pid_t> descendants = SnapshotProcessDescendants(self);
+    OH_LOG_INFO(LOG_APP,
+                "[ProcReg] killAll session descendants=%{public}zu tracked=%{public}zu",
+                descendants.size(), trackedPids.size());
+    for (pid_t pid : trackedPids)
+        if (pid != self) kill(pid, SIGKILL);
+    for (pid_t pid : descendants)
+        if (pid != self) kill(pid, SIGKILL);
+
+    /* AppSpawn children are not waitable by the main process.  Give the
+     * kernel a short, bounded opportunity to reap them and repeat the scan in
+     * case a broker child was forked while the first signal pass was running.
+     */
+    for (unsigned int pass = 0; pass < 20; ++pass)
+    {
+        bool anyAlive = false;
+        descendants = SnapshotProcessDescendants(self);
+        for (pid_t pid : descendants) {
+            if (!IsProcessAliveNotZombie(pid)) continue;
+            anyAlive = true;
+            kill(pid, SIGKILL);
+        }
+        if (!anyAlive) break;
+        usleep(100000);
     }
 }
 
@@ -328,13 +417,61 @@ void CloseInheritedFds(std::initializer_list<int> keepFds) {
     closedir(d);
 }
 
+// Embedded Box64 Wine intentionally survives the Windows process until the
+// server's final SIGKILL timeout. For clean smoke prefixes the server records
+// the already-established Windows exit code before that Unix-only cleanup.
+static bool ReadWineServerExitTelemetry(pid_t pid, int* exitCode)
+{
+    const char* prefixes[] = {WINE_SMOKE_PREFIX, WINE_PREFIX};
+    bool found = false;
+
+    for (const char* prefix : prefixes)
+    {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/.winehua-process-exit-status", prefix);
+        FILE* file = fopen(path, "r");
+        if (!file) continue;
+
+        char line[96];
+        int recordedPid = -1;
+        unsigned int windowsPid = 0;
+        int recordedExitCode = -1;
+        while (fgets(line, sizeof(line), file))
+        {
+            if (sscanf(line, "%d %u %d", &recordedPid, &windowsPid, &recordedExitCode) == 3 &&
+                recordedPid == pid)
+            {
+                *exitCode = recordedExitCode;
+                found = true;
+            }
+        }
+        fclose(file);
+        if (found) break;
+    }
+    return found;
+}
+
 // -- SIGCHLD handler: reap NCP child processes spawned by broker --
 void sigchld_handler(int) {
     int status;
     pid_t pid;
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        LogProcessExit("broker-child", pid, status);
-        RemoveProcess(pid);
+        int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        const char* source = "sigchld";
+        if (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL &&
+            ReadWineServerExitTelemetry(pid, &exitCode))
+        {
+            source = "wine-server-exit-telemetry";
+            OH_LOG_INFO(LOG_APP,
+                        "[broker-child] Wine logical exit pid=%{public}d code=%{public}d; "
+                        "Unix wrapper received the expected final SIGKILL",
+                        pid, exitCode);
+        }
+        else
+        {
+            LogProcessExit("broker-child", pid, status);
+        }
+        RemoveProcess(pid, exitCode, source);
         if (gStateTsfn) {
             char msg[64];
             snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);

@@ -142,3 +142,7 @@ export const MODIFIER_CODES: number[] = [
   2076, 2077,   // META_LEFT, META_RIGHT
   2074,          // CAPS_LOCK
 ]
+
+// evdev 键码常量 (Linux input-event-codes.h)。注入路径 (sendKeyEvent) 直接用,
+// 避免各处散落裸数字。命名对齐 Linux 头文件 KEY_*。
+export const EVDEV_KEY_ENTER: number = 28;       // KEY_ENTER

@@ -42,6 +42,13 @@ namespace {
 void InstallReaperOnce() {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, [] {
+        struct sigaction existing{};
+        if (sigaction(SIGCHLD, nullptr, &existing) != 0 ||
+            (existing.sa_flags & SA_SIGINFO) || existing.sa_handler != SIG_DFL) {
+            // The Wine process registry may already own SIGCHLD so it can
+            // preserve a child exit status for automation evidence.
+            return;
+        }
         struct sigaction sa{};
         sa.sa_handler = [](int) {
             int saved = errno;
