@@ -42,4 +42,16 @@ inline bool ZOrderNeedsParentPosCheck(bool parentIsZcOwner, bool parentIsRoot)
     return !parentIsZcOwner && !parentIsRoot;
 }
 
+// 判定"新的全屏候选是否应取代当前已选中的全屏前台" —
+// PickFullscreenLayerLocked 的选取法则 (收口的第 3 个散点)。
+// 规则: 可见全屏窗口 (可多个同时 fullscreen) 中取 FsPriority 最大者当全屏
+// 前台, 原因/局限见 ToplevelState::fsPriority 注释。candPriority 为候选
+// 序号, bestPriority 为当前已选序号, bestValid=当前是否已有选中 (无选中
+// 时恒取当前候选)。行为等价断言: !bestValid || cand > best。
+inline bool ZOrderFullscreenCandidateBeats(uint64_t candPriority, uint64_t bestPriority,
+                                           bool bestValid)
+{
+    return !bestValid || candPriority > bestPriority;
+}
+
 } // namespace winehua

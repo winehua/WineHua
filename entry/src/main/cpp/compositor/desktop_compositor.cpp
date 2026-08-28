@@ -292,7 +292,8 @@ uint32_t DesktopCompositor::PickFullscreenLayerLocked(
 {
     // 全屏目标选取 (阶段 4, S3 收敛): 渲染与输入共用的唯一实现, 遍历
     // 同一 Layer 列表 — 可见全屏窗口中取 fsPriority 最大者 (多窗口可
-    // 同时 fullscreen, 规则原因/局限见 ToplevelState::fsPriority 注释)
+    // 同时 fullscreen, 规则原因/局限见 ToplevelState::fsPriority 注释)。
+    // 选取法则收口于 zorder_policy (ZOrderFullscreenCandidateBeats, 行为平价)。
     uint32_t picked = 0;
     const ToplevelManager::ToplevelState* best = nullptr;
     for (const auto& layer : layers) {
@@ -300,7 +301,9 @@ uint32_t DesktopCompositor::PickFullscreenLayerLocked(
             !layer.visible || !layer.fullscreen) continue;
         const auto* cand = tmgr_.FindToplevelLocked(layer.toplevelId);
         if (!cand) continue;
-        if (!best || cand->FsPriority() > best->FsPriority()) {
+        if (winehua::ZOrderFullscreenCandidateBeats(cand->FsPriority(),
+                                                    best ? best->FsPriority() : 0,
+                                                    best != nullptr)) {
             best = cand;
             picked = layer.toplevelId;
         }
