@@ -3,6 +3,7 @@
 #include "frame_pipeline.h"
 #include "toplevel_manager.h"
 #include "compositor_utils.h"
+#include "compositor/zorder_policy.h"
 #include "geometry.h"
 #include "compositor/surface_data.h"
 #include "perf_utils.h"
@@ -200,9 +201,12 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     // 菜单 owner 是应用窗口), 若跟随父窗口 z-order, 会被置顶 pin 的任务栏
     // 挡住 — 所有菜单都应叠在任务栏上方 (Windows popup 语义, 2026-08 实测)。
     // 渲染与输入共用本列表 (单一数据源), 置顶后点击菜单的命中同步优先。
+    // 置顶判定收口于 zorder_policy.h (ZOrderTopAnchored, 行为平价 — 条件
+    // 逐字复现原 if)。
     for (const auto& sl : subsurfaceLayers_) {
-        if (sl.parentToplevel == rootId || sl.isExternal ||
-            !tmgr_.IsInZOrder(sl.parentToplevel)) {
+        if (winehua::ZOrderTopAnchored(sl.parentToplevel == rootId,
+                                       sl.isExternal,
+                                       tmgr_.IsInZOrder(sl.parentToplevel))) {
             appendSubsurfaceLayer(sl);
         }
     }

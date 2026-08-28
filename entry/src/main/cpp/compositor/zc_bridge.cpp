@@ -2,6 +2,7 @@
 
 #include "compositor/surface_data.h"  // SurfaceData (wl_resource_get_user_data)
 #include "compositor_utils.h"         // CompensateMinimizedSubsurfaceOffset
+#include "compositor/zorder_policy.h" // ZOrderNeedsParentPosCheck (ZC 遮挡层序)
 #include "desktop_compositor.h"       // DesktopCompositor (friend), SubsurfaceLayer
 #include "geometry.h"                 // DisplaySizeAfterViewport
 #include "toplevel_manager.h"
@@ -204,8 +205,11 @@ int ZcBridge::GetOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
         if (activeKeys_.count(layer.surfaceKey)) continue;
         if (layer.parentToplevel != comp_.desktopRootToplevelId_ &&
             !comp_.tmgr_.IsToplevelVisibleLocked(layer.parentToplevel, comp_.desktopRootToplevelId_)) continue;
-        if (layer.parentToplevel != info.parentToplevel &&
-            layer.parentToplevel != comp_.desktopRootToplevelId_) {
+        // 遮挡防护条件收口于 zorder_policy.h (ZOrderNeedsParentPosCheck, 行为平价):
+        // 父==ZC 窗口或==root 恒遮挡; 否则父 z-order 位置须 >= ZC 位置 (zcIt)。
+        if (winehua::ZOrderNeedsParentPosCheck(
+                layer.parentToplevel == info.parentToplevel,
+                layer.parentToplevel == comp_.desktopRootToplevelId_)) {
             const auto pit = std::find(comp_.tmgr_.toplevelZOrder().begin(),
                                        comp_.tmgr_.toplevelZOrder().end(),
                                        layer.parentToplevel);
