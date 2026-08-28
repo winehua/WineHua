@@ -178,12 +178,6 @@ int ToplevelManager::GetToplevelH(uint32_t id) {
     return it != toplevels_.end() ? it->second.Height() : 0;
 }
 
-uint32_t ToplevelManager::GetToplevelShmFormat(uint32_t id) {
-    auto lk = Lock();
-    auto it = toplevels_.find(id);
-    return it != toplevels_.end() ? it->second.ShmFormat() : 1;
-}
-
 ToplevelManager::ToplevelGeometrySnapshot ToplevelManager::GetToplevelGeometrySnapshot(uint32_t id) {
     auto lk = Lock();
     ToplevelGeometrySnapshot s;

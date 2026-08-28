@@ -46,8 +46,8 @@ public:
     bool Start(const std::string& socketPath);
     void Stop();
 
-    bool TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, int& w, int& h) {
-        return desktopCompositor_.TakeToplevelFrame(id, out, w, h);
+    bool TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, PresentedFrame& frame) {
+        return desktopCompositor_.TakeToplevelFrame(id, out, frame);
     }
     bool GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
                               int fallbackWidth, int fallbackHeight,
@@ -137,9 +137,6 @@ public:
     // 状态查询 (minimized/fullscreen 权威字段在 ToplevelState, 见 surface_data.h 状态边界注释)
     bool IsToplevelMinimized(uint32_t id) { return toplevelMgr_.IsToplevelMinimized(id); }
     bool IsToplevelFullscreen(uint32_t id) { return toplevelMgr_.IsToplevelFullscreen(id); }
-    // toplevel/popup 帧的 wl_shm 格式 (0=ARGB8888 有意义 alpha, 1=XRGB8888, 默认 1)
-    // EglRenderer 据此决定 alpha 透传或强制不透明 (XRGB 的 X 字节是垃圾)
-    uint32_t GetToplevelShmFormat(uint32_t id) { return toplevelMgr_.GetToplevelShmFormat(id); }
     // ARGB 异型窗口的 0/1 剪影掩码 (setWindowMask 用, ArkTS 轮询拉取)
     using WindowMask = ToplevelManager::WindowMask;
     // 取掩码: false = 无掩码或无更新; 取走清除 dirty

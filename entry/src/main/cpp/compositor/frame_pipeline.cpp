@@ -113,11 +113,12 @@ FramePlanner::FramePlanner(DesktopCompositor& comp, bool frameTrace)
 FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
                                                  TakeClock::time_point takeStarted,
                                                  TakeClock::time_point lockAcquired,
-                                                 std::vector<uint8_t>& out, int& w, int& h,
+                                                 std::vector<uint8_t>& out,
+                                                 PresentedFrame& frame,
                                                  FramePlan& plan) {
     ToplevelManager::ToplevelState* rst = nullptr;
     // 阶段 1: dirty 门控 + 无子窗口快进
-    const FramePlanOutcome gate = GateDesktopDirtyLocked(id, plan, out, w, h, rst);
+    const FramePlanOutcome gate = GateDesktopDirtyLocked(id, plan, out, frame, rst);
     if (gate != FramePlanOutcome::kCompose) return gate;
 
     // 层序单一数据源 (阶段 1): 一帧全部内容来源的层列表, 构建一次,
@@ -129,9 +130,9 @@ FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
     PlanFullscreenLocked(plan);
     // 阶段 3: fullscreenContentCovered 覆盖检测
     plan.fullscreenContentCovered = DetectFullscreenContentCoveredLocked(plan);
-    // 阶段 4: SHM 全屏直传判定 (通过即完成本帧: out/w/h 已填 + 直传日志)
+    // 阶段 4: SHM 全屏直传判定 (通过即完成本帧: out+frame 已填 + 直传日志)
     if (TryShmFullscreenDirectLocked(id, rst, takeStarted, lockAcquired,
-                                     plan, out, w, h))
+                                     plan, out, frame))
         return FramePlanOutcome::kDirectPass;
     // 阶段 5: 合成签名 FNV 哈希 + rebuildBase 判定
     plan.compositionSignature = ComputeCompositionSignatureLocked(id, plan);
@@ -150,12 +151,20 @@ FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
     plan.nZOrder = tmgr_.toplevelZOrder().size();
     plan.nSubLayers = comp_.subsurfaceLayers_.size();
     plan.snapshotDone = TakeClock::now();
+    // 帧交付契约 (kCompose): 合成帧 — 桌面空间, buffer = 内容 = root 尺寸
+    frame.kind = PresentedFrame::Kind::Composed;
+    frame.baseSpace = PresentedFrame::BaseSpace::Desktop;
+    frame.w = plan.rootW;
+    frame.h = plan.rootH;
+    frame.contentW = plan.rootW;
+    frame.contentH = plan.rootH;
+    frame.opaque = (rst->ShmFormat() != 0);
     return FramePlanOutcome::kCompose;
 }
 
 FramePlanOutcome FramePlanner::GateDesktopDirtyLocked(uint32_t id, FramePlan& plan,
-                                                      std::vector<uint8_t>& out, int& w,
-                                                      int& h,
+                                                      std::vector<uint8_t>& out,
+                                                      PresentedFrame& frame,
                                                       ToplevelManager::ToplevelState*& rst) {
     rst = tmgr_.FindToplevelLocked(id);
     if (!rst || !rst->HasFrame()) return FramePlanOutcome::kNoFrame;
@@ -175,8 +184,14 @@ FramePlanOutcome FramePlanner::GateDesktopDirtyLocked(uint32_t id, FramePlan& pl
     }
     if (!hasChildren && comp_.subsurfaceLayers_.empty()) {
         out = rst->Pixels();
-        w = plan.rootW;
-        h = plan.rootH;
+        // 帧交付契约 (kFastPath): 无子窗口快进 = root 帧直通, 语义同合成帧
+        frame.kind = PresentedFrame::Kind::Composed;
+        frame.baseSpace = PresentedFrame::BaseSpace::Desktop;
+        frame.w = plan.rootW;
+        frame.h = plan.rootH;
+        frame.contentW = plan.rootW;
+        frame.contentH = plan.rootH;
+        frame.opaque = (rst->ShmFormat() != 0);
         rst->ClearDirty();
         return FramePlanOutcome::kFastPath;
     }
@@ -233,7 +248,8 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                                                 TakeClock::time_point takeStarted,
                                                 TakeClock::time_point lockAcquired,
                                                 FramePlan& plan,
-                                                std::vector<uint8_t>& out, int& w, int& h) {
+                                                std::vector<uint8_t>& out,
+                                                PresentedFrame& frame) {
     /*
      * SHM 全屏游戏直传 (锁内判定, 通过即提前返回): 全屏 SHM 游戏独占
      * 画面时, 把游戏层的原始像素 (如 war3 的 800x600 sub 帧) 直接作为
@@ -292,9 +308,6 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
             if (fsLayerFound) {
                 const SubsurfaceLayer* contentSub = nullptr;
                 bool topOccluded = false;
-                uint32_t occlTl = 0;
-                int occlType = -1;
-                bool occlZc = false;
                 for (const auto& layer : plan.layers) {
                     if (layer.zIndex <= fsZ) continue;  // 全屏窗口及其下: 被盖住
                     if (layer.ShouldSkipCpu() ||
@@ -323,9 +336,6 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                         continue;
                     }
                     topOccluded = true;  // 上方可见层: 需要真合成
-                    occlTl = layer.toplevelId;
-                    occlType = static_cast<int>(layer.type);
-                    occlZc = layer.zcActive;
                     break;
                 }
                 const std::vector<uint8_t>* directPixels = nullptr;
@@ -360,8 +370,18 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                 if (directPixels) {
                     // assign 而非 swap: 源缓冲属 wl 线程的层状态, 必须拷出
                     out.assign(directPixels->begin(), directPixels->end());
-                    w = directW;
-                    h = directH;
+                    // 帧交付契约 (kDirectPass): 直传帧 buffer 是游戏内容尺寸
+                    // (如 800x600), 但帧作为整屏桌面输出交付 — 输入逆映射锚
+                    // 仍是桌面逻辑尺寸 (contentW/H = root), 与 buffer 尺寸
+                    // 解耦 (红警2 直传点击修复的契约化); 直传门控已要求
+                    // root XRGB → 帧按不透明呈现
+                    frame.kind = PresentedFrame::Kind::DirectPass;
+                    frame.baseSpace = PresentedFrame::BaseSpace::Desktop;
+                    frame.w = directW;
+                    frame.h = directH;
+                    frame.contentW = plan.rootW;
+                    frame.contentH = plan.rootH;
+                    frame.opaque = (rst->ShmFormat() != 0);
                     rst->ClearDirty();
                     const auto directDone = TakeClock::now();
                     if (frameTrace_) {
@@ -375,7 +395,7 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                         OH_LOG_INFO(LOG_APP,
                                     "[MW-TAKE] root #%{public}u %{public}dx%{public}d "
                                     "subsurfaces=%{public}zu mode=direct fs=%{public}d",
-                                    id, w, h, comp_.subsurfaceLayers_.size(),
+                                    id, frame.w, frame.h, comp_.subsurfaceLayers_.size(),
                                     plan.hasFullscreen ? 1 : 0);
                     }
                     return true;
@@ -636,7 +656,7 @@ void FrameBlitter::Composite(uint32_t id,
                              TakeClock::time_point takeStarted,
                              TakeClock::time_point lockAcquired,
                              const FramePlan& plan,
-                             std::vector<uint8_t>& out, int& w, int& h) {
+                             std::vector<uint8_t>& out) {
     auto& composited = out;
     // 合成单循环 (阶段 1): 按 zIndex 升序遍历 Layer 列表 — 等价旧
     // toplevel 循环 + subsurface 循环的两段顺序 (Layer zIndex 分配保证)。
@@ -658,8 +678,6 @@ void FrameBlitter::Composite(uint32_t id,
     const auto childrenComposited = TakeClock::now();
 
     const auto outputMoved = TakeClock::now();
-    w = plan.rootW;
-    h = plan.rootH;
     if (frameTrace_) {
         // 分段语义 (快照改造后): lockWait / 基底拷贝 / 快照(持锁) / blit(锁外) / 输出 / 总计
         TakeBreakdown().Add(TakeElapsedUs(takeStarted, lockAcquired),
@@ -669,7 +687,7 @@ void FrameBlitter::Composite(uint32_t id,
                       TakeElapsedUs(childrenComposited, outputMoved),
                       TakeElapsedUs(takeStarted, outputMoved));
         OH_LOG_INFO(LOG_APP, "[MW-TAKE] root #%{public}u %{public}dx%{public}d children=%{public}zu subsurfaces=%{public}zu mode=%{public}s fs=%{public}d dmg=(%{public}d,%{public}d %{public}dx%{public}d)",
-                    id, w, h, plan.nZOrder, plan.nSubLayers, plan.dmg.full ? "full" : "partial",
+                    id, plan.rootW, plan.rootH, plan.nZOrder, plan.nSubLayers, plan.dmg.full ? "full" : "partial",
                     plan.hasFullscreen ? 1 : 0, plan.dmg.x, plan.dmg.y, plan.dmg.w, plan.dmg.h);
     }
 }

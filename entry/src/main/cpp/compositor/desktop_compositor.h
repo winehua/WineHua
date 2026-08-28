@@ -7,6 +7,7 @@
 
 #include "display_policy.h"
 #include "geometry.h"
+#include "presented_frame.h"
 
 class ToplevelManager;
 
@@ -107,8 +108,11 @@ public:
                       const int32_t& outputH);
 
     // -- 帧输出 --
-    // 取指定 toplevel 的最新帧 (桌面模式合成到 root framebuffer)
-    bool TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, int& w, int& h);
+    // 取指定 toplevel 的最新帧 (桌面模式合成到 root framebuffer)。
+    // out 为像素载体 (调用方持有, 跨帧复用 — 局部合成 R 外保留上帧内容);
+    // frame 为帧交付契约 (presented_frame.h): 坐标空间/内容尺寸/alpha 语义
+    // 由产出侧填好, 消费方从字段取几何。
+    bool TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, PresentedFrame& frame);
 
     // 本帧重绘矩形 (root 坐标, 局部合成范围)。full=true 走整帧合成路径
     // (几何/层序/root 帧/全屏变化时, 行为与旧实现一致); 局部时仅 R 内像素
@@ -225,8 +229,8 @@ private:
 
     // PC 模式单窗口分支 (锁内; 窗口内 subsurface 像素 blit 走
     // FrameBlitter::BlitWindowSubsurface)
-    bool TakeWindowFrameLocked(uint32_t id, std::vector<uint8_t>& out, int& w, int& h,
-                               bool frameTrace);
+    bool TakeWindowFrameLocked(uint32_t id, std::vector<uint8_t>& out,
+                               PresentedFrame& frame, bool frameTrace);
 
     ToplevelManager& tmgr_;
     const DisplayPolicy& policy_;

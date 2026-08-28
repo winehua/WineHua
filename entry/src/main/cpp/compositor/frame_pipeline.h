@@ -6,6 +6,7 @@
 #include "blit_clip.h"
 #include "desktop_compositor.h"
 #include "geometry.h"
+#include "presented_frame.h"
 #include "toplevel_manager.h"
 
 // 帧合成管线 (重构第 2A 步: TakeToplevelFrame 纯结构拆分, 行为平价)。
@@ -70,8 +71,9 @@ struct FramePlan {
 };
 
 // 规划结果: kNoFrame=无新帧 (TakeToplevelFrame 返回 false); kFastPath=无子
-// 窗口快进 (out/w/h 已填, 返回 true); kDirectPass=SHM 全屏直传 (out/w/h 已
-// 填+日志, 返回 true); kCompose=需锁外合成 (plan 已备)。
+// 窗口快进 (out+frame 已填, 返回 true); kDirectPass=SHM 全屏直传
+// (out+frame 已填+日志, 返回 true); kCompose=需锁外合成 (plan 已备,
+// frame 元数据已填, frame.pixels 由编排者在 blit 后补)。
 enum class FramePlanOutcome { kNoFrame, kFastPath, kDirectPass, kCompose };
 
 // 锁内规划器: 全部方法在 tmgr 锁内运行 (调用方持锁)。状态经 comp_ friend
@@ -81,28 +83,29 @@ public:
     // frameTrace 为编排者捕获的帧级诊断门控 (perf_utils.h FrameTraceEnabled)
     FramePlanner(DesktopCompositor& comp, bool frameTrace);
 
-    // 锁内规划主流程 (阶段顺序与原 TakeToplevelFrame 内联段一致)
+    // 锁内规划主流程 (阶段顺序与原 TakeToplevelFrame 内联段一致);
+    // frame 为帧交付契约 (presented_frame.h), 各出口按路径填好
     FramePlanOutcome PlanDesktopLocked(uint32_t id,
                                        TakeClock::time_point takeStarted,
                                        TakeClock::time_point lockAcquired,
-                                       std::vector<uint8_t>& out, int& w, int& h,
+                                       std::vector<uint8_t>& out, PresentedFrame& frame,
                                        FramePlan& plan);
 
 private:
     // 阶段 1: dirty 门控 + 无子窗口快进
     FramePlanOutcome GateDesktopDirtyLocked(uint32_t id, FramePlan& plan,
-                                            std::vector<uint8_t>& out, int& w, int& h,
+                                            std::vector<uint8_t>& out, PresentedFrame& frame,
                                             ToplevelManager::ToplevelState*& rst);
     // 阶段 2: 全屏 pick/fit
     void PlanFullscreenLocked(FramePlan& plan);
     // 阶段 3: fullscreenContentCovered 覆盖检测
     bool DetectFullscreenContentCoveredLocked(const FramePlan& plan) const;
-    // 阶段 4: SHM 全屏直传判定 (通过即填好 out/w/h 并打直传日志, 返回 true)
+    // 阶段 4: SHM 全屏直传判定 (通过即填好 out+frame 并打直传日志, 返回 true)
     bool TryShmFullscreenDirectLocked(uint32_t id, ToplevelManager::ToplevelState* rst,
                                       TakeClock::time_point takeStarted,
                                       TakeClock::time_point lockAcquired,
                                       FramePlan& plan,
-                                      std::vector<uint8_t>& out, int& w, int& h);
+                                      std::vector<uint8_t>& out, PresentedFrame& frame);
     // 阶段 5: 合成签名 FNV 哈希 (rebuildBase 判定在 PlanDesktopLocked)
     uint64_t ComputeCompositionSignatureLocked(uint32_t id, const FramePlan& plan) const;
     // 阶段 6: 局部合成重绘矩形 R 计算 (含 BlitSource skip 预计算);
@@ -125,12 +128,13 @@ public:
     explicit FrameBlitter(bool frameTrace);
 
     // 合成主循环 + 每帧 [GL-TAKE]/[MW-TAKE] 日志 (frameTrace 门控);
-    // 只读 plan 快照, 在 out 上增量叠加
+    // 只读 plan 快照, 在 out 上增量叠加 (frame 元数据已在规划段填好,
+    // frame.pixels 由编排者在 blit 后补)
     void Composite(uint32_t id,
                    TakeClock::time_point takeStarted,
                    TakeClock::time_point lockAcquired,
                    const FramePlan& plan,
-                   std::vector<uint8_t>& out, int& w, int& h);
+                   std::vector<uint8_t>& out);
 
     // PC 模式窗口内 subsurface blit (纯像素): 直接读层像素 (无快照 — PC
     // 路径调用方全程持 tmgr 锁, 与原实现一致), 本函数自身不碰锁。

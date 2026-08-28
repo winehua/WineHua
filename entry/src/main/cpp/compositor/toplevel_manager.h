@@ -296,7 +296,6 @@ public:
     int GetToplevelY(uint32_t id);
     int GetToplevelW(uint32_t id);
     int GetToplevelH(uint32_t id);
-    uint32_t GetToplevelShmFormat(uint32_t id);
 
     // 几何快照: 一次加锁取全部字段 — 替代"为取一对坐标连续加锁两次"的
     // 单字段调用 (同一次读取内字段间一致)。未建档时 x/y/w/h=0, shmFormat=1

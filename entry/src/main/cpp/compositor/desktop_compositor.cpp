@@ -565,7 +565,8 @@ int DesktopCompositor::GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t render
 // damage R → 基底落盘 → 快照) 产出 FramePlan, FrameBlitter 锁外纯像素
 // 消费; 本函数只剩编排。锁边界/计时点/日志门控与原单函数实现逐段对应。
 
-bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, int& w, int& h) {
+bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out,
+                                          PresentedFrame& frame) {
     // 帧级诊断统一门控 (perf_utils.h): 关闭时跳过 breakdown 累加与 [MW-TAKE] 输出
     const bool frameTrace = winehua::FrameTraceEnabled();
 
@@ -577,20 +578,23 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
         FramePlan plan;
         FramePlanner planner(*this, frameTrace);
         const FramePlanOutcome outcome =
-            planner.PlanDesktopLocked(id, takeStarted, lockAcquired, out, w, h, plan);
-        if (outcome != FramePlanOutcome::kCompose)
+            planner.PlanDesktopLocked(id, takeStarted, lockAcquired, out, frame, plan);
+        if (outcome != FramePlanOutcome::kCompose) {
+            if (outcome != FramePlanOutcome::kNoFrame) frame.pixels = out.data();
             return outcome != FramePlanOutcome::kNoFrame;
+        }
         lk.unlock();  // ── 锁到此为止, 以下 blit 不持锁 ──
         FrameBlitter blitter(frameTrace);
-        blitter.Composite(id, takeStarted, lockAcquired, plan, out, w, h);
+        blitter.Composite(id, takeStarted, lockAcquired, plan, out);
+        frame.pixels = out.data();
         return true;
     }
 
-    return TakeWindowFrameLocked(id, out, w, h, frameTrace);
+    return TakeWindowFrameLocked(id, out, frame, frameTrace);
 }
 
 bool DesktopCompositor::TakeWindowFrameLocked(uint32_t id, std::vector<uint8_t>& out,
-                                              int& w, int& h, bool frameTrace) {
+                                              PresentedFrame& frame, bool frameTrace) {
     auto* st = tmgr_.FindToplevelLocked(id);
     if (!st || !st->IsDirty()) return false;
     const int winW = st->Width();
@@ -617,12 +621,19 @@ bool DesktopCompositor::TakeWindowFrameLocked(uint32_t id, std::vector<uint8_t>&
                 break;
         }
     }
-    w = winW;
-    h = winH;
+    // 帧交付契约: PC 窗口帧 — 窗口局部空间, buffer = 内容 = 窗口尺寸
+    frame.kind = PresentedFrame::Kind::Composed;
+    frame.baseSpace = PresentedFrame::BaseSpace::Window;
+    frame.w = winW;
+    frame.h = winH;
+    frame.contentW = winW;
+    frame.contentH = winH;
+    frame.opaque = (st->ShmFormat() != 0);
+    frame.pixels = out.data();
     st->ClearDirty();
     if (frameTrace) {
         OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu",
-                    id, w, h, out.size());
+                    id, frame.w, frame.h, out.size());
     }
     return true;
 }

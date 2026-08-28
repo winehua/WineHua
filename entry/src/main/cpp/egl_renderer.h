@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <mutex>
 #include "compositor/geometry.h"
+#include "compositor/presented_frame.h"
 
 struct OH_NativeImage;
 
@@ -33,8 +34,13 @@ public:
     int GetHeight() const { return height_; }
     int GetFrameWidth() const { return frameW_; }
     int GetFrameHeight() const { return frameH_; }
-    // Letterbox 适配矩形 (保持 Wine 帧宽高比居中渲染的视口, 输入坐标换算用)
-    const FitRect& GetLetterbox() const { return letterbox_; }
+    // 输入逆映射锚 (PresentedFrame 契约, 重构第 2B 步): 帧坐标空间的逻辑
+    // 内容尺寸 (contentW/H) 到当前 surface 的保比例 fit — 桌面合成/快进帧
+    // 锚定 root 逻辑尺寸, SHM 直传帧同样锚定桌面尺寸 (与显示 letterbox 的
+    // buffer 尺寸锚解耦, 红警2 直传点击修复的契约化); PC 窗口帧锚定窗口
+    // 内容尺寸 (= 显示 letterbox, content == buffer)。锚未就绪 (首帧前)
+    // 或 fit 失败时退回显示 letterbox (与旧 CoordTransform fallback 一致)。
+    FitRect GetInputLetterbox() const;
 
 private:
     void RenderLoop();
