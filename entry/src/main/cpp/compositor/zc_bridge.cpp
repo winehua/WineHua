@@ -3,7 +3,6 @@
 #include "graphics_broker.h"          // SetZeroCopySurfaceReady (ready marker, 进程单例)
 #include "compositor/surface_data.h"  // SurfaceData (wl_resource_get_user_data)
 #include "compositor_utils.h"         // CompensateMinimizedSubsurfaceOffset
-#include "compositor/zorder_policy.h" // ZOrderNeedsParentPosCheck (ZC 遮挡层序)
 #include "desktop_compositor.h"       // DesktopCompositor (friend), SubsurfaceLayer
 #include "geometry.h"                 // DisplaySizeAfterViewport
 #include "toplevel_manager.h"
@@ -294,45 +293,50 @@ int ZcBridge::GetOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
         out[count++] = {l, t, r - l, b - t};
     };
 
-    auto zbegin = comp_.tmgr_.toplevelZOrder().begin();
-    auto zcIt = comp_.tmgr_.toplevelZOrder().end();
-    if (info.parentToplevel != comp_.desktopRootToplevelId_) {
-        zcIt = std::find(comp_.tmgr_.toplevelZOrder().begin(), comp_.tmgr_.toplevelZOrder().end(),
-                         info.parentToplevel);
-        if (zcIt != comp_.tmgr_.toplevelZOrder().end()) zbegin = std::next(zcIt);
-    }
-    for (auto zit = zbegin; zit != comp_.tmgr_.toplevelZOrder().end() && count < maxOut; ++zit) {
-        const uint32_t cid = *zit;
-        if (!comp_.tmgr_.IsToplevelVisibleLocked(cid, comp_.desktopRootToplevelId_)) continue;
-        const auto* cst = comp_.tmgr_.FindToplevelLocked(cid);
-        if (!cst) continue;
-        if (cst->IsFullscreen()) pushRect(0, 0, rootW, rootH);
-        else pushRect(cst->X(), cst->Y(), cst->Width(), cst->Height());
-    }
-
-    // 新层序 (subsurface 挂父窗口层内, 见 BuildLayerListLocked): 仅父窗口
-    // z-order 不低于 ZC 窗口的层遮挡 ZC (同窗口的菜单等仍在 ZC 层之上);
-    // parent==root / 不在 z-order 的层保持置顶语义, 仍遮挡。
-    for (const auto& layer : comp_.subsurfaceLayers_) {
-        if (count >= maxOut) break;
-        if (activeKeys_.count(layer.surfaceKey)) continue;
-        if (layer.parentToplevel != comp_.desktopRootToplevelId_ &&
-            !comp_.tmgr_.IsToplevelVisibleLocked(layer.parentToplevel, comp_.desktopRootToplevelId_)) continue;
-        // 遮挡防护条件收口于 zorder_policy.h (ZOrderNeedsParentPosCheck, 行为平价):
-        // 父==ZC 窗口或==root 恒遮挡; 否则父 z-order 位置须 >= ZC 位置 (zcIt)。
-        if (winehua::ZOrderNeedsParentPosCheck(
-                layer.parentToplevel == info.parentToplevel,
-                layer.parentToplevel == comp_.desktopRootToplevelId_)) {
-            const auto pit = std::find(comp_.tmgr_.toplevelZOrder().begin(),
-                                       comp_.tmgr_.toplevelZOrder().end(),
-                                       layer.parentToplevel);
-            if (pit == comp_.tmgr_.toplevelZOrder().end() || pit < zcIt) continue;
+    // 遮挡源改遍历 BuildLayerListLocked 层列表 (层序单一数据源), 遮挡锚 =
+    // ZC 父窗口的 Toplevel 层 zIndex (层列表按 zIndex 升序即绘制序 — 父层
+    // 之后的所有可见非 ZC 层均在本层之上)。锚取父层而非 ZC 层自身:
+    //   - 同父 subsurface (菜单) 恒 > 父层锚 → 纳入, 且不再依赖 ZC 层自身的
+    //     zIndex 位置 (菜单 attach 早于 ZC 层时 zIndex 更低但仍在 ZC 内容上);
+    //   - ProtocolOnly ZC 层 (无 SubsurfaceLayer, 不在层列表): 锚仍可找到,
+    //     保留旧扫描语义, 不再因 "找不到 ZC 层" 整组退化为空;
+    //   - 父==root 时锚 = Root 层 zIndex (0): Root 之后全部纳入 — 即旧
+    //     zbegin=begin() 全扫 toplevel 语义。
+    // 置顶层 (菜单/任务栏) zIndex 最大 → 恒纳入, 与 BuildLayerListLocked
+    // "菜单恒置顶" 层序一致 — 对低 z-order 父窗口的置顶菜单属语义修正
+    // (旧 ZOrderNeedsParentPosCheck 需父 z-order 位置 >= ZC 父位置才判遮挡)。
+    // 性能: 每次调用构建一次层列表 (O(n) 拷贝), 调用频率 = GL overlay 遮挡
+    // 重绘路径; 不引缓存 (超出本次范围, 需独立评审)。
+    const auto layers = comp_.BuildLayerListLocked(rootW, rootH);
+    size_t anchorZ = 0;  // 父==root: 锚 = Root 层 zIndex (0)
+    bool anchorFound = (info.parentToplevel == comp_.desktopRootToplevelId_);
+    if (!anchorFound) {
+        for (const auto& layer : layers) {
+            if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel &&
+                layer.toplevelId == info.parentToplevel) {
+                anchorZ = layer.zIndex;
+                anchorFound = true;
+                break;
+            }
         }
-        int x = 0, y = 0;
-        comp_.ResolveSubsurfaceLayerPositionLocked(layer, x, y);
-        pushRect(x, y,
-                 DisplaySizeAfterViewport(layer.vpDstW, layer.w),
-                 DisplaySizeAfterViewport(layer.vpDstH, layer.h));
+    }
+    if (!anchorFound) return 0;  // 父窗口 Toplevel 层不在列表, 保守不出遮挡者
+
+    for (const auto& layer : layers) {
+        if (!layer.visible) continue;
+        if (layer.type == DesktopCompositor::CompositorLayer::Type::Root) continue;
+        if (layer.zcActive) continue;  // 跳过所有 ZC 层 (旧 activeKeys_ 检查同义)
+        if (layer.zIndex <= anchorZ) continue;
+        if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel) {
+            if (layer.fullscreen) pushRect(0, 0, rootW, rootH);
+            else pushRect(layer.x, layer.y, layer.w, layer.h);
+        } else {
+            // Subsurface: x/y 已 Resolve 为桌面坐标; 尺寸取 vpDst 裁剪后几何
+            // (层字段 w/h 是原 buffer 尺寸, 与旧实现取法一致 — 不用 layer.w/h)。
+            pushRect(layer.x, layer.y,
+                     DisplaySizeAfterViewport(layer.sub->vpDstW, layer.sub->w),
+                     DisplaySizeAfterViewport(layer.sub->vpDstH, layer.sub->h));
+        }
     }
     return count;
 }
