@@ -81,6 +81,19 @@ notepad 直启冒烟通过。
 - 行为平价：两 Compose 体逐行复刻原分支，锁边界/计时点/日志门控不变；desktop+非 root
   仍走 Window composer，与旧 `RootCompositing() && id==root` 逐点等价。
 
+### 验证记录（模拟器冒烟，2026-08-29）
+
+- 重建 x86_64 HAP 部署模拟器（1280x800，scale 2.25），卸载重装 + 清 prefix 首启 wineboot。
+- **任务 2 桌面链冒烟 ✅**：DesktopAbility 出图 = 蓝色桌面 + 左下角中文「开始」任务栏
+  （WL-STAT renderers=1，tl=4 桌面 root renderer 持续渲染 22s+ 无崩溃），
+  `DesktopRootFrameComposer` 行为平价实证通过。
+- **任务 1**：双架构编译 + host_tests 全绿 + 逻辑对账（`GetInputLetterbox` 桌面路径
+  == 旧 CoordTransform 桌面分支，逐点等价；直传帧 contentW/H 锚 root 为红警2 契约化）。
+  运行时输入逆映射：模拟器无 `input`/`uitest` 鼠标注入通道（均不可用），无法实证；
+  且直传/游戏输入回归需 arm64 Pad 真机（war3/PAL2/RA2），属 2B 最终验收。
+- 局限：模拟器无游戏，`WindowFrameComposer`（PC 模式）未在运行中触发（桌面模式取帧
+  只走 root，走 `DesktopRootFrameComposer`）；其正确性由逐行复刻 + 双架构编译保证。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
