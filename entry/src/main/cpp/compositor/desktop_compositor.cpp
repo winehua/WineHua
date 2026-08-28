@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <unordered_map>
 #include <hilog/log.h>
 
 #undef LOG_DOMAIN
@@ -143,14 +144,21 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         layers.push_back(std::move(rootLayer));
     }
 
-    // subsurface 层填充块 (原两份逐字相同的填充体合并, 行为不变 — 仅两个
-    // 循环的过滤条件不同): 位置已 Resolve 为桌面坐标; zcActive 由
-    // ZcBridge::IsActive (zc_) 派生 (合成/输入跳过, GPU 内容由 egl_renderer 绘制);
-    // zIndex 与调用点共享同一计数器, 分配顺序与合并前一致。
-    auto appendSubsurfaceLayer = [&](const SubsurfaceLayer& sl) {
+    // 层序显式化 (重构第 3B 步): 旧"嵌套循环隐式排布" (main 循环按 z-order
+    // 逐窗口块 + 尾部置顶循环) 替换为"排序键显式排布" — 每项先带 ZOrderSeq
+    // 排序键入 pending, std::sort 后按输出顺序分配 zIndex。输出序列与旧
+    // 实现逐元素一致 (行为平价): Root 恒首 → InZOrder 段 (z-order 升序,
+    // 父层 + 其非 external 子层成块, 块内父层恒首位) → TopAnchored 段
+    // (subsurfaceLayers_ 原顺序)。对账点见提交说明。
+
+    // subsurface 层字段填充块 (原两份逐字相同的填充体合并, 行为不变 — 仅
+    // 组归属/排序键不同): 位置已 Resolve 为桌面坐标; zcActive 由
+    // ZcBridge::IsActive (zc_) 派生 (合成/输入跳过, GPU 内容由 egl_renderer
+    // 绘制); zIndex 不再在此分配 — 由排序后的输出顺序统一分配 (输出循环),
+    // 编号与旧行为一致 (分配顺序=最终输出顺序)。
+    auto fillSubsurfaceLayer = [&](const SubsurfaceLayer& sl) -> CompositorLayer {
         CompositorLayer subLayer;
         subLayer.type = CompositorLayer::Type::Subsurface;
-        subLayer.zIndex = zIndex++;
         subLayer.visible = (sl.parentToplevel == rootId) ||
                            tmgr_.IsToplevelVisibleLocked(sl.parentToplevel, rootId);
         subLayer.zcActive = zc_.IsActive(sl.surfaceKey);
@@ -162,21 +170,39 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         subLayer.w = sl.w;
         subLayer.h = sl.h;
         subLayer.sub = &sl;
-        layers.push_back(std::move(subLayer));
+        return subLayer;
     };
 
+    // 待排项: 排序键 + 排布后的层 (字段构建时即填全, 只差 zIndex)。
+    struct PendingLayer {
+        winehua::ZOrderSeq seq;
+        CompositorLayer layer;
+    };
+    std::vector<PendingLayer> pending;
+    pending.reserve(tmgr_.toplevelZOrder().size() + subsurfaceLayers_.size());
+
+    // --- Toplevel 待排项: 遍历 z-order (与旧 main 循环同序遍历) ---
     // toplevel 层 (z-order 升序) + 各窗口的 subsurface 层挂在其父窗口层内
     // (文档 §4.2): z-order 更高的 toplevel 自然盖住低窗口的 subsurface —
     // 修复"GL 画面 (subsurface) 永远置顶、无法被其它窗口遮挡"。
     // root 由 Root 层表示, 不在 z-order 里重复。
     // 可见性判定与原合成/输入循环同源 (IsToplevelVisibleLocked)。
+    // laneSeq = 该窗口在 z-order 的组内序号 (即已 emit 的窗口序号, 与旧 main
+    // 循环"循环到的顺序"一一对应 — 注意不是 toplevelZOrder_ 原始下标: root
+    // 可能占位在列, 原始下标会把整个 lane 序偏移, 破块序)。
+    std::unordered_map<uint32_t, int64_t> laneOf;  // 父窗口 id → laneSeq
+    laneOf.reserve(tmgr_.toplevelZOrder().size());
+    int64_t zi = 0;
     for (uint32_t childId : tmgr_.toplevelZOrder()) {
         if (childId == rootId) continue;
         const auto* cst = tmgr_.FindToplevelLocked(childId);
         if (!cst) continue;
-        CompositorLayer layer;
+        PendingLayer p;
+        p.seq.group = winehua::ZOrderGroup::InZOrder;
+        p.seq.laneSeq = zi;
+        p.seq.itemSeq = 0;  // 父层恒在同 lane 首位, 子层 (itemSeq=li+1) 其后
+        CompositorLayer& layer = p.layer;
         layer.type = CompositorLayer::Type::Toplevel;
-        layer.zIndex = zIndex++;
         layer.visible = tmgr_.IsToplevelVisibleLocked(childId, rootId);
         layer.toplevelId = childId;
         layer.x = cst->X();
@@ -184,31 +210,57 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         layer.w = cst->Width();
         layer.h = cst->Height();
         layer.fullscreen = cst->IsFullscreen();
-        layers.push_back(std::move(layer));
-
-        // 该窗口的 subsurface 层 (按 subsurfaceLayers_ 原顺序, zIndex 紧随
-        // 父窗口)。弹出式菜单 (isExternal, 跨窗口 offset) 不跟随父窗口 —
-        // 统一置顶, 见尾部追加循环。
-        for (const auto& sl : subsurfaceLayers_) {
-            if (sl.parentToplevel != childId || sl.isExternal) continue;
-            appendSubsurfaceLayer(sl);
-        }
+        laneOf.emplace(childId, zi);
+        pending.push_back(std::move(p));
+        ++zi;
     }
 
-    // 尾部置顶层: parent==root / 不在 z-order 的旧外部层 (任务栏等,
-    // 避免沉底回归) + 所有弹出式菜单 (isExternal)。
+    // --- Subsurface 待排项: 遍历 subsurfaceLayers_ 一次 (旧 main/尾部循环
+    // 各自遍历一次, 过滤条件由密钥生成收口为 ZOrderGroupFor, 行为平价) ---
+    // 弹出式菜单 (isExternal, 跨窗口 offset) 不跟随父窗口 — 统一置顶。
     // 菜单恒置顶语义: 菜单挂的父窗口可能是普通应用窗口 (任务栏按钮右键
     // 菜单 owner 是应用窗口), 若跟随父窗口 z-order, 会被置顶 pin 的任务栏
     // 挡住 — 所有菜单都应叠在任务栏上方 (Windows popup 语义, 2026-08 实测)。
     // 渲染与输入共用本列表 (单一数据源), 置顶后点击菜单的命中同步优先。
-    // 置顶判定收口于 zorder_policy.h (ZOrderTopAnchored, 行为平价 — 条件
-    // 逐字复现原 if)。
+    int64_t li = 0;
     for (const auto& sl : subsurfaceLayers_) {
-        if (winehua::ZOrderTopAnchored(sl.parentToplevel == rootId,
-                                       sl.isExternal,
-                                       tmgr_.IsInZOrder(sl.parentToplevel))) {
-            appendSubsurfaceLayer(sl);
+        const winehua::ZOrderGroup grp = winehua::ZOrderGroupFor(
+            sl.parentToplevel == rootId, sl.isExternal,
+            tmgr_.IsInZOrder(sl.parentToplevel));
+        PendingLayer p;
+        p.seq.group = grp;
+        p.layer = fillSubsurfaceLayer(sl);
+        if (grp == winehua::ZOrderGroup::InZOrder) {
+            // 组归属保证父在 z-order 且非 root (ZOrderGroupFor 已把其余归
+            // TopAnchored), laneOf 必命中; 未命中 (仅 root/父缺失的假设
+            // 态, 与旧 main 循环"跳过缺失父整块"同丢弃)。
+            auto it = laneOf.find(sl.parentToplevel);
+            if (it == laneOf.end()) { ++li; continue; }
+            p.seq.laneSeq = it->second;
+            p.seq.itemSeq = li + 1;  // 子层恒在父层 (itemSeq=0) 之后, 同父
+                                     // 子层按 subsurfaceLayers_ 顺序 (li 递增)
+        } else {
+            // TopAnchored (parent==root / isExternal / 父不在 z-order:
+            // 任务栏等外部层, 避免沉底回归): 恒置顶段, 顺序 = subsurfaceLayers_
+            // 原顺序 (与旧尾部循环一致)。
+            p.seq.laneSeq = 0;
+            p.seq.itemSeq = li;
         }
+        pending.push_back(std::move(p));
+        ++li;
+    }
+
+    // --- 排序 (全序, 键无相等冲突: Toplevel (1,zi,0) 与子层 (1,zi,li+1)
+    // li+1>=1 不同; 同父子层 li 互异; Toplevel 项 zi 互异; TopAnchored
+    // (2,0,li) li 互异; 两段 group 不同) ---
+    std::sort(pending.begin(), pending.end(),
+              [](const PendingLayer& a, const PendingLayer& b) { return a.seq < b.seq; });
+
+    // --- 输出: zIndex 按输出顺序递增 (Root=0 → 后续 1..N) — 与旧行为一致
+    // (旧 zIndex 分配顺序 = 最终输出顺序) ---
+    for (auto& p : pending) {
+        p.layer.zIndex = zIndex++;
+        layers.push_back(std::move(p.layer));
     }
     return layers;
 }

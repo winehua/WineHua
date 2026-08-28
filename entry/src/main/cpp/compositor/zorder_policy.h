@@ -54,4 +54,47 @@ inline bool ZOrderFullscreenCandidateBeats(uint64_t candPriority, uint64_t bestP
     return !bestValid || candPriority > bestPriority;
 }
 
+// ============================================================================
+// 层序显式化 (重构第 3B 步): BuildLayerListLocked 的排布分组/排序键/谓词。
+// 旧实现用"嵌套循环隐式排布" (main 循环按 z-order 逐窗口块 + 尾部置顶循环)
+// 产生层序; 此处把同一排布表达为显式排序键 (ZOrderGroup + ZOrderSeq +
+// ZOrderGroupFor), 供 BuildLayerListLocked 组待排项后 std::sort — 输出序列
+// 与旧实现逐元素一致 (行为平价)。
+// ============================================================================
+
+// 层序分组: Root = 恒首 (不参与排序, 建层时直接先出); InZOrder = 随父窗口
+// z-order (父层 + 其非 external 子层); TopAnchored = 恒置顶段
+// (parent==root / isExternal / 父不在 z-order)。
+enum class ZOrderGroup { Root = 0, InZOrder = 1, TopAnchored = 2 };
+
+// 排序键全序: (group, laneSeq, itemSeq) 字典序。
+//   InZOrder:   laneSeq = 父窗口在 z-order 的组内序号; itemSeq = 父层 0 /
+//               子层 listIdx+1 (父层恒在同组同 lane 首位; 同父子层按
+//               subsurfaceLayers_ 顺序稳定)。
+//   TopAnchored: laneSeq = 0; itemSeq = 层在 subsurfaceLayers_ 的序号
+//               (列表顺序)。
+struct ZOrderSeq {
+    ZOrderGroup group = ZOrderGroup::Root;
+    int64_t laneSeq = 0;
+    int64_t itemSeq = 0;
+};
+inline bool operator<(const ZOrderSeq& a, const ZOrderSeq& b) {
+    if (a.group != b.group) return a.group < b.group;
+    if (a.laneSeq != b.laneSeq) return a.laneSeq < b.laneSeq;
+    return a.itemSeq < b.itemSeq;
+}
+
+// 分组建键依据: 组归属 = !ZOrderTopAnchored → InZOrder, 否则 TopAnchored
+// (与旧 main 循环 / 尾部循环的互斥划分逐字对应: main = 跟父且非 external,
+//  尾部 = parent==root | isExternal | 父不在 z-order)。
+inline ZOrderGroup ZOrderGroupFor(bool parentIsRoot, bool isExternal, bool parentInZOrder) {
+    return ZOrderTopAnchored(parentIsRoot, isExternal, parentInZOrder)
+        ? ZOrderGroup::TopAnchored : ZOrderGroup::InZOrder;
+}
+
+// 任务栏 pin 全屏例外收口 (原 ToplevelManager::PinToTop 手写 !raisedFullscreen):
+// raisedId 窗口被 raise 后把 pinId 压回栈顶; 被 raise 窗口全屏时不压
+// (游戏全屏必须压过任务栏)。
+inline bool ZOrderPinSuppressed(bool raisedIsFullscreen) { return raisedIsFullscreen; }
+
 } // namespace winehua

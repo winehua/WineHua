@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
+#include "compositor/zorder_policy.h"
 
 // WaylandServer 中 toplevel/popup 聚合状态的集中存储。
 // 所有字段由 mutex() 保护，调用方在访问任何成员前必须先加锁。
@@ -203,11 +204,12 @@ public:
         if (!IsInZOrder(id)) AddToZOrder(id);
     }
     // 恒置顶 pin (任务栏, app_id == "explorer.exe.taskbar"): raisedId 窗口被
-    // raise 后把 pinId 重新压回栈顶; 全屏窗口例外 — 游戏全屏必须压过任务栏
+    // raise 后把 pinId 重新压回栈顶; 全屏窗口例外 — 游戏全屏必须压过任务栏。
+    // 全屏例外谓词收口于 zorder_policy.h (ZOrderPinSuppressed, 行为平价)。
     void PinToTop(uint32_t pinId, uint32_t raisedId) {
         bool raisedFullscreen = false;
         if (const auto* rst = FindToplevelLocked(raisedId)) raisedFullscreen = rst->IsFullscreen();
-        if (pinId > 0 && pinId != raisedId && !raisedFullscreen) {
+        if (pinId > 0 && pinId != raisedId && !winehua::ZOrderPinSuppressed(raisedFullscreen)) {
             RaiseToplevel(pinId);
         }
     }
