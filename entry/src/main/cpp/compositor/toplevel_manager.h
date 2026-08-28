@@ -208,7 +208,8 @@ public:
     void HideToplevelLocked(uint32_t id) { EnsureToplevelLocked(id).SetBackground(true); }
     void ShowToplevelLocked(uint32_t id) { EnsureToplevelLocked(id).SetBackground(false); }
 
-    // 查询隐藏/可见状态 (桌面合成时会排除已隐藏 and 未 hidden 的窗口)。
+    // 查询 toplevel 是否可见 (合成/命中据此排除不可见窗口): 非桌面 root、
+    // 已建档、未标记 background (被切换掉的旧 root)、已有帧、未最小化。
     bool IsToplevelVisibleLocked(uint32_t id, uint32_t desktopRootId);
 
     // popup 管理 (调用方须已持有 mutex, 除非另行说明)

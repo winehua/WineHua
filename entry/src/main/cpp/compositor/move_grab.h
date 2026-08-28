@@ -16,7 +16,7 @@ public:
     void StartMoveGrab(ToplevelManager& tmgr, uint32_t toplevelId, uint32_t serial,
                        int32_t grabGlobalX, int32_t grabGlobalY);
 
-    // 结束抓取。返回被结束的 toplevelId（已为 0 表示未在抓取）。
+    // 结束抓取, 清空 grab 状态 (未在抓取时调用安全, 仅清零)。
     void EndMoveGrab(ToplevelManager& tmgr);
 
     // 处理移动。返回 true 表示事件被 grab 消费。

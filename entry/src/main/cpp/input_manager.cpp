@@ -72,8 +72,9 @@ static uint32_t NowMs() {
     return static_cast<uint32_t>(ms);
 }
 
-// 静止 tap 的最小按压时长: ≥2 个 PAL2 轮询帧 (~55ms/帧 @18fps),
-// 保证 down 落在与 up 不同的 GetDeviceState 轮询窗口 (见 ACT_RELEASE)
+// 静止 tap 的最小按压时长: 保证 down/up 落在不同的 GetDeviceState 轮询
+// 窗口 (PAL2 按帧轮询 dinput, ~55ms/帧 @18fps — 理论上 ≥1 个轮询帧 (55ms)
+// 即可分开 down/up, 取 100ms 再留帧耗时抖动的余量; 见 ACT_RELEASE 脉冲拉伸)
 static constexpr uint32_t kMinPressDurationMs = 100;
 
 // ========================================================================

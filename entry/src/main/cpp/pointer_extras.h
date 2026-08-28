@@ -38,11 +38,15 @@ public:
     enum class ConstraintType { None, Lock, Confine };
 
     // -- Host 光标锁定 (dinput 相对模式的系统侧配套) --
-    // wine 建立 Lock 约束 = 游戏进入"隐藏光标无限移动"的相对模式 (FPS 视角)。
+    // wine 创建 relative_pointer 对象 = 游戏进入"隐藏光标无限移动"的相对
+    // 模式 (FPS 视角)。判据不是 Lock 约束: 光标可见的绝对模式游戏也会挂
+    // 约束 (红警2 主菜单), 只有 relative 对象创建 (wine 侧 needs_relative
+    // 判定: 光标隐藏 + 约束 + 焦点一致) 才是真相对模式 — 冻结挂在
+    // relmgr_get_relative_pointer, 不挂 constr_lock_pointer。
     // host 侧同步两件事: OH_WindowManager_LockCursor 冻结系统光标 (不再跟随
     // 物理移动, 杜绝边缘钳制喂死绝对通道 + 系统手势误触), tsfn 通知 ets
-    // pointer.setPointerVisible(false) 隐藏光标。解锁 (约束销毁/wine 退出
-    // 断连) 时还原。confine (ClipCursor, 光标可见) 不触发 — host 钳制已由
+    // pointer.setPointerVisible(false) 隐藏光标。解锁 (relative 对象全部
+    // 销毁/wine 退出断连) 时还原。confine (ClipCursor, 光标可见) 不触发 — host 钳制已由
     // ClampToContent 承担, 且 wineserver 内 ClipCursor 同样生效。
     // LockCursor 仅支持获焦窗口 (失焦系统自动解锁), 故逐个尝试已注册窗口。
     static void RegisterHostWindow(int32_t windowId);

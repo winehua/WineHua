@@ -563,7 +563,7 @@ int DesktopCompositor::GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t render
 }
 
 // ============================================================================
-// TakeToplevelFrame: 桌面合成核心 (~390 行)
+// TakeToplevelFrame: 桌面合成核心
 // ============================================================================
 
 bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, int& w, int& h) {

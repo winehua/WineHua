@@ -1171,8 +1171,8 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
     wl_global_create(display, &wl_subcompositor_interface, 1, self, WaylandServer::subcompositor_bind);
     wl_global_create(display, &wp_viewporter_interface, 1, self, WaylandServer::viewporter_bind);
     wl_global_create(display, &wl_output_interface, 3, self, WaylandServer::output_bind);
-    // dinput 老游戏的指针扩展 (warp 回中/指针约束; relative 故意不注册,
-    // 见 pointer_extras.h 头注释)
+    // dinput 老游戏的指针扩展 (warp 回中/指针约束/relative pointer,
+    // 三者均在 PointerExtras::Register 注册, 见 pointer_extras.h 头注释)
     PointerExtras::GetInstance()->Register(display);
     // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
     TextInput::GetInstance()->Register(display);
