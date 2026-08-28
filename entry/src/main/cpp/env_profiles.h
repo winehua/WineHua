@@ -56,12 +56,14 @@ struct SessionEnvPolicy {
     std::string sockDir, sockName, libPath, binDir, homeDir, prefixDir;
     std::string wineLang = "zh_CN";
     int audioBootstrapFd = -1;
-    // D3D overlay: d3dBackend 空 = 不注入 (RunWineExe 手动路径, 由调用者
-    // 经 extraEnv 自带 d3dLaunchEnvironment)
+    // D3D overlay: d3dBackend 空 = 不注入 (RunWineExe 手动路径 — 该路径启动
+    // explorer 等系统组件, 本身不需要 DXVK overlay)
     std::string d3dBackend, dxvkBackend;
     // 兼容档位 (仅 aarch64 生效)
     std::string compatEnvStr;
-    // explorer 桌面会话链收口: WEAKBARRIER=0 clamp + DXVK_LOG + perf profile
+    // DXVK/VKD3D 稳定化 overlay: WEAKBARRIER=0 clamp + DXVK_LOG + perf profile。
+    // 消费方: explorer 桌面会话链 + RunWineExe 程序直启 (runWineProgram),
+    // 两侧同源 — ArkTS 不再平行维护默认值拷贝
     bool stableDesktopOverlay = false;
     // WINEHUA_DESKTOP=shell: 接入 explorer shell desktop (任务栏可见)
     bool desktopShellFlag = false;

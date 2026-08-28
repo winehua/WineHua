@@ -199,9 +199,9 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
         options.presentBackend == "venus_broker_present" ||
         options.presentBackend == "venus_direct_present");
 
-    // 声明式 env 管线 (env_profiles.cpp): 基线+D3D overlay 由 policy 字段声明,
-    // per-run 覆盖 (options.environment) 与进程标记经 extraEnv 最后写入
-    // (与旧顺序一致: 产品默认在前, per-run 设置可压过它们, 进程标记再后)。
+    // 声明式 env 管线 (env_profiles.cpp): 基线+D3D overlay+稳定化 overlay 由
+    // policy 字段声明, per-run 覆盖 (options.environment) 与进程标记经 extraEnv
+    // 最后写入 (与旧顺序一致: 产品默认在前, per-run 设置可压过它们, 进程标记再后)。
     winehua::SessionEnvPolicy policy;
     policy.sockDir = sockDir;
     policy.sockName = sockName;
@@ -211,6 +211,11 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     policy.prefixDir = prefixDir;
     policy.d3dBackend = options.d3dBackend;
     policy.dxvkBackend = options.dxvkBackend;
+    // DXVK 稳定化默认值 (DXVK_LOG/perf profile/WEAKBARRIER clamp 等) 与桌面
+    // 会话链同一来源 (AppendStableDesktopDxvkEnv) — 历史上由 ArkTS
+    // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK/VKD3D 后端
+    // overlay 内 early-return, extraEnv 最后写入仍可压过产品默认。
+    policy.stableDesktopOverlay = true;
     policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
     policy.extraEnv = options.environment;
     policy.extraEnv.push_back("WINEHUA_D3D_BACKEND=" + options.d3dBackend);
@@ -428,9 +433,8 @@ napi_value RunWineExe(napi_env env, napi_callback_info info)
     std::string sockName = (pos == std::string::npos) ? sockStr : sockStr.substr(pos + 1);
 
     // 声明式 env 管线 (env_profiles.cpp)。d3dBackend 留空 = 不注入 D3D
-    // overlay: 此路径从 ArkTS 手动启动 Wine exe（如 explorer 文件管理器），
-    // D3D 后端由调用者通过 d3dLaunchEnvironment 单独指定；explorer 本身
-    // 不需要 DXVK overlay。
+    // overlay: 此路径从 ArkTS 手动启动 Wine 系统组件（如 explorer 文件管理器），
+    // explorer 本身不需要 DXVK overlay。
     winehua::SessionEnvPolicy policy;
     policy.sockDir = sockDir;
     policy.sockName = sockName;

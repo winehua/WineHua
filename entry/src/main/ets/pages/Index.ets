@@ -206,48 +206,6 @@ struct Index {
     mirror();
   }
 
-  // 正常启动 exe 的 per-process env (经 runWineProgram 的 environment 通道下发,
-  // native 侧 UpsertEnvLine 最后写入者胜出)。只含产品语义项 — 调查期 perf
-  // profile 白名单与 Want 覆盖合并已随 smoke 设施拆除; 默认 profile 与 native
-  // AppendStableDesktopDxvkEnv 无显式 profile 时的缺省选择一致。
-  private d3dLaunchEnvironment(): Record<string, string> {
-    // wined3d / vkd3d 混合路由: overlay env 由 native AppendD3dBackendEnv 注入,
-    // 此处无需补充 (vkd3d 的 DXVK 诊断键见 WineEnvService 同款注释)
-    if (this.d3dBackend.indexOf('dxvk_') !== 0) {
-      return {};
-    }
-    if (this.d3dBackend === 'dxvk_modern_2_6') {
-      return {
-        'DXVK_LOG_LEVEL': 'warn',
-        'DXVK_LOG_PATH': 'C:\\windows\\temp',
-        'WINEDEBUG': '-all',
-        'BOX64_DYNAREC_WEAKBARRIER': '0',
-        'WINEHUA_PERF_PROFILE': 'shadow-precise-dirty-ring-inline-upload-coverage-sort',
-        'VN_WINEHUA_STRONG_RING_BARRIER': '1',
-        'DXVK_WINEHUA_TRACE_SAMPLED': '0',
-        'DXVK_WINEHUA_TRACE_FLOW': '0',
-        'DXVK_WINEHUA_TRACE_API': '0'
-      };
-    }
-    return {
-      'DXVK_LOG_LEVEL': 'warn',
-      'DXVK_LOG_PATH': 'C:\\windows\\temp',
-      'WINEDEBUG': '-all',
-      /* Venus uses a shared-memory command ring between the x86_64 guest and
-       * the ARM64 renderer.  Box64's aggressive weak-barrier mode can violate
-       * the x86 ordering expected by the ring and eventually corrupt a random
-       * Vulkan command. Keep this scoped to DXVK/Venus processes. */
-      'BOX64_DYNAREC_WEAKBARRIER': '0',
-      'WINEHUA_PERF_PROFILE': 'shadow-precise-dirty-ring-inline-upload-coverage-sort',
-      'DXVK_WINEHUA_PRECISE_SHADOW': '1',
-      'DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED': '1',
-      'VN_WINEHUA_REMOTE_MEMORY_SYNC': '1',
-      'VKR_WINEHUA_SHADOW_FROM_HOST': 'precise',
-      'VKR_WINEHUA_SHADOW_TRACE': '0',
-      'VN_WINEHUA_STRONG_RING_BARRIER': '1'
-    };
-  }
-
   private d3dPresentBackend(): string {
     return this.d3dBackend.indexOf('dxvk_') === 0 || this.d3dBackend === 'vkd3d_limited_500k' ?
       'venus_broker_present' : 'virgl_compositor';
@@ -344,7 +302,9 @@ struct Index {
     testNapi.runWineProgram({
       windowsExePath: exePath,
       argv: [],
-      environment: this.d3dLaunchEnvironment(),
+      // DXVK 稳定化 env 默认已收口 native (BuildSessionEnv stableDesktopOverlay,
+      // 与桌面会话链同源), ArkTS 不再平行维护; 无 per-run 覆盖项时传空表
+      environment: {},
       workingDirectory: this.curDir,
       d3dBackend: this.d3dBackend,
       dxvkBackend: this.dxvkBackend,

@@ -142,7 +142,7 @@ OHOS 的 NCP 子进程**不继承主进程 environ**(`wine_launch.cpp:506` 注�
 追加器(均经 `UpsertEnvLine` 去重,后者胜出):
 
 - `AppendD3dBackendEnv`(wine_env.cpp:152)——dxvk/vkd3d 后端时整组注入: VK_DRIVER_FILES、VN_*、WINEDLLOVERRIDES=d3d11=n;dxgi=n、WINEHUA_DXVK_*/VKD3D_* 等
-- `AppendStableDesktopDxvkEnv`(wine_launch.cpp:367)——桌面会话收口: DXVK_LOG_LEVEL=warn、WEAKBARRIER=0 clamp、WINEHUA_PERF_PROFILE
+- `AppendStableDesktopDxvkEnv`(env_profiles.cpp)——DXVK/VKD3D 稳定化收口(桌面会话链与 RunWineProgram 直启链同源): DXVK_LOG_LEVEL=warn、WEAKBARRIER=0 clamp、WINEHUA_PERF_PROFILE
 - 兼容档位(wine_launch.cpp:318-364,aarch64)——ArkTS `compatEnvStr` 分号串,白名单只放行 `BOX64_DYNAREC_*`;`AppendCompatEnvLines` 统一注入 SpawnRequest.env(会话 env 与 wineserver/wineboot 同一通道);automation 模式跳过
 
 **③ wine_child 子进程内重建**
@@ -163,7 +163,7 @@ wine 内 `CreateProcess` → `ohos_broker_spawn_child`(`ohos_broker.c:192`): 把
 
 - 引擎级(launchClient 参数,设置页 → preferences/AppStorage → `WineEnvService.ets:857` startSession 组装): `lang` → LANG/LC_ALL;`d3d`/`dxvk` → AppendD3dBackendEnv 分支;`compatEnvStr` → 兼容档位;`prefixMode`/`automation` → 行为开关
 - per-app(runWineProgram 的 `environment: Record<string,string>` 对象,`AppLibraryService.ets:549` launch()): LANG、11 个 BOX64_DYNAREC_* 档位(键清单/取值唯一来源 `Box64Dynarec.ets`,native 仅 `FilterCompatLines` 前缀门,不持键表)、`WINEHUA_WINDOWS_VERSION`(winver)、d3d/graphics 覆盖;native 端 `UpsertEnvLine` 压过基线(wine_exe.cpp:244-249)
-- 自动化: SmokeRunner 每用例构造 smokeEnvironment(WINEDEBUG/WINEHUA_SMOKE_*/VN_PERF 等);game 模式 `d3dLaunchEnvironment`(WineEnvService.ets:1317)注入 perf profile 整组
+- 自动化: smoke 设施已拆除(SmokeRunner/Want 协议/诊断 env 矩阵均移除),重建设计(瘦编排 + 随载荷版本化 manifest)见 SMOKE_INFRASTRUCTURE.md §4
 
 ### fd 变量的统一约定
 
@@ -179,7 +179,7 @@ virgl 子进程不共享 BuildWineEnv: 主进程 `WINEHUA_VIRGL_HOST_*` → IPC 
 |---|---|
 | wineserver | 仅 compat 档位经 SpawnRequest.env;其余靠 RunWineserver 精简基线 + broker 尾部 WINEPREFIX 会话权威 |
 | wineboot | LANG/LC_ALL(+compat 档位;automation 时 WINEDLLOVERRIDES=mscoree,mshtml=);"节省 entryParams 长度"刻意不传全量 |
-| explorer / RunWineProgram / RunWineExe / GuestELF | BuildWineEnv 全量 + AppendD3dBackendEnv(+桌面链 AppendStableDesktopDxvkEnv)→ broker |
+| explorer / RunWineProgram / RunWineExe / GuestELF | BuildWineEnv 全量 + AppendD3dBackendEnv(+AppendStableDesktopDxvkEnv: 桌面链与 RunWineProgram 链同源)→ broker |
 | wine→wine 子进程 | 父进程 environ 全量转发(过滤 fd 变量)|
 | virgl host | 独立白名单体系(见上),不共享 BuildWineEnv |
 | host ELF | 清除 guest/box64 图形变量后最小重建 |

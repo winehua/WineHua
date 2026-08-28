@@ -113,8 +113,9 @@ void AppendStableDesktopDxvkEnv(std::vector<std::string>& env,
     }
 
     /* Explorer-launched programs inherit the desktop process environment and
-     * bypass Index.d3dLaunchEnvironment(). Keep the product-correct settings
-     * here without changing the explicit A/B profiles used by runWineProgram. */
+     * never see runWineProgram's per-process overrides; runWineProgram itself
+     * reaches this same overlay via SessionEnvPolicy.stableDesktopOverlay.
+     * Keep the product-correct defaults here so both chains share one source. */
     /* Product sessions retain warnings and errors without formatting DXVK's
      * informational startup stream. Smoke and explicit diagnostics override
      * this through runWineProgram's per-process environment. */
