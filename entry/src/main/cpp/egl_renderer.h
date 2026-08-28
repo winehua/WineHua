@@ -129,7 +129,13 @@ private:
     int frameW_ = 0, frameH_ = 0;  // Wine 帧内容尺寸 (坐标转换)
     bool frameArgb_ = false;       // 当前帧是 ARGB8888 (layered/shaped 异型窗口, 透传 alpha)
     int texW_ = 0, texH_ = 0;      // 上次上传的纹理尺寸 (用于避免每帧 glTexImage2D)
-    FitRect letterbox_;  // Letterbox 适配矩形 (ComputeFitRect, 保持宽高比)
+    FitRect letterbox_;  // 显示 letterbox: buffer 尺寸 (frame.w/h) 到 surface 的保比例 fit
+    // 输入逆映射锚 (PresentedFrame 契约, 重构第 2B 步): 最近一帧契约的 contentW/H
+    // (逻辑内容尺寸)。桌面合成/快进/直传帧 = root 逻辑尺寸 (与 buffer 尺寸解耦,
+    // 直传游戏帧 buffer 800x600 但 content 仍是桌面 1400x920 — 红警2 修复点);
+    // PC 窗口帧 = 窗口内容尺寸 (content == buffer)。GetInputLetterbox 用它对当前
+    // surface 做保比例 fit; 无帧 (contentW/H=0) 或 fit 失败退回显示 letterbox_。
+    int contentW_ = 0, contentH_ = 0;
     int bufW_ = 0, bufH_ = 0;  // 上次 SET_BUFFER_GEOMETRY 的值, 避免重复调用
     int lastLoggedW_ = 0, lastLoggedH_ = 0;  // 上次输出 resize 日志时的 surface 尺寸
     std::thread thread_;

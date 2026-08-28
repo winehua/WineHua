@@ -164,19 +164,15 @@ void InputManager::CoordTransform(double px, double py, uint32_t tl,
     // 800x600 系, 再进 InputResolver 的 fit 被二次缩放 → 注入坐标与视觉
     // 光标错位 → 游戏永远点不到按钮 (红警2 主菜单点击无效)。CPU 帧
     // (1400x920) 时渲染视口恰为恒等映射, 两个基准重合, 故此前单测有效。
-    auto* ws = WaylandServer::GetInstance();
-    FitRect lb{};
-    if (ws->IsDesktopMode()) {
-        const uint32_t desktopRootId = ws->GetDesktopRootToplevelId();
-        const int rootW = ws->GetToplevelW(desktopRootId);
-        const int rootH = ws->GetToplevelH(desktopRootId);
-        if (rootW <= 0 || rootH <= 0 ||
-            !ComputeFitRect(surfW, surfH, rootW, rootH, lb)) {
-            lb = r->GetLetterbox();  // fallback: root 未就绪时退回渲染视口
-        }
-    } else {
-        lb = r->GetLetterbox();
-    }
+    // 输入逆映射锚 (PresentedFrame 契约, 重构第 2B 步): 由 renderer 按最近一帧
+    // 契约的 contentW/H 给出 surface 保比例 fit — 桌面合成/快进/直传帧锚桌面
+    // 逻辑尺寸, PC 窗口帧锚窗口内容尺寸。旧实现在此绕路重算: 桌面模式用 root
+    // 尺寸做 ComputeFitRect, root 未就绪或 PC 模式退回渲染器显示 letterbox。
+    // 契约化后 GetInputLetterbox 内部承接同一 fallback (无帧 contentW/H=0 或
+    // fit 失败时返回显示 letterbox_)。基准 (20260822 红警2 直传点击修复):
+    // 输入锚是"桌面逻辑坐标", 与"渲染当前帧格式"解耦 — 直传游戏帧 buffer
+    // 是内容尺寸 (800x600), 锚仍是桌面尺寸 (1400x920), 否则逆映射二次缩放。
+    FitRect lb = r->GetInputLetterbox();
     if (outLb) *outLb = lb;
 
     if (surfW <= 0 || surfH <= 0 || lb.dstW <= 0 || lb.dstH <= 0) {
