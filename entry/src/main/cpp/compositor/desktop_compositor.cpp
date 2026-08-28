@@ -105,30 +105,33 @@ void DesktopCompositor::RemoveZeroCopyKeyLocked(uint64_t surfaceKey)
     zeroCopySurfaceKeys_.erase(surfaceKey);
 }
 
-bool DesktopCompositor::HasZeroCopyLayerForToplevelLocked(uint32_t id) const
+const DesktopCompositor::SubsurfaceLayer*
+DesktopCompositor::FindZeroCopyLayerForToplevelLocked(uint32_t id) const
 {
     for (const auto& layer : subsurfaceLayers_)
         if (layer.parentToplevel == id && zeroCopySurfaceKeys_.count(layer.surfaceKey))
-            return true;
-    return false;
+            return &layer;
+    return nullptr;
+}
+
+bool DesktopCompositor::HasZeroCopyLayerForToplevelLocked(uint32_t id) const
+{
+    return FindZeroCopyLayerForToplevelLocked(id) != nullptr;
 }
 
 bool DesktopCompositor::GetZeroCopyContentSizeLocked(uint32_t toplevelId,
                                                      int& outW, int& outH) const
 {
-    // 与 HasZeroCopyLayerForToplevelLocked 同一层集合判定; 内容尺寸取
+    // 与 HasZeroCopyLayerForToplevelLocked 同一层集合判定 (共用
+    // FindZeroCopyLayerForToplevelLocked 单一查找); 内容尺寸取
     // vpDst 裁剪后几何, 与 GetZeroCopyLayerInfo (egl_renderer 渲染视口
     // 缓存 zeroCopyLayerW_/H_ 的来源) 完全同规则 — 保证输入 fit 与渲染
     // 显示严格互逆。
-    for (const auto& layer : subsurfaceLayers_) {
-        if (layer.parentToplevel != toplevelId ||
-            !zeroCopySurfaceKeys_.count(layer.surfaceKey))
-            continue;
-        outW = DisplaySizeAfterViewport(layer.vpDstW, layer.w);
-        outH = DisplaySizeAfterViewport(layer.vpDstH, layer.h);
-        return true;
-    }
-    return false;
+    const auto* layer = FindZeroCopyLayerForToplevelLocked(toplevelId);
+    if (!layer) return false;
+    outW = DisplaySizeAfterViewport(layer->vpDstW, layer->w);
+    outH = DisplaySizeAfterViewport(layer->vpDstH, layer->h);
+    return true;
 }
 
 std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)

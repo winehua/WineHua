@@ -212,6 +212,10 @@ public:
     bool GetZeroCopyContentSizeLocked(uint32_t toplevelId, int& outW, int& outH) const;
 
 private:
+    // toplevel 的 zero-copy subsurface 层查找 (上面两个查询的单一实现,
+    // 同一遍历同一谓词; 返回首个匹配层, 调用方须已持有 tmgr mutex)
+    const SubsurfaceLayer* FindZeroCopyLayerForToplevelLocked(uint32_t id) const;
+
     ToplevelManager& tmgr_;
     const DisplayPolicy& policy_;
     const uint32_t& desktopRootToplevelId_;
