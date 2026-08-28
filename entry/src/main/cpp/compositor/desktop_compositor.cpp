@@ -147,6 +147,28 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         layers.push_back(std::move(rootLayer));
     }
 
+    // subsurface 层填充块 (原两份逐字相同的填充体合并, 行为不变 — 仅两个
+    // 循环的过滤条件不同): 位置已 Resolve 为桌面坐标; zcActive 由
+    // zeroCopySurfaceKeys_ 派生 (合成/输入跳过, GPU 内容由 egl_renderer 绘制);
+    // zIndex 与调用点共享同一计数器, 分配顺序与合并前一致。
+    auto appendSubsurfaceLayer = [&](const SubsurfaceLayer& sl) {
+        CompositorLayer subLayer;
+        subLayer.type = CompositorLayer::Type::Subsurface;
+        subLayer.zIndex = zIndex++;
+        subLayer.visible = (sl.parentToplevel == rootId) ||
+                           tmgr_.IsToplevelVisibleLocked(sl.parentToplevel, rootId);
+        subLayer.zcActive = zeroCopySurfaceKeys_.count(sl.surfaceKey) > 0;
+        subLayer.toplevelId = sl.parentToplevel;
+        int lx = 0, ly = 0;
+        ResolveSubsurfaceLayerPositionLocked(sl, lx, ly);
+        subLayer.x = lx;
+        subLayer.y = ly;
+        subLayer.w = sl.w;
+        subLayer.h = sl.h;
+        subLayer.sub = &sl;
+        layers.push_back(std::move(subLayer));
+    };
+
     // toplevel 层 (z-order 升序) + 各窗口的 subsurface 层挂在其父窗口层内
     // (文档 §4.2): z-order 更高的 toplevel 自然盖住低窗口的 subsurface —
     // 修复"GL 画面 (subsurface) 永远置顶、无法被其它窗口遮挡"。
@@ -169,27 +191,11 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         layers.push_back(std::move(layer));
 
         // 该窗口的 subsurface 层 (按 subsurfaceLayers_ 原顺序, zIndex 紧随
-        // 父窗口)。位置已 Resolve 为桌面坐标; zcActive 由 zeroCopySurfaceKeys_
-        // 派生 (合成/输入跳过, GPU 内容由 egl_renderer 绘制)。
-        // 弹出式菜单 (isExternal, 跨窗口 offset) 不跟随父窗口 — 统一置顶,
-        // 见尾部追加循环。
+        // 父窗口)。弹出式菜单 (isExternal, 跨窗口 offset) 不跟随父窗口 —
+        // 统一置顶, 见尾部追加循环。
         for (const auto& sl : subsurfaceLayers_) {
             if (sl.parentToplevel != childId || sl.isExternal) continue;
-            CompositorLayer subLayer;
-            subLayer.type = CompositorLayer::Type::Subsurface;
-            subLayer.zIndex = zIndex++;
-            subLayer.visible = (sl.parentToplevel == rootId) ||
-                               tmgr_.IsToplevelVisibleLocked(sl.parentToplevel, rootId);
-            subLayer.zcActive = zeroCopySurfaceKeys_.count(sl.surfaceKey) > 0;
-            subLayer.toplevelId = sl.parentToplevel;
-            int lx = 0, ly = 0;
-            ResolveSubsurfaceLayerPositionLocked(sl, lx, ly);
-            subLayer.x = lx;
-            subLayer.y = ly;
-            subLayer.w = sl.w;
-            subLayer.h = sl.h;
-            subLayer.sub = &sl;
-            layers.push_back(std::move(subLayer));
+            appendSubsurfaceLayer(sl);
         }
     }
 
@@ -202,21 +208,7 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     for (const auto& sl : subsurfaceLayers_) {
         if (sl.parentToplevel == rootId || sl.isExternal ||
             !tmgr_.IsInZOrder(sl.parentToplevel)) {
-            CompositorLayer subLayer;
-            subLayer.type = CompositorLayer::Type::Subsurface;
-            subLayer.zIndex = zIndex++;
-            subLayer.visible = (sl.parentToplevel == rootId) ||
-                               tmgr_.IsToplevelVisibleLocked(sl.parentToplevel, rootId);
-            subLayer.zcActive = zeroCopySurfaceKeys_.count(sl.surfaceKey) > 0;
-            subLayer.toplevelId = sl.parentToplevel;
-            int lx = 0, ly = 0;
-            ResolveSubsurfaceLayerPositionLocked(sl, lx, ly);
-            subLayer.x = lx;
-            subLayer.y = ly;
-            subLayer.w = sl.w;
-            subLayer.h = sl.h;
-            subLayer.sub = &sl;
-            layers.push_back(std::move(subLayer));
+            appendSubsurfaceLayer(sl);
         }
     }
     return layers;
