@@ -105,6 +105,7 @@ add_library(virgl_child SHARED
     virgl_host_config.cpp
     virgl_surface_presenter.cpp
     venus_surface_presenter.cpp
+    shader_utils.cpp
     phone_adapter/phone_virgl_dispatch.cpp
 )
 target_link_libraries(virgl_child PUBLIC

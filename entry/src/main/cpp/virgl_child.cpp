@@ -10,6 +10,7 @@
 #include "virgl_ipc_protocol.h"
 #include "virgl_host_config.h"
 #include "virgl_surface_presenter.h"
+#include "presenter_common.h"
 
 #include <atomic>
 #include <chrono>
@@ -112,11 +113,8 @@ void ForwardPerfSummary(const std::string& path, std::atomic<bool>& stop)
     if (file) fclose(file);
 }
 
-bool PresentPerfSummaryEnabled()
-{
-    const char* summary = std::getenv("WINEHUA_VTEST_PRESENT_PERF_SUMMARY");
-    return summary && summary[0] == '1' && !summary[1];
-}
+// PresentPerfSummaryEnabled 收编于 presenter_common.h (行为平价)
+using winehua::PresentPerfSummaryEnabled;
 
 int WriteIpcResult(OHIPCParcel* reply, int32_t result)
 {

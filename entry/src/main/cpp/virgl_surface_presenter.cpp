@@ -1,6 +1,8 @@
 #include "virgl_surface_presenter.h"
 #include "venus_surface_presenter.h"
 #include "native_window_lease.h"
+#include "presenter_common.h"
+#include "shader_utils.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -24,43 +26,19 @@
 
 namespace {
 
-using SteadyClock = std::chrono::steady_clock;
+// 帧周期常量与工具函数收编于 presenter_common.h (行为平价 — 逻辑与返回值不变)
+using winehua::SteadyClock;
+using winehua::kDefaultFramePeriodNs;
+using winehua::kMinFramePeriodNs;
+using winehua::kVirglMaxFramePeriodNs;
+using winehua::kDispatchLeadNs;
+using winehua::NormalizeVirglFramePeriodNs;
+using winehua::VirglPacingPeriodNs;
+using winehua::NowUs;
+using winehua::NowNs;
+using winehua::PresentPerfSummaryEnabled;
 
-constexpr uint64_t kDefaultFramePeriodNs = 16666667;
-constexpr uint64_t kMinFramePeriodNs = 4000000;
-constexpr uint64_t kMaxFramePeriodNs = 33333333;
-constexpr uint64_t kProducerDispatchLeadNs = 500000;
 constexpr auto kVenusTargetAttachTimeout = std::chrono::milliseconds(2500);
-
-uint64_t NormalizeFramePeriodNs(uint64_t framePeriodNs)
-{
-    if (!framePeriodNs) return kDefaultFramePeriodNs;
-    return std::clamp(framePeriodNs, kMinFramePeriodNs, kMaxFramePeriodNs);
-}
-
-uint64_t PacingPeriodNs(uint64_t displayPeriodNs)
-{
-    return displayPeriodNs > kMinFramePeriodNs + kProducerDispatchLeadNs
-        ? displayPeriodNs - kProducerDispatchLeadNs : kMinFramePeriodNs;
-}
-
-uint64_t NowUs()
-{
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        SteadyClock::now().time_since_epoch()).count());
-}
-
-uint64_t NowNs()
-{
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-        SteadyClock::now().time_since_epoch()).count());
-}
-
-bool PresentPerfSummaryEnabled()
-{
-    const char* summary = std::getenv("WINEHUA_VTEST_PRESENT_PERF_SUMMARY");
-    return summary && summary[0] == '1' && !summary[1];
-}
 
 GLuint CompilePresentShader(GLenum type, const char* source)
 {
@@ -98,8 +76,8 @@ public:
         timestampFailures_ = 0;
         throttled_ = 0;
         lastPresentNs_ = 0;
-        displayPeriodNs_ = NormalizeFramePeriodNs(framePeriodNs);
-        framePeriodNs_ = PacingPeriodNs(displayPeriodNs_);
+        displayPeriodNs_ = NormalizeVirglFramePeriodNs(framePeriodNs);
+        framePeriodNs_ = VirglPacingPeriodNs(displayPeriodNs_);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][NCP] target attached surface_key=%{public}llu "
                     "window=%{public}p display_period_us=%{public}llu "
@@ -113,10 +91,10 @@ public:
     int SetFramePeriod(uint64_t framePeriodNs)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const uint64_t displayPeriodNs = NormalizeFramePeriodNs(framePeriodNs);
+        const uint64_t displayPeriodNs = NormalizeVirglFramePeriodNs(framePeriodNs);
         if (displayPeriodNs_ == displayPeriodNs) return 0;
         displayPeriodNs_ = displayPeriodNs;
-        framePeriodNs_ = PacingPeriodNs(displayPeriodNs_);
+        framePeriodNs_ = VirglPacingPeriodNs(displayPeriodNs_);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][NCP] frame period surface_key=%{public}llu "
                     "display_period_us=%{public}llu pace_period_us=%{public}llu",
@@ -317,23 +295,12 @@ private:
             return false;
         }
 
-        static constexpr const char* vertexSource = R"(#version 300 es
-out vec2 vTexCoord;
-void main() {
-    vec2 positions[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-    vec2 texcoords[3] = vec2[3](vec2(0.0, 0.0), vec2(2.0, 0.0), vec2(0.0, 2.0));
-    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
-    vTexCoord = texcoords[gl_VertexID];
-})";
-        static constexpr const char* fragmentSource = R"(#version 300 es
-precision mediump float;
-uniform sampler2D uTexture;
-in vec2 vTexCoord;
-out vec4 outColor;
-void main() { outColor = texture(uTexture, vTexCoord); }
-)";
-        const GLuint vertex = CompilePresentShader(GL_VERTEX_SHADER, vertexSource);
-        const GLuint fragment = CompilePresentShader(GL_FRAGMENT_SHADER, fragmentSource);
+        // 全屏 quad GLSL 收编于 shader_utils (重构第 3 步, 行为平价 — 逐字搬移,
+        // 仅由内嵌字符串改为 shader_utils 命名常量统一存放)
+        const GLuint vertex = CompilePresentShader(
+            GL_VERTEX_SHADER, winehua::kPresentFullscreenQuadVS);
+        const GLuint fragment = CompilePresentShader(
+            GL_FRAGMENT_SHADER, winehua::kPresentFullscreenQuadFS);
         GLuint program = 0;
         if (vertex && fragment)
         {
