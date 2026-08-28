@@ -414,10 +414,7 @@ bool DesktopCompositor::GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rende
             int sx = sd->subsurfaceX;
             int sy = sd->subsurfaceY;
             const auto* parentState = tmgr_.FindToplevelLocked(info.parentToplevel);
-            if (parentState && parentState->IsMinimized()) {
-                if (sx > 16000) sx -= 32000;
-                if (sy > 16000) sy -= 32000;
-            }
+            CompensateMinimizedSubsurfaceOffset(parentState, sx, sy);
             const int compX = parentState ? parentState->X() : 0;
             const int compY = parentState ? parentState->Y() : 0;
             const int wineX = parentState ? parentState->WineX() : 0;

@@ -842,30 +842,9 @@ void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfR
     }
 }
 
-// ---- 最小化 subsurface offset 补偿 ----
-//
-// Windows 窗口管理器将最小化窗口移到 (-32000, -32000)，这是一个自 Win95 以来
-// 的既定行为——WS_MINIMIZE 是语义标记，(-32000,-32000) 是其副作用。
-// Wine 忠实地复现了这一行为；winewayland.drv 在计算 subsurface offset 时
-// 直接使用 window->rect，数学上并无错误：
-//
-//   wayland_surface.c: wayland_surface_reconfigure_client()
-//     client_x = client_rect->left + window->client_rect.left - window->rect.left
-//              = 正常屏幕坐标 - (-32000) = 正常坐标 + 32000
-//
-// 这不是 Wine 的 bug——Wine 的角色是忠实地表达 Windows 窗口系统的状态。
-// 若在 Wine 侧特判 window->minimized 排除 rect 偏移，等于在协议通道上掩盖
-// 正确的 Windows 行为，不利于其他 compositor 理解真实状态。
-//
-// 因此补偿放在 compositor 侧：检测 offset 超过阈值时减去 32000 还原。
-// 超过 16000 才算偏移是因为正常窗口坐标不会这么大（虚拟桌面极端值约 ±8000）。
-static void CompensateMinimizedSubsurfaceOffset(const ToplevelManager::ToplevelState* pst,
-                                                int32_t& sx, int32_t& sy) {
-    if (pst && pst->IsMinimized()) {
-        if (sx > compositor_consts::kMinimizedCoordThreshold) sx -= compositor_consts::kMinimizedCoordOffset;
-        if (sy > compositor_consts::kMinimizedCoordThreshold) sy -= compositor_consts::kMinimizedCoordOffset;
-    }
-}
+// ---- 最小化 subsurface offset 补偿: 共享实现已收口到 compositor_utils.h
+// (CompensateMinimizedSubsurfaceOffset), desktop_compositor 的 ZC protocolOnly
+// 路径共用同一实现 ----
 
 // Desktop 模式: 存 layer, 在 TakeToplevelFrame 中合成 (不进入 per-toplevel 帧缓冲)
 void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* surfRes,
