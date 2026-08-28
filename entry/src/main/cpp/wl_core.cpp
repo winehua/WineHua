@@ -810,7 +810,7 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
     DesktopRootManager::CheckRootResult cr;
     {
         auto lk = toplevelMgr_.Lock();
-        cr = desktopRootMgr_.CheckRootLocked(sd, isFirstCommit, fi.contentW, fi.contentH);
+        cr = desktopRootMgr_.CheckRootLocked(sd, isFirstCommit);
         MarkDesktopRootDirtyLocked();
     }
     if (cr.moveRendererTo)
@@ -1125,7 +1125,6 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         }
         sd->w = fi.contentW;
         sd->h = fi.contentH;
-        sd->dirty = true;
         fi.shmCommitSerial = sd->shmCommitSerial.fetch_add(1, std::memory_order_release) + 1;
         OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
                     fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,

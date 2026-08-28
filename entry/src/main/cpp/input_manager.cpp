@@ -135,9 +135,9 @@ void InputManager::Shutdown() {
 //  坐标转换
 // ========================================================================
 
-wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
-                                         wl_fixed_t* outX, wl_fixed_t* outY,
-                                         FitRect* outLb) {
+void InputManager::CoordTransform(double px, double py, uint32_t tl,
+                                   wl_fixed_t* outX, wl_fixed_t* outY,
+                                   FitRect* outLb) {
     auto* r = PluginManager::GetInstance()->GetRendererForToplevel(tl);
     // Desktop 模式 fallback: root 切换后可能用旧 ID 查 renderer
     if (!r && WaylandServer::GetInstance()->Policy().RootCompositing()) {
@@ -152,7 +152,7 @@ wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
     if (!r) {
         OH_LOG_WARN(LOG_APP, "[Input] CoordTransform: no renderer for tl=%{public}u", tl);
         *outX = 0; *outY = 0;
-        return wl_fixed_from_int(0);
+        return;
     }
     int surfW = r->GetWidth();
     int surfH = r->GetHeight();
@@ -180,7 +180,7 @@ wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
 
     if (surfW <= 0 || surfH <= 0 || lb.dstW <= 0 || lb.dstH <= 0) {
         *outX = 0; *outY = 0;
-        return wl_fixed_from_int(0);
+        return;
     }
 
     // Letterbox 逆映射 (geometry.h 统一实现): 物理像素 → 去黑边 → 按帧尺寸缩放
@@ -198,7 +198,6 @@ wl_fixed_t InputManager::CoordTransform(double px, double py, uint32_t tl,
                      " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f) n=%{public}u",
                      px, py, lb.offX, lb.offY, lb.dstW, lb.dstH, surfW, surfH, lb.srcW, lb.srcH,
                      wl_fixed_to_double(wx), wl_fixed_to_double(wy), sCoordLogN);
-    return wx;
 }
 
 // ========================================================================
@@ -435,7 +434,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             if (target.swallow && action == ACT_PRESS) return;
             tl = target.toplevelId;
             targetSurf = target.surface;
-            // 桌面坐标 → surface 局部坐标 (即 geometry.h 的 FitUnmapX/Y;
+            // 桌面坐标 → surface 局部坐标 (FitRect 正变换的逆映射;
             // target.origin/scale 由 InputResolver 的 ComputeFitRect 给出)。
             // target.scale > 1 表示全屏窗口保比例放大显示, 局部坐标需按同一缩放除回来
             double localX = (logicalX - target.originX) / target.scale;

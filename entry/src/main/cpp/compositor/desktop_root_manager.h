@@ -18,7 +18,6 @@ public:
                        uint32_t& desktopRootToplevelId,
                        uint32_t& pendingDesktopRootToplevelId,
                        bool& recognitionEnabled,
-                       const int32_t& outputW, const int32_t& outputH,
                        FireEventFn fireEvent);
 
     // root 识别开关 (ArkTS 端完成后调用)
@@ -40,8 +39,7 @@ public:
     // 检查新提交的 toplevel 是否应成为桌面 root。
     // 调用方须已持有 toplevelManager 的锁 (tmgr_.Lock())。
     // 调用后调用方负责: MarkDesktopRootDirtyLocked + 锁外 MoveRendererToToplevel / FireToplevelEvent。
-    CheckRootResult CheckRootLocked(SurfaceData* sd, bool isFirstCommit,
-                                    int contentW, int contentH);
+    CheckRootResult CheckRootLocked(SurfaceData* sd, bool isFirstCommit);
 
     // 标记 root dirty (root 切换后调用, 调用方须已持有锁)
     void MarkRootDirtyLocked();
@@ -51,7 +49,5 @@ private:
     uint32_t& desktopRootToplevelId_;
     uint32_t& pendingDesktopRootToplevelId_;
     bool& recognitionEnabled_;
-    const int32_t& outputW_;
-    const int32_t& outputH_;
     FireEventFn fireEvent_;
 };

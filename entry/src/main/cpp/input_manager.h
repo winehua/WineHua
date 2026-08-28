@@ -95,8 +95,8 @@ public:
 
     // -- 辅助: 物理像素 → Wine 逻辑坐标映射 (供 FindToplevelAt 等使用) --
     // outLb 非空时回传本次映射使用的 letterbox 几何 (调用方做内容区钳制用)
-    wl_fixed_t CoordTransform(double px, double py, uint32_t tl, wl_fixed_t* outX, wl_fixed_t* outY,
-                              FitRect* outLb = nullptr);
+    void CoordTransform(double px, double py, uint32_t tl, wl_fixed_t* outX, wl_fixed_t* outY,
+                        FitRect* outLb = nullptr);
 
     // 最近一次注入的全局指针位置 (NAPI 线程写, Wayland 线程读)。
     // 语义 = move_grab 输入空间的绝对坐标: desktop 为桌面逻辑坐标,

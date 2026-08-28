@@ -12,7 +12,8 @@
 //   - wl_seat global 注册/注销
 //   - wl_pointer / wl_keyboard 资源生命周期管理
 //   - XKB_V1 keymap 发送
-//   - 对外提供 GetPointerResource/GetKeyboardResource (InputManager 注入时使用)
+//   - 对外提供 GetKeyboardResource/GetAllPointerResources 等资源查询
+//     (InputManager 注入时使用)
 //
 // 事件注入和状态追踪已移至 InputManager。
 // 使用 vector 管理资源, 支持 Wine 多窗口反复 bind/destroy 场景。
@@ -26,15 +27,11 @@ public:
     void Unregister();
 
     // -- 资源查询 (线程安全, InputManager 调用) --
-    wl_resource* GetPointerResource();
     wl_resource* GetKeyboardResource();
     std::vector<wl_resource*> GetAllPointerResources();
     std::vector<wl_resource*> GetAllKeyboardResources();
     bool HasPointerResource() const { return ptrCount_.load() > 0; }
     bool HasKeyboardResource() const { return kbdCount_.load() > 0; }
-
-    // wl_display 访问 (InputManager 需要, 已移至 InputManager)
-    // wl_display* GetDisplay() const { return display_; }
 
     // -- wl_seat bind 回调 --
     static void seat_bind(wl_client* client, void* data, uint32_t version, uint32_t id);

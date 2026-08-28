@@ -73,11 +73,6 @@ public:
     void DetachZeroCopyTarget(uint64_t surfaceKey);
     bool QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo>& surfaces) const;
     void SetZeroCopySurfaceReady(uint64_t surfaceKey, bool ready);
-    bool TakeFrameForToplevel(uint32_t rendererToplevelId,
-                              std::vector<uint8_t>& outPixels,
-                              int& w,
-                              int& h,
-                              uint32_t* outSourceToplevelId = nullptr);
 
     static const char* BackendName(GraphicsBackend backend);
     static bool ParseBackendName(const std::string& name, GraphicsBackend* outBackend);

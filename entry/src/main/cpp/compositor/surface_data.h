@@ -35,7 +35,6 @@ struct SurfaceData {
     // per-surface pixel buffer
     std::vector<uint8_t> pixels;
     int w = 0, h = 0;
-    bool dirty = false;
     std::atomic<uint64_t> shmCommitSerial{0};
 
     // toplevel identity

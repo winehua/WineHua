@@ -151,18 +151,6 @@ void WaylandServer::DestroyAllToplevels() {
 
 
 
-// -- 帧数据接口 --
-bool WaylandServer::TakeFrame(std::vector<uint8_t>& out, int& w, int& h) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    if (!dirty_) return false;
-    out = pixels_;
-    w = width_;
-    h = height_;
-    dirty_ = false;
-    OH_LOG_INFO(LOG_APP, "[MW-TAKE] global frame %{public}dx%{public}d px=%{public}zu", w, h, out.size());
-    return true;
-}
-
 void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
     auto lk = toplevelMgr_.Lock();
     toplevelMgr_.RemoveFromZOrder(id);

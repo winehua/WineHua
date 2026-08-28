@@ -13,14 +13,11 @@ DesktopRootManager::DesktopRootManager(ToplevelManager& tmgr,
                                        uint32_t& desktopRootToplevelId,
                                        uint32_t& pendingDesktopRootToplevelId,
                                        bool& recognitionEnabled,
-                                       const int32_t& outputW, const int32_t& outputH,
                                        FireEventFn fireEvent)
     : tmgr_(tmgr)
     , desktopRootToplevelId_(desktopRootToplevelId)
     , pendingDesktopRootToplevelId_(pendingDesktopRootToplevelId)
     , recognitionEnabled_(recognitionEnabled)
-    , outputW_(outputW)
-    , outputH_(outputH)
     , fireEvent_(std::move(fireEvent))
 {
 }
@@ -76,8 +73,7 @@ void DesktopRootManager::MarkRootDirtyLocked()
 }
 
 DesktopRootManager::CheckRootResult
-DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool isFirstCommit,
-                                    int contentW, int contentH)
+DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool isFirstCommit)
 {
     CheckRootResult result;
     if (!isFirstCommit) return result;

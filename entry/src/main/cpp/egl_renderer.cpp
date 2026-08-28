@@ -753,8 +753,6 @@ void EglRenderer::RenderLoop() {
                 // ARGB8888 帧 (layered/shaped 异型窗口) 透传 alpha; XRGB 强制不透明
                 frameArgb_ = (ws->GetToplevelShmFormat(useToplevel) == 0);
             }
-        } else {
-            cpuFrame = ws->TakeFrame(px, fw, fh);
         }
         haveFrame = cpuFrame || zeroCopyFrame || zeroCopyGeometryFrame;
         const uint64_t takeUs = PerfNowUs() - takeStartedUs;

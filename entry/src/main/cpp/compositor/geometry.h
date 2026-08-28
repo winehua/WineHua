@@ -25,8 +25,6 @@ bool ComputeFitRect(int rootW, int rootH, int winW, int winH, FitRect& out);
 // desktop 合成/命中路径用: 合成用未取整 scale blit, 输入按同一 scale 除回, 严格互逆。
 inline double FitMapX(const FitRect& t, double x) { return t.offX + x * t.scale; }
 inline double FitMapY(const FitRect& t, double y) { return t.offY + y * t.scale; }
-inline double FitUnmapX(const FitRect& t, double px) { return (px - t.offX) / t.scale; }
-inline double FitUnmapY(const FitRect& t, double py) { return (py - t.offY) / t.scale; }
 
 // subsurface 相对窗口原点的 fit 映射矩形 — 渲染 blit 与输入命中共用的唯一
 // 实现 (原两侧手写同一数学: 渲染 desktop_compositor.cpp blitSubsurface 全屏

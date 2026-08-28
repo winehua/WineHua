@@ -212,14 +212,6 @@ bool InputResolver::IsSurfaceAlive(wl_resource* surface)
     return tmgr_.ContainsSurfaceResource(surface);
 }
 
-bool InputResolver::IsZcGameSurface(wl_resource* surface)
-{
-    const uint32_t tl = tmgr_.FindToplevelBySurface(surface);
-    if (!tl) return false;
-    auto lk = tmgr_.Lock();
-    return compositor_.HasZeroCopyLayerForToplevelLocked(tl);
-}
-
 bool InputResolver::SurfaceLocalToDesktop(wl_resource* surface, double lx, double ly,
                                           double& dx, double& dy)
 {

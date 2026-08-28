@@ -37,10 +37,6 @@ public:
 
     enum class ConstraintType { None, Lock, Confine };
 
-    // 某 surface 当前生效的约束 (无 = None)。
-    // surface 已销毁的约束条目视为不存在 (惰性失效)
-    ConstraintType ConstraintFor(wl_resource* surface);
-
     // -- Host 光标锁定 (dinput 相对模式的系统侧配套) --
     // wine 建立 Lock 约束 = 游戏进入"隐藏光标无限移动"的相对模式 (FPS 视角)。
     // host 侧同步两件事: OH_WindowManager_LockCursor 冻结系统光标 (不再跟随

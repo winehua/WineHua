@@ -54,11 +54,6 @@ public:
     // surface 指针是否仍存活 (输入注入前的防御校验, 遍历 surfaceResources_)
     bool IsSurfaceAlive(wl_resource* surface);
 
-    // surface 是否属于 zero-copy 游戏 (画面在 GL overlay 层)。
-    // warp 补偿门控: ZC 游戏 (PAL2 等 dinput) 依赖 SetCursorPos 回中, 必须
-    // 补偿; SHM 游戏 (红警2 等) 读绝对坐标, 激活补偿反而破坏映射。
-    bool IsZcGameSurface(wl_resource* surface);
-
     // surface 局部坐标 → 桌面坐标 (warp 锚点换算, OnPointerWarp 用)。
     // 全屏 toplevel 用与命中/渲染相同的 FitRect 正变换; 普通窗口 = 位置+局部。
     bool SurfaceLocalToDesktop(wl_resource* surface, double lx, double ly,
