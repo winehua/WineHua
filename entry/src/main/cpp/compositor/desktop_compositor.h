@@ -163,6 +163,9 @@ public:
                              ZeroCopyOccluderRect* out, int maxOut) {
         return zc_.GetOccluders(surfaceKey, rendererToplevelId, out, maxOut);
     }
+    // ZC 协议 owner 访问 (重构第 3C 步: WaylandServer 内联委托持 ZC 状态机动作)
+    ZcBridge& zc() { return zc_; }
+    const ZcBridge& zc() const { return zc_; }
 
     // -- Subsurface layer 位置解析 (InputResolver 调用) --
     void ResolveSubsurfaceLayerPositionLocked(const SubsurfaceLayer& layer,

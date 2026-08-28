@@ -62,6 +62,39 @@ public:
                              ZeroCopyOccluderRect* out, int maxOut) {
         return desktopCompositor_.GetZeroCopyOccluders(surfaceKey, rendererToplevelId, out, maxOut);
     }
+    // -- ZC 状态机委托 (重构第 3C 步): EglRenderer 经本类内联委托拿 ZcBridge
+    //    幂等动作 (原 PublishZeroCopyActive/UnpublishZeroCopyReady/
+    //    ClearZeroCopyCompositorKey + 调用点状态位坐标, 行为平价) —
+    //    保持 EglRenderer 不直接访问 ZcBridge 的既有接入风格 --
+    void ActivateZcSurface(uint64_t surfaceKey, uint32_t rendererToplevelId) {
+        desktopCompositor_.zc().Activate(surfaceKey, rendererToplevelId);
+    }
+    void BeginFallbackZcSurface(uint64_t surfaceKey, uint64_t shmBaseline,
+                                bool baselineValid, uint32_t rendererToplevelId) {
+        desktopCompositor_.zc().BeginFallback(surfaceKey, shmBaseline,
+                                              baselineValid, rendererToplevelId);
+    }
+    bool ConfirmFallbackZcSurface(uint64_t surfaceKey, uint64_t shmSerial) {
+        return desktopCompositor_.zc().ConfirmFallback(surfaceKey, shmSerial);
+    }
+    void CancelFallbackZcSurface(uint64_t surfaceKey) {
+        desktopCompositor_.zc().CancelFallback(surfaceKey);
+    }
+    void ReleaseZcSurface(uint64_t surfaceKey, uint32_t rendererToplevelId) {
+        desktopCompositor_.zc().Release(surfaceKey, rendererToplevelId);
+    }
+    void BindZcSurface(uint64_t surfaceKey, uint64_t initialShmBaseline) {
+        desktopCompositor_.zc().BindSurface(surfaceKey, initialShmBaseline);
+    }
+    bool IsZcReadyPublished(uint64_t surfaceKey) const {
+        return desktopCompositor_.zc().IsReadyPublished(surfaceKey);
+    }
+    bool IsZcFallbackPending(uint64_t surfaceKey) const {
+        return desktopCompositor_.zc().IsFallbackPending(surfaceKey);
+    }
+    uint64_t GetZcFallbackShmSerial(uint64_t surfaceKey) const {
+        return desktopCompositor_.zc().GetFallbackShmSerial(surfaceKey);
+    }
 
     // 状态回调 (首帧到达 -> 通知 ArkTS)
     void SetStateCallback(StateCb cb) { stateCb_ = std::move(cb); }

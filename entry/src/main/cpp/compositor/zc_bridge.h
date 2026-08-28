@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 
 class DesktopCompositor;
@@ -36,6 +37,17 @@ struct ZeroCopyOccluderRect {
     int x = 0, y = 0, w = 0, h = 0;
 };
 
+// -- ZC 发布/回退协议状态 (重构第 3C 步: per-key, 原 EglRenderer 三状态位迁入) --
+// 原 EglRenderer::zeroCopyReadyPublished_ / zeroCopyFallbackPending_ /
+// zeroCopyFallbackShmSerial_ 是 renderer 实例单套成员 (每 renderer 恰绑一个
+// key); 迁移后按 key 存储 — activeKeys_ 集合支持多 key, 状态必须按 key
+// 隔离, 防止 B 游戏状态污染 A 游戏。
+struct ZcPublishState {
+    bool readyPublished = false;    // broker ready marker 已写 (guest 走 ZC)
+    bool fallbackPending = false;   // 已撤 ready, 等 shmCommitSerial 越基线
+    uint64_t fallbackShmSerial = 0; // fallback 基线 (本次 fallback 起点的 shm serial)
+};
+
 // ZC 层 key 权威簿记 + 几何供给。
 // friend of DesktopCompositor: 访问其层容器 (subsurfaceLayers_) / tmgr / policy /
 // root 引用, 同 FramePlanner / FrameComposer 模式 — 合成状态仍由
@@ -50,6 +62,28 @@ public:
     bool IsActive(uint64_t surfaceKey) const { return activeKeys_.count(surfaceKey) > 0; }
     const std::unordered_set<uint64_t>& activeKeys() const { return activeKeys_; }
 
+    // -- ZC 状态机 (重构第 3C 步: 协议 owner, 自 EglRenderer 三方法/三状态位
+    //    按 key 化迁入) — 何时发布/回退/确认的时序编排收敛到本类, 全部为
+    //    幂等动作方法 (入口守卫与旧实现一致)。时序是协议设计, 不可合并:
+    //    发布先 compositor key 后 ready marker (先让合成跳过, 再通知 guest
+    //    走 ZC); fallback 分两步 — 先撤 ready (guest 立即切 SHM), 等
+    //    shmCommitSerial 越过基线 (新 SHM 帧已到) 再撤 compositor key (恢复
+    //    合成), 避免合成到 ZC 前的旧 SHM 帧。methods 全部从渲染线程调用
+    //    (原调用点上下文), SetEnabled 内部持 tmgr 锁, 其余方法无锁 —
+    //    与原实现一致。broker 的 attached 集合 (IPC 簿记) 由
+    //    Attach/DetachZeroCopyTarget 独立维护, 不参与合成判定。
+    void Activate(uint64_t surfaceKey, uint32_t rendererToplevelId);  // 原 EglRenderer::PublishZeroCopyActive
+    void BeginFallback(uint64_t surfaceKey, uint64_t shmBaseline, bool baselineValid,
+                       uint32_t rendererToplevelId);  // 原 UnpublishZeroCopyReady + 失败调用点基线抓取/置位
+    bool ConfirmFallback(uint64_t surfaceKey, uint64_t shmSerial);  // 原 ClearZeroCopyCompositorKey + 确认调用点判断/置位
+    void CancelFallback(uint64_t surfaceKey);  // 原成功帧恢复路径的 pending 复位
+    void Release(uint64_t surfaceKey, uint32_t rendererToplevelId);  // 原 ReleaseZeroCopyBinding 状态复位序列
+    void BindSurface(uint64_t surfaceKey, uint64_t initialShmBaseline);  // 原 TryAttachZeroCopySurface 成功路径复位
+
+    bool IsReadyPublished(uint64_t surfaceKey) const;
+    bool IsFallbackPending(uint64_t surfaceKey) const;
+    uint64_t GetFallbackShmSerial(uint64_t surfaceKey) const;
+
     // -- 几何供给 (原 DesktopCompositor 方法, 行为平价) --
     bool GetLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
                       int fallbackWidth, int fallbackHeight, ZeroCopyLayerInfo& info);
@@ -61,4 +95,5 @@ public:
 private:
     DesktopCompositor& comp_;
     std::unordered_set<uint64_t> activeKeys_;  // ZC key 权威
+    std::unordered_map<uint64_t, ZcPublishState> publishStates_;  // key → ZC 发布状态
 };

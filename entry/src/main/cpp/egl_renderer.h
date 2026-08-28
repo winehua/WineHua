@@ -52,19 +52,6 @@ private:
     void ReleaseZeroCopyBinding();
     void ShutdownZeroCopyConsumer();
 
-    // -- ZC 状态发布点收敛 (阶段 3) --
-    // 三处状态 (compositor zeroCopySurfaceKeys_ / broker ready marker /
-    // renderer 内部 zeroCopyReadyPublished_) 的全部更新收敛到这三个方法,
-    // 每个幂等 (发布过才撤销)。时序设计: 发布时先 compositor key 后 ready
-    // (先让合成跳过, 再通知 guest 走 ZC); fallback 分两步 — 先撤 ready
-    // (guest 立即切 SHM), 等 shmCommitSerial 越过基线 (新 SHM 帧已到) 再
-    // 撤 compositor key (恢复合成), 避免合成到 ZC 前的旧 SHM 帧。broker 的
-    // attached 集合 (IPC 簿记) 由 Attach/DetachZeroCopyTarget 独立维护,
-    // 不参与合成判定 (CompositorLayer::zcActive 是唯一消费字段)。
-    void PublishZeroCopyActive(uint32_t rendererToplevelId);
-    void UnpublishZeroCopyReady(uint32_t rendererToplevelId);
-    void ClearZeroCopyCompositorKey();
-
     OHNativeWindow* window_ = nullptr;
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLContext context_ = EGL_NO_CONTEXT;
@@ -87,7 +74,6 @@ private:
     uint64_t zeroCopyCoalescedSignals_ = 0;
     uint64_t zeroCopyDuplicateTimestamps_ = 0;
     uint64_t zeroCopyFailures_ = 0;
-    uint64_t zeroCopyFallbackShmSerial_ = 0;
     uint64_t zeroCopyTimestampRegressions_ = 0;
     int64_t zeroCopyLastTimestamp_ = 0;
     uint64_t zeroCopySurfaceKey_ = 0;
@@ -104,10 +90,8 @@ private:
     // 无新帧跳过 swap 的累计次数 (诊断: 帧合成后多久没上屏)
     uint64_t skipFrames_ = 0;
     bool zeroCopyListenerSet_ = false;
-    bool zeroCopyReadyPublished_ = false;
     bool zeroCopyHasFrame_ = false;
     bool zeroCopyVulkanSource_ = false;
-    bool zeroCopyFallbackPending_ = false;
     bool zeroCopyGeometryDirty_ = false;
     bool zeroCopyFullscreen_ = false;  // 所属 toplevel 全屏: ZC 层保比例铺满显示区
     uint32_t zeroCopyConsecutiveFailures_ = 0;

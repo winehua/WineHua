@@ -1,5 +1,6 @@
 #include "zc_bridge.h"
 
+#include "graphics_broker.h"          // SetZeroCopySurfaceReady (ready marker, 进程单例)
 #include "compositor/surface_data.h"  // SurfaceData (wl_resource_get_user_data)
 #include "compositor_utils.h"         // CompensateMinimizedSubsurfaceOffset
 #include "compositor/zorder_policy.h" // ZOrderNeedsParentPosCheck (ZC 遮挡层序)
@@ -39,6 +40,118 @@ void ZcBridge::SetEnabled(uint64_t surfaceKey, bool enabled)
 void ZcBridge::RemoveKey(uint64_t surfaceKey)
 {
     activeKeys_.erase(surfaceKey);
+}
+
+// ============================================================================
+// ZC 状态机: 何时发布/回退/确认 (重构第 3C 步)
+// 自 EglRenderer 三方法/三状态位按 key 化迁入 (原 egl_renderer.cpp:419-449 +
+// 各调用点的状态位维护), protocol owner 即此处。时序注释源自原调用点收敛块,
+// 禁止合并: 发布先 compositor key 后 ready marker (先让合成跳过, 再通知
+// guest 走 ZC); fallback 分两步 — 先撤 ready (guest 立即切 SHM), 等
+// shmCommitSerial 越过基线 (新 SHM 帧已到) 再撤 compositor key (恢复合成),
+// 避免合成到 ZC 前的旧 SHM 帧。broker 的 attached 集合 (IPC 簿记) 由
+// Attach/DetachZeroCopyTarget 独立维护, 不参与合成判定 (CompositorLayer::
+// zcActive 是唯一消费字段)。所有方法从渲染线程调用 (原调用点上下文不变);
+// SetEnabled 内含 tmgr 锁, begin/confirm/cancel/release/bind/查询均无额外锁 —
+// 与原实现一致。
+// ============================================================================
+
+void ZcBridge::Activate(uint64_t surfaceKey, uint32_t rendererToplevelId)
+{
+    auto& st = publishStates_[surfaceKey];
+    if (st.readyPublished) return;
+    SetEnabled(surfaceKey, true);  // 原 SetSurfaceZeroCopy(key,true): 插 activeKeys_ + dirty + signature=0
+    winehua::GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(surfaceKey, true);
+    st.readyPublished = true;
+    OH_LOG_INFO(LOG_APP,
+                "[VIRGL-ZC][MAIN] GPU_ACTIVE tl=%{public}u key=%{public}llu",
+                rendererToplevelId,
+                static_cast<unsigned long long>(surfaceKey));
+}
+
+void ZcBridge::BeginFallback(uint64_t surfaceKey, uint64_t shmBaseline,
+                             bool baselineValid, uint32_t rendererToplevelId)
+{
+    auto& st = publishStates_[surfaceKey];
+    if (!st.readyPublished) return;
+    // 原失败调用点 :313-315 — 仅 GetZeroCopyLayerInfo 成功才抓 baseline
+    // (shmBaseline=layer.shmCommitSerial); 失败时保留上次记录值 (0 或
+    // attach 时初值)
+    if (baselineValid) st.fallbackShmSerial = shmBaseline;
+    winehua::GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(surfaceKey, false);
+    st.readyPublished = false;
+    st.fallbackPending = true;  // 原调用点 :317
+    OH_LOG_WARN(LOG_APP,
+                "[VIRGL-ZC][MAIN] ready revoked tl=%{public}u key=%{public}llu",
+                rendererToplevelId,
+                static_cast<unsigned long long>(surfaceKey));
+}
+
+bool ZcBridge::ConfirmFallback(uint64_t surfaceKey, uint64_t shmSerial)
+{
+    const auto it = publishStates_.find(surfaceKey);
+    if (it == publishStates_.end() || !it->second.fallbackPending ||
+        shmSerial <= it->second.fallbackShmSerial)
+        return false;
+    // SetEnabled 内部有 surfaceKey 检查, erase 不存在的 key 是 no-op — 天然幂等
+    SetEnabled(surfaceKey, false);  // 原 ClearZeroCopyCompositorKey
+    it->second.fallbackPending = false;  // 原调用点 :151
+    return true;
+}
+
+void ZcBridge::CancelFallback(uint64_t surfaceKey)
+{
+    auto it = publishStates_.find(surfaceKey);
+    if (it == publishStates_.end() || !it->second.fallbackPending) return;
+    it->second.fallbackPending = false;  // 原调用点 :377
+}
+
+void ZcBridge::Release(uint64_t surfaceKey, uint32_t rendererToplevelId)
+{
+    // 原 EglRenderer::ReleaseZeroCopyBinding 状态复位序列 (:464-465/:467/:506):
+    // 撤 ready (未发布过则整体是 no-op, 无日志) → 清 compositor key
+    // (key=0 时 SetEnabled 内部 no-op) → 状态位全清。
+    auto& st = publishStates_[surfaceKey];
+    if (st.readyPublished)
+    {
+        winehua::GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(surfaceKey, false);
+        st.readyPublished = false;
+        OH_LOG_WARN(LOG_APP,
+                    "[VIRGL-ZC][MAIN] ready revoked tl=%{public}u key=%{public}llu",
+                    rendererToplevelId,
+                    static_cast<unsigned long long>(surfaceKey));
+    }
+    SetEnabled(surfaceKey, false);
+    st = {};
+}
+
+void ZcBridge::BindSurface(uint64_t surfaceKey, uint64_t initialShmBaseline)
+{
+    // 原 TryAttachZeroCopySurface 成功路径 (:252-253): pending 复位 + 记录
+    // 初始 shm commit serial 作为下次 fallback 的基线起点; readyPublished
+    // 不清零 (原代码 attach 路径从不写该位, 该位只在 Release/Activate/
+    // BeginFallback 维护, attach 成功时恒为 false — 保持等价)。
+    auto& st = publishStates_[surfaceKey];
+    st.fallbackPending = false;
+    st.fallbackShmSerial = initialShmBaseline;
+}
+
+bool ZcBridge::IsReadyPublished(uint64_t surfaceKey) const
+{
+    const auto it = publishStates_.find(surfaceKey);
+    return it != publishStates_.end() && it->second.readyPublished;
+}
+
+bool ZcBridge::IsFallbackPending(uint64_t surfaceKey) const
+{
+    const auto it = publishStates_.find(surfaceKey);
+    return it != publishStates_.end() && it->second.fallbackPending;
+}
+
+uint64_t ZcBridge::GetFallbackShmSerial(uint64_t surfaceKey) const
+{
+    const auto it = publishStates_.find(surfaceKey);
+    return it == publishStates_.end() ? 0 : it->second.fallbackShmSerial;
 }
 
 bool ZcBridge::GetLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
