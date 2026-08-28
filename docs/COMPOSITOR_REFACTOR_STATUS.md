@@ -14,7 +14,7 @@
 | 0 死代码与诊断桩清理 | 完成（门禁全过） | 3f23dc4 方案文档、b44f5d8 死代码、fe492aa 诊断门控、a2e1a55 注释文档 |
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
-| 2B PresentedFrame 契约 + 直传能力协商 | **中断（半成品已提交，不可编译）** | 3461a1d WIP 现场 |
+| 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
 | 3 ZC 与层序政策收口 | 未开始 | — |
 | 4 输入栈拆分 | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
@@ -25,10 +25,11 @@
 x86_64 模拟器桌面链（EntryAbility → DesktopAbility → 中文桌面+任务栏）与
 notepad 直启冒烟通过。
 
-## 二、2B 中断现场（3461a1d 的精确状态）
+## 二、2B 续作进展
 
-任务 1（PresentedFrame 帧交付契约）的**产出侧**已切完，**消费侧未接**，
-当前工作树不可编译。
+中断现场（3461a1d）的**消费侧已接入**（任务 1），项目恢复可编译；任务 1、2
+均已提交并过门禁（见 §一 表格、§三 各任务要点）。本节记录已完成任务的要点，
+便于回溯；剩余任务 3 见 §三。
 
 ### 已完成
 
@@ -56,22 +57,33 @@ notepad 直启冒烟通过。
 - `compositor/toplevel_manager.{h,cpp}`：删除 `GetToplevelShmFormat`。
 - 任务 4（2A 遗留清理）已顺带完成：死变量 occlTl/occlType/occlZc 已删。
 
-### 未完成（编译断点）
+### 任务 1（消费侧接入，0d06926）：编译断点已解除
 
-1. `egl_renderer.cpp` 未动，三处断点：
-   - `GetInputLetterbox()` 只有声明没有实现；
-   - RenderLoop ~746 仍调旧签名 `TakeToplevelFrame(useToplevel, px, fw, fh)`；
-   - ~749 仍调已删除的 `ws->GetToplevelShmFormat(useToplevel)` 填 `frameArgb_`；
-   - 另需把 letterbox/fit 计算（~840-929：显示 letterbox、ZC 全屏 fit）
-     改从契约字段取几何——显示锚 buffer 尺寸（w/h），输入锚 contentW/H。
-2. `input_manager.cpp` 未动：CoordTransform ~162-178 仍调已删除的
-   `r->GetLetterbox()`，需改调 `GetInputLetterbox()` 并删掉绕路重算段
-   （旧逻辑：root 未就绪时 fallback 渲染视口——新契约下由
-   GetInputLetterbox 内部 fallback 承接）。
+- `egl_renderer.h`：加 contentW_/contentH_ 缓存最近帧契约的逻辑内容尺寸（输入锚）。
+- `egl_renderer.cpp`：实现 `GetInputLetterbox()`（contentW/H 对当前 surface 保比例
+  fit，无帧/fit 失败退回显示 letterbox_）；RenderLoop 取帧改新签名
+  `TakeToplevelFrame(id,out,frame)`，fw/fh 取 frame.w/h、frameArgb_ 取 !frame.opaque、
+  缓存 contentW/H。
+- `input_manager.cpp`：CoordTransform 改调 `GetInputLetterbox()`，删绕路重算
+  （IsDesktopMode/GetToplevelW/ComputeFitRect/GetLetterbox）。
+- 对账基准：桌面合成/快进/直传锚 root 逻辑尺寸，PC 窗口帧锚窗口内容尺寸 ——
+  与旧实现逐点一致（红警2 直传点击修复即直传帧 buffer 尺寸与锚解耦）。
+
+### 任务 2（显示策略拆分，1902862）：取帧路径 DisplayPolicy 多态化
+
+- `display_policy.h`：新增 `FrameRouteFor(id, rootId)` 路由（DesktopRoot|Window），
+  替换原 `RootCompositing() && id == desktopRootToplevelId_` 分流，编排者只问策略要帧。
+- `frame_composer.{h,cpp}`（新增）：FrameComposer 抽象 + DesktopRootFrameComposer
+  （原 TakeToplevelFrame desktop 分支：FramePlanner 锁内规划 + FrameBlitter 锁外合成）+
+  WindowFrameComposer（原 TakeWindowFrameLocked：窗口 SHM 帧 + 窗口内 subsurface blit）。
+- `desktop_compositor`：TakeToplevelFrame 瘦身为纯编排（按 FrameRouteFor 委托 composer），
+  删除 TakeWindowFrameLocked；两 composer 经 friend 访问 tmgr_（合成状态仍由本类持有）。
+- 行为平价：两 Compose 体逐行复刻原分支，锁边界/计时点/日志门控不变；desktop+非 root
+  仍走 Window composer，与旧 `RootCompositing() && id==root` 逐点等价。
 
 ## 三、2B 剩余工作清单
 
-1. **接上消费侧（解编译断点，完成任务 1）**
+1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
    - 实现 `EglRenderer::GetInputLetterbox()`：按头文件注释语义，用最近一帧
      契约的 contentW/H 对当前 surface 做 ComputeFitRect；无帧/失败退回
      显示 letterbox。渲染器需缓存最近一帧的契约元数据（kind/baseSpace/
@@ -83,7 +95,7 @@ notepad 直启冒烟通过。
      对账基准：桌面合成/快进/直传三路径的逆映射结果与旧实现逐点一致
      （直传路径正是红警2 修复点，旧逻辑 ~162-178 的注释保留了当时语义，
      新实现必须等价）。
-2. **任务 2：PC/Desktop 显示策略拆分**。现状：`TakeToplevelFrame` 编排壳里
+2. **任务 2：PC/Desktop 显示策略拆分** — ✅ 已提交（1902862）。现状：`TakeToplevelFrame` 编排壳里
    靠 `policy_.RootCompositing() && id == desktopRootToplevelId_` 分流 PC
    （TakeWindowFrameLocked + BlitWindowSubsurface）与 Desktop 路径。把取帧
    路径选择下沉为 DisplayPolicy 多态，分流条件逐点等价，编排者只问策略要帧。
