@@ -15,7 +15,7 @@
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
-| 3 ZC 与层序政策收口 | **进行中（3A 抽离完成，3B/C/D 待做）** | f9a2d8a zc_bridge 抽离 |
+| 3 ZC 与层序政策收口 | **进行中（3A/3D 完成，3B/3C 待做）** | f9a2d8a zc_bridge 抽离、cf7e9a1 presenter_common+GLSL、a3156a6 PresentTarget 统一 |
 | 4 输入栈拆分 | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
@@ -117,6 +117,33 @@ notepad 直启冒烟通过。
 - **3A 剩余精化（暂缓）**：`GetZeroCopyOccluders` 改遍历 Layer 列表以消除第 4 份
   全屏语义——行为敏感，需 ZC 游戏遮挡回归，本次仅做原样搬移保平价。
 
+### 阶段 3D（PresentTarget 统一 + presenter 收编，cf7e9a1 / a3156a6，2026-08-29）
+
+- `presenter_common.h`（新增）：收编 virgl/venus 两 presenter 逐字重复的
+  `NowNs`/`NowUs`/`PresentPerfSummaryEnabled` 与帧周期常量；`NormalizeFramePeriodNs`/
+  `PacingPeriodNs` 同名不同策略拆为显式命名的 `NormalizeVirgl/VenusFramePeriodNs`、
+  `Virgl/VenusPacingPeriodNs`，边界用命名常量（kMin/kVirglMax/kVenusMax/kDispatchLead/
+  kReleaseFenceWatchdog）表达。
+- `shader_utils.{h,cpp}`：收编 virgl presenter 内嵌全屏 quad GLSL 为
+  `kPresentFullscreenQuadVS/FS`（`gl_VertexID` 大三角形 + 无 BGR swizzle/uForceOpaque，
+  与 egl_renderer 的 `kFullscreenQuadFS` 语义不同，不可互换）；`virgl_child` 库加
+  `shader_utils.cpp` 提供链接。
+- `present_target.h`（新增）：`PresentTarget` 抽象接口（Attach/Detach/SetFramePeriod/
+  IsVulkan/Present/PresentVenus/HasVulkanDevice/Prepare+FinishDeviceRelease）+ 返回码命名
+  （kPresentNoTarget=-2/SourceInvisible=-3/GlSetupFailed=-4/MakeCurrentFailed=-5/
+  BlitFailed=-6/FenceSyncFailed=-7/Invalid=-EINVAL/Throttled=1）——数值与旧实现逐点
+  一致，消费者 virgl_child.cpp 的 `< -2 且 != -6` 日志门控语义保留。
+- `SurfaceQueuePresenterManager`：Entry 改持单一 `unique_ptr<PresentTarget>`，
+  Attach/Detach/SetFramePeriod/Present/PresentVenus/Prepare/Finish/Reset 全经接口调度，
+  **消灭 `if (flags & kSurfaceVulkan)` 事实多态**；`RetireVenusTargetLocked` 泛化为
+  `RetireTargetLocked`（按 IsVulkan 判定延迟释放）。两 target 分别实现接口，各自
+  不支持的呈现路径为防御性死路径返回 kPresentInvalid。
+- 行为平价：目标生成（vulkan 重造 venus / 非 vulkan 复用 virgl）、延迟释放（venus
+  持 device 移入 retired）、返回码数值、日志门控、锁边界均与原实现逐段一致。
+- 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
+- **3D 剩余（暂缓）**：veven child 的 `PresentVenus` 调度 wait 与 `retiredVenusTargets_`
+  保持原样（未引入 PresentTarget 上的统一 deadline/pacing 表，属超范围）。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -151,10 +178,10 @@ notepad 直启冒烟通过。
 
 顺序不可重排（依赖关系见 PLAN "阶段顺序的依赖关系"）：
 
-- **阶段 3 ZC 与层序政策收口**：3A（zc_bridge 抽离）已完成见 §二；剩余：
-  3A 精化（GetZeroCopyOccluders 改遍历 Layer 列表，消除第 4 份全屏语义）、
-  3B zorder_policy 层序单点、3C ZeroCopyStateCoordinator 5 份状态收敛、
-  3D PresentTarget 统一 + presenter_common。行为敏感：需 ZC 游戏遮挡/全屏回归。
+- **阶段 3 ZC 与层序政策收口**：3A（zc_bridge 抽离）、3D（presenter 收编 +
+  PresentTarget 统一）已完成见 §二；剩余：3A 精化（GetZeroCopyOccluders 改遍历
+  Layer 列表，消除第 4 份全屏语义）、3B zorder_policy 层序单点、
+  3C ZeroCopyStateCoordinator 5 份状态收敛。行为敏感：需 ZC 游戏遮挡/全屏回归。
 - **阶段 4 输入栈拆分**：InputResolver 裁决闭环；修 SendScrollEvent 缺段
   疑似实 bug（单独提交并标注行为变化）；InputManager 拆 InputQueue/
   InputStateTracker/InputInjector/InputSpaceMapper；两处 IsDesktopMode 改
