@@ -15,7 +15,7 @@
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
-| 3 ZC 与层序政策收口 | **进行中（3A/3D + 3B 谓词首步完成，3B 收口/3C 待做）** | f9a2d8a zc_bridge 抽离、cf7e9a1 presenter_common+GLSL、a3156a6 PresentTarget 统一、328ed21 zorder_policy 谓词 |
+| 3 ZC 与层序政策收口 | **进行中（3A/3D + 3B 谓词收口完成，3B 层序精化/3C 待做）** | f9a2d8a zc_bridge 抽离、cf7e9a1 presenter_common+GLSL、a3156a6 PresentTarget 统一、328ed21+48b7333 zorder_policy 三散点 |
 | 4 输入栈拆分 | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
@@ -156,9 +156,15 @@ notepad 直启冒烟通过。
   GetOccluders 遮挡防护条件改调谓词——逐字复现原 if，仅知识归属收拢。
 - 行为平价：条件逐字等价，层序生成仍由 BuildLayerList 编排；消两处手写重复。
 - 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
-- **3B 收口（待做，行为敏感需 ZC 遮挡回归）**：GetOccluders 改遍历
-  BuildLayerList 的层列表（消除独立 z-order 扫描，即 3A 精化）+ fsPriority
-  消费（PickFullscreen 选取法则）收口到 zorder_policy，层序显式化为可读排序列。
+- **3B 谓词收口完成（48b7333，2026-08-29）**：zorder_policy.h 第 3 个散点
+  （PickFullscreen 的 fsPriority 取最大）收口为 `ZOrderFullscreenCandidateBeats`
+  谓词，PickFullscreenLayerLocked 改调它——行为逐字等价（!best || cand>best →
+  !bestValid || cand>best）。至此头部注释列的三个散点（菜单恒置顶 /
+  ZC 遮挡防护 / fsPriority 取最大）全部收进 zorder_policy，消费方只调谓词。
+- **3B 剩余（层序精化，行为敏感需 ZC 遮挡回归）**：GetOccluders 改遍历
+  BuildLayerList 的层列表（消除独立 z-order 扫描与第 4 份全屏语义，即 3A
+  精化）+ 层序显式化为可读排序列——两者替换层序数据源/生成逻辑，超出纯谓词
+  抽取的行为平价边界，需 ZC 游戏遮挡回归再做。
 
 ## 三、2B 剩余工作清单
 
