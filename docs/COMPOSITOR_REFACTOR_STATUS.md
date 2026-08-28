@@ -15,7 +15,7 @@
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
-| 3 ZC 与层序政策收口 | **进行中（3A/3D + 3B 谓词收口完成，3B 层序精化/3C 待做）** | f9a2d8a zc_bridge 抽离、cf7e9a1 presenter_common+GLSL、a3156a6 PresentTarget 统一、328ed21+48b7333 zorder_policy 三散点 |
+| 3 ZC 与层序政策收口 | **完成（代码层全落地，待 ZC 设备回归）** | f9a2d8a zc_bridge 抽离、cf7e9a1/a3156a6/20b4bdb presenter+ZC 状态机、328ed21/48b7333 zorder_policy 三散点、a2d142d 3A 精化、5ebded3 3B 层序精化 |
 | 4 输入栈拆分 | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
@@ -161,10 +161,71 @@ notepad 直启冒烟通过。
   谓词，PickFullscreenLayerLocked 改调它——行为逐字等价（!best || cand>best →
   !bestValid || cand>best）。至此头部注释列的三个散点（菜单恒置顶 /
   ZC 遮挡防护 / fsPriority 取最大）全部收进 zorder_policy，消费方只调谓词。
-- **3B 剩余（层序精化，行为敏感需 ZC 遮挡回归）**：GetOccluders 改遍历
-  BuildLayerList 的层列表（消除独立 z-order 扫描与第 4 份全屏语义，即 3A
-  精化）+ 层序显式化为可读排序列——两者替换层序数据源/生成逻辑，超出纯谓词
-  抽取的行为平价边界，需 ZC 游戏遮挡回归再做。
+- **3B 层序精化完成（5ebded3，2026-08-29）**：BuildLayerListLocked 由"嵌套
+  循环隐式排布"显式化为"排序键排布" — `zorder_policy.h` 新增 `ZOrderGroup`
+  （Root/InZOrder/TopAnchored）、`ZOrderSeq`（(group,laneSeq,itemSeq) 全序）、
+  `ZOrderGroupFor`（组归属=!ZOrderTopAnchored→InZOrder，与旧 main/尾部循环
+  互斥划分逐字对应）；BuildLayerListLocked 改为"待排项建键 → std::sort →
+  按输出顺序分配 zIndex"。对账：5 场景 + 3000 组随机模糊对拍 0 不一致
+  （laneSeq 用 emit 序号非原始下标——root 占位时原始下标会偏移 lane 破块序；
+  父在列但 toplevels_ 缺失 → 丢弃，与旧行为逐字对应）。
+- `PinToTop` 全屏例外收口为 `ZOrderPinSuppressed(raisedIsFullscreen)` 谓词
+  （toplevel_manager.h）。
+- `host_tests/zorder_test.cpp` 新增（40 checks）：ZOrderGroupFor 8 组合边界、
+  12 项混排排序全表（组/lane/item 逐项断言）、ZOrderPinSuppressed 真/假；
+  Makefile test 目标追加（与 blit_clip_test 同模式）。
+- 行为平价：输出序列逐元素一致（顺序/type/zIndex 编号/字段值/sub 指针身份）。
+- 门禁：host_tests 全绿（含 zorder_test）；x86_64 + arm64-v8a hap 构建通过。
+
+### 阶段 3A 精化（GetOccluders 遍历层列表，a2d142d，2026-08-29）
+
+- `ZcBridge::GetOccluders` 由"独立扫描 toplevelZOrder + subsurfaceLayers_"
+  改为锁内构建 `BuildLayerListLocked` 层列表后单趟遍历 — **锚 = ZC 父窗口
+  Toplevel 层的 zIndex**（父==root 时锚 = Root 层 zIndex=0）；判定条件
+  `layer.zIndex > anchorZ` 且跳过 Root/zcActive/不可见层；Toplevel 用
+  fullscreen?整屏:X/Y/W/H，Subsurface 用 x/y+DisplaySizeAfterViewport(
+  vpDstW/H, w/h)（layer.w/h 非显示裁剪尺寸，勿用）。pushRect/前置返回/锁
+  语境不变。
+- 语义等价对账（Python 复刻新旧算法逐场景）：单 ZC 全屏+任务栏、同父菜单
+  attach 早/晚、其它窗口、连带 fullscreen、多 ZC 并存、**ProtocolOnly ZC 层
+  （D4 修复：不再因层缺失返 0）**、**ZC 父==root（D3b 修复：锚=0 全扫）**、
+  ZC 层自身 isExternal（D5 顺带修复）、maxOut 截断 —— 全部相等；
+- 已知语义修正（提交注明，需 ZC 游戏遮挡回归）：D1 置顶菜单挂低 z-order
+  普通窗口、D2 层父不在 z-order 但可见 → 旧不遮挡新纳入（与
+  BuildLayerListLocked"菜单恒置顶"层序一致，属统一数据源后的自然结果）。
+- 门禁：host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
+
+### 阶段 3C（ZC 状态机收敛到 ZcBridge，20b4bdb，2026-08-29）
+
+- ZC 发布/回退时序编排收敛到协议 owner（ZcBridge）：EglRenderer 三幂等
+  方法（PublishZeroCopyActive/UnpublishZeroCopyReady/ClearZeroCopyCompositorKey）
+  与三状态位（zeroCopyReadyPublished_/zeroCopyFallbackPending_/
+  zeroCopyFallbackShmSerial_）下沉，改为 per-key 状态机
+  `ZcBridge::publishStates_`（unordered_map<key, ZcPublishState>，多
+  renderer 多 ZC 绑定隔离），六个幂等动作：
+  `Activate`（=发布：先 compositor key 后 ready marker）/ `BeginFallback`
+  （=撤 ready，基线仅有效性时更新）/ `ConfirmFallback`（shmSerial>基线才
+  撤 key，返回 bool 供日志门控）/ `CancelFallback`（GPU 恢复取消）/
+  `Release`（释放复位序列）/ `BindSurface`（attach 复位）；三查询
+  （IsReadyPublished/IsFallbackPending/GetFallbackShmSerial）供日志与守卫。
+- EglRenderer 保留生命周期/观测状态（registered/failed/hasFrame 等），
+  五个旧调用点（成功帧/连续失败≥8/确认路径/恢复取消/释放）逐一改写为
+  WaylandServer 头内联委托（ActivateZcSurface/BeginFallbackZcSurface/… 9 个，
+  与 SetSurfaceZeroCopy 委托同模式）。`zeroCopyReadyPublished_` 等不再由
+  渲染线程持有——日志文本/门控/顺序逐字保留。
+- 行为平价：触发时机/幂等语义/时序不可合并（先 key 后 ready；fallback
+  两步）/线程域（渲染线程调用，tmgr 锁边界不变）/日志全部不变；
+  GraphicsBroker::SetZeroCopySurfaceReady 进程单例直调（原方式）。
+- 门禁：host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
+
+### 阶段 3 收尾状态（2026-08-29）
+
+- 阶段 3 代码层全部完成（3A/3B 谓词+层序精化/3C/3D）。**待设备回归**：
+  ZC 游戏（DXVK/OpenGL）遮挡、全屏、fallback 场景回归（响应 D1/D2 语义
+  修正与 3C 状态机迁移）；x86_64 模拟器桌面链/notepad 回归不受影响。
+- 已知未做（记录在案）：2B 任务 3（DirectPassPolicy 能力位）、wineboot
+  滞留排查（Task #49）、3D 剩余（venus child PresentVenus 调度 wait 保持
+  原样，超范围）。
 
 ## 三、2B 剩余工作清单
 
@@ -200,10 +261,11 @@ notepad 直启冒烟通过。
 
 顺序不可重排（依赖关系见 PLAN "阶段顺序的依赖关系"）：
 
-- **阶段 3 ZC 与层序政策收口**：3A（zc_bridge 抽离）、3D（presenter 收编 +
-  PresentTarget 统一）已完成见 §二；剩余：3A 精化（GetZeroCopyOccluders 改遍历
-  Layer 列表，消除第 4 份全屏语义）、3B zorder_policy 层序单点、
-  3C ZeroCopyStateCoordinator 5 份状态收敛。行为敏感：需 ZC 游戏遮挡/全屏回归。
+- **阶段 3 ZC 与层序政策收口**：**完成（见 §二，2026-08-29）**——3A（zc_bridge
+  抽离 + 精化 GetOccluders 遍历层列表）、3B（zorder_policy 三散点 + 层序
+  显式化 ZOrderSeq）、3C（ZC 状态机收敛到 ZcBridge）、3D（presenter 收编 +
+  PresentTarget 统一）全落地；**待设备回归**：ZC 游戏遮挡/全屏/fallback 场景
+  （3A 的 D1/D2 语义修正与此项绑定）。行为敏感点验证清单见 §二 3B/3A 小节。
 - **阶段 4 输入栈拆分**：InputResolver 裁决闭环；修 SendScrollEvent 缺段
   疑似实 bug（单独提交并标注行为变化）；InputManager 拆 InputQueue/
   InputStateTracker/InputInjector/InputSpaceMapper；两处 IsDesktopMode 改
