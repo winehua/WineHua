@@ -3,6 +3,7 @@
 #include "text_input.h"
 #include "input_manager.h"
 #include "xdg_shell.h"
+#include "xdg_configure.h"
 #include "fps_counter.h"
 #include "wine_process.h"
 #include "compositor/debug_assert.h"
@@ -364,20 +365,10 @@ void WaylandServer::SetToplevelRestored(uint32_t id) {
     if (!td || !td->xdgSurface) return;
     auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
     if (!xdg || !xdg->wlSurface) return;
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+    std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
     // 全屏窗口从最小化还原: 维持 FULLSCREEN 状态 (尺寸 0,0 = Wine 保持当前尺寸)
-    if (IsToplevelFullscreen(id)) {
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_FULLSCREEN;
-    }
-    xdg_toplevel_send_configure(tl, 0, 0, &states);
-    wl_array_release(&states);
-    wl_client* client = wl_resource_get_client(tl);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    if (IsToplevelFullscreen(id)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    XdgConfigureSend(tl, xdg->xdgSurface, 0, 0, states);
 }
 
 void WaylandServer::SetToplevelMaximized(uint32_t id) {
@@ -434,25 +425,11 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
                 IsDesktopMode() ? "no" : "yes",
                 (sd && sd->maximized) ? "yes" : "no");
 
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    if (sd && sd->maximized) {
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
-    }
+    std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
+    if (sd && sd->maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
     // 全屏窗口在 OHOS 侧尺寸变化时保持 FULLSCREEN 状态, 否则 Wine 会退出全屏。
-    if (IsToplevelFullscreen(toplevelId)) {
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_FULLSCREEN;
-    }
-    xdg_toplevel_send_configure(tl, w, h, &states);
-    wl_array_release(&states);
-
-    wl_client* client = wl_resource_get_client(tl);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    if (IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    XdgConfigureSend(tl, xdg->xdgSurface, w, h, states);
 
     // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时
     // setOutputSize (display 物理尺寸 / effectiveScale), root 的 resize 只反映

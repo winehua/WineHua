@@ -2,6 +2,7 @@
 #include "include/xdg-shell-server-protocol.h"
 #include "wayland_server.h"
 #include "xdg_shell.h"
+#include "xdg_configure.h"
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -118,16 +119,8 @@ static void tl_set_max_size(wl_client* client, wl_resource* tlRes, int32_t w, in
         sd->preMaxH = ws->GetToplevelH(sd->toplevelId);
         sd->maximized = true;
         ws->SetToplevelMaximized(sd->toplevelId);
-        wl_array states;
-        wl_array_init(&states);
-        uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-        xdg_toplevel_send_configure(tlRes, w, workH, &states);
-        wl_array_release(&states);
-        wl_display* dpy = wl_client_get_display(client);
-        xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+        XdgConfigureSend(tlRes, xdg->xdgSurface, w, workH,
+                         {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
         OH_LOG_INFO(LOG_APP, "[XDG] max_size→maximize tl=%{public}u → configure(%{public}d,%{public}d)",
                     sd->toplevelId, w, workH);
     } else {
@@ -161,16 +154,8 @@ static void tl_set_maximized(wl_client* client, wl_resource* tlRes) {
     }
     // 发 configure 让 Wine 渲染到工作区尺寸 (排除任务栏)
     int32_t mw = ws->outputW_, mh = ws->GetWorkAreaHeight();
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
-    st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    xdg_toplevel_send_configure(tlRes, mw, mh, &states);
-    wl_array_release(&states);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    XdgConfigureSend(tlRes, xdg->xdgSurface, mw, mh,
+                     {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
     ws->FireToplevelEvent(sd->toplevelId, "maximized");
     OH_LOG_INFO(LOG_APP, "[XDG] tl_set_maximized tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, mw, mh);
@@ -193,14 +178,7 @@ static void tl_unset_maximized(wl_client* client, wl_resource* tlRes) {
     // 发 configure 用最大化前尺寸, 不能用 0,0 (Wine 0,0+state → SWP_NOSIZE → 不resize)
     int32_t w = sd->preMaxW > 0 ? sd->preMaxW : 0;
     int32_t h = sd->preMaxH > 0 ? sd->preMaxH : 0;
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    xdg_toplevel_send_configure(tlRes, w, h, &states);
-    wl_array_release(&states);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    XdgConfigureSend(tlRes, xdg->xdgSurface, w, h, {XDG_TOPLEVEL_STATE_ACTIVATED});
     WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "unmaximized");
     OH_LOG_INFO(LOG_APP, "[XDG] tl_unset_maximized tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, w, h);
@@ -236,16 +214,8 @@ static void tl_set_fullscreen(wl_client* client, wl_resource* tlRes, wl_resource
     // 对任意尺寸兼容, 见 winewayland wayland_surface_config_is_compatible),
     // 缩放由合成器完成
     int32_t fw = ws->outputW_, fh = ws->outputH_;
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_FULLSCREEN;
-    st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    xdg_toplevel_send_configure(tlRes, fw, fh, &states);
-    wl_array_release(&states);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    XdgConfigureSend(tlRes, xdg->xdgSurface, fw, fh,
+                     {XDG_TOPLEVEL_STATE_FULLSCREEN, XDG_TOPLEVEL_STATE_ACTIVATED});
     ws->FireToplevelEvent(sd->toplevelId, "fullscreen");
     OH_LOG_INFO(LOG_APP, "[XDG] tl_set_fullscreen tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, fw, fh);
@@ -264,14 +234,7 @@ static void tl_unset_fullscreen(wl_client* client, wl_resource* tlRes) {
     // 恢复全屏前尺寸, 不能用 0,0 (Wine 0,0+state → SWP_NOSIZE → 不resize)
     int32_t w = sd->preFsW > 0 ? sd->preFsW : 0;
     int32_t h = sd->preFsH > 0 ? sd->preFsH : 0;
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    xdg_toplevel_send_configure(tlRes, w, h, &states);
-    wl_array_release(&states);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    XdgConfigureSend(tlRes, xdg->xdgSurface, w, h, {XDG_TOPLEVEL_STATE_ACTIVATED});
     ws->FireToplevelEvent(sd->toplevelId, "unfullscreen");
     OH_LOG_INFO(LOG_APP, "[XDG] tl_unset_fullscreen tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, w, h);
@@ -356,15 +319,7 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
     }
 
     // 发 toplevel configure (activated), 然后 xdg_surface configure
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    xdg_toplevel_send_configure(tl, 0, 0, &states);
-    wl_array_release(&states);
-
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xsRes, wl_display_next_serial(dpy));
+    XdgConfigureSend(tl, xsRes, 0, 0, {XDG_TOPLEVEL_STATE_ACTIVATED});
 }
 
 static void xs_get_popup(wl_client*, wl_resource*, uint32_t, wl_resource*, wl_resource*) {}
