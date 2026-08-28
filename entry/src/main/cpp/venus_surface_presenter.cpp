@@ -1239,21 +1239,31 @@ bool VenusSurfaceQueueTarget::FinishDeviceRelease(uint32_t contextId,
     return impl_->FinishDeviceRelease(contextId, device, waitResult);
 }
 
-int VenusSurfaceQueueTarget::Present(uint32_t contextId,
-                                     uintptr_t instance,
-                                     uintptr_t physicalDevice,
-                                     uintptr_t device,
-                                     uintptr_t queue,
-                                     uint64_t image,
-                                     uint32_t queueFamily,
-                                     uint32_t width,
-                                     uint32_t height,
-                                     uint32_t format,
-                                     uint32_t layout,
-                                     uint32_t serial,
-                                     uint64_t* nextPresentDeadlineNs,
-                                     void (*releaseQueue)(void*),
-                                     void* queueSyncData)
+// Present (GL) 为防御性死路径: Manager 按 IsVulkan 调度, GL 帧不会送达
+// venus 目标。返回 kPresentInvalid 以指示错误的呈现通道。
+int VenusSurfaceQueueTarget::Present(GLuint /*texture*/, uint32_t /*width*/,
+                                     uint32_t /*height*/, uint64_t /*drawable*/,
+                                     uint32_t /*serial*/,
+                                     uint64_t* /*nextPresentDeadlineNs*/)
+{
+    return kPresentInvalid;
+}
+
+int VenusSurfaceQueueTarget::PresentVenus(uint32_t contextId,
+                                          uintptr_t instance,
+                                          uintptr_t physicalDevice,
+                                          uintptr_t device,
+                                          uintptr_t queue,
+                                          uint64_t image,
+                                          uint32_t queueFamily,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          uint32_t format,
+                                          uint32_t layout,
+                                          uint32_t serial,
+                                          uint64_t* nextPresentDeadlineNs,
+                                          void (*releaseQueue)(void*),
+                                          void* queueSyncData)
 {
     return impl_->Present(contextId, instance, physicalDevice, device, queue,
                           image, queueFamily, width, height, format, layout,
