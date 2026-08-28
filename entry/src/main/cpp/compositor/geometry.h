@@ -53,6 +53,30 @@ inline int FitSizeDisplayH(const FitRect& t, int64_t h) { return t.srcH > 0 ? st
 inline double FitUnmapDisplayX(const FitRect& t, double px) { return t.dstW > 0 ? (px - t.offX) * t.srcW / t.dstW : 0.0; }
 inline double FitUnmapDisplayY(const FitRect& t, double py) { return t.dstH > 0 ? (py - t.offY) * t.srcH / t.dstH : 0.0; }
 
+// -- wp_viewport destination 生效后的显示尺寸 --
+// vpDst > 0 时 surface 按 viewport 目标尺寸显示, 否则 (<=0, 含未设置的 -1)
+// 回退 buffer 尺寸 (w/h)。两个变体语义不同, 原为 11 处手写三元式
+// (docs/COMPOSITOR_REFACTOR_PLAN.md §2.3), clamp 与否的差异可能是有意的,
+// 不得互换/统一 (统一语义是单独的行为变更):
+//
+// - DisplaySizeAfterViewport (不 clamp): viewport dst 直通, 显示尺寸可超过
+//   buffer (buffer 对齐填充大于内容 / 需要放大显示时, 源像素按此尺寸缩放
+//   上屏)。使用场景: ZC 层内容几何 (GetZeroCopyLayerInfo /
+//   GetZeroCopyContentSize / GetZeroCopyOccluders / BuildWindowLayerList)、
+//   wl_core CopyToplevelContent 逻辑尺寸。
+// - DisplaySizeAfterViewportClamped (min clamp): 显示尺寸封顶不超过 buffer
+//   — blit 源只有 buffer 尺寸, dst 更大时无源像素可放大, 按 buffer 截断。
+//   使用场景: 全屏 fit 路径 (fullscreenContentCovered 判定 / 全屏 fit 矩形 /
+//   输入 FindInputTargetAt 全屏命中)。
+inline int DisplaySizeAfterViewport(int32_t vpDst, int fallback)
+{
+    return vpDst > 0 ? vpDst : fallback;
+}
+inline int DisplaySizeAfterViewportClamped(int32_t vpDst, int fallback)
+{
+    return vpDst > 0 ? std::min(vpDst, fallback) : fallback;
+}
+
 // 全屏内容尺寸选择 (渲染/输入共用单一权威源, 渲染侧全屏几何的镜像):
 // - ZC 游戏 (toplevel 带 zero-copy GL 层): 画面是 GL 层按实际内容几何渲染的,
 //   全屏后 buffer 被 Wine 扩到输出尺寸但画面不变 → 用 layer 几何

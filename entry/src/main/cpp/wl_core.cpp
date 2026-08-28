@@ -14,6 +14,7 @@
 #include "text_input.h"
 #include "compositor/compositor_utils.h"
 #include "compositor/compositor_constants.h"
+#include "compositor/geometry.h"
 #include "include/viewporter-server-protocol.h"
 #include "perf_utils.h"
 #include <algorithm>
@@ -472,8 +473,8 @@ static void CopyToplevelContent(const SurfaceData* sd, ShmCommitInfo& fi,
                                 std::vector<uint8_t>& dst) {
     const int sourceW = fi.contentW;
     const int sourceH = fi.contentH;
-    const int logicalW = sd->vpDstW > 0 ? sd->vpDstW : sourceW;
-    const int logicalH = sd->vpDstH > 0 ? sd->vpDstH : sourceH;
+    const int logicalW = DisplaySizeAfterViewport(sd->vpDstW, sourceW);
+    const int logicalH = DisplaySizeAfterViewport(sd->vpDstH, sourceH);
 
     if (logicalW == sourceW && logicalH == sourceH) {
         CopyShmContentTight(fi, dst);

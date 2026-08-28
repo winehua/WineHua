@@ -124,8 +124,8 @@ bool DesktopCompositor::GetZeroCopyContentSizeLocked(uint32_t toplevelId,
         if (layer.parentToplevel != toplevelId ||
             !zeroCopySurfaceKeys_.count(layer.surfaceKey))
             continue;
-        outW = layer.vpDstW > 0 ? layer.vpDstW : layer.w;
-        outH = layer.vpDstH > 0 ? layer.vpDstH : layer.h;
+        outW = DisplaySizeAfterViewport(layer.vpDstW, layer.w);
+        outH = DisplaySizeAfterViewport(layer.vpDstH, layer.h);
         return true;
     }
     return false;
@@ -284,8 +284,8 @@ DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int
             zcLayer.type = CompositorLayer::Type::Subsurface;
             zcLayer.x = sd->subsurfaceX - parent->geoX;
             zcLayer.y = sd->subsurfaceY - parent->geoY;
-            zcLayer.w = sd->vpDstW > 0 ? sd->vpDstW : sd->w;
-            zcLayer.h = sd->vpDstH > 0 ? sd->vpDstH : sd->h;
+            zcLayer.w = DisplaySizeAfterViewport(sd->vpDstW, sd->w);
+            zcLayer.h = DisplaySizeAfterViewport(sd->vpDstH, sd->h);
         } else {
             continue;
         }
@@ -386,8 +386,8 @@ bool DesktopCompositor::GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rende
         auto* parent = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
         if (!parent || !parent->hasToplevel) return false;
         info.parentToplevel = parent->toplevelId;
-        info.width = sd->vpDstW > 0 ? sd->vpDstW : sd->w;
-        info.height = sd->vpDstH > 0 ? sd->vpDstH : sd->h;
+        info.width = DisplaySizeAfterViewport(sd->vpDstW, sd->w);
+        info.height = DisplaySizeAfterViewport(sd->vpDstH, sd->h);
         if (policy_.RootCompositing())
         {
             if (rendererToplevelId != desktopRootToplevelId_ ||
@@ -398,8 +398,8 @@ bool DesktopCompositor::GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rende
             {
                 if (layer.surface != wlRes) continue;
                 ResolveSubsurfaceLayerPositionLocked(layer, info.x, info.y);
-                info.width = layer.vpDstW > 0 ? layer.vpDstW : layer.w;
-                info.height = layer.vpDstH > 0 ? layer.vpDstH : layer.h;
+                info.width = DisplaySizeAfterViewport(layer.vpDstW, layer.w);
+                info.height = DisplaySizeAfterViewport(layer.vpDstH, layer.h);
                 info.shmCommitSerial = layer.shmCommitSerial;
                 info.desktopCoordinates = true;
                 if (const auto* pst = tmgr_.FindToplevelLocked(layer.parentToplevel))
@@ -427,8 +427,8 @@ bool DesktopCompositor::GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rende
             const bool insideWin = sx >= 0 && sx < compW && sy >= 0 && sy < compH;
             info.x = (insideWin ? compX : wineX) + sx;
             info.y = (insideWin ? compY : wineY) + sy;
-            info.width = sd->vpDstW > 0 ? sd->vpDstW : sd->w;
-            info.height = sd->vpDstH > 0 ? sd->vpDstH : sd->h;
+            info.width = DisplaySizeAfterViewport(sd->vpDstW, sd->w);
+            info.height = DisplaySizeAfterViewport(sd->vpDstH, sd->h);
             if (info.width <= 0) info.width = fallbackWidth;
             if (info.height <= 0) info.height = fallbackHeight;
             info.shmCommitSerial = sd->shmCommitSerial.load(std::memory_order_acquire);
@@ -556,8 +556,8 @@ int DesktopCompositor::GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t render
         int x = 0, y = 0;
         ResolveSubsurfaceLayerPositionLocked(layer, x, y);
         pushRect(x, y,
-                 layer.vpDstW > 0 ? layer.vpDstW : layer.w,
-                 layer.vpDstH > 0 ? layer.vpDstH : layer.h);
+                 DisplaySizeAfterViewport(layer.vpDstW, layer.w),
+                 DisplaySizeAfterViewport(layer.vpDstH, layer.h));
     }
     return count;
 }
@@ -674,8 +674,8 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
                 const auto& sl = *layer.sub;
                 if (sl.w <= 0 || sl.h <= 0) continue;
                 if (sl.shmFormat == 0 && !sl.opaque) continue;
-                const int dispW = sl.vpDstW > 0 ? std::min(sl.vpDstW, sl.w) : sl.w;
-                const int dispH = sl.vpDstH > 0 ? std::min(sl.vpDstH, sl.h) : sl.h;
+                const int dispW = DisplaySizeAfterViewportClamped(sl.vpDstW, sl.w);
+                const int dispH = DisplaySizeAfterViewportClamped(sl.vpDstH, sl.h);
                 const int relX = layer.x - fullscreenX;
                 const int relY = layer.y - fullscreenY;
                 if (relX <= 0 && relY <= 0 &&
@@ -966,8 +966,8 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
                         // 全屏 SHM 游戏: R 贡献 = fit 后屏幕区域 — 与
                         // blitSubsurface 全屏分支同源映射 (FitMapLayerRect),
                         // 保证 R 恰好=变化内容的显示区域 (黑边区无需重画)
-                        const int dispW = sl.vpDstW > 0 ? std::min(sl.vpDstW, layer.w) : layer.w;
-                        const int dispH = sl.vpDstH > 0 ? std::min(sl.vpDstH, layer.h) : layer.h;
+                        const int dispW = DisplaySizeAfterViewportClamped(sl.vpDstW, layer.w);
+                        const int dispH = DisplaySizeAfterViewportClamped(sl.vpDstH, layer.h);
                         FitMapLayerRect(transform, layer.x - fullscreenX, layer.y - fullscreenY,
                                         dispW, dispH, ux, uy, uw, uh);
                     } else {
@@ -1219,8 +1219,8 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
                 return;
             }
             if (hasFullscreen && layer.toplevelId == fullscreenId) {
-                const int layerDispW = bs.vpDstW > 0 ? std::min(bs.vpDstW, bs.w) : bs.w;
-                const int layerDispH = bs.vpDstH > 0 ? std::min(bs.vpDstH, bs.h) : bs.h;
+                const int layerDispW = DisplaySizeAfterViewportClamped(bs.vpDstW, bs.w);
+                const int layerDispH = DisplaySizeAfterViewportClamped(bs.vpDstH, bs.h);
                 // 与输入 FindInputTargetAt 全屏分支同几何 (FitMapLayerRect 唯一实现)
                 int layerDstX, layerDstY, layerDstW, layerDstH;
                 FitMapLayerRect(transform, layerX - fullscreenX, layerY - fullscreenY,

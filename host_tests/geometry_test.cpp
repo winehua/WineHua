@@ -122,6 +122,26 @@ int main()
               "720p input maps back to virtual coordinates");
     }
 
+    // 10. vpDst 显示尺寸 (重构阶段 1 特征化: 锁定 11 处手写三元式的两种
+    // 现有语义变体, 先写测试再做替换 — 行为平价, 不统一变体)
+    {
+        // 不 clamp 变体: vpDst<=0 (0 或负数, -1=未设置) 回退 buffer 尺寸
+        CHECK(DisplaySizeAfterViewport(0, 640) == 640, "vp size: 0 falls back to w");
+        CHECK(DisplaySizeAfterViewport(-1, 640) == 640, "vp size: negative falls back to w");
+        // vpDst < w: 按 vpDst 显示
+        CHECK(DisplaySizeAfterViewport(600, 640) == 600, "vp size: vpDst<w uses vpDst");
+        // vpDst > w: 直通不截断 (buffer 对齐填充/放大显示场景)
+        CHECK(DisplaySizeAfterViewport(800, 640) == 800, "vp size: vpDst>w passes through");
+
+        // min clamp 变体: 回退行为相同
+        CHECK(DisplaySizeAfterViewportClamped(0, 640) == 640, "vp size clamped: 0 falls back to w");
+        CHECK(DisplaySizeAfterViewportClamped(-1, 640) == 640, "vp size clamped: negative falls back to w");
+        // vpDst < w: 按 vpDst 显示 (min 不生效)
+        CHECK(DisplaySizeAfterViewportClamped(600, 640) == 600, "vp size clamped: vpDst<w uses vpDst");
+        // vpDst > w: 截断到 buffer 尺寸 (blit 源只有 buffer, 无像素可放大)
+        CHECK(DisplaySizeAfterViewportClamped(800, 640) == 640, "vp size clamped: vpDst>w truncated");
+    }
+
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
