@@ -13,9 +13,9 @@
 namespace winehua {
 namespace {
 
-// 会话上下文 (见 spawner.h): binDir 默认与 prefix (smoke 遥测判定) 由此取;
+// 会话上下文 (见 spawner.h): binDir 默认由此取;
 // homeDir 前缀 / WINEPREFIX 权威由 broker 服务端追加 (broker.cpp)
-std::string gBinDir, gPrefixDir;
+std::string gBinDir;
 
 // x86_64 原生需要 wine 加载器 token ("wine" 作为 argv[0]); aarch64 由
 // wine_child Main 直接 dlopen box64 跑 binDir/wine ELF, argv 不含该前缀
@@ -38,10 +38,9 @@ pid_t SpawnLogged(const SpawnRequest& req, const std::string& params) {
 
 } // namespace
 
-void Spawner::ConfigureSession(std::string homeDir, std::string binDir, std::string prefixDir) {
+void Spawner::ConfigureSession(std::string homeDir, std::string binDir) {
     (void)homeDir;  // broker 服务端权威 (gBrokerHomeDir), 此处仅记录备查
     gBinDir = std::move(binDir);
-    gPrefixDir = std::move(prefixDir);
 }
 
 // 全部 kind 统一走 broker (重构第 5 步): broker 服务端补 homeDir 前缀、
@@ -71,24 +70,12 @@ pid_t Spawner::Spawn(const SpawnRequest& req) {
     case SpawnKind::WineExe:
         if (kNeedsWineLoaderToken) params += "|wine";
         break;
-    case SpawnKind::GuestElf:
-        params += "|__winehua_guest_elf__";
-        break;
-    case SpawnKind::HostElf:
-        params += "|__winehua_host_elf__";
-        break;
     }
     for (const std::string& arg : req.argv) {
         params += "|";
         params += arg;
     }
 
-    // smoke prefix 的 wineserver 带退出遥测 (会话级判定, 与调用方无关)
-    if (req.kind == SpawnKind::Wineserver && gPrefixDir == WINE_SMOKE_PREFIX) {
-        SpawnRequest withTelemetry = req;
-        withTelemetry.env.push_back("WINEHUA_PROCESS_EXIT_TELEMETRY=1");
-        return SpawnLogged(withTelemetry, params);
-    }
     return SpawnLogged(req, params);
 }
 

@@ -48,7 +48,6 @@ export class WineWindowManager {
 
   // -- Desktop 模式 (Tablet / PC 虚拟桌面) --
   isDesktopMode: boolean = false;  // 公开: WineEnvService 镜像
-  private automationMode: boolean = false;
   // PC 虚拟桌面: 桌面 root surface 承载在独立 VirtualDesktopAbility 窗口
   // (master 的 tablet/phone 走 DesktopAbility 全屏窗口)。由 applyModePolicy 派生。
   desktopSeparateWindow: boolean = false;
@@ -84,10 +83,6 @@ export class WineWindowManager {
   desktopActive: boolean = false;
   // 桌面 root 的 XComponent surface 校准完成（renderer 就绪）才置 true。
   desktopSurfaceReady: boolean = false;
-  // Optional exact-title gate for an explicitly requested visible managed
-  // window. Clean-prefix bootstrap helpers must stay headless so they cannot
-  // steal the foreground from EntryAbility before the requested program starts.
-  private managedToplevelTitleFilter: string = '';
   // 主窗口 windowStage (ARGB 异型子窗口/popup 回退宿主)
   private mainWindowStage: window.WindowStage | null = null;
 
@@ -140,33 +135,21 @@ export class WineWindowManager {
     });
   }
 
-  setAutomationMode(enabled: boolean): void {
-    this.automationMode = enabled;
-    this.applyModePolicy();
-  }
-
   // 桌面模式判定统一入口 (init / 引擎启动前共用):
   //   Pad/phone → 恒桌面合成器 (DesktopAbility 全屏窗口, 现状)
-  //   PC (2in1) + automation (smoke) → 融合 (managed, 无 explorer)
   //   PC + 设置虚拟桌面 → 桌面合成器 + 独立 VirtualDesktopAbility 窗口
   //   PC + 设置融合 (默认) → managed 多窗口
   applyModePolicy(): void {
     const isPadOrPhone = deviceInfo.deviceType === 'tablet' || deviceInfo.deviceType === 'phone';
-    this.isDesktopMode = !this.automationMode &&
-      (isPadOrPhone || DesktopModeService.getInstance().mode === 'virtual');
+    this.isDesktopMode =
+      isPadOrPhone || DesktopModeService.getInstance().mode === 'virtual';
     this.desktopSeparateWindow = this.isDesktopMode && !isPadOrPhone;
     testNapi.setDesktopMode(this.isDesktopMode);
     hilog.info(DOMAIN, TAG,
-      '[MW] mode policy: type=%{public}s automation=%{public}s → %{public}s (separateWindow=%{public}s)',
-      deviceInfo.deviceType, this.automationMode ? 'true' : 'false',
+      '[MW] mode policy: type=%{public}s → %{public}s (separateWindow=%{public}s)',
+      deviceInfo.deviceType,
       this.isDesktopMode ? 'DESKTOP MODE' : 'MANAGED MODE',
       this.desktopSeparateWindow ? 'yes' : 'no');
-  }
-
-  setManagedToplevelTitleFilter(title: string): void {
-    this.managedToplevelTitleFilter = title;
-    hilog.info(DOMAIN, TAG, '[MW] managed toplevel title filter=%{public}s',
-      title.length > 0 ? title : '<disabled>');
   }
 
   async init(windowStage: window.WindowStage, abilityContext: common.UIAbilityContext): Promise<void> {
@@ -415,11 +398,6 @@ export class WineWindowManager {
       case 'created':
         if (this.isDesktopMode) {
           hilog.info(DOMAIN, TAG, '[MW] Desktop mode: toplevel #%{public}d created, skipping Ability', id);
-        } else if (this.managedToplevelTitleFilter.length > 0 &&
-          this.entries.get(id)?.title !== this.managedToplevelTitleFilter) {
-          hilog.info(DOMAIN, TAG,
-            '[MW] managed toplevel #%{public}d title="%{public}s" suppressed; waiting for "%{public}s"',
-            id, this.entries.get(id)?.title ?? '', this.managedToplevelTitleFilter);
         } else {
           hilog.info(DOMAIN, TAG, '[MW] -> startWineWindowAbility(#%{public}d)', id);
           this.startWineWindowAbility(id, data);

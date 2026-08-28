@@ -34,11 +34,8 @@ std::vector<std::string> FilterCompatLines(const std::string& compatEnvStr)
 }
 
 void AppendCompatEnvLines(std::vector<std::string>& env,
-                          const std::string& compatEnvStr, bool automationMode)
+                          const std::string& compatEnvStr)
 {
-    // smoke/experiment (automation) 使用隔离 prefix, 回归必须跑出厂基线
-    if (automationMode)
-        return;
     for (const std::string& line : FilterCompatLines(compatEnvStr))
         UpsertEnvLine(env, line);
 }
@@ -160,7 +157,7 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
     // 兼容模式全局档位: 压过基线; WEAKBARRIER=0 clamp 在 stable overlay 尾
     // 会再压回 — 档位不击穿 DXVK/desktop 约束
 #ifdef __aarch64__
-    AppendCompatEnvLines(env, p.compatEnvStr, p.automationMode);
+    AppendCompatEnvLines(env, p.compatEnvStr);
 #endif
     // 桌面稳定化 overlay。probe 快照 = 到此处为止的 env (基线+D3D+compat),
     // 与旧实现探测 LaunchParams.envStrs 语义一致

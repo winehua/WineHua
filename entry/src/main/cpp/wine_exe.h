@@ -13,11 +13,9 @@ struct ProgramOptions {
     std::vector<std::string> argv;
     std::vector<std::string> environment;
     std::string workingDirectory;
-    std::string prefixMode = "reuse";
     std::string d3dBackend = "vkd3d_limited_500k";
     std::string dxvkBackend = "dxvk_legacy";
     std::string presentBackend = "virgl_compositor";
-    bool automationMode = false;
 };
 
 // 经 broker 通道启动一个 Wine 程序 (手动 runWineProgram 与自动拉起共用)。
@@ -32,9 +30,5 @@ pid_t SpawnViaBroker(const std::string& entryParams,
 
 napi_value RunWineExe(napi_env env, napi_callback_info info);
 napi_value RunWineProgram(napi_env env, napi_callback_info info);
-napi_value RunGuestProgram(napi_env env, napi_callback_info info);
-napi_value RunHostProgram(napi_env env, napi_callback_info info);
-napi_value RunHostReplay(napi_env env, napi_callback_info info);
-napi_value IsHostReplayRunning(napi_env env, napi_callback_info info);
 napi_value QueryWineProcess(napi_env env, napi_callback_info info);
 napi_value TerminateWineProcess(napi_env env, napi_callback_info info);

@@ -13,8 +13,6 @@
 #include "wine_process.h"
 #include "wine_launch.h"
 #include "wine_exe.h"
-#include "host_vulkan_probe.h"
-#include "experiment_payload.h"
 #include "phone_adapter/phone_adapter.h"
 #include "text_input.h"
 
@@ -316,8 +314,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 11;
-    napi_value args[11] = {};
+    size_t argc = 9;
+    napi_value args[9] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -333,51 +331,38 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         napi_get_value_string_utf8(env, args[4], buf, sizeof(buf), nullptr);
         p->homeDir = buf;
     }
-    if (argc >= 6) napi_get_value_bool(env, args[5], &p->automationMode);
     p->prefixDir = WINE_PREFIX;
-    if (argc >= 7) {
-        char prefixMode[32] = {};
-        napi_get_value_string_utf8(env, args[6], prefixMode, sizeof(prefixMode), nullptr);
-        if (!strcmp(prefixMode, "clean")) p->prefixDir = WINE_SMOKE_PREFIX;
-    }
-    if (p->prefixDir == WINE_SMOKE_PREFIX && !p->automationMode) {
-        // The clean prefix is reserved for isolated smoke and experiment
-        // sessions. Never let a missing ArkTS boolean turn it into a desktop
-        // session, which would start Explorer ahead of the requested test.
-        OH_LOG_WARN(LOG_APP, "[Launch] clean prefix forces automation mode");
-        p->automationMode = true;
-    }
-    if (argc >= 8) {
+    if (argc >= 6) {
         char d3dBackend[64] = {};
-        napi_get_value_string_utf8(env, args[7], d3dBackend, sizeof(d3dBackend), nullptr);
+        napi_get_value_string_utf8(env, args[5], d3dBackend, sizeof(d3dBackend), nullptr);
         if (!strcmp(d3dBackend, "wined3d") || !strncmp(d3dBackend, "dxvk_", 5) ||
             !strcmp(d3dBackend, "vkd3d_limited_500k"))
             p->d3dBackend = d3dBackend;
     }
     if (p->d3dBackend == "dxvk_modern_2_6")
         p->dxvkBackend = "dxvk_modern_2_6";
-    if (argc >= 9) {
+    if (argc >= 7) {
         char dxvkBackend[64] = {};
-        napi_get_value_string_utf8(env, args[8], dxvkBackend, sizeof(dxvkBackend), nullptr);
+        napi_get_value_string_utf8(env, args[6], dxvkBackend, sizeof(dxvkBackend), nullptr);
         if (!strcmp(dxvkBackend, "dxvk_legacy") ||
             !strcmp(dxvkBackend, "dxvk_modern_2_6"))
             p->dxvkBackend = dxvkBackend;
     }
-    if (argc >= 10) {
+    if (argc >= 8) {
         // 设置页 "Wine 语言": 仅接受白名单值, 非法/缺省保持 zh_CN
         char wineLang[16] = {};
-        napi_get_value_string_utf8(env, args[9], wineLang, sizeof(wineLang), nullptr);
+        napi_get_value_string_utf8(env, args[7], wineLang, sizeof(wineLang), nullptr);
         if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "en_US"))
             p->wineLang = wineLang;
     }
-    if (argc >= 11) {
+    if (argc >= 9) {
         // 设置页 "兼容模式" 全局档位: 分号拼接的 BOX64_DYNAREC_* 行串
         // (ArkTS 拼, native 零表); 空串 = 出厂基线不注入。缓冲 2048 是硬
         // 上限: 当前档位表 11 行 ≈ 286B, 若规模膨胀超过则静默截断 (半截行
         // 会被前缀过滤放进环境, 注入残缺值) — 只在档位表大改时需复查
         char compatEnv[2048] = {};
         napi_status compatStatus =
-            napi_get_value_string_utf8(env, args[10], compatEnv, sizeof(compatEnv), nullptr);
+            napi_get_value_string_utf8(env, args[8], compatEnv, sizeof(compatEnv), nullptr);
         if (compatStatus != napi_ok) {
             OH_LOG_WARN(LOG_APP, "[Launch] compatEnvStr arg is not a string, ignored");
         }
@@ -389,9 +374,9 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
     }
 
     OH_LOG_WARN(LOG_APP,
-                "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s home=%{public}s prefix=%{public}s automation=%{public}s (async)",
+                "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s home=%{public}s prefix=%{public}s (async)",
                 p->exePath.c_str(), p->sockPath.c_str(), p->libPath.c_str(), p->homeDir.c_str(),
-                p->prefixDir.c_str(), p->automationMode ? "true" : "false");
+                p->prefixDir.c_str());
     OH_LOG_WARN(LOG_APP, "[Launch] desktop D3D=%{public}s DXVK=%{public}s lang=%{public}s compat=%{public}s",
                 p->d3dBackend.c_str(), p->dxvkBackend.c_str(), p->wineLang.c_str(),
                 p->compatEnvStr.empty() ? "baseline" : "preset");
@@ -420,15 +405,7 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
 
 // -- NAPI: checkWinePrefix -- 检测 .wine 是否已完整初始化 --
 static napi_value CheckWinePrefix(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    std::string prefix = WINE_PREFIX;
-    if (argc >= 1) {
-        char mode[32] = {};
-        napi_get_value_string_utf8(env, args[0], mode, sizeof(mode), nullptr);
-        if (!strcmp(mode, "clean")) prefix = WINE_SMOKE_PREFIX;
-    }
+    const std::string prefix = WINE_PREFIX;
     const std::string initMarker = prefix + "/.winehua-init-in-progress";
     bool ok = IsWinePrefixInitialized(prefix)
         && access(initMarker.c_str(), F_OK) != 0;
@@ -473,15 +450,7 @@ static bool RmDir(const char* path) {
 }
 
 static napi_value ResetWinePrefix(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     const char* prefix = WINE_PREFIX;
-    if (argc >= 1) {
-        char mode[32] = {};
-        napi_get_value_string_utf8(env, args[0], mode, sizeof(mode), nullptr);
-        if (!strcmp(mode, "clean")) prefix = WINE_SMOKE_PREFIX;
-    }
     OH_LOG_WARN(LOG_APP, "[NAPI] resetWinePrefix called prefix=%{public}s", prefix);
     KillAllProcesses();
     bool ok = RmDir(prefix);
@@ -496,98 +465,6 @@ static napi_value ResetWinePrefix(napi_env env, napi_callback_info info) {
     napi_get_boolean(env, ok, &result);
     return result;
 }
-
-// -- NAPI: stageExperimentPayload --
-// Import a verified test payload into C:\\smoke\\experiments only after
-// validating every artifact hash. No product runtime directory is writable.
-static napi_value StageExperimentPayloadNapi(napi_env env, napi_callback_info info) {
-    size_t argc = 5;
-    napi_value args[5] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    bool ok = false;
-    std::string message;
-    char experimentId[96] = {};
-    char prefixMode[32] = "reuse";
-    char sourceUrl[512] = {};
-    if (argc < 4 ||
-        napi_get_value_string_utf8(env, args[0], experimentId, sizeof(experimentId), nullptr) != napi_ok ||
-        napi_get_value_string_utf8(env, args[3], prefixMode, sizeof(prefixMode), nullptr) != napi_ok) {
-        message = "invalid experiment staging arguments";
-    } else {
-        if (argc >= 5 &&
-            napi_get_value_string_utf8(env, args[4], sourceUrl, sizeof(sourceUrl), nullptr) != napi_ok) {
-            message = "invalid experiment source URL";
-        }
-        bool namesIsArray = false;
-        bool hashesIsArray = false;
-        uint32_t nameCount = 0;
-        uint32_t hashCount = 0;
-        napi_is_array(env, args[1], &namesIsArray);
-        napi_is_array(env, args[2], &hashesIsArray);
-        if (namesIsArray && hashesIsArray) {
-            napi_get_array_length(env, args[1], &nameCount);
-            napi_get_array_length(env, args[2], &hashCount);
-        }
-        std::vector<winehua::ExperimentArtifact> artifacts;
-        if (!namesIsArray || !hashesIsArray || nameCount != hashCount || nameCount == 0 || nameCount > 16) {
-            message = "invalid experiment artifact list";
-        } else {
-            artifacts.reserve(nameCount);
-            for (uint32_t index = 0; index < nameCount; ++index) {
-                napi_value nameValue = nullptr;
-                napi_value hashValue = nullptr;
-                char name[128] = {};
-                char hash[96] = {};
-                if (napi_get_element(env, args[1], index, &nameValue) != napi_ok ||
-                    napi_get_element(env, args[2], index, &hashValue) != napi_ok ||
-                    napi_get_value_string_utf8(env, nameValue, name, sizeof(name), nullptr) != napi_ok ||
-                    napi_get_value_string_utf8(env, hashValue, hash, sizeof(hash), nullptr) != napi_ok) {
-                    message = "invalid experiment artifact item";
-                    artifacts.clear();
-                    break;
-                }
-                artifacts.push_back({name, hash});
-            }
-            if (!artifacts.empty() && message.empty())
-                ok = winehua::StageExperimentPayload(experimentId, artifacts, prefixMode, sourceUrl, &message);
-        }
-    }
-    OH_LOG_INFO(LOG_APP, "[Experiment] staging id=%{public}s result=%{public}s message=%{public}s",
-                experimentId, ok ? "PASS" : "FAIL", message.c_str());
-    napi_value result;
-    napi_get_boolean(env, ok, &result);
-    return result;
-}
-
-static napi_value RunHostVulkanProbe(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint64_t surfaceId = 0;
-    bool lossless = false;
-    char runId[128] = {};
-    if (argc < 2 ||
-        napi_get_value_bigint_uint64(env, args[0], &surfaceId, &lossless) != napi_ok || !lossless ||
-        napi_get_value_string_utf8(env, args[1], runId, sizeof(runId), nullptr) != napi_ok) {
-        napi_value result;
-        napi_get_boolean(env, false, &result);
-        return result;
-    }
-    bool started = StartHostVulkanProbe(surfaceId, runId);
-    OH_LOG_INFO(LOG_APP, "[HostVulkan] start surface=%{public}llu run=%{public}s result=%{public}s",
-                static_cast<unsigned long long>(surfaceId), runId, started ? "true" : "false");
-    napi_value result;
-    napi_get_boolean(env, started, &result);
-    return result;
-}
-
-static napi_value StopHostVulkanProbeNapi(napi_env env, napi_callback_info) {
-    StopHostVulkanProbe();
-    napi_value result;
-    napi_get_boolean(env, true, &result);
-    return result;
-}
-
 
 // -- NAPI: stopClient — 杀掉所有 Wine 进程 --
 static napi_value StopClient(napi_env, napi_callback_info) {
@@ -1246,17 +1123,10 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runWineExe",     nullptr, RunWineExe,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runWineProgram", nullptr, RunWineProgram, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"runGuestProgram", nullptr, RunGuestProgram, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"runHostProgram", nullptr, RunHostProgram, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"runHostReplay", nullptr, RunHostReplay, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"isHostReplayRunning", nullptr, IsHostReplayRunning, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"queryWineProcess", nullptr, QueryWineProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"terminateWineProcess", nullptr, TerminateWineProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"checkWinePrefix",nullptr, CheckWinePrefix,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resetWinePrefix",nullptr, ResetWinePrefix,nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"stageExperimentPayload", nullptr, StageExperimentPayloadNapi, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"runHostVulkanProbe", nullptr, RunHostVulkanProbe, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"stopHostVulkanProbe", nullptr, StopHostVulkanProbeNapi, nullptr, nullptr, nullptr, napi_default, nullptr},
         // surfaceId 驱动的渲染器管理 (XComponentController 回调)
         {"createRenderer",  nullptr, CreateRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resizeRenderer",  nullptr, ResizeRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},

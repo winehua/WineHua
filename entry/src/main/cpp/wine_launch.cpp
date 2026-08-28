@@ -337,7 +337,6 @@ static winehua::SessionEnvPolicy SessionPolicyFromLaunch(const LaunchParams& p, 
     s.d3dBackend = p.d3dBackend;
     s.dxvkBackend = p.dxvkBackend;
     s.compatEnvStr = p.compatEnvStr;
-    s.automationMode = p.automationMode;
     return s;
 }
 
@@ -345,8 +344,8 @@ static winehua::SessionEnvPolicy SessionPolicyFromLaunch(const LaunchParams& p, 
 // kind 推导 token 布局, 全部 kind 经 broker 单一通道 spawn, 本文件只声明意图。
 
 static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDegraded) {
-    // 会话上下文: binDir 默认 + prefix (smoke 遥测判定)
-    winehua::Spawner::ConfigureSession(p->homeDir, p->winehuaBin, p->prefixDir);
+    // 会话上下文: binDir 默认
+    winehua::Spawner::ConfigureSession(p->homeDir, p->winehuaBin);
 
     // Prefix registry and user data survive runtime upgrades, while the
     // syswow64 PE files are managed copies. Validate them before wineserver
@@ -371,11 +370,10 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     // -- wineserver via broker --
     // broker → wine_child Main → 截获 argv[0]=="wineserver" 转入本体
     // (wineserver 是纯 Unix ELF, 不能走 wine loader 的 PE 解析)。
-    // smoke prefix 的退出遥测由 Spawner 自动附加。
     {
         winehua::SpawnRequest wsReq{winehua::SpawnKind::Wineserver};
 #ifdef __aarch64__
-        winehua::AppendCompatEnvLines(wsReq.env, p->compatEnvStr, p->automationMode);
+        winehua::AppendCompatEnvLines(wsReq.env, p->compatEnvStr);
 #endif
         const pid_t wsChildPid = winehua::Spawner::Spawn(wsReq);
         if (wsChildPid <= 0) {
@@ -446,27 +444,17 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // 首启 wineboot 期间抑制窗口创建事件 (PC 窗口模式): 初始化等待窗
         // 不创建独立 OHOS 窗口 — 与 Pad 桌面模式对齐。wineboot 完成后恢复。
         ws->SetToplevelEventSuppressed(true);
-        // The bootstrap worker creates shell-owned helper windows before the
-        // requested test starts. Give only those helpers desktop-root routing.
-        const bool bootstrapNeedsDesktopSurfaces =
-            p->automationMode && p->prefixDir == WINE_SMOKE_PREFIX;
         // 注意: wineboot --init 只需要初始化 prefix, 不传完整环境变量以节省 entryParams 长度
         // (argv/兼容档位由 Spawner 按 kind 注入; aarch64 归一为不带 wine 加载器
         // token — Main 的 box64 路径自注 binDir/wine ELF, 与旧 reseed 路径的
         // "wine|wineboot" 布局等价)
         winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
-        wbReq.desktopSurface = ws->IsDesktopMode() || bootstrapNeedsDesktopSurfaces;
+        wbReq.desktopSurface = ws->IsDesktopMode();
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
-        if (p->automationMode && p->prefixDir == WINE_SMOKE_PREFIX) {
-            // A clean, headless verification prefix has no use for optional
-            // .NET/HTML components. Avoid their interactive download dialogs.
-            wbReq.env.push_back("WINEDLLOVERRIDES=mscoree,mshtml=");
-            wbReq.env.push_back("WINEHUA_BOOTSTRAP_PHASE=clean-automation");
-        }
         // 兼容模式全局档位 (wineboot Main 的 apply overrides 晚于 setup_wine_env)
 #ifdef __aarch64__
-        winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr, p->automationMode);
+        winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr);
 #endif
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
@@ -537,7 +525,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
 #ifdef __aarch64__
-        winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr, p->automationMode);
+        winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr);
 #endif
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
@@ -593,11 +581,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     // -- explorer desktop shell (仅 desktop 模式) --
     PrepareDesktopSessionGraphicsEnv(*p);
 
-    if (p->automationMode)
-    {
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] automation session ready; Explorer intentionally skipped");
-    }
-    else if (WaylandServer::GetInstance()->IsDesktopMode())
+    if (WaylandServer::GetInstance()->IsDesktopMode())
     // -- explorer (Desktop 或 Pad 模式均启动, 走 broker 统一路径) --
     {
         auto* ws = WaylandServer::GetInstance();

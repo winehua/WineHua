@@ -34,11 +34,10 @@ namespace winehua {
 // env 与 NCP entryParams 两条通道同一套行为 (原来源彼此漂移, 静默丢弃语义不一)
 std::vector<std::string> FilterCompatLines(const std::string& compatEnvStr);
 
-// 会话 env / SpawnRequest.env 增量注入 (smoke/automation 跳过: 隔离 prefix
-// 回归必须跑出厂基线)。NCP 路线由 Spawner 经 EnvSpec 序列化为 __env= 段,
-// 子进程 apply 晚于进程内基线, 档位胜出。
+// 会话 env / SpawnRequest.env 增量注入。NCP 路线由 Spawner 经 EnvSpec
+// 序列化为 __env= 段, 子进程 apply 晚于进程内基线, 档位胜出。
 void AppendCompatEnvLines(std::vector<std::string>& env,
-                          const std::string& compatEnvStr, bool automationMode);
+                          const std::string& compatEnvStr);
 #endif // __aarch64__
 
 // -- 桌面会话 DXVK 稳定化 overlay --
@@ -62,7 +61,6 @@ struct SessionEnvPolicy {
     std::string d3dBackend, dxvkBackend;
     // 兼容档位 (仅 aarch64 生效)
     std::string compatEnvStr;
-    bool automationMode = false;
     // explorer 桌面会话链收口: WEAKBARRIER=0 clamp + DXVK_LOG + perf profile
     bool stableDesktopOverlay = false;
     // WINEHUA_DESKTOP=shell: 接入 explorer shell desktop (任务栏可见)

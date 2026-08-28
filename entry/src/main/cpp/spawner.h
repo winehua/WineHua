@@ -8,8 +8,8 @@
  *   - 路由: 全部 kind 统一走 broker SPAWN (第 5 步起; broker 在主进程内
  *     以线程运行, 启动不依赖 wineserver, 无先后环)。broker 服务端补
  *     homeDir 前缀、WINEPREFIX 会话权威、audio bootstrap fd、进程登记。
- *   - token 布局: __winehua_desktop__ / guest|host elf 标记 / x86_64 的
- *     wine 加载器前缀 (aarch64 由 wine_child Main 自注 box64+wine ELF)
+ *   - token 布局: __winehua_desktop__ / x86_64 的 wine 加载器前缀
+ *     (aarch64 由 wine_child Main 自注 box64+wine ELF)
  *   - wineserver 由 wine_child Main 截获 argv[0]=="wineserver" 转入本体
  *     (纯 Unix ELF 不能走 wine loader 的 PE 解析)
  *
@@ -27,13 +27,11 @@ enum class SpawnKind {
     Wineboot,      // broker → Main: argv 固定 "wineboot --init", 极简 env (省 entryParams 长度)
     DesktopShell,  // broker Main: explorer + argv (桌面 shell)
     WineExe,       // broker Main: argv = [exePath, args...]
-    GuestElf,      // broker Main: __winehua_guest_elf__ + argv (guest vulkan smoke)
-    HostElf,       // broker Main: __winehua_host_elf__ + argv (host vulkan probe)
 };
 
 struct SpawnRequest {
     SpawnKind kind;
-    // DesktopShell: explorer 的参数; WineExe/GuestElf/HostElf: [exePath, args...];
+    // DesktopShell: explorer 的参数; WineExe: [exePath, args...];
     // Wineserver/Wineboot: 忽略 (argv 由 kind 固定)
     std::vector<std::string> argv;
     // K=V 增量行 (BuildSessionEnv 成品或极简集); 经 SpawnViaBroker 序列化
@@ -48,9 +46,9 @@ struct SpawnRequest {
 
 class Spawner {
 public:
-    // 会话上下文: binDir 默认与 prefix (smoke 遥测判定) 由此取;
+    // 会话上下文: binDir 默认由此取;
     // homeDir/WINEPREFIX 权威在 broker 服务端 (gBroker*), homeDir 仅备查。
-    static void ConfigureSession(std::string homeDir, std::string binDir, std::string prefixDir);
+    static void ConfigureSession(std::string homeDir, std::string binDir);
 
     // 返回子进程 pid, <= 0 表示失败 (失败原因在内部已记日志)
     static pid_t Spawn(const SpawnRequest& req);

@@ -21,7 +21,6 @@ struct LaunchParams {
     // 空 = 出厂基线不注入。native 零表: 只放行 BOX64_DYNAREC_* 行,
     // 会话 env 经 UpsertEnvLine 压过基线, wineboot/wineserver 追加 __env= 段
     std::string compatEnvStr;
-    bool automationMode = false;
 };
 
 void LaunchThreadFunc(LaunchParams* p);

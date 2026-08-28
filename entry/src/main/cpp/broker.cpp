@@ -44,29 +44,23 @@ static std::atomic<bool> gBrokerRunning{false};
 // -- 从 entryParams 解析进程 exe 路径 (登记到任务列表用) --
 // broker 加了 homeDir 前缀后 entryParams 形如
 //   "homeDir|binDir|[wine]|argv0|argv1|...|__env=K=V|..."
-// 或 guest/host ELF / desktop 标记路径。跳过 homeDir/binDir (前两个 '/' 段) 与
-// wine/__winehua_* 标记段, 取第一个可执行段的完整形式 (Windows 路径 C:\... /
-// native 绝对路径; AddProcess 自取 basename 作显示名)。早期版本只存 basename,
-// 任务列表拿不到真实路径, 无法按路径匹配应用库图标或按需提取图标。
+// 或 desktop 标记路径。跳过 homeDir/binDir (前两个 '/' 段) 与
+// wine/__winehua_desktop__ 标记段, 取第一个可执行段的完整形式 (Windows 路径
+// C:\... / native 绝对路径; AddProcess 自取 basename 作显示名)。早期版本只存
+// basename, 任务列表拿不到真实路径, 无法按路径匹配应用库图标或按需提取图标。
 // 取不到时回退 "wine"。
 static std::string ParseProcessPath(const char* entryParams) {
     std::string path = "wine";
     const std::string params = entryParams ? entryParams : "";
     size_t pos = 0;
     int slashSegsLeft = 2;  // homeDir + binDir, 均以 '/' 开头
-    bool guestElfNext = false;
     while (pos < params.size()) {
         size_t end = params.find('|', pos);
         std::string seg = params.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
         if (!seg.empty()) {
             if (seg.rfind("__env=", 0) == 0) break;  // env 段结束 argv
-            if (guestElfNext) {  // __winehua_guest_elf__ 后的绝对路径即 exe
-                path = seg;
-                break;
-            }
             if (seg[0] == '/' && slashSegsLeft > 0) { --slashSegsLeft; }
             else if (seg == "wine" || seg == "__winehua_desktop__") { /* 标记段 */ }
-            else if (seg == "__winehua_guest_elf__" || seg == "__winehua_host_elf__") { guestElfNext = true; }
             else {
                 path = seg;
                 break;
@@ -177,8 +171,8 @@ static void HandleRequest(int conn_fd)
 
     // 5) 构造 NativeChildProcess 参数。
     // Wine 服务进程会把创建者的环境重新序列化给 broker，但 NCP 不会继承
-    // LaunchPad 的环境。把会话 prefix 放在最后，使 clean smoke 的
-    // .wine-smoke 覆盖可能残留的默认 .wine 值。
+    // LaunchPad 的环境。把会话 prefix 放在最后 (后写胜出), 覆盖 entryParams
+    // 里可能残留的默认 .wine 值。
     std::string fullParams = gBrokerHomeDir.empty() ? entryParamsRaw
                             : (gBrokerHomeDir + "|" + entryParamsRaw);
     if (!gBrokerPrefixDir.empty())

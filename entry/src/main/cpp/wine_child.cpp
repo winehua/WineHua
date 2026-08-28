@@ -380,28 +380,6 @@ static void log_d3d_environment_summary()
                 rgba8SnormRt ? rgba8SnormRt : "");
 }
 
-static void prepare_host_elf_environment(const char *homeDir)
-{
-    std::vector<std::string> removeKeys;
-    for (char **entry = environ; entry && *entry; ++entry) {
-        const char *separator = strchr(*entry, '=');
-        if (!separator) continue;
-        std::string key(*entry, (size_t)(separator - *entry));
-        if (key.rfind("BOX64_", 0) == 0 || key.rfind("VN_", 0) == 0 ||
-            key == "USE_LIBBOX64" || key == "VK_DRIVER_FILES" ||
-            key == "VK_ICD_FILENAMES" || key == "MESA_LOADER_DRIVER_OVERRIDE" ||
-            key == "LIBGL_DRIVERS_PATH")
-            removeKeys.push_back(std::move(key));
-    }
-    for (const std::string& key : removeKeys) unsetenv(key.c_str());
-
-    setenv("LD_LIBRARY_PATH",
-           "/data/app/bin:/usr/local/lib:/system/lib64/module:/system/lib64", 1);
-    setenv("PATH", "/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin", 1);
-    setenv("TMPDIR", WINE_TMPDIR, 1);
-    if (homeDir && homeDir[0]) setenv("HOME", homeDir, 1);
-}
-
 // wineserver 本体 (文件后部定义); Main 截获 argv[0]=="wineserver" 转入
 static void RunWineserver(char* binDir, int argc2, char** argv2,
                           const std::vector<std::string>& envOverrides,
@@ -440,17 +418,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     if (argc > 0 && argv[0] && argv[0][0])
         prctl(PR_SET_NAME, basename_of_path(argv[0]));
 
-    bool guestElfMode = argc >= 2 && !strcmp(argv[0], "__winehua_guest_elf__");
-    bool hostElfMode = argc >= 2 && !strcmp(argv[0], "__winehua_host_elf__");
-    if (guestElfMode || hostElfMode) {
-        for (int i = 0; i < argc; ++i) argv[i] = argv[i + 1];
-        argc--;
-        if (hostElfMode)
-            OH_LOG_INFO(LOG_APP, "[HostChild] isolated native ELF=%{public}s", argv[0]);
-        else
-            OH_LOG_INFO(LOG_APP, "[GuestChild] isolated x86_64 ELF=%{public}s", argv[0]);
-    }
-
     // 检查 __winehua_desktop__ 标记: 有 → desktop 模式, 需要传 env 给 wine
     {
         for (int i = 0; i < argc; i++) {
@@ -467,7 +434,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     // wineserver 截获 (重构第 5 步): 所有 wineserver 启动经 broker → Main;
     // wine loader 无法把 "wineserver" 解析为 PE (纯 Unix ELF), 必须在此转入
     // wineserver 本体 (与旧 loader 自启 ohos_broker_spawn_wineserver 同路)。
-    if (!guestElfMode && !hostElfMode && argc > 0 && !strcmp(argv[0], "wineserver")) {
+    if (argc > 0 && !strcmp(argv[0], "wineserver")) {
         // broker 会为每个请求挂 audio bootstrap fd; wineserver 用不到, 关掉防泄漏
         for (auto* node = args.fdList.head; node; node = node->next) close(node->fd);
         RunWineserver(binDir, argc, argv, envOverrides, entryParams);
@@ -480,10 +447,8 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // 2. Step A: 设置 Wine 环境变量 baseline (硬编码默认值, 确保非 broker 路径可用)
     const char *winedebug = select_winedebug_profile(argc, argv);
-    if (!hostElfMode) {
-        OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
-        setup_wine_env(binDir, homeDir, winedebug);
-    }
+    OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
+    setup_wine_env(binDir, homeDir, winedebug);
 
     // 3. 从父进程 fdList 读取 fds (按 fdName 区分)
     int wsSockFd = -1;   // wineserver fd (per-process)
@@ -508,7 +473,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     // may not exist after a clean install.
     refresh_wine_session_paths();
 
-    if (!hostElfMode) log_d3d_environment_summary();
+    log_d3d_environment_summary();
 
     // 覆盖 per-process fd 变量 (__env__ 中的是父进程 fd 号, 本进程无效)
     if (wsSockFd >= 0) {
@@ -524,37 +489,6 @@ extern "C" void Main(NativeChildProcess_Args args)
         setenv("WINE_OHOS_AUDIO_BOOTSTRAP_FD", buf, 1);
         setenv("WINE_OHOS_AUDIO_PROTOCOL_VERSION", "1", 1);
         OH_LOG_INFO(LOG_APP, "[WineChild] AUDIO fd=%{public}d (own fd)", audioFd);
-    }
-
-    if (hostElfMode) {
-        prepare_host_elf_environment(homeDir);
-        const char *requestedCwd = getenv("WINEHUA_WORKING_DIRECTORY");
-        if (requestedCwd && requestedCwd[0] && chdir(requestedCwd) != 0) {
-            OH_LOG_ERROR(LOG_APP, "[HostChild] chdir(%{public}s) failed: %{public}s",
-                         requestedCwd, strerror(errno));
-            free(buf);
-            return;
-        }
-        OH_LOG_INFO(LOG_APP,
-                    "[HostChild] loading signed replay module for=%{public}s loader=system-vulkan",
-                    argv[0]);
-        void *module = dlopen("libwinehua_host_heaven_replay.so", RTLD_NOW | RTLD_LOCAL);
-        if (!module) {
-            OH_LOG_ERROR(LOG_APP, "[HostChild] replay module load failed: %{public}s", dlerror());
-            free(buf);
-            return;
-        }
-        auto replayMain = reinterpret_cast<int (*)(int, char **)>(
-            dlsym(module, "winehua_host_replay_main"));
-        if (!replayMain) {
-            OH_LOG_ERROR(LOG_APP, "[HostChild] replay entry lookup failed: %{public}s", dlerror());
-            free(buf);
-            return;
-        }
-        int replayResult = replayMain(argc, argv);
-        OH_LOG_INFO(LOG_APP, "[HostChild] replay module returned rc=%{public}d", replayResult);
-        free(buf);
-        return;
     }
 
     // 确保 WINEPREFIX 目录存在
@@ -576,9 +510,6 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     int errPipe[2];
     pipe(errPipe);
-    const char* automation = getenv("WINEHUA_AUTOMATION");
-    if (automation && !strcmp(automation, "1"))
-        dup2(errPipe[1], STDOUT_FILENO);
     dup2(errPipe[1], STDERR_FILENO);
     close(errPipe[1]);
     mkdir(WINE_LOG_DIR, 0755);
@@ -618,19 +549,12 @@ extern "C" void Main(NativeChildProcess_Args args)
         return;
     }
 
-    // Guest probes use the same isolated NCP/Box64 boundary as Wine but run a
-    // concrete x86_64 OHOS ELF.  Keeping this marker out of argv ensures the
-    // probe observes a normal argv[0] and cannot accidentally enter Wine.
-    std::string winePath = guestElfMode ? std::string(argv[0]) : std::string(binDir) + "/wine";
-    int box64_argc = guestElfMode ? argc + 1 : argc + 2;
+    std::string winePath = std::string(binDir) + "/wine";
+    int box64_argc = argc + 2;
     const char** box64_argv = new const char*[box64_argc + 1];
     box64_argv[0] = "box64";
     box64_argv[1] = winePath.c_str();
-    if (guestElfMode) {
-        for (int i = 1; i < argc; i++) box64_argv[i + 1] = argv[i];
-    } else {
-        for (int i = 0; i < argc; i++) box64_argv[i + 2] = argv[i];
-    }
+    for (int i = 0; i < argc; i++) box64_argv[i + 2] = argv[i];
     box64_argv[box64_argc] = nullptr;
 
     OH_LOG_INFO(LOG_APP, "[WineChild] calling box64_hmos_main argc=%{public}d wine=%{public}s",
@@ -645,12 +569,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     // 进程即将退出, OS 会回收一切, 无需手动卸载。
     free(buf);
 #else
-    if (guestElfMode) {
-        execve(argv[0], argv, environ);
-        OH_LOG_ERROR(LOG_APP, "[GuestChild] execve failed: %{public}s", strerror(errno));
-        free(buf);
-        return;
-    }
     // x86_64 Pad: dlopen ntdll.so → __wine_main (原生系统 linker 加载)
     OH_LOG_INFO(LOG_APP, "[WineChild] dlopen ntdll.so...");
     void* ntdll = dlopen("ntdll.so", RTLD_NOW);

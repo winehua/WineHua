@@ -13,10 +13,8 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <dlfcn.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <climits>
@@ -25,7 +23,6 @@
 #include <cstring>
 #include <signal.h>
 #include <string>
-#include <thread>
 #include <vector>
 
 #undef LOG_TAG
@@ -37,25 +34,6 @@
 extern napi_threadsafe_function gStateTsfn;
 
 namespace {
-
-struct GuestProgramOptions {
-    std::string executablePath;
-    std::vector<std::string> argv;
-    std::vector<std::string> environment;
-    std::string workingDirectory;
-    bool automationMode = true;
-};
-
-struct HostProgramOptions {
-    std::string executablePath;
-    std::vector<std::string> argv;
-    std::vector<std::string> environment;
-    std::string workingDirectory;
-    bool automationMode = true;
-};
-
-using HostReplayMain = int (*)(int, char**);
-static std::atomic<bool> gHostReplayRunning{false};
 
 static bool HasUnsafeProtocolChar(const std::string& value)
 {
@@ -89,17 +67,6 @@ static std::string GetString(napi_env env, napi_value object, const char* name,
         return fallback;
     std::string result = ReadString(env, value);
     return result.empty() ? fallback : result;
-}
-
-static bool GetBool(napi_env env, napi_value object, const char* name, bool fallback)
-{
-    napi_value value;
-    napi_valuetype type;
-    bool result = fallback;
-    if (GetNamed(env, object, name, &value) && napi_typeof(env, value, &type) == napi_ok &&
-        type == napi_boolean)
-        napi_get_value_bool(env, value, &result);
-    return result;
 }
 
 static void ReadStringArray(napi_env env, napi_value object, const char* name,
@@ -156,18 +123,7 @@ static void ReadEnvironment(napi_env env, napi_value object, std::vector<std::st
     }
 }
 
-static std::string EnvKey(const std::string& line)
-{
-    size_t separator = line.find('=');
-    return separator == std::string::npos ? line : line.substr(0, separator);
-}
-
 // UpsertEnvLine 在 wine_env.h 中声明，统一读写 env vector
-
-static std::string PrefixForMode(const std::string& mode)
-{
-    return mode == "clean" ? WINE_SMOKE_PREFIX : WINE_PREFIX;
-}
 
 static std::string NativePathToWindows(const std::string& path, const std::string& prefix)
 {
@@ -228,9 +184,9 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     for (const std::string& arg : options.argv) if (HasUnsafeProtocolChar(arg)) return -1;
 
     const std::string binDir = WINE_RUNTIME_BIN;
-    const std::string prefixDir = PrefixForMode(options.prefixMode);
-    const std::string homeDir = options.automationMode ? WINE_AUTOMATION_HOME
-        : (gBrokerHomeDir.empty() ? "/storage/Users/currentUser/Download" : gBrokerHomeDir);
+    const std::string prefixDir = WINE_PREFIX;
+    const std::string homeDir = gBrokerHomeDir.empty() ?
+        "/storage/Users/currentUser/Download" : gBrokerHomeDir;
     const std::string sockDir = prefixDir;
     const std::string sockName = "wine-wayland";
     const std::string libPath = binDir + ":" + binDir + "/x86_64-unix";
@@ -259,8 +215,6 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     policy.extraEnv = options.environment;
     policy.extraEnv.push_back("WINEHUA_D3D_BACKEND=" + options.d3dBackend);
     policy.extraEnv.push_back("WINEHUA_PRESENT_BACKEND=" + options.presentBackend);
-    policy.extraEnv.push_back(std::string("WINEHUA_AUTOMATION=") +
-                              (options.automationMode ? "1" : "0"));
     /* desktop 模式: 将进程接入 explorer 创建的 shell desktop, 使其窗口
      * 出现在任务栏 (与 RunWineExe 路径对称, 重构 runWineProgram 时遗漏). */
     /* DXVK is a managed WineHua runtime overlay, never a game-provided DLL. */
@@ -289,9 +243,9 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     if (pid <= 0) return -1;
     AddProcess(pid, options.windowsExePath, -1);
     OH_LOG_INFO(LOG_APP,
-                "[WineProgram] pid=%{public}d exe=%{public}s prefix=%{public}s d3d=%{public}s present=%{public}s automation=%{public}s",
+                "[WineProgram] pid=%{public}d exe=%{public}s prefix=%{public}s d3d=%{public}s present=%{public}s",
                 pid, exePath.c_str(), prefixDir.c_str(), options.d3dBackend.c_str(),
-                options.presentBackend.c_str(), options.automationMode ? "true" : "false");
+                options.presentBackend.c_str());
     if (gStateTsfn)
     {
         char state[64];
@@ -303,143 +257,10 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     return pid;
 }
 
-static pid_t SpawnGuestProgram(const GuestProgramOptions& options)
-{
-    const std::string guestRoot = std::string(WINE_RUNTIME_BIN) + "/guest_vulkan";
-    if (options.executablePath.rfind(guestRoot + "/", 0) != 0 ||
-        HasUnsafeProtocolChar(options.executablePath))
-        return -1;
-    for (const std::string& arg : options.argv) if (HasUnsafeProtocolChar(arg)) return -1;
-
-    const std::string binDir = WINE_RUNTIME_BIN;
-    const std::string guestLib = guestRoot + "/lib";
-    const std::string gfxLib = binDir + "/guest_gfx/lib";
-    const std::string unixLib = binDir + "/x86_64-unix";
-    const std::string libraryPath = guestLib + ":" + gfxLib + ":" + binDir + ":" + unixLib;
-    const std::string icd = guestRoot + "/share/vulkan/icd.d/venus_icd.x86_64.json";
-
-    std::vector<std::string> envStrs = BuildWineEnv(
-        WINE_PREFIX, "wine-wayland", libraryPath, binDir, -1,
-        WINE_AUTOMATION_HOME, WINE_PREFIX);
-#ifdef __aarch64__
-    // The NCP and box64.so are native AArch64.  Guest x86_64 directories must
-    // only enter Box64's emulated lookup path; putting them in LD_LIBRARY_PATH
-    // can make the native dynamic linker inspect wrong-architecture objects.
-    envStrs.erase(std::remove_if(envStrs.begin(), envStrs.end(), [](const std::string& line) {
-        return EnvKey(line) == "LD_LIBRARY_PATH";
-    }), envStrs.end());
-#else
-    UpsertEnvLine(envStrs,"LD_LIBRARY_PATH=" + libraryPath);
-#endif
-#ifdef __aarch64__
-    UpsertEnvLine(envStrs,"BOX64_LD_LIBRARY_PATH=" + libraryPath);
-    UpsertEnvLine(envStrs,
-        "BOX64_EMULATED_LIBS=libvulkan.so:libvulkan.so.1:"
-        "libEGL.so:libEGL.so.1:libGLESv2.so:libGLESv2.so.2:"
-        "libGLESv1_CM.so:libGLESv1_CM.so.1:libGL.so:libGL.so.1:"
-        "libwayland-client.so:libwayland-client.so.0:libwayland-server.so:"
-        "libwayland-server.so.0:libwayland-egl.so:libwayland-egl.so.1:"
-        "libdrm.so:libdrm.so.2:libffi.so:libffi.so.8");
-    // Library loading has its own smoke assertions.  Function-call tracing is
-    // prohibitively noisy when a disconnected vtest socket is polled and can
-    // otherwise grow the shared stderr log by gigabytes before the watchdog.
-    UpsertEnvLine(envStrs,"BOX64_LOG=1");
-    UpsertEnvLine(envStrs,"BOX64_NOBANNER=1");
-#endif
-    UpsertEnvLine(envStrs,"VK_DRIVER_FILES=" + icd);
-    UpsertEnvLine(envStrs,"VK_ICD_FILENAMES=" + icd);
-    UpsertEnvLine(envStrs,"VN_DEBUG=vtest,result");
-    // OHOS Host Vulkan memory uses an explicit SHM shadow when the driver
-    // cannot export dma-buf/opaque-fd memory. GPU fence and query feedback
-    // writes only the Host mapping, so query the real Host objects instead
-    // of polling stale Guest feedback slots.
-    UpsertEnvLine(envStrs,"VN_PERF=no_fence_feedback,no_query_feedback");
-    UpsertEnvLine(envStrs,"WINEHUA_HOST_ARCH=" + std::string(
-#ifdef __aarch64__
-        "aarch64"
-#else
-        "x86_64"
-#endif
-    ));
-    UpsertEnvLine(envStrs,std::string("WINEHUA_AUTOMATION=") +
-              (options.automationMode ? "1" : "0"));
-    if (!options.workingDirectory.empty())
-        UpsertEnvLine(envStrs,"WINEHUA_WORKING_DIRECTORY=" + options.workingDirectory);
-    for (const std::string& line : options.environment) UpsertEnvLine(envStrs,line);
-
-    winehua::SpawnRequest req{winehua::SpawnKind::GuestElf};
-    req.argv.push_back(options.executablePath);
-    req.argv.insert(req.argv.end(), options.argv.begin(), options.argv.end());
-    req.env = std::move(envStrs);
-
-    const pid_t pid = winehua::Spawner::Spawn(req);
-    if (pid <= 0) return -1;
-    AddProcess(pid, options.executablePath, -1);
-    OH_LOG_INFO(LOG_APP, "[GuestProgram] pid=%{public}d elf=%{public}s icd=%{public}s",
-                pid, options.executablePath.c_str(), icd.c_str());
-    return pid;
-}
-
-static bool ResolveManagedHostExecutable(const std::string& requested,
-                                         std::string* resolved)
-{
-    const std::string managedRoot = std::string(WINE_RUNTIME_BIN) + "/host_vulkan";
-    char rootPath[PATH_MAX] = {};
-    char executablePath[PATH_MAX] = {};
-    struct stat info = {};
-
-    if (!realpath(managedRoot.c_str(), rootPath) ||
-        !realpath(requested.c_str(), executablePath))
-        return false;
-    const std::string rootPrefix = std::string(rootPath) + "/";
-    if (std::string(executablePath).rfind(rootPrefix, 0) != 0 ||
-        stat(executablePath, &info) != 0 || !S_ISREG(info.st_mode))
-        return false;
-    *resolved = executablePath;
-    return true;
-}
-
-static pid_t SpawnHostProgram(const HostProgramOptions& options)
-{
-    std::string executablePath;
-    if (options.executablePath.empty() || HasUnsafeProtocolChar(options.executablePath) ||
-        !ResolveManagedHostExecutable(options.executablePath, &executablePath))
-        return -1;
-    for (const std::string& arg : options.argv)
-        if (HasUnsafeProtocolChar(arg)) return -1;
-
-    std::vector<std::string> envStrs = options.environment;
-    UpsertEnvLine(envStrs,"HOME=" + std::string(WINE_AUTOMATION_HOME));
-    UpsertEnvLine(envStrs,"TMPDIR=" + std::string(WINE_TMPDIR));
-    UpsertEnvLine(envStrs,"WINEHUA_HOST_ARCH=" + std::string(
-#ifdef __aarch64__
-        "aarch64"
-#else
-        "x86_64"
-#endif
-    ));
-    UpsertEnvLine(envStrs,std::string("WINEHUA_AUTOMATION=") +
-              (options.automationMode ? "1" : "0"));
-    if (!options.workingDirectory.empty())
-        UpsertEnvLine(envStrs,"WINEHUA_WORKING_DIRECTORY=" + options.workingDirectory);
-
-    winehua::SpawnRequest req{winehua::SpawnKind::HostElf};
-    req.argv.push_back(executablePath);
-    req.argv.insert(req.argv.end(), options.argv.begin(), options.argv.end());
-    req.env = std::move(envStrs);
-
-    const pid_t pid = winehua::Spawner::Spawn(req);
-    if (pid <= 0) return -1;
-    AddProcess(pid, executablePath, -1);
-    OH_LOG_INFO(LOG_APP, "[HostProgram] pid=%{public}d elf=%{public}s",
-                pid, executablePath.c_str());
-    return pid;
-}
-
 } // namespace
 
 // 经 broker Unix socket 发送 SPAWN 请求, 返回子进程 pid, <= 0 表示失败。
-// 调用方收口在 spawner.cpp (SpawnKind::DesktopShell/WineExe/GuestElf/HostElf);
+// 调用方收口在 spawner.cpp (SpawnKind::DesktopShell/WineExe 等);
 // 保留全局函数只因 broker 协议实现不应复制第二份。
 pid_t SpawnViaBroker(const std::string& entryParams,
                      const std::vector<std::string>& environment)
@@ -468,7 +289,7 @@ pid_t SpawnViaBroker(const std::string& entryParams,
      * |__env=KEY=VALUE segments embedded in entryParams.  The old ENV blob
      * trailer was removed with the broker-global session environment; leaving
      * it here makes children silently inherit only Wine's baseline and causes
-     * DXVK/Venus smoke to resolve the builtin d3d11.dll. */
+     * DXVK/Venus 程序错误地解析到内置 d3d11.dll。 */
     const std::string requestParams = entryParams + SerializeEnvToEntryParams(environment);
     static constexpr char header[] = "SPAWN\n";
     std::string requestTail = requestParams + "\n";
@@ -492,8 +313,7 @@ pid_t SpawnViaBroker(const std::string& entryParams,
     return response[0];
 }
 
-// 公开入口 (wine_launch.cpp 自动拉起 explorer 复用): 转发到匿名
-// namespace 内的实现, 后者依赖 PrefixForMode/SpawnViaBroker 等内部函数。
+
 int SpawnWineProgram(const ProgramOptions& options)
 {
     return SpawnWineProgramImpl(options);
@@ -513,7 +333,6 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     ProgramOptions options;
     options.windowsExePath = GetString(env, args[0], "windowsExePath");
     options.workingDirectory = GetString(env, args[0], "workingDirectory");
-    options.prefixMode = GetString(env, args[0], "prefixMode", "reuse");
     options.d3dBackend = GetString(env, args[0], "d3dBackend", "vkd3d_limited_500k");
     const std::string impliedDxvkBackend = options.d3dBackend == "dxvk_modern_2_6"
         ? "dxvk_modern_2_6" : "dxvk_legacy";
@@ -522,7 +341,6 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
         options.dxvkBackend != "dxvk_modern_2_6")
         options.dxvkBackend = impliedDxvkBackend;
     options.presentBackend = GetString(env, args[0], "presentBackend", "virgl_compositor");
-    options.automationMode = GetBool(env, args[0], "automationMode", false);
     ReadStringArray(env, args[0], "argv", &options.argv);
     ReadEnvironment(env, args[0], &options.environment);
     OH_LOG_INFO(LOG_APP,
@@ -534,117 +352,6 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     return pid > 0 && QueryProcessSnapshot(pid, &entry)
         ? MakeProcessObject(env, &entry, true)
         : MakeProcessObject(env, nullptr, false);
-}
-
-napi_value RunGuestProgram(napi_env env, napi_callback_info info)
-{
-    size_t argc = 1;
-    napi_value args[1] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return MakeProcessObject(env, nullptr, false);
-
-    napi_valuetype type;
-    if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_object)
-        return MakeProcessObject(env, nullptr, false);
-
-    GuestProgramOptions options;
-    options.executablePath = GetString(env, args[0], "executablePath");
-    options.workingDirectory = GetString(env, args[0], "workingDirectory");
-    options.automationMode = GetBool(env, args[0], "automationMode", true);
-    ReadStringArray(env, args[0], "argv", &options.argv);
-    ReadEnvironment(env, args[0], &options.environment);
-
-    const pid_t pid = SpawnGuestProgram(options);
-    WineProcessEntry entry;
-    return pid > 0 && QueryProcessSnapshot(pid, &entry)
-        ? MakeProcessObject(env, &entry, true)
-        : MakeProcessObject(env, nullptr, false);
-}
-
-napi_value RunHostProgram(napi_env env, napi_callback_info info)
-{
-    size_t argc = 1;
-    napi_value args[1] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return MakeProcessObject(env, nullptr, false);
-
-    napi_valuetype type;
-    if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_object)
-        return MakeProcessObject(env, nullptr, false);
-
-    HostProgramOptions options;
-    options.executablePath = GetString(env, args[0], "executablePath");
-    options.workingDirectory = GetString(env, args[0], "workingDirectory");
-    options.automationMode = GetBool(env, args[0], "automationMode", true);
-    ReadStringArray(env, args[0], "argv", &options.argv);
-    ReadEnvironment(env, args[0], &options.environment);
-
-    const pid_t pid = SpawnHostProgram(options);
-    WineProcessEntry entry;
-    return pid > 0 && QueryProcessSnapshot(pid, &entry)
-        ? MakeProcessObject(env, &entry, true)
-        : MakeProcessObject(env, nullptr, false);
-}
-
-napi_value RunHostReplay(napi_env env, napi_callback_info info)
-{
-    size_t argc = 1;
-    napi_value args[1] = {};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    bool started = false;
-    napi_valuetype type;
-    if (argc >= 1 && napi_typeof(env, args[0], &type) == napi_ok && type == napi_object)
-    {
-        HostProgramOptions options;
-        options.executablePath = GetString(env, args[0], "executablePath");
-        ReadStringArray(env, args[0], "argv", &options.argv);
-        std::string managedPath;
-        if (ResolveManagedHostExecutable(options.executablePath, &managedPath) &&
-            !gHostReplayRunning.exchange(true, std::memory_order_acq_rel))
-        {
-            void *module = dlopen("libwinehua_host_heaven_replay.so", RTLD_NOW | RTLD_LOCAL);
-            HostReplayMain replayMain = module ? reinterpret_cast<HostReplayMain>(
-                dlsym(module, "winehua_host_replay_main")) : nullptr;
-            if (!replayMain)
-            {
-                const char *loadError = dlerror();
-                OH_LOG_ERROR(LOG_APP, "[HostReplay] signed module unavailable: %{public}s",
-                             loadError ? loadError : "unknown");
-                gHostReplayRunning.store(false, std::memory_order_release);
-            }
-            else
-            {
-                std::thread([managedPath = std::move(managedPath),
-                             replayArgs = std::move(options.argv), replayMain]() mutable {
-                    std::vector<char*> argv;
-                    argv.reserve(replayArgs.size() + 2);
-                    argv.push_back(const_cast<char*>(managedPath.c_str()));
-                    for (std::string& argument : replayArgs)
-                        argv.push_back(const_cast<char*>(argument.c_str()));
-                    argv.push_back(nullptr);
-                    OH_LOG_INFO(LOG_APP, "[HostReplay] main-process worker started argc=%{public}zu",
-                                argv.size() - 1);
-                    const int result = replayMain(static_cast<int>(argv.size() - 1), argv.data());
-                    OH_LOG_INFO(LOG_APP, "[HostReplay] main-process worker finished rc=%{public}d",
-                                result);
-                    gHostReplayRunning.store(false, std::memory_order_release);
-                }).detach();
-                started = true;
-            }
-        }
-    }
-
-    napi_value result;
-    napi_get_boolean(env, started, &result);
-    return result;
-}
-
-napi_value IsHostReplayRunning(napi_env env, napi_callback_info)
-{
-    napi_value result;
-    napi_get_boolean(env, gHostReplayRunning.load(std::memory_order_acquire), &result);
-    return result;
 }
 
 napi_value QueryWineProcess(napi_env env, napi_callback_info info)

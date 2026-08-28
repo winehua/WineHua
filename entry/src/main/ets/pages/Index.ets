@@ -4,34 +4,15 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
 import { SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
-import { WineEnvService, pathExists, readTextIfExists, ensureDirectory } from '../service/WineEnvService';
+import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
-import { syncManagedSmoke } from '../service/SmokeRunner';
 
 const DOMAIN = 0x0000;
 
 // 文件浏览器以 C: 盘为根 (与 WineEnvService 的 DRIVE_C 同值)
 const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
-
-interface Vkd3dSmokeJson {
-  status?: string;
-  stage?: string;
-  frames?: number;
-  target_frames?: number;
-  fps?: number;
-}
-
-interface WineProcessHandle {
-  found: boolean;
-  pid: number;
-  status: string;
-  startTimestamp: number;
-  endTimestamp: number;
-  exitCode: number | null;
-  exitCodeSource: string;
-}
 
 @Entry
 @Component
@@ -40,9 +21,6 @@ struct Index {
   @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = 'vkd3d_limited_500k';
   @StorageLink('winehua.dxvk.backend') dxvkBackendText: string = 'dxvk_legacy';
   @StorageLink('winehua.dxvk.preference') dxvkPreferenceText: string = 'auto';
-  @StorageLink('winehua.game.d3d_env_keys') d3dEnvKeys: string[] = [];
-  @StorageLink('winehua.game.d3d_env_values') d3dEnvValues: string[] = [];
-  @StorageLink('winehua.perf.profile') perfProfileText: string = 'baseline';
   private env = WineEnvService.getInstance();
   // -- 页面镜像 (WineEnvService notify 驱动) --
   @State state: string = 'idle';
@@ -73,10 +51,6 @@ struct Index {
   private wm: WineWindowManager = WineWindowManager.getInstance();
   private d3dBackend: string = 'vkd3d_limited_500k';
   private dxvkBackend: string = 'dxvk_legacy';
-  @State vkd3dSmokePhase: string = 'idle';
-  @State vkd3dSmokeStatus: string = '尚未运行';
-  @State vkd3dSmokeDetail: string = '在当前 Wine 会话验证 D3D12 能力查询、回读、Fence 与 1000 帧动态渲染。';
-  private manualVkd3dSmokePid: number = -1;
   // 升级提示日志只打一次 (master 版无弹卡 UI, 检测到不一致仅留痕 +
   // 快速操作按钮转为"应用更新"语义, 见 quickStart)
   private upgradeLogged: boolean = false;
@@ -226,152 +200,52 @@ struct Index {
       this.desktopActive = wm.desktopActive;
       this.desktopWindowActive = wm.isDesktopWindowActive();
     });
-    // 引擎初始化 (幂等): automation/game 模式自动 startSession; prefix 就绪自动
-    // 拉起 (含升级检测拦截); 首启无 prefix 自动 startSession (与 master 一致)
+    // 引擎初始化 (幂等): prefix 就绪自动拉起 (含升级检测拦截);
+    // 首启无 prefix 自动 startSession (与 master 一致)
     env.init(getContext(this));
     mirror();
   }
 
+  // 正常启动 exe 的 per-process env (经 runWineProgram 的 environment 通道下发,
+  // native 侧 UpsertEnvLine 最后写入者胜出)。只含产品语义项 — 调查期 perf
+  // profile 白名单与 Want 覆盖合并已随 smoke 设施拆除; 默认 profile 与 native
+  // AppendStableDesktopDxvkEnv 无显式 profile 时的缺省选择一致。
   private d3dLaunchEnvironment(): Record<string, string> {
+    // wined3d / vkd3d 混合路由: overlay env 由 native AppendD3dBackendEnv 注入,
+    // 此处无需补充 (vkd3d 的 DXVK 诊断键见 WineEnvService 同款注释)
     if (this.d3dBackend.indexOf('dxvk_') !== 0) {
-      const overrides: Record<string, string> = {};
-      const overrideCount = Math.min(this.d3dEnvKeys.length, this.d3dEnvValues.length);
-      for (let index = 0; index < overrideCount; ++index) {
-        overrides[this.d3dEnvKeys[index]] = this.d3dEnvValues[index];
-      }
-      return overrides;
+      return {};
     }
     if (this.d3dBackend === 'dxvk_modern_2_6') {
-      const modernEnv: Record<string, string> = {
+      return {
         'DXVK_LOG_LEVEL': 'warn',
-        'DXVK_LOG_PATH': 'C:\\smoke\\results\\desktop-dxvk',
+        'DXVK_LOG_PATH': 'C:\\windows\\temp',
         'WINEDEBUG': '-all',
         'BOX64_DYNAREC_WEAKBARRIER': '0',
-        'WINEHUA_PERF_PROFILE': this.perfProfileText,
+        'WINEHUA_PERF_PROFILE': 'shadow-precise-dirty-ring-inline-upload-coverage-sort',
         'VN_WINEHUA_STRONG_RING_BARRIER': '1',
         'DXVK_WINEHUA_TRACE_SAMPLED': '0',
         'DXVK_WINEHUA_TRACE_FLOW': '0',
         'DXVK_WINEHUA_TRACE_API': '0'
       };
-      const modernOverrideCount = Math.min(this.d3dEnvKeys.length, this.d3dEnvValues.length);
-      for (let index = 0; index < modernOverrideCount; ++index) {
-        modernEnv[this.d3dEnvKeys[index]] = this.d3dEnvValues[index];
-      }
-      return modernEnv;
     }
-    const environment: Record<string, string> = {
+    return {
       'DXVK_LOG_LEVEL': 'warn',
-      'DXVK_LOG_PATH': 'C:\\smoke\\results\\desktop-dxvk',
+      'DXVK_LOG_PATH': 'C:\\windows\\temp',
       'WINEDEBUG': '-all',
       /* Venus uses a shared-memory command ring between the x86_64 guest and
        * the ARM64 renderer.  Box64's aggressive weak-barrier mode can violate
        * the x86 ordering expected by the ring and eventually corrupt a random
        * Vulkan command. Keep this scoped to DXVK/Venus processes. */
       'BOX64_DYNAREC_WEAKBARRIER': '0',
-      'WINEHUA_PERF_PROFILE': this.perfProfileText
+      'WINEHUA_PERF_PROFILE': 'shadow-precise-dirty-ring-inline-upload-coverage-sort',
+      'DXVK_WINEHUA_PRECISE_SHADOW': '1',
+      'DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED': '1',
+      'VN_WINEHUA_REMOTE_MEMORY_SYNC': '1',
+      'VKR_WINEHUA_SHADOW_FROM_HOST': 'precise',
+      'VKR_WINEHUA_SHADOW_TRACE': '0',
+      'VN_WINEHUA_STRONG_RING_BARRIER': '1'
     };
-    if (this.perfProfileText === 'shadow-precise-strong-ring-trace')
-      environment['VN_WINEHUA_PRESENT_TRACE'] = '1';
-    if (this.perfProfileText === 'direct-fence-wait')
-      environment['VN_WINEHUA_DIRECT_FENCE_WAIT'] = '1';
-    else if (this.perfProfileText === 'no-remote-sync')
-      environment['VN_WINEHUA_REMOTE_MEMORY_SYNC'] = '0';
-    else if (this.perfProfileText === 'no-dynamic-flush')
-      environment['DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED'] = '0';
-    else if (this.perfProfileText === 'fence-feedback')
-      environment['VN_PERF'] = '';
-    else if (this.perfProfileText === 'shadow-none') {
-      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'none';
-      environment['VKR_WINEHUA_SHADOW_TRACE'] = '0';
-    } else if (this.perfProfileText === 'shadow-trace') {
-      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'full';
-      environment['VKR_WINEHUA_SHADOW_TRACE'] = '1';
-      environment['DXVK_WINEHUA_TRACE_SAMPLED'] = '1';
-      environment['DXVK_WINEHUA_TRACE_FLOW'] = '1';
-    } else if (this.perfProfileText === 'shadow-to-host-explicit') {
-      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'to-host-explicit';
-      environment['VKR_WINEHUA_SHADOW_TRACE'] = '0';
-    } else if (this.perfProfileText === 'shadow-precise' ||
-      this.perfProfileText === 'shadow-precise-single-ring' ||
-      this.perfProfileText === 'shadow-precise-sync-submit' ||
-      this.perfProfileText === 'shadow-precise-strong-ring' ||
-      this.perfProfileText === 'shadow-precise-legacy-host-sync' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-no-upload' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-no-upload-fast' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-coverage-sort' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-coverage-sort-sampled' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-coverage-poll' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-alias-cover' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-serialized' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-descriptor-serialized' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-frame-assoc-trace' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-present-image-trace' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-perf' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-gpu-frame-profile' ||
-      this.perfProfileText === 'shadow-precise-dirty-ring-frame-timeline' ||
-      this.perfProfileText === 'shadow-precise-strong-ring-trace' ||
-      this.perfProfileText === 'shadow-precise-strong-ring-perf' ||
-      this.perfProfileText === 'shadow-precise-strong-ring-async-present' ||
-      this.perfProfileText === 'shadow-precise-strong-ring-fence-poll' ||
-      this.perfProfileText === 'shadow-precise-strong-ring-mailbox' ||
-      this.perfProfileText === 'shadow-precise-direct-fence' ||
-      this.perfProfileText === 'shadow-precise-retain-shmem' ||
-      this.perfProfileText === 'shadow-precise-cpu-upload') {
-      environment['DXVK_WINEHUA_PRECISE_SHADOW'] = '1';
-      environment['DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED'] = '1';
-      environment['VN_WINEHUA_REMOTE_MEMORY_SYNC'] = '1';
-      environment['VKR_WINEHUA_SHADOW_FROM_HOST'] = 'precise';
-      environment['VKR_WINEHUA_SHADOW_TRACE'] =
-        this.perfProfileText === 'shadow-precise-strong-ring-trace' ? '1' : '0';
-      if (this.perfProfileText === 'shadow-precise-single-ring')
-        environment['VN_PERF'] = 'no_fence_feedback,no_query_feedback,no_multi_ring';
-      if (this.perfProfileText === 'shadow-precise-sync-submit')
-        environment['VN_PERF'] =
-          'no_fence_feedback,no_query_feedback,no_async_queue_submit';
-      if (this.perfProfileText === 'shadow-precise-strong-ring' ||
-        this.perfProfileText === 'shadow-precise-legacy-host-sync' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-no-upload' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-no-upload-fast' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-coverage-sort' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-coverage-sort-sampled' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-coverage-poll' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-alias-cover' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-serialized' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-inline-upload-descriptor-serialized' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-frame-assoc-trace' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-present-image-trace' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-perf' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-gpu-frame-profile' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-frame-timeline' ||
-        this.perfProfileText === 'shadow-precise-strong-ring-trace' ||
-        this.perfProfileText === 'shadow-precise-strong-ring-perf' ||
-        this.perfProfileText === 'shadow-precise-strong-ring-async-present' ||
-        this.perfProfileText === 'shadow-precise-strong-ring-fence-poll' ||
-        this.perfProfileText === 'shadow-precise-strong-ring-mailbox')
-        environment['VN_WINEHUA_STRONG_RING_BARRIER'] = '1';
-      if (this.perfProfileText === 'shadow-precise-strong-ring-perf' ||
-        this.perfProfileText === 'shadow-precise-dirty-ring-perf')
-        environment['VN_WINEHUA_PERF_SUMMARY'] = '1';
-      if (this.perfProfileText === 'shadow-precise-direct-fence')
-        environment['VN_WINEHUA_DIRECT_FENCE_WAIT'] = '1';
-      if (this.perfProfileText === 'shadow-precise-dirty-ring-frame-assoc-trace')
-        environment['WINEHUA_DXVK_TRACE_CAMERA'] = '1';
-      if (this.perfProfileText === 'shadow-precise-dirty-ring-present-image-trace')
-        environment['WINEHUA_DXVK_TRACE_PRESENT_IMAGE'] = '1';
-      if (this.perfProfileText === 'shadow-precise-retain-shmem')
-        environment['VN_WINEHUA_DEFER_SHMEM_UNREF'] = '1';
-      if (this.perfProfileText === 'shadow-precise-cpu-upload')
-        environment['VKR_WINEHUA_GPU_UPLOAD'] = '0';
-    }
-    const overrideCount = Math.min(this.d3dEnvKeys.length, this.d3dEnvValues.length);
-    for (let index = 0; index < overrideCount; ++index) {
-      environment[this.d3dEnvKeys[index]] = this.d3dEnvValues[index];
-    }
-    return environment;
   }
 
   private d3dPresentBackend(): string {
@@ -410,162 +284,6 @@ struct Index {
     this.env.setDxvkPreference(selected);
     this.statusText = selected === 'dxvk_modern_2_6' ?
       'D3D11 / DXGI: DXVK 2.6.2' : 'D3D11 / DXGI: DXVK 1.10.3';
-  }
-
-  private startVkd3dSmoke = (): void => {
-    if (this.engineBusy() || this.vkd3dSmokePhase === 'preparing' ||
-      this.vkd3dSmokePhase === 'running') {
-      return;
-    }
-    this.selectD3dBackend('vkd3d_limited_500k');
-    this.vkd3dSmokePhase = 'preparing';
-    this.vkd3dSmokeStatus = '准备中：当前 Wine 会话';
-    this.vkd3dSmokeDetail = '使用当前 prefix 与混合路由 overlay，不切换隔离 .wine-smoke。';
-    this.manualVkd3dSmokePid = -1;
-    this.wm.setManagedToplevelTitleFilter('VKD3D Graphics Smoke');
-    this.runCurrentSessionVkd3dSmoke().catch((error: Object) => {
-      this.vkd3dSmokePhase = 'fail';
-      this.vkd3dSmokeStatus = 'FAIL：结果监控异常';
-      this.vkd3dSmokeDetail = JSON.stringify(error);
-      this.statusText = 'DX12 示例 FAIL：结果监控异常';
-      this.wm.setManagedToplevelTitleFilter('');
-      hilog.error(DOMAIN, 'VKD3D', 'manual result monitor failed error=%{public}s',
-        JSON.stringify(error));
-    });
-  }
-
-  private async runCurrentSessionVkd3dSmoke(): Promise<void> {
-    const ready = await this.env.ensureEngineReady();
-    if (!ready) {
-      this.vkd3dSmokePhase = 'fail';
-      this.vkd3dSmokeStatus = 'FAIL：引擎未就绪';
-      this.vkd3dSmokeDetail = '请先启动 Wine 引擎后再运行 DX12 smoke。';
-      this.statusText = 'DX12 示例启动失败（引擎未就绪）';
-      this.wm.setManagedToplevelTitleFilter('');
-      return;
-    }
-    if (!syncManagedSmoke('reuse')) {
-      this.vkd3dSmokePhase = 'fail';
-      this.vkd3dSmokeStatus = 'FAIL：测试程序同步失败';
-      this.vkd3dSmokeDetail = 'C:\\smoke 未能刷新到当前 prefix。';
-      this.statusText = 'DX12 示例启动失败（测试程序同步失败）';
-      this.wm.setManagedToplevelTitleFilter('');
-      return;
-    }
-    const resultPath = `${DRIVE_C}/smoke/results/vkd3d-manual.json`;
-    const checkpointPath = `${DRIVE_C}/smoke/results/vkd3d-manual.checkpoint.json`;
-    if (!ensureDirectory(`${DRIVE_C}/smoke/results`)) {
-      this.vkd3dSmokePhase = 'fail';
-      this.vkd3dSmokeStatus = 'FAIL：无法创建结果目录';
-      this.vkd3dSmokeDetail = resultPath;
-      this.statusText = 'DX12 示例启动失败（结果目录不可用）';
-      this.wm.setManagedToplevelTitleFilter('');
-      return;
-    }
-    for (const stalePath of [resultPath, checkpointPath]) {
-      try {
-        if (pathExists(stalePath)) fs.unlinkSync(stalePath);
-      } catch (error) {
-        this.vkd3dSmokePhase = 'fail';
-        this.vkd3dSmokeStatus = 'FAIL：无法清理上次测试结果';
-        this.vkd3dSmokeDetail = stalePath;
-        this.statusText = 'DX12 示例启动失败（旧结果清理失败）';
-        this.wm.setManagedToplevelTitleFilter('');
-        hilog.error(DOMAIN, 'VKD3D', 'manual stale result cleanup failed error=%{public}s',
-          JSON.stringify(error));
-        return;
-      }
-    }
-    const smokeEnvironment = this.d3dLaunchEnvironment();
-    smokeEnvironment['WINEHUA_DXVK_TRACE_PRESENT_IMAGE'] = '1';
-    smokeEnvironment['VN_WINEHUA_PRESENT_TRACE'] = '1';
-    this.vkd3dSmokePhase = 'running';
-    this.vkd3dSmokeStatus = '运行中：正在启动 DX12 程序';
-    this.vkd3dSmokeDetail = '等待 D3D12 设备、交换链与首帧检查点。';
-    const result = testNapi.runWineProgram({
-      windowsExePath: 'C:\\smoke\\x64\\winehua_d3d12_smoke.exe',
-      argv: ['--frames', '1000', '--width', '640', '--height', '480', '--sync-interval', '0',
-        '--hold-ms', '30000',
-        '--result', 'C:\\smoke\\results\\vkd3d-manual.json',
-        '--checkpoint', 'C:\\smoke\\results\\vkd3d-manual.checkpoint.json'],
-      environment: smokeEnvironment,
-      workingDirectory: 'C:\\smoke\\x64',
-      prefixMode: 'reuse',
-      d3dBackend: 'vkd3d_limited_500k',
-      dxvkBackend: this.dxvkBackend,
-      presentBackend: 'venus_broker_present',
-      automationMode: false
-    }) as WineProcessHandle;
-    this.manualVkd3dSmokePid = result.pid;
-    if (result.pid <= 0) {
-      this.vkd3dSmokePhase = 'fail';
-      this.vkd3dSmokeStatus = 'FAIL：测试进程未启动';
-      this.vkd3dSmokeDetail = `启动状态：${result.status}`;
-      this.statusText = 'DX12 示例启动失败';
-      this.wm.setManagedToplevelTitleFilter('');
-      return;
-    }
-    this.statusText = 'DX12 示例运行中（1000 帧）';
-    await this.monitorManualVkd3dResult(resultPath, checkpointPath);
-  }
-
-  private async monitorManualVkd3dResult(resultPath: string, checkpointPath: string): Promise<void> {
-    let lastCheckpoint = '';
-    for (let attempt = 0; attempt < 360; ++attempt) {
-      const resultText = readTextIfExists(resultPath);
-      if (resultText.length > 0) {
-        try {
-          const parsed = JSON.parse(resultText) as Vkd3dSmokeJson;
-          const status = parsed.status ?? '';
-          const stage = parsed.stage ?? '';
-          const frames = parsed.frames ?? 0;
-          const target = parsed.target_frames ?? 0;
-          const fps = parsed.fps ?? 0;
-          const passed = status === 'PASS' && stage === 'complete' &&
-            frames === target && target === 1000;
-          this.vkd3dSmokePhase = passed ? 'core-pass' : 'fail';
-          this.vkd3dSmokeStatus = passed ?
-            `核心 PASS：${frames}/${target} 帧｜${fps.toFixed(3)} FPS` :
-            `FAIL：${stage}`;
-          this.vkd3dSmokeDetail = resultText;
-          this.statusText = passed ?
-            `DX12 核心 PASS：物理显示待确认｜${fps.toFixed(3)} FPS` :
-            `DX12 示例 FAIL：${stage}`;
-          this.wm.setManagedToplevelTitleFilter('');
-          return;
-        } catch (error) {
-          hilog.warn(DOMAIN, 'VKD3D', 'manual result parse pending error=%{public}s',
-            JSON.stringify(error));
-        }
-      }
-      const checkpointText = readTextIfExists(checkpointPath);
-      if (checkpointText.length > 0 && checkpointText !== lastCheckpoint) {
-        lastCheckpoint = checkpointText;
-        try {
-          const checkpoint = JSON.parse(checkpointText) as Vkd3dSmokeJson;
-          const frames = checkpoint.frames ?? 0;
-          const target = checkpoint.target_frames ?? 0;
-          const fps = checkpoint.fps ?? 0;
-          const stage = checkpoint.stage ?? '';
-          const liveFps = fps > 0 ? `${fps.toFixed(3)} FPS` : '等待渲染计时';
-          this.vkd3dSmokeStatus = `运行中：${stage}`;
-          this.vkd3dSmokeDetail = `当前阶段 ${stage}｜已显示 ${frames}/${target} 帧｜${liveFps}`;
-          this.statusText = `DX12 示例运行中：${frames}/${target} 帧｜${liveFps}`;
-        } catch (error) {
-          hilog.warn(DOMAIN, 'VKD3D', 'manual checkpoint parse skipped error=%{public}s',
-            JSON.stringify(error));
-        }
-      }
-      await new Promise<void>((resolve: () => void) => {
-        setTimeout(resolve, 500);
-      });
-    }
-    this.vkd3dSmokePhase = 'fail';
-    this.vkd3dSmokeStatus = 'FAIL：测试结果超时';
-    this.vkd3dSmokeDetail = lastCheckpoint.length > 0 ?
-      `180 秒内未完成；最后检查点：${lastCheckpoint}` : '180 秒内未生成检查点或结果。';
-    this.statusText = 'DX12 示例 FAIL：结果超时';
-    this.wm.setManagedToplevelTitleFilter('');
   }
 
   // 桌面模式切换 (仅 PC): 写配置, 重启 Wine 引擎后生效 (explorer 是否启动/
@@ -628,11 +346,9 @@ struct Index {
       argv: [],
       environment: this.d3dLaunchEnvironment(),
       workingDirectory: this.curDir,
-      prefixMode: 'reuse',
       d3dBackend: this.d3dBackend,
       dxvkBackend: this.dxvkBackend,
-      presentBackend: this.d3dPresentBackend(),
-      automationMode: false
+      presentBackend: this.d3dPresentBackend()
     });
   }
 
@@ -779,22 +495,6 @@ struct Index {
           Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackend === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
             .fontSize(11).fontColor('#d9a').maxLines(3)
             .width('100%').margin({ bottom: 6 })
-          Text(this.vkd3dSmokeStatus)
-            .fontSize(13).fontWeight(FontWeight.Bold)
-            .fontColor(this.vkd3dSmokePhase === 'pass' ? '#5f8' :
-              (this.vkd3dSmokePhase === 'core-pass' ? '#fc6' :
-                (this.vkd3dSmokePhase === 'fail' ? '#f77' :
-                  (this.vkd3dSmokePhase === 'running' || this.vkd3dSmokePhase === 'preparing' ? '#fc6' : '#aaa'))))
-            .width('100%').margin({ bottom: 3 })
-          Text(this.vkd3dSmokeDetail)
-            .fontSize(11).fontColor('#bbb').maxLines(6)
-            .width('100%').margin({ bottom: 6 })
-          Button('运行 DX12 准确 Smoke（1000 帧）')
-            .width('100%').height(36).backgroundColor('#764')
-            .enabled(!this.engineBusy() && this.vkd3dSmokePhase !== 'preparing' &&
-              this.vkd3dSmokePhase !== 'running')
-            .onClick(this.startVkd3dSmoke)
-            .margin({ bottom: 8 })
         }
 
         // -- 桌面模式 (仅 PC): 融合模式 = 每个程序独立 OHOS 窗口 (多窗口, 默认);
@@ -864,12 +564,6 @@ struct Index {
               .margin({ bottom: 8 })
           }
         }
-
-        Button('开发测试（Core）')
-          .width('100%').backgroundColor('#246')
-          .enabled(!this.engineBusy())
-          .onClick(() => this.env.startDeveloperSmoke())
-          .margin({ bottom: 8 })
 
         Divider().color('#2a2a2a').width('100%')
 
