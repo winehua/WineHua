@@ -8,29 +8,13 @@
 #include "display_policy.h"
 #include "geometry.h"
 #include "presented_frame.h"
+#include "zc_bridge.h"  // ZC 层几何/状态类型与 ZcBridge (原 ZeroCopyLayerInfo/ZeroCopyOccluderRect)
 
 class ToplevelManager;
 
 // -- 公共类型 (原 WaylandServer 嵌套类型, 外部调用方通过 wayland_server.h 的 using 别名继续使用) --
-
-struct ZeroCopyLayerInfo {
-    uint64_t surfaceKey = 0;
-    uint32_t clientPid = 0;
-    uint32_t surfaceId = 0;
-    uint32_t parentToplevel = 0;
-    int x = 0;
-    int y = 0;
-    int width = 0;
-    int height = 0;
-    uint64_t shmCommitSerial = 0;
-    bool desktopCoordinates = false;
-    bool protocolOnly = false;
-    bool fullscreen = false;  // 所属 toplevel 全屏: GL 层保比例缩放铺满视口 (ZC 游戏)
-};
-
-struct ZeroCopyOccluderRect {
-    int x = 0, y = 0, w = 0, h = 0;
-};
+// ZeroCopyLayerInfo / ZeroCopyOccluderRect 已迁至 zc_bridge.h, 仍为全局作用域,
+// 本头文件 include zc_bridge.h 即可见; wayland_server.h 的 using 别名不变。
 
 // -- 帧合成 + 零拷贝 layer 管理 --
 // 依赖 ToplevelManager (只读), 通过构造时注入的引用访问。
@@ -41,7 +25,7 @@ struct ZeroCopyOccluderRect {
 //   结果, 其它 toplevel 帧只在其上叠加, 永不替代。
 // - zero-copy GL 层与 CPU 合成按帧互斥 (非并存): 走 GL overlay 的帧,
 //   被上层窗口遮挡的区域用桌面纹理重绘恢复层序 (egl_renderer occluder
-//   redraw); GPU→CPU fallback 时 key 移出 zeroCopySurfaceKeys_, 该层
+//   redraw); GPU→CPU fallback 时 key 移出 ZcBridge::activeKeys_ (zc_), 该层
 //   自动回归普通 CPU 合成与置顶命中, 无需特判。
 // - desktop root 不参与可见性判定 (契约在 ToplevelManager::IsToplevelVisibleLocked)。
 // - 层序单一数据源 (阶段 1, 行为等价): 一帧桌面的内容来源统一为
@@ -82,7 +66,7 @@ public:
         bool visible = false;    // 可见性判定结果 (Root 恒 true, 不参与命中)
         // ZC 层状态单一字段: 该层走 GPU 内容 (合成/输入跳过, 内容由
         // egl_renderer GPU 层自绘); false = fallback 到 CPU 内容 (合成/
-        // 命中照常)。由 zeroCopySurfaceKeys_ 派生 — 该集合是 compositor
+        // 命中照常)。由 ZcBridge::IsActive (zc_) 派生 — 该集合是 compositor
         // 侧唯一权威, broker 的 attached 簿记 / ready marker (guest 选路)
         // 只是它的执行投影, 不参与合成判定。
         bool zcActive = false;
@@ -168,13 +152,17 @@ public:
     bool ComputeFullscreenFitLocked(uint32_t toplevelId, int rootW, int rootH,
                                     FitRect& out) const;
 
-    // -- Zero-copy layer 管理 --
+    // -- Zero-copy layer 管理 (任务 3-A: 已抽离到 ZcBridge, 本类经 zc_ 委托) --
     bool GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
                               int fallbackWidth, int fallbackHeight,
-                              ZeroCopyLayerInfo& info);
-    void SetSurfaceZeroCopy(uint64_t surfaceKey, bool enabled);
+                              ZeroCopyLayerInfo& info) {
+        return zc_.GetLayerInfo(surfaceKey, rendererToplevelId, fallbackWidth, fallbackHeight, info);
+    }
+    void SetSurfaceZeroCopy(uint64_t surfaceKey, bool enabled) { zc_.SetEnabled(surfaceKey, enabled); }
     int GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
-                             ZeroCopyOccluderRect* out, int maxOut);
+                             ZeroCopyOccluderRect* out, int maxOut) {
+        return zc_.GetOccluders(surfaceKey, rendererToplevelId, out, maxOut);
+    }
 
     // -- Subsurface layer 位置解析 (InputResolver 调用) --
     void ResolveSubsurfaceLayerPositionLocked(const SubsurfaceLayer& layer,
@@ -203,7 +191,7 @@ public:
     bool ReorderSubsurfaceLayerBelow(wl_resource* child, wl_resource* sibling);
 
     // 移除 zero-copy key (调用方须已持有 mutex)
-    void RemoveZeroCopyKeyLocked(uint64_t surfaceKey);
+    void RemoveZeroCopyKeyLocked(uint64_t surfaceKey) { zc_.RemoveKey(surfaceKey); }
 
     // Increment root frame serial (called from surface_commit when root commits)
     void IncrementDesktopRootFrameSerial() { ++desktopRootFrameSerial_; }
@@ -236,6 +224,11 @@ private:
     friend class FrameComposer;
     friend class DesktopRootFrameComposer;
     friend class WindowFrameComposer;
+    // ZC 层几何供给与 key 簿记 (任务 3-A, 重构第 3 步): ZcBridge 经 friend
+    // 访问本类的层容器 (subsurfaceLayers_) / tmgr / policy / root 引用与
+    // dirty 标记 — ZC key 权威集合 (activeKeys_) 已迁入 ZcBridge, 本类经
+    // zc_ 委托; 锁边界/读写线程域不变 (tmgr 锁内, 与 FramePlanner 一致)。
+    friend class ZcBridge;
 
     ToplevelManager& tmgr_;
     const DisplayPolicy& policy_;
@@ -243,8 +236,11 @@ private:
     const int32_t& outputW_;
     const int32_t& outputH_;
 
+    // ZC 层状态与几何供给 (任务 3-A 抽离): 构造时绑定 *this (friend 访问
+    // 本类层容器/tmgr/policy/root/dirty)。
+    ZcBridge zc_;
+
     std::vector<SubsurfaceLayer> subsurfaceLayers_;
-    std::unordered_set<uint64_t> zeroCopySurfaceKeys_;
     uint64_t desktopCompositionSignature_ = 0;
     uint64_t desktopOutputRootFrameSerial_ = 0;
     bool desktopOutputInitialized_ = false;
