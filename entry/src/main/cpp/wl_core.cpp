@@ -759,8 +759,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     // 新 toplevel 加到 Z-order 顶层 (首次入列的全屏优先级取号在
     // AddToZOrder 内部完成, 见 ToplevelState::fsPriority 注释)
     if (Policy().RootCompositing() && sd->toplevelId != desktopRootToplevelId_) {
-        auto zit = std::find(toplevelMgr_.toplevelZOrder().begin(), toplevelMgr_.toplevelZOrder().end(), sd->toplevelId);
-        if (zit == toplevelMgr_.toplevelZOrder().end()) toplevelMgr_.AddToZOrder(sd->toplevelId);
+        toplevelMgr_.EnsureInZOrder(sd->toplevelId);
     }
     OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
                 sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());

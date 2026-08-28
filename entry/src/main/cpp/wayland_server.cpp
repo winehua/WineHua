@@ -153,8 +153,7 @@ void WaylandServer::DestroyAllToplevels() {
 
 void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
     auto lk = toplevelMgr_.Lock();
-    toplevelMgr_.RemoveFromZOrder(id);
-    toplevelMgr_.AddToZOrder(id);
+    toplevelMgr_.RaiseToplevel(id);
     // 全屏优先级: 仅"用户显式 raise (任务栏/窗口点击经 ArkTS 发起) 且目标
     // 当前已 fullscreen"时重新取号 — 两个全屏窗口互相切换靠它;
     // tl_set_fullscreen 批处理里的 raise 不重新取号 (显示模式切换会批量连带
@@ -168,13 +167,8 @@ void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
             toplevelMgr_.BumpFsPriorityLocked(id);
     }
     // 任务栏始终在顶层 (app_id == "explorer.exe.taskbar");
-    // 全屏窗口例外 — 游戏全屏必须压过任务栏
-    bool raisedFullscreen = false;
-    if (const auto* rst = toplevelMgr_.FindToplevelLocked(id)) raisedFullscreen = rst->IsFullscreen();
-    if (taskbarId_ > 0 && taskbarId_ != id && !raisedFullscreen) {
-        toplevelMgr_.RemoveFromZOrder(taskbarId_);
-        toplevelMgr_.AddToZOrder(taskbarId_);
-    }
+    // 全屏窗口例外 — 游戏全屏必须压过任务栏 (规则实现收口在 ToplevelManager::PinToTop)
+    toplevelMgr_.PinToTop(taskbarId_, id);
     MarkDesktopRootDirtyLocked();
 }
 

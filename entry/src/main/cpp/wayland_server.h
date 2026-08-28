@@ -129,6 +129,11 @@ public:
     int GetToplevelY(uint32_t id) { return toplevelMgr_.GetToplevelY(id); }
     int GetToplevelW(uint32_t id) { return toplevelMgr_.GetToplevelW(id); }
     int GetToplevelH(uint32_t id) { return toplevelMgr_.GetToplevelH(id); }
+    // 几何快照 (一次加锁): 替代"为取一对坐标连续加锁两次"的单字段调用
+    using ToplevelGeometrySnapshot = ToplevelManager::ToplevelGeometrySnapshot;
+    ToplevelGeometrySnapshot GetToplevelGeometrySnapshot(uint32_t id) {
+        return toplevelMgr_.GetToplevelGeometrySnapshot(id);
+    }
     // 状态查询 (minimized/fullscreen 权威字段在 ToplevelState, 见 surface_data.h 状态边界注释)
     bool IsToplevelMinimized(uint32_t id) { return toplevelMgr_.IsToplevelMinimized(id); }
     bool IsToplevelFullscreen(uint32_t id) { return toplevelMgr_.IsToplevelFullscreen(id); }

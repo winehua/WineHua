@@ -192,6 +192,25 @@ public:
     bool IsInZOrder(uint32_t id) const {
         return std::find(toplevelZOrder_.begin(), toplevelZOrder_.end(), id) != toplevelZOrder_.end();
     }
+    // 置顶 (Remove+Add 一体): 已在列则提到栈顶, 不在列则入列栈顶
+    // (首次入列的全屏优先级取号在 AddToZOrder 内部完成)
+    void RaiseToplevel(uint32_t id) {
+        RemoveFromZOrder(id);
+        AddToZOrder(id);
+    }
+    // 不在 z-order 则入列栈顶 (在列则不动; 首次入列取号同 AddToZOrder)
+    void EnsureInZOrder(uint32_t id) {
+        if (!IsInZOrder(id)) AddToZOrder(id);
+    }
+    // 恒置顶 pin (任务栏, app_id == "explorer.exe.taskbar"): raisedId 窗口被
+    // raise 后把 pinId 重新压回栈顶; 全屏窗口例外 — 游戏全屏必须压过任务栏
+    void PinToTop(uint32_t pinId, uint32_t raisedId) {
+        bool raisedFullscreen = false;
+        if (const auto* rst = FindToplevelLocked(raisedId)) raisedFullscreen = rst->IsFullscreen();
+        if (pinId > 0 && pinId != raisedId && !raisedFullscreen) {
+            RaiseToplevel(pinId);
+        }
+    }
 
     // -- 全屏优先级取号 (调用方须已持有 mutex; 规则与局限见 ToplevelState::fsPriority) --
     // 首次入 z-order 的取号在 AddToZOrder 内部完成; 此处仅"用户显式 raise
@@ -278,6 +297,15 @@ public:
     int GetToplevelW(uint32_t id);
     int GetToplevelH(uint32_t id);
     uint32_t GetToplevelShmFormat(uint32_t id);
+
+    // 几何快照: 一次加锁取全部字段 — 替代"为取一对坐标连续加锁两次"的
+    // 单字段调用 (同一次读取内字段间一致)。未建档时 x/y/w/h=0, shmFormat=1
+    // (与各单字段 getter 的 miss 默认值相同)。单字段 getter 保留给其它调用点。
+    struct ToplevelGeometrySnapshot {
+        int x = 0, y = 0, w = 0, h = 0;
+        uint32_t shmFormat = 1;
+    };
+    ToplevelGeometrySnapshot GetToplevelGeometrySnapshot(uint32_t id);
 
 private:
     std::mutex toplevelMutex_;

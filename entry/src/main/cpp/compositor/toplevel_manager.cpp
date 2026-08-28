@@ -183,3 +183,17 @@ uint32_t ToplevelManager::GetToplevelShmFormat(uint32_t id) {
     auto it = toplevels_.find(id);
     return it != toplevels_.end() ? it->second.ShmFormat() : 1;
 }
+
+ToplevelManager::ToplevelGeometrySnapshot ToplevelManager::GetToplevelGeometrySnapshot(uint32_t id) {
+    auto lk = Lock();
+    ToplevelGeometrySnapshot s;
+    auto it = toplevels_.find(id);
+    if (it != toplevels_.end()) {
+        s.x = it->second.X();
+        s.y = it->second.Y();
+        s.w = it->second.Width();
+        s.h = it->second.Height();
+        s.shmFormat = it->second.ShmFormat();
+    }
+    return s;
+}

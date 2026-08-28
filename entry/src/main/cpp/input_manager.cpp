@@ -459,13 +459,14 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                             target.scale, localX, localY);
         } else {
             // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标)
-            wx = wl_fixed_from_double(logicalX - ws->GetToplevelX(tl));
-            wy = wl_fixed_from_double(logicalY - ws->GetToplevelY(tl));
+            const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+            wx = wl_fixed_from_double(logicalX - tlGeo.x);
+            wy = wl_fixed_from_double(logicalY - tlGeo.y);
             // 目标 surface 不可用是异常路径 (正常应命中 root), WARN 全量
             OH_LOG_WARN(LOG_APP, "[Input] TARGET-FALLBACK a=%{public}d px=(%{public}.0f,%{public}.0f) tl=%{public}u"
                         " → local=(%{public}.1f,%{public}.1f) (no surf)",
                         action, logicalX, logicalY, tl,
-                        logicalX - ws->GetToplevelX(tl), logicalY - ws->GetToplevelY(tl));
+                        logicalX - tlGeo.x, logicalY - tlGeo.y);
         }
     } else {
         FitRect lb{};
@@ -477,16 +478,17 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             wy = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wy), lb.srcH));
         }
         // PC 空间全局指针位置 = 窗口局部坐标 + 窗口位置 (grab 偏移基准)
-        lastGlobalPtrX_.store(wl_fixed_from_double(wl_fixed_to_double(wx) + ws->GetToplevelX(tl)));
-        lastGlobalPtrY_.store(wl_fixed_from_double(wl_fixed_to_double(wy) + ws->GetToplevelY(tl)));
+        const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+        lastGlobalPtrX_.store(wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x));
+        lastGlobalPtrY_.store(wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y));
         // move grab 降级路径 (PC 模式 startMoving 失败时): wx 是窗口局部坐标,
         // 补上窗口位置还原为绝对坐标, 供 compositor 绝对定位 (不在此做
         // 局部→全局往返, 消费侧不再二次读 st->x, 避免双线程基准漂移)
         if (action == ACT_MOVE && ws->IsMoveGrabActive() &&
             ws->GetMoveGrabToplevelId() == tl) {
             Enqueue(InputEvent::PTR_MOTION, 0, nullptr,
-                    wl_fixed_from_double(wl_fixed_to_double(wx) + ws->GetToplevelX(tl)),
-                    wl_fixed_from_double(wl_fixed_to_double(wy) + ws->GetToplevelY(tl)),
+                    wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
+                    wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
                     0, 0);
             return;
         }
