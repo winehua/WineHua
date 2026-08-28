@@ -15,7 +15,7 @@
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
-| 3 ZC 与层序政策收口 | **进行中（3A/3D 完成，3B/3C 待做）** | f9a2d8a zc_bridge 抽离、cf7e9a1 presenter_common+GLSL、a3156a6 PresentTarget 统一 |
+| 3 ZC 与层序政策收口 | **进行中（3A/3D + 3B 谓词首步完成，3B 收口/3C 待做）** | f9a2d8a zc_bridge 抽离、cf7e9a1 presenter_common+GLSL、a3156a6 PresentTarget 统一、328ed21 zorder_policy 谓词 |
 | 4 输入栈拆分 | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
@@ -143,6 +143,22 @@ notepad 直启冒烟通过。
 - 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
 - **3D 剩余（暂缓）**：veven child 的 `PresentVenus` 调度 wait 与 `retiredVenusTargets_`
   保持原样（未引入 PresentTarget 上的统一 deadline/pacing 表，属超范围）。
+
+### 阶段 3B（zorder_policy 层序谓词收口，328ed21，2026-08-29 首步）
+
+- `zorder_policy.h`（新增）：场景层序政策单一权威，首版两个谓词 —
+  `ZOrderTopAnchored`（parent==root 或 isExternal 或 父不在 z-order → 恒置顶，
+  原 BuildLayerListLocked 尾部置顶循环）与 `ZOrderNeedsParentPosCheck`（父==ZC
+  窗口或==root 时不必查 z-order 位置，原 zc_bridge GetOccluders 遮挡防护条件）。
+  注释记录收敛的散点（任务栏 pin 已在 ToplevelManager::PinToTop / 菜单恒置顶 /
+  ZC 遮挡层序 / PickFullscreen fsPriority 消费）。
+- `desktop_compositor.cpp` BuildLayerListLocked 尾部置顶循环、`zc_bridge.cpp`
+  GetOccluders 遮挡防护条件改调谓词——逐字复现原 if，仅知识归属收拢。
+- 行为平价：条件逐字等价，层序生成仍由 BuildLayerList 编排；消两处手写重复。
+- 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
+- **3B 收口（待做，行为敏感需 ZC 遮挡回归）**：GetOccluders 改遍历
+  BuildLayerList 的层列表（消除独立 z-order 扫描，即 3A 精化）+ fsPriority
+  消费（PickFullscreen 选取法则）收口到 zorder_policy，层序显式化为可读排序列。
 
 ## 三、2B 剩余工作清单
 
