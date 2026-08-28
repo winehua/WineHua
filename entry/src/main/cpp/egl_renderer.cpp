@@ -32,12 +32,7 @@ static std::once_flag gDisplayOnce;
 using winehua::PerfClock;
 using winehua::PerfNowUs;
 using winehua::RendererPerfWindow;
-
-static bool TraceFrameOrder()
-{
-    const char* trace = std::getenv("VKR_WINEHUA_SHADOW_TRACE");
-    return trace && ((!strcmp(trace, "1")) || !strcmp(trace, "present-image-trace"));
-}
+using winehua::FrameTraceEnabled;
 
 static void ComposeZeroCopySamplingTransform(const float* nativeTransform,
                                              bool flipY,
@@ -387,7 +382,7 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     }
     PublishZeroCopyActive(rendererToplevelId);
     ++zeroCopyFrames_;
-    if (TraceFrameOrder() && zeroCopyFrames_ <= 600)
+    if (FrameTraceEnabled() && zeroCopyFrames_ <= 600)
         OH_LOG_INFO(LOG_APP,
                     "[VENUS-ORDER][MAIN] frame=%{public}llu signals=%{public}llu "
                     "updates=%{public}llu signal_delta=%{public}llu coalesced=%{public}llu "
@@ -762,8 +757,11 @@ void EglRenderer::RenderLoop() {
             // 存储帧尺寸供输入坐标转换
             frameW_ = fw;
             frameH_ = fh;
-            OH_LOG_INFO(LOG_APP, "[DBG-CPU] tl=%{public}u fw=%{public}d fh=%{public}d px=%{public}zu firstLogged=%{public}d loop=%{public}d",
-                        useToplevel, fw, fh, px.size(), firstFrameLogged, loopCount);
+            // 帧级诊断 (默认关闭, WINEHUA_FRAME_TRACE=1 开启): CPU 帧尺寸/序号
+            if (FrameTraceEnabled()) {
+                OH_LOG_INFO(LOG_APP, "[DBG-CPU] tl=%{public}u fw=%{public}d fh=%{public}d px=%{public}zu firstLogged=%{public}d loop=%{public}d",
+                            useToplevel, fw, fh, px.size(), firstFrameLogged, loopCount);
+            }
             if (!firstFrameLogged) {
                 OH_LOG_INFO(LOG_APP, "[MW-RNDR] tl=%{public}u  FIRST FRAME %{public}dx%{public}d px=%{public}zu",
                             useToplevel, fw, fh, px.size());
@@ -997,13 +995,16 @@ void EglRenderer::RenderLoop() {
         const uint64_t frameEndedUs = PerfNowUs();
         if (haveFrame) {
             // 诊断: 每帧有帧 swap 都打印 — 对齐合成(MW-TAKE)时刻与上屏(swap)时刻,
-            // skip 累计 = 自上次上屏以来跳过多少次无帧循环 (帧被延迟多久)
-            OH_LOG_INFO(LOG_APP,
-                        "[MW-SWAP] tl=%{public}u loop=%{public}llu f=%{public}d/%{public}d/%{public}d skip=%{public}llu take=%{public}lluus swap=%{public}lluus",
-                        useToplevel, static_cast<unsigned long long>(loopCount),
-                        cpuFrame ? 1 : 0, zeroCopyFrame ? 1 : 0, zeroCopyGeometryFrame ? 1 : 0,
-                        static_cast<unsigned long long>(skipFrames_), takeUs,
-                        frameEndedUs - swapStartedUs);
+            // skip 累计 = 自上次上屏以来跳过多少次无帧循环 (帧被延迟多久)。
+            // 默认关闭 (WINEHUA_FRAME_TRACE=1 开启, 见 perf_utils.h)
+            if (FrameTraceEnabled()) {
+                OH_LOG_INFO(LOG_APP,
+                            "[MW-SWAP] tl=%{public}u loop=%{public}llu f=%{public}d/%{public}d/%{public}d skip=%{public}llu take=%{public}lluus swap=%{public}lluus",
+                            useToplevel, static_cast<unsigned long long>(loopCount),
+                            cpuFrame ? 1 : 0, zeroCopyFrame ? 1 : 0, zeroCopyGeometryFrame ? 1 : 0,
+                            static_cast<unsigned long long>(skipFrames_), takeUs,
+                            frameEndedUs - swapStartedUs);
+            }
             skipFrames_ = 0;
             perf.Add(useToplevel, takeUs, uploadUs, frameEndedUs - swapStartedUs,
                      frameEndedUs - frameStartedUs, cpuFrame ? px.size() : 0, swapOk);

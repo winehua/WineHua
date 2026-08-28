@@ -15,6 +15,7 @@
 #include "compositor/compositor_utils.h"
 #include "compositor/compositor_constants.h"
 #include "include/viewporter-server-protocol.h"
+#include "perf_utils.h"
 #include <algorithm>
 #include <cstring>
 #include <ctime>
@@ -1109,8 +1110,12 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surfRes));
     auto* self = GetInstance();  // static 回调无 this, 分段均为实例方法
     // WL-T 临时诊断: commit 在 wl 事件循环线程上的占用 — >2ms 打单行,
-    // 另按 5s 窗口汇总, 与 LAT-NAPI→LAT-INJ 的 8ms/86ms 对时
-    const auto wt0 = std::chrono::steady_clock::now();
+    // 另按 5s 窗口汇总, 与 LAT-NAPI→LAT-INJ 的 8ms/86ms 对时。
+    // 默认关闭 (WINEHUA_FRAME_TRACE=1 开启, 见 perf_utils.h FrameTraceEnabled);
+    // 关闭时跳过计时与累加, 零开销
+    const bool frameTrace = winehua::FrameTraceEnabled();
+    const auto wt0 = frameTrace ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point();
     // NULL buffer → surface 无内容 (unmap)
     if (self->HandleNullBufferCommit(sd, surfRes)) return;
 
@@ -1139,20 +1144,22 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
 
     self->FinishCommit(sd, surfRes);
 
-    // WL-T 临时诊断 (接函数头): commit 占用统计
-    const long long wus = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - wt0).count();
-    static uint64_t sWinN, sWinUs, sWinMax; static time_t sWinT = time(nullptr);
-    sWinN++; sWinUs += wus; if ((uint64_t)wus > sWinMax) sWinMax = wus;
-    if (wus > 2000)
-        OH_LOG_INFO(LOG_APP, "[WL-T] commit dur=%{public}lldus buf=%{public}dx%{public}d content=%{public}dx%{public}d sub=%{public}d",
-                    wus, fi.bufW, fi.bufH, fi.contentW, fi.contentH, sd->isSubsurface ? 1 : 0);
-    if (time(nullptr) - sWinT >= 5) {
-        OH_LOG_INFO(LOG_APP, "[WL-T] commit 5s: n=%{public}llu avg=%{public}lluus max=%{public}lluus",
-                    (unsigned long long)sWinN,
-                    sWinN ? (unsigned long long)(sWinUs / sWinN) : 0ull,
-                    (unsigned long long)sWinMax);
-        sWinN = sWinUs = sWinMax = 0; sWinT = time(nullptr);
+    // WL-T 临时诊断 (接函数头): commit 占用统计; frameTrace 关闭时整体跳过
+    if (frameTrace) {
+        const long long wus = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - wt0).count();
+        static uint64_t sWinN, sWinUs, sWinMax; static time_t sWinT = time(nullptr);
+        sWinN++; sWinUs += wus; if ((uint64_t)wus > sWinMax) sWinMax = wus;
+        if (wus > 2000)
+            OH_LOG_INFO(LOG_APP, "[WL-T] commit dur=%{public}lldus buf=%{public}dx%{public}d content=%{public}dx%{public}d sub=%{public}d",
+                        wus, fi.bufW, fi.bufH, fi.contentW, fi.contentH, sd->isSubsurface ? 1 : 0);
+        if (time(nullptr) - sWinT >= 5) {
+            OH_LOG_INFO(LOG_APP, "[WL-T] commit 5s: n=%{public}llu avg=%{public}lluus max=%{public}lluus",
+                        (unsigned long long)sWinN,
+                        sWinN ? (unsigned long long)(sWinUs / sWinN) : 0ull,
+                        (unsigned long long)sWinMax);
+            sWinN = sWinUs = sWinMax = 0; sWinT = time(nullptr);
+        }
     }
 }
 

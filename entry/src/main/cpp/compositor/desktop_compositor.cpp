@@ -3,6 +3,7 @@
 #include "compositor_utils.h"
 #include "geometry.h"
 #include "compositor/surface_data.h"
+#include "perf_utils.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -102,7 +103,6 @@ bool DesktopCompositor::ReorderSubsurfaceLayerBelow(wl_resource* child, wl_resou
 void DesktopCompositor::RemoveZeroCopyKeyLocked(uint64_t surfaceKey)
 {
     zeroCopySurfaceKeys_.erase(surfaceKey);
-    zeroCopyProtocolGeometryLogged_.erase(surfaceKey);
 }
 
 bool DesktopCompositor::HasZeroCopyLayerForToplevelLocked(uint32_t id) const
@@ -435,7 +435,10 @@ bool DesktopCompositor::GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rende
             info.desktopCoordinates = true;
             info.protocolOnly = true;
             if (parentState) info.fullscreen = parentState->IsFullscreen();
-            if (zeroCopyProtocolGeometryLogged_.insert(surfaceKey).second) {
+            // 一次性日志去重 (每 key 只打一条): static 局部集合, 调用串行化
+            // 由函数入口的 tmgr_.Lock() 保证
+            static std::unordered_set<uint64_t> protocolGeometryLogged;
+            if (protocolGeometryLogged.insert(surfaceKey).second) {
                 OH_LOG_INFO(LOG_APP,
                             "[MW-ZC] protocol-only geometry key=%{public}llu "
                             "pid=%{public}u surface=%{public}u parent=%{public}u "
@@ -600,6 +603,8 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
         }
     };
     static TakeBreakdownWindow breakdown;
+    // 帧级诊断统一门控 (perf_utils.h): 关闭时跳过 breakdown 累加与 [MW-TAKE] 输出
+    const bool frameTrace = winehua::FrameTraceEnabled();
 
     using TakeClock = std::chrono::steady_clock;
     const auto takeStarted = TakeClock::now();
@@ -816,17 +821,19 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
                         h = directH;
                         rst->ClearDirty();
                         const auto directDone = TakeClock::now();
-                        // 分段语义同下: 直传无基底拷贝/快照/blit, 全部计入输出段
-                        breakdown.Add(elapsedUs(takeStarted, lockAcquired),
-                                      0, 0, 0,
-                                      elapsedUs(lockAcquired, directDone),
-                                      elapsedUs(takeStarted, directDone));
-                        // 帧总结 (与 CPU 合成分支同格式, 数据量一致 — 直传
-                        // 期间也能从日志确认"当前在直传模式")
-                        OH_LOG_INFO(LOG_APP,
-                                    "[MW-TAKE] root #%{public}u %{public}dx%{public}d "
-                                    "subsurfaces=%{public}zu mode=direct fs=%{public}d",
-                                    id, w, h, subsurfaceLayers_.size(), hasFullscreen ? 1 : 0);
+                        if (frameTrace) {
+                            // 分段语义同下: 直传无基底拷贝/快照/blit, 全部计入输出段
+                            breakdown.Add(elapsedUs(takeStarted, lockAcquired),
+                                          0, 0, 0,
+                                          elapsedUs(lockAcquired, directDone),
+                                          elapsedUs(takeStarted, directDone));
+                            // 帧总结 (与 CPU 合成分支同格式, 数据量一致 — 直传
+                            // 期间也能从日志确认"当前在直传模式")
+                            OH_LOG_INFO(LOG_APP,
+                                        "[MW-TAKE] root #%{public}u %{public}dx%{public}d "
+                                        "subsurfaces=%{public}zu mode=direct fs=%{public}d",
+                                        id, w, h, subsurfaceLayers_.size(), hasFullscreen ? 1 : 0);
+                        }
                         return true;
                     }
                 }
@@ -1289,18 +1296,20 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
         const auto childrenComposited = TakeClock::now();
 
         const auto outputMoved = TakeClock::now();
-        // 分段语义 (快照改造后): lockWait / 基底拷贝 / 快照(持锁) / blit(锁外) / 输出 / 总计
-        breakdown.Add(elapsedUs(takeStarted, lockAcquired),
-                      elapsedUs(lockAcquired, rootCopied),
-                      elapsedUs(rootCopied, snapshotDone),
-                      elapsedUs(snapshotDone, childrenComposited),
-                      elapsedUs(childrenComposited, outputMoved),
-                      elapsedUs(takeStarted, outputMoved));
         w = rootW;
         h = rootH;
-        OH_LOG_INFO(LOG_APP, "[MW-TAKE] root #%{public}u %{public}dx%{public}d children=%{public}zu subsurfaces=%{public}zu mode=%{public}s fs=%{public}d dmg=(%{public}d,%{public}d %{public}dx%{public}d)",
-                    id, w, h, nZOrder, nSubLayers, dmg.full ? "full" : "partial",
-                    hasFullscreen ? 1 : 0, dmg.x, dmg.y, dmg.w, dmg.h);
+        if (frameTrace) {
+            // 分段语义 (快照改造后): lockWait / 基底拷贝 / 快照(持锁) / blit(锁外) / 输出 / 总计
+            breakdown.Add(elapsedUs(takeStarted, lockAcquired),
+                          elapsedUs(lockAcquired, rootCopied),
+                          elapsedUs(rootCopied, snapshotDone),
+                          elapsedUs(snapshotDone, childrenComposited),
+                          elapsedUs(childrenComposited, outputMoved),
+                          elapsedUs(takeStarted, outputMoved));
+            OH_LOG_INFO(LOG_APP, "[MW-TAKE] root #%{public}u %{public}dx%{public}d children=%{public}zu subsurfaces=%{public}zu mode=%{public}s fs=%{public}d dmg=(%{public}d,%{public}d %{public}dx%{public}d)",
+                        id, w, h, nZOrder, nSubLayers, dmg.full ? "full" : "partial",
+                        hasFullscreen ? 1 : 0, dmg.x, dmg.y, dmg.w, dmg.h);
+        }
         return true;
     }
 
@@ -1353,7 +1362,9 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
     w = winW;
     h = winH;
     st->ClearDirty();
-    OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu",
-                id, w, h, out.size());
+    if (frameTrace) {
+        OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu",
+                    id, w, h, out.size());
+    }
     return true;
 }

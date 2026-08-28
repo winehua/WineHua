@@ -220,7 +220,6 @@ private:
 
     std::vector<SubsurfaceLayer> subsurfaceLayers_;
     std::unordered_set<uint64_t> zeroCopySurfaceKeys_;
-    std::unordered_set<uint64_t> zeroCopyProtocolGeometryLogged_;
     uint64_t desktopCompositionSignature_ = 0;
     uint64_t desktopOutputRootFrameSerial_ = 0;
     bool desktopOutputInitialized_ = false;
