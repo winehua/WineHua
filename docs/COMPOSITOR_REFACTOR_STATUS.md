@@ -15,7 +15,7 @@
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
-| 3 ZC 与层序政策收口 | 未开始 | — |
+| 3 ZC 与层序政策收口 | **进行中（3A 抽离完成，3B/C/D 待做）** | f9a2d8a zc_bridge 抽离 |
 | 4 输入栈拆分 | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
@@ -94,6 +94,23 @@ notepad 直启冒烟通过。
 - 局限：模拟器无游戏，`WindowFrameComposer`（PC 模式）未在运行中触发（桌面模式取帧
   只走 root，走 `DesktopRootFrameComposer`）；其正确性由逐行复刻 + 双架构编译保证。
 
+### 阶段 3A（zc_bridge 抽离，f9a2d8a，2026-08-29）
+
+- `compositor/zc_bridge.{h,cpp}`（新增）：ZC 层几何供给与 key 簿记从
+  DesktopCompositor 抽出。`ZeroCopyLayerInfo`/`ZeroCopyOccluderRect` 迁入
+  zc_bridge.h（仍全局作用域，WaylandServer using 别名不变）；`protocolOnly`
+  布尔改显式 `ZeroCopySource` 枚举（仅 once-log 信息位，无运行时读方，纯重标）。
+  `ZcBridge` 为 DesktopCompositor 的 friend（同 FrameComposer 模式），持有
+  ZC key 权威集合（`activeKeys_`，原 `zeroCopySurfaceKeys_`），DesktopCompositor
+  经 `zc_` 委托（GetZeroCopyLayerInfo/GetOccluders/SetSurfaceZeroCopy/
+  RemoveZeroCopyKeyLocked/HasZeroCopyLayer/GetZeroCopyContentSize）。
+- 行为平价：六方法体逐字搬移（仅成员引用改 `comp_.xxx`、key 集合改 `activeKeys_`、
+  `protocolOnly` 改 `source`）；`FindZeroCopyLayerForToplevelLocked` 保留在本类，
+  改经 `zc_.IsActive` 判定——单一查找谓词不变。锁边界/读写线程域不变（tmgr 锁内）。
+- 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
+- **3A 剩余精化（暂缓）**：`GetZeroCopyOccluders` 改遍历 Layer 列表以消除第 4 份
+  全屏语义——行为敏感，需 ZC 游戏遮挡回归，本次仅做原样搬移保平价。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -128,9 +145,10 @@ notepad 直启冒烟通过。
 
 顺序不可重排（依赖关系见 PLAN "阶段顺序的依赖关系"）：
 
-- **阶段 3 ZC 与层序政策收口**：zc_bridge 抽 ZC 几何供给/key 簿记；
-  zorder_policy 层序单点；ZeroCopyStateCoordinator 5 份状态收敛；
-  PresentTarget 统一 + presenter_common。行为敏感：需 ZC 游戏遮挡/全屏回归。
+- **阶段 3 ZC 与层序政策收口**：3A（zc_bridge 抽离）已完成见 §二；剩余：
+  3A 精化（GetZeroCopyOccluders 改遍历 Layer 列表，消除第 4 份全屏语义）、
+  3B zorder_policy 层序单点、3C ZeroCopyStateCoordinator 5 份状态收敛、
+  3D PresentTarget 统一 + presenter_common。行为敏感：需 ZC 游戏遮挡/全屏回归。
 - **阶段 4 输入栈拆分**：InputResolver 裁决闭环；修 SendScrollEvent 缺段
   疑似实 bug（单独提交并标注行为变化）；InputManager 拆 InputQueue/
   InputStateTracker/InputInjector/InputSpaceMapper；两处 IsDesktopMode 改
