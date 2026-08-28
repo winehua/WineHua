@@ -112,6 +112,9 @@ public:
     // out 为像素载体 (调用方持有, 跨帧复用 — 局部合成 R 外保留上帧内容);
     // frame 为帧交付契约 (presented_frame.h): 坐标空间/内容尺寸/alpha 语义
     // 由产出侧填好, 消费方从字段取几何。
+    // 取帧路径按 DisplayPolicy::FrameRouteFor 路由 (任务 2): Desktop root 帧
+    // 走 DesktopRootFrameComposer, PC 单窗口帧走 WindowFrameComposer — 本函数
+    // 只剩纯编排, 不再按 id==root 在自身内分 PC/Desktop 合成逻辑。
     bool TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, PresentedFrame& frame);
 
     // 本帧重绘矩形 (root 坐标, 局部合成范围)。full=true 走整帧合成路径
@@ -226,11 +229,13 @@ private:
     // 编排。Planner 经 friend 访问本类层容器/快照池/合成状态 — 状态仍由本类
     // 持有, 读写线程域不变 (渲染线程 + tmgr 锁内); 锁边界与原单函数一致。
     friend class FramePlanner;
-
-    // PC 模式单窗口分支 (锁内; 窗口内 subsurface 像素 blit 走
-    // FrameBlitter::BlitWindowSubsurface)
-    bool TakeWindowFrameLocked(uint32_t id, std::vector<uint8_t>& out,
-                               PresentedFrame& frame, bool frameTrace);
+    // 取帧路径策略实现 (任务 2, 重构第 2B 步): DesktopRootFrameComposer /
+    // WindowFrameComposer 经 friend 访问 tmgr_ (锁/查询) 复刻原
+    // TakeToplevelFrame desktop 分支与 TakeWindowFrameLocked — 两条路径的
+    // 合成状态 (snapPool_/subsurfaceLayers_/zeroCopySurfaceKeys_) 仍由本类持有。
+    friend class FrameComposer;
+    friend class DesktopRootFrameComposer;
+    friend class WindowFrameComposer;
 
     ToplevelManager& tmgr_;
     const DisplayPolicy& policy_;

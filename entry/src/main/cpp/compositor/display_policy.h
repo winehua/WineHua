@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 // ============================================================================
 // DisplayPolicy — PC 窗口模式 / Desktop 合成模式的差异策略查询点
@@ -42,4 +43,16 @@ struct DisplayPolicy {
     bool RootCompositing() const { return desktop; }
     // ④ 输入由 compositor 自命中/路由 (Desktop=true)
     bool CompositorRoutesInput() const { return desktop; }
+
+    // ⑤ 取帧路径路由 (任务 2, 重构第 2B 步): 该 toplevel 的帧应走 Desktop root
+    //   整屏合成还是 PC 单窗口帧。原 DesktopCompositor::TakeToplevelFrame 按
+    //   `RootCompositing() && id == desktopRootToplevelId_` 在单一函数内分流;
+    //   现下沉为策略查询 — 编排者只问策略要帧, 不再自己判 id。逐点等价:
+    //   desktop 且 id==root 才走 root 合成, 其余 (PC 模式 / non-root) 走窗口帧。
+    enum class FrameRoute { DesktopRoot, Window };
+    FrameRoute FrameRouteFor(uint32_t id, uint32_t desktopRootToplevelId) const {
+        return (desktop && id == desktopRootToplevelId)
+                   ? FrameRoute::DesktopRoot
+                   : FrameRoute::Window;
+    }
 };

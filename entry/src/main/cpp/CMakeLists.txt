@@ -46,6 +46,7 @@ add_library(entry SHARED
     compositor/compositor_utils.cpp
     compositor/geometry.cpp
     compositor/desktop_compositor.cpp
+    compositor/frame_composer.cpp
     compositor/frame_pipeline.cpp
     compositor/input_resolver.cpp
     compositor/desktop_root_manager.cpp

@@ -1,4 +1,5 @@
 #include "desktop_compositor.h"
+#include "frame_composer.h"
 #include "frame_pipeline.h"
 #include "toplevel_manager.h"
 #include "compositor_utils.h"
@@ -556,84 +557,40 @@ int DesktopCompositor::GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t render
 }
 
 // ============================================================================
-// TakeToplevelFrame: 桌面合成核心
+// TakeToplevelFrame: 帧输出编排 (纯编排, 不持合成逻辑)
 // ============================================================================
 //
-// 阶段拆分 (重构第 2A 步, 纯结构拆分行为平价): 桌面分支的"锁内规划 /
-// 锁外绘制"两阶段在 frame_pipeline.{h,cpp} — FramePlanner 锁内按原内联段
-// 顺序执行 (dirty 门控 → 全屏仲裁 → 覆盖检测 → 直传判定 → 签名/基底 →
-// damage R → 基底落盘 → 快照) 产出 FramePlan, FrameBlitter 锁外纯像素
-// 消费; 本函数只剩编排。锁边界/计时点/日志门控与原单函数实现逐段对应。
+// 编排 (任务 2, 重构第 2B 步): 取帧路径按 DisplayPolicy::FrameRouteFor 路由 —
+// Desktop root 帧整屏合成与 PC 单窗口帧两条路径拆为独立策略实现
+// (frame_composer.{h,cpp}: DesktopRootFrameComposer / WindowFrameComposer),
+// 本函数不再按 id==root 在自身内分 PC/Desktop 合成逻辑, 编排者只问策略要帧。
+//
+// 各路径内部: 桌面分支为"锁内规划 / 锁外绘制"两阶段 (frame_pipeline.{h,cpp} —
+// FramePlanner 锁内按原内联段顺序执行产出 FramePlan, FrameBlitter 锁外纯像素
+// 消费); PC 分支为窗口 SHM 帧基底 + 窗口内 subsurface blit。
+// 锁边界/计时点/日志门控与原单函数实现逐段对应, 行为平价。
 
 bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out,
                                           PresentedFrame& frame) {
     // 帧级诊断统一门控 (perf_utils.h): 关闭时跳过 breakdown 累加与 [MW-TAKE] 输出
     const bool frameTrace = winehua::FrameTraceEnabled();
 
-    const auto takeStarted = TakeClock::now();
-    auto lk = tmgr_.Lock();
-    const auto lockAcquired = TakeClock::now();
-
-    if (policy_.RootCompositing() && id == desktopRootToplevelId_) {
-        FramePlan plan;
-        FramePlanner planner(*this, frameTrace);
-        const FramePlanOutcome outcome =
-            planner.PlanDesktopLocked(id, takeStarted, lockAcquired, out, frame, plan);
-        if (outcome != FramePlanOutcome::kCompose) {
-            if (outcome != FramePlanOutcome::kNoFrame) frame.pixels = out.data();
-            return outcome != FramePlanOutcome::kNoFrame;
+    // 任务 2 (重构第 2B 步): 取帧路径按 DisplayPolicy 路由 — Desktop root 帧
+    // 整屏合成 (FramePlanner/FrameBlitter, 见 frame_composer.cpp) 走
+    // DesktopRootFrameComposer, PC 单窗口帧走 WindowFrameComposer。两实现均
+    // 无状态, 此处构图临时实例, 与原实现 "每次新造 FramePlanner" 的开销等价;
+    // 锁边界/计时点/行为平价。
+    switch (policy_.FrameRouteFor(id, desktopRootToplevelId_)) {
+        case DisplayPolicy::FrameRoute::DesktopRoot: {
+            DesktopRootFrameComposer composer(*this);
+            return composer.Compose(id, out, frame, frameTrace);
         }
-        lk.unlock();  // ── 锁到此为止, 以下 blit 不持锁 ──
-        FrameBlitter blitter(frameTrace);
-        blitter.Composite(id, takeStarted, lockAcquired, plan, out);
-        frame.pixels = out.data();
-        return true;
-    }
-
-    return TakeWindowFrameLocked(id, out, frame, frameTrace);
-}
-
-bool DesktopCompositor::TakeWindowFrameLocked(uint32_t id, std::vector<uint8_t>& out,
-                                              PresentedFrame& frame, bool frameTrace) {
-    auto* st = tmgr_.FindToplevelLocked(id);
-    if (!st || !st->IsDirty()) return false;
-    const int winW = st->Width();
-    const int winH = st->Height();
-    if (winW <= 0 || winH <= 0) return false;
-
-    // 窗口内层序 (阶段 3, PC 模式): Root(窗口帧) < Subsurface(窗口局部
-    // 坐标) < ZC 层(最顶)。窗口间层序由系统合成器保证, 不在此合成。
-    // PC 模式 subsurface 当前恒空 (全部转 popup 伪 toplevel), 合成输出 =
-    // 窗口 SHM 帧; ZC 层 (zcActive) 合成跳过 — GPU 内容由 renderer 自绘
-    // 覆盖, CPU 帧保留 SHM 内容不抠除 (与 desktop 模式同语义: GPU 帧
-    // 不透明时覆盖等价, fallback 窗口期显示旧内容比黑屏稳)。
-    const auto layers = BuildWindowLayerListLocked(id, winW, winH);
-    out = st->Pixels();
-    for (const auto& layer : layers) {
-        switch (layer.type) {
-            case CompositorLayer::Type::Root:
-                break;  // 基底已在 out = st->pixels 拷贝
-            case CompositorLayer::Type::Toplevel:
-                break;  // 窗口内 ZC 整窗口层: GPU 自绘, CPU 帧跳过
-            case CompositorLayer::Type::Subsurface:
-                if (layer.ShouldSkipCpu()) break;  // ZC 子表面 (GPU 自绘) / 不可见: 同上
-                FrameBlitter::BlitWindowSubsurface(layer, winW, winH, out);
-                break;
+        case DisplayPolicy::FrameRoute::Window: {
+            WindowFrameComposer composer(*this);
+            return composer.Compose(id, out, frame, frameTrace);
         }
     }
-    // 帧交付契约: PC 窗口帧 — 窗口局部空间, buffer = 内容 = 窗口尺寸
-    frame.kind = PresentedFrame::Kind::Composed;
-    frame.baseSpace = PresentedFrame::BaseSpace::Window;
-    frame.w = winW;
-    frame.h = winH;
-    frame.contentW = winW;
-    frame.contentH = winH;
-    frame.opaque = (st->ShmFormat() != 0);
-    frame.pixels = out.data();
-    st->ClearDirty();
-    if (frameTrace) {
-        OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu",
-                    id, frame.w, frame.h, out.size());
-    }
-    return true;
+    return false;  // 不可达 (FrameRoute 枚举穷尽)
 }
+
+
