@@ -223,7 +223,7 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 | Wayland 协议 | `wl_core.cpp` | compositor | wl_compositor/surface/subcompositor/subsurface/viewporter |
 | xdg 协议 | `xdg_shell.cpp` | compositor | xdg_wm_base/surface/toplevel |
 | 输入 | `seat.cpp` + `input_manager.cpp` | compositor | wl_seat、事件注入、丢帧统计 |
-| 合成 | `compositor/`（toplevel_manager / desktop_compositor / input_resolver / desktop_root_manager / move_grab / display_policy / compositor_blit / geometry / surface_data / compositor_constants / compositor_utils / debug_assert） | compositor | z-order、帧合成、命中裁决、root 识别、模式策略、blit/几何纯函数、共享数据结构与常量 |
+| 合成 | `compositor/`（toplevel_manager / desktop_compositor / frame_pipeline / input_resolver / desktop_root_manager / move_grab / display_policy / compositor_blit / blit_clip / geometry / surface_data / compositor_constants / compositor_utils / debug_assert） | compositor | z-order、帧合成（锁内规划 FramePlanner / 锁外绘制 FrameBlitter）、命中裁决、root 识别、模式策略、blit/几何纯函数、共享数据结构与常量 |
 | 图形后端 | `graphics_broker.cpp` | 图形 | Virgl/Venus 选择、IPC 配置、`WINEHUA_*` 注入 |
 | virgl 子进程 | `virgl_child.cpp` | 图形 | 加载 virglrenderer、OH_IPC 通信、host EGL |
 | GL 呈现 | `virgl_surface_presenter.cpp` | 图形 | VirGL zero-copy（OH_NativeBuffer + external OES） |
