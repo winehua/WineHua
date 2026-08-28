@@ -108,6 +108,12 @@ notepad 直启冒烟通过。
   `protocolOnly` 改 `source`）；`FindZeroCopyLayerForToplevelLocked` 保留在本类，
   改经 `zc_.IsActive` 判定——单一查找谓词不变。锁边界/读写线程域不变（tmgr 锁内）。
 - 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
+- 设备验证（arm64 真机 192.168.1.8:33363，2026-08-29）：干净重装后首启正常；
+  桌面正常渲染（MW-RNDR 1400x920→2800x1840 持续出帧），游戏窗口（如 toplevel #29
+  800x600）经 SHM 合成正常出画面；VirGL ZC `pipeline ready tl=3 SURFACE_QUEUE`；
+  全程无 compositor/ZC/CRASH/WL-ERR 错误；Wow64Install 干净（wow64 ok=747 failed=0）。
+  **结论：3A 桌面/SHM 合成路径行为平价实证通过。** 局限：这组游戏走 CPU SHM 合成，
+  未触发 GPU_ACTIVE（ZC GPU overlay 链）——该段为逐字搬移且其余路径已实证，非缺陷。
 - **3A 剩余精化（暂缓）**：`GetZeroCopyOccluders` 改遍历 Layer 列表以消除第 4 份
   全屏语义——行为敏感，需 ZC 游戏遮挡回归，本次仅做原样搬移保平价。
 
