@@ -14,11 +14,11 @@
 | 0 死代码与诊断桩清理 | 完成（门禁全过） | 3f23dc4 方案文档、b44f5d8 死代码、fe492aa 诊断门控、a2e1a55 注释文档 |
 | 1 纯函数与语义收口 | 完成（门禁全过） | 5a2985a 显示尺寸、1bd342e 最小化补偿、c76b24e 循环合并、b1d1af6 ZC查找、1e1f611 Raise语义、2f3f41f xdg configure |
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
-| 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
+| 2B PresentedFrame 契约 + 直传能力协商 | 完成（门禁全过） | 0d06926 消费侧接入、1902862 策略拆分、61b1d84 任务3 DirectPassPolicy |
 | 3 ZC 与层序政策收口 | **完成（代码层全落地，待 ZC 设备回归）** | f9a2d8a zc_bridge 抽离、cf7e9a1/a3156a6/20b4bdb presenter+ZC 状态机、328ed21/48b7333 zorder_policy 三散点、a2d142d 3A 精化、5ebded3 3B 层序精化 |
 | 4A InputResolver 裁决闭环 | 完成（门禁全过） | 本分支 HEAD 提交（§二 4A 下标） |
-| 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
-| 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
+| 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 9eeb9ff（台账此前 1c80f0d 为 rebase 前旧 SHA，以当前链为准） |
+| 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 77ea013（顺手项+台账；23fff1d 为 rebase 前旧 SHA） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
 | 5 协议层重构 | **代码层全部完成（5A1/5A2/5B1/5B2/5C/5D 落地，待设备回归）** | 5A1/5A2 前序记录（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标；5C §二 5C 下标；5D §二 5D（本分支 HEAD 提交） |
 | 6 facade 瘦身与共享状态收口 | **代码层全部完成（6A 转发删除+构造注入、6B POD/atomic 落地；待设备回归）** | 6A（提交见 §二 6A 小节）；6B（提交见 §二 6B 小节） |
@@ -31,6 +31,11 @@ notepad 直启冒烟通过。
 **阶段 0-6 代码层全部完成**（0/1/2A/2B/3/4A-4C/5A1-5D/6A-6B），全部行为
 平价提交（唯一行为变化例外 4B 已单独标注）；余下工作 = 全量设备回归
 （清单见 §四）。
+
+最终模拟器冒烟（2026-08-29，x86_64 HAP 完整构建后）：冷启动
+EntryAbility → 70s → DesktopAbility → 40s 桌面链出图 = 蓝色桌面 +
+左下角中文「开始」任务栏（基线吻合；期间黑屏均为已知预存时序缺陷，
+模拟器重启后干净环境一次通过）。
 
 ## 二、2B 续作进展
 
