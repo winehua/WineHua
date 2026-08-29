@@ -20,7 +20,7 @@
 | 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
-| 5 协议层重构 | **进行中（5A1/5A2/5B1 完成）** | 5A1 本分支 HEAD 提交（§二 5A1）；5B1 §二 5B1 下标 |
+| 5 协议层重构 | **进行中（5A1/5A2/5B1/5B2 完成）** | 5A1 本分支 HEAD 提交（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标 |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
@@ -735,6 +735,114 @@ ToplevelManager 语义方法（`SyncArgbPositionLocked`/`SyncDesktopPositionLock
 （`parentSd->committed.contentRect.x/y`）与掩码语义方法（只认
 pixels+w/h，不要求 ShmCommitInfo）解耦，PopupManager 迁移 popup
 时不需要触碰这些方法。
+
+### 阶段 5B2（PopupManager 拆出，2026-08-29）
+
+PLAN §三 PopupManager + §四阶段5 第 2 条 popup 子段：把 popup 状态
+管理（登记/裁剪/事件状态）从 wl_core.cpp/ToplevelManager 拆为独立
+模块 `compositor/popup_manager.{h,cpp}`；popup 偏移公式 4 份收口
+（PLAN §2.3）为 geometry.h 单一纯函数。全部行为平价（逐语句等价 +
+通道等价论证，见对账结论）；**事件 fire 调用点保持现形态**（红线：
+popup 事件仍在 wayland_server/wl_core 发出，PopupManager 只产出
+事件描述）。
+
+**接口形态（PopupManager，被 tmgr 锁守护，无独立锁）：**
+
+| 方法 | 原出处 | 调用方 | 锁契约 |
+|---|---|---|---|
+| `PopupCommitEvent UpdatePopupOnCommit(sd, surfRes, parentSd, fi)` | WaylandServer::UpdatePopupOnCommit (wl_core.cpp) | wl_core.cpp UpdateSubsurfaceOnCommit else 分支: 状态段收内, 事件段(show/resize/move json+日志)按返回描述逐字恢复, fire 原位 | 方法自持 tmgr 锁段 (与迁移前同一锁边界: 无锁计算段→锁段→锁外事件描述) |
+| `bool UpdatePopupPositionLocked(surfaceKey, x, y, parentContentX, parentContentY, PopupMoveEvent& out)` | subsurface_set_position popup_move 内联段 | wl_core.cpp subsurface_set_position (锁段内), 事件段按 out 锁外 fire 原位 | 调用方须已持 tmgr 锁 |
+| `uint32_t RemovePopupBySurfaceKeyLocked(key, outPopupId)` | ToplevelManager 同名 | wl_core.cpp 4 处 (surface resource 析构 / subsurface_destroy / surface_destroy / HandleNullBufferCommit), 锁域不变 | 调用方须已持 tmgr 锁 |
+| `void RemovePopupDataLocked(popupId)` | ToplevelManager 同名 | OnToplevelDestroyed 级联 (经下方收集) | 调用方须已持 tmgr 锁 |
+| `std::vector<uint32_t> CollectPopupIdsForParentLocked(parentId)` | 原 `popups()` 遍历 (wayland_server.cpp OnToplevelDestroyed) | 同上 (收集→删除→dirty→unmap 顺序逐字, 锁外 popup_hide 原位) | 调用方须已持 tmgr 锁 |
+
+**表迁移细节（谁调用 tmgr popup 方法 → 改向哪）：** `popups_` /
+`popupBySurfaceKey_` + `PopupRecord` 类型 + `FindPopupBySurfaceKey /
+FindPopup / RegisterPopup / RemovePopupDataLocked /
+RemovePopupBySurfaceKeyLocked / popups()` 全部从 ToplevelManager 迁出
+（tmgr 侧删除；无外部残留引用，grep 佐证）；PopupRecord 缩为
+popupId/parentToplevel/surface/surfaceKey/offX/offY — 原 `w/h` 字段
+随尺寸通道切换删除（见下）。popup 帧数据仍复用
+`ToplevelManager::ToplevelState`（popupId 来自 tmgr 取号器），清理时
+经 `EraseToplevelLocked`/`UnmapToplevelSurface` 对称清除（原
+RemovePopupDataLocked 的 toplevels_/toplevelSurfaceMap_ 段，行为逐字）。
+所有 tmgr popup 调用点改向 popupMgr_（WaylandServer 新成员，构造注入
+`toplevelMgr_`+`outputW_/outputH_` 引用 — DesktopCompositor 同款注入）。
+
+**popup 尺寸上报通道切换（唯一语义通道变更，等值论证）：**
+旧 `sizeChanged = (rec->w != winW || rec->h != winH)`（rec->w/h 建档时
+记录、每帧更新）；新改经 5B1 的 `HandleCommittedSizeLocked(popupId, 0,
+winW, winH, outputW_, outputH_)` — popup 的 ToplevelState 去重通道
+（`lastReportedW_/H`）语义等价：
+- 判定值逐字 = winW/H（全屏父补丁后的窗口上报尺寸；popup 从不
+  SetToplevelFullscreen → 漂移分支恒不触发；rootId=0 → id≠root 恒真）；
+- `isNew` 首帧也调用（播种 lastReported，等价旧"建档时 rec->w/h =
+  winW"），其 ResizeEvent 返回值被 isNew 吞掉（新 popup 只发 show，
+  第二帧同尺寸不发 resize，逐帧一致）；
+- 去重状态生命周期一致（随 popup 的 ToplevelState 在 RemovePopupData
+  时复位，等价 rec 删除）；
+- 随机对拍 5806 帧（3 surfaceKey 交错 commit/销毁/全屏补丁 winW 恒
+  output 场景）事件序列 0 不一致。`rec->w/h` 随通道切换删除（零外部
+  消费，grep 佐证）。
+
+**偏移公式 4 份收口核对表（ComputePopupOffset(geometry.h)，
+公式逐字 offX = subX − parentContentX/offY = subY − parentContentY）：**
+
+| 调用点 | 旧 | 新 | 等值论证 |
+|---|---|---|---|
+| wl_core.cpp subsurface_set_position popup_move 段 | `rec->offX = x - parentContentX` （parentContent 读 parentSd->committed.contentRect） | `PopupManager::UpdatePopupPositionLocked` 内 ComputePopupOffset(x, y, parentContentX, parentContentY) | 同一读数/同一算术, 纯函数内联等价; 调用点读 parent 值不变 |
+| wl_core.cpp UpdatePopupOnCommit（现 PopupManager::UpdatePopupOnCommit） | `offX = sd->subsurfaceX - parentSd->committed.contentRect.x` | 同函数体内 ComputePopupOffset(sd->subsurfaceX, …) | 同前 |
+| desktop_compositor.cpp BuildLayerListLocked ZC subsurface 层 | `zcLayer.x = sd->subsurfaceX - parent->committed.contentRect.x` | ComputePopupOffset(...) 解构赋值 | 同前 (几何字段赋值顺序 x 先 y 后不变) |
+| zc_bridge.cpp GetZeroCopyLayerInfo PC 分支 | `info.x = sd->subsurfaceX - parent->committed.contentRect.x` | ComputePopupOffset(...) 解构赋值 | 同前 |
+
+全库 grep 确认无残留手写 `subsurfaceX - parent…` 表达式（仅注释提
+公式）。host_tests geometry_test 新增第 14 组（6 checks: 零原点/正
+偏移/负内容原点/负子偏移/与加法互逆恒等）。
+
+**补丁资产平移（PLAN §2.5）：** war3 popup 窗口/内容尺寸解耦补丁注释
+（"全屏主窗口的 GL client surface… 窗口按全屏输出尺寸上报, FrameData
+仍按内容尺寸存"段落）完整平移至 PopupManager::UpdatePopupOnCommit
+定义处；wp_viewport 裁剪注释 + P2 风险标注（父销毁后重登记竞态）逐字
+平移；popup 裁剪逻辑（vpSrc/vpDst 源矩形 + 显示尺寸封顶 + crops
+memcpy 紧凑排列 + 双缓冲轮换）零改动。
+
+**对账结论：**
+1. popup 相关日志/事件字符串（show/hide/resize/move 4 事件名 + 5 种
+   JSON 模板 + 2 条 OH_LOG 文本）新旧多项集脚本比对完全一致（旧有
+   集合无缺失项）；
+2. 事件 fire 分支结构逐字：isNew → MapToplevelSurface → show json+
+   日志+fire → return（不发 resize/move）；else → sizeChanged →
+   resize → posChanged → move（顺序逐字）；
+3. 移动路径：FindPopup(0) miss 防御、出参替换、fire 条件
+   `move.popupId` 与旧 `movePopupId` 逐字；父 contentRect 读点在
+   wl_core 原位（PopupManager 不涉 SurfaceData 父几何）；
+4. 清理路径 4 处 + 级联：锁段边界/清理顺序（bySurfaceKey →
+   data: key→toplevels→surfaceMap→popups）/锁外 fire 条件
+   `removedPopup` 逐字；`toplevels_.erase`→`EraseToplevelLocked`、
+   `toplevelSurfaceMap_.erase（锁内锁）`→`UnmapToplevelSurface`（公开
+   路径），锁序（tmgr 锁→toplevelSurfaceMutex_）不变；
+5. 级联收集返回顺序 = popups_ 遍历顺序（同一 unordered_map 同一
+   遍历），与旧 toplevelMgr_.popups() 一致；
+6. 尺寸通道切换：随机对拍 5806 帧 0 不一致（见上）。
+
+**门禁：** `make test` host_tests 全绿（geometry 77 / blit_scaled
+402 / blit_clip 38 / zorder 40 / env 21+88 / input_state 84 /
+shm_frame_source 39，全 0 failures；本提交新增 geometry 第 14 组 6
+checks）；`make NATIVE_ARCH=arm64-v8a hap` 构建+签名通过（HAP 374M，
+构建后 build-profile.json5 已还原，工作树仅剩本提交改动 + 预存
+thirdparty/）。**设备回归待做**（行为平价纯迁移，popup 为窗口模式
+重敏感区）：PC 多窗口模式菜单弹出/边缘裁剪/菜单置顶、子菜单链移动、
+popup 尺寸变化（resize 事件）、菜单关闭（popup_hide）、war3 D3D
+模式切换（GL client surface 全屏上报补丁）、桌面 root 销毁时 popup
+级联清理。
+
+**给 5-C/5-D 的接口说明：** popup 侧无 ToplevelEventBus 事件名依赖
+（popup_show/resize/move/hide 四事件仍经 FireToplevelEvent 原样
+发出，5-D 事件 enum 化时这 4 个事件名应一并收编，json 字段见
+UpdateSubsurfaceOnCommit 事件段）；popup 尺寸通道已并入
+ToplevelState 的 lastReportedW_/H + HandleCommittedSizeLocked —
+5-C maximized 迁移若调整 SizeCommitEffect 语义需复查 popup 消费
+（当前只消费 ResizeEvent，popup 从不触发 ReassertFullscreen）。
 
 ## 三、2B 剩余工作清单
 
