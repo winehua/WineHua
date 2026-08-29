@@ -237,9 +237,15 @@ bool ZcBridge::GetLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
         if (rendererToplevelId != info.parentToplevel) return false;
         // 父几何读点 (重构第 5A2 步): 旧读 parent->geoX/geoY (即时窗口几何值),
         // 新读 parent->committed.contentRect.x/y — 同一写入点
-        // (xs_set_window_geometry 直写快照) 的同步表达式, 逐点等价
-        info.x = sd->subsurfaceX - parent->committed.contentRect.x;
-        info.y = sd->subsurfaceY - parent->committed.contentRect.y;
+        // (xs_set_window_geometry 直写快照) 的同步表达式, 逐点等价。
+        // 偏移公式收口 (重构第 5B2 步): geometry.h ComputePopupOffset 单点
+        // (PLAN §2.3 4 份公式), 算法逐字 (offX = subX - parentContentX)
+        const auto [subOffX, subOffY] =
+            ComputePopupOffset(sd->subsurfaceX, sd->subsurfaceY,
+                               parent->committed.contentRect.x,
+                               parent->committed.contentRect.y);
+        info.x = subOffX;
+        info.y = subOffY;
         info.shmCommitSerial = sd->shmCommitSerial.load(std::memory_order_acquire);
         return info.width > 0 && info.height > 0;
     }

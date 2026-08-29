@@ -282,7 +282,7 @@ DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int
     }
 
     // 窗口内 subsurface 层 (窗口局部坐标)。PC 模式 subsurface 全部转 popup
-    // 伪 toplevel (UpdatePopupOnCommit), 这里当前恒空 — 层序结构为窗口内
+    // 伪 toplevel (PopupManager::UpdatePopupOnCommit), 这里当前恒空 — 层序结构为窗口内
     // 内容扩展预留; 若未来窗口内 layer 化, 按协议顺序 zIndex 递增。
     for (const auto& sl : subsurfaceLayers_) {
         if (sl.parentToplevel != toplevelId) continue;
@@ -327,9 +327,15 @@ DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int
             zcLayer.type = CompositorLayer::Type::Subsurface;
             // 父几何读点 (重构第 5A2 步): 旧读 parent->geoX/geoY (即时窗口
             // 几何值), 新读 parent->committed.contentRect.x/y — 同一写入点
-            // (xs_set_window_geometry 直写快照) 的同步表达式, 逐点等价
-            zcLayer.x = sd->subsurfaceX - parent->committed.contentRect.x;
-            zcLayer.y = sd->subsurfaceY - parent->committed.contentRect.y;
+            // (xs_set_window_geometry 直写快照) 的同步表达式, 逐点等价。
+            // 偏移公式收口 (重构第 5B2 步): geometry.h ComputePopupOffset 单点
+            // (PLAN §2.3 4 份公式), 算法逐字 (offX = subX - parentContentX)
+            const auto [subOffX, subOffY] =
+                ComputePopupOffset(sd->subsurfaceX, sd->subsurfaceY,
+                                   parent->committed.contentRect.x,
+                                   parent->committed.contentRect.y);
+            zcLayer.x = subOffX;
+            zcLayer.y = subOffY;
             zcLayer.w = DisplaySizeAfterViewport(sd->vpDstW, sd->w);
             zcLayer.h = DisplaySizeAfterViewport(sd->vpDstH, sd->h);
         } else {
