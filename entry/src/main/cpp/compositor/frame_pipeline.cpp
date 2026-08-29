@@ -1,7 +1,9 @@
 #include "frame_pipeline.h"
 #include "compositor_blit.h"
 #include "compositor_constants.h"
+#include "compositor/direct_pass_policy.h"  // DirectPassPolicy 能力位 (任务 3)
 #include "geometry.h"
+#include "plugin_manager.h"  // GetRendererForToplevel (直传能力查询)
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -277,6 +279,19 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
      * 退出全屏/开窗弹窗时条件自然失效, 自动回退 CPU 合成; 回退帧
      * out.size() != rootBytes 触发 rebuildBase 重建基底。
      */
+    // 直传前提能力检查 (任务 3, 行为平价): 直传帧与 CPU 合成逐像素一致的
+    // 正确性前提是渲染器 GL 行为 (uForceOpaque/无 GL_BLEND/fit 同源/XRGB
+    // 不透明) — 能力位收口于 direct_pass_policy.h, 由渲染器声明, 此处只
+    // 查询。能力缺失 = 前提不成立 → 回退 CPU 合成。行为平价: 当前渲染器
+    // 恒备全部能力 (EglRenderer::DirectPassCapabilities), 判定结果不变;
+    // 渲染器不可查 (异常态) 时不拦截, 与旧行为一致。
+    if (const auto* dpolicy = PluginManager::GetInstance()->GetRendererForToplevel(
+            comp_.desktopRootToplevelId_)) {
+        if ((dpolicy->DirectPassCapabilities() & winehua::kDirectPassCapabilitiesAll)
+            != winehua::kDirectPassCapabilitiesAll) {
+            return false;
+        }
+    }
     if (plan.hasFullscreen && !plan.isZcGame && rst->ShmFormat() != 0 &&
         plan.transform.srcW > 0 && plan.transform.srcH > 0) {
         const ToplevelManager::ToplevelState* fsTop =

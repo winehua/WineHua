@@ -554,6 +554,20 @@ FitRect EglRenderer::GetInputLetterbox() const {
     return letterbox_;
 }
 
+uint32_t EglRenderer::DirectPassCapabilities() const
+{
+    // 直传能力位 (任务 3, 行为平价): 渲染器 GL 行为是 SHM 全屏直传逐像素
+    // 等价的前提, 此前散在 compositor 侧注释假设 — 能力来源逐条对应:
+    // - kForceOpaqueNoBlend: 本 context 从不开启 GL_BLEND (RenderFrame 注释)
+    //   + uForceOpaque 按 frameArgb_ 强制不透明 (egl_renderer.cpp:874);
+    // - kFitSameAsCpu: 几何统一由 ComputeFitRect 计算, 与 CPU 合成/输入命中
+    //   同源 (egl_renderer.cpp:819-821);
+    // - kXrgbFrameOpaque: root XRGB → frameArgb_=false, GPU 黑边不透明
+    //   (直传帧整屏覆盖有效)。
+    // 当前实现恒备全部能力 → 合成侧查询恒通过 (无能力位时判定不变)。
+    return winehua::kDirectPassCapabilitiesAll;
+}
+
 void EglRenderer::RenderLoop() {
     if (!eglMakeCurrent(display_, surface_, surface_, context_)) {
         OH_LOG_ERROR(LOG_APP, "[EGL] eglMakeCurrent failed: 0x%{public}x", eglGetError());

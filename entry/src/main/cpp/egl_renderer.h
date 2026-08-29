@@ -10,13 +10,14 @@
 #include <mutex>
 #include "compositor/geometry.h"
 #include "compositor/presented_frame.h"
+#include "compositor/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
 
 struct OH_NativeImage;
 
 // 最小 EGL 渲染器: 从 WaylandServer 取帧 -> GL 纹理 -> XComponent 上屏
 // 所有实例共享同一个 EGLDisplay (避免反复 init/terminate 导致 GPU 驱动竞争)
 // 每个实例拥有独立的 EGLContext + EGLSurface
-class EglRenderer {
+class EglRenderer : public winehua::DirectPassPolicy {
 public:
     // 获取/初始化共享的 EGLDisplay (首次调用时初始化, 线程安全)
     static EGLDisplay GetSharedDisplay();
@@ -41,6 +42,9 @@ public:
     // 内容尺寸 (= 显示 letterbox, content == buffer)。锚未就绪 (首帧前)
     // 或 fit 失败时退回显示 letterbox (与旧 CoordTransform fallback 一致)。
     FitRect GetInputLetterbox() const;
+    // 直传能力位 (DirectPassPolicy, 任务 3): 渲染器 GL 行为声明 —
+    // uForceOpaque/无 GL_BLEND/fit 同源/XRGB 不透明, 恒全备 (来源见 .cpp 实现)
+    uint32_t DirectPassCapabilities() const override;
 
 private:
     void RenderLoop();
