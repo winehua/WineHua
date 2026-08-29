@@ -293,14 +293,6 @@ public:
         return false;
     }
 
-    // ARGB 窗口剪影掩码生成 (补丁: 从 alpha 通道生成 0/1 掩码供 setWindowMask,
-    // 阈值 128 → 半透明抗锯齿边缘向内收半像素; FNV-1a 形状哈希不变不重建 —
-    // 时钟类静态形状零开销)。pixels = ToplevelState 帧数据 (w*h 像素 BGRA,
-    // 掩码按帧分辨率存 = Wine 逻辑像素, ArkTS 侧按 effectiveScale 最近邻放大)。
-    // 返回 true = 形状/尺寸更新发生, 调用方据此发 mask_dirty 事件。
-    bool UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels,
-                              int32_t w, int32_t h);
-
     // -- commit 业务段语义收口 (重构第 5B1 步) --
     //
     // 本节五个语义方法把 wl_core.cpp UpdateToplevelFrameOnCommit 的窗口管理
@@ -334,6 +326,14 @@ public:
     // 逐字, 完整补丁说明见 cpp 定义处。
     void SyncDesktopPositionLocked(uint32_t id, int32_t screenX, int32_t screenY,
                                    bool justRestored);
+
+    // ARGB 窗口剪影掩码生成 (补丁: 从 alpha 通道生成 0/1 掩码供 setWindowMask,
+    // 阈值 128 → 半透明抗锯齿边缘向内收半像素; FNV-1a 形状哈希不变不重建 —
+    // 时钟类静态形状零开销)。pixels = ToplevelState 帧数据 (w*h 像素 BGRA,
+    // 掩码按帧分辨率存 = Wine 逻辑像素, ArkTS 侧按 effectiveScale 最近邻放大)。
+    // 返回 true = 形状/尺寸更新发生, 调用方据此发 mask_dirty 事件。
+    bool UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels,
+                              int32_t w, int32_t h);
 
     // 提交尺寸上报语义 (检测尺寸变化 → 通知 ArkTS 调窗; 含全屏尺寸漂移检测
     // 补丁 — war3 D3D 模式切换画面缩左上, PLAN §2.5)。锁内调用 (判定读

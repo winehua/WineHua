@@ -20,7 +20,7 @@
 | 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
-| 5 协议层重构 | **进行中（5A1 ShmFrameSource 抽离完成）** | 本分支 HEAD 提交（§二 5A1 下标） |
+| 5 协议层重构 | **进行中（5A1/5A2/5B1 完成）** | 5A1 本分支 HEAD 提交（§二 5A1）；5B1 §二 5B1 下标 |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
@@ -668,6 +668,73 @@ ComputeContentAreaGeometry）可直接复用，无需触碰 wl 资源知识
 DisplaySizeAfterViewport（不 clamp 变体）语义与 clamp 变体不可互换
 （PLAN §2.3 11 处重复中的两变体之一），5A2 若收口显示尺寸公式必须
 按调用点历史行为选变体。
+
+### 阶段 5B1（commit 业务段各归其主，2026-08-29）
+
+PLAN §四阶段5 第 2 条（本段范围第 1/2/4 子段）：把 wl_core.cpp
+`UpdateToplevelFrameOnCommit`/`FinishCommit` 的窗口管理业务段（ARGB
+掩码生成 / 位置同步 / 恢复判定 / 全屏尺寸漂移重发 / 首帧 focus）收口
+到 ToplevelManager 语义方法层与 WaylandServer 会话焦点策略，消除
+"协议壳直接操作合成器内部状态、跨层知识倒挂"。全部行为平价（逐语句
+等价搬移，无统一语义，无锁域变化）。
+
+**业务段归属表（段 → 归属对象 → 语义方法签名，行号为搬移前 wl_core.cpp）：**
+
+| 业务段（现状） | 归属对象 | 语义方法 | 时序等价论证 |
+|---|---|---|---|
+| 自动恢复最小化窗口 判定（:597-609，`IsRestoreSizeCommit` + `SetMinimized(false)` + `[MW] auto-restore` 日志） | ToplevelManager | `bool TryAutoRestoreLocked(uint32_t id, int32_t contentW, int32_t contentH)`（返回 justRestored） | 判定条件/SetMinimized 时机/日志文本/顺序逐字；求值位置不变（仍在首帧判定前）；justRestored 出参同值导出。补丁注释（"锁内不能调 SetToplevelRestored"）完整平移 |
+| ARGB 窗口位置同步（:644-650，Wine 位置权威 → `SetPosition` + `argb_move`） | ToplevelManager（应用）+ wl_core（事件发出） | `bool SyncArgbPositionLocked(uint32_t id, int32_t screenX, int32_t screenY)`（返回位置是否变化） | X/Y 比较与 `SetPosition` 逐字搬入；模式/格式/首帧门禁守卫仍在调用点（相同短路顺序，求值位置一致）；`argb_move` 事件仍锁内发出，条件 = 方法返回 true 与原 `(X!=sx‖Y!=sy)` 逐字等价 |
+| 桌面模式位置同步（:665-685，WineX/Y 快照比较 + justRestored/最小化阈值/geo 同步三分支） | ToplevelManager | `void SyncDesktopPositionLocked(uint32_t id, int32_t screenX, int32_t screenY, bool justRestored)` | `Policy().RootCompositing() && !outFirstCommit` 守卫留在调用点；三分支/比较/`SetPosition`/`SetWinePosition` 顺序/`[MW-MOVE] restore keep pos`/`wine geo sync` 日志逐字；位置与 `justRestored`（上方法返回值）传递同值 |
+| ARGB 剪影掩码生成（:712-732，FNV-1a 哈希 + 128 阈值 0/1 剪影 + `mask_dirty`） | ToplevelManager（算法+状态）+ wl_core（事件发出） | `bool UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels, int32_t w, int32_t h)`（返回形状/尺寸更新发生） | FNV 常数/阈值/两段循环/更新条件 `(hash≠m.hash‖m.w≠w‖m.h≠h)`/bits resize+逐像素/`dirty=true` 逐字；事件保持调用方锁内发出（原同段同锁，输出条件逐字）；PLAN §2.2 掩码补丁注释（阈值 128 收半像素/哈希不变不重建/帧分辨率+effectiveScale 放大）完整平移 |
+| 提交尺寸上报 + 全屏尺寸漂移重发（:752-761 判定 + `:766-770` resize 事件；war3 补丁 + 持锁自死锁修复） | ToplevelManager（判定）+ wl_core（锁外动作/锁内事件） | `enum class SizeCommitEffect {None, ResizeEvent, ReassertFullscreen}`；`SizeCommitEffect HandleCommittedSizeLocked(uint32_t id, uint32_t rootId, int32_t contentW, int32_t contentH, int32_t outputW, int32_t outputH)` | `CheckAndUpdateLastReportedSize` 收内（写点时机同）；`IsFullscreen && id≠root && (<output)` 判定逐字；`[MW] ... fullscreen size drift` 日志文本逐字（锁内，先于 unlock）；`ReassertFullscreen` → `lk.unlock()` + `NotifyToplevelResize` 同位置（unlock 后无 st 触碰，与原一致）；`ResizeEvent` → resize json/日志/事件锁内同位置（`sd->maximized` 读点不变） |
+| 首帧 focus 预注入（FinishCommit :1049-1062，`firstFrame_` CAS → `active` 事件 + Pointer/Keyboard enter 预注入） | WaylandServer（会话焦点策略；非 ToplevelManager） | `void TryBeginSessionFirstFrame(uint32_t toplevelId, wl_resource* surfRes)`（private，实现 wayland_server.cpp） | CAS/`FireState("active")`/Seat 资源检查/两注入调用逐字，顺序不变；调用点仍在 release+callback 之后（FinishCommit 原位）；**首帧 focus 决策确不在 FireToplevelEvent created 处理**（wayland_server.cpp:205-231 无焦点注入），按实际从属收口（会话状态 firstFrame_ 所有者 = WaylandServer） |
+
+**lk.unlock hack 处置结论：** 存在且如实保留其必要性 —— wl_core.cpp
+原 :760 的 `lk.unlock()` + `NotifyToplevelResize` 是 war3 全屏尺寸漂移
+补丁（PLAN §2.5 "wl_core.cpp:766-795"，含 2026-08-15 自死锁修复记录）。
+消除方式：**判定**（IsFullscreen/root/output 比较）收进
+`HandleCommittedSizeLocked`（补丁注释完整平移），wl_core 不再"懂得
+为何条件成立"，只机械执行"语义方法返回 ReassertFullscreen → 解锁 →
+重发"。`unlock` 本身无法移除 —— `NotifyToplevelResize` 内部
+`IsToplevelFullscreen` 会再取非递归 `toplevelMutex_`，持锁调用自死锁
+（这是补丁语义而非 hack），判定与动作用显式返回值（`SizeCommitEffect`）
+分离，破坏性知识（"持锁不能调自己"）不出锁边界。
+
+**首帧 focus 归属结论：** 决策实际在 `FinishCommit`（wl_core.cpp
+:1049-1062，`firstFrame_` 会话级一次性字段 CAS），而非协议事件处理；
+从属对象 = 会话状态所有者 WaylandServer（firstFrame_/FireState 属它，
+注入经 InputManager 门面），收口为私有命名方法
+`TryBeginSessionFirstFrame`，语义 = 会话首帧焦点策略。未触碰
+InputStateTracker（4C2 产物）—— 该决策是跨模块编排（Seat 资源检查 +
+门面注入），非 tracker 纯状态域。
+
+**对账结论：** 六段逐语句等价（脚本抽取新旧全部日志 9 条多项集
+比对一致 —— 文本/占位符/参数逐字，仅 `sd->toplevelId`→`id` 等
+参数化改名）；补丁注释五处（恢复判定/ARGB 位置/桌面位置同步/ARGB
+掩码/全屏漂移+自死锁）完整平移至语义方法定义处，调用点留引用性
+短注释（原文勿删语义，均在目标文件）；锁域零变化（原锁内段仍在
+锁内、原锁外重发仍在锁外、首帧段本无锁）；未统一任何阈值/判定
+（掩码 128 阈值/FNV 常数/恢复尺寸阈值/最小化坐标阈值/漂移重发
+条件逐字保留）。popup（UpdatePopupOnCommit）未触碰（留 5-B2
+PopupManager）。
+
+**门禁：** `make test` host_tests 全绿（geometry 71 / blit_scaled
+402 / blit_clip 38 / zorder 40 / env 21+88 / input_state 84 /
+shm_frame_source 39，全 0 failures，本提交未改测试代码）；`make
+NATIVE_ARCH=arm64-v8a hap` 构建+签名通过（HAP 374M，构建后
+build-profile.json5 已还原，工作树仅剩本提交改动 + 预存
+thirdparty/）。**设备回归待做**（行为平价纯搬移，但 commit 路径
+为设备重度敏感区）：位置跟随（桌面窗口 move grab 后拖动/3DMLauncher
+边框残影复现）、ARGB 异型窗口（掩码 setWindowMask/shape 时钟）、
+最小化自动恢复、war3 全屏尺寸漂移（`[MW] ... fullscreen size drift`
+日志）、首帧 focus 注入（桌面激活/enter 注入日志与基线一致）。
+
+**给 5-B2 的接口说明：** PopupManager 实现时可直接复用本段收口的
+ToplevelManager 语义方法（`SyncArgbPositionLocked`/`SyncDesktopPositionLocked`
+均按 id+ToplevelState 工作），`UpdatePopupOnCommit` 的父几何读点
+（`parentSd->committed.contentRect.x/y`）与掩码语义方法（只认
+pixels+w/h，不要求 ShmCommitInfo）解耦，PopupManager 迁移 popup
+时不需要触碰这些方法。
 
 ## 三、2B 剩余工作清单
 
