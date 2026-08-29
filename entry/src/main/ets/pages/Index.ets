@@ -206,11 +206,6 @@ struct Index {
     mirror();
   }
 
-  private d3dPresentBackend(): string {
-    return this.d3dBackend.indexOf('dxvk_') === 0 || this.d3dBackend === 'vkd3d_limited_500k' ?
-      'venus_broker_present' : 'virgl_compositor';
-  }
-
   private selectD3dBackend = (backend: string): void => {
     const selected = backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
       backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
@@ -307,8 +302,8 @@ struct Index {
       environment: {},
       workingDirectory: this.curDir,
       d3dBackend: this.d3dBackend,
-      dxvkBackend: this.dxvkBackend,
-      presentBackend: this.d3dPresentBackend()
+      dxvkBackend: this.dxvkBackend
+      // presentBackend 不传: native 按 d3dBackend 派生 (DerivePresentBackend)
     });
   }
 

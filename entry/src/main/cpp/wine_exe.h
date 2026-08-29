@@ -15,7 +15,7 @@ struct ProgramOptions {
     std::string workingDirectory;
     std::string d3dBackend = "vkd3d_limited_500k";
     std::string dxvkBackend = "dxvk_legacy";
-    std::string presentBackend = "virgl_compositor";
+    std::string presentBackend;  // 空 = 按 d3dBackend 派生 (DerivePresentBackend)
 };
 
 // 经 broker 通道启动一个 Wine 程序 (手动 runWineProgram 与自动拉起共用)。

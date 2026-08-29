@@ -324,6 +324,16 @@ int SpawnWineProgram(const ProgramOptions& options)
     return SpawnWineProgramImpl(options);
 }
 
+// 呈现后端按 d3d 后端派生 (单一策略点): DXVK/VKD3D (走 GPU 图集) → venus
+// 呈现 (zero-copy), WineD3D → virgl 呈现。调用方不传 presentBackend 时由
+// 此兜底, 避免各调用方手写一份换算 (dev UI 曾各自实现一份)。
+static std::string DerivePresentBackend(const std::string& d3dBackend)
+{
+    const bool gpuBackend = d3dBackend.rfind("dxvk_", 0) == 0 ||
+                            d3dBackend == "vkd3d_limited_500k";
+    return gpuBackend ? "venus_broker_present" : "virgl_compositor";
+}
+
 napi_value RunWineProgram(napi_env env, napi_callback_info info)
 {
     size_t argc = 1;
@@ -345,7 +355,9 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     if (options.dxvkBackend != "dxvk_legacy" &&
         options.dxvkBackend != "dxvk_modern_2_6")
         options.dxvkBackend = impliedDxvkBackend;
-    options.presentBackend = GetString(env, args[0], "presentBackend", "virgl_compositor");
+    options.presentBackend = GetString(env, args[0], "presentBackend");
+    if (options.presentBackend.empty())
+        options.presentBackend = DerivePresentBackend(options.d3dBackend);
     ReadStringArray(env, args[0], "argv", &options.argv);
     ReadEnvironment(env, args[0], &options.environment);
     OH_LOG_INFO(LOG_APP,
