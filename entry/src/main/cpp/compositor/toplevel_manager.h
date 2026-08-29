@@ -293,6 +293,14 @@ public:
         return false;
     }
 
+    // ARGB 窗口剪影掩码生成 (补丁: 从 alpha 通道生成 0/1 掩码供 setWindowMask,
+    // 阈值 128 → 半透明抗锯齿边缘向内收半像素; FNV-1a 形状哈希不变不重建 —
+    // 时钟类静态形状零开销)。pixels = ToplevelState 帧数据 (w*h 像素 BGRA,
+    // 掩码按帧分辨率存 = Wine 逻辑像素, ArkTS 侧按 effectiveScale 最近邻放大)。
+    // 返回 true = 形状/尺寸更新发生, 调用方据此发 mask_dirty 事件。
+    bool UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels,
+                              int32_t w, int32_t h);
+
     // 坐标/尺寸查询
     int GetToplevelX(uint32_t id);
     int GetToplevelY(uint32_t id);

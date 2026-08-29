@@ -1,5 +1,7 @@
 #include "toplevel_manager.h"
 #include "debug_assert.h"
+#include "compositor_utils.h"    // IsRestoreSizeCommit (最小化自动恢复判定)
+#include "compositor_constants.h"  // 掩码阈值/FNV 常数/最小化坐标阈值
 #include <hilog/log.h>
 
 #undef LOG_DOMAIN
@@ -7,6 +9,39 @@
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "WL_Server"
 
+
+bool ToplevelManager::UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels,
+                                           int32_t w, int32_t h) {
+    auto* st = FindToplevelLocked(id);
+    if (!st) return false;  // 调用点建档后必有 (防御)
+    /*
+     * ARGB 窗口: 从 alpha 通道生成 0/1 剪影掩码 (setWindowMask 用)。
+     * - 阈值 128: 半透明抗锯齿边缘向内收半像素, 避免灰边外扩
+     * - 形状哈希没变就不重建: 时钟类静态形状零开销,
+     *   动画类 (桌面宠物) 每帧变形才按帧重算
+     * - 掩码是帧分辨率 (Wine 逻辑像素); setWindowMask 要求等于
+     *   窗口物理尺寸, ArkTS 侧按 effectiveScale 最近邻放大
+     */
+    const size_t pixCount = static_cast<size_t>(w) * h;
+    uint64_t hash = compositor_consts::kFnv1aOffsetBasis;
+    for (size_t i = 3; i < pixCount * 4; i += 4) {
+        hash ^= (pixels[i] >= compositor_consts::kArgbMaskAlphaThreshold) ? 1 : 0;
+        hash *= compositor_consts::kFnv1aPrime;
+    }
+    auto& m = st->MutableMask();
+    if (hash != m.hash || m.w != w || m.h != h) {
+        m.hash = hash;
+        m.w = w;
+        m.h = h;
+        m.bits.resize(pixCount);
+        for (size_t i = 0; i < pixCount; i++) {
+            m.bits[i] = (pixels[i * 4 + 3] >= compositor_consts::kArgbMaskAlphaThreshold) ? 1 : 0;
+        }
+        m.dirty = true;
+        return true;
+    }
+    return false;
+}
 // -- ToplevelState 语义方法 --
 
 void ToplevelManager::ToplevelState::ApplyFullscreen(bool on) {

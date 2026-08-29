@@ -701,32 +701,14 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
             FireToplevelEvent(sd->toplevelId, "argb", json);
         }
     }
-    /*
-     * ARGB 窗口: 从 alpha 通道生成 0/1 剪影掩码 (setWindowMask 用)。
-     * - 阈值 128: 半透明抗锯齿边缘向内收半像素, 避免灰边外扩
-     * - 形状哈希没变就不重建: 时钟类静态形状零开销,
-     *   动画类 (桌面宠物) 每帧变形才按帧重算
-     * - 掩码是帧分辨率 (Wine 逻辑像素); setWindowMask 要求等于
-     *   窗口物理尺寸, ArkTS 侧按 effectiveScale 最近邻放大
-     */
+    // ARGB 窗口掩码: FNV-1a 形状哈希 + 阈值 0/1 剪影生成与 mask 状态更新
+    // 收口于 ToplevelManager::UpdateArgbMaskLocked (补丁注释 — 阈值 128
+    // 边缘收半像素/形状哈希不变不重建/掩码帧分辨率 — 随方法平移, 见
+    // toplevel_manager.cpp)。mask_dirty 事件由此处在锁内发出 (原时序:
+    // 事件与状态更新同段同锁, 输出条件逐字不变)
     if (fi.shmFormat == 0 && Policy().OhosWindowPerToplevel()) {
-        const auto& px = st.Pixels();
-        const size_t pixCount = static_cast<size_t>(fi.contentW) * fi.contentH;
-        uint64_t hash = compositor_consts::kFnv1aOffsetBasis;
-        for (size_t i = 3; i < pixCount * 4; i += 4) {
-            hash ^= (px[i] >= compositor_consts::kArgbMaskAlphaThreshold) ? 1 : 0;
-            hash *= compositor_consts::kFnv1aPrime;
-        }
-        auto& m = st.MutableMask();
-        if (hash != m.hash || m.w != fi.contentW || m.h != fi.contentH) {
-            m.hash = hash;
-            m.w = fi.contentW;
-            m.h = fi.contentH;
-            m.bits.resize(pixCount);
-            for (size_t i = 0; i < pixCount; i++) {
-                m.bits[i] = (px[i * 4 + 3] >= compositor_consts::kArgbMaskAlphaThreshold) ? 1 : 0;
-            }
-            m.dirty = true;
+        if (toplevelMgr_.UpdateArgbMaskLocked(sd->toplevelId, st.Pixels(),
+                                              fi.contentW, fi.contentH)) {
             FireToplevelEvent(sd->toplevelId, "mask_dirty", "{}");
         }
     }
