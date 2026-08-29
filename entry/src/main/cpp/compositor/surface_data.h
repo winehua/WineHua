@@ -61,14 +61,18 @@ struct SurfaceData {
     int32_t vpSrcX = 0, vpSrcY = 0, vpSrcW = -1, vpSrcH = -1;
 
     // window states
-    // 状态边界 (docs/CPP_REFACTOR_PLAN.md Phase 2):
-    //   minimized/fullscreen 的"生效状态"唯一权威在 ToplevelState (ToplevelManager),
-    //   本结构不存副本; 查询经 WaylandServer::IsToplevelMinimized/Fullscreen。
-    //   maximized + preMax/preFs 是协议侧状态: 只有 xdg_shell 状态机和
-    //   NotifyToplevelResize 消费, compositor 合成/命中不读。
+    // 状态边界: 窗口状态三元组 (minimized/fullscreen/maximized) 的"生效状态"
+    // 唯一权威在 ToplevelState (ToplevelManager, 重构第 5C 步 maximized 迁入 —
+    // PLAN §2.4 状态权威分裂修复, 旧 maximized 曾分裂在本结构, tl_set_fullscreen
+    // 还须手工清它), 本结构不存副本; 查询经 WaylandServer::
+    // IsToplevelMinimized/IsToplevelFullscreen/IsToplevelMaximized。
+    // preMax/preFs 恢复尺寸 (SurfaceData 保留, 归属状态机的尺寸交接字段):
+    //   preMaxW/H 是 xdg_toplevel.set_maximized/unset_maximized 的尺寸交接
+    //   (Wine 侧 WS_MAXIMIZE 态伴随 configure 尺寸), 只由 xdg_shell 状态机
+    //   写/读, compositor 合成/命中均不消费;
+    //   preFsW/H 同 (tl_set_fullscreen/unset_fullscreen 的 restore 用)。
     // app_id (xdg_toplevel.set_app_id), 用于识别 explorer 桌面
     std::string appId;
-    bool maximized = false;
     int32_t preMaxW = 0, preMaxH = 0;  // 最大化前尺寸, restore 用
     int32_t preFsW = 0, preFsH = 0;    // 全屏前尺寸, unset_fullscreen restore 用
 

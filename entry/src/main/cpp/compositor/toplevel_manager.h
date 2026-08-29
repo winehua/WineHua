@@ -19,8 +19,10 @@
 //   desktop root 可能因识别时序已在列 (先 AddToZOrder 后 CheckRoot),
 //   由 IsToplevelVisibleLocked 对 root 恒 false 兜底 — root 永不作为
 //   可见 toplevel 参与合成/命中 (桌面"仅剩背景"回归的根因, 见 cpp 注释)。
-// - minimized/fullscreen 的唯一权威字段在 ToplevelState; 变更只经
-//   WaylandServer::SetToplevel* (本类故意不提供 setter)。
+// - 窗口状态三元组 (minimized/fullscreen/maximized) 的唯一权威字段在
+//   ToplevelState (重构第 5C 步: maximized 自 SurfaceData 迁入, PLAN §2.4
+//   状态权威分裂修复 — 曾需 tl_set_fullscreen 手工清 sd->maximized);
+//   变更只经 WaylandServer::SetToplevel* (本类故意不提供状态 setter)。
 // - fullscreen toplevel 锚定 (0,0): SetToplevelFullscreen 维护,
 //   合成按保比例缩放铺满, 不使用浮动位置。
 
@@ -106,6 +108,14 @@ public:
         bool IsMinimized() const { return minimized_; }
         bool IsBackground() const { return isBackground_; }  // 被切换掉的旧 root
         bool IsFullscreen() const { return fullscreen_; }
+        // maximized 权威字段 (重构第 5C 步: 自 SurfaceData::maximized 迁入 —
+        // PLAN §2.4 窗口状态三元组分裂修复, 与 minimized/fullscreen 同权威)。
+        // 写点经 WaylandServer::SetToplevelMaximizedState (Ensure 建档);
+        // 裸状态写 (无 dirty/锚定等副作用) — dirty 由调用点随后的
+        // SetToplevelMaximized (锚定) / configure 路径负责, 与旧
+        // "sd->maximized = x 直接赋值" 语义等价。
+        bool IsMaximized() const { return maximized_; }
+        void SetMaximized(bool v) { maximized_ = v; }
         void SetMinimized(bool v) { minimized_ = v; }
         void SetBackground(bool v) { isBackground_ = v; }
         // 全屏状态转换: 置位/清除 + 锚定 (0,0) + 不变式断言。
@@ -143,6 +153,7 @@ public:
         int wineX_ = 0, wineY_ = 0;     // Wine 坐标系位置 (首帧写, SetWinePosition 跟随更新)
         int lastReportedW_ = 0, lastReportedH_ = 0;  // 尺寸上报去重
         bool minimized_ = false;        // 桌面合成时跳过最小化窗口
+        bool maximized_ = false;        // 窗口状态三元组之一 (见 IsMaximized 注释)
         bool isBackground_ = false;     // 渲染层, 不接收输入 (被切换掉的旧 root)
         bool fullscreen_ = false;
         uint64_t fsPriority_ = 0;       // 全屏优先级序号 (规则见 fsPriority 注释)
@@ -225,11 +236,13 @@ public:
     // 已建档、未标记 background (被切换掉的旧 root)、已有帧、未最小化。
     bool IsToplevelVisibleLocked(uint32_t id, uint32_t desktopRootId);
 
-    // 状态查询 (内部加锁)。minimized/fullscreen 的唯一权威字段在 ToplevelState;
-    // 变更只经 WaylandServer::SetToplevel* (Ensure 建档 + dirty + 协议反应),
-    // 本类不提供 setter — 历史上这里有一套无调用方且语义不等价的 setter, 已删除。
+    // 状态查询 (内部加锁)。窗口状态三元组 (minimized/fullscreen/maximized)
+    // 的唯一权威字段在 ToplevelState; 变更只经 WaylandServer::SetToplevel*
+    // (Ensure 建档 + dirty + 协议反应), 本类不提供 setter — 历史上这里
+    // 有一套无调用方且语义不等价的 setter, 已删除。
     bool IsToplevelMinimized(uint32_t id);
     bool IsToplevelFullscreen(uint32_t id);
+    bool IsToplevelMaximized(uint32_t id);  // 重构第 5C 步: xdg configure 状态位/日志读点
 
     // resource 映射 (SendToplevelClose / xdg_toplevel 销毁)
     void RegisterToplevelResource(uint32_t id, wl_resource* tl);

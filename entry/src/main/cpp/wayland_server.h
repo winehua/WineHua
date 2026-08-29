@@ -128,7 +128,15 @@ public:
     // 统一状态转换 (确保 minimize/maximize/restore 涉及的 map 操作原子化)
     void SetToplevelMinimized(uint32_t id);
     void SetToplevelRestored(uint32_t id);
+    // 最大化生效的合成器反应: 锚定桌面原点 (最大化窗口全屏尺寸铺满) + dirty。
+    // 注意: 不写 maximized 状态位 — 状态位经 SetToplevelMaximizedState
+    // (重构第 5C 步: maximized 权威迁入 ToplevelState, 本函数与状态位分离
+    // 是历史形态, 只做几何反应)。
     void SetToplevelMaximized(uint32_t id);
+    // maximized 状态位写 (xdg_shell 协议处理调用): Ensure 建档 + 裸状态赋值,
+    // 无日志无 dirty — 对齐旧 sd->maximized 直接赋值的语义 (dirty 由调用点
+    // 随后的 SetToplevelMaximized 锚定 / configure 路径负责)。重构第 5C 步。
+    void SetToplevelMaximizedState(uint32_t id, bool on);
     // 全屏状态登记 (desktop 合成按保比例缩放+黑边绘制, 输入按同一变换逆映射)
     void SetToplevelFullscreen(uint32_t id, bool on);
     // surface 尺寸变化后强制下次渲染循环取帧重绘 (避免旧 viewport 贴新 surface 导致黑边)
@@ -168,9 +176,11 @@ public:
     ToplevelGeometrySnapshot GetToplevelGeometrySnapshot(uint32_t id) {
         return toplevelMgr_.GetToplevelGeometrySnapshot(id);
     }
-    // 状态查询 (minimized/fullscreen 权威字段在 ToplevelState, 见 surface_data.h 状态边界注释)
+    // 状态查询 (窗口状态三元组 minimized/fullscreen/maximized 权威字段在
+    // ToplevelState, 重构第 5C 步 maximized 迁入 — 见 toplevel_manager.h 不变式)
     bool IsToplevelMinimized(uint32_t id) { return toplevelMgr_.IsToplevelMinimized(id); }
     bool IsToplevelFullscreen(uint32_t id) { return toplevelMgr_.IsToplevelFullscreen(id); }
+    bool IsToplevelMaximized(uint32_t id) { return toplevelMgr_.IsToplevelMaximized(id); }
     // ARGB 异型窗口的 0/1 剪影掩码 (setWindowMask 用, ArkTS 轮询拉取)
     using WindowMask = ToplevelManager::WindowMask;
     // 取掩码: false = 无掩码或无更新; 取走清除 dirty

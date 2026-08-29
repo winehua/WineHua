@@ -67,7 +67,8 @@ static void fire_limits_event(SurfaceData* sd) {
              "{\"minW\":%d,\"minH\":%d,\"maxW\":%d,\"maxH\":%d}",
              sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
     OH_LOG_INFO(LOG_APP, "[XDG] fire_limits tl=%{public}u %{public}s maxState=%{public}s",
-                sd->toplevelId, json, sd->maximized ? "yes" : "no");
+                sd->toplevelId, json,
+                WaylandServer::GetInstance()->IsToplevelMaximized(sd->toplevelId) ? "yes" : "no");
     WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "limits", json);
 }
 
@@ -95,7 +96,7 @@ static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h
 // 使窗口落入 max+fs 混合态 (实测游戏全屏后 client 变成 1400x900, 画面下移)。
 static bool ShouldInferMaximizeFromMaxSize(WaylandServer* ws, SurfaceData* sd,
                                            int32_t w, int32_t h, int32_t workH) {
-    return !ws->IsToplevelFullscreen(sd->toplevelId) && !sd->maximized &&
+    return !ws->IsToplevelFullscreen(sd->toplevelId) && !ws->IsToplevelMaximized(sd->toplevelId) &&
            w >= ws->outputW_ && h >= workH &&
            sd->toplevelId != ws->GetDesktopRootToplevelId();
 }
@@ -117,7 +118,7 @@ static void tl_set_max_size(wl_client* client, wl_resource* tlRes, int32_t w, in
     if (ShouldInferMaximizeFromMaxSize(ws, sd, w, h, workH)) {
         sd->preMaxW = ws->GetToplevelW(sd->toplevelId);
         sd->preMaxH = ws->GetToplevelH(sd->toplevelId);
-        sd->maximized = true;
+        ws->SetToplevelMaximizedState(sd->toplevelId, true);  // 权威在 ToplevelState (重构第 5C 步)
         ws->SetToplevelMaximized(sd->toplevelId);
         XdgConfigureSend(tlRes, xdg->xdgSurface, w, workH,
                          {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
@@ -146,10 +147,10 @@ static void tl_set_maximized(wl_client* client, wl_resource* tlRes) {
     if (ws->IsToplevelMinimized(sd->toplevelId)) {
         ws->SetToplevelRestored(sd->toplevelId);
     }
-    if (!sd->maximized) {
+    if (!ws->IsToplevelMaximized(sd->toplevelId)) {  // 权威在 ToplevelState (重构第 5C 步)
         sd->preMaxW = ws->GetToplevelW(sd->toplevelId);
         sd->preMaxH = ws->GetToplevelH(sd->toplevelId);
-        sd->maximized = true;
+        ws->SetToplevelMaximizedState(sd->toplevelId, true);
         ws->SetToplevelMaximized(sd->toplevelId);
     }
     // 发 configure 让 Wine 渲染到工作区尺寸 (排除任务栏)
@@ -174,7 +175,10 @@ static void tl_unset_maximized(wl_client* client, wl_resource* tlRes) {
         OH_LOG_INFO(LOG_APP, "[XDG] tl_unset_maximized tl=%{public}u ignored (fullscreen)", sd->toplevelId);
         return;
     }
-    sd->maximized = false;
+    // maximized 状态位清 (权威在 ToplevelState, 重构第 5C 步): 裸状态写无
+    // dirty — 还原到 preMax 尺寸后位置回归正常浮动, 合成更新由 Wine 随
+    // configure 后的新帧 commit 触发 (与旧 sd->maximized = false 等价)
+    WaylandServer::GetInstance()->SetToplevelMaximizedState(sd->toplevelId, false);
     // 发 configure 用最大化前尺寸, 不能用 0,0 (Wine 0,0+state → SWP_NOSIZE → 不resize)
     int32_t w = sd->preMaxW > 0 ? sd->preMaxW : 0;
     int32_t h = sd->preMaxH > 0 ? sd->preMaxH : 0;
@@ -199,9 +203,11 @@ static void tl_set_fullscreen(wl_client* client, wl_resource* tlRes, wl_resource
         sd->preFsW = ws->GetToplevelW(sd->toplevelId);
         sd->preFsH = ws->GetToplevelH(sd->toplevelId);
         // 全屏 configure 不含 MAXIMIZED, Wine 会据此清掉 WS_MAXIMIZE;
-        // 合成器侧的标志位必须同步清, 否则后续 configure 会持续误带 MAXIMIZED
-        // (fullscreen 生效状态由 SetToplevelFullscreen 写入 ToplevelState, 唯一权威)
-        sd->maximized = false;
+        // 合成器侧的标志位必须同步清, 否则后续 configure 会持续误带 MAXIMIZED。
+        // 重构第 5C 步: maximized 权威迁入 ToplevelState (本行原清
+        // SurfaceData::maximized, 现清 ToplevelState — 唯一权威, 全屏生效
+        // 状态 SetToplevelFullscreen 与 maximized 不再分存两处, 失步窗口消除)
+        ws->SetToplevelMaximizedState(sd->toplevelId, false);
         ws->SetToplevelFullscreen(sd->toplevelId, true);
         // 全屏置顶 (RaiseToplevel 对全屏窗口跳过任务栏 pin)。
         // 注意走默认 userInitiated=false: 显示模式切换时 Wine 会批量连带

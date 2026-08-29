@@ -196,6 +196,16 @@ bool ToplevelManager::IsToplevelFullscreen(uint32_t id) {
     return it != toplevels_.end() && it->second.IsFullscreen();
 }
 
+// 重构第 5C 步: maximized 权威自 SurfaceData 迁入 ToplevelState (PLAN §2.4
+// 状态权威分裂修复)。miss 语义与 minimized/fullscreen 同款 (未建档 = 无状态
+// = false) — 历史上 sd==null 的读点 (NotifyToplevelResize 的 (sd && sd->maximized))
+// 与新 "miss→false" 逐值等价。
+bool ToplevelManager::IsToplevelMaximized(uint32_t id) {
+    auto lk = Lock();
+    auto it = toplevels_.find(id);
+    return it != toplevels_.end() && it->second.IsMaximized();
+}
+
 // -- resource 映射 --
 
 void ToplevelManager::RegisterToplevelResource(uint32_t id, wl_resource* tl) {

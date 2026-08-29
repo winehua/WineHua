@@ -20,7 +20,7 @@
 | 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
-| 5 协议层重构 | **进行中（5A1/5A2/5B1/5B2 完成）** | 5A1 本分支 HEAD 提交（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标 |
+| 5 协议层重构 | **进行中（5A1/5A2/5B1/5B2/5C 完成，待设备回归）** | 5A1/5A2 前序记录（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标；5C 本分支 HEAD 提交（§二 5C） |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
@@ -843,6 +843,55 @@ UpdateSubsurfaceOnCommit 事件段）；popup 尺寸通道已并入
 ToplevelState 的 lastReportedW_/H + HandleCommittedSizeLocked —
 5-C maximized 迁移若调整 SizeCommitEffect 语义需复查 popup 消费
 （当前只消费 ResizeEvent，popup 从不触发 ReassertFullscreen）。
+
+### 阶段 5C（maximized 迁入 ToplevelState，2026-08-29）
+
+PLAN §四阶段5 第 3 条 + §2.4 状态权威分裂修复的最后一块：窗口状态
+三元组 maximized 的"生效状态"自 `SurfaceData::maximized` 迁入
+`ToplevelState`，与 minimized/fullscreen 同权威（本步前 maximized
+是三元组里唯一分裂在 SurfaceData 的字段，tl_set_fullscreen 还须
+手工清它，PLAN §七风险表"状态权威统一影响 xdg 行为"焦点）。
+preMaxW/H/preFsW/H 恢复尺寸**保留在 SurfaceData**（xdg 状态机尺寸
+交接字段，PLAN 未列迁入，归 5-D/后续状态机收口，本步不越界）。
+
+**接口形态（ToplevelState/ToplevelManager/WaylandServer）：**
+
+- `ToplevelState`：私有 `bool maximized_ = false`；`IsMaximized()`
+  /`SetMaximized(bool)`（裸 setter，与 SetMinimized 同款；注释记录
+  5C 出处与"裸状态写无 dirty/日志 — dirty 由调用点随后的
+  SetToplevelMaximized 锚定 / configure 路径负责"的等价论证）。
+- `ToplevelManager::IsToplevelMaximized(id)`：加锁 find miss=false
+  （与 IsToplevelMinimized/IsToplevelFullscreen 同款）；状态写不
+  落 ToplevelManager（遵守"变更只经 WaylandServer::SetToplevel*"）。
+- `WaylandServer::IsToplevelMaximized(id)` inline 转发（wayland_server.h
+  状态查询区）；`WaylandServer::SetToplevelMaximizedState(id, on)`：
+  Ensure 建档 + 裸状态赋值（cpp，无日志无 dirty — 对齐旧直接赋值）。
+  已有 `SetToplevelMaximized(id)`（锚定+dirty 的几何反应函数）保持
+  不动，头部注释更新为与状态位写互相指认（历史形态：两函数分离）。
+
+**逐消费点核对表（全库 grep `->maximized`/`.maximized`/`Maximized`
+业务代码命中 10 处 = 1 定义 + 6 读 + 4 写，全部落表）：**
+
+| # | 读点（旧） | 新 | 等价论证 |
+|---|---|---|---|
+| R1 | wayland_server.cpp NotifyToplevelResize IN 日志 `(sd && sd->maximized)` | 函数内一次取局部 `const bool maximized = IsToplevelMaximized(toplevelId)`，三处消费（IN/状态位/出口日志）共用 | ① 全访问在 wl 线程，无并发写；② sd==null 旧=false ↔ State 未建档 miss=false 同值；③ State 已建档场景值与旧 sd 字段同步（写点全经 SetToplevelMaximizedState）；④ 锁域：独立加锁同 IsToplevelFullscreen（本函数入口 IsToplevelMinimized 已是该模式，无嵌套） |
+| R2 | 同函数 MAXIMIZED 状态位 `if (sd && sd->maximized)` | `if (maximized)` | **xdg configure 状态位回归焦点（PLAN §七）**：json 状态序列、顺序、位值逐字；Wine 侧 WS_MAXIMIZE 同步语义不变；三读点合一局部变量的快照性更强（旧为同 sd 字段同刻值，等价） |
+| R4 | xdg_shell.cpp fire_limits_event 日志 `sd->maximized` | `WaylandServer::GetInstance()->IsToplevelMaximized(sd->toplevelId)` | tl_set_max_size 推断路径：State 已由 SetToplevelMaximizedState(true) 置位 → yes 同旧；tl_set_min_size 路径从未 set → miss=false 同 sd 默认 false；toplevelId==0 已有函数首守卫 |
+| R5 | xdg_shell.cpp ShouldInferMaximizeFromMaxSize `!sd->maximized` | `!ws->IsToplevelMaximized(sd->toplevelId)` | 谓词已持 ws 参数（参数化不变）；判定时机（max_size 写后、推断动作前）与短路顺序逐字（全屏在上、maximized 在下）；自身守卫在 SetToplevelMaximizedState 之前 → 未置位者 miss=false 与 sd 默认一致 |
+| R6 | xdg_shell.cpp tl_set_maximized 转换守卫 `if (!sd->maximized)` | `if (!ws->IsToplevelMaximized(...))` | 守卫→preMax 快照→Set 置位→锚定顺序逐字；wl 线程内判定与写入之间无并发写，读改写原子等价 |
+| R7 | wl_core.cpp resize 事件日志 `sd->maximized` | `st.IsMaximized()`（**已持锁的 st 引用**） | 该处在 UpdateToplevelFrameOnCommit 锁内（函数首 :587 Ensure 后 st 恒存在）— **不能调 IsToplevelMaximized（内部重新加锁→非递归 std::mutex 自死锁，同 5B1 ReassertFullscreen 约束）**；锁内直读 State 与旧 sd 字段同域同值（写点全经 Ensure 的 State 写入）；锁域不变 |
+
+写点（4 处）：W1 tl_set_max_size 推断 → `ws->SetToplevelMaximizedState(id, true)`（插入点逐字：谓词通过后、锚定前）；W2 tl_set_maximized → 同上（R6 守卫内）；W3 tl_unset_maximized → `...SetToplevelMaximizedState(id, false)`（fullscreen 守卫后、preMax 读前，无 dirty 与旧等价）；**W4 tl_set_fullscreen 手工清（行为敏感焦点）** → `ws->SetToplevelMaximizedState(id, false)`：同一触发点（preFs 快照后、SetToplevelFullscreen 前）同一条件（!IsToplevelFullscreen 块内），注释全文平移+Bug 语义补记；迁移后清的是 ToplevelState（唯一权威）— 旧"hand 清 sd 而 State 无意"的双存失步由结构消除（无引入新失步：新存储只有 State 一处）。全库仅有此一处 set_fullscreen 清 maximized（grep 佐证；SetToplevelFullscreen 的 ApplyFullscreen 不清 maximized — 新旧一致）。
+
+**行为敏感点处置（PLAN §七 两选项，已选严格）：** 发现两个候选差异，均确认旧行为模式在两端一致 → **选严格选项（保持逐字），候选上报用户**：
+1. **State 已 Erase 后的读差异**：OnToplevelDestroyed（EraseToplevelLocked）后、xdg 资源销毁前的窄窗口，若 NotifyToplevelResize 再被调：旧读 sd->maximized 残留真值 → 新 miss→false。方向 = 与 minimized/fullscreen 同款"State 清即状态亡"权威语义（销毁后窗口带 MAXIMIZED 位本就是错误），修复方向而非回归。
+2. **SetToplevelRestored 不清 maximized（预存嫌疑，非本步引入）**：最小化的最大化窗口经 SetToplevelRestored 还原，configure states 无 MAXIMIZED（Wine 清 WS_MAXIMIZE），但 compositor maximized 标志保持 true（旧 sd 字段同样不清）→ 后续 NotifyToplevelResize 会继续带 MAXIMIZED 位。新旧行为完全一致，属历史语义冲突（还原 notify 通道与状态位不同步），**严格选项不改**；扩展选项 = SetToplevelRestored 清 maximized（行为变化，需设备回归（最小化还原的最大化窗口）后方可考虑，留用户决定）。
+
+**5-B2 popup 约束复查：** 通过。popup 尺寸通道经 `HandleCommittedSizeLocked` — 该函数体无 maximized 任何引用（点读确认，本步零改动）；popup 从不 set_maximized（xdg popup 无该协议）→ 迁入 State 的 maximized_ 对 popup 恒 false；NotifyToplevelResize 的 popupId 不可达（popup resize 走 FireToplevelEvent ResizeEvent，不调 NotifyToplevelResize）。5-C 对 popup 路径零影响。
+
+**门禁：** `make test` host_tests 全绿（geometry 77 / blit_scaled 402 / blit_clip 38 / zorder 40 / env 21+88 / input_state 84 / shm_frame_source 39，全 0 failures，本提交未改测试代码 — ToplevelState 依赖 wayland 头不可进 host_tests，同 5B1）；`make NATIVE_ARCH=arm64-v8a hap` 构建+签名通过（HAP 374M，构建后 build-profile.json5 已还原，工作树仅剩本提交改动 + 预存 thirdparty/）。
+
+**遗留（设备回归请求）：** 窗口最大化/还原（Wine 最大大小推断 + set_maximized 直发）、全屏切换（tl_set_fullscreen 手工清路径：全屏后 MAXIMIZED 位不误带）、最小化→还原（SetToplevelRestored 无 MAXIMIZED 状态位的预存语义）、popup 菜单；监视日志：`[XDG] tl_set_maximized/unset_maximized`、`[MW] NotifyToplevelResize ... max=yes/no`、`[MW] toplevel #N size changed ... max=`；war3 全屏尺寸漂移（ReassertFullscreen 路径 — maximized 不触达，回归确认）。
 
 ## 三、2B 剩余工作清单
 

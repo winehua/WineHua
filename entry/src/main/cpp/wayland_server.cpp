@@ -400,6 +400,17 @@ void WaylandServer::SetToplevelMaximized(uint32_t id) {
     MarkDesktopRootDirtyLocked();
 }
 
+// 重构第 5C 步: maximized 状态位写 (xdg_shell 协议处理调用), 权威自
+// SurfaceData::maximized 迁入 ToplevelState (PLAN §2.4 状态权威分裂修复 —
+// 旧 tl_set_fullscreen 须手工清 sd->maximized 以防 configure 误带 MAXIMIZED)。
+// Ensure 建档与 SetToplevelMinimized 同款 (pre-commit 状态转换同样记录)。
+// 裸状态赋值: 无 dirty/无日志 — 与旧 sd->maximized = x 直接赋值逐字等价,
+// dirty 由调用点随后的 SetToplevelMaximized (锚定) / configure 路径负责。
+void WaylandServer::SetToplevelMaximizedState(uint32_t id, bool on) {
+    auto lk = toplevelMgr_.Lock();
+    toplevelMgr_.EnsureToplevelLocked(id).SetMaximized(on);
+}
+
 void WaylandServer::SetToplevelFullscreen(uint32_t id, bool on) {
     OH_LOG_INFO(LOG_APP, "[MW] SetToplevelFullscreen id=%{public}u on=%{public}s",
                 id, on ? "yes" : "no");
@@ -437,15 +448,19 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
     if (!xdg) return;
 
-    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+    // maximized 状态位权威在 ToplevelState (重构第 5C 步: 旧读 sd->maximized
+    // 迁移为读 ToplevelState; 未建档/sd 缺失同值 false)。一次读取供本函数
+    // 三处消费 (日志/状态位/日志), 独立加锁与 IsToplevelFullscreen 同模式
+    // (本函数入口的 IsToplevelMinimized 已是该模式, 无锁嵌套)。
+    const bool maximized = IsToplevelMaximized(toplevelId);
 
     OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s",
                 toplevelId, w, h,
                 IsDesktopMode() ? "no" : "yes",
-                (sd && sd->maximized) ? "yes" : "no");
+                maximized ? "yes" : "no");
 
     std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
-    if (sd && sd->maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
+    if (maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
     // 全屏窗口在 OHOS 侧尺寸变化时保持 FULLSCREEN 状态, 否则 Wine 会退出全屏。
     if (IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
     XdgConfigureSend(tl, xdg->xdgSurface, w, h, states);
@@ -460,7 +475,7 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
                     toplevelId, w, h);
     } else {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u → %{public}dx%{public}d maximized=%{public}s",
-                    toplevelId, w, h, (sd && sd->maximized) ? "yes" : "no");
+                    toplevelId, w, h, maximized ? "yes" : "no");
     }
 }
 

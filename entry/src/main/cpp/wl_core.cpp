@@ -700,9 +700,13 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     } else if (sizeEffect == ToplevelManager::SizeCommitEffect::ResizeEvent) {
         char json[64];
         snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", fi.contentW, fi.contentH);
+        // maximized 状态位读 ToplevelState (重构第 5C 步; 旧读 sd->maximized)。
+        // 本处已持 toplevelMutex_ (函数首 Ensure 的 st 引用), 直接读 st —
+        // 不能调 IsToplevelMaximized (内部重新加锁, 非递归 std::mutex 自死锁,
+        // 同 5B1 HandleCommittedSizeLocked 的 ReassertFullscreen 约束)
         OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u size changed: %{public}dx%{public}d max=%{public}s -> ArkTS",
                     sd->toplevelId, fi.contentW, fi.contentH,
-                    sd->maximized ? "yes" : "no");
+                    st.IsMaximized() ? "yes" : "no");
         FireToplevelEvent(sd->toplevelId, "resize", json);
     }
 }
