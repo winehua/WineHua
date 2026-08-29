@@ -28,7 +28,9 @@
 // 填值不同即实现错误。旧读取路径零改动。
 // 提交 2 (5A2·2/2): 消费端全部切换到本快照; sd->geoX/geoY/geoW/geoH 删除,
 // 几何写点 (xdg_shell 的 set_window_geometry) 直写 contentRect/hasWindowGeometry,
-// role 随协议角色即时同步 — 与旧"写 geo 字段 → 读 geo 字段"值流逐点等价。
+// role 随协议角色设置点 (get_toplevel / get_subsurface / subsurface_destroy)
+// 即时同步 — 与旧"写 geo 字段 → 读 geo 字段"值流逐点等价 (含"父 surface
+// 写几何后未 commit 即被读"的窗口期: 写点直写与旧字段同一时序生效)。
 //
 // -- 线程/锁 --
 // 本结构各字段由 Wayland 事件循环线程 (wl 回调) 独占访问 — 与 SurfaceData
@@ -81,3 +83,13 @@ struct CommittedSurface {
     // 像素不进快照: 消费端仍经 SurfaceData::pixels 访问 (快照是帧元数据,
     // 像素属可变大数据, 拷贝即行为变化/开销, 见 5A1 的 ShmCommitInfo 同样决策)。
 };
+
+// 角色判定单点 (重构第 5A2 步): 旧代码在三个角色设置点各自手写 isSubsurface
+// 布尔 + hasToplevel 猜义分流; 此处汇聚为显式枚举判定。协议角色互斥
+// (get_toplevel / get_subsurface 各设一个, 协议上不得同时), toplevel 优先的
+// 防御与旧 ComputeContentAreaGeometry 调用点的分流顺序一致 (行为平价)。
+inline CommittedSurface::Role RoleFor(bool hasToplevel, bool isSubsurface) {
+    return hasToplevel ? CommittedSurface::Role::Toplevel
+         : isSubsurface  ? CommittedSurface::Role::Subsurface
+                         : CommittedSurface::Role::Plain;
+}

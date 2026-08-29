@@ -249,7 +249,11 @@ static void tl_set_minimized(wl_client*, wl_resource* tlRes) {
 
     // 生效状态唯一权威是 ToplevelState.minimized
     // (NotifyToplevelMinimized → SetToplevelMinimized 写入, 本处不再存协议侧副本)
-    WaylandServer::GetInstance()->NotifyToplevelMinimized(sd->toplevelId, sd->geoX, sd->geoY);
+    // 几何参数为历史遗留 (旧读 sd->geoX/geoY, 两参数在下方签名中未命名未消费);
+    // 重构第 5A2 步 geo 字段消亡后改读快照 contentRect (窗口几何即时值, 语义
+    // 与旧值同源) — 值仍未被消费, 仅保持调用形态并见证字段迁移
+    WaylandServer::GetInstance()->NotifyToplevelMinimized(
+        sd->toplevelId, sd->committed.contentRect.x, sd->committed.contentRect.y);
     WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "minimized");
     OH_LOG_INFO(LOG_APP, "[XDG] tl_set_minimized tl=%{public}u", sd->toplevelId);
 }
@@ -305,6 +309,9 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
         auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
         if (sd && !sd->hasToplevel) {
             sd->hasToplevel = true;
+            // CommittedSurface.role 即时同步 (重构第 5A2 步): 角色判定单点 =
+            // RoleFor (committed_surface.h), 取代旧"hasToplevel 猜义分流"
+            sd->committed.role = RoleFor(sd->hasToplevel, sd->isSubsurface);
             sd->toplevelId = WaylandServer::GetInstance()->NextToplevelId();
             d->toplevelId = sd->toplevelId;
             td->toplevelId = sd->toplevelId;
@@ -328,11 +335,16 @@ static void xs_set_window_geometry(wl_client*, wl_resource* xsRes, int32_t x, in
     if (!d || !d->wlSurface) return;
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
     if (!sd) return;
-    sd->hasWindowGeometry = true;
-    sd->geoX = x;
-    sd->geoY = y;
-    sd->geoW = w;
-    sd->geoH = h;
+    // CommittedSurface 几何写点直写 (重构第 5A2 步): 旧字段 geoX/geoY/geoW/geoH
+    // (三义字段, PLAN §2.4) 已删除, window_geometry 原值直写内容矩形 —
+    // 语义 (contentRect=buffer 内内容偏移, toplevel 的"桌面屏幕位置"义另经
+    // compute 派生存入 screenPos) 与取值时机与旧"写 geo 字段→commit 时读"
+    // 逐点等价, 含"写后未 commit 即被读"窗口期。
+    sd->committed.hasWindowGeometry = true;
+    sd->committed.contentRect.x = x;
+    sd->committed.contentRect.y = y;
+    sd->committed.contentRect.w = w;
+    sd->committed.contentRect.h = h;
     OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
                 sd->toplevelId, x, y, w, h);
 }

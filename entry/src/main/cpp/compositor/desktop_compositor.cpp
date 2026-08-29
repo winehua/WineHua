@@ -325,8 +325,11 @@ DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int
             auto* parent = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
             if (!parent || parent->toplevelId != toplevelId) continue;
             zcLayer.type = CompositorLayer::Type::Subsurface;
-            zcLayer.x = sd->subsurfaceX - parent->geoX;
-            zcLayer.y = sd->subsurfaceY - parent->geoY;
+            // 父几何读点 (重构第 5A2 步): 旧读 parent->geoX/geoY (即时窗口
+            // 几何值), 新读 parent->committed.contentRect.x/y — 同一写入点
+            // (xs_set_window_geometry 直写快照) 的同步表达式, 逐点等价
+            zcLayer.x = sd->subsurfaceX - parent->committed.contentRect.x;
+            zcLayer.y = sd->subsurfaceY - parent->committed.contentRect.y;
             zcLayer.w = DisplaySizeAfterViewport(sd->vpDstW, sd->w);
             zcLayer.h = DisplaySizeAfterViewport(sd->vpDstH, sd->h);
         } else {

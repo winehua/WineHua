@@ -32,15 +32,18 @@ struct SurfaceData {
     bool hasToplevel = false;
     std::string title;
 
-    // xdg_surface window geometry (content area within buffer), 默认全 buffer
-    bool hasWindowGeometry = false;
-    int geoX = 0, geoY = 0, geoW = 0, geoH = 0;
+    // xdg_surface window geometry (content area within buffer) 已整体迁入
+    // CommittedSurface: 旧 geoX/geoY/geoW/geoH 三义字段 (toplevel 桌面模式=
+    // 虚拟桌面坐标、toplevel PC 模式=内容偏移、subsurface=buffer 内内容偏移,
+    // PLAN §2.4 一名多义) 与 hasWindowGeometry 于重构第 5A2 步消亡 — 写点
+    // (xdg_shell xs_set_window_geometry, 直写 hasWindowGeometry+contentRect),
+    // 消费端按命名字段取义 (映射表见对应提交说明, 语义定义见 committed_surface.h)。
 
     // CommittedSurface 快照 (重构第 5A2 步): commit 产物 (role/contentRect/
     // screenPos/parentOffset/frame 命名字段 — PLAN 出处与 geoX/geoY 三义
-    // 消亡说明见 committed_surface.h)。提交 1 (5A2·1/2) 只产出: 与上方旧字段
+    // 消亡说明见 committed_surface.h)。提交 1 (5A2·1/2) 只产出: 与旧字段
     // 同一次计算的两种表达, 旧读取路径零改动; 提交 2 (5A2·2/2) 消费端切换到
-    // 本快照, geoX/geoY/geoW/geoH 从本结构删除 (写点直写快照)。
+    // 本快照, geoX/geoY/geoW/geoH/hasWindowGeometry 从本结构删除。
     CommittedSurface committed;
 
     // subsurface 父子追踪 (用于 popup 菜单合成到父 toplevel)

@@ -235,8 +235,11 @@ bool ZcBridge::GetLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
         }
 
         if (rendererToplevelId != info.parentToplevel) return false;
-        info.x = sd->subsurfaceX - parent->geoX;
-        info.y = sd->subsurfaceY - parent->geoY;
+        // 父几何读点 (重构第 5A2 步): 旧读 parent->geoX/geoY (即时窗口几何值),
+        // 新读 parent->committed.contentRect.x/y — 同一写入点
+        // (xs_set_window_geometry 直写快照) 的同步表达式, 逐点等价
+        info.x = sd->subsurfaceX - parent->committed.contentRect.x;
+        info.y = sd->subsurfaceY - parent->committed.contentRect.y;
         info.shmCommitSerial = sd->shmCommitSerial.load(std::memory_order_acquire);
         return info.width > 0 && info.height > 0;
     }

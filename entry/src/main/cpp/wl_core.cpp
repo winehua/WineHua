@@ -172,6 +172,9 @@ void WaylandServer::subcompositor_get_subsurface(wl_client* client, wl_resource*
     if (childSd) {
         childSd->parentSurface = parent;
         childSd->isSubsurface = true;
+        // CommittedSurface.role 即时同步 (重构第 5A2 步): role 随协议角色
+        // 设置点更新, 不再由 commit 时从布尔分流; 判定单点 = RoleFor
+        childSd->committed.role = RoleFor(childSd->hasToplevel, childSd->isSubsurface);
         OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] subsurface created: child=%{public}p parent=%{public}p",
                     surface, parent);
     }
@@ -196,20 +199,26 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
         self->desktopCompositor_.UpdateSubsurfaceLayerLocalPosition(childSurf, x, y);
         self->MarkDesktopRootDirtyLocked();
     }
-    // PC 模式: 更新已登记 popup 的偏移, 通知 ArkTS 移动子窗口
+    // PC 模式: 更新已登记 popup 的偏移, 通知 ArkTS 移动子窗口。
+    // 父几何读点 (重构第 5A2 步): 旧读 parentSd->geoX/geoY (即时窗口几何值),
+    // 新读 parentSd->committed.contentRect.x/y — 同一写入点 (xs_set_window_geometry
+    // 直写快照) 的同步表达式, 逐点等价; 偏移公式语义不变 (相对父内容原点)。
     uint32_t movePopupId = 0, moveParent = 0;
     int32_t moveOffX = 0, moveOffY = 0;
     {
         auto lk = self->toplevelMgr_.Lock();
         uint32_t pid = self->toplevelMgr_.FindPopupBySurfaceKey(sd->surfaceKey);
         if (auto* rec = self->toplevelMgr_.FindPopup(pid)) {
-            int32_t geoX = 0, geoY = 0;
+            int32_t parentContentX = 0, parentContentY = 0;
             if (sd->parentSurface) {
                 auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
-                if (parentSd) { geoX = parentSd->geoX; geoY = parentSd->geoY; }
+                if (parentSd) {
+                    parentContentX = parentSd->committed.contentRect.x;
+                    parentContentY = parentSd->committed.contentRect.y;
+                }
             }
-            rec->offX = x - geoX;
-            rec->offY = y - geoY;
+            rec->offX = x - parentContentX;
+            rec->offY = y - parentContentY;
             movePopupId = rec->popupId;
             moveParent = rec->parentToplevel;
             moveOffX = rec->offX;
@@ -268,6 +277,9 @@ void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
         if (sd) {
             sd->isSubsurface = false;
             sd->parentSurface = nullptr;
+            // CommittedSurface.role 即时同步 (重构第 5A2 步): role 移除后
+            // surface 变回普通面 (旧代码只清 isSubsurface, 语义对等)
+            sd->committed.role = RoleFor(sd->hasToplevel, sd->isSubsurface);
             auto* self = GetInstance();
             uint32_t removedPopup = 0, popupParent = 0;
             {
@@ -506,10 +518,17 @@ bool WaylandServer::BeginShmAccess(SurfaceData* sd, ShmCommitInfo& fi) {
 // 几何计算段已收口到 ShmFrameSource::ComputeContentAreaGeometry (重构第
 // 5A1 步, SurfaceData 字段值语义参数化, 逻辑逐字搬移, 行为平价); 本函数
 // 保留 hilog 日志 (MW-GEO/MW-STRIDE), 条件/文本/顺序与旧实现逐字一致。
+// 三义分流显式化 (重构第 5A2 步): 旧代码把 sd->geoX/geoY (三义字段, PLAN
+// §2.4) 原样喂给纯函数, 由函数内 hasToplevel 猜义; 现按命名字段取义 —
+// 角色 = committed.role (显式枚举), 几何值 = contentRect.x/y (写点直写的
+// 即时值; toplevel 的"屏幕位置"义在纯函数内转成 fi.screenX/Y 后另存
+// committed.screenX/Y, 本处不再直接读)。喂入的值与旧 geo 字段逐点相同。
 void WaylandServer::ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi) {
-    ComputeContentAreaGeometry(fi, sd->hasWindowGeometry, sd->geoW, sd->geoH,
-                               sd->hasToplevel, sd->geoX, sd->geoY);
-    if (sd->hasWindowGeometry && sd->geoW > 0 && sd->geoH > 0) {
+    const auto& c = sd->committed;
+    ComputeContentAreaGeometry(fi, c.hasWindowGeometry, c.contentRect.w, c.contentRect.h,
+                               c.role == CommittedSurface::Role::Toplevel,
+                               c.contentRect.x, c.contentRect.y);
+    if (c.hasWindowGeometry && c.contentRect.w > 0 && c.contentRect.h > 0) {
         OH_LOG_INFO(LOG_APP, "[MW-GEO] using window_geometry: src=%{public}dx%{public}d geo=(%{public}d,%{public}d %{public}dx%{public}d) screen=(%{public}d,%{public}d) vpSrc=(%{public}d,%{public}d %{public}dx%{public}d) vpDst=%{public}dx%{public}d",
                     fi.bufW, fi.bufH, fi.contentOffX, fi.contentOffY, fi.contentW, fi.contentH,
                     fi.screenX, fi.screenY,
@@ -523,32 +542,20 @@ void WaylandServer::ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi) {
     }
 }
 
-// CommittedSurface 快照产出 (重构第 5A2 步·1/2, 行为平价):
-// commit 管线"同一次计算的两种表达" — 旧字段 (sd->geo* / w / h / damage* /
-// shmCommitSerial / shmFormat / subsurfaceX/Y) 照旧填写与读取, 本函数把同一
-// 数据并行填入命名快照 (role/contentRect/screenPos/parentOffset/frame),
-// 供提交 2 的消费端切换 (geoX/geoY 三义消亡, 见 committed_surface.h 出处)。
-// 值与旧字段严格同步同源, 不做第二套独立算法 — 任何字段与旧取值不同即
-// 实现错误。调用点: surface_commit (BeginShmAccess 成功后、角色分发前),
-// 单次 commit 一份快照; NULL buffer commit (HandleNullBufferCommit 提前
-// return) 不更新 — 与旧字段行为一致 (旧字段值同样不变)。
-// 锁: 无 (wl 事件循环线程, wl 回调上下文, 与 SurfaceData 其余字段同域)。
+// CommittedSurface 快照产出 (重构第 5A2 步·2/2, 行为平价):
+// commit 管线把同一数据填入命名快照 (screenPos/parentOffset/frame) — 后续
+// 阶段语义段各归其主时的消费载体。值均直接拷贝自同源字段/fi:
+//   - role/hasWindowGeometry/contentRect: 已即时直写 (role 随协议角色设置点
+//     同步更新, 几何写点 xdg_shell xs_set_window_geometry 直写快照), 本函数
+//     不再填充 — 与旧"写 geo 字段 → commit 时读 geo 字段"值流逐点等价
+//   - screenPos: ComputeContentArea 计算出的 ShmCommitInfo::screenX/Y
+//     (语义 = 旧 geoX/geoY 的"虚拟桌面屏幕位置"义)
+//   - parentOffset/frame: SurfaceData 同值字段拷贝
+// 调用点: surface_commit (BeginShmAccess 成功后、角色分发前), 单次 commit
+// 一份快照; NULL buffer commit (HandleNullBufferCommit 提前 return) 不更新
+// — 与旧字段行为一致。锁: 无 (wl 事件循环线程, 与 SurfaceData 同域)。
 void WaylandServer::BuildCommittedSurface(SurfaceData* sd, ShmCommitInfo& fi) {
     auto& c = sd->committed;
-    // role: 优先 toplevel (协议角色互斥: get_toplevel / get_subsurface 各设
-    // 一个, 与旧 hasToplevel 猜义分流的判定顺序逐字一致)
-    c.role = sd->hasToplevel ? CommittedSurface::Role::Toplevel
-           : sd->isSubsurface ? CommittedSurface::Role::Subsurface
-                              : CommittedSurface::Role::Plain;
-    // contentRect: window_geometry 原值 (旧 geoX/geoY/geoW/geoH 的两义载体:
-    // toplevel 义 1/2 屏幕位置见 screenPos, subsurface 义 3 buffer 内容偏移)
-    if (sd->hasWindowGeometry) {
-        c.hasWindowGeometry = true;
-        c.contentRect.x = sd->geoX;
-        c.contentRect.y = sd->geoY;
-        c.contentRect.w = sd->geoW;
-        c.contentRect.h = sd->geoH;
-    }
     // screenPos: 与 ComputeContentArea 计算出的 ShmCommitInfo::screenX/Y
     // 同值 (toplevel 虚拟桌面屏幕位置, 即旧 geoX/geoY 的义 1; 非 toplevel
     // 或无 geometry 时恒 0 — 与 fi 同款条件, 无独立算法)
@@ -631,6 +638,8 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
      * ARGB 窗口: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置)。
      * 普通 PC 窗口后续 commit 忽略 geoX/geoY (OHOS 窗口管理器为权威),
      * ARGB 窗口相反: geo 变化 → 通知 ArkTS 移动子窗口。
+     * (历史字段 geoX/geoY 已于重构第 5A2 步消亡 — 其"桌面屏幕位置"义即
+     * 本函数消费的 fi.screenX/Y, 由 CommittedSurface::screenPos 命名承载)
      */
     if (Policy().OhosWindowPerToplevel() && fi.shmFormat == 0 && !outFirstCommit &&
         (st.X() != fi.screenX || st.Y() != fi.screenY)) {
@@ -889,8 +898,11 @@ void WaylandServer::UpdatePopupOnCommit(SurfaceData* sd, wl_resource* surfRes,
      * popup_show, ArkTS 侧因窗口不存在而积压 (竞态极小, 仅微量
      * 内存)。如需根治可在此处检查 parentId 是否仍存活。
      */
-    int32_t offX = sd->subsurfaceX - parentSd->geoX;
-    int32_t offY = sd->subsurfaceY - parentSd->geoY;
+    // 父几何读点 (重构第 5A2 步): 旧读 parentSd->geoX/geoY (即时窗口几何值),
+    // 新读 parentSd->committed.contentRect.x/y — 同一写入点 (xs_set_window_geometry
+    // 直写快照) 的同步表达式, 逐点等价; 偏移公式语义不变 (相对父内容原点)
+    int32_t offX = sd->subsurfaceX - parentSd->committed.contentRect.x;
+    int32_t offY = sd->subsurfaceY - parentSd->committed.contentRect.y;
     int dispW = sd->w, dispH = sd->h;
     int cropX = 0, cropY = 0;
     if (sd->vpSrcW > 0 && sd->vpSrcH > 0) {
@@ -1077,12 +1089,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         fi.shmCommitSerial = sd->shmCommitSerial.fetch_add(1, std::memory_order_release) + 1;
         OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
                     fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
-                    sd->hasWindowGeometry ? "yes" : "no");
+                    sd->committed.hasWindowGeometry ? "yes" : "no");
 
-        // CommittedSurface 快照产出 (重构第 5A2 步·1/2): 旧字段照旧填与读,
-        // 此处并行填充命名快照 (role/contentRect/screenPos/parentOffset/frame)。
-        // 硬性约束: 与旧字段同一次计算的两种表达 — 值全部来自上方的
-        // ComputeContentArea 产出与 SurfaceData 同值字段, 无第二套算法
+        // CommittedSurface 快照产出 (重构第 5A2 步): 填入 commit 时点可观察值
+        // (screenPos/parentOffset/frame; role 与几何已随协议设置点直写)。
+        // 消费端已全部切换到该快照 (geoX/geoY 三义消亡, 见 committed_surface.h)
         self->BuildCommittedSurface(sd, fi);
 
         bool isFirstCommit = false;
