@@ -480,7 +480,8 @@ export class WineEnvService {
     if (pathExists(target)) return;
     if (!pathExists(source)) return;
     try {
-      await fs.copy(source, target);
+      // fs.copy 入参要求 URI 形式 (file://...), 裸路径会参数校验失败 401
+      await fs.copy(fileUri.getUriFromPath(source), fileUri.getUriFromPath(target));
       hilog.warn(DOMAIN, 'wine', 'seeded smoke payload → C:\\smoke');
     } catch (e) {
       hilog.warn(DOMAIN, 'wine', 'seed smoke payload failed: %{public}s', JSON.stringify(e));
