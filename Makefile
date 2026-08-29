@@ -439,6 +439,11 @@ test:
 	    -o $(HOST_TEST_DIR)/env_baseline_test \
 	    $(ROOT)/host_tests/env_baseline_test.cpp
 	$(HOST_TEST_DIR)/env_baseline_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/input_state_test \
+	    $(ROOT)/host_tests/input_state_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/compositor/input_state_tracker.cpp
+	$(HOST_TEST_DIR)/input_state_test
 
 
 # ============================================================
