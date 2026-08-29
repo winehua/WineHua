@@ -2,6 +2,7 @@
 #include "wine_constants.h"
 #include "audio_broker.h"
 #include "audio_ipc_protocol.h"
+#include "env_spec.h"
 #include "graphics_broker.h"
 #include "wayland_server.h"
 
@@ -10,7 +11,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#include <unordered_set>
 
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -40,9 +40,6 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& homeDir,
                                       const std::string& prefixDir,
                                       const std::string& wineLang) {
-    std::string shareDir = binDir + "/../share";
-    std::string xkbDir = shareDir + "/X11/xkb";
-    std::string midiSoundfontPath = binDir + "/../audio/winehua-gm.sf2";
     std::string runtimeLibPath = binDir + ":" + binDir + "/x86_64-unix:" + binDir + "/../lib/x86_64";
     winehua::GraphicsBackendState graphicsState = winehua::GraphicsBroker::GetInstance().GetState();
     std::string guestReceiverLibDir;
@@ -55,43 +52,34 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         }
     }
 
-    std::string dllPath = binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir;
-#ifndef __aarch64__
-    // x86_64: bundled libs 加入 WINEDLLPATH, load_unixlib_by_name() 从此搜索 .so
-    dllPath += ":/data/storage/el1/bundle/libs/x86_64";
-#endif
-
-    // ==== Layer 0: 硬基线 (路径、locale、Wayland socket) ====
+    // ==== Layer 0: 硬基线 ====
+    // 分歧键 (合成器 socket 参数) 主进程侧自行给定; 公共键与子进程
+    // setup_wine_env 同一张表 (wine_env_baseline.h), 增键只改一处。
     // NOTE: WINEDLLDIR0/1, WINEDLLPATH 在 DXVK 路径下会被 AppendD3dBackendEnv 覆盖
     std::vector<std::string> env = {
         "XDG_RUNTIME_DIR=" + sockDir,
         "WAYLAND_DISPLAY=" + sockName,
-        "HOME=" + homeDir,
-        "WINEPREFIX=" + (prefixDir.empty() ? std::string(WINE_PREFIX) : prefixDir),
-        "WINEDATADIR=" + shareDir + "/wine",
-        "WINEDLLDIR=" + binDir + "/x86_64-unix",
-        "WINEDLLDIR0=" + binDir + "/x86_64-windows",
-        "WINEDLLDIR1=" + binDir + "/i386-windows",
-        "WINEDLLDIR2=" + binDir,
-        "WINEDLLPATH=" + dllPath,
-        "WINEDEBUG=-all",
-        "LANG=" + wineLang + ".UTF-8",
-        // OHOS musl 无 locale 数据, setlocale 激活失败返回 "C";
-        // Wine 的 unix_to_win_locale 遇 "C" 只读 LC_ALL 兜底 (ntdll/unix/env.c),
-        // 单设 LANG 无效, 必须补 LC_ALL 才能解析出对应 LCID (0x0804 zh-CN),
-        // 与 LANG 同取设置页 wineLang (zh_CN/en_US)
-        "LC_ALL=" + wineLang + ".UTF-8",
-        "XKB_CONFIG_ROOT=" + xkbDir,
-        "PATH=/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:" + binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir,
-        "TMPDIR=" WINE_TMPDIR,
-        "MIDI_SOUNDFONT_PATH=" + midiSoundfontPath,
-        // winegstreamer 运行时加载 GStreamer 插件 (gst-plugins-base/good/libav)
-        "GST_PLUGIN_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0",
-        "GST_PLUGIN_SYSTEM_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0",
     };
-    // ==== Layer 1: Box64 性能调优 (仅 ARM64) ====
-    // NOTE: BOX64_DYNAREC_WEAKBARRIER=2 在桌面 DXVK 下会被 AppendStableDesktopDxvkEnv 覆盖为 0
-    AppendBox64PerfStrings(env);
+    {
+        std::vector<std::string> baseline = winehua::BuildWineBaselineLines(
+            {binDir, homeDir, prefixDir});
+        env.insert(env.end(), baseline.begin(), baseline.end());
+    }
+    // 仅主进程侧基线: locale / WINEDEBUG 静默 / GStreamer 插件路径
+    // (子进程 WINEDEBUG 由 select_winedebug_profile 决定, 不走此表)
+    env.push_back("WINEDEBUG=-all");
+    env.push_back("LANG=" + wineLang + ".UTF-8");
+    // OHOS musl 无 locale 数据, setlocale 激活失败返回 "C";
+    // Wine 的 unix_to_win_locale 遇 "C" 只读 LC_ALL 兜底 (ntdll/unix/env.c),
+    // 单设 LANG 无效, 必须补 LC_ALL 才能解析出对应 LCID (0x0804 zh-CN),
+    // 与 LANG 同取设置页 wineLang (zh_CN/en_US)
+    env.push_back("LC_ALL=" + wineLang + ".UTF-8");
+    // winegstreamer 运行时加载 GStreamer 插件 (gst-plugins-base/good/libav)
+    env.push_back("GST_PLUGIN_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
+    env.push_back("GST_PLUGIN_SYSTEM_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
+    // ==== Layer 1: Box64 性能调优 (仅 ARM64, 键值表见 wine_env_baseline.h) ====
+    // NOTE: BOX64_DYNAREC_WEAKBARRIER=2 在桌面 DXVK 下会被 AppendStableDxvkEnv 覆盖为 0
+    winehua::AppendBox64PerfStrings(env);
     // ==== Layer 2: 运行时库路径 ====
     // NOTE: BOX64_LD_LIBRARY_PATH (ARM64) 在 DXVK 路径下会被 AppendD3dBackendEnv 覆盖
 #ifdef __aarch64__
@@ -141,7 +129,7 @@ void UpsertEnvLine(std::vector<std::string>& env, const std::string& line)
     if (sep == std::string::npos || sep == 0) return;
     const std::string key = line.substr(0, sep);
     // 清理所有同 key 的旧条目, 然后追加新值 (与旧 UpsertEnv 行为一致,
-    // 避免 AppendStableDesktopDxvkEnv 等 push_back 路径产生重复 key)
+    // 避免 AppendStableDxvkEnv 等 push_back 路径产生重复 key)
     env.erase(std::remove_if(env.begin(), env.end(), [&](const std::string& existing) {
         return existing.compare(0, key.size(), key) == 0 &&
                existing.size() > key.size() && existing[key.size()] == '=';
@@ -373,78 +361,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
     for (const std::string& line : legacyCompatibility) UpsertEnvLine(env, line);
 }
 
-static bool ShouldSerializeEntryParamEnv(const std::string& envLine) {
-    return envLine.rfind("WINE_OHOS_AUDIO_ENABLE=", 0) != 0 &&
-           envLine.rfind("WINE_OHOS_AUDIO_BOOTSTRAP_FD=", 0) != 0 &&
-           envLine.rfind("WINE_OHOS_AUDIO_PROTOCOL_VERSION=", 0) != 0 &&
-           envLine.rfind("WINESERVERSOCKET=", 0) != 0;
-}
-
-static std::string EnvKey(const std::string& envLine) {
-    size_t sep = envLine.find('=');
-    return sep == std::string::npos ? envLine : envLine.substr(0, sep);
-}
-
-static bool IsBrokerSessionAuthoritativeKey(const std::string& key) {
-    // Explorer may start before VirGL is ready. Replace its early Box64 path
-    // with the finalized path, where guest graphics libraries are a fallback.
-    return key == "BOX64_LD_LIBRARY_PATH";
-}
-
-size_t AppendMissingEntryParamsEnvOverrides(std::string& entryParams,
-                                            const std::vector<std::string>& env) {
-    std::unordered_set<std::string> existingKeys;
-    size_t pos = 0;
-
-    while ((pos = entryParams.find("|__env=", pos)) != std::string::npos) {
-        pos += strlen("|__env=");
-        size_t end = entryParams.find('|', pos);
-        std::string key = EnvKey(entryParams.substr(pos, end == std::string::npos
-                                                          ? std::string::npos
-                                                          : end - pos));
-        if (!key.empty()) existingKeys.insert(std::move(key));
-        if (end == std::string::npos) break;
-        pos = end;
-    }
-
-    size_t appended = 0;
-    for (const std::string& envLine : env) {
-        if (!ShouldSerializeEntryParamEnv(envLine) ||
-            envLine.find('|') != std::string::npos ||
-            envLine.find('\n') != std::string::npos)
-            continue;
-        // 过滤 per-process fd 变量: 子进程会从 fdList 拿到自己的值
-        if (envLine.rfind("WINESERVERSOCKET=", 0) == 0 ||
-            envLine.rfind("WINE_OHOS_AUDIO_ENABLE=", 0) == 0 ||
-            envLine.rfind("WINE_OHOS_AUDIO_BOOTSTRAP_FD=", 0) == 0 ||
-            envLine.rfind("WINE_OHOS_AUDIO_PROTOCOL_VERSION=", 0) == 0)
-            continue;
-        const std::string key = EnvKey(envLine);
-        if (key.empty() ||
-            (existingKeys.count(key) && !IsBrokerSessionAuthoritativeKey(key)))
-            continue;
-        entryParams += "|__env=";
-        entryParams += envLine;
-        existingKeys.insert(key);
-        ++appended;
-    }
-    return appended;
-}
-
+// 迁移期 shim: 新代码请直接用 winehua::EnvSpec (env_spec.h)。
+// 序列化规则 (fd 变量禁入 / 不可编码字符过滤) 已收口到 env_spec.cpp;
+// fromLines 对同 key 行取最后值, 与子进程逐条 setenv 覆盖语义一致。
 std::string SerializeEnvToEntryParams(const std::vector<std::string>& env) {
-    std::string result;
-    for (const std::string& e : env) {
-        if (e.find('|') != std::string::npos || e.find('\n') != std::string::npos)
-            continue;
-        if (e.rfind("WINESERVERSOCKET=", 0) == 0 ||
-            e.rfind("WINE_OHOS_AUDIO_ENABLE=", 0) == 0 ||
-            e.rfind("WINE_OHOS_AUDIO_BOOTSTRAP_FD=", 0) == 0 ||
-            e.rfind("WINE_OHOS_AUDIO_PROTOCOL_VERSION=", 0) == 0)
-            continue;
-        result += "|__env=";
-        result += e;
-    }
-    return result;
+    return winehua::EnvSpec::fromLines(env).serializeEntryParams();
 }
 
 void LogGraphicsBackendStateForLaunch(const char* tag) {

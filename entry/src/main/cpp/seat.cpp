@@ -58,10 +58,6 @@ Seat* Seat::GetInstance() {
 }
 
 // -- 资源访问 --
-wl_resource* Seat::GetPointerResource() {
-    std::lock_guard<std::mutex> lk(ptrResMutex_);
-    return pointerResources_.empty() ? nullptr : pointerResources_.back();
-}
 wl_resource* Seat::GetKeyboardResource() {
     std::lock_guard<std::mutex> lk(kbdResMutex_);
     return keyboardResources_.empty() ? nullptr : keyboardResources_.back();

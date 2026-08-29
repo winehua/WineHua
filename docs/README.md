@@ -19,6 +19,7 @@
 - **[OPENGL_VIRGL_DESIGN.md](OPENGL_VIRGL_DESIGN.md)** — VirGL/OpenGL 设计与 zero-copy/Vulkan 演进
 - **[CROSS_FORK_CONTRACTS.md](CROSS_FORK_CONTRACTS.md)** — 跨仓库私有契约（OpenGL 链路：shm 页 / present 协议 / 环境变量 / ready 标记 / 回调 / IPC；Vulkan 链路：surface tag / vn_winehua_present / VK_PRESENT 协议 / 设备释放回调；各含两端代码索引与失效表现）
 - **[AUDIO_ARCHITECTURE.md](AUDIO_ARCHITECTURE.md)** — 音频架构
+- **[PROCESS_SPAWNING.md](PROCESS_SPAWNING.md)** — 进程启动架构(broker 机制 + 4 条启动路径 + 环境变量机制 + ArkTS/native 入口索引)
 - **[DXVK_MODERN_UPGRADE_READINESS.md](DXVK_MODERN_UPGRADE_READINESS.md)** — DXVK 2.x/VKD3D 升级能力矩阵、迁移清单与准入门禁
 - **[VKD3D_LIMITED_500K_PLAN.md](VKD3D_LIMITED_500K_PLAN.md)** - VKD3D 2.6 limited-500K official D3D12 profile, gates, and device evidence
 - **[VKD3D_DESCRIPTOR_500K_910_20260804.md](VKD3D_DESCRIPTOR_500K_910_20260804.md)** — 910 设备 500K 末槽 GPU descriptor 三次真机证据

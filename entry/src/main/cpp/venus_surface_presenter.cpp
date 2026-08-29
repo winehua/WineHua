@@ -2,6 +2,7 @@
 
 #include "venus_surface_presenter.h"
 #include "native_window_lease.h"
+#include "presenter_common.h"
 
 #include <hilog/log.h>
 #include <native_buffer/native_buffer.h>
@@ -25,28 +26,12 @@
 namespace winehua {
 namespace {
 
-using SteadyClock = std::chrono::steady_clock;
-
-constexpr uint64_t kDefaultFramePeriodNs = 16666667;
-constexpr uint64_t kDispatchLeadNs = 500000;
-constexpr uint64_t kReleaseFenceWatchdogNs = 1000000000;
-
-uint64_t NowNs()
-{
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-        SteadyClock::now().time_since_epoch()).count());
-}
-
-uint64_t NormalizeFramePeriodNs(uint64_t value)
-{
-    return value >= 4000000 && value <= 100000000 ? value : kDefaultFramePeriodNs;
-}
-
-uint64_t PacingPeriodNs(uint64_t displayPeriodNs)
-{
-    return displayPeriodNs > kDispatchLeadNs ? displayPeriodNs - kDispatchLeadNs
-                                             : displayPeriodNs;
-}
+// 帧周期常量与工具函数收编于 presenter_common.h (行为平价 — 逻辑与返回值不变);
+// 本匿 namespace 位于 winehua 内, 直接可见 winehua 的 inline 函数与常量。
+// NormalizeVenus/PacingVenus 为 venus 专用策略版 (显式命名, 与 virgl 版区分)。
+using winehua::kDefaultFramePeriodNs;
+using winehua::kReleaseFenceWatchdogNs;
+using winehua::NowNs;
 
 VkPresentModeKHR RequestedPresentMode()
 {
@@ -91,12 +76,6 @@ bool GpuFrameProfileEnabled()
 {
     const char* profile = std::getenv("WINEHUA_VENUS_GPU_FRAME_PROFILE");
     return profile && profile[0] == '1' && !profile[1];
-}
-
-bool PresentPerfSummaryEnabled()
-{
-    const char* summary = std::getenv("WINEHUA_VTEST_PRESENT_PERF_SUMMARY");
-    return summary && summary[0] == '1' && !summary[1];
 }
 
 bool ForceSourceClearEnabled()
@@ -194,8 +173,8 @@ struct VenusSurfaceQueueTarget::Impl {
         surfaceKey_ = surfaceKey;
         surfaceAttached_ = true;
         deviceReleasing_ = false;
-        displayPeriodNs_ = NormalizeFramePeriodNs(framePeriodNs);
-        framePeriodNs_ = PacingPeriodNs(displayPeriodNs_);
+        displayPeriodNs_ = NormalizeVenusFramePeriodNs(framePeriodNs);
+        framePeriodNs_ = VenusPacingPeriodNs(displayPeriodNs_);
         lastPresentNs_ = 0;
         framesPresented_ = 0;
         lastSerial_ = 0;
@@ -251,8 +230,8 @@ struct VenusSurfaceQueueTarget::Impl {
     int SetFramePeriod(uint64_t framePeriodNs)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        displayPeriodNs_ = NormalizeFramePeriodNs(framePeriodNs);
-        framePeriodNs_ = PacingPeriodNs(displayPeriodNs_);
+        displayPeriodNs_ = NormalizeVenusFramePeriodNs(framePeriodNs);
+        framePeriodNs_ = VenusPacingPeriodNs(displayPeriodNs_);
         return 0;
     }
 
@@ -1260,21 +1239,31 @@ bool VenusSurfaceQueueTarget::FinishDeviceRelease(uint32_t contextId,
     return impl_->FinishDeviceRelease(contextId, device, waitResult);
 }
 
-int VenusSurfaceQueueTarget::Present(uint32_t contextId,
-                                     uintptr_t instance,
-                                     uintptr_t physicalDevice,
-                                     uintptr_t device,
-                                     uintptr_t queue,
-                                     uint64_t image,
-                                     uint32_t queueFamily,
-                                     uint32_t width,
-                                     uint32_t height,
-                                     uint32_t format,
-                                     uint32_t layout,
-                                     uint32_t serial,
-                                     uint64_t* nextPresentDeadlineNs,
-                                     void (*releaseQueue)(void*),
-                                     void* queueSyncData)
+// Present (GL) 为防御性死路径: Manager 按 IsVulkan 调度, GL 帧不会送达
+// venus 目标。返回 kPresentInvalid 以指示错误的呈现通道。
+int VenusSurfaceQueueTarget::Present(GLuint /*texture*/, uint32_t /*width*/,
+                                     uint32_t /*height*/, uint64_t /*drawable*/,
+                                     uint32_t /*serial*/,
+                                     uint64_t* /*nextPresentDeadlineNs*/)
+{
+    return kPresentInvalid;
+}
+
+int VenusSurfaceQueueTarget::PresentVenus(uint32_t contextId,
+                                          uintptr_t instance,
+                                          uintptr_t physicalDevice,
+                                          uintptr_t device,
+                                          uintptr_t queue,
+                                          uint64_t image,
+                                          uint32_t queueFamily,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          uint32_t format,
+                                          uint32_t layout,
+                                          uint32_t serial,
+                                          uint64_t* nextPresentDeadlineNs,
+                                          void (*releaseQueue)(void*),
+                                          void* queueSyncData)
 {
     return impl_->Present(contextId, instance, physicalDevice, device, queue,
                           image, queueFamily, width, height, format, layout,

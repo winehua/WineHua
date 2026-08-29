@@ -2,7 +2,7 @@
 #include "graphics_broker.h"
 #include "perf_utils.h"
 #include "shader_utils.h"
-#include "wayland_server.h"
+#include "compositor/toplevel/desktop_compositor.h"  // DesktopCompositor (6A 构造注入: 取帧/ZC 直连)
 #include "fps_counter.h"
 #include <algorithm>
 #include <array>
@@ -32,12 +32,7 @@ static std::once_flag gDisplayOnce;
 using winehua::PerfClock;
 using winehua::PerfNowUs;
 using winehua::RendererPerfWindow;
-
-static bool TraceFrameOrder()
-{
-    const char* trace = std::getenv("VKR_WINEHUA_SHADOW_TRACE");
-    return trace && ((!strcmp(trace, "1")) || !strcmp(trace, "present-image-trace"));
-}
+using winehua::FrameTraceEnabled;
 
 static void ComposeZeroCopySamplingTransform(const float* nativeTransform,
                                              bool flipY,
@@ -51,6 +46,8 @@ static void ComposeZeroCopySamplingTransform(const float* nativeTransform,
         samplingTransform[12 + row] = nativeTransform[4 + row] + nativeTransform[12 + row];
     }
 }
+
+EglRenderer::EglRenderer(DesktopCompositor& compositor) : compositor_(compositor) {}
 
 void EglRenderer::OnVSync(long long timestamp, void* data)
 {
@@ -128,13 +125,12 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
     if (!zeroCopyProgram_) return false;
     const uint64_t nowUs = PerfNowUs();
     auto& broker = winehua::GraphicsBroker::GetInstance();
-    WaylandServer* server = WaylandServer::GetInstance();
 
     if (zeroCopyRegistered_)
     {
-        WaylandServer::ZeroCopyLayerInfo layer;
-        if (!server->GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
-                                          zeroCopySourceW_, zeroCopySourceH_, layer))
+        ZeroCopyLayerInfo layer;
+        if (!compositor_.GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
+                                              zeroCopySourceW_, zeroCopySourceH_, layer))
         {
             ReleaseZeroCopyBinding();
         }
@@ -142,18 +138,15 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         {
             if (zeroCopyLayerX_ != layer.x || zeroCopyLayerY_ != layer.y ||
                 zeroCopyLayerW_ != layer.width || zeroCopyLayerH_ != layer.height ||
-                zeroCopyFullscreen_ != (layer.fullscreen && server->Policy().RootCompositing()))
+                zeroCopyFullscreen_ != (layer.fullscreen && compositor_.Policy().RootCompositing()))
                 zeroCopyGeometryDirty_ = true;
             zeroCopyLayerX_ = layer.x;
             zeroCopyLayerY_ = layer.y;
             zeroCopyLayerW_ = layer.width;
             zeroCopyLayerH_ = layer.height;
-            zeroCopyFullscreen_ = layer.fullscreen && server->Policy().RootCompositing();
-            if (zeroCopyFallbackPending_ &&
-                layer.shmCommitSerial > zeroCopyFallbackShmSerial_)
+            zeroCopyFullscreen_ = layer.fullscreen && compositor_.Policy().RootCompositing();
+            if (compositor_.zc().ConfirmFallback(zeroCopySurfaceKey_, layer.shmCommitSerial))
             {
-                ClearZeroCopyCompositorKey();
-                zeroCopyFallbackPending_ = false;
                 zeroCopyHasFrame_ = false;
                 OH_LOG_WARN(LOG_APP,
                             "[VIRGL-ZC][MAIN] CPU_FALLBACK tl=%{public}u key=%{public}llu "
@@ -161,7 +154,8 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
                             rendererToplevelId,
                             static_cast<unsigned long long>(zeroCopySurfaceKey_),
                             static_cast<unsigned long long>(layer.shmCommitSerial),
-                            static_cast<unsigned long long>(zeroCopyFallbackShmSerial_));
+                            static_cast<unsigned long long>(
+                                compositor_.zc().GetFallbackShmSerial(zeroCopySurfaceKey_)));
             }
         }
     }
@@ -193,10 +187,10 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
     {
         if (!surface.surfaceKey || surface.attached) continue;
         if (surface.vulkan != wantVulkanSurface) continue;
-        WaylandServer::ZeroCopyLayerInfo layer;
-        if (!server->GetZeroCopyLayerInfo(surface.surfaceKey, rendererToplevelId,
-                                          static_cast<int>(surface.width),
-                                          static_cast<int>(surface.height), layer))
+        ZeroCopyLayerInfo layer;
+        if (!compositor_.GetZeroCopyLayerInfo(surface.surfaceKey, rendererToplevelId,
+                                              static_cast<int>(surface.width),
+                                              static_cast<int>(surface.height), layer))
             continue;
 
         glGenTextures(1, &zeroCopyTexture_);
@@ -254,8 +248,7 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         zeroCopyLayerH_ = layer.height;
         zeroCopyRegistered_ = true;
         zeroCopyGeometryDirty_ = true;
-        zeroCopyFallbackPending_ = false;
-        zeroCopyFallbackShmSerial_ = layer.shmCommitSerial;
+        compositor_.zc().BindSurface(zeroCopySurfaceKey_, layer.shmCommitSerial);
         zeroCopyConsecutiveFailures_ = 0;
         zeroCopyLastTimestamp_ = 0;
         zeroCopyTimestampRegressions_ = 0;
@@ -307,26 +300,27 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
                         "transform=%{public}d failures=%{public}llu",
                         toplevelId_, updateResult, transformResult,
                         static_cast<unsigned long long>(zeroCopyFailures_));
-        if (zeroCopyReadyPublished_ && !zeroCopyFallbackPending_ &&
+        if (compositor_.zc().IsReadyPublished(zeroCopySurfaceKey_) &&
+            !compositor_.zc().IsFallbackPending(zeroCopySurfaceKey_) &&
             zeroCopyConsecutiveFailures_ >= 8)
         {
-            WaylandServer::ZeroCopyLayerInfo layer;
+            ZeroCopyLayerInfo layer;
             uint32_t rendererToplevelId = toplevelId_;
-            WaylandServer* server = WaylandServer::GetInstance();
-            if (server->Policy().RootCompositing())
-                rendererToplevelId = server->GetDesktopRootToplevelId();
-            if (server->GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
-                                              zeroCopySourceW_, zeroCopySourceH_, layer))
-                zeroCopyFallbackShmSerial_ = layer.shmCommitSerial;
-            UnpublishZeroCopyReady(rendererToplevelId);
-            zeroCopyFallbackPending_ = true;
+            if (compositor_.Policy().RootCompositing())
+                rendererToplevelId = compositor_.DesktopRootToplevelId();
+            const bool baselineValid = compositor_.GetZeroCopyLayerInfo(
+                zeroCopySurfaceKey_, rendererToplevelId,
+                zeroCopySourceW_, zeroCopySourceH_, layer);
+            compositor_.zc().BeginFallback(zeroCopySurfaceKey_, layer.shmCommitSerial,
+                                           baselineValid, rendererToplevelId);
             OH_LOG_WARN(LOG_APP,
                         "[VIRGL-ZC][MAIN] fallback pending tl=%{public}u key=%{public}llu "
                         "failures=%{public}u shm_baseline=%{public}llu",
                         rendererToplevelId,
                         static_cast<unsigned long long>(zeroCopySurfaceKey_),
                         zeroCopyConsecutiveFailures_,
-                        static_cast<unsigned long long>(zeroCopyFallbackShmSerial_));
+                        static_cast<unsigned long long>(
+                            compositor_.zc().GetFallbackShmSerial(zeroCopySurfaceKey_)));
         }
         return false;
     }
@@ -359,12 +353,11 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
             zeroCopyLastTimestamp_ = imageTimestamp;
     }
 
-    WaylandServer::ZeroCopyLayerInfo layer;
+    ZeroCopyLayerInfo layer;
     uint32_t rendererToplevelId = toplevelId_;
-    WaylandServer* server = WaylandServer::GetInstance();
-    if (server->Policy().RootCompositing()) rendererToplevelId = server->GetDesktopRootToplevelId();
-    if (!server->GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
-                                      zeroCopySourceW_, zeroCopySourceH_, layer))
+    if (compositor_.Policy().RootCompositing()) rendererToplevelId = compositor_.DesktopRootToplevelId();
+    if (!compositor_.GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
+                                          zeroCopySourceW_, zeroCopySourceH_, layer))
     {
         ReleaseZeroCopyBinding();
         return false;
@@ -373,21 +366,21 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     zeroCopyLayerY_ = layer.y;
     zeroCopyLayerW_ = layer.width;
     zeroCopyLayerH_ = layer.height;
-    zeroCopyFullscreen_ = layer.fullscreen && server->Policy().RootCompositing();
+    zeroCopyFullscreen_ = layer.fullscreen && compositor_.Policy().RootCompositing();
     width = zeroCopySourceW_;
     height = zeroCopySourceH_;
     zeroCopyHasFrame_ = true;
-    if (zeroCopyFallbackPending_)
+    if (compositor_.zc().IsFallbackPending(zeroCopySurfaceKey_))
     {
-        zeroCopyFallbackPending_ = false;
+        compositor_.zc().CancelFallback(zeroCopySurfaceKey_);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][MAIN] fallback cancelled by GPU recovery tl=%{public}u key=%{public}llu",
                     rendererToplevelId,
                     static_cast<unsigned long long>(zeroCopySurfaceKey_));
     }
-    PublishZeroCopyActive(rendererToplevelId);
+    compositor_.zc().Activate(zeroCopySurfaceKey_, rendererToplevelId);
     ++zeroCopyFrames_;
-    if (TraceFrameOrder() && zeroCopyFrames_ <= 600)
+    if (FrameTraceEnabled() && zeroCopyFrames_ <= 600)
         OH_LOG_INFO(LOG_APP,
                     "[VENUS-ORDER][MAIN] frame=%{public}llu signals=%{public}llu "
                     "updates=%{public}llu signal_delta=%{public}llu coalesced=%{public}llu "
@@ -414,45 +407,6 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     return width > 0 && height > 0;
 }
 
-// -- ZC 状态发布点收敛 (阶段 3) --
-// 三处状态 (compositor zeroCopySurfaceKeys_ / broker ready marker /
-// renderer 内部 zeroCopyReadyPublished_) 的全部更新收敛到这三个方法,
-// 每个幂等。时序是协议设计, 不可合并: 发布先 compositor key 后 ready
-// (先让合成跳过, 再通知 guest 走 ZC); fallback 分两步 — 先撤 ready
-// (guest 立即切 SHM), 等 shmCommitSerial 越过基线 (新 SHM 帧已到) 再撤
-// compositor key (恢复合成), 避免合成到 ZC 前的旧 SHM 帧。
-void EglRenderer::PublishZeroCopyActive(uint32_t rendererToplevelId)
-{
-    if (zeroCopyReadyPublished_) return;
-    WaylandServer::GetInstance()->SetSurfaceZeroCopy(zeroCopySurfaceKey_, true);
-    winehua::GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(
-        zeroCopySurfaceKey_, true);
-    zeroCopyReadyPublished_ = true;
-    OH_LOG_INFO(LOG_APP,
-                "[VIRGL-ZC][MAIN] GPU_ACTIVE tl=%{public}u key=%{public}llu",
-                rendererToplevelId,
-                static_cast<unsigned long long>(zeroCopySurfaceKey_));
-}
-
-void EglRenderer::UnpublishZeroCopyReady(uint32_t rendererToplevelId)
-{
-    if (!zeroCopyReadyPublished_) return;
-    winehua::GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(
-        zeroCopySurfaceKey_, false);
-    zeroCopyReadyPublished_ = false;
-    OH_LOG_WARN(LOG_APP,
-                "[VIRGL-ZC][MAIN] ready revoked tl=%{public}u key=%{public}llu",
-                rendererToplevelId,
-                static_cast<unsigned long long>(zeroCopySurfaceKey_));
-}
-
-void EglRenderer::ClearZeroCopyCompositorKey()
-{
-    // SetSurfaceZeroCopy 内部有 surfaceKey 检查, erase 不存在的 key 是
-    // no-op — 天然幂等
-    WaylandServer::GetInstance()->SetSurfaceZeroCopy(zeroCopySurfaceKey_, false);
-}
-
 void EglRenderer::ReleaseZeroCopyBinding()
 {
     // Teardown logs below distinguish SurfaceQueue ownership failures from rendering failures.
@@ -461,15 +415,11 @@ void EglRenderer::ReleaseZeroCopyBinding()
                 "[VIRGL-ZC][MAIN] release begin tl=%{public}u key=%{public}llu "
                 "registered=%{public}d ready=%{public}d listener=%{public}d image=%{public}p",
                 toplevelId_, static_cast<unsigned long long>(surfaceKey),
-                zeroCopyRegistered_, zeroCopyReadyPublished_, zeroCopyListenerSet_,
-                zeroCopyImage_);
-    if (zeroCopySurfaceKey_)
-    {
-        // 幂等: 未发布过 (attach 早退/从未 GPU_ACTIVE) 时两个方法都是 no-op
-        UnpublishZeroCopyReady(toplevelId_);
-        ClearZeroCopyCompositorKey();
-    }
-    zeroCopyFallbackPending_ = false;
+                zeroCopyRegistered_, compositor_.zc().IsReadyPublished(surfaceKey),
+                zeroCopyListenerSet_, zeroCopyImage_);
+    // 幂等: 未发布过 (attach 早退/从未 GPU_ACTIVE) 时状态复位序列是 no-op
+    // (ready 未发布不撤也不打日志; key=0 时 SetEnabled 内部 no-op)
+    compositor_.zc().Release(surfaceKey, toplevelId_);
     if (zeroCopyRegistered_) {
         OH_LOG_INFO(LOG_APP, "[VIRGL-ZC][MAIN] release detach begin key=%{public}llu",
                     static_cast<unsigned long long>(surfaceKey));
@@ -508,7 +458,6 @@ void EglRenderer::ReleaseZeroCopyBinding()
     zeroCopyHasFrame_ = false;
     zeroCopyGeometryDirty_ = false;
     zeroCopyConsecutiveFailures_ = 0;
-    zeroCopyFallbackShmSerial_ = 0;
     zeroCopyLastTimestamp_ = 0;
     zeroCopyTimestampRegressions_ = 0;
     zeroCopyUpdates_ = 0;
@@ -586,6 +535,35 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
     thread_ = std::thread(&EglRenderer::RenderLoop, this);
     OH_LOG_INFO(LOG_APP, "[EGL] tl=%{public}u Init done, render thread started OK", toplevelId_);
     return true;
+}
+
+FitRect EglRenderer::GetInputLetterbox() const {
+    // 输入逆映射锚 (PresentedFrame 契约, 重构第 2B 步): 用最近一帧契约的
+    // 逻辑内容尺寸 (contentW/H) 对当前 surface 保比例 fit。桌面合成/快进/
+    // 直传帧均锚桌面逻辑尺寸, PC 窗口帧锚窗口内容尺寸。与显示 letterbox
+    // (锚 buffer 尺寸 frame.w/h) 解耦: 直传游戏帧 buffer 是内容尺寸 (如
+    // 800x600), 输入锚仍是桌面逻辑尺寸 (如 1400x920) — 否则逆映射二次缩放
+    // (红警2 主菜单点击无效根因)。锚未就绪 (首帧前 contentW/H=0) 或 fit 失败
+    // 退回显示 letterbox (与旧 CoordTransform fallback 语义一致)。
+    if (contentW_ > 0 && contentH_ > 0) {
+        FitRect lb;
+        if (ComputeFitRect(width_, height_, contentW_, contentH_, lb)) return lb;
+    }
+    return letterbox_;
+}
+
+uint32_t EglRenderer::DirectPassCapabilities() const
+{
+    // 直传能力位 (任务 3, 行为平价): 渲染器 GL 行为是 SHM 全屏直传逐像素
+    // 等价的前提, 此前散在 compositor 侧注释假设 — 能力来源逐条对应:
+    // - kForceOpaqueNoBlend: 本 context 从不开启 GL_BLEND (RenderFrame 注释)
+    //   + uForceOpaque 按 frameArgb_ 强制不透明 (egl_renderer.cpp:874);
+    // - kFitSameAsCpu: 几何统一由 ComputeFitRect 计算, 与 CPU 合成/输入命中
+    //   同源 (egl_renderer.cpp:819-821);
+    // - kXrgbFrameOpaque: root XRGB → frameArgb_=false, GPU 黑边不透明
+    //   (直传帧整屏覆盖有效)。
+    // 当前实现恒备全部能力 → 合成侧查询恒通过 (无能力位时判定不变)。
+    return winehua::kDirectPassCapabilitiesAll;
 }
 
 void EglRenderer::RenderLoop() {
@@ -740,21 +718,30 @@ void EglRenderer::RenderLoop() {
         int zeroCopyWidth = 0;
         int zeroCopyHeight = 0;
         uint32_t useToplevel = toplevelId_;
-        WaylandServer* ws = WaylandServer::GetInstance();
         // Desktop mode: root toplevel may be recreated, always use current ID
-        if (ws->Policy().RootCompositing()) useToplevel = ws->GetDesktopRootToplevelId();
+        // (6A: 配置经构造注入的 DesktopCompositor 引用直读 — 与旧
+        // WaylandServer::Policy()/GetDesktopRootToplevelId() 同一引用成员, 同值)
+        if (compositor_.Policy().RootCompositing()) useToplevel = compositor_.DesktopRootToplevelId();
         TryAttachZeroCopySurface(useToplevel);
         const bool zeroCopyGeometryFrame = zeroCopyGeometryDirty_;
         zeroCopyGeometryDirty_ = false;
         zeroCopyFrame = UpdateZeroCopyFrame(zeroCopyWidth, zeroCopyHeight);
         if (useToplevel != 0) {
-            cpuFrame = ws->TakeToplevelFrame(useToplevel, px, fw, fh);
+            // 帧交付契约 (presented_frame.h): TakeToplevelFrame 返回 PresentedFrame。
+            // fw/fh 从帧 buffer 尺寸 (frame.w/h) 取 — 直传帧是游戏内容尺寸
+            // (如 800x600), 合成/快进帧是桌面逻辑尺寸 (如 1400x920); 显示
+            // letterbox 用它们 (frameW_/frameH_)。alpha 语义取 frame.opaque —
+            // 产出侧 opaque = ShmFormat != 0, 故 !opaque == 旧 (ShmFormat==0) 等价。
+            // contentW/H (逻辑内容尺寸) 缓存供 GetInputLetterbox 输入逆映射锚。
+            PresentedFrame frame;
+            cpuFrame = compositor_.TakeToplevelFrame(useToplevel, px, frame);
             if (cpuFrame) {
-                // ARGB8888 帧 (layered/shaped 异型窗口) 透传 alpha; XRGB 强制不透明
-                frameArgb_ = (ws->GetToplevelShmFormat(useToplevel) == 0);
+                fw = frame.w;
+                fh = frame.h;
+                frameArgb_ = !frame.opaque;
+                contentW_ = frame.contentW;
+                contentH_ = frame.contentH;
             }
-        } else {
-            cpuFrame = ws->TakeFrame(px, fw, fh);
         }
         haveFrame = cpuFrame || zeroCopyFrame || zeroCopyGeometryFrame;
         const uint64_t takeUs = PerfNowUs() - takeStartedUs;
@@ -764,8 +751,11 @@ void EglRenderer::RenderLoop() {
             // 存储帧尺寸供输入坐标转换
             frameW_ = fw;
             frameH_ = fh;
-            OH_LOG_INFO(LOG_APP, "[DBG-CPU] tl=%{public}u fw=%{public}d fh=%{public}d px=%{public}zu firstLogged=%{public}d loop=%{public}d",
-                        useToplevel, fw, fh, px.size(), firstFrameLogged, loopCount);
+            // 帧级诊断 (默认关闭, WINEHUA_FRAME_TRACE=1 开启): CPU 帧尺寸/序号
+            if (FrameTraceEnabled()) {
+                OH_LOG_INFO(LOG_APP, "[DBG-CPU] tl=%{public}u fw=%{public}d fh=%{public}d px=%{public}zu firstLogged=%{public}d loop=%{public}d",
+                            useToplevel, fw, fh, px.size(), firstFrameLogged, loopCount);
+            }
             if (!firstFrameLogged) {
                 OH_LOG_INFO(LOG_APP, "[MW-RNDR] tl=%{public}u  FIRST FRAME %{public}dx%{public}d px=%{public}zu",
                             useToplevel, fw, fh, px.size());
@@ -951,12 +941,12 @@ void EglRenderer::RenderLoop() {
             // z-order 高于本层的窗口区域, 无上层窗口时结果为空 (无遮挡,
             // 行为不变); 双 GL 实例互叠 (另一窗口被连带标全屏) 时上层窗口
             // 被贴回, 双实例 bug 由此修复 (见 COMPOSITOR_UNIFICATION §5 阶段 2)
-            if (ws->Policy().RootCompositing() && rendered) {
+            if (compositor_.Policy().RootCompositing() && rendered) {
                 // 32 上限: 遮挡源 = 上层窗口 + popup 层, 真实场景个位数;
                 // 超出的部分不重绘 (该区域 GL 内容会透出), 比动态扩容简单且够用
                 static constexpr int kMaxOccluders = 32;
-                WaylandServer::ZeroCopyOccluderRect occluders[kMaxOccluders];
-                const int occluderCount = ws->GetZeroCopyOccluders(
+                ZeroCopyOccluderRect occluders[kMaxOccluders];
+                const int occluderCount = compositor_.GetZeroCopyOccluders(
                     zeroCopySurfaceKey_, useToplevel, occluders, kMaxOccluders);
                 if (occluderCount > 0) {
                     glUseProgram(program_);
@@ -999,13 +989,16 @@ void EglRenderer::RenderLoop() {
         const uint64_t frameEndedUs = PerfNowUs();
         if (haveFrame) {
             // 诊断: 每帧有帧 swap 都打印 — 对齐合成(MW-TAKE)时刻与上屏(swap)时刻,
-            // skip 累计 = 自上次上屏以来跳过多少次无帧循环 (帧被延迟多久)
-            OH_LOG_INFO(LOG_APP,
-                        "[MW-SWAP] tl=%{public}u loop=%{public}llu f=%{public}d/%{public}d/%{public}d skip=%{public}llu take=%{public}lluus swap=%{public}lluus",
-                        useToplevel, static_cast<unsigned long long>(loopCount),
-                        cpuFrame ? 1 : 0, zeroCopyFrame ? 1 : 0, zeroCopyGeometryFrame ? 1 : 0,
-                        static_cast<unsigned long long>(skipFrames_), takeUs,
-                        frameEndedUs - swapStartedUs);
+            // skip 累计 = 自上次上屏以来跳过多少次无帧循环 (帧被延迟多久)。
+            // 默认关闭 (WINEHUA_FRAME_TRACE=1 开启, 见 perf_utils.h)
+            if (FrameTraceEnabled()) {
+                OH_LOG_INFO(LOG_APP,
+                            "[MW-SWAP] tl=%{public}u loop=%{public}llu f=%{public}d/%{public}d/%{public}d skip=%{public}llu take=%{public}lluus swap=%{public}lluus",
+                            useToplevel, static_cast<unsigned long long>(loopCount),
+                            cpuFrame ? 1 : 0, zeroCopyFrame ? 1 : 0, zeroCopyGeometryFrame ? 1 : 0,
+                            static_cast<unsigned long long>(skipFrames_), takeUs,
+                            frameEndedUs - swapStartedUs);
+            }
             skipFrames_ = 0;
             perf.Add(useToplevel, takeUs, uploadUs, frameEndedUs - swapStartedUs,
                      frameEndedUs - frameStartedUs, cpuFrame ? px.size() : 0, swapOk);

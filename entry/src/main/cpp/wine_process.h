@@ -41,8 +41,8 @@ struct WineProcessEntry {
 //   evt:<name>[:<pid>]       瞬时事件 (不迁移状态):
 //     evt:launch-accepted:<pid>  evt:launch-failed
 //     evt:proc-updated  evt:proc-exited:<pid>
-//     evt:desktop-ready   桌面根 toplevel 出现 (WaylandServer FireToplevelEvent
-//         的 desktop_root 钩子补发; 唯一例外: ArkTS 用它把 ready-degraded 升级为 ready)
+//     evt:desktop-ready   桌面根 toplevel 出现 (WaylandServer PostToplevelEvent
+//         的 desktop_root 旁路补发; 唯一例外: ArkTS 用它把 ready-degraded 升级为 ready)
 extern napi_threadsafe_function gStateTsfn;
 extern std::string gSockPath;
 
@@ -69,7 +69,7 @@ void MarkDesktopSessionEnded();
 // 桌面会话启动 (LaunchPadMode spawn explorer 前) 调用: 清除上次会话的标记守卫,
 // 使新会话首次 desktop_root 出现时能重新标记 (热重启复用旧 wineserver 也生效)。
 void BeginDesktopSession();
-// 桌面 root 首次出现 (FireToplevelEvent desktop_root) 调用: 把当前 running 的
+// 桌面 root 首次出现 (PostToplevelEvent desktop_root) 调用: 把当前 running 的
 // 进程标记为桌面 shell 基础进程 (desktop + 桌面出现前加入的 explorer 等)。
 // root 重建不重复标记, 避免把已在跑的用户程序误标为不可结束。
 void MarkDesktopShellProcesses();

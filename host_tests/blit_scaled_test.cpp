@@ -2,7 +2,7 @@
 // 参考实现 blitScaledRef 是 2026-08-22 的"逐像素 4 采样"历史实现 (98b87ce
 // 回退目标), 固化于此作为对比基准: 未来对 BlitScaled 的任何改写 (分离
 // 插值/NEON/裁剪相位改动) 都必须与之逐位一致; 黄金值用例验证混合/clip 语义。
-#include "compositor/compositor_blit.h"
+#include "compositor/frame/compositor_blit.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>

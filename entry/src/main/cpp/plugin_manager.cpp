@@ -43,7 +43,13 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     }
     OH_LOG_INFO(LOG_APP, "[MW-Create] native window created %{public}p for toplevel #%{public}u", win, toplevelId);
 
-    auto r = std::make_unique<EglRenderer>();
+    // 构造注入 frame compositor (重构第 6A 步): 渲染器取帧/ZC 状态机经
+    // DesktopCompositor 直连 — 替代旧 WaylandServer 门面 26 处转发
+    // (TakeToplevelFrame/GetZeroCopyLayerInfo/ActivateZcSurface 等)。
+    // compositor 生命周期长于一切 renderer (WaylandServer 单例成员, 装配出口
+    // 见 wayland_server.h GetDesktopCompositor 注释), 无后置装配竞态。
+    auto r = std::make_unique<EglRenderer>(
+        WaylandServer::GetInstance()->GetDesktopCompositor());
     // 初始尺寸 1x1, 真正尺寸由 ResizeRenderer (onSurfaceChanged) 设置
     r->SetToplevelId(toplevelId);
     if (r->Init(win, 1, 1)) {
@@ -70,9 +76,9 @@ void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
         WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
 
         // 通知 ArkTS surface 的物理像素尺寸, 用于动态计算标题栏高度
-        char json[64];
-        snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", w, h);
-        WaylandServer::GetInstance()->FireToplevelEvent(toplevelId, "surface", json);
+        WaylandServer::GetInstance()->PostToplevelEvent(
+            toplevelId, ToplevelEventType::Surface,
+            ToplevelEventBus::JsonSurface(w, h));
     } else {
         OH_LOG_WARN(LOG_APP, "[MW-Resize] toplevel #%{public}u renderer NOT found or invalid", toplevelId);
     }

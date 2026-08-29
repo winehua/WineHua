@@ -17,11 +17,14 @@ export interface ProcessInfo {
 // wine 内部系统进程 (broker 已全量登记): 运行中页只显示用户程序,
 // 隐藏 wineserver/services 等服务进程。AddProcess 登记的是 basename。
 // winehua_keep 是桌面保活驻留 (桌面销毁后仍 Sleep 永驻), 属基础设施;
-// 不过滤它进程列表永不为空, "全部退出" 判定永远不成立
+// 不过滤它进程列表永不为空, "全部退出" 判定永远不成立。
+// wineboot (无 .exe) 是 broker 登记 NCP 壳的名字 (first boot 的 wineboot
+// 经 broker 通道 spawn, 全量登记后带此名) — 与 wineboot.exe 同一功能,
+// 同样过滤; 否则首启期间它会以绿点出现在运行中列表 (P1 残留观感)
 const SYSTEM_PROC_BLACKLIST: string[] = [
   'wineserver', 'services.exe', 'csrss.exe', 'winedevice.exe',
-  'plugplay.exe', 'svchost.exe', 'rpcss.exe', 'wineboot.exe',
-  'winehua_keep.exe',
+  'plugplay.exe', 'svchost.exe', 'rpcss.exe', 'wineboot',
+  'wineboot.exe', 'winehua_keep.exe',
 ];
 
 // Wine 进程列表服务: 原 Index.ets 的 refreshProcessList/doKillProcess 原样迁入。

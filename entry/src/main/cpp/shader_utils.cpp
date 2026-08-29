@@ -43,6 +43,27 @@ void main() {
 }
 )";
 
+// presenter 路径全屏 quad (gl_VertexID 大三角形): 覆盖整个视口的超采样
+// 三角形, 无需 attribute/VBO; 片段直读 RGBA texture, 无 swizzle/forceOpaque
+// (与 egl_renderer 的 kFullscreenQuadFS 语义不同 — 后者处理 Wayland ARGB=
+// BGRA 内存序 + XRGB forceOpaque, 不可互换)。收编于此处统一存放, 行为平价。
+const char* kPresentFullscreenQuadVS = R"(#version 300 es
+out vec2 vTexCoord;
+void main() {
+    vec2 positions[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    vec2 texcoords[3] = vec2[3](vec2(0.0, 0.0), vec2(2.0, 0.0), vec2(0.0, 2.0));
+    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+    vTexCoord = texcoords[gl_VertexID];
+})";
+
+const char* kPresentFullscreenQuadFS = R"(#version 300 es
+precision mediump float;
+uniform sampler2D uTexture;
+in vec2 vTexCoord;
+out vec4 outColor;
+void main() { outColor = texture(uTexture, vTexCoord); }
+)";
+
 GLuint CompileShader(GLenum type, const char* src) {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, nullptr);

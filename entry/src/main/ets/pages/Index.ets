@@ -24,24 +24,6 @@ import { BusinessError } from '@kit.BasicServicesKit';
 const DOMAIN = 0x0000;
 const TAG = 'Index';
 
-interface Vkd3dSmokeJson {
-  status?: string;
-  stage?: string;
-  frames?: number;
-  target_frames?: number;
-  fps?: number;
-}
-
-interface WineProcessHandle {
-  found: boolean;
-  pid: number;
-  status: string;
-  startTimestamp: number;
-  endTimestamp: number;
-  exitCode: number | null;
-  exitCodeSource: string;
-}
-
 @Entry
 @Component
 struct Index {

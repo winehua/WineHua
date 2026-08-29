@@ -13,11 +13,9 @@ struct ProgramOptions {
     std::vector<std::string> argv;
     std::vector<std::string> environment;
     std::string workingDirectory;
-    std::string prefixMode = "reuse";
     std::string d3dBackend = "vkd3d_limited_500k";
     std::string dxvkBackend = "dxvk_legacy";
-    std::string presentBackend = "virgl_compositor";
-    bool automationMode = false;
+    std::string presentBackend;  // 空 = 按 d3dBackend 派生 (DerivePresentBackend)
 };
 
 // 经 broker 通道启动一个 Wine 程序 (手动 runWineProgram 与自动拉起共用)。
@@ -25,15 +23,12 @@ struct ProgramOptions {
 int SpawnWineProgram(const ProgramOptions& options);
 
 // 经 broker Unix socket 发送 SPAWN 请求, 返回子进程 pid, <= 0 表示失败。
-// 供 wine_exe.cpp 内部与 wine_launch.cpp (explorer 桌面模式) 共用, 避免重复实现。
+// 实现位于 wine_exe.cpp; 新代码一般不直接调用 — 走 winehua::Spawner
+// (spawner.h) 声明 SpawnKind 由它收口路由与 token 布局。
 pid_t SpawnViaBroker(const std::string& entryParams,
                      const std::vector<std::string>& environment);
 
 napi_value RunWineExe(napi_env env, napi_callback_info info);
 napi_value RunWineProgram(napi_env env, napi_callback_info info);
-napi_value RunGuestProgram(napi_env env, napi_callback_info info);
-napi_value RunHostProgram(napi_env env, napi_callback_info info);
-napi_value RunHostReplay(napi_env env, napi_callback_info info);
-napi_value IsHostReplayRunning(napi_env env, napi_callback_info info);
 napi_value QueryWineProcess(napi_env env, napi_callback_info info);
 napi_value TerminateWineProcess(napi_env env, napi_callback_info info);

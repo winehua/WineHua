@@ -3,10 +3,11 @@
 #include "text_input.h"
 #include "input_manager.h"
 #include "xdg_shell.h"
+#include "xdg_configure.h"
 #include "fps_counter.h"
 #include "wine_process.h"
-#include "compositor/debug_assert.h"
-#include "include/xdg-shell-server-protocol.h"
+#include "compositor/frame/debug_assert.h"
+#include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
 #include <cstring>
 #include <ctime>
@@ -76,11 +77,21 @@ bool WaylandServer::Start(const std::string& socketPath) {
     wl_display_init_shm(display_);
     RegisterXdgShell(display_);
     Seat::GetInstance()->Register(display_);
+    // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
+    // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
+    // 装配在 wl 事件循环启动前 (与 4C1 warpSink 同模式: 之后回调仅在
+    // Wayland 线程 / NAPI 线程读, 只读共享, 无新锁; 引用与单例同生命周期,
+    // Start 前成员已全构造)。见 input_manager.h BindCompositorDeps。
+    // 共享状态引用指向 session_ 字段 (重构第 6B 步: 存储自根字段迁移到
+    // DesktopSessionState POD, 注入形态/时序不变 — 见 input_manager.h 注释)
+    InputManager::GetInstance()->BindCompositorDeps(toplevelMgr_, inputResolver_,
+                                                    moveGrab_, session_.policy,
+                                                    session_.desktopRootToplevelId);
     InputManager::GetInstance()->Initialize(display_);
     OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat+input)");
 
     running_ = true;
-    firstFrame_ = false;
+    session_.firstFrame = false;   // 存储 = 会话共享 POD (重构第 6B 步)
     thread_ = std::thread(&WaylandServer::EventLoop, this);
     OH_LOG_INFO(LOG_APP, "[WL] compositor started OK");
     return true;
@@ -104,7 +115,7 @@ void WaylandServer::Stop() {
         wl_display_destroy(display_);
         display_ = nullptr;
     }
-    firstFrame_ = false;
+    session_.firstFrame = false;   // 存储 = 会话共享 POD (重构第 6B 步)
 }
 
 void WaylandServer::EventLoop() {
@@ -129,7 +140,7 @@ void WaylandServer::EventLoop() {
 
 void WaylandServer::DestroyAllToplevels() {
     // 收集 id (锁内), 逐个收口 (锁外): OnToplevelDestroyed 内部重新拿锁,
-    // FireToplevelEvent 发 ArkTS 事件不应持 compositor 锁。模拟正常 client
+    // PostToplevelEvent 发 ArkTS 事件不应持 compositor 锁。模拟正常 client
     // 断开路径 (wl_core.cpp surface_destroy) 的清理 + destroyed 通知 —
     // stopAll 强杀 Wine 后该路径不执行, 导致 toplevel 残留 + ArkTS 子窗口不关。
     // 桌面 root 在内时 OnToplevelDestroyed 内部会 ResetSessionState (幂等)。
@@ -145,28 +156,15 @@ void WaylandServer::DestroyAllToplevels() {
                 ids.size());
     for (uint32_t id : ids) {
         OnToplevelDestroyed(id);
-        FireToplevelEvent(id, "destroyed");
+        PostToplevelEvent(id, ToplevelEventType::Destroyed);
     }
 }
 
 
 
-// -- 帧数据接口 --
-bool WaylandServer::TakeFrame(std::vector<uint8_t>& out, int& w, int& h) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    if (!dirty_) return false;
-    out = pixels_;
-    w = width_;
-    h = height_;
-    dirty_ = false;
-    OH_LOG_INFO(LOG_APP, "[MW-TAKE] global frame %{public}dx%{public}d px=%{public}zu", w, h, out.size());
-    return true;
-}
-
 void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
     auto lk = toplevelMgr_.Lock();
-    toplevelMgr_.RemoveFromZOrder(id);
-    toplevelMgr_.AddToZOrder(id);
+    toplevelMgr_.RaiseToplevel(id);
     // 全屏优先级: 仅"用户显式 raise (任务栏/窗口点击经 ArkTS 发起) 且目标
     // 当前已 fullscreen"时重新取号 — 两个全屏窗口互相切换靠它;
     // tl_set_fullscreen 批处理里的 raise 不重新取号 (显示模式切换会批量连带
@@ -180,13 +178,8 @@ void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
             toplevelMgr_.BumpFsPriorityLocked(id);
     }
     // 任务栏始终在顶层 (app_id == "explorer.exe.taskbar");
-    // 全屏窗口例外 — 游戏全屏必须压过任务栏
-    bool raisedFullscreen = false;
-    if (const auto* rst = toplevelMgr_.FindToplevelLocked(id)) raisedFullscreen = rst->IsFullscreen();
-    if (taskbarId_ > 0 && taskbarId_ != id && !raisedFullscreen) {
-        toplevelMgr_.RemoveFromZOrder(taskbarId_);
-        toplevelMgr_.AddToZOrder(taskbarId_);
-    }
+    // 全屏窗口例外 — 游戏全屏必须压过任务栏 (规则实现收口在 ToplevelManager::PinToTop)
+    toplevelMgr_.PinToTop(session_.taskbarId, id);   // 存储 = 会话共享 POD (重构第 6B 步)
     MarkDesktopRootDirtyLocked();
 }
 
@@ -198,7 +191,7 @@ void WaylandServer::StartMoveGrab(uint32_t toplevelId, uint32_t serial) {
                             wl_fixed_to_int(InputManager::GetInstance()->GetLastGlobalPointerX()),
                             wl_fixed_to_int(InputManager::GetInstance()->GetLastGlobalPointerY()));
     if (Policy().OhosWindowPerToplevel()) {
-        FireToplevelEvent(toplevelId, "move_start");
+        PostToplevelEvent(toplevelId, ToplevelEventType::MoveStart);
     }
 }
 
@@ -206,7 +199,7 @@ void WaylandServer::EndMoveGrab() {
     uint32_t tl = moveGrab_.GetToplevelId();
     moveGrab_.EndMoveGrab(toplevelMgr_);
     if (Policy().OhosWindowPerToplevel() && tl != 0) {
-        FireToplevelEvent(tl, "move_end");
+        PostToplevelEvent(tl, ToplevelEventType::MoveEnd);
     }
 }
 
@@ -219,31 +212,29 @@ bool WaylandServer::ProcessMoveGrabMotion(wl_fixed_t wx, wl_fixed_t wy) {
     return true;
 }
 
-void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char* jsonData) {
-    /* 首启 wineboot 抑制窗口创建事件 (PC 窗口模式): 抑制 created/argb_created
-     * 后 ArkTS 不启动 WineWindowAbility, wineboot 等待窗不出现在系统桌面。
-     * 功能不受影响 — wine.inf 安装不依赖窗口显示; wineboot 退出的 destroyed
-     * 事件照常派发, ArkTS 对未知 toplevel id 的销毁容忍。 */
-    if (toplevelEventSuppressed_ &&
-        (!strcmp(event, "created") || !strcmp(event, "argb_created"))) {
-        OH_LOG_INFO(LOG_APP, "[MW] suppress %{public}s tl=%{public}u (wineboot init)", event, id);
-        return;
-    }
-    OH_LOG_INFO(LOG_APP, "[MW] FireToplevel id=%{public}u event=%{public}s data=%{public}s", id, event, jsonData);
-    if (toplevelCb_) toplevelCb_(id, event, jsonData);
+void WaylandServer::PostToplevelEvent(uint32_t id, ToplevelEventType evt,
+                                      const std::string& json) {
+    // 事件收口 (重构第 5D 步): 抑制门禁 + [MW] FireToplevel 日志 + 主事件通道
+    // (ArkTS toplevel 回调) 全部在 ToplevelEventBus::Post 内 — 事件名经
+    // ToplevelEventName 映射为旧字符串 (逐字), 日志文本/顺序/抑制条件逐字;
+    // NAPI 通道移出 compositor 核心 (旧本函数直调 gStateTsfn, 见下方旁路)。
+    toplevelEventBus_.Post(id, evt, json);
     /* 桌面根出现 = 引擎消息通道的 evt:desktop-ready: LaunchPadMode 的 15s
      * root 等待超时后状态机停在 ready-degraded, 靠这个补票升级为正式 ready。
-     * 挂在统一的 FireToplevelEvent 而非 LaunchPadMode 等待循环 — root 在任意
+     * 挂在统一的 toplevel 事件收口点而非 LaunchPadMode 等待循环 — root 在任意
      * 时刻出现 (含慢设备超时后姗姗来迟) 都能补发; ArkTS 只在 degraded 态消费,
-     * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。 */
-    if (!strcmp(event, "desktop_root")) {
+     * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。
+     * 重构第 5D 步: 旧实现在此直调 napi_call_threadsafe_function(gStateTsfn)
+     * (PLAN §2.2 点名的 NAPI 通道泄漏), 现经会话状态通道 FireState →
+     * stateCb_ (napi_init SetStateCallback 注入的转发) 投递 — 消息与通道
+     * 不变 (同一 "evt:desktop-ready" + WLState TSFN + block 投递), 判空
+     * 语义等价 (napi 侧 lambda 内 if (gStateTsfn), 与旧 if (gStateTsfn)
+     * 一致), compositor 核心不再接触 napi 符号。 */
+    if (evt == ToplevelEventType::DesktopRoot) {
         // 桌面 root 首次出现: 把当前 running 的进程标记为桌面 shell 基础进程
         // (desktop + 桌面出现前加入的 explorer 等), ArkTS 据此隐藏"结束"防误操作。
         MarkDesktopShellProcesses();
-        if (gStateTsfn) {
-            napi_call_threadsafe_function(gStateTsfn, strdup("evt:desktop-ready"),
-                                          napi_tsfn_blocking);
-        }
+        FireState("evt:desktop-ready");
     }
 }
 
@@ -267,18 +258,20 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     {
         auto lk = toplevelMgr_.Lock();
         toplevelMgr_.EraseToplevelLocked(toplevelId);
-        if (pendingDesktopRootToplevelId_ == toplevelId)
-            pendingDesktopRootToplevelId_ = 0;
-        if (taskbarId_ == toplevelId) {
+        // 会话状态读写经 DesktopSessionState (重构第 6B 步: 旧为宿主私有字段,
+        // 清空点/时机/锁域逐字不变)
+        if (session_.pendingDesktopRootToplevelId == toplevelId)
+            session_.pendingDesktopRootToplevelId = 0;
+        if (session_.taskbarId == toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] taskbar toplevel #%{public}u destroyed, clearing cached id",
                         toplevelId);
-            taskbarId_ = 0;
+            session_.taskbarId = 0;
         }
         // root 本体被销毁 (xs_destroy / 客户端断连路径同样走到这里): 复位, 等待下一个 explorer
-        if (desktopRootToplevelId_ == toplevelId) {
+        if (session_.desktopRootToplevelId == toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] desktop root toplevel #%{public}u destroyed, clearing root",
                         toplevelId);
-            desktopRootToplevelId_ = 0;
+            session_.desktopRootToplevelId = 0;
             wasDesktopRoot = true;
             // 桌面会话由 explorer 主动结束: 随后 wineserver 跟随退出属正常终结,
             // ProcMon 据此按 state:stopped 收口而非误报 failed (仅 desktop 模式
@@ -292,11 +285,11 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
             moveGrab_.EndMoveGrab(toplevelMgr_);
         }
         toplevelMgr_.RemoveFromZOrder(toplevelId);
-        // 级联清理该 toplevel 的全部 PC popup (帧数据 + 映射)
-        for (const auto& [pid, rec] : toplevelMgr_.popups()) {
-            if (rec.parentToplevel == toplevelId) cascadePopups.push_back(pid);
-        }
-        for (uint32_t pid : cascadePopups) toplevelMgr_.RemovePopupDataLocked(pid);
+        // 级联清理该 toplevel 的全部 PC popup (帧数据 + 映射) — popup 表与
+        // 清理收口于 PopupManager (重构第 5B2 步; 锁域不变: 收集/删除仍在
+        // toplevelMgr 锁内, popup_hide fire 仍在锁外, 见下方)
+        cascadePopups = popupMgr_.CollectPopupIdsForParentLocked(toplevelId);
+        for (uint32_t pid : cascadePopups) popupMgr_.RemovePopupDataLocked(pid);
         MarkDesktopRootDirtyLocked();  // 非 desktop / root 已复位时 root=0, 自然 no-op
         // 对称清理 surface 映射 (popup 路径在 RemovePopupDataLocked 已清, toplevel 路径此前缺失):
         // xs_destroy 时 wl_surface 可能仍存活, 不清会让 GetSurfaceForToplevel(死 id) 命中
@@ -314,9 +307,29 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     if (wasDesktopRoot) ResetSessionState();
     // 通知 ArkTS 销毁 popup 子窗口 (锁外触发)
     for (uint32_t pid : cascadePopups) {
-        char json[64];
-        snprintf(json, sizeof(json), "{\"popupId\":%u}", pid);
-        FireToplevelEvent(toplevelId, "popup_hide", json);
+        PostToplevelEvent(toplevelId, ToplevelEventType::PopupHide,
+                          ToplevelEventBus::JsonPopupHide(pid));
+    }
+}
+
+void WaylandServer::TryBeginSessionFirstFrame(uint32_t toplevelId, wl_resource* surfRes) {
+    // 首帧通知 + 预设 pointer/keyboard focus (参考 HarmonyBox)
+    // 决策归属 (重构第 5B1 步): 从 wl_core FinishCommit 内联段收为命名策略 —
+    // 协议壳只陈述"首帧 commit 发生", 焦点预注入 (注入条件/顺序) 逐字平移。
+    // 存储 = 会话共享 POD 的 session_.firstFrame (重构第 6B 步, 仍 atomic)
+    bool expected = false;
+    if (session_.firstFrame.compare_exchange_strong(expected, true)) {
+        FireState("active");
+        // 预设 focus: Wine 在用户操作前就需要 enter
+        // 安全检查: 只有 resource 已创建才注入 (否则 Inject*Enter 内部会 DROP)
+        if (Seat::GetInstance()->HasPointerResource()) {
+            InputManager::GetInstance()->InjectPointerEnter(toplevelId, surfRes,
+                                                            wl_fixed_from_int(0),
+                                                            wl_fixed_from_int(0));
+        }
+        if (Seat::GetInstance()->HasKeyboardResource()) {
+            InputManager::GetInstance()->InjectKeyboardEnter(toplevelId, surfRes);
+        }
     }
 }
 
@@ -324,15 +337,14 @@ void WaylandServer::ResetSessionState() {
     // Wine 会话终结统一收口。只重置「进程级一次性/漂移状态」— 随 toplevel
     // 销毁自愈的字段 (root/pending/taskbar, OnToplevelDestroyed 锁内清理)
     // 不在这里重复, 避免锁外写非 atomic 字段与锁内读的竞态。
-    firstFrame_ = false;   // 热重启不重走 Start, 不重置则新会话首帧不注入 focus
+    session_.firstFrame = false;   // 热重启不重走 Start, 不重置则新会话首帧不注入 focus
     moveGrab_.EndMoveGrab(toplevelMgr_);  // 幂等兜底 (grab 窗口非 root 时已随销毁复位)
     InputManager::GetInstance()->ResetSessionState();
     OH_LOG_INFO(LOG_APP, "[MW] session state reset (firstFrame/grab/input focus+keys)");
 }
 
-// RemovePopupDataLocked 已移至 ToplevelManager (compositor/toplevel_manager.cpp)
-
-// RemovePopupBySurfaceKeyLocked 已移至 ToplevelManager (compositor/toplevel_manager.cpp)
+// RemovePopupDataLocked / RemovePopupBySurfaceKeyLocked 已移至 PopupManager
+// (compositor/popup_manager.{h,cpp}, 重构第 5B2 步)
 
 bool WaylandServer::TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out) {
     // 收敛: 掩码消费唯一入口在 ToplevelManager::TakeWindowMask
@@ -355,9 +367,9 @@ void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
 
 int32_t WaylandServer::GetWorkAreaHeight() {
     auto lk = toplevelMgr_.Lock();
-    if (taskbarId_ == 0) return outputH_;
-    const auto* st = toplevelMgr_.FindToplevelLocked(taskbarId_);
-    if (!st) return outputH_;
+    if (session_.taskbarId == 0) return session_.outputH;
+    const auto* st = toplevelMgr_.FindToplevelLocked(session_.taskbarId);
+    if (!st) return session_.outputH;
     return st->Y();  // 工作区 = 任务栏上方空间
 }
 
@@ -382,20 +394,11 @@ void WaylandServer::SetToplevelRestored(uint32_t id) {
     if (!td || !td->xdgSurface) return;
     auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
     if (!xdg || !xdg->wlSurface) return;
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+    std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
     // 全屏窗口从最小化还原: 维持 FULLSCREEN 状态 (尺寸 0,0 = Wine 保持当前尺寸)
-    if (IsToplevelFullscreen(id)) {
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_FULLSCREEN;
-    }
-    xdg_toplevel_send_configure(tl, 0, 0, &states);
-    wl_array_release(&states);
-    wl_client* client = wl_resource_get_client(tl);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    // 状态查询直调 toplevelMgr_ (6A 删转发; 本函数为 WaylandServer 成员, 直调同值)
+    if (toplevelMgr_.IsToplevelFullscreen(id)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    XdgConfigureSend(tl, xdg->xdgSurface, 0, 0, states);
 }
 
 void WaylandServer::SetToplevelMaximized(uint32_t id) {
@@ -406,6 +409,17 @@ void WaylandServer::SetToplevelMaximized(uint32_t id) {
         st->AnchorToOrigin();
     }
     MarkDesktopRootDirtyLocked();
+}
+
+// 重构第 5C 步: maximized 状态位写 (xdg_shell 协议处理调用), 权威自
+// SurfaceData::maximized 迁入 ToplevelState (PLAN §2.4 状态权威分裂修复 —
+// 旧 tl_set_fullscreen 须手工清 sd->maximized 以防 configure 误带 MAXIMIZED)。
+// Ensure 建档与 SetToplevelMinimized 同款 (pre-commit 状态转换同样记录)。
+// 裸状态赋值: 无 dirty/无日志 — 与旧 sd->maximized = x 直接赋值逐字等价,
+// dirty 由调用点随后的 SetToplevelMaximized (锚定) / configure 路径负责。
+void WaylandServer::SetToplevelMaximizedState(uint32_t id, bool on) {
+    auto lk = toplevelMgr_.Lock();
+    toplevelMgr_.EnsureToplevelLocked(id).SetMaximized(on);
 }
 
 void WaylandServer::SetToplevelFullscreen(uint32_t id, bool on) {
@@ -432,7 +446,8 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     // configure 路径处理会 SetWindowPos 把窗口挪回屏幕内, 哨兵位被污染 →
     // 用户还原时检测永不成立, WS_MINIMIZE 清不掉 (war3 还原后黑屏 +
     // 点击再最小化的根因之一)。还原通道 SetToplevelRestored 不走本函数。
-    if (IsToplevelMinimized(toplevelId)) {
+    // 状态查询直调 toplevelMgr_ (6A 删转发; 本函数为 WaylandServer 成员, 同值)
+    if (toplevelMgr_.IsToplevelMinimized(toplevelId)) {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u %{public}dx%{public}d SKIPPED (minimized)",
                     toplevelId, w, h);
         return;
@@ -445,48 +460,36 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
     if (!xdg) return;
 
-    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(xdg->wlSurface));
+    // maximized 状态位权威在 ToplevelState (重构第 5C 步: 旧读 sd->maximized
+    // 迁移为读 ToplevelState; 未建档/sd 缺失同值 false)。一次读取供本函数
+    // 三处消费 (日志/状态位/日志), 独立加锁与 IsToplevelFullscreen 同模式
+    // (本函数入口的 IsToplevelMinimized 已是该模式, 无锁嵌套)。
+    // 6A: 状态查询直调 toplevelMgr_ (删转发; 本函数为 WaylandServer 成员, 同值)。
+    const bool maximized = toplevelMgr_.IsToplevelMaximized(toplevelId);
 
     OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s",
                 toplevelId, w, h,
                 IsDesktopMode() ? "no" : "yes",
-                (sd && sd->maximized) ? "yes" : "no");
+                maximized ? "yes" : "no");
 
-    wl_array states;
-    wl_array_init(&states);
-    uint32_t* st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-    *st = XDG_TOPLEVEL_STATE_ACTIVATED;
-    if (sd && sd->maximized) {
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
-    }
+    std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
+    if (maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
     // 全屏窗口在 OHOS 侧尺寸变化时保持 FULLSCREEN 状态, 否则 Wine 会退出全屏。
-    if (IsToplevelFullscreen(toplevelId)) {
-        st = static_cast<uint32_t*>(wl_array_add(&states, sizeof(uint32_t)));
-        *st = XDG_TOPLEVEL_STATE_FULLSCREEN;
-    }
-    xdg_toplevel_send_configure(tl, w, h, &states);
-    wl_array_release(&states);
-
-    wl_client* client = wl_resource_get_client(tl);
-    wl_display* dpy = wl_client_get_display(client);
-    xdg_surface_send_configure(xdg->xdgSurface, wl_display_next_serial(dpy));
+    if (toplevelMgr_.IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    XdgConfigureSend(tl, xdg->xdgSurface, w, h, states);
 
     // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时
     // setOutputSize (display 物理尺寸 / effectiveScale), root 的 resize 只反映
     // ArkUI surface 波动 — 桌面退出时 launcherVisible 翻 true, 窗口退出全屏,
     // XComponent 高度 1840→1683, 反写会把错误高度残留进 output, 下次热重启
     // explorer 用 /desktop=shell,WxH 建桌面就少了这段高度 (上下被裁)。
-    if (Policy().RootCompositing() && toplevelId == desktopRootToplevelId_) {
+    if (Policy().RootCompositing() && toplevelId == session_.desktopRootToplevelId) {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize root=%{public}u (output untouched) %{public}dx%{public}d",
                     toplevelId, w, h);
     } else {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u → %{public}dx%{public}d maximized=%{public}s",
-                    toplevelId, w, h, (sd && sd->maximized) ? "yes" : "no");
+                    toplevelId, w, h, maximized ? "yes" : "no");
     }
 }
-
-// -- toplevelId -> wl_surface 映射 (供 Seat::InjectPointerEnter 查找) --
-wl_resource* WaylandServer::GetSurfaceForToplevel(uint32_t toplevelId) {
-    return toplevelMgr_.GetSurfaceForToplevel(toplevelId);
-}
+// GetSurfaceForToplevel 转发已删 (重构第 6A 步): 调用方 (InputManager/
+// InputInjector) 经装配注入 ToplevelManager 引用直调 GetSurfaceForToplevel

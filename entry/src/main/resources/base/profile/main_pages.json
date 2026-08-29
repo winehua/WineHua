@@ -1,7 +1,6 @@
 {
   "src": [
     "pages/Index",
-    "pages/HostVulkanSmoke",
     "pages/WineWindow",
     "pages/WinePopup",
     "pages/VirtualDesktop"

@@ -1,14 +1,18 @@
 /**
  * wine_child.cpp - Wine 子进程入口 (libwine_child.so)
  *
- * 通过 OH_Ability_StartNativeChildProcess 启动，入口函数 Main()。
+ * 通过 OH_Ability_StartNativeChildProcess 启动，入口函数 Main()
+ * (broker spawn 的唯一入口, 见 broker.cpp)。
  * 子进程从 appspawn 创建，全局状态干净，ntdll.so 首次 dlopen 构造正常执行。
  *
- * entryParams 格式: "binDir|arg0|arg1|..."
+ * entryParams 格式: "homeDir|binDir|arg0|arg1|...|__env=K=V|..."
  *   binDir  = /data/storage/el2/base/files/wine/bin
  *   后续    = argv (如 "wineboot --init")
+ *   特判    = argv[0]=="wineserver" → RunWineserver 本体 (纯 Unix ELF,
+ *             不能走 wine loader 的 PE 解析)
  *
- * fdList 的第一个 fd 为 wineserver socket，设为 WINESERVERSOCKET。
+ * fdList 按 fdName 区分: wineserver_sock (wineserver socket, 设为
+ * WINESERVERSOCKET) / wine_audio_bootstrap (音频 bootstrap)。
  */
 #include <AbilityKit/native_child_process.h>
 #include <hilog/log.h>
@@ -268,9 +272,9 @@ static const char *select_winedebug_profile(int argc, char *argv[])
 
 static void setup_wine_env(const char* binDir, const char* homeDir, const char *winedebug)
 {
-    std::string shareDir = std::string(binDir) + "/../share";
-    std::string libDir = std::string(binDir) + "/x86_64-unix";
+    const std::string libDir = std::string(binDir) + "/x86_64-unix";
 
+    // 分歧键: 库搜索路径 (主进程 BuildWineEnv 按图形后端另算 runtimeLibPath)
 #ifdef __aarch64__
     // ARM64: x86_64 .so 由 Box64 加载，不在系统 LD_LIBRARY_PATH
     // LD_LIBRARY_PATH 只包含 ARM64 原生 .so
@@ -285,39 +289,23 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
            (libDir + ":/data/storage/el1/bundle/libs/x86_64").c_str(), 1);
 #endif
 
-    if (homeDir && homeDir[0])
-        setenv("HOME", homeDir, 1);
+    // 公共基线: 与主进程 BuildWineEnv 同一张表 (wine_env_baseline.h), 增键只改一处
+    winehua::ApplyEnvLinesToEnviron(winehua::BuildWineBaselineLines(
+        {binDir, homeDir && homeDir[0] ? homeDir : "", WINE_PREFIX}));
+    // 分歧键: 合成器 socket 固定名 (主进程侧是 sockName 参数)
     setenv("WAYLAND_DISPLAY", "wine-wayland", 1);
-    setenv("WINEPREFIX", WINE_PREFIX, 1);
+    // 读 WINEPREFIX 设 XDG_RUNTIME_DIR/PROCESSBROKER, 必须在基线 (WINEPREFIX) 之后
     refresh_wine_session_paths();
-    setenv("WINEDATADIR", (shareDir + "/wine").c_str(), 1);
-    setenv("XKB_CONFIG_ROOT", (shareDir + "/X11/xkb").c_str(), 1);
     // WINEBINDIR/WINEUNIXDIR 覆盖 init_paths() 中基于 dladdr(ntdll.so) 推算的错误路径
     // ntdll.so 在 bundle libs 目录，而 PE DLL / Unix SO 数据都在 wine/bin/ 下
     setenv("WINEBINDIR", binDir, 1);   // wine/bin/
     setenv("WINEUNIXDIR", binDir, 1);  // wine/bin/ (含 x86_64-unix/x86_64-windows)
-    setenv("WINEDLLDIR", libDir.c_str(), 1);
-    setenv("WINEDLLDIR0", (std::string(binDir) + "/x86_64-windows").c_str(), 1);
-    setenv("WINEDLLDIR1", (std::string(binDir) + "/i386-windows").c_str(), 1);
-    setenv("WINEDLLDIR2", binDir, 1);
-    {
-        std::string dllPath = std::string(binDir) + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir;
-#ifndef __aarch64__
-        dllPath += ":/data/storage/el1/bundle/libs/x86_64";
-#endif
-        setenv("WINEDLLPATH", dllPath.c_str(), 1);
-    }
     // Box64 日志: 0=关闭 (3=DEBUG 会产生海量 I/O)
-    SetBox64PerfEnv();
+    winehua::SetBox64PerfEnv();
 #ifdef __aarch64__
     // 标记 Box64 in-process 模式，供 x86_64 wine 代码 (process.c) 运行时判断
     setenv("USE_LIBBOX64", "1", 1);
 #endif
-    setenv("PATH", (std::string("/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:")
-                    + binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir).c_str(), 1);
-    setenv("TMPDIR", WINE_TMPDIR, 1);
-    std::string midiSoundfontPath = std::string(binDir) + "/../audio/winehua-gm.sf2";
-    setenv("MIDI_SOUNDFONT_PATH", midiSoundfontPath.c_str(), 1);
     setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
 }
 
@@ -392,27 +380,10 @@ static void log_d3d_environment_summary()
                 rgba8SnormRt ? rgba8SnormRt : "");
 }
 
-static void prepare_host_elf_environment(const char *homeDir)
-{
-    std::vector<std::string> removeKeys;
-    for (char **entry = environ; entry && *entry; ++entry) {
-        const char *separator = strchr(*entry, '=');
-        if (!separator) continue;
-        std::string key(*entry, (size_t)(separator - *entry));
-        if (key.rfind("BOX64_", 0) == 0 || key.rfind("VN_", 0) == 0 ||
-            key == "USE_LIBBOX64" || key == "VK_DRIVER_FILES" ||
-            key == "VK_ICD_FILENAMES" || key == "MESA_LOADER_DRIVER_OVERRIDE" ||
-            key == "LIBGL_DRIVERS_PATH")
-            removeKeys.push_back(std::move(key));
-    }
-    for (const std::string& key : removeKeys) unsetenv(key.c_str());
-
-    setenv("LD_LIBRARY_PATH",
-           "/data/app/bin:/usr/local/lib:/system/lib64/module:/system/lib64", 1);
-    setenv("PATH", "/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin", 1);
-    setenv("TMPDIR", WINE_TMPDIR, 1);
-    if (homeDir && homeDir[0]) setenv("HOME", homeDir, 1);
-}
+// wineserver 本体 (文件后部定义); Main 截获 argv[0]=="wineserver" 转入
+static void RunWineserver(char* binDir, int argc2, char** argv2,
+                          const std::vector<std::string>& envOverrides,
+                          const char* entryParamsForLog);
 
 extern "C" void Main(NativeChildProcess_Args args)
 {
@@ -447,17 +418,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     if (argc > 0 && argv[0] && argv[0][0])
         prctl(PR_SET_NAME, basename_of_path(argv[0]));
 
-    bool guestElfMode = argc >= 2 && !strcmp(argv[0], "__winehua_guest_elf__");
-    bool hostElfMode = argc >= 2 && !strcmp(argv[0], "__winehua_host_elf__");
-    if (guestElfMode || hostElfMode) {
-        for (int i = 0; i < argc; ++i) argv[i] = argv[i + 1];
-        argc--;
-        if (hostElfMode)
-            OH_LOG_INFO(LOG_APP, "[HostChild] isolated native ELF=%{public}s", argv[0]);
-        else
-            OH_LOG_INFO(LOG_APP, "[GuestChild] isolated x86_64 ELF=%{public}s", argv[0]);
-    }
-
     // 检查 __winehua_desktop__ 标记: 有 → desktop 模式, 需要传 env 给 wine
     {
         for (int i = 0; i < argc; i++) {
@@ -471,15 +431,24 @@ extern "C" void Main(NativeChildProcess_Args args)
         }
     }
 
+    // wineserver 截获 (重构第 5 步): 所有 wineserver 启动经 broker → Main;
+    // wine loader 无法把 "wineserver" 解析为 PE (纯 Unix ELF), 必须在此转入
+    // wineserver 本体 (与旧 loader 自启 ohos_broker_spawn_wineserver 同路)。
+    if (argc > 0 && !strcmp(argv[0], "wineserver")) {
+        // broker 会为每个请求挂 audio bootstrap fd; wineserver 用不到, 关掉防泄漏
+        for (auto* node = args.fdList.head; node; node = node->next) close(node->fd);
+        RunWineserver(binDir, argc, argv, envOverrides, entryParams);
+        free(buf);
+        return;
+    }
+
     OH_LOG_INFO(LOG_APP, "[WineChild] homeDir=%{public}s binDir=%{public}s argc=%{public}d argv[0]=%{public}s",
                 homeDir ? homeDir : "(null)", binDir, argc, argc > 0 ? argv[0] : "(none)");
 
     // 2. Step A: 设置 Wine 环境变量 baseline (硬编码默认值, 确保非 broker 路径可用)
     const char *winedebug = select_winedebug_profile(argc, argv);
-    if (!hostElfMode) {
-        OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
-        setup_wine_env(binDir, homeDir, winedebug);
-    }
+    OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
+    setup_wine_env(binDir, homeDir, winedebug);
 
     // 3. 从父进程 fdList 读取 fds (按 fdName 区分)
     int wsSockFd = -1;   // wineserver fd (per-process)
@@ -504,7 +473,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     // may not exist after a clean install.
     refresh_wine_session_paths();
 
-    if (!hostElfMode) log_d3d_environment_summary();
+    log_d3d_environment_summary();
 
     // 覆盖 per-process fd 变量 (__env__ 中的是父进程 fd 号, 本进程无效)
     if (wsSockFd >= 0) {
@@ -520,37 +489,6 @@ extern "C" void Main(NativeChildProcess_Args args)
         setenv("WINE_OHOS_AUDIO_BOOTSTRAP_FD", buf, 1);
         setenv("WINE_OHOS_AUDIO_PROTOCOL_VERSION", "1", 1);
         OH_LOG_INFO(LOG_APP, "[WineChild] AUDIO fd=%{public}d (own fd)", audioFd);
-    }
-
-    if (hostElfMode) {
-        prepare_host_elf_environment(homeDir);
-        const char *requestedCwd = getenv("WINEHUA_WORKING_DIRECTORY");
-        if (requestedCwd && requestedCwd[0] && chdir(requestedCwd) != 0) {
-            OH_LOG_ERROR(LOG_APP, "[HostChild] chdir(%{public}s) failed: %{public}s",
-                         requestedCwd, strerror(errno));
-            free(buf);
-            return;
-        }
-        OH_LOG_INFO(LOG_APP,
-                    "[HostChild] loading signed replay module for=%{public}s loader=system-vulkan",
-                    argv[0]);
-        void *module = dlopen("libwinehua_host_heaven_replay.so", RTLD_NOW | RTLD_LOCAL);
-        if (!module) {
-            OH_LOG_ERROR(LOG_APP, "[HostChild] replay module load failed: %{public}s", dlerror());
-            free(buf);
-            return;
-        }
-        auto replayMain = reinterpret_cast<int (*)(int, char **)>(
-            dlsym(module, "winehua_host_replay_main"));
-        if (!replayMain) {
-            OH_LOG_ERROR(LOG_APP, "[HostChild] replay entry lookup failed: %{public}s", dlerror());
-            free(buf);
-            return;
-        }
-        int replayResult = replayMain(argc, argv);
-        OH_LOG_INFO(LOG_APP, "[HostChild] replay module returned rc=%{public}d", replayResult);
-        free(buf);
-        return;
     }
 
     // 确保 WINEPREFIX 目录存在
@@ -572,9 +510,6 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     int errPipe[2];
     pipe(errPipe);
-    const char* automation = getenv("WINEHUA_AUTOMATION");
-    if (automation && !strcmp(automation, "1"))
-        dup2(errPipe[1], STDOUT_FILENO);
     dup2(errPipe[1], STDERR_FILENO);
     close(errPipe[1]);
     mkdir(WINE_LOG_DIR, 0755);
@@ -614,19 +549,12 @@ extern "C" void Main(NativeChildProcess_Args args)
         return;
     }
 
-    // Guest probes use the same isolated NCP/Box64 boundary as Wine but run a
-    // concrete x86_64 OHOS ELF.  Keeping this marker out of argv ensures the
-    // probe observes a normal argv[0] and cannot accidentally enter Wine.
-    std::string winePath = guestElfMode ? std::string(argv[0]) : std::string(binDir) + "/wine";
-    int box64_argc = guestElfMode ? argc + 1 : argc + 2;
+    std::string winePath = std::string(binDir) + "/wine";
+    int box64_argc = argc + 2;
     const char** box64_argv = new const char*[box64_argc + 1];
     box64_argv[0] = "box64";
     box64_argv[1] = winePath.c_str();
-    if (guestElfMode) {
-        for (int i = 1; i < argc; i++) box64_argv[i + 1] = argv[i];
-    } else {
-        for (int i = 0; i < argc; i++) box64_argv[i + 2] = argv[i];
-    }
+    for (int i = 0; i < argc; i++) box64_argv[i + 2] = argv[i];
     box64_argv[box64_argc] = nullptr;
 
     OH_LOG_INFO(LOG_APP, "[WineChild] calling box64_hmos_main argc=%{public}d wine=%{public}s",
@@ -641,12 +569,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     // 进程即将退出, OS 会回收一切, 无需手动卸载。
     free(buf);
 #else
-    if (guestElfMode) {
-        execve(argv[0], argv, environ);
-        OH_LOG_ERROR(LOG_APP, "[GuestChild] execve failed: %{public}s", strerror(errno));
-        free(buf);
-        return;
-    }
     // x86_64 Pad: dlopen ntdll.so → __wine_main (原生系统 linker 加载)
     OH_LOG_INFO(LOG_APP, "[WineChild] dlopen ntdll.so...");
     void* ntdll = dlopen("ntdll.so", RTLD_NOW);
@@ -678,37 +600,26 @@ extern "C" void Main(NativeChildProcess_Args args)
 #endif
 }
 
-// wineserver 子进程入口
-// entryParams: "homeDir|binDir|wineserver|-f"... (homeDir 跳过)
-extern "C" void WineserverMain(NativeChildProcess_Args args)
+// wineserver 本体 — 统一入口 (重构第 5 步)。
+// 所有 wineserver 启动都经 broker → Main 截获 argv[0]=="wineserver" 到此
+// (wine loader 无法把 "wineserver" 解析为 PE — 它是纯 Unix ELF; loader 自启
+// ohos_broker_spawn_wineserver 同样走 broker→Main, 由本函数兜底)。
+// env 基线刻意精简 (非完整 setup_wine_env): wineserver 几乎不加载库,
+// 省 entryParams 长度; WINEPREFIX 由 __env 会话权威最后覆盖。
+// argv/argvOverrides 来自调用方已解析的 token (argv[0]="wineserver" ...)。
+static void RunWineserver(char* binDir, int argc2, char** argv2,
+                          const std::vector<std::string>& envOverrides,
+                          const char* entryParamsForLog)
 {
-    OH_LOG_INFO(LOG_APP, "[WineChild] WineserverMain() ENTER pid=%{public}d entryParams=%{public}s",
-                getpid(), args.entryParams ? args.entryParams : "(null)");
-
-    const char* ep = args.entryParams ? args.entryParams : "";
-    char* buf = strdup(ep);
-    strtok(buf, "|");              // skip homeDir
-    char* binDir = strtok(nullptr, "|");
-    if (!binDir) { free(buf); return; }
-
-    // Collect argv and per-session environment overrides.  In particular this
-    // keeps a clean smoke prefix isolated from the user's normal prefix.
-    int argc2 = 0;
-    char* argv2[8];
-    char* t;
-    std::vector<std::string> envOverrides;
-    while ((t = strtok(nullptr, "|")))
-    {
-        if (!strncmp(t, "__env=", 6))
-            envOverrides.emplace_back(t + 6);
-        else if (argc2 < 7)
-            argv2[argc2++] = t;
-    }
-    argv2[argc2] = nullptr;
-
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step1: setting env...");
     setenv("WINEPREFIX", WINE_PREFIX, 1);
     setenv("WINEDEBUG", "-all", 1);
+#ifdef __aarch64__
+    // Box64 基线必须先于 __env apply: 会话档位 (BOX64_DYNAREC_*) 经 __env
+    // 下发, apply 最后执行才能保证 "后写胜出"。
+    setenv("BOX64_LD_LIBRARY_PATH", (std::string(binDir) + "/x86_64-unix").c_str(), 1);
+    winehua::SetBox64PerfEnv();
+#endif
     apply_entry_param_env_overrides(envOverrides);
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step2: mkdir prefix=%{public}s...", active_wine_prefix());
     mkdir(active_wine_prefix(), 0755);
@@ -732,7 +643,7 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     int errFile = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (errFile >= 0) {
         dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
-                args.entryParams ? args.entryParams : "(null)");
+                entryParamsForLog ? entryParamsForLog : "(null)");
     }
     auto* ctx = new stderr_ctx{errPipe[0], errFile};
     pthread_t tid;
@@ -756,34 +667,17 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     void* box64_lib = dlopen("box64.so", RTLD_NOW);
     if (!box64_lib) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlopen(box64.so) failed: %{public}s", dlerror());
-        free(buf);
         return;
     }
     auto* box64_main = (int (*)(int, const char**, char**))dlsym(box64_lib, "box64_hmos_main");
     if (!box64_main) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlsym(box64_hmos_main) failed: %{public}s", dlerror());
         dlclose(box64_lib);
-        free(buf);
         return;
     }
 
-    // Box64 env for wineserver (x86_64 wineserver ELF inside Box64).
-    std::string libDir = std::string(binDir) + "/x86_64-unix";
-    setenv("BOX64_LD_LIBRARY_PATH", libDir.c_str(), 1);
-    SetBox64PerfEnv();
-    // __env= 段在此前 (:712) 已 apply 一次 — 该次必须先于 mkdir (WINEPREFIX
-    // 覆盖依赖), 不可整体延迟。但 SetBox64PerfEnv 的 setenv(...,1) 把
-    // BOX64_DYNAREC_* 盖回硬基线, 此处只重放 dynarec 行让其压过基线;
-    // 其余 __env key (WINEPREFIX 等) 不重放, 避免覆盖 :712 之后的环境决策
-    for (const std::string& envLine : envOverrides) {
-        if (envLine.rfind("BOX64_DYNAREC_", 0) != 0)
-            continue;
-        size_t sep = envLine.find('=');
-        if (sep == std::string::npos || sep == 0)
-            continue;
-        setenv(envLine.substr(0, sep).c_str(), envLine.substr(sep + 1).c_str(), 1);
-    }
-
+    // Box64 env (BOX64_LD_LIBRARY_PATH / 性能基线) 已在 step1 先于 __env
+    // apply 设置, 此处直接拼 argv。
     // Build argv: ["box64", "/path/to/wineserver", "wineserver", "-f", "-p"]
     std::string wsPath = std::string(binDir) + "/wineserver";
     int box64_argc = argc2 + 2;
@@ -807,7 +701,6 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     void* h = dlopen("libwineserver.so", RTLD_NOW);
     if (!h) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlopen(libwineserver.so) failed: %{public}s", dlerror());
-        free(buf);
         return;
     }
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step6: dlsym main...");
@@ -815,7 +708,6 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
     if (!ws_main) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlsym(main) failed: %{public}s", dlerror());
         dlclose(h);
-        free(buf);
         return;
     }
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step7: calling ws_main(%{public}d, [...]), WINEPREFIX=%{public}s",
@@ -828,5 +720,4 @@ extern "C" void WineserverMain(NativeChildProcess_Args args)
                   wsRc);
 #endif
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step9: wineserver process exiting");
-    free(buf);
 }

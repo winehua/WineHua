@@ -417,40 +417,6 @@ void CloseInheritedFds(std::initializer_list<int> keepFds) {
     closedir(d);
 }
 
-// Embedded Box64 Wine intentionally survives the Windows process until the
-// server's final SIGKILL timeout. For clean smoke prefixes the server records
-// the already-established Windows exit code before that Unix-only cleanup.
-static bool ReadWineServerExitTelemetry(pid_t pid, int* exitCode)
-{
-    const char* prefixes[] = {WINE_SMOKE_PREFIX, WINE_PREFIX};
-    bool found = false;
-
-    for (const char* prefix : prefixes)
-    {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/.winehua-process-exit-status", prefix);
-        FILE* file = fopen(path, "r");
-        if (!file) continue;
-
-        char line[96];
-        int recordedPid = -1;
-        unsigned int windowsPid = 0;
-        int recordedExitCode = -1;
-        while (fgets(line, sizeof(line), file))
-        {
-            if (sscanf(line, "%d %u %d", &recordedPid, &windowsPid, &recordedExitCode) == 3 &&
-                recordedPid == pid)
-            {
-                *exitCode = recordedExitCode;
-                found = true;
-            }
-        }
-        fclose(file);
-        if (found) break;
-    }
-    return found;
-}
-
 // -- SIGCHLD handler: reap NCP child processes spawned by broker --
 void sigchld_handler(int) {
     int status;
@@ -458,19 +424,7 @@ void sigchld_handler(int) {
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         const char* source = "sigchld";
-        if (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL &&
-            ReadWineServerExitTelemetry(pid, &exitCode))
-        {
-            source = "wine-server-exit-telemetry";
-            OH_LOG_INFO(LOG_APP,
-                        "[broker-child] Wine logical exit pid=%{public}d code=%{public}d; "
-                        "Unix wrapper received the expected final SIGKILL",
-                        pid, exitCode);
-        }
-        else
-        {
-            LogProcessExit("broker-child", pid, status);
-        }
+        LogProcessExit("broker-child", pid, status);
         RemoveProcess(pid, exitCode, source);
         if (gStateTsfn) {
             char msg[64];

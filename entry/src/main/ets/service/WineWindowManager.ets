@@ -49,12 +49,10 @@ export class WineWindowManager {
 
   // -- Desktop 模式 (Tablet / PC 虚拟桌面) --
   isDesktopMode: boolean = false;
-  private automationMode: boolean = false;
   // PC 虚拟桌面: 桌面 root surface 承载在独立 VirtualDesktopAbility 窗口
   // (Index 内嵌 DesktopLayer 只在 Pad/phone 挂载)。由 applyDesktopModePolicy 派生。
   desktopSeparateWindow: boolean = false;
-  // PC 虚拟桌面窗口状态 (root 单例, 不用 entries Map; 参照 master 分支
-  // DesktopAbility 的 registerDesktopAbility/desktopAbilityCtx 模式):
+  // PC 虚拟桌面窗口状态 (root 单例, 不用 entries Map):
   //   desktopWinStarting  — startAbility 飞行中 (防重复)
   //   desktopWindowActive — 窗口存活 (Index 悬浮窗显隐: VDA 存活时隐藏)
   //   desktopWinCtx       — VDA onCreate 注册, root 销毁时 terminateSelf 关窗
@@ -63,8 +61,8 @@ export class WineWindowManager {
   private desktopWinCtx: common.UIAbilityContext | null = null;
   private desktopRootId: number = 0;
   // 单 Ability 三层页面: 桌面已激活 → Index 挂载 DesktopLayer 盖住启动器。
-  // root 销毁时翻回 false (等效旧双 Ability 时代"root 销毁关闭 DesktopAbility
-  // 回主页面"的语义), 新 desktop_root 事件再置 true
+  // root 销毁时翻回 false (等效旧双 Ability 时代"root 销毁即关窗回主页面"
+  // 的语义), 新 desktop_root 事件再置 true
   desktopActive: boolean = false;
   // 桌面 root 的 XComponent surface 校准完成（renderer 就绪）才置 true。
   desktopSurfaceReady: boolean = false;
@@ -187,35 +185,23 @@ export class WineWindowManager {
     });
   }
 
-  setAutomationMode(enabled: boolean): void {
-    this.automationMode = enabled;
-    this.applyModePolicy();
-  }
-
   // 桌面模式判定统一入口 (init / 引擎启动前共用):
   //   Pad/phone → 恒桌面合成器 (Index 内嵌 DesktopLayer)
-  //   PC (2in1) + automation (smoke) → 融合 (managed, 无 explorer)
   //   PC + 设置虚拟桌面 → 桌面合成器 + 独立 VirtualDesktopAbility 窗口
   //   PC + 设置融合 (默认) → managed 多窗口
   // 引擎每次启动前调用 — 设置页切换后"重启引擎"即生效。若只在 init 判定,
   // 重启引擎会沿用启动时旧模式 (改融合后桌面/悬浮窗依旧出现)
   applyModePolicy(): void {
     const isPadOrPhone = deviceInfo.deviceType === 'tablet' || deviceInfo.deviceType === 'phone';
-    this.isDesktopMode = !this.automationMode &&
-      (isPadOrPhone || DesktopModeService.getInstance().mode === 'virtual');
+    this.isDesktopMode =
+      isPadOrPhone || DesktopModeService.getInstance().mode === 'virtual';
     this.desktopSeparateWindow = this.isDesktopMode && !isPadOrPhone;
     testNapi.setDesktopMode(this.isDesktopMode);
     hilog.info(DOMAIN, TAG,
-      '[MW] mode policy: type=%{public}s automation=%{public}s → %{public}s (separateWindow=%{public}s)',
-      deviceInfo.deviceType, this.automationMode ? 'true' : 'false',
+      '[MW] mode policy: type=%{public}s → %{public}s (separateWindow=%{public}s)',
+      deviceInfo.deviceType,
       this.isDesktopMode ? 'DESKTOP MODE' : 'MANAGED MODE',
       this.desktopSeparateWindow ? 'yes' : 'no');
-  }
-
-  setManagedToplevelTitleFilter(title: string): void {
-    this.managedToplevelTitleFilter = title;
-    hilog.info(DOMAIN, TAG, '[MW] managed toplevel title filter=%{public}s',
-      title.length > 0 ? title : '<disabled>');
   }
 
   async init(windowStage: window.WindowStage, abilityContext: common.UIAbilityContext): Promise<void> {
@@ -463,11 +449,6 @@ export class WineWindowManager {
       case 'created':
         if (this.isDesktopMode) {
           hilog.info(DOMAIN, TAG, '[MW] Desktop mode: toplevel #%{public}d created, skipping Ability', id);
-        } else if (this.managedToplevelTitleFilter.length > 0 &&
-          this.entries.get(id)?.title !== this.managedToplevelTitleFilter) {
-          hilog.info(DOMAIN, TAG,
-            '[MW] managed toplevel #%{public}d title="%{public}s" suppressed; waiting for "%{public}s"',
-            id, this.entries.get(id)?.title ?? '', this.managedToplevelTitleFilter);
         } else {
           hilog.info(DOMAIN, TAG, '[MW] -> startWineWindowAbility(#%{public}d)', id);
           this.startWineWindowAbility(id, data);
@@ -930,7 +911,7 @@ export class WineWindowManager {
     return this.desktopWindowActive;
   }
 
-  // VDA onCreate 调: 注册 ctx + 窗口存活标记 (对齐 master registerDesktopAbility)
+  // VDA onCreate 调: 注册 ctx + 窗口存活标记
   registerDesktopWindow(ctx: common.UIAbilityContext): void {
     this.desktopWinCtx = ctx;
     this.desktopWindowActive = true;
@@ -941,7 +922,7 @@ export class WineWindowManager {
   }
 
   // VDA 关窗 (WINDOW_DESTROYED / onDestroy) 调: 引擎会话后台继续, 仅清窗口标记
-  // (对齐 master unregisterDesktopAbility 语义 + notify 让 Index 按钮显隐)
+  // (清标记 + notify 让 Index 按钮显隐)
   markDesktopWindowClosed(): void {
     this.desktopWinCtx = null;
     this.desktopWindowActive = false;

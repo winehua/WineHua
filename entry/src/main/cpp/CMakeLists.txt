@@ -9,7 +9,12 @@ set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(
     ${NATIVERENDER_ROOT_PATH}
-    ${NATIVERENDER_ROOT_PATH}/include
+    ${NATIVERENDER_ROOT_PATH}/protocols
+    # compositor 按域分组后 (frame/toplevel/input): 域内互引保持裸名 include,
+    # 经本路径解析; 跨域由目标目录命中。同目录优先搜索不变。
+    ${NATIVERENDER_ROOT_PATH}/compositor/frame
+    ${NATIVERENDER_ROOT_PATH}/compositor/toplevel
+    ${NATIVERENDER_ROOT_PATH}/compositor/input
 )
 
 if(DEFINED PACKAGE_FIND_FILE)
@@ -25,13 +30,14 @@ add_library(entry SHARED
     audio_stream.cpp
     graphics_broker.cpp
     virgl_host_config.cpp
-    experiment_payload.cpp
     napi_init.cpp
     wine_process.cpp
     wine_env.cpp
+    env_spec.cpp
+    env_profiles.cpp
+    spawner.cpp
     wine_launch.cpp
     wine_exe.cpp
-    host_vulkan_probe.cpp
     broker.cpp
     ncp_dispatch.cpp
     perf_utils.cpp
@@ -39,14 +45,24 @@ add_library(entry SHARED
     phone_adapter/phone_virgl_relay.cpp
     wayland_server.cpp
     wl_core.cpp
-    compositor/compositor_blit.cpp
-    compositor/toplevel_manager.cpp
-    compositor/move_grab.cpp
-    compositor/compositor_utils.cpp
-    compositor/geometry.cpp
-    compositor/desktop_compositor.cpp
-    compositor/input_resolver.cpp
-    compositor/desktop_root_manager.cpp
+    compositor/frame/compositor_blit.cpp
+    compositor/toplevel/toplevel_manager.cpp
+    compositor/toplevel/popup_manager.cpp
+    compositor/toplevel/move_grab.cpp
+    compositor/frame/compositor_utils.cpp
+    compositor/frame/geometry.cpp
+    compositor/toplevel/desktop_compositor.cpp
+    compositor/frame/zc_bridge.cpp
+    compositor/frame/frame_composer.cpp
+    compositor/frame/frame_pipeline.cpp
+    compositor/frame/shm_frame_source.cpp
+    compositor/input/input_resolver.cpp
+    compositor/input/input_space_mapper.cpp
+    compositor/input/input_queue.cpp
+    compositor/input/input_state_tracker.cpp
+    compositor/input/input_injector.cpp
+    compositor/toplevel/desktop_root_manager.cpp
+    compositor/toplevel/toplevel_event_bus.cpp
     egl_renderer.cpp
     fs_utils.cpp
     plugin_manager.cpp
@@ -59,12 +75,12 @@ add_library(entry SHARED
     pointer_extras.cpp
     xdg_shell.cpp
     text_input.cpp
-    xdg-shell-protocol.c
-    viewporter-server-protocol.c
-    pointer-warp-v1-protocol.c
-    pointer-constraints-unstable-v1-protocol.c
-    relative-pointer-unstable-v1-protocol.c
-    text-input-unstable-v3-protocol.c
+    protocols/xdg-shell-protocol.c
+    protocols/viewporter-server-protocol.c
+    protocols/pointer-warp-v1-protocol.c
+    protocols/pointer-constraints-unstable-v1-protocol.c
+    protocols/relative-pointer-unstable-v1-protocol.c
+    protocols/text-input-unstable-v3-protocol.c
 )
 
 # BlitScaled (双线性缩放 blit) 是桌面合成热路径: 全屏游戏 800x600→1400x920
@@ -72,7 +88,7 @@ add_library(entry SHARED
 # 单独 -O2 该源文件 (其余保持 -O0 便于调试), 合成崩溃时该文件仍可栈回溯。
 # 注意: compositor_blit.cpp 迁移自 compositor_utils.cpp (2026-08-22 拆分),
 # -O2 属性必须跟着代码走 — 漏挂曾致 blit 段从 26ms 劣化到 ~240ms。
-set_source_files_properties(compositor/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+set_source_files_properties(compositor/frame/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")
 
 target_link_libraries(entry PUBLIC
     libace_napi.z.so
@@ -101,6 +117,7 @@ add_library(virgl_child SHARED
     virgl_host_config.cpp
     virgl_surface_presenter.cpp
     venus_surface_presenter.cpp
+    shader_utils.cpp
     phone_adapter/phone_virgl_dispatch.cpp
 )
 target_link_libraries(virgl_child PUBLIC

@@ -976,22 +976,6 @@ void GraphicsBroker::AppendWineEnv(std::vector<std::string>& env) const
     }
 }
 
-bool GraphicsBroker::TakeFrameForToplevel(uint32_t rendererToplevelId,
-                                          std::vector<uint8_t>& outPixels,
-                                          int& w,
-                                          int& h,
-                                          uint32_t* outSourceToplevelId)
-{
-    WaylandServer* ws = WaylandServer::GetInstance();
-    uint32_t sourceToplevelId = rendererToplevelId;
-
-    if (ws->Policy().RootCompositing()) sourceToplevelId = ws->GetDesktopRootToplevelId();
-    if (outSourceToplevelId) *outSourceToplevelId = sourceToplevelId;
-
-    if (sourceToplevelId != 0) return ws->TakeToplevelFrame(sourceToplevelId, outPixels, w, h);
-    return ws->TakeFrame(outPixels, w, h);
-}
-
 const char* GraphicsBroker::BackendName(GraphicsBackend backend)
 {
     switch (backend) {

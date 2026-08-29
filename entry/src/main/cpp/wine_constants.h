@@ -8,14 +8,9 @@
 // Wine prefix (Wine 运行时数据: registry, drive_c, .wineserver socket)
 #define WINE_PREFIX          "/data/storage/el2/base/files/.wine"
 
-// Isolated prefix used by milestone smoke runs.  It is never removed as part
-// of the normal user's prefix lifecycle.
-#define WINE_SMOKE_PREFIX    "/data/storage/el2/base/files/.wine-smoke"
-
-// Wine runtime and the non-interactive HOME used by automation.
+// Wine 运行时解压目录
 #define WINE_RUNTIME_ROOT    "/data/storage/el2/base/files/wine"
 #define WINE_RUNTIME_BIN     WINE_RUNTIME_ROOT "/bin"
-#define WINE_AUTOMATION_HOME "/data/storage/el2/base/files/home"
 
 // Broker Unix socket 路径 (主进程 <-> 子进程通信)
 #define WINE_BROKER_SOCKET   "/data/storage/el2/base/files/.wine_broker"
