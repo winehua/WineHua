@@ -20,7 +20,7 @@
 | 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
-| 5 协议层重构 | **进行中（5A1/5A2/5B1/5B2/5C 完成，待设备回归）** | 5A1/5A2 前序记录（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标；5C 本分支 HEAD 提交（§二 5C） |
+| 5 协议层重构 | **代码层全部完成（5A1/5A2/5B1/5B2/5C/5D 落地，待设备回归）** | 5A1/5A2 前序记录（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标；5C §二 5C 下标；5D §二 5D（本分支 HEAD 提交） |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
@@ -893,6 +893,116 @@ preMaxW/H/preFsW/H 恢复尺寸**保留在 SurfaceData**（xdg 状态机尺寸
 
 **遗留（设备回归请求）：** 窗口最大化/还原（Wine 最大大小推断 + set_maximized 直发）、全屏切换（tl_set_fullscreen 手工清路径：全屏后 MAXIMIZED 位不误带）、最小化→还原（SetToplevelRestored 无 MAXIMIZED 状态位的预存语义）、popup 菜单；监视日志：`[XDG] tl_set_maximized/unset_maximized`、`[MW] NotifyToplevelResize ... max=yes/no`、`[MW] toplevel #N size changed ... max=`；war3 全屏尺寸漂移（ReassertFullscreen 路径 — maximized 不触达，回归确认）。
 
+### 阶段 5D（ToplevelEventBus 事件 enum 化 + JSON 构造单点 + NAPI 通道移出 core，2026-08-29）
+
+PLAN §三 ToplevelEventBus + §四阶段5 第 4 条 + §2.3（22 种 stringly-typed 事件名
+散布 5 文件 ~30 处 snprintf）+ §2.2（FireToplevelEvent 直调
+napi_call_threadsafe_function 点名的 NAPI 通道泄漏）。全部行为平价。
+
+**事件清单表（22 种 → enum → JSON 模板 → caller → payload 来源）：**
+
+| # | 事件名 | enum | JSON 模板（逐字） | caller（旧行号，无 payload 即默认 "{}"） | payload 来源 |
+|---|---|---|---|---|---|
+| 1 | created | Created | `{"w":%d,"h":%d}` | wl_core.cpp surface_commit 首帧 XRGB 分支 | fi.contentW/H |
+| 2 | created（桌面） | Created | `{"w":640,"h":480}` | xdg_shell.cpp xs_get_toplevel（硬编码常量） | 无 |
+| 3 | argb_created | ArgbCreated | `{"x":%d,"y":%d,"w":%d,"h":%d}` | wl_core.cpp surface_commit 首帧 ARGB 分支 | fi.screenX/Y + contentW/H |
+| 4 | destroyed | Destroyed | `{}` | wayland_server.cpp DestroyAllToplevels / wl_core.cpp (surface resource 析构 :134, surface_destroy :390) / xdg_shell.cpp (xs_destroy, xs_resource_destroy) — 5 处 | — |
+| 5 | popup_hide | PopupHide | `{"popupId":%u}` | wayland_server.cpp 级联 / wl_core.cpp 4 处（析构/subsurface_destroy/surface_destroy/NULL buffer）— 5 处 | removedPopup / pid |
+| 6 | popup_move | PopupMove | `{"popupId":%u,"x":%d,"y":%d}` | wl_core.cpp subsurface_set_position / UpdateSubsurfaceOnCommit | PopupMoveEvent.popupId/offX/offY |
+| 7 | popup_show | PopupShow | `{"popupId":%u,"x":%d,"y":%d,"w":%d,"h":%d,"argb":%d}` | wl_core.cpp UpdateSubsurfaceOnCommit isNew 分支 | ev.popupId/offX/offY/winW/winH + shmFormat==0?1:0 |
+| 8 | popup_resize | PopupResize | `{"popupId":%u,"w":%d,"h":%d}` | wl_core.cpp UpdateSubsurfaceOnCommit | ev.popupId/winW/winH |
+| 9 | argb_move | ArgbMove | `{"x":%d,"y":%d}` | wl_core.cpp 首帧后 ARGB 位置同步（SyncArgbPositionLocked 返回 true） | fi.screenX/Y |
+| 10 | argb | Argb | `{"argb":%d}` | wl_core.cpp shm format 变化/首帧（OhosWindowPerToplevel） | shmFormat==0?1:0 |
+| 11 | mask_dirty | MaskDirty | `{}` | wl_core.cpp UpdateArgbMaskLocked 返回 true | — |
+| 12 | resize | Resize | `{"w":%d,"h":%d}` | wl_core.cpp HandleCommittedSizeLocked ResizeEvent | fi.contentW/H |
+| 13 | desktop_root | DesktopRoot | `{}` | wl_core.cpp CheckDesktopRootOnCommit + DesktopRootManager::PromotePending（经构造注入 lambda · 2 条路径） | — |
+| 14 | surface | Surface | `{"w":%d,"h":%d}` | plugin_manager.cpp ResizeRenderer | w/h |
+| 15 | title | Title | `{"title":"%s"}`（不转义，既有行为） | xdg_shell.cpp tl_set_title | sd->title.c_str() |
+| 16 | limits | Limits | `{"minW":%d,"minH":%d,"maxW":%d,"maxH":%d}` | xdg_shell.cpp fire_limits_event（set_min/max_size 共用） | sd->min/maxWidth/Height |
+| 17 | maximized | Maximized | `{}` | xdg_shell.cpp tl_set_maximized | — |
+| 18 | unmaximized | Unmaximized | `{}` | xdg_shell.cpp tl_unset_maximized | — |
+| 19 | fullscreen | Fullscreen | `{}` | xdg_shell.cpp tl_set_fullscreen | — |
+| 20 | unfullscreen | Unfullscreen | `{}` | xdg_shell.cpp tl_unset_fullscreen | — |
+| 21 | minimized | Minimized | `{}` | xdg_shell.cpp tl_set_minimized | — |
+| 22 | move_start | MoveStart | `{}` | wayland_server.cpp StartMoveGrab（OhosWindowPerToplevel） | — |
+| 23 | move_end | MoveEnd | `{}` | wayland_server.cpp EndMoveGrab | — |
+
+（"created" 有两种模板 — PC 首帧内容尺寸 vs 桌面 get_toplevel 硬编码 640x480，
+为既有分化，bus 保留为 JsonCreated / JsonCreatedDefault 两个构造器，未统一。）
+
+**模块形态（新增 compositor/toplevel_event_bus.{h,cpp}）：**
+
+- `ToplevelEventType` 全局 enum class（22 种，命名与旧字符串一一对应）；
+  `ToplevelEventName()` 头内联 switch 映射旧字符串（日志/sink 消费，逐字）。
+  enum 名不与 napi_init.cpp 的 `struct ToplevelEvent`（全局）冲突。
+- `ToplevelEventBus`：`Post(id, evt, json = "{}")`（投递单点，语义 = 旧
+  FireToplevelEvent：① 抑制门禁 created/argb_created → `[MW] suppress` 日志
+  ② `[MW] FireToplevel id=... event=... data=...` 日志 ③ EventSink 派发 —
+  文本/条件/短路顺序逐字；EventSink 签名 = 旧 ToplevelCb
+  (id, eventName, jsonData)，**napi_init.cpp SetToplevelCallback 装配点零改动**）；
+  `SetSuppressed`（wine_launch SetToplevelEventSuppressed 转发，签名不变）；
+  Json* 静态构造器（12 个 14 模板，snprintf 模板逐字，含 created 双模板）。
+- 零依赖约定：EventName/Json* 头内联（无 wayland/hilog），bus 投递实现在
+  .cpp（hilog）。host_tests/toplevel_event_test.cpp（62 checks）直连头编译。
+- 事件 fire 调用点保持原位（30 处），只改 fire 方式：字符串事件名 +
+  调用点 snprintf → `ToplevelEventType::Xxx` + `ToplevelEventBus::JsonXxx(...)`；
+  WaylandServer::FireToplevelEvent → `PostToplevelEvent`（公开转发，内部
+  bus.Post + desktop_root 会话侧旁路）。桌面 root 的 PromotePending 间接
+  路径（DesktopRootManager 构造注入 lambda）同步收编。
+
+**NAPI 移出方案（谁注入/何时）：**
+
+- 移出前：FireToplevelEvent 只有 desktop_root 分支直调
+  `napi_call_threadsafe_function(gStateTsfn, "evt:desktop-ready")`
+  （其余已回调化 toplevelCb_）；gStateTsfn 经 wine_process.h extern 引入 —
+  即 PLAN §2.2 点名的唯一泄漏点。
+- 移出后：desktop_root 旁路在 WaylandServer::PostToplevelEvent（bus.Post 之后，
+  时序与旧逐字）：`MarkDesktopShellProcesses()`（wine_process 编排，会话层
+  职责）+ `FireState("evt:desktop-ready")` — 经 stateCb_ 通道，由
+  napi_init.cpp SetStateCallback 注册的转发到达同一 WLState TSFN（消息
+  "evt:desktop-ready"/blocking 投递/判空 `if (gStateTsfn)` 全部等价 —
+  判空从 bus 侧移到 napi 侧 lambda，语义同值）。
+- 结论：`napi_call_threadsafe_function`/`gStateTsfn` 符号在
+  wayland_server/wl_core/xdg_shell/plugin_manager/bus 全部零引用（grep 佐证，
+  仅注释溯源提及）；ToplevelCallback/StateCallback 两装配点（napi_init.cpp）
+  零改动；wine_process.h 仍被 wayland_server.cpp include（MarkDesktopShellProcesses
+  声明，属会话层对进程模块的编排，非 NAPI 符号依赖）。
+
+**旁路收编结论：** `FireState("active")` 与 `"evt:desktop-ready"` 属**引擎状态
+通道**（stateCb_ → ArkTS setStateCallback），而非 toplevel 事件通道 —
+active 由 TryBeginSessionFirstFrame（5B1 产物，原位不动）发出，desktop-ready
+经上面方案收编。二者均不再构成 compositor 核心 NAPI 依赖；无 toplevelId
+承载的语义（状态迁移/补票）留在会话状态通道是对的（事件总线按
+(toplevelId, eventName, json) 三维建模，旁路不满足）。
+
+**对账结论（脚本多项集比对，0 差异）：**
+
+1. 事件名多项集：旧 22 种（grep FireToplevelEvent 字面量 + fireEvent_
+   间接路径）== 新 ToplevelEventName 映射 22 种，无缺无多；
+2. JSON 模板多项集：旧 11 种（9 snprintf + `{"w":640,"h":480}` 字面量 +
+   "{}" 等价类）== 新 11 种，0 差异（键名/值/顺序逐字）。
+   注意：旧模板提取受 `%{public}`（hilog 占位符含 `{`）与注释引号干扰，
+   对账脚本按"以 '{' 开头的字符串字面量"过滤 — 黄金值同步固化进
+   host_tests/toplevel_event_test.cpp。
+3. 调用计数逐项一致（22 事件名 × 每个的 fire/Post 次数；desktop_root
+   2 条路径：wl_core 直接 + PromotePending 间接）。
+4. 日志逐字：`[MW] FireToplevel`/`[MW] suppress`（bus.cpp 逐字搬移）、
+   `[MW] argb_created`/`[XDG] fire_limits ... %s`（json.text 参数化传
+   c_str()，占位符与值不变）、fire 调用点前后的业务日志零改动。
+
+**门禁：** `make test` host_tests 全绿（geometry 77 / blit_scaled 402 /
+blit_clip 38 / zorder 40 / env 21+88 / input_state 84 / shm_frame_source 39 /
+**toplevel_event 62**，全 0 failures）；`make NATIVE_ARCH=arm64-v8a hap`
+构建+签名通过（HAP 374M，构建后 build-profile.json5 已还原，工作树仅剩
+本提交改动 + 预存 thirdparty/）。
+
+**给阶段 6 的接口说明：** bus 已是独立模块（零 napi/wine_process 依赖），
+WaylandServer 的 `PostToplevelEvent` 仅剩"转发 + desktop_root 会话旁路"一层；
+阶段 6 若删转发方法，bus 可直接作为成员注入各调用方（wl_core/xdg_shell/
+plugin_manager 当前经 WaylandServer 门面调用 — GetInstance 调用点不归本段）。
+`ToplevelEventType` 全局名与 napi_init.cpp 的 `struct ToplevelEvent` 无冲突
+（已命名规避）。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -953,8 +1063,18 @@ preMaxW/H/preFsW/H 恢复尺寸**保留在 SurfaceData**（xdg 状态机尺寸
      拖拽窗口（move grab 期间 motion 注入总线）、热重启会话状态复位
      （快捷键残留无卡键）。
   模拟器冒烟（x86_64）与 arm64 Pad 回归均待续作承担。
-- **阶段 5 协议层重构**：wl_core 拆协议壳 + CommittedSurface 快照；
-  PopupManager；maximized 迁入 ToplevelState；ToplevelEventBus 事件 enum 化。
+- **阶段 5 协议层重构：代码层全部完成，待设备回归** — 5A1（ShmFrameSource
+  纯函数）+ 5A2（CommittedSurface 快照，前序记录）+ 5B1（commit 业务段
+  各归其主）+ 5B2（PopupManager 拆出）+ 5C（maximized 迁入 ToplevelState）+
+  **5D（ToplevelEventBus 事件 enum 化 + JSON 构造单点 + NAPI 通道移出 core）**
+  全部落地（各阶段台账见 §二）。**阶段 5 设备回归点汇总**（arm64 Pad 真机
+  或模拟器）：桌面链冒烟（桌面启动/notepad 直启/任务栏交互/窗口最小化
+  还原）+ 事件通道全量抽查（[MW] FireToplevel 日志事件名逐字、ArkTS
+  收到的事件名/JSON 字段与基线一致 — WineWindowManager/PopupWindowManager
+  无未识别事件告警）+ PC 多窗口/菜单/popup（5B2 清单）+ 窗口状态
+  （5C 清单：最大化推断/全屏转换/最小化还原）+ 三游戏（war3 直传+局部
+  合成+尺寸漂移、PAL2 SHM+dinput、RA2 全屏点击路由）+ ZC 遮挡/全屏/
+  fallback（阶段 3 清单）。
 - **阶段 6 facade 瘦身**：WaylandServer 拆 24 个转发；DesktopSessionState
   POD；desktopRootFrameSerial_ 改 atomic。
 

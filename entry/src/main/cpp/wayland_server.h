@@ -15,6 +15,7 @@
 #include "compositor/display_policy.h"
 #include "compositor/toplevel_manager.h"
 #include "compositor/popup_manager.h"
+#include "compositor/toplevel_event_bus.h"  // ToplevelEventType/ToplevelEventBus (重构第 5D 步)
 
 // 前置声明: surface_commit 分段函数的参数类型 (定义在 compositor/surface_data.h,
 // 该头在文件末尾引入 — 本类的签名只需引用, 无需完整定义)
@@ -38,6 +39,8 @@ public:
     using StateCb = std::function<void(const char*)>;
     // toplevel 回调: (toplevelId, eventName, jsonData)
     // events: "created", "destroyed", "title", "configure"
+    // (消费端子集见 napi_init.cpp SetToplevelCallback; 事件名/JSON 构造收口
+    // 于 ToplevelEventBus — 重构第 5D 步, 本签名未变)
     using ToplevelCb = std::function<void(uint32_t, const char*, const char*)>;
 
     static WaylandServer* GetInstance();
@@ -112,9 +115,16 @@ public:
     // 永不激活)。注意: 调用方须不在 toplevelMgr_ 锁内 (EndMoveGrab/Input 会拿锁)
     void ResetSessionState();
 
-    // toplevel 回调 (xdg_toplevel 生命周期 -> 通知 ArkTS 创建/销毁窗口)
-    void SetToplevelCallback(ToplevelCb cb) { toplevelCb_ = std::move(cb); }
-    void FireToplevelEvent(uint32_t id, const char* event, const char* jsonData = "{}");
+    // toplevel 回调 (xdg_toplevel 生命周期 -> 通知 ArkTS 创建/销毁窗口):
+    // 实现 = ToplevelEventBus::SetEventSink (重构第 5D 步, bus 收口事件通道,
+    // 签名/装配点不变 — napi_init.cpp SetToplevelCallback 零改动)
+    void SetToplevelCallback(ToplevelCb cb) { toplevelEventBus_.SetEventSink(std::move(cb)); }
+    /* toplevel 事件投递 (重构第 5D 步收口点): 事件名 enum 化 + JSON 由
+     * ToplevelEventBus::Json* 构造单点 + NAPI 通道移出 compositor 核心 —
+     * 本函数语义 = 旧 FireToplevelEvent (bus 投递 + desktop_root 会话侧旁路,
+     * 见 wayland_server.cpp)。事件名/JSON/日志逐字不变 (红线)。 */
+    void PostToplevelEvent(uint32_t id, ToplevelEventType evt,
+                           const std::string& json = "{}");
 
     // 生成唯一 toplevel ID
     uint32_t NextToplevelId() { return toplevelMgr_.AllocateToplevelId(); }
@@ -199,8 +209,9 @@ public:
     /* 首启 wineboot 期间抑制窗口创建事件 (PC 窗口模式): wineboot 的
      * "Setting up Wine" 等待窗不创建独立 OHOS 窗口 — 与 Pad 桌面模式对齐
      * (初始化阶段 desktop root 未出现, 窗口天然不可见)。仅首启 wineboot
-     * 生命周期内置位, wineboot 完成后恢复 (wine_launch.cpp)。 */
-    void SetToplevelEventSuppressed(bool on) { toplevelEventSuppressed_ = on; }
+     * 生命周期内置位, wineboot 完成后恢复 (wine_launch.cpp)。
+     * 抑制状态随事件通道收口于 ToplevelEventBus (重构第 5D 步, 语义不变)。 */
+    void SetToplevelEventSuppressed(bool on) { toplevelEventBus_.SetSuppressed(on); }
     void PromotePendingDesktopRoot() {
         uint32_t id = desktopRootMgr_.PromotePending();
         if (id) PluginManager::GetInstance()->MoveRendererToToplevel(0, id);
@@ -313,10 +324,12 @@ private:
     void MarkDesktopRootDirtyLocked() { desktopRootMgr_.MarkRootDirtyLocked(); }
 
     StateCb stateCb_;
-    ToplevelCb toplevelCb_;
-    // 首启 wineboot 期间置位 (wine_launch.cpp): 抑制 created/argb_created
-    // 派发, PC 窗口模式下 wineboot 初始化等待窗不创建独立 OHOS 窗口
-    bool toplevelEventSuppressed_ = false;
+    // toplevel 事件总线 (重构第 5D 步): 事件名 enum 化 + JSON 构造单点 +
+    // NAPI 通道移出 compositor 核心 — 事件通道/抑制门禁/派发日志全部由
+    // bus 收口 (bus 零 napi/wine_process 依赖), 本类只留会话侧旁路
+    // (desktop_root → MarkDesktopShellProcesses + evt:desktop-ready)。
+    // 旧 ToplevelCb/置位标志的宿主成员随收口删除 (见文件头注释)。
+    ToplevelEventBus toplevelEventBus_;
     std::atomic<bool> firstFrame_{false};
 
     // Desktop 合成模式策略 (唯一模式存储位, DesktopCompositor 持引用随动)
@@ -328,11 +341,14 @@ private:
     // 交互式窗口移动 (xdg_toplevel.move) — 已移入 MoveGrabHandler
     MoveGrabHandler moveGrab_;
     // 桌面 Root 识别+切换 — 已移入 DesktopRootManager
+    // fireEvent_: DesktopRootManager 只发 desktop_root 事件 (PromotePending
+    // 路径), 事件名/JSON 与 CheckRootLocked 的 fireDesktopRoot 分支一致 —
+    // 收口到 PostToplevelEvent (重构第 5D 步, 事件 enum 化)。
     DesktopRootManager desktopRootMgr_{toplevelMgr_, desktopRootToplevelId_,
                                         pendingDesktopRootToplevelId_,
                                         desktopRootRecognitionEnabled_,
-                                        [this](uint32_t id, const char* ev, const char* data) {
-                                            FireToplevelEvent(id, ev, data);
+                                        [this](uint32_t id, const char*, const char*) {
+                                            PostToplevelEvent(id, ToplevelEventType::DesktopRoot);
                                         }};
     // 帧合成 + zero-copy layer 管理 — 已移入 DesktopCompositor
     DesktopCompositor desktopCompositor_{toplevelMgr_, policy_, desktopRootToplevelId_,

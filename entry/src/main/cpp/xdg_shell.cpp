@@ -38,9 +38,9 @@ static void tl_set_title(wl_client*, wl_resource* tlRes, const char* title) {
     OH_LOG_INFO(LOG_APP, "[XDG] title tl=%{public}u %{public}s",
                 sd->toplevelId, title ? title : "(null)");
     sd->title = title ? title : "";
-    char json[512];
-    snprintf(json, sizeof(json), "{\"title\":\"%s\"}", sd->title.c_str());
-    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "title", json);
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        sd->toplevelId, ToplevelEventType::Title,
+        ToplevelEventBus::JsonTitle(sd->title));
 }
 static void tl_set_app_id(wl_client*, wl_resource* tlRes, const char* appId) {
     auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
@@ -62,14 +62,13 @@ static void tl_move(wl_client*, wl_resource* tlRes, wl_resource* /*seat*/, uint3
 static void tl_resize(wl_client*, wl_resource*, wl_resource*, uint32_t, uint32_t) {}
 static void fire_limits_event(SurfaceData* sd) {
     if (!sd || sd->toplevelId == 0) return;
-    char json[128];
-    snprintf(json, sizeof(json),
-             "{\"minW\":%d,\"minH\":%d,\"maxW\":%d,\"maxH\":%d}",
-             sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
+    std::string json =
+        ToplevelEventBus::JsonLimits(sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
     OH_LOG_INFO(LOG_APP, "[XDG] fire_limits tl=%{public}u %{public}s maxState=%{public}s",
-                sd->toplevelId, json,
+                sd->toplevelId, json.c_str(),
                 WaylandServer::GetInstance()->IsToplevelMaximized(sd->toplevelId) ? "yes" : "no");
-    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "limits", json);
+    WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Limits,
+                                                    json);
 }
 
 static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h) {
@@ -157,7 +156,7 @@ static void tl_set_maximized(wl_client* client, wl_resource* tlRes) {
     int32_t mw = ws->outputW_, mh = ws->GetWorkAreaHeight();
     XdgConfigureSend(tlRes, xdg->xdgSurface, mw, mh,
                      {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
-    ws->FireToplevelEvent(sd->toplevelId, "maximized");
+    ws->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Maximized);
     OH_LOG_INFO(LOG_APP, "[XDG] tl_set_maximized tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, mw, mh);
 }
@@ -183,7 +182,8 @@ static void tl_unset_maximized(wl_client* client, wl_resource* tlRes) {
     int32_t w = sd->preMaxW > 0 ? sd->preMaxW : 0;
     int32_t h = sd->preMaxH > 0 ? sd->preMaxH : 0;
     XdgConfigureSend(tlRes, xdg->xdgSurface, w, h, {XDG_TOPLEVEL_STATE_ACTIVATED});
-    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "unmaximized");
+    WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId,
+                                                    ToplevelEventType::Unmaximized);
     OH_LOG_INFO(LOG_APP, "[XDG] tl_unset_maximized tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, w, h);
 }
@@ -222,7 +222,7 @@ static void tl_set_fullscreen(wl_client* client, wl_resource* tlRes, wl_resource
     int32_t fw = ws->outputW_, fh = ws->outputH_;
     XdgConfigureSend(tlRes, xdg->xdgSurface, fw, fh,
                      {XDG_TOPLEVEL_STATE_FULLSCREEN, XDG_TOPLEVEL_STATE_ACTIVATED});
-    ws->FireToplevelEvent(sd->toplevelId, "fullscreen");
+    ws->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Fullscreen);
     OH_LOG_INFO(LOG_APP, "[XDG] tl_set_fullscreen tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, fw, fh);
 }
@@ -241,7 +241,7 @@ static void tl_unset_fullscreen(wl_client* client, wl_resource* tlRes) {
     int32_t w = sd->preFsW > 0 ? sd->preFsW : 0;
     int32_t h = sd->preFsH > 0 ? sd->preFsH : 0;
     XdgConfigureSend(tlRes, xdg->xdgSurface, w, h, {XDG_TOPLEVEL_STATE_ACTIVATED});
-    ws->FireToplevelEvent(sd->toplevelId, "unfullscreen");
+    ws->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Unfullscreen);
     OH_LOG_INFO(LOG_APP, "[XDG] tl_unset_fullscreen tl=%{public}u → configure(%{public}d,%{public}d)",
                 sd->toplevelId, w, h);
 }
@@ -260,7 +260,8 @@ static void tl_set_minimized(wl_client*, wl_resource* tlRes) {
     // 与旧值同源) — 值仍未被消费, 仅保持调用形态并见证字段迁移
     WaylandServer::GetInstance()->NotifyToplevelMinimized(
         sd->toplevelId, sd->committed.contentRect.x, sd->committed.contentRect.y);
-    WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "minimized");
+    WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId,
+                                                    ToplevelEventType::Minimized);
     OH_LOG_INFO(LOG_APP, "[XDG] tl_set_minimized tl=%{public}u", sd->toplevelId);
 }
 
@@ -291,7 +292,8 @@ static void xs_destroy(wl_client*, wl_resource* r) {
         if (sd && sd->hasToplevel) {
             OH_LOG_INFO(LOG_APP, "[MW-Life] xs_destroy → OnToplevelDestroyed tl=%{public}u", sd->toplevelId);
             WaylandServer::GetInstance()->OnToplevelDestroyed(sd->toplevelId);
-            WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "destroyed");
+            WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId,
+                                                            ToplevelEventType::Destroyed);
         }
     }
     wl_resource_destroy(r);
@@ -325,8 +327,9 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             // PC 模式: created 延迟到首帧 commit (此时才知 wl_shm 格式,
             // ARGB 异型窗口需走子窗口路线而非 ability, 见 surface_commit)
             if (!WaylandServer::GetInstance()->Policy().OhosWindowPerToplevel()) {
-                WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "created",
-                    "{\"w\":640,\"h\":480}");
+                WaylandServer::GetInstance()->PostToplevelEvent(
+                    sd->toplevelId, ToplevelEventType::Created,
+                    ToplevelEventBus::JsonCreatedDefault());
             }
         }
     }
@@ -374,7 +377,8 @@ static void xs_resource_destroy(wl_resource* r) {
         if (sd && sd->hasToplevel) {
             OH_LOG_INFO(LOG_APP, "[MW-Life] xs_resource_destroy → OnToplevelDestroyed tl=%{public}u (client disconnect)", sd->toplevelId);
             WaylandServer::GetInstance()->OnToplevelDestroyed(sd->toplevelId);
-            WaylandServer::GetInstance()->FireToplevelEvent(sd->toplevelId, "destroyed");
+            WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId,
+                                                            ToplevelEventType::Destroyed);
         }
     }
     delete static_cast<XdgSurface*>(wl_resource_get_user_data(r));

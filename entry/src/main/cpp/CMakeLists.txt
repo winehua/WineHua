@@ -57,6 +57,7 @@ add_library(entry SHARED
     compositor/input_state_tracker.cpp
     compositor/input_injector.cpp
     compositor/desktop_root_manager.cpp
+    compositor/toplevel_event_bus.cpp
     egl_renderer.cpp
     fs_utils.cpp
     plugin_manager.cpp

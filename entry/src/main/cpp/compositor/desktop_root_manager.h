@@ -26,7 +26,7 @@ public:
     // 提 pending root 为正式 root (ArkTS 端子窗口 ready 后调用)。
     // 返回 promoted toplevel ID (0 = 无需操作)。
     // 调用方负责: PluginManager::MoveRendererToToplevel(0, id)。
-    // FireToplevelEvent 已由内部 fireEvent_ 回调处理。
+    // PostToplevelEvent 已由内部 fireEvent_ 回调处理 (重构第 5D 步)。
     uint32_t PromotePending();
 
     // surface_commit 中 root 识别决策树的结果
@@ -38,7 +38,7 @@ public:
 
     // 检查新提交的 toplevel 是否应成为桌面 root。
     // 调用方须已持有 toplevelManager 的锁 (tmgr_.Lock())。
-    // 调用后调用方负责: MarkDesktopRootDirtyLocked + 锁外 MoveRendererToToplevel / FireToplevelEvent。
+    // 调用后调用方负责: MarkDesktopRootDirtyLocked + 锁外 MoveRendererToToplevel / PostToplevelEvent。
     CheckRootResult CheckRootLocked(SurfaceData* sd, bool isFirstCommit);
 
     // 标记 root dirty (root 切换后调用, 调用方须已持有锁)

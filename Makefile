@@ -449,6 +449,10 @@ test:
 	    $(ROOT)/host_tests/input_state_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/input_state_tracker.cpp
 	$(HOST_TEST_DIR)/input_state_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/toplevel_event_test \
+	    $(ROOT)/host_tests/toplevel_event_test.cpp
+	$(HOST_TEST_DIR)/toplevel_event_test
 
 
 # ============================================================

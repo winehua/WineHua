@@ -131,12 +131,11 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             {
                 self->toplevelMgr_.UnmapToplevelSurface(sd->toplevelId);
             }
-            self->FireToplevelEvent(sd->toplevelId, "destroyed");
+            self->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Destroyed);
         }
         if (removedPopup) {
-            char json[64];
-            snprintf(json, sizeof(json), "{\"popupId\":%u}", removedPopup);
-            self->FireToplevelEvent(popupParent, "popup_hide", json);
+            self->PostToplevelEvent(popupParent, ToplevelEventType::PopupHide,
+                                    ToplevelEventBus::JsonPopupHide(removedPopup));
         }
         delete sd;
     });
@@ -223,10 +222,8 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
                                                   parentContentX, parentContentY, move);
     }
     if (move.popupId) {
-        char json[128];
-        snprintf(json, sizeof(json), "{\"popupId\":%u,\"x\":%d,\"y\":%d}",
-                 move.popupId, move.offX, move.offY);
-        self->FireToplevelEvent(move.parentId, "popup_move", json);
+        self->PostToplevelEvent(move.parentId, ToplevelEventType::PopupMove,
+                                ToplevelEventBus::JsonPopupMove(move.popupId, move.offX, move.offY));
     }
     OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] set_position: child=%{public}p parent=%{public}p pos=(%{public}d,%{public}d)",
                 childSurf, sd->parentSurface, x, y);
@@ -286,9 +283,8 @@ void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
                 popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
             if (removedPopup) {
-                char json[64];
-                snprintf(json, sizeof(json), "{\"popupId\":%u}", removedPopup);
-                self->FireToplevelEvent(popupParent, "popup_hide", json);
+                self->PostToplevelEvent(popupParent, ToplevelEventType::PopupHide,
+                                        ToplevelEventBus::JsonPopupHide(removedPopup));
             }
         }
     }
@@ -387,7 +383,7 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
         // 重置 InputManager 焦点: 防止后续 Inject*Leave 引用已销毁的 surface
         // (否则 Wine 收到 invalid object 协议错误 → 断开连接)
         InputManager::GetInstance()->OnSurfaceDestroyed(r);
-        self->FireToplevelEvent(sd->toplevelId, "destroyed");
+        self->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Destroyed);
     }
     // subsurface 销毁: 清除 layer + 标记 root dirty 触发重绘 (移除残留像素)
     if (sd && sd->isSubsurface) {
@@ -403,9 +399,8 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
         if (removedPopup) {
             // 防止 pointer focus 悬在已销毁的 popup surface 上 (协议错误会断开 Wine)
             InputManager::GetInstance()->OnSurfaceDestroyed(r);
-            char json[64];
-            snprintf(json, sizeof(json), "{\"popupId\":%u}", removedPopup);
-            self->FireToplevelEvent(popupParent, "popup_hide", json);
+            self->PostToplevelEvent(popupParent, ToplevelEventType::PopupHide,
+                                    ToplevelEventBus::JsonPopupHide(removedPopup));
         }
     }
     wl_resource_destroy(r);
@@ -487,9 +482,8 @@ bool WaylandServer::HandleNullBufferCommit(SurfaceData* sd, wl_resource* surfRes
         if (removedPopup) {
             OH_LOG_INFO(LOG_APP, "[MW-POPUP] hide popup=#%{public}u parent=#%{public}u (NULL buffer commit)",
                         removedPopup, popupParent);
-            char json[64];
-            snprintf(json, sizeof(json), "{\"popupId\":%u}", removedPopup);
-            FireToplevelEvent(popupParent, "popup_hide", json);
+            PostToplevelEvent(popupParent, ToplevelEventType::PopupHide,
+                              ToplevelEventBus::JsonPopupHide(removedPopup));
         }
     }
     return true;
@@ -613,16 +607,15 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
      *   (2in1 主窗口无 alpha 通道/背景透明被钳制, 实测不可行)
      */
     if (outFirstCommit && Policy().OhosWindowPerToplevel()) {
-        char json[160];
         if (fi.shmFormat == 0) {
-            snprintf(json, sizeof(json), "{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}",
-                     fi.screenX, fi.screenY, fi.contentW, fi.contentH);
             OH_LOG_INFO(LOG_APP, "[MW] argb_created tl=%{public}u geo=(%{public}d,%{public}d %{public}dx%{public}d)",
                         sd->toplevelId, fi.screenX, fi.screenY, fi.contentW, fi.contentH);
-            FireToplevelEvent(sd->toplevelId, "argb_created", json);
+            PostToplevelEvent(sd->toplevelId, ToplevelEventType::ArgbCreated,
+                              ToplevelEventBus::JsonArgbCreated(
+                                  fi.screenX, fi.screenY, fi.contentW, fi.contentH));
         } else {
-            snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", fi.contentW, fi.contentH);
-            FireToplevelEvent(sd->toplevelId, "created", json);
+            PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
+                              ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
         }
     }
     // ARGB 窗口位置同步: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置,
@@ -632,9 +625,8 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     // 模式/格式/首帧门禁在此判定, 事件锁内发 — 行为逐字)
     if (Policy().OhosWindowPerToplevel() && fi.shmFormat == 0 && !outFirstCommit &&
         toplevelMgr_.SyncArgbPositionLocked(sd->toplevelId, fi.screenX, fi.screenY)) {
-        char json[96];
-        snprintf(json, sizeof(json), "{\"x\":%d,\"y\":%d}", fi.screenX, fi.screenY);
-        FireToplevelEvent(sd->toplevelId, "argb_move", json);
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::ArgbMove,
+                          ToplevelEventBus::JsonArgbMove(fi.screenX, fi.screenY));
     }
     // 桌面模式后续 commit 的位置同步: 判定 (WineX/Y 快照比较) 与三分支跟随
     // (justRestored 保持 compositor 位置/最小化坐标只记快照/Wine geo 跟随)
@@ -656,11 +648,10 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     if (outFirstCommit || st.ShmFormat() != fi.shmFormat) {
         st.SetShmFormat(fi.shmFormat);
         if (Policy().OhosWindowPerToplevel()) {
-            char json[32];
-            snprintf(json, sizeof(json), "{\"argb\":%d}", fi.shmFormat == 0 ? 1 : 0);
             OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u shm format → %{public}s",
                         sd->toplevelId, fi.shmFormat == 0 ? "ARGB8888" : "XRGB8888");
-            FireToplevelEvent(sd->toplevelId, "argb", json);
+            PostToplevelEvent(sd->toplevelId, ToplevelEventType::Argb,
+                              ToplevelEventBus::JsonArgb(fi.shmFormat == 0 ? 1 : 0));
         }
     }
     // ARGB 窗口掩码: FNV-1a 形状哈希 + 阈值 0/1 剪影生成与 mask 状态更新
@@ -671,7 +662,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     if (fi.shmFormat == 0 && Policy().OhosWindowPerToplevel()) {
         if (toplevelMgr_.UpdateArgbMaskLocked(sd->toplevelId, st.Pixels(),
                                               fi.contentW, fi.contentH)) {
-            FireToplevelEvent(sd->toplevelId, "mask_dirty", "{}");
+            PostToplevelEvent(sd->toplevelId, ToplevelEventType::MaskDirty);
         }
     }
     // 新 toplevel 加到 Z-order 顶层 (首次入列的全屏优先级取号在
@@ -698,8 +689,6 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
         lk.unlock();
         NotifyToplevelResize(sd->toplevelId, outputW_, outputH_);
     } else if (sizeEffect == ToplevelManager::SizeCommitEffect::ResizeEvent) {
-        char json[64];
-        snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", fi.contentW, fi.contentH);
         // maximized 状态位读 ToplevelState (重构第 5C 步; 旧读 sd->maximized)。
         // 本处已持 toplevelMutex_ (函数首 Ensure 的 st 引用), 直接读 st —
         // 不能调 IsToplevelMaximized (内部重新加锁, 非递归 std::mutex 自死锁,
@@ -707,7 +696,8 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
         OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u size changed: %{public}dx%{public}d max=%{public}s -> ArkTS",
                     sd->toplevelId, fi.contentW, fi.contentH,
                     st.IsMaximized() ? "yes" : "no");
-        FireToplevelEvent(sd->toplevelId, "resize", json);
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::Resize,
+                          ToplevelEventBus::JsonResize(fi.contentW, fi.contentH));
     }
 }
 
@@ -739,7 +729,7 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
         // 仍是 true 会导致新 root 首帧不注入 enter, 桌面不激活 (症状: 桌面
         // 只在点击时才刷新, regedit 打开内容不完整, 菜单弹出后释放即关)
         ResetFirstFrame();
-        FireToplevelEvent(sd->toplevelId, "desktop_root", "{}");
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::DesktopRoot);
     }
 }
 
@@ -758,26 +748,21 @@ void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfR
         // (popup_show 后 return, 与旧实现一致)。
         const auto ev = popupMgr_.UpdatePopupOnCommit(sd, surfRes, parentSd, fi);
         if (ev.isNew) {
-            char json[256];
-            snprintf(json, sizeof(json),
-                     "{\"popupId\":%u,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"argb\":%d}",
-                     ev.popupId, ev.offX, ev.offY, ev.winW, ev.winH, ev.shmFormat == 0 ? 1 : 0);
             OH_LOG_INFO(LOG_APP, "[MW-POPUP] show popup=#%{public}u parent=#%{public}u off=(%{public}d,%{public}d) %{public}dx%{public}d win=%{public}dx%{public}d (buffer %{public}dx%{public}d src=%{public}d,%{public}d %{public}dx%{public}d dst=%{public}dx%{public}d)",
                         ev.popupId, ev.parentId, ev.offX, ev.offY, ev.dispW, ev.dispH, ev.winW, ev.winH, sd->w, sd->h,
                         sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH, sd->vpDstW, sd->vpDstH);
-            FireToplevelEvent(ev.parentId, "popup_show", json);
+            PostToplevelEvent(ev.parentId, ToplevelEventType::PopupShow,
+                              ToplevelEventBus::JsonPopupShow(
+                                  ev.popupId, ev.offX, ev.offY, ev.winW, ev.winH,
+                                  ev.shmFormat == 0 ? 1 : 0));
         } else {
             if (ev.sizeChanged) {
-                char json[128];
-                snprintf(json, sizeof(json), "{\"popupId\":%u,\"w\":%d,\"h\":%d}",
-                         ev.popupId, ev.winW, ev.winH);
-                FireToplevelEvent(ev.parentId, "popup_resize", json);
+                PostToplevelEvent(ev.parentId, ToplevelEventType::PopupResize,
+                                  ToplevelEventBus::JsonPopupResize(ev.popupId, ev.winW, ev.winH));
             }
             if (ev.posChanged) {
-                char json[128];
-                snprintf(json, sizeof(json), "{\"popupId\":%u,\"x\":%d,\"y\":%d}",
-                         ev.popupId, ev.offX, ev.offY);
-                FireToplevelEvent(ev.parentId, "popup_move", json);
+                PostToplevelEvent(ev.parentId, ToplevelEventType::PopupMove,
+                                  ToplevelEventBus::JsonPopupMove(ev.popupId, ev.offX, ev.offY));
             }
         }
     }

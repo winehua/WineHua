@@ -70,9 +70,9 @@ void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
         WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
 
         // 通知 ArkTS surface 的物理像素尺寸, 用于动态计算标题栏高度
-        char json[64];
-        snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", w, h);
-        WaylandServer::GetInstance()->FireToplevelEvent(toplevelId, "surface", json);
+        WaylandServer::GetInstance()->PostToplevelEvent(
+            toplevelId, ToplevelEventType::Surface,
+            ToplevelEventBus::JsonSurface(w, h));
     } else {
         OH_LOG_WARN(LOG_APP, "[MW-Resize] toplevel #%{public}u renderer NOT found or invalid", toplevelId);
     }

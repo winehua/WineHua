@@ -130,7 +130,7 @@ void WaylandServer::EventLoop() {
 
 void WaylandServer::DestroyAllToplevels() {
     // 收集 id (锁内), 逐个收口 (锁外): OnToplevelDestroyed 内部重新拿锁,
-    // FireToplevelEvent 发 ArkTS 事件不应持 compositor 锁。模拟正常 client
+    // PostToplevelEvent 发 ArkTS 事件不应持 compositor 锁。模拟正常 client
     // 断开路径 (wl_core.cpp surface_destroy) 的清理 + destroyed 通知 —
     // stopAll 强杀 Wine 后该路径不执行, 导致 toplevel 残留 + ArkTS 子窗口不关。
     // 桌面 root 在内时 OnToplevelDestroyed 内部会 ResetSessionState (幂等)。
@@ -146,7 +146,7 @@ void WaylandServer::DestroyAllToplevels() {
                 ids.size());
     for (uint32_t id : ids) {
         OnToplevelDestroyed(id);
-        FireToplevelEvent(id, "destroyed");
+        PostToplevelEvent(id, ToplevelEventType::Destroyed);
     }
 }
 
@@ -181,7 +181,7 @@ void WaylandServer::StartMoveGrab(uint32_t toplevelId, uint32_t serial) {
                             wl_fixed_to_int(InputManager::GetInstance()->GetLastGlobalPointerX()),
                             wl_fixed_to_int(InputManager::GetInstance()->GetLastGlobalPointerY()));
     if (Policy().OhosWindowPerToplevel()) {
-        FireToplevelEvent(toplevelId, "move_start");
+        PostToplevelEvent(toplevelId, ToplevelEventType::MoveStart);
     }
 }
 
@@ -189,7 +189,7 @@ void WaylandServer::EndMoveGrab() {
     uint32_t tl = moveGrab_.GetToplevelId();
     moveGrab_.EndMoveGrab(toplevelMgr_);
     if (Policy().OhosWindowPerToplevel() && tl != 0) {
-        FireToplevelEvent(tl, "move_end");
+        PostToplevelEvent(tl, ToplevelEventType::MoveEnd);
     }
 }
 
@@ -202,31 +202,29 @@ bool WaylandServer::ProcessMoveGrabMotion(wl_fixed_t wx, wl_fixed_t wy) {
     return true;
 }
 
-void WaylandServer::FireToplevelEvent(uint32_t id, const char* event, const char* jsonData) {
-    /* 首启 wineboot 抑制窗口创建事件 (PC 窗口模式): 抑制 created/argb_created
-     * 后 ArkTS 不启动 WineWindowAbility, wineboot 等待窗不出现在系统桌面。
-     * 功能不受影响 — wine.inf 安装不依赖窗口显示; wineboot 退出的 destroyed
-     * 事件照常派发, ArkTS 对未知 toplevel id 的销毁容忍。 */
-    if (toplevelEventSuppressed_ &&
-        (!strcmp(event, "created") || !strcmp(event, "argb_created"))) {
-        OH_LOG_INFO(LOG_APP, "[MW] suppress %{public}s tl=%{public}u (wineboot init)", event, id);
-        return;
-    }
-    OH_LOG_INFO(LOG_APP, "[MW] FireToplevel id=%{public}u event=%{public}s data=%{public}s", id, event, jsonData);
-    if (toplevelCb_) toplevelCb_(id, event, jsonData);
+void WaylandServer::PostToplevelEvent(uint32_t id, ToplevelEventType evt,
+                                      const std::string& json) {
+    // 事件收口 (重构第 5D 步): 抑制门禁 + [MW] FireToplevel 日志 + 主事件通道
+    // (ArkTS toplevel 回调) 全部在 ToplevelEventBus::Post 内 — 事件名经
+    // ToplevelEventName 映射为旧字符串 (逐字), 日志文本/顺序/抑制条件逐字;
+    // NAPI 通道移出 compositor 核心 (旧本函数直调 gStateTsfn, 见下方旁路)。
+    toplevelEventBus_.Post(id, evt, json);
     /* 桌面根出现 = 引擎消息通道的 evt:desktop-ready: LaunchPadMode 的 15s
      * root 等待超时后状态机停在 ready-degraded, 靠这个补票升级为正式 ready。
-     * 挂在统一的 FireToplevelEvent 而非 LaunchPadMode 等待循环 — root 在任意
+     * 挂在统一的 toplevel 事件收口点而非 LaunchPadMode 等待循环 — root 在任意
      * 时刻出现 (含慢设备超时后姗姗来迟) 都能补发; ArkTS 只在 degraded 态消费,
-     * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。 */
-    if (!strcmp(event, "desktop_root")) {
+     * 其余情况 (正常启动 root 先到 / root 重建) 为无害空转。
+     * 重构第 5D 步: 旧实现在此直调 napi_call_threadsafe_function(gStateTsfn)
+     * (PLAN §2.2 点名的 NAPI 通道泄漏), 现经会话状态通道 FireState →
+     * stateCb_ (napi_init SetStateCallback 注入的转发) 投递 — 消息与通道
+     * 不变 (同一 "evt:desktop-ready" + WLState TSFN + block 投递), 判空
+     * 语义等价 (napi 侧 lambda 内 if (gStateTsfn), 与旧 if (gStateTsfn)
+     * 一致), compositor 核心不再接触 napi 符号。 */
+    if (evt == ToplevelEventType::DesktopRoot) {
         // 桌面 root 首次出现: 把当前 running 的进程标记为桌面 shell 基础进程
         // (desktop + 桌面出现前加入的 explorer 等), ArkTS 据此隐藏"结束"防误操作。
         MarkDesktopShellProcesses();
-        if (gStateTsfn) {
-            napi_call_threadsafe_function(gStateTsfn, strdup("evt:desktop-ready"),
-                                          napi_tsfn_blocking);
-        }
+        FireState("evt:desktop-ready");
     }
 }
 
@@ -297,9 +295,8 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     if (wasDesktopRoot) ResetSessionState();
     // 通知 ArkTS 销毁 popup 子窗口 (锁外触发)
     for (uint32_t pid : cascadePopups) {
-        char json[64];
-        snprintf(json, sizeof(json), "{\"popupId\":%u}", pid);
-        FireToplevelEvent(toplevelId, "popup_hide", json);
+        PostToplevelEvent(toplevelId, ToplevelEventType::PopupHide,
+                          ToplevelEventBus::JsonPopupHide(pid));
     }
 }
 
