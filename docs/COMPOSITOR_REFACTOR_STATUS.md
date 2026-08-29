@@ -245,10 +245,14 @@ notepad 直启冒烟通过。
    靠 `policy_.RootCompositing() && id == desktopRootToplevelId_` 分流 PC
    （TakeWindowFrameLocked + BlitWindowSubsurface）与 Desktop 路径。把取帧
    路径选择下沉为 DisplayPolicy 多态，分流条件逐点等价，编排者只问策略要帧。
-3. **任务 3：SHM 直传能力协商**。现状：`TryShmFullscreenDirectLocked`
-   （frame_pipeline.cpp:248 起）决策引用渲染器 GL 层细节（uForceOpaque/
-   GL_BLEND 等）。定义 compositor 侧 DirectPassPolicy 能力位接口，由
-   egl_renderer 实现注入；决策结果逐点等价，只换知识归属。
+3. **任务 3：SHM 直传能力协商** — ✅ 已提交（61b1d84，2026-08-29）。
+   `TryShmFullscreenDirectLocked` 的直传正确性前提（uForceOpaque/无
+   GL_BLEND/fit 与 CPU 同源/XRGB 帧不透明）从注释假设收口为
+   `compositor/direct_pass_policy.h` 能力位（DirectPassCapabilities 三枚举 +
+   kDirectPassCapabilitiesAll + DirectPassPolicy 接口），EglRenderer 实现
+   声明（恒全备，能力来源逐条注释），FramePlanner 锁内经
+   PluginManager::GetRendererForToplevel 查询（渲染器不可查时不拦截=与旧
+   行为一致）。决策结果逐点等价；pad 设备游戏回归正常。
 4. **验证门禁**：每项 `make test`；全完后 `make NATIVE_ARCH=x86_64` 全量
    构建（构建后 `git checkout -- entry/build-profile.json5` 还原）；随后
    模拟器冒烟门禁 + 后台 arm64 构建门禁（同前几阶段）。
