@@ -142,6 +142,73 @@ int main()
         CHECK(DisplaySizeAfterViewportClamped(800, 640) == 640, "vp size clamped: vpDst>w truncated");
     }
 
+    // 11. ClampToContent (重构第 4A 步自 input_manager.cpp file-static 收进
+    // geometry.h 的内容区钳制 — 全屏 letterbox 黑边/拖出窗口边缘的注入前钳位,
+    // 防相对增量差分累积黑边里的幽灵位移)
+    {
+        // content<=0: 无内容尺寸信息 (非全屏目标), 不钳制 (交给 winewayland clamp)
+        CHECK(near(ClampToContent(356.7, 0), 356.7, 1e-12), "clamp: content=0 no-op");
+        CHECK(near(ClampToContent(-12.0, -1), -12.0, 1e-12), "clamp: negative content no-op");
+        // 正常钳 [0, content-1]
+        CHECK(near(ClampToContent(-3.0, 800), 0.0, 1e-12), "clamp: negative to 0");
+        CHECK(near(ClampToContent(799.0, 800), 799.0, 1e-12), "clamp: inside unchanged");
+        CHECK(near(ClampToContent(801.0, 800), 799.0, 1e-12), "clamp: overflow to content-1");
+        CHECK(near(ClampToContent(0.0, 800), 0.0, 1e-12), "clamp: zero ok");
+        // content=1: 值域退化 [0,0] (黑边全沿被钳死, 增量恒 0)
+        CHECK(near(ClampToContent(5.0, 1), 0.0, 1e-12), "clamp: content=1 collapses to 0");
+        CHECK(near(ClampToContent(-5.0, 1), 0.0, 1e-12), "clamp: content=1 negative to 0");
+    }
+
+    // 12. ComputeLocalPoint (重构第 4A 步新增: InputResolver 命中终态的
+    // 桌面逻辑坐标 → surface 局部坐标逆映射, 与合成侧 FitMapX 正变换严格互逆)
+    {
+        double lx, ly;
+        // 恒等: 普通窗口原点 (100,200), scale=1, content 无效 → 平移不钳
+        ComputeLocalPoint(120.0, 230.0, 100.0, 200.0, 1.0, 0, 0, lx, ly);
+        CHECK(near(lx, 20.0, 1e-9) && near(ly, 30.0, 1e-9), "local: identity shift");
+        // 全屏保比例放大 (int 缩放 2): origin=(64,0), 内容 800x600
+        ComputeLocalPoint(64.0 + 400.0 * 2.0, 0.0 + 300.0 * 2.0,
+                          64.0, 0.0, 2.0, 800, 600, lx, ly);
+        CHECK(near(lx, 400.0, 1e-9) && near(ly, 300.0, 1e-9), "local: fit inverse");
+        // 黑边 (swallow MOVE/RELEASE 透传语义): 内容区外坐标钳到 [0, content-1]
+        ComputeLocalPoint(0.0, 0.0, 64.0, 0.0, 2.0, 800, 600, lx, ly);
+        CHECK(near(lx, 0.0, 1e-9) && near(ly, 0.0, 1e-9), "local: letterbox clamped to edge");
+        ComputeLocalPoint(64.0 - 40.0, -20.0, 64.0, 0.0, 2.0, 800, 600, lx, ly);
+        CHECK(near(lx, 0.0, 1e-9) && near(ly, 0.0, 1e-9), "local: letterbox negative clamped");
+        // 非整数缩放: 与 FitMapX 正变换 (未取整 double scale) 逐点互逆
+        {
+            FitRect t;
+            CHECK(ComputeFitRect(1400, 920, 800, 600, t), "fit rect for inverse check");
+            CHECK(near(t.scale, 920.0 / 600.0, 1e-12), "fit scale = min ratio");
+            for (double e : {0.0, 100.0, 399.5, 799.0}) {
+                double dx = FitMapX(t, e);
+                ComputeLocalPoint(dx, 0.0, t.offX, t.offY, t.scale, 800, 600, lx, ly);
+                CHECK(near(lx, e, 1e-6), "local: fit inverse roundtrip");
+            }
+        }
+    }
+
+    // 13. 4A 精度对账: InputTarget scale 由旧 float 截断改 double 未取整
+    // (与 FitRect scale 同源同精度)。对账: Δlocal ≤ |local|·2^-23 (float
+    // 表示误差上界的宽松界), 远小于 wl_fixed 半格 (1/512); 即注入坐标最多
+    // 差 1 个 fixed 单位且仅当 local 落入 1/256 格边界附近 — 方向为消除
+    // 旧 float 截断误差 (FitMapX 未取整 scale 严格互逆), 无语义变化
+    {
+        FitRect t;
+        CHECK(ComputeFitRect(1400, 920, 800, 600, t), "fit rect for 4A prec check");
+        const double scaleNew = t.scale;
+        const double scaleOld = static_cast<double>(static_cast<float>(t.scale));
+        CHECK(scaleNew != scaleOld, "pre-4A float truncation is lossy");
+        double maxDev = 0.0;
+        for (double e = 0.0; e <= 799.0; e += 37.5) {
+            const double dx = t.offX + e * scaleOld;  // 旧字段值换算出的桌面坐标
+            const double localNew = (dx - t.offX) / scaleNew;  // 4A 后路径
+            maxDev = std::max(maxDev, std::fabs(localNew - e));
+        }
+        CHECK(maxDev < 800.0 * (1.0 / (1.0 * (1 << 23))), "4A dev bounded by float eps");
+        CHECK(maxDev < 0.5 / 256.0, "4A dev below wl_fixed half-step");
+    }
+
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

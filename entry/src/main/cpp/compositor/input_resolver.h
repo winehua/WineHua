@@ -5,20 +5,31 @@
 class ToplevelManager;
 class DesktopCompositor;
 
-// 输入命中目标 (原 WaylandServer 嵌套类型, 外部调用方通过 wayland_server.h 的 using 别名继续使用)
+// 输入命中终态 (原 WaylandServer 嵌套类型, 外部调用方通过 wayland_server.h 的 using 别名继续使用)
+//
+// 裁决闭环 (重构第 4A 步): FindInputTargetAt 返回终态 — 调用方无需再懂
+// "桌面坐标→surface 局部"的逆映射与内容区钳制, 直接取 localX/localY 注入
+// (wl_fixed 转换在注入时做); 调用方只按 swallow 加工 (见下)。origin/scale/
+// contentW/H 保留供诊断日志与源码复核, 不再参与换算。
 struct InputTarget {
     uint32_t toplevelId = 0;         // 事件归属 toplevel (raise/键盘焦点)
     wl_resource* surface = nullptr;  // pointer enter 目标
-    int originX = 0, originY = 0;    // surface 的桌面原点 (输入坐标换算基)
-    // 桌面坐标 → surface 局部坐标的缩放除数。
-    // 全屏窗口保比例缩放显示, 局部坐标 = (桌面坐标 - origin) / scale; 普通窗口为 1
-    float scale = 1.0f;
+    // 终态: 可注入的 surface 局部坐标 (双精度)。由 resolver 在锁内完成
+    // 逆映射 (ComputeLocalPoint): (桌面逻辑坐标 - origin) / scale, 已按
+    // contentW/H 钳到内容区边缘
+    double localX = 0.0, localY = 0.0;
     // true = 该点落在全屏黑边内: 调用方只吞 PRESS (防幻影点击/焦点切换);
-    // MOVE/RELEASE 照常按 origin/scale 透传给全屏窗口 (越界坐标由调用方
-    // 用 contentW/contentH 钳到内容区边缘, 吞掉会导致按键状态卡死)
+    // MOVE/RELEASE 照常注入 local (已在 resolver 内钳到内容区边缘,
+    // 吞掉会导致按键状态卡死)
     bool swallow = false;
-    // 全屏窗口的内容尺寸 (fit 变换 src 尺寸, 即表面局部坐标有效域);
-    // 非全屏目标为 0 = 调用方不做内容区钳制
+    // 诊断/复核: 本命中使用的逆映射基 (local = (d - origin) / scale)。
+    // 全屏窗口保比例缩放 (== FitRect off/scale), 普通窗口与 root 回退为恒等
+    // (origin=0, scale=1)。精度与 geometry.h FitRect 对齐: origin 是整数
+    // 屏幕原点 (int → double 无损), scale 是未取整 double (不再 float 截断)
+    double originX = 0.0, originY = 0.0;
+    double scale = 1.0;
+    // 全屏窗口的内容尺寸 (fit 变换 src 尺寸 = 局部坐标有效域, 钳制上界);
+    // 非全屏目标为 0 = 未做内容区钳制
     int contentW = 0, contentH = 0;
 };
 
@@ -40,13 +51,16 @@ public:
                   const uint32_t& desktopRootToplevelId,
                   const int32_t& outputW, const int32_t& outputH);
 
-    // Desktop 模式: (x,y) 处的精确输入目标。
+    // Desktop 模式: 桌面逻辑坐标 (lx,ly) 处的精确输入目标, 一次性产出
+    // 终态 (surface + 可注入局部坐标 localX/localY + swallow 动作指示)。
+    // 命中判定用取整坐标 (lround), 逆映射用未取整 double — 与旧调用方
+    // (lround 命中 / 原始 logicalX 换算) 逐点一致, 4A 收内时不合并两处精度。
     // 命中 subsurface 菜单层时返回层自己的 wl_surface + 层桌面原点 —
     // 菜单可伸出父窗口边界, 事件必须 enter 菜单 surface 并用菜单相对坐标,
     // 否则经父窗口 surface 的越界坐标会被 winewayland 的 motion clamp
     // (wayland_pointer.c "bring them within bounds") 夹回窗口内, 菜单收不到。
     // 未命中层时回退 toplevel / desktop root。返回 false = surface 不可用。
-    bool FindInputTargetAt(int x, int y, InputTarget& out);
+    bool FindInputTargetAt(double lx, double ly, InputTarget& out);
 
     // Desktop 模式: 在合成帧中查找包含 (x,y) 的 toplevel (用于输入路由)
     uint32_t FindToplevelAt(int x, int y);

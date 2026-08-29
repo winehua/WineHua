@@ -26,20 +26,8 @@ enum {
     BTN_MIDDLE = 0x112,
 };
 
-// 内容区钳制: 把越界坐标 (全屏 letterbox 黑边、拖出窗口边缘) 钳到
-// [0, content-1]。关键不在绝对坐标通道 (wine 侧本来也有 motion clamp,
-// 绝对游戏回到画面内会按绝对映射自动对齐), 而在相对增量通道:
-// SendPointerEvent 用注入坐标差分出 REL_MOTION, 若不钳制, 系统光标在
-// 黑边里移动时未钳制坐标仍在变化, 会差分出游戏光标从未走过的幽灵增量
-// (wine 光标被钳在边缘没动), 相对模式 (dinput) 游戏累积后游戏光标与
-// 系统光标持续错位。钳制后两通道同源: 黑边里垂直移动仍沿边缘跟随
-// (保留 RTS 边缘滚动语义), 水平移动增量为 0。content<=0 表示调用方
-// 无内容尺寸信息 (非全屏目标), 不钳制。
-static inline double ClampToContent(double v, int content) {
-    if (content <= 0) return v;
-    const double hi = content > 1 ? static_cast<double>(content - 1) : 0.0;
-    return std::min(std::max(v, 0.0), hi);
-}
+// ClampToContent / ComputeLocalPoint 已收进 compositor/geometry.h
+// (重构第 4A 步: 内容区钳制与输入逆映射作为纯函数单点化, 本文件不再持有)。
 
 // -- 丢帧统计 (全局计数器 + 周期性汇总, 60s 间隔) --
 static std::atomic<int> gDropEnter{0}, gDropButton{0}, gDropKey{0}, gDropMotion{0};
@@ -422,24 +410,20 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         double logicalX = wl_fixed_to_double(wx);
         double logicalY = wl_fixed_to_double(wy);
         WaylandServer::InputTarget target;
-        if (ws->FindInputTargetAt(static_cast<int>(lround(logicalX)),
-                                  static_cast<int>(lround(logicalY)), target)) {
+        if (ws->FindInputTargetAt(logicalX, logicalY, target)) {
             // 全屏黑边: 只吞 PRESS (防幻影点击/焦点切换)。MOVE/RELEASE 照常透传 —
-            // 越界坐标钳到内容区边缘 (host 侧, 见 ClampToContent; 不再依赖
-            // winewayland clamp, 否则相对增量差分会累积黑边里的幽灵位移);
-            // 吞掉 RELEASE 会让 pressedButtons_ 永不清位 (按键卡死)
+            // 越界坐标已在 resolver 内钳到内容区边缘 (宿主侧钳制, 与相对增量
+            // 差分同源; 不再依赖 winewayland clamp, 否则相对增量差分会累积
+            // 黑边里的幽灵位移); 吞掉 RELEASE 会让 pressedButtons_ 永不清位
+            // (按键卡死)
             if (target.swallow && action == ACT_PRESS) return;
             tl = target.toplevelId;
             targetSurf = target.surface;
-            // 桌面坐标 → surface 局部坐标 (FitRect 正变换的逆映射;
-            // target.origin/scale 由 InputResolver 的 ComputeFitRect 给出)。
-            // target.scale > 1 表示全屏窗口保比例放大显示, 局部坐标需按同一缩放除回来
-            double localX = (logicalX - target.originX) / target.scale;
-            double localY = (logicalY - target.originY) / target.scale;
-            localX = ClampToContent(localX, target.contentW);
-            localY = ClampToContent(localY, target.contentH);
-            wx = wl_fixed_from_double(localX);
-            wy = wl_fixed_from_double(localY);
+            // 裁决闭环 (重构第 4A 步): 桌面坐标 → surface 局部坐标的逆映射与
+            // 内容区钳制已由 InputResolver 收内 (终态 localX/localY), 调用方
+            // 只做 wl_fixed 注入 — 不再手写 (logical-origin)/scale + ClampToContent
+            wx = wl_fixed_from_double(target.localX);
+            wy = wl_fixed_from_double(target.localY);
             // 系统性链路日志 (断点 2): 目标解析结果 — 手指桌面坐标命中哪个窗口/
             // 区域, 全屏时 origin+scale 即 fit 几何 (内容/黑边), local 是最终
             // 注入的 wine 坐标。PRESS/RELEASE 全量 (点按诊断核心), MOVE 高频
@@ -447,12 +431,12 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             static uint32_t sTargetLogN = 0;
             if (action != ACT_MOVE || ++sTargetLogN % 120 == 0)
                 OH_LOG_INFO(LOG_APP, "[Input] TARGET a=%{public}d px=(%{public}.0f,%{public}.0f) → tl=%{public}u"
-                            " surf=%{public}p swallow=%{public}d origin=(%{public}d,%{public}d) scale=%{public}.2f"
+                            " surf=%{public}p swallow=%{public}d origin=(%{public}.1f,%{public}.1f) scale=%{public}.2f"
                             " → local=(%{public}.1f,%{public}.1f)",
                             action, logicalX, logicalY, target.toplevelId,
                             static_cast<void*>(target.surface),
                             target.swallow ? 1 : 0, target.originX, target.originY,
-                            target.scale, localX, localY);
+                            target.scale, target.localX, target.localY);
         } else {
             // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标)
             const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);

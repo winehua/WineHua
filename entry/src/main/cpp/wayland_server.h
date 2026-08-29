@@ -143,8 +143,8 @@ public:
     int32_t outputH_ = compositor_consts::kDefaultOutputHeight;
     int32_t GetWorkAreaHeight();  // 排除任务栏后的可用高度
     uint32_t FindToplevelAt(int x, int y) { return inputResolver_.FindToplevelAt(x, y); }
-    bool FindInputTargetAt(int x, int y, InputTarget& out) {
-        return inputResolver_.FindInputTargetAt(x, y, out);
+    bool FindInputTargetAt(double lx, double ly, InputTarget& out) {
+        return inputResolver_.FindInputTargetAt(lx, ly, out);
     }
     bool IsSurfaceAlive(wl_resource* surface) { return inputResolver_.IsSurfaceAlive(surface); }
     // warp 锚点换算 (wp_pointer_warp_v1 → InputManager::OnPointerWarp)

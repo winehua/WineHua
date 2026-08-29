@@ -96,3 +96,38 @@ inline void SelectFullscreenContentSize(int32_t layerW, int32_t layerH,
     outW = useLayer ? layerW : bufW;
     outH = useLayer ? layerH : bufH;
 }
+
+// -- 输入内容区钳制与逆映射 (重构第 4A 步, 自 input_manager.cpp file-static
+//    ClampToContent + :437-441 手写逆映射收进本模块) --
+//
+// 内容区钳制: 注入前把越界局部坐标 (全屏 letterbox 黑边、拖出窗口边缘) 钳到
+// [0, content-1]。关键不在绝对坐标通道 (wine 侧本来也有 motion clamp, 绝对
+// 游戏回到画面内会按绝对映射自动对齐), 而在相对增量通道: 注入坐标被差分出
+// REL_MOTION, 若不钳制, 系统光标在黑边里移动时未钳制坐标仍在变化, 会差分出
+// 游戏光标从未走过的幽灵增量 (wine 光标被钳在边缘没动), 相对模式 (dinput)
+// 游戏累积后游戏光标与系统光标持续错位。钳制后两通道同源: 黑边里垂直移动仍
+// 沿边缘跟随 (保留 RTS 边缘滚动语义), 水平移动增量为 0。content<=0 表示调用方
+// 无内容尺寸信息 (非全屏目标), 不钳制。
+inline double ClampToContent(double v, int content) {
+    if (content <= 0) return v;
+    const double hi = content > 1 ? static_cast<double>(content - 1) : 0.0;
+    return std::min(std::max(v, 0.0), hi);
+}
+
+// 桌面逻辑坐标 → surface 局部坐标 (输入命中逆映射, InputResolver 终态收口):
+// local = (logical - origin) / scale, 再按 contentW/H 钳到内容区 (钳制仅
+// content>0 时生效, 非全屏目标交给 winewayland 自身 motion clamp)。
+// originX/Y 为 surface 在桌面逻辑系的原点 (FitRect offX/offY 同源整数,
+// double 无损表示); scale 与合成侧 FitMapX/FitMapLayerRect 正变换同一未取整
+// 系数, 两者严格互逆。注意 dst 取整变体 FitUnmapDisplayX 是 glViewport 路径
+// (整数像素), 精度规则不同不得混用。
+inline void ComputeLocalPoint(double logicalX, double logicalY,
+                              double originX, double originY, double scale,
+                              int contentW, int contentH,
+                              double& localX, double& localY)
+{
+    localX = (logicalX - originX) / scale;
+    localY = (logicalY - originY) / scale;
+    localX = ClampToContent(localX, contentW);
+    localY = ClampToContent(localY, contentH);
+}

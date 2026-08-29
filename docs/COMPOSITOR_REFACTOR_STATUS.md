@@ -16,7 +16,8 @@
 | 2A 帧管线结构拆分 | 完成（门禁全过） | 690fb68 抽段、5c554c5 迁 frame_pipeline、8de86bd blit_clip_test |
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
 | 3 ZC 与层序政策收口 | **完成（代码层全落地，待 ZC 设备回归）** | f9a2d8a zc_bridge 抽离、cf7e9a1/a3156a6/20b4bdb presenter+ZC 状态机、328ed21/48b7333 zorder_policy 三散点、a2d142d 3A 精化、5ebded3 3B 层序精化 |
-| 4 输入栈拆分 | 未开始 | — |
+| 4A InputResolver 裁决闭环 | 完成（门禁全过） | 本分支 HEAD 提交（§二 4A 下标） |
+| 4B 其余输入栈拆分（InputManager 拆层/ScrollEvent 缺段修复等） | 未开始 | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
@@ -227,6 +228,77 @@ notepad 直启冒烟通过。
   滞留排查（Task #49）、3D 剩余（venus child PresentVenus 调度 wait 保持
   原样，超范围）。
 
+### 阶段 4A（InputResolver 裁决闭环，2026-08-29）
+
+PLAN §四阶段4 与 §2.2 指出的封装泄漏：`FindInputTargetAt` 返回半成品
+`InputTarget`（originX/Y int + scale float + contentW/H 裸字段），调用方
+`SendPointerEvent` 必须手写逆映射与 `ClampToContent` 补完 ——
+"桌面坐标→surface 局部"的知识被拦腰切成两段。4A 收内 + 精度统一，行为平价。
+
+**改动文件：**
+
+- `compositor/geometry.h`（+35）：新增 `ClampToContent`（自 input_manager.cpp
+  file-static 收进本模块，函数体与注释逐字平移——§2.5 补丁资产完整保留）与
+  纯函数 `ComputeLocalPoint`（桌面逻辑→surface 局部逆映射 +
+  内容区钳制，与合成侧 `FitMapX`/`FitMapLayerRect` 正变换严格互逆，同一未取整
+  scale；头部注释指明与 dst 取整变体 `FitUnmapDisplayX` 精度规则不同不得混用）。
+- `compositor/input_resolver.h`：`InputTarget` 改终态——新增 `localX/localY`
+  （可注入的 surface 局部坐标，resolver 锁内已算好 + 已钳制）；`originX/Y`
+  int→double、`scale` float→double（与 FitRect 精度规则对齐：origin 是整数
+  屏幕原点 double 无损提升、scale 是未取整 double，不再 float 截断）；
+  `swallow`/`contentW/H`/`toplevelId`/`surface` 保留。`FindInputTargetAt`
+  签名 int→double（见下"命中/逆映射双精度"）。
+- `compositor/input_resolver.cpp`：`FindInputTargetAt` 内把 lround 收进函数的
+  `x/y`（命中判定用），各命中分支（7 处）就位 origin/scale/content 后调用
+  `finalize()`（=`ComputeLocalPoint`）填 `localX/localY`；`scale` 赋值去 float
+  截断（`transform.scale` 直存 double）。**全部命中/全屏/root/黑边/swallow
+  判定与产出分支逐字保留**。
+- `wayland_server.h`：:146 转发签名 int→double（同步）。
+- `input_manager.cpp`：删除 file-static `ClampToContent`（改用 geometry.h 同名
+  函数，PC 分支 :457-458 调用点不变）；`SendPointerEvent` 桌面分支删手写
+  `(logical-origin)/scale + ClampToContent`（:434-437），改注入
+  `target.localX/localY`（wl_fixed 转换在注入时做）；TARGET 日志 origin 占位
+  改 `%.1f`（double），字段与诊断语义不变。`lround` 调用点随之在
+  input_manager 消失（移至 resolver 内）。
+- `host_tests/geometry_test.cpp`（+67）：新增 3 组用例——11 ClampToContent
+  8 例（content<=0 不钳 / 钳 [0,content-1] / content=1 退化）；12 ComputeLocalPoint
+  恒等/整数 fit/黑边钳制/非整数 fit 与 FitMapX 逐点互逆；13 **4A 精度对账**
+  特征化（1400x920→800x600 fit：float 截断确实有损；抽样 local 域新旧值
+  最大偏差 < 800·2^-23 且 < wl_fixed 半格 1/512）。
+
+**设计决策（精度统一）：** 不把 InputTarget 强套 `FitRect` —— FitRect 是
+letterbox 显示几何（src/dst/off/scale 四元组），其 src/dst 只在 fit 映射
+（全屏窗口）有定义；普通窗口命中（scale=1 恒等，content=0 不钳制）与 root
+回退没有 fit 语义，强行构造退化 FitRect 需要为 content（src 尺寸）引入
+新语义（0=不钳制既有契约会破裂）。因此保留显式 `double originX/Y` +
+`double scale` + `int contentW/H` 字段——精度规则与 FitRect 一致（origin 为
+FitRect offX/offY 无损 double 化、scale 为 FitRect scale 同源未取整 double），
+换算数学收为 geometry.h 纯函数。此取舍理由已写入 input_resolver.h 注释。
+
+**对账结论（旧 :437-441 手写式 vs 4A 收内，逐场景）：**
+
+| 场景 | 旧 | 新 | 一致性 |
+|---|---|---|---|
+| 普通窗口/subsurface 命中（scale=1, content=0） | local=logical-origin，不钳 | ComputeLocalPoint 同公式同顺序，content=0 不钳 | origin 为原 int 无损转 double，**逐点相等** |
+| 全屏内容区命中（fit origin/scale/srcW/H） | (logical-origin)/scale_float | 同公式，scale 为 double 全精度 | Δlocal ≤ \|local\|·2^-23（host_tests 13 量化），wl_fixed 转换绝大多数位一致；仅在 local 落入 1/256 格边界 ±ε 内时差 1 定点单位（0.0039px），方向为消除旧 float 截断误差（与合成侧未取整 scale 互逆更精确），无语义变化 |
+| 全屏黑边 swallow（PRESS 吞 / MOVE/RELEASE 钳透传） | 调用方 clamp（同函数同 content 值） | resolver 内 clamp（同函数同 content 值 = transform.srcW/H） | **逐点相等** |
+| 桌面合成/快进（root 恒等） | origin=0 scale=1, content=0 | 同（root 回退/root 自身命中） | **逐点相等** |
+| 直传（红警2 修复点） | 锚=root 逻辑尺寸：contentW/H=transform.srcW/H（ZC→层几何、SHM→buffer），CoordTransform 锚 2B 契约 contentW/H=root 逻辑尺寸 | contentW/H 来源路径未动（ComputeFullscreenFitLocked 同一实现），逆映射在桌面逻辑系上做 | **逐点相等**（红警2 修复不回退） |
+| PC 分支（不走 FindInputTargetAt） | file-static ClampToContent(wx, lb.srcW/H) | geometry.h 同名函数逐字相同 | **逐点相等**（纯平移） |
+| 命中判定坐标 | 调用方 lround(logicalX) 传 int | resolver 内 lround(logicalX)（内部转换），napi `FindToplevelAt(int)` 内 int→double→lround 恒等 | **逐点相等** |
+
+**门禁：** `make test` host_tests 全绿（geometry_test 71 checks / 0 failures；
+blit_scaled 402 / blit_clip 38 / zorder 40 / env 21+88 / 全 0 failures）；
+`make NATIVE_ARCH=arm64-v8a hap` 构建通过（HAP 374M 签名完成，构建后还原
+build-profile.json5，工作树清洁）。**设备回归待做**（arm64 Pad 真机 / 模拟器
+输入链路）：红警2 直传点击路由、PAL2 相对模式点击/移动、war3 光标、桌面任务栏
+交互——属 4A 最终验收，同前几阶段由子代理归来后的冒烟+设备回归承担。
+
+**遗留：** 4B（InputManager 拆 InputQueue/InputStateTracker/InputInjector/
+InputSpaceMapper）、SendScrollEvent 缺段疑似实 bug（按 PLAN 单独提交标注行为
+变化）、两处 `IsDesktopMode()` 改 `Policy()`；`InputTarget` 的 origin/scale/
+contentW/H 字段保留作诊断（TARGET 日志断点），若后续无用可并入 4B 清理。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -270,10 +342,13 @@ notepad 直启冒烟通过。
   显式化 ZOrderSeq）、3C（ZC 状态机收敛到 ZcBridge）、3D（presenter 收编 +
   PresentTarget 统一）全落地；**待设备回归**：ZC 游戏遮挡/全屏/fallback 场景
   （3A 的 D1/D2 语义修正与此项绑定）。行为敏感点验证清单见 §二 3B/3A 小节。
-- **阶段 4 输入栈拆分**：InputResolver 裁决闭环；修 SendScrollEvent 缺段
-  疑似实 bug（单独提交并标注行为变化）；InputManager 拆 InputQueue/
-  InputStateTracker/InputInjector/InputSpaceMapper；两处 IsDesktopMode 改
-  Policy()。行为敏感：需 PAL2/war3/RA2 输入回归（arm64 Pad，需用户配合）。
+- **阶段 4 输入栈拆分**：4A InputResolver 裁决闭环**完成**（见 §二 4A 下标，
+  PLAN §2.2 封装泄漏收口 + InputTarget 精度 double 化 + ClampToContent 收
+  geometry.h）。剩余 4B：修 SendScrollEvent 缺段疑似实 bug（单独提交并标注
+  行为变化）；InputManager 拆 InputQueue/InputStateTracker/InputInjector/
+  InputSpaceMapper；两处 IsDesktopMode 改 Policy()；InputTarget origin/scale/
+  contentW/H 诊断字段去留。行为敏感：需 PAL2/war3/RA2 输入回归（arm64 Pad，
+  需用户配合）。
 - **阶段 5 协议层重构**：wl_core 拆协议壳 + CommittedSurface 快照；
   PopupManager；maximized 迁入 ToplevelState；ToplevelEventBus 事件 enum 化。
 - **阶段 6 facade 瘦身**：WaylandServer 拆 24 个转发；DesktopSessionState

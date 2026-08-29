@@ -36,10 +36,24 @@ uint32_t InputResolver::FindToplevelAt(int x, int y)
     return target.toplevelId;
 }
 
-bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
+bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTarget& out)
 {
     auto lk = tmgr_.Lock();
     uint32_t rootId = desktopRootToplevelId_;
+
+    // 命中判定用取整桌面坐标 (与旧调用方 lround 后传 int 逐点一致);
+    // 逆映射用未取整 double (旧调用方同样用未取整 logicalX/Y 换算 local) —
+    // 两处精度角色不同, 4A 收内时 1-to-1 平移, 不合并。
+    const int x = static_cast<int>(lround(logicalX));
+    const int y = static_cast<int>(lround(logicalY));
+
+    // 终态产出 (逆映射 + 内容区钳制 — 4A 自调用方 input_manager.cpp :437-441
+    // 收内): 各命中分支在 origin/scale/content 就位后调用, 一次性把
+    // localX/localY 算完, 调用方只做注入。
+    auto finalize = [&]() {
+        ComputeLocalPoint(logicalX, logicalY, out.originX, out.originY, out.scale,
+                          out.contentW, out.contentH, out.localX, out.localY);
+    };
 
     // 层序单一数据源 (阶段 1): 与渲染侧 (TakeToplevelFrame) 遍历同一个按
     // zIndex 升序的 Layer 列表。方案 B: 命中也是单一 zIndex 逆序遍历 —
@@ -138,7 +152,8 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
                     out.surface = sl.surface;
                     out.originX = layerScrX;
                     out.originY = layerScrY;
-                    out.scale = static_cast<float>(transform.scale);
+                    out.scale = transform.scale;
+                    finalize();
                     return out.surface != nullptr;
                 }
             } else if (x >= layer.x && x < layer.x + layer.w &&
@@ -154,6 +169,8 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
                     out.originX = layer.x;
                     out.originY = layer.y;
                 }
+                // scale 保持默认 1 (恒等变换), content 保持默认 0 (不钳制)
+                finalize();
                 return out.surface != nullptr;
             }
         } else if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel) {
@@ -165,9 +182,10 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
                     out.surface = tmgr_.GetSurfaceForToplevel(fullscreenId);
                     out.originX = transform.offX;
                     out.originY = transform.offY;
-                    out.scale = static_cast<float>(transform.scale);
+                    out.scale = transform.scale;
                     out.contentW = transform.srcW;
                     out.contentH = transform.srcH;
+                    finalize();
                     return out.surface != nullptr;
                 }
                 // 黑边: 更高层已检查未命中, 黑边归属全屏窗口 (渲染时填黑),
@@ -176,10 +194,11 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
                 out.surface = tmgr_.GetSurfaceForToplevel(fullscreenId);
                 out.originX = transform.offX;
                 out.originY = transform.offY;
-                out.scale = static_cast<float>(transform.scale);
+                out.scale = transform.scale;
                 out.contentW = transform.srcW;
                 out.contentH = transform.srcH;
                 out.swallow = true;
+                finalize();
                 return out.surface != nullptr;
             }
             if (x >= layer.x && x < layer.x + layer.w && y >= layer.y && y < layer.y + layer.h) {
@@ -192,7 +211,8 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
                 out.surface = surf;
                 out.originX = layer.x;
                 out.originY = layer.y;
-                out.scale = 1.0f;
+                out.scale = 1.0;
+                finalize();
                 return out.surface != nullptr;
             }
         }
@@ -202,6 +222,8 @@ bool InputResolver::FindInputTargetAt(int x, int y, InputTarget& out)
     out.surface = tmgr_.GetSurfaceForToplevel(rootId);
     out.originX = 0;
     out.originY = 0;
+    // scale 保持默认 1 (恒等), content 保持默认 0 (不钳制) — local = 桌面坐标
+    finalize();
     return out.surface != nullptr;
 }
 
