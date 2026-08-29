@@ -311,11 +311,11 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // 产品默认 perf profile (原 EntryAbility 正常模式 Want 默认): vkd3d 混合路由
-    // → shadow-precise; 其余 → coverage-sort (与 native AppendStableDesktopDxvkEnv
-    // 无显式 profile 时的缺省选择一致)。调查期白名单随 smoke 设施拆除
-    this.perfProfile = this.d3dBackend === 'vkd3d_limited_500k' ? 'shadow-precise' :
-      'shadow-precise-dirty-ring-inline-upload-coverage-sort';
+    // 产品默认 perf profile = baseline (full 影子契约, 与 3b58977 基线一致);
+    // 用户显式选择 (winehua.perf.profile) 优先。c2f0f7a 曾按 d3dBackend 硬分派
+    // shadow-precise (precise 契约) 并忽略持久化值, 该契约在首启后首游戏进程
+    // 上渲染失败 (弹窗白屏, P2 回归) — 已撤销。
+    this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
   }
 
   // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)
