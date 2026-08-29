@@ -51,6 +51,9 @@ add_library(entry SHARED
     compositor/frame_pipeline.cpp
     compositor/input_resolver.cpp
     compositor/input_space_mapper.cpp
+    compositor/input_queue.cpp
+    compositor/input_state_tracker.cpp
+    compositor/input_injector.cpp
     compositor/desktop_root_manager.cpp
     egl_renderer.cpp
     fs_utils.cpp

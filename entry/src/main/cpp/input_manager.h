@@ -2,27 +2,30 @@
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #include <cstdint>
-#include <atomic>
-#include <mutex>
-#include <unordered_map>
-#include <vector>
 
 #include "compositor/geometry.h"
 #include "compositor/input_space_mapper.h"  // CoordTransform 落点 + lastGlobalPtr 显式语义 (4C1)
+#include "compositor/input_queue.h"         // 队列机制 (4C2 拆层)
+#include "compositor/input_state_tracker.h" // 纯状态 (4C2 拆层)
+#include "compositor/input_injector.h"      // 唯一 wl_*_send_* 注入 (4C2 拆层)
 
-// InputManager: 统一输入事件管理器
+// InputManager: 统一输入事件管理器 — 编排门面 (重构第 4C2 步瘦身)
 //
-// 职责:
-//   - 接收 ArkTS 通过 NAPI 发来的标准化事件 (唯一输入源)
-//   - 坐标转换 (viewport → wine buffer letterbox)
-//   - 状态追踪 (button bitmask, modifier state, pointer/keyboard focus)
-//   - 事件入队 (pipe → Wayland 线程)
-//   - 事件注入 (wl_pointer_*/wl_keyboard_* send)
+// 分层 (PLAN §四阶段4, 4C2):
+//   InputManager  本类: 策略编排 — NAPI 入口 (坐标变换/目标解析/焦点判定/
+//                   enter/leave 三语义变体) + FlushQueue dispatch (去重后的
+//                   事件批 → 注入器) ; 公开接口与单例保持不变, 30+ 调用点
+//                   (napi_init/wl_core/seat/wayland_server) 零改动
+//   InputQueue    队列机制: pipe 唤醒 / 去重 Poll / flush_clients
+//   InputStateTracker 纯状态: 按钮位掩码/修饰键/焦点/可见性/serial/相对基线
+//   InputInjector 唯一碰 wl_*_send_* : Enter/Motion/Button/Axis/Leave/Key
+//   InputSpaceMapper (4C1) 坐标变换单点
 //
-// 线程模型:
-//   - NAPI/JS 线程: SendPointerEvent / SendKeyEvent → 坐标变换 + 状态更新 + Enqueue
-//   - Wayland 线程: FlushQueue → 去重 → Inject → wl_display_flush_clients
-//
+// 线程模型 (与旧实现逐字):
+//   - NAPI/JS 线程: SendPointerEvent / SendKeyEvent / SendScrollEvent →
+//     坐标变换 + 状态更新 + Enqueue (queue 锁内 push, 锁外 pipe)
+//   - Wayland 线程: Pipe 回调 → FlushQueue → Poll+去重 → 注入 →
+//     wl_display_flush_clients
 // 所有 wl_*_send_* 调用必须在 Wayland 线程 (通过 pipe 唤醒)
 
 class Seat;  // 前向声明
@@ -57,7 +60,8 @@ public:
     // px/py: 鼠标在组件上的物理像素坐标
     void SendScrollEvent(uint32_t toplevelId, int axis, double value, int scrollStep, double px, double py);
 
-    // -- Wayland 线程注入 (由 FlushQueue 调用) --
+    // -- Wayland 线程注入 (编制层委托 InputInjector; 公开方法保留 —
+    //    wl_core.cpp 首帧 focus 预设直接调用本方法) --
     void InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fixed_t sx, wl_fixed_t sy);
     void InjectPointerMotion(wl_fixed_t sx, wl_fixed_t sy);
     void InjectRelativeMotion(wl_fixed_t dx, wl_fixed_t dy);
@@ -87,12 +91,12 @@ public:
     void SetToplevelVisible(uint32_t tl, bool visible);
 
     // -- Focus 查询 (线程安全) --
-    bool HasPointerFocus() const { return pointerFocusedToplevel_.load() != 0; }
+    bool HasPointerFocus() const { return tracker_.HasPointerFocus(); }
     bool NeedsPointerEnter() const;
-    uint32_t GetPointerFocusedToplevel() const { return pointerFocusedToplevel_.load(); }
+    uint32_t GetPointerFocusedToplevel() const { return tracker_.PointerFocusedToplevel(); }
 
-    bool HasKeyboardFocus() const { return keyboardEntered_.load(); }
-    uint32_t GetKeyboardFocusedToplevel() const { return keyboardFocusedToplevel_.load(); }
+    bool HasKeyboardFocus() const { return tracker_.KeyboardEntered(); }
+    uint32_t GetKeyboardFocusedToplevel() const { return tracker_.KeyboardFocusedToplevel(); }
 
     // -- 辅助: 物理像素 → Wine 逻辑坐标映射 (供 FindToplevelAt 等使用) --
     // outLb 非空时回传本次映射使用的 letterbox 几何 (调用方做内容区钳制用)
@@ -120,88 +124,29 @@ public:
     void OnPointerWarp(wl_resource* surface, double sx, double sy);
 
 private:
-    InputManager() = default;
+    InputManager();
 
-    // -- 事件队列 (NAPI → Wayland 线程) --
-    struct InputEvent {
-        enum Type { PTR_ENTER, PTR_LEAVE, PTR_MOTION, PTR_BUTTON, PTR_AXIS,
-                    REL_MOTION,
-                    KBD_ENTER, KBD_LEAVE, KBD_KEY, KBD_MODIFIERS } type;
-        uint32_t tl = 0;
-        wl_resource* surface = nullptr;
-        wl_fixed_t x = 0, y = 0;
-        uint32_t btn_or_key = 0;
-        uint32_t state = 0;
-        // axis fields
-        int axis = 0;           // 0=vertical, 1=horizontal
-        wl_fixed_t axis_value = 0;
-        // modifiers fields
-        uint32_t mod_depressed = 0, mod_latched = 0, mod_locked = 0, mod_group = 0;
-    };
+    // 修饰键快照入队 (读取 tracker 当前状态 → InputQueue, 消费侧读事件快照)
+    void EnqueueModifiers();
 
-    std::mutex queueMutex_;
-    std::vector<InputEvent> queue_;
-    int pipeRead_ = -1, pipeWrite_ = -1;
-    struct wl_event_source* pipeSource_ = nullptr;
-    wl_display* display_ = nullptr;
-
-    void Enqueue(InputEvent::Type type, uint32_t tl, wl_resource* surface,
-                 wl_fixed_t x, wl_fixed_t y, uint32_t btn_or_key, uint32_t state);
-    void EnqueueModifiers();  // 入队当前 modifiers_depressed_ 等状态
+    // Wayland 线程: Poll 去重批 → 逐事件 dispatch (注入 + move grab 语义) →
+    // flush clients。由 InputQueue pipe 回调经构造注入的 flush 回调调用。
     void FlushQueue();
-    static int OnPipeReadable(int fd, uint32_t mask, void* data);
 
-    // -- 状态追踪 --
-    // button bitmask: bit0=left(0x110), bit1=right(0x111), bit2=middle(0x112)
-    static constexpr unsigned kBtnBitLeft   = 0;
-    static constexpr unsigned kBtnBitRight  = 1;
-    static constexpr unsigned kBtnBitMiddle = 2;
-    uint32_t pressedButtons_ = 0;
+    // -- enter/leave 收敛 helper (重构第 4C2 步) --
+    // 三变体 (ACT_PRESS / ACT_MOVE / SCROLL-ENTER) 中"确认要 enter 后"的共同
+    // 动作: needLeave 双判据 (targetSurf 非空=surface 级, 否则 toplevel 级) →
+    // PTR_LEAVE 入队 → PTR_ENTER 入队 (与旧三处逐字同一顺序/判定)。
+    // needEnter 判定与 skipEnter 守卫**不**收敛 — PRESS 的强制重入+守卫、
+    // MOVE/SCROLL 的 NeedsPointerEnter 先判, 三份语义不同, 由调用者各自
+    // 保留 (红线: 不允许统一成一种语义)。targetSurf = 桌面裁决命中层
+    // (nullptr = PC/回退的 toplevel 级语义)。
+    void SubmitEnterLeave(uint32_t tl, wl_resource* targetSurf, wl_resource* surf,
+                          wl_fixed_t x, wl_fixed_t y);
 
-    unsigned ButtonToBit(uint32_t btn);
-    uint32_t BitToButton(unsigned bit);
-
-    // modifier state
-    uint32_t modifiers_depressed_ = 0;
-    uint32_t modifiers_latched_ = 0;
-    uint32_t modifiers_locked_ = 0;
-    uint32_t modifiers_group_ = 0;
-    void UpdateModifiers(int evdevCode, bool pressed);
-    bool IsModifierKey(int evdevCode);
-
-    // 最近一次注入的全局指针位置 (跨线程, 供 move grab 建立时算偏移) —
-    // 已收进 InputSpaceMapper (4C1, 双语义显式化为 GlobalPtrState::Space)
-    // 与 GetLastGlobalPointerX/Y 委托访问, 本类不再持有该状态。
-
-    // pointer focus
-    std::atomic<uint32_t> pointerFocusedToplevel_{0};
-    // atomic: NAPI 线程 (SendPointerEvent) 用它做 surface 级 enter/leave 判定,
-    // Wayland 线程 (Inject*) 写入 — desktop 模式菜单层与父窗口同 toplevelId,
-    // 仅比较 toplevelId 无法察觉焦点需要在两个 surface 间切换
-    std::atomic<wl_resource*> pointerFocusedSurface_{nullptr};
-    std::atomic<uint32_t> pointerEnterSerial_{0};
-    std::atomic<uint32_t> serial_{1};
-
-    // keyboard focus (独立于 pointer)
-    std::atomic<uint32_t> keyboardFocusedToplevel_{0};
-    wl_resource* keyboardFocusedSurface_ = nullptr;
-    std::atomic<bool> keyboardEntered_{false};
-
-    // 窗口可见性 (鸿蒙侧最小化时抑制输入)
-    std::mutex visibleMutex_;
-    std::unordered_map<uint32_t, bool> toplevelVisible_;
-
-    /*
-     * 相对指针增量基准 (zwp_relative_pointer_v1): wine 相对模式 (隐藏光标 +
-     * 约束, wayland_pointer.c needs_relative) 丢弃绝对 motion, 光标位置 =
-     * 基线 + 增量累积。host 不做模式判断 — 始终发绝对 motion, 同时把注入
-     * 坐标序列差分出增量, 有 relative 对象就入队 REL_MOTION。
-     * 增量在 surface 局部坐标空间 (与绝对 motion 同空间, 见 SendPointerEvent)。
-     * 仅 SendPointerEvent 所在线程 (ArkTS NAPI) 访问, 无需加锁。
-     */
-    double lastLocalX_ = 0, lastLocalY_ = 0;
-    bool hasLastLocal_ = false;
-
-    // 最近一次按下时刻 (ACT_RELEASE 的脉冲拉伸计时, 见 input_manager.cpp)
-    std::atomic<uint32_t> lastPressMs_{0};
+    // 四层 (拆层后 InputManager 只持成员对象; tracker 先于 injector 声明 —
+    // 构造注入其引用, 见 InputManager 构造函数)
+    InputStateTracker tracker_;
+    InputQueue queue_;
+    InputInjector injector_;
 };

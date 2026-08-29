@@ -1,7 +1,6 @@
 #include "input_manager.h"
 #include "seat.h"
 #include "pointer_extras.h"
-#include "text_input.h"
 #include "wayland_server.h"
 #include "compositor/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
                                             // fallback 已迁入, 本文件不再认识
@@ -12,8 +11,6 @@
 #include <cmath>
 #include <algorithm>
 #include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -31,23 +28,8 @@ enum {
 // ClampToContent / ComputeLocalPoint 已收进 compositor/geometry.h
 // (重构第 4A 步: 内容区钳制与输入逆映射作为纯函数单点化, 本文件不再持有)。
 
-// -- 丢帧统计 (全局计数器 + 周期性汇总, 60s 间隔) --
-static std::atomic<int> gDropEnter{0}, gDropButton{0}, gDropKey{0}, gDropMotion{0};
-static std::atomic<uint64_t> gLastDropReport{0};
-
-static void MaybeReportDrops() {
-    uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    uint64_t last = gLastDropReport.load();
-    if (now - last > 60000) {  // 每 60 秒最多报一次
-        if (gLastDropReport.compare_exchange_strong(last, now)) {
-            OH_LOG_WARN(LOG_APP,
-                "[Input-DROP] 60s summary: enter=%{public}d button=%{public}d key=%{public}d motion=%{public}d",
-                gDropEnter.exchange(0), gDropButton.exchange(0),
-                gDropKey.exchange(0), gDropMotion.exchange(0));
-        }
-    }
-}
+// (丢帧统计 gDrop* 已随注入层迁至 compositor/input_injector.cpp —
+//  全部 fetch_add 点都在 wl_*_send_* 注入函数内, 重构第 4C2 步)
 
 // -- 单例 --
 InputManager* InputManager::GetInstance() {
@@ -55,69 +37,42 @@ InputManager* InputManager::GetInstance() {
     return &s;
 }
 
-// -- 辅助: 当前毫秒时间 --
+// 静止 tap 的最小按压时长: 保证 down/up 落在不同的 GetDeviceState 轮询
+// 窗口 (PAL2 按帧轮询 dinput, ~55ms/帧 @18fps — 理论上 ≥1 个轮询帧 (55ms)
+// 即可分开 down/up, 取 100ms 再留帧耗时抖动的余量; 见 ACT_RELEASE 脉冲拉伸)
+static constexpr uint32_t kMinPressDurationMs = 100;
+
+// -- 辅助: 当前毫秒时间 (原 file-static; 注入层各自独立一份同款) --
 static uint32_t NowMs() {
     auto now = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     return static_cast<uint32_t>(ms);
 }
 
-// 静止 tap 的最小按压时长: 保证 down/up 落在不同的 GetDeviceState 轮询
-// 窗口 (PAL2 按帧轮询 dinput, ~55ms/帧 @18fps — 理论上 ≥1 个轮询帧 (55ms)
-// 即可分开 down/up, 取 100ms 再留帧耗时抖动的余量; 见 ACT_RELEASE 脉冲拉伸)
-static constexpr uint32_t kMinPressDurationMs = 100;
-
 // ========================================================================
 //  生命周期
 // ========================================================================
 
+InputManager::InputManager() : injector_(&tracker_) {
+    // 四层持成员对象, tracker_ 先于 injector_ 声明 (成员构造顺序), 注入其
+    // 引用 — Injector 的焦点/串行号状态写入与编排层读同一 tracker。
+}
+
 void InputManager::Initialize(wl_display* display) {
-    if (pipeRead_ >= 0) {
-        OH_LOG_WARN(LOG_APP, "[Input] already initialized");
-        return;
-    }
-    display_ = display;
-
-    int fds[2];
-    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) != 0) {
-        OH_LOG_ERROR(LOG_APP, "[Input] pipe2 failed errno=%{public}d", errno);
-        return;
-    }
-    pipeRead_  = fds[0];
-    pipeWrite_ = fds[1];
-
-    struct wl_event_loop* loop = wl_display_get_event_loop(display);
-    pipeSource_ = wl_event_loop_add_fd(loop, pipeRead_, WL_EVENT_READABLE, OnPipeReadable, this);
-    if (!pipeSource_) {
-        OH_LOG_ERROR(LOG_APP, "[Input] wl_event_loop_add_fd failed");
-        close(pipeRead_); close(pipeWrite_);
-        pipeRead_ = pipeWrite_ = -1;
-        return;
-    }
-    OH_LOG_INFO(LOG_APP, "[Input] initialized OK (pipe r=%{public}d w=%{public}d)", pipeRead_, pipeWrite_);
+    // 队列+pipe+事件源全迁 InputQueue (原 Initialize 函数体逐字搬移,
+    // 含日志与 already-initialized 守卫); flush 回调由本类在事件循环启动前
+    // 注入 — 只在 Wayland 线程执行 (与 4C1 warpSink 同模式, 无锁)。
+    queue_.Initialize(display, [this] { FlushQueue(); });
 }
 
 void InputManager::Shutdown() {
-    if (pipeSource_) {
-        wl_event_source_remove(pipeSource_);
-        pipeSource_ = nullptr;
-    }
-    if (pipeRead_ >= 0)  { close(pipeRead_);  pipeRead_  = -1; }
-    if (pipeWrite_ >= 0) { close(pipeWrite_); pipeWrite_ = -1; }
-
-    // 清理状态
-    pressedButtons_ = 0;
-    modifiers_depressed_ = 0;
-    modifiers_latched_ = 0;
-    modifiers_locked_ = 0;
-    modifiers_group_ = 0;
-    pointerFocusedToplevel_ = 0;
-    pointerFocusedSurface_ = nullptr;
-    pointerEnterSerial_ = 0;
-    keyboardFocusedToplevel_ = 0;
-    keyboardFocusedSurface_ = nullptr;
-    keyboardEntered_ = false;
-    display_ = nullptr;
+    // 队列资源 (pipeSource_/fd/display) 清理迁 InputQueue
+    queue_.Shutdown();
+    // 清理状态 (原第二段逐字, 顺序: buttons → modifiers → pointer/kbd 焦点)
+    tracker_.ResetButtons();
+    tracker_.ResetModifiers();
+    tracker_.ClearPointerFocus();
+    tracker_.ClearKeyboardFocus();
 
     OH_LOG_INFO(LOG_APP, "[Input] shutdown OK");
 }
@@ -172,26 +127,23 @@ void InputManager::OnPointerWarp(wl_resource* surface, double sx, double sy) {
 }
 
 // ========================================================================
-//  Focus 查询
+//  Focus 查询与状态复位
 // ========================================================================
 
 bool InputManager::NeedsPointerEnter() const {
     auto* seat = Seat::GetInstance();
     // 需要 enter 当: 有 pointer resource 且没有已聚焦的 toplevel
-    return seat->HasPointerResource() && pointerFocusedToplevel_.load() == 0;
+    // (组合判定收在 StateTracker::PointerNeedsEnter — seat 状态作参数传入)
+    return tracker_.PointerNeedsEnter(seat->HasPointerResource());
 }
 
 void InputManager::ResetPointerEnter() {
-    pointerFocusedToplevel_ = 0;
-    pointerFocusedSurface_ = nullptr;
-    pointerEnterSerial_ = 0;
+    tracker_.ClearPointerFocus();
     OH_LOG_INFO(LOG_APP, "[Input] ResetPointerEnter OK");
 }
 
 void InputManager::ResetKeyboardEnter() {
-    keyboardEntered_ = false;
-    keyboardFocusedToplevel_ = 0;
-    keyboardFocusedSurface_ = nullptr;
+    tracker_.ClearKeyboardFocus();
     OH_LOG_INFO(LOG_APP, "[Input] ResetKeyboardEnter OK");
 }
 
@@ -200,113 +152,34 @@ void InputManager::ResetSessionState() {
     // 按下/修饰键残留会让新会话卡键 (会话结束时 Ctrl 按着, 新会话所有按键
     // 都带 Ctrl); 指针位置/相对增量基线污染新会话首次操作。只清状态不发
     // 事件 — client 已断开, send 到已销毁 surface 会触发协议错误。
+    // (顺序与旧实现逐字: pointer → keyboard → buttons → modifiers →
+    //  global ptr (mapper) → 相对基线 → press 时刻 → 可见性表)
     ResetPointerEnter();
     ResetKeyboardEnter();
-    pressedButtons_ = 0;
-    modifiers_depressed_ = 0;
-    modifiers_latched_ = 0;
-    modifiers_locked_ = 0;
-    modifiers_group_ = 0;
+    tracker_.ResetButtons();
+    tracker_.ResetModifiers();
     // 全局指针位置已收进 InputSpaceMapper (4C1): 原 "字段=0" 改复位调用,
     // 值等价 (标签回默认 Desktop); 位置仍在 modifiers 之后、相对增量基准之前,
     // 与旧实现清零顺序一致。
     InputSpaceMapper::GetInstance()->ResetGlobalPtr();
-    lastLocalX_ = 0;
-    lastLocalY_ = 0;
-    hasLastLocal_ = false;
-    lastPressMs_ = 0;
-    {
-        std::lock_guard<std::mutex> lock(visibleMutex_);
-        toplevelVisible_.clear();
-    }
+    tracker_.ResetLastLocal();
+    tracker_.ResetLastPressMs();
+    tracker_.ClearVisible();
     OH_LOG_INFO(LOG_APP, "[Input] session state reset (focus/buttons/modifiers/position/visible)");
 }
 
 void InputManager::OnSurfaceDestroyed(wl_resource* surface) {
     // surface 已被 Wine 销毁, 如果仍持有引用并在后续 Inject*Leave 中使用,
     // 会导致 Wayland 协议错误 "invalid object" → Wine 断开连接
-    if (pointerFocusedSurface_ == surface) {
+    if (tracker_.PointerFocusedSurfaceIs(surface)) {
         OH_LOG_INFO(LOG_APP, "[Input] OnSurfaceDestroyed: clearing pointer focus (surface=%{public}p was tl=%{public}u)",
-                    surface, pointerFocusedToplevel_.load());
-        pointerFocusedToplevel_ = 0;
-        pointerFocusedSurface_ = nullptr;
-        pointerEnterSerial_ = 0;
+                    surface, tracker_.PointerFocusedToplevel());
+        tracker_.ClearPointerFocus();
     }
-    if (keyboardFocusedSurface_ == surface) {
+    if (tracker_.KeyboardFocusedSurface() == surface) {
         OH_LOG_INFO(LOG_APP, "[Input] OnSurfaceDestroyed: clearing keyboard focus (surface=%{public}p was tl=%{public}u)",
-                    surface, keyboardFocusedToplevel_.load());
-        keyboardEntered_ = false;
-        keyboardFocusedToplevel_ = 0;
-        keyboardFocusedSurface_ = nullptr;
-    }
-}
-
-// ========================================================================
-//  Button bitmask 辅助
-// ========================================================================
-
-unsigned InputManager::ButtonToBit(uint32_t btn) {
-    switch (btn) {
-        case BTN_LEFT:   return kBtnBitLeft;
-        case BTN_RIGHT:  return kBtnBitRight;
-        case BTN_MIDDLE: return kBtnBitMiddle;
-        default:         return 99;  // unknown
-    }
-}
-
-uint32_t InputManager::BitToButton(unsigned bit) {
-    switch (bit) {
-        case kBtnBitLeft:   return BTN_LEFT;
-        case kBtnBitRight:  return BTN_RIGHT;
-        case kBtnBitMiddle: return BTN_MIDDLE;
-        default:            return 0;
-    }
-}
-
-// ========================================================================
-//  Modifier 追踪
-// ========================================================================
-
-bool InputManager::IsModifierKey(int evdevCode) {
-    // evdev modifier keycodes
-    switch (evdevCode) {
-        case 42:  case 54:    // KEY_LEFTSHIFT, KEY_RIGHTSHIFT
-        case 29:  case 97:    // KEY_LEFTCTRL, KEY_RIGHTCTRL
-        case 56:  case 100:   // KEY_LEFTALT, KEY_RIGHTALT
-        case 125: case 126:   // KEY_LEFTMETA, KEY_RIGHTMETA
-        case 58:               // KEY_CAPSLOCK
-        case 69:               // KEY_NUMLOCK
-            return true;
-        default:
-            return false;
-    }
-}
-
-void InputManager::UpdateModifiers(int evdevCode, bool pressed) {
-    uint32_t bit = 0;
-    switch (evdevCode) {
-        case 42: case 54:   bit = (1u << 0); break;  // Shift
-        case 58:            bit = (1u << 1); break;  // Caps Lock (toggle)
-        case 29: case 97:   bit = (1u << 2); break;  // Ctrl
-        case 56: case 100:  bit = (1u << 3); break;  // Alt
-        case 69:            bit = (1u << 4); break;  // Num Lock (toggle)
-        case 125: case 126: bit = (1u << 6); break;  // Super
-        default: return;
-    }
-
-    if (evdevCode == 58 || evdevCode == 69) {
-        // CapsLock / NumLock: toggle on each press
-        if (pressed) {
-            if (modifiers_locked_ & bit)
-                modifiers_locked_ &= ~bit;
-            else
-                modifiers_locked_ |= bit;
-        }
-    } else {
-        if (pressed)
-            modifiers_depressed_ |= bit;
-        else
-            modifiers_depressed_ &= ~bit;
+                    surface, tracker_.KeyboardFocusedToplevel());
+        tracker_.ClearKeyboardFocus();
     }
 }
 
@@ -315,25 +188,20 @@ void InputManager::UpdateModifiers(int evdevCode, bool pressed) {
 // ========================================================================
 
 void InputManager::SetToplevelVisible(uint32_t tl, bool visible) {
-    std::lock_guard<std::mutex> lk(visibleMutex_);
-    toplevelVisible_[tl] = visible;
+    tracker_.SetToplevelVisible(tl, visible);
     OH_LOG_INFO(LOG_APP, "[Input] SetToplevelVisible tl=%{public}u visible=%{public}s", tl, visible ? "true" : "false");
 }
 
 void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double py, int button,
                                     double rawDx, double rawDy, bool fromMouse) {
     // 窗口不可见时抑制输入
-    {
-        std::lock_guard<std::mutex> lk(visibleMutex_);
-        auto it = toplevelVisible_.find(tl);
-        if (it != toplevelVisible_.end() && !it->second) {
-            // 抽样 120:1: 窗口不可见时 hover 移动也会走到这里 (125Hz 全量会
-            // 刷屏); 只保留采样行确认"输入被抑制"这一状态
-            static uint32_t sSuppressN = 0;
-            if (++sSuppressN % 120 == 1)
-                OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u action=%{public}d (window invisible)", tl, action);
-            return;
-        }
+    if (tracker_.IsInputSuppressed(tl)) {
+        // 抽样 120:1: 窗口不可见时 hover 移动也会走到这里 (125Hz 全量会
+        // 刷屏); 只保留采样行确认"输入被抑制"这一状态
+        static uint32_t sSuppressN = 0;
+        if (++sSuppressN % 120 == 1)
+            OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u action=%{public}d (window invisible)", tl, action);
+        return;
     }
 
     auto* seat = Seat::GetInstance();
@@ -366,7 +234,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         // 下一帧位移 → 快速拖动时窗口位移逐帧累积放大, 窗口瞬间飞出屏幕
         if (action == ACT_MOVE && ws->IsMoveGrabActive() &&
             ws->GetMoveGrabToplevelId() == tl) {
-            Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
+            queue_.Enqueue(InputQueue::Event::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
             return;
         }
         double logicalX = wl_fixed_to_double(wx);
@@ -431,7 +299,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         // 局部→全局往返, 消费侧不再二次读 st->x, 避免双线程基准漂移)
         if (action == ACT_MOVE && ws->IsMoveGrabActive() &&
             ws->GetMoveGrabToplevelId() == tl) {
-            Enqueue(InputEvent::PTR_MOTION, 0, nullptr,
+            queue_.Enqueue(InputQueue::Event::PTR_MOTION, 0, nullptr,
                     wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
                     wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
                     0, 0);
@@ -455,8 +323,8 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     if (action == ACT_MOVE) {
         const double localX = wl_fixed_to_double(wx);
         const double localY = wl_fixed_to_double(wy);
-        const double diffDx = hasLastLocal_ ? (localX - lastLocalX_) : 0.0;
-        const double diffDy = hasLastLocal_ ? (localY - lastLocalY_) : 0.0;
+        const double diffDx = tracker_.HasLastLocal() ? (localX - tracker_.LastLocalX()) : 0.0;
+        const double diffDy = tracker_.HasLastLocal() ? (localY - tracker_.LastLocalY()) : 0.0;
         if (PointerExtras::GetInstance()->HasRelativePointer()) {
             double dx = 0.0, dy = 0.0;
             if (rawDx != 0.0 || rawDy != 0.0) {
@@ -470,7 +338,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                 dy = diffDy;
             }
             if (dx != 0.0 || dy != 0.0) {
-                Enqueue(InputEvent::REL_MOTION, 0, nullptr,
+                queue_.Enqueue(InputQueue::Event::REL_MOTION, 0, nullptr,
                         wl_fixed_from_double(dx), wl_fixed_from_double(dy), 0, 0);
                 // 系统性链路日志 (断点 4): 相对模式增量 — 相对模式下绝对
                 // motion 被 wine 丢弃, 增量是光标唯一移动来源; 高频抽样 120:1
@@ -479,12 +347,10 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                 if (++sRelLogN % 120 == 0)
                     OH_LOG_INFO(LOG_APP, "[Input] REL d=(%{public}.1f,%{public}.1f) raw=(%{public}.1f,%{public}.1f)"
                                 " base=(%{public}.1f,%{public}.1f)",
-                                dx, dy, rawDx, rawDy, lastLocalX_, lastLocalY_);
+                                dx, dy, rawDx, rawDy, tracker_.LastLocalX(), tracker_.LastLocalY());
             }
         }
-        lastLocalX_ = localX;
-        lastLocalY_ = localY;
-        hasLastLocal_ = true;
+        tracker_.UpdateLastLocal(localX, localY);
     }
 
 
@@ -495,14 +361,14 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                     " wine=(%{public}.0f,%{public}.0f) ptrRes=%{public}d needsEnter=%{public}d pressedBits=0x%{public}x",
                     action, tl, button, px, py,
                     wl_fixed_to_double(wx), wl_fixed_to_double(wy),
-                    seat->HasPointerResource(), NeedsPointerEnter(), pressedButtons_);
+                    seat->HasPointerResource(), NeedsPointerEnter(), tracker_.PressedButtons());
     } else {
         static uint32_t sMoveLogN = 0;
         if (++sMoveLogN % 120 == 0)
             OH_LOG_INFO(LOG_APP, "[Input] PTR MOVE tl=%{public}u px=(%{public}.0f,%{public}.0f)"
                         " wine=(%{public}.0f,%{public}.0f) focusedTl=%{public}u n=%{public}u",
                         tl, px, py, wl_fixed_to_double(wx), wl_fixed_to_double(wy),
-                        pointerFocusedToplevel_.load(), sMoveLogN);
+                        tracker_.PointerFocusedToplevel(), sMoveLogN);
     }
 
     switch (action) {
@@ -528,7 +394,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             const bool skipEnter = fromMouse
                 && PointerExtras::GetInstance()->HasRelativePointer()
                 && pressTargetSurf != nullptr
-                && pointerFocusedSurface_.load() == pressTargetSurf;
+                && tracker_.PointerFocusedSurfaceIs(pressTargetSurf);
             // 系统性链路日志 (断点 3): relMode/skipEnter 仅诊断 (相对模式下
             // enter 走静默校准, 行为与绝对模式一致; skipEnter=1 时 enter 被跳过)
             OH_LOG_INFO(LOG_APP, "[Input] PRESS-ENTER tl=%{public}u surf=%{public}p"
@@ -536,46 +402,40 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                         tl, static_cast<void*>(pressTargetSurf),
                         PointerExtras::GetInstance()->HasRelativePointer() ? 1 : 0,
                         skipEnter ? 1 : 0,
-                        static_cast<void*>(pointerFocusedSurface_.load()));
+                        static_cast<void*>(tracker_.PointerFocusedSurface()));
             if (pressTargetSurf && !skipEnter) {
-                wl_resource* focused = pointerFocusedSurface_.load();
-                const bool needLeave = targetSurf
-                    ? (focused != nullptr && focused != pressTargetSurf)
-                    : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
-                if (needLeave)
-                    Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
-                Enqueue(InputEvent::PTR_ENTER, tl, pressTargetSurf, wx, wy, 0, 0);
+                // enter/leave 共同动作 (needLeave 双判据 + LEAVE/ENTER 入队序)
+                // 收敛于 SubmitEnterLeave — 语义与旧内联段逐字一致
+                SubmitEnterLeave(tl, targetSurf, pressTargetSurf, wx, wy);
                 // enter 定位真实改变 wine 光标位置 — 保持增量基线与 wine
                 // 光标一致, 防后续拖动漂移
-                lastLocalX_ = wl_fixed_to_double(wx);
-                lastLocalY_ = wl_fixed_to_double(wy);
-                hasLastLocal_ = true;
+                tracker_.UpdateLastLocal(wl_fixed_to_double(wx), wl_fixed_to_double(wy));
             }
             if (!skipEnter)
-                Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
+                queue_.Enqueue(InputQueue::Event::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
             if (button) {
-                unsigned bit = ButtonToBit(button);
+                unsigned bit = tracker_.ButtonToBit(button);
                 if (bit < 32) {
-                    pressedButtons_ |= (1u << bit);
+                    tracker_.OnButtonPress(button);
                     OH_LOG_INFO(LOG_APP, "[Input] BTN_PRESS btn=0x%{public}x bit=%{public}u pressedBits=0x%{public}x",
-                                button, bit, pressedButtons_);
+                                button, bit, tracker_.PressedButtons());
                 }
-                lastPressMs_ = NowMs();  // 脉冲拉伸计时基准 (见 ACT_RELEASE)
-                Enqueue(InputEvent::PTR_BUTTON, 0, nullptr, 0, 0, button, WL_POINTER_BUTTON_STATE_PRESSED);
+                tracker_.SetLastPressMs(NowMs());  // 脉冲拉伸计时基准 (见 ACT_RELEASE)
+                queue_.Enqueue(InputQueue::Event::PTR_BUTTON, 0, nullptr, 0, 0, button,
+                               WL_POINTER_BUTTON_STATE_PRESSED);
             }
 
             //  键盘焦点跟随点击 (P0-1 + P0-3)
             // winewayland.drv: keyboard_enter → WM_WAYLAND_SET_FOREGROUND
             // → NtUserSetForegroundWindowInternal → Wine 前台窗口切换
-            if (!keyboardEntered_.load() || keyboardFocusedToplevel_.load() != tl) {
+            if (!tracker_.KeyboardEntered() || tracker_.KeyboardFocusedToplevel() != tl) {
                 wl_resource* kbdSurf = ws->GetSurfaceForToplevel(tl);
                 if (kbdSurf) {
-                    if (keyboardEntered_.load() && keyboardFocusedToplevel_.load() != tl)
-                        Enqueue(InputEvent::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
-                    keyboardFocusedToplevel_ = tl;
-                    keyboardFocusedSurface_ = kbdSurf;
-                    keyboardEntered_ = true;
-                    Enqueue(InputEvent::KBD_ENTER, tl, kbdSurf, 0, 0, 0, 0);
+                    if (tracker_.KeyboardEntered() && tracker_.KeyboardFocusedToplevel() != tl)
+                        queue_.Enqueue(InputQueue::Event::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
+                    // 立即设置状态, 避免 NAPI 线程在 flush 前又发一次 enter
+                    tracker_.SetKeyboardFocus(tl, kbdSurf);
+                    queue_.Enqueue(InputQueue::Event::KBD_ENTER, tl, kbdSurf, 0, 0, 0, 0);
                     EnqueueModifiers();
                     OH_LOG_INFO(LOG_APP, "[Input] PTR PRESS + KBD ENTER tl=%{public}u (focus follows click)", tl);
                 }
@@ -585,22 +445,10 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         case ACT_RELEASE: {
             // ArkTS RELEASE 的 button 字段始终为 0x0
             // 从 pressedButtons_ bitmask 中查找被按下的按钮并释放
-            unsigned bit = ButtonToBit(button);
-            uint32_t releaseBtn = button;
-            if (bit >= 32 && pressedButtons_) {
-                // button=0 或未知按钮: 释放所有已按下的按钮
-                for (unsigned b = 0; b < 3; b++) {
-                    if (pressedButtons_ & (1u << b)) {
-                        releaseBtn = BitToButton(b);
-                        pressedButtons_ &= ~(1u << b);
-                        break;
-                    }
-                }
-            } else if (pressedButtons_ & (1u << bit)) {
-                pressedButtons_ &= ~(1u << bit);
-            }
+            // (查找/清除逻辑收在 StateTracker::OnButtonRelease — 语义逐字)
+            uint32_t releaseBtn = tracker_.OnButtonRelease(button);
             OH_LOG_INFO(LOG_APP, "[Input] BTN_RELEASE btn=0x%{public}x→0x%{public}x pressedBits=0x%{public}x",
-                        button, releaseBtn, pressedButtons_);
+                        button, releaseBtn, tracker_.PressedButtons());
             // 脉冲拉伸: 按下-抬起间隔 <kMinPressDurationMs 的点击, 抬手延迟
             // 补足再发。根因: ArkTS 触控手势状态机把静止 tap 合成为
             // Press+Release 同刻脉冲 (DesktopWindow.ets onTouch 的"等 Up 再
@@ -611,7 +459,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // 为真实时序, 本延迟主要对残余的触屏 tap 脉冲生效。
             // 延迟用短生命周期线程, 不阻塞 ArkTS 输入线程; 极限快速连点
             // (<100ms 间隔) 事件可能乱序, 对老游戏可接受。
-            const uint32_t quick = NowMs() - lastPressMs_.load();
+            const uint32_t quick = NowMs() - tracker_.LastPressMs();
             if (releaseBtn && quick < kMinPressDurationMs) {
                 const uint32_t delayMs = kMinPressDurationMs - quick;
                 // 可观测性: 触屏 tap 之外的使用 (如物理鼠标) 不应触发本延迟;
@@ -620,12 +468,12 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                             releaseBtn, quick, delayMs);
                 std::thread([this, delayMs, releaseBtn] {
                     std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-                    Enqueue(InputEvent::PTR_BUTTON, 0, nullptr, 0, 0, releaseBtn,
-                            WL_POINTER_BUTTON_STATE_RELEASED);
+                    queue_.Enqueue(InputQueue::Event::PTR_BUTTON, 0, nullptr, 0, 0, releaseBtn,
+                                   WL_POINTER_BUTTON_STATE_RELEASED);
                 }).detach();
             } else if (releaseBtn) {
-                Enqueue(InputEvent::PTR_BUTTON, 0, nullptr, 0, 0, releaseBtn,
-                        WL_POINTER_BUTTON_STATE_RELEASED);
+                queue_.Enqueue(InputQueue::Event::PTR_BUTTON, 0, nullptr, 0, 0, releaseBtn,
+                               WL_POINTER_BUTTON_STATE_RELEASED);
             }
             break;
         }
@@ -635,23 +483,17 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // desktop: surface 级焦点判定 — 鼠标从窗口移入菜单层 (同 toplevelId,
             // 不同 surface) 时必须重新 enter, 否则 motion 继续发给窗口 surface
             const bool needEnter = targetSurf
-                ? (NeedsPointerEnter() || pointerFocusedSurface_.load() != targetSurf)
-                : (NeedsPointerEnter() || pointerFocusedToplevel_.load() != tl);
+                ? (NeedsPointerEnter() || tracker_.PointerFocusedSurface() != targetSurf)
+                : (NeedsPointerEnter() || tracker_.PointerFocusedToplevel() != tl);
             if (needEnter) {
                 wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
                 OH_LOG_INFO(LOG_APP, "[Input] MOVE-ENTER try surf=%{public}p for tl=%{public}u", surf, tl);
                 if (surf) {
-                    wl_resource* focused = pointerFocusedSurface_.load();
-                    const bool needLeave = targetSurf
-                        ? (focused != nullptr && focused != surf)
-                        : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
-                    if (needLeave)
-                        Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
-                    Enqueue(InputEvent::PTR_ENTER, tl, surf, wx, wy, 0, 0);
+                    SubmitEnterLeave(tl, targetSurf, surf, wx, wy);
                     OH_LOG_INFO(LOG_APP, "[Input] MOVE-ENTER enqueued OK");
                 }
             }
-            Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
+            queue_.Enqueue(InputQueue::Event::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
             break;
         }
         default:
@@ -661,16 +503,12 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
 
 void InputManager::SendKeyEvent(uint32_t tl, int evdevCode, bool pressed) {
     // 窗口不可见时抑制输入
-    {
-        std::lock_guard<std::mutex> lk(visibleMutex_);
-        auto it = toplevelVisible_.find(tl);
-        if (it != toplevelVisible_.end() && !it->second) {
-            // 抽样 120:1 (密钥重复按压/自动重复会出现高频, 与指针同一策略)
-            static uint32_t sSuppressN = 0;
-            if (++sSuppressN % 120 == 1)
-                OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u evdev=%{public}d (window invisible)", tl, evdevCode);
-            return;
-        }
+    if (tracker_.IsInputSuppressed(tl)) {
+        // 抽样 120:1 (密钥重复按压/自动重复会出现高频, 与指针同一策略)
+        static uint32_t sSuppressN = 0;
+        if (++sSuppressN % 120 == 1)
+            OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u evdev=%{public}d (window invisible)", tl, evdevCode);
+        return;
     }
 
     auto* seat = Seat::GetInstance();
@@ -679,73 +517,54 @@ void InputManager::SendKeyEvent(uint32_t tl, int evdevCode, bool pressed) {
                 " kbdRes=%{public}d kbdEntered=%{public}d",
                 tl, evdevCode, pressed,
                 seat->GetKeyboardResource() ? 1 : 0,
-                keyboardEntered_.load());
+                tracker_.KeyboardEntered());
 
     // 键盘 enter 管理: 立即设置状态防止重复 enter (参考旧代码)
     // 桌面模式: 键盘事件永远发到 root, 不应覆盖点击建立的子窗口焦点
     if (pressed && !WaylandServer::GetInstance()->Policy().CompositorRoutesInput()
-        && (!keyboardEntered_.load() || keyboardFocusedToplevel_.load() != tl)) {
+        && (!tracker_.KeyboardEntered() || tracker_.KeyboardFocusedToplevel() != tl)) {
         wl_resource* surf = WaylandServer::GetInstance()->GetSurfaceForToplevel(tl);
         if (surf) {
-            if (keyboardEntered_.load() && keyboardFocusedToplevel_.load() != tl) {
-                Enqueue(InputEvent::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
+            if (tracker_.KeyboardEntered() && tracker_.KeyboardFocusedToplevel() != tl) {
+                queue_.Enqueue(InputQueue::Event::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
             }
             // 立即设置状态, 避免 NAPI 线程在 flush 前又发一次 enter
-            keyboardFocusedToplevel_ = tl;
-            keyboardFocusedSurface_ = surf;
-            keyboardEntered_ = true;
-            Enqueue(InputEvent::KBD_ENTER, tl, surf, 0, 0, 0, 0);
+            tracker_.SetKeyboardFocus(tl, surf);
+            queue_.Enqueue(InputQueue::Event::KBD_ENTER, tl, surf, 0, 0, 0, 0);
             // 发送初始 modifier 状态
             EnqueueModifiers();
         }
     }
 
     // 追踪 modifier 状态 → 同步到 Wine
-    if (IsModifierKey(evdevCode)) {
-        UpdateModifiers(evdevCode, pressed);
+    if (tracker_.IsModifierKey(evdevCode)) {
+        tracker_.UpdateModifiers(evdevCode, pressed);
         EnqueueModifiers();  // 每次修饰键变化都同步, Wine 需要最新的 modifier state
     }
 
     // 入队 key 事件
     uint32_t state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
-    Enqueue(InputEvent::KBD_KEY, 0, nullptr, 0, 0, evdevCode, state);
+    queue_.Enqueue(InputQueue::Event::KBD_KEY, 0, nullptr, 0, 0, evdevCode, state);
 }
 
 void InputManager::EnqueueModifiers() {
-    InputEvent ev;
-    ev.type = InputEvent::KBD_MODIFIERS;
-    ev.mod_depressed = modifiers_depressed_;
-    ev.mod_latched = modifiers_latched_;
-    ev.mod_locked = modifiers_locked_;
-    ev.mod_group = modifiers_group_;
-    {
-        std::lock_guard<std::mutex> lk(queueMutex_);
-        queue_.push_back(ev);
-    }
-    if (pipeWrite_ >= 0) {
-        char c = 1;
-        ssize_t n = write(pipeWrite_, &c, 1);
-        if (n < 0 && errno != EAGAIN) {
-            OH_LOG_WARN(LOG_APP, "[Input] pipe write FAIL errno=%{public}d", errno);
-        }
-    }
+    // 修饰键状态快照入队 (原 InputManager::EnqueueModifiers 逐字 — 事件携带
+    // 四个当前值, 与出队时点无关; 值在 NAPI 线程取, 与旧读端一致)
+    queue_.EnqueueModifiers(tracker_.ModifiersDepressed(), tracker_.ModifiersLatched(),
+                            tracker_.ModifiersLocked(), tracker_.ModifiersGroup());
 }
 
 void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scrollStep,
                                     double px, double py) {
     // 窗口不可见时抑制输入 (缺段修复: scroll 此前绕过可见性检查, 与
     // SendPointerEvent/SendKeyEvent 对齐 — 最小化窗口/不可见窗口的滚动不再注入)
-    {
-        std::lock_guard<std::mutex> lk(visibleMutex_);
-        auto it = toplevelVisible_.find(tl);
-        if (it != toplevelVisible_.end() && !it->second) {
-            // 抽样 120:1: 连续滚动会有高频重复, 与指针/键盘同一策略
-            static uint32_t sSuppressN = 0;
-            if (++sSuppressN % 120 == 1)
-                OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u axis=%{public}s (window invisible)",
-                            tl, axis == 0 ? "VERT" : "HORIZ");
-            return;
-        }
+    if (tracker_.IsInputSuppressed(tl)) {
+        // 抽样 120:1: 连续滚动会有高频重复, 与指针/键盘同一策略
+        static uint32_t sSuppressN = 0;
+        if (++sSuppressN % 120 == 1)
+            OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u axis=%{public}s (window invisible)",
+                        tl, axis == 0 ? "VERT" : "HORIZ");
+        return;
     }
 
     auto* seat = Seat::GetInstance();
@@ -839,383 +658,111 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
     // 的越界局部坐标会被 winewayland 的 motion clamp 夹回窗口内 — 与
     // ACT_MOVE 同一需求)。
     if (targetSurf
-        ? (NeedsPointerEnter() || pointerFocusedSurface_.load() != targetSurf)
-        : (NeedsPointerEnter() || pointerFocusedToplevel_.load() != tl)) {
+        ? (NeedsPointerEnter() || tracker_.PointerFocusedSurface() != targetSurf)
+        : (NeedsPointerEnter() || tracker_.PointerFocusedToplevel() != tl)) {
         wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
         OH_LOG_INFO(LOG_APP, "[Input] SCROLL-ENTER try surf=%{public}p for tl=%{public}u", surf, tl);
         if (surf) {
-            wl_resource* focused = pointerFocusedSurface_.load();
-            const bool needLeave = targetSurf
-                ? (focused != nullptr && focused != surf)
-                : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
-            if (needLeave)
-                Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
-            Enqueue(InputEvent::PTR_ENTER, tl, surf, wx, wy, 0, 0);
+            SubmitEnterLeave(tl, targetSurf, surf, wx, wy);
             OH_LOG_INFO(LOG_APP, "[Input] SCROLL-ENTER enqueued OK");
         }
     }
 
-    // 入队 axis 事件
-    {
-        InputEvent ev;
-        ev.type = InputEvent::PTR_AXIS;
-        ev.axis = axis;
-        ev.axis_value = val;
-        // 诊断字段: InjectPointerAxis 与 motion/button 一致广播到全部 pointer
-        // 资源, 消费侧不读 tl (wine 按 per-process focused_hwnd 消化 axis,
-        // 谁收到 enter 谁响应 — 见 4B 台账"注入端与 pointer 资源结论")
-        ev.tl = tl;
-        std::lock_guard<std::mutex> lk(queueMutex_);
-        queue_.push_back(ev);
-    }
-    if (pipeWrite_ >= 0) {
-        char c = 1;
-        ssize_t n = write(pipeWrite_, &c, 1);
-        if (n < 0 && errno != EAGAIN) {
-            OH_LOG_WARN(LOG_APP, "[Input] pipe write FAIL errno=%{public}d", errno);
-        }
-    }
+    // 入队 axis 事件 (原手写 push 收在 InputQueue::EnqueueAxis — 锁边界/pipe
+    // 唤醒与原实现逐字; tl 诊断字段语义见 input_queue.h)
+    queue_.EnqueueAxis(axis, val, tl);
 }
 
 // ========================================================================
-//  事件队列 (JS 线程 → Wayland 线程)
+//  enter/leave 收敛 helper (三变体共同动作 — 见头注释)
 // ========================================================================
 
-void InputManager::Enqueue(InputEvent::Type type, uint32_t tl, wl_resource* surface,
-                            wl_fixed_t x, wl_fixed_t y, uint32_t btn_or_key, uint32_t state) {
-    {
-        std::lock_guard<std::mutex> lk(queueMutex_);
-        queue_.push_back({type, tl, surface, x, y, btn_or_key, state});
-    }
-    // 唤醒 Wayland 线程
-    if (pipeWrite_ >= 0) {
-        char c = 1;
-        ssize_t n = write(pipeWrite_, &c, 1);
-        if (n < 0 && errno != EAGAIN) {
-            OH_LOG_WARN(LOG_APP, "[Input] pipe write FAIL errno=%{public}d", errno);
-        }
-    }
+void InputManager::SubmitEnterLeave(uint32_t tl, wl_resource* targetSurf,
+                                    wl_resource* surf, wl_fixed_t x, wl_fixed_t y) {
+    // needLeave 双判据 (与旧 ACT_PRESS/ACT_MOVE/SCROLL-ENTER 三处内联逐字):
+    // targetSurf 非空 = 桌面级 — 已有聚焦 surface 且 ≠ 新目标 → leave;
+    // 为空 = toplevel 级 — 已有聚焦 toplevel 且 ≠ tl → leave。
+    // (注意: surf 由调用者选定 — 桌面级必须用命中的层自己 surface, 菜单
+    //  伸出父窗口边界时经父窗口 surface 的越界坐标会被 winewayland clamp)
+    wl_resource* focused = tracker_.PointerFocusedSurface();
+    const bool needLeave = targetSurf
+        ? (focused != nullptr && focused != surf)
+        : (tracker_.PointerFocusedToplevel() != 0 && tracker_.PointerFocusedToplevel() != tl);
+    if (needLeave)
+        queue_.Enqueue(InputQueue::Event::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
+    queue_.Enqueue(InputQueue::Event::PTR_ENTER, tl, surf, x, y, 0, 0);
 }
 
-int InputManager::OnPipeReadable(int fd, uint32_t mask, void* data) {
-    char buf[64];
-    while (read(fd, buf, sizeof(buf)) > 0) {}
-    static_cast<InputManager*>(data)->FlushQueue();
-    return 0;
-}
+// ========================================================================
+//  事件队列 flush (Wayland 线程 — pipe 回调 → poll 去重 → dispatch → flush)
+// ========================================================================
 
 void InputManager::FlushQueue() {
-    // Wayland 线程: 取出所有事件并发送
-    std::vector<InputEvent> batch;
-    {
-        std::lock_guard<std::mutex> lk(queueMutex_);
-        batch.swap(queue_);
-    }
+    // InputQueue::Poll = 锁内 swap 取批 + 去重 (原 FlushQueue 前半逐字,
+    // dedup 日志在队列层 — 去重属队列批量语义, 与注入无关, 见 input_queue.h)
+    auto batch = queue_.Poll();
     if (batch.empty()) return;
 
-    // 去重
-    std::vector<InputEvent> merged;
     for (auto& ev : batch) {
-        if (!merged.empty()) {
-            auto& last = merged.back();
-            if (last.type == ev.type) {
-                bool skip = false;
-                switch (ev.type) {
-                    case InputEvent::PTR_BUTTON:
-                        skip = (last.btn_or_key == ev.btn_or_key && last.state == ev.state);
-                        break;
-                    case InputEvent::PTR_MOTION:
-                        last = ev; continue;  // 只保留最后一个坐标 (绝对位置)
-                    // PTR_AXIS 不去重: 每个值是累积滚动距离, 丢中间值 = 丢滚动量
-                    // 快速滚轮/触控板会产生连续 axis 事件, 必须全部送达 Wine
-                    case InputEvent::PTR_ENTER:
-                        skip = (last.tl == ev.tl && last.surface == ev.surface);
-                        break;
-                    case InputEvent::KBD_KEY:
-                        skip = (last.btn_or_key == ev.btn_or_key && last.state == ev.state);
-                        break;
-                    default: break;
-                }
-                if (skip) continue;
-            }
-        }
-        merged.push_back(ev);
-    }
-    if (merged.size() != batch.size()) {
-        OH_LOG_INFO(LOG_APP, "[Input] dedup %{public}zu→%{public}zu", batch.size(), merged.size());
-    }
-
-    for (auto& ev : merged) {
         switch (ev.type) {
-            case InputEvent::PTR_ENTER:   InjectPointerEnter(ev.tl, ev.surface, ev.x, ev.y); break;
-            case InputEvent::PTR_LEAVE:   InjectPointerLeave(); break;
-            case InputEvent::PTR_MOTION: {
+            case InputQueue::Event::PTR_ENTER:   injector_.InjectPointerEnter(ev.tl, ev.surface, ev.x, ev.y); break;
+            case InputQueue::Event::PTR_LEAVE:   injector_.InjectPointerLeave(); break;
+            case InputQueue::Event::PTR_MOTION: {
                 //  Wayland 标准: xdg_toplevel.move 期间 compositor 接管 motion,
                 // 不转发给 Wine (协议规定 surface loses device focus)
                 if (WaylandServer::GetInstance()->ProcessMoveGrabMotion(ev.x, ev.y))
                     break;
-                InjectPointerMotion(ev.x, ev.y); break;
+                injector_.InjectPointerMotion(ev.x, ev.y); break;
             }
-            case InputEvent::PTR_BUTTON:
+            case InputQueue::Event::PTR_BUTTON:
                 //  交互式移动结束: Release 时结束 grab 并转发给 Wine
                 if (ev.state == WL_POINTER_BUTTON_STATE_RELEASED)
                     WaylandServer::GetInstance()->EndMoveGrab();
-                InjectPointerButton(ev.btn_or_key, ev.state); break;
-            case InputEvent::REL_MOTION:  InjectRelativeMotion(ev.x, ev.y); break;
-            case InputEvent::PTR_AXIS:    InjectPointerAxis(ev.axis, ev.axis_value); break;
-            case InputEvent::KBD_ENTER:   InjectKeyboardEnter(ev.tl, ev.surface); break;
-            case InputEvent::KBD_LEAVE:   InjectKeyboardLeave(); break;
-            case InputEvent::KBD_KEY:     InjectKeyboardKey(ev.btn_or_key, ev.state); break;
-            case InputEvent::KBD_MODIFIERS: InjectKeyboardModifiers(ev.mod_depressed, ev.mod_latched, ev.mod_locked, ev.mod_group); break;
+                injector_.InjectPointerButton(ev.btn_or_key, ev.state); break;
+            case InputQueue::Event::REL_MOTION:  injector_.InjectRelativeMotion(ev.x, ev.y); break;
+            case InputQueue::Event::PTR_AXIS:    injector_.InjectPointerAxis(ev.axis, ev.axis_value); break;
+            case InputQueue::Event::KBD_ENTER:   injector_.InjectKeyboardEnter(ev.tl, ev.surface); break;
+            case InputQueue::Event::KBD_LEAVE:   injector_.InjectKeyboardLeave(); break;
+            case InputQueue::Event::KBD_KEY:     injector_.InjectKeyboardKey(ev.btn_or_key, ev.state); break;
+            case InputQueue::Event::KBD_MODIFIERS: injector_.InjectKeyboardModifiers(ev.mod_depressed, ev.mod_latched, ev.mod_locked, ev.mod_group); break;
         }
     }
-    if (display_) {
-        wl_display_flush_clients(display_);
-    }
+    // wl_display_flush_clients (display 在队列层初始化时注入)
+    queue_.FlushClients();
 }
 
 // ========================================================================
-//  事件注入 (Wayland 线程, 调用 wl_*_send_*)
+//  Wayland 线程注入入口 — 公开委托 InputInjector (4C2 拆层; wl_core.cpp
+//  首帧 focus 预设与 FlushQueue dispatch 调用, 签名/线程/语义逐字不变)
 // ========================================================================
 
 void InputManager::InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fixed_t sx, wl_fixed_t sy) {
-    auto* seat = Seat::GetInstance();
-    auto ptrs = seat->GetAllPointerResources();
-    if (ptrs.empty() || !surface) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectEnter DROP nPtrs=%{public}zu surf=%{public}p", ptrs.size(), surface);
-        gDropEnter.fetch_add(1); MaybeReportDrops();
-        return;
-    }
-
-    // 防御: surface 可能在入队后到 flush 前被 Wine 销毁。
-    // 用 surfaceResources_ 精确验证该 surface 本体仍存活 —
-    // 菜单 subsurface 不在 toplevelSurfaceMap_ 里, 不能用 tl 的映射代替
-    if (!WaylandServer::GetInstance()->IsSurfaceAlive(surface)) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectEnter DROP tl=%{public}u surf=%{public}p: surface destroyed before flush", tl, surface);
-        gDropEnter.fetch_add(1); MaybeReportDrops();
-        return;
-    }
-
-    pointerFocusedToplevel_ = tl;
-    pointerFocusedSurface_ = surface;
-    uint32_t s = serial_++;
-    pointerEnterSerial_ = s;
-    int nSent = 0;
-    struct wl_client* surfClient = wl_resource_get_client(surface);
-    OH_LOG_INFO(LOG_APP, "[Input] InjectEnter tl=%{public}u serial=%{public}u sx=%{public}.1f sy=%{public}.1f nPtrs=%{public}zu t=%{public}u",
-                tl, s, wl_fixed_to_double(sx), wl_fixed_to_double(sy), ptrs.size(), NowMs());
-    for (auto* ptr : ptrs) {
-        // 安全检查: surface 必须与 pointer 属于同一 client (防止跨客户端错误)
-        if (ptr && wl_resource_get_client(ptr) == surfClient) {
-            wl_pointer_send_enter(ptr, s, surface, sx, sy);
-            wl_pointer_send_frame(ptr);
-            nSent++;
-        }
-    }
-    OH_LOG_INFO(LOG_APP, "[Input] InjectEnter OK sent=%{public}d", nSent);
+    injector_.InjectPointerEnter(tl, surface, sx, sy);
 }
-
-void InputManager::InjectRelativeMotion(wl_fixed_t dx, wl_fixed_t dy) {
-    // 相对模式增量转发 (zwp_relative_pointer_v1)。wine 侧收到后累积进
-    // wineserver 光标位置 (wayland_pointer.c relative_pointer_v1_relative_motion)。
-    // 无 relative 对象 (绝对模式) 时 PointerExtras 内部空转。
-    PointerExtras::GetInstance()->SendRelativeMotion(
-        wl_fixed_to_double(dx), wl_fixed_to_double(dy));
-}
-
 void InputManager::InjectPointerMotion(wl_fixed_t sx, wl_fixed_t sy) {
-    auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) { gDropMotion.fetch_add(1); return; }
-    for (auto* ptr : ptrs) {
-        if (ptr) {
-            wl_pointer_send_motion(ptr, NowMs(), sx, sy);
-            wl_pointer_send_frame(ptr);
-        }
-    }
-    // 高频路径 (hover ~125Hz) 抽样 120:1, 防止刷爆 hilog
-    static uint32_t sInjMotionLogN = 0;
-    if (++sInjMotionLogN % 120 == 0)
-        OH_LOG_INFO(LOG_APP, "[Input] InjectMotion sx=%{public}.1f sy=%{public}.1f OK n=%{public}u ptrs=%{public}zu",
-                    wl_fixed_to_double(sx), wl_fixed_to_double(sy), sInjMotionLogN, ptrs.size());
+    injector_.InjectPointerMotion(sx, sy);
 }
-
+void InputManager::InjectRelativeMotion(wl_fixed_t dx, wl_fixed_t dy) {
+    injector_.InjectRelativeMotion(dx, dy);
+}
 void InputManager::InjectPointerButton(uint32_t button, uint32_t state) {
-    auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectButton DROP btn=0x%{public}x: no ptr", button);
-        gDropButton.fetch_add(1); MaybeReportDrops();
-        return;
-    }
-    // 使用最近一次 enter 的 serial (Wayland 协议要求 button 序列号与 enter 一致)
-    uint32_t enterSerial = pointerEnterSerial_.load();
-    uint32_t s = enterSerial ? enterSerial : serial_++;
-    OH_LOG_INFO(LOG_APP, "[Input] InjectButton btn=0x%{public}x state=%{public}u serial=%{public}u (enterSerial=%{public}u) n=%{public}zu t=%{public}u",
-                button, state, s, enterSerial, ptrs.size(), NowMs());
-    for (auto* ptr : ptrs) {
-        if (ptr) {
-            wl_pointer_send_button(ptr, s, NowMs(), button, state);
-            wl_pointer_send_frame(ptr);
-        }
-    }
+    injector_.InjectPointerButton(button, state);
 }
-
 void InputManager::InjectPointerAxis(int axis, wl_fixed_t value) {
-    auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) { return; }
-    uint32_t axisEnum = (axis == 0) ? WL_POINTER_AXIS_VERTICAL_SCROLL
-                                    : WL_POINTER_AXIS_HORIZONTAL_SCROLL;
-    int nSent = 0;
-    uint32_t t = NowMs();
-    for (auto* ptr : ptrs) {
-        if (ptr) {
-            // winewayland.drv 只处理 axis_discrete/axis_value120, axis 是空函数。
-            // 协议规定 discrete 在配对 axis 之前; steps 直接比较 wl_fixed 原值,
-            // 避免 wl_fixed_to_int 截断把 |值|<1 的正向滚动 (触控板细步) 误判成反向
-            if (wl_resource_get_version(ptr) >= WL_POINTER_AXIS_DISCRETE_SINCE_VERSION) {
-                int32_t steps = (value > 0) ? 1 : -1;
-                wl_pointer_send_axis_discrete(ptr, axisEnum, steps);
-            }
-            wl_pointer_send_axis(ptr, t, axisEnum, value);
-            wl_pointer_send_frame(ptr);
-            nSent++;
-        }
-    }
-    OH_LOG_INFO(LOG_APP, "[Input] InjectAxis %{public}s val=%{public}.1f t=%{public}u sent=%{public}d",
-                axis == 0 ? "VERT" : "HORIZ", wl_fixed_to_double(value), t, nSent);
+    injector_.InjectPointerAxis(axis, value);
 }
-
 void InputManager::InjectPointerLeave() {
-    auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    wl_resource* surf = pointerFocusedSurface_.load();
-    if (ptrs.empty() || !surf) return;
-    // 防御: surface 可能在 leave 入队后到 flush 前被销毁 — 对已复用的
-    // 对象 id 发 leave 会让 client 报 "invalid object ... leave(uo)" 并断开
-    if (!WaylandServer::GetInstance()->IsSurfaceAlive(surf)) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectLeave SKIP surf=%{public}p: destroyed before flush", surf);
-        pointerFocusedToplevel_ = 0;
-        pointerFocusedSurface_ = nullptr;
-        pointerEnterSerial_ = 0;
-        return;
-    }
-    uint32_t s = serial_++;
-    struct wl_client* surfClient = wl_resource_get_client(surf);
-    for (auto* ptr : ptrs) {
-        if (ptr && wl_resource_get_client(ptr) == surfClient) {
-            wl_pointer_send_leave(ptr, s, surf);
-        }
-    }
-    pointerFocusedToplevel_ = 0;
-    pointerFocusedSurface_ = nullptr;
-    pointerEnterSerial_ = 0;
+    injector_.InjectPointerLeave();
 }
-
 void InputManager::InjectKeyboardEnter(uint32_t tl, wl_resource* surface) {
-    auto kbds = Seat::GetInstance()->GetAllKeyboardResources();
-    if (kbds.empty() || !surface) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP nKbds=%{public}zu surf=%{public}p", kbds.size(), surface);
-        gDropEnter.fetch_add(1); MaybeReportDrops();
-        return;
-    }
-
-    // 防御: surface 可能在入队后到 flush 前被 Wine 销毁
-    if (!WaylandServer::GetInstance()->GetSurfaceForToplevel(tl)) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP tl=%{public}u: surface no longer in map (destroyed before flush?)", tl);
-        gDropEnter.fetch_add(1); MaybeReportDrops();
-        return;
-    }
-
-    keyboardFocusedToplevel_ = tl;
-    keyboardFocusedSurface_ = surface;
-    keyboardEntered_ = true;
-    uint32_t s = serial_++;
-    int nSent = 0;
-    struct wl_client* surfClient = wl_resource_get_client(surface);
-    OH_LOG_INFO(LOG_APP, "[Input] InjectKbdEnter tl=%{public}u serial=%{public}u mods=0x%{public}x nKbds=%{public}zu t=%{public}u",
-                tl, s, modifiers_depressed_, kbds.size(), NowMs());
-
-    for (auto* kbd : kbds) {
-        if (!kbd) continue;
-        // 安全检查: surface 必须与 keyboard 属于同一 client
-        if (wl_resource_get_client(kbd) != surfClient) continue;
-        wl_array keys;
-        wl_array_init(&keys);
-        wl_keyboard_send_enter(kbd, s, surface, &keys);
-        wl_array_release(&keys);
-
-        // 发送当前 modifier 状态
-        wl_keyboard_send_modifiers(kbd, serial_++, modifiers_depressed_, modifiers_latched_,
-                                   modifiers_locked_, modifiers_group_);
-        nSent++;
-    }
-    OH_LOG_INFO(LOG_APP, "[Input] InjectKbdEnter OK sent=%{public}d", nSent);
-    // IME: keyboard enter → text-input enter (Wine 收到后 enable, 等待文本框
-    // SetIMECompositionRect → 非零光标矩形 → TextInput 判定激活)
-    TextInput::GetInstance()->OnKeyboardEnter(surface);
+    injector_.InjectKeyboardEnter(tl, surface);
 }
-
 void InputManager::InjectKeyboardKey(uint32_t key, uint32_t state) {
-    auto kbds = Seat::GetInstance()->GetAllKeyboardResources();
-    if (kbds.empty()) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectKey DROP evdev=%{public}u: no kbd", key);
-        gDropKey.fetch_add(1); MaybeReportDrops();
-        return;
-    }
-    uint32_t s = serial_++;
-    int nSent = 0;
-    struct wl_client* focusClient = keyboardFocusedSurface_ ? wl_resource_get_client(keyboardFocusedSurface_) : nullptr;
-    for (auto* kbd : kbds) {
-        if (kbd) {
-            // 只发给已 enter 的 client (与 InjectKbdEnter 一致), 避免无 focused_hwnd 的 client 收到无效 key
-            if (focusClient && wl_resource_get_client(kbd) == focusClient) {
-                wl_keyboard_send_key(kbd, s, NowMs(), key, state);
-                nSent++;
-            }
-        }
-    }
-    if (nSent == 0) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectKey DROP evdev=%{public}u: no kbd with focus (nTotal=%{public}zu)", key, kbds.size());
-        gDropKey.fetch_add(1); MaybeReportDrops();
-    } else {
-        OH_LOG_INFO(LOG_APP, "[Input] InjectKey evdev=%{public}u state=%{public}u serial=%{public}u sent=%{public}d t=%{public}u",
-                    key, state, s, nSent, NowMs());
-    }
+    injector_.InjectKeyboardKey(key, state);
 }
-
 void InputManager::InjectKeyboardLeave() {
-    auto kbds = Seat::GetInstance()->GetAllKeyboardResources();
-    wl_resource* surf = keyboardFocusedSurface_;
-    if (kbds.empty() || !keyboardEntered_.load() || !surf) return;
-    // 防御: 同 InjectPointerLeave — 对已销毁/复用的对象 id 发 leave 会断开 client
-    if (!WaylandServer::GetInstance()->IsSurfaceAlive(surf)) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectKbdLeave SKIP surf=%{public}p: destroyed before flush", surf);
-        keyboardEntered_ = false;
-        keyboardFocusedToplevel_ = 0;
-        keyboardFocusedSurface_ = nullptr;
-        return;
-    }
-    uint32_t s = serial_++;
-    struct wl_client* surfClient = wl_resource_get_client(surf);
-    for (auto* kbd : kbds) {
-        if (kbd && wl_resource_get_client(kbd) == surfClient) {
-            wl_keyboard_send_leave(kbd, s, surf);
-        }
-    }
-    keyboardEntered_ = false;
-    keyboardFocusedToplevel_ = 0;
-    keyboardFocusedSurface_ = nullptr;
-    OH_LOG_INFO(LOG_APP, "[Input] InjectKbdLeave OK");
-    // IME: keyboard leave → text-input leave (Wine disable, 失活)
-    TextInput::GetInstance()->OnKeyboardLeave(surf);
+    injector_.InjectKeyboardLeave();
 }
-
-void InputManager::InjectKeyboardModifiers(uint32_t depressed, uint32_t latched,
-                                            uint32_t locked, uint32_t group) {
-    auto kbds = Seat::GetInstance()->GetAllKeyboardResources();
-    if (kbds.empty()) return;
-    uint32_t s = serial_++;
-    for (auto* kbd : kbds) {
-        if (kbd) {
-            wl_keyboard_send_modifiers(kbd, s, depressed, latched, locked, group);
-        }
-    }
+void InputManager::InjectKeyboardModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
+    injector_.InjectKeyboardModifiers(depressed, latched, locked, group);
 }
