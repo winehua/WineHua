@@ -523,6 +523,51 @@ void WaylandServer::ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi) {
     }
 }
 
+// CommittedSurface 快照产出 (重构第 5A2 步·1/2, 行为平价):
+// commit 管线"同一次计算的两种表达" — 旧字段 (sd->geo* / w / h / damage* /
+// shmCommitSerial / shmFormat / subsurfaceX/Y) 照旧填写与读取, 本函数把同一
+// 数据并行填入命名快照 (role/contentRect/screenPos/parentOffset/frame),
+// 供提交 2 的消费端切换 (geoX/geoY 三义消亡, 见 committed_surface.h 出处)。
+// 值与旧字段严格同步同源, 不做第二套独立算法 — 任何字段与旧取值不同即
+// 实现错误。调用点: surface_commit (BeginShmAccess 成功后、角色分发前),
+// 单次 commit 一份快照; NULL buffer commit (HandleNullBufferCommit 提前
+// return) 不更新 — 与旧字段行为一致 (旧字段值同样不变)。
+// 锁: 无 (wl 事件循环线程, wl 回调上下文, 与 SurfaceData 其余字段同域)。
+void WaylandServer::BuildCommittedSurface(SurfaceData* sd, ShmCommitInfo& fi) {
+    auto& c = sd->committed;
+    // role: 优先 toplevel (协议角色互斥: get_toplevel / get_subsurface 各设
+    // 一个, 与旧 hasToplevel 猜义分流的判定顺序逐字一致)
+    c.role = sd->hasToplevel ? CommittedSurface::Role::Toplevel
+           : sd->isSubsurface ? CommittedSurface::Role::Subsurface
+                              : CommittedSurface::Role::Plain;
+    // contentRect: window_geometry 原值 (旧 geoX/geoY/geoW/geoH 的两义载体:
+    // toplevel 义 1/2 屏幕位置见 screenPos, subsurface 义 3 buffer 内容偏移)
+    if (sd->hasWindowGeometry) {
+        c.hasWindowGeometry = true;
+        c.contentRect.x = sd->geoX;
+        c.contentRect.y = sd->geoY;
+        c.contentRect.w = sd->geoW;
+        c.contentRect.h = sd->geoH;
+    }
+    // screenPos: 与 ComputeContentArea 计算出的 ShmCommitInfo::screenX/Y
+    // 同值 (toplevel 虚拟桌面屏幕位置, 即旧 geoX/geoY 的义 1; 非 toplevel
+    // 或无 geometry 时恒 0 — 与 fi 同款条件, 无独立算法)
+    c.screenX = fi.screenX;
+    c.screenY = fi.screenY;
+    // parentOffset: 旧 subsurfaceX/Y 的 commit 时点快照 (rel 父偏移义)
+    c.parentOffsetX = sd->subsurfaceX;
+    c.parentOffsetY = sd->subsurfaceY;
+    // frame 属性: 与 SurfaceData / ShmCommitInfo 同值
+    c.w = sd->w;
+    c.h = sd->h;
+    c.shmCommitSerial = fi.shmCommitSerial;
+    c.shmFormat = fi.shmFormat;
+    c.damageX = sd->damageX;
+    c.damageY = sd->damageY;
+    c.damageW = sd->damageW;
+    c.damageH = sd->damageH;
+}
+
 // toplevel 帧更新: 内容裁剪拷贝进 ToplevelState, 建档/首帧事件/格式事件/
 // ARGB 掩码/z-order/尺寸上报。协议上 xdg_toplevel 的首个 attach+commit
 // 完成 initial show window 语义, 首帧判定靠 hasPosition。
@@ -1033,6 +1078,12 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
                     fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
                     sd->hasWindowGeometry ? "yes" : "no");
+
+        // CommittedSurface 快照产出 (重构第 5A2 步·1/2): 旧字段照旧填与读,
+        // 此处并行填充命名快照 (role/contentRect/screenPos/parentOffset/frame)。
+        // 硬性约束: 与旧字段同一次计算的两种表达 — 值全部来自上方的
+        // ComputeContentArea 产出与 SurfaceData 同值字段, 无第二套算法
+        self->BuildCommittedSurface(sd, fi);
 
         bool isFirstCommit = false;
         self->UpdateToplevelFrameOnCommit(sd, surfRes, fi, isFirstCommit);

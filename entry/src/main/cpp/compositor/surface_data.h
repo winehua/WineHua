@@ -5,12 +5,14 @@
 #include <string>
 #include <vector>
 
-#include "shm_frame_source.h"  // ShmCommitInfo (SHM 帧上下文随 ShmFrameSource 纯函数迁出)
+#include "shm_frame_source.h"     // ShmCommitInfo (SHM 帧上下文随 ShmFrameSource 纯函数迁出)
+#include "committed_surface.h"    // CommittedSurface 快照 (重构第 5A2 步: commit 产物命名快照)
 
 // wl_surface 的每个实例携带的数据。
 // 提取为独立头文件: compositor 子模块和 WaylandServer 各自 include, 无需互相依赖。
 // ShmCommitInfo 已随 SHM 拷贝/缩放纯函数 (重构第 5A1 步) 迁至 shm_frame_source.h
-// (纯值字段无 wayland 依赖, host_tests 可编译)。
+// (纯值字段无 wayland 依赖, host_tests 可编译); CommittedSurface (commit 产物
+// 命名快照, 见 committed_surface.h) 于重构第 5A2 步引入。
 
 struct SurfaceData {
     wl_resource* surface = nullptr;
@@ -33,6 +35,13 @@ struct SurfaceData {
     // xdg_surface window geometry (content area within buffer), 默认全 buffer
     bool hasWindowGeometry = false;
     int geoX = 0, geoY = 0, geoW = 0, geoH = 0;
+
+    // CommittedSurface 快照 (重构第 5A2 步): commit 产物 (role/contentRect/
+    // screenPos/parentOffset/frame 命名字段 — PLAN 出处与 geoX/geoY 三义
+    // 消亡说明见 committed_surface.h)。提交 1 (5A2·1/2) 只产出: 与上方旧字段
+    // 同一次计算的两种表达, 旧读取路径零改动; 提交 2 (5A2·2/2) 消费端切换到
+    // 本快照, geoX/geoY/geoW/geoH 从本结构删除 (写点直写快照)。
+    CommittedSurface committed;
 
     // subsurface 父子追踪 (用于 popup 菜单合成到父 toplevel)
     wl_resource* parentSurface = nullptr;     // 父 wl_surface (仅 subsurface)

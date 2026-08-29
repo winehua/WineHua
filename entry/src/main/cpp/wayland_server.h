@@ -273,6 +273,9 @@ private:
     bool HandleNullBufferCommit(SurfaceData* sd, wl_resource* surfRes);
     bool BeginShmAccess(SurfaceData* sd, ShmCommitInfo& fi);
     void ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi);
+    // CommittedSurface 快照产出 (重构第 5A2 步): commit 管线与旧字段同源并行
+    // 填充 sd->committed (命名快照), 供消费端切换 (见 committed_surface.h)
+    void BuildCommittedSurface(SurfaceData* sd, ShmCommitInfo& fi);
 
     void UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                      ShmCommitInfo& fi, bool& outFirstCommit);
