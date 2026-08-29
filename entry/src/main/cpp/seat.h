@@ -13,9 +13,10 @@
 //   - wl_pointer / wl_keyboard 资源生命周期管理
 //   - XKB_V1 keymap 发送
 //   - 对外提供 GetKeyboardResource/GetAllPointerResources 等资源查询
-//     (InputManager 注入时使用)
+//     (InputInjector 注入时使用 — 重构第 4C2 步 wl_*_send_* 注入层)
 //
-// 事件注入和状态追踪已移至 InputManager。
+// 事件注入和状态追踪已移至 InputManager 编排层 (InputInjector 注入 /
+// InputStateTracker 焦点状态 — 重构第 4C2 步)。
 // 使用 vector 管理资源, 支持 Wine 多窗口反复 bind/destroy 场景。
 
 class Seat {

@@ -18,7 +18,8 @@
 | 3 ZC 与层序政策收口 | **完成（代码层全落地，待 ZC 设备回归）** | f9a2d8a zc_bridge 抽离、cf7e9a1/a3156a6/20b4bdb presenter+ZC 状态机、328ed21/48b7333 zorder_policy 三散点、a2d142d 3A 精化、5ebded3 3B 层序精化 |
 | 4A InputResolver 裁决闭环 | 完成（门禁全过） | 本分支 HEAD 提交（§二 4A 下标） |
 | 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
-| 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector） | 4C1 完成（门禁全过，见 §二 4C1 下标）；4C2 未开始 | 本分支 HEAD 提交（§二 4C1 下标） |
+| 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
+| **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
@@ -472,6 +473,115 @@ ACT_PRESS/ACT_MOVE/SCROLL-ENTER 同构见 §二 4B 记录）；`WaylandServer`
 转发的 CoordTransform（napi_init.cpp FindToplevelAt 调用点）可一并改为
 直呼 mapper（4C2 顺手项）。
 
+### 阶段 4C2（InputManager 核心拆层，2026-08-29）
+
+PLAN §四阶段4 最后一段：InputManager 拆四层 —
+`InputQueue`（队列+pipe+去重）/ `InputStateTracker`（纯状态，可宿主机
+单测）/ `InputInjector`（唯一碰 wl_*_send_*）/ `InputSpaceMapper`（4C1
+产物，只消费不重建）；InputManager 留为薄编排门面。**对外公开接口
+（InputManager 全部 public 方法与单例 GetInstance）保持不变** —
+napi_init/wl_core/seat/wayland_server 等 30+ 调用点零改动（仅实现重排）。
+
+**分层结构总览（每层职责一句话）：**
+
+| 层 | 文件 | 职责 | wayland 依赖 |
+|---|---|---|---|
+| InputManager | input_manager.{h,cpp}（1222→~700 行） | 薄编排：NAPI 入口策略分流（坐标变换/目标解析/焦点判定/enter-leave 三语义变体）+ FlushQueue dispatch（去重批→注入器）+ 公开委托 | 有（签名用） |
+| InputQueue | compositor/input_queue.{h,cpp} | 队列机制：queue+mutex、pipe 唤醒、wl_event_source 注册、Poll（锁内 swap + 去重）、FlushClients | 仅 .cpp（wayland-server-core.h 事件循环） |
+| InputStateTracker | compositor/input_state_tracker.{h,cpp} | 纯状态：按钮位掩码/修饰键/pointer+keyboard 焦点/可见性抑制/serial/相对增量基线/最近按下时刻 | **零**（wl_resource 前向声明只存指针；host_tests 直连编译） |
+| InputInjector | compositor/input_injector.{h,cpp} | 唯一 wl_*_send_* 注入：Enter/Motion/RelativeMotion/Button/Axis/Leave + Keyboard 全系列；注入前防御（surface 存活/资源空 DROP/client 过滤）；丢帧统计 | 有（协议头，注入层专属） |
+| InputSpaceMapper | compositor/input_space_mapper.{h,cpp} | （4C1）坐标变换单点 + lastGlobalPtr 显式语义 | 不动 |
+
+**上报值范围口径：** InputManager 不透明句柄（wl_resource*）只在前三层间
+传递身份；tracker 只存指针做比较（`PointerFocusedSurfaceIs`），绝不 deref
+或调 wl_resource_get_* — 这是宿主单测可行的关键。
+
+**InputStateTracker 宿主单测（host_tests/input_state_test.cpp，TDD 先
+红后绿，84 checks / 0 failures）：** 覆盖 11 组 —
+1. IsModifierKey 转换（shift/ctrl/alt/super/caps/num 10 keycode 真 + 3 非
+   修饰键假）；
+2. UpdateModifiers depressed 位（左右 Ctrl 共享 bit2、非修饰键 no-op、
+   latched/group 恒 0）；
+3. Caps/Num toggle（press 翻转 locked、release 不翻、二按清除）；
+4. 按钮位掩码（ButtonToBit/BitToButton 双向 + unknown 99→0、press 置位/
+   unknown 忽略、release(0) 弹首个按下位/未按下指定键返回键码/空掩码返 0）；
+5. pointer 焦点转移（无焦点→enter→leave→clear 全字段、PointerNeedsEnter
+   组合语义、re-enter skip 判定 = PointerFocusedSurfaceIs 相同 surface）；
+6. keyboard 焦点转移（SetKeyboardFocus/ClearKeyboardFocus 三元组清全）；
+7. 可见性抑制边界（未登记放行、登记 true/false、多窗口隔离、ClearVisible）；
+8. serial 递增（初值 1、单调 +1、跨复位不清零 — 协议串号唯一性合同保留）；
+9. 相对增量基线（空→更新→覆盖→重置语义）；
+10. 最近按下时刻（脉冲拉伸计时值）；
+11. ResetSessionState 组合顺序特征化（复位后 serial 继续单调）。
+
+**queue/注入器边界决策理由：** 去重归 **InputQueue::Poll** 而非 Injector —
+去重只比对事件序列自身的 type/tl/surface/坐标（`PTR_MOTION 只留最后一
+个坐标`、`PTR_BUTTON/KBD_KEY 同键同状态合并`、`PTR_ENTER 同 tl+surface
+合并`、`PTR_AXIS 不去重（累积量不可丢）`、`PTR_LEAVE/KBD_* 不去重`），
+不读任何 wayland 资源/客户机状态，与"锁内 swap 取批"同属队列批量语义；
+Injector 保持"每事件一注入"的纯粹协议层（未来 dispatch 复用/测试不受
+去重干扰）。dedup 日志（`[Input] dedup N→M`）随 Poll 平移，文本不变。
+事件不再私嵌 InputEvent 类型，改 InputQueue::Event（wl_fixed_t x/y 以
+等价 int32_t 承载，头文件不 include wayland）。
+
+**Enter/Leave 三变体收敛方案：** 收敛点 = InputManager 编排层私有
+`SubmitEnterLeave(tl, targetSurf, surf, x, y)`（放编排层而非 StateTracker
+的理由：leave/enter 入队与 needLeave 判定依赖 GetSurfaceForToplevel/
+Enqueue/日志环绕，且三调用点日志文本（PRESS-ENTER / MOVE-ENTER try+
+enqueued OK / SCROLL-ENTER try+enqueued OK）与 surf 选定时机不同，无法
+整体内聚到 tracker 而不改变日志顺序 — 红线禁变）。helper 只收敛"确认要
+enter 后的共同动作"：needLeave 双判据（targetSurf 非空=surface 级：已有
+聚焦 surface≠surf → leave；为空=toplevel 级：已有聚焦 tl≠tl → leave）→
+PTR_LEAVE → PTR_ENTER 入队序。**needEnter 判定与 skipEnter 守卫不收敛**
+（语义不同）：ACT_PRESS = `pressTargetSurf && !skipEnter`（每次点击强制
+重定位 enter；skipEnter = fromMouse+相对模式+同一 surface 三重守卫，
+跳过时也不发运动）；ACT_MOVE/SCROLL-ENTER = `NeedsPointerEnter() ||
+focused 不同于目标`（先判再 enter，仅过渡时发）；三调用点逐字保留原
+判定表达式与日志点。对账：PRESS 的基线更新（UpdateLastLocal 在 enter 后）
+与 !skipEnter 才发 PTR_MOTION、MOVE/SCROLL 的 "try"/"enqueued OK" 日志
+位置（与旧 if(surf) 块内）逐字一致。
+
+**状态迁移对账（旧字段→新归属）：** pressedButtons_/ButtonToBit/
+BitToButton/UpdateModifiers/IsModifierKey → tracker（含 `releaseBtn` 初值
+=传参 button 的"未按下的指定键也入队 RELEASED"既有语义不修正）；pointer
+焦点三原子（tl/surface/enterSerial）+ serial_ → tracker（NextSerial 取号
+为旧 serial_++，InjectButton 的 enterSerial 复用语义不变）；keyboard 焦
+点三元组 → tracker；visibleMutex_+toplevelVisible_ → tracker（同款 mutex
+锁边界）；lastLocalX/Y/hasLastLocal → tracker（仅 NAPI 线程，无锁不变）；
+lastPressMs_ → tracker（atomic 保留）；`display_` 随队列走（Initialize
+注入的 WaylandServer 事件循环 display，FlushQueue 尾 wl_display_flush_
+clients 委托 Queue::FlushClients）。ResetSessionState 清序逐字（pointer→
+keyboard→buttons→modifiers→mapper ResetGlobalPtr→基线→press→可见性）。
+
+**线程/锁边界：** tmgr 锁不新增接触；队列锁只在 InputQueue（Enqueue*
+锁内 push+锁外 pipe、Poll 锁内 swap，与原逐字）；Injector 经构造注入的
+tracker 指针（InputManager 持成员对象，只读共享 — 写方仍是原两个线程，
+atomic 属性不变）；pipe 回调（Queue::OnPipeReadable）经事件循环启动前
+注入的 flush 回调（lambda [this]{FlushQueue()}）回编排层，与 4C1 warpSink
+同模式，无新锁。
+
+**顺手项（4C1 遗留）：** `InputTarget` 的 contentW/contentH 确认为零消费
+读点（全库仅 resolver 内 finalize 传给 ComputeLocalPoint；TARGET/
+SCROLL-TARGET 日志只读 origin/scale/swallow/local）→ 删除字段，改口
+resolver 内局部变量传纯函数（行为不变）；originX/originY/scale 因日志仍
+输出而保留（注释更新：仅诊断不再参与换算）。4C1 预列的 `WaylandServer`
+转发 CoordTransform→直呼 mapper 项**保留委托不直呼**（红线：公开接口不
+变，napi_init.cpp 调用点零改动）。
+
+**门禁：** `make test` host_tests 全绿（geometry 71 / blit_scaled 402 /
+blit_clip 38 / zorder 40 / env 21+88 / **input_state 84**，全 0 failures）；
+`make NATIVE_ARCH=arm64-v8a hap` 构建+签名通过（HAP 374M，libs/arm64-
+v8a/，工作树仅剩预存 thirdparty/ 改动）。
+
+**遗留（设备回归请求，阶段 4 统一汇总见 §四）：** 本提交无运行时时序/
+语义变化（结构重排+纯搬移+日志文本不变），但输入栈是设备重度敏感区 —
+arm64 Pad 真机回归清单：4A 直传点击路由（红警2 主菜单）+ 全屏黑边点击
+（RA2）、4B fit 缩放窗口内滚轮 + 菜单/任务栏弹出层滚动（SCROLL-TARGET/
+SCROLL-ENTER/SCROLL-DROP 日志）、4C 全局输入行为（PAL2 相对模式点击/
+移动 + war3 光标 + 桌面任务栏交互 + 触摸 tap + PC 模式多窗口）。监视
+tag：WL_Input（[Input] 全组日志顺序与基线一致）+ [PIPE/N] 无丢帧。模拟器
+冒烟基线（蓝色桌面+「开始」任务栏、notepad 直启）待回归时复核。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -515,15 +625,23 @@ ACT_PRESS/ACT_MOVE/SCROLL-ENTER 同构见 §二 4B 记录）；`WaylandServer`
   显式化 ZOrderSeq）、3C（ZC 状态机收敛到 ZcBridge）、3D（presenter 收编 +
   PresentTarget 统一）全落地；**待设备回归**：ZC 游戏遮挡/全屏/fallback 场景
   （3A 的 D1/D2 语义修正与此项绑定）。行为敏感点验证清单见 §二 3B/3A 小节。
-- **阶段 4 输入栈拆分**：4A InputResolver 裁决闭环**完成**（见 §二 4A 下标，
-  PLAN §2.2 封装泄漏收口 + InputTarget 精度 double 化 + ClampToContent 收
-  geometry.h）。4B 步 SendScrollEvent 缺段修复**完成**（见 §二 4B 下标 —
-  行为变化例外，单独提交并逐项标注，待设备滚动回归）。4C1（InputSpaceMapper
-  坐标收口 + PointerExtras 解环 + IsDesktopMode→Policy）**完成**（见
-  §二 4C1 下标）。剩余 4C2：InputManager 拆 InputQueue/InputStateTracker/
-  InputInjector（InputSpaceMapper 已就位，接口见 §二 4C1"4C2 预留说明"）；
-  InputTarget origin/scale/contentW/H 诊断字段去留。行为敏感：
-  需 PAL2/war3/RA2 输入回归（arm64 Pad，需用户配合）。
+- **阶段 4 输入栈拆分：代码层全部完成，待设备回归** — 4A InputResolver
+  裁决闭环（§二 4A）、4B SendScrollEvent 缺段修复（§二 4B，行为变化例外）、
+  4C1 InputSpaceMapper 坐标收口 + PointerExtras 解环 + Policy 改名（§二
+  4C1）、4C2 InputManager 拆 InputQueue/InputStateTracker/InputInjector +
+  enter/leave 三变体收敛 + host_tests（§二 4C2）全部落地。
+  **阶段 4 设备回归点汇总（arm64 Pad 真机或模拟器，按 4A/4B/4C 溯源码）**：
+  1. 4A：红警2 直传点击路由（主菜单可点中）、全屏黑边点击/拖动（RA2 点击
+     + 黑边透传）、PAL2 相对模式点击/移动、war3 光标、桌面任务栏交互；
+  2. 4B：fit 缩放窗口内滚轮（桌面模式命中非 root 目标）、菜单/任务栏弹出
+     层滚动路由、PC 模式窗口滚动+黑边滚动、全屏游戏滚动、拖拽窗口中滚动
+     （应无事件）、最小化窗口滚动（应被抑制）— 关注 SCROLL-TARGET/
+     SCROLL-ENTER/SCROLL-DROP/SCROLL-FALLBACK 日志；
+  3. 4C：全输入链路冒烟 — WL_Input 日志组（PRES/PRE-ENTER/TARGET/SCROLL/
+     REL/Inject*，文本与基线逐字对比）、输入无丢帧（Input-DROP 汇总）、
+     拖拽窗口（move grab 期间 motion 注入总线）、热重启会话状态复位
+     （快捷键残留无卡键）。
+  模拟器冒烟（x86_64）与 arm64 Pad 回归均待续作承担。
 - **阶段 5 协议层重构**：wl_core 拆协议壳 + CommittedSurface 快照；
   PopupManager；maximized 迁入 ToplevelState；ToplevelEventBus 事件 enum 化。
 - **阶段 6 facade 瘦身**：WaylandServer 拆 24 个转发；DesktopSessionState

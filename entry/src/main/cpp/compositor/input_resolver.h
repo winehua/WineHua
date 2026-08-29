@@ -9,8 +9,10 @@ class DesktopCompositor;
 //
 // 裁决闭环 (重构第 4A 步): FindInputTargetAt 返回终态 — 调用方无需再懂
 // "桌面坐标→surface 局部"的逆映射与内容区钳制, 直接取 localX/localY 注入
-// (wl_fixed 转换在注入时做); 调用方只按 swallow 加工 (见下)。origin/scale/
-// contentW/H 保留供诊断日志与源码复核, 不再参与换算。
+// (wl_fixed 转换在注入时做); 调用方只按 swallow 加工 (见下)。origin/scale
+// 保留供诊断日志 (TARGET/SCROLL-TARGET 断点), 不再参与换算; 内容区尺寸
+// (钳制上界 contentW/H) 是 ComputeLocalPoint 的内部管道参数, 无外部
+// 消费者, 4C2 顺手项已从 InputTarget 删除 (局部变量传给纯函数)。
 struct InputTarget {
     uint32_t toplevelId = 0;         // 事件归属 toplevel (raise/键盘焦点)
     wl_resource* surface = nullptr;  // pointer enter 目标
@@ -25,12 +27,10 @@ struct InputTarget {
     // 诊断/复核: 本命中使用的逆映射基 (local = (d - origin) / scale)。
     // 全屏窗口保比例缩放 (== FitRect off/scale), 普通窗口与 root 回退为恒等
     // (origin=0, scale=1)。精度与 geometry.h FitRect 对齐: origin 是整数
-    // 屏幕原点 (int → double 无损), scale 是未取整 double (不再 float 截断)
+    // 屏幕原点 (int → double 无损), scale 是未取整 double (不再 float 截断)。
+    // 仅输入日志 (TARGET/SCROLL-TARGET 断点 2/4B) 消费, 不参与换算。
     double originX = 0.0, originY = 0.0;
     double scale = 1.0;
-    // 全屏窗口的内容尺寸 (fit 变换 src 尺寸 = 局部坐标有效域, 钳制上界);
-    // 非全屏目标为 0 = 未做内容区钳制
-    int contentW = 0, contentH = 0;
 };
 
 // 输入命中裁决 (依赖 ToplevelManager + DesktopCompositor)
