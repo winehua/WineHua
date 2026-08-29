@@ -984,20 +984,11 @@ void WaylandServer::FinishCommit(SurfaceData* sd, wl_resource* surfRes) {
     sd->frameCallbacks.clear();
     sd->pendingBuffer = nullptr;
 
-    // 首帧通知 + 预设 pointer/keyboard focus (参考 HarmonyBox)
-    bool expected = false;
-    if (firstFrame_.compare_exchange_strong(expected, true)) {
-        FireState("active");
-        // 预设 focus: Wine 在用户操作前就需要 enter
-        // 安全检查: 只有 resource 已创建才注入 (否则 Inject*Enter 内部会 DROP)
-        uint32_t tl = sd->toplevelId;
-        if (Seat::GetInstance()->HasPointerResource()) {
-            InputManager::GetInstance()->InjectPointerEnter(tl, surfRes, wl_fixed_from_int(0), wl_fixed_from_int(0));
-        }
-        if (Seat::GetInstance()->HasKeyboardResource()) {
-            InputManager::GetInstance()->InjectKeyboardEnter(tl, surfRes);
-        }
-    }
+    // 首帧通知 + 预设 pointer/keyboard focus: 会话焦点策略 (firstFrame_ CAS
+    // 判定 + active 事件 + enter 预注入, 条件/顺序逐字) 收口于
+    // WaylandServer::TryBeginSessionFirstFrame — 协议壳只陈述"首帧 commit
+    // 发生", 不亲自做焦点决策 (参考 HarmonyBox, 完整说明见 wayland_server.cpp)
+    TryBeginSessionFirstFrame(sd->toplevelId, surfRes);
 }
 
 void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {

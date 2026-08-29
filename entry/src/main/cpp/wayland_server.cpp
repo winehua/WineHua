@@ -303,6 +303,26 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     }
 }
 
+void WaylandServer::TryBeginSessionFirstFrame(uint32_t toplevelId, wl_resource* surfRes) {
+    // 首帧通知 + 预设 pointer/keyboard focus (参考 HarmonyBox)
+    // 决策归属 (重构第 5B1 步): 从 wl_core FinishCommit 内联段收为命名策略 —
+    // 协议壳只陈述"首帧 commit 发生", 焦点预注入 (注入条件/顺序) 逐字平移。
+    bool expected = false;
+    if (firstFrame_.compare_exchange_strong(expected, true)) {
+        FireState("active");
+        // 预设 focus: Wine 在用户操作前就需要 enter
+        // 安全检查: 只有 resource 已创建才注入 (否则 Inject*Enter 内部会 DROP)
+        if (Seat::GetInstance()->HasPointerResource()) {
+            InputManager::GetInstance()->InjectPointerEnter(toplevelId, surfRes,
+                                                            wl_fixed_from_int(0),
+                                                            wl_fixed_from_int(0));
+        }
+        if (Seat::GetInstance()->HasKeyboardResource()) {
+            InputManager::GetInstance()->InjectKeyboardEnter(toplevelId, surfRes);
+        }
+    }
+}
+
 void WaylandServer::ResetSessionState() {
     // Wine 会话终结统一收口。只重置「进程级一次性/漂移状态」— 随 toplevel
     // 销毁自愈的字段 (root/pending/taskbar, OnToplevelDestroyed 锁内清理)

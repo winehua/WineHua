@@ -262,6 +262,13 @@ public:
 private:
     WaylandServer() = default;
     void EventLoop();
+    // 会话首帧 focus 策略 (重构第 5B1 步): 首个 commit 到达时通知 ArkTS
+    // active 事件 + 预设 pointer/keyboard focus (Wine 在用户操作前就需要
+    // enter)。firstFrame_ 会话级一次性 CAS 判定 (Start/ResetSessionState/
+    // ResetFirstFrame 复位), 注入有 Seat 资源安全检查。wl_core FinishCommit
+    // 只陈述"首帧 commit 发生"不亲自决策; 回归基线: 决策条件/注入顺序/
+    // 参考 (HarmonyBox) 与原内联段逐字 (见 wayland_server.cpp)。
+    void TryBeginSessionFirstFrame(uint32_t toplevelId, wl_resource* surfRes);
     // stopAll 主动清空全部 toplevel: SIGKILL 强杀 Wine 后 client 断开事件
     // 未被 dispatch (wl_display_terminate 提前终止事件循环), 依赖断开事件触发
     // 的 OnToplevelDestroyed 不执行 → toplevel 残留 (重启后旧窗口画面共存、
