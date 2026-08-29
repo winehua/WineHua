@@ -7,7 +7,7 @@
 // 经 SetPointerWarpSink 装配 (见头注释"warp 回调装配"), 装配点在
 // wl_core.cpp RegisterWlCoreGlobals。6A: 也不再 include wayland_server.h —
 // surface→toplevel 反查与 root 判定经 BindWaylandRefs 注入引用 (见头注释)。
-#include "compositor/toplevel_manager.h"
+#include "compositor/toplevel/toplevel_manager.h"
 
 #include <algorithm>
 #include <chrono>

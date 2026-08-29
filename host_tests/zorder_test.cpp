@@ -3,7 +3,7 @@
 // 覆盖: 分组 8 组合边界 (唯一 InZOrder = (非 root, 非 external, 在 z-order));
 // 真实层序场景排序全表断言 (3 窗口 + 每窗口 2 subsurface + 菜单/任务栏/游离层,
 // 含 root 在 z-order 首位的 lane 偏移情形); pin 例外谓词。
-#include "compositor/zorder_policy.h"
+#include "compositor/toplevel/zorder_policy.h"
 #include <algorithm>
 #include <cstdio>
 #include <string>

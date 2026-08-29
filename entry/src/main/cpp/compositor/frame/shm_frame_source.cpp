@@ -1,5 +1,5 @@
-#include "compositor/shm_frame_source.h"
-#include "compositor/geometry.h"  // DisplaySizeAfterViewport (不 clamp 变体)
+#include "compositor/frame/shm_frame_source.h"
+#include "compositor/frame/geometry.h"  // DisplaySizeAfterViewport (不 clamp 变体)
 #include <algorithm>
 #include <cstring>
 

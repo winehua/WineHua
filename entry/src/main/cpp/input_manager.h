@@ -3,12 +3,12 @@
 #include <wayland-server-protocol.h>
 #include <cstdint>
 
-#include "compositor/geometry.h"
-#include "compositor/display_policy.h"      // DisplayPolicy (6A 装配注入共享引用)
-#include "compositor/input_space_mapper.h"  // CoordTransform 落点 + lastGlobalPtr 显式语义 (4C1)
-#include "compositor/input_queue.h"         // 队列机制 (4C2 拆层)
-#include "compositor/input_state_tracker.h" // 纯状态 (4C2 拆层)
-#include "compositor/input_injector.h"      // 唯一 wl_*_send_* 注入 (4C2 拆层)
+#include "compositor/frame/geometry.h"
+#include "compositor/frame/display_policy.h"      // DisplayPolicy (6A 装配注入共享引用)
+#include "compositor/input/input_space_mapper.h"  // CoordTransform 落点 + lastGlobalPtr 显式语义 (4C1)
+#include "compositor/input/input_queue.h"         // 队列机制 (4C2 拆层)
+#include "compositor/input/input_state_tracker.h" // 纯状态 (4C2 拆层)
+#include "compositor/input/input_injector.h"      // 唯一 wl_*_send_* 注入 (4C2 拆层)
 
 // InputManager: 统一输入事件管理器 — 编排门面 (重构第 4C2 步瘦身)
 //

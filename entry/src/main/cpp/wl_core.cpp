@@ -12,10 +12,10 @@
 #include "plugin_manager.h"
 #include "pointer_extras.h"
 #include "text_input.h"
-#include "compositor/compositor_utils.h"
-#include "compositor/compositor_constants.h"
-#include "compositor/geometry.h"
-#include "compositor/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
+#include "compositor/frame/compositor_utils.h"
+#include "compositor/frame/compositor_constants.h"
+#include "compositor/frame/geometry.h"
+#include "compositor/frame/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
 #include "include/viewporter-server-protocol.h"
 #include "perf_utils.h"
 #include <algorithm>

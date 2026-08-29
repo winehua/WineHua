@@ -1,4 +1,4 @@
-#include "compositor/input_injector.h"
+#include "compositor/input/input_injector.h"
 
 #include <wayland-server-protocol.h>  // wl_pointer_send_*/wl_keyboard_send_* 系列
 
@@ -6,8 +6,8 @@
 #include "pointer_extras.h"
 #include "text_input.h"
 // 6A 装配注入直呼 (BindResolvers 注入; wl 事件循环启动前装配, 见头注释):
-#include "compositor/input_resolver.h"   // IsSurfaceAlive (注入前 surface 存活防御)
-#include "compositor/toplevel_manager.h" // GetSurfaceForToplevel (surface 存在检查)
+#include "compositor/input/input_resolver.h"   // IsSurfaceAlive (注入前 surface 存活防御)
+#include "compositor/toplevel/toplevel_manager.h" // GetSurfaceForToplevel (surface 存在检查)
 
 #include <chrono>
 #include <atomic>

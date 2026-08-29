@@ -10,6 +10,11 @@ set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(
     ${NATIVERENDER_ROOT_PATH}
     ${NATIVERENDER_ROOT_PATH}/include
+    # compositor 按域分组后 (frame/toplevel/input): 域内互引保持裸名 include,
+    # 经本路径解析; 跨域由目标目录命中。同目录优先搜索不变。
+    ${NATIVERENDER_ROOT_PATH}/compositor/frame
+    ${NATIVERENDER_ROOT_PATH}/compositor/toplevel
+    ${NATIVERENDER_ROOT_PATH}/compositor/input
 )
 
 if(DEFINED PACKAGE_FIND_FILE)
@@ -40,24 +45,24 @@ add_library(entry SHARED
     phone_adapter/phone_virgl_relay.cpp
     wayland_server.cpp
     wl_core.cpp
-    compositor/compositor_blit.cpp
-    compositor/toplevel_manager.cpp
-    compositor/popup_manager.cpp
-    compositor/move_grab.cpp
-    compositor/compositor_utils.cpp
-    compositor/geometry.cpp
-    compositor/desktop_compositor.cpp
-    compositor/zc_bridge.cpp
-    compositor/frame_composer.cpp
-    compositor/frame_pipeline.cpp
-    compositor/shm_frame_source.cpp
-    compositor/input_resolver.cpp
-    compositor/input_space_mapper.cpp
-    compositor/input_queue.cpp
-    compositor/input_state_tracker.cpp
-    compositor/input_injector.cpp
-    compositor/desktop_root_manager.cpp
-    compositor/toplevel_event_bus.cpp
+    compositor/frame/compositor_blit.cpp
+    compositor/toplevel/toplevel_manager.cpp
+    compositor/toplevel/popup_manager.cpp
+    compositor/toplevel/move_grab.cpp
+    compositor/frame/compositor_utils.cpp
+    compositor/frame/geometry.cpp
+    compositor/toplevel/desktop_compositor.cpp
+    compositor/frame/zc_bridge.cpp
+    compositor/frame/frame_composer.cpp
+    compositor/frame/frame_pipeline.cpp
+    compositor/frame/shm_frame_source.cpp
+    compositor/input/input_resolver.cpp
+    compositor/input/input_space_mapper.cpp
+    compositor/input/input_queue.cpp
+    compositor/input/input_state_tracker.cpp
+    compositor/input/input_injector.cpp
+    compositor/toplevel/desktop_root_manager.cpp
+    compositor/toplevel/toplevel_event_bus.cpp
     egl_renderer.cpp
     fs_utils.cpp
     plugin_manager.cpp
@@ -83,7 +88,7 @@ add_library(entry SHARED
 # 单独 -O2 该源文件 (其余保持 -O0 便于调试), 合成崩溃时该文件仍可栈回溯。
 # 注意: compositor_blit.cpp 迁移自 compositor_utils.cpp (2026-08-22 拆分),
 # -O2 属性必须跟着代码走 — 漏挂曾致 blit 段从 26ms 劣化到 ~240ms。
-set_source_files_properties(compositor/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+set_source_files_properties(compositor/frame/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")
 
 target_link_libraries(entry PUBLIC
     libace_napi.z.so

@@ -3,7 +3,7 @@
 #include <wayland-server-core.h>  // wl_resource/wl_fixed_t — 协议注入层专属 (不在 host_tests 链路)
 #include <cstdint>
 
-#include "compositor/input_state_tracker.h"
+#include "compositor/input/input_state_tracker.h"
 
 class InputResolver;  // 前向声明 (6A 装配注入引用, 见 BindResolvers)
 class ToplevelManager;  // 前向声明 (6A 装配注入引用, 见 BindResolvers)

@@ -2,7 +2,7 @@
 // 覆盖: 负原点裁剪 (ClipBlitToTarget)、dst∩R 裁剪 (IntersectBlitWithDamage /
 // IntersectRectWithDamage)、src∩damage 包围盒 (ClipBlitSourceToRect)。
 // 黄金值用例 + 固定种子随机用例与逐像素暴力参考实现对比。
-#include "compositor/blit_clip.h"
+#include "compositor/frame/blit_clip.h"
 #include <algorithm>
 #include <cstdio>
 #include <random>

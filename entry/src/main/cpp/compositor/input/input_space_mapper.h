@@ -4,7 +4,7 @@
 #include <atomic>
 #include <cstdint>
 
-#include "compositor/geometry.h"  // FitRect
+#include "compositor/frame/geometry.h"  // FitRect
 
 class EglRenderer;  // 前向声明 (定义在 egl_renderer.h)
 

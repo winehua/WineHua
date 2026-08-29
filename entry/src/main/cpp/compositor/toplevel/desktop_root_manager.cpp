@@ -2,7 +2,7 @@
 #include "desktop_session_state.h"
 #include "toplevel_manager.h"
 #include "compositor_constants.h"
-#include "compositor/surface_data.h"
+#include "compositor/frame/surface_data.h"
 #include <hilog/log.h>
 
 #undef LOG_DOMAIN

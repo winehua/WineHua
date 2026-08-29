@@ -4,7 +4,7 @@
 // 全 buffer 紧凑拷贝, 内容区计算 (window_geometry 裁剪 toplevel/subsurface
 // 双分支 + 异步 geometry/buffer 防御 clamp)。
 // 黄金值用例 + 固定种子随机用例与独立数学路径参考实现对比。
-#include "compositor/shm_frame_source.h"
+#include "compositor/frame/shm_frame_source.h"
 #include <algorithm>
 #include <cstdio>
 #include <random>

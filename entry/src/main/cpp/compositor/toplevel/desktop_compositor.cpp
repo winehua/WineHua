@@ -3,9 +3,9 @@
 #include "frame_pipeline.h"
 #include "toplevel_manager.h"
 #include "compositor_utils.h"
-#include "compositor/zorder_policy.h"
+#include "compositor/toplevel/zorder_policy.h"
 #include "geometry.h"
-#include "compositor/surface_data.h"
+#include "compositor/frame/surface_data.h"
 #include "perf_utils.h"
 #include <algorithm>
 #include <chrono>

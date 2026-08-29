@@ -1,7 +1,7 @@
 // compositor/geometry 纯函数的宿主机单元测试 (make test)。
 // 不依赖 wayland/OHOS SDK, 用宿主 g++ 编译, 目的是把坐标换算这种
 // 历史重灾区逻辑 (全屏/黑边鼠标映射) 变成可离线验证的纯函数。
-#include "compositor/geometry.h"
+#include "compositor/frame/geometry.h"
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>

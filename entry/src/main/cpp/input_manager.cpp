@@ -2,13 +2,13 @@
 #include "seat.h"
 #include "pointer_extras.h"
 #include "wayland_server.h"  // 保留: FlushQueue 的 move grab 动作委托 + InputTarget 别名
-#include "compositor/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
+#include "compositor/input/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
                                             // fallback 已迁入, 本文件不再认识
                                             // PluginManager (include 已删)
 // 6A 装配注入直调 (BindCompositorDeps 注入引用; 见 input_manager.h 注释):
-#include "compositor/input_resolver.h"   // FindInputTargetAt/SurfaceLocalToDesktop/IsSurfaceAlive(经 injector)
-#include "compositor/toplevel_manager.h" // GetSurfaceForToplevel/GetToplevelGeometrySnapshot
-#include "compositor/move_grab.h"        // IsActive/GetToplevelId
+#include "compositor/input/input_resolver.h"   // FindInputTargetAt/SurfaceLocalToDesktop/IsSurfaceAlive(经 injector)
+#include "compositor/toplevel/toplevel_manager.h" // GetSurfaceForToplevel/GetToplevelGeometrySnapshot
+#include "compositor/toplevel/move_grab.h"        // IsActive/GetToplevelId
 #include <chrono>
 #include <thread>
 #include <atomic>

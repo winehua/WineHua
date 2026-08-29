@@ -1,4 +1,4 @@
-#include "compositor/input_queue.h"
+#include "compositor/input/input_queue.h"
 
 #include <wayland-server-core.h>  // wl_display_get_event_loop / wl_event_loop_add_fd ...
 #include <utility>  // std::move

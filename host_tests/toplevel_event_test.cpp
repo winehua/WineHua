@@ -1,7 +1,7 @@
 // ============================================================================
 // toplevel_event_test — ToplevelEventBus 纯函数对账 (重构第 5D 步, 行为平价)
 //
-// 测试对象: compositor/toplevel_event_bus.h 的事件名映射与 JSON 构造单点。
+// 测试对象: compositor/toplevel/toplevel_event_bus.h 的事件名映射与 JSON 构造单点。
 // 黄金值 = 重构前各调用点 (wl_core.cpp / xdg_shell.cpp / wayland_server.cpp /
 // plugin_manager.cpp) 的 snprintf 模板逐字 — 事件名/键名/值/顺序不变是
 // 红线 (ArkTS 侧 WineWindowManager.ets / PopupWindowManager.ets 按事件名与
@@ -9,7 +9,7 @@
 //
 // 构建: make test (host g++ 直连编译, 零 wayland/hilog 依赖 — 纯函数在头)。
 // ============================================================================
-#include "compositor/toplevel_event_bus.h"
+#include "compositor/toplevel/toplevel_event_bus.h"
 #include <cstdio>
 #include <cstring>
 #include <string>

@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
-#include "compositor/zorder_policy.h"
+#include "compositor/toplevel/zorder_policy.h"
 
 // WaylandServer 中 toplevel 聚合状态的集中存储 (PC popup 的帧状态复用
 // ToplevelState — popup 登记表本身已迁至 PopupManager, 见 popup_manager.h)。

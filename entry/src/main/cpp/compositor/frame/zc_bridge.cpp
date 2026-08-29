@@ -1,7 +1,7 @@
 #include "zc_bridge.h"
 
 #include "graphics_broker.h"          // SetZeroCopySurfaceReady (ready marker, 进程单例)
-#include "compositor/surface_data.h"  // SurfaceData (wl_resource_get_user_data)
+#include "compositor/frame/surface_data.h"  // SurfaceData (wl_resource_get_user_data)
 #include "compositor_utils.h"         // CompensateMinimizedSubsurfaceOffset
 #include "desktop_compositor.h"       // DesktopCompositor (friend), SubsurfaceLayer
 #include "geometry.h"                 // DisplaySizeAfterViewport

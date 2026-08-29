@@ -6,7 +6,7 @@
 #include "xdg_configure.h"
 #include "fps_counter.h"
 #include "wine_process.h"
-#include "compositor/debug_assert.h"
+#include "compositor/frame/debug_assert.h"
 #include "include/xdg-shell-server-protocol.h"
 #include <algorithm>
 #include <cstring>

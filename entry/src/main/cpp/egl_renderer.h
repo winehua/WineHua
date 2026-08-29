@@ -8,9 +8,9 @@
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
-#include "compositor/geometry.h"
-#include "compositor/presented_frame.h"
-#include "compositor/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
+#include "compositor/frame/geometry.h"
+#include "compositor/frame/presented_frame.h"
+#include "compositor/frame/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
 
 struct OH_NativeImage;
 class DesktopCompositor;

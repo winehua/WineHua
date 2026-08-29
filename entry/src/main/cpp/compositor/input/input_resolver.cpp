@@ -2,7 +2,7 @@
 #include "toplevel_manager.h"
 #include "desktop_compositor.h"
 #include "geometry.h"
-#include "compositor/surface_data.h"
+#include "compositor/frame/surface_data.h"
 #include <algorithm>
 #include <hilog/log.h>
 

@@ -11,21 +11,21 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "compositor/compositor_constants.h"
-#include "compositor/display_policy.h"
-#include "compositor/desktop_session_state.h"  // DesktopSessionState (重构第 6B 步: 会话共享状态 POD)
-#include "compositor/toplevel_manager.h"
-#include "compositor/popup_manager.h"
-#include "compositor/toplevel_event_bus.h"  // ToplevelEventType/ToplevelEventBus (重构第 5D 步)
+#include "compositor/frame/compositor_constants.h"
+#include "compositor/frame/display_policy.h"
+#include "compositor/toplevel/desktop_session_state.h"  // DesktopSessionState (重构第 6B 步: 会话共享状态 POD)
+#include "compositor/toplevel/toplevel_manager.h"
+#include "compositor/toplevel/popup_manager.h"
+#include "compositor/toplevel/toplevel_event_bus.h"  // ToplevelEventType/ToplevelEventBus (重构第 5D 步)
 
-// 前置声明: surface_commit 分段函数的参数类型 (定义在 compositor/surface_data.h,
+// 前置声明: surface_commit 分段函数的参数类型 (定义在 compositor/frame/surface_data.h,
 // 该头在文件末尾引入 — 本类的签名只需引用, 无需完整定义)
 struct SurfaceData;
 struct ShmCommitInfo;
-#include "compositor/move_grab.h"
-#include "compositor/desktop_compositor.h"
-#include "compositor/input_resolver.h"
-#include "compositor/desktop_root_manager.h"
+#include "compositor/toplevel/move_grab.h"
+#include "compositor/toplevel/desktop_compositor.h"
+#include "compositor/input/input_resolver.h"
+#include "compositor/toplevel/desktop_root_manager.h"
 #include "plugin_manager.h"  // PromotePendingDesktopRoot → MoveRendererToToplevel
 
 // 最小 Wayland Compositor: wl_compositor + wl_surface + wl_shm
@@ -312,4 +312,4 @@ private:
     PopupManager popupMgr_{toplevelMgr_, session_.outputW, session_.outputH};
 };
 
-#include "compositor/surface_data.h"  // SurfaceData 已提取至独立头文件
+#include "compositor/frame/surface_data.h"  // SurfaceData 已提取至独立头文件

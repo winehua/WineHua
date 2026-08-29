@@ -5,7 +5,7 @@
 // 比较), 用宿主 g++ 直连编译, 把输入状态机这种历史重灾区变成离线可验证。
 // 期望语义 = 重构前 input_manager.cpp 内联状态逻辑逐字平移, 本测试即
 // 行为平价的特征化 (特征化测试先于实现: 本文件是新 StateTracker 接口的第一个用例)。
-#include "compositor/input_state_tracker.h"
+#include "compositor/input/input_state_tracker.h"
 #include <cstdint>
 #include <cstdio>
 

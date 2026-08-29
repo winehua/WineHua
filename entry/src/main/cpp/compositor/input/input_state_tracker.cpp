@@ -1,4 +1,4 @@
-#include "compositor/input_state_tracker.h"
+#include "compositor/input/input_state_tracker.h"
 
 // ============================================================================
 // InputStateTracker 实现 — 原 InputManager 状态逻辑逐字平移 (重构第 4C2 步)。

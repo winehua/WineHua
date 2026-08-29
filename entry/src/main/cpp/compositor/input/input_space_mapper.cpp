@@ -1,4 +1,4 @@
-#include "compositor/input_space_mapper.h"
+#include "compositor/input/input_space_mapper.h"
 
 #include "plugin_manager.h"
 #include "wayland_server.h"

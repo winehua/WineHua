@@ -2,8 +2,8 @@
 #include <atomic>
 #include <cstdint>
 
-#include "compositor/compositor_constants.h"
-#include "compositor/display_policy.h"
+#include "compositor/frame/compositor_constants.h"
+#include "compositor/frame/display_policy.h"
 
 // DesktopSessionState — 桌面会话共享状态 POD (重构第 6B 步)
 //
