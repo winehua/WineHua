@@ -593,20 +593,12 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     if (sd->toplevelId == desktopRootToplevelId_) {
         desktopCompositor_.IncrementDesktopRootFrameSerial();
     }
-    /*
-     * 自动恢复最小化窗口: 判定逻辑见 IsRestoreSizeCommit (compositor_utils.h)。
-     * 注意: 此处已持有 toplevelMutex_, 不能调 SetToplevelRestored。
-     * justRestored: 还原帧的 geo 是 Wine 记录的"原位" — 用户拖动过窗口
-     * (move grab 只改 compositor 坐标, Wine 不知道) 时原位是旧的, 下方
-     * 位置跟随必须跳过 (见 wine geo sync 分支)。
-     */
-    bool justRestored = false;
-    if (IsRestoreSizeCommit(st.IsMinimized(), fi.contentW, fi.contentH)) {
-        st.SetMinimized(false);
-        justRestored = true;
-        OH_LOG_INFO(LOG_APP, "[MW] auto-restore tl=%{public}u size=%{public}dx%{public}d",
-                    sd->toplevelId, fi.contentW, fi.contentH);
-    }
+    // 自动恢复最小化窗口: 判定/状态改写/日志收口于 ToplevelManager::
+    // TryAutoRestoreLocked — "此处已持锁不能调 SetToplevelRestored" 与
+    // justRestored 语义 (还原帧 geo 是 Wine 旧原位, 位置跟随须跳过) 的补丁
+    // 注释随方法平移 (见 toplevel_manager.cpp); 返回值 = justRestored
+    const bool justRestored =
+        toplevelMgr_.TryAutoRestoreLocked(sd->toplevelId, fi.contentW, fi.contentH);
     // 首帧判定只认 hasPosition, 不认条目存在
     // (pre-commit 的 SetToplevelMinimized 等路径可能已建档)
     outFirstCommit = !st.HasPosition();
@@ -634,54 +626,25 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
             FireToplevelEvent(sd->toplevelId, "created", json);
         }
     }
-    /*
-     * ARGB 窗口: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置)。
-     * 普通 PC 窗口后续 commit 忽略 geoX/geoY (OHOS 窗口管理器为权威),
-     * ARGB 窗口相反: geo 变化 → 通知 ArkTS 移动子窗口。
-     * (历史字段 geoX/geoY 已于重构第 5A2 步消亡 — 其"桌面屏幕位置"义即
-     * 本函数消费的 fi.screenX/Y, 由 CommittedSurface::screenPos 命名承载)
-     */
+    // ARGB 窗口位置同步: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置,
+    // 普通 PC 窗口后续 commit 忽略 geo, OHOS 窗口管理器为权威 — 完整补丁
+    // 说明随方法平移, 见 toplevel_manager.cpp SyncArgbPositionLocked)。
+    // 位置应用在 ToplevelManager, argb_move 事件由此处锁内发出 (原时序:
+    // 模式/格式/首帧门禁在此判定, 事件锁内发 — 行为逐字)
     if (Policy().OhosWindowPerToplevel() && fi.shmFormat == 0 && !outFirstCommit &&
-        (st.X() != fi.screenX || st.Y() != fi.screenY)) {
-        st.SetPosition(fi.screenX, fi.screenY);
+        toplevelMgr_.SyncArgbPositionLocked(sd->toplevelId, fi.screenX, fi.screenY)) {
         char json[96];
         snprintf(json, sizeof(json), "{\"x\":%d,\"y\":%d}", fi.screenX, fi.screenY);
         FireToplevelEvent(sd->toplevelId, "argb_move", json);
     }
-    /*
-     * 桌面模式后续 commit 的位置同步:
-     * - compositor 位置为权威: move grab 后 Wine 不知道新位置, 下次
-     *   commit 的 geo 仍是旧值 → 不能无条件跟随 (拖动会被弹回)
-     * - 但 Wine 程序主动 SetWindowPos (geo ≠ 上次 Wine 快照) 必须跟随:
-     *   否则首帧后移动的窗口永远停在初始位置 — 3DMLauncher UI 窗口
-     *   首帧 @(0,0), launcher 布局阶段移到 (220,66) 被忽略, 内容停在
-     *   左上角而窗口框 (972x801, 含边框+阴影) 在中间, 呈"边框残影"
-     *   (2026-08-11 实测: 该窗口首帧后 geo 更新到 (220,66) 未生效)
-     * - 判定用 wineX_/wineY_ 快照 (首帧写, 此处跟随更新) 而非 x_/y_:
-     *   move grab 只改 x_/y_, 快照不变 → 拖动后不被旧 geo 弹回
-     * - 最小化坐标 (-32000,-32000) 只记快照不移动; 恢复时 geo 正常
-     *   自动跟随回新位置
-     */
-    if (Policy().RootCompositing() && !outFirstCommit &&
-        (fi.screenX != st.WineX() || fi.screenY != st.WineY())) {
-        if (justRestored) {
-            /*
-             * 还原帧: 保持 compositor 位置 (用户可能拖动过, Wine 不知道
-             * 新位置, 其 geo 是旧原位 — 实测还原回 (0,0) 而非拖动位置)。
-             * 只同步 Wine 快照, 后续 commit (geo==快照) 不再误触发。
-             */
-            st.SetWinePosition(fi.screenX, fi.screenY);
-            OH_LOG_INFO(LOG_APP, "[MW-MOVE] restore keep pos tl=%{public}u (%{public}d,%{public}d) wine=(%{public}d,%{public}d)",
-                        sd->toplevelId, st.X(), st.Y(), fi.screenX, fi.screenY);
-        } else if (fi.screenX > -compositor_consts::kMinimizedCoordThreshold &&
-                   fi.screenY > -compositor_consts::kMinimizedCoordThreshold) {
-            st.SetPosition(fi.screenX, fi.screenY);
-            st.SetWinePosition(fi.screenX, fi.screenY);
-            OH_LOG_INFO(LOG_APP, "[MW-MOVE] wine geo sync tl=%{public}u (%{public}d,%{public}d)",
-                        sd->toplevelId, fi.screenX, fi.screenY);
-        } else {
-            st.SetWinePosition(fi.screenX, fi.screenY);
-        }
+    // 桌面模式后续 commit 的位置同步: 判定 (WineX/Y 快照比较) 与三分支跟随
+    // (justRestored 保持 compositor 位置/最小化坐标只记快照/Wine geo 跟随)
+    // 收口于 ToplevelManager::SyncDesktopPositionLocked — "compositor 为权威
+    // 但 SetWindowPos 必须跟随/move grab 只改 x/y 不改快照/3DMLauncher 边框
+    // 残影 (2026-08-11 实测)" 的完整补丁说明随方法平移 (见 toplevel_manager.cpp)
+    if (Policy().RootCompositing() && !outFirstCommit) {
+        toplevelMgr_.SyncDesktopPositionLocked(sd->toplevelId, fi.screenX, fi.screenY,
+                                               justRestored);
     }
     st.MarkDirty();
     // 帧内容序列号: 像素每次 commit 重写时递增 — 桌面局部合成
@@ -720,35 +683,28 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
                 sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
 
-    // 检测尺寸变化 -> 通知 ArkTS 调整子窗口
-    if (st.CheckAndUpdateLastReportedSize(fi.contentW, fi.contentH)) {
-        // fullscreen 纠偏: D3D 游戏的显示模式切换会把窗口 MoveWindow 到
-        // 模式尺寸 (war3: 1560x1040 → 800x600), 内容几何随之缩小。此时
-        // resize 转发无意义 (系统本就拒绝 fullscreen 窗口 resize), 真正
-        // 需要的是把 wine 窗口拉回 configure 尺寸 — 否则 GL client
-        // surface 按 800x600 客户区出帧, 经 popup 路径原样上屏, 画面
-        // 缩到左上。重发 fullscreen configure 后 wine 客户区恢复全屏,
-        // client surface 跟随, wined3d 内部把模式尺寸 backbuffer 拉伸
-        // 出帧 (与 RA2 的 GDI 主 surface viewport 拉伸殊途同归)。
-        // 非 fullscreen / 尺寸不小于输出 / 桌面 root: 维持原转发语义。
-        if (st.IsFullscreen() && sd->toplevelId != desktopRootToplevelId_ &&
-            (fi.contentW < outputW_ || fi.contentH < outputH_)) {
-            OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u fullscreen size drift %{public}dx%{public}d < output %{public}dx%{public}d -> re-assert configure",
-                        sd->toplevelId, fi.contentW, fi.contentH, outputW_, outputH_);
-            // 必须先解锁: NotifyToplevelResize 内部 IsToplevelFullscreen 会
-            // 再取 toplevelMutex_ (非递归 std::mutex), 持锁调用 = 同线程
-            // 自死锁 — wayland 事件循环卡死, 输入/帧派发全停 (APP_INPUT_BLOCK,
-            // 2026-08-15 war3 全屏黑屏整机卡死的根因)。解锁后不再触碰 st。
-            lk.unlock();
-            NotifyToplevelResize(sd->toplevelId, outputW_, outputH_);
-        } else {
-            char json[64];
-            snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", fi.contentW, fi.contentH);
-            OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u size changed: %{public}dx%{public}d max=%{public}s -> ArkTS",
-                        sd->toplevelId, fi.contentW, fi.contentH,
-                        sd->maximized ? "yes" : "no");
-            FireToplevelEvent(sd->toplevelId, "resize", json);
-        }
+    // 检测尺寸变化 -> 通知 ArkTS 调整子窗口: 尺寸变化判定 + 全屏尺寸漂移
+    // 补丁 (war3 D3D 模式切换画面缩左上, PLAN §2.5; 补丁注释完整平移, 见
+    // toplevel_manager.cpp HandleCommittedSizeLocked) 收口于 ToplevelManager;
+    // 锁外动作 (重发 configure) 与判定分离 — NotifyToplevelResize 内部会
+    // 再取 toplevelMutex_ (非递归), 不能持锁调用 (见下方自死锁注释)
+    const auto sizeEffect = toplevelMgr_.HandleCommittedSizeLocked(
+        sd->toplevelId, desktopRootToplevelId_, fi.contentW, fi.contentH,
+        outputW_, outputH_);
+    if (sizeEffect == ToplevelManager::SizeCommitEffect::ReassertFullscreen) {
+        // 必须先解锁: NotifyToplevelResize 内部 IsToplevelFullscreen 会
+        // 再取 toplevelMutex_ (非递归 std::mutex), 持锁调用 = 同线程
+        // 自死锁 — wayland 事件循环卡死, 输入/帧派发全停 (APP_INPUT_BLOCK,
+        // 2026-08-15 war3 全屏黑屏整机卡死的根因)。解锁后不再触碰 st。
+        lk.unlock();
+        NotifyToplevelResize(sd->toplevelId, outputW_, outputH_);
+    } else if (sizeEffect == ToplevelManager::SizeCommitEffect::ResizeEvent) {
+        char json[64];
+        snprintf(json, sizeof(json), "{\"w\":%d,\"h\":%d}", fi.contentW, fi.contentH);
+        OH_LOG_INFO(LOG_APP, "[MW] toplevel #%{public}u size changed: %{public}dx%{public}d max=%{public}s -> ArkTS",
+                    sd->toplevelId, fi.contentW, fi.contentH,
+                    sd->maximized ? "yes" : "no");
+        FireToplevelEvent(sd->toplevelId, "resize", json);
     }
 }
 
