@@ -987,14 +987,18 @@ export class WineWindowManager {
   //   桌面模式   → 悬浮窗形态禁止; 完整桌面形态仅"非桌面 root surface"允许。
   //                PC: 悬浮 = Index 小窗预览 (VDA 未存活 desktopWindowActive=false);
   //                    完整桌面 = VDA 独立窗口存活 (desktopWindowActive=true)
-  //                Pad 老模型: 悬浮 = launcherVisible; 完整 = !launcherVisible
+  //                Pad: 未激活 = desktopActive=false (desktop root 未出现);
+  //                    完整桌面 = desktopActive=true (desktop_root 事件)
   //               完整桌面下 fromToplevel == desktopRootId → 桌面 shell 自身藏
   //               光标 (启动瞬时) → 禁止; 子窗口 (真实游戏/程序) → 允许。
   private canHideCursor(fromToplevel: number): boolean {
     if (!this.isDesktopMode) return true;
     if (this.desktopSeparateWindow) {
       if (!this.desktopWindowActive) return false;
-    } else if (this.desktopLauncherVisible) {
+    } else if (!this.desktopActive) {
+      // Pad 门禁: 桌面未激活 (desktop root 未出现) 禁止隐藏。旧实现读
+      // desktopLauncherVisible (恒 true 死字段 — 全局无写入方), 致 Pad 上
+      // "光标锁定但未隐藏" (C++ 冻结生效、ArkTS 恒拒绝) — 已改。
       return false;
     }
     return fromToplevel !== this.desktopRootId;
@@ -1009,11 +1013,11 @@ export class WineWindowManager {
     // 每次调用都打决策 (含 no-op), 实测才能确认门禁走向 (锁定/解锁、
     // 悬浮↔完整切换均会触发, 频率低不刷屏)
     hilog.info(DOMAIN, TAG,
-      '[MW]PtrVis → %{public}s (locked=%{public}s canHide=%{public}s tl=%{public}d mode=%{public}s sep=%{public}s vda=%{public}s launcher=%{public}s)',
+      '[MW]PtrVis → %{public}s (locked=%{public}s canHide=%{public}s tl=%{public}d mode=%{public}s sep=%{public}s vda=%{public}s da=%{public}s)',
       shouldHide ? 'HIDE' : 'SHOW',
       String(this.pointerLocked), String(canHide), this.pointerLockToplevel,
       String(this.isDesktopMode), String(this.desktopSeparateWindow),
-      String(this.desktopWindowActive), String(this.desktopLauncherVisible));
+      String(this.desktopWindowActive), String(this.desktopActive));
     if (shouldHide === this.effectiveHidden) return;
     this.effectiveHidden = shouldHide;
     pointer.setPointerVisible(!shouldHide).catch((e: BusinessError) => {
