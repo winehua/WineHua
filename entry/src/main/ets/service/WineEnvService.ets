@@ -474,18 +474,33 @@ export class WineEnvService {
   // 启动入口的存在性前提。载荷随 wine 数据打包在 wine/smoke; 前缀就绪后
   // 按需播种到持久 prefix (旧 syncManagedSmoke 职责的轻量版 — 自动化设施
   // 已整体拆除, 仅保留载荷复制, 失败只记日志不阻塞引擎)。
-  private async seedSmokePayload(): Promise<void> {
+  private seedSmokePayload(): void {
     const source = `${WINE_ROOT}/smoke`;
     const target = `${FILES_BASE}/.wine/drive_c/smoke`;
     if (pathExists(target)) return;
     if (!pathExists(source)) return;
     try {
-      // fs.copy 入参要求 URI 形式 (file://...), 裸路径会参数校验失败 401
-      await fs.copy(fileUri.getUriFromPath(source), fileUri.getUriFromPath(target));
+      this.copyTree(source, target);
       hilog.warn(DOMAIN, 'wine', 'seeded smoke payload → C:\\smoke');
     } catch (e) {
       hilog.warn(DOMAIN, 'wine', 'seed smoke payload failed: %{public}s', JSON.stringify(e));
     }
+  }
+
+  // 目录递归复制 (项目既有 fs 原语)。不用 fs.copy — 该 API 面向跨设备 URI
+  // 拷贝, 对应用沙箱路径实测失败 (裸路径 401, file:// URI 13900020 权限);
+  // 载荷仅沙箱内小目录树, listFileSync+copyFileSync 足够且无权限歧义。
+  // 与 removePathRecursive 同层工具函数。
+  private copyTree(src: string, dst: string): void {
+    const st = fs.statSync(src);
+    if (st.isDirectory()) {
+      fs.mkdirSync(dst, true);
+      for (const name of fs.listFileSync(src)) {
+        this.copyTree(`${src}/${name}`, `${dst}/${name}`);
+      }
+      return;
+    }
+    fs.copyFileSync(src, dst);
   }
 
   private detectRawfileWineData(): boolean {
