@@ -3,8 +3,10 @@
 #include "include/pointer-constraints-unstable-v1-server-protocol.h"
 #include "include/pointer-warp-v1-server-protocol.h"
 #include "include/relative-pointer-unstable-v1-server-protocol.h"
-#include "input_manager.h"
 #include "wayland_server.h"
+// 解环 (重构第 4C1 步): 本文件不再 include input_manager.h — warp 位置同步
+// 经 SetPointerWarpSink 装配 (见头注释"warp 回调装配"), 装配点在
+// wl_core.cpp RegisterWlCoreGlobals。
 
 #include <algorithm>
 #include <chrono>
@@ -37,6 +39,13 @@ void PointerExtras::Register(wl_display* display) {
     wl_global_create(display, &zwp_relative_pointer_manager_v1_interface, 1,
                      this, relmgr_bind);
     OH_LOG_INFO(LOG_APP, "[PtrExt] constraints+warp+relative registered");
+}
+
+// warp 回调装配 (4C1 解环): 注入 InputManager::OnPointerWarp 的转发 lambda。
+// 无锁 — 装配总在 Server Start 阶段 (wl 事件循环启动前) 做一次, 之后回调
+// 只在 Wayland 线程读 warpSink_ (见 pointer_extras.h"warp 回调装配"注释)。
+void PointerExtras::SetPointerWarpSink(PointerWarpSink sink) {
+    warpSink_ = std::move(sink);
 }
 
 // ========================================================================
@@ -165,7 +174,10 @@ void PointerExtras::OnConstraintResourceDestroyed(wl_resource* r) {
     // 把逻辑指针移到 hint, 避免解锁瞬间光标跳回锁定点
     // (协议: set_cursor_position_hint 的既定用途)
     if (gone.type == ConstraintType::Lock && gone.hasHint) {
-        InputManager::GetInstance()->OnPointerWarp(gone.surface, gone.hintX, gone.hintY);
+        // 4C1 解环: 经装配的回调同步 (原直接调 InputManager::OnPointerWarp)
+        // static 成员函数经 GetInstance() 取 sink (warpSink_ 是实例成员)
+        const auto sink = self->warpSink_;
+        if (sink) sink(gone.surface, gone.hintX, gone.hintY);
     }
     // 注: Lock 约束销毁不再触发解锁 — 宿主冻结只挂在 relative_pointer
     // 创建上, 约束销毁 (wine 退出相对的同一批里先于 relative 销毁, 且
@@ -203,7 +215,10 @@ void PointerExtras::warp_warp_pointer(wl_client*, wl_resource*, wl_resource* sur
     if (++sWarpLogN % 120 == 1)  // warp 是游戏每帧高频路径, 抽样 120:1
         OH_LOG_INFO(LOG_APP, "[PtrExt] warp surf=%{public}p → (%{public}.1f,%{public}.1f) serial=%{public}u n=%{public}u",
                     static_cast<void*>(surface), dx, dy, serial, sWarpLogN);
-    InputManager::GetInstance()->OnPointerWarp(surface, dx, dy);
+    // 4C1 解环: 经装配的回调同步 (原直接调 InputManager::OnPointerWarp);
+    // static 成员函数经 GetInstance() 取 sink (warpSink_ 是实例成员)
+    const auto sink = GetInstance()->warpSink_;
+    if (sink) sink(surface, dx, dy);
 }
 
 // ========================================================================

@@ -1,9 +1,11 @@
 #include "input_manager.h"
 #include "seat.h"
-#include "plugin_manager.h"
 #include "pointer_extras.h"
 #include "text_input.h"
 #include "wayland_server.h"
+#include "compositor/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
+                                            // fallback 已迁入, 本文件不再认识
+                                            // PluginManager (include 已删)
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -121,68 +123,16 @@ void InputManager::Shutdown() {
 }
 
 // ========================================================================
-//  坐标转换
+//  坐标转换 (已迁 InputSpaceMapper, 本函数为公开委托 — 重构第 4C1 步)
 // ========================================================================
 
 void InputManager::CoordTransform(double px, double py, uint32_t tl,
                                    wl_fixed_t* outX, wl_fixed_t* outY,
                                    FitRect* outLb) {
-    auto* r = PluginManager::GetInstance()->GetRendererForToplevel(tl);
-    // Desktop 模式 fallback: root 切换后可能用旧 ID 查 renderer
-    if (!r && WaylandServer::GetInstance()->Policy().RootCompositing()) {
-        uint32_t rootId = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
-        if (rootId != tl) r = PluginManager::GetInstance()->GetRendererForToplevel(rootId);
-        // 兜底: RootCompositing 下 renderer 永远渲染桌面根，letterbox 映射与
-        // 登记 id 无关；桌面根重建瞬间或前台窗口"提升"后按 id 查不到
-        // renderer 时，取当前登记的唯一 renderer 仍能得到正确的 viewport
-        // 映射（否则坐标全部坍缩为 (0,0)，触摸/鼠标不可用）。
-        if (!r) r = PluginManager::GetInstance()->GetAnyRenderer();
-    }
-    if (!r) {
-        OH_LOG_WARN(LOG_APP, "[Input] CoordTransform: no renderer for tl=%{public}u", tl);
-        *outX = 0; *outY = 0;
-        return;
-    }
-    int surfW = r->GetWidth();
-    int surfH = r->GetHeight();
-    // 桌面系基准 (20260822 红警2 主菜单点击无效根因修复): 输入坐标换算的
-    // 锚点是"桌面逻辑坐标" (root toplevel 尺寸), 与"渲染当前帧格式"解耦。
-    // 此前用 r->GetLetterbox() (渲染视口) 做逆映射 — 直传 (7930495) 时
-    // renderer 的帧是游戏直传源 800x600, letterbox 逆映射先把物理坐标缩到
-    // 800x600 系, 再进 InputResolver 的 fit 被二次缩放 → 注入坐标与视觉
-    // 光标错位 → 游戏永远点不到按钮 (红警2 主菜单点击无效)。CPU 帧
-    // (1400x920) 时渲染视口恰为恒等映射, 两个基准重合, 故此前单测有效。
-    // 输入逆映射锚 (PresentedFrame 契约, 重构第 2B 步): 由 renderer 按最近一帧
-    // 契约的 contentW/H 给出 surface 保比例 fit — 桌面合成/快进/直传帧锚桌面
-    // 逻辑尺寸, PC 窗口帧锚窗口内容尺寸。旧实现在此绕路重算: 桌面模式用 root
-    // 尺寸做 ComputeFitRect, root 未就绪或 PC 模式退回渲染器显示 letterbox。
-    // 契约化后 GetInputLetterbox 内部承接同一 fallback (无帧 contentW/H=0 或
-    // fit 失败时返回显示 letterbox_)。基准 (20260822 红警2 直传点击修复):
-    // 输入锚是"桌面逻辑坐标", 与"渲染当前帧格式"解耦 — 直传游戏帧 buffer
-    // 是内容尺寸 (800x600), 锚仍是桌面尺寸 (1400x920), 否则逆映射二次缩放。
-    FitRect lb = r->GetInputLetterbox();
-    if (outLb) *outLb = lb;
-
-    if (surfW <= 0 || surfH <= 0 || lb.dstW <= 0 || lb.dstH <= 0) {
-        *outX = 0; *outY = 0;
-        return;
-    }
-
-    // Letterbox 逆映射 (geometry.h 统一实现): 物理像素 → 去黑边 → 按帧尺寸缩放
-    // 注意用取整后 dst 尺寸的变体 — 与 glViewport 实际显示的整数像素严格一致
-    wl_fixed_t wx = wl_fixed_from_double(FitUnmapDisplayX(lb, px));
-    wl_fixed_t wy = wl_fixed_from_double(FitUnmapDisplayY(lb, py));
-    *outX = wx; *outY = wy;
-
-    // 系统性链路日志 (断点 1): letterbox 逆映射是"物理像素→桌面坐标"的关键,
-    // DEBUG 级别 release 下被滤掉 → 升 INFO + MOVE 高频抽样。分析鼠标问题时
-    // 与 TARGET 日志 (断点 2) 配对看: 此处输出桌面逻辑坐标, 后者换算到窗口局部
-    static uint32_t sCoordLogN = 0;
-    if (++sCoordLogN % 120 == 0)
-        OH_LOG_INFO(LOG_APP, "[Input] CoordTransform px=(%{public}.0f,%{public}.0f) vp=(%{public}d,%{public}d %{public}dx%{public}d)"
-                     " surf=%{public}dx%{public}d frame=%{public}dx%{public}d → wine=(%{public}.0f,%{public}.0f) n=%{public}u",
-                     px, py, lb.offX, lb.offY, lb.dstW, lb.dstH, surfW, surfH, lb.srcW, lb.srcH,
-                     wl_fixed_to_double(wx), wl_fixed_to_double(wy), sCoordLogN);
+    // renderer 查找 fallback 链 (tl → root → any) 与 letterbox 逆映射收口在
+    // compositor/input_space_mapper.cpp (原函数体逐字搬移, 含 2B 契约化
+    // GetInputLetterbox 锚点与抽样日志); 调用线程 (NAPI) 不变。
+    InputSpaceMapper::GetInstance()->CoordTransform(px, py, tl, outX, outY, outLb);
 }
 
 // ========================================================================
@@ -196,19 +146,29 @@ void InputManager::OnPointerWarp(wl_resource* surface, double sx, double sy) {
     // 模式 wine 拒绝 SetCursorPos (wayland_pointer.c:1024) 不会发本请求。
     // 这里只把 move grab 的偏移基准同步到 warp 位置。
     double lx = sx, ly = sy;
-    if (ws->IsDesktopMode()) {
+    // IsDesktopMode→Policy (重构第 4C1 步): 模式位真策略分支改命名查询 —
+    // "desktop 才做 surface 局部→桌面坐标换算" = 输入由 compositor 自路由
+    // 的语境 (CompositorRoutesInput; desktop 模式下与 RootCompositing 同值)
+    if (ws->Policy().CompositorRoutesInput()) {
         if (!ws->SurfaceLocalToDesktop(surface, sx, sy, lx, ly)) {
             OH_LOG_WARN(LOG_APP, "[Input] WARP sync failed: surf=%{public}p not mapped",
                         static_cast<void*>(surface));
             return;
         }
+        // 全局指针位置显式语义 (4C1): desktop 分支 = SurfaceLocalToDesktop 后
+        // 的桌面逻辑坐标 (Space::Desktop)
+        InputSpaceMapper::GetInstance()->UpdateGlobalPtr(
+            wl_fixed_from_double(lx), wl_fixed_from_double(ly), GlobalPtrState::Space::Desktop);
+    } else {
+        // PC 分支 = surface 局部坐标原值 (未经换算, 也不加窗口位置 — 历史语义,
+        // 4C1 只重标为 Space::Window 不修正, 见 input_space_mapper.h 注释)
+        InputSpaceMapper::GetInstance()->UpdateGlobalPtr(
+            wl_fixed_from_double(lx), wl_fixed_from_double(ly), GlobalPtrState::Space::Window);
     }
-    lastGlobalPtrX_.store(wl_fixed_from_double(lx));
-    lastGlobalPtrY_.store(wl_fixed_from_double(ly));
     static uint32_t sWarpN = 0;
     if (++sWarpN % 120 == 1)
         OH_LOG_INFO(LOG_APP, "[Input] WARP pos=(%{public}.1f,%{public}.1f) desktop=%{public}d n=%{public}u",
-                    lx, ly, ws->IsDesktopMode() ? 1 : 0, sWarpN);
+                    lx, ly, ws->Policy().CompositorRoutesInput() ? 1 : 0, sWarpN);
 }
 
 // ========================================================================
@@ -247,8 +207,10 @@ void InputManager::ResetSessionState() {
     modifiers_latched_ = 0;
     modifiers_locked_ = 0;
     modifiers_group_ = 0;
-    lastGlobalPtrX_ = 0;
-    lastGlobalPtrY_ = 0;
+    // 全局指针位置已收进 InputSpaceMapper (4C1): 原 "字段=0" 改复位调用,
+    // 值等价 (标签回默认 Desktop); 位置仍在 modifiers 之后、相对增量基准之前,
+    // 与旧实现清零顺序一致。
+    InputSpaceMapper::GetInstance()->ResetGlobalPtr();
     lastLocalX_ = 0;
     lastLocalY_ = 0;
     hasLastLocal_ = false;
@@ -394,9 +356,9 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     wl_resource* targetSurf = nullptr;
     if (ws->Policy().CompositorRoutesInput() && tl != ws->GetDesktopRootToplevelId()) {
         CoordTransform(px, py, ws->GetDesktopRootToplevelId(), &wx, &wy);
-        // 记录最近一次注入的桌面全局指针位置 (grab 建立时算固定偏移用)
-        lastGlobalPtrX_.store(wx);
-        lastGlobalPtrY_.store(wy);
+        // 记录最近一次注入的桌面全局指针位置 (grab 建立时算固定偏移用)。
+        // 4C1: 收进 InputSpaceMapper, 空间标签显式化为 Desktop (桌面逻辑坐标)
+        InputSpaceMapper::GetInstance()->UpdateGlobalPtr(wx, wy, GlobalPtrState::Space::Desktop);
         // move grab 期间 (xdg_toplevel.move): compositor 用桌面全局坐标绝对定位
         // 被拖窗口, motion 必须注入全局坐标。局部坐标往返 (enqueue 时
         // local = logical - st->x, 消费时再 + st->x 还原) 在两个线程间基准
@@ -457,10 +419,13 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             wx = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wx), lb.srcW));
             wy = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wy), lb.srcH));
         }
-        // PC 空间全局指针位置 = 窗口局部坐标 + 窗口位置 (grab 偏移基准)
+        // PC 空间全局指针位置 = 窗口局部坐标 + 窗口位置 (grab 偏移基准)。
+        // 4C1: 显式语义为 Window 空间 (窗口局部+窗口位置还原值)
         const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
-        lastGlobalPtrX_.store(wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x));
-        lastGlobalPtrY_.store(wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y));
+        InputSpaceMapper::GetInstance()->UpdateGlobalPtr(
+            wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
+            wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
+            GlobalPtrState::Space::Window);
         // move grab 降级路径 (PC 模式 startMoving 失败时): wx 是窗口局部坐标,
         // 补上窗口位置还原为绝对坐标, 供 compositor 绝对定位 (不在此做
         // 局部→全局往返, 消费侧不再二次读 st->x, 避免双线程基准漂移)
@@ -800,9 +765,9 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
     if (ws->Policy().CompositorRoutesInput() && tl != ws->GetDesktopRootToplevelId()) {
         CoordTransform(px, py, ws->GetDesktopRootToplevelId(), &wx, &wy);
         // 缺段修复: 维护最近一次全局指针位置 (grab 偏移基准, 与
-        // SendPointerEvent 桌面分支同一语义 — scroll 位置即指针位置)
-        lastGlobalPtrX_.store(wx);
-        lastGlobalPtrY_.store(wy);
+        // SendPointerEvent 桌面分支同一语义 — scroll 位置即指针位置);
+        // 4C1 收进 InputSpaceMapper, 空间标签 Desktop (桌面逻辑坐标)
+        InputSpaceMapper::GetInstance()->UpdateGlobalPtr(wx, wy, GlobalPtrState::Space::Desktop);
         // move grab 期间: 交互式拖拽由 compositor 接管, 不注入 scroll —
         // 拖动窗口标题栏时滚轮不应滚动窗口内容 (axis 无位置属性, 不存在
         // 绝对值定位的等价事件, 拖拽中直接丢弃)
@@ -845,10 +810,12 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
             wy = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wy), lb.srcH));
         }
         // 缺段修复: PC 空间全局指针位置 = 窗口局部 + 窗口位置 (grab 偏移基准,
-        // 与 SendPointerEvent PC 分支同款)
+        // 与 SendPointerEvent PC 分支同款); 4C1 显式语义 Window 空间
         const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
-        lastGlobalPtrX_.store(wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x));
-        lastGlobalPtrY_.store(wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y));
+        InputSpaceMapper::GetInstance()->UpdateGlobalPtr(
+            wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
+            wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
+            GlobalPtrState::Space::Window);
         if (ws->IsMoveGrabActive() && ws->GetMoveGrabToplevelId() == tl) {
             OH_LOG_INFO(LOG_APP, "[Input] SCROLL-DROP tl=%{public}u (move grab active)", tl);
             return;

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "compositor/geometry.h"
+#include "compositor/input_space_mapper.h"  // CoordTransform 落点 + lastGlobalPtr 显式语义 (4C1)
 
 // InputManager: 统一输入事件管理器
 //
@@ -95,15 +96,23 @@ public:
 
     // -- 辅助: 物理像素 → Wine 逻辑坐标映射 (供 FindToplevelAt 等使用) --
     // outLb 非空时回传本次映射使用的 letterbox 几何 (调用方做内容区钳制用)
+    // 实现已迁 InputSpaceMapper (compositor/input_space_mapper.*, 重构第 4C1 步);
+    // 本方法保留为公开委托 — renderer 查找 fallback 链与逆映射收口在 mapper。
     void CoordTransform(double px, double py, uint32_t tl, wl_fixed_t* outX, wl_fixed_t* outY,
                         FitRect* outLb = nullptr);
 
     // 最近一次注入的全局指针位置 (NAPI 线程写, Wayland 线程读)。
-    // 语义 = move_grab 输入空间的绝对坐标: desktop 为桌面逻辑坐标,
-    // PC 为 窗口局部坐标 + 窗口位置 还原值。xdg_toplevel.move 建立 grab
-    // 时据此立即算固定 grab 偏移 (绝对定位, 无累积)
-    wl_fixed_t GetLastGlobalPointerX() const { return lastGlobalPtrX_.load(); }
-    wl_fixed_t GetLastGlobalPointerY() const { return lastGlobalPtrY_.load(); }
+    // 语义 = move_grab 输入空间的绝对坐标, 空间标签显式化 (4C1):
+    // desktop 为桌面逻辑坐标 (GlobalPtrState::Space::Desktop), PC 为
+    // 窗口局部坐标 + 窗口位置 还原值 (Space::Window, OnPointerWarp 的 PC
+    // 分支为 surface 局部原值 — 历史语义, 详见 input_space_mapper.h)。
+    // xdg_toplevel.move 建立 grab 时据此立即算固定 grab 偏移 (绝对定位, 无累积)
+    wl_fixed_t GetLastGlobalPointerX() const {
+        return InputSpaceMapper::GetInstance()->GetGlobalPtrX();
+    }
+    wl_fixed_t GetLastGlobalPointerY() const {
+        return InputSpaceMapper::GetInstance()->GetGlobalPtrY();
+    }
 
     // SetCursorPos 位置同步 (wp_pointer_warp_v1 → PointerExtras 调入,
     // Wayland 线程)。sx/sy 是 wine 的 surface 局部坐标。wineserver 光标
@@ -160,9 +169,9 @@ private:
     void UpdateModifiers(int evdevCode, bool pressed);
     bool IsModifierKey(int evdevCode);
 
-    // 最近一次注入的全局指针位置 (跨线程, 供 move grab 建立时算偏移)
-    std::atomic<wl_fixed_t> lastGlobalPtrX_{0};
-    std::atomic<wl_fixed_t> lastGlobalPtrY_{0};
+    // 最近一次注入的全局指针位置 (跨线程, 供 move grab 建立时算偏移) —
+    // 已收进 InputSpaceMapper (4C1, 双语义显式化为 GlobalPtrState::Space)
+    // 与 GetLastGlobalPointerX/Y 委托访问, 本类不再持有该状态。
 
     // pointer focus
     std::atomic<uint32_t> pointerFocusedToplevel_{0};

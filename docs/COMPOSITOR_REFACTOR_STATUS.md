@@ -17,7 +17,8 @@
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
 | 3 ZC 与层序政策收口 | **完成（代码层全落地，待 ZC 设备回归）** | f9a2d8a zc_bridge 抽离、cf7e9a1/a3156a6/20b4bdb presenter+ZC 状态机、328ed21/48b7333 zorder_policy 三散点、a2d142d 3A 精化、5ebded3 3B 层序精化 |
 | 4A InputResolver 裁决闭环 | 完成（门禁全过） | 本分支 HEAD 提交（§二 4A 下标） |
-| 4B 其余输入栈拆分（InputManager 拆层/ScrollEvent 缺段修复等） | 进行中（4B 步: SendScrollEvent 缺段修复**完成**，见 §二 4B 小节；InputManager 拆层/Policy 改名未开始） | 1c80f0d（见 §二 4B 下标） |
+| 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
+| 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector） | 4C1 完成（门禁全过，见 §二 4C1 下标）；4C2 未开始 | 本分支 HEAD 提交（§二 4C1 下标） |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
@@ -387,6 +388,90 @@ blit_clip 38 / zorder 40 / env 21+88，全 0 failures，本提交未改测试代
 PAL2）滚动、拖拽窗口中滚动（应无事件）。关注日志 tag `WL_Input` 的
 SCROLL-TARGET/SCROLL-ENTER/SCROLL-DROP/FALLBACK 与 [PIPE] scroll 输入侧。
 
+### 阶段 4C1（InputSpaceMapper 坐标收口 + PointerExtras 解环 + IsDesktopMode→Policy，2026-08-29）
+
+PLAN §四阶段4 三件事的落地：InputSpaceMapper 模块抽离（§2.2 renderer 查找
+泄漏收口 + §2.4 lastGlobalPtr 双语义显式化）、PointerExtras↔InputManager 双
+向依赖单向化、input_manager.cpp 仅存的两处 IsDesktopMode 真策略分支改
+Policy() 命名查询。全部结构收口，行为平价。
+
+**模块边界设计（一句话版）：** InputSpaceMapper = 输入坐标空间映射单点
+（renderer 查找 fallback + letterbox 逆映射 + lastGlobalPtr 显式语义），
+InputManager 只依赖其公开接口且不再认识 PluginManager；PointerExtras 的
+warp 位置同步改经注册表回调注入，不再 include input_manager.h。
+
+**改动文件：**
+
+- `compositor/input_space_mapper.{h,cpp}`（**新增**）：坐标变换收口。
+  - `ResolveRendererFor(tl)`：renderer 查找 fallback 链（tl → RootCompositing
+    下 root → GetAnyRenderer）自 PluginManager 取值 — PLAN §2.2"渲染器登记
+    结构泄漏到输入模块"收口，InputManager 不再认识 PluginManager。
+  - `CoordTransform(...)`：原 `InputManager::CoordTransform` 函数体逐字搬移
+    （2B 契约化 GetInputLetterbox 锚点、FitUnmapDisplayX/Y 逆映射、120:1
+    抽样 INFO 日志 — LOG_TAG 保持 `WL_Input`，诊断 grep 基线不回退）。
+    `InputManager::CoordTransform` 保留公开委托（napi_init.cpp 调用者不变）。
+  - `UpdateGlobalPtr/ResetGlobalPtr/GetGlobalPtrX/Y/GetGlobalPtr`：lastGlobalPtr
+    双语义显式化 — `GlobalPtrState::Space{Desktop, Window}` 标签；X/Y 保持
+    两个独立 `std::atomic<wl_fixed_t>`（写序先 X 后 Y、读方两次独立 load，
+    与旧实现逐点一致，不合成单 atomic 结构体收紧既有竞态窗口）；space 标签
+    纯语义诊断、无算法消费方。
+- `input_manager.h`：删 lastGlobalPtrX_/Y_ 字段；`GetLastGlobalPointerX/Y`
+  改委托 `InputSpaceMapper`（public 签名不变 — wayland_server.cpp:181
+  StartMoveGrab 调用方不动）；include input_space_mapper.h。
+- `input_manager.cpp`：删 `#include "plugin_manager.h"`；CoordTransform 改
+  公开委托；`SendPointerEvent`/`SendScrollEvent` 4 处 `lastGlobalPtrX_.store`
+  对改 `UpdateGlobalPtr(...)`（desktop 分支标 Desktop 空间、PC 分支标 Window
+  空间，值与写序逐点一致）；`OnPointerWarp` 2 处 store 改 UpdateGlobalPtr
+  （desktop 分支 Desktop 标签、PC 分支 Window 标签 — surface 局部原值，4C1
+  只重标不修正该历史语义）；`ResetSessionState` 改 `ResetGlobalPtr()`。
+- `pointer_extras.{h,cpp}`：新增 `SetPointerWarpSink(std::function<...>)` +
+  私有 `warpSink_`；`:168`（Lock 约束销毁 hint 路径）与 `:206`（warp 请求，
+  两处均在 Wayland 线程）改经 sink 转发；**删 `#include "input_manager.h"`**。
+- `wl_core.cpp`：`RegisterWlCoreGlobals` 在 `PointerExtras::Register(display)`
+  之后注入 `InputManager::OnPointerWarp` 转发 lambda（装配点）。
+- `CMakeLists.txt`：源列表追加 `compositor/input_space_mapper.cpp`。
+
+**解环方案（谁不再 include 谁、装配点）：** pointer_extras.cpp 不再
+include input_manager.h；装配在 `wl_core.cpp RegisterWlCoreGlobals`
+（Server Start 阶段、wl 事件循环启动前）一次性注入，之后回调只在 Wayland
+线程读 → 无锁（与 wayland_server.h SetStateCallback 同模式，未新增锁）。
+InputManager→PointerExtras 方向（`HasRelativePointer`/`SendRelativeMotion`）
+保持 include — 单向依赖成立。
+
+**IsDesktopMode→Policy 对账：** input_manager.cpp 仅存两处（OnPointerWarp
+:199 策略分支 + :211 日志行），改为 `ws->Policy().CompositorRoutesInput()`
+（同值谓词；"desktop 才做 surface 局部→桌面坐标换算"即输入自路由语境）。
+日志文本 `WARP pos=(...) desktop=%d`（:211）保持逐字，desktop=0/1 位同值。
+全文件已无其他 IsDesktopMode 调用（grep 佐证）。
+
+**行为平价对账：** CoordTransform 函数体逐字搬移（含全部注释/日志/抽样
+static 起点一致—所有调用方汇入同一新函数体）；OnPointerWarp 分支条件
+同值、failure return 路径不变、store 值不变（新增第三字段 space 是无旧
+观察方的诊断标签）；ResetSessionState 清零顺序不变（modifiers 后、相对
+增量基准前）；4 处 UpdateGlobalPtr 值/写序逐点一致；ptr 扩展开关、rawDelta
+±512、PAL2 脉冲拉伸、relSkipEnter 守卫、PRES-DEFER、4B scroll 修复逻辑
+零触碰。全局 grep：`lastGlobalPtr` 仅剩 mapper 与委托处、`IsDesktopMode`
+在 input_manager.cpp 仅剩注释、`InputManager::OnPointerWarp` 为唯一入口
+（wl_core 装配 lambda 转发）。
+
+**门禁：** `make test` host_tests 全绿（geometry 71 / blit_scaled 402 /
+blit_clip 38 / zorder 40 / env 21+88，全 0 failures，本提交未改测试代码）；
+`make NATIVE_ARCH=arm64-v8a hap` 构建+签名通过（HAP 374M，构建后
+`git checkout -- entry/build-profile.json5` 还原，工作树仅剩预存
+thirdparty/ 改动）。**设备回归待做**：同 4A/4B — arm64 Pad 真机
+（往返/滚动/游戏输入）验证，本提交无任何运行时状态语义变化。
+
+**4C2 预留说明：** InputSpaceMapper 只收坐标知识（协调器边界清晰）：
+wl_*_send_* / PointerExtras 状态 / 队列与焦点追踪全部留在 InputManager。
+4C2 拆 Queue/StateTracker/Injector 时的接口面 = `InputSpaceMapper` 公开
+方法集（ResolveRendererFor/CoordTransform/UpdateGlobalPtr/ResetGlobalPtr/
+GetGlobalPtrX/Y/GetGlobalPtr）+ 已公开的 Inject*/Enqueue/InputEvent — 无
+隐藏依赖。已知 4C2 清理项（本步刻意未做）：`InputTarget` 的
+origin/scale/contentW/H 诊断字段去留；enter/leave 三份变体收敛（
+ACT_PRESS/ACT_MOVE/SCROLL-ENTER 同构见 §二 4B 记录）；`WaylandServer`
+转发的 CoordTransform（napi_init.cpp FindToplevelAt 调用点）可一并改为
+直呼 mapper（4C2 顺手项）。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -433,10 +518,12 @@ SCROLL-TARGET/SCROLL-ENTER/SCROLL-DROP/FALLBACK 与 [PIPE] scroll 输入侧。
 - **阶段 4 输入栈拆分**：4A InputResolver 裁决闭环**完成**（见 §二 4A 下标，
   PLAN §2.2 封装泄漏收口 + InputTarget 精度 double 化 + ClampToContent 收
   geometry.h）。4B 步 SendScrollEvent 缺段修复**完成**（见 §二 4B 下标 —
-  行为变化例外，单独提交并逐项标注，待设备滚动回归）。剩余 4B：InputManager
-  拆 InputQueue/InputStateTracker/InputInjector/InputSpaceMapper；两处
-  IsDesktopMode 改 Policy()；InputTarget origin/scale/contentW/H 诊断字段去留。
-  行为敏感：需 PAL2/war3/RA2 输入回归（arm64 Pad，需用户配合）。
+  行为变化例外，单独提交并逐项标注，待设备滚动回归）。4C1（InputSpaceMapper
+  坐标收口 + PointerExtras 解环 + IsDesktopMode→Policy）**完成**（见
+  §二 4C1 下标）。剩余 4C2：InputManager 拆 InputQueue/InputStateTracker/
+  InputInjector（InputSpaceMapper 已就位，接口见 §二 4C1"4C2 预留说明"）；
+  InputTarget origin/scale/contentW/H 诊断字段去留。行为敏感：
+  需 PAL2/war3/RA2 输入回归（arm64 Pad，需用户配合）。
 - **阶段 5 协议层重构**：wl_core 拆协议壳 + CommittedSurface 快照；
   PopupManager；maximized 迁入 ToplevelState；ToplevelEventBus 事件 enum 化。
 - **阶段 6 facade 瘦身**：WaylandServer 拆 24 个转发；DesktopSessionState

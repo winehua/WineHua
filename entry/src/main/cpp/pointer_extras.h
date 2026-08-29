@@ -54,6 +54,20 @@ public:
     // 注意在 Wayland 线程触发
     void SetPointerLockCallback(std::function<void(bool, uint32_t)> cb);
 
+    // -- warp 回调装配 (重构第 4C1 步: PointerExtras↔InputManager 单向化) --
+    // wp_pointer_warp_v1 的 warp 请求与 Lock 约束销毁时的 cursor_position_hint
+    // 需把"wine 侧已完成的 SetCursorPos 位置"同步回 InputManager::OnPointerWarp
+    // (move grab 偏移基准)。原实现 pointer_extras.cpp 直接 include input_manager.h
+    // 调其单例 → 双向依赖; 现改为注册表装配: 调用方 (wl_core.cpp
+    // RegisterWlCoreGlobals) 在 PointerExtras::Register 之后注入转发 lambda,
+    // 本文件不再认识 InputManager (InputManager→PointerExtras 方向保持 include:
+    // HasRelativePointer/SendRelativeMotion 消费, 单向成立)。
+    // 线程: 回调总在 Wayland 线程触发 (wl 协议接口 + 资源 destroy 回调);
+    // 装配发生在 wl 事件循环启动前 (Server Start 阶段一次性), 之后只读 —
+    // 无锁 (与 wayland_server.h SetStateCallback 同一模式)。
+    using PointerWarpSink = std::function<void(wl_resource* surface, double x, double y)>;
+    void SetPointerWarpSink(PointerWarpSink sink);
+
     // 相对指针增量广播: wine 有 relative_pointer 对象时把输入增量发过去。
     // 对象存在 ⇔ wine 判定当前为相对模式 (隐藏光标 + 约束); 无对象 = 绝对
     // 模式, 此函数空转。Wayland 线程调用 (事件发送必须在该线程)。
@@ -116,4 +130,7 @@ private:
     std::vector<int32_t> hostWindowIds_;       // mutex_ 保护; 各 Ability 主窗口
     int32_t lockedWindowId_ = 0;               // 实际锁定成功的窗口 (0=未锁)
     std::function<void(bool, uint32_t)> lockCallback_;   // mutex_ 保护
+    // warp 回调装配 (4C1 解环): SetPointerWarpSink 在事件循环启动前一次性注入,
+    // 之后只在 Wayland 线程读 → 无锁 (见头文件 Top 注释"warp 回调装配")。
+    PointerWarpSink warpSink_;
 };

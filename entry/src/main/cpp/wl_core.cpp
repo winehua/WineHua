@@ -1153,6 +1153,14 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
     // dinput 老游戏的指针扩展 (warp 回中/指针约束/relative pointer,
     // 三者均在 PointerExtras::Register 注册, 见 pointer_extras.h 头注释)
     PointerExtras::GetInstance()->Register(display);
+    // 解环装配 (重构第 4C1 步): PointerExtras 的 warp 位置同步 (warp 请求 +
+    // Lock 约束 cursor_position_hint) 经此回调注入 InputManager::OnPointerWarp —
+    // pointer_extras.cpp 不再 include input_manager.h (双向依赖单向化)。
+    // 装配在 wl 事件循环启动前 (Start 阶段), 之后回调只在 Wayland 线程读。
+    PointerExtras::GetInstance()->SetPointerWarpSink(
+        [](wl_resource* surface, double x, double y) {
+            InputManager::GetInstance()->OnPointerWarp(surface, x, y);
+        });
     // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
     TextInput::GetInstance()->Register(display);
 }
