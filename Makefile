@@ -427,6 +427,11 @@ test:
 	    $(ROOT)/host_tests/blit_clip_test.cpp
 	$(HOST_TEST_DIR)/blit_clip_test
 	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/shm_frame_source_test \
+	    $(ROOT)/host_tests/shm_frame_source_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/compositor/shm_frame_source.cpp
+	$(HOST_TEST_DIR)/shm_frame_source_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
 	    -o $(HOST_TEST_DIR)/zorder_test \
 	    $(ROOT)/host_tests/zorder_test.cpp
 	$(HOST_TEST_DIR)/zorder_test

@@ -49,6 +49,7 @@ add_library(entry SHARED
     compositor/zc_bridge.cpp
     compositor/frame_composer.cpp
     compositor/frame_pipeline.cpp
+    compositor/shm_frame_source.cpp
     compositor/input_resolver.cpp
     compositor/input_space_mapper.cpp
     compositor/input_queue.cpp

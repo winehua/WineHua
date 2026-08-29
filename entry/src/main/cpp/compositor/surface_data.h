@@ -5,24 +5,12 @@
 #include <string>
 #include <vector>
 
-struct wl_shm_buffer;
+#include "shm_frame_source.h"  // ShmCommitInfo (SHM 帧上下文随 ShmFrameSource 纯函数迁出)
 
 // wl_surface 的每个实例携带的数据。
 // 提取为独立头文件: compositor 子模块和 WaylandServer 各自 include, 无需互相依赖。
-
-// surface_commit 单次提交内共享的 shm 帧上下文 (BeginShmAccess 填充,
-// 各分段函数只读; 见 wl_core.cpp 的分段实现)
-struct ShmCommitInfo {
-    wl_shm_buffer* shm = nullptr;
-    const uint8_t* src = nullptr;      // buffer 像素基址 (begin_access 期间有效)
-    int32_t bufW = 0, bufH = 0;        // buffer 全尺寸
-    int32_t stride = 0;                // 每行字节数 (可含 padding)
-    uint32_t shmFormat = 1;            // wl_shm format (0=ARGB8888, 1=XRGB8888)
-    int contentW = 0, contentH = 0;    // 内容区尺寸 (window_geometry 裁剪后)
-    int contentOffX = 0, contentOffY = 0;  // 内容区在 buffer 内的偏移
-    int screenX = 0, screenY = 0;      // 桌面模式: 虚拟桌面屏幕位置
-    uint64_t shmCommitSerial = 0;      // 本次 commit 的序号 (zero-copy 回退判定)
-};
+// ShmCommitInfo 已随 SHM 拷贝/缩放纯函数 (重构第 5A1 步) 迁至 shm_frame_source.h
+// (纯值字段无 wayland 依赖, host_tests 可编译)。
 
 struct SurfaceData {
     wl_resource* surface = nullptr;

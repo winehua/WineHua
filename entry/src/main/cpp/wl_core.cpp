@@ -15,6 +15,7 @@
 #include "compositor/compositor_utils.h"
 #include "compositor/compositor_constants.h"
 #include "compositor/geometry.h"
+#include "compositor/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
 #include "include/viewporter-server-protocol.h"
 #include "perf_utils.h"
 #include <algorithm>
@@ -453,61 +454,8 @@ void WaylandServer::surface_frame(wl_client* client, wl_resource* surfRes, uint3
 //  分段实现, 每段头注释注明协议语义; 共享的 shm 帧信息经 ShmCommitInfo 传递。
 // ========================================================================
 
-// 紧凑拷贝 content 区 (去 stride padding, 裁剪 window_geometry 后的区域)
-static void CopyShmContentTight(const ShmCommitInfo& fi, std::vector<uint8_t>& dst) {
-    const int contentRowBytes = fi.contentW * 4;
-    dst.resize(static_cast<size_t>(contentRowBytes) * fi.contentH);
-    uint8_t* d = dst.data();
-    const uint8_t* rowStart = fi.src + fi.contentOffY * fi.stride + fi.contentOffX * 4;
-    for (int32_t y = 0; y < fi.contentH; y++) {
-        std::memcpy(d, rowStart + y * fi.stride, contentRowBytes);
-        d += contentRowBytes;
-    }
-}
-
-// wp_viewport destination is the logical surface size. Wine may attach an
-// aligned SHM buffer whose source rectangle is smaller than that destination
-// (for example 640 pixels scaled to a 652-pixel decorated window). Preserve
-// all BGRA channels while scaling so ARGB window masks keep their alpha.
-static void CopyToplevelContent(const SurfaceData* sd, ShmCommitInfo& fi,
-                                std::vector<uint8_t>& dst) {
-    const int sourceW = fi.contentW;
-    const int sourceH = fi.contentH;
-    const int logicalW = DisplaySizeAfterViewport(sd->vpDstW, sourceW);
-    const int logicalH = DisplaySizeAfterViewport(sd->vpDstH, sourceH);
-
-    if (logicalW == sourceW && logicalH == sourceH) {
-        CopyShmContentTight(fi, dst);
-    } else {
-        dst.resize(static_cast<size_t>(logicalW) * logicalH * 4);
-        const uint8_t* source = fi.src + fi.contentOffY * fi.stride + fi.contentOffX * 4;
-        for (int y = 0; y < logicalH; ++y) {
-            const int sourceY = std::min(sourceH - 1,
-                static_cast<int>((static_cast<int64_t>(y) * sourceH) / logicalH));
-            const uint8_t* sourceRow = source + static_cast<size_t>(sourceY) * fi.stride;
-            uint8_t* destinationRow = dst.data() + static_cast<size_t>(y) * logicalW * 4;
-            for (int x = 0; x < logicalW; ++x) {
-                const int sourceX = std::min(sourceW - 1,
-                    static_cast<int>((static_cast<int64_t>(x) * sourceW) / logicalW));
-                std::memcpy(destinationRow + x * 4, sourceRow + sourceX * 4, 4);
-            }
-        }
-    }
-
-    fi.contentW = logicalW;
-    fi.contentH = logicalH;
-}
-
-// 紧凑拷贝全 buffer (subsurface 帧 staging / deprecated 全局帧缓冲用)
-static void CopyShmBufferTight(const ShmCommitInfo& fi, std::vector<uint8_t>& dst) {
-    const int rowBytes = fi.bufW * 4;
-    dst.resize(static_cast<size_t>(rowBytes) * fi.bufH);
-    uint8_t* d = dst.data();
-    for (int32_t y = 0; y < fi.bufH; y++) {
-        std::memcpy(d, fi.src + y * fi.stride, rowBytes);
-        d += rowBytes;
-    }
-}
+// 注: SHM 拷贝/缩放纯函数 (CopyShmContentTight/CopyToplevelContent/CopyShmBufferTight)
+// 已迁至 compositor/shm_frame_source.{h,cpp} (重构第 5A1 步, 行为平价), 调用点见下方。
 
 // NULL buffer commit: surface 无内容 (wl_surface.attach(NULL)+commit 即 unmap)。
 // 清除对应 desktop subsurface layer / PC popup 记录并通知 ArkTS。
@@ -555,41 +503,13 @@ bool WaylandServer::BeginShmAccess(SurfaceData* sd, ShmCommitInfo& fi) {
 // 计算实际内容区: 优先 xdg_surface window_geometry (协议: geometry 是
 // buffer 内的"可见内容"矩形), 否则全 buffer。toplevel 的 geoX/geoY 在桌面
 // 模式另有含义 (虚拟桌面屏幕位置), subsurface 则是相对父 surface 的偏移。
+// 几何计算段已收口到 ShmFrameSource::ComputeContentAreaGeometry (重构第
+// 5A1 步, SurfaceData 字段值语义参数化, 逻辑逐字搬移, 行为平价); 本函数
+// 保留 hilog 日志 (MW-GEO/MW-STRIDE), 条件/文本/顺序与旧实现逐字一致。
 void WaylandServer::ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi) {
-    fi.contentW = fi.bufW;
-    fi.contentH = fi.bufH;
+    ComputeContentAreaGeometry(fi, sd->hasWindowGeometry, sd->geoW, sd->geoH,
+                               sd->hasToplevel, sd->geoX, sd->geoY);
     if (sd->hasWindowGeometry && sd->geoW > 0 && sd->geoH > 0) {
-        fi.contentW = sd->geoW;
-        fi.contentH = sd->geoH;
-        if (sd->hasToplevel) {
-            // 桌面模式: toplevel content 永远从 buffer 原点开始,
-            // geoX/geoY 是虚拟桌面屏幕位置
-            fi.contentOffX = 0;
-            fi.contentOffY = 0;
-            fi.screenX = sd->geoX;
-            fi.screenY = sd->geoY;
-        } else {
-            // subsurface: geoX/geoY 是相对父 surface 的内容偏移
-            fi.contentOffX = sd->geoX;
-            fi.contentOffY = sd->geoY;
-        }
-        /*
-         * 防御: geometry 与 buffer 是异步更新的 — 显示模式切换瞬间
-         * Wine 会先发新 geometry (如 1400x920) 而 buffer 仍是旧尺寸
-         * (如 896x640, GL readback 管线尚未跟上)。content 必须 clamp
-         * 进 buffer 实际范围, 否则拷贝越界读 shm → SIGSEGV
-         * (实测: 游戏退出恢复桌面分辨率的瞬间崩溃于 memcpy)。
-         * 该帧显示为部分内容, 下一帧 buffer 跟上后自然恢复。
-         */
-        if (fi.contentOffX < 0 || fi.contentOffX >= fi.bufW) fi.contentOffX = 0;
-        if (fi.contentOffY < 0 || fi.contentOffY >= fi.bufH) fi.contentOffY = 0;
-        if (fi.contentOffX + fi.contentW > fi.bufW) fi.contentW = fi.bufW - fi.contentOffX;
-        if (fi.contentOffY + fi.contentH > fi.bufH) fi.contentH = fi.bufH - fi.contentOffY;
-        if (fi.contentW <= 0 || fi.contentH <= 0) {
-            fi.contentOffX = fi.contentOffY = 0;
-            fi.contentW = fi.bufW;
-            fi.contentH = fi.bufH;
-        }
         OH_LOG_INFO(LOG_APP, "[MW-GEO] using window_geometry: src=%{public}dx%{public}d geo=(%{public}d,%{public}d %{public}dx%{public}d) screen=(%{public}d,%{public}d) vpSrc=(%{public}d,%{public}d %{public}dx%{public}d) vpDst=%{public}dx%{public}d",
                     fi.bufW, fi.bufH, fi.contentOffX, fi.contentOffY, fi.contentW, fi.contentH,
                     fi.screenX, fi.screenY,
@@ -614,7 +534,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     toplevelMgr_.MapToplevelSurface(sd->toplevelId, surfRes);
     auto lk = toplevelMgr_.Lock();
     auto& st = toplevelMgr_.EnsureToplevelLocked(sd->toplevelId);  // 首次 commit 在此建档
-    CopyToplevelContent(sd, fi, st.FrameData());
+    CopyToplevelContent(sd->vpDstW, sd->vpDstH, fi, st.FrameData());
     sd->w = fi.contentW;
     sd->h = fi.contentH;
     st.SetContentSize(fi.contentW, fi.contentH);

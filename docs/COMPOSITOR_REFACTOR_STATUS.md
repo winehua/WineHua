@@ -20,7 +20,7 @@
 | 4B SendScrollEvent 缺段修复（行为变化例外） | 完成（门禁全过，见 §二 4B 下标） | 1c80f0d |
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
-| 5 协议层重构 | 未开始 | — |
+| 5 协议层重构 | **进行中（5A1 ShmFrameSource 抽离完成）** | 本分支 HEAD 提交（§二 5A1 下标） |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
@@ -581,6 +581,93 @@ SCROLL-ENTER/SCROLL-DROP 日志）、4C 全局输入行为（PAL2 相对模式�
 移动 + war3 光标 + 桌面任务栏交互 + 触摸 tap + PC 模式多窗口）。监视
 tag：WL_Input（[Input] 全组日志顺序与基线一致）+ [PIPE/N] 无丢帧。模拟器
 冒烟基线（蓝色桌面+「开始」任务栏、notepad 直启）待回归时复核。
+
+### 阶段 5A1（ShmFrameSource 纯函数抽离，2026-08-29）
+
+PLAN §四阶段5 第 1 条的前半：wl_core.cpp 的 SHM 拷贝/缩放/内容区计算
+知识抽为纯函数模块 `compositor/shm_frame_source.{h,cpp}`，可进 host_tests。
+这是阶段 5 的第一块（协议拆壳前先落地的纯函数部分）。
+
+**抽离函数清单（原 wl_core.cpp 行号 → 新模块签名）：**
+
+| 原函数 | 原行号 | 新签名（shm_frame_source.h） | 形式 |
+|---|---|---|---|
+| `CopyShmContentTight` | :457-466 (file-static) | `void CopyShmContentTight(const ShmCommitInfo& fi, std::vector<uint8_t>& dst)` | 纯函数，逐字搬移 |
+| `CopyToplevelContent` | :472-499 (file-static) | `void CopyToplevelContent(int32_t vpDstW, int32_t vpDstH, ShmCommitInfo& fi, std::vector<uint8_t>& dst)` | 纯函数；`SurfaceData* sd` 值语义参数化为 `vpDstW/vpDstH`（函数体仅 `sd->vpDstW/H` → 参数，含 vpDst 缩放 clamp/不 clamp 与 BRGA 保通道注释逐字） |
+| `CopyShmBufferTight` | :502-510 (file-static) | `void CopyShmBufferTight(const ShmCommitInfo& fi, std::vector<uint8_t>& dst)` | 纯函数，逐字搬移 |
+| `ComputeContentArea` | :558-604 (WaylandServer 成员，私有) | 计算段 → `void ComputeContentAreaGeometry(ShmCommitInfo& fi, bool hasWindowGeometry, int32_t geoW, int32_t geoH, bool hasToplevel, int32_t geoX, int32_t geoY)`（新模块）；日志段 → 留在 `WaylandServer::ComputeContentArea` 包装 | 计算/日志按 hilog 边界切开（见下） |
+| `BeginShmAccess` | :542-553 (WaylandServer 成员，私有) | **不抽离，留在 wl_core.cpp 原样** | wl 资源生命周期知识（wl_shm_buffer_get_*/begin_access 配对），不可纯化；host 环境无 wayland 头 |
+
+**依赖迁移决策：**
+
+- `ShmCommitInfo` 随迁：定义从 `surface_data.h:15-25` 移入
+  `shm_frame_source.h`（纯值 POD + 不透明 `wl_shm_buffer*` 前置声明，
+  本就不需要 wayland 完整头）；`surface_data.h` 改为 include 新头，
+  头部注释注明归属变更。使 shm_frame_source 零 wayland/hilog 依赖，
+  host g++ 直连编译。
+- 日志处理（ComputeContentArea 切开的唯一理由）：两条 hilog
+  `[MW-GEO]`（:593-596，位于 geometry if 块尾）与 `[MW-STRIDE]`
+  （:600-603，函数尾）保留在 `wl_core.cpp` 的包装函数里，条件
+  （`sd->hasWindowGeometry && geoW>0 && geoH>0`）、文本、占位符、
+  顺序与旧实现**逐字一致**（对账脚本确认 identical）。纯函数只搬
+  计算语义（值参数化 + clamp 防御 + 注释逐字），不做日志回调注入
+  （%{public} 修饰符使回调宿主无法复现文本，注入即改动日志）。
+- static 状态：三个 file-static free 函数升为模块全局函数（同名，
+  调用点无需改名——`CopyShmBufferTight(fi, sd->pixels)` 未变），
+  无其他文件静态依赖可随迁（`DisplaySizeAfterViewport` 来自
+  geometry.h 纯函数头，新模块直接 include）。
+- wayland_server.h 私有声明 `BeginShmAccess`/`ComputeContentArea`
+  **未动**（签名不变），外部调用面零变化。
+
+**wl_core.cpp 内改动：** include `shm_frame_source.h`；删除三个
+file-static 函数定义（原 :456-510）；`ComputeContentArea` 计算段改
+调纯函数 + 日志逐字保留；唯一调用点 `CopyToplevelContent` 改为传
+`sd->vpDstW, sd->vpDstH`（:= 原行 617，位于 `UpdateToplevelFrameOnCommit`
+的 `toplevelMgr_.Lock()` 锁内——锁域/调用顺序未变）；`surface_commit`
+里 `CopyShmBufferTight` 调用点与 `BeginShmAccess` 调用形态原样。
+
+**host_tests（shm_frame_source_test.cpp，39 checks / 0 failures）：**
+
+- CopyShmContentTight：带 stride padding 的内容区紧凑拷贝（黄金值逐
+  字节）、零内容尺寸、全内容 == CopyShmBufferTight 结果；
+- CopyToplevelContent：vpDst=-1 → tight 路径（与 CopyShmContentTight
+  逐字节一致）、vpDst 与内容同尺寸/0 → tight、（4x4→8x6）放大与
+  （8x8→4x4）缩小的逐像素 vs 独立 double 路径参考、fi.contentW/H
+  更新为逻辑尺寸；
+- CopyShmBufferTight：padding 全 buffer 拷贝黄金值、零 buffer；
+- ComputeContentAreaGeometry：无 geometry 全 buffer、toplevel 分支
+  （off=0/screen=geo）、subsurface 分支（off=geo）、clamp（越界/负
+  off/边界恰贴）、geoW/geoH 非正回退；
+- 固定种子 fuzz（500 轮随机 buffer 尺寸/off/padding/内容区/逻辑尺寸）
+  vs 独立参考 0 不一致。
+
+**对账结论（逐函数与原体一致性）：** 三个拷贝函数与旧 file-static
+函数体逐字一致（脚本 unified-diff，仅签名行 static 去除 /
+`sd->vpDstW/H` → 参数）；`ComputeContentAreaGeometry` 与旧成员函数
+计算段的语句序列逐语句等价（sd 字段 → 同值参数），`[MW-GEO]`/
+`[MW-STRIDE]` 日志段脚本确认与旧文本 identical 且位置顺序不变
+（计算 → MW-GEO → MW-STRIDE）；`BeginShmAccess` 未动。行为平价：
+无算法/坐标/裁剪/缩放语义变化；锁域（tmgr 锁内调用点路径不变）、
+日志门控、调用顺序逐字。
+
+**门禁：** `make test` host_tests 全绿（geometry 71 / blit_scaled
+402 / blit_clip 38 / zorder 40 / env 21+88 / input_state 84 /
+**shm_frame_source 39**，全 0 failures）；`make NATIVE_ARCH=arm64-v8a
+hap` 构建+签名通过（HAP 374M，build-profile.json5 已还原，工作树仅剩
+本提交改动 + 预存 thirdparty/）。
+
+**给 5A2 的接口说明（协议拆壳前置）：** `ShmFrameSource` 是 commit
+路径「读像素」知识单点——后续把 `surface_commit` 语义段（角色分发/
+更新上层状态）从 wl_core.cpp 挪走时，本模块的四个函数
+（CopyShmContentTight / CopyToplevelContent / CopyShmBufferTight /
+ComputeContentAreaGeometry）可直接复用，无需触碰 wl 资源知识
+（BeginShmAccess/WaylandServer::ComputeContentArea 日志壳属协议层，
+5A2 拆壳时归协议壳侧）；`ShmCommitInfo` 已是事实上的帧快照 POD
+（值与 wl 无关），5A2 的 CommittedSurface 若携带像素裁切信息可直接
+持有它或按字段抽取。注意红线：`CopyToplevelContent` 的
+DisplaySizeAfterViewport（不 clamp 变体）语义与 clamp 变体不可互换
+（PLAN §2.3 11 处重复中的两变体之一），5A2 若收口显示尺寸公式必须
+按调用点历史行为选变体。
 
 ## 三、2B 剩余工作清单
 
