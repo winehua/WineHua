@@ -349,7 +349,7 @@ void WaylandServer::output_bind(wl_client* client, void* data, uint32_t version,
     //   桌面模式下 explorer 按它铺 desktop 窗口, 全屏游戏按它选渲染分辨率
     // - geometry 物理尺寸 → 推算 DPI (按 96DPI 基准从默认分辨率折算, 见常量)
     // - scale 恒 1: Wine 逻辑像素 = 合成像素, 缩放由 ArkTS 侧 effectiveScale 承担
-    int32_t pw = self->outputW_, ph = self->outputH_;
+    int32_t pw = self->OutputWidth(), ph = self->OutputHeight();
     // 物理尺寸按默认分辨率折算 (1280x720 → 340x190mm ≈ 96DPI)
     int32_t physW = pw * compositor_consts::kOutputPhysWidthMm / compositor_consts::kDefaultOutputWidth;
     int32_t physH = ph * compositor_consts::kOutputPhysHeightMm / compositor_consts::kDefaultOutputHeight;
@@ -378,7 +378,7 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
         auto* self = GetInstance();
         self->toplevelMgr_.UnmapToplevelSurface(sd->toplevelId);
         // 清理 toplevel 像素数据 + 标记 root dirty
-        // (root 被销毁时 OnToplevelDestroyed 内部已复位 desktopRootToplevelId_)
+        // (root 被销毁时 OnToplevelDestroyed 内部已复位 session_.desktopRootToplevelId)
         self->OnToplevelDestroyed(sd->toplevelId);
         // 重置 InputManager 焦点: 防止后续 Inject*Leave 引用已销毁的 surface
         // (否则 Wine 收到 invalid object 协议错误 → 断开连接)
@@ -583,7 +583,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     sd->w = fi.contentW;
     sd->h = fi.contentH;
     st.SetContentSize(fi.contentW, fi.contentH);
-    if (sd->toplevelId == desktopRootToplevelId_) {
+    if (sd->toplevelId == session_.desktopRootToplevelId) {
         desktopCompositor_.IncrementDesktopRootFrameSerial();
     }
     // 自动恢复最小化窗口: 判定/状态改写/日志收口于 ToplevelManager::
@@ -667,7 +667,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     }
     // 新 toplevel 加到 Z-order 顶层 (首次入列的全屏优先级取号在
     // AddToZOrder 内部完成, 见 ToplevelState::fsPriority 注释)
-    if (Policy().RootCompositing() && sd->toplevelId != desktopRootToplevelId_) {
+    if (Policy().RootCompositing() && sd->toplevelId != session_.desktopRootToplevelId) {
         toplevelMgr_.EnsureInZOrder(sd->toplevelId);
     }
     OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
@@ -679,15 +679,15 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     // 锁外动作 (重发 configure) 与判定分离 — NotifyToplevelResize 内部会
     // 再取 toplevelMutex_ (非递归), 不能持锁调用 (见下方自死锁注释)
     const auto sizeEffect = toplevelMgr_.HandleCommittedSizeLocked(
-        sd->toplevelId, desktopRootToplevelId_, fi.contentW, fi.contentH,
-        outputW_, outputH_);
+        sd->toplevelId, session_.desktopRootToplevelId, fi.contentW, fi.contentH,
+        session_.outputW, session_.outputH);
     if (sizeEffect == ToplevelManager::SizeCommitEffect::ReassertFullscreen) {
         // 必须先解锁: NotifyToplevelResize 内部 IsToplevelFullscreen 会
         // 再取 toplevelMutex_ (非递归 std::mutex), 持锁调用 = 同线程
         // 自死锁 — wayland 事件循环卡死, 输入/帧派发全停 (APP_INPUT_BLOCK,
         // 2026-08-15 war3 全屏黑屏整机卡死的根因)。解锁后不再触碰 st。
         lk.unlock();
-        NotifyToplevelResize(sd->toplevelId, outputW_, outputH_);
+        NotifyToplevelResize(sd->toplevelId, session_.outputW, session_.outputH);
     } else if (sizeEffect == ToplevelManager::SizeCommitEffect::ResizeEvent) {
         // maximized 状态位读 ToplevelState (重构第 5C 步; 旧读 sd->maximized)。
         // 本处已持 toplevelMutex_ (函数首 Ensure 的 st 引用), 直接读 st —
@@ -703,14 +703,14 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
 
 // Desktop 模式子窗口 commit → desktop root 识别 (判定逻辑在 DesktopRootManager)
 void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi, bool isFirstCommit) {
-    if (!Policy().RootCompositing() || !sd->hasToplevel || sd->toplevelId == desktopRootToplevelId_) return;
+    if (!Policy().RootCompositing() || !sd->hasToplevel || sd->toplevelId == session_.desktopRootToplevelId) return;
 
     // 任务栏身份登记 (app_id 在 xdg_toplevel 创建时已设置, 首次 commit 即有值)
     if (sd->appId == compositor_consts::kAppIdExplorerTaskbar) {
-        if (taskbarId_ != sd->toplevelId) {
+        if (session_.taskbarId != sd->toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] taskbar registered: #%{public}u (was #%{public}u)",
-                        sd->toplevelId, taskbarId_);
-            taskbarId_ = sd->toplevelId;
+                        sd->toplevelId, session_.taskbarId);
+            session_.taskbarId = sd->toplevelId;
         }
     }
     DesktopRootManager::CheckRootResult cr;
@@ -725,8 +725,9 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
         // 新 root 出现: 重置首帧标记, 让 FinishCommit 重新注入 pointer/keyboard
         // focus。热重启 (keep anchor 复用旧 wineserver) 的首帧标记由会话结束
         // 的 ResetSessionState 统一复位; 这里防御会话内 root 切换 — pending
-        // root 机制下旧 root 可能尚未销毁, 会话结束清理不会触发, firstFrame_
-        // 仍是 true 会导致新 root 首帧不注入 enter, 桌面不激活 (症状: 桌面
+        // root 机制下旧 root 可能尚未销毁, 会话结束清理不会触发, 首帧标记
+        // (session_.firstFrame, 旧字段 firstFrame_) 仍是 true 会导致新 root
+        // 首帧不注入 enter, 桌面不激活 (症状: 桌面
         // 只在点击时才刷新, regedit 打开内容不完整, 菜单弹出后释放即关)
         ResetFirstFrame();
         PostToplevelEvent(sd->toplevelId, ToplevelEventType::DesktopRoot);
@@ -852,8 +853,8 @@ void WaylandServer::FinishCommit(SurfaceData* sd, wl_resource* surfRes) {
     sd->frameCallbacks.clear();
     sd->pendingBuffer = nullptr;
 
-    // 首帧通知 + 预设 pointer/keyboard focus: 会话焦点策略 (firstFrame_ CAS
-    // 判定 + active 事件 + enter 预注入, 条件/顺序逐字) 收口于
+    // 首帧通知 + 预设 pointer/keyboard focus: 会话焦点策略 (session_.firstFrame
+    // CAS 判定 + active 事件 + enter 预注入, 条件/顺序逐字) 收口于
     // WaylandServer::TryBeginSessionFirstFrame — 协议壳只陈述"首帧 commit
     // 发生", 不亲自做焦点决策 (参考 HarmonyBox, 完整说明见 wayland_server.cpp)
     TryBeginSessionFirstFrame(sd->toplevelId, surfRes);

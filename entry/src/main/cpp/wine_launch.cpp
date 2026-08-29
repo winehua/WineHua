@@ -589,10 +589,10 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // 新桌面会话开始: 清除上次会话的桌面 shell 标记守卫, 使本次 root 出现时
         // 重新标记基础进程 (desktop + explorer 等) 为不可由用户结束。
         BeginDesktopSession();
-        int dw = ws->outputW_ > 0 ? ws->outputW_ : 1280;
-        int dh = ws->outputH_ > 0 ? ws->outputH_ : 720;
+        int dw = ws->OutputWidth() > 0 ? ws->OutputWidth() : 1280;
+        int dh = ws->OutputHeight() > 0 ? ws->OutputHeight() : 720;
         OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop size: outputW=%{public}d outputH=%{public}d → %{public}dx%{public}d",
-                    ws->outputW_, ws->outputH_, dw, dh);
+                    ws->OutputWidth(), ws->OutputHeight(), dw, dh);
         /* 附带 winehua_keep.exe: 加入 shell desktop 并持久运行,
          * 避免最后一个用户应用退出后 wineserver 自动关闭桌面.
          * 仅 Pad 桌面模式需要, Phone 模式走单窗口, 无需此逻辑. */

@@ -82,14 +82,16 @@ bool WaylandServer::Start(const std::string& socketPath) {
     // 装配在 wl 事件循环启动前 (与 4C1 warpSink 同模式: 之后回调仅在
     // Wayland 线程 / NAPI 线程读, 只读共享, 无新锁; 引用与单例同生命周期,
     // Start 前成员已全构造)。见 input_manager.h BindCompositorDeps。
+    // 共享状态引用指向 session_ 字段 (重构第 6B 步: 存储自根字段迁移到
+    // DesktopSessionState POD, 注入形态/时序不变 — 见 input_manager.h 注释)
     InputManager::GetInstance()->BindCompositorDeps(toplevelMgr_, inputResolver_,
-                                                    moveGrab_, policy_,
-                                                    desktopRootToplevelId_);
+                                                    moveGrab_, session_.policy,
+                                                    session_.desktopRootToplevelId);
     InputManager::GetInstance()->Initialize(display_);
     OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat+input)");
 
     running_ = true;
-    firstFrame_ = false;
+    session_.firstFrame = false;   // 存储 = 会话共享 POD (重构第 6B 步)
     thread_ = std::thread(&WaylandServer::EventLoop, this);
     OH_LOG_INFO(LOG_APP, "[WL] compositor started OK");
     return true;
@@ -113,7 +115,7 @@ void WaylandServer::Stop() {
         wl_display_destroy(display_);
         display_ = nullptr;
     }
-    firstFrame_ = false;
+    session_.firstFrame = false;   // 存储 = 会话共享 POD (重构第 6B 步)
 }
 
 void WaylandServer::EventLoop() {
@@ -177,7 +179,7 @@ void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
     }
     // 任务栏始终在顶层 (app_id == "explorer.exe.taskbar");
     // 全屏窗口例外 — 游戏全屏必须压过任务栏 (规则实现收口在 ToplevelManager::PinToTop)
-    toplevelMgr_.PinToTop(taskbarId_, id);
+    toplevelMgr_.PinToTop(session_.taskbarId, id);   // 存储 = 会话共享 POD (重构第 6B 步)
     MarkDesktopRootDirtyLocked();
 }
 
@@ -256,18 +258,20 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     {
         auto lk = toplevelMgr_.Lock();
         toplevelMgr_.EraseToplevelLocked(toplevelId);
-        if (pendingDesktopRootToplevelId_ == toplevelId)
-            pendingDesktopRootToplevelId_ = 0;
-        if (taskbarId_ == toplevelId) {
+        // 会话状态读写经 DesktopSessionState (重构第 6B 步: 旧为宿主私有字段,
+        // 清空点/时机/锁域逐字不变)
+        if (session_.pendingDesktopRootToplevelId == toplevelId)
+            session_.pendingDesktopRootToplevelId = 0;
+        if (session_.taskbarId == toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] taskbar toplevel #%{public}u destroyed, clearing cached id",
                         toplevelId);
-            taskbarId_ = 0;
+            session_.taskbarId = 0;
         }
         // root 本体被销毁 (xs_destroy / 客户端断连路径同样走到这里): 复位, 等待下一个 explorer
-        if (desktopRootToplevelId_ == toplevelId) {
+        if (session_.desktopRootToplevelId == toplevelId) {
             OH_LOG_INFO(LOG_APP, "[MW] desktop root toplevel #%{public}u destroyed, clearing root",
                         toplevelId);
-            desktopRootToplevelId_ = 0;
+            session_.desktopRootToplevelId = 0;
             wasDesktopRoot = true;
             // 桌面会话由 explorer 主动结束: 随后 wineserver 跟随退出属正常终结,
             // ProcMon 据此按 state:stopped 收口而非误报 failed (仅 desktop 模式
@@ -312,8 +316,9 @@ void WaylandServer::TryBeginSessionFirstFrame(uint32_t toplevelId, wl_resource* 
     // 首帧通知 + 预设 pointer/keyboard focus (参考 HarmonyBox)
     // 决策归属 (重构第 5B1 步): 从 wl_core FinishCommit 内联段收为命名策略 —
     // 协议壳只陈述"首帧 commit 发生", 焦点预注入 (注入条件/顺序) 逐字平移。
+    // 存储 = 会话共享 POD 的 session_.firstFrame (重构第 6B 步, 仍 atomic)
     bool expected = false;
-    if (firstFrame_.compare_exchange_strong(expected, true)) {
+    if (session_.firstFrame.compare_exchange_strong(expected, true)) {
         FireState("active");
         // 预设 focus: Wine 在用户操作前就需要 enter
         // 安全检查: 只有 resource 已创建才注入 (否则 Inject*Enter 内部会 DROP)
@@ -332,7 +337,7 @@ void WaylandServer::ResetSessionState() {
     // Wine 会话终结统一收口。只重置「进程级一次性/漂移状态」— 随 toplevel
     // 销毁自愈的字段 (root/pending/taskbar, OnToplevelDestroyed 锁内清理)
     // 不在这里重复, 避免锁外写非 atomic 字段与锁内读的竞态。
-    firstFrame_ = false;   // 热重启不重走 Start, 不重置则新会话首帧不注入 focus
+    session_.firstFrame = false;   // 热重启不重走 Start, 不重置则新会话首帧不注入 focus
     moveGrab_.EndMoveGrab(toplevelMgr_);  // 幂等兜底 (grab 窗口非 root 时已随销毁复位)
     InputManager::GetInstance()->ResetSessionState();
     OH_LOG_INFO(LOG_APP, "[MW] session state reset (firstFrame/grab/input focus+keys)");
@@ -362,9 +367,9 @@ void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
 
 int32_t WaylandServer::GetWorkAreaHeight() {
     auto lk = toplevelMgr_.Lock();
-    if (taskbarId_ == 0) return outputH_;
-    const auto* st = toplevelMgr_.FindToplevelLocked(taskbarId_);
-    if (!st) return outputH_;
+    if (session_.taskbarId == 0) return session_.outputH;
+    const auto* st = toplevelMgr_.FindToplevelLocked(session_.taskbarId);
+    if (!st) return session_.outputH;
     return st->Y();  // 工作区 = 任务栏上方空间
 }
 
@@ -478,7 +483,7 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     // ArkUI surface 波动 — 桌面退出时 launcherVisible 翻 true, 窗口退出全屏,
     // XComponent 高度 1840→1683, 反写会把错误高度残留进 output, 下次热重启
     // explorer 用 /desktop=shell,WxH 建桌面就少了这段高度 (上下被裁)。
-    if (Policy().RootCompositing() && toplevelId == desktopRootToplevelId_) {
+    if (Policy().RootCompositing() && toplevelId == session_.desktopRootToplevelId) {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize root=%{public}u (output untouched) %{public}dx%{public}d",
                     toplevelId, w, h);
     } else {

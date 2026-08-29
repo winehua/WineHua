@@ -1,4 +1,5 @@
 #include "desktop_root_manager.h"
+#include "desktop_session_state.h"
 #include "toplevel_manager.h"
 #include "compositor_constants.h"
 #include "compositor/surface_data.h"
@@ -10,14 +11,10 @@
 #define LOG_TAG "WL_Server"
 
 DesktopRootManager::DesktopRootManager(ToplevelManager& tmgr,
-                                       uint32_t& desktopRootToplevelId,
-                                       uint32_t& pendingDesktopRootToplevelId,
-                                       bool& recognitionEnabled,
+                                       DesktopSessionState& session,
                                        FireEventFn fireEvent)
     : tmgr_(tmgr)
-    , desktopRootToplevelId_(desktopRootToplevelId)
-    , pendingDesktopRootToplevelId_(pendingDesktopRootToplevelId)
-    , recognitionEnabled_(recognitionEnabled)
+    , state_(session)
     , fireEvent_(std::move(fireEvent))
 {
 }
@@ -30,7 +27,7 @@ DesktopRootManager::DesktopRootManager(ToplevelManager& tmgr,
 void DesktopRootManager::SetRecognitionEnabled(bool enabled)
 {
     auto lk = tmgr_.Lock();
-    recognitionEnabled_ = enabled;
+    state_.desktopRootRecognitionEnabled = enabled;
     OH_LOG_INFO(LOG_APP, "[MW] desktop root recognition %{public}s",
                 enabled ? "enabled" : "disabled");
 }
@@ -40,25 +37,25 @@ uint32_t DesktopRootManager::PromotePending()
     uint32_t id = 0;
     {
         auto lk = tmgr_.Lock();
-        id = pendingDesktopRootToplevelId_;
+        id = state_.pendingDesktopRootToplevelId;
         auto* pst = id ? tmgr_.FindToplevelLocked(id) : nullptr;
         if (id == 0 || !pst || !pst->HasFrame()) {
             if (id != 0) {
                 OH_LOG_WARN(LOG_APP, "[MW] pending desktop root #%{public}u has no pixels, skip", id);
-                pendingDesktopRootToplevelId_ = 0;
+                state_.pendingDesktopRootToplevelId = 0;
             }
             return 0;
         }
-        if (desktopRootToplevelId_ == id) {
-            pendingDesktopRootToplevelId_ = 0;
+        if (state_.desktopRootToplevelId == id) {
+            state_.pendingDesktopRootToplevelId = 0;
             return 0;
         }
-        if (desktopRootToplevelId_ > 0) {
-            tmgr_.HideToplevelLocked(desktopRootToplevelId_);
+        if (state_.desktopRootToplevelId > 0) {
+            tmgr_.HideToplevelLocked(state_.desktopRootToplevelId);
         }
         tmgr_.ShowToplevelLocked(id);
-        desktopRootToplevelId_ = id;
-        pendingDesktopRootToplevelId_ = 0;
+        state_.desktopRootToplevelId = id;
+        state_.pendingDesktopRootToplevelId = 0;
         pst->MarkDirty();
     }
 
@@ -69,7 +66,7 @@ uint32_t DesktopRootManager::PromotePending()
 
 void DesktopRootManager::MarkRootDirtyLocked()
 {
-    tmgr_.MarkToplevelDirtyLocked(desktopRootToplevelId_);
+    tmgr_.MarkToplevelDirtyLocked(state_.desktopRootToplevelId);
 }
 
 DesktopRootManager::CheckRootResult
@@ -91,10 +88,10 @@ DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool isFirstCommit)
 
     // --- 以下 sd 是真 desktop-shell ---
 
-    uint32_t rootId = desktopRootToplevelId_;
+    uint32_t rootId = state_.desktopRootToplevelId;
 
-    if (!recognitionEnabled_) {
-        pendingDesktopRootToplevelId_ = sd->toplevelId;
+    if (!state_.desktopRootRecognitionEnabled) {
+        state_.pendingDesktopRootToplevelId = sd->toplevelId;
         tmgr_.ShowToplevelLocked(sd->toplevelId);
         OH_LOG_INFO(LOG_APP,
                     "[MW] desktop-shell #%{public}u pending (recognition disabled)",
@@ -103,18 +100,18 @@ DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool isFirstCommit)
     }
 
     if (rootId == 0) {
-        if (pendingDesktopRootToplevelId_ > 0 &&
-            pendingDesktopRootToplevelId_ != sd->toplevelId) {
+        if (state_.pendingDesktopRootToplevelId > 0 &&
+            state_.pendingDesktopRootToplevelId != sd->toplevelId) {
             tmgr_.HideToplevelLocked(sd->toplevelId);
             OH_LOG_INFO(LOG_APP,
                         "[MW] desktop-shell #%{public}u -> background, pending root #%{public}u exists",
-                        sd->toplevelId, pendingDesktopRootToplevelId_);
+                        sd->toplevelId, state_.pendingDesktopRootToplevelId);
         } else {
             OH_LOG_INFO(LOG_APP, "[MW] desktop root: #%{public}u appId=explorer.exe.desktop-shell",
                         sd->toplevelId);
             result.moveRendererTo = sd->toplevelId;
-            desktopRootToplevelId_ = sd->toplevelId;
-            pendingDesktopRootToplevelId_ = 0;
+            state_.desktopRootToplevelId = sd->toplevelId;
+            state_.pendingDesktopRootToplevelId = 0;
             result.fireDesktopRoot = true;
         }
         return result;
@@ -126,7 +123,7 @@ DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool isFirstCommit)
     tmgr_.HideToplevelLocked(rootId);
     result.moveRendererFrom = rootId;
     result.moveRendererTo = sd->toplevelId;
-    desktopRootToplevelId_ = sd->toplevelId;
+    state_.desktopRootToplevelId = sd->toplevelId;
     result.fireDesktopRoot = true;
     return result;
 }

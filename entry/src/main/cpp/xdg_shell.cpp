@@ -105,7 +105,7 @@ static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h
 static bool ShouldInferMaximizeFromMaxSize(WaylandServer* ws, SurfaceData* sd,
                                            int32_t w, int32_t h, int32_t workH) {
     return !gTmgr->IsToplevelFullscreen(sd->toplevelId) && !gTmgr->IsToplevelMaximized(sd->toplevelId) &&
-           w >= ws->outputW_ && h >= workH &&
+           w >= ws->OutputWidth() && h >= workH &&
            sd->toplevelId != ws->GetDesktopRootToplevelId();
 }
 
@@ -162,7 +162,7 @@ static void tl_set_maximized(wl_client* client, wl_resource* tlRes) {
         ws->SetToplevelMaximized(sd->toplevelId);
     }
     // 发 configure 让 Wine 渲染到工作区尺寸 (排除任务栏)
-    int32_t mw = ws->outputW_, mh = ws->GetWorkAreaHeight();
+    int32_t mw = ws->OutputWidth(), mh = ws->GetWorkAreaHeight();
     XdgConfigureSend(tlRes, xdg->xdgSurface, mw, mh,
                      {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
     ws->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Maximized);
@@ -228,7 +228,7 @@ static void tl_set_fullscreen(wl_client* client, wl_resource* tlRes, wl_resource
     // (含任务栏区, 全屏应覆盖)。Wine 可保持自己的分辨率不变 (fullscreen
     // 对任意尺寸兼容, 见 winewayland wayland_surface_config_is_compatible),
     // 缩放由合成器完成
-    int32_t fw = ws->outputW_, fh = ws->outputH_;
+    int32_t fw = ws->OutputWidth(), fh = ws->OutputHeight();
     XdgConfigureSend(tlRes, xdg->xdgSurface, fw, fh,
                      {XDG_TOPLEVEL_STATE_FULLSCREEN, XDG_TOPLEVEL_STATE_ACTIVATED});
     ws->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Fullscreen);

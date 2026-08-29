@@ -13,6 +13,7 @@
 
 #include "compositor/compositor_constants.h"
 #include "compositor/display_policy.h"
+#include "compositor/desktop_session_state.h"  // DesktopSessionState (重构第 6B 步: 会话共享状态 POD)
 #include "compositor/toplevel_manager.h"
 #include "compositor/popup_manager.h"
 #include "compositor/toplevel_event_bus.h"  // ToplevelEventType/ToplevelEventBus (重构第 5D 步)
@@ -56,8 +57,8 @@ public:
     ToplevelManager& GetToplevelManager() { return toplevelMgr_; }
     DesktopCompositor& GetDesktopCompositor() { return desktopCompositor_; }
     // root 身份的共享引用装配出口 (与 DesktopCompositor/InputResolver 注入的
-    // 引用同源, 6-B DesktopSessionState 化后换成 POD 成员)
-    const uint32_t& DesktopRootToplevelIdRef() const { return desktopRootToplevelId_; }
+    // 引用同源, 重构第 6B 步起指向 session_.desktopRootToplevelId 的 POD 字段)
+    const uint32_t& DesktopRootToplevelIdRef() const { return session_.desktopRootToplevelId; }
 
     bool Start(const std::string& socketPath);
     void Stop();
@@ -68,7 +69,8 @@ public:
     // 会话内 root 切换防御: 新 root 出现时重置首帧标记 (pending root 机制下
     // 旧 root 可能未销毁, 会话结束的 ResetSessionState 不会触发), 让新 root
     // 首帧重新注入 focus。见 CheckDesktopRootOnCommit 的 fireDesktopRoot 分支
-    void ResetFirstFrame() { firstFrame_ = false; }
+    // (重构第 6B 步: 存储移入 session_.firstFrame, 语义/复位点不变)
+    void ResetFirstFrame() { session_.firstFrame = false; }
     // Wine 会话终结统一收口 (desktop root 销毁 / stopClient 时调用):
     // 重置进程级一次性状态 (firstFrame_/输入焦点/按键/修饰键), 使下一次
     // 引擎启动 (冷/热) 从与冷启动一致的基线开始 — 状态生命周期按「Wine
@@ -112,10 +114,14 @@ public:
     void ForceToplevelRedraw(uint32_t id);
     // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染
     void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h);
-    // 设置输出尺寸 (替换硬编码 1280x720)
-    void SetOutputSize(int32_t w, int32_t h) { outputW_ = w; outputH_ = h; }
-    int32_t outputW_ = compositor_consts::kDefaultOutputWidth;
-    int32_t outputH_ = compositor_consts::kDefaultOutputHeight;
+    // 设置输出尺寸 (替换硬编码 1280x720)。权威源 = ArkTS 启动时 setOutputSize
+    // (display 物理尺寸 / effectiveScale); 桌面 root 的 resize 不反写 (见
+    // NotifyToplevelResize 注释)。存储 = session_.outputW/H (重构第 6B 步:
+    // 会话共享状态 POD; 旧为 public 字段, 外部读改经 OutputWidth/Height 访问器)
+    void SetOutputSize(int32_t w, int32_t h) { session_.outputW = w; session_.outputH = h; }
+    // 输出尺寸只读访问器 (外部经门面读, 与旧 public 字段同值; 写只经 SetOutputSize)
+    int32_t OutputWidth() const { return session_.outputW; }
+    int32_t OutputHeight() const { return session_.outputH; }
     int32_t GetWorkAreaHeight();  // 排除任务栏后的可用高度
     // 输入命中顶层 toplevel 查询 (NAPI 入口 findToplevelAt 唯一调用方 —
     // 入口模块保留委托; 业务层 InputManager 已改直呼 InputResolver,
@@ -133,10 +139,12 @@ public:
     // Desktop 合成模式 (Tablet): 全部 toplevel 合成到一个 root framebuffer。
     // 模式差异的策略查询走 Policy() (display_policy.h); IsDesktopMode 只用于
     // 模式上报类调用 (给 wine 传环境/标记进程/日志)。
-    void SetDesktopMode(bool on) { policy_ = DisplayPolicy::FromDesktopMode(on); }
-    bool IsDesktopMode() const { return policy_.desktop; }
-    const DisplayPolicy& Policy() const { return policy_; }
-    uint32_t GetDesktopRootToplevelId() const { return desktopRootToplevelId_; }
+    // 模式存储位 = session_.policy (重构第 6B 步: 会话共享状态 POD — 旧为
+    // private 字段, SetDesktopMode 经 NAPI 写 / 各处策略查询只读, 行为不变)
+    void SetDesktopMode(bool on) { session_.policy = DisplayPolicy::FromDesktopMode(on); }
+    bool IsDesktopMode() const { return session_.policy.desktop; }
+    const DisplayPolicy& Policy() const { return session_.policy; }
+    uint32_t GetDesktopRootToplevelId() const { return session_.desktopRootToplevelId; }
     // wl_surface → toplevelId 反查 (PointerExtras 判相对模式的约束 surface
     // 是否桌面 root 自身 — 区分"桌面 shell 启动瞬时藏光标"与"游戏真相对模式")
     // 已删转发 (重构第 6A 步): PointerExtras 装配注入 ToplevelManager 引用直调
@@ -222,10 +230,11 @@ private:
     void EventLoop();
     // 会话首帧 focus 策略 (重构第 5B1 步): 首个 commit 到达时通知 ArkTS
     // active 事件 + 预设 pointer/keyboard focus (Wine 在用户操作前就需要
-    // enter)。firstFrame_ 会话级一次性 CAS 判定 (Start/ResetSessionState/
-    // ResetFirstFrame 复位), 注入有 Seat 资源安全检查。wl_core FinishCommit
-    // 只陈述"首帧 commit 发生"不亲自决策; 回归基线: 决策条件/注入顺序/
-    // 参考 (HarmonyBox) 与原内联段逐字 (见 wayland_server.cpp)。
+    // enter)。session_.firstFrame (重构第 6B 步存储, 旧字段 firstFrame_)
+    // 会话级一次性 CAS 判定 (Start/ResetSessionState/ResetFirstFrame 复位),
+    // 注入有 Seat 资源安全检查。wl_core FinishCommit 只陈述"首帧 commit
+    // 发生"不亲自决策; 回归基线: 决策条件/注入顺序/参考 (HarmonyBox) 与
+    // 原内联段逐字 (见 wayland_server.cpp)。
     void TryBeginSessionFirstFrame(uint32_t toplevelId, wl_resource* surfRes);
     // stopAll 主动清空全部 toplevel: SIGKILL 强杀 Wine 后 client 断开事件
     // 未被 dispatch (wl_display_terminate 提前终止事件循环), 依赖断开事件触发
@@ -266,35 +275,41 @@ private:
     // (desktop_root → MarkDesktopShellProcesses + evt:desktop-ready)。
     // 旧 ToplevelCb/置位标志的宿主成员随收口删除 (见文件头注释)。
     ToplevelEventBus toplevelEventBus_;
-    std::atomic<bool> firstFrame_{false};
-
-    // Desktop 合成模式策略 (唯一模式存储位, DesktopCompositor 持引用随动)
-    DisplayPolicy policy_{};
-    uint32_t desktopRootToplevelId_ = 0;
-    uint32_t pendingDesktopRootToplevelId_ = 0;
-    uint32_t taskbarId_ = 0;  // app_id == "explorer.exe.taskbar", RaiseToplevel/GetWorkAreaHeight 用
-    bool desktopRootRecognitionEnabled_ = true;
+    // 会话共享状态 POD (重构第 6B 步): desktop root 身份 (root/pending/
+    // taskbar/recognitionEnabled)/policy/outputW/H/firstFrame 单点存储 —
+    // 旧为上述同名字段 (desktopRootToplevelId_/pendingDesktopRootToplevelId_/
+    // taskbarId_/desktopRootRecognitionEnabled_/policy_/firstFrame_/outputW_/
+    // outputH_)。本类经访问器/成员函数按旧时机读写; DesktopRootManager/
+    // DesktopCompositor/InputResolver/PopupManager 的注入引用指向本成员
+    // 字段 (注入形态不变, 只换指向); 状态成员归属表见 STATUS §二 6B。
+    // 声明必须先于使用其字段引用的子组件成员 (成员构造顺序 = 声明顺序)。
+    DesktopSessionState session_;
     // 交互式窗口移动 (xdg_toplevel.move) — 已移入 MoveGrabHandler
     MoveGrabHandler moveGrab_;
-    // 桌面 Root 识别+切换 — 已移入 DesktopRootManager
+    // 桌面 Root 识别+切换 — 已移入 DesktopRootManager (重构第 6B 步: 该
+    // 类现在经注入的 DesktopSessionState 引用真正拥有 root 状态 — 消除
+    // "引用成员指向宿主子字段"的隐式同步; fireEvent_ 仍经构造注入, 见
+    // desktop_root_manager.h)。
     // fireEvent_: DesktopRootManager 只发 desktop_root 事件 (PromotePending
     // 路径), 事件名/JSON 与 CheckRootLocked 的 fireDesktopRoot 分支一致 —
     // 收口到 PostToplevelEvent (重构第 5D 步, 事件 enum 化)。
-    DesktopRootManager desktopRootMgr_{toplevelMgr_, desktopRootToplevelId_,
-                                        pendingDesktopRootToplevelId_,
-                                        desktopRootRecognitionEnabled_,
+    DesktopRootManager desktopRootMgr_{toplevelMgr_, session_,
                                         [this](uint32_t id, const char*, const char*) {
                                             PostToplevelEvent(id, ToplevelEventType::DesktopRoot);
                                         }};
-    // 帧合成 + zero-copy layer 管理 — 已移入 DesktopCompositor
-    DesktopCompositor desktopCompositor_{toplevelMgr_, policy_, desktopRootToplevelId_,
-                                          outputW_, outputH_};
-    // 输入命中裁决 — 已移入 InputResolver
-    InputResolver inputResolver_{toplevelMgr_, desktopCompositor_, desktopRootToplevelId_,
-                                  outputW_, outputH_};
+    // 帧合成 + zero-copy layer 管理 — 已移入 DesktopCompositor (policy/rootId/
+    // output 注入引用指向 session_ 字段, 6A 装配形态不变 — 重构第 6B 步)
+    DesktopCompositor desktopCompositor_{toplevelMgr_, session_.policy,
+                                          session_.desktopRootToplevelId,
+                                          session_.outputW, session_.outputH};
+    // 输入命中裁决 — 已移入 InputResolver (同上)
+    InputResolver inputResolver_{toplevelMgr_, desktopCompositor_,
+                                  session_.desktopRootToplevelId,
+                                  session_.outputW, session_.outputH};
     // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
-    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
-    PopupManager popupMgr_{toplevelMgr_, outputW_, outputH_};
+    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h;
+    // output 注入引用指向 session_ 字段 — 重构第 6B 步)
+    PopupManager popupMgr_{toplevelMgr_, session_.outputW, session_.outputH};
 };
 
 #include "compositor/surface_data.h"  // SurfaceData 已提取至独立头文件

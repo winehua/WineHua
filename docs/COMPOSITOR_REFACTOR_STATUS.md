@@ -21,12 +21,16 @@
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
 | 5 协议层重构 | **代码层全部完成（5A1/5A2/5B1/5B2/5C/5D 落地，待设备回归）** | 5A1/5A2 前序记录（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标；5C §二 5C 下标；5D §二 5D（本分支 HEAD 提交） |
-| 6 facade 瘦身与共享状态收口 | **进行中（6A 转发删除+构造注入落地；6B POD/atomic 待做；待设备回归）** | 6A（提交见 §二 6A 小节） |
+| 6 facade 瘦身与共享状态收口 | **代码层全部完成（6A 转发删除+构造注入、6B POD/atomic 落地；待设备回归）** | 6A（提交见 §二 6A 小节）；6B（提交见 §二 6B 小节） |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
 `make NATIVE_ARCH=x86_64` 与 `make NATIVE_ARCH=arm64-v8a` 全量构建成功；
 x86_64 模拟器桌面链（EntryAbility → DesktopAbility → 中文桌面+任务栏）与
 notepad 直启冒烟通过。
+
+**阶段 0-6 代码层全部完成**（0/1/2A/2B/3/4A-4C/5A1-5D/6A-6B），全部行为
+平价提交（唯一行为变化例外 4B 已单独标注）；余下工作 = 全量设备回归
+（清单见 §四）。
 
 ## 二、2B 续作进展
 
@@ -1101,6 +1105,113 @@ POD 迁移收拢，调用方（egl_renderer/xdg_shell/input_manager/pointer_extr
 经装配注入的引用指向 SessionState 成员。`desktopRootFrameSerial_` 的
 atomic 化保留给 6B。
 
+### 阶段 6B（DesktopSessionState POD + desktopRootFrameSerial_ 原子化，2026-08-29）
+
+PLAN §四阶段6 后半（共享状态收进 DesktopSessionState POD、DesktopRootManager
+真正拥有 root 状态、desktopRootFrameSerial_ 改 atomic）+ §2.2 四处点名
+（rootId 四组件共享引用 / DesktopRootManager 7 参数无状态 / outputW_ outputH_
+public 字段 / desktopRootFrameSerial_ 非 atomic 跨线程）的收口。全部行为
+平价：存储位置重排 + 注入指向迁移，写读时机/线程域/日志逐字不变。
+
+**状态成员归属表（6A 清单 + 现场核对，逐成员确认后归入）：**
+
+| # | 成员（旧） | 写方 | 读方 | 线程域/锁 | 归 POD / 保留 | 注入形态 |
+|---|---|---|---|---|---|---|
+| 1 | desktopRootToplevelId_ (uint32_t) | DesktopRootManager（CheckRootLocked/PromotePending，tmgr 锁内）；OnToplevelDestroyed（清 0，tmgr 锁内） | DesktopCompositor/InputResolver/ZcBridge/FramePlanner（tmgr 锁内）；InputManager/PointerExtras（指针只读）；wl_core/xdg_shell/napi_init/wine_launch（门面读） | wl 线程写（tmgr 锁内）；读多线程（锁内或只读） | → session_.desktopRootToplevelId | const uint32_t& ×2（compositor/resolver）+ const uint32_t* ×2（input_manager/pointer_extras）不变 |
+| 2 | pendingDesktopRootToplevelId_ | DesktopRootManager（锁内）；OnToplevelDestroyed（清 0，锁内） | DesktopRootManager（锁内） | wl 线程 + tmgr 锁 | → session_.pendingDesktopRootToplevelId | 旧经 DesktopRootManager 引用，现该引用换为 session_.desktopRootToplevelId 同源（DesktopRootManager 改持 POD 引用，见下） |
+| 3 | taskbarId_ | CheckDesktopRootOnCommit（wl 线程，锁外登记）；OnToplevelDestroyed（清 0，tmgr 锁内） | RaiseToplevel/GetWorkAreaHeight（tmgr 锁内） | wl 线程 | → session_.taskbarId | 无注入（wl_core/wayland_server 成员函数经 session_） |
+| 4 | desktopRootRecognitionEnabled_ | DesktopRootManager::SetRecognitionEnabled（wl 线程，自取 tmgr 锁） | CheckRootLocked（tmgr 锁内） | wl 线程 + tmgr 锁 | → session_.desktopRootRecognitionEnabled | 同上（DesktopRootManager 引用改 POD） |
+| 5 | policy_ (DisplayPolicy) | SetDesktopMode（NAPI 线程） | wl_core/xdg_shell/wayland_server（wl 线程）；DesktopCompositor/ZcBridge（tmgr 锁内）；InputManager（指针只读） | NAPI 写 / wl+渲染读（既有跨线程，无新竞态） | → session_.policy | const DisplayPolicy&（compositor）+ const DisplayPolicy*（input_manager）指向 session_.policy |
+| 6 | outputW_/outputH_（**public** int32_t） | SetOutputSize（NAPI 线程——ArkTS 权威源，root resize 不反写） | output_bind / HandleCommittedSizeLocked / GetWorkAreaHeight / NotifyToplevelResize（wl 线程）；xdg_shell（wl 线程）；wine_launch（NAPI 线程）；DesktopCompositor/InputResolver（const int32_t&）/PopupManager（int32_t&） | NAPI 写 / wl+渲染读（既有） | → session_.outputW/H；**public 字段删除** | 引用注入不变；外部（wl_core/xdg_shell/wine_launch）读改经新访问器 OutputWidth()/OutputHeight() |
+| 7 | firstFrame_（std::atomic\<bool\>） | Start/Stop/ResetSessionState/ResetFirstFrame（复位）；CAS 于 TryBeginSessionFirstFrame | CAS 判定 | 多线程（atomic 既有收口） | → session_.firstFrame（保持 atomic，属性不动） | 无注入（门面语义方法） |
+| 8 | desktopRootFrameSerial_（DesktopCompositor，**非 atomic** uint64_t） | wl_core UpdateToplevelFrameOnCommit（root commit，tmgr 锁内 ++） | FramePlanner rebuildBase 判定 + CopyBaseToOutputLocked 回写 desktopOutputRootFrameSerial_（渲染线程，tmgr 锁内） | 读写两侧均持 tmgr 锁 → 无 data race | → std::atomic\<uint64_t\>（防御性收口） | 无注入（friend FramePlanner 直访，读法 ++/!=/= 对 atomic 逐位等值） |
+
+就地核对**不归 POD**的（现状保留）：toplevelEventSuppressed_（5D 已收口
+ToplevelEventBus）、ZC 状态键（3C 已收口 ZcBridge）、per-toplevel 状态
+（ToplevelManager/ToplevelState）、move grab 状态（MoveGrabHandler）、
+渲染/合成状态（DesktopCompositor 自身）、输入焦点/按键（4C2
+InputStateTracker/InputQueue）——均非会话共享状态。
+
+**POD 形态（新增 compositor/desktop_session_state.h，纯头文件，CMake 无需追加）：**
+
+- 字段表：`desktopRootToplevelId`（0）/`pendingDesktopRootToplevelId`（0）/
+  `taskbarId`（0）/`desktopRootRecognitionEnabled`（true）/`policy`（DisplayPolicy
+  值，desktop=false）/`outputW`+`outputH`（kDefaultOutputWidth/Height）/
+  `firstFrame`（std::atomic\<bool\>，false）。
+- **字段保持 public（可寻址）的理由**：6A 装配注入的引用/指针
+  （DesktopCompositor/InputResolver 的 const 引用、PopupManager 的
+  int32_t&、InputManager/PointerExtras 的指针）必须绑定到 POD 内真实存储
+  ——字段私有化会迫使注入形态改为"持 POD 引用"而破坏 6A 已装配形态
+  （红线：注入形态兼容，只换指向）。对外读经 WaylandServer 访问器
+  （Policy()/GetDesktopRootToplevelId()/OutputWidth()/OutputHeight()）、
+  写经语义方法（SetDesktopMode/SetOutputSize/ResetFirstFrame）——外部
+  不直接摸 POD；输出尺寸 public 字段语义移至 POD。
+- 头注释记录：存储位置重排（行为平价）、字段可见性与注入引用关系、
+  atomic 成员不可拷贝（单例成员，无拷贝需求）、归属表索引。
+- WaylandServer 持 `DesktopSessionState session_` 成员（声明位于使用其
+  字段引用的子组件 desktopRootMgr_/desktopCompositor_/inputResolver_/
+  popupMgr_ 之前——成员构造顺序 = 声明顺序）；旧 8 字段
+  （policy_/desktopRootToplevelId_/pendingDesktopRootToplevelId_/
+  taskbarId_/desktopRootRecognitionEnabled_/firstFrame_/outputW_/outputH_）
+  删除。
+
+**注入指向迁移清单（形态不变，只换指向）：**
+
+| 组件 | 注入（旧指向） | 新指向 |
+|---|---|---|
+| DesktopRootManager | tmgr & + rootId & + pending & + recognitionEnabled & + fireEvent | tmgr & + DesktopSessionState& + fireEvent（状态引用 3 个→1 个，见下） |
+| DesktopCompositor | const DisplayPolicy& / const uint32_t& / const int32_t& ×2 | session_.policy / session_.desktopRootToplevelId / session_.outputW/H |
+| InputResolver | 同上 | 同上 |
+| PopupManager | int32_t& ×2 | session_.outputW/H |
+| InputManager（BindCompositorDeps） | const DisplayPolicy& + const uint32_t& | session_.policy / session_.desktopRootToplevelId |
+| PointerExtras（BindWaylandRefs） | const uint32_t* | &session_.desktopRootToplevelId（经 DesktopRootToplevelIdRef() 出口，装配点 wl_core 不变） |
+
+**DesktopRootManager 调整（真正拥有 root 状态）：** 构造签名改
+`(ToplevelManager& tmgr, DesktopSessionState& session, FireEventFn fireEvent)`
+——删除 3 个指向宿主子字段的引用成员（desktopRootToplevelId_/
+pendingDesktopRootToplevelId_/recognitionEnabled_），换为单个
+`DesktopSessionState& state_`，方法体内 `desktopRootToplevelId_` 等
+逐字替换为 `state_.desktopRootToplevelId` 等。消除的隐式同步：旧形态
+"引用成员指向宿主子字段"——宿主的 root 状态写到哪、读从哪、被谁清，
+认知成本挂在引用链上（PLAN §2.2 "DesktopRootManager…自己什么状态都
+不拥有"）；现 root 状态存储 = POD 单点，管理器读写就在 POD 内部，
+WaylandServer（OnToplevelDestroyed 清 root/pending/taskbar）与 wl_core
+（taskbar 登记）也经同一 POD——所有 root 状态消费者指向收敛、职责
+（识别/切换决策 = DesktopRootManager；生命周期清理 = WaylandServer）
+清晰。锁域不变（CheckRootLocked 调用方持锁 / SetRecognitionEnabled 自取
+锁）；fireEvent_ 注入不变（desktop_root 事件路径/时序逐字）。
+
+**atomic 结论（PLAN 核实项，已核实并写入成员处注释）：**
+- `desktopRootFrameSerial_` = desktop root 全局帧序号（wl 线程在 root
+  commit 时 ++，渲染线程在 FramePlanner 锁内读，判定 rebuildBase 与回写
+  desktopOutputRootFrameSerial_）——读写两侧均持 tmgr mutex，无 data race
+  （6A 前置核实结论）。
+- 与 `ToplevelState::frameSerial_`（per-toplevel dirty 序号，各层内容
+  变化判定）**是不同概念，不合一**——前者是 root 帧级"根帧又新了"序号，
+  后者是每个 toplevel 的内容版本号。
+- 6B 处置：`std::atomic<uint64_t>`（seq_cst 默认序）；锁纪律不变——
+  不因 atomic 引入新无锁访问，持锁访问保持锁内（PLAN §七红线）；atomic
+  为防御性收口（锁协议调整时防 TSan 类隐性撕裂）。
+
+**对账结论：** 状态字段改经 session_.xxx 的全部读写点文本等值（仅存储
+路径变化，取值/条件/日志/顺序/锁域不变）；firstFrame CAS 与复位点逐字；
+外部 public 字段读点（wl_core output_bind、xdg_shell 3 处、wine_launch）
+改经 OutputWidth()/OutputHeight() 访问器（同值同时机；写仍只经
+SetOutputSize）；desktop_root_manager 三个引用成员改 state_.xxx 逐字；
+无 getter/日志文本/接口签名（对外保留方法）变化。桌面 root 尺寸不反写
+output 注释（NotifyToplevelResize）与 POD 头注释互相指认。
+
+**门禁：** `make test` host_tests 全绿（geometry 77 / blit_scaled 402 /
+blit_clip 38 / zorder 40 / env 21+88 / input_state 84 / shm_frame_source 39 /
+toplevel_event 62，全 0 failures，本提交未改测试代码）；`make
+NATIVE_ARCH=x86_64 hap` 与 `make NATIVE_ARCH=arm64-v8a hap` 双架构构建+
+签名通过（每次构建后 build-profile.json5 已还原，工作树仅剩本提交改动 +
+预存 thirdparty/）。**设备回归待做**（行为平价纯存储重排，覆盖桌面全链）：
+桌面启动/notepad 直启/任务栏交互（output 尺寸 → xdg configure 尺寸 →
+GetWorkAreaHeight 路径）、root 识别/切换/销毁（root/pending/taskbar 读写
+清空路径）、三游戏（rootId/输出尺寸读点全覆盖）、会话状态复位（firstFrame/
+热重启首帧再注入）；监视 MW-*/WL-* 日志与基线对比。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -1173,12 +1284,18 @@ atomic 化保留给 6B。
   （5C 清单：最大化推断/全屏转换/最小化还原）+ 三游戏（war3 直传+局部
   合成+尺寸漂移、PAL2 SHM+dinput、RA2 全屏点击路由）+ ZC 遮挡/全屏/
   fallback（阶段 3 清单）。
-- **阶段 6 facade 瘦身**：**6A 完成（见 §二 6A 小节，2026-08-29）** —
-  WaylandServer 拆 27 个转发/死方法 + 调用方构造/装配注入（egl_renderer/
-  xdg_shell/input_manager/input_injector/pointer_extras 五处），待设备回归
-  （ZC 时序/输入路由/move grab/指针约束）；**6B 待做**：DesktopSessionState
-  POD（desktopRootToplevelId_/pendingRoot/taskbarId/recognitionEnabled/output
-  尺寸/policy 收拢）+ desktopRootFrameSerial_ 改 atomic。
+- **阶段 6 facade 瘦身：代码层全部完成（6A + 6B，待设备回归）** — 6A
+  （见 §二 6A 小节，2026-08-29）：WaylandServer 拆 27 个转发/死方法 + 调用方
+  构造/装配注入（egl_renderer/xdg_shell/input_manager/input_injector/
+  pointer_extras 五处）；6B（见 §二 6B 小节）：DesktopSessionState POD
+  （desktopRootToplevelId/pending/taskbar/recognitionEnabled/policy/output
+  尺寸/firstFrame 收拢，注入只换指向）+ DesktopRootManager 真正拥有 root
+  状态 + desktopRootFrameSerial_ 改 atomic。**阶段 6 设备回归点**：6A ——
+  ZC 时序/输入路由/move grab/指针约束；6B —— 桌面链冒烟（output 尺寸 →
+  xdg configure 尺寸 → GetWorkAreaHeight 路径）、root 识别/切换/销毁
+  （root/pending/taskbar 路径）、三游戏、firstFrame 热重启。至此
+  **阶段 0-6 代码层全部完成，余下 = 全量设备回归（各阶段清单见 §四 各段
+  与 §二 各小节"设备回归待做"）**。
 
 ## 五、续作执行要点
 

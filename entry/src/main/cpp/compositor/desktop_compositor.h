@@ -1,5 +1,6 @@
 #pragma once
 #include <wayland-server-core.h>
+#include <atomic>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,8 +84,9 @@ public:
         bool ShouldSkipCpu() const { return !visible || zcActive; }
     };
 
-    // 构造: 注入 ToplevelManager + 桌面合成配置 (由 WaylandServer 持有,
-    // policy 为引用 — SetDesktopMode 后随动)
+    // 构造: 注入 ToplevelManager + 桌面合成配置 (存储在 WaylandServer 的
+    // DesktopSessionState POD — 重构第 6B 步, 注入引用指向 session_ 字段;
+    // policy 随 SetDesktopMode 随动, rootId/output 随会话状态变化即见)
     DesktopCompositor(ToplevelManager& tmgr,
                       const DisplayPolicy& policy,
                       const uint32_t& desktopRootToplevelId,
@@ -208,6 +210,8 @@ public:
     void RemoveZeroCopyKeyLocked(uint64_t surfaceKey) { zc_.RemoveKey(surfaceKey); }
 
     // Increment root frame serial (called from surface_commit when root commits)
+    // — 存储为 atomic (重构第 6B 步, 见成员处注释: 读写两侧均持 tmgr 锁,
+    // atomic 为防御性收口; 调用点/线程域不变)
     void IncrementDesktopRootFrameSerial() { ++desktopRootFrameSerial_; }
 
     // toplevel 是否有 zero-copy GL 层 (ZC 游戏判定: 全屏渲染/输入映射分流用,
@@ -258,7 +262,17 @@ private:
     uint64_t desktopCompositionSignature_ = 0;
     uint64_t desktopOutputRootFrameSerial_ = 0;
     bool desktopOutputInitialized_ = false;
-    uint64_t desktopRootFrameSerial_ = 0;
+    /* desktopRootFrameSerial_ — desktop root 全局帧序号 (重构第 6B 步原子化)。
+     * 语义: wl 线程在 root commit 时 ++ (IncrementDesktopRootFrameSerial,
+     * wl_core.cpp UpdateToplevelFrameOnCommit, tmgr 锁内), 渲染线程在
+     * FramePlanner 锁内段读 (rebuildBase 判定/CopyBaseToOutputLocked 回写
+     * desktopOutputRootFrameSerial_, frame_pipeline.cpp) — 读写两侧均持
+     * tmgr mutex, 无 data race; 原子化为防御性收口 (锁协议改变时防 TSan 类
+     * 隐性撕裂；锁纪律不变 — 不因 atomic 引入新无锁访问, 持锁访问保持锁内)。
+     * 核实结论 (PLAN §四阶段6): 与 ToplevelState::frameSerial_ (per-toplevel
+     * dirty 序号, 各层内容变化判定) 是不同概念, 不合一 — 前者是 root 帧
+     * 级"根帧又新了"的全局序号, 后者是 each-toplevel 内容版本号。 */
+    std::atomic<uint64_t> desktopRootFrameSerial_{0};
     // TakeToplevelFrame 快照缓冲池 (仅渲染线程访问): 跨帧复用容量,
     // 避免每帧新建多 MB vector 的分配+缺页开销 — 见 cpp 快照阶段注释
     std::vector<std::vector<uint8_t>> snapPool_;
