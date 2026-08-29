@@ -34,6 +34,8 @@ struct Index {
   @State statusText: string = '检测中...';
   @State initOverlayVisible: boolean = false;
   @State initOverlayText: string = '';
+  // 本次初始化含解压 (首启/重置): overlay 显示"1-2 分钟"; 暖启动无解压不给
+  @State initExpectsUnpack: boolean = false;
   // 初始化失败 (首启引导 4.8): overlay 把 spinner 换成 重试/重置 入口
   @State initFailed: boolean = false;
   @State currentIndex: number = 0;
@@ -211,6 +213,7 @@ struct Index {
       this.statusText = env.statusText;
       this.initOverlayText = env.initOverlayText;
       this.initOverlayVisible = env.initOverlayVisible;
+      this.initExpectsUnpack = env.initExpectsUnpack;
       this.initFailed = env.initFailed;
       this.initBusy = env.initBusy;
       this.opBusy = env.opBusy;
@@ -790,11 +793,14 @@ struct Index {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .margin({ bottom: 8 })
-          // 初始化等待耗时预期: 弹窗显示的每次初始化 (首启/重启/重置) 都给预期
-          Text('可能需要 1-2 分钟')
-            .fontSize(13)
-            .fontColor($r('app.color.text_tertiary'))
-            .margin({ bottom: 4 })
+          // 初始化等待耗时预期: 仅含解压 (首启/升级重置) 时给"1-2 分钟",
+          // 暖启动 (重启引擎/二次进入, 无解压) 不给 — 同等预期会误导
+          if (this.initExpectsUnpack) {
+            Text('可能需要 1-2 分钟')
+              .fontSize(13)
+              .fontColor($r('app.color.text_tertiary'))
+              .margin({ bottom: 4 })
+          }
           Text(this.initOverlayText)
             .fontSize(15)
             .fontColor($r('app.color.text_secondary'))

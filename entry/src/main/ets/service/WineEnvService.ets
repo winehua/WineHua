@@ -119,6 +119,10 @@ export class WineEnvService {
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
+  // 本次初始化是否含解压数据 (首启/升级重置): 决定 overlay 耗时预期 —
+  // 解压 249MB 才是真"1-2 分钟"; 暖启动 (重启引擎/二次进入) 无解压,
+  // 给同等预期会误导。startSession 开头复位, 解压分支置真。
+  initExpectsUnpack: boolean = false;
   // 初始为空串 = "未设置"；唯一写入入口 acquireZHome (startSession 开头调用),
   // 重跑 startSession 时复用已设置的 / 结尾真实路径。切勿给非空默认值 —
   // 会导致 !zHome 永假、picker 被跳过、gamesDir 拼出 .../Downloadgames 错误路径
@@ -889,6 +893,7 @@ export class WineEnvService {
     this.bgStart = !foreground;
     this.initBusy = true;
     this.initFailed = false;
+    this.initExpectsUnpack = false;  // 解压分支再置真; 防上次解压标记残留
     // 初始化开始: 屏幕强制常亮 (无视用户设置); 结束/失败由各自挂点恢复
     this.applyKeepScreenOn();
     if (!await this.acquireZHome(this.ctx)) {
@@ -907,6 +912,7 @@ export class WineEnvService {
     //   prefix 不兼容; 置 upgradePending 由用户主动选择应用 (完整重置)
     hilog.warn(DOMAIN, 'wine', 'auto-init: check marker=%{public}s', `${WINE_ROOT}/share/wine/wine.inf`);
     if (!pathExists(`${WINE_ROOT}/share/wine/wine.inf`)) {
+      this.initExpectsUnpack = true;
       this.setInitStatus('解压数据...', !this.bgStart);
       hilog.warn(DOMAIN, 'wine', 'auto-init: extracting wine data (missing)...');
       await this.extractWineData();
