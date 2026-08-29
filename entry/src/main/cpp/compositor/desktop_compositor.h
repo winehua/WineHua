@@ -120,7 +120,7 @@ public:
     // BuildLayerListLocked 对称但用窗口局部坐标:
     //   zIndex: Root(窗口帧) < Subsurface(窗口内局部坐标) < ZC 层(最顶)
     // 窗口间层序不在此管理 (系统合成器)。PC 模式 subsurface 全部转 popup
-    // 伪 toplevel (UpdatePopupOnCommit), 窗口内 subsurface 当前恒空 —
+    // 伪 toplevel (PopupManager::UpdatePopupOnCommit), 窗口内 subsurface 当前恒空 —
     // 层序结构为窗口内内容扩展预留; ZC 层 (zcActive) 在层序最顶, 合成跳过
     // (GPU 自绘覆盖, 与 desktop 模式同语义)。调用方须已持有 tmgr mutex。
     std::vector<CompositorLayer> BuildWindowLayerListLocked(uint32_t toplevelId,

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 
 // 保比例适配 (letterbox) 几何: 正/逆映射的唯一实现。
 //
@@ -130,4 +131,27 @@ inline void ComputeLocalPoint(double logicalX, double logicalY,
     localY = (logicalY - originY) / scale;
     localX = ClampToContent(localX, contentW);
     localY = ClampToContent(localY, contentH);
+}
+
+// -- subsurface 相对父内容原点的偏移 (PLAN §2.3 知识重复 4 份收口, 重构第
+//    5B2 步) --
+//
+// 公式 (逐字, 算法零改动): offX = subX - parentContentX —
+// wl_subsurface.set_position 的偏移是相对父 surface 的, 而 popup 的"父窗口"
+// 内容是 window_geometry 内容矩形 (父 surface 的 buffer 内内容原点 =
+// CommittedSurface::contentRect.x/y, 写点 xs_set_window_geometry 直写快照),
+// 故偏移基准 = 父内容原点。
+//
+// 四处调用点皆同源 (5A2 后统一读 parent->committed.contentRect):
+//   1. wl_core subsurface_set_position popup_move 段
+//      (迁至 PopupManager::UpdatePopupPositionLocked)
+//   2. wl_core UpdatePopupOnCommit popup 登记
+//      (迁至 PopupManager::UpdatePopupOnCommit)
+//   3. desktop_compositor BuildLayerListLocked ZC subsurface 层几何
+//   4. zc_bridge GetZeroCopyLayerInfo PC 分支
+inline std::pair<int32_t, int32_t> ComputePopupOffset(int32_t subX, int32_t subY,
+                                                      int32_t parentContentX,
+                                                      int32_t parentContentY)
+{
+    return {subX - parentContentX, subY - parentContentY};
 }

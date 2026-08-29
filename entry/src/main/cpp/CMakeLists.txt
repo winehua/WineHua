@@ -42,6 +42,7 @@ add_library(entry SHARED
     wl_core.cpp
     compositor/compositor_blit.cpp
     compositor/toplevel_manager.cpp
+    compositor/popup_manager.cpp
     compositor/move_grab.cpp
     compositor/compositor_utils.cpp
     compositor/geometry.cpp

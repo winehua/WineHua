@@ -179,41 +179,8 @@ bool ToplevelManager::IsToplevelVisibleLocked(uint32_t id, uint32_t desktopRootI
     return !st.IsBackground() && st.HasFrame() && !st.IsMinimized();
 }
 
-// -- popup 数据清理 --
-
-void ToplevelManager::RemovePopupDataLocked(uint32_t popupId) {
-    auto popupIt = popups_.find(popupId);
-    if (popupIt == popups_.end()) return;
-
-    // 清理 surfaceKey → popupId 映射
-    auto keyIt = popupBySurfaceKey_.find(popupIt->second.surfaceKey);
-    if (keyIt != popupBySurfaceKey_.end() && keyIt->second == popupId)
-        popupBySurfaceKey_.erase(keyIt);
-
-    // 清理 toplevels_ 中 popup 复用的帧数据
-    auto tlIt = toplevels_.find(popupId);
-    if (tlIt != toplevels_.end()) toplevels_.erase(tlIt);
-
-    // 清理 toplevelSurfaceMap_ 中的 popup 条目
-    {
-        std::lock_guard<std::mutex> lk(toplevelSurfaceMutex_);
-        auto surfIt = toplevelSurfaceMap_.find(popupId);
-        if (surfIt != toplevelSurfaceMap_.end()) toplevelSurfaceMap_.erase(surfIt);
-    }
-
-    popups_.erase(popupIt);
-}
-
-uint32_t ToplevelManager::RemovePopupBySurfaceKeyLocked(uint64_t surfaceKey, uint32_t& outPopupId) {
-    auto it = popupBySurfaceKey_.find(surfaceKey);
-    if (it == popupBySurfaceKey_.end()) return 0;
-    outPopupId = it->second;
-    uint32_t parentToplevel = 0;
-    auto popupIt = popups_.find(outPopupId);
-    if (popupIt != popups_.end()) parentToplevel = popupIt->second.parentToplevel;
-    RemovePopupDataLocked(outPopupId);
-    return parentToplevel;
-}
+// -- popup 数据清理已迁至 PopupManager (compositor/popup_manager.{h,cpp},
+//    重构第 5B2 步: popup 表/清理方法/级联收集随 PopupManager 拆出) --
 
 // -- toplevel 状态查询 --
 

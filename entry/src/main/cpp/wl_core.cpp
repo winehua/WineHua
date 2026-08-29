@@ -116,8 +116,9 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             self->desktopCompositor_.RemoveZeroCopyKeyLocked(surfaceKey);
             self->desktopCompositor_.RemoveSubsurfaceLayer(r);
             // PC popup 记录一并清除 (client 断开时 libwayland 走此路径)
+            // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域/清理顺序不变)
             if (sd) {
-                popupParent = self->toplevelMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
+                popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
             self->MarkDesktopRootDirtyLocked();
         }
@@ -200,36 +201,32 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
         self->MarkDesktopRootDirtyLocked();
     }
     // PC 模式: 更新已登记 popup 的偏移, 通知 ArkTS 移动子窗口。
-    // 父几何读点 (重构第 5A2 步): 旧读 parentSd->geoX/geoY (即时窗口几何值),
-    // 新读 parentSd->committed.contentRect.x/y — 同一写入点 (xs_set_window_geometry
-    // 直写快照) 的同步表达式, 逐点等价; 偏移公式语义不变 (相对父内容原点)。
-    uint32_t movePopupId = 0, moveParent = 0;
-    int32_t moveOffX = 0, moveOffY = 0;
+    // 状态段 (popup 表查找/偏移更新) 收口于 PopupManager::UpdatePopupPositionLocked
+    // (重构第 5B2 步; 偏移公式经 geometry.h ComputePopupOffset 单点, 算法逐字
+    // offX = x - parentContentX)。父几何读点 (重构第 5A2 步): 旧读
+    // parentSd->geoX/geoY (即时窗口几何值), 新读
+    // parentSd->committed.contentRect.x/y — 同一写入点 (xs_set_window_geometry
+    // 直写快照) 的同步表达式, 逐点等价; 事件 fire 调用点保持现形态
+    // (popup_move json/文本逐字)。
+    PopupManager::PopupMoveEvent move;
     {
         auto lk = self->toplevelMgr_.Lock();
-        uint32_t pid = self->toplevelMgr_.FindPopupBySurfaceKey(sd->surfaceKey);
-        if (auto* rec = self->toplevelMgr_.FindPopup(pid)) {
-            int32_t parentContentX = 0, parentContentY = 0;
-            if (sd->parentSurface) {
-                auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
-                if (parentSd) {
-                    parentContentX = parentSd->committed.contentRect.x;
-                    parentContentY = parentSd->committed.contentRect.y;
-                }
+        int32_t parentContentX = 0, parentContentY = 0;
+        if (sd->parentSurface) {
+            auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
+            if (parentSd) {
+                parentContentX = parentSd->committed.contentRect.x;
+                parentContentY = parentSd->committed.contentRect.y;
             }
-            rec->offX = x - parentContentX;
-            rec->offY = y - parentContentY;
-            movePopupId = rec->popupId;
-            moveParent = rec->parentToplevel;
-            moveOffX = rec->offX;
-            moveOffY = rec->offY;
         }
+        self->popupMgr_.UpdatePopupPositionLocked(sd->surfaceKey, x, y,
+                                                  parentContentX, parentContentY, move);
     }
-    if (movePopupId) {
+    if (move.popupId) {
         char json[128];
         snprintf(json, sizeof(json), "{\"popupId\":%u,\"x\":%d,\"y\":%d}",
-                 movePopupId, moveOffX, moveOffY);
-        self->FireToplevelEvent(moveParent, "popup_move", json);
+                 move.popupId, move.offX, move.offY);
+        self->FireToplevelEvent(move.parentId, "popup_move", json);
     }
     OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] set_position: child=%{public}p parent=%{public}p pos=(%{public}d,%{public}d)",
                 childSurf, sd->parentSurface, x, y);
@@ -285,7 +282,8 @@ void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
             {
                 auto lk = self->toplevelMgr_.Lock();
                 self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf);
-                popupParent = self->toplevelMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
+                // popup 表已迁至 PopupManager (重构第 5B2 步, 锁域/清理顺序不变)
+                popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
             if (removedPopup) {
                 char json[64];
@@ -398,8 +396,8 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
         {
             auto lk = self->toplevelMgr_.Lock();
             self->desktopCompositor_.RemoveSubsurfaceLayer(r);
-            // PC popup 记录一并清除
-            popupParent = self->toplevelMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
+            // PC popup 记录一并清除 (popup 表已迁至 PopupManager — 重构第 5B2 步)
+            popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             if (self->Policy().RootCompositing()) self->MarkDesktopRootDirtyLocked();
         }
         if (removedPopup) {
@@ -483,7 +481,8 @@ bool WaylandServer::HandleNullBufferCommit(SurfaceData* sd, wl_resource* surfRes
                 if (Policy().RootCompositing()) MarkDesktopRootDirtyLocked();
             }
             // PC popup: unmap (菜单关闭) → 销毁 ArkTS 子窗口
-            popupParent = toplevelMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
+            // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域不变)
+            popupParent = popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
         }
         if (removedPopup) {
             OH_LOG_INFO(LOG_APP, "[MW-POPUP] hide popup=#%{public}u parent=#%{public}u (NULL buffer commit)",
@@ -749,7 +748,34 @@ void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfR
     if (Policy().SubsurfaceAsLayer()) {
         UpdateSubsurfaceLayerOnCommit(sd, surfRes, parentSd->toplevelId, fi);
     } else {
-        UpdatePopupOnCommit(sd, surfRes, parentSd, fi);
+        // PC 模式: popup 状态段 (裁剪/建档/帧归档/尺寸上报) 收口于
+        // PopupManager::UpdatePopupOnCommit (重构第 5B2 步); 事件 fire 调用点
+        // 保持现形态 — 下方事件段按返回值逐字恢复原 json/文本/顺序
+        // (popup_show 后 return, 与旧实现一致)。
+        const auto ev = popupMgr_.UpdatePopupOnCommit(sd, surfRes, parentSd, fi);
+        if (ev.isNew) {
+            char json[256];
+            snprintf(json, sizeof(json),
+                     "{\"popupId\":%u,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"argb\":%d}",
+                     ev.popupId, ev.offX, ev.offY, ev.winW, ev.winH, ev.shmFormat == 0 ? 1 : 0);
+            OH_LOG_INFO(LOG_APP, "[MW-POPUP] show popup=#%{public}u parent=#%{public}u off=(%{public}d,%{public}d) %{public}dx%{public}d win=%{public}dx%{public}d (buffer %{public}dx%{public}d src=%{public}d,%{public}d %{public}dx%{public}d dst=%{public}dx%{public}d)",
+                        ev.popupId, ev.parentId, ev.offX, ev.offY, ev.dispW, ev.dispH, ev.winW, ev.winH, sd->w, sd->h,
+                        sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH, sd->vpDstW, sd->vpDstH);
+            FireToplevelEvent(ev.parentId, "popup_show", json);
+        } else {
+            if (ev.sizeChanged) {
+                char json[128];
+                snprintf(json, sizeof(json), "{\"popupId\":%u,\"w\":%d,\"h\":%d}",
+                         ev.popupId, ev.winW, ev.winH);
+                FireToplevelEvent(ev.parentId, "popup_resize", json);
+            }
+            if (ev.posChanged) {
+                char json[128];
+                snprintf(json, sizeof(json), "{\"popupId\":%u,\"x\":%d,\"y\":%d}",
+                         ev.popupId, ev.offX, ev.offY);
+                FireToplevelEvent(ev.parentId, "popup_move", json);
+            }
+        }
     }
 }
 
@@ -816,158 +842,11 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
                 layer.w, layer.h, layer.x, layer.y, parentId);
 }
 
-// PC 多窗口模式: popup 登记为伪 toplevel, 由 ArkTS 独立
-// OHOS 子窗口渲染。不再 blit 进父 buffer (会被窗口边缘裁剪)。
-// 参考 weston/wlroots: subsurface 可越出父 surface 边界,
-// compositor 不做父边界裁剪。
-void WaylandServer::UpdatePopupOnCommit(SurfaceData* sd, wl_resource* surfRes,
-                                        SurfaceData* parentSd, ShmCommitInfo& fi) {
-    uint32_t parentId = parentSd->toplevelId;
-    /*
-     * wp_viewport: Wine popup 的 shm buffer 常按 2 的幂次对齐
-     * 填充, 大于真实菜单内容。真实显示尺寸 =
-     * min(buffer, set_source, set_destination), 从源矩形原点裁剪
-     * (与 desktop 路径 vpDst clamp / toplevel 的 window_geometry
-     * 裁剪同语义)。
-     *
-     * 风险标注 (P2): 父 toplevel 销毁后 popup 会被级联清理
-     * (OnToplevelDestroyed), 但若该 popup surface 在父窗口销毁后
-     * 恰好又 commit 一帧, 会在此重新登记并向已销毁的 parentId 发
-     * popup_show, ArkTS 侧因窗口不存在而积压 (竞态极小, 仅微量
-     * 内存)。如需根治可在此处检查 parentId 是否仍存活。
-     */
-    // 父几何读点 (重构第 5A2 步): 旧读 parentSd->geoX/geoY (即时窗口几何值),
-    // 新读 parentSd->committed.contentRect.x/y — 同一写入点 (xs_set_window_geometry
-    // 直写快照) 的同步表达式, 逐点等价; 偏移公式语义不变 (相对父内容原点)
-    int32_t offX = sd->subsurfaceX - parentSd->committed.contentRect.x;
-    int32_t offY = sd->subsurfaceY - parentSd->committed.contentRect.y;
-    int dispW = sd->w, dispH = sd->h;
-    int cropX = 0, cropY = 0;
-    if (sd->vpSrcW > 0 && sd->vpSrcH > 0) {
-        cropX = std::max(0, std::min(sd->vpSrcX, sd->w - 1));
-        cropY = std::max(0, std::min(sd->vpSrcY, sd->h - 1));
-        if (sd->vpSrcW < dispW) dispW = sd->vpSrcW;
-        if (sd->vpSrcH < dispH) dispH = sd->vpSrcH;
-    }
-    if (sd->vpDstW > 0 && sd->vpDstW < dispW) dispW = sd->vpDstW;
-    if (sd->vpDstH > 0 && sd->vpDstH < dispH) dispH = sd->vpDstH;
-    dispW = std::min(dispW, sd->w - cropX);
-    dispH = std::min(dispH, sd->h - cropY);
-    // 防御: pixels 须为完整 w*h*4 (subsurface 若设 window_geometry
-    // 则 sd->w/h 是 content 尺寸而 pixels 是全 buffer, 不成立)
-    const size_t expectSz = static_cast<size_t>(sd->w) * sd->h * 4;
-    if (sd->pixels.size() < expectSz) {
-        OH_LOG_WARN(LOG_APP, "[MW-POPUP] pixels size mismatch: %{public}zu < %{public}zu (w=%{public}d h=%{public}d), skip frame",
-                    sd->pixels.size(), expectSz, sd->w, sd->h);
-        return;
-    }
-    if (dispW <= 0 || dispH <= 0) return;
-    uint32_t popupId = 0;
-    bool isNew = false;
-    bool sizeChanged = false;
-    bool posChanged = false;
-    /*
-     * 全屏主窗口的 GL client surface (war3 D3D 模式切换): wine 把客户区
-     * MoveWindow 到模式尺寸 (800x600), client surface 随之缩小, 按 1:1
-     * 上报会把画面缩在屏幕左上角。这里把"窗口上报尺寸"与"内容像素尺寸"
-     * 解耦: 窗口按全屏输出尺寸上报, FrameData 仍按内容尺寸存 — 渲染侧
-     * EglRenderer letterbox 保比例放大上屏, 输入侧 CoordTransform 按同
-     * 一 letterbox 逆映射 (与 RA2 主 surface 全屏路径同构)。
-     * 判定 = 父全屏 + 偏移 (0,0) + 内容尺寸等于父内容尺寸 (client
-     * surface 恰好覆盖整个客户区; 菜单等小 popup 不满足, 不受影响)。
-     * 本函数仅 PC 模式到达 (桌面模式走 layer 合成), 不影响 Pad 桌面。
-     */
-    int winW = dispW, winH = dispH;
-    {
-        auto lk = toplevelMgr_.Lock();
-        auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
-        if (pst && pst->IsFullscreen() && offX == 0 && offY == 0 &&
-            dispW == pst->Width() && dispH == pst->Height() &&
-            outputW_ > 0 && outputH_ > 0 &&
-            (dispW < outputW_ || dispH < outputH_)) {
-            winW = outputW_;
-            winH = outputH_;
-        }
-        popupId = toplevelMgr_.FindPopupBySurfaceKey(sd->surfaceKey);
-        if (popupId == 0) {
-            popupId = NextToplevelId();
-            isNew = true;
-            ToplevelManager::PopupRecord rec;
-            rec.popupId = popupId;
-            rec.parentToplevel = parentId;
-            rec.surface = surfRes;
-            rec.surfaceKey = sd->surfaceKey;
-            rec.offX = offX;
-            rec.offY = offY;
-            rec.w = winW;
-            rec.h = winH;
-            toplevelMgr_.RegisterPopup(popupId, rec);
-        } else {
-            auto* rec = toplevelMgr_.FindPopup(popupId);
-            if (!rec) {
-                // 两表不同步 (不应发生): 清孤儿 key, 跳过本帧, 下帧重建
-                popupId = 0;
-            } else {
-                sizeChanged = (rec->w != winW || rec->h != winH);
-                posChanged = (rec->offX != offX || rec->offY != offY);
-                rec->offX = offX;
-                rec->offY = offY;
-                rec->w = winW;
-                rec->h = winH;
-            }
-        }
-        if (popupId > 0) {
-            auto& pbuf = toplevelMgr_.EnsureToplevelLocked(popupId);
-            auto& buf = pbuf.FrameData();
-            if (cropX == 0 && cropY == 0 && dispW == sd->w && dispH == sd->h) {
-                // 无裁剪: 像素双缓冲轮换 (同 desktop layer 做法)
-                auto reusablePixels = std::move(buf);
-                buf = std::move(sd->pixels);
-                sd->pixels = std::move(reusablePixels);
-            } else {
-                // 裁剪出真实内容区域 (紧凑排列)
-                buf.resize(static_cast<size_t>(dispW) * dispH * 4);
-                for (int y = 0; y < dispH; y++) {
-                    std::memcpy(buf.data() + static_cast<size_t>(y) * dispW * 4,
-                                sd->pixels.data() + (static_cast<size_t>(cropY + y) * sd->w + cropX) * 4,
-                                static_cast<size_t>(dispW) * 4);
-                }
-            }
-            pbuf.SetContentSize(dispW, dispH);
-            pbuf.MarkDirty();
-            pbuf.BumpFrameSerial();  // 帧序列号语义: 像素轮换重写即递增
-            pbuf.SetShmFormat(fi.shmFormat);
-        }
-    }
-    if (popupId == 0) {
-        // 记录异常, 跳过本帧 (下帧按新 popup 重建)
-        return;
-    }
-    if (isNew) {
-        toplevelMgr_.MapToplevelSurface(popupId, surfRes);
-        char json[256];
-        snprintf(json, sizeof(json),
-                 "{\"popupId\":%u,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"argb\":%d}",
-                 popupId, offX, offY, winW, winH, fi.shmFormat == 0 ? 1 : 0);
-        OH_LOG_INFO(LOG_APP, "[MW-POPUP] show popup=#%{public}u parent=#%{public}u off=(%{public}d,%{public}d) %{public}dx%{public}d win=%{public}dx%{public}d (buffer %{public}dx%{public}d src=%{public}d,%{public}d %{public}dx%{public}d dst=%{public}dx%{public}d)",
-                    popupId, parentId, offX, offY, dispW, dispH, winW, winH, sd->w, sd->h,
-                    sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH, sd->vpDstW, sd->vpDstH);
-        FireToplevelEvent(parentId, "popup_show", json);
-        return;
-    }
-    if (sizeChanged) {
-        char json[128];
-        snprintf(json, sizeof(json), "{\"popupId\":%u,\"w\":%d,\"h\":%d}",
-                 popupId, winW, winH);
-        FireToplevelEvent(parentId, "popup_resize", json);
-    }
-    if (posChanged) {
-        char json[128];
-        snprintf(json, sizeof(json), "{\"popupId\":%u,\"x\":%d,\"y\":%d}",
-                 popupId, offX, offY);
-        FireToplevelEvent(parentId, "popup_move", json);
-    }
-}
+// PC 多窗口模式 popup 状态段已迁至 PopupManager (compositor/popup_manager.cpp
+// PopupManager::UpdatePopupOnCommit, 重构第 5B2 步): popup 登记为伪 toplevel,
+// 由 ArkTS 独立 OHOS 子窗口渲染, 不再 blit 进父 buffer (会被窗口边缘裁剪)。
+// 参考 weston/wlroots: subsurface 可越出父 surface 边界, compositor 不做
+// 父边界裁剪。事件 fire 调用点保持现形态 (UpdateSubsurfaceOnCommit 壳内)。
 
 // commit 收尾: release buffer (协议: 客户端收到 release 才可复写该 buffer),
 // 回发 frame callback (协议: commit 生效后 done, 客户端据此帧节流),

@@ -14,6 +14,7 @@
 #include "compositor/compositor_constants.h"
 #include "compositor/display_policy.h"
 #include "compositor/toplevel_manager.h"
+#include "compositor/popup_manager.h"
 
 // 前置声明: surface_commit 分段函数的参数类型 (定义在 compositor/surface_data.h,
 // 该头在文件末尾引入 — 本类的签名只需引用, 无需完整定义)
@@ -290,8 +291,6 @@ private:
     void UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi);
     void UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                        uint32_t parentId, ShmCommitInfo& fi);
-    void UpdatePopupOnCommit(SurfaceData* sd, wl_resource* surfRes,
-                             SurfaceData* parentSd, ShmCommitInfo& fi);
     void FinishCommit(SurfaceData* sd, wl_resource* surfRes);
 
     wl_display* display_ = nullptr;
@@ -331,6 +330,9 @@ private:
     // 输入命中裁决 — 已移入 InputResolver
     InputResolver inputResolver_{toplevelMgr_, desktopCompositor_, desktopRootToplevelId_,
                                   outputW_, outputH_};
+    // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
+    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
+    PopupManager popupMgr_{toplevelMgr_, outputW_, outputH_};
 
     // 渲染/输入共用的 toplevel 可见性检查 (调用方须已持有锁)
     bool IsToplevelVisibleLocked(uint32_t id) {

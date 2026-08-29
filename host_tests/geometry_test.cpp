@@ -209,6 +209,28 @@ int main()
         CHECK(maxDev < 0.5 / 256.0, "4A dev below wl_fixed half-step");
     }
 
+    // 14. ComputePopupOffset (重构第 5B2 步收口: PLAN §2.3 popup 偏移公式 4 份
+    // 单点化 — subsurface 相对父内容原点的偏移。原本四处调用点逐字为
+    // offX = subX - parentContentX; 负原点/窗口几何内嵌 menu/异形窗口全在
+    // 公式定义域内, 纯减法按定义逐点相等, 以下用例特征化边界值)
+    {
+        auto [offX, offY] = ComputePopupOffset(0, 0, 0, 0);
+        CHECK(offX == 0 && offY == 0, "popup off: zero origin zero offset");
+        auto [a, b] = ComputePopupOffset(100, 50, 10, 20);
+        CHECK(a == 90 && b == 30, "popup off: positive sub minus parent content origin");
+        // 负原点: parentContentRect 可有负值 (窗口几何 x/y 为 buffer 内内容偏移,
+        // contentRect.x/y 与旧 geoX/geoY 同语义 — 可为负, 见 5A2 映射表)
+        auto [c, d] = ComputePopupOffset(0, 0, -12, -8);
+        CHECK(c == 12 && d == 8, "popup off: negative parent origin yields positive off");
+        auto [e, f] = ComputePopupOffset(-5, -3, 8, 6);
+        CHECK(e == -13 && f == -9, "popup off: negative sub offset (弹出在父内容原点左侧)");
+        // 恒等式: 与"父内容原点 + 偏移 = 子坐标"严格互逆
+        CHECK(offX + 0 == 0 && offY + 0 == 0, "popup off: inverse identity");
+        const int32_t subX = 320, subY = 240, pcx = 64, pcy = 48;
+        auto [g, h] = ComputePopupOffset(subX, subY, pcx, pcy);
+        CHECK(g + pcx == subX && h + pcy == subY, "popup off: inverse roundtrip exact (int)");
+    }
+
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

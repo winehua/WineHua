@@ -10,7 +10,8 @@
 #include <unordered_set>
 #include "compositor/zorder_policy.h"
 
-// WaylandServer 中 toplevel/popup 聚合状态的集中存储。
+// WaylandServer 中 toplevel 聚合状态的集中存储 (PC popup 的帧状态复用
+// ToplevelState — popup 登记表本身已迁至 PopupManager, 见 popup_manager.h)。
 // 所有字段由 mutex() 保护，调用方在访问任何成员前必须先加锁。
 //
 // 不变式 (违反即 bug):
@@ -148,15 +149,6 @@ public:
         WindowMask mask_;               // mask.w==0 = 从未生成
     };
 
-    struct PopupRecord {
-        uint32_t popupId = 0;
-        uint32_t parentToplevel = 0;
-        wl_resource* surface = nullptr;  // popup 的 wl_surface (pointer enter 目标)
-        uint64_t surfaceKey = 0;
-        int32_t offX = 0, offY = 0;      // 相对父窗口内容原点
-        int w = 0, h = 0;
-    };
-
     // -- 访问器 --
 
     // RAII lock guard。用 auto lk = tmgr.Lock(); 替代 std::lock_guard<std::mutex>
@@ -232,24 +224,6 @@ public:
     // 查询 toplevel 是否可见 (合成/命中据此排除不可见窗口): 非桌面 root、
     // 已建档、未标记 background (被切换掉的旧 root)、已有帧、未最小化。
     bool IsToplevelVisibleLocked(uint32_t id, uint32_t desktopRootId);
-
-    // popup 管理 (调用方须已持有 mutex, 除非另行说明)
-    uint32_t FindPopupBySurfaceKey(uint64_t key) {
-        auto it = popupBySurfaceKey_.find(key);
-        return it != popupBySurfaceKey_.end() ? it->second : 0;
-    }
-    PopupRecord* FindPopup(uint32_t popupId) {
-        auto it = popups_.find(popupId);
-        return it != popups_.end() ? &it->second : nullptr;
-    }
-    void RegisterPopup(uint32_t popupId, const PopupRecord& rec) {
-        popups_[popupId] = rec;
-        popupBySurfaceKey_[rec.surfaceKey] = popupId;
-    }
-    void RemovePopupDataLocked(uint32_t popupId);
-    uint32_t RemovePopupBySurfaceKeyLocked(uint64_t surfaceKey, uint32_t& outPopupId);
-    // 遍历 popup 找属于某 parent 的所有 popup (OnToplevelDestroyed 级联清理)
-    const std::unordered_map<uint32_t, PopupRecord>& popups() const { return popups_; }
 
     // 状态查询 (内部加锁)。minimized/fullscreen 的唯一权威字段在 ToplevelState;
     // 变更只经 WaylandServer::SetToplevel* (Ensure 建档 + dirty + 协议反应),
@@ -378,6 +352,4 @@ private:
     std::mutex toplevelSurfaceMutex_;
     std::unordered_map<uint32_t, wl_resource*> toplevelResources_;
     std::mutex toplevelResMutex_;
-    std::unordered_map<uint32_t, PopupRecord> popups_;
-    std::unordered_map<uint64_t, uint32_t> popupBySurfaceKey_;
 };

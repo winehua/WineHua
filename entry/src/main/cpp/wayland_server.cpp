@@ -275,11 +275,11 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
             moveGrab_.EndMoveGrab(toplevelMgr_);
         }
         toplevelMgr_.RemoveFromZOrder(toplevelId);
-        // 级联清理该 toplevel 的全部 PC popup (帧数据 + 映射)
-        for (const auto& [pid, rec] : toplevelMgr_.popups()) {
-            if (rec.parentToplevel == toplevelId) cascadePopups.push_back(pid);
-        }
-        for (uint32_t pid : cascadePopups) toplevelMgr_.RemovePopupDataLocked(pid);
+        // 级联清理该 toplevel 的全部 PC popup (帧数据 + 映射) — popup 表与
+        // 清理收口于 PopupManager (重构第 5B2 步; 锁域不变: 收集/删除仍在
+        // toplevelMgr 锁内, popup_hide fire 仍在锁外, 见下方)
+        cascadePopups = popupMgr_.CollectPopupIdsForParentLocked(toplevelId);
+        for (uint32_t pid : cascadePopups) popupMgr_.RemovePopupDataLocked(pid);
         MarkDesktopRootDirtyLocked();  // 非 desktop / root 已复位时 root=0, 自然 no-op
         // 对称清理 surface 映射 (popup 路径在 RemovePopupDataLocked 已清, toplevel 路径此前缺失):
         // xs_destroy 时 wl_surface 可能仍存活, 不清会让 GetSurfaceForToplevel(死 id) 命中
@@ -333,9 +333,8 @@ void WaylandServer::ResetSessionState() {
     OH_LOG_INFO(LOG_APP, "[MW] session state reset (firstFrame/grab/input focus+keys)");
 }
 
-// RemovePopupDataLocked 已移至 ToplevelManager (compositor/toplevel_manager.cpp)
-
-// RemovePopupBySurfaceKeyLocked 已移至 ToplevelManager (compositor/toplevel_manager.cpp)
+// RemovePopupDataLocked / RemovePopupBySurfaceKeyLocked 已移至 PopupManager
+// (compositor/popup_manager.{h,cpp}, 重构第 5B2 步)
 
 bool WaylandServer::TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out) {
     // 收敛: 掩码消费唯一入口在 ToplevelManager::TakeWindowMask
