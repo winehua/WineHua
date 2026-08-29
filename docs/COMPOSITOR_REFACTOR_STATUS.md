@@ -17,7 +17,7 @@
 | 2B PresentedFrame 契约 + 直传能力协商 | **进行中（任务 1/2 完成，3 待做）** | 0d06926 消费侧接入、1902862 策略拆分 |
 | 3 ZC 与层序政策收口 | **完成（代码层全落地，待 ZC 设备回归）** | f9a2d8a zc_bridge 抽离、cf7e9a1/a3156a6/20b4bdb presenter+ZC 状态机、328ed21/48b7333 zorder_policy 三散点、a2d142d 3A 精化、5ebded3 3B 层序精化 |
 | 4A InputResolver 裁决闭环 | 完成（门禁全过） | 本分支 HEAD 提交（§二 4A 下标） |
-| 4B 其余输入栈拆分（InputManager 拆层/ScrollEvent 缺段修复等） | 未开始 | — |
+| 4B 其余输入栈拆分（InputManager 拆层/ScrollEvent 缺段修复等） | 进行中（4B 步: SendScrollEvent 缺段修复**完成**，见 §二 4B 小节；InputManager 拆层/Policy 改名未开始） | 1c80f0d（见 §二 4B 下标） |
 | 5 协议层重构 | 未开始 | — |
 | 6 facade 瘦身与共享状态收口 | 未开始 | — |
 
@@ -299,6 +299,94 @@ InputSpaceMapper）、SendScrollEvent 缺段疑似实 bug（按 PLAN 单独提�
 变化）、两处 `IsDesktopMode()` 改 `Policy()`；`InputTarget` 的 origin/scale/
 contentW/H 字段保留作诊断（TARGET 日志断点），若后续无用可并入 4B 清理。
 
+### 阶段 4B 步（SendScrollEvent 缺段修复，1c80f0d，2026-08-29）
+
+PLAN 红线明确的两个行为变化例外之一：SendScrollEvent 疑似实 bug，允许行为
+变化、单独提交并逐一标注。修复内容是**生产侧（SendScrollEvent）**缺段对齐；
+**注入端（InjectPointerAxis）不改**（诊断结论见下）。
+
+**改动文件：**
+
+- `entry/src/main/cpp/input_manager.cpp` 仅 `SendScrollEvent`（+109/-6）：
+  可见性抑制、桌面/PC 双分支目标解析、ClampToContent、move-grab 丢弃、
+  lastGlobalPtr 维护、enter/leave 升 surface 级（全部与 SendPointerEvent 对应
+  分支或 SendKeyEvent 对齐，见对账表格）。
+
+**行为变化清单**（每项: 场景 → 修复前 → 修复后 → 理由）：
+
+1. **桌面模式目标解析（核心修复）** — 桌面模式指针悬于非 root 目标上滚轮：
+   修复前 `CoordTransform(px,py,tl)` 无法按窗口 id 查到 renderer（桌面模式只有
+   root 渲染器）→ `GetAnyRenderer` 兜底得到**桌面逻辑坐标**，却以窗口局部
+   坐标语义进 enter → wine 光标被设置到偏移窗口原点/未经 fit 缩放的位置；
+   axis 无位置属性（wl_pointer 协议不含坐标），实际落到 wine 光标当前所在
+   窗口，可作用在错误窗口。修复后与 SendPointerEvent 桌面分支同构：root
+   CoordTransform + FindInputTargetAt（4A 终态 `localX/localY`，逆映射+fit+
+   钳制收内）→ enter 被命中 surface + 正确局部坐标，axis 在同批 flush 的
+   enter 之后注入，落点正确。**理由：对齐 SendPointerEvent 桌面分支，消除
+   PLAN §2.3 指出的"scroll 缺桌面→surface 局部转换"疑似实 bug**。
+2. **PC 模式坐标钳制补齐 ClampToContent** — 全屏 letterbox 黑边/窗口边缘外
+   的越界滚动坐标此前全文件唯一不钳制路径，直接进 enter 把 wine 光标放到
+   黑边/屏幕外。修复后与 SendPointerEvent PC 分支同款钳制到 [0, content-1]。
+3. **可见性抑制** — 最小化/不可见窗口上的滚动此前绕过 `toplevelVisible_`。
+   修复后与 SendPointerEvent/SendKeyEvent 一致抑制（抽样日志 120:1）。
+4. **enter/leave 升 surface 级** — 桌面模式滚动落在与父窗口同 toplevelId 的
+   菜单 subsurface 上：修复前只比较 toplevelId，focused 为父窗口 surface 时
+   不重新 enter，axis 继续喂父窗口；且 enter 用的是 `GetSurfaceForToplevel(tl)`
+   = 父窗口 surface（菜单伸出父窗口边界，其越界局部坐标会被 winewayland
+   motion clamp 夹回窗口内）。修复后与 ACT_MOVE 同纬：surface 级比较
+   （`pointerFocusedSurface_ != targetSurf`）+ enter 命中层自己的 surface；
+   非桌面/命中失败路径保持 toplevel 级（行为未变）。
+5. **move-grab 期间滚动丢弃** — xdg_toplevel.move 拖拽进行中滚动此前照常
+   注入（axis 落在拖拽窗口上）。修复后 `IsMoveGrabActive() &&
+   GetMoveGrabToplevelId()==tl` 时丢弃（采样日志 SCROLL-DROP）。**理由：
+   拖拽由 compositor 接管，不向 client 派输入事件（SendPointerEvent 同款
+   语义）；axis 无绝对定位等价事件，丢弃比注入安全。**
+6. **lastGlobalPtr 维护** — 滚动后立即发起拖拽时，grab 偏移基准此前用的是
+   陈旧值（若滚动前无 MOVE）。修复后桌面分支存 root 逆映射后的桌面逻辑
+   坐标、PC 分支存 wx+tlGeo（与 SendPointerEvent 同款），grab 基准新鲜。
+7. **目标不可用回退路径语义变化** — FindInputTargetAt 返回 false（root
+   surface 都不可用，仅异常时序）时走父窗口相对坐标（同 SendPointerEvent
+   TARGET-FALLBACK），此前是桌面逻辑坐标直进 enter。
+
+**保留（主动不变化）：**
+- scroll 不产生 REL_MOTION → 不动相对增量基线 `lastLocal_`（与 ACT_MOVE 的
+  enter 不以 enter 位置更新基线一致；PRESS 的基线更新是定位专用语义）；
+  scroll NAPI 无 fromMouse 位，不引入 PRESS 的 skipEnter（其守卫对象是"冻结
+  点的恒定坐标"，scroll enter 位置是真实指针位置，且 ACT_MOVE — 本修复的
+  对齐基准 — 同样不 skip）。
+- §2.5 输入相关补丁（rawDelta ±512 钳制、PAL2 点击脉冲拉伸、skipEnter 同
+  surface 守卫、PRES-DEFER 延迟判定等）触发条件全部未动，本修复只改
+  SendScrollEvent 单函数。
+
+**注入端与 pointer 资源结论（诊断）：**
+- pointer_resources 构成：`Seat` 的 vector 是每 client 一支 wl_pointer —
+  wine 进程组里每个连到 compositor 的进程按 process_wayland 各开一条连接并
+  `wl_seat_get_pointer`（winewayland.drv wayland.c:69/80），典型构成随会话
+  有 wineboot/explorer/应用等多支；每支有独立 `focused_hwnd`（wayland_pointer.c
+  pointer_handle_enter :195-224）。
+- **axis 广播不构成 4-B 独有的 bug**：InjectPointerAxis（:999-1022）与
+  InjectPointerMotion/InjectPointerButton 分发机制完全一致（同一
+  GetAllPointerResources 循环、无 client 过滤、同样 frame 兜底）。wine 侧
+  `pointer_handle_axis`（wl_pointer axis 本体）是空函数，实际滚动走
+  axis_discrete → axis_value120（:337-368）且 `wayland_pointer_get_focused_hwnd()`
+  判空返回 — 只有收到过 enter 的进程才消费 axis。注入端 enter 带 surface 的
+  client 过滤（InjectPointerEnter :946-951），故广播最终只被正确进程消化。
+  结论：**不改注入端**；`ev.tl` 不读 = 无害冗余，保留并注释为诊断字段。
+- 由此路由正确性的全部杠杆在生产侧：**enter（+其坐标）必须先行且指向命中
+  surface** — 本修复的 1/4 项即时此意。Wayland wl_pointer 无 axis+位置事件，
+  这是协议设计使然，不要试图把坐标塞进 axis。
+
+**门禁：** `make test` host_tests 全绿（geometry 71 / blit_scaled 402 /
+blit_clip 38 / zorder 40 / env 21+88，全 0 failures，本提交未改测试代码 —
+受影响数学已由 4A geometry_test 覆盖）；`make NATIVE_ARCH=arm64-v8a hap`
+构建+签名通过（HAP 374M，构建后 `git checkout -- entry/build-profile.json5`
+还原，工作树仅剩预存 thirdparty/ 改动）。
+
+**遗留（设备回归请求）：** 桌面模式 fit 缩放窗口内滚轮（PLAN 阶段 4 验证点）、
+菜单/任务栏弹出层滚动路由、PC 模式窗口滚动+黑边滚动、全屏游戏（war3/RA2/
+PAL2）滚动、拖拽窗口中滚动（应无事件）。关注日志 tag `WL_Input` 的
+SCROLL-TARGET/SCROLL-ENTER/SCROLL-DROP/FALLBACK 与 [PIPE] scroll 输入侧。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -344,11 +432,11 @@ contentW/H 字段保留作诊断（TARGET 日志断点），若后续无用可�
   （3A 的 D1/D2 语义修正与此项绑定）。行为敏感点验证清单见 §二 3B/3A 小节。
 - **阶段 4 输入栈拆分**：4A InputResolver 裁决闭环**完成**（见 §二 4A 下标，
   PLAN §2.2 封装泄漏收口 + InputTarget 精度 double 化 + ClampToContent 收
-  geometry.h）。剩余 4B：修 SendScrollEvent 缺段疑似实 bug（单独提交并标注
-  行为变化）；InputManager 拆 InputQueue/InputStateTracker/InputInjector/
-  InputSpaceMapper；两处 IsDesktopMode 改 Policy()；InputTarget origin/scale/
-  contentW/H 诊断字段去留。行为敏感：需 PAL2/war3/RA2 输入回归（arm64 Pad，
-  需用户配合）。
+  geometry.h）。4B 步 SendScrollEvent 缺段修复**完成**（见 §二 4B 下标 —
+  行为变化例外，单独提交并逐项标注，待设备滚动回归）。剩余 4B：InputManager
+  拆 InputQueue/InputStateTracker/InputInjector/InputSpaceMapper；两处
+  IsDesktopMode 改 Policy()；InputTarget origin/scale/contentW/H 诊断字段去留。
+  行为敏感：需 PAL2/war3/RA2 输入回归（arm64 Pad，需用户配合）。
 - **阶段 5 协议层重构**：wl_core 拆协议壳 + CommittedSurface 快照；
   PopupManager；maximized 迁入 ToplevelState；ToplevelEventBus 事件 enum 化。
 - **阶段 6 facade 瘦身**：WaylandServer 拆 24 个转发；DesktopSessionState

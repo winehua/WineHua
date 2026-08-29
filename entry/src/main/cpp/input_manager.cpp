@@ -768,12 +768,92 @@ void InputManager::EnqueueModifiers() {
 
 void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scrollStep,
                                     double px, double py) {
+    // 窗口不可见时抑制输入 (缺段修复: scroll 此前绕过可见性检查, 与
+    // SendPointerEvent/SendKeyEvent 对齐 — 最小化窗口/不可见窗口的滚动不再注入)
+    {
+        std::lock_guard<std::mutex> lk(visibleMutex_);
+        auto it = toplevelVisible_.find(tl);
+        if (it != toplevelVisible_.end() && !it->second) {
+            // 抽样 120:1: 连续滚动会有高频重复, 与指针/键盘同一策略
+            static uint32_t sSuppressN = 0;
+            if (++sSuppressN % 120 == 1)
+                OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u axis=%{public}s (window invisible)",
+                            tl, axis == 0 ? "VERT" : "HORIZ");
+            return;
+        }
+    }
+
     auto* seat = Seat::GetInstance();
     if (!seat->HasPointerResource()) return;
 
-    // 坐标转换
+    // 坐标转换 — 缺段修复: 与 SendPointerEvent 同构 — 桌面模式走 root +
+    // FindInputTargetAt (4A 终态 localX/localY = 逆映射 + 内容区钳制收内),
+    // PC 模式保留 CoordTransform(tl) 并补 ClampToContent (此前是全文件唯一
+    // 不钳制的坐标路径: 黑边/越界坐标直接进 enter 会污染 wine 光标位置)。
+    // 修复前只用 CoordTransform(px, py, tl) — 桌面模式 tl 是 ArkTS
+    // findToplevelAt 的窗口 id, 查不到 renderer 走 GetAnyRenderer 兜底得到
+    // 的是**桌面逻辑坐标**, 却以窗口局部坐标语义进 enter → wine 光标被
+    // 设置到偏移窗口原点/未经 fit 缩放的位置。
     wl_fixed_t wx, wy;
-    CoordTransform(px, py, tl, &wx, &wy);
+    auto* ws = WaylandServer::GetInstance();
+    wl_resource* targetSurf = nullptr;
+    if (ws->Policy().CompositorRoutesInput() && tl != ws->GetDesktopRootToplevelId()) {
+        CoordTransform(px, py, ws->GetDesktopRootToplevelId(), &wx, &wy);
+        // 缺段修复: 维护最近一次全局指针位置 (grab 偏移基准, 与
+        // SendPointerEvent 桌面分支同一语义 — scroll 位置即指针位置)
+        lastGlobalPtrX_.store(wx);
+        lastGlobalPtrY_.store(wy);
+        // move grab 期间: 交互式拖拽由 compositor 接管, 不注入 scroll —
+        // 拖动窗口标题栏时滚轮不应滚动窗口内容 (axis 无位置属性, 不存在
+        // 绝对值定位的等价事件, 拖拽中直接丢弃)
+        if (ws->IsMoveGrabActive() && ws->GetMoveGrabToplevelId() == tl) {
+            OH_LOG_INFO(LOG_APP, "[Input] SCROLL-DROP tl=%{public}u (move grab active)", tl);
+            return;
+        }
+        double logicalX = wl_fixed_to_double(wx);
+        double logicalY = wl_fixed_to_double(wy);
+        WaylandServer::InputTarget target;
+        if (ws->FindInputTargetAt(logicalX, logicalY, target)) {
+            tl = target.toplevelId;
+            targetSurf = target.surface;
+            // 终态: resolver 锁内已算好 surface 局部坐标 + 内容区钳制
+            // (桌面坐标→局部逆映射由 4A ComputeLocalPoint 单点化, 不手写)
+            wx = wl_fixed_from_double(target.localX);
+            wy = wl_fixed_from_double(target.localY);
+            OH_LOG_INFO(LOG_APP, "[Input] SCROLL-TARGET tl=%{public}u surf=%{public}p"
+                        " origin=(%{public}.1f,%{public}.1f) scale=%{public}.2f"
+                        " swallow=%{public}d → local=(%{public}.1f,%{public}.1f)",
+                        tl, static_cast<void*>(target.surface),
+                        target.originX, target.originY, target.scale,
+                        target.swallow ? 1 : 0, target.localX, target.localY);
+        } else {
+            // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标), 同 SendPointerEvent
+            const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+            wx = wl_fixed_from_double(logicalX - tlGeo.x);
+            wy = wl_fixed_from_double(logicalY - tlGeo.y);
+            OH_LOG_WARN(LOG_APP, "[Input] SCROLL-FALLBACK tl=%{public}u → local=(%{public}.1f,%{public}.1f) (no surf)",
+                        tl, logicalX - tlGeo.x, logicalY - tlGeo.y);
+        }
+    } else {
+        FitRect lb{};
+        CoordTransform(px, py, tl, &wx, &wy, &lb);
+        // 钳到内容区 (与 SendPointerEvent PC 分支同款): 全屏 letterbox 黑边/
+        // 拖出窗口边缘的越界滚动坐标钳回内容区, 防 enter 把 wine 光标放到
+        // 屏幕外的无效位置
+        if (lb.srcW > 0 && lb.srcH > 0) {
+            wx = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wx), lb.srcW));
+            wy = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wy), lb.srcH));
+        }
+        // 缺段修复: PC 空间全局指针位置 = 窗口局部 + 窗口位置 (grab 偏移基准,
+        // 与 SendPointerEvent PC 分支同款)
+        const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+        lastGlobalPtrX_.store(wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x));
+        lastGlobalPtrY_.store(wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y));
+        if (ws->IsMoveGrabActive() && ws->GetMoveGrabToplevelId() == tl) {
+            OH_LOG_INFO(LOG_APP, "[Input] SCROLL-DROP tl=%{public}u (move grab active)", tl);
+            return;
+        }
+    }
 
     // Wayland axis value 用 wl_fixed_t (256 精度)
     // HarmonyOS AxisEvent 的 value 是浮点数, 每个 notch 通常 ±1.0
@@ -785,13 +865,26 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
                 wl_fixed_to_double(wx), wl_fixed_to_double(wy),
                 seat->HasPointerResource());
 
-    // 确保指针已 enter (和 MOVE 同样的逻辑)
-    if (NeedsPointerEnter() || pointerFocusedToplevel_.load() != tl) {
-        wl_resource* surf = WaylandServer::GetInstance()->GetSurfaceForToplevel(tl);
+    // 确保指针已 enter — 缺段修复: 判定升级到与 ACT_MOVE 同纬 (surface 级)。
+    // 仅比较 toplevelId 时, 桌面模式滚动落在菜单 subsurface (与父窗口同
+    // toplevelId) 上不会重新 enter, axis 继续喂给父窗口; 且 enter 的 surface
+    // 必须是被命中的层自己的 surface (菜单伸出父窗口边界, 用父窗口 surface
+    // 的越界局部坐标会被 winewayland 的 motion clamp 夹回窗口内 — 与
+    // ACT_MOVE 同一需求)。
+    if (targetSurf
+        ? (NeedsPointerEnter() || pointerFocusedSurface_.load() != targetSurf)
+        : (NeedsPointerEnter() || pointerFocusedToplevel_.load() != tl)) {
+        wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
+        OH_LOG_INFO(LOG_APP, "[Input] SCROLL-ENTER try surf=%{public}p for tl=%{public}u", surf, tl);
         if (surf) {
-            if (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl)
+            wl_resource* focused = pointerFocusedSurface_.load();
+            const bool needLeave = targetSurf
+                ? (focused != nullptr && focused != surf)
+                : (pointerFocusedToplevel_.load() != 0 && pointerFocusedToplevel_.load() != tl);
+            if (needLeave)
                 Enqueue(InputEvent::PTR_LEAVE, 0, nullptr, 0, 0, 0, 0);
             Enqueue(InputEvent::PTR_ENTER, tl, surf, wx, wy, 0, 0);
+            OH_LOG_INFO(LOG_APP, "[Input] SCROLL-ENTER enqueued OK");
         }
     }
 
@@ -801,6 +894,9 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
         ev.type = InputEvent::PTR_AXIS;
         ev.axis = axis;
         ev.axis_value = val;
+        // 诊断字段: InjectPointerAxis 与 motion/button 一致广播到全部 pointer
+        // 资源, 消费侧不读 tl (wine 按 per-process focused_hwnd 消化 axis,
+        // 谁收到 enter 谁响应 — 见 4B 台账"注入端与 pointer 资源结论")
         ev.tl = tl;
         std::lock_guard<std::mutex> lk(queueMutex_);
         queue_.push_back(ev);
