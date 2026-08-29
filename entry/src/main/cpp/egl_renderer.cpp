@@ -2,7 +2,7 @@
 #include "graphics_broker.h"
 #include "perf_utils.h"
 #include "shader_utils.h"
-#include "wayland_server.h"
+#include "compositor/desktop_compositor.h"  // DesktopCompositor (6A 构造注入: 取帧/ZC 直连)
 #include "fps_counter.h"
 #include <algorithm>
 #include <array>
@@ -46,6 +46,8 @@ static void ComposeZeroCopySamplingTransform(const float* nativeTransform,
         samplingTransform[12 + row] = nativeTransform[4 + row] + nativeTransform[12 + row];
     }
 }
+
+EglRenderer::EglRenderer(DesktopCompositor& compositor) : compositor_(compositor) {}
 
 void EglRenderer::OnVSync(long long timestamp, void* data)
 {
@@ -123,13 +125,12 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
     if (!zeroCopyProgram_) return false;
     const uint64_t nowUs = PerfNowUs();
     auto& broker = winehua::GraphicsBroker::GetInstance();
-    WaylandServer* server = WaylandServer::GetInstance();
 
     if (zeroCopyRegistered_)
     {
-        WaylandServer::ZeroCopyLayerInfo layer;
-        if (!server->GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
-                                          zeroCopySourceW_, zeroCopySourceH_, layer))
+        ZeroCopyLayerInfo layer;
+        if (!compositor_.GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
+                                              zeroCopySourceW_, zeroCopySourceH_, layer))
         {
             ReleaseZeroCopyBinding();
         }
@@ -137,14 +138,14 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         {
             if (zeroCopyLayerX_ != layer.x || zeroCopyLayerY_ != layer.y ||
                 zeroCopyLayerW_ != layer.width || zeroCopyLayerH_ != layer.height ||
-                zeroCopyFullscreen_ != (layer.fullscreen && server->Policy().RootCompositing()))
+                zeroCopyFullscreen_ != (layer.fullscreen && compositor_.Policy().RootCompositing()))
                 zeroCopyGeometryDirty_ = true;
             zeroCopyLayerX_ = layer.x;
             zeroCopyLayerY_ = layer.y;
             zeroCopyLayerW_ = layer.width;
             zeroCopyLayerH_ = layer.height;
-            zeroCopyFullscreen_ = layer.fullscreen && server->Policy().RootCompositing();
-            if (server->ConfirmFallbackZcSurface(zeroCopySurfaceKey_, layer.shmCommitSerial))
+            zeroCopyFullscreen_ = layer.fullscreen && compositor_.Policy().RootCompositing();
+            if (compositor_.zc().ConfirmFallback(zeroCopySurfaceKey_, layer.shmCommitSerial))
             {
                 zeroCopyHasFrame_ = false;
                 OH_LOG_WARN(LOG_APP,
@@ -154,7 +155,7 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
                             static_cast<unsigned long long>(zeroCopySurfaceKey_),
                             static_cast<unsigned long long>(layer.shmCommitSerial),
                             static_cast<unsigned long long>(
-                                server->GetZcFallbackShmSerial(zeroCopySurfaceKey_)));
+                                compositor_.zc().GetFallbackShmSerial(zeroCopySurfaceKey_)));
             }
         }
     }
@@ -186,10 +187,10 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
     {
         if (!surface.surfaceKey || surface.attached) continue;
         if (surface.vulkan != wantVulkanSurface) continue;
-        WaylandServer::ZeroCopyLayerInfo layer;
-        if (!server->GetZeroCopyLayerInfo(surface.surfaceKey, rendererToplevelId,
-                                          static_cast<int>(surface.width),
-                                          static_cast<int>(surface.height), layer))
+        ZeroCopyLayerInfo layer;
+        if (!compositor_.GetZeroCopyLayerInfo(surface.surfaceKey, rendererToplevelId,
+                                              static_cast<int>(surface.width),
+                                              static_cast<int>(surface.height), layer))
             continue;
 
         glGenTextures(1, &zeroCopyTexture_);
@@ -247,7 +248,7 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         zeroCopyLayerH_ = layer.height;
         zeroCopyRegistered_ = true;
         zeroCopyGeometryDirty_ = true;
-        server->BindZcSurface(zeroCopySurfaceKey_, layer.shmCommitSerial);
+        compositor_.zc().BindSurface(zeroCopySurfaceKey_, layer.shmCommitSerial);
         zeroCopyConsecutiveFailures_ = 0;
         zeroCopyLastTimestamp_ = 0;
         zeroCopyTimestampRegressions_ = 0;
@@ -299,19 +300,18 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
                         "transform=%{public}d failures=%{public}llu",
                         toplevelId_, updateResult, transformResult,
                         static_cast<unsigned long long>(zeroCopyFailures_));
-        WaylandServer* server = WaylandServer::GetInstance();
-        if (server->IsZcReadyPublished(zeroCopySurfaceKey_) &&
-            !server->IsZcFallbackPending(zeroCopySurfaceKey_) &&
+        if (compositor_.zc().IsReadyPublished(zeroCopySurfaceKey_) &&
+            !compositor_.zc().IsFallbackPending(zeroCopySurfaceKey_) &&
             zeroCopyConsecutiveFailures_ >= 8)
         {
-            WaylandServer::ZeroCopyLayerInfo layer;
+            ZeroCopyLayerInfo layer;
             uint32_t rendererToplevelId = toplevelId_;
-            if (server->Policy().RootCompositing())
-                rendererToplevelId = server->GetDesktopRootToplevelId();
-            const bool baselineValid = server->GetZeroCopyLayerInfo(
+            if (compositor_.Policy().RootCompositing())
+                rendererToplevelId = compositor_.DesktopRootToplevelId();
+            const bool baselineValid = compositor_.GetZeroCopyLayerInfo(
                 zeroCopySurfaceKey_, rendererToplevelId,
                 zeroCopySourceW_, zeroCopySourceH_, layer);
-            server->BeginFallbackZcSurface(zeroCopySurfaceKey_, layer.shmCommitSerial,
+            compositor_.zc().BeginFallback(zeroCopySurfaceKey_, layer.shmCommitSerial,
                                            baselineValid, rendererToplevelId);
             OH_LOG_WARN(LOG_APP,
                         "[VIRGL-ZC][MAIN] fallback pending tl=%{public}u key=%{public}llu "
@@ -320,7 +320,7 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
                         static_cast<unsigned long long>(zeroCopySurfaceKey_),
                         zeroCopyConsecutiveFailures_,
                         static_cast<unsigned long long>(
-                            server->GetZcFallbackShmSerial(zeroCopySurfaceKey_)));
+                            compositor_.zc().GetFallbackShmSerial(zeroCopySurfaceKey_)));
         }
         return false;
     }
@@ -353,12 +353,11 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
             zeroCopyLastTimestamp_ = imageTimestamp;
     }
 
-    WaylandServer::ZeroCopyLayerInfo layer;
+    ZeroCopyLayerInfo layer;
     uint32_t rendererToplevelId = toplevelId_;
-    WaylandServer* server = WaylandServer::GetInstance();
-    if (server->Policy().RootCompositing()) rendererToplevelId = server->GetDesktopRootToplevelId();
-    if (!server->GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
-                                      zeroCopySourceW_, zeroCopySourceH_, layer))
+    if (compositor_.Policy().RootCompositing()) rendererToplevelId = compositor_.DesktopRootToplevelId();
+    if (!compositor_.GetZeroCopyLayerInfo(zeroCopySurfaceKey_, rendererToplevelId,
+                                          zeroCopySourceW_, zeroCopySourceH_, layer))
     {
         ReleaseZeroCopyBinding();
         return false;
@@ -367,19 +366,19 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     zeroCopyLayerY_ = layer.y;
     zeroCopyLayerW_ = layer.width;
     zeroCopyLayerH_ = layer.height;
-    zeroCopyFullscreen_ = layer.fullscreen && server->Policy().RootCompositing();
+    zeroCopyFullscreen_ = layer.fullscreen && compositor_.Policy().RootCompositing();
     width = zeroCopySourceW_;
     height = zeroCopySourceH_;
     zeroCopyHasFrame_ = true;
-    if (server->IsZcFallbackPending(zeroCopySurfaceKey_))
+    if (compositor_.zc().IsFallbackPending(zeroCopySurfaceKey_))
     {
-        server->CancelFallbackZcSurface(zeroCopySurfaceKey_);
+        compositor_.zc().CancelFallback(zeroCopySurfaceKey_);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][MAIN] fallback cancelled by GPU recovery tl=%{public}u key=%{public}llu",
                     rendererToplevelId,
                     static_cast<unsigned long long>(zeroCopySurfaceKey_));
     }
-    server->ActivateZcSurface(zeroCopySurfaceKey_, rendererToplevelId);
+    compositor_.zc().Activate(zeroCopySurfaceKey_, rendererToplevelId);
     ++zeroCopyFrames_;
     if (FrameTraceEnabled() && zeroCopyFrames_ <= 600)
         OH_LOG_INFO(LOG_APP,
@@ -412,16 +411,15 @@ void EglRenderer::ReleaseZeroCopyBinding()
 {
     // Teardown logs below distinguish SurfaceQueue ownership failures from rendering failures.
     const uint64_t surfaceKey = zeroCopySurfaceKey_;
-    WaylandServer* server = WaylandServer::GetInstance();
     OH_LOG_INFO(LOG_APP,
                 "[VIRGL-ZC][MAIN] release begin tl=%{public}u key=%{public}llu "
                 "registered=%{public}d ready=%{public}d listener=%{public}d image=%{public}p",
                 toplevelId_, static_cast<unsigned long long>(surfaceKey),
-                zeroCopyRegistered_, server->IsZcReadyPublished(surfaceKey),
+                zeroCopyRegistered_, compositor_.zc().IsReadyPublished(surfaceKey),
                 zeroCopyListenerSet_, zeroCopyImage_);
     // 幂等: 未发布过 (attach 早退/从未 GPU_ACTIVE) 时状态复位序列是 no-op
     // (ready 未发布不撤也不打日志; key=0 时 SetEnabled 内部 no-op)
-    server->ReleaseZcSurface(surfaceKey, toplevelId_);
+    compositor_.zc().Release(surfaceKey, toplevelId_);
     if (zeroCopyRegistered_) {
         OH_LOG_INFO(LOG_APP, "[VIRGL-ZC][MAIN] release detach begin key=%{public}llu",
                     static_cast<unsigned long long>(surfaceKey));
@@ -720,9 +718,10 @@ void EglRenderer::RenderLoop() {
         int zeroCopyWidth = 0;
         int zeroCopyHeight = 0;
         uint32_t useToplevel = toplevelId_;
-        WaylandServer* ws = WaylandServer::GetInstance();
         // Desktop mode: root toplevel may be recreated, always use current ID
-        if (ws->Policy().RootCompositing()) useToplevel = ws->GetDesktopRootToplevelId();
+        // (6A: 配置经构造注入的 DesktopCompositor 引用直读 — 与旧
+        // WaylandServer::Policy()/GetDesktopRootToplevelId() 同一引用成员, 同值)
+        if (compositor_.Policy().RootCompositing()) useToplevel = compositor_.DesktopRootToplevelId();
         TryAttachZeroCopySurface(useToplevel);
         const bool zeroCopyGeometryFrame = zeroCopyGeometryDirty_;
         zeroCopyGeometryDirty_ = false;
@@ -735,7 +734,7 @@ void EglRenderer::RenderLoop() {
             // 产出侧 opaque = ShmFormat != 0, 故 !opaque == 旧 (ShmFormat==0) 等价。
             // contentW/H (逻辑内容尺寸) 缓存供 GetInputLetterbox 输入逆映射锚。
             PresentedFrame frame;
-            cpuFrame = ws->TakeToplevelFrame(useToplevel, px, frame);
+            cpuFrame = compositor_.TakeToplevelFrame(useToplevel, px, frame);
             if (cpuFrame) {
                 fw = frame.w;
                 fh = frame.h;
@@ -942,12 +941,12 @@ void EglRenderer::RenderLoop() {
             // z-order 高于本层的窗口区域, 无上层窗口时结果为空 (无遮挡,
             // 行为不变); 双 GL 实例互叠 (另一窗口被连带标全屏) 时上层窗口
             // 被贴回, 双实例 bug 由此修复 (见 COMPOSITOR_UNIFICATION §5 阶段 2)
-            if (ws->Policy().RootCompositing() && rendered) {
+            if (compositor_.Policy().RootCompositing() && rendered) {
                 // 32 上限: 遮挡源 = 上层窗口 + popup 层, 真实场景个位数;
                 // 超出的部分不重绘 (该区域 GL 内容会透出), 比动态扩容简单且够用
                 static constexpr int kMaxOccluders = 32;
-                WaylandServer::ZeroCopyOccluderRect occluders[kMaxOccluders];
-                const int occluderCount = ws->GetZeroCopyOccluders(
+                ZeroCopyOccluderRect occluders[kMaxOccluders];
+                const int occluderCount = compositor_.GetZeroCopyOccluders(
                     zeroCopySurfaceKey_, useToplevel, occluders, kMaxOccluders);
                 if (occluderCount > 0) {
                     glUseProgram(program_);

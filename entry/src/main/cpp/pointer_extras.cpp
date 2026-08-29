@@ -3,10 +3,11 @@
 #include "include/pointer-constraints-unstable-v1-server-protocol.h"
 #include "include/pointer-warp-v1-server-protocol.h"
 #include "include/relative-pointer-unstable-v1-server-protocol.h"
-#include "wayland_server.h"
 // 解环 (重构第 4C1 步): 本文件不再 include input_manager.h — warp 位置同步
 // 经 SetPointerWarpSink 装配 (见头注释"warp 回调装配"), 装配点在
-// wl_core.cpp RegisterWlCoreGlobals。
+// wl_core.cpp RegisterWlCoreGlobals。6A: 也不再 include wayland_server.h —
+// surface→toplevel 反查与 root 判定经 BindWaylandRefs 注入引用 (见头注释)。
+#include "compositor/toplevel_manager.h"
 
 #include <algorithm>
 #include <chrono>
@@ -48,6 +49,14 @@ void PointerExtras::SetPointerWarpSink(PointerWarpSink sink) {
     warpSink_ = std::move(sink);
 }
 
+// 6A 会话引用装配: 见头注释。装配于 Server Start 阶段 (wl 事件循环启动前)
+// 一次性, 之后只在 Wayland 线程读 tmgr_/rootId 引用 — 无锁。
+void PointerExtras::BindWaylandRefs(ToplevelManager* tmgr,
+                                    const uint32_t* desktopRootToplevelId) {
+    tmgr_ = tmgr;
+    desktopRootToplevelId_ = desktopRootToplevelId;
+}
+
 // ========================================================================
 //  zwp_pointer_constraints_v1 (lock / confine)
 // ========================================================================
@@ -82,7 +91,9 @@ void PointerExtras::constr_lock_pointer(wl_client*, wl_resource*, uint32_t id,
     auto* self = GetInstance();
     // surface → toplevelId (锁外算: FindToplevelBySurface 自持 toplevelSurfaceMutex_,
     // 与 self->mutex_ 是两把独立锁, 但不要嵌套持锁)
-    const uint32_t tl = WaylandServer::GetInstance()->FindToplevelIdBySurface(surface);
+    // 6A: 直呼注入的 ToplevelManager (原 WaylandServer::FindToplevelIdBySurface 转发;
+    // 本函数是 static, 经单例取装配引用 — 与 self->mutex_ 同访问模式)
+    const uint32_t tl = self->tmgr_->FindToplevelBySurface(surface);
     wl_resource* res = wl_resource_create(wl_resource_get_client(pointer),
                                           &zwp_locked_pointer_v1_interface, 1, id);
     wl_resource_set_implementation(res, &kLockedImpl, nullptr,
@@ -114,7 +125,9 @@ void PointerExtras::constr_confine_pointer(wl_client*, wl_resource*, uint32_t id
                                            wl_resource* surface, wl_resource* pointer,
                                            wl_resource* region, uint32_t lifetime) {
     auto* self = GetInstance();
-    const uint32_t tl = WaylandServer::GetInstance()->FindToplevelIdBySurface(surface);
+    // 6A: 直呼注入的 ToplevelManager (原 WaylandServer::FindToplevelIdBySurface 转发;
+    // static 函数经单例取装配引用, 同 self->mutex_ 模式)
+    const uint32_t tl = self->tmgr_->FindToplevelBySurface(surface);
     wl_resource* res = wl_resource_create(wl_resource_get_client(pointer),
                                           &zwp_confined_pointer_v1_interface, 1, id);
     wl_resource_set_implementation(res, &kConfinedImpl, nullptr,
@@ -364,8 +377,9 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
     if (!doLock && !doUnlock) return;
     // isShell 在调用线程 (wl 事件循环) 算好再捕获进工作线程 — 避免工作线程
     // 与 wl 线程并发读 desktopRootToplevelId_ (数据竞争)
+    // 6A: 直读装配注入的 rootId 共享引用 (与 WaylandServer::GetDesktopRootToplevelId 同值同源)
     const bool isShell =
-        (toplevelId == WaylandServer::GetInstance()->GetDesktopRootToplevelId());
+        (toplevelId == *desktopRootToplevelId_);
     // IPC 挪入独立线程执行 (20260822 review #3): OH_WindowManager_LockCursor
     // 是同步 Binder 往返, 在调用点 (wl 事件循环线程) 执行会停摆整个
     // Wayland 循环 — 进游戏瞬间的相对模式切换恰是最高频时刻。工作线程按

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "compositor/geometry.h"
+#include "compositor/display_policy.h"      // DisplayPolicy (6A 装配注入共享引用)
 #include "compositor/input_space_mapper.h"  // CoordTransform 落点 + lastGlobalPtr 显式语义 (4C1)
 #include "compositor/input_queue.h"         // 队列机制 (4C2 拆层)
 #include "compositor/input_state_tracker.h" // 纯状态 (4C2 拆层)
@@ -29,6 +30,9 @@
 // 所有 wl_*_send_* 调用必须在 Wayland 线程 (通过 pipe 唤醒)
 
 class Seat;  // 前向声明
+class ToplevelManager;   // 前向声明 (6A 装配注入, 见 BindCompositorDeps)
+class InputResolver;     // 前向声明 (6A 装配注入)
+class MoveGrabHandler;   // 前向声明 (6A 装配注入)
 
 class InputManager {
 public:
@@ -37,6 +41,20 @@ public:
     // -- 生命周期 (WaylandServer::Start/Stop 调用) --
     void Initialize(wl_display* display);
     void Shutdown();
+
+    // -- 子组件装配注入 (重构第 6A 步, WaylandServer::Start 调用) --
+    // 替代本类经 WaylandServer 的一行转发 (FindInputTargetAt/
+    // SurfaceLocalToDesktop/GetToplevelGeometrySnapshot/GetSurfaceForToplevel/
+    // IsMoveGrabActive/GetMoveGrabToplevelId/Policy/GetDesktopRootToplevelId):
+    // 输入编排直连 ToplevelManager/InputResolver/MoveGrabHandler/共享
+    // policy+rootId 引用 (与 DesktopCompositor/InputResolver 注入同源)。
+    // 生命周期: 引用属于 WaylandServer 单例成员 (Start 前已构造), 装配在
+    // wl 事件循环启动前一次性 — 之后各线程 (NAPI/Wayland) 只读共享, 无新锁
+    // (与 4C1 warpSink 装配同模式)。指针成员为装配出口 (单例构造不晚于
+    // Start 时依赖存在), 装配前不可调用任何依赖方法。
+    void BindCompositorDeps(ToplevelManager& tmgr, InputResolver& resolver,
+                            MoveGrabHandler& moveGrab, const DisplayPolicy& policy,
+                            const uint32_t& desktopRootToplevelId);
 
     // -- NAPI 入口 (JS 线程调用) --
     // action: ArkTS MouseAction (Press=1, Release=2, Move=3)
@@ -149,4 +167,13 @@ private:
     InputStateTracker tracker_;
     InputQueue queue_;
     InputInjector injector_;
+
+    // 6A 装配注入的子组件引用 (指针形式: InputManager 单例可能先于
+    // WaylandServer 构造, BindCompositorDeps 在 Start 写、事件循环启动前 —
+    // 见公开方法注释; controller 里注入方向是"子组件→编排层"单向)
+    ToplevelManager* tmgr_ = nullptr;
+    InputResolver* resolver_ = nullptr;
+    MoveGrabHandler* moveGrab_ = nullptr;
+    const DisplayPolicy* policy_ = nullptr;
+    const uint32_t* desktopRootToplevelId_ = nullptr;
 };

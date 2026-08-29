@@ -5,6 +5,9 @@
 
 #include "compositor/input_state_tracker.h"
 
+class InputResolver;  // 前向声明 (6A 装配注入引用, 见 BindResolvers)
+class ToplevelManager;  // 前向声明 (6A 装配注入引用, 见 BindResolvers)
+
 // ============================================================================
 // InputInjector — 唯一碰 wl_*_send_* 的注入层 (重构第 4C2 步从 InputManager 抽离)
 //
@@ -28,6 +31,14 @@ public:
     // 生命周期与 InputManager 单例一致)
     explicit InputInjector(InputStateTracker* tracker);
 
+    // 6A 装配注入 (InputManager::BindCompositorDeps 转发): 注入前防御的
+    // surface 存活校验 (IsSurfaceAlive → InputResolver) 与 surface→toplevel
+    // 查找 (GetSurfaceForToplevel → ToplevelManager) 直呼子组件 — 替代旧
+    // WaylandServer 两行转发。引用生命周期与单例一致 (WaylandServer 成员,
+    // Start 前构造), 装配在 wl 事件循环启动前 (同 tracker 指针注入模式,
+    // 无锁; 装配前不可调 Inject* 依赖方法 — FlushQueue 从未在装配前运行)。
+    void BindResolvers(InputResolver* resolver, ToplevelManager* tmgr);
+
     void InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fixed_t sx, wl_fixed_t sy);
     void InjectPointerMotion(wl_fixed_t sx, wl_fixed_t sy);
     void InjectRelativeMotion(wl_fixed_t dx, wl_fixed_t dy);
@@ -41,4 +52,6 @@ public:
 
 private:
     InputStateTracker* tracker_;
+    InputResolver* resolver_ = nullptr;  // 6A 装配 (BindResolvers): IsSurfaceAlive 防御
+    ToplevelManager* tmgr_ = nullptr;    // 6A 装配 (BindResolvers): GetSurfaceForToplevel
 };

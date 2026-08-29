@@ -940,6 +940,15 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
         [](wl_resource* surface, double x, double y) {
             InputManager::GetInstance()->OnPointerWarp(surface, x, y);
         });
+    // 会话引用装配 (重构第 6A 步): surface→toplevel 反查 (FindToplevelBySurface)
+    // 与 root 身份判定 (isShell) 直呼 ToplevelManager / rootId 共享引用 —
+    // 替代 WaylandServer::FindToplevelIdBySurface/GetDesktopRootToplevelId
+    // 转发 (6A 删除)。装配在 wl 事件循环启动前一次性, 之后只读 → 无锁
+    // (与 warpSink 同模式; GetToplevelManager/DesktopRootToplevelIdRef 是
+    // 装配出口, 见 wayland_server.h)。
+    PointerExtras::GetInstance()->BindWaylandRefs(
+        &WaylandServer::GetInstance()->GetToplevelManager(),
+        &self->DesktopRootToplevelIdRef());
     // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
     TextInput::GetInstance()->Register(display);
 }

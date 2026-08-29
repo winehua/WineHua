@@ -13,12 +13,21 @@
 #include "compositor/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
 
 struct OH_NativeImage;
+class DesktopCompositor;
 
-// 最小 EGL 渲染器: 从 WaylandServer 取帧 -> GL 纹理 -> XComponent 上屏
+// 最小 EGL 渲染器: 从 DesktopCompositor 取帧 -> GL 纹理 -> XComponent 上屏
 // 所有实例共享同一个 EGLDisplay (避免反复 init/terminate 导致 GPU 驱动竞争)
 // 每个实例拥有独立的 EGLContext + EGLSurface
 class EglRenderer : public winehua::DirectPassPolicy {
 public:
+    // 构造注入 frame compositor (重构第 6A 步): 取帧/ZC 层几何与状态机经
+    // DesktopCompositor 直连 — 替代旧 WaylandServer 门面的一行转发
+    // (TakeToplevelFrame/GetZeroCopyLayerInfo/ActivateZcSurface 等 26 处调用)。
+    // 注入点 = PluginManager::CreateRenderer (WaylandServer::GetDesktopCompositor)。
+    // compositor 生命周期长于一切 renderer (WaylandServer 单例成员), 只读
+    // 引用共享与 InputResolver/PopupManager 注入同模式, 无新锁。
+    explicit EglRenderer(DesktopCompositor& compositor);
+
     // 获取/初始化共享的 EGLDisplay (首次调用时初始化, 线程安全)
     static EGLDisplay GetSharedDisplay();
 
@@ -134,4 +143,8 @@ private:
     std::atomic<long long> vsyncPeriodNs_{16666667};
 
     uint32_t toplevelId_ = 0;
+
+    // frame compositor 引用 (构造注入, 见构造函数注释): 取帧/层几何/ZC
+    // 状态机直连目标 — 渲染线程唯一需要的外部 compositor 入口。
+    DesktopCompositor& compositor_;
 };

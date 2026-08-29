@@ -158,18 +158,29 @@ public:
                               ZeroCopyLayerInfo& info) {
         return zc_.GetLayerInfo(surfaceKey, rendererToplevelId, fallbackWidth, fallbackHeight, info);
     }
-    void SetSurfaceZeroCopy(uint64_t surfaceKey, bool enabled) { zc_.SetEnabled(surfaceKey, enabled); }
     int GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
                              ZeroCopyOccluderRect* out, int maxOut) {
         return zc_.GetOccluders(surfaceKey, rendererToplevelId, out, maxOut);
     }
-    // ZC 协议 owner 访问 (重构第 3C 步: WaylandServer 内联委托持 ZC 状态机动作)
+    // (SetSurfaceZeroCopy 入口已删: zero-copy 开关经 ZcBridge 状态机幂等动作
+    // Activate/Release — Activate 内部调 SetEnabled, 入口外部零调用方,
+    // 重构第 6A 步死转发清理)
+
+    // ZC 协议 owner 访问 (重构第 3C 步: 渲染器直调 ZC 状态机动作 — 6A 转
+    // 发删除后 EglRenderer 经注入的本类引用持 zc() 直连)
     ZcBridge& zc() { return zc_; }
     const ZcBridge& zc() const { return zc_; }
 
     // -- Subsurface layer 位置解析 (InputResolver 调用) --
     void ResolveSubsurfaceLayerPositionLocked(const SubsurfaceLayer& layer,
                                               int& x, int& y) const;
+
+    // -- 配置只读访问 (装配出口, 重构第 6A 步) --
+    // 本类经构造注入了 policy/rootId 的共享引用 (与 InputResolver 同源),
+    // 渲染器 (经 plugin_manager 注入本类引用) 经此读同值配置 — 替代
+    // WaylandServer::Policy()/GetDesktopRootToplevelId() 门面转发。
+    const DisplayPolicy& Policy() const { return policy_; }
+    uint32_t DesktopRootToplevelId() const { return desktopRootToplevelId_; }
 
     // -- 桌面 root dirty 标记 --
     void MarkDesktopRootDirtyLocked();

@@ -21,7 +21,7 @@
 | 4C InputManager 拆层（4C1 坐标收口/解环/Policy 改名 → 4C2 拆 Queue/StateTracker/Injector + enter/leave 收敛 + host_tests） | 完成（门禁全过，见 §二 4C1/4C2 下标） | 4C1 3950980；4C2 0f7c6bf（StateTracker+测试）/ 479cccd（Queue+Injector+编排瘦身）/ 23fff1d（顺手项+台账） |
 | **阶段 4（输入栈拆分）** | **代码层全部完成（4A/4B/4C1/4C2），待设备回归（清单见 §四 阶段 4 验证段）** | — |
 | 5 协议层重构 | **代码层全部完成（5A1/5A2/5B1/5B2/5C/5D 落地，待设备回归）** | 5A1/5A2 前序记录（§二 5A1）；5B1 §二 5B1 下标；5B2 §二 5B2 下标；5C §二 5C 下标；5D §二 5D（本分支 HEAD 提交） |
-| 6 facade 瘦身与共享状态收口 | 未开始 | — |
+| 6 facade 瘦身与共享状态收口 | **进行中（6A 转发删除+构造注入落地；6B POD/atomic 待做；待设备回归）** | 6A（提交见 §二 6A 小节） |
 
 已过门禁（每个完成阶段均满足）：`make test` host_tests 全绿；
 `make NATIVE_ARCH=x86_64` 与 `make NATIVE_ARCH=arm64-v8a` 全量构建成功；
@@ -1003,6 +1003,104 @@ plugin_manager 当前经 WaylandServer 门面调用 — GetInstance 调用点不
 `ToplevelEventType` 全局名与 napi_init.cpp 的 `struct ToplevelEvent` 无冲突
 （已命名规避）。
 
+### 阶段 6A（WaylandServer facade 瘦身 — 转发删除 + 调用方构造注入，2026-08-29）
+
+PLAN §四阶段6 前半（"WaylandServer 只留生命周期 + 回调注册 + 会话状态
+所有者；一行转发方法删除，调用方构造注入"）。全部结构移动（同值替代），
+行为平价：无时序/锁域/日志变化。**6B 范围（DesktopSessionState POD、
+desktopRootFrameSerial_ atomic）未做**。
+
+**摸底（5A-5D 后现数，行号漂移后重新盘点）：** WaylandServer.h 369 行；
+一行转发 27 处（desktopCompositor_/zc_ 系 5+9、toplevelMgr_ 系 8、
+inputResolver_ 系 4、moveGrab_ 系 2、兼容别名 2、死方法 3）；
+GetInstance() 全库 69 处 / 13 文件。
+
+**处置表（方法 → 处置 → 调用方改造）：**
+
+| # | 方法（wayland_server.h 旧） | 处置 | 调用方 → 直调对象 |
+|---|---|---|---|
+| 1 | TakeToplevelFrame | 删 | egl_renderer → DesktopCompositor&（构造注入） |
+| 2 | GetZeroCopyLayerInfo | 删 | 同上 |
+| 3 | SetSurfaceZeroCopy | 删（死转发：全库零调用方 — ZC 开关已走状态机 Activate/Release） | — |
+| 4 | GetZeroCopyOccluders | 删 | egl_renderer → DesktopCompositor& |
+| 5-13 | ActivateZcSurface / BeginFallbackZcSurface / ConfirmFallbackZcSurface / CancelFallbackZcSurface / ReleaseZcSurface / BindZcSurface / IsZcReadyPublished / IsZcFallbackPending / GetZcFallbackShmSerial（ZC 状态机 9 个） | 删 | egl_renderer → `compositor.zc().Xxx`（ZcBridge 方法旧名：3C 时已改名 Activate/BeginFallback/…） |
+| 14 | NextToplevelId | 删 | xdg_shell → gTmgr->AllocateToplevelId()（装配注入） |
+| 15-16 | GetToplevelX / GetToplevelY | 删（死转发：外部零调用方） | — |
+| 17-18 | GetToplevelW / GetToplevelH | 删 | xdg_shell → gTmgr |
+| 19 | GetToplevelGeometrySnapshot | 删 | input_manager → tmgr_ |
+| 20-22 | IsToplevelMinimized / IsToplevelFullscreen / IsToplevelMaximized | 删 | xdg_shell → gTmgr；wayland_server.cpp 内部 → toplevelMgr_（成员直调） |
+| 23 | FindToplevelIdBySurface | 删 | pointer_extras → self->tmgr_->FindToplevelBySurface（static 成员经单例取装配引用） |
+| 24 | GetSurfaceForToplevel | 删（cpp 实现） | input_manager → tmgr_；input_injector → tmgr_ |
+| 25 | FindInputTargetAt | 删 | input_manager → resolver_ |
+| 26 | IsSurfaceAlive | 删 | input_injector → resolver_ |
+| 27 | SurfaceLocalToDesktop | 删 | input_manager → resolver_ |
+| 28-29 | IsMoveGrabActive / GetMoveGrabToplevelId | 删 | input_manager → moveGrab_->IsActive()/GetToplevelId() |
+| 30-31 | NotifyWindowRestored / NotifyToplevelMinimized（旧接口兼容别名） | 删 | napi_init → SetToplevelRestored；xdg_shell → SetToplevelMinimized（同实现同值） |
+| 32 | IsToplevelVisibleLocked（private 死桩） | 删（零调用方；tmgr 版本是 zc_bridge/desktop_compositor 直调的） | — |
+| — | 保留 | 生命周期 GetInstance/GetDisplay/Start/Stop/ResetSessionState/DestroyAllToplevels；回调注册 SetStateCallback/FireState/SetToplevelCallback/ResetFirstFrame/SetToplevelEventSuppressed*；状态接口 SetDesktopMode/IsDesktopMode/Policy/GetDesktopRootToplevelId/SetOutputSize/outputW_/outputH_/GetWorkAreaHeight；行为方法 PostToplevelEvent（bus 投递+desktop_root 会话旁路，非一行转发）/Register|UnregisterToplevelResource/OnToplevelDestroyed/SendToplevelClose/SetToplevelMinimized/Restored/Maximized/MaximizedState/Fullscreen/NotifyToplevelResize/ForceToplevelRedraw/RaiseToplevel/StartMoveGrab/EndMoveGrab/ProcessMoveGrabMotion/TakeWindowMask*/FindToplevelAt*；协议 vtable 全部（region 等空实现属协议壳，保留） | 保留（napi_init/wine_launch/wine_env/wine_exe 入口模块与协议壳继续经 GetInstance 使用；* = 入口专用保留委托，注释写明理由） |
+| — | 新增装配出口 GetToplevelManager()/GetDesktopCompositor()/DesktopRootToplevelIdRef() | 增 | 装配点：plugin_manager（CreateRenderer 构造注入 EglRenderer）、wl_core RegisterWlCoreGlobals（PointerExtras BindWaylandRefs）、RegisterXdgShell（gTmgr）；Start 成员函数直传成员（BindCompositorDeps） |
+
+**死桩清理清单（随 6A 顺带，零调用方实证）：**
+- `WaylandServer::SetSurfaceZeroCopy` + `DesktopCompositor::SetSurfaceZeroCopy`
+  （整链死：入口零调用，ZC 开关经 ZcBridge 幂等动作 Activate/Release —
+  Activate 内部调 SetEnabled，保留）
+- `WaylandServer::GetToplevelX/Y`（外部零调用；ToplevelManager::GetToplevelX/Y
+  保留未删 — 属 tmgr 公开方法，超范围）
+- `WaylandServer::IsToplevelVisibleLocked`（private 死：真实消费方
+  zc_bridge/desktop_compositor 直调 ToplevelManager::IsToplevelVisibleLocked）
+
+**注入模式总结（谁经哪个引用、装配点在哪、无锁论证）：**
+
+| 组件 | 注入引用 | 装配点 | 时序/锁论证 |
+|---|---|---|---|
+| EglRenderer | `DesktopCompositor& compositor_`（构造注入） | PluginManager::CreateRenderer `make_unique<EglRenderer>(GetInstance()->GetDesktopCompositor())` | compositor 是 WaylandServer 单例成员（Start 前已构造），生命周期长于一切 renderer（renderer 由 ArkTS XComponent 创建，恒在 Start 后）；渲染线程只读引用，无新锁 |
+| xdg_shell | `ToplevelManager* gTmgr`（file-static 引用） | RegisterXdgShell（Start 阶段，wl 事件循环启动前） | 协议回调只在 Wayland 线程读 → 无锁（与 4C1 warpSink 同模式） |
+| InputManager | `ToplevelManager*`/`InputResolver*`/`MoveGrabHandler*`/`const DisplayPolicy*`/`const uint32_t*`（指针装配） | WaylandServer::Start（BindCompositorDeps，Initialize 之前） | 指针形式因 InputManager 单例可能先于 WaylandServer 构造；装配在事件循环启动前一次性，之后 NAPI/Wayland 两线程只读共享 → 无新锁；装配前无任何依赖方法可被调（Pipeline: 事件循环未启动） |
+| InputInjector（InputManager 成员） | `InputResolver*`/`ToplevelManager*` | BindCompositorDeps 转发 `injector_.BindResolvers` | 同 InputManager |
+| PointerExtras | `ToplevelManager*`/`const uint32_t*`（rootId 共享引用） | wl_core RegisterWlCoreGlobals（Start 阶段，事件循环启动前） | 之后只在 Wayland 线程读 → 无锁（与 warpSink 同模式） |
+| wl_core | 无（WaylandServer 自身协议实现，静态成员函数直访私有成员） | — | — |
+| napi_init/wine_launch/wine_env/wine_exe | 无（入口模块，单例保留） | — | — |
+
+**构造顺序核对（时序证据）：** 所有装配发生在 WaylandServer::Start 的
+global 注册段（RegisterWlCoreGlobals → RegisterXdgShell → Seat/InputManager
+绑定），而组件引用全部指向 WaylandServer 单例成员 — 单例在 GetInstance 首次
+调用即构造（含全部子组件值成员与构造注入引用），远早于 Start；EglRenderer
+构造点恒在 Start 之后的运行期（ArkTS XComponent 事件回调）。无"注册后未
+初始化"窗口：wl 事件循环 thread_ 在装配完成后才启动（Start: thread_
+位于函数尾）。引用/指针装配后只读，无后置装配竞态。
+
+**GetInstance 前后统计：** 69 处/13 文件 → **53 处/11 文件**：
+egl_renderer 5→0（构造注入）、input_injector 4→0、pointer_extras 3→0、
+input_manager 7→2（仅 FlushQueue 保留的 ProcessMoveGrabMotion/EndMoveGrab
+会话动作）、xdg_shell 22→20（gTmgr 取号/查询直调，继续经门面调保留的
+状态转换/事件方法）；输入映射 service（input_space_mapper 2）与入口模块
+（napi 15/wine_launch 3/wine_env 2/wine_exe 2/plugin_manager 3/wl_core 3）
+不变。**剩余 GetInstance 都是"保留方法"（生命周期/回调/状态/会话动作），
+无一行转发。**
+
+**门禁：** `make test` host_tests 全绿（geometry 71 / blit_scaled 402 /
+blit_clip 38 / zorder 40 / env 21+88 / input_state 84 / shm_frame_source 39 /
+toplevel_event 62，全 0 failures，本提交未改测试代码）；`make
+NATIVE_ARCH=x86_64 hap` 与 `make NATIVE_ARCH=arm64-v8a hap` 双架构构建+签名
+通过（每次构建后 build-profile.json5 已还原，工作树仅剩本提交改动 + 预存
+thirdparty/）。**设备回归待做**（行为平价结构重排：模拟器桌面链冒烟 +
+arm64 Pad 主要回归路径 — ZC 发布/回退时序（egl_renderer 状态机直连后）、
+输入点击/滚动路由（InputManager 引用注入后）、move grab（moveGrab_ 直调）、
+pointer 约束/相对模式（PointerExtras rootId 引用）；监视 WL_Input/WL_EGL/
+VIRGL-ZC/MW-* 日志与基线对比）。
+
+**给 6B 的接口说明（WaylandServer 剩余成员/字段清单 — POD 化候选）：**
+`desktopRootToplevelId_`/`pendingDesktopRootToplevelId_`/`taskbarId_`/
+`desktopRootRecognitionEnabled_` / `policy_` / `outputW_`+`outputH_`（仍
+public 字段）/ `firstFrame_`（atomic）/ `desktopRootFrameSerial_`（在
+DesktopCompositor，非 atomic）；新增的 `DesktopRootToplevelIdRef()` 出口与
+DesktopCompositor 新增的 `Policy()`/`DesktopRootToplevelId()` 读取器在
+SessionState POD 化后可改为直接持对象成员 — 引用成员（compositor/
+resolver/popupMgr 注入的 tmpgm/policy/rootId/outputW/H 引用）届时随
+POD 迁移收拢，调用方（egl_renderer/xdg_shell/input_manager/pointer_extras）
+经装配注入的引用指向 SessionState 成员。`desktopRootFrameSerial_` 的
+atomic 化保留给 6B。
+
 ## 三、2B 剩余工作清单
 
 1. **接上消费侧（解编译断点，完成任务 1）** — ✅ 已提交（0d06926）
@@ -1075,8 +1173,12 @@ plugin_manager 当前经 WaylandServer 门面调用 — GetInstance 调用点不
   （5C 清单：最大化推断/全屏转换/最小化还原）+ 三游戏（war3 直传+局部
   合成+尺寸漂移、PAL2 SHM+dinput、RA2 全屏点击路由）+ ZC 遮挡/全屏/
   fallback（阶段 3 清单）。
-- **阶段 6 facade 瘦身**：WaylandServer 拆 24 个转发；DesktopSessionState
-  POD；desktopRootFrameSerial_ 改 atomic。
+- **阶段 6 facade 瘦身**：**6A 完成（见 §二 6A 小节，2026-08-29）** —
+  WaylandServer 拆 27 个转发/死方法 + 调用方构造/装配注入（egl_renderer/
+  xdg_shell/input_manager/input_injector/pointer_extras 五处），待设备回归
+  （ZC 时序/输入路由/move grab/指针约束）；**6B 待做**：DesktopSessionState
+  POD（desktopRootToplevelId_/pendingRoot/taskbarId/recognitionEnabled/output
+  尺寸/policy 收拢）+ desktopRootFrameSerial_ 改 atomic。
 
 ## 五、续作执行要点
 

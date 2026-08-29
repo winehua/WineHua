@@ -47,58 +47,20 @@ public:
 
     wl_display* GetDisplay() const { return display_; }
 
+    // -- 子组件装配出口 (重构第 6A 步, 与 GetDisplay 同模式) --
+    // 业务组件 (EglRenderer / InputManager / PointerExtras / xdg_shell 等)
+    // 经此取得子组件引用做构造/装配注入, 替代本类到业务方法的转发 —
+    // 本类不再转发业务方法 (处置表见 docs/COMPOSITOR_REFACTOR_STATUS.md §二 6A)。
+    // 引用与成员同生命周期 (单例启动前即构造), 装配在 wl 事件循环启动前
+    // (与 4C1 warpSink / 5D bus 装配同模式, 无新锁)。
+    ToplevelManager& GetToplevelManager() { return toplevelMgr_; }
+    DesktopCompositor& GetDesktopCompositor() { return desktopCompositor_; }
+    // root 身份的共享引用装配出口 (与 DesktopCompositor/InputResolver 注入的
+    // 引用同源, 6-B DesktopSessionState 化后换成 POD 成员)
+    const uint32_t& DesktopRootToplevelIdRef() const { return desktopRootToplevelId_; }
+
     bool Start(const std::string& socketPath);
     void Stop();
-
-    bool TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out, PresentedFrame& frame) {
-        return desktopCompositor_.TakeToplevelFrame(id, out, frame);
-    }
-    bool GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
-                              int fallbackWidth, int fallbackHeight,
-                              ZeroCopyLayerInfo& info) {
-        return desktopCompositor_.GetZeroCopyLayerInfo(
-            surfaceKey, rendererToplevelId, fallbackWidth, fallbackHeight, info);
-    }
-    void SetSurfaceZeroCopy(uint64_t surfaceKey, bool enabled) {
-        desktopCompositor_.SetSurfaceZeroCopy(surfaceKey, enabled);
-    }
-    int GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
-                             ZeroCopyOccluderRect* out, int maxOut) {
-        return desktopCompositor_.GetZeroCopyOccluders(surfaceKey, rendererToplevelId, out, maxOut);
-    }
-    // -- ZC 状态机委托 (重构第 3C 步): EglRenderer 经本类内联委托拿 ZcBridge
-    //    幂等动作 (原 PublishZeroCopyActive/UnpublishZeroCopyReady/
-    //    ClearZeroCopyCompositorKey + 调用点状态位坐标, 行为平价) —
-    //    保持 EglRenderer 不直接访问 ZcBridge 的既有接入风格 --
-    void ActivateZcSurface(uint64_t surfaceKey, uint32_t rendererToplevelId) {
-        desktopCompositor_.zc().Activate(surfaceKey, rendererToplevelId);
-    }
-    void BeginFallbackZcSurface(uint64_t surfaceKey, uint64_t shmBaseline,
-                                bool baselineValid, uint32_t rendererToplevelId) {
-        desktopCompositor_.zc().BeginFallback(surfaceKey, shmBaseline,
-                                              baselineValid, rendererToplevelId);
-    }
-    bool ConfirmFallbackZcSurface(uint64_t surfaceKey, uint64_t shmSerial) {
-        return desktopCompositor_.zc().ConfirmFallback(surfaceKey, shmSerial);
-    }
-    void CancelFallbackZcSurface(uint64_t surfaceKey) {
-        desktopCompositor_.zc().CancelFallback(surfaceKey);
-    }
-    void ReleaseZcSurface(uint64_t surfaceKey, uint32_t rendererToplevelId) {
-        desktopCompositor_.zc().Release(surfaceKey, rendererToplevelId);
-    }
-    void BindZcSurface(uint64_t surfaceKey, uint64_t initialShmBaseline) {
-        desktopCompositor_.zc().BindSurface(surfaceKey, initialShmBaseline);
-    }
-    bool IsZcReadyPublished(uint64_t surfaceKey) const {
-        return desktopCompositor_.zc().IsReadyPublished(surfaceKey);
-    }
-    bool IsZcFallbackPending(uint64_t surfaceKey) const {
-        return desktopCompositor_.zc().IsFallbackPending(surfaceKey);
-    }
-    uint64_t GetZcFallbackShmSerial(uint64_t surfaceKey) const {
-        return desktopCompositor_.zc().GetFallbackShmSerial(surfaceKey);
-    }
 
     // 状态回调 (首帧到达 -> 通知 ArkTS)
     void SetStateCallback(StateCb cb) { stateCb_ = std::move(cb); }
@@ -126,9 +88,6 @@ public:
     void PostToplevelEvent(uint32_t id, ToplevelEventType evt,
                            const std::string& json = "{}");
 
-    // 生成唯一 toplevel ID
-    uint32_t NextToplevelId() { return toplevelMgr_.AllocateToplevelId(); }
-
     // toplevel resource 映射 (用于 SendToplevelClose -> xdg_toplevel_send_close)
     void RegisterToplevelResource(uint32_t toplevelId, wl_resource* tl);
     void UnregisterToplevelResource(uint32_t toplevelId);
@@ -151,9 +110,6 @@ public:
     void SetToplevelFullscreen(uint32_t id, bool on);
     // surface 尺寸变化后强制下次渲染循环取帧重绘 (避免旧 viewport 贴新 surface 导致黑边)
     void ForceToplevelRedraw(uint32_t id);
-    // 旧接口 → 转发到新方法
-    void NotifyWindowRestored(uint32_t id) { SetToplevelRestored(id); }
-    void NotifyToplevelMinimized(uint32_t id, int32_t, int32_t) { SetToplevelMinimized(id); }
     // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染
     void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h);
     // 设置输出尺寸 (替换硬编码 1280x720)
@@ -161,36 +117,15 @@ public:
     int32_t outputW_ = compositor_consts::kDefaultOutputWidth;
     int32_t outputH_ = compositor_consts::kDefaultOutputHeight;
     int32_t GetWorkAreaHeight();  // 排除任务栏后的可用高度
+    // 输入命中顶层 toplevel 查询 (NAPI 入口 findToplevelAt 唯一调用方 —
+    // 入口模块保留委托; 业务层 InputManager 已改直呼 InputResolver,
+    // 重构第 6A 步)
     uint32_t FindToplevelAt(int x, int y) { return inputResolver_.FindToplevelAt(x, y); }
-    bool FindInputTargetAt(double lx, double ly, InputTarget& out) {
-        return inputResolver_.FindInputTargetAt(lx, ly, out);
-    }
-    bool IsSurfaceAlive(wl_resource* surface) { return inputResolver_.IsSurfaceAlive(surface); }
-    // warp 锚点换算 (wp_pointer_warp_v1 → InputManager::OnPointerWarp)
-    bool SurfaceLocalToDesktop(wl_resource* surface, double lx, double ly, double& dx, double& dy) {
-        return inputResolver_.SurfaceLocalToDesktop(surface, lx, ly, dx, dy);
-    }
     // Desktop 模式: 提到 Z-order 最顶层。
     // userInitiated=true 仅用于用户显式操作路径 (ArkTS 任务栏/窗口点击),
     // 会对已 fullscreen 的目标重新取全屏优先级号; tl_set_fullscreen 等
     // 批处理路径必须保持默认 false。见 ToplevelState::fsPriority 注释
     void RaiseToplevel(uint32_t id, bool userInitiated = false);
-    // 读取 toplevel 桌面坐标 (InputManager 坐标转换用)
-    // miss 返回 0 (与旧实现返回值一致), find 语义无插入副作用
-    int GetToplevelX(uint32_t id) { return toplevelMgr_.GetToplevelX(id); }
-    int GetToplevelY(uint32_t id) { return toplevelMgr_.GetToplevelY(id); }
-    int GetToplevelW(uint32_t id) { return toplevelMgr_.GetToplevelW(id); }
-    int GetToplevelH(uint32_t id) { return toplevelMgr_.GetToplevelH(id); }
-    // 几何快照 (一次加锁): 替代"为取一对坐标连续加锁两次"的单字段调用
-    using ToplevelGeometrySnapshot = ToplevelManager::ToplevelGeometrySnapshot;
-    ToplevelGeometrySnapshot GetToplevelGeometrySnapshot(uint32_t id) {
-        return toplevelMgr_.GetToplevelGeometrySnapshot(id);
-    }
-    // 状态查询 (窗口状态三元组 minimized/fullscreen/maximized 权威字段在
-    // ToplevelState, 重构第 5C 步 maximized 迁入 — 见 toplevel_manager.h 不变式)
-    bool IsToplevelMinimized(uint32_t id) { return toplevelMgr_.IsToplevelMinimized(id); }
-    bool IsToplevelFullscreen(uint32_t id) { return toplevelMgr_.IsToplevelFullscreen(id); }
-    bool IsToplevelMaximized(uint32_t id) { return toplevelMgr_.IsToplevelMaximized(id); }
     // ARGB 异型窗口的 0/1 剪影掩码 (setWindowMask 用, ArkTS 轮询拉取)
     using WindowMask = ToplevelManager::WindowMask;
     // 取掩码: false = 无掩码或无更新; 取走清除 dirty
@@ -204,13 +139,15 @@ public:
     uint32_t GetDesktopRootToplevelId() const { return desktopRootToplevelId_; }
     // wl_surface → toplevelId 反查 (PointerExtras 判相对模式的约束 surface
     // 是否桌面 root 自身 — 区分"桌面 shell 启动瞬时藏光标"与"游戏真相对模式")
-    uint32_t FindToplevelIdBySurface(wl_resource* surf) { return toplevelMgr_.FindToplevelBySurface(surf); }
+    // 已删转发 (重构第 6A 步): PointerExtras 装配注入 ToplevelManager 引用直调
+    // FindToplevelBySurface (见 pointer_extras.h BindWaylandRefs)
     void SetDesktopRootRecognitionEnabled(bool enabled) { desktopRootMgr_.SetRecognitionEnabled(enabled); }
     /* 首启 wineboot 期间抑制窗口创建事件 (PC 窗口模式): wineboot 的
      * "Setting up Wine" 等待窗不创建独立 OHOS 窗口 — 与 Pad 桌面模式对齐
      * (初始化阶段 desktop root 未出现, 窗口天然不可见)。仅首启 wineboot
      * 生命周期内置位, wineboot 完成后恢复 (wine_launch.cpp)。
-     * 抑制状态随事件通道收口于 ToplevelEventBus (重构第 5D 步, 语义不变)。 */
+     * 抑制状态随事件通道收口于 ToplevelEventBus (重构第 5D 步, 语义不变)。
+     * 6A 保留: wine_launch (启动编排入口模块) 唯一调用方, 入口依赖保留委托。 */
     void SetToplevelEventSuppressed(bool on) { toplevelEventBus_.SetSuppressed(on); }
     void PromotePendingDesktopRoot() {
         uint32_t id = desktopRootMgr_.PromotePending();
@@ -271,12 +208,11 @@ public:
     /* wl_output */
     static void output_release(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
 
-    // toplevelId -> wl_surface 映射 (供 Seat::InjectPointerEnter 查找)
-    wl_resource* GetSurfaceForToplevel(uint32_t toplevelId);
-
-    // 交互式窗口移动 (xdg_toplevel.move) — 由 xdg_shell 和 InputManager 调用
-    bool IsMoveGrabActive() const { return moveGrab_.IsActive(); }
-    uint32_t GetMoveGrabToplevelId() const { return moveGrab_.GetToplevelId(); }
+    // 交互式窗口移动 (xdg_toplevel.move) — 由 xdg_shell 和 InputManager 调用。
+    // 状态查询 (IsMoveGrabActive/GetMoveGrabToplevelId) 已删转发 — 调用方
+    // (InputManager) 构造注入 MoveGrabHandler 引用直调 (重构第 6A 步);
+    // 动作方法保留 (EndMoveGrab/ProcessMoveGrabMotion 含会话侧 dirty 标记
+    // 与事件补发, 属会话状态职责)。
     void StartMoveGrab(uint32_t toplevelId, uint32_t serial);
     void EndMoveGrab();
     bool ProcessMoveGrabMotion(int32_t gx, int32_t gy);
@@ -359,11 +295,6 @@ private:
     // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
     // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
     PopupManager popupMgr_{toplevelMgr_, outputW_, outputH_};
-
-    // 渲染/输入共用的 toplevel 可见性检查 (调用方须已持有锁)
-    bool IsToplevelVisibleLocked(uint32_t id) {
-        return toplevelMgr_.IsToplevelVisibleLocked(id, desktopRootToplevelId_);
-    }
 };
 
 #include "compositor/surface_data.h"  // SurfaceData 已提取至独立头文件

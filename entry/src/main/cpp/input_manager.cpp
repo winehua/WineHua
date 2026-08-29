@@ -1,10 +1,14 @@
 #include "input_manager.h"
 #include "seat.h"
 #include "pointer_extras.h"
-#include "wayland_server.h"
+#include "wayland_server.h"  // 保留: FlushQueue 的 move grab 动作委托 + InputTarget 别名
 #include "compositor/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
                                             // fallback 已迁入, 本文件不再认识
                                             // PluginManager (include 已删)
+// 6A 装配注入直调 (BindCompositorDeps 注入引用; 见 input_manager.h 注释):
+#include "compositor/input_resolver.h"   // FindInputTargetAt/SurfaceLocalToDesktop/IsSurfaceAlive(经 injector)
+#include "compositor/toplevel_manager.h" // GetSurfaceForToplevel/GetToplevelGeometrySnapshot
+#include "compositor/move_grab.h"        // IsActive/GetToplevelId
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -65,6 +69,19 @@ void InputManager::Initialize(wl_display* display) {
     queue_.Initialize(display, [this] { FlushQueue(); });
 }
 
+void InputManager::BindCompositorDeps(ToplevelManager& tmgr, InputResolver& resolver,
+                                      MoveGrabHandler& moveGrab, const DisplayPolicy& policy,
+                                      const uint32_t& desktopRootToplevelId) {
+    // 6A 装配: 见头注释 (生命周期/无锁论证)。injector 的 surface 存活防御
+    // (IsSurfaceAlive) 与 surface→toplevel 查询同样走 Subscriber 注入的引用。
+    tmgr_ = &tmgr;
+    resolver_ = &resolver;
+    moveGrab_ = &moveGrab;
+    policy_ = &policy;
+    desktopRootToplevelId_ = &desktopRootToplevelId;
+    injector_.BindResolvers(&resolver, &tmgr);
+}
+
 void InputManager::Shutdown() {
     // 队列资源 (pipeSource_/fd/display) 清理迁 InputQueue
     queue_.Shutdown();
@@ -95,7 +112,6 @@ void InputManager::CoordTransform(double px, double py, uint32_t tl,
 // ========================================================================
 
 void InputManager::OnPointerWarp(wl_resource* surface, double sx, double sy) {
-    auto* ws = WaylandServer::GetInstance();
     // SetCursorPos 的位置同步。wineserver 光标已在 wine 侧移动到位, host
     // 不需要注入 motion: 绝对模式 (RTS 等) 下一次设备事件自然覆盖, 相对
     // 模式 wine 拒绝 SetCursorPos (wayland_pointer.c:1024) 不会发本请求。
@@ -104,8 +120,10 @@ void InputManager::OnPointerWarp(wl_resource* surface, double sx, double sy) {
     // IsDesktopMode→Policy (重构第 4C1 步): 模式位真策略分支改命名查询 —
     // "desktop 才做 surface 局部→桌面坐标换算" = 输入由 compositor 自路由
     // 的语境 (CompositorRoutesInput; desktop 模式下与 RootCompositing 同值)
-    if (ws->Policy().CompositorRoutesInput()) {
-        if (!ws->SurfaceLocalToDesktop(surface, sx, sy, lx, ly)) {
+    // 6A: 经装配注入的共享 policy 引用直读 (与 WaylandServer::Policy 同值)
+    if (policy_->CompositorRoutesInput()) {
+        // 6A: 逆映射直呼注入的 InputResolver (原 WaylandServer::SurfaceLocalToDesktop 转发)
+        if (!resolver_->SurfaceLocalToDesktop(surface, sx, sy, lx, ly)) {
             OH_LOG_WARN(LOG_APP, "[Input] WARP sync failed: surf=%{public}p not mapped",
                         static_cast<void*>(surface));
             return;
@@ -123,7 +141,7 @@ void InputManager::OnPointerWarp(wl_resource* surface, double sx, double sy) {
     static uint32_t sWarpN = 0;
     if (++sWarpN % 120 == 1)
         OH_LOG_INFO(LOG_APP, "[Input] WARP pos=(%{public}.1f,%{public}.1f) desktop=%{public}d n=%{public}u",
-                    lx, ly, ws->Policy().CompositorRoutesInput() ? 1 : 0, sWarpN);
+                    lx, ly, policy_->CompositorRoutesInput() ? 1 : 0, sWarpN);
 }
 
 // ========================================================================
@@ -217,13 +235,13 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
 
     // 坐标转换
     wl_fixed_t wx, wy;
-    auto* ws = WaylandServer::GetInstance();
     // Desktop 模式: 按桌面坐标解析精确输入目标 (菜单 subsurface 有自己的
     // wl_surface, 必须 enter 它并用层相对坐标 — 经父窗口 surface 的越界
     // 坐标会被 winewayland 的 motion clamp 夹回窗口内, 菜单伸出部分点不中)
+    // 6A: 策略/rootId 经装配注入的共享引用直读 (与 WaylandServer getter 同值)
     wl_resource* targetSurf = nullptr;
-    if (ws->Policy().CompositorRoutesInput() && tl != ws->GetDesktopRootToplevelId()) {
-        CoordTransform(px, py, ws->GetDesktopRootToplevelId(), &wx, &wy);
+    if (policy_->CompositorRoutesInput() && tl != *desktopRootToplevelId_) {
+        CoordTransform(px, py, *desktopRootToplevelId_, &wx, &wy);
         // 记录最近一次注入的桌面全局指针位置 (grab 建立时算固定偏移用)。
         // 4C1: 收进 InputSpaceMapper, 空间标签显式化为 Desktop (桌面逻辑坐标)
         InputSpaceMapper::GetInstance()->UpdateGlobalPtr(wx, wy, GlobalPtrState::Space::Desktop);
@@ -232,15 +250,16 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         // local = logical - st->x, 消费时再 + st->x 还原) 在两个线程间基准
         // 漂移: 消费时刻的 st->x 已变, rx 多出"窗口自身刚移动的量"并叠进
         // 下一帧位移 → 快速拖动时窗口位移逐帧累积放大, 窗口瞬间飞出屏幕
-        if (action == ACT_MOVE && ws->IsMoveGrabActive() &&
-            ws->GetMoveGrabToplevelId() == tl) {
+        // 6A: moveGrab 状态查询直呼注入的 MoveGrabHandler (原两行转发)
+        if (action == ACT_MOVE && moveGrab_->IsActive() &&
+            moveGrab_->GetToplevelId() == tl) {
             queue_.Enqueue(InputQueue::Event::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
             return;
         }
         double logicalX = wl_fixed_to_double(wx);
         double logicalY = wl_fixed_to_double(wy);
         WaylandServer::InputTarget target;
-        if (ws->FindInputTargetAt(logicalX, logicalY, target)) {
+        if (resolver_->FindInputTargetAt(logicalX, logicalY, target)) {
             // 全屏黑边: 只吞 PRESS (防幻影点击/焦点切换)。MOVE/RELEASE 照常透传 —
             // 越界坐标已在 resolver 内钳到内容区边缘 (宿主侧钳制, 与相对增量
             // 差分同源; 不再依赖 winewayland clamp, 否则相对增量差分会累积
@@ -269,7 +288,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                             target.scale, target.localX, target.localY);
         } else {
             // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标)
-            const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+            const auto tlGeo = tmgr_->GetToplevelGeometrySnapshot(tl);
             wx = wl_fixed_from_double(logicalX - tlGeo.x);
             wy = wl_fixed_from_double(logicalY - tlGeo.y);
             // 目标 surface 不可用是异常路径 (正常应命中 root), WARN 全量
@@ -289,7 +308,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         }
         // PC 空间全局指针位置 = 窗口局部坐标 + 窗口位置 (grab 偏移基准)。
         // 4C1: 显式语义为 Window 空间 (窗口局部+窗口位置还原值)
-        const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+        const auto tlGeo = tmgr_->GetToplevelGeometrySnapshot(tl);
         InputSpaceMapper::GetInstance()->UpdateGlobalPtr(
             wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
             wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
@@ -297,8 +316,8 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         // move grab 降级路径 (PC 模式 startMoving 失败时): wx 是窗口局部坐标,
         // 补上窗口位置还原为绝对坐标, 供 compositor 绝对定位 (不在此做
         // 局部→全局往返, 消费侧不再二次读 st->x, 避免双线程基准漂移)
-        if (action == ACT_MOVE && ws->IsMoveGrabActive() &&
-            ws->GetMoveGrabToplevelId() == tl) {
+        if (action == ACT_MOVE && moveGrab_->IsActive() &&
+            moveGrab_->GetToplevelId() == tl) {
             queue_.Enqueue(InputQueue::Event::PTR_MOTION, 0, nullptr,
                     wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
                     wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
@@ -383,7 +402,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // 桌面模式需 surface 级比较 (菜单层与父窗口同 toplevelId), 其余
             // 模式保持 toplevel 级比较 (一窗一 surface, 语义等价)。
             wl_resource* pressTargetSurf =
-                targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
+                targetSurf ? targetSurf : tmgr_->GetSurfaceForToplevel(tl);
             // 相对模式 + 物理鼠标: 跳过 enter/motion 重定位, 只投递按键。
             // LockCursor 冻结系统光标后, 每次点击的坐标恒为冻结点, 而 wine
             // 相对模式把 enter 当静默 SetCursorPos — 游戏自绘光标走绝对
@@ -429,7 +448,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // winewayland.drv: keyboard_enter → WM_WAYLAND_SET_FOREGROUND
             // → NtUserSetForegroundWindowInternal → Wine 前台窗口切换
             if (!tracker_.KeyboardEntered() || tracker_.KeyboardFocusedToplevel() != tl) {
-                wl_resource* kbdSurf = ws->GetSurfaceForToplevel(tl);
+                wl_resource* kbdSurf = tmgr_->GetSurfaceForToplevel(tl);
                 if (kbdSurf) {
                     if (tracker_.KeyboardEntered() && tracker_.KeyboardFocusedToplevel() != tl)
                         queue_.Enqueue(InputQueue::Event::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
@@ -486,7 +505,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                 ? (NeedsPointerEnter() || tracker_.PointerFocusedSurface() != targetSurf)
                 : (NeedsPointerEnter() || tracker_.PointerFocusedToplevel() != tl);
             if (needEnter) {
-                wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
+                wl_resource* surf = targetSurf ? targetSurf : tmgr_->GetSurfaceForToplevel(tl);
                 OH_LOG_INFO(LOG_APP, "[Input] MOVE-ENTER try surf=%{public}p for tl=%{public}u", surf, tl);
                 if (surf) {
                     SubmitEnterLeave(tl, targetSurf, surf, wx, wy);
@@ -521,9 +540,10 @@ void InputManager::SendKeyEvent(uint32_t tl, int evdevCode, bool pressed) {
 
     // 键盘 enter 管理: 立即设置状态防止重复 enter (参考旧代码)
     // 桌面模式: 键盘事件永远发到 root, 不应覆盖点击建立的子窗口焦点
-    if (pressed && !WaylandServer::GetInstance()->Policy().CompositorRoutesInput()
+    // 6A: 策略/surface 查询经装配注入引用直调 (同值)
+    if (pressed && !policy_->CompositorRoutesInput()
         && (!tracker_.KeyboardEntered() || tracker_.KeyboardFocusedToplevel() != tl)) {
-        wl_resource* surf = WaylandServer::GetInstance()->GetSurfaceForToplevel(tl);
+        wl_resource* surf = tmgr_->GetSurfaceForToplevel(tl);
         if (surf) {
             if (tracker_.KeyboardEntered() && tracker_.KeyboardFocusedToplevel() != tl) {
                 queue_.Enqueue(InputQueue::Event::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
@@ -579,10 +599,10 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
     // 的是**桌面逻辑坐标**, 却以窗口局部坐标语义进 enter → wine 光标被
     // 设置到偏移窗口原点/未经 fit 缩放的位置。
     wl_fixed_t wx, wy;
-    auto* ws = WaylandServer::GetInstance();
     wl_resource* targetSurf = nullptr;
-    if (ws->Policy().CompositorRoutesInput() && tl != ws->GetDesktopRootToplevelId()) {
-        CoordTransform(px, py, ws->GetDesktopRootToplevelId(), &wx, &wy);
+    // 6A: 策略/rootId/moveGrab/裁决经装配注入引用直调 (与旧 WaylandServer 转发同值)
+    if (policy_->CompositorRoutesInput() && tl != *desktopRootToplevelId_) {
+        CoordTransform(px, py, *desktopRootToplevelId_, &wx, &wy);
         // 缺段修复: 维护最近一次全局指针位置 (grab 偏移基准, 与
         // SendPointerEvent 桌面分支同一语义 — scroll 位置即指针位置);
         // 4C1 收进 InputSpaceMapper, 空间标签 Desktop (桌面逻辑坐标)
@@ -590,14 +610,14 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
         // move grab 期间: 交互式拖拽由 compositor 接管, 不注入 scroll —
         // 拖动窗口标题栏时滚轮不应滚动窗口内容 (axis 无位置属性, 不存在
         // 绝对值定位的等价事件, 拖拽中直接丢弃)
-        if (ws->IsMoveGrabActive() && ws->GetMoveGrabToplevelId() == tl) {
+        if (moveGrab_->IsActive() && moveGrab_->GetToplevelId() == tl) {
             OH_LOG_INFO(LOG_APP, "[Input] SCROLL-DROP tl=%{public}u (move grab active)", tl);
             return;
         }
         double logicalX = wl_fixed_to_double(wx);
         double logicalY = wl_fixed_to_double(wy);
         WaylandServer::InputTarget target;
-        if (ws->FindInputTargetAt(logicalX, logicalY, target)) {
+        if (resolver_->FindInputTargetAt(logicalX, logicalY, target)) {
             tl = target.toplevelId;
             targetSurf = target.surface;
             // 终态: resolver 锁内已算好 surface 局部坐标 + 内容区钳制
@@ -612,7 +632,7 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
                         target.swallow ? 1 : 0, target.localX, target.localY);
         } else {
             // 目标 surface 不可用: 退回旧路径 (父窗口相对坐标), 同 SendPointerEvent
-            const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+            const auto tlGeo = tmgr_->GetToplevelGeometrySnapshot(tl);
             wx = wl_fixed_from_double(logicalX - tlGeo.x);
             wy = wl_fixed_from_double(logicalY - tlGeo.y);
             OH_LOG_WARN(LOG_APP, "[Input] SCROLL-FALLBACK tl=%{public}u → local=(%{public}.1f,%{public}.1f) (no surf)",
@@ -630,12 +650,12 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
         }
         // 缺段修复: PC 空间全局指针位置 = 窗口局部 + 窗口位置 (grab 偏移基准,
         // 与 SendPointerEvent PC 分支同款); 4C1 显式语义 Window 空间
-        const auto tlGeo = ws->GetToplevelGeometrySnapshot(tl);
+        const auto tlGeo = tmgr_->GetToplevelGeometrySnapshot(tl);
         InputSpaceMapper::GetInstance()->UpdateGlobalPtr(
             wl_fixed_from_double(wl_fixed_to_double(wx) + tlGeo.x),
             wl_fixed_from_double(wl_fixed_to_double(wy) + tlGeo.y),
             GlobalPtrState::Space::Window);
-        if (ws->IsMoveGrabActive() && ws->GetMoveGrabToplevelId() == tl) {
+        if (moveGrab_->IsActive() && moveGrab_->GetToplevelId() == tl) {
             OH_LOG_INFO(LOG_APP, "[Input] SCROLL-DROP tl=%{public}u (move grab active)", tl);
             return;
         }
@@ -660,7 +680,7 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
     if (targetSurf
         ? (NeedsPointerEnter() || tracker_.PointerFocusedSurface() != targetSurf)
         : (NeedsPointerEnter() || tracker_.PointerFocusedToplevel() != tl)) {
-        wl_resource* surf = targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
+        wl_resource* surf = targetSurf ? targetSurf : tmgr_->GetSurfaceForToplevel(tl);
         OH_LOG_INFO(LOG_APP, "[Input] SCROLL-ENTER try surf=%{public}p for tl=%{public}u", surf, tl);
         if (surf) {
             SubmitEnterLeave(tl, targetSurf, surf, wx, wy);

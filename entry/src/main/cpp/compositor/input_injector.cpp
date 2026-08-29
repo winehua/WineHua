@@ -3,9 +3,11 @@
 #include <wayland-server-protocol.h>  // wl_pointer_send_*/wl_keyboard_send_* 系列
 
 #include "seat.h"
-#include "wayland_server.h"
 #include "pointer_extras.h"
 #include "text_input.h"
+// 6A 装配注入直呼 (BindResolvers 注入; wl 事件循环启动前装配, 见头注释):
+#include "compositor/input_resolver.h"   // IsSurfaceAlive (注入前 surface 存活防御)
+#include "compositor/toplevel_manager.h" // GetSurfaceForToplevel (surface 存在检查)
 
 #include <chrono>
 #include <atomic>
@@ -46,6 +48,11 @@ static uint32_t NowMs() {
 
 InputInjector::InputInjector(InputStateTracker* tracker) : tracker_(tracker) {}
 
+void InputInjector::BindResolvers(InputResolver* resolver, ToplevelManager* tmgr) {
+    resolver_ = resolver;
+    tmgr_ = tmgr;
+}
+
 // ========================================================================
 //  事件注入 (Wayland 线程, 调用 wl_*_send_*)
 // ========================================================================
@@ -62,7 +69,8 @@ void InputInjector::InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fix
     // 防御: surface 可能在入队后到 flush 前被 Wine 销毁。
     // 用 surfaceResources_ 精确验证该 surface 本体仍存活 —
     // 菜单 subsurface 不在 toplevelSurfaceMap_ 里, 不能用 tl 的映射代替
-    if (!WaylandServer::GetInstance()->IsSurfaceAlive(surface)) {
+    // 6A: 直呼注入的 InputResolver (原 WaylandServer::IsSurfaceAlive 转发)
+    if (!resolver_->IsSurfaceAlive(surface)) {
         OH_LOG_WARN(LOG_APP, "[Input] InjectEnter DROP tl=%{public}u surf=%{public}p: surface destroyed before flush", tl, surface);
         gDropEnter.fetch_add(1); MaybeReportDrops();
         return;
@@ -164,7 +172,7 @@ void InputInjector::InjectPointerLeave() {
     if (ptrs.empty() || !surf) return;
     // 防御: surface 可能在 leave 入队后到 flush 前被销毁 — 对已复用的
     // 对象 id 发 leave 会让 client 报 "invalid object ... leave(uo)" 并断开
-    if (!WaylandServer::GetInstance()->IsSurfaceAlive(surf)) {
+    if (!resolver_->IsSurfaceAlive(surf)) {
         OH_LOG_WARN(LOG_APP, "[Input] InjectLeave SKIP surf=%{public}p: destroyed before flush", surf);
         tracker_->ClearPointerFocus();
         return;
@@ -188,7 +196,8 @@ void InputInjector::InjectKeyboardEnter(uint32_t tl, wl_resource* surface) {
     }
 
     // 防御: surface 可能在入队后到 flush 前被 Wine 销毁
-    if (!WaylandServer::GetInstance()->GetSurfaceForToplevel(tl)) {
+    // 6A: 直呼注入的 ToplevelManager (原 WaylandServer::GetSurfaceForToplevel 转发)
+    if (!tmgr_->GetSurfaceForToplevel(tl)) {
         OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP tl=%{public}u: surface no longer in map (destroyed before flush?)", tl);
         gDropEnter.fetch_add(1); MaybeReportDrops();
         return;
@@ -256,7 +265,7 @@ void InputInjector::InjectKeyboardLeave() {
     wl_resource* surf = tracker_->KeyboardFocusedSurface();
     if (kbds.empty() || !tracker_->KeyboardEntered() || !surf) return;
     // 防御: 同 InjectPointerLeave — 对已销毁/复用的对象 id 发 leave 会断开 client
-    if (!WaylandServer::GetInstance()->IsSurfaceAlive(surf)) {
+    if (!resolver_->IsSurfaceAlive(surf)) {
         OH_LOG_WARN(LOG_APP, "[Input] InjectKbdLeave SKIP surf=%{public}p: destroyed before flush", surf);
         tracker_->ClearKeyboardFocus();
         return;

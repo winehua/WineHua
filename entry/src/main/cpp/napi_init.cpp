@@ -1030,7 +1030,8 @@ static napi_value SetToplevelVisible(napi_env env, napi_callback_info info) {
     napi_get_value_bool(env, args[1], &visible);
     InputManager::GetInstance()->SetToplevelVisible(tl, visible);
     if (visible) {
-        WaylandServer::GetInstance()->NotifyWindowRestored(tl);
+        // 6A: 兼容别名 NotifyWindowRestored 已删, 直调语义方法 (同实现同值)
+        WaylandServer::GetInstance()->SetToplevelRestored(tl);
     }
     return nullptr;
 }

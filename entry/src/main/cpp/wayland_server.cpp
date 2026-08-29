@@ -77,6 +77,14 @@ bool WaylandServer::Start(const std::string& socketPath) {
     wl_display_init_shm(display_);
     RegisterXdgShell(display_);
     Seat::GetInstance()->Register(display_);
+    // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
+    // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
+    // 装配在 wl 事件循环启动前 (与 4C1 warpSink 同模式: 之后回调仅在
+    // Wayland 线程 / NAPI 线程读, 只读共享, 无新锁; 引用与单例同生命周期,
+    // Start 前成员已全构造)。见 input_manager.h BindCompositorDeps。
+    InputManager::GetInstance()->BindCompositorDeps(toplevelMgr_, inputResolver_,
+                                                    moveGrab_, policy_,
+                                                    desktopRootToplevelId_);
     InputManager::GetInstance()->Initialize(display_);
     OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat+input)");
 
@@ -383,7 +391,8 @@ void WaylandServer::SetToplevelRestored(uint32_t id) {
     if (!xdg || !xdg->wlSurface) return;
     std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
     // 全屏窗口从最小化还原: 维持 FULLSCREEN 状态 (尺寸 0,0 = Wine 保持当前尺寸)
-    if (IsToplevelFullscreen(id)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    // 状态查询直调 toplevelMgr_ (6A 删转发; 本函数为 WaylandServer 成员, 直调同值)
+    if (toplevelMgr_.IsToplevelFullscreen(id)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
     XdgConfigureSend(tl, xdg->xdgSurface, 0, 0, states);
 }
 
@@ -432,7 +441,8 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     // configure 路径处理会 SetWindowPos 把窗口挪回屏幕内, 哨兵位被污染 →
     // 用户还原时检测永不成立, WS_MINIMIZE 清不掉 (war3 还原后黑屏 +
     // 点击再最小化的根因之一)。还原通道 SetToplevelRestored 不走本函数。
-    if (IsToplevelMinimized(toplevelId)) {
+    // 状态查询直调 toplevelMgr_ (6A 删转发; 本函数为 WaylandServer 成员, 同值)
+    if (toplevelMgr_.IsToplevelMinimized(toplevelId)) {
         OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize id=%{public}u %{public}dx%{public}d SKIPPED (minimized)",
                     toplevelId, w, h);
         return;
@@ -449,7 +459,8 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     // 迁移为读 ToplevelState; 未建档/sd 缺失同值 false)。一次读取供本函数
     // 三处消费 (日志/状态位/日志), 独立加锁与 IsToplevelFullscreen 同模式
     // (本函数入口的 IsToplevelMinimized 已是该模式, 无锁嵌套)。
-    const bool maximized = IsToplevelMaximized(toplevelId);
+    // 6A: 状态查询直调 toplevelMgr_ (删转发; 本函数为 WaylandServer 成员, 同值)。
+    const bool maximized = toplevelMgr_.IsToplevelMaximized(toplevelId);
 
     OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s",
                 toplevelId, w, h,
@@ -459,7 +470,7 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
     if (maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
     // 全屏窗口在 OHOS 侧尺寸变化时保持 FULLSCREEN 状态, 否则 Wine 会退出全屏。
-    if (IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    if (toplevelMgr_.IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
     XdgConfigureSend(tl, xdg->xdgSurface, w, h, states);
 
     // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时
@@ -475,8 +486,5 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
                     toplevelId, w, h, maximized ? "yes" : "no");
     }
 }
-
-// -- toplevelId -> wl_surface 映射 (供 Seat::InjectPointerEnter 查找) --
-wl_resource* WaylandServer::GetSurfaceForToplevel(uint32_t toplevelId) {
-    return toplevelMgr_.GetSurfaceForToplevel(toplevelId);
-}
+// GetSurfaceForToplevel 转发已删 (重构第 6A 步): 调用方 (InputManager/
+// InputInjector) 经装配注入 ToplevelManager 引用直调 GetSurfaceForToplevel
