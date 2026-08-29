@@ -16,7 +16,7 @@
 #include "compositor/frame/compositor_constants.h"
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
-#include "include/viewporter-server-protocol.h"
+#include "protocols/viewporter-server-protocol.h"
 #include "perf_utils.h"
 #include <algorithm>
 #include <cstring>

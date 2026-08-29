@@ -9,7 +9,7 @@ set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(
     ${NATIVERENDER_ROOT_PATH}
-    ${NATIVERENDER_ROOT_PATH}/include
+    ${NATIVERENDER_ROOT_PATH}/protocols
     # compositor 按域分组后 (frame/toplevel/input): 域内互引保持裸名 include,
     # 经本路径解析; 跨域由目标目录命中。同目录优先搜索不变。
     ${NATIVERENDER_ROOT_PATH}/compositor/frame
@@ -75,12 +75,12 @@ add_library(entry SHARED
     pointer_extras.cpp
     xdg_shell.cpp
     text_input.cpp
-    xdg-shell-protocol.c
-    viewporter-server-protocol.c
-    pointer-warp-v1-protocol.c
-    pointer-constraints-unstable-v1-protocol.c
-    relative-pointer-unstable-v1-protocol.c
-    text-input-unstable-v3-protocol.c
+    protocols/xdg-shell-protocol.c
+    protocols/viewporter-server-protocol.c
+    protocols/pointer-warp-v1-protocol.c
+    protocols/pointer-constraints-unstable-v1-protocol.c
+    protocols/relative-pointer-unstable-v1-protocol.c
+    protocols/text-input-unstable-v3-protocol.c
 )
 
 # BlitScaled (双线性缩放 blit) 是桌面合成热路径: 全屏游戏 800x600→1400x920

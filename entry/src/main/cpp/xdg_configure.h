@@ -2,7 +2,7 @@
 #include <wayland-server-core.h>
 #include <cstdint>
 #include <vector>
-#include "include/xdg-shell-server-protocol.h"
+#include "protocols/xdg-shell-server-protocol.h"
 
 // xdg_toplevel configure 构造单点 (原 8 份手工 wl_array 拷贝收口 — xdg_shell.cpp
 // 6 份 + wayland_server.cpp 2 份, docs/COMPOSITOR_REFACTOR_PLAN.md §2.3):

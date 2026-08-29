@@ -1,5 +1,5 @@
 #include <wayland-server-core.h>
-#include "include/xdg-shell-server-protocol.h"
+#include "protocols/xdg-shell-server-protocol.h"
 #include "wayland_server.h"
 #include "xdg_shell.h"
 #include "xdg_configure.h"

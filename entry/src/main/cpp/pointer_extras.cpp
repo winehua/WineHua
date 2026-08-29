@@ -1,8 +1,8 @@
 #include "pointer_extras.h"
 
-#include "include/pointer-constraints-unstable-v1-server-protocol.h"
-#include "include/pointer-warp-v1-server-protocol.h"
-#include "include/relative-pointer-unstable-v1-server-protocol.h"
+#include "protocols/pointer-constraints-unstable-v1-server-protocol.h"
+#include "protocols/pointer-warp-v1-server-protocol.h"
+#include "protocols/relative-pointer-unstable-v1-server-protocol.h"
 // 解环 (重构第 4C1 步): 本文件不再 include input_manager.h — warp 位置同步
 // 经 SetPointerWarpSink 装配 (见头注释"warp 回调装配"), 装配点在
 // wl_core.cpp RegisterWlCoreGlobals。6A: 也不再 include wayland_server.h —
