@@ -52,7 +52,7 @@ static std::string FindEnvValue(const std::vector<std::string>& probeBase, const
     return {};
 }
 
-void AppendStableDesktopDxvkEnv(std::vector<std::string>& env,
+void AppendStableDxvkEnv(std::vector<std::string>& env,
                                 const std::vector<std::string>& probeBase,
                                 const std::string& d3dBackend,
                                 const std::string& dxvkBackend)
@@ -114,7 +114,7 @@ void AppendStableDesktopDxvkEnv(std::vector<std::string>& env,
 
     /* Explorer-launched programs inherit the desktop process environment and
      * never see runWineProgram's per-process overrides; runWineProgram itself
-     * reaches this same overlay via SessionEnvPolicy.stableDesktopOverlay.
+     * reaches this same overlay via SessionEnvPolicy.applyStableOverlay.
      * Keep the product-correct defaults here so both chains share one source. */
     /* Product sessions retain warnings and errors without formatting DXVK's
      * informational startup stream. Smoke and explicit diagnostics override
@@ -162,8 +162,8 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
 #endif
     // 桌面稳定化 overlay。probe 快照 = 到此处为止的 env (基线+D3D+compat),
     // 与旧实现探测 LaunchParams.envStrs 语义一致
-    if (p.stableDesktopOverlay)
-        AppendStableDesktopDxvkEnv(env, env, p.d3dBackend, p.dxvkBackend);
+    if (p.applyStableOverlay)
+        AppendStableDxvkEnv(env, env, p.d3dBackend, p.dxvkBackend);
     if (p.desktopShellFlag)
         UpsertEnvLine(env, "WINEHUA_DESKTOP=shell");
     // per-app 覆盖最后写入, 优先级最高

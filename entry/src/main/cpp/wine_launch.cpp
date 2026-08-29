@@ -285,7 +285,7 @@ static bool IsWineserverSocketReady(const std::string& prefix) {
 }
 
 // FindLaunchEnvironmentValue / UsesDxvkOverlay / 兼容档位三函数 /
-// AppendStableDesktopDxvkEnv 已迁入 env_profiles.cpp (策略集中, 重构第 3 步)
+// AppendStableDxvkEnv 已迁入 env_profiles.cpp (策略集中, 重构第 3 步)
 
 static bool UsesVulkanD3dBackend(const std::string& backend)
 {
@@ -294,7 +294,7 @@ static bool UsesVulkanD3dBackend(const std::string& backend)
 }
 
 // 兼容模式全局档位 (FilterCompatLines / AppendCompatEnvLines) 与
-// AppendStableDesktopDxvkEnv 已迁入 env_profiles.cpp, 签名从 LaunchParams 解耦
+// AppendStableDxvkEnv 已迁入 env_profiles.cpp, 签名从 LaunchParams 解耦
 // (重构第 3 步); 第 5 步起档位统一经 SpawnRequest.env 下发
 
 static void PrepareDesktopSessionGraphicsEnv(const LaunchParams& params)
@@ -605,7 +605,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // WINE_OHOS_AUDIO_* fd 行会被序列化契约过滤 (fd 跨进程无效), broker
         // 会为子进程自动创建 audio bootstrap fd。
         winehua::SessionEnvPolicy explorerPolicy = SessionPolicyFromLaunch(*p, audioBootstrapFd);
-        explorerPolicy.stableDesktopOverlay = true;
+        explorerPolicy.applyStableOverlay = true;
         std::vector<std::string> explorerEnv = winehua::BuildSessionEnv(explorerPolicy);
 
         winehua::SpawnRequest exReq{winehua::SpawnKind::DesktopShell};

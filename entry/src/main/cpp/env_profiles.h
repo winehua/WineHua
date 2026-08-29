@@ -8,7 +8,7 @@
  *   BuildWineEnv (L0-L5 基线, wine_env.cpp)
  *   → AppendD3dBackendEnv (dxvk/vkd3d 受管 overlay, wine_env.cpp)
  *   → AppendCompatEnvLines (设置页兼容档位, 本文件)
- *   → AppendStableDesktopDxvkEnv (桌面会话稳定化 overlay, 本文件, 可选)
+ *   → AppendStableDxvkEnv (桌面会话稳定化 overlay, 本文件, 可选)
  *   → WINEHUA_DESKTOP=shell (可选)
  *   → extraEnv (per-run/per-app 覆盖, 优先级最高)
  *
@@ -25,7 +25,7 @@ namespace winehua {
 // 供 UI 档位/未来逐键微调演进); 本侧只是机制层前缀门: 放行
 // BOX64_DYNAREC_* 行 (防注入其它 key), 不认识档位名, 空串 = 出厂基线不注入。
 // 会话 env 经 UpsertEnvLine 压过基线 (每 key 最后写入者胜出);
-// DXVK/desktop 的 WEAKBARRIER=0 clamp 在 AppendStableDesktopDxvkEnv 尾,
+// DXVK/desktop 的 WEAKBARRIER=0 clamp 在 AppendStableDxvkEnv 尾,
 // 只会重新压回, 不会被档位击穿 (该 clamp 是 Venus 图形 ring 约束, 只
 // 覆盖 explorer 会话链; wineboot/wineserver 无图形, 档位原值直接生效)。
 // 仅 __aarch64__ (Box64) 设备有意义; x86_64 原生跑无 box64, 空转不注入。
@@ -45,7 +45,7 @@ void AppendCompatEnvLines(std::vector<std::string>& env,
 // 的探测基准 (旧实现探测 LaunchParams.envStrs = 基线+D3D+compat 后的会话 env;
 // 管线化后由 BuildSessionEnv 传"到此处为止的 env"快照, 语义一致)。
 // 实现保证: 全部 probeBase 读取先于对 env 的写入, 允许调用方传同一 vector。
-void AppendStableDesktopDxvkEnv(std::vector<std::string>& env,
+void AppendStableDxvkEnv(std::vector<std::string>& env,
                                 const std::vector<std::string>& probeBase,
                                 const std::string& d3dBackend,
                                 const std::string& dxvkBackend);
@@ -64,7 +64,7 @@ struct SessionEnvPolicy {
     // DXVK/VKD3D 稳定化 overlay: WEAKBARRIER=0 clamp + DXVK_LOG + perf profile。
     // 消费方: explorer 桌面会话链 + RunWineExe 程序直启 (runWineProgram),
     // 两侧同源 — ArkTS 不再平行维护默认值拷贝
-    bool stableDesktopOverlay = false;
+    bool applyStableOverlay = false;
     // WINEHUA_DESKTOP=shell: 接入 explorer shell desktop (任务栏可见)
     bool desktopShellFlag = false;
     // per-run/per-app 覆盖, 最后写入 (优先级最高)

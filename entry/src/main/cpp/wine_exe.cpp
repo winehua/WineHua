@@ -212,10 +212,10 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     policy.d3dBackend = options.d3dBackend;
     policy.dxvkBackend = options.dxvkBackend;
     // DXVK 稳定化默认值 (DXVK_LOG/perf profile/WEAKBARRIER clamp 等) 与桌面
-    // 会话链同一来源 (AppendStableDesktopDxvkEnv) — 历史上由 ArkTS
+    // 会话链同一来源 (AppendStableDxvkEnv) — 历史上由 ArkTS
     // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK/VKD3D 后端
     // overlay 内 early-return, extraEnv 最后写入仍可压过产品默认。
-    policy.stableDesktopOverlay = true;
+    policy.applyStableOverlay = true;
     policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
     policy.extraEnv = options.environment;
     policy.extraEnv.push_back("WINEHUA_D3D_BACKEND=" + options.d3dBackend);

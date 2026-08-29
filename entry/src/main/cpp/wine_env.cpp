@@ -78,7 +78,7 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     env.push_back("GST_PLUGIN_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
     env.push_back("GST_PLUGIN_SYSTEM_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
     // ==== Layer 1: Box64 性能调优 (仅 ARM64, 键值表见 wine_env_baseline.h) ====
-    // NOTE: BOX64_DYNAREC_WEAKBARRIER=2 在桌面 DXVK 下会被 AppendStableDesktopDxvkEnv 覆盖为 0
+    // NOTE: BOX64_DYNAREC_WEAKBARRIER=2 在桌面 DXVK 下会被 AppendStableDxvkEnv 覆盖为 0
     winehua::AppendBox64PerfStrings(env);
     // ==== Layer 2: 运行时库路径 ====
     // NOTE: BOX64_LD_LIBRARY_PATH (ARM64) 在 DXVK 路径下会被 AppendD3dBackendEnv 覆盖
@@ -129,7 +129,7 @@ void UpsertEnvLine(std::vector<std::string>& env, const std::string& line)
     if (sep == std::string::npos || sep == 0) return;
     const std::string key = line.substr(0, sep);
     // 清理所有同 key 的旧条目, 然后追加新值 (与旧 UpsertEnv 行为一致,
-    // 避免 AppendStableDesktopDxvkEnv 等 push_back 路径产生重复 key)
+    // 避免 AppendStableDxvkEnv 等 push_back 路径产生重复 key)
     env.erase(std::remove_if(env.begin(), env.end(), [&](const std::string& existing) {
         return existing.compare(0, key.size(), key) == 0 &&
                existing.size() > key.size() && existing[key.size()] == '=';
