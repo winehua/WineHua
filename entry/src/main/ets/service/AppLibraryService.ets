@@ -94,7 +94,8 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
   // wine 自带小工具 (system32 的 exe stub, 设备实测存在)
   { name: '扫雷', exe: 'windows/system32/winemine.exe' },
   { name: 'winefile', exe: 'windows/system32/winefile.exe' },
-  // 烟测程序 (C:\smoke 在持久 prefix 内, 每次启动由 syncManagedSmoke 刷新)
+  // 烟测程序 (C:\smoke 载荷随 wine 数据打包, 引擎就绪后由
+  // WineEnvService.seedSmokePayload 按需播种到持久 prefix — 见 master)
   { name: 'Graphics Smoke', exe: 'smoke/x64/winehua_graphics_smoke.exe' },
   { name: 'D3d Smoke', exe: 'smoke/x64/winehua_d3d_switch_cube.exe' },
 ];
