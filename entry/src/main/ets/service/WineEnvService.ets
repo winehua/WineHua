@@ -465,7 +465,26 @@ export class WineEnvService {
     this.bgStart = false;
     this.setInitStatus('已就绪', false);
     // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
-    this.waitForPrefix();
+    this.waitForPrefix().then(() => {
+      void this.seedSmokePayload();
+    });
+  }
+
+  // 烟测程序载荷: C:\smoke 是应用库内建「Graphics Smoke / D3d Smoke」手动
+  // 启动入口的存在性前提。载荷随 wine 数据打包在 wine/smoke; 前缀就绪后
+  // 按需播种到持久 prefix (旧 syncManagedSmoke 职责的轻量版 — 自动化设施
+  // 已整体拆除, 仅保留载荷复制, 失败只记日志不阻塞引擎)。
+  private async seedSmokePayload(): Promise<void> {
+    const source = `${WINE_ROOT}/smoke`;
+    const target = `${FILES_BASE}/.wine/drive_c/smoke`;
+    if (pathExists(target)) return;
+    if (!pathExists(source)) return;
+    try {
+      await fs.copy(source, target);
+      hilog.warn(DOMAIN, 'wine', 'seeded smoke payload → C:\\smoke');
+    } catch (e) {
+      hilog.warn(DOMAIN, 'wine', 'seed smoke payload failed: %{public}s', JSON.stringify(e));
+    }
   }
 
   private detectRawfileWineData(): boolean {
