@@ -99,6 +99,8 @@ export struct DesktopLayer {
   private twoFingerAccumY: number = 0;
   private twoFingerAccumX: number = 0;
   private static readonly SCROLL_STEP_PX: number = 40; // 物理像素/滚动步, winewayland.drv 只处理 discrete
+  // 双指点击↔滚动判定阈值 (物理px): > DRAG_THRESHOLD(落指抖动) < SCROLL_STEP_PX(滚动生效步)
+  private static readonly TWO_FINGER_TAP_PX: number = 20;
   // 物理鼠标右键: Press 时捕获目标 tl, Release 发给同一 tl (按下捕获语义)
   private rightBtnTl: number = 0;
   // 物理鼠标中键: 同右键的按下捕获 (OHOS 只对左键合成 touch, 右/中键
@@ -147,6 +149,8 @@ export struct DesktopLayer {
   private tpTwoFingerLastMidY: number = 0;
   private tpScrollAccumX: number = 0;
   private tpScrollAccumY: number = 0;
+  private tpTwoFingerDownTime: number = 0; // 进入双指模式时刻 (TP-TWO-TAP 日志打点用)
+  private tpScrollFired: boolean = false;  // 本次双指已发过滚动事件 (抬指不再判右键 — 累积会被消费, 残量可能 < 点击阈值)
 
   aboutToAppear(): void {
     this.input.subscribe(this.mirrorInput);
@@ -209,6 +213,8 @@ export struct DesktopLayer {
     this.tpDragging = false;
     this.tpDragTl = 0;
     this.tpTwoFinger = false;
+    this.tpTwoFingerDownTime = 0;
+    this.tpScrollFired = false;
     this.tpLastTapTime = 0;
   }
 
@@ -241,11 +247,18 @@ export struct DesktopLayer {
         this.tpTwoFingerLastMidY = midY;
         this.tpScrollAccumX = 0;
         this.tpScrollAccumY = 0;
+        this.tpScrollFired = false;
+        this.tpTwoFingerDownTime = Date.now();
       } else {
         this.tpScrollAccumY += this.tpTwoFingerLastMidY - midY;
         this.tpScrollAccumX += midX - this.tpTwoFingerLastMidX;
         this.tpTwoFingerLastMidX = midX;
         this.tpTwoFingerLastMidY = midY;
+        // 累积触及滚动步立即锁定"滚动手势": 后续抬指不判右键
+        if (Math.abs(this.tpScrollAccumY) >= DesktopLayer.SCROLL_STEP_PX
+          || Math.abs(this.tpScrollAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
+          this.tpScrollFired = true;
+        }
         const tl = this.tlAtCursor();
         if (tl > 0) {
           while (Math.abs(this.tpScrollAccumY) >= DesktopLayer.SCROLL_STEP_PX) {
@@ -266,6 +279,15 @@ export struct DesktopLayer {
     }
     if (this.tpTwoFinger) {
       this.tpTwoFinger = false;
+      // 双指抬起判定: 中点净位移 < TWO_FINGER_TAP_PX → 模拟右键 (与单指长按同效果);
+      // 净位移 >= 阈值 → 滚动手势, 不起右键 (累积满 40px 的已在滚动分支发过)
+      const dist = Math.abs(this.tpScrollAccumX) + Math.abs(this.tpScrollAccumY);
+      if (!this.tpScrollFired && dist < DesktopLayer.TWO_FINGER_TAP_PX) {
+        const tl = this.tlAtCursor();
+        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TP-TWO-TAP→RCLICK tl=%{public}d moved=%{public}d hold=%{public}dms',
+          tl, dist, Date.now() - this.tpTwoFingerDownTime);
+        this.clickAtCursor(mapMouseButton(2));
+      }
       return;
     }
 
