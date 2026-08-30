@@ -70,6 +70,12 @@ void AppendStableDxvkEnv(std::vector<std::string>& env,
     const bool guestPerf = shadowTrace && !strcmp(shadowTrace, "perf");
     std::string selectedProfile = FindEnvValue(probeBase, "WINEHUA_PERF_PROFILE");
     const std::string strongRing = FindEnvValue(probeBase, "VN_WINEHUA_STRONG_RING_BARRIER");
+    // 1.10.3 (legacy) 是经典上传/隐式同步模型, 不接受 precise shadow/强环契约键:
+    // stable overlay 的缺省 STRONG_RING=1 与 PRECISE_SHADOW=1 对 legacy 会话
+    // 反而把每帧提交拖回 host 同步 (实测 E 组合=低帧率)。机制键与精确 profile
+    // 仅对 DXVK 2.6 契约注入; legacy 会话保留 probeBase 原值 (若走 vkd3d 混合
+    // 路由, 机制组键仍由 AppendD3dBackendEnv 决定, 不在本层补)。
+    const bool legacyDxvk = dxvkBackend != "dxvk_modern_2_6";
     const char* traceKeys[] = {
         "DXVK_WINEHUA_TRACE_SAMPLED",
         "DXVK_WINEHUA_TRACE_FLOW",
@@ -124,13 +130,15 @@ void AppendStableDxvkEnv(std::vector<std::string>& env,
 #ifdef __aarch64__
     UpsertEnvLine(env, "BOX64_DYNAREC_WEAKBARRIER=0");
 #endif
-    UpsertEnvLine(env, "WINEHUA_PERF_PROFILE=" + selectedProfile);
-    UpsertEnvLine(env, "DXVK_WINEHUA_PRECISE_SHADOW=1");
-    if (selectedProfile == "shadow-precise-dirty-ring-inline-upload-descriptor-serialized") {
-        UpsertEnvLine(env, "VKR_WINEHUA_DESCRIPTOR_UPDATE_SERIALIZE=1");
+    if (!legacyDxvk) {
+        UpsertEnvLine(env, "WINEHUA_PERF_PROFILE=" + selectedProfile);
+        UpsertEnvLine(env, "DXVK_WINEHUA_PRECISE_SHADOW=1");
+        if (selectedProfile == "shadow-precise-dirty-ring-inline-upload-descriptor-serialized") {
+            UpsertEnvLine(env, "VKR_WINEHUA_DESCRIPTOR_UPDATE_SERIALIZE=1");
+        }
+        UpsertEnvLine(env, "VN_WINEHUA_STRONG_RING_BARRIER=" +
+                      (strongRing.empty() ? "1" : strongRing));
     }
-    UpsertEnvLine(env, "VN_WINEHUA_STRONG_RING_BARRIER=" +
-                  (strongRing.empty() ? "1" : strongRing));
     if (traceKeysEnabled) {
         for (size_t i = 0; i < kTraceKeyCount; ++i) {
             env.push_back(std::string(traceKeys[i]) + "=" +

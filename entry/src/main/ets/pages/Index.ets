@@ -446,6 +446,11 @@ struct Index {
           .backgroundColor(this.d3dBackend === 'vkd3d_limited_500k' ? '#854' : '#333')
           .onClick(() => this.selectD3dBackend('vkd3d_limited_500k'))
           .margin({ bottom: 6 })
+        Button('纯 DXVK 路由 (无 D3D12 混合)')
+          .width('100%').height(34)
+          .backgroundColor(this.d3dBackend === 'dxvk_legacy' ? '#285' : '#333')
+          .onClick(() => this.selectD3dBackend('dxvk_legacy'))
+          .margin({ bottom: 6 })
         if (this.d3dBackend === 'vkd3d_limited_500k') {
           Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackend === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
             .fontSize(11).fontColor('#d9a').maxLines(3)

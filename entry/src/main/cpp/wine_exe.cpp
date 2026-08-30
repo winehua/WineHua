@@ -327,6 +327,10 @@ int SpawnWineProgram(const ProgramOptions& options)
 // 呈现后端按 d3d 后端派生 (单一策略点): DXVK/VKD3D (走 GPU 图集) → venus
 // 呈现 (zero-copy), WineD3D → virgl 呈现。调用方不传 presentBackend 时由
 // 此兜底, 避免各调用方手写一份换算 (dev UI 曾各自实现一份)。
+// 注 (2026-08-30 实测): 曾按 dxvkBackend 让 legacy 1.10.3 走 virgl_compositor
+// 以复现 1.0.12 高帧率路径, 设备实测反而白屏 0 帧 — master 的 guest present
+// 信号协议只对 2.6 帧源持续供给, 1.10.3 在 venus 模式 1 帧断供 / virgl 模式
+// 0 帧白屏 — 已回滚 (详见 docs/WINE_DXVK_BACKEND_MASTER_ANALYSIS.md §8.5-8.7)。
 static std::string DerivePresentBackend(const std::string& d3dBackend)
 {
     const bool gpuBackend = d3dBackend.rfind("dxvk_", 0) == 0 ||
@@ -361,8 +365,10 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     ReadStringArray(env, args[0], "argv", &options.argv);
     ReadEnvironment(env, args[0], &options.environment);
     OH_LOG_INFO(LOG_APP,
-                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu",
-                options.windowsExePath.c_str(), options.argv.size(), options.environment.size());
+                "[WineProgram] parsed options exe=%{public}s d3d=%{public}s dxvk=%{public}s present=%{public}s argc=%{public}zu env=%{public}zu",
+                options.windowsExePath.c_str(), options.d3dBackend.c_str(),
+                options.dxvkBackend.c_str(), options.presentBackend.c_str(),
+                options.argv.size(), options.environment.size());
 
     const pid_t pid = SpawnWineProgram(options);
     WineProcessEntry entry;

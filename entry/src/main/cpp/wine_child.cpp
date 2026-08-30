@@ -385,6 +385,31 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
                           const std::vector<std::string>& envOverrides,
                           const char* entryParamsForLog);
 
+// === 基准采集: 进程发射前 argv/environ 快照 (proc-env-baseline 工具) ===
+// 每个 wine 子进程在 execve / box64_hmos_main 调用前把真实 argv 与当时 environ
+// 逐条落盘到 WINE_LOG_DIR/proc_snapshot.log, 供主机侧脚本汇总为
+// "进程启动参数与环境变量基线" 文档。仅记录, 不改变任何行为。
+static void dump_proc_snapshot(const char* tag, int argc, const char* const* argv)
+{
+    extern char** environ;
+    mkdir(WINE_LOG_DIR, 0755);
+    char path[256];
+    snprintf(path, sizeof(path), WINE_LOG_DIR "/proc_snapshot.log");
+    FILE* f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "\n=== SNAPSHOT pid=%d tag=%s\n", getpid(), tag);
+    fprintf(f, "argv:");
+    for (int i = 0; i < argc; i++)
+        fprintf(f, " %s", argv[i] ? argv[i] : "(null)");
+    fprintf(f, "\n");
+    for (char** e = environ; *e; e++) {
+        if (strchr(*e, '\n')) continue;
+        fprintf(f, "env %s\n", *e);
+    }
+    fprintf(f, "=== END\n");
+    fclose(f);
+}
+
 extern "C" void Main(NativeChildProcess_Args args)
 {
     OH_LOG_INFO(LOG_APP, "[WineChild] Main() ENTER pid=%{public}d entryParams=%{public}s",
@@ -560,6 +585,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     OH_LOG_INFO(LOG_APP, "[WineChild] calling box64_hmos_main argc=%{public}d wine=%{public}s",
                 box64_argc, winePath.c_str());
 
+    dump_proc_snapshot(argc > 0 ? basename_of_path(argv[0]) : "wine", box64_argc, box64_argv);
     int box64_rc = box64_main(box64_argc, box64_argv, environ);
     OH_LOG_INFO(LOG_APP, "[WineChild] box64_hmos_main returned rc=%{public}d", box64_rc);
 
@@ -690,6 +716,7 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
 
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step6: calling box64_hmos_main argc=%{public}d ws=%{public}s",
                 box64_argc, wsPath.c_str());
+    dump_proc_snapshot("wineserver", box64_argc, box64_argv);
     int wsRc = box64_main(box64_argc, box64_argv, environ);
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step7: box64_hmos_main returned rc=%{public}d", wsRc);
 

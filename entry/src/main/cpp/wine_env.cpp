@@ -218,9 +218,12 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             "VK_DRIVER_FILES=" + guestVulkanIcd,
             "VK_ICD_FILENAMES=" + guestVulkanIcd,
             "VN_DEBUG=vtest",
+            /* legacy 1.10.3 不注入 no_multi_ring: 实测该标志 × legacy 组合
+             * 拖慢每帧提交 (1.0.12 时代无此标志 + 1.10.3 = 高帧率;
+             * F 组合带该标志 + 1.10.3 = 低帧率)。2.6.2 自适应, 不受影响。 */
             "VN_PERF=" + std::string(modern26
                 ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
-                : "no_fence_feedback,no_query_feedback,no_multi_ring"),
+                : "no_fence_feedback,no_query_feedback"),
             "VN_WINEHUA_STRONG_RING_BARRIER=1",
             "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
             "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
@@ -331,9 +334,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
          * so advertise the runtime capability here for every DXVK version.
          * Re-enable multi-ring only after a replacement Venus runtime passes
          * the x86/x64 command-stream qualification gate. */
+        /* legacy 分支同 VN_PERF 短版约束 (see vkd3d 分支注释):
+         * 1.10.3 不带 no_multi_ring, 对齐 1.0.12 高帧率基线。 */
         "VN_PERF=" + std::string(modern26
             ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
-            : "no_fence_feedback,no_query_feedback,no_multi_ring"),
+            : "no_fence_feedback,no_query_feedback"),
         "WINEDLLOVERRIDES=d3d11=n;dxgi=n",
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,

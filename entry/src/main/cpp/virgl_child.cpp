@@ -27,6 +27,29 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <sys/stat.h>
+#include "wine_constants.h"
+
+// === 基准采集: 进程发射前 argv/environ 快照 (proc-env-baseline 工具) ===
+// virgl_child 为图形 Broker 进程 (独立 NCP 入口, 不经 wine_child.cpp),
+// 单独记录其 entryParams 与发射瞬间的完整 environ。仅记录, 不改变行为。
+static void dump_proc_snapshot(const char* tag, const char* entryParams)
+{
+    extern char** environ;
+    mkdir(WINE_LOG_DIR, 0755);
+    char path[256];
+    snprintf(path, sizeof(path), WINE_LOG_DIR "/proc_snapshot.log");
+    FILE* f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "\n=== SNAPSHOT pid=%d tag=%s\n", getpid(), tag);
+    fprintf(f, "argv: %s\n", entryParams ? entryParams : "(null)");
+    for (char** e = environ; *e; e++) {
+        if (strchr(*e, '\n')) continue;
+        fprintf(f, "env %s\n", *e);
+    }
+    fprintf(f, "=== END\n");
+    fclose(f);
+}
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -531,6 +554,7 @@ extern "C" __attribute__((visibility("default"))) OHIPCRemoteStub* NativeChildPr
 
 extern "C" __attribute__((visibility("default"))) void NativeChildProcess_MainProc()
 {
+    dump_proc_snapshot("virgl-ipc-proc", "NativeChildProcess_MainProc");
     ClearGuestGraphicsEnv();
 #ifdef __x86_64__
     // Emulator express GPU: surfaceless EGL crashes it; use default display
@@ -630,6 +654,7 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
 
     OH_LOG_INFO(LOG_APP, "[virgl-child] Main enter pid=%{public}d params=%{public}s",
                 getpid(), entryParams);
+    dump_proc_snapshot("virgl-ipc-main", entryParams);
     if (!buffer)
     {
         OH_LOG_ERROR(LOG_APP, "[virgl-child] entryParams allocation failed");
