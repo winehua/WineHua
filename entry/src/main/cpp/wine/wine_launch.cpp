@@ -1,13 +1,13 @@
 #include "wine_launch.h"
 #include "wine_exe.h"
-#include "wine_process.h"
+#include "proc/wine_process.h"
 #include "wine_env.h"
 #include "env_profiles.h"
-#include "spawner.h"
+#include "proc/spawner.h"
 #include "wine_constants.h"
-#include "wayland_server.h"
+#include "compositor/wayland_server.h"
 #include "audio_ipc_protocol.h"
-#include "graphics_broker.h"
+#include "graphics/graphics_broker.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -31,8 +31,8 @@
 #define LOG_TAG "WL_NAPI"
 #include <hilog/log.h>
 
-#include "broker.h"
-#include "wait_utils.h"
+#include "proc/broker.h"
+#include "common/wait_utils.h"
 
 // NCP 直启细节已收口到 spawner.cpp (重构第 4 步), 本文件不再直接触碰
 // AbilityKit NCP 接口。

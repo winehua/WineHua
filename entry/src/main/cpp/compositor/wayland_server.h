@@ -26,7 +26,7 @@ struct ShmCommitInfo;
 #include "compositor/toplevel/desktop_compositor.h"
 #include "compositor/input/input_resolver.h"
 #include "compositor/toplevel/desktop_root_manager.h"
-#include "plugin_manager.h"  // PromotePendingDesktopRoot → MoveRendererToToplevel
+#include "bridge/plugin_manager.h"  // PromotePendingDesktopRoot → MoveRendererToToplevel
 
 // 最小 Wayland Compositor: wl_compositor + wl_surface + wl_shm
 class WaylandServer {

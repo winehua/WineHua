@@ -2,7 +2,7 @@
 
 #include "desktop_compositor.h"
 #include "frame_pipeline.h"
-#include "perf_utils.h"
+#include "common/perf_utils.h"
 #include "toplevel_manager.h"
 
 #include <hilog/log.h>

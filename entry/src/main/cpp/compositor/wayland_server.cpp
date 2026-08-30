@@ -1,11 +1,11 @@
 #include "wayland_server.h"
-#include "seat.h"
-#include "text_input.h"
-#include "input_manager.h"
+#include "input/seat.h"
+#include "input/text_input.h"
+#include "input/input_manager.h"
 #include "xdg_shell.h"
 #include "xdg_configure.h"
-#include "fps_counter.h"
-#include "wine_process.h"
+#include "common/fps_counter.h"
+#include "proc/wine_process.h"
 #include "compositor/frame/debug_assert.h"
 #include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
@@ -25,7 +25,7 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display);
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "WL_Server"
 #include <hilog/log.h>
-#include "plugin_manager.h"
+#include "bridge/plugin_manager.h"
 
 // 核心协议接口表与实现已剥离到 wl_core.cpp (Phase 3 纯搬移)
 

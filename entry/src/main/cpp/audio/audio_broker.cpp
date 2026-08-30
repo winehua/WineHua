@@ -15,7 +15,7 @@
 #include <hilog/log.h>
 
 #include "audio_ipc_server.h"
-#include "ring_buffer.h"
+#include "common/ring_buffer.h"
 
 namespace winehua {
 

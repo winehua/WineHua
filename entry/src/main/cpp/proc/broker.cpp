@@ -11,9 +11,9 @@
  *   响应: [childPid: int32_le] [status: int32_le]   (8 字节)
  */
 #include "broker.h"
-#include "wait_utils.h"
-#include "wine_constants.h"
-#include "audio_broker.h"
+#include "common/wait_utils.h"
+#include "wine/wine_constants.h"
+#include "audio/audio_broker.h"
 #include "wine_process.h"
 // 由 LaunchPadMode 在启动 Broker 前设置
 std::string gBrokerHomeDir;

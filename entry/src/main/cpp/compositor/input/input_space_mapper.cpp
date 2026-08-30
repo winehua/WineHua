@@ -1,8 +1,8 @@
 #include "compositor/input/input_space_mapper.h"
 
-#include "plugin_manager.h"
-#include "wayland_server.h"
-#include "egl_renderer.h"  // GetWidth/GetHeight/GetInputLetterbox
+#include "bridge/plugin_manager.h"
+#include "compositor/wayland_server.h"
+#include "graphics/egl_renderer.h"  // GetWidth/GetHeight/GetInputLetterbox
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
