@@ -10,8 +10,10 @@ set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(
     ${NATIVERENDER_ROOT_PATH}
     ${NATIVERENDER_ROOT_PATH}/protocols
-    # compositor 按域分组后 (frame/toplevel/input): 域内互引保持裸名 include,
-    # 经本路径解析; 跨域由目标目录命中。同目录优先搜索不变。
+    # 合成器按域分组 (frame/toplevel/input) + 协议 C 头 (protocols/): 域内互引
+    # 保持裸名 include 经本路径解析。cpp 根下各功能域 (wine/proc/graphics/…)
+    # 的新头不注册到此 — 跨域引用一律显式域前缀 (#include "wine/wine_env.h"),
+    # 裸名只在同域内合法。同目录优先搜索不变。
     ${NATIVERENDER_ROOT_PATH}/compositor/frame
     ${NATIVERENDER_ROOT_PATH}/compositor/toplevel
     ${NATIVERENDER_ROOT_PATH}/compositor/input
@@ -25,26 +27,26 @@ endif()
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
 add_library(entry SHARED
-    audio_broker.cpp
-    audio_ipc_server.cpp
-    audio_stream.cpp
-    graphics_broker.cpp
-    virgl_host_config.cpp
-    napi_init.cpp
-    wine_process.cpp
-    wine_env.cpp
-    env_spec.cpp
-    env_profiles.cpp
-    spawner.cpp
-    wine_launch.cpp
-    wine_exe.cpp
-    broker.cpp
-    ncp_dispatch.cpp
-    perf_utils.cpp
+    audio/audio_broker.cpp
+    audio/audio_ipc_server.cpp
+    audio/audio_stream.cpp
+    graphics/graphics_broker.cpp
+    graphics/virgl_host_config.cpp
+    bridge/napi_init.cpp
+    proc/wine_process.cpp
+    wine/wine_env.cpp
+    wine/env_spec.cpp
+    wine/env_profiles.cpp
+    proc/spawner.cpp
+    wine/wine_launch.cpp
+    wine/wine_exe.cpp
+    proc/broker.cpp
+    proc/ncp_dispatch.cpp
+    common/perf_utils.cpp
     phone_adapter/phone_process.cpp
     phone_adapter/phone_virgl_relay.cpp
-    wayland_server.cpp
-    wl_core.cpp
+    compositor/wayland_server.cpp
+    compositor/wl_core.cpp
     compositor/frame/compositor_blit.cpp
     compositor/toplevel/toplevel_manager.cpp
     compositor/toplevel/popup_manager.cpp
@@ -63,18 +65,18 @@ add_library(entry SHARED
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp
     compositor/toplevel/toplevel_event_bus.cpp
-    egl_renderer.cpp
-    fs_utils.cpp
-    plugin_manager.cpp
-    process_utils.cpp
-    ring_buffer.cpp
-    seat.cpp
-    shader_utils.cpp
-    string_utils.cpp
-    input_manager.cpp
-    pointer_extras.cpp
-    xdg_shell.cpp
-    text_input.cpp
+    graphics/egl_renderer.cpp
+    common/fs_utils.cpp
+    bridge/plugin_manager.cpp
+    common/process_utils.cpp
+    common/ring_buffer.cpp
+    input/seat.cpp
+    graphics/shader_utils.cpp
+    common/string_utils.cpp
+    input/input_manager.cpp
+    input/pointer_extras.cpp
+    compositor/xdg_shell.cpp
+    input/text_input.cpp
     protocols/xdg-shell-protocol.c
     protocols/viewporter-server-protocol.c
     protocols/pointer-warp-v1-protocol.c
@@ -108,16 +110,16 @@ target_link_libraries(entry PUBLIC
 )
 
 add_library(wine_child SHARED
-    wine_child.cpp
+    proc/wine_child.cpp
 )
 target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)
 
 add_library(virgl_child SHARED
-    virgl_child.cpp
-    virgl_host_config.cpp
-    virgl_surface_presenter.cpp
-    venus_surface_presenter.cpp
-    shader_utils.cpp
+    graphics/virgl_child.cpp
+    graphics/virgl_host_config.cpp
+    graphics/virgl_surface_presenter.cpp
+    graphics/venus_surface_presenter.cpp
+    graphics/shader_utils.cpp
     phone_adapter/phone_virgl_dispatch.cpp
 )
 target_link_libraries(virgl_child PUBLIC

@@ -1,7 +1,7 @@
 #include "input_manager.h"
 #include "seat.h"
 #include "pointer_extras.h"
-#include "wayland_server.h"  // 保留: FlushQueue 的 move grab 动作委托 + InputTarget 别名
+#include "compositor/wayland_server.h"  // 保留: FlushQueue 的 move grab 动作委托 + InputTarget 别名
 #include "compositor/input/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
                                             // fallback 已迁入, 本文件不再认识
                                             // PluginManager (include 已删)

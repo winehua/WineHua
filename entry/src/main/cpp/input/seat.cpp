@@ -1,7 +1,7 @@
 #include "seat.h"
 #include "keymap_xkb.h"
 #include "input_manager.h"
-#include "wayland_server.h"
+#include "compositor/wayland_server.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>

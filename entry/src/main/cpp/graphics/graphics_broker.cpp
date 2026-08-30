@@ -1,17 +1,17 @@
 #include "graphics_broker.h"
 
-#include "fs_utils.h"
-#include "process_utils.h"
-#include "string_utils.h"
-#include "wait_utils.h"
-#include "wayland_server.h"
+#include "common/fs_utils.h"
+#include "common/process_utils.h"
+#include "common/string_utils.h"
+#include "common/wait_utils.h"
+#include "compositor/wayland_server.h"
 
 #include <AbilityKit/native_child_process.h>
 #include "phone_adapter/phone_adapter.h"
 #include <IPCKit/ipc_kit.h>
 #include <native_window/external_window.h>
 #include "virgl_ipc_protocol.h"
-#include "wine_env.h"
+#include "wine/wine_env.h"
 
 // ---- 与 OH_IPCRemoteProxy_* 签名兼容的包装：真 proxy 走原 API，dummy 走 socket relay ----
 static int SendVirglRequestLocked(OHIPCRemoteProxy* proxy, uint32_t code,

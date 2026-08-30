@@ -1,5 +1,5 @@
 #include "wine_process.h"
-#include "wine_constants.h"
+#include "wine/wine_constants.h"
 #include "phone_adapter/phone_adapter.h"
 
 #include <unistd.h>

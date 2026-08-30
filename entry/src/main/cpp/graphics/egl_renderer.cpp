@@ -1,9 +1,9 @@
 #include "egl_renderer.h"
 #include "graphics_broker.h"
-#include "perf_utils.h"
+#include "common/perf_utils.h"
 #include "shader_utils.h"
 #include "compositor/toplevel/desktop_compositor.h"  // DesktopCompositor (6A 构造注入: 取帧/ZC 直连)
-#include "fps_counter.h"
+#include "common/fps_counter.h"
 #include <algorithm>
 #include <array>
 #include <chrono>

@@ -7,7 +7,7 @@
 #include "phone_virgl_relay.h"
 #include "phone_socket.h"
 #include "phone_adapter.h"       // PhoneAdapter_GetConfigSocket
-#include "virgl_ipc_protocol.h"
+#include "graphics/virgl_ipc_protocol.h"
 
 #include <cerrno>
 #include <cstdint>

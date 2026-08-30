@@ -1,13 +1,13 @@
 #include "wine_exe.h"
 
-#include "broker.h"
+#include "proc/broker.h"
 #include "env_profiles.h"
-#include "spawner.h"
-#include "graphics_broker.h"
-#include "wayland_server.h"
+#include "proc/spawner.h"
+#include "graphics/graphics_broker.h"
+#include "compositor/wayland_server.h"
 #include "wine_constants.h"
 #include "wine_env.h"
-#include "wine_process.h"
+#include "proc/wine_process.h"
 
 #include <sys/socket.h>
 #include <sys/stat.h>

@@ -1,10 +1,10 @@
 #include "wine_env.h"
 #include "wine_constants.h"
-#include "audio_broker.h"
+#include "audio/audio_broker.h"
 #include "audio_ipc_protocol.h"
 #include "env_spec.h"
-#include "graphics_broker.h"
-#include "wayland_server.h"
+#include "graphics/graphics_broker.h"
+#include "compositor/wayland_server.h"
 
 #include <unistd.h>
 #include <algorithm>

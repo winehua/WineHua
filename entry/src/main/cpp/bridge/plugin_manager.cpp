@@ -1,5 +1,5 @@
 #include "plugin_manager.h"
-#include "wayland_server.h"
+#include "compositor/wayland_server.h"
 #include <native_window/external_window.h>
 
 #undef LOG_TAG

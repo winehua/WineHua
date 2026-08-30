@@ -3,7 +3,7 @@
 #include "compositor_constants.h"
 #include "compositor/frame/direct_pass_policy.h"  // DirectPassPolicy 能力位 (任务 3)
 #include "geometry.h"
-#include "plugin_manager.h"  // GetRendererForToplevel (直传能力查询)
+#include "bridge/plugin_manager.h"  // GetRendererForToplevel (直传能力查询)
 #include <algorithm>
 #include <chrono>
 #include <cstring>

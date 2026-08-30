@@ -29,8 +29,8 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
-#include "wine_constants.h"
-#include "wine_env.h"
+#include "wine/wine_constants.h"
+#include "wine/wine_env.h"
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>

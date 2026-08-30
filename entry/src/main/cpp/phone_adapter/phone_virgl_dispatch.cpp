@@ -4,7 +4,7 @@
 // 线协议与 phone_virgl_relay.cpp 的 PhoneVirgl_RelayRequest 严格对应。
 #include "phone_virgl_dispatch.h"
 #include "phone_socket.h"
-#include "virgl_ipc_protocol.h"
+#include "graphics/virgl_ipc_protocol.h"
 
 #include <cstdint>
 #include <string>

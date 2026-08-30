@@ -1,5 +1,5 @@
 #pragma once
-#include "egl_renderer.h"
+#include "graphics/egl_renderer.h"
 #include <unordered_map>
 #include <memory>
 #include <cstdint>

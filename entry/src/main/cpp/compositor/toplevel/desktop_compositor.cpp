@@ -6,7 +6,7 @@
 #include "compositor/toplevel/zorder_policy.h"
 #include "geometry.h"
 #include "compositor/frame/surface_data.h"
-#include "perf_utils.h"
+#include "common/perf_utils.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>

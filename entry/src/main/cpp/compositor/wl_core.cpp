@@ -7,17 +7,17 @@
 // (ToplevelManager / DesktopCompositor / InputManager 等)。
 
 #include "wayland_server.h"
-#include "seat.h"
-#include "input_manager.h"
-#include "plugin_manager.h"
-#include "pointer_extras.h"
-#include "text_input.h"
+#include "input/seat.h"
+#include "input/input_manager.h"
+#include "bridge/plugin_manager.h"
+#include "input/pointer_extras.h"
+#include "input/text_input.h"
 #include "compositor/frame/compositor_utils.h"
 #include "compositor/frame/compositor_constants.h"
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
 #include "protocols/viewporter-server-protocol.h"
-#include "perf_utils.h"
+#include "common/perf_utils.h"
 #include <algorithm>
 #include <cstring>
 #include <ctime>

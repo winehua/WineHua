@@ -1,6 +1,6 @@
 #include "spawner.h"
-#include "wine_constants.h"
-#include "wine_exe.h"  // SpawnViaBroker
+#include "wine/wine_constants.h"
+#include "wine/wine_exe.h"  // SpawnViaBroker
 
 #include <sys/types.h>
 
