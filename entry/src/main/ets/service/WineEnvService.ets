@@ -6,6 +6,7 @@ import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
+import { AppLibraryService } from './AppLibraryService';
 import { DisplaySettingsService } from './DisplaySettingsService';
 import { normalizeCompatMode, box64DynarecEnvString } from './Box64Dynarec';
 
@@ -516,7 +517,12 @@ export class WineEnvService {
     this.applyKeepScreenOn();
     // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
     this.waitForPrefix().then(() => {
-      void this.seedSmokePayload();
+      this.seedSmokePayload();
+      // smoke 播种晚于 prefixReady 边沿 (AppLibraryView.mirror → ensureBuiltinTools
+      // 只在 false→true 边沿触发): 边沿时 C:\smoke 尚不存在 → smoke 条目被跳过,
+      // 播种完成后必须补一次入库, 否则全新安装首启「内建」永久缺 smoke
+      // (重启 app 后边沿重跑才出现)。ensureBuiltinTools 幂等, 无变更静默返回。
+      AppLibraryService.getInstance().ensureBuiltinTools();
     });
   }
 
