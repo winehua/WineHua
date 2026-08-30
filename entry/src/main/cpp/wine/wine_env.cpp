@@ -222,11 +222,15 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
                 ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
                 : "no_fence_feedback,no_query_feedback,no_multi_ring"),
             "VN_WINEHUA_STRONG_RING_BARRIER=1",
+            /* [实验-8025复现] sync 开关取舍: 黑屏根因 = REMOTE_MEMORY_SYNC 是
+             * dxvk/vkd3d 的唯一发布点 — mesa vn 显式 flush + Unmap 默认 no-op
+             * (mesa/src/virtio/vulkan/vn_device_memory.c:619-666), 关掉则
+             * host 侧 dirty list 为空, precise-dirty to-host 不拷 → 黑屏
+             * (已实测, 80FPS 帧在跑画面黑)。下两行 + FORCE_COHERENT 为性能
+             * 嫌疑: PERSISTENT 常驻映射强制发布 / DIRECT_FENCE 每帧阻塞往返,
+             * 先关闭看帧率; 保留 r9 修复 (STRONG_RING_BARRIER/WEAKBARRIER)。 */
             "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
-            "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
-            "VN_WINEHUA_DIRECT_FENCE_WAIT=1",
             "VKR_WINEHUA_SHADOW_FROM_HOST=precise",
-            "VKD3D_WINEHUA_FORCE_COHERENT_MAP_SYNC=1",
             "WINEDLLOVERRIDES=d3d12=n;d3d11=n;dxgi=n",
             "WINEDLLPATH=" + wineDllPath,
             "WINEDLLDIR0=" + overlay64,
