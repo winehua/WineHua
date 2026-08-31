@@ -33,11 +33,14 @@ build_fex_ec() {
     mkdir -p "$build"
     cd "$build"
     if [ ! -f CMakeCache.txt ]; then
+        # BUILD_TESTING=False: FEX 用 CTest 的 BUILD_TESTING (非 BUILD_TESTS)
+        # 控制 unittests/, 开着会在 configure 阶段 enable_language(ASM_NASM)
+        # 硬依赖 nasm — 我们只编 dll 目标, 显式关掉
         cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
             -DENABLE_LTO=False \
             -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
-            -DBUILD_TESTS=False \
+            -DBUILD_TESTING=False \
             "$FEX_SRC"
     fi
     make -j"$JOBS" arm64ecfex
@@ -66,7 +69,7 @@ build_fex_pe() {
             -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
             -DENABLE_LTO=False \
             -DMINGW_TRIPLE=aarch64-w64-mingw32 \
-            -DBUILD_TESTS=False \
+            -DBUILD_TESTING=False \
             "$FEX_SRC"
     fi
     make -j"$JOBS" wow64fex
