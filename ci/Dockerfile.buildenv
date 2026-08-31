@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y \
         gcc-mingw-w64-i686 g++-mingw-w64-i686 \
         gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
         mingw-w64-tools \
-        gcc-aarch64-linux-gnu \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
         default-jdk \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -102,6 +102,7 @@ RUN set -eux; \
     test -f /apps/harmony/bin/hvigorw; \
     test -f /usr/share/aclocal/ltdl.m4; \
     test -x /opt/llvm-mingw/bin/arm64ec-w64-mingw32-clang; \
+    test -f /usr/aarch64-linux-gnu/lib/Scrt1.o; \
     python3 -c 'import yaml, mako, markupsafe'
 
 WORKDIR /workspace

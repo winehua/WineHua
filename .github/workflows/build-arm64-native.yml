@@ -179,9 +179,12 @@ jobs:
             packages+=(xz-utils)
           fi
           # gcc-aarch64-linux-gnu: box64 wow64 (wowbox64) 顶层 configure 的
-          # C 编译器, build_box64_wow64.sh 硬依赖
-          if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
-            packages+=(gcc-aarch64-linux-gnu)
+          # C 编译器, build_box64_wow64.sh 硬依赖. Ubuntu 26.04 把目标 libc
+          # 头文件/启动文件 (libc6-dev-arm64-cross) 降级为 Recommends,
+          # --no-install-recommends 下需显式安装, 否则链接缺 Scrt1.o/crti.o
+          if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 || \
+             [ ! -e /usr/aarch64-linux-gnu/lib/Scrt1.o ]; then
+            packages+=(gcc-aarch64-linux-gnu libc6-dev-arm64-cross)
           fi
           if [ "${#packages[@]}" -gt 0 ]; then
             echo "Installing missing CI packages: ${packages[*]}"
