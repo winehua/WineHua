@@ -225,8 +225,14 @@ export class SmokeRunner {
           .split('<test-id>').join(test.testId));
       }
     } else {
+      // 协议键必须 Windows 盘符形式 (C:\smoke\results\...): native 路径
+      // 转反斜杠是无盘符形式 (\data\...), wine 解析为当前盘根下相对路径,
+      // PE 结果落错目录 — runner 轮询 native resultPath 永远超时 (实测
+      // 渲染 613 帧完成但结果文件未出现在轮询目录)。raw 模式由 suites
+      // 自带盘符形式 argv, 不经过里。
       const std = ['--automation', '--run-id', request.runId,
-        '--test-id', test.testId, '--result', `${resultPath.replace(/\//g, '\\')}`];
+        '--test-id', test.testId,
+        '--result', `C:\\smoke\\results\\${request.runId}\\${test.testId}.json`];
       if (test.mode === 'offscreen') {
         argv.push(...std, '--offscreen');
       } else {
