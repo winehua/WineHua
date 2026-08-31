@@ -15,6 +15,13 @@ class DesktopController extends XComponentController {
   // 用缓存值才能配对销毁 renderer — 否则旧 root 的 renderer 泄漏, 热重启
   // 后新旧两个 renderer 抢同一 root 的合成帧, 表现为画面「滞后一拍」
   private lastRootId: number = 0;
+  // 悬浮窗放大期间 root resize 节流: onSurfaceChanged 连续波动 (沉浸生效
+  // 前后两拍中间值, 如 2584x1644→2584x1828) 只记最终值, 停止 150ms 后再
+  // 一次性 notifyToplevelResize — 见 deferRootResize 注释
+  private pendingRootW: number = 0;
+  private pendingRootH: number = 0;
+  private rootResizeTimer: number = -1;
+  private static readonly ROOT_RESIZE_DEBOUNCE_MS: number = 150;
 
   onSurfaceCreated(surfaceId: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
@@ -34,16 +41,54 @@ class DesktopController extends XComponentController {
         // 跳过 root resize, 否则中间态高度会缩小 Wine 桌面, 且退出后残留
         // 进 output, 热重启桌面高度出错 (上下被裁)
         if (WineWindowManager.getInstance().desktopLauncherVisible) {
+          this.cancelDeferredRootResize();
           return;
         }
-        // 统一经 getEffectiveScale, 不再硬编码 2.0
-        const s = WineWindowManager.getInstance().getEffectiveScale();
-        testNapi.notifyToplevelResize(rootId,
-          Math.round(rect.surfaceWidth / s), Math.round(rect.surfaceHeight / s));
+        // 悬浮窗放大期间 XComponent 尺寸带中间波动 (沉浸生效前后两拍,
+        // 如 2584x1644→2584x1828): 逐拍下发会让 Wine 桌面被中间值 resize,
+        // Wine 静止不重绘时画面停在中间值黑边 (旧帧 vs 中间 surface)。
+        // 节流: 连续变化只记最新值, 停止 150ms 后一次性下发 — Wine 桌面
+        // 只被最终尺寸改一次, 不经过中间值。
+        this.deferRootResize(rect.surfaceWidth, rect.surfaceHeight);
       } catch (_) {}
     }
   }
+
+  // root (Wine 桌面) resize 节流: onSurfaceChanged 连续触发期间记最新尺寸,
+  // 停止 ROOT_RESIZE_DEBOUNCE_MS 后才真正 notifyToplevelResize 一次。中间值
+  // 不进 Wine 桌面, 避免 Wine 帧尺寸与 surface 中间值不匹配的左右黑边。
+  private deferRootResize(w: number, h: number): void {
+    this.pendingRootW = w;
+    this.pendingRootH = h;
+    if (this.rootResizeTimer >= 0) {
+      clearTimeout(this.rootResizeTimer);
+    }
+    this.rootResizeTimer = setTimeout(() => {
+      this.rootResizeTimer = -1;
+      // 节流期间 root 可能重启重建 (getDesktopRootId 变化), 用当前 root 下单
+      const rootIdNow = WineWindowManager.getInstance().getDesktopRootId();
+      // 统一经 getEffectiveScale, 不再硬编码 2.0
+      const s = WineWindowManager.getInstance().getEffectiveScale();
+      if (rootIdNow > 0) {
+        hilog.info(DOMAIN, 'LIFE', '[XComp] root resize flush rootId=%{public}d %{public}dx%{public}d',
+          rootIdNow, Math.round(this.pendingRootW / s), Math.round(this.pendingRootH / s));
+        testNapi.notifyToplevelResize(rootIdNow,
+          Math.round(this.pendingRootW / s), Math.round(this.pendingRootH / s));
+      }
+    }, DesktopController.ROOT_RESIZE_DEBOUNCE_MS);
+  }
+
+  private cancelDeferredRootResize(): void {
+    if (this.rootResizeTimer >= 0) {
+      clearTimeout(this.rootResizeTimer);
+      this.rootResizeTimer = -1;
+    }
+  }
+
   onSurfaceDestroyed(_s: string): void {
+    // surface 销毁 = 挂起 root resize 永不 flush (不卸 timer 会迟到补发
+    // 或挂在失效 root 上)
+    this.cancelDeferredRootResize();
     const cached = this.lastRootId;
     this.lastRootId = 0;
     hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed lastRootId=%{public}d', cached);
