@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y \
         gcc-mingw-w64-i686 g++-mingw-w64-i686 \
         gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
         mingw-w64-tools \
+        gcc-aarch64-linux-gnu \
         default-jdk \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -96,7 +97,7 @@ ENV LLVM_MINGW=/opt/llvm-mingw
 # ---- 验证关键工具/文件都在 ----
 # 增加 ltdl.m4 断言, 防止未来 apt/依赖变动再次让它悄悄消失
 RUN set -eux; \
-    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget makeinfo x86_64-w64-mingw32-widl xz; \
+    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget makeinfo x86_64-w64-mingw32-widl xz aarch64-linux-gnu-gcc; \
     test -f /apps/harmony/sdk/default/openharmony/native/llvm/bin/clang; \
     test -f /apps/harmony/bin/hvigorw; \
     test -f /usr/share/aclocal/ltdl.m4; \

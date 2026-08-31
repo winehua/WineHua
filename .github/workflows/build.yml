@@ -186,6 +186,11 @@ jobs:
           if ! command -v xz >/dev/null 2>&1; then
             packages+=(xz-utils)
           fi
+          # gcc-aarch64-linux-gnu: box64 wow64 (wowbox64) 顶层 configure 的
+          # C 编译器, build_box64_wow64.sh 硬依赖
+          if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+            packages+=(gcc-aarch64-linux-gnu)
+          fi
           if [ "${#packages[@]}" -gt 0 ]; then
             echo "Installing missing CI packages: ${packages[*]}"
             apt-get update
