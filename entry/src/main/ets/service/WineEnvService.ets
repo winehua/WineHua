@@ -8,7 +8,7 @@ import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
 import { AppLibraryService } from './AppLibraryService';
 import { DisplaySettingsService } from './DisplaySettingsService';
-import { normalizeCompatMode, box64DynarecEnvString } from './Box64Dynarec';
+import { normalizeCompatMode } from './Box64Dynarec';
 
 const DOMAIN = 0x0000;
 const FILES_BASE = '/data/storage/el2/base/files';
@@ -970,9 +970,11 @@ export class WineEnvService {
       this.failInit('启动服务失败');
       return;
     }
+    // 兼容模式档位只随 runWineProgram 程序级 environment 注入 (AppLibraryService
+    // launch/openInWine), 会话启动链 (wineserver/wineboot/explorer) 不带档位 —
+    // 档位异常只影响对应程序, 不会卡死桌面启动 (Winlator 同款)
     testNapi.launchClient(BOX64, [], SOCK, `${BIN_DIR}:${WINE_LIB}`, this.zHome,
-      this.d3dBackend, this.dxvkBackend, this.wineLang,
-      box64DynarecEnvString(this.compatMode));
+      this.d3dBackend, this.dxvkBackend, this.wineLang);
   }
 
   // 停止会话原语: 编排 stopAll 并等 native state:stopped (注册表进程全死

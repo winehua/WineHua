@@ -145,9 +145,9 @@ export struct SettingsView {
     this.restartHint = true;
   }
 
-  // 兼容模式档位切换: 仅写配置 (service 内持久化)。双通道生效:
+  // 兼容模式档位切换: 仅写配置 (service 内持久化)。程序级生效:
   // 新启动的程序 (launch/openInWine 直启) 立即生效;
-  // 运行中的桌面会话 (explorer 及子孙) 重启引擎后生效 (UI 负责分档提示)
+  // 会话启动链 (wineserver/wineboot/explorer) 不带档位, 无重启语义
   private selectCompat(mode: string): void {
     if (mode == this.compatMode) {
       return;
@@ -455,7 +455,7 @@ export struct SettingsView {
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
           if (this.compatRestartHint) {
-            Text('兼容模式已更改; 新启动的程序立即生效, 运行中的桌面会话重启后生效')
+            Text('兼容模式已更改; 仅对之后启动的程序生效')
               .fontSize(12)
               .fontColor($r('app.color.state_warn'))
               .width('100%')

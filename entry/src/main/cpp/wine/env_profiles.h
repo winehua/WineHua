@@ -7,7 +7,6 @@
  * 管线顺序只在此文件定义一次:
  *   BuildWineEnv (L0-L5 基线, wine_env.cpp)
  *   → AppendD3dBackendEnv (dxvk/vkd3d 受管 overlay, wine_env.cpp)
- *   → AppendCompatEnvLines (设置页兼容档位, 本文件)
  *   → AppendStableDxvkEnv (桌面会话稳定化 overlay, 本文件, 可选)
  *   → WINEHUA_DESKTOP=shell (可选)
  *   → extraEnv (per-run/per-app 覆盖, 优先级最高)
@@ -19,26 +18,6 @@
 #include <vector>
 
 namespace winehua {
-
-// -- 兼容模式全局档位 (设置页 → launchClient compatEnvStr 分号串) --
-// 键清单与各档取值的唯一来源在 ArkTS Box64Dynarec.ets (policy 归 ArkTS,
-// 供 UI 档位/未来逐键微调演进); 本侧只是机制层前缀门: 放行
-// BOX64_DYNAREC_* 行 (防注入其它 key), 不认识档位名, 空串 = 出厂基线不注入。
-// 会话 env 经 UpsertEnvLine 压过基线 (每 key 最后写入者胜出);
-// DXVK/desktop 的 WEAKBARRIER=0 clamp 在 AppendStableDxvkEnv 尾,
-// 只会重新压回, 不会被档位击穿 (该 clamp 是 Venus 图形 ring 约束, 只
-// 覆盖 explorer 会话链; wineboot/wineserver 无图形, 档位原值直接生效)。
-// 仅 __aarch64__ (Box64) 设备有意义; x86_64 原生跑无 box64, 空转不注入。
-#ifdef __aarch64__
-// 统一过滤: 前缀 + entryParams 协议危险字符 ('|'/'\n') + 缺 '=' 畸形行 — 会话
-// env 与 NCP entryParams 两条通道同一套行为 (原来源彼此漂移, 静默丢弃语义不一)
-std::vector<std::string> FilterCompatLines(const std::string& compatEnvStr);
-
-// 会话 env / SpawnRequest.env 增量注入。NCP 路线由 Spawner 经 EnvSpec
-// 序列化为 __env= 段, 子进程 apply 晚于进程内基线, 档位胜出。
-void AppendCompatEnvLines(std::vector<std::string>& env,
-                          const std::string& compatEnvStr);
-#endif // __aarch64__
 
 // -- 桌面会话 DXVK 稳定化 overlay --
 // probeBase: WINEHUA_PERF_PROFILE / VN_WINEHUA_STRONG_RING_BARRIER / trace 键
@@ -59,8 +38,6 @@ struct SessionEnvPolicy {
     // D3D overlay: d3dBackend 空 = 不注入 (RunWineExe 手动路径 — 该路径启动
     // explorer 等系统组件, 本身不需要 DXVK overlay)
     std::string d3dBackend, dxvkBackend;
-    // 兼容档位 (仅 aarch64 生效)
-    std::string compatEnvStr;
     // DXVK/VKD3D 稳定化 overlay: WEAKBARRIER=0 clamp + DXVK_LOG + perf profile。
     // 消费方: explorer 桌面会话链 + RunWineExe 程序直启 (runWineProgram),
     // 两侧同源 — ArkTS 不再平行维护默认值拷贝

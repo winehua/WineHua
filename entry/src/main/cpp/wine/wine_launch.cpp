@@ -293,9 +293,8 @@ static bool UsesVulkanD3dBackend(const std::string& backend)
            backend == "vkd3d_limited_500k";
 }
 
-// 兼容模式全局档位 (FilterCompatLines / AppendCompatEnvLines) 与
-// AppendStableDxvkEnv 已迁入 env_profiles.cpp, 签名从 LaunchParams 解耦
-// (重构第 3 步); 第 5 步起档位统一经 SpawnRequest.env 下发
+// 兼容模式档位已收窄到程序级 (AppLibraryService per-app environment),
+// 会话启动链不再注入 — 见 env_profiles.cpp 的说明
 
 static void PrepareDesktopSessionGraphicsEnv(const LaunchParams& params)
 {
@@ -336,7 +335,6 @@ static winehua::SessionEnvPolicy SessionPolicyFromLaunch(const LaunchParams& p, 
     s.audioBootstrapFd = audioFd;
     s.d3dBackend = p.d3dBackend;
     s.dxvkBackend = p.dxvkBackend;
-    s.compatEnvStr = p.compatEnvStr;
     return s;
 }
 
@@ -372,9 +370,6 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     // (wineserver 是纯 Unix ELF, 不能走 wine loader 的 PE 解析)。
     {
         winehua::SpawnRequest wsReq{winehua::SpawnKind::Wineserver};
-#ifdef __aarch64__
-        winehua::AppendCompatEnvLines(wsReq.env, p->compatEnvStr);
-#endif
         const pid_t wsChildPid = winehua::Spawner::Spawn(wsReq);
         if (wsChildPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver spawn FAILED");
@@ -452,10 +447,6 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         wbReq.desktopSurface = ws->IsDesktopMode();
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
-        // 兼容模式全局档位 (wineboot Main 的 apply overrides 晚于 setup_wine_env)
-#ifdef __aarch64__
-        winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr);
-#endif
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot spawn FAILED");
@@ -524,9 +515,6 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
-#ifdef __aarch64__
-        winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr);
-#endif
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init spawn FAILED");
