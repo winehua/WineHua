@@ -3,8 +3,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   WineEnvService, DRIVE_C, readTextIfExists,
   ensureDirectory, writeTextFile
-} from './WineEnvService';
-import { SmokeRequest } from '../common/SmokeTypes';
+} from '../service/WineEnvService';
+import { SmokeRequest } from './SmokeTypes';
 
 const DOMAIN = 0x0000;
 const TAG = 'SMOKE';
@@ -93,6 +93,14 @@ export class SmokeRunner {
 
   subscribe(listener: () => void): void {
     this.listeners.push(listener);
+  }
+
+  // 退订: 组件 aboutToDisappear 必须调用, 否则每次挂载都积一份闭包
+  unsubscribe(listener: () => void): void {
+    const i = this.listeners.indexOf(listener);
+    if (i >= 0) {
+      this.listeners.splice(i, 1);
+    }
   }
 
   private notify(): void {

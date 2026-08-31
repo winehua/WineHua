@@ -6,16 +6,16 @@ import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
-import { SmokeRunner } from './SmokeRunner';
-import { SmokeRequest } from '../common/SmokeTypes';
+// [[SMOKE]] 合并到 main-ui: 删本行与 init 内的 attach 调用 (均为此标记)
+import { SmokeHook } from '../smoke/SmokeHook';
 
 const DOMAIN = 0x0000;
-const FILES_BASE = '/data/storage/el2/base/files';
+export const FILES_BASE = '/data/storage/el2/base/files';
 // startSession 与页面 doRun 连同一个 wineserver socket
 export const SOCK = '/data/storage/el2/base/files/.wine/wine-wayland';
 
 // Wine 运行时从 rawfile 解压到 files/
-const WINE_ROOT = `${FILES_BASE}/wine`;
+export const WINE_ROOT = `${FILES_BASE}/wine`;
 export const WINE_BIN = `${WINE_ROOT}/bin`;
 export const WINE_LIB = `${WINE_BIN}/x86_64-unix`;
 const BIN_DIR = WINE_BIN;
@@ -116,9 +116,6 @@ export class WineEnvService {
   // engineState 细节: starting → wineserver/wineboot; failed → 失败阶段
   engineStage: string = '';
   prefixReady: boolean = false;
-  // smoke 自动化请求 (EntryAbility 发布 → consumeSmokeRequest 消费 → 引擎就绪
-  // 后 maybeRunSmoke 拾起触发 SmokeRunner)。消费后置空/清键, 不跨会话重触发。
-  private pendingSmoke: SmokeRequest | null = null;
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
@@ -341,10 +338,6 @@ export class WineEnvService {
     }
     this.updateLaunchRequest();
 
-    // smoke 请求前置消费 (先于自动初始化分支; clean 的重置编排在 auto-start
-    // 判定前执行, 见下方 clean 分支)
-    this.consumeSmokeRequest();
-
     this.hasRawfileWineData = this.detectRawfileWineData();
 
     testNapi.setStateCallback(this.onNativeState);
@@ -363,14 +356,12 @@ export class WineEnvService {
       this.desktopMode = wm.isDesktopMode;
       this.notify();
     });
-    // smoke clean 基线: 清空 C 盘后由重置编排自动重启 (停 → 清 → startSession
-    // → enterReady → maybeRunSmoke)。必须在状态回调/订阅注册之后判定 (编排里
-    // stopSession/startSession 依赖 native 状态消息); busy 拦截时落回常规分支,
-    // pendingSmoke 仍会由 enterReady 链尾 maybeRunSmoke 拾起。
-    if (this.pendingSmoke && this.pendingSmoke.prefix === 'clean') {
-      if (this.resetSmokePrefix()) {
-        return;
-      }
+    // [[SMOKE]] 合并到 main-ui: 删本行 (smoke 请求的消费/编排全在 SmokeHook,
+    // 经 ets/smoke/ 物理隔离; 返回 true = smoke clean 重置编排已接管初始化)。
+    // 本行位置有讲究: 必须位于 native 状态回调与订阅注册之后 (clean 编排里
+    // stopSession/startSession 依赖 native 状态消息)。
+    if (SmokeHook.getInstance().attach(this)) {
+      return;
     }
     // 自动初始化分两种情形:
     // 1) prefix 已就绪 (二次进入): 后台自动拉起引擎 (startSession(后台)
@@ -484,59 +475,31 @@ export class WineEnvService {
     this.setInitStatus('已就绪', false);
     // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
     this.waitForPrefix().then(() => {
-      void this.seedSmokePayload();
-      void this.maybeRunSmoke();
+      // [[SMOKE]] 合并到 main-ui: 删本行 (smoke 播种/跑测触发点, 旧
+      // seedSmokePayload+maybeRunSmoke 同位置)
+      SmokeHook.getInstance().onEngineReady();
     });
   }
 
-  // 新 Want 进入 (EntryAbility.onNewWant): smoke 请求可能在 App 存活时到达。
+  // 新 Want 进入 (EntryAbility.onNewWant): smoke 请求在 App 存活时到达时
+  // 由 SmokeHook 消费 (引擎已就绪, 可直接编排/跑测)。
   onNewWant(): void {
-    this.consumeSmokeRequest();
-    if (this.pendingSmoke && this.pendingSmoke.prefix === 'clean') {
-      this.resetSmokePrefix();
-      return;
-    }
-    this.maybeRunSmoke();
+    // [[SMOKE]] 合并到 main-ui: 删本行
+    SmokeHook.getInstance().onNewWant();
   }
 
-  // smoke 请求消费单点 (冷启动 init + onNewWant 双入口; 消费后清键防重触发)。
-  // clean 标记保留在 pendingSmoke, 由 init/onNewWant 的重置分支执行。
-  private consumeSmokeRequest(): void {
-    const raw = AppStorage.get<string>('winehua.smoke.request');
-    if (!raw) return;
-    AppStorage.setOrCreate<string>('winehua.smoke.request', '');
-    try {
-      this.pendingSmoke = JSON.parse(raw) as SmokeRequest;
-      hilog.info(DOMAIN, 'wine', 'smoke request consumed: suite=%{public}s runId=%{public}s prefix=%{public}s',
-        this.pendingSmoke.suite, this.pendingSmoke.runId, this.pendingSmoke.prefix || 'reuse');
-    } catch (e) {
-      hilog.error(DOMAIN, 'wine', 'smoke request parse error: %{public}s', JSON.stringify(e));
-      this.pendingSmoke = null;
-    }
-  }
-
-  // smoke 启动单点: 引擎 ready 且 prefix 就绪才触发 (enterReady 链尾/二次 Want
-  // 路径共用)。不在此做 clean — 那是 init/onNewWant 的重置编排职责。
-  private maybeRunSmoke(): void {
-    const req = this.pendingSmoke;
-    if (!req) return;
-    if (!this.prefixReady) return;   // 等 enterReady 链尾 (waitForPrefix 完成) 再拾
-    this.pendingSmoke = null;
-    SmokeRunner.getInstance().start(req);
-  }
-
-  // smoke --prefix clean 语义: 只清 prefix (C 盘 + prefix 元数据), 不删运行时 —
-  // 与 doReset (删 WINE_ROOT + 重解压 249MB) 的区别。必须先 stopSession:
-  // 活 wineserver/explorer 脚下删 prefix 是数据损坏。编排: 停 → 清 →
-  // 延迟 startSession (与 doReset 同款 500ms 隔离)。返回 false = busy 拦截
-  // (调用方走常规启动分支, pendingSmoke 仍由 maybeRunSmoke 拾起)。
-  private resetSmokePrefix(): boolean {
+  // 只清 prefix (C 盘 + prefix 元数据), 不删运行时 — 与 doReset (删 WINE_ROOT +
+  // 重解压 249MB) 的区别。必须先 stopSession: 活 wineserver/explorer 脚下删
+  // prefix 是数据损坏。编排: 停 → 清 → 延迟 startSession (与 doReset 同款 500ms
+  // 隔离)。返回 false = busy 拦截 (调用方走常规启动分支)。当前调用方:
+  // SmokeHook (smoke --prefix clean 基线) — 引擎级通用能力, 非 smoke 专属。
+  cleanPrefixAndRestart(): boolean {
     if (this.isBusy()) {
-      hilog.warn(DOMAIN, 'wine', 'resetSmokePrefix blocked (busy)');
+      hilog.warn(DOMAIN, 'wine', 'cleanPrefixAndRestart blocked (busy)');
       return false;
     }
     this.opBusy = true;
-    this.setInitStatus('正在清空 smoke prefix...', true);
+    this.setInitStatus('正在清空 prefix...', true);
     (async (): Promise<void> => {
       try {
         await this.stopSession(true);
@@ -546,7 +509,7 @@ export class WineEnvService {
         this.engineStage = '';
         this.prefixReady = false;
         ProcessService.getInstance().clear();
-        this.setInitStatus('smoke prefix 已清空', false);
+        this.setInitStatus('prefix 已清空', false);
         // opBusy 在自己手上: 不先清, 延迟 startSession 会被自身 re-entry 守卫
         // 拦截 (startSession 前两次调用在 clean 编排里, 而守卫检查 opBusy)
         setTimeout(() => {
@@ -554,45 +517,12 @@ export class WineEnvService {
           this.startSession(true);
         }, 500);
       } catch (e) {
-        hilog.error(DOMAIN, 'wine', 'resetSmokePrefix error: %{public}s', JSON.stringify(e));
+        hilog.error(DOMAIN, 'wine', 'cleanPrefixAndRestart error: %{public}s', JSON.stringify(e));
         this.opBusy = false;
         this.notify();
       }
     })();
     return true;
-  }
-
-  // 烟测程序载荷: C:\smoke 是应用库内建「Graphics Smoke / D3d Smoke」手动
-  // 启动入口的存在性前提。载荷随 wine 数据打包在 wine/smoke; 前缀就绪后
-  // 按需播种到持久 prefix (旧 syncManagedSmoke 职责的轻量版 — 自动化设施
-  // 已整体拆除, 仅保留载荷复制, 失败只记日志不阻塞引擎)。
-  private seedSmokePayload(): void {
-    const source = `${WINE_ROOT}/smoke`;
-    const target = `${FILES_BASE}/.wine/drive_c/smoke`;
-    if (pathExists(target)) return;
-    if (!pathExists(source)) return;
-    try {
-      this.copyTree(source, target);
-      hilog.warn(DOMAIN, 'wine', 'seeded smoke payload → C:\\smoke');
-    } catch (e) {
-      hilog.warn(DOMAIN, 'wine', 'seed smoke payload failed: %{public}s', JSON.stringify(e));
-    }
-  }
-
-  // 目录递归复制 (项目既有 fs 原语)。不用 fs.copy — 该 API 面向跨设备 URI
-  // 拷贝, 对应用沙箱路径实测失败 (裸路径 401, file:// URI 13900020 权限);
-  // 载荷仅沙箱内小目录树, listFileSync+copyFileSync 足够且无权限歧义。
-  // 与 removePathRecursive 同层工具函数。
-  private copyTree(src: string, dst: string): void {
-    const st = fs.statSync(src);
-    if (st.isDirectory()) {
-      fs.mkdirSync(dst, true);
-      for (const name of fs.listFileSync(src)) {
-        this.copyTree(`${src}/${name}`, `${dst}/${name}`);
-      }
-      return;
-    }
-    fs.copyFileSync(src, dst);
   }
 
   private detectRawfileWineData(): boolean {

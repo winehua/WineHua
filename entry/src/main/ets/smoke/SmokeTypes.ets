@@ -1,6 +1,6 @@
 // Smoke 自动化请求的公共类型 (EntryAbility 解析 Want → AppStorage →
-// WineEnvService.consumeSmokeRequest → SmokeRunner 消费)。
-// 独立文件避免 WineEnvService ↔ SmokeRunner 的循环 import。
+// SmokeHook 消费 → SmokeRunner 消费)。独立文件避免 SmokeHook ↔
+// SmokeRunner 的循环 import。
 export interface SmokeRequest {
   suite: string;
   runId: string;

@@ -224,3 +224,64 @@ native probe，另立；win32_driver game 点击驱动二期）。
 3. 设备验证（部署后）：`aa start --ps winehua.mode=smoke --ps winehua.suite=core --ps winehua.run_id=r1`
    → 设备端 hilog `SMOKE` 打点、`C:\smoke\results\r1\suite-summary.json` 生成 → host
    `run_regression.py --suite core` 过一遍；d3d12 套件独立跑一次（1000 帧）
+
+## 11. 与 main-ui 的合并策略（2026-09-01 物理隔离重构后）
+
+> 用户决策：smoke 是开发测试设施，**不得进入 main-ui**（面向用户的产品分支）。
+> 上文 §4-§7 是重构前的接入形态（smoke 代码长在 WineEnvService/Index/EntryAbility
+> 共享文件里，合并冲突高危）；2026-09-01 重构后 smoke ArkTS **物理隔离**进
+> `entry/src/main/ets/smoke/`，行为语义不变（§6 的编排时序逐条平移）。
+
+### 重构后的结构
+
+```
+entry/src/main/ets/smoke/          # 全部 smoke ArkTS (整目录可删)
+  SmokeTypes.ets                   # SmokeRequest 接口
+  SmokeRunner.ets                  # 瘦解释器 (跑套件/轮询结果/汇总)
+  SmokeHook.ets                    # 枢纽: Want 解析 applyWant / 请求消费 attach
+                                   # / clean 编排触发 / prefixReady 边沿 / 载荷播种
+  SmokeDevPanel.ets                # 侧边栏「开发测试」区组件 (自镜像, Index 零状态)
+```
+
+公共产品文件仅剩 **带 `// [[SMOKE]]` 标记的行级钩子**（3 个文件，共 7 处
+标记行）：
+
+| 文件 | 钩子 | 摘除后 |
+|---|---|---|
+| `entryability/EntryAbility.ets` | `import { SmokeHook } ...` + `applyWant(parameters)` | Want 不再解析 smoke 键 |
+| `service/WineEnvService.ets` | `import { SmokeHook } ...` + ① init 内 `if (attach(this)) return;`（clean 编排接管判定）② `onNewWant()` 内 `SmokeHook.onNewWant();`（二次 Want 消费）③ `enterReady` 链尾 `SmokeHook.onEngineReady();`（跑测触发，旧 maybeRunSmoke 同位置） | 初始化编排不含 smoke |
+| `pages/Index.ets` | `import { SmokeDevPanel } ...` + `<SmokeDevPanel />` | 侧边栏无「开发测试」区 |
+
+**触发语义**（与重构前 maybRunSmoke 逐条对齐，设备实测 4 场景过：
+正常首启零干扰 / 冷启动 want / App 存活二次 want / clean 重建）：
+- 冷启动：`attach` 只消费请求（clean 则编排并 return），跑测等 `enterReady` 链尾
+  `onEngineReady`（引擎真 ready + waitForPrefix 完成；回放式 ready 不可信——
+  broker 未就绪时 runWineProgram 返回 -1）
+- 二次 Want：`onNewWant` 消费后立即跑（引擎必然已就绪，无常驻轮询）
+- **SmokeHook 不订阅 env 状态镜像**：clean 编排启动瞬间引擎仍短暂 ready
+  （stopSession 异步），订阅兜底触发会把 clean 请求当 reuse 提前跑（r6 实测误触发）
+
+（`WineEnvService.cleanPrefixAndRestart` 由旧 `resetSmokePrefix` 改名而来，是**引擎级
+通用能力**（只清 prefix 不删运行时，与 doReset 的区别），无 smoke 字眼——main-ui
+可保留（无调用方则编译面为空）或随摘除删除。`FILES_BASE/WINE_ROOT` 加 export 供
+SmokeHook 播种使用，原值不变。）
+
+### 合并动作清单（main-ui 开发者在 merge master 后执行）
+
+```bash
+git rm -r entry/src/main/ets/smoke/          # 1. 整目录拔除
+grep -rn '\[\[SMOKE\]\]' entry/src/main/ets/ # 2. 定位各标记行 → 逐处删除
+grep -rn 'SmokeHook\|SmokeDevPanel' entry/src/main/ets/  # 3. 校验零引用
+```
+
+批量校验：`grep -rni 'smoke' entry/src/main/ets/` 应只剩注释级历史提及。
+**main-ui 一期遗留**（应用库「Graphics Smoke / D3d Smoke」条目 + WineEnvService
+`seedSmokePayload` 播种）同批清理，否则条目存在但 C:\smoke 无人播种（启动报
+wine failed to open）。
+
+### 数据/脚本层（不带 ArkTS 侵入，随合并安全）
+
+`automation/`、`scripts/assemble.sh`（suites.json 生成段）、`wine_data/smoke/`（载荷）、
+`docs/` 均为宿主侧/打包资产，不产生 App 行为面。合并后 main-ui 的 wine-data.zip
+仍含 `smoke/` 载荷目录（静态资产，约几 MB，无 UI/运行时行为），可留可裁——
+留可保证两分支 zip 产物结构一致，裁需在 assemble.sh 加开关（多一个分支差异点）。
