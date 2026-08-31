@@ -1,0 +1,426 @@
+# .github/workflows/build-arm64-native.yml
+# 方案③: arm64 设备 + aarch64 原生 wine (纯 arm64, 无 box64 全量转译)
+# 与 build.yml (方案② box64+x86_64 wine, master 线) 并存:
+#   本 workflow 显式 WINE_ARCH=aarch64, Makefile 默认亦是 aarch64,
+#   显式标注是为了产物意图可读、防止未来默认值变动造成静默切换.
+name: Build HAP (arm64 原生 wine, unsigned)
+
+on:
+  push:
+    branches:
+      - feature/arm64
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE*'
+  pull_request:
+    branches: [feature/arm64]
+  workflow_dispatch:
+
+# GITHUB_TOKEN 权限:
+#   contents: write — 拉源码 (需要 write)
+#   packages: read  — 拉 GHCR 私有 buildenv 镜像
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build:
+    name: make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 hap
+    runs-on: ubuntu-26.04
+    # 方案③ 比方案② 多构建 fex (ec+pe) 与 wowbox64.dll, 超时放宽到 240
+    timeout-minutes: 240
+
+    # 容器里默认 shell 是 sh, 不认 `set -o pipefail` 等 bash 语法
+    # 这里强制所有 run step 用 bash
+    defaults:
+      run:
+        shell: bash
+
+    container:
+      image: ghcr.io/panedioic/winehua-buildenv:test
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # ---- 让私有 submodule 走 HTTPS + GITHUB_TOKEN ----
+      # 前提: wine/box64/mesa-ohos 三个私有 submodule 与本仓库在同一账号/组织下
+      # 若跨组织, 需替换成有跨仓库权限的 PAT (存到 secrets.SUBMODULE_PAT)
+      - name: Configure git for private submodules
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global \
+            url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf \
+            "git@github.com:"
+          git config --global --add \
+            url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf \
+            "https://github.com/"
+
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # actions/checkout recursive + fetch-depth:1 有时不会把 vkd3d-proton
+      # 的嵌套 Khronos/dxil-spirv 子模块落到工作树, 构建脚本会在 1 秒内退出.
+      - name: Ensure nested graphics submodules
+        run: |
+          set -euo pipefail
+          git submodule update --init --recursive
+          test -f thirdparty/dxvk-modern/include/vulkan/include/vulkan/vulkan.h
+          test -f thirdparty/dxvk-modern/include/spirv/include/spirv/unified1/spirv.hpp
+          test -f thirdparty/vkd3d-proton/subprojects/Vulkan-Headers/include/vulkan/vulkan.h
+          test -f thirdparty/vkd3d-proton/subprojects/SPIRV-Headers/include/spirv/unified1/spirv.h
+          test -f thirdparty/vkd3d-proton/subprojects/dxil-spirv/meson.build
+          git -C thirdparty/vkd3d-proton submodule status
+          git -C thirdparty/vkd3d-proton status --porcelain --untracked-files=no --ignore-submodules=dirty || true
+
+      # ---- 绕过签名: 用 stub 替换 sign.py ----
+      # scripts/package.sh 最后会调 `python3 sign.py <unsigned> <signed>`,
+      # 无签名场景下这里直接把 unsigned 拷成 "signed" 文件, 让 make hap 完整跑完
+      - name: Stub sign.py (unsigned build)
+        run: |
+          cat > sign.py <<'PY'
+          #!/usr/bin/env python3
+          # CI-only stub: 无签名构建, 直接把 unsigned HAP 拷贝为 "signed" 输出
+          import shutil, sys, os
+          src, dst = sys.argv[1], sys.argv[2]
+          os.makedirs(os.path.dirname(dst), exist_ok=True)
+          shutil.copy(src, dst)
+          print(f"[sign-stub] copied {src} -> {dst} (UNSIGNED)")
+          PY
+          chmod +x sign.py
+
+      # ---- CI-only: 无签名的 build-profile.json5 ----
+      # 从 example 派生会踩坑: example 里的 signingConfigs 指向占位符路径,
+      # hvigor 的 SignHap 任务会校验这些文件存在, 直接失败.
+      # 这里显式写一份 signingConfigs 为空的 profile, 让 hvigor 跳过 SignHap,
+      # 直接输出 entry-default-unsigned.hap.
+      - name: Provision unsigned build-profile.json5
+        run: |
+          cat > build-profile.json5 <<'JSON5'
+          {
+            "app": {
+              "signingConfigs": [],
+              "products": [
+                {
+                  "name": "default",
+                  "targetSdkVersion": "6.1.0(23)",
+                  "compatibleSdkVersion": "6.1.0(23)",
+                  "runtimeOS": "HarmonyOS",
+                  "buildOption": {
+                    "nativeCompiler": "BiSheng",
+                    "strictMode": {
+                      "caseSensitiveCheck": true,
+                      "useNormalizedOHMUrl": true
+                    }
+                  }
+                }
+              ],
+              "buildModeSet": [
+                {
+                  "name": "debug"
+                },
+                {
+                  "name": "release"
+                }
+              ]
+            },
+            "modules": [
+              {
+                "name": "entry",
+                "srcPath": "./entry",
+                "targets": [
+                  {
+                    "name": "default",
+                    "applyToProducts": ["default"]
+                  }
+                ]
+              }
+            ]
+          }
+          JSON5
+          echo "[ci] wrote unsigned build-profile.json5 (signingConfigs empty)"
+
+      # ---- 兜底: 确保预构建 buildenv 含当前源码所需工具 ----
+      # 与 build.yml 保持一致; Dockerfile 已同步声明, 镜像更新后这里 no-op.
+      - name: Ensure CI build dependencies present
+        run: |
+          packages=()
+          if [ ! -f /usr/share/aclocal/ltdl.m4 ]; then
+            packages+=(libltdl-dev)
+          fi
+          if ! command -v glslangValidator >/dev/null 2>&1; then
+            packages+=(glslang-tools)
+          fi
+          if ! command -v msgfmt >/dev/null 2>&1; then
+            packages+=(gettext)
+          fi
+          if ! command -v curl >/dev/null 2>&1; then
+            packages+=(curl)
+          fi
+          if ! command -v wget >/dev/null 2>&1; then
+            packages+=(wget)
+          fi
+          # makeinfo (texinfo): gmp make all 会重新生成 doc/gmp.info,
+          # 干净 checkout 时间戳旧必触发, 缺则 deps 阶段 Error 127
+          if ! command -v makeinfo >/dev/null 2>&1; then
+            packages+=(texinfo)
+          fi
+          if ! command -v x86_64-w64-mingw32-widl >/dev/null 2>&1; then
+            packages+=(mingw-w64-tools)
+          fi
+          if [ "${#packages[@]}" -gt 0 ]; then
+            echo "Installing missing CI packages: ${packages[*]}"
+            apt-get update
+            apt-get install -y --no-install-recommends "${packages[@]}"
+          else
+            echo "CI build dependencies already present"
+          fi
+
+      - name: Show environment
+        run: |
+          echo "== toolchain =="
+          gcc --version | head -1
+          cmake --version | head -1
+          meson --version
+          ninja --version
+          python3 --version
+          glslangValidator --version | head -1
+          x86_64-w64-mingw32-g++ --version | head -1
+          i686-w64-mingw32-g++ --version | head -1
+          x86_64-w64-mingw32-widl -V | head -1
+          java -version 2>&1 | head -1
+          echo "== OHOS SDK =="
+          ls /apps/harmony/sdk/default/openharmony/native/llvm/bin/clang
+          /apps/harmony/bin/hvigorw --version || true
+          echo "== nproc =="
+          nproc
+
+      # DXVK/VKD3D 是 x86 PE 运行时, 方案③ 经 wowbox64.dll/libarm64ecfex.dll
+      # (HODLL/HODLL64) 转译运行 x86/x64 应用时仍需要它们, 与方案② 相同.
+      - name: Build DXVK Legacy runtime (x64 + x86)
+        run: |
+          set -euxo pipefail
+          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 dxvk
+          for dll in \
+            build/dxvk/legacy/x64/bin/d3d11.dll \
+            build/dxvk/legacy/x64/bin/dxgi.dll \
+            build/dxvk/legacy/x86/bin/d3d11.dll \
+            build/dxvk/legacy/x86/bin/dxgi.dll; do
+            test -s "$dll"
+          done
+          sha256sum build/dxvk/legacy/{x64,x86}/bin/{d3d11,dxgi}.dll
+
+      - name: Build DXVK Modern runtime (x64 + x86)
+        run: |
+          set -euxo pipefail
+          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 dxvk-modern
+          for dll in \
+            build/dxvk/modern-2.6/x64/bin/d3d11.dll \
+            build/dxvk/modern-2.6/x64/bin/dxgi.dll \
+            build/dxvk/modern-2.6/x86/bin/d3d11.dll \
+            build/dxvk/modern-2.6/x86/bin/dxgi.dll; do
+            test -s "$dll"
+          done
+          sha256sum build/dxvk/modern-2.6/{x64,x86}/bin/{d3d11,dxgi}.dll
+
+      - name: Build VKD3D-Proton runtime (x64 limited-500K)
+        run: |
+          set -euxo pipefail
+          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 vkd3d-proton
+          for artifact in \
+            build/vkd3d-proton/limited-500k/x64/d3d12.dll \
+            build/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
+            build/vkd3d-proton/limited-500k/x64/triangle.exe \
+            build/vkd3d-proton/limited-500k/x64/gears.exe \
+            build/vkd3d-proton/limited-500k/manifest.json; do
+            test -s "$artifact"
+          done
+
+      - name: Build HAP
+        env:
+          NATIVE_ARCH: arm64-v8a
+          WINE_ARCH: aarch64
+          BUILD_GUEST_GFX: '1'
+          BUILD_GUEST_VULKAN: '1'
+          # CI 默认开启 mono: build_deps 用 curl/wget 下载 wine-mono msi,
+          # assemble.sh 打包 cpl + mono msi. 设 BUILD_WINE_MONO: '0' 可关闭.
+          BUILD_WINE_MONO: '1'
+        run: |
+          set -euxo pipefail
+          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 hap
+
+      - name: Locate artifacts
+        id: art
+        run: |
+          set -eux
+          out_dir=entry/build/default/outputs/default
+          ls -lh "$out_dir"
+          if [ -f "$out_dir/entry-default-unsigned.hap" ]; then
+            echo "hap=$out_dir/entry-default-unsigned.hap" >> "$GITHUB_OUTPUT"
+          else
+            echo "hap=$out_dir/entry-default-signed.hap" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 校验分两层:
+      # 1) wine-data.zip 内的 dxvk/vkd3d x86 PE 运行时与 submodule commit 一致
+      #    (与 build.yml 同套断言, 方案②③ 共用这部分 payload);
+      # 2) 方案③ 专属: 证明打进 HAP 的 wine 本身是 aarch64 —
+      #    PE 侧 bin/aarch64-windows/*.dll machine==0xAA64,
+      #    Unix 侧 .so 走 el1 bundle (libs/arm64-v8a, 方案③ wine-data 的
+      #    bin/aarch64-unix/ 为空目录), 抽 libs/arm64-v8a/libwineserver.so
+      #    验 ELF e_machine==0xB7 (EM_AARCH64).
+      - name: Verify embedded runtime in HAP
+        env:
+          HAP_PATH: ${{ steps.art.outputs.hap }}
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import io
+          import json
+          import os
+          import struct
+          import subprocess
+          import zipfile
+
+          hap_path = os.environ["HAP_PATH"]
+          expected_runtimes = {
+              "legacy": {
+                  "version": "1.10.3",
+                  "commit": subprocess.check_output(
+                      ["git", "-C", "thirdparty/dxvk", "rev-parse", "HEAD"], text=True
+                  ).strip(),
+              },
+              "modern-2.6": {
+                  "version": "2.6.2",
+                  "commit": subprocess.check_output(
+                      ["git", "-C", "thirdparty/dxvk-modern", "rev-parse", "HEAD"], text=True
+                  ).strip(),
+              },
+          }
+
+          with zipfile.ZipFile(hap_path) as hap:
+              payload = hap.read("resources/rawfile/wine-data.zip")
+              runtime_manifest = json.loads(
+                  hap.read("resources/rawfile/wine-runtime-manifest.json")
+              )
+              # 方案③ 专属: el1 bundle 里的 wine unix .so 必须是 AArch64 ELF
+              wineserver = hap.read("libs/arm64-v8a/libwineserver.so")
+              assert wineserver[:4] == b"\x7fELF", "libwineserver.so not ELF"
+              em = struct.unpack_from("<H", wineserver, 18)[0]
+              assert em == 0xB7, ("libs/arm64-v8a/libwineserver.so", hex(em))
+              print(f"[arm64] libs/arm64-v8a/libwineserver.so: e_machine={em:#06x} size={len(wineserver)}")
+
+          payload_sha = hashlib.sha256(payload).hexdigest()
+          assert runtime_manifest["payloadSha256"] == payload_sha, (
+              runtime_manifest["payloadSha256"], payload_sha
+          )
+
+          with zipfile.ZipFile(io.BytesIO(payload)) as wine_data:
+              dxvk_manifest = json.loads(wine_data.read("dxvk/manifest.json"))
+              assert dxvk_manifest["schemaVersion"] == 2
+              assert dxvk_manifest["backend"] == "dxvk"
+              assert dxvk_manifest["defaultProfile"] == "legacy"
+              runtimes = dxvk_manifest["runtimes"]
+              assert set(runtimes) == set(expected_runtimes), runtimes.keys()
+
+              for profile, expected in expected_runtimes.items():
+                  runtime = runtimes[profile]
+                  assert runtime["version"] == expected["version"], runtime
+                  assert runtime["commit"] == expected["commit"], (
+                      profile, runtime["commit"], expected["commit"]
+                  )
+                  for arch, expected_machine in (("x64", 0x8664), ("x86", 0x014C)):
+                      for dll in ("d3d11.dll", "dxgi.dll"):
+                          name = f"dxvk/{profile}/{arch}/{dll}"
+                          image = wine_data.read(name)
+                          assert len(image) > 4096, (name, len(image))
+                          assert image[:2] == b"MZ", name
+                          pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                          assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                          machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                          assert machine == expected_machine, (
+                              name, hex(machine), hex(expected_machine)
+                          )
+                          assert runtime[arch][dll] == hashlib.sha256(image).hexdigest(), name
+                          print(
+                              f"[dxvk/{profile}] {name}: "
+                              f"machine={machine:#06x} size={len(image)}"
+                          )
+
+              # 方案③ vulkan 运行时: PE 侧 aarch64 (ARM64 machine 0xAA64) +
+              # i386 (32 位 x86 wow64 用), guest 侧 ICD 为 venus_icd.aarch64.json.
+              pe = wine_data.read("bin/aarch64-windows/vulkan-1.dll")
+              assert pe[:2] == b"MZ"
+              pe_off = struct.unpack_from("<I", pe, 0x3C)[0]
+              machine = struct.unpack_from("<H", pe, pe_off + 4)[0]
+              assert machine == 0xAA64, ("bin/aarch64-windows/vulkan-1.dll", hex(machine))
+              print(f"[arm64] bin/aarch64-windows/vulkan-1.dll: machine={machine:#06x}")
+
+              vulkan_runtime = (
+                  "bin/i386-windows/vulkan-1.dll",
+                  "bin/guest_vulkan/lib/libvulkan.so.1",
+                  "bin/guest_vulkan/lib/libvulkan_virtio.so",
+                  "bin/guest_vulkan/share/vulkan/icd.d/venus_icd.aarch64.json",
+              )
+              for name in vulkan_runtime:
+                  image = wine_data.read(name)
+                  assert image, name
+                  print(f"[vulkan] {name}: size={len(image)}")
+
+              vkd3d_manifest = json.loads(wine_data.read("vkd3d/manifest.json"))
+              assert vkd3d_manifest["profile"] == "limited-500k", vkd3d_manifest
+              vkd3d_commit = subprocess.check_output(
+                  ["git", "-C", "thirdparty/vkd3d-proton", "rev-parse", "HEAD"],
+                  text=True,
+              ).strip()
+              assert vkd3d_manifest["upstreamCommit"] == vkd3d_commit, (
+                  vkd3d_manifest["upstreamCommit"], vkd3d_commit
+              )
+              for name, expected_machine in (
+                  ("vkd3d/limited-500k/x64/d3d12.dll", 0x8664),
+                  ("smoke/x64/winehua_d3d12_smoke.exe", 0x8664),
+                  ("smoke/x64/triangle.exe", 0x8664),
+                  ("smoke/x64/gears.exe", 0x8664),
+              ):
+                  image = wine_data.read(name)
+                  assert len(image) > 4096, (name, len(image))
+                  assert image[:2] == b"MZ", name
+                  pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                  assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                  machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                  assert machine == expected_machine, (
+                      name, hex(machine), hex(expected_machine)
+                  )
+                  print(f"[vkd3d] {name}: machine={machine:#06x} size={len(image)}")
+              print(f"[vkd3d] commit={vkd3d_commit}")
+
+          print(f"[dxvk] wine-data.zip sha256={payload_sha}")
+          PY
+
+      - name: Upload HAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: WineHua-arm64-native-unsigned-${{ github.sha }}
+          path: ${{ steps.art.outputs.hap }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-arm64-native-${{ github.sha }}
+          path: |
+            build/**/meson-logs/**
+            build/**/CMakeFiles/CMakeOutput.log
+            build/**/CMakeFiles/CMakeError.log
+            build/**/config.log
+          if-no-files-found: ignore
+          retention-days: 7
