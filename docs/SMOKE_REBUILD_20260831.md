@@ -52,13 +52,13 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
   "suites": {
     "core": {
       "tests": [
-        { "testId": "opengl-x64", "exe": "smoke/x64/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 },
-        { "testId": "opengl-x86", "exe": "smoke/x86/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 }
+        { "testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 },
+        { "testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 }
       ]
     },
     "d3d12": {
       "tests": [
-        { "testId": "d3d12-1000f", "exe": "smoke/x64/winehua_d3d12_smoke.exe",
+        { "testId": "d3d12-1000f", "exe": "x64/winehua_d3d12_smoke.exe",
           "argv": ["--frames", "1000",
                    "--result", "C:/smoke/results/<run-id>/<test-id>.json",
                    "--checkpoint", "C:/smoke/results/<run-id>/<test-id>.ckpt"],
@@ -70,7 +70,9 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
 ```
 
 约定：
-- `exe` 相对 `C:\smoke\`，仅允许 `smoke/` 前缀（防目录逃逸）；x64/x86 arch 由路径表达
+- `exe` 相对 `C:\smoke\` 根（`x64/…` / `x86/…`，**无** `smoke/` 前缀——载荷打包在
+  `smoke/{x64,x86}`，播种到 `C:\smoke` 后即根级子目录；曾误编 `smoke/x64/…` 导致
+  runner 拼成 `C:\smoke\smoke\x64\…` → wine `failed to open`）；x64/x86 arch 由路径表达
 - `env` 只声明**测试专属诊断键**。产品语义（DXVK 稳定化注入、d3d 后端 overlay、perf profile、
   box64 档位）已由 native `BuildSessionEnv` + `runWineProgram(d3dBackend)` 参数收口，
   suites.json 不重复声明（双头维护消灭，见 _SMOKE_INFRASTRUCTURE §2 侵入点 3 的教训）。
