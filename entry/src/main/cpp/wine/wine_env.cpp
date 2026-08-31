@@ -218,9 +218,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             "VK_DRIVER_FILES=" + guestVulkanIcd,
             "VK_ICD_FILENAMES=" + guestVulkanIcd,
             "VN_DEBUG=vtest",
-            "VN_PERF=" + std::string(modern26
-                ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
-                : "no_fence_feedback,no_query_feedback,no_multi_ring"),
+            /* no_semaphore_feedback 必须始终带: venus semaphore feedback 在 vtest
+             * 下会 stuck in semaphore wait (iter 1024) → d3d12 白屏。此开关
+             * 不能跟随 dxvk 档位 (modern26) 派生 — 曾默认 vkd3d+dxvk_legacy
+             * 组合下白屏、先切 dxvk2.6 再切回 vkd3d 才正常 (残留档位掩盖了 bug)。 */
+            "VN_PERF=no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring",
             "VN_WINEHUA_STRONG_RING_BARRIER=1",
             "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
             "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
