@@ -3,6 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { WineEnvService } from '../service/WineEnvService';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -23,23 +24,51 @@ export default class EntryAbility extends UIAbility {
     return this.defaultDxvkBackend();
   }
 
-  // 发布正常会话所需的最小启动状态: 持久化 preference → AppStorage 生效值
+  // 发布启动状态: want 开屏参数 (d3d/dxvk 覆盖 + smoke 请求) → AppStorage 生效值
   // (Index 的 @StorageLink 'winehua.d3d.backend'/'winehua.dxvk.backend' 与
-  // WineEnvService.updateLaunchRequest 依赖)。自动化 Want 协议
-  // (smoke/game/experiment/click/perf-profile) 已随 smoke 设施整体拆除,
-  // 重建后按 docs/SMOKE_INFRASTRUCTURE.md §4 的三层设计重新引入。
-  private publishLaunchRequest(): void {
-    const persistedD3d = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
-    const d3dBackend = persistedD3d === 'dxvk_legacy' || persistedD3d === 'dxvk_modern_2_6' ||
-      persistedD3d === 'vkd3d_limited_500k' ? persistedD3d : 'wined3d';
-    let dxvkBackend = this.resolveDxvkBackend(
-      AppStorage.get<string>('winehua.dxvk.preference') || 'auto');
+  // WineEnvService.updateLaunchRequest 依赖)。自动化 Want 协议按
+  // docs/SMOKE_REBUILD_20260831.md §2 重新引入 (mode/suite/run_id/prefix/long_seconds
+  // 5 键极简版; game/experiment/click/perf-profile 凭据拆除不恢复)。
+  private publishLaunchRequest(want: Want): void {
+    const parameters = want.parameters;
+    const value = (key: string, fallback: string): string => {
+      if (!parameters || parameters[key] === undefined || parameters[key] === null) return fallback;
+      return `${parameters[key]}`;
+    };
+    const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
+      parameters['winehua.d3d_backend'] !== null;
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
+    const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
+    const d3dBackend = requestedD3d === 'dxvk_legacy' ||
+      requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
+      requestedD3d : 'wined3d';
+    const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
+      parameters['winehua.dxvk_backend'] !== null;
+    const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'auto';
+    let dxvkBackend = this.resolveDxvkBackend(explicitDxvk ?
+      value('winehua.dxvk_backend', 'auto') : persistedDxvk);
     if (d3dBackend === 'dxvk_legacy') dxvkBackend = 'dxvk_legacy';
     if (d3dBackend === 'dxvk_modern_2_6') dxvkBackend = 'dxvk_modern_2_6';
     AppStorage.setOrCreate<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    // Smoke 自动化请求 (docs/SMOKE_REBUILD_20260831.md §2): mode=smoke 时发布
+    // 5 键请求, 由 WineEnvService.consumeSmokeRequest 在引擎编排前置消费
+    // (消费后清键, 不重触发)。正常会话 (无 mode) 零影响。
+    const smokeMode = value('winehua.mode', '');
+    if (smokeMode === 'smoke') {
+      AppStorage.setOrCreate<string>('winehua.smoke.request', JSON.stringify({
+        suite: value('winehua.suite', 'core'),
+        runId: value('winehua.run_id', `manual-${Date.now()}`),
+        prefix: value('winehua.prefix', 'reuse') === 'clean' ? 'clean' : 'reuse',
+        longSeconds: Number(value('winehua.long_seconds', '3600')),
+        source: 'want'
+      }));
+      hilog.info(DOMAIN, 'testTag', 'smoke request: suite=%{public}s runId=%{public}s prefix=%{public}s',
+        value('winehua.suite', 'core'), value('winehua.run_id', ''),
+        value('winehua.prefix', 'reuse'));
+    }
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -52,13 +81,14 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
-    this.publishLaunchRequest();
+    this.publishLaunchRequest(want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.publishLaunchRequest();
+    this.publishLaunchRequest(want);
     WineWindowManager.getInstance().restoreDesktopIfRunning();
+    WineEnvService.getInstance().onNewWant();
   }
 
   onDestroy(): void {

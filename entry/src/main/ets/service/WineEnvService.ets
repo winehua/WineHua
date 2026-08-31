@@ -6,6 +6,8 @@ import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
+import { SmokeRunner } from './SmokeRunner';
+import { SmokeRequest } from '../common/SmokeTypes';
 
 const DOMAIN = 0x0000;
 const FILES_BASE = '/data/storage/el2/base/files';
@@ -114,6 +116,9 @@ export class WineEnvService {
   // engineState 细节: starting → wineserver/wineboot; failed → 失败阶段
   engineStage: string = '';
   prefixReady: boolean = false;
+  // smoke 自动化请求 (EntryAbility 发布 → consumeSmokeRequest 消费 → 引擎就绪
+  // 后 maybeRunSmoke 拾起触发 SmokeRunner)。消费后置空/清键, 不跨会话重触发。
+  private pendingSmoke: SmokeRequest | null = null;
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
@@ -336,6 +341,10 @@ export class WineEnvService {
     }
     this.updateLaunchRequest();
 
+    // smoke 请求前置消费 (先于自动初始化分支; clean 的重置编排在 auto-start
+    // 判定前执行, 见下方 clean 分支)
+    this.consumeSmokeRequest();
+
     this.hasRawfileWineData = this.detectRawfileWineData();
 
     testNapi.setStateCallback(this.onNativeState);
@@ -354,6 +363,15 @@ export class WineEnvService {
       this.desktopMode = wm.isDesktopMode;
       this.notify();
     });
+    // smoke clean 基线: 清空 C 盘后由重置编排自动重启 (停 → 清 → startSession
+    // → enterReady → maybeRunSmoke)。必须在状态回调/订阅注册之后判定 (编排里
+    // stopSession/startSession 依赖 native 状态消息); busy 拦截时落回常规分支,
+    // pendingSmoke 仍会由 enterReady 链尾 maybeRunSmoke 拾起。
+    if (this.pendingSmoke && this.pendingSmoke.prefix === 'clean') {
+      if (this.resetSmokePrefix()) {
+        return;
+      }
+    }
     // 自动初始化分两种情形:
     // 1) prefix 已就绪 (二次进入): 后台自动拉起引擎 (startSession(后台)
     //    抑制 overlay, 用户无感), 就绪前点 exe 由 UI 侧 toast 拦截;
@@ -467,7 +485,76 @@ export class WineEnvService {
     // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
     this.waitForPrefix().then(() => {
       void this.seedSmokePayload();
+      void this.maybeRunSmoke();
     });
+  }
+
+  // 新 Want 进入 (EntryAbility.onNewWant): smoke 请求可能在 App 存活时到达。
+  onNewWant(): void {
+    this.consumeSmokeRequest();
+    if (this.pendingSmoke && this.pendingSmoke.prefix === 'clean') {
+      this.resetSmokePrefix();
+      return;
+    }
+    this.maybeRunSmoke();
+  }
+
+  // smoke 请求消费单点 (冷启动 init + onNewWant 双入口; 消费后清键防重触发)。
+  // clean 标记保留在 pendingSmoke, 由 init/onNewWant 的重置分支执行。
+  private consumeSmokeRequest(): void {
+    const raw = AppStorage.get<string>('winehua.smoke.request');
+    if (!raw) return;
+    AppStorage.setOrCreate<string>('winehua.smoke.request', '');
+    try {
+      this.pendingSmoke = JSON.parse(raw) as SmokeRequest;
+      hilog.info(DOMAIN, 'wine', 'smoke request consumed: suite=%{public}s runId=%{public}s prefix=%{public}s',
+        this.pendingSmoke.suite, this.pendingSmoke.runId, this.pendingSmoke.prefix || 'reuse');
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'smoke request parse error: %{public}s', JSON.stringify(e));
+      this.pendingSmoke = null;
+    }
+  }
+
+  // smoke 启动单点: 引擎 ready 且 prefix 就绪才触发 (enterReady 链尾/二次 Want
+  // 路径共用)。不在此做 clean — 那是 init/onNewWant 的重置编排职责。
+  private maybeRunSmoke(): void {
+    const req = this.pendingSmoke;
+    if (!req) return;
+    if (!this.prefixReady) return;   // 等 enterReady 链尾 (waitForPrefix 完成) 再拾
+    this.pendingSmoke = null;
+    SmokeRunner.getInstance().start(req);
+  }
+
+  // smoke --prefix clean 语义: 只清 prefix (C 盘 + prefix 元数据), 不删运行时 —
+  // 与 doReset (删 WINE_ROOT + 重解压 249MB) 的区别。必须先 stopSession:
+  // 活 wineserver/explorer 脚下删 prefix 是数据损坏。编排: 停 → 清 →
+  // 延迟 startSession (与 doReset 同款 500ms 隔离)。返回 false = busy 拦截
+  // (调用方走常规启动分支, pendingSmoke 仍由 maybeRunSmoke 拾起)。
+  private resetSmokePrefix(): boolean {
+    if (this.isBusy()) {
+      hilog.warn(DOMAIN, 'wine', 'resetSmokePrefix blocked (busy)');
+      return false;
+    }
+    this.opBusy = true;
+    this.setInitStatus('正在清空 smoke prefix...', true);
+    (async (): Promise<void> => {
+      try {
+        await this.stopSession(true);
+        this.setInitStatus('正在清空...', true);
+        testNapi.resetWinePrefix();
+        this.engineState = 'idle';
+        this.engineStage = '';
+        this.prefixReady = false;
+        ProcessService.getInstance().clear();
+        this.setInitStatus('smoke prefix 已清空', false);
+        setTimeout(() => this.startSession(true), 500);
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'resetSmokePrefix error: %{public}s', JSON.stringify(e));
+        this.opBusy = false;
+        this.notify();
+      }
+    })();
+    return true;
   }
 
   // 烟测程序载荷: C:\smoke 是应用库内建「Graphics Smoke / D3d Smoke」手动
