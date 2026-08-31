@@ -1,0 +1,16 @@
+diff --git a/Source/Windows/Common/WinAPI/Misc.cpp b/Source/Windows/Common/WinAPI/Misc.cpp
+index 41a625324..9ba98a8f9 100644
+--- a/Source/Windows/Common/WinAPI/Misc.cpp
++++ b/Source/Windows/Common/WinAPI/Misc.cpp
+@@ -188,3 +188,11 @@ DLLEXPORT_FUNC(LONG, RegCloseKey, (HKEY hKey)) {
+ DLLEXPORT_FUNC(DWORD, GetActiveProcessorCount, (WORD group)) {
+   UNIMPLEMENTED();
+ }
++
++DLLEXPORT_FUNC(UINT, GetACP, ()) {
++  UNIMPLEMENTED();
++}
++
++DLLEXPORT_FUNC(int, GetLocaleInfoEx, (LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCData, int cchData)) {
++  UNIMPLEMENTED();
++}

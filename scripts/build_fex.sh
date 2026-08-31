@@ -27,6 +27,23 @@ test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" || err "llvm-mingw 缺失 aa
 
 export PATH="$LLVM_MINGW/bin:$PATH"
 
+# 随构建走的 FEX 补丁 (子模块锁定 86ff33bbe 且指向 FEX-Emu/FEX 上游,
+# 非 fork 不能推分支, 按 glib-format-security 先例 patch 化):
+#   fex-missing-includes.patch   — 上游 08031a2767 "Add missing includes",
+#     StringConv.h 等 3 文件缺 <cstdlib>/<stdarg.h>, 旧 llvm-mingw (20260616)
+#     的 libc++ 靠传递 include 侥幸能编, 20260826 起不行.
+#   fex-winapi-locale-stubs.patch — 20260826 libc++ 的 locale_win32.cpp.obj
+#     引用 GetACP/GetLocaleInfoEx, 上游 master 在 WinAPI/Misc.cpp 以
+#     UNIMPLEMENTED 桩解决, 回补到本树同名文件.
+for PATCH in \
+    "$SCRIPT_DIR/patches/fex-missing-includes.patch" \
+    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch"; do
+    if ! git -C "$FEX_SRC" apply --reverse --check "$PATCH" 2>/dev/null; then
+        git -C "$FEX_SRC" apply "$PATCH"
+        log "已应用 patch: $(basename "$PATCH")"
+    fi
+done
+
 # ---- libarm64ecfex.dll (x86_64 模拟, arm64ec ABI) ----
 build_fex_ec() {
     local build="$BUILD_DIR/fex-ec"
