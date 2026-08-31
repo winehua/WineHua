@@ -8,6 +8,7 @@ import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
+import { SmokeRunner } from '../service/SmokeRunner';
 
 const DOMAIN = 0x0000;
 
@@ -41,6 +42,9 @@ struct Index {
   @State dirStack: string[] = [];
   // -- 运行中进程 (ProcessService 镜像) --
   @State processList: ProcessInfo[] = [];
+  // -- smoke 回归 (SmokeRunner 镜像: 侧边栏开发测试区) --
+  @State smokeStatus: string = '';
+  @State smokeResult: string = '';
   // -- 桌面模式 (仅 PC): 融合/虚拟桌面设置 (镜像 DesktopModeService) --
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
@@ -200,6 +204,14 @@ struct Index {
       this.desktopActive = wm.desktopActive;
       this.desktopWindowActive = wm.isDesktopWindowActive();
     });
+    // smoke 状态镜像 (侧边栏开发测试区): 运行中显示进度, 完成后显示 PASS/FAIL
+    const smoke = SmokeRunner.getInstance();
+    const mirrorSmoke = (): void => {
+      this.smokeStatus = smoke.statusText();
+      this.smokeResult = smoke.resultText();
+    };
+    smoke.subscribe(mirrorSmoke);
+    mirrorSmoke();
     // 引擎初始化 (幂等): prefix 就绪自动拉起 (含升级检测拦截);
     // 首启无 prefix 自动 startSession (与 master 一致)
     env.init(getContext(this));
@@ -289,6 +301,17 @@ struct Index {
 
   private quickRestart = (): void => {
     this.env.restartEngine();
+  }
+
+  // smoke 手动入口: 只跑 core 单套件 (固定帧视觉回归, 与脚本 --suite core 同链)。
+  // 结果写到 C:\smoke\results\manual-<ts>\suite-summary.json, 界面镜像进度/汇总
+  private startSmoke = (): void => {
+    SmokeRunner.getInstance().start({
+      suite: 'core',
+      runId: `manual-${Date.now()}`,
+      prefix: 'reuse',
+      source: 'ui'
+    });
   }
 
   private doRun = (name: string): void => {
@@ -518,6 +541,31 @@ struct Index {
               .onClick(() => this.wm.openDesktopWindow())
               .margin({ bottom: 8 })
           }
+        }
+
+        Divider().color('#2a2a2a').width('100%')
+
+        // -- 开发测试 (smoke 回归) --
+        Text('开发测试')
+          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .width('100%').padding({ top: 12, bottom: 8 })
+        Button('Smoke 回归 (core)')
+          .width('100%').height(32).backgroundColor('#394')
+          .enabled(!this.engineBusy() && this.prefixReady && !SmokeRunner.getInstance().isRunning())
+          .onClick(this.startSmoke)
+          .margin({ bottom: 6 })
+        if (this.smokeStatus) {
+          Text(this.smokeStatus)
+            .fontSize(12).fontColor(this.smokeResult === 'PASS' ? '#4f4' :
+              (this.smokeResult === 'FAIL' || this.smokeResult === 'ERROR' ? '#f55' : '#8cf'))
+            .width('100%').maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ bottom: 4 })
+          Text('结果: C:\\smoke\\results\\' + (SmokeRunner.getInstance().runId() || '') +
+            '\\suite-summary.json')
+            .fontSize(11).fontColor('#777')
+            .width('100%').maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
 
         Divider().color('#2a2a2a').width('100%')

@@ -33,7 +33,7 @@ automation/run_regression.py
 | `winehua.mode` | `smoke`（唯一认可值） | 缺省 = 正常会话，零行为变化 |
 | `winehua.suite` | suite 名（suites.json 的键） | 一期：core/audio/d3d8/d3d9/wine-vulkan/dxvk/dxvk-long/dxvk-dynamic/gpu-diagnostics/dxvk26-requirements/dxvk-modern-baseline/dxvk-modern-long/d3d12/all/long |
 | `winehua.run_id` | 任意 ASCII | 结果目录 `results/<run-id>/`；手动入口 `manual-<ts>` |
-| `winehua.prefix` | `reuse`（默认）/ `clean` | `clean` → 启动前 `resetWinePrefix()`（native 已保留，App UID 权威删除） |
+| `winehua.prefix` | `reuse`（默认）/ `clean` | `clean` → 引擎启动编排前置 `env.doReset()`（stopSession→wipe→自动 startSession 的现成编排；裸 resetWinePrefix 不先停引擎会损坏活 prefix） |
 
 恢复不引入旧版全套：`experiment/game/click/long_seconds/perf_profile 白名单` 不进一期（文档 §3 点名砍掉）。
 perf_profile 不走 Want——smoke 会话跑产品默认档（原生 `BuildSessionEnv` 无显式 profile 的缺省即
@@ -59,7 +59,9 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
     "d3d12": {
       "tests": [
         { "testId": "d3d12-1000f", "exe": "smoke/x64/winehua_d3d12_smoke.exe",
-          "argv": ["--result", "<run-id>\\<test-id>.json", "--checkpoint", "<run-id>\\<test-id>.ckpt"],
+          "argv": ["--frames", "1000",
+                   "--result", "C:/smoke/results/<run-id>/<test-id>.json",
+                   "--checkpoint", "C:/smoke/results/<run-id>/<test-id>.ckpt"],
           "env": {}, "timeoutMs": 180000 }
       ]
     }
@@ -77,10 +79,13 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
   （fallback 检测）、dxvk-modern 的 trace 键等。
 - `argv` / `seconds`（渲染秒数）/ `timeoutMs` 可选：秒数与超时对齐旧 Runner 规格
   （opengl=8s/60s、audio=3s/45s、d3d8/d3d9/dxvk=5~8s/180s、dxvk-long=longSeconds+90s、
-  gpu-diagnostics/dxvk26=0s/90s）。`argv` 中 `<run-id>\<test-id>.json` 形式的占位符
-  由 Runner 运行时替换为实际值（如 d3d12 的 `--result` 窗口通知路径）；d3d12 的
-  `--result/--checkpoint` 参数以 `winehua_d3d12_smoke.exe` 实际支持为准（实现时对照
-  vkd3d-proton 源码核对）
+  gpu-diagnostics/dxvk26=0s/90s）。`argv` 中 `<run-id>`/`<test-id>` 占位符由 Runner
+  运行时替换。d3d12 的 exe 参数已对照 patch 0005 确认：`--frames`（默认仅 3！
+  `VKD3D_GRAPHICS_SMOKE_DEFAULT_FRAMES 3u`，1000 帧须显式传）、`--result`、`--checkpoint`
+  （后者二选一传 `--result` 即可）；另确认路径用正斜杠（Wine 的 fopen 接受 `C:/smoke/...`，
+  规避 JSON/heredoc 双重转义）
+- `seconds`/`timeoutMs` 为 `-1` 时表示「取请求的 longSeconds」（dxvk-long/dxvk-modern-long 用，
+  请求默认 3600；`timeoutMs=-1` ⇒ `longSeconds*1000+90000`）
 - `WINEHUA_SMOKE_RUN_ID / WINEHUA_SMOKE_TEST_ID` 由 Runner 固定注入，不在 suites 声明
 - 新增测试 = 改 assemble 生成段 + smoke C 源码，不动 ArkTS
 
@@ -161,7 +166,8 @@ private consumeSmokeRequest(): void {
   AppStorage.setOrCreate<string>('winehua.smoke.request', '');   // 清键: 不重触发
   this.pendingSmoke = JSON.parse(raw) as SmokeRequest;
   if (this.pendingSmoke.prefix === 'clean') {
-    this.resetWinePrefix();       // native 通道, App UID 权威删除; 之后 startSession 自动重造
+    this.doReset();               // 现成编排: stopSession→wipe→自动 startSession;
+                                  // 不能裸 resetWinePrefix (活引擎下删 prefix=损坏)
   }
 }
 ```
@@ -170,8 +176,8 @@ private consumeSmokeRequest(): void {
 `void this.maybeRunSmoke();`——`maybeRunSmoke` 有 `pendingSmoke` 则
 `SmokeRunner.getInstance().start(pendingSmoke)` 并置空 pending。
 **引擎已就绪时的二次请求**（handleNewWant）：`pendingSmoke` 非空且 prefixReady → 直接触发 runner。
-编排顺序：consume（clean→reset 前置）→ startSession → enterReady → seed → maybeRunSmoke。
-Runner 只跑测试、不做 clean，语义单点。
+编排顺序：consume（clean→doReset 前置：停止→清空→自动重启）→ startSession → enterReady →
+seed → maybeRunSmoke。Runner 只跑测试、不做 clean，语义单点。
 
 ## 7. UI 入口（Index.ets 侧边栏「开发测试」区）
 
