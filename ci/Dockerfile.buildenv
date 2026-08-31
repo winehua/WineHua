@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
         # spirv-tools: build_ohos_guest_vulkan.sh 无条件调用 spirv-as/dis/val/opt,
         # 显式声明避免依赖传递链断裂. (与根 Dockerfile 保持一致)
         gettext curl wget texinfo \
+        xz-utils \
         libexpat1-dev libxml2-dev libffi-dev \
         libfreetype-dev \
         gcc-mingw-w64-i686 g++-mingw-w64-i686 \
@@ -76,13 +77,30 @@ ENV TOOL_HOME=/apps/harmony \
 # 失败不影响镜像可用性
 RUN /apps/harmony/bin/hvigorw --version >/dev/null 2>&1 || true
 
+# ---- llvm-mingw (arm64ec/aarch64 PE 编译 + FEX/wowbox64 构建, 需 LLVM ≥ 18) ----
+# 与 workflow 的 "Prepare llvm-mingw toolchain" step 同版本; scripts/env.sh
+# 通过 LLVM_MINGW 环境变量优先采用本路径, 镜像内置后该 step 自动 no-op.
+ARG LLVM_MINGW_VERSION=20260826
+RUN set -eux; \
+    curl -fL --retry 3 -o /tmp/llvm-mingw.tar.xz \
+      "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"; \
+    mkdir -p /opt/llvm-mingw; \
+    tar -xJf /tmp/llvm-mingw.tar.xz -C /opt/llvm-mingw --strip-components=1; \
+    rm /tmp/llvm-mingw.tar.xz; \
+    test -x /opt/llvm-mingw/bin/arm64ec-w64-mingw32-clang; \
+    test -x /opt/llvm-mingw/bin/aarch64-w64-mingw32-clang; \
+    /opt/llvm-mingw/bin/aarch64-w64-mingw32-clang --version | head -1
+
+ENV LLVM_MINGW=/opt/llvm-mingw
+
 # ---- 验证关键工具/文件都在 ----
 # 增加 ltdl.m4 断言, 防止未来 apt/依赖变动再次让它悄悄消失
 RUN set -eux; \
-    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget makeinfo x86_64-w64-mingw32-widl; \
+    which gcc make cmake ninja meson bison flex autoconf pkg-config git python3 java glslangValidator msgfmt curl wget makeinfo x86_64-w64-mingw32-widl xz; \
     test -f /apps/harmony/sdk/default/openharmony/native/llvm/bin/clang; \
     test -f /apps/harmony/bin/hvigorw; \
     test -f /usr/share/aclocal/ltdl.m4; \
+    test -x /opt/llvm-mingw/bin/arm64ec-w64-mingw32-clang; \
     python3 -c 'import yaml, mako, markupsafe'
 
 WORKDIR /workspace

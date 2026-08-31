@@ -174,6 +174,10 @@ jobs:
           if ! command -v x86_64-w64-mingw32-widl >/dev/null 2>&1; then
             packages+=(mingw-w64-tools)
           fi
+          # xz-utils: 解压 llvm-mingw .tar.xz (见下方 Prepare llvm-mingw step)
+          if ! command -v xz >/dev/null 2>&1; then
+            packages+=(xz-utils)
+          fi
           if [ "${#packages[@]}" -gt 0 ]; then
             echo "Installing missing CI packages: ${packages[*]}"
             apt-get update
@@ -181,6 +185,36 @@ jobs:
           else
             echo "CI build dependencies already present"
           fi
+
+      # ---- llvm-mingw (arm64ec/aarch64 PE 编译 + FEX/wowbox64 构建, 需 LLVM ≥ 18) ----
+      # buildenv 镜像暂未内置: 下载官方 release 到 .temp/ 并导出 LLVM_MINGW
+      # (scripts/env.sh 优先采用该环境变量). 镜像内置 (ENV LLVM_MINGW) 后
+      # 本 step 自动 no-op.
+      - name: Prepare llvm-mingw toolchain
+        run: |
+          set -euo pipefail
+          version=20260826
+          name="llvm-mingw-${version}-ucrt-ubuntu-22.04-x86_64"
+          if [ -x "${LLVM_MINGW:-}/bin/arm64ec-w64-mingw32-clang" ]; then
+            echo "llvm-mingw already present: $LLVM_MINGW"
+            "$LLVM_MINGW/bin/arm64ec-w64-mingw32-clang" --version | head -1
+            exit 0
+          fi
+          dest="$GITHUB_WORKSPACE/.temp/$name"
+          if [ ! -x "$dest/bin/arm64ec-w64-mingw32-clang" ]; then
+            mkdir -p "$GITHUB_WORKSPACE/.temp"
+            curl -fL --retry 3 --connect-timeout 30 \
+              -o "$GITHUB_WORKSPACE/.temp/$name.tar.xz" \
+              "https://github.com/mstorsjo/llvm-mingw/releases/download/${version}/${name}.tar.xz"
+            tar -xJf "$GITHUB_WORKSPACE/.temp/$name.tar.xz" -C "$GITHUB_WORKSPACE/.temp"
+            rm "$GITHUB_WORKSPACE/.temp/$name.tar.xz"
+          fi
+          for tool in arm64ec-w64-mingw32-clang aarch64-w64-mingw32-clang \
+                      aarch64-w64-mingw32-dlltool aarch64-w64-mingw32-strip llvm-readobj; do
+            test -x "$dest/bin/$tool"
+          done
+          echo "LLVM_MINGW=$dest" >> "$GITHUB_ENV"
+          "$dest/bin/arm64ec-w64-mingw32-clang" --version | head -1
 
       - name: Show environment
         run: |
