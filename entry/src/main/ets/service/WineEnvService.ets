@@ -547,7 +547,12 @@ export class WineEnvService {
         this.prefixReady = false;
         ProcessService.getInstance().clear();
         this.setInitStatus('smoke prefix 已清空', false);
-        setTimeout(() => this.startSession(true), 500);
+        // opBusy 在自己手上: 不先清, 延迟 startSession 会被自身 re-entry 守卫
+        // 拦截 (startSession 前两次调用在 clean 编排里, 而守卫检查 opBusy)
+        setTimeout(() => {
+          this.opBusy = false;
+          this.startSession(true);
+        }, 500);
       } catch (e) {
         hilog.error(DOMAIN, 'wine', 'resetSmokePrefix error: %{public}s', JSON.stringify(e));
         this.opBusy = false;
