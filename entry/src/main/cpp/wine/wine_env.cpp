@@ -203,17 +203,19 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         const std::string guestVulkanRoot = binDir + "/guest_vulkan";
         const std::string guestVulkanLib = guestVulkanRoot + "/lib";
         const std::string guestVulkanIcd = guestVulkanRoot +
-            "/share/vulkan/icd.d/venus_icd.x86_64.json";
+            "/share/vulkan/icd.d/venus_icd." WINE_WINE_ARCH ".json";
+#if defined(__aarch64__) && defined(WINEHUA_WINE_ARCH_IS_X86_64)
+        // 方案② box64+wine: box64 的 x86_64 guest 库搜索路径 (wine .so + guest gfx/vulkan)
         const std::string box64LibraryPath = guestVulkanLib + ":" +
             binDir + "/guest_gfx/lib:" + binDir + ":" +
-            binDir + "/x86_64-unix:" + std::string(WINE_RUNTIME_ROOT) +
+            binDir + "/" WINE_UNIX_SUBDIR ":" + std::string(WINE_RUNTIME_ROOT) +
             "/lib/x86_64";
+#endif
         /* Keep VKD3D first for d3d12, then the independently selected DXVK
          * overlays for d3d11/dxgi. The Wine loader gives both overlay
          * families priority over an application's private DLL directory. */
         const std::string wineDllPath = overlay64 + ":" + dxvk64 + ":" +
-            dxvk86 + ":" + binDir + "/x86_64-windows:" +
-            binDir + "/i386-windows:" + binDir;
+            dxvk86 + ":" + BuiltinWineDllPath(binDir);
         const std::vector<std::string> managed = {
             "WINEHUA_D3D_BACKEND=" + d3dBackend,
             "WINEHUA_VKD3D_ROOT=" + overlayRoot,
@@ -227,9 +229,13 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
              * remain enabled explicitly below. */
             "WINEHUA_PERF_PROFILE=shadow-precise",
             "WINEHUA_VULKAN_RUNTIME=1",
-            "WINEHUA_VULKAN_LOADER_ARCH=x86_64",
-            "WINEHUA_VENUS_ICD_ARCH=x86_64",
-#ifdef __aarch64__
+            "WINEHUA_VULKAN_LOADER_ARCH=" WINE_WINE_ARCH,
+            "WINEHUA_VENUS_ICD_ARCH=" WINE_WINE_ARCH,
+#if defined(__aarch64__) && defined(WINEHUA_WINE_ARCH_IS_X86_64)
+            /* 方案② 才注入 box64 桥接 env (曾用 #ifdef __aarch64__, 方案③
+             * 误带 USE_LIBBOX64 → ntdll ohos_broker_spawn_child 省 "|wine"
+             * loader token → wine 内部子进程 (winehua_keep 等) __wine_main
+             * argc=1 打印 Usage 秒退 → explorer GUI 线程卡死 → 桌面白屏) */
             "USE_LIBBOX64=1",
             "BOX64_LD_LIBRARY_PATH=" + box64LibraryPath,
             "BOX64_EMULATED_LIBS=libvulkan.so:libvulkan.so.1:"
@@ -262,8 +268,12 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
                 "libxml2.so:libxml2.so.2:libz.so:libz.so.1",
             "BOX64_DYNAREC_WEAKBARRIER=0",
 #endif
+#ifdef __aarch64__
+            // arm64 宿主 (方案②③): venus ICD 是否打包由下方 for 循环后运行时检测
+#else
             "VK_DRIVER_FILES=" + guestVulkanIcd,
             "VK_ICD_FILENAMES=" + guestVulkanIcd,
+#endif
             "VN_DEBUG=vtest",
             "VN_PERF=" + std::string(modern26
                 ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
@@ -282,11 +292,20 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             /* ntdll stops scanning WINEDLLDIRn at the first missing index.
              * Keep Wine's PE runtime directories contiguous after the D3D
              * overlays so their imports can still resolve system DLLs. */
-            "WINEDLLDIR3=" + binDir + "/x86_64-windows",
+            "WINEDLLDIR3=" + binDir + "/" WINE_PE_SUBDIR,
             "WINEDLLDIR4=" + binDir + "/i386-windows",
             "WINEDLLDIR5=" + binDir,
         };
         for (const std::string& line : managed) UpsertEnvLine(env, line);
+#ifdef __aarch64__
+        // arm64 宿主: 若对应架构 venus ICD 已打包 (guest_vulkan bundle 存在
+        // icd json) 则走 venus→vtest 硬件加速; 否则回退宿主 Vulkan。
+        if (access(guestVulkanIcd.c_str(), F_OK) == 0)
+        {
+            UpsertEnvLine(env, "VK_DRIVER_FILES=" + guestVulkanIcd);
+            UpsertEnvLine(env, "VK_ICD_FILENAMES=" + guestVulkanIcd);
+        }
+#endif
         if (!modern26)
         {
             const std::vector<std::string> legacyCompatibility = {
@@ -402,7 +421,7 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         "WINEDLLDIR1=" + overlay86,
         /* Preserve the contiguous Wine PE runtime search path after the
          * selected DXVK overlays. */
-        "WINEDLLDIR2=" + binDir + "/x86_64-windows",
+        "WINEDLLDIR2=" + binDir + "/" WINE_PE_SUBDIR,
         "WINEDLLDIR3=" + binDir + "/i386-windows",
         "WINEDLLDIR4=" + binDir,
     };
