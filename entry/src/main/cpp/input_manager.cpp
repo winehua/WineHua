@@ -355,42 +355,7 @@ void InputManager::SetToplevelVisible(uint32_t tl, bool visible) {
     OH_LOG_INFO(LOG_APP, "[Input] SetToplevelVisible tl=%{public}u visible=%{public}s", tl, visible ? "true" : "false");
 }
 
-void InputManager::UpdateRawScale(double rawDx, double rawDy, double diffDx, double diffDy) {
-    // 按轴累积 (状态字段语义见 input_manager.h): 该轴两侧都有真实移动
-    // (未被钳制) 才是有效样本 — 单侧钳制的"沿边缘滑动"样本只累积自由轴。
-    // 离群过滤: 跨窗口 enter 跳变/坐标系切换会产生 diff 尖峰, 单样本位移
-    // 过大或比例超出合理区间的直接丢弃
-    const double rawAx = std::fabs(rawDx), rawAy = std::fabs(rawDy);
-    const double difAx = std::fabs(diffDx), difAy = std::fabs(diffDy);
-    if (rawAx > 0.5 && difAx > 0.3 && difAx < 300.0) {
-        const double r = difAx / rawAx;
-        if (r > 0.05 && r < 20.0) {
-            rawAccumX_ += rawAx;
-            absAccumX_ += difAx;
-        }
-    }
-    if (rawAy > 0.5 && difAy > 0.3 && difAy < 300.0) {
-        const double r = difAy / rawAy;
-        if (r > 0.05 && r < 20.0) {
-            rawAccumY_ += rawAy;
-            absAccumY_ += difAy;
-        }
-    }
-    const double rawSum = rawAccumX_ + rawAccumY_;
-    constexpr double kWarmupRaw = 400;  // 累积 raw 量阈值, 样本不足不动比例
-    if (rawSum < kWarmupRaw) return;
-    const double s = (absAccumX_ + absAccumY_) / rawSum;
-    // 变化 >5% 才更新+记日志 (标定值稳定后不再刷日志; 设备/DPI 切换时会
-    // 自动滑动到新比例)
-    if (std::fabs(s - rawScale_) > 0.05 * rawScale_) {
-        OH_LOG_INFO(LOG_APP, "[Input] RAW-SCALE %{public}.3f → %{public}.3f (rawSum=%{public}.0f)",
-                    rawScale_, s, rawSum);
-        rawScale_ = s;
-    }
-}
-
-void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double py, int button,
-                                    double rawDx, double rawDy, bool fromMouse) {
+void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double py, int button) {
     // 窗口不可见时抑制输入
     {
         std::lock_guard<std::mutex> lk(visibleMutex_);
@@ -504,50 +469,28 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     // 相对指针增量 (zwp_relative_pointer_v1): wine 相对模式 (隐藏光标 + 约束,
     // wayland_pointer.c needs_relative) 丢弃绝对 motion, 光标位置 = 基线 +
     // 增量累积。host 不做模式判断 — 绝对 motion 照常注入 (相对模式下被 wine
-    // 丢弃), 有 relative 对象就入队 REL_MOTION。对象存在 ⇔ wine 判定当前为
-    // 相对模式。
-    // 增量来源: 优先用鸿蒙 MouseEvent.rawDelta (鼠标硬件原始增量) — 光标
-    // 被 ClampToContent 钳在屏幕/窗口边缘后, 绝对坐标差分恒为 0, 只有
-    // rawDelta 还在真实上报; 若仍用差分, dinput 视角游戏 (FPS) 鼠标顶到
-    // 边缘即卡死。rawDelta 缺失时 (触屏合成 mouse 等) 回退绝对差分。
+    // 丢弃), 同时把注入坐标 (surface 局部空间) 差分出增量, 有 relative 对象
+    // 就入队 REL_MOTION 转发。对象存在 ⇔ wine 判定当前为相对模式。
     // 基准在 MOVE 与「PRESS 的 enter 定位」时更新 — 两者都真实改变 wine
     // 光标位置 (enter 是相对模式下唯一被消费的绝对坐标); 其余 PRESS/RELEASE
-    // 不发增量也不移动基准, 避免按下瞬间坐标跳变污染后续增量/标定样本。
+    // 不发增量也不移动基准, 避免按下瞬间坐标跳变污染后续增量。
     if (action == ACT_MOVE) {
         const double localX = wl_fixed_to_double(wx);
         const double localY = wl_fixed_to_double(wy);
-        const double diffDx = hasLastLocal_ ? (localX - lastLocalX_) : 0.0;
-        const double diffDy = hasLastLocal_ ? (localY - lastLocalY_) : 0.0;
-        // rawDelta 标定不设相对模式门: 相对模式下 B 方案冻结系统光标,
-        // 绝对差分恒为 0 永远采不到样本 — 必须在正常绝对移动期间 (光标
-        // 可见未冻结) 持续收敛, 游戏进入相对模式时比例已就绪, 视角手感
-        // 与桌面光标一致 (差分含系统加速增益, 恰是用户习惯的手感)
-        if (rawDx != 0.0 || rawDy != 0.0)
-            UpdateRawScale(rawDx, rawDy, diffDx, diffDy);
-        if (PointerExtras::GetInstance()->HasRelativePointer()) {
-            double dx = 0.0, dy = 0.0;
-            if (rawDx != 0.0 || rawDy != 0.0) {
-                dx = rawDx * rawScale_;
-                dy = rawDy * rawScale_;
-                // 单事件位移钳制: 标定未收敛/单位异常时防巨型跳变
-                // (125Hz 下合法单事件位移远小于此)
-                dx = std::clamp(dx, -512.0, 512.0);
-                dy = std::clamp(dy, -512.0, 512.0);
-            } else {
-                dx = diffDx;
-                dy = diffDy;
-            }
-            if (dx != 0.0 || dy != 0.0) {
+        if (hasLastLocal_) {
+            const double dx = localX - lastLocalX_;
+            const double dy = localY - lastLocalY_;
+            if ((dx != 0 || dy != 0) && PointerExtras::GetInstance()->HasRelativePointer()) {
                 Enqueue(InputEvent::REL_MOTION, 0, nullptr,
                         wl_fixed_from_double(dx), wl_fixed_from_double(dy), 0, 0);
-                // 系统性链路日志 (断点 4): 相对模式增量 — 相对模式下绝对
+                // 系统性链路日志 (断点 4): 相对模式增量差分 — 相对模式下绝对
                 // motion 被 wine 丢弃, 增量是光标唯一移动来源; 高频抽样 120:1
-                // (与 SendRelativeMotion 断点 5 配对; 测试需全量时改这里)
+                // (拖动只看增量趋势, 与 SendRelativeMotion 断点 5 配对; 测试需
+                // 全量时改这里)
                 static uint32_t sRelLogN = 0;
                 if (++sRelLogN % 120 == 0)
-                    OH_LOG_INFO(LOG_APP, "[Input] REL d=(%{public}.1f,%{public}.1f) raw=(%{public}.1f,%{public}.1f)"
-                                " scale=%{public}.3f base=(%{public}.1f,%{public}.1f)",
-                                dx, dy, rawDx, rawDy, rawScale_, lastLocalX_, lastLocalY_);
+                    OH_LOG_INFO(LOG_APP, "[Input] REL d=(%{public}.1f,%{public}.1f) base=(%{public}.1f,%{public}.1f)",
+                                dx, dy, lastLocalX_, lastLocalY_);
             }
         }
         lastLocalX_ = localX;
@@ -586,26 +529,14 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // 模式保持 toplevel 级比较 (一窗一 surface, 语义等价)。
             wl_resource* pressTargetSurf =
                 targetSurf ? targetSurf : ws->GetSurfaceForToplevel(tl);
-            // 相对模式 + 物理鼠标: 跳过 enter/motion 重定位, 只投递按键。
-            // LockCursor 冻结系统光标后, 每次点击的坐标恒为冻结点, 而 wine
-            // 相对模式把 enter 当静默 SetCursorPos — 游戏自绘光标走绝对
-            // GetCursorPos (war3) 每次点击都瞬移到固定位置 (实测: 冻结点
-            // 633,392 → local 356.7,256.0 恒定)。触屏 tap 仍是绝对定位设备,
-            // 保留 enter (PAL2 点菜单依赖); 指针尚未聚焦该 surface 时也必须
-            // enter, 否则 button 无焦点投递
-            const bool skipEnter = fromMouse
-                && PointerExtras::GetInstance()->HasRelativePointer()
-                && pressTargetSurf != nullptr
-                && pointerFocusedSurface_.load() == pressTargetSurf;
-            // 系统性链路日志 (断点 3): relMode/skipEnter 仅诊断 (相对模式下
-            // enter 走静默校准, 行为与绝对模式一致; skipEnter=1 时 enter 被跳过)
+            // 系统性链路日志 (断点 3): relMode 仅诊断 (相对模式下 enter 走
+            // 静默校准, 行为与绝对模式一致)
             OH_LOG_INFO(LOG_APP, "[Input] PRESS-ENTER tl=%{public}u surf=%{public}p"
-                        " relMode=%{public}d skip=%{public}d focused=%{public}p",
+                        " relMode=%{public}d focused=%{public}p",
                         tl, static_cast<void*>(pressTargetSurf),
                         PointerExtras::GetInstance()->HasRelativePointer() ? 1 : 0,
-                        skipEnter ? 1 : 0,
                         static_cast<void*>(pointerFocusedSurface_.load()));
-            if (pressTargetSurf && !skipEnter) {
+            if (pressTargetSurf) {
                 wl_resource* focused = pointerFocusedSurface_.load();
                 const bool needLeave = targetSurf
                     ? (focused != nullptr && focused != pressTargetSurf)
@@ -619,8 +550,7 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                 lastLocalY_ = wl_fixed_to_double(wy);
                 hasLastLocal_ = true;
             }
-            if (!skipEnter)
-                Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
+            Enqueue(InputEvent::PTR_MOTION, 0, nullptr, wx, wy, 0, 0);
             if (button) {
                 unsigned bit = ButtonToBit(button);
                 if (bit < 32) {

@@ -368,7 +368,7 @@ struct WineWindow {
         hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE tl=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=0x%{public}x',
           this.toplevelId, event.action, Math.round(px), Math.round(py), btn);
       }
-      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn, event.rawDeltaX, event.rawDeltaY, true);
+      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn);
     })
 
     // -- 键盘事件 --

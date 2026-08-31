@@ -1,7 +1,6 @@
 #pragma once
 
 #include <wayland-server-core.h>
-#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -40,19 +39,6 @@ public:
     // 某 surface 当前生效的约束 (无 = None)。
     // surface 已销毁的约束条目视为不存在 (惰性失效)
     ConstraintType ConstraintFor(wl_resource* surface);
-
-    // -- Host 光标锁定 (dinput 相对模式的系统侧配套) --
-    // wine 建立 Lock 约束 = 游戏进入"隐藏光标无限移动"的相对模式 (FPS 视角)。
-    // host 侧同步两件事: OH_WindowManager_LockCursor 冻结系统光标 (不再跟随
-    // 物理移动, 杜绝边缘钳制喂死绝对通道 + 系统手势误触), tsfn 通知 ets
-    // pointer.setPointerVisible(false) 隐藏光标。解锁 (约束销毁/wine 退出
-    // 断连) 时还原。confine (ClipCursor, 光标可见) 不触发 — host 钳制已由
-    // ClampToContent 承担, 且 wineserver 内 ClipCursor 同样生效。
-    // LockCursor 仅支持获焦窗口 (失焦系统自动解锁), 故逐个尝试已注册窗口。
-    static void RegisterHostWindow(int32_t windowId);
-    // 锁定状态变化回调 (NAPI 层注册 → tsfn → ets setPointerVisible)。
-    // 注意在 Wayland 线程触发
-    void SetPointerLockCallback(std::function<void(bool)> cb);
 
     // 相对指针增量广播: wine 有 relative_pointer 对象时把输入增量发过去。
     // 对象存在 ⇔ wine 判定当前为相对模式 (隐藏光标 + 约束); 无对象 = 绝对
@@ -107,11 +93,4 @@ private:
     static void constraints_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
     static void warp_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
     static void relmgr_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
-
-    // Host 光标锁定实施 (见上方 public 注释); 失败只记日志不阻断 — A 方案
-    // (rawDelta 相对位移) 不依赖锁定, 老系统 (API<22) 上相对模式仍工作
-    void ApplyHostCursorLock(bool lock);
-    std::vector<int32_t> hostWindowIds_;       // mutex_ 保护; 各 Ability 主窗口
-    int32_t lockedWindowId_ = 0;               // 实际锁定成功的窗口 (0=未锁)
-    std::function<void(bool)> lockCallback_;   // mutex_ 保护
 };

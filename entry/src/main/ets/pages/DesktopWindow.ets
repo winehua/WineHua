@@ -292,13 +292,6 @@ struct DesktopPage {
       // (触屏长按合成右键不受影响)。
       .onMouse((ev: MouseEvent) => {
         try {
-          // 诊断 (临时): 非 Move 事件在处理器入口记录硬件时间戳 — 同一物理
-          // 事件被框架重复派发时 timestamp 相同, 独立事件则不同 (排查 explorer
-          // 单击变双击: 日志出现 ~150ms 间隔的同坐标 MOUSE-LEFT press 对)
-          if (ev.action !== MouseAction.Move) {
-            hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RAW a=%{public}d btn=%{public}d ts=%{public}d',
-              ev.action, ev.button, Math.round(ev.timestamp % 1000000000));
-          }
           // ── hover 移动直通 (指针跟随/高亮/tooltip/光标形状依赖 WM_MOUSEMOVE) ──
           if (ev.action === MouseAction.Move) {
             // touch 手势进行中: 左键按住移动等由 onTouch 状态机发 motion
@@ -317,7 +310,7 @@ struct DesktopPage {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-MOVE tl=%{public}d px=(%{public}d,%{public}d) n=%{public}d',
                 tl, px, py, this.hoverLogCounter);
             }
-            testNapi.sendPointerEvent(tl, MouseAction.Move, px, py, 0, ev.rawDeltaX, ev.rawDeltaY);
+            testNapi.sendPointerEvent(tl, MouseAction.Move, px, py, 0);
             return;
           }
           if (ev.action !== MouseAction.Press && ev.action !== MouseAction.Release) return;
@@ -345,7 +338,7 @@ struct DesktopPage {
               this.leftBtnTl = tl;
               testNapi.raiseToplevel(tl);
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT press tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-              testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnLeft, 0, 0, true);
+              testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnLeft);
             } else {
               if (this.leftBtnTl <= 0) {
                 this.mouseLeftActive = false;
@@ -370,7 +363,7 @@ struct DesktopPage {
             this.rightBtnTl = tl;
             testNapi.raiseToplevel(tl);
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RIGHT press tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-            testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnRight, 0, 0, true);
+            testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnRight);
           } else {
             if (this.rightBtnTl <= 0) return;
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RIGHT release tl=%{public}d px=(%{public}d,%{public}d)', this.rightBtnTl, px, py);

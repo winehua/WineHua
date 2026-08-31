@@ -565,12 +565,6 @@ export struct DesktopLayer {
       // (触屏长按合成右键不受影响)。
       .onMouse((ev: MouseEvent) => {
         try {
-          // 诊断 (临时): 非 Move 事件在处理器入口记录硬件时间戳 (排查 explorer
-          // 单击变双击, 见 DesktopWindow.ets 同注释)
-          if (ev.action !== MouseAction.Move) {
-            hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RAW a=%{public}d btn=%{public}d ts=%{public}d',
-              ev.action, ev.button, Math.round(ev.timestamp % 1000000000));
-          }
           // 悬浮窗态: 输入旁路 (物理鼠标同样不转发给 Wine)
           if (this.floating) {
             return;
@@ -593,7 +587,7 @@ export struct DesktopLayer {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-MOVE tl=%{public}d px=(%{public}d,%{public}d) n=%{public}d',
                 tl, px, py, this.hoverLogCounter);
             }
-            testNapi.sendPointerEvent(tl, MouseAction.Move, px, py, 0, ev.rawDeltaX, ev.rawDeltaY);
+            testNapi.sendPointerEvent(tl, MouseAction.Move, px, py, 0);
             return;
           }
           if (ev.action !== MouseAction.Press && ev.action !== MouseAction.Release) return;
@@ -623,7 +617,7 @@ export struct DesktopLayer {
               this.leftBtnTl = tl;
               testNapi.raiseToplevel(tl);
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT press tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-              testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnLeft, 0, 0, true);
+              testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnLeft);
             } else {
               if (this.leftBtnTl <= 0) {
                 this.mouseLeftActive = false;
@@ -648,7 +642,7 @@ export struct DesktopLayer {
             this.rightBtnTl = tl;
             testNapi.raiseToplevel(tl);
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RIGHT press tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-            testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnRight, 0, 0, true);
+            testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnRight);
           } else {
             if (this.rightBtnTl <= 0) return;
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RIGHT release tl=%{public}d px=(%{public}d,%{public}d)', this.rightBtnTl, px, py);

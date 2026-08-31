@@ -1,8 +1,7 @@
 import { common, Want } from '@kit.AbilityKit';
 import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
-import { pointer } from '@kit.InputKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ArgbWindowManager } from './ArgbWindowManager';
@@ -202,19 +201,6 @@ export class WineWindowManager {
       this.onToplevelEvent(id, event, data);
     });
     hilog.info(DOMAIN, TAG, '[MW] toplevel callback registered OK');
-
-    // dinput 相对模式 (游戏隐藏光标无限转视角) 的 host 侧配套:
-    // 注册主窗口 id 供 native OH_WindowManager_LockCursor 冻结光标;
-    // 锁定状态回调里隐藏/恢复系统光标 (隐藏能力只有 ArkTS API)
-    if (this.mainWindow) {
-      testNapi.registerHostWindow(this.mainWindow.getWindowProperties().id);
-    }
-    testNapi.setPointerLockCallback((locked: boolean) => {
-      hilog.info(DOMAIN, TAG, '[MW] pointer lock → setPointerVisible(%{public}s)', String(!locked));
-      pointer.setPointerVisible(!locked).catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, '[MW] setPointerVisible failed: %{public}s', JSON.stringify(e));
-      });
-    });
 
     // A launcher resume recreates EntryAbility while the Wine desktop root can
     // still be alive.  No new desktop_root event is emitted in that case, so

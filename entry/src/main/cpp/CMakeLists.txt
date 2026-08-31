@@ -93,7 +93,6 @@ target_link_libraries(entry PUBLIC
     libchild_process.so
     libipc_capi.so
     libohaudio.so
-    libnative_window_manager.so
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
 )
 

@@ -1,7 +1,6 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
 
 const DOMAIN = 0x0000;
@@ -54,8 +53,6 @@ export default class VirtualDesktopAbility extends UIAbility {
         return;
       }
       mainWindow.setWindowTitle('Wine 桌面');
-      // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
-      testNapi.registerHostWindow(mainWindow.getWindowProperties().id);
       // 窗口用系统默认初始大小 — "虚拟桌面按屏幕大小初始化"由 Wine 桌面
       // 分辨率保证 (WineWindowManager.init 的 setOutputSize = 屏幕/scale),
       // 窗口只是显示口: 任何尺寸下 renderer letterbox (ComputeFitRect)

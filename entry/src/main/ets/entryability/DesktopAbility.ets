@@ -47,8 +47,6 @@ export default class DesktopAbility extends UIAbility {
       try {
         const mw = windowStage.getMainWindowSync();
         if (mw) {
-          // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
-          testNapi.registerHostWindow(mw.getWindowProperties().id);
           mw.setWindowLayoutFullScreen(true).catch((e: BusinessError) => {
             hilog.error(DOMAIN, TAG, '[DWA] fullScreen failed: %{public}s', JSON.stringify(e));
           });
