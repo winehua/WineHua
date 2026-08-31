@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - master
-      - feature/vkd3d-capability-probe
+      - main-ui
     tags:
       - 'dev-*'                 # 开发版 (直接发布, 不占 Latest 徽章)
       - 'rc-*'                  # RC 版 (占 Latest 徽章)
@@ -274,14 +274,11 @@ jobs:
           NATIVE_ARCH: arm64-v8a
           BUILD_GUEST_GFX: '1'
           BUILD_GUEST_VULKAN: '1'
-          # CI 主动关闭 mono: 避免 mono msi 外网大下载拖慢流水线且引入
-          # 不稳定, 并精简产物 — build_deps 不下载 mono msi, assemble.sh
-          # 也不打包 .cpl (含 appwiz.cpl). mono 缺失时 mscoree →
-          # control.exe 加载 appwiz.cpl 失败立即退出, 不再弹 DialogBoxW
-          # 卡死 wineboot. 代价: CI 产物 .NET 应用/控制面板不可用.
-          # 本地 make 默认 BUILD_WINE_MONO=1 (build_deps.sh ${BUILD_WINE_MONO:-1},
-          # 有 curl 正常下载), 且 assemble.sh 打包 cpl, 产物完整.
-          BUILD_WINE_MONO: '0'
+          # CI 默认开启 mono: build_deps 用 curl/wget 下载 wine-mono-11.1.0
+          # msi (~80MB, 镜像已备下载工具), assemble.sh 打包 cpl + mono msi —
+          # 产物完整支持 .NET 应用/控制面板. 设 BUILD_WINE_MONO: '0' 可关闭
+          # (无网络/精简产物时用).
+          BUILD_WINE_MONO: '1'
         run: |
           set -euxo pipefail
           make NATIVE_ARCH=arm64-v8a hap
@@ -495,8 +492,17 @@ jobs:
 
       - name: Generate changelog
         run: |
-          # 找到上一个 tag (若存在)
-          prev_tag=$(git describe --tags --abbrev=0 "${{ steps.tag.outputs.tag }}^" 2>/dev/null || echo "")
+          # 按频道找上一个同类 tag (dev→dev, rc→rc, v→v): 各频道 changelog
+          # 只相对自己上一版统计, 避免 dev 频繁构建把 rc/v 的变更列表切碎。
+          # 注意 git describe 只沿祖先链找 — 同频道 tag 须在同一分支线上
+          tag="${{ steps.tag.outputs.tag }}"
+          case "$tag" in
+            dev-*) match='dev-*' ;;
+            rc-*)  match='rc-*' ;;
+            v*)    match='v*' ;;
+            *)     match='*' ;;
+          esac
+          prev_tag=$(git describe --tags --abbrev=0 --match "$match" "${tag}^" 2>/dev/null || echo "")
           if [ -n "$prev_tag" ]; then
             {
               echo "## Changes since \`$prev_tag\`"

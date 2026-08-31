@@ -1,0 +1,150 @@
+#pragma once
+
+#include <wayland-server-core.h>
+#include <functional>
+#include <mutex>
+#include <vector>
+
+/*
+ * DirectInput 类老游戏 (PAL2 等) 依赖的指针扩展协议 compositor 端实现:
+ *
+ * - wp_pointer_warp_v1: SetCursorPos 映射。绝对模式游戏 (RTS 等) 稀疏
+ *   调用, wineserver 光标已在 wine 侧移动到位, host 无需注入 motion。
+ * - zwp_pointer_constraints_v1: lock/confine 对象承载。只注册全局 +
+ *   应答 locked/confined 即可满足 wine 的约束状态机; 锁销毁时若游戏
+ *   给过 cursor_position_hint, 按协议把逻辑指针移到 hint。
+ * - zwp_relative_pointer_manager_v1: wine 相对模式的承载 (wayland_pointer.c
+ *   needs_relative = !is_visible && constraint_hwnd == focused_hwnd —
+ *   游戏隐藏系统光标且有约束 → 启用 zwp_relative_pointer_v1, 丢弃绝对
+ *   motion, 光标位置 = 基线 + 增量累积, 经 NtUserSendHardwareInput 驱动
+ *   wineserver 光标; 绝对读 (GetCursorPos) 与相对读 (dinput 差值) 都工作)。
+ *   host 不做模式判断: 始终发绝对 motion, 同时把输入坐标差分出增量,
+ *   有 relative 对象就发 relative_motion — 启用与否由 wine 按真实游戏
+ *   行为 (光标可见性 + 约束) 决定。SetCursorPos 在相对模式下被 wine
+ *   拒绝 (wayland_pointer.c:1024 返回 FALSE), 不发 warp 请求。
+ *
+ * confine 的坐标钳制不在 compositor 侧做: ClipCursor 在 wineserver 内
+ * 同样钳住光标 (与驱动无关), 两侧钳制结果一致, 无需重复实现。
+ *
+ * 参照 weston pointer-constraints.c。
+ */
+class ToplevelManager;  // 前向声明 (6A 装配注入引用, 见 BindWaylandRefs)
+
+class PointerExtras {
+public:
+    static PointerExtras* GetInstance();
+
+    // 注册 constraints + warp + relative_pointer_manager global (见头注释)
+    void Register(wl_display* display);
+
+    enum class ConstraintType { None, Lock, Confine };
+
+    // -- Host 光标锁定 (dinput 相对模式的系统侧配套) --
+    // wine 创建 relative_pointer 对象 = 游戏进入"隐藏光标无限移动"的相对
+    // 模式 (FPS 视角)。判据不是 Lock 约束: 光标可见的绝对模式游戏也会挂
+    // 约束 (红警2 主菜单), 只有 relative 对象创建 (wine 侧 needs_relative
+    // 判定: 光标隐藏 + 约束 + 焦点一致) 才是真相对模式 — 冻结挂在
+    // relmgr_get_relative_pointer, 不挂 constr_lock_pointer。
+    // host 侧同步两件事: OH_WindowManager_LockCursor 冻结系统光标 (不再跟随
+    // 物理移动, 杜绝边缘钳制喂死绝对通道 + 系统手势误触), tsfn 通知 ets
+    // pointer.setPointerVisible(false) 隐藏光标。解锁 (relative 对象全部
+    // 销毁/wine 退出断连) 时还原。confine (ClipCursor, 光标可见) 不触发 — host 钳制已由
+    // ClampToContent 承担, 且 wineserver 内 ClipCursor 同样生效。
+    // LockCursor 仅支持获焦窗口 (失焦系统自动解锁), 故逐个尝试已注册窗口。
+    static void RegisterHostWindow(int32_t windowId);
+    // 锁定状态变化回调 (NAPI 层注册 → tsfn → ets setPointerVisible)。
+    // 注意在 Wayland 线程触发
+    void SetPointerLockCallback(std::function<void(bool, uint32_t)> cb);
+
+    // -- warp 回调装配 (重构第 4C1 步: PointerExtras↔InputManager 单向化) --
+    // wp_pointer_warp_v1 的 warp 请求与 Lock 约束销毁时的 cursor_position_hint
+    // 需把"wine 侧已完成的 SetCursorPos 位置"同步回 InputManager::OnPointerWarp
+    // (move grab 偏移基准)。原实现 pointer_extras.cpp 直接 include input_manager.h
+    // 调其单例 → 双向依赖; 现改为注册表装配: 调用方 (wl_core.cpp
+    // RegisterWlCoreGlobals) 在 PointerExtras::Register 之后注入转发 lambda,
+    // 本文件不再认识 InputManager (InputManager→PointerExtras 方向保持 include:
+    // HasRelativePointer/SendRelativeMotion 消费, 单向成立)。
+    // 线程: 回调总在 Wayland 线程触发 (wl 协议接口 + 资源 destroy 回调);
+    // 装配发生在 wl 事件循环启动前 (Server Start 阶段一次性), 之后只读 —
+    // 无锁 (与 wayland_server.h SetStateCallback 同一模式)。
+    using PointerWarpSink = std::function<void(wl_resource* surface, double x, double y)>;
+    void SetPointerWarpSink(PointerWarpSink sink);
+
+    // -- 会话引用装配 (重构第 6A 步) --
+    // 注入 ToplevelManager (surface→toplevelId 反查) 与 desktop root id 的
+    // 共享引用 — 替代 WaselyServer::FindToplevelIdBySurface /
+    // GetDesktopRootToplevelId 两处转发。装配点 = wl_core.cpp
+    // RegisterWlCoreGlobals (Start 阶段, 事件循环启动前, 与 warpSink 同模式:
+    // 之后只读, 无锁); 引用与 WaylandServer 单例成员同生命周期。
+    void BindWaylandRefs(ToplevelManager* tmgr, const uint32_t* desktopRootToplevelId);
+
+    // 相对指针增量广播: wine 有 relative_pointer 对象时把输入增量发过去。
+    // 对象存在 ⇔ wine 判定当前为相对模式 (隐藏光标 + 约束); 无对象 = 绝对
+    // 模式, 此函数空转。Wayland 线程调用 (事件发送必须在该线程)。
+    void SendRelativeMotion(double dx, double dy);
+    bool HasRelativePointer() const;
+
+    // -- 协议接口实现 (public: wl 接口表在类外初始化, 与 wayland_server.h 同例) --
+    // zwp_pointer_constraints_v1
+    static void constr_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+    static void constr_lock_pointer(wl_client*, wl_resource*, uint32_t id,
+                                    wl_resource* surface, wl_resource* pointer,
+                                    wl_resource* region, uint32_t lifetime);
+    static void constr_confine_pointer(wl_client*, wl_resource*, uint32_t id,
+                                       wl_resource* surface, wl_resource* pointer,
+                                       wl_resource* region, uint32_t lifetime);
+    static void locked_destroy(wl_client*, wl_resource* r);
+    static void locked_set_cursor_position_hint(wl_client*, wl_resource* r,
+                                                wl_fixed_t sx, wl_fixed_t sy);
+    static void confined_destroy(wl_client*, wl_resource* r);
+    static void confined_set_region(wl_client*, wl_resource*, wl_resource*) {}
+    static void locked_set_region(wl_client*, wl_resource*, wl_resource*) {}
+    // wp_pointer_warp_v1
+    static void warp_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+    static void warp_warp_pointer(wl_client*, wl_resource*, wl_resource* surface,
+                                  wl_resource* pointer, wl_fixed_t x, wl_fixed_t y,
+                                  uint32_t serial);
+    // zwp_relative_pointer_manager_v1
+    static void relmgr_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+    static void relmgr_get_relative_pointer(wl_client*, wl_resource*, uint32_t id,
+                                            wl_resource* pointer);
+
+private:
+    struct Constraint {
+        ConstraintType type = ConstraintType::None;
+        wl_resource* surface = nullptr;   // 约束目标 surface
+        wl_resource* res = nullptr;       // locked/confined 对象
+        bool hasHint = false;             // locked 的 cursor_position_hint
+        double hintX = 0, hintY = 0;
+        uint32_t toplevelId = 0;          // surface 所属 toplevel (相对模式门禁:
+                                          // 是否桌面 root 自身, 见 relmgr)
+    };
+
+    // mutable: const 查询接口 (HasRelativePointer) 也要锁
+    mutable std::mutex mutex_;
+    std::vector<Constraint> constraints_;
+    // 已创建的 zwp_relative_pointer_v1 对象 (wine 相对模式时存在, 至多一个:
+    // wine 用 process_wayland.pointer.wl_pointer 固定绑定; 多对象时全部广播)
+    std::vector<wl_resource*> relativePointers_;
+
+    // 约束资源析构共通处理: 摘掉条目, 如有 hint 则把逻辑指针移到 hint
+    static void OnConstraintResourceDestroyed(wl_resource* r);
+    static void OnRelativePointerDestroyed(wl_resource* r);
+    static void constraints_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
+    static void warp_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
+    static void relmgr_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
+
+    // Host 光标锁定实施 (见上方 public 注释); 失败只记日志不阻断 — A 方案
+    // (rawDelta 相对位移) 不依赖锁定, 老系统 (API<22) 上相对模式仍工作
+    void ApplyHostCursorLock(bool lock, uint32_t toplevelId);
+    std::vector<int32_t> hostWindowIds_;       // mutex_ 保护; 各 Ability 主窗口
+    int32_t lockedWindowId_ = 0;               // 实际锁定成功的窗口 (0=未锁)
+    std::function<void(bool, uint32_t)> lockCallback_;   // mutex_ 保护
+    // warp 回调装配 (4C1 解环): SetPointerWarpSink 在事件循环启动前一次性注入,
+    // 之后只在 Wayland 线程读 → 无锁 (见头文件 Top 注释"warp 回调装配")。
+    PointerWarpSink warpSink_;
+    // 6A 会话引用装配 (BindWaylandRefs): 约束 surface→toplevel 反查与 root
+    // 身份判定 — 装配于事件循环启动前, 之后只在 Wayland 线程读 (无锁)。
+    ToplevelManager* tmgr_ = nullptr;           // FindToplevelBySurface
+    const uint32_t* desktopRootToplevelId_ = nullptr;  // isShell 判定 (共享 root 引用)
+};

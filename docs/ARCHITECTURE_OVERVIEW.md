@@ -160,7 +160,7 @@ flowchart LR
     DC --> R1["virgl/venus presenter / egl_renderer"]
 ```
 
-- 协议实现与状态拥有分离：`wl_core.cpp` / `xdg_shell.cpp` 只管协议解析，状态（z-order、toplevel 聚合）收在 `compositor/` 的 owning classes（各头注释声明不变式）。
+- 状态（z-order、toplevel 聚合）收在 `compositor/` 的 owning classes（各头注释声明不变式）。协议层尚未瘦身为纯解析：`xdg_shell.cpp` 基本只管协议；`wl_core.cpp` 除 wl_compositor/surface/subcompositor/subsurface/viewporter 协议实现外，surface_commit 路径仍混有 SHM 上传/图像处理、窗口管理策略（位置同步、尺寸漂移重发 configure、root 识别）、popup 管理等协议外职责（收敛计划见 [COMPOSITOR_REFACTOR_PLAN.md](COMPOSITOR_REFACTOR_PLAN.md) 阶段 5）。
 - `compositor/display_policy.h` 是 PC/Desktop 模式差异的策略查询唯一入口（事件派发 / subsurface / 渲染取帧 / 输入命中四类；phone 模式不经此，传输层隔离）。
 - 输入链路：ArkTS 事件 → NAPI `SendPointerEvent/SendKeyEvent/SendScrollEvent` → `input_manager.cpp` 注入 → `wl_pointer/wl_keyboard` 事件 → Wine（调试 tag 速查见 `.claude/rules/build-and-log.md`）。
 - 交互式窗口移动由 `compositor/move_grab.cpp` 实现（xdg_toplevel.move grab）。
@@ -223,7 +223,7 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 | Wayland 协议 | `wl_core.cpp` | compositor | wl_compositor/surface/subcompositor/subsurface/viewporter |
 | xdg 协议 | `xdg_shell.cpp` | compositor | xdg_wm_base/surface/toplevel |
 | 输入 | `seat.cpp` + `input_manager.cpp` | compositor | wl_seat、事件注入、丢帧统计 |
-| 合成 | `compositor/`（toplevel_manager / desktop_compositor / input_resolver / desktop_root_manager / move_grab / display_policy） | compositor | z-order、帧合成、命中裁决、模式策略 |
+| 合成 | `compositor/`（toplevel_manager / desktop_compositor / frame_pipeline / input_resolver / desktop_root_manager / move_grab / display_policy / compositor_blit / blit_clip / geometry / surface_data / compositor_constants / compositor_utils / debug_assert） | compositor | z-order、帧合成（锁内规划 FramePlanner / 锁外绘制 FrameBlitter）、命中裁决、root 识别、模式策略、blit/几何纯函数、共享数据结构与常量 |
 | 图形后端 | `graphics_broker.cpp` | 图形 | Virgl/Venus 选择、IPC 配置、`WINEHUA_*` 注入 |
 | virgl 子进程 | `virgl_child.cpp` | 图形 | 加载 virglrenderer、OH_IPC 通信、host EGL |
 | GL 呈现 | `virgl_surface_presenter.cpp` | 图形 | VirGL zero-copy（OH_NativeBuffer + external OES） |

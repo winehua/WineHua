@@ -3,6 +3,7 @@ import testNapi from 'libentry.so';
 import { EVDEV_KEY_ENTER, OH2EVDEV } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { InputDeviceMapper } from '../service/InputDeviceMapper';
 
 const DOMAIN = 0x0000;
 
@@ -365,10 +366,24 @@ struct WineWindow {
       const py = vp2px(event.y);
       const btn = mapMouseButton(event.button);
       if (event.action !== MouseAction.Move) {
-        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE tl=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=0x%{public}x',
+        // btn 用十进制: ArkTS hilog 不支持 %{public}x (渲染成乱码 '0x}x',
+        // 按键无从辨认) — evdev: left=272 right=273 middle=274
+        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE tl=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=%{public}d',
           this.toplevelId, event.action, Math.round(px), Math.round(py), btn);
       }
-      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn);
+      // 按输入设备类型缩放 rawDelta (相对模式增量 = rawDx × kSensRel 无标定,
+      // 触控板 raw 单位约为鼠标 5~10 倍, 不缩放则"移动一点点光标跑很多");
+      // 绝对模式有差分自标定, 缩放不影响结果
+      // event.deviceId 类型是 number|undefined (运行时恒有, 类型标注缺省)
+      let rawDx = event.rawDeltaX ?? 0;
+      let rawDy = event.rawDeltaY ?? 0;
+      const devId = event.deviceId ?? 0;
+      if (devId > 0) {
+        const s = InputDeviceMapper.getInstance().getScale(devId);
+        rawDx *= s;
+        rawDy *= s;
+      }
+      testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn, rawDx, rawDy, true);
     })
 
     // -- 键盘事件 --

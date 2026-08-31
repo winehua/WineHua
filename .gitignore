@@ -41,6 +41,10 @@ out/
 /.appanalyzer
 /.ohos
 /entry/libs
+# build_native.sh 头文件安装点 (master 已退役 include/ → protocols/, 构建仍再生)
+/entry/src/main/cpp/include
+# build_native.sh 协议代码遗留输出点 (编译用 protocols/xdg-shell-protocol.c)
+/entry/src/main/cpp/xdg-shell-protocol.c
 /build-profile.json5
 .claude/rules/local.md
 

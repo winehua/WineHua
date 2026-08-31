@@ -18,6 +18,11 @@
         "name": "ohos.permission.INTERNET"
       },
       {
+        // 游戏相对模式 (dinput 无限转视角) 时锁定/冻结系统光标;
+        // normal 级 system_grant, 声明即可, 无弹窗
+        "name": "ohos.permission.LOCK_WINDOW_CURSOR"
+      },
+      {
         "name": "ohos.permission.MICROPHONE",
         "reason": "$string:microphone_permission",
         "usedScene": {

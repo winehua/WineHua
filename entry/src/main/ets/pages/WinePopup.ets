@@ -312,10 +312,12 @@ struct WinePopup {
       const py = vp2px(event.y);
       const btn = mapMouseButton(event.button);
       if (event.action !== MouseAction.Move) {
-        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] POPUP-MOUSE popup=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=0x%{public}x',
+        // btn 用十进制 (同 WineWindow: ArkTS hilog %{public}x 渲染乱码)
+        // evdev: left=272 right=273 middle=274
+        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] POPUP-MOUSE popup=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=%{public}d',
           this.popupId, event.action, Math.round(px), Math.round(py), btn);
       }
-      testNapi.sendPointerEvent(this.popupId, event.action, px, py, btn);
+      testNapi.sendPointerEvent(this.popupId, event.action, px, py, btn, event.rawDeltaX, event.rawDeltaY, true);
     })
   }
 }

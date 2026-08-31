@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "app.hackeris.winehua",
     "vendor": "example",
-    "versionCode": 1000007,
-    "versionName": "1.0.7",
+    "versionCode": 1000013,
+    "versionName": "1.0.13",
     "icon": "$media:layered_image",
     "label": "$string:app_name"
   }
