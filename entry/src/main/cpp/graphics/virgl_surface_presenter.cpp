@@ -34,7 +34,7 @@ using winehua::kMinFramePeriodNs;
 using winehua::kVirglMaxFramePeriodNs;
 using winehua::kDispatchLeadNs;
 using winehua::NormalizeVirglFramePeriodNs;
-using winehua::VirglPacingPeriodNs;
+using winehua::VirglQueuePacingPeriodNs;
 using winehua::NowUs;
 using winehua::NowNs;
 using winehua::PresentPerfSummaryEnabled;
@@ -94,7 +94,7 @@ public:
         throttled_ = 0;
         lastPresentNs_ = 0;
         displayPeriodNs_ = NormalizeVirglFramePeriodNs(framePeriodNs);
-        framePeriodNs_ = VirglPacingPeriodNs(displayPeriodNs_);
+        framePeriodNs_ = VirglQueuePacingPeriodNs(displayPeriodNs_);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][NCP] target attached surface_key=%{public}llu "
                     "window=%{public}p display_period_us=%{public}llu "
@@ -111,7 +111,7 @@ public:
         const uint64_t displayPeriodNs = NormalizeVirglFramePeriodNs(framePeriodNs);
         if (displayPeriodNs_ == displayPeriodNs) return 0;
         displayPeriodNs_ = displayPeriodNs;
-        framePeriodNs_ = VirglPacingPeriodNs(displayPeriodNs_);
+        framePeriodNs_ = VirglQueuePacingPeriodNs(displayPeriodNs_);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][NCP] frame period surface_key=%{public}llu "
                     "display_period_us=%{public}llu pace_period_us=%{public}llu",
