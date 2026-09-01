@@ -453,6 +453,10 @@ test:
 	    -o $(HOST_TEST_DIR)/toplevel_event_test \
 	    $(ROOT)/host_tests/toplevel_event_test.cpp
 	$(HOST_TEST_DIR)/toplevel_event_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/presenter_common_test \
+	    $(ROOT)/host_tests/presenter_common_test.cpp
+	$(HOST_TEST_DIR)/presenter_common_test
 
 
 # ============================================================

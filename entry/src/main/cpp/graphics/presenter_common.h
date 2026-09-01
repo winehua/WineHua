@@ -65,12 +65,12 @@ inline uint64_t NormalizeVenusFramePeriodNs(uint64_t value)
         ? value : kDefaultFramePeriodNs;
 }
 
-// -- 帧间隔提前量 (pacing): 两版策略不同, 显式命名 --
-// virgl: 需保证剩余 >= min (floor=min); 显示周期减去提前量后不低于 min。
-inline uint64_t VirglPacingPeriodNs(uint64_t displayPeriodNs)
+// -- 帧间隔 pacing: VirGL SurfaceQueue 与 Venus deadline 策略不同 --
+// VirGL 的 NativeImage consumer 跟随显示周期。生产者每帧提前提交会逐步
+// 追上 consumer 并堆积已被 UpdateSurfaceImage 合并的回调，因此保持同周期。
+inline uint64_t VirglQueuePacingPeriodNs(uint64_t displayPeriodNs)
 {
-    return displayPeriodNs > kMinFramePeriodNs + kDispatchLeadNs
-        ? displayPeriodNs - kDispatchLeadNs : kMinFramePeriodNs;
+    return NormalizeVirglFramePeriodNs(displayPeriodNs);
 }
 
 // venus: 仅减去提前量, 不设 floor (显示周期本身是最小值)。
