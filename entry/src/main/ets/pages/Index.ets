@@ -51,6 +51,11 @@ struct Index {
   @State desktopActive: boolean = false;
   @State desktopWindowActive: boolean = false;
   private wm: WineWindowManager = WineWindowManager.getInstance();
+  // 图形后端互斥单选状态 (响应式, 高亮判据唯一来源)。区别于 @StorageLink
+  // 文本字段: 后者由 AppStorage/PersistentStorage 恢复, 非点击驱动;
+  // 直接绑 private 字段做高亮是旧实现"选中无高亮"根因 (非响应式)。
+  @State backendSel: string = 'vkd3d_limited_500k';
+  // doRun 传参用的后端值: 与 backendSel 同步 (selectBackend 内联更新)
   private d3dBackend: string = 'vkd3d_limited_500k';
   private dxvkBackend: string = 'dxvk_legacy';
   // 升级提示日志只打一次 (master 版无弹卡 UI, 检测到不一致仅留痕 +
@@ -154,6 +159,7 @@ struct Index {
     this.d3dBackend = this.d3dBackendText === 'dxvk_legacy' ||
       this.d3dBackendText === 'dxvk_modern_2_6' ||
       this.d3dBackendText === 'vkd3d_limited_500k' ? this.d3dBackendText : 'wined3d';
+    this.backendSel = this.d3dBackend;
     this.dxvkBackend = this.dxvkBackendText === 'dxvk_modern_2_6' ?
       'dxvk_modern_2_6' : 'dxvk_legacy';
     this.setupIme();
@@ -208,13 +214,19 @@ struct Index {
     mirror();
   }
 
-  private selectD3dBackend = (backend: string): void => {
+  // 图形后端互斥单选收口: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D 四选一。
+  // 选中值 = d3d 后端权威档 (vkd3d 档 = D3D12→VKD3D + D3D11/DXGI→DXVK 混合路由,
+  // DXVK 版本由 dxvkBackendText 决定, 见下方混合路由提示)。更新三个来源:
+  // @State backendSel (高亮) / @StorageLink 文本 (AppStorage+持久化) / 私有字段 (doRun)。
+  private selectBackend = (backend: string): void => {
     const selected = backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
       backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
+    this.backendSel = selected;
     this.d3dBackend = selected;
     this.d3dBackendText = selected;
     this.d3dPreferenceText = selected;
     if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
+      // DXVK 档: dxvk 版本与 d3d 档一致 (vkd3d/wined3d 档保留上次 DXVK 版本)
       this.dxvkBackend = selected;
       this.dxvkBackendText = selected;
       this.dxvkPreferenceText = selected;
@@ -224,21 +236,6 @@ struct Index {
       (selected === 'dxvk_modern_2_6' ? 'DXVK Modern 2.6' :
         (selected === 'vkd3d_limited_500k' ? 'VKD3D 2.6 Limited 500K' : 'WineD3D'));
     hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
-  }
-
-  private selectDxvkBackend = (backend: string): void => {
-    const selected = backend === 'dxvk_modern_2_6' ? 'dxvk_modern_2_6' : 'dxvk_legacy';
-    this.dxvkBackend = selected;
-    this.dxvkBackendText = selected;
-    this.dxvkPreferenceText = selected;
-    if (this.d3dBackend === 'wined3d' || this.d3dBackend.indexOf('dxvk_') === 0) {
-      this.d3dBackend = selected;
-      this.d3dBackendText = selected;
-      this.d3dPreferenceText = selected;
-    }
-    this.env.setDxvkPreference(selected);
-    this.statusText = selected === 'dxvk_modern_2_6' ?
-      'D3D11 / DXGI: DXVK 2.6.2' : 'D3D11 / DXGI: DXVK 1.10.3';
   }
 
   // 桌面模式切换 (仅 PC): 写配置, 重启 Wine 引擎后生效 (explorer 是否启动/
@@ -421,35 +418,35 @@ struct Index {
 
         Divider().color('#2a2a2a').width('100%')
 
-        Text('D3D11 / DXGI')
+        // 图形后端互斥单选: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D
+        // 四选一, 高亮 .backgroundColor 判据统一走 @State backendSel (响应式)。
+        Text('图形后端')
           .fontWeight(FontWeight.Bold).fontColor('#999')
           .width('100%').padding({ top: 12, bottom: 8 })
         Row({ space: 4 }) {
           Button('DXVK 2.6.2')
             .layoutWeight(1).height(34)
-            .backgroundColor(this.dxvkBackend === 'dxvk_modern_2_6' ? '#285' : '#333')
-            .onClick(() => this.selectDxvkBackend('dxvk_modern_2_6'))
+            .backgroundColor(this.backendSel === 'dxvk_modern_2_6' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('dxvk_modern_2_6'))
           Button('DXVK 1.10.3')
             .layoutWeight(1).height(34)
-            .backgroundColor(this.dxvkBackend === 'dxvk_legacy' ? '#285' : '#333')
-            .onClick(() => this.selectDxvkBackend('dxvk_legacy'))
+            .backgroundColor(this.backendSel === 'dxvk_legacy' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('dxvk_legacy'))
+        }
+        .width('100%').margin({ bottom: 4 })
+        Row({ space: 4 }) {
+          Button('VKD3D 2.6 (500K)')
+            .layoutWeight(1).height(34)
+            .backgroundColor(this.backendSel === 'vkd3d_limited_500k' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('vkd3d_limited_500k'))
+          Button('WineD3D')
+            .layoutWeight(1).height(34)
+            .backgroundColor(this.backendSel === 'wined3d' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('wined3d'))
         }
         .width('100%').margin({ bottom: 6 })
-        Button('WineD3D fallback')
-          .width('100%').height(32)
-          .backgroundColor(this.d3dBackend === 'wined3d' ? '#285' : '#333')
-          .onClick(() => this.selectD3dBackend('wined3d'))
-          .margin({ bottom: 8 })
-        Text('D3D12')
-          .fontWeight(FontWeight.Bold).fontColor('#999')
-          .width('100%').padding({ top: 2, bottom: 8 })
-        Button('VKD3D 2.6 (supported, 500K)')
-          .width('100%').height(34)
-          .backgroundColor(this.d3dBackend === 'vkd3d_limited_500k' ? '#854' : '#333')
-          .onClick(() => this.selectD3dBackend('vkd3d_limited_500k'))
-          .margin({ bottom: 6 })
-        if (this.d3dBackend === 'vkd3d_limited_500k') {
-          Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackend === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
+        if (this.backendSel === 'vkd3d_limited_500k') {
+          Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackendText === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
             .fontSize(11).fontColor('#d9a').maxLines(3)
             .width('100%').margin({ bottom: 6 })
         }
@@ -502,16 +499,19 @@ struct Index {
             .onClick(this.quickReset)
             .margin({ bottom: 8 })
         } else {
-          Button('重置 Wine')
-            .width('100%').backgroundColor('#633')
-            .enabled(!this.engineBusy())
-            .onClick(this.quickReset)
-            .margin({ bottom: 8 })
-          Button('重启 Wine')
-            .width('100%').backgroundColor('#652')
-            .enabled(!this.engineBusy())
-            .onClick(this.quickRestart)
-            .margin({ bottom: 8 })
+          Row({ space: 4 }) {
+            Button('重置 Wine')
+              .layoutWeight(1).height(34)
+              .backgroundColor('#633')
+              .enabled(!this.engineBusy())
+              .onClick(this.quickReset)
+            Button('重启 Wine')
+              .layoutWeight(1).height(34)
+              .backgroundColor('#652')
+              .enabled(!this.engineBusy())
+              .onClick(this.quickRestart)
+          }
+          .width('100%').margin({ bottom: 8 })
           // PC 虚拟桌面: 桌面窗口已关闭 (引擎后台继续) 时提供重开入口
           if (this.desktopActive && this.wm.isSeparateDesktopWindow() && !this.desktopWindowActive) {
             Button('打开桌面')
