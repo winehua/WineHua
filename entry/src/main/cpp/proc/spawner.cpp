@@ -76,6 +76,19 @@ pid_t Spawner::Spawn(const SpawnRequest& req) {
         params += arg;
     }
 
+    // 全路径 env 收口打点: 所有 kind (wineserver/wineboot/desktop shell/wine exe)
+    // 都经过本节唯一 spawn 通道, 此处打出送入 broker 的最终 env (基线+overlay+
+    // extraEnv 已合流), 与 wine_exe.cpp 的 "parsed options" 原样注入对照。
+    if (!req.env.empty()) {
+        std::string envJoined;
+        for (const std::string& line : req.env) {
+            if (!envJoined.empty()) envJoined += ";";
+            envJoined += line;
+        }
+        OH_LOG_INFO(LOG_APP, "[Spawner] env kind=%{public}d count=%{public}zu [%{public}s]",
+                    (int)req.kind, req.env.size(), envJoined.c_str());
+    }
+
     return SpawnLogged(req, params);
 }
 

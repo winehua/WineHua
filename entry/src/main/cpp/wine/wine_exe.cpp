@@ -360,9 +360,20 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
         options.presentBackend = DerivePresentBackend(options.d3dBackend);
     ReadStringArray(env, args[0], "argv", &options.argv);
     ReadEnvironment(env, args[0], &options.environment);
+    // ArkTS 原样传入的 per-app environment (未经管线改写, 与 main-ui 启动链
+    // 对比的判别点): 拼成 K=V;K=V 行串打出, 空 = 调用方未注入
+    const std::string envFallback = [&options]() {
+        std::string joined;
+        for (const std::string& line : options.environment) {
+            if (!joined.empty()) joined += ";";
+            joined += line;
+        }
+        return joined;
+    }();
     OH_LOG_INFO(LOG_APP,
-                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu",
-                options.windowsExePath.c_str(), options.argv.size(), options.environment.size());
+                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu [%{public}s]",
+                options.windowsExePath.c_str(), options.argv.size(), options.environment.size(),
+                envFallback.c_str());
 
     const pid_t pid = SpawnWineProgram(options);
     WineProcessEntry entry;
