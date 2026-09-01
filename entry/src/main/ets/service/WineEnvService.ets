@@ -174,8 +174,8 @@ export class WineEnvService {
   private stopWaiters: Array<() => void> = [];
 
   // -- 启动参数 (EntryAbility 发布的 AppStorage 生效值, init 时读取) --
-  private d3dBackend: string = 'vkd3d_limited_500k';
-  private dxvkBackend: string = 'dxvk_legacy';
+  private d3dBackend: string = 'dxvk_modern_2_6';
+  private dxvkBackend: string = 'dxvk_modern_2_6';
   // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效。
   // 持久化走 preferences API (同 DisplaySettingsService) — 不用 PersistentStorage:
   // 实测本应用 persistProp 在冷启动时不从磁盘恢复值 (haps/entry/files/
@@ -385,10 +385,10 @@ export class WineEnvService {
 
   // 读取 EntryAbility 发布到 AppStorage 的生效值 (D3D/DXVK 后端)
   private updateLaunchRequest(): void {
-    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k';
+    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_modern_2_6';
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
-      AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
+      AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_modern_2_6');
     // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
     // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
     // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏

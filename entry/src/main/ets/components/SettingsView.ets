@@ -28,10 +28,10 @@ export struct SettingsView {
   @State statusText: string = '检测中...';
   // 渲染策略镜像 (dxvk_legacy / dxvk_modern_2_6 / vkd3d_limited_500k / wined3d);
   // 切换后提示需重启引擎才生效
-  @State d3dBackend: string = 'dxvk_legacy';
+  @State d3dBackend: string = 'dxvk_modern_2_6';
   // SegmentButton 选中项 (@Link 双向): 0=DXVK1.10 1=DXVK2.6 2=VKD3D 3=WineD3D,
   // 与 d3dBackend 同步
-  @State backendSel: number[] = [0];
+  @State backendSel: number[] = [1];
   // Wine 语言分段选中项: 0=中文(zh_CN) 1=English(en_US), 与 wineLang 同步
   @State langSel: number[] = [0];
   @State wineLang: string = 'zh_CN';

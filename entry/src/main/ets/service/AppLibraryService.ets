@@ -522,7 +522,7 @@ export class AppLibraryService {
     // 图形渲染: 临时覆盖 → 全局默认。presentBackend 从 d3dBackend 派生
     // (与 WineEnvService.d3dPresentBackend 同规则, 不作为独立用户开关)
     const d3dBackend = overrides?.graphics == 'wined3d' ? 'wined3d'
-      : overrides?.graphics == 'dxvk' ? 'dxvk_legacy' : env.getD3dBackend();
+      : overrides?.graphics == 'dxvk' ? 'dxvk_modern_2_6' : env.getD3dBackend();
     const environment: Record<string, string> = {};
     // 语言设置对程序直启逐进程注入 (桌面会话内由 explorer 继承, 此处兜底
     // 覆盖 BuildWineEnv 基线); UpsertEnvLine 保证它压过 native 默认值。
