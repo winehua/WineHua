@@ -313,11 +313,13 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // 产品默认 perf profile = baseline (full 影子契约, 与 3b58977 基线一致);
-    // 用户显式选择 (winehua.perf.profile) 优先。c2f0f7a 曾按 d3dBackend 硬分派
-    // shadow-precise (precise 契约) 并忽略持久化值, 该契约在首启后首游戏进程
-    // 上渲染失败 (弹窗白屏, P2 回归) — 已撤销。
-    this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
+    // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
+    // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
+    // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏
+    // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
+    // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
+    // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
+    this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   }
 
   // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)
