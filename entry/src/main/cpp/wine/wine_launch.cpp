@@ -8,6 +8,7 @@
 #include "compositor/wayland_server.h"
 #include "audio_ipc_protocol.h"
 #include "graphics/graphics_broker.h"
+#include "input/controller/controller_runtime.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -367,6 +368,10 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     StartBrokerServer();
     setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
 
+    // winebus loads during wineboot/winedevice startup, so publish the WHGP
+    // socket before the first Wine process is spawned.
+    winehua::controller::EnsureBridgeForWineLaunch(p->prefixDir);
+
     // -- wineserver via broker --
     // broker → wine_child Main → 截获 argv[0]=="wineserver" 转入本体
     // (wineserver 是纯 Unix ELF, 不能走 wine loader 的 PE 解析)。
@@ -456,6 +461,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
 #ifdef __aarch64__
         winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr);
 #endif
+        winehua::controller::AppendWineGamepadEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot spawn FAILED");
@@ -527,6 +533,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
 #ifdef __aarch64__
         winehua::AppendCompatEnvLines(wbReq.env, p->compatEnvStr);
 #endif
+        winehua::controller::AppendWineGamepadEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init spawn FAILED");

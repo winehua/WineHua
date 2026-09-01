@@ -15,6 +15,8 @@
 #include "wine/wine_exe.h"
 #include "phone_adapter/phone_adapter.h"
 #include "input/text_input.h"
+#include "input/game_controller_bridge.h"
+#include "input/controller/controller_napi.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -1150,6 +1152,26 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getProcessList",   nullptr, GetProcessList,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"killProcess",     nullptr, KillProcess,     nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"initGameController", nullptr, InitGameController, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"cleanupGameController", nullptr, CleanupGameController, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"isGamepadConnected", nullptr, IsGamepadConnected, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getGamepadCount", nullptr, GetGamepadCount, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setGamepadButtonCallback", nullptr, SetGamepadButtonCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setGamepadAxisCallback", nullptr, SetGamepadAxisCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setGamepadDeviceCallback", nullptr, SetGamepadDeviceCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setGamepadRumbleCallback", nullptr, SetGamepadRumbleCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetEnabled", nullptr, ControllerSetEnabled, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetButton", nullptr, ControllerSetButton, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetAxis", nullptr, ControllerSetAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetHat", nullptr, ControllerSetHat, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerResetSource", nullptr, ControllerResetSource, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerGetState", nullptr, ControllerGetState, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerGetStateText", nullptr, ControllerGetStateText, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerStartBridge", nullptr, ControllerStartBridge, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerStopBridge", nullptr, ControllerStopBridge, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerGetSocketPath", nullptr, ControllerGetSocketPath, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetOutputMode", nullptr, ControllerSetOutputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerGetOutputMode", nullptr, ControllerGetOutputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

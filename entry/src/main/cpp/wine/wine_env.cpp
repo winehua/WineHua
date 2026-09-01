@@ -5,6 +5,7 @@
 #include "env_spec.h"
 #include "graphics/graphics_broker.h"
 #include "compositor/wayland_server.h"
+#include "input/controller/controller_runtime.h"
 
 #include <unistd.h>
 #include <algorithm>
@@ -65,6 +66,10 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
             {binDir, homeDir, prefixDir});
         env.insert(env.end(), baseline.begin(), baseline.end());
     }
+    // Start the WHGP socket before spawning Wine and keep its contract near
+    // the front of the NCP environment list.
+    winehua::controller::EnsureBridgeForWineLaunch(prefixDir);
+    winehua::controller::AppendWineGamepadEnv(env);
     // 仅主进程侧基线: locale / WINEDEBUG 静默 / GStreamer 插件路径
     // (子进程 WINEDEBUG 由 select_winedebug_profile 决定, 不走此表)
     env.push_back("WINEDEBUG=-all");
