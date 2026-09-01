@@ -6,40 +6,9 @@
 
 namespace winehua {
 
-#ifdef __aarch64__
-std::vector<std::string> FilterCompatLines(const std::string& compatEnvStr)
-{
-    std::vector<std::string> raw;
-    std::string cur;
-    for (const char c : compatEnvStr) {
-        if (c == ';') {
-            if (!cur.empty()) raw.push_back(cur);
-            cur.clear();
-        } else {
-            cur += c;
-        }
-    }
-    if (!cur.empty()) raw.push_back(cur);
-    std::vector<std::string> filtered;
-    for (const std::string& line : raw) {
-        if (line.rfind("BOX64_DYNAREC_", 0) != 0)
-            continue;
-        if (line.find('|') != std::string::npos || line.find('\n') != std::string::npos)
-            continue;
-        if (line.find('=') == std::string::npos)
-            continue;
-        filtered.push_back(line);
-    }
-    return filtered;
-}
-
-void AppendCompatEnvLines(std::vector<std::string>& env,
-                          const std::string& compatEnvStr)
-{
-    for (const std::string& line : FilterCompatLines(compatEnvStr))
-        UpsertEnvLine(env, line);
-}
-#endif // __aarch64__
+// 兼容模式档位 (Box64Dynarec.ets) 仅随程序级 extraEnv (runWineProgram per-app
+// environment) 注入, 不再与会话链 (wineserver/wineboot/explorer) 耦合 —
+// 会话进程始终走出厂基线, 档位异常只影响对应程序, 不会卡死桌面启动。
 
 // 旧 FindLaunchEnvironmentValue: 后写胜出, 反向扫描取最后一个匹配
 static std::string FindEnvValue(const std::vector<std::string>& probeBase, const char* key)
@@ -155,12 +124,7 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
     // D3D overlay (受管 dxvk/vkd3d 运行时)
     if (!p.d3dBackend.empty())
         AppendD3dBackendEnv(env, p.d3dBackend, p.dxvkBackend, p.binDir);
-    // 兼容模式全局档位: 压过基线; WEAKBARRIER=0 clamp 在 stable overlay 尾
-    // 会再压回 — 档位不击穿 DXVK/desktop 约束
-#ifdef __aarch64__
-    AppendCompatEnvLines(env, p.compatEnvStr);
-#endif
-    // 桌面稳定化 overlay。probe 快照 = 到此处为止的 env (基线+D3D+compat),
+    // 桌面稳定化 overlay。probe 快照 = 到此处为止的 env (基线+D3D),
     // 与旧实现探测 LaunchParams.envStrs 语义一致
     if (p.applyStableOverlay)
         AppendStableDxvkEnv(env, env, p.d3dBackend, p.dxvkBackend);
