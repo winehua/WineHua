@@ -37,7 +37,6 @@ export class SmokeHook {
   // clean 重置编排已启动 (幂等 guard): 编排中 prefixReady=false, 完成边沿由
   // 订阅回调拾起进入跑测分支
   private resetStarted: boolean = false;
-  private seedDone: boolean = false;
 
   // EntryAbility.publishLaunchRequest 调用: want 里 mode=smoke 时发布 5 键请求
   // 到 AppStorage (消费清键, 不重触发)。正常会话 (无 mode) 零行为变化。
@@ -80,8 +79,11 @@ export class SmokeHook {
   }
 
   // WineEnvService.enterReady 链尾调用: 引擎 ready 且 waitForPrefix 完成 —
-  // 播种 + 跑测的入口 (冷启动/clean 复位/核心重启共用)。
+  // 先无条件播种 C:\smoke (幂等以 pathExists 判定: 同一 App 进程内 clean
+  // 清盘后必须能重播, seedDone flag 会漏), 再跑测 (冷启动/clean 复位/核心
+  // 重启共用)。
   onEngineReady(): void {
+    this.seed();
     this.runPending();
   }
 
@@ -108,14 +110,13 @@ export class SmokeHook {
 
   // 跑测单点: 引擎 ready + prefix 就绪 + 有 pending 才启动 (pending 置空即
   // 防重; SmokeRunner.busy 挡运行中的重复请求)。二次 Want 走 onNewWant→tick;
-  // 冷启动走 onEngineReady; onEnvChange 兜底 (ready 边沿竞态)。
+  // 冷启动走 onEngineReady (其前置 seed)。
   private runPending(): void {
     const req = this.pending;
     const env = this.env;
     if (!req || !env) return;
     if (!env.prefixReady || env.engineState !== 'ready') return;
     this.pending = null;
-    this.seed();
     SmokeRunner.getInstance().start(req);
   }
 
@@ -135,10 +136,11 @@ export class SmokeHook {
   }
 
   // C:\smoke 载荷播种 (suites.json + exe, assemble.sh 打包随 wine 数据):
-  // 引擎就绪后执行一次, 失败只记日志不阻塞 (与旧 seedSmokePayload 同语义)。
+  // 引擎 ready 时调用 (onEngineReady 前置). 幂等以 pathExists 判定 —
+  // 不用 seedDone flag: 同一 App 进程内 clean 清盘后 C:\smoke 不存在,
+  // 必须能重播 (run_regression --gate 的 reuse×3+clean 连续场景)。
+  // 失败只记日志不阻塞。
   private seed(): void {
-    if (this.seedDone) return;
-    this.seedDone = true;
     const source = `${WINE_ROOT}/smoke`;
     const target = `${FILES_BASE}/.wine/drive_c/smoke`;
     if (pathExists(target) || !pathExists(source)) return;
