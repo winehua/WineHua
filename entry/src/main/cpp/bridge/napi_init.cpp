@@ -315,8 +315,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 9;
-    napi_value args[9] = {};
+    size_t argc = 8;
+    napi_value args[8] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -356,19 +356,6 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "en_US"))
             p->wineLang = wineLang;
     }
-    if (argc >= 9) {
-        // 设置页 "兼容模式" 全局档位: 分号拼接的 BOX64_DYNAREC_* 行串
-        // (ArkTS 拼, native 零表); 空串 = 出厂基线不注入。缓冲 2048 是硬
-        // 上限: 当前档位表 11 行 ≈ 286B, 若规模膨胀超过则静默截断 (半截行
-        // 会被前缀过滤放进环境, 注入残缺值) — 只在档位表大改时需复查
-        char compatEnv[2048] = {};
-        napi_status compatStatus =
-            napi_get_value_string_utf8(env, args[8], compatEnv, sizeof(compatEnv), nullptr);
-        if (compatStatus != napi_ok) {
-            OH_LOG_WARN(LOG_APP, "[Launch] compatEnvStr arg is not a string, ignored");
-        }
-        p->compatEnvStr = compatEnv;
-    }
     // 向后兼容: 旧调用未传 homeDir 时使用默认路径
     if (p->homeDir.empty()) {
         p->homeDir = "/storage/Users/currentUser/Download";
@@ -378,9 +365,8 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
                 "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s home=%{public}s prefix=%{public}s (async)",
                 p->exePath.c_str(), p->sockPath.c_str(), p->libPath.c_str(), p->homeDir.c_str(),
                 p->prefixDir.c_str());
-    OH_LOG_WARN(LOG_APP, "[Launch] desktop D3D=%{public}s DXVK=%{public}s lang=%{public}s compat=%{public}s",
-                p->d3dBackend.c_str(), p->dxvkBackend.c_str(), p->wineLang.c_str(),
-                p->compatEnvStr.empty() ? "baseline" : "preset");
+    OH_LOG_WARN(LOG_APP, "[Launch] desktop D3D=%{public}s DXVK=%{public}s lang=%{public}s",
+                p->d3dBackend.c_str(), p->dxvkBackend.c_str(), p->wineLang.c_str());
 
     // 保证可执行
     if (access(p->exePath.c_str(), X_OK) != 0) chmod(p->exePath.c_str(), 0755);

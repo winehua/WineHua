@@ -751,7 +751,144 @@ EOF
   }
 }
 EOF
-    log "  managed smoke payload → smoke/{x64,x86}"
+    # Suite 编排定义: companion of manifest.json, consumed by SmokeRunner.ets.
+    # 每 suite: tests[] → testId/exe(相对 C:\smoke 根: x64/… 或 x86/…,
+    # 载荷打包成 smoke/{x64,x86}, 播种到 C:\smoke 后即根级子目录; 无
+    # smoke/ 前缀 — runner 拼 C:\smoke\ + exe)/env(测试专属
+    # 诊断键)/d3dBackend(回归固定后端)/mode(present|offscreen)/seconds/timeoutMs
+    # (-1=取请求 longSeconds)。产品语义 env (DXVK 稳定化 overlay/perf profile)
+    # 由 native BuildSessionEnv 收口, 不在此重复; argv 协议由 runner 生成。
+    cat > "$smoke_dir/suites.json" <<SMOKE_SUITES_EOF
+{
+  "schemaVersion": 1,
+  "suiteVersion": "$smoke_suite_version",
+  "suites": {
+    "core": {
+      "tests": [
+        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
+        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000}
+      ]
+    },
+    "opengl": {
+      "tests": [
+        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
+        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000}
+      ]
+    },
+    "audio": {
+      "tests": [
+        {"testId": "audio-x64", "exe": "x64/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
+        {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000}
+      ]
+    },
+    "d3d8": {
+      "tests": [
+        {"testId": "d3d8-capability-x86", "exe": "x86/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "d3d8-capability-x64", "exe": "x64/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000}
+      ]
+    },
+    "d3d9": {
+      "tests": [
+        {"testId": "d3d9-cube-x86", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
+        {"testId": "d3d9-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000}
+      ]
+    },
+    "wine-vulkan": {
+      "tests": [
+        {"testId": "wine-vulkan-offscreen-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "wine-vulkan-offscreen-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "wine-vulkan-sampled-only-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1", "WINEHUA_VULKAN_SAMPLED_ONLY": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "wine-vulkan-sampled-only-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1", "WINEHUA_VULKAN_SAMPLED_ONLY": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000}
+      ]
+    },
+    "wine-vulkan-present": {
+      "tests": [
+        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000}
+      ]
+    },
+    "dxvk": {
+      "tests": [
+        {"testId": "dxvk-legacy-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-legacy-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 8, "timeoutMs": 180000}
+      ]
+    },
+    "dxvk-dynamic": {
+      "tests": [
+        {"testId": "dxvk-dynamic-cb-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-dynamic-cb-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000}
+      ]
+    },
+    "dxvk-long": {
+      "tests": [
+        {"testId": "dxvk-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": -1, "timeoutMs": -1}
+      ]
+    },
+    "dxvk-modern-baseline": {
+      "tests": [
+        {"testId": "dxvk-modern-baseline-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-modern-baseline-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-modern-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": 8, "timeoutMs": 180000}
+      ]
+    },
+    "dxvk-modern-long": {
+      "tests": [
+        {"testId": "dxvk-modern-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": -1, "timeoutMs": -1}
+      ]
+    },
+    "gpu-diagnostics": {
+      "tests": [
+        {"testId": "gpu-diagnostics-x86", "exe": "x86/winehua_gpu_diagnostics.exe", "env": {}, "d3dBackend": "dxvk_legacy", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "gpu-diagnostics-x64", "exe": "x64/winehua_gpu_diagnostics.exe", "env": {}, "d3dBackend": "dxvk_legacy", "seconds": 0, "timeoutMs": 90000}
+      ]
+    },
+    "dxvk26-requirements": {
+      "tests": [
+        {"testId": "dxvk26-requirements-x86", "exe": "x86/winehua_dxvk26_requirements.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "dxvk26-requirements-x64", "exe": "x64/winehua_dxvk26_requirements.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 90000}
+      ]
+    },
+    "d3d12": {
+      "tests": [
+        {"testId": "d3d12-1000f", "exe": "x64/winehua_d3d12_smoke.exe", "env": {}, "d3dBackend": "vkd3d_limited_500k", "argvMode": "raw",
+         "argv": ["--frames", "1000", "--result", "C:/smoke/results/<run-id>/<test-id>.json",
+                  "--checkpoint", "C:/smoke/results/<run-id>/<test-id>.ckpt"],
+         "seconds": 0, "timeoutMs": 180000}
+      ]
+    },
+    "all": {
+      "tests": [
+        {"testId": "audio-x64", "exe": "x64/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
+        {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
+        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
+        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
+        {"testId": "d3d8-capability-x86", "exe": "x86/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "d3d8-capability-x64", "exe": "x64/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "d3d9-cube-x86", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
+        {"testId": "d3d9-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
+        {"testId": "wine-vulkan-offscreen-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "wine-vulkan-offscreen-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
+        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-legacy-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-legacy-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "dxvk-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 8, "timeoutMs": 180000}
+      ]
+    },
+    "long": {
+      "tests": [
+        {"testId": "audio-x64", "exe": "x64/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
+        {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
+        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3600, "timeoutMs": 3660000},
+        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3600, "timeoutMs": 3660000},
+        {"testId": "dxvk-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": -1, "timeoutMs": -1}
+      ]
+    }
+  }
+}
+SMOKE_SUITES_EOF
+    log "  smoke suite definitions → smoke/suites.json ($smoke_suite_version)"
     log "  VKD3D-Proton 2.6 limited-500K (default mixed D3D12 profile) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
 
     # fonts

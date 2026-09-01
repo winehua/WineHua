@@ -3,6 +3,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { WineEnvService } from '../service/WineEnvService';
+// [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
+import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -23,23 +26,37 @@ export default class EntryAbility extends UIAbility {
     return this.defaultDxvkBackend();
   }
 
-  // 发布正常会话所需的最小启动状态: 持久化 preference → AppStorage 生效值
+  // 发布启动状态: want 开屏参数 (d3d/dxvk 覆盖; smoke 请求由 SmokeHook 侧挂)
+  // → AppStorage 生效值
   // (Index 的 @StorageLink 'winehua.d3d.backend'/'winehua.dxvk.backend' 与
-  // WineEnvService.updateLaunchRequest 依赖)。自动化 Want 协议
-  // (smoke/game/experiment/click/perf-profile) 已随 smoke 设施整体拆除,
-  // 重建后按 docs/SMOKE_INFRASTRUCTURE.md §4 的三层设计重新引入。
-  private publishLaunchRequest(): void {
-    const persistedD3d = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
-    const d3dBackend = persistedD3d === 'dxvk_legacy' || persistedD3d === 'dxvk_modern_2_6' ||
-      persistedD3d === 'vkd3d_limited_500k' ? persistedD3d : 'wined3d';
-    let dxvkBackend = this.resolveDxvkBackend(
-      AppStorage.get<string>('winehua.dxvk.preference') || 'auto');
+  // WineEnvService.updateLaunchRequest 依赖)。
+  private publishLaunchRequest(want: Want): void {
+    const parameters = want.parameters;
+    const value = (key: string, fallback: string): string => {
+      if (!parameters || parameters[key] === undefined || parameters[key] === null) return fallback;
+      return `${parameters[key]}`;
+    };
+    const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
+      parameters['winehua.d3d_backend'] !== null;
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
+    const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
+    const d3dBackend = requestedD3d === 'dxvk_legacy' ||
+      requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
+      requestedD3d : 'wined3d';
+    const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
+      parameters['winehua.dxvk_backend'] !== null;
+    const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'auto';
+    let dxvkBackend = this.resolveDxvkBackend(explicitDxvk ?
+      value('winehua.dxvk_backend', 'auto') : persistedDxvk);
     if (d3dBackend === 'dxvk_legacy') dxvkBackend = 'dxvk_legacy';
     if (d3dBackend === 'dxvk_modern_2_6') dxvkBackend = 'dxvk_modern_2_6';
     AppStorage.setOrCreate<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
+    // 在 SmokeHook, 模式非 smoke 时零行为)
+    SmokeHook.getInstance().applyWant(parameters);
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -52,13 +69,14 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
-    this.publishLaunchRequest();
+    this.publishLaunchRequest(want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.publishLaunchRequest();
+    this.publishLaunchRequest(want);
     WineWindowManager.getInstance().restoreDesktopIfRunning();
+    WineEnvService.getInstance().onNewWant();
   }
 
   onDestroy(): void {

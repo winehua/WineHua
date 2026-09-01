@@ -8,6 +8,8 @@ import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
+// [[SMOKE]] 合并到 main-ui: 删本行与侧边栏的 <SmokeDevPanel /> 调用
+import { SmokeDevPanel } from '../smoke/SmokeDevPanel';
 
 const DOMAIN = 0x0000;
 
@@ -519,6 +521,11 @@ struct Index {
               .margin({ bottom: 8 })
           }
         }
+
+        Divider().color('#2a2a2a').width('100%')
+
+        // [[SMOKE]] 合并到 main-ui: 删本行 (开发测试区组件)
+        SmokeDevPanel()
 
         Divider().color('#2a2a2a').width('100%')
 

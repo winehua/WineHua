@@ -6,14 +6,16 @@ import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
+// [[SMOKE]] 合并到 main-ui: 删本行与 init 内的 attach 调用 (均为此标记)
+import { SmokeHook } from '../smoke/SmokeHook';
 
 const DOMAIN = 0x0000;
-const FILES_BASE = '/data/storage/el2/base/files';
+export const FILES_BASE = '/data/storage/el2/base/files';
 // startSession 与页面 doRun 连同一个 wineserver socket
 export const SOCK = '/data/storage/el2/base/files/.wine/wine-wayland';
 
 // Wine 运行时从 rawfile 解压到 files/
-const WINE_ROOT = `${FILES_BASE}/wine`;
+export const WINE_ROOT = `${FILES_BASE}/wine`;
 export const WINE_BIN = `${WINE_ROOT}/bin`;
 const BIN_DIR = WINE_BIN;
 const BOX64 = `${WINE_BIN}/box64`;
@@ -310,11 +312,13 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // 产品默认 perf profile = baseline (full 影子契约, 与 3b58977 基线一致);
-    // 用户显式选择 (winehua.perf.profile) 优先。c2f0f7a 曾按 d3dBackend 硬分派
-    // shadow-precise (precise 契约) 并忽略持久化值, 该契约在首启后首游戏进程
-    // 上渲染失败 (弹窗白屏, P2 回归) — 已撤销。
-    this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
+    // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
+    // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
+    // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏
+    // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
+    // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
+    // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
+    this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   }
 
   // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)
@@ -353,6 +357,13 @@ export class WineEnvService {
       this.desktopMode = wm.isDesktopMode;
       this.notify();
     });
+    // [[SMOKE]] 合并到 main-ui: 删本行 (smoke 请求的消费/编排全在 SmokeHook,
+    // 经 ets/smoke/ 物理隔离; 返回 true = smoke clean 重置编排已接管初始化)。
+    // 本行位置有讲究: 必须位于 native 状态回调与订阅注册之后 (clean 编排里
+    // stopSession/startSession 依赖 native 状态消息)。
+    if (SmokeHook.getInstance().attach(this)) {
+      return;
+    }
     // 自动初始化分两种情形:
     // 1) prefix 已就绪 (二次进入): 后台自动拉起引擎 (startSession(后台)
     //    抑制 overlay, 用户无感), 就绪前点 exe 由 UI 侧 toast 拦截;
@@ -465,41 +476,54 @@ export class WineEnvService {
     this.setInitStatus('已就绪', false);
     // wineboot 可能还在后台初始化 prefix，轮询等待 drive_c 就绪
     this.waitForPrefix().then(() => {
-      void this.seedSmokePayload();
+      // [[SMOKE]] 合并到 main-ui: 删本行 (smoke 播种/跑测触发点, 旧
+      // seedSmokePayload+maybeRunSmoke 同位置)
+      SmokeHook.getInstance().onEngineReady();
     });
   }
 
-  // 烟测程序载荷: C:\smoke 是应用库内建「Graphics Smoke / D3d Smoke」手动
-  // 启动入口的存在性前提。载荷随 wine 数据打包在 wine/smoke; 前缀就绪后
-  // 按需播种到持久 prefix (旧 syncManagedSmoke 职责的轻量版 — 自动化设施
-  // 已整体拆除, 仅保留载荷复制, 失败只记日志不阻塞引擎)。
-  private seedSmokePayload(): void {
-    const source = `${WINE_ROOT}/smoke`;
-    const target = `${FILES_BASE}/.wine/drive_c/smoke`;
-    if (pathExists(target)) return;
-    if (!pathExists(source)) return;
-    try {
-      this.copyTree(source, target);
-      hilog.warn(DOMAIN, 'wine', 'seeded smoke payload → C:\\smoke');
-    } catch (e) {
-      hilog.warn(DOMAIN, 'wine', 'seed smoke payload failed: %{public}s', JSON.stringify(e));
-    }
+  // 新 Want 进入 (EntryAbility.onNewWant): smoke 请求在 App 存活时到达时
+  // 由 SmokeHook 消费 (引擎已就绪, 可直接编排/跑测)。
+  onNewWant(): void {
+    // [[SMOKE]] 合并到 main-ui: 删本行
+    SmokeHook.getInstance().onNewWant();
   }
 
-  // 目录递归复制 (项目既有 fs 原语)。不用 fs.copy — 该 API 面向跨设备 URI
-  // 拷贝, 对应用沙箱路径实测失败 (裸路径 401, file:// URI 13900020 权限);
-  // 载荷仅沙箱内小目录树, listFileSync+copyFileSync 足够且无权限歧义。
-  // 与 removePathRecursive 同层工具函数。
-  private copyTree(src: string, dst: string): void {
-    const st = fs.statSync(src);
-    if (st.isDirectory()) {
-      fs.mkdirSync(dst, true);
-      for (const name of fs.listFileSync(src)) {
-        this.copyTree(`${src}/${name}`, `${dst}/${name}`);
-      }
-      return;
+  // 只清 prefix (C 盘 + prefix 元数据), 不删运行时 — 与 doReset (删 WINE_ROOT +
+  // 重解压 249MB) 的区别。必须先 stopSession: 活 wineserver/explorer 脚下删
+  // prefix 是数据损坏。编排: 停 → 清 → 延迟 startSession (与 doReset 同款 500ms
+  // 隔离)。返回 false = busy 拦截 (调用方走常规启动分支)。当前调用方:
+  // SmokeHook (smoke --prefix clean 基线) — 引擎级通用能力, 非 smoke 专属。
+  cleanPrefixAndRestart(): boolean {
+    if (this.isBusy()) {
+      hilog.warn(DOMAIN, 'wine', 'cleanPrefixAndRestart blocked (busy)');
+      return false;
     }
-    fs.copyFileSync(src, dst);
+    this.opBusy = true;
+    this.setInitStatus('正在清空 prefix...', true);
+    (async (): Promise<void> => {
+      try {
+        await this.stopSession(true);
+        this.setInitStatus('正在清空...', true);
+        testNapi.resetWinePrefix();
+        this.engineState = 'idle';
+        this.engineStage = '';
+        this.prefixReady = false;
+        ProcessService.getInstance().clear();
+        this.setInitStatus('prefix 已清空', false);
+        // opBusy 在自己手上: 不先清, 延迟 startSession 会被自身 re-entry 守卫
+        // 拦截 (startSession 前两次调用在 clean 编排里, 而守卫检查 opBusy)
+        setTimeout(() => {
+          this.opBusy = false;
+          this.startSession(true);
+        }, 500);
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'cleanPrefixAndRestart error: %{public}s', JSON.stringify(e));
+        this.opBusy = false;
+        this.notify();
+      }
+    })();
+    return true;
   }
 
   private detectRawfileWineData(): boolean {
