@@ -33,7 +33,7 @@ automation/run_regression.py
 | `winehua.mode` | `smoke`（唯一认可值） | 缺省 = 正常会话，零行为变化 |
 | `winehua.suite` | suite 名（suites.json 的键） | 一期：core/audio/d3d8/d3d9/wine-vulkan/dxvk/dxvk-long/dxvk-dynamic/gpu-diagnostics/dxvk26-requirements/dxvk-modern-baseline/dxvk-modern-long/d3d12/all/long |
 | `winehua.run_id` | 任意 ASCII | 结果目录 `results/<run-id>/`；手动入口 `manual-<ts>` |
-| `winehua.prefix` | `reuse`（默认）/ `clean` | `clean` → 启动前 `resetWinePrefix()`（native 已保留，App UID 权威删除） |
+| `winehua.prefix` | `reuse`（默认）/ `clean` | `clean` → 引擎启动编排前置 `env.doReset()`（stopSession→wipe→自动 startSession 的现成编排；裸 resetWinePrefix 不先停引擎会损坏活 prefix） |
 
 恢复不引入旧版全套：`experiment/game/click/long_seconds/perf_profile 白名单` 不进一期（文档 §3 点名砍掉）。
 perf_profile 不走 Want——smoke 会话跑产品默认档（原生 `BuildSessionEnv` 无显式 profile 的缺省即
@@ -52,14 +52,16 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
   "suites": {
     "core": {
       "tests": [
-        { "testId": "opengl-x64", "exe": "smoke/x64/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 },
-        { "testId": "opengl-x86", "exe": "smoke/x86/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 }
+        { "testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 },
+        { "testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "seconds": 8, "timeoutMs": 60000 }
       ]
     },
     "d3d12": {
       "tests": [
-        { "testId": "d3d12-1000f", "exe": "smoke/x64/winehua_d3d12_smoke.exe",
-          "argv": ["--result", "<run-id>\\<test-id>.json", "--checkpoint", "<run-id>\\<test-id>.ckpt"],
+        { "testId": "d3d12-1000f", "exe": "x64/winehua_d3d12_smoke.exe",
+          "argv": ["--frames", "1000",
+                   "--result", "C:/smoke/results/<run-id>/<test-id>.json",
+                   "--checkpoint", "C:/smoke/results/<run-id>/<test-id>.ckpt"],
           "env": {}, "timeoutMs": 180000 }
       ]
     }
@@ -68,7 +70,9 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
 ```
 
 约定：
-- `exe` 相对 `C:\smoke\`，仅允许 `smoke/` 前缀（防目录逃逸）；x64/x86 arch 由路径表达
+- `exe` 相对 `C:\smoke\` 根（`x64/…` / `x86/…`，**无** `smoke/` 前缀——载荷打包在
+  `smoke/{x64,x86}`，播种到 `C:\smoke` 后即根级子目录；曾误编 `smoke/x64/…` 导致
+  runner 拼成 `C:\smoke\smoke\x64\…` → wine `failed to open`）；x64/x86 arch 由路径表达
 - `env` 只声明**测试专属诊断键**。产品语义（DXVK 稳定化注入、d3d 后端 overlay、perf profile、
   box64 档位）已由 native `BuildSessionEnv` + `runWineProgram(d3dBackend)` 参数收口，
   suites.json 不重复声明（双头维护消灭，见 _SMOKE_INFRASTRUCTURE §2 侵入点 3 的教训）。
@@ -77,10 +81,13 @@ runner 不做任何档位特殊逻辑。long 套件的时长由 host 脚本经 `
   （fallback 检测）、dxvk-modern 的 trace 键等。
 - `argv` / `seconds`（渲染秒数）/ `timeoutMs` 可选：秒数与超时对齐旧 Runner 规格
   （opengl=8s/60s、audio=3s/45s、d3d8/d3d9/dxvk=5~8s/180s、dxvk-long=longSeconds+90s、
-  gpu-diagnostics/dxvk26=0s/90s）。`argv` 中 `<run-id>\<test-id>.json` 形式的占位符
-  由 Runner 运行时替换为实际值（如 d3d12 的 `--result` 窗口通知路径）；d3d12 的
-  `--result/--checkpoint` 参数以 `winehua_d3d12_smoke.exe` 实际支持为准（实现时对照
-  vkd3d-proton 源码核对）
+  gpu-diagnostics/dxvk26=0s/90s）。`argv` 中 `<run-id>`/`<test-id>` 占位符由 Runner
+  运行时替换。d3d12 的 exe 参数已对照 patch 0005 确认：`--frames`（默认仅 3！
+  `VKD3D_GRAPHICS_SMOKE_DEFAULT_FRAMES 3u`，1000 帧须显式传）、`--result`、`--checkpoint`
+  （后者二选一传 `--result` 即可）；另确认路径用正斜杠（Wine 的 fopen 接受 `C:/smoke/...`，
+  规避 JSON/heredoc 双重转义）
+- `seconds`/`timeoutMs` 为 `-1` 时表示「取请求的 longSeconds」（dxvk-long/dxvk-modern-long 用，
+  请求默认 3600；`timeoutMs=-1` ⇒ `longSeconds*1000+90000`）
 - `WINEHUA_SMOKE_RUN_ID / WINEHUA_SMOKE_TEST_ID` 由 Runner 固定注入，不在 suites 声明
 - 新增测试 = 改 assemble 生成段 + smoke C 源码，不动 ArkTS
 
@@ -161,7 +168,8 @@ private consumeSmokeRequest(): void {
   AppStorage.setOrCreate<string>('winehua.smoke.request', '');   // 清键: 不重触发
   this.pendingSmoke = JSON.parse(raw) as SmokeRequest;
   if (this.pendingSmoke.prefix === 'clean') {
-    this.resetWinePrefix();       // native 通道, App UID 权威删除; 之后 startSession 自动重造
+    this.doReset();               // 现成编排: stopSession→wipe→自动 startSession;
+                                  // 不能裸 resetWinePrefix (活引擎下删 prefix=损坏)
   }
 }
 ```
@@ -170,8 +178,8 @@ private consumeSmokeRequest(): void {
 `void this.maybeRunSmoke();`——`maybeRunSmoke` 有 `pendingSmoke` 则
 `SmokeRunner.getInstance().start(pendingSmoke)` 并置空 pending。
 **引擎已就绪时的二次请求**（handleNewWant）：`pendingSmoke` 非空且 prefixReady → 直接触发 runner。
-编排顺序：consume（clean→reset 前置）→ startSession → enterReady → seed → maybeRunSmoke。
-Runner 只跑测试、不做 clean，语义单点。
+编排顺序：consume（clean→doReset 前置：停止→清空→自动重启）→ startSession → enterReady →
+seed → maybeRunSmoke。Runner 只跑测试、不做 clean，语义单点。
 
 ## 7. UI 入口（Index.ets 侧边栏「开发测试」区）
 
@@ -216,3 +224,64 @@ native probe，另立；win32_driver game 点击驱动二期）。
 3. 设备验证（部署后）：`aa start --ps winehua.mode=smoke --ps winehua.suite=core --ps winehua.run_id=r1`
    → 设备端 hilog `SMOKE` 打点、`C:\smoke\results\r1\suite-summary.json` 生成 → host
    `run_regression.py --suite core` 过一遍；d3d12 套件独立跑一次（1000 帧）
+
+## 11. 与 main-ui 的合并策略（2026-09-01 物理隔离重构后）
+
+> 用户决策：smoke 是开发测试设施，**不得进入 main-ui**（面向用户的产品分支）。
+> 上文 §4-§7 是重构前的接入形态（smoke 代码长在 WineEnvService/Index/EntryAbility
+> 共享文件里，合并冲突高危）；2026-09-01 重构后 smoke ArkTS **物理隔离**进
+> `entry/src/main/ets/smoke/`，行为语义不变（§6 的编排时序逐条平移）。
+
+### 重构后的结构
+
+```
+entry/src/main/ets/smoke/          # 全部 smoke ArkTS (整目录可删)
+  SmokeTypes.ets                   # SmokeRequest 接口
+  SmokeRunner.ets                  # 瘦解释器 (跑套件/轮询结果/汇总)
+  SmokeHook.ets                    # 枢纽: Want 解析 applyWant / 请求消费 attach
+                                   # / clean 编排触发 / prefixReady 边沿 / 载荷播种
+  SmokeDevPanel.ets                # 侧边栏「开发测试」区组件 (自镜像, Index 零状态)
+```
+
+公共产品文件仅剩 **带 `// [[SMOKE]]` 标记的行级钩子**（3 个文件，共 7 处
+标记行）：
+
+| 文件 | 钩子 | 摘除后 |
+|---|---|---|
+| `entryability/EntryAbility.ets` | `import { SmokeHook } ...` + `applyWant(parameters)` | Want 不再解析 smoke 键 |
+| `service/WineEnvService.ets` | `import { SmokeHook } ...` + ① init 内 `if (attach(this)) return;`（clean 编排接管判定）② `onNewWant()` 内 `SmokeHook.onNewWant();`（二次 Want 消费）③ `enterReady` 链尾 `SmokeHook.onEngineReady();`（跑测触发，旧 maybeRunSmoke 同位置） | 初始化编排不含 smoke |
+| `pages/Index.ets` | `import { SmokeDevPanel } ...` + `<SmokeDevPanel />` | 侧边栏无「开发测试」区 |
+
+**触发语义**（与重构前 maybRunSmoke 逐条对齐，设备实测 4 场景过：
+正常首启零干扰 / 冷启动 want / App 存活二次 want / clean 重建）：
+- 冷启动：`attach` 只消费请求（clean 则编排并 return），跑测等 `enterReady` 链尾
+  `onEngineReady`（引擎真 ready + waitForPrefix 完成；回放式 ready 不可信——
+  broker 未就绪时 runWineProgram 返回 -1）
+- 二次 Want：`onNewWant` 消费后立即跑（引擎必然已就绪，无常驻轮询）
+- **SmokeHook 不订阅 env 状态镜像**：clean 编排启动瞬间引擎仍短暂 ready
+  （stopSession 异步），订阅兜底触发会把 clean 请求当 reuse 提前跑（r6 实测误触发）
+
+（`WineEnvService.cleanPrefixAndRestart` 由旧 `resetSmokePrefix` 改名而来，是**引擎级
+通用能力**（只清 prefix 不删运行时，与 doReset 的区别），无 smoke 字眼——main-ui
+可保留（无调用方则编译面为空）或随摘除删除。`FILES_BASE/WINE_ROOT` 加 export 供
+SmokeHook 播种使用，原值不变。）
+
+### 合并动作清单（main-ui 开发者在 merge master 后执行）
+
+```bash
+git rm -r entry/src/main/ets/smoke/          # 1. 整目录拔除
+grep -rn '\[\[SMOKE\]\]' entry/src/main/ets/ # 2. 定位各标记行 → 逐处删除
+grep -rn 'SmokeHook\|SmokeDevPanel' entry/src/main/ets/  # 3. 校验零引用
+```
+
+批量校验：`grep -rni 'smoke' entry/src/main/ets/` 应只剩注释级历史提及。
+**main-ui 一期遗留**（应用库「Graphics Smoke / D3d Smoke」条目 + WineEnvService
+`seedSmokePayload` 播种）同批清理，否则条目存在但 C:\smoke 无人播种（启动报
+wine failed to open）。
+
+### 数据/脚本层（不带 ArkTS 侵入，随合并安全）
+
+`automation/`、`scripts/assemble.sh`（suites.json 生成段）、`wine_data/smoke/`（载荷）、
+`docs/` 均为宿主侧/打包资产，不产生 App 行为面。合并后 main-ui 的 wine-data.zip
+仍含 `smoke/` 载荷目录（静态资产，约几 MB，无 UI/运行时行为），可留可裁——
+留可保证两分支 zip 产物结构一致，裁需在 assemble.sh 加开关（多一个分支差异点）。
