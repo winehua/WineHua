@@ -270,8 +270,27 @@ private:
     bool EnsureGlLocked(EGLDisplay sourceDisplay, EGLContext sourceContext,
                         uint32_t width, uint32_t height)
     {
+        if (display_ == sourceDisplay && sourceContext_ == sourceContext &&
+            context_ != EGL_NO_CONTEXT && surface_ != EGL_NO_SURFACE &&
+            (width_ != width || height_ != height)) {
+            // Resizing a window surface only changes future buffer requests.
+            // Recreating EGL here also tears down the producer queue while the
+            // NativeImage consumer may still own an acquired buffer.
+            if (OH_NativeWindow_NativeWindowHandleOpt(
+                    windowLease_.Get(), SET_BUFFER_GEOMETRY,
+                    static_cast<int32_t>(width), static_cast<int32_t>(height)) != 0)
+                return false;
+            width_ = width;
+            height_ = height;
+            OH_LOG_INFO(LOG_APP,
+                        "[VIRGL-ZC][NCP] window resized size=%{public}ux%{public}u "
+                        "surface_key=%{public}llu retained_egl=1",
+                        width, height, static_cast<unsigned long long>(surfaceKey_));
+            return true;
+        }
         if (display_ != EGL_NO_DISPLAY &&
-            (display_ != sourceDisplay || width_ != width || height_ != height))
+            (display_ != sourceDisplay || sourceContext_ != sourceContext ||
+             width_ != width || height_ != height))
             ResetGlLocked();
         if (context_ != EGL_NO_CONTEXT && surface_ != EGL_NO_SURFACE) return true;
 
@@ -371,6 +390,7 @@ private:
         eglSwapInterval(sourceDisplay, 0);
 
         display_ = sourceDisplay;
+        sourceContext_ = sourceContext;
         context_ = context;
         surface_ = surface;
         program_ = program;
@@ -405,6 +425,7 @@ private:
             if (context_ != EGL_NO_CONTEXT) eglDestroyContext(display_, context_);
         }
         display_ = EGL_NO_DISPLAY;
+        sourceContext_ = EGL_NO_CONTEXT;
         context_ = EGL_NO_CONTEXT;
         surface_ = EGL_NO_SURFACE;
         program_ = 0;
@@ -430,6 +451,7 @@ private:
     winehua::NativeWindowLease windowLease_;
     uint64_t surfaceKey_ = 0;
     EGLDisplay display_ = EGL_NO_DISPLAY;
+    EGLContext sourceContext_ = EGL_NO_CONTEXT;
     EGLContext context_ = EGL_NO_CONTEXT;
     EGLSurface surface_ = EGL_NO_SURFACE;
     GLuint program_ = 0;
