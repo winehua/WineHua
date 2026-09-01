@@ -310,11 +310,15 @@ export class WineEnvService {
 
   getCompatMode(): string { return this.compatMode; }
 
-  // 环境页"渲染策略"切换: 持久化偏好 + 同步 AppStorage 生效值 + 重读启动参数。
+  // 环境页"渲染策略"切换: 持久化偏好 (preferences API, putSync+flush 直写磁盘,
+  // 同 wineLang — persistProp 冷启动不恢复磁盘值, 实测 + 同步 AppStorage
+  // 生效值 + 重读启动参数。
   // 仅写入配置 — 已在运行的 Wine 不受影响, 重启引擎后生效 (UI 负责提示)
   setD3dPreference(backend: string): void {
     const selected = this.normalizeD3dBackend(backend);
-    PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
+    if (!this.persistD3dBackend(selected)) {
+      return; // 写盘失败: 不更新内存 (与 wineLang 同语义, UI 保留旧值)
+    }
     AppStorage.set<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.backend', selected);
     if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
@@ -328,20 +332,55 @@ export class WineEnvService {
 
   setDxvkPreference(backend: string): void {
     const selected = this.normalizeDxvkBackend(backend);
-    PersistentStorage.persistProp<string>('winehua.dxvk.preference', selected);
+    if (!this.persistDxvkBackend(selected)) {
+      return; // 写盘失败: 不更新内存 (同 wineLang 语义)
+    }
     AppStorage.set<string>('winehua.dxvk.preference', selected);
     AppStorage.set<string>('winehua.dxvk.backend', selected);
     const d3d = this.normalizeD3dBackend(
       AppStorage.get<string>('winehua.d3d.backend') ?? selected);
     if (d3d === 'wined3d' || d3d.indexOf('dxvk_') === 0) {
-      PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
-      AppStorage.set<string>('winehua.d3d.preference', selected);
-      AppStorage.set<string>('winehua.d3d.backend', selected);
+      // DXVK 档且 d3d 档跟其后端: d3d 写入与 dxvk 一致 (主档联动)
+      if (this.persistD3dBackend(selected)) {
+        AppStorage.set<string>('winehua.d3d.preference', selected);
+        AppStorage.set<string>('winehua.d3d.backend', selected);
+      }
     }
     this.updateLaunchRequest();
     hilog.info(DOMAIN, 'GameTest', 'DXVK backend selected=%{public}s d3d12=%{public}s',
       selected, this.d3dBackend);
     this.notify();
+  }
+
+  // 写盘渲染策略偏好: preferences API (同 wineLang, 'wine_settings' 文件)。
+  // 不用 PersistentStorage — 实测其冷启动不恢复磁盘值 (见 wineLang 注释);
+  // 返回 false 表示写盘失败 (调用方不更新内存, UI 保留旧值)
+  private persistD3dBackend(v: string): boolean {
+    if (!this.settingsStore) {
+      return true; // store 未就绪: 按内存版处理 (SettingsView 仅在 init 后可交互)
+    }
+    try {
+      this.settingsStore.putSync('d3d_backend', v);
+      this.settingsStore.flush();
+      return true;
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'd3d backend persist fail: %{public}s', JSON.stringify(e));
+      return false;
+    }
+  }
+
+  private persistDxvkBackend(v: string): boolean {
+    if (!this.settingsStore) {
+      return true;
+    }
+    try {
+      this.settingsStore.putSync('dxvk_backend', v);
+      this.settingsStore.flush();
+      return true;
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'dxvk backend persist fail: %{public}s', JSON.stringify(e));
+      return false;
+    }
   }
 
   // 读取 EntryAbility 发布到 AppStorage 的生效值 (D3D/DXVK 后端)
@@ -382,6 +421,28 @@ export class WineEnvService {
           this.settingsStore.getSync('compat_mode', '') as string);
       } catch (e) {
         hilog.error(DOMAIN, 'wine', 'compat mode load fail: %{public}s', JSON.stringify(e));
+      }
+    }
+    // 渲染策略偏好读回: 同 compat_mode — PersistentStorage 冷启动不恢复磁盘值
+    // (实测, 见 wineLang 注释), 此处 getSync 直读; 盘上无键 (尚未配置过) 不覆盖,
+    // 保持 EntryAbility publishLaunchRequest 的协议默认 (显式 want > 持久化 > 默认)
+    if (this.settingsStore) {
+      try {
+        const rawD3d = this.settingsStore.getSync('d3d_backend', '') as string;
+        if (rawD3d !== '') {
+          const d3d = this.normalizeD3dBackend(rawD3d);
+          AppStorage.set<string>('winehua.d3d.preference', d3d);
+          AppStorage.set<string>('winehua.d3d.backend', d3d);
+          hilog.info(DOMAIN, 'wine', 'd3d prefs loaded=%{public}s', d3d);
+        }
+        const rawDxvk = this.settingsStore.getSync('dxvk_backend', '') as string;
+        if (rawDxvk !== '') {
+          const dxvk = this.normalizeDxvkBackend(rawDxvk);
+          AppStorage.set<string>('winehua.dxvk.preference', dxvk);
+          AppStorage.set<string>('winehua.dxvk.backend', dxvk);
+        }
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'd3d/dxvk prefs load fail: %{public}s', JSON.stringify(e));
       }
     }
     this.updateLaunchRequest();

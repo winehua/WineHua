@@ -54,13 +54,15 @@ export default class EntryAbility extends UIAbility {
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    hilog.info(DOMAIN, 'testTag', 'publish d3d=%{public}s dxvk=%{public}s explicit=%{public}d',
+      d3dBackend, dxvkBackend, explicitD3d ? 1 : 0);
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'vkd3d_limited_500k');
-    PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'auto');
-    // 注: Wine 语言偏好不走 PersistentStorage (冷启动不恢复磁盘值, 实测),
-    // 由 WineEnvService.init 用 preferences API 自行加载
+    // d3d/dxvk 偏好的读回不在本文 (与 Wine 语言同款): PersistentStorage
+    // 冷启动不恢复磁盘值 (实测, 见 WineEnvService 注释), 由 WineEnvService.init
+    // 用 preferences API 读盘后覆盖 AppStorage, publishLaunchRequest 此处只
+    // 负责"显式 want 覆盖 > 持久化偏好 > 默认值"协议与 dxvk 联动
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     } catch (err) {
