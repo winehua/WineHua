@@ -338,8 +338,8 @@ build_virglrenderer() {
     if [ -f "$NATIVE_LIBS/libvirglrenderer.so.1" ] && \
        [ -f "$NATIVE_LIBS/libwinehua_vtest_server.so" ] && \
        [ "$(cat "$config_stamp" 2>/dev/null || true)" = "$expected_config" ] && \
-       ! find "$src" -newer "$NATIVE_LIBS/libwinehua_vtest_server.so" -type f \
-           \( -name '*.c' -o -name '*.h' -o -name 'meson.build' \) 2>/dev/null | grep -q .; then
+       [ -z "$(find "$src" -newer "$NATIVE_LIBS/libwinehua_vtest_server.so" -type f \
+           \( -name '*.c' -o -name '*.h' -o -name 'meson.build' \) -print -quit 2>/dev/null)" ]; then
         log "virglrenderer ($NATIVE_ARCH) 已就绪，跳过"
         return 0
     fi
