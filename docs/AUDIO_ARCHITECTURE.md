@@ -1,10 +1,6 @@
 # WineHua 音频架构
 
-<<<<<<< HEAD
-> 更新日期: 2026-07-31
-=======
-> 更新日期: 2026-09-02
->>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
+> 更新日期: 2026-09-04
 
 ## 概览
 
@@ -27,13 +23,8 @@ flowchart LR
     D --> F["数据面: Shared Memory Ring"]
     E -->     G["Host AudioBroker"]
     F --> G
-<<<<<<< HEAD
-    G --> H["OH_AudioRenderer / OH_AudioCapturer"]
-    H --> I["Speaker / Microphone"]
-=======
-    G --> H["Per-endpoint OH_AudioRenderer"]
-    H --> I["HarmonyOS mix / Speaker"]
->>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
+    G --> H["Per-endpoint OH_AudioRenderer / OH_AudioCapturer"]
+    H --> I["HarmonyOS mix / Speaker / Microphone"]
 ```
 
 ## 设计原则
@@ -76,12 +67,8 @@ flowchart LR
 - 管理 broker 生命周期
 - 创建和管理 stream（render / capture 双向，`AudioStreamDirection`）
 - 为每个 stream 创建 memfd ring buffer
-<<<<<<< HEAD
-- 在 OHAudio callback 中读取并混音（render），或写入采集数据（capture）
-=======
 - 为每个 render endpoint 创建并启停独立的 `OH_AudioRenderer`
-- 在 OHAudio callback 中只读取对应 ring
->>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
+- 在 OHAudio callback 中只读取对应 ring，或写入采集数据（capture）
 
 ## 控制面和数据面
 
@@ -134,7 +121,7 @@ flowchart LR
 
 ## 固定混音格式
 
-宿主固定混音格式:
+宿主 Renderer 固定格式:
 
 ```text
 48000 Hz
@@ -144,8 +131,8 @@ s16le
 
 对外行为:
 
-- `GetMixFormat()` 返回固定 `48k / stereo / s16`
-- Wine 侧把常见共享模式输入统一转换到这组格式
+- Wine `GetMixFormat()` 广告 `48k / stereo / IEEE float32`，避免 BASS 把 float 写进 4 字节 S16 帧
+- Wine 把共享模式输入转换成 ring 上的 `48k / stereo / s16le` 再交给宿主 Renderer
 
 当前接受的输入范围:
 
@@ -185,16 +172,9 @@ flowchart TD
 
 当前版本覆盖:
 
-<<<<<<< HEAD
-- render（多 stream 混音，共享模式，默认播放设备）
+- render（每 endpoint 一路 Renderer，共享模式，默认播放设备，系统混频）
 - capture（`OH_AudioCapturer`，`WINEHUA_AUDIO_STREAM_FLAG_CAPTURE`）
 - MIDI 软合成（`wineohos.drv/ohos_midi.c` + `MIDI_SOUNDFONT_PATH`）
-=======
-- render
-- shared mode
-- 默认播放设备
-- 多 endpoint 由系统混频
->>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
 
 当前不做:
 
