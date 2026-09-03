@@ -25,8 +25,6 @@ LogicalButton MapOhButton(int code)
         case 2305: return LogicalButton::Y;
         case 2307: return LogicalButton::LB;
         case 2308: return LogicalButton::RB;
-        case 2309: return LogicalButton::LB; // L2 digital → LT via SetTrigger
-        case 2310: return LogicalButton::RB;
         case 2311: return LogicalButton::Back;
         case 2312: return LogicalButton::Start;
         case 2313: return LogicalButton::L3;

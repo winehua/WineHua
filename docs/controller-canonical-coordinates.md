@@ -19,3 +19,5 @@ Controller Hub uses one platform-independent space for every source:
 4. **winebus `bus_ohos`** maps canonical sticks to HID/XInput without analog Y inversion. Hat Y is inverted only because the HID hatswitch helper is +Y=Down. `bus_sdl` SDL-raw inversion does not apply here.
 
 Do not compensate in `InputDispatcher` with `whgpY = -y`. Do not let Hub or winebus invert based on source.
+
+After a HAP that contains a new `winebus.so`, restart the Wine session. Host native reloads on install; the guest unix lib does not.
