@@ -375,6 +375,11 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     // (wineserver 是纯 Unix ELF, 不能走 wine loader 的 PE 解析)。
     {
         winehua::SpawnRequest wsReq{winehua::SpawnKind::Wineserver};
+        // gamepad env 必须在此注入: winedevice (winebus 加载方) 是 wineserver
+        // 的服务进程, env 继承自 wineserver。只注入 wineboot/explorer 链
+        // (BuildSessionEnv) 时 winebus 读不到这些键, 门禁/模式全吃缺省 —
+        // keyboard_legacy 兜底完全失效 (bus_ohos/bus_sdl 的 env 唯一来源)。
+        winehua::controller::AppendWineGamepadEnv(wsReq.env);
         const pid_t wsChildPid = winehua::Spawner::Spawn(wsReq);
         if (wsChildPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver spawn FAILED");
@@ -452,6 +457,9 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         wbReq.desktopSurface = ws->IsDesktopMode();
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
+        // wineboot 阶段也加载 winebus (winedevice 由 wineserver 拉起, 可能先于
+        // 本 spawn 或后于它), 键注入与 wineserver 保持一致, 模式不靠缺省。
+        winehua::controller::AppendWineGamepadEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot spawn FAILED");
@@ -520,6 +528,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
+        winehua::controller::AppendWineGamepadEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init spawn FAILED");
