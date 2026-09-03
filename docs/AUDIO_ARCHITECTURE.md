@@ -1,6 +1,10 @@
 # WineHua 音频架构
 
+<<<<<<< HEAD
 > 更新日期: 2026-07-31
+=======
+> 更新日期: 2026-09-02
+>>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
 
 ## 概览
 
@@ -21,18 +25,23 @@ flowchart LR
     C --> D["wineohos.drv"]
     D --> E["控制面: AudioBroker IPC"]
     D --> F["数据面: Shared Memory Ring"]
-    E --> G["Host AudioBroker"]
+    E -->     G["Host AudioBroker"]
     F --> G
+<<<<<<< HEAD
     G --> H["OH_AudioRenderer / OH_AudioCapturer"]
     H --> I["Speaker / Microphone"]
+=======
+    G --> H["Per-endpoint OH_AudioRenderer"]
+    H --> I["HarmonyOS mix / Speaker"]
+>>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
 ```
 
 ## 设计原则
 
 - Wine 子进程不直接创建设备。
-- 宿主 native 进程独占 `OH_AudioRenderer`。
+- Wine 每个 render endpoint 对应一路宿主 `OH_AudioRenderer`，最终混频由 HarmonyOS Audio Service 完成。
 - 控制面走 IPC，数据面走共享内存。
-- callback 只做取数、混音、补零，不做阻塞操作。
+- callback 只做本路取数，不做跨流求和、不做阻塞操作。
 
 ## 分层
 
@@ -67,7 +76,12 @@ flowchart LR
 - 管理 broker 生命周期
 - 创建和管理 stream（render / capture 双向，`AudioStreamDirection`）
 - 为每个 stream 创建 memfd ring buffer
+<<<<<<< HEAD
 - 在 OHAudio callback 中读取并混音（render），或写入采集数据（capture）
+=======
+- 为每个 render endpoint 创建并启停独立的 `OH_AudioRenderer`
+- 在 OHAudio callback 中只读取对应 ring
+>>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
 
 ## 控制面和数据面
 
@@ -139,37 +153,48 @@ s16le
 - 声道: `mono / stereo`
 - 样本格式: `s16 / float32`
 
-## 多进程混频
+## Endpoint 映射
 
-当前多进程混频是:
+当前默认路径（B3）是一条 Wine `IAudioClient` 对应一路 `OH_AudioRenderer`，最终混频由 HarmonyOS Audio Service 完成：
 
 ```mermaid
 flowchart TD
-    S1["Stream 1 Ring"] --> M["AudioBroker Mixer"]
-    S2["Stream 2 Ring"] --> M
-    S3["Stream N Ring"] --> M
-    M --> R["Single OH_AudioRenderer"]
+    S1["Endpoint 1 Ring"] --> R1["OH_AudioRenderer 1 GAME"]
+    S2["Endpoint 2 Ring"] --> R2["OH_AudioRenderer 2 GAME"]
+    R1 --> S["HarmonyOS Audio Service"]
+    R2 --> S
 ```
 
 实现方式:
 
-- 每个 Wine stream 一块独立 ring
-- 宿主侧只有一个全局 `OH_AudioRenderer`
-- callback 读取当前 snapshot 中所有 `started()` stream
-- 混音时先累加到 `int32`，最后 clamp 回 `s16`
+- 每个 Wine render stream 一块独立 ring，OPEN 时创建独立 Renderer 对象但不 Start
+- Wine START：等 Ring 达到 `2 × callbackFrames`（超时 80 ms）再 Start，并做 3 ms fade-in
+- Wine STOP：3 ms fade-out 后 Stop，对象保留；CLOSE 再 Release
+- 来电/PAUSE 记住 `wantStarted`，RESUME 后重新 priming 再 Start
+- 两路都保持 `USAGE_GAME` + `LATENCY_NORMAL`，48 kHz stereo S16
+- callback 只读本路 ring；空数据返回 `INVALID`，不回退到全局 Mixer
+- 最终混频、音量和限幅交给 HarmonyOS Audio Service
+- WASAPI event 唤醒和 IAudioClock 仍按 Ring 水位近似，尚未改 Wine 侧
 
 对应代码:
 
-- stream 打开和生命周期: `entry/src/main/cpp/audio_broker.cpp`
-- callback 混音: `AudioBroker::MixStreamsS16()` / `AudioBroker::OnWriteData()`
+- stream 与 Renderer 生命周期: `entry/src/main/cpp/audio/audio_broker.cpp`
+- 单路 callback: `AudioBroker::FillRendererCallback()` / `AudioBroker::OnWriteData()`
 
 ## 当前边界
 
 当前版本覆盖:
 
+<<<<<<< HEAD
 - render（多 stream 混音，共享模式，默认播放设备）
 - capture（`OH_AudioCapturer`，`WINEHUA_AUDIO_STREAM_FLAG_CAPTURE`）
 - MIDI 软合成（`wineohos.drv/ohos_midi.c` + `MIDI_SOUNDFONT_PATH`）
+=======
+- render
+- shared mode
+- 默认播放设备
+- 多 endpoint 由系统混频
+>>>>>>> cde21f8f (fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp)
 
 当前不做:
 
@@ -179,7 +204,8 @@ flowchart TD
 
 ## TODO
 
-- [ ] Soak test: underrun / overflow and multi-process mixing stability
+- [ ] Padding / IAudioClock: Ring 消费水位还不等于硬件已播放
+- [ ] WASAPI event 改为按 Ring 消费水位唤醒，而不是固定 period
 - [ ] Format matrix: `WAV / MP3 / video audio track`
 - [ ] Confirm non-audio Wine processes are not slowed by broker init
 - [ ] Reduce control-plane overhead on the event-callback path
