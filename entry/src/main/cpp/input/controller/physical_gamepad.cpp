@@ -1,12 +1,20 @@
 #include "input/controller/physical_gamepad.h"
 
 #include "input/controller/controller_hub.h"
-#include "input/controller/controller_runtime.h"
 #include "input/controller/controller_types.h"
+#include "input/controller/ohos_gamepad_adapter.h"
 
 namespace winehua {
 namespace controller {
 namespace {
+
+enum class PhysicalControlAxis {
+    LeftStick = 0,
+    RightStick = 1,
+    Dpad = 2,
+    LeftTrigger = 3,
+    RightTrigger = 4,
+};
 
 LogicalButton MapOhButton(int code)
 {
@@ -17,7 +25,7 @@ LogicalButton MapOhButton(int code)
         case 2305: return LogicalButton::Y;
         case 2307: return LogicalButton::LB;
         case 2308: return LogicalButton::RB;
-        case 2309: return LogicalButton::LB; // L2 button → also drive LT via SetAxis below
+        case 2309: return LogicalButton::LB; // L2 digital → LT via SetTrigger
         case 2310: return LogicalButton::RB;
         case 2311: return LogicalButton::Back;
         case 2312: return LogicalButton::Start;
@@ -37,15 +45,14 @@ LogicalButton MapOhButton(int code)
 void PhysicalFeedButton(int ohButtonCode, bool pressed)
 {
     if (!ControllerHub::Instance().IsEnabled()) return;
-    // Trigger buttons: prefer axis; also set axis 1.0/0 as fallback.
     if (ohButtonCode == 2309) {
-        ControllerHub::Instance().SetAxis(ControllerSourceId::Physical, 0, LogicalAxis::LT,
-                                          pressed ? 1.f : 0.f);
+        ControllerHub::Instance().SetTrigger(ControllerSourceId::Physical, 0,
+                                              LogicalTrigger::Left, pressed ? 1.f : 0.f);
         return;
     }
     if (ohButtonCode == 2310) {
-        ControllerHub::Instance().SetAxis(ControllerSourceId::Physical, 0, LogicalAxis::RT,
-                                          pressed ? 1.f : 0.f);
+        ControllerHub::Instance().SetTrigger(ControllerSourceId::Physical, 0,
+                                              LogicalTrigger::Right, pressed ? 1.f : 0.f);
         return;
     }
     const LogicalButton btn = MapOhButton(ohButtonCode);
@@ -57,32 +64,29 @@ void PhysicalFeedAxis(int axisType, double x, double y)
 {
     if (!ControllerHub::Instance().IsEnabled()) return;
     auto& hub = ControllerHub::Instance();
-    const float fx = static_cast<float>(x);
-    const float fy = static_cast<float>(y);
-    auto feedThumb = [&](LogicalAxis axisX, LogicalAxis axisY) {
-        hub.SetAxis(ControllerSourceId::Physical, 0, axisX, fx);
-        hub.SetAxis(ControllerSourceId::Physical, 0, axisY, fy);
-    };
-    switch (axisType) {
-        case 0: // left stick
-            feedThumb(LogicalAxis::LX, LogicalAxis::LY);
-            break;
-        case 1: // right stick
-            feedThumb(LogicalAxis::RX, LogicalAxis::RY);
-            break;
-        case 2: { // hat / dpad axis — values typically -1..1
-            const int8_t hx = (x < -0.5) ? -1 : (x > 0.5 ? 1 : 0);
-            // Hat: Kit +Y is Down → Hub +Y=Up. Analog thumbs are not flipped:
-            // left and right share feedThumb; winebus already inverts stick Y.
-            const int8_t hy = (y > 0.5) ? -1 : (y < -0.5 ? 1 : 0);
-            hub.SetHat(ControllerSourceId::Physical, 0, hx, hy);
+    switch (static_cast<PhysicalControlAxis>(axisType)) {
+        case PhysicalControlAxis::LeftStick: {
+            const Stick2D stick = NormalizeOhosThumb(x, y);
+            hub.SetStick(ControllerSourceId::Physical, 0, LogicalStick::Left, stick.x, stick.y);
             break;
         }
-        case 3: // LT brake [0,1]
-            hub.SetAxis(ControllerSourceId::Physical, 0, LogicalAxis::LT, static_cast<float>(x));
+        case PhysicalControlAxis::RightStick: {
+            const Stick2D stick = NormalizeOhosThumb(x, y);
+            hub.SetStick(ControllerSourceId::Physical, 0, LogicalStick::Right, stick.x, stick.y);
             break;
-        case 4: // RT gas
-            hub.SetAxis(ControllerSourceId::Physical, 0, LogicalAxis::RT, static_cast<float>(x));
+        }
+        case PhysicalControlAxis::Dpad: {
+            const CanonicalHat hat = NormalizeOhosHat(x, y);
+            hub.SetHat(ControllerSourceId::Physical, 0, hat.x, hat.y);
+            break;
+        }
+        case PhysicalControlAxis::LeftTrigger:
+            hub.SetTrigger(ControllerSourceId::Physical, 0, LogicalTrigger::Left,
+                           NormalizeOhosTrigger(x));
+            break;
+        case PhysicalControlAxis::RightTrigger:
+            hub.SetTrigger(ControllerSourceId::Physical, 0, LogicalTrigger::Right,
+                           NormalizeOhosTrigger(x));
             break;
         default:
             break;

@@ -186,9 +186,13 @@ void GamepadBridge::RecvLoop(int fd)
     while (true) {
         whgp_header hdr{};
         if (!ReadExact(fd, &hdr, sizeof(hdr))) break;
-        if (hdr.magic != WHGP_MAGIC || hdr.version != WHGP_VERSION) {
-            OH_LOG_WARN(LOG_APP, "[WHGP] bad header from winebus magic=%{public}u ver=%{public}u",
-                        hdr.magic, hdr.version);
+        if (hdr.magic != WHGP_MAGIC) {
+            OH_LOG_WARN(LOG_APP, "[WHGP] bad magic from winebus magic=%{public}u", hdr.magic);
+            break;
+        }
+        if (!whgp_version_matches(hdr.version)) {
+            OH_LOG_ERROR(LOG_APP, "WHGP protocol mismatch: peer=%{public}u expected=2",
+                         hdr.version);
             break;
         }
         if (hdr.payload_size > 4096) {
@@ -237,9 +241,9 @@ void GamepadBridge::WriteState(int fd, uint32_t slot, const LogicalGamepadState&
     hdr.version = WHGP_VERSION;
     hdr.msg_type = WHGP_MSG_STATE;
     hdr.slot = slot;
-    hdr.payload_size = sizeof(whgp_state_v1);
+    hdr.payload_size = sizeof(whgp_state_v2);
 
-    whgp_state_v1 body{};
+    whgp_state_v2 body{};
     body.buttons = state.buttons;
     body.lx = state.lx;
     body.ly = state.ly;

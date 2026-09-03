@@ -57,6 +57,36 @@ export const takeWindowMask: (toplevelId: number) => { w: number, h: number, buf
 export const setToplevelVisible: (toplevelId: number, visible: boolean) => void;
 export const getProcessList: () => Array<{pid: number, name: string, path: string, state: string, desktopShell: boolean}>;
 export const killProcess: (pid: number) => boolean;
+export const initGameController: () => number;
+export const cleanupGameController: () => void;
+export const isGamepadConnected: () => boolean;
+export const getGamepadCount: () => number;
+export const setGamepadButtonCallback: (
+  callback: (buttonCode: number, pressed: boolean) => void) => void;
+export const setGamepadAxisCallback: (
+  callback: (axisType: number, x: number, y: number) => void) => void;
+export const setGamepadDeviceCallback: (callback: (connected: boolean) => void) => void;
+export const setGamepadRumbleCallback: (
+  callback: (low: number, high: number, durationMs: number) => void) => void;
+/** Controller Hub (Touch source + WHGP). source: 0=Touch 1=Physical 2=Keyboard */
+export const controllerSetEnabled: (enabled: boolean) => void;
+export const controllerSetButton: (source: number, slot: number, button: number, pressed: boolean) => void;
+/** stick: 0=left 1=right. x/y already canonical (right+, up+). */
+export const controllerSetStick: (source: number, slot: number, stick: number, x: number, y: number) => void;
+/** trigger: 0=LT 1=RT. value 0..1. */
+export const controllerSetTrigger: (source: number, slot: number, trigger: number, value: number) => void;
+export const controllerSetHat: (source: number, slot: number, x: number, y: number) => void;
+export const controllerResetSource: (source: number) => void;
+export const controllerGetState: (slot: number) => {
+  buttons: number; lx: number; ly: number; rx: number; ry: number;
+  lt: number; rt: number; hatX: number; hatY: number; sequence: number;
+};
+export const controllerGetStateText: (slot: number) => string;
+export const controllerStartBridge: (socketPath?: string) => boolean;
+export const controllerStopBridge: () => void;
+export const controllerGetSocketPath: () => string;
+export const controllerSetOutputMode: (mode: string) => void;
+export const controllerGetOutputMode: () => string;
 export const termRun: (cols: number, rows: number, cb: (data: ArrayBuffer) => void, onExit: () => void) => number;
 export const termSend: (data: ArrayBuffer) => void;
 export const termResize: (cols: number, rows: number) => void;

@@ -462,6 +462,7 @@ test:
 	    $(ROOT)/host_tests/controller_merge_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/input/controller/controller_hub.cpp
 	$(HOST_TEST_DIR)/controller_merge_test
+	python3 $(ROOT)/scripts/verify_whgp_protocol.py
 
 
 # ============================================================
