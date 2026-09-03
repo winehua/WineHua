@@ -537,30 +537,76 @@ assemble_pad() {
         done
     fi
     local dxvk_root="$DXVK_BUILD_ROOT"
-    [ -f "$dxvk_root/x64/bin/d3d11.dll" ] || err "DXVK Legacy x64 d3d11.dll missing: $dxvk_root/x64/bin/d3d11.dll"
-    [ -f "$dxvk_root/x64/bin/dxgi.dll" ] || err "DXVK Legacy x64 dxgi.dll missing: $dxvk_root/x64/bin/dxgi.dll"
     [ -f "$dxvk_root/x86/bin/d3d11.dll" ] || err "DXVK Legacy x86 d3d11.dll missing: $dxvk_root/x86/bin/d3d11.dll"
     [ -f "$dxvk_root/x86/bin/dxgi.dll" ] || err "DXVK Legacy x86 dxgi.dll missing: $dxvk_root/x86/bin/dxgi.dll"
-    mkdir -p "$wine_data/dxvk/legacy/x64" "$wine_data/dxvk/legacy/x86"
-    cp "$dxvk_root/x64/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
-    cp "$dxvk_root/x64/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
+    mkdir -p "$wine_data/dxvk/legacy/x86"
     cp "$dxvk_root/x86/bin/d3d11.dll" "$wine_data/dxvk/legacy/x86/d3d11.dll"
     cp "$dxvk_root/x86/bin/dxgi.dll" "$wine_data/dxvk/legacy/x86/dxgi.dll"
+    # 方案③ (aarch64 wine + FEX): x64 guest 的 d3d11/dxgi 由 ARM64X (arm64x/)
+    # 提供 (wine_env.cpp 把 x64 overlay 指向 arm64x), x64/ 目录不被引用, 跳过
+    # 打包; 方案①/② (x86_64 wine native / box64) 仍需要 x64/。
+    if [ "$WINE_ARCH" != "aarch64" ]; then
+        [ -f "$dxvk_root/x64/bin/d3d11.dll" ] || err "DXVK Legacy x64 d3d11.dll missing: $dxvk_root/x64/bin/d3d11.dll"
+        [ -f "$dxvk_root/x64/bin/dxgi.dll" ] || err "DXVK Legacy x64 dxgi.dll missing: $dxvk_root/x64/bin/dxgi.dll"
+        mkdir -p "$wine_data/dxvk/legacy/x64"
+        cp "$dxvk_root/x64/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
+        cp "$dxvk_root/x64/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
+    fi
+    # 方案③ ARM64X 双图 DLL: wine_env.cpp 把 x64 overlay 指向 arm64x
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        local dxvk_arm64x="$DXVK_BUILD_ROOT/arm64x"
+        [ -f "$dxvk_arm64x/bin/d3d11.dll" ] || \
+            err "DXVK Legacy ARM64X d3d11.dll missing: $dxvk_arm64x/bin/d3d11.dll"
+        [ -f "$dxvk_arm64x/bin/dxgi.dll" ] || \
+            err "DXVK Legacy ARM64X dxgi.dll missing: $dxvk_arm64x/bin/dxgi.dll"
+        mkdir -p "$wine_data/dxvk/legacy/arm64x"
+        cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/arm64x/d3d11.dll"
+        cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/arm64x/dxgi.dll"
+    fi
     local dxvk_modern_root="$DXVK_MODERN_BUILD_ROOT"
-    [ -f "$dxvk_modern_root/x64/bin/d3d11.dll" ] || err "DXVK Modern x64 d3d11.dll missing: $dxvk_modern_root/x64/bin/d3d11.dll"
-    [ -f "$dxvk_modern_root/x64/bin/dxgi.dll" ] || err "DXVK Modern x64 dxgi.dll missing: $dxvk_modern_root/x64/bin/dxgi.dll"
     [ -f "$dxvk_modern_root/x86/bin/d3d11.dll" ] || err "DXVK Modern x86 d3d11.dll missing: $dxvk_modern_root/x86/bin/d3d11.dll"
     [ -f "$dxvk_modern_root/x86/bin/dxgi.dll" ] || err "DXVK Modern x86 dxgi.dll missing: $dxvk_modern_root/x86/bin/dxgi.dll"
-    mkdir -p "$wine_data/dxvk/modern-2.6/x64" "$wine_data/dxvk/modern-2.6/x86"
-    cp "$dxvk_modern_root/x64/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
-    cp "$dxvk_modern_root/x64/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
+    mkdir -p "$wine_data/dxvk/modern-2.6/x86"
     cp "$dxvk_modern_root/x86/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x86/d3d11.dll"
     cp "$dxvk_modern_root/x86/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x86/dxgi.dll"
+    # 方案③ (aarch64 wine + FEX): 同上, x64/ 由 arm64x/ 取代, 跳过打包;
+    # 方案①/② 需要 x64/。
+    if [ "$WINE_ARCH" != "aarch64" ]; then
+        [ -f "$dxvk_modern_root/x64/bin/d3d11.dll" ] || err "DXVK Modern x64 d3d11.dll missing: $dxvk_modern_root/x64/bin/d3d11.dll"
+        [ -f "$dxvk_modern_root/x64/bin/dxgi.dll" ] || err "DXVK Modern x64 dxgi.dll missing: $dxvk_modern_root/x64/bin/dxgi.dll"
+        mkdir -p "$wine_data/dxvk/modern-2.6/x64"
+        cp "$dxvk_modern_root/x64/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
+        cp "$dxvk_modern_root/x64/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
+    fi
+    # 方案③ (aarch64 wine + FEX): ARM64X 双图 DLL, wine_env.cpp 把 x64 overlay
+    # 指向 arm64x, 使 FEX 以 native view 执行而非逐条 x64 转译。
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        local dxvk_arm64x="$DXVK_MODERN_BUILD_ROOT/arm64x"
+        [ -f "$dxvk_arm64x/bin/d3d11.dll" ] || \
+            err "DXVK Modern ARM64X d3d11.dll missing: $dxvk_arm64x/bin/d3d11.dll"
+        [ -f "$dxvk_arm64x/bin/dxgi.dll" ] || \
+            err "DXVK Modern ARM64X dxgi.dll missing: $dxvk_arm64x/bin/dxgi.dll"
+        mkdir -p "$wine_data/dxvk/modern-2.6/arm64x"
+        cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/arm64x/d3d11.dll"
+        cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/arm64x/dxgi.dll"
+    fi
     local vkd3d_root="$VKD3D_PROTON_BUILD_ROOT/limited-500k"
-    [ -f "$vkd3d_root/x64/d3d12.dll" ] || err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
     [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \
         err "VKD3D-Proton x64 graphics smoke missing: $vkd3d_root/x64/winehua-d3d12-smoke.exe"
     [ -f "$vkd3d_root/manifest.json" ] || err "VKD3D-Proton manifest missing: $vkd3d_root/manifest.json"
+    # 方案③ ARM64X d3d12.dll: wine_env.cpp 把 vkd3d overlay64 指向 arm64x
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        local d3d12_arm64x="$vkd3d_root/arm64x/bin/d3d12.dll"
+        [ -f "$d3d12_arm64x" ] || err "VKD3D-Proton ARM64X d3d12.dll missing: $d3d12_arm64x"
+        mkdir -p "$wine_data/vkd3d/limited-500k/arm64x"
+        cp "$d3d12_arm64x" "$wine_data/vkd3d/limited-500k/arm64x/d3d12.dll"
+    else
+        # 方案③ 下 x64/d3d12.dll 由 arm64x 取代; 方案①/② (x86_64 wine) 需要
+        [ -f "$vkd3d_root/x64/d3d12.dll" ] || \
+            err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
+        mkdir -p "$wine_data/vkd3d/limited-500k/x64"
+        cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
+    fi
     # Keep the upstream VKD3D-Proton demos available as ordinary managed
     # C:\\smoke programs. They are test assets, not runtime DLLs.
     # Prefer demos built with this limited-500K profile so CI does not depend
@@ -581,8 +627,6 @@ assemble_pad() {
     local vkd3d_upstream_triangle_sha vkd3d_upstream_gears_sha
     vkd3d_upstream_triangle_sha="$(sha256sum "$smoke_dir/x64/triangle.exe" | awk '{print $1}')"
     vkd3d_upstream_gears_sha="$(sha256sum "$smoke_dir/x64/gears.exe" | awk '{print $1}')"
-    mkdir -p "$wine_data/vkd3d/limited-500k/x64"
-    cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
     cp "$vkd3d_root/manifest.json" "$wine_data/vkd3d/manifest.json"
     cp "$vkd3d_root/x64/winehua-d3d12-smoke.exe" \
         "$smoke_dir/x64/winehua_d3d12_smoke.exe"
@@ -666,12 +710,21 @@ assemble_pad() {
     venus_runtime_id="venus-${guest_venus_icd_sha:0:12}-${host_virglrenderer_sha:0:12}"
     local dxvk64_d3d11_sha dxvk64_dxgi_sha dxvk32_d3d11_sha dxvk32_dxgi_sha
     local dxvkmodern64_d3d11_sha dxvkmodern64_dxgi_sha dxvkmodern32_d3d11_sha dxvkmodern32_dxgi_sha
-    dxvk64_d3d11_sha="$(sha256sum "$wine_data/dxvk/legacy/x64/d3d11.dll" | awk '{print $1}')"
-    dxvk64_dxgi_sha="$(sha256sum "$wine_data/dxvk/legacy/x64/dxgi.dll" | awk '{print $1}')"
+    # 方案③ (aarch64) 不打包 x64/ → sha 记空 (同 vkd3d64 的守卫风格)
+    if [ -f "$wine_data/dxvk/legacy/x64/d3d11.dll" ]; then
+        dxvk64_d3d11_sha="$(sha256sum "$wine_data/dxvk/legacy/x64/d3d11.dll" | awk '{print $1}')"
+        dxvk64_dxgi_sha="$(sha256sum "$wine_data/dxvk/legacy/x64/dxgi.dll" | awk '{print $1}')"
+    else
+        dxvk64_d3d11_sha="" dxvk64_dxgi_sha=""
+    fi
     dxvk32_d3d11_sha="$(sha256sum "$wine_data/dxvk/legacy/x86/d3d11.dll" | awk '{print $1}')"
     dxvk32_dxgi_sha="$(sha256sum "$wine_data/dxvk/legacy/x86/dxgi.dll" | awk '{print $1}')"
-    dxvkmodern64_d3d11_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x64/d3d11.dll" | awk '{print $1}')"
-    dxvkmodern64_dxgi_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x64/dxgi.dll" | awk '{print $1}')"
+    if [ -f "$wine_data/dxvk/modern-2.6/x64/d3d11.dll" ]; then
+        dxvkmodern64_d3d11_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x64/d3d11.dll" | awk '{print $1}')"
+        dxvkmodern64_dxgi_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x64/dxgi.dll" | awk '{print $1}')"
+    else
+        dxvkmodern64_d3d11_sha="" dxvkmodern64_dxgi_sha=""
+    fi
     dxvkmodern32_d3d11_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x86/d3d11.dll" | awk '{print $1}')"
     dxvkmodern32_dxgi_sha="$(sha256sum "$wine_data/dxvk/modern-2.6/x86/dxgi.dll" | awk '{print $1}')"
     cat > "$wine_data/dxvk/manifest.json" <<EOF

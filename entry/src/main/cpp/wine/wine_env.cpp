@@ -195,10 +195,21 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         const std::string dxvkRuntimeProfile = modern26 ? "modern-2.6" : "legacy";
         const std::string overlayRoot = std::string(WINE_RUNTIME_ROOT) +
             "/vkd3d/limited-500k";
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+        // 方案③ arm64 原生 wine + FEX: d3d12.dll 走 ARM64X 双图 (FEX native view)
+        const std::string overlay64 = overlayRoot + "/arm64x";
+#else
         const std::string overlay64 = overlayRoot + "/x64";
+#endif
         const std::string dxvkRoot = std::string(WINE_RUNTIME_ROOT) +
             "/dxvk/" + dxvkRuntimeProfile;
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+        // 方案③ arm64 原生 wine + FEX: x64 guest 的 d3d11/dxgi 走 ARM64X 双图
+        // DLL (FEX native view 执行), 不再逐条 x64 指令转译
+        const std::string dxvk64 = dxvkRoot + "/arm64x";
+#else
         const std::string dxvk64 = dxvkRoot + "/x64";
+#endif
         const std::string dxvk86 = dxvkRoot + "/x86";
         const std::string guestVulkanRoot = binDir + "/guest_vulkan";
         const std::string guestVulkanLib = guestVulkanRoot + "/lib";
@@ -331,7 +342,13 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
     const std::string runtimeProfile = modern26 ? "modern-2.6" : "legacy";
     const std::string overlayRoot = std::string(WINE_RUNTIME_ROOT) +
         "/dxvk/" + runtimeProfile;
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    // 方案③ arm64 原生 wine + FEX: x64 guest 的 d3d11/dxgi 走 ARM64X 双图
+    // DLL (FEX native view 执行), 不再逐条 x64 指令转译
+    const std::string overlay64 = overlayRoot + "/arm64x";
+#else
     const std::string overlay64 = overlayRoot + "/x64";
+#endif
     const std::string overlay86 = overlayRoot + "/x86";
     const std::string guestVulkanRoot = binDir + "/guest_vulkan";
     const std::string guestVulkanLib = guestVulkanRoot + "/lib";

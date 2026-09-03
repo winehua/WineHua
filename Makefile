@@ -44,14 +44,32 @@ DXVK_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/legacy/x64/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll
-DXVK_STAMP := $(STAMPS)/dxvk-legacy
+# 方案③ (aarch64): 追加 ARM64X 双图 DLL (FEX native view); stamp 按 WINE_ARCH 隔离
+ifeq ($(WINE_ARCH),aarch64)
+DXVK_ARTIFACTS += \
+	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/dxgi.dll
+endif
+DXVK_STAMP := $(STAMPS)/dxvk-legacy-$(WINE_ARCH)
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
+# dxvk-modern 产物按 WINE_ARCH 分支:
+#   方案③ (arm64 原生 wine + FEX): ARM64X 双图 DLL (FEX native view 执行);
+#   方案①/②: 经典 x64/x86 转译版本 (meson cross)。
+#   stamp 同样按 WINE_ARCH 隔离, 避免两方案互相吞 stamp。
+ifeq ($(WINE_ARCH),aarch64)
+DXVK_MODERN_ARTIFACTS := \
+	$(BUILD_DIR)/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/arm64x/bin/dxgi.dll
+DXVK_MODERN_BUILD := build_dxvk_modern_arm64x.sh
+else
 DXVK_MODERN_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/dxgi.dll
-DXVK_MODERN_STAMP := $(STAMPS)/dxvk-modern-2.6
+DXVK_MODERN_BUILD := build_dxvk_modern.sh
+endif
+DXVK_MODERN_STAMP := $(STAMPS)/dxvk-modern-2.6-$(WINE_ARCH)
 DXVK_MODERN_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk-modern/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk-modern -maxdepth 1 -type f 2>/dev/null)
 VKD3D_PROTON_ARTIFACTS := \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/d3d12.dll \
@@ -59,7 +77,11 @@ VKD3D_PROTON_ARTIFACTS := \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/triangle.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/gears.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/manifest.json
-VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k
+# 方案③ (aarch64): 追加 ARM64X d3d12.dll (FEX native view); stamp 按 WINE_ARCH 隔离
+ifeq ($(WINE_ARCH),aarch64)
+VKD3D_PROTON_ARTIFACTS += $(BUILD_DIR)/vkd3d-proton/limited-500k/arm64x/bin/d3d12.dll
+endif
+VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k-$(WINE_ARCH)
 VKD3D_PROTON_SOURCE_INPUTS := $(shell find $(ROOT)/patches/vkd3d-proton -type f 2>/dev/null; \
 	find $(ROOT)/thirdparty/vkd3d-proton -maxdepth 2 -type f 2>/dev/null)
 
@@ -89,9 +111,10 @@ endif
 .PHONY: dxvk
 dxvk: $(DXVK_STAMP)
 
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
-	@echo "=== dxvk legacy ==="
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
+	@echo "=== dxvk legacy ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk.sh
+	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_dxvk_arm64x.sh; fi
 	touch $@
 
 # DXVK is produced as a four-file side effect of the stamp recipe.  Give each
@@ -108,9 +131,9 @@ $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 .PHONY: dxvk-modern
 dxvk-modern: $(DXVK_MODERN_STAMP)
 
-$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(DXVK_MODERN_SOURCE_INPUTS) | $(STAMPS)
-	@echo "=== dxvk modern 2.6 ==="
-	bash $(SCRIPTS)/build_dxvk_modern.sh
+$(DXVK_MODERN_STAMP): $(SCRIPTS)/$(DXVK_MODERN_BUILD) $(DXVK_MODERN_SOURCE_INPUTS) | $(STAMPS)
+	@echo "=== dxvk modern 2.6 ($(WINE_ARCH)) ==="
+	bash $(SCRIPTS)/$(DXVK_MODERN_BUILD)
 	touch $@
 
 $(DXVK_MODERN_ARTIFACTS): $(DXVK_MODERN_STAMP)
@@ -125,9 +148,10 @@ endif
 .PHONY: vkd3d-proton
 vkd3d-proton: $(VKD3D_PROTON_STAMP)
 
-$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_INPUTS) | $(STAMPS)
-	@echo "=== vkd3d-proton 2.6 limited-500K ==="
+$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(SCRIPTS)/build_vkd3d_proton_arm64x.sh $(VKD3D_PROTON_SOURCE_INPUTS) | $(STAMPS)
+	@echo "=== vkd3d-proton 2.6 limited-500K ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_vkd3d_proton.sh
+	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_vkd3d_proton_arm64x.sh; fi
 	touch $@
 
 $(VKD3D_PROTON_ARTIFACTS): $(VKD3D_PROTON_STAMP)
