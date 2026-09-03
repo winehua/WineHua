@@ -5,7 +5,8 @@
 // Controller Hub NAPI (Touch source + enable/WHGP bootstrap).
 napi_value ControllerSetEnabled(napi_env env, napi_callback_info info);
 napi_value ControllerSetButton(napi_env env, napi_callback_info info);
-napi_value ControllerSetAxis(napi_env env, napi_callback_info info);
+napi_value ControllerSetStick(napi_env env, napi_callback_info info);
+napi_value ControllerSetTrigger(napi_env env, napi_callback_info info);
 napi_value ControllerSetHat(napi_env env, napi_callback_info info);
 napi_value ControllerResetSource(napi_env env, napi_callback_info info);
 napi_value ControllerGetState(napi_env env, napi_callback_info info);

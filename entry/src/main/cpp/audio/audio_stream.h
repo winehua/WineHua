@@ -47,6 +47,13 @@ public:
     void MarkClosed();
     void IncrementUnderrun();
     void IncrementOverflow();
+    void NoteLastFrame(const int16_t* samples, size_t frames);
+    void HoldPadRemainder(int16_t* samples, size_t gotFrames, uint32_t frames);
+    void MarkMixUnderrun();
+    void MarkMixFilled();
+    uint32_t consecutive_underruns() const { return consecutiveUnderruns_; }
+    bool has_hold() const { return haveLast_; }
+    void ClearHold();
 
     uint32_t stream_id() const { return streamId_; }
     uint32_t owner_connection_id() const { return ownerConnectionId_; }
@@ -82,6 +89,10 @@ private:
     WinehuaAudioRingBuffer* ring_ = nullptr;
     std::atomic<uint32_t> readAttempts_{0};
     std::atomic<uint64_t> totalFramesRead_{0};
+    int16_t lastL_ = 0;
+    int16_t lastR_ = 0;
+    bool haveLast_ = false;
+    uint32_t consecutiveUnderruns_ = 0;
 };
 
 } // namespace winehua

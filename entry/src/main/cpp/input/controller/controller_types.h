@@ -1,12 +1,17 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 
-// WineHua Controller Hub — logical gamepad types.
-// Stick: int16 [-32768, 32767], +Y = Up.
-// Trigger: uint16 [0, 32767].
-// Hat: int8 -1 / 0 / +1.
+// Canonical Controller Space (platform-independent):
+//   Stick X: right positive, range [-1, 1]
+//   Stick Y: up positive, range [-1, 1]
+//   Hat X:   right positive, values -1 / 0 / +1
+//   Hat Y:   up positive, values -1 / 0 / +1
+//   Trigger: 0..1
+// LogicalGamepadState sticks use int16 [-32768, 32767] with the same signs.
+// Source adapters normalize platform raw input into this space. Hub and WHGP
+// never invert based on source. Wine bus_ohos maps canonical sticks to
+// XInput without analog Y inversion.
 
 namespace winehua {
 namespace controller {
@@ -30,13 +35,15 @@ enum class LogicalButton : uint8_t {
     Count
 };
 
-enum class LogicalAxis : uint8_t {
-    LX = 0,
-    LY,
-    RX,
-    RY,
-    LT,
-    RT,
+enum class LogicalStick : uint8_t {
+    Left = 0,
+    Right,
+    Count
+};
+
+enum class LogicalTrigger : uint8_t {
+    Left = 0,
+    Right,
     Count
 };
 
@@ -47,7 +54,6 @@ enum class ControllerSourceType : uint8_t {
     Macro = 3,
 };
 
-// Fixed source ids for MVP (bit indices in ownership masks).
 enum class ControllerSourceId : uint8_t {
     Touch = 0,
     Physical = 1,
@@ -55,9 +61,15 @@ enum class ControllerSourceId : uint8_t {
     Count = 3,
 };
 
+struct Stick2D {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
 static constexpr uint32_t kMaxControllerSlots = 4;
 static constexpr uint32_t kButtonCount = static_cast<uint32_t>(LogicalButton::Count);
-static constexpr uint32_t kAxisCount = static_cast<uint32_t>(LogicalAxis::Count);
+static constexpr uint32_t kStickCount = static_cast<uint32_t>(LogicalStick::Count);
+static constexpr uint32_t kTriggerCount = static_cast<uint32_t>(LogicalTrigger::Count);
 static constexpr uint32_t kSourceCount = static_cast<uint32_t>(ControllerSourceId::Count);
 
 struct LogicalGamepadState {

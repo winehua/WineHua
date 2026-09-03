@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 
 #ifndef MFD_CLOEXEC
@@ -89,6 +90,7 @@ void AudioStream::Reset()
 {
     if (!ring_) return;
     winehua_audio_ring_reset(ring_, WINEHUA_AUDIO_STREAM_STOPPED);
+    ClearHold();
 }
 
 void AudioStream::SetStarted(bool started)
@@ -97,6 +99,7 @@ void AudioStream::SetStarted(bool started)
     winehua_audio_ring_store_state(
         ring_, started ? WINEHUA_AUDIO_STREAM_STARTED : WINEHUA_AUDIO_STREAM_STOPPED);
     winehua_audio_ring_increment_seq(ring_);
+    if (!started) ClearHold();
 }
 
 void AudioStream::MarkClosed()
@@ -114,6 +117,45 @@ void AudioStream::IncrementUnderrun()
 void AudioStream::IncrementOverflow()
 {
     if (ring_) winehua_audio_ring_increment_overflow(ring_);
+}
+
+void AudioStream::NoteLastFrame(const int16_t* samples, size_t frames)
+{
+    if (!samples || !frames) return;
+    lastL_ = samples[(frames - 1) * 2];
+    lastR_ = samples[(frames - 1) * 2 + 1];
+    haveLast_ = true;
+}
+
+void AudioStream::HoldPadRemainder(int16_t* samples, size_t gotFrames, uint32_t frames)
+{
+    if (!samples || gotFrames >= frames) return;
+    const int16_t holdL = haveLast_ ? lastL_ : 0;
+    const int16_t holdR = haveLast_ ? lastR_ : 0;
+    for (size_t i = gotFrames; i < frames; ++i)
+    {
+        samples[i * 2] = holdL;
+        samples[i * 2 + 1] = holdR;
+    }
+}
+
+void AudioStream::ClearHold()
+{
+    lastL_ = 0;
+    lastR_ = 0;
+    haveLast_ = false;
+    consecutiveUnderruns_ = 0;
+}
+
+void AudioStream::MarkMixUnderrun()
+{
+    IncrementUnderrun();
+    consecutiveUnderruns_++;
+}
+
+void AudioStream::MarkMixFilled()
+{
+    consecutiveUnderruns_ = 0;
 }
 
 bool AudioStream::started() const
