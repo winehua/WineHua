@@ -46,6 +46,12 @@ add_library(entry SHARED
     audio/audio_stream.cpp
     graphics/graphics_broker.cpp
     graphics/virgl_host_config.cpp
+    input/game_controller_bridge.cpp
+    input/controller/controller_hub.cpp
+    input/controller/controller_napi.cpp
+    input/controller/controller_runtime.cpp
+    input/controller/gamepad_bridge.cpp
+    input/controller/physical_gamepad.cpp
     bridge/napi_init.cpp
     proc/wine_process.cpp
     wine/wine_env.cpp
