@@ -8,6 +8,11 @@
 #include <string>
 #include <cstdio>
 
+// WineHua: get_toplevel 建档后应用暂存的 modal 关系 (实现在 winehua_toplevel.cpp)。
+// 声明必须在匿名 namespace 之外且用 extern "C" — 定义侧为 extern "C",
+// 块内 C++ 声明会被视为 internal linkage / 名字修饰不匹配
+extern "C" void WinehuaToplevelApplyPending(wl_resource* surfaceRes);
+
 #undef LOG_TAG
 #undef LOG_DOMAIN
 #define LOG_DOMAIN 0x0000
@@ -333,6 +338,10 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             d->toplevelId = sd->toplevelId;
             td->toplevelId = sd->toplevelId;
             WaylandServer::GetInstance()->RegisterToplevelResource(sd->toplevelId, tl);
+            // WineHua: 应用暂存的 modal 关系 (set_modal 早于 get_toplevel 到达)。
+            // 在 created 事件之前执行 — PC 模式 ArkTS 据此把 modal 窗口接入
+            // owner 的子窗口路径而非启动独立 Ability (事件顺序红线)
+            WinehuaToplevelApplyPending(d->wlSurface);
             // PC 模式: created 延迟到首帧 commit (此时才知 wl_shm 格式,
             // ARGB 异型窗口需走子窗口路线而非 ability, 见 surface_commit)
             if (!WaylandServer::GetInstance()->Policy().OhosWindowPerToplevel()) {

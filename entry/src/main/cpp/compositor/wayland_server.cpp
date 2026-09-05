@@ -19,6 +19,7 @@
 
 
 extern "C" void RegisterXdgShell(wl_display* display);
+extern "C" void RegisterWinehuaToplevel(wl_display* display);
 extern "C" void RegisterWlCoreGlobals(wl_display* display);
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -76,6 +77,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
     RegisterWlCoreGlobals(display_);
     wl_display_init_shm(display_);
     RegisterXdgShell(display_);
+    RegisterWinehuaToplevel(display_);
     Seat::GetInstance()->Register(display_);
     // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
     // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
@@ -257,6 +259,15 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     bool wasDesktopRoot = false;
     {
         auto lk = toplevelMgr_.Lock();
+        // WineHua: 先清 modal 组员关系 (EraseModalLocked 依赖 ToplevelState 的
+        // owner 回查, 必须先于 EraseToplevelLocked; 组员不在 z-order, 漏清会让
+        // BuildLayerListLocked 展开出已亡窗口)。对称清理"它作为 owner 的组":
+        // owner 先亡 (wine 关闭属主窗口) 且模态对话框尚存活时, 组员带着亡
+        // owner 指针残留在 modalOf_, 其 lane 消失 → 对话框从合成/命中列表
+        // 消失且不可恢复
+        toplevelMgr_.EraseModalLocked(toplevelId);
+        for (uint32_t m : toplevelMgr_.ModalListLocked(toplevelId))
+            toplevelMgr_.EraseModalLocked(m);
         toplevelMgr_.EraseToplevelLocked(toplevelId);
         // 会话状态读写经 DesktopSessionState (重构第 6B 步: 旧为宿主私有字段,
         // 清空点/时机/锁域逐字不变)

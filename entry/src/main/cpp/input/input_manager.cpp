@@ -266,6 +266,36 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             // 黑边里的幽灵位移); 吞掉 RELEASE 会让 pressedButtons_ 永不清位
             // (按键卡死)
             if (target.swallow && action == ACT_PRESS) return;
+            // WineHua modal 拦截: 命中被模态禁用的 owner (blockedModalId > 0):
+            // 吞掉 PRESS (禁用窗口不接收点击, Win32 语义), 同时键盘焦点切到
+            // 模态框 + raise 其 owner 组 (RaiseToplevel 把 modal 上浮到主人)
+            // — 首次点击只激活模态框, 第二次点击落在模态框上正常注入。
+            // 只吞 PRESS: MOVE 透传 (hover 无点击语义, 吞掉会让相对模式增量
+            // 基线失真), RELEASE 透传 (按下在模态框、拖到 owner 区域松手的
+            // 组合若吞 release, pressedButtons_ 永不清位 — 与全屏黑边的
+            // swallow 只吞 PRESS 同源)。
+            if (target.blockedModalId && action == ACT_PRESS) {
+                OH_LOG_INFO(LOG_APP, "[Input] MODAL-BLOCK owner tl=%{public}u press swallowed,"
+                            " activate modal #%{public}u", target.toplevelId, target.blockedModalId);
+                // 走 WaylandServer::RaiseToplevel (内部持锁, 与 Wayland 线程
+                // commit 的 z-order 写互斥; 裸调 tmgr_ = 无锁 push_back 并发
+                // 时数组重分配/悬垂指针)。userInitiated=true 与 ArkTS 点击 raise
+                // 同语义: 任务栏 PinToTop + 桌面 dirty 保持一致
+                WaylandServer::GetInstance()->RaiseToplevel(target.blockedModalId, true);
+                if (!tracker_.KeyboardEntered() ||
+                    tracker_.KeyboardFocusedToplevel() != target.blockedModalId) {
+                    wl_resource* kbdSurf = tmgr_->GetSurfaceForToplevel(target.blockedModalId);
+                    if (kbdSurf) {
+                        if (tracker_.KeyboardEntered())
+                            queue_.Enqueue(InputQueue::Event::KBD_LEAVE, 0, nullptr, 0, 0, 0, 0);
+                        tracker_.SetKeyboardFocus(target.blockedModalId, kbdSurf);
+                        queue_.Enqueue(InputQueue::Event::KBD_ENTER, target.blockedModalId,
+                                       kbdSurf, 0, 0, 0, 0);
+                        EnqueueModifiers();
+                    }
+                }
+                return;
+            }
             tl = target.toplevelId;
             targetSurf = target.surface;
             // 裁决闭环 (重构第 4A 步): 桌面坐标 → surface 局部坐标的逆映射与
