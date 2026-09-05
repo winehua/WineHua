@@ -96,8 +96,10 @@ add_library(entry SHARED
     input/input_manager.cpp
     input/pointer_extras.cpp
     compositor/xdg_shell.cpp
+    compositor/winehua_toplevel.cpp
     input/text_input.cpp
     protocols/xdg-shell-protocol.c
+    protocols/winehua-toplevel-protocol.c
     protocols/viewporter-server-protocol.c
     protocols/pointer-warp-v1-protocol.c
     protocols/pointer-constraints-unstable-v1-protocol.c

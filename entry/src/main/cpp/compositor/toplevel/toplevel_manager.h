@@ -142,6 +142,13 @@ public:
         // 两个 TakeWindowMask 实现收敛后的唯一消费入口
         bool TakeMask(WindowMask& out);
 
+        // -- WineHua modal 关系 (winehua_toplevel 协议) --
+        // 0 = 非模态; 否则为本模态对话框的 owner toplevelId。
+        // 模态窗口由 ToplevelManager::modalOf_ 组员化 (不入 z-order),
+        // BuildLayerListLocked 在 owner lane 展开 → 恒在 owner 上方。
+        uint32_t ModalOwnerId() const { return modalOwnerId_; }
+        void SetModalOwnerId(uint32_t v) { modalOwnerId_ = v; }
+
     private:
         std::vector<uint8_t> pixels_;   // empty() = 尚无帧
         int w_ = 0, h_ = 0;             // content 尺寸 (popup 为显示尺寸)
@@ -156,6 +163,7 @@ public:
         bool maximized_ = false;        // 窗口状态三元组之一 (见 IsMaximized 注释)
         bool isBackground_ = false;     // 渲染层, 不接收输入 (被切换掉的旧 root)
         bool fullscreen_ = false;
+        uint32_t modalOwnerId_ = 0;     // WineHua modal 关系 (见访问器注释)
         uint64_t fsPriority_ = 0;       // 全屏优先级序号 (规则见 fsPriority 注释)
         WindowMask mask_;               // mask.w==0 = 从未生成
     };
@@ -167,6 +175,10 @@ public:
 
     // 读路径: find 语义, miss 返回 nullptr
     ToplevelState* FindToplevelLocked(uint32_t id) {
+        auto it = toplevels_.find(id);
+        return it != toplevels_.end() ? &it->second : nullptr;
+    }
+    const ToplevelState* FindToplevelLocked(uint32_t id) const {
         auto it = toplevels_.find(id);
         return it != toplevels_.end() ? &it->second : nullptr;
     }
@@ -199,6 +211,12 @@ public:
     // 置顶 (Remove+Add 一体): 已在列则提到栈顶, 不在列则入列栈顶
     // (首次入列的全屏优先级取号在 AddToZOrder 内部完成)
     void RaiseToplevel(uint32_t id) {
+        // WineHua: raise 模态对话框本体 = raise 它的 owner (组提升)。
+        // 模态组员不在 z-order, 直接 Remove+Add 无效; 组提升后对话框
+        // 恒在 owner 上方这一静态关系由 BuildLayerListLocked 展开保证。
+        if (const auto* st = FindToplevelLocked(id)) {
+            if (st->ModalOwnerId()) id = st->ModalOwnerId();
+        }
         RemoveFromZOrder(id);
         AddToZOrder(id);
     }
@@ -216,6 +234,77 @@ public:
             RaiseToplevel(pinId);
         }
     }
+
+    // -- WineHua modal 关系 (winehua_toplevel 协议) --
+    // ownerId → 模态对话框列表 (设置顺序)。模态窗口不入 toplevelZOrder_
+    // (组员化): BuildLayerListLocked 在 owner lane 展开, 恒在 owner 上方
+    // (Win32 owned 窗口语义); RaiseToplevel(owner) 天然等于"组提升"。
+    // 嵌套模态 (modal 又是另一 modal 的 owner) 用 appendModal 递归展开。
+    // 调用方须已持有 mutex。
+    void SetModalLocked(uint32_t modalId, uint32_t ownerId, bool on) {
+        if (on && ownerId && modalId != ownerId) {
+            RemoveFromZOrder(modalId);
+            ToplevelState& st = EnsureToplevelLocked(modalId);
+            st.SetModalOwnerId(ownerId);
+            auto& list = modalOf_[ownerId];
+            if (std::find(list.begin(), list.end(), modalId) == list.end())
+                list.push_back(modalId);
+        } else if (!on) {
+            EraseModalLocked(modalId);
+        }
+    }
+    void EraseModalLocked(uint32_t modalId) {
+        auto* st = FindToplevelLocked(modalId);
+        uint32_t owner = st ? st->ModalOwnerId() : 0;
+        if (!owner) return;
+        FindToplevelLocked(modalId)->SetModalOwnerId(0);
+        auto it = modalOf_.find(owner);
+        if (it != modalOf_.end()) {
+            auto& list = it->second;
+            auto it2 = std::find(list.begin(), list.end(), modalId);
+            if (it2 != list.end()) list.erase(it2);
+            if (list.empty()) modalOf_.erase(it);
+        }
+        // 脱离组后恢复独立: 可见 (未标记 background/有帧/未最小化) 经
+        // EnsureInZOrder 回到 z-order 栈顶
+        if (ToplevelState* now = FindToplevelLocked(modalId)) {
+            if (now->HasFrame() && !now->IsBackground() && !now->IsMinimized()) {
+                EnsureInZOrder(modalId);
+            }
+        }
+    }
+    // owner 的模态列表 (设置顺序; 晚设置的在列表尾 = 展开时更上层)
+    std::vector<uint32_t> ModalListLocked(uint32_t ownerId) const {
+        auto it = modalOf_.find(ownerId);
+        return it != modalOf_.end() ? it->second : std::vector<uint32_t>{};
+    }
+    bool HasModalLocked(uint32_t ownerId) const {
+        auto it = modalOf_.find(ownerId);
+        return it != modalOf_.end() && !it->second.empty();
+    }
+    // id 是否为组员化模态 (须已持锁; commit 路径用, 防止组员被 EnsureInZOrder
+    // 当独立窗口重新塞回 z-order)
+    bool IsModalIdLocked(uint32_t id) const {
+        const auto* st = FindToplevelLocked(id);
+        return st && st->ModalOwnerId() != 0;
+    }
+    // 位移同步到 id 的整条 modal 组 (嵌套递归 — 组员也可能是另一 modal 的
+    // owner)。调用方须已持有 mutex。Win32 语义: owned 窗口随 owner 拖动。
+    // 只改组的 compositor 位置 (X/Y), 不碰 wine 坐标快照 (wine 的 geo 是
+    // 它自己的坐标系, 不随拖动变)。
+    void ApplyModalDeltaLocked(uint32_t ownerId, int32_t dx, int32_t dy) {
+        if (dx == 0 && dy == 0) return;
+        for (uint32_t m : ModalListLocked(ownerId)) {
+            auto* ms = FindToplevelLocked(m);
+            if (ms && ms->HasPosition()) {
+                ms->SetPosition(ms->X() + dx, ms->Y() + dy);
+                ApplyModalDeltaLocked(m, dx, dy);
+            }
+        }
+    }
+    // 命中拦截: owner 链中第一个"可见模态" (列表尾优先 = 最上层先中;
+    // 嵌套时递归沿 modal 链下钻)。返回 0 = 无可见模态, 不拦截。
+    uint32_t FirstVisibleModalLocked(uint32_t topId, uint32_t desktopRootId);
 
     // -- 全屏优先级取号 (调用方须已持有 mutex; 规则与局限见 ToplevelState::fsPriority) --
     // 首次入 z-order 的取号在 AddToZOrder 内部完成; 此处仅"用户显式 raise
@@ -359,6 +448,10 @@ private:
     std::unordered_map<uint64_t, wl_resource*> surfaceResources_;
     std::unordered_map<uint32_t, ToplevelState> toplevels_;
     std::vector<uint32_t> toplevelZOrder_;
+    // WineHua modal 组 (toplevelMutex_ 保护): ownerId → 模态对话框列表。
+    // 组员不入 toplevelZOrder_ — z-order 数组与渲染/命中都经本表展开。
+    // 更新只走 SetModalLocked (xset_modal handler) / EraseModalLocked。
+    std::unordered_map<uint32_t, std::vector<uint32_t>> modalOf_;
     uint64_t nextFsPriority_ = 1;  // 全屏优先级取号器 (toplevelMutex_ 保护)
     // 以下成员由自己的 mutex 保护 (非 toplevelMutex_)
     std::unordered_map<uint32_t, wl_resource*> toplevelSurfaceMap_;

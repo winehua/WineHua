@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 #include <hilog/log.h>
 
@@ -192,6 +193,38 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     // 可能占位在列, 原始下标会把整个 lane 序偏移, 破块序)。
     std::unordered_map<uint32_t, int64_t> laneOf;  // 父窗口 id → laneSeq
     laneOf.reserve(tmgr_.toplevelZOrder().size());
+    // WineHua: 在 owner lane 内递归展开 modal 组 (嵌套对话框: modal 又是
+    // 另一 modal 的 owner)。itemSeq 用 [100000, ...) 区间 — 与 owner 的
+    // subsurface 子层 (itemSeq=li+1) 不相撞, 且恒在同 lane 的 subsurface 之后
+    // (模态框显示在 owner 全部内容之上, Win32 owned 窗口语义)。
+    const auto kModalItemBase = 100000;
+    std::function<void(uint32_t, int64_t)> appendModals = [&](uint32_t ownerId, int64_t lane) {
+        int64_t item = kModalItemBase;
+        for (uint32_t modalId : tmgr_.ModalListLocked(ownerId)) {
+            const auto* mst = tmgr_.FindToplevelLocked(modalId);
+            if (!mst) continue;
+            PendingLayer mp;
+            mp.seq.group = winehua::ZOrderGroup::InZOrder;
+            mp.seq.laneSeq = lane;
+            mp.seq.itemSeq = item++;
+            CompositorLayer& mlayer = mp.layer;
+            mlayer.type = CompositorLayer::Type::Toplevel;
+            mlayer.visible = tmgr_.IsToplevelVisibleLocked(modalId, rootId);
+            mlayer.toplevelId = modalId;
+            mlayer.x = mst->X();
+            mlayer.y = mst->Y();
+            mlayer.w = mst->Width();
+            mlayer.h = mst->Height();
+            // modal 层恒以普通层参与 (fullscreen 位强制清零): 尺寸等于
+            // 输出尺寸的对话框 (全屏游戏的分辨率切换确认框等) 会被 wine
+            // 标 WINE_SWP_FULLSCREEN, 若带入 fullscreen 位会被
+            // ShouldSkipFullscreenCascade 连渲染带命中一起跳过, 而输入
+            // 拦截 (FirstVisibleModalLocked) 仍生效 → 对话框不可见且点不到
+            mlayer.fullscreen = false;
+            pending.push_back(std::move(mp));
+            appendModals(modalId, lane);  // 嵌套: 同一 lane, 继续展开
+        }
+    };
     int64_t zi = 0;
     for (uint32_t childId : tmgr_.toplevelZOrder()) {
         if (childId == rootId) continue;
@@ -212,6 +245,7 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         layer.fullscreen = cst->IsFullscreen();
         laneOf.emplace(childId, zi);
         pending.push_back(std::move(p));
+        appendModals(childId, zi);  // WineHua: modal 组展开 (成员不入 z-order)
         ++zi;
     }
 

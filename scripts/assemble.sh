@@ -520,6 +520,17 @@ assemble_pad() {
     i686-w64-mingw32-gcc -O2 -s -mwindows -o \
         "$smoke_dir/x86/winehua_d3d8_smoke.exe" "$d3d8_source" \
         -luser32 -lgdi32
+    # DNS probe: must exercise wine's dnsapi.dll -> unixlib resolver path.
+    # On hosts without libresolv (OHOS musl) this is the gate for the
+    # builtin resolver fallback (dlls/dnsapi/libresolv_musl.c): a crash here
+    # would be the old empty-stub 0xC0000005 behavior.
+    local dns_probe_source="$WINEHUA/smoke/winehua_dns_probe.c"
+    x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
+        "$smoke_dir/x64/winehua_dns_probe.exe" "$dns_probe_source" \
+        -ldnsapi -luser32 -lgdi32
+    i686-w64-mingw32-gcc -O2 -s -mwindows -o \
+        "$smoke_dir/x86/winehua_dns_probe.exe" "$dns_probe_source" \
+        -ldnsapi -luser32 -lgdi32
     # This deliberately links Wine's own PE Vulkan import library.  The
     # requirements probe must exercise the same vulkan-1 -> winevulkan ->
     # x86_64 Loader -> Venus transport as a Windows DXVK process, without
@@ -846,7 +857,9 @@ EOF
     "core": {
       "tests": [
         {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
-        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000}
+        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
+        {"testId": "dns-api-x64", "exe": "x64/winehua_dns_probe.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 120000},
+        {"testId": "dns-api-x86", "exe": "x86/winehua_dns_probe.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 120000}
       ]
     },
     "opengl": {

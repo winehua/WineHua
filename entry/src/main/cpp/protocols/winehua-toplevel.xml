@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="winehua_toplevel">
+  <interface name="winehua_toplevel" version="1">
+    <description summary="WineHua toplevel mobile attributes">
+      Vendor protocol between Wine's wayland driver and the WineHua compositor.
+
+      Base xdg-shell cannot express Win32 modal dialog relations (an owned
+      popup whose owner is disabled), so Wine reports them here; the
+      compositor uses the relation to keep the dialog above its owner and to
+      block input routed to a disabled owner window.
+    </description>
+
+    <request name="set_modal">
+      <description summary="Set or clear the modal relation of a toplevel">
+        surface: the dialog toplevel; owner_surface: its owner toplevel
+        (NULL when clearing); modal: 1 = apply, 0 = release.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="owner_surface" type="object" interface="wl_surface" allow-null="true"/>
+      <arg name="modal" type="uint"/>
+    </request>
+  </interface>
+</protocol>

@@ -668,7 +668,11 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     // 新 toplevel 加到 Z-order 顶层 (首次入列的全屏优先级取号在
     // AddToZOrder 内部完成, 见 ToplevelState::fsPriority 注释)
     if (Policy().RootCompositing() && sd->toplevelId != session_.desktopRootToplevelId) {
-        toplevelMgr_.EnsureInZOrder(sd->toplevelId);
+        // WineHua: modal 组员不入 z-order (由 owner lane 展开), 跳过 —
+        // 否则每次 commit 都会被塞回独立列, 破坏恒在 owner 上方的语义
+        if (!toplevelMgr_.IsModalIdLocked(sd->toplevelId)) {
+            toplevelMgr_.EnsureInZOrder(sd->toplevelId);
+        }
     }
     OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
                 sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());

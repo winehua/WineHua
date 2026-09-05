@@ -157,6 +157,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.originX = layerScrX;
                     out.originY = layerScrY;
                     out.scale = transform.scale;
+                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_);
                     finalize();
                     return out.surface != nullptr;
                 }
@@ -172,6 +173,8 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.surface = sl.surface;
                     out.originX = layer.x;
                     out.originY = layer.y;
+                    // WineHua: 命中 owner 暴露区 (菜单层归属 owner) → 拦
+                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_);
                 }
                 // scale 保持默认 1 (恒等变换), content 保持默认 0 (不钳制)
                 finalize();
@@ -189,6 +192,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.scale = transform.scale;
                     contentW = transform.srcW;
                     contentH = transform.srcH;
+                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(fullscreenId, desktopRootToplevelId_);
                     finalize();
                     return out.surface != nullptr;
                 }
@@ -216,6 +220,10 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                 out.originX = layer.x;
                 out.originY = layer.y;
                 out.scale = 1.0;
+                // WineHua: 命中被模态禁用的 owner → 拦截 (吞点击+焦点切 modal)
+                out.blockedModalId = layer.toplevelId != rootId
+                    ? tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_)
+                    : 0;
                 finalize();
                 return out.surface != nullptr;
             }

@@ -68,8 +68,13 @@ void ToplevelManager::SyncDesktopPositionLocked(uint32_t id, int32_t screenX, in
                         id, st->X(), st->Y(), screenX, screenY);
         } else if (screenX > -compositor_consts::kMinimizedCoordThreshold &&
                    screenY > -compositor_consts::kMinimizedCoordThreshold) {
+            // WineHua: wine 程序主动移动 owner (SetWindowPos) 时 modal 组
+            // 一起跟随 (先算差, 再落位置 — ApplyModalDelta 以 X/Y 差为准)
+            const int32_t ddx = screenX - st->X();
+            const int32_t ddy = screenY - st->Y();
             st->SetPosition(screenX, screenY);
             st->SetWinePosition(screenX, screenY);
+            ApplyModalDeltaLocked(id, ddx, ddy);
             OH_LOG_INFO(LOG_APP, "[MW-MOVE] wine geo sync tl=%{public}u (%{public}d,%{public}d)",
                         id, screenX, screenY);
         } else {
@@ -162,6 +167,30 @@ bool ToplevelManager::ToplevelState::TakeMask(WindowMask& out) {
     out.bits = std::move(mask_.bits);
     mask_.dirty = false;
     return true;
+}
+
+// -- 渲染/输入共用的 toplevel 可见性检查 --
+
+// -- WineHua modal 命中拦截 --
+
+uint32_t ToplevelManager::FirstVisibleModalLocked(uint32_t topId, uint32_t desktopRootId) {
+    // 拦截语义 = 命中窗口 X 是否被模态禁用 (Win32: X 被禁用 ⟺ 存在可见
+    // modal 属于 X 的 modalOf_ 列表 — 与 X 自身是否 modal 无关)。因此:
+    // 命中普通窗口 → 查它的模态列表; 命中模态 M1 (M1 自己又被 M2 嵌套
+    // 禁用) → 同样查 M1 的列表 (被禁状态也是"其模态列表非空"); M1 无
+    // 子模态 → 该点命中 M1 有效, 正常注入 (返回 0)。
+    // 链顶优先: 列表尾=最上层 modal 先查, 不可见则递归下钻其子链。
+    const auto* st = FindToplevelLocked(topId);
+    if (!st) return 0;
+    auto it = modalOf_.find(topId);
+    if (it == modalOf_.end()) return 0;
+    for (auto rit = it->second.rbegin(); rit != it->second.rend(); ++rit) {
+        if (IsToplevelVisibleLocked(*rit, desktopRootId)) return *rit;
+        // 该 modal 不可见但仍有子模态 (嵌套): 递归
+        uint32_t nested = FirstVisibleModalLocked(*rit, desktopRootId);
+        if (nested) return nested;
+    }
+    return 0;
 }
 
 // -- 渲染/输入共用的 toplevel 可见性检查 --
