@@ -187,11 +187,9 @@ export class GameHook {
   }
 
   private buildEnvironment(req: GameRequest): Record<string, string> {
-    const environment: Record<string, string> = {
-      'DXVK_LOG_LEVEL': 'info',
-      'DXVK_LOG_PATH': 'C:\\windows\\temp',
-      'WINEDEBUG': '-all,+err,+vulkan,+winediag'
-    };
+    // Product DXVK_LOG / WINEDEBUG come from native AppendStableDxvkEnv
+    // (same as Index.doRun). Want may still overlay explicit D3D keys.
+    const environment: Record<string, string> = {};
     const n = Math.min(req.d3dEnvKeys.length, req.d3dEnvValues.length);
     for (let i = 0; i < n; ++i) {
       environment[req.d3dEnvKeys[i]] = req.d3dEnvValues[i];
@@ -203,20 +201,37 @@ export class GameHook {
     const req = this.pending;
     const env = this.env;
     if (!req || !env || this.started) return;
-    if (!env.prefixReady || env.engineState !== 'ready') return;
-    if (req.path.length === 0) return;
+    if (!env.prefixReady || env.engineState !== 'ready') {
+      hilog.info(DOMAIN, TAG,
+        'game launch deferred path=%{public}s prefixReady=%{public}d engine=%{public}s',
+        req.path, env.prefixReady ? 1 : 0, env.engineState);
+      return;
+    }
+    if (req.path.length === 0) {
+      hilog.error(DOMAIN, TAG, 'game want armed but path is empty');
+      return;
+    }
     this.started = true;
     const environment = this.buildEnvironment(req);
-    hilog.info(DOMAIN, TAG, 'launching %{public}s argc=%{public}d', req.path, req.argv.length);
-    testNapi.runWineProgram({
+    const d3dBackend = env.getD3dBackend();
+    const dxvkBackend = env.getDxvkBackend();
+    hilog.info(DOMAIN, TAG, 'launching %{public}s argc=%{public}d d3d=%{public}s dxvk=%{public}s',
+      req.path, req.argv.length, d3dBackend, dxvkBackend);
+    const launched = testNapi.runWineProgram({
       windowsExePath: req.path,
       argv: req.argv.slice(),
       environment: environment,
       workingDirectory: this.windowsParentDirectory(req.path),
-      d3dBackend: env.getD3dBackend(),
-      dxvkBackend: env.getDxvkBackend()
-    });
-    hilog.info(DOMAIN, TAG, 'game launch done path=%{public}s', req.path);
+      d3dBackend: d3dBackend,
+      dxvkBackend: dxvkBackend
+    }) as Record<string, Object>;
+    const pid = Number(launched['pid'] ?? 0);
+    hilog.info(DOMAIN, TAG, 'game launch done path=%{public}s pid=%{public}d status=%{public}s',
+      req.path, pid, `${launched['status'] ?? ''}`);
+    if (!(pid > 0)) {
+      hilog.error(DOMAIN, TAG, 'game spawn failed path=%{public}s', req.path);
+      return;
+    }
 
     if (req.clickTitlePrefix.length > 0 && req.clickButtonText.length > 0) {
       const titlePrefix = req.clickTitlePrefix;
@@ -224,8 +239,6 @@ export class GameHook {
       const delayMs = req.clickDelayMs;
       const clickXPermille = req.clickClientXPermille;
       const clickYPermille = req.clickClientYPermille;
-      const d3dBackend = env.getD3dBackend();
-      const dxvkBackend = env.getDxvkBackend();
       setTimeout(() => {
         const driverArguments = ['--attach', '--title-prefix', titlePrefix,
           '--button-text', buttonText, '--timeout-ms', '60000'];

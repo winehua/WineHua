@@ -966,10 +966,11 @@ void GraphicsBroker::AppendWineEnv(std::vector<std::string>& env) const
         env.push_back(std::string("WINEHUA_ZERO_COPY_READY_DIR=") + ZERO_COPY_READY_DIR);
         for (const std::string& extra : guestEnv) env.push_back(extra);
 #if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
-        // 方案③ arm64 原生: dri drivers 平铺复制到 el1 bundle。必须在 guestEnv
-        // push 之后 Upsert 覆盖 env 文件的 LIBGL_DRIVERS_PATH=$ORIGIN/lib/dri (已展开 el2) —
-        // entryParams 按序 setenv, 最后设置的 el1 才生效 (与 x86_64 softpipe 块同构)。
-        // 方案② (box64+wine) 不走这里 — guest 是 x86_64, dri 在 el2, 走下方 #else 只设 VTEST_SOCKET_NAME.
+        // 方案③: dri 平铺在 el1 bundle。必须在 guestEnv 之后 Upsert, 盖掉
+        // env 文件里已展开的 LIBGL_DRIVERS_PATH=$ORIGIN/lib/dri (el2)。
+        // virpipe 的正确加载方式是 guest env 既有的
+        // LIBGL_ALWAYS_SOFTWARE=1 + MESA_LOADER_DRIVER_OVERRIDE=swrast +
+        // GALLIUM_DRIVER=virpipe (virpipe 是 gallium pipe, 不是独立 dri)。
         UpsertEnvLine(env, "LIBGL_DRIVERS_PATH=/data/storage/el1/bundle/libs/arm64");
         if (!state.virglSocketPath.empty()) env.push_back("VTEST_SOCKET_NAME=" + state.virglSocketPath);
 #elif defined(__x86_64__)

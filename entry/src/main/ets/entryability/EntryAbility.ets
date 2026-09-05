@@ -40,16 +40,16 @@ export default class EntryAbility extends UIAbility {
     };
     const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
       parameters['winehua.d3d_backend'] !== null;
-    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'dxvk_legacy';
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
     const d3dBackend = requestedD3d === 'dxvk_legacy' ||
       requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
       requestedD3d : 'wined3d';
     const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
       parameters['winehua.dxvk_backend'] !== null;
-    const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'auto';
+    const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'dxvk_legacy';
     let dxvkBackend = this.resolveDxvkBackend(explicitDxvk ?
-      value('winehua.dxvk_backend', 'auto') : persistedDxvk);
+      value('winehua.dxvk_backend', 'dxvk_legacy') : persistedDxvk);
     if (d3dBackend === 'dxvk_legacy') dxvkBackend = 'dxvk_legacy';
     if (d3dBackend === 'dxvk_modern_2_6') dxvkBackend = 'dxvk_modern_2_6';
     AppStorage.setOrCreate<string>('winehua.d3d.backend', d3dBackend);
@@ -64,8 +64,9 @@ export default class EntryAbility extends UIAbility {
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'vkd3d_limited_500k');
-    PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'auto');
+    // Default D3D: DXVK 1.10 (legacy). Do not auto-select/init VKD3D.
+    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'dxvk_legacy');
+    PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'dxvk_legacy');
     // 注: Wine 语言偏好不走 PersistentStorage (冷启动不恢复磁盘值, 实测),
     // 由 WineEnvService.init 用 preferences API 自行加载
     try {

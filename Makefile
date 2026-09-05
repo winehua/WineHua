@@ -111,7 +111,7 @@ endif
 .PHONY: dxvk
 dxvk: $(DXVK_STAMP)
 
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) $(if $(filter aarch64,$(WINE_ARCH)),$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)) | $(STAMPS)
 	@echo "=== dxvk legacy ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk.sh
 	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_dxvk_arm64x.sh; fi

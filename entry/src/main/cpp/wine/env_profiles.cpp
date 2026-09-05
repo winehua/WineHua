@@ -85,10 +85,10 @@ void AppendStableDxvkEnv(std::vector<std::string>& env,
      * never see runWineProgram's per-process overrides; runWineProgram itself
      * reaches this same overlay via SessionEnvPolicy.applyStableOverlay.
      * Keep the product-correct defaults here so both chains share one source. */
-    /* Heaven / ARM64EC bring-up: keep DXVK info logs on a writable path
-     * (C:\windows\temp). Smoke and explicit diagnostics can still override
-     * through runWineProgram's per-process environment. */
-    UpsertEnvLine(env, "DXVK_LOG_LEVEL=info");
+    /* Product sessions retain warnings and errors without formatting DXVK's
+     * informational startup stream. Smoke and explicit diagnostics override
+     * this through runWineProgram's per-process environment. */
+    UpsertEnvLine(env, "DXVK_LOG_LEVEL=warn");
     UpsertEnvLine(env, "DXVK_LOG_PATH=C:\\windows\\temp");
 #ifdef __aarch64__
     UpsertEnvLine(env, "BOX64_DYNAREC_WEAKBARRIER=0");
