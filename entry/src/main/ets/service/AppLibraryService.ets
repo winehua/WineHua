@@ -180,6 +180,10 @@ export class AppLibraryService {
 
   // Steam Legacy 预置客户端: rawfile/steam-legacy.zip (6243 文件, 716MB,
   // 内部路径根为 "Program Files (x86)/Steam/") → 解压到 prefix drive_c。
+  // 版本: archive.org 2024-09-18 BETA Win7 兼容版 (build 1726604483, 旧版 CEF),
+  // 包内 steam.cfg 版本锁防自更新。选 Legacy 原因: 现代客户端 webhelper 在
+  // box64 下有窗口收养/消息泵结构问题, Legacy 为 Winlator 同款解法。
+  // 详见 docs/STEAM_LEGACY.md。
   // 幂等: marker = Steam/steam.exe 已存在即跳过。fire-and-forget 后台执行,
   // 解压完成前点 Steam 条目会启动失败 (文件还没落地)。
   // 与 WineEnvService.extractWineData 同款流式拷贝 (getRawFdSync 分块读,
