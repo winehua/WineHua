@@ -27,7 +27,7 @@ export struct SettingsView {
   @State prefixReady: boolean = false;
   @State statusText: string = '检测中...';
   // 渲染策略镜像 (dxvk_legacy / dxvk_modern_2_6 / vkd3d_limited_500k / wined3d);
-  // 默认 DXVK 1.10 (legacy); 切换后提示需重启引擎才生效
+  // 默认 DXVK 1.10 (legacy); 切换后直启即生效, 已运行会话内需重启会话
   @State d3dBackend: string = 'dxvk_legacy';
   // SegmentButton 选中项 (@Link 双向): 0=DXVK1.10 1=DXVK2.6 2=VKD3D 3=WineD3D,
   // 与 d3dBackend 同步
@@ -136,7 +136,8 @@ export struct SettingsView {
   }
 
   // 渲染策略分段控件: 系统预置 SegmentButton 胶囊单选 (替代手写双 Button 行);
-  // 切换仅写配置 (service 内持久化), 重启 Wine 引擎后生效
+  // 切换仅写配置 (service 内持久化); 直启程序逐进程注入新 env 立即生效,
+  // 已运行的桌面会话内程序继承旧 env, 需重启会话
   private selectBackend(backend: string): void {
     if (backend == this.d3dBackend) {
       return;
@@ -429,7 +430,7 @@ export struct SettingsView {
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
           if (this.restartHint) {
-            Text('渲染策略已更改, 重启 Wine 引擎后生效')
+            Text('渲染策略已更改, 之后启动的程序立即生效; 桌面会话内的程序需重启会话')
               .fontSize(12)
               .fontColor($r('app.color.state_warn'))
               .width('100%')
