@@ -413,52 +413,52 @@ HOST_TEST_DIR := $(BUILD_DIR)/host_tests
 .PHONY: test
 test:
 	@mkdir -p $(HOST_TEST_DIR)
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/geometry_test \
 	    $(ROOT)/host_tests/geometry_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/frame/geometry.cpp
 	$(HOST_TEST_DIR)/geometry_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/blit_scaled_test \
 	    $(ROOT)/host_tests/blit_scaled_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/frame/compositor_blit.cpp
 	$(HOST_TEST_DIR)/blit_scaled_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/blit_clip_test \
 	    $(ROOT)/host_tests/blit_clip_test.cpp
 	$(HOST_TEST_DIR)/blit_clip_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/shm_frame_source_test \
 	    $(ROOT)/host_tests/shm_frame_source_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/frame/shm_frame_source.cpp
 	$(HOST_TEST_DIR)/shm_frame_source_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/zorder_test \
 	    $(ROOT)/host_tests/zorder_test.cpp
 	$(HOST_TEST_DIR)/zorder_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/env_spec_test \
 	    $(ROOT)/host_tests/env_spec_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/env_spec.cpp
+	    $(ROOT)/entry/src/main/cpp/wine/env_spec.cpp
 	$(HOST_TEST_DIR)/env_spec_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/env_baseline_test \
 	    $(ROOT)/host_tests/env_baseline_test.cpp
 	$(HOST_TEST_DIR)/env_baseline_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/input_state_test \
 	    $(ROOT)/host_tests/input_state_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/input/input_state_tracker.cpp
 	$(HOST_TEST_DIR)/input_state_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/toplevel_event_test \
 	    $(ROOT)/host_tests/toplevel_event_test.cpp
 	$(HOST_TEST_DIR)/toplevel_event_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/presenter_common_test \
 	    $(ROOT)/host_tests/presenter_common_test.cpp
 	$(HOST_TEST_DIR)/presenter_common_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/controller_merge_test \
 	    $(ROOT)/host_tests/controller_merge_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/input/controller/controller_hub.cpp
