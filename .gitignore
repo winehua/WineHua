@@ -52,6 +52,9 @@ thirdparty/freetype-VER-2-13-3/
 /entry/hnp
 entry/src/main/resources/rawfile/wine-data.zip
 entry/src/main/resources/rawfile/wine-runtime-manifest.json
+entry/src/main/resources/rawfile/steam-legacy.zip
+entry/src/main/resources/rawfile/dnsapi-fix.zip
+entry/src/main/resources/rawfile/diagtools.zip
 tmp/
 prebuilt/
 

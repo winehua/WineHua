@@ -1,10 +1,10 @@
 [submodule "thirdparty/wine"]
 	path = thirdparty/wine
-	url = git@github.com:winehua/wine.git
+	url = https://github.com/winehua/wine.git
 	branch = master
 [submodule "thirdparty/box64"]
 	path = thirdparty/box64
-	url = git@github.com:winehua/box64.git
+	url = https://github.com/winehua/box64.git
 	branch = main
 [submodule "thirdparty/wayland"]
 	path = thirdparty/wayland
@@ -37,11 +37,11 @@
 	branch = master
 [submodule "thirdparty/mesa"]
 	path = thirdparty/mesa
-	url = git@github.com:winehua/mesa-ohos.git
+	url = https://github.com/winehua/mesa-ohos.git
 	branch = main
 [submodule "thirdparty/libdrm"]
 	path = thirdparty/libdrm
-	url = https://gitee.com/openharmony/third_party_libdrm.git
+	url = https://github.com/openharmony/third_party_libdrm.git
 	branch = OpenHarmony-6.0-Beta1
 [submodule "thirdparty/dxvk"]
 	path = thirdparty/dxvk
