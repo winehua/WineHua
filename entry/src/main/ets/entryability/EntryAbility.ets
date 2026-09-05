@@ -3,25 +3,19 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { DEFAULT_D3D_BACKEND } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
-  private defaultDxvkBackend(): string {
-    /* This is an evidence allowlist, not a Host-to-Guest capability inference.
-     * The bundled Guest Mesa/DXVK payload is fixed by the HAP manifest, while
-     * the product/build identity below pins the audited Host driver. A system
-     * update therefore falls back to 1.10.3 until that identity is qualified. */
-    const qualified920 = deviceInfo.productModel === 'VYG-AL00' &&
-      deviceInfo.incrementalVersion === '26.0.0.32';
-    return qualified920 ? 'dxvk_modern_2_6' : 'dxvk_legacy';
-  }
-
+  // 默认档统一 DXVK 1.10 (DEFAULT_D3D_BACKEND); 2.6 仅在用户显式选择时启用。
+  // 停用了原"设备审计白名单" (VYG-AL00 26.0.0.32 自动 2.6, 否则 1.10.3):
+  // 它服务于"默认 2.6"时期, 默认档反转后自动上浮已无意义, 统一回落 1.10。
   private resolveDxvkBackend(value: string): string {
     if (value === 'dxvk_legacy' || value === 'dxvk_modern_2_6') return value;
-    return this.defaultDxvkBackend();
+    return DEFAULT_D3D_BACKEND;
   }
 
   // 发布正常会话所需的最小启动状态: want 开屏参数里的 d3d/dxvk 覆盖项优先
@@ -38,7 +32,7 @@ export default class EntryAbility extends UIAbility {
     };
     const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
       parameters['winehua.d3d_backend'] !== null;
-    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'dxvk_modern_2_6';
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || DEFAULT_D3D_BACKEND;
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
     const d3dBackend = requestedD3d === 'dxvk_legacy' ||
       requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
