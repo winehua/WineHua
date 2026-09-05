@@ -78,10 +78,11 @@ VKD3D_PROTON_ARTIFACTS := \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/triangle.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/gears.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/manifest.json
-# 方案③ (aarch64): 追加 ARM64X d3d12.dll (FEX native view); stamp 按 WINE_ARCH 隔离
-ifeq ($(WINE_ARCH),aarch64)
-VKD3D_PROTON_ARTIFACTS += $(BUILD_DIR)/vkd3d-proton/limited-500k/arm64x/bin/d3d12.dll
-endif
+# 方案③ (aarch64): d3d12 固定 x64 单图 + FEX 转译执行 (与 09-01 可跑基线同机制)。
+# vkd3d arm64x 已放弃 (2026-09-05 最终决策): 手搓 -marm64x 被 clang 静默忽略
+# → 产物是 "空 ARM64X (仅 AA64 单子图)" 假双图, 加载后数据回读全 0; 改用真
+# ARM64EC (-target=arm64ec-w64-mingw32, meson cross 已验证可产出) 后在
+# libarm64ecfex 桥上 D3D12CreateDevice 阶段崩溃。见 scripts/assemble.sh 注释。
 VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k-$(WINE_ARCH)
 VKD3D_PROTON_SOURCE_INPUTS := $(shell find $(ROOT)/patches/vkd3d-proton -type f 2>/dev/null; \
 	find $(ROOT)/thirdparty/vkd3d-proton -maxdepth 2 -type f 2>/dev/null)
@@ -150,15 +151,16 @@ ASSEMBLE_GUEST_INPUTS += $(wildcard $(GUEST_VULKAN_SENTINEL))
 endif
 
 # ============================================================
-# vkd3d-proton — x64-only, explicit, default-off 2.6 limited-500K profile
+# vkd3d-proton — x64 单图产物 (所有架构一致; arm64x 已放弃, 见上注释);
+# explicit, default-off 2.6 limited-500K profile
 # ============================================================
 .PHONY: vkd3d-proton
 vkd3d-proton: $(VKD3D_PROTON_STAMP)
 
-$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(SCRIPTS)/build_vkd3d_proton_arm64x.sh $(VKD3D_PROTON_SOURCE_INPUTS) | $(STAMPS)
+$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_INPUTS) \
+	$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
 	@echo "=== vkd3d-proton 2.6 limited-500K ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_vkd3d_proton.sh
-	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_vkd3d_proton_arm64x.sh; fi
 	touch $@
 
 $(VKD3D_PROTON_ARTIFACTS): $(VKD3D_PROTON_STAMP)

@@ -248,7 +248,7 @@ jobs:
       # 本地验证流程 = `make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64`
       # (DEFAULT_GOAL=all → hap → assemble), Makefile 依赖链一次拉满
       # deps/wine/fex/box64-wow64/native/host-vulkan/guest gfx+vulkan/
-      # dxvk (legacy 三图 + modern arm64x)/vkd3d (附加 arm64x) 并组装 HAP.
+      # dxvk (legacy 三图 + modern arm64x)/vkd3d (x64 单图, arm64x 已放弃) 并组装 HAP.
       # 此前拆成 dxvk ×3 + hap 四步仅"理论等价"; 且 dxvk-modern 的断言用了
       # 方案② 的 x64/x86 路径 (Makefile DXVK_MODERN_ARTIFACTS 按 WINE_ARCH
       # 分支为 arm64x 双图), 方案③ 干净环境必挂 — 本地能过只因 build/ 残留.
@@ -280,8 +280,7 @@ jobs:
             build/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
             build/vkd3d-proton/limited-500k/x64/triangle.exe \
             build/vkd3d-proton/limited-500k/x64/gears.exe \
-            build/vkd3d-proton/limited-500k/x64/manifest.json \
-            build/vkd3d-proton/limited-500k/arm64x/bin/d3d12.dll; do
+            build/vkd3d-proton/limited-500k/x64/manifest.json; do
             test -s "$f" || { echo "ERROR: missing $f" >&2; exit 1; }
           done
           sha256sum build/dxvk/legacy/{x64,x86,arm64x}/bin/d3d11.dll \

@@ -619,19 +619,21 @@ assemble_pad() {
     [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \
         err "VKD3D-Proton x64 graphics smoke missing: $vkd3d_root/x64/winehua-d3d12-smoke.exe"
     [ -f "$vkd3d_root/manifest.json" ] || err "VKD3D-Proton manifest missing: $vkd3d_root/manifest.json"
-    # 方案③ ARM64X d3d12.dll: wine_env.cpp 把 vkd3d overlay64 指向 arm64x
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        local d3d12_arm64x="$vkd3d_root/arm64x/bin/d3d12.dll"
-        [ -f "$d3d12_arm64x" ] || err "VKD3D-Proton ARM64X d3d12.dll missing: $d3d12_arm64x"
-        mkdir -p "$wine_data/vkd3d/limited-500k/arm64x"
-        cp "$d3d12_arm64x" "$wine_data/vkd3d/limited-500k/arm64x/d3d12.dll"
-    else
-        # 方案③ 下 x64/d3d12.dll 由 arm64x 取代; 方案①/② (x86_64 wine) 需要
-        [ -f "$vkd3d_root/x64/d3d12.dll" ] || \
-            err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
-        mkdir -p "$wine_data/vkd3d/limited-500k/x64"
-        cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
-    fi
+    # 方案③: d3d12 固定用 x86_64 单图 (FEX 转译执行)。
+    # vkd3d arm64x 弃用结论 (2026-09-05 最终决策, 不再重试):
+    #   * 手搓链路用 --target=aarch64-w64-mingw32 -marm64x: 该 clang 对
+    #     -marm64x 静默忽略, 产物 = ARM64X 壳但仅 AA64 单子图 (假双图),
+    #     x64 guest 加载后执行形态错误 → buffer 回读 (vkCmdCopyBuffer 链)
+    #     全 0, fence 却正常信号;
+    #   * 真 ARM64EC (-target=arm64ec-w64-mingw32, meson cross 已验证可产出
+    #     0xA641) 在 libarm64ecfex 桥上 D3D12CreateDevice 阶段崩溃。
+    #   * 对照: dxvk 的 arm64x 为真双图 (0xA64E+0xA641), 与以上无关, 保留。
+    # x64 单图 = 09-01 验证过的 "d12 能跑" 基线同款机制, 新特性 HAP 上实测 PASS。
+    # (方案①/②/③ 统一: d3d12 均为 x64 单图)
+    [ -f "$vkd3d_root/x64/d3d12.dll" ] || \
+        err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
+    mkdir -p "$wine_data/vkd3d/limited-500k/x64"
+    cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
     # Keep the upstream VKD3D-Proton demos available as ordinary managed
     # C:\\smoke programs. They are test assets, not runtime DLLs.
     # Prefer demos built with this limited-500K profile so CI does not depend
