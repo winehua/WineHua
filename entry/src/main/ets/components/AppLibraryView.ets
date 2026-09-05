@@ -303,17 +303,23 @@ export struct AppLibraryView {
     this.renameController.open();
   }
 
-  // 自定义启动: 弹窗选渲染策略 + 兼容模式档位 + Windows 版本 → 按临时参数
-  // 启动一次 (不持久化)。onLaunch 里 this.launch(entry, { graphics, compatMode, winver })
-  // 透传弹窗选择
+  // 自定义启动: 弹窗选渲染策略 + 兼容模式档位 + Windows 版本 + 启动参数 →
+  // 按所选参数启动。launchArgs 特殊: 启动前回写条目持久化 (记住上次参数,
+  // 清空输入 = 清除), 其余保持"选一次用一次"不持久化
   private customLaunch(entry: AppEntry): void {
     this.customLaunchController = new CustomDialogController({
       builder: CustomLaunchDialog({
         exeName: entry.name,
+        initialArgs: entry.launchArgs ?? '',
         onLaunch: (graphics?: 'dxvk' | 'wined3d',
                    compatMode?: 'stability' | 'conservative' | 'intermediate' | 'performance',
-                   winver?: string) => {
-          this.launch(entry, { graphics: graphics, compatMode: compatMode, winver: winver });
+                   winver?: string,
+                   launchArgs?: string) => {
+          if (launchArgs !== undefined) {
+            this.lib.setLaunchArgs(entry.path, launchArgs);
+          }
+          this.launch(entry, { graphics: graphics, compatMode: compatMode, winver: winver,
+            launchArgs: launchArgs });
         }
       }),
       autoCancel: true

@@ -1258,7 +1258,7 @@ export class WineEnvService {
       dxvkBackend: this.dxvkBackend,
       presentBackend: this.d3dPresentBackend(),
       automationMode: false
-    }) as ProcessInfo;
+    }) as object as ProcessInfo;
     hilog.info(DOMAIN, 'GameTest',
       'game launch path=%{public}s argc=%{public}d env=%{public}d backend=%{public}s perf=%{public}s '
         + 'pid=%{public}d status=%{public}s',
@@ -1288,7 +1288,7 @@ export class WineEnvService {
           dxvkBackend: this.dxvkBackend,
           presentBackend: this.d3dPresentBackend(),
           automationMode: false
-        }) as ProcessInfo;
+        }) as object as ProcessInfo;
         hilog.info(DOMAIN, 'GameTest',
           'click driver title=%{public}s button=%{public}s relative=%{public}d,%{public}d '
             + 'pid=%{public}d status=%{public}s',

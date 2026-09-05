@@ -59,7 +59,7 @@ export class ProcessService {
   // 原 refreshProcessList (含 master 的系统进程黑名单过滤)
   refresh = (): void => {
     try {
-      const all = testNapi.getProcessList() as ProcessInfo[];
+      const all = testNapi.getProcessList() as object as ProcessInfo[];
       this.processList = all.filter((p: ProcessInfo) => SYSTEM_PROC_BLACKLIST.indexOf(p.name) < 0);
     } catch (e) {
       this.processList = [];

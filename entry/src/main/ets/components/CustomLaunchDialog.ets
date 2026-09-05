@@ -50,13 +50,17 @@ const WINVER_OPTIONS: WinverOption[] = [
 export struct CustomLaunchDialog {
   controller?: CustomDialogController;
   exeName: string = '';   // 标题 "自定义启动 · <exe>"
+  initialArgs: string = ''; // 启动参数输入框初值 (条目持久化的 launchArgs)
   onLaunch: (graphics?: 'dxvk' | 'wined3d',
              compatMode?: 'stability' | 'conservative' | 'intermediate' | 'performance',
-             winver?: string) => void = () => {};
+             winver?: string,
+             launchArgs?: string) => void = () => {};
   // 渲染策略: 0=跟随全局 1=dxvk 2=wined3d
   @State graphicsSel: number[] = [0];
   // 兼容模式: 0=跟随全局 1=稳定 2=保守 3=均衡 4=性能 (对齐 Winlator 4 档位)
   @State compatSel: number[] = [0];
+  // 启动参数原文 (TextInput 双向回写; 启动时原文传出, 切分/校验在 service 层)
+  @State argsText: string = '';
   // Windows 版本: 按钮显示文本 (选中菜单项后按钮文本自动更新, 回写本状态)。
   // 用 .value() 驱动而不是 .selected(索引): selected 只设"初始选中态/高亮",
   // 不更新按钮显示文本 (收起状态空白); value 才是按钮文本 (HiSH 同款用法)
@@ -65,13 +69,19 @@ export struct CustomLaunchDialog {
   private winverOptions: SelectOption[] = WINVER_OPTIONS.map(
     (o: WinverOption): SelectOption => ({ value: o.label }));
 
+  aboutToAppear(): void {
+    // 每次 open 都是新实例: @State 初值从这里回到条目持久化参数
+    this.argsText = this.initialArgs;
+  }
+
   private doLaunch(): void {
     const g = this.graphicsSel[0] ?? 0;
     const c = this.compatSel[0] ?? 0;
     const opt = WINVER_OPTIONS.find((o: WinverOption) => o.label == this.winverLabel);
     const winver = opt?.value || undefined;
+    const args = this.argsText.trim();
     this.onLaunch(g == 1 ? 'dxvk' : g == 2 ? 'wined3d' : undefined,
-      compatModeFromIndex(c), winver);
+      compatModeFromIndex(c), winver, args ? args : undefined);
     this.controller?.close();
   }
 
@@ -136,6 +146,23 @@ export struct CustomLaunchDialog {
             this.winverLabel = WINVER_OPTIONS[index].label;
           })
         Text('注入 WINEHUA_WINDOWS_VERSION, 仅本次启动生效')
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      Column({ space: 8 }) {
+        Text('启动参数')
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+        TextInput({ text: this.argsText, placeholder: '如 -noreactlogin (空格分隔多个)' })
+          .width('100%')
+          .height(40)
+          .onChange((value: string) => {
+            this.argsText = value;
+          })
+        Text('启动成功后自动记住, 之后普通启动也带上; 清空即清除')
           .fontSize(11)
           .fontColor($r('app.color.text_tertiary'))
       }

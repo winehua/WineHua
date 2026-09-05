@@ -808,18 +808,18 @@ export class SmokeRunner {
              * disappear before returning the result.
              */
             for (let i = 0; i < 40; ++i) {
-              const current = testNapi.queryWineProcess(process.pid) as ProcessInfo;
+              const current = testNapi.queryWineProcess(process.pid) as object as ProcessInfo;
               if (!current.found || current.status !== 'running') break;
               await sleep(250);
             }
-            const stillRunning = testNapi.queryWineProcess(process.pid) as ProcessInfo;
+            const stillRunning = testNapi.queryWineProcess(process.pid) as object as ProcessInfo;
             if (stillRunning.found && stillRunning.status === 'running') {
               hilog.warn(DOMAIN, 'SmokeRunner',
                 'final result arrived before process teardown pid=%{public}d test=%{public}s; terminating',
                 process.pid, spec.id);
               testNapi.terminateWineProcess(process.pid);
               for (let i = 0; i < 20; ++i) {
-                const current = testNapi.queryWineProcess(process.pid) as ProcessInfo;
+                const current = testNapi.queryWineProcess(process.pid) as object as ProcessInfo;
                 if (!current.found || current.status !== 'running') break;
                 await sleep(250);
                 }
@@ -839,7 +839,7 @@ export class SmokeRunner {
           }
         } catch (_) {}
       }
-      const current = testNapi.queryWineProcess(process.pid) as ProcessInfo;
+      const current = testNapi.queryWineProcess(process.pid) as object as ProcessInfo;
       if (!current.found || current.status !== 'running') {
         const detail = text ?
           'process disappeared with only a non-final result' :
@@ -851,7 +851,7 @@ export class SmokeRunner {
 
     testNapi.terminateWineProcess(process.pid);
     for (let i = 0; i < 20; ++i) {
-      const current = testNapi.queryWineProcess(process.pid) as ProcessInfo;
+      const current = testNapi.queryWineProcess(process.pid) as object as ProcessInfo;
       if (!current.found || current.status !== 'running') break;
       await sleep(250);
     }
@@ -1286,7 +1286,7 @@ export class SmokeRunner {
           },
         workingDirectory: GUEST_VULKAN_ROOT,
         automationMode: true
-      }) as ProcessInfo;
+      }) as object as ProcessInfo;
       if (!guestProcess.found || guestProcess.pid <= 0)
         return this.failureResult(spec, 'startup', 'runGuestProgram failed to return a PID', guestProcess);
       return this.waitForFinal(spec, resultPath, guestProcess);
@@ -1533,7 +1533,7 @@ export class SmokeRunner {
         d3dBackend: isDxvk ? (isDxvkModern ? 'dxvk_modern_2_6' : 'dxvk_legacy') : 'wined3d',
         presentBackend: isPresent ? 'venus_broker_present' : 'venus_offscreen',
         automationMode: true
-      }) as ProcessInfo;
+      }) as object as ProcessInfo;
     } else {
       process = testNapi.runWineProgram({
         windowsExePath: `C:\\smoke\\${spec.architecture}\\${spec.executable}`,
@@ -1553,7 +1553,7 @@ export class SmokeRunner {
         d3dBackend: 'wined3d',
         presentBackend: 'virgl_compositor',
         automationMode: true
-      }) as ProcessInfo;
+      }) as object as ProcessInfo;
     }
     if (!process.found || process.pid <= 0)
       return this.failureResult(spec, 'startup', 'runWineProgram failed to return a PID', process);

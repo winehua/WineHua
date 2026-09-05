@@ -2,6 +2,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { zlib } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
 import { WineEnvService } from './WineEnvService';
 import { BOX64_DYNAREC_PRESETS } from './Box64Dynarec';
@@ -25,6 +26,9 @@ const SCAN_MAX_EXE = 200;
 export interface LaunchOverrides {
   graphics?: 'dxvk' | 'wined3d';
   compatMode?: 'stability' | 'conservative' | 'intermediate' | 'performance';
+  // 启动参数原文 (空白分隔, 如 "-noreactlogin -cef-disable-gpu"): 弹窗当前
+  // 输入优先; 缺省回落条目持久化的 launchArgs (上次自定义启动记住的值)
+  launchArgs?: string;
   // Windows 版本 (wine 侧 ntdll/version.c version_names 表的合法值, 如
   // 'win95'/'winxp'/'win7'/'win10'/'win11', 全小写精确匹配):
   // winehua 定制版 version_init 优先读环境变量 WINEHUA_WINDOWS_VERSION
@@ -45,6 +49,9 @@ export interface AppEntry {
                        // 缺省 (老数据) 按 'import' 归类 — 见 sourceOf, 不做持久化迁移
   lastRun?: number;    // 最近一次受理成功的启动时刻 epoch ms ("最近使用"分类依据;
                        // 只记应用库/文件页经本服务 launch 的启动, explorer 内双击不计)
+  launchArgs?: string; // 持久化启动参数 (空白分隔 argv 原文): "自定义启动"弹窗每次
+                       // 启动时回写 (清空输入=清除), 普通 launch 未传 overrides 时
+                       // 作为缺省参数自动带上 — Steam 等需要固定 flag 的程序靠它免配置
 }
 
 // withField 的可选覆盖项 (ArkTS 不用 Partial 以保持显式)
@@ -57,6 +64,7 @@ interface AppEntryPatch {
   hidden?: boolean;
   source?: string;
   lastRun?: number;
+  launchArgs?: string;
 }
 
 // 扫描结果: added=新入库条目数, classified=已在库但本次被归到"开始菜单"的数量
@@ -144,6 +152,7 @@ export class AppLibraryService {
       return;
     }
     this.initialized = true;
+    this.ctx = ctx;
     try {
       this.store = preferences.getPreferencesSync(ctx, { name: STORE_NAME });
       const json = this.store.getSync(KEY_ENTRIES, '[]') as string;
@@ -162,6 +171,272 @@ export class AppLibraryService {
         this.fillIcon(e.path);
       }
     }
+  }
+
+  // ctx 保存 (ensureSteamLegacy 的 resourceManager 依赖)
+  private ctx: common.Context | null = null;
+  // Steam Legacy 解压进行中标记 (防重入; ensureBuiltinTools 每次 prefixReady 都调)
+  private steamLegacyBusy = false;
+
+  // Steam Legacy 预置客户端: rawfile/steam-legacy.zip (6243 文件, 716MB,
+  // 内部路径根为 "Program Files (x86)/Steam/") → 解压到 prefix drive_c。
+  // 幂等: marker = Steam/steam.exe 已存在即跳过。fire-and-forget 后台执行,
+  // 解压完成前点 Steam 条目会启动失败 (文件还没落地)。
+  // 与 WineEnvService.extractWineData 同款流式拷贝 (getRawFdSync 分块读,
+  // 避免 rawfile 一次性加载进内存)。
+  private ensureSteamLegacy(): void {
+    if (this.steamLegacyBusy || !this.ctx) {
+      return;
+    }
+    const marker = `${WINE_PREFIX}/drive_c/Program Files (x86)/Steam/steam.exe`;
+    if (this.fileExists(marker)) {
+      return;
+    }
+    this.steamLegacyBusy = true;
+    // OHOS zlib.decompressFile 对 zip 条目路径中的空格会报 900001, 故 zip 内
+    // 路径根为无空格的 "Steam/", 解压到 files/ 后整体 rename 进 prefix
+    const filesBase = WINE_PREFIX.substring(0, WINE_PREFIX.lastIndexOf('/'));
+    const srcDir = `${filesBase}/Steam`;
+    const destDir = `${WINE_PREFIX}/drive_c/Program Files (x86)/Steam`;
+    const tmpZip = `${filesBase}/steam-legacy-tmp.zip`;
+    (async (): Promise<void> => {
+      try {
+        const rm = this.ctx!.resourceManager;
+        const rawFd = rm.getRawFdSync('steam-legacy.zip');
+        hilog.warn(DOMAIN, 'wine', 'steam-legacy: extracting (%{public}d bytes)...', rawFd.length);
+        // 流式拷贝 rawfile → 临时 zip (4MB 分块)
+        const dst = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        const CHUNK = 4 * 1024 * 1024;
+        const buf = new ArrayBuffer(CHUNK);
+        let pos = rawFd.offset;
+        const end = rawFd.offset + rawFd.length;
+        while (pos < end) {
+          const toRead = Math.min(CHUNK, end - pos);
+          const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+          if (n <= 0) {
+            break;
+          }
+          fs.writeSync(dst.fd, buf, { length: n });
+          pos += n;
+        }
+        fs.closeSync(dst);
+        rm.closeRawFdSync('steam-legacy.zip');
+        // 解压到 files/ (无空格路径), 再整体改名挪进 prefix
+        await zlib.decompressFile(tmpZip, filesBase, {});
+        try {
+          fs.rmdirSync(destDir);
+        } catch (_) {}
+        fs.renameSync(srcDir, destDir);
+        hilog.warn(DOMAIN, 'wine', 'steam-legacy: extracted, marker=%{public}d', this.fileExists(marker) ? 1 : 0);
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'steam-legacy extract fail: %{public}s', JSON.stringify(e));
+      } finally {
+        try {
+          fs.unlinkSync(tmpZip);
+        } catch (_) {}
+        this.steamLegacyBusy = false;
+      }
+    })();
+  }
+
+  // dnsapi unixlib 补丁进行中标记
+  private dnsapiPatchBusy = false;
+
+  // dnsapi unixlib 补丁: OHOS musl 无 libresolv (res_query 等全是桩符号),
+  // 上游 HAVE_RESOLV 检测不过, 产出的 x86_64-unix/dnsapi.so 是空壳, 运行时
+  // DnsQuery_A 直接 0xC0000005。rawfile/dnsapi-fix.zip (条目根 wine/bin/
+  // x86_64-unix/dnsapi.so) 是 musl 适配版 (resolv.conf + UDP 查询 + getaddrinfo
+  // 兜底)。幂等 marker = 目标文件大小为补丁版本 (空壳 9752 / 补丁 18472,
+  // 大小不同即重打)。解压根 files/ 与 zip 条目根正好对齐, 无需 rename。
+  private ensureDnsapiPatch(): void {
+    if (this.dnsapiPatchBusy || !this.ctx) {
+      return;
+    }
+    const filesBase = WINE_PREFIX.substring(0, WINE_PREFIX.lastIndexOf('/'));
+    const target = `${filesBase}/wine/bin/x86_64-unix/dnsapi.so`;
+    const marker = `${filesBase}/dnsapi-fix-applied`;
+    // 已应用 (marker 文件) 且目标仍在 → 跳过; 目标丢失 (wine 数据被清) 时
+    // 连 marker 一起重来
+    if (this.fileExists(marker)) {
+      try {
+        fs.statSync(target);
+        return;
+      } catch (_) {
+        try {
+          fs.unlinkSync(marker);
+        } catch (_) {}
+      }
+    }
+    this.dnsapiPatchBusy = true;
+    const tmpZip = `${filesBase}/dnsapi-fix-tmp.zip`;
+    (async (): Promise<void> => {
+      try {
+        const rm = this.ctx!.resourceManager;
+        const rawFd = rm.getRawFdSync('dnsapi-fix.zip');
+        const dst = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        const CHUNK = 1024 * 1024;
+        const buf = new ArrayBuffer(CHUNK);
+        let pos = rawFd.offset;
+        const end = rawFd.offset + rawFd.length;
+        while (pos < end) {
+          const toRead = Math.min(CHUNK, end - pos);
+          const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+          if (n <= 0) {
+            break;
+          }
+          fs.writeSync(dst.fd, buf, { length: n });
+          pos += n;
+        }
+        fs.closeSync(dst);
+        rm.closeRawFdSync('dnsapi-fix.zip');
+        await zlib.decompressFile(tmpZip, filesBase, {});
+        const st = fs.statSync(target);
+        const mk = fs.openSync(marker, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+        fs.closeSync(mk);
+        hilog.warn(DOMAIN, 'wine', 'dnsapi-patch: applied, size=%{public}d', st.size);
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'dnsapi-patch fail: %{public}s', JSON.stringify(e));
+      } finally {
+        try {
+          fs.unlinkSync(tmpZip);
+        } catch (_) {}
+        this.dnsapiPatchBusy = false;
+      }
+    })();
+  }
+
+  // 诊断工具投放: rawfile/diagtools.zip (条目根 .wine/drive_c/windows/temp/
+  // chunkfetch2.exe) — P1 下载解包失败的独立抓块对比实验用 (game 通道以
+  // C:\windows\temp\chunkfetch2.exe + URL 参数启动, 不经 steam 下载器)。
+  // 与 dnsapi 补丁同模式: marker 幂等, 目标丢失自动重解压。
+  private ensureDiagTools(): void {
+    if (!this.ctx) {
+      return;
+    }
+    const filesBase = WINE_PREFIX.substring(0, WINE_PREFIX.lastIndexOf('/'));
+    const tempDir = `${filesBase}/.wine/drive_c/windows/temp`;
+    const target = `${tempDir}/chunkfetch2.exe`;
+    const marker = `${filesBase}/diag-tools-applied-v6`;
+    if (this.fileExists(marker)) {
+      try {
+        fs.statSync(target);
+        fs.statSync(`${tempDir}/steamlaunch.exe`);
+        fs.statSync(`${tempDir}/steamlaunch2.exe`);
+        fs.statSync(`${tempDir}/sapmover.exe`);
+        fs.statSync(`${tempDir}/aesni_test.exe`);
+        fs.statSync(`${tempDir}/winexec.exe`);
+        fs.statSync(`${tempDir}/rjlaunch.exe`);
+        fs.statSync(`${tempDir}/spawntest.exe`);
+        fs.statSync(`${tempDir}/rjfix.exe`);
+        fs.statSync(`${tempDir}/appmanifest_1714040.acf`);
+        return;
+      } catch (_) {
+        try {
+          fs.unlinkSync(marker);
+        } catch (_) {}
+      }
+    }
+    const tmpZip = `${filesBase}/diagtools-tmp.zip`;
+    (async (): Promise<void> => {
+      try {
+        const rm = this.ctx!.resourceManager;
+        const rawFd = rm.getRawFdSync('diagtools.zip');
+        const dst = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        const CHUNK = 1024 * 1024;
+        const buf = new ArrayBuffer(CHUNK);
+        let pos = rawFd.offset;
+        const end = rawFd.offset + rawFd.length;
+        while (pos < end) {
+          const toRead = Math.min(CHUNK, end - pos);
+          const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+          if (n <= 0) {
+            break;
+          }
+          fs.writeSync(dst.fd, buf, { length: n });
+          pos += n;
+        }
+        fs.closeSync(dst);
+        rm.closeRawFdSync('diagtools.zip');
+        await zlib.decompressFile(tmpZip, filesBase, {});
+        fs.statSync(target);
+        fs.statSync(`${tempDir}/steamlaunch.exe`);
+        fs.statSync(`${tempDir}/steamlaunch2.exe`);
+        fs.statSync(`${tempDir}/sapmover.exe`);
+        fs.statSync(`${tempDir}/aesni_test.exe`);
+        fs.statSync(`${tempDir}/winexec.exe`);
+        fs.statSync(`${tempDir}/rjlaunch.exe`);
+        fs.statSync(`${tempDir}/spawntest.exe`);
+        fs.statSync(`${tempDir}/rjfix.exe`);
+        fs.statSync(`${tempDir}/appmanifest_1714040.acf`);
+        const mk = fs.openSync(marker, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+        fs.closeSync(mk);
+        hilog.warn(DOMAIN, 'wine', 'diag-tools: chunkfetch2 staged');
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'diag-tools fail: %{public}s', JSON.stringify(e));
+      } finally {
+        try {
+          fs.unlinkSync(tmpZip);
+        } catch (_) {}
+      }
+    })();
+  }
+
+  // 一次性游戏搬运 (rawfile/game-transfer.zip): Super Auto Pets 离线安装包
+  // (条目根 = .wine/drive_c/Program Files (x86)/Steam/steamapps/...)。
+  // P1 绕过方案: 设备下载管线对特定 chunk 内容必败, 验证完整性只读本地
+  // 文件, 搬运后 Steam 即认已安装。幂等 marker=game-transfer-applied,
+  // 清单丢失 (prefix 重建) 自动重解压。
+  private ensureGameTransfer(): void {
+    if (!this.ctx) {
+      return;
+    }
+    const filesBase = WINE_PREFIX.substring(0, WINE_PREFIX.lastIndexOf('/'));
+    const target = `${filesBase}/.wine/drive_c/Program Files (x86)/Steam/steamapps/appmanifest_1714040.acf`;
+    const marker = `${filesBase}/game-transfer-applied`;
+    if (this.fileExists(marker)) {
+      try {
+        fs.statSync(target);
+        return;
+      } catch (_) {
+        try {
+          fs.unlinkSync(marker);
+        } catch (_) {}
+      }
+    }
+    const tmpZip = `${filesBase}/game-transfer-tmp.zip`;
+    (async (): Promise<void> => {
+      try {
+        const rm = this.ctx!.resourceManager;
+        const rawFd = rm.getRawFdSync('game-transfer.zip');
+        const dst = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+        const CHUNK = 1024 * 1024;
+        const buf = new ArrayBuffer(CHUNK);
+        let pos = rawFd.offset;
+        const end = rawFd.offset + rawFd.length;
+        while (pos < end) {
+          const toRead = Math.min(CHUNK, end - pos);
+          const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+          if (n <= 0) {
+            break;
+          }
+          fs.writeSync(dst.fd, buf, { length: n });
+          pos += n;
+        }
+        fs.closeSync(dst);
+        rm.closeRawFdSync('game-transfer.zip');
+        await zlib.decompressFile(tmpZip, filesBase, {});
+        fs.statSync(target);
+        const mk = fs.openSync(marker, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+        fs.closeSync(mk);
+        hilog.warn(DOMAIN, 'wine', 'game-transfer: Super Auto Pets installed');
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'game-transfer fail: %{public}s', JSON.stringify(e));
+      } finally {
+        try {
+          fs.unlinkSync(tmpZip);
+        } catch (_) {}
+      }
+    })();
   }
 
   // name 取文件名去 .exe 后缀
@@ -367,6 +642,7 @@ export class AppLibraryService {
       hidden: patch.hidden !== undefined ? patch.hidden : e.hidden,
       source: patch.source !== undefined ? patch.source : e.source,
       lastRun: patch.lastRun !== undefined ? patch.lastRun : e.lastRun,
+      launchArgs: patch.launchArgs !== undefined ? patch.launchArgs : e.launchArgs,
     };
   }
 
@@ -420,6 +696,12 @@ export class AppLibraryService {
   // 无条件 notify 会触发 mirror→ensureBuiltinTools→notify 无限递归 (栈溢出
   // 曾被 persist 的 catch 吞成 "persist fail: {}")
   ensureBuiltinTools(): void {
+    // Steam Legacy 预置解压 (幂等自带 marker 检查, 置顶触发 — 下方无变更
+    // 早退分支不能挡它, 否则第二次启动永远不解压)
+    this.ensureSteamLegacy();
+    this.ensureDnsapiPatch();
+    this.ensureDiagTools();
+    this.ensureGameTransfer();
     const driveC = `${WINE_PREFIX}/drive_c`;
     let changed = false;
     // 剔除失效内建条目: 旧版把 regedit 错记进 system32 (存在性检查写错,
@@ -507,8 +789,36 @@ export class AppLibraryService {
     }
   }
 
+  // 持久化条目启动参数 ("自定义启动"弹窗每次启动时回写; 清空输入 = 清除)。
+  // 条目不在库 (文件页库外直启) 时静默跳过 — map 自然空转
+  setLaunchArgs(path: string, args: string): void {
+    const normalized = args.trim();
+    this.entries = this.entries.map((e: AppEntry): AppEntry =>
+      e.path == path ? this.withField(e, { launchArgs: normalized }) : e);
+    this.persist();
+  }
+
+  // "启动参数"字符串 → argv 数组: 按空白切分, 多个空格/制表符都算分隔
+  // (不支持带引号的含空格参数 — 启动 flag 场景用不到); 空串/纯空白 → []
+  private parseLaunchArgs(s: string): string[] {
+    const trimmed = s.trim();
+    if (!trimmed) {
+      return [];
+    }
+    const argv: string[] = [];
+    const parts = trimmed.split(/\s+/);
+    for (const p of parts) {
+      if (p) {
+        argv.push(p);
+      }
+    }
+    return argv;
+  }
+
   // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env)。
-  // overrides 为"自定义启动"临时参数 (弹窗选一次, 不持久化):
+  // overrides 为"自定义启动"临时参数 (graphics/compatMode/winver 弹窗选一次
+  // 不持久化; launchArgs 例外 — 视图层在 launch 前经 setLaunchArgs 回写条目,
+  // 之后普通启动也自动带上):
   //   graphics    'wined3d'→WineD3D, 'dxvk'→DXVK; undefined = 跟随全局 d3dBackend
   //   compatMode  'stability'/'conservative'/'intermediate'/'performance'
   //               (对齐 Winlator 4 档位, 完整 11 参数注入);
@@ -545,10 +855,17 @@ export class AppLibraryService {
     if (winver) {
       environment['WINEHUA_WINDOWS_VERSION'] = winver;
     }
+    // 启动参数 → argv: 弹窗当次输入优先, 缺省回落条目持久化的 launchArgs
+    // (上次自定义启动记住的值); 都没有 = 空数组 (runWineProgram 原样透传)
+    const entry = this.entries.find((e: AppEntry) => e.path == path);
+    const argsSrc = overrides?.launchArgs ?? entry?.launchArgs ?? '';
+    const argv: string[] = this.parseLaunchArgs(argsSrc);
+    // 注意: 不可为 steam 注入任何 WINEDEBUG 调试通道 (+server/+font 等 stderr
+    // 洪水会塞满管道把整个会话拖死, 2026-09-04 三次冻结的根因)。
     const winPath = this.toWindowsPath(path, env.zHome);
     const result = testNapi.runWineProgram({
       windowsExePath: winPath,
-      argv: [],
+      argv: argv,
       environment: environment,
       workingDirectory: this.windowsParentDir(winPath),
       prefixMode: 'reuse',
@@ -559,7 +876,7 @@ export class AppLibraryService {
       presentBackend: d3dBackend.startsWith('dxvk_') || d3dBackend == 'vkd3d_limited_500k' ?
         'venus_broker_present' : 'virgl_compositor',
       automationMode: false
-    }) as ProcessInfo;
+    }) as object as ProcessInfo;
     if (result && result.pid > 0) {
       this.markLaunched(path);
       return result.pid;
@@ -596,7 +913,7 @@ export class AppLibraryService {
       presentBackend: d3dBackend.startsWith('dxvk_') || d3dBackend == 'vkd3d_limited_500k' ?
         'venus_broker_present' : 'virgl_compositor',
       automationMode: false
-    }) as ProcessInfo;
+    }) as object as ProcessInfo;
     return (result && result.pid > 0) ? result.pid : -1;
   }
 
@@ -616,7 +933,8 @@ export class AppLibraryService {
         favorite: e.favorite,
         builtin: e.builtin,
         hidden: e.hidden,
-        source: e.source
+        source: e.source,
+        launchArgs: e.launchArgs
       };
     });
     this.persist();

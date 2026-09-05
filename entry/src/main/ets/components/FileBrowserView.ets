@@ -781,17 +781,20 @@ export struct FileBrowserView {
   }
 
   // 自定义启动 (右键菜单 exe 分支): 弹窗选渲染策略 + 兼容模式档位 + Windows
-  // 版本 → 按临时参数启动一次 (不持久化)。onLaunch 里 launchExe(fullPath,
-  // { graphics, compatMode, winver }) 透传弹窗选择
+  // 版本 + 启动参数 → 按所选参数启动。文件页条目不在应用库, launchArgs 仅
+  // 当次生效 (service.launch 的 overrides 通道; 加入应用库后才会持久化记住)
   private customLaunch(entry: FileEntry): void {
     const path = this.fullPath(entry.name);
     this.customLaunchController = new CustomDialogController({
       builder: CustomLaunchDialog({
         exeName: entry.name,
+        initialArgs: '',
         onLaunch: (graphics?: 'dxvk' | 'wined3d',
                    compatMode?: 'stability' | 'conservative' | 'intermediate' | 'performance',
-                   winver?: string) => {
-          this.launchExe(path, { graphics: graphics, compatMode: compatMode, winver: winver });
+                   winver?: string,
+                   launchArgs?: string) => {
+          this.launchExe(path, { graphics: graphics, compatMode: compatMode, winver: winver,
+            launchArgs: launchArgs });
         }
       }),
       autoCancel: true
