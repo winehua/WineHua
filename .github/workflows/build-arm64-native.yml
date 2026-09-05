@@ -201,6 +201,7 @@ jobs:
       - name: Prepare llvm-mingw toolchain
         run: |
           set -euo pipefail
+          # 版本权威处 = scripts/env.sh 的 LLVM_MINGW_VERSION (本地/CI 同步维护)
           version=20260826
           name="llvm-mingw-${version}-ucrt-ubuntu-22.04-x86_64"
           if [ -x "${LLVM_MINGW:-}/bin/arm64ec-w64-mingw32-clang" ]; then
@@ -243,48 +244,15 @@ jobs:
           echo "== nproc =="
           nproc
 
-      # DXVK/VKD3D 是 x86 PE 运行时, 方案③ 经 wowbox64.dll/libarm64ecfex.dll
-      # (HODLL/HODLL64) 转译运行 x86/x64 应用时仍需要它们, 与方案② 相同.
-      - name: Build DXVK Legacy runtime (x64 + x86)
-        run: |
-          set -euxo pipefail
-          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 dxvk
-          for dll in \
-            build/dxvk/legacy/x64/bin/d3d11.dll \
-            build/dxvk/legacy/x64/bin/dxgi.dll \
-            build/dxvk/legacy/x86/bin/d3d11.dll \
-            build/dxvk/legacy/x86/bin/dxgi.dll; do
-            test -s "$dll"
-          done
-          sha256sum build/dxvk/legacy/{x64,x86}/bin/{d3d11,dxgi}.dll
-
-      - name: Build DXVK Modern runtime (x64 + x86)
-        run: |
-          set -euxo pipefail
-          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 dxvk-modern
-          for dll in \
-            build/dxvk/modern-2.6/x64/bin/d3d11.dll \
-            build/dxvk/modern-2.6/x64/bin/dxgi.dll \
-            build/dxvk/modern-2.6/x86/bin/d3d11.dll \
-            build/dxvk/modern-2.6/x86/bin/dxgi.dll; do
-            test -s "$dll"
-          done
-          sha256sum build/dxvk/modern-2.6/{x64,x86}/bin/{d3d11,dxgi}.dll
-
-      - name: Build VKD3D-Proton runtime (x64 limited-500K)
-        run: |
-          set -euxo pipefail
-          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 vkd3d-proton
-          for artifact in \
-            build/vkd3d-proton/limited-500k/x64/d3d12.dll \
-            build/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
-            build/vkd3d-proton/limited-500k/x64/triangle.exe \
-            build/vkd3d-proton/limited-500k/x64/gears.exe \
-            build/vkd3d-proton/limited-500k/manifest.json; do
-            test -s "$artifact"
-          done
-
-      - name: Build HAP
+      # ---- 完整复现本地流程: 一把 make 全链 ----
+      # 本地验证流程 = `make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64`
+      # (DEFAULT_GOAL=all → hap → assemble), Makefile 依赖链一次拉满
+      # deps/wine/fex/box64-wow64/native/host-vulkan/guest gfx+vulkan/
+      # dxvk (legacy 三图 + modern arm64x)/vkd3d (x64 单图, arm64x 已放弃) 并组装 HAP.
+      # 此前拆成 dxvk ×3 + hap 四步仅"理论等价"; 且 dxvk-modern 的断言用了
+      # 方案② 的 x64/x86 路径 (Makefile DXVK_MODERN_ARTIFACTS 按 WINE_ARCH
+      # 分支为 arm64x 双图), 方案③ 干净环境必挂 — 本地能过只因 build/ 残留.
+      - name: Build (make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64)
         env:
           NATIVE_ARCH: arm64-v8a
           WINE_ARCH: aarch64
@@ -295,7 +263,30 @@ jobs:
           BUILD_WINE_MONO: '1'
         run: |
           set -euxo pipefail
-          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 hap
+          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64
+          # Makefile 的 artifact 规则内部已带 test -s 断言; 此处按 Makefile
+          # aarch64 产物清单 (DXVK_ARTIFACTS / DXVK_MODERN_ARTIFACTS /
+          # VKD3D_PROTON_ARTIFACTS) 做最终汇总校验, 与本地产物布局完全一致.
+          for f in \
+            build/dxvk/legacy/x64/bin/d3d11.dll \
+            build/dxvk/legacy/x64/bin/dxgi.dll \
+            build/dxvk/legacy/x86/bin/d3d11.dll \
+            build/dxvk/legacy/x86/bin/dxgi.dll \
+            build/dxvk/legacy/arm64x/bin/d3d11.dll \
+            build/dxvk/legacy/arm64x/bin/dxgi.dll \
+            build/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
+            build/dxvk/modern-2.6/arm64x/bin/dxgi.dll \
+            build/vkd3d-proton/limited-500k/x64/d3d12.dll \
+            build/vkd3d-proton/limited-500k/x64/winehua-d3d12-smoke.exe \
+            build/vkd3d-proton/limited-500k/x64/triangle.exe \
+            build/vkd3d-proton/limited-500k/x64/gears.exe \
+            build/vkd3d-proton/limited-500k/x64/manifest.json; do
+            test -s "$f" || { echo "ERROR: missing $f" >&2; exit 1; }
+          done
+          sha256sum build/dxvk/legacy/{x64,x86,arm64x}/bin/d3d11.dll \
+                    build/dxvk/legacy/{x64,x86,arm64x}/bin/dxgi.dll \
+                    build/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
+                    build/dxvk/modern-2.6/arm64x/bin/dxgi.dll
 
       - name: Locate artifacts
         id: art
@@ -378,7 +369,12 @@ jobs:
                   assert runtime["commit"] == expected["commit"], (
                       profile, runtime["commit"], expected["commit"]
                   )
-                  for arch, expected_machine in (("x64", 0x8664), ("x86", 0x014C)):
+                  # 方案③ 下 modern 的 x64 overlay 由 arm64x 取代 (
+                  # wine_env.cpp overlay64 → arm64x, FEX native view),
+                  # manifest 中 x64 的 sha 记空、不打包实际文件;
+                  # legacy 仍是 x64+x86 双图。按 profile 分派断言架构。
+                  arches = [("x64", 0x8664), ("x86", 0x014C)] if profile == "legacy" else [("x86", 0x014C)]
+                  for arch, expected_machine in arches:
                       for dll in ("d3d11.dll", "dxgi.dll"):
                           name = f"dxvk/{profile}/{arch}/{dll}"
                           image = wine_data.read(name)
@@ -391,6 +387,21 @@ jobs:
                               name, hex(machine), hex(expected_machine)
                           )
                           assert runtime[arch][dll] == hashlib.sha256(image).hexdigest(), name
+                          print(
+                              f"[dxvk/{profile}] {name}: "
+                              f"machine={machine:#06x} size={len(image)}"
+                          )
+                  if profile == "modern-2.6":
+                      # 方案③ 专属: ARM64X 双图 DLL 在 wine-data 中但不在 manifest
+                      for dll in ("d3d11.dll", "dxgi.dll"):
+                          name = f"dxvk/modern-2.6/arm64x/{dll}"
+                          image = wine_data.read(name)
+                          assert len(image) > 4096, (name, len(image))
+                          assert image[:2] == b"MZ", name
+                          pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                          assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                          machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                          assert machine == 0xAA64, (name, hex(machine))
                           print(
                               f"[dxvk/{profile}] {name}: "
                               f"machine={machine:#06x} size={len(image)}"

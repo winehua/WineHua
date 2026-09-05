@@ -8,8 +8,8 @@
 #
 # Wine configure 探测 gstreamer-1.0/video/audio/tag 四个 .pc:
 #   core 出 gstreamer-1.0 / gstreamer-base-1.0, base 的 gst-libs 出 video/audio/tag。
-# 全部直接装 sysroot-ext (prefix=$SYSROOT_EXT/usr, libdir=lib/x86_64-linux-ohos),
-# 与 gnutls 链不同 (那套走 staging 中转, 因库间用 pkg-config 互相找)。
+# 全部直接装 sysroot-ext (prefix=$SYSROOT_EXT/usr, libdir=lib/$TARGET,
+# 按 WINE_ARCH 隔离), 与 gnutls 链不同 (那套走 staging 中转, 因库间用 pkg-config 互相找)。
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
@@ -46,7 +46,7 @@ mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$BUILD_DIR"
 
 CROSS_CFLAGS="-O2 -fPIC -D__MUSL__"
 CROSS_LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET"
-# pkgconfigdir = libdir/pkgconfig (x86_64-linux-ohos 子目录) — 两个路径都要
+# pkgconfigdir = libdir/pkgconfig ($TARGET 子目录) — 两个路径都要
 export PKG_CONFIG_PATH="$SYSROOT_EXT_PC:$GST_LIBDIR/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
 export CFLAGS="-I$SYSROOT_EXT_INC $CROSS_CFLAGS"
 export LDFLAGS="-L$SYSROOT_EXT_LIB $CROSS_LDFLAGS"
@@ -233,7 +233,7 @@ for f in "$SYSROOT_EXT_INC"/glib-2.0/*; do
     b="$(basename "$f")"
     [ -e "$SYSROOT_EXT_INC/$b" ] || ln -sfn "glib-2.0/$b" "$SYSROOT_EXT_INC/$b"
 done
-# glibconfig.h 是构建产物头, meson 按 libdir 装 (lib/x86_64-linux-ohos/glib-2.0/include/)
+# glibconfig.h 是构建产物头, meson 按 libdir 装 (lib/$TARGET/glib-2.0/include/)
 ln -sfn ../lib/$TARGET/glib-2.0/include/glibconfig.h "$SYSROOT_EXT_INC/glibconfig.h"
 ln -sfn gstreamer-1.0/gst "$SYSROOT_EXT_INC/gst"
 
@@ -289,7 +289,7 @@ if [ -d "$BAD_SRC" ] && \
     sed -i "s/^subdir('cuda')/# subdir('cuda') # disabled: musl C++ link/" \
         "$BAD_SRC/gst-libs/gst/meson.build"
     meson setup "$build" "$BAD_SRC" --cross-file "$(gen_cross_file)" \
-        --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos --wrap-mode=nofallback \
+        --prefix="$GST_PREFIX" -Dlibdir=lib/$TARGET --wrap-mode=nofallback \
         -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \
         -Dauto_features=disabled -Dgpl=disabled -Dexamples=disabled -Dtests=disabled \
         -Dvideoparsers=enabled -Dasfmux=enabled \
@@ -312,7 +312,7 @@ if [ -d "$UGLY_SRC" ] && \
     build="$BUILD_DIR/gst_ugly_build"
     rm -rf "$build"
     meson setup "$build" "$UGLY_SRC" --cross-file "$(gen_cross_file)" \
-        --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos --wrap-mode=nofallback \
+        --prefix="$GST_PREFIX" -Dlibdir=lib/$TARGET --wrap-mode=nofallback \
         -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \
         -Dauto_features=disabled -Dgpl=disabled -Dnls=disabled -Dtests=disabled -Ddoc=disabled \
         -Dasfdemux=enabled

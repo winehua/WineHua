@@ -22,16 +22,13 @@ command -v glslangValidator >/dev/null 2>&1 || \
 
 # ── 工具链: ARM64X 需要 20260826+ ──
 find_arm64x_mingw() {
-    for d in "${ARM64X_MINGW:-}" \
-             "$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64" \
-             "/data/share/winebox/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64"; do
-        [ -n "${d:-}" ] && [ -x "$d/bin/clang" ] && { echo "$d"; return 0; }
+    # 同 build_dxvk_arm64x.sh: LLVM_MINGW 由 env.sh 保证 (自动下载+双图校验)
+    for d in "${ARM64X_MINGW:-}" "${LLVM_MINGW:-}"; do
+        [ -n "${d:-}" ] && [ -x "$d/bin/clang" ] && \
+            "$d/bin/llvm-ar" t "$d/aarch64-w64-mingw32/lib/libc++.a" 2>/dev/null | grep -q 'obj\.arm64ec/' && \
+            { echo "$d"; return 0; }
     done
-    err "ARM64X 构建需要 llvm-mingw 20260826+ (20260616 无 ARM64EC C++ 库)。
-  可用 CI 同款下载命令:
-    curl -fL -o \$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz \
-      https://github.com/mstorsjo/llvm-mingw/releases/download/20260826/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz
-    tar -xJf \$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz -C \$ROOT/.temp"
+    err "ARM64X 构建需要 llvm-mingw ${LLVM_MINGW_VERSION} 双图工具链 (见 scripts/env.sh 的自动下载逻辑, 或 export LLVM_MINGW=...)。"
 }
 MGW="$(find_arm64x_mingw)"
 CLANG="$MGW/bin/clang"
@@ -71,7 +68,7 @@ done
       "$GEN/pnp-id-table.c" pnp_id_table 2>/dev/null || true
 
 # ── 4) -marm64x 单遍编译 (每源一个 AA+EC 双图对象) ──
-CFLAGS="-std=c++17 -DNOMINMAX -D_WIN32_WINNT=0xa00 \
+CFLAGS="-std=c++17 -DNOMINMAX -D_WIN32_WINNT=0xa00 -DDXVK_WSI_WIN32 \
   -I$DXVK_MODERN_SRC/src -I$DXVK_MODERN_SRC/include \
   -I$DXVK_MODERN_SRC/include/vulkan/include \
   -I$DXVK_MODERN_SRC/include/spirv/include -I$DXVK_MODERN_SRC/include/native \
@@ -90,6 +87,11 @@ SRCS=$(find "$DXVK_MODERN_SRC/src/wsi" "$DXVK_MODERN_SRC/src/util" "$DXVK_MODERN
 SRCS="$SRCS $(find "$DXVK_MODERN_SRC/subprojects/libdisplay-info" -maxdepth 1 -name '*.c' 2>/dev/null)"
 SRCS="$SRCS $GEN/pnp-id-table.c"
 
+# 编译参数指纹 (增量 skip 不感知 CFLAGS 变化, 见 build_dxvk_arm64x.sh 注释)
+fp="$(printf '%s\n%s\n%s' "$CFLAGS" "$CFLAGS_C" "${CFLAGS_EXTRA:-}" | sha256sum | awk '{print $1}')"
+fp_file="$OBJD/.cflags_fp"
+[ -f "$fp_file" ] && [ "$(cat "$fp_file" 2>/dev/null)" = "$fp" ] || { rm -rf "$OBJD"; mkdir -p "$OBJD"; }
+printf '%s\n' "$fp" > "$fp_file"
 N=0
 for s in $SRCS; do
     if [[ "$s" == $DXVK_MODERN_SRC/src/* ]]; then
@@ -152,6 +154,8 @@ link_profile() {
     "$CLANG" --target=aarch64-w64-mingw32 -marm64x -c "$shim" -o "$BUILD/$dll.exports.o"
 
     log "Linking $dll.dll (${#objs[@]} objects)..."
+    # 静态 .a + --start-group 三件套 (见 build_dxvk_arm64x.sh 同款注释;
+    # --- 注释必须在命令块之前, 续行中插 # 会注释掉整条链接命令 ---)
     "$CLANG" --target=aarch64-w64-mingw32 -marm64x -shared \
         -o "$BIN/$dll.dll" \
         -Wl,--out-implib="$ARM64X_ROOT/$dll.lib" \
@@ -160,7 +164,11 @@ link_profile() {
         $extra_implib \
         "$BUILD_DIR/wine-ohos-$WINE_ARCH/dlls/vulkan-1/aarch64-windows/libvulkan-1.a" \
         -L"$MGW/aarch64-w64-mingw32/lib" \
-        -lc++abi -lunwind -lc++ \
+        -Wl,--start-group \
+            "$MGW/aarch64-w64-mingw32/lib/libc++abi.a" \
+            "$MGW/aarch64-w64-mingw32/lib/libunwind.a" \
+            "$MGW/aarch64-w64-mingw32/lib/libc++.a" \
+        -Wl,--end-group \
         -lole32 -loleaut32 -ldwmapi -lwinmm -limm32 -lcomdlg32 -luxtheme -lsetupapi \
         -lshlwapi -lws2_32 -liphlpapi -lgdi32 \
         2> "$BIN/$dll.link.log" || {
@@ -171,6 +179,17 @@ link_profile() {
     headers="$("$LLVM_READOBJ" --file-headers "$BIN/$dll.dll")"
     echo "$headers" | grep -q '0xA641' || \
         err "$dll.dll is not ARM64X (missing ARM64EC subimage)"
+    # 产物级断言: WSI 必须编译进 Win32 路径。无 -DDXVK_WSI_WIN32 时运行时抛
+    # "DXVK_WSI_DRIVER environment variable unset" → DXGI factory 失败 → d3d11/d3d12 全灭
+    # (本会话实测: 增量 skip 吞掉 CFLAGS 变化的根因)。字符串仍在 → 宏没生效。
+    # 注: 不能用 `grep -q X && err` —— 函数内 && 列表失败状态会泄漏给调用方,
+    # set -e 静默杀掉脚本 (无 err 消息)。统一用计数式: 通过路径返回 0。
+    n=$(grep -ac 'DXVK_WSI_DRIVER environment variable unset' "$BIN/$dll.dll" || true)
+    [ "$n" = 0 ] || err "$dll.dll compiled without -DDXVK_WSI_WIN32"
+    # 产物级断言: C++ 运行时必须静态进 DLL (与 build_dxvk_arm64x.sh 同款说明)
+    imports="$("$LLVM_READOBJ" --coff-imports "$BIN/$dll.dll")"
+    n=$(echo "$imports" | grep -ci 'libc++\|libunwind' || true)
+    [ "$n" = 0 ] || err "$dll.dll dynamically links libc++/libunwind, should be static"
 }
 
 link_profile dxgi

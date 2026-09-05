@@ -406,6 +406,19 @@ assemble_pad() {
         else
             warn "wowbox64.dll 未找到！请先执行: bash scripts/build_box64_wow64.sh"
         fi
+        # libc++/libunwind runtime (防御): arm64x DLL 现以静态 .a
+        # --start-group 链接, 正常不再依赖运行时; 若未来换工具链/改造
+        # 恢复动态依赖, system32 (bin/aarch64-windows/) 缺失即 c0000135
+        # (实测 2026-09-05 "Library libc++.dll ... not found" 即此坑)。
+        for rt in libc++.dll libunwind.dll; do
+            rt_src="$LLVM_MINGW/aarch64-w64-mingw32/bin/$rt"
+            if [ -f "$rt_src" ]; then
+                cp "$rt_src" "$wine_data/bin/$wine_pe_dir/"
+                log "    $rt → rawfile $wine_pe_dir/ (arm64x runtime)"
+            else
+                warn "arm64x runtime $rt 未找到 ($rt_src)"
+            fi
+        done
     fi
 
     # -- 2. PE DLL + 数据文件 → rawfile (两种架构共用) --
@@ -613,6 +626,15 @@ assemble_pad() {
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/arm64x/dxgi.dll"
         copy_arm64x_cxx_runtime "$wine_data/dxvk/legacy/arm64x"
+        # WineHua loader 钩子 (ntdll/loader.c search_winehua_dxvk_overlay) 只拼
+        # WINEHUA_DXVK_ROOT 下的 x64/x86 子目录 (archW 数组无 arm64x): 方案③
+        # 必须把 arm64x 双图内容同时放入 x64/ 目录名让钩子命中, 否则钩子 miss
+        # → native 搜索失败直接 c0000135 (实测 2026-09-05: WINEDLLPATH 兜底只
+        # 救 dxvk/d3d11, vkd3d/d3d12 必挂)。
+        mkdir -p "$wine_data/dxvk/legacy/x64"
+        cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
+        cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
+        copy_arm64x_cxx_runtime "$wine_data/dxvk/legacy/x64"
     fi
     local dxvk_modern_root="$DXVK_MODERN_BUILD_ROOT"
     [ -f "$dxvk_modern_root/x86/bin/d3d11.dll" ] || err "DXVK Modern x86 d3d11.dll missing: $dxvk_modern_root/x86/bin/d3d11.dll"
@@ -641,25 +663,31 @@ assemble_pad() {
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/arm64x/dxgi.dll"
         copy_arm64x_cxx_runtime "$wine_data/dxvk/modern-2.6/arm64x"
+        # 同 legacy: loader 钩子只认 x64/, arm64x 内容镜像一份 (见上方注释)
+        mkdir -p "$wine_data/dxvk/modern-2.6/x64"
+        cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
+        cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
+        copy_arm64x_cxx_runtime "$wine_data/dxvk/modern-2.6/x64"
     fi
     local vkd3d_root="$VKD3D_PROTON_BUILD_ROOT/limited-500k"
     [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \
         err "VKD3D-Proton x64 graphics smoke missing: $vkd3d_root/x64/winehua-d3d12-smoke.exe"
     [ -f "$vkd3d_root/manifest.json" ] || err "VKD3D-Proton manifest missing: $vkd3d_root/manifest.json"
-    # 方案③ ARM64X d3d12.dll: wine_env.cpp 把 vkd3d overlay64 指向 arm64x
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        local d3d12_arm64x="$vkd3d_root/arm64x/bin/d3d12.dll"
-        [ -f "$d3d12_arm64x" ] || err "VKD3D-Proton ARM64X d3d12.dll missing: $d3d12_arm64x"
-        mkdir -p "$wine_data/vkd3d/limited-500k/arm64x"
-        cp "$d3d12_arm64x" "$wine_data/vkd3d/limited-500k/arm64x/d3d12.dll"
-        copy_arm64x_cxx_runtime "$wine_data/vkd3d/limited-500k/arm64x"
-    else
-        # 方案③ 下 x64/d3d12.dll 由 arm64x 取代; 方案①/② (x86_64 wine) 需要
-        [ -f "$vkd3d_root/x64/d3d12.dll" ] || \
-            err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
-        mkdir -p "$wine_data/vkd3d/limited-500k/x64"
-        cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
-    fi
+    # 方案③: d3d12 固定用 x86_64 单图 (FEX 转译执行)。
+    # vkd3d arm64x 弃用结论 (2026-09-05 最终决策, 不再重试):
+    #   * 手搓链路用 --target=aarch64-w64-mingw32 -marm64x: 该 clang 对
+    #     -marm64x 静默忽略, 产物 = ARM64X 壳但仅 AA64 单子图 (假双图),
+    #     x64 guest 加载后执行形态错误 → buffer 回读 (vkCmdCopyBuffer 链)
+    #     全 0, fence 却正常信号;
+    #   * 真 ARM64EC (-target=arm64ec-w64-mingw32, meson cross 已验证可产出
+    #     0xA641) 在 libarm64ecfex 桥上 D3D12CreateDevice 阶段崩溃。
+    #   * 对照: dxvk 的 arm64x 为真双图 (0xA64E+0xA641), 与以上无关, 保留。
+    # x64 单图 = 09-01 验证过的 "d12 能跑" 基线同款机制, 新特性 HAP 上实测 PASS。
+    # (方案①/②/③ 统一: d3d12 均为 x64 单图)
+    [ -f "$vkd3d_root/x64/d3d12.dll" ] || \
+        err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
+    mkdir -p "$wine_data/vkd3d/limited-500k/x64"
+    cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
     # Keep the upstream VKD3D-Proton demos available as ordinary managed
     # C:\\smoke programs. They are test assets, not runtime DLLs.
     # Prefer demos built with this limited-500K profile so CI does not depend

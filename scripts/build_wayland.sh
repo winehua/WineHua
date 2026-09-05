@@ -29,13 +29,15 @@ build_scanner() {
             "$SCRIPT_DIR/ohos-sign-elf.py" "$host_prefix"
         fi
     else
-        mkdir -p /tmp/wayland_native
-        meson setup /tmp/wayland_native "$WL_SRC" \
+        # 系统 /tmp 会丢增量 + 多用户冲突; 放 BUILD_DIR (env.sh 机位参数化)
+        local host_build="$BUILD_DIR/wayland_native"
+        mkdir -p "$host_build"
+        meson setup "$host_build" "$WL_SRC" \
             --prefix /usr/local -Ddocumentation=false -Dtests=false --buildtype=release
-        ninja -C /tmp/wayland_native
-        ninja -C /tmp/wayland_native install
+        ninja -C "$host_build"
+        ninja -C "$host_build" install
     fi
-    log "wayland-scanner: $(which wayland-scanner)"
+    log "wayland-scanner: $(which wayland-scanner 2>/dev/null || echo "$WAYLAND_SCANNER")"
 }
 
 log "=== 构建 Wayland ($WINE_ARCH) ==="

@@ -19,16 +19,14 @@ source "$SCRIPT_DIR/env.sh"
 command -v glslangValidator >/dev/null 2>&1 || err "glslangValidator missing"
 
 find_arm64x_mingw() {
-    for d in "${ARM64X_MINGW:-}" \
-             "$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64" \
-             "/data/share/winebox/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64"; do
-        [ -n "${d:-}" ] && [ -x "$d/bin/clang" ] && { echo "$d"; return 0; }
+    # env.sh 已确保 LLVM_MINGW 就绪 (缺失自动下载/显式报错 + 双图校验);
+    # ARM64X_MINGW 仅作显式覆盖 (直接跑本脚本、绕过 env 链时用)。
+    for d in "${ARM64X_MINGW:-}" "${LLVM_MINGW:-}"; do
+        [ -n "${d:-}" ] && [ -x "$d/bin/clang" ] && \
+            "$d/bin/llvm-ar" t "$d/aarch64-w64-mingw32/lib/libc++.a" 2>/dev/null | grep -q 'obj\.arm64ec/' && \
+            { echo "$d"; return 0; }
     done
-    err "ARM64X 构建需要 llvm-mingw 20260826+ (20260616 无 ARM64EC C++ 库)。
-  可用 CI 同款下载命令:
-    curl -fL -o \$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz \
-      https://github.com/mstorsjo/llvm-mingw/releases/download/20260826/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz
-    tar -xJf \$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64.tar.xz -C \$ROOT/.temp"
+    err "ARM64X 构建需要 llvm-mingw ${LLVM_MINGW_VERSION} 双图工具链 (见 scripts/env.sh 的自动下载逻辑, 或 export LLVM_MINGW=...)。"
 }
 MGW="$(find_arm64x_mingw)"
 CLANG="$MGW/bin/clang"
@@ -68,6 +66,12 @@ SRCS=$(find "$DXVK_SRC/src/util" "$DXVK_SRC/src/spirv" "$DXVK_SRC/src/vulkan" \
            "$DXVK_SRC/src/dxvk" "$DXVK_SRC/src/dxbc" "$DXVK_SRC/src/dxgi" "$DXVK_SRC/src/d3d10" \
            "$DXVK_SRC/src/d3d11" "$DXVK_SRC/src/d3d9" "$DXVK_SRC/src/dxso" \
            \( -name '*.cpp' -o -name '*.c' \) 2>/dev/null)
+# 编译参数指纹: 增量 skip ([ -f "$obj" ] && continue) 不感知 CFLAGS 变化,
+# 宏/选项变动必须重编 (2026-09-05 实测: -DDXVK_WSI_WIN32 加了却不生效)。
+fp="$(printf '%s\n%s\n%s' "$CFLAGS" "$CFLAGS_C" "${CFLAGS_EXTRA:-}" | sha256sum | awk '{print $1}')"
+fp_file="$OBJD/.cflags_fp"
+[ -f "$fp_file" ] && [ "$(cat "$fp_file" 2>/dev/null)" = "$fp" ] || { rm -rf "$OBJD"; mkdir -p "$OBJD"; }
+printf '%s\n' "$fp" > "$fp_file"
 N=0
 for s in $SRCS; do
     rel=${s#$DXVK_SRC/src/}
@@ -118,6 +122,13 @@ link_profile() {
     "$CLANG" --target=aarch64-w64-mingw32 -marm64x -c "$shim" -o "$BUILD/$dll.exports.o"
 
     log "Linking $dll.dll (${#objs[@]} objects)..."
+    # libc++/libunwind 必须直给 .a 静态库并包 --start-group:
+    # a) `-lc++` 解析到 libc++.dll.a (import 库), 但 dxvk 对象是
+    #    非 imp 引用 (U _ZNSt3__1...), import 库无法满足 → undefined;
+    # b) 双图 .a 成员 (root=ARM64, obj.arm64ec/=ARM64EC) 需循环扫描
+    #    才能让 EC 侧成员被拉入 (单遍会漏选 EC 成员 → undefined native)。
+    # 注意: 注释必须放在命令块之前, 不能插在 `\` 续行中间 (会注释掉
+    # 整条链接命令, 2026-09-05 实测 3 次全被这个坑绊住)。
     "$CLANG" --target=aarch64-w64-mingw32 -marm64x -shared \
         -o "$BIN/$dll.dll" \
         -Wl,--out-implib="$ARM64X_ROOT/$dll.lib" \
@@ -126,7 +137,11 @@ link_profile() {
         $extra_implib \
         "$BUILD_DIR/wine-ohos-$WINE_ARCH/dlls/vulkan-1/aarch64-windows/libvulkan-1.a" \
         -L"$MGW/aarch64-w64-mingw32/lib" \
-        -lc++abi -lunwind -lc++ \
+        -Wl,--start-group \
+            "$MGW/aarch64-w64-mingw32/lib/libc++abi.a" \
+            "$MGW/aarch64-w64-mingw32/lib/libunwind.a" \
+            "$MGW/aarch64-w64-mingw32/lib/libc++.a" \
+        -Wl,--end-group \
         -lole32 -loleaut32 -ldwmapi -lwinmm -limm32 -lcomdlg32 -luxtheme -lsetupapi \
         -lshlwapi -lws2_32 -liphlpapi -lgdi32 \
         2> "$BIN/$dll.link.log" || {
@@ -136,6 +151,13 @@ link_profile() {
     headers="$("$LLVM_READOBJ" --file-headers "$BIN/$dll.dll")"
     echo "$headers" | grep -q '0xA641' || \
         err "$dll.dll is not ARM64X (missing ARM64EC subimage)"
+    # 产物级断言: C++ 运行时必须静态进 DLL。导入表出现 libc++/libunwind 意味着
+    # -lc++ 被解析回 .dll.a 动态依赖 → guest 启动即 c0000135 (本会话实测)。
+    # 注: 不能用 `grep -q X && err` —— 函数内 && 列表失败状态会泄漏给调用方,
+    # set -e 静默杀掉脚本 (无 err 消息)。统一用计数式: 通过路径返回 0。
+    imports="$("$LLVM_READOBJ" --coff-imports "$BIN/$dll.dll")"
+    n=$(echo "$imports" | grep -ci 'libc++\|libunwind' || true)
+    [ "$n" = 0 ] || err "$dll.dll dynamically links libc++/libunwind, should be static"
 }
 
 link_profile dxgi

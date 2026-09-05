@@ -14,6 +14,12 @@ case "$GUEST_ARCH" in
     aarch64|x86_64) ;;
     *) err "guest Vulkan requires GUEST_ARCH=aarch64 or x86_64, got $GUEST_ARCH" ;;
 esac
+# 编译目标 (WINE_ARCH) 与输出目录/ICD 文件名 (GUEST_ARCH) 必须同键:
+# breadcrumb 不同 ⇒ loader/ICD 按 GUEST_ARCH 目录名打包而运行时按 WINE_ARCH
+# 读 venus_icd.<arch>.json, 静默错位。当前三方案均等值, 显式覆盖不一致即拒绝。
+if [ "$GUEST_ARCH" != "$WINE_ARCH" ]; then
+    err "GUEST_ARCH=$GUEST_ARCH 与 WINE_ARCH=$WINE_ARCH 不一致: guest Vulkan 栈与 wine 必须同架构"
+fi
 
 LOADER_TAG="v1.3.290"
 LOADER_COMMIT="f8616928ee19f6c7fd648c1cf1f456cba3771855"
@@ -32,7 +38,9 @@ LOADER_PATCH="$ROOT/patches/vulkan-loader-v1.3.290-ohos.patch"
 fetch_pinned_source() {
     local url="$1" tag="$2" commit="$3" destination="$4"
     if [ ! -d "$destination/.git" ]; then
-        [ ! -e "$destination" ] || err "incomplete managed source exists: $destination"
+        # clone 中断残留 → 删除重取 (与 build_ohos_guest_gfx.sh 的
+        # fetch 处理对齐); 否则一次中断后脚本永久锁死
+        [ ! -e "$destination" ] || { rm -rf "$destination"; log "清除不完整的 $destination 并重新 clone"; }
         git clone --depth 1 --branch "$tag" "$url" "$destination"
     fi
     local actual

@@ -53,21 +53,22 @@ endif
 DXVK_STAMP := $(STAMPS)/dxvk-legacy-$(WINE_ARCH)
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
 # dxvk-modern 产物按 WINE_ARCH 分支:
-#   方案③ (arm64 原生 wine + FEX): ARM64X 双图 DLL (FEX native view 执行);
+#   方案③ (arm64 原生 wine + FEX): x86 (32 位 i386 应用必需, arm64x 只能顶替
+#     x64 不能顶替 x86) + ARM64X 双图 (x64 overlay → arm64x, FEX native view);
 #   方案①/②: 经典 x64/x86 转译版本 (meson cross)。
-#   stamp 同样按 WINE_ARCH 隔离, 避免两方案互相吞 stamp。
+#   stamp 按 WINE_ARCH 隔离, 避免两方案互相吞 stamp。
 ifeq ($(WINE_ARCH),aarch64)
 DXVK_MODERN_ARTIFACTS := \
+	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/arm64x/bin/dxgi.dll
-DXVK_MODERN_BUILD := build_dxvk_modern_arm64x.sh
 else
 DXVK_MODERN_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/dxgi.dll
-DXVK_MODERN_BUILD := build_dxvk_modern.sh
 endif
 DXVK_MODERN_STAMP := $(STAMPS)/dxvk-modern-2.6-$(WINE_ARCH)
 DXVK_MODERN_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk-modern/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk-modern -maxdepth 1 -type f 2>/dev/null)
@@ -77,10 +78,11 @@ VKD3D_PROTON_ARTIFACTS := \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/triangle.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/gears.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/manifest.json
-# 方案③ (aarch64): 追加 ARM64X d3d12.dll (FEX native view); stamp 按 WINE_ARCH 隔离
-ifeq ($(WINE_ARCH),aarch64)
-VKD3D_PROTON_ARTIFACTS += $(BUILD_DIR)/vkd3d-proton/limited-500k/arm64x/bin/d3d12.dll
-endif
+# 方案③ (aarch64): d3d12 固定 x64 单图 + FEX 转译执行 (与 09-01 可跑基线同机制)。
+# vkd3d arm64x 已放弃 (2026-09-05 最终决策): 手搓 -marm64x 被 clang 静默忽略
+# → 产物是 "空 ARM64X (仅 AA64 单子图)" 假双图, 加载后数据回读全 0; 改用真
+# ARM64EC (-target=arm64ec-w64-mingw32, meson cross 已验证可产出) 后在
+# libarm64ecfex 桥上 D3D12CreateDevice 阶段崩溃。见 scripts/assemble.sh 注释。
 VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k-$(WINE_ARCH)
 VKD3D_PROTON_SOURCE_INPUTS := $(shell find $(ROOT)/patches/vkd3d-proton -type f 2>/dev/null; \
 	find $(ROOT)/thirdparty/vkd3d-proton -maxdepth 2 -type f 2>/dev/null)
@@ -94,7 +96,7 @@ DEPS_SENTINEL   := $(BUILD_DIR)/sysroot-ext/usr/lib/$(WINE_ARCH)-linux-ohos/libf
 WINE_SENTINEL   := $(BUILD_DIR)/wine-native/tools/winegcc/winegcc
 GUEST_GFX_SENTINEL := $(BUILD_DIR)/guest_gfx/$(GUEST_ARCH)/winehua-guest-gfx.env
 GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
-WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-ohos/share/wine/mono/wine-mono-11.1.0-x86.msi
+WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-mono/wine-mono-11.1.0-x86.msi
 HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
 
 # Guest runtime build scripts can also be invoked directly while iterating on
@@ -111,7 +113,11 @@ endif
 .PHONY: dxvk
 dxvk: $(DXVK_STAMP)
 
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) $(if $(filter aarch64,$(WINE_ARCH)),$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)) | $(STAMPS)
+# arm64x 链接引用 wine 构建的 import lib (dlls/vulkan-1/aarch64-windows/libvulkan-1.a):
+# 必须显式前置 wine stamp, 否则干净环境 (无残留 build/) 中 dxvk 先于 wine 构建
+# → 链接失败 (CI 实测 2026-09-04: "no such file ... libvulkan-1.a")。
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) \
+	$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
 	@echo "=== dxvk legacy ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk.sh
 	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_dxvk_arm64x.sh; fi
@@ -131,9 +137,11 @@ $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 .PHONY: dxvk-modern
 dxvk-modern: $(DXVK_MODERN_STAMP)
 
-$(DXVK_MODERN_STAMP): $(SCRIPTS)/$(DXVK_MODERN_BUILD) $(DXVK_MODERN_SOURCE_INPUTS) | $(STAMPS)
+$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(SCRIPTS)/build_dxvk_modern_arm64x.sh $(DXVK_MODERN_SOURCE_INPUTS) \
+	$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
 	@echo "=== dxvk modern 2.6 ($(WINE_ARCH)) ==="
-	bash $(SCRIPTS)/$(DXVK_MODERN_BUILD)
+	bash $(SCRIPTS)/build_dxvk_modern.sh
+	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_dxvk_modern_arm64x.sh; fi
 	touch $@
 
 $(DXVK_MODERN_ARTIFACTS): $(DXVK_MODERN_STAMP)
@@ -143,15 +151,16 @@ ASSEMBLE_GUEST_INPUTS += $(wildcard $(GUEST_VULKAN_SENTINEL))
 endif
 
 # ============================================================
-# vkd3d-proton — x64-only, explicit, default-off 2.6 limited-500K profile
+# vkd3d-proton — x64 单图产物 (所有架构一致; arm64x 已放弃, 见上注释);
+# explicit, default-off 2.6 limited-500K profile
 # ============================================================
 .PHONY: vkd3d-proton
 vkd3d-proton: $(VKD3D_PROTON_STAMP)
 
-$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(SCRIPTS)/build_vkd3d_proton_arm64x.sh $(VKD3D_PROTON_SOURCE_INPUTS) | $(STAMPS)
+$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_INPUTS) \
+	$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
 	@echo "=== vkd3d-proton 2.6 limited-500K ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_vkd3d_proton.sh
-	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_vkd3d_proton_arm64x.sh; fi
 	touch $@
 
 $(VKD3D_PROTON_ARTIFACTS): $(VKD3D_PROTON_STAMP)
@@ -262,7 +271,6 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	    ! [ "$(SCRIPTS)/build_xkbcommon.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbconfig.sh" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/guest_vulkan_smoke.c" -nt $@ ] && \
-	    ! [ "$(ROOT)/smoke/guest_vulkan_smoke.c" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/venus_sampled_image_probe.c" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/venus_depth_cube_probe.inc" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/venus_depth_cube_graphics_replay.inc" -nt $@ ] && \
@@ -295,6 +303,9 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	           $(ROOT)/thirdparty/xkeyboard-config \
 	           $(ROOT)/thirdparty/mesa \
 	           $(ROOT)/thirdparty/libdrm \
+	           $(ROOT)/thirdparty/glib \
+	           $(ROOT)/thirdparty/pcre2 \
+	           $(ROOT)/thirdparty/gstreamer \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
 	              -o -name 'meson.build' -o -name 'CMakeLists.txt' \
@@ -336,13 +347,17 @@ $(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.s
 # fex — FEX arm64ec 模拟器 (arm64 原生 wine 转译 x86_64 应用, libarm64ecfex.dll)
 # ============================================================
 .PHONY: fex
-fex: $(STAMPS)/fex-arm64-v8a
+# fex stamp 按 WINE_ARCH 隔离 (同 wine): 方案② (WINE_ARCH=x86_64, 不需要 fex)
+# 会 skip-touch 该 stamp; 若与方案③ 共享, 方案③ 将复用方案② 的 stamp 永不构建
+# fex → assemble 缺 libarm64ecfex.dll。skip-touch 分支同样不落共享 stamp。
+fex: $(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/fex-arm64-v8a: $(SCRIPTS)/build_fex.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
+$(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_fex.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
 	@if [ "$(WINE_ARCH)" = "x86_64" ]; then \
 	    echo "  [fex] skip (x86_64)"; \
 	    mkdir -p $(dir $@) && touch $@; \
 	elif [ -f $@ ] && \
+	    [ -f $(BUILD_DIR)/fex-ec/Bin/libarm64ecfex.dll ] && \
 	    ! [ "$(SCRIPTS)/build_fex.sh" -nt $@ ] && \
 	    ! find $(ROOT)/thirdparty/fex \
 	           -newer $@ -type f \
@@ -360,9 +375,11 @@ $(STAMPS)/fex-arm64-v8a: $(SCRIPTS)/build_fex.sh $(SCRIPTS)/env.sh FORCE | $(STA
 #         (arm64 设备 + x86_64 wine 全转译; NATIVE_ARCH=arm64-v8a + WINE_ARCH=x86_64)
 # ============================================================
 .PHONY: box64
-box64: $(STAMPS)/box64-arm64-v8a
+# stamp 按 WINE_ARCH 隔离: 方案③ (WINE_ARCH=aarch64) skip-touch, 方案② 真构建;
+# 共享 stamp 会让方案③ 的 skip-touch 掩盖方案② 的源码变更 (见 fex 注释)。
+box64: $(STAMPS)/box64-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/box64-arm64-v8a: $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
+$(STAMPS)/box64-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
 	@if [ "$(WINE_ARCH)" = "aarch64" ] || [ "$(NATIVE_ARCH)" = "x86_64" ]; then \
 	    echo "  [box64] skip (非 box64+wine 方案, WINE_ARCH=$(WINE_ARCH))"; \
 	    mkdir -p $(dir $@) && touch $@; \
@@ -385,9 +402,10 @@ $(STAMPS)/box64-arm64-v8a: $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh FORCE | $
 #         (转译 32 位 x86 应用, HODLL 默认引擎; fex 的 libwow64fex.dll 同级备选)
 # ============================================================
 .PHONY: box64-wow64
-box64-wow64: $(STAMPS)/box64-wow64-arm64-v8a
+# stamp 按 WINE_ARCH 隔离 (同 box64): 方案② skip-touch, 方案③ 真构建。
+box64-wow64: $(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/box64-wow64-arm64-v8a: $(SCRIPTS)/build_box64_wow64.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
+$(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_box64_wow64.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
 	@if [ "$(WINE_ARCH)" = "x86_64" ]; then \
 	    echo "  [box64-wow64] skip (非 arm64 原生 wine, WINE_ARCH=x86_64)"; \
 	    mkdir -p $(dir $@) && touch $@; \
@@ -476,7 +494,7 @@ $(foreach a,arm64-v8a x86_64,$(eval $(call assemble_rule,$(a))))
 # arm64 assemble 额外依赖: 方案③ fex (libarm64ecfex.dll) + box64-wow64 (wowbox64.dll);
 # 方案② box64 (box64.so)。各 target 内部按 WINE_ARCH skip。
 # 32-bit PE DLL (i386-windows) 已由 wine 主构建 --enable-archs=i386 提供
-$(STAMPS)/arm64-v8a/assemble: $(STAMPS)/fex-arm64-v8a $(STAMPS)/box64-arm64-v8a $(STAMPS)/box64-wow64-arm64-v8a
+$(STAMPS)/arm64-v8a/assemble: $(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH) $(STAMPS)/box64-$(CONFIG)-$(WINE_ARCH) $(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH)
 
 # ============================================================
 # hap — HAP 构建 + 签名 (统一 rawfile zip)
@@ -569,7 +587,7 @@ clean:
 # ============================================================
 .PHONY: help
 help:
-	@echo "用法: make [target] [NATIVE_ARCH=x86_64|arm64-v8a|all]"
+	@echo "用法: make [target] [NATIVE_ARCH=x86_64|arm64-v8a]"
 	@echo ""
 	@echo "默认: NATIVE_ARCH=x86_64"
 	@echo "SDK: target=$(TARGET_SDK_VERSION), compatible=$(COMPATIBLE_SDK_VERSION)"

@@ -6,7 +6,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-NATIVE_TARGET="${NATIVE_TARGET:-aarch64-linux-ohos}"
+# NATIVE_TARGET 由 env.sh 按 NATIVE_ARCH 推导 (arm64-v8a→aarch64-linux-ohos,
+# x86_64→x86_64-linux-ohos); 这里显式断言, 防止环境残留/空值静默错配。
+: "${NATIVE_TARGET:?env.sh 未按 NATIVE_ARCH=$NATIVE_ARCH 推导出 NATIVE_TARGET}"
 WINEHUA_INC="$WINEHUA/entry/src/main/cpp/protocols"
 NATIVE_BUILD="$BUILD_DIR/native_${NATIVE_ARCH}"
 if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
