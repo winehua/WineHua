@@ -435,9 +435,10 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
          * so advertise the runtime capability here for every DXVK version.
          * Re-enable multi-ring only after a replacement Venus runtime passes
          * the x86/x64 command-stream qualification gate. */
-        "VN_PERF=" + std::string(modern26
-            ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
-            : "no_fence_feedback,no_query_feedback,no_multi_ring"),
+        /* Same contract as the vkd3d branch: venus semaphore feedback under
+         * vtest can stick in semaphore wait and white-screen DX11/DXVK too.
+         * Do not omit no_semaphore_feedback on the legacy profile. */
+        "VN_PERF=no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring",
         "WINEDLLOVERRIDES=d3d11=n;dxgi=n",
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,

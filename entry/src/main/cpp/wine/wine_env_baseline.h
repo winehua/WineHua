@@ -103,11 +103,14 @@ inline std::vector<std::string> BuildWineBaselineLines(const WineBaselinePaths& 
     const std::string& binDir = p.binDir;
     const std::string shareDir = binDir + "/../share";
     const std::string prefix = p.prefixDir.empty() ? std::string(WINE_PREFIX) : p.prefixDir;
+    // Match BuiltinWineDllPath / 29778f7: PE dirs, then unixlib dir, then HAP
+    // native libs so load_unixlib_by_name() can find wineohos.so even before
+    // AppendD3dBackendEnv / reassert_arch_wine_runtime_env overlays run.
     std::string dllPath = binDir + "/" WINE_PE_SUBDIR ":" + binDir + "/i386-windows:" + binDir;
 #if !defined(__aarch64__) || !defined(WINEHUA_WINE_ARCH_IS_X86_64)
-    // 方案①③: bundled libs 加入 WINEDLLPATH, load_unixlib_by_name() 从此搜索
-    // .so (wineohos.so 等)。方案② (box64 转译) 不加: el1 arm64 原生库不走
-    // wine PE/unixlib 搜索 (与 wine_env.cpp BuildWineEnv 的 Layer 2 一致)。
+    // 方案①③: unixlib + bundled libs。方案② (box64 转译) 不加 el1 arm64
+    // 原生库 (与 wine_env.cpp BuildWineEnv 的 Layer 2 一致)。
+    dllPath += ":" + binDir + "/" WINE_UNIX_SUBDIR;
 #ifdef __aarch64__
     dllPath += ":/data/storage/el1/bundle/libs/arm64";
 #else
