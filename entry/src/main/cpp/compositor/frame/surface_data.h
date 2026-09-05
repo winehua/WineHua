@@ -32,6 +32,12 @@ struct SurfaceData {
     bool hasToplevel = false;
     std::string title;
 
+    // WineHua modal 关系暂存 (winehua_toplevel.set_modal 早于 xdg get_toplevel
+    // 到达时先落这里, xs_get_toplevel 建档时应用; surfaceKey 对 owner 的
+    // wl_surface 身份不可变 (pid+protocolId), 生命周期安全)
+    bool modalPending = false;
+    uint64_t modalOwnerSurfaceKey = 0;
+
     // xdg_surface window geometry (content area within buffer) 已整体迁入
     // CommittedSurface: 旧 geoX/geoY/geoW/geoH 三义字段 (toplevel 桌面模式=
     // 虚拟桌面坐标、toplevel PC 模式=内容偏移、subsurface=buffer 内内容偏移,

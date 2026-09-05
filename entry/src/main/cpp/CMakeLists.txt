@@ -32,6 +32,12 @@ add_library(entry SHARED
     audio/audio_stream.cpp
     graphics/graphics_broker.cpp
     graphics/virgl_host_config.cpp
+    input/game_controller_bridge.cpp
+    input/controller/controller_hub.cpp
+    input/controller/controller_napi.cpp
+    input/controller/controller_runtime.cpp
+    input/controller/gamepad_bridge.cpp
+    input/controller/physical_gamepad.cpp
     bridge/napi_init.cpp
     proc/wine_process.cpp
     wine/wine_env.cpp
@@ -76,8 +82,10 @@ add_library(entry SHARED
     input/input_manager.cpp
     input/pointer_extras.cpp
     compositor/xdg_shell.cpp
+    compositor/winehua_toplevel.cpp
     input/text_input.cpp
     protocols/xdg-shell-protocol.c
+    protocols/winehua-toplevel-protocol.c
     protocols/viewporter-server-protocol.c
     protocols/pointer-warp-v1-protocol.c
     protocols/pointer-constraints-unstable-v1-protocol.c

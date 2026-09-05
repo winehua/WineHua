@@ -67,6 +67,8 @@ enum class ToplevelEventType : uint32_t {
     // 交互式移动
     MoveStart,     // "move_start"     xdg_toplevel.move grab 开始
     MoveEnd,       // "move_end"       grab 结束 (或 grab 窗口销毁复位)
+    // WineHua modal 关系 (winehua_toplevel.set_modal 上报)
+    Modal,         // "modal"          1=置为模态 (modal/owner 报关系), 0=解除
     // 会话
     DesktopRoot,   // "desktop_root"   桌面 root 出现 (识别/PromotePending 两路径)
 };
@@ -95,6 +97,7 @@ inline const char* ToplevelEventName(ToplevelEventType evt) {
         case ToplevelEventType::Minimized:     return "minimized";
         case ToplevelEventType::MoveStart:     return "move_start";
         case ToplevelEventType::MoveEnd:       return "move_end";
+        case ToplevelEventType::Modal:         return "modal";
         case ToplevelEventType::DesktopRoot:   return "desktop_root";
     }
     return "unknown";  // 防御: 枚举越界永不发生 (仅编译器告警消噪)
@@ -208,6 +211,18 @@ public:
     static std::string JsonSurface(int32_t w, int32_t h) {
         char buf[64];
         snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d}", w, h);
+        return buf;
+    }
+
+    // modal: modal=1 置为模态 (owner 通常 >0); modal=0 解除 (owner 冗余传 0)。
+    // dx/dy = modal 相对 owner 的桌面坐标差 (PC 模式 ArkTS 定位子窗口:
+    // owner 屏幕位置 + 差*scale); w/h = modal 内容尺寸。解除时全 0。
+    static std::string JsonModal(uint32_t modalId, uint32_t ownerId, int32_t modal,
+                                 int32_t dx, int32_t dy, int32_t w, int32_t h) {
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+                 "{\"modal\":%d,\"owner\":%u,\"tl\":%u,\"dx\":%d,\"dy\":%d,\"w\":%d,\"h\":%d}",
+                 modal, ownerId, modalId, dx, dy, w, h);
         return buf;
     }
 

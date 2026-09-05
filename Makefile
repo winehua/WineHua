@@ -377,6 +377,7 @@ assemble-$(1): $$(STAMPS)/$(1)/assemble
 $$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
 	$(VKD3D_PROTON_ARTIFACTS) \
 	$(ROOT)/smoke/winehua_d3d8_smoke.c \
+	$(ROOT)/smoke/winehua_dns_probe.c \
 	$(ROOT)/smoke/winehua_d3d_switch_cube.c \
 	$(ROOT)/smoke/winehua_gpu_diagnostics.c \
 	$(ROOT)/smoke/winehua_dxvk26_requirements.c \
@@ -457,6 +458,11 @@ test:
 	    -o $(HOST_TEST_DIR)/presenter_common_test \
 	    $(ROOT)/host_tests/presenter_common_test.cpp
 	$(HOST_TEST_DIR)/presenter_common_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/controller_merge_test \
+	    $(ROOT)/host_tests/controller_merge_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/input/controller/controller_hub.cpp
+	$(HOST_TEST_DIR)/controller_merge_test
 
 
 # ============================================================

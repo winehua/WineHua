@@ -7,6 +7,7 @@ import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ArgbWindowManager } from './ArgbWindowManager';
 import { DisplaySettingsService } from './DisplaySettingsService';
+import { ModalWindowManager } from './ModalWindowManager';
 import { DesktopModeService } from './DesktopModeService';
 
 const DOMAIN = 0x0000;
@@ -108,6 +109,10 @@ export class WineWindowManager {
   // toplevelId -> 已销毁标记 (WineWindowAbility.onCreate 竞态拦截)。
   // 墓碑生命期严格长于 entry, 设计上永不清理, 独立于 entries 保留
   private destroyed: Set<number> = new Set();
+
+  // WineHua PC 模式 modal 对话框 (无 entry/ability, 子窗口承载在
+  // ModalWindowManager); 事件流按此集合拦截, 防止 created 误启 Ability
+  private modalToplevelIds: Set<number> = new Set();
 
   // entry 建档: 'created' / 提前到达的排队事件 / move_start / register 回填
   private ensureEntry(id: number): WineWindowEntry {
@@ -318,6 +323,8 @@ export class WineWindowManager {
   unregisterAbility(toplevelId: number): void {
     // 级联销毁该窗口的全部 popup 子窗口
     PopupWindowManager.getInstance().destroyPopupsForToplevel(toplevelId);
+    // WineHua: owner 销毁 → 级联销毁其 modal 子窗口
+    ModalWindowManager.getInstance().destroyForOwner(toplevelId);
     const had = this.entries.delete(toplevelId);
     hilog.info(DOMAIN, TAG, '[MW]  unregisterAbility #%{public}d entry=%{public}s',
       toplevelId, had ? 'removed' : 'absent');
@@ -398,6 +405,8 @@ export class WineWindowManager {
     // popup 积压事件 (windowStage 就绪后补建)
     if (e?.stage && e?.win) {
       PopupWindowManager.getInstance().flushPending(toplevelId, e.stage, e.win, this.getEffectiveScale());
+      // WineHua: owner 未就绪时暂存的 modal show 请求补建 (启动即弹窗场景)
+      ModalWindowManager.getInstance().flushForOwner(toplevelId, e.stage, e.win, this.getEffectiveScale());
     }
 
     if (!e || e.events.length === 0) {
@@ -444,6 +453,53 @@ export class WineWindowManager {
   private onToplevelEvent(id: number, event: string, data: string): void {
     hilog.info(DOMAIN, TAG, '[MW] onToplevelEvent #%{public}d event=%{public}s hasWindow=%{public}s',
       id, event, this.entries.get(id)?.win ? 'yes' : 'no');
+
+    // WineHua modal: 事件入口 (不建 entry/ability, 也不走 queueOrApply)。
+    // 只对 PC 模式生效: 桌面模式由 C++ compositor 直接处理 (z-order 门禁 +
+    // 输入拦截), ArkTS 侧零参与
+    if (!this.isDesktopMode && (event === 'modal' || this.modalToplevelIds.has(id))) {
+      if (event === 'modal') {
+        try {
+          const obj: Record<string, number> = JSON.parse(data) as Record<string, number>;
+          if (obj.modal === 1) {
+            this.modalToplevelIds.add(id);
+            // 清 title 先到时的幽灵 entry (modal 无 ability, 不建 entry)。
+            // 守卫: 真 Ability (win/ctx/starting 已回填) 存在时绝不删 —
+            // 若因时序它先建 (C++ pending 未兜住等), 删掉会让双窗口并存
+            // 且 destroyed 永不 terminateSelf
+            const ghost = this.entries.get(id);
+            if (ghost && !ghost.win && !ghost.ctx && !ghost.starting) {
+              this.entries.delete(id);
+            }
+            ModalWindowManager.getInstance().show(id, obj,
+              this.entries.get(Number(obj.owner ?? 0))?.stage ?? null,
+              this.entries.get(Number(obj.owner ?? 0))?.win ?? null,
+              this.getEffectiveScale());
+          } else {
+            this.modalToplevelIds.delete(id);
+            ModalWindowManager.getInstance().hide(id);
+          }
+        } catch (e) {
+          hilog.error(DOMAIN, TAG, '[MW] modal event bad data #%{public}d: %{public}s',
+            id, JSON.stringify(e));
+        }
+        return;
+      }
+      if (event === 'resize') {
+        ModalWindowManager.getInstance().onResize(id, data, this.getEffectiveScale());
+        return;
+      }
+      if (event === 'destroyed') {
+        this.modalToplevelIds.delete(id);
+        ModalWindowManager.getInstance().hide(id);
+        // 清理 title 等先于 'modal' 事件到达时经 queueOrApply 建的幽灵 entry
+        this.entries.delete(id);
+        return;
+      }
+      // title/limits/argb/surface/...: 模态子窗口不需要 (窗口标题由 Wine
+      // 像素自带, 无独立 entry)
+      return;
+    }
 
     switch (event) {
       case 'created':
