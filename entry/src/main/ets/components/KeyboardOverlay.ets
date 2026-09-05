@@ -21,6 +21,7 @@ interface KbKey {
   code: number;  // evdev key code
   w: number;     // 行内 layoutWeight
   mod: number;   // 0 = 普通键; 非 0 = 修饰键锁存位 (1 Shift / 2 Ctrl / 4 Alt)
+  shiftLabel: string; // Shift 锁存时键帽切换显示的副符号 ('' = 无副符号键)
 }
 
 // keyView 入参。必须整体作为单个对象字面量传给 @Builder (按引用传递),
@@ -30,10 +31,11 @@ interface KeySpec {
   k: KbKey;
   pressed: boolean;   // 正被按住
   latched: boolean;   // 修饰键锁存中
+  shiftActive: boolean; // Shift 锁存中 → 键帽显示副符号 (shiftLabel)
 }
 
-function key(label: string, code: number, w: number = 1, mod: number = 0): KbKey {
-  return { label: label, code: code, w: w, mod: mod };
+function key(label: string, code: number, w: number = 1, mod: number = 0, shiftLabel: string = ''): KbKey {
+  return { label: label, code: code, w: w, mod: mod, shiftLabel: shiftLabel };
 }
 
 function letters(start: number, labels: string): KbKey[] {
@@ -44,14 +46,35 @@ function letters(start: number, labels: string): KbKey[] {
   return out;
 }
 
-// 紧凑 QWERTY 布局 (evdev code): 数字行 + 三行字母 + 空格/方向行;
-// 只保留桌面操作高频键 (Esc/Tab/Enter/Backspace/方向), 符号仅 , . /
+// 标准 104 键紧凑布局 (evdev code): F 行 (Esc 同行) + 符号数字行 + 三行字母 +
+// 编辑/方向行。覆盖桌面高频键 (Esc/F1-F12 / Tab / Enter / Backspace /
+// Home-End-PgUp-PgDn / Del / 全方向); 带 Shift 组合符号的键 (数字行/标点)
+// 键帽平时只显示主字符, Shift 锁存时切换显示副符号 (1→!, ;→:), 按下即打出
+// 副符号 (由 wine keymap 解析, 与真实键盘同语义)。
 const KB_ROWS: KbKey[][] = [
-  [key('Esc', 1, 1.3)].concat(letters(2, '1234567890')).concat([key('⌫', 14, 1.7)]),
-  [key('Tab', 15, 1.5)].concat(letters(16, 'QWERTYUIOP')),
-  [key('Ctrl', 29, 1.7, 2)].concat(letters(30, 'ASDFGHJKL')).concat([key('Enter', 28, 1.8)]),
-  [key('Shift', 42, 1.9, 1)].concat(letters(44, 'ZXCVBNM')).concat([key(',', 51), key('.', 52), key('/', 53)]),
-  [key('Alt', 56, 1.7, 4), key('空格', 57, 5.6), key('←', 105), key('↑', 103), key('↓', 108), key('→', 106)]
+  [key('Esc', 1, 1.3),
+   key('F1', 59), key('F2', 60), key('F3', 61), key('F4', 62),
+   key('F5', 63), key('F6', 64), key('F7', 65), key('F8', 66),
+   key('F9', 67), key('F10', 68), key('F11', 69), key('F12', 70),
+   key('Del', 111, 1.1)],
+  // 数字行: 主字符 + shiftLabel 组合符号 (shift 后 = !@#$%^&*()_-+)
+  [key('`', 41, 0.9, 0, '~'),
+   key('1', 2, 1, 0, '!'), key('2', 3, 1, 0, '@'), key('3', 4, 1, 0, '#'),
+   key('4', 5, 1, 0, '$'), key('5', 6, 1, 0, '%'), key('6', 7, 1, 0, '^'),
+   key('7', 8, 1, 0, '&'), key('8', 9, 1, 0, '*'), key('9', 10, 1, 0, '('),
+   key('0', 11, 1, 0, ')'),
+   key('-', 12, 1, 0, '_'), key('=', 13, 1, 0, '+'), key('⌫', 14, 1.4)],
+  [key('Tab', 15, 1.5)].concat(letters(16, 'QWERTYUIOP'))
+    .concat([key('[', 26, 1, 0, '{'), key(']', 27, 1, 0, '}'), key('\\', 43, 1.05, 0, '|')]),
+  [key('Ctrl', 29, 1.7, 2)].concat(letters(30, 'ASDFGHJKL'))
+    .concat([key(';', 39, 1.05, 0, ':'), key("'", 40, 1.05, 0, '"'), key('Enter', 28, 1.8)]),
+  [key('Shift', 42, 1.9, 1)].concat(letters(44, 'ZXCVBNM'))
+    .concat([key(',', 51, 1, 0, '<'), key('.', 52, 1, 0, '>'), key('/', 53, 1, 0, '?'),
+      key('↑', 103, 1.1), key('Shift', 54, 1.5)]),
+  [key('Alt', 56, 1.5, 4), key('空格', 57, 3.2),
+   key('Home', 102, 1.1), key('End', 107, 1.1),
+   key('PgUp', 104, 1.1), key('PgDn', 109, 1.1),
+   key('←', 105, 1.1), key('↓', 108, 1.1), key('→', 106, 1.1)]
 ];
 
 // 模拟键盘覆盖层: 悬浮条"键盘"开关控制显隐, 面板可拖动 (拖顶部把手),
@@ -134,14 +157,18 @@ export struct KeyboardOverlay {
     }
   }
 
+  private keyLabel(k: KbKey, shiftActive: boolean): string {
+    return shiftActive && k.shiftLabel ? k.shiftLabel : k.label;
+  }
+
   @Builder
   keyView($$: KeySpec) {
-    Text($$.k.label)
-      .fontSize($$.k.label.length > 1 ? 12 : 15)
+    Text(this.keyLabel($$.k, $$.shiftActive))
+      .fontSize(this.keyLabel($$.k, $$.shiftActive).length > 1 ? 12 : 15)
       .fontColor(Color.White)
       .textAlign(TextAlign.Center)
       .width('100%')
-      .height(42)
+      .height(38)
       .backgroundColor($$.pressed || $$.latched ? $r('app.color.accent') : '#1A000000')
       .borderRadius(8)
       .border({ width: 1, color: '#66FFFFFF' })
@@ -154,7 +181,7 @@ export struct KeyboardOverlay {
   build() {
     Stack() {
       if (this.kbEnabled) {
-        Column({ space: 6 }) {
+        Column({ space: 4 }) {
           // 顶部把手: 拖动挪位。手势只挂把手 — 挂整个面板会和键帽 onTouch 抢事件
           // (按键微动即拖走面板)。拖动中直接改 relX/relY (position 的数据源),
           // 面板逐帧跟手; 不要绕 .offset 暂存位移 (实测拖动中不刷新, 抬起才跳变)。
@@ -191,14 +218,15 @@ export struct KeyboardOverlay {
                 this.keyView({
                   k: k,
                   pressed: this.pressedCodes.indexOf(k.code) >= 0,
-                  latched: k.mod != 0 && (this.modMask & k.mod) != 0
+                  latched: k.mod != 0 && (this.modMask & k.mod) != 0,
+                  shiftActive: (this.modMask & 1) != 0
                 })
               }, (k: KbKey) => k.code.toString())
             }
             .width('100%')
           }, (row: KbKey[], idx: number) => idx.toString())
         }
-        .width(Math.min(this.scrW * 0.94, 860))
+        .width(Math.min(this.scrW * 0.9, 810))
         .padding({ left: 8, right: 8, top: 2, bottom: 8 })
         // 半透明面板: 压低不透明度让桌面/游戏画面透出来 (键帽同理)
         .backgroundColor('#4D000000')
