@@ -209,6 +209,7 @@ jobs:
       - name: Prepare llvm-mingw toolchain
         run: |
           set -euo pipefail
+          # 版本权威处 = scripts/env.sh 的 LLVM_MINGW_VERSION (本地/CI 同步维护)
           version=20260826
           name="llvm-mingw-${version}-ucrt-ubuntu-22.04-x86_64"
           if [ -x "${LLVM_MINGW:-}/bin/arm64ec-w64-mingw32-clang" ]; then

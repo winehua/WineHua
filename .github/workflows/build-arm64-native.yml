@@ -201,6 +201,7 @@ jobs:
       - name: Prepare llvm-mingw toolchain
         run: |
           set -euo pipefail
+          # 版本权威处 = scripts/env.sh 的 LLVM_MINGW_VERSION (本地/CI 同步维护)
           version=20260826
           name="llvm-mingw-${version}-ucrt-ubuntu-22.04-x86_64"
           if [ -x "${LLVM_MINGW:-}/bin/arm64ec-w64-mingw32-clang" ]; then
@@ -369,7 +370,12 @@ jobs:
                   assert runtime["commit"] == expected["commit"], (
                       profile, runtime["commit"], expected["commit"]
                   )
-                  for arch, expected_machine in (("x64", 0x8664), ("x86", 0x014C)):
+                  # 方案③ 下 modern 的 x64 overlay 由 arm64x 取代 (
+                  # wine_env.cpp overlay64 → arm64x, FEX native view),
+                  # manifest 中 x64 的 sha 记空、不打包实际文件;
+                  # legacy 仍是 x64+x86 双图。按 profile 分派断言架构。
+                  arches = [("x64", 0x8664), ("x86", 0x014C)] if profile == "legacy" else [("x86", 0x014C)]
+                  for arch, expected_machine in arches:
                       for dll in ("d3d11.dll", "dxgi.dll"):
                           name = f"dxvk/{profile}/{arch}/{dll}"
                           image = wine_data.read(name)
@@ -382,6 +388,21 @@ jobs:
                               name, hex(machine), hex(expected_machine)
                           )
                           assert runtime[arch][dll] == hashlib.sha256(image).hexdigest(), name
+                          print(
+                              f"[dxvk/{profile}] {name}: "
+                              f"machine={machine:#06x} size={len(image)}"
+                          )
+                  if profile == "modern-2.6":
+                      # 方案③ 专属: ARM64X 双图 DLL 在 wine-data 中但不在 manifest
+                      for dll in ("d3d11.dll", "dxgi.dll"):
+                          name = f"dxvk/modern-2.6/arm64x/{dll}"
+                          image = wine_data.read(name)
+                          assert len(image) > 4096, (name, len(image))
+                          assert image[:2] == b"MZ", name
+                          pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                          assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                          machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                          assert machine == 0xAA64, (name, hex(machine))
                           print(
                               f"[dxvk/{profile}] {name}: "
                               f"machine={machine:#06x} size={len(image)}"

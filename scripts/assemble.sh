@@ -384,6 +384,19 @@ assemble_pad() {
         else
             warn "wowbox64.dll 未找到！请先执行: bash scripts/build_box64_wow64.sh"
         fi
+        # libc++/libunwind runtime (防御): arm64x DLL 现以静态 .a
+        # --start-group 链接, 正常不再依赖运行时; 若未来换工具链/改造
+        # 恢复动态依赖, system32 (bin/aarch64-windows/) 缺失即 c0000135
+        # (实测 2026-09-05 "Library libc++.dll ... not found" 即此坑)。
+        for rt in libc++.dll libunwind.dll; do
+            rt_src="$LLVM_MINGW/aarch64-w64-mingw32/bin/$rt"
+            if [ -f "$rt_src" ]; then
+                cp "$rt_src" "$wine_data/bin/$wine_pe_dir/"
+                log "    $rt → rawfile $wine_pe_dir/ (arm64x runtime)"
+            else
+                warn "arm64x runtime $rt 未找到 ($rt_src)"
+            fi
+        done
     fi
 
     # -- 2. PE DLL + 数据文件 → rawfile (两种架构共用) --
@@ -562,6 +575,14 @@ assemble_pad() {
         mkdir -p "$wine_data/dxvk/legacy/arm64x"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/arm64x/dxgi.dll"
+        # WineHua loader 钩子 (ntdll/loader.c search_winehua_dxvk_overlay) 只拼
+        # WINEHUA_DXVK_ROOT 下的 x64/x86 子目录 (archW 数组无 arm64x): 方案③
+        # 必须把 arm64x 双图内容同时放入 x64/ 目录名让钩子命中, 否则钩子 miss
+        # → native 搜索失败直接 c0000135 (实测 2026-09-05: WINEDLLPATH 兜底只
+        # 救 dxvk/d3d11, vkd3d/d3d12 必挂)。
+        mkdir -p "$wine_data/dxvk/legacy/x64"
+        cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
+        cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
     fi
     local dxvk_modern_root="$DXVK_MODERN_BUILD_ROOT"
     [ -f "$dxvk_modern_root/x86/bin/d3d11.dll" ] || err "DXVK Modern x86 d3d11.dll missing: $dxvk_modern_root/x86/bin/d3d11.dll"
@@ -589,6 +610,10 @@ assemble_pad() {
         mkdir -p "$wine_data/dxvk/modern-2.6/arm64x"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/arm64x/dxgi.dll"
+        # 同 legacy: loader 钩子只认 x64/, arm64x 内容镜像一份 (见上方注释)
+        mkdir -p "$wine_data/dxvk/modern-2.6/x64"
+        cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
+        cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
     fi
     local vkd3d_root="$VKD3D_PROTON_BUILD_ROOT/limited-500k"
     [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \

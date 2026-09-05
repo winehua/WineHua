@@ -164,7 +164,7 @@ build_ohos_unix() {
             PKG_CONFIG="$pkg_config" \
             PKG_CONFIG_PATH="$SYSROOT_EXT_PC" \
             "$CONFIGURE_BIN" --srcdir="$WINE_SRC" \
-                --host=x86_64-linux-ohos \
+                --host="$HOST_TRIPLE" \
                 --enable-archs=i386,x86_64 \
                 --prefix=/opt/winehua \
                 --libdir='${prefix}' \

@@ -50,11 +50,47 @@ CLANG="$OHOS_SDK/native/llvm/bin/clang"
 SYSROOT="$OHOS_SDK/native/sysroot"
 
 # llvm-mingw (arm64ec/aarch64 PE 编译 + FEX 构建, 需 LLVM ≥ 18)
-# 优先项目本地 .temp, 缺失时开发期回退到 winebox 的现成工具链
-LLVM_MINGW="${LLVM_MINGW:-$ROOT/.temp/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64}"
-if [ ! -d "$LLVM_MINGW/bin/arm64ec-w64-mingw32-clang" ] && \
-   [ -d /data/share/winebox/.temp/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64 ]; then
-    LLVM_MINGW=/data/share/winebox/.temp/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64
+# 版本常量只在此一处 (CI workflow / ci/Dockerfile.buildenv 的 version= 与其
+# 同步维护)。20260616 的 libc++ 无 ARM64EC C++ 库, 编不出 arm64x 双图 DLL。
+# 发现链 (位置完全参数化, 不要求任何固定目录名):
+#   1. $LLVM_MINGW 环境变量 — 用户自选位置, 任意目录名;
+#   2. $ROOT/.temp/llvm-mingw-<版本>-… — 脚本缺失时自动下载解压的落点
+#      (标准布局 = CI 同款, 不是"约定用户手工放这里");
+#   3. 无网络 → 显式报错 + 设置指引。
+# 均需通过双图库校验 (libc++.a 含 obj.arm64ec/ 成员, 旧版会失败)。
+LLVM_MINGW_VERSION="${LLVM_MINGW_VERSION:-20260826}"
+LLVM_MINGW_DIRNAME="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
+LLVM_MINGW="${LLVM_MINGW:-}"
+# 注意: arm64ec-w64-mingw32-clang 是二进制文件, 校验用 -x; 用 -d 永远为假 → 一旦
+# 某脚本 export LLVM_MINGW 后, 后续所有 source env.sh 的脚本全部误报 (2026-09-05 实测)。
+if [ -n "${LLVM_MINGW}" ] && [ ! -x "$LLVM_MINGW/bin/arm64ec-w64-mingw32-clang" ]; then
+    echo "ERROR: LLVM_MINGW 指向的工具链不完整: $LLVM_MINGW (缺 bin/arm64ec-w64-mingw32-clang)" >&2
+    exit 1
+fi
+if [ -z "${LLVM_MINGW}" ] && [ -d "$ROOT/.temp/$LLVM_MINGW_DIRNAME" ]; then
+    LLVM_MINGW="$ROOT/.temp/$LLVM_MINGW_DIRNAME"
+fi
+if [ -z "${LLVM_MINGW}" ]; then
+    echo "llvm-mingw 缺失, 自动下载 $LLVM_MINGW_VERSION (CI 同款 release) 到 $ROOT/.temp/  ..." >&2
+    mkdir -p "$ROOT/.temp"
+    tarball="$ROOT/.temp/$LLVM_MINGW_DIRNAME.tar.xz"
+    if ! curl -fL --retry 3 --connect-timeout 30 -o "$tarball" \
+         "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$LLVM_MINGW_DIRNAME.tar.xz"; then
+        echo "ERROR: 自动下载失败。请用以下任一方式准备工具链再构建:" >&2
+        echo "  方式 A (推荐): http_proxy/https_proxy 正常后重试本命令;" >&2
+        echo "  方式 B: 自行下载解压, 然后 export LLVM_MINGW=/path/to/$LLVM_MINGW_DIRNAME" >&2
+        echo "  方式 C: 离线拷入 $ROOT/.temp/$LLVM_MINGW_DIRNAME (与 CI 同布局)" >&2
+        exit 1
+    fi
+    tar -xJf "$tarball" -C "$ROOT/.temp" || { echo "ERROR: 解压失败: $tarball" >&2; exit 1; }
+    rm -f "$tarball"
+    LLVM_MINGW="$ROOT/.temp/$LLVM_MINGW_DIRNAME"
+fi
+# 双图库校验: 版本合格才放行 (20260616 无 obj.arm64ec/ 成员)
+if ! "$LLVM_MINGW/bin/llvm-ar" t "$LLVM_MINGW/aarch64-w64-mingw32/lib/libc++.a" 2>/dev/null \
+     | grep -q 'obj\.arm64ec/'; then
+    echo "ERROR: $LLVM_MINGW 的 libc++.a 缺 ARM64EC 双图成员 (需 >= $LLVM_MINGW_VERSION)" >&2
+    exit 1
 fi
 export LLVM_MINGW
 

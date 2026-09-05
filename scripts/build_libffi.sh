@@ -50,7 +50,7 @@ includedir=\${prefix}/include
 libdir=\${prefix}/lib/$TARGET
 Name: libffi
 Description: Library supporting Foreign Function Interfaces
-Version: 3.5.2
+Version: 3.4.6
 Libs: -L\${libdir} -lffi
 Cflags: -I\${includedir}
 EOF
