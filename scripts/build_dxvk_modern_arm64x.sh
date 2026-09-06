@@ -68,17 +68,20 @@ done
       "$GEN/pnp-id-table.c" pnp_id_table 2>/dev/null || true
 
 # ── 4) -marm64x 单遍编译 (每源一个 AA+EC 双图对象) ──
-CFLAGS="-std=c++17 -DNOMINMAX -D_WIN32_WINNT=0xa00 -DDXVK_WSI_WIN32 \
+# 手搓链绕过 meson -Dbuildtype=release；OPT 必须显式带上，否则 clang 默认 O0。
+CFLAGS="$ARM64X_OPT_FLAGS -std=c++17 -DNOMINMAX -D_WIN32_WINNT=0xa00 -DDXVK_WSI_WIN32 \
   -I$DXVK_MODERN_SRC/src -I$DXVK_MODERN_SRC/include \
   -I$DXVK_MODERN_SRC/include/vulkan/include \
   -I$DXVK_MODERN_SRC/include/spirv/include -I$DXVK_MODERN_SRC/include/native \
   -I$DXVK_MODERN_SRC/subprojects/libdisplay-info/include -I$GEN"
 # C 源 (libdisplay-info/sha1): 无 C++17 参数, 需 meson 同款 -Dstatic_array=static
-CFLAGS_C="-std=c11 -DNOMINMAX -D_WIN32_WINNT=0xa00 -D_POSIX_C_SOURCE=200809L -Dstatic_array=static \
+CFLAGS_C="$ARM64X_OPT_FLAGS -std=c11 -DNOMINMAX -D_WIN32_WINNT=0xa00 -D_POSIX_C_SOURCE=200809L -Dstatic_array=static \
   -I$DXVK_MODERN_SRC/src -I$DXVK_MODERN_SRC/include \
   -I$DXVK_MODERN_SRC/include/vulkan/include \
   -I$DXVK_MODERN_SRC/include/spirv/include -I$DXVK_MODERN_SRC/include/native \
   -I$DXVK_MODERN_SRC/subprojects/libdisplay-info/include -I$GEN"
+require_optimization_flags "DXVK Modern ARM64X CFLAGS" $CFLAGS
+require_ndebug "DXVK Modern ARM64X CFLAGS" $CFLAGS
 
 SRCS=$(find "$DXVK_MODERN_SRC/src/wsi" "$DXVK_MODERN_SRC/src/util" "$DXVK_MODERN_SRC/src/spirv" \
            "$DXVK_MODERN_SRC/src/vulkan" "$DXVK_MODERN_SRC/src/dxvk" "$DXVK_MODERN_SRC/src/dxbc" \

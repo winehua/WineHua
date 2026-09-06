@@ -131,7 +131,10 @@ build_ohos_unix() {
         if [ "$HOST_OS" = "HarmonyOS" ]; then
             ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
             GUEST_GFX_ROOT="${WINEHUA_GUEST_GFX_INSTALL_ROOT:-$ROOT/build/guest_gfx_install/x86_64}"
-            export CROSSCFLAGS="-I$GUEST_GFX_ROOT/include"
+            # 必须含 -g -O2: Wine configure 用 ${CROSSCFLAGS:-"-g -O2"} 作为
+            # 各 PE 架构 CFLAGS 的整串默认值。只写 -I 会把 ARM64EC/aarch64/i386
+            # PE 全部编成无 -O*（clang 默认 O0）。
+            export CROSSCFLAGS="-g -O2 -I$GUEST_GFX_ROOT/include"
 
             MINGW_CC="$LLVM_MINGW/bin/clang"
         else
@@ -184,6 +187,11 @@ build_ohos_unix() {
     if [ "$WINE_ARCH" = "aarch64" ]; then
         mkdir -p include/GL
         cp -f "$LLVM_MINGW/generic-w64-mingw32/include/GL/gl.h" include/GL/gl.h
+        # PE 交叉编译不走上面的 WINE_CFLAGS（那是 Unix .so）。Wine 默认
+        # ${arch}_CFLAGS=-g -O2；HarmonyOS CROSSCFLAGS 曾只写 -I 会冲掉 -O2。
+        require_makefile_opt_var Makefile aarch64_CFLAGS
+        require_makefile_opt_var Makefile arm64ec_CFLAGS
+        require_makefile_opt_var Makefile i386_CFLAGS
     fi
 
     make -j$JOBS \

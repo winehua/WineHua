@@ -255,6 +255,62 @@ log()  { echo -e "\033[32m[BUILD]\033[0m $*" >&2; }
 warn() { echo -e "\033[33m[WARN]\033[0m $*" >&2; }
 err()  { echo -e "\033[31m[ERROR]\033[0m $*" >&2; exit 1; }
 
+# ARM64X 手搓 clang（绕过 meson -Dbuildtype=release）默认必须带优化。
+# 可被环境覆盖，但 require_optimization_flags 仍拒绝无 -O* 的生产构建。
+ARM64X_OPT_FLAGS="${ARM64X_OPT_FLAGS:--O2 -DNDEBUG}"
+
+# 断言参数串含 -O1/-O2/-O3/-Os/-Oz。用于手搓 ARM64X、Wine PE Makefile、CMake cache。
+require_optimization_flags() {
+    local label="$1"
+    shift
+    local blob=" $* "
+    case "$blob" in
+        *" -O1 "*|*" -O2 "*|*" -O3 "*|*" -Os "*|*" -Oz "*) ;;
+        *) err "$label: production build has no optimization flag (-O1/-O2/-O3/-Os/-Oz)" ;;
+    esac
+}
+
+require_ndebug() {
+    local label="$1"
+    shift
+    local blob=" $* "
+    case "$blob" in
+        *" -DNDEBUG "*|*" -DNDEBUG="*) ;;
+        *) err "$label: production build missing -DNDEBUG" ;;
+    esac
+}
+
+require_cmake_not_debug() {
+    local cache="$1"
+    local label="$2"
+    local t=""
+    [ -f "$cache" ] || err "$label: missing $cache"
+    t="$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' "$cache" | head -1)"
+    case "$t" in
+        Release|RelWithDebInfo|MinSizeRel) ;;
+        *) err "$label: CMAKE_BUILD_TYPE='$t' (need Release / RelWithDebInfo / MinSizeRel)" ;;
+    esac
+}
+
+require_cmake_flag_var() {
+    local cache="$1"
+    local var="$2"
+    local label="$3"
+    local val=""
+    [ -f "$cache" ] || err "$label: missing $cache"
+    val="$(sed -n "s/^${var}:STRING=//p" "$cache" | head -1)"
+    require_optimization_flags "$label" "$val"
+}
+
+require_makefile_opt_var() {
+    local mk="$1"
+    local var="$2"
+    local val=""
+    [ -f "$mk" ] || err "$var: missing $mk"
+    val="$(sed -n "s/^${var} = //p" "$mk" | head -1)"
+    require_optimization_flags "$var" "$val"
+}
+
 # ── 共享工具函数 ──
 find_first_existing_dir() {
     local candidate=""

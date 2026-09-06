@@ -39,16 +39,20 @@ CONFIG    := $(NATIVE_ARCH)
 BUILD_DIR := $(ROOT)/build
 STAMPS    := $(BUILD_DIR)/.stamps
 SCRIPTS   := $(ROOT)/scripts
+# 方案③ (aarch64): x86 meson + ARM64X 双图 (FEX native view)。meson x64 不打包,
+# assemble 把 arm64x 镜像进 wine-data 的 x64/ 目录名。方案①/② 仍要 meson x64+x86。
+ifeq ($(WINE_ARCH),aarch64)
+DXVK_ARTIFACTS := \
+	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll \
+	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/dxgi.dll
+else
 DXVK_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/legacy/x64/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/legacy/x64/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll
-# 方案③ (aarch64): 追加 ARM64X 双图 DLL (FEX native view); stamp 按 WINE_ARCH 隔离
-ifeq ($(WINE_ARCH),aarch64)
-DXVK_ARTIFACTS += \
-	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/d3d11.dll \
-	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/dxgi.dll
 endif
 DXVK_STAMP := $(STAMPS)/dxvk-legacy-$(WINE_ARCH)
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
@@ -508,6 +512,13 @@ hap: assemble
 	@ls -lh $(ROOT)/entry/build/default/outputs/default/entry-default-signed.hap 2>/dev/null || true
 
 # ============================================================
+# arm64ec-release-gate — 拒绝 ARM64X/ARM64EC 生产构建静默退回 O0/Debug
+# ============================================================
+.PHONY: arm64ec-release-gate
+arm64ec-release-gate:
+	bash $(SCRIPTS)/check_arm64ec_release_gate.sh
+
+# ============================================================
 # test: 宿主机单元测试 (纯函数, 不依赖 OHOS SDK, 用宿主 g++ 编译)
 # ============================================================
 HOST_TEST_DIR := $(BUILD_DIR)/host_tests
@@ -607,6 +618,7 @@ help:
 	@echo "  make host-vulkan # Host Vulkan exact replay"
 	@echo "  make assemble  # 组装布局"
 	@echo "  make hap       # HAP 打包 + 签名"
+	@echo "  make arm64ec-release-gate # 检查 ARM64X/ARM64EC 构建不是 O0/Debug"
 	@echo ""
 	@echo "每个架构:"
 	@echo "  make native-x86_64  make native-arm64-v8a"

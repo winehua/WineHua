@@ -53,12 +53,15 @@ for f in $(find "$DXVK_SRC/src/dxvk/shaders" "$DXVK_SRC/src/dxvk/hud/shaders" \
 done
 
 # ── 3) -marm64x 单遍编译 ──
-CFLAGS="-std=c++17 -DNOMINMAX -D_WIN32_WINNT=0xa00 \
+# 手搓链绕过 meson -Dbuildtype=release；OPT 必须显式带上，否则 clang 默认 O0。
+CFLAGS="$ARM64X_OPT_FLAGS -std=c++17 -DNOMINMAX -D_WIN32_WINNT=0xa00 \
   -I$DXVK_SRC/src -I$DXVK_SRC/include -I$DXVK_SRC/include/spirv \
   -I$DXVK_SRC/include/vulkan -I$GEN"
-CFLAGS_C="-std=c11 -DNOMINMAX -D_WIN32_WINNT=0xa00 \
+CFLAGS_C="$ARM64X_OPT_FLAGS -std=c11 -DNOMINMAX -D_WIN32_WINNT=0xa00 \
   -I$DXVK_SRC/src -I$DXVK_SRC/include -I$DXVK_SRC/include/spirv \
   -I$DXVK_SRC/include/vulkan -I$GEN"
+require_optimization_flags "DXVK Legacy ARM64X CFLAGS" $CFLAGS
+require_ndebug "DXVK Legacy ARM64X CFLAGS" $CFLAGS
 
 # 注意: 1.10.3 无 src/wsi 目录 (wsi 实现在 dxvk/ 内), find 列缺失路径会返回
 # 非零退出码 → set -e 误退, 故只要存在的模块目录

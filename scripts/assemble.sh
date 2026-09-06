@@ -626,11 +626,9 @@ assemble_pad() {
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/arm64x/dxgi.dll"
         copy_arm64x_cxx_runtime "$wine_data/dxvk/legacy/arm64x"
-        # WineHua loader 钩子 (ntdll/loader.c search_winehua_dxvk_overlay) 只拼
-        # WINEHUA_DXVK_ROOT 下的 x64/x86 子目录 (archW 数组无 arm64x): 方案③
-        # 必须把 arm64x 双图内容同时放入 x64/ 目录名让钩子命中, 否则钩子 miss
-        # → native 搜索失败直接 c0000135 (实测 2026-09-05: WINEDLLPATH 兜底只
-        # 救 dxvk/d3d11, vkd3d/d3d12 必挂)。
+        # ntdll overlay 现已搜 arm64x/; 仍把双图镜像进 x64/, 兼容旧 ntdll
+        # 以及只认 x64 目录名的钩子。缺 x64 时 64 位 Unity LoadLibrary(d3d11)
+        # 会落到 Wine builtin 再被 d3d11=n 拒绝 (0x80029C4A)。
         mkdir -p "$wine_data/dxvk/legacy/x64"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
@@ -663,7 +661,7 @@ assemble_pad() {
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/arm64x/dxgi.dll"
         copy_arm64x_cxx_runtime "$wine_data/dxvk/modern-2.6/arm64x"
-        # 同 legacy: loader 钩子只认 x64/, arm64x 内容镜像一份 (见上方注释)
+        # 同 legacy: 镜像进 x64/, 兼容旧 ntdll overlay
         mkdir -p "$wine_data/dxvk/modern-2.6/x64"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
