@@ -264,16 +264,16 @@ jobs:
         run: |
           set -euxo pipefail
           make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64
-          # Makefile 的 artifact 规则内部已带 test -s 断言; 此处按 Makefile
-          # aarch64 产物清单 (DXVK_ARTIFACTS / DXVK_MODERN_ARTIFACTS /
-          # VKD3D_PROTON_ARTIFACTS) 做最终汇总校验, 与本地产物布局完全一致.
+          make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64 arm64ec-release-gate
+          # 方案③ 产物清单与 Makefile DXVK_ARTIFACTS / DXVK_MODERN_ARTIFACTS 对齐:
+          # meson x64 不构建、不打包; 64 位 overlay 是 arm64x (assemble 再镜像进 wine-data x64/).
           for f in \
-            build/dxvk/legacy/x64/bin/d3d11.dll \
-            build/dxvk/legacy/x64/bin/dxgi.dll \
             build/dxvk/legacy/x86/bin/d3d11.dll \
             build/dxvk/legacy/x86/bin/dxgi.dll \
             build/dxvk/legacy/arm64x/bin/d3d11.dll \
             build/dxvk/legacy/arm64x/bin/dxgi.dll \
+            build/dxvk/modern-2.6/x86/bin/d3d11.dll \
+            build/dxvk/modern-2.6/x86/bin/dxgi.dll \
             build/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
             build/dxvk/modern-2.6/arm64x/bin/dxgi.dll \
             build/vkd3d-proton/limited-500k/x64/d3d12.dll \
@@ -283,10 +283,10 @@ jobs:
             build/vkd3d-proton/limited-500k/x64/manifest.json; do
             test -s "$f" || { echo "ERROR: missing $f" >&2; exit 1; }
           done
-          sha256sum build/dxvk/legacy/{x64,x86,arm64x}/bin/d3d11.dll \
-                    build/dxvk/legacy/{x64,x86,arm64x}/bin/dxgi.dll \
-                    build/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
-                    build/dxvk/modern-2.6/arm64x/bin/dxgi.dll
+          sha256sum build/dxvk/legacy/{x86,arm64x}/bin/d3d11.dll \
+                    build/dxvk/legacy/{x86,arm64x}/bin/dxgi.dll \
+                    build/dxvk/modern-2.6/{x86,arm64x}/bin/d3d11.dll \
+                    build/dxvk/modern-2.6/{x86,arm64x}/bin/dxgi.dll
 
       - name: Locate artifacts
         id: art
@@ -369,42 +369,50 @@ jobs:
                   assert runtime["commit"] == expected["commit"], (
                       profile, runtime["commit"], expected["commit"]
                   )
-                  # 方案③ 下 modern 的 x64 overlay 由 arm64x 取代 (
-                  # wine_env.cpp overlay64 → arm64x, FEX native view),
-                  # manifest 中 x64 的 sha 记空、不打包实际文件;
-                  # legacy 仍是 x64+x86 双图。按 profile 分派断言架构。
-                  arches = [("x64", 0x8664), ("x86", 0x014C)] if profile == "legacy" else [("x86", 0x014C)]
-                  for arch, expected_machine in arches:
-                      for dll in ("d3d11.dll", "dxgi.dll"):
-                          name = f"dxvk/{profile}/{arch}/{dll}"
-                          image = wine_data.read(name)
-                          assert len(image) > 4096, (name, len(image))
-                          assert image[:2] == b"MZ", name
-                          pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
-                          assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
-                          machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
-                          assert machine == expected_machine, (
-                              name, hex(machine), hex(expected_machine)
-                          )
-                          assert runtime[arch][dll] == hashlib.sha256(image).hexdigest(), name
-                          print(
-                              f"[dxvk/{profile}] {name}: "
-                              f"machine={machine:#06x} size={len(image)}"
-                          )
-                  if profile == "modern-2.6":
-                      # 方案③ 专属: ARM64X 双图 DLL 在 wine-data 中但不在 manifest
-                      for dll in ("d3d11.dll", "dxgi.dll"):
-                          name = f"dxvk/modern-2.6/arm64x/{dll}"
-                          image = wine_data.read(name)
-                          assert len(image) > 4096, (name, len(image))
-                          assert image[:2] == b"MZ", name
-                          pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
-                          assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
-                          machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
-                          assert machine == 0xAA64, (name, hex(machine))
-                          print(
-                              f"[dxvk/{profile}] {name}: "
-                              f"machine={machine:#06x} size={len(image)}"
+                  # 方案③: x86 仍是 i386 meson PE; 64 位走 ARM64X (arm64x/,
+                  # FileHeader 0xAA64 或 ARM64EC 0xA64E)。wine-data 的 x64/ 是
+                  # ARM64X 镜像 (兼容旧 ntdll overlay), 不是 meson AMD64 0x8664。
+                  ARM64X_MACHINES = {0xAA64, 0xA64E}
+
+                  def check_pe(name, expected_machines, expected_sha=None):
+                      image = wine_data.read(name)
+                      assert len(image) > 4096, (name, len(image))
+                      assert image[:2] == b"MZ", name
+                      pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+                      assert image[pe_offset:pe_offset + 4] == b"PE\0\0", name
+                      machine = struct.unpack_from("<H", image, pe_offset + 4)[0]
+                      assert machine in expected_machines, (
+                          name, hex(machine), {hex(m) for m in expected_machines}
+                      )
+                      digest = hashlib.sha256(image).hexdigest()
+                      if expected_sha:
+                          assert expected_sha == digest, name
+                      print(
+                          f"[dxvk/{profile}] {name}: "
+                          f"machine={machine:#06x} size={len(image)}"
+                      )
+                      return digest
+
+                  for dll in ("d3d11.dll", "dxgi.dll"):
+                      check_pe(
+                          f"dxvk/{profile}/x86/{dll}",
+                          {0x014C},
+                          runtime["x86"][dll],
+                      )
+                      arm64x_sha = check_pe(
+                          f"dxvk/{profile}/arm64x/{dll}",
+                          ARM64X_MACHINES,
+                      )
+                      x64_name = f"dxvk/{profile}/x64/{dll}"
+                      try:
+                          x64_sha = check_pe(x64_name, ARM64X_MACHINES)
+                      except KeyError:
+                          x64_sha = ""
+                      manifest_x64 = runtime.get("x64", {}).get(dll, "")
+                      if manifest_x64:
+                          assert x64_sha == manifest_x64, (x64_name, manifest_x64)
+                          assert x64_sha == arm64x_sha, (
+                              f"{x64_name} must be the ARM64X mirror"
                           )
 
               # 方案③ vulkan 运行时: PE 侧 aarch64 (ARM64 machine 0xAA64) +

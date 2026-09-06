@@ -60,6 +60,10 @@ build_fex_ec() {
             -DBUILD_TESTING=False \
             "$FEX_SRC"
     fi
+    require_cmake_not_debug CMakeCache.txt "fex-ec"
+    require_cmake_flag_var CMakeCache.txt CMAKE_CXX_FLAGS_RELWITHDEBINFO "fex-ec CMAKE_CXX_FLAGS_RELWITHDEBINFO"
+    require_ndebug "fex-ec CMAKE_CXX_FLAGS_RELWITHDEBINFO" \
+        "$(sed -n 's/^CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=//p' CMakeCache.txt | head -1)"
     make -j"$JOBS" arm64ecfex
 
     local dll="$OUT_DIR/libarm64ecfex.dll"
@@ -89,6 +93,10 @@ build_fex_pe() {
             -DBUILD_TESTING=False \
             "$FEX_SRC"
     fi
+    require_cmake_not_debug CMakeCache.txt "fex-pe"
+    require_cmake_flag_var CMakeCache.txt CMAKE_CXX_FLAGS_RELWITHDEBINFO "fex-pe CMAKE_CXX_FLAGS_RELWITHDEBINFO"
+    require_ndebug "fex-pe CMAKE_CXX_FLAGS_RELWITHDEBINFO" \
+        "$(sed -n 's/^CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=//p' CMakeCache.txt | head -1)"
     make -j"$JOBS" wow64fex
 
     local dll="$build/Bin/libwow64fex.dll"

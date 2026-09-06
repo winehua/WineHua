@@ -506,8 +506,11 @@ static void log_d3d_environment_summary()
     const char* rgba8SnormRt = getenv("DXVK_WINEHUA_EMULATE_RGBA8_SNORM_RT");
 
     std::string root = dxvkRoot && dxvkRoot[0] ? dxvkRoot : "";
-    const std::string x64D3d11 = root + "/x64/d3d11.dll";
-    const std::string x64Dxgi = root + "/x64/dxgi.dll";
+    const std::string overlay64 = root + "/arm64x";
+    const bool useArm64x = !overlay64.empty() && access((overlay64 + "/d3d11.dll").c_str(), R_OK) == 0;
+    const std::string dxgi64Dir = useArm64x ? overlay64 : (root + "/x64");
+    const std::string x64D3d11 = dxgi64Dir + "/d3d11.dll";
+    const std::string x64Dxgi = dxgi64Dir + "/dxgi.dll";
     const std::string x86D3d11 = root + "/x86/d3d11.dll";
     const std::string x86Dxgi = root + "/x86/dxgi.dll";
     auto present = [](const std::string& path) {

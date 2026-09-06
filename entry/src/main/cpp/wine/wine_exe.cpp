@@ -355,7 +355,7 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     ProgramOptions options;
     options.windowsExePath = GetString(env, args[0], "windowsExePath");
     options.workingDirectory = GetString(env, args[0], "workingDirectory");
-    options.d3dBackend = GetString(env, args[0], "d3dBackend", "vkd3d_limited_500k");
+    options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_legacy");
     const std::string impliedDxvkBackend = options.d3dBackend == "dxvk_modern_2_6"
         ? "dxvk_modern_2_6" : "dxvk_legacy";
     options.dxvkBackend = GetString(env, args[0], "dxvkBackend", impliedDxvkBackend.c_str());

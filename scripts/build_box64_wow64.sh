@@ -50,11 +50,18 @@ if [ ! -f CMakeCache.txt ]; then
         -DWOW64=ON \
         "$BOX64_SRC"
 fi
+require_cmake_not_debug CMakeCache.txt "box64-pe"
+require_cmake_flag_var CMakeCache.txt CMAKE_C_FLAGS_RELEASE "box64-pe CMAKE_C_FLAGS_RELEASE"
 make -j"$JOBS" wowbox64
 
 # 产物定位 (ExternalProject 子构建目录; hangover boxpe/Dockerfile 的路径)
 DLL="$BUILD/wowbox64-prefix/src/wowbox64-build/wowbox64.dll"
 test -f "$DLL" || err "wowbox64 构建失败: $DLL 不存在"
+WOW_CACHE="$BUILD/wowbox64-prefix/src/wowbox64-build/CMakeCache.txt"
+if [ -f "$WOW_CACHE" ]; then
+    require_cmake_not_debug "$WOW_CACHE" "wowbox64.dll"
+    require_cmake_flag_var "$WOW_CACHE" CMAKE_C_FLAGS_RELEASE "wowbox64.dll CMAKE_C_FLAGS_RELEASE"
+fi
 
 # aarch64 PE 验证 (llvm-readobj, mingw magic 不误判)
 local_readobj="$LLVM_MINGW/bin/llvm-readobj"

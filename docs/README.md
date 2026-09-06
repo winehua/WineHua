@@ -36,6 +36,7 @@
 ### 平台限制与已知问题
 - **[NOEXEC_MMAP_ANALYSIS.md](NOEXEC_MMAP_ANALYSIS.md)** — noexec 文件系统上 mmap+PROT_EXEC 修复（已解决，设计依据）
 - **[OHOS_MMAP_ANALYSIS.md](OHOS_MMAP_ANALYSIS.md)** — OHOS mmap 权限调研报告（平台硬约束）
+- **[ARM64_SCHEME3_HEAVEN_CRASH_FIX.md](ARM64_SCHEME3_HEAVEN_CRASH_FIX.md)** — 方案③ Heaven Qt 白屏 / DX11 FS 基址崩溃：sigchain SMC、TEB trampoline、wowbox64 epilog
 - **[X86_64_PC_ISSUES.md](X86_64_PC_ISSUES.md)** — x86_64 PC 已知问题
 
 ### 工程维护

@@ -13,7 +13,7 @@ struct ProgramOptions {
     std::vector<std::string> argv;
     std::vector<std::string> environment;
     std::string workingDirectory;
-    std::string d3dBackend = "vkd3d_limited_500k";
+    std::string d3dBackend = "dxvk_legacy";
     std::string dxvkBackend = "dxvk_legacy";
     std::string presentBackend;  // 空 = 按 d3dBackend 派生 (DerivePresentBackend)
 };

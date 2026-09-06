@@ -13,7 +13,7 @@ struct LaunchParams {
     std::string sockName;
     std::string winehuaBin;
     std::string prefixDir;
-    std::string d3dBackend = "vkd3d_limited_500k";
+    std::string d3dBackend = "dxvk_legacy";
     std::string dxvkBackend = "dxvk_legacy";
     // Wine locale 语言 ("zh_CN"/"en_US"), 来自设置页, 决定桌面会话的 LANG
     std::string wineLang = "zh_CN";

@@ -8,6 +8,8 @@ import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
 // [[SMOKE]] 合并到 main-ui: 删本行与 init 内的 attach 调用 (均为此标记)
 import { SmokeHook } from '../smoke/SmokeHook';
+// [[GAME]] merge drop: delete with ets/game/ and GameHook call sites
+import { GameHook } from '../game/GameHook';
 
 const DOMAIN = 0x0000;
 export const FILES_BASE = '/data/storage/el2/base/files';
@@ -168,7 +170,7 @@ export class WineEnvService {
   private stopWaiters: Array<() => void> = [];
 
   // -- 启动参数 (EntryAbility 发布的 AppStorage 生效值, init 时读取) --
-  private d3dBackend: string = 'vkd3d_limited_500k';
+  private d3dBackend: string = 'dxvk_legacy';
   private dxvkBackend: string = 'dxvk_legacy';
   // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效。
   // 持久化走 preferences API (同 DisplaySettingsService) — 不用 PersistentStorage:
@@ -308,7 +310,7 @@ export class WineEnvService {
 
   // 读取 EntryAbility 发布到 AppStorage 的生效值 (D3D/DXVK 后端)
   private updateLaunchRequest(): void {
-    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k';
+    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_legacy';
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
@@ -361,6 +363,7 @@ export class WineEnvService {
     // 经 ets/smoke/ 物理隔离; 返回 true = smoke clean 重置编排已接管初始化)。
     // 本行位置有讲究: 必须位于 native 状态回调与订阅注册之后 (clean 编排里
     // stopSession/startSession 依赖 native 状态消息)。
+    GameHook.getInstance().attach(this);
     if (SmokeHook.getInstance().attach(this)) {
       return;
     }
@@ -380,7 +383,8 @@ export class WineEnvService {
       // wine.inf 缺失不算升级 (数据缺失走 startSession 自动解压, 不弹卡)
       if (!this.sessionAlive &&
           pathExists(`${WINE_ROOT}/share/wine/wine.inf`) &&
-          this.upgradeNeedsAttention()) {
+          this.upgradeNeedsAttention() &&
+          !GameHook.getInstance().isActive()) {
         this.upgradePending = true;
         this.notify();
         return;
@@ -479,6 +483,7 @@ export class WineEnvService {
       // [[SMOKE]] 合并到 main-ui: 删本行 (smoke 播种/跑测触发点, 旧
       // seedSmokePayload+maybeRunSmoke 同位置)
       SmokeHook.getInstance().onEngineReady();
+      GameHook.getInstance().onEngineReady();
     });
   }
 
@@ -487,6 +492,7 @@ export class WineEnvService {
   onNewWant(): void {
     // [[SMOKE]] 合并到 main-ui: 删本行
     SmokeHook.getInstance().onNewWant();
+    GameHook.getInstance().onNewWant();
   }
 
   // 只清 prefix (C 盘 + prefix 元数据), 不删运行时 — 与 doReset (删 WINE_ROOT +
@@ -877,6 +883,12 @@ export class WineEnvService {
     if (!pathExists(`${WINE_ROOT}/share/wine/wine.inf`)) {
       this.setInitStatus('解压数据...', !this.bgStart);
       hilog.warn(DOMAIN, 'wine', 'auto-init: extracting wine data (missing)...');
+      await this.extractWineData();
+    } else if (this.runtimeNeedsRefresh() && GameHook.getInstance().isActive()) {
+      // Game-test Want (无人值守 Heaven 等): 升级不弹卡 — 自动解压以加载 HAP
+      // 内新 win32u/wine-data (WOW64 vkMapMemory 等), 否则会挂在升级卡片上。
+      this.setInitStatus('解压数据...', !this.bgStart);
+      hilog.warn(DOMAIN, 'wine', 'auto-init: game-test runtime upgrade, auto-extracting...');
       await this.extractWineData();
     } else if (this.upgradeNeedsAttention()) {
       hilog.warn(DOMAIN, 'wine', 'auto-init: runtime outdated, NOT auto-extracting (user-initiated)');

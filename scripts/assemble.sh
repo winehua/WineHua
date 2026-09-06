@@ -29,6 +29,28 @@ assemble_pad() {
         # arm64ec-windows 仅产 .o (ABI 编译验证) → smoke 也取 aarch64-windows
         smoke_src_dir="aarch64-windows"
     fi
+    # ARM64X DXVK/VKD3D 由 llvm-mingw clang++ 链接, 导入 libc++.dll + libunwind.dll。
+    # 原生 ARM64 smoke 加载 ARM64X d3d11 时若缺这两颗会 STATUS_DLL_NOT_FOUND (c0000135)。
+    # 优先 20260826 工具链: 其 aarch64 libc++ 本身也是 ARM64X, 与 DXVK 双图匹配。
+    copy_arm64x_cxx_runtime() {
+        local dest="$1"
+        local cxx_root=""
+        local cand
+        for cand in \
+            "$ROOT/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64/aarch64-w64-mingw32/bin" \
+            "/data/share/winebox/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64/aarch64-w64-mingw32/bin" \
+            "$LLVM_MINGW/aarch64-w64-mingw32/bin"
+        do
+            if [ -f "$cand/libc++.dll" ] && [ -f "$cand/libunwind.dll" ]; then
+                cxx_root="$cand"
+                break
+            fi
+        done
+        [ -n "$cxx_root" ] || err "ARM64X C++ runtime missing (libc++.dll / libunwind.dll)"
+        cp "$cxx_root/libc++.dll" "$dest/libc++.dll"
+        cp "$cxx_root/libunwind.dll" "$dest/libunwind.dll"
+        log "    ARM64X C++ runtime ← $cxx_root → $dest"
+    }
     rm -rf "$STAGING_DIR"
     rm -rf "$wine_data"
     # 方案② 清理 entry/libs 残留: 该目录由 build_native (wayland/xkbcommon/ffi) +
@@ -419,6 +441,10 @@ assemble_pad() {
             done
         done
     done
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        # Native ARM64 / ARM64X PE (DXVK, VKD3D, clang++ smokes) import these.
+        copy_arm64x_cxx_runtime "$wine_data/bin/$wine_pe_dir"
+    fi
     log "  $wine_pe_dir → $(ls "$wine_data/bin/$wine_pe_dir" | wc -l) files"
 
     # strip PE 调试符号 (DWARF .debug_*, 缩减 ~50%)
@@ -486,12 +512,24 @@ assemble_pad() {
     local smoke_dir="$wine_data/smoke"
     mkdir -p "$smoke_dir/x64" "$smoke_dir/x86" "$smoke_dir/assets"
     local cube_source="$WINEHUA/smoke/winehua_d3d_switch_cube.c"
-    x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
-        "$smoke_dir/x64/winehua_d3d_switch_cube.exe" "$cube_source" \
-        -ld3d9 -ld3d11 -ldxgi -ld3dcompiler -luuid -lshell32 -luser32 -lgdi32 -lm
+    local cube_libs="-ld3d9 -ld3d11 -ldxgi -ld3dcompiler -luuid -lshell32 -luser32 -lgdi32 -lm"
+    # 方案③: smoke/x64 与 winehua_d3d11_smoke 等受管 smoke 一致, 用原生 ARM64 PE
+    # (匹配 ARM64X DXVK overlay), 避免 UI「x64 cube」走 FEX 后在 ProcessInit 静默退出。
+    # 真 AMD64 (0x8664) 副本放到 smoke/amd64/ 供后续 FEX 回归; 方案①/② 仍用 x86_64 PE。
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        local aarch64_cc="$LLVM_MINGW/bin/aarch64-w64-mingw32-clang"
+        [ -x "$aarch64_cc" ] || err "aarch64 smoke cube needs $aarch64_cc"
+        mkdir -p "$smoke_dir/amd64"
+        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
+            "$smoke_dir/amd64/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
+        "$aarch64_cc" -O2 -s -mwindows -o \
+            "$smoke_dir/x64/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
+    else
+        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
+            "$smoke_dir/x64/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
+    fi
     i686-w64-mingw32-gcc -O2 -s -mwindows -o \
-        "$smoke_dir/x86/winehua_d3d_switch_cube.exe" "$cube_source" \
-        -ld3d9 -ld3d11 -ldxgi -ld3dcompiler -luuid -lshell32 -luser32 -lgdi32 -lm
+        "$smoke_dir/x86/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
     # The primary Wine build uses --enable-archs=i386,x86_64.  Its PE import
     # libraries are both emitted under wine-ohos; wine-i386-pe is an obsolete
     # standalone build directory and does not exist in a clean CI checkout.
@@ -514,9 +552,15 @@ assemble_pad() {
         "$vulkan_import_x86" \
         -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
     local d3d8_source="$WINEHUA/smoke/winehua_d3d8_smoke.c"
-    x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
-        "$smoke_dir/x64/winehua_d3d8_smoke.exe" "$d3d8_source" \
-        -luser32 -lgdi32
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -mwindows -o \
+            "$smoke_dir/x64/winehua_d3d8_smoke.exe" "$d3d8_source" \
+            -luser32 -lgdi32
+    else
+        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
+            "$smoke_dir/x64/winehua_d3d8_smoke.exe" "$d3d8_source" \
+            -luser32 -lgdi32
+    fi
     i686-w64-mingw32-gcc -O2 -s -mwindows -o \
         "$smoke_dir/x86/winehua_d3d8_smoke.exe" "$d3d8_source" \
         -luser32 -lgdi32
@@ -534,9 +578,15 @@ assemble_pad() {
         "$smoke_dir/x86/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
         "$vulkan_import_x86" -luser32 -lcomctl32 -lgdi32
     local win32_driver_source="$WINEHUA/smoke/winehua_win32_driver.c"
-    x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
-        "$smoke_dir/x64/winehua_win32_driver.exe" "$win32_driver_source" \
-        -lshell32 -luser32
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -municode -mwindows -o \
+            "$smoke_dir/x64/winehua_win32_driver.exe" "$win32_driver_source" \
+            -lshell32 -luser32
+    else
+        x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
+            "$smoke_dir/x64/winehua_win32_driver.exe" "$win32_driver_source" \
+            -lshell32 -luser32
+    fi
     i686-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
         "$smoke_dir/x86/winehua_win32_driver.exe" "$win32_driver_source" \
         -lshell32 -luser32
@@ -575,14 +625,14 @@ assemble_pad() {
         mkdir -p "$wine_data/dxvk/legacy/arm64x"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/arm64x/dxgi.dll"
-        # WineHua loader 钩子 (ntdll/loader.c search_winehua_dxvk_overlay) 只拼
-        # WINEHUA_DXVK_ROOT 下的 x64/x86 子目录 (archW 数组无 arm64x): 方案③
-        # 必须把 arm64x 双图内容同时放入 x64/ 目录名让钩子命中, 否则钩子 miss
-        # → native 搜索失败直接 c0000135 (实测 2026-09-05: WINEDLLPATH 兜底只
-        # 救 dxvk/d3d11, vkd3d/d3d12 必挂)。
+        copy_arm64x_cxx_runtime "$wine_data/dxvk/legacy/arm64x"
+        # ntdll overlay 现已搜 arm64x/; 仍把双图镜像进 x64/, 兼容旧 ntdll
+        # 以及只认 x64 目录名的钩子。缺 x64 时 64 位 Unity LoadLibrary(d3d11)
+        # 会落到 Wine builtin 再被 d3d11=n 拒绝 (0x80029C4A)。
         mkdir -p "$wine_data/dxvk/legacy/x64"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
+        copy_arm64x_cxx_runtime "$wine_data/dxvk/legacy/x64"
     fi
     local dxvk_modern_root="$DXVK_MODERN_BUILD_ROOT"
     [ -f "$dxvk_modern_root/x86/bin/d3d11.dll" ] || err "DXVK Modern x86 d3d11.dll missing: $dxvk_modern_root/x86/bin/d3d11.dll"
@@ -610,10 +660,12 @@ assemble_pad() {
         mkdir -p "$wine_data/dxvk/modern-2.6/arm64x"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/arm64x/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/arm64x/dxgi.dll"
-        # 同 legacy: loader 钩子只认 x64/, arm64x 内容镜像一份 (见上方注释)
+        copy_arm64x_cxx_runtime "$wine_data/dxvk/modern-2.6/arm64x"
+        # 同 legacy: 镜像进 x64/, 兼容旧 ntdll overlay
         mkdir -p "$wine_data/dxvk/modern-2.6/x64"
         cp "$dxvk_arm64x/bin/d3d11.dll" "$wine_data/dxvk/modern-2.6/x64/d3d11.dll"
         cp "$dxvk_arm64x/bin/dxgi.dll" "$wine_data/dxvk/modern-2.6/x64/dxgi.dll"
+        copy_arm64x_cxx_runtime "$wine_data/dxvk/modern-2.6/x64"
     fi
     local vkd3d_root="$VKD3D_PROTON_BUILD_ROOT/limited-500k"
     [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \

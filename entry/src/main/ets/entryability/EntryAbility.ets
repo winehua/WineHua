@@ -6,6 +6,8 @@ import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
+// [[GAME]] Heaven/game Want automation (URI-decode path); delete with ets/game/
+import { GameHook } from '../game/GameHook';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -38,16 +40,16 @@ export default class EntryAbility extends UIAbility {
     };
     const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
       parameters['winehua.d3d_backend'] !== null;
-    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'dxvk_legacy';
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
     const d3dBackend = requestedD3d === 'dxvk_legacy' ||
       requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
       requestedD3d : 'wined3d';
     const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
       parameters['winehua.dxvk_backend'] !== null;
-    const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'auto';
+    const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'dxvk_legacy';
     let dxvkBackend = this.resolveDxvkBackend(explicitDxvk ?
-      value('winehua.dxvk_backend', 'auto') : persistedDxvk);
+      value('winehua.dxvk_backend', 'dxvk_legacy') : persistedDxvk);
     if (d3dBackend === 'dxvk_legacy') dxvkBackend = 'dxvk_legacy';
     if (d3dBackend === 'dxvk_modern_2_6') dxvkBackend = 'dxvk_modern_2_6';
     AppStorage.setOrCreate<string>('winehua.d3d.backend', d3dBackend);
@@ -57,11 +59,14 @@ export default class EntryAbility extends UIAbility {
     // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
     // 在 SmokeHook, 模式非 smoke 时零行为)
     SmokeHook.getInstance().applyWant(parameters);
+    // [[GAME]] mode=game Want → GameHook
+    GameHook.getInstance().applyWant(parameters);
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'vkd3d_limited_500k');
-    PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'auto');
+    // Default D3D: DXVK 1.10 (legacy). Do not auto-select/init VKD3D.
+    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'dxvk_legacy');
+    PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'dxvk_legacy');
     // 注: Wine 语言偏好不走 PersistentStorage (冷启动不恢复磁盘值, 实测),
     // 由 WineEnvService.init 用 preferences API 自行加载
     try {
