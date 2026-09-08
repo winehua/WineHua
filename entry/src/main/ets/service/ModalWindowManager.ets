@@ -22,6 +22,11 @@ class ModalEntry {
   modalId: number = 0;
   ownerId: number = 0;
   subWin: window.Window | null = null;
+  // 宿主 stage (创建本子窗口的 WindowStage)。嵌套 modal (owner 是另一
+  // modal) 时继承 owner 的, 供以本 modal 为 owner 的下一层补建使用;
+  // OHOS subWindow 不能嵌套 (宿主恒为主窗口), 但同 stage 多 subWindow
+  // 并存合法, 后创建默认在上层
+  stage: window.WindowStage | null = null;
   w: number = 0;
   h: number = 0;
 }
@@ -68,13 +73,26 @@ export class ModalWindowManager {
   show(modalId: number, d: Record<string, string | number>,
        stage: window.WindowStage | null,
        parentWin: window.Window | null, scale: number): void {
+    // 嵌套模态兜底: modal 窗口不建 WineWindowManager entry, 当新对话框的
+    // owner 是另一个 modal (而非真实主窗口) 时, 宿主 stage + 物理父窗口
+    // 从该 modal 继承 — OHOS subWindow 不能嵌套, 但同 stage 多 subWindow
+    // 并存且后创建默认在上层, 嵌套对话框"看得到"不受此限
+    let hostStage = stage;
+    let hostWin = parentWin;
+    if (!hostStage || !hostWin) {
+      const host = this.modals.get(Number(d.owner ?? 0));
+      if (host?.stage && host?.subWin) {
+        hostStage = host.stage;
+        hostWin = host.subWin;
+      }
+    }
     // 已存在 (Wine 每次 WindowPosChanged 重发 modal=1, 带新 dx/dy) →
     // 只做位置/尺寸跟随, 不重建子窗口
     const existing = this.modals.get(modalId);
     if (existing) {
       hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d re-show → reposition', modalId);
-      if (parentWin) {
-        this.reposition(existing, d, parentWin, scale);
+      if (hostWin) {
+        this.reposition(existing, d, hostWin, scale);
       }
       return;
     }
@@ -83,11 +101,12 @@ export class ModalWindowManager {
       return;
     }
 
-    if (!stage || !parentWin) {
-      // owner Ability 异步启动晚于对话框弹出 (启动即弹窗场景): 暂存,
-      // owner 的 stage/win 回填后 (WineWindowManager.flushPendingEvents)
-      // flushForOwner 补建 — drop 会让 ModalToplevelIds 吞掉后续一切事件
-      // 且 owner 已被 wine 禁用, 应用表现为"点不动且无对话框"
+    if (!hostStage || !hostWin) {
+      // owner (Ability 或上一级 modal) 尚未就绪: 暂存, 由"就绪方"补建 —
+      // 真实主窗口经 WineWindowManager.flushPendingEvents 回填,
+      // 嵌套 modal 经 show 成功后 flushForOwner 级联补建。drop 会让
+      // ModalToplevelIds 吞掉后续一切事件且 owner 已被 wine 禁用,
+      // 应用表现为"点不动且无对话框"
       hilog.warn(DOMAIN, TAG, '[MODAL] show #%{public}d: owner #%{public}d stage/win not ready, queue',
         modalId, d.owner ?? 0);
       const pending: PendingShow = { data: d, ownerId: Number(d.owner ?? 0) };
@@ -97,6 +116,7 @@ export class ModalWindowManager {
     const entry = new ModalEntry();
     entry.modalId = modalId;
     entry.ownerId = Number(d.owner ?? 0);
+    entry.stage = hostStage;
     entry.w = Math.max(1, Number(d.w ?? 0));
     entry.h = Math.max(1, Number(d.h ?? 0));
     this.creating.add(modalId);
@@ -108,7 +128,7 @@ export class ModalWindowManager {
       '[MODAL] show #%{public}d owner=#%{public}d wine=%{public}dx%{public}d rel=(%{public}d,%{public}d) scale=%{public}s',
       modalId, entry.ownerId, entry.w, entry.h, d.dx ?? 0, d.dy ?? 0, scale.toFixed(2));
 
-    stage.createSubWindowWithOptions(`wine_modal_${modalId}`, {
+    hostStage.createSubWindowWithOptions(`wine_modal_${modalId}`, {
       title: '',
       decorEnabled: false,
       isModal: true
@@ -146,7 +166,7 @@ export class ModalWindowManager {
         // 尺寸: wine 逻辑 × scale; 位置: owner 屏幕位置 + 相对差 × scale
         await subWin.resize(Math.max(1, Math.round(entry.w * scale)),
                             Math.max(1, Math.round(entry.h * scale)));
-        const pr = parentWin.getWindowProperties().windowRect;
+        const pr = hostWin!.getWindowProperties().windowRect;
         const dx = Number(d.dx ?? 0);
         const dy = Number(d.dy ?? 0);
         await subWin.moveWindowToGlobal(
@@ -156,6 +176,9 @@ export class ModalWindowManager {
         hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d shown at screen(%{public}d,%{public}d)',
           modalId, pr.left + Math.round(dx * scale),
           pr.top + Math.round(dy * scale));
+        // 嵌套模态: 自身已可见 → 以自身为 owner 的暂存 show 请求可补建
+        // (宿主 stage + 本 subWin 即其物理父/定位基准)
+        this.flushForOwner(entry.modalId, entry.stage, entry.subWin, scale);
       } catch (e) {
         hilog.error(DOMAIN, TAG, '[MODAL] #%{public}d show failed: %{public}s',
           modalId, JSON.stringify(e));
@@ -251,6 +274,18 @@ export class ModalWindowManager {
   }
 
   private destroyEntry(entry: ModalEntry): void {
+    // 级联: 以该 modal 为 owner 的嵌套 modal 一并销毁 (Win32 owned 链);
+    // 同时清掉其暂存 show 请求 (父已亡, 永不补建, 防泄漏)
+    this.modals.forEach((child) => {
+      if (child.ownerId === entry.modalId) {
+        this.destroyEntry(child);
+      }
+    });
+    this.pendingShows.forEach((p, modalId) => {
+      if (p.ownerId === entry.modalId) {
+        this.pendingShows.delete(modalId);
+      }
+    });
     this.modals.delete(entry.modalId);
     this.creating.delete(entry.modalId);
     this.pendingDestroy.delete(entry.modalId);
