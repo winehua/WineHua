@@ -13,6 +13,7 @@ export const sendImeCommit: (text: string) => void;
 export const sendImePreedit: (text: string, start: number, end: number) => void;
 export const imeBackspace: () => void;
 export const setPendingToplevel: (id: number) => void;
+export const cancelPendingToplevel: (id: number) => void;
 export const getCurrentToplevelId: () => number;
 export const destroyToplevel: (id: number) => void;
 export const sendToplevelClose: (id: number) => void;

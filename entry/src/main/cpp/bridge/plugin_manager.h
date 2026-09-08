@@ -3,7 +3,7 @@
 #include <unordered_map>
 #include <memory>
 #include <cstdint>
-#include <queue>
+#include <deque>
 
 // surfaceId 驱动的 XComponent 管理
 //
@@ -33,9 +33,13 @@ public:
     void DestroyToplevel(uint32_t toplevelId);
 
     // pending toplevelId 队列: Ability 在 loadContent 前入队
-    // WineWindow.aboutToAppear 同步出队 (FIFO, 无竞态)
-    void SetPendingToplevel(uint32_t id) { pendingToplevelQueue_.push(id); }
+    // WineWindow.aboutToAppear 同步出队 (FIFO); 出队方窗口被销毁时
+    // 用 CancelPendingToplevel 清除残坑, 防止后续页面出队错位
+    // (getCurrentToplevelId 拿到别人的 id → 渲染器挂错 toplevel → 黑屏,
+    // 1.8 实测: show/hide 快速交替的 destroy-while-creating 页面无 aboutToAppear)
+    void SetPendingToplevel(uint32_t id) { pendingToplevelQueue_.push_back(id); }
     uint32_t DequeuePendingToplevel();
+    void CancelPendingToplevel(uint32_t id);
 
     // 辅助: toplevelId -> EglRenderer 查找 (InputManager 坐标转换使用)
     EglRenderer* GetRendererForToplevel(uint32_t tid);
@@ -54,6 +58,7 @@ private:
     // 每个 toplevel 一个独立 EGLContext 渲染器
     std::unordered_map<uint32_t, std::unique_ptr<EglRenderer>> toplevelRenderers_;
 
-    // pending queue: Ability 入队, WineWindow.aboutToAppear 出队 (FIFO 无竞态)
-    std::queue<uint32_t> pendingToplevelQueue_;
+    // pending queue: Ability 入队, WineWindow.aboutToAppear 出队 (FIFO);
+    // deque 支持 CancelPendingToplevel 的定点删除 (queue 底层不可迭代)
+    std::deque<uint32_t> pendingToplevelQueue_;
 };

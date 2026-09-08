@@ -637,6 +637,18 @@ static napi_value GetCurrentToplevelId(napi_env env, napi_callback_info info) {
     return r;
 }
 
+// -- NAPI: cancelPendingToplevel -- (窗口在 loadContent 前被销毁时清除队列残坑,
+//   防止后续页面出队拿到死 id → 渲染器挂错 toplevel 黑屏; 未在队列时 no-op)
+static napi_value CancelPendingToplevel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    napi_get_value_uint32(env, args[0], &id);
+    PluginManager::GetInstance()->CancelPendingToplevel(id);
+    return nullptr;
+}
+
 // -- NAPI: setPendingToplevel -- (WineWindowAbility 在 loadContent 前调用)
 static napi_value SetPendingToplevel(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -1108,6 +1120,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"imeBackspace", nullptr, ImeBackspace, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getCurrentToplevelId", nullptr, GetCurrentToplevelId, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"cancelPendingToplevel", nullptr, CancelPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"destroyToplevel", nullptr, DestroyToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runWineExe",     nullptr, RunWineExe,     nullptr, nullptr, nullptr, napi_default, nullptr},
