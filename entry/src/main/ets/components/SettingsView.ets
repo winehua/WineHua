@@ -177,10 +177,10 @@ export struct SettingsView {
     this.desktopModeRestartHint = true;
   }
 
-  // 设置项可见性: 功能仅对 PC 可用 (Pad/phone 恒虚拟桌面, 无融合模式可切)
+  // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
   private isPcDevice(): boolean {
     const t = deviceInfo.deviceType;
-    return t !== 'tablet' && t !== 'phone';
+    return t !== 'phone';
   }
 
   private confirmReset(): void {
@@ -326,15 +326,18 @@ export struct SettingsView {
               .width('100%')
           }
 
-          // 桌面模式 (仅 PC): 融合模式 = 每个程序独立 OHOS 窗口 (多窗口, 默认);
-          // 虚拟桌面 = 独立窗口承载 Wine 桌面
+          // 桌面模式 (Pad/PC): 多窗口模式 = 每个程序独立 OHOS 窗口 (可拖动/
+          // 缩放/置顶); 虚拟桌面 = Wine 桌面合成为单一窗口。phone 不显示。
           if (this.isPcDevice()) {
             Text('桌面模式')
               .fontColor($r('app.color.text_primary'))
               .width('100%')
             SegmentButton({
               options: SegmentButtonOptions.capsule({
-                buttons: [{ text: '融合模式' }, { text: '虚拟桌面' }],
+                // Pad 用户语境用"多窗口模式", PC 沿用"融合模式"旧名
+                buttons: [{
+                  text: (deviceInfo.deviceType === 'tablet') ? '多窗口模式' : '融合模式'
+                }, { text: '虚拟桌面' }],
                 multiply: false
               }),
               selectedIndexes: $desktopModeSel,
@@ -343,7 +346,10 @@ export struct SettingsView {
               }
             })
             .width('100%')
-            Text('虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
+            // 说明文字按设备: Pad 多窗口为新试验功能带标注, PC 融合模式成熟不标
+            Text(deviceInfo.deviceType === 'tablet' ?
+              '虚拟桌面: Wine 桌面在独立窗口运行; 多窗口模式: 每个程序独立窗口（试验功能）' :
+              '虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
               .fontSize(12)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
