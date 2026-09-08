@@ -3,8 +3,10 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
-import { DEFAULT_D3D_BACKEND } from '../service/WineEnvService';
+import { DEFAULT_D3D_BACKEND, WineEnvService } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
+import { DesktopModeService } from '../service/DesktopModeService';
+import { AppLibraryService } from '../service/AppLibraryService';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -48,6 +50,32 @@ export default class EntryAbility extends UIAbility {
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
+    // subWindow 承载 (2in1 真机验证 subWindow 路线用, 见 WineWindowManager.
+    // fusionUsesSubWindow)。仅显式 want 生效, 不持久化。
+    const explicitFusionHost = !!parameters && parameters['winehua.fusionHost'] !== undefined &&
+      parameters['winehua.fusionHost'] !== null;
+    if (explicitFusionHost) {
+      AppStorage.set<string>('winehua.fusionHost', value('winehua.fusionHost', ''));
+    }
+    // 桌面模式显式覆盖 (fusion|virtual, 设置页切换前的测试通道): 仅在
+    // applyModePolicy 判定读取, 不持久化 (重启引擎场景仍按持久化值)。
+    // 经 DesktopModeService 单例传递 — AppStorage 读取实测不可靠。
+    const explicitDesktopMode = !!parameters && parameters['winehua.desktopMode'] !== undefined &&
+      parameters['winehua.desktopMode'] !== null;
+    if (explicitDesktopMode) {
+      DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
+    }
+    // 自动化测试通道: winehua.autoStart=1 → 主页面就绪后自动拉起引擎
+    // (UI 点击不可注入的设备上验证用, 一次消费)
+    if (parameters && parameters['winehua.autoStart'] === '1') {
+      WineEnvService.getInstance().autoStartPending = true;
+    }
+    // 自动化测试通道: winehua.program=<wine路径> → 引擎就绪后自动启动该程序
+    if (parameters && parameters['winehua.program'] !== undefined &&
+      parameters['winehua.program'] !== null) {
+      WineEnvService.getInstance().setAutoProgram(value('winehua.program', ''));
+    }
     hilog.info(DOMAIN, 'testTag', 'publish d3d=%{public}s dxvk=%{public}s explicit=%{public}d',
       d3dBackend, dxvkBackend, explicitD3d ? 1 : 0);
   }
@@ -71,6 +99,33 @@ export default class EntryAbility extends UIAbility {
     // 桌面还原不走 master 的 restoreDesktopIfRunning (DesktopAbility 已随
     // 悬浮窗重构删除): Pad/phone 桌面即主窗口内 DesktopLayer, resume 自动
     // 回前台; PC 独立虚拟桌面窗口由用户点悬浮窗打开
+    // 自动化测试通道 (运行中会话): winehua.program → 直启该程序 (warm
+    // ensureEngineReady 直返, 不重启会话)
+    this.autoRunIfRequested();
+  }
+
+  // 自动化测试通道: winehua.autoStart=1 (冷启动) / winehua.program=<wine路径>
+  // (冷启动或运行中) → 引擎就绪后自动启动程序。UI 点击不可注入的设备上
+  // 全自动验证用; 单次消费 (autoProgram 消费一次后清空)。
+  private autoRunIfRequested(): void {
+    const env = WineEnvService.getInstance();
+    const prog = env.autoProgram;
+    if (prog.length === 0) {
+      return;
+    }
+    setTimeout(() => {
+      env.ensureEngineReady().then((ok: boolean) => {
+        const p = env.consumeAutoProgram();
+        if (ok && p) {
+          hilog.info(DOMAIN, 'testTag', 'autoRun: launch %{public}s', p);
+          AppLibraryService.getInstance().launch(p);
+        } else if (p) {
+          hilog.warn(DOMAIN, 'testTag', 'autoRun: engine not ready, skip %{public}s', p);
+        }
+      }).catch((e: Object) => {
+        hilog.warn(DOMAIN, 'testTag', 'autoRun ensureEngineReady: %{public}s', JSON.stringify(e));
+      });
+    }, 300);
   }
 
   onDestroy(): void {
@@ -122,6 +177,8 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<window.Window>('winehua.mainWindow', mainWin);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      // 自动化测试通道 (冷启动): 主页面就绪后可自动拉起引擎/程序
+      this.autoRunIfRequested();
     });
   }
 

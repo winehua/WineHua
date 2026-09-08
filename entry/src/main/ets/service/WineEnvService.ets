@@ -1140,6 +1140,33 @@ export class WineEnvService {
     })();
   }
 
+  // 自动化测试通道: winehua.autoStart=1 时由 Index.aboutToAppear 消费并
+  // 自动拉起引擎 (UI 点击不可注入的设备上验证用, 一次消费后即失效)
+  autoStartPending: boolean = false;
+
+  // 自动化测试通道: winehua.program=<wine路径> — 引擎就绪后自动启动该程序
+  // (配合 autoStart 全自动验证; wine 接受正斜杠路径, 如 C:/windows/system32/notepad.exe)
+  autoProgram: string = '';
+
+  setAutoProgram(p: string): void {
+    this.autoProgram = p;
+  }
+
+  consumeAutoProgram(): string {
+    const p = this.autoProgram;
+    this.autoProgram = '';
+    return p;
+  }
+
+  consumeAutoStart(): boolean {
+    if (!this.autoStartPending) {
+      return false;
+    }
+    this.autoStartPending = false;
+    hilog.info(DOMAIN, 'wine', 'consumeAutoStart → ensureEngineReady');
+    return true;
+  }
+
   // 按需拉起引擎 (懒初始化入口): 标题栏"启动引擎"按钮与启动 app 前调用。
   // ready 直返; idle/failed 走 restartEngine 编排后等 state:ready — 首启含
   // 249MB 解压可达数分钟, 300s 超时仅作安全网, 正常失败路径都经 failInit
