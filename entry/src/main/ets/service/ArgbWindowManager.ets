@@ -75,6 +75,7 @@ export class ArgbWindowManager {
     this.creating.add(id);
 
     // 复用 pages/WinePopup 渲染管线 (createRenderer + sendPointerEvent)
+    // 与 PC 同款 FIFO: aboutToAppear 同步读 pending toplevelId
     testNapi.setPendingToplevel(id);
 
     stage.createSubWindowWithOptions(`wine_argb_${id}`, {
@@ -127,6 +128,7 @@ export class ArgbWindowManager {
       }
     }).catch((e: Error) => {
       this.creating.delete(id);
+      testNapi.cancelPendingToplevel(id);  // 创建失败 → 清 pending 残坑
       hilog.error(DOMAIN, TAG, '[ARGB] #%{public}d createSubWindow FAILED: %{public}s', id, JSON.stringify(e));
     });
   }
@@ -171,6 +173,9 @@ export class ArgbWindowManager {
     if (this.creating.has(id)) {
       this.pendingDestroy.add(id);
       this.creating.delete(id);
+      // disconnect-while-creating: 页面可能未执行 aboutToAppear → 清 pending 残坑
+      // (不删会使后续页面出队拿到死 id, 渲染器挂错 toplevel 黑屏)
+      testNapi.cancelPendingToplevel(id);
       return;
     }
     const entry = this.entries.get(id);
