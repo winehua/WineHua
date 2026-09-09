@@ -288,6 +288,8 @@ export class WineWindowManager {
     // 注册主窗口 id 供 native OH_WindowManager_LockCursor 冻结光标;
     // 锁定状态回调里隐藏/恢复系统光标 (隐藏能力只有 ArkTS API)
     if (this.mainWindow) {
+      // [WINID] 宿主主窗口 (Index) 身份: WMS 日志 "parent 312" 的物理父窗口
+      hilog.info(DOMAIN, TAG, '[MW] host mainWindow id=%{public}d', this.mainWindow.getWindowProperties().id);
       testNapi.registerHostWindow(this.mainWindow.getWindowProperties().id);
     }
     testNapi.setPointerLockCallback((locked: boolean, fromToplevel: number) => {
@@ -365,6 +367,16 @@ export class WineWindowManager {
   // WineWindow 的 onMouse 在下一帧 MOVE 时检查此标记并调用 startMoving()
   shouldStartMoving(toplevelId: number): boolean {
     return this.entries.get(toplevelId)?.moveGrabPending ?? false;
+  }
+
+  // startMoving() 已发起 → 消费 pending: 拖拽期间触摸/鼠标每帧 Move 都会查
+  // shouldStartMoving, 不清会每帧重复 startMoving() — OHOS 系统拖拽被反复
+  // 取消/重启, WMS 拖拽状态机与子窗口跟随反复重排, 父窗口的 popup 画面层
+  // 被拖丢 → 露出窗口白底 (1.8 实测: TP-DRAG startMoving 每 11ms 一次)。
+  // move_end 事件仍会重置 (兜底), 此处只负责消费一次。
+  clearMovePending(toplevelId: number): void {
+    const me = this.entries.get(toplevelId);
+    if (me) me.moveGrabPending = false;
   }
 
   getWindow(toplevelId: number): window.Window | undefined {
@@ -625,6 +637,39 @@ export class WineWindowManager {
         const me = this.entries.get(id);
         if (me) me.moveGrabPending = false;
         hilog.info(DOMAIN, TAG, '[MW] move_grab_end #%{public}d', id);
+        // [WINID] 拖拽结束时 Fusion 子窗口实际矩形 — 判断窗口最终停在屏内还是
+        // 屏外 (WMS win 329 rect), 白屏是否因窗口被拖出屏幕/回到错误位置。
+        const fWin = this.fusionUsesSubWindow() ? FusionWindowManager.getInstance().getWindow(id) : null;
+        if (fWin) {
+          try {
+            const r = fWin.getWindowProperties().windowRect;
+            hilog.info(DOMAIN, TAG,
+              '[MW] winRect #%{public}d winId=%{public}d rect=(%{public}d,%{public}d,%{public}dx%{public}d)',
+              id, fWin.getWindowProperties().id, Math.round(r.left), Math.round(r.top),
+              Math.round(r.width), Math.round(r.height));
+          } catch (_) { /* ignore */ }
+        }
+        // 拖拽结束: 拖动中 windowRectChange 已实时跟随, 此处延后补定位兜底
+        // 最后位置 (系统拖拽动画尾帧的 move 可能被 WMS 拒收/丢失)。
+        if (this.fusionUsesSubWindow() && FusionWindowManager.getInstance().has(id)) {
+          const win = FusionWindowManager.getInstance().getWindow(id);
+          if (win) {
+            const wid = id;
+            setTimeout(() => {
+              try {
+                PopupWindowManager.getInstance().repositionPopups(wid, win, this.getEffectiveScale());
+                hilog.info(DOMAIN, TAG, '[MW] move_end → repositionPopups reconvocation #%{public}d', wid);
+              } catch (_) { /* ignore */ }
+            }, 2000);
+            // [WINID] 白屏 z 序判定: 补定位后 1s (白屏稳定期) 抓 WMS 全窗
+            // 布局列表 (idx 0 = 最上层) — 对照 335/336 的 rect 排位
+            setTimeout(() => {
+              try {
+                testNapi.dumpWindowLayout(0);
+              } catch (_) { /* ignore */ }
+            }, 3000);
+          }
+        }
         break;
       }
       case 'title':
@@ -989,7 +1034,7 @@ export class WineWindowManager {
       this.registerWindow(winId, subWin);
       // 锁光标 (相对模式) 的 host window: PC 每窗 Ability 都注册, 这里等效
       try { testNapi.registerHostWindow(subWin.getWindowProperties().id); } catch (_) { /* ignore */ }
-      // 拖动/系统 resize → popup 重新定位 (对齐 WWA windowRectChange)
+      // 拖动/系统 resize → popup 实时重新定位 (画面跟随主窗, 不再拖后瞬移)
       try {
         subWin.on('windowRectChange', () => {
           PopupWindowManager.getInstance().repositionPopups(winId, subWin, this.getEffectiveScale());
@@ -1150,6 +1195,13 @@ export class WineWindowManager {
     } catch (e) {
       hilog.warn(DOMAIN, TAG, '[MW] recoverDesktopWindow failed: %{public}s', JSON.stringify(e));
     }
+  }
+
+  // 点击置顶整组: 主窗 raise 后 popup 再 raise (画面恒在主窗之上)
+  raiseWindowGroup(toplevelId: number): void {
+    if (!this.fusionUsesSubWindow()) return;
+    FusionWindowManager.getInstance().raise(toplevelId);
+    PopupWindowManager.getInstance().raisePopups(toplevelId);
   }
 
   // 主动打开虚拟桌面独立窗口 (Index 悬浮窗点击; 初始化完毕不再自动拉起,

@@ -109,6 +109,8 @@ export class FusionWindowManager {
       decorEnabled: false,
       isModal: false
     }).then(async (subWin) => {
+      // 保持 focusable(true): 拖动 (startMoving) 需要焦点。
+      // 点击置顶盖 popup 的画面白屏问题在 WineWindow.onTouch 整组提升解决。
       try {
         await subWin.loadContent('pages/WineWindow');
       } catch (e) {
@@ -121,6 +123,15 @@ export class FusionWindowManager {
       }
       entry.creating = false;
       entry.subWin = subWin;
+
+      // [WINID] 子窗口身份打点: 对照 WMS 日志 "win NNN parent XXX" 中 NNN 归属
+      // (Fusion 子窗 vs popup 子窗); hostMainId == 物理父 (stage 主窗口)。
+      let hostId = -1;
+      try {
+        hostId = this.hostStage?.getMainWindowSync()?.getWindowProperties().id ?? -1;
+      } catch (_) { /* ignore */ }
+      hilog.info(DOMAIN, TAG, '[FWM] #%{public}d subWinId=%{public}d hostMainId=%{public}d',
+        tl, subWin.getWindowProperties().id, hostId);
 
       // 无系统装饰 → 只保留内容, 圆角/直角对齐 PC 承载
       try { subWin.setWindowCornerRadius(0); } catch (_) { /* ignore */ }
