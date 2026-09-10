@@ -320,9 +320,8 @@ private:
                                   session_.desktopRootToplevelId,
                                   session_.outputW, session_.outputH};
     // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
-    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h;
-    // output 注入引用指向 session_ 字段 — 重构第 6B 步)
-    PopupManager popupMgr_{toplevelMgr_, session_.outputW, session_.outputH};
+    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
+    PopupManager popupMgr_{toplevelMgr_};
 };
 
 #include "compositor/frame/surface_data.h"  // SurfaceData 已提取至独立头文件
