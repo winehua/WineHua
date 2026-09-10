@@ -1120,4 +1120,31 @@ export class WineEnvService {
       this.notify();
     })();
   }
+
+  // -- aa want 自动化通道状态 (UI 不可注入设备上的全自动验证, 见 EntryAbility
+  //    publishLaunchRequest; 均为单次消费, 不持久化) --
+
+  // winehua.autoStart=1: 主页面就绪后自动拉起引擎
+  autoStartPending: boolean = false;
+  // winehua.program=<wine 路径>: 引擎就绪后自动启动该程序
+  autoProgram: string = '';
+
+  setAutoProgram(p: string): void {
+    this.autoProgram = p;
+  }
+
+  consumeAutoProgram(): string {
+    const p = this.autoProgram;
+    this.autoProgram = '';
+    return p;
+  }
+
+  consumeAutoStart(): boolean {
+    if (!this.autoStartPending) {
+      return false;
+    }
+    this.autoStartPending = false;
+    hilog.info(DOMAIN, 'wine', 'consumeAutoStart → ensureEngineReady');
+    return true;
+  }
 }

@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
+import { DesktopModeService } from '../service/DesktopModeService';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
@@ -54,9 +55,86 @@ export default class EntryAbility extends UIAbility {
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
+    // subWindow 承载 (见 WineWindowManager.fusionUsesSubWindow)。仅显式 want
+    // 生效, 不持久化。
+    const explicitFusionHost = !!parameters && parameters['winehua.fusionHost'] !== undefined &&
+      parameters['winehua.fusionHost'] !== null;
+    if (explicitFusionHost) {
+      AppStorage.set<string>('winehua.fusionHost', value('winehua.fusionHost', ''));
+    }
+    // 桌面模式显式覆盖 (fusion|virtual): 仅在 applyModePolicy 判定读取, 不持久化
+    // (重启引擎场景仍按持久化值)。经 DesktopModeService 单例传递 — AppStorage
+    // 跨 Ability 上下文读取不可靠 (见 DesktopModeService.setOverrideMode)。
+    const explicitDesktopMode = !!parameters && parameters['winehua.desktopMode'] !== undefined &&
+      parameters['winehua.desktopMode'] !== null;
+    if (explicitDesktopMode) {
+      DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
+    }
+    // 自动化通道 (UI 点击/输入不可注入设备的全自动验证):
+    // winehua.autoStart=1 → 主页面就绪后自动拉起引擎 (一次消费)
+    if (parameters && parameters['winehua.autoStart'] === '1') {
+      WineEnvService.getInstance().autoStartPending = true;
+    }
+    // winehua.program=<wine 路径> → 引擎就绪后自动启动该程序
+    if (parameters && parameters['winehua.program'] !== undefined &&
+      parameters['winehua.program'] !== null) {
+      WineEnvService.getInstance().setAutoProgram(value('winehua.program', ''));
+    }
     // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
     // 在 SmokeHook, 模式非 smoke 时零行为)
     SmokeHook.getInstance().applyWant(parameters);
+  }
+
+  // 自动化通道: winehua.program → 引擎就绪后直启该程序。单次消费 (成功才
+  // 消费, 见 consumeAutoProgram)。冷启动时 loadContent 回调早于引擎初始化
+  // (wineboot 数秒), 故轮询等待就绪 — 与人工操作时序无关, 只服务自动化。
+  private autoRunIfRequested(): void {
+    const env = WineEnvService.getInstance();
+    if (env.autoProgram.length === 0) {
+      return;
+    }
+    let tries = 0;
+    const tick = (): void => {
+      const p = env.autoProgram;
+      if (p.length === 0) {
+        return;  // 已被消费
+      }
+      env.ensureEngineReady().then((ok: boolean) => {
+        if (ok) {
+          const prog = env.consumeAutoProgram();
+          if (prog) {
+            hilog.info(DOMAIN, 'testTag', 'autoRun: launch %{public}s', prog);
+            this.runProgram(prog);
+          }
+          return;
+        }
+        if (++tries < 60) {  // ~60s 上限 (首次初始化含 wineboot)
+          setTimeout(tick, 1000);
+        } else {
+          hilog.warn(DOMAIN, 'testTag', 'autoRun: engine not ready after %{public}d tries, skip %{public}s',
+            tries, p);
+        }
+      }).catch((e: Object) => {
+        hilog.warn(DOMAIN, 'testTag', 'autoRun ensureEngineReady: %{public}s', JSON.stringify(e));
+        if (++tries < 60) setTimeout(tick, 1000);
+      });
+    };
+    setTimeout(tick, 300);
+  }
+
+  // 程序直启 (与 Index.doRun 同款通道; 目录/参数由调用方给出)
+  private runProgram(windowsPath: string): void {
+    const slash = windowsPath.lastIndexOf('/');
+    const dir = slash > 0 ? windowsPath.substring(0, slash) : windowsPath;
+    testNapi.runWineProgram({
+      windowsExePath: windowsPath,
+      argv: [],
+      environment: {},
+      workingDirectory: dir,
+      d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k',
+      dxvkBackend: AppStorage.get<string>('winehua.dxvk.backend') ?? 'auto'
+    });
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -77,6 +155,8 @@ export default class EntryAbility extends UIAbility {
     this.publishLaunchRequest(want);
     WineWindowManager.getInstance().restoreDesktopIfRunning();
     WineEnvService.getInstance().onNewWant();
+    // 自动化通道 (运行中会话): winehua.program → 直启该程序
+    this.autoRunIfRequested();
   }
 
   onDestroy(): void {
@@ -120,6 +200,9 @@ export default class EntryAbility extends UIAbility {
         mainWin.setWindowDecorVisible(false);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      // 自动化通道 (冷启动): winehua.program → 引擎就绪后直启该程序
+      // (winehua.autoStart 的消费在 Index.aboutToAppear)
+      this.autoRunIfRequested();
     });
   }
 

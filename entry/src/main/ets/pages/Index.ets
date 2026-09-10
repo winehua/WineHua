@@ -223,6 +223,11 @@ struct Index {
     // 首启无 prefix 自动 startSession (与 master 一致)
     env.init(getContext(this));
     mirror();
+    // 自动化通道 (winehua.autoStart=1, UI 不可注入设备验证用): 主页面就绪后
+    // 自动拉起引擎 (一次消费后失效; 见 EntryAbility.publishLaunchRequest)
+    if (env.consumeAutoStart()) {
+      setTimeout(() => this.quickStart(), 300);
+    }
   }
 
   // 图形后端互斥单选收口: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D 四选一。
