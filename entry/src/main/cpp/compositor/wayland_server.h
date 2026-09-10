@@ -257,6 +257,8 @@ private:
     void UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi);
     void UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                        uint32_t parentId, ShmCommitInfo& fi);
+    void UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes,
+                                        SurfaceData* parentSd, ShmCommitInfo& fi);
     void FinishCommit(SurfaceData* sd, wl_resource* surfRes);
 
     wl_display* display_ = nullptr;
@@ -267,6 +269,17 @@ private:
     ToplevelManager toplevelMgr_;
 
     void MarkDesktopRootDirtyLocked() { desktopRootMgr_.MarkRootDirtyLocked(); }
+
+    // 按层承载方标脏 (调用方须已持有 toplevelMgr 锁): DesktopLayer 层合成在
+    // root 帧 → 标 root; InlineClient 层合成在父窗口帧 → 标该窗口。
+    // 单一实现收口 route→dirty 分派, 供 commit/移动/移除三条路径复用。
+    void MarkLayerHostDirtyLocked(uint32_t parentToplevel, DisplayPolicy::SubsurfaceRoute route) {
+        if (route == DisplayPolicy::SubsurfaceRoute::InlineClient) {
+            toplevelMgr_.MarkToplevelDirtyLocked(parentToplevel);
+        } else {
+            MarkDesktopRootDirtyLocked();
+        }
+    }
 
     StateCb stateCb_;
     // toplevel 事件总线 (重构第 5D 步): 事件名 enum 化 + JSON 构造单点 +

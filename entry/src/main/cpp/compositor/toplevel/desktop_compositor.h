@@ -50,6 +50,14 @@ public:
         int32_t dmgX = 0, dmgY = 0, dmgW = 0, dmgH = 0;  // damage 包围盒
         int32_t vpDstW = -1, vpDstH = -1;                // viewport destination
         bool isExternal = false;  // 外部菜单 (任务栏等), 输入坐标需用 Wine 基底
+
+        // 承载路由 (DisplayPolicy::SubsurfaceRoute 的落库副本, 见该枚举注释):
+        // DesktopLayer = root 帧合成; InlineClient = 父窗口帧合成 (多窗口模式
+        // 客户区)。两者都存本容器 (desktop 用桌面坐标, inline 用窗口局部
+        // 坐标), 消费方按本字段/父窗口过滤, 不得用 isExternal 反推承载方式
+        // (isExternal 只表达"坐标是否 Wine 基底", 语义正交)。
+        DisplayPolicy::SubsurfaceRoute route =
+            DisplayPolicy::SubsurfaceRoute::DesktopLayer;
     };
 
     // -- 层序单一数据源 (阶段 1: 行为等价重构) --
@@ -189,11 +197,19 @@ public:
 
     // -- Subsurface layer 生命周期 (替代直接操作 subsurfaceLayers_) --
 
-    // 更新 subsurface layer 的本地偏移 (subsurface_set_position 调用)
-    void UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y);
+    // 更新 subsurface layer 的本地偏移 (subsurface_set_position 调用)。
+    // 命中时经 out 返回该 layer 的归属 (父 toplevel + 承载路由), 供调用方
+    // 按承载方式标脏 (DesktopLayer→root 帧; InlineClient→父窗口帧; Popup 不经此
+    // 容器)。未命中返回 false (调用方不标脏)。
+    bool UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y,
+                                            uint32_t& outParentToplevel,
+                                            DisplayPolicy::SubsurfaceRoute& outRoute);
 
-    // 移除指定 surface 对应的 layer。返回是否实际移除 (调用方据此决定是否 mark dirty)。
-    bool RemoveSubsurfaceLayer(wl_resource* surface);
+    // 移除指定 surface 对应的 layer。返回是否实际移除 (调用方据此决定是否
+    // mark dirty); 命中时经 out 返回其归属 (父 toplevel + 承载路由), 供调用方
+    // 按承载方式标脏 (见 WaylandServer::MarkLayerHostDirtyLocked)。
+    bool RemoveSubsurfaceLayer(wl_resource* surface, uint32_t& outParentToplevel,
+                               DisplayPolicy::SubsurfaceRoute& outRoute);
 
     // 插入或替换 layer (按 surface 匹配)。`layer` 应已填充除 pixels 外的所有字段。
     // `newPixels` 是 sd->pixels 中刚提交的帧数据, 被移入 layer。
