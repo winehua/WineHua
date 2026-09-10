@@ -683,8 +683,11 @@ export class WineWindowManager {
       case 'unfullscreen':
         // 桌面模式: 全屏由 C++ 合成器直接处理 (缩放绘制 + 输入映射), ArkTS 无需动作
         if (this.isDesktopMode && id !== this.desktopRootId) return;
-        // PC 模式: 游戏 xdg fullscreen → OHOS 沉浸式全屏 (盖住 dock/任务栏)。
-        // 游戏画面由 popup (全屏拉伸) 承载, 主窗口最大化保证无系统 UI 露出。
+        // 多窗口模式: 游戏 xdg fullscreen → OHOS 沉浸式全屏 (盖住 dock/任务栏),
+        // 主窗口最大化保证无系统 UI 露出。客户区画面合入主窗帧后 (InlineClient,
+        // 见 docs/SUBSURFACE_CLASSIFICATION_DESIGN.md), 游戏帧按自身分辨率绘制、
+        // 由主窗 renderer 的 letterbox 保比例放大铺满 — 原"popup 全屏拉伸"
+        // 特例路径已随合入退役。
         this.queueOrApply(id, event, data);
         break;
       default:

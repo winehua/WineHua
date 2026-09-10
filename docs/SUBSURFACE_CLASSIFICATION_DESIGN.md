@@ -1,7 +1,9 @@
 # 多窗口模式 subsurface 按类分流 — 判据设计
 
 日期：2026-09-10
-状态：**设计基线（实施规格）** —— 随 PAD_GL_POPUP_ARCHITECTURE_ANALYSIS.md 方案 A 落地
+状态：**实施中**——C++ 侧已完成并入库（6e28f28 按类分流 + 6736ebd 启发式退役 +
+1d1005c ARGB 精确判透明），ArkTS 侧经审计无需改动（内嵌类不再产生 popup 事件，
+`PopupWindowManager` 遍历自然空转），待设备验证。
 适用范围：PC 融合模式 + Pad 多窗口模式（共用 `DisplayPolicy` 与 `PopupManager`）
 
 ## 0. 目的与不变量
