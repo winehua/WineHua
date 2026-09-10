@@ -70,6 +70,8 @@ export default class WineWindowAbility extends UIAbility {
       // 注册 Window 引用
       WineWindowManager.getInstance().registerWindow(this.toplevelId, mainWindow);
       // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
+      // [WINID] WWA 主窗口身份打点 (对照 WMS win NNN 归属)
+      hilog.info(DOMAIN, TAG, '[WWA] mainWindow id=%{public}d', mainWindow.getWindowProperties().id);
       testNapi.registerHostWindow(mainWindow.getWindowProperties().id);
       // 注册 WindowStage 引用 (popup 子窗口创建入口)
       WineWindowManager.getInstance().registerWindowStage(this.toplevelId, windowStage);

@@ -8,6 +8,7 @@ export const setStateCallback: (cb: (state: string) => void) => void;
 export const setToplevelCallback: (cb: (id: number, event: string, data: string) => void) => void;
 export const setImeCallback: (cb: (active: number, x: number, y: number, w: number, h: number) => void) => void;
 export const registerHostWindow: (windowId: number) => void;
+export const dumpWindowLayout: (displayId?: number) => void;
 export const setPointerLockCallback: (cb: (locked: boolean, toplevelId: number) => void) => void;
 export const sendImeCommit: (text: string) => void;
 export const sendImePreedit: (text: string, start: number, end: number) => void;

@@ -615,6 +615,7 @@ void EglRenderer::RenderLoop() {
     bool firstFrameLogged = false;
     bool rendered = false;  // 首帧已渲染后, 无新帧时跳过 GPU 绘制
     RendererPerfWindow perf;
+    uint32_t pixSampleN = 0;  // [PIX-SAMPLE] 帧内容白度采样计数 (诊断)
 
     static constexpr long long kFallbackPeriodNs = 16666667;
     static constexpr auto kVSyncTimeout = std::chrono::milliseconds(100);
@@ -783,6 +784,25 @@ void EglRenderer::RenderLoop() {
             }
             uploadUs = PerfNowUs() - uploadStartedUs;
             rendered = true;
+            // [PIX-SAMPLE] 帧内容白度采样: 区分"帧本身是白的" (guest/wine
+            // 侧渲染或回读) vs "帧有内容但显示白" (宿主 EGL/WMS 侧)。
+            // 每 30 帧对 px 采样 (中心像素 RGB + 全宽白像素占比)。
+            if (++pixSampleN % 30 == 1) {
+                size_t whitePixels = 0, totalPx = px.size() / 4;
+                // 采样: 每 16 像素取 1 个像素
+                if (totalPx > 0) {
+                    for (size_t i = 0; i < totalPx; i += 16) {
+                        const uint8_t* p = &px[i * 4];
+                        if (p[0] == 255 && p[1] == 255 && p[2] == 255) ++whitePixels;
+                    }
+                    const uint8_t* mid = &px[(totalPx / 2) * 4];
+                    OH_LOG_INFO(LOG_APP,
+                                "[PIX-SAMPLE] tl=%{public}u fw=%{public}d fh=%{public}d "
+                                "whitePx=%{public}zu/%{public}zu midRGB=(%{public}u,%{public}u,%{public}u)",
+                                useToplevel, fw, fh, whitePixels, totalPx / 16 + 1,
+                                mid[0], mid[1], mid[2]);
+                }
+            }
         }
         if (zeroCopyFrame && !firstFrameLogged) {
             OH_LOG_INFO(LOG_APP,

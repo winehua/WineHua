@@ -54,6 +54,9 @@ class WineXComponentController extends XComponentController {
 @Component
 struct WineWindow {
   controller: WineXComponentController = new WineXComponentController();
+  // toplevelId 由承载方 (WineWindowAbility/FusionWindowManager/ModalWindowManager)
+  // 在 loadContent 前 setPendingToplevel 入队, aboutToAppear 出队取得
+  // (与 PC 多窗口同款, PC 实测 OK)。
   @State toplevelId: number = 0;
   @State surfacePxW: number = 1;
   @State surfacePxH: number = 1;
@@ -95,6 +98,7 @@ struct WineWindow {
 
   aboutToAppear(): void {
     // 关键: aboutToAppear 是 loadContent 的同步调用, 在下一个 Ability 覆盖前读取
+    // (与 PC 多窗口同款, PC 实测 OK)
     this.toplevelId = testNapi.getCurrentToplevelId() as number;
     // 同步设置给 controller: 保证 onSurfaceCreated 拿到正确的 toplevelId
     this.controller.toplevelId = this.toplevelId;
@@ -210,6 +214,10 @@ struct WineWindow {
             if (ev.type === TouchType.Down) {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH tl=%{public}d px=(%{public}d,%{public}d)',
                 this.toplevelId, px, py);
+              // 点击置顶: 主窗+画面 popup 整组提升 (白屏修复, 防 WMS 置顶盖画面)
+              try {
+                WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
+              } catch (_) { /* ignore */ }
               // 进入 PENDING 状态: 暂不发送事件, 等判定长按/拖拽/点击
               this.touchPending = true;
               this.isDragging = false;
@@ -234,6 +242,25 @@ struct WineWindow {
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Press, this.pendingPx, this.pendingPy, btnLeft);
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Move, px, py, btnLeft);
               } else if (this.isDragging) {
+                // Pad 多窗口 (subWindow 承载): 触摸拖动 wine 标题栏 → wine 已发
+                // move 请求 (moveGrabPending), 由 OHOS startMoving 接管系统拖拽。
+                // 必须在触摸路径处理 — 本状态机的合成 mouse Move 被守卫吞掉,
+                // onMouse 分支到不了; 仅子窗口承载 (Ability 窗口触屏拖不动属
+                // PC 现状, PC 有鼠标/触控板)。startMoving 后系统接管, 后续
+                // Move 注入自动恢复 (moveGrabPending 在 move_end 变 false)
+                if (WineWindowManager.getInstance().shouldStartMoving(this.toplevelId) &&
+                    WineWindowManager.getInstance().fusionUsesSubWindow()) {
+                  try {
+                    const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
+                    if (win) {
+                      win.startMoving();
+                      // 消费 pending: 防止拖拽期间每帧重复 startMoving (见 clearMovePending)
+                      WineWindowManager.getInstance().clearMovePending(this.toplevelId);
+                      hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TP-DRAG startMoving tl=%{public}d', this.toplevelId);
+                      return;
+                    }
+                  } catch (e) { /* fall through to inject */ }
+                }
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Move, px, py, 0);
                 if (++this.motionLogCounter % 10 === 0) {
                   hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-MOVE tl=%{public}d px=(%{public}d,%{public}d) frame=%{public}d',
@@ -243,6 +270,10 @@ struct WineWindow {
               // PENDING 且未超阈值: 不做任何事 (等 Up 判定长按/点击)
 
             } else if (ev.type === TouchType.Up) {
+              // WMS 置顶可能晚于 Down 的 raise, 松手再提一次组
+              try {
+                WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
+              } catch (_) { /* ignore */ }
               if (this.isDragging) {
                 const btnLeft = mapMouseButton(1);
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-END tl=%{public}d px=(%{public}d,%{public}d)',
@@ -330,6 +361,8 @@ struct WineWindow {
           const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
           if (win) {
             win.startMoving();
+            // 消费 pending: 防止拖拽期间每帧重复 startMoving (见 clearMovePending)
+            WineWindowManager.getInstance().clearMovePending(this.toplevelId);
             return; // OHOS 接管拖拽, 不再转发给 Wine
           }
         } catch (e) { /* fall through to normal path */ }

@@ -20,6 +20,7 @@
 
 #include <unistd.h>
 #include <signal.h>
+#include <window_manager/oh_window.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -865,6 +866,32 @@ static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- NAPI: dumpWindowLayout -- (WMS 全窗口布局列表, 层级排序 index 0 = 最高)
+// 白屏 z 序判定: Fusion 主窗 (335 类) 与画面 popup (336 类) 的 rect 在列表中
+// 的先后; 与 ArkTS 侧 subWinId 打点对照归属。
+static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t displayId = 0;
+    if (argc >= 1) napi_get_value_int64(env, args[0], &displayId);
+    WindowManager_Rect* list = nullptr;
+    size_t count = 0;
+    const int32_t ret = OH_WindowManager_GetAllWindowLayoutInfoList(displayId, &list, &count);
+    if (ret != 0 || !list) {
+        OH_LOG_WARN(LOG_APP, "[WinLayout] Get table failed ret=%{public}d", ret);
+        if (list) OH_WindowManager_ReleaseAllWindowLayoutInfoList(list);
+        return nullptr;
+    }
+    for (size_t i = 0; i < count; i++) {
+        OH_LOG_INFO(LOG_APP,
+                    "[WinLayout] idx=%{public}zu/%{public}zu rect=(%{public}d,%{public}d %{public}ux%{public}u)",
+                    i, count, list[i].posX, list[i].posY, list[i].width, list[i].height);
+    }
+    OH_WindowManager_ReleaseAllWindowLayoutInfoList(list);
+    return nullptr;
+}
+
 // -- NAPI: registerHostWindow -- (ets 各 Ability 注册主窗口 id, 供
 // OH_WindowManager_LockCursor 锁定光标用 — 仅获焦窗口能锁, 逐个尝试)
 static napi_value RegisterHostWindow(napi_env env, napi_callback_info info) {
@@ -1143,6 +1170,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendScrollEvent",   nullptr, SendScrollEvent,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerHostWindow", nullptr, RegisterHostWindow, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"dumpWindowLayout", nullptr, DumpWindowLayout, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"takeWindowMask", nullptr, TakeWindowMask, nullptr, nullptr, nullptr, napi_default, nullptr},
