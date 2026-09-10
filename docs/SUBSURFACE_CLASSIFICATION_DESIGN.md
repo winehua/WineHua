@@ -1,9 +1,9 @@
 # 多窗口模式 subsurface 按类分流 — 判据设计
 
 日期：2026-09-10
-状态：**实施中**——C++ 侧已完成并入库（6e28f28 按类分流 + 6736ebd 启发式退役 +
-1d1005c ARGB 精确判透明），ArkTS 侧经审计无需改动（内嵌类不再产生 popup 事件，
-`PopupWindowManager` 遍历自然空转），待设备验证。
+状态：**已完成（Pad 侧验证通过，PC 融合待验）**——C++ 侧已完成并入库（6e28f28 按类分流 +
+6736ebd 启发式退役 + 1d1005c ARGB 精确判透明），ArkTS 侧经审计无需改动（内嵌类不再产生
+popup 事件，`PopupWindowManager` 遍历自然空转），设备验证见 §6。
 适用范围：PC 融合模式 + Pad 多窗口模式（共用 `DisplayPolicy` 与 `PopupManager`）
 
 ## 0. 目的与不变量
@@ -94,3 +94,57 @@ Inline 的帧与窗口同尺度，不需要"窗口上报尺寸与内容尺寸解
 4. ArkTS 收口：内嵌类不再建 popup 窗口（`PopupWindowManager` 只收浮层
    事件）；白屏修复的 `raiseWindowGroup` 对内嵌类自然失效（无 popup 可提升，
    主窗单窗口无 z 序问题）。
+
+## 6. 设备验证记录（2026-09-10，Pad 192.168.1.6）
+
+验证通道：`aa start --ps winehua.desktopMode fusion --ps winehua.autoStart 1
+--ps winehua.program <路径>`（5363b38 入库，无需人工点 UI）。
+
+### 6.1 内嵌客户区（InlineClient）— 通过
+
+`C:\smoke\x86\winehua_graphics_smoke.exe`（x86 D3D，960x540 客户区）：
+
+```
+384 × [MW-SUBSURF] inline client layer 960x540 at (4,23) parent=#1
+  1 × [VIRGL-ZC][MAIN] tl=1 path=SURFACE_QUEUE
+  1 × [VIRGL-ZC][MAIN] pipeline ready tl=1
+  0 × [MW-POPUP]
+```
+
+抓屏：GL 立方体（FPS 55.5）+ 网格地面完整渲染在带标题栏的窗口帧内，
+无独立浮动窗口、无白屏。ZC 直通管道挂在主窗 renderer（tl=1），
+`zc_bridge.cpp:237` 的 `rendererToplevelId == parentToplevel` 在多窗口模式下
+天然成立（主窗 renderer id = toplevel id），无需改动 —— 对应 §2 的 ZC 归属核对项。
+
+### 6.2 浮层保留 popup（Popup）— 通过
+
+winemine 点「游戏(G)」菜单：
+
+```
+[MW-POPUP] show popup=#2 parent=#1 off=(3,41) 123x186
+          (buffer 128x256 src=0,0 123x186 dst=123x186)
+```
+
+`src` 非零（viewport source 已设）→ 判为 Popup，走原路径。菜单 8 项完整
+显示未被子窗口边界裁剪（I2 成立），点「退出」正常关窗。
+
+### 6.3 桌面模式回归 — 通过
+
+虚拟桌面（`--ps winehua.desktopMode virtual`）：蓝色桌面 + 任务栏「开始」
+正常，root 合成路径未受影响。
+
+### 6.4 未覆盖项
+
+- **PC 融合模式**：唯一 2in1 设备（192.168.1.5）验证时处于锁屏，开发者模式
+  禁止自动解锁，需人工解锁后复验。代码路径与 Pad 共用（`WindowFrameComposer`
+  在 PC 侧更早就在跑），风险低。
+- **`route=inline|popup|layer` debug 行**（§4 第 3 条）未实现：分流结果已由
+  各分支自身的首帧日志（`inline client layer` / `MW-POPUP show`）区分，
+  未新增冗余日志点。
+- **§5.2 灰度回退键**未实现：内嵌路径为纯增量（新增分支，不改 popup 现有
+  行为），回退可通过 `git revert 6e28f28` 完成，未额外加运行时开关。
+
+### 6.5 host 单测
+
+`make test` 全绿，含 `display_policy_test`（13 checks，判据真值表）
+与 `blit_clip_test`（含 `IsFullyOpaqueArgb` 9 checks）。
