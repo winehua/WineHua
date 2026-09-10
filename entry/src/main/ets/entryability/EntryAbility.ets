@@ -106,26 +106,40 @@ export default class EntryAbility extends UIAbility {
 
   // 自动化测试通道: winehua.autoStart=1 (冷启动) / winehua.program=<wine路径>
   // (冷启动或运行中) → 引擎就绪后自动启动程序。UI 点击不可注入的设备上
-  // 全自动验证用; 单次消费 (autoProgram 消费一次后清空)。
+  // 全自动验证用; 单次消费 (autoProgram 消费一次后清空)。冷启动时 loadContent
+  // 回调早于引擎初始化 (wineboot 数秒), 故轮询等待就绪 — 只服务自动化。
   private autoRunIfRequested(): void {
     const env = WineEnvService.getInstance();
-    const prog = env.autoProgram;
-    if (prog.length === 0) {
+    if (env.autoProgram.length === 0) {
       return;
     }
-    setTimeout(() => {
+    let tries = 0;
+    const tick = (): void => {
+      const p = env.autoProgram;
+      if (p.length === 0) {
+        return;  // 已被消费
+      }
       env.ensureEngineReady().then((ok: boolean) => {
-        const p = env.consumeAutoProgram();
-        if (ok && p) {
-          hilog.info(DOMAIN, 'testTag', 'autoRun: launch %{public}s', p);
-          AppLibraryService.getInstance().launch(p);
-        } else if (p) {
-          hilog.warn(DOMAIN, 'testTag', 'autoRun: engine not ready, skip %{public}s', p);
+        if (ok) {
+          const prog = env.consumeAutoProgram();
+          if (prog) {
+            hilog.info(DOMAIN, 'testTag', 'autoRun: launch %{public}s', prog);
+            AppLibraryService.getInstance().launch(prog);
+          }
+          return;
+        }
+        if (++tries < 60) {  // ~60s 上限 (首次初始化含 wineboot)
+          setTimeout(tick, 1000);
+        } else {
+          hilog.warn(DOMAIN, 'testTag', 'autoRun: engine not ready after %{public}d tries, skip %{public}s',
+            tries, p);
         }
       }).catch((e: Object) => {
         hilog.warn(DOMAIN, 'testTag', 'autoRun ensureEngineReady: %{public}s', JSON.stringify(e));
+        if (++tries < 60) setTimeout(tick, 1000);
       });
-    }, 300);
+    };
+    setTimeout(tick, 300);
   }
 
   onDestroy(): void {

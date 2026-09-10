@@ -214,6 +214,13 @@ struct WineWindow {
             if (ev.type === TouchType.Down) {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH tl=%{public}d px=(%{public}d,%{public}d)',
                 this.toplevelId, px, py);
+              // 点击置顶: 主窗 + 其 popup 子窗口整组提升。WMS 焦点提升只抬主窗,
+              // 不同步抬 popup → 子窗口被主窗盖住 (原白屏 bug 的根因, e51da46)。
+              // 现多窗口模式的客户区已合入主窗帧 (InlineClient, 不建 popup),
+              // 本调用实际保护的是菜单/下拉等浮层 popup (见 raiseWindowGroup)。
+              try {
+                WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
+              } catch (_) { /* ignore */ }
               // 进入 PENDING 状态: 暂不发送事件, 等判定长按/拖拽/点击
               this.touchPending = true;
               this.isDragging = false;
@@ -250,6 +257,8 @@ struct WineWindow {
                     const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
                     if (win) {
                       win.startMoving();
+                      // 消费 pending: 防止拖拽期间每帧重复 startMoving (见 clearMovePending)
+                      WineWindowManager.getInstance().clearMovePending(this.toplevelId);
                       hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TP-DRAG startMoving tl=%{public}d', this.toplevelId);
                       return;
                     }
@@ -264,6 +273,10 @@ struct WineWindow {
               // PENDING 且未超阈值: 不做任何事 (等 Up 判定长按/点击)
 
             } else if (ev.type === TouchType.Up) {
+              // WMS 置顶可能晚于 Down 的 raise, 松手再提一次组 (理由同 Down 分支)
+              try {
+                WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
+              } catch (_) { /* ignore */ }
               if (this.isDragging) {
                 const btnLeft = mapMouseButton(1);
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-END tl=%{public}d px=(%{public}d,%{public}d)',
@@ -351,6 +364,8 @@ struct WineWindow {
           const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
           if (win) {
             win.startMoving();
+            // 消费 pending: 防止拖拽期间每帧重复 startMoving (见 clearMovePending)
+            WineWindowManager.getInstance().clearMovePending(this.toplevelId);
             return; // OHOS 接管拖拽, 不再转发给 Wine
           }
         } catch (e) { /* fall through to normal path */ }

@@ -257,6 +257,8 @@ private:
     void UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi);
     void UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                        uint32_t parentId, ShmCommitInfo& fi);
+    void UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes,
+                                        SurfaceData* parentSd, ShmCommitInfo& fi);
     void FinishCommit(SurfaceData* sd, wl_resource* surfRes);
 
     wl_display* display_ = nullptr;
@@ -267,6 +269,17 @@ private:
     ToplevelManager toplevelMgr_;
 
     void MarkDesktopRootDirtyLocked() { desktopRootMgr_.MarkRootDirtyLocked(); }
+
+    // 按层承载方标脏 (调用方须已持有 toplevelMgr 锁): DesktopLayer 层合成在
+    // root 帧 → 标 root; InlineClient 层合成在父窗口帧 → 标该窗口。
+    // 单一实现收口 route→dirty 分派, 供 commit/移动/移除三条路径复用。
+    void MarkLayerHostDirtyLocked(uint32_t parentToplevel, DisplayPolicy::SubsurfaceRoute route) {
+        if (route == DisplayPolicy::SubsurfaceRoute::InlineClient) {
+            toplevelMgr_.MarkToplevelDirtyLocked(parentToplevel);
+        } else {
+            MarkDesktopRootDirtyLocked();
+        }
+    }
 
     StateCb stateCb_;
     // toplevel 事件总线 (重构第 5D 步): 事件名 enum 化 + JSON 构造单点 +
@@ -307,9 +320,8 @@ private:
                                   session_.desktopRootToplevelId,
                                   session_.outputW, session_.outputH};
     // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
-    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h;
-    // output 注入引用指向 session_ 字段 — 重构第 6B 步)
-    PopupManager popupMgr_{toplevelMgr_, session_.outputW, session_.outputH};
+    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
+    PopupManager popupMgr_{toplevelMgr_};
 };
 
 #include "compositor/frame/surface_data.h"  // SurfaceData 已提取至独立头文件

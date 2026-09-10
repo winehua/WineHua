@@ -47,9 +47,21 @@ public:
         uint32_t parentToplevel = 0;
         uint32_t shmFormat = 1;
         bool opaque = false;
+        // ARGB 精确 opaque 的缓存 (IsFullyOpaqueArgb 结果): 判定成本为一次
+        // 全层扫描, 按内容序列号缓存 — 仅当像素实际重写 (serial 变化) 时重算。
+        // 消费方: desktop 快照扫描写回 / 窗口内 blit 读用 (两条路径同一语义)。
+        uint64_t opaqueCheckedSerial = 0;
         int32_t dmgX = 0, dmgY = 0, dmgW = 0, dmgH = 0;  // damage 包围盒
         int32_t vpDstW = -1, vpDstH = -1;                // viewport destination
         bool isExternal = false;  // 外部菜单 (任务栏等), 输入坐标需用 Wine 基底
+
+        // 承载路由 (DisplayPolicy::SubsurfaceRoute 的落库副本, 见该枚举注释):
+        // DesktopLayer = root 帧合成; InlineClient = 父窗口帧合成 (多窗口模式
+        // 客户区)。两者都存本容器 (desktop 用桌面坐标, inline 用窗口局部
+        // 坐标), 消费方按本字段/父窗口过滤, 不得用 isExternal 反推承载方式
+        // (isExternal 只表达"坐标是否 Wine 基底", 语义正交)。
+        DisplayPolicy::SubsurfaceRoute route =
+            DisplayPolicy::SubsurfaceRoute::DesktopLayer;
     };
 
     // -- 层序单一数据源 (阶段 1: 行为等价重构) --
@@ -118,13 +130,14 @@ public:
     // rootW/rootH 用于 Root 层几何 (输入侧仅作占位, 不参与命中)。
     std::vector<CompositorLayer> BuildLayerListLocked(int rootW, int rootH);
 
-    // 窗口内 Layer 列表 (阶段 3, PC 模式): 单窗口合成数据源, 与
-    // BuildLayerListLocked 对称但用窗口局部坐标:
-    //   zIndex: Root(窗口帧) < Subsurface(窗口内局部坐标) < ZC 层(最顶)
-    // 窗口间层序不在此管理 (系统合成器)。PC 模式 subsurface 全部转 popup
-    // 伪 toplevel (PopupManager::UpdatePopupOnCommit), 窗口内 subsurface 当前恒空 —
-    // 层序结构为窗口内内容扩展预留; ZC 层 (zcActive) 在层序最顶, 合成跳过
-    // (GPU 自绘覆盖, 与 desktop 模式同语义)。调用方须已持有 tmgr mutex。
+    // 窗口内 Layer 列表 (阶段 3, 多窗口模式 — PC 窗口模式与 Pad 多窗口模式
+    // 共用): 单窗口合成数据源, 与 BuildLayerListLocked 对称但用窗口局部坐标:
+    //   zIndex: Root(窗口帧) < 内嵌客户区 Subsurface(窗口局部坐标) < ZC 层(最顶)
+    // 窗口间层序不在此管理 (系统合成器)。只收 route=InlineClient 的子层
+    // (多窗口客户区), Popup 类走伪 toplevel + 独立子窗口 (见
+    // DisplayPolicy::RouteForSubsurface); ZC 层 (zcActive) 在层序最顶,
+    // 合成跳过 (GPU 自绘覆盖, 与 desktop 模式同语义)。
+    // 调用方须已持有 tmgr mutex。
     std::vector<CompositorLayer> BuildWindowLayerListLocked(uint32_t toplevelId,
                                                             int winW, int winH);
 
@@ -189,11 +202,19 @@ public:
 
     // -- Subsurface layer 生命周期 (替代直接操作 subsurfaceLayers_) --
 
-    // 更新 subsurface layer 的本地偏移 (subsurface_set_position 调用)
-    void UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y);
+    // 更新 subsurface layer 的本地偏移 (subsurface_set_position 调用)。
+    // 命中时经 out 返回该 layer 的归属 (父 toplevel + 承载路由), 供调用方
+    // 按承载方式标脏 (DesktopLayer→root 帧; InlineClient→父窗口帧; Popup 不经此
+    // 容器)。未命中返回 false (调用方不标脏)。
+    bool UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y,
+                                            uint32_t& outParentToplevel,
+                                            DisplayPolicy::SubsurfaceRoute& outRoute);
 
-    // 移除指定 surface 对应的 layer。返回是否实际移除 (调用方据此决定是否 mark dirty)。
-    bool RemoveSubsurfaceLayer(wl_resource* surface);
+    // 移除指定 surface 对应的 layer。返回是否实际移除 (调用方据此决定是否
+    // mark dirty); 命中时经 out 返回其归属 (父 toplevel + 承载路由), 供调用方
+    // 按承载方式标脏 (见 WaylandServer::MarkLayerHostDirtyLocked)。
+    bool RemoveSubsurfaceLayer(wl_resource* surface, uint32_t& outParentToplevel,
+                               DisplayPolicy::SubsurfaceRoute& outRoute);
 
     // 插入或替换 layer (按 surface 匹配)。`layer` 应已填充除 pixels 外的所有字段。
     // `newPixels` 是 sd->pixels 中刚提交的帧数据, 被移入 layer。

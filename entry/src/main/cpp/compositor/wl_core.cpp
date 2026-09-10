@@ -114,13 +114,16 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             const uint64_t surfaceKey = sd ? sd->surfaceKey : 0;
             self->toplevelMgr_.UnregisterSurfaceResource(surfaceKey);
             self->desktopCompositor_.RemoveZeroCopyKeyLocked(surfaceKey);
-            self->desktopCompositor_.RemoveSubsurfaceLayer(r);
+            uint32_t removedParent = 0;
+            DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+            if (self->desktopCompositor_.RemoveSubsurfaceLayer(r, removedParent, removedRoute)) {
+                self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+            }
             // PC popup 记录一并清除 (client 断开时 libwayland 走此路径)
             // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域/清理顺序不变)
             if (sd) {
                 popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
-            self->MarkDesktopRootDirtyLocked();
         }
         // 无条件重置输入焦点: 任何 surface (含 desktop 菜单 subsurface) 销毁时
         // 都可能是当前 pointer/keyboard 焦点 — 焦点悬垂后下一次 leave 会引用
@@ -196,8 +199,12 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
     auto* self = GetInstance();
     {
         auto lk = self->toplevelMgr_.Lock();
-        self->desktopCompositor_.UpdateSubsurfaceLayerLocalPosition(childSurf, x, y);
-        self->MarkDesktopRootDirtyLocked();
+        uint32_t layerParent = 0;
+        DisplayPolicy::SubsurfaceRoute layerRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+        if (self->desktopCompositor_.UpdateSubsurfaceLayerLocalPosition(
+                childSurf, x, y, layerParent, layerRoute)) {
+            self->MarkLayerHostDirtyLocked(layerParent, layerRoute);
+        }
     }
     // PC 模式: 更新已登记 popup 的偏移, 通知 ArkTS 移动子窗口。
     // 状态段 (popup 表查找/偏移更新) 收口于 PopupManager::UpdatePopupPositionLocked
@@ -278,7 +285,11 @@ void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
             uint32_t removedPopup = 0, popupParent = 0;
             {
                 auto lk = self->toplevelMgr_.Lock();
-                self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf);
+                uint32_t removedParent = 0;
+                DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+                if (self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf, removedParent, removedRoute)) {
+                    self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+                }
                 // popup 表已迁至 PopupManager (重构第 5B2 步, 锁域/清理顺序不变)
                 popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
@@ -391,10 +402,13 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
         uint32_t removedPopup = 0, popupParent = 0;
         {
             auto lk = self->toplevelMgr_.Lock();
-            self->desktopCompositor_.RemoveSubsurfaceLayer(r);
+            uint32_t removedParent = 0;
+            DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+            if (self->desktopCompositor_.RemoveSubsurfaceLayer(r, removedParent, removedRoute)) {
+                self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+            }
             // PC popup 记录一并清除 (popup 表已迁至 PopupManager — 重构第 5B2 步)
             popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
-            if (self->Policy().RootCompositing()) self->MarkDesktopRootDirtyLocked();
         }
         if (removedPopup) {
             // 防止 pointer focus 悬在已销毁的 popup surface 上 (协议错误会断开 Wine)
@@ -471,9 +485,11 @@ bool WaylandServer::HandleNullBufferCommit(SurfaceData* sd, wl_resource* surfRes
         uint32_t removedPopup = 0, popupParent = 0;
         {
             auto lk = toplevelMgr_.Lock();
-            if (desktopCompositor_.RemoveSubsurfaceLayer(surfRes)) {
+            uint32_t removedParent = 0;
+            DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+            if (desktopCompositor_.RemoveSubsurfaceLayer(surfRes, removedParent, removedRoute)) {
                 OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] NULL buffer commit → removed layer");
-                if (Policy().RootCompositing()) MarkDesktopRootDirtyLocked();
+                MarkLayerHostDirtyLocked(removedParent, removedRoute);
             }
             // PC popup: unmap (菜单关闭) → 销毁 ArkTS 子窗口
             // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域不变)
@@ -738,16 +754,26 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
     }
 }
 
-// subsurface 帧分发: Desktop 模式存 layer 在 TakeToplevelFrame 中合成;
-// PC 模式登记 popup 伪 toplevel 由 ArkTS 独立子窗口渲染
+// subsurface 帧分发 (承载路由见 DisplayPolicy::RouteForSubsurface):
+//   DesktopLayer — 存 layer 在 TakeToplevelFrame 中合成进 root 帧
+//   InlineClient — 多窗口模式客户区 (wine client surface): 存 layer 合入
+//                  父窗口帧 (WindowFrameComposer 层列表), 单窗口承载
+//   Popup        — 越界浮层 (菜单/子窗口): 登记 popup 伪 toplevel 由 ArkTS
+//                  独立子窗口渲染 (可越界/输入自持, 不能进窗口帧)
 void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi) {
     if (!sd->isSubsurface || !sd->parentSurface || sd->pixels.empty()) return;
     auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
     if (!parentSd || !parentSd->hasToplevel) return;
-    if (Policy().SubsurfaceAsLayer()) {
+    const auto route = Policy().RouteForSubsurface(sd->inputRegionEmpty, sd->vpSrcW);
+    if (route == DisplayPolicy::SubsurfaceRoute::DesktopLayer) {
         UpdateSubsurfaceLayerOnCommit(sd, surfRes, parentSd->toplevelId, fi);
+    } else if (route == DisplayPolicy::SubsurfaceRoute::InlineClient) {
+        // 客户区合入父窗口帧: 与 desktop layer 同一层容器/同一合成器
+        // (WindowFrameComposer 按 parentToplevel 过滤), 仅坐标系不同 —
+        // 窗口内用 localX/localY (窗口局部), 见 BuildWindowLayerListLocked。
+        UpdateInlineSubsurfaceOnCommit(sd, surfRes, parentSd, fi);
     } else {
-        // PC 模式: popup 状态段 (裁剪/建档/帧归档/尺寸上报) 收口于
+        // Popup: popup 状态段 (裁剪/建档/帧归档/尺寸上报) 收口于
         // PopupManager::UpdatePopupOnCommit (重构第 5B2 步); 事件 fire 调用点
         // 保持现形态 — 下方事件段按返回值逐字恢复原 json/文本/顺序
         // (popup_show 后 return, 与旧实现一致)。
@@ -828,12 +854,63 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
     layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
     layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
+    layer.route = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
     // Upsert layer (pixel buffer rotation handled internally)
     sd->pixels = desktopCompositor_.UpsertSubsurfaceLayer(
         std::move(layer), std::move(sd->pixels));
     MarkDesktopRootDirtyLocked();
     OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] stored layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
                 layer.w, layer.h, layer.x, layer.y, parentId);
+}
+
+// 多窗口模式 — 内嵌客户区 (wine client surface) 合入父窗口帧。
+// 与 desktop 版共用层容器/合成器, 差异只在坐标与脏标记:
+//   - 窗口局部坐标 (localX/localY = subsurface offset), 由
+//     WindowFrameComposer 的窗口帧 (尺寸 = 窗口内容尺寸) 承接, 1:1 blit —
+//     与父帧同尺度 (Wine 逻辑像素 = 合成像素, 缩放由 ArkTS effectiveScale 承担)
+//   - 输入: client surface 空输入区 (协议保证), 命中落在父窗口, 本层不参与
+//     输入路由 (CompositorRoutesInput=false 的 PC 模式本就由 OHOS 窗口系统路由)
+//   - dirty: 窗口帧有独立 dirty 标志 (MarkToplevelDirtyLocked), 不触 root
+void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes,
+                                                   SurfaceData* parentSd, ShmCommitInfo& fi) {
+    const bool opaque = fi.shmFormat != 0;
+    const uint32_t parentId = parentSd->toplevelId;
+    auto lk = toplevelMgr_.Lock();
+    const auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
+    SubsurfaceLayer layer;
+    layer.surface = surfRes;
+    layer.surfaceKey = sd->surfaceKey;
+    layer.w = sd->w;
+    layer.h = sd->h;
+    int32_t sx = sd->subsurfaceX, sy = sd->subsurfaceY;
+    CompensateMinimizedSubsurfaceOffset(pst, sx, sy);
+    // 坐标 = 相对父窗口内容原点: 窗口帧基底 (ToplevelState::Pixels) 是
+    // content 帧 (CopyToplevelContent 自 contentOffX/Y 起拷), 其原点即父
+    // window_geometry 内容原点 — 与 popup 路径同一换算 (ComputePopupOffset
+    // 单点, geometry.h)。PC 模式 wine 的 geometry 恒 (0,0,w,h), 该式退化为
+    // subsurface offset; 用统一式保持语义稳健 (wine 若在 PC 模式发非零
+    // geometry 仍正确)。
+    const auto [offX, offY] = ComputePopupOffset(sd->subsurfaceX, sd->subsurfaceY,
+                                                 parentSd->committed.contentRect.x,
+                                                 parentSd->committed.contentRect.y);
+    layer.localX = offX;
+    layer.localY = offY;
+    // x/y 与 localX/localY 同值 (窗口局部坐标; route 已区分消费方, 不与
+    // DesktopLayer 的桌面坐标混用), 保持容器内自洽。
+    layer.x = offX;
+    layer.y = offY;
+    layer.parentToplevel = parentId;
+    layer.shmFormat = fi.shmFormat;
+    layer.opaque = opaque;
+    layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
+    layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
+    layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
+    layer.route = DisplayPolicy::SubsurfaceRoute::InlineClient;
+    sd->pixels = desktopCompositor_.UpsertSubsurfaceLayer(
+        std::move(layer), std::move(sd->pixels));
+    toplevelMgr_.MarkToplevelDirtyLocked(parentId);
+    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] inline client layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
+                sd->w, sd->h, sx, sy, parentId);
 }
 
 // PC 多窗口模式 popup 状态段已迁至 PopupManager (compositor/popup_manager.cpp

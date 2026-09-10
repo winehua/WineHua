@@ -270,6 +270,11 @@ struct Index {
     });
     this.bp = bps.current;
     mirror();
+    // 自动化测试通道 (winehua.autoStart=1, UI 点击不可注入的设备验证用):
+    // 主页面就绪后确保引擎拉起 (一次消费; 引擎自动初始化时幂等直返)
+    if (env.consumeAutoStart()) {
+      setTimeout(() => { this.env.ensureEngineReady().catch(() => { /* ignore */ }); }, 300);
+    }
     // 标题栏右侧避让系统窗口控制按钮 (PC/2in1): 动态取系统按钮宽度,
     // Pad 无系统按钮 (getTitleButtonRect 失败/width=0) 回落默认 14
     try {

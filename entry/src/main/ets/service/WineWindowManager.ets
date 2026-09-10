@@ -288,6 +288,8 @@ export class WineWindowManager {
     // 注册主窗口 id 供 native OH_WindowManager_LockCursor 冻结光标;
     // 锁定状态回调里隐藏/恢复系统光标 (隐藏能力只有 ArkTS API)
     if (this.mainWindow) {
+      // [WINID] 宿主主窗口 (Index) 身份: WMS 日志 "parent 312" 的物理父窗口
+      hilog.info(DOMAIN, TAG, '[MW] host mainWindow id=%{public}d', this.mainWindow.getWindowProperties().id);
       testNapi.registerHostWindow(this.mainWindow.getWindowProperties().id);
     }
     testNapi.setPointerLockCallback((locked: boolean, fromToplevel: number) => {
@@ -365,6 +367,16 @@ export class WineWindowManager {
   // WineWindow 的 onMouse 在下一帧 MOVE 时检查此标记并调用 startMoving()
   shouldStartMoving(toplevelId: number): boolean {
     return this.entries.get(toplevelId)?.moveGrabPending ?? false;
+  }
+
+  // startMoving() 已发起 → 消费 pending: 拖拽期间触摸/鼠标每帧 Move 都会查
+  // shouldStartMoving, 不清会每帧重复 startMoving() — OHOS 系统拖拽被反复
+  // 取消/重启, WMS 拖拽状态机与子窗口跟随反复重排, 父窗口的 popup 画面层
+  // 被拖丢 → 露出窗口白底 (1.8 实测: TP-DRAG startMoving 每 11ms 一次)。
+  // move_end 事件仍会重置 (兜底), 此处只负责消费一次。
+  clearMovePending(toplevelId: number): void {
+    const me = this.entries.get(toplevelId);
+    if (me) me.moveGrabPending = false;
   }
 
   getWindow(toplevelId: number): window.Window | undefined {
@@ -625,6 +637,39 @@ export class WineWindowManager {
         const me = this.entries.get(id);
         if (me) me.moveGrabPending = false;
         hilog.info(DOMAIN, TAG, '[MW] move_grab_end #%{public}d', id);
+        // [WINID] 拖拽结束时 Fusion 子窗口实际矩形 — 判断窗口最终停在屏内还是
+        // 屏外 (WMS win 329 rect), 白屏是否因窗口被拖出屏幕/回到错误位置。
+        const fWin = this.fusionUsesSubWindow() ? FusionWindowManager.getInstance().getWindow(id) : null;
+        if (fWin) {
+          try {
+            const r = fWin.getWindowProperties().windowRect;
+            hilog.info(DOMAIN, TAG,
+              '[MW] winRect #%{public}d winId=%{public}d rect=(%{public}d,%{public}d,%{public}dx%{public}d)',
+              id, fWin.getWindowProperties().id, Math.round(r.left), Math.round(r.top),
+              Math.round(r.width), Math.round(r.height));
+          } catch (_) { /* ignore */ }
+        }
+        // 拖拽结束: 拖动中 windowRectChange 已实时跟随, 此处延后补定位兜底
+        // 最后位置 (系统拖拽动画尾帧的 move 可能被 WMS 拒收/丢失)。
+        if (this.fusionUsesSubWindow() && FusionWindowManager.getInstance().has(id)) {
+          const win = FusionWindowManager.getInstance().getWindow(id);
+          if (win) {
+            const wid = id;
+            setTimeout(() => {
+              try {
+                PopupWindowManager.getInstance().repositionPopups(wid, win, this.getEffectiveScale());
+                hilog.info(DOMAIN, TAG, '[MW] move_end → repositionPopups reconvocation #%{public}d', wid);
+              } catch (_) { /* ignore */ }
+            }, 2000);
+            // [WINID] 白屏 z 序判定: 补定位后 1s (白屏稳定期) 抓 WMS 全窗
+            // 布局列表 (idx 0 = 最上层) — 对照 335/336 的 rect 排位
+            setTimeout(() => {
+              try {
+                testNapi.dumpWindowLayout(0);
+              } catch (_) { /* ignore */ }
+            }, 3000);
+          }
+        }
         break;
       }
       case 'title':
@@ -690,8 +735,11 @@ export class WineWindowManager {
       case 'unfullscreen':
         // 桌面模式: 全屏由 C++ 合成器直接处理 (缩放绘制 + 输入映射), ArkTS 无需动作
         if (this.isDesktopMode && id !== this.desktopRootId) return;
-        // PC 模式: 游戏 xdg fullscreen → OHOS 沉浸式全屏 (盖住 dock/任务栏)。
-        // 游戏画面由 popup (全屏拉伸) 承载, 主窗口最大化保证无系统 UI 露出。
+        // 多窗口模式: 游戏 xdg fullscreen → OHOS 沉浸式全屏 (盖住 dock/任务栏),
+        // 主窗口最大化保证无系统 UI 露出。客户区画面合入主窗帧后 (InlineClient,
+        // 见 docs/SUBSURFACE_CLASSIFICATION_DESIGN.md), 游戏帧按自身分辨率绘制、
+        // 由主窗 renderer 的 letterbox 保比例放大铺满 — 原"popup 全屏拉伸"
+        // 特例路径已随合入退役。
         this.queueOrApply(id, event, data);
         break;
       default:
@@ -989,7 +1037,8 @@ export class WineWindowManager {
       this.registerWindow(winId, subWin);
       // 锁光标 (相对模式) 的 host window: PC 每窗 Ability 都注册, 这里等效
       try { testNapi.registerHostWindow(subWin.getWindowProperties().id); } catch (_) { /* ignore */ }
-      // 拖动/系统 resize → popup 重新定位 (对齐 WWA windowRectChange)
+      // 拖动/系统 resize → popup 实时重新定位 (画面跟随主窗, 不再拖后瞬移)
+
       try {
         subWin.on('windowRectChange', () => {
           PopupWindowManager.getInstance().repositionPopups(winId, subWin, this.getEffectiveScale());
@@ -1150,6 +1199,20 @@ export class WineWindowManager {
     } catch (e) {
       hilog.warn(DOMAIN, TAG, '[MW] recoverDesktopWindow failed: %{public}s', JSON.stringify(e));
     }
+  }
+
+  // 点击置顶整组: 主窗 raise 后其 popup 子窗口再 raise (子窗口恒在主窗之上)。
+  // 必要性: OHOS WMS 的焦点提升只抬主子窗口承载的主窗, 不会同步抬 popup —
+  // 若只 raise 主窗, popup 会被压在下面 (2026-09-10 白屏 bug 的根因: 画面
+  // popup 被主窗白壳帧盖住; 见 docs/PAD_POPUP_WHITE_SCREEN_DRAG_INVESTIGATION.md)。
+  // 适用范围: 仅 subWindow 承载的多窗口模式 (PC/独立 ability 窗口由系统合成器
+  // 管理窗口间层序, 不需要)。现 popup 只剩菜单/下拉等浮层 — 客户区画面已按类
+  // 分流合入主窗帧 (InlineClient, 不建 popup, 见 SUBSURFACE_CLASSIFICATION_DESIGN.md),
+  // 故本调用当前保护对象 = 浮层。
+  raiseWindowGroup(toplevelId: number): void {
+    if (!this.fusionUsesSubWindow()) return;
+    FusionWindowManager.getInstance().raise(toplevelId);
+    PopupWindowManager.getInstance().raisePopups(toplevelId);
   }
 
   // 主动打开虚拟桌面独立窗口 (Index 悬浮窗点击; 初始化完毕不再自动拉起,
