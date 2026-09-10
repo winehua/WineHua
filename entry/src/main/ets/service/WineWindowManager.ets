@@ -1171,7 +1171,14 @@ export class WineWindowManager {
     this.applyPointerVisibility();
   }
 
-  // 点击置顶整组: 主窗 raise 后 popup 再 raise (画面恒在主窗之上)
+  // 点击置顶整组: 主窗 raise 后其 popup 子窗口再 raise (子窗口恒在主窗之上)。
+  // 必要性: OHOS WMS 的焦点提升只抬主子窗口承载的主窗, 不会同步抬 popup —
+  // 若只 raise 主窗, popup 会被压在下面 (2026-09-10 白屏 bug 的根因: 画面
+  // popup 被主窗白壳帧盖住; 见 docs/PAD_POPUP_WHITE_SCREEN_DRAG_INVESTIGATION.md)。
+  // 适用范围: 仅 subWindow 承载的多窗口模式 (PC/独立 ability 窗口由系统合成器
+  // 管理窗口间层序, 不需要)。现 popup 只剩菜单/下拉等浮层 — 客户区画面已按类
+  // 分流合入主窗帧 (InlineClient, 不建 popup, 见 SUBSURFACE_CLASSIFICATION_DESIGN.md),
+  // 故本调用当前保护对象 = 浮层。
   raiseWindowGroup(toplevelId: number): void {
     if (!this.fusionUsesSubWindow()) return;
     FusionWindowManager.getInstance().raise(toplevelId);

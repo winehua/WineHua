@@ -214,7 +214,10 @@ struct WineWindow {
             if (ev.type === TouchType.Down) {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH tl=%{public}d px=(%{public}d,%{public}d)',
                 this.toplevelId, px, py);
-              // 点击置顶: 主窗+画面 popup 整组提升 (白屏修复, 防 WMS 置顶盖画面)
+              // 点击置顶: 主窗 + 其 popup 子窗口整组提升。WMS 焦点提升只抬主窗,
+              // 不同步抬 popup → 子窗口被主窗盖住 (原白屏 bug 的根因, e51da46)。
+              // 现多窗口模式的客户区已合入主窗帧 (InlineClient, 不建 popup),
+              // 本调用实际保护的是菜单/下拉等浮层 popup (见 raiseWindowGroup)。
               try {
                 WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
               } catch (_) { /* ignore */ }
@@ -270,7 +273,7 @@ struct WineWindow {
               // PENDING 且未超阈值: 不做任何事 (等 Up 判定长按/点击)
 
             } else if (ev.type === TouchType.Up) {
-              // WMS 置顶可能晚于 Down 的 raise, 松手再提一次组
+              // WMS 置顶可能晚于 Down 的 raise, 松手再提一次组 (理由同 Down 分支)
               try {
                 WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
               } catch (_) { /* ignore */ }

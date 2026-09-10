@@ -110,7 +110,9 @@ export class FusionWindowManager {
       isModal: false
     }).then(async (subWin) => {
       // 保持 focusable(true): 拖动 (startMoving) 需要焦点。
-      // 点击置顶盖 popup 的画面白屏问题在 WineWindow.onTouch 整组提升解决。
+      // 焦点提升只抬主窗、会盖住 popup 子窗口 — 由 WineWindow.onTouch 的
+      // raiseWindowGroup 整组提升解决 (原白屏 bug 根因; 客户区合入主窗帧后
+      // 该调用保护的是菜单/浮层, 见 WineWindowManager.raiseWindowGroup)。
       try {
         await subWin.loadContent('pages/WineWindow');
       } catch (e) {
