@@ -640,7 +640,9 @@ void FramePlanner::SnapshotBlitSourcesLocked(ToplevelManager::ToplevelState* rst
             if (sl.shmFormat == 0) {
                 // ARGB: opaque 精确判定融合进拷贝 (单次内存遍历; wl 线程
                 // 不再扫描 — 见 UpdateSubsurfaceLayerOnCommit 注释)。
-                // 结果写回 layer (fullscreenContentCovered 等下一帧用新值)
+                // 判定语义 = IsFullyOpaqueArgb 单一实现 (窗口内 blit 同用),
+                // 此处就地扫描以省一次遍历。结果写回 layer (下一帧
+                // fullscreenContentCovered 等复用)。
                 uint32_t nw = static_cast<uint32_t>(sl.pixels.size() / 4);
                 buf.resize(sl.pixels.size());
                 const uint32_t* s = reinterpret_cast<const uint32_t*>(sl.pixels.data());
@@ -851,7 +853,20 @@ void FrameBlitter::BlitWindowSubsurface(const CompositorLayer& layer, int winW, 
     if (!ClipBlitToTarget(layer.x, layer.y, sl.w, sl.h, winW, winH,
                           srcX, srcY, dstX, dstY, copyW, copyH))
         return;
-    const bool needsAlphaBlend = sl.shmFormat == 0 && !sl.opaque;
+    // ARGB 的透明性按像素精确判定 (IsFullyOpaqueArgb, 与 desktop 快照路径
+    // 同一语义): GL readback 客户区常为 ARGB 格式但 alpha 全 255, 只按格式判
+    // 会走 alpha 混合 → 画面发暗/透底。窗口路径无快照阶段, 直接按内容序列号
+    // 缓存判定 (仅层像素重写时重扫一次; 未变则复用缓存, 避免每帧全层扫描)。
+    bool opaque = sl.opaque;
+    if (sl.shmFormat == 0) {
+        auto* mut = const_cast<SubsurfaceLayer*>(layer.sub);
+        if (mut->opaqueCheckedSerial != sl.shmCommitSerial) {
+            mut->opaque = IsFullyOpaqueArgb(sl.pixels.data(), sl.w, sl.w, sl.h);
+            mut->opaqueCheckedSerial = sl.shmCommitSerial;
+        }
+        opaque = mut->opaque;
+    }
+    const bool needsAlphaBlend = sl.shmFormat == 0 && !opaque;
     for (int y = 0; y < copyH; y++) {
         const uint8_t* srcRow = sl.pixels.data() + ((srcY + y) * sl.w + srcX) * 4;
         uint8_t* dstRow = out.data() + ((dstY + y) * winW + dstX) * 4;

@@ -47,6 +47,10 @@ public:
         uint32_t parentToplevel = 0;
         uint32_t shmFormat = 1;
         bool opaque = false;
+        // ARGB 精确 opaque 的缓存 (IsFullyOpaqueArgb 结果): 判定成本为一次
+        // 全层扫描, 按内容序列号缓存 — 仅当像素实际重写 (serial 变化) 时重算。
+        // 消费方: desktop 快照扫描写回 / 窗口内 blit 读用 (两条路径同一语义)。
+        uint64_t opaqueCheckedSerial = 0;
         int32_t dmgX = 0, dmgY = 0, dmgW = 0, dmgH = 0;  // damage 包围盒
         int32_t vpDstW = -1, vpDstH = -1;                // viewport destination
         bool isExternal = false;  // 外部菜单 (任务栏等), 输入坐标需用 Wine 基底

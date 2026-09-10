@@ -425,7 +425,8 @@ test:
 	$(HOST_TEST_DIR)/blit_scaled_test
 	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/blit_clip_test \
-	    $(ROOT)/host_tests/blit_clip_test.cpp
+	    $(ROOT)/host_tests/blit_clip_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/compositor/frame/compositor_blit.cpp
 	$(HOST_TEST_DIR)/blit_clip_test
 	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/shm_frame_source_test \
