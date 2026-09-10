@@ -58,6 +58,17 @@ bool DesktopRootFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
 // ============================================================================
 bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
                                   PresentedFrame& frame, bool frameTrace) {
+    // 全程持 tmgr 锁 (RAII, 出函数解锁): 本路径直接消费共享层 — layer.sub
+    // 指向 subsurfaceLayers_ 元素 (BuildWindowLayerListLocked), blit 会就地
+    // 写其 opaque/opaqueCheckedSerial 缓存, st/st->Pixels()/ClearDirty 亦为
+    // 锁内契约 (见 CompositorLayer 注释)。无锁时与 WL_Server 线程的
+    // UpsertSubsurfaceLayer (持锁; 首次 push_back 扩容 / 更新 move 换 pixels
+    // 缓冲) 并发 → layer.sub->pixels 悬垂 → 渲染线程 SIGSEGV (Pad 实测:
+    // 内嵌客户区 smoke 跑 ~25s 必崩, cppcrash tid=渲染线程)。按类分流前
+    // 窗口内层列表恒空 (PC 模式 subsurface 全转 popup), 该缺陷未暴露。
+    // 注: desktop 路径的"锁内规划/锁外绘制"之所以安全, 是因为 FramePlan 已
+    // 快照像素; 本路径无快照阶段, 故 blit 必须留在锁内 (窗口内层数据量小)。
+    auto lk = comp_.tmgr_.Lock();
     auto* st = comp_.tmgr_.FindToplevelLocked(id);
     if (!st || !st->IsDirty()) return false;
     const int winW = st->Width();
@@ -88,6 +99,7 @@ bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
     frame.opaque = (st->ShmFormat() != 0);
     frame.pixels = out.data();
     st->ClearDirty();
+    lk.unlock();  // ── 锁到此为止, 以下日志/返回不持锁 ──
     if (frameTrace) {
         OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu",
                     id, frame.w, frame.h, out.size());
