@@ -47,12 +47,14 @@ bool DesktopRootFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
 // WindowFrameComposer: PC 单窗口帧
 // (原 DesktopCompositor::TakeWindowFrameLocked, 逐行等价)
 //
-// 窗口内层序 (阶段 3, PC 模式): Root(窗口帧) < Subsurface(窗口局部坐标) <
-// ZC 层(最顶)。窗口间层序由系统合成器保证, 不在此合成。PC 模式 subsurface
-// 当前恒空 (全部转 popup 伪 toplevel), 合成输出 = 窗口 SHM 帧; ZC 层
-// (zcActive) 合成跳过 — GPU 内容由 renderer 自绘覆盖, CPU 帧保留 SHM 内容
-// 不抠除 (与 desktop 模式同语义: GPU 帧不透明时覆盖等价, fallback 窗口期
-// 显示旧内容比黑屏稳)。
+// 窗口内层序 (阶段 3, 多窗口模式 — PC 窗口模式与 Pad 多窗口模式共用, 两者
+// DisplayPolicy::desktop 均为 false): Root(窗口帧) < 内嵌客户区 Subsurface
+// (窗口局部坐标, route=InlineClient) < ZC 层(最顶)。窗口间层序由系统合成器
+// 保证, 不在此合成。Popup 类 subsurface (菜单/越界浮层) 不在本容器 — 走
+// 伪 toplevel + 独立 OHOS 子窗口, 见 DisplayPolicy::RouteForSubsurface。
+// ZC 层 (zcActive) 合成跳过 — GPU 内容由 renderer 自绘覆盖, CPU 帧保留 SHM
+// 内容不抠除 (与 desktop 模式同语义: GPU 帧不透明时覆盖等价, fallback
+// 窗口期显示旧内容比黑屏稳)。
 // ============================================================================
 bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
                                   PresentedFrame& frame, bool frameTrace) {
