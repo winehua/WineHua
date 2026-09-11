@@ -389,6 +389,19 @@ assemble_pad() {
     cp "$dxvk_root/x64/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
     cp "$dxvk_root/x86/bin/d3d11.dll" "$wine_data/dxvk/legacy/x86/d3d11.dll"
     cp "$dxvk_root/x86/bin/dxgi.dll" "$wine_data/dxvk/legacy/x86/dxgi.dll"
+    # D3D10 链必须整套装齐 (实测 WarThunderLauncher 启动器):
+    # wine builtin 的 d3d10core 是调 dxgi 的私有导出 DXGID3D10CreateDevice 建
+    # 设备的, 而 DXVK 的 dxgi 没有该导出 —— 缺 native d3d10 时程序落到 builtin
+    # 链, 又被 WINEDLLOVERRIDES=dxgi=n (禁止回退 builtin) 卡住, 直接 abort。
+    # DXVK 1.10.3 自带 d3d10/d3d10_1/d3d10core (2.x 起移除, 故只在 legacy 装),
+    # 三者与 dxgi 同一次构建产出, 整套走 native 才自洽。
+    local dxvk_d3d10
+    for dxvk_d3d10 in d3d10.dll d3d10_1.dll d3d10core.dll; do
+        [ -f "$dxvk_root/x64/bin/$dxvk_d3d10" ] || err "DXVK Legacy x64 $dxvk_d3d10 missing"
+        [ -f "$dxvk_root/x86/bin/$dxvk_d3d10" ] || err "DXVK Legacy x86 $dxvk_d3d10 missing"
+        cp "$dxvk_root/x64/bin/$dxvk_d3d10" "$wine_data/dxvk/legacy/x64/$dxvk_d3d10"
+        cp "$dxvk_root/x86/bin/$dxvk_d3d10" "$wine_data/dxvk/legacy/x86/$dxvk_d3d10"
+    done
     local dxvk_modern_root="$DXVK_MODERN_BUILD_ROOT"
     [ -f "$dxvk_modern_root/x64/bin/d3d11.dll" ] || err "DXVK Modern x64 d3d11.dll missing: $dxvk_modern_root/x64/bin/d3d11.dll"
     [ -f "$dxvk_modern_root/x64/bin/dxgi.dll" ] || err "DXVK Modern x64 dxgi.dll missing: $dxvk_modern_root/x64/bin/dxgi.dll"
