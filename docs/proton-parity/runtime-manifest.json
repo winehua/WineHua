@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-11",
+  "capturedBy": "codex/proton-arm64-parity",
+  "deviceVerified": false,
+  "source": {
+    "repo": "github.com/winehua/WineHua",
+    "worktree": "/home/liufeng/src/WineHua-arm64ec",
+    "branch": "feature/arm64-heaven-port",
+    "head": "2728523fe1aaaa2509d3e22dc73923dfdf23461f",
+    "dirty": true
+  },
+  "submodules": {
+    "thirdparty/wine": "dc5204ecb0c3c1bf6624542ecf42f931fcc1a3b0",
+    "thirdparty/box64": "16515448b24ccbec20ce477a8f6b6e88e00f0176",
+    "thirdparty/fex": "86ff33bbe299cd8959a6610198c169b67ec419db",
+    "thirdparty/mesa": "2939cbb816d3a3c5fcf3147fb8436e105d0a0ee8",
+    "thirdparty/dxvk": "f6dd62e6dc4bb62a3aaaa4fad824e6cef5655afc",
+    "thirdparty/dxvk-modern": "05a0a66d74cc41e6a90a8cb62d459c1c6a28c783",
+    "thirdparty/virglrenderer": "05d4ded5c4bbd46078676a3f423454abaad90d27",
+    "thirdparty/vkd3d-proton": "3e5aab6fb3e18f81a71b339be4cb5cdf55140980"
+  },
+  "runtime": {
+    "scheme": 3,
+    "schemeMeaning": "aarch64 native Wine + FEX CPU DLLs",
+    "cpuDlls": {
+      "x64": "libarm64ecfex.dll",
+      "x86": ["wowbox64.dll", "libwow64fex.dll"],
+      "unixlib": "absent"
+    },
+    "dxvk": {
+      "legacy": "1.10.3 (thirdparty/dxvk)",
+      "modern": "2.6.2 (thirdparty/dxvk-modern)"
+    },
+    "guestVulkan": {
+      "x64": "venus_icd.aarch64.json (native aarch64)",
+      "x86": "x86 DXVK PE, translated"
+    }
+  },
+  "products": {
+    "hap": {
+      "path": "entry/build/default/outputs/default/entry-default-signed.hap",
+      "sha256": "32dea9969d440223e4dd35f3ae59f2673a62681bab8a24a03ead6eaba56ba289",
+      "size": 403590755
+    },
+    "fexArm64ec": {
+      "path": "build/fex-ec/Bin/libarm64ecfex.dll",
+      "sha256": "7fdbc3f46d794d34b8100ccab849e324bbe9b14eea9e3fc369e55449c141e920",
+      "size": 40300544,
+      "abi": "arm64ec PE"
+    },
+    "fexWow64": {
+      "path": "build/fex-pe/Bin/libwow64fex.dll",
+      "sha256": "75d61406dc16fdf51397352c14381222af55aebf02dc7cbd9120add88eccdf0e",
+      "size": 40972288,
+      "abi": "aarch64 PE"
+    },
+    "wineDataZipSha256": "88dc953b63bdfecd4203b1534d2e2847748c23d7bef0609dc49cc7534e64439c"
+  },
+  "buildEnvironment": {
+    "containerImage": "winehua-dev",
+    "ohosCommandLineTools": "6.1.1.290",
+    "llvmMingw": "20260826-ucrt-ubuntu-22.04-x86_64",
+    "entrypoint": "Makefile"
+  },
+  "unknowns": [
+    "device os build / sdk api",
+    "actual loaded dll set in NCP on device",
+    "effective FEX config in process",
+    "prefix state on device"
+  ]
+}

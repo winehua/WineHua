@@ -1,0 +1,62 @@
+{
+  "capturedAt": "2026-09-11",
+  "scope": "baseline binaries built in /home/liufeng/src/WineHua-arm64ec",
+  "evidence": [
+    "/home/liufeng/src/WineHua-arm64ec/build/fex-ec/CMakeCache.txt",
+    "/home/liufeng/src/WineHua-arm64ec/build/fex-pe/CMakeCache.txt",
+    "thirdparty/fex@86ff33bbe FEXCore/Source/Interface/Config/Config.json.in"
+  ],
+  "configFile": {
+    "presentInRepo": false,
+    "searchPaths": [
+      "${XDG_CONFIG_HOME:-$HOME/.config}/fex-emu/Config.json",
+      "/usr/share/fex-emu/Config.json"
+    ],
+    "expectedInOhosSandbox": false,
+    "consequence": "进程使用编译期默认值；最终生效值尚未在设备上取证"
+  },
+  "cmakeCache": {
+    "fex-ec": {
+      "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+      "ENABLE_FEXCORE_PROFILER": "OFF",
+      "ENABLE_LTO": "False",
+      "BUILD_TESTING": "ON",
+      "TUNE_CPU": "native",
+      "RANGES_NATIVE": "ON",
+      "MINGW_TRIPLE": "arm64ec-w64-mingw32"
+    },
+    "fex-pe": {
+      "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+      "ENABLE_FEXCORE_PROFILER": "OFF",
+      "ENABLE_LTO": "False",
+      "BUILD_TESTING": "ON",
+      "TUNE_CPU": "native",
+      "RANGES_NATIVE": "ON",
+      "MINGW_TRIPLE": "aarch64-w64-mingw32"
+    },
+    "staleCacheWarning": {
+      "observed": "build_fex.sh 传 -DBUILD_TESTING=False，但实际缓存为 ON",
+      "cause": "脚本用 `if [ ! -f CMakeCache.txt ]` 守卫配置，旧目录不会被重新 configure",
+      "action": "P2 必须使用全新隔离 build 目录并复核每一项 CMake 缓存值"
+    }
+  },
+  "sourceDefaults_vs_protonReference": {
+    "MaxInst": {"sourceDefault": "5000", "protonReference": "500", "delta": true},
+    "X87ReducedPrecision": {"sourceDefault": "false", "protonReference": "1", "delta": true},
+    "ProfileStats": {"sourceDefault": "false", "protonReference": "1", "delta": true},
+    "TSOEnabled": {"sourceDefault": "true", "protonReference": "1", "delta": false},
+    "VectorTSOEnabled": {"sourceDefault": "false", "protonReference": "0", "delta": false},
+    "MemcpySetTSOEnabled": {"sourceDefault": "false", "protonReference": "0", "delta": false},
+    "HalfBarrierTSOEnabled": {"sourceDefault": "true", "protonReference": "1", "delta": false},
+    "Multiblock": {"sourceDefault": "true", "protonReference": "1", "delta": false}
+  },
+  "compileTimeProfiler": {
+    "officialReference": "ENABLE_FEXCORE_PROFILER=True",
+    "local": "OFF",
+    "impact": "SHM 统计相关能力未编入；即使配置文件开 ProfileStats 也需先确认编译期支持"
+  },
+  "unknowns": [
+    "进程内最终生效值（未在设备上导出）",
+    "是否存在运行期 profile / app config 覆盖"
+  ]
+}

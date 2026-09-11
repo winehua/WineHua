@@ -1,0 +1,11 @@
+# 基线产物哈希（2026-09-11 采样）
+# 说明：大小单位为字节。哈希为 SHA-256。
+
+32dea9969d440223e4dd35f3ae59f2673a62681bab8a24a03ead6eaba56ba289  403590755  WineHua-arm64ec/entry/build/default/outputs/default/entry-default-signed.hap
+7fdbc3f46d794d34b8100ccab849e324bbe9b14eea9e3fc369e55449c141e920  40300544  WineHua-arm64ec/build/fex-ec/Bin/libarm64ecfex.dll
+75d61406dc16fdf51397352c14381222af55aebf02dc7cbd9120add88eccdf0e  40972288  WineHua-arm64ec/build/fex-pe/Bin/libwow64fex.dll
+88dc953b63bdfecd4203b1534d2e2847748c23d7bef0609dc49cc7534e64439c  -  WineHua-arm64ec/entry/src/main/resources/rawfile/wine-data.zip
+
+# 待补（接设备 / 重新打包后填）
+# <sha256>  -  HAP 内 files/wine/bin/<pe_dir>/libarm64ecfex.dll（实际加载副本）
+# <sha256>  -  HAP 内 files/wine/bin/<pe_dir>/libwow64fex.dll（实际加载副本）

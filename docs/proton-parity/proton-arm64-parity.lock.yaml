@@ -1,0 +1,116 @@
+# Proton ARM64 parity —— 参考锁定值与本地对应
+# 生成：2026-09-11（codex/proton-arm64-parity）
+# 用途：固定"对照对象"，避免把分支名当版本。所有值均为提交哈希。
+
+reference:
+  proton:
+    repo: ValveSoftware/Proton
+    ref: proton_11.0
+    commit: 5b89db940e0ebe3a137a6009a3589232fe084c09
+    role: 参考基线（构建规则 / 组件锁定 / FEX 配置 / prefix 部署）
+  wine:
+    repo: ValveSoftware/Proton (submodule)
+    commit: dc26e61847081a1b5cb0733dc30feba6ee575482
+    local_available: false
+  fex:
+    repo: FEX-Emu/FEX
+    commit: 1cc4b93e7a71c883ec021b71359f136394dc1f3c
+    describe: FEX-2607
+    commit_date: 2026-07-02
+    local_available: true      # 已确认存在于第三方的本地对象库
+  dxvk:
+    repo: valve (Proton submodule)
+    commit: a6764047e587178283fcde4073ae6e1410af594f
+    local_available: false
+  vkd3d_proton:
+    repo: valve (Proton submodule)
+    commit: 212991fc2c266bc0d59f4c4ce8f80f7126508d71
+    local_available: false
+
+# 第三方 OHOS 参考：只用于问题识别，不作为架构基线
+ohos_reference:
+  repo: caidingding233/aetherium-lite-runtime-using-wine-version-not-the-qemu-emulator-version
+  commit: 8bfb459bb71400eb759a35e790d217615174febc
+  usage: reference_only     # 禁止整体套用补丁 / 脚本 / 运行时版本集
+  local_available: false
+
+# 本地（WineHua）实际值 —— 这是"我们要对齐到什么"的现状
+local:
+  winehua_repo: github.com/winehua/WineHua
+  baseline_worktree:
+    path: /home/liufeng/src/WineHua-arm64ec
+    branch: feature/arm64-heaven-port
+    head: 2728523fe1aaaa2509d3e22dc73923dfdf23461f
+    dirty: true
+  parity_worktree:
+    path: /home/liufeng/src/WineHua-proton-parity
+    branch: feature/proton-arm64-parity
+    head: 2728523fe1aaaa2509d3e22dc73923dfdf23461f
+    dirty: false
+  submodules:
+    thirdparty/wine: dc5204ecb0c3c1bf6624542ecf42f931fcc1a3b0
+    thirdparty/box64: 16515448b24ccbec20ce477a8f6b6e88e00f0176
+    thirdparty/fex: 86ff33bbe299cd8959a6610198c169b67ec419db
+    thirdparty/fex_describe: FEX-2605-2-g86ff33bbe
+    thirdparty/mesa: 2939cbb816d3a3c5fcf3147fb8436e105d0a0ee8
+    thirdparty/dxvk: f6dd62e6dc4bb62a3aaaa4fad824e6cef5655afc
+    thirdparty/dxvk-modern: 05a0a66d74cc41e6a90a8cb62d459c1c6a28c783
+    thirdparty/virglrenderer: 05d4ded5c4bbd46078676a3f423454abaad90d27
+    thirdparty/vkd3d-proton: 3e5aab6fb3e18f81a71b339be4cb5cdf55140980
+
+# FEX 版本关系（已核对，勿当 fast-forward）
+fex_matrix:
+  baseline_86ff33bbe:
+    describe: FEX-2605-2-g86ff33bbe
+    source_windows_dirs: [ARM64EC, Common, Defs, WOW64, include]
+    has_unixlib_dir: false
+    has_FEXUnixLib_cpp: false
+    produces_unixlib_so: false
+  reference_1cc4b93e:
+    describe: FEX-2607
+    source_windows_dirs: [ARM64EC, Common, Defs, WOW64, UnixLib, include]
+    has_unixlib_dir: true
+    has_FEXUnixLib_cpp: true
+    produces_unixlib_so: true
+  merge_base: a04b0241c2fe3911729842205cd8643981108aad
+  ancestor_relation: divergent      # 86ff33bbe 不是 1cc4b93e 的祖先
+  commits_on_reference_side: 321
+  implication: >
+    切换 FEX 版本不是快进合并。要么把 1cc4b93e 的 UnixLib / 接口增量
+    按最小集合回移到 86ff33bbe 链路，要么整体切到 1cc4b93e 并接受
+    Wine 侧接口变量一并变化。两条路都必须记录对比变量。
+
+# 对齐目标（本轮不追求"全部升级"）
+scope:
+  do:
+    - 在隔离 build/install/package/prefix 目录内做实验
+    - 建立可观测的 FEX 统计与 UnixLib 加载证据
+    - x86 与 x64 分开测量，不外推
+  do_not:
+    - 不整体套用第三方 OHOS 补丁
+    - 不同时升级 DXVK / vkd3d / Mesa / virglrenderer
+    - 不修改产品主线分支
+    - 不把 32 位结果外推为 x64 ARM64EC 收益
+
+build_parameters_reference:
+  # 来自方案 §5.2/§5.3，用作对照，不是"必须照抄"
+  fex_cmake:
+    ENABLE_FEXCORE_PROFILER: true
+    CMAKE_BUILD_TYPE: Release
+    ENABLE_LTO: false
+    BUILD_TESTING: false
+    TUNE_CPU: none
+    RANGES_NATIVE: false
+  fex_config_json:
+    ProfileStats: "1"
+    X87ReducedPrecision: "1"
+    TSOEnabled: "1"
+    VectorTSOEnabled: "0"
+    MemcpySetTSOEnabled: "0"
+    HalfBarrierTSOEnabled: "1"
+    MaxInst: "500"
+    Multiblock: "1"
+  local_current:
+    cmake_build_type: RelWithDebInfo
+    config_json_present: false
+    note: 本地仓库内不存在 FEX 配置文件
