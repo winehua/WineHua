@@ -9,7 +9,7 @@ import { ArgbWindowManager } from './ArgbWindowManager';
 import { DisplaySettingsService } from './DisplaySettingsService';
 import { ModalWindowManager } from './ModalWindowManager';
 import { FusionWindowManager } from './FusionWindowManager';
-import { DesktopModeService } from './DesktopModeService';
+import { DesktopModeService, isSubWindowFormFactor } from './DesktopModeService';
 
 const DOMAIN = 0x0000;
 const TAG = 'WineWM';
@@ -192,13 +192,11 @@ export class WineWindowManager {
   }
 
   // 桌面模式判定统一入口 (init / 引擎启动前共用):
-  //   phone → 恒桌面合成器 (Index 内嵌 DesktopLayer, 现状)
-  //   Pad/PC + 设置虚拟桌面 → 桌面合成器 (Pad: Index 内嵌; PC: VirtualDesktopAbility)
-  //   Pad/PC + 设置多窗口 (默认分设备) → managed 多窗口 (Pad 承载 subWindow, PC/2in1 独立 Ability)
+  //   虚拟桌面 → 桌面合成器 (移动形态: Index 内嵌 DesktopLayer; 2in1/PC: 独立桌面窗口)
+  //   多窗口 → managed 多窗口 (移动形态承载 subWindow, 2in1/PC 独立 Ability 窗口)
   // 引擎每次启动前调用 — 设置页切换后"重启引擎"即生效。若只在 init 判定,
   // 重启引擎会沿用启动时旧模式 (改融合后桌面/悬浮窗依旧出现)
   applyModePolicy(): void {
-    const isPhone = deviceInfo.deviceType === 'phone';
     // 显式 want 覆盖 (winehua.desktopMode, 试验/冒烟协议): 优先于持久化值,
     // 只在设置页切换 "重启引擎" 前后的测试场景用, 不持久化。经 DesktopModeService
     // 单例字段传递 (AppStorage 跨 Ability 生命周期读取不可靠, 见 DesktopModeService)
@@ -206,8 +204,10 @@ export class WineWindowManager {
     const savedMode = DesktopModeService.getInstance().mode;
     const effectiveMode = (explicitMode === 'fusion' || explicitMode === 'virtual') ?
       explicitMode : savedMode;
-    this.isDesktopMode = isPhone || effectiveMode === 'virtual';
-    this.desktopSeparateWindow = this.isDesktopMode && !isPhone && deviceInfo.deviceType !== 'tablet';
+    // 按用户选择判定 (默认值见 DesktopModeService.DEFAULT_MODE)
+    this.isDesktopMode = effectiveMode === 'virtual';
+    // 虚拟桌面承载: 2in1/PC 用独立桌面窗口; 移动形态内嵌主窗口 (DesktopLayer)
+    this.desktopSeparateWindow = this.isDesktopMode && !isSubWindowFormFactor();
     testNapi.setDesktopMode(this.isDesktopMode);
     hilog.info(DOMAIN, TAG,
       '[MW] mode policy: type=%{public}s → %{public}s (separateWindow=%{public}s explicit=%{public}s)',
@@ -217,19 +217,16 @@ export class WineWindowManager {
       explicitMode || 'none');
   }
 
-  // -- Pad 多窗口承载判定: 非 desktop 模式下, 每窗口是独立 UIAbility 主窗口
-  //    (PC/2in1 现状, 系统自由窗口 + 原生视频) 还是主窗口 stage 下的 subWindow
-  //    (Pad: 普通形态无自由窗口, 系统视频不可用 — 走 subWindow 路线, 见
-  //    FusionWindowManager 头注释)。调试键 winehua.fusionHost 可跨设备强制
-  //    (subwindow/ability, 2in1 真机验证 subWindow 承载用), 仅当设置无效时不读。
+  // -- 多窗口承载判定: 移动形态 (tablet/phone) 用 subWindow 承载 (见
+  //    FusionWindowManager 头注释), 2in1/PC 用独立 UIAbility 主窗口。
+  //    形态判据见 DesktopModeService.isSubWindowFormFactor; 调试键
+  //    winehua.fusionHost 可强制 subwindow/ability (2in1 验证 subWindow 用)。
   fusionUsesSubWindow(): boolean {
     if (this.isDesktopMode) return false;
-    if (deviceInfo.deviceType === 'tablet') {
-      // Pad 默认 subWindow; 显式强制 ability (调试/回退) 时除外
-      return AppStorage.get<string>('winehua.fusionHost') !== 'ability';
-    }
     const forced = AppStorage.get<string>('winehua.fusionHost') ?? '';
-    return forced === 'subwindow';
+    if (forced === 'ability') return false;     // 调试/回退: 强制独立 Ability 窗口
+    if (forced === 'subwindow') return true;    // 调试: 跨设备强制 subWindow 承载
+    return isSubWindowFormFactor();             // 默认: 移动形态走 subWindow
   }
 
   async init(windowStage: window.WindowStage, abilityContext: common.UIAbilityContext): Promise<void> {

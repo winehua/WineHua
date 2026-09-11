@@ -1,13 +1,12 @@
 import { promptAction, SegmentButton, SegmentButtonOptions, window } from '@kit.ArkUI';
 import { fileUri, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineEnvService } from '../service/WineEnvService';
 import { FontImportService } from '../service/FontImportService';
 import { LogExportService } from '../service/LogExportService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
 import { InputSettingsService } from '../service/InputSettingsService';
-import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
+import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION, isSubWindowFormFactor } from '../service/DesktopModeService';
 import { compatIndexOfMode, compatModeFromIndex } from '../service/Box64Dynarec';
 
 // 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · Windows 字体 ·
@@ -42,7 +41,7 @@ export struct SettingsView {
   @State compatSel: number[] = [0];
   @State compatMode: string = '';
   @State compatRestartHint: boolean = false;
-  // 桌面模式分段选中项 (仅 PC): 0=融合模式 1=虚拟桌面, 与 desktopMode 同步
+  // 桌面模式分段选中项: 0=多窗口/融合 1=虚拟桌面 (由 mirror 按服务模式纠正)
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
   @State desktopModeRestartHint: boolean = false;
@@ -85,7 +84,7 @@ export struct SettingsView {
     if (this.compatSel[0] != compatIdx) {
       this.compatSel = [compatIdx];
     }
-    // 桌面模式镜像 (仅 PC 生效; Pad/phone 恒虚拟桌面, 设置项不渲染)
+    // 桌面模式镜像 (默认值见 DesktopModeService.DEFAULT_MODE)
     const desktopMode = DesktopModeService.getInstance().mode;
     if (desktopMode != this.desktopMode) {
       this.desktopMode = desktopMode;
@@ -175,12 +174,6 @@ export struct SettingsView {
     DesktopModeService.getInstance().setMode(mode);
     this.desktopMode = mode;
     this.desktopModeRestartHint = true;
-  }
-
-  // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
-  private isPcDevice(): boolean {
-    const t = deviceInfo.deviceType;
-    return t !== 'phone';
   }
 
   private confirmReset(): void {
@@ -326,39 +319,37 @@ export struct SettingsView {
               .width('100%')
           }
 
-          // 桌面模式 (Pad/PC): 多窗口模式 = 每个程序独立 OHOS 窗口 (可拖动/
-          // 缩放/置顶); 虚拟桌面 = Wine 桌面合成为单一窗口。phone 不显示。
-          if (this.isPcDevice()) {
-            Text('桌面模式')
-              .fontColor($r('app.color.text_primary'))
-              .width('100%')
-            SegmentButton({
-              options: SegmentButtonOptions.capsule({
-                // Pad 用户语境用"多窗口模式", PC 沿用"融合模式"旧名
-                buttons: [{
-                  text: (deviceInfo.deviceType === 'tablet') ? '多窗口模式' : '融合模式'
-                }, { text: '虚拟桌面' }],
-                multiply: false
-              }),
-              selectedIndexes: $desktopModeSel,
-              onItemClicked: (index: number) => {
-                this.selectDesktopMode(index == 0 ? MODE_FUSION : MODE_VIRTUAL);
-              }
-            })
+          // 桌面模式 (全形态可切): 多窗口/融合 = 每个程序独立 OHOS 窗口
+          // (可拖动/缩放/置顶); 虚拟桌面 = Wine 桌面合成为单一窗口
+          Text('桌面模式')
+            .fontColor($r('app.color.text_primary'))
             .width('100%')
-            // 说明文字按设备: Pad 多窗口为新试验功能带标注, PC 融合模式成熟不标
-            Text(deviceInfo.deviceType === 'tablet' ?
-              '虚拟桌面: Wine 桌面在独立窗口运行; 多窗口模式: 每个程序独立窗口（试验功能）' :
-              '虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
-              .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
-              .width('100%')
-            if (this.desktopModeRestartHint) {
-              Text('桌面模式已更改, 重启 Wine 引擎后生效')
-                .fontSize(12)
-                .fontColor($r('app.color.state_warn'))
-                .width('100%')
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              // 移动形态叫"多窗口模式", PC 沿用旧名"融合模式"
+              buttons: [{
+                text: isSubWindowFormFactor() ? '多窗口模式' : '融合模式'
+              }, { text: '虚拟桌面' }],
+              multiply: false
+            }),
+            selectedIndexes: $desktopModeSel,
+            onItemClicked: (index: number) => {
+              this.selectDesktopMode(index == 0 ? MODE_FUSION : MODE_VIRTUAL);
             }
+          })
+          .width('100%')
+          // 说明文字: 多窗口仍是试验功能, 加标注
+          Text(isSubWindowFormFactor() ?
+            '虚拟桌面: Wine 桌面在独立窗口运行; 多窗口模式: 每个程序独立窗口（试验功能）' :
+            '虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+          if (this.desktopModeRestartHint) {
+            Text('桌面模式已更改, 重启 Wine 引擎后生效')
+              .fontSize(12)
+              .fontColor($r('app.color.state_warn'))
+              .width('100%')
           }
         }
         .width('100%')

@@ -8,12 +8,19 @@ const STORE_NAME: string = 'desktop_mode';
 const KEY_MODE: string = 'mode';
 export const MODE_VIRTUAL: string = 'virtual';   // 虚拟桌面: 桌面合成器 + 独立窗口
 export const MODE_FUSION: string = 'fusion';     // 多窗口模式: 每窗口独立 OHOS 窗口
-// 默认模式按设备: Pad 首装维持"虚拟桌面"现状, PC/2in1 维持"多窗口/融合"现状 —
-// 无存储值时各设备沿用各自既有体验, 只有用户显式切换才改变
-const DEFAULT_MODE: string = deviceInfo.deviceType === 'tablet' ? MODE_VIRTUAL : MODE_FUSION;
 
-// 桌面模式 (Pad/PC 可切, phone 恒虚拟桌面):
-// 持久化用户选择。生效时机: 仅应用启动 — WineWindowManager.init 读此值
+// 承载形态判据 (单一出处): tablet/phone 无系统自由窗口, 多窗口模式的每个窗口
+// 用主窗口下的 subWindow 承载 (FusionWindowManager); 2in1/PC 用独立 UIAbility
+// 主窗口 (系统自由窗口 + 原生视频)。
+export function isSubWindowFormFactor(): boolean {
+  return deviceInfo.deviceType !== '2in1';
+}
+
+// 默认模式: 移动形态 (tablet/phone) 用虚拟桌面, 2in1/PC 用多窗口 — 与各形态
+// 既有行为一致; 移动形态上多窗口只作为设置页可选项。
+const DEFAULT_MODE: string = isSubWindowFormFactor() ? MODE_VIRTUAL : MODE_FUSION;
+
+// 桌面模式 (全形态可切): 持久化用户选择。生效时机: 仅应用启动 — WineWindowManager.init 读此值
 // 判定 isDesktopMode (explorer 是否启动/桌面合成器是否开启), 运行中改值
 // 不影响当前会话, 故本服务不提供 subscribe, 设置页改完自行刷新显示即可
 // (与 DisplaySettingsService 同款, 见其"重启生效"约定)。
