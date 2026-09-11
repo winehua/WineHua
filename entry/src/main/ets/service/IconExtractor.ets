@@ -114,10 +114,22 @@ export class IconExtractor {
   }
 
   // mkdirSync 在目录已存在时抛 13900015 (即使 recursion=true), 必须先判存在。
-  // 首批提取时第一个 exe 建目录成功后, 后续 exe 全撞这个错 (regedit/winhlp32 曾因此无图标)
+  // 首批提取时第一个 exe 建目录成功后, 后续 exe 全撞这个错 (regedit/winhlp32 曾因此无图标)。
+  // 注意: accessSync 预判只挡住串行场景 — loadIcons 每批并行 4 个, 首次建目录时
+  // 同批任务会在 access 与 mkdir 之间撞竞态 (实测 icons-v2 首用: THS 建成,
+  // 并行的 dfcft8 抛错 → 无图标, 刷新才恢复), 故 mkdir 必须容忍"已存在"
   private ensureCacheDir(): void {
     if (!fs.accessSync(CACHE_DIR)) {
-      fs.mkdirSync(CACHE_DIR, true);
+      try {
+        fs.mkdirSync(CACHE_DIR, true);
+      } catch (e) {
+        // 容忍并发竞态 (同批任务已抢先建好); 真失败 (磁盘满/权限) 必须抛出 —
+        // 吞掉会让错误推迟到 openSync 才暴露, 日志指向错误的位置。
+        // ArkTS 限制: throw 不能抛任意类型 (arkts-limited-throw), 故重新包装
+        if (!fs.accessSync(CACHE_DIR)) {
+          throw new Error(`mkdir ${CACHE_DIR} failed: ${JSON.stringify(e)}`);
+        }
+      }
     }
   }
 
@@ -252,29 +264,31 @@ export class IconExtractor {
       if (wantId >= 0 && (id & 0x80000000 || (id & 0xFFFF) != wantId)) {
         continue;
       }
-      // 名称项 → 语言子目录 → 第一个数据项
+      // 名称项 → 语言子目录 → 第一个数据项。
+      // 任一读取失败一律 continue 试下一个候选: 本循环现在也接受命名项, 目录里
+      // "命名+ID" 混合时首个候选坏掉不该让整组失败 (单项目录时与 return null 等价)
       const langDir = off & 0x7FFFFFFF;
       const lhdr = this.readAt(fd, resOff + langDir + 12, 4);
       if (!lhdr) {
-        return null;
+        continue;
       }
       const lv = new DataView(lhdr);
       const ltotal = lv.getUint16(0, true) + lv.getUint16(2, true);
       if (ltotal <= 0) {
-        return null;
+        continue;
       }
       const dentry = this.readAt(fd, resOff + langDir + 16, 8);
       if (!dentry) {
-        return null;
+        continue;
       }
       const dvv = new DataView(dentry);
       const dataOff = dvv.getUint32(4, true);
       if (dataOff & 0x80000000) {
-        return null; // 不应再是子目录
+        continue; // 不应再是子目录
       }
       const dataEntry = this.readAt(fd, resOff + dataOff, 8);
       if (!dataEntry) {
-        return null;
+        continue;
       }
       const dev = new DataView(dataEntry);
       return { dataRva: dev.getUint32(0, true), size: dev.getUint32(4, true) };
@@ -449,9 +463,11 @@ export class IconExtractor {
     return { pixels: out.buffer as ArrayBuffer, width: width, height: height };
   }
 
+  // 注意: 就地修改传入的 buffer (RGBA → BGRA), 调用方不得复用或二次传入
   private async writePng(rgba: ArrayBuffer, width: number, height: number, outPath: string): Promise<string> {
     // PixelMap 内部按 BGRA 存放: 直接喂 RGBA 会让产出的 PNG 红蓝互换
-    // (实测 dfcft8.exe 橙色图标被写成蓝色), 先交换 R/B 再建 PixelMap
+    // (实测 dfcft8.exe 橙色图标被写成蓝色), 先交换 R/B 再建 PixelMap。
+    // new Uint8Array 是视图不是拷贝 — 交换直接落在入参 buffer 上 (见函数头注释)
     const px = new Uint8Array(rgba);
     for (let i = 0; i + 3 < px.length; i += 4) {
       const t = px[i];
@@ -464,7 +480,7 @@ export class IconExtractor {
       editable: false
     };
     const pixelMap = await image.createPixelMap(rgba, opts);
-    this.ensureCacheDir();
+    // 缓存目录已由 extract 保证存在 (本函数 private, 唯一上游就是它)
     const out = fs.openSync(outPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
     try {
       const packer = image.createImagePacker();

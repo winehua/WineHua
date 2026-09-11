@@ -157,9 +157,13 @@ export class AppLibraryService {
       hilog.error(DOMAIN, 'wine', 'app library load fail: %{public}s', JSON.stringify(e));
       this.entries = [];
     }
-    // 存量条目补图标 (老数据无 icon 字段, 首次启动后台逐个提取)
+    // 存量条目补图标 (老数据无 icon 字段, 首次启动后台逐个提取)。
+    // 还要校验图标文件是否还在: icon 持久化的是 cache 目录下的绝对路径, 系统
+    // 清缓存 (设置里"清除缓存"/空间紧张) 或缓存目录改名后文件就没了, 此时不
+    // 重提取该条目会永久停在默认图标 — 文件页每次进目录都重置 icon 再提取,
+    // 所以这个坑只在应用库暴露
     for (const e of this.entries) {
-      if (!e.icon) {
+      if (!e.icon || !this.iconFileAlive(e.icon)) {
         this.fillIcon(e.path);
       }
     }
@@ -369,6 +373,15 @@ export class AppLibraryService {
       source: patch.source !== undefined ? patch.source : e.source,
       lastRun: patch.lastRun !== undefined ? patch.lastRun : e.lastRun,
     };
+  }
+
+  // 图标缓存文件是否还在 (icon 存的是 cache 下的绝对路径, 会被系统清缓存回收)
+  private iconFileAlive(iconPath: string): boolean {
+    try {
+      return fs.accessSync(iconPath);
+    } catch (_) {
+      return false;
+    }
   }
 
   // 异步提取 exe 图标 → 更新 entry.icon 并持久化 (完成前 UI 显示默认 ▶)

@@ -1030,7 +1030,10 @@ export struct FileBrowserView {
                   }
                 })
               }
-            }, (entry: FileEntry) => entry.name)
+              // key 必须带 icon 状态: 图标是异步提取的, 完成时若 key 不变则 ForEach
+              // 复用旧组件不重建, 图标永久不显示 (首次进目录必现, 切目录/重启才恢复;
+              // 同 AppLibraryView 网格 key 的既有处理)
+            }, (entry: FileEntry) => `${entry.name}|${entry.icon ? 1 : 0}`)
           }
           .width('100%').layoutWeight(1)
         }
