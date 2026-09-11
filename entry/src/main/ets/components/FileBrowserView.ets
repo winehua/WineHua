@@ -883,8 +883,10 @@ export struct FileBrowserView {
             .enabled(this.state == 'ready')
             .onClick(() => this.launchExe(this.fullPath(entry.name)))
         } else if (this.rowKindOf(entry) == 'dir') {
+          // fontSize 22: chevron 类是窄图标 (宽≈0.5×字号), 16 时实测仅 8x15vp,
+          // 触发 PC 市场审核"图标宽或高 < 10vp"; 22 → 约 11x20.6vp 达标
           SymbolGlyph($r('sys.symbol.chevron_right'))
-            .fontSize(16)
+            .fontSize(22)
             .fontColor([$r('app.color.text_tertiary')])
         }
       }
@@ -915,8 +917,9 @@ export struct FileBrowserView {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
       .margin({ left: 6 })
+      // fontSize 22 同 fileRow: 16 时渲染 8x15vp 不达 10vp 图标下限
       SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(16)
+        .fontSize(22)
         .fontColor([$r('app.color.text_tertiary')])
     }
     .width('100%').height(56).padding({ left: 14, right: 14 })

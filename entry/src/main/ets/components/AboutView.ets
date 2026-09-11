@@ -192,8 +192,9 @@ export struct AboutView {
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_secondary'))
               .layoutWeight(1)
+            // fontSize 22: chevron 窄图标 16 时渲染仅 8x15vp, 不达 10vp 图标下限
             SymbolGlyph(this.sysExpanded ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
-              .fontSize(16)
+              .fontSize(22)
               .fontColor([$r('app.color.text_secondary')])
           }
           .width('100%')

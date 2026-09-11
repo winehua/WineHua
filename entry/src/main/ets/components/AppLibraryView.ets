@@ -619,7 +619,8 @@ export struct AppLibraryView {
           })
         Text('扫描')
           .fontColor($r('app.color.accent'))
-          .padding({ left: 16, top: 4, bottom: 4 })
+          // top/bottom 6: 文字行高约 17vp + 12 = 29vp, 满足 5mm(≈26vp) 热区下限
+          .padding({ left: 16, top: 6, bottom: 6 })
           // modalMode 同 bindContextMenu 处注释: 默认菜单外点击穿透下层
           .bindMenu(this.scanMenu(), { modalMode: ModalMode.TARGET_WINDOW })
       }
