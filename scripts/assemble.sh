@@ -323,6 +323,21 @@ assemble_pad() {
         done
         log "    Wine .so: $(ls "$wine_build_dir/dlls/"*/*.so 2>/dev/null | wc -l) files"
 
+        # FEX UnixLib (.so) → libs/ 同级 (与其它 Wine unix .so 同目录)。
+        # wine ntdll 的 load_unixlib_by_name() 按
+        #   <dll_path>/aarch64-unix/<name>.so  →  <dll_path>/<name>.so
+        # 逐个 dlopen; UnixLib 导出 __wine_unix_call_funcs。
+        # 文件缺失只告警不中断: 未构建 UnixLib 时仍是可用的旧基线。
+        for so in "$BUILD_DIR/fex-unixlib/libwow64fex.so" \
+                  "$BUILD_DIR/fex-unixlib/libarm64ecfex.so"; do
+            if [ -f "$so" ]; then
+                cp "$so" "$NATIVE_LIBS/"
+                log "    FEX UnixLib: $(basename "$so")"
+            else
+                warn "FEX UnixLib 未找到: $so (先执行 bash scripts/build_fex.sh)"
+            fi
+        done
+
         # 交叉编译依赖 → libs/
         _pick_lib_pad() {
             local name="$1" soname="$2" linker="${3:-}"

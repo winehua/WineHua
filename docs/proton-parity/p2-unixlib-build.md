@@ -129,7 +129,7 @@ SONAME  libwow64fex.so
 
 已验证现有 HAP 的 `libs/arm64-v8a/libc++_shared.so` 存在，依赖可满足。
 
-## 6. 打包要求（下一步，尚未做）
+## 6. 打包归位（已接入 assemble.sh，尚未真机验证）
 
 UnixLib 的 `.so` 与两个 PE DLL **去向不同**：
 
@@ -138,9 +138,13 @@ UnixLib 的 `.so` 与两个 PE DLL **去向不同**：
   即 `entry/libs/arm64-v8a/`。候选路径由 `load_unixlib_by_name` 决定：
   `<dll_path>/aarch64-unix/<name>.so`，退化为 `<dll_path>/<name>.so`。
 
-**本轮没有改 `assemble.sh` / `wine_env*.cpp`**：这两处属于平台层，
-需要真机确认 `WINEDLLPATH` / `WINEUNIXDIR` 的实际取值后再改，
-否则可能破坏当前可用的环境（`docs/ARM64_SCHEME3_PERF_HANDOFF.md` §4.2 已记录过类似踩坑）。
+`scripts/assemble.sh` 的方案③分支已加入两行拷贝：把
+`$BUILD_DIR/fex-unixlib/lib{wow64fex,arm64ecfex}.so` 与其它 Wine unix `.so`
+一起放进 `$NATIVE_LIBS`（即 `entry/libs/<arch>/`）。文件缺失时只 `warn`，不中断。
+
+**仍未改动 `wine_env*.cpp` / `wine_child.cpp`**：`WINEDLLPATH` / `WINEUNIXDIR`
+的实际取值必须先在设备上确认。在没确认前改环境可能破坏当前可用的链路
+（`docs/ARM64_SCHEME3_PERF_HANDOFF.md` §4.2 已记录过同类踩坑）。
 
 ## 7. 风险与未验证
 
