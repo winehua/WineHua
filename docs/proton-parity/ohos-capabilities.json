@@ -15,7 +15,7 @@
     {"id": "OHOS-09", "scope": "signals-exceptions", "level": "G0", "status": "not_tested", "existing_implementation": "dlls/ntdll/signal_arm64ec.c, ohos_virtual.c"},
     {"id": "OHOS-10", "scope": "libc-pthread", "level": "G0/G2", "status": "not_tested"},
     {"id": "OHOS-11", "scope": "kernel-optional-caps", "level": "G2", "status": "unsupported_with_verified_fallback", "note": "PR_GET_MEM_MODEL -> 0xffffffff errno=22；PR_ARM64_SET_UNALIGN_ATOMIC -> -1 errno=22；回退软件 TSO", "device": "MLR-AL10 / API 26 / 7.0.0.105", "evidence": "docs/proton-parity/p2-device-validation.md"},
-    {"id": "OHOS-12", "scope": "fex-formal-stats", "level": "G1", "status": "pass_new", "note": "FEX_Config.json 已随包部署并由 FEX_APP_CONFIG_LOCATION 定位；真机 shm 统计创建成功（fex-<pid>-stats, map=4096 max=4194304）。统计内容读取待 app 内工具", "evidence": "docs/proton-parity/p2-effective-config.md"},
+    {"id": "OHOS-12", "scope": "fex-formal-stats", "level": "G1", "status": "pass_new", "note": "统计头真机可读: version=2 app_type=3 slot_size=80 capacity=4096 fex_version=FEX-2604-99-g86ff33b; 线程槽 slot_off=64/144。扩容与退出清理未触发", "evidence": "docs/proton-parity/p2-effective-config.md"},
     {"id": "OHOS-13", "scope": "packaging-deploy", "level": "G0/G1", "status": "not_tested", "existing_implementation": "Makefile, scripts/assemble.sh"},
     {"id": "OHOS-14", "scope": "real-window-and-measurement", "level": "G0", "status": "not_tested", "note": "已完成启动链路与 env 采集（29 个 wine 子进程、无 CRASH）；尚未做帧率/正确性测量"}
   ]

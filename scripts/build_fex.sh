@@ -33,6 +33,30 @@ test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" || err "llvm-mingw 缺失 aa
 
 export PATH="$LLVM_MINGW/bin:$PATH"
 
+# 容器内以 root 构建、源码属主是普通用户时, git 会以 "dubious ownership" 拒绝
+# 操作 (patch 应用也会一起失败)。统一用 safe.directory 放行。
+fex_git() { git -c 'safe.directory=*' -C "$FEX_SRC" "$@"; }
+
+# 把 FEX 版本写进产物 (Proton 用 .git_describe/.git_rev 传 OVERRIDE_*)。
+# 统计头里的 fex_version 就来自这里; 不传会是空字符串, 无法从 stats 反查版本。
+# 注意: 拿不到真实版本时必须**不传**, 否则 FEX 的 git_version.h 生成器会把
+# 非十六进制字符串按字节拼成 0x?? 常量, 直接把编译打挂。
+FEX_OVERRIDE_VERSION="$(fex_git describe --abbrev=7 --always 2>/dev/null || true)"
+FEX_OVERRIDE_HASH="$(fex_git rev-parse --short=7 HEAD 2>/dev/null || true)"
+FEX_OVERRIDE_ARGS=()
+if [ -n "$FEX_OVERRIDE_VERSION" ] && [ -n "$FEX_OVERRIDE_HASH" ]; then
+    FEX_OVERRIDE_ARGS=(
+        "-DOVERRIDE_VERSION=$FEX_OVERRIDE_VERSION"
+        "-DOVERRIDE_HASH=$FEX_OVERRIDE_HASH"
+    )
+    log "FEX 版本标记: $FEX_OVERRIDE_VERSION ($FEX_OVERRIDE_HASH)"
+else
+    warn "无法读取 FEX git 版本, 产物将不带版本标记"
+fi
+
+# FEX CMake 里 OVERRIDE_VERSION 的默认值是 "detect"; 缓存值不等于期望值就要重配。
+FEX_EXPECT_CACHE_VERSION="${FEX_OVERRIDE_VERSION:-detect}"
+
 # 随构建走的 FEX 补丁 (子模块锁定 86ff33bbe 且指向 FEX-Emu/FEX 上游,
 # 非 fork 不能推分支, 按 glib-format-security 先例 patch 化):
 #   fex-missing-includes.patch   — 上游 08031a2767 "Add missing includes",
@@ -65,8 +89,8 @@ fi
 # 但补丁其实已经应用, 再正向 apply 就会报 "already exists"。
 patch_state() {
     local patch="$1" sentinel="$2"
-    git -C "$FEX_SRC" apply --reverse --check "$patch" 2>/dev/null && { echo applied; return; }
-    git -C "$FEX_SRC" apply --check "$patch" 2>/dev/null && { echo fresh; return; }
+    fex_git apply --reverse --check "$patch" 2>/dev/null && { echo applied; return; }
+    fex_git apply --check "$patch" 2>/dev/null && { echo fresh; return; }
     [ -n "$sentinel" ] && [ -e "$sentinel" ] && { echo applied; return; }
     echo unknown
 }
@@ -80,7 +104,7 @@ for PATCH in "${FEX_PATCHES[@]}"; do
     case "$(patch_state "$PATCH" "$sentinel")" in
         applied) : ;;
         fresh)
-            git -C "$FEX_SRC" apply "$PATCH"
+            fex_git apply "$PATCH"
             log "已应用 patch: $(basename "$PATCH")" ;;
         *)
             err "补丁状态不明(既不能正向也不能反向应用): $(basename "$PATCH")" ;;
@@ -92,7 +116,10 @@ build_fex_ec() {
     local build="$BUILD_DIR/fex-ec"
     mkdir -p "$build"
     cd "$build"
-    if [ ! -f CMakeCache.txt ]; then
+    # 注意 (方案 §5.2): 只用 `[ ! -f CMakeCache.txt ]` 守卫会让"改了脚本参数但复用旧目录"
+    # 静默失效。这里额外比对 OVERRIDE_VERSION 缓存值, 不一致就重新 configure。
+    if [ ! -f CMakeCache.txt ] || \
+       [ "$(sed -n 's/^OVERRIDE_VERSION:STRING=//p' CMakeCache.txt 2>/dev/null | head -1)" != "$FEX_EXPECT_CACHE_VERSION" ]; then
         # BUILD_TESTING=False: FEX 用 CTest 的 BUILD_TESTING (非 BUILD_TESTS)
         # 控制 unittests/, 开着会在 configure 阶段 enable_language(ASM_NASM)
         # 硬依赖 nasm — 我们只编 dll 目标, 显式关掉
@@ -101,6 +128,7 @@ build_fex_ec() {
             -DENABLE_LTO=False \
             -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
             -DBUILD_TESTING=False \
+            "${FEX_OVERRIDE_ARGS[@]}" \
             "$FEX_SRC"
     fi
     require_cmake_not_debug CMakeCache.txt "fex-ec"
@@ -128,12 +156,14 @@ build_fex_pe() {
     local build="$BUILD_DIR/fex-pe"
     mkdir -p "$build"
     cd "$build"
-    if [ ! -f CMakeCache.txt ]; then
+    if [ ! -f CMakeCache.txt ] || \
+       [ "$(sed -n 's/^OVERRIDE_VERSION:STRING=//p' CMakeCache.txt 2>/dev/null | head -1)" != "$FEX_EXPECT_CACHE_VERSION" ]; then
         cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
             -DENABLE_LTO=False \
             -DMINGW_TRIPLE=aarch64-w64-mingw32 \
             -DBUILD_TESTING=False \
+            "${FEX_OVERRIDE_ARGS[@]}" \
             "$FEX_SRC"
     fi
     require_cmake_not_debug CMakeCache.txt "fex-pe"

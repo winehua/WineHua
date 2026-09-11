@@ -69,6 +69,54 @@ HAP：`418 977 859 B`，`sha256 a83e826c3447c567e6103859f63904a8cd397b1b20740f7a
 
 | 项 | 状态 |
 | --- | --- |
-| 读取 SHM 统计内容 | 未做。`/dev/shm/fex-<pid>-stats` 在应用私有命名空间，hdc shell 读不到（Permission denied）。需要在 app 内加读取工具，或扩展探针在映射后 dump `ThreadStatsHeader`（Version / app_type / fex_version[48] / Head / Size） |
-| 生效值逐项导出 | 目前只能证明配置文件被读取；`MaxInst=500` 等键的进程内实际取值还没有导出手段 |
+| SLOT 扩容 (`shm-grow`) | 未触发。容量 1 页 = (4096-64)/80-1 = 49 槽，本次运行线程数远小于它。代码路径存在（探针已埋），需要一个多线程负载才能观察 |
+| 退出清理 (`DeleteSHMStatsFile`) | 未观察。进程多为被杀而不是正常退出 |
+| 生效值逐项导出 | 只能证明配置文件被读取 + 统计头自洽；`MaxInst=500` 等键的进程内实际取值还没有导出手段 |
 | `ENABLE_FEXCORE_PROFILER` / Release 对齐 | 未做；已确认与 SHM 统计无关，属独立优化项 |
+
+## 6. 统计内容读取（已打通）
+
+`/dev/shm/fex-<pid>-stats` 在应用私有命名空间，hdc shell 读不到（`Permission denied`）。
+改在 FEX 侧读：`StatAlloc::StatAlloc` 在 `SaveHeader()` **之后** dump 统计头，
+`StatAllocBase::AllocateSlot` dump 前两次线程槽登记。
+
+输出通道也是踩出来的：PE 侧的 `stderr` / `write(2)` **不可见**——Wine 在进程启动时
+就缓存了 PE std handle，而 NCP 子进程是在其后才把 unix fd 2 重定向到 wine_stderr 日志，
+所以只有 UnixLib（raw `dprintf(2)`）写得到日志。最终 PE 侧改为写 Wine 文件系统里的
+`C:\windows\temp\winehua_fex_probe.txt`，hdc 直接可读。
+
+### 真机结果
+
+```text
+[WINEHUA-FEX-PROBE] shm-header version=2 app_type=3 slot_size=80 capacity=4096 size=4096 fex_version=FEX-2604-99-g86ff33b
+[WINEHUA-FEX-PROBE] shm-slot alloc tid=304 slot_off=64 head_off=64
+[WINEHUA-FEX-PROBE] shm-slot alloc tid=308 slot_off=144 head_off=64
+[WINEHUA-FEX-PROBE] shm-slot alloc tid=320 slot_off=64 head_off=64
+[WINEHUA-FEX-PROBE] shm-slot alloc tid=324 slot_off=144 head_off=64
+```
+
+逐项核对（对照 `FEXCore/include/FEXCore/Utils/SHMStats.h`）：
+
+| 字段 | 实测 | 期望 | 结论 |
+| --- | --- | --- | --- |
+| `Version` | 2 | `STATS_VERSION = 2` | ✅ |
+| `app_type` | 3 | `WIN_WOW64`（枚举 0..3） | ✅ 32 位链路 |
+| `ThreadStatsSize` | 80 | 4+4+9×8 = 80 | ✅ 结构与读取方一致 |
+| `capacity/size` | 4096 | `FEX_PAGE_SIZE` 一页 | ✅ |
+| `fex_version` | `FEX-2604-99-g86ff33b` | 构建时写入 | ✅ 版本可反查 |
+| 槽布局 | `slot_off=64` → `144` | header 64B，槽步长 80B | ✅ 链表头/第二槽均正确 |
+
+> `fex_version` 一开始是空的：FEX 从 `git_version.h` 取，而 Proton 用
+> `.git_describe/.git_rev` 传 `-DOVERRIDE_VERSION/-DOVERRIDE_HASH`。补上后发现
+> 容器内 git 因 "dubious ownership" 拒绝执行（root 构建、源码属主非 root），
+> 需要 `-c safe.directory=*`；且**拿不到真实版本时必须不传**，否则 FEX 的
+> `git_version.h` 生成器会把 `unknown` 逐字节拼成 `0x??` 常量，直接编译失败。
+
+### 产物
+
+| 产物 | SHA-256 |
+| --- | --- |
+| `libarm64ecfex.dll` | `bfe47099d6d61389bc1a0e3d8cd10394f23c2c979e6e5d06600c813769b447ee` |
+| `libwow64fex.dll` | `43a76838d5e73cb8809bb183f65cb3e4292acf85b0da3c4b25f9cc02cd2f7edd` |
+| HAP（已装到 MLR-AL10） | `85c62630d008c3ca31644b7ceac4901443b6820a9223d031c01d84a02f93a367`（418 981 995 B） |
+| HAP payloadSha256 | `2be7af51a2ae16f0df2f8324b86f065ff8a85d94d314e2899f7db2f0449768d5` |

@@ -1,3 +1,110 @@
+diff --git a/Source/Common/SHMStats.cpp b/Source/Common/SHMStats.cpp
+index c522f42f8..a5aad1ccb 100644
+--- a/Source/Common/SHMStats.cpp
++++ b/Source/Common/SHMStats.cpp
+@@ -4,6 +4,27 @@
+ 
+ #include <FEXCore/Debug/InternalThreadState.h>
+ 
++#include <cstdio>
++#include <cstdarg>
++
++// [WineHua 实验探针] 同 Windows/Common/SHMStats.cpp: PE 侧 stderr 不可见, 写文件。
++static void WineHuaProbeSlotFmt(const char* Fmt, ...) {
++  char Buffer[256];
++  va_list Args;
++  va_start(Args, Fmt);
++  const int Length = std::vsnprintf(Buffer, sizeof(Buffer), Fmt, Args);
++  va_end(Args);
++  if (Length <= 0) {
++    return;
++  }
++  const size_t ToWrite =
++    static_cast<size_t>(Length) < sizeof(Buffer) ? static_cast<size_t>(Length) : sizeof(Buffer) - 1;
++  if (FILE* File = std::fopen("C:\\windows\\temp\\winehua_fex_probe.txt", "a")) {
++    std::fwrite(Buffer, 1, ToWrite, File);
++    std::fclose(File);
++  }
++}
++
+ namespace FEX::SHMStats {
+ void StatAllocBase::SaveHeader(FEXCore::SHMStats::AppType AppType) {
+   if (!Base) {
+@@ -74,6 +95,14 @@ FEXCore::SHMStats::ThreadStats* StatAllocBase::AllocateSlot(uint32_t TID) {
+ 
+   // Update the tail.
+   StatTail = AllocatedSlot;
++
++  // [WineHua 实验探针] 只在前两次分配时打印, 证明线程槽真的被登记进统计链表
++  static uint32_t WineHuaProbeSlotCount = 0;
++  if (WineHuaProbeSlotCount < 2) {
++    ++WineHuaProbeSlotCount;
++    WineHuaProbeSlotFmt("[WINEHUA-FEX-PROBE] shm-slot alloc tid=%u slot_off=%u head_off=%u\n", TID,
++                        OffsetFromStat(AllocatedSlot), Head->Head.load(std::memory_order_relaxed));
++  }
+   return AllocatedSlot;
+ }
+ 
+diff --git a/Source/Windows/Common/SHMStats.cpp b/Source/Windows/Common/SHMStats.cpp
+index 81daa0d72..fae8ce86f 100644
+--- a/Source/Windows/Common/SHMStats.cpp
++++ b/Source/Windows/Common/SHMStats.cpp
+@@ -12,6 +12,32 @@
+ #include <winnt.h>
+ #include <wine/debug.h>
+ 
++#include <cstdio>
++#include <cstdarg>
++
++// [WineHua 实验探针]
++// 不能用 stderr / write(2): Wine 在进程启动时就缓存了 PE 侧 std handle,
++// 而 WineHua 的 NCP 子进程是在其后才把 unix fd 2 重定向到 wine_stderr 日志的,
++// 所以 PE 侧的 fd 2 指向的不是日志 (实测 UnixLib 的 dprintf(2) 可见、PE 侧不可见)。
++// 改为写 Wine 文件系统里的普通文件, hdc 可以直接读。
++#define WINEHUA_FEX_PROBE_FILE "C:\\windows\\temp\\winehua_fex_probe.txt"
++static void WineHuaProbeFmt(const char* Fmt, ...) {
++  char Buffer[256];
++  va_list Args;
++  va_start(Args, Fmt);
++  const int Length = std::vsnprintf(Buffer, sizeof(Buffer), Fmt, Args);
++  va_end(Args);
++  if (Length <= 0) {
++    return;
++  }
++  const size_t ToWrite =
++    static_cast<size_t>(Length) < sizeof(Buffer) ? static_cast<size_t>(Length) : sizeof(Buffer) - 1;
++  if (FILE* File = std::fopen(WINEHUA_FEX_PROBE_FILE, "a")) {
++    std::fwrite(Buffer, 1, ToWrite, File);
++    std::fclose(File);
++  }
++}
++
+ namespace FEX::Windows {
+ uint32_t StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
+   if (CurrentSize == MAX_STATS_SIZE) {
+@@ -23,6 +49,8 @@ uint32_t StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
+ 
+   if (Result.SHMBase) {
+     CurrentSize = Result.MappedSize;
++    // [WineHua 实验探针] 扩容路径: 证明 shm 可以按需增长
++    WineHuaProbeFmt("[WINEHUA-FEX-PROBE] shm-grow new_size=%u\n", CurrentSize);
+   }
+ 
+   return CurrentSize;
+@@ -35,6 +63,13 @@ StatAlloc::StatAlloc(FEXCore::SHMStats::AppType AppType) {
+     CurrentSize = Result.MappedSize;
+     Base = Result.SHMBase;
+     SaveHeader(AppType);
++    // [WineHua 实验探针] 读统计头: 必须在 SaveHeader 之后, 否则读到的是刚 ftruncate 的零页
++    if (Head) {
++      WineHuaProbeFmt("[WINEHUA-FEX-PROBE] shm-header version=%u app_type=%u slot_size=%u capacity=%u size=%u fex_version=%.48s\n",
++                      static_cast<unsigned>(Head->Version), static_cast<unsigned>(Head->app_type),
++                      static_cast<unsigned>(Head->ThreadStatsSize), CurrentSize,
++                      Head->Size.load(std::memory_order_relaxed), Head->fex_version);
++    }
+     return;
+   }
+ }
 diff --git a/Source/Windows/UnixLib/FEXUnixLib.cpp b/Source/Windows/UnixLib/FEXUnixLib.cpp
 index 692e459f1..84f4e7d67 100644
 --- a/Source/Windows/UnixLib/FEXUnixLib.cpp

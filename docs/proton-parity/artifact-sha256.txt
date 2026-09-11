@@ -31,3 +31,9 @@ c4eaa204601c4c1a3b4fe1cf6ef14e773c256963a0bdaaad5d9ec2301124bbc9  18104  WineHua
 # P2 收尾: 完整 hvigor 出包 (含 FEX_Config.json + UnixLib + FEX WOW64 默认引擎)
 a83e826c3447c567e6103859f63904a8cd397b1b20740f7a1a870e0749dd1cc5  418977859  WineHua-proton-parity/entry/build/default/outputs/default/entry-default-signed.hap (已装到 MLR-AL10)
                                                   payloadSha256: ddce2eb25d529ddc8e7094d8606abfc712e695bd1e1dd86d3e1756d28277802c
+
+# P2 闭环: 统计头可读 (fex_version 已填) —— 见 p2-effective-config.md §6
+bfe47099d6d61389bc1a0e3d8cd10394f23c2c979e6e5d06600c813769b447ee  -  WineHua-proton-parity/build/fex-ec/Bin/libarm64ecfex.dll
+43a76838d5e73cb8809bb183f65cb3e4292acf85b0da3c4b25f9cc02cd2f7edd  -  WineHua-proton-parity/build/fex-pe/Bin/libwow64fex.dll
+85c62630d008c3ca31644b7ceac4901443b6820a9223d031c01d84a02f93a367  418981995  WineHua-proton-parity/entry/build/default/outputs/default/entry-default-signed.hap (已装到 MLR-AL10)
+                                                  payloadSha256: 2be7af51a2ae16f0df2f8324b86f065ff8a85d94d314e2899f7db2f0449768d5
