@@ -1,0 +1,1121 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 8e5416709..cb4abb1b7 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -29,6 +29,7 @@ $end_info$
+ 
+ #include "Windows/Common/Allocator.h"
+ #include "Windows/Common/EnvironmentVariablesHandling.h"
++#include "Windows/Common/FEXUnixLib.h"
+ #include "Common/CallRetStack.h"
+ #include "Common/JITGuardPage.h"
+ #include "Common/Config.h"
+@@ -601,6 +602,7 @@ NTSTATUS ProcessInit() {
+   FEX::Windows::SetupEnvironmentVariableValues(NtDll);
+ 
+   FEX::Windows::Allocator::SetupHooks(NtDll);
++  FEX::Windows::UnixLib::Init(NtDll);
+ 
+   {
+     auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine);
+@@ -630,12 +632,8 @@ NTSTATUS ProcessInit() {
+   Exception::KiUserExceptionDispatcher = NtDllRedirectionLUT[KiUserExceptionDispatcherFFS - NtDllBase] + NtDllBase;
+ 
+   FEX_CONFIG_OPT(TSOEnabled, TSOENABLED);
+-  if (TSOEnabled()) {
+-    BOOL Enable = TRUE;
+-    NTSTATUS Status = NtSetInformationProcess(NtCurrentProcess(), ProcessFexHardwareTso, &Enable, sizeof(Enable));
+-    if (Status == STATUS_SUCCESS) {
+-      CTX->SetHardwareTSOSupport(true);
+-    }
++  if (TSOEnabled() && FEX::Windows::UnixLib::TryEnableHardwareTSO()) {
++    CTX->SetHardwareTSOSupport(true);
+   }
+ 
+   FEX_CONFIG_OPT(ProfileStats, PROFILESTATS);
+diff --git a/Source/Windows/Common/Allocator.cpp b/Source/Windows/Common/Allocator.cpp
+index 0643e062f..d535bdef7 100644
+--- a/Source/Windows/Common/Allocator.cpp
++++ b/Source/Windows/Common/Allocator.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ #include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/TypeDefines.h>
++#include "Windows/Common/FEXUnixLib.h"
+ 
+ #include <array>
+ #include <chrono>
+@@ -13,228 +14,13 @@
+ #include <wine/debug.h>
+ 
+ namespace FEX::Windows::Allocator {
+-#define PR_SET_VMA 0x53564d41
+-#define PR_SET_VMA_ANON_NAME 0
+-
+-#define MADV_HUGEPAGE 14
+-#define MADV_NOHUGEPAGE 15
+-
+-namespace Trampoline {
+-  struct madvise_data {
+-    const void* addr;
+-    size_t size;
+-    int advise;
+-  };
+-
+-  struct prctl_data {
+-    int op;
+-    uint64_t attr;
+-    const void* addr;
+-    size_t size;
+-    const char* name;
+-    uint64_t ret;
+-  };
+-
+-  __attribute__((naked)) uint64_t wine_prctl(prctl_data* d) {
+-    asm volatile(
+-      R"(
+-  .globl wine_prctl_begin
+-  wine_prctl_begin:
+-    mov x19, x0;
+-    mov x8, 167; // prctl
+-    ldr x0, [x19]; // op
+-    ldp x1, x2, [x19, %[attr_offset]]; // {attr, addr}
+-    ldp x3, x4, [x19, %[size_offset]]; // {size, name}
+-    svc #0;
+-    str x0, [x19, %[ret_offset]];
+-    // Tell wine it was all groovy.
+-    mov x0, 0;
+-    ret;
+-
+-  .globl wine_prctl_end
+-  wine_prctl_end:
+-  )"
+-      :
+-      : [attr_offset] "i"(offsetof(prctl_data, attr)), [size_offset] "i"(offsetof(prctl_data, size)), [ret_offset] "i"(offsetof(prctl_data, ret))
+-      : "memory");
+-  };
+-
+-  __attribute__((naked)) uint64_t wine_madvise(madvise_data* d) {
+-    asm volatile(R"(
+-  .globl wine_madvise_begin
+-  wine_madvise_begin:
+-    mov x8, 233; // madvise
+-    ldr x2, [x0, %[advise_offset]]; // advise
+-    ldp x0, x1, [x0]; // {addr, size}
+-    svc #0;
+-    // Tell wine it was all groovy.
+-    mov x0, 0;
+-    ret;
+-
+-  .globl wine_madvise_end
+-  wine_madvise_end:
+-  )" ::[advise_offset] "i"(offsetof(madvise_data, advise))
+-                 : "memory");
+-  }
+-
+-  extern "C" uint64_t wine_madvise_begin;
+-  extern "C" uint64_t wine_madvise_end;
+-
+-  void* const wine_madvise_begin_loc = &wine_madvise_begin;
+-  void* const wine_madvise_end_loc = &wine_madvise_end;
+-
+-  extern "C" uint64_t wine_prctl_begin;
+-  extern "C" uint64_t wine_prctl_end;
+-
+-  void* const wine_prctl_begin_loc = &wine_prctl_begin;
+-  void* const wine_prctl_end_loc = &wine_prctl_end;
+-
+-  extern NTSTATUS(WINAPI* __wine_unix_call_dispatcher)(uint64_t, unsigned int, void*);
+-  decltype(__wine_unix_call_dispatcher) WineUnixCall;
+-
+-  enum unix_function_indexes {
+-    INDEX_PRCTL = 0,
+-    INDEX_MADVISE = 1,
+-    INDEX_MAX,
+-  };
+-  static std::array<void*, INDEX_MAX> unix_functions {};
+-
+-  static uint64_t wine_prctl_trampoline(int op, uint64_t attr, const void* addr, size_t size, const char* name) {
+-    prctl_data d {
+-      .op = op,
+-      .attr = attr,
+-      .addr = addr,
+-      .size = size,
+-      .name = name,
+-    };
+-    WineUnixCall(reinterpret_cast<uint64_t>(unix_functions.data()), INDEX_PRCTL, &d);
+-    return d.ret;
+-  }
+-
+-  static uint64_t wine_madvise_trampoline(const void* addr, size_t size, int advice) {
+-    madvise_data d {
+-      .addr = addr,
+-      .size = size,
+-      .advise = advice,
+-    };
+-    WineUnixCall(reinterpret_cast<uint64_t>(unix_functions.data()), INDEX_MADVISE, &d);
+-    return 0;
+-  }
+-
+-  void VirtualName(const char* Name, const void* Ptr, size_t Size) {
+-    static bool Supports {true};
+-    if (Supports) {
+-      auto Result = wine_prctl_trampoline(PR_SET_VMA, PR_SET_VMA_ANON_NAME, Ptr, Size, Name);
+-      if (Result != 0) {
+-        // Disable any additional attempts.
+-        Supports = false;
+-      }
+-    }
+-  }
+-
+-  void VirtualTHPControl(const void* Ptr, size_t Size, FEXCore::Allocator::THPControl Control) {
+-    wine_madvise_trampoline(Ptr, Size, Control == FEXCore::Allocator::THPControl::Disable ? MADV_NOHUGEPAGE : MADV_HUGEPAGE);
+-  }
+-} // namespace Trampoline
+-
+-// This code path will eventually crash once Wine and the kernel implements `userspace syscall dispatch`.
+-// FEX will need to switch over to using WINE's unixlib syscall approach then.
+-// See `SetupHooks` for why unixlib doesn't work today.
+-namespace Illegal {
+-  __attribute__((naked)) uint64_t prctl(int op, uint64_t attr, const void* addr, size_t size, const char* Name) {
+-    asm volatile(R"(
+-      mov x8, 167; // prctl
+-      svc #0;
+-      ret;
+-    )" ::
+-                   : "memory");
+-  }
+-
+-  __attribute__((naked)) uint64_t madvise(const void* addr, size_t size, int advice) {
+-    asm volatile(R"(
+-      mov x8, 233; // madvise
+-      svc #0;
+-      ret;
+-    )" ::
+-                   : "memory");
+-  }
+-
+-  void VirtualName(const char* Name, const void* Ptr, size_t Size) {
+-    static bool Supports {true};
+-    if (Supports) {
+-      auto Result = prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, Ptr, Size, Name);
+-      if (Result != 0) {
+-        // Disable any additional attempts.
+-        Supports = false;
+-      }
+-    }
+-  }
+-
+-  void VirtualTHPControl(const void* Ptr, size_t Size, FEXCore::Allocator::THPControl Control) {
+-    madvise(Ptr, Size, Control == FEXCore::Allocator::THPControl::Disable ? MADV_NOHUGEPAGE : MADV_HUGEPAGE);
+-  }
+-} // namespace Illegal
+-
+ void SetupHooks(HMODULE ntdll) {
+-  // If this symbol doesn't exist, then we aren't running under WINE.
+-  const auto Sym = GetProcAddress(ntdll, "__wine_unix_call_dispatcher");
+-
+-  if (!Sym) {
+-    return;
+-  }
+-
+   FEXCore::Allocator::HookPtrs Ptrs {};
+ 
+-  // Wine will soon require us to use unixlib for calling helper routines that use Linux syscalls.
+-  // It needs this for `userspace syscall dispatch` to capture rogue applications doing raw Windows syscalls.
+-  // If FEX doesn't use unixlib, then when WINE and a kernel implements this, then our "illegal" path will start crashing.
+-  //
+-  // This code currently conflicts with FEX's `Call Checker` since the latter captures uses of `unixlib`.
+-  // We hence have to stick to the `Illegal::` functions until a workaround is implemented.
+-  if constexpr (false) {
+-    // NTSTATUS __wine_unix_call_dispatcher( unixlib_handle_t, unsigned int, void * );
+-    // - unixlib_handle_t is just an array of functions
+-    // - uint32_t is just an index in to that
+-    // - void* is the user provided pointer, gets loaded in to x0 in for the unix_function called.
+-    // - Return value - SUCCESS or other error.
+-    Trampoline::WineUnixCall = *reinterpret_cast<decltype(Trampoline::WineUnixCall)*>(Sym);
+-
+-    // This code must be copied over to allocated memory from top down allocations apparently.
+-    auto Code = reinterpret_cast<uint8_t*>(
+-      ::VirtualAlloc(nullptr, FEXCore::Utils::FEX_PAGE_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_TOP_DOWN, PAGE_EXECUTE_READWRITE));
+-    if (!Code) {
+-      return;
+-    }
+-
+-    size_t CurrentOffset {};
+-    const size_t prctl_size =
+-      reinterpret_cast<uintptr_t>(Trampoline::wine_prctl_end_loc) - reinterpret_cast<uintptr_t>(Trampoline::wine_prctl_begin_loc);
+-    const size_t madvise_size =
+-      reinterpret_cast<uintptr_t>(Trampoline::wine_madvise_end_loc) - reinterpret_cast<uintptr_t>(Trampoline::wine_madvise_begin_loc);
+-
+-    // Copy prctl.
+-    memcpy(Code + CurrentOffset, Trampoline::wine_prctl_begin_loc, prctl_size);
+-    Trampoline::unix_functions[Trampoline::INDEX_PRCTL] = Code + CurrentOffset;
+-    CurrentOffset += prctl_size;
+-
+-    // Copy madvise.
+-    memcpy(Code + CurrentOffset, Trampoline::wine_madvise_begin_loc, madvise_size);
+-    Trampoline::unix_functions[Trampoline::INDEX_MADVISE] = Code + CurrentOffset;
+-
+-    // Protect the page now.
+-    FEXCore::Allocator::VirtualProtect(Code, FEXCore::Utils::FEX_PAGE_SIZE,
+-                                       FEXCore::Allocator::ProtectOptions::Read | FEXCore::Allocator::ProtectOptions::Exec);
+-
+-    Ptrs = {
+-      .VirtualName = Trampoline::VirtualName,
+-      .VirtualTHPControl = Trampoline::VirtualTHPControl,
+-    };
+-  } else {
+-    Ptrs = {
+-      .VirtualName = Illegal::VirtualName,
+-      .VirtualTHPControl = Illegal::VirtualTHPControl,
+-    };
+-  }
++  Ptrs = {
++    .VirtualName = UnixLib::VirtualName,
++    .VirtualTHPControl = UnixLib::VirtualTHPControl,
++  };
+ 
+   SYSTEM_INFO system_info {};
+   GetSystemInfo(&system_info);
+diff --git a/Source/Windows/Common/CMakeLists.txt b/Source/Windows/Common/CMakeLists.txt
+index 3a0a71c07..a9cdeac60 100644
+--- a/Source/Windows/Common/CMakeLists.txt
++++ b/Source/Windows/Common/CMakeLists.txt
+@@ -10,6 +10,7 @@ add_library(CommonWindows STATIC
+   Allocator.cpp
+   CPUFeatures.cpp
+   EnvironmentVariablesHandling.cpp
++  FEXUnixLib.cpp
+   SHMStats.cpp
+   InvalidationTracker.cpp
+   ImageTracker.cpp
+diff --git a/Source/Windows/Common/FEXUnixLib.cpp b/Source/Windows/Common/FEXUnixLib.cpp
+new file mode 100644
+index 000000000..7b82753c1
+--- /dev/null
++++ b/Source/Windows/Common/FEXUnixLib.cpp
+@@ -0,0 +1,290 @@
++// SPDX-License-Identifier: MIT
++#include <FEXCore/fextl/fmt.h>
++#include <FEXCore/Utils/LogManager.h>
++
++#include <cstdint>
++#include <windef.h>
++#include <winbase.h>
++#define __WINESRC__
++#include <winternl.h>
++#include <libloaderapi.h>
++#include "FEXUnixLib.h"
++#include "Priv.h"
++
++#define PR_SET_VMA 0x53564d41
++#define PR_SET_VMA_ANON_NAME 0
++
++#define MADV_HUGEPAGE 14
++#define MADV_NOHUGEPAGE 15
++
++extern "C" IMAGE_DOS_HEADER __ImageBase;
++
++namespace FEX::Windows::UnixLib {
++static bool UsingNTQueryPath {};
++static bool SupportsVirtualName {true};
++unixlib_handle_t UnixLibHandle {};
++
++decltype(__wine_unix_call_dispatcher) UnixCallDispatcher {};
++
++#ifdef ARCHITECTURE_arm64ec
++// On ARM64EC, indirect calls go through __os_arm64x_dispatch_icall which invokes
++// FEX's custom call checker. Use a naked trampoline to bypass the dispatch mechanism
++// and call the unix dispatcher directly via a register branch.
++static decltype(__wine_unix_call_dispatcher) UnixCallDispatcherDirect {};
++
++static NTSTATUS __attribute__((naked)) TrampolineCall(unixlib_handle_t, unsigned int, void*) {
++  asm(R"(
++  adrp x16, %[Displace];
++  ldr x16, [x16, #:lo12:%[Displace]]
++  br x16
++  )" ::[Displace] "S"(&UnixCallDispatcherDirect)
++      : "memory");
++}
++#endif
++// This code path will eventually crash once Wine and the kernel implements `userspace syscall dispatch`.
++// FEX will need to switch over to using WINE's unixlib syscall approach then.
++namespace Illegal {
++  __attribute__((naked)) uint64_t prctl(int op, uint64_t attr, const void* addr, size_t size, const char* Name) {
++    asm volatile(R"(
++      mov x8, 167; // prctl
++      svc #0;
++      ret;
++    )" ::
++                   : "memory");
++  }
++
++  __attribute__((naked)) uint64_t madvise(const void* addr, size_t size, int advice) {
++    asm volatile(R"(
++      mov x8, 233; // madvise
++      svc #0;
++      ret;
++    )" ::
++                   : "memory");
++  }
++
++  __attribute__((naked)) uint64_t linux_getpid() {
++    asm volatile(R"(
++    mov x8, 172;
++    svc #0;
++    ret;
++    )" ::
++                   : "r0", "r8");
++  }
++
++  void VirtualName(const char* Name, const void* Ptr, size_t Size) {
++    if (SupportsVirtualName) {
++      auto Result = prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, Ptr, Size, Name);
++      if (Result != 0) {
++        // Disable any additional attempts.
++        SupportsVirtualName = false;
++      }
++    }
++  }
++
++  void VirtualTHPControl(const void* Ptr, size_t Size, FEXCore::Allocator::THPControl Control) {
++    madvise(Ptr, Size, Control == FEXCore::Allocator::THPControl::Disable ? MADV_NOHUGEPAGE : MADV_HUGEPAGE);
++  }
++} // namespace Illegal
++
++bool Init(HMODULE NtDll) {
++  const auto Sym = GetProcAddress(NtDll, "__wine_unix_call_dispatcher");
++
++  if (!Sym) {
++    return false;
++  }
++
++  auto TryNewWineMethod = []() {
++#ifdef ARCHITECTURE_arm64ec
++    auto Name = InitUnicodeString(L"libarm64ecfex");
++#else
++    auto Name = InitUnicodeString(L"libwow64fex");
++#endif
++
++    // Not supported in Proton at all, but supported in upstream WINE.
++    uint64_t Result[2];
++    if (NtQueryVirtualMemory(NtCurrentProcess(), &Name, MemoryWineLoadUnixLibByName, Result, sizeof(Result), nullptr)) {
++      return false;
++    }
++
++    // Result[0] = unixlib_module_t
++    // Result[1] = unixlib_handle_t
++    // Module is ignored as it's only used to unload.
++    UnixLibHandle = Result[1];
++    return true;
++  };
++
++  auto TryOldWineMethod = []() {
++    // Supported in Proton 11 and Experimental (2026-06-26).
++    return NtQueryVirtualMemory(NtCurrentProcess(), &__ImageBase, MemoryWineUnixFuncs, &UnixLibHandle, sizeof(UnixLibHandle), nullptr) == 0;
++  };
++
++  if (!TryNewWineMethod() && !TryOldWineMethod()) {
++    return false;
++  }
++
++#ifdef ARCHITECTURE_arm64ec
++  UnixCallDispatcherDirect = *reinterpret_cast<decltype(__wine_unix_call_dispatcher)*>(Sym);
++  UnixCallDispatcher = TrampolineCall;
++#else
++  UnixCallDispatcher = *reinterpret_cast<decltype(__wine_unix_call_dispatcher)*>(Sym);
++#endif
++
++  // Give a log saying that the unix lib was loaded.
++  LogMan::Msg::IFmt("FEX: Loaded FEXUnixLib");
++  return true;
++}
++
++static bool UnixLibAvailable() {
++  return UnixLibHandle != 0;
++}
++
++bool TryEnableHardwareTSO() {
++  if (UnixLibAvailable()) {
++    // UnixLib path.
++    FEXUnixLib_SetHardwareTSOControlArgs Args {
++      .Enable = true,
++    };
++
++    return Call(FEXUnixLibFunctions::SetHardwareTSOControl, &Args) == STATUS_SUCCESS;
++  }
++
++  // Legacy Proton path.
++  bool Enable = TRUE;
++  NTSTATUS Status = NtSetInformationProcess(NtCurrentProcess(), ProcessFexHardwareTso, &Enable, sizeof(Enable));
++  return Status == STATUS_SUCCESS;
++}
++
++bool SetKernelUnalignedAtomicControl(uint64_t Flags) {
++  if (UnixLibAvailable()) {
++    // UnixLib path.
++    FEXUnixLib_SetKernelUnalignedAtomicControl Args {
++      .Flags = Flags,
++    };
++
++    return Call(FEXUnixLibFunctions::SetKernelUnalignedAtomicControl, &Args) == STATUS_SUCCESS;
++  }
++
++  // Legacy Proton path.
++  return NtSetInformationProcess(NtCurrentProcess(), ProcessFexUnalignAtomic, &Flags, sizeof(Flags)) == STATUS_SUCCESS;
++}
++
++void VirtualTHPControl(const void* Ptr, size_t Size, FEXCore::Allocator::THPControl Control) {
++  if (UnixLibAvailable()) {
++    // UnixLib path.
++    FEXUnixLib_Madvise Args {
++      .Addr = Ptr,
++      .Size = Size,
++      .Advise = Control == FEXCore::Allocator::THPControl::Disable ? MADV_NOHUGEPAGE : MADV_HUGEPAGE,
++    };
++
++    Call(FEXUnixLibFunctions::Madvise, &Args);
++    return;
++  }
++
++  // Legacy Proton path.
++  Illegal::VirtualTHPControl(Ptr, Size, Control);
++}
++
++void VirtualName(const char* Name, const void* Ptr, size_t Size) {
++  if (!SupportsVirtualName) {
++    return;
++  }
++
++  if (UnixLibAvailable()) {
++    // UnixLib path.
++    FEXUnixLib_SetVMAName Args {
++      .Addr = Ptr,
++      .Size = Size,
++      .Name = Name,
++    };
++
++    if (Call(FEXUnixLibFunctions::SetVMAName, &Args) != STATUS_SUCCESS) {
++      SupportsVirtualName = false;
++    }
++    return;
++  }
++
++  // Legacy Proton path.
++  Illegal::VirtualName(Name, Ptr, Size);
++}
++
++SHMSlotResult AllocateSHMSlots(void* SHMBase, uint32_t MapSize, uint32_t MaxSize) {
++  if (UnixLibAvailable()) {
++    // UnixLib path.
++    FEXUnixLib_GetSHMStatsVMA Args {
++      .SHMBase = SHMBase,
++      .MapSize = MapSize,
++      .MaxSize = MaxSize,
++    };
++
++    if (Call(FEXUnixLibFunctions::GetSHMStatsVMA, &Args) == STATUS_SUCCESS) {
++      return {
++        .SHMBase = Args.SHMBase,
++        .MappedSize = Args.MapSize,
++      };
++    }
++
++    return {};
++  }
++
++  // Legacy Proton path.
++  // Magic WINE+FEX path.
++  if (SHMBase == nullptr || UsingNTQueryPath) {
++    MEMORY_FEX_STATS_SHM_INFORMATION Info {
++      .shm_base = SHMBase,
++      .map_size = MapSize,
++      .max_size = MaxSize,
++    };
++    size_t Length {};
++    auto Result = NtQueryVirtualMemory(NtCurrentProcess(), nullptr, MemoryFexStatsShm, &Info, sizeof(Info), &Length);
++    if (!Result) {
++      UsingNTQueryPath = true;
++      return {
++        .SHMBase = Info.shm_base,
++        .MappedSize = MapSize,
++      };
++    }
++  }
++
++  // Opaque handle path, doesn't support resizing.
++  auto handle = CreateFile(fextl::fmt::format("/dev/shm/fex-{}-stats", Illegal::linux_getpid()).c_str(), GENERIC_READ | GENERIC_WRITE,
++                           FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++
++  // Create the section mapping for the file handle for the full size.
++  HANDLE SectionMapping;
++  LARGE_INTEGER SectionSize {{MaxSize}};
++  auto Result = NtCreateSection(&SectionMapping, SECTION_EXTEND_SIZE | SECTION_MAP_READ | SECTION_MAP_WRITE, nullptr, &SectionSize,
++                                PAGE_READWRITE, SEC_COMMIT, handle);
++  if (Result != STATUS_SUCCESS) {
++    CloseHandle(handle);
++    return {};
++  }
++
++  // Section mapping is used from now on.
++  CloseHandle(handle);
++
++  // Now actually map the view of the section.
++  void* Base = nullptr;
++  size_t FullSize = MaxSize;
++  Result = NtMapViewOfSection(SectionMapping, NtCurrentProcess(), &Base, 0, 0, nullptr, &FullSize, ViewUnmap, MEM_RESERVE | MEM_TOP_DOWN,
++                              PAGE_READWRITE);
++  if (Result != STATUS_SUCCESS) {
++    CloseHandle(SectionMapping);
++    return {};
++  }
++
++  return {.SHMBase = Base, .MappedSize = MaxSize};
++}
++
++void DeleteSHMStatsFile() {
++  if (UnixLibAvailable()) {
++    // UnixLib path.
++    Call(FEXUnixLibFunctions::DeleteSHMStatsFile, nullptr);
++    return;
++  }
++
++  // Legacy Proton path.
++  DeleteFile(fextl::fmt::format("/dev/shm/fex-{}-stats", Illegal::linux_getpid()).c_str());
++}
++
++} // namespace FEX::Windows::UnixLib
+diff --git a/Source/Windows/Common/FEXUnixLib.h b/Source/Windows/Common/FEXUnixLib.h
+new file mode 100644
+index 000000000..36da52c54
+--- /dev/null
++++ b/Source/Windows/Common/FEXUnixLib.h
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <cstdint>
++#include <FEXCore/Utils/AllocatorHooks.h>
++#include <FEXCore/Utils/EnumUtils.h>
++#include "../UnixLib/FEXUnixLib.h"
++#include "wine/unixlib.h"
++
++namespace FEX::Windows::UnixLib {
++extern decltype(__wine_unix_call_dispatcher) UnixCallDispatcher;
++extern unixlib_handle_t UnixLibHandle;
++
++inline NTSTATUS Call(FEXUnixLibFunctions code, void* args) {
++  if (!UnixCallDispatcher) {
++    return STATUS_NOT_SUPPORTED;
++  }
++
++  return UnixCallDispatcher(UnixLibHandle, FEXCore::ToUnderlying(code), args);
++}
++
++bool Init(HMODULE NtDll);
++
++/**
++ * @brief Tries to enable hardware TSO if supported.
++ *
++ * @return true if hardware TSO is supported and enabled.
++ */
++bool TryEnableHardwareTSO();
++
++/**
++ * @brief Tries to enable kernel unaligned atomic handling if supported.
++ *
++ * @param Flags Which unaligned types to enable
++ *
++ * @return true if the flags were enabled
++ */
++bool SetKernelUnalignedAtomicControl(uint64_t Flags);
++
++void VirtualTHPControl(const void* Ptr, size_t Size, FEXCore::Allocator::THPControl Control);
++void VirtualName(const char* Name, const void* Ptr, size_t Size);
++
++struct SHMSlotResult {
++  void* SHMBase;
++  uint32_t MappedSize;
++};
++SHMSlotResult AllocateSHMSlots(void* SHMBase, uint32_t MapSize, uint32_t MaxSize);
++void DeleteSHMStatsFile();
++} // namespace FEX::Windows::UnixLib
+diff --git a/Source/Windows/Common/SHMStats.cpp b/Source/Windows/Common/SHMStats.cpp
+index 9d844b3a3..81daa0d72 100644
+--- a/Source/Windows/Common/SHMStats.cpp
++++ b/Source/Windows/Common/SHMStats.cpp
+@@ -1,4 +1,5 @@
+ // SPDX-License-Identifier: MIT
++#include "Windows/Common/FEXUnixLib.h"
+ #include "Windows/Common/SHMStats.h"
+ 
+ #include <FEXCore/fextl/fmt.h>
+@@ -12,88 +13,34 @@
+ #include <wine/debug.h>
+ 
+ namespace FEX::Windows {
+-__attribute__((naked)) uint64_t linux_getpid() {
+-  asm volatile(R"(
+-  mov x8, 172;
+-  svc #0;
+-  ret;
+-  )" ::
+-                 : "r0", "r8");
+-}
+-
+ uint32_t StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
+-  if (CurrentSize == MAX_STATS_SIZE || !UsingNTQueryPath) {
++  if (CurrentSize == MAX_STATS_SIZE) {
+     LogMan::Msg::DFmt("Ran out of slots. Can't allocate more");
+     return CurrentSize;
+   }
+ 
+-  MEMORY_FEX_STATS_SHM_INFORMATION Info {
+-    .shm_base = nullptr,
+-    .map_size = std::min(CurrentSize * 2, MAX_STATS_SIZE),
+-    .max_size = MAX_STATS_SIZE,
+-  };
+-  size_t Length {};
+-  auto Result = NtQueryVirtualMemory(NtCurrentProcess(), nullptr, MemoryFexStatsShm, &Info, sizeof(Info), &Length);
+-  if (!Result) {
+-    CurrentSize = Info.map_size;
++  auto Result = UnixLib::AllocateSHMSlots(Base, std::min(CurrentSize * 2, MAX_STATS_SIZE), MAX_STATS_SIZE);
++
++  if (Result.SHMBase) {
++    CurrentSize = Result.MappedSize;
+   }
+ 
+   return CurrentSize;
+ }
+ 
+ StatAlloc::StatAlloc(FEXCore::SHMStats::AppType AppType) {
+-  // Try wine+fex magic path.
+-
+-  {
+-    MEMORY_FEX_STATS_SHM_INFORMATION Info {
+-      .shm_base = nullptr,
+-      .map_size = FEXCore::Utils::FEX_PAGE_SIZE,
+-      .max_size = MAX_STATS_SIZE,
+-    };
+-    size_t Length {};
+-    auto Result = NtQueryVirtualMemory(NtCurrentProcess(), nullptr, MemoryFexStatsShm, &Info, sizeof(Info), &Length);
+-    if (!Result) {
+-      UsingNTQueryPath = true;
+-      CurrentSize = Info.map_size;
+-      Base = Info.shm_base;
+-      SaveHeader(AppType);
+-      return;
+-    }
+-  }
+-  CurrentSize = MAX_STATS_SIZE;
+-
+-  auto handle = CreateFile(fextl::fmt::format("/dev/shm/fex-{}-stats", linux_getpid()).c_str(), GENERIC_READ | GENERIC_WRITE,
+-                           FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++  auto Result = UnixLib::AllocateSHMSlots(Base, FEXCore::Utils::FEX_PAGE_SIZE, MAX_STATS_SIZE);
+ 
+-  // Create the section mapping for the file handle for the full size.
+-  HANDLE SectionMapping;
+-  LARGE_INTEGER SectionSize {{MAX_STATS_SIZE}};
+-  auto Result = NtCreateSection(&SectionMapping, SECTION_EXTEND_SIZE | SECTION_MAP_READ | SECTION_MAP_WRITE, nullptr, &SectionSize,
+-                                PAGE_READWRITE, SEC_COMMIT, handle);
+-  if (Result != 0) {
+-    CloseHandle(handle);
++  if (Result.SHMBase) {
++    CurrentSize = Result.MappedSize;
++    Base = Result.SHMBase;
++    SaveHeader(AppType);
+     return;
+   }
+-
+-  // Section mapping is used from now on.
+-  CloseHandle(handle);
+-
+-  // Now actually map the view of the section.
+-  Base = 0;
+-  size_t FullSize = MAX_STATS_SIZE;
+-  Result = NtMapViewOfSection(SectionMapping, NtCurrentProcess(), &Base, 0, 0, nullptr, &FullSize, ViewUnmap, MEM_RESERVE | MEM_TOP_DOWN,
+-                              PAGE_READWRITE);
+-  if (Result != 0) {
+-    CloseHandle(SectionMapping);
+-    return;
+-  }
+-
+-  // Once WINE supports NtExtendSection and SECTION_EXTEND_SIZE correctly then we can map/commit a single page, map the full MAX_STATS_SIZE
+-  // view as reserved, and extend the view using NtExtendSection.
+-  SaveHeader(AppType);
+ }
++
+ StatAlloc::~StatAlloc() {
+-  DeleteFile(fextl::fmt::format("/dev/shm/fex-{}-stats", linux_getpid()).c_str());
++  UnixLib::DeleteSHMStatsFile();
+ }
+ 
+ } // namespace FEX::Windows
+diff --git a/Source/Windows/Common/SHMStats.h b/Source/Windows/Common/SHMStats.h
+index c8bbc6172..786efc2c6 100644
+--- a/Source/Windows/Common/SHMStats.h
++++ b/Source/Windows/Common/SHMStats.h
+@@ -23,7 +23,6 @@ public:
+ 
+ private:
+   uint32_t FrontendAllocateSlots(uint32_t NewSize) override;
+-  bool UsingNTQueryPath {};
+ };
+ 
+ } // namespace FEX::Windows
+diff --git a/Source/Windows/Common/TSOHandlerConfig.h b/Source/Windows/Common/TSOHandlerConfig.h
+index 1a0a888ab..3940da4c2 100644
+--- a/Source/Windows/Common/TSOHandlerConfig.h
++++ b/Source/Windows/Common/TSOHandlerConfig.h
+@@ -26,7 +26,7 @@ public:
+     uint64_t Flags = (StrictInProcessSplitLocks() ? FEX_UNALIGN_ATOMIC_STRICT_SPLIT_LOCKS : 0) |
+                      (KernelUnalignedAtomicBackpatching() ? FEX_UNALIGN_ATOMIC_BACKPATCH : 0) | FEX_UNALIGN_ATOMIC_EMULATE;
+ 
+-    if (NtSetInformationProcess(NtCurrentProcess(), ProcessFexUnalignAtomic, &Flags, sizeof(Flags)) == STATUS_SUCCESS) {
++    if (UnixLib::SetKernelUnalignedAtomicControl(Flags)) {
+       LogMan::Msg::IFmt("FEX: Kernel unaligned atomics enabled!");
+     }
+   }
+diff --git a/Source/Windows/UnixLib/CMakeLists.txt b/Source/Windows/UnixLib/CMakeLists.txt
+new file mode 100644
+index 000000000..37eda6aa0
+--- /dev/null
++++ b/Source/Windows/UnixLib/CMakeLists.txt
+@@ -0,0 +1,14 @@
++cmake_minimum_required(VERSION 3.14)
++project(FEXUnixLib CXX)
++
++include(GNUInstallDirs)
++
++function(CreateLib TargetName LibName)
++  add_library(${TargetName} SHARED FEXUnixLib.cpp)
++  set_target_properties(${TargetName} PROPERTIES OUTPUT_NAME ${LibName} PREFIX "lib" SUFFIX ".so")
++  target_link_libraries(${TargetName} PRIVATE rt)
++  install(TARGETS ${TargetName} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Runtime)
++endfunction()
++
++CreateLib(wow64fex_unixlib wow64fex)
++CreateLib(arm64ecfex_unixlib arm64ecfex)
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.cpp b/Source/Windows/UnixLib/FEXUnixLib.cpp
+new file mode 100644
+index 000000000..692e459f1
+--- /dev/null
++++ b/Source/Windows/UnixLib/FEXUnixLib.cpp
+@@ -0,0 +1,175 @@
++// SPDX-License-Identifier: MIT
++#include <cstdint>
++#include <type_traits>
++#include <fcntl.h>
++#include <string>
++#include <sys/mman.h>
++#include <sys/prctl.h>
++#include <unistd.h>
++
++#include "FEXUnixLib.h"
++
++// Equivalent to C++23's std::to_underlying.
++template<typename Enum>
++[[nodiscard]]
++constexpr std::underlying_type_t<Enum> ToUnderlying(Enum e) noexcept {
++  return static_cast<std::underlying_type_t<Enum>>(e);
++}
++
++using NTSTATUS = int32_t;
++using unixlib_entry_t = NTSTATUS (*)(void*);
++
++constexpr NTSTATUS STATUS_SUCCESS = 0;
++constexpr NTSTATUS STATUS_NOT_SUPPORTED = 0xC00000BB;
++constexpr NTSTATUS STATUS_INTERNAL_ERROR = 0xC00000E5;
++
++#ifndef PR_GET_MEM_MODEL
++#define PR_GET_MEM_MODEL 0x6d4d444c
++#endif
++#ifndef PR_SET_MEM_MODEL
++#define PR_SET_MEM_MODEL 0x4d4d444c
++#endif
++#ifndef PR_SET_MEM_MODEL_DEFAULT
++#define PR_SET_MEM_MODEL_DEFAULT 0
++#endif
++#ifndef PR_SET_MEM_MODEL_TSO
++#define PR_SET_MEM_MODEL_TSO 1
++#endif
++#ifndef PR_ARM64_SET_UNALIGN_ATOMIC
++#define PR_ARM64_SET_UNALIGN_ATOMIC 0x46455849
++#endif
++#ifndef PR_SET_VMA
++#define PR_SET_VMA 0x53564d41
++#endif
++#ifndef PR_SET_VMA_ANON_NAME
++#define PR_SET_VMA_ANON_NAME 0
++#endif
++
++static NTSTATUS FEXUnixLib_SetHardwareTSOControlHandler(void* _Args) {
++  auto Args = reinterpret_cast<const FEXUnixLib_SetHardwareTSOControlArgs*>(_Args);
++  if (Args->Enable) {
++    int ret = prctl(PR_GET_MEM_MODEL, 0, 0, 0, 0);
++    if (ret == PR_SET_MEM_MODEL_DEFAULT) {
++      return prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_TSO, 0, 0, 0) ? STATUS_NOT_SUPPORTED : STATUS_SUCCESS;
++    }
++    return ret == PR_SET_MEM_MODEL_TSO ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++  }
++
++  prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_DEFAULT, 0, 0, 0);
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS FEXUnixLib_SetKernelUnalignedAtomicControlHandler(void* _Args) {
++  auto Args = reinterpret_cast<const FEXUnixLib_SetKernelUnalignedAtomicControl*>(_Args);
++  return prctl(PR_ARM64_SET_UNALIGN_ATOMIC, Args->Flags, 0, 0, 0) == 0 ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS FEXUnixLib_MadviseHandler(void* _Args) {
++  auto Args = reinterpret_cast<const FEXUnixLib_Madvise*>(_Args);
++  return madvise(const_cast<void*>(Args->Addr), Args->Size, Args->Advise) == 0 ? STATUS_SUCCESS : STATUS_INTERNAL_ERROR;
++}
++
++static NTSTATUS FEXUnixLib_SetVMANameHandler(void* _Args) {
++  auto Args = reinterpret_cast<const FEXUnixLib_SetVMAName*>(_Args);
++  return prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, reinterpret_cast<unsigned long>(Args->Addr), Args->Size, Args->Name) == 0 ?
++           STATUS_SUCCESS :
++           STATUS_INTERNAL_ERROR;
++}
++
++constexpr static int USER_PERMS = S_IRWXU | S_IRWXG | S_IRWXO;
++static inline void* InitializeSHM(uint32_t MapSize, uint32_t MaxSize) {
++  void* Base {};
++  const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
++  int fd = shm_open(Name.c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
++
++  if (fd == -1) {
++    return nullptr;
++  }
++
++  if (ftruncate(fd, MapSize) == -1) {
++    goto err;
++  }
++
++  // Reserve a region of MAX_STATS_SIZE so we can grow the allocation buffer.
++  // Number of thread slots when ThreadStatsHeader == 64bytes and ThreadStats == 40bytes:
++  // 1 page: 99 slots
++  // 1 MB: 26211 slots
++  // 128 MB: 3355440 slots
++  Base = mmap(nullptr, MaxSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++  if (Base == MAP_FAILED) {
++    Base = nullptr;
++    goto err;
++  }
++
++  prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, reinterpret_cast<void*>(Base), MaxSize, "FEXMem_Misc");
++
++  // Allocate a small working shared space for now, grow as necessary.
++  {
++    auto SharedBase = mmap(Base, MapSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
++    if (SharedBase == MAP_FAILED) {
++      ::munmap(Base, MaxSize);
++      Base = nullptr;
++      goto err;
++    }
++  }
++
++err:
++  close(fd);
++
++  return Base;
++}
++
++static inline bool AllocateMoreSlots(void* SHMBase, uint32_t NewSize) {
++  bool Result {};
++  const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
++
++  // When allocating more slots, open the fd without O_TRUNC | O_CREAT.
++  int fd = shm_open(Name.c_str(), O_RDWR, USER_PERMS);
++  if (fd == -1) {
++    return false;
++  }
++
++  if (ftruncate(fd, NewSize) == -1) {
++    goto err;
++  }
++
++  {
++    auto SharedBase = mmap(SHMBase, NewSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
++    if (SharedBase == MAP_FAILED) {
++      goto err;
++    }
++  }
++
++  Result = true;
++
++err:
++  close(fd);
++  return Result;
++}
++
++static NTSTATUS FEXUnixLib_GetSHMStatsVMAHandler(void* _Args) {
++  auto Args = reinterpret_cast<FEXUnixLib_GetSHMStatsVMA*>(_Args);
++  if (Args->SHMBase == nullptr) {
++    Args->SHMBase = InitializeSHM(Args->MapSize, Args->MaxSize);
++    return Args->SHMBase ? STATUS_SUCCESS : STATUS_INTERNAL_ERROR;
++  }
++
++  return AllocateMoreSlots(Args->SHMBase, Args->MapSize) ? STATUS_SUCCESS : STATUS_INTERNAL_ERROR;
++}
++
++static NTSTATUS FEXUnixLib_DeleteSHMStatsFileHandler(void* _Args) {
++  const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
++  shm_unlink(Name.c_str());
++  return STATUS_SUCCESS;
++}
++
++extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
++  FEXUnixLib_SetHardwareTSOControlHandler,
++  FEXUnixLib_SetKernelUnalignedAtomicControlHandler,
++  FEXUnixLib_MadviseHandler,
++  FEXUnixLib_SetVMANameHandler,
++  FEXUnixLib_GetSHMStatsVMAHandler,
++  FEXUnixLib_DeleteSHMStatsFileHandler,
++};
++
++static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == ToUnderlying(FEXUnixLibFunctions::MAX));
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.h b/Source/Windows/UnixLib/FEXUnixLib.h
+new file mode 100644
+index 000000000..4795d62c0
+--- /dev/null
++++ b/Source/Windows/UnixLib/FEXUnixLib.h
+@@ -0,0 +1,53 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <cstddef>
++#include <cstdint>
++
++enum class FEXUnixLibFunctions : uint32_t {
++  SetHardwareTSOControl,
++  SetKernelUnalignedAtomicControl,
++  Madvise,
++  SetVMAName,
++  GetSHMStatsVMA,
++  DeleteSHMStatsFile,
++  MAX,
++};
++
++// Structures for passing arguments to unix library handlers.
++// This must match between wow64, arm64ec, and Linux.
++struct FEXUnixLib_SetHardwareTSOControlArgs {
++  bool Enable;
++};
++static_assert(sizeof(FEXUnixLib_SetHardwareTSOControlArgs) == 1);
++
++// These match the prctl flag values for PR_ARM64_SET_UNALIGN_ATOMIC
++static constexpr uint64_t FEX_UNALIGN_ATOMIC_EMULATE = 1ULL << 0;
++static constexpr uint64_t FEX_UNALIGN_ATOMIC_BACKPATCH = 1ULL << 1;
++static constexpr uint64_t FEX_UNALIGN_ATOMIC_STRICT_SPLIT_LOCKS = 1ULL << 2;
++
++struct FEXUnixLib_SetKernelUnalignedAtomicControl {
++  uint64_t Flags;
++};
++static_assert(sizeof(FEXUnixLib_SetKernelUnalignedAtomicControl) == 8);
++
++struct FEXUnixLib_Madvise {
++  const void* Addr;
++  size_t Size;
++  int32_t Advise;
++  uint32_t pad;
++};
++static_assert(sizeof(FEXUnixLib_Madvise) == 24);
++
++struct FEXUnixLib_SetVMAName {
++  const void* Addr;
++  size_t Size;
++  const char* Name;
++};
++static_assert(sizeof(FEXUnixLib_SetVMAName) == 24);
++
++struct FEXUnixLib_GetSHMStatsVMA {
++  void* SHMBase;
++  uint32_t MapSize;
++  uint32_t MaxSize;
++};
++static_assert(sizeof(FEXUnixLib_GetSHMStatsVMA) == 16);
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index b2027a0cd..6d4ecffbc 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -30,6 +30,7 @@ $end_info$
+ 
+ #include "Windows/Common/Allocator.h"
+ #include "Windows/Common/EnvironmentVariablesHandling.h"
++#include "Windows/Common/FEXUnixLib.h"
+ #include "Common/CallRetStack.h"
+ #include "Common/JITGuardPage.h"
+ #include "Common/Config.h"
+@@ -529,6 +530,7 @@ void BTCpuProcessInit() {
+   OvercommitTracker.emplace(IsWine);
+ 
+   FEX::Windows::Allocator::SetupHooks(NtDll);
++  FEX::Windows::UnixLib::Init(NtDll);
+ 
+   {
+     auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine);
+@@ -572,12 +574,8 @@ void BTCpuProcessInit() {
+   GetTLS().Wow64Info().CpuFlags = WOW64_CPUFLAGS_SOFTWARE;
+ 
+   FEX_CONFIG_OPT(TSOEnabled, TSOENABLED);
+-  if (TSOEnabled()) {
+-    BOOL Enable = TRUE;
+-    NTSTATUS Status = NtSetInformationProcess(NtCurrentProcess(), ProcessFexHardwareTso, &Enable, sizeof(Enable));
+-    if (Status == STATUS_SUCCESS) {
+-      CTX->SetHardwareTSOSupport(true);
+-    }
++  if (TSOEnabled() && FEX::Windows::UnixLib::TryEnableHardwareTSO()) {
++    CTX->SetHardwareTSOSupport(true);
+   }
+ 
+   FEX_CONFIG_OPT(ProfileStats, PROFILESTATS);
+diff --git a/Source/Windows/include/wine/unixlib.h b/Source/Windows/include/wine/unixlib.h
+index fd77405b6..20bf811ef 100644
+--- a/Source/Windows/include/wine/unixlib.h
++++ b/Source/Windows/include/wine/unixlib.h
+@@ -9,6 +9,10 @@
+ extern "C" {
+ #endif
+ 
++constexpr NTSTATUS STATUS_SUCCESS = 0;
++constexpr NTSTATUS STATUS_NOT_SUPPORTED = 0xC00000BB;
++constexpr NTSTATUS STATUS_INTERNAL_ERROR = 0xC00000E5;
++
+ typedef UINT64 unixlib_handle_t;
+ 
+ extern NTSTATUS(WINAPI* __wine_set_unix_env)(const char*, const char*);
+diff --git a/Source/Windows/include/winternl.h b/Source/Windows/include/winternl.h
+index 03f3c4497..d2e1fbba2 100644
+--- a/Source/Windows/include/winternl.h
++++ b/Source/Windows/include/winternl.h
+@@ -458,8 +458,16 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+   MemoryBadInformation,
+   MemoryBadInformationAllProcesses,
+ #ifdef __WINESRC__
++  // Older Wine behaviour
+   MemoryWineUnixFuncs = 1000,
+   MemoryWineUnixWow64Funcs,
++
++  // Newer Wine behaviour
++  MemoryWineLoadUnixLib = 1000,
++  MemoryWineLoadUnixLibWow64,
++  MemoryWineLoadUnixLibByName,
++  MemoryWineLoadUnixLibByNameWow64,
++  MemoryWineUnloadUnixLib,
+ #endif
+   MemoryFexStatsShm = 2000,
+ } MEMORY_INFORMATION_CLASS;
+@@ -469,11 +477,6 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+ #define ProcessFexHardwareTso (PROCESSINFOCLASS)2000
+ #define ProcessFexUnalignAtomic (PROCESSINFOCLASS)2001
+ 
+-// These match the prctl flag values
+-#define FEX_UNALIGN_ATOMIC_EMULATE (1ULL << 0)
+-#define FEX_UNALIGN_ATOMIC_BACKPATCH (1ULL << 1)
+-#define FEX_UNALIGN_ATOMIC_STRICT_SPLIT_LOCKS (1ULL << 2)
+-
+ typedef enum _KEY_VALUE_INFORMATION_CLASS {
+   KeyValueBasicInformation,
+   KeyValueFullInformation,

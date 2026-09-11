@@ -5,10 +5,16 @@
 #                       load_arm64ec_module() 在 ARM64EC/WoW64 层内加载 (HODLL64)
 #   libwow64fex.dll   : i386 (32 位 x86) 模拟 — aarch64 ABI, 由 Wine 的
 #                       get_cpu_dll_name() 在 WoW64 层内加载 (HODLL)
+#   libwow64fex.so    : WoW64 UnixLib (aarch64 ELF) — FEX 通过 ntdll 的
+#                       MemoryWineLoadUnixLibByName 获取, 提供硬件 TSO /
+#                       未对齐原子 / SHM 统计等 Unix 侧能力
+#   libarm64ecfex.so  : ARM64EC UnixLib (aarch64 ELF), 同上
 #
 # 产物:
 #   build/fex-ec/Bin/libarm64ecfex.dll  (assemble.sh 归位到 aarch64-windows/)
 #   build/fex-pe/Bin/libwow64fex.dll    (assemble.sh 归位到 aarch64-windows/)
+#   build/fex-unixlib/libwow64fex.so    (归位到 aarch64-unix/)
+#   build/fex-unixlib/libarm64ecfex.so  (归位到 aarch64-unix/)
 # 前置: LLVM_MINGW (llvm-mingw, 需 LLVM ≥ 18 支持 arm64ec) + thirdparty/fex
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,9 +41,15 @@ export PATH="$LLVM_MINGW/bin:$PATH"
 #   fex-winapi-locale-stubs.patch — 20260826 libc++ 的 locale_win32.cpp.obj
 #     引用 GetACP/GetLocaleInfoEx, 上游 master 在 WinAPI/Misc.cpp 以
 #     UNIMPLEMENTED 桩解决, 回补到本树同名文件.
+#   fex-unixlib-backport.patch — 把上游引入 UnixLib 的 5 个提交
+#     (dbaf22372 c09225f86 201bb7398 954581c75 6c58fef22) 回移到本基线,
+#     补上 Source/Windows/{Common,UnixLib}/FEXUnixLib.* 与 winternl.h 枚举.
+#     Wine 侧无改动: dlls/ntdll/unix/virtual.c 与 dlls/wow64/virtual.c 已经
+#     实现 MemoryWineLoadUnixLibByName 与 get_unixlib_funcs.
 for PATCH in \
     "$SCRIPT_DIR/patches/fex-missing-includes.patch" \
-    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch"; do
+    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch" \
+    "$SCRIPT_DIR/patches/fex-unixlib-backport.patch"; do
     if ! git -C "$FEX_SRC" apply --reverse --check "$PATCH" 2>/dev/null; then
         git -C "$FEX_SRC" apply "$PATCH"
         log "已应用 patch: $(basename "$PATCH")"
@@ -112,4 +124,54 @@ build_fex_pe() {
 
 build_fex_ec
 build_fex_pe
-log "FEX 构建完成 (arm64ecfex + wow64fex)"
+
+# ---- libwow64fex.so / libarm64ecfex.so (AArch64 UnixLib) ----
+# 参考 Proton Makefile: UnixLib 是 Source/Windows/UnixLib 下的**独立 CMake 工程**,
+# 用 aarch64 Unix 工具链构建 (不走 mingw toolchain), 与两个 PE DLL 是两条独立链路。
+# 产物由 wine ntdll 的 load_unixlib_by_name() 在 <unix_dir>/aarch64-unix/ 下查找,
+# 需要 assemble.sh 归位到运行时的 aarch64-unix 目录。
+build_fex_unixlib() {
+    local build="$BUILD_DIR/fex-unixlib"
+    local src="$FEX_SRC/Source/Windows/UnixLib"
+    local cc="${CLANG:-}" cxx
+    cxx="$(dirname "$cc")/clang++"
+    test -f "$src/CMakeLists.txt" || err "UnixLib 源码缺失: $src (先应用 fex-unixlib-backport.patch)"
+    [ -x "$cc" ]  || err "OHOS clang 缺失: $cc (需设置 OHOS_SDK)"
+    [ -x "$cxx" ] || err "OHOS clang++ 缺失: $cxx"
+    [ -d "$SYSROOT" ] || err "OHOS sysroot 缺失: $SYSROOT"
+
+    local xflags="--target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld -O2 -DNDEBUG"
+    mkdir -p "$build"
+    ( cd "$build" && cmake \
+        -DCMAKE_SYSTEM_NAME=Linux \
+        -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+        -DCMAKE_C_COMPILER="$cc" \
+        -DCMAKE_CXX_COMPILER="$cxx" \
+        -DCMAKE_C_FLAGS="$xflags" \
+        -DCMAKE_CXX_FLAGS="$xflags" \
+        -DCMAKE_BUILD_TYPE=Release \
+        "$src" )
+    ( cd "$build" && make -j"$JOBS" )
+
+    local readobj="$LLVM_MINGW/bin/llvm-readobj" so f
+    for so in libwow64fex.so libarm64ecfex.so; do
+        f="$build/$so"
+        test -f "$f" || err "UnixLib 构建失败: $f 不存在"
+        # ELF 架构断言: file(1) 在本工具链下不可靠, 以 llvm-readobj 为准
+        if "$readobj" --file-headers "$f" 2>/dev/null | grep -q "EM_AARCH64"; then
+            log "OK: $so 为 aarch64 ELF"
+        else
+            err "$so 架构异常: $("$readobj" --file-headers "$f" 2>/dev/null | grep -m1 -E 'Format:|Machine:')"
+        fi
+        # wine get_unixlib_funcs() 依赖这个导出, 缺失等于没接通
+        if "$readobj" --dyn-symbols "$f" 2>/dev/null | grep -q "__wine_unix_call_funcs"; then
+            log "OK: $so 导出 __wine_unix_call_funcs"
+        else
+            err "$so 缺少 __wine_unix_call_funcs 导出"
+        fi
+    done
+    log "产物: $build/lib{wow64fex,arm64ecfex}.so (归位到 aarch64-unix/)"
+}
+
+build_fex_unixlib
+log "FEX 构建完成 (arm64ecfex + wow64fex + 两个 UnixLib)"
