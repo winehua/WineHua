@@ -75,6 +75,14 @@ fex_matrix:
   merge_base: a04b0241c2fe3911729842205cd8643981108aad
   ancestor_relation: divergent      # 86ff33bbe 不是 1cc4b93e 的祖先
   commits_on_reference_side: 321
+  unixlib_backport_commits:
+    # 引入 UnixLib 的 5 个提交；已实测可在 86ff33bbe 上无冲突 cherry-pick
+    - dbaf22372  # Windows: Adds empty Linux side unix library
+    - c09225f86  # Windows: Load unixlib if possible
+    - 201bb7398  # Windows/UnixLib: Adds support for Hardware TSO support
+    - 954581c75  # Windows/UnixLib: Adds remaining helpers
+    - 6c58fef22  # Windows/UnixLib: Fix loading with new MemoryWineLoadUnixLibByName mechanism
+  nested_submodule_pins_differ: false   # 两个版本 .gitmodules 无差异
   implication: >
     切换 FEX 版本不是快进合并。要么把 1cc4b93e 的 UnixLib / 接口增量
     按最小集合回移到 86ff33bbe 链路，要么整体切到 1cc4b93e 并接受

@@ -45,7 +45,48 @@ ARM64EC dispatcher/trampoline、`HODLL/HODLL64` 加载、`ohos_virtual` 等）�
 | OHOS 平台适配文件 | `dlls/ntdll/unix/ohos_virtual.{c,h}`、`ohos_broker.{c,h}`、`ohos_file.{c,h}` | 已有 |
 | 硬件 TSO 的 `prctl(PR_GET_MEM_MODEL)` | `dlls/` 内 **未出现** | 缺口（应由 FEX UnixLib 承担） |
 
+**Wine 侧已经实现了 UnixLib 协议的服务端**（这是本轮最重要的正面发现）：
+
+```text
+dlls/ntdll/unix/virtual.c:6243   case MemoryWineLoadUnixLibByName:
+dlls/ntdll/unix/virtual.c:6244   case MemoryWineLoadUnixLibByNameWow64:
+dlls/ntdll/unix/virtual.c:6255   get_unixlib_funcs( handle, info_class == ...Wow64, ... )
+dlls/wow64/virtual.c:695,701,707 同族处理（WoW64 侧）
+include/winternl.h:2438-2439     MemoryWineLoadUnixLibByName / ...Wow64 枚举
+```
+
+也就是说：**Wine 已经会说这套协议，缺的是 FEX 侧的调用方**。
+
 结论：Wine 侧接口与方案 §5.4 描述一致；**瓶颈不在 Wine，而在 FEX 侧没有对应的 UnixLib 实现**。
+
+### 1.2.1 UnixLib 在参考版本由 5 个提交引入（回移可行性已实测）
+
+```text
+dbaf22372  Windows: Adds empty Linux side unix library
+c09225f86  Windows: Load unixlib if possible
+201bb7398  Windows/UnixLib: Adds support for Hardware TSO support
+954581c75  Windows/UnixLib: Adds remaining helpers
+6c58fef22  Windows/UnixLib: Fix loading with new MemoryWineLoadUnixLibByName mechanism.
+```
+
+在 `86ff33bbe` 上顺序 `git cherry-pick -n` 这 5 个提交，**全部无冲突通过**；
+且 `86ff33bbe → 1cc4b93e` 的 `.gitmodules` **没有差异**（嵌套子模块 pin 未变）。产出改动集：
+
+```text
+M  Source/Windows/ARM64EC/Module.cpp
+M  Source/Windows/Common/Allocator.cpp
+M  Source/Windows/Common/CMakeLists.txt
+A  Source/Windows/Common/FEXUnixLib.cpp
+A  Source/Windows/Common/FEXUnixLib.h
+M  Source/Windows/Common/SHMStats.{cpp,h}
+M  Source/Windows/Common/TSOHandlerConfig.h
+A  Source/Windows/UnixLib/{CMakeLists.txt,FEXUnixLib.cpp,FEXUnixLib.h}
+M  Source/Windows/WOW64/Module.cpp
+M  Source/Windows/include/wine/unixlib.h
+M  Source/Windows/include/winternl.h
+```
+
+这使"最小回移"从"未知风险"变成"已知可做"。
 
 ### 1.3 构建与打包脚本
 

@@ -46,6 +46,12 @@
 
 ### 步骤 2（B，最小回移）
 
+> **可行性已实测（2026-09-11）**：5 个 UnixLib 提交在 `86ff33bbe` 上 cherry-pick 全部无冲突，
+> 且两版本间 `.gitmodules` 无差异（嵌套子模块 pin 未变）。测试工作树：
+> `/tmp/fex-unixlib-test`（`git -C thirdparty/fex worktree add`，分支 `tmp/unixlib-backport`）。
+> 另：Wine 侧 `dlls/ntdll/unix/virtual.c` 与 `dlls/wow64/virtual.c` **已实现**
+> `MemoryWineLoadUnixLibByName` / `...Wow64` 与 `get_unixlib_funcs`，协议服务端已就绪。
+
 1. 在 `thirdparty/fex` 内新建分支（例如 `feature/proton-parity-unixlib`），
    **不要**直接切到 `1cc4b93e` 交差。
 2. 先列出 UnixLib 相关提交：
@@ -54,7 +60,16 @@
    git -C thirdparty/fex log --oneline a04b0241c..1cc4b93e -- Source/Windows/UnixLib Source/Windows/Common/FEXUnixLib.cpp Source/Windows/Common/FEXUnixLib.h
    ```
 
+   已确认就是这 5 个：
+
+   ```text
+   dbaf22372 c09225f86 201bb7398 954581c75 6c58fef22
+   ```
+
 3. 逐个 cherry-pick，编译验证；冲突说明该提交耦合了别的改动 → 拆出来记录。
+   **项目约定**：`thirdparty/fex` 指向上游 `FEX-Emu/FEX`，不能推分支，
+   因此按 `fex-missing-includes.patch` 先例**导出为 `scripts/patches/fex-unixlib-backport.patch`**，
+   由 `build_fex.sh` 统一应用（不要在主仓库登记子模块分支指针）。
 4. `scripts/build_fex.sh` 增加 UnixLib 目标，构建目录用 `build/parity/fex-unixlib-*`。
    - 使用**原生**工具链（aarch64-linux-ohos 或容器 gcc），产出 AArch64 ELF `.so`。
    - 断言 `readelf -h` 的 `Machine: AArch64`。
