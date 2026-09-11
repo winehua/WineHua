@@ -76,7 +76,9 @@ fex_matrix:
   ancestor_relation: divergent      # 86ff33bbe 不是 1cc4b93e 的祖先
   commits_on_reference_side: 321
   unixlib_backport_commits:
-    # 引入 UnixLib 的 5 个提交；已实测可在 86ff33bbe 上无冲突 cherry-pick
+    # 引入 UnixLib 的 6 个提交；已实测可在 86ff33bbe 上无冲突 cherry-pick
+    # 并已落地为 scripts/patches/fex-unixlib-backport.patch (commit bba5d2e)
+    - 126bcd365  # winternl: Update enums (MemoryWineLoad*/Unload)
     - dbaf22372  # Windows: Adds empty Linux side unix library
     - c09225f86  # Windows: Load unixlib if possible
     - 201bb7398  # Windows/UnixLib: Adds support for Hardware TSO support

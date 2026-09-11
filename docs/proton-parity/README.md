@@ -45,14 +45,17 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | `ohos-capabilities.json` | §12 | 预检结果的机器可读汇总 |
 | `fex-effective-config.json` | P2 预备 | 当前 FEX 生效配置（实测：无配置文件） |
 | `p2-release-probe.md` | P2 | FEX Release 参数对齐探针（已实测，产物已构建） |
+| `p2-unixlib-build.md` | P2 | UnixLib 回移与四产物构建（已实测，脚本已接入） |
 | `next-steps.md` | P2 | 下一步可执行动作与门禁 |
 
 ## 状态总览（2026-09-11）
 
 - P0：已完成基线冻结与哈希记录；**设备侧基线未取**（本机无 `hdc`，真机数据仍为历史口述值）。
 - P1：接口盘点完成第一轮，已定位一个结构性缺口——**当前锁定的 FEX 基线不含 UnixLib**。
-- P2（部分）：已用 Proton 官方参数集构建出 Release 版 `libarm64ecfex.dll` / `libwow64fex.dll`
-  并通过架构断言，见 `p2-release-probe.md`；**UnixLib 仍未解决**（该版本源码不存在）。
+- P2（大部分）：已用 Proton 官方参数集构建出 Release 版 `libarm64ecfex.dll` / `libwow64fex.dll`
+  （`p2-release-probe.md`）；**UnixLib 已通过回移 6 个上游提交解决**，
+  `build_fex.sh` 现在能一次产出四个产物并通过 aarch64 + 导出符号断言（`p2-unixlib-build.md`）。
+  剩余：`.so` 打包归位与真机加载验证。
 - 原工作树未做任何修改。
 
 ## 记录约定

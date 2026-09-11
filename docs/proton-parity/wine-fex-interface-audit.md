@@ -128,15 +128,15 @@ ThreadStats { Next, TID, AccumulatedJITTime, ... }
 | --- | --- | --- | --- | --- |
 | I-01 | `libarm64ecfex.dll` 构建与 ARM64EC 属性 | 已有，`RelWithDebInfo` | 需对齐 | `llvm-readobj --file-headers` 断言 `COFF-ARM64EC` |
 | I-02 | `libwow64fex.dll` 构建与 aarch64 属性 | 已有 | 已有（保留） | `COFF-ARM64` 断言 |
-| I-03 | `libarm64ecfex.so`（AArch64 UnixLib） | **缺失** | **需回补 / 阻塞** | CMake 目标 + `readelf -h` 断言 `AArch64` |
-| I-04 | `libwow64fex.so`（AArch64 UnixLib） | **缺失** | **需回补 / 阻塞** | 同上 |
-| I-05 | `MemoryWineLoadUnixLibByName` 获取 UnixLib | **FEX 侧缺失** | **需回补** | 运行时日志 + 断点/调用计数 |
-| I-06 | `MemoryWineUnixFuncs` 获取 UnixLib | **FEX 侧缺失** | **需回补** | 同上 |
+| I-03 | `libarm64ecfex.so`（AArch64 UnixLib） | **已回移并构建**（`bba5d2e`） | `pass_new`（构建层） | `readelf -h` 断言 `AArch64` + `__wine_unix_call_funcs` 导出；待设备加载验证 |
+| I-04 | `libwow64fex.so`（AArch64 UnixLib） | **已回移并构建** | `pass_new`（构建层） | 同上 |
+| I-05 | `MemoryWineLoadUnixLibByName` 获取 UnixLib | **已随回移接入** | `pass_new`（源码层）/ 待运行验证 | 设备日志确认走新机制而非回退 |
+| I-06 | `MemoryWineUnixFuncs` 获取 UnixLib | 同上，且作为回退路径保留 | `pass_new` | 同上 |
 | I-07 | `__wine_unix_call_dispatcher` 加载 | Wine 已有；FEX 旧版直连 ntdll 符号 | 已有（形态不同） | `GetProcAddress` 成功日志 |
 | I-08 | ARM64EC dispatcher 直连 trampoline | Wine 已有；FEX 旧版无 `Direct` 变体 | 需对齐 | 对照 `UnixCallDispatcherDirect` 使用点 |
-| I-09 | 硬件 TSO `prctl(PR_GET/SET_MEM_MODEL)` | **未接通**（Wine 无、FEX 旧版无 UnixLib） | 需回补；不可用属 G2 | 记录返回值 / errno / 回退 |
-| I-10 | 未对齐原子控制 | 未接通 | 需回补（G2） | 同上 |
-| I-11 | SHM 统计创建 / 扩容 / 清理 | FEX 侧 `SHMStats.cpp` 存在于旧版，但无 UnixLib 通道 | 待验证 | 读到 `STATS_VERSION`、线程槽增长、退出清理 |
+| I-09 | 硬件 TSO `prctl(PR_GET/SET_MEM_MODEL)` | **代码已接通**（UnixLib 内实现） | 待设备返回值（不可用属 G2） | 记录返回值 / errno / 回退 |
+| I-10 | 未对齐原子控制 | **代码已接通**（`PR_ARM64_SET_UNALIGN_ATOMIC`） | 待设备返回值（G2） | 同上 |
+| I-11 | SHM 统计创建 / 扩容 / 清理 | **代码已接通**（UnixLib 内 `shm_open`/`ftruncate`/`mmap`/`shm_unlink`） | 待验证 | 读到 `STATS_VERSION`、线程槽增长、退出清理 |
 | I-12 | 异常 / SMC / 保护页 | Wine `ohos_virtual.c` + `signal_arm64ec.c` 已有 | 已有（待真机回归） | 受控 SEH / 保护页测试 |
 | I-13 | `HODLL64` / `HODLL` 选择 | 已有；默认 `wowbox64.dll`，`WINEHUA_WOW64_ENGINE=fex` 切 FEX | 已有 | 启动日志 `[WineChild] final` |
 | I-14 | FEX 生效配置导出 | **缺失**（无配置文件） | 需新增（观测） | 导出编译期能力 + 进程生效值 |

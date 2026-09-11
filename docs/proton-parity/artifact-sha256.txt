@@ -13,3 +13,9 @@
 # P2 Release 对齐探针产物（2026-09-11，见 p2-release-probe.md）
 a064acfa6177aa659c59287cb4f65f5326362ee98dc7bd5789be2988b60bbe63  5103616   WineHua-proton-parity/build/parity/fex-ec-release/Bin/libarm64ecfex.dll
 ad3b868fa022283c4be1417213d4c4956b20147062c9a3546ec0ef311ca4861d  4575232   WineHua-proton-parity/build/parity/fex-pe-release/Bin/libwow64fex.dll
+
+# P2 UnixLib 回移后的完整四产物（2026-09-11, 见 p2-unixlib-build.md）
+2e72742a9ab560b52d9f117aa40f8035b88940f55e6383fbfc290b2dafdf38f4  41811968  WineHua-proton-parity/build/fex-ec/Bin/libarm64ecfex.dll
+f00179a60d079a374980f5f8336709e0ddd7adff6231f02f432319843fb8f6ad  40939520  WineHua-proton-parity/build/fex-pe/Bin/libwow64fex.dll
+9e09210b7303911cc145299d8ff13acee3ebe21e3650acb38c979f70f04033eea  16880  WineHua-proton-parity/build/fex-unixlib/libwow64fex.so
+73045aead305f14ab3971959170b1832e4a98bb846faf7f30ed90281b031fcd4  16880  WineHua-proton-parity/build/fex-unixlib/libarm64ecfex.so

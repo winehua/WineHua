@@ -44,7 +44,14 @@
 
    目的：确认这些官方参数在本机 / 容器里能不能 configure 通过，并留下缓存证据。
 
-### 步骤 2（B，最小回移）
+### 步骤 2（B，最小回移）—— ✅ 已完成（`bba5d2e`）
+
+结果：`scripts/patches/fex-unixlib-backport.patch`（6 个提交）+ `build_fex.sh` 的
+`build_fex_unixlib()`。四个产物全部构建成功并通过 aarch64 / 导出符号断言。
+详见 `p2-unixlib-build.md`。
+
+<details>
+<summary>当初的执行计划（保留备查）</summary>
 
 > **可行性已实测（2026-09-11）**：5 个 UnixLib 提交在 `86ff33bbe` 上 cherry-pick 全部无冲突，
 > 且两版本间 `.gitmodules` 无差异（嵌套子模块 pin 未变）。测试工作树：
@@ -75,6 +82,20 @@
    - 断言 `readelf -h` 的 `Machine: AArch64`。
 5. `assemble.sh` / `Makefile` 把两个 `.so` 放进运行时包的 Unix 侧目录，
    文件名必须是 `libwow64fex.so` / `libarm64ecfex.so`。
+
+</details>
+
+### 步骤 2.5（新，下一步实际要做的）：把 `.so` 归位
+
+UnixLib `.so` 的落点与 PE DLL 不同：
+
+- PE DLL → `wine-data.zip` 的 `bin/<pe_dir>/`（现状不变）。
+- UnixLib `.so` → 应与 `ntdll.so` / `winevulkan.so` / `win32u.so` 同级，
+  即 **`entry/libs/arm64-v8a/`**（HAP 内已确认这些 unix `.so` 都在这里）。
+  查找路径由 `load_unixlib_by_name()` 决定：`<dll_path>/aarch64-unix/<name>.so`，
+  再退化为 `<dll_path>/<name>.so`。
+
+**不要**在没有真机确认 `WINEDLLPATH` / `WINEUNIXDIR` 实际取值前改 `wine_env*.cpp`。
 
 ### 步骤 3（验收，G0 → G1）
 

@@ -6,7 +6,7 @@
   "items": [
     {"id": "OHOS-01", "scope": "source-artifact-closure", "level": "G0", "status": "pass_existing", "evidence": "docs/proton-parity/runtime-baseline.md", "caveat": "thirdparty/fex 脏；二进制不可仅由 86ff33bbe 复现"},
     {"id": "OHOS-02", "scope": "toolchain-abi", "level": "G0", "status": "not_tested", "existing_implementation": "scripts/build_fex.sh arch assertions"},
-    {"id": "OHOS-03", "scope": "native-library-loading", "level": "G0", "status": "blocked", "reason": "FEX 基线不产出 UnixLib（1cc4b93e 起才有）"},
+    {"id": "OHOS-03", "scope": "native-library-loading", "level": "G0", "status": "not_tested", "note": "UnixLib 已回移并可构建（aarch64 ELF + __wine_unix_call_funcs 断言通过）；运行时加载未验证"},
     {"id": "OHOS-04", "scope": "startup-context", "level": "G0", "status": "not_tested", "existing_implementation": "wine/env_profiles.cpp, proc/wine_child.cpp"},
     {"id": "OHOS-05", "scope": "child-process-fd", "level": "G0", "status": "not_tested", "existing_implementation": "dlls/ntdll/unix/ohos_broker.c"},
     {"id": "OHOS-06", "scope": "paths-prefix", "level": "G0", "status": "not_tested", "existing_implementation": "dlls/ntdll/unix/ohos_file.c"},
@@ -15,7 +15,7 @@
     {"id": "OHOS-09", "scope": "signals-exceptions", "level": "G0", "status": "not_tested", "existing_implementation": "dlls/ntdll/signal_arm64ec.c, ohos_virtual.c"},
     {"id": "OHOS-10", "scope": "libc-pthread", "level": "G0/G2", "status": "not_tested"},
     {"id": "OHOS-11", "scope": "kernel-optional-caps", "level": "G2", "status": "not_tested", "existing_implementation": null, "history": "hardware_tso=false（历史口述，未复核）"},
-    {"id": "OHOS-12", "scope": "fex-formal-stats", "level": "G1", "status": "blocked", "reason": "缺 UnixLib 通道；ENABLE_FEXCORE_PROFILER=OFF"},
+    {"id": "OHOS-12", "scope": "fex-formal-stats", "level": "G1", "status": "not_tested", "note": "UnixLib 内 SHM 实现已回移；仍缺 profiler 编译开关、配置文件与打包归位"},
     {"id": "OHOS-13", "scope": "packaging-deploy", "level": "G0/G1", "status": "not_tested", "existing_implementation": "Makefile, scripts/assemble.sh"},
     {"id": "OHOS-14", "scope": "real-window-and-measurement", "level": "G0", "status": "not_tested", "reason": "本机无 hdc，未接设备"}
   ]
