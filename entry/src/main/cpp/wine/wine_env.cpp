@@ -341,7 +341,16 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         "VN_PERF=" + std::string(modern26
             ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
             : "no_fence_feedback,no_query_feedback,no_multi_ring"),
-        "WINEDLLOVERRIDES=d3d11=n;dxgi=n",
+        /* legacy 1.10.3 自带整套 DXVK d3d10 链 (d3d10/d3d10_1/d3d10core, 见
+         * scripts/assemble.sh), 用 D3D10 的程序必须整套走 native —— 且**不能**
+         * 写成 "n,b" 兜底: 一旦回退到 wine builtin 的 d3d10core, 它建设备要调
+         * dxgi 的私有导出 DXGID3D10CreateDevice (DXVK 的 dxgi 没有该导出, 又因
+         * dxgi=n 禁止回退 builtin) → import 解析失败直接 abort。两条链不兼容,
+         * builtin 兜底等于退回一条必崩的路 (实测 WarThunderLauncher: n,b 卡死,
+         * 纯 n 后正常出界面)。modern 2.x 已移除 d3d10, 不设。 */
+        "WINEDLLOVERRIDES=" + std::string(modern26
+            ? "d3d11=n;dxgi=n"
+            : "d3d10=n;d3d10_1=n;d3d10core=n;d3d11=n;dxgi=n"),
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,
         "WINEDLLDIR0=" + overlay64,
