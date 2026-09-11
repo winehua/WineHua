@@ -306,6 +306,26 @@ static const char *select_winedebug_profile(int argc, char *argv[])
     return default_winedebug_profile();
 }
 
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+/* 方案③: 64 位 x64 走 FEX (HODLL64); 32 位 i386 默认也走 FEX (HODLL=libwow64fex.dll)。
+ * wow64.dll get_cpu_dll_name() 读 HODLL。WINEHUA_WOW64_ENGINE=box 才切回 wowbox64.dll。
+ * 必须在 extraEnv 之后再调一次 — setup_wine_env 早于 __env 覆盖。 */
+static void apply_wow64_cpu_dll()
+{
+    setenv("HODLL64", "libarm64ecfex.dll", 1);
+    const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
+    if (wow64_engine && strcmp(wow64_engine, "box") == 0)
+        setenv("HODLL", "wowbox64.dll", 1);
+    else
+        setenv("HODLL", "libwow64fex.dll", 1);
+    OH_LOG_INFO(LOG_APP,
+                "[WineChild] CPU dll HODLL64=%{public}s HODLL=%{public}s engine=%{public}s",
+                getenv("HODLL64") ? getenv("HODLL64") : "",
+                getenv("HODLL") ? getenv("HODLL") : "",
+                wow64_engine && wow64_engine[0] ? wow64_engine : "(default fex)");
+}
+#endif
+
 static void setup_wine_env(const char* binDir, const char* homeDir, const char *winedebug)
 {
     const std::string libDir = std::string(binDir) + "/" WINE_UNIX_SUBDIR;
@@ -351,16 +371,7 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     setenv("WINEUNIXDIR", binDir, 1);  // wine/bin/ (含 aarch64-unix/aarch64-windows 或 x86_64-*)
     // WINEDLLDIR*/WINEDLLPATH/PATH/TMPDIR/MIDI 已由公共基线表覆盖 (wine_env_baseline.h)
 #if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
-    // 方案③ arm64 原生 wine: 指定 FEX 模拟器 DLL (HODLL64), 由 ntdll loader 加载转译 x86_64 应用
-    setenv("HODLL64", "libarm64ecfex.dll", 1);
-    // 32 位 x86 应用: HODLL 由 wow64.dll get_cpu_dll_name() 读取, 转译 i386 PE。
-    // 引擎可选: box=Box64 wowbox64.dll (默认), fex=FEX libwow64fex.dll。
-    // 通过 WINEHUA_WOW64_ENGINE=fex 切换 (与 WINEHUA_WINEDEBUG 同机制)。
-    const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
-    if (wow64_engine && strcmp(wow64_engine, "fex") == 0)
-        setenv("HODLL", "libwow64fex.dll", 1);
-    else
-        setenv("HODLL", "wowbox64.dll", 1);
+    apply_wow64_cpu_dll();
 #endif
     setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
 }
@@ -380,7 +391,10 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
         std::string key = envLine.substr(0, sep);
         std::string value = envLine.substr(sep + 1);
         setenv(key.c_str(), value.c_str(), 1);
-        if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0)
+        if (key == "WINEHUA_BOOTSTRAP_PHASE" ||
+            key == "WINEHUA_PERF_DIAGNOSIS" || key == "WINEHUA_RUN_ID" ||
+            key == "WINEHUA_WOW64_ENGINE" || key.rfind("BOX64_DYNAREC_", 0) == 0 ||
+            key.rfind("FEX_", 0) == 0 || key == "DXVK_WINEHUA_PERF_DIAGNOSIS")
             OH_LOG_INFO(LOG_APP, "[WineChild] env override %{public}s=%{public}s",
                         key.c_str(), value.c_str());
     }
@@ -462,11 +476,21 @@ static void reassert_arch_wine_runtime_env(const char* binDir)
     append_path_component(dllPath, bundleDir);
     setenv("WINEDLLPATH", dllPath.c_str(), 1);
 
+    /* FEX 生效配置: 运行时包内的 share/fex-emu/Config.json (Proton 参考配置)。
+     * FEX 只按环境变量定位配置目录 (FEX_APP_CONFIG_LOCATION / FEX_APP_CONFIG /
+     * $HOME 下的默认位置), 不会主动去 <runtime>/share 找, 所以这里必须显式指定。
+     * overwrite=0: 保留上层 (per-app extraEnv 等) 已有的设置, 便于做 A/B。 */
+    const std::string fexConfigDir = std::string(binDir) + "/../share/fex-emu/";
+    const std::string fexConfigFile = fexConfigDir + "Config.json";
+    if (access(fexConfigFile.c_str(), R_OK) == 0 && !getenv("FEX_APP_CONFIG_LOCATION"))
+        setenv("FEX_APP_CONFIG_LOCATION", fexConfigDir.c_str(), 1);
+
 #if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
     /* Parent __env still serializes el2 guest_gfx/wine/bin first. That
      * poisons musl ICD/loader scans on 方案③; force the el1-only path.
      * 方案② keeps the box64 host LD_LIBRARY_PATH from setup_wine_env. */
     setenv("LD_LIBRARY_PATH", bundleDir.c_str(), 1);
+    apply_wow64_cpu_dll();
 #endif
 
     const char* path = getenv("PATH");
@@ -479,11 +503,12 @@ static void reassert_arch_wine_runtime_env(const char* binDir)
 
     OH_LOG_INFO(LOG_APP,
                 "[WineChild] reassert WINEDLLDIR=%{public}s WINEDLLDIR0=%{public}s "
-                "WINEDLLPATH=%{public}s LD_LIBRARY_PATH=%{public}s",
+                "WINEDLLPATH=%{public}s LD_LIBRARY_PATH=%{public}s FEX_APP_CONFIG_LOCATION=%{public}s",
                 unixDir.c_str(),
                 getenv("WINEDLLDIR0") ? getenv("WINEDLLDIR0") : "",
                 dllPath.c_str(),
-                getenv("LD_LIBRARY_PATH") ? getenv("LD_LIBRARY_PATH") : "");
+                getenv("LD_LIBRARY_PATH") ? getenv("LD_LIBRARY_PATH") : "",
+                getenv("FEX_APP_CONFIG_LOCATION") ? getenv("FEX_APP_CONFIG_LOCATION") : "");
 }
 
 static void log_d3d_environment_summary()
@@ -676,9 +701,12 @@ extern "C" void Main(NativeChildProcess_Args args)
     }
     log_d3d_environment_summary();
     OH_LOG_INFO(LOG_APP,
-                "[WineChild] final WINEDLLDIR=%{public}s WINEDEBUG=%{public}s",
+                "[WineChild] final WINEDLLDIR=%{public}s WINEDEBUG=%{public}s "
+                "HODLL64=%{public}s HODLL=%{public}s",
                 getenv("WINEDLLDIR") ? getenv("WINEDLLDIR") : "",
-                getenv("WINEDEBUG") ? getenv("WINEDEBUG") : "");
+                getenv("WINEDEBUG") ? getenv("WINEDEBUG") : "",
+                getenv("HODLL64") ? getenv("HODLL64") : "",
+                getenv("HODLL") ? getenv("HODLL") : "");
 
     // 覆盖 per-process fd 变量 (__env__ 中的是父进程 fd 号, 本进程无效)
     if (wsSockFd >= 0) {

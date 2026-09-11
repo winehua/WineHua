@@ -91,6 +91,19 @@ assemble_pad() {
         warn "winehua-gm.sf2 not found; MIDI output will be unavailable"
     fi
 
+    # FEX 生效配置 (Proton 参考配置)。
+    # FEX 只按环境变量/默认路径定位配置目录, 不会主动去 <runtime>/share 找,
+    # 所以 wine_child 会把 FEX_APP_CONFIG_LOCATION 指到这里。
+    # 见 docs/proton-parity/fex-effective-config.json 与方案 §5.3。
+    local fex_config="$ROOT/FEX_Config.json"
+    if [ -f "$fex_config" ]; then
+        mkdir -p "$wine_data/share/fex-emu"
+        cp "$fex_config" "$wine_data/share/fex-emu/Config.json"
+        log "    FEX_Config.json → rawfile share/fex-emu/Config.json"
+    else
+        warn "FEX_Config.json 未找到; FEX 将退回源码默认值 (MaxInst=5000 等)"
+    fi
+
     # -- 1. 原生 .so → libs/$NATIVE_ARCH/ (由各 build 脚本完成) --
     mkdir -p "$NATIVE_LIBS"
 

@@ -47,6 +47,7 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | `p2-release-probe.md` | P2 | FEX Release 参数对齐探针（已实测，产物已构建） |
 | `p2-unixlib-build.md` | P2 | UnixLib 回移与四产物构建（已实测，脚本已接入） |
 | `p2-device-validation.md` | P2 | 真机验证：UnixLib 已加载、硬件 TSO/未对齐原子不支持（有真实返回值） |
+| `p2-effective-config.md` | P2 | FEX 生效配置落地与 SHM 统计实测（配置已被真实读取） |
 | `next-steps.md` | P2 | 下一步可执行动作与门禁 |
 
 ## 状态总览（2026-09-11）
@@ -58,7 +59,9 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
   `build_fex.sh` 现在能一次产出四个产物并通过 aarch64 + 导出符号断言（`p2-unixlib-build.md`）。
 - **真机验证已完成**：UnixLib 在设备上被真实加载；硬件 TSO / 未对齐原子确认为
   内核不支持（errno=22），非接口问题。见 `p2-device-validation.md`。
-  剩余：SHM 统计（需 profiler + 配置）与性能测量。
+- **FEX 生效配置已落地并验证**：`FEX_Config.json`（Proton 参考值）随包部署，
+  真机上 SHM 统计创建成功，证明配置被真实读取。见 `p2-effective-config.md`。
+  剩余：SHM 统计内容读取、逐项生效值导出、随后进入 P3/P4 测量。
 - 原工作树未做任何修改。
 
 ## 记录约定

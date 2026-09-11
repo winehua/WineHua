@@ -27,3 +27,7 @@ c4eaa204601c4c1a3b4fe1cf6ef14e773c256963a0bdaaad5d9ec2301124bbc9  18104  WineHua
 1324a61ca3423c9674d7876de04a717525e5efa8a3a356ff627e8e9baecaac7a  18104  WineHua-proton-parity/build/fex-unixlib/libwow64fex.so
 25f522dee297219c4b4c89119bbc1ec824f8da5c86159b7df8a52c26e895d15f  418964156  WineHua-proton-parity/build/parity-hap/winehua-unixlib-signed.hap (已装到 MLR-AL10)
                                                   payloadSha256: b90c4e6700c9bfd2a07653a8fa5a5f4ae99bcf61de6f53781bbf44b51ea2b5f8
+
+# P2 收尾: 完整 hvigor 出包 (含 FEX_Config.json + UnixLib + FEX WOW64 默认引擎)
+a83e826c3447c567e6103859f63904a8cd397b1b20740f7a1a870e0749dd1cc5  418977859  WineHua-proton-parity/entry/build/default/outputs/default/entry-default-signed.hap (已装到 MLR-AL10)
+                                                  payloadSha256: ddce2eb25d529ddc8e7094d8606abfc712e695bd1e1dd86d3e1756d28277802c
