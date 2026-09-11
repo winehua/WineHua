@@ -8,7 +8,9 @@ const TAG = 'IconExtractor';
 // 图标缓存目录: 每个 exe 提取一次, 后续直接读缓存文件。
 // 放 cache 而非 files: 图标是从 exe 可再生推导的中间产物, 系统清 cache 后
 // 重新提取即可, 不该占用持久文件区 (files 下改名/删除的 exe 会积累孤儿 PNG)
-const CACHE_DIR = '/data/storage/el2/base/cache/icons';
+// v2 后缀: 修复 R/B 互换后, 旧缓存 PNG 颜色全错且按 mtime 判定不会重提取,
+// 换目录名强制失效 (旧目录留给系统清 cache)
+const CACHE_DIR = '/data/storage/el2/base/cache/icons-v2';
 
 const RT_ICON = 3;
 const RT_GROUP_ICON = 14;
@@ -241,10 +243,13 @@ export class IconExtractor {
     for (let i = 0; i < total; i++) {
       const id = ev.getUint32(i * 8, true);
       const off = ev.getUint32(i * 8 + 4, true);
-      if (id & 0x80000000 || !(off & 0x80000000)) {
+      if (!(off & 0x80000000)) {
         continue;
       }
-      if (wantId >= 0 && (id & 0xFFFF) != wantId) {
+      // 命名资源 (id 高位=1, 低 31 位为名称字符串偏移): 取第一个 (wantId<0) 时
+      // 必须接受 — Delphi/BCB 编译的 exe (实测 THS_v9) 图标组名是 MAINICON,
+      // 旧逻辑无条件跳过命名项, 导致这类 exe 整组图标丢失 (why=group-ref)
+      if (wantId >= 0 && (id & 0x80000000 || (id & 0xFFFF) != wantId)) {
         continue;
       }
       // 名称项 → 语言子目录 → 第一个数据项
@@ -445,6 +450,14 @@ export class IconExtractor {
   }
 
   private async writePng(rgba: ArrayBuffer, width: number, height: number, outPath: string): Promise<string> {
+    // PixelMap 内部按 BGRA 存放: 直接喂 RGBA 会让产出的 PNG 红蓝互换
+    // (实测 dfcft8.exe 橙色图标被写成蓝色), 先交换 R/B 再建 PixelMap
+    const px = new Uint8Array(rgba);
+    for (let i = 0; i + 3 < px.length; i += 4) {
+      const t = px[i];
+      px[i] = px[i + 2];
+      px[i + 2] = t;
+    }
     const opts: image.InitializationOptions = {
       size: { width: width, height: height },
       pixelFormat: image.PixelMapFormat.RGBA_8888,
