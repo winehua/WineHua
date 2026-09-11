@@ -46,14 +46,45 @@ export PATH="$LLVM_MINGW/bin:$PATH"
 #     补上 Source/Windows/{Common,UnixLib}/FEXUnixLib.* 与 winternl.h 枚举.
 #     Wine 侧无改动: dlls/ntdll/unix/virtual.c 与 dlls/wow64/virtual.c 已经
 #     实现 MemoryWineLoadUnixLibByName 与 get_unixlib_funcs.
-for PATCH in \
-    "$SCRIPT_DIR/patches/fex-missing-includes.patch" \
-    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch" \
-    "$SCRIPT_DIR/patches/fex-unixlib-backport.patch"; do
-    if ! git -C "$FEX_SRC" apply --reverse --check "$PATCH" 2>/dev/null; then
-        git -C "$FEX_SRC" apply "$PATCH"
-        log "已应用 patch: $(basename "$PATCH")"
-    fi
+FEX_PATCHES=(
+    "$SCRIPT_DIR/patches/fex-missing-includes.patch"
+    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch"
+    "$SCRIPT_DIR/patches/fex-unixlib-backport.patch"
+)
+
+# 实验探针 (只加诊断输出, 不改行为): FEX_UNIXLIB_PROBE=1 时随构建应用。
+# 用于真机验证 UnixLib 是否真的被 wine 加载、硬件 TSO / SHM 的真实返回值。
+# 见 docs/proton-parity/p2-device-validation.md。默认关闭。
+if [ "${FEX_UNIXLIB_PROBE:-0}" = "1" ]; then
+    FEX_PATCHES+=( "$SCRIPT_DIR/patches/fex-unixlib-probe.patch" )
+fi
+
+# 补丁状态判定。
+# 只用 `git apply --reverse --check` 不够稳: 若补丁产生的文件之后又被本地修改
+# (例如 fex-unixlib-probe 改了 backport 新建的 FEXUnixLib.cpp), 反向检查会失败,
+# 但补丁其实已经应用, 再正向 apply 就会报 "already exists"。
+patch_state() {
+    local patch="$1" sentinel="$2"
+    git -C "$FEX_SRC" apply --reverse --check "$patch" 2>/dev/null && { echo applied; return; }
+    git -C "$FEX_SRC" apply --check "$patch" 2>/dev/null && { echo fresh; return; }
+    [ -n "$sentinel" ] && [ -e "$sentinel" ] && { echo applied; return; }
+    echo unknown
+}
+
+for PATCH in "${FEX_PATCHES[@]}"; do
+    case "$(basename "$PATCH")" in
+        fex-unixlib-backport.patch|fex-unixlib-probe.patch)
+            sentinel="$FEX_SRC/Source/Windows/UnixLib/FEXUnixLib.cpp" ;;
+        *)  sentinel="" ;;
+    esac
+    case "$(patch_state "$PATCH" "$sentinel")" in
+        applied) : ;;
+        fresh)
+            git -C "$FEX_SRC" apply "$PATCH"
+            log "已应用 patch: $(basename "$PATCH")" ;;
+        *)
+            err "补丁状态不明(既不能正向也不能反向应用): $(basename "$PATCH")" ;;
+    esac
 done
 
 # ---- libarm64ecfex.dll (x86_64 模拟, arm64ec ABI) ----

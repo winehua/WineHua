@@ -17,7 +17,7 @@
 | --- | --- | --- | --- | --- | --- |
 | OHOS-01 | 源码与产物闭环 | G0 | `pass_existing`（部分） | — | 已记录 HEAD / 子模块 / 哈希。**注意 `thirdparty/fex` 为脏**，二进制不能只由 `86ff33bbe` 复现 → 需记录其 diff |
 | OHOS-02 | 工具链与 ABI | G0 | `not_tested` | `scripts/build_fex.sh` 内含 `llvm-readobj` 架构断言 | 需产出"每个 DLL/ELF 的 target/PE machine/ELF machine"清单 |
-| OHOS-03 | 原生库加载 | G0 | `not_tested`（构建已通过，加载未验） | `build/fex-unixlib/*.so` + `assemble.sh`（待接） | UnixLib 已能构建；需在真实 NCP 内确认被 `load_unixlib_by_name` 加载 |
+| OHOS-03 | 原生库加载 | G0 | **`pass_new`** | `build/fex-unixlib/*.so` → `entry/libs/<arch>/` | 真机确认：探针构造函数在两个 wine 进程中触发，证明 `load_unixlib_by_name` dlopen 成功 |
 | OHOS-04 | 启动上下文（argv/env/auxv） | G0 | `not_tested`（实现已存在） | `entry/src/main/cpp/wine/env_profiles.cpp`、`proc/wine_child.cpp` | 中文/空格/空参数、两个实验配置不串环境 |
 | OHOS-05 | 子进程与 FD | G0 | `not_tested`（实现已存在） | `dlls/ntdll/unix/ohos_broker.c` + broker 中继 | 真实 readiness / 退出码 / 失败回收 |
 | OHOS-06 | 路径与 prefix | G0 | `not_tested`（实现已存在） | `ohos_file.c`、Wine prefix 管理 | 隔离根目录、空 prefix 首启、盘符语义 |
@@ -25,7 +25,7 @@
 | OHOS-08 | native / JIT / guest 权限 | G0 | `not_tested`（实现已存在） | `ohos_virtual.c`（`ohos_map_exec_section` / JIT enable） | 分别验证 native ELF、native PE/ARM64EC、FEX JIT |
 | OHOS-09 | 信号与异常 | G0 | `not_tested`（实现已存在） | `signal_arm64ec.c`、`ohos_virtual.c` sigchain | 受控 SEH / 保护页 / 无 SIGSEGV 循环 |
 | OHOS-10 | libc / pthread 语义 | G0/G2 | `not_tested` | Wine OHOS 适配 + musl 侧 | 按实际用量测 typedef / 锁 / TLS / 条件时钟 |
-| OHOS-11 | 内核可选能力（TSO / 未对齐原子） | G2（无回退则 G0） | `not_tested`；历史口述 `hardware_tso=false` | **未接通**（缺 UnixLib） | 记录返回值 / errno / 回退路径 |
+| OHOS-11 | 内核可选能力（TSO / 未对齐原子） | G2 | **`unsupported_with_verified_fallback`** | UnixLib 已接通并实测 | `PR_GET_MEM_MODEL`→`0xffffffff/errno=22`，`PR_ARM64_SET_UNALIGN_ATOMIC`→`-1/errno=22`；回退为软件 TSO |
 | OHOS-12 | FEX 正式统计 | G1 | `not_tested` | UnixLib 内 SHM 实现已回移 | 仍需编入 profiler（当前 `ENABLE_FEXCORE_PROFILER=OFF`）+ 配置文件 + 打包归位 |
 | OHOS-13 | 打包与部署 | G0/G1 | `not_tested` | `Makefile` / `scripts/assemble.sh` | 文件清单 / SHA256 / 架构 / 资源版本；最终 HAP 与测量记录对应 |
 | OHOS-14 | 真实窗口与测量边界 | G0 | `not_tested` | 既有 Wayland compositor + presenters | 需要真机；记录分辨率/画质/场景/同步/缓存/日志开关 |

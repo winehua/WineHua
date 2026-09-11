@@ -19,3 +19,11 @@ ad3b868fa022283c4be1417213d4c4956b20147062c9a3546ec0ef311ca4861d  4575232   Wine
 f00179a60d079a374980f5f8336709e0ddd7adff6231f02f432319843fb8f6ad  40939520  WineHua-proton-parity/build/fex-pe/Bin/libwow64fex.dll
 9e09210b7303911cc145299d8ff13acee3ebe21e3650acb38c979f70f04033eea  16880  WineHua-proton-parity/build/fex-unixlib/libwow64fex.so
 73045aead305f14ab3971959170b1832e4a98bb846faf7f30ed90281b031fcd4  16880  WineHua-proton-parity/build/fex-unixlib/libarm64ecfex.so
+
+# P2 探针版（含 [WINEHUA-FEX-PROBE]）—— 已上真机验证，见 p2-device-validation.md
+9e9276b712201c0ec4f2a21aad156567acdc2dec099b44ab5fc96b35fcf74c30  42130432  WineHua-proton-parity/build/fex-ec/Bin/libarm64ecfex.dll
+1674c5b42746bb629e7dd370a80202cdd0229de901318c492f5e4b172ca1cf30  41152512  WineHua-proton-parity/build/fex-pe/Bin/libwow64fex.dll
+c4eaa204601c4c1a3b4fe1cf6ef14e773c256963a0bdaaad5d9ec2301124bbc9  18104  WineHua-proton-parity/build/fex-unixlib/libarm64ecfex.so
+1324a61ca3423c9674d7876de04a717525e5efa8a3a356ff627e8e9baecaac7a  18104  WineHua-proton-parity/build/fex-unixlib/libwow64fex.so
+25f522dee297219c4b4c89119bbc1ec824f8da5c86159b7df8a52c26e895d15f  418964156  WineHua-proton-parity/build/parity-hap/winehua-unixlib-signed.hap (已装到 MLR-AL10)
+                                                  payloadSha256: b90c4e6700c9bfd2a07653a8fa5a5f4ae99bcf61de6f53781bbf44b51ea2b5f8

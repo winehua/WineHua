@@ -1,0 +1,86 @@
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.cpp b/Source/Windows/UnixLib/FEXUnixLib.cpp
+index 692e459f1..84f4e7d67 100644
+--- a/Source/Windows/UnixLib/FEXUnixLib.cpp
++++ b/Source/Windows/UnixLib/FEXUnixLib.cpp
+@@ -1,6 +1,8 @@
+ // SPDX-License-Identifier: MIT
+ #include <cstdint>
+ #include <type_traits>
++#include <cerrno>
++#include <cstdio>
+ #include <fcntl.h>
+ #include <string>
+ #include <sys/mman.h>
+@@ -9,6 +11,17 @@
+ 
+ #include "FEXUnixLib.h"
+ 
++// ===================================================================
++// WineHua 实验探针 (临时诊断, 仅用于真机验证 UnixLib 是否被加载)
++// 见 docs/proton-parity/p2-device-validation.md
++// 输出到 fd 2, 由 WineHua 的 wine_child 转发到 temp/wine_stderr_*.log
++// ===================================================================
++#define WINEHUA_FEX_PROBE(...) ::dprintf(2, "[WINEHUA-FEX-PROBE] " __VA_ARGS__)
++
++__attribute__((constructor)) static void WineHuaFexUnixLibLoadedProbe() {
++  WINEHUA_FEX_PROBE("unixlib-dotso loaded pid=%d\n", static_cast<int>(::getpid()));
++}
++
+ // Equivalent to C++23's std::to_underlying.
+ template<typename Enum>
+ [[nodiscard]]
+@@ -48,20 +61,32 @@ constexpr NTSTATUS STATUS_INTERNAL_ERROR = 0xC00000E5;
+ static NTSTATUS FEXUnixLib_SetHardwareTSOControlHandler(void* _Args) {
+   auto Args = reinterpret_cast<const FEXUnixLib_SetHardwareTSOControlArgs*>(_Args);
+   if (Args->Enable) {
++    errno = 0;
+     int ret = prctl(PR_GET_MEM_MODEL, 0, 0, 0, 0);
+     if (ret == PR_SET_MEM_MODEL_DEFAULT) {
+-      return prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_TSO, 0, 0, 0) ? STATUS_NOT_SUPPORTED : STATUS_SUCCESS;
++      errno = 0;
++      int setret = prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_TSO, 0, 0, 0);
++      WINEHUA_FEX_PROBE("hardware-TSO enable get=0x%x set=%d errno=%d result=%s\n", ret, setret, errno,
++                        setret ? "NOT_SUPPORTED" : "OK");
++      return setret ? STATUS_NOT_SUPPORTED : STATUS_SUCCESS;
+     }
++    WINEHUA_FEX_PROBE("hardware-TSO enable get=0x%x already errno=%d result=%s\n", ret, errno,
++                      ret == PR_SET_MEM_MODEL_TSO ? "OK" : "NOT_SUPPORTED");
+     return ret == PR_SET_MEM_MODEL_TSO ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+   }
+ 
++  WINEHUA_FEX_PROBE("hardware-TSO disable\n");
+   prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_DEFAULT, 0, 0, 0);
+   return STATUS_SUCCESS;
+ }
+ 
+ static NTSTATUS FEXUnixLib_SetKernelUnalignedAtomicControlHandler(void* _Args) {
+   auto Args = reinterpret_cast<const FEXUnixLib_SetKernelUnalignedAtomicControl*>(_Args);
+-  return prctl(PR_ARM64_SET_UNALIGN_ATOMIC, Args->Flags, 0, 0, 0) == 0 ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++  errno = 0;
++  int ret = prctl(PR_ARM64_SET_UNALIGN_ATOMIC, Args->Flags, 0, 0, 0);
++  WINEHUA_FEX_PROBE("unaligned-atomic flags=0x%llx ret=%d errno=%d result=%s\n",
++                    static_cast<unsigned long long>(Args->Flags), ret, errno, ret == 0 ? "OK" : "NOT_SUPPORTED");
++  return ret == 0 ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+ }
+ 
+ static NTSTATUS FEXUnixLib_MadviseHandler(void* _Args) {
+@@ -80,9 +105,11 @@ constexpr static int USER_PERMS = S_IRWXU | S_IRWXG | S_IRWXO;
+ static inline void* InitializeSHM(uint32_t MapSize, uint32_t MaxSize) {
+   void* Base {};
+   const std::string Name = "fex-" + std::to_string(getpid()) + "-stats";
++  errno = 0;
+   int fd = shm_open(Name.c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
+ 
+   if (fd == -1) {
++    WINEHUA_FEX_PROBE("shm_open(%s) FAILED errno=%d\n", Name.c_str(), errno);
+     return nullptr;
+   }
+ 
+@@ -116,6 +143,7 @@ static inline void* InitializeSHM(uint32_t MapSize, uint32_t MaxSize) {
+ err:
+   close(fd);
+ 
++  WINEHUA_FEX_PROBE("shm-stats name=%s map=%u max=%u base=%p\n", Name.c_str(), MapSize, MaxSize, Base);
+   return Base;
+ }
+ 
