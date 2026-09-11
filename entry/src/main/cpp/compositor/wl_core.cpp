@@ -617,33 +617,24 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
                     sd->toplevelId, fi.screenX, fi.screenY);
     }
     /*
-     * PC 模式: created 延迟到首帧 (此时 wl_shm 格式已确定):
-     * - XRGB → "created": 走 WineWindowAbility (multiton 主窗口)
-     * - ARGB → "argb_created": 走子窗口 + setWindowMask 异型窗口路线
-     *   (2in1 主窗口无 alpha 通道/背景透明被钳制, 实测不可行)
+     * PC 模式: created 延迟到首帧 (此时 wl_shm 格式已确定)。
+     * ARGB 窗口同样发 "created" 走 WineWindowAbility 主窗口路线 (2026-09-12
+     * 决定): 实测 WarThunder 启动器 launcher.exe 的 shm format = ARGB8888
+     * (Wine 侧 window_surface.c:391 "shape_bits || layered" 条件), 但 mask
+     * 覆盖率 95% (opaque=630000/656850) — 仅窗口边缘一圈约 4% 透明像素。
+     * 为这点装饰性透明牺牲整个窗口的独立性 (子窗口非自由窗口: 无任务栏
+     * 条目/不能系统级拖动最小化/层级跟随宿主主窗口) 不值, 故不再分流;
+     * 透明区域按窗口背景色显示。原 "argb_created" 子窗口 + setWindowMask
+     * 路线 (ArgbWindowManager) 已随本次一并删除。
      */
     if (outFirstCommit && Policy().OhosWindowPerToplevel()) {
-        if (fi.shmFormat == 0) {
-            OH_LOG_INFO(LOG_APP, "[MW] argb_created tl=%{public}u geo=(%{public}d,%{public}d %{public}dx%{public}d)",
-                        sd->toplevelId, fi.screenX, fi.screenY, fi.contentW, fi.contentH);
-            PostToplevelEvent(sd->toplevelId, ToplevelEventType::ArgbCreated,
-                              ToplevelEventBus::JsonArgbCreated(
-                                  fi.screenX, fi.screenY, fi.contentW, fi.contentH));
-        } else {
-            PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
-                              ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
-        }
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
+                          ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
     }
-    // ARGB 窗口位置同步: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置,
-    // 普通 PC 窗口后续 commit 忽略 geo, OHOS 窗口管理器为权威 — 完整补丁
-    // 说明随方法平移, 见 toplevel_manager.cpp SyncArgbPositionLocked)。
-    // 位置应用在 ToplevelManager, argb_move 事件由此处锁内发出 (原时序:
-    // 模式/格式/首帧门禁在此判定, 事件锁内发 — 行为逐字)
-    if (Policy().OhosWindowPerToplevel() && fi.shmFormat == 0 && !outFirstCommit &&
-        toplevelMgr_.SyncArgbPositionLocked(sd->toplevelId, fi.screenX, fi.screenY)) {
-        PostToplevelEvent(sd->toplevelId, ToplevelEventType::ArgbMove,
-                          ToplevelEventBus::JsonArgbMove(fi.screenX, fi.screenY));
-    }
+    // ARGB 窗口位置同步 (argb_move) 随 "ARGB 也走普通窗口" 决定停用: ARGB
+    // 窗口位置与 XRGB 窗口同规则 — OHOS 窗口管理器为权威, Wine 后续 commit
+    // 的 geo 忽略。(原语义: 子窗口路线下 Wine 位置为权威, 由
+    // ToplevelManager::SyncArgbPositionLocked 应用并发 argb_move)
     // 桌面模式后续 commit 的位置同步: 判定 (WineX/Y 快照比较) 与三分支跟随
     // (justRestored 保持 compositor 位置/最小化坐标只记快照/Wine geo 跟随)
     // 收口于 ToplevelManager::SyncDesktopPositionLocked — "compositor 为权威
@@ -670,17 +661,9 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
                               ToplevelEventBus::JsonArgb(fi.shmFormat == 0 ? 1 : 0));
         }
     }
-    // ARGB 窗口掩码: FNV-1a 形状哈希 + 阈值 0/1 剪影生成与 mask 状态更新
-    // 收口于 ToplevelManager::UpdateArgbMaskLocked (补丁注释 — 阈值 128
-    // 边缘收半像素/形状哈希不变不重建/掩码帧分辨率 — 随方法平移, 见
-    // toplevel_manager.cpp)。mask_dirty 事件由此处在锁内发出 (原时序:
-    // 事件与状态更新同段同锁, 输出条件逐字不变)
-    if (fi.shmFormat == 0 && Policy().OhosWindowPerToplevel()) {
-        if (toplevelMgr_.UpdateArgbMaskLocked(sd->toplevelId, st.Pixels(),
-                                              fi.contentW, fi.contentH)) {
-            PostToplevelEvent(sd->toplevelId, ToplevelEventType::MaskDirty);
-        }
-    }
+    // ARGB 剪影掩码生成 (mask_dirty) 随 "ARGB 也走普通窗口" 决定停用: 普通
+    // 窗口路线不需要 setWindowMask 剪影, 掩码计算每帧一次 FNV 哈希 + 位图
+    // 拷贝随之省掉。(UpdateArgbMaskLocked/SyncArgbPositionLocked 已删)
     // 新 toplevel 加到 Z-order 顶层 (首次入列的全屏优先级取号在
     // AddToZOrder 内部完成, 见 ToplevelState::fsPriority 注释)
     if (Policy().RootCompositing() && sd->toplevelId != session_.desktopRootToplevelId) {

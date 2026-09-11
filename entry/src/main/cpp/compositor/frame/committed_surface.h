@@ -61,7 +61,7 @@ struct CommittedSurface {
     };
     ContentRect contentRect;
 
-    // screenPos: toplevel 的虚拟桌面屏幕位置 (义 1; PC 模式首帧/argb_move
+    // screenPos: toplevel 的虚拟桌面屏幕位置 (义 1; PC 模式首帧判定
     // 同源 = ShmCommitInfo::screenX/Y 的同步表达)。仅 role==Toplevel 且有
     // window_geometry 且尺寸 > 0 时有义 (与 ComputeContentAreaGeometry 的
     // screenX/screenY 赋值条件逐字一致); 其余情况取 0。

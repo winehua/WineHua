@@ -35,23 +35,6 @@ bool ToplevelManager::TryAutoRestoreLocked(uint32_t id, int32_t contentW, int32_
     return false;
 }
 
-bool ToplevelManager::SyncArgbPositionLocked(uint32_t id, int32_t screenX, int32_t screenY) {
-    auto* st = FindToplevelLocked(id);
-    if (!st) return false;  // 调用点建档后必有 (防御)
-    /*
-     * ARGB 窗口: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置)。
-     * 普通 PC 窗口后续 commit 忽略 geoX/geoY (OHOS 窗口管理器为权威),
-     * ARGB 窗口相反: geo 变化 → 通知 ArkTS 移动子窗口。
-     * (历史字段 geoX/geoY 已于重构第 5A2 步消亡 — 其"桌面屏幕位置"义即
-     * 本方法接收的 screenX/Y, 由 CommittedSurface::screenPos 命名承载)
-     */
-    if (st->X() != screenX || st->Y() != screenY) {
-        st->SetPosition(screenX, screenY);
-        return true;
-    }
-    return false;
-}
-
 void ToplevelManager::SyncDesktopPositionLocked(uint32_t id, int32_t screenX, int32_t screenY,
                                                 bool justRestored) {
     auto* st = FindToplevelLocked(id);
@@ -81,39 +64,6 @@ void ToplevelManager::SyncDesktopPositionLocked(uint32_t id, int32_t screenX, in
             st->SetWinePosition(screenX, screenY);
         }
     }
-}
-
-bool ToplevelManager::UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels,
-                                           int32_t w, int32_t h) {
-    auto* st = FindToplevelLocked(id);
-    if (!st) return false;  // 调用点建档后必有 (防御)
-    /*
-     * ARGB 窗口: 从 alpha 通道生成 0/1 剪影掩码 (setWindowMask 用)。
-     * - 阈值 128: 半透明抗锯齿边缘向内收半像素, 避免灰边外扩
-     * - 形状哈希没变就不重建: 时钟类静态形状零开销,
-     *   动画类 (桌面宠物) 每帧变形才按帧重算
-     * - 掩码是帧分辨率 (Wine 逻辑像素); setWindowMask 要求等于
-     *   窗口物理尺寸, ArkTS 侧按 effectiveScale 最近邻放大
-     */
-    const size_t pixCount = static_cast<size_t>(w) * h;
-    uint64_t hash = compositor_consts::kFnv1aOffsetBasis;
-    for (size_t i = 3; i < pixCount * 4; i += 4) {
-        hash ^= (pixels[i] >= compositor_consts::kArgbMaskAlphaThreshold) ? 1 : 0;
-        hash *= compositor_consts::kFnv1aPrime;
-    }
-    auto& m = st->MutableMask();
-    if (hash != m.hash || m.w != w || m.h != h) {
-        m.hash = hash;
-        m.w = w;
-        m.h = h;
-        m.bits.resize(pixCount);
-        for (size_t i = 0; i < pixCount; i++) {
-            m.bits[i] = (pixels[i * 4 + 3] >= compositor_consts::kArgbMaskAlphaThreshold) ? 1 : 0;
-        }
-        m.dirty = true;
-        return true;
-    }
-    return false;
 }
 
 ToplevelManager::SizeCommitEffect ToplevelManager::HandleCommittedSizeLocked(
@@ -158,15 +108,6 @@ void ToplevelManager::ToplevelState::ApplyFullscreen(bool on) {
     // 不变式守卫 (类注释): 全屏 toplevel 锚定 (0,0)
     MW_ASSERT(!on || !hasPosition_ || (x_ == 0 && y_ == 0),
               "fullscreen toplevel must be anchored at (0,0)");
-}
-
-bool ToplevelManager::ToplevelState::TakeMask(WindowMask& out) {
-    if (mask_.w == 0 || !mask_.dirty) return false;
-    out.w = mask_.w;
-    out.h = mask_.h;
-    out.bits = std::move(mask_.bits);
-    mask_.dirty = false;
-    return true;
 }
 
 // -- 渲染/输入共用的 toplevel 可见性检查 --
@@ -275,18 +216,6 @@ uint32_t ToplevelManager::FindToplevelBySurface(wl_resource* surf) {
     for (const auto& [id, s] : toplevelSurfaceMap_)
         if (s == surf) return id;
     return 0;
-}
-
-bool ToplevelManager::TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out) {
-    auto lk = Lock();
-    auto it = toplevels_.find(id);
-    if (it == toplevels_.end()) return false;
-    WindowMask m;
-    if (!it->second.TakeMask(m)) return false;
-    w = m.w;
-    h = m.h;
-    out = std::move(m.bits);
-    return true;
 }
 
 // -- 诊断数据访问 --

@@ -908,6 +908,12 @@ PLAN §三 ToplevelEventBus + §四阶段5 第 4 条 + §2.3（22 种 stringly-t
 散布 5 文件 ~30 处 snprintf）+ §2.2（FireToplevelEvent 直调
 napi_call_threadsafe_function 点名的 NAPI 通道泄漏）。全部行为平价。
 
+> 后续变更注记（2026-09-12）：`argb_created`（#3）、`argb_move`（#9）、
+> `mask_dirty`（#11）三个事件已随 "ARGB 窗口改按普通窗口承载"（WarThunder
+> 启动器实测 mask 覆盖率 95%，仅边缘 ~4% 装饰性透明，不值得牺牲独立窗口
+> 特性）连同 ArgbWindowManager / WindowMask / takeWindowMask NAPI 一并删除。
+> 下表为重构当时（2026-08）的行为记录，保留作审计依据；事件总数由 22 减为 19。
+
 **事件清单表（22 种 → enum → JSON 模板 → caller → payload 来源）：**
 
 | # | 事件名 | enum | JSON 模板（逐字） | caller（旧行号，无 payload 即默认 "{}"） | payload 来源 |
