@@ -9,3 +9,7 @@
 # 待补（接设备 / 重新打包后填）
 # <sha256>  -  HAP 内 files/wine/bin/<pe_dir>/libarm64ecfex.dll（实际加载副本）
 # <sha256>  -  HAP 内 files/wine/bin/<pe_dir>/libwow64fex.dll（实际加载副本）
+
+# P2 Release 对齐探针产物（2026-09-11，见 p2-release-probe.md）
+a064acfa6177aa659c59287cb4f65f5326362ee98dc7bd5789be2988b60bbe63  5103616   WineHua-proton-parity/build/parity/fex-ec-release/Bin/libarm64ecfex.dll
+ad3b868fa022283c4be1417213d4c4956b20147062c9a3546ec0ef311ca4861d  4575232   WineHua-proton-parity/build/parity/fex-pe-release/Bin/libwow64fex.dll
