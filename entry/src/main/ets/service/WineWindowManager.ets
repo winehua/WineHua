@@ -5,7 +5,6 @@ import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
 import { pointer } from '@kit.InputKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
-import { ArgbWindowManager } from './ArgbWindowManager';
 import { DisplaySettingsService } from './DisplaySettingsService';
 import { ModalWindowManager } from './ModalWindowManager';
 import { FusionWindowManager } from './FusionWindowManager';
@@ -14,7 +13,7 @@ import { DesktopModeService, isSubWindowFormFactor } from './DesktopModeService'
 const DOMAIN = 0x0000;
 const TAG = 'WineWM';
 
-// 单个 Wine toplevel 在 ArkTS 侧的聚合状态 (参照 PopupEntry/ArgbEntry 模式)。
+// 单个 Wine toplevel 在 ArkTS 侧的聚合状态 (参照 PopupEntry 模式)。
 // 'created' 事件 (或首个提前到达的事件) 时经 ensureEntry 建档,
 // ctx/win/stage 由 WineWindowAbility 三步回填 (registerAbility/Window/WindowStage),
 // unregisterAbility 一次性整体删除。
@@ -672,14 +671,6 @@ export class WineWindowManager {
       case 'title':
       case 'resize':
         if (this.isDesktopMode && id !== this.desktopRootId) return;
-        if (ArgbWindowManager.getInstance().has(id)) {
-          // ARGB 异型窗口: resize 调整子窗口尺寸; title 不需要 (子窗口无标题栏)。
-          // 注意不能进积压队列 — ARGB 窗口永远不会注册 ability, 永不 flush
-          if (event === 'resize') {
-            ArgbWindowManager.getInstance().onResize(id, data, this.getEffectiveScale());
-          }
-          break;
-        }
         this.queueOrApply(id, event, data);
         break;
       case 'minimized':
@@ -689,34 +680,13 @@ export class WineWindowManager {
       case 'limits':
       case 'argb':
         if (this.isDesktopMode && id !== this.desktopRootId) return;
-        // ARGB 异型窗口: 这些事件无意义且会泄漏进积压队列 (永不注册 ability)
-        if (ArgbWindowManager.getInstance().has(id)) break;
         this.queueOrApply(id, event, data);
-        break;
-      case 'argb_created':
-      case 'argb_move':
-      case 'mask_dirty':
-        // ARGB 异型窗口 (子窗口 + setWindowMask 路线, desktop 模式不涉及)
-        if (this.isDesktopMode) return;
-        if (!this.mainWindowStage) return;
-        {
-          const argb = ArgbWindowManager.getInstance();
-          const s = this.getEffectiveScale();
-          if (event === 'argb_created') {
-            argb.onCreated(id, data, this.mainWindowStage!, s);
-          } else if (event === 'argb_move') {
-            argb.onMove(id, data, s);
-          } else {
-            argb.onMaskDirty(id, s);
-          }
-        }
         break;
       case 'popup_show':
       case 'popup_move':
       case 'popup_resize':
       case 'popup_hide':
         // PC 模式 popup 子窗口 (desktop 模式 C++ 不会发这些事件)
-        // 父窗口可能是普通 ability 窗口, 也可能是 ARGB 异型子窗口 (回退)
         if (this.isDesktopMode) return;
         // 父窗口 Wine 尺寸传给 PopupWindowManager: 全屏游戏把渲染 surface 放
         // popup (popup 尺寸==模拟分辨率==父窗口尺寸), 需判定并拉伸到宿主屏幕;
@@ -724,7 +694,7 @@ export class WineWindowManager {
         PopupWindowManager.getInstance().onPopupEvent(
           id, event, data,
           this.getWindowStage(id) ?? this.mainWindowStage,
-          this.getWindow(id) ?? ArgbWindowManager.getInstance().getWindow(id),
+          this.getWindow(id) ?? null,
           this.getEffectiveScale(),
           this.entries.get(id)?.lastResizeWineDim ?? null);
         break;
@@ -1103,15 +1073,6 @@ export class WineWindowManager {
     }
     // Desktop 模式: 非 root toplevel 销毁, C++ 自动停止合成
     if (this.isDesktopMode) {
-      this.unregisterAbility(id);
-      return;
-    }
-
-    // PC: ARGB 异型子窗口销毁 (级联销毁其 popup)
-    if (ArgbWindowManager.getInstance().has(id)) {
-      hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d: destroy ARGB subwindow', id);
-      ArgbWindowManager.getInstance().destroy(id);
-      testNapi.destroyToplevel(id);
       this.unregisterAbility(id);
       return;
     }

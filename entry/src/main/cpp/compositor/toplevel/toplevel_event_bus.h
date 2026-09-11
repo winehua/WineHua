@@ -36,23 +36,20 @@
 // 实现的无锁语义等价 (sink_ 在 wl 线程读, 装配一次性注入)。
 // ============================================================================
 
-// 22 种 toplevel 事件 (PLAN §2.3 清单; 命名与旧字符串一一对应, 每个事件
+// toplevel 事件 (PLAN §2.3 清单; 命名与旧字符串一一对应, 每个事件
 // 的 JSON 模板见对应 Json* 函数)。ArkTS 侧按 ToplevelEventName 字符串
 // 消费 — 事件名逐字不变 (红线)。
 enum class ToplevelEventType : uint32_t {
     // 生命周期
     Created,       // "created"        PC 首帧 ({\"w\":\"h\"}) / 桌面 get_toplevel ({\"w\":640,\"h\":480})
-    ArgbCreated,   // "argb_created"   PC 首帧 ARGB 异型窗口
     Destroyed,     // "destroyed"
     // popup (PC 模式菜单)
     PopupHide,     // "popup_hide"
     PopupMove,     // "popup_move"
     PopupShow,     // "popup_show"
     PopupResize,   // "popup_resize"
-    // ARGB 异型窗口
-    ArgbMove,      // "argb_move"
+    // ARGB 窗口格式
     Argb,          // "argb"           shm format 切换 (首帧必发)
-    MaskDirty,     // "mask_dirty"     0/1 剪影掩码更新
     // 尺寸/格式
     Resize,        // "resize"
     Surface,       // "surface"        renderer surface 物理像素尺寸
@@ -77,15 +74,12 @@ enum class ToplevelEventType : uint32_t {
 inline const char* ToplevelEventName(ToplevelEventType evt) {
     switch (evt) {
         case ToplevelEventType::Created:       return "created";
-        case ToplevelEventType::ArgbCreated:   return "argb_created";
         case ToplevelEventType::Destroyed:     return "destroyed";
         case ToplevelEventType::PopupHide:     return "popup_hide";
         case ToplevelEventType::PopupMove:     return "popup_move";
         case ToplevelEventType::PopupShow:     return "popup_show";
         case ToplevelEventType::PopupResize:   return "popup_resize";
-        case ToplevelEventType::ArgbMove:      return "argb_move";
         case ToplevelEventType::Argb:          return "argb";
-        case ToplevelEventType::MaskDirty:     return "mask_dirty";
         case ToplevelEventType::Resize:        return "resize";
         case ToplevelEventType::Surface:       return "surface";
         case ToplevelEventType::Title:         return "title";
@@ -113,7 +107,7 @@ public:
     void SetEventSink(EventSink sink) { sink_ = std::move(sink); }
 
     // 首启 wineboot 窗口创建事件抑制 (wine_launch.cpp SetToplevelEventSuppressed
-    // 转发): 抑制 created/argb_created, 有 [MW] suppress 日志
+    // 转发): 抑制 created, 有 [MW] suppress 日志
     void SetSuppressed(bool on) { suppressed_ = on; }
     bool Suppressed() const { return suppressed_; }
 
@@ -125,7 +119,7 @@ public:
     void Post(uint32_t id, ToplevelEventType evt, const std::string& json = "{}");
 
     // ---- JSON 构造单点: 模板与旧各调用点 snprintf 逐字 (键名/值/顺序) ----
-    // 无参数事件 (Destroyed/MaskDirty/DesktopRoot/Maximized/Unmaximized/
+    // 无参数事件 (Destroyed/DesktopRoot/Maximized/Unmaximized/
     // Fullscreen/Unfullscreen/Minimized/MoveStart/MoveEnd) 用默认 "{}" —
     // 与旧调用点传 "{}" 或省略 jsonData 参数等价。
 
@@ -140,12 +134,6 @@ public:
     }
     static std::string JsonCreatedDefault() { return "{\"w\":640,\"h\":480}"; }
 
-    static std::string JsonArgbCreated(int32_t x, int32_t y, int32_t w, int32_t h) {
-        char buf[160];
-        snprintf(buf, sizeof(buf), "{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}", x, y, w, h);
-        return buf;
-    }
-
     static std::string JsonPopupHide(uint32_t popupId) {
         char buf[64];
         snprintf(buf, sizeof(buf), "{\"popupId\":%u}", popupId);
@@ -155,12 +143,6 @@ public:
     static std::string JsonPopupMove(uint32_t popupId, int32_t x, int32_t y) {
         char buf[128];
         snprintf(buf, sizeof(buf), "{\"popupId\":%u,\"x\":%d,\"y\":%d}", popupId, x, y);
-        return buf;
-    }
-
-    static std::string JsonArgbMove(int32_t x, int32_t y) {
-        char buf[96];
-        snprintf(buf, sizeof(buf), "{\"x\":%d,\"y\":%d}", x, y);
         return buf;
     }
 

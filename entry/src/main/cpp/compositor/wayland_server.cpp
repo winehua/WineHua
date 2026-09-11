@@ -357,12 +357,6 @@ void WaylandServer::ResetSessionState() {
 // RemovePopupDataLocked / RemovePopupBySurfaceKeyLocked 已移至 PopupManager
 // (compositor/popup_manager.{h,cpp}, 重构第 5B2 步)
 
-bool WaylandServer::TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out) {
-    // 收敛: 掩码消费唯一入口在 ToplevelManager::TakeWindowMask
-    // (ToplevelState::TakeMask), 此处转发 (napi_init 唯一调用方)
-    return toplevelMgr_.TakeWindowMask(id, w, h, out);
-}
-
 void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
     wl_resource* tl = toplevelMgr_.FindToplevelResource(toplevelId);
     if (tl) {

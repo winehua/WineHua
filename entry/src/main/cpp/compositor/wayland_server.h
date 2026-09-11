@@ -132,10 +132,6 @@ public:
     // 会对已 fullscreen 的目标重新取全屏优先级号; tl_set_fullscreen 等
     // 批处理路径必须保持默认 false。见 ToplevelState::fsPriority 注释
     void RaiseToplevel(uint32_t id, bool userInitiated = false);
-    // ARGB 异型窗口的 0/1 剪影掩码 (setWindowMask 用, ArkTS 轮询拉取)
-    using WindowMask = ToplevelManager::WindowMask;
-    // 取掩码: false = 无掩码或无更新; 取走清除 dirty
-    bool TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out);
     // Desktop 合成模式 (Tablet): 全部 toplevel 合成到一个 root framebuffer。
     // 模式差异的策略查询走 Policy() (display_policy.h); IsDesktopMode 只用于
     // 模式上报类调用 (给 wine 传环境/标记进程/日志)。

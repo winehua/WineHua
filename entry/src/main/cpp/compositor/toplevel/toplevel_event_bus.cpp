@@ -11,8 +11,8 @@
 //
 // 与旧 WaylandServer::FireToplevelEvent (wayland_server.cpp, 本步前状态)
 // 逐字对应:
-//   ① 抑制门禁 — suppressed_ (原 toplevelEventSuppressed_) && created/
-//      argb_created → [MW] suppress 日志 (文本/条件/短路顺序逐字);
+//   ① 抑制门禁 — suppressed_ (原 toplevelEventSuppressed_) && created
+//      → [MW] suppress 日志 (文本/条件/短路顺序逐字);
 //   ② [MW] FireToplevel id=... event=... data=... 日志 — eventName 经
 //      ToplevelEventName 映射为旧字符串, id/event/data 占位符逐字;
 //   ③ sink 派发 — EventSink 即旧 toplevelCb_ (napi_init SetToplevelCallback
@@ -30,13 +30,12 @@
 void ToplevelEventBus::Post(uint32_t id, ToplevelEventType evt,
                             const std::string& json) {
     const char* name = ToplevelEventName(evt);
-    // ① 首启 wineboot 抑制窗口创建事件 (PC 窗口模式): 抑制 created/
-    //    argb_created 后 ArkTS 不启动 WineWindowAbility, wineboot 等待窗
-    //    不出现在系统桌面。功能不受影响 — wine.inf 安装不依赖窗口显示;
-    //    wineboot 退出的 destroyed 事件照常派发, ArkTS 对未知 toplevel id
-    //    的销毁容忍。原条件/短路顺序/日志逐字。
-    if (suppressed_ &&
-        (evt == ToplevelEventType::Created || evt == ToplevelEventType::ArgbCreated)) {
+    // ① 首启 wineboot 抑制窗口创建事件 (PC 窗口模式): 抑制 created 后
+    //    ArkTS 不启动 WineWindowAbility, wineboot 等待窗不出现在系统桌面。
+    //    功能不受影响 — wine.inf 安装不依赖窗口显示; wineboot 退出的
+    //    destroyed 事件照常派发, ArkTS 对未知 toplevel id 的销毁容忍。
+    //    原条件/短路顺序/日志逐字。
+    if (suppressed_ && evt == ToplevelEventType::Created) {
         OH_LOG_INFO(LOG_APP, "[MW] suppress %{public}s tl=%{public}u (wineboot init)",
                     name, id);
         return;

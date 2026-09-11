@@ -796,39 +796,6 @@ static napi_value GetDesktopRootId(napi_env env, napi_callback_info) {
     return r;
 }
 
-// -- NAPI: takeWindowMask -- (ARGB 异型窗口剪影掩码, ArkTS 轮询拉取)
-static napi_value TakeWindowMask(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    if (argc >= 1) {
-        napi_get_value_uint32(env, args[0], &id);
-    }
-    int w = 0, h = 0;
-    std::vector<uint8_t> bits;
-    if (!WaylandServer::GetInstance()->TakeWindowMask(id, w, h, bits)) {
-        return nullptr;
-    }
-    napi_value result, wv, hv, buf;
-    napi_create_object(env, &result);
-    napi_create_int32(env, w, &wv);
-    napi_create_int32(env, h, &hv);
-    void* data = nullptr;
-    napi_create_arraybuffer(env, bits.size(), &data, &buf);
-    if (data && !bits.empty()) {
-        memcpy(data, bits.data(), bits.size());
-    }
-    napi_value wKey, hKey, bufKey;
-    napi_create_string_utf8(env, "w", 1, &wKey);
-    napi_create_string_utf8(env, "h", 1, &hKey);
-    napi_create_string_utf8(env, "buffer", 6, &bufKey);
-    napi_set_property(env, result, wKey, wv);
-    napi_set_property(env, result, hKey, hv);
-    napi_set_property(env, result, bufKey, buf);
-    return result;
-}
-
 // -- Input forwarding NAPI (unified InputManager path) --
 static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
     size_t argc = 8;
@@ -1173,7 +1140,6 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"dumpWindowLayout", nullptr, DumpWindowLayout, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"takeWindowMask", nullptr, TakeWindowMask, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
