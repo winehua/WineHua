@@ -1,0 +1,7 @@
+dc5204ecb0c|2026-09-06|fix(ntdll): search arm64x DXVK overlay before x64
+d2ceee0f451|2026-09-05|fix(ohos): route Box64 SMC and CALLRET before Wine SEH and DFX
+cf37f755944|2026-08-21|Merge remote-tracking branch 'origin/master' into feature/arm64
+db8df6a15d5|2026-08-20|fix(wow64): alias vkMapMemory into 32-bit VA for WowBox64 DXVK
+651c33a02fc|2026-08-20|fix(wow64): 4G 分配下限与高区探测限定 aarch64 — 恢复 x86_64/box64 方案
+d84ff28c6a7|2026-08-16|feat(wow64): 支持 HODLL 环境变量指定 32 位转译器 — ARM64 默认 libwow64fex.dll
+1dd4e895b10|2026-08-16|feat(arm64): 原生 wine arm64 适配 — ntdll/wow64/signal/virtual/mapping

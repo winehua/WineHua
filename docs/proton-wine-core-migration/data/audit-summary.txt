@@ -1,0 +1,40 @@
+winehua commits on origin/master : 61
+commits only on HEAD       : 7
+files touched (union)      : 101
+  new vs Valve Proton Wine : 40
+  exists in Valve tree too : 61
+
+--- touched files by top-level area (NEW) ---
+     10 dlls/wineohos.drv
+      8 dlls/winewayland.drv
+      6 dlls/ntdll
+      3 dlls/mciqtz32
+      2 programs/winehua_keep
+      2 programs/winehua_graphics_smoke
+      2 programs/winehua_dinput_probe
+      2 dlls/win32u
+      1 server
+      1 dlls/winebus.sys
+      1 dlls/dnsapi
+      1 configure
+      1 .gitignore
+
+--- touched files by top-level area (BOTH) ---
+     19 dlls/ntdll
+      8 dlls/winewayland.drv
+      8 dlls/win32u
+      7 server
+      3 dlls/wow64
+      3 dlls/mciqtz32
+      2 dlls/setupapi
+      1 tools
+      1 programs/wineboot
+      1 po
+      1 include
+      1 dlls/winebus.sys
+      1 dlls/shell32
+      1 dlls/mountmgr.sys
+      1 dlls/mmdevapi
+      1 dlls/kernel32
+      1 dlls/dnsapi
+      1 configure.ac

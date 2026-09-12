@@ -1,0 +1,61 @@
+08cbdd642b9|2026-09-05|feat(dnsapi): builtin resolver fallback for hosts without libresolv (OHOS musl)
+205ba3444ad|2026-09-05|feat(winewayland): WineHua modal 对话框探测与私有协议上报
+7005b6861e8|2026-09-04|fix(winebus): 手柄总线默认恢复 Wine 原行为, Controller Hub 需显式开启
+6569cd8dbd9|2026-08-20|Merge commit '78dffe3e537'
+037984bdc80|2026-08-15|fix(win32u): 最小化窗口豁免 present_rect 替换 — 修复全屏游戏还原握手失效
+65b5128d50f|2026-08-10|feat(ntdll): Windows 兼容版本 — 移植 CrossOver 的 WINEHUA_WINDOWS_VERSION 环境变量补丁
+b7f43d4bd96|2026-08-10|feat(win32u): Tank 全屏修复 — WINEHUA_SIMULATE_RESOLUTION per-process 模拟 CDS 分辨率，删广播/死代码
+752ef4aefcb|2026-08-09|feat(winewayland): 相对模式 enter 静默校准, SetCursorPos 不污染 dinput 差分通道
+1882de66331|2026-08-09|fix(ui): explorer 菜单 Start 翻译「起点」修正为「开始」
+11e59500210|2026-08-03|feat: 添加 winehua_dinput_probe 探针，从主仓库 smoke/ 迁移
+19300be437a|2026-07-30|feat(winehua_keep): desktop keep-alive 辅助进程, 替代 --no-auto-close
+035725cc5bc|2026-07-26|fix(shell32): desktop.ini CLSID 解析失败时回退到默认 folder handler
+93df673ac15|2026-07-26|feat(winewayland): app_id 附加窗口 class 后缀以区分 explorer 窗口类型
+7718da97c1c|2026-07-25|fix: #ifdef __OHOS__ guards for upstream-incompatible changes
+d9f1fd599f7|2026-07-25|docs: PE 目标文件标注 #ifdef __OHOS__ 不可用
+dd1cbdf0d78|2026-07-25|refactor: M3 — env.c DllPath 加 #ifdef __OHOS__ 守卫减少 diff
+a30aff0292c|2026-07-25|refactor: 提取 wayland_surface_update_min_max 到独立文件 (M5)
+c2177b489d4|2026-07-25|refactor: 消除 server.c 中的 goto 跨块跳转 (M2)
+7e8a7197080|2026-07-25|refactor: 提取 drive→unix path 映射到 ohos_file.c/h (M1)
+e8ecfe76e31|2026-07-25|refactor(ntdll): 提取 wineserver socket 扫描 + GET_FUNC 回退 upstream
+85e8d3f2f90|2026-07-25|refactor(win32u): 提取 opengl diag 框架到 opengl_diag.c/h
+8de193b356d|2026-07-25|refactor(ntdll): 提取 spawn 高层接口到 ohos_broker.c，进一步收缩注入点
+3e9a444897d|2026-07-25|refactor(ntdll): 提取 virtual.c noexec/JIT 代码到 ohos_virtual.c/h
+7c2c142a18a|2026-07-25|refactor(ntdll): 提取公共 Process Broker 客户端到 ohos_broker.c/h
+66747922a12|2026-07-25|refactor(winewayland): 分离 opengl.c 诊断框架和 readback 管线到独立文件
+54aa4207b5e|2026-07-25|refactor(mciqtz32): 提取 waveOut MP3/WAV 后端到独立文件
+a09da08d384|2026-07-25|chore: 清理无意义的上游差异 — 移除纯调试日志和格式化变更
+ab7b0305c26|2026-07-25|chore: 回退 makedep.c CRLF + configure 到 upstream baseline
+5074468a078|2026-07-18|chore(winewayland): reword readback size-sentinel comment
+787e79bf008|2026-07-18|fix(winewayland): recreate readback pbuffer on client resize
+f82f4a8f29e|2026-07-17|refactor: 统一环境变量传递为 __env__ 字符串机制
+2ae866964dc|2026-07-11|refactor: PAD_MODE → __OHOS__ 编译时宏 + winewayland.drv 运行时桌面模式
+3ec1e4d1625|2026-07-10|feat: broker SPAWN 协议支持环境变量转发 (ENV 段)
+d387ca85406|2026-07-08|feat: broker SPAWN 协议支持命名多 fd (发送端)
+b63f26bb56a|2026-07-06|chore: 同步 audio_ipc_protocol.h + graphics_runtime_env.h, 更新 wine submodule
+0d885ac7b95|2026-07-06|chore: 清理 WoW64 调试诊断日志
+db90f6413ab|2026-07-06|feat: WoW64 32-bit 进程加载诊断日志 + --enable-archs=i386,x86_64
+2ac4e1c87bd|2026-07-02|fix: audio_ipc_protocol.h 移到 wineohos.drv/ 目录, 去掉 shared/ 相对路径
+9d36aff91aa|2026-07-05|feat: complete OHOS audio backend on pad
+ecfd429e751|2026-07-04|fix(wineohos.drv): add EXTRADEFS/MODULE to Makefile.in, add wineohos.spec
+609f66285b3|2026-06-26|server: 新增 --no-auto-close 选项，禁止桌面自动关闭
+a5bbc03d06c|2026-06-25|清理: 回退纯格式化变更 (花括号/空白行/OHOS-DEBUG 注释)
+4ebeef255c7|2026-06-25|fixup: virtual.c anon_mmap 回退 — 整块 else 而非仅内容包裹
+4d08097ca4e|2026-06-25|修复: PAD_MODE 守卫 WINESERVERSOCKET 死连接检测 + virtual.c Box64 mmap 回退
+851a1b657a9|2026-06-23|清理: 移除 OHOS-DBG 临时调试日志, 统一保留日志前缀
+f31e4cf7c06|2026-06-22|修复: Wine 子进程 entryParams 兼容 Box64 in-process 模式
+af64af414a7|2026-06-21|winewayland.drv: PAD_MODE 下通过 window_geometry x,y 传递虚拟桌面坐标
+29ad6866b5f|2026-06-21|修复: PAD_MODE 允许桌面窗口创建 wayland surface (subsurfacing 根)
+e08d38b8464|2026-06-21|修复: wineserver 持久化 + WINESERVERSOCKET 死连接 fallback
+d33229f9d11|2026-06-21|修复: wineserver 重启 — start_server 通过 broker 替代 posix_spawn
+67656950306|2026-06-19|wayland/mountmgr/server: resize 约束传递 + strncpy 修复 + musl_compat 加入构建
+87a93f896e4|2026-06-19|修复: OHOS 无 fontconfig 时加载系统字体 /system/fonts/
+6572449d993|2026-06-19|修复: OHOS 不支持 symlink() 导致 explorer 无法枚举盘符
+aafcf89c5b3|2026-06-18|清理: 移除 OHOS 调试诊断代码 (BMP dump/ERR 日志/OHOS-DEBUG 注释)
+6b35058a4a4|2026-06-15|fix: NEEDMEDIA 死循环修复 + 诊断日志
+7ee8f1b9571|2026-06-14|feat: Wayland rendering chain — compositor connects, 窗口上屏
+e523d39203f|2026-06-14|fix: dosdevices symlink 不可用的四条代码路径修复
+69ca4262c70|2026-06-13|fix: unix_to_nt_file_name fallback via \??\unix when dosdevices unavailable
+71aa11709bf|2026-06-13|feat(__OHOS__): dosdevices fallback for kernel32 loading when symlink unavailable
+f481a2a796d|2026-06-13|fix: symlink failure non-fatal in setup_config_dir for OHOS compatibility
+1f5ccc01412|2026-06-12|ohos: Box64 compatibility + noexec filesystem support

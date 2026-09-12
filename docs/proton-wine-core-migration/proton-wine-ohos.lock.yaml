@@ -1,0 +1,80 @@
+# Proton-Wine-OHOS 锁定值（W0 产出）
+# 生成：2026-09-12，分支 feature/proton-wine-ohos
+# 用途：把「对照对象」「本地现状」「本轮审计口径」都固定成提交哈希，避免后面拿分支名当版本。
+
+stage: W0        # W0 只是审计；W1 才会真的换 Wine Core
+generated_by: codex/proton-wine-ohos
+
+# ── 目标 Wine Core（W1 要迁入的基线）──────────────────────────────
+target:
+  proton:
+    repo: ValveSoftware/Proton
+    commit: 5b89db940e0ebe3a137a6009a3589232fe084c09
+    verified: "git ls-remote HEAD 与锁定值一致（2026-09-12 复验）"
+    pinned_submodules:
+      wine: dc26e61847081a1b5cb0733dc30feba6ee575482
+      FEX: 1cc4b93e7a71c883ec021b71359f136394dc1f3c
+      dxvk: a6764047e587178283fcde4073ae6e1410af594f
+      vkd3d-proton: 212991fc2c266bc0d59f4c4ce8f80f7126508d71
+  wine:
+    repo: ValveSoftware/wine
+    commit: dc26e61847081a1b5cb0733dc30feba6ee575482
+    branch: proton_11.0
+    branch_note: 该提交是 proton_11.0 分支 tip
+    VERSION: "Wine version 11.0"
+    files: 11149
+    local_copy: /tmp/valve-wine-probe（blobless，W0 审计用；W1 需在子模块里正式接入）
+
+# ── 当前 WineHua Wine（对照 A）────────────────────────────────────
+current:
+  winehua_repo: github.com/winehua/WineHua
+  winehua_baseline_commit: 2728523fe1aaaa2509d3e22dc73923dfdf23461f
+  wine_submodule:
+    repo: github.com/winehua/wine
+    commit: dc5204ecb0c3c1bf6624542ecf42f931fcc1a3b0
+    subject: "fix(ntdll): search arm64x DXVK overlay before x64"
+    VERSION: "Wine version 11.10"
+    lineage: "WineHQ upstream fork（根提交 2c25c3e9442, 1993-06-29）"
+  base_branch_in_fork: origin/master
+  merge_base_with_base_branch: 57bad82108f   # 2026-08-14
+
+# ── 要冻结的对照分支（可恢复基线）────────────────────────────────
+frozen_baseline:
+  branch: feature/proton-arm64-parity
+  worktree: /home/liufeng/src/WineHua-proton-parity
+  head: 2695185
+  status: 保留，不删；与 W1 候选做 A/B
+  known_platform_fix_included:
+    - "scripts/patches/wine-arm64ec-ndr-shadow-space.patch（ARM64EC rpcrt4 thunk 跳过 shadow space；已真机验证 RPC 闭环）"
+  known_open_issue:
+    - "RPC 返回后仍有 execute-AV；首要怀疑 ARM64EC thunk 返回未走 __os_arm64x_dispatch_ret"
+
+# ── 本轮审计口径（可复现）────────────────────────────────────────
+audit:
+  tool: docs/proton-wine-core-migration/tools/wine-delta-audit.sh
+  method: >
+    只取 WineHua 自己写的提交（--author 过滤），不统计与上游的全仓 diff；
+    再用 Valve 树的文件清单把每个被触碰文件分成 NEW（Valve 里不存在）
+    与 BOTH（两边都有，属改动上游文件）。
+  winehua_authored_commits: 61
+  fork_only_commits: 7
+  files_touched: 101
+  files_new: 40          # 必须在 W1 新加
+  files_both: 61         # 必须逐个人工重放（上游 11.0→11.10 已变）
+  valve_has_arm64ec_infra: true   # Valve 树已有 dlls/ntdll/signal_arm64ec.c、dlls/wow64/*、unixlib 等
+
+# ── 本轮明确不动的层（首轮迁移固定变量）──────────────────────────
+do_not_change_in_w1:
+  - FEX 版本与四产物（libwow64fex.dll / libarm64ecfex.dll / 两个 .so）
+  - FEX_Config.json 与 SHM 统计
+  - DXVK（legacy 1.10.3 / modern 2.6.2）与 ARM64X 图形库
+  - vkd3d-proton、Mesa、virglrenderer
+  - Host presenter / Venus / OHOS 图形与输入
+
+# ── 明确不迁移（需在新基线上重新复现后再定）──────────────────────
+do_not_port_by_default:
+  - 临时 crash bypass
+  - 旧 FEX / 旧 WoW64 workaround
+  - Steam 专用 workaround
+  - 固定偏移 binary patch（含我们用于验证 rpcrt4 的那次字节改动）
+  - 游戏专用 patch
