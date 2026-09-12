@@ -118,6 +118,94 @@ ABI 级改动，必须先拿到 C1/C2 的判定证据。
 4. 它给出了明确的下一步：**先判定 C1 还是 C2**。若是 C1，修的是 FEX 的 ARM64EC 约定
    （并可借 R 线的 FEX 参考版本做对照）；若是 C2，修的是我们 Wine 的 rpcrt4。
 
+## 4.1 二分结果：只有 64 位 ARM64EC 路径坏（32 位全过）
+
+把同一份 `comprobe.c` 交叉编译成 **i686**（32 位 PE）再跑一次，
+**17 步全部走完**，包括 `OpenSCManagerW(L"",L"")`、`OpenServiceW`、
+`EnumServicesStatusExW`、`CoMarshalInterface`、以及最后那个 `OpenSCManagerW(NULL,NULL)`：
+
+```text
+STEP 9  OpenSCManagerW("","")     handle=001E6390 gle=0
+STEP 10 OpenServiceW(Steam)       handle=001E63C0 gle=0
+STEP 11 EnumServicesStatusExW     ok=0 needed=3392 gle=234
+STEP 13 CoMarshalInterface        hr=0x00000000
+STEP 17 OpenSCManagerW(NULL,NULL) handle=00CE4FD8 gle=0
+DONE - all steps completed
+```
+
+⇒ 结论：
+
+- Wine 的 RPC / 服务控制 / 命名管道**功能本身是好的**，`services.exe` 链路通；
+- 坏的只有 **x86-64 应用 → ARM64EC Wine DLL** 这条 64 位路径；
+- 因此**不是 C2（格式串）**：同一份 stubless 格式生成逻辑在 32 位侧工作正常。
+  剩下的就是 **C1：x64↔ARM64EC 的互操作约定**。
+
+## 4.2 C1 的具体位置：FEX 的 ARM64EC 退出/进入 thunk
+
+我方 Wine 的 `NdrClientCall2` ARM64EC trampoline 与 **上游 winehq master（2026-09-09，
+`788d90c4`）逐字相同**，也不是我们改坏的：
+
+```asm
+/* dlls/rpcrt4/ndr_stubless.c, __arm64ec__ 分支（上游 3c8fc4927d7 之后） */
+stp x29, x30, [sp, #-0x20]!
+stp x2, x3, [x4, #-0x10]!     /* 把两个寄存器实参压栈，x4 -= 0x10 */
+mov x2, x4                    /* stack_top = x4 */
+bl NdrpClientCall2
+```
+
+而 `x4` 由运行时的 ARM64EC 调度器提供 —— 在我们的架构里就是 **FEX**：
+
+```asm
+/* thirdparty/fex/Source/Windows/ARM64EC/Module.S: ExitFunctionSuspendResumePoint */
+mov x4, sp
+tbz x4, #3, ret_sp_misaligned
+ldr lr, [x4], #0x8            /* 弹出返回地址，x4 += 8 */
+mov sp, x4
+ret_sp_aligned:
+br x17                        /* 进入 ARM64EC 入口 thunk，此时 x4 = 原 RSP + 8 */
+```
+
+### 量纲对不上：差一个 32 字节 shadow space
+
+x86-64 调用约定里，`[RSP]` 是返回地址，`[RSP+8 .. RSP+0x28]` 是 **32 字节 home/shadow space**，
+**栈传参从 `[RSP+0x28]` 开始**。
+
+| 路径 | `stack_top` | `stack_top+0x10`（格式串认为的第 3 个参数） | 真实第 3 个参数位置 |
+| --- | --- | --- | --- |
+| x86-64 原生 trampoline | `RSP+0x18` | `RSP+0x28` ✅ | `RSP+0x28` |
+| ARM64EC trampoline + FEX 现有的 `x4`（=`RSP+8`） | `(RSP+8)-0x10 = RSP-8` | `RSP+8` ❌（读到 shadow space） | `RSP+0x28` |
+
+**偏差正好是 0x20（32 字节 shadow space）。** 这与本轮观测完全吻合：
+
+```text
+params 地址 = stack_top + 0, +8, +0x10, +0x18   ← 格式串假设四个参数连续
+```
+
+即：第 1、2 个参数（寄存器传参，被 trampoline 正确压栈）没问题，
+**第 3、4 个参数（栈传参）读到了 shadow space / 返回地址那一带**，
+于是 `SC_RPC_HANDLE *handle` 这个出参指针变成垃圾值，
+最终在格式串解释器里写出 `str xzr,[x19]`（x19 = 0x10）——正是 Steam dump 里那个
+"写地址 0x10"的 `0xC0000005`。
+
+也解释了为什么**普通 ARM64EC 调用不出问题**：像 `CreateFileW`（7 个参数）这类
+非可变参数函数，ARM64EC ABI 直接用 `x0..x6` 传参，根本不经过这条栈路径。
+只有**可变参数**（`NdrClientCall2` 就是）才走 x64 ABI 的栈传参。
+
+### 待验证/待修（下一轮）
+
+> 以上是基于 ABI 的推导，**尚未用一次对照实验证实**。下一轮要做的：
+
+1. **证实**：在 FEX 的 `ExitFunctionSuspendResumePoint` 处把 `x4`（以及 x64 `RSP`）
+   dump 到日志，与调用方真实栈位置比对；或在 ARM64EC trampoline 里 dump
+   `x4`、三个 `stack_offset` 与实际参数值，直接看第 3/4 个参数是否落在 shadow space。
+2. **修**：若证实是 FEX 的 thunk 少跳过 shadow space，改
+   `Source/Windows/ARM64EC/Module.S` 并重建 FEX（走 `scripts/build_fex.sh`）+
+   重出 HAP，用 `comprobe.exe` 当回归用例（期望打出 `DONE - all steps completed`）。
+3. **对照**：同时检查参考 FEX（`1cc4b93e`，Proton 锁定版本）里
+   `Source/Windows/ARM64EC/Module.S` 的对应实现是否已修（已确认参考侧在
+   `86ff33bbe..1cc4b93e` 区间内只有 3 个 ARM64EC 相关提交，均非此路径，
+   所以**大概率仍要靠我们自己定位/修**，而不是换版本就能解决）。
+
 ## 5. 复现材料清单
 
 | 文件 | 说明 |
