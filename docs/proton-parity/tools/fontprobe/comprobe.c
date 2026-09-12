@@ -26,6 +26,36 @@
 
 static FILE *g_out;
 
+static void mark(const char *fmt, ...);
+
+/* Log the first few exceptions (with RIP/RSP) so a crash after a successful call
+ * can be attributed to an exact address instead of being guessed at. */
+static int g_veh_count;
+
+static LONG CALLBACK veh_log(EXCEPTION_POINTERS *ep)
+{
+    EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    CONTEXT *c = ep->ContextRecord;
+
+    if (g_veh_count >= 8) return EXCEPTION_CONTINUE_SEARCH;
+
+    mark("VEH[%d] code=0x%08lX address=%p rip=%p rsp=%p rbp=%p",
+         g_veh_count, (unsigned long)er->ExceptionCode, (void *)er->ExceptionAddress,
+         (void *)(ULONG_PTR)c->Rip, (void *)(ULONG_PTR)c->Rsp, (void *)(ULONG_PTR)c->Rbp);
+    if (er->NumberParameters >= 2)
+        mark("VEH[%d]   parameter[0]=%p parameter[1]=%p (1=write, 8=execute)",
+             g_veh_count, (void *)er->ExceptionInformation[0],
+             (void *)er->ExceptionInformation[1]);
+    {
+        ULONG_PTR *sp = (ULONG_PTR *)(ULONG_PTR)c->Rsp;
+        int i;
+        for (i = 0; i < 8; i++)
+            mark("VEH[%d]   stack[%d] = %p", g_veh_count, i, (void *)sp[i]);
+    }
+    g_veh_count++;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static void mark(const char *fmt, ...)
 {
     va_list ap;
@@ -120,6 +150,11 @@ static int run(void)
 
     mark("STEP 9 OpenSCManagerW(L\"\", L\"\") - non-NULL strings");
     {
+        mark("  IAT __imp_OpenSCManagerW = %p (slot %p)",
+             *(void **)(void *)&OpenSCManagerW, (void *)&OpenSCManagerW);
+        mark("  OpenSCManagerW address   = %p", (void *)OpenSCManagerW);
+        mark("  OpenSCManagerA address   = %p", (void *)OpenSCManagerA);
+        mark("  OpenServiceW address     = %p", (void *)OpenServiceW);
         SC_HANDLE scm = OpenSCManagerW(L"", L"", SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE);
         err = GetLastError();
         mark("RESULT %-40s handle=%p gle=%lu", "OpenSCManagerW(\"\",\"\")", (void *)scm, (unsigned long)err);
@@ -215,6 +250,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
     if (!g_out) g_out = fopen("C:\\comprobe.txt", "w");
     if (!g_out) g_out = fopen("Z:\\comprobe.txt", "w");
     if (!g_out) return 1;
+
+    AddVectoredExceptionHandler(1, veh_log);
+    mark("VEH installed");
 
     run();
 

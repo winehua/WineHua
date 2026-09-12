@@ -292,7 +292,7 @@ trace:rpc:NdrpClientCall2 RetVal = 0x0        ← 调用成功返回
 ⇒ **`x4`/shadow-space 这一段已经修对了**，`OpenSCManagerW` 现在能完成到
 `services.exe` 的完整 RPC 往返。
 
-### 4.6 剩余问题（独立、尚未解决）
+### 4.6 剩余问题（独立、已精确刻画，尚未解决）
 
 RPC 返回之后立刻还有一个 `EXCEPTION_ACCESS_VIOLATION`，而且 Wine **无法派发**它：
 
@@ -306,20 +306,80 @@ err:seh:NtRaiseException Exception frame is not in stack limits => unable to dis
 也就是**帧链走飞了**。它发生在 `NdrpClientCall2` 返回之后，落点应在
 「trampoline 收尾 / FEX 的 ARM64EC→x64 返回路径 / 调用方」这一段。
 
-下一轮要做的对照实验（按代价从低到高）：
+#### 4.6.1 给探针加 VEH 后的精确结果
 
-1. **不要破坏 `x4`**：当前 trampoline 两条写法都会改写 `x4`（它同时承载 x64 的 RSP）。
-   改成用临时寄存器做基址（`add x9, x4, #0x10` 后 `stp x2,x3,[x9]`、`mov x2,x9`），
-   保留 `x4` 原值，再测一次 —— 这能直接判定「剩余 AV 是不是 x4 被破坏导致的」。
-2. 按同样方式核对 `NdrClientCall3`/`Ndr64AsyncClientCall` 的收尾。
-3. 若仍崩，再查 FEX 的 ARM64EC 返回路径（`RetToEntryThunk` / `ExitToX64`）与
-   Wine 的 `signal_arm64ec.c` 帧链遍历。
+在 `comprobe.exe` 里装了 `AddVectoredExceptionHandler`，把异常地址/寄存器/栈都打出来：
 
-### 4.7 一条被推翻的中间假设（留档）
+```text
+STEP 9 OpenSCManagerW(L"", L"") - non-NULL strings
+  IAT __imp_OpenSCManagerW = 00000001F18A25FF (slot 0000006FFF7514D0)
+  OpenSCManagerW address   = 0000006FFF7514D0     ← Wine 生成的 ARM64EC 入口 thunk
+  OpenServiceW address     = 0000006FFF7514E0     （相距 0x10）
+VEH[0] code=0xC0000005 address=00000001400034F8 rip=00000001400034F8 rsp=0000007E9BA3ECB0 rbp=00000001400034F8
+VEH[0]   parameter[0]=0000000000000008 parameter[1]=00000001400034F8    ← 8 = **执行**
+VEH[0]   stack[0] = 0000000000000005      ← 正是那次调用的 access mask
+VEH[0]   stack[1] = 0000007E9BA3ECF0
+VEH[0]   stack[2] = 0000006FFF671534      ← Wine 模块内的返回地址
+VEH[0]   stack[3] = 0000007E9BA3ECD0
+```
+
+查过 PE 布局：`0x1400034F8` **在探针自己的 `.rdata` 里**（`.text` 是 0x140001000-0x140002ba6，
+`.rdata` 是 0x140003000 起）—— 也就是说 **CPU 试图“执行”一个数据地址**
+（该地址是代码里当字符串常量用的），并且 `rbp` 也等于它。
+
+#### 4.6.2 已排除：不是 x4 被破坏
+
+做了对照实验：把补丁改成**不破坏 x4** 的等价写法
+（`stp x2,x3,[x4,#0x10]` 无回写 + `add x2,x4,#0x10`），其余语义完全相同。
+
+```text
+结果：AV 的所有数值逐字节一致（rip / rsp / rbp / stack[0..3] 全同）
+⇒ 剩余 AV 与 x4 是否被改写无关。
+```
+
+#### 4.6.3 当前的首要怀疑：ARM64EC thunk 的「返回」没有走派发器
+
+对照 clang 为 ARM64EC 变参函数生成的入口 thunk，它是**两头都走派发器**的：
+
+```asm
+$ientry_thunk$cdecl$i8$varargs:
+    ... 保存 x29/x30 与 q6-q15 ...
+    add x4, x4, #32          ; 入口：跳过 shadow space
+    mov x5, xzr
+    blr x9                   ; 调函数体
+    adrp x8, __os_arm64x_dispatch_ret
+    ldr  x1, [x8, :lo12:__os_arm64x_dispatch_ret]
+    mov  x8, x0
+    ... 恢复寄存器 ...
+    br   x1                  ; ★ 返回：走 __os_arm64x_dispatch_ret
+```
+
+而 Wine 手写的 4 个 thunk 结尾是裸 `ret`：
+
+```asm
+    "ldp x29, x30, [sp], #0x20\n\t"
+    "ret\n\t"
+```
+
+ARM64EC 里 `ret` = `br x30`，**不会经过派发器**。若此刻 x30 里是 x64 的返回地址，
+CPU 就会在 ARM64 模式下**把 x64 机器码当 ARM64 指令执行** —— 这与我们观测到的
+「执行一个数据地址」的现象高度吻合（x64 字节被误译成 `br <数据地址>`）。
+
+#### 4.6.4 下一轮要做的对照实验（按代价从低到高）
+
+1. **把 4 个 thunk 的 `ret` 换成走 `__os_arm64x_dispatch_ret`**（照 clang 的写法），
+   再跑 `comprobe.exe`。这是当前最强的假设。
+2. 若仍崩，在 thunk 收尾处 dump `x30` / `sp` / `[sp-8]`，确认返回目标是谁。
+3. 再查 FEX 的 `RetToEntryThunk` / `check_target_ec` 与 Wine `signal_arm64ec.c`
+   的帧链遍历。
+
+### 4.7 两条被推翻的中间假设（留档）
 
 中途曾怀疑「FEX 的 `x4` 全局传错」，并据此推断要么改 FEX、要么改 Wine。该假设已被
 §4.3 的 `varargprobe` 与 §4.4 的 clang 代码生成共同推翻：**`x4` 由环境和编译器约定一致**，
 错的只有 Wine 手写 thunk。留档以免后人重复这条路。
+
+另一条被推翻的是「剩余 AV 由 `x4` 被破坏引起」——见 §4.6.2 的对照实验。
 
 补充事实：参考 FEX（`1cc4b93e`，Proton 锁定版本）在 `86ff33bbe..1cc4b93e` 区间内
 **只有 3 个 ARM64EC 相关提交**（offline compiler backend / EC map 优化 / 分配 TOP_DOWN），
