@@ -149,16 +149,40 @@ direct/alias/copy/reused/failed 计数）。已观测到的全部条目都是：
 这与交接文档里"低地址共享映射失败 → 每次 submit 整块复制"的成本模型**不符**，
 至少在目前的样本上没有发生。后续要看这个假设是否只对特定游戏成立。
 
-**（d）真实应用的启动分成两类。** 同一 Want 通道下：
+**（d）真实应用其实都到了渲染 —— 我先前"没建窗口"的判断是错的。**
 
-| 目标 | 结果 |
-| --- | --- |
-| `games/SA/Game.exe` | 建了窗口（`WL-STAT` toplevels 3→7），117–124% CPU，合成器 FPS ≈41–56 |
-| `games/kqcs/LustFromTheDeep.exe`（Unity x64） | **没建窗口**（toplevels 保持 3），6 分钟只用 4 秒 CPU，卡在渲染前 |
-| `games/dx11_test/.../BasicHLSL11.exe`（D3D11 样例） | **没建窗口**，几秒后进程退出 |
+上一版我根据 `WL-STAT` 的 toplevel 数不变、以及合成器 FPS≈0，判定
+"Unity 与 BasicHLSL11 没建窗口、卡在渲染前"。**读了应用自己的 DXVK 日志后这个结论被推翻：**
 
-所以"真实游戏性能"这条要落地，先得解决"哪些应用能起到窗口/渲染"这一类问题，
-而不是继续调测量口径。
+```text
+# C:\windows\temp\BasicHLSL11_d3d11.log （本次运行 10:51 更新）
+info:  [DXVK-PERF] diagnosis enabled sample_frames=120
+info:  Presenter: Actual swap chain properties:
+         Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR
+         Buffer size:  640x480   Image count: 3
+
+# C:\windows\temp\LustFromTheDeep_d3d11.log （本次运行 10:44 更新）
+warn:  DxgiSwapChain::GetFrameStatistics: Semi-stub      ← swapchain 已存在并被查询
+warn:  DXGI: MakeWindowAssociation: Ignoring flags
+
+# C:\windows\temp\steamwebhelper_dxgi.log
+err:   DxvkInstance: Failed to create instance            ← 这个才是真失败
+```
+
+**即 BasicHLSL11 与 Unity 都成功创建了 DXVK swapchain**（640x480 / immediate / 3 images），
+Unity 甚至走到了 `GetFrameStatistics`（典型的第一帧呈现路径）。
+
+我误判的两个原因：
+
+1. **`WL-STAT` 的 toplevel 数不反映游戏窗口** —— 游戏的 Win32 窗口是被合成进
+   Wine 桌面那个 toplevel 的，不会新增 xdg_toplevel。
+2. **合成器 FPS≈0 只说明"没有新帧被合成"** —— 画面停在菜单/静态时本来就不出帧，
+   不等于没渲染。SA/Game.exe 一直在动，所以它给出 41–56 fps。
+
+**修正后的结论：真实游戏性能是可以测的**，只是必须保证游戏处于"持续出帧"的状态
+（否则量到的是"静止画面 0 fps"）。Unity 停在菜单就是典型场景 ——
+`GameHook` 已经带了点击自动化（`winehua.click_title_prefix` / `click_button_text`）
+正是为这种情况准备的。
 
 ### 2.6 真实应用的 SMC / 信号链开销（有量化）
 
