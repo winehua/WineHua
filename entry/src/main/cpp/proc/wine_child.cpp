@@ -387,6 +387,24 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
 
 extern "C" void Main(NativeChildProcess_Args args)
 {
+    // 开鸿/OHOS 实测 (2026-09-12): native 子进程由框架启动, fd 表被重建, 但平台库
+    // (hilog 等) 在 fork 后保留着父进程的 fd 号缓存 —— 子进程里该号一旦空闲, 就会被
+    // wine 的 IPC fd 复用, 平台库对"自己的"fd 的写入于是插进 wine 的请求流
+    // (wineserver 读到非法请求头 req=714604645 size=1.79GB, 单线程服务停摆)。
+    // 对策: 在任何 fd 分配之前把低位号段用 /dev/null 占满, 使
+    //   (a) 平台库对陈旧 fd 号的写入落到无害对象上;
+    //   (b) wine 自己分配的 fd 落在平台库不会使用的号段。
+    // 打不开 /dev/null 时循环立即结束, 行为回到改动前 (只多一条日志)。
+    {
+        long maxfd = sysconf(_SC_OPEN_MAX);
+        int cap = (maxfd <= 0 || maxfd > 192) ? 127 : (int)maxfd - 64;  // 至少留 64 个可用
+        int fd = -1, count = 0;
+        if (cap > 2)
+            while ((fd = open("/dev/null", O_RDWR)) >= 0 && fd < cap) count++;
+        OH_LOG_INFO(LOG_APP, "[WineChild] reserve low fds: maxfd=%{public}d last=%{public}d count=%{public}d",
+                    (int)maxfd, fd, count);
+    }
+
     OH_LOG_INFO(LOG_APP, "[WineChild] Main() ENTER pid=%{public}d entryParams=%{public}s",
                 getpid(), args.entryParams ? args.entryParams : "(null)");
 
@@ -588,6 +606,7 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     OH_LOG_INFO(LOG_APP, "[WineChild] calling __wine_main");
     wine_main(argc, argv);
+    fprintf(stderr, "[WineChild] __wine_main returned (abnormal)\n");
 
     // __wine_main → start_main_thread → server_init_process_done →
     // signal_start_thread (汇编实现, 劫持控制流跳入 Wine 代码)
@@ -613,7 +632,6 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
 {
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step1: setting env...");
     setenv("WINEPREFIX", WINE_PREFIX, 1);
-    setenv("WINEDEBUG", "-all", 1);
 #ifdef __aarch64__
     // Box64 基线必须先于 __env apply: 会话档位 (BOX64_DYNAREC_*) 经 __env
     // 下发, apply 最后执行才能保证 "后写胜出"。

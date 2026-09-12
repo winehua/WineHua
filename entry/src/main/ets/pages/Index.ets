@@ -299,8 +299,6 @@ struct Index {
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'titleButtonRect query failed: %{public}s', JSON.stringify(e));
     }
-    // 按当前 launcherVisible 应用一次沉浸 (初始 true = 显示状态栏)
-    this.applyImmersiveMode();
     // 悬浮窗拖动钳制尺寸 (vp) + 初始位置右上角 — 用窗口尺寸而非屏幕尺寸:
     // position 相对 Index 页面 (窗口) 定位, PC/2in1 窗口可能非全屏,
     // 按屏幕尺寸计算会超出窗口边界 (悬浮窗整体在窗口外不可见)。
@@ -375,42 +373,12 @@ struct Index {
     if (!wm.isSeparateDesktopWindow()) {
       wm.setDesktopLauncherVisible(this.launcherVisible);
     }
-    this.applyImmersiveMode();
   }
 
-  // 沉浸切换 (照抄旧桌面 Ability 的 try/catch + .catch 日志模式, tag 改 'Index')
-  private applyImmersiveMode(): void {
-    try {
-      const mw = WineWindowManager.getInstance().getMainWindow();
-      if (mw) {
-        if (this.launcherVisible) {
-          // 显示启动器: status/navigationIndicator 显示 + 退出全屏布局
-          mw.setSpecificSystemBarEnabled('status', true).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'statusBar show failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setSpecificSystemBarEnabled('navigationIndicator', true).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'navBar show failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setWindowLayoutFullScreen(false).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'exit fullScreen failed: %{public}s', JSON.stringify(e));
-          });
-        } else {
-          // 进入桌面: 全屏 + 隐藏状态栏和导航栏
-          mw.setWindowLayoutFullScreen(true).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'fullScreen failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setSpecificSystemBarEnabled('status', false).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'statusBar hide failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setSpecificSystemBarEnabled('navigationIndicator', false).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'navBar hide failed: %{public}s', JSON.stringify(e));
-          });
-        }
-      }
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'applyImmersive ERR: %{public}s', JSON.stringify(e));
-    }
-  }
+  // 沉浸式切换已移除 (2026-09-12 开鸿 PC 适配): 原逻辑在 launcherVisible 变化时
+  // 调 setWindowLayoutFullScreen / setSpecificSystemBarEnabled 切换沉浸全屏 +
+  // 系统栏显隐 — 那是移动形态全屏应用的形态, 在 PC 自由窗口下不适用
+  // (窗口应带系统装饰、可拖动缩放)。
 
   // 切换主区页签: sm 壳走 TabsController (底部 TabBar), md/lg 壳直接 set currentIndex (Stack visibility)
   private switchTab(index: number): void {

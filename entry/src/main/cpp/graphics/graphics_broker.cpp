@@ -958,7 +958,7 @@ void GraphicsBroker::AppendWineEnv(std::vector<std::string>& env) const
         env.push_back(std::string("WINEHUA_ZERO_COPY_READY_DIR=") + ZERO_COPY_READY_DIR);
         for (const std::string& extra : guestEnv) env.push_back(extra);
 #ifdef __x86_64__
-        // HarmonyOS PC emulator express GPU cannot host GL: eglCreateContext
+        // HarmonyOS PC 模拟器 express GPU cannot host GL: eglCreateContext
         // with a NULL share context and glTexImage2D with NULL pixels crash
         // Emulator.exe. Route the x86_64 guest to software rendering
         // (softpipe) instead of virpipe, and do not advertise the vtest
@@ -968,6 +968,15 @@ void GraphicsBroker::AppendWineEnv(std::vector<std::string>& env) const
         // 文件 (共享产物, arm64/x86_64 同一份) 里已含 GALLIUM_DRIVER=virpipe
         // 与 LIBGL_DRIVERS_PATH=$ORIGIN/lib/dri, 而 getenv 取首个匹配项,
         // push_back 追加的 softpipe/el1 值会被产物里的旧值遮蔽。
+        //
+        // 2026-09-12 开鸿 OpenHarmony PC 真机实测教训: 曾试图把这段绕行整体
+        // 换成 virpipe + VTEST_SOCKET_NAME (以为真机该走设计路径), 结果 wine 侧
+        // 不再创建任何 wl_surface (合成器 toplevels=0 surfaces=0, 桌面 root
+        // 永不出现)。所以这里保持模拟器/真机都验证过能出画面的 softpipe 配置。
+        // 真机上 softpipe 与硬件 EGL 设备枚举的冲突 (Mesa "Not allowed to force
+        // software rendering when API explicitly selects a hardware device" →
+        // driCreateNewScreen3 段错误) 改在 wine 侧修: dlls/win32u/opengl.c 的
+        // init_egl_devices() 在强制软件渲染时跳过硬件设备枚举。
         UpsertEnvLine(env, "GALLIUM_DRIVER=softpipe");
         UpsertEnvLine(env, "LIBGL_DRIVERS_PATH=/data/storage/el1/bundle/libs/x86_64");
 #else

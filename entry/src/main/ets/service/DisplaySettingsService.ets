@@ -1,12 +1,18 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { isSubWindowFormFactor } from './DesktopModeService';
 
 const DOMAIN: number = 0x0000;
 const STORE_NAME: string = 'display_settings';
 const KEY_SCALE: string = 'scale';
 const KEY_KEEP_SCREEN_ON: string = 'keep_screen_on';
-const DEFAULT_SCALE: number = 2.0;
+// 默认目标 effectiveScale 按承载形态分:
+//   移动形态 2.0 — 高 DPI 屏 (densityPixels 3.x) 上把 Wine 逻辑像素放大到可读尺寸
+//   桌面形态 1.0 — 系统 densityPixels 已是该屏的推荐缩放, 再乘 2 会整体放大一倍
+//                  (开鸿 OpenHarmony PC 实测 2026-09-12: deviceDPI=1.00 →
+//                   effective=2.00, 窗口/字体都过大)
+const DEFAULT_SCALE: number = isSubWindowFormFactor() ? 2.0 : 1.0;
 // 范围 [1, 3] (用户决策: 0.75 档位取消); 旧版本存过的 <1 值由 clamp 收敛到 1.0
 const MIN_SCALE: number = 1.0;
 const MAX_SCALE: number = 3.0;

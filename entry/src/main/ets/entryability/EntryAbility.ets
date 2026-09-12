@@ -5,7 +5,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DEFAULT_D3D_BACKEND, WineEnvService } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
-import { DesktopModeService } from '../service/DesktopModeService';
+import { DesktopModeService, isOpenHarmonyHost } from '../service/DesktopModeService';
 import { AppLibraryService } from '../service/AppLibraryService';
 import testNapi from 'libentry.so';
 
@@ -151,7 +151,10 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
     // 手机走 fork-shim，必须在 WineEnvService.startSession 的首次 NCP 调用前设置。
-    testNapi.setPhoneMode(deviceInfo.deviceType === 'phone');
+    // 开鸿 (OpenHarmony) 系统禁用 NCP (const.max_native_child_process=0,
+    // StartNativeChildProcess 返回 16010004), 同样改走 phone_adapter 的 fork
+    // 后端绕开 — 判据见 DesktopModeService.isOpenHarmonyHost
+    testNapi.setPhoneMode(deviceInfo.deviceType === 'phone' || isOpenHarmonyHost());
 
     // Phone desktop is rendered in a full-window XComponent. Force the window
     // to landscape (module.json5 orientation=landscape 亦静态锁定), so the
@@ -178,10 +181,11 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      // loadContent 成功后隐藏窗口装饰
+      // 窗口装饰保持系统默认 (2026-09-12 开鸿 PC 适配): 原先这里无条件
+      // setWindowDecorVisible(false) 隐藏标题栏 — 那是移动形态全屏应用的形态。
+      // PC 上隐藏装饰会让窗口失去拖动/缩放能力, 只能最大化, 与自由窗口预期不符。
       let mainWin = windowStage.getMainWindowSync();
       if (mainWin) {
-        mainWin.setWindowDecorVisible(false);
         // 保持屏幕常亮 (设置项): 启动时应用持久化值;
         // 引用存入 AppStorage 供设置页切换时立即应用 (getLastWindow 多窗口下不可靠)
         mainWin.setWindowKeepScreenOn(DisplaySettingsService.getInstance().keepScreenOn)

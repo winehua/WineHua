@@ -4,8 +4,12 @@
     "type": "entry",
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
+    // 不含 "phone": 本模块用到仅 2in1/tablet 提供的系统能力, 与 phone 的 syscap
+    // 集交集为空, 带上 phone 会让 hvigor 直接构建失败 —
+    // "The intersection of the system capability sets configured for multiple
+    // devices is empty" (2026-09-12 实测, 加回 phone 立即复现)。
+    // 另: Release 打包流程 (见 .claude/rules/local.md 第 1 步) 同样要求去掉 phone。
     "deviceTypes": [
-      "phone",
       "2in1",
       "tablet"
     ],

@@ -2,8 +2,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import testNapi from 'libentry.so';
-import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
-import { zlib } from '@kit.BasicServicesKit';
+import { fileIo as fs, fileUri, picker, Environment } from '@kit.CoreFileKit';
+import { zlib, deviceInfo } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
 import { AppLibraryService } from './AppLibraryService';
@@ -942,24 +942,70 @@ export class WineEnvService {
   // (桌面会话存活时几乎秒回), 常驻页面已在用 '' 渲染, 需一次刷新拿真实路径
   private async acquireZHome(ctx: common.Context): Promise<boolean> {
     if (!this.zHome) {
-      const documentViewPicker = new picker.DocumentViewPicker(ctx);
-      // DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
-      // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
-      let documentSaveResult: string[] = [];
-      try {
-        documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
-      } catch (e) {
-        hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
+      // 平台分流: OpenHarmony (开鸿) 实测 DocumentPickerMode.DOWNLOAD 不被设备侧
+      // UserFileService 支持 — 弹完整保存对话框 (用户取消即失败), 且返回文件路径
+      // 而非 Download/<包名>/ 目录, 语义不符 (2026-09-12 实测)。改走 file.environment
+      // 直取公共 Download 拼包名子目录; 不可写 (公共目录权限受限) 时退回应用沙箱 —
+      // 功能可用, 代价是用户需经"外部导入"投递文件。
+      // HarmonyOS 保持 picker 路径 (DOWNLOAD 模式静默且由 picker 完成授权)。
+      let home = '';
+      if (deviceInfo.osFullName.startsWith('OpenHarmony')) {
+        home = this.acquireZHomeViaEnvironment(ctx);
+      } else {
+        home = await this.acquireZHomeViaPicker(ctx);
       }
-      if (!documentSaveResult || documentSaveResult.length == 0) {
+      if (!home) {
         return false;
       }
-      const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
-      this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
+      this.zHome = home;
     }
     hilog.warn(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
     this.notify();
     return true;
+  }
+
+  // HarmonyOS: DOWNLOAD 模式直达 Download/包名/ 不弹界面; 仍防御取消/异常 —
+  // 此前空结果会在 FileUri(undefined) 处抛成未捕获 rejection, initBusy 卡死
+  private async acquireZHomeViaPicker(ctx: common.Context): Promise<string> {
+    const documentViewPicker = new picker.DocumentViewPicker(ctx);
+    let documentSaveResult: string[] = [];
+    try {
+      documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+    } catch (e) {
+      hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
+    }
+    if (!documentSaveResult || documentSaveResult.length == 0) {
+      return '';
+    }
+    const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
+    return pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
+  }
+
+  // OpenHarmony (开鸿): file.environment 的公共 Download 根 + <包名>/ 子目录
+  // (与 HarmonyOS picker 落点语义对齐); 取路径/建目录失败或不可写时退回沙箱。
+  // ensureDirectory 走 mkdir → 目录不存在才会真建, 权限不足即抛异常 → 兜底生效
+  private acquireZHomeViaEnvironment(ctx: common.Context): string {
+    const sub = `${ctx.applicationInfo.name}/`;
+    try {
+      const base: string = Environment.getUserDownloadDir();
+      if (base) {
+        const root: string = base.endsWith('/') ? base : `${base}/`;
+        const dir: string = `${root}${sub}`;
+        if (ensureDirectory(dir)) {
+          hilog.warn(DOMAIN, 'wine', 'Z home: OpenHarmony public Download=%{public}s', dir);
+          return dir;
+        }
+        hilog.warn(DOMAIN, 'wine', 'Z home: public Download not writable, fallback to sandbox');
+      }
+    } catch (e) {
+      hilog.warn(DOMAIN, 'wine', 'Z home: getUserDownloadDir failed: %{public}s', JSON.stringify(e));
+    }
+    const sandbox = `${FILES_BASE}/Download/${sub}`;
+    if (!ensureDirectory(sandbox)) {
+      return '';
+    }
+    hilog.warn(DOMAIN, 'wine', 'Z home: OpenHarmony sandbox=%{public}s', sandbox);
+    return sandbox;
   }
 
   // 启动会话原语 (幂等): 确保引擎就绪。内部按磁盘状态分流 — 运行时缺失则解压、

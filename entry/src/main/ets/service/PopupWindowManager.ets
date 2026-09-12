@@ -1,5 +1,6 @@
 import { display, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -47,6 +48,13 @@ export class PopupWindowManager {
   private pendingDestroy: Set<number> = new Set();
   // 父窗口 windowStage 未就绪时积压的事件: parentToplevel -> [event, data]
   private pendingEvents: Map<number, Array<[string, string]>> = new Map();
+  // 主窗口 (EntryAbility/Index) 的 stage: 在 WineWindowAbility 的 stage 上
+  // 创建子窗口失败时的回退宿主, 见 createOn。由 WineWindowManager.init 注入。
+  private hostStage: window.WindowStage | null = null;
+
+  setHostStage(stage: window.WindowStage): void {
+    this.hostStage = stage;
+  }
 
   static getInstance(): PopupWindowManager {
     if (!PopupWindowManager.instance) {
@@ -153,7 +161,21 @@ export class PopupWindowManager {
     // 让 pages/WinePopup 的 aboutToAppear 同步取到 popupId (与 PC 同款 FIFO, PC 实测 OK)
     testNapi.setPendingToplevel(popupId);
 
-    stage.createSubWindowWithOptions(`wine_popup_${popupId}`, {
+    this.createOn(stage, entry, popupId, parentWin, scale, true);
+  }
+
+  // -- 在指定 stage 上创建 popup 子窗口; 失败时回退到主窗 stage --
+  // 开鸿 OpenHarmony PC 实测 (2026-09-12): 从 WineWindowAbility 的 windowStage
+  // createSubWindowWithOptions 报 1300002 (窗口状态异常), 于是菜单/tooltip 等
+  // popup 一律弹不出来 (事件链路本身是通的 — [POPUP] show 打点到了, 只有建窗这步挂)。
+  // 主窗口 (EntryAbility/Index) 的 stage 创建子窗口是已验证路径 (移动形态
+  // FusionWindowManager 一直用它), 所以失败时回退到主窗 stage 重试。popup 的位置
+  // 本就由 positionEntry 手动算 (不依赖 WMS 物理父子关系), 换宿主不改变显示位置。
+  // allowFallback 只作用于第一跳, 防止回退失败后再回退成环。
+  private createOn(stage: window.WindowStage, entry: PopupEntry, popupId: number,
+                   parentWin: window.Window, scale: number, allowFallback: boolean,
+                   nameSuffix: string = ''): void {
+    stage.createSubWindowWithOptions(`wine_popup_${popupId}${nameSuffix}`, {
       title: '',
       decorEnabled: false,
       isModal: false
@@ -227,10 +249,19 @@ export class PopupWindowManager {
         this.destroyEntry(entry);
       }
     }).catch((e: Error) => {
+      const be = e as BusinessError;
+      if (allowFallback && this.hostStage && this.hostStage !== stage) {
+        hilog.warn(DOMAIN, TAG,
+          '[POPUP] #%{public}d createSubWindow on ability stage failed (code=%{public}d msg=%{public}s), retry on host stage',
+          popupId, be.code, be.message);
+        // 回退用不同的名字: 1300002 的另一条成因是"同名子窗口已存在", 换名可排除
+        this.createOn(this.hostStage, entry, popupId, parentWin, scale, false, '_host');
+        return;
+      }
       this.creating.delete(popupId);
       testNapi.cancelPendingToplevel(popupId);  // 创建失败 → 同样清残坑
-      hilog.error(DOMAIN, TAG, '[POPUP] #%{public}d createSubWindow FAILED: %{public}s',
-        popupId, JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, '[POPUP] #%{public}d createSubWindow FAILED: code=%{public}d msg=%{public}s',
+        popupId, be.code, be.message);
     });
   }
 

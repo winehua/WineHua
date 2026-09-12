@@ -63,12 +63,21 @@ PY
 # 工具函数: 同步根 build-profile 的 SDK 版本
 set_sdk_versions() {
     local profile="$WINEHUA/build-profile.json5"
-    local target_version="${TARGET_SDK_VERSION:-6.1.0(23)}"
-    local compatible_version="${COMPATIBLE_SDK_VERSION:-6.1.0(23)}"
 
     if [ ! -f "$profile" ]; then
         err "build-profile.json5 未找到: $profile"
     fi
+
+    # runtimeOS=OpenHarmony 时 SDK 版本是整数 (如 23, 不带引号), 与 HarmonyOS 的
+    # 字符串版本号 ("6.1.0(23)") 不同; 期望值由 profile 自身承载, 这里不改写
+    # (下方正则只认带引号的字符串形式, 硬套会把整数改回字符串, 破坏配置文件)
+    if grep -qE '"runtimeOS"[[:space:]]*:[[:space:]]*"OpenHarmony"' "$profile"; then
+        log "  runtimeOS=OpenHarmony → SDK 版本保持 profile 原值 (跳过同步)"
+        return 0
+    fi
+
+    local target_version="${TARGET_SDK_VERSION:-6.1.0(23)}"
+    local compatible_version="${COMPATIBLE_SDK_VERSION:-6.1.0(23)}"
 
     python3 - "$profile" "$target_version" "$compatible_version" <<'PY'
 import re

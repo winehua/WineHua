@@ -6,7 +6,6 @@ import { FontImportService } from '../service/FontImportService';
 import { LogExportService } from '../service/LogExportService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
 import { InputSettingsService } from '../service/InputSettingsService';
-import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION, isSubWindowFormFactor } from '../service/DesktopModeService';
 import { compatIndexOfMode, compatModeFromIndex } from '../service/Box64Dynarec';
 
 // 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · Windows 字体 ·
@@ -41,10 +40,6 @@ export struct SettingsView {
   @State compatSel: number[] = [0];
   @State compatMode: string = '';
   @State compatRestartHint: boolean = false;
-  // 桌面模式分段选中项: 0=多窗口/融合 1=虚拟桌面 (由 mirror 按服务模式纠正)
-  @State desktopModeSel: number[] = [0];
-  @State desktopMode: string = MODE_FUSION;
-  @State desktopModeRestartHint: boolean = false;
   // 字体导入进行中 (镜像 WineEnvService.fontImporting): 按钮使能 + 文案
   @State fontImporting: boolean = false;
   // -- 显示 --
@@ -83,15 +78,6 @@ export struct SettingsView {
     const compatIdx = compatIndexOfMode(this.compatMode);
     if (this.compatSel[0] != compatIdx) {
       this.compatSel = [compatIdx];
-    }
-    // 桌面模式镜像 (默认值见 DesktopModeService.DEFAULT_MODE)
-    const desktopMode = DesktopModeService.getInstance().mode;
-    if (desktopMode != this.desktopMode) {
-      this.desktopMode = desktopMode;
-      const modeSel = desktopMode == MODE_FUSION ? 0 : 1;
-      if (this.desktopModeSel[0] != modeSel) {
-        this.desktopModeSel = [modeSel];
-      }
     }
     this.fontImporting = FontImportService.getInstance().fontImporting;
   }
@@ -163,17 +149,6 @@ export struct SettingsView {
     }
     this.env.setWineLangPreference(lang);
     this.langRestartHint = true;
-  }
-
-  // 桌面模式切换 (仅 PC): 写配置, 重启 Wine 引擎后生效 (explorer 是否启动/
-  // 合成器策略在引擎启动时按此值判定, 运行中切换不影响当前会话)
-  private selectDesktopMode(mode: string): void {
-    if (mode == this.desktopMode) {
-      return;
-    }
-    DesktopModeService.getInstance().setMode(mode);
-    this.desktopMode = mode;
-    this.desktopModeRestartHint = true;
   }
 
   private confirmReset(): void {
@@ -319,38 +294,9 @@ export struct SettingsView {
               .width('100%')
           }
 
-          // 桌面模式 (全形态可切): 多窗口/融合 = 每个程序独立 OHOS 窗口
-          // (可拖动/缩放/置顶); 虚拟桌面 = Wine 桌面合成为单一窗口
-          Text('桌面模式')
-            .fontColor($r('app.color.text_primary'))
-            .width('100%')
-          SegmentButton({
-            options: SegmentButtonOptions.capsule({
-              // 移动形态叫"多窗口模式", PC 沿用旧名"融合模式"
-              buttons: [{
-                text: isSubWindowFormFactor() ? '多窗口模式' : '融合模式'
-              }, { text: '虚拟桌面' }],
-              multiply: false
-            }),
-            selectedIndexes: $desktopModeSel,
-            onItemClicked: (index: number) => {
-              this.selectDesktopMode(index == 0 ? MODE_FUSION : MODE_VIRTUAL);
-            }
-          })
-          .width('100%')
-          // 说明文字: 多窗口仍是试验功能, 加标注
-          Text(isSubWindowFormFactor() ?
-            '虚拟桌面: Wine 桌面在独立窗口运行; 多窗口模式: 每个程序独立窗口（试验功能）' :
-            '虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
-            .fontSize(12)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-          if (this.desktopModeRestartHint) {
-            Text('桌面模式已更改, 重启 Wine 引擎后生效')
-              .fontSize(12)
-              .fontColor($r('app.color.state_warn'))
-              .width('100%')
-          }
+          // 桌面模式切换已移除: 统一虚拟桌面。原因见 DesktopModeService.DEFAULT_MODE —
+          // 多窗口模式依赖 createSubWindowWithOptions 承载 Wine 的菜单/模态框,
+          // 而开鸿 PC 不支持该接口 (1300002), 菜单一律弹不出来。
         }
         .width('100%')
         .padding(14)
@@ -506,7 +452,6 @@ export struct SettingsView {
             .onClick(() => {
               this.restartHint = false;
               this.langRestartHint = false;
-              this.desktopModeRestartHint = false;
               this.compatRestartHint = false;
               this.env.restartEngine();
             })

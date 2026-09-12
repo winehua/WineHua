@@ -73,40 +73,62 @@ export default class WineWindowAbility extends UIAbility {
       // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
       // [WINID] WWA 主窗口身份打点 (对照 WMS win NNN 归属)
       hilog.info(DOMAIN, TAG, '[WWA] mainWindow id=%{public}d', mainWindow.getWindowProperties().id);
-      testNapi.registerHostWindow(mainWindow.getWindowProperties().id);
+      // 开鸿 (OpenHarmony PC) 实测 2026-09-12: 下面这些 window 调用里有会抛
+      // 801 (Capability not supported) 的 —— 此前任何一步抛出都会让整个
+      // onWindowStageCreate 中断, 后面的 loadContent / flushPendingEvents 全被
+      // 跳过, 结果窗口永久停在 not ready: 事件只堆进 pending 队列, 窗口内容
+      // 一直不渲染 (WineWindowManager 把事件投给未就绪窗口时打的
+      // "queue pending #N ... (window not ready, queue=1..N)" 就是这个状态)。
+      // 设备窗口能力有差异, 每个调用各自容错, 单个 API 不支持不得影响建窗主链路。
+      const step: (name: string, fn: () => void) => void = (name: string, fn: () => void) => {
+        try {
+          fn();
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, '[WWA] #%{public}d %{public}s unsupported, skipped: %{public}s',
+            this.toplevelId, name, JSON.stringify(e));
+        }
+      };
+
+      step('registerHostWindow', () => { testNapi.registerHostWindow(mainWindow.getWindowProperties().id); });
       // 注册 WindowStage 引用 (popup 子窗口创建入口)
       WineWindowManager.getInstance().registerWindowStage(this.toplevelId, windowStage);
 
       // 父窗口移动/缩放 → 重新定位其 popup 子窗口
-      mainWindow.on('windowRectChange', () => {
-        const mgr = WineWindowManager.getInstance();
-        PopupWindowManager.getInstance().repositionPopups(
-          this.toplevelId, mainWindow, mgr.getEffectiveScale());
+      step('on(windowRectChange)', () => {
+        mainWindow.on('windowRectChange', () => {
+          const mgr = WineWindowManager.getInstance();
+          PopupWindowManager.getInstance().repositionPopups(
+            this.toplevelId, mainWindow, mgr.getEffectiveScale());
+        });
       });
 
-      // 应用 pending 事件
-      WineWindowManager.getInstance().flushPendingEvents(this.toplevelId);
+      // 应用 pending 事件 (必须在 loadContent 前 — 窗口就绪后 WWA 侧不再重投)
+      step('flushPendingEvents', () => { WineWindowManager.getInstance().flushPendingEvents(this.toplevelId); });
 
       // 禁止 OHOS 标题栏双击最大化 (与 Wine 内置最大化冲突),
       // 仍可通过 win.maximize() 程序调用最大化 (Wine 按钮)
-      mainWindow.on('windowStatusChange', (statusType: number) => {
-        hilog.info(DOMAIN, TAG, '[WWA] #%{public}d windowStatusChange status=%{public}d',
-          this.toplevelId, statusType);
+      step('on(windowStatusChange)', () => {
+        mainWindow.on('windowStatusChange', (statusType: number) => {
+          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d windowStatusChange status=%{public}d',
+            this.toplevelId, statusType);
+        });
       });
 
       // 监听窗口事件 (关闭 / 最小化 / 恢复等)
-      mainWindow.on('windowEvent', (eventType: number) => {
-        hilog.info(DOMAIN, TAG, '[WWA] #%{public}d windowEvent type=%{public}d', this.toplevelId, eventType);
-        if (eventType === window.WindowEventType.WINDOW_DESTROYED) {
-          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d  WINDOW_DESTROYED (user closed)', this.toplevelId);
-          this.cleanup();
-        } else if (eventType === window.WindowEventType.WINDOW_SHOWN) {
-          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d  WINDOW_SHOWN → resume input', this.toplevelId);
-          try { testNapi.setToplevelVisible(this.toplevelId, true); } catch (_) {}
-        } else if (eventType === window.WindowEventType.WINDOW_HIDDEN) {
-          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d  WINDOW_HIDDEN → suppress input', this.toplevelId);
-          try { testNapi.setToplevelVisible(this.toplevelId, false); } catch (_) {}
-        }
+      step('on(windowEvent)', () => {
+        mainWindow.on('windowEvent', (eventType: number) => {
+          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d windowEvent type=%{public}d', this.toplevelId, eventType);
+          if (eventType === window.WindowEventType.WINDOW_DESTROYED) {
+            hilog.info(DOMAIN, TAG, '[WWA] #%{public}d  WINDOW_DESTROYED (user closed)', this.toplevelId);
+            this.cleanup();
+          } else if (eventType === window.WindowEventType.WINDOW_SHOWN) {
+            hilog.info(DOMAIN, TAG, '[WWA] #%{public}d  WINDOW_SHOWN → resume input', this.toplevelId);
+            try { testNapi.setToplevelVisible(this.toplevelId, true); } catch (_) {}
+          } else if (eventType === window.WindowEventType.WINDOW_HIDDEN) {
+            hilog.info(DOMAIN, TAG, '[WWA] #%{public}d  WINDOW_HIDDEN → suppress input', this.toplevelId);
+            try { testNapi.setToplevelVisible(this.toplevelId, false); } catch (_) {}
+          }
+        });
       });
 
       hilog.info(DOMAIN, TAG, '[WWA] -> loadContent pages/WineWindow...');
@@ -117,16 +139,13 @@ export default class WineWindowAbility extends UIAbility {
           return;
         }
         hilog.info(DOMAIN, TAG, '[WWA] loadContent OK tl=%{public}d', this.toplevelId);
-        //  窗口装饰配置 -- 必须在 loadContent 之后调用
+        //  窗口装饰保持系统默认 (2026-09-12 开鸿 PC 适配): 原先这里隐藏标题栏
+        // (setWindowDecorVisible(false) + setWindowTitleButtonVisible(false)),
+        // 再 setWindowTitleMoveEnabled(false) 禁用标题栏拖动 — 都是移动形态全屏
+        // 应用的做法; PC 上会让窗口失去拖动/缩放能力、只能最大化。
         try {
           const mw = windowStage.getMainWindowSync();
           if (mw) {
-            mw.setWindowTitleButtonVisible(false, false, false);
-            mw.setWindowDecorVisible(false);
-            mw.setWindowDecorHeight(40);
-            // 禁止 OHOS 标题栏双击最大化 (与 Wine 内置最大化冲突),
-            // maximize() 程序调用不受影响
-            try { mw.setWindowTitleMoveEnabled(false); } catch (_) {}
             // 保持屏幕常亮 (设置项): 游戏跑在子窗口 (主要场景), 创建时应用持久化值
             mw.setWindowKeepScreenOn(DisplaySettingsService.getInstance().keepScreenOn)
               .catch((e: Object) => {

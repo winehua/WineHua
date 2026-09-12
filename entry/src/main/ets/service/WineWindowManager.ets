@@ -233,6 +233,9 @@ export class WineWindowManager {
     this.mainWindowStage = windowStage;
     this.mainWindow = windowStage.getMainWindowSync();
     this.uiAbilityContext = abilityContext;
+    // 主窗 stage 注入 popup 管理器: 在 WineWindowAbility 的 stage 上建子窗口
+    // 失败时 (开鸿 PC 报 1300002) 回退到主窗 stage 建, 见 PopupWindowManager.createOn
+    PopupWindowManager.getInstance().setHostStage(windowStage);
 
     hilog.info(DOMAIN, TAG, '[MW] init: mainWindow=%{public}s ctx=%{public}s',
       this.mainWindow ? 'ok' : 'NULL', this.uiAbilityContext ? 'ok' : 'NULL');
@@ -774,7 +777,7 @@ export class WineWindowManager {
           const w = obj.w as number;
           const h = obj.h as number;
           if (w && h) {
-            const barH = 0; //  标题栏已通过 setWindowDecorVisible(false) 隐藏
+            const barH = 0; // 初值; 真实装饰高度由 onAfterLoadContent 的 getWindowDecorHeight 校准
             const s = this.displayScale * this.scaleBoost;  // effective scale (启动时定, 默认 2.0)
             const winW = Math.round(w * s);
             const winH = Math.round(h * s + barH);
