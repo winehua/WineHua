@@ -34,6 +34,48 @@ display_period_us = 11129   （屏幕 90 Hz）
 游戏里快多少」。要给出目标游戏的可解释性能结论，必须换一个不吃显示节拍的负载
 （离屏渲染、或每帧多次提交），或者直接在目标游戏上测。
 
+### 2.1 直接上真实游戏：启动通了，但游戏没到渲染
+
+用 `winehua.mode=game` 的 Want 通道（`GameHook`）启动设备上的目标游戏
+`Z:\games\kqcs\LustFromTheDeep.exe`（Unity 2022 AMD64，交接文档里的同一款）：
+
+```bash
+aa start -a EntryAbility -b app.hackeris.winehua \
+  --ps winehua.mode game --ps winehua.game_path "Z:\games\kqcs\LustFromTheDeep.exe"
+```
+
+启动链路是通的 —— 游戏进程起来了（pid 57966），宿主日志确认它拿到了完整的托管环境：
+
+```text
+WINEHUA_DXVK_ROOT=.../dxvk/legacy   WINEHUA_DXVK_VERSION=1.10.3
+VK_ICD_FILENAMES=.../venus_icd.aarch64.json
+WINEHUA_VULKAN_LOADER_ARCH=aarch64  WINEHUA_WINE_UNIX_ARCH=aarch64
+WINEHUA_PERF_PROFILE=shadow-precise-dirty-ring-inline-upload-coverage-sort
+```
+
+**但它没有进入渲染阶段**（观察 ~6 分钟）：
+
+| 观测点 | 结果 |
+| --- | --- |
+| 进程 CPU 时间 | 6 分钟只用了 **4 秒** —— 大部分时间在阻塞，不是在算 |
+| 游戏 stderr | 停在 `[SMC]` 条目上不再前进；没有任何 wanewayland / 显示驱动活动 |
+| 宿主 FPS 文件 | `winehua_display_fps.txt` 一直是 smoke 那轮的旧值 `169 77.941 3`，**没有新的 toplevel 发布** |
+
+也就是说：**这一条现在不是"测量方法不够"，而是"目标游戏在这个构建上没跑到能测的状态"。**
+两者要分开，前者是我的工具问题，后者是真实的兼容性/启动问题。
+
+> 顺带记录：该游戏的 stderr 里累计了 **857 条 `[SMC]` 记录**（Unity IL2CPP/Burst 的
+> 自修改代码），与方案 §11/交接文档提到的 SMC/信号税吻合。但 4 秒 CPU 说明它并不是
+> 被 SMC 拖慢，而是**卡在渲染之前**，需要单独诊断（隐藏模态对话框 / 缺依赖 / 初始化路径）。
+
+### 2.2 这一步的下一步
+
+1. 诊断 Unity 卡在哪：抓 `[SMC]` 之后到阻塞点的调用栈，或用 `GameHook` 的点击自动化
+   （`winehua.click_title_prefix` / `click_button_text`）排除"首启模态框等输入"。
+2. 换一个更容易到渲染的目标（设备上还有 `games/SA/Game.exe`、DX SDK 样例集
+   `games/dx11_test/`），先拿到**任意真实 D3D11 应用**的显示帧率，
+   把"真实应用 FPS 可读"这条打通，再回到 Unity 目标游戏。
+
 ### 已经可以下的性能结论（有证据）
 
 | 结论 | 证据 |
