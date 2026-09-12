@@ -121,5 +121,30 @@
     "appcache": {"appinfoVdfMtime": "2024-06-22", "note": "appinfo 停留在 2024-06-22，进一步印证客户端长期未更新"}
   },
 
-  "checksumNote": "本轮只对设备上的 PE 做了架构/版本取证，未记录每个二进制的 sha256；如需做“换客户端前后”对照，应在下一轮补齐 sha256"
+  "checksumNote": "本轮只对设备上的 PE 做了架构/版本取证，未记录每个二进制的 sha256；如需做“换客户端前后”对照，应在下一轮补齐 sha256",
+
+  "officialClientInstall": {
+    "status": "USER_INSTALLED_AND_PROBED",
+    "installedAt": "2026-09-12T12:16+08:00",
+    "unixPath": "/data/app/el2/100/base/app.hackeris.winehua/files/.wine/drive_c/Program Files (x86)/Steam",
+    "windowsPath": "C:\\Program Files (x86)\\Steam",
+    "installerSource": "SteamSetup.exe (Valve 官方), sha256 7d3654531c32d941b8cae81c4137fc542172bfa9635f169cb392f245a0a12bcb, Authenticode Valid / CN=Valve Corp.",
+    "oldInstallNote": "旧的 Z:\\games\\Steam（2023-07-10 冻结包）已不在设备上；本会话开始时 games/ 下只剩 SteamSetup .exe",
+    "buildId": "1788652215",
+    "updaterBuilt": "Sep  2 2026 18:32:43",
+    "selfUpdate": "已开启（bootstrap_log 显示 Checking for update / Manifest download / Verifying all executable checksums / Verification complete）",
+    "binaries": {
+      "steam.exe": { "peMachine": "0x8664", "arch": "x86-64 (AMD64)", "fileVersion": "10.96.30.42", "sizeBytes": 5775512 },
+      "SteamUI.dll": { "peMachine": "0x8664", "arch": "x86-64 (AMD64)", "sizeBytes": 18962584 },
+      "bin/cef/cef.win64/steamwebhelper.exe": { "peMachine": "0x8664", "arch": "x86-64 (AMD64)", "fileVersion": "10.96.30.42", "sizeBytes": 7488152 }
+    },
+    "archChangeVsOldClient": "旧包 steam.exe 是 i386（走 libwow64fex.dll），官方包 steam.exe 变成 x86-64（走 libarm64ecfex.dll）—— 方案 §5.7 要求的“按真实 PE Machine 判定”在这里得到验证，历史假设已经失效",
+    "cefLayoutChange": "CEF 目录从 bin/cef/cef.win7x64 变成 bin/cef/cef.win64，进程命令行改为 --type=gpu-process / --type=utility --utility-sub-type=network.mojom.NetworkService / storage.mojom.StorageService",
+    "surroundings": {
+      "serviceLog": "service_log.txt: 'Failed to load Steam Service (GLE 126)' × 3（ERROR_MOD_NOT_FOUND，steamservice 依赖缺模块；本轮未判定是否致命）",
+      "gpuTopology": "steamsysinfo.txt: GpuTopology 查询成功 —— Virtio-GPU Venus (Maleoon 910), driver_id=k_EGpuDriverId_MesaVenus, version 25.0.1；同时报 'CVulkanTopology: failed to load DXGI.dll'",
+      "dxgiNote": "DXVK 覆盖 d3d11=n;dxgi=n，因此 guest 里没有 DXGI —— 与上一行相符，是配置效果而非新缺陷"
+    },
+    "fatalOutcome": "steam.exe 启动约 20-25 秒后 assert 崩溃并退出码 1，详见 steam-first-blocker.md §0"
+  }
 }

@@ -82,6 +82,32 @@ R0/S1 的关键实测结论（都是本轮真机取到的）：
 4. 当前安装的运行时 `bin/aarch64-unix/` 为空 —— **不含 P2 的 UnixLib 产物**。
    P2「UnixLib 已加载」的结论属于当时的探针包，不能自动继承。
 
+### 2026-09-12 13:00 追加：官方客户端已安装并复现
+
+用户按 S0 装了 Valve 官方客户端（`C:\Program Files (x86)\Steam`，build 1788652215，
+`steam.exe` 实测为 **x86-64**）。三次冷启动三次复现同一条崩溃链：
+
+```text
+steamwebhelper + gpu/network/storage 子进程都起来
+→ ~20s 后 steam.exe 写 dumps/assert_steam.exe_*.dmp（随后 crash dump）
+→ [ProcMon] steam.exe exit=1 → 全部 webhelper 跟着退出
+```
+
+assert 原文（从 dump 里读出）：
+
+```text
+Assert( Couldn't get string length ):...\src\vgui2\vgui_surfacelib\Win32Font.cpp:1129
+```
+
+**同一句话在 2023 旧包里也出现过，只是不致命**（`Win32Font.cpp (963)` 记一行日志）。
+所以这是**我们 Wine 的文本度量缺陷**，新客户端把它变成致命断言。
+详见 `steam-first-blocker.md` §0（含异常码 `0xC0000005`、下一步最小复现、以及
+「不换 Valve 基线怎么收敛」的决策规则）。
+
+同时暴露一个工具缺口：本轮传了 `WINEDEBUG=err+all,warn+all,+dwrite`（子进程已生效），
+但 hilog 里**一条 Wine 的 err/warn 都没有** —— Wine 子进程 stderr 目前没有可读通道，
+这个必须先补，否则后面都是盲调。
+
 ## 状态总览（2026-09-11）
 
 - P0：已完成基线冻结与哈希记录；**设备侧基线未取**（本机无 `hdc`，真机数据仍为历史口述值）。
