@@ -1,5 +1,5 @@
 diff --git a/configure.ac b/configure.ac
-index 370857c1e5a..4e8e17fd873 100644
+index 370857c1e5a..ae252b65577 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -1728,7 +1728,12 @@ WINE_NOTICE_WITH(ffmpeg,[test "x$FFMPEG_LIBS" = x],
@@ -54,6 +54,23 @@ index 370857c1e5a..4e8e17fd873 100644
  WINE_CONFIG_MAKEFILE(dlls/winegstreamer)
  WINE_CONFIG_MAKEFILE(dlls/winehid.sys)
  WINE_CONFIG_MAKEFILE(dlls/winemac.drv)
+@@ -3742,6 +3768,16 @@ WINE_CONFIG_MAKEFILE(programs/wuauserv)
+ WINE_CONFIG_MAKEFILE(programs/wusa)
+ WINE_CONFIG_MAKEFILE(programs/xcopy)
+ WINE_CONFIG_MAKEFILE(programs/xcopy/tests)
++
++dnl WineHua/OHOS (W1): 从 winehua fork 移植过来的自有程序（W-16 / W-17）。
++dnl winehua_keep 是桌面保活辅助进程（app 侧会拉起它）；其余是 smoke 探针，
++dnl assemble.sh 会打包它们。
++WINE_CONFIG_MAKEFILE(programs/winehua_audio_smoke)
++WINE_CONFIG_MAKEFILE(programs/winehua_dinput_probe)
++WINE_CONFIG_MAKEFILE(programs/winehua_graphics_smoke)
++WINE_CONFIG_MAKEFILE(programs/winehua_d3d11_smoke)
++WINE_CONFIG_MAKEFILE(programs/winehua_vulkan_smoke)
++WINE_CONFIG_MAKEFILE(programs/winehua_keep)
+ WINE_CONFIG_MAKEFILE(server)
+ WINE_CONFIG_MAKEFILE(tools)
+ WINE_CONFIG_MAKEFILE(tools/sfnt2fon)
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index f8aa468a3ab..d744f5a765f 100644
 --- a/dlls/ntdll/unix/loader.c

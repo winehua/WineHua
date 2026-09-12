@@ -184,6 +184,45 @@ libwineserver.so  entry/libs/arm64-v8a/libwineserver.so (1.07 MB)
 **注意**：M1 只证明「编得出来」，**不等于**「跑得起来」。
 下一步必须把产物做成运行时包部署到 MLR-AL10，用 Gate W0 验证 prefix 建立与进程启动。
 
+## 12. **M2 达成：assemble 出包成功（wine-data.zip）**（2026-09-12 16:11）
+
+```text
+[BUILD]   rawfile/wine-data.zip
+入口: entry/src/main/resources/rawfile/wine-data.zip
+size: 287953133
+sha256: 7ca03ca57578a6a37b8dbf23f90f65a5b575bb508f54a05e489e7aacc45c5e42
+```
+
+即：**Proton-Wine-OHOS 候选已经能打出与产品同布局的运行时包**（用的是产品自己的
+`scripts/assemble.sh`，所以包结构与 app 侧预期一致）。
+
+### 12.1 为跑通 assemble 补的三件事
+
+| # | 现象 | 处置 |
+| --- | --- | --- |
+| 1 | `libarm64ecfex.dll / libwow64fex.dll / wowbox64.dll 未找到` | 新工作树里没有第三方产物；**必须真实拷贝**（软链在容器内是断的，因为只挂本工作树）。已写成 `scripts/w1-m2-prepare-assemble.sh`：拷 fex-ec / fex-pe / box64-pe / guest_* / host_vulkan / wine-mono / dxvk / vkd3d-proton |
+| 2 | `VKD3D-Proton x64 graphics smoke missing`、`managed smoke x64 artifact missing: winehua_audio_smoke.exe` | assemble 会打包 fork 自有的 `programs/winehua_*`。已把 6 个程序（keep + 5 个 smoke）**真正移植**到 Valve 树并在 `configure.ac` 注册（台账 W-16/W-17） |
+| 3 | `libvirglrenderer.so.1: No such file or directory` | `entry/libs/arm64-v8a` 缺少 host 侧原生库。该目录属容器内 root，宿主写不进 → 给容器加挂产品工作树（`-v …:/data/prod:ro`），在容器里 `cp -an` 补齐（no-clobber，不覆盖我们新编的 wine unix 库） |
+
+### 12.2 已知遗留（进 Gate W0 前要知道）
+
+```text
+bin/aarch64-unix/wineohos.so   仍是产品（11.10）那份，日期 Sep 9 16:57
+```
+
+原因：`dlls/wineohos.drv` 是我们 fork 独有的 OHOS 音频模块（台账 W-10），**还没迁到
+Valve 树**。所以这个包是「Valve Wine 主体 + 一个 11.10 编的音频 drv」——
+Gate W0（wineboot/cmd）不加载它，但**进入 M3 的音频/媒体验证前必须把它也迁过来**，
+否则就是"新旧混搭"。
+
+### 12.3 部署与 Gate W0（待设备在线）
+
+部署脚本已备好：`scripts/w1-m3-deploy-runtime.sh`
+（推 zip → 备份 manifest → 设备上 `unzip -o` 覆盖 `files/wine/` → 更新 `payloadSha256`
+→ 打印核对信息；可回退）。
+
+**当前阻塞**：设备未连接（`hdc list targets` 为空）。需要设备重新接上后才能跑 Gate W0。
+
 ## 8. W1 动手前实测到的三个环境障碍（2026-09-12 实做）
 
 ### 8.1 子模块 gitdir 是共享的 —— 不要在新工作树里跑 `submodule update`
