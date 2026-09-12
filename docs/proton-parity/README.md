@@ -35,6 +35,7 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | 文件 | 阶段 | 内容 |
 | --- | --- | --- |
 | `architecture-overview.md` | 总览 | **当前架构与各层改动一览（从这里开始读）** |
+| `proton-steam-gap-review.md` | 评审稿 | **从架构看距离"跑 Proton / 跑 Steam"的缺口（需求侧 vs 供给侧对照）** |
 | `runtime-baseline.md` | P0 | 基线冻结：源码、脏改动、产物、工具链、测量上下文 |
 | `artifact-sha256.txt` | P0 | 现有 HAP / FEX 产物 / 运行时包哈希 |
 | `runtime-manifest.json` | P0 | 当前基线运行时的机器可读清单 |
