@@ -123,6 +123,11 @@ export default class WineWindowAbility extends UIAbility {
             mw.setWindowTitleButtonVisible(false, false, false);
             mw.setWindowDecorVisible(false);
             mw.setWindowDecorHeight(40);
+            // 窗口底色黑 (兜底): 主修复在 WineWindow 页的 Stack 底 (ARGB 帧
+            // 画面外的透明区透出的是它), 本层防页面加载前/重建的空窗期露
+            // 系统默认色 (浅色模式白)。窗口属性须在 loadContent 后设置才生效
+            // (同上标题栏配置); popup/modal 子窗口底色各自另设
+            try { mw.setWindowBackgroundColor('#FF000000'); } catch (_) {}
             // 禁止 OHOS 标题栏双击最大化 (与 Wine 内置最大化冲突),
             // maximize() 程序调用不受影响
             try { mw.setWindowTitleMoveEnabled(false); } catch (_) {}
