@@ -141,6 +141,49 @@ make                              OK   运行到 98549 行日志（几乎编完�
 2. **按 Gate 需要裁剪**：M1 只需要 wineboot/cmd，可先排除这两块把构建跑完，
    把它们的依赖补齐留到 M3（音频/媒体）之前。→ 更快拿到"完整构建"这个里程碑。
 
+## 11. **M1 达成：Proton-Wine-OHOS 候选构建成功**（2026-09-12 15:48）
+
+```text
+[BUILD]   wineserver → libwineserver.so (aarch64-linux-ohos)
+[BUILD]   → /data/src/winehua/entry/libs/arm64-v8a/libwineserver.so
+[BUILD] Wine 构建完成
+```
+
+**零错误**跑完整条链：autoconf →（上游 autogen.sh 等价的）生成器 → configure →
+make（147522 行日志）→ wineserver。产物清点（`build/wine-ohos-aarch64/`）：
+
+```text
+unix .so     187 个
+PE .dll     5184 个
+.exe         599 个
+libwineserver.so  entry/libs/arm64-v8a/libwineserver.so (1.07 MB)
+```
+
+即：**ValveSoftware/wine@dc26e618（Proton 11 Wine Core）已经被我们的 OHOS 工具链编成套**，
+过程中使用的是我们自己的 `scripts/build_wine.sh`，Wine 源码侧只加了本文 §9/§10 记录的
+那几处 OHOS 补丁（`patches/w1-stage1-valve-tree.diff` 及其后续）。
+
+### 11.1 期间修掉的最后一个坑（也是我自己造成的）
+
+`sysroot-ext` 里的 `.pc` 记录的是**构建当时的挂载点** `/workspace`，而我们现在挂在
+`/data/src/winehua`。第一版修复脚本用 `grep -rl` 扫了整棵树，把 **ELF 二进制里内嵌的
+路径字符串也改了** —— `/workspace`(10) → `/data/src/winehua`(18) 长度不同，直接把
+`libgstreamer-1.0.so` 等库**改坏**，症状是链接报 `gst_debug_log` 之类“未定义符号”。
+
+处置：重新从产品工作树拷贝 `sysroot-ext`，并把脚本收紧到只改 `*.pc` / `*.cmake`。
+**教训（写进脚本注释）**：批量 `sed` 必须限定扩展名，绝不能对整棵树做替换。
+
+### 11.2 M1 之后
+
+| 步 | 内容 | 状态 |
+| --- | --- | --- |
+| M1 | 构建成套（本文件 §11） | ✅ 已完成 |
+| M2 | 打包进 HAP / 部署到设备，跑 Gate W0（wineboot / cmd / reg） | 待做 |
+| M3 | Gate W1–W5（32/64 WoW64、FEX、GUI、TLS、IPC），再进 S0（Steam） | 待做 |
+
+**注意**：M1 只证明「编得出来」，**不等于**「跑得起来」。
+下一步必须把产物做成运行时包部署到 MLR-AL10，用 Gate W0 验证 prefix 建立与进程启动。
+
 ## 8. W1 动手前实测到的三个环境障碍（2026-09-12 实做）
 
 ### 8.1 子模块 gitdir 是共享的 —— 不要在新工作树里跑 `submodule update`

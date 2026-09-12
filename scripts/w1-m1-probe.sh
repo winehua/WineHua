@@ -23,6 +23,13 @@ export WINE_SRC="${WINE_SRC:-$ROOT/thirdparty/wine-valve}"
 export BUILD_DIR="${BUILD_DIR:-$ROOT/build}"
 export NATIVE_ARCH="${NATIVE_ARCH:-arm64-v8a}"
 
+# wayland-scanner：env.sh 默认指向 /usr/local/bin/wayland-scanner（容器里没有），
+# 我们仓库自带一份在 $BUILD_DIR/host-tools/bin/。必须在 configure 之前指定，
+# 因为 configure 会把这个路径写进生成的 Makefile。
+if [ -z "${WAYLAND_SCANNER:-}" ] && [ -x "$BUILD_DIR/host-tools/bin/wayland-scanner" ]; then
+    export WAYLAND_SCANNER="$BUILD_DIR/host-tools/bin/wayland-scanner"
+fi
+
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/env.sh"
 

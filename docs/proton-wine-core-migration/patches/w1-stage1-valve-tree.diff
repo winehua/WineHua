@@ -1,8 +1,22 @@
 diff --git a/configure.ac b/configure.ac
-index 370857c1e5a..d82b4e0cfee 100644
+index 370857c1e5a..4e8e17fd873 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2528,7 +2528,11 @@ WINE_CONFIG_MAKEFILE(dlls/advapi32/tests)
+@@ -1728,7 +1728,12 @@ WINE_NOTICE_WITH(ffmpeg,[test "x$FFMPEG_LIBS" = x],
+ dnl **** Check for gstreamer ****
+ if test "x$with_gstreamer" != "xno"
+ then
+-    WINE_PACKAGE_FLAGS(GSTREAMER,[gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0 gstreamer-gl-1.0],,,,
++    dnl WineHua/OHOS (W1): 上游 11.10 的同一行已经没有 gstreamer-gl-1.0
++    dnl （我们 fork 就是那个形态）。11.0 要求 GL 插件 → 我们的 OHOS sysroot 没有
++    dnl gstreamer-gl-1.0 → 整个 GSTREAMER 包探测失败 → GSTREAMER_CFLAGS/LIBS 为空
++    dnl → winegstreamer.so 链接时 gst_debug_log 之类 undefined symbol。
++    dnl 配合我们把 wg_parser.c / unixlib.c 里的 gst/gl 用法关掉（同上游 11.10 方向）。
++    WINE_PACKAGE_FLAGS(GSTREAMER,[gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0],,,,
+         [AC_CHECK_HEADER([gst/gst.h],
+             [AC_MSG_CHECKING([whether gint64 defined by gst/gst.h is indeed 64-bit])
+               AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <gst/gst.h>]],
+@@ -2528,7 +2533,11 @@ WINE_CONFIG_MAKEFILE(dlls/advapi32/tests)
  WINE_CONFIG_MAKEFILE(dlls/advpack)
  WINE_CONFIG_MAKEFILE(dlls/advpack/tests)
  WINE_CONFIG_MAKEFILE(dlls/amsi)
@@ -15,11 +29,10 @@ index 370857c1e5a..d82b4e0cfee 100644
  WINE_CONFIG_MAKEFILE(dlls/amdxc64)
  WINE_CONFIG_MAKEFILE(dlls/amstream)
  WINE_CONFIG_MAKEFILE(dlls/amstream/tests)
-@@ -3436,7 +3440,16 @@ WINE_CONFIG_MAKEFILE(dlls/winebus.sys)
+@@ -3436,7 +3445,24 @@ WINE_CONFIG_MAKEFILE(dlls/winebus.sys)
  WINE_CONFIG_MAKEFILE(dlls/winecoreaudio.drv)
  WINE_CONFIG_MAKEFILE(dlls/winecrt0)
  WINE_CONFIG_MAKEFILE(dlls/wined3d)
--WINE_CONFIG_MAKEFILE(dlls/winedmo)
 +dnl WineHua/OHOS (W1, 临时): Valve 的 11.0 winedmo 仍带 media-converter 那套
 +dnl （libavcodec/pcm_byte_order_reverse_bsf.c + unix_demuxer_mediaconv.c），
 +dnl 它依赖 ffmpeg 私有 API（AVBSFInternal / AVBitStreamFilter.filter|init），
@@ -29,7 +42,15 @@ index 370857c1e5a..d82b4e0cfee 100644
 +dnl   (a) 移植上游删除 mediaconv 的那组改动，或
 +dnl   (b) 把 fork 里能编过的 11.10 winedmo 迁过来（注意 PARENTSRC 取自 winegstreamer）。
 +dnl 回退方式：恢复本行。
-+dnl WINE_CONFIG_MAKEFILE(dlls/winedmo)
+ WINE_CONFIG_MAKEFILE(dlls/winedmo)
++dnl WineHua/OHOS (W1, 临时): Valve 11.0 的 winegstreamer 引 <gst/gl/gl.h>
++dnl （gst-plugins-base 的 GL 集成头），我们的 sysroot-ext 里没有该子目录
++dnl （为 OHOS 交叉编译 gst-plugins-base 时没有 GL 头，故未产出）。
++dnl 上游 11.10 的对应文件已不再引 gst/gl（我们 fork 就是那个形态）。
++dnl M1 先排除该模块以跑通完整构建；**进入 M3（音频/媒体）之前必须补回来**：
++dnl   (a) 移植上游去掉 gst/gl 依赖的那组改动，或
++dnl   (b) 为 OHOS 目标补 gst-plugins-base GL 头 + 重新编 gstreamer。
++dnl 回退方式：恢复本行。
  WINE_CONFIG_MAKEFILE(dlls/winegstreamer)
  WINE_CONFIG_MAKEFILE(dlls/winehid.sys)
  WINE_CONFIG_MAKEFILE(dlls/winemac.drv)
@@ -77,3 +98,185 @@ index f8aa468a3ab..d744f5a765f 100644
  
  #ifndef WINE_JAVA_CLASS
  #define WINE_JAVA_CLASS "org/winehq/wine/WineActivity"
+diff --git a/dlls/winedmo/Makefile.in b/dlls/winedmo/Makefile.in
+index bee5d80f242..cd961e3b2e0 100644
+--- a/dlls/winedmo/Makefile.in
++++ b/dlls/winedmo/Makefile.in
+@@ -12,8 +12,6 @@ SOURCES = \
+ 	media-converter/fossilize.c \
+ 	media-converter/murmur3.c \
+ 	media-converter/lib.c \
+-	libavcodec/pcm_byte_order_reverse_bsf.c \
+ 	unix_demuxer.c \
+-	unix_demuxer_mediaconv.c \
+ 	unix_media_type.c \
+ 	unixlib.c
+diff --git a/dlls/winedmo/unix_demuxer.c b/dlls/winedmo/unix_demuxer.c
+index 24681e2d5df..3b098d056f2 100644
+--- a/dlls/winedmo/unix_demuxer.c
++++ b/dlls/winedmo/unix_demuxer.c
+@@ -142,6 +142,11 @@ static NTSTATUS demuxer_create_streams( struct demuxer *demuxer )
+                 continue;
+             }
+         }
++        /* WineHua/OHOS (W1): 上游 11.10 已把 libavcodec/pcm_byte_order_reverse_bsf.c
++         * 整个删掉（该文件依赖 ffmpeg 私有 API，当前头文件不匹配）。这里按同样方向
++         * 在 OHOS 上略过 big-endian PCM 的特殊转换，退回通用 null filter 路径。
++         * 归属 W-19（媒体模块的 OHOS 补丁）；要恢复：补回该源文件并撤销本守卫。 */
++#if !defined(__OHOS__)
+         else if (codec_is_big_endian_pcm(par->codec_id))
+         {
+             /* WAVEFORMATEX does not contain endianness info, so this needs to be converted here. */
+@@ -150,6 +155,7 @@ static NTSTATUS demuxer_create_streams( struct demuxer *demuxer )
+             av_bsf_init( stream->filter );
+             continue;
+         }
++#endif
+ 
+         av_bsf_get_null_filter( &stream->filter );
+         avcodec_parameters_copy( stream->filter->par_in, demuxer->ctx->streams[i]->codecpar );
+@@ -239,7 +245,11 @@ NTSTATUS demuxer_create( void *arg )
+ 
+     TRACE( "context %p, url %s, mime %s\n", params->context, debugstr_a(params->url), debugstr_a(params->mime_type) );
+ 
++    /* WineHua/OHOS (W1): media-converter demuxer 钩子（unix_demuxer_mediaconv.c）
++     * 上游 11.10 已整体删除，这里同样在 OHOS 上关掉。归属 W-19。 */
++#if !defined(__OHOS__)
+     mediaconv_demuxer_init();
++#endif
+ 
+     if (!(demuxer = calloc( 1, sizeof(*demuxer) ))) return STATUS_NO_MEMORY;
+     demuxer->stream_context = params->context;
+@@ -249,11 +259,13 @@ NTSTATUS demuxer_create( void *arg )
+ 
+     if ((ret = avformat_open_input( &demuxer->ctx, NULL, NULL, NULL )) < 0)
+         WARN( "Failed to open input, error %s.\n", debugstr_averr(ret) );
++#if !defined(__OHOS__)
+     if ((ret = mediaconv_demuxer_open( &demuxer->ctx, params->context ) < 0))
+     {
+         ERR( "Failed to open input, error %s.\n", debugstr_averr(ret) );
+         goto failed;
+     }
++#endif
+     format = demuxer->ctx->iformat;
+ 
+     if ((params->duration = get_context_duration( demuxer->ctx )) == AV_NOPTS_VALUE ||
+@@ -307,7 +319,9 @@ failed:
+     free( demuxer->streams );
+     free( demuxer );
+ 
++#if !defined(__OHOS__)
+     mediaconv_demuxer_exit();
++#endif
+     return STATUS_UNSUCCESSFUL;
+ }
+ 
+@@ -327,7 +341,9 @@ NTSTATUS demuxer_destroy( void *arg )
+     free( demuxer->streams );
+     free( demuxer );
+ 
++#if !defined(__OHOS__)
+     mediaconv_demuxer_exit();
++#endif
+     return STATUS_SUCCESS;
+ }
+ 
+diff --git a/dlls/winegstreamer/media-converter/media-converter.h b/dlls/winegstreamer/media-converter/media-converter.h
+index 3dd8864d54f..d37c942e771 100644
+--- a/dlls/winegstreamer/media-converter/media-converter.h
++++ b/dlls/winegstreamer/media-converter/media-converter.h
+@@ -29,6 +29,10 @@
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <sys/stat.h>
++/* WineHua/OHOS (W1): 本头用到 pthread_mutex_t 但没带 <pthread.h>；
++ * 上游 11.10 已重构掉这块代码（我们 fork 里没有这个文件）。
++ * 归属 W-19（媒体模块的 OHOS 补丁）。 */
++#include <pthread.h>
+ 
+ #include "unix_private.h"
+ #include "wine/rbtree.h"
+diff --git a/dlls/winegstreamer/unixlib.c b/dlls/winegstreamer/unixlib.c
+index b259388026b..de1fe41f4e0 100644
+--- a/dlls/winegstreamer/unixlib.c
++++ b/dlls/winegstreamer/unixlib.c
+@@ -30,7 +30,13 @@
+ 
+ #define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_30
+ #include <gst/gst.h>
++/* WineHua/OHOS (W1): gst/gl 需要 gst-plugins-base 的 GL 集成头，
++ * 我们的 OHOS sysroot 没有（交叉编译时未产出）。上游 11.10 的 winegstreamer
++ * 已不再依赖 gst/gl，这里按同样方向在 OHOS 上关掉 GL display 那一小块。
++ * 归属 W-19/W-08（媒体模块的 OHOS 补丁）。 */
++#if !defined(__OHOS__)
+ #include <gst/gl/gl.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -47,7 +53,9 @@
+ GST_DEBUG_CATEGORY(wine);
+ 
+ static UINT thread_count;
++#if !defined(__OHOS__)
+ GstGLDisplay *gl_display;
++#endif
+ 
+ GstStreamType stream_type_from_caps(GstCaps *caps)
+ {
+@@ -323,8 +331,10 @@ NTSTATUS wg_init_gstreamer(void *arg)
+     if (!gst_element_register_winegstreamerstepper(NULL))
+         GST_ERROR("Failed to register the stepper element");
+ 
++#if !defined(__OHOS__)
+     if (!(gl_display = gst_gl_display_new()))
+         GST_ERROR("Failed to create OpenGL display");
++#endif
+ 
+     if (!media_converter_init())
+     {
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 074f3f14872..c85f638f3e3 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -36,7 +36,10 @@
+ #include <gst/audio/audio.h>
+ #include <gst/tag/tag.h>
+ 
++/* WineHua/OHOS (W1): 见 unixlib.c 里同款说明（OHOS 无 gst/gl 头）。 */
++#if !defined(__OHOS__)
+ #include <gst/gl/gl.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -45,7 +48,9 @@
+ 
+ #include "unix_private.h"
+ 
++#if !defined(__OHOS__)
+ extern GstGLDisplay *gl_display;
++#endif
+ 
+ typedef enum
+ {
+@@ -2231,6 +2236,9 @@ static NTSTATUS wg_parser_create(void *args)
+ 
+     if (!(parser = calloc(1, sizeof(*parser))))
+         return E_OUTOFMEMORY;
++    /* WineHua/OHOS (W1): OHOS 上没有 gst/gl，因此这里也不设置 GL display context
++     * （见文件头同款说明）。归属 W-19。 */
++#if !defined(__OHOS__)
+     if ((parser->use_opengl = params->use_opengl && gl_display))
+     {
+         if ((parser->context = gst_context_new(GST_GL_DISPLAY_CONTEXT_TYPE, false)))
+@@ -2241,6 +2249,9 @@ static NTSTATUS wg_parser_create(void *args)
+             parser->use_opengl = FALSE;
+         }
+     }
++#else
++    parser->use_opengl = FALSE;
++#endif
+     if (!(parser->task_pool = wg_task_pool_new()))
+     {
+         free(parser);
