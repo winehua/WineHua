@@ -586,12 +586,15 @@ static HRESULT init_d3d9(void)
 static void render_d3d9(float angle)
 {
     D3D9State *s = &g_app.d3d9;
+    LARGE_INTEGER wq_begin, wq_before_present, wq_end;
     D3DVIEWPORT9 viewport;
     Mat4 world = mat4_mul(mat4_rotation_x(angle * 0.67f), mat4_rotation_y(angle));
     Mat4 view = mat4_translation(0.0f, 0.0f, 5.0f);
     Mat4 proj = mat4_perspective_lh(60.0f * 3.1415926535f / 180.0f,
                                     (float)g_app.width / (float)g_app.height,
                                     0.1f, 100.0f);
+
+    QueryPerformanceCounter(&wq_begin);
 
     viewport.X = 0;
     viewport.Y = 0;
@@ -615,7 +618,14 @@ static void render_d3d9(float angle)
                                               0, (UINT)ARRAY_SIZE(g_indices) / 3);
         IDirect3DDevice9_EndScene(s->device);
     }
+    QueryPerformanceCounter(&wq_before_present);
     g_app.present_result = IDirect3DDevice9_Present(s->device, NULL, NULL, NULL, NULL);
+    QueryPerformanceCounter(&wq_end);
+    if (g_app.bench && g_app.qpc_freq.QuadPart) {
+        const double scale = 1000.0 / (double)g_app.qpc_freq.QuadPart;
+        g_app.bench_render_total_ms += (double)(wq_before_present.QuadPart - wq_begin.QuadPart) * scale;
+        g_app.bench_present_total_ms += (double)(wq_end.QuadPart - wq_before_present.QuadPart) * scale;
+    }
 }
 
 static void release_d3d11(void)

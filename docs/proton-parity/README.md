@@ -69,7 +69,9 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
   见 `p3-p4-smoke-ab.md`。
 - **P5 初步归因**：拆段计时显示 render 仅 0.09–0.17 ms，`Present` 占 11.66–11.95 ms
   （96–98%），且三种配置一致 ⇒ 瓶颈在宿主 present 链路，与 CPU 转译无关。
-  下一步是在 present 链路内继续细分打点。
+  换图形栈对照（DXVK/Venus vs WineD3D/virgl）两者 present 都是 10.7–11.7 ms
+  ⇒ 这是**两条栈共有的宿主 present/上屏段**固定成本，不是 DXVK/Venus 特有。
+  下一步在该段内打点（SurfaceQueue / egl_renderer / 显示周期 pacing）。
 - 原工作树未做任何修改。
 
 ## 记录约定

@@ -120,6 +120,37 @@ angleRegressions : 0
 （与 `docs/ARM64_SCHEME3_PERF_HANDOFF.md` §5.6 "Host present ~5ms 时低 FPS 仍可能在
 Guest shadow" 的提示一致，但本轮的测量把范围收窄到 present 段本身。）
 
+### 3.4 换图形栈对照：这 11 ms 是两条栈**共有**的
+
+再加一个套件 `p5-paths`，同一个 cube 分别走 **DXVK 1.10（D3D11→Venus→vtest）**
+与 **WineD3D（D3D9→OpenGL→virgl）** 两条完全不同的图形栈，其余条件不变。
+run `p5c`（30 s / 项）：
+
+| 测试 | 图形栈 | frames | fps | avgMs | renderMs | **presentMs** |
+| --- | --- | --- | --- | --- | --- | --- |
+| `p5-d3d11-x86-fex` | DXVK → Venus → vtest | 2354 | 81.03 | 12.3416 | 0.1662 | **11.6985** |
+| `p5-d3d9-x86-fex` | WineD3D → OpenGL → virgl | 2548 | 88.33 | 11.3208 | 0.1697 | **10.7199** |
+| `p5-d3d9-x64-native` | WineD3D → OpenGL → virgl | 2586 | 89.56 | 11.1655 | 0.0814 | **10.9828** |
+
+**结论：两条互不相干的图形栈给出几乎相同的 present 成本（10.7–11.7 ms），
+render 都只有 0.08–0.17 ms。** 所以这 ~11 ms **不是 DXVK/Venus 特有的**，
+而在两者共用的宿主 present 段：
+
+```text
+vtest socket → 宿主 virglrenderer/vkr → SurfaceQueue → egl/XComponent 上屏
+                      ↑ 两条 Guest 栈在这里汇合
+```
+
+配合 §3.3（与 CPU 架构/转译器无关），P5 的归因已收窄到：
+**宿主 present/上屏段的固定 ~11 ms**。下一步应在这段里打点
+（`graphics/` 下的 SurfaceQueue / egl_renderer / presenter 与显示周期配置），
+而不是继续在 Guest 侧或 FEX 上找。
+
+> 旁证：`graphics/presenter_common.h` 里存在帧周期钳制常量
+> （`kDefaultFramePeriodNs = 16666667` 名义 60 Hz、`kDispatchLeadNs = 500000`），
+> 且 `venus_surface_presenter` 会用 `lastPresentNs_ + framePeriodNs_` 计算下一个
+> present 截止时间 —— present 段确实带 pacing 逻辑，是否就是这 11 ms 需要下一轮打点确认。
+
 ## 4. 两处被修正的判断（保留记录，避免复现同样的错）
 
 ### 4.1 "78 fps 是 `Sleep(1)` 节流" —— 错
