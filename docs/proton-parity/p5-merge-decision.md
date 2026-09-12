@@ -160,6 +160,33 @@ direct/alias/copy/reused/failed 计数）。已观测到的全部条目都是：
 所以"真实游戏性能"这条要落地，先得解决"哪些应用能起到窗口/渲染"这一类问题，
 而不是继续调测量口径。
 
+### 2.6 真实应用的 SMC / 信号链开销（有量化）
+
+真实应用跑起来后，wine stderr 里会出现密集的 `[SMC]` 记录（自修改代码 / 保护页
+故障走 WineHua 的 sigchain）。本节会话（含 BasicHLSL11 与随后的 Steam 启动）里：
+
+```text
+grep -c 'SMC'              -> 2034 行
+grep -c 'result=not_mine'  -> 664 次（决定"不是我处理的"，转交 Wine SEH）
+```
+
+每种故障的形态都是：
+
+```text
+[SMC] enter tid=12810 sig=7 addr=0x1e40de pc_in=0x7ff57ea608 teb=0x88000 fn=0
+[SMC] tid=12810 sig=7 addr=0x1e40de ... result=wine_seh pc_out=... wine=1
+[SMC] tid=12810 sig=7 addr=0x1e40de ... result=not_mine  ...
+```
+
+即**每次故障都要走完整的 sigchain 判定 + 每条 2 行 `write(2)` 日志**。
+交接文档把"信号/SMC 税"列为主要嫌疑之一，这里给出的是真实应用上的量级样本
+（**注意：这些日志本身也计入开销**，所以"关掉/限流 SMC 日志再看帧率"是一个值得做的对照）。
+
+顺带记录一个干扰项：本节会话里应用**自行启动了 Steam**
+（`cmd.exe /s/c Z:\games\Steam\1.bat` → `start.exe steam.exe -nocrashmonitor ...`，
+以及 `Z:\games\Steam\steam.exe`）。做真实游戏测帧率时必须先确认没有这类
+后台启动在抢 CPU，否则数据不可比。
+
 ### 已经可以下的性能结论（有证据）
 
 | 结论 | 证据 |
