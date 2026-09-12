@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
@@ -97,9 +98,38 @@ typedef struct AppState {
     char test_id[96];
     char result_path[MAX_PATH];
     char status[256];
+    /* --bench: 去掉每帧 Sleep(1) 的节流, 并统计帧时间分布。
+     * 默认(非 bench)每帧 Sleep(1) 会把循环压在 ~78fps, 无法用于 CPU 后端对比。 */
+    int bench;
+    unsigned int bench_count;
+    double bench_total_ms;
+    double bench_min_ms;
+    double bench_max_ms;
+    double bench_samples[4096];
 } AppState;
 
+#define BENCH_MAX_SAMPLES ARRAY_SIZE(((AppState *)0)->bench_samples)
+
+static double bench_sorted[BENCH_MAX_SAMPLES];
+
 static AppState g_app;
+
+static int bench_cmp_double(const void *a, const void *b)
+{
+    const double da = *(const double *)a;
+    const double db = *(const double *)b;
+    return (da < db) ? -1 : (da > db) ? 1 : 0;
+}
+
+static void bench_record(double ms)
+{
+    if (g_app.bench_count < BENCH_MAX_SAMPLES)
+        g_app.bench_samples[g_app.bench_count] = ms;
+    if (g_app.bench_count == 0 || ms < g_app.bench_min_ms) g_app.bench_min_ms = ms;
+    if (ms > g_app.bench_max_ms) g_app.bench_max_ms = ms;
+    g_app.bench_total_ms += ms;
+    ++g_app.bench_count;
+}
 
 static const char *feature_level_name(D3D_FEATURE_LEVEL level);
 
@@ -281,6 +311,8 @@ static void parse_command_line(RendererKind *initial_renderer)
             *initial_renderer = RENDERER_D3D11;
         } else if (!wcscmp(argv[i], L"--automation")) {
             g_app.automation = 1;
+        } else if (!wcscmp(argv[i], L"--bench")) {
+            g_app.bench = 1;
         } else if (!wcscmp(argv[i], L"--seconds") && i + 1 < argc) {
             unsigned long seconds = wcstoul(argv[++i], NULL, 10);
             if (seconds > 3600) seconds = 3600;
@@ -297,6 +329,11 @@ static void parse_command_line(RendererKind *initial_renderer)
         }
     }
     LocalFree(argv);
+
+    /* smoke 编排只能通过 env 传诊断键 (argv 由 runner 统一生成), 所以 bench
+     * 也支持环境变量开启。见 docs/proton-parity/p3-p4-smoke-ab.md。 */
+    if (getenv("WINEHUA_SMOKE_BENCH") && getenv("WINEHUA_SMOKE_BENCH")[0] == '1')
+        g_app.bench = 1;
 }
 
 static const char *active_d3d_backend(void)
@@ -326,6 +363,7 @@ static void write_automation_result(const char *status_override, const char *mes
     char temporary[MAX_PATH + 8];
     char d3d11_path[MAX_PATH];
     char dxgi_path[MAX_PATH];
+    char bench_json[288];
     FILE *fp;
     const char *status = status_override ? status_override :
         (g_app.renderer_ready && SUCCEEDED(g_app.present_result) &&
@@ -334,6 +372,24 @@ static void write_automation_result(const char *status_override, const char *mes
         (g_app.renderer_ready ? "cube rendered and presented" : g_app.status);
 
     if (!g_app.result_path[0]) return;
+
+    bench_json[0] = 0;
+    if (g_app.bench && g_app.bench_count) {
+        const unsigned int n = g_app.bench_count < BENCH_MAX_SAMPLES ?
+            g_app.bench_count : (unsigned int)BENCH_MAX_SAMPLES;
+        const double avg_ms = g_app.bench_total_ms / (double)g_app.bench_count;
+        double p50, p95;
+        memcpy(bench_sorted, g_app.bench_samples, n * sizeof(double));
+        qsort(bench_sorted, n, sizeof(double), bench_cmp_double);
+        p50 = bench_sorted[(n - 1) * 50 / 100];
+        p95 = bench_sorted[(n - 1) * 95 / 100];
+        snprintf(bench_json, sizeof(bench_json),
+                 ",\n"
+                 "  \"bench\": {\"frames\": %u, \"fps\": %.3f, \"avgMs\": %.4f, "
+                 "\"p50Ms\": %.4f, \"p95Ms\": %.4f, \"minMs\": %.4f, \"maxMs\": %.4f}",
+                 g_app.bench_count, avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0, avg_ms,
+                 p50, p95, g_app.bench_min_ms, g_app.bench_max_ms);
+    }
     snprintf(temporary, sizeof(temporary), "%s.tmp", g_app.result_path);
     loaded_module_path("d3d11.dll", d3d11_path, sizeof(d3d11_path));
     loaded_module_path("dxgi.dll", dxgi_path, sizeof(dxgi_path));
@@ -358,7 +414,7 @@ static void write_automation_result(const char *status_override, const char *mes
             "  \"angleRegressions\": %u,\n"
             "  \"lastAngle\": %.9f,\n"
             "  \"d3d11Dll\": \"%s\",\n"
-            "  \"dxgiDll\": \"%s\"\n"
+            "  \"dxgiDll\": \"%s\"%s\n"
             "}\n",
             g_app.run_id, g_app.test_id, status,
             g_app.renderer_ready ? "present" : "initialization",
@@ -375,7 +431,7 @@ static void write_automation_result(const char *status_override, const char *mes
             (unsigned long)g_app.present_result,
             g_app.total_frame_count, g_app.render_sequence,
             g_app.angle_regression_count, g_app.last_render_angle,
-            d3d11_path, dxgi_path);
+            d3d11_path, dxgi_path, bench_json);
     fclose(fp);
     MoveFileExA(temporary, g_app.result_path,
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
@@ -1084,10 +1140,18 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
             g_app.need_recreate = 0;
             switch_renderer(g_app.renderer);
         }
-        render_frame();
+        {
+            LARGE_INTEGER bench_begin, bench_end;
+            QueryPerformanceCounter(&bench_begin);
+            render_frame();
+            QueryPerformanceCounter(&bench_end);
+            if (g_app.bench && g_app.qpc_freq.QuadPart)
+                bench_record((double)(bench_end.QuadPart - bench_begin.QuadPart) * 1000.0 /
+                             (double)g_app.qpc_freq.QuadPart);
+        }
         if (g_app.duration_ms && GetTickCount64() - g_app.run_start_ms >= g_app.duration_ms)
             g_app.running = 0;
-        Sleep(1);
+        if (!g_app.bench) Sleep(1);
     }
 
     write_automation_result(NULL, NULL);

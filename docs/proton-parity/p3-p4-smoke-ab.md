@@ -108,10 +108,48 @@ angleRegressions : 0
   必须先去掉这个节流。
 - x64 的 19.9 fps 低于上限，因此**不受此限制影响**，是有效信号。
 
-## 5. 下一步
+## 5. bench 模式：修正 §4 的判断（重要）
 
-1. 给 cube 加一个 `--bench`（跳过 `Sleep(1)`、按帧时间分布统计）模式，重编 `smoke/x86`、
-   `smoke/amd64`、`smoke/x64` 三个 cube，才能做真正的 P3 CPU 对比与 P5 归因。
+给 cube 加了 `--bench` / `WINEHUA_SMOKE_BENCH=1`：跳过每帧 `Sleep(1)`，
+并按帧时间分布输出 `avg/p50/p95/min/max`。
+
+第一次实测（`run p3b`，30 s）：
+
+| 测试 | 状态 | frames | avgMs | p50Ms | p95Ms | maxMs | fps |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `p3-bench-x86-wowbox64` | 完成 | 2378 | **12.2741** | 12.0886 | 15.6588 | 201.0682 | 81.5 |
+| `p3-bench-x86-fex` | **停在 60 帧检查点，未产出终值** | (60) | (15.97) | (12.26) | (18.46) | (131.55) | — |
+| `p3-bench-x64-native` | 未开始（runner 卡在前一项） | — | — | — | — | — | — |
+
+**关键修正：§4 里"≈78 fps 是 Sleep(1) 节流上限"的说法不成立。**
+关掉 Sleep 之后（bench 模式）每帧仍是 **12.27 ms**，而带 Sleep 的普通模式是
+12.61 ms —— 差 0.34 ms，说明 `Sleep(1)` 在这个平台上只花约 0.3 ms，
+**12 毫秒/帧是真实的每帧成本**，不是循环节流。
+
+于是：
+
+- 之前"三个后端都顶到 78fps 上限所以无法区分"的结论作废；
+  这个 cube **是有区分度的**，x86 每帧 ~12.2 ms 是可以拿来做 A/B 的真实工作量。
+- 但 bench 模式下 FEX 那一项**没有跑完**（停在 60 帧检查点后再无输出，
+  runner 随后卡住，`suite-summary.json` 未生成）。这本身需要排查：
+  去掉 Sleep 的紧凑循环 + FEX 转译的组合可能有问题（也可能是 runner 的
+  完成判定问题——它在看到 60 帧检查点后就认为该项结束）。
+
+## 6. 下一步
+
+1. 修 bench 模式的完成判定 / 排查 FEX 项卡住：先确认 60 帧检查点是否让 runner
+   提前放行（对比：非 bench 的 p3/p4 也是先写检查点，但最终都补上了终值）。
+   若确认是 FEX 紧凑循环本身的问题，那是比帧率更值得先解决的缺陷。
 2. 分离 ARM64X thunk 成本：把 x64 overlay 指向 `dxvk/legacy/x64/`（普通 x64 DXVK，
    整库走 FEX）与现在的 `arm64x/` 对照 —— 即方案 §5.3 的实验。
-3. 有了 (1)(2) 再谈产品合入判定与回退策略。
+3. 有了 (1)(2) 再做正式的多次重复测量（交错顺序、记录温度/缓存状态），
+   最后谈产品合入判定与回退策略。
+
+## 7. 本轮附带产出
+
+| 文件 | 作用 |
+| --- | --- |
+| `smoke/winehua_d3d_switch_cube.c` | 新增 `--bench` / `WINEHUA_SMOKE_BENCH=1`，输出帧时间分布 |
+| `docs/proton-parity/tools/build_bench_cubes.sh` | 用 llvm-mingw 编 x86 / amd64 / aarch64 三份 cube（不需要 Docker） |
+| `docs/proton-parity/tools/patch_hap_payload.py` | 直接替换 HAP 内 wine-data.zip 条目并同步 payloadSha256（无 Docker 出包） |
+| `scripts/assemble.sh` | `p3-wow64-ab` / `p4-amd64-fex` 套件改用 bench 模式 |
