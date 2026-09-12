@@ -7,7 +7,8 @@ source "$SCRIPT_DIR/env.sh"
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
-    -fPIC -fasynchronous-unwind-tables"
+    -fPIC -fasynchronous-unwind-tables \
+    -I$SYSROOT_EXT_INC/libdrm"
 
 build_native_tools() {
     log "--- Native 构建 (winegcc 等 host 工具) ---"
@@ -74,12 +75,28 @@ build_ohos_unix() {
     mkdir -p "$wine_build_dir"
     cd "$wine_build_dir"
 
+    # llvm-mingw 的 clang 必须在 PATH 里，**且与是否重新 configure 无关**：
+    # winebuild 在 PE 侧靠 `clang -print-prog-name=...` 找 ar/ranlib
+    # （tools/tools.h 的 find_clang_tool）。这一句原来只写在"需要重新 configure"
+    # 的分支里 → 重跑时 Makefile 已存在、跳过 configure，PATH 里就没有 llvm-mingw，
+    # winebuild 只能裸名 spawn "clang" → ENOENT，报出：
+    #   error: winebuild : No such file or directory
+    # （该文案是 tools/winebuild/utils.c 里 fatal_perror("winebuild") 的固定字符串，
+    #  与实际缺失的程序名无关，排查时容易误判。）
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        export PATH="$LLVM_MINGW/bin:$PATH"
+    fi
+
     # 检查是否需要重新 configure。只查 wine 真正生成到 config.h 的 SONAME 宏
     # (freetype/vulkan/gnutls 用 WINE_CHECK_SONAME); wayland/gstreamer 不生成
     # SONAME 宏 (config.h.in 无条目), 旧检查 SONAME_LIBWAYLAND_CLIENT /
     # SONAME_LIBGSTREAMER_1_0 永远为真 → 每次都重配, 已移除。
     # 外加 host 校验 (config.status 的 --host), 防止切换架构后复用旧 host 缓存。
-    if [ ! -f "Makefile" ] || ! grep -q '#define SONAME_LIBFREETYPE' include/config.h 2>/dev/null \
+    # W1 追加: configure.ac（或我们生成的 configure）比 config.status 新时也要重配,
+    # 否则改了 configure.ac（例如排除 amd_ags_x64 模块）不会生效。
+    if [ ! -f "Makefile" ] || [ "$WINE_SRC/configure.ac" -nt config.status ] \
+       || [ "$BUILD_DIR/configure" -nt config.status ] \
+       || ! grep -q '#define SONAME_LIBFREETYPE' include/config.h 2>/dev/null \
        || ! grep -q '#define SONAME_LIBVULKAN "libvulkan.so.1"' include/config.h 2>/dev/null \
        || ! grep -q '#define SONAME_LIBGNUTLS' include/config.h 2>/dev/null \
        || ! grep -q -- "--host=$HOST_TRIPLE" config.status 2>/dev/null; then
@@ -294,35 +311,39 @@ if [ ! -x "$CONFIGURE_BIN" ] || [ "$WINE_SRC/configure.ac" -nt "$CONFIGURE_BIN" 
     chmod +x "$CONFIGURE_BIN"
 fi
 
-# Wine 上游树不带 include/config.h.in（winehua fork 里是提交进仓库的生成物）。
-# 若源码树没有，就在构建目录用 autoheader 生成一份，否则 configure 会在
-# config.status 阶段报 "cannot find input file: 'include/config.h.in'"。
-# 这条分支只在换用上游/Valve 源码树（W1）时才会走到。
-if [ ! -f "$WINE_SRC/include/config.h.in" ] && [ ! -f "$BUILD_DIR/include/config.h.in" ]; then
-    log "--- 源码树缺少 include/config.h.in，在源码树内生成（等价于上游 autogen.sh）---"
-    # 容器里的 autoheader 是精简版，不支持 --include/--output/-o，
-    # 只能按默认行为在源码树内生成 include/config.h.in。
-    # configure 的 --srcdir 会在 srcdir 里找到它，因此不需要再拷到构建目录。
-    (cd "$WINE_SRC" && autoheader)
-    log "  → $WINE_SRC/include/config.h.in"
+# out-of-tree 构建时，Wine 生成的 Makefile 里 config.status 依赖 $(srcdir)/configure。
+# winehua fork 的源码树里带着 configure，所以旧流程没暴露这个问题；
+# Valve 的 proton_11.0 树不带（上游 autogen.sh 会在树内生成），于是 make 会报：
+#   make: *** No rule to make target '<srcdir>/configure', needed by 'config.status'.  Stop.
+if [ ! -f "$WINE_SRC/configure" ]; then
+    log "--- 源码树缺少 configure，从构建目录补齐 (config.status 依赖 \$(srcdir)/configure) ---"
+    cp -f "$CONFIGURE_BIN" "$WINE_SRC/configure"
+    chmod +x "$WINE_SRC/configure"
 fi
 
-# 同理：include/wine/vulkan.h 与 dlls/winevulkan/{loader,vulkan}_thunks.* 也是生成物。
-# WineHQ 上游（11.10）把它们提交进了仓库，Valve 的 proton_11.0 分支没有，
-# 于是 makedep 在生成 Makefile 时会因为找不到 include/wine/vulkan.h 直接失败：
+# ── 上游 autogen.sh 的生成步骤（换上游/Valve 源码树时必需）──────────────
+# Wine 的 autogen.sh 实际做四件事：
+#   tools/make_requests / tools/make_specfiles
+#   dlls/winevulkan/make_vulkan -x vk.xml -X video.xml / autoreconf -ifv
+# winehua 的 fork 把产物（include/config.h.in、dlls/ntdll/ntsyscalls.h、
+# include/wine/vulkan.h、winevulkan 的 thunks 等）**提交进了仓库**，
+# 所以以前只跑 autoconf 就够用；换成 Valve 的 proton_11.0 树后会依次撞上：
+#   config.status: error: cannot find input file: 'include/config.h.in'
 #   error: open wine/vulkan.h : No such file or directory
-#   config.status: error: could not create Makefile
-# 正解是用源树自带的 make_vulkan 生成到**构建目录**（out-of-tree 的标准做法）。
-if [ ! -f "$WINE_SRC/include/wine/vulkan.h" ] && [ ! -f "$BUILD_DIR/include/wine/vulkan.h" ]; then
-    log "--- 源码树缺少 include/wine/vulkan.h，用 make_vulkan 生成到构建目录 ---"
-    mkdir -p "$BUILD_DIR/include/wine" "$BUILD_DIR/dlls/winevulkan"
+#   dlls/ntdll/signal_arm.c:35: error: ntsyscalls.h: No such file or directory
+# 这里按 autogen.sh 的等价步骤补齐（幂等：产物已在则整块跳过）。
+if [ ! -f "$WINE_SRC/dlls/ntdll/ntsyscalls.h" ] \
+   || [ ! -f "$WINE_SRC/include/config.h.in" ] \
+   || [ ! -f "$WINE_SRC/include/wine/vulkan.h" ]; then
+    log "--- 源码树缺少上游生成物 → 运行 autogen.sh 等价的生成步骤 ---"
     (
-        cd "$BUILD_DIR" &&
-        python3 "$WINE_SRC/dlls/winevulkan/make_vulkan" \
-            -x "$WINE_SRC/dlls/winevulkan/vk.xml" \
-            -X "$WINE_SRC/dlls/winevulkan/video.xml"
+        cd "$WINE_SRC" &&
+        tools/make_requests &&
+        tools/make_specfiles &&
+        ( cd dlls/winevulkan && ./make_vulkan -x vk.xml -X video.xml ) &&
+        autoheader
     )
-    log "  → $BUILD_DIR/include/wine/vulkan.h"
+    log "--- 生成完成: ntsyscalls.h / include/wine/vulkan.h / include/config.h.in ---"
 fi
 
 build_native_tools

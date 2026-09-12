@@ -1,0 +1,79 @@
+diff --git a/configure.ac b/configure.ac
+index 370857c1e5a..d82b4e0cfee 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2528,7 +2528,11 @@ WINE_CONFIG_MAKEFILE(dlls/advapi32/tests)
+ WINE_CONFIG_MAKEFILE(dlls/advpack)
+ WINE_CONFIG_MAKEFILE(dlls/advpack/tests)
+ WINE_CONFIG_MAKEFILE(dlls/amsi)
+-WINE_CONFIG_MAKEFILE(dlls/amd_ags_x64)
++dnl WineHua/OHOS (W1): amd_ags_x64 是 AMD 显卡专用 shim（UNIX_LIBS 依赖 libdrm_amdgpu），
++dnl OHOS/Mali 上无意义，且我们的 sysroot-ext 没有 amdgpu.h / libdrm_amdgpu。
++dnl 上游 11.0 无条件编它；我们的 fork 里根本没有这个模块。
++dnl 归属 W-19（构建系统）：先排除该模块，回退方式=恢复本行并补 libdrm_amdgpu。
++dnl WINE_CONFIG_MAKEFILE(dlls/amd_ags_x64)
+ WINE_CONFIG_MAKEFILE(dlls/amdxc64)
+ WINE_CONFIG_MAKEFILE(dlls/amstream)
+ WINE_CONFIG_MAKEFILE(dlls/amstream/tests)
+@@ -3436,7 +3440,16 @@ WINE_CONFIG_MAKEFILE(dlls/winebus.sys)
+ WINE_CONFIG_MAKEFILE(dlls/winecoreaudio.drv)
+ WINE_CONFIG_MAKEFILE(dlls/winecrt0)
+ WINE_CONFIG_MAKEFILE(dlls/wined3d)
+-WINE_CONFIG_MAKEFILE(dlls/winedmo)
++dnl WineHua/OHOS (W1, 临时): Valve 的 11.0 winedmo 仍带 media-converter 那套
++dnl （libavcodec/pcm_byte_order_reverse_bsf.c + unix_demuxer_mediaconv.c），
++dnl 它依赖 ffmpeg 私有 API（AVBSFInternal / AVBitStreamFilter.filter|init），
++dnl 与当前可用的 ffmpeg 头不匹配 → 编译失败。上游 11.10 已经把这两个文件连同
++dnl unix_demuxer.c 里的调用一起删掉（我们 fork 就是那个版本）。
++dnl M1 先排除该模块以跑通完整构建；W1 后续要决定：
++dnl   (a) 移植上游删除 mediaconv 的那组改动，或
++dnl   (b) 把 fork 里能编过的 11.10 winedmo 迁过来（注意 PARENTSRC 取自 winegstreamer）。
++dnl 回退方式：恢复本行。
++dnl WINE_CONFIG_MAKEFILE(dlls/winedmo)
+ WINE_CONFIG_MAKEFILE(dlls/winegstreamer)
+ WINE_CONFIG_MAKEFILE(dlls/winehid.sys)
+ WINE_CONFIG_MAKEFILE(dlls/winemac.drv)
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index f8aa468a3ab..d744f5a765f 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -78,7 +78,10 @@
+ #else
+   extern char **environ;
+ #endif
+-#ifdef __ANDROID__
++/* WineHua/OHOS (W1): 上游这段 Android JNI 入口（JNI_OnLoad / wine_init_jni）
++ * 需要 jni.h 和真实 JVM。OHOS 侧两者都没有也不需要，因此定义 __OHOS__ 时整块跳过。
++ * 归属 W-05（loader 的 OHOS 补丁）。 */
++#if defined(__ANDROID__) && !defined(__OHOS__)
+ # include <jni.h>
+ #endif
+ 
+@@ -2451,7 +2454,12 @@ static void start_main_thread(void)
+     set_thread_teb( teb );
+ #endif
+ 
++    /* WineHua/OHOS (W1): M_PERTURB 是 glibc 的 malloc 调试开关，musl（OHOS）没有。
++     * 上游 11.0 在此处无条件调用，我们的 OHOS 构建里没有这段代码。
++     * 归属 W-05（loader 的 OHOS 补丁）。 */
++#if defined(M_PERTURB)
+     mallopt( M_PERTURB, 0xff );
++#endif
+     init_startup_info();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     set_load_order_app_name( main_wargv[0] );
+@@ -2460,11 +2468,13 @@ static void start_main_thread(void)
+     load_ntdll();
+     load_wow64_ntdll( main_image_info.Machine );
+     load_apiset_dll();
++#if defined(M_PERTURB)
+     mallopt( M_PERTURB, 0 );
++#endif
+     server_init_process_done();
+ }
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) && !defined(__OHOS__)
+ 
+ #ifndef WINE_JAVA_CLASS
+ #define WINE_JAVA_CLASS "org/winehq/wine/WineActivity"

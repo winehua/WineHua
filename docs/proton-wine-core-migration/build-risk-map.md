@@ -104,6 +104,43 @@ Gate：network / TLS（DNS/TCP/TLS/WinHTTP/WinInet/crypt32 证书链）；
 - 尚未尝试实际编译 Valve Wine；M1 的第一个真实动作就是把它编起来，
   预期会暴露一批 configure / 头文件 / 工具链问题。
 
+## 10. W1 第二次实做：configure 通过、make 编完近整棵树（同日后续）
+
+方案 A（补齐 out-of-tree 流程）**其实能走通**，关键是补上「上游 autogen.sh 的生成步骤」：
+
+```text
+autoconf                          OK
+make_requests / make_specfiles    OK   （产出 ntscalls 类生成物：ntsyscalls.h、server_protocol.h 等）
+make_vulkan                       OK   （产出 include/wine/vulkan.h + winevulkan thunks）
+configure                         OK   "configure: Finished.  Do 'make' to compile Wine."
+make                              OK   运行到 98549 行日志（几乎编完整棵树）
+```
+
+这一轮又修掉 6 个构建阻塞，全部属于 W-19：
+
+| # | 现象 | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 4 | `make: *** No rule to make target '<srcdir>/configure'` | out-of-tree 时 `config.status` 依赖 `$(srcdir)/configure`，Valve 树里没有（上游 autogen.sh 会在树内生成） | 构建脚本：缺则从构建目录拷回源码树 |
+| 5 | `dlls/ntdll/unix/loader.c: 'jni.h' file not found` | Valve 11.0 的 loader.c 带 `#ifdef __ANDROID__` 的 **JNI 入口**（`JNI_OnLoad`/`wine_init_jni`）；我们的 CFLAGS 定义了 `__ANDROID__`（musl 路径需要） | 源码补丁：改成 `#if defined(__ANDROID__) && !defined(__OHOS__)`，OHOS 侧跳过 |
+| 6 | `dlls/amd_ags_x64/unixlib.c: 'amdgpu_drm.h' file not found` | 该模块直接 `#include <amdgpu_drm.h>`，而 sysroot-ext 的头在 `usr/include/libdrm/`；此模块我们 fork 里没有（11.0→11.10 上游新增） | CFLAGS 加 `-I$SYSROOT_EXT_INC/libdrm` |
+| 7 | `'M_PERTURB' undeclared`；随后 `'amdgpu.h' not found` | `M_PERTURB` 是 glibc 的 malloc 调试开关，musl 没有；`amdgpu.h`/`libdrm_amdgpu` 我们没建 | 源码补丁：`mallopt(M_PERTURB,…)` 用 `#if defined(M_PERTURB)` 包住；`amd_ags_x64` 在 configure.ac 里先排除（AMD 专用 shim，OHOS/Mali 无意义） |
+| 8 | `error: winebuild : No such file or directory`（**看起来**像缺 winebuild） | 这行是 `tools/winebuild/utils.c` 里 `fatal_perror("winebuild")` 的**固定文案**；真实原因是 winebuild 要裸名 spawn `clang`（`tools/tools.h:find_clang_tool` 用它找 ar/ranlib），而**我们脚本的 `export PATH="$LLVM_MINGW/bin:$PATH"` 只写在"需要重新 configure"的分支里** → 重跑时跳过 configure，PATH 里没有 llvm-mingw | 源码补丁：PATH 导出提到 `build_ohos_unix()` 开头，与是否重配无关 |
+| 9 | `dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c`：`AVBSFInternal` / `AVBitStreamFilter.filter\|init` 不匹配 | Valve 11.0 的 winedmo 仍带 media-converter 那套；上游 11.10 已把该文件与 `unix_demuxer_mediaconv.c`（连同 `unix_demuxer.c` 里的调用）整块删除 | **M1 暂排除 winedmo**（configure.ac 注释），W1 后续决定：移植上游删除 or 迁 fork 的 11.10 winedmo |
+| 10 | `dlls/winegstreamer/unixlib.c: 'gst/gl/gl.h' file not found` | Valve 11.0 的 winegstreamer 引 `gst/gl/gl.h`（gst-plugins-base 的 GL 头），sysroot-ext 无该子目录；我们 11.10 的对应文件只 include `gst/gst.h`/`video`/`audio`/`tag` | **未解决**：(a) 移植上游这组改动 /(b) 给 sysroot-ext 补 gst/gl 头 /(c) M1 暂排除 winegstreamer（丢媒体能力，倾向不做） |
+
+**M1 现状**：configure 通过、make 编到 `dlls/winegstreamer`（接近收尾）。
+剩下的都是**模块级**差异（11.0 与 11.10 之间被上游改过的模块），不再是工具链或流程问题。
+
+本阶段源码补丁留档（只含**有意**改动）：`patches/w1-stage1-valve-tree.diff`
+（`configure.ac` + `dlls/ntdll/unix/loader.c`；自动生成的产物不计入）。
+
+### 10.1 M1 收尾的两条路
+
+1. **补依赖**：给 sysroot-ext 补 `gst/gl` 头（来自 gst-plugins-base；我们已经有 `gst_base_build`），
+   并把 winedmo 按上游 11.10 的方式改造（删 mediaconv）。→ 保留全部上游能力，但工作量更大。
+2. **按 Gate 需要裁剪**：M1 只需要 wineboot/cmd，可先排除这两块把构建跑完，
+   把它们的依赖补齐留到 M3（音频/媒体）之前。→ 更快拿到"完整构建"这个里程碑。
+
 ## 8. W1 动手前实测到的三个环境障碍（2026-09-12 实做）
 
 ### 8.1 子模块 gitdir 是共享的 —— 不要在新工作树里跑 `submodule update`
