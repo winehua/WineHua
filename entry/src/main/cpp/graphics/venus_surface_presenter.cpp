@@ -182,6 +182,8 @@ struct VenusSurfaceQueueTarget::Impl {
         failures_ = 0;
         throttled_ = 0;
         firstPresentedNs_ = 0;
+        lastFrameEndNs_ = 0;
+        frameGapCount_ = 0;
         totalPresentUs_ = 0;
         maxPresentUs_ = 0;
         totalWaitFenceUs_ = 0;
@@ -630,6 +632,11 @@ struct VenusSurfaceQueueTarget::Impl {
         if (lastSerial_ && serial <= lastSerial_) ++serialRegressions_;
         lastSerial_ = serial;
         const uint64_t frameEndNs = NowNs();
+        const uint64_t frameGapUs = lastFrameEndNs_
+            ? (frameEndNs - lastFrameEndNs_) / 1000 : 0;
+        lastFrameEndNs_ = frameEndNs;
+        if (frameGapUs && frameGapCount_ < frameGapUs_.size())
+            frameGapUs_[frameGapCount_++] = frameGapUs;
         const uint64_t presentUs = (frameEndNs - presentStartNs) / 1000;
         if (!firstPresentedNs_) firstPresentedNs_ = frameEndNs;
         totalPresentUs_ += presentUs;
@@ -646,7 +653,7 @@ struct VenusSurfaceQueueTarget::Impl {
                         "release_wait_us=%{public}llu present_cpu_us=%{public}llu "
                         "wait_fence_us=%{public}llu acquire_us=%{public}llu "
                         "submit_us=%{public}llu queue_present_us=%{public}llu "
-                        "gpu_present_copy_us=%{public}llu",
+                        "gpu_present_copy_us=%{public}llu frame_gap_us=%{public}llu",
                         serial,
                         static_cast<unsigned long long>(releaseWaitUs),
                         static_cast<unsigned long long>(presentUs),
@@ -654,7 +661,8 @@ struct VenusSurfaceQueueTarget::Impl {
                         static_cast<unsigned long long>(acquireUs),
                         static_cast<unsigned long long>(submitUs),
                         static_cast<unsigned long long>(queuePresentUs),
-                        static_cast<unsigned long long>(gpuPresentCopyUs));
+                        static_cast<unsigned long long>(gpuPresentCopyUs),
+                        static_cast<unsigned long long>(frameGapUs));
         }
         if (nextPresentDeadlineNs)
             *nextPresentDeadlineNs = lastPresentNs_ + framePeriodNs_;
@@ -678,6 +686,16 @@ struct VenusSurfaceQueueTarget::Impl {
             const uint64_t fpsX100 = elapsedNs && framesPresented_ > 1
                 ? ((framesPresented_ - 1) * 100ULL * 1000000000ULL) / elapsedNs
                 : 0;
+            auto sortedFrameGaps = frameGapUs_;
+            std::sort(sortedFrameGaps.begin(),
+                      sortedFrameGaps.begin() + frameGapCount_);
+            const auto frameGapPercentile = [&](size_t percentile) {
+                if (!frameGapCount_) return uint64_t(0);
+                const size_t index = std::min(
+                    frameGapCount_ - 1,
+                    (frameGapCount_ * percentile + 99) / 100 - 1);
+                return sortedFrameGaps[index];
+            };
             OH_LOG_INFO(LOG_APP,
                         "[VENUS-PRESENT][NCP] frames=%{public}llu ctx=%{public}u "
                         "key=%{public}llu serial=%{public}u size=%{public}ux%{public}u "
@@ -690,6 +708,7 @@ struct VenusSurfaceQueueTarget::Impl {
                         "gpu_present_copy_avg=%{public}llu max=%{public}llu samples=%{public}llu "
                         "release_minus_present_gpu_avg=%{public}llu "
                         "release_mode=%{public}s "
+                        "frame_gap_us_p50=%{public}llu p95=%{public}llu p99=%{public}llu "
                         "failures=%{public}llu "
                         "throttled=%{public}llu",
                         static_cast<unsigned long long>(framesPresented_), contextId,
@@ -718,8 +737,12 @@ struct VenusSurfaceQueueTarget::Impl {
                                           ? totalGpuPresentWorkUs_ / gpuTimingSamples_ : 0)
                                 : 0),
                         ReleaseModeName(),
+                        static_cast<unsigned long long>(frameGapPercentile(50)),
+                        static_cast<unsigned long long>(frameGapPercentile(95)),
+                        static_cast<unsigned long long>(frameGapPercentile(99)),
                         static_cast<unsigned long long>(failures_),
                         static_cast<unsigned long long>(throttled_));
+            frameGapCount_ = 0;
         }
         return 0;
     }
@@ -1180,6 +1203,9 @@ private:
     uint64_t failures_ = 0;
     uint64_t throttled_ = 0;
     uint64_t firstPresentedNs_ = 0;
+    uint64_t lastFrameEndNs_ = 0;
+    std::array<uint64_t, 120> frameGapUs_{};
+    size_t frameGapCount_ = 0;
     uint64_t totalPresentUs_ = 0;
     uint64_t maxPresentUs_ = 0;
     uint64_t totalWaitFenceUs_ = 0;

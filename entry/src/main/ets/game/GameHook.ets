@@ -13,6 +13,9 @@ interface D3dEnvironmentEntry {
 interface GameRequest {
   path: string;
   argv: string[];
+  perfDiagnosis: boolean;
+  runId: string;
+  wow64Engine: string;
   d3dEnvKeys: string[];
   d3dEnvValues: string[];
   clickTitlePrefix: string;
@@ -41,6 +44,11 @@ export class GameHook {
 
   isActive(): boolean {
     return this.active;
+  }
+
+  getPerfProfileOverride(): string {
+    return this.pending?.perfDiagnosis ?
+      'shadow-precise-dirty-ring-frame-timeline' : '';
   }
 
   applyWant(parameters: Record<string, Object> | undefined): void {
@@ -109,7 +117,7 @@ export class GameHook {
         'BOX64_DYNAREC_STRONGMEM',
         'BOX64_AVX'
       ];
-      const allowedKey = /^(WINEDEBUG|DXVK_|VN_|VKR_|WINEHUA_DXVK_|WINEHUA_VKR_)[A-Za-z0-9_]*$/.test(key) ||
+      const allowedKey = /^(WINEDEBUG|DXVK_|VN_|VKR_|WINEHUA_DXVK_|WINEHUA_VKR_|FEX_)[A-Za-z0-9_]*$/.test(key) ||
         allowedBox64Keys.indexOf(key) >= 0;
       if (!allowedKey || envValue.length > 1024 || d3dEnvKeys.length >= 32) {
         hilog.warn(DOMAIN, TAG, 'ignoring invalid D3D environment key=%{public}s', key);
@@ -148,10 +156,19 @@ export class GameHook {
     const requestedClickDelayMs = Number(value('winehua.click_delay_ms', '1500'));
     const requestedClickClientXPermille = Number(value('winehua.click_client_x_permille', '-1'));
     const requestedClickClientYPermille = Number(value('winehua.click_client_y_permille', '-1'));
+    const perfDiagnosis = value('winehua.perf_diagnosis', '0') === '1';
+    const requestedRunId = value('winehua.run_id', '');
+    const runId = /^[A-Za-z0-9._-]{1,64}$/.test(requestedRunId) ? requestedRunId : '';
+    const requestedWow64Engine = value('winehua.wow64_engine', '');
+    const wow64Engine = requestedWow64Engine === 'box' || requestedWow64Engine === 'fex' ?
+      requestedWow64Engine : '';
 
     this.pending = {
       path: gamePath,
       argv: gameArguments,
+      perfDiagnosis: perfDiagnosis,
+      runId: runId,
+      wow64Engine: wow64Engine,
       d3dEnvKeys: d3dEnvKeys,
       d3dEnvValues: d3dEnvValues,
       clickTitlePrefix: value('winehua.click_title_prefix', ''),
@@ -162,8 +179,10 @@ export class GameHook {
     };
     this.started = false;
     this.active = gamePath.length > 0;
-    hilog.info(DOMAIN, TAG, 'game want armed path=%{public}s argc=%{public}d env=%{public}d',
-      gamePath, gameArguments.length, d3dEnvKeys.length);
+    hilog.info(DOMAIN, TAG,
+      'game want armed path=%{public}s argc=%{public}d env=%{public}d perf=%{public}d run=%{public}s wow64=%{public}s',
+      gamePath, gameArguments.length, d3dEnvKeys.length, perfDiagnosis ? 1 : 0,
+      runId || '(none)', wow64Engine || '(default)');
   }
 
   attach(env: WineEnvService): void {
@@ -190,6 +209,17 @@ export class GameHook {
     // Product DXVK_LOG / WINEDEBUG come from native AppendStableDxvkEnv
     // (same as Index.doRun). Want may still overlay explicit D3D keys.
     const environment: Record<string, string> = {};
+    if (req.perfDiagnosis) {
+      environment['WINEHUA_PERF_DIAGNOSIS'] = '1';
+      environment['DXVK_WINEHUA_PERF_DIAGNOSIS'] = '1';
+      environment['DXVK_LOG_LEVEL'] = 'info';
+      environment['FEX_PROFILESTATS'] = '1';
+      environment['FEX_PROFILESTATSLOG'] = '1';
+      environment['FEX_LIBRARYJITNAMING'] = '1';
+      environment['BOX64_DYNAREC_PERFMAP'] = '1';
+    }
+    if (req.runId.length > 0) environment['WINEHUA_RUN_ID'] = req.runId;
+    if (req.wow64Engine.length > 0) environment['WINEHUA_WOW64_ENGINE'] = req.wow64Engine;
     const n = Math.min(req.d3dEnvKeys.length, req.d3dEnvValues.length);
     for (let i = 0; i < n; ++i) {
       environment[req.d3dEnvKeys[i]] = req.d3dEnvValues[i];
@@ -213,6 +243,9 @@ export class GameHook {
     }
     this.started = true;
     const environment = this.buildEnvironment(req);
+    if (req.perfDiagnosis) {
+      testNapi.setHostShadowProfile('shadow-precise-dirty-ring-frame-timeline');
+    }
     const d3dBackend = env.getD3dBackend();
     const dxvkBackend = env.getDxvkBackend();
     hilog.info(DOMAIN, TAG, 'launching %{public}s argc=%{public}d d3d=%{public}s dxvk=%{public}s',

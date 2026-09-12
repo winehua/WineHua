@@ -76,6 +76,46 @@ WINEHUA_PERF_PROFILE=shadow-precise-dirty-ring-inline-upload-coverage-sort
    `games/dx11_test/`），先拿到**任意真实 D3D11 应用**的显示帧率，
    把"真实应用 FPS 可读"这条打通，再回到 Unity 目标游戏。
 
+### 2.3 并入原工作树的其余未提交改动（关键）
+
+排查过程中发现：parity 分支此前**只并入了 6 处未提交改动中的 1 处**
+（`wine_child.cpp`），而剩下 5 处恰好就是"真实游戏测量"需要的全部工具，
+外加两个子模块补丁文件。已全部并入（`git apply` 自原工作树 diff，未改动原工作树）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `entry/src/main/ets/game/GameHook.ets` | `winehua.perf_diagnosis` / `winehua.run_id` / **`winehua.wow64_engine=box\|fex`**；D3D env 白名单加 `FEX_` 前缀；perf 模式注入 `FEX_PROFILESTATS` 等 |
+| `entry/src/main/cpp/graphics/venus_surface_presenter.cpp` | present 日志增加 **帧间隔分位 `frame_gap_us_p50/p95/p99`** |
+| `entry/src/main/ets/service/WineEnvService.ets` | perf 档位可由 GameHook 覆盖（诊断时切到 frame-timeline） |
+| `scripts/build_ohos_guest_vulkan.sh` + `patches/mesa-ohos-wow64-map-fd.patch` | Venus WoW64 backing-fd 生命周期修复 |
+| `scripts/build_wine.sh` + `patches/wine-wow64-shared-map.patch` | Wine WoW64 shared-map 修复 |
+
+**这说明之前"真实游戏测不到"的一部分原因是我们的树本身就不完整**，不是游戏或平台的问题。
+（这两个补丁只被构建脚本引用，**尚未真正生效** —— 生效需要重编 wine 与 guest Mesa，
+那是长构建，留给下一轮。）
+
+### 2.4 真实游戏帧率：已经能读到
+
+并入后用同一条 Want 通道启动 `Z:\games\SA\Game.exe`，带 `perf=1`：
+
+```text
+game want armed path=Z:\games\SA\Game.exe ... perf=1 run=p6game wow64=fex
+```
+
+宿主合成器的 FPS 文件给出真实游戏帧率：
+
+```text
+50.268 / 44.322 / 56.383 / 47.987 / 45.832   (toplevel 3, wow64=fex)
+37.446 / 39.107 / 39.957 / 44.012 / 41.567   (toplevel 1, wow64=box)
+```
+
+**但这两组还不能直接对比**：`winehua_display_fps.txt` 只有一行、记录的是"最后被合成的那个
+toplevel"，而两次运行报的 toplevel id 不同（3 vs 1）。`WL-STAT` 显示游戏起来后
+toplevels 从 3 涨到 7，游戏确实建了窗口（`#10 520x411`、`#2 1280x20`）。
+
+**所以下一步很明确：把 FPS 采样绑定到游戏自己的 toplevel id**（或让它成为唯一前台
+toplevel），再做 fex/box 的 A/B。**现在离"目标游戏性能有可解释结果"只差这一步。**
+
 ### 已经可以下的性能结论（有证据）
 
 | 结论 | 证据 |

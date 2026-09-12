@@ -4,6 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+SHARED_MAP_PATCH="$SCRIPT_DIR/patches/wine-wow64-shared-map.patch"
+if ! git -C "$WINE_SRC" apply --reverse --check "$SHARED_MAP_PATCH" 2>/dev/null; then
+    git -C "$WINE_SRC" apply --check "$SHARED_MAP_PATCH"
+    git -C "$WINE_SRC" apply "$SHARED_MAP_PATCH"
+    log "已应用 WoW64 shared-map 修复"
+fi
+
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \

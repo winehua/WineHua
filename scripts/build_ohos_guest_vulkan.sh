@@ -8,6 +8,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+MAP_FD_SOURCE="${WINEHUA_OHOS_MESA_SOURCE_ROOT:-$ROOT/thirdparty/mesa}"
+MAP_FD_PATCH="$SCRIPT_DIR/patches/mesa-ohos-wow64-map-fd.patch"
+if ! git -C "$MAP_FD_SOURCE" apply --reverse --check "$MAP_FD_PATCH" 2>/dev/null; then
+    git -C "$MAP_FD_SOURCE" apply --check "$MAP_FD_PATCH"
+    git -C "$MAP_FD_SOURCE" apply "$MAP_FD_PATCH"
+    log "已应用 Venus WoW64 backing-fd 生命周期修复"
+fi
+
 # guest 栈架构与 Wine 对齐, 值域 aarch64|x86_64 (不是 NATIVE_ARCH 的 arm64-v8a)
 GUEST_ARCH="${GUEST_ARCH:-$WINE_ARCH}"
 case "$GUEST_ARCH" in

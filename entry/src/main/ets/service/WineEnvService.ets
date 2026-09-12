@@ -320,7 +320,8 @@ export class WineEnvService {
     // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
     // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
     // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
-    this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
+    this.perfProfile = GameHook.getInstance().getPerfProfileOverride() ||
+      'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   }
 
   // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)

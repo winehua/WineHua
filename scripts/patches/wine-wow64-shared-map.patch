@@ -1,0 +1,452 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 7437af71a48..e31240227ce 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -34,6 +34,7 @@
+ #include <string.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #ifndef MREMAP_DONTUNMAP
+@@ -43,6 +44,9 @@
+ #include "ntstatus.h"
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
++#ifdef _WIN64
++#include "winehua_shared_map.h"
++#endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
+ 
+@@ -1265,6 +1269,49 @@ static VkResult win32u_vkGetMemoryWin32HandlePropertiesKHR( VkDevice client_devi
+ }
+ 
+ #ifdef _WIN64
++/* Opt-in, process-wide diagnostics. Counters are protected by the existing
++ * copy mutex; reports are printed after releasing it. No mapping semantics
++ * or copy ranges are changed by this instrumentation. */
++static pthread_once_t wow64_map_perf_once = PTHREAD_ONCE_INIT;
++static BOOL wow64_map_perf_enabled;
++static struct
++{
++    uint64_t last_ns, submits, copy_ops, copy_bytes, copy_ns, lock_wait_ns, max_copy_ns;
++    uint64_t direct_total, alias_total, copy_total, reused_total, failed_total;
++} wow64_map_perf;
++
++static uint64_t winehua_map_perf_ns(void)
++{
++    struct timespec ts;
++    clock_gettime( CLOCK_MONOTONIC, &ts );
++    return (uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
++}
++
++static void winehua_map_perf_init(void)
++{
++    const char *value = getenv( "WINEHUA_PERF_DIAGNOSIS" );
++    wow64_map_perf_enabled = value && !strcmp( value, "1" );
++    if (wow64_map_perf_enabled) wow64_map_perf.last_ns = winehua_map_perf_ns();
++}
++
++static BOOL winehua_map_perf_active(void)
++{
++    pthread_once( &wow64_map_perf_once, winehua_map_perf_init );
++    return wow64_map_perf_enabled;
++}
++
++static void winehua_map_perf_record( struct device_memory *memory, VkResult result, BOOL reused )
++{
++    if (!NtCurrentTeb()->WowTebOffset || !winehua_map_perf_active()) return;
++    pthread_mutex_lock( &wow64_copy_mutex );
++    if (result != VK_SUCCESS) wow64_map_perf.failed_total++;
++    else if (reused) wow64_map_perf.reused_total++;
++    else if (memory->wow64_copy) wow64_map_perf.copy_total++;
++    else if (memory->wow64_alias) wow64_map_perf.alias_total++;
++    else wow64_map_perf.direct_total++; /* Includes placed/external-host maps. */
++    pthread_mutex_unlock( &wow64_copy_mutex );
++}
++
+ static ULONG_PTR winehua_wow64_zero_bits(void)
+ {
+     if (zero_bits) return zero_bits;
+@@ -1299,14 +1346,57 @@ static void winehua_wow64_copy_unregister( struct device_memory *memory )
+ static void winehua_wow64_flush_copies(void)
+ {
+     struct device_memory *memory;
++    BOOL profile = winehua_map_perf_active();
++    uint64_t begin = 0, locked = 0, end = 0, active_maps = 0, active_bytes = 0;
++    char report[768];
+ 
++    report[0] = 0;
++    if (profile) begin = winehua_map_perf_ns();
+     pthread_mutex_lock( &wow64_copy_mutex );
++    if (profile) locked = winehua_map_perf_ns();
+     LIST_FOR_EACH_ENTRY( memory, &wow64_copy_maps, struct device_memory, wow64_entry )
+     {
+         if (memory->host_map && memory->vm_map && memory->size)
++        {
+             memcpy( memory->host_map, memory->vm_map, (size_t)memory->size );
++            if (profile)
++            {
++                active_maps++;
++                active_bytes += memory->size;
++            }
++        }
++    }
++    if (profile)
++    {
++        end = winehua_map_perf_ns();
++        wow64_map_perf.submits++;
++        wow64_map_perf.copy_ops += active_maps;
++        wow64_map_perf.copy_bytes += active_bytes;
++        /* Includes traversal, excludes mutex acquisition and report output. */
++        wow64_map_perf.copy_ns += end - locked;
++        wow64_map_perf.lock_wait_ns += locked - begin;
++        if (end - locked > wow64_map_perf.max_copy_ns) wow64_map_perf.max_copy_ns = end - locked;
++        if (end - wow64_map_perf.last_ns >= 1000000000)
++        {
++            snprintf( report, sizeof(report),
++                      "[WOW64-MAP-PERF] pid=%u end_ns=%" PRIu64 " interval_ns=%" PRIu64
++                      " submits=%" PRIu64 " active_copy_maps=%" PRIu64 " active_copy_bytes=%" PRIu64
++                      " copy_ops=%" PRIu64 " copy_bytes=%" PRIu64 " copy_ns=%" PRIu64
++                      " lock_wait_ns=%" PRIu64 " max_copy_ns=%" PRIu64
++                      " direct_total=%" PRIu64 " alias_total=%" PRIu64 " copy_total=%" PRIu64
++                      " reused_total=%" PRIu64 " failed_total=%" PRIu64 "\n",
++                      (unsigned int)getpid(), end, end - wow64_map_perf.last_ns, wow64_map_perf.submits,
++                      active_maps, active_bytes, wow64_map_perf.copy_ops, wow64_map_perf.copy_bytes,
++                      wow64_map_perf.copy_ns, wow64_map_perf.lock_wait_ns, wow64_map_perf.max_copy_ns,
++                      wow64_map_perf.direct_total, wow64_map_perf.alias_total, wow64_map_perf.copy_total,
++                      wow64_map_perf.reused_total, wow64_map_perf.failed_total );
++            wow64_map_perf.last_ns = end;
++            wow64_map_perf.submits = wow64_map_perf.copy_ops = wow64_map_perf.copy_bytes = 0;
++            wow64_map_perf.copy_ns = wow64_map_perf.lock_wait_ns = wow64_map_perf.max_copy_ns = 0;
++        }
+     }
+     pthread_mutex_unlock( &wow64_copy_mutex );
++    if (report[0]) fputs( report, stderr );
+ }
+ 
+ static BOOL winehua_find_vma( const void *ptr, uintptr_t *start, uintptr_t *end,
+@@ -1382,9 +1472,8 @@ static BOOL winehua_wow64_ptr_mapped( const void *ptr )
+     return winehua_find_vma( ptr, &start, &end, &offset, &inode );
+ }
+ 
+-/* Harmony mremap(DONTUNMAP) may return success without sharing pages, or
+- * ignore DONTUNMAP and MOVE the VMA (leaving Venus holding a dangling
+- * 64-bit pointer).  Probe before trusting an "alias". */
++/* The old alias path remains the compatibility fallback for sandboxes that
++ * cannot reopen the BO VMA through the retained Venus file descriptor. */
+ static BOOL winehua_wow64_alias_coherent( void *host, void *placed )
+ {
+     volatile unsigned char *h = host;
+@@ -1413,6 +1502,7 @@ static BOOL winehua_wow64_alias_coherent( void *host, void *placed )
+     return TRUE;
+ }
+ 
++
+ static void winehua_wow64_accept_map( struct device_memory *memory, void *placed, void *host,
+                                       BOOL alias, void **data, const char *how )
+ {
+@@ -1448,6 +1538,9 @@ static VkResult winehua_wow64_remap_map( struct device_memory *memory, void **da
+     unsigned long offset = 0, inode = 0;
+     BOOL have_vma;
+     int fd;
++    static LONG shared_map_announced;
++    static LONG legacy_map_announced;
++    int shared_error;
+ 
+     if (!NtCurrentTeb()->WowTebOffset || !((UINT_PTR)host >> 32))
+         return VK_SUCCESS;
+@@ -1466,6 +1559,18 @@ static VkResult winehua_wow64_remap_map( struct device_memory *memory, void **da
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     }
+ 
++    /* The retained Venus BO fd is the preferred path. The old aliases below
++     * remain for devices where application sandbox rules reject reopening it. */
++    if (!winehua_shared_map_alias( host, alloc_size, placed ))
++    {
++        winehua_wow64_accept_map( memory, placed, host, TRUE, data, "shared fd" );
++        if (!InterlockedCompareExchange( &shared_map_announced, 1, 0 ))
++            fprintf( stderr, "[WOW64-MAP] mode=shared-fd pid=%u first_bytes=%" PRIu64 "\n",
++                     (unsigned int)getpid(), (uint64_t)memory->size );
++        return VK_SUCCESS;
++    }
++    shared_error = errno;
++
+ #ifdef MREMAP_DONTUNMAP
+     {
+         void *alias = mremap( host, alloc_size, alloc_size,
+@@ -1474,15 +1579,17 @@ static VkResult winehua_wow64_remap_map( struct device_memory *memory, void **da
+         {
+             if (winehua_wow64_alias_coherent( host, placed ))
+             {
+-                winehua_wow64_accept_map( memory, placed, host, TRUE, data, "mremap" );
++                winehua_wow64_accept_map( memory, placed, host, TRUE, data, "mremap fallback" );
++                if (!InterlockedCompareExchange( &legacy_map_announced, 1, 0 ))
++                    fprintf( stderr, "[WOW64-MAP] mode=legacy-mremap pid=%u shared_stage=%s shared_errno=%d\n",
++                             (unsigned int)getpid(), winehua_shared_map_stage(), shared_error );
+                 return VK_SUCCESS;
+             }
+-            ERR( "WineHua: WOW64 mremap not coherent host=%p dest=%p host_mapped=%d\n",
++            ERR( "WineHua: WOW64 mremap fallback not coherent host=%p dest=%p host_mapped=%d\n",
+                  host, placed, winehua_wow64_ptr_mapped( host ) );
+             if (!winehua_wow64_ptr_mapped( host ))
+             {
+-                void *restored;
+-                void *release;
++                void *restored, *release;
+                 SIZE_T z;
+ 
+                 restored = mremap( placed, alloc_size, alloc_size,
+@@ -1504,38 +1611,31 @@ static VkResult winehua_wow64_remap_map( struct device_memory *memory, void **da
+                 }
+             }
+         }
+-        else
+-            ERR( "WineHua: WOW64 mremap alias failed host=%p dest=%p errno=%d\n", host, placed, errno );
+     }
+ #endif
+ 
+     have_vma = winehua_find_vma( host, &start, &end, &offset, &inode );
+     if (have_vma && (fd = winehua_open_vma_fd( start, end, inode )) >= 0)
+     {
+-        off_t file_off = (off_t)( offset + ((uintptr_t)host - start) );
++        off_t file_off = (off_t)(offset + ((uintptr_t)host - start));
+         void *alias = mmap( placed, alloc_size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_FIXED, fd, file_off );
+         close( fd );
+-        if (alias == placed)
++        if (alias == placed && winehua_wow64_alias_coherent( host, placed ))
+         {
+-            if (winehua_wow64_alias_coherent( host, placed ))
+-            {
+-                winehua_wow64_accept_map( memory, placed, host, TRUE, data, "mmap fd" );
+-                return VK_SUCCESS;
+-            }
+-            ERR( "WineHua: WOW64 mmap fd not coherent host=%p dest=%p off=0x%lx\n",
+-                 host, placed, (unsigned long)file_off );
++            winehua_wow64_accept_map( memory, placed, host, TRUE, data, "mmap fd fallback" );
++            if (!InterlockedCompareExchange( &legacy_map_announced, 1, 0 ))
++                fprintf( stderr, "[WOW64-MAP] mode=legacy-mmap-fd pid=%u shared_stage=%s shared_errno=%d\n",
++                         (unsigned int)getpid(), winehua_shared_map_stage(), shared_error );
++            return VK_SUCCESS;
+         }
+-        else
+-            ERR( "WineHua: WOW64 mmap alias failed host=%p dest=%p errno=%d\n", host, placed, errno );
+     }
+-    else
+-        ERR( "WineHua: WOW64 could not open backing fd for map %p vma=%d\n", host, have_vma );
+ 
+-    /* Last resort: CPU copy.  FlushMappedMemoryRanges bypasses win32u, so
+-     * QueueSubmit copies the whole allocation.  Precise DXVK/Venus flushes
+-     * may still race; prefer a coherent alias above. */
+-    memcpy( placed, host, (size_t)(memory->size < (VkDeviceSize)alloc_size ? memory->size : (VkDeviceSize)alloc_size) );
++    fprintf( stderr, "[WOW64-MAP] mode=copy pid=%u bytes=%" PRIu64
++             " shared_stage=%s shared_errno=%d\n", (unsigned int)getpid(),
++             (uint64_t)memory->size, winehua_shared_map_stage(), shared_error );
++    memcpy( placed, host, (size_t)(memory->size < (VkDeviceSize)alloc_size ?
++                                   memory->size : (VkDeviceSize)alloc_size) );
+     winehua_wow64_accept_map( memory, placed, host, FALSE, data, "CPU fallback" );
+     return VK_SUCCESS;
+ }
+@@ -1580,6 +1680,9 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
+     {
+         *data = (char *)memory->vm_map + info.offset;
+         TRACE( "returning %p\n", *data );
++#ifdef _WIN64
++        winehua_map_perf_record( memory, VK_SUCCESS, TRUE );
++#endif
+         return VK_SUCCESS;
+     }
+ 
+@@ -1597,6 +1700,9 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
+                                      &alloc_size, MEM_COMMIT, PAGE_READWRITE ))
+         {
+             ERR( "NtAllocateVirtualMemory failed\n" );
++#ifdef _WIN64
++            winehua_map_perf_record( memory, VK_ERROR_OUT_OF_HOST_MEMORY, FALSE );
++#endif
+             return VK_ERROR_OUT_OF_HOST_MEMORY;
+         }
+     }
+@@ -1616,6 +1722,9 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
+             SIZE_T alloc_size = 0;
+             ERR( "vkMapMemory2EXT failed: %d\n", res );
+             NtFreeVirtualMemory( GetCurrentProcess(), &placed_info.pPlacedAddress, &alloc_size, MEM_RELEASE );
++#ifdef _WIN64
++            winehua_map_perf_record( memory, res, FALSE );
++#endif
+             return res;
+         }
+         memory->vm_map = placed_info.pPlacedAddress;
+@@ -1632,6 +1741,7 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
+             *data = NULL;
+         }
+     }
++    winehua_map_perf_record( memory, res, FALSE );
+ #endif
+ 
+     return res;
+diff --git a/dlls/win32u/winehua_shared_map.h b/dlls/win32u/winehua_shared_map.h
+new file mode 100644
+index 00000000000..fd5b9b62f23
+--- /dev/null
++++ b/dlls/win32u/winehua_shared_map.h
+@@ -0,0 +1,156 @@
++/* WineHua: alias a live shared Vulkan mapping into a Wine-owned reservation.
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ */
++#ifndef WINEHUA_SHARED_MAP_H
++#define WINEHUA_SHARED_MAP_H
++
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <unistd.h>
++
++struct winehua_shared_vma
++{
++    uintptr_t start, end;
++    uint64_t offset, inode;
++    unsigned int dev_major, dev_minor;
++};
++
++static const char *winehua_shared_map_last_stage = "uninitialized";
++
++static const char *winehua_shared_map_stage(void)
++{
++    return winehua_shared_map_last_stage;
++}
++
++static int winehua_shared_fd_matches( int fd, const struct winehua_shared_vma *vma )
++{
++    struct stat st;
++    int flags = fcntl( fd, F_GETFL );
++    return flags >= 0 && (flags & O_ACCMODE) == O_RDWR && !fstat( fd, &st ) &&
++           (S_ISREG( st.st_mode ) || S_ISCHR( st.st_mode )) &&
++           (uint64_t)st.st_ino == vma->inode &&
++           major( st.st_dev ) == vma->dev_major && minor( st.st_dev ) == vma->dev_minor;
++}
++
++static int winehua_shared_map_fd( const void *host, size_t size, off_t *file_offset )
++{
++    struct winehua_shared_vma vma;
++    uintptr_t address = (uintptr_t)host;
++    struct dirent *entry;
++    FILE *maps;
++    DIR *fds;
++    char line[512], path[128];
++    int found = 0, fd = -1;
++    uint64_t offset;
++
++    if (!size || size > UINTPTR_MAX - address)
++    {
++        winehua_shared_map_last_stage = "validate";
++        errno = EINVAL;
++        return -1;
++    }
++    winehua_shared_map_last_stage = "maps-open";
++    if (!(maps = fopen( "/proc/self/maps", "r" ))) return -1;
++    while (fgets( line, sizeof(line), maps ))
++    {
++        char perms[8];
++        if (sscanf( line, "%" SCNxPTR "-%" SCNxPTR " %7s %" SCNx64 " %x:%x %" SCNu64,
++                    &vma.start, &vma.end, perms, &vma.offset,
++                    &vma.dev_major, &vma.dev_minor, &vma.inode ) != 7) continue;
++        if (address >= vma.start && address + size <= vma.end &&
++            perms[0] == 'r' && perms[1] == 'w' && perms[3] == 's' && vma.inode)
++        {
++            found = 1;
++            break;
++        }
++    }
++    fclose( maps );
++    if (!found)
++    {
++        winehua_shared_map_last_stage = "shared-vma";
++        errno = ENOENT;
++        return -1;
++    }
++    offset = vma.offset + (address - vma.start);
++    if (offset < vma.offset || (off_t)offset < 0 || (uint64_t)(off_t)offset != offset)
++    {
++        winehua_shared_map_last_stage = "file-offset";
++        errno = EOVERFLOW;
++        return -1;
++    }
++
++    /* Prefer a duplicate of the live BO fd. map_files often requires a
++     * privilege that application sandboxes do not have. Duplicate before
++     * fstat, so a concurrently reused fd cannot pass an obsolete check. */
++    winehua_shared_map_last_stage = "live-fd";
++    if ((fds = opendir( "/proc/self/fd" )))
++    {
++        while ((entry = readdir( fds )))
++        {
++            if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
++            fd = fcntl( atoi( entry->d_name ), F_DUPFD_CLOEXEC, 0 );
++            if (fd < 0) continue;
++            if (winehua_shared_fd_matches( fd, &vma )) break;
++            close( fd );
++            fd = -1;
++        }
++        closedir( fds );
++    }
++    if (fd < 0)
++    {
++        winehua_shared_map_last_stage = "map-files";
++        snprintf( path, sizeof(path), "/proc/self/map_files/%" PRIxPTR "-%" PRIxPTR, vma.start, vma.end );
++        fd = open( path, O_RDWR | O_CLOEXEC );
++        if (fd >= 0 && !winehua_shared_fd_matches( fd, &vma ))
++        {
++            close( fd );
++            fd = -1;
++            winehua_shared_map_last_stage = "map-files-identity";
++            errno = ENOENT;
++        }
++    }
++    if (fd >= 0)
++    {
++        winehua_shared_map_last_stage = "alias-mmap";
++        *file_offset = (off_t)offset;
++    }
++    return fd;
++}
++
++/* placed must be an exclusive reservation owned by the caller. Only that
++ * reservation is replaced; the original host VMA is never moved or probed
++ * with writes. Both views use the exact same backing file and byte offset. */
++static int winehua_shared_map_alias( const void *host, size_t size, void *placed )
++{
++    long page_size = sysconf( _SC_PAGESIZE );
++    uintptr_t src = (uintptr_t)host, dst = (uintptr_t)placed;
++    off_t offset;
++    void *mapped;
++    int fd, error;
++
++    winehua_shared_map_last_stage = "validate";
++    if (page_size <= 0 || !size || !placed || src % page_size || dst % page_size ||
++        size > SIZE_MAX - (size_t)page_size + 1)
++    { errno = EINVAL; return -1; }
++    size = (size + page_size - 1) / page_size * page_size;
++    if (size > UINTPTR_MAX - src || size > UINTPTR_MAX - dst ||
++        (dst < src + size && src < dst + size))
++    { errno = EINVAL; return -1; }
++    if ((fd = winehua_shared_map_fd( host, size, &offset )) < 0) return -1;
++    mapped = mmap( placed, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, offset );
++    error = errno;
++    close( fd );
++    if (mapped == placed) winehua_shared_map_last_stage = "shared-alias";
++    errno = error;
++    return mapped == placed ? 0 : -1;
++}
++
++#endif
