@@ -1044,6 +1044,17 @@ EOF
         {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3600, "timeoutMs": 3660000},
         {"testId": "dxvk-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": -1, "timeoutMs": -1}
       ]
+    },
+    "p3-wow64-ab": {
+      "tests": [
+        {"testId": "p3-cube-x86-wowbox64", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "box"}, "d3dBackend": "dxvk_legacy", "seconds": 30, "timeoutMs": 300000},
+        {"testId": "p3-cube-x86-fex", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "fex"}, "d3dBackend": "dxvk_legacy", "seconds": 30, "timeoutMs": 300000}
+      ]
+    },
+    "p4-amd64-fex": {
+      "tests": [
+        {"testId": "p4-cube-amd64-fex", "exe": "amd64/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "dxvk_legacy", "seconds": 30, "timeoutMs": 300000}
+      ]
     }
   }
 }

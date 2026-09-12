@@ -48,6 +48,7 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | `p2-unixlib-build.md` | P2 | UnixLib 回移与四产物构建（已实测，脚本已接入） |
 | `p2-device-validation.md` | P2 | 真机验证：UnixLib 已加载、硬件 TSO/未对齐原子不支持（有真实返回值） |
 | `p2-effective-config.md` | P2 | FEX 生效配置落地与 SHM 统计实测（配置已被真实读取） |
+| `p3-p4-smoke-ab.md` | P3/P4 | smoke 编排 A/B：x86 后端对比、x64+ARM64X 链路验证与瓶颈信号 |
 | `next-steps.md` | P2 | 下一步可执行动作与门禁 |
 
 ## 状态总览（2026-09-11）
@@ -62,6 +63,9 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 - **FEX 生效配置已落地并验证**：`FEX_Config.json`（Proton 参考值）随包部署，
   真机上 SHM 统计创建成功，证明配置被真实读取。见 `p2-effective-config.md`。
   剩余：SHM 统计内容读取、逐项生效值导出、随后进入 P3/P4 测量。
+- **P3/P4 已开跑**：x86 两个后端都顶到 ≈78 fps 循环上限（本基准无法区分 CPU 成本）；
+  真 AMD64 + FEX + ARM64X DXVK 只有 ≈19.9 fps，**x64 路径是当前最明确瓶颈**。
+  见 `p3-p4-smoke-ab.md`。
 - 原工作树未做任何修改。
 
 ## 记录约定
