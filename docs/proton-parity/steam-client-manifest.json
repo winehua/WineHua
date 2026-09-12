@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-12",
+  "capturedBy": "codex/proton-arm64-parity",
+  "deviceVerified": true,
+
+  "install": {
+    "unixPath": "/storage/media/100/local/files/Docs/Download/app.hackeris.winehua/games/Steam",
+    "windowsPath": "Z:\\games\\Steam",
+    "ownerOnDevice": "20001006:file_manager",
+    "dirMtime": "2026-09-12T11:00+08:00",
+    "zDriveMapping": "Z: -> /storage/Users/currentUser/Download/app.hackeris.winehua/",
+    "libraryFoldersVdf": {
+      "path": "config/libraryfolders.vdf",
+      "libraryPath": "Z:\\games\\Steam",
+      "appsInstalled": [],
+      "note": "库路径有且只有一个，apps 段为空 —— 客户端认为本库未安装任何游戏"
+    }
+  },
+
+  "provenance": {
+    "verdict": "NOT_OFFICIAL_CURRENT_CLIENT",
+    "reasons": [
+      "主程序构建时间：bootstrap_log 自述 'updater built Jul 10 2023 17:00:59'；绝大部分二进制 mtime = 2023-07-10",
+      "Steam 自更新被显式关闭：steam.cfg 中 BootStrapperInhibitAll=Enable",
+      "随包附带 1.bat（2024-08-17），带一整套旧参数（含 -cef-single-process / -cef-disable-sandbox / -cef-disable-gpu）",
+      "客户端无法上报版本：console_log.txt 'Client version: 0'",
+      "登录被客户端自身拒绝：console_log.txt 'LogonFailure License expired'"
+    ],
+    "guidelineReference": "2026-09-12 方案 §6 S0：首轮使用从官方取得的客户端，不使用来源不明、已修改或冻结过久的『精简 Steam』作为唯一验收对象",
+    "actionRequired": "换用 Valve 官方 Windows 客户端（SteamSetup.exe / 官方安装后允许自更新），并放进隔离的测试安装目录"
+  },
+
+  "steamCfg": {
+    "path": "steam.cfg",
+    "sizeBytes": 64,
+    "content": "BootStrapperInhibitAll=Enable\r\nBootStrapperForceSelfUpdate=False",
+    "effect": "禁止客户端自更新；bootstrap_log 每次都打印 'Suppressing Steam update'"
+  },
+
+  "legacyLauncher": {
+    "path": "1.bat",
+    "mtime": "2024-08-17",
+    "sizeBytes": 206,
+    "content": "start steam.exe -nocrashmonitor -noshaders -no-shared-textures -cef-single-process -cef-in-process-gpu -cef-disable-sandbox -disable-winh264 -no-cef-sandbox -vrdisable -cef-disable-breakpad -cef-disable-gpu",
+    "note": "这些参数是历史遗留，不作为默认路径使用；本会话的实测运行未使用它们"
+  },
+
+  "binaries": {
+    "method": "hdc file recv 拉回本机，直接解析 PE 头（e_lfanew -> Machine）+ FileVersionInfo",
+    "measuredAt": "2026-09-12",
+    "entries": [
+      {
+        "path": "steam.exe",
+        "peMachine": "0x014C",
+        "arch": "i386 (x86 32-bit)",
+        "fileVersion": "08.18.16.37",
+        "productVersion": "01.00.00.02",
+        "company": "Valve Corporation",
+        "sizeBytes": 4371816,
+        "mtime": "2023-07-10"
+      },
+      {
+        "path": "bin/cef/cef.win7x64/steamwebhelper.exe",
+        "peMachine": "0x8664",
+        "arch": "x86-64 (AMD64)",
+        "fileVersion": "08.18.16.37",
+        "productVersion": "01.00.00.01",
+        "company": "Valve Corporation",
+        "sizeBytes": 7137640,
+        "mtime": "2023-07-10"
+      },
+      {
+        "path": "bin/steamservice.exe",
+        "peMachine": "0x014C",
+        "arch": "i386 (x86 32-bit)",
+        "fileVersion": "08.18.16.37",
+        "sizeBytes": 2662248,
+        "mtime": "2023-07-10"
+      },
+      {
+        "path": "steamerrorreporter.exe",
+        "peMachine": "0x014C",
+        "arch": "i386 (x86 32-bit)",
+        "sizeBytes": 573800,
+        "mtime": "2023-07-10"
+      },
+      {
+        "path": "steamerrorreporter64.exe",
+        "peMachine": "0x8664",
+        "arch": "x86-64 (AMD64)",
+        "sizeBytes": 656744,
+        "mtime": "2023-07-10"
+      }
+    ],
+    "conclusion": "在这个 2023 包上，“steam.exe 是 32 位、steamwebhelper.exe 是 64 位”成立且已实测；但这是对该具体包的测量结果，不是对当前官方客户端的先验假设（方案 §5.7）"
+  },
+
+  "cefLayout": {
+    "hostDir": "bin/cef/cef.win7x64",
+    "legacyDir": "bin/cef/cef.winxp",
+    "paksInWin7x64": true,
+    "note": "该版本把 CEF 放在 bin/cef/cef.win7x64/（含 steamwebhelper.exe）；现代客户端的目录与进程数可能不同，换客户端后必须重测"
+  },
+
+  "existingState": {
+    "loginUsersVdf": {
+      "path": "config/loginusers.vdf",
+      "mtime": "2026-09-12T10:58+08:00",
+      "entries": 1,
+      "fields": "AccountName / PersonaName 已按脱敏要求不落盘；RememberPassword=1, MostRecent=1, AllowAutoLogin=0, WantsOfflineMode=0, Timestamp=1787146060 (~2026-08-19)",
+      "implication": "该 prefix 历史上至少成功登录过一次（loginusers.vdf 只在校验通过后写入）"
+    },
+    "cefHtmlcache": {
+      "path": "users/100/AppData/Local/Steam/htmlcache",
+      "files": ["Cookies (20480B)", "Cookies-journal", "CURRENT", "Cache/", "Code Cache/", "GPUCache/"],
+      "mtime": "2026-09-12T10:57..11:00",
+      "implication": "CEF 真的跑起来并写过 profile；不是“进程起来就死”"
+    },
+    "configVdf": {"path": "config/config.vdf", "mtime": "2026-09-12T10:58+08:00"},
+    "appcache": {"appinfoVdfMtime": "2024-06-22", "note": "appinfo 停留在 2024-06-22，进一步印证客户端长期未更新"}
+  },
+
+  "checksumNote": "本轮只对设备上的 PE 做了架构/版本取证，未记录每个二进制的 sha256；如需做“换客户端前后”对照，应在下一轮补齐 sha256"
+}

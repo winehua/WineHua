@@ -54,6 +54,33 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | `fex-build-parity.md` | P2 | FEX 构建参数对齐官方（Release/profiler/TUNE_CPU/RANGES_NATIVE + 缓存签名） |
 | `p5-merge-decision.md` | P5 | 合入判定与回退策略（含"目标游戏性能"这条为何尚不满足） |
 | `next-steps.md` | P2 | 下一步可执行动作与门禁 |
+| `proton-wine-migration-status.md` | R0 | **Proton Wine 本体迁移状态：当前 Wine 不是 Valve 基线，含 R1 最小补丁清单** |
+| `runtime-provenance.json` | S0 | **运行时来源清单（源码/产物/设备/配置，含设备实测哈希）** |
+| `steam-client-manifest.json` | S0 | **设备上实际 Steam 客户端的清点与 PE Machine 实测** |
+| `steam-test-scope.md` | S0 | **测试范围：用哪份运行时/客户端/prefix，测什么不测什么** |
+| `steam-startup-trace.md` | S1 | **真实 Steam 启动逐事件追踪（进程/网络/CEF/窗口）** |
+| `steam-process-tree.json` | S1 | **本次运行的进程树（NCP child ↔ Windows 可执行名映射）** |
+| `steam-first-blocker.md` | S1 | **第一处可复现阻塞：登录窗口不上屏 + 客户端过旧** |
+
+## 2026-09-12 阶段（S 线 / R0）
+
+按《WineHua 下一阶段：Proton Wine 本体迁移与 Steam 登录闭环》把工作拆成两条线：
+
+- **S 线（当前优先）**：真实 Windows Steam 启动 → 登录 → 游戏库 → 下载 → 启动游戏。
+  本批完成 S0（清单与范围）与 S1（启动追踪 + 第一处阻塞）。
+- **R 线**：先做 R0 定基线。结论是**当前 Wine 不是指定 Valve Wine 基线**，
+  见 `proton-wine-migration-status.md`。
+
+R0/S1 的关键实测结论（都是本轮真机取到的）：
+
+1. 设备上的 Steam 是 **2023-07-10 冻结包**，`steam.cfg` 关了自更新，
+   客户端自述 `Client version: 0` 并以 `LogonFailure License expired` 拒绝登录 ⇒ 不符合 S0 的客户端要求。
+2. 用**默认参数、默认多进程 CEF**启动后：`steam.exe` 起了 5 个 `steamwebhelper.exe`，
+   CEF 的 browser/gpu/utility/renderer 四类进程都出现，guest 内 IPv6 HTTP/UDP 连通性测试 SUCCESS。
+3. 登录窗口真的被创建了（toplevel #5，`登录 Steam`，705x440，持续 commit），
+   **但没有出现在画面上**，且每次 commit 都是 `geo=no`（客户端从未发 window_geometry）。
+4. 当前安装的运行时 `bin/aarch64-unix/` 为空 —— **不含 P2 的 UnixLib 产物**。
+   P2「UnixLib 已加载」的结论属于当时的探针包，不能自动继承。
 
 ## 状态总览（2026-09-11）
 

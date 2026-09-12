@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-12",
+  "capturedBy": "codex/proton-arm64-parity",
+  "deviceVerified": true,
+  "reference": {
+    "proton": {
+      "repo": "github.com/ValveSoftware/Proton",
+      "commit": "5b89db940e0ebe3a137a6009a3589232fe084c09",
+      "verifiedThisSession": true,
+      "verification": "git ls-remote HEAD, 2026-09-12",
+      "submodulePins": {
+        "wine": "dc26e61847081a1b5cb0733dc30feba6ee575482",
+        "FEX": "1cc4b93e7a71c883ec021b71359f136394dc1f3c",
+        "dxvk": "a6764047e587178283fcde4073ae6e1410af594f",
+        "vkd3d-proton": "212991fc2c266bc0d59f4c4ce8f80f7126508d71"
+      },
+      "submodulePinEvidence": "git ls-tree 5b89db94 (blobless fetch) -> 160000 commit entries"
+    },
+    "wine": {
+      "repo": "github.com/ValveSoftware/wine",
+      "commit": "dc26e61847081a1b5cb0733dc30feba6ee575482",
+      "branch": "proton_11.0",
+      "branchRelation": "this commit is the tip of branch proton_11.0",
+      "author": "Arkadiusz Hiler <ahiler@codeweavers.com>",
+      "commitDate": "2026-07-30T11:12:46+03:00",
+      "subject": "winebus: Fix initial axis values for evdev gamepads.",
+      "VERSION": "Wine version 11.0",
+      "localAvailable": false,
+      "localAvailableNote": "absent from both wine object stores; this session fetched it into a throwaway probe repo only"
+    },
+    "fex": {
+      "repo": "FEX-Emu/FEX",
+      "commit": "1cc4b93e7a71c883ec021b71359f136394dc1f3c",
+      "describe": "FEX-2607",
+      "localAvailable": true,
+      "relationToLocal": "divergent",
+      "mergeBase": "a04b0241c2fe3911729842205cd8643981108aad",
+      "commitsOnReferenceSide": 321
+    }
+  },
+  "localSource": {
+    "winehuaRepo": "github.com/winehua/WineHua",
+    "parityWorktree": {
+      "path": "/home/liufeng/src/WineHua-proton-parity",
+      "branch": "feature/proton-arm64-parity",
+      "head": "b2409e5",
+      "role": "experiment / parity only worktree"
+    },
+    "productWorktree": {
+      "path": "/home/liufeng/src/WineHua-arm64ec",
+      "branch": "feature/arm64-heaven-port",
+      "head": "2728523fe1aaaa2509d3e22dc73923dfdf23461f",
+      "dirty": true,
+      "touched": false
+    }
+  },
+  "wine": {
+    "repo": "github.com/winehua/wine",
+    "head": "dc5204ecb0c3c1bf6624542ecf42f931fcc1a3b0",
+    "headSubject": "fix(ntdll): search arm64x DXVK overlay before x64",
+    "headAuthor": "hackeris <hackeris@qq.com>",
+    "headDate": "2026-09-06T15:41:00+08:00",
+    "versionFile": "Wine version 11.10",
+    "lineage": "WineHQ upstream fork (root commit 2c25c3e9442, 1993-06-29, Alexandre Julliard)",
+    "mergeBaseWithOriginMaster": "57bad82108f (2026-08-14)",
+    "commitsOnlyInHeadVsOriginMaster": 19,
+    "winehuaAuthoredCommitsOnOriginMaster": 59,
+    "containsValveWineCommit": false,
+    "valveWineCommitCheck": "git cat-file -e dc26e618 -> ABSENT in both worktrees",
+    "isSpecifiedProtonWineBaseline": false
+  },
+  "fexLocal": {
+    "repoLocalHead": "86ff33bbe299cd8959a6610198c169b67ec419db",
+    "describe": "FEX-2605-2-g86ff33bbe",
+    "headDate": "2026-01-10",
+    "dirtyTrackedFiles": 14,
+    "untrackedNewPaths": [
+      "Source/Windows/Common/FEXUnixLib.cpp",
+      "Source/Windows/Common/FEXUnixLib.h",
+      "Source/Windows/UnixLib/FEXUnixLib.cpp",
+      "Source/Windows/UnixLib/FEXUnixLib.h",
+      "Source/Windows/UnixLib/CMakeLists.txt"
+    ],
+    "backportPatches": {
+      "scripts/patches/fex-unixlib-backport.patch": "91e067a2a4c2558897c30911f33a9a2319d1866882e5a6740d92ad696e831498",
+      "scripts/patches/fex-unixlib-probe.patch": "bdde138be5d089af4763458ee8b167dba49f8a3ea4aaccc43bf57426d89830bb"
+    }
+  },
+  "graphics": {
+    "dxvkLegacy": "1.10.3 (thirdparty/dxvk @ f6dd62e6dc4bb62a3aaaa4fad824e6cef5655afc)",
+    "dxvkModern": "2.6.2 (thirdparty/dxvk-modern @ 05a0a66d74cc41e6a90a8cb62d459c1c6a28c783)",
+    "guestVulkan": "venus_icd.aarch64.json (aarch64 loader + guest Mesa virpipe)",
+    "activeBackendOnDevice": "dxvk_legacy",
+    "dllOverridesOnDevice": "d3d11=n;dxgi=n"
+  },
+  "device": {
+    "model": "MLR-AL10",
+    "hdcTarget": "5KPBB25818203996",
+    "osVersion": "HarmonyOS 7.0.0.105",
+    "apiVersion": 26,
+    "kernel": "HongMeng Kernel 1.13.0 aarch64",
+    "bundleName": "app.hackeris.winehua",
+    "bundleVersionName": "1.0.13",
+    "bundleVersionCode": 1000013,
+    "bundleProvisionType": "debug",
+    "hapPath": "/data/app/el1/bundle/public/app.hackeris.winehua/entry.hap",
+    "hapSha256": "not_obtained",
+    "hapSha256Blocker": "hdc shell user gets Permission denied on the bundle directory",
+    "installedRuntimeManifest": {
+      "path": "files/wine/.winehua-runtime-manifest.json",
+      "schemaVersion": 1,
+      "payload": "wine-data.zip",
+      "payloadSha256": "07ec815bc435417ba099060f3b8be6930eca2dfe8939fc00220591f4fdb6335b",
+      "smokeSuiteVersion": "phase2-vulkan-dxvk-v10-vkd3d-default"
+    },
+    "payloadSha256Candidates": {
+      "WineHua-arm64ec/rawfile/wine-data.zip": "88dc953b63bdfecd4203b1534d2e2847748c23d7bef0609dc49cc7534e64439c",
+      "WineHua-proton-parity/rawfile/wine-data.zip": "2be7af51a2ae16f0df2f8324b86f065ff8a85d94d314e2899f7db2f0449768d5",
+      "WineHua-master-latest-20260909/rawfile/wine-data.zip": "c9087a6a0a137f1400cb6207656d28991e9ab58b47df3b5210e22bffd7f817f8",
+      "result": "none matched the installed payload; source HAP not identified this session"
+    }
+  },
+  "runtimeOnDevice": {
+    "wineDir": "/data/app/el2/100/base/app.hackeris.winehua/files/wine",
+    "extractedAt": "2026-09-12T10:33+08:00",
+    "cpuDlls": {
+      "dir": "bin/aarch64-windows",
+      "libarm64ecfex.dll": "f222f8ff2625382e77943699efcf540a201ec9c8e60cf176435070ea4015d45b",
+      "libwow64fex.dll": "8e6b825ae1a69d259277d7243a72ad9d99a1beee1c6531e4749f882b9ec84fec",
+      "wowbox64.dll": "239dcdce208e3132da243b8c0a19fc3041237d0413e330075109b8471c2909f8"
+    },
+    "fexConfig": {
+      "path": "share/fex-emu/Config.json",
+      "sha256": "9ea32f4dc4d6bcab0e4bcd821df385879279498c65fc2bf001222f56f3f565e6",
+      "values": {
+        "ProfileStats": "1",
+        "X87ReducedPrecision": "1",
+        "TSOEnabled": "1",
+        "VectorTSOEnabled": "0",
+        "MemcpySetTSOEnabled": "0",
+        "HalfBarrierTSOEnabled": "1",
+        "MaxInst": "500",
+        "Multiblock": "1"
+      }
+    },
+    "unixLib": {
+      "expectedPaths": ["bin/libwow64fex.so", "bin/libarm64ecfex.so", "bin/aarch64-unix/*"],
+      "present": false,
+      "evidence": "bin/aarch64-unix is empty; find files/wine -name *.so matched only guest_gfx/guest_vulkan/host_vulkan libs",
+      "implication": "installed runtime does not carry the P2 UnixLib artifacts; the earlier 'UnixLib loaded' evidence belongs to the probe package, not this install"
+    },
+    "prefix": {
+      "path": "files/.wine",
+      "wineserverDir": "files/.wine/.wineserver",
+      "brokerSocket": "files/.wine_broker",
+      "waylandSocket": "files/.wine/wine-wayland"
+    }
+  },
+  "buildEnvironment": {
+    "containerImage": "winehua-dev",
+    "containerRunningThisSession": false,
+    "runningContainers": ["gtav-ohos-build", "vp-build"],
+    "ohosCommandLineTools": "6.1.1.290",
+    "llvmMingw": "20260826-ucrt-ubuntu-22.04-x86_64",
+    "entrypoint": "Makefile / scripts/package.sh hap"
+  },
+  "unknowns": [
+    "file-level sha256 and build origin worktree of the installed HAP",
+    "hash of the unix-side artifacts (ntdll.so etc.) actually loaded on device",
+    "per-file diffstat Valve Wine dc26e618 vs winehua wine (full tree not fetched)"
+  ]
+}

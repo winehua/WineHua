@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "runId": "steam-s1-20260912a",
+  "capturedAt": "2026-09-12T12:02:37+08:00",
+  "device": "MLR-AL10",
+  "entry": "aa start -a EntryAbility -b app.hackeris.winehua --ps winehua.mode game --ps winehua.game_path \"Z:\\games\\Steam\\steam.exe\"",
+  "cliArgsPassedToSteam": [],
+  "evidenceSources": [
+    "hdc shell ps -ef",
+    "hilog [WineChild] Main() ENTER pid=… entryParams=…|wine|<exe>",
+    "hilog [WL_Xdg] / [MW] FireToplevel"
+  ],
+  "notes": [
+    "NCP 子进程统一由 appspawn 创建，ps 的 PPID 一律显示为 64436，因此用 hilog 的 Main() ENTER 行把 NCP child 编号映射到 Windows 可执行名",
+    "winPid 无法从宿主直接取得，表中 pid 为设备侧 Unix pid",
+    "child 编号按创建顺序，缺号表示该次未产生子进程或已退出"
+  ],
+  "host": {
+    "mainProcess": { "pid": 43975, "name": "app.hackeris.winehua" },
+    "virglChild": { "pid": 44600, "name": "app.hackeris.winehua:Native_libvirgl_child0" }
+  },
+  "wineSession": [
+    { "ncpChild": 1, "pid": 44627, "exe": "wineserver -f -p", "role": "wineserver" },
+    { "ncpChild": 2, "pid": 44630, "exe": "wineboot", "role": "prefix bootstrap" },
+    { "ncpChild": 3, "pid": 44651, "exe": "C:\\windows\\system32\\wineboot.exe", "role": "prefix bootstrap" },
+    { "ncpChild": 4, "pid": 44663, "exe": "C:\\windows\\system32\\winemenubuilder.exe", "role": "shell integration" },
+    { "ncpChild": 5, "pid": 44668, "exe": "C:\\windows\\system32\\services.exe", "role": "scm" },
+    { "ncpChild": 6, "pid": 44674, "exe": "C:\\windows\\system32\\winedevice.exe", "role": "driver host" },
+    { "ncpChild": 7, "pid": 44686, "exe": "C:\\windows\\system32\\plugplay.exe", "role": "pnp" },
+    { "ncpChild": 8, "pid": 44697, "exe": "C:\\windows\\system32\\svchost.exe", "role": "service host" },
+    { "ncpChild": 9, "pid": 44706, "exe": "C:\\windows\\system32\\winedevice.exe", "role": "driver host" },
+    { "ncpChild": 10, "pid": 44727, "exe": "C:\\windows\\system32\\wineboot.exe", "role": "prefix bootstrap" },
+    { "ncpChild": 11, "pid": 44733, "exe": "C:\\windows\\system32\\winemenubuilder.exe", "role": "shell integration" },
+    { "ncpChild": 12, "pid": 44740, "exe": "C:\\windows\\system32\\services.exe", "role": "scm" },
+    { "ncpChild": 13, "pid": 44749, "exe": "C:\\windows\\system32\\winedevice.exe", "role": "driver host" },
+    { "ncpChild": 14, "pid": 44769, "exe": "explorer /desktop=shell,1280x800 (via __winehua_desktop__) + C:\\windows\\system32\\winehua_keep.exe", "role": "virtual desktop + keep-alive" },
+    { "ncpChild": 15, "pid": 44774, "exe": "C:\\windows\\system32\\explorer.exe", "role": "shell" },
+    { "ncpChild": 16, "pid": 44781, "exe": "C:\\windows\\system32\\explorer.exe", "role": "shell" },
+    { "ncpChild": 17, "pid": 44809, "exe": "C:\\windows\\system32\\winehua_keep.exe", "role": "desktop keep-alive" },
+    { "ncpChild": 18, "pid": 44816, "exe": "C:\\windows\\system32\\explorer.exe", "role": "shell" },
+    { "ncpChild": 19, "pid": 44832, "exe": "Z:\\games\\Steam\\steam.exe", "role": "steam client entry", "cpuDll": "libwow64fex.dll (x86)", "isSteam": true },
+    { "ncpChild": 20, "pid": 44863, "exe": "C:\\windows\\system32\\rpcss.exe", "role": "rpc" },
+    { "ncpChild": 21, "pid": 44921, "exe": "C:\\windows\\system32\\plugplay.exe", "role": "pnp" },
+    { "ncpChild": 22, "pid": 44933, "exe": "C:\\windows\\system32\\svchost.exe", "role": "service host" },
+    { "ncpChild": 23, "pid": 45142, "exe": "Z:\\games\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "role": "CEF helper (browser)", "isSteam": true },
+    { "ncpChild": 24, "pid": 45157, "exe": "Z:\\games\\Steam\\steamerrorreporter.exe", "role": "crash reporter", "exit": 0, "exitObservedAt": "2026-09-12T12:03:14.585+08:00", "isSteam": true },
+    { "ncpChild": 25, "pid": 45172, "exe": "Z:\\games\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "role": "CEF helper", "isSteam": true },
+    { "ncpChild": 26, "pid": 45217, "exe": "Z:\\games\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "role": "CEF helper", "isSteam": true },
+    { "ncpChild": 27, "pid": 45286, "exe": "Z:\\games\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "role": "CEF helper", "isSteam": true },
+    { "ncpChild": 28, "pid": 45288, "exe": ".\\bin\\gldriverquery64.exe", "role": "GPU probe", "isSteam": true },
+    { "ncpChild": 29, "pid": 45291, "exe": "C:\\windows\\system32\\winedevice.exe", "role": "driver host" },
+    { "ncpChild": 30, "pid": 45313, "exe": "C:\\windows\\system32\\winedevice.exe", "role": "driver host" },
+    { "ncpChild": 31, "pid": 45340, "exe": ".\\bin\\gldriverquery.exe", "role": "GPU probe", "isSteam": true },
+    { "ncpChild": 32, "pid": 45351, "exe": ".\\bin\\vulkandriverquery64.exe", "role": "GPU probe", "isSteam": true },
+    { "ncpChild": 33, "pid": 45356, "exe": "C:\\windows\\system32\\conhost.exe", "role": "console host" },
+    { "ncpChild": 34, "pid": 45380, "exe": ".\\bin\\vulkandriverquery.exe", "role": "GPU probe", "isSteam": true },
+    { "ncpChild": 35, "pid": 45387, "exe": "C:\\windows\\system32\\conhost.exe", "role": "console host" },
+    { "ncpChild": 36, "pid": 45411, "exe": "Z:\\games\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "role": "CEF helper (renderer)", "isSteam": true },
+    { "ncpChild": 37, "pid": 45441, "exe": "C:\\windows\\system32\\explorer.exe", "role": "shell" },
+    { "ncpChild": 38, "pid": 45453, "exe": "C:\\windows\\system32\\explorer.exe", "role": "shell" },
+    { "ncpChild": 39, "pid": 45470, "exe": "C:\\windows\\system32\\rpcss.exe", "role": "rpc" },
+    { "ncpChild": 40, "pid": 45518, "exe": "C:\\windows\\system32\\winedevice.exe", "role": "driver host" }
+  ],
+  "summary": {
+    "wineChildren": 40,
+    "steamProcesses": 12,
+    "steamWebHelpers": 5,
+    "cefProcessTypes": ["browser", "gpu-process", "utility", "renderer"],
+    "cefMultiprocess": true,
+    "anySteamProcessOnBox64": false,
+    "allProcessPrefix": "/data/storage/el2/base/files/.wine",
+    "allProcessGraphicalBackend": "dxvk_legacy 1.10.3 (d3d11=n;dxgi=n)"
+  },
+  "toplevels": [
+    { "id": 1, "appId": null, "title": "shell - Wine 桌面", "role": "desktop_root", "size": "1280x800" },
+    { "id": 2, "appId": null, "title": "", "role": "toplevel", "note": "输入命中 origin=(0,780)，即底部任务条所在 surface" },
+    { "id": 3, "appId": null, "title": "", "role": "toplevel" },
+    { "id": 5, "appId": "steamwebhelper.exe", "title": "登录 Steam", "role": "toplevel", "createdAt": "2026-09-12T12:03:23.837+08:00", "size": "705x440", "initialPos": "(287,180)", "windowGeometry": "absent (hasWindowGeometry=false)", "commitsObserved": true }
+  ]
+}
