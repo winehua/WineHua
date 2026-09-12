@@ -60,9 +60,12 @@ docs/proton-wine-core-migration/tools/wine-delta-audit.sh \
 
 ## 下一步（W1 才做的事）
 
-1. 在**这个工作树**里把 `thirdparty/wine` 的子模块初始化，并把 Valve Wine 加为参考 remote。
-2. 按 `build-risk-map.md` §4 的 M1（最小可启动）先动手，而不是一次全迁。
-3. 每迁一组就跑 `build-risk-map.md` §5 的 Gate（wineboot / cmd / 32-64 混跑 / FEX / GUI / TLS / IPC）。
+1. ~~把 `thirdparty/wine` 准备好，并把 Valve Wine 加为参考 remote~~ —— **已完成**：
+   用独立克隆（不是 `submodule update`，原因见 `build-risk-map.md` §8.1），
+   已加 `valve` remote 并取到 `dc26e618`。
+2. 按 `build-risk-map.md` §8 解决 `env.sh` 不可覆盖与依赖树缺失两个障碍。
+3. 按 §4 的 M1（最小可启动）先做最小化构建，而不是一次全迁。
+4. 每迁一组就跑 §5 的 Gate（wineboot / cmd / 32-64 混跑 / FEX / GUI / TLS / IPC）。
 
 ## 边界
 

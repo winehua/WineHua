@@ -103,3 +103,58 @@ Gate：network / TLS（DNS/TCP/TLS/WinHTTP/WinInet/crypt32 证书链）；
 - 三档划分是**规划**，不是实测；每档实际工作量要在 W1 里用"能否过 Gate"验证。
 - 尚未尝试实际编译 Valve Wine；M1 的第一个真实动作就是把它编起来，
   预期会暴露一批 configure / 头文件 / 工具链问题。
+
+## 8. W1 动手前实测到的三个环境障碍（2026-09-12 实做）
+
+### 8.1 子模块 gitdir 是共享的 —— 不要在新工作树里跑 `submodule update`
+
+`git worktree` 出来的新工作树与产品工作树**共用同一个子模块 git 目录**：
+
+```text
+唯一存在: /home/liufeng/src/WineHua-arm64ec/.git/modules/thirdparty/wine
+git 版本: 2.34.1（不支持 per-worktree submodule）
+```
+
+在新工作树里执行 `git submodule update --init` 会复用/争用这一个 git 目录，
+**存在改到产品工作树子模块 HEAD 的风险**。
+
+本轮的处置（已验证安全）：
+
+```bash
+cd /home/liufeng/src/WineHua-proton-ohos
+git clone /home/liufeng/src/WineHua-arm64ec/thirdparty/wine thirdparty/wine   # 硬链接对象，1.4 s
+cd thirdparty/wine
+git remote add valve https://github.com/ValveSoftware/wine.git
+git fetch --depth 1 --filter=blob:none --no-tags valve dc26e61847081a1b5cb0733dc30feba6ee575482
+```
+
+得到一份**完全独立**的 Wine 仓库（`origin` 仍指向本地 winehua 克隆，另加 `valve` 参考 remote），
+产品工作树与 parity 工作树**均未被触碰**。
+
+### 8.2 `scripts/env.sh` 把 WINE_SRC / BUILD_DIR 写死
+
+```sh
+WINE_SRC="$ROOT/thirdparty/wine"
+BUILD_DIR="$ROOT/build"
+```
+
+是普通赋值（不是 `${VAR:-default}`），**无法用环境变量覆盖**。W1 必须先解决：
+
+- 推荐：在**新工作树**里把 env.sh 改成 `${WINE_SRC:-$ROOT/thirdparty/wine}` 形式；
+- 或者写一个 wrapper：先 `source scripts/env.sh`，再覆盖这两个变量（仅当 build 脚本在其后读取它们）。
+
+### 8.3 新工作树没有任何构建依赖树
+
+`<arm64ec>/build` 有 **8.4 GB**（OHOS `sysroot-ext`、wayland/xkbcommon/freetype/gnutls、
+各 `*-build` 中间产物）；新工作树里是空的。三条路：
+
+| 方案 | 代价 | 风险 |
+| --- | --- | --- |
+| 复制整个 build/ 并批量改绝对路径 | 磁盘够（750 G 可用） | 交叉文件里的 sysroot 路径要逐个 sed，容易漏 |
+| 在新工作树重跑 `build_deps.sh` | 干净但耗时（小时级） | 无 |
+| 借 arm64ec 的 build/ 运行，只把 WINE_SRC 指到新工作树 | 最省事 | **不推荐**：会覆盖产品工作树的构建产物 |
+
+**建议的 M1 路线**：先做**最小化构建**——只出 `ntdll.so` / `wineserver` / 少量 PE DLL，
+configure 时 `--without-wayland --without-x --without-alsa --without-opengl --without-vulkan`
+（与我们 `build_wine.sh` 里 native-tools 那一步同款做法），把工具链路径先打通；
+等 W2 的 Gate 通过，再决定是否复制完整依赖树。
