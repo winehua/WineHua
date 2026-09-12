@@ -44,6 +44,13 @@ inline uint64_t NowUs()
 // -- WINEHUA_VTEST_PRESENT_PERF_SUMMARY 三位开关 (仅只在三个调用点打过日志) --
 inline bool PresentPerfSummaryEnabled()
 {
+    /* 需要抓宿主 present 分段统计时, 临时把 kForcedOn 改成 true:
+     * 这些计数器 (totalPresentUs_ / waitFence / acquire / submit /
+     * queue_present / release_wait / gpu_present_copy) 本来就在无条件累加,
+     * 打开只是放开输出 (每 120 帧一条 hilog), 行为中性。
+     * 用法与实测结果见 docs/proton-parity/p3-p4-smoke-ab.md §3.5。 */
+    static const bool kForcedOn = false;
+    if (kForcedOn) return true;
     const char* summary = std::getenv("WINEHUA_VTEST_PRESENT_PERF_SUMMARY");
     return summary && summary[0] == '1' && !summary[1];
 }

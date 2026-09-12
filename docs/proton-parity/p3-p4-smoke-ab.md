@@ -151,6 +151,58 @@ vtest socket → 宿主 virglrenderer/vkr → SurfaceQueue → egl/XComponent �
 > 且 `venus_surface_presenter` 会用 `lastPresentNs_ + framePeriodNs_` 计算下一个
 > present 截止时间 —— present 段确实带 pacing 逻辑，是否就是这 11 ms 需要下一轮打点确认。
 
+### 3.5 打点宿主 present：真因是 **90 Hz 屏幕节拍**，不是渲染成本
+
+把宿主 presenter 里**本来就无条件累加**的 present 分段统计打开（`presenter_common.h`
+的 `kForcedOn`，行为中性，只放开每 120 帧一条日志），再跑 `p5-paths`（run `p5d`）。
+宿主侧 `[VENUS-PRESENT][NCP]`：
+
+```text
+frames=2280 fps=79.16 present_us_avg=2967 max=22451
+  wait_fence_avg=15  acquire_avg=642  submit_avg=923  queue_present_avg=1099
+  release_wait_avg=36  release_polls_avg=0  gpu_present_copy_avg=0
+  release_mode=wait  failures=0  throttled=0
+```
+
+**宿主整条 present 只花 2.97 ms**（15+642+923+1099+36 µs）——远小于客人观察到的 11.7 ms。
+所以那 11 ms 不是宿主的渲染/present 工作量。
+
+再取宿主日志里的显示周期：
+
+```text
+[VENUS-PRESENT][NCP] target attached ... display_period_us=11129
+[VIRGL-ZC][NCP]       target attached ... display_period_us=11129 pace_period_us=11129
+```
+
+**屏幕是 90 Hz（11.129 ms），两个 presenter 都按这个周期 pacing 出帧。**
+
+于是把之前所有数字换算成"相对屏幕节拍的余量"：
+
+| 配置 | 帧时间 avgMs | 相对 11.129 ms |
+| --- | --- | --- |
+| x86 wowbox64 · DXVK | 12.1538 | **+1.025**（+9.2%） |
+| x86 FEX · DXVK | 12.2953 | **+1.166**（+10.5%） |
+| x64 原生 ARM64 · DXVK | 12.1590 | **+1.030**（+9.3%） |
+| x64 真 AMD64+FEX · DXVK | 12.1529 | **+1.024**（+9.2%） |
+| x86 FEX · WineD3D/D3D9 | 11.3208 | +0.192（+1.7%） |
+| x64 原生 · WineD3D/D3D9 | 11.1655 | +0.037（+0.3%） |
+
+**这才是完整的 P5 图景：**
+
+1. 帧时间的主体是**屏幕节拍 11.13 ms（90 Hz）**，不是任何计算成本。
+   D3D9/WineD3D 路径几乎正好卡在节拍上（+0.04 ~ +0.19 ms）。
+2. **DXVK/Venus 路径每帧多约 1.0 ms**，因此错过 90 Hz 截止点，落到 ~81 fps。
+   宿主 present 只占 2.97 ms、有 ~8 ms 余量，所以这 ~1 ms 更可能在
+   **客人侧 DXVK/Venus 提交 + vtest 往返**这一段，而不是宿主。
+3. CPU 后端的差异（FEX vs wowbox64 = 0.14 ms；原生 vs 真 AMD64 = 0.006 ms）
+   只是这 ~1 ms 的一小部分 —— **转译器不是瓶颈**这个结论进一步坐实。
+
+**方法学后果（重要）：** 这个 smoke cube 的工作负载是**显示器节拍受限**的，
+所以它只能回答"有没有超出 90 Hz 预算、超了多少"，**不能用来比较 CPU/GPU 的绝对算力**。
+要测余量必须换负载（离屏渲染、或每帧多次提交），不能拿它的 fps 直接做后端排名。
+换个角度说：**之前"x86/x64 都 12.1-12.3 ms 所以分不出差异"的困惑，
+本质是四条配置都撞在同一个显示节拍附近。**
+
 ## 4. 两处被修正的判断（保留记录，避免复现同样的错）
 
 ### 4.1 "78 fps 是 `Sleep(1)` 节流" —— 错

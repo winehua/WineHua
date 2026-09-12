@@ -71,7 +71,12 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
   （96–98%），且三种配置一致 ⇒ 瓶颈在宿主 present 链路，与 CPU 转译无关。
   换图形栈对照（DXVK/Venus vs WineD3D/virgl）两者 present 都是 10.7–11.7 ms
   ⇒ 这是**两条栈共有的宿主 present/上屏段**固定成本，不是 DXVK/Venus 特有。
-  下一步在该段内打点（SurfaceQueue / egl_renderer / 显示周期 pacing）。
+- **P5 结论（打到宿主日志后）**：显示周期 **11.129 ms（90 Hz）**，presenter 按它 pacing。
+  帧时间主体就是这个节拍。宿主 present 本身只花 2.97 ms（有 ~8 ms 余量）；
+  D3D9/WineD3D 几乎正好卡在节拍（+0.04~0.19 ms），
+  **DXVK/Venus 路径每帧多约 1.0 ms** 因而错过 90 Hz、落到 ~81 fps。
+  CPU 后端差异（FEX vs wowbox64 0.14 ms）只是其中一小部分。
+  方法学：该 cube 是节拍受限负载，只能测"超预算多少"，不能做后端绝对排名。
 - 原工作树未做任何修改。
 
 ## 记录约定
