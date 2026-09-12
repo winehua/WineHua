@@ -219,7 +219,13 @@ export class WineEnvService {
     if (this.engineState == 'starting' || this.initBusy) {
       this.statusText = this.initOverlayText || '正在初始化...';
     } else if (this.engineState == 'ready') {
-      this.statusText = this.sessionAlive ? '运行中' : '已就绪';
+      // "运行中" 附用户进程数: runningCount 与"运行中"页签列表同源 (ProcessService
+      // 黑名单过滤后), 数字即用户程序数 (不含 wineserver/services 等基础进程)。
+      // 仅 >0 时显示括号 — 桌面 root 存活而列表为空的登记间隙保持"运行中",
+      // 避免出现自相矛盾的 "运行中 (0)"
+      this.statusText = this.sessionAlive
+        ? (this.runningCount > 0 ? `运行中 (${this.runningCount})` : '运行中')
+        : '已就绪';
     } else if (this.engineState == 'ready-degraded') {
       this.statusText = '桌面准备中...';
     } else if (this.engineState == 'stopping') {
