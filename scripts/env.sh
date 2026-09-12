@@ -138,7 +138,9 @@ esac
 WINE_DEVICE_ROOT="/data/storage/el2/base/files/wine"
 
 # 源码路径
-WINE_SRC="$ROOT/thirdparty/wine"
+# W1（Proton Wine Core 迁移）允许把 wine 源码指向另一个检出（例如 Valve Proton Wine），
+# 便于在同一套构建脚本下做 A/B；不改默认行为。
+WINE_SRC="${WINE_SRC:-$ROOT/thirdparty/wine}"
 DXVK_SRC="$ROOT/thirdparty/dxvk"
 # box64+wine 方案 (方案②, arm64 设备 + x86_64 wine) 的 in-process 转译器源码
 BOX64_SRC="$ROOT/thirdparty/box64"
@@ -146,7 +148,7 @@ DXVK_MODERN_SRC="$ROOT/thirdparty/dxvk-modern"
 VKD3D_PROTON_SRC="$ROOT/thirdparty/vkd3d-proton"
 
 # 产物路径
-BUILD_DIR="$ROOT/build"          # 源码构建中间产物
+BUILD_DIR="${BUILD_DIR:-$ROOT/build}"   # 源码构建中间产物（同样允许覆盖，避免污染产品构建目录）
 SYSROOT_EXT="$BUILD_DIR/sysroot-ext"  # 交叉编译扩展 (不污染 SDK)
 STAGING_DIR="$BUILD_DIR/staging"   # 打包临时目录
 DXVK_BUILD_ROOT="$BUILD_DIR/dxvk/legacy"

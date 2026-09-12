@@ -294,6 +294,37 @@ if [ ! -x "$CONFIGURE_BIN" ] || [ "$WINE_SRC/configure.ac" -nt "$CONFIGURE_BIN" 
     chmod +x "$CONFIGURE_BIN"
 fi
 
+# Wine 上游树不带 include/config.h.in（winehua fork 里是提交进仓库的生成物）。
+# 若源码树没有，就在构建目录用 autoheader 生成一份，否则 configure 会在
+# config.status 阶段报 "cannot find input file: 'include/config.h.in'"。
+# 这条分支只在换用上游/Valve 源码树（W1）时才会走到。
+if [ ! -f "$WINE_SRC/include/config.h.in" ] && [ ! -f "$BUILD_DIR/include/config.h.in" ]; then
+    log "--- 源码树缺少 include/config.h.in，在源码树内生成（等价于上游 autogen.sh）---"
+    # 容器里的 autoheader 是精简版，不支持 --include/--output/-o，
+    # 只能按默认行为在源码树内生成 include/config.h.in。
+    # configure 的 --srcdir 会在 srcdir 里找到它，因此不需要再拷到构建目录。
+    (cd "$WINE_SRC" && autoheader)
+    log "  → $WINE_SRC/include/config.h.in"
+fi
+
+# 同理：include/wine/vulkan.h 与 dlls/winevulkan/{loader,vulkan}_thunks.* 也是生成物。
+# WineHQ 上游（11.10）把它们提交进了仓库，Valve 的 proton_11.0 分支没有，
+# 于是 makedep 在生成 Makefile 时会因为找不到 include/wine/vulkan.h 直接失败：
+#   error: open wine/vulkan.h : No such file or directory
+#   config.status: error: could not create Makefile
+# 正解是用源树自带的 make_vulkan 生成到**构建目录**（out-of-tree 的标准做法）。
+if [ ! -f "$WINE_SRC/include/wine/vulkan.h" ] && [ ! -f "$BUILD_DIR/include/wine/vulkan.h" ]; then
+    log "--- 源码树缺少 include/wine/vulkan.h，用 make_vulkan 生成到构建目录 ---"
+    mkdir -p "$BUILD_DIR/include/wine" "$BUILD_DIR/dlls/winevulkan"
+    (
+        cd "$BUILD_DIR" &&
+        python3 "$WINE_SRC/dlls/winevulkan/make_vulkan" \
+            -x "$WINE_SRC/dlls/winevulkan/vk.xml" \
+            -X "$WINE_SRC/dlls/winevulkan/video.xml"
+    )
+    log "  → $BUILD_DIR/include/wine/vulkan.h"
+fi
+
 build_native_tools
 build_ohos_unix
 build_wineserver

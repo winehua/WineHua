@@ -141,3 +141,28 @@ W0 的结论因此包含一条：**W1 不是"免费获得 Proton 的修复"，�
   与 Valve 的对应文件差异多大，**没有**逐个人工比对（W1 抽样）。
 - 没有验证 Valve 树在 ARM64EC/OHOS 方向上的可编译性（那是 W1 的构建风险，见 `build-risk-map.md`）。
 - 数字会随两个仓库推进而变化，重跑 `tools/wine-delta-audit.sh` 即可刷新。
+
+## 7. 补充：按"文件集"再算一遍（2026-09-12 追加）
+
+§1 的数字是按**提交作者**过滤得到的（回答"我们写了哪些补丁"）。
+但 W1 实做发现另一类差异：**fork 里存在、Valve 树里不存在的文件**，
+其中一部分不是"我们写的补丁"，而是**上游后来才提交进仓库的生成物**。补算如下：
+
+```text
+我们的树 (dc5204ecb0c)          12058 个文件
+Valve 树 (dc26e618)             11149 个文件
+只在我们的树里                  2503
+  ├ 在 WineHQ master(11.10) 里也有  2459   ← 属"11.0→11.10 上游进展"，不是 fork 工作量
+  └ WineHQ master 里也没有            44   ← 真正的 fork 独有文件
+只在 Valve 树里                  1594   ← 上游旧版才有（换基线会带进来，多数会被我们忽略）
+```
+
+**真正的 fork 独有文件 = 44 个**（清单见 `data/fork-only-files.txt`），
+与 §2 里按提交过滤得到的 40 个高度重合，另有 4 个是诊断程序
+（`programs/winehua_{audio,d3d11,vulkan}_smoke`、`programs/winehua_smoke_protocol.h`）。
+
+**但 W1 实做又暴露出第三类**：`include/config.h.in`、`include/wine/vulkan.h`、
+`dlls/ntdll/ntsyscalls.h` 这三个文件——它们**在我们的树里存在、在 Valve 的 11.0 里不存在**，
+却被上面的分类判成了"上游进展"（因为 WineHQ 11.10 里确实有）。
+对 W1 而言它们的性质是"**必须在 11.0 树上重新生成**"，
+细节与处置见 `build-risk-map.md` §9。

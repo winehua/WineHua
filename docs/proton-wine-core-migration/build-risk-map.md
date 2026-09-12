@@ -158,3 +158,46 @@ BUILD_DIR="$ROOT/build"
 configure 时 `--without-wayland --without-x --without-alsa --without-opengl --without-vulkan`
 （与我们 `build_wine.sh` 里 native-tools 那一步同款做法），把工具链路径先打通；
 等 W2 的 Gate 通过，再决定是否复制完整依赖树。
+
+## 9. W1 实做记录（2026-09-12，M1 第一次尝试）
+
+做法：在新工作树里挂 `winehua-dev` 容器（项目挂 `/data/src/winehua`、SDK 挂 `/apps/harmony`、
+llvm-mingw 挂 `/data/llvm`），用 `scripts/w1-m1-probe.sh` 让**我们自己的 `build_wine.sh`**
+去编 **Valve 的源码树**（`thirdparty/wine-valve` = `dc26e618` 的独立检出），
+`NATIVE_ARCH=arm64-v8a`。日志：`build/w1-m1-build.log`。
+
+### 9.1 结果：**构建系统风险被实测证实**，连续撞上同一类问题
+
+| # | 现象（原文） | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `config.status: error: cannot find input file: 'include/config.h.in'` | `include/config.h.in` 是 autoheader 生成物；**我们的 fork 把它提交进了仓库，Valve 的 11.0 没有**（WineHQ 11.10 也有） | 已在 `build_wine.sh` 补：源码树缺它时在树内跑 `autoheader`（容器里的 autoheader 是精简版，不支持 `-o/--output`，只能按默认落点） |
+| 2 | `error: open wine/vulkan.h : No such file or directory` → `config.status: error: could not create Makefile` | `include/wine/vulkan.h`（+ `dlls/winevulkan/{loader,vulkan}_thunks.*`）同为生成物，**fork 提交了、11.0 没有**（WineHQ 11.10 有） | 已在 `build_wine.sh` 补：缺它时用源树自带的 `dlls/winevulkan/make_vulkan -x vk.xml -X video.xml` 生成（实测生成到**源码树**，不是构建目录） |
+| 3 | `dlls/ntdll/signal_arm.c:35: error: ntsyscalls.h: No such file or directory` → `config.status: error: could not create Makefile` | 同一类：`dlls/ntdll/ntsyscalls.h` 由 `tools/make_specfiles` 生成；**fork 提交了、11.0 没有**（WineHQ 11.10 有）。且它**版本敏感**（是系统调用号表），不能从 11.10 抄 | **未解决**：见 §9.2 |
+
+**结论 1**：这不是偶发问题，而是一整类——`proton_11.0` 分支缺少若干"上游提交进仓库的生成物"，
+而我们的构建流程默认它们在源码树里。
+
+**结论 2**：**不能把 11.10 的生成物直接抄进 11.0 树**。`config.h.in` / `vulkan.h` 抄了问题不大，
+但 `ntsyscalls.h` 是 syscall 号表，抄错会让 ntdll 静默错乱 —— 必须用该树自己的生成器产出。
+
+**结论 3**：这正好印证了 §1 里"构建系统风险最高"的判断，也说明 W-19 必须最先做、且要按
+**"生成物"**这条线单独过一遍，而不是只看 `Makefile.in` 有没有对应的模块。
+
+### 9.2 下一步（二选一，倾向 B）
+
+**A. 继续把 out-of-tree 流程补齐**：在 `build_native_tools` 之前先把 host 工具
+（`tools/make_specfiles` 等）编出来，并按依赖顺序生成 `ntsyscalls.h` / `server_protocol.h` 等。
+工作量大、依赖顺序易错（Wine 的生成器之间互相依赖）。
+
+**B. 改用上游自己的流程（推荐先试）**：在 Valve 源码树里直接 `./autogen.sh && ./configure && make`
+（in-tree），让 Wine 自己的规则把生成物写进源码树；等 M1 跑通、Gate 通过之后，
+再把 in-tree 产物接入我们现有的打包流程（`assemble.sh` 取 `$BUILD_DIR` 里的产物）。
+理由：我们踩到的三个坑全部是"生成物不在源码树里"导致的 in-tree/out-of-tree 差异，
+而 Wine 官方流程从来不支持 out-of-tree 到这种程度。
+
+### 9.3 本轮同时完成的 W1 准备工作
+
+- `scripts/env.sh`：`WINE_SRC` / `BUILD_DIR` 改为可被环境变量覆盖（默认值不变）。
+- `scripts/w1-m1-probe.sh`：新增，`env|autoconf|full` 三个子命令，可复现本轮全部动作。
+- `thirdparty/wine-valve`：Valve `dc26e618` 的独立检出（`origin` 仍指 winehua 本地克隆，
+  另有 `valve` remote）；`thirdparty/wine` 与产品工作树**未被触碰**。
