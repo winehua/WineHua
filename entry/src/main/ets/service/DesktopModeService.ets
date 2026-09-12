@@ -13,7 +13,10 @@ export const MODE_FUSION: string = 'fusion';     // 多窗口模式: 每窗口�
 // 用主窗口下的 subWindow 承载 (FusionWindowManager); 2in1/PC 用独立 UIAbility
 // 主窗口 (系统自由窗口 + 原生视频)。
 export function isSubWindowFormFactor(): boolean {
-  return deviceInfo.deviceType !== '2in1';
+  const t: string = deviceInfo.deviceType;
+  // 2in1 与 PC 同属桌面形态: 部分设备 PC 上报 'pc' 而非 '2in1', 两者都要排除,
+  // 否则 pc 会被当成移动形态落到 subWindow 承载
+  return t !== '2in1' && t !== 'pc';
 }
 
 // 默认模式: 移动形态 (tablet/phone) 用虚拟桌面, 2in1/PC 用多窗口 — 与各形态
