@@ -354,13 +354,18 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     // 方案③ arm64 原生 wine: 指定 FEX 模拟器 DLL (HODLL64), 由 ntdll loader 加载转译 x86_64 应用
     setenv("HODLL64", "libarm64ecfex.dll", 1);
     // 32 位 x86 应用: HODLL 由 wow64.dll get_cpu_dll_name() 读取, 转译 i386 PE。
-    // 引擎可选: box=Box64 wowbox64.dll (默认), fex=FEX libwow64fex.dll。
-    // 通过 WINEHUA_WOW64_ENGINE=fex 切换 (与 WINEHUA_WINEDEBUG 同机制)。
+    // 引擎可选: fex=FEX libwow64fex.dll (默认), box=Box64 wowbox64.dll。
+    //
+    // 方案③ (arm64 原生 wine) 上默认用 FEX: 主库 arm64 分支的默认就是
+    // libwow64fex.dll; 而且 box64 的 wowbox64 shim 会注册 OHOS 的**全局**
+    // host-fault 槽, 在同一个进程里会把 FEX/ARM64EC 的 dynarec 故障抢过去,
+    // 表现为 SMC 无限循环 (实测 60s 内 28 万次 "[SMC] enter ... result=epilog")。
+    // box64 仅作为显式回退保留: WINEHUA_WOW64_ENGINE=box。
     const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
-    if (wow64_engine && strcmp(wow64_engine, "fex") == 0)
-        setenv("HODLL", "libwow64fex.dll", 1);
-    else
+    if (wow64_engine && strcmp(wow64_engine, "box") == 0)
         setenv("HODLL", "wowbox64.dll", 1);
+    else
+        setenv("HODLL", "libwow64fex.dll", 1);
 #endif
     setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
 }

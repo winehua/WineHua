@@ -71,3 +71,36 @@ bash scripts/w1-m3-build-hap.sh                                                 
 1. Gate W0：`cmd.exe` / `reg.exe` 能不能跑、窗口输入是否正常；
 2. 桌面交互：鼠标/键盘/窗口管理（合成器 ↔ winewayland 私有扩展）；
 3. 再往上是音频、网络 TLS，然后才是 Steam 客户端。
+
+## 7. 2026-09-13 续：SMC 路由把两个翻译器搅在一起（已修一半）
+
+### 7.1 现象与定位
+
+x64 音频冒烟进程的日志里出现 **284,684 次 `[SMC] enter` 死循环**（60 秒内，日志 58MB）：
+
+```text
+[SMC] enter tid=29410 sig=11 addr=0x1678028 teb=0x1f0000 fn=0x7aa2239c
+[SMC] tid=29410 sig=11 addr=0x1678028 prot=--- dynarec=0 result=epilog pc_out=0x7aaa2320 wine=0
+```
+
+故障 PC 落在 **FEX 的 dynarec 区**，但 `fn` 是 **box64/wowbox64 注册的全局 host-fault 槽**
+（该槽全进程唯一）。`prot=---` 说明 box64 自己也没认领这块区域，却仍返回 `epilog`
+→ 跳进 box64 的 epilog → 再踩同一地址 → 无限循环。
+
+根因：**同一个进程里同时装了 box64 和 FEX 两套翻译器**。`HODLL=wowbox64.dll`（旧方案②
+的默认）让 box64 的 shim 在**每个** wine 子进程里抢占该全局槽，把 FEX 的故障抢走。
+
+### 7.2 三处修复（都已真机验证到效果）
+
+| # | 改动 | 位置 | 验证 |
+| --- | --- | --- | --- |
+| 1 | OHOS unixlib 入口放回 **index 8**（与预编译 wowbox64.dll 的 ABI 对齐） | `dlls/ntdll/unixlib.h` + `unix/loader.c` | `registered host fault handler status` 由 `c0000100` → `00000000`，`unix_mprotect` 由 0 → `0x7e9b1d1984` |
+| 2 | 32 位翻译器默认改用 FEX：`HODLL=libwow64fex.dll`（`WINEHUA_WOW64_ENGINE=box` 可回退） | `entry/src/main/cpp/proc/wine_child.cpp` | 日志出现 `starting FEX based libwow64fex.dll`；`[SMC] translator probe: fex=1 box64=0` |
+| 3 | SMC 路由：不是自己的故障就 **return 0 让 sigchain 继续**（不再直接塞给 Wine），并对"认领了但没有 dynarec 位"的认领打回 | `dlls/ntdll/unix/ohos_virtual.c` | `result=epilog` 284,684 → **0**；日志 572k 行 → 2.2k 行 |
+
+### 7.3 仍未解决
+
+音频冒烟（x64/x86 两档）依旧 45s 超时：故障现在被"让出"给 sigchain，但 FEX 自己的
+JIT 故障处理没有完成。下一步要查的是 **FEX 的 JIT 页是否真的拿到 PROT_EXEC**
+（`virtual_set_force_exec(TRUE)` / `ohos_jit_enable()` 是否在 FEX 路径上被调到），
+以及 x64 进程里 FEX 的 unix 侧到底有没有映射（`translator probe` 在 x64 进程里报 `fex=0`）。
