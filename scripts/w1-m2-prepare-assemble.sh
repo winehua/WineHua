@@ -7,8 +7,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 产品工作树：宿主上在 /home/liufeng/src/WineHua-arm64ec，容器里挂在 /data/prod。
+# 允许用环境变量覆盖，避免"脚本在容器里跑却按宿主路径找 → 全部 skip"的坑。
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROD=/home/liufeng/src/WineHua-arm64ec
+PROD="${PROD:-/data/prod}"
+[ -d "$PROD/build" ] || PROD=/home/liufeng/src/WineHua-arm64ec
 
 cd "$ROOT/build" || exit 1
 
@@ -47,6 +50,42 @@ for d in $FORK_PROGRAMS; do
 done
 [ -f "$forkprog_src/winehua_smoke_protocol.h" ] && \
     cp -a "$forkprog_src/winehua_smoke_protocol.h" "$forkprog_dst/"
+
+# ── W1 移植：fork 独有的 OHOS 源码模块（台账 W-01/W-02/W-03/W-04/W-10）────
+# 这些文件在 Valve 树里完全不存在（R0 审计：真正的 fork 独有文件 44 个）。
+# 先做"文件落地"，注入点（unix/process.c、unix/file.c、unix/virtual.c 等）另轮逐个重放。
+wp="$ROOT/thirdparty/wine"
+wv="$ROOT/thirdparty/wine-valve"
+copy_if_exists() {  # copy_if_exists <相对路径>
+    if [ -e "$wp/$1" ]; then
+        mkdir -p "$(dirname "$wv/$1")"
+        cp -a "$wp/$1" "$wv/$1"
+        echo "copy  $1 <- fork"
+    fi
+}
+
+for f in \
+    dlls/ntdll/unix/ohos_broker.c dlls/ntdll/unix/ohos_broker.h \
+    dlls/ntdll/unix/ohos_file.c   dlls/ntdll/unix/ohos_file.h \
+    dlls/ntdll/unix/ohos_virtual.c dlls/ntdll/unix/ohos_virtual.h \
+    dlls/win32u/opengl_diag.c dlls/win32u/opengl_diag.h \
+    dlls/winewayland.drv/opengl_diag.c dlls/winewayland.drv/opengl_diag.h \
+    dlls/winewayland.drv/opengl_readback.c dlls/winewayland.drv/opengl_readback.h \
+    dlls/winewayland.drv/wayland_surface_ohos.c dlls/winewayland.drv/wayland_surface_ohos.h \
+    dlls/winewayland.drv/winehua-toplevel.xml \
+    dlls/winebus.sys/bus_ohos.c \
+    dlls/mciqtz32/mciqtz_waveout.c dlls/mciqtz32/mciqtz_waveout.h dlls/mciqtz32/minimp3.h \
+    dlls/dnsapi/libresolv_musl.c \
+    server/musl_compat.c ; do
+    copy_if_exists "$f"
+done
+
+# wineohos.drv 是整目录
+if [ -d "$wp/dlls/wineohos.drv" ]; then
+    rm -rf "$wv/dlls/wineohos.drv"
+    cp -a "$wp/dlls/wineohos.drv" "$wv/dlls/wineohos.drv"
+    echo "copy  dlls/wineohos.drv <- fork (整目录)"
+fi
 
 # entry/libs/arm64-v8a: 我们的 build_wine.sh 已经把**新编的 wine unix .so** 放进去，
 # 但 assemble 还需要 host 侧原生库（libvirglrenderer / libEGL / libGLESv2 / libc++_shared /

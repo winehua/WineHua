@@ -334,7 +334,8 @@ fi
 # 这里按 autogen.sh 的等价步骤补齐（幂等：产物已在则整块跳过）。
 if [ ! -f "$WINE_SRC/dlls/ntdll/ntsyscalls.h" ] \
    || [ ! -f "$WINE_SRC/include/config.h.in" ] \
-   || [ ! -f "$WINE_SRC/include/wine/vulkan.h" ]; then
+   || [ ! -f "$WINE_SRC/include/wine/vulkan.h" ] \
+   || [ ! -f "$WINE_SRC/dlls/vulkan-1/vulkan-1.spec" ]; then
     log "--- 源码树缺少上游生成物 → 运行 autogen.sh 等价的生成步骤 ---"
     (
         cd "$WINE_SRC" &&
