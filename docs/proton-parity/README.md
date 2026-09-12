@@ -89,7 +89,7 @@ R0/S1 的关键实测结论（都是本轮真机取到的）：
 
 ```text
 steamwebhelper + gpu/network/storage 子进程都起来
-→ ~20s 后 steam.exe 写 dumps/assert_steam.exe_*.dmp（随后 crash dump）
+→ 启动后 18–41 s（视是否走完整更新检查）steam.exe 写 dumps/assert_steam.exe_*.dmp（随后 crash dump）
 → [ProcMon] steam.exe exit=1 → 全部 webhelper 跟着退出
 ```
 

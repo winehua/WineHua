@@ -19,7 +19,7 @@ GpuTopology  查询成功：Virtio-GPU Venus (Maleoon 910)，k_EGpuDriverId_Mesa
 实测 PE Machine 均为 `0x8664`），走 `libarm64ecfex.dll`；旧包是 i386，走 `libwow64fex.dll`。
 **两者报的是同一条文本度量错误**，所以更像上层 Wine 文本 API 的问题，而不是某个 CPU 后端。
 
-### 0.2 崩溃链（3 次冷启动 3 次复现）
+### 0.2 崩溃链（3 次冷启动 3 次复现；从启动到 assert 约 18–41 s，取决于是否走完整更新检查）
 
 ```text
 13:00:45  Steam Client launched with: "C:\Program Files (x86)\Steam\steam.exe"
