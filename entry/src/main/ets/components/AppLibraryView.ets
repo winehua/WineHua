@@ -55,6 +55,7 @@ struct RenameDialog {
         Button('取消')
           .layoutWeight(1)
           .backgroundColor($r('app.color.control_bg'))
+          .fontColor($r('app.color.text_primary'))
           .onClick(() => this.controller?.close())
         Button('确定')
           .layoutWeight(1)
@@ -585,7 +586,7 @@ export struct AppLibraryView {
         }
         .width('100%').height('100%')
         .justifyContent(FlexAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.overlay_mask'))
         .borderRadius(12)
       }
     }
@@ -666,18 +667,23 @@ export struct AppLibraryView {
               if (this.chip == 'startmenu') {
                 Button('扫描开始菜单')
                   .backgroundColor($r('app.color.control_bg'))
+                  // 底色跟主题走就必须显式给字色: Button 默认文字是白色,
+                  // 浅色主题下 control_bg 变浅灰, 白字会看不清
+                  .fontColor($r('app.color.text_primary'))
                   .onClick(() => {
                     this.runScan('lnk');
                   })
               } else {
                 Button('扫描 Z: 目录')
                   .backgroundColor($r('app.color.control_bg'))
+                  .fontColor($r('app.color.text_primary'))
                   .onClick(() => {
                     this.runScan('z');
                   })
                 if (this.onNavigateToFiles) {
                   Button('去文件页')
                     .backgroundColor($r('app.color.control_bg'))
+                    .fontColor($r('app.color.text_primary'))
                     .onClick(() => {
                       if (this.onNavigateToFiles) {
                         this.onNavigateToFiles();

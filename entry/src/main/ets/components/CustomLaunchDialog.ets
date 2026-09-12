@@ -146,6 +146,7 @@ export struct CustomLaunchDialog {
         Button('取消')
           .layoutWeight(1)
           .backgroundColor($r('app.color.control_bg'))
+          .fontColor($r('app.color.text_primary'))
           .onClick(() => this.controller?.close())
         Button('启动')
           .layoutWeight(1)

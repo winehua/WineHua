@@ -57,6 +57,10 @@
       "value": "#FF7DB8FF"
     },
     {
+      "name": "accent_bg",
+      "value": "#337DB8FF"
+    },
+    {
       "name": "accent_soft",
       "value": "#FFDDFFDD"
     },
@@ -91,6 +95,10 @@
     {
       "name": "shadow",
       "value": "#66000000"
+    },
+    {
+      "name": "panel_border",
+      "value": "#66FFFFFF"
     }
   ]
 }

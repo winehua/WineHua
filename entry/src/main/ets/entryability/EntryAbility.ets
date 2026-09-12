@@ -1,4 +1,4 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
@@ -6,6 +6,7 @@ import { WineWindowManager } from '../service/WineWindowManager';
 import { DEFAULT_D3D_BACKEND, WineEnvService } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
 import { DesktopModeService } from '../service/DesktopModeService';
+import { ThemeService } from '../service/ThemeService';
 import { AppLibraryService } from '../service/AppLibraryService';
 import testNapi from 'libentry.so';
 
@@ -85,11 +86,9 @@ export default class EntryAbility extends UIAbility {
     // 冷启动不恢复磁盘值 (实测, 见 WineEnvService 注释), 由 WineEnvService.init
     // 用 preferences API 读盘后覆盖 AppStorage, publishLaunchRequest 此处只
     // 负责"显式 want 覆盖 > 持久化偏好 > 默认值"协议与 dxvk 联动
-    try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
-    } catch (err) {
-      hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
-    }
+    // 外观设置 (浅色/深色/跟随系统) 在此只读盘, 不在此下发: setColorMode 要求
+    // 窗口已创建且页面 loadContent 完成 (API 文档), 实际下发见 onWindowStageCreate
+    ThemeService.getInstance().init(this.context);
     this.publishLaunchRequest(want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
@@ -191,6 +190,9 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<window.Window>('winehua.mainWindow', mainWin);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      // 外观设置下发: 此处才满足 setColorMode 的前置条件 (页面已加载);
+      // 幂等, 切换时由设置页 ThemeService.setMode 各自触发
+      ThemeService.getInstance().apply();
       // 自动化测试通道 (冷启动): 主页面就绪后可自动拉起引擎/程序
       this.autoRunIfRequested();
     });

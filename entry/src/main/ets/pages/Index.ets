@@ -682,9 +682,11 @@ struct Index {
       // clip 恒 true: 动画期间 borderRadius 12→0 渐变需持续裁剪, 否则圆角
       // 区域露出方角背景; 全屏态 borderRadius=0 + clip(true) 无可见副作用
       .clip(true)
-      .border({ width: this.launcherVisible ? 1 : 0, color: '#66FFFFFF' })
+      // 边框/阴影随主题 (panel_border 深色=白描边 / 浅色=深描边); 其余浮在
+      // Wine 画面之上的硬编码色 (提示条/虚拟光标/游戏按键) 刻意不跟随主题
+      .border({ width: this.launcherVisible ? 1 : 0, color: $r('app.color.panel_border') })
       .shadow({ radius: this.launcherVisible ? 12 : 0,
-        color: '#66000000', offsetX: 0, offsetY: this.launcherVisible ? 4 : 0 })
+        color: $r('app.color.shadow'), offsetX: 0, offsetY: this.launcherVisible ? 4 : 0 })
     }
     // Layer 2: 桌面悬浮条 + 手柄覆盖层 (仅桌面激活且启动器隐藏时可见)
     if (this.desktopActive && !this.launcherVisible) {

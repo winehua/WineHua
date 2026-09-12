@@ -73,6 +73,7 @@ struct FileRenameDialog {
         Button('取消')
           .layoutWeight(1)
           .backgroundColor($r('app.color.control_bg'))
+          .fontColor($r('app.color.text_primary'))
           .onClick(() => this.controller?.close())
         Button('确定')
           .layoutWeight(1)
@@ -939,6 +940,7 @@ export struct FileBrowserView {
             Button('← 上级目录')
               .height(32)
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(this.goUp)
           }
           Text(this.displayPath())
@@ -952,6 +954,7 @@ export struct FileBrowserView {
             Button('粘贴')
               .height(32)
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(() => {
                 this.pasteClip();
               })
@@ -963,6 +966,7 @@ export struct FileBrowserView {
               .height(32)
               .margin({ left: 8 })
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(() => {
                 this.openInFileManager(this.curDir);
               })
@@ -973,6 +977,7 @@ export struct FileBrowserView {
               .height(32)
               .margin({ left: 8 })
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(() => {
                 this.openInWine();
               })
