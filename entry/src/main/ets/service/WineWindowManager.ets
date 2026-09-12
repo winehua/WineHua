@@ -358,6 +358,26 @@ export class WineWindowManager {
     const had = this.entries.delete(toplevelId);
     hilog.info(DOMAIN, TAG, '[MW]  unregisterAbility #%{public}d entry=%{public}s',
       toplevelId, had ? 'removed' : 'absent');
+    // 窗口没了 → 相对模式锁定兜底清理 (见 clearPointerLockFor)
+    this.clearPointerLockFor(toplevelId);
+  }
+
+  // 相对模式来源窗口消失 → 清锁定状态并重算光标 (host 侧兜底)。
+  // 正常路径由 native 解锁回调驱动 (wine 销毁 relative_pointer 对象), 但
+  // "游戏卡死"时 wine 不响应 xdg_toplevel_send_close, 该对象永不销毁 —
+  // 解锁回调永远不来, 光标保持隐藏。两个入口共用本方法:
+  //   - onToplevelDestroyed: wine 事件路径 (client 断连/正常销毁)
+  //   - unregisterAbility:  WWA 用户关窗自清理路径 (卡死场景的唯一出口)
+  // 只清"来源正是本窗口"的锁定; fromToplevel=0 (未找到约束) 无法归属,
+  // 留给 native 回调。窗口已销毁, 之后到达的 cb(false) 是幂等清理
+  private clearPointerLockFor(toplevelId: number): void {
+    if (this.pointerLocked && this.pointerLockToplevel === toplevelId) {
+      hilog.info(DOMAIN, TAG,
+        '[MW] locked toplevel #%{public}d gone → clear pointer lock', toplevelId);
+      this.pointerLocked = false;
+      this.pointerLockToplevel = 0;
+      this.applyPointerVisibility();
+    }
   }
 
   isDestroyed(toplevelId: number): boolean {
@@ -1058,6 +1078,9 @@ export class WineWindowManager {
   private onToplevelDestroyed(id: number): void {
     hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d', id);
     this.destroyed.add(id);
+    // 相对模式来源窗口销毁 → 清锁定状态并重算光标 (兜底)。此处提前于
+    // 下方各分支的 return (desktop root 分支不调 unregisterAbility)
+    this.clearPointerLockFor(id);
 
     // Desktop 模式: root 销毁 → 桌面会话结束
     if (this.isDesktopMode && id === this.desktopRootId) {

@@ -57,6 +57,13 @@ public:
     // toplevelId (解锁时传 0; ArkTS 用它区分"桌面 shell 自身"与"游戏窗口")。
     void SetPointerLockCallback(std::function<void(bool, uint32_t)> cb);
 
+    // 锁定窗口所属 toplevel 被宿主销毁 (用户关窗: WWA cleanup → destroyToplevel)
+    // → 立即释放 host 锁定并通知 ets, 不等 relative_pointer 销毁。游戏卡死时
+    // wine 不响应 sendToplevelClose, 相对对象永不销毁、正常解锁回调不来 —
+    // 不主动释放则: ①系统光标保持隐藏 ②lockedWindowId_ 残留使下一个游戏
+    // 锁不上 (lock 重入守卫以它判断)。toplevelId 与当前锁定不匹配则空转
+    void ReleaseLockForToplevel(uint32_t toplevelId);
+
     // -- warp 回调装配 (重构第 4C1 步: PointerExtras↔InputManager 单向化) --
     // wp_pointer_warp_v1 的 warp 请求与 Lock 约束销毁时的 cursor_position_hint
     // 需把"wine 侧已完成的 SetCursorPos 位置"同步回 InputManager::OnPointerWarp
@@ -141,6 +148,14 @@ private:
     void ApplyHostCursorLock(bool lock, uint32_t toplevelId);
     std::vector<int32_t> hostWindowIds_;       // mutex_ 保护; 各 Ability 主窗口
     int32_t lockedWindowId_ = 0;               // 实际锁定成功的窗口 (0=未锁)
+    // mutex_ 保护; 已向 ets 通知过 locked=true。与 lockedWindowId_ 分离:
+    // 锁定 IPC 可能全部失败 (无获焦窗口/系统不支持) 而隐藏照常下发, 解锁
+    // 时由本标记保证补发 false — 否则 ets 的 pointerLocked 永真, 系统光标
+    // 不恢复 (2026-09-13)
+    bool etsLockNotified_ = false;
+    // mutex_ 保护; 当前锁定对应的 toplevel (0=无)。ReleaseLockForToplevel
+    // 按它匹配"被销毁的窗口是否正是锁定来源"
+    uint32_t lockedToplevelId_ = 0;
     std::function<void(bool, uint32_t)> lockCallback_;   // mutex_ 保护
     // warp 回调装配 (4C1 解环): SetPointerWarpSink 在事件循环启动前一次性注入,
     // 之后只在 Wayland 线程读 → 无锁 (见头文件 Top 注释"warp 回调装配")。
