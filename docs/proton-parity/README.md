@@ -63,8 +63,9 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 - **FEX 生效配置已落地并验证**：`FEX_Config.json`（Proton 参考值）随包部署，
   真机上 SHM 统计创建成功，证明配置被真实读取。见 `p2-effective-config.md`。
   剩余：SHM 统计内容读取、逐项生效值导出、随后进入 P3/P4 测量。
-- **P3/P4 已开跑**：x86 两个后端都顶到 ≈78 fps 循环上限（本基准无法区分 CPU 成本）；
-  真 AMD64 + FEX + ARM64X DXVK 只有 ≈19.9 fps，**x64 路径是当前最明确瓶颈**。
+- **P3/P4 已有可复现结论**：x86(wowbox64/FEX)、原生 ARM64、真 AMD64+FEX+ARM64X
+  四种配置帧时间都在 12.10–12.30 ms（≈82 fps），差异 <1%，
+  两次独立运行偏差 ≤0.5%。**CPU 后端不是瓶颈，~12ms/帧在 graphics/present 共同路径**。
   见 `p3-p4-smoke-ab.md`。
 - 原工作树未做任何修改。
 

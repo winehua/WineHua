@@ -131,6 +131,25 @@ static void bench_record(double ms)
     ++g_app.bench_count;
 }
 
+/* bench 进度: 写到 <result>.progress, 不碰结果协议文件。
+ * 便于从 hdc 侧观察"到底是在慢慢跑还是卡住了"。 */
+static void bench_write_progress(void)
+{
+    char path[MAX_PATH + 16];
+    FILE *fp;
+    if (!g_app.bench || !g_app.result_path[0]) return;
+    snprintf(path, sizeof(path), "%s.progress", g_app.result_path);
+    fp = fopen(path, "wb");
+    if (!fp) return;
+    fprintf(fp, "frames=%u elapsedMs=%llu benchFrames=%u avgMs=%.4f lastMs=%.4f\n",
+            g_app.total_frame_count,
+            (unsigned long long)(GetTickCount64() - g_app.run_start_ms),
+            g_app.bench_count,
+            g_app.bench_count ? g_app.bench_total_ms / (double)g_app.bench_count : 0.0,
+            g_app.bench_count ? g_app.bench_samples[g_app.bench_count - 1] : 0.0);
+    fclose(fp);
+}
+
 static const char *feature_level_name(D3D_FEATURE_LEVEL level);
 
 static const WORD g_indices[] = {
@@ -1148,10 +1167,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
             if (g_app.bench && g_app.qpc_freq.QuadPart)
                 bench_record((double)(bench_end.QuadPart - bench_begin.QuadPart) * 1000.0 /
                              (double)g_app.qpc_freq.QuadPart);
+            if (g_app.bench && g_app.bench_count % 300 == 0) bench_write_progress();
         }
         if (g_app.duration_ms && GetTickCount64() - g_app.run_start_ms >= g_app.duration_ms)
             g_app.running = 0;
-        if (!g_app.bench) Sleep(1);
+        /* bench 模式不能忙等: 不给别的线程让出 CPU 会饿死 wineserver/图形线程。
+         * Sleep(0) = 让出时间片但不做毫秒级节流。 */
+        Sleep(g_app.bench ? 0 : 1);
     }
 
     write_automation_result(NULL, NULL);
