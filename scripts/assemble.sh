@@ -1063,6 +1063,18 @@ EOF
         {"testId": "p5-d3d9-x86-fex", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "fex", "WINEHUA_SMOKE_BENCH": "1"}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 30, "timeoutMs": 300000},
         {"testId": "p5-d3d9-x64-native", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_SMOKE_BENCH": "1"}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 30, "timeoutMs": 300000}
       ]
+    },
+    "p5-headroom": {
+      "tests": [
+        {"testId": "p5-k1-x86-fex", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "fex", "WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "1"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k4-x86-fex", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "fex", "WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "4"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k1-x86-wowbox64", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "box", "WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "1"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k4-x86-wowbox64", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_WOW64_ENGINE": "box", "WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "4"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k1-x64-native", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "1"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k4-x64-native", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "4"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k1-amd64-fex", "exe": "amd64/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "1"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000},
+        {"testId": "p5-k4-amd64-fex", "exe": "amd64/winehua_d3d_switch_cube.exe", "env": {"WINEHUA_SMOKE_BENCH": "1", "WINEHUA_SMOKE_DRAW_LOOP": "4"}, "d3dBackend": "dxvk_legacy", "seconds": 20, "timeoutMs": 300000}
+      ]
     }
   }
 }

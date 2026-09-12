@@ -101,6 +101,11 @@ typedef struct AppState {
     /* --bench: 去掉每帧 Sleep(1) 的节流, 并统计帧时间分布。
      * 默认(非 bench)每帧 Sleep(1) 会把循环压在 ~78fps, 无法用于 CPU 后端对比。 */
     int bench;
+    /* 每帧重复绘制的次数 (WINEHUA_SMOKE_DRAW_LOOP): 在保持 present 节拍的同时
+     * 加大每帧工作量, 用 K=1/4 的斜率量图形路径的每帧成本。
+     * 不用"离屏不 Present"方案: 没有 present 就没人消费提交, 会灌满 vtest ring
+     * 直接卡死 (实测 60 帧后停住)。 */
+    int draw_loop;
     unsigned int bench_count;
     double bench_total_ms;
     double bench_min_ms;
@@ -356,6 +361,10 @@ static void parse_command_line(RendererKind *initial_renderer)
      * 也支持环境变量开启。见 docs/proton-parity/p3-p4-smoke-ab.md。 */
     if (getenv("WINEHUA_SMOKE_BENCH") && getenv("WINEHUA_SMOKE_BENCH")[0] == '1')
         g_app.bench = 1;
+    if (getenv("WINEHUA_SMOKE_DRAW_LOOP")) {
+        const long v = strtol(getenv("WINEHUA_SMOKE_DRAW_LOOP"), NULL, 10);
+        g_app.draw_loop = (v >= 1 && v <= 4096) ? (int)v : 1;
+    }
 }
 
 static const char *active_d3d_backend(void)
@@ -409,11 +418,12 @@ static void write_automation_result(const char *status_override, const char *mes
                  ",\n"
                  "  \"bench\": {\"frames\": %u, \"fps\": %.3f, \"avgMs\": %.4f, "
                  "\"p50Ms\": %.4f, \"p95Ms\": %.4f, \"minMs\": %.4f, \"maxMs\": %.4f, "
-                 "\"renderMs\": %.4f, \"presentMs\": %.4f}",
+                 "\"renderMs\": %.4f, \"presentMs\": %.4f, \"drawLoop\": %d}",
                  g_app.bench_count, avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0, avg_ms,
                  p50, p95, g_app.bench_min_ms, g_app.bench_max_ms,
                  g_app.bench_render_total_ms / (double)g_app.bench_count,
-                 g_app.bench_present_total_ms / (double)g_app.bench_count);
+                 g_app.bench_present_total_ms / (double)g_app.bench_count,
+                 g_app.draw_loop > 0 ? g_app.draw_loop : 1);
     }
     snprintf(temporary, sizeof(temporary), "%s.tmp", g_app.result_path);
     loaded_module_path("d3d11.dll", d3d11_path, sizeof(d3d11_path));
@@ -760,6 +770,7 @@ static HRESULT init_d3d11_targets(void)
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
     ID3D11DeviceContext_RSSetViewports(s->context, 1, &viewport);
+
     return S_OK;
 }
 
@@ -993,7 +1004,13 @@ static void render_d3d11(float angle, unsigned int frame_sequence)
     ID3D11DeviceContext_IASetIndexBuffer(s->context, s->ib, DXGI_FORMAT_R16_UINT, 0);
     ID3D11DeviceContext_VSSetShader(s->context, s->vs, NULL, 0);
     ID3D11DeviceContext_PSSetShader(s->context, s->ps, NULL, 0);
-    ID3D11DeviceContext_DrawIndexed(s->context, (UINT)ARRAY_SIZE(g_d3d11_indices), 0, 0);
+    {
+        /* K 次重复绘制: 保持一次 present 不变, 只加大每帧图形工作量 */
+        const int draws = g_app.draw_loop > 0 ? g_app.draw_loop : 1;
+        int i;
+        for (i = 0; i < draws; ++i)
+            ID3D11DeviceContext_DrawIndexed(s->context, (UINT)ARRAY_SIZE(g_d3d11_indices), 0, 0);
+    }
     QueryPerformanceCounter(&wq_before_present);
     g_app.present_result = IDXGISwapChain_Present(s->swap_chain, 0, 0);
     QueryPerformanceCounter(&wq_end);

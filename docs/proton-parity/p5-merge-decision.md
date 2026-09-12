@@ -42,6 +42,8 @@ display_period_us = 11129   （屏幕 90 Hz）
 | 转译工作量极小 | cube 的 `renderMs`（全部 D3D11 调用 + Draw + 变换 + 上传）只有 0.09–0.17 ms |
 | 剩下的是公共图形成本 | 宿主 present 只有 2.97 ms（有余量）；DXVK/Venus 比 D3D9/WineD3D 每帧多约 1.0 ms，因而错过 90 Hz 落到 ~81 fps |
 | 构建参数对齐不提速 | Release + profiler + TUNE_CPU=none 对齐前后帧时间同噪声范围（`fex-build-parity.md`） |
+| render 侧余量极大 | 每帧绘制量 ×4（K=1→K=4）后 `renderMs` 只动 0.01–0.02 ms，帧时间不动（`p3-p4-smoke-ab.md` §3.6） |
+| 离屏方案在本运行时不可用 | 不 Present 时无消费者，`Flush` 会灌满 vtest ring，第 60 帧卡死（同样记录在 §3.6） |
 
 ## 3. 判定
 
