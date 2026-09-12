@@ -46,7 +46,20 @@ param[0]      = 1           (写)
 param[1]      = 0x10        (被访问地址 —— 典型的「空指针 + 0x10 偏移」写)
 ```
 
-### 0.3 关键判断：这不是新客户端带来的新缺陷
+### 0.3 已定位：崩溃根因不在 Steam，而在我们的 RPC stubless 代理
+
+> **完整证据链见 `ohos-rpc-stubless-arm64ec-crash.md`。** 一句话：
+> `OpenSCManagerW` 在 x86-64 进程里必崩（9 步最小复现），
+> 崩溃点是 `rpcrt4.dll+0x64aac` 的 `str xzr,[x19]`（x19=0x10），
+> 调用链 `steamui → sechost(服务控制) → rpcrt4`，
+> Wine 侧日志显示崩溃发生在 `client_do_args` 处理 `FC_UP` 参数时。
+> 这段 ARM64EC trampoline 是**上游 Wine 代码**，我们没有改过 ——
+> 所以这是 ARM64EC 调用约定/格式串布局问题，与 Valve 基线无关。
+
+另：`-no-dwrite` 能让 §0.2 的 assert **完全消失**（不再产生 `assert_*.dmp`），
+但 rpcrt4 崩溃照旧 ⇒ 这是**两个独立缺陷**，DWrite 那个只是先报到而已。
+
+### 0.4 关键判断：这不是新客户端带来的新缺陷
 
 同一句话在**旧包**里也出现过，只是当时只写一行日志、不致命：
 
@@ -58,7 +71,7 @@ param[1]      = 0x10        (被访问地址 —— 典型的「空指针 + 0x10
 ⇒ **我们这份 Wine 一直存在文本度量（GDI 字体/排版）缺陷；老客户端记日志，新客户端直接断言退出。**
 这是一条可以在**我们自己仓库**里定位和修掉的缺陷，不需要换 Wine 基线。
 
-### 0.4 字体侧现状（相关，未定因）
+### 0.5 字体侧现状（相关，未定因）
 
 ```text
 prefix:  drive_c/windows/Fonts/   -> 空
@@ -72,30 +85,36 @@ prefix:  drive_c/windows/Fonts/   -> 空
 
 这两类正是字体枚举/加载容易踩坑的形态。**本轮不下结论**，只记为待验证假设。
 
-### 0.5 本轮暴露的工具缺口（必须先补）
+### 0.6 工具面修正：Wine stderr 有落盘通道
 
-为了拿到 Wine 自己的视角，本轮用 `winehua.d3d_env_json` 传了
+**此前记录「Wine 子进程 stderr 没有可读通道」是错的。** 这个通道一直存在：
+`wine_child.cpp` 把子进程 stderr 经 pipe 转发到 hilog（`[WineChild-stderr]`）**并落盘**到
+`/data/storage/el2/base/temp/wine_stderr_YYYYMMDD.log`（设备上今天已 14 MB，
+按 `=== PID=… entryParams=… ===` 分段）。之前没找到只是因为只 grep 了 hilog。
+
+用法：用 `winehua.d3d_env_json` 传
 `WINEDEBUG=err+all,warn+all,+dwrite`，子进程日志确认**参数已生效**：
 
 ```text
 [WineChild] final WINEDLLDIR=... WINEDEBUG=err+all,warn+all,+dwrite HODLL64=libarm64ecfex.dll HODLL=libwow64fex.dll
 ```
 
-但一整轮复现之后，hilog 里**一条 Wine 的 `err:`/`warn:`/`fixme:` 都没有**
-（抓到的 `err:` 全是 HarmonyOS 系统组件自己的）。也就是说
-**Wine 子进程的 stderr 目前没有落到任何可读通道**。
-这会让后面所有 Wine 侧缺陷都变成盲调，必须先修。
+然后直接读上面那个文件（hilog 里看不到，因为转发线程只写文件+hilog 的一部分）。
+本轮就是靠它拿到 `client_do_args` 与 `RpcExceptionFilter` 这两条决定性日志的。
 
-### 0.6 下一步（最小、可复现）
+### 0.7 下一步（最小、可复现）
 
-1. 打通 Wine stderr（落 hilog 或落文件），确认 `+dwrite` / `+gdi32` 真能看到输出。
-2. 写一个受控探针 exe：按 Steam 的字体列表依次 `CreateFontIndirectW` +
-   `GetTextExtentPoint32W`，找到第一组返回 FALSE / 全 0 尺寸的 (字体, 字符串)。
-3. 在**我们自己仓库的 Wine** 里做有界修复（字体枚举 / 变量字体 / ttc、替换表、
-   `GetTextExtentExPointW` 的失败路径），改完先跑 smoke 回归。
-4. 验收：`dumps/` 不再新增 `assert_steam.exe_*.dmp`，且登录窗口出现。
+1. **判定 C1 还是 C2**（见 `ohos-rpc-stubless-arm64ec-crash.md` §3）：
+   C1 = FEX 的 ARM64EC 调用约定传错了 x64 的 `x4`(RSP)；
+   C2 = Wine rpcrt4 的 ARM64EC 格式串/`args_regs_to_stack` 布局与实际 trampoline 不一致。
+2. 按判定结果做**有界修复**：C1 改 FEX ARM64EC 路径（可借参考版本 `1cc4b93e` 对照），
+   C2 改我们 Wine 的 rpcrt4；两者都要先补 ABI 级回归（用 `comprobe.exe` 当回归用例）。
+3. DWrite assert 单独排队：先用 `-no-dwrite` 作为**诊断对照**（不是产品默认值），
+   真修在 Wine 的 dwrite 侧。
+4. 验收：`comprobe.exe` 能打印到 `DONE - all steps completed`；
+   Steam `dumps/` 不再新增 `assert_*.dmp` / `crash_*.dmp`，且登录窗口出现。
 
-### 0.7 为什么不换基线也能收敛（决策规则）
+### 0.8 为什么不换基线也能收敛（决策规则）
 
 原则：**按 Steam 客户端实际踩到的 Wine 缺陷逐条修**；只有当缺陷变成「要重写 Proton 的整块
 子系统」时才考虑换基线。

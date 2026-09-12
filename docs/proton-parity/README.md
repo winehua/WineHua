@@ -61,6 +61,8 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | `steam-startup-trace.md` | S1 | **真实 Steam 启动逐事件追踪（进程/网络/CEF/窗口）** |
 | `steam-process-tree.json` | S1 | **本次运行的进程树（NCP child ↔ Windows 可执行名映射）** |
 | `steam-first-blocker.md` | S1 | **第一处可复现阻塞：登录窗口不上屏 + 客户端过旧** |
+| `ohos-rpc-stubless-arm64ec-crash.md` | S1 | **根因：ARM64EC 下 RPC stubless 代理读错参数槽（`OpenSCManagerW` 9 步最小复现）** |
+| `tools/fontprobe/` | 工具 | **真机探针：`fontprobe.exe`（GDI 文本度量）+ `comprobe.exe`（COM/RPC，本缺陷的回归用例）** |
 
 ## 2026-09-12 阶段（S 线 / R0）
 
@@ -104,9 +106,30 @@ Assert( Couldn't get string length ):...\src\vgui2\vgui_surfacelib\Win32Font.cpp
 详见 `steam-first-blocker.md` §0（含异常码 `0xC0000005`、下一步最小复现、以及
 「不换 Valve 基线怎么收敛」的决策规则）。
 
-同时暴露一个工具缺口：本轮传了 `WINEDEBUG=err+all,warn+all,+dwrite`（子进程已生效），
-但 hilog 里**一条 Wine 的 err/warn 都没有** —— Wine 子进程 stderr 目前没有可读通道，
-这个必须先补，否则后面都是盲调。
+（本节当时判断「Wine stderr 没有可读通道」是**错的**，13:30 已更正，见下节。）
+
+### 2026-09-12 13:30 追加：Steam 崩溃根因已定位（与 Valve 基线无关）
+
+**上一条「stderr 没有可读通道」是错的**：`wine_child.cpp` 一直把子进程 stderr
+经 pipe 落盘到 `/data/storage/el2/base/temp/wine_stderr_YYYYMMDD.log`
+（今天已 14 MB，按 `=== PID=… ===` 分段）。改用这个文件后立刻拿到决定性日志。
+
+结论（完整证据见 `ohos-rpc-stubless-arm64ec-crash.md`）：
+
+1. **Steam 的致命崩溃 = `OpenSCManagerW` 在 x86-64 进程里必崩。**
+   探针 `comprobe.exe` 9 步最小复现：前 8 步（COM/RPC 全部）正常，第 9 步
+   `OpenSCManagerW` 直接死；`L""` 与 `NULL` 都一样。
+2. 崩溃点 = `rpcrt4.dll+0x64aac` 的 `str xzr,[x19]`（x19=0x10），
+   对应 Steam dump 里的 `0xC0000005` 写 `0x10`；调用链
+   `steamui → sechost(服务控制) → rpcrt4`，Wine 日志显示死在
+   `client_do_args` 处理 `FC_UP` 参数时。
+3. 这段 ARM64EC trampoline 是**上游 Wine 代码**（提交 `3c8fc4927d7`），我们没改过。
+   ⇒ 这是 ARM64EC 调用约定 / 格式串布局问题，**换不换 Valve 基线都一样**。
+4. DWrite 断言（`CWin32Font::GetTextSize`，`Win32Font.cpp:1129`）是**另一个独立缺陷**：
+   加 `-no-dwrite` 后 `assert_*.dmp` 完全消失，但 rpcrt4 崩溃照旧。
+5. 下一步二选一验证：C1 = FEX 的 ARM64EC 约定传错 x64 `x4`(RSP)；
+   C2 = Wine rpcrt4 的 ARM64EC 布局不一致。判定后再做 ABI 级有界修复，
+   用 `comprobe.exe` 当回归用例。
 
 ## 状态总览（2026-09-11）
 
