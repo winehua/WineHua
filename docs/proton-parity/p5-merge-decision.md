@@ -116,6 +116,50 @@ toplevels 从 3 涨到 7，游戏确实建了窗口（`#10 520x411`、`#2 1280x2
 **所以下一步很明确：把 FPS 采样绑定到游戏自己的 toplevel id**（或让它成为唯一前台
 toplevel），再做 fex/box 的 A/B。**现在离"目标游戏性能有可解释结果"只差这一步。**
 
+### 2.5 本轮补到的三条实测事实
+
+**（a）宿主诊断档位在 virgl 子进程启动时就固化 —— 要在冷启动带参数。**
+第二次 Want 里传 `winehua.perf_diagnosis=1` 不会改已有 virgl 子进程的 profile，
+所以必须 `aa force-stop` 后，把 `winehua.mode=game` 与诊断参数一起交给**冷启动**：
+
+```bash
+aa force-stop app.hackeris.winehua
+aa start -a EntryAbility -b app.hackeris.winehua \
+  --ps winehua.mode game --ps winehua.game_path "<path>" \
+  --ps winehua.perf_diagnosis 1 --ps winehua.run_id <id> --ps winehua.wow64_engine fex
+```
+
+**（b）`winehua_display_fps.txt` 不是 surface-bound 指标。**
+宿主合成器每次只写"最后被合成的那个 toplevel"一行（`<seq> <fps> <toplevelId>`），
+而 toplevel id 会随窗口创建顺序变化，所以跨会话拿到的 id 不同（我们观测到 3 / 1），
+**不能拿它直接做 A/B**。要做有效对比，必须绑定到游戏自己的 surface/toplevel。
+
+**（c）交接文档的"第一优先级"假设（WoW64 整块复制）在当前运行里没有复现。**
+部署的运行时里带 `[WOW64-MAP-PERF]` 探针（逐秒输出提交数、copy 字节/耗时/锁等待、
+direct/alias/copy/reused/failed 计数）。已观测到的全部条目都是：
+
+```text
+[WOW64-MAP-PERF] pid=10605 interval_ns=1085325000 submits=6
+  active_copy_maps=0 active_copy_bytes=0 copy_ops=0 copy_bytes=0 copy_ns=1562
+  lock_wait_ns=1042 max_copy_ns=521
+  direct_total=0 alias_total=0 copy_total=0 reused_total=0 failed_total=0
+```
+
+即 **`copy_total=0` / `copy_bytes=0` / `failed_total=0`** —— 没有落到 CPU 副本回退。
+这与交接文档里"低地址共享映射失败 → 每次 submit 整块复制"的成本模型**不符**，
+至少在目前的样本上没有发生。后续要看这个假设是否只对特定游戏成立。
+
+**（d）真实应用的启动分成两类。** 同一 Want 通道下：
+
+| 目标 | 结果 |
+| --- | --- |
+| `games/SA/Game.exe` | 建了窗口（`WL-STAT` toplevels 3→7），117–124% CPU，合成器 FPS ≈41–56 |
+| `games/kqcs/LustFromTheDeep.exe`（Unity x64） | **没建窗口**（toplevels 保持 3），6 分钟只用 4 秒 CPU，卡在渲染前 |
+| `games/dx11_test/.../BasicHLSL11.exe`（D3D11 样例） | **没建窗口**，几秒后进程退出 |
+
+所以"真实游戏性能"这条要落地，先得解决"哪些应用能起到窗口/渲染"这一类问题，
+而不是继续调测量口径。
+
 ### 已经可以下的性能结论（有证据）
 
 | 结论 | 证据 |
