@@ -191,20 +191,45 @@ params 地址 = stack_top + 0, +8, +0x10, +0x18   ← 格式串假设四个参�
 非可变参数函数，ARM64EC ABI 直接用 `x0..x6` 传参，根本不经过这条栈路径。
 只有**可变参数**（`NdrClientCall2` 就是）才走 x64 ABI 的栈传参。
 
-### 待验证/待修（下一轮）
+### 4.3 又一步二分：普通可变参数调用是好的，坏的只有 Wine 那个手写 trampoline
 
-> 以上是基于 ABI 的推导，**尚未用一次对照实验证实**。下一轮要做的：
+新增探针 `tools/fontprobe/varargprobe.c`（x86-64 PE），专门打「x64 调 ARM64EC 可变参数函数
+且实参走栈」这条路径：
 
-1. **证实**：在 FEX 的 `ExitFunctionSuspendResumePoint` 处把 `x4`（以及 x64 `RSP`）
-   dump 到日志，与调用方真实栈位置比对；或在 ARM64EC trampoline 里 dump
-   `x4`、三个 `stack_offset` 与实际参数值，直接看第 3/4 个参数是否落在 shadow space。
-2. **修**：若证实是 FEX 的 thunk 少跳过 shadow space，改
-   `Source/Windows/ARM64EC/Module.S` 并重建 FEX（走 `scripts/build_fex.sh`）+
-   重出 HAP，用 `comprobe.exe` 当回归用例（期望打出 `DONE - all steps completed`）。
-3. **对照**：同时检查参考 FEX（`1cc4b93e`，Proton 锁定版本）里
-   `Source/Windows/ARM64EC/Module.S` 的对应实现是否已修（已确认参考侧在
-   `86ff33bbe..1cc4b93e` 区间内只有 3 个 ARM64EC 相关提交，均非此路径，
-   所以**大概率仍要靠我们自己定位/修**，而不是换版本就能解决）。
+```text
+STEP 0 local_sum(8, 11..88) = 396 (expect 396)      ← 本模块内 x64 可变参数，基线
+STEP 1 sprintf(msvcrt, 8 个 %d)  out = [11 22 33 44 55 66 77 88]   ✅
+STEP 2 wsprintfW(user32, 8 个 %d) out = [11 22 33 44 55 66 77 88]   ✅
+STEP 3 wsprintfA(user32, 8 个 %d) out = [11 22 33 44 55 66 77 88]   ✅
+STEP 4 sprintf("a=%d b=%s c=%d d=%s e=%d", 1,"two",3,"four",5)      ✅
+```
+
+8 个实参里前 2 个走寄存器、后 6 个**必须走 x64 栈**，全部正确。
+
+⇒ **推翻了「FEX 的 x4 全局传错」这个版本**：如果 x4 全错，clang 编译的
+`sprintf` / `wsprintf` 的可变参数也必然读错。既然它们对，说明编译器侧的
+ARM64EC 可变参数约定与环境是自洽的。
+
+⇒ 因此问题**收敛到唯一一处**：Wine `dlls/rpcrt4/ndr_stubless.c` 里
+**手写的 ARM64EC `NdrClientCall2` trampoline**，它对 `x4` 的假设与运行环境不一致。
+
+### 4.4 修复候选（下一轮要做的对照实验）
+
+要判定「改哪边」，只需一个对照实验：把 `x4` 的值 dump 出来，看它等于
+`x64 RSP + 8`（shadow space 起点）还是 `x64 RSP + 0x28`（第一个栈实参）。
+
+| 观测结果 | 结论 | 改动点 |
+| --- | --- | --- |
+| `x4 = RSP + 8` 且 clang 侧仍正确 | FEX 与 clang 自洽；**Wine 的 trampoline 假设 x4 指向第一个栈实参**，与本地环境不符 | 改 **Wine** `ndr_stubless.c` 的 `__arm64ec__` 分支（让它按 `x4 + 0x20` 取栈实参），因为是我们在非 Windows 环境跑 ARM64EC |
+| `x4 = RSP + 0x28` | 与 Wine 的假设一致 | 那就得回到格式串/`args_regs_to_stack` 继续查 |
+
+两种改法都属于**有界补丁 + 一次重建**（Wine 改动需重建 wine 与 HAP；FEX 改动需
+`scripts/build_fex.sh` + 重出 HAP），完成后用 `comprobe.exe`（期望打印
+`DONE - all steps completed`）与 `varargprobe.exe`（期望四段全对）做回归。
+
+补充事实：参考 FEX（`1cc4b93e`，Proton 锁定版本）在 `86ff33bbe..1cc4b93e` 区间内
+**只有 3 个 ARM64EC 相关提交**（offline compiler backend / EC map 优化 / 分配 TOP_DOWN），
+都不涉及这条路径 ⇒ **换 FEX 版本不会自动修好这个问题**。
 
 ## 5. 复现材料清单
 

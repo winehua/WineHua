@@ -22,6 +22,15 @@
 
 2026-09-12 结论：第 9 步 `OpenSCManagerW` 必崩（`L""` 与 `NULL` 都一样），
 前 8 步（COM 创建 / UUID / RPC 绑定 / 释放）全部正常。
+同一份源码编成 i686（`comprobe32.exe`）后 **17 步全过** —— 缺陷只在 64 位 ARM64EC 路径。
+
+## varargprobe.c
+
+用途：判定「x64 调 ARM64EC 可变参数、实参走栈」这条约定是否坏。
+8 个 `%d` 实参里前 2 个走寄存器、后 6 个必须走 x64 栈。
+
+2026-09-12 结论：`sprintf` / `wsprintfW` / `wsprintfA` / 混合类型 **全部正确**
+⇒ 可变参数约定本身没问题，问题只在 Wine 手写的 `NdrClientCall2` ARM64EC trampoline。
 
 ## 构建
 
