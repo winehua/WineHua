@@ -49,6 +49,7 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
 | `p2-device-validation.md` | P2 | 真机验证：UnixLib 已加载、硬件 TSO/未对齐原子不支持（有真实返回值） |
 | `p2-effective-config.md` | P2 | FEX 生效配置落地与 SHM 统计实测（配置已被真实读取） |
 | `p3-p4-smoke-ab.md` | P3/P4 | smoke 编排 A/B：x86 后端对比、x64+ARM64X 链路验证与瓶颈信号 |
+| `fex-build-parity.md` | P2 | FEX 构建参数对齐官方（Release/profiler/TUNE_CPU/RANGES_NATIVE + 缓存签名） |
 | `next-steps.md` | P2 | 下一步可执行动作与门禁 |
 
 ## 状态总览（2026-09-11）

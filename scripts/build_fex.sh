@@ -57,6 +57,48 @@ fi
 # FEX CMake 里 OVERRIDE_VERSION 的默认值是 "detect"; 缓存值不等于期望值就要重配。
 FEX_EXPECT_CACHE_VERSION="${FEX_OVERRIDE_VERSION:-detect}"
 
+# ---- 构建参数: 对齐 Proton 官方 FEX 段 (方案 §5.2) ----
+#   官方: CMAKE_BUILD_TYPE=Release, ENABLE_FEXCORE_PROFILER=True,
+#         ENABLE_LTO=False, BUILD_TESTING=False, TUNE_CPU=none, RANGES_NATIVE=OFF
+# 旧基线是 RelWithDebInfo / profiler=OFF / TUNE_CPU=native / RANGES_NATIVE=ON,
+# 可用 FEX_BUILD_TYPE / FEX_PROFILER 覆盖做 A/B 对照。
+FEX_BUILD_TYPE="${FEX_BUILD_TYPE:-Release}"
+FEX_PROFILER="${FEX_PROFILER:-True}"
+FEX_CMAKE_ARGS=(
+    -DCMAKE_BUILD_TYPE="$FEX_BUILD_TYPE"
+    -DENABLE_FEXCORE_PROFILER="$FEX_PROFILER"
+    -DENABLE_LTO=False
+    -DBUILD_TESTING=False
+    -DTUNE_CPU=none
+    -DRANGES_NATIVE=OFF
+)
+
+case "$FEX_BUILD_TYPE" in
+    Release)        FEX_FLAGS_VAR=CMAKE_CXX_FLAGS_RELEASE ;;
+    RelWithDebInfo) FEX_FLAGS_VAR=CMAKE_CXX_FLAGS_RELWITHDEBINFO ;;
+    *)              FEX_FLAGS_VAR=CMAKE_CXX_FLAGS_RELEASE ;;
+esac
+
+# 参数签名: 任一构建参数变化都要重新 configure。
+# (方案 §5.2 的旧缓存坑: 只看 CMakeCache.txt 是否存在会静默沿用旧参数。)
+fex_configure() {
+    local build="$1" triple="$2"
+    local signature="${FEX_BUILD_TYPE}|${FEX_PROFILER}|${FEX_EXPECT_CACHE_VERSION}|${triple}"
+    mkdir -p "$build"
+    if [ -f "$build/CMakeCache.txt" ] && \
+       [ "$(cat "$build/.parity-signature" 2>/dev/null)" = "$signature" ]; then
+        return 0
+    fi
+    log "FEX configure: $(basename "$build") ($signature)"
+    rm -rf "$build/CMakeCache.txt" "$build/CMakeFiles"
+    ( cd "$build" && cmake "${FEX_CMAKE_ARGS[@]}" \
+        -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
+        -DMINGW_TRIPLE="$triple" \
+        "${FEX_OVERRIDE_ARGS[@]}" \
+        "$FEX_SRC" )
+    printf '%s' "$signature" > "$build/.parity-signature"
+}
+
 # 随构建走的 FEX 补丁 (子模块锁定 86ff33bbe 且指向 FEX-Emu/FEX 上游,
 # 非 fork 不能推分支, 按 glib-format-security 先例 patch 化):
 #   fex-missing-includes.patch   — 上游 08031a2767 "Add missing includes",
@@ -114,27 +156,12 @@ done
 # ---- libarm64ecfex.dll (x86_64 模拟, arm64ec ABI) ----
 build_fex_ec() {
     local build="$BUILD_DIR/fex-ec"
-    mkdir -p "$build"
+    fex_configure "$build" arm64ec-w64-mingw32
     cd "$build"
-    # 注意 (方案 §5.2): 只用 `[ ! -f CMakeCache.txt ]` 守卫会让"改了脚本参数但复用旧目录"
-    # 静默失效。这里额外比对 OVERRIDE_VERSION 缓存值, 不一致就重新 configure。
-    if [ ! -f CMakeCache.txt ] || \
-       [ "$(sed -n 's/^OVERRIDE_VERSION:STRING=//p' CMakeCache.txt 2>/dev/null | head -1)" != "$FEX_EXPECT_CACHE_VERSION" ]; then
-        # BUILD_TESTING=False: FEX 用 CTest 的 BUILD_TESTING (非 BUILD_TESTS)
-        # 控制 unittests/, 开着会在 configure 阶段 enable_language(ASM_NASM)
-        # 硬依赖 nasm — 我们只编 dll 目标, 显式关掉
-        cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
-            -DENABLE_LTO=False \
-            -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
-            -DBUILD_TESTING=False \
-            "${FEX_OVERRIDE_ARGS[@]}" \
-            "$FEX_SRC"
-    fi
     require_cmake_not_debug CMakeCache.txt "fex-ec"
-    require_cmake_flag_var CMakeCache.txt CMAKE_CXX_FLAGS_RELWITHDEBINFO "fex-ec CMAKE_CXX_FLAGS_RELWITHDEBINFO"
-    require_ndebug "fex-ec CMAKE_CXX_FLAGS_RELWITHDEBINFO" \
-        "$(sed -n 's/^CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=//p' CMakeCache.txt | head -1)"
+    require_cmake_flag_var CMakeCache.txt "$FEX_FLAGS_VAR" "fex-ec $FEX_FLAGS_VAR"
+    require_ndebug "fex-ec $FEX_FLAGS_VAR" \
+        "$(sed -n "s/^${FEX_FLAGS_VAR}:STRING=//p" CMakeCache.txt | head -1)"
     make -j"$JOBS" arm64ecfex
 
     local dll="$OUT_DIR/libarm64ecfex.dll"
@@ -154,22 +181,12 @@ build_fex_ec() {
 # 目录 (fex-pe), 避免 CMake 缓存与 arm64ec 配置互相覆盖。
 build_fex_pe() {
     local build="$BUILD_DIR/fex-pe"
-    mkdir -p "$build"
+    fex_configure "$build" aarch64-w64-mingw32
     cd "$build"
-    if [ ! -f CMakeCache.txt ] || \
-       [ "$(sed -n 's/^OVERRIDE_VERSION:STRING=//p' CMakeCache.txt 2>/dev/null | head -1)" != "$FEX_EXPECT_CACHE_VERSION" ]; then
-        cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
-            -DENABLE_LTO=False \
-            -DMINGW_TRIPLE=aarch64-w64-mingw32 \
-            -DBUILD_TESTING=False \
-            "${FEX_OVERRIDE_ARGS[@]}" \
-            "$FEX_SRC"
-    fi
     require_cmake_not_debug CMakeCache.txt "fex-pe"
-    require_cmake_flag_var CMakeCache.txt CMAKE_CXX_FLAGS_RELWITHDEBINFO "fex-pe CMAKE_CXX_FLAGS_RELWITHDEBINFO"
-    require_ndebug "fex-pe CMAKE_CXX_FLAGS_RELWITHDEBINFO" \
-        "$(sed -n 's/^CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=//p' CMakeCache.txt | head -1)"
+    require_cmake_flag_var CMakeCache.txt "$FEX_FLAGS_VAR" "fex-pe $FEX_FLAGS_VAR"
+    require_ndebug "fex-pe $FEX_FLAGS_VAR" \
+        "$(sed -n "s/^${FEX_FLAGS_VAR}:STRING=//p" CMakeCache.txt | head -1)"
     make -j"$JOBS" wow64fex
 
     local dll="$build/Bin/libwow64fex.dll"
