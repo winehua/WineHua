@@ -670,6 +670,10 @@ static napi_value DestroyToplevel(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
     PluginManager::GetInstance()->DestroyToplevel(id);
+    // 相对模式锁定兜底: 宿主主动销毁 toplevel (WWA 关窗) 时释放 host 锁定 —
+    // 游戏卡死时 wine 不响应 sendToplevelClose, relative_pointer 永不销毁,
+    // 正常解锁回调不来 (见 PointerExtras::ReleaseLockForToplevel)
+    PointerExtras::GetInstance()->ReleaseLockForToplevel(id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyToplevel id=%{public}u", id);
     return nullptr;
 }
