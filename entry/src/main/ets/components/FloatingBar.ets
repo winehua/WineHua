@@ -43,6 +43,10 @@ export struct FloatingBar {
   private input: InputSettingsService = InputSettingsService.getInstance();
   private static readonly BALL: number = 44;
   private static readonly MARGIN_RIGHT: number = 10;
+  // 悬浮条是浮在 Wine 画面上的深色浮层, 而画面本身不跟应用主题走 —— 所以这里
+  // 的配色固定用深色模式那套, 不引用会随主题翻转的颜色资源: 浅色主题下
+  // text_primary 会翻成近黑 (图标压在黑色半透明底上基本看不见)、accent 变深蓝。
+  private static readonly ACTIVE_BG: string = '#FF7DB8FF';
 
   private mirrorInput = (): void => {
     this.touchpadOn = this.input.touchpadEnabled;
@@ -79,17 +83,17 @@ export struct FloatingBar {
       if (typeof $$.content === 'string') {
         Text($$.content)
           .fontSize(13)
-          .fontColor($$.active ? Color.White : $r('app.color.text_primary'))
+          .fontColor(Color.White)
       } else {
         SymbolGlyph($$.content)
           .fontSize(20)
-          .fontColor([$$.active ? Color.White : $r('app.color.text_primary')])
+          .fontColor([Color.White])
       }
     }
     .width(40).height(40)
     .justifyContent(FlexAlign.Center)
     .borderRadius(20)
-    .backgroundColor($$.active ? $r('app.color.accent') : Color.Transparent)
+    .backgroundColor($$.active ? FloatingBar.ACTIVE_BG : Color.Transparent)
     .onClick($$.onTap)
   }
 
