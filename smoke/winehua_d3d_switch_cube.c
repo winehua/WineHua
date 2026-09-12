@@ -105,6 +105,9 @@ typedef struct AppState {
     double bench_total_ms;
     double bench_min_ms;
     double bench_max_ms;
+    /* render(提交前) 与 present(交换链 Present) 的分段累计, 用于 P5 归因 */
+    double bench_render_total_ms;
+    double bench_present_total_ms;
     double bench_samples[4096];
 } AppState;
 
@@ -405,9 +408,12 @@ static void write_automation_result(const char *status_override, const char *mes
         snprintf(bench_json, sizeof(bench_json),
                  ",\n"
                  "  \"bench\": {\"frames\": %u, \"fps\": %.3f, \"avgMs\": %.4f, "
-                 "\"p50Ms\": %.4f, \"p95Ms\": %.4f, \"minMs\": %.4f, \"maxMs\": %.4f}",
+                 "\"p50Ms\": %.4f, \"p95Ms\": %.4f, \"minMs\": %.4f, \"maxMs\": %.4f, "
+                 "\"renderMs\": %.4f, \"presentMs\": %.4f}",
                  g_app.bench_count, avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0, avg_ms,
-                 p50, p95, g_app.bench_min_ms, g_app.bench_max_ms);
+                 p50, p95, g_app.bench_min_ms, g_app.bench_max_ms,
+                 g_app.bench_render_total_ms / (double)g_app.bench_count,
+                 g_app.bench_present_total_ms / (double)g_app.bench_count);
     }
     snprintf(temporary, sizeof(temporary), "%s.tmp", g_app.result_path);
     loaded_module_path("d3d11.dll", d3d11_path, sizeof(d3d11_path));
@@ -926,6 +932,7 @@ done:
 static void render_d3d11(float angle, unsigned int frame_sequence)
 {
     D3D11State *s = &g_app.d3d11;
+    LARGE_INTEGER wq_begin, wq_before_present, wq_end;
     float clear_color[4] = {0.06f, 0.08f, 0.11f, 1.0f};
     UINT stride = sizeof(D3D11Vertex);
     UINT offset = 0;
@@ -938,6 +945,8 @@ static void render_d3d11(float angle, unsigned int frame_sequence)
                                     (float)g_app.width / (float)g_app.height,
                                     0.1f, 100.0f);
     Mat4 mvp = mat4_mul(mat4_mul(model, view), proj);
+
+    QueryPerformanceCounter(&wq_begin);
 
     transform_to_ndc(g_d3d11_vertices, transformed, ARRAY_SIZE(g_d3d11_vertices), mvp);
     {
@@ -975,7 +984,14 @@ static void render_d3d11(float angle, unsigned int frame_sequence)
     ID3D11DeviceContext_VSSetShader(s->context, s->vs, NULL, 0);
     ID3D11DeviceContext_PSSetShader(s->context, s->ps, NULL, 0);
     ID3D11DeviceContext_DrawIndexed(s->context, (UINT)ARRAY_SIZE(g_d3d11_indices), 0, 0);
+    QueryPerformanceCounter(&wq_before_present);
     g_app.present_result = IDXGISwapChain_Present(s->swap_chain, 0, 0);
+    QueryPerformanceCounter(&wq_end);
+    if (g_app.bench && g_app.qpc_freq.QuadPart) {
+        const double scale = 1000.0 / (double)g_app.qpc_freq.QuadPart;
+        g_app.bench_render_total_ms += (double)(wq_before_present.QuadPart - wq_begin.QuadPart) * scale;
+        g_app.bench_present_total_ms += (double)(wq_end.QuadPart - wq_before_present.QuadPart) * scale;
+    }
 }
 
 static void release_renderer(void)

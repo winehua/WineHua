@@ -93,6 +93,33 @@ angleRegressions : 0
 
 **没有静默退回普通 x64 图形 DLL**，ARM64X overlay 命中，画面正确。
 
+### 3.3 P5 归因：帧时间 96–98% 花在 `Present`
+
+在 cube 里把 `render_d3d11` 拆成两段计时：`renderMs` = 从进入函数到 `Present` 调用前
+（全部 D3D11 状态设置 + DrawIndexed + Map/Unmap + 顶点变换），
+`presentMs` = `IDXGISwapChain_Present(swap_chain, 0, 0)` 本身。run `p5b`：
+
+| 测试 | avgMs | **renderMs** | **presentMs** | present 占比 |
+| --- | --- | --- | --- | --- |
+| `p3-bench-x86-wowbox64` | 12.1297 | 0.1665 | **11.7701** | 97.0% |
+| `p3-bench-x86-fex` | 12.2732 | 0.1709 | **11.6601** | 95.0% |
+| `p3-bench-x64-native` | 12.1530 | 0.0891 | **11.9523** | 98.3% |
+
+**结论：**
+
+1. 所有 CPU 侧工作（D3D11 调用序列 + DrawIndexed + 顶点变换 + 上传）只有
+   **0.09–0.17 ms**；连 FEX 转译 x86 的代价在内也不到 0.2 ms。
+2. 帧时间几乎**全部**是 `Present` 的 11.7–12.0 ms。
+3. 三种配置（wowbox64 / FEX / 原生 ARM64）的 `presentMs` 一致到 0.3 ms 以内，
+   说明它**与 CPU 架构和转译器无关**，是这条图形链路的公共段：
+   `DXVK → win32u/winevulkan → Venus ICD → vtest → host virglrenderer → SurfaceQueue → XComponent`。
+4. `Present` 的 `SyncInterval=0`（非 vsync），却稳定 ~11.9 ms（≈84 Hz），
+   形态更像**宿主 present/表面队列的自带节拍或等待**，而不是 GPU 渲染不过来。
+
+**这直接决定 P5 的下一步方向：去宿主 present 链路找这 12 ms，而不是调 FEX。**
+（与 `docs/ARM64_SCHEME3_PERF_HANDOFF.md` §5.6 "Host present ~5ms 时低 FPS 仍可能在
+Guest shadow" 的提示一致，但本轮的测量把范围收窄到 present 段本身。）
+
 ## 4. 两处被修正的判断（保留记录，避免复现同样的错）
 
 ### 4.1 "78 fps 是 `Sleep(1)` 节流" —— 错
@@ -118,11 +145,13 @@ runner 随后也卡住、不出 summary。改成 `Sleep(0)`（让出时间片但
 
 ## 5. 下一步
 
-1. 按 §3.1 的指向做 P5 归因：先量 render 与 present 的占比（Host present / Venus 往返 /
-   shadow 上传），确认这 12 ms 花在哪一段。
+1. 按 §3.3 的指向继续细分 `presentMs`：在 DXVK / win32u / Venus ICD / vtest /
+   virglrenderer / SurfaceQueue 各段打点，确定 11.9 ms 具体停在哪一步
+   （是等 fence、等 surface queue 空位，还是宿主合成节拍）。
 2. 分离 ARM64X thunk 成本：把 x64 overlay 指向 `dxvk/legacy/x64/`（普通 x64 DXVK，
    整库走 FEX）与现在的 `arm64x/` 对照 —— 即方案 §5.3 的实验。
-   由于 §3 显示 x64 与原生持平，这一项现在是"可选验证"而非首要怀疑对象。
+   由于 §3 显示 x64 与原生持平、且 §3.3 显示 present 占 98%，这一项现在是
+   "可选验证"而非首要怀疑对象。
 3. 有余力再跑一轮非 bench（带 `Sleep(1)`）对照，确认 §4.1 的口径差异可复现。
 
 ## 6. 本轮附带产出

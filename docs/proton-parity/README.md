@@ -67,6 +67,9 @@ Windows 侧入口：`F:\WineHua\proton-parity-worktree\`（指向该工作树的
   四种配置帧时间都在 12.10–12.30 ms（≈82 fps），差异 <1%，
   两次独立运行偏差 ≤0.5%。**CPU 后端不是瓶颈，~12ms/帧在 graphics/present 共同路径**。
   见 `p3-p4-smoke-ab.md`。
+- **P5 初步归因**：拆段计时显示 render 仅 0.09–0.17 ms，`Present` 占 11.66–11.95 ms
+  （96–98%），且三种配置一致 ⇒ 瓶颈在宿主 present 链路，与 CPU 转译无关。
+  下一步是在 present 链路内继续细分打点。
 - 原工作树未做任何修改。
 
 ## 记录约定
