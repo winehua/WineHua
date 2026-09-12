@@ -213,19 +213,113 @@ ARM64EC 可变参数约定与环境是自洽的。
 ⇒ 因此问题**收敛到唯一一处**：Wine `dlls/rpcrt4/ndr_stubless.c` 里
 **手写的 ARM64EC `NdrClientCall2` trampoline**，它对 `x4` 的假设与运行环境不一致。
 
-### 4.4 修复候选（下一轮要做的对照实验）
+### 4.4 结论：`x4` 语义已由 clang 代码生成确定，Wine 的 trampoline 缺了 shadow-space 跳过
 
-要判定「改哪边」，只需一个对照实验：把 `x4` 的值 dump 出来，看它等于
-`x64 RSP + 8`（shadow space 起点）还是 `x64 RSP + 0x28`（第一个栈实参）。
+用 llvm-mingw 的 clang 直接编译一个 ARM64EC 变参函数，看它自己生成的入口 thunk：
 
-| 观测结果 | 结论 | 改动点 |
-| --- | --- | --- |
-| `x4 = RSP + 8` 且 clang 侧仍正确 | FEX 与 clang 自洽；**Wine 的 trampoline 假设 x4 指向第一个栈实参**，与本地环境不符 | 改 **Wine** `ndr_stubless.c` 的 `__arm64ec__` 分支（让它按 `x4 + 0x20` 取栈实参），因为是我们在非 Windows 环境跑 ARM64EC |
-| `x4 = RSP + 0x28` | 与 Wine 的假设一致 | 那就得回到格式串/`args_regs_to_stack` 继续查 |
+```asm
+$ientry_thunk$cdecl$i8$varargs:
+    stp  q6, q7, [sp, #-176]!
+    ... 保存 x29/x30 与 q6-q15 ...
+    add  x4, x4, #32        ; ★ 编译器自己加 32
+    mov  x5, xzr
+    blr  x9
+```
 
-两种改法都属于**有界补丁 + 一次重建**（Wine 改动需重建 wine 与 HAP；FEX 改动需
-`scripts/build_fex.sh` + 重出 HAP），完成后用 `comprobe.exe`（期望打印
-`DONE - all steps completed`）与 `varargprobe.exe`（期望四段全对）做回归。
+函数体里则用调整后的 `x4`：
+
+```asm
+vsum:
+    stp  x1, x2, [x4, #-24]!
+    str  x3, [x4, #16]
+    str  x4, [sp, #8]       ; va_list 的溢出区指针
+```
+
+⇒ 权威结论（来自编译器，不是推断）：
+
+```text
+进入 ARM64EC 变参函数时，x4 = x64 RSP + 8（shadow space 起点）；
+第一个 x64 栈上实参在 x4 + 0x20。
+```
+
+而 Wine 手写的 `NdrClientCall2` ARM64EC trampoline **没有这一步**，
+所以它读到的第 3/4 个实参落在 shadow space 里。
+
+**修复**：在 4 个手写 ARM64EC thunk 里补上跳过 shadow space 的一步
+（与编译器生成的 thunk 完全一致）。补丁：
+
+```text
+scripts/patches/wine-arm64ec-ndr-shadow-space.patch
+sha256 46b79b0356ca12d0968d36d35ae40ef1c4807291f13e3689b06717463db6c954
+改动  dlls/rpcrt4/ndr_stubless.c ×4：
+      NdrClientCall2 / NdrAsyncClientCall / NdrClientCall3 / Ndr64AsyncClientCall
+```
+
+等价写法（我们做真机快速验证时用的字节级改动，**同长度、无插入**）：
+
+```text
+stp x2,x3,[x4,#-0x10]!   (0xA9BF0C82)  →  stp x2,x3,[x4,#0x10]!   (0xA9810C82)
+str x3,  [x4,#-0x8]!     (0xF81F8C83)  →  str x3,  [x4,#0x18]!    (0xF8018C83)
+补丁点（文件偏移，来自设备上的 aarch64-windows/rpcrt4.dll）：
+  0x73e24, 0x7541c, 0x75ea4, 0x76138
+注意：同一编码在该 DLL 里还有 2 处属于别的函数，绝不能一起改。
+```
+
+### 4.5 真机验证结果（2026-09-12 13:39）
+
+把打过上述字节补丁的 `rpcrt4.dll` 推到设备（`bin/aarch64-windows/` 与
+`drive_c/windows/system32/`），再跑 `comprobe.exe`：
+
+**参数基址按预期整体右移 0x20**：
+
+```text
+打补丁前: param[0] 0000007E9BA3EC80 ... param[3] 0000007E9BA3EC98
+打补丁后: param[0] 0000007E9BA3ECA0 ... param[3] 0000007E9BA3ECB8  (+0x20 ✓)
+```
+
+**RPC 完整闭环**（打补丁前死在 CALCSIZE）：
+
+```text
+trace:rpc:ndr_client_call SENDRECEIVE
+trace:rpc:I_RpcSendReceive
+trace:rpc:RPCRT4_ReceiveWithAuth buffer length = 24
+trace:rpc:ndr_client_call UNMARSHAL
+trace:rpc:client_free_handle Explicit generic binding handle #1
+trace:rpc:RpcBindingFree (...) = 0
+trace:rpc:NdrpClientCall2 RetVal = 0x0        ← 调用成功返回
+```
+
+⇒ **`x4`/shadow-space 这一段已经修对了**，`OpenSCManagerW` 现在能完成到
+`services.exe` 的完整 RPC 往返。
+
+### 4.6 剩余问题（独立、尚未解决）
+
+RPC 返回之后立刻还有一个 `EXCEPTION_ACCESS_VIOLATION`，而且 Wine **无法派发**它：
+
+```text
+warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+err:seh:call_seh_handlers invalid frame 1400033fe (0000007E9B942000-0000007E9BA40000)
+err:seh:NtRaiseException Exception frame is not in stack limits => unable to dispatch exception.
+```
+
+`0x1400033fe` 是**模块内代码地址**（probe 镜像基址 0x140000000），却被当成 SEH 帧指针 —— 
+也就是**帧链走飞了**。它发生在 `NdrpClientCall2` 返回之后，落点应在
+「trampoline 收尾 / FEX 的 ARM64EC→x64 返回路径 / 调用方」这一段。
+
+下一轮要做的对照实验（按代价从低到高）：
+
+1. **不要破坏 `x4`**：当前 trampoline 两条写法都会改写 `x4`（它同时承载 x64 的 RSP）。
+   改成用临时寄存器做基址（`add x9, x4, #0x10` 后 `stp x2,x3,[x9]`、`mov x2,x9`），
+   保留 `x4` 原值，再测一次 —— 这能直接判定「剩余 AV 是不是 x4 被破坏导致的」。
+2. 按同样方式核对 `NdrClientCall3`/`Ndr64AsyncClientCall` 的收尾。
+3. 若仍崩，再查 FEX 的 ARM64EC 返回路径（`RetToEntryThunk` / `ExitToX64`）与
+   Wine 的 `signal_arm64ec.c` 帧链遍历。
+
+### 4.7 一条被推翻的中间假设（留档）
+
+中途曾怀疑「FEX 的 `x4` 全局传错」，并据此推断要么改 FEX、要么改 Wine。该假设已被
+§4.3 的 `varargprobe` 与 §4.4 的 clang 代码生成共同推翻：**`x4` 由环境和编译器约定一致**，
+错的只有 Wine 手写 thunk。留档以免后人重复这条路。
 
 补充事实：参考 FEX（`1cc4b93e`，Proton 锁定版本）在 `86ff33bbe..1cc4b93e` 区间内
 **只有 3 个 ARM64EC 相关提交**（offline compiler backend / EC map 优化 / 分配 TOP_DOWN），

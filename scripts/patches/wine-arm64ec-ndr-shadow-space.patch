@@ -1,0 +1,36 @@
+diff --git a/dlls/rpcrt4/ndr_stubless.c b/dlls/rpcrt4/ndr_stubless.c
+index ec09fefc0d7..5870421ea51 100644
+--- a/dlls/rpcrt4/ndr_stubless.c
++++ b/dlls/rpcrt4/ndr_stubless.c
+@@ -1004,6 +1004,7 @@ CLIENT_CALL_RETURN __attribute__((naked)) NdrClientCall2( PMIDL_STUB_DESC desc,
+          "stp x29, x30, [sp, #-0x20]!\n\t"
+          ".seh_save_fplr_x 0x20\n\t"
+          ".seh_endprologue\n\t"
++         "add x4, x4, #0x20\n\t"   /* x4 points at the x64 shadow space; skip it (same as clang ARM64EC entry thunks) */
+          "stp x2, x3, [x4, #-0x10]!\n\t"
+          "mov x2, x4\n\t"          /* stack */
+          "mov x3, #0\n\t"          /* fpu_stack */
+@@ -1838,6 +1839,7 @@ CLIENT_CALL_RETURN __attribute__((naked)) NdrAsyncClientCall( PMIDL_STUB_DESC de
+          "stp x29, x30, [sp, #-0x20]!\n\t"
+          ".seh_save_fplr_x 0x20\n\t"
+          ".seh_endprologue\n\t"
++         "add x4, x4, #0x20\n\t"   /* x4 points at the x64 shadow space; skip it (same as clang ARM64EC entry thunks) */
+          "stp x2, x3, [x4, #-0x10]!\n\t"
+          "mov x2, x4\n\t"          /* stack */
+          "mov x3, #0\n\t"          /* fpu_stack */
+@@ -2216,6 +2218,7 @@ CLIENT_CALL_RETURN __attribute__((naked)) NdrClientCall3( MIDL_STUBLESS_PROXY_IN
+          "stp x29, x30, [sp, #-0x20]!\n\t"
+          ".seh_save_fplr_x 0x20\n\t"
+          ".seh_endprologue\n\t"
++         "add x4, x4, #0x20\n\t"   /* x4 points at the x64 shadow space; skip it (same as clang ARM64EC entry thunks) */
+          "str x3, [x4, #-0x8]!\n\t"
+          "mov x3, x4\n\t"          /* stack */
+          "bl \"#ndr64_client_call\"\n\t"
+@@ -2286,6 +2289,7 @@ CLIENT_CALL_RETURN __attribute__((naked)) Ndr64AsyncClientCall( MIDL_STUBLESS_PR
+          "stp x29, x30, [sp, #-0x20]!\n\t"
+          ".seh_save_fplr_x 0x20\n\t"
+          ".seh_endprologue\n\t"
++         "add x4, x4, #0x20\n\t"   /* x4 points at the x64 shadow space; skip it (same as clang ARM64EC entry thunks) */
+          "str x3, [x4, #-0x8]!\n\t"
+          "mov x3, x4\n\t"          /* stack */
+          "mov x4, #0\n\t"          /* fpu_stack */
