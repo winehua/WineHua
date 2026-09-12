@@ -164,6 +164,15 @@ export class WineWindowManager {
       this.isDesktopMode ? 'DESKTOP MODE' : 'MANAGED MODE',
       this.desktopSeparateWindow ? 'yes' : 'no',
       explicitMode || 'none');
+    // 模式判定变了必须通知订阅者刷新镜像 (WineEnvService.desktopMode 等)。
+    // 本方法在"切模式 → 重启引擎"路径上由 startSession 调用, 而此时重启
+    // 期间的 toplevel 销毁事件已经过去 — 订阅者最后一次刷新拿到的还是旧
+    // 模式; 新会话 (MANAGED) 又没有窗口事件, 镜像就永久滞后一拍。
+    // 不通知的后果: MANAGED 会话下点应用仍按旧"虚拟桌面"逻辑走 ensureDesktop
+    // 拉起桌面 → 重复 startSession 把引擎整个拉起一遍 (用户看到"引擎又初始
+    // 化"), 且 MANAGED 端不 spawn explorer, desktopSurfaceReady 永远等不到,
+    // 25s 超时报"桌面启动失败" (实测 2026-09-13, tablet 切多窗口后重启引擎)
+    this.notify();
   }
 
   // -- Pad 多窗口承载判定: 非 desktop 模式下, 每窗口是独立 UIAbility 主窗口
