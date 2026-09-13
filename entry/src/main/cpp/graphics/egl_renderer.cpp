@@ -812,69 +812,90 @@ void EglRenderer::RenderLoop() {
         }
 
         // 无新帧且已渲染过首帧 → 跳过 GPU 绘制, 静态桌面节省 GPU 功耗。
-        // 例外: EGL surface 尺寸变了 (最小化还原/窗口 resize) 必须用当前纹理
-        // 重新 letterbox 上屏 — 否则最后一帧可能画在旧尺寸 buffer 上
-        // (ForceToplevelRedraw 的 dirty 与 buffer 异步切换存在竞争窗口),
-        // 静止窗口再无新帧触发重绘, 系统把旧 buffer 拉伸显示导致缩放错误
+        // 例外: EGL surface 与"上次真正画上去的尺寸"不一致 (最小化还原/窗口
+        // resize/沉浸式切换的中间态落地延迟) 必须重新 letterbox 上屏 — 否则
+        // 最后一帧留在旧尺寸 buffer 上, 静止窗口再无新帧触发重绘, 系统把旧
+        // buffer 拉伸显示导致缩放错误 (2026-09-14 全屏桌面左右黑边根因)。
+        // 判据必须是 lastDrawW_/lastDrawH_ (= 上次实际上屏的矩形): 用
+        // width_/height_ 会被 SetSize 写成 ArkTS 的"声明尺寸"而误判 — 系统把
+        // buffer 切到 1840 后, "实测 1840 == 声明的 1840" 成立就永不重绘了。
         if (!haveFrame && rendered) {
-            // resize 悬置: SetSize 后无新帧也必须强制重绘上屏, 否则画面停在
-            // 旧帧被系统拉伸到新 surface 尺寸 (缩放错误), 直到 wine 提交新帧。
-            if (sizeDirty_.load()) {
-                OH_LOG_INFO(LOG_APP,
-                            "[MW-RNDR] tl=%{public}u sizeDirty with no new frame, force re-letterbox",
-                            useToplevel);
-            } else {
-                EGLint curW = 0, curH = 0;
-                eglQuerySurface(display_, surface_, EGL_WIDTH, &curW);
-                eglQuerySurface(display_, surface_, EGL_HEIGHT, &curH);
-                if (curW == width_ && curH == height_) {
-                    loopCount++;
-                    ++skipFrames_;   // 诊断: 统计跳过 swap 的帧数
-                    if (!waitForFrameTick()) break;
-                    continue;
-                }
-                OH_LOG_INFO(LOG_APP,
-                            "[MW-RNDR] tl=%{public}u surface %{public}dx%{public}d -> %{public}dx%{public}d with no new frame, re-letterbox",
-                            useToplevel, width_, height_, curW, curH);
+            EGLint curW = 0, curH = 0;
+            eglQuerySurface(display_, surface_, EGL_WIDTH, &curW);
+            eglQuerySurface(display_, surface_, EGL_HEIGHT, &curH);
+            if (curW == lastDrawW_ && curH == lastDrawH_) {
+                loopCount++;
+                ++skipFrames_;   // 诊断: 统计跳过 swap 的帧数
+                if (!waitForFrameTick()) break;
+                continue;
             }
+            OH_LOG_INFO(LOG_APP,
+                        "[MW-RNDR] tl=%{public}u surface %{public}dx%{public}d -> %{public}dx%{public}d with no new frame, re-letterbox",
+                        useToplevel, lastDrawW_, lastDrawH_, curW, curH);
         }
 
-        // 获取 EGL surface 实际大小
+        // 获取 EGL surface 实际大小 (本次绘制的目标 buffer 尺寸)
         EGLint surfW = 0, surfH = 0;
         eglQuerySurface(display_, surface_, EGL_WIDTH, &surfW);
         eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfH);
+        // [MW-RNDR] 声明尺寸 (ArkTS SetSize) 与实际 surface 不一致时告警 — 系统侧
+        // 没采纳声明的信号; 此时画面按实际尺寸 letterbox (几何正确), 但若它长期
+        // 不收敛, 说明上游声明值本身可疑。限频: 数值变化才打, 否则未落地稳态每帧刷。
+        if (surfW > 0 && surfH > 0 && expectW_ > 0 && expectH_ > 0 &&
+            (surfW != expectW_ || surfH != expectH_) &&
+            (surfW != lastWarnSurfW_ || surfH != lastWarnSurfH_)) {
+            lastWarnSurfW_ = surfW; lastWarnSurfH_ = surfH;
+            OH_LOG_WARN(LOG_APP,
+                        "[MW-RNDR] tl=%{public}u DRAW-TIME surface=%{public}dx%{public}d != expect=%{public}dx%{public}d",
+                        toplevelId_, surfW, surfH, expectW_, expectH_);
+        }
         if (surfW > 0 && surfH > 0) {
             width_ = surfW;
             height_ = surfH;
         }
+        // 本次绘制的尺寸快照: 绘制期间 width_/height_ 可能被 NAPI 线程的 SetSize
+        // 改写 (日志实证: swap 后 w=2800 h=1840 而 lb 仍是按 1683 算的), 所以
+        // letterbox / viewport / 上屏记录三者必须共用这一份快照, 保证"画的"
+        // 与"记的"是同一个值
+        const int drawW = width_, drawH = height_;
 
         // Letterbox 视口: 保持 Wine 帧宽高比, 居中渲染, 左右或上下黑边。
         // 几何统一由 ComputeFitRect 计算 (与 desktop 合成/输入命中同源;
         // 历史实现此处独立手写, 截断取整与合成的 lround 不一致曾有 1px 偏差)
-        if (ComputeFitRect(width_, height_, frameW_, frameH_, letterbox_)) {
+        if (ComputeFitRect(drawW, drawH, frameW_, frameH_, letterbox_)) {
             glViewport(letterbox_.offX, letterbox_.offY, letterbox_.dstW, letterbox_.dstH);
         } else {
             letterbox_ = FitRect{};
-            glViewport(0, 0, width_, height_);
+            glViewport(0, 0, drawW, drawH);
         }
-        static uint32_t sFitLogN = 0;
-        if (++sFitLogN % 60 == 1 || width_ == 0 || height_ == 0)
+        // [DBG-FIT] 几何变化时打印一条 (surface/frame/letterbox 任一变化)。
+        // 采样式 %60 对"绘制次数"取模会吞掉关键那次绘制, 故改为变化即打;
+        // 记录值必须是本实例成员 — 每个 toplevel 一个渲染器, 函数内 static 会被
+        // 多个渲染线程互相覆盖 (2026-09-14 审查发现)。
+        if (drawW != lastFitLogW_ || drawH != lastFitLogH_ ||
+            frameW_ != lastFitLogFw_ || frameH_ != lastFitLogFh_ ||
+            letterbox_.dstW != lastFitLogLbW_ || letterbox_.dstH != lastFitLogLbH_ ||
+            drawW == 0 || drawH == 0) {
+            lastFitLogW_ = drawW; lastFitLogH_ = drawH;
+            lastFitLogFw_ = frameW_; lastFitLogFh_ = frameH_;
+            lastFitLogLbW_ = letterbox_.dstW; lastFitLogLbH_ = letterbox_.dstH;
             OH_LOG_INFO(LOG_APP, "[DBG-FIT] tl=%{public}u surface=%{public}dx%{public}d frame=%{public}dx%{public}d lb=%{public}dx%{public}d+%{public}d,%{public}d zc=%{public}d/%{public}d/%{public}d",
-                        useToplevel, width_, height_, frameW_, frameH_,
+                        useToplevel, drawW, drawH, frameW_, frameH_,
                         letterbox_.dstW, letterbox_.dstH, letterbox_.offX, letterbox_.offY,
                         zeroCopyRegistered_ ? 1 : 0, zeroCopyHasFrame_ ? 1 : 0, zeroCopyFullscreen_ ? 1 : 0);
+        }
 
         // 诊断: 前10帧详细打印 surface -> frame -> viewport 完整映射
         if (loopCount < 10) {
             int barTop = letterbox_.offY;
-            int barBot = height_ - letterbox_.offY - letterbox_.dstH;
+            int barBot = drawH - letterbox_.offY - letterbox_.dstH;
             int barLeft = letterbox_.offX;
-            int barRight = width_ - letterbox_.offX - letterbox_.dstW;
-            float sA = (float)width_ / height_;
+            int barRight = drawW - letterbox_.offX - letterbox_.dstW;
+            float sA = (float)drawW / drawH;
             float fA = frameW_ > 0 && frameH_ > 0 ? (float)frameW_ / frameH_ : 0;
             OH_LOG_INFO(LOG_APP, "[MW-RNDR] diag#%{public}d tl=%{public}u surface=%{public}dx%{public}d(asp=%{public}.2f) frame=%{public}dx%{public}d(asp=%{public}.2f) vp=%{public}dx%{public}d+%{public}d,%{public}d bar=(L%{public}d R%{public}d T%{public}d B%{public}d)",
                         loopCount, useToplevel,
-                        width_, height_, sA, frameW_, frameH_, fA,
+                        drawW, drawH, sA, frameW_, frameH_, fA,
                         letterbox_.dstW, letterbox_.dstH, letterbox_.offX, letterbox_.offY,
                         barLeft, barRight, barTop, barBot);
         }
@@ -1005,7 +1026,19 @@ void EglRenderer::RenderLoop() {
 
         const uint64_t swapStartedUs = PerfNowUs();
         const bool swapOk = eglSwapBuffers(display_, surface_) == EGL_TRUE;
-        if (swapOk) sizeDirty_.store(false);   // 重绘已上屏, 清除 resize 悬置标记
+        // 记录"这次真正上屏的绘制尺寸" — 无帧循环据此判断当前 surface 是否已经
+        // 与画面不一致 (不一致就重绘)。swap 失败时不记录, 下一轮会再试。
+        if (swapOk) {
+            lastDrawW_ = drawW;
+            lastDrawH_ = drawH;
+            swapFailStreak_ = 0;
+        } else if (++swapFailStreak_ == 1 || swapFailStreak_ % 120 == 0) {
+            // swap 失败: 画面没上屏, 循环会持续重试绘制 — 首次 + 每 120 次低频
+            // 告警, 便于发现 surface 失效/buffer 饥饿这类持续失败
+            OH_LOG_WARN(LOG_APP,
+                        "[MW-RNDR] tl=%{public}u eglSwapBuffers failed x%{public}d (draw=%{public}dx%{public}d)",
+                        toplevelId_, swapFailStreak_, drawW, drawH);
+        }
         const uint64_t frameEndedUs = PerfNowUs();
         if (haveFrame) {
             // 诊断: 每帧有帧 swap 都打印 — 对齐合成(MW-TAKE)时刻与上屏(swap)时刻,
