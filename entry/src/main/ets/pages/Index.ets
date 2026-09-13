@@ -101,6 +101,9 @@ struct Index {
   private tabsController: TabsController = new TabsController();
   // 五导航图标 (与 tabBarItem/sideNavItem 的 index 一一对应):
   // 应用库/运行中/文件/设置/关于 — 系统符号, 替代纯文字导航
+  // 渲染字号统一 24 (原 20): 应用市场审核报"应用库"图标锯齿值 90.14 > 阈值 90,
+  // 小尺寸下抗锯齿灰边占比高; 同图标在任务列表页 24 号未被报。两处渲染点
+  // (tabBarItem / sideNavItem) 都改, 行高 48 / 底部 tab 均容得下
   private readonly navIcons: Resource[] = [
     $r('sys.symbol.square_grid_2x2'),
     $r('sys.symbol.play_circle'),
@@ -378,37 +381,18 @@ struct Index {
     this.applyImmersiveMode();
   }
 
-  // 沉浸切换 (照抄旧桌面 Ability 的 try/catch + .catch 日志模式, tag 改 'Index')
+  // 沉浸切换: 实现收在 WineWindowManager.applyImmersive ("先系统栏后布局"的顺序
+  // 语义与逐 API 容错都收在那里)。这里必须同时兜住同步抛错 — applyImmersive 不是
+  // async 方法, 窗口态非法时它可能同步 throw, 只挂 .catch 接不住, 异常会一路逃到
+  // @Watch 回调/aboutToAppear 里 (2026-09-14 审查)。
   private applyImmersiveMode(): void {
     try {
-      const mw = WineWindowManager.getInstance().getMainWindow();
-      if (mw) {
-        if (this.launcherVisible) {
-          // 显示启动器: status/navigationIndicator 显示 + 退出全屏布局
-          mw.setSpecificSystemBarEnabled('status', true).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'statusBar show failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setSpecificSystemBarEnabled('navigationIndicator', true).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'navBar show failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setWindowLayoutFullScreen(false).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'exit fullScreen failed: %{public}s', JSON.stringify(e));
-          });
-        } else {
-          // 进入桌面: 全屏 + 隐藏状态栏和导航栏
-          mw.setWindowLayoutFullScreen(true).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'fullScreen failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setSpecificSystemBarEnabled('status', false).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'statusBar hide failed: %{public}s', JSON.stringify(e));
-          });
-          mw.setSpecificSystemBarEnabled('navigationIndicator', false).catch((e: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'navBar hide failed: %{public}s', JSON.stringify(e));
-          });
-        }
-      }
+      WineWindowManager.getInstance().applyImmersive(this.launcherVisible)
+        .catch((e: BusinessError) => {
+          hilog.error(DOMAIN, TAG, 'immersive switch failed: %{public}s', JSON.stringify(e));
+        });
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'applyImmersive ERR: %{public}s', JSON.stringify(e));
+      hilog.error(DOMAIN, TAG, 'immersive switch threw: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -444,7 +428,7 @@ struct Index {
   tabBarItem(title: string, index: number) {
     Column({ space: 2 }) {
       SymbolGlyph(this.navIcons[index])
-        .fontSize(20)
+        .fontSize(24)
         .fontColor([this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary')])
       Text(title)
         .fontSize(10)
@@ -478,7 +462,7 @@ struct Index {
   sideNavItem(title: string, index: number) {
     Row({ space: 10 }) {
       SymbolGlyph(this.navIcons[index])
-        .fontSize(20)
+        .fontSize(24)
         .fontColor([this.currentIndex == index ? $r('app.color.accent') : $r('app.color.text_secondary')])
       Text(title)
         .fontSize(14)
@@ -761,6 +745,9 @@ struct Index {
             Button('重置环境')
               .layoutWeight(1)
               .backgroundColor($r('app.color.action_danger'))
+              // 浅粉底必须配深红字: 用默认白字时对比度不足 (同 SettingsView
+              // "重置 Wine 引擎" 按钮的浅底深字搭配)
+              .fontColor($r('app.color.danger'))
               .onClick(() => {
                 AlertDialog.show({
                   title: '重置 Wine 引擎',
@@ -855,7 +842,10 @@ struct Index {
             })
           Button('立即应用')
             .layoutWeight(1)
-            .backgroundColor($r('app.color.action_danger'))
+            // 危险操作但需醒目可点击: 原 action_danger (#E8B0B0 浅粉) 配默认
+            // 白字对比度极低, 用户反馈"以为不能点" — 改深红底 + 显式白字
+            .backgroundColor($r('app.color.danger'))
+            .fontColor(Color.White)
             .onClick(() => {
               AlertDialog.show({
                 title: '应用 Wine 引擎更新',

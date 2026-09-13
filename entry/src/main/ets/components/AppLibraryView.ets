@@ -615,6 +615,9 @@ export struct AppLibraryView {
         Search({ placeholder: '搜索应用名称或路径' })
           .height(36)
           .layoutWeight(1)
+          // 放大镜 28vp: 系统内置图标实测仅 15vp(≈2.9mm), 不满足审核"键鼠热区
+          // 短边 ≥5mm(≈26vp)"; 28vp≈5.4mm 留余量 (审核报告坐标 31x30px)
+          .searchIcon({ size: 28 })
           .onChange((value: string) => {
             this.searchText = value.trim();
           })
