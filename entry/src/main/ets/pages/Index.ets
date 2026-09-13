@@ -10,6 +10,7 @@ import { FileBrowserView } from '../components/FileBrowserView';
 import { SettingsView } from '../components/SettingsView';
 import { AboutView } from '../components/AboutView';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { FusionWindowManager, MinimizedWindow } from '../service/FusionWindowManager';
 import { DesktopLayer } from '../components/DesktopLayer';
 import { FloatingBar } from '../components/FloatingBar';
 import { GamepadOverlay } from '../components/GamepadOverlay';
@@ -94,6 +95,11 @@ struct Index {
   // 标题栏右侧避让系统按钮 (PC/2in1): 动态取系统窗口按钮宽度,
   // Pad 无系统按钮 (getTitleButtonRect 失败/width=0) 回落默认 14
   @State titleBarRightPadding: number = 14;
+  // 已最小化的窗口 (Pad 多窗口/fusion 承载): 标题栏恢复入口的列表数据源。
+  // 子窗口 minimize 后系统无 Dock 还原入口 (只能本应用 showWindow), 该入口
+  // 是唯一唤回途径; PC/桌面模式恒空, 角标自然不显示
+  @State minimizedList: MinimizedWindow[] = [];
+  @State showMinimizedSheet: boolean = false;
 
   private env: WineEnvService = WineEnvService.getInstance();
   private proc: ProcessService = ProcessService.getInstance();
@@ -252,6 +258,12 @@ struct Index {
         this.setLauncherVisible(true);
       }
     });
+    // 最小化窗口名单镜像 (Wine 最小化 → 子窗口被系统隐藏 → 从标题栏入口唤回)
+    const fwm = FusionWindowManager.getInstance();
+    fwm.subscribe(() => {
+      this.minimizedList = fwm.minimizedWindows();
+    });
+    this.minimizedList = fwm.minimizedWindows();
     this.proc.bindEnv(env);
     // 字体导入遮罩镜像 (FontImportService): 拆分自 WineEnvService 的发布版服务
     const fontSvc = FontImportService.getInstance();
@@ -456,6 +468,50 @@ struct Index {
     TaskListView()
   }
 
+  // 最小化窗口列表 (标题栏入口弹出): 预览图 = 最小化前抓的窗口截图,
+  // 点击条目恢复 (OHOS 侧 showWindow + 通知 Wine 清最小化状态)
+  @Builder
+  minimizedSheet() {
+    Column() {
+      ForEach(this.minimizedList, (w: MinimizedWindow) => {
+        Row() {
+          if (w.thumb) {
+            Image(w.thumb)
+              .width(72).height(54)
+              .objectFit(ImageFit.Cover)
+              .borderRadius(6)
+              .border({ width: 1, color: $r('app.color.panel_border') })
+          } else {
+            // 截图未完成/失败: 占位块 (列表功能不受影响)
+            Column() {
+              SymbolGlyph($r('sys.symbol.rectangle_on_rectangle'))
+                .fontSize(22)
+                .fontColor([$r('app.color.text_tertiary')])
+            }
+            .width(72).height(54)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(6)
+            .backgroundColor($r('app.color.control_bg'))
+          }
+          Text(w.title.length > 0 ? w.title : `窗口 #${w.tl}`)
+            .fontSize(15)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ left: 12 })
+            .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 10, bottom: 10 })
+        .onClick(() => {
+          FusionWindowManager.getInstance().restoreMinimized(w.tl);
+          this.showMinimizedSheet = false;
+        })
+      }, (w: MinimizedWindow) => `${w.tl}|${w.title}|${w.thumbSeq}`)
+    }
+    .width('100%')
+    .padding({ top: 6, bottom: 16 })
+  }
+
   // 侧导航项 (md/lg 壳): 图标+文字; 选中项为 accent 淡底圆角块
   // (替代旧版左侧 3vp 竖条 — 竖条选中态太弱); 行高 48vp, 圆角 8
   @Builder
@@ -505,6 +561,32 @@ struct Index {
           .fontColor(this.stateColor())
           .margin({ left: 6 }).layoutWeight(1)
           .maxLines(1)
+
+        // 最小化窗口恢复入口 (仅存在已最小化窗口时出现): 子窗口 minimize 后
+        // 系统无 Dock 还原入口, 只能从这里唤回 — 见 FusionWindowManager.hide
+        if (this.minimizedList.length > 0) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.rectangle_on_rectangle'))
+              .fontSize(16)
+              .fontColor([$r('app.color.text_primary')])
+            Text(String(this.minimizedList.length))
+              .fontSize(11)
+              .fontColor($r('app.color.text_primary'))
+              .margin({ left: 3 })
+          }
+          .height(20)
+          .padding({ left: 8, right: 8 })
+          .borderRadius(10)
+          .backgroundColor($r('app.color.control_bg'))
+          .onClick(() => {
+            this.showMinimizedSheet = true;
+          })
+          .bindSheet($$this.showMinimizedSheet, this.minimizedSheet(), {
+            title: { title: '已最小化的窗口' },
+            height: SheetSize.FIT_CONTENT,
+            showClose: true
+          })
+        }
 
         // 引擎启动入口不在标题栏: 首启由 EngineGuide 引导, 二次进入后台
         // 自动拉起, 失败/降级由 EngineGuide 与设置页承接

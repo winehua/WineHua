@@ -807,7 +807,16 @@ export class WineWindowManager {
     if (this.fusionUsesSubWindow() && FusionWindowManager.getInstance().has(toplevelId)) {
       switch (event) {
         case 'title':
-          hilog.info(DOMAIN, TAG, '[MW] fusion #%{public}d title (record only, subwindow no decor)', toplevelId);
+          // subWindow decorEnabled:false 时 setWindowTitle 报 1300002, 不设系统
+          // 标题; 但转存给 FusionWindowManager — 最小化恢复列表要显示窗口标题
+          try {
+            const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
+            if (obj.title) {
+              FusionWindowManager.getInstance().setTitle(toplevelId, obj.title as string);
+            }
+          } catch (e) {
+            hilog.warn(DOMAIN, TAG, '[MW] fusion title parse error: %{public}s', JSON.stringify(e));
+          }
           return;
         case 'minimized':
           FusionWindowManager.getInstance().hide(toplevelId);
