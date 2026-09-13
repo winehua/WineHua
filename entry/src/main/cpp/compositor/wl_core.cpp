@@ -608,6 +608,15 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     // 注释随方法平移 (见 toplevel_manager.cpp); 返回值 = justRestored
     const bool justRestored =
         toplevelMgr_.TryAutoRestoreLocked(sd->toplevelId, fi.contentW, fi.contentH);
+    // Wine 自己把最小化窗口恢复了 (xdg 无 unset_minimized 协议, 靠 commit 正常
+    // 尺寸内容判定 — 见 compositor_utils.h IsRestoreSizeCommit): 通知 ArkTS 把
+    // OHOS 承载窗口显示回来。子窗口 minimize 后系统无 Dock 还原入口, 只能本应用
+    // showWindow (见 @ohos.window 文档), 缺此事件则 ArkTS 侧窗口永久隐藏
+    // (2026-09-14 "最小化后找不回来")。本函数持 toplevelMgr_ 锁, 但
+    // PostToplevelEvent 不碰该锁 (仅投递事件总线), 与下方 Created/Argb 同款。
+    if (justRestored && Policy().OhosWindowPerToplevel()) {
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::Restored);
+    }
     // 首帧判定只认 hasPosition, 不认条目存在
     // (pre-commit 的 SetToplevelMinimized 等路径可能已建档)
     outFirstCommit = !st.HasPosition();
