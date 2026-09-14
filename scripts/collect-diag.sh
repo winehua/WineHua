@@ -4,11 +4,12 @@
 #
 # 排查设备问题时把"该看什么"固化下来, 免去逐个回忆日志路径与 hdc 命令。
 #
-# 用法:
-#     scripts/collect-diag.sh                          # 自动选设备
-#     scripts/collect-diag.sh -t 192.168.1.6:33363     # 指定设备
-#     scripts/collect-diag.sh --hilog-lines 20000
-#     scripts/collect-diag.sh -o /tmp/mydiag
+# 用法 (本仓库 core.fileMode=false → 脚本无执行位, 须用 bash 显式调用,
+# 与 Makefile 里 `bash $(SCRIPTS)/xxx.sh` 的惯例一致):
+#     bash scripts/collect-diag.sh                          # 自动选设备
+#     bash scripts/collect-diag.sh -t 192.168.1.6:33363     # 指定设备
+#     bash scripts/collect-diag.sh --hilog-lines 20000
+#     bash scripts/collect-diag.sh -o /tmp/mydiag
 #
 # 产出 (默认 build/diag-logs/<时间戳>/):
 #     hilog.txt           应用日志 — 含 WineChild-stderr 转发的 wine stderr
@@ -45,7 +46,7 @@ while [ $# -gt 0 ]; do
         -t) DEVICE="$2"; shift 2 ;;
         -o) OUT_DIR="$2"; shift 2 ;;
         --hilog-lines) HILOG_LINES="$2"; shift 2 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
 done
