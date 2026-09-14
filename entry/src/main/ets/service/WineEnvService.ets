@@ -333,12 +333,20 @@ export class WineEnvService {
     this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   }
 
-  // 诊断环境变量注入 (EntryAbility.publishLaunchRequest ← want 参数):
-  // 形如 "WINEDEBUG=-all,+sync;BOX64_LOG=2", 只作用于 runWineProgram 启动的
-  // 目标进程。刻意不校验键名 — 使用者是开发者, 且该 want 通道本就与
-  // winehua.program (可启动任意程序) 同一信任级别。
+  // 诊断开关注入 (EntryAbility.publishLaunchRequest ← want 参数):
+  // 形如 "WINEDEBUG=-all,+sync;WINEHUA_FRAME_TRACE=1"。一份 spec 走两条独立
+  // 通道 (NCP 子进程不继承宿主 environ, 必须分别下发):
+  //   ① 宿主侧 setHostDiagEnv — 设到 app 进程自身, 供 compositor/egl_renderer
+  //      等读; 必须早于其首次读取 (FrameTraceEnabled 有 static 缓存)
+  //   ② 子进程侧 diagEnvironment() — 合并进 runWineProgram 的 environment,
+  //      经 __env 段下发到 wine 进程
+  // 键名不在 ArkTS 侧校验: 宿主通道由 native 做前缀白名单, 子进程侧刻意放开
+  // (使用者是开发者, 与 winehua.program 可启动任意程序同一信任级别)。
   setDiagEnv(spec: string): void {
     this.diagEnvSpec = spec || '';
+    if (this.diagEnvSpec) {
+      testNapi.setHostDiagEnv(this.diagEnvSpec);
+    }
     hilog.warn(DOMAIN, 'wine', 'diag env: %{public}s', this.diagEnvSpec);
   }
 

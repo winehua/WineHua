@@ -767,6 +767,60 @@ static napi_value SetDisplayScale(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// 宿主侧诊断环境变量放行前缀。宿主进程 setenv 的风险高于子进程 — 改
+// LD_LIBRARY_PATH 之类会影响后续 dlopen 甚至搞死整个 App, 而宿主诊断键
+// (WINEHUA_FRAME_TRACE / VKR_WINEHUA_SHADOW_TRACE 等) 都在这几个前缀下,
+// 前缀白名单足够用且挡住了误用。
+static bool IsHostDiagKeyAllowed(const char *key)
+{
+    static const char *kPrefixes[] = {
+        "WINEHUA_", "VKR_", "VN_", "DXVK_", "MESA_", "VKD3D_",
+    };
+    for (const char *p : kPrefixes)
+        if (!strncmp(key, p, strlen(p))) return true;
+    return false;
+}
+
+// 宿主侧诊断环境变量: 设置到 app 进程自身 environ, 供 compositor /
+// egl_renderer / presenter 等宿主模块 getenv 读取。
+//
+// 与子进程诊断是两条独立通道: NCP 子进程不继承本进程 environ (wine 子进程
+// 的 env 唯一权威通道是 entryParams 的 __env 段, 见 env_spec.h), 所以这里
+// setenv 只影响宿主自身, 不会泄漏进 wine 进程 — 想诊断 wine 进程请用
+// runWineProgram 的 environment (winehua.diag_env)。
+//
+// 时机: 必须在消费方首次读取之前调用 — perf_utils.h 的 FrameTraceEnabled()
+// 用 static 缓存结果 (避免每帧 getenv), 首次调用之后再 setenv 不再生效。
+static napi_value SetHostDiagEnv(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+
+    char spec[512] = {};
+    napi_get_value_string_utf8(env, args[0], spec, sizeof(spec), nullptr);
+    char orig[512] = {};
+    strncpy(orig, spec, sizeof(orig) - 1);  // strtok_r 原地改写 spec, 留原文给日志
+
+    int applied = 0;
+    char *save = nullptr;
+    for (char *tok = strtok_r(spec, ";", &save); tok; tok = strtok_r(nullptr, ";", &save)) {
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok) continue;
+        *eq = '\0';
+        if (!IsHostDiagKeyAllowed(tok)) {
+            OH_LOG_WARN(LOG_APP, "[HostDiag] rejected (prefix not allowed): %{public}s", tok);
+            continue;
+        }
+        setenv(tok, eq + 1, 1);
+        OH_LOG_WARN(LOG_APP, "[HostDiag] %{public}s=%{public}s", tok, eq + 1);
+        applied++;
+    }
+    if (applied == 0)
+        OH_LOG_WARN(LOG_APP, "[HostDiag] nothing applied (spec=%{public}s)", orig);
+    return nullptr;
+}
+
 static napi_value SetDesktopMode(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -1134,6 +1188,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setOutputSize",   nullptr, SetOutputSize,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayScale",  nullptr, SetDisplayScale,  nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDesktopMode",   nullptr, SetDesktopMode,   nullptr, nullptr, nullptr, napi_default, nullptr},
+        // 宿主侧诊断开关 (compositor/egl_renderer 等的 getenv), 见 SetHostDiagEnv
+        {"setHostDiagEnv",   nullptr, SetHostDiagEnv,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPhoneMode",     nullptr, SetPhoneMode,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getDesktopRootId", nullptr, GetDesktopRootId, nullptr, nullptr, nullptr, napi_default, nullptr},
         // ArkTS input forwarding (unified InputManager path)
