@@ -177,7 +177,16 @@ export class WineEnvService {
   // persistent_storage 明明有值仍返回默认值), 原因未查明, 绕开
   private wineLang: string = 'zh_CN';
   private settingsStore: preferences.Preferences | null = null;
-  private perfProfile: string = 'baseline';
+  // host 侧 shadow 传输档 (setHostShadowProfile)。默认值是 dirty-ring 档,
+  // 与 guest 侧产品默认一致 — env_profiles.cpp 在 selectedProfile 为空 (无
+  // trace 键) 时落到同一字符串, 该 overlay 是 guest 侧权威 (wine_env.cpp 里
+  // 的 shadow-precise 会被它 Upsert 覆盖)。
+  // 不能改回 'baseline': vkd3d(D3D12) 上传堆常驻 map、无 explicit 发布点,
+  // host=explicit 依赖 dirty (即 baseline 语义) 会黑屏 (c2f0f7a)。
+  // 此前该值硬编码且注释标"[实验-设备验证]", 而 'winehua.perf.profile' 偏好
+  // 全项目零写入点 — 所谓"恢复产品语义"实际等于永久回到 baseline, 会踩黑屏。
+  // 改为: 现值即正式默认, 只保留 want 临时覆盖 (不持久化, 与 fusionHost 同模式)。
+  private perfProfile: string = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   // 诊断环境变量 (排查用, 只作用于经 runWineProgram 启动的目标进程):
   // 形如 "WINEDEBUG=-all,+sync;BOX64_LOG=2"。走 runWineProgram 的 environment
   // 字段下发 (该通道已存在, C++ 侧零改动)。来源是 want 参数, 不持久化 —
@@ -324,13 +333,13 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
-    // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
-    // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏
-    // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
-    // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
-    // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
-    this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
+    // perf profile 临时覆盖 (诊断用): 仅显式 want 生效, 不持久化。
+    //     aa start ... --ps winehua.perf.profile shadow-none
+    // 未给时保持字段默认值 (dirty-ring 档, 见字段注释)。
+    const profileOverride = AppStorage.get<string>('winehua.perf.profile');
+    if (profileOverride) {
+      this.perfProfile = profileOverride;
+    }
   }
 
   // 诊断开关注入 (EntryAbility.publishLaunchRequest ← want 参数):

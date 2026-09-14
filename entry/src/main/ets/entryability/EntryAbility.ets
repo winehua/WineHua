@@ -55,6 +55,13 @@ export default class EntryAbility extends UIAbility {
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    // host shadow 传输档临时覆盖 (诊断用, 如 shadow-none), 仅显式 want 生效、
+    // 不持久化 — 默认档在 WineEnvService.perfProfile 字段注释里说明。
+    const explicitPerfProfile = !!parameters && parameters['winehua.perf.profile'] !== undefined &&
+      parameters['winehua.perf.profile'] !== null;
+    if (explicitPerfProfile) {
+      AppStorage.set<string>('winehua.perf.profile', value('winehua.perf.profile', ''));
+    }
     // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
     // subWindow 承载 (见 WineWindowManager.fusionUsesSubWindow)。仅显式 want
     // 生效, 不持久化。
