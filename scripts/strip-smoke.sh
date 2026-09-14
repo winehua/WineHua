@@ -125,7 +125,12 @@ if [ "$DRY" = 1 ]; then
 fi
 
 # 4a. 目录已消失
-[ -d "$SMOKE_DIR" ] && { echo "错误: $SMOKE_DIR 仍存在" >&2; exit 1; }
+# 注意: 不能写成 `[ -d X ] && { ...; exit 1; }` — 条件为假时整行返回非零,
+# set -e 会当场退出, 校验段后续根本不执行 (演练实测踩到)。
+if [ -d "$SMOKE_DIR" ]; then
+    echo "错误: $SMOKE_DIR 仍存在" >&2
+    exit 1
+fi
 
 # 4b. 无残留代码引用 (注释行不计 — 历史提及无害)
 leftover="$(grep -rn 'SmokeHook\|SmokeDevPanel\|SmokeRunner\|SmokeTypes' "$ETS_ROOT" 2>/dev/null \
