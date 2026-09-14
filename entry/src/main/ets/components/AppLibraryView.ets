@@ -424,7 +424,7 @@ export struct AppLibraryView {
 
   // 扫描统一入口 (菜单与空态按钮共用)。扫描期间 Index 根 Stack 的全窗遮罩
   // 拦触摸 (状态由 service 持有), 防扫描中误操作造成状态交错; lib.scanning
-  // 兼作防重入。扫描内部是异步 fs (LnkScanner/collectExe 均为 Promise 版),
+  // 兼作防重入。扫描内部是异步 fs (LnkScanner/collectPrograms 均为 Promise 版),
   // 事件循环保持活性 — 遮罩转圈动画能正常播放; 若用同步 API, 遮罩自己都会冻结
   private async runScan(kind: string): Promise<void> {
     if (this.lib.scanning) {

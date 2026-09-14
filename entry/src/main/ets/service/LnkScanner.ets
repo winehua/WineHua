@@ -1,17 +1,19 @@
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { isProgramFile } from '../common/LaunchableFile';
 
 const DOMAIN = 0x0000;
 const TAG = 'LnkScanner';
 
 export interface LnkTarget {
   name: string;   // 显示名 (lnk 内 NAME_STRING, 缺省用文件名去后缀)
-  target: string; // 解析后的 native exe 路径
+  target: string; // 解析后的 native 可启动文件路径
 }
 
 // .lnk (Shell Link Binary, [MS-SHLLINK]) 扫描与解析。
 // 扫描 Start Menu (ProgramData + 各用户) 与 Desktop (Public + 各用户) 四个根,
-// 解析 LinkInfo 的 LocalBasePath(Unicode) 拿目标路径, C:\ → drive_c、Z:\ → zHome
+// 解析 LinkInfo 的 LocalBasePath(Unicode) 拿目标路径 (目标须为 exe/bat/cmd,
+// 见 common/LaunchableFile), C:\ → drive_c、Z:\ → zHome
 // 逐段大小写不敏感解析 (lnk 里的路径大小写与磁盘目录可能不一致)。
 export class LnkScanner {
   private static instance: LnkScanner | null = null;
@@ -138,7 +140,7 @@ export class LnkScanner {
             target = this.readAnsiZ(bytes, pos + ansiOff, st.size);
           }
           // LocalBasePath 通常已含文件名; 少数写入器只写到目录, 拼 CommonPathSuffix
-          if (target && !target.toLowerCase().endsWith('.exe')) {
+          if (target && !isProgramFile(target)) {
             let suffix = '';
             if (liHdrSize >= 0x24) {
               const suOff = dv.getUint32(pos + 32, true);
@@ -184,7 +186,7 @@ export class LnkScanner {
       }
       // Windows 路径 → native
       const native = await this.resolveWinPath(target, driveC, zHome);
-      if (!native || !native.toLowerCase().endsWith('.exe')) {
+      if (!native || !isProgramFile(native)) {
         return null;
       }
       const fileName = path.substring(path.lastIndexOf('/') + 1);
