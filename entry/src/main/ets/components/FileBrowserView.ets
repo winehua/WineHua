@@ -6,6 +6,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { WineEnvService, DRIVE_C } from '../service/WineEnvService';
 import { AppLibraryService, AppEntry, LaunchOverrides } from '../service/AppLibraryService';
 import { IconExtractor } from '../service/IconExtractor';
+import { isLaunchableFile } from '../common/LaunchableFile';
 import { EngineGuide } from './EngineGuide';
 import { CustomLaunchDialog } from './CustomLaunchDialog';
 
@@ -14,10 +15,11 @@ const TAG = 'Files';
 
 // 文件页 (设计 4.4 / P3): 双根节点 C:\(prefix drive_c) 与 Z:\(zHome 下载目录)。
 // 顶层为根选择视图, 进入某根后 "← 上级目录" 可一路退回根选择。
-// exe 行尾只留"启动"小按钮, 其余操作(加入应用库/重命名/复制/剪切/删除)收进
-// 长按(PC 右键)菜单; 剪切跨盘(C: 沙箱 ↔ Z: 共享存储)renameSync 会失败,
-// 回退为递归复制+删除。导入 = 系统文件选择器把 exe/lnk 拷入 Z:\ 根,
-// exe 同时自动入库 (设计原文"触发重新扫描"的可感知效果就是应用库出现新条目)。
+// 可启动文件 (exe/bat/cmd/lnk) 行尾留"启动"小按钮, 其余操作(加入应用库/
+// 重命名/复制/剪切/删除)收进长按(PC 右键)菜单; 剪切跨盘(C: 沙箱 ↔ Z: 共享
+// 存储)renameSync 会失败, 回退为递归复制+删除。导入 = 系统文件选择器把文件
+// 拷入当前目录, 可启动类型同时自动入库 (设计原文"触发重新扫描"的可感知效果
+// 就是应用库出现新条目)。
 // 列表条目: 一次 statSync 全量取回 (含大小/修改时间), 避免排序与渲染重复 stat。
 // icon 为 IconExtractor 提取的 PNG 缓存路径, '' = 未提取 (UI 回退系统符号)
 interface FileEntry {
@@ -45,7 +47,7 @@ interface ClipItem {
 interface ImportItem {
   uri: string;      // picker 授权 URI
   name: string;     // 文件名
-  exe: boolean;     // .exe 后缀 → 复制后自动入库
+  autoAdd: boolean; // 可启动文件 (exe/bat/cmd/lnk) → 复制后自动入库
 }
 
 // 重命名输入对话框 (与应用库 RenameDialog 同款模式, 文件名校验在 onDone 侧)
@@ -73,6 +75,7 @@ struct FileRenameDialog {
         Button('取消')
           .layoutWeight(1)
           .backgroundColor($r('app.color.control_bg'))
+          .fontColor($r('app.color.text_primary'))
           .onClick(() => this.controller?.close())
         Button('确定')
           .layoutWeight(1)
@@ -190,9 +193,10 @@ export struct FileBrowserView {
         if (a.isDir && !b.isDir) return -1;
         if (!a.isDir && b.isDir) return 1;
         if (!a.isDir && !b.isDir) {
-          let aExe = this.isExe(a.name) ? 0 : 1;
-          let bExe = this.isExe(b.name) ? 0 : 1;
-          return aExe - bExe || a.name.localeCompare(b.name);
+          // 可启动文件置顶 (与行尾"启动"按钮同一判据)
+          const aApp = isLaunchableFile(a.name) ? 0 : 1;
+          const bApp = isLaunchableFile(b.name) ? 0 : 1;
+          return aApp - bApp || a.name.localeCompare(b.name);
         }
         return a.name.localeCompare(b.name);
       });
@@ -240,12 +244,13 @@ export struct FileBrowserView {
   // 提取失败记忆 (非 @State, 只防重试不触发渲染)
   private iconFail: Set<string> = new Set();
 
-  // 对当前目录的 exe 异步提取图标: 每批 4 个, 批间让出一帧, 目录 exe 多时
-  // UI 不卡; IconExtractor 内部按路径哈希磁盘缓存, 重复进目录秒回
+  // 对当前目录的 exe 异步提取图标 (IconExtractor 只解析 PE, bat/cmd/lnk 无图标
+  // 可提, 走行内系统符号): 每批 4 个, 批间让出一帧, 目录 exe 多时 UI 不卡;
+  // IconExtractor 内部按路径哈希磁盘缓存, 重复进目录秒回
   private async loadIcons(): Promise<void> {
     const paths: string[] = [];
     for (const e of this.entries) {
-      if (!e.isDir && this.isExe(e.name) && !e.icon && !this.iconFail.has(this.fullPath(e.name))) {
+      if (!e.isDir && e.name.toLowerCase().endsWith('.exe') && !e.icon && !this.iconFail.has(this.fullPath(e.name))) {
         paths.push(this.fullPath(e.name));
       }
     }
@@ -303,10 +308,6 @@ export struct FileBrowserView {
     this.curDir = target;
     this.atRootList = false;
     this.listDir(target);
-  }
-
-  private isExe = (name: string): boolean => {
-    return name.toLowerCase().endsWith('.exe');
   }
 
   private enterDir = (name: string): void => {
@@ -372,9 +373,10 @@ export struct FileBrowserView {
     return false;
   }
 
-  // 行类别: 基于 listDir 已取回的 isDir, 不再重复 stat
-  private rowKindOf = (entry: FileEntry): 'dir' | 'exe' | 'other' => {
-    return entry.isDir ? 'dir' : (this.isExe(entry.name) ? 'exe' : 'other');
+  // 行类别: 基于 listDir 已取回的 isDir, 不再重复 stat。'app' = 可启动文件
+  // (exe/bat/cmd/lnk, 见 common/LaunchableFile), 行尾给"启动"按钮
+  private rowKindOf = (entry: FileEntry): 'dir' | 'app' | 'other' => {
+    return entry.isDir ? 'dir' : (isLaunchableFile(entry.name) ? 'app' : 'other');
   }
 
   private toast(msg: string): void {
@@ -555,7 +557,7 @@ export struct FileBrowserView {
 
   // 导入 (设计 4.4): 系统文件选择器选文件/文件夹 → 拷入当前浏览目录。
   // 不限后缀/类型 — 压缩包/安装包/数据目录等任意内容都有导入需求;
-  // exe 额外自动入库。文件夹走目录选择器 + 递归复制。
+  // 可启动文件 (exe/bat/cmd/lnk) 额外自动入库。文件夹走目录选择器 + 递归复制。
   // 复制全走异步 fs API (fs.copyFile 吃路径) — 不阻塞 UI; 期间弹覆盖层提示
   private async importFiles(): Promise<void> {
     const dest = this.curDir;
@@ -586,13 +588,12 @@ export struct FileBrowserView {
         skipped++;
         continue;
       }
-      const lower = name.toLowerCase();
       const dst = dest + '/' + name;
       if (this.pathExists(dst)) {
         skipped++;
         continue;
       }
-      items.push({ uri, name, exe: lower.endsWith('.exe') });
+      items.push({ uri, name, autoAdd: isLaunchableFile(name) });
     }
     if (items.length == 0) {
       this.toast(skipped > 0 ? '所选文件均为同名或无法解析' : '未选择文件');
@@ -612,7 +613,7 @@ export struct FileBrowserView {
           fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
         await fs.copyFile(srcFile.fd, dstFile.fd);
         copied++;
-        if (item.exe) {
+        if (item.autoAdd) {
           this.lib.add(dest + '/' + item.name);
         }
       } catch (e) {
@@ -728,7 +729,7 @@ export struct FileBrowserView {
     return copied;
   }
 
-  // 引擎就绪编排 (launchExe / openInWine 共用): 未就绪先拉起引擎 (懒初始化,
+  // 引擎就绪编排 (launchFile / openInWine 共用): 未就绪先拉起引擎 (懒初始化,
   // 首启可达数分钟, toast 预告), 已就绪但无桌面会话先拉起桌面 — 避免程序
   // 只有自己窗口没有桌面。返回 true = 可以放行后续启动
   private async ensureRunReady(): Promise<boolean> {
@@ -766,11 +767,11 @@ export struct FileBrowserView {
     }
   }
 
-  // exe 启动统一入口 (行内按钮与长按菜单同判据): 引擎未启动则先按需拉起
+  // 可启动文件启动统一入口 (行内按钮与长按菜单同判据): 引擎未启动则先按需拉起
   // (懒初始化), ready 才放行; 受理失败给 toast; 受理后的闪退检测在应用库
   // 启动反馈里 (文件页无加载态)。overrides = 自定义启动临时参数 (渲染策略+
   // 兼容模式档位, 不持久化), 行内"启动"按钮不传 = 跟随全局
-  private async launchExe(path: string, overrides?: LaunchOverrides): Promise<void> {
+  private async launchFile(path: string, overrides?: LaunchOverrides): Promise<void> {
     if (!(await this.ensureRunReady())) {
       return;
     }
@@ -780,8 +781,8 @@ export struct FileBrowserView {
     }
   }
 
-  // 自定义启动 (右键菜单 exe 分支): 弹窗选渲染策略 + 兼容模式档位 + Windows
-  // 版本 → 按临时参数启动一次 (不持久化)。onLaunch 里 launchExe(fullPath,
+  // 自定义启动 (右键菜单可启动分支): 弹窗选渲染策略 + 兼容模式档位 + Windows
+  // 版本 → 按临时参数启动一次 (不持久化)。onLaunch 里 launchFile(fullPath,
   // { graphics, compatMode, winver }) 透传弹窗选择
   private customLaunch(entry: FileEntry): void {
     const path = this.fullPath(entry.name);
@@ -791,7 +792,7 @@ export struct FileBrowserView {
         onLaunch: (graphics?: 'dxvk' | 'wined3d',
                    compatMode?: 'stability' | 'conservative' | 'intermediate' | 'performance',
                    winver?: string) => {
-          this.launchExe(path, { graphics: graphics, compatMode: compatMode, winver: winver });
+          this.launchFile(path, { graphics: graphics, compatMode: compatMode, winver: winver });
         }
       }),
       autoCancel: true
@@ -801,14 +802,14 @@ export struct FileBrowserView {
 
   // ---- 菜单与行 ----
 
-  // 长按(PC 右键)菜单: exe 多 启动/加入应用库 两项, 文件操作全行可用
+  // 长按(PC 右键)菜单: 可启动文件多 启动/自定义启动/加入应用库, 文件操作全行可用
   @Builder
   fileMenu(entry: FileEntry) {
     Menu() {
-      if (this.rowKindOf(entry) == 'exe') {
+      if (this.rowKindOf(entry) == 'app') {
         MenuItem({ content: '启动' })
           .onChange(() => {
-            this.launchExe(this.fullPath(entry.name));
+            this.launchFile(this.fullPath(entry.name));
           })
         MenuItem({ content: '自定义启动' })
           .onChange(() => {
@@ -840,27 +841,27 @@ export struct FileBrowserView {
     }
   }
 
-  // 文件行内容 (exe 与 dir/other 共用; bindContextMenu 不接受 undefined,
+  // 文件行内容 (可启动文件与 dir/other 共用; bindContextMenu 不接受 undefined,
   // 故菜单按行类别在 ListItem 上条件挂载, 行体不变)。
   // 列布局: 图标 | 名称(自适应) | 大小(仅文件) | 修改时间 | 操作
   @Builder
   fileRow(entry: FileEntry) {
     Row() {
       // 行首图标: exe 有提取图标用提取的 PNG, 否则系统符号占位
-      if (this.rowKindOf(entry) == 'exe' && entry.icon) {
+      if (this.rowKindOf(entry) == 'app' && entry.icon) {
         Image(`file://${entry.icon}`)
           .width(26).height(26)
           .margin({ right: 2 })
       } else {
         SymbolGlyph(this.rowKindOf(entry) == 'dir' ? $r('sys.symbol.folder_fill') :
-                    this.rowKindOf(entry) == 'exe' ? $r('sys.symbol.square_grid_2x2') : $r('sys.symbol.doc'))
+                    this.rowKindOf(entry) == 'app' ? $r('sys.symbol.square_grid_2x2') : $r('sys.symbol.doc'))
           .fontSize(20)
           .fontColor([this.rowKindOf(entry) == 'dir' ? $r('app.color.state_info') :
-                      this.rowKindOf(entry) == 'exe' ? $r('app.color.accent') : $r('app.color.text_tertiary')])
+                      this.rowKindOf(entry) == 'app' ? $r('app.color.accent') : $r('app.color.text_tertiary')])
           .width(28)
       }
       Text(entry.name)
-        .fontColor(this.rowKindOf(entry) == 'exe' ? $r('app.color.text_primary') :
+        .fontColor(this.rowKindOf(entry) == 'app' ? $r('app.color.text_primary') :
                    this.rowKindOf(entry) == 'dir' ? $r('app.color.state_info') : $r('app.color.text_tertiary'))
         .layoutWeight(1)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -874,14 +875,14 @@ export struct FileBrowserView {
         .width(126).fontSize(11)
         .fontColor($r('app.color.text_tertiary'))
         .textAlign(TextAlign.End).maxLines(1)
-      // 行尾操作槽: 固定宽度 + 右对齐, 非 exe 行也保留同样宽度 —
-      // 否则无"启动"按钮的行, 大小/时间列相对 exe 行整体右移错位
+      // 行尾操作槽: 固定宽度 + 右对齐, 无"启动"按钮的行也保留同样宽度 —
+      // 否则大小/时间列相对可启动行整体右移错位
       Row() {
-        if (this.rowKindOf(entry) == 'exe') {
+        if (this.rowKindOf(entry) == 'app') {
           Button('启动')
             .height(32)
             .enabled(this.state == 'ready')
-            .onClick(() => this.launchExe(this.fullPath(entry.name)))
+            .onClick(() => this.launchFile(this.fullPath(entry.name)))
         } else if (this.rowKindOf(entry) == 'dir') {
           // fontSize 22: chevron 类是窄图标 (宽≈0.5×字号), 16 时实测仅 8x15vp,
           // 触发 PC 市场审核"图标宽或高 < 10vp"; 22 → 约 11x20.6vp 达标
@@ -939,6 +940,7 @@ export struct FileBrowserView {
             Button('← 上级目录')
               .height(32)
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(this.goUp)
           }
           Text(this.displayPath())
@@ -952,6 +954,7 @@ export struct FileBrowserView {
             Button('粘贴')
               .height(32)
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(() => {
                 this.pasteClip();
               })
@@ -963,6 +966,7 @@ export struct FileBrowserView {
               .height(32)
               .margin({ left: 8 })
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(() => {
                 this.openInFileManager(this.curDir);
               })
@@ -973,6 +977,7 @@ export struct FileBrowserView {
               .height(32)
               .margin({ left: 8 })
               .backgroundColor($r('app.color.control_bg'))
+              .fontColor($r('app.color.text_primary'))
               .onClick(() => {
                 this.openInWine();
               })
@@ -1000,7 +1005,7 @@ export struct FileBrowserView {
         } else {
           List({ space: 1 }) {
             ForEach(this.entries, (entry: FileEntry) => {
-              if (this.rowKindOf(entry) == 'exe') {
+              if (this.rowKindOf(entry) == 'app') {
                 ListItem() {
                   this.fileRow(entry)
                 }
@@ -1019,7 +1024,7 @@ export struct FileBrowserView {
                 }
                 .backgroundColor($r('app.color.card_bg'))
                 .hoverEffect(HoverEffect.Highlight)
-                // modalMode 同上方 exe 分支: 菜单外点击仅关菜单, 不穿透下层
+                // modalMode 同上方可启动分支: 菜单外点击仅关菜单, 不穿透下层
                 .bindContextMenu(this.fileMenu(entry), ResponseType.LongPress,
                   { modalMode: ModalMode.TARGET_WINDOW })
                 .bindContextMenu(this.fileMenu(entry), ResponseType.RightClick,

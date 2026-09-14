@@ -96,7 +96,9 @@ export struct EngineGuide {
             .onClick(() => this.onStartEngine())
           Button('重置环境')
             .backgroundColor($r('app.color.action_danger'))
-            .fontColor(Color.White)
+            // 浅粉底改深红字: 白字在 #E8B0B0 上对比度不足 (同 SettingsView
+            // "重置 Wine 引擎" 按钮的浅底深字搭配)
+            .fontColor($r('app.color.danger'))
             .onClick(() => this.confirmReset())
         }
         .margin({ top: 14 })

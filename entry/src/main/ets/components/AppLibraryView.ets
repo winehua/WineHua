@@ -55,6 +55,7 @@ struct RenameDialog {
         Button('取消')
           .layoutWeight(1)
           .backgroundColor($r('app.color.control_bg'))
+          .fontColor($r('app.color.text_primary'))
           .onClick(() => this.controller?.close())
         Button('确定')
           .layoutWeight(1)
@@ -423,7 +424,7 @@ export struct AppLibraryView {
 
   // 扫描统一入口 (菜单与空态按钮共用)。扫描期间 Index 根 Stack 的全窗遮罩
   // 拦触摸 (状态由 service 持有), 防扫描中误操作造成状态交错; lib.scanning
-  // 兼作防重入。扫描内部是异步 fs (LnkScanner/collectExe 均为 Promise 版),
+  // 兼作防重入。扫描内部是异步 fs (LnkScanner/collectPrograms 均为 Promise 版),
   // 事件循环保持活性 — 遮罩转圈动画能正常播放; 若用同步 API, 遮罩自己都会冻结
   private async runScan(kind: string): Promise<void> {
     if (this.lib.scanning) {
@@ -585,7 +586,7 @@ export struct AppLibraryView {
         }
         .width('100%').height('100%')
         .justifyContent(FlexAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.overlay_mask'))
         .borderRadius(12)
       }
     }
@@ -614,6 +615,9 @@ export struct AppLibraryView {
         Search({ placeholder: '搜索应用名称或路径' })
           .height(36)
           .layoutWeight(1)
+          // 放大镜 28vp: 系统内置图标实测仅 15vp(≈2.9mm), 不满足审核"键鼠热区
+          // 短边 ≥5mm(≈26vp)"; 28vp≈5.4mm 留余量 (审核报告坐标 31x30px)
+          .searchIcon({ size: 28 })
           .onChange((value: string) => {
             this.searchText = value.trim();
           })
@@ -666,18 +670,23 @@ export struct AppLibraryView {
               if (this.chip == 'startmenu') {
                 Button('扫描开始菜单')
                   .backgroundColor($r('app.color.control_bg'))
+                  // 底色跟主题走就必须显式给字色: Button 默认文字是白色,
+                  // 浅色主题下 control_bg 变浅灰, 白字会看不清
+                  .fontColor($r('app.color.text_primary'))
                   .onClick(() => {
                     this.runScan('lnk');
                   })
               } else {
                 Button('扫描 Z: 目录')
                   .backgroundColor($r('app.color.control_bg'))
+                  .fontColor($r('app.color.text_primary'))
                   .onClick(() => {
                     this.runScan('z');
                   })
                 if (this.onNavigateToFiles) {
                   Button('去文件页')
                     .backgroundColor($r('app.color.control_bg'))
+                    .fontColor($r('app.color.text_primary'))
                     .onClick(() => {
                       if (this.onNavigateToFiles) {
                         this.onNavigateToFiles();

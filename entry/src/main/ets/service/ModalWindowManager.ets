@@ -1,6 +1,7 @@
-import { window } from '@kit.ArkUI';
+import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import { FusionWindowManager } from './FusionWindowManager';
 
 const DOMAIN = 0x0000;
 const TAG = 'ModalWM';
@@ -163,19 +164,15 @@ export class ModalWindowManager {
       this.modals.set(modalId, entry);
 
       try {
-        // 尺寸: wine 逻辑 × scale; 位置: owner 屏幕位置 + 相对差 × scale
+        // 尺寸: wine 逻辑 × scale; 位置见 computePosition
         await subWin.resize(Math.max(1, Math.round(entry.w * scale)),
                             Math.max(1, Math.round(entry.h * scale)));
         const pr = hostWin!.getWindowProperties().windowRect;
-        const dx = Number(d.dx ?? 0);
-        const dy = Number(d.dy ?? 0);
-        await subWin.moveWindowToGlobal(
-          pr.left + Math.round(dx * scale),
-          pr.top + Math.round(dy * scale));
+        const pos = this.computePosition(entry.ownerId, pr, d, entry.w, entry.h, scale);
+        await subWin.moveWindowToGlobal(pos[0], pos[1]);
         await subWin.showWindow();
         hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d shown at screen(%{public}d,%{public}d)',
-          modalId, pr.left + Math.round(dx * scale),
-          pr.top + Math.round(dy * scale));
+          modalId, pos[0], pos[1]);
         // 嵌套模态: 自身已可见 → 以自身为 owner 的暂存 show 请求可补建
         // (宿主 stage + 本 subWin 即其物理父/定位基准)
         this.flushForOwner(entry.modalId, entry.stage, entry.subWin, scale);
@@ -210,23 +207,59 @@ export class ModalWindowManager {
     }
   }
 
+  // 计算 modal 的屏幕位置 [x, y] (物理像素)。
+  //
+  // PC 模式: wine 的窗口位置即屏幕位置, 定位 = owner 屏幕位置 + 相对差 × scale。
+  // Fusion (Pad 多窗口) 模式: 窗口屏幕位置由 FusionWindowManager 层叠摆放
+  // (cascadePoint), 与 wine 的虚拟桌面布局是两套坐标 —— C++ 传来的 dx/dy 是
+  // wine 自己排版的结果 (含它为避开虚拟桌面边界做的挪动, 实测可达数千逻辑
+  // 像素), 直接叠加会把对话框推出屏幕, 而 isModal 的输入阻塞照常生效 ——
+  // 表现为"对话框一闪就没了、所有窗口点不动"。该模式下改为相对 owner 居中。
+  // 最后统一钳制进屏幕, 兜住任何模式下的越界。
+  private computePosition(ownerId: number, pr: window.Rect,
+                          d: Record<string, string | number>,
+                          w: number, h: number, scale: number): number[] {
+    const modalW = Math.max(1, Math.round(w * scale));
+    const modalH = Math.max(1, Math.round(h * scale));
+    let x: number;
+    let y: number;
+    if (FusionWindowManager.getInstance().has(ownerId)) {
+      x = pr.left + Math.round((pr.width - modalW) / 2);
+      y = pr.top + Math.round((pr.height - modalH) / 2);
+    } else {
+      x = pr.left + Math.round(Number(d.dx ?? 0) * scale);
+      y = pr.top + Math.round(Number(d.dy ?? 0) * scale);
+    }
+    try {
+      const scr = display.getDefaultDisplaySync();
+      x = Math.min(Math.max(x, 0), Math.max(0, scr.width - modalW));
+      y = Math.min(Math.max(y, 0), Math.max(0, scr.height - modalH));
+    } catch (_) { /* 拿不到屏幕尺寸则不钳制, 保持原值 */ }
+    return [x, y];
+  }
+
   // -- 已存在 modal 的尺寸/位置跟随 (Wine 重发 modal=1 带新 dx/dy) --
+  // 末尾补 showWindow: 首次 show 与 re-show 之间窗口可能被隐藏 (创建期时序/
+  // 父窗口变化), 只 resize+move 不会让它重新可见 —— 配合位置钳制一起兜住
+  // "对话框不可见却仍阻塞输入"
   private reposition(entry: ModalEntry, d: Record<string, string | number>,
                      parentWin: window.Window, scale: number): void {
     if (!entry.subWin) return;
-    const w = Math.max(1, Number(d.w ?? entry.w));
-    const h = Math.max(1, Number(d.h ?? entry.h));
+    // 占位事件 (modal=1 首发时 w/h 为 0) 不覆盖已知尺寸, 否则窗口被缩成 1×1
+    // (onResize 同款守卫)
+    const nw = Number(d.w ?? 0);
+    const nh = Number(d.h ?? 0);
+    const w = nw > 0 ? nw : entry.w;
+    const h = nh > 0 ? nh : entry.h;
     entry.w = w;
     entry.h = h;
-    const dx = Number(d.dx ?? 0);
-    const dy = Number(d.dy ?? 0);
-    entry.subWin.resize(Math.max(1, Math.round(w * scale)),
-                        Math.max(1, Math.round(h * scale))).then(() => {
+    const subWin = entry.subWin;
+    subWin.resize(Math.max(1, Math.round(w * scale)),
+                  Math.max(1, Math.round(h * scale))).then(() => {
       const pr = parentWin.getWindowProperties().windowRect;
-      return entry.subWin!.moveWindowToGlobal(
-        pr.left + Math.round(dx * scale),
-        pr.top + Math.round(dy * scale));
-    }).catch(() => { /* ignore */ });
+      const pos = this.computePosition(entry.ownerId, pr, d, w, h, scale);
+      return subWin.moveWindowToGlobal(pos[0], pos[1]);
+    }).then(() => subWin.showWindow()).catch(() => { /* ignore */ });
   }
 
   // -- resize 事件 (wine 逻辑尺寸 × scale) --

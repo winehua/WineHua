@@ -51,6 +51,7 @@ struct KeyPickerDialog {
       Button('取消')
         .width('100%')
         .backgroundColor($r('app.color.control_bg'))
+        .fontColor($r('app.color.text_primary'))
         .onClick(() => this.controller?.close())
     }
     .padding(18)
@@ -245,6 +246,7 @@ export struct GamepadLayoutEditor {
         .height(38)
         .fontSize(13)
         .backgroundColor($r('app.color.control_bg'))
+        .fontColor($r('app.color.text_primary'))
         .onClick(() => this.onReset())
     }
     .width('100%')

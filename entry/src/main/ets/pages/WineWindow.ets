@@ -348,7 +348,13 @@ struct WineWindow {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#00000000')
+    // 底色固定黑: XComponent surface 的透明像素 (ARGB 帧在渲染器里清透明底 —
+    // 异型/圆角窗口的透明区要能透出) 透出的就是本层。原为透明 (#00000000),
+    // 依据"surface 不透明覆盖全部区域" — 该假设对 ARGB 帧不成立: 浅色模式下
+    // 画面外区域显示系统默认底色白边 (2026-09-13 魔兽3 实测左右各 173px 白条,
+    // 深色模式碰巧是黑的所以一直没暴露)。本页只有全屏 XComponent, 固定黑无
+    // 副作用; 透明菜单 popup 走独立子窗口页面 (WinePopup), 不受此改动影响
+    .backgroundColor('#000')
     .focusable(true)
     .defaultFocus(true)
 

@@ -8,6 +8,7 @@ import { BOX64_DYNAREC_PRESETS } from './Box64Dynarec';
 import { ProcessInfo } from './ProcessService';
 import { IconExtractor } from './IconExtractor';
 import { LnkScanner, LnkTarget } from './LnkScanner';
+import { displayNameOf, isProgramFile } from '../common/LaunchableFile';
 
 const DOMAIN = 0x0000;
 const STORE_NAME = 'app_library';
@@ -16,7 +17,7 @@ const WINE_PREFIX = '/data/storage/el2/base/files/.wine';
 
 // Z: 递归扫描上限: 防病态目录树 (海量小文件/死循环软链) 把 UI 线程拖住
 const SCAN_MAX_DEPTH = 6;
-const SCAN_MAX_EXE = 200;
+const SCAN_MAX_PROGRAMS = 200;
 
 // 自定义启动临时参数 (弹窗选一次, 不持久化): graphics 渲染策略覆盖,
 // compatMode 兼容模式档位 (Box64 dynarec 档位, 对齐 Winlator 4 档, 完整
@@ -169,15 +170,14 @@ export class AppLibraryService {
     }
   }
 
-  // name 取文件名去 .exe 后缀
-  private exeNameOf(path: string): string {
-    const fileName = path.substring(path.lastIndexOf('/') + 1);
-    return fileName.toLowerCase().endsWith('.exe') ? fileName.substring(0, fileName.length - 4) : fileName;
+  // 条目显示名: 文件名去可启动后缀 ("foo.exe"/"foo.bat" → "foo")
+  private entryNameOf(path: string): string {
+    return displayNameOf(path.substring(path.lastIndexOf('/') + 1));
   }
 
   // 按 path 去重, 已存在则忽略
   add(path: string): void {
-    this.addNamed(path, this.exeNameOf(path));
+    this.addNamed(path, this.entryNameOf(path));
   }
 
   addNamed(path: string, name: string, source: string = 'import'): void {
@@ -254,8 +254,8 @@ export class AppLibraryService {
     }
   }
 
-  // 扫描 Z: (zHome 下载目录) 下的 .exe 入库为"外部导入" (手动触发; 异步 IO)。
-  // 递归遍历, 跳过 . 开头目录; 深度/总量设上限 (SCAN_MAX_DEPTH/SCAN_MAX_EXE)
+  // 扫描 Z: (zHome 下载目录) 下的程序文件 (exe/bat/cmd) 入库为"外部导入" (手动触发; 异步 IO)。
+  // 递归遍历, 跳过 . 开头目录; 深度/总量设上限 (SCAN_MAX_DEPTH/SCAN_MAX_PROGRAMS)
   // 防病态目录树拖住扫描。已在库 (含隐藏) 的跳过。
   // 对账: source 为 'import' 且文件已不存在的条目移除。found 集合受扫描上限
   // 截断影响 (超深/超量漏扫), 未命中但文件仍在的不删 — 叠加 fileExists 双保险;
@@ -271,7 +271,7 @@ export class AppLibraryService {
     try {
       const root = zHome.endsWith('/') ? zHome.substring(0, zHome.length - 1) : zHome;
       const found: string[] = [];
-      await this.collectExe(root, 0, found);
+      await this.collectPrograms(root, 0, found);
       // 对账移除 (先于新增判断, 保证下方 has() 反映移除后的库)
       const foundSet = new Set(found);
       let removed = 0;
@@ -285,7 +285,7 @@ export class AppLibraryService {
       const fresh: AppEntry[] = [];
       for (const p of found) {
         if (!this.has(p)) {
-          fresh.push({ path: p, name: this.exeNameOf(p), source: 'import' });
+          fresh.push({ path: p, name: this.entryNameOf(p), source: 'import' });
         }
       }
       // 新增 + 对账移除 → 统一一次 sort/persist/notify
@@ -319,8 +319,8 @@ export class AppLibraryService {
     this.notify();
   }
 
-  private async collectExe(dir: string, depth: number, out: string[]): Promise<void> {
-    if (depth > SCAN_MAX_DEPTH || out.length >= SCAN_MAX_EXE) {
+  private async collectPrograms(dir: string, depth: number, out: string[]): Promise<void> {
+    if (depth > SCAN_MAX_DEPTH || out.length >= SCAN_MAX_PROGRAMS) {
       return;
     }
     let names: string[];
@@ -330,7 +330,7 @@ export class AppLibraryService {
       return; // 目录不可读属正常 (权限/已删除), 跳过
     }
     for (const name of names) {
-      if (out.length >= SCAN_MAX_EXE) {
+      if (out.length >= SCAN_MAX_PROGRAMS) {
         return;
       }
       if (name.startsWith('.')) {
@@ -344,8 +344,8 @@ export class AppLibraryService {
         continue;
       }
       if (isDir) {
-        await this.collectExe(full, depth + 1, out);
-      } else if (name.toLowerCase().endsWith('.exe')) {
+        await this.collectPrograms(full, depth + 1, out);
+      } else if (isProgramFile(name)) {
         out.push(full);
       }
     }
@@ -522,6 +522,8 @@ export class AppLibraryService {
   }
 
   // 启动: 走 runWineProgram (与游戏/smoke 同一条 broker 通道, 逐进程注入 env)。
+  // path 接受 exe/bat/cmd/lnk (见 common/LaunchableFile): .bat/.cmd 由 kernelbase
+  // 转 cmd.exe 直接起; .lnk 经 start.exe 走 ShellExecute 解析目标。
   // overrides 为"自定义启动"临时参数 (弹窗选一次, 不持久化):
   //   graphics    'wined3d'→WineD3D, 'dxvk'→DXVK; undefined = 跟随全局 d3dBackend
   //   compatMode  'stability'/'conservative'/'intermediate'/'performance'
@@ -560,9 +562,10 @@ export class AppLibraryService {
       environment['WINEHUA_WINDOWS_VERSION'] = winver;
     }
     const winPath = this.toWindowsPath(path, env.zHome);
+    const isLnk = path.toLowerCase().endsWith('.lnk');
     const result = testNapi.runWineProgram({
-      windowsExePath: winPath,
-      argv: [],
+      windowsExePath: isLnk ? 'C:\\windows\\system32\\start.exe' : winPath,
+      argv: isLnk ? [winPath] : [],
       environment: environment,
       workingDirectory: this.windowsParentDir(winPath),
       d3dBackend: d3dBackend,

@@ -139,8 +139,8 @@ with open('$profile', 'w') as f:
 # ============================================================
 package_hap() {
     log "=== 打包 HAP ($NATIVE_ARCH) ==="
-    local unsigned_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-unsigned.hap"
     local signed_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
+    local unsigned_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-unsigned.hap"
 
     import_user_profile     # <-- 优先使用用户挂载的 profile + 签名
     set_sdk_versions
@@ -167,13 +167,26 @@ with open('$module_json', 'w') as f:
     fi
 
     cd "$WINEHUA"
+    # hvigorw assembleHap 自带 SignHap 任务: 按根 build-profile.json5 的
+    # signingConfigs 选材料 (调试 = .ohos/default_*.cer, 发布 =
+    # .ohos/release/hish_beian.*), 直接产出 entry-default-signed.hap。
+    # 2026-09-12 移除独立签名步骤 scripts/sign.py: 它拿 unsigned.hap 再签一遍
+    # 只是重复劳动, 且材料选择逻辑与 hvigor 重复, 两边不同步时会签错证书。
+    # signingConfigs 为空时 (CI 的未签名流水线 — build-profile 由 workflow
+    # provision, 见 .github/workflows/build.yml) hvigor 跳过 SignHap, 只产出
+    # unsigned.hap; 那是该流水线的预期产物, 不是失败。
     hvigorw assembleHap || { err "hvigorw assembleHap 失败"; return 1; }
 
-    cd "$WINEHUA"
-    python3 sign.py "$unsigned_hap" "$signed_hap"
-
-    ls -lh "$signed_hap"
-    log "HAP 构建 + 签名完成 ($NATIVE_ARCH)"
+    if [ -f "$signed_hap" ]; then
+        ls -lh "$signed_hap"
+        log "HAP 构建 + 签名完成 ($NATIVE_ARCH)"
+    elif [ -f "$unsigned_hap" ]; then
+        ls -lh "$unsigned_hap"
+        log "HAP 构建完成 (无 signingConfig, 未签名) ($NATIVE_ARCH)"
+    else
+        err "HAP 产物缺失: 既无 $signed_hap 也无 $unsigned_hap"
+        return 1
+    fi
 }
 
 # ============================================================

@@ -34,6 +34,8 @@ export class WineWindowManager {
   private static instance: WineWindowManager | null = null;
   private windowStage: window.WindowStage | null = null;
   private mainWindow: window.Window | null = null;
+  // 沉浸式切换的代际计数: 快速翻转 (连点悬浮窗) 时用于丢弃过期链, 见 applyImmersive
+  private immersiveSeq: number = 0;
   private uiAbilityContext: common.UIAbilityContext | null = null;
   // 设备显示密度 + 屏幕尺寸 (用于缩放)
   private displayScale: number = 1.0;
@@ -132,6 +134,49 @@ export class WineWindowManager {
     return this.mainWindow;
   }
 
+  // 沉浸式切换 (进入桌面: 隐藏系统栏 + 全屏布局; 显示启动器: 恢复)。
+  // 沉浸式切换 (主窗口版本; FusionWindowManager.updateImmersive 是子窗口的另一份
+  // 实现, 不共用 — 那份不调 setWindowLayoutFullScreen)。调用点: Index 的
+  // onLauncherVisibleChange / aboutToAppear。
+  // **顺序约定: 先系统栏后布局, 不可颠倒** — 颠倒会在"布局已全屏但系统栏仍在"
+  // 的中间态下分配一次 2800x1683 的 XComponent surface (见 f70a5e9); 该中间态
+  // 与渲染循环 resize 的竞态见 egl_renderer.h 成员区 (2026-09-14 黑边根因)。
+  // 系统栏用一次 setWindowSystemBarEnable 原子开关 status + navigation;
+  // 手势指示条 navigationIndicator 不在该 API 取值内, 单独调用。
+  applyImmersive(bars: boolean): Promise<void> {
+    const mw = this.mainWindow;
+    if (!mw) {
+      return Promise.reject(new Error('applyImmersive: no mainWindow'));
+    }
+    const seq = ++this.immersiveSeq;
+    const names: Array<'status' | 'navigation'> = bars ? ['status', 'navigation'] : [];
+    hilog.info(DOMAIN, TAG, '[IMM] apply bars=%{public}s seq=%{public}d', String(bars), seq);
+    const run = async (): Promise<void> => {
+      await this.tryWindowApi('systemBar', seq, () => mw.setWindowSystemBarEnable(names));
+      if (this.immersiveSeq !== seq) { return; }
+      await this.tryWindowApi('navIndicator', seq,
+        () => mw.setSpecificSystemBarEnabled('navigationIndicator', bars));
+      if (this.immersiveSeq !== seq) { return; }
+      await this.tryWindowApi('layoutFullScreen', seq, () => mw.setWindowLayoutFullScreen(!bars));
+    };
+    return run();
+  }
+
+  // 单个窗口 API 调用 (applyImmersive 的三步共用): 同步抛错与 Promise 拒绝都
+  // 收敛成一条日志, 不中断切换流程 — 个别形态不支持某个 API 是既有事实
+  // (FusionWindowManager 亦有逐 API 容错), 而 setWindowLayoutFullScreen 全仓
+  // 仅此一处调用, 被前一步的错误短路会让窗口永久停在"系统栏已关 + 布局未全屏"
+  // 的中间态且无人再纠正 (2026-09-14 审查)。
+  private async tryWindowApi(name: string, seq: number, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+      hilog.info(DOMAIN, TAG, '[IMM] %{public}s OK (seq=%{public}d)', name, seq);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, '[IMM] %{public}s failed (seq=%{public}d): %{public}s',
+        name, seq, JSON.stringify(e));
+    }
+  }
+
   // -- dump 当前状态 (诊断用) --
   dumpState(): void {
     hilog.info(DOMAIN, TAG, '[MW-DUMP] state: entries=%{public}d destroyed=%{public}d',
@@ -214,6 +259,15 @@ export class WineWindowManager {
       this.isDesktopMode ? 'DESKTOP MODE' : 'MANAGED MODE',
       this.desktopSeparateWindow ? 'yes' : 'no',
       explicitMode || 'none');
+    // 模式判定变了必须通知订阅者刷新镜像 (WineEnvService.desktopMode 等)。
+    // 本方法在"切模式 → 重启引擎"路径上由 startSession 调用, 而此时重启
+    // 期间的 toplevel 销毁事件已经过去 — 订阅者最后一次刷新拿到的还是旧
+    // 模式; 新会话 (MANAGED) 又没有窗口事件, 镜像就永久滞后一拍。
+    // 不通知的后果: MANAGED 会话下点应用仍按旧"虚拟桌面"逻辑走 ensureDesktop
+    // 拉起桌面 → 重复 startSession 把引擎整个拉起一遍 (用户看到"引擎又初始
+    // 化"), 且 MANAGED 端不 spawn explorer, desktopSurfaceReady 永远等不到,
+    // 25s 超时报"桌面启动失败" (实测 2026-09-13, tablet 切多窗口后重启引擎)
+    this.notify();
   }
 
   // -- 多窗口承载判定: 移动形态 (tablet/phone) 用 subWindow 承载 (见
@@ -352,6 +406,26 @@ export class WineWindowManager {
     const had = this.entries.delete(toplevelId);
     hilog.info(DOMAIN, TAG, '[MW]  unregisterAbility #%{public}d entry=%{public}s',
       toplevelId, had ? 'removed' : 'absent');
+    // 窗口没了 → 相对模式锁定兜底清理 (见 clearPointerLockFor)
+    this.clearPointerLockFor(toplevelId);
+  }
+
+  // 相对模式来源窗口消失 → 清锁定状态并重算光标 (host 侧兜底)。
+  // 正常路径由 native 解锁回调驱动 (wine 销毁 relative_pointer 对象), 但
+  // "游戏卡死"时 wine 不响应 xdg_toplevel_send_close, 该对象永不销毁 —
+  // 解锁回调永远不来, 光标保持隐藏。两个入口共用本方法:
+  //   - onToplevelDestroyed: wine 事件路径 (client 断连/正常销毁)
+  //   - unregisterAbility:  WWA 用户关窗自清理路径 (卡死场景的唯一出口)
+  // 只清"来源正是本窗口"的锁定; fromToplevel=0 (未找到约束) 无法归属,
+  // 留给 native 回调。窗口已销毁, 之后到达的 cb(false) 是幂等清理
+  private clearPointerLockFor(toplevelId: number): void {
+    if (this.pointerLocked && this.pointerLockToplevel === toplevelId) {
+      hilog.info(DOMAIN, TAG,
+        '[MW] locked toplevel #%{public}d gone → clear pointer lock', toplevelId);
+      this.pointerLocked = false;
+      this.pointerLockToplevel = 0;
+      this.applyPointerVisibility();
+    }
   }
 
   isDestroyed(toplevelId: number): boolean {
@@ -736,7 +810,16 @@ export class WineWindowManager {
     if (this.fusionUsesSubWindow() && FusionWindowManager.getInstance().has(toplevelId)) {
       switch (event) {
         case 'title':
-          hilog.info(DOMAIN, TAG, '[MW] fusion #%{public}d title (record only, subwindow no decor)', toplevelId);
+          // subWindow decorEnabled:false 时 setWindowTitle 报 1300002, 不设系统
+          // 标题; 但转存给 FusionWindowManager — 最小化恢复列表要显示窗口标题
+          try {
+            const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
+            if (obj.title) {
+              FusionWindowManager.getInstance().setTitle(toplevelId, obj.title as string);
+            }
+          } catch (e) {
+            hilog.warn(DOMAIN, TAG, '[MW] fusion title parse error: %{public}s', JSON.stringify(e));
+          }
           return;
         case 'minimized':
           FusionWindowManager.getInstance().hide(toplevelId);
@@ -1052,6 +1135,9 @@ export class WineWindowManager {
   private onToplevelDestroyed(id: number): void {
     hilog.info(DOMAIN, TAG, '[MW] onToplevelDestroyed #%{public}d', id);
     this.destroyed.add(id);
+    // 相对模式来源窗口销毁 → 清锁定状态并重算光标 (兜底)。此处提前于
+    // 下方各分支的 return (desktop root 分支不调 unregisterAbility)
+    this.clearPointerLockFor(id);
 
     // Desktop 模式: root 销毁 → 桌面会话结束
     if (this.isDesktopMode && id === this.desktopRootId) {

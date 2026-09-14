@@ -247,7 +247,12 @@ assemble_pad() {
     #   OHOS 无头环境无人响应 → wineboot 永久阻塞 (mscoree WaitForSingleObject 无限
     #   等待). 去掉 appwiz.cpl 后 control.exe 加载 cpl 失败立即退出, mscoree 走
     #   "无 .NET 运行时"路径不卡死.
-    local pe_exts="dll drv exe sys acm ax ocx tlb"
+    # msstyles: 主题文件, 名义上是 DLL 但扩展名是 .msstyles (data-only PE,
+    # 无代码只有 INI 文本 + 位图资源)。缺它时 uxtheme 加载
+    # %10%\resources\themes\aero\aero.msstyles 落空, 所有 Win32 控件退化成
+    # 经典 (无主题) 绘制 —— 窗口标题栏/边框/按钮变成 Win95 观感。
+    # x86_64 与 i386 两份都要: WoW64 下 32 位进程加载 32 位主题。
+    local pe_exts="dll drv exe sys acm ax ocx tlb msstyles"
     if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
         pe_exts="$pe_exts cpl"
     fi

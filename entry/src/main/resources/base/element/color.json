@@ -2,99 +2,103 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#FF111111"
+      "value": "#FFF2F2F2"
     },
     {
       "name": "window_bg",
-      "value": "#FF111111"
+      "value": "#FFF2F2F2"
     },
     {
       "name": "panel_bg",
-      "value": "#FF141414"
-    },
-    {
-      "name": "header_bg",
-      "value": "#FF1A1A1A"
-    },
-    {
-      "name": "card_bg",
-      "value": "#FF1E1E1E"
-    },
-    {
-      "name": "overlay_bg",
-      "value": "#FF20242B"
-    },
-    {
-      "name": "overlay_mask",
-      "value": "#99000000"
-    },
-    {
-      "name": "divider",
-      "value": "#FF2A2A2A"
-    },
-    {
-      "name": "control_bg",
-      "value": "#FF333333"
-    },
-    {
-      "name": "text_primary",
       "value": "#FFFFFFFF"
     },
     {
+      "name": "header_bg",
+      "value": "#FFEAEAEA"
+    },
+    {
+      "name": "card_bg",
+      "value": "#FFFFFFFF"
+    },
+    {
+      "name": "overlay_bg",
+      "value": "#FFF5F7FA"
+    },
+    {
+      "name": "overlay_mask",
+      "value": "#66000000"
+    },
+    {
+      "name": "divider",
+      "value": "#FFDCDCDC"
+    },
+    {
+      "name": "control_bg",
+      "value": "#FFE6E6E6"
+    },
+    {
+      "name": "text_primary",
+      "value": "#FF1A1A1A"
+    },
+    {
       "name": "text_secondary",
-      "value": "#FF999999"
+      "value": "#FF5A5A5A"
     },
     {
       "name": "text_tertiary",
-      "value": "#FF888888"
+      "value": "#FF808080"
     },
     {
       "name": "text_disabled",
-      "value": "#FF555555"
+      "value": "#FFB0B0B0"
     },
     {
       "name": "accent",
-      "value": "#FF7DB8FF"
+      "value": "#FF0A66C2"
     },
     {
       "name": "accent_bg",
-      "value": "#337DB8FF"
+      "value": "#1A0A66C2"
     },
     {
       "name": "accent_soft",
-      "value": "#FFDDFFDD"
+      "value": "#FFE8F5E8"
     },
     {
       "name": "state_ok",
-      "value": "#FF44FF44"
+      "value": "#FF1B8A1B"
     },
     {
       "name": "state_warn",
-      "value": "#FFFF8844"
+      "value": "#FFB25E00"
     },
     {
       "name": "state_info",
-      "value": "#FF88CCFF"
+      "value": "#FF0A66C2"
     },
     {
       "name": "danger",
-      "value": "#FFFF5555"
+      "value": "#FFC62828"
     },
     {
       "name": "action_primary",
-      "value": "#FF228855"
+      "value": "#FF1E7A4C"
     },
     {
       "name": "action_danger",
-      "value": "#FF663333"
+      "value": "#FFE8B0B0"
     },
     {
       "name": "action_warning",
-      "value": "#FF665522"
+      "value": "#FF8A6A1F"
     },
     {
       "name": "shadow",
-      "value": "#66000000"
+      "value": "#26000000"
+    },
+    {
+      "name": "panel_border",
+      "value": "#33000000"
     }
   ]
 }

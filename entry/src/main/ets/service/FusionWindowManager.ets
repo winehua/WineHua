@@ -1,4 +1,5 @@
 import { window, display } from '@kit.ArkUI';
+import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 
@@ -33,9 +34,26 @@ class FusionEntry {
   fullscreen: boolean = false;    // 当前是否全屏化 (subWindow 无系统最大化,
                                   // 全屏 = resize 到显示尺寸 + 定位 0,0)
   frame: [number, number] | null = null; // 全屏前的 (x, y) 全局位置 (restore 基准)
+  title: string = '';              // 窗口标题 (title 事件转发, 最小化列表显示)
+  minimized: boolean = false;      // 已最小化: 子窗口被系统隐藏, 等恢复入口唤回
+  thumb: image.PixelMap | null = null; // 最小化前抓的窗口截图 (列表预览图)
+  thumbSeq: number = 0;            // 缩略图版本号 (截图异步到达, ForEach key 需感知)
+}
+
+// 最小化窗口列表项 (标题栏恢复入口消费)
+export interface MinimizedWindow {
+  tl: number;
+  title: string;
+  thumb: image.PixelMap | null;
+  thumbSeq: number;
 }
 
 export class FusionWindowManager {
+  // 缩略图上限 (物理像素): snapshot 是全分辨率 (全屏可达 2800x1840 ≈ 20MB),
+  // 列表只显示 72x54vp — 超出按比例缩小, 避免多窗口把 native 内存累积到几十 MB
+  private static readonly THUMB_MAX_W: number = 320;
+  private static readonly THUMB_MAX_H: number = 240;
+
   private static instance: FusionWindowManager | null = null;
   private entries: Map<number, FusionEntry> = new Map();
   private hostStage: window.WindowStage | null = null;
@@ -69,6 +87,44 @@ export class FusionWindowManager {
 
   getWindow(tl: number): window.Window | null {
     return this.entries.get(tl)?.subWin ?? null;
+  }
+
+  // -- 最小化窗口名单: 订阅 (UI 镜像) + 查询 (标题栏恢复入口数据源) --
+  private listeners: Array<() => void> = [];
+
+  subscribe(cb: () => void): void {
+    this.listeners.push(cb);
+  }
+
+  private notify(): void {
+    for (const cb of this.listeners) {
+      try {
+        cb();
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, '[FWM] listener threw: %{public}s', JSON.stringify(e));
+      }
+    }
+  }
+
+  minimizedWindows(): MinimizedWindow[] {
+    const out: MinimizedWindow[] = [];
+    this.entries.forEach((e: FusionEntry, tl: number) => {
+      if (e.minimized && e.subWin !== null) {
+        const item: MinimizedWindow = {
+          tl: tl, title: e.title, thumb: e.thumb, thumbSeq: e.thumbSeq
+        };
+        out.push(item);
+      }
+    });
+    return out;
+  }
+
+  // title 事件转发 (WineWindowManager fusion 分支调用): 列表显示标题用
+  setTitle(tl: number, title: string): void {
+    const e = this.entries.get(tl);
+    if (!e) return;
+    e.title = title;
+    if (e.minimized) this.notify();  // 列表已展示时同步刷新
   }
 
   // -- created: 创建子窗口 (幂等: 已存在只做 resize 跟随, 不重建) --
@@ -299,21 +355,114 @@ export class FusionWindowManager {
     hilog.info(DOMAIN, TAG, '[FWM] #%{public}d restore (%{public}d,%{public}d)', tl, frame[0], frame[1]);
   }
 
-  // -- wine minimized/restored → 系统最小化/再显示。Window 接口无隐藏 API
-  //    (hideWindow 不存在), 用 minimize() 近似: 非自由窗口设备上不生效也不
-  //    报错 (与 maximize 同款设备行为差异), Pad 多窗口最坏就是窗口保持显示。
+  // -- wine minimized → 隐藏承载窗口, 并进入"可恢复名单"。
+  //    子窗口 minimize 即"隐藏": 系统无 Dock 还原入口, 只能本应用 showWindow
+  //    唤回 (@ohos.window Interface(Window).minimize 文档), 故隐藏前抓一张
+  //    截图作列表预览图; 恢复入口在 Index 标题栏 (消费 minimizedWindows)。
   hide(tl: number): void {
     const e = this.entries.get(tl);
-    if (!e?.subWin) return;
-    e.subWin.minimize().catch(() => { /* ignore */ });
-    hilog.info(DOMAIN, TAG, '[FWM] #%{public}d minimize (wine minimized)', tl);
+    if (!e?.subWin || e.minimized) return;
+    e.minimized = true;
+    const win = e.subWin;
+    // 先截图再最小化: 子窗口隐藏后 snapshot 拿不到内容 (空白图)。截图失败/
+    // 抛错/卡住都不挡最小化 — 列表回退为无预览图的条目。
+    let done = false;
+    const minimizeNow = (): void => {
+      if (done) return;  // 幂等: 截图回调与超时兜底只会生效一次
+      done = true;
+      win.minimize().then(() => {
+        hilog.info(DOMAIN, TAG, '[FWM] #%{public}d minimize (wine minimized)', tl);
+        this.notify();  // 窗口已隐藏 → 标题栏角标/列表刷新
+      }).catch((err: Error) => {
+        hilog.warn(DOMAIN, TAG, '[FWM] #%{public}d minimize failed: %{public}s', tl, JSON.stringify(err));
+        this.notify();
+      });
+    };
+    try {
+      win.snapshot().then((pm: image.PixelMap) => {
+        if (this.entries.get(tl) !== e) {
+          // 截图飞行期间窗口已销毁 (entry 出列): 丢弃, 否则无人释放 (native 内存)
+          try {
+            pm.release().catch(() => { /* ignore */ });
+          } catch (_) { /* ignore */ }
+          return;
+        }
+        this.setThumb(e, this.shrinkThumb(pm));
+        minimizeNow();
+      }).catch((err: Error) => {
+        hilog.warn(DOMAIN, TAG, '[FWM] #%{public}d snapshot failed: %{public}s', tl, JSON.stringify(err));
+        minimizeNow();
+      });
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[FWM] #%{public}d snapshot threw: %{public}s', tl, JSON.stringify(err));
+      minimizeNow();
+    }
+    // 兜底: snapshot 既不 resolve 也不 reject 时, 窗口也必须能最小化
+    setTimeout(minimizeNow, 500);
+  }
+
+  // 缩略图压缩: 按目标上限等比缩小 (原地 scaleSync); 查询/缩放失败保留原图
+  // (宁可多占内存, 不能让列表没图)
+  private shrinkThumb(pm: image.PixelMap): image.PixelMap {
+    try {
+      const info: image.ImageInfo = pm.getImageInfoSync();
+      const w = info.size.width;
+      const h = info.size.height;
+      if (w > 0 && h > 0) {
+        const ratio = Math.min(1,
+          FusionWindowManager.THUMB_MAX_W / w, FusionWindowManager.THUMB_MAX_H / h);
+        if (ratio < 1) {
+          pm.scaleSync(ratio, ratio);
+        }
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[FWM] shrink thumb failed: %{public}s', JSON.stringify(err));
+    }
+    return pm;
+  }
+
+  // 缩略图替换/释放 (PixelMap 是 native 内存, 不释放会泄漏)
+  private setThumb(e: FusionEntry, pm: image.PixelMap | null): void {
+    const old = e.thumb;
+    e.thumb = pm;
+    e.thumbSeq++;
+    if (old && old !== pm) {
+      try {
+        old.release().catch(() => { /* ignore */ });
+      } catch (_) { /* ignore */ }
+    }
   }
 
   show(tl: number): void {
     const e = this.entries.get(tl);
     if (!e?.subWin) return;
+    if (e.minimized) {
+      e.minimized = false;
+      this.notify();
+    }
     e.subWin.showWindow().catch(() => { /* ignore */ });
     hilog.info(DOMAIN, TAG, '[FWM] #%{public}d show (wine restored)', tl);
+  }
+
+  // -- 列表主动恢复 (标题栏入口点击): OHOS 显示子窗口 + 通知 Wine 侧同步。
+  //    setToplevelVisible(true) → C++ SetToplevelRestored: 清 minimized 状态
+  //    并给 Wine 发 ACTIVATED configure, 两侧都恢复才算真还原。
+  restoreMinimized(tl: number): void {
+    const e = this.entries.get(tl);
+    if (!e?.subWin || !e.minimized) return;
+    e.minimized = false;
+    this.notify();
+    e.subWin.showWindow().then(() => {
+      e.subWin?.raiseToAppTop().catch(() => { /* ignore */ });
+    }).catch((err: Error) => {
+      hilog.warn(DOMAIN, TAG, '[FWM] #%{public}d showWindow failed: %{public}s', tl, JSON.stringify(err));
+    });
+    try {
+      testNapi.setToplevelVisible(tl, true);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[FWM] #%{public}d setToplevelVisible threw: %{public}s', tl, JSON.stringify(err));
+    }
+    hilog.info(DOMAIN, TAG, '[FWM] #%{public}d restore from minimized list', tl);
   }
 
   // -- destroyed: 销毁子窗口 (级联 popup/modal 由 WineWindowManager.unregisterAbility 做) --
@@ -327,7 +476,11 @@ export class FusionWindowManager {
     this.entries.delete(tl);
     const subWin = e.subWin;
     e.subWin = null;
+    const wasMinimized = e.minimized;
+    e.minimized = false;
+    this.setThumb(e, null);  // 释放缩略图 native 内存 (entry 已出列)
     this.updateImmersive();  // 最后一个窗口关闭 → 退出沉浸窗口模式
+    if (wasMinimized) this.notify();  // 名单变化 → 标题栏角标/列表刷新
     if (subWin) {
       try {
         subWin.destroyWindow().then(() => {

@@ -146,6 +146,11 @@ export default class WineWindowAbility extends UIAbility {
         try {
           const mw = windowStage.getMainWindowSync();
           if (mw) {
+            // 窗口底色黑 (兜底): 主修复在 WineWindow 页的 Stack 底 (ARGB 帧
+            // 画面外的透明区透出的是它), 本层防页面加载前/重建的空窗期露
+            // 系统默认色 (浅色模式白)。窗口属性须在 loadContent 后设置才生效;
+            // popup/modal 子窗口底色各自另设
+            try { mw.setWindowBackgroundColor('#FF000000'); } catch (_) {}
             // 保持屏幕常亮 (设置项): 游戏跑在子窗口 (主要场景), 创建时应用持久化值
             mw.setWindowKeepScreenOn(DisplaySettingsService.getInstance().keepScreenOn)
               .catch((e: Object) => {

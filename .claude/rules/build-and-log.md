@@ -132,6 +132,9 @@ hdc -t <device_ip> shell "hilog -z 200" | grep -iE 'crash|fault|SIGSEGV|SIGABRT|
 | `WL_Seat` | C++ `seat.cpp` | wl_seat 注册/绑定、pointer/keyboard 生命周期 |
 | `WL_NAPI` | C++ `napi_init.cpp` | NAPI 桥接 (PIPE)、Wine/wineserver/wineboot 进程管理、crash 检测 |
 | `MW-RNDR` | C++ `egl_renderer.cpp` render loop | viewport、surface size、frame size 对比 |
+| `MW-RNDR`/`DRAW-TIME` | 同上 | 绘制时 `eglQuerySurface` 实测尺寸 ≠ ArkTS 声明尺寸 (SetSize) 的告警 — 声明没被系统采纳; 限频打 (数值变化才打) |
+| `MW-RNDR`/`re-letterbox` | 同上 | 无新帧但 surface 尺寸 ≠ **上次真正上屏的绘制尺寸** → 强制重绘 (静态桌面节约 GPU 的跳过分支的例外路径, 2026-09-14 左右黑边即此判定失误所致) |
+| `DBG-FIT` | C++ `egl_renderer.cpp` render loop | 几何变化时打: surface/frame/letterbox/zc 状态 (变化才打, 不刷屏) |
 | `WL-ERR` | C++ `wayland_server.cpp` | Wayland 协议错误 (event loop dispatch 失败) |
 | `WL-STAT` | C++ `wayland_server.cpp` | 定期资源快照 (toplevel/surface/renderer 数, 30s) |
 | `Input-DROP` | C++ `input_manager.cpp` | 丢帧统计汇总 (60s, 分类 enter/button/key/motion) |

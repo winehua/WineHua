@@ -52,9 +52,11 @@ void PointerExtras::SetPointerWarpSink(PointerWarpSink sink) {
 // 6A 会话引用装配: 见头注释。装配于 Server Start 阶段 (wl 事件循环启动前)
 // 一次性, 之后只在 Wayland 线程读 tmgr_/rootId 引用 — 无锁。
 void PointerExtras::BindWaylandRefs(ToplevelManager* tmgr,
-                                    const uint32_t* desktopRootToplevelId) {
+                                    const uint32_t* desktopRootToplevelId,
+                                    const bool* desktopMode) {
     tmgr_ = tmgr;
     desktopRootToplevelId_ = desktopRootToplevelId;
+    desktopMode_ = desktopMode;
 }
 
 // ========================================================================
@@ -365,21 +367,36 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
                 doLock = true;
                 ids = hostWindowIds_;
             }
+            // "锁定成功"与"已通知 ets"是两件事: LockCursor 可能全部失败
+            // (无获焦窗口/系统 <API22), 而隐藏照常下发 — 解锁补发靠本标记
+            etsLockNotified_ = true;
+            lockedToplevelId_ = toplevelId;   // 供 ReleaseLockForToplevel 匹配
         } else {
-            if (lockedWindowId_ != 0) {
+            // 解锁: 只要曾通知过 ets 就必发 false。旧实现以 lockedWindowId_
+            // 为条件, 从未锁定成功时 (该值恒 0) 这里直接 return → cb(false)
+            // 丢失 → ets pointerLocked 永真 → 系统光标不恢复 (2026-09-13)
+            if (etsLockNotified_) {
                 doUnlock = true;
-                ids = {lockedWindowId_};
+                if (lockedWindowId_) ids.push_back(lockedWindowId_);
                 // 受理即清位: 解锁已排入工作线程, 后续 lock 快照不被旧状态吞掉
                 lockedWindowId_ = 0;
+                etsLockNotified_ = false;
+                lockedToplevelId_ = 0;
             }
         }
     }
     if (!doLock && !doUnlock) return;
     // isShell 在调用线程 (wl 事件循环) 算好再捕获进工作线程 — 避免工作线程
-    // 与 wl 线程并发读 desktopRootToplevelId_ (数据竞争)
-    // 6A: 直读装配注入的 rootId 共享引用 (与 WaylandServer::GetDesktopRootToplevelId 同值同源)
-    const bool isShell =
-        (toplevelId == *desktopRootToplevelId_);
+    // 与 wl 线程并发读这些共享引用 (数据竞争)。
+    // 6A: 直读装配注入的 id 共享引用 (与 WaylandServer 的 session 字段同源)。
+    //
+    // 桌面模式下 root 尚未确立 = 桌面未就绪: 此刻能发起相对指针的只可能是
+    // 桌面壳自身 (游戏要先有桌面), 不能按游戏冻结 — 否则宿主锁死系统光标,
+    // 表现为"可见但动不了", 且 relative 对象不销毁则永不解锁。
+    // toplevelId==0 (约束 surface 未映射成 toplevel) 与 root==0 同属身份未知,
+    // 一并按不冻结处理。
+    const bool desktopNotReady = *desktopMode_ && *desktopRootToplevelId_ == 0;
+    const bool isShell = desktopNotReady || toplevelId == *desktopRootToplevelId_;
     // IPC 挪入独立线程执行 (20260822 review #3): OH_WindowManager_LockCursor
     // 是同步 Binder 往返, 在调用点 (wl 事件循环线程) 执行会停摆整个
     // Wayland 循环 — 进游戏瞬间的相对模式切换恰是最高频时刻。工作线程按
@@ -389,10 +406,16 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
         // Lock/Unlock IPC 序列彼此串行 (窗口服务侧重入序), 与 mutex_ 无关
         static std::mutex ipcMutex;
         if (doUnlock) {
-            std::lock_guard<std::mutex> ipc(ipcMutex);
-            const int32_t ret = OH_WindowManager_UnlockCursor(ids[0]);
-            OH_LOG_INFO(LOG_APP, "[PtrExt] host cursor UNLOCKED win=%{public}d ret=%{public}d",
-                        ids[0], ret);
+            // ids 为空 = 从未锁定成功 (LockCursor 全失败): 无 IPC 可发,
+            // 但仍必须通知 ets 恢复光标 (隐藏当初照常下发过)
+            if (!ids.empty()) {
+                std::lock_guard<std::mutex> ipc(ipcMutex);
+                const int32_t ret = OH_WindowManager_UnlockCursor(ids[0]);
+                OH_LOG_INFO(LOG_APP, "[PtrExt] host cursor UNLOCKED win=%{public}d ret=%{public}d",
+                            ids[0], ret);
+            } else {
+                OH_LOG_INFO(LOG_APP, "[PtrExt] host cursor never locked, notify ets only");
+            }
             cb(false, toplevelId);
             return;
         }
@@ -428,4 +451,18 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
             cb(true, toplevelId);
         }
     }).detach();
+}
+
+void PointerExtras::ReleaseLockForToplevel(uint32_t toplevelId) {
+    bool release = false;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        // 未通知过 ets / 锁定来源不是本 toplevel → 不是本次要清的锁定
+        release = etsLockNotified_ && lockedToplevelId_ == toplevelId;
+    }
+    if (!release) return;
+    OH_LOG_INFO(LOG_APP, "[PtrExt] release lock for destroyed toplevel %{public}u", toplevelId);
+    // 锁外调用 (ApplyHostCursorLock 自持 mutex_): 走正常解锁路径 —
+    // UnlockCursor(已销毁窗口 id 返回错误无害) + cb(false) 通知 ets 恢复光标
+    ApplyHostCursorLock(false, 0);
 }
