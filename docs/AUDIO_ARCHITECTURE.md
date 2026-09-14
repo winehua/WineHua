@@ -195,8 +195,12 @@ flowchart TD
 - 失败日志
 - close / cleanup 统计
 
-如需更详细的 Wine 日志，可通过:
+如需更详细的 Wine 日志，直接注入 `WINEDEBUG`（经 `runWineProgram` 的
+`environment` 字段 / `__env` 通道下发；它在子进程 `setup_wine_env` 之后
+apply，覆盖默认的 `-all`）。例如：
 
-- `WINEHUA_WINEDEBUG`
+```
+winehua.diag_env="WINEDEBUG=-all,+winmm,+mmdevapi"
+```
 
-覆盖默认 `WINEDEBUG`。
+注意 `WINEDEBUG` 必须带 `-all` 前缀，否则所有 channel 全开、日志洪水。

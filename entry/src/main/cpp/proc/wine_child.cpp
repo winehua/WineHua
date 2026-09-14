@@ -298,11 +298,12 @@ static bool derive_launch_cwd(int argc, char *argv[], const char *homeDir, std::
     return false;
 }
 
+// WINEDEBUG 选择: 音频测试 exe 走专属诊断档, 其余 -all。
+// 外部覆盖 WINEDEBUG 的通道是 entryParams 的 __env 段 (直接传
+// WINEDEBUG=...; 它在 setup_wine_env 之后 apply, 后者胜出) — 不需要中间
+// 变量: 曾经的 WINEHUA_WINEDEBUG 全项目零写入点, 已移除。
 static const char *select_winedebug_profile(int argc, char *argv[])
 {
-    const char *override = getenv("WINEHUA_WINEDEBUG");
-
-    if (override && override[0]) return override;
     if (is_audio_test_exe(argc, argv)) return midi_diag_winedebug_profile();
     if (is_sdl_audio_test_exe(argc, argv)) return sdl_audio_diag_winedebug_profile();
     return default_winedebug_profile();
