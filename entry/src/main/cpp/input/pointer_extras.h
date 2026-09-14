@@ -79,12 +79,15 @@ public:
     void SetPointerWarpSink(PointerWarpSink sink);
 
     // -- 会话引用装配 (重构第 6A 步) --
-    // 注入 ToplevelManager (surface→toplevelId 反查) 与 desktop root id 的
-    // 共享引用 — 替代 WaselyServer::FindToplevelIdBySurface /
+    // 注入 ToplevelManager (surface→toplevelId 反查)、desktop root id 与桌面
+    // 模式标志的共享引用 — 替代 WaselyServer::FindToplevelIdBySurface /
     // GetDesktopRootToplevelId 两处转发。装配点 = wl_core.cpp
     // RegisterWlCoreGlobals (Start 阶段, 事件循环启动前, 与 warpSink 同模式:
     // 之后只读, 无锁); 引用与 WaylandServer 单例成员同生命周期。
-    void BindWaylandRefs(ToplevelManager* tmgr, const uint32_t* desktopRootToplevelId);
+    // desktopMode 供 isShell 判"桌面未就绪不锁定" (见 ApplyHostCursorLock)。
+    void BindWaylandRefs(ToplevelManager* tmgr,
+                         const uint32_t* desktopRootToplevelId,
+                         const bool* desktopMode);
 
     // 相对指针增量广播: wine 有 relative_pointer 对象时把输入增量发过去。
     // 对象存在 ⇔ wine 判定当前为相对模式 (隐藏光标 + 约束); 无对象 = 绝对
@@ -164,4 +167,5 @@ private:
     // 身份判定 — 装配于事件循环启动前, 之后只在 Wayland 线程读 (无锁)。
     ToplevelManager* tmgr_ = nullptr;           // FindToplevelBySurface
     const uint32_t* desktopRootToplevelId_ = nullptr;  // isShell 判定 (共享 root 引用)
+    const bool* desktopMode_ = nullptr;   // isShell: 桌面模式 && root 未识别 = 桌面启动中
 };

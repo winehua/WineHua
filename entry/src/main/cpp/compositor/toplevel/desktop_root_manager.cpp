@@ -23,6 +23,11 @@ DesktopRootManager::DesktopRootManager(ToplevelManager& tmgr,
 // Wine 侧对 #32769 窗口设置 app_id="explorer.exe.desktop-shell",
 // compositor 精确匹配即可识别。 空 title 的 desktop-shell 是非活跃
 // 的辅助窗口, 不作为 root 候选。
+//
+// title 是唯一能区分真桌面与 ghost 的信号: set_desktop_window_title 只对
+// 活动桌面调用, 而 ghost 与真桌面尺寸相同 (都铺满输出), 尺寸分辨不了。
+// 首次 commit 可能早于标题到达, 该次识别不出 root — 由 PointerExtras 的
+// "桌面未就绪不锁定光标"兜底, 不要为此放宽识别判据。
 
 void DesktopRootManager::SetRecognitionEnabled(bool enabled)
 {

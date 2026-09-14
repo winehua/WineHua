@@ -59,6 +59,9 @@ public:
     // root 身份的共享引用装配出口 (与 DesktopCompositor/InputResolver 注入的
     // 引用同源, 重构第 6B 步起指向 session_.desktopRootToplevelId 的 POD 字段)
     const uint32_t& DesktopRootToplevelIdRef() const { return session_.desktopRootToplevelId; }
+    // 桌面模式标志的共享引用 (PointerExtras 判"桌面未就绪不锁定"用)。
+    // policy.desktop 运行期可变 (用户切换融合/虚拟桌面), 故用引用而非值。
+    const bool& DesktopModeRef() const { return session_.policy.desktop; }
 
     bool Start(const std::string& socketPath);
     void Stop();
