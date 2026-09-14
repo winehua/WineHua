@@ -71,6 +71,13 @@ export default class EntryAbility extends UIAbility {
     if (explicitDesktopMode) {
       DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
     }
+    // 诊断环境变量 (排查用, 只作用于经 runWineProgram 启动的目标进程):
+    // winehua.diag_env="WINEDEBUG=-all,+sync;BOX64_LOG=2"
+    // 注意 WINEDEBUG 必须带 -all 前缀, 否则所有 channel 全开 (日志洪水)。
+    const diagEnv = value('winehua.diag_env', '');
+    if (diagEnv) {
+      WineEnvService.getInstance().setDiagEnv(diagEnv);
+    }
     // 自动化通道 (UI 点击/输入不可注入设备的全自动验证):
     // winehua.autoStart=1 → 主页面就绪后自动拉起引擎 (一次消费)
     if (parameters && parameters['winehua.autoStart'] === '1') {
@@ -130,7 +137,7 @@ export default class EntryAbility extends UIAbility {
     testNapi.runWineProgram({
       windowsExePath: windowsPath,
       argv: [],
-      environment: {},
+      environment: WineEnvService.getInstance().diagEnvironment(),
       workingDirectory: dir,
       d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k',
       dxvkBackend: AppStorage.get<string>('winehua.dxvk.backend') ?? 'auto'

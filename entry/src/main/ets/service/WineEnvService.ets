@@ -178,6 +178,11 @@ export class WineEnvService {
   private wineLang: string = 'zh_CN';
   private settingsStore: preferences.Preferences | null = null;
   private perfProfile: string = 'baseline';
+  // 诊断环境变量 (排查用, 只作用于经 runWineProgram 启动的目标进程):
+  // 形如 "WINEDEBUG=-all,+sync;BOX64_LOG=2"。走 runWineProgram 的 environment
+  // 字段下发 (该通道已存在, C++ 侧零改动)。来源是 want 参数, 不持久化 —
+  // App 重启即失效, 避免忘关后日志洪水。
+  private diagEnvSpec: string = '';
 
   // 极简订阅: 状态变化后逐个调用
   subscribe(listener: () => void): void {
@@ -326,6 +331,27 @@ export class WineEnvService {
     // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
     // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
     this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
+  }
+
+  // 诊断环境变量注入 (EntryAbility.publishLaunchRequest ← want 参数):
+  // 形如 "WINEDEBUG=-all,+sync;BOX64_LOG=2", 只作用于 runWineProgram 启动的
+  // 目标进程。刻意不校验键名 — 使用者是开发者, 且该 want 通道本就与
+  // winehua.program (可启动任意程序) 同一信任级别。
+  setDiagEnv(spec: string): void {
+    this.diagEnvSpec = spec || '';
+    hilog.warn(DOMAIN, 'wine', 'diag env: %{public}s', this.diagEnvSpec);
+  }
+
+  // 供 runWineProgram 的 environment 合并: "K=V;K2=V2" → Record。
+  // 未配置时返回空对象, 调用方行为与无此机制时逐字节一致。
+  diagEnvironment(): Record<string, string> {
+    const env: Record<string, string> = {};
+    if (!this.diagEnvSpec) return env;
+    for (const line of this.diagEnvSpec.split(';')) {
+      const eq = line.indexOf('=');
+      if (eq > 0) env[line.substring(0, eq)] = line.substring(eq + 1);
+    }
+    return env;
   }
 
   // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)

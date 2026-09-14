@@ -313,8 +313,9 @@ struct Index {
       windowsExePath: exePath,
       argv: [],
       // DXVK 稳定化 env 默认已收口 native (BuildSessionEnv stableDesktopOverlay,
-      // 与桌面会话链同源), ArkTS 不再平行维护; 无 per-run 覆盖项时传空表
-      environment: {},
+      // 与桌面会话链同源), ArkTS 不再平行维护; 仅诊断待命配置需在此合并 —
+      // 程序启动路径不经会话链, 见 WineEnvService.diagEnvironment
+      environment: this.env.diagEnvironment(),
       workingDirectory: this.curDir,
       d3dBackend: this.d3dBackend,
       dxvkBackend: this.dxvkBackend

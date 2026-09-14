@@ -210,6 +210,12 @@ export class SmokeRunner {
       'WINEHUA_SMOKE_RUN_ID': request.runId,
       'WINEHUA_SMOKE_TEST_ID': test.testId
     };
+    // 诊断待命配置: smoke 测试进程走程序启动路径 (不经会话链), 需在此合并;
+    // 未配置诊断时返回空表, 行为不变 (suites.json 的 per-test env 亦可声明)
+    const diagEnv: Record<string, string> = envSvc.diagEnvironment();
+    for (const key of Object.keys(diagEnv)) {
+      environment[key] = diagEnv[key];
+    }
     const declared: Record<string, string> = test.env || {};
     for (const key of Object.keys(declared)) {
       if (declared[key] !== undefined) {

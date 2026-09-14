@@ -35,8 +35,16 @@
 #include <pthread.h>
 #include <time.h>
 
-// 从 stderr pipe 读取 Wine 内部日志，同时转发到 hilog 和文件
-struct stderr_ctx { int fd; int fileFd; };
+// 从 stderr pipe 读取 Wine 内部日志，同时转发到 hilog 和文件。
+// pid/exe 用于日志归属: 同一天所有 wine 进程共用一份
+// wine_stderr_YYYYMMDD.log, 没有标识就分不清哪行是哪个进程的
+// (开了 WINEDEBUG 的进程尤其致命 — 它的输出会淹没其它进程)。
+struct stderr_ctx {
+    int fd;
+    int fileFd;
+    pid_t pid;
+    char exe[64];
+};
 static void* stderr_reader_thread(void* arg) {
     auto* ctx = (stderr_ctx*)arg;
     char buf[4096];
@@ -48,13 +56,43 @@ static void* stderr_reader_thread(void* arg) {
         // 转发到 hilog（多行拆开）
         char *save = nullptr, *tok = strtok_r(buf, "\n", &save);
         while (tok) {
-            OH_LOG_INFO(LOG_APP, "[WineChild-stderr] %{public}s", tok);
+            OH_LOG_INFO(LOG_APP, "[WineChild-stderr pid=%{public}d exe=%{public}s] %{public}s",
+                        ctx->pid, ctx->exe, tok);
             tok = strtok_r(nullptr, "\n", &save);
         }
     }
     if (ctx->fileFd >= 0) close(ctx->fileFd);
     delete ctx;
     return nullptr;
+}
+
+// exe 名净化: 只保留 [A-Za-z0-9._-], 其余替换为 '_'。日志标识里混入控制字符
+// 或换行会破坏单行格式 (exe 名来自用户文件系统, 不可预期)。
+static void sanitize_filename_component(const char *in, char *out, size_t outSize)
+{
+    size_t w = 0;
+    if (!outSize) return;
+    for (const char *p = in ? in : ""; *p && w + 1 < outSize; ++p)
+    {
+        const unsigned char c = (unsigned char)*p;
+        out[w++] = ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+                       ? (char)c : '_';
+    }
+    out[w] = '\0';
+    if (!w) snprintf(out, outSize, "unknown");
+}
+
+// stderr_ctx 统一构造 (普通路径与 wineserver 路径共用)。
+// exeName 由调用方给 basename (本函数位于 basename_of_path 定义之前)。
+static stderr_ctx* make_stderr_ctx(int pipeFd, int fileFd, const char *exeName)
+{
+    auto* ctx = new stderr_ctx{};
+    ctx->fd = pipeFd;
+    ctx->fileFd = fileFd;
+    ctx->pid = getpid();
+    sanitize_filename_component(exeName, ctx->exe, sizeof(ctx->exe));
+    return ctx;
 }
 
 #undef LOG_DOMAIN
@@ -526,7 +564,8 @@ extern "C" void Main(NativeChildProcess_Args args)
         dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
                 args.entryParams ? args.entryParams : "(null)");
     }
-    auto* ctx = new stderr_ctx{errPipe[0], errFile};
+    auto* ctx = make_stderr_ctx(errPipe[0], errFile,
+                                argc > 0 && argv[0] ? basename_of_path(argv[0]) : "");
     pthread_t tid;
     pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
     pthread_detach(tid);
@@ -645,7 +684,7 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
         dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
                 entryParamsForLog ? entryParamsForLog : "(null)");
     }
-    auto* ctx = new stderr_ctx{errPipe[0], errFile};
+    auto* ctx = make_stderr_ctx(errPipe[0], errFile, "wineserver");
     pthread_t tid;
     pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
     pthread_detach(tid);
