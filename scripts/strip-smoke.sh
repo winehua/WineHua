@@ -52,8 +52,14 @@ if [ ! -d "$SMOKE_DIR" ]; then
     exit 1
 fi
 
-if [ "$DRY" = 0 ] && ! git diff --quiet; then
-    echo "错误: 工作区有未提交改动, --apply 前请先提交或暂存 (避免与摘除改动混在一起无法区分)" >&2
+# 只看摘除会触碰的路径: submodule 的 dirty 是构建常态 (glib/gstreamer 等被
+# 构建脚本改写), 用全局 git diff 会把它们误判成"工作区不干净"而挡下正常流程。
+dirty="$(git status --porcelain --ignore-submodules=all -- entry/ scripts/ docs/ 2>/dev/null \
+         | grep -v '^??' || true)"
+if [ "$DRY" = 0 ] && [ -n "$dirty" ]; then
+    echo "错误: entry/scripts/docs 下有未提交改动, --apply 前请先提交或暂存" >&2
+    echo "     (避免摘除改动与其它改动混在一起, 无法区分)" >&2
+    echo "$dirty" >&2
     exit 1
 fi
 
