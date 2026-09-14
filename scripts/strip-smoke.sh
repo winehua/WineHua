@@ -65,7 +65,9 @@ fi
 
 # 标记行总数: 为 0 说明标记格式已变 (或被摘过), 此时静默跳过是危险的。
 # 只统计 3 个产品文件 — smoke/ 目录内的说明文字也含这个字面量, 不能算进去。
-marker_count="$(grep -ho '// \[\[SMOKE\]\]' "${HOOK_FILES[@]}" | wc -l | tr -d ' ')"
+# `|| true`: 无匹配时 grep 返回 1, 在 set -o pipefail 下会让整个赋值非零 →
+# set -e 静默退出 (本脚本"删干净后反而失败"的根源, 两处都要)。
+marker_count="$(grep -ho '// \[\[SMOKE\]\]' "${HOOK_FILES[@]}" | wc -l | tr -d ' ' || true)"
 echo "标记行: $marker_count 处 (2026-09 基线为 8; 若为 0 说明格式已变, 需人工核对)"
 if [ "$marker_count" -eq 0 ]; then
     echo "错误: 未找到任何 '// [[SMOKE]]' 标记, 拒绝继续" >&2
@@ -141,9 +143,9 @@ if [ -n "$leftover" ]; then
     exit 1
 fi
 
-# 4c. 标记行已清零
+# 4c. 标记行已清零 (grep 零匹配返回 1, 见上文 `|| true` 说明)
 left_markers="$(grep -rc '\[\[SMOKE\]\]' "$ETS_ROOT" --include='*.ets' 2>/dev/null \
-                | awk -F: '{s+=$2} END {print s+0}')"
+                | awk -F: '{s+=$2} END {print s+0}' || true)"
 if [ "$left_markers" -ne 0 ]; then
     echo "错误: 仍有 $left_markers 处标记行未清除" >&2
     exit 1
