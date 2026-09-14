@@ -951,9 +951,21 @@ void GraphicsBroker::AppendWineEnv(std::vector<std::string>& env) const
             if (DirExists(guestLibDir + "/egl")) env.push_back("EGL_DRIVERS_PATH=" + guestLibDir + "/egl");
         }
         env.push_back("WINEHUA_WAYLAND_READBACK=1");
-        env.push_back("WINEHUA_GL_STALL_DIAG=1");
+        // WINEHUA_DISPLAY_FPS_FILE 保持常开: 开销为零 (只是给程序一个路径,
+        // 唯一消费方是 smoke 程序 winehua_graphics_smoke 的 fps 判定, 其它
+        // 进程读了不用), 不值得为它加门控。
         env.push_back("WINEHUA_DISPLAY_FPS_FILE=C:\\windows\\temp\\winehua_display_fps.txt");
-        env.push_back("WINEHUA_VTEST_FRONTBUFFER_LOG=/data/storage/el2/base/temp/winehua_vtest_frontbuffer.log");
+        // 下面两个是诊断键, 默认关闭。曾经无条件常开, 后果是 mesa 侧
+        // WINEHUA_VTEST_FRONTBUFFER_LOG 的门控形同虚设 — virgl_vtest_winsys.c
+        // 里明明写了 `if (log_path && log_path[0])` 才 fopen, 但 broker 总是
+        // 把路径塞进去, 于是每 120 次调用 fopen/写/fclose 且文件无上限增长。
+        // 要开时经宿主诊断通道下发 (见 napi_init.cpp SetHostDiagEnv):
+        //   aa start --ps winehua.diag_env "WINEHUA_GFX_DIAG=1"
+        const char *gfxDiag = getenv("WINEHUA_GFX_DIAG");
+        if (gfxDiag && gfxDiag[0] && strcmp(gfxDiag, "0") != 0) {
+            env.push_back("WINEHUA_GL_STALL_DIAG=1");
+            env.push_back("WINEHUA_VTEST_FRONTBUFFER_LOG=/data/storage/el2/base/temp/winehua_vtest_frontbuffer.log");
+        }
         env.push_back("WINEHUA_VTEST_PRESENT=surface-queue");
         env.push_back(std::string("WINEHUA_ZERO_COPY_READY_DIR=") + ZERO_COPY_READY_DIR);
         for (const std::string& extra : guestEnv) env.push_back(extra);
