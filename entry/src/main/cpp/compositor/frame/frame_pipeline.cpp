@@ -14,9 +14,7 @@
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "WL_Server"
 
-using CompositorLayer = DesktopCompositor::CompositorLayer;
 using DamageRect = DesktopCompositor::DamageRect;
-using SubsurfaceLayer = DesktopCompositor::SubsurfaceLayer;
 
 namespace {
 
@@ -218,31 +216,35 @@ void FramePlanner::PlanFullscreenLocked(FramePlan& plan) {
     }
 }
 
+bool FramePlanner::SubsurfaceCoversContentRect(const CompositorLayer& layer,
+                                               int fullscreenX, int fullscreenY,
+                                               int contentW, int contentH) {
+    const auto& sl = *layer.sub;
+    if (sl.w <= 0 || sl.h <= 0) return false;
+    const int dispW = DisplaySizeAfterViewportClamped(sl.vpDstW, sl.w);
+    const int dispH = DisplaySizeAfterViewportClamped(sl.vpDstH, sl.h);
+    const int relX = layer.x - fullscreenX;
+    const int relY = layer.y - fullscreenY;
+    return relX <= 0 && relY <= 0 &&
+           relX + dispW >= contentW && relY + dispH >= contentH;
+}
+
 bool FramePlanner::DetectFullscreenContentCoveredLocked(const FramePlan& plan) const {
-    bool fullscreenContentCovered = false;
-    if (plan.hasFullscreen) {
-        const auto* fst = tmgr_.FindToplevelLocked(plan.fullscreenId);
-        const int winW = fst ? fst->Width() : 0;
-        const int winH = fst ? fst->Height() : 0;
-        for (const auto& layer : plan.layers) {
-            if (layer.type != CompositorLayer::Type::Subsurface) continue;
-            if (layer.toplevelId != plan.fullscreenId) continue;
-            if (layer.ShouldSkipCpu()) continue;
-            const auto& sl = *layer.sub;
-            if (sl.w <= 0 || sl.h <= 0) continue;
-            if (sl.shmFormat == 0 && !sl.opaque) continue;
-            const int dispW = DisplaySizeAfterViewportClamped(sl.vpDstW, sl.w);
-            const int dispH = DisplaySizeAfterViewportClamped(sl.vpDstH, sl.h);
-            const int relX = layer.x - plan.fullscreenX;
-            const int relY = layer.y - plan.fullscreenY;
-            if (relX <= 0 && relY <= 0 &&
-                relX + dispW >= winW && relY + dispH >= winH) {
-                fullscreenContentCovered = true;
-                break;
-            }
-        }
+    if (!plan.hasFullscreen) return false;
+    const auto* fst = tmgr_.FindToplevelLocked(plan.fullscreenId);
+    if (!fst) return false;
+    for (const auto& layer : plan.layers) {
+        if (layer.type != CompositorLayer::Type::Subsurface) continue;
+        if (layer.toplevelId != plan.fullscreenId) continue;
+        if (layer.ShouldSkipCpu()) continue;
+        // ARGB 非 opaque (GL readback 残留在 alpha 通道) 不算覆盖: 透明区
+        // 会露出下层, 需 CPU 合成保底
+        if (layer.sub->shmFormat == 0 && !layer.sub->opaque) continue;
+        if (SubsurfaceCoversContentRect(layer, plan.fullscreenX, plan.fullscreenY,
+                                        fst->Width(), fst->Height()))
+            return true;
     }
-    return fullscreenContentCovered;
+    return false;
 }
 
 bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
@@ -331,7 +333,16 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                         continue;
                     if (layer.type == CompositorLayer::Type::Subsurface &&
                         layer.toplevelId == plan.fullscreenId) {
-                        // 本窗口内容 sub (游戏画面): 候选直传源
+                        // 本窗口的 sub 分两类 (判据见 SubsurfaceCoversContentRect):
+                        // 覆盖窗口内容区 = 内容层 (游戏画面, 候选直传源); 不覆盖
+                        // = 叠加其上的浮层 (菜单/提示) — 像素不在窗口帧里, 须判
+                        // 遮挡回退 CPU 合成
+                        if (!SubsurfaceCoversContentRect(layer, plan.fullscreenX,
+                                                         plan.fullscreenY,
+                                                         fsTop->Width(), fsTop->Height())) {
+                            topOccluded = true;
+                            break;
+                        }
                         if (!contentSub) {
                             const auto& sl = *layer.sub;
                             // 注: 不再要求 (shmFormat!=0 || opaque) — GL
@@ -343,8 +354,7 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                             // 强制不透明: alpha=255 区域与 CPU 混合分支逐
                             // 像素一致, alpha=0 区域 CPU 保留黑底 (RGB 残留
                             // 值通常亦黑) — 视觉等价。
-                            if (sl.w > 0 && sl.h > 0 &&
-                                (sl.vpDstW <= 0 || sl.vpDstW >= sl.w) &&
+                            if ((sl.vpDstW <= 0 || sl.vpDstW >= sl.w) &&
                                 (sl.vpDstH <= 0 || sl.vpDstH >= sl.h))
                                 contentSub = &sl;
                         }

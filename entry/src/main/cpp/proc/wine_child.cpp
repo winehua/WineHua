@@ -323,6 +323,15 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
 
         std::string key = envLine.substr(0, sep);
         std::string value = envLine.substr(sep + 1);
+        // WINEDEBUG 的决策点在本文件的 select_winedebug_profile (它才知道是不是
+        // audio 诊断 exe、有没有 WINEHUA_WINEDEBUG 覆盖), 通用 __env 覆盖会让
+        // 它恒等于 App 侧下发的值, profile 选择失效。显式诊断请走 WINEHUA_WINEDEBUG。
+        if (key == "WINEDEBUG")
+        {
+            OH_LOG_INFO(LOG_APP, "[WineChild] __env WINEDEBUG ignored: %{public}s",
+                        value.c_str());
+            continue;
+        }
         setenv(key.c_str(), value.c_str(), 1);
         if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0)
             OH_LOG_INFO(LOG_APP, "[WineChild] env override %{public}s=%{public}s",

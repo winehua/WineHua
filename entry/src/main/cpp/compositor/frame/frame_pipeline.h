@@ -48,7 +48,7 @@ struct BlitSource {
 // layers 的 sub 指针解锁后失效 — Blitter 只读各层值字段 (type/toplevelId/
 // x/y/w/h), 不得解引用 sub (所需字段已全部拷入 srcs)。
 struct FramePlan {
-    std::vector<DesktopCompositor::CompositorLayer> layers;  // 层列表 (锁内构建)
+    std::vector<CompositorLayer> layers;  // 层列表 (锁内构建)
     std::vector<BlitSource> srcs;         // 与 layers 等长 (锁内快照)
     int rootW = 0, rootH = 0;
     uint32_t fullscreenId = 0;
@@ -98,6 +98,14 @@ private:
                                             ToplevelManager::ToplevelState*& rst);
     // 阶段 2: 全屏 pick/fit
     void PlanFullscreenLocked(FramePlan& plan);
+    // 全屏窗口内容层判据 (阶段 3/4 共用的几何规则唯一实现): 该 subsurface
+    // 是否覆盖全屏窗口整个内容区 — 覆盖 = 内容层 (游戏画面, 可作直传源);
+    // 不覆盖 = 叠加其上的浮层 (菜单/提示), 直传须回退 CPU 合成。
+    // caller 保证 layer.type == Subsurface; fullscreenX/Y 为窗口位置。
+    static bool SubsurfaceCoversContentRect(const CompositorLayer& layer,
+                                            int fullscreenX, int fullscreenY,
+                                            int contentW, int contentH);
+
     // 阶段 3: fullscreenContentCovered 覆盖检测
     bool DetectFullscreenContentCoveredLocked(const FramePlan& plan) const;
     // 阶段 4: SHM 全屏直传判定 (通过即填好 out+frame 并打直传日志, 返回 true)
@@ -138,15 +146,15 @@ public:
 
     // PC 模式窗口内 subsurface blit (纯像素): 直接读层像素 (无快照 — PC
     // 路径调用方全程持 tmgr 锁, 与原实现一致), 本函数自身不碰锁。
-    static void BlitWindowSubsurface(const DesktopCompositor::CompositorLayer& layer,
+    static void BlitWindowSubsurface(const CompositorLayer& layer,
                                      int winW, int winH, std::vector<uint8_t>& out);
 
 private:
     static void BlitToplevel(const FramePlan& plan,
-                             const DesktopCompositor::CompositorLayer& layer,
+                             const CompositorLayer& layer,
                              const BlitSource& bs, std::vector<uint8_t>& composited);
     static void BlitSubsurface(const FramePlan& plan,
-                               const DesktopCompositor::CompositorLayer& layer,
+                               const CompositorLayer& layer,
                                const BlitSource& bs, std::vector<uint8_t>& composited);
 
     bool frameTrace_;

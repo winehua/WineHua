@@ -34,7 +34,7 @@ public:
     // Re-export types moved to compositor/ (backward compat)
     using ZeroCopyLayerInfo = ::ZeroCopyLayerInfo;
     using ZeroCopyOccluderRect = ::ZeroCopyOccluderRect;
-    using SubsurfaceLayer = DesktopCompositor::SubsurfaceLayer;
+    using SubsurfaceLayer = ::SubsurfaceLayer;
     using InputTarget = ::InputTarget;
 
     using StateCb = std::function<void(const char*)>;
