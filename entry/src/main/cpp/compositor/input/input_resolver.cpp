@@ -132,7 +132,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
         // 非全屏弹窗/对话框保留
         if (DesktopCompositor::ShouldSkipFullscreenCascade(layer, fullscreenId, fsOk, tmgr_)) continue;
 
-        if (layer.type == DesktopCompositor::CompositorLayer::Type::Subsurface) {
+        if (layer.type == CompositorLayer::Type::Subsurface) {
             // 内部菜单: enter 层自己的 wl_surface, 坐标以层原点为基。层可伸出
             // 父窗口边界 — 若改走父窗口 surface, 伸出部分产生越界的窗口相对
             // 坐标, 会被 winewayland 的 motion clamp (wayland_pointer.c
@@ -180,7 +180,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                 finalize();
                 return out.surface != nullptr;
             }
-        } else if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel) {
+        } else if (layer.type == CompositorLayer::Type::Toplevel) {
             if (fsOk && layer.toplevelId == fullscreenId) {
                 // 主全屏窗口: 内容区 (fit 矩形) 命中
                 if (x >= transform.offX && x < transform.offX + transform.dstW &&

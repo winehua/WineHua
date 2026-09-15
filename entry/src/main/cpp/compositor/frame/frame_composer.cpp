@@ -79,11 +79,11 @@ bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
     out = st->Pixels();
     for (const auto& layer : layers) {
         switch (layer.type) {
-            case DesktopCompositor::CompositorLayer::Type::Root:
+            case CompositorLayer::Type::Root:
                 break;  // 基底已在 out = st->pixels 拷贝
-            case DesktopCompositor::CompositorLayer::Type::Toplevel:
+            case CompositorLayer::Type::Toplevel:
                 break;  // 窗口内 ZC 整窗口层: GPU 自绘, CPU 帧跳过
-            case DesktopCompositor::CompositorLayer::Type::Subsurface:
+            case CompositorLayer::Type::Subsurface:
                 if (layer.ShouldSkipCpu()) break;  // ZC 子表面 (GPU 自绘) / 不可见: 同上
                 FrameBlitter::BlitWindowSubsurface(layer, winW, winH, out);
                 break;
