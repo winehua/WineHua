@@ -101,6 +101,29 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
   { name: 'D3d Smoke', exe: 'smoke/x64/winehua_d3d_switch_cube.exe' },
 ];
 
+// 名字占位判定: 空串/纯空白/仅控制字符。lnk 的 NAME_STRING 可能是 wine 留空
+// 写成的占位 NUL (count=1, 内容 0x0000) — 早期解析把它当真名入库, 卡片标题
+// 渲染为不可见字符。判定失败的名字跳过展示补写。
+function isPlaceholderName(name: string | undefined): boolean {
+  if (!name) {
+    return true;
+  }
+  for (let i = 0; i < name.length; i++) {
+    const c = name.charCodeAt(i);
+    if (c > 0x20 && c != 0x7f) {
+      return false;  // 存在非空白可见字符
+    }
+  }
+  return true;
+}
+
+// 文件名兜底显示名 (去目录与后缀): 无 lnk 上下文时修存量脏名字用
+function fallbackNameOf(path: string): string {
+  const base = path.substring(path.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.substring(0, dot) : base;
+}
+
 // 应用库服务: 收藏的 exe 列表, preferences 持久化 (store 'app_library', 单 key 'entries' 存 JSON)。
 // 页面经 subscribe 镜像 entries; launch 与原 Index.doRun 一致 (统一走 WINE_BIN)。
 // 注意: entries 每次变更都换新数组引用, 保证页面 @State 镜像能触发刷新。
@@ -151,7 +174,19 @@ export class AppLibraryService {
       const json = this.store.getSync(KEY_ENTRIES, '[]') as string;
       const list = JSON.parse(json) as AppEntry[];
       if (Array.isArray(list)) {
-        this.entries = list;
+        // 存量脏名字清洗: 早期把 lnk 占位 NUL 当名字入库的条目用文件名兜底
+        // (下次扫描开始菜单会被 lnk 真名覆盖)
+        let fixed = 0;
+        this.entries = list.map((e: AppEntry): AppEntry => {
+          if (!isPlaceholderName(e.name)) {
+            return e;
+          }
+          fixed++;
+          return this.withField(e, { name: fallbackNameOf(e.path) });
+        });
+        if (fixed > 0) {
+          this.persist();
+        }
         this.sortEntries();
       }
     } catch (e) {
@@ -205,6 +240,7 @@ export class AppLibraryService {
       const marks: ScanMarks = { added: 0, classified: 0, removed: 0 };
       const fresh: AppEntry[] = [];
       const upgraded: string[] = [];
+      const renamed = new Map<string, string>();  // 历史脏名字补写: path → 新名
       for (const t of found) {
         const existing = this.entries.find((e: AppEntry) => e.path == t.target);
         if (!existing) {
@@ -214,6 +250,13 @@ export class AppLibraryService {
             marks.added++;
           }
           continue;
+        }
+        // 名字为占位 (早期把 lnk 占位 NUL 当真名入库) 或仍是文件兜底名的条目
+        // 用本次解析的快捷方式名覆盖; 用户手动改过的不动
+        const autoName = fallbackNameOf(existing.path);
+        if ((isPlaceholderName(existing.name) || existing.name === autoName) &&
+            !isPlaceholderName(t.name) && t.name !== existing.name) {
+          renamed.set(t.target, t.name);
         }
         if (!existing.builtin && existing.source != 'lnk' && upgraded.indexOf(t.target) < 0) {
           upgraded.push(t.target);
@@ -233,10 +276,22 @@ export class AppLibraryService {
       // 新增 + 归类升级 + 对账移除 → 统一一次 sort/persist/notify
       // (逐条操作会让整组 JSON flush 与整页重渲染各跑 N 遍, 200 条目
       // 是 4 万次级写放大, UI 明显抖动)
-      if (fresh.length > 0 || upgraded.length > 0 || marks.removed > 0) {
-        if (upgraded.length > 0) {
-          this.entries = this.entries.map((e: AppEntry): AppEntry =>
-            upgraded.indexOf(e.path) >= 0 ? this.withField(e, { source: 'lnk' }) : e);
+      if (fresh.length > 0 || upgraded.length > 0 || renamed.size > 0 || marks.removed > 0) {
+        if (upgraded.length > 0 || renamed.size > 0) {
+          this.entries = this.entries.map((e: AppEntry): AppEntry => {
+            const patch: AppEntryPatch = {};
+            if (upgraded.indexOf(e.path) >= 0) {
+              patch.source = 'lnk';
+            }
+            const newName = renamed.get(e.path);
+            if (newName !== undefined) {
+              patch.name = newName;
+            }
+            if (patch.source === undefined && patch.name === undefined) {
+              return e;
+            }
+            return this.withField(e, patch);
+          });
         }
         if (fresh.length > 0) {
           this.entries = this.entries.concat(fresh);

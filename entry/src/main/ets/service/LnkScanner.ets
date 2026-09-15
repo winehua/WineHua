@@ -6,7 +6,7 @@ const DOMAIN = 0x0000;
 const TAG = 'LnkScanner';
 
 export interface LnkTarget {
-  name: string;   // 显示名 (lnk 内 NAME_STRING, 缺省用文件名去后缀)
+  name: string;   // 显示名 = 快捷方式文件名去 .lnk 后缀 (与 Windows/wine 一致)
   target: string; // 解析后的 native 可启动文件路径
 }
 
@@ -108,7 +108,6 @@ export class LnkScanner {
         }
       }
       const flags = dv.getUint32(0x14, true);
-      const isUnicode = (flags & 0x80) != 0;
       let pos = 76;
       // LinkTargetIDList: 跳过
       if (flags & 0x01) {
@@ -160,38 +159,19 @@ export class LnkScanner {
       if (!target) {
         return null;
       }
-      // StringData: 只需要 NAME_STRING (HasName); 之前按序跳过
-      let displayName = '';
-      const stringFlags = [0x04, 0x08, 0x10, 0x20, 0x40];
-      for (let i = 0; i < stringFlags.length; i++) {
-        const f = stringFlags[i];
-        if (!(flags & f)) {
-          continue;
-        }
-        if (pos + 2 > st.size) {
-          break;
-        }
-        const count = dv.getUint16(pos, true);
-        pos += 2;
-        const byteLen = count * (isUnicode ? 2 : 1);
-        if (pos + byteLen > st.size) {
-          break;
-        }
-        if (f == 0x04) {
-          displayName = isUnicode
-            ? this.readUtf16(bytes, pos, count)
-            : this.readAnsi(bytes, pos, count);
-        }
-        pos += byteLen;
-      }
       // Windows 路径 → native
       const native = await this.resolveWinPath(target, driveC, zHome);
       if (!native || !isProgramFile(native)) {
         return null;
       }
+      // 显示名 = 快捷方式文件名 (去 .lnk 后缀), 与 Windows/wine 开始菜单一致:
+      // lnk 内的 NAME_STRING 是可选字段, wine 创建时留空 (写占位 NUL), 读它
+      // 会让卡片标题渲染成不可见字符
       const fileName = path.substring(path.lastIndexOf('/') + 1);
-      const fallback = fileName.substring(0, fileName.length - 4);
-      return { name: displayName || fallback, target: native };
+      const name = fileName.toLowerCase().endsWith('.lnk')
+        ? fileName.substring(0, fileName.length - 4)
+        : fileName;
+      return { name, target: native };
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'parse fail %{public}s: %{public}s', path, JSON.stringify(e));
       return null;
@@ -214,14 +194,6 @@ export class LnkScanner {
     return s;
   }
 
-  private readUtf16(bytes: Uint8Array, off: number, count: number): string {
-    let s = '';
-    for (let i = 0; i < count; i++) {
-      s += String.fromCharCode(bytes[off + i * 2] | (bytes[off + i * 2 + 1] << 8));
-    }
-    return s;
-  }
-
   private readAnsiZ(bytes: Uint8Array, off: number, size: number): string {
     let s = '';
     for (let i = off; i < size; i++) {
@@ -229,14 +201,6 @@ export class LnkScanner {
         break;
       }
       s += String.fromCharCode(bytes[i]);
-    }
-    return s;
-  }
-
-  private readAnsi(bytes: Uint8Array, off: number, count: number): string {
-    let s = '';
-    for (let i = 0; i < count; i++) {
-      s += String.fromCharCode(bytes[off + i]);
     }
     return s;
   }

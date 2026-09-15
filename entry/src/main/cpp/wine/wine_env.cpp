@@ -70,9 +70,9 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // the front of the NCP environment list.
     winehua::controller::EnsureBridgeForWineLaunch(prefixDir);
     winehua::controller::AppendWineGamepadEnv(env);
-    // 仅主进程侧基线: locale / WINEDEBUG 静默 / GStreamer 插件路径
-    // (子进程 WINEDEBUG 由 select_winedebug_profile 决定, 不走此表)
-    env.push_back("WINEDEBUG=-all");
+    // locale / GStreamer 插件路径。WINEDEBUG 不在此注入: 本列表经 __env 通道
+    // 下发, 在 wine 侧晚于 setup_wine_env 应用, 会盖掉 select_winedebug_profile
+    // 的选择 — wine 进程 WINEDEBUG 的唯一决策点是 wine_child.cpp。
     env.push_back("LANG=" + wineLang + ".UTF-8");
     // OHOS musl 无 locale 数据, setlocale 激活失败返回 "C";
     // Wine 的 unix_to_win_locale 遇 "C" 只读 LC_ALL 兜底 (ntdll/unix/env.c),

@@ -122,7 +122,7 @@ bool DesktopCompositor::ReorderSubsurfaceLayerBelow(wl_resource* child, wl_resou
     return true;
 }
 
-const DesktopCompositor::SubsurfaceLayer*
+const SubsurfaceLayer*
 DesktopCompositor::FindZeroCopyLayerForToplevelLocked(uint32_t id) const
 {
     // toplevel 的 zero-copy subsurface 层查找 — 层集合判定单一实现 (ZcBridge::
@@ -145,7 +145,7 @@ bool DesktopCompositor::GetZeroCopyContentSizeLocked(uint32_t toplevelId,
     return zc_.GetContentSize(toplevelId, outW, outH);
 }
 
-std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)
+std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)
 {
     std::vector<CompositorLayer> layers;
     const uint32_t rootId = desktopRootToplevelId_;
@@ -319,7 +319,7 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     return layers;
 }
 
-std::vector<DesktopCompositor::CompositorLayer>
+std::vector<CompositorLayer>
 DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int winH)
 {
     std::vector<CompositorLayer> layers;
