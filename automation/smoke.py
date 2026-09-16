@@ -317,10 +317,13 @@ ABILITY = "EntryAbility"
 #   hdc shell：只认真实路径；对沙箱视角路径的 rm -rf 会静默返回 0 而实际不删
 SANDBOX_FILES = "/data/storage/el2/base/files"
 REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
-# 设备端播种源（相对 files/）：SmokeHook.seed() 把 <WINE_ROOT>/smoke 拷到
-# <prefix>/drive_c/smoke。推这里 + 清 C:\smoke 即完成载荷更新，无需重装 HAP。
-PAYLOAD_REL = "wine/smoke"
+# 载荷推送源（相对 files/）：设备端 SmokeHook.seed 的优先源，按 manifest 版本
+# 比对后导入 C:\smoke（HAP rawfile 树 files/wine/smoke 为兜底，host 不写）。
+PAYLOAD_REL = "smoke-payload"
+# 当前 prefix 的实际载荷：二次 Want 不触发设备端 seed，必须直接更新这里
 DRIVE_C_REL = ".wine/drive_c/smoke"
+# job 文件（host 生成）：debug 参数组合 / 选测 / 内联临时用例走它下发
+JOB_REL = "smoke-job.json"
 
 
 def resolve_hdc() -> str:
@@ -356,7 +359,8 @@ def hdc_shell(hdc: str, device: str, script: str) -> tuple:
     return result.returncode, result.stdout
 
 
-def hdc_send_dir(hdc: str, device: str, local: Path, remote: str) -> None:
+def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:
+    """推文件或目录到沙箱（remote 用沙箱视角路径）。"""
     result = subprocess.run(
         [hdc, "-t", device, "file", "send", "-b", BUNDLE, str(local), remote],
         capture_output=True, text=True, errors="replace")
@@ -406,27 +410,54 @@ def cmd_push(args: argparse.Namespace) -> int:
     device = resolve_device(hdc, args.device)
     log(f"push {payload} → {device}")
     # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
-    # 1) 播种源：--prefix clean 清盘后由设备端 seed 重新导入
+    # 1) 推送源：设备端 seed 的来源（冷启动 / clean 清盘后按版本比对导入）
     remove_sandbox_path(hdc, device, PAYLOAD_REL)
-    hdc_send_dir(hdc, device, payload, f"{SANDBOX_FILES}/{PAYLOAD_REL}")
+    hdc_send(hdc, device, payload, f"{SANDBOX_FILES}/{PAYLOAD_REL}")
     # 2) 当前 prefix 的 C:\smoke：立即生效。二次 Want 不触发 seed（seed 只在
-    #    引擎 ready 链上跑），只更新播种源会导致本次会话仍读旧载荷。
+    #    引擎 ready 链上跑），只更新推送源会导致本次会话仍读旧载荷。
     code, out = hdc_shell(hdc, device, f"ls -d '{REAL_FILES}/.wine/drive_c' 2>/dev/null")
-    target = f"{SANDBOX_FILES}/{DRIVE_C_REL}"
     if code == 0 and out.strip():
         remove_sandbox_path(hdc, device, DRIVE_C_REL)
-        hdc_send_dir(hdc, device, payload, target)
+        hdc_send(hdc, device, payload, f"{SANDBOX_FILES}/{DRIVE_C_REL}")
     else:
-        target = f"{SANDBOX_FILES}/{PAYLOAD_REL}"
-        log("prefix 未创建：仅更新播种源，C:\\smoke 由设备端 seed 播种")
+        log("prefix 未创建：仅更新推送源，C:\\smoke 由设备端 seed 播种")
     for probe in ("suites.json", "x64/winehua_graphics_smoke.exe", "x86/winehua_graphics_smoke.exe"):
-        code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{DRIVE_C_REL}/{probe}' 2>/dev/null")
+        code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
         if code != 0 or not out.strip():
-            code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
-            if code != 0 or not out.strip():
-                die(f"push verification failed: missing {probe}")
+            die(f"push verification failed: missing {probe}")
     log("push done")
     return 0
+
+
+def build_job(args: argparse.Namespace) -> dict:
+    """host 侧的运行描述（设备端 SmokeHook.applyWant 解析）。"""
+    job = {"suite": args.suite, "prefix": args.prefix}
+    if args.tests:
+        job["tests"] = [item.strip() for item in args.tests.split(",") if item.strip()]
+    if args.inline:
+        job["inline"] = json.loads(Path(args.inline).read_text())
+    if args.long_seconds:
+        job["longSeconds"] = args.long_seconds
+    params = {}
+    if args.env:
+        overrides = {}
+        for item in args.env:
+            key, sep, value = item.partition("=")
+            if not sep:
+                die(f"--env 需要 KEY=VALUE 形式: {item}")
+            overrides[key] = value
+        params["env"] = overrides
+    if args.d3d:
+        params["d3dBackend"] = args.d3d
+    if args.dxvk:
+        params["dxvkBackend"] = args.dxvk
+    if args.seconds is not None:
+        params["seconds"] = args.seconds
+    if args.timeout_ms is not None:
+        params["timeoutMs"] = args.timeout_ms
+    if params:
+        job["params"] = params
+    return job
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -442,12 +473,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     archive = Path(args.archive_root).resolve() / f"{args.suite}-{run_id}"
     archive.mkdir(parents=True, exist_ok=True)
 
+    # job 文件：选测 / 参数覆盖 / 内联用例走它；5 键仍然带，兼容未升级的设备端
+    job = build_job(args)
+    job_path = archive / "job.json"
+    job_path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n")
+    remove_sandbox_path(hdc, device, JOB_REL)
+    hdc_send(hdc, device, job_path, f"{SANDBOX_FILES}/{JOB_REL}")
+
     start = (f"aa start -a {ABILITY} -b {BUNDLE} "
-             f"--ps winehua.mode smoke --ps winehua.suite {args.suite} "
+             f"--ps winehua.mode smoke "
+             f"--ps winehua.job_file {SANDBOX_FILES}/{JOB_REL} "
+             f"--ps winehua.suite {args.suite} "
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
-    log(f"run {args.suite} (runId={run_id}, prefix={args.prefix})")
+    log(f"run {args.suite} (runId={run_id}, prefix={args.prefix}, "
+        f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
     if code != 0:
         die(f"aa start failed: {out.strip()}")
@@ -606,6 +647,16 @@ def main() -> int:
     run.add_argument("--run-id", default="")
     run.add_argument("--long-seconds", type=int, default=0)
     run.add_argument("--skip-push", action="store_true")
+    run.add_argument("--tests", default="",
+                     help="逗号分隔的 testId 选测（suite 子集）")
+    run.add_argument("--inline", default="",
+                     help="内联测试定义 JSON 文件（临时用例；exe 须已在 C:\\smoke）")
+    run.add_argument("--env", action="append", default=[],
+                     help="KEY=VALUE 覆盖选中测试的 env（可重复）")
+    run.add_argument("--d3d", default="", help="覆盖 d3d 后端（如 dxvk_modern_2_6）")
+    run.add_argument("--dxvk", default="", help="覆盖 dxvk 后端")
+    run.add_argument("--seconds", type=int, default=None)
+    run.add_argument("--timeout-ms", type=int, default=None, dest="timeout_ms")
     run.add_argument("--archive-root",
                      default=str(REPO_ROOT / "build/automation-logs"))
     run.add_argument("--timeout-minutes", type=int, default=15)

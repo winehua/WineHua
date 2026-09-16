@@ -1,10 +1,15 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
-  WineEnvService, WINE_ROOT, FILES_BASE, pathExists
+  WineEnvService, WINE_ROOT, FILES_BASE, pathExists, readTextIfExists
 } from '../service/WineEnvService';
 import { SmokeRunner } from './SmokeRunner';
-import { SmokeRequest } from './SmokeTypes';
+import { SmokeJob, SmokeRequest } from './SmokeTypes';
+
+// 载荷 manifest 的窄化视图 (只需内容版本)
+interface PayloadManifest {
+  suiteVersion?: string;
+}
 
 const DOMAIN = 0x0000;
 const TAG = 'SMOKE';
@@ -38,24 +43,46 @@ export class SmokeHook {
   // 订阅回调拾起进入跑测分支
   private resetStarted: boolean = false;
 
-  // EntryAbility.publishLaunchRequest 调用: want 里 mode=smoke 时发布 5 键请求
-  // 到 AppStorage (消费清键, 不重触发)。正常会话 (无 mode) 零行为变化。
+  // EntryAbility.publishLaunchRequest 调用: want 里 mode=smoke 时发布请求到
+  // AppStorage (消费清键, 不重触发)。正常会话 (无 mode) 零行为变化。
+  // 两种下发方式: winehua.job_file (沙箱路径, 内容大的 job) 优先于内联
+  // winehua.job; 都没有则退化为旧 5 键 (suite + run_id + prefix)。
   applyWant(parameters: Record<string, Object> | undefined): void {
     const value = (key: string, fallback: string): string => {
       if (!parameters || parameters[key] === undefined || parameters[key] === null) return fallback;
       return `${parameters[key]}`;
     };
     if (value('winehua.mode', '') !== 'smoke') return;
-    AppStorage.setOrCreate<string>('winehua.smoke.request', JSON.stringify({
-      suite: value('winehua.suite', 'core'),
+    const job: SmokeJob | undefined = this.parseJob(value);
+    const prefix = job && job.prefix ? job.prefix : value('winehua.prefix', 'reuse');
+    const request: SmokeRequest = {
+      suite: job && job.suite ? job.suite : value('winehua.suite', 'core'),
       runId: value('winehua.run_id', `manual-${Date.now()}`),
-      prefix: value('winehua.prefix', 'reuse') === 'clean' ? 'clean' : 'reuse',
-      longSeconds: Number(value('winehua.long_seconds', '3600')),
+      prefix: prefix === 'clean' ? 'clean' : 'reuse',
+      longSeconds: job && job.longSeconds ? job.longSeconds : Number(value('winehua.long_seconds', '3600')),
+      job: job,
       source: 'want'
-    }));
-    hilog.info(DOMAIN, TAG, 'want request: suite=%{public}s runId=%{public}s prefix=%{public}s',
-      value('winehua.suite', 'core'), value('winehua.run_id', ''),
-      value('winehua.prefix', 'reuse'));
+    };
+    AppStorage.setOrCreate<string>('winehua.smoke.request', JSON.stringify(request));
+    hilog.info(DOMAIN, TAG, 'want request: suite=%{public}s runId=%{public}s prefix=%{public}s job=%{public}s',
+      job && job.suite ? job.suite : value('winehua.suite', 'core'), value('winehua.run_id', ''),
+      prefix, job ? 'yes' : 'no');
+  }
+
+  private parseJob(value: (key: string, fallback: string) => string): SmokeJob | undefined {
+    const jobFile = value('winehua.job_file', '');
+    const inline = jobFile ? '' : value('winehua.job', '');
+    const raw = jobFile ? readTextIfExists(jobFile) : inline;
+    if (!raw) {
+      if (jobFile) hilog.error(DOMAIN, TAG, 'job_file not readable: %{public}s', jobFile);
+      return undefined;
+    }
+    try {
+      return JSON.parse(raw) as SmokeJob;
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'job parse error: %{public}s', JSON.stringify(e));
+      return undefined;
+    }
   }
 
   // WineEnvService.init 调用 (native 状态回调与订阅已注册后): 消费冷启动请求;
@@ -135,20 +162,38 @@ export class SmokeHook {
     }
   }
 
-  // C:\smoke 载荷播种 (suites.json + exe, assemble.sh 打包随 wine 数据):
-  // 引擎 ready 时调用 (onEngineReady 前置). 幂等以 pathExists 判定 —
-  // 不用 seedDone flag: 同一 App 进程内 clean 清盘后 C:\smoke 不存在,
-  // 必须能重播 (run_regression --gate 的 reuse×3+clean 连续场景)。
+  // C:\smoke 载荷导入, 引擎 ready 时调用 (onEngineReady 前置)。源优先级:
+  //   1) files/smoke-payload —— host 推送 (改测试只推几 MB, 不重装 HAP)
+  //   2) files/wine/smoke    —— HAP rawfile 解压树 (仅开发构建含载荷, 兜底)
+  // 幂等以 manifest.suiteVersion (载荷内容版本) 比对: 相同跳过, 不同整树覆盖。
+  // 不用 seedDone flag: 同一 App 进程内 clean 清盘后 C:\smoke 不存在必须能重播。
+  // 覆盖不删旧树: 同名文件覆盖, results/ 保留 (改名/删除的用例文件会残留, 无害)。
   // 失败只记日志不阻塞。
   private seed(): void {
-    const source = `${WINE_ROOT}/smoke`;
+    const pushed = `${FILES_BASE}/smoke-payload`;
+    const bundled = `${WINE_ROOT}/smoke`;
+    const source = pathExists(pushed) ? pushed : (pathExists(bundled) ? bundled : '');
+    if (!source) return;
     const target = `${FILES_BASE}/.wine/drive_c/smoke`;
-    if (pathExists(target) || !pathExists(source)) return;
+    const version = this.payloadVersion(`${source}/manifest.json`);
+    if (version && version === this.payloadVersion(`${target}/manifest.json`)) return;
     try {
       this.copyTree(source, target);
-      hilog.warn(DOMAIN, TAG, 'seeded smoke payload → C:\\smoke');
+      hilog.warn(DOMAIN, TAG, 'seeded smoke payload %{public}s → C:\\smoke',
+        version ? version : '(unversioned)');
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'seed smoke payload failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  private payloadVersion(manifestPath: string): string {
+    const raw = readTextIfExists(manifestPath);
+    if (!raw) return '';
+    try {
+      const doc = JSON.parse(raw) as PayloadManifest;
+      return doc.suiteVersion ? `${doc.suiteVersion}` : '';
+    } catch (e) {
+      return '';
     }
   }
 
