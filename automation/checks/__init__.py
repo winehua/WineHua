@@ -43,16 +43,30 @@ def result_json(ctx: dict) -> dict:
 
 
 def visual(ctx: dict) -> dict:
-    frame_path = ctx.get("frame")
-    if not frame_path:
+    """对采集到的固定帧跑视觉校验。多帧任一通过即通过 —— 立方体/场景随
+    动画相位波动（旋转角度不同颜色桶分布不同），单帧采样会把瞬时相位判成
+    失败；采集侧按序多截，判定取最好的一帧。"""
+    paths = ctx.get("frames") or []
+    if not paths:
         return {"status": "FAIL", "stage": "missing-frame",
                 "message": "未采集到固定帧截图（截图时机错过或测试未渲染）"}
-    report = frame.validate(ctx["validator"], frame_path)
+    reports = []
+    for path in paths:
+        report = frame.validate(ctx["validator"], path)
+        reports.append(report)
+        if report["status"] == "PASS":
+            return {
+                "status": "PASS",
+                "stage": f"visual:{ctx['validator']}",
+                "message": f"{report['validator']} on {path.name}",
+                "metrics": report,
+            }
+    last = reports[-1]
     return {
-        "status": report["status"],
+        "status": "FAIL",
         "stage": f"visual:{ctx['validator']}",
-        "message": f"{report['validator']} on {frame_path.name}",
-        "metrics": report,
+        "message": f"{last['validator']} 全部 {len(reports)} 帧未通过 ({last.get('message', '')})",
+        "metrics": last,
     }
 
 

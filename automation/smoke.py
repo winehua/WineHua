@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -568,7 +569,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     suites = load_suites(cases)
     suite = summary.get("suite", "")
     entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
-    frames = {path.stem: path for path in (archive / "frames").glob("*.jpeg")}
+    # 帧分组：<test_id>.jpeg 与重试帧 <test_id>-<n>.jpeg（testId 以 -x64/-x86 结尾，
+    # 去掉末尾纯数字后缀即归属测试）
+    frames = {}
+    for path in sorted((archive / "frames").glob("*.jpeg")):
+        frames.setdefault(re.sub(r"-\d+$", "", path.stem), []).append(path)
     artifact_path = archive / "artifact.json"
     long_seconds = 3600
     if artifact_path.is_file():
@@ -584,13 +589,15 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0 if host["status"] == "PASS" else 1
 
 
-def snapshot_frame(hdc: str, device: str, archive: Path, test_id: str) -> Path | None:
-    """截取固定帧并回传本地归档。"""
-    remote = f"/data/local/tmp/smoke-frame-{test_id}.jpeg"
+def snapshot_frame(hdc: str, device: str, archive: Path, test_id: str,
+                   index: int = 0) -> Path | None:
+    """截取固定帧并回传本地归档（index>0 为同一测试的重试帧）。"""
+    remote = f"/data/local/tmp/smoke-frame-{test_id}-{index}.jpeg"
     code, _ = hdc_shell(hdc, device, f"snapshot_display -f {remote}")
     if code != 0:
         return None
-    local = archive / "frames" / f"{test_id}.jpeg"
+    name = f"{test_id}.jpeg" if index == 0 else f"{test_id}-{index}.jpeg"
+    local = archive / "frames" / name
     local.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([hdc, "-t", device, "file", "recv", remote, str(local)],
                    capture_output=True, text=True, errors="replace")
@@ -598,11 +605,14 @@ def snapshot_frame(hdc: str, device: str, archive: Path, test_id: str) -> Path |
 
 
 def poll_run(hdc: str, device: str, archive: Path, run_id: str,
-             frame_targets: dict, timeout_minutes: int, poll_seconds: int) -> tuple:
+             frame_targets: dict, timeout_minutes: int, poll_seconds: int,
+             frame_attempts: int = 4) -> tuple:
     """轮询 suite-summary；期间对需要视觉判定的测试采集固定帧。
 
     截图时机沿用旧脚本语义：测试程序完成固定帧渲染后写结果文件（message 含
-    "fixed-frame"），此时画面仍在 —— 轮询到该文件即截图，帧对应那一轮渲染。
+    "fixed-frame"），此时画面仍在 —— 轮询到该文件即采集。采集多帧（旧脚本
+    capture_d3d11_frame 的 4 次尝试语义）：场景随动画相位波动，判定侧取任一
+    通过即可，单帧采样会把瞬时相位判成失败。
     """
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
     deadline = time.time() + timeout_minutes * 60
@@ -615,10 +625,16 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
             text = sandbox_text(hdc, device,
                                 f"{DRIVE_C_REL}/results/{run_id}/{test_id}.json")
             if '"fixed-frame"' in text and '"message"' in text:
-                path = snapshot_frame(hdc, device, archive, test_id)
-                if path:
-                    frames[test_id] = path
-                    log(f"  frame: {test_id} captured")
+                captured = []
+                for attempt in range(frame_attempts):
+                    if attempt:
+                        time.sleep(0.6)
+                    path = snapshot_frame(hdc, device, archive, test_id, attempt)
+                    if path:
+                        captured.append(path)
+                if captured:
+                    frames[test_id] = captured
+                    log(f"  frame: {test_id} captured x{len(captured)}")
         text = sandbox_text(hdc, device, summary_rel)
         if text.strip().startswith("{"):
             try:
@@ -662,7 +678,7 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
         verdict = evaluate_checks(declared, {
             "run_dir": archive, "test_id": test_id,
             "test": entry.to_suite_json() if entry else {},
-            "result": result, "frame": frames.get(test_id),
+            "result": result, "frames": frames.get(test_id, []),
         })
         results[test_id] = verdict
 
@@ -673,7 +689,7 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
     if declared_suite:
         suite_verdict = evaluate_checks(declared_suite, {
             "run_dir": archive, "test_id": suite_name, "test": {},
-            "result": None, "frame": None,
+            "result": None, "frames": [],
             "summary": {"tests": collected},
             "suite": suite_name, "long_seconds": long_seconds,
         })
