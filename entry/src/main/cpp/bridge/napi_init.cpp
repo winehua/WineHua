@@ -966,17 +966,33 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
 }
 
 static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc < 3) return nullptr;
     uint32_t tl; int32_t w, h;
+    bool resizing = false;
     napi_get_value_uint32(env, args[0], &tl);
     napi_get_value_int32(env, args[1], &w);
     napi_get_value_int32(env, args[2], &h);
-    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d",
-                tl, w, h);
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h);
+    if (argc >= 4) napi_get_value_bool(env, args[3], &resizing);
+    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
+                tl, w, h, resizing ? "yes" : "no");
+    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
+    return nullptr;
+}
+
+// 拖拽缩放结束 (ArkTS windowRectChange DRAG_END): 发 configure(0,0) 清 RESIZING
+// 状态, Wine 保持当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
+static napi_value NotifyToplevelResizeEnd(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    uint32_t tl;
+    napi_get_value_uint32(env, args[0], &tl);
+    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResizeEnd tl=%{public}u", tl);
+    WaylandServer::GetInstance()->NotifyToplevelResize(tl, 0, 0, false);
     return nullptr;
 }
 
@@ -1144,6 +1160,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"dumpWindowLayout", nullptr, DumpWindowLayout, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
