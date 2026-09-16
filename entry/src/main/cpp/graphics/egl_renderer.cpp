@@ -552,6 +552,21 @@ FitRect EglRenderer::GetInputLetterbox() const {
     return letterbox_;
 }
 
+FitRect EglRenderer::ComputeFrameDisplayRect(int drawW, int drawH) const {
+    // 常态: 与等比映射锚同值 (整帧按比例显示, 多余部分是黑边)
+    if (!stretchFill_.load() || drawW <= 0 || drawH <= 0) {
+        return letterbox_;
+    }
+    // 拖拽缩放中: 填满 surface — srcW/srcH/scale 沿用映射锚, 只覆盖显示目标
+    // (拖拽的过渡帧不保持比例, Wine 新帧到达后由拖拽结束的 configure 复位)
+    FitRect r = letterbox_;
+    r.offX = 0;
+    r.offY = 0;
+    r.dstW = drawW;
+    r.dstH = drawH;
+    return r;
+}
+
 uint32_t EglRenderer::DirectPassCapabilities() const
 {
     // 直传能力位 (任务 3, 行为平价): 渲染器 GL 行为是 SHM 全屏直传逐像素
@@ -859,14 +874,13 @@ void EglRenderer::RenderLoop() {
         // 与"记的"是同一个值
         const int drawW = width_, drawH = height_;
 
-        // Letterbox 视口: 保持 Wine 帧宽高比, 居中渲染, 左右或上下黑边。
-        // 几何统一由 ComputeFitRect 计算 (与 desktop 合成/输入命中同源;
-        // 历史实现此处独立手写, 截断取整与合成的 lround 不一致曾有 1px 偏差)
-        if (ComputeFitRect(drawW, drawH, frameW_, frameH_, letterbox_)) {
-            glViewport(letterbox_.offX, letterbox_.offY, letterbox_.dstW, letterbox_.dstH);
-        } else {
+        // 等比映射锚: 帧坐标空间 → surface 的保比例 fit。几何统一由
+        // ComputeFitRect 计算 (与 desktop 合成/输入命中同源; 历史实现此处
+        // 独立手写, 截断取整与合成的 lround 不一致曾有 1px 偏差)。
+        // 消费方: ZC 层映射/遮挡重绘/输入逆映射, 以及常态下的整帧显示 —
+        // 拖拽缩放中的整帧显示矩形另见 ComputeFrameDisplayRect。
+        if (!ComputeFitRect(drawW, drawH, frameW_, frameH_, letterbox_)) {
             letterbox_ = FitRect{};
-            glViewport(0, 0, drawW, drawH);
         }
         // [DBG-FIT] 几何变化时打印一条 (surface/frame/letterbox 任一变化)。
         // 采样式 %60 对"绘制次数"取模会吞掉关键那次绘制, 故改为变化即打;
@@ -921,7 +935,8 @@ void EglRenderer::RenderLoop() {
         glActiveTexture(GL_TEXTURE0);
 
         if (rendered) {
-            glViewport(letterbox_.offX, letterbox_.offY, letterbox_.dstW, letterbox_.dstH);
+            const FitRect disp = ComputeFrameDisplayRect(drawW, drawH);
+            glViewport(disp.offX, disp.offY, disp.dstW, disp.dstH);
             glUseProgram(program_);
             glBindTexture(GL_TEXTURE_2D, texture_);
             glUniform1i(glGetUniformLocation(program_, "uTex"), 0);

@@ -42,6 +42,11 @@ public:
     void SetSize(int w, int h) {
         expectW_ = w; expectH_ = h;
     }
+    // 拖拽缩放中: 整帧拉伸填满 surface (见 ComputeFrameDisplayRect)。拖拽时
+    // 窗口先变、Wine 新帧未到的空档里, 等比 fit 会按旧帧比例留黑边; 拉伸让
+    // 旧帧先铺满, 新帧到达自然消除。由 WaylandServer::NotifyToplevelResize
+    // 随 configure 同步 (拖拽结束的 0 尺寸 configure 带 resizing=false 清掉)。
+    void SetStretchFill(bool on) { stretchFill_.store(on); }
     bool IsValid() const { return running_; }
 
     // 尺寸 getters (供输入坐标转换: 触控坐标 -> wine 内容坐标)
@@ -69,6 +74,11 @@ private:
     bool UpdateZeroCopyFrame(int& width, int& height);
     void ReleaseZeroCopyBinding();
     void ShutdownZeroCopyConsumer();
+
+    // 整帧的显示矩形 (surface 坐标): 常态 = letterbox_ (等比 fit); 拖拽缩放中
+    // = 填满 surface (SetStretchFill)。letterbox_ 本身保持等比映射锚语义不变 —
+    // 帧内坐标映射 (ZC 层/遮挡重绘/输入逆映射) 都锚它, 本矩形只服务"整帧显示"。
+    FitRect ComputeFrameDisplayRect(int drawW, int drawH) const;
 
     OHNativeWindow* window_ = nullptr;
     // 沉浸式切换的两拍 resize (2800x1683 → 2800x1840) 与渲染循环的竞态
@@ -147,7 +157,9 @@ private:
     int frameW_ = 0, frameH_ = 0;  // Wine 帧内容尺寸 (坐标转换)
     bool frameArgb_ = false;       // 当前帧是 ARGB8888 (layered/shaped 异型窗口, 透传 alpha)
     int texW_ = 0, texH_ = 0;      // 上次上传的纹理尺寸 (用于避免每帧 glTexImage2D)
-    FitRect letterbox_;  // 显示 letterbox: buffer 尺寸 (frame.w/h) 到 surface 的保比例 fit
+    FitRect letterbox_;  // 等比映射锚: buffer 尺寸 (frame.w/h) 到 surface 的保比例 fit
+    // 拖拽缩放中: 整帧拉伸填满 (见 SetStretchFill / ComputeFrameDisplayRect)
+    std::atomic<bool> stretchFill_{false};
     // 输入逆映射锚 (PresentedFrame 契约, 重构第 2B 步): 最近一帧契约的 contentW/H
     // (逻辑内容尺寸)。桌面合成/快进/直传帧 = root 逻辑尺寸 (与 buffer 尺寸解耦,
     // 直传游戏帧 buffer 800x600 但 content 仍是桌面 1400x920 — 红警2 修复点);
