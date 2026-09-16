@@ -1,0 +1,33 @@
+{
+  "id": "gpu-diagnostics",
+  "title": "Guest Vulkan / DXVK 加载路径 / D3D11 设备状态报告",
+  "exe": "winehua_gpu_diagnostics.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_gpu_diagnostics.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-mwindows"
+    ],
+    "dxvk_include": true,
+    "vulkan_import": true,
+    "libs": [
+      "-ld3d11",
+      "-ldxgi",
+      "-lversion",
+      "-luuid",
+      "-lshell32",
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

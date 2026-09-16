@@ -1,0 +1,22 @@
+{
+  "name": "dxvk-dynamic",
+  "title": "DXVK dynamic constant buffer 专项",
+  "tests": [
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-dynamic-cb",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    }
+  ]
+}

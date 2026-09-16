@@ -1,0 +1,21 @@
+{
+  "name": "dxvk-long",
+  "title": "DXVK Legacy 长跑",
+  "tests": [
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-long",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module"
+      },
+      "seconds": -1,
+      "timeoutMs": -1
+    }
+  ]
+}

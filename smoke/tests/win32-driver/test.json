@@ -1,0 +1,24 @@
+{
+  "id": "win32-driver",
+  "title": "窗口标题匹配自动点击驱动（无人值守过启动对话框）",
+  "exe": "winehua_win32_driver.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_win32_driver.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-municode",
+      "-mwindows"
+    ],
+    "libs": [
+      "-lshell32",
+      "-luser32"
+    ]
+  }
+}

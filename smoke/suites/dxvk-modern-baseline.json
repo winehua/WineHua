@@ -1,0 +1,43 @@
+{
+  "name": "dxvk-modern-baseline",
+  "title": "DXVK Modern（2.6.2）baseline",
+  "tests": [
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-modern-baseline",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk_modern_2_6"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module",
+        "DXVK_WINEHUA_TRACE_SAMPLED": "0",
+        "DXVK_WINEHUA_TRACE_FLOW": "0",
+        "DXVK_WINEHUA_TRACE_API": "0"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d-switch-cube",
+      "id": "dxvk-modern-cube",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_modern_2_6"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module",
+        "DXVK_WINEHUA_TRACE_SAMPLED": "0",
+        "DXVK_WINEHUA_TRACE_FLOW": "0",
+        "DXVK_WINEHUA_TRACE_API": "0"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

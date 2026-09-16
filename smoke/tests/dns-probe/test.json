@@ -1,0 +1,24 @@
+{
+  "id": "dns-probe",
+  "title": "wine dnsapi 解析（含 NXDOMAIN 反例）",
+  "exe": "winehua_dns_probe.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_dns_probe.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-mwindows"
+    ],
+    "libs": [
+      "-ldnsapi",
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

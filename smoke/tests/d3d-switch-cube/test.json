@@ -1,0 +1,30 @@
+{
+  "id": "d3d-switch-cube",
+  "title": "D3D9/D3D11 旋转立方体固定帧",
+  "exe": "winehua_d3d_switch_cube.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_d3d_switch_cube.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-mwindows"
+    ],
+    "libs": [
+      "-ld3d9",
+      "-ld3d11",
+      "-ldxgi",
+      "-ld3dcompiler",
+      "-luuid",
+      "-lshell32",
+      "-luser32",
+      "-lgdi32",
+      "-lm"
+    ]
+  }
+}
