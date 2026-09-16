@@ -27,6 +27,10 @@ TESTS_DIR = REPO_ROOT / "smoke/tests"
 SUITES_DIR = REPO_ROOT / "smoke/suites"
 DEFAULT_OUT = REPO_ROOT / "build/smoke-payload"
 
+# 判定器包（automation/checks/）：判定与执行分离，check 子命令对归档重跑同一套
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from checks import evaluate as evaluate_checks, parse_checks  # noqa: E402
+
 MINGW = {"x64": "x86_64-w64-mingw32-gcc", "x86": "i686-w64-mingw32-gcc"}
 # vulkan-1 PE 导入库所在子目录（wine 构建 --enable-archs=i386,x86_64 的产物）
 WINE_ARCH_DIR = {"x64": "x86_64-windows", "x86": "i386-windows"}
@@ -83,10 +87,20 @@ class Case:
     build: dict = field(default_factory=dict)
     from_wine: str = ""
     from_vkd3d: str = ""
+    checks: list = field(default_factory=list)
 
     @property
     def exe_stem(self) -> str:
         return self.exe[:-4] if self.exe.lower().endswith(".exe") else self.exe
+
+    @property
+    def declared_checks(self) -> list:
+        return self.checks or ["result-json"]
+
+    @property
+    def needs_frame(self) -> bool:
+        """需要固定帧截图的用例（声明了 visual:* 判定）。"""
+        return any(name == "visual" for name, _ in parse_checks(self.declared_checks))
 
 
 @dataclass
@@ -123,6 +137,7 @@ def load_cases() -> dict:
             build=body.get("build", {}),
             from_wine=body.get("from_wine", ""),
             from_vkd3d=body.get("from_vkd3d", ""),
+            checks=list(body.get("checks", [])),
         )
         if case.id in cases:
             die(f"duplicate case id {case.id}: {path}")
@@ -493,9 +508,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     if code != 0:
         die(f"aa start failed: {out.strip()}")
 
+    # 本地套件定义：给判定器提供用例的 checks 声明（inline 等未定义测试退回默认判定）
+    cases = load_cases()
+    suites = load_suites(cases)
+    suite_tests = suites[args.suite]["tests"] if args.suite in suites else []
+    if args.tests:
+        wanted = {item.strip() for item in args.tests.split(",") if item.strip()}
+        suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
+    entries = {entry.test_id: entry for entry in suite_tests}
+    frame_targets = {tid: entry for tid, entry in entries.items() if entry.case.needs_frame}
+
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
     try:
-        summary = wait_for_summary(hdc, device, summary_rel,
+        summary, frames = poll_run(hdc, device, archive, run_id, frame_targets,
                                    args.timeout_minutes, args.poll_seconds)
         if summary is None:
             die(f"suite summary not found within {args.timeout_minutes} min: "
@@ -511,33 +536,131 @@ def cmd_run(args: argparse.Namespace) -> int:
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device,
         }, indent=2, ensure_ascii=False) + "\n")
+        # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）
+        host = judge_run(archive, entries, frames, summary.get("tests", []))
+        (archive / "host-summary.json").write_text(
+            json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
         # 无论成败都停掉测试 App：常驻会让下次启动走 onNewWant 保留自动化
         # 窗口/页面状态，而不是重建正常形态（旧 run_regression.py 的既有经验）
         hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
 
-    tests = summary.get("tests", [])
-    for test in tests:
-        log(f"  {test.get('testId'):<28} {test.get('status'):<10} "
-            f"{test.get('stage', '')} {test.get('message', '')[:80]}")
-    status = summary.get("status", "FAIL")
-    log(f"{status}: {sum(1 for t in tests if t.get('status') == 'PASS')}/{len(tests)} "
-        f"→ {archive}")
+    for test in host["tests"]:
+        log(f"  {test['testId']:<28} {test['status']:<10} "
+            f"{test.get('stage', '')} {test.get('message', '')[:70]}")
+    status = "PASS" if summary.get("status") == "PASS" and host["status"] == "PASS" else "FAIL"
+    log(f"{status}: 设备端 {summary.get('status')} / 判定 {host['status']} "
+        f"({host['passed']}/{host['total']}) → {archive}")
     return 0 if status == "PASS" else 1
 
 
-def wait_for_summary(hdc: str, device: str, summary_rel: str,
-                     timeout_minutes: int, poll_seconds: int) -> dict | None:
+def cmd_check(args: argparse.Namespace) -> int:
+    """对历史归档重跑判定（判定规则迭代不必重跑设备）。"""
+    archive = Path(args.run_dir).resolve()
+    summary_path = archive / "suite-summary.json"
+    if not summary_path.is_file():
+        die(f"归档缺少 suite-summary.json: {archive}")
+    summary = json.loads(summary_path.read_text())
+    cases = load_cases()
+    suites = load_suites(cases)
+    suite = summary.get("suite", "")
+    entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
+    frames = {path.stem: path for path in (archive / "frames").glob("*.jpeg")}
+    host = judge_run(archive, entries, frames, summary.get("tests", []))
+    (archive / "host-summary.json").write_text(
+        json.dumps(host, indent=2, ensure_ascii=False) + "\n")
+    for test in host["tests"]:
+        log(f"  {test['testId']:<28} {test['status']:<10} "
+            f"{test.get('stage', '')} {test.get('message', '')[:70]}")
+    log(f"check {host['status']} ({host['passed']}/{host['total']}) → {archive}")
+    return 0 if host["status"] == "PASS" else 1
+
+
+def snapshot_frame(hdc: str, device: str, archive: Path, test_id: str) -> Path | None:
+    """截取固定帧并回传本地归档。"""
+    remote = f"/data/local/tmp/smoke-frame-{test_id}.jpeg"
+    code, _ = hdc_shell(hdc, device, f"snapshot_display -f {remote}")
+    if code != 0:
+        return None
+    local = archive / "frames" / f"{test_id}.jpeg"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([hdc, "-t", device, "file", "recv", remote, str(local)],
+                   capture_output=True, text=True, errors="replace")
+    return local if local.is_file() else None
+
+
+def poll_run(hdc: str, device: str, archive: Path, run_id: str,
+             frame_targets: dict, timeout_minutes: int, poll_seconds: int) -> tuple:
+    """轮询 suite-summary；期间对需要视觉判定的测试采集固定帧。
+
+    截图时机沿用旧脚本语义：测试程序完成固定帧渲染后写结果文件（message 含
+    "fixed-frame"），此时画面仍在 —— 轮询到该文件即截图，帧对应那一轮渲染。
+    """
+    summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
     deadline = time.time() + timeout_minutes * 60
+    frames = {}
+    summary = None
     while time.time() < deadline:
-        time.sleep(poll_seconds)
+        pending = [tid for tid in frame_targets if tid not in frames]
+        time.sleep(0.5 if pending else poll_seconds)
+        for test_id in pending:
+            text = sandbox_text(hdc, device,
+                                f"{DRIVE_C_REL}/results/{run_id}/{test_id}.json")
+            if '"fixed-frame"' in text and '"message"' in text:
+                path = snapshot_frame(hdc, device, archive, test_id)
+                if path:
+                    frames[test_id] = path
+                    log(f"  frame: {test_id} captured")
         text = sandbox_text(hdc, device, summary_rel)
         if text.strip().startswith("{"):
             try:
-                return json.loads(text)
+                summary = json.loads(text)
+                break
             except json.JSONDecodeError:
                 continue
-    return None
+    return summary, frames
+
+
+def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = None) -> dict:
+    """对归档跑判定（entries: testId → TestEntry；无定义的测试用默认判定）。
+
+    device_tests 为设备端 summary 的 tests 列表（inline 等不在套件定义里的
+    测试靠它补全）。与 `smoke.py check` 共用：判定规则迭代后对历史归档重跑，
+    不必重跑设备。
+    """
+    results = {}
+    device_dir = archive / "device-results"
+    test_ids = list(entries.keys())
+    for item in device_tests or []:
+        test_id = item.get("testId", "")
+        if test_id and test_id not in entries:
+            test_ids.append(test_id)
+    for test_id in test_ids:
+        entry = entries.get(test_id)
+        result = None
+        result_path = device_dir / f"{test_id}.json"
+        if result_path.is_file():
+            try:
+                result = json.loads(result_path.read_text())
+            except json.JSONDecodeError:
+                result = None
+        declared = entry.case.declared_checks if entry else ["result-json"]
+        verdict = evaluate_checks(declared, {
+            "run_dir": archive, "test_id": test_id,
+            "test": entry.to_suite_json() if entry else {},
+            "result": result, "frame": frames.get(test_id),
+        })
+        results[test_id] = verdict
+    passed = [v for v in results.values() if v["status"] == "PASS"]
+    failed = [v for v in results.values() if v["status"] == "FAIL"]
+    status = "PASS" if results and not failed else ("FAIL" if failed else "SKIP")
+    return {
+        "schemaVersion": 1,
+        "status": status,
+        "passed": len(passed),
+        "total": len(results),
+        "tests": [{"testId": test_id, **verdict} for test_id, verdict in results.items()],
+    }
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -667,6 +790,10 @@ def main() -> int:
     install.add_argument("--hap", default=str(REPO_ROOT / "entry/build/default/outputs/default/entry-default-signed.hap"))
     install.add_argument("--device", default="")
     install.set_defaults(func=cmd_install)
+
+    check = sub.add_parser("check", help="对历史归档重跑判定（不碰设备）")
+    check.add_argument("run_dir", help="归档目录（含 suite-summary.json）")
+    check.set_defaults(func=cmd_check)
 
     devices = sub.add_parser("devices", help="列出 hdc 设备")
     devices.set_defaults(func=cmd_devices)

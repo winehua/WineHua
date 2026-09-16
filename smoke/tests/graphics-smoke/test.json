@@ -6,5 +6,9 @@
     "x64",
     "x86"
   ],
-  "from_wine": "winehua_graphics_smoke"
+  "from_wine": "winehua_graphics_smoke",
+  "checks": [
+    "result-json",
+    "visual:rgba-quadrants"
+  ]
 }
