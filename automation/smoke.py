@@ -14,9 +14,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -305,6 +307,225 @@ def write_payload(out_dir: Path, suites: dict, cases: dict, env: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 设备与传输
+# ---------------------------------------------------------------------------
+
+BUNDLE = "app.hackeris.winehua"
+ABILITY = "EntryAbility"
+# 沙箱路径有两个视角，用途不同（2026-09-16 实测，不可混用）：
+#   hdc file send -b <bundle>：remote 必须写沙箱视角，写真实路径会落到不存在的相对位置
+#   hdc shell：只认真实路径；对沙箱视角路径的 rm -rf 会静默返回 0 而实际不删
+SANDBOX_FILES = "/data/storage/el2/base/files"
+REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
+# 设备端播种源（相对 files/）：SmokeHook.seed() 把 <WINE_ROOT>/smoke 拷到
+# <prefix>/drive_c/smoke。推这里 + 清 C:\smoke 即完成载荷更新，无需重装 HAP。
+PAYLOAD_REL = "wine/smoke"
+DRIVE_C_REL = ".wine/drive_c/smoke"
+
+
+def resolve_hdc() -> str:
+    env_hdc = os.environ.get("WINEHUA_HDC")
+    if env_hdc:
+        if not Path(env_hdc).is_file():
+            die(f"WINEHUA_HDC points to a missing file: {env_hdc}")
+        return env_hdc
+    found = shutil.which("hdc")
+    if not found:
+        die("hdc not found: set WINEHUA_HDC or add hdc to PATH")
+    return found
+
+
+def resolve_device(hdc: str, explicit: str) -> str:
+    target = explicit or os.environ.get("WINEHUA_DEVICE", "")
+    if target:
+        return target
+    result = subprocess.run([hdc, "list", "targets"], capture_output=True,
+                            text=True, errors="replace")
+    devices = [line.strip() for line in result.stdout.splitlines()
+               if line.strip() and "Empty" not in line]
+    if len(devices) == 1:
+        return devices[0]
+    if not devices:
+        die("no hdc device found (connect the device or pass --device)")
+    die("multiple devices; pass --device (or WINEHUA_DEVICE): " + ", ".join(devices))
+
+
+def hdc_shell(hdc: str, device: str, script: str) -> tuple:
+    result = subprocess.run([hdc, "-t", device, "shell", script],
+                            capture_output=True, text=True, errors="replace")
+    return result.returncode, result.stdout
+
+
+def hdc_send_dir(hdc: str, device: str, local: Path, remote: str) -> None:
+    result = subprocess.run(
+        [hdc, "-t", device, "file", "send", "-b", BUNDLE, str(local), remote],
+        capture_output=True, text=True, errors="replace")
+    if result.returncode != 0 or "FileTransfer finish" not in result.stdout:
+        die(f"hdc file send failed rc={result.returncode}: "
+            f"{result.stdout.strip()} {result.stderr.strip()}")
+
+
+def hdc_recv_dir(hdc: str, device: str, rel_path: str, local_dir: Path) -> None:
+    """把 files/ 下的一个目录拉回本地（remote 同样是沙箱视角）。"""
+    local_dir.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                    f"{SANDBOX_FILES}/{rel_path}", str(local_dir)],
+                   capture_output=True, text=True, errors="replace")
+
+
+def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
+    """删除 files/ 下的一条路径（相对 files/）。用真实路径 + 事后校验：
+    `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。"""
+    real = f"{REAL_FILES}/{rel_path}"
+    hdc_shell(hdc, device, f"rm -rf '{real}'")
+    code, out = hdc_shell(hdc, device, f"ls -d '{real}' 2>/dev/null")
+    if code == 0 and out.strip():
+        die(f"remove verification failed (still exists): {real}")
+
+
+def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
+    """读 files/ 下的文本文件（真实路径，空/不存在返回空串）。"""
+    code, out = hdc_shell(hdc, device, f"cat '{REAL_FILES}/{rel_path}' 2>/dev/null")
+    return out if code == 0 else ""
+
+
+# ---------------------------------------------------------------------------
+# 子命令：push / run
+# ---------------------------------------------------------------------------
+
+def ensure_payload(args) -> Path:
+    payload = Path(args.payload).resolve()
+    if not (payload / "suites.json").is_file():
+        die(f"payload not built: {payload} (run: smoke.py build)")
+    return payload
+
+
+def cmd_push(args: argparse.Namespace) -> int:
+    payload = ensure_payload(args)
+    hdc = resolve_hdc()
+    device = resolve_device(hdc, args.device)
+    log(f"push {payload} → {device}")
+    # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
+    # 1) 播种源：--prefix clean 清盘后由设备端 seed 重新导入
+    remove_sandbox_path(hdc, device, PAYLOAD_REL)
+    hdc_send_dir(hdc, device, payload, f"{SANDBOX_FILES}/{PAYLOAD_REL}")
+    # 2) 当前 prefix 的 C:\smoke：立即生效。二次 Want 不触发 seed（seed 只在
+    #    引擎 ready 链上跑），只更新播种源会导致本次会话仍读旧载荷。
+    code, out = hdc_shell(hdc, device, f"ls -d '{REAL_FILES}/.wine/drive_c' 2>/dev/null")
+    target = f"{SANDBOX_FILES}/{DRIVE_C_REL}"
+    if code == 0 and out.strip():
+        remove_sandbox_path(hdc, device, DRIVE_C_REL)
+        hdc_send_dir(hdc, device, payload, target)
+    else:
+        target = f"{SANDBOX_FILES}/{PAYLOAD_REL}"
+        log("prefix 未创建：仅更新播种源，C:\\smoke 由设备端 seed 播种")
+    for probe in ("suites.json", "x64/winehua_graphics_smoke.exe", "x86/winehua_graphics_smoke.exe"):
+        code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{DRIVE_C_REL}/{probe}' 2>/dev/null")
+        if code != 0 or not out.strip():
+            code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
+            if code != 0 or not out.strip():
+                die(f"push verification failed: missing {probe}")
+    log("push done")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    payload = ensure_payload(args)
+    hdc = resolve_hdc()
+    device = resolve_device(hdc, args.device)
+    if not args.skip_push:
+        push_args = argparse.Namespace(payload=args.payload, device=args.device)
+        if cmd_push(push_args) != 0:
+            return 1
+    manifest = json.loads((payload / "manifest.json").read_text())
+    run_id = args.run_id or time.strftime("r%Y%m%d-%H%M%S")
+    archive = Path(args.archive_root).resolve() / f"{args.suite}-{run_id}"
+    archive.mkdir(parents=True, exist_ok=True)
+
+    start = (f"aa start -a {ABILITY} -b {BUNDLE} "
+             f"--ps winehua.mode smoke --ps winehua.suite {args.suite} "
+             f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
+    if args.long_seconds:
+        start += f" --ps winehua.long_seconds {args.long_seconds}"
+    log(f"run {args.suite} (runId={run_id}, prefix={args.prefix})")
+    code, out = hdc_shell(hdc, device, start)
+    if code != 0:
+        die(f"aa start failed: {out.strip()}")
+
+    summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
+    try:
+        summary = wait_for_summary(hdc, device, summary_rel,
+                                   args.timeout_minutes, args.poll_seconds)
+        if summary is None:
+            die(f"suite summary not found within {args.timeout_minutes} min: "
+                f"{REAL_FILES}/{summary_rel} "
+                f"(引擎未就绪? 设备端 ready-degraded 时不会跑测试)")
+
+        hdc_recv_dir(hdc, device, f"{DRIVE_C_REL}/results/{run_id}",
+                     archive / "device-results")
+        (archive / "suite-summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
+        (archive / "artifact.json").write_text(json.dumps({
+            "runId": run_id, "suite": args.suite, "prefix": args.prefix,
+            "payloadVersion": manifest.get("suiteVersion"),
+            "device": device,
+        }, indent=2, ensure_ascii=False) + "\n")
+    finally:
+        # 无论成败都停掉测试 App：常驻会让下次启动走 onNewWant 保留自动化
+        # 窗口/页面状态，而不是重建正常形态（旧 run_regression.py 的既有经验）
+        hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
+
+    tests = summary.get("tests", [])
+    for test in tests:
+        log(f"  {test.get('testId'):<28} {test.get('status'):<10} "
+            f"{test.get('stage', '')} {test.get('message', '')[:80]}")
+    status = summary.get("status", "FAIL")
+    log(f"{status}: {sum(1 for t in tests if t.get('status') == 'PASS')}/{len(tests)} "
+        f"→ {archive}")
+    return 0 if status == "PASS" else 1
+
+
+def wait_for_summary(hdc: str, device: str, summary_rel: str,
+                     timeout_minutes: int, poll_seconds: int) -> dict | None:
+    deadline = time.time() + timeout_minutes * 60
+    while time.time() < deadline:
+        time.sleep(poll_seconds)
+        text = sandbox_text(hdc, device, summary_rel)
+        if text.strip().startswith("{"):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    hap = Path(args.hap).resolve()
+    if not hap.is_file():
+        die(f"HAP not found: {hap} (run make NATIVE_ARCH=arm64-v8a hap first)")
+    hdc = resolve_hdc()
+    device = resolve_device(hdc, args.device)
+    log(f"install {hap.name} → {device}")
+    result = subprocess.run([hdc, "-t", device, "install", "-r", str(hap)],
+                            capture_output=True, text=True, errors="replace")
+    output = (result.stdout + result.stderr).strip()
+    print(output)
+    if result.returncode != 0 or "successfully" not in output.lower():
+        die("install failed. 降级被拒时先在设备上卸载: "
+            f"hdc -t {device} uninstall {BUNDLE}")
+    log("install ok")
+    return 0
+
+
+def cmd_devices(args: argparse.Namespace) -> int:
+    hdc = resolve_hdc()
+    result = subprocess.run([hdc, "list", "targets"], capture_output=True,
+                            text=True, errors="replace")
+    print(result.stdout.strip())
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 子命令
 # ---------------------------------------------------------------------------
 
@@ -371,6 +592,33 @@ def main() -> int:
     build.add_argument("--check", default="",
                        help="与既有 payload 目录逐字节比对（迁移验证）")
     build.set_defaults(func=cmd_build)
+
+    push = sub.add_parser("push", help="推送 payload 到设备沙箱（播种源）")
+    push.add_argument("--payload", default=str(DEFAULT_OUT))
+    push.add_argument("--device", default="")
+    push.set_defaults(func=cmd_push)
+
+    run = sub.add_parser("run", help="跑一个套件：推送 + aa start + 轮询 + 归档")
+    run.add_argument("--suite", required=True)
+    run.add_argument("--prefix", choices=("reuse", "clean"), default="reuse")
+    run.add_argument("--payload", default=str(DEFAULT_OUT))
+    run.add_argument("--device", default="")
+    run.add_argument("--run-id", default="")
+    run.add_argument("--long-seconds", type=int, default=0)
+    run.add_argument("--skip-push", action="store_true")
+    run.add_argument("--archive-root",
+                     default=str(REPO_ROOT / "build/automation-logs"))
+    run.add_argument("--timeout-minutes", type=int, default=15)
+    run.add_argument("--poll-seconds", type=int, default=5)
+    run.set_defaults(func=cmd_run)
+
+    install = sub.add_parser("install", help="安装当前 HAP 到设备")
+    install.add_argument("--hap", default=str(REPO_ROOT / "entry/build/default/outputs/default/entry-default-signed.hap"))
+    install.add_argument("--device", default="")
+    install.set_defaults(func=cmd_install)
+
+    devices = sub.add_parser("devices", help="列出 hdc 设备")
+    devices.set_defaults(func=cmd_devices)
 
     args = parser.parse_args()
     return args.func(args)
