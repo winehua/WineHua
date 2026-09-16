@@ -523,7 +523,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
     try:
         summary, frames = poll_run(hdc, device, archive, run_id, frame_targets,
-                                   args.timeout_minutes, args.poll_seconds)
+                                   args.timeout_minutes, args.poll_seconds,
+                                   start_command=start)
         if summary is None:
             die(f"suite summary not found within {args.timeout_minutes} min: "
                 f"{REAL_FILES}/{summary_rel} "
@@ -604,20 +605,40 @@ def snapshot_frame(hdc: str, device: str, archive: Path, test_id: str,
     return local if local.is_file() else None
 
 
+def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
+    """抓一小段设备日志（流式 hilog，超时截断）。"""
+    try:
+        result = subprocess.run([hdc, "-t", device, "shell", "hilog"],
+                                capture_output=True, text=True,
+                                timeout=seconds, errors="replace")
+        return result.stdout or ""
+    except subprocess.TimeoutExpired as error:
+        if error.stdout:
+            return error.stdout.decode("utf-8", errors="replace")
+        return ""
+
+
 def poll_run(hdc: str, device: str, archive: Path, run_id: str,
              frame_targets: dict, timeout_minutes: int, poll_seconds: int,
-             frame_attempts: int = 4) -> tuple:
+             frame_attempts: int = 4, start_command: str = "",
+             probe_after_s: int = 90) -> tuple:
     """轮询 suite-summary；期间对需要视觉判定的测试采集固定帧。
 
     截图时机沿用旧脚本语义：测试程序完成固定帧渲染后写结果文件（message 含
     "fixed-frame"），此时画面仍在 —— 轮询到该文件即采集。采集多帧（旧脚本
     capture_d3d11_frame 的 4 次尝试语义）：场景随动画相位波动，判定侧取任一
     通过即可，单帧采样会把瞬时相位判成失败。
+
+    引擎自愈：桌面模式下 explorer 桌面根 15s 未就绪时设备端报告 ready-degraded，
+    此时不放行任何程序（canLaunch 语义），盲等只会超时。启动后长时间无结果时
+    抓日志确认，命中则重启 App 重试一次。
     """
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
     deadline = time.time() + timeout_minutes * 60
     frames = {}
     summary = None
+    started = time.time()
+    retried = False
     while time.time() < deadline:
         pending = [tid for tid in frame_targets if tid not in frames]
         time.sleep(0.5 if pending else poll_seconds)
@@ -642,6 +663,17 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
                 break
             except json.JSONDecodeError:
                 continue
+        # 引擎 ready-degraded 自愈（见 docstring）
+        if (not retried and start_command and not frames
+                and time.time() - started > probe_after_s):
+            probe = recent_log(hdc, device, 4)
+            if "ready-degraded" in probe or "desktop root TIMEOUT" in probe:
+                log("检测到 ready-degraded（桌面根未起）：重启 App 重试")
+                hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
+                time.sleep(3)
+                hdc_shell(hdc, device, start_command)
+                retried = True
+                started = time.time()
     return summary, frames
 
 
