@@ -1,7 +1,4 @@
-"""固定帧视觉校验器（numpy + pillow，仅视觉判定需要）。
-
-从 automation/validate_frame.py 迁移为 checks 包的判定器实现。
-"""
+"""固定帧视觉校验器（numpy + pillow，仅视觉判定需要）。"""
 
 from __future__ import annotations
 

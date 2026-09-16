@@ -1,4 +1,4 @@
-"""DXVK 系列套件的覆盖率判定（自 run_regression.get_d3d11_coverage 迁移）。
+"""DXVK 系列套件的覆盖率判定。
 
 suite 级判定器：读整份设备端 summary，对含 rgba8SampleMatrix 指标的测试
 （d3d11-smoke 系）提取 required 检查矩阵，全部通过才 PASS。视觉类测试

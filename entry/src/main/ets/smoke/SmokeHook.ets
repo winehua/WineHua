@@ -164,7 +164,7 @@ export class SmokeHook {
 
   // C:\smoke 载荷导入, 引擎 ready 时调用 (onEngineReady 前置)。源优先级:
   //   1) files/smoke-payload —— host 推送 (改测试只推几 MB, 不重装 HAP)
-  //   2) files/wine/smoke    —— HAP rawfile 解压树 (仅开发构建含载荷, 兜底)
+  //   2) files/wine/smoke    —— HAP rawfile 解压树 (离线备用通道)
   // 幂等以 manifest.suiteVersion (载荷内容版本) 比对: 相同跳过, 不同整树覆盖。
   // 不用 seedDone flag: 同一 App 进程内 clean 清盘后 C:\smoke 不存在必须能重播。
   // 覆盖不删旧树: 同名文件覆盖, results/ 保留 (改名/删除的用例文件会残留, 无害)。

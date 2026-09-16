@@ -257,10 +257,10 @@ aa start -a EntryAbility -b app.hackeris.winehua \
 
 | 命令 | 作用 |
 |---|---|
-| `build [--suite X]` | 扫描 `smoke/tests/` → mingw 交叉编译 → `build/smoke-payload/`（秒级，无 Docker） |
+| `build [--suite X] [--case X]` | 扫描 `smoke/tests/` → mingw 交叉编译 → `build/smoke-payload/`（秒级，无 Docker） |
 | `install` | `hdc install` 当前 HAP（仅设备端代码变更时需要） |
-| `push` | `hdc file send -b` 推 payload（sha256 比对，未变跳过） |
-| `run --suite core [--prefix clean] [--param k=v]` | 推 job + `aa start` + 轮询 + 归档 + 判定 |
+| `push` | `hdc file send -b` 推 payload 到沙箱（旧目录先删，推后校验） |
+| `run --suite core [--prefix clean] [--tests ID,ID] [--env K=V] [--inline FILE]` | 推 job + `aa start` + 轮询 + 归档 + 判定 |
 | `check <run-dir>` | 只跑判定（对历史归档可重跑） |
 | `gate` | 预定义门禁（core ×3 reuse + core ×1 clean） |
 | `devices` | 列设备并选目标 |
@@ -272,8 +272,8 @@ aa start -a EntryAbility -b app.hackeris.winehua \
 - 仅视觉判定需要：numpy + pillow
 - 设备地址：`--device` 显式给，或 `WINEHUA_DEVICE`，或 `hdc list targets` 单选时自动
 
-归档结构沿用现有（`build/automation-logs/<timestamp>/`），保留
-`artifact.json`（HAP hash / submodule commit / payload buildId）。
+归档结构：`build/automation-logs/<suite>-<runId>/`，含 `artifact.json`
+（payload 版本 / device / longSeconds）与 `host-summary.json`（判定结论）。
 
 ## 8. 判定层
 
@@ -322,19 +322,21 @@ Makefile，但因"接入要改 assemble 编译段 + suites 生成段"而未进�
 
 | 阶段 | 内容 | 验证 |
 |---|---|---|
-| P1 | 构建外置：`smoke/tests/` 目录化 + `smoke.py build`（先不删 assemble 的 smoke 段） | 产物 exe 与现 `build/staging/wine-data/smoke/` 逐字节比对 |
+| P1 | 构建外置：`smoke/tests/` 目录化 + `smoke.py build` | 产物 exe 与原 `build/staging/wine-data/smoke/` 逐字节比对 |
 | P2 | 传输/执行：`smoke.py push/run`；设备端读推送目录 | 推 payload + 手工 `aa start` 跑 core 全绿 |
 | P3 | job 协议：选测 / params / inline；设备端 Runner 扩展 | `--tests opengl-x64`、params 覆盖 env 实测生效 |
 | P4 | 判定层拆分：`automation/checks/` + `smoke.py check` | 对 P2/P3 归档重跑判定，结果一致 |
-| P5 | 拆除：删 `run_regression.py`、assemble smoke 段（默认）、旧 Want 5 键路径；文档收口 | `smoke.py gate` 通过；`grep run_regression` 零引用 |
+| P5 | 拆除：删 `run_regression.py`/`validate_frame.py`、assemble 的 C:\smoke 载荷段；文档收口 | 全量套件 14/15 PASS；`grep run_regression` 零代码引用 |
 
-每阶段独立可回退；P5 之前新旧设施可并存（设备端协议向后兼容 5 键）。
+各阶段均已完成。`winehua.*` 的 Want 5 键（suite/run_id/prefix/long_seconds）
+作为手动入口协议保留：不带 job 文件时 `aa start --ps winehua.mode smoke ...`
+仍可直接起套件，见 `automation/README.md`。
 
-## 11. 待确认决策点
+## 11. 决策记录
 
-1. **`-b` 通道的普适性**：当前实测开鸿 PC（release 签名包）通过。若某些设备/系统
-   拒绝（"debug application directory" 可能要求调试态），fallback = 开发构建把
-   payload 打进 HAP（`make hap SMOKE_PAYLOAD=1`），设备端导入逻辑不变（§4.3 优先级）。
-2. **payload 推送形态**：目录树（当前实测可用）vs zip（原子 + 单文件校验）。
-3. **侧边栏手动入口**（`SmokeDevPanel`）是否随 v2 保留。
-4. **host 工具形态**：单文件 `smoke.py`（简单）vs 包（`automation/smoke/`，判定器插件化更清晰）。
+1. **推送通道**：`hdc file send -b <bundle>` + 沙箱视角 remote 路径，实测可用
+   （Pad 与开鸿 PC）。设备端 seed 同时保留 `files/wine/smoke`（HAP rawfile 解压树）
+   作为离线备用源。
+2. **payload 形态**：目录树（非 zip）——推送后设备端按 manifest 内容版本整树导入。
+3. **侧边栏手动入口**：`SmokeDevPanel` 保留，同链起 core 套件。
+4. **host 工具形态**：单文件 `automation/smoke.py` + `automation/checks/` 判定器包。
