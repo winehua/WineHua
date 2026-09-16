@@ -25,6 +25,7 @@ checks 声明（test.json / suite 定义）:
 
 from __future__ import annotations
 
+from . import coverage as _coverage
 from . import frame
 
 
@@ -58,6 +59,8 @@ def visual(ctx: dict) -> dict:
 REGISTRY = {
     "result-json": result_json,
     "visual": visual,
+    # suite 级判定：读 ctx["summary"]（整份设备端结果）
+    "coverage": _coverage.coverage,
 }
 
 

@@ -1,6 +1,9 @@
 {
   "name": "dxvk-long",
   "title": "DXVK Legacy 长跑",
+  "checks": [
+    "coverage"
+  ],
   "tests": [
     {
       "case": "d3d11-smoke",

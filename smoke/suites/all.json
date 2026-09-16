@@ -1,6 +1,9 @@
 {
   "name": "all",
   "title": "组合：主力套件并集",
+  "checks": [
+    "coverage"
+  ],
   "tests": [
     {
       "case": "audio-smoke",

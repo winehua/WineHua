@@ -162,7 +162,8 @@ def load_suite(path: Path, cases: dict) -> tuple:
         for arch in archs:
             test_id = inst["testId"] if "testId" in inst else f"{inst['id']}-{arch}"
             entries.append(TestEntry(test_id=test_id, case=case, arch=arch, params=params))
-    return name, {"title": body.get("title", name), "tests": entries}
+    return name, {"title": body.get("title", name),
+                  "checks": list(body.get("checks", [])), "tests": entries}
 
 
 def load_suites(cases: dict) -> dict:
@@ -531,13 +532,15 @@ def cmd_run(args: argparse.Namespace) -> int:
                      archive / "device-results")
         (archive / "suite-summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
+        long_seconds = args.long_seconds or int(job.get("longSeconds", 0)) or 3600
         (archive / "artifact.json").write_text(json.dumps({
             "runId": run_id, "suite": args.suite, "prefix": args.prefix,
             "payloadVersion": manifest.get("suiteVersion"),
-            "device": device,
+            "device": device, "longSeconds": long_seconds,
         }, indent=2, ensure_ascii=False) + "\n")
         # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）
-        host = judge_run(archive, entries, frames, summary.get("tests", []))
+        host = judge_run(archive, entries, frames, summary.get("tests", []),
+                         suites.get(args.suite), args.suite, long_seconds)
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
@@ -566,7 +569,12 @@ def cmd_check(args: argparse.Namespace) -> int:
     suite = summary.get("suite", "")
     entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
     frames = {path.stem: path for path in (archive / "frames").glob("*.jpeg")}
-    host = judge_run(archive, entries, frames, summary.get("tests", []))
+    artifact_path = archive / "artifact.json"
+    long_seconds = 3600
+    if artifact_path.is_file():
+        long_seconds = int(json.loads(artifact_path.read_text()).get("longSeconds", 3600))
+    host = judge_run(archive, entries, frames, summary.get("tests", []),
+                     suites.get(suite), suite, long_seconds)
     (archive / "host-summary.json").write_text(
         json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     for test in host["tests"]:
@@ -621,12 +629,15 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
     return summary, frames
 
 
-def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = None) -> dict:
-    """对归档跑判定（entries: testId → TestEntry；无定义的测试用默认判定）。
+def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = None,
+              suite_def: dict = None, suite_name: str = "",
+              long_seconds: int = 3600) -> dict:
+    """对归档跑判定（per-test 判定 + suite 级判定）。
 
-    device_tests 为设备端 summary 的 tests 列表（inline 等不在套件定义里的
-    测试靠它补全）。与 `smoke.py check` 共用：判定规则迭代后对历史归档重跑，
-    不必重跑设备。
+    entries: testId → TestEntry（套件定义；无定义的测试用默认判定）；
+    device_tests: 设备端 summary 的 tests（inline 等未定义测试靠它补全，
+    也是 suite 级判定 coverage 的数据源）。
+    与 `smoke.py check` 共用：判定规则迭代后对历史归档重跑，不必重跑设备。
     """
     results = {}
     device_dir = archive / "device-results"
@@ -635,6 +646,7 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
         test_id = item.get("testId", "")
         if test_id and test_id not in entries:
             test_ids.append(test_id)
+    collected = []
     for test_id in test_ids:
         entry = entries.get(test_id)
         result = None
@@ -644,6 +656,8 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
                 result = json.loads(result_path.read_text())
             except json.JSONDecodeError:
                 result = None
+        if result is not None:
+            collected.append(result)
         declared = entry.case.declared_checks if entry else ["result-json"]
         verdict = evaluate_checks(declared, {
             "run_dir": archive, "test_id": test_id,
@@ -651,15 +665,34 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
             "result": result, "frame": frames.get(test_id),
         })
         results[test_id] = verdict
-    passed = [v for v in results.values() if v["status"] == "PASS"]
+
+    # suite 级判定（coverage 等）。数据源是各测试的结果文件 —— metrics 在结果
+    # 文件里（设备端 suite-summary 条目不含 metrics，重建时按瘦解释器简化）
+    suite_verdict = {"status": "SKIP", "verdicts": [], "stage": "", "message": ""}
+    declared_suite = suite_def.get("checks", []) if suite_def else []
+    if declared_suite:
+        suite_verdict = evaluate_checks(declared_suite, {
+            "run_dir": archive, "test_id": suite_name, "test": {},
+            "result": None, "frame": None,
+            "summary": {"tests": collected},
+            "suite": suite_name, "long_seconds": long_seconds,
+        })
+
     failed = [v for v in results.values() if v["status"] == "FAIL"]
-    status = "PASS" if results and not failed else ("FAIL" if failed else "SKIP")
+    per_test = "PASS" if results and not failed else ("FAIL" if failed else "SKIP")
+    if per_test == "FAIL" or suite_verdict["status"] == "FAIL":
+        status = "FAIL"
+    elif per_test == "PASS":
+        status = "PASS"
+    else:
+        status = "SKIP"
     return {
         "schemaVersion": 1,
         "status": status,
-        "passed": len(passed),
+        "passed": sum(1 for v in results.values() if v["status"] == "PASS"),
         "total": len(results),
         "tests": [{"testId": test_id, **verdict} for test_id, verdict in results.items()],
+        "suiteVerdicts": suite_verdict.get("verdicts", []),
     }
 
 

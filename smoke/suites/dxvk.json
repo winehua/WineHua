@@ -1,6 +1,9 @@
 {
   "name": "dxvk",
   "title": "DXVK Legacy（1.10.3）完整矩阵",
+  "checks": [
+    "coverage"
+  ],
   "tests": [
     {
       "case": "d3d11-smoke",
