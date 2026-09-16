@@ -27,13 +27,16 @@ class WineXComponentController extends XComponentController {
       this.toplevelId, surfaceId, JSON.stringify(rect));
     try {
       testNapi.resizeRenderer(this.toplevelId, rect.surfaceWidth, rect.surfaceHeight);
+      const mgr = WineWindowManager.getInstance();
       // surface 是物理像素, Wine 需要逻辑坐标 (统一经 getEffectiveScale, 不再硬编码 2.0)
-      const s = WineWindowManager.getInstance().getEffectiveScale();
+      const s = mgr.getEffectiveScale();
       const w = Math.round(rect.surfaceWidth / s);
       const h = Math.round(rect.surfaceHeight / s);
-      hilog.info(DOMAIN, 'WineWindow', '[Ctrl] onSurfaceChanged tl=%{public}d → notifyToplevelResize(%{public}d, %{public}d)',
-        this.toplevelId, w, h);
-      testNapi.notifyToplevelResize(this.toplevelId, w, h);
+      // 拖拽缩放中 → configure 带 RESIZING, Wine 才采用新尺寸 (见 setResizeDragging)
+      const resizing = mgr.isResizeDragging(this.toplevelId);
+      hilog.info(DOMAIN, 'WineWindow', '[Ctrl] onSurfaceChanged tl=%{public}d → notifyToplevelResize(%{public}d, %{public}d, resize=%{public}s)',
+        this.toplevelId, w, h, resizing ? 'yes' : 'no');
+      testNapi.notifyToplevelResize(this.toplevelId, w, h, resizing);
     } catch (e) {
       hilog.error(DOMAIN, 'WineWindow', 'ERR onSurfaceChanged resizeRenderer: %{public}s', JSON.stringify(e));
     }

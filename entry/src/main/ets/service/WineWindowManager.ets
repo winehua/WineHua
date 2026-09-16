@@ -28,6 +28,9 @@ class WineWindowEntry {
   title: string = '';                                // 最近标题 (loadContent 后重置需重 apply)
   everMaximized: boolean = false;                    // 曾进入 maximize (诊断 OHOS 状态机冲突)
   moveGrabPending: boolean = false;                  // Wine move_grab 等待 startMoving()
+  // 拖拽缩放中 (windowRectChange DRAG_START/DRAG 置位, DRAG_END 清, 见
+  // setResizeDragging)。entry 生命周期 = 窗口生命周期, unregister 即回收
+  resizeDragging: boolean = false;
 }
 
 export class WineWindowManager {
@@ -384,6 +387,16 @@ export class WineWindowManager {
   // effectiveScale = displayScale × scaleBoost (Wine 逻辑坐标 → 物理像素)
   getEffectiveScale(): number {
     return this.displayScale * this.scaleBoost;
+  }
+
+  // 拖拽缩放标记 (见 WineWindowEntry.resizeDragging 注释): windowRectChange
+  // 的 DRAG_START/DRAG → true, DRAG_END → false
+  setResizeDragging(toplevelId: number, on: boolean): void {
+    this.ensureEntry(toplevelId).resizeDragging = on;
+  }
+
+  isResizeDragging(toplevelId: number): boolean {
+    return this.entries.get(toplevelId)?.resizeDragging ?? false;
   }
 
   getDesktopMode(): boolean {
@@ -859,6 +872,17 @@ export class WineWindowManager {
           const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
           const w = obj.w as number;
           const h = obj.h as number;
+          // 拖拽缩放中: 窗口尺寸权威在用户/系统手里, 忽略 Wine 的尺寸回推 —
+          // 否则 win.resize() 与用户拖拽互相拉扯 (物理尺寸来回跳 = 反复扰动)。
+          // 注意保留 lastResizeWineDim 记录: 拖拽结束后 Wine 尺寸继续由
+          // resize 事件对齐 (拖拽中的 Wine 尺寸仅是我们 configure 的回声)
+          if (this.isResizeDragging(toplevelId)) {
+            const se = this.entries.get(toplevelId);
+            if (se) se.lastResizeWineDim = [w, h];
+            hilog.info(DOMAIN, TAG, '[MW-RESIZE] tl=%{public}d wine=%{public}dx%{public}d IGNORED (dragging)',
+              toplevelId, w, h);
+            break;
+          }
           if (w && h) {
             const barH = 0; // 初值; 真实装饰高度由 onAfterLoadContent 的 getWindowDecorHeight 校准
             const s = this.displayScale * this.scaleBoost;  // effective scale (启动时定, 默认 2.0)

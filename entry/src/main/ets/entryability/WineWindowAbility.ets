@@ -95,10 +95,25 @@ export default class WineWindowAbility extends UIAbility {
 
       // 父窗口移动/缩放 → 重新定位其 popup 子窗口
       step('on(windowRectChange)', () => {
-        mainWindow.on('windowRectChange', () => {
+        mainWindow.on('windowRectChange', (data: window.RectChangeOptions) => {
           const mgr = WineWindowManager.getInstance();
           PopupWindowManager.getInstance().repositionPopups(
             this.toplevelId, mainWindow, mgr.getEffectiveScale());
+          // 拖拽缩放 (DRAG_START/DRAG) → 标记缩放中, onSurfaceChanged 的
+          // configure 据此带 RESIZING (Wine 才采用新尺寸); DRAG_END 发一次
+          // 0 尺寸 configure 让 Wine 退出 size-move (保持当前尺寸)
+          if (data.reason === window.RectChangeReason.DRAG_START ||
+              data.reason === window.RectChangeReason.DRAG) {
+            mgr.setResizeDragging(this.toplevelId, true);
+          } else if (data.reason === window.RectChangeReason.DRAG_END) {
+            mgr.setResizeDragging(this.toplevelId, false);
+            try {
+              testNapi.notifyToplevelResizeEnd(this.toplevelId);
+            } catch (e) {
+              hilog.warn(DOMAIN, TAG, '[WWA] #%{public}d notifyToplevelResizeEnd fail: %{public}s',
+                this.toplevelId, JSON.stringify(e));
+            }
+          }
         });
       });
 

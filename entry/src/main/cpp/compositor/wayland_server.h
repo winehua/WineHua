@@ -115,8 +115,14 @@ public:
     void SetToplevelFullscreen(uint32_t id, bool on);
     // surface 尺寸变化后强制下次渲染循环取帧重绘 (避免旧 viewport 贴新 surface 导致黑边)
     void ForceToplevelRedraw(uint32_t id);
-    // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染
-    void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h);
+    // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染。
+    // resizing: 用户拖拽缩放中 (ArkTS windowRectChange DRAG_START..DRAG_END),
+    // configure 带 RESIZING 状态 — Wine 只采用带状态 (MAXIMIZED/RESIZING/
+    // TILED/FULLSCREEN) 的 configure 尺寸, 无状态尺寸被有意忽略 (winewayland
+    // window.c wayland_configure_window "Ignore size hints ... to avoid
+    // spurious resizes")。w=h=0 且 resizing=false 表示拖拽结束: Wine 保持
+    // 当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
+    void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h, bool resizing = false);
     // 设置输出尺寸 (替换硬编码 1280x720)。权威源 = ArkTS 启动时 setOutputSize
     // (display 物理尺寸 / effectiveScale); 桌面 root 的 resize 不反写 (见
     // NotifyToplevelResize 注释)。存储 = session_.outputW/H (重构第 6B 步:

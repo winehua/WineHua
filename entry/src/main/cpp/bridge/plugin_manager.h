@@ -20,6 +20,8 @@
 //     → PluginManager::ResizeRenderer → EglRenderer::SetSize
 //   WineWindow.ets (XComponentController.onSurfaceDestroyed)
 //     → NAPI destroyRenderer(toplevelId) → DestroyToplevel
+//   WaylandServer::NotifyToplevelResize (拖拽缩放标记随 configure 同步)
+//     → PluginManager::SetRendererStretchFill → EglRenderer::SetStretchFill
 //
 // 键盘事件仅通过 Stack.onKeyEvent → NAPI sendKeyEvent → InputManager 路径,
 // 不再使用 OH_NativeXComponent_RegisterKeyEventCallback。
@@ -30,6 +32,8 @@ public:
     // surfaceId 驱动的渲染器生命周期
     void CreateRenderer(uint32_t toplevelId, int64_t surfaceId);
     void ResizeRenderer(uint32_t toplevelId, int w, int h);
+    // 拖拽缩放中: 目标渲染器整帧拉伸填满 (EglRenderer::SetStretchFill)
+    void SetRendererStretchFill(uint32_t toplevelId, bool on);
     void DestroyToplevel(uint32_t toplevelId);
 
     // pending toplevelId 队列: Ability 在 loadContent 前入队
