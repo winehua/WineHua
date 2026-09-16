@@ -16,7 +16,8 @@
         "d3d": "dxvk_legacy"
       },
       "env": {
-        "WINEDEBUG": "+loaddll,+module"
+        "WINEDEBUG": "+loaddll,+module",
+        "WINEHUA_D3D11_DYNAMIC_CB": "1"
       },
       "seconds": 5,
       "timeoutMs": 180000

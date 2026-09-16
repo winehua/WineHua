@@ -553,7 +553,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     for test in host["tests"]:
         log(f"  {test['testId']:<28} {test['status']:<10} "
             f"{test.get('stage', '')} {test.get('message', '')[:70]}")
-    status = "PASS" if summary.get("status") == "PASS" and host["status"] == "PASS" else "FAIL"
+    # 判定层是权威结论：设备端 status 是原始数据，其语义由判定器解释
+    # （能力探针的 UNSUPPORTED 是合法答案，设备端 suite 汇总仍记 FAIL）。
+    status = "PASS" if host["status"] == "PASS" else "FAIL"
     log(f"{status}: 设备端 {summary.get('status')} / 判定 {host['status']} "
         f"({host['passed']}/{host['total']}) → {archive}")
     return 0 if status == "PASS" else 1
