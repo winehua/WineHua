@@ -124,6 +124,13 @@ HAP 里引擎内容变了时，设备端不会直接启动引擎（正常使用�
 `upgradePending` 就自己走 `doReset`（停 → 清 → 重解压 → 重启，会清空 prefix），
 然后接着跑测。多出来的时间是解压几百 MB 引擎数据，不是卡住。
 
+**改了套件定义，设备上跑的还是旧行为**
+
+`push`/`run` 推的是 `build/smoke-payload/`，改了 `smoke/tests/` 或 `smoke/suites/`
+之后必须先 `smoke.py build` 重建载荷。工具会比对定义与载荷的时间戳，过期直接
+报错拒绝执行（实测踩坑：改了套件档位没重建，设备端 suites.json 还是旧 backend，
+测试结果完全没变）。
+
 **视觉用例报 missing-frame**
 
 graphics-smoke 的固定帧窗口是测试末尾 2 秒（`duration_ms - 2000` 起持续渲染同一帧），
