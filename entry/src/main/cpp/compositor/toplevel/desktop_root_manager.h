@@ -43,9 +43,11 @@ public:
     };
 
     // 检查新提交的 toplevel 是否应成为桌面 root。
+    // recognitionOpportunity: 本次调用是否是识别时机 (窗口首个 commit, 或 title
+    // 到达 —— 真桌面靠非空 title 识别, 两者都可能晚到)。非识别时机的调用直接返回。
     // 调用方须已持有 toplevelManager 的锁 (tmgr_.Lock())。
     // 调用后调用方负责: MarkDesktopRootDirtyLocked + 锁外 MoveRendererToToplevel / PostToplevelEvent。
-    CheckRootResult CheckRootLocked(SurfaceData* sd, bool isFirstCommit);
+    CheckRootResult CheckRootLocked(SurfaceData* sd, bool recognitionOpportunity);
 
     // 标记 root dirty (root 切换后调用, 调用方须已持有锁)
     void MarkRootDirtyLocked();
