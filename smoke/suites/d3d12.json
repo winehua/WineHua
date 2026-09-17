@@ -9,7 +9,8 @@
         "x64"
       ],
       "backend": {
-        "d3d": "vkd3d_limited_500k"
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
       },
       "env": {},
       "argv": [

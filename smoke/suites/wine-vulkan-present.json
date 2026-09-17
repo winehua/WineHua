@@ -10,7 +10,8 @@
         "x86"
       ],
       "backend": {
-        "d3d": "vkd3d_limited_500k"
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
       },
       "env": {
         "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",

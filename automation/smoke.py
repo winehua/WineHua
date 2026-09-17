@@ -154,11 +154,31 @@ def load_cases() -> dict:
     return cases
 
 
+# 经 __env 下发后设备端读不到的键。声明了也没有任何效果，装载期直接拦下，
+# 避免"写了以为开了"的静默失效。Wine 日志看 hilog 的 WineChild-stderr tag。
+UNREACHABLE_ENV_KEYS = {
+    # 设计上忽略: profile 选择要自己判断 exe 类型与覆盖来源, 通用覆盖会让它失效
+    "WINEDEBUG": "设备端显式忽略（wine_child.cpp select_winedebug_profile）",
+    # 时序缺陷: 该函数在 458 行读它, __env 覆盖在 479 行才应用 —— 属待修 bug,
+    # 不是设计意图 (同处注释声称这条通道可用)
+    "WINEHUA_WINEDEBUG": "设备端读取早于 __env 应用（wine_child.cpp:458 vs 479）",
+}
+
+
+def reject_unreachable_env(context: str, env: dict) -> None:
+    for key in env or {}:
+        reason = UNREACHABLE_ENV_KEYS.get(key)
+        if reason:
+            die(f"{context}: env {key} 不会生效 —— {reason}"
+                f"; Wine 日志看 hilog 的 WineChild-stderr tag")
+
+
 def load_suite(path: Path, cases: dict) -> tuple:
     body = json.loads(path.read_text())
     name = body["name"]
     entries = []
     for inst in body.get("tests", []):
+        reject_unreachable_env(path.name, inst.get("env"))
         case_id = inst["case"]
         if case_id not in cases:
             die(f"{path.name}: unknown case {case_id}")
@@ -491,6 +511,7 @@ def build_job(args: argparse.Namespace) -> dict:
             if not sep:
                 die(f"--env 需要 KEY=VALUE 形式: {item}")
             overrides[key] = value
+        reject_unreachable_env("--env", overrides)
         params["env"] = overrides
     if args.d3d:
         params["d3dBackend"] = args.d3d

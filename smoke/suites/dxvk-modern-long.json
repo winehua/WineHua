@@ -15,7 +15,6 @@
         "d3d": "dxvk_modern_2_6"
       },
       "env": {
-        "WINEDEBUG": "+loaddll,+module",
         "DXVK_WINEHUA_TRACE_SAMPLED": "0",
         "DXVK_WINEHUA_TRACE_FLOW": "0",
         "DXVK_WINEHUA_TRACE_API": "0"
