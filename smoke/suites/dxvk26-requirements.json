@@ -1,6 +1,6 @@
 {
   "name": "dxvk26-requirements",
-  "title": "DXVK 2.6.2 transport 资格 probe",
+  "title": "DXVK 2.6.2 transport 资格 probe（vkd3d 档下发 venus runtime）",
   "tests": [
     {
       "case": "dxvk26-requirements",
@@ -10,7 +10,7 @@
         "x86"
       ],
       "backend": {
-        "d3d": "wined3d"
+        "d3d": "vkd3d_limited_500k"
       },
       "env": {},
       "seconds": 0,
