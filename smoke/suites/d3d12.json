@@ -24,6 +24,56 @@
       "argvMode": "raw",
       "seconds": 0,
       "timeoutMs": 180000
+    },
+    {
+      "case": "d3d12-gears",
+      "testId": "d3d12-gears-600f",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {},
+      "argv": [
+        "--frames",
+        "600",
+        "--run-id",
+        "<run-id>",
+        "--test-id",
+        "<test-id>",
+        "--result",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "argvMode": "raw",
+      "seconds": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "d3d12-triangle",
+      "testId": "d3d12-triangle-600f",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {},
+      "argv": [
+        "--frames",
+        "600",
+        "--run-id",
+        "<run-id>",
+        "--test-id",
+        "<test-id>",
+        "--result",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "argvMode": "raw",
+      "seconds": 0,
+      "timeoutMs": 120000
     }
   ]
 }

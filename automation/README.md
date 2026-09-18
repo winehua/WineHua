@@ -110,7 +110,7 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 - **dxvk-500k-routes**：500k 混合路由的两条 DXVK 支路（1.10.3 = 全新设备默认，2.6.2 = UI 选过 DXVK 2.6.2 后的组合）
 - **gpu-diagnostics**：报告 Guest Vulkan、DXVK DLL 实际加载路径与 D3D11 device 状态
 - **dxvk26-requirements**：DXVK 2.6.2 所需的 Guest/Wine Vulkan 1.3 transport 资格探针
-- **d3d12**：VKD3D-Proton limited-500k 1000 帧图形 smoke（含 checkpoint 进度）
+- **d3d12**：VKD3D-Proton limited-500k 1000 帧图形 smoke（含 checkpoint 进度）+ gears/triangle demo 各 600 帧（`from_vkd3d` 用例，demo 侧 `--frames/--result` 由 patch 0019 提供）
 - **all / long**：组合套件
 
 ## 结果归档

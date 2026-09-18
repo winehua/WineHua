@@ -1,0 +1,9 @@
+{
+  "id": "d3d12-gears",
+  "title": "VKD3D gears demo（帧数驱动，raw argv）",
+  "exe": "gears.exe",
+  "arch": [
+    "x64"
+  ],
+  "from_vkd3d": "limited-500k/x64/gears.exe"
+}
