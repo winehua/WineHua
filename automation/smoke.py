@@ -788,6 +788,13 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
                 result = json.loads(result_path.read_text())
             except json.JSONDecodeError:
                 result = None
+        if result is None and device_tests:
+            # 结果文件缺失：测试超时/崩溃时设备端只把结论写进 suite-summary
+            # （SmokeRunner 的 failure() 是内存对象），不落结果文件。回退到
+            # summary 条目以保住 stage/message —— 否则判定只剩一句"结果文件
+            # 缺失"，超时原因整个丢掉（实测 --timeout-ms 1500 即如此）。
+            result = next((item for item in device_tests
+                           if item.get("testId") == test_id), None)
         if result is not None:
             collected.append(result)
         declared = entry.case.declared_checks if entry else ["result-json"]
