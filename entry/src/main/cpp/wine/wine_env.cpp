@@ -230,13 +230,13 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             "VN_PERF=no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring",
             "VN_WINEHUA_STRONG_RING_BARRIER=1",
             "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
-            /* 不注入 VN_WINEHUA_PERSISTENT_MAP_SYNC: 它在每次队列提交前把
-             * 持久映射的 coherent 内存整段 to-host flush，破坏 DXVK 的
-             * staging 回读（compute UAV/采样拿到旧数据）。mesa 侧该机制
-             * 按设计仅服务 vkd3d 的常驻 map（vn_queue.c submit 前 flush），
-             * DXVK 走 Unmap 边界发布不需要它；d3d12-smoke 实测两种取值
-             * 都通过。vkd3d 若有常驻 map 上传场景需要它，须按程序另行
-             * 下发，不能进档位 env。 */
+            /* VN_WINEHUA_PERSISTENT_MAP_SYNC 两难（2026-09-18 实测）：
+             * vkd3d 常驻 map 上传（Map 后每帧直写、无 Unmap，如 gears 的
+             * instance buffer）必须靠它发布，去掉后 D3D12 渲染不出图；
+             * 但它每次队列提交前整段 to-host flush 会破坏 DXVK 的 staging
+             * 回读（compute UAV 拿旧数据）。500k 档两种消费者共用档位
+             * env，先保 D3D12 出图。 */
+            "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
             "VN_WINEHUA_DIRECT_FENCE_WAIT=1",
             "VKR_WINEHUA_SHADOW_FROM_HOST=precise",
             "VKD3D_WINEHUA_FORCE_COHERENT_MAP_SYNC=1",
