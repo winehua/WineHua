@@ -1,6 +1,7 @@
 # WineHua 自动化回归测试
 
-用例、套件、判定器都在仓库里；测试产物不进 HAP（host 经 hdc 推送到设备沙箱），
+用例、套件、判定器都在仓库里；载荷随包分发（wine-data.zip 的 smoke/ 树），
+开发环境由 host 经 hdc 推送更新（优先于包内版本），
 判定在 host 侧做。设计见 `docs/SMOKE_V2_DESIGN.md`。
 
 ## 快速开始
@@ -34,7 +35,10 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
                       内容版本不同则整树导入 C:\smoke
 ```
 
-- 改测试只推几 MB 载荷，不重装 HAP；`build/smoke-payload` 不进版本库。
+- 载荷有**两个来源**，seed 按优先级取：`files/smoke-payload`（host 推送，开发环境改测试
+  只推几 MB、不重装 HAP）＞ `files/wine/smoke`（**随包分发**——assemble 打进 wine-data.zip，
+  发布环境无 host 也能播种，SmokeDevPanel 侧边栏入口可跑 core 自检）。`build/smoke-payload`
+  不进版本库。
 - `suites.json` 的 `suiteVersion` 是载荷内容哈希（定义 + 各 exe），任一处变化都会触发重新播种。
 - 冷启动（prefix 未创建）只更新推送源，`C:\smoke` 由设备端 seed 播种；prefix 已存在时
   直接更新 `C:\smoke`，本次会话立即生效。
