@@ -75,10 +75,10 @@ void DesktopRootManager::MarkRootDirtyLocked()
 }
 
 DesktopRootManager::CheckRootResult
-DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool isFirstCommit)
+DesktopRootManager::CheckRootLocked(SurfaceData* sd, bool recognitionOpportunity)
 {
     CheckRootResult result;
-    if (!isFirstCommit) return result;
+    if (!recognitionOpportunity) return result;
 
     if (sd->appId != compositor_consts::kAppIdExplorerDesktopShell) return result;
 
