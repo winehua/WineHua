@@ -26,5 +26,9 @@
       "-lgdi32",
       "-lm"
     ]
-  }
+  },
+  "checks": [
+    "result-json",
+    "visual:d3d11-cube"
+  ]
 }

@@ -1,6 +1,9 @@
 {
   "name": "dxvk-modern-long",
   "title": "DXVK Modern 长跑",
+  "checks": [
+    "coverage"
+  ],
   "tests": [
     {
       "case": "d3d11-smoke",

@@ -1,6 +1,9 @@
 {
   "name": "dxvk-modern-baseline",
   "title": "DXVK Modern（2.6.2）baseline",
+  "checks": [
+    "coverage"
+  ],
   "tests": [
     {
       "case": "d3d11-smoke",
