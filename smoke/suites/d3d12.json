@@ -1,0 +1,79 @@
+{
+  "name": "d3d12",
+  "title": "VKD3D-Proton limited-500k 图形 smoke",
+  "tests": [
+    {
+      "case": "d3d12-smoke",
+      "testId": "d3d12-1000f",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {},
+      "argv": [
+        "--frames",
+        "1000",
+        "--result",
+        "C:/smoke/results/<run-id>/<test-id>.json",
+        "--checkpoint",
+        "C:/smoke/results/<run-id>/<test-id>.ckpt"
+      ],
+      "argvMode": "raw",
+      "seconds": 0,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d12-gears",
+      "testId": "d3d12-gears-600f",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {},
+      "argv": [
+        "--frames",
+        "600",
+        "--run-id",
+        "<run-id>",
+        "--test-id",
+        "<test-id>",
+        "--result",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "argvMode": "raw",
+      "seconds": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "d3d12-triangle",
+      "testId": "d3d12-triangle-600f",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {},
+      "argv": [
+        "--frames",
+        "600",
+        "--run-id",
+        "<run-id>",
+        "--test-id",
+        "<test-id>",
+        "--result",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "argvMode": "raw",
+      "seconds": 0,
+      "timeoutMs": 120000
+    }
+  ]
+}

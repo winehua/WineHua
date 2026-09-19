@@ -1,0 +1,23 @@
+{
+  "id": "d3d8-smoke",
+  "title": "D3D8 设备能力探测",
+  "exe": "winehua_d3d8_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_d3d8_smoke.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-mwindows"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

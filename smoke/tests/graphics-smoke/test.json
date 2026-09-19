@@ -1,0 +1,14 @@
+{
+  "id": "graphics-smoke",
+  "title": "OpenGL 全屏渲染固定帧（Wine 构建产物）",
+  "exe": "winehua_graphics_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "from_wine": "winehua_graphics_smoke",
+  "checks": [
+    "result-json",
+    "visual:rgba-quadrants"
+  ]
+}

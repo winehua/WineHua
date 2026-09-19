@@ -714,7 +714,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
 }
 
 // Desktop 模式子窗口 commit → desktop root 识别 (判定逻辑在 DesktopRootManager)
-void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi, bool isFirstCommit) {
+void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOpportunity) {
     if (!Policy().RootCompositing() || !sd->hasToplevel || sd->toplevelId == session_.desktopRootToplevelId) return;
 
     // 任务栏身份登记 (app_id 在 xdg_toplevel 创建时已设置, 首次 commit 即有值)
@@ -728,7 +728,7 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
     DesktopRootManager::CheckRootResult cr;
     {
         auto lk = toplevelMgr_.Lock();
-        cr = desktopRootMgr_.CheckRootLocked(sd, isFirstCommit);
+        cr = desktopRootMgr_.CheckRootLocked(sd, recognitionOpportunity);
         MarkDesktopRootDirtyLocked();
     }
     if (cr.moveRendererTo)
@@ -744,6 +744,15 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
         ResetFirstFrame();
         PostToplevelEvent(sd->toplevelId, ToplevelEventType::DesktopRoot);
     }
+}
+
+// title 到达时补一次识别机会 (声明与理由见 wayland_server.h)
+void WaylandServer::RecheckDesktopRootOnTitle(SurfaceData* sd) {
+    // 只在 root 尚未确定时补识别: root 确定后 CheckRootLocked 走的是"新
+    // desktop-shell 替换旧 root"分支 (隐藏旧 root + 切换), 而辅助窗口后来
+    // 设置 title 不该触发这种切换。
+    if (session_.desktopRootToplevelId != 0) return;
+    CheckDesktopRootOnCommit(sd, /*recognitionOpportunity=*/true);
 }
 
 // subsurface 帧分发 (承载路由见 DisplayPolicy::RouteForSubsurface):
@@ -969,7 +978,7 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
 
         bool isFirstCommit = false;
         self->UpdateToplevelFrameOnCommit(sd, surfRes, fi, isFirstCommit);
-        self->CheckDesktopRootOnCommit(sd, fi, isFirstCommit);
+        self->CheckDesktopRootOnCommit(sd, isFirstCommit);
         self->UpdateSubsurfaceOnCommit(sd, surfRes, fi);
         wl_shm_buffer_end_access(fi.shm);
     }

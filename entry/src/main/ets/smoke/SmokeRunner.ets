@@ -4,32 +4,12 @@ import {
   WineEnvService, DRIVE_C, readTextIfExists,
   ensureDirectory, writeTextFile
 } from '../service/WineEnvService';
-import { SmokeRequest } from './SmokeTypes';
+import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest } from './SmokeTypes';
 
 const DOMAIN = 0x0000;
 const TAG = 'SMOKE';
 
 // suites.json (assemble.sh 随载荷生成的编排定义) 的运行时视图
-interface SmokeSuiteTest {
-  testId: string;
-  exe: string;
-  env?: Record<string, string>;
-  // argvMode: 默认 'std' = runner 生成 smoke 统一协议 argv
-  // (--automation --run-id --test-id --result + mode/seconds);
-  // 'raw' = 用 argv 字段原样 (d3d12 等自有参数的程序), <run-id>/<test-id> 占位符替换
-  argvMode?: string;
-  argv?: string[];
-  // 'present' (默认, 带 --seconds N) / 'offscreen' (wine-vulkan offscreen 系)
-  mode?: string;
-  // 追加参数 (如 d3d9-cube 的 --d3d9)
-  extraArgs?: string[];
-  // 回归固定后端 (旧 SmokeRunner per-test 语义): 缺省 = 当前档位 (UI 手动入口用)
-  d3dBackend?: string;
-  dxvkBackend?: string;
-  seconds?: number;
-  timeoutMs?: number;
-}
-
 interface SmokeSuite {
   tests?: SmokeSuiteTest[];
 }
@@ -68,9 +48,20 @@ interface RunProgramResult {
   pid: number;
 }
 
+// queryWineProcess 返回的窄化视图 (native 进程注册表快照)
+interface ProcessSnapshot {
+  found: boolean;
+  status: string;
+  exitCode?: number | null;
+  exitCodeSource?: string;
+}
+
 // 结果 JSON 的终态集合 (与 smoke 程序协议一致: PASS/FAIL/SKIP/UNSUPPORTED)
 const FINAL_STATUSES: string[] = ['PASS', 'FAIL', 'SKIP', 'UNSUPPORTED'];
 const POLL_INTERVAL_MS: number = 500;
+// 进程退出与结果落盘有先后差: 判崩溃前多等几轮再定
+const EXIT_GRACE_READS: number = 4;
+const EXIT_GRACE_MS: number = 150;
 
 // 瘦编排解释器: 读 suites.json → 逐测试 runWineProgram → 轮询结果 JSON → 汇总
 // suite-summary.json。只搬运 env 不懂 env; 产品语义 env (DXVK 稳定化/后端档位) 由
@@ -150,20 +141,33 @@ export class SmokeRunner {
         ]);
         return;
       }
-      const suitesPath: string = `${DRIVE_C}/smoke/suites.json`;
-      const raw: string = readTextIfExists(suitesPath);
-      if (!raw) {
-        await this.finishSuite(request, [
-          this.failure(request, 'suites', `missing ${suitesPath} (seed 未完成或载荷缺失)`, -1)
-        ]);
-        return;
+      // 测试清单来源 (job > suites.json): inline 自带完整定义不读 suites.json;
+      // tests 是在 suite 上的过滤; 都没有则跑整个 suite
+      const job: SmokeJob | undefined = request.job;
+      let tests: SmokeSuiteTest[] = [];
+      if (job && job.inline && job.inline.length > 0) {
+        tests = job.inline;
+      } else {
+        const suitesPath: string = `${DRIVE_C}/smoke/suites.json`;
+        const raw: string = readTextIfExists(suitesPath);
+        if (!raw) {
+          await this.finishSuite(request, [
+            this.failure(request, 'suites', `missing ${suitesPath} (seed 未完成或载荷缺失)`, -1)
+          ]);
+          return;
+        }
+        const doc: SuitesDoc = JSON.parse(raw) as SuitesDoc;
+        const suite: SmokeSuite | undefined = doc.suites ? doc.suites[request.suite] : undefined;
+        tests = suite && suite.tests ? suite.tests : [];
+        const wanted: string[] = job && job.tests ? job.tests : [];
+        if (wanted.length > 0) {
+          tests = tests.filter((t) => wanted.includes(t.testId));
+        }
       }
-      const doc: SuitesDoc = JSON.parse(raw) as SuitesDoc;
-      const suite: SmokeSuite | undefined = doc.suites ? doc.suites[request.suite] : undefined;
-      const tests: SmokeSuiteTest[] | undefined = suite ? suite.tests : undefined;
-      if (!tests || tests.length === 0) {
+      if (tests.length === 0) {
         await this.finishSuite(request, [
-          this.failure(request, 'suites', `suite "${request.suite}" 无定义 (suites.json)`, -1)
+          this.failure(request, 'suites',
+            `suite "${request.suite}" 无测试 (定义缺失或 job.tests 过滤后为空)`, -1)
         ]);
         return;
       }
@@ -205,6 +209,9 @@ export class SmokeRunner {
 
   private async runTest(request: SmokeRequest, test: SmokeSuiteTest, resultsDir: string): Promise<SmokeTestResult> {
     const envSvc = WineEnvService.getInstance();
+    // job.params 是对选中测试的统一覆盖 (调试参数组合): env 合并 (params 优先),
+    // argv 追加, 后端与时长参数覆盖测试定义
+    const params: SmokeJobParams = request.job && request.job.params ? request.job.params : {};
     // 结果协议键由 runner 控制; suites 声明的诊断键随后合并 (测试专属, 非产品语义)
     const environment: Record<string, string> = {
       'WINEHUA_SMOKE_RUN_ID': request.runId,
@@ -216,11 +223,19 @@ export class SmokeRunner {
         environment[key] = declared[key];
       }
     }
-    // seconds/timeoutMs: 缺失用默认; -1 = 取请求的 longSeconds (dxvk-long 系列)
-    const unresolved: number = test.seconds === undefined ? 0 : test.seconds;
+    const overridden: Record<string, string> = params.env || {};
+    for (const key of Object.keys(overridden)) {
+      if (overridden[key] !== undefined) {
+        environment[key] = overridden[key];
+      }
+    }
+    // seconds/timeoutMs: 测试定义 > job.params > 默认; -1 = 取请求的 longSeconds
+    const definedSeconds: number = test.seconds === undefined ? 0 : test.seconds;
+    const unresolved: number = params.seconds === undefined ? definedSeconds : params.seconds;
     const seconds: number = unresolved < 0 ? (request.longSeconds || 3600) : unresolved;
-    const timeoutMs: number = test.timeoutMs === undefined ? 120000 :
-      (test.timeoutMs < 0 ? seconds * 1000 + 90000 : test.timeoutMs);
+    const definedTimeout: number = test.timeoutMs === undefined ? 120000 : test.timeoutMs;
+    const timeoutMs: number = params.timeoutMs === undefined ? definedTimeout : params.timeoutMs;
+    const resolvedTimeout: number = timeoutMs < 0 ? seconds * 1000 + 90000 : timeoutMs;
     // arg 展开: 'std' (默认) = smoke 统一协议 argv, runner 生成
     // (--automation → 结果协议由 argv 承载, 见 winehua_smoke_protocol.h);
     // 'raw' = 原样 argv (d3d12 的 --frames/--result/--checkpoint), 占位符替换
@@ -246,55 +261,86 @@ export class SmokeRunner {
       } else {
         argv.push(...std, '--present', '--seconds', `${seconds}`);
       }
-      const extra: string[] = test.extraArgs || [];
+      const extra: string[] = (test.extraArgs || []).concat(params.argv || []);
       for (const arg of extra) {
         argv.push(arg);
       }
     }
-    // d3d 后端: suites 显式声明 (回归跑固定后端), 缺省 = 当前档位 (UI 手动 core)
-    const d3dBackend: string = test.d3dBackend ? test.d3dBackend : envSvc.getD3dBackend();
+    // d3d 后端: job.params > suites 声明 (回归跑固定后端) > 当前档位 (UI 手动 core)
+    const d3dBackend: string = params.d3dBackend ? params.d3dBackend :
+      (test.d3dBackend ? test.d3dBackend : envSvc.getD3dBackend());
     const winPath: string = 'C:\\smoke\\' + test.exe.replace(/\//g, '\\');
     hilog.info(DOMAIN, TAG, 'spawn test=%{public}s exe=%{public}s seconds=%{public}d timeoutMs=%{public}d back=%{public}s',
-      test.testId, winPath, seconds, timeoutMs, d3dBackend);
+      test.testId, winPath, seconds, resolvedTimeout, d3dBackend);
+    const dxvkBackend: string = params.dxvkBackend ? params.dxvkBackend :
+      (test.dxvkBackend ? test.dxvkBackend : envSvc.getDxvkBackend());
     const process = testNapi.runWineProgram({
       windowsExePath: winPath,
       argv: argv,
       environment: environment,
       workingDirectory: 'C:\\smoke',
       d3dBackend: d3dBackend,
-      dxvkBackend: test.dxvkBackend ? test.dxvkBackend : envSvc.getDxvkBackend()
+      dxvkBackend: dxvkBackend
     }) as RunProgramResult;
     if (!process || process.pid <= 0) {
       return this.failure(request, 'startup', `runWineProgram failed: ${winPath}`, -1, test.testId);
     }
-    // 轮询结果 JSON: 文件出现且 status 为终态即采; 超时记 FAIL(timeout)
-    const deadline = Date.now() + timeoutMs;
+    // 子进程死了 (崩溃/被杀) 就不会再有结果文件, 只盯文件的轮询会把崩溃拖满
+    // 整个 timeout, 失败信息只剩一句"轮询超时", 崩溃原因整个丢掉。查一次
+    // native 进程注册表 (无 IO) 确认已退出的: 宽限几轮等结果落盘, 仍无终态
+    // 即判失败并带上退出码与来源。
+    const deadline = Date.now() + resolvedTimeout;
     let lastText: string = '';
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
       lastText = readTextIfExists(resultPath);
-      if (lastText) {
-        try {
-          const obj = JSON.parse(lastText) as SmokeResultFile;
-          const status = obj.status ? `${obj.status}` : '';
-          if (status && FINAL_STATUSES.includes(status)) {
-            return {
-              schemaVersion: 1,
-              runId: request.runId,
-              testId: test.testId,
-              status: status,
-              stage: obj.stage ? `${obj.stage}` : 'complete',
-              pid: process.pid
-            };
-          }
-        } catch (_) {
-          // 半写 JSON: 继续轮询
+      let final: SmokeResultFile | null = SmokeRunner.parseFinal(lastText);
+      const snapshot = testNapi.queryWineProcess(process.pid) as ProcessSnapshot;
+      const exited: boolean = !snapshot.found || snapshot.status !== 'running';
+      if (exited) {
+        for (let grace = 0; grace < EXIT_GRACE_READS && !final; grace++) {
+          await new Promise<void>((r) => setTimeout(r, EXIT_GRACE_MS));
+          lastText = readTextIfExists(resultPath);
+          final = SmokeRunner.parseFinal(lastText);
         }
+        if (!final) {
+          const code: string = snapshot.exitCode === undefined || snapshot.exitCode === null
+            ? '?' : `${snapshot.exitCode}`;
+          const source: string = snapshot.exitCodeSource ? snapshot.exitCodeSource : 'unknown';
+          hilog.error(DOMAIN, TAG,
+            'test=%{public}s pid=%{public}d exited before result exit=%{public}s source=%{public}s',
+            test.testId, process.pid, code, source);
+          return this.failure(request, 'crashed',
+            `进程在写出结果前退出 (exit=${code}, source=${source})`,
+            process.pid, test.testId);
+        }
+      }
+      if (final) {
+        return {
+          schemaVersion: 1,
+          runId: request.runId,
+          testId: test.testId,
+          status: final.status ? `${final.status}` : '',
+          stage: final.stage ? `${final.stage}` : 'complete',
+          pid: process.pid
+        };
       }
     }
     hilog.error(DOMAIN, TAG, 'timeout test=%{public}s lastText=%{public}s',
       test.testId, lastText.substring(0, 200));
-    return this.failure(request, 'timeout', `轮询超时 ${timeoutMs}ms (结果文件: ${resultPath})`, process.pid, test.testId);
+    return this.failure(request, 'timeout', `轮询超时 ${resolvedTimeout}ms (结果文件: ${resultPath})`, process.pid, test.testId);
+  }
+
+  // 结果文件 → 终态对象; 未出现 / 半写 JSON / 非终态一律 null (继续轮询)
+  private static parseFinal(text: string): SmokeResultFile | null {
+    if (!text) return null;
+    try {
+      const obj = JSON.parse(text) as SmokeResultFile;
+      const status = obj.status ? `${obj.status}` : '';
+      return status && FINAL_STATUSES.includes(status) ? obj : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   private failure(request: SmokeRequest, stage: string, message: string, pid: number, testId?: string): SmokeTestResult {

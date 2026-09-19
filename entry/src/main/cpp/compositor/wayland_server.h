@@ -230,6 +230,12 @@ public:
     void EndMoveGrab();
     bool ProcessMoveGrabMotion(int32_t gx, int32_t gy);
 
+    // title 是与 commit 独立的协议请求, 可能晚于首个 commit 到达。真桌面靠
+    // 非空 title 识别 (空 title 的 desktop-shell 是辅助窗口), 而识别机会原本
+    // 只有首个 commit 一次 —— title 晚到会让真桌面被当辅助窗口隐藏、桌面根
+    // 永久缺失。title 到位时补一次识别机会。
+    void RecheckDesktopRootOnTitle(SurfaceData* sd);
+
 private:
     WaylandServer() = default;
     void EventLoop();
@@ -258,7 +264,7 @@ private:
 
     void UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                      ShmCommitInfo& fi, bool& outFirstCommit);
-    void CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi, bool isFirstCommit);
+    void CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOpportunity);
     void UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi);
     void UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                        uint32_t parentId, ShmCommitInfo& fi);
