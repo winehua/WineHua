@@ -8,7 +8,7 @@
 
 | 要求 | 落点 |
 |---|---|
-| ① 少侵入：测试代码不干扰产品逻辑 | 载荷移出产品包（§4）；产品代码保持 7 处标记钩子（§6）；正常会话零行为变化 |
+| ① 少侵入：测试代码不干扰产品逻辑 | 载荷独立成树、随包分发（§4）；产品代码保持 7 处标记钩子（§6）；正常会话零行为变化 |
 | ② 覆盖 + 稳定复现 + 跨环境 | 用例自包含目录（§3）；环境依赖收敛为 python3+hdc+mingw（§7）；判定与执行分离、可重跑（§8） |
 | ③ 灵活：调试难复现场景/参数组合 | job 协议支持选测/参数覆盖/内联临时用例（§5）；矩阵展开（§3.3） |
 
@@ -48,7 +48,7 @@
 | # | 缺点 | 后果 | 新方案 |
 |---|---|---|---|
 | 1 | host 脚本依赖 Docker + Windows PowerShell | 只有作者机器能跑，"跨开发者环境稳定"不成立 | host 工具只用 python3 + hdc + mingw（§7） |
-| 2 | 载荷（4.7 MB）打进 HAP（wine-data.zip 293 MB） | 改一个测试要重打 zip + 重装 HAP；产品包含测试资产 | 载荷移出产品包，`-b` 推送（§4） |
+| 2 | 载荷（4.7 MB）打进 HAP（wine-data.zip 293 MB） | 改一个测试要重打 zip + 重装 HAP | 载荷独立成树 + 双源导入（§4）：开发环境 `-b` 推几 MB 即可，发布环境用包内版本 |
 | 3 | Want 5 键协议（只能整套跑） | 不能跑单测、不能传参数组合、不能跑临时用例 | job 协议：选测 / 参数覆盖 / 内联用例（§5） |
 | 4 | 新增用例要改 4 处（C 源、assemble 编译段、assemble suites 段、run_regression 白名单） | 用例积累摩擦大 | 用例 = 一个目录，构建脚本扫描生成（§3） |
 | 5 | 判定逻辑绑死在 run_regression.py | 改判定要重跑设备；历史归档无法重判 | 判定器独立 + `check <run-dir>` 可重跑（§8） |
@@ -147,21 +147,25 @@ suite 只是用例的分组视图；`all` / `long` 这类组合套件由构建�
 
 ## 4. 载荷通道
 
-### 4.1 构建产物（不进 HAP）
+### 4.1 构建产物（随包分发）
 
 ```
 build/smoke-payload/
   suites.json          # 沿用现有 schema（设备端 Runner 直接可读）
-  manifest.json        # 每个文件的 sha256 + buildId
+  manifest.json        # 每个文件的 sha256 + 内容版本（suiteVersion）
   x64/*.exe  x86/*.exe
   assets/*
 ```
 
-`assemble.sh` 删除 smoke 打包段；产品 HAP **不含任何测试资产**。
-开发构建可用 `make hap SMOKE_PAYLOAD=1` 把 payload 打回 rawfile 作为兜底
-（见 §4.3 优先级）。
+`assemble.sh` 把 `build/smoke-payload` 拷进 `wine-data.zip` 的 `smoke/` 树
+（约 5 MB，占 HAP 1.4%）。发布环境没有 host，靠包内载荷让用户也能跑自检
+（App 侧栏「Smoke 回归 (core)」）。
 
-### 4.2 推送
+构建链唯一：`python3 automation/smoke.py build` 产出载荷，Makefile 里 assemble
+依赖它（源码型用例跟踪 `smoke/` 全树，产物型用例跟踪代表产物与对应 stamp，
+避免拷到陈旧 exe）。
+
+### 4.2 推送（开发环境热更新）
 
 ```bash
 hdc file send -b app.hackeris.winehua build/smoke-payload \
@@ -171,15 +175,18 @@ hdc file send -b app.hackeris.winehua build/smoke-payload \
 规则（实测）：**`-b <bundle>` 必须配沙箱视角 remote**（`/data/storage/el2/base/files/…`），
 写真实路径会被当成相对路径落到不存在的位置。整目录递归送达。
 
-### 4.3 设备端导入
+改测试只推几 MB，不用重装 346 MB 的 HAP。
+
+### 4.3 设备端导入（双源）
 
 `SmokeHook` 在引擎 ready 时（有 smoke 请求才做）：
 
-1. 读 `files/smoke-payload/manifest.json` 的 `buildId`；
-2. 与 `<prefix>/drive_c/smoke/.build-id` 比对，一致则跳过（正常会话零动作）；
-3. 不一致 → 删旧树 → copyTree 到 `<prefix>/drive_c/smoke` → 写 `.build-id`。
+1. 按优先级选源：`files/smoke-payload`（host 推送）> `files/wine/smoke`
+   （包内解压树，发布环境用）；
+2. 读源的 `manifest.json` 的 `suiteVersion`，与 `C:\smoke` 现有版本一致则跳过
+   （正常会话零动作）；
+3. 不一致 → copyTree 覆盖到 `<prefix>/drive_c/smoke`（不删旧树，`results/` 保留）。
 
-兜底优先级：`files/smoke-payload`（推送）> HAP rawfile（开发构建时才存在）。
 两个来源都没有 → 会话报 FAIL（`suites` 阶段），不阻塞产品会话。
 
 ### 4.4 备选通道（一期不做）

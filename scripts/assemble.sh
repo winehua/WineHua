@@ -289,8 +289,9 @@ assemble_pad() {
 
     # 32-bit exe stubs, 放在 bin/i386-windows/.
     # Wine 通过 WINEARCH 或 exe header 判断 32/64, 自动加载对应 DLL.
-    # 排除测试程序: smoke 载荷由 host 推送 (smoke/tests + automation/smoke.py),
-    # 不进产品包; winehua_keep.exe 是产品必需 (wine_launch.cpp 拷进 system32).
+    # 排除测试程序: wine 的 bin/ 目录不放 smoke 程序, 载荷走 wine-data/smoke
+    # 独立树 (见 assemble 尾部, 设备端经 SmokeHook.seed 播种到 C:\smoke);
+    # winehua_keep.exe 是产品必需 (wine_launch.cpp 拷进 system32).
     for exe in "$BUILD_DIR/wine-ohos/programs/"*/i386-windows/*.exe; do
         case "$(basename "$exe")" in
             winehua_*_smoke.exe|winehua_dinput_probe.exe) continue ;;
@@ -309,7 +310,7 @@ assemble_pad() {
         warn "  i686-w64-mingw32-strip not found, skipping strip"
     fi
 
-    # *.exe stubs → rawfile (同样排除测试程序)
+    # *.exe stubs → rawfile (bin/ 不放 smoke 程序, 同上)
     for exe in "$BUILD_DIR/wine-ohos/programs/"*/x86_64-windows/*.exe; do
         case "$(basename "$exe")" in
             winehua_*_smoke.exe|winehua_dinput_probe.exe) continue ;;
@@ -558,6 +559,17 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     mkdir -p "$wine_data/bin/host_vulkan"
     cp -a "$host_vulkan_root/"* "$wine_data/bin/host_vulkan/"
     log "  host_vulkan ($NATIVE_ARCH): native exact replay"
+
+    # Smoke 载荷 (v2, automation/smoke.py build 产出) → wine-data/smoke/。
+    # 设备端 SmokeHook.seed 的离线源就是 files/wine/smoke (解压自本 zip),
+    # 发布环境无 host 也能播种 C:\smoke; 开发环境 host 推送源
+    # files/smoke-payload 优先级更高, 改测试不用重装 HAP。
+    local smoke_payload="$BUILD_DIR/smoke-payload"
+    [ -f "$smoke_payload/manifest.json" ] || \
+        err "smoke payload missing: run 'python3 automation/smoke.py build' first"
+    mkdir -p "$wine_data/smoke"
+    cp -a "$smoke_payload/." "$wine_data/smoke/"
+    log "  smoke payload → wine-data/smoke ($(find "$wine_data/smoke" -name '*.exe' | wc -l) exe)"
 
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
