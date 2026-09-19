@@ -107,7 +107,7 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 - **dxvk-dynamic**：dynamic constant buffer 专项
 - **dxvk-long / dxvk-modern-long**：长时间稳定性（默认 1 小时，`--long-seconds` 可调）
 - **dxvk-modern-baseline**：DXVK 2.6.2 x86/x64 baseline + cube 回归
-- **dxvk-500k-routes**：500k 混合路由的两条 DXVK 支路（1.10.3 = 全新设备默认，2.6.2 = UI 选过 DXVK 2.6.2 后的组合）
+- **dxvk-500k-routes**：500k 混合路由的两条 DXVK 支路（1.10.3 = 全新设备默认，2.6.2 = UI 选过 DXVK 2.6.2 后的组合）。**当前已知红**：产品为保 D3D12 渲染注入 `VN_WINEHUA_PERSISTENT_MAP_SYNC=1`（去掉则 D3D12 常驻 map 上传断、渲染黑屏），该开关会破坏 DXVK 支路的 compute 回读 → `computeUavFunctional=false` 是产品真实缺陷的如实反映，两难的治本方案与验证方案见 memory `persistent-map-sync-dxvk-readback`
 - **gpu-diagnostics**：报告 Guest Vulkan、DXVK DLL 实际加载路径与 D3D11 device 状态
 - **dxvk26-requirements**：DXVK 2.6.2 所需的 Guest/Wine Vulkan 1.3 transport 资格探针
 - **d3d12**：VKD3D-Proton limited-500k 1000 帧图形 smoke（含 checkpoint 进度）
