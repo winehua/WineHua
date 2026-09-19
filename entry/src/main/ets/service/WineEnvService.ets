@@ -1138,6 +1138,22 @@ export class WineEnvService {
   autoStartPending: boolean = false;
   // winehua.program=<wine 路径>: 引擎就绪后自动启动该程序
   autoProgram: string = '';
+  // winehua.programArgs=<空格分隔 argv>: 程序参数透传 (winedbg 调试用)
+  autoProgramArgs: string = '';
+  // winehua.programEnv=<KEY=VALUE>: 程序 env 透传 (WINEDEBUG 等诊断开关)
+  autoProgramEnv: string = '';
+
+  consumeAutoProgramEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    if (this.autoProgramEnv.length > 0) {
+      const sep = this.autoProgramEnv.indexOf('=');
+      if (sep > 0) {
+        env[this.autoProgramEnv.substring(0, sep)] = this.autoProgramEnv.substring(sep + 1);
+      }
+    }
+    this.autoProgramEnv = '';
+    return env;
+  }
 
   setAutoProgram(p: string): void {
     this.autoProgram = p;
@@ -1147,6 +1163,15 @@ export class WineEnvService {
     const p = this.autoProgram;
     this.autoProgram = '';
     return p;
+  }
+
+  consumeAutoProgramArgs(): string[] {
+    // '|' 为参数边界 (参数值本身可含空格, 如 winedbg --command "info proc")
+    const args = this.autoProgramArgs.length > 0
+      ? this.autoProgramArgs.split('|').filter((a: string) => a.length > 0)
+      : [];
+    this.autoProgramArgs = '';
+    return args;
   }
 
   consumeAutoStart(): boolean {

@@ -34,6 +34,85 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
+#include <dirent.h>
+
+// 卡死排查: 周期 dump 本进程各线程阻塞中的 syscall (nr + sp/pc)。
+// pc 配合 /proc/self/maps 可定位卡在哪个 .so。WINEHUA_GUEST_SC_DIAG=1 启用。
+// 输出走 stderr 文件通道 (O_APPEND, PIPE_BUF 内原子)。
+static void* guest_syscall_diag_thread(void* arg) {
+    int fileFd = (int)(intptr_t)arg;
+    char path[128], line[512];
+    bool first = true;
+    for (;;) {
+        sleep(3);
+        DIR* d = opendir("/proc/self/task");
+        if (!d) {
+            // 沙箱可能限制 /proc: 失败也要可见, 否则空转无法区分
+            if (first && fileFd >= 0)
+                dprintf(fileFd, "[GUEST-SC] opendir(/proc/self/task) FAILED errno=%d\n",
+                        errno);
+            first = false;
+            continue;
+        }
+        int dumped = 0, readFail = 0;
+        struct dirent* e;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            char sc[256] = "", comm[64] = "";
+            snprintf(path, sizeof(path), "/proc/self/task/%s/syscall", e->d_name);
+            FILE* f = fopen(path, "r");
+            if (f) {
+                size_t n = fread(sc, 1, sizeof(sc) - 1, f);
+                sc[n] = 0;
+                fclose(f);
+            } else {
+                readFail++;
+                continue;
+            }
+            dumped++;
+            char* nl = strchr(sc, '\n');
+            if (nl) *nl = 0;
+            snprintf(path, sizeof(path), "/proc/self/task/%s/comm", e->d_name);
+            f = fopen(path, "r");
+            if (f) {
+                size_t n = fread(comm, 1, sizeof(comm) - 1, f);
+                comm[n] = 0;
+                if (n && comm[n - 1] == '\n') comm[n - 1] = 0;
+                fclose(f);
+            }
+            snprintf(line, sizeof(line), "[GUEST-SC] pid=%d tid=%s comm=%s sc=%s\n",
+                     getpid(), e->d_name, comm, sc);
+            if (fileFd >= 0) write(fileFd, line, strlen(line));
+        }
+        closedir(d);
+        if (first && fileFd >= 0) {
+            // 首轮自检: 0 线程可读 / 全部 syscall 读取失败时给出可见信号
+            dprintf(fileFd, "[GUEST-SC] diag loop ok: dumped=%d readFail=%d\n",
+                    dumped, readFail);
+            first = false;
+        }
+    }
+    return nullptr;
+}
+
+static void start_guest_syscall_diag(int errFile) {
+    const char* env = getenv("WINEHUA_GUEST_SC_DIAG");
+    OH_LOG_INFO(LOG_APP, "[WineChild] sc-diag probe env=%{public}s",
+                env ? env : "(unset)");
+    // 双通道探针: stderr 文件通道与 hilog 独立, 用于区分"代码未执行"与"hilog 丢日志"
+    if (errFile >= 0)
+        dprintf(errFile, "[GUEST-SC] probe pid=%d env=%s\n",
+                getpid(), env ? env : "(unset)");
+    if (!env || !env[0] || !strcmp(env, "0")) return;
+    pthread_t scTid;
+    if (pthread_create(&scTid, nullptr, guest_syscall_diag_thread,
+                       (void*)(intptr_t)errFile) == 0)
+    {
+        pthread_detach(scTid);
+        OH_LOG_INFO(LOG_APP, "[WineChild] sc-diag thread started pid=%{public}d",
+                    getpid());
+    }
+}
 
 // 从 stderr pipe 读取 Wine 内部日志，同时转发到 hilog 和文件
 struct stderr_ctx { int fd; int fileFd; };
@@ -270,7 +349,9 @@ static const char *select_winedebug_profile(int argc, char *argv[])
     return default_winedebug_profile();
 }
 
-static void setup_wine_env(const char* binDir, const char* homeDir, const char *winedebug)
+// WINEDEBUG 不在此设置: 决策 (select_winedebug_profile) 依赖 __env 覆盖
+// (WINEHUA_WINEDEBUG), 必须在 apply_entry_param_env_overrides 之后 (Main Step B 后)
+static void setup_wine_env(const char* binDir, const char* homeDir)
 {
     const std::string libDir = std::string(binDir) + "/x86_64-unix";
 
@@ -306,7 +387,6 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     // 标记 Box64 in-process 模式，供 x86_64 wine 代码 (process.c) 运行时判断
     setenv("USE_LIBBOX64", "1", 1);
 #endif
-    setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
 }
 
 static void apply_entry_param_env_overrides(const std::vector<std::string>& envOverrides)
@@ -455,9 +535,7 @@ extern "C" void Main(NativeChildProcess_Args args)
                 homeDir ? homeDir : "(null)", binDir, argc, argc > 0 ? argv[0] : "(none)");
 
     // 2. Step A: 设置 Wine 环境变量 baseline (硬编码默认值, 确保非 broker 路径可用)
-    const char *winedebug = select_winedebug_profile(argc, argv);
-    OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
-    setup_wine_env(binDir, homeDir, winedebug);
+    setup_wine_env(binDir, homeDir);
 
     // 3. 从父进程 fdList 读取 fds (按 fdName 区分)
     int wsSockFd = -1;   // wineserver fd (per-process)
@@ -477,6 +555,11 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+    // WINEDEBUG 决策必须在 __env 应用之后: select 要读的 WINEHUA_WINEDEBUG
+    // 覆盖就在 entryParams 里 (决策先于应用时, 覆盖永不生效 — 实测踩坑)
+    const char *winedebug = select_winedebug_profile(argc, argv);
+    OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
+    setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.
@@ -539,6 +622,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     pthread_t tid;
     pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
     pthread_detach(tid);
+    start_guest_syscall_diag(errFile);
 
 #ifdef __aarch64__
     // ARM64 Pad: dlopen box64.so → Box64 模拟 x86_64 wine ELF
@@ -658,6 +742,7 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
     pthread_t tid;
     pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
     pthread_detach(tid);
+    start_guest_syscall_diag(errFile);
 
     // 收集 argv: "wineserver" "-f" ...
     if (argc2 == 0) {

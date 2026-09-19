@@ -80,6 +80,18 @@ export default class EntryAbility extends UIAbility {
     if (parameters && parameters['winehua.program'] !== undefined &&
       parameters['winehua.program'] !== null) {
       WineEnvService.getInstance().setAutoProgram(value('winehua.program', ''));
+      // winehua.programArgs=<空格分隔>: 同步消费的 argv (winedbg 调试用)
+      if (parameters['winehua.programArgs'] !== undefined &&
+        parameters['winehua.programArgs'] !== null) {
+        WineEnvService.getInstance().autoProgramArgs =
+          `${parameters['winehua.programArgs']}`;
+      }
+      // winehua.programEnv=<KEY=VALUE>: 同步消费的 env (WINEDEBUG 诊断)
+      if (parameters['winehua.programEnv'] !== undefined &&
+        parameters['winehua.programEnv'] !== null) {
+        WineEnvService.getInstance().autoProgramEnv =
+          `${parameters['winehua.programEnv']}`;
+      }
     }
     // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
     // 在 SmokeHook, 模式非 smoke 时零行为)
@@ -105,7 +117,8 @@ export default class EntryAbility extends UIAbility {
           const prog = env.consumeAutoProgram();
           if (prog) {
             hilog.info(DOMAIN, 'testTag', 'autoRun: launch %{public}s', prog);
-            this.runProgram(prog);
+            const extraEnv = env.consumeAutoProgramEnv();
+            this.runProgram(prog, env.consumeAutoProgramArgs(), extraEnv);
           }
           return;
         }
@@ -124,13 +137,19 @@ export default class EntryAbility extends UIAbility {
   }
 
   // 程序直启 (与 Index.doRun 同款通道; 目录/参数由调用方给出)
-  private runProgram(windowsPath: string): void {
+  private runProgram(windowsPath: string, args: string[] = [],
+    extraEnv: Record<string, string> = {}): void {
     const slash = windowsPath.lastIndexOf('/');
     const dir = slash > 0 ? windowsPath.substring(0, slash) : windowsPath;
+    const env: Record<string, string> = {};
+    const keys = Object.keys(extraEnv);
+    for (let i = 0; i < keys.length; i++) {
+      env[keys[i]] = extraEnv[keys[i]];
+    }
     testNapi.runWineProgram({
       windowsExePath: windowsPath,
-      argv: [],
-      environment: {},
+      argv: args,
+      environment: env,
       workingDirectory: dir,
       d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k',
       dxvkBackend: AppStorage.get<string>('winehua.dxvk.backend') ?? 'auto'
