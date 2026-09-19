@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """WineHua smoke 自动化工具（host 侧）。
 
-设计见 docs/SMOKE_V2_DESIGN.md。当前实现 P1：payload 本地构建。
+设计见 docs/SMOKE_V2_DESIGN.md。
 
-    python3 automation/smoke.py build [--suite NAME] [--out DIR] [--check DIR]
+    python3 automation/smoke.py build [--suite NAME] [--case NAME] [--out DIR]
+    python3 automation/smoke.py push
+    python3 automation/smoke.py run --suite NAME [--tests ID,ID] [--inline FILE]
+    python3 automation/smoke.py check <run-dir>
+    python3 automation/smoke.py gate
 
 构建流程：扫描 smoke/tests/*/test.json（用例）与 smoke/suites/*.json（套件定义），
 交叉编译/收集 exe，生成 build/smoke-payload/（suites.json + manifest.json）。
-产物不进 HAP：由 host 经 hdc 推送到设备沙箱（P2 起）。
+产物不进 HAP：由 host 经 hdc 推送到设备沙箱；设备端 SmokeHook.seed 按 manifest
+的内容版本（suiteVersion）导入 C:\\smoke。判定在 host 侧（automation/checks/），
+`check` 可对历史归档重跑，改判定规则不必重跑设备。
 """
 from __future__ import annotations
 
@@ -410,6 +416,22 @@ def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
     return out if code == 0 else ""
 
 
+def sandbox_texts(hdc: str, device: str, rel_paths: list) -> dict:
+    """一次 hdc 调用读多个文件（分隔符切分）：固定帧窗口只有 2 秒，逐文件
+    cat 的往返开销会把轮询周期撑到窗口之外。返回 {rel_path: 内容}。"""
+    if not rel_paths:
+        return {}
+    marker = "@@@SMOKE@@@"
+    script = f"; echo '{marker}'; ".join(
+        f"cat '{REAL_FILES}/{path}' 2>/dev/null" for path in rel_paths)
+    code, out = hdc_shell(hdc, device, script)
+    if code != 0:
+        return {path: "" for path in rel_paths}
+    chunks = out.split(marker)
+    return {path: (chunks[index].strip() if index < len(chunks) else "")
+            for index, path in enumerate(rel_paths)}
+
+
 # ---------------------------------------------------------------------------
 # 子命令：push / run
 # ---------------------------------------------------------------------------
@@ -547,7 +569,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
         # 无论成败都停掉测试 App：常驻会让下次启动走 onNewWant 保留自动化
-        # 窗口/页面状态，而不是重建正常形态（旧 run_regression.py 的既有经验）
+        # 窗口/页面状态，而不是重建正常形态
         hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
 
     for test in host["tests"]:
@@ -643,10 +665,12 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
     retried = False
     while time.time() < deadline:
         pending = [tid for tid in frame_targets if tid not in frames]
-        time.sleep(0.5 if pending else poll_seconds)
+        time.sleep(0.15 if pending else poll_seconds)
+        # 每轮一次 hdc 读全部待采帧测试 + suite summary（见 sandbox_texts）
+        paths = [f"{DRIVE_C_REL}/results/{run_id}/{tid}.json" for tid in pending]
+        texts = sandbox_texts(hdc, device, paths + [summary_rel])
         for test_id in pending:
-            text = sandbox_text(hdc, device,
-                                f"{DRIVE_C_REL}/results/{run_id}/{test_id}.json")
+            text = texts.get(f"{DRIVE_C_REL}/results/{run_id}/{test_id}.json", "")
             if '"fixed-frame"' in text and '"message"' in text:
                 captured = []
                 for attempt in range(frame_attempts):
@@ -658,7 +682,7 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
                 if captured:
                     frames[test_id] = captured
                     log(f"  frame: {test_id} captured x{len(captured)}")
-        text = sandbox_text(hdc, device, summary_rel)
+        text = texts.get(summary_rel, "")
         if text.strip().startswith("{"):
             try:
                 summary = json.loads(text)
@@ -789,6 +813,13 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     needed = {(entry.case.id, entry.arch) for suite in selected.values()
               for entry in suite["tests"]}
+    # --case: 单独构建未接入套件的用例（如手动调试工具 win32-driver），
+    # 使其 exe 进入 payload，可用 --inline 组合出临时测试跑参数组合。
+    for case_id in [item.strip() for item in (args.case or "").split(",") if item.strip()]:
+        if case_id not in cases:
+            die(f"unknown case {case_id} (have: {', '.join(sorted(cases))})")
+        for arch in cases[case_id].arch:
+            needed.add((case_id, arch))
     log(f"build begin: {len(needed)} case/arch from "
         f"{len(selected)} suite(s), out={args.out}")
 
@@ -812,7 +843,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def compare_with(check_dir: str, out_dir: Path) -> int:
-    """与既有 payload 逐字节比对（P1 迁移验证：产物必须与现设施一致）。"""
+    """与既有 payload 逐字节比对（比对忽略 PE 编译时间戳，见 pe_normalized）。"""
     reference = Path(check_dir).resolve()
     mismatches = []
     for produced in sorted(out_dir.rglob("*.exe")):
@@ -829,15 +860,40 @@ def compare_with(check_dir: str, out_dir: Path) -> int:
     return 1 if mismatches else 0
 
 
-def main() -> int:
+def cmd_gate(args: argparse.Namespace) -> int:
+    """入口门禁：3×reuse core + 1×clean core —— 引擎健康与基础渲染的最小回归。
+
+    载荷不变，只有第一次 run 推送；后续 --skip-push 复用设备端已有载荷。
+    """
+    parser = build_parser()
+    plan = [("reuse", False), ("reuse", True), ("reuse", True), ("clean", True)]
+    failed = []
+    for index, (prefix, skip_push) in enumerate(plan, 1):
+        log(f"gate {index}/{len(plan)}: core prefix={prefix}")
+        argv = ["run", "--suite", "core", "--prefix", prefix,
+                "--payload", args.payload, "--archive-root", args.archive_root,
+                "--timeout-minutes", str(args.timeout_minutes)]
+        if args.device:
+            argv += ["--device", args.device]
+        if skip_push:
+            argv.append("--skip-push")
+        if cmd_run(parser.parse_args(argv)) != 0:
+            failed.append(f"{index}:{prefix}")
+    log(f"gate {'PASS' if not failed else 'FAIL'} "
+        f"({len(plan) - len(failed)}/{len(plan)}), 未通过: {', '.join(failed) or '无'}")
+    return 0 if not failed else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="WineHua smoke automation (host)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     build = sub.add_parser("build", help="构建 payload 到 build/smoke-payload/")
     build.add_argument("--suite", default="", help="只构建该套件用到的用例（suites.json 仍全量）")
+    build.add_argument("--case", default="", help="额外构建的用例 id（逗号分隔，可未接入套件）")
     build.add_argument("--out", default=str(DEFAULT_OUT))
     build.add_argument("--check", default="",
-                       help="与既有 payload 目录逐字节比对（迁移验证）")
+                       help="与既有 payload 目录逐字节比对")
     build.set_defaults(func=cmd_build)
 
     push = sub.add_parser("push", help="推送 payload 到设备沙箱（播种源）")
@@ -881,7 +937,19 @@ def main() -> int:
     devices = sub.add_parser("devices", help="列出 hdc 设备")
     devices.set_defaults(func=cmd_devices)
 
-    args = parser.parse_args()
+    gate = sub.add_parser("gate", help="入口门禁：3×reuse core + 1×clean core")
+    gate.add_argument("--payload", default=str(DEFAULT_OUT))
+    gate.add_argument("--device", default="")
+    gate.add_argument("--archive-root",
+                      default=str(REPO_ROOT / "build/automation-logs"))
+    gate.add_argument("--timeout-minutes", type=int, default=15)
+    gate.set_defaults(func=cmd_gate)
+
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     return args.func(args)
 
 
