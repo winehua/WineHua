@@ -1,0 +1,298 @@
+From d1bdbac64188593ca1d626247e48fc93fc5ba84d Mon Sep 17 00:00:00 2001
+From: hackeris <hackeris@qq.com>
+Date: Fri, 18 Sep 2026 23:44:13 +0800
+Subject: [PATCH] test: add smoke protocol args to d3d12 demos
+
+gears and triangle accept --frames N (auto-exit after N presented
+frames), --result PATH, --run-id and --test-id. The terminal result
+JSON follows the winehua smoke protocol fields so the demos can run
+as regular smoke cases. Without --frames the interactive behaviour is
+unchanged; triangle only installs its idle render loop when a frame
+budget is given.
+---
+ demos/gears.c    | 69 +++++++++++++++++++++++++++++++--
+ demos/triangle.c | 99 ++++++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 160 insertions(+), 8 deletions(-)
+
+diff --git a/demos/gears.c b/demos/gears.c
+index 29ecb6cd..5e44ab1b 100644
+--- a/demos/gears.c
++++ b/demos/gears.c
+@@ -46,6 +46,8 @@
+ #endif
+ #include <assert.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ #define _USE_MATH_DEFINES
+ #include <math.h>
+ #include "demo.h"
+@@ -142,6 +144,16 @@ struct cx_gears
+     struct cxg_cb_data *cb_data;
+     struct cxg_instance_data *instance_data;
+     struct cxg_draw draws[3];
++
++    /* WineHua smoke automation: exit after --frames presented frames and
++     * write the winehua smoke result JSON to --result. Zero frame_target
++     * keeps the interactive demo behaviour unchanged. */
++    unsigned int frame_target;
++    unsigned int frame_count;
++    double start_time;
++    char result_path[260];
++    char run_id[96];
++    char test_id[96];
+ };
+ 
+ static void cxg_populate_command_list(struct cx_gears *cxg, unsigned int rt_idx)
+@@ -319,6 +331,9 @@ static void cxg_render_frame(struct cx_gears *cxg)
+             (ID3D12CommandList **)&cxg->command_list[cxg->rt_idx]);
+     demo_swapchain_present(cxg->swapchain);
+     cxg_wait_for_previous_frame(cxg);
++
++    if (cxg->frame_target && ++cxg->frame_count >= cxg->frame_target)
++        demo_window_destroy(cxg->window);
+ }
+ 
+ static void cxg_destroy_pipeline(struct cx_gears *cxg)
+@@ -851,14 +866,55 @@ static void cxg_idle(struct demo *demo, void *user_data)
+     cxg_render_frame(user_data);
+ }
+ 
+-static int cxg_main(void)
++static void cxg_parse_smoke_args(struct cx_gears *cxg, int argc, char **argv)
++{
++    int i;
++
++    for (i = 1; i < argc; ++i)
++    {
++        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
++            cxg->frame_target = (unsigned int)strtoul(argv[++i], NULL, 10);
++        else if (!strcmp(argv[i], "--result") && i + 1 < argc)
++            snprintf(cxg->result_path, sizeof(cxg->result_path), "%s", argv[++i]);
++        else if (!strcmp(argv[i], "--run-id") && i + 1 < argc)
++            snprintf(cxg->run_id, sizeof(cxg->run_id), "%s", argv[++i]);
++        else if (!strcmp(argv[i], "--test-id") && i + 1 < argc)
++            snprintf(cxg->test_id, sizeof(cxg->test_id), "%s", argv[++i]);
++    }
++}
++
++static void cxg_write_result(const struct cx_gears *cxg, const char *status, const char *message)
++{
++    double duration_ms = 0.0;
++    FILE *file;
++
++    if (!cxg->result_path[0])
++        return;
++    if (cxg->start_time > 0.0)
++        duration_ms = (cxg_get_time() - cxg->start_time) * 1000.0;
++    file = fopen(cxg->result_path, "w");
++    if (!file)
++        return;
++    fprintf(file,
++            "{\"schemaVersion\":1,\"runId\":\"%s\",\"testId\":\"%s\",\"status\":\"%s\","
++            "\"stage\":\"d3d12\",\"message\":\"%s\",\"metrics\":{\"frames\":%u,\"durationMs\":%.0f}}\n",
++            cxg->run_id, cxg->test_id, status, message, cxg->frame_count, duration_ms);
++    fclose(file);
++}
++
++static int cxg_main(int argc, char **argv)
+ {
+     unsigned int width = 300, height = 300;
+     struct cx_gears cxg;
+ 
+     memset(&cxg, 0, sizeof(cxg));
++    cxg_parse_smoke_args(&cxg, argc, argv);
++    cxg.start_time = cxg_get_time();
+     if (!demo_init(&cxg.demo, &cxg))
++    {
++        cxg_write_result(&cxg, "FAIL", "window/demo init failed");
+         return EXIT_FAILURE;
++    }
+     demo_set_idle_func(&cxg.demo, cxg_idle);
+ 
+     cxg.window = demo_window_create(&cxg.demo, "Vkd3d Gears", width, height, &cxg);
+@@ -889,6 +945,7 @@ static int cxg_main(void)
+     demo_process_events(&cxg.demo);
+ 
+     cxg_wait_for_previous_frame(&cxg);
++    cxg_write_result(&cxg, "PASS", "vkd3d gears demo completed");
+     cxg_destroy_assets(&cxg);
+     cxg_destroy_pipeline(&cxg);
+     demo_cleanup(&cxg.demo);
+@@ -902,9 +959,13 @@ int WINAPI WinMain(
+     HINSTANCE hPrevInstance,
+     LPSTR lpCmdLine,
+     int nCmdShow)
++{
++    /* __argc/__argv are declared by mingw-w64's <stdlib.h>. */
++    return cxg_main(__argc, __argv);
++}
+ #else
+-int main(void)
+-#endif
++int main(int argc, char **argv)
+ {
+-    return cxg_main();
++    return cxg_main(argc, argv);
+ }
++#endif
+diff --git a/demos/triangle.c b/demos/triangle.c
+index cc8af2e6..123d5c94 100644
+--- a/demos/triangle.c
++++ b/demos/triangle.c
+@@ -43,6 +43,10 @@
+ 
+ #define INITGUID
+ #include <assert.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/time.h>
+ #include "demo.h"
+ 
+ #include "triangle_vs.h"
+@@ -84,6 +88,16 @@ struct cx_triangle
+ 
+     unsigned int frame_idx;
+     struct cxt_fence fence;
++
++    /* WineHua smoke automation: exit after --frames presented frames and
++     * write the winehua smoke result JSON to --result. Zero frame_target
++     * keeps the interactive demo behaviour unchanged. */
++    unsigned int frame_target;
++    unsigned int frame_count;
++    double start_time;
++    char result_path[260];
++    char run_id[96];
++    char test_id[96];
+ };
+ 
+ static void cxt_populate_command_list(struct cx_triangle *cxt)
+@@ -158,6 +172,14 @@ static void cxt_render_frame(struct demo_window *window, void *user_data)
+     ID3D12CommandQueue_ExecuteCommandLists(cxt->command_queue, 1, (ID3D12CommandList **)&cxt->command_list);
+     demo_swapchain_present(cxt->swapchain);
+     cxt_wait_for_previous_frame(cxt);
++
++    if (cxt->frame_target && ++cxt->frame_count >= cxt->frame_target)
++        demo_window_destroy(cxt->window);
++}
++
++static void cxt_idle(struct demo *demo, void *user_data)
++{
++    cxt_render_frame(NULL, user_data);
+ }
+ 
+ static void cxt_destroy_pipeline(struct cx_triangle *cxt)
+@@ -354,19 +376,83 @@ static void cxt_key_press(struct demo_window *window, demo_key key, void *user_d
+         demo_window_destroy(window);
+ }
+ 
+-static int cxt_main(void)
++static double cxt_get_time(void)
++{
++#ifdef _WIN32
++    LARGE_INTEGER freq;
++    LARGE_INTEGER counter;
++
++    QueryPerformanceFrequency(&freq);
++    QueryPerformanceCounter(&counter);
++
++    return ((double)counter.QuadPart) / (double)freq.QuadPart;
++#else
++    struct timeval tv;
++    double t;
++    gettimeofday(&tv, NULL);
++    t = tv.tv_sec + tv.tv_usec / 1000000.0;
++    return t;
++#endif
++}
++
++static void cxt_parse_smoke_args(struct cx_triangle *cxt, int argc, char **argv)
++{
++    int i;
++
++    for (i = 1; i < argc; ++i)
++    {
++        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
++            cxt->frame_target = (unsigned int)strtoul(argv[++i], NULL, 10);
++        else if (!strcmp(argv[i], "--result") && i + 1 < argc)
++            snprintf(cxt->result_path, sizeof(cxt->result_path), "%s", argv[++i]);
++        else if (!strcmp(argv[i], "--run-id") && i + 1 < argc)
++            snprintf(cxt->run_id, sizeof(cxt->run_id), "%s", argv[++i]);
++        else if (!strcmp(argv[i], "--test-id") && i + 1 < argc)
++            snprintf(cxt->test_id, sizeof(cxt->test_id), "%s", argv[++i]);
++    }
++}
++
++static void cxt_write_result(const struct cx_triangle *cxt, const char *status, const char *message)
++{
++    double duration_ms = 0.0;
++    FILE *file;
++
++    if (!cxt->result_path[0])
++        return;
++    if (cxt->start_time > 0.0)
++        duration_ms = (cxt_get_time() - cxt->start_time) * 1000.0;
++    file = fopen(cxt->result_path, "w");
++    if (!file)
++        return;
++    fprintf(file,
++            "{\"schemaVersion\":1,\"runId\":\"%s\",\"testId\":\"%s\",\"status\":\"%s\","
++            "\"stage\":\"d3d12\",\"message\":\"%s\",\"metrics\":{\"frames\":%u,\"durationMs\":%.0f}}\n",
++            cxt->run_id, cxt->test_id, status, message, cxt->frame_count, duration_ms);
++    fclose(file);
++}
++
++static int cxt_main(int argc, char **argv)
+ {
+     unsigned int width = 640, height = 480;
+     struct cx_triangle cxt;
+ 
+     memset(&cxt, 0, sizeof(cxt));
++    cxt_parse_smoke_args(&cxt, argc, argv);
++    cxt.start_time = cxt_get_time();
+ 
+     if (!demo_init(&cxt.demo, NULL))
++    {
++        cxt_write_result(&cxt, "FAIL", "window/demo init failed");
+         return EXIT_FAILURE;
++    }
+ 
+     cxt.window = demo_window_create(&cxt.demo, "Vkd3d Triangle", width, height, &cxt);
+     demo_window_set_expose_func(cxt.window, cxt_render_frame);
+     demo_window_set_key_press_func(cxt.window, cxt_key_press);
++    /* Interactive mode stays expose-driven; the smoke frame budget needs a
++     * render loop that does not depend on window messages arriving. */
++    if (cxt.frame_target)
++        demo_set_idle_func(&cxt.demo, cxt_idle);
+ 
+     cxt.width = width;
+     cxt.height = height;
+@@ -385,6 +471,7 @@ static int cxt_main(void)
+     demo_process_events(&cxt.demo);
+ 
+     cxt_wait_for_previous_frame(&cxt);
++    cxt_write_result(&cxt, "PASS", "vkd3d triangle demo completed");
+     cxt_destroy_assets(&cxt);
+     cxt_destroy_pipeline(&cxt);
+     demo_cleanup(&cxt.demo);
+@@ -398,9 +485,13 @@ int WINAPI WinMain(
+     HINSTANCE hPrevInstance,
+     LPSTR lpCmdLine,
+     int nCmdShow)
++{
++    /* __argc/__argv are declared by mingw-w64's <stdlib.h>. */
++    return cxt_main(__argc, __argv);
++}
+ #else
+-int main(void)
+-#endif
++int main(int argc, char **argv)
+ {
+-    return cxt_main();
++    return cxt_main(argc, argv);
+ }
++#endif
+-- 
+2.53.0
+
