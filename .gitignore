@@ -64,6 +64,26 @@ prebuilt/
 # Local signing material (never commit)
 /sign/
 
+# Local Steam Host deployment state (never commit)
+/steam-host/host-config.json
+/steam-host/*.local.json
+/steam-host/state/
+/steam-host/data/
+/steam-host/*.local.pem
+/steam-host/*.local.key
+
 # Python caches
 __pycache__/
 *.pyc
+
+# 本地证据 / 中间产物（需要留档时用 git add -f 显式加入）
+/artifacts/
+/replay-out/
+/.tmp-hapcmp/
+
+# 本地签名材料（含私钥，绝不入库）
+/signs/
+
+# 第三方源码的本地检出（由 scripts/ 拉取，不是本仓内容）
+/thirdparty/wine-valve/
+/thirdparty/wine-proton/

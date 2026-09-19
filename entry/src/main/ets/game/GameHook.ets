@@ -1,5 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WineEnvService } from '../service/WineEnvService';
+import { WineWindowManager } from '../service/WineWindowManager';
+import { normalizeGameContainerId } from '../service/GameContainer';
 import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
@@ -12,6 +14,7 @@ interface D3dEnvironmentEntry {
 
 interface GameRequest {
   path: string;
+  containerId: string;
   argv: string[];
   d3dEnvKeys: string[];
   d3dEnvValues: string[];
@@ -37,6 +40,7 @@ export class GameHook {
   private env: WineEnvService | null = null;
   private pending: GameRequest | null = null;
   private started: boolean = false;
+  private launching: boolean = false;
   private active: boolean = false;
 
   isActive(): boolean {
@@ -51,6 +55,14 @@ export class GameHook {
     if (value('winehua.mode', '') !== 'game') return;
 
     const rawGamePath = value('winehua.game_path', '');
+    const containerId = normalizeGameContainerId(value('winehua.container_id', ''));
+    if (containerId === null) {
+      this.pending = null;
+      this.active = false;
+      hilog.error(DOMAIN, TAG, 'invalid game container id=%{public}s',
+        value('winehua.container_id', ''));
+      return;
+    }
     let gamePath = rawGamePath;
     if (rawGamePath.indexOf('%') >= 0) {
       try {
@@ -110,6 +122,31 @@ export class GameHook {
         'BOX64_AVX'
       ];
       const allowedKey = /^(WINEDEBUG|DXVK_|VN_|VKR_|WINEHUA_DXVK_|WINEHUA_VKR_)[A-Za-z0-9_]*$/.test(key) ||
+        key === 'WINEHUA_WOW64_ENGINE' ||
+        key === 'WINEHUA_FAULT_FREEZE' ||
+        key === 'WINEHUA_FAULT_DUMP_MAPS' ||
+        key === 'WINEHUA_EARLY_FAULT' ||
+        key === 'WINEHUA_CEF_FORCE_SOFTWARE' ||
+        key === 'WINEHUA_CEF_FORCE_GPU' ||
+        key === 'WINEHUA_CEF_ANGLE_BACKEND' ||
+        key === 'WINEHUA_CEF_STEAM_DISABLE_GPU' ||
+        key === 'WINEHUA_VIRGL_UBO_FIX' ||
+        key === 'WINEHUA_MIN_THREAD_STACK_MB' ||
+        key === 'WINEHUA_EMU_STACK_MB' ||
+        key === 'WINEHUA_GL_PROBE' ||
+        key === 'WINEHUA_OPENGL_DIAG' ||
+        key === 'WINEHUA_PROF_SAMPLE' ||
+        key === 'WINEHUA_STALL_DUMP' ||
+        key === 'WINEHUA_GL_PROC_TRACE' ||
+        key === 'WINEHUA_WAIT_TRACE' ||
+        key === 'WINEHUA_GUEST_CAPS_LOG' ||
+        key === 'WINEHUA_CEF_LOGGING' ||
+        key === 'WINEHUA_CEF_VMODULE' ||
+        key === 'WINEHUA_CEF_UTILITY_PROBE' ||
+        key === 'WINEHUA_IPC_TRACE' ||
+        key === 'WINEHUA_WINEDEBUG' ||
+        key === 'WINEHUA_STEAM_WEBHELPER_DIAG' ||
+        key === 'WINEHUA_DUMP_PHDR' ||
         allowedBox64Keys.indexOf(key) >= 0;
       if (!allowedKey || envValue.length > 1024 || d3dEnvKeys.length >= 32) {
         hilog.warn(DOMAIN, TAG, 'ignoring invalid D3D environment key=%{public}s', key);
@@ -151,6 +188,7 @@ export class GameHook {
 
     this.pending = {
       path: gamePath,
+      containerId: containerId,
       argv: gameArguments,
       d3dEnvKeys: d3dEnvKeys,
       d3dEnvValues: d3dEnvValues,
@@ -162,8 +200,8 @@ export class GameHook {
     };
     this.started = false;
     this.active = gamePath.length > 0;
-    hilog.info(DOMAIN, TAG, 'game want armed path=%{public}s argc=%{public}d env=%{public}d',
-      gamePath, gameArguments.length, d3dEnvKeys.length);
+    hilog.info(DOMAIN, TAG, 'game want armed container=%{public}s path=%{public}s argc=%{public}d env=%{public}d',
+      containerId, gamePath, gameArguments.length, d3dEnvKeys.length);
   }
 
   attach(env: WineEnvService): void {
@@ -200,61 +238,92 @@ export class GameHook {
   private runPending(): void {
     const req = this.pending;
     const env = this.env;
-    if (!req || !env || this.started) return;
-    if (!env.prefixReady || env.engineState !== 'ready') {
-      hilog.info(DOMAIN, TAG,
-        'game launch deferred path=%{public}s prefixReady=%{public}d engine=%{public}s',
-        req.path, env.prefixReady ? 1 : 0, env.engineState);
-      return;
-    }
+    if (!req || !env || this.started || this.launching) return;
     if (req.path.length === 0) {
       hilog.error(DOMAIN, TAG, 'game want armed but path is empty');
       return;
     }
-    this.started = true;
-    const environment = this.buildEnvironment(req);
-    const d3dBackend = env.getD3dBackend();
-    const dxvkBackend = env.getDxvkBackend();
-    hilog.info(DOMAIN, TAG, 'launching %{public}s argc=%{public}d d3d=%{public}s dxvk=%{public}s',
-      req.path, req.argv.length, d3dBackend, dxvkBackend);
-    const launched = testNapi.runWineProgram({
-      windowsExePath: req.path,
-      argv: req.argv.slice(),
-      environment: environment,
-      workingDirectory: this.windowsParentDirectory(req.path),
-      d3dBackend: d3dBackend,
-      dxvkBackend: dxvkBackend
-    }) as Record<string, Object>;
-    const pid = Number(launched['pid'] ?? 0);
-    hilog.info(DOMAIN, TAG, 'game launch done path=%{public}s pid=%{public}d status=%{public}s',
-      req.path, pid, `${launched['status'] ?? ''}`);
-    if (!(pid > 0)) {
-      hilog.error(DOMAIN, TAG, 'game spawn failed path=%{public}s', req.path);
-      return;
-    }
+    this.launching = true;
+    this.launchPending(req, env);
+  }
 
-    if (req.clickTitlePrefix.length > 0 && req.clickButtonText.length > 0) {
-      const titlePrefix = req.clickTitlePrefix;
-      const buttonText = req.clickButtonText;
-      const delayMs = req.clickDelayMs;
-      const clickXPermille = req.clickClientXPermille;
-      const clickYPermille = req.clickClientYPermille;
-      setTimeout(() => {
-        const driverArguments = ['--attach', '--title-prefix', titlePrefix,
-          '--button-text', buttonText, '--timeout-ms', '60000'];
-        if (clickXPermille >= 0 && clickYPermille >= 0) {
-          driverArguments.push('--client-x-permille', `${clickXPermille}`,
-            '--client-y-permille', `${clickYPermille}`);
-        }
-        testNapi.runWineProgram({
-          windowsExePath: 'C:\\smoke\\x64\\winehua_win32_driver.exe',
-          argv: driverArguments,
-          environment: {},
-          workingDirectory: 'C:\\smoke\\x64',
-          d3dBackend: d3dBackend,
-          dxvkBackend: dxvkBackend
-        });
-      }, delayMs);
+  private async launchPending(req: GameRequest, env: WineEnvService): Promise<void> {
+    try {
+      if (!await env.ensureContainerReady(req.containerId)) {
+        hilog.error(DOMAIN, TAG,
+          'game launch blocked: container not ready id=%{public}s path=%{public}s',
+          req.containerId, req.path);
+        return;
+      }
+      if (!await env.ensureDesktop()) {
+        hilog.error(DOMAIN, TAG, 'game launch blocked: desktop not ready path=%{public}s', req.path);
+        return;
+      }
+      if (this.pending !== req) {
+        return;
+      }
+      this.started = true;
+      const environment = this.buildEnvironment(req);
+      const d3dBackend = env.getD3dBackend();
+      const dxvkBackend = env.getDxvkBackend();
+      hilog.info(DOMAIN, TAG,
+        'launching container=%{public}s path=%{public}s argc=%{public}d d3d=%{public}s dxvk=%{public}s',
+        req.containerId, req.path, req.argv.length, d3dBackend, dxvkBackend);
+      const launched = testNapi.runWineProgram({
+        windowsExePath: req.path,
+        containerId: req.containerId,
+        argv: req.argv.slice(),
+        environment: environment,
+        workingDirectory: this.windowsParentDirectory(req.path),
+        d3dBackend: d3dBackend,
+        dxvkBackend: dxvkBackend
+      }) as Record<string, Object>;
+      const pid = Number(launched['pid'] ?? 0);
+      hilog.info(DOMAIN, TAG, 'game launch done path=%{public}s pid=%{public}d status=%{public}s',
+        req.path, pid, `${launched['status'] ?? ''}`);
+      if (!(pid > 0)) {
+        hilog.error(DOMAIN, TAG, 'game spawn failed path=%{public}s', req.path);
+        this.started = false;
+        return;
+      }
+
+      // The native child ability may complete its foreground transition just
+      // after runWineProgram returns. Put the existing desktop back on top.
+      setTimeout(() => WineWindowManager.getInstance().restoreDesktopIfRunning(), 250);
+
+      if (req.clickTitlePrefix.length > 0 && req.clickButtonText.length > 0) {
+        const titlePrefix = req.clickTitlePrefix;
+        const buttonText = req.clickButtonText;
+        const delayMs = req.clickDelayMs;
+        const clickXPermille = req.clickClientXPermille;
+        const clickYPermille = req.clickClientYPermille;
+        setTimeout(() => {
+          const driverArguments = ['--attach', '--title-prefix', titlePrefix,
+            '--button-text', buttonText, '--timeout-ms', '60000'];
+          if (clickXPermille >= 0 && clickYPermille >= 0) {
+            driverArguments.push('--client-x-permille', `${clickXPermille}`,
+              '--client-y-permille', `${clickYPermille}`);
+          }
+          testNapi.runWineProgram({
+            windowsExePath: 'C:\\smoke\\x64\\winehua_win32_driver.exe',
+            containerId: req.containerId,
+            argv: driverArguments,
+            environment: {},
+            workingDirectory: 'C:\\smoke\\x64',
+            d3dBackend: d3dBackend,
+            dxvkBackend: dxvkBackend
+          });
+        }, delayMs);
+      }
+    } catch (error) {
+      this.started = false;
+      hilog.error(DOMAIN, TAG, 'game launch exception path=%{public}s error=%{public}s',
+        req.path, JSON.stringify(error));
+    } finally {
+      this.launching = false;
+      if (!this.started && this.pending !== req) {
+        this.runPending();
+      }
     }
   }
 }

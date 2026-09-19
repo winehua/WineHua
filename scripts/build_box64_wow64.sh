@@ -40,6 +40,16 @@ test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-dlltool" || err "llvm-mingw 缺失 
 
 export PATH="$LLVM_MINGW/bin:$PATH"
 
+# wowbox64 is an ExternalProject. Its nested CMake cache records absolute
+# llvm-mingw paths, so an SDK/toolchain upgrade must reconfigure the whole
+# generated tree rather than trying to reuse a now-invalid child cache.
+WOWBOX64_CACHE="$BUILD/wowbox64-prefix/src/wowbox64-build/CMakeCache.txt"
+EXPECTED_MINGW_CC="$LLVM_MINGW/bin/aarch64-w64-mingw32-clang"
+if [ -f "$WOWBOX64_CACHE" ] && ! grep -Fq "$EXPECTED_MINGW_CC" "$WOWBOX64_CACHE"; then
+    log "llvm-mingw changed; clearing stale Box64 WoW64 build cache"
+    rm -rf "$BUILD"
+fi
+
 mkdir -p "$BUILD"
 cd "$BUILD"
 if [ ! -f CMakeCache.txt ]; then

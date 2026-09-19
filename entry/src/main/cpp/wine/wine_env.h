@@ -36,6 +36,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
                          const std::string& dxvkBackend,
                          const std::string& binDir);
 
+// Add the Guest Vulkan loader/Venus ICD environment without selecting a D3D
+// overlay. Direct Vulkan programs use this with the wined3d backend.
+void AppendVulkanRuntimeEnv(std::vector<std::string>& env,
+                            const std::string& binDir);
+
 // -- 环境变量辅助 --
 void UpsertEnvLine(std::vector<std::string>& env, const std::string& line);
 

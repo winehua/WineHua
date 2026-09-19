@@ -107,49 +107,60 @@ void InputInjector::InjectRelativeMotion(wl_fixed_t dx, wl_fixed_t dy) {
 
 void InputInjector::InjectPointerMotion(wl_fixed_t sx, wl_fixed_t sy) {
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) { gDropMotion.fetch_add(1); return; }
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    if (ptrs.empty() || !focus) { gDropMotion.fetch_add(1); return; }
+    struct wl_client* focusClient = wl_resource_get_client(focus);
+    int nSent = 0;
+    uint32_t t = NowMs();
     for (auto* ptr : ptrs) {
-        if (ptr) {
-            wl_pointer_send_motion(ptr, NowMs(), sx, sy);
+        if (ptr && wl_resource_get_client(ptr) == focusClient) {
+            wl_pointer_send_motion(ptr, t, sx, sy);
             wl_pointer_send_frame(ptr);
+            nSent++;
         }
     }
     // 高频路径 (hover ~125Hz) 抽样 120:1, 防止刷爆 hilog
     static uint32_t sInjMotionLogN = 0;
     if (++sInjMotionLogN % 120 == 0)
-        OH_LOG_INFO(LOG_APP, "[Input] InjectMotion sx=%{public}.1f sy=%{public}.1f OK n=%{public}u ptrs=%{public}zu",
-                    wl_fixed_to_double(sx), wl_fixed_to_double(sy), sInjMotionLogN, ptrs.size());
+        OH_LOG_INFO(LOG_APP, "[Input] InjectMotion sx=%{public}.1f sy=%{public}.1f OK n=%{public}u sent=%{public}d total=%{public}zu",
+                    wl_fixed_to_double(sx), wl_fixed_to_double(sy), sInjMotionLogN, nSent, ptrs.size());
 }
 
 void InputInjector::InjectPointerButton(uint32_t button, uint32_t state) {
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectButton DROP btn=0x%{public}x: no ptr", button);
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    if (ptrs.empty() || !focus) {
+        OH_LOG_WARN(LOG_APP, "[Input] InjectButton DROP btn=0x%{public}x: no pointer focus (nTotal=%{public}zu)",
+                    button, ptrs.size());
         gDropButton.fetch_add(1); MaybeReportDrops();
         return;
     }
-    // 使用最近一次 enter 的 serial (Wayland 协议要求 button 序列号与 enter 一致)
-    uint32_t enterSerial = tracker_->PointerEnterSerial();
-    uint32_t s = enterSerial ? enterSerial : tracker_->NextSerial();
-    OH_LOG_INFO(LOG_APP, "[Input] InjectButton btn=0x%{public}x state=%{public}u serial=%{public}u (enterSerial=%{public}u) n=%{public}zu t=%{public}u",
-                button, state, s, enterSerial, ptrs.size(), NowMs());
+    struct wl_client* focusClient = wl_resource_get_client(focus);
+    uint32_t s = tracker_->NextSerial();
+    uint32_t t = NowMs();
+    int nSent = 0;
     for (auto* ptr : ptrs) {
-        if (ptr) {
-            wl_pointer_send_button(ptr, s, NowMs(), button, state);
+        if (ptr && wl_resource_get_client(ptr) == focusClient) {
+            wl_pointer_send_button(ptr, s, t, button, state);
             wl_pointer_send_frame(ptr);
+            nSent++;
         }
     }
+    OH_LOG_INFO(LOG_APP, "[Input] InjectButton btn=0x%{public}x state=%{public}u serial=%{public}u sent=%{public}d total=%{public}zu t=%{public}u",
+                button, state, s, nSent, ptrs.size(), t);
 }
 
 void InputInjector::InjectPointerAxis(int axis, wl_fixed_t value) {
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) { return; }
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    if (ptrs.empty() || !focus) { return; }
+    struct wl_client* focusClient = wl_resource_get_client(focus);
     uint32_t axisEnum = (axis == 0) ? WL_POINTER_AXIS_VERTICAL_SCROLL
                                     : WL_POINTER_AXIS_HORIZONTAL_SCROLL;
     int nSent = 0;
     uint32_t t = NowMs();
     for (auto* ptr : ptrs) {
-        if (ptr) {
+        if (ptr && wl_resource_get_client(ptr) == focusClient) {
             // winewayland.drv 只处理 axis_discrete/axis_value120, axis 是空函数。
             // 协议规定 discrete 在配对 axis 之前; steps 直接比较 wl_fixed 原值,
             // 避免 wl_fixed_to_int 截断把 |值|<1 的正向滚动 (触控板细步) 误判成反向

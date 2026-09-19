@@ -157,8 +157,10 @@ public:
     // -- Zero-copy layer 管理 (任务 3-A: 已抽离到 ZcBridge, 本类经 zc_ 委托) --
     bool GetZeroCopyLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
                               int fallbackWidth, int fallbackHeight,
-                              ZeroCopyLayerInfo& info) {
-        return zc_.GetLayerInfo(surfaceKey, rendererToplevelId, fallbackWidth, fallbackHeight, info);
+                              ZeroCopyLayerInfo& info,
+                              const char** outReason = nullptr) {
+        return zc_.GetLayerInfo(surfaceKey, rendererToplevelId, fallbackWidth, fallbackHeight,
+                                info, outReason);
     }
     int GetZeroCopyOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
                              ZeroCopyOccluderRect* out, int maxOut) {

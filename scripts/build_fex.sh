@@ -17,10 +17,32 @@ source "$SCRIPT_DIR/env.sh"
 # 仅 arm64 原生 wine 需要 FEX (x86_64 模拟器同目标, 不需要转译)
 [ "$WINE_ARCH" = "aarch64" ] || { log "FEX 仅 arm64 原生需要 (WINE_ARCH=$WINE_ARCH)，跳过"; exit 0; }
 
-FEX_SRC="$ROOT/thirdparty/fex"
+FEX_SRC="${FEX_SRC:-$ROOT/thirdparty/fex}"
 OUT_DIR="$BUILD_DIR/fex-ec/Bin"
 
-test -d "$FEX_SRC" || err "FEX 源码缺失: $FEX_SRC (git submodule update --init)"
+if [ ! -f "$FEX_SRC/CMakeLists.txt" ]; then
+    # Proton migration keeps the product tree read-only.  Stage its pinned FEX
+    # source in this worktree so downstream fixes are reproducible and never
+    # mutate /data/prod.
+    FEX_VENDOR_SRC="${FEX_VENDOR_SRC:-/data/prod/thirdparty/fex}"
+    [ -f "$FEX_VENDOR_SRC/CMakeLists.txt" ] || \
+        FEX_VENDOR_SRC="${PROD:-/home/liufeng/src/WineHua-arm64ec}/thirdparty/fex"
+    test -f "$FEX_VENDOR_SRC/CMakeLists.txt" || \
+        err "FEX 源码缺失: $ROOT/thirdparty/fex 和 $FEX_VENDOR_SRC"
+
+    FEX_SRC="$BUILD_DIR/fex-src"
+    if [ ! -f "$FEX_SRC/CMakeLists.txt" ]; then
+        stage_tmp="$FEX_SRC.tmp.$$"
+        rm -rf "$stage_tmp"
+        mkdir -p "$stage_tmp"
+        tar -C "$FEX_VENDOR_SRC" --exclude=.git --exclude=build --exclude=Build -cf - . | \
+            tar -C "$stage_tmp" -xf -
+        rm -rf "$FEX_SRC"
+        mv "$stage_tmp" "$FEX_SRC"
+        log "已复制只读产品 FEX 源码到: $FEX_SRC"
+    fi
+fi
+
 test -f "$FEX_SRC/Data/CMake/toolchain_mingw.cmake" || err "FEX toolchain_mingw.cmake 缺失"
 test -x "$LLVM_MINGW/bin/arm64ec-w64-mingw32-clang" || err "llvm-mingw 缺失 arm64ec 支持: $LLVM_MINGW (需 LLVM ≥ 18)"
 test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" || err "llvm-mingw 缺失 aarch64-w64-mingw32-clang: $LLVM_MINGW"
@@ -35,19 +57,47 @@ export PATH="$LLVM_MINGW/bin:$PATH"
 #   fex-winapi-locale-stubs.patch — 20260826 libc++ 的 locale_win32.cpp.obj
 #     引用 GetACP/GetLocaleInfoEx, 上游 master 在 WinAPI/Misc.cpp 以
 #     UNIMPLEMENTED 桩解决, 回补到本树同名文件.
+#   fex-wow64-lookup-cache-commit.patch — Wine-OHOS 不能保证把 native CPU
+#     DLL 的 lookup-cache 访问异常回调给 FEX，WOW64 显式保持映射 committed.
+#   fex-wow64-dynamic-l1-recommit.patch — 动态 L1 缓存缩容后也保持页面
+#     committed；否则后续扩容会在 FindBlock 重新访问已 decommit 的页面。
+#   fex-arm64ec-unaligned-diagnostics.patch — 绕过默认 SilentLog，有界记录
+#     ARM64EC SIGBUS 的 opcode、JIT 归属和模拟结果。
+#   fex-windows-unaligned-stderr.patch — 同样覆盖 Steam 32 位 CEF 实际使用的
+#     WoW64 reset 路径，并直接写入 Wine stderr。
 for PATCH in \
     "$SCRIPT_DIR/patches/fex-missing-includes.patch" \
-    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch"; do
-    if ! git -C "$FEX_SRC" apply --reverse --check "$PATCH" 2>/dev/null; then
-        git -C "$FEX_SRC" apply "$PATCH"
-        log "已应用 patch: $(basename "$PATCH")"
+    "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch" \
+    "$SCRIPT_DIR/patches/fex-wow64-lookup-cache-commit.patch" \
+    "$SCRIPT_DIR/patches/fex-wow64-dynamic-l1-recommit.patch" \
+    "$SCRIPT_DIR/patches/fex-arm64ec-lookup-cache-commit.patch" \
+    "$SCRIPT_DIR/patches/fex-arm64ec-unaligned-diagnostics.patch" \
+    "$SCRIPT_DIR/patches/fex-windows-unaligned-stderr.patch"; do
+    if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$PATCH" >/dev/null 2>&1; then
+        continue
     fi
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$PATCH" >/dev/null || \
+        err "FEX patch 无法应用: $PATCH"
+    patch -d "$FEX_SRC" -p1 -s < "$PATCH"
+    log "已应用 patch: $(basename "$PATCH")"
 done
+
+prepare_build_dir() {
+    local build="$1" cached_source
+    [ -f "$build/CMakeCache.txt" ] || return 0
+    cached_source="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$build/CMakeCache.txt" | head -1)"
+    if [ -n "$cached_source" ] && [ "$cached_source" != "$FEX_SRC" ]; then
+        log "FEX 源码位置变化，刷新 CMake 缓存: $cached_source -> $FEX_SRC"
+        rm -rf "$build/CMakeFiles"
+        rm -f "$build/CMakeCache.txt" "$build/Makefile" "$build/cmake_install.cmake"
+    fi
+}
 
 # ---- libarm64ecfex.dll (x86_64 模拟, arm64ec ABI) ----
 build_fex_ec() {
     local build="$BUILD_DIR/fex-ec"
     mkdir -p "$build"
+    prepare_build_dir "$build"
     cd "$build"
     if [ ! -f CMakeCache.txt ]; then
         # BUILD_TESTING=False: FEX 用 CTest 的 BUILD_TESTING (非 BUILD_TESTS)
@@ -84,6 +134,7 @@ build_fex_ec() {
 build_fex_pe() {
     local build="$BUILD_DIR/fex-pe"
     mkdir -p "$build"
+    prepare_build_dir "$build"
     cd "$build"
     if [ ! -f CMakeCache.txt ]; then
         cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \

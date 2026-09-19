@@ -26,6 +26,7 @@ interface SmokeSuiteTest {
   // 回归固定后端 (旧 SmokeRunner per-test 语义): 缺省 = 当前档位 (UI 手动入口用)
   d3dBackend?: string;
   dxvkBackend?: string;
+  presentBackend?: string;
   seconds?: number;
   timeoutMs?: number;
 }
@@ -127,6 +128,12 @@ export class SmokeRunner {
 
   // 单入口: want/ui 双通道共用。忙时直接拒绝 (调用方已做 enabled 拦截)。
   start(request: SmokeRequest): void {
+    if (request.suite === 'd3d12') {
+      this.currentStatus = `Smoke ${request.suite} 已禁用`;
+      this.currentResult = 'DISABLED';
+      this.notify();
+      return;
+    }
     if (this.busy) {
       hilog.warn(DOMAIN, TAG, 'start blocked (busy) suite=%{public}s', request.suite);
       return;
@@ -252,7 +259,9 @@ export class SmokeRunner {
       }
     }
     // d3d 后端: suites 显式声明 (回归跑固定后端), 缺省 = 当前档位 (UI 手动 core)
-    const d3dBackend: string = test.d3dBackend ? test.d3dBackend : envSvc.getD3dBackend();
+    const declaredBackend: string = test.d3dBackend ? test.d3dBackend : envSvc.getD3dBackend();
+    const d3dBackend: string = declaredBackend === 'wined3d' ||
+      declaredBackend === 'dxvk_modern_2_6' ? declaredBackend : 'dxvk_legacy';
     const winPath: string = 'C:\\smoke\\' + test.exe.replace(/\//g, '\\');
     hilog.info(DOMAIN, TAG, 'spawn test=%{public}s exe=%{public}s seconds=%{public}d timeoutMs=%{public}d back=%{public}s',
       test.testId, winPath, seconds, timeoutMs, d3dBackend);
@@ -262,7 +271,8 @@ export class SmokeRunner {
       environment: environment,
       workingDirectory: 'C:\\smoke',
       d3dBackend: d3dBackend,
-      dxvkBackend: test.dxvkBackend ? test.dxvkBackend : envSvc.getDxvkBackend()
+      dxvkBackend: d3dBackend === 'dxvk_modern_2_6' ? 'dxvk_modern_2_6' : 'dxvk_legacy',
+      presentBackend: test.presentBackend ? test.presentBackend : ''
     }) as RunProgramResult;
     if (!process || process.pid <= 0) {
       return this.failure(request, 'startup', `runWineProgram failed: ${winPath}`, -1, test.testId);

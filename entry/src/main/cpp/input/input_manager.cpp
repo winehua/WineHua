@@ -9,6 +9,7 @@
 #include "compositor/input/input_resolver.h"   // FindInputTargetAt/SurfaceLocalToDesktop/IsSurfaceAlive(经 injector)
 #include "compositor/toplevel/toplevel_manager.h" // GetSurfaceForToplevel/GetToplevelGeometrySnapshot
 #include "compositor/toplevel/move_grab.h"        // IsActive/GetToplevelId
+#include "compositor/frame/input_target_probe.h"  // P0-1 Task A: 最近输入目标 (仅诊断)
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -268,6 +269,8 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
             if (target.swallow && action == ACT_PRESS) return;
             tl = target.toplevelId;
             targetSurf = target.surface;
+            // P0-1 Task A: 记录最近输入目标 (仅诊断)
+            winehua::NoteInputTargetToplevel(target.toplevelId);
             // 裁决闭环 (重构第 4A 步): 桌面坐标 → surface 局部坐标的逆映射与
             // 内容区钳制已由 InputResolver 收内 (终态 localX/localY), 调用方
             // 只做 wl_fixed 注入 — 不再手写 (logical-origin)/scale + ClampToContent

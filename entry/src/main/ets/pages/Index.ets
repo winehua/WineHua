@@ -8,6 +8,8 @@ import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
+import { SteamHostHook } from '../service/SteamHostHook';
+import { SteamHostPanel } from '../components/SteamHostPanel';
 // [[SMOKE]] 合并到 main-ui: 删本行与侧边栏的 <SmokeDevPanel /> 调用
 import { SmokeDevPanel } from '../smoke/SmokeDevPanel';
 
@@ -36,7 +38,9 @@ struct Index {
   @State initFailed: boolean = false;
   @State initBusy: boolean = false;
   @State opBusy: boolean = false;
+  @State launchBusy: boolean = false;
   @State upgradePending: boolean = false;
+  @State steamHostVisible: boolean = false;
   // -- 文件浏览器 --
   @State curDir: string = DRIVE_C;
   @State entries: string[] = [];
@@ -156,9 +160,8 @@ struct Index {
   }
 
   aboutToAppear(): void {
-    this.d3dBackend = this.d3dBackendText === 'dxvk_legacy' ||
-      this.d3dBackendText === 'dxvk_modern_2_6' ||
-      this.d3dBackendText === 'vkd3d_limited_500k' ? this.d3dBackendText : 'wined3d';
+    this.d3dBackend = this.d3dBackendText === 'wined3d' ||
+      this.d3dBackendText === 'dxvk_modern_2_6' ? this.d3dBackendText : 'dxvk_legacy';
     this.backendSel = this.d3dBackend;
     this.dxvkBackend = this.dxvkBackendText === 'dxvk_modern_2_6' ?
       'dxvk_modern_2_6' : 'dxvk_legacy';
@@ -174,9 +177,10 @@ struct Index {
       const wasReady = this.prefixReady;
       this.prefixReady = env.prefixReady;
       if (this.prefixReady && !wasReady) {
-        this.curDir = DRIVE_C;
+        const driveC = env.getActiveDriveC();
+        this.curDir = driveC;
         this.dirStack = [];
-        this.listDir(DRIVE_C);
+        this.listDir(driveC);
       } else if (!this.prefixReady) {
         this.entries = [];
       }
@@ -191,7 +195,7 @@ struct Index {
         this.upgradeLogged = true;
         hilog.warn(DOMAIN, 'wine',
           'upgrade pending: packaged wine runtime differs from extracted data. ' +
-          'Use "重置 Wine" to apply the update (full factory reset).');
+          'Apply the runtime update to keep the existing prefix.');
       }
     };
     env.subscribe(mirror);
@@ -211,30 +215,29 @@ struct Index {
     // 引擎初始化 (幂等): prefix 就绪自动拉起 (含升级检测拦截);
     // 首启无 prefix 自动 startSession (与 master 一致)
     env.init(getContext(this));
+    // A cold-start steam-host install/launch Want waits for WineEnvService to
+    // register its native callbacks before it can switch containers.
+    SteamHostHook.getInstance().attachWineEnvironment();
     mirror();
   }
 
-  // 图形后端互斥单选收口: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D 四选一。
-  // 选中值 = d3d 后端权威档 (vkd3d 档 = D3D12→VKD3D + D3D11/DXGI→DXVK 混合路由,
-  // DXVK 版本由 dxvkBackendText 决定, 见下方混合路由提示)。更新三个来源:
+  // 图形后端提供 DXVK 1.10.3、可选 DXVK 2.6.2 与 WineD3D。更新三个来源:
   // @State backendSel (高亮) / @StorageLink 文本 (AppStorage+持久化) / 私有字段 (doRun)。
   private selectBackend = (backend: string): void => {
-    const selected = backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
-      backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
+    const selected = backend === 'wined3d' || backend === 'dxvk_modern_2_6' ?
+      backend : 'dxvk_legacy';
     this.backendSel = selected;
     this.d3dBackend = selected;
     this.d3dBackendText = selected;
     this.d3dPreferenceText = selected;
     if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
-      // DXVK 档: dxvk 版本与 d3d 档一致 (vkd3d/wined3d 档保留上次 DXVK 版本)
       this.dxvkBackend = selected;
       this.dxvkBackendText = selected;
       this.dxvkPreferenceText = selected;
     }
     this.env.setD3dPreference(selected);
-    this.statusText = selected === 'dxvk_legacy' ? 'DXVK Legacy' :
-      (selected === 'dxvk_modern_2_6' ? 'DXVK Modern 2.6' :
-        (selected === 'vkd3d_limited_500k' ? 'VKD3D 2.6 Limited 500K' : 'WineD3D'));
+    this.statusText = selected === 'dxvk_legacy' ? 'DXVK 1.10.3' :
+      (selected === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'WineD3D');
     hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
   }
 
@@ -256,12 +259,11 @@ struct Index {
   }
 
   // 引擎操作统一入口: 忙时 (初始化/停止编排中) 由 WineEnvService 自身拦截。
-  // 升级检测到不一致时 (upgradePending) 快速操作转为"应用更新" —
-  // master 开发版无升级弹卡 UI, doReset 完整恢复出厂 (重装数据+清 C 盘)
-  // 即 main-ui 升级卡"立即应用"同语义; 日常路径走 restartEngine 编排
+  // 升级检测到不一致时 (upgradePending) 快速操作只刷新 Wine 运行时并保留
+  // prefix；恢复出厂始终由带确认框的"重置 Wine"入口完成。
   private quickStart = (): void => {
     if (this.upgradePending) {
-      this.env.doReset();
+      this.env.applyRuntimeUpdate();
     } else {
       this.env.restartEngine();
     }
@@ -290,25 +292,59 @@ struct Index {
     this.env.restartEngine();
   }
 
-  private doRun = (name: string): void => {
-    this.statusText = '启动中...';
-    let exePath = this.curDir + '/' + name;
-    testNapi.runWineProgram({
-      windowsExePath: exePath,
-      argv: [],
-      // DXVK 稳定化 env 默认已收口 native (BuildSessionEnv stableDesktopOverlay,
-      // 与桌面会话链同源), ArkTS 不再平行维护; 无 per-run 覆盖项时传空表
-      environment: {},
-      workingDirectory: this.curDir,
-      d3dBackend: this.d3dBackend,
-      dxvkBackend: this.dxvkBackend
-      // presentBackend 不传: native 按 d3dBackend 派生 (DerivePresentBackend)
-    });
+  private doRun = async (name: string): Promise<void> => {
+    if (this.launchBusy) return;
+    this.launchBusy = true;
+    const exePath = this.curDir + '/' + name;
+    try {
+      this.statusText = '正在准备 Wine 引擎...';
+      if (!await this.env.ensureEngineReady()) {
+        this.statusText = 'Wine 引擎未就绪';
+        hilog.error(DOMAIN, 'GameTest', 'launch blocked: engine not ready path=%{public}s', exePath);
+        return;
+      }
+      this.statusText = '正在准备 Wine 桌面...';
+      if (!await this.env.ensureDesktop()) {
+        this.statusText = 'Wine 桌面未就绪';
+        hilog.error(DOMAIN, 'GameTest', 'launch blocked: desktop not ready path=%{public}s', exePath);
+        return;
+      }
+      this.statusText = '启动中...';
+      const launched = testNapi.runWineProgram({
+        windowsExePath: exePath,
+        containerId: this.env.getActiveContainerId(),
+        argv: [],
+        // DXVK 稳定化 env 默认已收口 native (BuildSessionEnv stableDesktopOverlay,
+        // 与桌面会话链同源), ArkTS 不再平行维护; 无 per-run 覆盖项时传空表
+        environment: {},
+        workingDirectory: this.curDir,
+        d3dBackend: this.d3dBackend,
+        dxvkBackend: this.dxvkBackend
+        // presentBackend 不传: native 按 d3dBackend 派生 (DerivePresentBackend)
+      }) as Record<string, Object>;
+      const pid = Number(launched['pid'] ?? 0);
+      if (!(pid > 0)) {
+        this.statusText = '程序启动失败';
+        hilog.error(DOMAIN, 'GameTest', 'runWineProgram failed path=%{public}s status=%{public}s',
+          exePath, `${launched['status'] ?? ''}`);
+      } else {
+        // Native child ability startup can foreground EntryAbility after the
+        // desktop readiness check. Refocus once that transition has settled.
+        setTimeout(() => this.wm.restoreDesktopIfRunning(), 250);
+      }
+    } catch (error) {
+      this.statusText = '程序启动失败';
+      hilog.error(DOMAIN, 'GameTest', 'launch exception path=%{public}s error=%{public}s',
+        exePath, JSON.stringify(error));
+    } finally {
+      this.launchBusy = false;
+    }
   }
 
   private relPath = (): string => {
-    if (this.curDir == DRIVE_C) return 'C:\\';
-    return 'C:\\' + this.curDir.substring(DRIVE_C.length + 1).replace(/\//g, '\\');
+    const driveC = this.env.getActiveDriveC();
+    if (this.curDir == driveC) return 'C:\\';
+    return 'C:\\' + this.curDir.substring(driveC.length + 1).replace(/\//g, '\\');
   }
 
   private listDir = (path: string): void => {
@@ -418,8 +454,7 @@ struct Index {
 
         Divider().color('#2a2a2a').width('100%')
 
-        // 图形后端互斥单选: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D
-        // 四选一, 高亮 .backgroundColor 判据统一走 @State backendSel (响应式)。
+        // 图形后端互斥单选: DXVK 1.10.3 / DXVK 2.6.2 / WineD3D。
         Text('图形后端')
           .fontWeight(FontWeight.Bold).fontColor('#999')
           .width('100%').padding({ top: 12, bottom: 8 })
@@ -435,21 +470,12 @@ struct Index {
         }
         .width('100%').margin({ bottom: 4 })
         Row({ space: 4 }) {
-          Button('VKD3D 2.6 (500K)')
-            .layoutWeight(1).height(34)
-            .backgroundColor(this.backendSel === 'vkd3d_limited_500k' ? '#285' : '#333')
-            .onClick(() => this.selectBackend('vkd3d_limited_500k'))
           Button('WineD3D')
             .layoutWeight(1).height(34)
             .backgroundColor(this.backendSel === 'wined3d' ? '#285' : '#333')
             .onClick(() => this.selectBackend('wined3d'))
         }
         .width('100%').margin({ bottom: 6 })
-        if (this.backendSel === 'vkd3d_limited_500k') {
-          Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackendText === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
-            .fontSize(11).fontColor('#d9a').maxLines(3)
-            .width('100%').margin({ bottom: 6 })
-        }
 
         // -- 桌面模式 (仅 PC): 融合模式 = 每个程序独立 OHOS 窗口 (多窗口, 默认);
         // 虚拟桌面 = 独立窗口承载 Wine 桌面。切换后重启引擎生效
@@ -491,12 +517,11 @@ struct Index {
             .onClick(this.quickStart)
             .margin({ bottom: 8 })
         } else if (this.upgradePending) {
-          // 引擎数据与 HAP 不一致: 引擎未拉起, 唯一动作是应用更新
-          // (完整恢复出厂 = main-ui 升级卡"立即应用"同语义)
-          Button('应用引擎更新（重置）')
-            .width('100%').backgroundColor('#633')
+          // 引擎数据与 HAP 不一致: 停止会话后替换运行时，保留 prefix 数据。
+          Button('应用引擎更新（保留数据）')
+            .width('100%').backgroundColor('#285')
             .enabled(!this.engineBusy())
-            .onClick(this.quickReset)
+            .onClick(this.quickStart)
             .margin({ bottom: 8 })
         } else {
           Row({ space: 4 }) {
@@ -523,6 +548,11 @@ struct Index {
         }
 
         Divider().color('#2a2a2a').width('100%')
+
+        Button('Steam 宿主')
+          .width('100%').height(36).backgroundColor('#246')
+          .onClick(() => { this.steamHostVisible = true; })
+          .margin({ top: 12, bottom: 4 })
 
         // [[SMOKE]] 合并到 main-ui: 删本行 (开发测试区组件)
         SmokeDevPanel()
@@ -593,7 +623,7 @@ struct Index {
         // -- 文件浏览器 --
         if (this.prefixReady) {
           Row() {
-            if (this.curDir != DRIVE_C) {
+            if (this.curDir != this.env.getActiveDriveC()) {
               Button('← 上级目录')
                 .backgroundColor('#333')
                 .onClick(this.goUp)
@@ -619,7 +649,7 @@ struct Index {
                   if (this.isExe(name)) {
                     Button('启动')
                       .height(32)
-                      .enabled(!this.engineBusy())
+                      .enabled(!this.engineBusy() && !this.launchBusy)
                       .onClick(() => this.doRun(name))
                   }
                 }
@@ -715,6 +745,9 @@ struct Index {
       .width('100%').height('100%')
       .justifyContent(FlexAlign.Center)
       .backgroundColor('#99000000')
+    }
+    if (this.steamHostVisible) {
+      SteamHostPanel({ visible: $steamHostVisible })
     }
     }
     .width('100%').height('100%')

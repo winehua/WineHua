@@ -15,11 +15,78 @@ PROD="${PROD:-/data/prod}"
 
 cd "$ROOT/build" || exit 1
 
+# This candidate worktree may be created without thirdparty submodules.  The
+# GStreamer closure cannot be rebuilt from its historical sysroot alone, so
+# recover the exact product sources only when the destination is empty.  Git
+# metadata is deliberately excluded: this is a source snapshot, not a second
+# checkout of the product repository.
+stage_thirdparty_source_if_empty() {
+    local component="$1" sentinel="$2"
+    local source="$PROD/thirdparty/$component"
+    local destination="$ROOT/thirdparty/$component"
+    local product_commit
+
+    [ -f "$source/$sentinel" ] || {
+        echo "ERROR: product source missing: $source/$sentinel" >&2
+        exit 1
+    }
+    if [ -f "$destination/$sentinel" ]; then
+        echo "keep  thirdparty/$component (source already present)"
+        return
+    fi
+    if [ -d "$destination" ] && \
+       [ -n "$(find "$destination" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        echo "ERROR: thirdparty/$component is partial; refusing to overwrite it" >&2
+        exit 1
+    fi
+    rmdir "$destination" 2>/dev/null || true
+    mkdir -p "$destination"
+    ( cd "$source" && tar --exclude-vcs -cf - . ) | ( cd "$destination" && tar -xf - )
+    product_commit="$(git -c safe.directory="$source" -C "$source" rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "copy  thirdparty/$component <- $source (commit=$product_commit)"
+}
+
+stage_thirdparty_source_if_empty pcre2 CMakeLists.txt
+stage_thirdparty_source_if_empty glib meson.build
+stage_thirdparty_source_if_empty gstreamer meson.build
+
+# FFmpeg Meson is likewise a locked GStreamer dependency, but its upstream
+# source lives under build/ in the product tree.  An interrupted shallow clone
+# can leave only .git behind, which looks like a checkout to build_gstreamer.sh
+# while providing no meson.build.  build/ is generated workspace state, so an
+# invalid snapshot can be replaced safely with the read-only product snapshot.
+stage_build_source_if_invalid() {
+    local component="$1" sentinel="$2"
+    local source="$PROD/build/$component"
+    local destination="$ROOT/build/$component"
+    local product_commit
+
+    [ -f "$source/$sentinel" ] || {
+        echo "ERROR: product build source missing: $source/$sentinel" >&2
+        exit 1
+    }
+    if [ -f "$destination/$sentinel" ]; then
+        echo "keep  build/$component (source already present)"
+        return
+    fi
+    rm -rf "$destination"
+    mkdir -p "$destination"
+    ( cd "$source" && tar --exclude-vcs -cf - . ) | ( cd "$destination" && tar -xf - )
+    product_commit="$(git -c safe.directory="$source" -C "$source" rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "copy  build/$component <- $source (commit=$product_commit)"
+}
+
+stage_build_source_if_invalid ffmpeg_src meson.build
+
 # 注意：**必须真实拷贝，不能用符号链接**。
 # 构建在容器里跑，容器只挂了本工作树；指向产品工作树绝对路径的软链在容器内是断的
 # （第一版用软链，assemble 就报 libarm64ecfex.dll / wowbox64.dll 未找到）。
 for d in fex-ec fex-pe box64-pe guest_vulkan guest_gfx host_vulkan wine-mono dxvk vkd3d-proton; do
     if [ -e "$PROD/build/$d" ]; then
+        if { [ "$d" = fex-ec ] || [ "$d" = fex-pe ]; } && [ -e "$d/CMakeCache.txt" ]; then
+            echo "keep  $d (本工作树已配置/构建，避免覆盖 FEX 修复产物)"
+            continue
+        fi
         rm -rf "$d"
         cp -a "$PROD/build/$d" "$d"
         echo "copy  $d <- $PROD/build/$d"
@@ -38,7 +105,7 @@ fi
 # W1 移植：把 fork 自有的 programs/winehua_*（keep + 各类 smoke 探针）搬到
 # Valve 树里（configure.ac 已注册对应 WINE_CONFIG_MAKEFILE）。assemble.sh 会打包它们。
 FORK_PROGRAMS="winehua_audio_smoke winehua_d3d11_smoke winehua_dinput_probe
-winehua_graphics_smoke winehua_keep winehua_vulkan_smoke"
+winehua_graphics_smoke winehua_keep winehua_platform_process_smoke winehua_vulkan_smoke"
 forkprog_src="$ROOT/thirdparty/wine/programs"
 forkprog_dst="$ROOT/thirdparty/wine-valve/programs"
 for d in $FORK_PROGRAMS; do
@@ -80,11 +147,16 @@ for f in \
     copy_if_exists "$f"
 done
 
-# wineohos.drv 是整目录
+# wineohos.drv 是整目录。Valve 树在首次移植后是该模块的候选实现，后续
+# prepare 不得用旧 fork 覆盖其中已经完成的 Proton ABI 修复。
 if [ -d "$wp/dlls/wineohos.drv" ]; then
-    rm -rf "$wv/dlls/wineohos.drv"
-    cp -a "$wp/dlls/wineohos.drv" "$wv/dlls/wineohos.drv"
-    echo "copy  dlls/wineohos.drv <- fork (整目录)"
+    if [ ! -d "$wv/dlls/wineohos.drv" ]; then
+        cp -a "$wp/dlls/wineohos.drv" "$wv/dlls/wineohos.drv"
+        echo "copy  dlls/wineohos.drv <- fork (首次移植)"
+    else
+        cp -an "$wp/dlls/wineohos.drv/." "$wv/dlls/wineohos.drv/"
+        echo "keep  dlls/wineohos.drv (仅从 fork 补缺失文件)"
+    fi
 fi
 
 # entry/libs/arm64-v8a: 我们的 build_wine.sh 已经把**新编的 wine unix .so** 放进去，

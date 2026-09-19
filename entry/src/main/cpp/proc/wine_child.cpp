@@ -33,8 +33,11 @@
 #include "wine_scheme.h"
 #include "wine/wine_env.h"
 #include <fcntl.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <time.h>
+#include <link.h>
+#include <sys/ucontext.h>
 
 // 从 stderr pipe 读取 Wine 内部日志，同时转发到 hilog 和文件
 struct stderr_ctx { int fd; int fileFd; };
@@ -71,7 +74,10 @@ static const char *default_winedebug_profile(void)
 static const char *midi_diag_winedebug_profile(void)
 {
     return "-all,trace+driver,trace+winmm,trace+mmdevapi,"
-           "trace+ohosaudio,warn+ohosaudio,warn+module";
+           "trace+ohosaudio,warn+ohosaudio,warn+module,"
+           /* +seh: 音频链路真机崩溃时输出未处理异常的寄存器与回栈
+            * (含模块名+偏移), 是定位 "mmdevapi 循环后页错误" 的唯一手段。 */
+           "err+seh";
 }
 
 static const char *sdl_audio_diag_winedebug_profile(void)
@@ -80,6 +86,19 @@ static const char *sdl_audio_diag_winedebug_profile(void)
            "warn+mmdevapi,err+mmdevapi,trace+dsound,warn+dsound,"
            "err+dsound,trace+ohosaudio,warn+ohosaudio,err+ohosaudio,"
            "warn+module,err+module";
+}
+
+static const char *steam_webhelper_diag_winedebug_profile(void)
+{
+    /* Opt-in only: trace+dwrite emits tens of thousands of lines while CEF
+       builds its font fallback list and can delay the first Steam window. */
+    return "-all,trace+dwrite,warn+dwrite,err+seh,warn+module";
+}
+
+static bool steam_webhelper_diag_enabled(void)
+{
+    const char *value = getenv("WINEHUA_STEAM_WEBHELPER_DIAG");
+    return value && !strcmp(value, "1");
 }
 
 static const char *basename_of_path(const char *path)
@@ -137,6 +156,20 @@ static bool is_sdl_audio_test_exe(int argc, char *argv[])
         if (!argv[i]) continue;
         normalize_basename(argv[i], norm, sizeof(norm));
         if (strstr(norm, "mjx86") != NULL) return true;
+    }
+    return false;
+}
+
+static bool is_steam_webhelper_exe(int argc, char *argv[])
+{
+    char norm[128];
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!argv[i]) continue;
+        normalize_basename(argv[i], norm, sizeof(norm));
+        if (!strcasecmp(norm, "steamwebhelper.exe") || !strcasecmp(norm, "steamwebhelper"))
+            return true;
     }
     return false;
 }
@@ -303,6 +336,8 @@ static const char *select_winedebug_profile(int argc, char *argv[])
     if (existing && existing[0] && strcmp(existing, "-all") != 0) return existing;
     if (is_audio_test_exe(argc, argv)) return midi_diag_winedebug_profile();
     if (is_sdl_audio_test_exe(argc, argv)) return sdl_audio_diag_winedebug_profile();
+    if (is_steam_webhelper_exe(argc, argv) && steam_webhelper_diag_enabled())
+        return steam_webhelper_diag_winedebug_profile();
     return default_winedebug_profile();
 }
 
@@ -354,20 +389,357 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     // 方案③ arm64 原生 wine: 指定 FEX 模拟器 DLL (HODLL64), 由 ntdll loader 加载转译 x86_64 应用
     setenv("HODLL64", "libarm64ecfex.dll", 1);
     // 32 位 x86 应用: HODLL 由 wow64.dll get_cpu_dll_name() 读取, 转译 i386 PE。
-    // 引擎可选: fex=FEX libwow64fex.dll (默认), box=Box64 wowbox64.dll。
-    //
-    // 方案③ (arm64 原生 wine) 上默认用 FEX: 主库 arm64 分支的默认就是
-    // libwow64fex.dll; 而且 box64 的 wowbox64 shim 会注册 OHOS 的**全局**
-    // host-fault 槽, 在同一个进程里会把 FEX/ARM64EC 的 dynarec 故障抢过去,
-    // 表现为 SMC 无限循环 (实测 60s 内 28 万次 "[SMC] enter ... result=epilog")。
-    // box64 仅作为显式回退保留: WINEHUA_WOW64_ENGINE=box。
-    const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
-    if (wow64_engine && strcmp(wow64_engine, "box") == 0)
-        setenv("HODLL", "wowbox64.dll", 1);
-    else
-        setenv("HODLL", "libwow64fex.dll", 1);
+    // 引擎可选: box=Box64 wowbox64.dll (默认), fex=FEX libwow64fex.dll。
+    // Box64 是 arm64 产品基线，Steam/CEF 等高负载 Win32 子进程先走这条
+    // 已验证路径；FEX 保留为显式诊断覆盖，避免把未完成的 FEX JIT fault
+    // 路由作为所有用户进程的默认行为。
+    // 注: HODLL 的最终选择放在 apply_entry_param_env_overrides() 之后
+    // (见 select_wow64_backend)，否则从 Want 传入的 WINEHUA_WOW64_ENGINE
+    // 会被这里的默认值覆盖。
 #endif
     setenv("WINEDEBUG", winedebug && winedebug[0] ? winedebug : default_winedebug_profile(), 1);
+}
+
+// 32 位 CPU 后端选择 (HODLL)。必须放在 entryParams 的 __env 覆盖之后执行，
+// 否则 Want 传入的 WINEHUA_WOW64_ENGINE 会被 setup_wine_env() 的默认值吃掉。
+// 背景: Wine 的 wow64.dll 通过 get_cpu_dll_name() 读取 HODLL 加载后端, 并要求
+// 后端导出完整 BTCpu* 契约 (含 BTCpuSuspendLocalThread)。wowbox64.dll 目前缺该
+// 导出, 而 libwow64fex.dll 完整提供。
+static bool is_steam_game_exe(int argc, char **argv)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!argv[i]) continue;
+        if (strstr(argv[i], "\\steamapps\\common\\") ||
+            strstr(argv[i], "/steamapps/common/") ||
+            strstr(argv[i], "\\steamapps\\downloading\\") ||
+            strstr(argv[i], "/steamapps/downloading/"))
+            return true;
+    }
+    return false;
+}
+
+// 大小写不敏感子串匹配 (仅 ASCII, Windows 路径大小写不敏感需要它)。
+static bool contains_ascii_ci(const char *hay, const char *needle)
+{
+    if (!hay || !needle || !*needle) return false;
+    for (const char *p = hay; *p; ++p)
+    {
+        const char *h = p;
+        const char *n = needle;
+        while (*h && *n)
+        {
+            char hc = (*h >= 'A' && *h <= 'Z') ? char(*h + 32) : *h;
+            char nc = (*n >= 'A' && *n <= 'Z') ? char(*n + 32) : *n;
+            if (hc != nc) break;
+            ++h;
+            ++n;
+        }
+        if (!*n) return true;
+    }
+    return false;
+}
+
+// Steam 客户端进程树: steam.exe / bootstrap / bin\cef\steamwebhelper.exe /
+// gldriverquery*.exe / steamerrorreporter*.exe 等。它们都在 ...\Steam\ 目录下。
+// 为什么不能只依赖 WINEHUA_WOW64_ENGINE: Steam 自更新结束后由 updater 用干净环境
+// 重新拉起 steam.exe, 那时会话里的 Want 环境已丢失, 于是整棵树退回 box64, 32 位
+// 子进程 (steamsysinfo/gldriverquery/vulkandriverquery) 会立刻 SIGSEGV, 客户端再也
+// 建不出 UI。按路径兜底可以保证任何一次自重启后仍然是 FEX。
+static bool is_steam_client_exe(int argc, char **argv)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!argv[i]) continue;
+        if (contains_ascii_ci(argv[i], "\\steam\\") ||
+            contains_ascii_ci(argv[i], "/steam/"))
+            return true;
+        /* 32 位时代的老坑重现 (2026-09-18): Steam 的 GPU 探测工具是用**相对路径**
+         * 拉起的 —— `.\bin\gldriverquery.exe` / `.\bin\vulkandriverquery.exe`,
+         * 路径里没有 "steam" 字样, 于是按路径兜底的 FEX 选择不命中, 落到 box64,
+         * 这两个 i386 工具就立刻 SIGSEGV (与 09-16 记录的 steamsysinfo/
+         * gldriverquery/vulkandriverquery 秒死同一现象)。
+         * 兜底: 相对路径 + 启动目录在 Steam 树下 → 同样算 Steam 客户端进程。 */
+        const char *path = argv[i];
+        bool relative = (path[0] == '.' && (path[1] == '\\' || path[1] == '/')) ||
+                        (!strchr(path, '\\') && !strchr(path, '/'));
+        if (relative)
+        {
+            const char *cwd = getenv("WINEHUA_WORKING_DIRECTORY");
+            if (cwd && (contains_ascii_ci(cwd, "\\steam") || contains_ascii_ci(cwd, "/steam")))
+                return true;
+        }
+    }
+    return false;
+}
+
+static void select_wow64_backend(int argc, char **argv)
+{
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    /* Steam client/CEF needs FEX on this build, but 32-bit game payloads
+     * launched below steamapps\common crash immediately under the current
+     * FEX WOW64 path.  Keep the Steam process tree on FEX and force game
+     * executables onto the box64 product baseline.  This also covers games
+     * launched by Steam itself (the child inherits the parent's env). */
+    if (is_steam_game_exe(argc, argv))
+    {
+        setenv("HODLL", "wowbox64.dll", 1);
+        OH_LOG_INFO(LOG_APP,
+                    "[WineChild] HODLL=wowbox64.dll (steam-game override, exe=%{public}s)",
+                    argv[1] ? argv[1] : "(null)");
+        return;
+    }
+
+    if (is_steam_client_exe(argc, argv))
+    {
+        setenv("HODLL", "libwow64fex.dll", 1);
+        OH_LOG_INFO(LOG_APP,
+                    "[WineChild] HODLL=libwow64fex.dll (steam-client override, exe=%{public}s)",
+                    argv[1] ? argv[1] : "(null)");
+        return;
+    }
+
+    const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
+
+    if (wow64_engine && strcmp(wow64_engine, "fex") == 0)
+        setenv("HODLL", "libwow64fex.dll", 1);
+    else
+        setenv("HODLL", "wowbox64.dll", 1);
+    OH_LOG_INFO(LOG_APP, "[WineChild] HODLL=%{public}s (WINEHUA_WOW64_ENGINE=%{public}s)",
+                getenv("HODLL") ? getenv("HODLL") : "?", wow64_engine ? wow64_engine : "(unset)");
+#endif
+}
+
+// Steam 客户端 (…\Steam\steam.exe) 的必备 CEF 参数是否已由 Want 给出。
+static bool is_steam_bootstrap_exe(int argc, char **argv)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!argv[i]) continue;
+        if (contains_ascii_ci(argv[i], "\\steam\\steam.exe") ||
+            contains_ascii_ci(argv[i], "/steam/steam.exe"))
+            return true;
+    }
+    return false;
+}
+
+// Steam 客户端在 Wine 下的默认参数。缺了 -no-cef-sandbox 时 webhelper 的
+// CEF 沙箱初始化会卡死: 日志停在 "Startup - webhelper launched pid", 连
+// gpu-process/utility 子进程都不会起, 表现就是登录窗口永远不出现 (2026-09-17
+// 21:52 / 22:17 两次复现), 所以这条无条件注入。
+//
+// -cef-force-gpu 在 2026-09-18 之后改成**可选**: 它会强制 CEF 走 GPU 后端,
+// 与 WineHua 注入的 --disable-gpu* 直接冲突, 形成"半 GPU 状态" (P0-GL 计划 §18)。
+// 默认不再注入, 让 CEF 自己选 backend (计划 §19 Run A "Clean");
+// 需要复现历史 GPU 配置时用 WINEHUA_CEF_FORCE_GPU=1 (Run B)。
+// 这里按 exe 路径补默认值, 与 select_wow64_backend 的路径兜底同理: Steam 自更新
+// 结束后的 updater 自重启、以及应用 UI 不带参数的直接启动, 都不会传这些开关。
+static void apply_steam_client_default_args(int &argc, char **argv)
+{
+    if (!is_steam_bootstrap_exe(argc, argv)) return;
+    if (argc > 61) return;   // argv[64], 末尾保留 nullptr 槽位
+
+    static char kForceGpu[] = "-cef-force-gpu";
+    static char kDisableGpu[] = "-cef-disable-gpu";
+    static char kNoSandbox[] = "-no-cef-sandbox";
+
+    bool hasSandboxSwitch = arg_equals(argc, argv, kNoSandbox) ||
+                            arg_equals(argc, argv, "-cef-disable-sandbox");
+    if (!hasSandboxSwitch)
+    {
+        argv[argc++] = kNoSandbox;
+        OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", kNoSandbox);
+    }
+    const char* forceGpu = getenv("WINEHUA_CEF_FORCE_GPU");
+    if (forceGpu && forceGpu[0] == '1' && !arg_equals(argc, argv, kForceGpu))
+    {
+        argv[argc++] = kForceGpu;
+        OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", kForceGpu);
+    }
+    /* WINEHUA_CEF_STEAM_DISABLE_GPU=1 -> Steam 自己的 -cef-disable-gpu。
+     * 32 位客户端当初能出画面时的 GPU 进程命令行就是 `--use-gl=disabled`
+     * (2026-09-17 22:25 webhelper.txt), 即"关掉 GL、走非 GL 路径"; 复刻到 win64 时
+     * 只加这一条 Steam 原生开关, 不再叠 WineHua 的 --disable-gpu-compositing
+     * (实测二者叠加会把 CEF 推成半 GPU 状态: 窗口整体黑 + renderer 反复崩)。 */
+    const char* disableGpu = getenv("WINEHUA_CEF_STEAM_DISABLE_GPU");
+    if (disableGpu && disableGpu[0] == '1' && !arg_equals(argc, argv, kDisableGpu))
+    {
+        argv[argc++] = kDisableGpu;
+        OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", kDisableGpu);
+    }
+    argv[argc] = nullptr;
+}
+
+// ---- 前缀字体/代码页自愈 (产品化, 2026-09-18) ----
+// 为什么必须做进代码: 本 runtime 里 Wine 的默认 UI 字体链是断的 ——
+// system.reg 的 FontSubstitutes 把 Arial / Calibri / Candara / Comic Sans MS / … 指向
+// **并不存在的** family "HarmonyOS Sans SC" (HarmonyOS_Sans_SC.ttf 的真实注册名是
+// "鸿蒙黑体"), 而 Nls\CodePage 段经常在 Wine 重写注册表时被抹掉。
+// 实测症状 (32 位客户端先踩到, win64 客户端同样):
+//   src\vgui2\src\surface_gdiwin32.cpp (1336) : winFont   -> 界面无文字 / 客户端卡在启动画面
+//   blink remote_font_face_source.cc NOTREACHED          -> CEF UI 起不来
+// 之前只在一台设备的 prefix 里手工修过, 换机或重置 prefix 就会重现, 所以放在会话启动时补齐。
+static const char kWineHuaFontTarget[] = "\\x9e3f\\x8499\\x9ed1\\x4f53"; // 鸿蒙黑体 (registry 转义)
+
+static const char* const kWineUiFontFamilies[] = {
+    "Arial", "Arial Black", "Arial Narrow", "Calibri", "Cambria", "Candara",
+    "Chicago", "Comic Sans MS", "Consolas", "Constantia", "Corbel", "Courier",
+    "Courier New", "DengXian", "FangSong", "Fixedsys", "Geneva", "Georgia",
+    "Helvetica", "KaiTi", "Lucida Console", "Marlett", "Meiryo",
+    "Microsoft Sans Serif", "MS Gothic", "MS Mincho", "MS Sans Serif",
+    "MS Shell Dlg", "MS UI Gothic", "Motiva Sans", "Palatino Linotype", "Roboto",
+    "Segoe UI", "Segoe UI Semibold", "SimHei", "SimSun", "Tahoma",
+    "Times New Roman", "Trebuchet MS", "Verdana", "Yu Gothic", "sans", "sans-serif",
+};
+
+struct WineHuaRegEntry { const char* key; const char* value; };
+
+static bool winehua_read_text_file(const char* path, std::string& out)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    char buf[65536];
+    ssize_t n;
+    out.clear();
+    while ((n = read(fd, buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
+    close(fd);
+    return !out.empty();
+}
+
+static bool winehua_write_text_file(const char* path, const std::string& data)
+{
+    int fd = open(path, O_WRONLY | O_TRUNC);
+    if (fd < 0) return false;
+    size_t off = 0;
+    while (off < data.size())
+    {
+        ssize_t w = write(fd, data.data() + off, data.size() - off);
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+    close(fd);
+    return off == data.size();
+}
+
+// 已知"指向不存在 family"的值: 这些目标名在本 runtime 里没有对应字体。
+static bool winehua_font_target_is_broken(const std::string& value)
+{
+    return value.find("HarmonyOS Sans") != std::string::npos ||
+           value.find("Noto Sans CJK") != std::string::npos ||
+           value.find("Noto Serif") != std::string::npos ||
+           value.find("Noto Sans Mono") != std::string::npos;
+}
+
+// 在 [section] 段内补齐缺失项 / 纠正失效目标; 段不存在且 add_missing 时追加该段。
+static int winehua_patch_reg_section(std::string& text, const char* section,
+                                     const WineHuaRegEntry* entries, size_t count,
+                                     bool add_missing, bool replace_broken)
+{
+    const std::string header = std::string("[") + section + "]";
+    size_t pos = text.find(header);
+    if (pos == std::string::npos)
+    {
+        if (!add_missing) return 0;
+        std::string add = "\n" + header + " 0\n#time=0\n";
+        for (size_t i = 0; i < count; ++i)
+            add += std::string("\"") + entries[i].key + "\"=\"" + entries[i].value + "\"\n";
+        text += add;
+        return (int)count;
+    }
+
+    size_t body = text.find('\n', pos);
+    if (body == std::string::npos) return 0;
+    body += 1;
+    size_t end = text.find("\n[", body);
+    if (end == std::string::npos) end = text.size();
+    std::string body_text = text.substr(body, end - body);
+    std::string additions;
+    int changed = 0;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        const std::string key = std::string("\"") + entries[i].key + "\"=\"";
+        size_t kp = body_text.find(key);
+        if (kp == std::string::npos)
+        {
+            if (!add_missing) continue;
+            if (!additions.empty()) additions += "\n";
+            additions += key + entries[i].value + "\"";
+            changed++;
+            continue;
+        }
+        if (!replace_broken) continue;
+        size_t vstart = kp + key.size();
+        size_t vend = body_text.find('"', vstart);
+        if (vend == std::string::npos) continue;
+        if (winehua_font_target_is_broken(body_text.substr(vstart, vend - vstart)))
+        {
+            body_text.replace(vstart, vend - vstart, entries[i].value);
+            changed++;
+        }
+    }
+    if (!changed) return 0;
+    text = text.substr(0, body) + body_text + additions + text.substr(end);
+    return changed;
+}
+
+// 会话启动时自愈 prefix: 字体替换链 + 中文代码页。幂等, 只在有改动时写回。
+static void ensure_prefix_fonts_and_codepage()
+{
+    const char* prefix = getenv("WINEPREFIX");
+    if (!prefix || !*prefix) return;
+
+    WineHuaRegEntry font_entries[sizeof(kWineUiFontFamilies) / sizeof(kWineUiFontFamilies[0])];
+    for (size_t i = 0; i < sizeof(kWineUiFontFamilies) / sizeof(kWineUiFontFamilies[0]); ++i)
+    {
+        font_entries[i].key = kWineUiFontFamilies[i];
+        font_entries[i].value = kWineHuaFontTarget;
+    }
+    const size_t font_count = sizeof(kWineUiFontFamilies) / sizeof(kWineUiFontFamilies[0]);
+
+    std::string path = std::string(prefix) + "/user.reg";
+    std::string text;
+    if (winehua_read_text_file(path.c_str(), text))
+    {
+        int n = winehua_patch_reg_section(text, "Software\\\\Wine\\\\Fonts\\\\Replacements",
+                                         font_entries, font_count, true, true);
+        if (n > 0)
+        {
+            std::string backup = path + ".winehua.bak";
+            int bfd = open(backup.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+            if (bfd >= 0) close(bfd);
+            if (winehua_write_text_file(path.c_str(), text))
+                OH_LOG_INFO(LOG_APP, "[WineChild] font Replacements patched (%{public}d entries)", n);
+            else
+                OH_LOG_WARN(LOG_APP, "[WineChild] font Replacements write failed");
+        }
+    }
+
+    static const WineHuaRegEntry codepage_entries[] = {
+        { "ACP", "936" }, { "OEMCP", "936" }, { "MACCP", "10008" },
+    };
+    path = std::string(prefix) + "/system.reg";
+    text.clear();
+    if (winehua_read_text_file(path.c_str(), text))
+    {
+        int n = winehua_patch_reg_section(
+            text, "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes",
+            font_entries, font_count, false, true);
+        n += winehua_patch_reg_section(text, "System\\\\CurrentControlSet\\\\Control\\\\Nls\\\\CodePage",
+                                       codepage_entries,
+                                       sizeof(codepage_entries) / sizeof(codepage_entries[0]),
+                                       true, false);
+        if (n > 0)
+        {
+            std::string backup = path + ".winehua.bak";
+            int bfd = open(backup.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+            if (bfd >= 0) close(bfd);
+            if (winehua_write_text_file(path.c_str(), text))
+                OH_LOG_INFO(LOG_APP, "[WineChild] system.reg font/codepage patched (%{public}d entries)", n);
+            else
+                OH_LOG_WARN(LOG_APP, "[WineChild] system.reg write failed");
+        }
+    }
 }
 
 static void apply_entry_param_env_overrides(const std::vector<std::string>& envOverrides)
@@ -578,11 +950,652 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
                           const std::vector<std::string>& envOverrides,
                           const char* entryParamsForLog);
 
+// ---- TEMP-DIAG(STALL-DUMP): 空闲卡死时的线程等待点观测 (2026-09-18) ----
+// 背景: win64 CEF browser 在 "CreateBrowser → AfterCreated" 之后静止 (状态 S, 不烧 CPU)。
+// 外部读 /proc/<pid>/stack 被 SELinux 拒绝; ITIMER_PROF 采样器只在烧 CPU 时触发, 对
+// "空闲等待"零输出。这个看门狗在**进程内部**观测: 若一个窗口期内本进程 utime+stime 完全
+// 没有增长, 就把每个线程的 comm/wchan/内核栈落到 stderr (即 wine_stderr 文件)。
+// 开关: WINEHUA_STALL_DUMP=<秒窗口> (默认 20), 0/未设 = 关闭。
+static void WineHuaStallSampleAllThreads(void);   // 定义在 EARLY-FAULT 段之后 (要用模块表)
+static long WineHuaProcCpuTicks()
+{
+    char buf[1024];
+    FILE *f = fopen("/proc/self/stat", "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (!n) return -1;
+    buf[n] = 0;
+    char *p = strrchr(buf, ')');
+    if (!p) return -1;
+    p++;
+    long vals[16];
+    int i = 0;
+    for (char *tok = strtok(p, " "); tok && i < 16; tok = strtok(nullptr, " "))
+        vals[i++] = atol(tok);
+    if (i < 15) return -1;
+    return vals[11] + vals[12];   /* utime + stime */
+}
+
+static void WineHuaDumpSelfThreads(const char *why)
+{
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return;
+    char line[512];
+    int n = snprintf(line, sizeof(line), "[stall-dump] pid=%d why=%s begin\n", getpid(), why);
+    if (n > 0) write(2, line, (size_t)n);
+    struct dirent *ent;
+    while ((ent = readdir(d)) != nullptr)
+    {
+        if (ent->d_name[0] == '.') continue;
+        char comm[64] = {0}, wchan[64] = {0}, path[96];
+        snprintf(path, sizeof(path), "/proc/self/task/%s/comm", ent->d_name);
+        FILE *f = fopen(path, "r");
+        if (f) { if (!fgets(comm, sizeof(comm), f)) comm[0] = 0; fclose(f); }
+        char *nl = strchr(comm, '\n'); if (nl) *nl = 0;
+        snprintf(path, sizeof(path), "/proc/self/task/%s/wchan", ent->d_name);
+        f = fopen(path, "r");
+        if (f) { if (!fgets(wchan, sizeof(wchan), f)) wchan[0] = 0; fclose(f); }
+        nl = strchr(wchan, '\n'); if (nl) *nl = 0;
+        n = snprintf(line, sizeof(line), "[stall-dump] tid=%s comm=%s wchan=%s\n",
+                     ent->d_name, comm, wchan);
+        if (n > 0) write(2, line, (size_t)n);
+        snprintf(path, sizeof(path), "/proc/self/task/%s/stack", ent->d_name);
+        f = fopen(path, "r");
+        if (f)
+        {
+            int k = 0;
+            while (k < 6 && fgets(line, sizeof(line), f))
+            {
+                size_t len = strlen(line);
+                if (len && write(2, line, len) > 0) k++;
+            }
+            fclose(f);
+        }
+    }
+    closedir(d);
+    const char *end = "[stall-dump] end\n";
+    write(2, end, strlen(end));
+}
+
+static void *WineHuaStallWatchdog(void *)
+{
+    const char *env = getenv("WINEHUA_STALL_DUMP");
+    int window = (env && env[0] && env[0] != '0') ? atoi(env) : 0;
+    if (window <= 0) return nullptr;
+    if (window > 120) window = 120;
+    int dumps = 0;
+    long prev = WineHuaProcCpuTicks();
+    for (;;)
+    {
+        sleep((unsigned)window);
+        long cur = WineHuaProcCpuTicks();
+        /* 判据用"CPU 占用率低"而不是"零增长": 看门狗自身 (fopen/fread) 也会推进 utime/stime,
+         * 浏览器还会周期性地烧掉一点点 CPU, 用零增长会把真正卡住的进程漏掉 (实测: 只有
+         * gpu/storage 被 dump, 浏览器从没触发)。HZ 按 100 估: 窗口内 ticks 增量 < window*1
+         * (即 <10% 一个核) 就算"卡住"。*/
+        if (cur >= 0 && prev >= 0 && (cur - prev) < window && dumps < 3)
+        {
+            dumps++;
+            WineHuaDumpSelfThreads("idle-no-cpu-progress");
+            WineHuaStallSampleAllThreads();
+        }
+        prev = cur;
+    }
+    return nullptr;
+}
+
+// ---- TEMP-DIAG(EARLY-FAULT) ----
+// 宿主 linker (ld-musl) 内的崩溃发生在 ntdll 安装 sigchain 之前，Wine 侧看不到。
+// 这里在 Main 最早处挂一个"只记录、不接管"的 action: 打印 sig/si_addr/pc/lr/sp
+// 并对栈做一次有界扫描(把命中宿主模块的地址解析成 模块+偏移)。
+namespace {
+struct OhosEarlyMod { uintptr_t start; uintptr_t end; char name[96]; };
+struct OhosEarlyCtx { OhosEarlyMod mods[80]; int count; };
+
+int OhosEarlyPhdrCb(struct dl_phdr_info* info, size_t /*size*/, void* data) {
+    auto* ctx = static_cast<OhosEarlyCtx*>(data);
+    if (ctx->count >= 80) return 0;
+    uintptr_t start = 0, end = 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        if (info->dlpi_phdr[i].p_type != PT_LOAD) continue;
+        uintptr_t s = (uintptr_t)info->dlpi_addr + info->dlpi_phdr[i].p_vaddr;
+        uintptr_t e = s + info->dlpi_phdr[i].p_memsz;
+        if (!start || s < start) start = s;
+        if (e > end) end = e;
+    }
+    if (!end) return 0;
+    OhosEarlyMod& m = ctx->mods[ctx->count++];
+    m.start = start;
+    m.end = end;
+    const char* n = (info->dlpi_name && info->dlpi_name[0]) ? info->dlpi_name : "<main>";
+    snprintf(m.name, sizeof(m.name), "%s", n);
+    return 0;
+}
+
+// ---- TEMP-DIAG(FAULT-MAP) ----
+// 2026-09-17 修正: 旧实现只 read() 一次 /proc/self/maps, 在 4KB seq_file 边界被截断
+// (实测每次只拿到 ~3.5KB, 读到 0x14001a000 就停), 于是 0x6ffcxxxxxxxx /
+// 0x7ffexxxxxxxx 这些高位区一律被误判成 not-in-maps。现在循环读到 EOF, 落盘 + 回显
+// 整张 maps, 并补上 fault 指令机器码与通用寄存器, 让本地 objdump 能直接对上号。
+static size_t OhosReadFullMaps(char* buf, size_t cap)
+{
+    if (!buf || cap < 2) return 0;
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return 0;
+    size_t total = 0;
+    for (;;)
+    {
+        if (total + 1 >= cap) break;
+        ssize_t r = read(fd, buf + total, cap - 1 - total);
+        if (r < 0)
+        {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) break;
+        total += (size_t)r;
+    }
+    close(fd);
+    buf[total] = '\0';
+    return total;
+}
+
+struct OhosVma { uintptr_t lo; uintptr_t hi; char perms[8]; };
+
+// 找出 maps 里覆盖 addr 的那一段 (地址空间排序, 命中即止)。
+static bool OhosVmaBounds(const char* maps, uintptr_t addr, OhosVma* out)
+{
+    if (!maps) return false;
+    const char* p = maps;
+    while (p && *p)
+    {
+        const char* nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        unsigned long long s = 0, e = 0;
+        char perm[8] = {0};
+        if (len && sscanf(p, "%llx-%llx %7s", &s, &e, perm) == 3 &&
+            addr >= (uintptr_t)s && addr < (uintptr_t)e)
+        {
+            if (out)
+            {
+                out->lo = (uintptr_t)s;
+                out->hi = (uintptr_t)e;
+                snprintf(out->perms, sizeof(out->perms), "%s", perm);
+            }
+            return true;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return false;
+}
+
+// pc / lr / sp / si_addr 各自落在哪一段 VMA、什么权限。区分:
+// 页面完全不存在 / 页面存在但权限不符 (SEGV_ACCERR) / guard / reserved。
+static void OhosEmitFaultMap(const char* what, uintptr_t addr, const char* maps)
+{
+    if (!addr || !maps) return;
+    char hit[384] = {0};
+    char below[384] = {0};
+    char above[384] = {0};
+    const char* p = maps;
+    while (p && *p)
+    {
+        const char* nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len && len < sizeof(hit))
+        {
+            unsigned long long s = 0, e = 0;
+            char perms[8] = {0};
+            if (sscanf(p, "%llx-%llx %7s", &s, &e, perms) == 3)
+            {
+                if (addr >= (uintptr_t)s && addr < (uintptr_t)e)
+                {
+                    memcpy(hit, p, len);
+                    hit[len] = '\0';
+                    break;
+                }
+                if ((uintptr_t)e <= addr)
+                {
+                    memcpy(below, p, len);
+                    below[len] = '\0';
+                }
+                else if (!above[0])
+                {
+                    memcpy(above, p, len);
+                    above[len] = '\0';
+                }
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    char out[1400];
+    int m;
+    if (hit[0])
+        m = snprintf(out, sizeof(out), "[fault-map] %s=%p HIT %s\n",
+                     what, (void*)addr, hit);
+    else
+        m = snprintf(out, sizeof(out),
+                     "[fault-map] %s=%p NOT-IN-MAPS\n"
+                     "[fault-map]   below: %s\n"
+                     "[fault-map]   above: %s\n",
+                     what, (void*)addr, below[0] ? below : "(none)",
+                     above[0] ? above : "(none)");
+    if (m > 0) write(2, out, (size_t)((m < (int)sizeof(out)) ? m : (int)sizeof(out) - 1));
+}
+
+// 首次 fault 时把整张 maps 落盘 (设备可直接 pull) 并回显到 stderr。
+static void OhosDumpSelfMaps(const char* maps, size_t n)
+{
+    if (!maps || !n) return;
+    char path[192];
+    snprintf(path, sizeof(path), "/data/storage/el2/base/temp/fault-maps-%d.txt", (int)getpid());
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+    {
+        snprintf(path, sizeof(path), "/data/local/tmp/fault-maps-%d.txt", (int)getpid());
+        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    }
+    if (fd >= 0)
+    {
+        size_t off = 0;
+        while (off < n)
+        {
+            ssize_t w = write(fd, maps + off, n - off);
+            if (w <= 0) break;
+            off += (size_t)w;
+        }
+        close(fd);
+        char out[224];
+        int m = snprintf(out, sizeof(out), "[fault-maps-file] %s bytes=%zu\n", path, n);
+        if (m > 0) write(2, out, (size_t)m);
+    }
+    write(2, "[fault-maps-begin]\n", 19);
+    size_t echo = (n > (64u << 10)) ? (64u << 10) : n;
+    write(2, maps, echo);
+    write(2, "[fault-maps-end]\n", 17);
+}
+
+// 打印 fault 现场机器码 (pc-16 起 64 字节), 让本地 objdump 反汇编出访问语义。
+static void OhosDumpFaultCode(uintptr_t pc)
+{
+    char out[512];
+    int fd = open("/proc/self/mem", O_RDONLY);
+    if (fd < 0)
+    {
+        int m = snprintf(out, sizeof(out), "[fault-code] open(/proc/self/mem) failed\n");
+        if (m > 0) write(2, out, (size_t)m);
+        return;
+    }
+    unsigned char code[64];
+    uintptr_t base = (pc - 16) & ~(uintptr_t)3;
+    ssize_t r = pread(fd, code, sizeof(code), (off_t)base);
+    close(fd);
+    if (r <= 0)
+    {
+        int m = snprintf(out, sizeof(out), "[fault-code] pread(pc=%p) failed\n", (void*)pc);
+        if (m > 0) write(2, out, (size_t)m);
+        return;
+    }
+    int off = snprintf(out, sizeof(out), "[fault-code] base=%p pc=%p n=%zd\n",
+                       (void*)base, (void*)pc, r);
+    for (ssize_t i = 0; i < r; i += 4)
+    {
+        unsigned w = 0;
+        for (ssize_t k = 0; k < 4 && (i + k) < r; k++)
+            w |= (unsigned)code[i + k] << (8 * k);
+        if (off < (int)sizeof(out) - 16)
+            off += snprintf(out + off, sizeof(out) - off, "%s%08x",
+                            ((uintptr_t)(base + i) == pc) ? " *" : " ", w);
+    }
+    if (off < (int)sizeof(out) - 2) { out[off++] = '\n'; out[off] = '\0'; }
+    write(2, out, (size_t)off);
+}
+
+// 打印 AArch64 通用寄存器: 判断 fault 指令用的是哪个 base/offset 只能靠它。
+static void OhosDumpRegs(ucontext_t* uc)
+{
+#if defined(__aarch64__)
+    if (!uc) return;
+    char out[768];
+    int off = 0;
+    for (int i = 0; i < 31 && off < (int)sizeof(out) - 96; i += 4)
+    {
+        off += snprintf(out + off, sizeof(out) - off, "[fault-regs]");
+        for (int k = 0; k < 4 && (i + k) < 31; k++)
+            off += snprintf(out + off, sizeof(out) - off, " x%d=%016llx", i + k,
+                            (unsigned long long)uc->uc_mcontext.regs[i + k]);
+        off += snprintf(out + off, sizeof(out) - off, "\n");
+    }
+    if (off < (int)sizeof(out) - 96)
+        off += snprintf(out + off, sizeof(out) - off,
+                        "[fault-regs] sp=%016llx pc=%016llx\n",
+                        (unsigned long long)uc->uc_mcontext.sp,
+                        (unsigned long long)uc->uc_mcontext.pc);
+    write(2, out, (size_t)off);
+#else
+    (void)uc;
+#endif
+}
+
+// 运行时开关: 注册时 entryParams 的 env 还没应用, 所以 handler 里再看这个标志。
+static volatile int g_early_fault_enabled = 1;
+
+int OhosEarlyFault(int sig, siginfo_t* info, void* uctx) {
+    static int logged = 0;
+    static volatile int in_handler = 0;
+    ucontext_t* uc = static_cast<ucontext_t*>(uctx);
+    uintptr_t pc = 0, lr = 0, sp = 0;
+#if defined(__aarch64__)
+    if (uc) {
+        pc = uc->uc_mcontext.pc;
+        lr = uc->uc_mcontext.regs[30];
+        sp = uc->uc_mcontext.sp;
+    }
+#endif
+    if (!g_early_fault_enabled) return 0;
+
+    /* 真嵌套: handler 自己又 fault (Wine 会 abort_thread, 必须能分辨) */
+    if (in_handler)
+    {
+        if (logged <= 8)
+        {
+            char out[224];
+            int m = snprintf(out, sizeof(out),
+                             "[early-fault] nested#%d sig=%d code=%d addr=%p pc=%p lr=%p sp=%p\n",
+                             logged, sig, info ? info->si_code : 0,
+                             info ? info->si_addr : nullptr, (void*)pc, (void*)lr, (void*)sp);
+            if (m > 0) write(2, out, (size_t)m);
+        }
+        return 0;
+    }
+    /* 去重而不是"前 4 颗都打" (2026-09-18 观测轮实测):
+     * arm64ec 路径下**每个 x64 进程启动阶段都会先吃 4 颗形态完全相同的
+     * sig=7(SIGBUS) 探针 fault** (FEX/SMC/SEH, 见 [SMC] result=wine_seh),
+     * 旧的"前 4 颗"名额被它们吃光 —— 后面真正的崩溃 (CEF renderer 的
+     * SIGSEGV, 实测每 7~8 秒死一次) 反而一条现场都没有, 直接漏掉根因。
+     * 改成按 (sig, pc) 去重: 相同故障点只打一次, 不同故障点各打一次, 上限 12 种。 */
+    static int seenSig[12];
+    static uintptr_t seenPc[12];
+    static int seenCount = 0;
+    for (int i = 0; i < seenCount; i++)
+        if (seenSig[i] == sig && seenPc[i] == pc) return 0;
+    if (seenCount >= 12) return 0;
+    seenSig[seenCount] = sig;
+    seenPc[seenCount] = pc;
+    seenCount++;
+    logged = seenCount;
+    in_handler = 1;
+
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf),
+                     "[early-fault] #%d pid=%d tid=%ld sig=%d code=%d addr=%p pc=%p lr=%p sp=%p\n",
+                     logged, getpid(), (long)syscall(SYS_gettid), sig, info ? info->si_code : 0,
+                     info ? info->si_addr : nullptr, (void*)pc, (void*)lr, (void*)sp);
+    if (n > 0) write(2, buf, (size_t)n);
+
+    static char maps[512 * 1024];
+    size_t mapsBytes = OhosReadFullMaps(maps, sizeof(maps));
+    n = snprintf(buf, sizeof(buf), "[fault-maps] bytes=%zu\n", mapsBytes);
+    if (n > 0) write(2, buf, (size_t)n);
+
+    OhosDumpRegs(uc);
+    OhosDumpFaultCode(pc);
+    OhosEmitFaultMap("pc", pc, maps);
+    OhosEmitFaultMap("lr", lr, maps);
+    if (sp) OhosEmitFaultMap("sp", sp, maps);
+    if (info && info->si_addr) OhosEmitFaultMap("addr", (uintptr_t)info->si_addr, maps);
+
+    OhosEarlyCtx ctx;
+    ctx.count = 0;
+    dl_iterate_phdr(OhosEarlyPhdrCb, &ctx);
+    auto emit = [&ctx](const char* what, uintptr_t addr) {
+        char line[220];
+        for (int i = 0; i < ctx.count; i++) {
+            if (addr >= ctx.mods[i].start && addr < ctx.mods[i].end) {
+                int m = snprintf(line, sizeof(line), "[early-fault] %s=%p %s+0x%lx\n", what,
+                                 (void*)addr, ctx.mods[i].name,
+                                 (unsigned long)(addr - ctx.mods[i].start));
+                if (m > 0) write(2, line, (size_t)m);
+                return;
+            }
+        }
+        int m = snprintf(line, sizeof(line), "[early-fault] %s=%p <unmapped>\n", what, (void*)addr);
+        if (m > 0) write(2, line, (size_t)m);
+    };
+    emit("pc-elf", pc);
+    emit("lr-elf", lr);
+
+    OhosDumpSelfMaps(maps, mapsBytes);
+
+    /* WineHua: 把 Wine 侧 GL proc 解析 ring 一并 dump (win32u.so 以 RTLD_GLOBAL 加载)。
+     * 用来回答"崩溃前最后解析了哪些 GL/EGL 入口、哪一个返回了 NULL"。 */
+    {
+        typedef void (*gl_proc_dump_fn)(const char *);
+        gl_proc_dump_fn dump = (gl_proc_dump_fn)dlsym(RTLD_DEFAULT, "winehua_gl_proc_trace_dump");
+        if (dump) dump("early-fault");
+    }
+
+    /* 栈扫描只经 /proc/self/mem, 且要求 VMA 可读 — 见 2026-09-18 的 nested 事故。 */
+    if (sp)
+    {
+        OhosVma vma = {0, 0, {0}};
+        if (OhosVmaBounds(maps, sp, &vma) && vma.perms[0] == 'r')
+        {
+            uintptr_t start = sp & ~(uintptr_t)7;
+            uintptr_t limit = (vma.hi > start) ? (vma.hi - start) : 0;
+            size_t bytes = (limit < 96 * sizeof(uintptr_t)) ? (size_t)limit : 96 * sizeof(uintptr_t);
+            bytes &= ~(size_t)7;
+            if (bytes)
+            {
+                int fd = open("/proc/self/mem", O_RDONLY);
+                if (fd >= 0)
+                {
+                    static uintptr_t words[96];
+                    ssize_t got = pread(fd, words, bytes, (off_t)start);
+                    close(fd);
+                    if (got > 0)
+                    {
+                        int count = (int)(got / (ssize_t)sizeof(uintptr_t));
+                        for (int i = 0; i < count; i++)
+                        {
+                            uintptr_t v = words[i];
+                            for (int j = 0; j < ctx.count; j++)
+                            {
+                                if (v >= ctx.mods[j].start && v < ctx.mods[j].end)
+                                {
+                                    emit("stack", v);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const char* freeze = getenv("WINEHUA_FAULT_FREEZE");
+    if (freeze && freeze[0] == '1')
+    {
+        int hold = atoi(freeze + 1);
+        if (hold <= 0) hold = 30;
+        if (hold > 300) hold = 300;
+        char out[160];
+        int m = snprintf(out, sizeof(out),
+                         "[fault-freeze] pid=%d tid=%ld hold=%ds\n",
+                         getpid(), (long)syscall(SYS_gettid), hold);
+        if (m > 0) write(2, out, (size_t)m);
+        for (int i = 0; i < hold; i++) sleep(1);
+    }
+    write(2, "[early-fault] logger-exit\n", 26);
+    in_handler = 0;
+    return 0;
+}
+
+void OhosInstallEarlyFaultLogger() {
+    /* 诊断器本身也可能是 nested exception 的来源, 所以留一个 A/B 开关:
+     * WINEHUA_EARLY_FAULT=0 完全不注册 (回到纯 Wine 处理路径)。 */
+    const char* enable = getenv("WINEHUA_EARLY_FAULT");
+    if (enable && enable[0] == '0')
+    {
+        OH_LOG_INFO(LOG_APP, "[WineChild] early fault logger disabled (WINEHUA_EARLY_FAULT=0)");
+        return;
+    }
+    struct ohos_sca { int (*sca_sigaction)(int, siginfo_t*, void*); sigset_t sca_mask; uint64_t sca_flags; };
+    auto add_special = (void (*)(int, struct ohos_sca*))dlsym(RTLD_DEFAULT, "AddSpecialSignalHandlerFn");
+    if (!add_special) add_special = (void (*)(int, struct ohos_sca*))dlsym(RTLD_DEFAULT, "add_special_signal_handler");
+    if (!add_special) {
+        OH_LOG_WARN(LOG_APP, "[WineChild] early fault logger: no sigchain API");
+        return;
+    }
+    struct ohos_sca sca;
+    memset(&sca, 0, sizeof(sca));
+    sca.sca_sigaction = OhosEarlyFault;
+    sigfillset(&sca.sca_mask);
+    sigdelset(&sca.sca_mask, SIGSEGV);
+    sigdelset(&sca.sca_mask, SIGBUS);
+    sigdelset(&sca.sca_mask, SIGILL);
+    add_special(SIGSEGV, &sca);
+    add_special(SIGBUS, &sca);
+    add_special(SIGILL, &sca);
+    OH_LOG_INFO(LOG_APP, "[WineChild] early fault logger installed");
+}
+}  // namespace
+// ---- TEMP-DIAG(EARLY-FAULT) end ----
+
+// ---- 用户态栈采样: 卡住线程到底停在哪个函数 (2026-09-19) ----
+// wchan 只说明"在 futex 上等", 看不到调用者。这里对每个线程 tgkill(SIGPROF),
+// 在 handler 里记录 pc/lr/fp, 再用 dl_iterate_phdr 的模块表解析成 模块+偏移。
+// 只在 WINEHUA_STALL_DUMP 打开、且判定为卡住时触发。
+#define WINEHUA_STALL_MAX_SAMPLES 256
+
+struct WineHuaStallSample {
+    int tid;
+    uintptr_t pc, lr, fp;
+};
+
+static WineHuaStallSample g_stallSamples[WINEHUA_STALL_MAX_SAMPLES];
+static int g_stallSampleCount;
+static volatile sig_atomic_t g_stallSampling;
+// Wine 侧还装了一个 SIGPROF 采样器 (WINEHUA_PROF_SAMPLE=1 时), 它负责读
+// ARM64EC 的 guest(x64) 上下文。这里保存它原来的 handler 并链式调用,
+// 否则本文件安装 handler 会把对方顶掉 (实测: 只能拿到 host 侧 pc).
+static struct sigaction g_stallPrevSa;
+static int g_stallChainPrev;
+
+static void WineHuaStallSampleHandler(int sig, siginfo_t* info, void* uctx)
+{
+    (void)sig; (void)info;
+    if (!g_stallSampling) return;
+    ucontext_t* uc = static_cast<ucontext_t*>(uctx);
+    if (uc)
+    {
+        int slot = g_stallSampleCount;
+        if (slot >= 0 && slot < WINEHUA_STALL_MAX_SAMPLES)
+        {
+            g_stallSampleCount = slot + 1;
+            g_stallSamples[slot].tid = (int)syscall(SYS_gettid);
+#if defined(__aarch64__)
+            g_stallSamples[slot].pc = (uintptr_t)uc->uc_mcontext.pc;
+            g_stallSamples[slot].lr = (uintptr_t)uc->uc_mcontext.regs[30];
+            g_stallSamples[slot].fp = (uintptr_t)uc->uc_mcontext.regs[29];
+#else
+            g_stallSamples[slot].pc = g_stallSamples[slot].lr = g_stallSamples[slot].fp = 0;
+#endif
+        }
+    }
+    // 链式调用 wine 侧采样器 (它会在 ARM64EC 进程里打 [prof-guest] ...)
+    if (g_stallChainPrev)
+    {
+        if (g_stallPrevSa.sa_flags & SA_SIGINFO)
+        {
+            if (g_stallPrevSa.sa_sigaction) g_stallPrevSa.sa_sigaction(sig, info, uctx);
+        }
+        else if (g_stallPrevSa.sa_handler && g_stallPrevSa.sa_handler != SIG_DFL &&
+                 g_stallPrevSa.sa_handler != SIG_IGN)
+        {
+            g_stallPrevSa.sa_handler(sig);
+        }
+    }
+}
+
+static void WineHuaStallEmitPc(const char* what, uintptr_t v, const OhosEarlyCtx& ctx)
+{
+    char line[256];
+    for (int i = 0; i < ctx.count; i++)
+    {
+        if (v >= ctx.mods[i].start && v < ctx.mods[i].end)
+        {
+            int n = snprintf(line, sizeof(line), "[stall-pc] %s=%p %s+0x%lx\n", what,
+                             (void*)v, ctx.mods[i].name, (unsigned long)(v - ctx.mods[i].start));
+            if (n > 0) write(2, line, (size_t)n);
+            return;
+        }
+    }
+    int n = snprintf(line, sizeof(line), "[stall-pc] %s=%p <unmapped>\n", what, (void*)v);
+    if (n > 0) write(2, line, (size_t)n);
+}
+
+static void WineHuaStallSampleAllThreads(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = WineHuaStallSampleHandler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGPROF, &sa, &g_stallPrevSa) != 0) return;
+    g_stallChainPrev = 1;
+
+    g_stallSampleCount = 0;
+    g_stallSampling = 1;
+    DIR* d = opendir("/proc/self/task");
+    if (d)
+    {
+        struct dirent* ent;
+        while ((ent = readdir(d)) != nullptr)
+        {
+            if (ent->d_name[0] == '.') continue;
+            int tid = atoi(ent->d_name);
+            if (tid <= 0) continue;
+            syscall(SYS_tgkill, getpid(), tid, SIGPROF);
+            /* 目标线程可能正阻塞在 futex 上, 需要被唤醒并调度到才会跑 handler;
+             * 窗口太短会一条都收不到 (实测 1.5ms 时 0 条)。 */
+            usleep(20000);
+        }
+        closedir(d);
+    }
+    usleep(200000);   /* 收尾: 等最后几个线程把 handler 跑完 */
+    g_stallSampling = 0;
+
+    OhosEarlyCtx ctx;
+    ctx.count = 0;
+    dl_iterate_phdr(OhosEarlyPhdrCb, &ctx);
+
+    char comm[64] = {0}, path[96], line[160];
+    for (int i = 0; i < g_stallSampleCount; i++)
+    {
+        comm[0] = 0;
+        snprintf(path, sizeof(path), "/proc/self/task/%d/comm", g_stallSamples[i].tid);
+        FILE* f = fopen(path, "r");
+        if (f) { if (!fgets(comm, sizeof(comm), f)) comm[0] = 0; fclose(f); }
+        char* nl = strchr(comm, '\n'); if (nl) *nl = 0;
+        int n = snprintf(line, sizeof(line), "[stall-pc] tid=%d comm=%s\n",
+                         g_stallSamples[i].tid, comm);
+        if (n > 0) write(2, line, (size_t)n);
+        WineHuaStallEmitPc("pc", g_stallSamples[i].pc, ctx);
+        WineHuaStallEmitPc("lr", g_stallSamples[i].lr, ctx);
+        WineHuaStallEmitPc("fp", g_stallSamples[i].fp, ctx);
+    }
+}
+
 extern "C" void Main(NativeChildProcess_Args args)
 {
     OH_LOG_INFO(LOG_APP, "[WineChild] Main() ENTER pid=%{public}d entryParams=%{public}s",
                 getpid(), args.entryParams ? args.entryParams : "(null)");
     LogWineScheme("libwine_child.so Main");
+    OhosInstallEarlyFaultLogger();
 
     // 1. 解析 entryParams: "homeDir|binDir|arg0|arg1|...|__env=KEY=VALUE|..."
     const char* entryParams = args.entryParams ? args.entryParams : "";
@@ -662,10 +1675,47 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+    // entryParams 覆盖之后再选一次 WINEDEBUG 档位: select_winedebug_profile() 会优先
+    // 采用 WINEHUA_WINEDEBUG / 非 "-all" 的 WINEDEBUG, 但它上面的那次调用发生在
+    // apply_entry_param_env_overrides() 之前 (2026-09-18 实测 Want 里传的档位永远不生效,
+    // 全部退回 -all)。这里补一次, 让 Want 能开 +loaddll/+module/+seh 之类通道。
+    {
+        const char* profile = select_winedebug_profile(argc, argv);
+        setenv("WINEDEBUG", profile, 1);
+        OH_LOG_INFO(LOG_APP, "[WineChild] final WINEDEBUG=%{public}s (after entry env)", profile);
+    }
+    // early-fault 诊断器同理: 注册时 entryParams 的 env 还没生效, 运行时再确认一次。
+    {
+        const char* ef = getenv("WINEHUA_EARLY_FAULT");
+        g_early_fault_enabled = (ef && ef[0] == '0') ? 0 : 1;
+        OH_LOG_INFO(LOG_APP, "[WineChild] early fault logger=%{public}s",
+                    g_early_fault_enabled ? "on" : "off");
+    }
+    // CEF 渲染后端不再由 WineHua 单方面决定 (P0-GL 计划 §19):
+    //   默认 (clean)  -> 不注入任何 CEF GPU/软件开关, 让 CEF 自己选 backend,
+    //                    kernelbase 侧也只在显式设置时才追加 (Run A)
+    //   FORCE_GPU=1   -> 只注入 Steam 自己的 -cef-force-gpu (Run B)
+    //   FORCE_SOFTWARE=1|both|compositing|gpu
+    //                 -> 注入 --disable-gpu / --disable-gpu-compositing (Run C, 兼容性回退)
+    // 历史上软件开关默认打开, 但实测它会把 CEF 推到"半 GPU 状态"(窗口整体黑、renderer
+    // 反复 SIGSEGV), 而 clean 模式至少能出 VGUI 外框 —— 所以默认回到 clean,
+    // 软件模式保留为显式回退项。
+    const char* softDefault = getenv("WINEHUA_CEF_FORCE_SOFTWARE");
+    OH_LOG_INFO(LOG_APP, "[WineChild] CEF backend policy: force_gpu=%{public}s force_software=%{public}s",
+                (getenv("WINEHUA_CEF_FORCE_GPU") && getenv("WINEHUA_CEF_FORCE_GPU")[0] == '1') ? "1" : "0",
+                (softDefault && softDefault[0]) ? softDefault : "(unset/clean)");
+    // entryParams 覆盖之后再决定 32 位 CPU 后端 (HODLL)，保证 Want 里的
+    // WINEHUA_WOW64_ENGINE 生效。
+    select_wow64_backend(argc, argv);
+    // Steam 客户端缺省参数兜底 (CEF 沙箱/gpu), 理由见函数注释。
+    apply_steam_client_default_args(argc, argv);
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.
     refresh_wine_session_paths();
+    // 前缀字体/代码页自愈 (必须在 Wine 起来之前): 新装/重置 prefix 后 UI 字体链是断的,
+    // 会让 win64/32 位 Steam 的 VGUI2 断言 surface_gdiwin32.cpp:1336 winFont 并卡在启动画面。
+    ensure_prefix_fonts_and_codepage();
 
     // 父进程 __env 可能用 DXVK PE 目录覆盖 WINEDLLPATH 并丢掉 HAP native-lib
     // 目录 (wineohos.so 所在) — 按方案重Assert运行期路径 (arm64 三方案修复)。
@@ -673,11 +1723,12 @@ extern "C" void Main(NativeChildProcess_Args args)
     /* Parent serializes WINEDEBUG=-all,+opengl,... which clobbers the
      * audio diagnostic profile selected in setup_wine_env(). Restore it
      * so mmdevapi/wineohos traces actually appear for audio tests. */
-    if (is_audio_test_exe(argc, argv) || is_sdl_audio_test_exe(argc, argv))
+    if (is_audio_test_exe(argc, argv) || is_sdl_audio_test_exe(argc, argv) ||
+        (is_steam_webhelper_exe(argc, argv) && steam_webhelper_diag_enabled()))
     {
         const char *profile = select_winedebug_profile(argc, argv);
         setenv("WINEDEBUG", profile, 1);
-        OH_LOG_INFO(LOG_APP, "[WineChild] restored audio WINEDEBUG=%{public}s", profile);
+        OH_LOG_INFO(LOG_APP, "[WineChild] restored diagnostic WINEDEBUG=%{public}s", profile);
     }
     log_d3d_environment_summary();
     OH_LOG_INFO(LOG_APP,
@@ -752,6 +1803,14 @@ extern "C" void Main(NativeChildProcess_Args args)
     pthread_t tid;
     pthread_create(&tid, nullptr, stderr_reader_thread, ctx);
     pthread_detach(tid);
+
+    // 空闲卡死看门狗 (WINEHUA_STALL_DUMP=<秒> 才启动): 必须在 stderr 已重定向到
+    // wine_stderr 之后启动, 这样 dump 才落在同一个文件里。
+    {
+        pthread_t watchdog;
+        if (pthread_create(&watchdog, nullptr, WineHuaStallWatchdog, nullptr) == 0)
+            pthread_detach(watchdog);
+    }
 
 #if defined(__aarch64__) && defined(WINEHUA_WINE_ARCH_IS_X86_64)
     // 方案② box64+wine: dlopen box64.so → box64_hmos_main, box64 转译 x86_64 wine ELF。

@@ -26,6 +26,8 @@ RUN apt-get update && apt-get install -y \
     gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
     # VKD3D-Proton meson 交叉文件硬依赖 x86_64-w64-mingw32-widl
     mingw-w64-tools \
+    # Box64 WoW64 顶层 CMake 配置需要 ARM64 GNU 编译器
+    gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
     # HAP 签名
     default-jdk \
  && apt-get clean && rm -rf /var/lib/apt/lists/*

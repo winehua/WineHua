@@ -557,7 +557,12 @@ bool GraphicsBroker::QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo>& sur
 {
     surfaces.clear();
     std::lock_guard<std::mutex> lock(virglIpcMutex_);
-    if (!virglIpcConfigured_) return false;
+    if (!virglIpcConfigured_)
+    {
+        // 诊断 (2026-09-16): 旧实现静默返回 false — app 侧 ZC attach 就此停摆且无日志。
+        LogZeroCopyQueryFailureLocked("ipc_not_configured", 0, 0);
+        return false;
+    }
     if (virglServerUsesInProcess_.load(std::memory_order_acquire))
     {
         auto queryFn = reinterpret_cast<VirglInProcessQueryFn>(virglInProcessQuery_);
@@ -567,7 +572,10 @@ bool GraphicsBroker::QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo>& sur
             queryReply.version != static_cast<uint32_t>(virgl_ipc::kProtocolVersion) ||
             queryReply.size != sizeof(queryReply) ||
             queryReply.count > virgl_ipc::kMaxSurfaces)
+        {
+            LogZeroCopyQueryFailureLocked("in_process_reply_invalid", 0, 0);
             return false;
+        }
         surfaces.reserve(queryReply.count);
         for (uint32_t i = 0; i < queryReply.count; ++i)
         {
@@ -579,7 +587,11 @@ bool GraphicsBroker::QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo>& sur
         }
         return true;
     }
-    if (!virglRemoteProxy_) return false;
+    if (!virglRemoteProxy_)
+    {
+        LogZeroCopyQueryFailureLocked("no_remote_proxy", 0, 0);
+        return false;
+    }
 
     OHIPCParcel* request = OH_IPCParcel_Create();
     OHIPCParcel* reply = OH_IPCParcel_Create();
@@ -628,7 +640,29 @@ bool GraphicsBroker::QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo>& sur
     }
     if (reply) OH_IPCParcel_Destroy(reply);
     if (request) OH_IPCParcel_Destroy(request);
+    if (result != OH_IPC_SUCCESS)
+        LogZeroCopyQueryFailureLocked("ipc_request_failed", result,
+                                      static_cast<int32_t>(surfaces.size()));
     return result == OH_IPC_SUCCESS;
+}
+
+// 诊断 (2026-09-16): ZC surface 查询失败的带原因日志 (每 2s 最多一条, 不改变行为)。
+// 调用方须持有 virglIpcMutex_。
+void GraphicsBroker::LogZeroCopyQueryFailureLocked(const char* reason, int32_t detail,
+                                                  int32_t surfaceCount) const
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (zeroCopyQueryFailureLogged_ &&
+        now - zeroCopyQueryFailureLogTime_ < std::chrono::seconds(2))
+        return;
+    zeroCopyQueryFailureLogged_ = true;
+    zeroCopyQueryFailureLogTime_ = now;
+    OH_LOG_WARN(LOG_APP,
+                "[VIRGL-ZC][MAIN][DIAG] zc_query_fail reason=%{public}s detail=%{public}d "
+                "surfaces=%{public}d ipc=%{public}d proxy=%{public}p in_process=%{public}d",
+                reason, detail, surfaceCount, virglIpcConfigured_ ? 1 : 0,
+                virglRemoteProxy_,
+                virglServerUsesInProcess_.load(std::memory_order_acquire) ? 1 : 0);
 }
 
 void GraphicsBroker::SetZeroCopySurfaceReady(uint64_t surfaceKey, bool ready)

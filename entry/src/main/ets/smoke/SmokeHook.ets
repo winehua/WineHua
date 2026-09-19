@@ -1,7 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
-  WineEnvService, WINE_ROOT, FILES_BASE, pathExists
+  WineEnvService, WINE_ROOT, FILES_BASE, pathExists, readTextIfExists
 } from '../service/WineEnvService';
 import { SmokeRunner } from './SmokeRunner';
 import { SmokeRequest } from './SmokeTypes';
@@ -46,15 +46,20 @@ export class SmokeHook {
       return `${parameters[key]}`;
     };
     if (value('winehua.mode', '') !== 'smoke') return;
+    const suite = value('winehua.suite', 'core');
+    if (suite === 'd3d12') {
+      hilog.warn(DOMAIN, TAG, 'rejected disabled graphics suite=%{public}s', suite);
+      return;
+    }
     AppStorage.setOrCreate<string>('winehua.smoke.request', JSON.stringify({
-      suite: value('winehua.suite', 'core'),
+      suite: suite,
       runId: value('winehua.run_id', `manual-${Date.now()}`),
       prefix: value('winehua.prefix', 'reuse') === 'clean' ? 'clean' : 'reuse',
       longSeconds: Number(value('winehua.long_seconds', '3600')),
       source: 'want'
     }));
     hilog.info(DOMAIN, TAG, 'want request: suite=%{public}s runId=%{public}s prefix=%{public}s',
-      value('winehua.suite', 'core'), value('winehua.run_id', ''),
+      suite, value('winehua.run_id', ''),
       value('winehua.prefix', 'reuse'));
   }
 
@@ -109,13 +114,14 @@ export class SmokeHook {
   }
 
   // 跑测单点: 引擎 ready + prefix 就绪 + 有 pending 才启动 (pending 置空即
-  // 防重; SmokeRunner.busy 挡运行中的重复请求)。二次 Want 走 onNewWant→tick;
-  // 冷启动走 onEngineReady (其前置 seed)。
+  // 防重; SmokeRunner.busy 挡运行中的重复请求)。启动前校验载荷版本，覆盖
+  // 安装 HAP 后的热请求也不能继续读取旧 C:\smoke 定义。
   private runPending(): void {
     const req = this.pending;
     const env = this.env;
     if (!req || !env) return;
     if (!env.prefixReady || env.engineState !== 'ready') return;
+    this.seed();
     this.pending = null;
     SmokeRunner.getInstance().start(req);
   }
@@ -136,17 +142,23 @@ export class SmokeHook {
   }
 
   // C:\smoke 载荷播种 (suites.json + exe, assemble.sh 打包随 wine 数据):
-  // 引擎 ready 时调用 (onEngineReady 前置). 幂等以 pathExists 判定 —
-  // 不用 seedDone flag: 同一 App 进程内 clean 清盘后 C:\smoke 不存在,
-  // 必须能重播 (run_regression --gate 的 reuse×3+clean 连续场景)。
-  // 失败只记日志不阻塞。
+  // target 不存在或 manifest 不一致时覆盖受管文件。copyTree 不删除 target
+  // 中源目录没有的内容，因此历史 results 会保留。不能只用 pathExists 判定，
+  // 否则覆盖 HAP 并保留 prefix 时会永久使用旧 suite/exe。
   private seed(): void {
     const source = `${WINE_ROOT}/smoke`;
     const target = `${FILES_BASE}/.wine/drive_c/smoke`;
-    if (pathExists(target) || !pathExists(source)) return;
+    if (!pathExists(source)) return;
+    const sourceManifest = readTextIfExists(`${source}/manifest.json`);
+    const targetManifest = readTextIfExists(`${target}/manifest.json`);
+    if (pathExists(target) && sourceManifest.length > 0 && sourceManifest === targetManifest) return;
+    if (pathExists(target) && sourceManifest.length === 0) {
+      hilog.warn(DOMAIN, TAG, 'skip smoke refresh: source manifest missing');
+      return;
+    }
     try {
       this.copyTree(source, target);
-      hilog.warn(DOMAIN, TAG, 'seeded smoke payload → C:\\smoke');
+      hilog.warn(DOMAIN, TAG, 'seeded/refreshed smoke payload → C:\\smoke');
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'seed smoke payload failed: %{public}s', JSON.stringify(e));
     }
@@ -157,7 +169,7 @@ export class SmokeHook {
   private copyTree(src: string, dst: string): void {
     const st = fs.statSync(src);
     if (st.isDirectory()) {
-      fs.mkdirSync(dst, true);
+      if (!pathExists(dst)) fs.mkdirSync(dst, true);
       for (const name of fs.listFileSync(src)) {
         this.copyTree(`${src}/${name}`, `${dst}/${name}`);
       }

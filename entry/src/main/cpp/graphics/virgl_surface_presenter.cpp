@@ -52,6 +52,7 @@ using winehua::kPresentFenceSyncFailed;
 using winehua::kPresentInvalid;
 
 constexpr auto kVenusTargetAttachTimeout = std::chrono::milliseconds(2500);
+constexpr auto kVirglTargetAttachTimeout = std::chrono::milliseconds(500);
 
 GLuint CompilePresentShader(GLenum type, const char* source)
 {
@@ -510,6 +511,8 @@ public:
         }
         if (result == 0) {
             entry.info.flags |= winehua::virgl_ipc::kSurfaceAttached;
+            entry.attachWaitGaveUp = false;
+            entry.attachSkipLogged = false;
             targetCondition_.notify_all();
         }
         return result;
@@ -604,7 +607,7 @@ public:
         if (!clientPid || !surfaceId) return kPresentNoTarget;
         const uint64_t surfaceKey =
             (static_cast<uint64_t>(clientPid) << 32) | surfaceId;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         auto& entry = surfaces_[surfaceKey];
         // 防御: GL 帧送达 venus (vulkan) target — 错误通道。原按 info.flags
         // 判断, 现改按 target 类型 (kind 一致)。无 target 时无法判断, 先
@@ -617,8 +620,60 @@ public:
         entry.info.height = height;
         entry.info.serial = serial;
         entry.lastPresentUs = NowUs();
-        if (!entry.target) return kPresentNoTarget;
-        return entry.target->Present(
+        const auto targetReady = [this, surfaceKey]() {
+            const auto it = surfaces_.find(surfaceKey);
+            return it != surfaces_.end() && it->second.target &&
+                   !it->second.target->IsVulkan() &&
+                   (it->second.info.flags & winehua::virgl_ipc::kSurfaceAttached);
+        };
+        if (!targetReady())
+        {
+            const bool firstMissingTarget = !entry.missingTargetLogged;
+            if (firstMissingTarget)
+            {
+                entry.missingTargetLogged = true;
+                OH_LOG_WARN(LOG_APP,
+                            "[VIRGL-ZC][NCP] target missing key=%{public}llu "
+                            "pid=%{public}u surface=%{public}u",
+                            static_cast<unsigned long long>(surfaceKey),
+                            clientPid, surfaceId);
+            }
+            if (!firstMissingTarget) return kPresentNoTarget;
+            const uint64_t generation = surfaceGenerations_[surfaceKey];
+            const auto waitStart = SteadyClock::now();
+            targetCondition_.wait_for(
+                lock, kVirglTargetAttachTimeout,
+                [this, surfaceKey, generation, &targetReady]() {
+                    return targetReady() ||
+                           surfaceGenerations_[surfaceKey] != generation;
+                });
+            const uint64_t waitedUs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    SteadyClock::now() - waitStart).count());
+            if (!targetReady())
+            {
+                const auto it = surfaces_.find(surfaceKey);
+                if (it != surfaces_.end() && it->second.target &&
+                    it->second.target->IsVulkan())
+                    return kPresentInvalid;
+                OH_LOG_WARN(LOG_APP,
+                            "[VIRGL-ZC][NCP] target wait ended key=%{public}llu "
+                            "pid=%{public}u waited_us=%{public}llu reason=%{public}s",
+                            static_cast<unsigned long long>(surfaceKey), clientPid,
+                            static_cast<unsigned long long>(waitedUs),
+                            surfaceGenerations_[surfaceKey] != generation
+                                ? "detached" : "timeout");
+                return kPresentNoTarget;
+            }
+            OH_LOG_INFO(LOG_APP,
+                        "[VIRGL-ZC][NCP] target ready key=%{public}llu "
+                        "pid=%{public}u waited_us=%{public}llu",
+                        static_cast<unsigned long long>(surfaceKey), clientPid,
+                        static_cast<unsigned long long>(waitedUs));
+        }
+        auto it = surfaces_.find(surfaceKey);
+        if (it == surfaces_.end() || !it->second.target) return kPresentNoTarget;
+        return it->second.target->Present(
             texture, width, height, drawable, serial, nextPresentDeadlineNs);
     }
 
@@ -641,9 +696,64 @@ public:
                      void* queueSyncData)
     {
         if (!clientPid || !surfaceId) return kPresentInvalid;
-        const uint64_t surfaceKey =
+        uint64_t surfaceKey =
             (static_cast<uint64_t>(clientPid) << 32) | surfaceId;
         std::unique_lock<std::mutex> lock(mutex_);
+
+        /* DIAG(2026-09-16): cross-process HWND surface identity.
+         * The guest builds surfaceKey from getpid() of the process that *submits* the present,
+         * while the Venus target is attached under the pid of the process that *owns* the
+         * window surface. For a foreign HWND these differ, the lookup below misses, the host
+         * waits kVenusTargetAttachTimeout, returns -EAGAIN, and Wine maps that to
+         * VK_SUBOPTIMAL_KHR which makes DXVK 1.10.3 rebuild the swapchain forever.
+         * This fallback (same surfaceId, different pid) exists ONLY to confirm that contract
+         * break: it is loud on purpose and is not the intended final fix. */
+        const auto isVulkanTargetReady = [this](uint64_t key) {
+            const auto it = surfaces_.find(key);
+            return it != surfaces_.end() && it->second.target && it->second.target->IsVulkan() &&
+                   (it->second.info.flags & winehua::virgl_ipc::kSurfaceAttached);
+        };
+        if (!isVulkanTargetReady(surfaceKey)) {
+            /* DIAG(2026-09-16): dump what targets actually exist, so the correct owner
+             * identity contract can be designed from data instead of guesses. */
+            {
+                unsigned listed = 0;
+                for (const auto& kv : surfaces_) {
+                    if (listed >= 8) break;
+                    OH_LOG_WARN(LOG_APP,
+                                "[VENUS-PRESENT][NCP][DIAG] available key=%{public}llu pid=%{public}u "
+                                "surface=%{public}u hasTarget=%{public}d isVulkan=%{public}d attached=%{public}d",
+                                static_cast<unsigned long long>(kv.first),
+                                static_cast<uint32_t>(kv.first >> 32),
+                                static_cast<uint32_t>(kv.first),
+                                kv.second.target ? 1 : 0,
+                                kv.second.target ? (kv.second.target->IsVulkan() ? 1 : 0) : -1,
+                                (kv.second.info.flags & winehua::virgl_ipc::kSurfaceAttached) ? 1 : 0);
+                    listed++;
+                }
+                if (!listed) {
+                    OH_LOG_WARN(LOG_APP,
+                                "[VENUS-PRESENT][NCP][DIAG] no surfaces registered at all "
+                                "requested_key=%{public}llu pid=%{public}u surface=%{public}u",
+                                static_cast<unsigned long long>(surfaceKey), clientPid, surfaceId);
+                }
+            }
+            for (const auto& candidate : surfaces_) {
+                if (static_cast<uint32_t>(candidate.first) == surfaceId &&
+                    candidate.first != surfaceKey && isVulkanTargetReady(candidate.first)) {
+                    OH_LOG_WARN(LOG_APP,
+                                "[VENUS-PRESENT][NCP][DIAG] owner-pid fallback "
+                                "requested_key=%{public}llu requested_pid=%{public}u "
+                                "resolved_key=%{public}llu resolved_pid=%{public}u surface=%{public}u",
+                                static_cast<unsigned long long>(surfaceKey), clientPid,
+                                static_cast<unsigned long long>(candidate.first),
+                                static_cast<uint32_t>(candidate.first >> 32), surfaceId);
+                    surfaceKey = candidate.first;
+                    break;
+                }
+            }
+        }
+
         auto& entry = surfaces_[surfaceKey];
         // 防御: Vulkan 帧送达 virgl (GL) target — 错误通道。
         if (entry.target && !entry.target->IsVulkan()) return kPresentInvalid;
@@ -670,6 +780,23 @@ public:
                             static_cast<unsigned long long>(surfaceKey),
                             contextId, clientPid, surfaceId);
             }
+            // 退化尺寸 (1x1 占位/哑 surface) 不可能对应任何窗口, 不值得等
+            const bool degenerate = width <= 64 && height <= 64;
+            if (entry.attachWaitGaveUp || degenerate)
+            {
+                if (!entry.attachSkipLogged)
+                {
+                    entry.attachSkipLogged = true;
+                    OH_LOG_WARN(LOG_APP,
+                                "[VENUS-PRESENT][NCP] target wait skipped key=%{public}llu "
+                                "ctx=%{public}u pid=%{public}u surface=%{public}u "
+                                "size=%{public}ux%{public}u reason=%{public}s",
+                                static_cast<unsigned long long>(surfaceKey), contextId,
+                                clientPid, surfaceId, width, height,
+                                degenerate ? "degenerate-size" : "attach-gave-up");
+                }
+                return -EAGAIN;
+            }
             const uint64_t generation = surfaceGenerations_[surfaceKey];
             const auto waitStart = SteadyClock::now();
             targetCondition_.wait_for(
@@ -682,6 +809,7 @@ public:
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     SteadyClock::now() - waitStart).count());
             if (!targetReady()) {
+                entry.attachWaitGaveUp = true;
                 OH_LOG_WARN(LOG_APP,
                             "[VENUS-PRESENT][NCP] target wait ended key=%{public}llu "
                             "ctx=%{public}u waited_us=%{public}llu reason=%{public}s",
@@ -781,6 +909,14 @@ private:
         std::unique_ptr<PresentTarget> target;
         uint64_t lastPresentUs = 0;
         bool missingTargetLogged = false;
+        // 2026-09-17: present 目标解析失败退避。
+        // 旧实现每次 miss 都等满 kVenusTargetAttachTimeout —— 对"永远不会被 attach"
+        // 的 surface (CEF 的 1x1 占位/哑 surface, 或 app 侧判定 owner 歧义的窗口)
+        // 会让调用线程每帧阻塞 2.5s, 直接把 CEF 的 UI 线程拖到 "unresponsive" 被杀。
+        // 现在: 首次 miss 仍等一次; 超时后置位, 后续 present 立即返回;
+        // Attach 成功/Detach 生成新 generation 时清位 (目标可能已经就绪)。
+        bool attachWaitGaveUp = false;
+        bool attachSkipLogged = false;
     };
 
     mutable std::mutex mutex_;

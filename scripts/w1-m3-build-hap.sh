@@ -16,5 +16,13 @@ export NATIVE_ARCH="${NATIVE_ARCH:-arm64-v8a}"
 log="$ROOT/build/w1-m3-hap.log"
 echo "== package.sh hap -> $log =="
 ( cd "$ROOT" && NATIVE_ARCH="$NATIVE_ARCH" bash scripts/package.sh hap ) 2>&1 | tee "$log"
-echo "package rc=${PIPESTATUS[0]}"
+rc=${PIPESTATUS[0]}
+echo "package rc=$rc"
+if [ "$rc" -ne 0 ]; then
+    exit "$rc"
+fi
+
+signed_hap="$ROOT/entry/build/default/outputs/default/entry-default-signed.hap"
+[ -s "$signed_hap" ] || { echo "signed HAP missing: $signed_hap" >&2; exit 1; }
+bash "$ROOT/scripts/w1-verify-candidate.sh" --hap "$signed_hap"
 ls -la "$ROOT/entry/build/default/outputs/default/" 2>/dev/null | tail -5

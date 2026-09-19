@@ -1,0 +1,82 @@
+# fex-arm64ec-lookup-cache-commit.patch
+#
+# 背景 (2026-09-17): WineHua 方案③ (arm64 原生 wine) 上, 任何真正的 AMD64 (0x8664)
+# PE 都会在进入程序前确定性 SIGSEGV:
+#
+#   [early-fault] sig=11 code=2(SEGV_ACCERR) addr=<...FEXMem_Lookup_L1 页内>
+#                 pc=<FEX JIT 代码区>
+#   [fault-map] pc   HIT 6ffc511000-6ffc6fa000 r-xp (匿名 = FEX JIT)
+#   [fault-map] addr HIT 7efefd0000-7efffd0000 ---p [anon:FEXMem_Lookup_L1]
+#
+# 即 FEX ARM64EC 的 lookup cache 是 "只 Reserve 不 Commit" (PAGE_NOACCESS),
+# JIT 第一次读 L1 表项时必然 fault, 期望由 FEX 的 overcommit handler 提交该页再重试。
+# 但 Wine-OHOS 不会把 CPU DLL / JIT 里发生的 native 访问异常交回 FEX
+# (WOW64 同样如此, 见 fex-wow64-lookup-cache-commit.patch), 于是这颗 fault 直接
+# 逃逸成 host SIGSEGV, 进程在 entry point 之前就死了。
+#
+# 修法: 把这套"预先 Commit + 不 Decommit"的处理从 WOW64 分支扩展到 ARM64EC 分支
+# (去掉 `&& !defined(ARCHITECTURE_arm64ec)` 门禁)。Wine 侧仍是按需分页, 未被触碰的
+# 页不会变成 RSS。
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.cpp b/FEXCore/Source/Interface/Core/LookupCache.cpp
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -38,12 +38,14 @@
+   // Allocate a region of memory that we can use to back our block pointers
+   // We need one pointer per page of virtual memory
+   // At 64GB of virtual memory this will allocate 128MB of virtual memory space
+-#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
+-  // Wine-OHOS does not route every native access violation raised by a WOW64
+-  // CPU DLL through BTCpuResetToConsistentState.  A reserved lookup cache can
+-  // therefore escape as a host SIGSEGV before the overcommit tracker commits
+-  // the faulting page.  Commit the virtual range up front; Wine still relies
+-  // on the host kernel's demand paging, so untouched pages do not become RSS.
++#if defined(_WIN32)
++  // Wine-OHOS does not route every native access violation raised inside the
++  // CPU DLL (WOW64 BTCpuResetToConsistentState, nor the ARM64EC JIT path) back
++  // to FEX's overcommit tracker.  A reserved lookup cache therefore escapes as
++  // a host SIGSEGV (observed as SEGV_ACCERR on a ---p FEXMem_Lookup_L1 page)
++  // before the faulting page is ever committed.  Commit the virtual range up
++  // front; Wine still relies on the host kernel's demand paging, so untouched
++  // pages do not become RSS.
+   PagePointer = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, true));
+ #else
+   PagePointer = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, false));
+@@ -90,8 +92,8 @@
+ void LookupCache::ClearL2Cache(const FEXCore::LookupCacheBaseLockToken& lk) {
+   // Clear out the page memory
+   // PagePointer and PageMemory are sequential with each other. Clear both at once.
+-#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
+-  // Keep the WOW64 mapping committed for the same reason as in the constructor.
++#if defined(_WIN32)
++  // Keep the mapping committed for the same reason as in the constructor.
+   FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer),
+                                       ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE, true);
+ #else
+@@ -103,7 +105,7 @@
+ 
+ void LookupCache::ClearThreadLocalCaches(const LookupCacheWriteLockToken&) {
+   // Clear L1 and L2 by clearing the full cache.
+-#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++#if defined(_WIN32)
+   FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer), TotalCacheSize, true);
+ #else
+   FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer), TotalCacheSize, false);
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -257,10 +257,11 @@
+           // Madvise the entries that we are dropping. Gives the memory back to the OS.
+           LookupCacheEntry* FirstZeroL1Entry = &reinterpret_cast<LookupCacheEntry*>(L1Pointer)[CurrentL1Entries];
+           size_t ZeroMemorySize = (MAX_L1_ENTRIES - CurrentL1Entries) * sizeof(LookupCacheEntry);
+-#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
+-          // Wine-OHOS does not route native WOW64 CPU-DLL lookup-cache faults
+-          // back to FEX's overcommit handler. Keep dropped L1 pages committed
+-          // so a later dynamic cache expansion can access them directly.
++#if defined(_WIN32)
++          // Wine-OHOS does not route native CPU-DLL lookup-cache faults (WOW64
++          // or ARM64EC) back to FEX's overcommit handler. Keep dropped L1 pages
++          // committed so a later dynamic cache expansion can access them without
++          // faulting on a PROT_NONE page.
+           FEXCore::Allocator::VirtualDontNeed(FirstZeroL1Entry, ZeroMemorySize, true);
+ #else
+           FEXCore::Allocator::VirtualDontNeed(FirstZeroL1Entry, ZeroMemorySize, false);

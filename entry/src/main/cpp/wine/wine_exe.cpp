@@ -6,6 +6,7 @@
 #include "graphics/graphics_broker.h"
 #include "compositor/wayland_server.h"
 #include "wine_constants.h"
+#include "container_session.h"
 #include "wine_env.h"
 #include "proc/wine_process.h"
 
@@ -183,8 +184,22 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     if (options.windowsExePath.empty() || HasUnsafeProtocolChar(options.windowsExePath)) return -1;
     for (const std::string& arg : options.argv) if (HasUnsafeProtocolChar(arg)) return -1;
 
+    const winehua::ContainerSession session = options.containerId.empty()
+        ? winehua::GetActiveContainerSession()
+        : [&options]() {
+            winehua::ContainerSession resolved;
+            if (!winehua::ResolveContainerSession(options.containerId, &resolved)) return winehua::ContainerSession{};
+            return resolved;
+        }();
+    if (session.id.empty() ||
+        (!options.containerId.empty() && !winehua::IsActiveContainerSession(session.id))) {
+        OH_LOG_ERROR(LOG_APP, "[WineProgram] rejected inactive or invalid container=%{public}s",
+                     options.containerId.c_str());
+        return -1;
+    }
+
     const std::string binDir = WINE_RUNTIME_BIN;
-    const std::string prefixDir = WINE_PREFIX;
+    const std::string prefixDir = session.prefixDir;
     const std::string homeDir = gBrokerHomeDir.empty() ?
         "/storage/Users/currentUser/Download" : gBrokerHomeDir;
     const std::string sockDir = prefixDir;
@@ -213,7 +228,7 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     policy.dxvkBackend = options.dxvkBackend;
     // DXVK 稳定化默认值 (DXVK_LOG/perf profile/WEAKBARRIER clamp 等) 与桌面
     // 会话链同一来源 (AppendStableDxvkEnv) — 历史上由 ArkTS
-    // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK/VKD3D 后端
+    // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK 后端
     // overlay 内 early-return, extraEnv 最后写入仍可压过产品默认。
     policy.applyStableOverlay = true;
     policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
@@ -223,8 +238,8 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     /* desktop 模式: 将进程接入 explorer 创建的 shell desktop, 使其窗口
      * 出现在任务栏 (与 RunWineExe 路径对称, 重构 runWineProgram 时遗漏). */
     /* DXVK is a managed WineHua runtime overlay, never a game-provided DLL. */
-    if (options.d3dBackend.rfind("dxvk_", 0) == 0 ||
-        options.d3dBackend == "vkd3d_limited_500k")
+    if (options.d3dBackend == "dxvk_legacy" ||
+        options.d3dBackend == "dxvk_modern_2_6")
         OH_LOG_INFO(LOG_APP, "[WineProgram] managed D3D backend=%{public}s",
                     options.d3dBackend.c_str());
     // WINEHUA_WINE_UNIX_ARCH 描述 wine unix 侧架构 (= WINE_ARCH), 方案①② 为
@@ -336,8 +351,7 @@ int SpawnWineProgram(const ProgramOptions& options)
 // 此兜底, 避免各调用方手写一份换算 (dev UI 曾各自实现一份)。
 static std::string DerivePresentBackend(const std::string& d3dBackend)
 {
-    const bool gpuBackend = d3dBackend.rfind("dxvk_", 0) == 0 ||
-                            d3dBackend == "vkd3d_limited_500k";
+    const bool gpuBackend = d3dBackend == "dxvk_legacy" || d3dBackend == "dxvk_modern_2_6";
     return gpuBackend ? "venus_broker_present" : "virgl_compositor";
 }
 
@@ -355,13 +369,13 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     ProgramOptions options;
     options.windowsExePath = GetString(env, args[0], "windowsExePath");
     options.workingDirectory = GetString(env, args[0], "workingDirectory");
+    options.containerId = GetString(env, args[0], "containerId");
     options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_legacy");
-    const std::string impliedDxvkBackend = options.d3dBackend == "dxvk_modern_2_6"
-        ? "dxvk_modern_2_6" : "dxvk_legacy";
-    options.dxvkBackend = GetString(env, args[0], "dxvkBackend", impliedDxvkBackend.c_str());
-    if (options.dxvkBackend != "dxvk_legacy" &&
-        options.dxvkBackend != "dxvk_modern_2_6")
-        options.dxvkBackend = impliedDxvkBackend;
+    if (options.d3dBackend != "dxvk_legacy" && options.d3dBackend != "dxvk_modern_2_6" &&
+        options.d3dBackend != "wined3d")
+        options.d3dBackend = "dxvk_legacy";
+    options.dxvkBackend = options.d3dBackend == "dxvk_modern_2_6" ?
+        "dxvk_modern_2_6" : "dxvk_legacy";
     options.presentBackend = GetString(env, args[0], "presentBackend");
     if (options.presentBackend.empty())
         options.presentBackend = DerivePresentBackend(options.d3dBackend);

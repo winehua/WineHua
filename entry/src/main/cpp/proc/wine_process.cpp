@@ -1,6 +1,7 @@
 #include "wine_process.h"
 #include "wine/wine_constants.h"
 #include "phone_adapter/phone_adapter.h"
+#include "cef_utility_probe.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -442,20 +443,23 @@ void sigchld_handler(int) {
 //    explorer 先走 wineserver 后走): 正常会话终结不是崩溃 — 扫尾
 //    残余进程 (winehua_keep 等) 后按正常停止发 state:stopped
 // 3) 其余 = 非预期死亡: 报 state:failed:wineserver (引擎故障)
-static void HandleProcessDeath(pid_t pid, int exitCode = -1, const char* source = "unknown") {
+static void HandleProcessDeath(pid_t pid, int reason = -1, const char* source = "unknown") {
+    // CEF 子进程生命周期观测: NCP 回调带来的 signal (或 ProcMon 的 -1) 就是
+    // "exit 0 还是被信号打死" 的答案, 与创建侧配对写 CEF-UTILITY-EXIT。
+    WineHuaCefUtilityProbeNoteExit((int32_t)pid, reason);
     {
         std::lock_guard<std::mutex> lock(gExitWaitMutex);
         gExitedPids.insert(pid);
     }
     WineProcessEntry entry;
     if (QueryProcessSnapshot(pid, &entry)) {
-        OH_LOG_WARN(LOG_APP, "[ProcMon] pid=%{public}d no longer alive name=%{public}s exit=%{public}d source=%{public}s",
-                    pid, entry.exeBasename.c_str(), exitCode, source);
+        OH_LOG_WARN(LOG_APP, "[ProcMon] pid=%{public}d no longer alive name=%{public}s reason=%{public}d(0x%{public}x) source=%{public}s",
+                    pid, entry.exeBasename.c_str(), reason, (unsigned int)reason, source);
     } else {
-        OH_LOG_WARN(LOG_APP, "[ProcMon] pid=%{public}d no longer alive (not in registry) exit=%{public}d source=%{public}s",
-                    pid, exitCode, source);
+        OH_LOG_WARN(LOG_APP, "[ProcMon] pid=%{public}d no longer alive (not in registry) reason=%{public}d(0x%{public}x) source=%{public}s",
+                    pid, reason, (unsigned int)reason, source);
     }
-    RemoveProcess(pid, exitCode, source);
+    RemoveProcess(pid, reason, source);
     if (gStateTsfn) {
         char msg[64];
         snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
@@ -482,6 +486,8 @@ static void HandleProcessDeath(pid_t pid, int exitCode = -1, const char* source 
 // 退出时回调本函数 (pid + signal)。这是退出检测的权威信号 — ProcMon 轮询
 // 的 /proc 判活在沙箱里对 NCP 不可靠 (可能全部误判), 只保留 zombie 感知。
 static void OnNcpChildExit(int32_t pid, int32_t signal) {
+    OH_LOG_ERROR(LOG_APP, "[ProcReg] NCP child pid=%{public}d terminated signal/reason=%{public}d(0x%{public}x) name=%{public}s",
+                 pid, signal, (unsigned int)signal, strsignal(signal));
     HandleProcessDeath((pid_t)pid, signal, "ncp-exit");
 }
 

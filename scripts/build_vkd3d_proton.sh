@@ -146,7 +146,7 @@ cat > "$OUTPUT_ROOT/manifest.json" <<EOF
 {
   "schemaVersion": 1,
   "profile": "limited-500k",
-  "defaultEnabled": true,
+  "defaultEnabled": false,
   "architecture": "x86_64-windows",
   "version": "2.6",
   "upstreamCommit": "$base_commit",

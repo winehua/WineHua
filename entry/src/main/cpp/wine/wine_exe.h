@@ -13,6 +13,9 @@ struct ProgramOptions {
     std::vector<std::string> argv;
     std::vector<std::string> environment;
     std::string workingDirectory;
+    // Empty selects the currently active Wine container. The native boundary
+    // resolves this identifier to a private prefix and never accepts a path.
+    std::string containerId;
     std::string d3dBackend = "dxvk_legacy";
     std::string dxvkBackend = "dxvk_legacy";
     std::string presentBackend;  // 空 = 按 d3dBackend 派生 (DerivePresentBackend)

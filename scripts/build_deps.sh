@@ -71,9 +71,9 @@ fi
 # Native compositor 依赖 (wayland-server for HAP) 在 build.sh 中按架构单独调用:
 #   bash scripts/build_native.sh
 
-# Wine Mono (.NET 运行时) — 预编译 MSI, 默认启用 (增加 ~80MB)
-# 设置 BUILD_WINE_MONO=0 跳过
-if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
+# Wine Mono (.NET runtime) is opt-in. Its first-launch installer requires a
+# device-side interaction flow, so the direct-game package leaves it out.
+if [ "${BUILD_WINE_MONO:-0}" = "1" ]; then
     # 必须与 mscoree 侧期望一致: appwiz.cpl addons.c MONO_VERSION /
     # mscoree_private.h WINE_MONO_VERSION 均为 11.1.0. install_addon
     # 按 addon->file_name 精确匹配, 版本不一致 → 找不到 msi → 弹框卡死

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "hostId": "wrapper-test",
+  "origin": "https://steam-host.test:8443",
+  "bind": "127.0.0.1",
+  "port": 8443,
+  "dataDir": "state",
+  "certificate": "tls-origin-cert.pem",
+  "privateKey": "tls-origin-key.pem",
+  "steamcmd": "steamcmd-fixture",
+  "steamUser": "host-account",
+  "apps": {
+    "480": {
+      "name": "Wrapper test policy",
+      "launchExeRelativePath": "game.exe",
+      "workingDirectoryRelativePath": ".",
+      "launchReady": false
+    }
+  }
+}

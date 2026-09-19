@@ -80,9 +80,7 @@ void InputQueue::EnqueueModifiers(uint32_t depressed, uint32_t latched,
 void InputQueue::EnqueueAxis(int axis, int32_t axis_value, uint32_t tl) {
     {
         std::lock_guard<std::mutex> lk(queueMutex_);
-        // 诊断字段: InjectPointerAxis 与 motion/button 一致广播到全部 pointer
-        // 资源, 消费侧不读 tl (wine 按 per-process focused_hwnd 消化 axis,
-        // 谁收到 enter 谁响应 — 见 4B 台账"注入端与 pointer 资源结论")
+        // tl 仅用于诊断；消费侧按当前 pointer focus 的 client 投递。
         queue_.push_back({Event::PTR_AXIS, tl, nullptr, 0, 0, 0, 0,
                           axis, axis_value, 0, 0, 0, 0});
     }

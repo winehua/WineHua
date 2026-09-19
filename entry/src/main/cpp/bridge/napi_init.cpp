@@ -11,6 +11,7 @@
 #include "wine/wine_constants.h"
 #include "wine_scheme.h"
 #include "wine/wine_env.h"
+#include "wine/container_session.h"
 #include "proc/wine_process.h"
 #include "wine/wine_launch.h"
 #include "wine/wine_exe.h"
@@ -35,6 +36,7 @@
 #include <thread>
 #include <atomic>
 #include <algorithm>
+#include <vector>
 #include <dlfcn.h>
 
 #undef LOG_TAG
@@ -317,8 +319,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8] = {};
+    size_t argc = 9;
+    napi_value args[9] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -334,21 +336,51 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         napi_get_value_string_utf8(env, args[4], buf, sizeof(buf), nullptr);
         p->homeDir = buf;
     }
-    p->prefixDir = WINE_PREFIX;
+    std::string containerId = winehua::kDefaultContainerId;
+    if (argc >= 9) {
+        napi_valuetype type;
+        size_t length = 0;
+        if (napi_typeof(env, args[8], &type) != napi_ok || type != napi_string ||
+            napi_get_value_string_utf8(env, args[8], nullptr, 0, &length) != napi_ok ||
+            length == 0 || length > 64) {
+            delete p;
+            napi_value failed;
+            napi_create_int32(env, -1, &failed);
+            return failed;
+        }
+        std::vector<char> value(length + 1);
+        if (napi_get_value_string_utf8(env, args[8], value.data(), value.size(), &length) != napi_ok) {
+            delete p;
+            napi_value failed;
+            napi_create_int32(env, -1, &failed);
+            return failed;
+        }
+        containerId.assign(value.data(), length);
+    }
+    winehua::ContainerSession container;
+    if (!winehua::SetActiveContainerSession(containerId, &container)) {
+        OH_LOG_ERROR(LOG_APP, "[Launch] invalid container id=%{public}s", containerId.c_str());
+        delete p;
+        napi_value failed;
+        napi_create_int32(env, -1, &failed);
+        return failed;
+    }
+    p->containerId = container.id;
+    p->prefixDir = container.prefixDir;
+    // Prefix and socket must be derived together.  Passing an arbitrary
+    // socket path here would split the Wine child from its session runtime.
+    p->sockPath = container.waylandSocket;
     if (argc >= 6) {
         char d3dBackend[64] = {};
         napi_get_value_string_utf8(env, args[5], d3dBackend, sizeof(d3dBackend), nullptr);
-        if (!strcmp(d3dBackend, "wined3d") || !strncmp(d3dBackend, "dxvk_", 5) ||
-            !strcmp(d3dBackend, "vkd3d_limited_500k"))
+        if (!strcmp(d3dBackend, "wined3d") || !strcmp(d3dBackend, "dxvk_legacy") ||
+            !strcmp(d3dBackend, "dxvk_modern_2_6"))
             p->d3dBackend = d3dBackend;
     }
-    if (p->d3dBackend == "dxvk_modern_2_6")
-        p->dxvkBackend = "dxvk_modern_2_6";
     if (argc >= 7) {
         char dxvkBackend[64] = {};
         napi_get_value_string_utf8(env, args[6], dxvkBackend, sizeof(dxvkBackend), nullptr);
-        if (!strcmp(dxvkBackend, "dxvk_legacy") ||
-            !strcmp(dxvkBackend, "dxvk_modern_2_6"))
+        if (!strcmp(dxvkBackend, "dxvk_legacy") || !strcmp(dxvkBackend, "dxvk_modern_2_6"))
             p->dxvkBackend = dxvkBackend;
     }
     if (argc >= 8) {
@@ -364,7 +396,8 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
     }
 
     OH_LOG_WARN(LOG_APP,
-                "[Launch] exe=%{public}s sock=%{public}s lib=%{public}s home=%{public}s prefix=%{public}s (async)",
+                "[Launch] container=%{public}s exe=%{public}s sock=%{public}s lib=%{public}s home=%{public}s prefix=%{public}s (async)",
+                p->containerId.c_str(),
                 p->exePath.c_str(), p->sockPath.c_str(), p->libPath.c_str(), p->homeDir.c_str(),
                 p->prefixDir.c_str());
     OH_LOG_WARN(LOG_APP, "[Launch] desktop D3D=%{public}s DXVK=%{public}s lang=%{public}s",
@@ -394,7 +427,31 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
 
 // -- NAPI: checkWinePrefix -- 检测 .wine 是否已完整初始化 --
 static napi_value CheckWinePrefix(napi_env env, napi_callback_info info) {
-    const std::string prefix = WINE_PREFIX;
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string containerId = winehua::kDefaultContainerId;
+    if (argc >= 1) {
+        size_t length = 0;
+        napi_valuetype type;
+        if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_string ||
+            napi_get_value_string_utf8(env, args[0], nullptr, 0, &length) != napi_ok ||
+            length == 0 || length > 64) {
+            napi_value invalid;
+            napi_get_boolean(env, false, &invalid);
+            return invalid;
+        }
+        std::vector<char> value(length + 1);
+        napi_get_value_string_utf8(env, args[0], value.data(), value.size(), &length);
+        containerId.assign(value.data(), length);
+    }
+    winehua::ContainerSession container;
+    if (!winehua::ResolveContainerSession(containerId, &container)) {
+        napi_value invalid;
+        napi_get_boolean(env, false, &invalid);
+        return invalid;
+    }
+    const std::string& prefix = container.prefixDir;
     const std::string initMarker = prefix + "/.winehua-init-in-progress";
     bool ok = IsWinePrefixInitialized(prefix)
         && access(initMarker.c_str(), F_OK) != 0;
@@ -439,8 +496,33 @@ static bool RmDir(const char* path) {
 }
 
 static napi_value ResetWinePrefix(napi_env env, napi_callback_info info) {
-    const char* prefix = WINE_PREFIX;
-    OH_LOG_WARN(LOG_APP, "[NAPI] resetWinePrefix called prefix=%{public}s", prefix);
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string containerId = winehua::kDefaultContainerId;
+    if (argc >= 1) {
+        size_t length = 0;
+        napi_valuetype type;
+        if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_string ||
+            napi_get_value_string_utf8(env, args[0], nullptr, 0, &length) != napi_ok ||
+            length == 0 || length > 64) {
+            napi_value invalid;
+            napi_get_boolean(env, false, &invalid);
+            return invalid;
+        }
+        std::vector<char> value(length + 1);
+        napi_get_value_string_utf8(env, args[0], value.data(), value.size(), &length);
+        containerId.assign(value.data(), length);
+    }
+    winehua::ContainerSession container;
+    if (!winehua::ResolveContainerSession(containerId, &container)) {
+        napi_value invalid;
+        napi_get_boolean(env, false, &invalid);
+        return invalid;
+    }
+    const char* prefix = container.prefixDir.c_str();
+    OH_LOG_WARN(LOG_APP, "[NAPI] resetWinePrefix called container=%{public}s prefix=%{public}s",
+                container.id.c_str(), prefix);
     KillAllProcesses();
     bool ok = RmDir(prefix);
     if (mkdir(prefix, 0755) != 0 && errno != EEXIST) {

@@ -1,0 +1,85 @@
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -48,6 +48,7 @@ $end_info$
+ #include <type_traits>
+ #include <atomic>
+ #include <mutex>
++#include <optional>
+ #include <utility>
+ #include <unordered_map>
+ #include <ntstatus.h>
+@@ -334,9 +335,11 @@ WOW64_CONTEXT ReconstructWowContext(TLS TLS, CONTEXT* Context) {
+ }
+ 
+ static std::optional<FEX::Windows::TSOHandlerConfig> HandlerConfig;
++static std::atomic<uint32_t> UnalignedEventCount {};
++static std::atomic<uint32_t> UnalignedFailureCount {};
+ 
+-bool HandleUnalignedAccess(TLS TLS, CONTEXT* Context) {
++std::optional<int32_t> HandleUnalignedAccess(TLS TLS, CONTEXT* Context) {
+   auto Thread = TLS.ThreadState();
+   if (!Thread->CTX->IsAddressInCodeBuffer(Thread, Context->Pc)) {
+-    return false;
++    return std::nullopt;
+   }
+ 
+   const auto Result =
+@@ -344,7 +347,7 @@ bool HandleUnalignedAccess(TLS TLS, CONTEXT* Context) {
+     FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(Thread, HandlerConfig->GetUnalignedHandlerType(), Context->Pc, &Context->X0);
+   Context->Pc += Result.value_or(0);
+-  return Result.has_value();
++  return Result;
+ }
+ 
+ void LockJITContext(TLS TLS) {
+@@ -934,15 +937,49 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
+     }
+   }
+ 
+-  if (!Thread || !IsAddressInJit(Context->Pc)) {
++  const bool IsJIT = Thread && IsAddressInJit(Context->Pc);
++  if (!Thread || !IsJIT) {
++    if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT) {
++      const uint32_t Event = Context::UnalignedEventCount.fetch_add(1, std::memory_order_relaxed);
++      const uint32_t Failure = Context::UnalignedFailureCount.fetch_add(1, std::memory_order_relaxed);
++      if (Event < 64 || (Event < 16384 && (Event % 256) == 0) || Failure < 64) {
++        const auto Output = fextl::fmt::format(
++          "[FEX-WOW64-UNALIGNED] pid={} tid={} event={} failure={} code=0x{:08x} thread={} config={} pc=0x{:x} opcode=unread jit={} handled=false skip=-1 next_pc=0x{:x}\n",
++          GetCurrentProcessId(), GetCurrentThreadId(), Event, Failure, Exception->ExceptionCode, Thread != nullptr,
++          Context::HandlerConfig.has_value(), Context->Pc, IsJIT, Context->Pc);
++        __wine_dbg_output(Output.c_str());
++      }
++    }
+     return false;
+   }
+ 
+   FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSIGBUSCount, 1);
+-  if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT && Context::HandleUnalignedAccess(TLS, Context)) {
+-    LogMan::Msg::DFmt("Handled unaligned atomic: new pc: {:X}", Context->Pc);
+-    return true;
++  if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT) {
++    const uint64_t OldPC = Context->Pc;
++    const uint32_t Opcode = *reinterpret_cast<const uint32_t*>(OldPC);
++    const auto Result = Context::HandleUnalignedAccess(TLS, Context);
++    const uint32_t Event = Context::UnalignedEventCount.fetch_add(1, std::memory_order_relaxed);
++    uint32_t Failure = UINT32_MAX;
++    if (!Result) {
++      Failure = Context::UnalignedFailureCount.fetch_add(1, std::memory_order_relaxed);
++    }
++
++    const bool ShouldLog = Event < 64 || (Event < 16384 && (Event % 256) == 0) || (!Result && Failure < 64);
++    if (ShouldLog) {
++      const auto Output = fextl::fmt::format(
++        "[FEX-WOW64-UNALIGNED] pid={} tid={} event={} failure={} code=0x{:08x} thread=true config={} pc=0x{:x} opcode=0x{:08x} jit=true handled={} skip={} next_pc=0x{:x}\n",
++        GetCurrentProcessId(), GetCurrentThreadId(), Event, Failure, Exception->ExceptionCode, Context::HandlerConfig.has_value(), OldPC, Opcode,
++        Result.has_value(), Result.value_or(-1), Context->Pc);
++      __wine_dbg_output(Output.c_str());
++    }
++
++    if (Result) {
++      return true;
++    }
+   }
+ 
+   LogMan::Msg::DFmt("Reconstructing context");

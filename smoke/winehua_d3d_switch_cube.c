@@ -994,13 +994,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         }
         return 0;
     case WM_CLOSE:
-        /* The Harmony automation surface can send a close while the window is
-         * still being configured. Keep the bounded smoke alive long enough
-         * to publish and capture its fixed frame. */
-        if (g_app.automation && (!g_app.duration_ms ||
-            GetTickCount64() - g_app.run_start_ms < g_app.duration_ms))
-            return 0;
-        break;
+        g_app.running = 0;
+        PostQuitMessage(0);
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;

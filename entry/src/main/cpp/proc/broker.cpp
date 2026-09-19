@@ -15,6 +15,7 @@
 #include "wine/wine_constants.h"
 #include "audio/audio_broker.h"
 #include "wine_process.h"
+#include "cef_utility_probe.h"
 // 由 LaunchPadMode 在启动 Broker 前设置
 std::string gBrokerHomeDir;
 std::string gBrokerPrefixDir;
@@ -36,6 +37,28 @@ std::string gBrokerPrefixDir;
 #define LOG_DOMAIN 0x2330
 #define LOG_TAG "WL_Broker"
 #include <hilog/log.h>
+
+// SO_PEERCRED: 取出连接方 (调用 CreateProcess 的那个 Wine 进程) 的本机 pid。
+// 这是 "父子关系" 的权威来源 —— broker 自己只知道它替谁启了子进程, 日志里
+// [PROC-SPAWN] parentHostPid 打的是 broker 自身 pid, 不能用来画进程树。
+// OHOS 走 Linux 内核, 常量固定为 17; 头文件缺失时兜底。
+#ifndef SO_PEERCRED
+#define SO_PEERCRED 17
+#endif
+
+struct WineHuaUCred {
+    pid_t pid;
+    uid_t uid;
+    gid_t gid;
+};
+
+static int32_t QueryPeerPid(int connFd) {
+    WineHuaUCred cred;
+    socklen_t len = sizeof(cred);
+    memset(&cred, 0, sizeof(cred));
+    if (getsockopt(connFd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) return -1;
+    return (int32_t)cred.pid;
+}
 
 static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
 
@@ -110,6 +133,10 @@ static void HandleRequest(int conn_fd)
         return;
     }
     buf[n] = '\0';
+
+    // 连接方 = 发起 CreateProcess 的 Wine 进程 (broker 只是代跑 NCP API)。
+    // CEF utility 生命周期观测需要它来回答 "谁创建了这个子进程"。
+    const int32_t peerPid = QueryPeerPid(conn_fd);
 
     // 2) 解析 "SPAWN\n{entryParams}\n[FDS:name0,name1,...\n]"
     //    entryParams 到第一个 '\n' 为止; 其后是可选段: FDS: (逗号分隔 fd 名)。
@@ -230,6 +257,11 @@ static void HandleRequest(int conn_fd)
 
     OH_LOG_INFO(LOG_APP, "[Broker] StartNativeChildProcess ret=%{public}d childPid=%{public}d",
                 ret, childPid);
+    // TEMP-DIAG(PROC-SPAWN): 谁 fork 了谁。Steam/CEF 这类多进程客户端只有一个父进程
+    // 会拉起一串子进程, 崩溃归属必须能对上 parentHostPid -> childHostPid。
+    OH_LOG_INFO(LOG_APP,
+                "[PROC-SPAWN] parentHostPid=%{public}d childHostPid=%{public}d createStatus=%{public}d exe=%{public}s",
+                getpid(), childPid, ret, ParseProcessPath(fullParams.c_str()).c_str());
 
     if (ret == 0 && childPid > 0) {
         // 全量登记: App 侧主动启动 (SpawnViaBroker) 与 wine 内部自启
@@ -237,6 +269,9 @@ static void HandleRequest(int conn_fd)
         // 统一登记使 explorer 里双击的 exe 出现在任务列表; App 侧调用者随后
         // 会用更准确的路径 AddProcess 覆盖 (AddProcess 同 pid 幂等)。
         AddProcess(childPid, ParseProcessPath(fullParams.c_str()), -1);
+        // CEF 子进程生命周期观测: 记录这个 pid 是谁 (browser/network.mojom.*/…) 与
+        // 谁创建的, 等 NCP 退出回调回来时配对算 lifetimeMs/signal。
+        WineHuaCefUtilityProbeNoteSpawn(childPid, peerPid, fullParams.c_str());
     }
 
     free(entryParamsCopy);

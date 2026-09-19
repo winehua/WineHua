@@ -189,11 +189,55 @@ void UpsertEnvLine(std::vector<std::string>& env, const std::string& line)
     env.push_back(line);
 }
 
+void AppendVulkanRuntimeEnv(std::vector<std::string>& env,
+                            const std::string& binDir)
+{
+    const std::string guestVulkanRoot = binDir + "/guest_vulkan";
+    const std::string guestVulkanIcd = guestVulkanRoot +
+        "/share/vulkan/icd.d/venus_icd." WINE_WINE_ARCH ".json";
+
+    UpsertEnvLine(env, "WINEHUA_VULKAN_RUNTIME=1");
+    UpsertEnvLine(env, "WINEHUA_VULKAN_LOADER_ARCH=" WINE_WINE_ARCH);
+    UpsertEnvLine(env, "WINEHUA_VENUS_ICD_ARCH=" WINE_WINE_ARCH);
+    UpsertEnvLine(env, "VN_DEBUG=vtest");
+    UpsertEnvLine(env,
+        "VN_PERF=no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring");
+    UpsertEnvLine(env, "VN_WINEHUA_STRONG_RING_BARRIER=1");
+    UpsertEnvLine(env, "VN_WINEHUA_REMOTE_MEMORY_SYNC=1");
+
+#if defined(__aarch64__) && defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    const std::string guestVulkanLib = guestVulkanRoot + "/lib";
+    const std::string box64LibraryPath = guestVulkanLib + ":" +
+        binDir + "/guest_gfx/lib:" + binDir + ":" +
+        binDir + "/" WINE_UNIX_SUBDIR + ":" +
+        std::string(WINE_RUNTIME_ROOT) + "/lib/x86_64";
+    UpsertEnvLine(env, "USE_LIBBOX64=1");
+    UpsertEnvLine(env, "BOX64_LD_LIBRARY_PATH=" + box64LibraryPath);
+    UpsertEnvLine(env,
+        "BOX64_EMULATED_LIBS=libvulkan.so:libvulkan.so.1:"
+        "libEGL.so:libEGL.so.1:libGLESv2.so:libGLESv2.so.2:"
+        "libwayland-client.so:libwayland-client.so.0:libdrm.so:libdrm.so.2:libffi.so:libffi.so.8");
+#endif
+
+#ifdef __aarch64__
+    if (access(guestVulkanIcd.c_str(), F_OK) == 0)
+#endif
+    {
+        UpsertEnvLine(env, "VK_DRIVER_FILES=" + guestVulkanIcd);
+        UpsertEnvLine(env, "VK_ICD_FILENAMES=" + guestVulkanIcd);
+    }
+}
+
 void AppendD3dBackendEnv(std::vector<std::string>& env,
                          const std::string& d3dBackend,
                          const std::string& dxvkBackend,
                          const std::string& binDir)
 {
+    if (d3dBackend == "vkd3d_limited_500k")
+    {
+        OH_LOG_WARN(LOG_APP, "[WineEnv] VKD3D profile is packaged but disabled");
+        return;
+    }
     if (d3dBackend == "vkd3d_limited_500k")
     {
         const bool modern26 = dxvkBackend == "dxvk_modern_2_6";

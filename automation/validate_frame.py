@@ -50,6 +50,20 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
         "blue": (b > 160) & (r < 130) & (g < 140),
         "yellow": (r > 170) & (g > 140) & (b < 120),
     }
+    # The Wine desktop itself is blue and can dwarf the blue test quadrant.
+    # Red, green and yellow do not collide with the desktop; together they
+    # span both axes of every accepted rotation and define the test frame ROI.
+    anchor = masks["red"] | masks["green"] | masks["yellow"]
+    if anchor.any():
+        roi_min_x = int(xgrid[anchor].min())
+        roi_max_x = int(xgrid[anchor].max())
+        roi_min_y = int(ygrid[anchor].min())
+        roi_max_y = int(ygrid[anchor].max())
+        roi = ((xgrid >= roi_min_x) & (xgrid <= roi_max_x) &
+               (ygrid >= roi_min_y) & (ygrid <= roi_max_y))
+        masks = {name: mask & roi for name, mask in masks.items()}
+    else:
+        roi_min_x = roi_min_y = roi_max_x = roi_max_y = -1
     sample_count = math.ceil(width / step) * math.ceil(height / step)
     minimum = max(80, int(sample_count * 0.003))
 
@@ -105,6 +119,12 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
         "width": width,
         "height": height,
         "minimumSamplesPerColor": minimum,
+        "regionOfInterest": {
+            "x": roi_min_x,
+            "y": roi_min_y,
+            "width": roi_max_x - roi_min_x + 1 if roi_min_x >= 0 else 0,
+            "height": roi_max_y - roi_min_y + 1 if roi_min_y >= 0 else 0,
+        },
         "detectedTransform": detected_transform,
         "quadrants": quadrants,
         "centroids": centroids,

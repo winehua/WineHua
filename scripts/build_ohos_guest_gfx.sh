@@ -710,6 +710,7 @@ INSTALL_ROOT="$(normalize_host_path_input "$INSTALL_ROOT")"
 [ -d "$SOURCE_ROOT" ] || err "Mesa source root does not exist: $SOURCE_ROOT (check thirdparty/mesa submodule)"
 [ -f "$SOURCE_ROOT/meson.build" ] || err "Mesa source root is not valid (meson.build missing): $SOURCE_ROOT"
 ensure_mesa_source_layout "$SOURCE_ROOT"
+bash "$SCRIPT_DIR/apply_mesa_ohos_patches.sh" "$SOURCE_ROOT"
 
 if [ "$CLEAN" -eq 1 ]; then
     remove_tree "$BUILD_ROOT"

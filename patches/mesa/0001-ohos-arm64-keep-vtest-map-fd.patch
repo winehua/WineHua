@@ -1,0 +1,33 @@
+diff --git a/src/virtio/vulkan/vn_renderer_vtest.c b/src/virtio/vulkan/vn_renderer_vtest.c
+index 3f67f27fdc6..ee3f32d5f9c 100644
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -78,7 +78,7 @@ struct vtest_bo {
+    struct vn_renderer_bo base;
+ 
+    uint32_t blob_flags;
+-   /* might be closed after mmap */
++   /* Retained on OHOS ARM64 for Wine's WoW64 shared-map alias. */
+    int res_fd;
+ };
+ 
+@@ -814,8 +814,17 @@ vtest_bo_map(struct vn_renderer *renderer, struct vn_renderer_bo *_bo)
+                 bo->res_fd, bo->base.mmap_size, strerror(errno));
+       } else {
+          bo->base.mmap_ptr = ptr;
+-         /* we don't need the fd anymore */
+-         if (!shareable) {
++         /* Native ARM64 Wine may need a second, low-address MAP_SHARED
++          * view after vkMapMemory returns. Keep the backing fd until BO
++          * destruction so it can do this without privileged map_files
++          * access or a whole-allocation CPU copy at every submission.
++          * vtest_bo_destroy closes this fd on every normal destroy path. */
++#if defined(__aarch64__) && defined(__OHOS__)
++         const bool keep_wow64_map_fd = true;
++#else
++         const bool keep_wow64_map_fd = false;
++#endif
++         if (!shareable && !keep_wow64_map_fd) {
+             close(bo->res_fd);
+             bo->res_fd = -1;
+          }

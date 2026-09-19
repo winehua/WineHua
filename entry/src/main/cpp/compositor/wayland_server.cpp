@@ -7,6 +7,7 @@
 #include "common/fps_counter.h"
 #include "proc/wine_process.h"
 #include "compositor/frame/debug_assert.h"
+#include "frame/surface_data.h"   // window registry probe (P0-1, 2026-09-17)
 #include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
 #include <cstring>
@@ -134,6 +135,49 @@ void WaylandServer::EventLoop() {
             size_t renderers = PluginManager::GetInstance()->GetRendererCount();
             OH_LOG_INFO(LOG_APP, "[WL-STAT] toplevels=%{public}zu surfaces=%{public}zu renderers=%{public}zu",
                         toplevelMgr_.ToplevelResourceCount(), toplevelMgr_.ToplevelSurfaceCount(), renderers);
+        }
+        // P0-1 WindowRegistry probe (2026-09-17, diagnostics only):
+        // dump the Wayland-side window authority every 7.5s so it can be compared
+        // with producer reports and with the Wine-side identity probe.
+        if (tick % 150 == 0) {
+            auto lk = toplevelMgr_.Lock();
+            const uint32_t rootId = desktopCompositor_.DesktopRootToplevelId();
+            for (const auto& [key, res] : toplevelMgr_.SurfaceResources())
+            {
+                if (!res) continue;
+                auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(res));
+                if (!sd) continue;
+                const char* role = sd->hasToplevel ? "toplevel"
+                                 : (sd->isSubsurface ? "subsurface" : "none");
+                int w = sd->w, h = sd->h, x = 0, y = 0;
+                bool visible = false, fullscreen = false;
+                if (sd->hasToplevel)
+                {
+                    if (const auto* st = toplevelMgr_.FindToplevelLocked(sd->toplevelId))
+                    {
+                        x = st->X();
+                        y = st->Y();
+                        w = st->Width();
+                        h = st->Height();
+                        visible = toplevelMgr_.IsToplevelVisibleLocked(sd->toplevelId, rootId);
+                        fullscreen = st->IsFullscreen();
+                    }
+                }
+                OH_LOG_INFO(LOG_APP,
+                            "WINDOW-REG: event=snapshot ownerHostPid=%{public}u wlSurfaceId=%{public}u "
+                            "toplevelId=%{public}u role=%{public}s geometry=%{public}dx%{public}d+%{public}d,%{public}d "
+                            "visible=%{public}d desktopRoot=%{public}d fullscreen=%{public}d "
+                            "serial=%{public}llu key=%{public}llu",
+                            sd->clientPid, sd->protocolId, sd->toplevelId, role, w, h, x, y,
+                            visible ? 1 : 0,
+                            (sd->hasToplevel && sd->toplevelId == rootId) ? 1 : 0,
+                            fullscreen ? 1 : 0,
+                            static_cast<unsigned long long>(
+                                sd->shmCommitSerial.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(key));
+            }
+            // P0-1 Task A: per-window 黑窗归因快照 (NoBinding/ProducerStall/CompositeStall/OK)
+            desktopCompositor_.zc().DumpWindowBindingDiag();
         }
     }
 }

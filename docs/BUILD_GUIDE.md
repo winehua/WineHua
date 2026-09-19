@@ -119,7 +119,7 @@ build/.stamps/
 | `OHOS_SDK` | `/apps/harmony/sdk/default/openharmony` | HarmonyOS SDK 路径 |
 | `BUILD_GUEST_GFX` | `1` (Makefile) / `0` (脚本直跑) | 构建 guest Mesa (VirGL) |
 | `BUILD_GUEST_VULKAN` | `1` (Makefile) | 构建 guest Vulkan 栈 (Loader + Venus ICD) |
-| `BUILD_WINE_MONO` | `0` | 设为 `1` 下载 Wine Mono (.NET 运行时) |
+| `BUILD_WINE_MONO` | `0` | 设为 `1` 构建实验性的 Wine Mono (.NET 运行时) 包 |
 | `TARGET_SDK_VERSION` | `6.1.0(23)` | HAP SDK 版本 |
 
 运行时变量（注入 Wine 子进程，见 `graphics_broker.cpp` / `wine_env.cpp` / `wine_child.cpp`）：

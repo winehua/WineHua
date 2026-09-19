@@ -1,0 +1,19 @@
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+index cc2a9f013..2a815159c 100644
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -257,7 +257,14 @@ public:
+           // Madvise the entries that we are dropping. Gives the memory back to the OS.
+           LookupCacheEntry* FirstZeroL1Entry = &reinterpret_cast<LookupCacheEntry*>(L1Pointer)[CurrentL1Entries];
+           size_t ZeroMemorySize = (MAX_L1_ENTRIES - CurrentL1Entries) * sizeof(LookupCacheEntry);
++#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++          // Wine-OHOS does not route native WOW64 CPU-DLL lookup-cache faults
++          // back to FEX's overcommit handler. Keep dropped L1 pages committed
++          // so a later dynamic cache expansion can access them directly.
++          FEXCore::Allocator::VirtualDontNeed(FirstZeroL1Entry, ZeroMemorySize, true);
++#else
+           FEXCore::Allocator::VirtualDontNeed(FirstZeroL1Entry, ZeroMemorySize, false);
++#endif
+ 
+           // Update the thread's L1 pointer mask to increase how much cache it uses.
+           // Since we're in C-code, this is safe to update here.

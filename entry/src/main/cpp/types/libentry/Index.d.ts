@@ -1,7 +1,8 @@
 export const startServer: (sockPath: string) => boolean;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
-  homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string) => number;
+  homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string,
+  containerId?: string) => number;
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;
@@ -22,6 +23,7 @@ export interface WineProgramOptions {
   argv: string[];
   environment: Record<string, string>;
   workingDirectory: string;
+  containerId?: string;
   d3dBackend: string;
   dxvkBackend?: string;
   presentBackend: string;
@@ -38,8 +40,8 @@ export interface WineProcessHandle {
 export const runWineProgram: (options: WineProgramOptions) => WineProcessHandle;
 export const queryWineProcess: (pid: number) => WineProcessHandle;
 export const terminateWineProcess: (pid: number) => boolean;
-export const checkWinePrefix: () => boolean;
-export const resetWinePrefix: () => boolean;
+export const checkWinePrefix: (containerId?: string) => boolean;
+export const resetWinePrefix: (containerId?: string) => boolean;
 export const setOutputSize: (w: number, h: number) => void;
 export const setDisplayScale: (scale: number) => void;
 export const setDesktopMode: (enabled: boolean) => void;

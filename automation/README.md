@@ -34,6 +34,9 @@ python3 automation/run_regression.py --suite d3d12 --prefix clean
 
 # 跳过构建，只跑已产出的 HAP
 python3 automation/run_regression.py --suite core --skip-build
+
+# 候选已安装时复用当前 App/NCP 进程注册表，避免覆盖安装制造孤立 wineserver
+python3 automation/run_regression.py --suite audio --prefix clean --skip-build --skip-install
 ```
 
 脚本内不写死任何环境内容：
@@ -55,6 +58,7 @@ python3 automation/run_regression.py --suite core --skip-build
 | `--long-seconds` | 3600 | `dxvk-long` / `dxvk-modern-long` 套件的墙钟目标 |
 | `--gate` | off | 入口门禁（3×reuse core + 1×clean core） |
 | `--skip-build` | off | 跳过本机 make，直接用现有 HAP |
+| `--skip-install` | off | 跳过覆盖安装，复用设备上已安装候选及当前 App/NCP 注册表 |
 | `--device-id` | 自动 | hdc target |
 | `--archive-root` | 自动 | 结果归档根 |
 | `--timeout-minutes` | 15 | 单 run 超时（dxvk-long 自动放宽） |

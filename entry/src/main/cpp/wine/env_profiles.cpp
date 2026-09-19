@@ -26,8 +26,8 @@ void AppendStableDxvkEnv(std::vector<std::string>& env,
                                 const std::string& d3dBackend,
                                 const std::string& dxvkBackend)
 {
-    const bool usesDxvkOverlay = d3dBackend.rfind("dxvk_", 0) == 0 ||
-                                 d3dBackend == "vkd3d_limited_500k";
+    const bool usesDxvkOverlay = d3dBackend == "dxvk_legacy" ||
+                                 d3dBackend == "dxvk_modern_2_6";
     if (!usesDxvkOverlay) return;
 
     // 全部 probeBase 读取集中在写入之前 (允许调用方 env 与 probeBase 别名)
@@ -46,8 +46,7 @@ void AppendStableDxvkEnv(std::vector<std::string>& env,
     };
     constexpr size_t kTraceKeyCount = sizeof(traceKeys) / sizeof(traceKeys[0]);
     std::string traceValues[kTraceKeyCount];
-    const bool traceKeysEnabled = d3dBackend == "dxvk_modern_2_6" ||
-        (d3dBackend == "vkd3d_limited_500k" && dxvkBackend == "dxvk_modern_2_6");
+    const bool traceKeysEnabled = d3dBackend == "dxvk_modern_2_6";
     if (traceKeysEnabled) {
         for (size_t i = 0; i < kTraceKeyCount; ++i)
             traceValues[i] = FindEnvValue(probeBase, traceKeys[i]);
@@ -121,18 +120,39 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
     std::vector<std::string> env = BuildWineEnv(p.sockDir, p.sockName, p.libPath,
                                                 p.binDir, p.audioBootstrapFd, p.homeDir,
                                                 p.prefixDir, p.wineLang);
-    // D3D overlay (受管 dxvk/vkd3d 运行时)
-    if (!p.d3dBackend.empty())
-        AppendD3dBackendEnv(env, p.d3dBackend, p.dxvkBackend, p.binDir);
+    // DXVK 1.10.3 is the default, DXVK 2.6.2 is opt-in, and WineD3D remains
+    // available for VirGL. VKD3D artifacts may be packaged for future work,
+    // but no caller can activate that overlay through this product path.
+    const std::string d3dBackend = p.d3dBackend == "wined3d" ||
+        p.d3dBackend == "dxvk_modern_2_6" ? p.d3dBackend : "dxvk_legacy";
+    const std::string dxvkBackend = d3dBackend == "dxvk_modern_2_6" ?
+        "dxvk_modern_2_6" : "dxvk_legacy";
+    if (!d3dBackend.empty())
+        AppendD3dBackendEnv(env, d3dBackend, dxvkBackend, p.binDir);
     // 桌面稳定化 overlay。probe 快照 = 到此处为止的 env (基线+D3D),
     // 与旧实现探测 LaunchParams.envStrs 语义一致
     if (p.applyStableOverlay)
-        AppendStableDxvkEnv(env, env, p.d3dBackend, p.dxvkBackend);
+        AppendStableDxvkEnv(env, env, d3dBackend, dxvkBackend);
     if (p.desktopShellFlag)
         UpsertEnvLine(env, "WINEHUA_DESKTOP=shell");
+    // Direct Vulkan programs intentionally keep d3dBackend=wined3d, so the
+    // D3D overlay above does not configure Venus.
+    if (FindEnvValue(p.extraEnv, "WINEHUA_VULKAN_RUNTIME") == "1" &&
+        d3dBackend != "dxvk_legacy" && d3dBackend != "dxvk_modern_2_6")
+        AppendVulkanRuntimeEnv(env, p.binDir);
     // per-app 覆盖最后写入, 优先级最高
-    for (const std::string& line : p.extraEnv)
+    for (const std::string& line : p.extraEnv) {
+        // These keys are owned by the normalized backend policy above. A
+        // caller-provided environment must not reactivate an archived VKD3D
+        // route after the policy has selected the runtime overlay.
+        if (line.rfind("WINEHUA_D3D_BACKEND=", 0) == 0 ||
+            line.rfind("WINEHUA_DXVK_ROOT=", 0) == 0 ||
+            line.rfind("WINEHUA_DXVK_PROFILE=", 0) == 0 ||
+            line.rfind("WINEHUA_DXVK_VERSION=", 0) == 0 ||
+            line.rfind("WINEHUA_VKD3D_", 0) == 0)
+            continue;
         UpsertEnvLine(env, line);
+    }
     return env;
 }
 

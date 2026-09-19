@@ -115,6 +115,10 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             self->toplevelMgr_.UnregisterSurfaceResource(surfaceKey);
             self->desktopCompositor_.RemoveZeroCopyKeyLocked(surfaceKey);
             self->desktopCompositor_.RemoveSubsurfaceLayer(r);
+            // P0-1: 窗口销毁 → 联动失效所有指向它的 PresentBinding (方案 §11)
+            if (sd)
+                self->desktopCompositor_.zc().InvalidateBindingsForWindow(
+                    sd->clientPid, sd->protocolId);
             // PC popup 记录一并清除 (client 断开时 libwayland 走此路径)
             // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域/清理顺序不变)
             if (sd) {

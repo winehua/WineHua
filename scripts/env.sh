@@ -138,9 +138,9 @@ esac
 WINE_DEVICE_ROOT="/data/storage/el2/base/files/wine"
 
 # 源码路径
-# W1（Proton Wine Core 迁移）允许把 wine 源码指向另一个检出（例如 Valve Proton Wine），
-# 便于在同一套构建脚本下做 A/B；不改默认行为。
-WINE_SRC="${WINE_SRC:-$ROOT/thirdparty/wine}"
+# Proton-OHOS 的受支持基线是 Valve Proton Wine。显式 WINE_SRC 仍可用于
+# 对照构建，但所有常规入口必须选择同一源码树，避免 make 静默打入旧 Wine。
+WINE_SRC="${WINE_SRC:-$ROOT/thirdparty/wine-valve}"
 DXVK_SRC="$ROOT/thirdparty/dxvk"
 # box64+wine 方案 (方案②, arm64 设备 + x86_64 wine) 的 in-process 转译器源码
 BOX64_SRC="$ROOT/thirdparty/box64"
@@ -170,7 +170,16 @@ if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     [ -n "${PKG_CONFIG_BIN:-}" ] || err "pkg-config not found in PATH; run: brew install pkg-config"
 else
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-/usr/bin/pkg-config}"
-    export WAYLAND_SCANNER="${WAYLAND_SCANNER:-/usr/local/bin/wayland-scanner}"
+    # The container builds this host tool under BUILD_DIR.  Prefer it over a
+    # conventional path that may not exist, otherwise later Mesa scripts see
+    # a non-empty but unusable WAYLAND_SCANNER and skip their own discovery.
+    if [ -z "${WAYLAND_SCANNER:-}" ]; then
+        if [ -x "$BUILD_DIR/host-tools/bin/wayland-scanner" ]; then
+            export WAYLAND_SCANNER="$BUILD_DIR/host-tools/bin/wayland-scanner"
+        else
+            export WAYLAND_SCANNER="/usr/local/bin/wayland-scanner"
+        fi
+    fi
 fi
 
 # HAP 项目

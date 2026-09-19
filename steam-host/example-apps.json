@@ -1,0 +1,11 @@
+{
+  "hostId": "winehua-host-1",
+  "apps": {
+    "480": {
+      "name": "Spacewar test policy",
+      "launchExeRelativePath": "game.exe",
+      "workingDirectoryRelativePath": ".",
+      "launchReady": false
+    }
+  }
+}

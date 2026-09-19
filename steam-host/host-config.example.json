@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "hostId": "winehua-host-1",
+  "origin": "https://steam-host.example:8443",
+  "bind": "0.0.0.0",
+  "port": 8443,
+  "dataDir": "C:\\WineHuaSteamHost",
+  "certificate": "C:\\WineHuaSteamHost\\cert.pem",
+  "privateKey": "C:\\WineHuaSteamHost\\key.pem",
+  "steamcmd": "C:\\steamcmd\\steamcmd.exe",
+  "steamUser": "replace-with-steam-login-name",
+  "steamcmdTimeoutSeconds": 14400,
+  "apps": {
+    "480": {
+      "name": "Spacewar test policy",
+      "launchExeRelativePath": "game.exe",
+      "workingDirectoryRelativePath": ".",
+      "launchReady": false
+    }
+  }
+}

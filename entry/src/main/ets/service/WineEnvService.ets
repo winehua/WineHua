@@ -10,6 +10,13 @@ import { WineWindowManager } from './WineWindowManager';
 import { SmokeHook } from '../smoke/SmokeHook';
 // [[GAME]] merge drop: delete with ets/game/ and GameHook call sites
 import { GameHook } from '../game/GameHook';
+import {
+  DEFAULT_GAME_CONTAINER_ID,
+  normalizeGameContainerId,
+  wineDriveCForContainer,
+  winePrefixForContainer,
+  wineSocketForContainer
+} from './GameContainer';
 
 const DOMAIN = 0x0000;
 export const FILES_BASE = '/data/storage/el2/base/files';
@@ -117,6 +124,9 @@ export class WineEnvService {
   // engineState 细节: starting → wineserver/wineboot; failed → 失败阶段
   engineStage: string = '';
   prefixReady: boolean = false;
+  // A WineHua process owns one broker/wineserver session. New app containers
+  // get separate prefixes while the default retains the historical .wine path.
+  private activeContainerId: string = DEFAULT_GAME_CONTAINER_ID;
   statusText: string = '检测中...';
   initOverlayText: string = '';
   initOverlayVisible: boolean = false;
@@ -144,8 +154,8 @@ export class WineEnvService {
   // 由 state:ready / state:failed / failInit 清除
   initBusy: boolean = false;
   // 升级待处理标记: 启动检测到已解压运行时与 HAP 打包不一致 (升级) 时置位,
-  // 不自动解压 (静默换数据会与旧 prefix 不兼容), 由 UI 卡片问用户是否应用。
-  // 用户选择应用 → doReset 完整恢复出厂 (重装数据+清 C 盘); 稍后 → dismiss。
+  // 不在活会话下替换运行时, 由 UI 卡片问用户是否应用。应用更新只替换
+  // files/wine 并保留 files/.wine；恢复出厂仍由 doReset 显式完成。
   // 解压成功后自动清除 (数据已最新)
   upgradePending: boolean = false;
   // 已跳过提醒的升级 sha (preferences 持久化): 点"稍后"记录, 绑定具体版本 —
@@ -246,10 +256,13 @@ export class WineEnvService {
   // 环境页渲染策略/开发者分区展示当前生效值 (updateLaunchRequest 写入)
   getD3dBackend(): string { return this.d3dBackend; }
   getDxvkBackend(): string { return this.dxvkBackend; }
+  getActiveContainerId(): string { return this.activeContainerId; }
+  getActivePrefix(): string { return winePrefixForContainer(this.activeContainerId); }
+  getActiveSocket(): string { return wineSocketForContainer(this.activeContainerId); }
+  getActiveDriveC(): string { return wineDriveCForContainer(this.activeContainerId); }
 
   private normalizeD3dBackend(backend: string): string {
-    return backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
-      backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
+    return backend === 'wined3d' || backend === 'dxvk_modern_2_6' ? backend : 'dxvk_legacy';
   }
 
   private normalizeDxvkBackend(backend: string): string {
@@ -303,7 +316,7 @@ export class WineEnvService {
       AppStorage.set<string>('winehua.d3d.backend', selected);
     }
     this.updateLaunchRequest();
-    hilog.info(DOMAIN, 'GameTest', 'DXVK backend selected=%{public}s d3d12=%{public}s',
+    hilog.info(DOMAIN, 'GameTest', 'DXVK backend selected=%{public}s d3d=%{public}s',
       selected, this.d3dBackend);
     this.notify();
   }
@@ -314,12 +327,8 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
-    // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
-    // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏
-    // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
-    // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
-    // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
+    // DXVK 1.10.3 uses the qualified dirty-ring transport profile. VKD3D is
+    // not a product route; DXVK 2.6 remains an explicit opt-in profile.
     this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   }
 
@@ -373,11 +382,9 @@ export class WineEnvService {
     // 2) 无 prefix (首启): startSession(前台) — 首启解压 249MB 可达数分钟,
     //    前台 overlay 阻塞至 prefix 就绪
     if (this.prefixReady) {
-      // 升级检测提前到自动拉起之前: 数据与 HAP 不一致时不拉起引擎 —
-      // 静默换数据会与旧 prefix 不兼容; 且引擎启动中选"立即应用"会撞
-      // doReset 防重入 (并发操作运行时目录 = 数据损坏)。跳过拉起, 置
-      // upgradePending 弹卡片, 由用户决定: 应用=完整重置 (引擎静止无竞态)
-      // / 稍后=dismiss 补拉起继续用旧数据
+      // 升级检测提前到自动拉起之前: 数据与 HAP 不一致时不拉起引擎。
+      // 引擎启动中替换运行时会损坏会话，因此置 upgradePending，待用户应用
+      // 保留 prefix 的运行时更新，或选择稍后并继续使用旧运行时。
       // 守卫 (与自动拉起同款防御): 幸存会话不可见 (sessionAlive 恒 false),
       // 此时弹卡→立即应用会删活引擎二进制 — 不弹卡, 旧会话继续跑;
       // wine.inf 缺失不算升级 (数据缺失走 startSession 自动解压, 不弹卡)
@@ -490,9 +497,17 @@ export class WineEnvService {
   // 新 Want 进入 (EntryAbility.onNewWant): smoke 请求在 App 存活时到达时
   // 由 SmokeHook 消费 (引擎已就绪, 可直接编排/跑测)。
   onNewWant(): void {
+    // EntryAbility publishes per-launch D3D overrides to AppStorage before
+    // entering here. Refresh the cached values before GameHook consumes them.
+    this.updateLaunchRequest();
     // [[SMOKE]] 合并到 main-ui: 删本行
     SmokeHook.getInstance().onNewWant();
     GameHook.getInstance().onNewWant();
+    // 应用已停在升级提示时，新到达的 game Want 需要主动推进运行时刷新。
+    // init() 中的 GameHook 守卫只覆盖冷启动；热进程此前会一直 deferred 在 idle。
+    if (this.upgradePending && GameHook.getInstance().isActive()) {
+      this.applyRuntimeUpdate(false);
+    }
   }
 
   // 只清 prefix (C 盘 + prefix 元数据), 不删运行时 — 与 doReset (删 WINE_ROOT +
@@ -511,7 +526,7 @@ export class WineEnvService {
       try {
         await this.stopSession(true);
         this.setInitStatus('正在清空...', true);
-        testNapi.resetWinePrefix();
+        testNapi.resetWinePrefix(this.activeContainerId);
         this.engineState = 'idle';
         this.engineStage = '';
         this.prefixReady = false;
@@ -643,15 +658,50 @@ export class WineEnvService {
     this.notify();
   }
 
+  // Steam 的 GPU 探测小工具 (gldriverquery.exe / vulkandriverquery.exe) 是 i386,
+  // 且仍链接 SDL2.dll; Steam 主体迁到 SDL3 后该依赖缺失 → 它们以
+  // STATUS_DLL_NOT_FOUND(0xC0000135) 退出, shader_cache 永远 "Found 0 current buckets"。
+  // 这里把 HAP 随包的官方 x86 SDL2.dll 补到 gldriverquery.exe 同目录
+  // (Windows DLL 搜索优先应用目录)。Valve 自带/已补过就保持不动。
+  private async ensureSteamGpuProbeDeps(): Promise<void> {
+    const steamBin = `${DRIVE_C}/Program Files (x86)/Steam/bin`;
+    const dstPath = `${steamBin}/SDL2.dll`;
+    if (!pathExists(steamBin)) return;      // 没装 Steam: 什么都不做
+    if (pathExists(dstPath)) return;        // Valve 自带优先
+    try {
+      const rm = this.ctx!.resourceManager;
+      const rawFd = rm.getRawFdSync('sdl2-x86.dll');
+      const dst = fs.openSync(dstPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      const CHUNK = 1024 * 1024;
+      const buf = new ArrayBuffer(CHUNK);
+      let pos = rawFd.offset;
+      const end = rawFd.offset + rawFd.length;
+      let written = 0;
+      while (pos < end) {
+        const toRead = Math.min(CHUNK, end - pos);
+        const n = fs.readSync(rawFd.fd, buf, { offset: pos, length: toRead });
+        if (n <= 0) break;
+        fs.writeSync(dst.fd, buf, { length: n });
+        pos += n;
+        written += n;
+      }
+      fs.closeSync(dst);
+      hilog.warn(DOMAIN, 'wine',
+        'steam gpu-probe deps: SDL2.dll staged bytes=%{public}d -> %{public}s', written, dstPath);
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'steam gpu-probe deps stage FAIL: %{public}s', JSON.stringify(e));
+    }
+  }
+
   // Pad: 从 rawfile 取出 wine-data.zip → zlib.decompressFile 解压到 files/wine/
   // 使用 getRawFdSync 流式读取，避免 249MB 一次加载到内存导致 OOM
-  private async extractWineData(): Promise<void> {
+  private async extractWineData(): Promise<boolean> {
     const marker = `${WINE_ROOT}/share/wine/wine.inf`;
     const packagedManifest = this.readRawfileText('wine-runtime-manifest.json');
     hilog.warn(DOMAIN, 'wine', 'extract: check marker=%{public}s', marker);
     if (!this.runtimeNeedsRefresh()) {
       hilog.warn(DOMAIN, 'wine', 'extract: runtime manifest matches');
-      return;
+      return true;
     }
     hilog.warn(DOMAIN, 'wine', 'extract: runtime missing or changed, start managed refresh');
 
@@ -716,6 +766,7 @@ export class WineEnvService {
       try {
         fs.unlinkSync(tmpZip);
       } catch (_) {}
+      return !this.runtimeNeedsRefresh();
     } catch (e) {
       // 解压失败不直写状态文案: 继续走下去 native 会因运行时缺失发
       // state:failed, 由状态机统一呈现失败 + 重试入口
@@ -736,6 +787,7 @@ export class WineEnvService {
         fs.unlinkSync(`${FILES_BASE}/wine-data.zip`);
       } catch (_) {}
       this.notify();
+      return false;
     } finally {
       rm.closeRawFdSync('wine-data.zip');
     }
@@ -743,7 +795,7 @@ export class WineEnvService {
 
   private refreshPrefix = (): void => {
     try {
-      this.prefixReady = testNapi.checkWinePrefix();
+      this.prefixReady = testNapi.checkWinePrefix(this.activeContainerId);
     } catch (e) {
       this.prefixReady = false;
     }
@@ -756,7 +808,7 @@ export class WineEnvService {
   private waitForPrefix = async (): Promise<void> => {
     for (let i = 0; i < 90; i++) {
       try {
-        if (testNapi.checkWinePrefix()) {
+        if (testNapi.checkWinePrefix(this.activeContainerId)) {
           this.prefixReady = true;
           this.initOverlayVisible = false;
           this.notify();
@@ -806,7 +858,7 @@ export class WineEnvService {
   // prefix 是否已在盘上 (drive_c 存在): 引导"首次/二次进入"文案分野 —
   // 首次启动含解压数据+建 prefix, 耗时显著多于暖启动, 需提前给耗时预期
   hasPrefixOnDisk(): boolean {
-    return pathExists(DRIVE_C);
+    return pathExists(this.getActiveDriveC());
   }
 
   // 失败 overlay 的"返回启动器"出口: 仅失败终态且无任何编排时可关 —
@@ -877,8 +929,8 @@ export class WineEnvService {
     hilog.warn(DOMAIN, 'wine', 'auto-init: games directory=%{public}s', gamesDir);
     // 检查是否需要解压 wine 数据文件:
     // - 数据缺失 (首启/重置后, wine.inf 不存在): 必须解压, 否则引擎起不来
-    // - 数据存在但与 HAP 打包不一致 (升级): 不自动解压 — 静默换数据会与旧
-    //   prefix 不兼容; 置 upgradePending 由用户主动选择应用 (完整重置)
+    // - 数据存在但与 HAP 打包不一致 (升级): 常规启动先置 upgradePending，
+    //   game Want 则在无活会话时自动刷新运行时并保留 prefix
     hilog.warn(DOMAIN, 'wine', 'auto-init: check marker=%{public}s', `${WINE_ROOT}/share/wine/wine.inf`);
     if (!pathExists(`${WINE_ROOT}/share/wine/wine.inf`)) {
       this.setInitStatus('解压数据...', !this.bgStart);
@@ -908,12 +960,17 @@ export class WineEnvService {
     }
     hilog.warn(DOMAIN, 'wine', 'auto-init: starting Wine...');
     this.setInitStatus('启动服务...', !this.bgStart);
+    if (!ensureDirectory(this.getActivePrefix())) {
+      this.failInit('创建 Wine 容器失败');
+      return;
+    }
     // 桌面模式按最新设置重新判定 + 同步 C++ (explorer 是否启动由 IsDesktopMode
     // 决定): 设置页切融合/虚拟桌面后"重启引擎"立即生效 — 若只在 app 启动时
     // 判定, 重启引擎会沿用旧模式 (改融合后桌面窗口依旧出现)
     WineWindowManager.getInstance().applyModePolicy();
     testNapi.setHostShadowProfile(this.perfProfile);
-    const ok: boolean = testNapi.startServer(SOCK);
+    const socketPath = this.getActiveSocket();
+    const ok: boolean = testNapi.startServer(socketPath);
     if (!ok) {
       this.failInit('启动服务失败');
       return;
@@ -921,8 +978,8 @@ export class WineEnvService {
     // wine unix 子目录按 HAP 实际方案探测 (方案①②=x86_64-unix, ③=aarch64-unix)。
     // 注意 native BuildWineEnv 已忽略 libPath 形参 (void), 此处仅为语义/日志正确。
     const wineUnixSubdir = pathExists(`${WINE_BIN}/aarch64-unix`) ? 'aarch64-unix' : 'x86_64-unix';
-    testNapi.launchClient(BOX64, [], SOCK, `${BIN_DIR}:${WINE_BIN}/${wineUnixSubdir}`, this.zHome,
-      this.d3dBackend, this.dxvkBackend, this.wineLang);
+    testNapi.launchClient(BOX64, [], socketPath, `${BIN_DIR}:${WINE_BIN}/${wineUnixSubdir}`, this.zHome,
+      this.d3dBackend, this.dxvkBackend, this.wineLang, this.activeContainerId);
   }
 
   // 停止会话原语: 编排 stopAll 并等 native state:stopped (注册表进程全死
@@ -960,7 +1017,38 @@ export class WineEnvService {
   // 必须先 stopSession — 在活着的 wineserver/explorer 脚下删 prefix 是数据损坏
   private wipeEnvironment(): void {
     if (pathExists(WINE_ROOT)) removePathRecursive(WINE_ROOT);
-    testNapi.resetWinePrefix();
+    testNapi.resetWinePrefix(this.activeContainerId);
+  }
+
+  // 应用 HAP 中的新 Wine 运行时，保留用户 prefix、已安装程序和存档。
+  // 运行时目录不能在 wineserver 活着时替换，因此与重启一样先完整停止会话。
+  // foreground=false 供无人值守 game Want 使用，避免弹出模态初始化层。
+  applyRuntimeUpdate(foreground: boolean = true): boolean {
+    if (this.isBusy()) {
+      hilog.warn(DOMAIN, 'wine', 'applyRuntimeUpdate blocked (busy)');
+      return false;
+    }
+    this.opBusy = true;
+    this.upgradePending = false;
+    (async (): Promise<void> => {
+      let refreshed = false;
+      try {
+        await this.stopSession(foreground);
+        this.setInitStatus('正在更新 Wine 运行时...', foreground);
+        refreshed = await this.extractWineData();
+        this.engineState = 'idle';
+        this.engineStage = '';
+        if (!refreshed) {
+          this.failInit('Wine 运行时更新失败');
+          return;
+        }
+        this.setInitStatus('Wine 运行时已更新', false);
+      } finally {
+        this.opBusy = false;
+      }
+      setTimeout(() => this.startSession(foreground), 500);
+    })();
+    return true;
   }
 
   // 重置 = stopSession + wipeEnvironment + startSession(前台) 组合 (编排式)。
@@ -1052,6 +1140,53 @@ export class WineEnvService {
     return engineReady;
   }
 
+  // Changes the session identity only after stopSession observed the native
+  // drain signal. A broker session cannot host two WINEPREFIX values.
+  async ensureContainerReady(containerId: string): Promise<boolean> {
+    const normalized = normalizeGameContainerId(containerId);
+    if (normalized === null) {
+      hilog.error(DOMAIN, 'wine', 'invalid container id=%{public}s', containerId);
+      return false;
+    }
+    // Steam 的 GPU 探测小工具 (gldriverquery.exe / vulkandriverquery.exe) 是 i386,
+    // 仍链接 SDL2.dll; Steam 主体迁到 SDL3 后该依赖缺失 → 它们以
+    // STATUS_DLL_NOT_FOUND(0xC0000135) 退出, shader_cache 永远 "Found 0 current buckets"。
+    // 这里在会话就绪前补齐 (Valve 自带优先, 缺了才补)。
+    await this.ensureSteamGpuProbeDeps();
+    if (normalized === this.activeContainerId) {
+      return this.ensureEngineReady();
+    }
+    if (this.isBusy()) {
+      hilog.warn(DOMAIN, 'wine', 'container switch blocked while engine is busy');
+      return false;
+    }
+
+    this.opBusy = true;
+    try {
+      await this.stopSession(false);
+      this.activeContainerId = normalized;
+      this.prefixReady = false;
+      this.engineState = 'idle';
+      this.engineStage = '';
+      ProcessService.getInstance().clear();
+      this.notify();
+    } catch (error) {
+      hilog.error(DOMAIN, 'wine', 'container switch failed id=%{public}s error=%{public}s',
+        normalized, JSON.stringify(error));
+      return false;
+    } finally {
+      this.opBusy = false;
+    }
+
+    await this.startSession(false);
+    const deadline = Date.now() + 300000;
+    while (this.engineState !== 'ready' && Date.now() < deadline) {
+      if (this.initFailed || this.engineState === 'failed') return false;
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    }
+    return this.engineState === 'ready';
+  }
+
   // 已就绪但无桌面会话时，先拉起桌面外壳（explorer desktop shell），
   // 供启动程序前调用：避免程序窗口单独出现而没有桌面。
   // 复用 startSession 热重启路径（sessionAlive=false → launchClient spawn 新 explorer
@@ -1070,6 +1205,23 @@ export class WineEnvService {
     if (this.engineState != 'ready') {
       return false;
     }
+
+    // native 只在 explorer desktop root 出现后发 state:ready，但 root/surface
+    // 通过另一条 ArkTS 订阅同步，通常会晚数百毫秒。先等待这次已在进行的
+    // desktop 启动完成；否则 ready 回调中的 GameHook 会立即再调 startSession，
+    // 造成第二套 wineboot/explorer 与待启动程序并发。
+    const settleDeadline = Date.now() + 10000;
+    while ((!this.sessionAlive || !this.desktopSurfaceReady) &&
+           this.engineState == 'ready' && Date.now() < settleDeadline) {
+      await new Promise<void>((r) => setTimeout(r, 150));
+    }
+    if (this.sessionAlive && this.desktopSurfaceReady) {
+      return true;
+    }
+    if (this.engineState != 'ready') {
+      return false;
+    }
+
     await this.startSession(true);
     // 就绪判据 = root 出现（desktopActive → sessionAlive）&& renderer surface
     // 校准完成（desktopSurfaceReady）。只等 root 不够: desktop_root 是 toplevel

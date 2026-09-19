@@ -275,6 +275,11 @@ public:
     }
     void RegisterSurfaceResource(uint64_t key, wl_resource* res) { surfaceResources_[key] = res; }
     void UnregisterSurfaceResource(uint64_t key) { surfaceResources_.erase(key); }
+    size_t SurfaceResourceCount() const { return surfaceResources_.size(); }
+    // 诊断 (2026-09-16): 只读遍历 (present surface → owner 窗口解析取证用)
+    const std::unordered_map<uint64_t, wl_resource*>& SurfaceResources() const {
+        return surfaceResources_;
+    }
     bool ContainsSurfaceResource(wl_resource* res) {
         for (auto& [k, r] : surfaceResources_) if (r == res) return true;
         return false;

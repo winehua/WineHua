@@ -1,0 +1,45 @@
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.cpp b/FEXCore/Source/Interface/Core/LookupCache.cpp
+index d590b4f6e..1ee346f69 100644
+--- a/FEXCore/Source/Interface/Core/LookupCache.cpp
++++ b/FEXCore/Source/Interface/Core/LookupCache.cpp
+@@ -38,7 +38,16 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
+   // Allocate a region of memory that we can use to back our block pointers
+   // We need one pointer per page of virtual memory
+   // At 64GB of virtual memory this will allocate 128MB of virtual memory space
++#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  // Wine-OHOS does not route every native access violation raised by a WOW64
++  // CPU DLL through BTCpuResetToConsistentState.  A reserved lookup cache can
++  // therefore escape as a host SIGSEGV before the overcommit tracker commits
++  // the faulting page.  Commit the virtual range up front; Wine still relies
++  // on the host kernel's demand paging, so untouched pages do not become RSS.
++  PagePointer = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, true));
++#else
+   PagePointer = reinterpret_cast<uintptr_t>(FEXCore::Allocator::VirtualAlloc(TotalCacheSize, false, false));
++#endif
+   LOGMAN_THROW_A_FMT(PagePointer != -1ULL, "Failed to allocate PagePointer");
+ 
+   // Disable THP on the Lookup cache.
+@@ -81,13 +90,23 @@ LookupCache::~LookupCache() {
+ void LookupCache::ClearL2Cache(const FEXCore::LookupCacheBaseLockToken& lk) {
+   // Clear out the page memory
+   // PagePointer and PageMemory are sequential with each other. Clear both at once.
++#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  // Keep the WOW64 mapping committed for the same reason as in the constructor.
++  FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer),
++                                      ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE, true);
++#else
+   FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer),
+                                       ctx->Config.VirtualMemSize / FEXCore::Utils::FEX_PAGE_SIZE * 8 + CODE_SIZE, false);
++#endif
+   AllocateOffset = 0;
+ }
+ 
+ void LookupCache::ClearThreadLocalCaches(const LookupCacheWriteLockToken&) {
+   // Clear L1 and L2 by clearing the full cache.
++#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++  FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer), TotalCacheSize, true);
++#else
+   FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(PagePointer), TotalCacheSize, false);
++#endif
+   CachedCodePages.clear();
+ }

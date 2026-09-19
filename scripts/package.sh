@@ -187,6 +187,7 @@ with open('$module_json', 'w') as f:
 
     cd "$WINEHUA"
     python3 sign.py "$unsigned_hap" "$signed_hap"
+    python3 "$SCRIPT_DIR/check_runtime_components.py" --hap "$signed_hap"
 
     ls -lh "$signed_hap"
     log "HAP 构建 + 签名完成 ($NATIVE_ARCH)"

@@ -91,6 +91,8 @@ private:
     int64_t zeroCopyLastTimestamp_ = 0;
     uint64_t zeroCopySurfaceKey_ = 0;
     uint64_t zeroCopyLastQueryUs_ = 0;
+    uint64_t zeroCopyDiagLastUs_ = 0;   // 诊断 (2026-09-16): ZC 查询/候选打印节流
+    size_t zeroCopyDiagCount_ = 0;      // 诊断: 上一次打印时的 surface 数量
     uint32_t zeroCopyClientPid_ = 0;
     uint32_t zeroCopySurfaceId_ = 0;
     int zeroCopySourceW_ = 0;

@@ -4,6 +4,9 @@ import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
+import { SteamHostService } from '../service/SteamHostService';
+import { SteamHostHook } from '../service/SteamHostHook';
+import { ScreenAwake } from '../service/ScreenAwake';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 // [[GAME]] Heaven/game Want automation (URI-decode path); delete with ets/game/
@@ -14,13 +17,7 @@ const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   private defaultDxvkBackend(): string {
-    /* This is an evidence allowlist, not a Host-to-Guest capability inference.
-     * The bundled Guest Mesa/DXVK payload is fixed by the HAP manifest, while
-     * the product/build identity below pins the audited Host driver. A system
-     * update therefore falls back to 1.10.3 until that identity is qualified. */
-    const qualified920 = deviceInfo.productModel === 'VYG-AL00' &&
-      deviceInfo.incrementalVersion === '26.0.0.32';
-    return qualified920 ? 'dxvk_modern_2_6' : 'dxvk_legacy';
+    return 'dxvk_legacy';
   }
 
   private resolveDxvkBackend(value: string): string {
@@ -42,9 +39,10 @@ export default class EntryAbility extends UIAbility {
       parameters['winehua.d3d_backend'] !== null;
     const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'dxvk_legacy';
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
-    const d3dBackend = requestedD3d === 'dxvk_legacy' ||
-      requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
-      requestedD3d : 'wined3d';
+    // DXVK 1.10.3 is the product default. DXVK 2.6 remains an explicit
+    // opt-in profile; VKD3D is deliberately not accepted from Wants.
+    const d3dBackend = requestedD3d === 'wined3d' || requestedD3d === 'dxvk_modern_2_6' ||
+      requestedD3d === 'dxvk_legacy' ? requestedD3d : 'dxvk_legacy';
     const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
       parameters['winehua.dxvk_backend'] !== null;
     const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'dxvk_legacy';
@@ -61,6 +59,9 @@ export default class EntryAbility extends UIAbility {
     SmokeHook.getInstance().applyWant(parameters);
     // [[GAME]] mode=game Want → GameHook
     GameHook.getInstance().applyWant(parameters);
+    // mode=steam-host is a controlled Host content action. It never launches
+    // Windows Steam and only accepts the paired-content protocol parameters.
+    SteamHostHook.getInstance().applyWant(parameters);
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -74,6 +75,7 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
+    SteamHostService.getInstance().init(this.context);
     this.publishLaunchRequest(want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
@@ -123,6 +125,9 @@ export default class EntryAbility extends UIAbility {
       let mainWin = windowStage.getMainWindowSync();
       if (mainWin) {
         mainWin.setWindowDecorVisible(false);
+        // 前台期间保持屏幕常亮: 熄屏会自动锁屏, 而锁屏状态下 aa start 被拒
+        // (10106102), 自动化回归与 Steam 会话都会被打断。
+        ScreenAwake.attach(mainWin);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });
@@ -136,10 +141,12 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    ScreenAwake.setKeepScreenOn(true);
   }
 
   onBackground(): void {
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+    ScreenAwake.setKeepScreenOn(false);
   }
 }

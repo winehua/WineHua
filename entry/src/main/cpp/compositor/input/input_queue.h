@@ -68,8 +68,7 @@ public:
     // 消费侧不读实时状态, 与旧 EnqueueModifiers 同序)
     void EnqueueModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group);
     // axis 入队 (原 SendScrollEvent 尾部手写 push — tl 是诊断字段, 消费侧
-    // InjectPointerAxis 不读: 广播到全部 pointer 资源, wine 按 per-process
-    // focused_hwnd 消化 axis, 见 4B 台账"注入端与 pointer 资源结论")
+    // InjectPointerAxis 不读 tl, 按当前 pointer focus 的 client 投递)
     void EnqueueAxis(int axis, int32_t axis_value, uint32_t tl);
 
     // -- Wayland 线程 --

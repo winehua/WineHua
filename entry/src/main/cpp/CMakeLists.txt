@@ -45,6 +45,7 @@ add_library(entry SHARED
     audio/audio_ipc_server.cpp
     audio/audio_stream.cpp
     graphics/graphics_broker.cpp
+    graphics/gl_capability_probe.cpp
     graphics/virgl_host_config.cpp
     input/game_controller_bridge.cpp
     input/controller/controller_hub.cpp
@@ -57,11 +58,13 @@ add_library(entry SHARED
     wine/wine_env.cpp
     wine/env_spec.cpp
     wine/env_profiles.cpp
+    wine/container_session.cpp
     proc/spawner.cpp
     wine/wine_launch.cpp
     wine/wine_exe.cpp
     proc/broker.cpp
     proc/ncp_dispatch.cpp
+    proc/cef_utility_probe.cpp
     common/perf_utils.cpp
     phone_adapter/phone_process.cpp
     phone_adapter/phone_virgl_relay.cpp

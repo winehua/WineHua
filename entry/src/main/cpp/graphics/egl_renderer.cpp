@@ -1,5 +1,6 @@
 #include "egl_renderer.h"
 #include "graphics_broker.h"
+#include "gl_capability_probe.h"
 #include "common/perf_utils.h"
 #include "shader_utils.h"
 #include "compositor/toplevel/desktop_compositor.h"  // DesktopCompositor (6A 构造注入: 取帧/ZC 直连)
@@ -164,7 +165,101 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
     zeroCopyLastQueryUs_ = nowUs;
 
     std::vector<winehua::ZeroCopySurfaceInfo> surfaces;
-    if (!broker.QueryZeroCopySurfaces(surfaces)) return zeroCopyRegistered_;
+    if (!broker.QueryZeroCopySurfaces(surfaces))
+    {
+        // 诊断 (2026-09-16): 查询失败时旧实现静默返回, 导致"presenter 一直超时,
+        // app 侧零日志"无法定位。低频打印一次原因侧信息。
+        const uint64_t diagUs = PerfNowUs();
+        if (diagUs - zeroCopyDiagLastUs_ > 2000000)
+        {
+            zeroCopyDiagLastUs_ = diagUs;
+            OH_LOG_WARN(LOG_APP,
+                        "[VIRGL-ZC][MAIN][DIAG] query_failed tl=%{public}u "
+                        "registered=%{public}d vulkan_mode=%{public}d",
+                        rendererToplevelId, zeroCopyRegistered_ ? 1 : 0,
+                        broker.IsVulkanPresentMode() ? 1 : 0);
+        }
+        return zeroCopyRegistered_;
+    }
+    // 诊断 (2026-09-16): surface 集合变化或每 2s 打印一次候选与 layer 判定原因。
+    {
+        const uint64_t diagUs = PerfNowUs();
+        if (diagUs - zeroCopyDiagLastUs_ > 2000000 ||
+            surfaces.size() != zeroCopyDiagCount_)
+        {
+            zeroCopyDiagLastUs_ = diagUs;
+            zeroCopyDiagCount_ = surfaces.size();
+            OH_LOG_INFO(LOG_APP,
+                        "[VIRGL-ZC][MAIN][DIAG] query tl=%{public}u count=%{public}zu "
+                        "want_vulkan=%{public}d registered=%{public}d",
+                        rendererToplevelId, surfaces.size(),
+                        broker.IsVulkanPresentMode() ? 1 : 0,
+                        zeroCopyRegistered_ ? 1 : 0);
+            uint32_t shown = 0;
+            for (const auto& surface : surfaces)
+            {
+                if (shown >= 6) break;
+                if (!surface.surfaceKey) continue;
+                ++shown;
+                ZeroCopyLayerInfo diagLayer;
+                const char* reason = "not_evaluated";
+                const bool layerOk = compositor_.GetZeroCopyLayerInfo(
+                    surface.surfaceKey, rendererToplevelId,
+                    static_cast<int>(surface.width), static_cast<int>(surface.height),
+                    diagLayer, &reason);
+                ZcLayerDiag d;
+                compositor_.zc().DiagnoseLayerInfo(surface.surfaceKey, rendererToplevelId, d);
+                OH_LOG_INFO(LOG_APP,
+                            "[VIRGL-ZC][MAIN][DIAG] cand key=%{public}llu pid=%{public}u "
+                            "surface=%{public}u wh=%{public}ux%{public}u attached=%{public}d "
+                            "vulkan=%{public}d layer=%{public}d reason=%{public}s "
+                            "res=%{public}d sd=%{public}d top=%{public}d sub=%{public}d "
+                            "topid=%{public}u ptop=%{public}u root=%{public}u visible=%{public}d "
+                            "sdwh=%{public}dx%{public}d vpdst=%{public}dx%{public}d "
+                            "sub=%{public}d,%{public}d nres=%{public}u",
+                            static_cast<unsigned long long>(surface.surfaceKey),
+                            surface.clientPid, surface.surfaceId, surface.width, surface.height,
+                            surface.attached ? 1 : 0, surface.vulkan ? 1 : 0,
+                            layerOk ? 1 : 0, reason,
+                            d.hasResource ? 1 : 0, d.hasData ? 1 : 0, d.hasToplevel ? 1 : 0,
+                            d.isSubsurface ? 1 : 0, d.toplevelId, d.parentToplevel,
+                            d.desktopRootToplevelId, d.rootVisible ? 1 : 0,
+                            d.surfaceW, d.surfaceH, d.vpDstW, d.vpDstH, d.subX, d.subY,
+                            d.registeredSurfaces);
+                for (uint32_t p = 0; p < d.peerCount; ++p)
+                {
+                    OH_LOG_INFO(LOG_APP,
+                                "[VIRGL-ZC][MAIN][DIAG]   peer pid=%{public}u "
+                                "surface=%{public}u top=%{public}u topid=%{public}u "
+                                "sub=%{public}u ptop=%{public}u wh=%{public}dx%{public}d",
+                                surface.clientPid, d.peers[p].surfaceId,
+                                d.peers[p].hasToplevel, d.peers[p].toplevelId,
+                                d.peers[p].isSubsurface, d.peers[p].parentToplevel,
+                                static_cast<int>(d.peers[p].w),
+                                static_cast<int>(d.peers[p].h));
+                }
+                // owner 解析失败时把注册表打全: 找出真正拥有该窗口的 client/toplevel
+                if (!layerOk)
+                {
+                    for (uint32_t r = 0; r < d.regCount; ++r)
+                    {
+                        OH_LOG_INFO(LOG_APP,
+                                    "[VIRGL-ZC][MAIN][DIAG]   reg pid=%{public}u "
+                                    "surface=%{public}u top=%{public}u topid=%{public}u "
+                                    "sub=%{public}u ptop=%{public}u wh=%{public}dx%{public}d "
+                                    "state=%{public}dx%{public}d",
+                                    d.registry[r].clientPid, d.registry[r].surfaceId,
+                                    d.registry[r].hasToplevel, d.registry[r].toplevelId,
+                                    d.registry[r].isSubsurface, d.registry[r].parentToplevel,
+                                    static_cast<int>(d.registry[r].w),
+                                    static_cast<int>(d.registry[r].h),
+                                    static_cast<int>(d.registry[r].stateW),
+                                    static_cast<int>(d.registry[r].stateH));
+                    }
+                }
+            }
+        }
+    }
     if (zeroCopyRegistered_)
     {
         for (const auto& surface : surfaces)
@@ -488,6 +583,10 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
     window_ = window;
     width_ = w;
     height_ = h;
+
+    // P0-GL-1: 首个窗口出现时做一次 Host EGL/GLES 能力探测 (后台线程, 单次)。
+    // 放在这里是因为合成器一定会在会话早期走到, 且此时 EGL 已可用。
+    WineHuaProbeHostGlCapability();
 
     OH_LOG_INFO(LOG_APP, "[EGL] Init tl=%{public}u req=%{public}dx%{public}d", toplevelId_, w, h);
 

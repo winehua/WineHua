@@ -290,8 +290,7 @@ static bool IsWineserverSocketReady(const std::string& prefix) {
 
 static bool UsesVulkanD3dBackend(const std::string& backend)
 {
-    return backend.rfind("dxvk_", 0) == 0 ||
-           backend == "vkd3d_limited_500k";
+    return backend == "dxvk_legacy" || backend == "dxvk_modern_2_6";
 }
 
 // 兼容模式档位已收窄到程序级 (AppLibraryService per-app environment),
@@ -668,7 +667,15 @@ void LaunchThreadFunc(LaunchParams* p) {
     // 会话 env 不再预先构建: 唯一消费者是 explorer 桌面链, 它在 LaunchPadMode
     // 内用 BuildSessionEnv (SessionPolicyFromLaunch) 现取现建, 图形状态更新鲜。
 
-    mkdir(p->prefixDir.c_str(), 0755);
+    if (!EnsureDirRecursive(p->prefixDir, 0755)) {
+        OH_LOG_ERROR(LOG_APP, "[Launch-Async] cannot create container prefix: %{public}s",
+                     p->prefixDir.c_str());
+        if (gStateTsfn)
+            napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:prefix"),
+                                          napi_tsfn_blocking);
+        delete p;
+        return;
+    }
 
     if (gStateTsfn)
         napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineserver"), napi_tsfn_blocking);

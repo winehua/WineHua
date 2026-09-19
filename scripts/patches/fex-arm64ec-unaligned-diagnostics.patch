@@ -1,0 +1,73 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index a01094edc..8133a6bd4 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -47,6 +47,7 @@ $end_info$
+ #include "BTInterface.h"
+ #include "Windows/Common/SHMStats.h"
+ 
++#include <atomic>
+ #include <cstdint>
+ #include <cstdio>
+ #include <type_traits>
+@@ -294,6 +295,8 @@ void HandleImageUnmap(uint64_t Address, uint64_t Size) {
+ 
+ namespace Exception {
+ static std::optional<FEX::Windows::TSOHandlerConfig> HandlerConfig;
++static std::atomic<uint32_t> UnalignedEventCount {};
++static std::atomic<uint32_t> UnalignedFailureCount {};
+ static uintptr_t KiUserExceptionDispatcher;
+ 
+ struct alignas(16) KiUserExceptionDispatcherStackLayout {
+@@ -304,13 +307,13 @@ struct alignas(16) KiUserExceptionDispatcherStackLayout {
+   uint64_t Redzone[2];
+ };
+ 
+-static bool HandleUnalignedAccess(const ThreadCPUArea CPUArea, ARM64_NT_CONTEXT& Context, bool IsJIT) {
++static std::optional<int32_t> HandleUnalignedAccess(const ThreadCPUArea CPUArea, ARM64_NT_CONTEXT& Context, bool IsJIT) {
+   auto Thread = CPUArea.ThreadState();
+   FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSIGBUSCount, 1);
+   const auto Result =
+     FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess(Thread, HandlerConfig->GetUnalignedHandlerType(), Context.Pc, &Context.X0, IsJIT);
+   Context.Pc += Result.value_or(0);
+-  return Result.has_value();
++  return Result;
+ }
+ 
+ static void LoadStateFromECContext(FEXCore::Core::InternalThreadState* Thread, CONTEXT& Context) {
+@@ -720,10 +723,31 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+     }
+   }
+ 
+-  bool IsJIT = CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc);
+-  if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT && Exception::HandleUnalignedAccess(CPUArea, *NativeContext, IsJIT)) {
+-    LogMan::Msg::DFmt("Handled unaligned atomic: new pc: {:X}", NativeContext->Pc);
+-    return true;
++  const bool IsJIT = CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc);
++  if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT) {
++    const uint64_t OldPC = NativeContext->Pc;
++    const uint32_t Opcode = *reinterpret_cast<const uint32_t*>(OldPC);
++    const auto Result = Exception::HandleUnalignedAccess(CPUArea, *NativeContext, IsJIT);
++    const uint32_t Event = Exception::UnalignedEventCount.fetch_add(1, std::memory_order_relaxed);
++    uint32_t Failure = UINT32_MAX;
++    if (!Result) {
++      Failure = Exception::UnalignedFailureCount.fetch_add(1, std::memory_order_relaxed);
++    }
++
++    // Keep enough early and periodic evidence to identify changing CEF fault
++    // patterns without recreating the previous unbounded signal log storm.
++    const bool ShouldLog = Event < 64 || (Event < 16384 && (Event % 256) == 0) || (!Result && Failure < 64);
++    if (ShouldLog) {
++      const auto Output = fextl::fmt::format(
++        "[FEX-UNALIGNED] pid={} tid={} event={} failure={} code=0x{:08x} thread={} config={} pc=0x{:x} opcode=0x{:08x} jit={} handled={} skip={} next_pc=0x{:x}\n",
++        GetCurrentProcessId(), GetCurrentThreadId(), Event, Failure, Exception->ExceptionCode, Thread != nullptr, Exception::HandlerConfig.has_value(), OldPC,
++        Opcode, IsJIT, Result.has_value(), Result.value_or(-1), NativeContext->Pc);
++      __wine_dbg_output(Output.c_str());
++    }
++
++    if (Result) {
++      return true;
++    }
+   }
+ 
+   if (!IsJIT && !IsDispatcherAddress(NativeContext->Pc)) {

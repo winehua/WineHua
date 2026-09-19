@@ -12,6 +12,7 @@ struct LaunchParams {
     std::string sockDir;
     std::string sockName;
     std::string winehuaBin;
+    std::string containerId;
     std::string prefixDir;
     std::string d3dBackend = "dxvk_legacy";
     std::string dxvkBackend = "dxvk_legacy";

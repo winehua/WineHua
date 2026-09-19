@@ -26,8 +26,10 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +46,7 @@ BUNDLE = "app.hackeris.winehua"
 ABILITY = "EntryAbility"
 HAP_PATH = REPO_ROOT / "entry/build/default/outputs/default/entry-default-signed.hap"
 RAWFILE_ZIP = REPO_ROOT / "entry/src/main/resources/rawfile/wine-data.zip"
+WINE_ARCH_MARKER = REPO_ROOT / "entry/.wine_arch"
 DEVICE_SANDBOX = f"/data/app/el2/100/base/{BUNDLE}"
 DOCKER_CONTAINER = "winehua-master-ext4"
 DOCKER_REPO = "/data/src/winehua"
@@ -70,8 +73,8 @@ REQUIRED_PAYLOAD = (
     "smoke/x64/winehua_d3d8_smoke.exe", "smoke/x86/winehua_d3d8_smoke.exe",
     "smoke/x64/winehua_d3d_switch_cube.exe", "smoke/x86/winehua_d3d_switch_cube.exe",
     "smoke/x64/winehua_d3d11_smoke.exe", "smoke/x86/winehua_d3d11_smoke.exe",
-    "smoke/x64/winehua_gpu_diagnostics.exe", "smoke/x86/winehua_gpu_diagnostics.exe",
-    "smoke/x64/winehua_dxvk26_requirements.exe", "smoke/x86/winehua_dxvk26_requirements.exe",
+    "smoke/x86/winehua_gpu_diagnostics.exe",
+    "smoke/x86/winehua_dxvk26_requirements.exe",
     "smoke/x64/winehua_d3d12_smoke.exe",
     "smoke/x64/triangle.exe", "smoke/x64/gears.exe",
     "dxvk/manifest.json",
@@ -81,7 +84,7 @@ REQUIRED_PAYLOAD = (
     "dxvk/modern-2.6/x86/d3d11.dll", "dxvk/modern-2.6/x86/dxgi.dll",
     "bin/guest_vulkan/lib/libvulkan.so.1",
     "bin/guest_vulkan/lib/libvulkan_virtio.so",
-    "bin/guest_vulkan/share/vulkan/icd.d/venus_icd.x86_64.json",
+    "bin/guest_vulkan/share/vulkan/icd.d/venus_icd.aarch64.json",
 )
 
 
@@ -96,6 +99,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gate", action="store_true",
                         help="Phase-2 entry gate: three reuse-prefix core runs and one clean-prefix core run")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--skip-install", action="store_true",
+                        help="reuse the installed candidate without restarting the app process")
     parser.add_argument("--device-id", default="",
                         help="hdc target; auto-selected (physical preferred) when empty")
     parser.add_argument("--archive-root", default="",
@@ -134,7 +139,8 @@ def hdc_local_path(path: Path) -> str:
         suffix = (match.group(2) or "").replace("/", chr(92))
         return f"{match.group(1).upper()}:{chr(92)}{suffix}"
     if value.startswith("/home/"):
-        return (chr(92) * 2 + "wsl.localhost" + chr(92) + "Ubuntu" +
+        distro = os.environ.get("WSL_DISTRO_NAME", "Ubuntu")
+        return (chr(92) * 2 + "wsl.localhost" + chr(92) + distro +
                 value.replace("/", chr(92)))
     return value
 
@@ -209,6 +215,26 @@ def save_probe_results(hdc: str, device_id: str, run_directory: Path,
         archived["artifactSource"] = "device-suite-summary"
         archived["perProbeArtifact"] = "MISSING"
         write_json(target, archived)
+
+
+def load_probe_results(run_directory: Path, summary: dict) -> dict:
+    """Return the suite summary with archived per-probe details merged in."""
+    merged = dict(summary)
+    tests = []
+    for test in summary.get("tests", []):
+        test_id = str(test.get("testId", ""))
+        path = run_directory / "device-results" / f"{test_id}.json"
+        if test_id and path.is_file():
+            try:
+                detail = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                detail = None
+            if isinstance(detail, dict) and detail.get("testId") == test_id:
+                tests.append(detail)
+                continue
+        tests.append(test)
+    merged["tests"] = tests
+    return merged
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -297,34 +323,85 @@ def sh_capture_shell(script: str) -> str:
     return result.stdout.strip()
 
 
+def git_capture(repository: Path, *args: str) -> str:
+    resolved = str(repository.resolve())
+    match = re.fullmatch(
+        r"\\\\wsl(?:\.localhost|\$)\\([^\\]+)\\(.*)", resolved,
+        flags=re.IGNORECASE)
+    if match:
+        linux_path = "/" + match.group(2).replace(chr(92), "/")
+        command = ["wsl.exe", "-d", match.group(1), "-e",
+                   "git", "-C", linux_path, *args]
+    else:
+        command = ["git", "-C", resolved, *args]
+    result = subprocess.run(command, capture_output=True, text=True, errors="replace")
+    return result.stdout.strip()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_zip_member(archive: zipfile.ZipFile, member: str) -> str:
+    digest = hashlib.sha256()
+    with archive.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def zip_member_elf_architecture(archive: zipfile.ZipFile, member: str) -> str:
+    with archive.open(member) as stream:
+        header = stream.read(20)
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        raise RuntimeError(f"Archive member is not ELF: {member}")
+    if header[5] not in (1, 2):
+        raise RuntimeError(f"Archive member has invalid ELF endianness: {member}")
+    byte_order = "<" if header[5] == 1 else ">"
+    machine = struct.unpack(f"{byte_order}H", header[18:20])[0]
+    architectures = {62: "x86-64", 183: "ARM aarch64"}
+    return architectures.get(machine, f"ELF machine {machine}")
+
+
 def get_artifact_metadata(output_directory: Path) -> dict:
     if not HAP_PATH.is_file():
         raise RuntimeError("Signed HAP does not exist")
-    stat = sh_capture("stat", "-c", "%y %s", str(HAP_PATH))
-    hap_hash = sh_capture("sha256sum", str(HAP_PATH)).split()[0]
-    raw_hash = sh_capture("sha256sum", str(RAWFILE_ZIP)).split()[0]
-    embedded_hash = sh_capture_shell(
-        f"unzip -p '{HAP_PATH}' resources/rawfile/wine-data.zip | sha256sum").split()[0]
+    hap_stat = HAP_PATH.stat()
+    stat = f"{datetime.fromtimestamp(hap_stat.st_mtime).astimezone().isoformat()} {hap_stat.st_size}"
+    hap_hash = sha256_file(HAP_PATH)
+    raw_hash = sha256_file(RAWFILE_ZIP)
+    with zipfile.ZipFile(HAP_PATH) as hap_archive:
+        embedded_hash = sha256_zip_member(
+            hap_archive, "resources/rawfile/wine-data.zip")
+        host_arch = zip_member_elf_architecture(
+            hap_archive, "libs/arm64-v8a/libentry.so")
     if raw_hash != embedded_hash:
         raise RuntimeError("HAP embedded wine-data.zip hash does not match assembled payload")
 
-    smoke_list = sh_capture("unzip", "-l", str(RAWFILE_ZIP))
-    for required in REQUIRED_PAYLOAD:
-        if required not in smoke_list:
-            raise RuntimeError(f"Payload missing {required}")
-
-    guest_arch = sh_capture_shell(
-        f"unzip -p '{RAWFILE_ZIP}' bin/guest_gfx/lib/libEGL.so.1 | file -")
-    host_arch = sh_capture_shell(
-        f"unzip -p '{HAP_PATH}' libs/arm64-v8a/libentry.so | file -")
-    if "x86-64" not in guest_arch:
+    with zipfile.ZipFile(RAWFILE_ZIP) as payload_archive:
+        payload_names = set(payload_archive.namelist())
+        for required in REQUIRED_PAYLOAD:
+            if required not in payload_names:
+                raise RuntimeError(f"Payload missing {required}")
+        guest_arch = zip_member_elf_architecture(
+            payload_archive, "bin/guest_gfx/lib/libEGL.so.1")
+    wine_arch = WINE_ARCH_MARKER.read_text(encoding="utf-8").strip()
+    expected_guest_arch = "ARM aarch64" if wine_arch == "aarch64" else "x86-64"
+    if guest_arch != expected_guest_arch:
         raise RuntimeError(f"Guest EGL architecture invalid: {guest_arch}")
-    if "ARM aarch64" not in host_arch:
+    if host_arch != "ARM aarch64":
         raise RuntimeError(f"Host libentry architecture invalid: {host_arch}")
 
-    main_commit = sh_capture("git", "-C", str(REPO_ROOT), "rev-parse", "HEAD")
-    submodules = sh_capture("git", "-C", str(REPO_ROOT), "submodule", "status", "--recursive")
-    dirty = sh_capture("git", "-C", str(REPO_ROOT), "status", "--short")
+    wine_repository = REPO_ROOT / "thirdparty/wine-valve"
+    main_commit = git_capture(REPO_ROOT, "rev-parse", "HEAD")
+    submodules = git_capture(REPO_ROOT, "submodule", "status", "--recursive")
+    dirty = git_capture(REPO_ROOT, "status", "--short", "--ignore-submodules=all")
+    wine_commit = git_capture(wine_repository, "rev-parse", "HEAD")
+    wine_dirty = git_capture(wine_repository, "status", "--short")
 
     metadata = {
         "schemaVersion": 1,
@@ -335,6 +412,9 @@ def get_artifact_metadata(output_directory: Path) -> dict:
         "mainCommit": main_commit,
         "submodules": submodules.splitlines(),
         "dirtySummary": dirty.splitlines() if dirty else [],
+        "wineCommit": wine_commit,
+        "wineDirtySummary": wine_dirty.splitlines() if wine_dirty else [],
+        "wineArchitecture": wine_arch,
         "guestArchitecture": guest_arch,
         "hostArchitecture": host_arch,
     }
@@ -499,12 +579,11 @@ def invoke_one_run(hdc: str, device_id: str, run_suite: str, run_prefix: str,
     remote_results = f"{DEVICE_SANDBOX}/files/.wine/drive_c/smoke/results/{run_id}"
     remote_stable = f"{remote_results}/suite-summary.json"
 
-    run_hdc(hdc, device_id, "shell", "aa", "force-stop", BUNDLE)
-    # HDC shell cannot remove application-owned sandbox files. EntryAbility
-    # performs and verifies the clean-prefix reset under the App UID before
-    # starting Wayland, wineserver or Wine.
+    # Keep a live app process across runs so its NCP registry can stop every
+    # AppSpawn-owned Wine child. Force-stopping the app loses that registry and
+    # leaves detached wineserver processes that can capture the next prefix.
     run_hdc(hdc, device_id, "shell", "power-shell", "wakeup")
-    run_hdc(hdc, device_id, "shell", "hilog", "-x")
+    run_hdc(hdc, device_id, "shell", "hilog", "-r")
     start_args = (
         "shell", "aa", "start", "-a", ABILITY, "-b", BUNDLE,
         "--ps", "winehua.mode", "smoke",
@@ -514,11 +593,16 @@ def invoke_one_run(hdc: str, device_id: str, run_suite: str, run_prefix: str,
         "--ps", "winehua.long_seconds", str(long_seconds),
     )
     code, start_output = run_hdc_windows(hdc, device_id, *start_args)
+    if "Device not found or connected" in start_output and ":" in device_id:
+        subprocess.run([hdc, "tconn", device_id], capture_output=True,
+                       text=True, errors="replace")
+        run_hdc(hdc, device_id, "shell", "power-shell", "wakeup")
+        code, start_output = run_hdc_windows(hdc, device_id, *start_args)
     if "10106102" in start_output:
         # Devices without a credential can be dismissed with one deterministic
         # swipe.  A credential-protected lock remains an infrastructure error.
         run_hdc(hdc, device_id, "shell",
-                "uitest uiInput swipe 1280 1350 1280 300 1200")
+                "uitest uiInput swipe 1280 1400 1280 180 500")
         code, start_output = run_hdc_windows(hdc, device_id, *start_args)
     (run_directory / "start.log").write_text(start_output, encoding="utf-8")
     if code != 0 or "start ability successfully" not in start_output:
@@ -594,7 +678,8 @@ def invoke_one_run(hdc: str, device_id: str, run_suite: str, run_prefix: str,
     visual_pass = True if not capture_visuals else not any(not value for value in captured.values())
     if run_suite in ("dxvk", "dxvk-long", "dxvk-dynamic", "all",
                      "dxvk-modern-baseline", "dxvk-modern-long"):
-        coverage = get_d3d11_coverage(summary, run_suite, long_seconds)
+        coverage = get_d3d11_coverage(
+            load_probe_results(run_directory, summary), run_suite, long_seconds)
     else:
         coverage = None
     coverage_pass = coverage is None or coverage["status"] == "PASS"
@@ -654,10 +739,14 @@ def main() -> int:
     if not args.skip_build:
         invoke_build(session_directory / "build.log")
     artifact = get_artifact_metadata(session_directory)
-    code, install_output = run_hdc_install(hdc, device_id, HAP_PATH)
-    (session_directory / "install.log").write_text(install_output, encoding="utf-8")
-    if code != 0 or "install bundle successfully" not in install_output:
-        raise RuntimeError("HAP overwrite install did not report install bundle successfully")
+    if args.skip_install:
+        (session_directory / "install.log").write_text(
+            "SKIPPED: reusing installed candidate\n", encoding="utf-8")
+    else:
+        code, install_output = run_hdc_install(hdc, device_id, HAP_PATH)
+        (session_directory / "install.log").write_text(install_output, encoding="utf-8")
+        if code != 0 or "install bundle successfully" not in install_output:
+            raise RuntimeError("HAP overwrite install did not report install bundle successfully")
 
     matrix: list[tuple[str, str]] = []
     if args.gate:

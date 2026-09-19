@@ -20,7 +20,7 @@ GUEST_ARCH ?= $(WINE_ARCH)
 # 需要 dlopen 的关键 guest 库由 assemble 复制到 entry/libs/<NATIVE_ARCH> (el1 bundle)
 BUILD_GUEST_GFX ?= 1
 BUILD_GUEST_VULKAN ?= 1
-BUILD_WINE_MONO ?= 1
+BUILD_WINE_MONO ?= 0
 TARGET_SDK_VERSION ?= 6.1.0(23)
 COMPATIBLE_SDK_VERSION ?= 6.1.0(23)
 export NATIVE_ARCH
@@ -39,6 +39,12 @@ CONFIG    := $(NATIVE_ARCH)
 BUILD_DIR := $(ROOT)/build
 STAMPS    := $(BUILD_DIR)/.stamps
 SCRIPTS   := $(ROOT)/scripts
+# Keep the Wine source selector visible to make as well as the shell scripts.
+# The Proton/Valve migration uses WINE_SRC=thirdparty/wine-valve; dependency
+# checks must follow that selector or an old stamp can silently reuse the
+# previous wine-proton build after the selected source changes.
+WINE_SRC ?= $(ROOT)/thirdparty/wine-valve
+export WINE_SRC
 # 方案③ (aarch64): x86 meson + ARM64X 双图 (FEX native view)。meson x64 不打包,
 # assemble 把 arm64x 镜像进 wine-data 的 x64/ 目录名。方案①/② 仍要 meson x64+x86。
 ifeq ($(WINE_ARCH),aarch64)
@@ -334,7 +340,7 @@ wine: $(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)
 $(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
 	@if [ -f $@ ] && [ -f $(WINE_SENTINEL) ] && \
 	    ! [ "$(SCRIPTS)/build_wine.sh" -nt $@ ] && \
-	    ! find $(ROOT)/thirdparty/wine \
+        ! find $(WINE_SRC) \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
 	              -o -name 'meson.build' -o -name 'CMakeLists.txt' \

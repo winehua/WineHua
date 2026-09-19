@@ -51,6 +51,120 @@ assemble_pad() {
         cp "$cxx_root/libunwind.dll" "$dest/libunwind.dll"
         log "    ARM64X C++ runtime ← $cxx_root → $dest"
     }
+    # GStreamer discovers plugins through GST_PLUGIN_PATH.  Keep modules in the
+    # architecture-specific rawfile directory even when the Wine unixlibs live
+    # in the HAP native-library directory.
+    package_gstreamer_plugins() {
+        local gst_plugin_dir="$SYSROOT_EXT_LIB/gstreamer-1.0"
+        local gst_dest="$wine_data/bin/$WINE_ARCH-unix/gstreamer-1.0"
+        local plugin_count=0
+        local pso required
+
+        [ -d "$gst_plugin_dir" ] || err "GStreamer plugin directory missing: $gst_plugin_dir"
+        mkdir -p "$gst_dest"
+        for pso in "$gst_plugin_dir"/*.so; do
+            [ -f "$pso" ] || continue
+            cp -L "$pso" "$gst_dest/"
+            plugin_count=$((plugin_count + 1))
+        done
+        [ "$plugin_count" -gt 0 ] || err "No GStreamer plugins found in: $gst_plugin_dir"
+
+        # These modules cover the Wine media baseline: core discovery, common
+        # playback, MP4/Matroska/ASF containers, H.264 parsing and libav decode.
+        for required in \
+            libgstcoreelements.so libgsttypefindfunctions.so libgstplayback.so \
+            libgstisomp4.so libgstmatroska.so libgstasf.so \
+            libgstvideoparsersbad.so libgstlibav.so; do
+            [ -s "$gst_dest/$required" ] || err "Required GStreamer plugin missing: $gst_dest/$required"
+        done
+        log "    GStreamer plugins ($plugin_count) → rawfile bin/$WINE_ARCH-unix/gstreamer-1.0/"
+    }
+
+    verify_runtime_components() {
+        local runtime_lib_dir="$NATIVE_LIBS"
+        local gst_plugin_dir="$wine_data/bin/$WINE_ARCH-unix/gstreamer-1.0"
+        local component_manifest="$wine_data/runtime-components.json"
+        local plugin_count font_count mono_status="disabled"
+        local gstreamer_version="1.24.4"
+        local mono_version="11.1.0"
+        local mono_sha256=""
+        local llvm_readelf="$OHOS_SDK/native/llvm/bin/llvm-readelf"
+        local plugin
+        local required
+
+        if [ "$is_box64_scheme" = "1" ]; then
+            runtime_lib_dir="$wine_data/bin/$WINE_ARCH-unix"
+        fi
+
+        for required in \
+            libglib-2.0.so.0 libgstreamer-1.0.so.0 libgstbase-1.0.so.0 \
+            libgstvideo-1.0.so.0 libgstaudio-1.0.so.0 libgsttag-1.0.so.0 \
+            libgstcodecparsers-1.0.so.0 libgstmpegts-1.0.so.0 \
+            libavcodec.so.60 libavformat.so.60 libavutil.so.58 libintl.so; do
+            [ -s "$runtime_lib_dir/$required" ] || \
+                err "Runtime component missing: $runtime_lib_dir/$required"
+        done
+        grep -Fxq "Version: $gstreamer_version" "$SYSROOT_EXT_PC/gstreamer-1.0.pc" || \
+            err "Unexpected GStreamer version in: $SYSROOT_EXT_PC/gstreamer-1.0.pc"
+        for required in \
+            libgstcoreelements.so libgsttypefindfunctions.so libgstplayback.so \
+            libgstisomp4.so libgstmatroska.so libgstasf.so \
+            libgstvideoparsersbad.so libgstlibav.so; do
+            [ -s "$gst_plugin_dir/$required" ] || \
+                err "Packaged GStreamer plugin missing: $gst_plugin_dir/$required"
+        done
+        [ -x "$llvm_readelf" ] || err "llvm-readelf missing: $llvm_readelf"
+        "$llvm_readelf" --dynamic-table "$runtime_lib_dir/libintl.so" 2>/dev/null | \
+            grep -Fq 'Library soname: [libintl.so]' || \
+            err "libintl.so is missing DT_SONAME"
+        for plugin in "$gst_plugin_dir"/*.so; do
+            "$llvm_readelf" --dynamic-table "$plugin" 2>/dev/null | \
+                grep -q 'Shared library: \[[^]]*/' && \
+                err "GStreamer plugin has an absolute DT_NEEDED path: $plugin"
+        done
+
+        if [ "${BUILD_WINE_MONO:-0}" = "1" ]; then
+            local packaged_mono="$wine_data/share/wine/mono/wine-mono-${mono_version}-x86.msi"
+            [ -s "$packaged_mono" ] || err "Packaged Wine Mono MSI missing: $packaged_mono"
+            mono_sha256="$(sha256sum "$packaged_mono" | awk '{print $1}')"
+            [ "$mono_sha256" = "deb0341431f8260b209fff6bc79ddcc5414b97f8e9236ab9fbdca4ce59e0a9b9" ] || \
+                err "Unexpected Wine Mono checksum: $packaged_mono"
+            [ -s "$wine_data/bin/$wine_pe_dir/appwiz.cpl" ] || \
+                err "Wine Mono requires appwiz.cpl: $wine_data/bin/$wine_pe_dir/appwiz.cpl"
+            mono_status="bundled"
+        fi
+
+        font_count="$(find "$wine_data/share/wine/fonts" -maxdepth 1 -type f -name '*.ttf' | wc -l)"
+        [ "$font_count" -gt 0 ] || err "Wine font payload is empty"
+        plugin_count="$(find "$gst_plugin_dir" -maxdepth 1 -type f -name '*.so' | wc -l)"
+
+        cat > "$component_manifest" <<EOF
+{
+  "schemaVersion": 1,
+  "wineArch": "$WINE_ARCH",
+  "gstreamer": {
+    "version": "$gstreamer_version",
+    "pluginDirectory": "bin/$WINE_ARCH-unix/gstreamer-1.0",
+    "pluginCount": $plugin_count,
+    "requiredPlugins": ["libgstcoreelements.so", "libgsttypefindfunctions.so", "libgstplayback.so", "libgstisomp4.so", "libgstmatroska.so", "libgstasf.so", "libgstvideoparsersbad.so", "libgstlibav.so"]
+  },
+  "mono": {
+    "status": "$mono_status",
+    "version": "$mono_version",
+    "msi": "share/wine/mono/wine-mono-${mono_version}-x86.msi",
+    "sha256": "$mono_sha256"
+  },
+  "fonts": {
+    "ttfCount": $font_count
+  },
+  "gecko": {
+    "status": "not-bundled",
+    "reason": "not part of the direct-game runtime profile"
+  }
+}
+EOF
+        log "  runtime component verification: GStreamer=$plugin_count plugins, Mono=$mono_status, fonts=$font_count"
+    }
     rm -rf "$STAGING_DIR"
     rm -rf "$wine_data"
     # 方案② 清理 entry/libs 残留: 该目录由 build_native (wayland/xkbcommon/ffi) +
@@ -110,9 +224,9 @@ assemble_pad() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$NATIVE_LIBS"
             if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
-                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
+                cp -L "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
             elif [ -f "$SYSROOT/usr/lib/$TARGET/$name" ]; then
-                cp "$SYSROOT/usr/lib/$TARGET/$name" "$dest/$soname"
+                cp -L "$SYSROOT/usr/lib/$TARGET/$name" "$dest/$soname"
             else
                 warn "$soname 未找到"
                 return 0
@@ -144,10 +258,17 @@ assemble_pad() {
                   libgstnet-1.0.so.0 libgstvideo-1.0.so.0 libgstaudio-1.0.so.0 \
                   libgsttag-1.0.so.0 libgstpbutils-1.0.so.0 libgstallocators-1.0.so.0 \
                   libgstapp-1.0.so.0 libgstfft-1.0.so.0 libgstriff-1.0.so.0 \
-                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0 \
-                  libgstcodecparsers-1.0.so.0 libgstmpegts-1.0.so.0; do
+                   libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0 \
+                   libgstcodecparsers-1.0.so.0 libgstmpegts-1.0.so.0; do
             _pick_lib_pad "$so" "$so"
         done
+        # gst-libav is a plugin; its FFmpeg shared objects must be visible to
+        # the native linker when it is loaded from the rawfile plugin path.
+        for so in libavcodec.so.60 libavformat.so.60 libavutil.so.58 \
+                  libswscale.so.7 libswresample.so.4 libavfilter.so.9; do
+            _pick_lib_pad "$so" "$so"
+        done
+        package_gstreamer_plugins
         log "    交叉编译依赖 → libs/x86_64/"
 
         # libc.so → libs/x86_64/
@@ -225,9 +346,9 @@ assemble_pad() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$wine_data/bin/x86_64-unix"
             if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
-                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
+                cp -L "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
             elif [ -f "$SYSROOT/usr/lib/$TARGET/$name" ]; then
-                cp "$SYSROOT/usr/lib/$TARGET/$name" "$dest/$soname"
+                cp -L "$SYSROOT/usr/lib/$TARGET/$name" "$dest/$soname"
             else
                 warn "$soname 未找到"
                 return 0
@@ -277,18 +398,7 @@ assemble_pad() {
                   libswscale.so.7 libswresample.so.4 libavfilter.so.9; do
             _pick_lib_pad_rf "$so" "$so"
         done
-        # GStreamer 插件 (gst-plugins-base/good + gst-libav) → rawfile
-        local gst_plugin_dir="$SYSROOT_EXT_LIB/gstreamer-1.0"
-        if [ -d "$gst_plugin_dir" ]; then
-            mkdir -p "$wine_data/bin/x86_64-unix/gstreamer-1.0"
-            for pso in "$gst_plugin_dir"/*.so; do
-                [ -f "$pso" ] || continue
-                cp "$pso" "$wine_data/bin/x86_64-unix/gstreamer-1.0/"
-            done
-            log "    GStreamer 插件 ($(ls "$gst_plugin_dir"/*.so 2>/dev/null | wc -l) 个) → rawfile gstreamer-1.0/"
-        else
-            warn "gstreamer-1.0 插件目录缺失: $gst_plugin_dir"
-        fi
+        package_gstreamer_plugins
 
         # libfreetype → bin/ (box64 按名 dlopen 搜索路径: .)
         cp "$wine_data/bin/x86_64-unix/libfreetype.so.6" "$wine_data/bin/"
@@ -328,9 +438,9 @@ assemble_pad() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$NATIVE_LIBS"
             if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
-                cp "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
+                cp -L "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
             elif [ -f "$SYSROOT/usr/lib/$TARGET/$name" ]; then
-                cp "$SYSROOT/usr/lib/$TARGET/$name" "$dest/$soname"
+                cp -L "$SYSROOT/usr/lib/$TARGET/$name" "$dest/$soname"
             else
                 warn "$soname 未找到"
                 return 0
@@ -362,9 +472,17 @@ assemble_pad() {
                   libgstnet-1.0.so.0 libgstvideo-1.0.so.0 libgstaudio-1.0.so.0 \
                   libgsttag-1.0.so.0 libgstpbutils-1.0.so.0 libgstallocators-1.0.so.0 \
                   libgstapp-1.0.so.0 libgstfft-1.0.so.0 libgstriff-1.0.so.0 \
-                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0; do
+                  libgstrtp-1.0.so.0 libgstrtsp-1.0.so.0 libgstsdp-1.0.so.0 \
+                  libgstcodecparsers-1.0.so.0 libgstmpegts-1.0.so.0; do
             _pick_lib_pad "$so" "$so"
         done
+        # Native Wine loads gst-libav from rawfile, so its FFmpeg dependency
+        # chain belongs beside the native GStreamer core libraries.
+        for so in libavcodec.so.60 libavformat.so.60 libavutil.so.58 \
+                  libswscale.so.7 libswresample.so.4 libavfilter.so.9; do
+            _pick_lib_pad "$so" "$so"
+        done
+        package_gstreamer_plugins
         log "    交叉编译依赖 → libs/$NATIVE_ARCH/"
 
         # libc.so → libs/
@@ -424,14 +542,14 @@ assemble_pad() {
     # -- 2. PE DLL + 数据文件 → rawfile (两种架构共用) --
     # x86_64-windows/ — 复制所有运行时 PE 文件
     # .cpl (含 appwiz.cpl) 是否打包由 BUILD_WINE_MONO 决定:
-    #   =1 (本地默认): 打包 cpl + build_deps 下载 mono msi, 保留 .NET/控制面板.
-    #   =0 (CI 无 curl): 不打包 cpl. 若 mono 缺失, wineboot 初始化时 mscoree.dll
+    #   =1 (显式实验): 打包 cpl + build_deps 下载 mono msi, 保留 .NET/控制面板.
+    #   =0 (默认直接游戏档): 不打包 cpl. 若 mono 缺失, wineboot 初始化时 mscoree.dll
     #   会 CreateProcess "control.exe appwiz.cpl install_mono" 弹 DialogBoxW 模态框,
     #   OHOS 无头环境无人响应 → wineboot 永久阻塞 (mscoree WaitForSingleObject 无限
     #   等待). 去掉 appwiz.cpl 后 control.exe 加载 cpl 失败立即退出, mscoree 走
     #   "无 .NET 运行时"路径不卡死.
     local pe_exts="dll drv exe sys acm ax ocx tlb"
-    if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
+    if [ "${BUILD_WINE_MONO:-0}" = "1" ]; then
         pe_exts="$pe_exts cpl"
     fi
     for ext in $pe_exts; do
@@ -564,6 +682,21 @@ assemble_pad() {
     i686-w64-mingw32-gcc -O2 -s -mwindows -o \
         "$smoke_dir/x86/winehua_d3d8_smoke.exe" "$d3d8_source" \
         -luser32 -lgdi32
+    # P0-GL-5: Windows(WGL) OpenGL 能力探针。x64 用原生 ARM64 PE (与产品路径一致),
+    # amd64 用真 x86_64 PE 走 FEX 做对照, x86 走 WOW64。
+    local gl_smoke_source="$WINEHUA/smoke/winehua_opengl_smoke.c"
+    local gl_smoke_libs="-lopengl32 -luser32 -lgdi32"
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -DARCH_LABEL='"arm64"' -o \
+            "$smoke_dir/x64/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
+        x86_64-w64-mingw32-gcc -O2 -s -DARCH_LABEL='"amd64"' -o \
+            "$smoke_dir/amd64/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
+    else
+        x86_64-w64-mingw32-gcc -O2 -s -DARCH_LABEL='"amd64"' -o \
+            "$smoke_dir/x64/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
+    fi
+    i686-w64-mingw32-gcc -O2 -s -DARCH_LABEL='"x86"' -o \
+        "$smoke_dir/x86/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
     # This deliberately links Wine's own PE Vulkan import library.  The
     # requirements probe must exercise the same vulkan-1 -> winevulkan ->
     # x86_64 Loader -> Venus transport as a Windows DXVK process, without
@@ -590,6 +723,21 @@ assemble_pad() {
     i686-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
         "$smoke_dir/x86/winehua_win32_driver.exe" "$win32_driver_source" \
         -lshell32 -luser32
+    local platform_network_source="$WINEHUA/smoke/winehua_platform_network.c"
+    local platform_wininet_source="$WINEHUA/smoke/winehua_platform_wininet.c"
+    local platform_network_libs="-liphlpapi -ldnsapi -lwinhttp -lwininet -lsecur32 -lcrypt32 -lws2_32"
+    if [ "$WINE_ARCH" = "aarch64" ]; then
+        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -mwindows -o \
+            "$smoke_dir/x64/winehua_platform_network.exe" "$platform_network_source" "$platform_wininet_source" \
+            $platform_network_libs
+    else
+        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
+            "$smoke_dir/x64/winehua_platform_network.exe" "$platform_network_source" "$platform_wininet_source" \
+            $platform_network_libs
+    fi
+    i686-w64-mingw32-gcc -O2 -s -mwindows -o \
+        "$smoke_dir/x86/winehua_platform_network.exe" "$platform_network_source" "$platform_wininet_source" \
+        $platform_network_libs
     # venus shader assets: 随 guest_vulkan bundle 打包 (aarch64/x86_64 源驱动; 无 bundle 则跳过)
     local guest_shader_root="$BUILD_DIR/guest_vulkan/$guest_arch/share/winehua"
     if [ -d "$guest_shader_root" ]; then
@@ -715,7 +863,8 @@ assemble_pad() {
     # DLLs.  SpawnWineProgram exposes this versioned directory through
     # WINEDLLPATH for the selected DXVK or mixed VKD3D backend.
     local smoke_program
-    for smoke_program in winehua_audio_smoke winehua_graphics_smoke winehua_vulkan_smoke winehua_d3d11_smoke; do
+    for smoke_program in winehua_audio_smoke winehua_graphics_smoke winehua_vulkan_smoke \
+                         winehua_d3d11_smoke winehua_platform_process_smoke; do
         local smoke64="$wine_build_dir/programs/$smoke_program/$smoke_src_dir/$smoke_program.exe"
         local smoke32="$BUILD_DIR/wine-i386-pe/programs/$smoke_program/i386-windows/$smoke_program.exe"
         if [ ! -f "$smoke32" ]; then
@@ -728,6 +877,7 @@ assemble_pad() {
     done
     local audio64_sha graphics64_sha vulkan64_sha d3d1164_sha d3d864_sha cube64_sha diagnostics64_sha driver64_sha requirements64_sha
     local audio32_sha graphics32_sha vulkan32_sha d3d1132_sha d3d832_sha cube32_sha diagnostics32_sha driver32_sha requirements32_sha
+    local network64_sha network32_sha process64_sha process32_sha
     local storage_write_sha storage_read_sha image_fetch_sha combined_sample_sha separated_sample_sha
     local vkd3d64_d3d12_sha vkd3d64_smoke_sha
     audio64_sha="$(sha256sum "$smoke_dir/x64/winehua_audio_smoke.exe" | awk '{print $1}')"
@@ -742,6 +892,8 @@ assemble_pad() {
         diagnostics64_sha=""
     fi
     driver64_sha="$(sha256sum "$smoke_dir/x64/winehua_win32_driver.exe" | awk '{print $1}')"
+    network64_sha="$(sha256sum "$smoke_dir/x64/winehua_platform_network.exe" | awk '{print $1}')"
+    process64_sha="$(sha256sum "$smoke_dir/x64/winehua_platform_process_smoke.exe" | awk '{print $1}')"
     if [ -s "$vulkan_import_x64" ]; then
         requirements64_sha="$(sha256sum "$smoke_dir/x64/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
     else
@@ -755,6 +907,8 @@ assemble_pad() {
     cube32_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d_switch_cube.exe" | awk '{print $1}')"
     diagnostics32_sha="$(sha256sum "$smoke_dir/x86/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
     driver32_sha="$(sha256sum "$smoke_dir/x86/winehua_win32_driver.exe" | awk '{print $1}')"
+    network32_sha="$(sha256sum "$smoke_dir/x86/winehua_platform_network.exe" | awk '{print $1}')"
+    process32_sha="$(sha256sum "$smoke_dir/x86/winehua_platform_process_smoke.exe" | awk '{print $1}')"
     # venus shader 资产: 随 guest_vulkan bundle 打包 (源驱动)
     if [ -f "$smoke_dir/assets/venus_storage_write.spv" ]; then
         storage_write_sha="$(sha256sum "$smoke_dir/assets/venus_storage_write.spv" | awk '{print $1}')"
@@ -777,7 +931,9 @@ assemble_pad() {
     else
         vkd3d64_smoke_sha=""
     fi
-    local smoke_suite_version="phase2-vulkan-dxvk-v10-vkd3d-default"
+    local process_x64_arch="x86_64"
+    [ "$WINE_ARCH" = "aarch64" ] && process_x64_arch="arm64"
+    local smoke_suite_version="phase2-vulkan-dxvk-v12-steam-platform-gates"
     local dxvk_commit dxvk_modern_commit mesa_commit virglrenderer_commit
     local guest_venus_icd_sha host_virglrenderer_sha venus_runtime_id
     dxvk_commit="$(git -c safe.directory="$DXVK_SRC" -C "$DXVK_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -851,7 +1007,7 @@ EOF
 {
   "schemaVersion": 1,
   "suiteVersion": "$smoke_suite_version",
-  "enabledSuites": ["core", "audio", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk", "gpu-diagnostics", "dxvk26-requirements", "dxvk-modern-baseline"],
+  "enabledSuites": ["core", "audio", "platform-process", "platform-network", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk", "gpu-diagnostics", "dxvk26-requirements", "dxvk-modern-baseline"],
   "managedRoot": "C:\\\\smoke",
   "files": {
     "x64/winehua_audio_smoke.exe": "$audio64_sha",
@@ -862,6 +1018,8 @@ EOF
     "x64/winehua_d3d_switch_cube.exe": "$cube64_sha",
     "x64/winehua_gpu_diagnostics.exe": "$diagnostics64_sha",
     "x64/winehua_win32_driver.exe": "$driver64_sha",
+    "x64/winehua_platform_network.exe": "$network64_sha",
+    "x64/winehua_platform_process_smoke.exe": "$process64_sha",
     "x64/winehua_dxvk26_requirements.exe": "$requirements64_sha",
     "x64/winehua_d3d12_smoke.exe": "$vkd3d64_smoke_sha",
     "x64/triangle.exe": "$vkd3d_upstream_triangle_sha",
@@ -874,6 +1032,8 @@ EOF
     "x86/winehua_d3d_switch_cube.exe": "$cube32_sha",
     "x86/winehua_gpu_diagnostics.exe": "$diagnostics32_sha",
     "x86/winehua_win32_driver.exe": "$driver32_sha",
+    "x86/winehua_platform_network.exe": "$network32_sha",
+    "x86/winehua_platform_process_smoke.exe": "$process32_sha",
     "x86/winehua_dxvk26_requirements.exe": "$requirements32_sha",
     "assets/venus_storage_write.spv": "$storage_write_sha",
     "assets/venus_storage_read.spv": "$storage_read_sha",
@@ -913,6 +1073,18 @@ EOF
         {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000}
       ]
     },
+    "platform-network": {
+      "tests": [
+        {"testId": "platform-network-x64", "exe": "x64/winehua_platform_network.exe", "env": {"WINEDEBUG": "+dnsapi,+iphlpapi,+winsock,+nsi,+winhttp,+wininet,+schannel,+crypt"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 180000},
+        {"testId": "platform-network-x86", "exe": "x86/winehua_platform_network.exe", "env": {"WINEDEBUG": "+dnsapi,+iphlpapi,+winsock,+nsi,+winhttp,+wininet,+schannel,+crypt"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 180000}
+      ]
+    },
+    "platform-process": {
+      "tests": [
+        {"testId": "platform-process-x64", "exe": "x64/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x86/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000},
+        {"testId": "platform-process-x86", "exe": "x86/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x64/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "$process_x64_arch"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000}
+      ]
+    },
     "d3d8": {
       "tests": [
         {"testId": "d3d8-capability-x86", "exe": "x86/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
@@ -935,8 +1107,8 @@ EOF
     },
     "wine-vulkan-present": {
       "tests": [
-        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000}
+        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000}
       ]
     },
     "dxvk": {
@@ -1001,8 +1173,8 @@ EOF
         {"testId": "d3d9-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
         {"testId": "wine-vulkan-offscreen-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
         {"testId": "wine-vulkan-offscreen-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000},
+        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000},
         {"testId": "dxvk-legacy-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
         {"testId": "dxvk-legacy-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
         {"testId": "dxvk-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 8, "timeoutMs": 180000}
@@ -1021,7 +1193,7 @@ EOF
 }
 SMOKE_SUITES_EOF
     log "  smoke suite definitions → smoke/suites.json ($smoke_suite_version)"
-    log "  VKD3D-Proton 2.6 limited-500K (default mixed D3D12 profile) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
+    log "  VKD3D-Proton 2.6 limited-500K (packaged, product-disabled) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
 
     # fonts
     cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
@@ -1029,12 +1201,11 @@ SMOKE_SUITES_EOF
     cp "$wine_build_dir/nls/"*.nls "$wine_data/share/wine/nls/"
     # winmd
     cp "$wine_build_dir/include/"*.winmd "$wine_data/share/wine/winmd/"
-    # Wine Mono (.NET 运行时) — build_deps.sh 下载到架构无关的 build/wine-mono.
-    # Default builds require the exact MSI expected by mscoree/appwiz; an empty
-    # directory would otherwise leave wineboot in an interactive installer
-    # forever on first launch.
+    # Wine Mono (.NET runtime) is retained for explicit experiments only.
+    # The direct-game default omits it and appwiz.cpl because Wine's first-run
+    # installer is interactive and blocks wineboot without a device-side flow.
     local wine_mono_msi="$BUILD_DIR/wine-mono/wine-mono-11.1.0-x86.msi"
-    if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
+    if [ "${BUILD_WINE_MONO:-0}" = "1" ]; then
         [ -s "$wine_mono_msi" ] || err "Wine Mono MSI missing: $wine_mono_msi"
         cp "$wine_mono_msi" "$wine_data/share/wine/mono/"
         log "    wine-mono.msi → rawfile share/wine/mono/"
@@ -1107,6 +1278,8 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
         cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
     fi
+
+    verify_runtime_components
 
     # guest GPU 库 (Mesa/VirGL, 供 GraphicsBroker 注入到 Wine LD_LIBRARY_PATH)
     if [ -d "$BUILD_DIR/guest_gfx/$guest_arch/lib" ]; then
@@ -1208,6 +1381,7 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cd "$wine_data"
     rm -f "$STAGING_DIR/$zip_name"
     zip -r "$STAGING_DIR/$zip_name" . -x '*.git*'
+    python3 "$SCRIPT_DIR/check_runtime_components.py" --payload "$STAGING_DIR/$zip_name"
     cp "$STAGING_DIR/$zip_name" "$rawfile_dir/"
     local payload_sha
     payload_sha="$(sha256sum "$rawfile_dir/$zip_name" | awk '{print $1}')"
