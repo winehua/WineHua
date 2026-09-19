@@ -1,0 +1,24 @@
+{
+  "name": "dxvk-modern-long",
+  "title": "DXVK Modern 长跑",
+  "tests": [
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-modern-long",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_modern_2_6"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module",
+        "DXVK_WINEHUA_TRACE_SAMPLED": "0",
+        "DXVK_WINEHUA_TRACE_FLOW": "0",
+        "DXVK_WINEHUA_TRACE_API": "0"
+      },
+      "seconds": -1,
+      "timeoutMs": -1
+    }
+  ]
+}

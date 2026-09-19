@@ -1,0 +1,20 @@
+{
+  "name": "dxvk26-requirements",
+  "title": "DXVK 2.6.2 transport 资格 probe",
+  "tests": [
+    {
+      "case": "dxvk26-requirements",
+      "id": "dxvk26-requirements",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 0,
+      "timeoutMs": 90000
+    }
+  ]
+}

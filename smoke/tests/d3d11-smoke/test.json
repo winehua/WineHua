@@ -1,0 +1,10 @@
+{
+  "id": "d3d11-smoke",
+  "title": "D3D11 功能矩阵（Wine 构建产物）",
+  "exe": "winehua_d3d11_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "from_wine": "winehua_d3d11_smoke"
+}

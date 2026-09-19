@@ -1,0 +1,37 @@
+{
+  "name": "dxvk",
+  "title": "DXVK Legacy（1.10.3）完整矩阵",
+  "tests": [
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-legacy",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d-switch-cube",
+      "id": "dxvk-cube",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "env": {
+        "WINEDEBUG": "+loaddll,+module"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

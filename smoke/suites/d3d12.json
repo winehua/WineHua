@@ -1,0 +1,28 @@
+{
+  "name": "d3d12",
+  "title": "VKD3D-Proton limited-500k 图形 smoke",
+  "tests": [
+    {
+      "case": "d3d12-smoke",
+      "testId": "d3d12-1000f",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k"
+      },
+      "env": {},
+      "argv": [
+        "--frames",
+        "1000",
+        "--result",
+        "C:/smoke/results/<run-id>/<test-id>.json",
+        "--checkpoint",
+        "C:/smoke/results/<run-id>/<test-id>.ckpt"
+      ],
+      "argvMode": "raw",
+      "seconds": 0,
+      "timeoutMs": 180000
+    }
+  ]
+}
