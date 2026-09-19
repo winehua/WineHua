@@ -79,6 +79,13 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     }
 }
 
+void PluginManager::SetRendererStretchFill(uint32_t toplevelId, bool on) {
+    auto rit = toplevelRenderers_.find(toplevelId);
+    if (rit != toplevelRenderers_.end() && rit->second->IsValid()) {
+        rit->second->SetStretchFill(on);
+    }
+}
+
 void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
     OH_LOG_INFO(LOG_APP, "[MW-Resize] toplevel=%{public}u size=%{public}dx%{public}d", toplevelId, w, h);
 

@@ -452,7 +452,7 @@ void WaylandServer::ForceToplevelRedraw(uint32_t id) {
     if (auto* st = toplevelMgr_.FindToplevelLocked(id)) st->MarkDirty();
 }
 
-void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h) {
+void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h, bool resizing) {
     // 最小化门禁: 窗口最小化期间不向 Wine 发任何 configure。
     // winewayland 的「最小化→还原」握手 (window.c restoring_from_minimize)
     // 依赖窗口 rect 停在 -32000 哨兵位; 此时收到 configure, wine 走普通
@@ -480,15 +480,22 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     // 6A: 状态查询直调 toplevelMgr_ (删转发; 本函数为 WaylandServer 成员, 同值)。
     const bool maximized = toplevelMgr_.IsToplevelMaximized(toplevelId);
 
-    OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s",
+    OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s resize=%{public}s",
                 toplevelId, w, h,
                 IsDesktopMode() ? "no" : "yes",
-                maximized ? "yes" : "no");
+                maximized ? "yes" : "no",
+                resizing ? "yes" : "no");
+
+    // 拖拽缩放中: 渲染器整帧拉伸填满 — 窗口已变而 Wine 新帧未到的空档里,
+    // 等比 fit 会按旧帧比例留黑边 (拖拽结束的 0 尺寸 configure 复位)
+    PluginManager::GetInstance()->SetRendererStretchFill(toplevelId, resizing);
 
     std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
     if (maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
     // 全屏窗口在 OHOS 侧尺寸变化时保持 FULLSCREEN 状态, 否则 Wine 会退出全屏。
     if (toplevelMgr_.IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    // 拖拽缩放中: Wine 仅采用带 RESIZING 的 configure 尺寸 (见头文件注释)
+    if (resizing) states.push_back(XDG_TOPLEVEL_STATE_RESIZING);
     XdgConfigureSend(tl, xdg->xdgSurface, w, h, states);
 
     // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时
