@@ -28,14 +28,29 @@ from __future__ import annotations
 from . import coverage as _coverage
 from . import frame
 
+# 终态集合，与 smoke 程序协议一致 (thirdparty/wine/programs/winehua_smoke_protocol.h)
+FINAL_STATUSES = ("PASS", "FAIL", "SKIP", "UNSUPPORTED")
+
 
 def result_json(ctx: dict) -> dict:
     result = ctx.get("result")
     if not result:
         return {"status": "FAIL", "stage": "missing-result",
                 "message": "设备端结果文件缺失"}
+    status = result.get("status", "")
+    if status not in FINAL_STATUSES:
+        # 非终态 = 测试没跑完。程序跑测期间会反复写心跳快照 (status=RUNNING),
+        # 卡死或被杀后留在盘上的就是最后那次心跳 —— 原样透传的话 RUNNING 既不
+        # 等于 FAIL 也不是 PASS, judge_run 按"没有 FAIL 即 PASS"会把这颗卡死
+        # 判成绿的 (实测 dxvk-modern-baseline-x64 卡在 D24S8 cube-array 180s
+        # 超时, 结果文件是 RUNNING 快照, 顶上是 PASS)。判定层必须自己兜底。
+        detail = " ".join(part for part in (result.get("stage", ""),
+                                            result.get("message", "")) if part)
+        return {"status": "FAIL", "stage": status or "unfinished",
+                "message": f"结果非终态 ({status or '无 status 字段'}){': ' + detail if detail else ''}",
+                "metrics": result.get("metrics", {})}
     return {
-        "status": result.get("status", "FAIL"),
+        "status": status,
         "stage": result.get("stage", ""),
         "message": result.get("message", ""),
         "metrics": result.get("metrics", {}),

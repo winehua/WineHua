@@ -25,6 +25,8 @@ const TAG = 'SMOKE';
 //     等 enterReady 链尾的 onEngineReady (引擎 ready 且 prefix 真正就绪 —
 //     回放式 ready 不可信: broker 未就绪时 runWineProgram 返回 -1, 实测)。
 //   - 二次 Want (App 存活): onNewWant 消费后立即跑 (引擎必然已就绪)。
+//   - 数据待更新 (upgradePending): onEngineUpgradePending 先自动做完整重置,
+//     否则引擎不会拉起, 只能等超时。
 export class SmokeHook {
   private static instance: SmokeHook | null = null;
 
@@ -90,8 +92,9 @@ export class SmokeHook {
   // 冷启动等 onEngineReady (引擎真 ready), 由 enterReady 链尾通知。
   // 注意: 不订阅 env 状态镜像 — clean 编排启动瞬间引擎仍短暂 ready
   // (stopSession 异步), 任何 notify 兜底触发都会把 clean 请求当 reuse 提前跑
-  // (r6 实测误触发)。跑测只走三个显式入口: attach 之 tick (仅 clean 编排) /
-  // onNewWant (引擎必然已就绪) / onEngineReady (waitForPrefix 完成链)。
+  // (r6 实测误触发)。跑测只走四个显式入口: attach 之 tick (仅 clean 编排) /
+  // onNewWant (引擎必然已就绪) / onEngineReady (waitForPrefix 完成链) /
+  // onEngineUpgradePending (引擎数据待更新, 先自动重置)。
   attach(env: WineEnvService): boolean {
     this.env = env;
     this.consume();
@@ -114,12 +117,35 @@ export class SmokeHook {
     this.runPending();
   }
 
+  // WineEnvService 置 upgradePending 后调用: 引擎数据与 HAP 不一致时产品不
+  // 拉起引擎 (等用户点「应用引擎更新」), 不处理就只能等超时。测试容器没有
+  // 要保留的用户数据, 编排里直接做同一动作。
+  onEngineUpgradePending(): void {
+    this.consume();
+    this.tick();
+  }
+
   // 编排单点 (幂等): clean 优先 (启动重置编排) → 跑测条件满足就跑 → 否则等待。
   // 返回 true = 本次调用启动了重置编排 (init 据此提前 return)。
   private tick(): boolean {
     const req = this.pending;
     const env = this.env;
     if (!req || !env) return false;
+    // 引擎数据与 HAP 不一致 (upgradePending): 产品不拉起引擎, 等用户点
+    // 「应用引擎更新（重置）」。测试容器没有要保留的用户数据, 直接做同一动作
+    // (doReset = 停 → 清 → 重解压 → 重启), ready 边沿会再进本方法跑测。
+    if (env.upgradePending && !this.resetStarted) {
+      if (env.isBusy()) {
+        return false;
+      }
+      this.resetStarted = true;
+      if (env.doReset()) {
+        hilog.warn(DOMAIN, TAG, 'engine upgrade pending: auto doReset (smoke session)');
+        return true;
+      }
+      this.resetStarted = false;
+      return false;
+    }
     if (req.prefix === 'clean' && !this.resetStarted) {
       if (env.isBusy()) {
         return false; // busy: 等下一 tick (编排完成后 ready 边沿触发)

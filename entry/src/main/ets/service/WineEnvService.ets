@@ -389,6 +389,8 @@ export class WineEnvService {
           pathExists(`${WINE_ROOT}/share/wine/wine.inf`) &&
           this.upgradeNeedsAttention()) {
         this.upgradePending = true;
+        // [[SMOKE]] 合并到 main-ui: 删本行 (测试会话自动应用引擎更新)
+        SmokeHook.getInstance().onEngineUpgradePending();
         this.notify();
         return;
       }
@@ -898,6 +900,8 @@ export class WineEnvService {
       this.initOverlayVisible = false;
       this.initBusy = false;
       this.upgradePending = true;
+      // [[SMOKE]] 合并到 main-ui: 删本行 (测试会话自动应用引擎更新)
+      SmokeHook.getInstance().onEngineUpgradePending();
       this.notify();
       return;
     }

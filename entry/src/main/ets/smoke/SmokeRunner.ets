@@ -48,9 +48,20 @@ interface RunProgramResult {
   pid: number;
 }
 
+// queryWineProcess 返回的窄化视图 (native 进程注册表快照)
+interface ProcessSnapshot {
+  found: boolean;
+  status: string;
+  exitCode?: number | null;
+  exitCodeSource?: string;
+}
+
 // 结果 JSON 的终态集合 (与 smoke 程序协议一致: PASS/FAIL/SKIP/UNSUPPORTED)
 const FINAL_STATUSES: string[] = ['PASS', 'FAIL', 'SKIP', 'UNSUPPORTED'];
 const POLL_INTERVAL_MS: number = 500;
+// 进程退出与结果落盘有先后差: 判崩溃前多等几轮再定
+const EXIT_GRACE_READS: number = 4;
+const EXIT_GRACE_MS: number = 150;
 
 // 瘦编排解释器: 读 suites.json → 逐测试 runWineProgram → 轮询结果 JSON → 汇总
 // suite-summary.json。只搬运 env 不懂 env; 产品语义 env (DXVK 稳定化/后端档位) 由
@@ -274,34 +285,62 @@ export class SmokeRunner {
     if (!process || process.pid <= 0) {
       return this.failure(request, 'startup', `runWineProgram failed: ${winPath}`, -1, test.testId);
     }
-    // 轮询结果 JSON: 文件出现且 status 为终态即采; 超时记 FAIL(timeout)
+    // 子进程死了 (崩溃/被杀) 就不会再有结果文件, 只盯文件的轮询会把崩溃拖满
+    // 整个 timeout, 失败信息只剩一句"轮询超时", 崩溃原因整个丢掉。查一次
+    // native 进程注册表 (无 IO) 确认已退出的: 宽限几轮等结果落盘, 仍无终态
+    // 即判失败并带上退出码与来源。
     const deadline = Date.now() + resolvedTimeout;
     let lastText: string = '';
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
       lastText = readTextIfExists(resultPath);
-      if (lastText) {
-        try {
-          const obj = JSON.parse(lastText) as SmokeResultFile;
-          const status = obj.status ? `${obj.status}` : '';
-          if (status && FINAL_STATUSES.includes(status)) {
-            return {
-              schemaVersion: 1,
-              runId: request.runId,
-              testId: test.testId,
-              status: status,
-              stage: obj.stage ? `${obj.stage}` : 'complete',
-              pid: process.pid
-            };
-          }
-        } catch (_) {
-          // 半写 JSON: 继续轮询
+      let final: SmokeResultFile | null = SmokeRunner.parseFinal(lastText);
+      const snapshot = testNapi.queryWineProcess(process.pid) as ProcessSnapshot;
+      const exited: boolean = !snapshot.found || snapshot.status !== 'running';
+      if (exited) {
+        for (let grace = 0; grace < EXIT_GRACE_READS && !final; grace++) {
+          await new Promise<void>((r) => setTimeout(r, EXIT_GRACE_MS));
+          lastText = readTextIfExists(resultPath);
+          final = SmokeRunner.parseFinal(lastText);
         }
+        if (!final) {
+          const code: string = snapshot.exitCode === undefined || snapshot.exitCode === null
+            ? '?' : `${snapshot.exitCode}`;
+          const source: string = snapshot.exitCodeSource ? snapshot.exitCodeSource : 'unknown';
+          hilog.error(DOMAIN, TAG,
+            'test=%{public}s pid=%{public}d exited before result exit=%{public}s source=%{public}s',
+            test.testId, process.pid, code, source);
+          return this.failure(request, 'crashed',
+            `进程在写出结果前退出 (exit=${code}, source=${source})`,
+            process.pid, test.testId);
+        }
+      }
+      if (final) {
+        return {
+          schemaVersion: 1,
+          runId: request.runId,
+          testId: test.testId,
+          status: final.status ? `${final.status}` : '',
+          stage: final.stage ? `${final.stage}` : 'complete',
+          pid: process.pid
+        };
       }
     }
     hilog.error(DOMAIN, TAG, 'timeout test=%{public}s lastText=%{public}s',
       test.testId, lastText.substring(0, 200));
     return this.failure(request, 'timeout', `轮询超时 ${resolvedTimeout}ms (结果文件: ${resultPath})`, process.pid, test.testId);
+  }
+
+  // 结果文件 → 终态对象; 未出现 / 半写 JSON / 非终态一律 null (继续轮询)
+  private static parseFinal(text: string): SmokeResultFile | null {
+    if (!text) return null;
+    try {
+      const obj = JSON.parse(text) as SmokeResultFile;
+      const status = obj.status ? `${obj.status}` : '';
+      return status && FINAL_STATUSES.includes(status) ? obj : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   private failure(request: SmokeRequest, stage: string, message: string, pid: number, testId?: string): SmokeTestResult {

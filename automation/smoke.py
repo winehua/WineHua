@@ -440,6 +440,12 @@ def ensure_payload(args) -> Path:
     payload = Path(args.payload).resolve()
     if not (payload / "suites.json").is_file():
         die(f"payload not built: {payload} (run: smoke.py build)")
+    # 定义比载荷新 = 改了 smoke/tests 或 smoke/suites 却没重建：push 上去的
+    # 仍是旧定义（实测踩坑：改套件档位后设备端 suites.json 还是旧 backend）
+    definitions = list(TESTS_DIR.glob("*/test.json")) + list(SUITES_DIR.glob("*.json"))
+    newest = max(path.stat().st_mtime for path in definitions)
+    if newest > (payload / "suites.json").stat().st_mtime:
+        die("payload 已过期（smoke/tests 或 smoke/suites 有更新），先跑: smoke.py build")
     return payload
 
 
