@@ -1,0 +1,10 @@
+{
+  "id": "vulkan-smoke",
+  "title": "Wine Vulkan 探针（offscreen / present，Wine 构建产物）",
+  "exe": "winehua_vulkan_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "from_wine": "winehua_vulkan_smoke"
+}

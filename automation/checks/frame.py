@@ -1,31 +1,17 @@
-#!/usr/bin/env python3
-"""PIL/numpy frame validators for the WineHua regression suite.
-
-Replaces the System.Drawing validators that previously ran inside the Windows
-PowerShell orchestrator. Runs standalone so the same suite works from WSL pwsh.
-
-Exit code 0 means PASS, 1 means FAIL. The machine-readable JSON is written to
---output when given, and printed to stdout otherwise.
-"""
+"""固定帧视觉校验器（numpy + pillow，仅视觉判定需要）。"""
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
-import sys
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
 
+def _load_sampled_rgb(path: Path, step: int = 4):
+    """返回 (采样像素, 坐标网格, 宽, 高)；网格带原始像素坐标，使质心/边界
+    与历史 System.Drawing 实现一致。"""
+    import numpy as np
+    from PIL import Image
 
-def load_sampled_rgb(path: Path, step: int = 4) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Return (sampled pixels, (x, y) coordinate grids, width, height).
-
-    The grids carry original pixel coordinates (0, step, 2*step, ...) so
-    centroids and bounds match the previous System.Drawing implementation.
-    """
     with Image.open(path) as image:
         rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
         width, height = image.size
@@ -36,10 +22,11 @@ def load_sampled_rgb(path: Path, step: int = 4) -> tuple[np.ndarray, np.ndarray,
 
 
 def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
-    """Four-colour quadrant topology, rotation-invariant (validator
-    'rgba-quadrants-v1-rotations'). A reflection or duplicated/missing
-    quadrant fails the visual gate."""
-    pixels, xgrid, ygrid, width, height = load_sampled_rgb(image_path, step)
+    """四色象限拓扑，旋转不变（rgba-quadrants-v1-rotations）。镜像或象限
+    重复/缺失即 FAIL。"""
+    import numpy as np
+
+    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step)
     r = pixels[..., 0].astype(np.int16)
     g = pixels[..., 1].astype(np.int16)
     b = pixels[..., 2].astype(np.int16)
@@ -65,11 +52,8 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
             "y": float(ygrid[mask].mean()) if count else -1.0,
         }
 
-    # The OHOS presentation transform follows the display's native orientation.
-    # A landscape snapshot can therefore contain a 90/180/270 degree rotation of
-    # the canonical Vulkan framebuffer. Require the exact four-colour topology,
-    # but accept rotations; a reflection or duplicated/missing quadrant still
-    # fails the visual gate.
+    # OHOS 呈现变换跟随屏幕原生方向：横屏截图可能是规范帧的 90/180/270 度旋转。
+    # 要求精确的四色拓扑但接受旋转；镜像/重复/缺失仍 FAIL。
     center_x = sum(centroids[name]["x"] for name in masks) / 4.0
     center_y = sum(centroids[name]["y"] for name in masks) / 4.0
     quadrants = {}
@@ -112,9 +96,10 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
 
 
 def validate_d3d11_cube(image_path: Path, step: int = 4) -> dict:
-    """Coloured cube with depth/background variety (validator
-    'd3d11-cube-color-depth-v1')."""
-    pixels, xgrid, ygrid, width, height = load_sampled_rgb(image_path, step)
+    """带深度/背景色差的彩色立方体（d3d11-cube-color-depth-v1）。"""
+    import numpy as np
+
+    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step)
     r = pixels[..., 0].astype(np.int16)
     g = pixels[..., 1].astype(np.int16)
     b = pixels[..., 2].astype(np.int16)
@@ -174,20 +159,13 @@ VALIDATORS = {
 }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--validator", required=True, choices=sorted(VALIDATORS))
-    parser.add_argument("--image", required=True, type=Path)
-    parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-
-    report = VALIDATORS[args.validator](args.image)
-    encoded = json.dumps(report, sort_keys=True, indent=2) + "\n"
-    if args.output:
-        args.output.write_text(encoded, encoding="utf-8")
-    print(encoded, end="")
-    return 0 if report["status"] == "PASS" else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def validate(name: str, image_path: Path) -> dict:
+    runner = VALIDATORS.get(name)
+    if runner is None:
+        return {"status": "FAIL", "validator": name,
+                "message": f"未知视觉校验器: {name}（可用: {', '.join(sorted(VALIDATORS))}）"}
+    try:
+        return runner(image_path)
+    except Exception as error:  # noqa: BLE001 - 校验器依赖缺失/图片损坏都要有明确结论
+        return {"status": "FAIL", "validator": name,
+                "message": f"视觉校验异常: {error}"}

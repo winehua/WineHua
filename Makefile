@@ -71,6 +71,23 @@ GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
 WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-ohos/share/wine/mono/wine-mono-11.1.0-x86.msi
 HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
 
+# ============================================================
+# smoke 载荷 — automation/smoke.py build 产出, assemble 打进
+# wine-data.zip 的 smoke/ 树 (设备端 SmokeHook.seed 的离线源;
+# host 推送源 files/smoke-payload 优先级更高, 供开发环境热更新)
+# ============================================================
+SMOKE_PAYLOAD_MANIFEST := $(BUILD_DIR)/smoke-payload/manifest.json
+# 源码型用例跟踪 smoke/ 全树; 产物型用例 (from_wine/from_vkd3d) 跟踪
+# 代表产物与 stamp, 重编后触发载荷重建, 防止 assemble 拷到陈旧 exe
+SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
+	$(BUILD_DIR)/wine-ohos/programs/winehua_d3d11_smoke/x86_64-windows/winehua_d3d11_smoke.exe \
+	$(VKD3D_PROTON_STAMP)
+
+$(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
+	@echo "=== smoke payload ==="
+	python3 $(ROOT)/automation/smoke.py build
+	test -f $@
+
 # Guest runtime build scripts can also be invoked directly while iterating on
 # Mesa/Venus. Track their manifests as assemble inputs so a subsequent
 # `make hap` cannot silently reuse an older staged wine-data.zip.
@@ -375,13 +392,7 @@ define assemble_rule
 assemble-$(1): $$(STAMPS)/$(1)/assemble
 
 $$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
-	$(VKD3D_PROTON_ARTIFACTS) \
-	$(ROOT)/smoke/winehua_d3d8_smoke.c \
-	$(ROOT)/smoke/winehua_dns_probe.c \
-	$(ROOT)/smoke/winehua_d3d_switch_cube.c \
-	$(ROOT)/smoke/winehua_gpu_diagnostics.c \
-	$(ROOT)/smoke/winehua_dxvk26_requirements.c \
-	$(ROOT)/smoke/winehua_win32_driver.c \
+	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
 	$$(STAMPS)/deps $$(STAMPS)/wine-$(1) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \
 	$$(ASSEMBLE_GUEST_INPUTS) | $$(STAMPS)/$(1)

@@ -1,5 +1,9 @@
 # Smoke / 自动化设施全景与侵入点清理（entry 模块）
 
+> 本文描述 v1 设施（载荷打进 HAP、`automation/run_regression.py` 驱动、SmokeRunner
+> 位于 `service/`）。设施已由 v2 替代，当前形态见 `docs/SMOKE_V2_DESIGN.md` 与
+> `automation/README.md`；本文保留作为侵入点分析的档案。
+
 本文记录 entry 模块内 smoke（自动化烟测）相关设施各自是什么功能、入口在哪里，
 以及这些设施对正常功能逻辑的侵入点与清理方案。
 

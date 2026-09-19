@@ -1,0 +1,130 @@
+{
+  "name": "all",
+  "title": "组合：主力套件并集",
+  "checks": [
+    "coverage"
+  ],
+  "tests": [
+    {
+      "case": "audio-smoke",
+      "id": "audio",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 3,
+      "timeoutMs": 45000
+    },
+    {
+      "case": "graphics-smoke",
+      "id": "opengl",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "d3d8-smoke",
+      "id": "d3d8-capability",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 5,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d-switch-cube",
+      "id": "d3d9-cube",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "extraArgs": [
+        "--d3d9"
+      ],
+      "seconds": 8,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "vulkan-smoke",
+      "id": "wine-vulkan-offscreen",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
+        "WINEHUA_VULKAN_RUNTIME": "1"
+      },
+      "mode": "offscreen",
+      "seconds": 0,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "vulkan-smoke",
+      "id": "wine-vulkan-present",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
+        "WINEHUA_VULKAN_RUNTIME": "1"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-legacy",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d-switch-cube",
+      "id": "dxvk-cube",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

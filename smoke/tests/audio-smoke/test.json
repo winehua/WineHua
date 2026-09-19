@@ -1,0 +1,10 @@
+{
+  "id": "audio-smoke",
+  "title": "音频输出能力（Wine 构建产物）",
+  "exe": "winehua_audio_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "from_wine": "winehua_audio_smoke"
+}

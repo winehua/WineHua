@@ -55,6 +55,9 @@ static void tl_set_title(wl_client*, wl_resource* tlRes, const char* title) {
     WaylandServer::GetInstance()->PostToplevelEvent(
         sd->toplevelId, ToplevelEventType::Title,
         ToplevelEventBus::JsonTitle(sd->title));
+    // title 与 commit 是独立的协议请求, 可能晚于首个 commit 到达 —— 补一次
+    // 识别机会 (理由见 WaylandServer::RecheckDesktopRootOnTitle)。
+    WaylandServer::GetInstance()->RecheckDesktopRootOnTitle(sd);
 }
 static void tl_set_app_id(wl_client*, wl_resource* tlRes, const char* appId) {
     auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));

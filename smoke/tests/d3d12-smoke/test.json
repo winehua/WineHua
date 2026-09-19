@@ -1,0 +1,9 @@
+{
+  "id": "d3d12-smoke",
+  "title": "VKD3D-Proton limited-500k 图形 smoke（x64 单图）",
+  "exe": "winehua_d3d12_smoke.exe",
+  "arch": [
+    "x64"
+  ],
+  "from_vkd3d": "limited-500k/x64/winehua-d3d12-smoke.exe"
+}
