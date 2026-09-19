@@ -154,11 +154,31 @@ def load_cases() -> dict:
     return cases
 
 
+# 经 __env 下发后设备端读不到的键。声明了也没有任何效果，装载期直接拦下，
+# 避免"写了以为开了"的静默失效。Wine 日志看 hilog 的 WineChild-stderr tag。
+UNREACHABLE_ENV_KEYS = {
+    # 设计上忽略: profile 选择要自己判断 exe 类型与覆盖来源, 通用覆盖会让它失效
+    "WINEDEBUG": "设备端显式忽略（wine_child.cpp select_winedebug_profile）",
+    # 时序缺陷: 该函数在 458 行读它, __env 覆盖在 479 行才应用 —— 属待修 bug,
+    # 不是设计意图 (同处注释声称这条通道可用)
+    "WINEHUA_WINEDEBUG": "设备端读取早于 __env 应用（wine_child.cpp:458 vs 479）",
+}
+
+
+def reject_unreachable_env(context: str, env: dict) -> None:
+    for key in env or {}:
+        reason = UNREACHABLE_ENV_KEYS.get(key)
+        if reason:
+            die(f"{context}: env {key} 不会生效 —— {reason}"
+                f"; Wine 日志看 hilog 的 WineChild-stderr tag")
+
+
 def load_suite(path: Path, cases: dict) -> tuple:
     body = json.loads(path.read_text())
     name = body["name"]
     entries = []
     for inst in body.get("tests", []):
+        reject_unreachable_env(path.name, inst.get("env"))
         case_id = inst["case"]
         if case_id not in cases:
             die(f"{path.name}: unknown case {case_id}")
@@ -376,10 +396,25 @@ def resolve_device(hdc: str, explicit: str) -> str:
     die("multiple devices; pass --device (or WINEHUA_DEVICE): " + ", ".join(devices))
 
 
-def hdc_shell(hdc: str, device: str, script: str) -> tuple:
-    result = subprocess.run([hdc, "-t", device, "shell", script],
-                            capture_output=True, text=True, errors="replace")
-    return result.returncode, result.stdout
+# hdc shell 的超时保护。设备端卡死时（测试进程进 D-state 等）hdc 调用可能永不
+# 返回，没有 timeout 的话 subprocess.run 会永久阻塞，调用方的 deadline 检查也就
+# 永远执行不到 —— 实测一轮 run 挂满 23 分钟直到手工 kill（设备端与 host 侧两层
+# 超时全部失效）。默认值留够 aa start / snapshot_display 这类慢命令；轮询路径
+# 用更短的值，让"设备端无响应"尽快暴露。
+HDC_SHELL_TIMEOUT_S = 60
+HDC_POLL_TIMEOUT_S = 20
+
+
+def hdc_shell(hdc: str, device: str, script: str,
+              timeout: int = HDC_SHELL_TIMEOUT_S) -> tuple:
+    """执行设备端 shell 命令；超时按失败返回 (-1, "")，不向上抛。"""
+    try:
+        result = subprocess.run([hdc, "-t", device, "shell", script],
+                                capture_output=True, text=True,
+                                timeout=timeout, errors="replace")
+        return result.returncode, result.stdout
+    except subprocess.TimeoutExpired:
+        return -1, ""
 
 
 def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:
@@ -418,13 +453,18 @@ def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
 
 def sandbox_texts(hdc: str, device: str, rel_paths: list) -> dict:
     """一次 hdc 调用读多个文件（分隔符切分）：固定帧窗口只有 2 秒，逐文件
-    cat 的往返开销会把轮询周期撑到窗口之外。返回 {rel_path: 内容}。"""
+    cat 的往返开销会把轮询周期撑到窗口之外。返回 {rel_path: 内容}。
+
+    整个 hdc 调用失败（含超时）时返回**空 dict** —— 与"文件不存在"返回
+    {path: ""} 区分开，调用方据此判断设备端是否还在响应。"""
     if not rel_paths:
         return {}
     marker = "@@@SMOKE@@@"
     script = f"; echo '{marker}'; ".join(
         f"cat '{REAL_FILES}/{path}' 2>/dev/null" for path in rel_paths)
-    code, out = hdc_shell(hdc, device, script)
+    code, out = hdc_shell(hdc, device, script, timeout=HDC_POLL_TIMEOUT_S)
+    if code == -1:
+        return {}
     if code != 0:
         return {path: "" for path in rel_paths}
     chunks = out.split(marker)
@@ -491,6 +531,7 @@ def build_job(args: argparse.Namespace) -> dict:
             if not sep:
                 die(f"--env 需要 KEY=VALUE 形式: {item}")
             overrides[key] = value
+        reject_unreachable_env("--env", overrides)
         params["env"] = overrides
     if args.d3d:
         params["d3dBackend"] = args.d3d
@@ -669,12 +710,23 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
     summary = None
     started = time.time()
     retried = False
+    consecutive_unresponsive = 0
     while time.time() < deadline:
         pending = [tid for tid in frame_targets if tid not in frames]
         time.sleep(0.15 if pending else poll_seconds)
         # 每轮一次 hdc 读全部待采帧测试 + suite summary（见 sandbox_texts）
         paths = [f"{DRIVE_C_REL}/results/{run_id}/{tid}.json" for tid in pending]
         texts = sandbox_texts(hdc, device, paths + [summary_rel])
+        if not texts:
+            # hdc 调用本身失败（超时）= 设备端可能卡死。卡住的测试进程不自愈，
+            # 别耗满 deadline 才报 —— 连续几轮无响应就带现场退出。
+            consecutive_unresponsive += 1
+            if consecutive_unresponsive >= 5:
+                die(f"设备端连续 {consecutive_unresponsive} 轮无响应"
+                    f"（hdc shell 超时 {HDC_POLL_TIMEOUT_S}s）：测试进程可能卡死，"
+                    f"设备端日志见 {SANDBOX_FILES}/temp/wine_stderr_*.log")
+            continue
+        consecutive_unresponsive = 0
         for test_id in pending:
             text = texts.get(f"{DRIVE_C_REL}/results/{run_id}/{test_id}.json", "")
             if '"fixed-frame"' in text and '"message"' in text:
@@ -736,6 +788,13 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
                 result = json.loads(result_path.read_text())
             except json.JSONDecodeError:
                 result = None
+        if result is None and device_tests:
+            # 结果文件缺失：测试超时/崩溃时设备端只把结论写进 suite-summary
+            # （SmokeRunner 的 failure() 是内存对象），不落结果文件。回退到
+            # summary 条目以保住 stage/message —— 否则判定只剩一句"结果文件
+            # 缺失"，超时原因整个丢掉（实测 --timeout-ms 1500 即如此）。
+            result = next((item for item in device_tests
+                           if item.get("testId") == test_id), None)
         if result is not None:
             collected.append(result)
         declared = entry.case.declared_checks if entry else ["result-json"]

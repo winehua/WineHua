@@ -72,7 +72,8 @@
         "x86"
       ],
       "backend": {
-        "d3d": "vkd3d_limited_500k"
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
       },
       "env": {
         "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
@@ -90,7 +91,8 @@
         "x86"
       ],
       "backend": {
-        "d3d": "vkd3d_limited_500k"
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
       },
       "env": {
         "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
@@ -109,9 +111,6 @@
       "backend": {
         "d3d": "dxvk_legacy"
       },
-      "env": {
-        "WINEDEBUG": "+loaddll,+module"
-      },
       "seconds": 5,
       "timeoutMs": 180000
     },
@@ -123,9 +122,6 @@
       ],
       "backend": {
         "d3d": "dxvk_legacy"
-      },
-      "env": {
-        "WINEDEBUG": "+loaddll,+module"
       },
       "seconds": 8,
       "timeoutMs": 180000

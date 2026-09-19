@@ -55,6 +55,18 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
 套件条目字段：`case`（用例 id）、`id`/`testId`、`arch`、`env`、`backend.d3d`/`backend.dxvk`、
 `seconds`、`timeoutMs`、`mode`、`extraArgs`、`argvMode`/`argv`。
 
+`backend.dxvk` 只在 `d3d=vkd3d_limited_500k` 档被消费（`wine_env.cpp` 的
+`AppendD3dBackendEnv` 用它选 DXVK overlay 与 `WINEHUA_DXVK_ROOT`）；其余档位走各自
+分支，写不写都一样。声明了 `d3d` 就要一起声明 `dxvk`：不声明会退回"设备当前设置"，
+而它由 `EntryAbility.defaultDxvkBackend()` 按机型与系统版本解析（`VYG-AL00` 且
+`incrementalVersion=26.0.0.32` → modern，其余 → legacy），同一套件在不同设备上测的
+就不是同一个东西。
+
+`env` 里的 `WINEDEBUG` 与 `WINEHUA_WINEDEBUG` 都不生效：前者被设备端显式忽略
+（`wine_child.cpp` 的 profile 选择要自己判断 exe 类型），后者的读取早于 `__env` 应用
+（同文件 458 行 vs 479 行，属实现缺陷）。`smoke.py` 装载套件时直接拦下这两类声明。
+Wine 日志看 hilog 的 `WineChild-stderr` tag。
+
 ## 判定
 
 设备端只产出原始数据（结果 JSON、固定帧），PASS/FAIL 由 `automation/checks/` 解释：
@@ -95,6 +107,7 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 - **dxvk-dynamic**：dynamic constant buffer 专项
 - **dxvk-long / dxvk-modern-long**：长时间稳定性（默认 1 小时，`--long-seconds` 可调）
 - **dxvk-modern-baseline**：DXVK 2.6.2 x86/x64 baseline + cube 回归
+- **dxvk-500k-routes**：500k 混合路由的两条 DXVK 支路（1.10.3 = 全新设备默认，2.6.2 = UI 选过 DXVK 2.6.2 后的组合）
 - **gpu-diagnostics**：报告 Guest Vulkan、DXVK DLL 实际加载路径与 D3D11 device 状态
 - **dxvk26-requirements**：DXVK 2.6.2 所需的 Guest/Wine Vulkan 1.3 transport 资格探针
 - **d3d12**：VKD3D-Proton limited-500k 1000 帧图形 smoke（含 checkpoint 进度）
