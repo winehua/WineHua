@@ -428,6 +428,50 @@ Start-Sleep 150
 | `https://github.com/winehua/box64.git` | `ohos-wow64-smc-fs` | `a8e7ed5ca` |
 | `https://github.com/winehua/wine.git` | `ohos-port-snapshot-20260919` | `8f5f22a8f25` |
 
+> **注意**：上面 `ohos-port-snapshot-20260919` 是"无父提交"的快照分支，只用于留档；
+> 给 CI 用的是另一条：`ohos-port-steam-win64` = `c0cc03e377e`（父提交 = 远端 `ohos-port`
+> 旧尖端 `61a2f5d0`，树 = 本地 `wine-valve` 工作树）。见 §11.4。
+
+### 11.4 线上可编译性（CI 取 wine 源码的缺口与修复）
+
+**缺口（本轮发现）**：构建用的 wine 源码是 `thirdparty/wine-valve`（`Makefile: WINE_SRC=thirdparty/wine-valve`），
+但它是 `thirdparty/wine`（注册 submodule）的一个 **worktree**，**从来没被主仓跟踪过**。
+`.github/workflows/*.yml` 只做 `actions/checkout(submodules: recursive)` + `make ... hap`，
+所以 CI/新 clone 里根本没有 `thirdparty/wine-valve` → `make wine/assemble/hap` 第一步就退出。
+
+**修复（已提交）**：
+
+1. 推送一条能在 CI 里正常 fetch/worktree 的 wine 分支：
+
+   | 远端 | 分支 | 提交 | 说明 |
+   | --- | --- | --- | --- |
+   | `winehua/wine.git` | `ohos-port-steam-win64` | `c0cc03e377e` | 父提交 = `ohos-port@61a2f5d0`；树 = 本地 `wine-valve@f90646a3c5a` 的完整源码树 |
+
+   验证方式（已实测）：`git -C thirdparty/wine fetch --depth 1 fork ohos-port-steam-win64`
+   → `git -C thirdparty/wine worktree add --detach /tmp/wv-verify FETCH_HEAD`
+   → 11211 个文件落地，`dlls/ntdll/unix/ohos_virtual.c`、`dlls/kernelbase/winehua_ipc_trace.c`、
+   `dlls/win32u/winehua_gl_proc_trace.c` 等都在，`wait-trace`/sigchain 改动可 grep 到。
+
+2. 新增 `scripts/prepare-wine-valve.sh`：CI / 新 clone 上物化 `thirdparty/wine-valve`
+   （检测到已存在就直接返回；本地开发机无需改动）。
+   可用 `WINE_VALVE_REF=<branch>` 覆盖（默认 `ohos-port-steam-win64`）。
+3. `.github/workflows/build.yml` 与 `build-arm64-native.yml` 在
+   "Ensure nested graphics submodules" 之后新增一步：
+   `- name: Materialize Proton/Valve wine tree (thirdparty/wine-valve)` → `bash scripts/prepare-wine-valve.sh`。
+
+**仍需注意**：
+
+- CI 触发条件仍是 `master` / `main-ui` / `dev-*`/`rc-*` tag；`feature/proton-wine-ohos` 分支的 push
+  不会自动跑 CI（合进 master 或手动 `workflow_dispatch` 才会）。
+- 三个图形子模块（mesa / virglrenderer / box64）本次的提交是推在**新分支**上
+  （`ohos-guest-caps-diag` / `ohos-vrend-ubo-fix` / `ohos-wow64-smc-fs`），
+  与 `.gitmodules` 里写的 `main`/`master` 不一致。`actions/checkout` 是按主仓记录的
+  **精确 gitlink SHA** 抓取的（已用 `ls-remote` 核对这三个 SHA 都可达），所以 CI 能编；
+  但如果有人用 `git submodule update --remote` 就会拿到配置分支的旧代码——需要时把那三个
+  分支 fast-forward 到对应配置分支即可。
+- wine-valve 本地仍是"worktree of thirdparty/wine"的形态（与文档一致）；
+  `.gitignore` 里已忽略 `/thirdparty/wine-valve/`，避免误提交整棵树。
+
 > **wine-valve 是浅克隆**（`rev-parse --is-shallow-repository` = true，pack 1.21 GiB），
 > 直接推历史会被服务端拒（`remote unpack failed: index-pack failed`），从浅仓库推
 > 分支也会卡在 shallow 协商（`pack-objects --shallow` 空转）。

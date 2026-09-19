@@ -79,6 +79,12 @@ jobs:
           git -C thirdparty/vkd3d-proton submodule status
           git -C thirdparty/vkd3d-proton status --porcelain --untracked-files=no --ignore-submodules=dirty || true
 
+      # thirdparty/wine-valve 不是 submodule：它是 winehua/wine.git 一条分支的 worktree，
+      # 也是构建实际使用的 wine 源码（Makefile: WINE_SRC=thirdparty/wine-valve）。
+      # 不物化它，make wine/assemble/hap 会在第一步就退出。
+      - name: Materialize Proton/Valve wine tree (thirdparty/wine-valve)
+        run: bash scripts/prepare-wine-valve.sh
+
       # ---- 绕过签名: 用 stub 替换 sign.py ----
       # scripts/package.sh 最后会调 `python3 sign.py <unsigned> <signed>`,
       # 无签名场景下这里直接把 unsigned 拷成 "signed" 文件, 让 make hap 完整跑完
