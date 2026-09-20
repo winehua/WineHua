@@ -41,8 +41,12 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& homeDir,
                                       const std::string& prefixDir,
                                       const std::string& wineLang) {
+    // 环境构建曾被观测为会话启动链路的卡点 (explorer 永不 spawn → 引擎死寂,
+    // Launch-Async 线程睡死在 GetState 持锁等待), 分步打点供下次卡死直读卡点。
+    OH_LOG_INFO(LOG_APP, "[BuildWineEnv] enter prefix=%{public}s", prefixDir.c_str());
     std::string runtimeLibPath = binDir + ":" + binDir + "/x86_64-unix:" + binDir + "/../lib/x86_64";
     winehua::GraphicsBackendState graphicsState = winehua::GraphicsBroker::GetInstance().GetState();
+    OH_LOG_INFO(LOG_APP, "[BuildWineEnv] graphics state active=%{public}d", (int)graphicsState.active);
     std::string guestReceiverLibDir;
     bool useGuestReceiverRuntime = graphicsState.active == winehua::GraphicsBackend::Virgl;
 
@@ -68,7 +72,9 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     }
     // Start the WHGP socket before spawning Wine and keep its contract near
     // the front of the NCP environment list.
+    OH_LOG_INFO(LOG_APP, "[BuildWineEnv] before EnsureBridgeForWineLaunch");
     winehua::controller::EnsureBridgeForWineLaunch(prefixDir);
+    OH_LOG_INFO(LOG_APP, "[BuildWineEnv] bridge ensured");
     winehua::controller::AppendWineGamepadEnv(env);
     // locale / GStreamer 插件路径。WINEDEBUG 不在此注入: 本列表经 __env 通道
     // 下发, 在 wine 侧晚于 setup_wine_env 应用, 会盖掉 select_winedebug_profile

@@ -137,6 +137,22 @@ void GamepadBridge::Stop()
     if (rumbleThread_.joinable()) rumbleThread_.join();
 }
 
+void GamepadBridge::LogThrottled(const char* what, int fd, pid_t pid)
+{
+    // 连接风暴时 accept/退出每秒数千次, 全量日志实测 9 小时刷出 750 万条把
+    // hilog 冲爆; 统一节流到每秒最多一条。
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (now - lastConnectLog_ < std::chrono::seconds(1)) return;
+        lastConnectLog_ = now;
+    }
+    if (pid >= 0)
+        OH_LOG_INFO(LOG_APP, "[WHGP] %{public}s fd=%{public}d peer_pid=%{public}d", what, fd, pid);
+    else
+        OH_LOG_INFO(LOG_APP, "[WHGP] %{public}s fd=%{public}d (no peercred)", what, fd);
+}
+
 void GamepadBridge::AcceptLoop()
 {
     while (true) {
@@ -158,12 +174,36 @@ void GamepadBridge::AcceptLoop()
             continue;
         }
 
+        struct ucred peer{};
+        socklen_t peerLen = sizeof(peer);
+        const bool havePeer = getsockopt(client, SOL_SOCKET, SO_PEERCRED, &peer, &peerLen) == 0;
+        const pid_t peerPid = havePeer ? peer.pid : -1;
+
         int oldClient = -1;
+        bool reject = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            oldClient = clientFd_;
-            clientFd_ = -1;
-            if (oldClient >= 0) shutdown(oldClient, SHUT_RDWR);
+            if (!running_) {
+                close(client);
+                return;
+            }
+            // 异 pid 来连且已有活跃连接 → 拒绝后者, 保护先到者: winedevice
+            // 旧实例未退场时新实例接入会与旧实例互踢, 实测演变成每秒数千次
+            // 的连接风暴; 只有同 pid 的重连才允许接管旧连接。
+            if (clientFd_ >= 0 && peerPid >= 0 && clientPid_ != peerPid) {
+                reject = true;
+            } else {
+                oldClient = clientFd_;
+                clientFd_ = -1;
+                clientPid_ = -1;
+                if (oldClient >= 0) shutdown(oldClient, SHUT_RDWR);
+            }
+        }
+        if (reject) {
+            // LogThrottled 内部拿 mutex_, 与上方锁域分离 (不可重入)
+            LogThrottled("client rejected", client, peerPid);
+            close(client);
+            continue;
         }
         if (rumbleThread_.joinable()) rumbleThread_.join();
 
@@ -174,15 +214,12 @@ void GamepadBridge::AcceptLoop()
                 return;
             }
             clientFd_ = client;
-            // 对端身份: 连接风暴定位用 (两个 listener / 多客户端互踢时, pid 直接点名元凶)
-            struct ucred peer{};
-            socklen_t peerLen = sizeof(peer);
-            if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &peer, &peerLen) == 0)
-                OH_LOG_INFO(LOG_APP, "[WHGP] client connected fd=%{public}d peer_pid=%{public}d uid=%{public}d",
-                            client, peer.pid, peer.uid);
-            else
-                OH_LOG_INFO(LOG_APP, "[WHGP] client connected fd=%{public}d (no peercred)", client);
+            clientPid_ = peerPid;
         }
+        // LogThrottled 内部也拿 mutex_, 不能在持锁状态调用 (std::mutex 不可
+        // 重入, 否则 accept 线程自死锁并永久占锁, 后续所有 Start/PublishState
+        // 等锁睡死 — 实测表现为 explorer 永不 spawn 的引擎死寂)。
+        LogThrottled("client connected", client, peerPid);
         rumbleThread_ = std::thread([this, client] { RecvLoop(client); });
         PublishState(0, ControllerHub::Instance().GetState(0));
     }
@@ -231,10 +268,13 @@ void GamepadBridge::RecvLoop(int fd)
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (clientFd_ == fd) clientFd_ = -1;
+        if (clientFd_ == fd) {
+            clientFd_ = -1;
+            clientPid_ = -1;
+        }
     }
     close(fd);
-    OH_LOG_INFO(LOG_APP, "[WHGP] client recv loop exited fd=%{public}d", fd);
+    LogThrottled("client recv loop exited", fd, -1);
 }
 
 void GamepadBridge::WriteState(int fd, uint32_t slot, const LogicalGamepadState& state)
