@@ -174,7 +174,14 @@ void GamepadBridge::AcceptLoop()
                 return;
             }
             clientFd_ = client;
-            OH_LOG_INFO(LOG_APP, "[WHGP] client connected fd=%{public}d", client);
+            // 对端身份: 连接风暴定位用 (两个 listener / 多客户端互踢时, pid 直接点名元凶)
+            struct ucred peer{};
+            socklen_t peerLen = sizeof(peer);
+            if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &peer, &peerLen) == 0)
+                OH_LOG_INFO(LOG_APP, "[WHGP] client connected fd=%{public}d peer_pid=%{public}d uid=%{public}d",
+                            client, peer.pid, peer.uid);
+            else
+                OH_LOG_INFO(LOG_APP, "[WHGP] client connected fd=%{public}d (no peercred)", client);
         }
         rumbleThread_ = std::thread([this, client] { RecvLoop(client); });
         PublishState(0, ControllerHub::Instance().GetState(0));
