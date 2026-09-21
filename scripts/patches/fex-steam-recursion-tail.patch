@@ -1,0 +1,6 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -186 +186 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+-  const bool deep = inDeep && deepEdge >= 600 && deepEdge < 1200;
++  const bool deep = inDeep && deepEdge >= 600 && deepEdge < 2000;

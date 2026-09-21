@@ -65,6 +65,18 @@ export PATH="$LLVM_MINGW/bin:$PATH"
 #     ARM64EC SIGBUS 的 opcode、JIT 归属和模拟结果。
 #   fex-windows-unaligned-stderr.patch — 同样覆盖 Steam 32 位 CEF 实际使用的
 #     WoW64 reset 路径，并直接写入 Wine stderr。
+patched_source=0
+# The ARM64EC lookup-cache patch deliberately changes the context of the
+# earlier WOW64 patches. Recognize the complete result when rebuilding the
+# already staged source; a fresh staged tree still applies every patch below.
+if grep -Fq '#if defined(_WIN32)' "$FEX_SRC/FEXCore/Source/Interface/Core/LookupCache.cpp" &&
+   grep -Fq 'VirtualDontNeed(FirstZeroL1Entry, ZeroMemorySize, true)' "$FEX_SRC/FEXCore/Source/Interface/Core/LookupCache.h" &&
+   grep -Fq 'static std::atomic<uint32_t> UnalignedEventCount' "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" &&
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-windows-unaligned-stderr.patch" >/dev/null 2>&1 &&
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-missing-includes.patch" >/dev/null 2>&1 &&
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch" >/dev/null 2>&1; then
+    patched_source=1
+fi
 for PATCH in \
     "$SCRIPT_DIR/patches/fex-missing-includes.patch" \
     "$SCRIPT_DIR/patches/fex-winapi-locale-stubs.patch" \
@@ -73,6 +85,10 @@ for PATCH in \
     "$SCRIPT_DIR/patches/fex-arm64ec-lookup-cache-commit.patch" \
     "$SCRIPT_DIR/patches/fex-arm64ec-unaligned-diagnostics.patch" \
     "$SCRIPT_DIR/patches/fex-windows-unaligned-stderr.patch"; do
+    if [ "$patched_source" = 1 ]; then
+        log "已验证完整 FEX 补丁集: $(basename "$PATCH")"
+        continue
+    fi
     if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$PATCH" >/dev/null 2>&1; then
         continue
     fi
@@ -81,6 +97,143 @@ for PATCH in \
     patch -d "$FEX_SRC" -p1 -s < "$PATCH"
     log "已应用 patch: $(basename "$PATCH")"
 done
+
+if grep -Fq 'const bool deep = (depth >= 0x7000 && depth < 0x90000) ||' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp"; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-limit.patch" >/dev/null || \
+        err "FEX Steam recursion entry-limit patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-limit.patch"
+fi
+
+if grep -Fq 'SteamEntryTraceEdges.fetch_add(1, std::memory_order_relaxed) < 512;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp"; then
+    log "已验证完整 FEX Steam 诊断补丁集"
+else
+if { grep -Fq 'extern "C" void WineHuaGuestBoundary' "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" &&
+     grep -Fq 'WineHuaGuestBoundary' "$FEX_SRC/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp" &&
+     grep -Fq 'WineHuaGuestCall' "$FEX_SRC/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp"; } ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-boundary-trace.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-boundary-trace.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-boundary-trace.patch" >/dev/null || \
+        err "FEX Steam boundary patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-boundary-trace.patch"
+fi
+
+if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-arm64ec-threadterm-context.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-arm64ec-threadterm-context.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-arm64ec-threadterm-context.patch" >/dev/null || \
+        err "FEX ARM64EC thread termination patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-arm64ec-threadterm-context.patch"
+fi
+
+if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-arm64ec-threadterm-get-context-right.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-arm64ec-threadterm-get-context-right.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-arm64ec-threadterm-get-context-right.patch" >/dev/null || \
+        err "FEX ARM64EC thread context handle access patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-arm64ec-threadterm-get-context-right.patch"
+fi
+
+if grep -Fq 'if (sequence >= 2048 && (sequence - 2048) % 16) return;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'if (sequence >= 1024 && (sequence - 1024) % 16) return;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-deferred-call-trace.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-deferred-call-trace.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-deferred-call-trace.patch" >/dev/null || \
+        err "FEX deferred Steam call trace patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-deferred-call-trace.patch"
+fi
+
+if grep -Fq 'const bool deep = startRsp > rsp && startRsp - rsp >= 0x3000 &&' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'const uint32_t deepEdge = inDeep ? SteamTraceDeepEdges.fetch_add' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-deep-call-trace.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-deep-call-trace.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-deep-call-trace.patch" >/dev/null || \
+        err "FEX deep Steam call trace patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-deep-call-trace.patch"
+fi
+
+if grep -Fq 'const bool deep = inDeep && deepEdge >= 600 && deepEdge < 2000;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'const uint32_t deepEdge = inDeep ? SteamTraceDeepEdges.fetch_add' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-window.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-window.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-window.patch" >/dev/null || \
+        err "FEX Steam recursion window patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-window.patch"
+fi
+
+if grep -Fq 'const bool deep = inDeep && deepEdge >= 600 && deepEdge < 2000;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   grep -Fq 'const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-transition.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-transition.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-transition.patch" >/dev/null || \
+        err "FEX Steam recursion transition patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-transition.patch"
+fi
+
+if grep -Fq 'const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-tail.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-tail.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-tail.patch" >/dev/null || \
+        err "FEX Steam recursion tail patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-tail.patch"
+fi
+
+if grep -Fq 'const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;' \
+     "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp" ||
+   patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-contiguous.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-contiguous.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-contiguous.patch" >/dev/null || \
+        err "FEX Steam contiguous recursion patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-contiguous.patch"
+fi
+
+if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-depth-window.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-depth-window.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-depth-window.patch" >/dev/null || \
+        err "FEX Steam depth-window patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-depth-window.patch"
+fi
+
+if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-window.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-entry-window.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-window.patch" >/dev/null || \
+        err "FEX Steam recursion entry-window patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-window.patch"
+fi
+
+if patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-limit.patch" >/dev/null 2>&1; then
+    log "已应用 patch: fex-steam-recursion-entry-limit.patch"
+else
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-limit.patch" >/dev/null || \
+        err "FEX Steam recursion entry-limit patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-limit.patch"
+fi
+fi
 
 prepare_build_dir() {
     local build="$1" cached_source

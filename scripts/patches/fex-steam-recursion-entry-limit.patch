@@ -1,0 +1,16 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -103,2 +103,3 @@ std::atomic<uint32_t> SteamCallWrite {};
+ std::atomic<uint32_t> SteamCallSeen {};
++std::atomic<uint32_t> SteamEntryTraceEdges {};
+ std::atomic_flag SteamBoundaryFlushing = ATOMIC_FLAG_INIT;
+@@ -183,5 +184,6 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   const uint64_t startRsp = SteamTraceStartRsp.load(std::memory_order_relaxed);
+   const uint64_t depth = startRsp > rsp ? startRsp - rsp : 0;
+-  const bool deep = (depth >= 0x7000 && depth < 0x90000) ||
+-                    (depth >= 0x7f4000 && depth < 0x7fe800);
++  const bool entry = depth >= 0x7000 && depth < 0x90000 &&
++                     SteamEntryTraceEdges.fetch_add(1, std::memory_order_relaxed) < 512;
++  const bool deep = entry || (depth >= 0x7f4000 && depth < 0x7fe800);
+   if (early) SteamTraceEdges.store(edge + 1, std::memory_order_relaxed);

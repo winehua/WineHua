@@ -1,0 +1,21 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -181,6 +181,6 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   const uint32_t edge = SteamTraceEdges.load(std::memory_order_relaxed);
+   const bool early = edge < 512;
+   const uint64_t startRsp = SteamTraceStartRsp.load(std::memory_order_relaxed);
+-  const bool deep = startRsp > rsp && startRsp - rsp >= 0x2000 &&
+-                    SteamTraceDeepEdges.fetch_add(1, std::memory_order_relaxed) < 384;
++  const bool deep = startRsp > rsp && startRsp - rsp >= 0x3000 &&
++                    SteamTraceDeepEdges.fetch_add(1, std::memory_order_relaxed) < 768;
+   if (early) SteamTraceEdges.store(edge + 1, std::memory_order_relaxed);
+@@ -196,6 +196,6 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+     } else if (!early && !deep) return;
+   }
+   const uint32_t sequence = SteamCallSeen.fetch_add(1, std::memory_order_relaxed);
+-  if (sequence >= 1024 && (sequence - 1024) % 16) return;
+-  const uint32_t slot = sequence < 1024 ? sequence : 1024 + (sequence - 1024) / 16;
++  if (sequence >= 2048 && (sequence - 2048) % 16) return;
++  const uint32_t slot = sequence < 2048 ? sequence : 2048 + (sequence - 2048) / 16;
+   if (slot >= SteamCallRecords.size()) return;

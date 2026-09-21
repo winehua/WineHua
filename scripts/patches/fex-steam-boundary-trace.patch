@@ -1,0 +1,321 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -15,6 +15,11 @@
+ #include <FEXCore/HLE/SyscallHandler.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
++#ifdef ARCHITECTURE_arm64ec
++extern "C" uintptr_t WineHuaSteamWebhelperBase;
++extern "C" void WineHuaGuestCall(uintptr_t, FEXCore::Core::CpuStateFrame*, uint32_t);
++#endif
++
+ namespace FEXCore::CPU {
+ 
+ DEF_OP(CallbackReturn) {
+@@ -56,7 +61,18 @@
+   uint64_t NewRIP;
+ 
+   if (IsInlineConstant(Op->NewRIP, &NewRIP) || IsInlineEntrypointOffset(Op->NewRIP, &NewRIP)) {
+ #ifdef ARCHITECTURE_arm64ec
++    if (WineHuaSteamWebhelperBase && Op->Hint == IR::BranchHint::Call) {
++      PushDynamicRegs(TMP1);
++      SpillStaticRegs(TMP1);
++      LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r0, NewRIP);
++      mov(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, STATE.R());
++      mov(ARMEmitter::Size::i32Bit, ARMEmitter::Reg::r2, 0);
++      LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r3, reinterpret_cast<uintptr_t>(&WineHuaGuestCall));
++      blr(ARMEmitter::Reg::r3);
++      FillStaticRegs();
++      PopDynamicRegs();
++    }
+     if (NewRIP < EC_CODE_BITMAP_MAX_ADDRESS && RtlIsEcCode(NewRIP)) {
+       str(REG_CALLRET_SP, STATE_PTR(CpuStateFrame, State.callret_sp));
+       add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, StaticRegisters[X86State::REG_RSP], 0);
+@@ -177,6 +193,20 @@
+   } else {
+     ARMEmitter::ForwardLabel SkipFullLookup;
+     auto RipReg = GetReg(Op->NewRIP);
++#ifdef ARCHITECTURE_arm64ec
++    if (WineHuaSteamWebhelperBase &&
++        (Op->Hint == IR::BranchHint::Call || Op->Hint == IR::BranchHint::Return)) {
++      PushDynamicRegs(TMP1);
++      SpillStaticRegs(TMP1);
++      mov(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r0, RipReg.X());
++      mov(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, STATE.R());
++      mov(ARMEmitter::Size::i32Bit, ARMEmitter::Reg::r2, Op->Hint == IR::BranchHint::Return ? 1 : 0);
++      LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r3, reinterpret_cast<uintptr_t>(&WineHuaGuestCall));
++      blr(ARMEmitter::Reg::r3);
++      FillStaticRegs();
++      PopDynamicRegs();
++    }
++#endif
+ 
+     if (Op->Hint == IR::BranchHint::Return) {
+       // First try to pop from the call-ret stack, otherwise follow the normal path (but ending in a ret)
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -17,6 +17,11 @@
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include <FEXCore/Utils/EnumUtils.h>
+ 
++#ifdef ARCHITECTURE_arm64ec
++extern "C" uintptr_t WineHuaSteamWebhelperBase;
++extern "C" void WineHuaGuestBoundary(uintptr_t, FEXCore::Core::CpuStateFrame*);
++#endif
++
+ namespace FEXCore::CPU {
+ 
+ DEF_OP(WFET) {
+@@ -43,6 +48,35 @@
+   auto Op = IROp->C<IR::IROp_GuestOpcode>();
+   // metadata
+   DebugData->GuestOpcodes.push_back({Op->GuestEntryOffset, GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
++#ifdef ARCHITECTURE_arm64ec
++  const uint64_t rip = Entry + Op->GuestEntryOffset;
++  const uint64_t base = WineHuaSteamWebhelperBase;
++  if (base && (rip == base + 0x131950 || rip == base + 0x1319e1 ||
++               rip == base + 0x131a18 || rip == base + 0x131a1b ||
++               rip == base + 0x131a26 || rip == base + 0x131a2b ||
++               rip == base + 0x131a93 || rip == base + 0x131a96 ||
++               rip == base + 0x131b6f || rip == base + 0x131b7f ||
++               rip == base + 0x131c14 || rip == base + 0x131cf4 ||
++               rip == base + 0x131d11 || rip == base + 0x131d1d ||
++               rip == base + 0x131d27 || rip == base + 0x131d2c ||
++               rip == base + 0x131d34 || rip == base + 0x131e24 ||
++               rip == base + 0x131e69 || rip == base + 0x131f3e ||
++               rip == base + 0x131f62 || rip == base + 0x13200c ||
++               rip == base + 0x13204b || rip == base + 0x13212e ||
++               rip == base + 0x1321ec || rip == base + 0x132433 ||
++               rip == base + 0x132476 || rip == base + 0x132480 ||
++               rip == base + 0x1324b1 || rip == base + 0x1493f0)) {
++    PushDynamicRegs(TMP1);
++    SpillStaticRegs(TMP1);
++    LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r0, rip);
++    mov(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, STATE.R());
++    LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2,
++                 reinterpret_cast<uintptr_t>(&WineHuaGuestBoundary));
++    blr(ARMEmitter::Reg::r2);
++    FillStaticRegs();
++    PopDynamicRegs();
++  }
++#endif
+ }
+ 
+ DEF_OP(Fence) {
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -48,8 +48,11 @@
+ #include "Windows/Common/SHMStats.h"
+ 
+ #include <atomic>
++#include <array>
+ #include <cstdint>
+ #include <cstdio>
++#include <cstdlib>
++#include <cstring>
+ #include <type_traits>
+ #include <mutex>
+ #include <optional>
+@@ -61,6 +64,112 @@
+ #include <winnt.h>
+ #include <wine/debug.h>
+ 
++extern "C" __declspec(dllimport) NTSTATUS WINAPI RtlQueryEnvironmentVariable_U(PWSTR, PUNICODE_STRING, PUNICODE_STRING);
++extern "C" uintptr_t WineHuaSteamWebhelperBase = 0;
++
++namespace {
++struct SteamBoundaryRecord {
++  std::atomic<uint32_t> ready {};
++  uint32_t sequence {};
++  uint32_t pid {};
++  uint32_t tid {};
++  uintptr_t rip {};
++  uintptr_t object {};
++  uintptr_t lock {};
++  uintptr_t rax {};
++  uintptr_t rcx {};
++  uintptr_t rdx {};
++  uintptr_t r14 {};
++  uintptr_t rsp {};
++};
++
++std::array<SteamBoundaryRecord, 1024> SteamBoundaryRecords;
++std::atomic<uint32_t> SteamBoundaryWrite {};
++std::atomic_flag SteamBoundaryFlushing = ATOMIC_FLAG_INIT;
++uint32_t SteamBoundaryRead {};
++std::atomic<uint32_t> SteamTraceThread {};
++std::atomic<uint64_t> SteamTraceLowRsp {};
++std::atomic<uint32_t> SteamTraceReturns {};
++std::atomic<uint32_t> SteamTraceEdges {512};
++
++void FlushSteamBoundaries() {
++  if (!WineHuaSteamWebhelperBase || SteamBoundaryFlushing.test_and_set(std::memory_order_acquire)) return;
++  const DWORD error = GetLastError();
++  while (SteamBoundaryRead < SteamBoundaryRecords.size() &&
++         SteamBoundaryRecords[SteamBoundaryRead].ready.load(std::memory_order_acquire)) {
++    const auto& record = SteamBoundaryRecords[SteamBoundaryRead++];
++    char message[320];
++    snprintf(message, sizeof(message),
++             "[steam-boundary] seq=%u pid=%u tid=%u rva=0x%lx object=0x%llx lock=0x%llx rax=0x%llx rcx=0x%llx rdx=0x%llx r14=0x%llx rsp=0x%llx\n",
++             record.sequence, record.pid, record.tid,
++             static_cast<unsigned long>(record.rip - WineHuaSteamWebhelperBase),
++             static_cast<unsigned long long>(record.object), static_cast<unsigned long long>(record.lock),
++             static_cast<unsigned long long>(record.rax), static_cast<unsigned long long>(record.rcx),
++             static_cast<unsigned long long>(record.rdx), static_cast<unsigned long long>(record.r14),
++             static_cast<unsigned long long>(record.rsp));
++    __wine_dbg_output(message);
++  }
++  SetLastError(error);
++  SteamBoundaryFlushing.clear(std::memory_order_release);
++}
++} // namespace
++
++extern "C" void WineHuaGuestBoundary(uintptr_t rip, FEXCore::Core::CpuStateFrame* frame) {
++  if (rip == WineHuaSteamWebhelperBase + 0x131950) {
++    SteamTraceLowRsp.store(frame->State.gregs[FEXCore::X86State::REG_RSP], std::memory_order_relaxed);
++    SteamTraceThread.store(GetCurrentThreadId(), std::memory_order_release);
++  }
++  if (rip == WineHuaSteamWebhelperBase + 0x131d11) SteamTraceEdges.store(0, std::memory_order_relaxed);
++  const uint32_t index = SteamBoundaryWrite.fetch_add(1, std::memory_order_relaxed);
++  if (index >= SteamBoundaryRecords.size()) return;
++  auto& record = SteamBoundaryRecords[index];
++  record.sequence = index;
++  record.pid = GetCurrentProcessId();
++  record.tid = GetCurrentThreadId();
++  record.rip = rip;
++  record.object = frame->State.gregs[(rip == WineHuaSteamWebhelperBase + 0x131950 ||
++                                     rip == WineHuaSteamWebhelperBase + 0x1493f0) ?
++                                    FEXCore::X86State::REG_RCX : FEXCore::X86State::REG_RDI];
++  record.lock = rip == WineHuaSteamWebhelperBase + 0x1493f0 ? 0 : record.object + 0x446;
++  record.rax = frame->State.gregs[FEXCore::X86State::REG_RAX];
++  record.rcx = frame->State.gregs[FEXCore::X86State::REG_RCX];
++  record.rdx = frame->State.gregs[FEXCore::X86State::REG_RDX];
++  record.r14 = frame->State.gregs[FEXCore::X86State::REG_R14];
++  record.rsp = frame->State.gregs[FEXCore::X86State::REG_RSP];
++  record.ready.store(1, std::memory_order_release);
++}
++
++extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
++  if (GetCurrentThreadId() != SteamTraceThread.load(std::memory_order_acquire)) return;
++  const uint64_t rsp = frame->State.gregs[FEXCore::X86State::REG_RSP];
++  const uint64_t low = SteamTraceLowRsp.load(std::memory_order_relaxed);
++  if (!low) return;
++  const uint32_t edge = SteamTraceEdges.load(std::memory_order_relaxed);
++  const bool early = edge < 512;
++  if (early) SteamTraceEdges.store(edge + 1, std::memory_order_relaxed);
++  if (isReturn) {
++    if (rsp < low || rsp - low > 0x80 ||
++        SteamTraceReturns.fetch_add(1, std::memory_order_relaxed) >= 1) {
++      if (!early) return;
++    }
++  } else {
++    if (rsp < low && low - rsp >= 0x1000) {
++      SteamTraceLowRsp.store(rsp, std::memory_order_relaxed);
++      SteamTraceReturns.store(0, std::memory_order_relaxed);
++    } else if (!early) return;
++  }
++  uint64_t returnAddress = 0;
++  if (!isReturn) memcpy(&returnAddress, reinterpret_cast<const void*>(rsp), sizeof(returnAddress));
++  const DWORD error = GetLastError();
++  char message[210];
++  snprintf(message, sizeof(message), "[steam-call] pid=%lu tid=%lu edge=%u kind=%s target=0x%llx rsp=0x%llx return=0x%llx\n",
++           static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()),
++           early ? edge : 512, isReturn ? "ret" : "call", static_cast<unsigned long long>(target),
++           static_cast<unsigned long long>(rsp), static_cast<unsigned long long>(returnAddress));
++  __wine_dbg_output(message);
++  SetLastError(error);
++}
++
+ namespace Exception {
+ class ECSyscallHandler;
+ }
+@@ -515,5 +624,6 @@
+ 
+   uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args) override {
++    FlushSteamBoundaries();
+     ProcessPendingCrossProcessEmulatorWork();
+ 
+     // Manually raise an exeption with the current JIT state packed into a native context, ntdll handles this and
+@@ -581,6 +691,41 @@
+ 
+   FEX::Windows::InitCRTProcess();
+-  const auto ExecutableName = FEX::Windows::BaseName(FEX::Windows::GetExecutableFilePath());
++  const auto ExecutablePath = FEX::Windows::GetExecutableFilePath();
++  const auto ExecutableName = FEX::Windows::BaseName(ExecutablePath);
++  const char* boundary = std::getenv("WINEHUA_STEAM_BOUNDARY_TRACE");
++  WCHAR nameBuffer[] = L"WINEHUA_STEAM_BOUNDARY_TRACE";
++  WCHAR valueBuffer[2] {};
++  UNICODE_STRING name {static_cast<USHORT>(sizeof(nameBuffer) - sizeof(WCHAR)),
++                       static_cast<USHORT>(sizeof(nameBuffer)), nameBuffer};
++  UNICODE_STRING value {0, static_cast<USHORT>(sizeof(valueBuffer)), valueBuffer};
++  const bool crtEnabled = boundary && boundary[0] == '1' && !boundary[1];
++  const bool rtlEnabled = !RtlQueryEnvironmentVariable_U(nullptr, &name, &value) &&
++                          value.Length == sizeof(WCHAR) && valueBuffer[0] == L'1';
++  if (crtEnabled || rtlEnabled) {
++    char message[140];
++    snprintf(message, sizeof(message), "[steam-boundary] probe name=%.*s crt=%d rtl=%d\n",
++             static_cast<int>(ExecutableName.size() < 80 ? ExecutableName.size() : 80), ExecutableName.data(),
++             crtEnabled, rtlEnabled);
++    __wine_dbg_output(message);
++  }
++  if ((crtEnabled || rtlEnabled) && ExecutableName == "steamwebhelper.exe") {
++    const auto* image = reinterpret_cast<const uint8_t*>(reinterpret_cast<__TEB*>(NtCurrentTeb())->Peb->ImageBaseAddress);
++    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
++    if (image && dos->e_magic == IMAGE_DOS_SIGNATURE && dos->e_lfanew > 0 && dos->e_lfanew < 0x1000) {
++      const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(image + dos->e_lfanew);
++      static constexpr uint8_t Signature[] {0x48, 0x89, 0x54, 0x24, 0x10, 0x55};
++      if (nt->Signature == IMAGE_NT_SIGNATURE && nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 &&
++          nt->FileHeader.TimeDateStamp == 0x6a98ce5d && nt->OptionalHeader.SizeOfImage == 0x748000 &&
++          !memcmp(image + 0x131950, Signature, sizeof(Signature))) {
++        WineHuaSteamWebhelperBase = reinterpret_cast<uintptr_t>(image);
++        __wine_dbg_output("[steam-boundary] enabled for pinned steamwebhelper.exe\n");
++      } else {
++        __wine_dbg_output("[steam-boundary] skipped: steamwebhelper.exe identity mismatch\n");
++      }
++    } else {
++      __wine_dbg_output("[steam-boundary] skipped: executable image header unavailable\n");
++    }
++  }
+   FEX::Config::LoadConfig(fextl::string {ExecutableName}, _environ, FEX::ReadPortabilityInformation());
+   FEXCore::Config::ReloadMetaLayer();
+   FEX::Windows::Logging::Init();
+@@ -654,7 +799,7 @@
+   return STATUS_SUCCESS;
+ }
+ 
+-void ProcessTerm(HANDLE Handle, BOOL After, NTSTATUS Status) {}
++void ProcessTerm(HANDLE Handle, BOOL After, NTSTATUS Status) { FlushSteamBoundaries(); }
+ 
+ class ScopedCallbackDisable {
+ private:
+@@ -724,5 +869,19 @@
+   }
+ 
+   const bool IsJIT = CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc);
++  if (WineHuaSteamWebhelperBase && IsJIT && Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
++      Exception->NumberParameters >= 2) {
++    const auto fault = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
++    if (fault >= NativeContext->Sp && fault - NativeContext->Sp < 4096) {
++      char message[220];
++      snprintf(message, sizeof(message),
++               "[steam-fex-guard] pid=%lu tid=%lu guest_rip=0x%llx host_pc=0x%llx sp=0x%llx fault=0x%llx\n",
++               static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()),
++               static_cast<unsigned long long>(CTX->RestoreRIPFromHostPC(Thread, NativeContext->Pc)),
++               static_cast<unsigned long long>(NativeContext->Pc), static_cast<unsigned long long>(NativeContext->Sp),
++               static_cast<unsigned long long>(fault));
++      __wine_dbg_output(message);
++    }
++  }
+   if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT) {
+     const uint64_t OldPC = NativeContext->Pc;
+@@ -1010,6 +1169,7 @@
+ }
+ 
+ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
++  FlushSteamBoundaries();
+   if (!FEX::Windows::ValidateHandleAccess(Thread, THREAD_TERMINATE)) {
+     return STATUS_ACCESS_DENIED;
+   }

@@ -1,0 +1,35 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -98,3 +98,3 @@ struct SteamCallRecord {
+ };
+-std::array<SteamCallRecord, 4096> SteamCallRecords;
++std::array<SteamCallRecord, 16384> SteamCallRecords;
+ std::atomic<uint32_t> SteamCallSeen {};
+@@ -105,3 +105,2 @@ std::atomic<uint64_t> SteamTraceLowRsp {};
+ std::atomic<uint64_t> SteamTraceStartRsp {};
+-std::atomic<uint32_t> SteamTraceDeepEdges {};
+ std::atomic<uint32_t> SteamTraceReturns {};
+@@ -182,6 +181,5 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   const bool early = edge < 512;
+   const uint64_t startRsp = SteamTraceStartRsp.load(std::memory_order_relaxed);
+-  const bool inDeep = startRsp > rsp && startRsp - rsp >= 0x3000;
+-  const uint32_t deepEdge = inDeep ? SteamTraceDeepEdges.fetch_add(1, std::memory_order_relaxed) : 0;
+-  const bool deep = inDeep && deepEdge >= 600 && deepEdge < 2000;
++  const uint64_t depth = startRsp > rsp ? startRsp - rsp : 0;
++  const bool deep = depth >= 0x7f4000 && depth < 0x7fe800;
+   if (early) SteamTraceEdges.store(edge + 1, std::memory_order_relaxed);
+@@ -198,3 +197,3 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   const uint32_t sequence = SteamCallSeen.fetch_add(1, std::memory_order_relaxed);
+-  if (sequence >= 2048 && !deep && (sequence - 2048) % 16) return;
++  if (sequence >= 512 && !deep && (sequence - 512) % 16) return;
+   const uint32_t slot = SteamCallWrite.fetch_add(1, std::memory_order_relaxed);
+@@ -215,5 +213,7 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   if (!isReturn) memcpy(&returnAddress, reinterpret_cast<const void*>(rsp), sizeof(returnAddress));
+   record.caller = returnAddress;
+   record.ready.store(1, std::memory_order_release);
+-  if (slot == 127 || slot == 1023 || (slot > 1024 && slot % 512 == 0)) FlushSteamBoundaries();
++  if (slot == 127 || slot == 1023 || (slot > 1024 && slot % 512 == 0) ||
++      (deep && (slot % 32 == 0 || (depth >= 0x7f8000 && slot % 8 == 0))))
++    FlushSteamBoundaries();
+ }

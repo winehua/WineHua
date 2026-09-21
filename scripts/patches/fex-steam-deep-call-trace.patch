@@ -1,0 +1,73 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -92,5 +92,10 @@ struct SteamCallRecord {
+   uintptr_t target {};
+   uintptr_t caller {};
+   uintptr_t rsp {};
++  uintptr_t rax {};
++  uintptr_t rcx {};
++  uintptr_t rdx {};
++  uintptr_t r8 {};
++  uintptr_t r9 {};
+ };
+ std::array<SteamCallRecord, 4096> SteamCallRecords;
+@@ -103,3 +108,5 @@
+ std::atomic<uint32_t> SteamTraceThread {};
+ std::atomic<uint64_t> SteamTraceLowRsp {};
++std::atomic<uint64_t> SteamTraceStartRsp {};
++std::atomic<uint32_t> SteamTraceDeepEdges {};
+ std::atomic<uint32_t> SteamTraceReturns {};
+@@ -127,8 +134,10 @@ void FlushSteamBoundaries() {
+     const auto& record = SteamCallRecords[SteamCallRead++];
+-    char message[190];
++    char message[340];
+     snprintf(message, sizeof(message),
+-             "[steam-call] seq=%u tid=%u kind=%s target=0x%llx caller=0x%llx rsp=0x%llx\n",
++             "[steam-call] seq=%u tid=%u kind=%s target=0x%llx caller=0x%llx rsp=0x%llx rax=0x%llx rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx\n",
+              record.sequence, record.tid, record.isReturn ? "ret" : "call",
+              static_cast<unsigned long long>(record.target), static_cast<unsigned long long>(record.caller),
+-             static_cast<unsigned long long>(record.rsp));
++             static_cast<unsigned long long>(record.rsp), static_cast<unsigned long long>(record.rax),
++             static_cast<unsigned long long>(record.rcx), static_cast<unsigned long long>(record.rdx),
++             static_cast<unsigned long long>(record.r8), static_cast<unsigned long long>(record.r9));
+     __wine_dbg_output(message);
+@@ -141,5 +150,6 @@ extern "C" void WineHuaGuestBoundary(uintptr_t rip, FEXCore::Core::CpuStateFrame* frame) {
+   if (rip == WineHuaSteamWebhelperBase + 0x131950) {
+     SteamTraceLowRsp.store(frame->State.gregs[FEXCore::X86State::REG_RSP], std::memory_order_relaxed);
++    SteamTraceStartRsp.store(frame->State.gregs[FEXCore::X86State::REG_RSP], std::memory_order_relaxed);
+     SteamTraceThread.store(GetCurrentThreadId(), std::memory_order_release);
+   }
+   if (rip == WineHuaSteamWebhelperBase + 0x131d11) SteamTraceEdges.store(0, std::memory_order_relaxed);
+@@ -171,14 +181,17 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   const uint32_t edge = SteamTraceEdges.load(std::memory_order_relaxed);
+   const bool early = edge < 512;
++  const uint64_t startRsp = SteamTraceStartRsp.load(std::memory_order_relaxed);
++  const bool deep = startRsp > rsp && startRsp - rsp >= 0x2000 &&
++                    SteamTraceDeepEdges.fetch_add(1, std::memory_order_relaxed) < 384;
+   if (early) SteamTraceEdges.store(edge + 1, std::memory_order_relaxed);
+   if (isReturn) {
+     if (rsp < low || rsp - low > 0x80 ||
+         SteamTraceReturns.fetch_add(1, std::memory_order_relaxed) >= 1) {
+-      if (!early) return;
++      if (!early && !deep) return;
+     }
+   } else {
+     if (rsp < low && low - rsp >= 0x1000) {
+       SteamTraceLowRsp.store(rsp, std::memory_order_relaxed);
+       SteamTraceReturns.store(0, std::memory_order_relaxed);
+-    } else if (!early) return;
++    } else if (!early && !deep) return;
+   }
+@@ -190,6 +203,11 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   record.isReturn = isReturn;
+   record.target = target;
+   record.rsp = rsp;
++  record.rax = frame->State.gregs[FEXCore::X86State::REG_RAX];
++  record.rcx = frame->State.gregs[FEXCore::X86State::REG_RCX];
++  record.rdx = frame->State.gregs[FEXCore::X86State::REG_RDX];
++  record.r8 = frame->State.gregs[FEXCore::X86State::REG_R8];
++  record.r9 = frame->State.gregs[FEXCore::X86State::REG_R9];
+   uint64_t returnAddress = 0;
+   if (!isReturn) memcpy(&returnAddress, reinterpret_cast<const void*>(rsp), sizeof(returnAddress));
+   record.caller = returnAddress;

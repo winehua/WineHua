@@ -1,0 +1,24 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -102,2 +102,3 @@ std::array<SteamCallRecord, 4096> SteamCallRecords;
+ std::atomic<uint32_t> SteamCallSeen {};
++std::atomic<uint32_t> SteamCallWrite {};
+ uint32_t SteamCallRead {};
+ std::array<SteamBoundaryRecord, 1024> SteamBoundaryRecords;
+@@ -199,4 +200,4 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   }
+   const uint32_t sequence = SteamCallSeen.fetch_add(1, std::memory_order_relaxed);
+-  if (sequence >= 2048 && (sequence - 2048) % 16) return;
+-  const uint32_t slot = sequence < 2048 ? sequence : 2048 + (sequence - 2048) / 16;
++  if (sequence >= 2048 && !deep && (sequence - 2048) % 16) return;
++  const uint32_t slot = SteamCallWrite.fetch_add(1, std::memory_order_relaxed);
+   if (slot >= SteamCallRecords.size()) return;
+   auto& record = SteamCallRecords[slot];
+@@ -214,6 +215,6 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   if (!isReturn) memcpy(&returnAddress, reinterpret_cast<const void*>(rsp), sizeof(returnAddress));
+   record.caller = returnAddress;
+   record.ready.store(1, std::memory_order_release);
+-  if (sequence == 127 || sequence == 1023 || (sequence > 1024 && sequence % 512 == 0)) FlushSteamBoundaries();
++  if (slot == 127 || slot == 1023 || (slot > 1024 && slot % 512 == 0)) FlushSteamBoundaries();
+ }

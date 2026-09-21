@@ -1,0 +1,64 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -66,5 +66,6 @@
+ 
+ extern "C" __declspec(dllimport) NTSTATUS WINAPI RtlQueryEnvironmentVariable_U(PWSTR, PUNICODE_STRING, PUNICODE_STRING);
++extern "C" __declspec(dllimport) NTSTATUS WINAPI NtResumeThread(HANDLE, PULONG);
+ extern "C" uintptr_t WineHuaSteamWebhelperBase = 0;
+ 
+ namespace {
+@@ -1182,14 +1182,34 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
+   const auto ThreadTID = reinterpret_cast<uint64_t>(Info.ClientId.UniqueThread);
+   bool Self = ThreadTID == GetCurrentThreadId();
++  const char* trace = std::getenv("WINEHUA_STEAM_BOUNDARY_TRACE");
++  const bool traceTerm = trace && trace[0] == '1' && !trace[1];
++  auto logTerm = [&](const char* stage, NTSTATUS status) {
++    if (!traceTerm) return;
++    char message[180];
++    snprintf(message, sizeof(message), "[fex-threadterm] pid=%lu caller=%lu target=%llu stage=%s status=0x%lx\n",
++             static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()),
++             static_cast<unsigned long long>(ThreadTID), stage, static_cast<unsigned long>(status));
++    __wine_dbg_output(message);
++  };
+   if (!Self) {
+-    CONTEXT TmpContext;
+     // If we are suspending a thread that isn't ourselves, try to suspend it first so we know internal JIT locks aren't being held.
+-    NtSuspendThread(*ThreadDup, NULL);
++    const NTSTATUS suspended = NtSuspendThread(*ThreadDup, NULL);
++    logTerm("suspend", suspended);
++    if (suspended) return suspended;
+     // This will wait for the thread to be suspended
+-    NtGetContextThread(*ThreadDup, &TmpContext);
++    CONTEXT TmpContext {};
++    TmpContext.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
++    const NTSTATUS contextStatus = NtGetContextThread(*ThreadDup, &TmpContext);
++    logTerm("context", contextStatus);
++    if (contextStatus) {
++      NtResumeThread(*ThreadDup, NULL);
++      return contextStatus;
++    }
+   }
+ 
+   const auto [Err, CPUArea] = GetThreadCPUArea(*ThreadDup);
+   if (Err) {
++    if (!Self) NtResumeThread(*ThreadDup, NULL);
++    logTerm("cpu-area", Err);
+     return Err;
+   }
+@@ -1201,6 +1221,8 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
+     auto it = Threads.find(ThreadTID);
+     if (it == Threads.end()) {
+       // Thread already terminated
++      if (!Self) NtResumeThread(*ThreadDup, NULL);
++      logTerm("already-terminated", STATUS_SUCCESS);
+       return STATUS_SUCCESS;
+     }
+ 
+@@ -1221,6 +1243,7 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
+     FEX::Windows::DeinitCRTThread();
+   }
+ 
++  logTerm("destroyed", STATUS_SUCCESS);
+   return STATUS_SUCCESS;
+ }

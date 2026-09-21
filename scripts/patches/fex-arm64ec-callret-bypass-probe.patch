@@ -1,0 +1,36 @@
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -199,8 +199,11 @@
+     if (Op->Hint == IR::BranchHint::Return) {
+       // First try to pop from the call-ret stack, otherwise follow the normal path (but ending in a ret)
+       ldp<ARMEmitter::IndexType::POST>(TMP1, TMP2, REG_CALLRET_SP, 0x10);
++#ifndef ARCHITECTURE_arm64ec
+       sub(TMP1, TMP1, RipReg.X());
+       (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
++#endif
++      // Candidate-only: ARM64EC returns always resolve through the normal lookup.
+     }
+ 
+     // L1 Cache
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -132,7 +132,8 @@
+ 
+   // If the entry at the TOS is for the target address, pop it and return to the JIT code
+   add(ARMEmitter::Size::i64Bit, REG_CALLRET_SP, REG_CALLRET_SP, 0x10);
+-  ret(TMP2);
++  // Candidate-only: discard the cached host return target, preserving the pop.
++  (void)b(&LoopTop);
+ 
+   // Enter JIT
+ #endif
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -789,6 +789,7 @@
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
+ 
+   __wine_dbg_output("starting FEX based libarm64ecfex.dll\n");
++  __wine_dbg_output("[FEX-CALLRET-CONTROL] guest_returns=lookup ec_returns=lookup accounting=preserved\n");
+ 
+   FEXCore::Profiler::Init("", "");
+ 

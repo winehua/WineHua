@@ -1,0 +1,12 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1173,7 +1173,8 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
+     return STATUS_ACCESS_DENIED;
+   }
+ 
+-  auto ThreadDup = FEX::Windows::DupHandle(Thread, THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME);
++  auto ThreadDup = FEX::Windows::DupHandle(Thread, THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT);
++  if (!ThreadDup) return STATUS_ACCESS_DENIED;
+ 
+   THREAD_BASIC_INFORMATION Info;

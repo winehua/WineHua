@@ -1,0 +1,170 @@
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -39,6 +39,7 @@
+   bool BeginUntrackedWriteLocked(uint64_t Address, uint64_t Size);
+ 
+   FEXCore::HLE::ExecutableRangeInfo QueryExecutableRange(uint64_t Address);
++  void TraceRWXProbe(uint64_t Address);
+ 
+ private:
+   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -7,6 +7,7 @@
+ #include <FEXCore/Config/Config.h>
+ #include <FEXCore/Debug/InternalThreadState.h>
+ #include "InvalidationTracker.h"
++#include "RWXProbe.h"
+ #include <windef.h>
+ #include <winternl.h>
+ 
+@@ -16,6 +17,7 @@
+   , Threads {Threads} {
+   FEX_CONFIG_OPT(SMCChecks, SMCCHECKS);
+   SMCDetectionDisabled = (SMCChecks == FEXCore::Config::CONFIG_SMC_NONE);
++  RWXProbeLog("[FEX-RWX-INIT] pid=%lu tid=%lu smc_disabled=%u\n", GetCurrentProcessId(), GetCurrentThreadId(), SMCDetectionDisabled);
+ 
+   MEMORY_BASIC_INFORMATION Info;
+   uint64_t Address = 0;
+@@ -162,7 +164,12 @@
+       ULONG TmpProt;
+       void* TmpAddress = reinterpret_cast<void*>(FaultAddress);
+       SIZE_T TmpSize = 1;
+-      NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, PAGE_EXECUTE_READWRITE, &TmpProt);
++      const auto Status = NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, PAGE_EXECUTE_READWRITE, &TmpProt);
++      static std::atomic<uint32_t> ProtectCount {};
++      if (RWXProbeBudget(ProtectCount)) {
++        RWXProbeLog("[FEX-RWX-UNPROTECT] pid=%lu tid=%lu addr=0x%llx pc=0x%llx status=0x%lx old=0x%lx\n",
++                    GetCurrentProcessId(), GetCurrentThreadId(), FaultAddress, HostPc, Status, Status ? 0UL : TmpProt);
++      }
+     }
+     DetectMonoBackpatcherBlock(Thread, HostPc);
+     return true;
+@@ -189,6 +196,26 @@
+   return {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
+ }
+ 
++void InvalidationTracker::TraceRWXProbe(uint64_t Address) {
++  // Call the real query, then snapshot membership. The snapshots can race with
++  // a concurrent notification; neither changes intervals or page permissions.
++  const auto Range = QueryExecutableRange(Address);
++  bool X, RWX, Disabled;
++  {
++    std::shared_lock Lock(IntervalsLock);
++    X = XIntervals.Query(Address).Enclosed;
++    RWX = RWXIntervals.Query(Address).Enclosed;
++    Disabled = SMCDetectionDisabled;
++  }
++  MEMORY_BASIC_INFORMATION Info {};
++  const auto Status = NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(Address),
++                                           MemoryBasicInformation, &Info, sizeof(Info), nullptr);
++  RWXProbeLog("[FEX-RWX-TRACK] pid=%lu tid=%lu addr=0x%llx x=%u rwx=%u smc_disabled=%u query_base=0x%llx query_size=0x%llx query_write=%u vm_status=0x%lx vm_base=%p vm_size=0x%llx vm_prot=0x%lx vm_state=0x%lx\n",
++              GetCurrentProcessId(), GetCurrentThreadId(), Address, X, RWX, Disabled,
++              Range.Base, Range.Size, Range.Writable, Status, Info.BaseAddress,
++              static_cast<uint64_t>(Info.RegionSize), Info.Protect, Info.State);
++}
++
+ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc) {
+   if (!MonoBackpatcherDetectionPending) {
+     return;
+@@ -220,6 +247,8 @@
+ 
+ void InvalidationTracker::DisableSMCDetection() {
+   std::unique_lock Lock(IntervalsLock);
++  RWXProbeLog("[FEX-RWX-DISABLE] pid=%lu tid=%lu reason=mono-backpatcher previous=%u mono_base=0x%llx mono_end=0x%llx\n",
++              GetCurrentProcessId(), GetCurrentThreadId(), SMCDetectionDisabled, MonoBase, MonoEnd);
+   SMCDetectionDisabled = true;
+   uint64_t Address = 0;
+ 
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -35,6 +35,7 @@
+ #include "Common/Exception.h"
+ #include "Common/ImageTracker.h"
+ #include "Common/InvalidationTracker.h"
++#include "Common/RWXProbe.h"
+ #include "Common/OvercommitTracker.h"
+ #include "Common/TSOHandlerConfig.h"
+ #include "Common/CPUFeatures.h"
+@@ -890,17 +891,35 @@
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+-    if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, NativeContext->X17)) {
++    static std::atomic<uint32_t> ProbeCount {}, UnhandledProbeCount {};
++    const bool Probe = FEX::Windows::RWXProbeBudget(ProbeCount);
++    const auto ProbePC = NativeContext->Pc;
++    const auto Access = Exception->ExceptionInformation[0];
++    const bool CallRet = FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, NativeContext->X17);
++    if (CallRet) {
++      if (Probe) FEX::Windows::RWXProbeLog("[FEX-RWX-CHAIN] pid=%lu tid=%lu addr=0x%llx pc=0x%llx access=%llu callret=1 guard=-1 tracker=-1 handled=1\n",
++                                         GetCurrentProcessId(), GetCurrentThreadId(), FaultAddress, ProbePC, Access);
+       return true;
+     }
+ 
+-    if (FEX::Windows::JITGuardPage::HandleJITGuardPage(Thread, reinterpret_cast<void*>(FaultAddress), NativeContext->X,
+-                                                       reinterpret_cast<__uint128_t*>(NativeContext->V), &NativeContext->Pc)) {
++    const bool Guard = FEX::Windows::JITGuardPage::HandleJITGuardPage(Thread, reinterpret_cast<void*>(FaultAddress), NativeContext->X,
++                                                       reinterpret_cast<__uint128_t*>(NativeContext->V), &NativeContext->Pc);
++    if (Guard) {
++      if (Probe) FEX::Windows::RWXProbeLog("[FEX-RWX-CHAIN] pid=%lu tid=%lu addr=0x%llx pc=0x%llx access=%llu callret=0 guard=1 tracker=-1 handled=1\n",
++                                         GetCurrentProcessId(), GetCurrentThreadId(), FaultAddress, ProbePC, Access);
+       return true;
+     }
+ 
+     std::scoped_lock Lock(ThreadCreationMutex);
+-    if (InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
++    if (Probe && InvalidationTracker) InvalidationTracker->TraceRWXProbe(FaultAddress);
++    const bool RWX = InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress);
++    if (Probe || (!RWX && FEX::Windows::RWXProbeBudget(UnhandledProbeCount, 64))) {
++      if (!Probe && InvalidationTracker) InvalidationTracker->TraceRWXProbe(FaultAddress);
++      FEX::Windows::RWXProbeLog("[FEX-RWX-CHAIN] pid=%lu tid=%lu addr=0x%llx pc=0x%llx access=%llu callret=0 guard=0 tracker=%d handled=%u jit=%u\n",
++                                GetCurrentProcessId(), GetCurrentThreadId(), FaultAddress, ProbePC, Access,
++                                InvalidationTracker ? static_cast<int>(RWX) : -1, RWX, CTX->IsAddressInCodeBuffer(Thread, ProbePC));
++    }
++    if (RWX) {
+       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
+       if (CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) && !CTX->IsCurrentBlockSingleInst(CPUArea.ThreadState()) &&
+           CTX->IsAddressInCurrentBlock(Thread, FaultAddress & FEXCore::Utils::FEX_PAGE_MASK, FEXCore::Utils::FEX_PAGE_SIZE)) {
+@@ -990,6 +1009,15 @@
+ NTSTATUS ResetToConsistentState(EXCEPTION_RECORD* Exception, CONTEXT* GuestContext, ARM64_NT_CONTEXT* NativeContext) {
+   bool Cont {};
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
++    static std::atomic<uint32_t> EntryCount {};
++    if (FEX::Windows::RWXProbeBudget(EntryCount)) {
++      const auto Area = GetCPUArea();
++      FEX::Windows::RWXProbeLog("[FEX-RWX-ENTRY] pid=%lu tid=%lu addr=0x%llx pc=0x%llx access=%llu thread=%u simulation=%u callback=%u\n",
++                                GetCurrentProcessId(), GetCurrentThreadId(), Exception->ExceptionInformation[1], NativeContext->Pc,
++                                Exception->ExceptionInformation[0], Area.ThreadState() != nullptr, Area.Area->InSimulation, Area.Area->InSyscallCallback);
++    }
++  }
++  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+     if (OvercommitTracker) {
+--- /dev/null
++++ b/Source/Windows/Common/RWXProbe.h
+@@ -0,0 +1,23 @@
++// Diagnostic candidate only: bounded, allocation-free output to Wine stderr.
++#pragma once
++#include <atomic>
++#include <cstdarg>
++#include <cstdio>
++#include <windows.h>
++#include <wine/debug.h>
++
++namespace FEX::Windows {
++inline void RWXProbeLog(const char* Format, ...) {
++  const DWORD Error = GetLastError();
++  char Message[1024];
++  va_list Args;
++  va_start(Args, Format);
++  vsnprintf(Message, sizeof(Message), Format, Args);
++  va_end(Args);
++  __wine_dbg_output(Message);
++  SetLastError(Error);
++}
++inline bool RWXProbeBudget(std::atomic<uint32_t>& Count, uint32_t Limit = 256) {
++  return Count.fetch_add(1, std::memory_order_relaxed) < Limit;
++}
++}

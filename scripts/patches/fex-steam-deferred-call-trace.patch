@@ -1,0 +1,65 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -84,6 +84,18 @@ struct SteamBoundaryRecord {
+   uintptr_t rsp {};
+ };
+ 
++struct SteamCallRecord {
++  std::atomic<uint32_t> ready {};
++  uint32_t sequence {};
++  uint32_t tid {};
++  uint32_t isReturn {};
++  uintptr_t target {};
++  uintptr_t caller {};
++  uintptr_t rsp {};
++};
++std::array<SteamCallRecord, 4096> SteamCallRecords;
++std::atomic<uint32_t> SteamCallSeen {};
++uint32_t SteamCallRead {};
+ std::array<SteamBoundaryRecord, 1024> SteamBoundaryRecords;
+ std::atomic<uint32_t> SteamBoundaryWrite {};
+ std::atomic_flag SteamBoundaryFlushing = ATOMIC_FLAG_INIT;
+@@ -110,4 +122,15 @@ void FlushSteamBoundaries() {
+     __wine_dbg_output(message);
+   }
++  while (SteamCallRead < SteamCallRecords.size() &&
++         SteamCallRecords[SteamCallRead].ready.load(std::memory_order_acquire)) {
++    const auto& record = SteamCallRecords[SteamCallRead++];
++    char message[190];
++    snprintf(message, sizeof(message),
++             "[steam-call] seq=%u tid=%u kind=%s target=0x%llx caller=0x%llx rsp=0x%llx\n",
++             record.sequence, record.tid, record.isReturn ? "ret" : "call",
++             static_cast<unsigned long long>(record.target), static_cast<unsigned long long>(record.caller),
++             static_cast<unsigned long long>(record.rsp));
++    __wine_dbg_output(message);
++  }
+   SetLastError(error);
+   SteamBoundaryFlushing.clear(std::memory_order_release);
+@@ -159,13 +182,18 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+     } else if (!early) return;
+   }
++  const uint32_t sequence = SteamCallSeen.fetch_add(1, std::memory_order_relaxed);
++  if (sequence >= 1024 && (sequence - 1024) % 16) return;
++  const uint32_t slot = sequence < 1024 ? sequence : 1024 + (sequence - 1024) / 16;
++  if (slot >= SteamCallRecords.size()) return;
++  auto& record = SteamCallRecords[slot];
++  record.sequence = sequence;
++  record.tid = GetCurrentThreadId();
++  record.isReturn = isReturn;
++  record.target = target;
++  record.rsp = rsp;
+   uint64_t returnAddress = 0;
+   if (!isReturn) memcpy(&returnAddress, reinterpret_cast<const void*>(rsp), sizeof(returnAddress));
+-  const DWORD error = GetLastError();
+-  char message[210];
+-  snprintf(message, sizeof(message), "[steam-call] pid=%lu tid=%lu edge=%u kind=%s target=0x%llx rsp=0x%llx return=0x%llx\n",
+-           static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()),
+-           early ? edge : 512, isReturn ? "ret" : "call", static_cast<unsigned long long>(target),
+-           static_cast<unsigned long long>(rsp), static_cast<unsigned long long>(returnAddress));
+-  __wine_dbg_output(message);
+-  SetLastError(error);
++  record.caller = returnAddress;
++  record.ready.store(1, std::memory_order_release);
++  if (sequence == 127 || sequence == 1023 || (sequence > 1024 && sequence % 512 == 0)) FlushSteamBoundaries();
+ }

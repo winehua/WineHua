@@ -1,0 +1,10 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -183,3 +183,4 @@ extern "C" void WineHuaGuestCall(uintptr_t target, FEXCore::Core::CpuStateFrame* frame, uint32_t isReturn) {
+   const uint64_t startRsp = SteamTraceStartRsp.load(std::memory_order_relaxed);
+-  const bool deep = startRsp > rsp && startRsp - rsp >= 0x3000 &&
+-                    SteamTraceDeepEdges.fetch_add(1, std::memory_order_relaxed) < 768;
++  const bool inDeep = startRsp > rsp && startRsp - rsp >= 0x3000;
++  const uint32_t deepEdge = inDeep ? SteamTraceDeepEdges.fetch_add(1, std::memory_order_relaxed) : 0;
++  const bool deep = inDeep && deepEdge >= 600 && deepEdge < 1200;
