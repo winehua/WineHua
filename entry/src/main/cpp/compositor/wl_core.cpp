@@ -742,8 +742,24 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
 // PC 模式登记 popup 伪 toplevel 由 ArkTS 独立子窗口渲染
 void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi) {
     if (!sd->isSubsurface || !sd->parentSurface || sd->pixels.empty()) return;
-    auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
-    if (!parentSd || !parentSd->hasToplevel) return;
+    /* 子面的直接父级不一定带 xdg 角色: Wine 的 GL drawable 会挂在窗口自己的
+     * wl_surface 下, 而中间层可能只是普通 surface (实测 PAL2: 1280x800
+     * toplevel 的 serial 停在 2, 真正的游戏帧全部提交在 640x480 subsurface 上,
+     * 序号随 GL present 桥的 readbacks 增长)。只看直接父级会把这类帧整段丢掉,
+     * 表现就是"游戏在跑但窗口黑屏/空白"。
+     * 沿父链向上找到最近的 toplevel 归属, 帧仍按该 toplevel 合成。 */
+    SurfaceData* parentSd = nullptr;
+    wl_resource* ancestor = sd->parentSurface;
+    for (int depth = 0; ancestor && depth < 8; ++depth) {
+        auto* ancestorSd = static_cast<SurfaceData*>(wl_resource_get_user_data(ancestor));
+        if (!ancestorSd) break;
+        if (ancestorSd->hasToplevel) {
+            parentSd = ancestorSd;
+            break;
+        }
+        ancestor = ancestorSd->parentSurface;
+    }
+    if (!parentSd) return;
     if (Policy().SubsurfaceAsLayer()) {
         UpdateSubsurfaceLayerOnCommit(sd, surfRes, parentSd->toplevelId, fi);
     } else {

@@ -114,7 +114,9 @@ export class GameHook {
     const d3dEnvValues: string[] = [];
     const appendD3dEnvironment = (key: string, envValue: string): void => {
       const allowedBox64Keys = [
+        'BOX64_DYNAREC',
         'BOX64_DYNAREC_SAFEFLAGS',
+        'BOX64_DYNAREC_NATIVEFLAGS',
         'BOX64_DYNAREC_BIGBLOCK',
         'BOX64_DYNAREC_CALLRET',
         'BOX64_DYNAREC_FORWARD',
@@ -123,6 +125,7 @@ export class GameHook {
       ];
       const allowedKey = /^(WINEDEBUG|DXVK_|VN_|VKR_|WINEHUA_DXVK_|WINEHUA_VKR_)[A-Za-z0-9_]*$/.test(key) ||
         key === 'WINEHUA_WOW64_ENGINE' ||
+        key === 'WINE_LARGE_ADDRESS_AWARE' ||
         key === 'WINEHUA_FAULT_FREEZE' ||
         key === 'WINEHUA_FAULT_DUMP_MAPS' ||
         key === 'WINEHUA_EARLY_FAULT' ||

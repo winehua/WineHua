@@ -192,6 +192,24 @@ static bool arg_equals(int argc, char *argv[], const char *value)
     return false;
 }
 
+static void apply_game_address_space_compatibility(int argc, char **argv)
+{
+    if (getenv("WINE_LARGE_ADDRESS_AWARE")) return;
+    for (int i = 1; i < argc; ++i)
+    {
+        char name[128];
+        if (!argv[i]) continue;
+        normalize_basename(argv[i], name, sizeof(name));
+        if (!program_is(name, "pal4")) continue;
+        // PAL4 does not declare LARGE_ADDRESS_AWARE. Proton's forced 4 GB
+        // override corrupts its UI initialization; honor the PE flag as the
+        // previous Wine runtime did. Keep explicit overrides for diagnosis.
+        setenv("WINE_LARGE_ADDRESS_AWARE", "0", 1);
+        OH_LOG_INFO(LOG_APP, "[WineChild] PAL4: honoring image address-space limit");
+        return;
+    }
+}
+
 static bool arg_starts_with(int argc, char *argv[], const char *prefix)
 {
     size_t prefixLen = prefix ? strlen(prefix) : 0;
@@ -476,20 +494,13 @@ static bool is_steam_client_exe(int argc, char **argv)
 static void select_wow64_backend(int argc, char **argv)
 {
 #if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
-    /* Steam client/CEF needs FEX on this build, but 32-bit game payloads
-     * launched below steamapps\common crash immediately under the current
-     * FEX WOW64 path.  Keep the Steam process tree on FEX and force game
-     * executables onto the box64 product baseline.  This also covers games
-     * launched by Steam itself (the child inherits the parent's env). */
-    if (is_steam_game_exe(argc, argv))
-    {
-        setenv("HODLL", "wowbox64.dll", 1);
-        OH_LOG_INFO(LOG_APP,
-                    "[WineChild] HODLL=wowbox64.dll (steam-game override, exe=%{public}s)",
-                    argv[1] ? argv[1] : "(null)");
-        return;
-    }
-
+    /* 2026-09-22: 32 位默认基座改为 FEX (libwow64fex.dll)。
+     * 背景: PAL4 在 box64 下必须退到 BOX64_DYNAREC_BIGBLOCK=0 才能跑完场景,
+     * 而默认档 (BIGBLOCK=3) 会卡死在加载; 同一游戏在 FEX 下直接以 48 FPS 通过
+     * 加载并进入场景, 与用户实测"FEX 明显流畅"一致。box64 不再是 Proton 侧
+     * 的运行基座, 但仍保留为显式回退: WINEHUA_WOW64_ENGINE=box。
+     * steamapps\common 下曾经秒崩的现象尚未在 FEX 基座下复查, 先保留路径判定
+     * 只作为日志线索, 不再据此强制换引擎。 */
     if (is_steam_client_exe(argc, argv))
     {
         setenv("HODLL", "libwow64fex.dll", 1);
@@ -499,12 +510,18 @@ static void select_wow64_backend(int argc, char **argv)
         return;
     }
 
+    /* 日志线索: steamapps\common 下的游戏过去在 FEX 上秒崩, 因而被强制 box64。
+     * 现在基座换成 FEX, 这里只记录, 便于按 exe 归类崩溃样本。 */
+    if (is_steam_game_exe(argc, argv))
+        OH_LOG_INFO(LOG_APP, "[WineChild] steamapps game on FEX base (exe=%{public}s)",
+                    argv[1] ? argv[1] : "(null)");
+
     const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
 
-    if (wow64_engine && strcmp(wow64_engine, "fex") == 0)
-        setenv("HODLL", "libwow64fex.dll", 1);
-    else
+    if (wow64_engine && strcmp(wow64_engine, "box") == 0)
         setenv("HODLL", "wowbox64.dll", 1);
+    else
+        setenv("HODLL", "libwow64fex.dll", 1);
     OH_LOG_INFO(LOG_APP, "[WineChild] HODLL=%{public}s (WINEHUA_WOW64_ENGINE=%{public}s)",
                 getenv("HODLL") ? getenv("HODLL") : "?", wow64_engine ? wow64_engine : "(unset)");
 #endif
@@ -771,24 +788,11 @@ static void ensure_prefix_fonts_and_codepage()
     }
 }
 
-// ---- 前缀 Vulkan 加载器遮蔽自愈 (2026-09-21) ----
-//
-// Wine 解析 PE 导入时先在**可执行文件同目录**探测依赖 DLL。Steam 的 CEF 目录
-// (Steam\bin\cef\cef.win64) 自带一份原生 vulkan-1.dll, 于是 GPU 进程
-// (steamwebhelper --type=gpu-process) 加载 DXVK 的 arm64x dxgi.dll/d3d11.dll 时
-// 会先探测到这份文件; 探测失败后整条 import 链断掉, 实测现象是:
-//   DxvkInstance::createInstance: Failed to create Vulkan 1.1 instance
-//   eglInitialize D3D11 failed (No available renderers) / SwANGLE Internal Vulkan error (-3)
-//   Exiting GPU process due to errors during initialization
-//   → GPU 进程 1.5~2.5 秒崩溃重启 (单场累计 spawned=25/exited=25)
-//   → SteamUI 线程 frame stalled → Timed out waiting for mutex in PutInternal()
-//   → 整组 CEF 被终止、界面黑屏或没有窗口。
-//
-// 本运行时的 venus ICD 是 OHOS 侧 .so (/data/storage/el1/bundle/libs/arm64/
-// libvulkan_virtio.so), 只有 Wine 的 winevulkan 加载器能解析它, 原生 loader 在这
-// 里永远不可能工作。因此把这类遮蔽文件改名保留 (.winehua-shadow, 不改内容、可逆、
-// 幂等) 是安全的; 若 Steam 自检把它恢复回来, 下一次会话启动会再次改名。
-static void repair_shadowing_vulkan_loaders()
+// Recover files hidden by older WineHua builds. DLL selection belongs to Wine's
+// builtin override, not the Steam installation: removing a verified client file
+// makes the updater download it again on every launch. Recover the backup before
+// starting the Steam updater. Hard links are denied by the device's sandbox.
+static void restore_shadowed_vulkan_loaders()
 {
     const char* prefix = getenv("WINEPREFIX");
     if (!prefix || !*prefix) return;
@@ -803,31 +807,13 @@ static void repair_shadowing_vulkan_loaders()
     for (const char* rel : kShadowDirs)
     {
         std::string path = std::string(prefix) + rel + "/vulkan-1.dll";
-        if (access(path.c_str(), F_OK) != 0) continue;
-
+        if (access(path.c_str(), F_OK) == 0) continue;
         std::string backup = path + ".winehua-shadow";
-        if (access(backup.c_str(), F_OK) == 0)
-        {
-            /* 备份已在, 说明 Steam 自检把原文件恢复了 — 直接摘掉恢复件。 */
-            if (unlink(path.c_str()) != 0)
-            {
-                OH_LOG_WARN(LOG_APP,
-                            "[WineChild] shadowing vulkan-1.dll remove failed path=%{public}s errno=%{public}d",
-                            path.c_str(), errno);
-                continue;
-            }
-        }
-        else if (rename(path.c_str(), backup.c_str()) != 0)
-        {
-            OH_LOG_WARN(LOG_APP,
-                        "[WineChild] shadowing vulkan-1.dll rename failed path=%{public}s errno=%{public}d",
+        if (rename(backup.c_str(), path.c_str()) == 0)
+            OH_LOG_INFO(LOG_APP, "[WineChild] restored Steam Vulkan loader path=%{public}s", path.c_str());
+        else if (errno != ENOENT && errno != EEXIST)
+            OH_LOG_WARN(LOG_APP, "[WineChild] Vulkan loader restore failed path=%{public}s errno=%{public}d",
                         path.c_str(), errno);
-            continue;
-        }
-
-        OH_LOG_INFO(LOG_APP,
-                    "[WineChild] neutralized shadowing vulkan-1.dll path=%{public}s (kept as *.winehua-shadow)",
-                    path.c_str());
     }
 }
 
@@ -1766,6 +1752,7 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+    apply_game_address_space_compatibility(argc, argv);
     // entryParams 覆盖之后再选一次 WINEDEBUG 档位: select_winedebug_profile() 会优先
     // 采用 WINEHUA_WINEDEBUG / 非 "-all" 的 WINEDEBUG, 但它上面的那次调用发生在
     // apply_entry_param_env_overrides() 之前 (2026-09-18 实测 Want 里传的档位永远不生效,
@@ -1811,10 +1798,8 @@ extern "C" void Main(NativeChildProcess_Args args)
     // 前缀字体/代码页自愈 (必须在 Wine 起来之前): 新装/重置 prefix 后 UI 字体链是断的,
     // 会让 win64/32 位 Steam 的 VGUI2 断言 surface_gdiwin32.cpp:1336 winFont 并卡在启动画面。
     ensure_prefix_fonts_and_codepage();
-    // 前缀 Vulkan 加载器遮蔽自愈 (必须在任何 Wine 模块解析之前): Steam CEF 自带的
-    // cef.win64\vulkan-1.dll 会让 GPU 进程里的 DXVK 建不出 Vulkan 实例, 进而
-    // GPU 进程崩溃重启、SteamUI 卡死、整组 CEF 被终止 (见函数注释)。
-    repair_shadowing_vulkan_loaders();
+    // Migrate the old file-hiding workaround before Steam verifies its files.
+    if (is_steam_bootstrap_exe(argc, argv)) restore_shadowed_vulkan_loaders();
 
     // 父进程 __env 可能用 DXVK PE 目录覆盖 WINEDLLPATH 并丢掉 HAP native-lib
     // 目录 (wineohos.so 所在) — 按方案重Assert运行期路径 (arm64 三方案修复)。
