@@ -65,8 +65,15 @@ void EglRenderer::OnZeroCopyFrameAvailable(void* data)
 {
     auto* renderer = static_cast<EglRenderer*>(data);
     if (!renderer) return;
+    // 2026-09-20 关键修复: 这是**真实 present** 的唯一来源。旧实现只在这里加计数,
+    // 而"producer 是否还活跃"却由渲染循环的查询刷新 → 失效 producer 永远显示活跃。
+    // 现在同时把时刻写进 ZcBridge 活性表 (只碰它自己的小锁, 不取 tmgr 锁)。
+    const uint64_t nowUs = PerfNowUs();
+    renderer->zeroCopyLastSignalUs_.store(nowUs, std::memory_order_relaxed);
     renderer->zeroCopyFrameSignals_.fetch_add(1, std::memory_order_relaxed);
     renderer->zeroCopyFrameAvailable_.store(true, std::memory_order_release);
+    if (renderer->zeroCopySurfaceKey_)
+        renderer->compositor_.zc().NoteProducerPresent(renderer->zeroCopySurfaceKey_, nowUs);
 }
 
 EGLDisplay EglRenderer::GetSharedDisplay() {
@@ -334,6 +341,8 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         zeroCopySurfaceKey_ = surface.surfaceKey;
         zeroCopyClientPid_ = surface.clientPid;
         zeroCopySurfaceId_ = surface.surfaceId;
+        zeroCopyAttachUs_ = PerfNowUs();
+        zeroCopyLastSignalUs_.store(0, std::memory_order_relaxed);
         zeroCopySourceW_ = static_cast<int>(surface.width);
         zeroCopySourceH_ = static_cast<int>(surface.height);
         zeroCopyVulkanSource_ = surface.vulkan || broker.IsVulkanPresentMode();
@@ -389,12 +398,13 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     {
         ++zeroCopyFailures_;
         ++zeroCopyConsecutiveFailures_;
-        if (zeroCopyFailures_ == 1 || zeroCopyFailures_ % 60 == 0)
+        if (zeroCopyFailures_ <= 10 || zeroCopyFailures_ % 60 == 0)
             OH_LOG_WARN(LOG_APP,
                         "[VIRGL-ZC][MAIN] update failed tl=%{public}u update=%{public}d "
-                        "transform=%{public}d failures=%{public}llu",
+                        "transform=%{public}d failures=%{public}llu consecutive=%{public}u",
                         toplevelId_, updateResult, transformResult,
-                        static_cast<unsigned long long>(zeroCopyFailures_));
+                        static_cast<unsigned long long>(zeroCopyFailures_),
+                        zeroCopyConsecutiveFailures_);
         if (compositor_.zc().IsReadyPublished(zeroCopySurfaceKey_) &&
             !compositor_.zc().IsFallbackPending(zeroCopySurfaceKey_) &&
             zeroCopyConsecutiveFailures_ >= 8)
@@ -416,6 +426,22 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
                         zeroCopyConsecutiveFailures_,
                         static_cast<unsigned long long>(
                             compositor_.zc().GetFallbackShmSerial(zeroCopySurfaceKey_)));
+        }
+        // 2026-09-20 关键修复 (ROUND3 §7): 连续失败说明这一代 NativeImage/缓冲队列
+        // 已不可用 (现场: 40601000 之后 producer 也不再交帧, app 这边因为
+        // zeroCopyFrameAvailable_ 已被取走而永远不再重试 → 双方互等)。
+        // 重建消费者即为"归还队列缓冲 + 下轮重新 attach", 是打破该互等的唯一动作。
+        if (zeroCopyConsecutiveFailures_ >= 2)
+        {
+            OH_LOG_WARN(LOG_APP,
+                        "[VIRGL-ZC][MAIN] consumer re-attach after %{public}u consecutive "
+                        "update failures tl=%{public}u key=%{public}llu failures=%{public}llu",
+                        zeroCopyConsecutiveFailures_, toplevelId_,
+                        static_cast<unsigned long long>(zeroCopySurfaceKey_),
+                        static_cast<unsigned long long>(zeroCopyFailures_));
+            zeroCopyLastReattachUs_ = PerfNowUs();
+            ++zeroCopyReattachCount_;
+            ReleaseZeroCopyBinding();
         }
         return false;
     }
@@ -465,6 +491,8 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     width = zeroCopySourceW_;
     height = zeroCopySourceH_;
     zeroCopyHasFrame_ = true;
+    // 2026-09-20: 记录**真实**消费时刻 (供黑窗归因/活性判定; 旧实现在查询路径里刷)
+    compositor_.zc().NoteLayerConsumed(zeroCopySurfaceKey_, PerfNowUs());
     if (compositor_.zc().IsFallbackPending(zeroCopySurfaceKey_))
     {
         compositor_.zc().CancelFallback(zeroCopySurfaceKey_);
@@ -500,6 +528,71 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
                     static_cast<unsigned long long>(zeroCopyFrameSignals_.load()),
                     static_cast<unsigned long long>(zeroCopyFailures_));
     return width > 0 && height > 0;
+}
+
+// 诊断 (2026-09-20, 默认关): WINEHUA_ZC_PIXEL_DUMP=<path>。在 ZC 层绘制之后立刻
+// 读回该层在画布上的中心条带 → 回答"导入纹理本身是黑的"还是"合成后才黑"。
+// 只在首帧/每 300 帧/自愈重连后 2s 内落盘, 避免常态读回开销。
+void EglRenderer::DumpZeroCopyLayerPixels(int x, int y, int w, int h)
+{
+    if (!zeroCopyDumpFile_)
+    {
+        const char* path = getenv("WINEHUA_ZC_PIXEL_DUMP");
+        // 默认落在 app temp (hdc 可直接取), 环境变量可覆盖; 未设置时用默认路径,
+        // 因为 app 进程拿不到 Want 注入的 env (那是给 wine 子进程的)。
+        if (!path || !path[0]) path = "/data/storage/el2/base/temp/zc-pixel-dump.txt";
+        zeroCopyDumpMax_ = 400;
+        zeroCopyDumpFile_ = fopen(path, "a");
+        if (!zeroCopyDumpFile_)
+        {
+            OH_LOG_WARN(LOG_APP, "[VIRGL-ZC][MAIN] pixel dump open failed path=%{public}s", path);
+            return;
+        }
+        fprintf(zeroCopyDumpFile_,
+                "# frame signals updates failures reattach nonblack sampled mean_luma\n");
+    }
+    if (w <= 0 || h <= 0) return;
+    if (zeroCopyDumpCount_ >= zeroCopyDumpMax_) return;
+    const uint64_t nowUs = PerfNowUs();
+    const bool afterReattach = zeroCopyLastReattachUs_ && nowUs - zeroCopyLastReattachUs_ < 2000000ull;
+    if (!(zeroCopyFrames_ <= 5 || zeroCopyFrames_ % 300 == 0 || afterReattach)) return;
+
+    const int rw = std::min(w, 256);
+    const int rh = std::min(h, 64);
+    const int rx = x + (w - rw) / 2;
+    const int ry = y + (h - rh) / 2;
+    std::vector<uint8_t> buf(static_cast<size_t>(rw) * static_cast<size_t>(rh) * 4u);
+    glReadPixels(rx, ry, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, buf.data());
+    size_t nonBlack = 0;
+    uint64_t lumaSum = 0;
+    const size_t pixels = buf.size() / 4;
+    for (size_t i = 0; i + 3 < buf.size(); i += 4)
+    {
+        if (buf[i] | buf[i + 1] | buf[i + 2]) ++nonBlack;
+        lumaSum += (buf[i] + buf[i + 1] + buf[i + 2]) / 3;
+    }
+    const uint64_t meanLuma = pixels ? lumaSum / pixels : 0;
+    fprintf(zeroCopyDumpFile_, "%llu %llu %llu %llu %llu %zu %zu %llu\n",
+            static_cast<unsigned long long>(zeroCopyFrames_),
+            static_cast<unsigned long long>(zeroCopyFrameSignals_.load()),
+            static_cast<unsigned long long>(zeroCopyUpdates_),
+            static_cast<unsigned long long>(zeroCopyFailures_),
+            static_cast<unsigned long long>(zeroCopyReattachCount_),
+            nonBlack, pixels, static_cast<unsigned long long>(meanLuma));
+    fflush(zeroCopyDumpFile_);
+    if (zeroCopyDumpCount_++ < 300)
+        OH_LOG_INFO(LOG_APP,
+                    "[VIRGL-ZC][MAIN] pixel dump frame=%{public}llu tl=%{public}u "
+                    "signals=%{public}llu updates=%{public}llu failures=%{public}llu "
+                    "reattach=%{public}llu nonblack=%{public}zu/%{public}zu mean_luma=%{public}llu "
+                    "rect=%{public}dx%{public}d+%{public}d,%{public}d",
+                    static_cast<unsigned long long>(zeroCopyFrames_), toplevelId_,
+                    static_cast<unsigned long long>(zeroCopyFrameSignals_.load()),
+                    static_cast<unsigned long long>(zeroCopyUpdates_),
+                    static_cast<unsigned long long>(zeroCopyFailures_),
+                    static_cast<unsigned long long>(zeroCopyReattachCount_),
+                    nonBlack, pixels, static_cast<unsigned long long>(meanLuma),
+                    rw, rh, rx, ry);
 }
 
 void EglRenderer::ReleaseZeroCopyBinding()
@@ -572,6 +665,11 @@ void EglRenderer::ReleaseZeroCopyBinding()
 void EglRenderer::ShutdownZeroCopyConsumer()
 {
     ReleaseZeroCopyBinding();
+    if (zeroCopyDumpFile_)
+    {
+        fclose(zeroCopyDumpFile_);
+        zeroCopyDumpFile_ = nullptr;
+    }
     if (zeroCopyProgram_)
     {
         glDeleteProgram(zeroCopyProgram_);
@@ -825,6 +923,40 @@ void EglRenderer::RenderLoop() {
         const bool zeroCopyGeometryFrame = zeroCopyGeometryDirty_;
         zeroCopyGeometryDirty_ = false;
         zeroCopyFrame = UpdateZeroCopyFrame(zeroCopyWidth, zeroCopyHeight);
+        // 2026-09-20 自愈 (ROUND3 §7): 已 attach 但真实 present 长时间不来, 且当前
+        // 消费者侧"没有可用内容"(从未消费成功)或"已经出现过失败" → 这一代
+        // NativeImage/队列很可能已被 producer 弃用, 重建消费者归还缓冲,
+        // 下一轮 TryAttachZeroCopySurface 重新 attach。保守条件是为了不打扰
+        // 正常的静态窗口 (静止但健康的窗口会一直 frames>0/failures==0)。
+        if (zeroCopyRegistered_ && zeroCopySurfaceKey_)
+        {
+            const uint64_t idleNowUs = PerfNowUs();
+            const uint64_t lastSignalUs = zeroCopyLastSignalUs_.load(std::memory_order_relaxed);
+            const uint64_t baseUs = lastSignalUs ? lastSignalUs : zeroCopyAttachUs_;
+            const uint64_t idleMs = baseUs && idleNowUs > baseUs ? (idleNowUs - baseUs) / 1000 : 0;
+            const bool neverConsumed = (zeroCopyFrames_ == 0 && idleMs > 5000);
+            const bool failedBefore = (zeroCopyFailures_ > 0 && idleMs > 8000);
+            if ((neverConsumed || failedBefore) &&
+                idleNowUs - zeroCopyLastReattachUs_ > 3000000ull)
+            {
+                zeroCopyLastReattachUs_ = idleNowUs;
+                ++zeroCopyReattachCount_;
+                OH_LOG_WARN(LOG_APP,
+                            "[VIRGL-ZC][MAIN] stale consumer re-attach tl=%{public}u "
+                            "key=%{public}llu idleMs=%{public}llu signals=%{public}llu "
+                            "frames=%{public}llu failures=%{public}llu reattach=%{public}llu "
+                            "reason=%{public}s",
+                            toplevelId_,
+                            static_cast<unsigned long long>(zeroCopySurfaceKey_),
+                            static_cast<unsigned long long>(idleMs),
+                            static_cast<unsigned long long>(zeroCopyFrameSignals_.load()),
+                            static_cast<unsigned long long>(zeroCopyFrames_),
+                            static_cast<unsigned long long>(zeroCopyFailures_),
+                            static_cast<unsigned long long>(zeroCopyReattachCount_),
+                            neverConsumed ? "never-consumed" : "update-failed");
+                ReleaseZeroCopyBinding();
+            }
+        }
         if (useToplevel != 0) {
             // 帧交付契约 (presented_frame.h): TakeToplevelFrame 返回 PresentedFrame。
             // fw/fh 从帧 buffer 尺寸 (frame.w/h) 取 — 直传帧是游戏内容尺寸
@@ -1028,6 +1160,8 @@ void EglRenderer::RenderLoop() {
             glUniformMatrix4fv(zeroCopyTransformLocation_, 1, GL_FALSE,
                                zeroCopySamplingTransform_);
             glDrawArrays(GL_TRIANGLES, 0, 6);
+            DumpZeroCopyLayerPixels(layerViewportX, layerViewportY,
+                                    layerViewportW, layerViewportH);
 
             // Desktop 模式 z-order 修复: GL overlay 不参与 CPU 合成的层序,
             // 画完 overlay 后, 把压在 GL 窗口之上的区域 (z-order 更高的窗口/

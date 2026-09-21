@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -134,7 +135,11 @@ struct WineHuaPresentBinding {
     // P0-1 Task A (黑窗归因): producer 侧最新 extent 与"最近被消费"的时刻
     uint32_t frameWidth = 0;
     uint32_t frameHeight = 0;
-    uint64_t lastProducerUs = 0;   // 最近一次该 producer 的 present 被消费
+    // 2026-09-20: 语义修正为"最近一次该 producer **真实** present 的时刻"
+    // (由 native present 回调 NoteProducerPresent 写入)。旧实现把它放在
+    // 渲染循环的查询路径里刷新, 于是失效 producer 永远显示活跃、新 producer
+    // 无法接管其窗口 (参见 ROUND3 文档 §7)。
+    uint64_t lastProducerUs = 0;
     uint64_t lastDrawUs = 0;       // 最近一次绑定路径真的用于取几何(合成消费)
     // P0-1 Task E/F (2026-09-17): producer 生命周期
     bool pending = false;          // 新 producer 已绑定但还没出第一帧 (旧 producer 仍显示)
@@ -203,6 +208,13 @@ public:
     // 会被持久化，后续调用直接返回绑定（不再做几何搜索）。
     bool ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth, uint32_t frameHeight,
                                WineHuaPresentBinding* outBinding, bool* outNewlyBound);
+    // 2026-09-20 关键修复: producer 活性只能由真实 present 驱动。
+    // NoteProducerPresent 由 native present 回调 (OHOS 回调线程) 调用, 只碰本类
+    // 自己的小锁 + 表, 不取 tmgr 锁 (回调可能在 UpdateSurfaceImage 内同步触发,
+    // 而渲染线程此刻可能正持 tmgr 锁) — 锁序单向: tmgr → presentLivenessMutex_。
+    void NoteProducerPresent(uint64_t surfaceKey, uint64_t nowUs);
+    // 合成侧真正消费一帧 (渲染线程在 UpdateSurfaceImage 成功后调用)
+    void NoteLayerConsumed(uint64_t surfaceKey, uint64_t nowUs);
     // 窗口销毁/代际变化时失效所有指向该窗口的绑定
     void InvalidateBindingsForWindow(uint32_t ownerHostPid, uint32_t wlSurfaceId);
     size_t PresentBindingCount() const { return presentBindings_.size(); }
@@ -217,12 +229,26 @@ private:
     DesktopCompositor& comp_;
     std::unordered_set<uint64_t> activeKeys_;  // ZC key 权威
     std::unordered_map<uint64_t, ZcPublishState> publishStates_;  // key → ZC 发布状态
+    // 真实 present 活性表 (producer key → 最近一次 present 的 steady 时钟 µs)。
+    // 只由 NoteProducerPresent 写、由 ResolvePresentBinding / 归因诊断读。
+    mutable std::mutex presentLivenessMutex_;
+    std::unordered_map<uint64_t, uint64_t> lastPresentUsByKey_;
+    uint64_t LastPresentUs(uint64_t surfaceKey) const;
+    // 清理"窗口还锁着一个已经没有绑定/资源已消失的 producer"的残留映射,
+    // 否则该窗口永远无法被新 producer 接管 (ROUND3 §7.2)。
+    void PruneStaleWindowBindings();
     // P0-1: producer key ((presenterHostPid<<32)|presentSurfaceId) → 持久绑定
     std::unordered_map<uint64_t, WineHuaPresentBinding> presentBindings_;
     // 已被其它 producer 占用的窗口 (防止两个 producer 绑到同一窗口)
     std::unordered_map<uint64_t, uint64_t> windowBindings_;
     std::unordered_set<uint64_t> bindingRejectedLogged_;
     std::unordered_map<uint64_t, WineHuaBindDiagProducer> bindDiagProducers_;
+    struct BlankShmFrame {
+        uint64_t serial = 0;
+        bool blank = false;
+        bool valid = false;
+    };
+    std::unordered_map<uint32_t, BlankShmFrame> blankShmFrames_;
     // TEMP-DIAG(BIND): 去重表 (有界 vector — OHOS libc++ 无 std::hash<std::string>)
     std::vector<std::string> bindDiagWindowLogged_;
     std::vector<std::string> bindDiagRejectLogged_;

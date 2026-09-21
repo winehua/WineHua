@@ -570,6 +570,35 @@ static void apply_steam_client_default_args(int &argc, char **argv)
     argv[argc] = nullptr;
 }
 
+/* 2026-09-20 诊断: 摘掉 webhelper 系 (browser / gpu-process / renderer / utility) 的
+ * 进程内崩溃处理器。
+ *
+ * 背景 (ROUND3 §9.6): renderer / gpu-process 以 signal=11 退出, 但 wine_stderr 里
+ * **没有对应的 sig=11 记录**, 只有崩溃前成串被 FEX 正常处理的 sig=7(未对齐) 故障
+ * —— 说明致命 fault 被 CEF 自己的崩溃处理器截获后再终止进程, 我们的 SMC/early-fault
+ * 看不到"为什么崩"。关掉 breakpad/crash-reporter 后, fault 会回到 Wine 信号路径,
+ * 现成的 [SMC-MAP]/[SMC-stack]/[fault-map] 归属就能直接给出模块与调用来源。
+ *
+ * 默认关闭, 只有 WINEHUA_CEF_NO_CRASH_HANDLER=1 才注入; 只影响崩溃报告, 不影响渲染。 */
+static void apply_steam_webhelper_diag_args(int &argc, char **argv)
+{
+    const char* flag = getenv("WINEHUA_CEF_NO_CRASH_HANDLER");
+    if (!flag || flag[0] != '1') return;
+    if (!is_steam_webhelper_exe(argc, argv)) return;
+    if (argc > 60) return;
+
+    static char kNoBreakpad[] = "--disable-breakpad";
+    static char kNoCrashReporter[] = "--disable-crash-reporter";
+    static char kNoErrDialogs[] = "--noerrdialogs";
+
+    if (!arg_equals(argc, argv, kNoBreakpad)) argv[argc++] = kNoBreakpad;
+    if (!arg_equals(argc, argv, kNoCrashReporter)) argv[argc++] = kNoCrashReporter;
+    if (!arg_equals(argc, argv, kNoErrDialogs)) argv[argc++] = kNoErrDialogs;
+    argv[argc] = nullptr;
+    OH_LOG_INFO(LOG_APP,
+                "[WineChild] webhelper diag args injected: breakpad/crash-reporter disabled");
+}
+
 // ---- 前缀字体/代码页自愈 (产品化, 2026-09-18) ----
 // 为什么必须做进代码: 本 runtime 里 Wine 的默认 UI 字体链是断的 ——
 // system.reg 的 FontSubstitutes 把 Arial / Calibri / Candara / Comic Sans MS / … 指向
@@ -1316,17 +1345,19 @@ int OhosEarlyFault(int sig, siginfo_t* info, void* uctx) {
      * sig=7(SIGBUS) 探针 fault** (FEX/SMC/SEH, 见 [SMC] result=wine_seh),
      * 旧的"前 4 颗"名额被它们吃光 —— 后面真正的崩溃 (CEF renderer 的
      * SIGSEGV, 实测每 7~8 秒死一次) 反而一条现场都没有, 直接漏掉根因。
-     * 改成按 (sig, pc) 去重: 相同故障点只打一次, 不同故障点各打一次, 上限 12 种。 */
-    static int seenSig[12];
-    static uintptr_t seenPc[12];
-    static int seenCount = 0;
-    for (int i = 0; i < seenCount; i++)
+     * SIGBUS 探针不能占用后来 SIGSEGV 的诊断名额。 */
+    static int seenSig[16];
+    static uintptr_t seenPc[16];
+    static int seenCount[2];
+    const int group = sig == SIGSEGV ? 1 : 0;
+    const int first = group * 8;
+    for (int i = first; i < first + seenCount[group]; i++)
         if (seenSig[i] == sig && seenPc[i] == pc) return 0;
-    if (seenCount >= 12) return 0;
-    seenSig[seenCount] = sig;
-    seenPc[seenCount] = pc;
-    seenCount++;
-    logged = seenCount;
+    if (seenCount[group] >= 8) return 0;
+    const int index = first + seenCount[group]++;
+    seenSig[index] = sig;
+    seenPc[index] = pc;
+    logged = index + 1;
     in_handler = 1;
 
     char buf[256];
@@ -1687,7 +1718,9 @@ extern "C" void Main(NativeChildProcess_Args args)
     // early-fault 诊断器同理: 注册时 entryParams 的 env 还没生效, 运行时再确认一次。
     {
         const char* ef = getenv("WINEHUA_EARLY_FAULT");
-        g_early_fault_enabled = (ef && ef[0] == '0') ? 0 : 1;
+        const char* quiet = getenv("WINEHUA_DIAG_QUIET");
+        g_early_fault_enabled = (ef && ef[0] == '0') ||
+                                (quiet && quiet[0] == '1' && !(ef && ef[0] == '1')) ? 0 : 1;
         OH_LOG_INFO(LOG_APP, "[WineChild] early fault logger=%{public}s",
                     g_early_fault_enabled ? "on" : "off");
     }
@@ -1709,6 +1742,8 @@ extern "C" void Main(NativeChildProcess_Args args)
     select_wow64_backend(argc, argv);
     // Steam 客户端缺省参数兜底 (CEF 沙箱/gpu), 理由见函数注释。
     apply_steam_client_default_args(argc, argv);
+    // 诊断: webhelper 系崩溃处理器开关 (默认关闭, 见函数注释)。
+    apply_steam_webhelper_diag_args(argc, argv);
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.

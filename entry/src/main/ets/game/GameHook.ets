@@ -126,10 +126,14 @@ export class GameHook {
         key === 'WINEHUA_FAULT_FREEZE' ||
         key === 'WINEHUA_FAULT_DUMP_MAPS' ||
         key === 'WINEHUA_EARLY_FAULT' ||
+        key === 'WINEHUA_DIAG_QUIET' ||
+        key === 'WINEHUA_STEAM_BOUNDARY_TRACE' ||
         key === 'WINEHUA_CEF_FORCE_SOFTWARE' ||
         key === 'WINEHUA_CEF_FORCE_GPU' ||
         key === 'WINEHUA_CEF_ANGLE_BACKEND' ||
         key === 'WINEHUA_CEF_STEAM_DISABLE_GPU' ||
+        // 2026-09-20 诊断: 关掉 webhelper 进程内崩溃处理器 (让致命 fault 回到 Wine 信号路径)
+        key === 'WINEHUA_CEF_NO_CRASH_HANDLER' ||
         key === 'WINEHUA_VIRGL_UBO_FIX' ||
         key === 'WINEHUA_MIN_THREAD_STACK_MB' ||
         key === 'WINEHUA_EMU_STACK_MB' ||
@@ -139,6 +143,7 @@ export class GameHook {
         key === 'WINEHUA_STALL_DUMP' ||
         key === 'WINEHUA_GL_PROC_TRACE' ||
         key === 'WINEHUA_WAIT_TRACE' ||
+        key === 'WINEHUA_WAIT_OBJECT_TRACE' ||
         key === 'WINEHUA_GUEST_CAPS_LOG' ||
         key === 'WINEHUA_CEF_LOGGING' ||
         key === 'WINEHUA_CEF_VMODULE' ||

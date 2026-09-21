@@ -301,6 +301,15 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     bool wasDesktopRoot = false;
     {
         auto lk = toplevelMgr_.Lock();
+        // A hidden Wine window can drop its xdg role while retaining wl_surface.
+        // Release its native producer now, before the role loses its identity.
+        for (const auto& [key, resource] : toplevelMgr_.SurfaceResources()) {
+            static_cast<void>(key);
+            if (!resource) continue;
+            auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(resource));
+            if (sd && sd->hasToplevel && sd->toplevelId == toplevelId)
+                desktopCompositor_.zc().InvalidateBindingsForWindow(sd->clientPid, sd->protocolId);
+        }
         toplevelMgr_.EraseToplevelLocked(toplevelId);
         // 会话状态读写经 DesktopSessionState (重构第 6B 步: 旧为宿主私有字段,
         // 清空点/时机/锁域逐字不变)

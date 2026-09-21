@@ -5,6 +5,7 @@
 #include <GLES3/gl3.h>
 #include <thread>
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
@@ -62,6 +63,9 @@ private:
     bool InitZeroCopyConsumer();
     bool TryAttachZeroCopySurface(uint32_t rendererToplevelId);
     bool UpdateZeroCopyFrame(int& width, int& height);
+    // 诊断 (2026-09-20, 默认关): WINEHUA_ZC_PIXEL_DUMP=<path> 时把 ZC 层绘制后
+    // 画布上该区域的像素采样落盘, 用于区分"纹理是黑的"与"合成后才是黑的"。
+    void DumpZeroCopyLayerPixels(int x, int y, int w, int h);
     void ReleaseZeroCopyBinding();
     void ShutdownZeroCopyConsumer();
 
@@ -81,6 +85,14 @@ private:
     GLint zeroCopyTransformLocation_ = -1;
     std::atomic<bool> zeroCopyFrameAvailable_{false};
     std::atomic<uint64_t> zeroCopyFrameSignals_{0};
+    // 2026-09-20: 真实 present 活性 (回调写入) + 消费者自愈簿记
+    std::atomic<uint64_t> zeroCopyLastSignalUs_{0};
+    uint64_t zeroCopyAttachUs_ = 0;        // 本代消费者 attach 时刻
+    uint64_t zeroCopyLastReattachUs_ = 0;  // 最近一次"陈旧消费者重建"
+    uint64_t zeroCopyReattachCount_ = 0;
+    uint64_t zeroCopyDumpCount_ = 0;       // WINEHUA_ZC_PIXEL_DUMP 诊断计数
+    uint64_t zeroCopyDumpMax_ = 400;       // 诊断落盘行数上限 (有界)
+    FILE* zeroCopyDumpFile_ = nullptr;     // 诊断输出 (默认 nullptr = 关)
     uint64_t zeroCopyFrames_ = 0;
     uint64_t zeroCopyUpdates_ = 0;
     uint64_t zeroCopyLastConsumedSignal_ = 0;

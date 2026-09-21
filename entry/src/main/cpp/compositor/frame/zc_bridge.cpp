@@ -232,12 +232,10 @@ bool ZcBridge::GetLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
                 wlRes = boundRes;
                 sd = boundSd;
                 if (outReason) *outReason = "present-binding";
-                // P0-1 Task A: 记录合成侧消费时刻 (用于黑窗归因)
-                auto it = presentBindings_.find(surfaceKey);
-                if (it != presentBindings_.end())
-                    it->second.lastDrawUs = static_cast<uint64_t>(
-                        std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now().time_since_epoch()).count());
+                // 2026-09-20: 这里**不再**写消费时刻。本函数同时服务"每帧查询"与
+                // "真正消费"两条路径, 把查询当消费会让 lastProducerUs/lastDrawUs
+                // 变成"渲染器上次查询时刻"(= 恒为 8ms 的假活跃)。真实消费时刻改由
+                // 渲染线程在 UpdateSurfaceImage 成功后经 NoteLayerConsumed 写入。
             }
         }
     }
@@ -514,6 +512,51 @@ bool ZcBridge::GetLayerInfo(uint64_t surfaceKey, uint32_t rendererToplevelId,
 
 // 诊断 (只看不改): 该 key 在当前合成状态下的原始事实, 用于解释 GetLayerInfo 的拒绝原因。
 // ============================================================================
+// 2026-09-20 关键修复: 真实 present 活性 (producer liveness)
+// ----------------------------------------------------------------------------
+// 现场 (ROUND3 §7): producer 16:38:14 之后不再交帧, 但 STEAM-WINDOW 一直显示
+// producerAgeMs≈8ms, 因为旧实现把"渲染循环每帧查询"当成"producer 活跃":
+// 同一字段既驱动黑窗归因, 又驱动"能否被新 producer 接管"的守卫 → 被弃用的
+// producer 永远霸占窗口, 新 present surface 拿不到窗口, 帧流再也回不来。
+// 现在活性只来自 native present 回调 (NoteProducerPresent)。
+void ZcBridge::NoteProducerPresent(uint64_t surfaceKey, uint64_t nowUs)
+{
+    if (!surfaceKey) return;
+    std::lock_guard<std::mutex> lock(presentLivenessMutex_);
+    lastPresentUsByKey_[surfaceKey] = nowUs;
+}
+
+uint64_t ZcBridge::LastPresentUs(uint64_t surfaceKey) const
+{
+    if (!surfaceKey) return 0;
+    std::lock_guard<std::mutex> lock(presentLivenessMutex_);
+    const auto it = lastPresentUsByKey_.find(surfaceKey);
+    return it == lastPresentUsByKey_.end() ? 0 : it->second;
+}
+
+void ZcBridge::NoteLayerConsumed(uint64_t surfaceKey, uint64_t nowUs)
+{
+    if (!surfaceKey) return;
+    auto lk = comp_.tmgr_.Lock();
+    const auto it = presentBindings_.find(surfaceKey);
+    if (it != presentBindings_.end()) it->second.lastDrawUs = nowUs;
+}
+
+void ZcBridge::PruneStaleWindowBindings()
+{
+    for (auto it = windowBindings_.begin(); it != windowBindings_.end();)
+    {
+        const bool bindingAlive = presentBindings_.count(it->second) > 0;
+        const bool resourceAlive = comp_.tmgr_.FindSurfaceResource(it->first) != nullptr;
+        if (bindingAlive && resourceAlive)
+        {
+            ++it;
+            continue;
+        }
+        it = windowBindings_.erase(it);
+    }
+}
+
 // P0-1 PresentBinding (2026-09-17) — 调用方须已持有 comp_.tmgr_ 锁
 // ============================================================================
 bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
@@ -522,6 +565,9 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
 {
     if (!surfaceKey || !outBinding) return false;
     if (outNewlyBound) *outNewlyBound = false;
+    // 2026-09-20: 先清掉"窗口 → 已消失 producer"的残留映射。否则该窗口永远无法
+    // 被新 producer 接管 (ROUND3 §7.2: 表面重建后新 present surface 拿不到窗口)。
+    PruneStaleWindowBindings();
     const uint64_t nowUs = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -534,6 +580,7 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
     };
 
     // ---- TEMP-DIAG(BIND-PRODUCER, 2026-09-18): producer arrival + frame-chain activity ----
+    if (frameWidth && frameHeight)
     {
         auto& rec = bindDiagProducers_[surfaceKey];
         if (!rec.firstUs) rec.firstUs = nowUs;
@@ -552,7 +599,8 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
         }
     }
     // 只观察不绑定: 候选窗口四套尺寸 + 每条拒绝原因 (去重)
-    BindDiagPass(surfaceKey, frameWidth, frameHeight, presenterHostPid, presentSurfaceId, rootId);
+    if (frameWidth && frameHeight)
+        BindDiagPass(surfaceKey, frameWidth, frameHeight, presenterHostPid, presentSurfaceId, rootId);
 
     // L0：已有绑定，且窗口仍在 → 直接复用（绝不重新搜索）
     auto existing = presentBindings_.find(surfaceKey);
@@ -562,8 +610,17 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
         // 避免旧 producer 与接管者争抢同一扇窗口。
         if (existing->second.retired)
         {
-            windowBindings_.erase((static_cast<uint64_t>(existing->second.window.ownerHostPid) << 32) |
-                                  existing->second.window.wlSurfaceId);
+            // 2026-09-20: 只有该窗口**仍然指向这个被退役的 producer** 时才清映射。
+            // 接管 (BIND-TAKEOVER/BIND-RETIRE) 之后窗口已经指向新 producer, 旧
+            // producer 的收尾若按窗口无条件删除, 会把新绑定一起抹掉 → 窗口回到
+            // binding=none / 黑 SHM (现场: 17:14:02.745 BIND-RETIRE 之后
+            // 17:14:03.332 STEAM-WINDOW 立刻变成 binding=none producer=0x0)。
+            const uint64_t retiredWindowKey =
+                (static_cast<uint64_t>(existing->second.window.ownerHostPid) << 32) |
+                existing->second.window.wlSurfaceId;
+            const auto retiredWindow = windowBindings_.find(retiredWindowKey);
+            if (retiredWindow != windowBindings_.end() && retiredWindow->second == surfaceKey)
+                windowBindings_.erase(retiredWindow);
             presentBindings_.erase(existing);
             return false;
         }
@@ -571,10 +628,12 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
                                   existing->second.window.wlSurfaceId;
         if (comp_.tmgr_.FindSurfaceResource(boundKey))
         {
-            // L0 复用：刷新 producer 侧观测（extent / 活跃时刻），供黑窗归因使用
+            // L0 复用：刷新 producer 侧 extent；活性时刻只取**真实 present** 表
+            // (2026-09-20: 旧实现写 nowUs, 使失效 producer 永远显示活跃)
             existing->second.frameWidth = frameWidth;
             existing->second.frameHeight = frameHeight;
-            existing->second.lastProducerUs = nowUs;
+            if (const uint64_t lastPresentUs = LastPresentUs(surfaceKey))
+                existing->second.lastProducerUs = lastPresentUs;
             // Task E/F: 接管者出第一帧后, 才真正退役旧 producer (旧 layer 在此期间继续显示最后帧)
             if (existing->second.pending)
             {
@@ -687,12 +746,22 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
                 claim != windowBindings_.end())
             {
                 const auto claimBinding = presentBindings_.find(claim->second);
-                if (claimBinding == presentBindings_.end()) continue;
-                const uint64_t claimLastUs = claimBinding->second.lastProducerUs;
+                if (claimBinding == presentBindings_.end())
+                {
+                    // 2026-09-20: claim 指向的 producer 已无绑定 (被 release/销毁) →
+                    // 该占用是残留, 直接清掉并让本 producer 正常竞争该窗口。
+                    windowBindings_.erase(claim);
+                }
+                else
+                {
+                // 活性取自**真实 present** 时间戳 (旧实现取查询刷新值 → 永不超时,
+                // 新 producer 永远无法接管被弃用的窗口)。
+                const uint64_t claimLastUs = LastPresentUs(claim->second);
                 const uint64_t claimAgeMs =
                     claimLastUs && nowUs > claimLastUs ? (nowUs - claimLastUs) / 1000 : 0;
                 if (claimAgeMs <= 1000) continue;
                 takeover = true;
+                }
             }
             const bool sizeMatch = otherSizeKnown &&
                                    static_cast<uint32_t>(otherW) == frameWidth &&
@@ -768,8 +837,10 @@ bool ZcBridge::ResolvePresentBinding(uint64_t surfaceKey, uint32_t frameWidth,
     binding.reason = reason;
     binding.frameWidth = frameWidth;
     binding.frameHeight = frameHeight;
-    binding.lastProducerUs = nowUs;
-    binding.lastDrawUs = nowUs;
+    // 2026-09-20: 活性取真实 present 时间 (可能为 0 = 尚未见过该 producer 交帧);
+    // 消费时刻交给 NoteLayerConsumed, 不再用"绑定发生时刻"冒充两者。
+    binding.lastProducerUs = LastPresentUs(surfaceKey);
+    binding.lastDrawUs = 0;
 
     const uint64_t windowKey = windowKeyOf(candidate);
     presentBindings_[surfaceKey] = binding;
@@ -839,12 +910,17 @@ void ZcBridge::DumpWindowBindingDiag()
         const bool boundNow = presentBindings_.count(producerKey) > 0;
         const uint64_t producerAgeMs =
             rec.lastUs && nowUs > rec.lastUs ? (nowUs - rec.lastUs) / 1000 : 0;
+        // 2026-09-20: 另打印**真实 present** 时延 (上面的 ageMs 是查询时延)。
+        const uint64_t lastPresentUs = LastPresentUs(producerKey);
+        const uint64_t presentAgeMs = lastPresentUs && nowUs > lastPresentUs
+            ? (nowUs - lastPresentUs) / 1000 : 0;
         char line[320];
         snprintf(line, sizeof(line),
                  "BIND-PRODUCER-STATE: producer=0x%llx extent=%ux%u frames=%u ageMs=%llu "
-                 "binding=%s lastReject=%s contentRectWouldMatch=%d\n",
+                 "presentAgeMs=%llu binding=%s lastReject=%s contentRectWouldMatch=%d\n",
                  static_cast<unsigned long long>(producerKey), rec.width, rec.height, rec.frames,
-                 static_cast<unsigned long long>(producerAgeMs), boundNow ? "bound" : "none",
+                 static_cast<unsigned long long>(producerAgeMs),
+                 static_cast<unsigned long long>(presentAgeMs), boundNow ? "bound" : "none",
                  rec.lastReject[0] ? rec.lastReject : "none", rec.contentRectWouldMatch ? 1 : 0);
         BindDiagEmit(line);
     }
@@ -1118,6 +1194,36 @@ int ZcBridge::GetOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
         if (layer.zcActive) continue;  // 跳过所有 ZC 层 (旧 activeKeys_ 检查同义)
         if (layer.zIndex <= anchorZ) continue;
         if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel) {
+            // A native-only window may commit an all-zero SHM placeholder while
+            // its pixels live in a separate, role-less present surface. Repainting
+            // that placeholder over another native window hides its actual frame.
+            bool nativeBound = false;
+            for (const auto& [windowKey, producerKey] : windowBindings_) {
+                static_cast<void>(producerKey);
+                auto* resource = comp_.tmgr_.FindSurfaceResource(windowKey);
+                auto* window = resource
+                    ? static_cast<SurfaceData*>(wl_resource_get_user_data(resource)) : nullptr;
+                if (window && window->hasToplevel &&
+                    window->toplevelId == layer.toplevelId) {
+                    nativeBound = true;
+                    break;
+                }
+            }
+            const auto* state = nativeBound
+                ? comp_.tmgr_.FindToplevelLocked(layer.toplevelId) : nullptr;
+            if (state && state->HasFrame()) {
+                if (blankShmFrames_.size() >= 64 &&
+                    blankShmFrames_.count(layer.toplevelId) == 0)
+                    blankShmFrames_.clear();
+                auto& cached = blankShmFrames_[layer.toplevelId];
+                if (!cached.valid || cached.serial != state->FrameSerial()) {
+                    cached.serial = state->FrameSerial();
+                    cached.blank = std::all_of(state->Pixels().begin(), state->Pixels().end(),
+                                               [](uint8_t pixel) { return pixel == 0; });
+                    cached.valid = true;
+                }
+                if (cached.blank) continue;
+            }
             if (layer.fullscreen) pushRect(0, 0, rootW, rootH);
             else pushRect(layer.x, layer.y, layer.w, layer.h);
         } else {
