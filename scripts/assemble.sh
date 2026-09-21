@@ -875,6 +875,24 @@ EOF
         cp "$smoke64" "$smoke_dir/x64/$smoke_program.exe"
         cp "$smoke32" "$smoke_dir/x86/$smoke_program.exe"
     done
+    # The x64 directory contains native ARM64 PE in this build. Keep a separate
+    # AMD64 executable so this gate actually exercises ARM64EC/FEX.
+    mkdir -p "$smoke_dir/x64-fex"
+    "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" -O2 -s -mconsole -o \
+        "$smoke_dir/x64-fex/winehua_platform_process_smoke.exe" \
+        "$WINEHUA/thirdparty/wine-valve/programs/winehua_platform_process_smoke/main.c" -lws2_32
+    "$LLVM_MINGW/bin/llvm-readobj" --file-headers \
+        "$smoke_dir/x64-fex/winehua_platform_process_smoke.exe" | grep -q 'COFF-x86-64' || \
+        err "AMD64 process smoke has unexpected PE Machine"
+    bash "$WINEHUA/scripts/build_steam_arch_contract.sh"
+    cp "$WINEHUA/artifacts/steam-arch-contract/contract-amd64.exe" "$smoke_dir/x64-fex/"
+    cp "$WINEHUA/artifacts/steam-arch-contract/contract-i386.exe" "$smoke_dir/x86/"
+    bash "$WINEHUA/scripts/build_steam_font_contract.sh"
+    cp "$WINEHUA/artifacts/steam-font-contract/font-contract-amd64.exe" "$smoke_dir/x64-fex/"
+    cp "$WINEHUA/artifacts/steam-font-contract/font-contract-i386.exe" "$smoke_dir/x86/"
+    local font_amd64_sha font_i386_sha
+    font_amd64_sha="$(sha256sum "$smoke_dir/x64-fex/font-contract-amd64.exe" | awk '{print $1}')"
+    font_i386_sha="$(sha256sum "$smoke_dir/x86/font-contract-i386.exe" | awk '{print $1}')"
     local audio64_sha graphics64_sha vulkan64_sha d3d1164_sha d3d864_sha cube64_sha diagnostics64_sha driver64_sha requirements64_sha
     local audio32_sha graphics32_sha vulkan32_sha d3d1132_sha d3d832_sha cube32_sha diagnostics32_sha driver32_sha requirements32_sha
     local network64_sha network32_sha process64_sha process32_sha
@@ -894,6 +912,11 @@ EOF
     driver64_sha="$(sha256sum "$smoke_dir/x64/winehua_win32_driver.exe" | awk '{print $1}')"
     network64_sha="$(sha256sum "$smoke_dir/x64/winehua_platform_network.exe" | awk '{print $1}')"
     process64_sha="$(sha256sum "$smoke_dir/x64/winehua_platform_process_smoke.exe" | awk '{print $1}')"
+    local process_amd64_sha
+    process_amd64_sha="$(sha256sum "$smoke_dir/x64-fex/winehua_platform_process_smoke.exe" | awk '{print $1}')"
+    local contract_amd64_sha contract_i386_sha
+    contract_amd64_sha="$(sha256sum "$smoke_dir/x64-fex/contract-amd64.exe" | awk '{print $1}')"
+    contract_i386_sha="$(sha256sum "$smoke_dir/x86/contract-i386.exe" | awk '{print $1}')"
     if [ -s "$vulkan_import_x64" ]; then
         requirements64_sha="$(sha256sum "$smoke_dir/x64/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
     else
@@ -933,7 +956,7 @@ EOF
     fi
     local process_x64_arch="x86_64"
     [ "$WINE_ARCH" = "aarch64" ] && process_x64_arch="arm64"
-    local smoke_suite_version="phase2-vulkan-dxvk-v12-steam-platform-gates"
+    local smoke_suite_version="phase2-vulkan-dxvk-v13-steam-arch-contract"
     local dxvk_commit dxvk_modern_commit mesa_commit virglrenderer_commit
     local guest_venus_icd_sha host_virglrenderer_sha venus_runtime_id
     dxvk_commit="$(git -c safe.directory="$DXVK_SRC" -C "$DXVK_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -1007,7 +1030,7 @@ EOF
 {
   "schemaVersion": 1,
   "suiteVersion": "$smoke_suite_version",
-  "enabledSuites": ["core", "audio", "platform-process", "platform-network", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk", "gpu-diagnostics", "dxvk26-requirements", "dxvk-modern-baseline"],
+  "enabledSuites": ["core", "audio", "platform-process", "steam-arch-compare", "steam-contract", "steam-font", "steam-contract-isolate", "platform-network", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk", "gpu-diagnostics", "dxvk26-requirements", "dxvk-modern-baseline"],
   "managedRoot": "C:\\\\smoke",
   "files": {
     "x64/winehua_audio_smoke.exe": "$audio64_sha",
@@ -1020,6 +1043,10 @@ EOF
     "x64/winehua_win32_driver.exe": "$driver64_sha",
     "x64/winehua_platform_network.exe": "$network64_sha",
     "x64/winehua_platform_process_smoke.exe": "$process64_sha",
+    "x64-fex/winehua_platform_process_smoke.exe": "$process_amd64_sha",
+    "x64-fex/contract-amd64.exe": "$contract_amd64_sha",
+    "x64-fex/font-contract-amd64.exe": "$font_amd64_sha",
+    "x86/font-contract-i386.exe": "$font_i386_sha",
     "x64/winehua_dxvk26_requirements.exe": "$requirements64_sha",
     "x64/winehua_d3d12_smoke.exe": "$vkd3d64_smoke_sha",
     "x64/triangle.exe": "$vkd3d_upstream_triangle_sha",
@@ -1034,6 +1061,7 @@ EOF
     "x86/winehua_win32_driver.exe": "$driver32_sha",
     "x86/winehua_platform_network.exe": "$network32_sha",
     "x86/winehua_platform_process_smoke.exe": "$process32_sha",
+    "x86/contract-i386.exe": "$contract_i386_sha",
     "x86/winehua_dxvk26_requirements.exe": "$requirements32_sha",
     "assets/venus_storage_write.spv": "$storage_write_sha",
     "assets/venus_storage_read.spv": "$storage_read_sha",
@@ -1083,6 +1111,31 @@ EOF
       "tests": [
         {"testId": "platform-process-x64", "exe": "x64/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x86/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000},
         {"testId": "platform-process-x86", "exe": "x86/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x64/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "$process_x64_arch"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000}
+      ]
+    },
+    "steam-arch-compare": {
+      "tests": [
+        {"testId": "steam-process-amd64-fex", "exe": "x64-fex/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x86/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000},
+        {"testId": "steam-process-i386", "exe": "x86/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x64-fex/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86_64"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000}
+      ]
+    },
+    "steam-contract": {
+      "tests": [
+        {"testId": "contract-i386", "exe": "x86/contract-i386.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000},
+        {"testId": "contract-amd64", "exe": "x64-fex/contract-amd64.exe", "env": {"WINEHUA_STEAM_BOUNDARY_TRACE": "1"}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000}
+      ]
+    },
+    "steam-font": {
+      "tests": [
+        {"testId": "font-i386", "exe": "x86/font-contract-i386.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000},
+        {"testId": "font-amd64", "exe": "x64-fex/font-contract-amd64.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000}
+      ]
+    },
+    "steam-contract-isolate": {
+      "tests": [
+        {"testId": "format-i386", "exe": "x86/contract-i386.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--format-only", "--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 30000},
+        {"testId": "format-amd64", "exe": "x64-fex/contract-amd64.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--format-only", "--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 30000},
+        {"testId": "ipc-no-terminate-amd64", "exe": "x64-fex/contract-amd64.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--skip-terminate", "--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000}
       ]
     },
     "d3d8": {

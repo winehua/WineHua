@@ -173,6 +173,14 @@ REQUIRED_PLATFORM_SMOKE_TESTS = {
         "platform-process-x64": "x64/winehua_platform_process_smoke.exe",
         "platform-process-x86": "x86/winehua_platform_process_smoke.exe",
     },
+    "steam-contract": {
+        "contract-i386": "x86/contract-i386.exe",
+        "contract-amd64": "x64-fex/contract-amd64.exe",
+    },
+    "steam-font": {
+        "font-i386": "x86/font-contract-i386.exe",
+        "font-amd64": "x64-fex/font-contract-amd64.exe",
+    },
 }
 REQUIRED_ARM64_FEX_FILES = (
     "libarm64ecfex.dll",
@@ -343,6 +351,11 @@ def validate_media_dependency_closure(payload: Archive, hap: Archive, wine_arch:
 
 
 def validate_platform_smoke_suites(archive: Archive) -> None:
+    manifest = json.loads(archive.read("smoke/manifest.json").decode("utf-8"))
+    for path in ("x86/font-contract-i386.exe", "x64-fex/font-contract-amd64.exe"):
+        require_equal(manifest.get("files", {}).get(path),
+                      hashlib.sha256(archive.read(f"smoke/{path}")).hexdigest(),
+                      f"font smoke checksum {path}")
     try:
         suites = json.loads(archive.read("smoke/suites.json").decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -368,6 +381,49 @@ def validate_platform_smoke_suites(archive: Archive) -> None:
                 raise ValidationError(f"missing platform smoke test: {test_id}")
             require_equal(test.get("exe"), executable, f"platform smoke executable {test_id}")
             archive.require_file(f"smoke/{executable}")
+
+    for executable, machine in (("x86/contract-i386.exe", 0x014c),
+                                ("x86/font-contract-i386.exe", 0x014c),
+                                ("x64-fex/font-contract-amd64.exe", 0x8664),
+                                ("x64-fex/contract-amd64.exe", 0x8664)):
+        data = archive.read(f"smoke/{executable}")
+        if data[:2] != b"MZ" or len(data) < 64:
+            raise ValidationError(f"{executable} is not a PE executable")
+        pe_offset = struct.unpack_from("<I", data, 0x3c)[0]
+        if pe_offset + 6 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0" or \
+                struct.unpack_from("<H", data, pe_offset + 4)[0] != machine:
+            raise ValidationError(f"{executable} has the wrong PE Machine")
+
+    amd64_executable = "x64-fex/winehua_platform_process_smoke.exe"
+    archive.require_file(f"smoke/{amd64_executable}")
+    amd64_data = archive.read(f"smoke/{amd64_executable}")
+    if amd64_data[:2] != b"MZ" or len(amd64_data) < 64:
+        raise ValidationError("Steam AMD64 smoke is not a PE executable")
+    pe_offset = struct.unpack_from("<I", amd64_data, 0x3c)[0]
+    if pe_offset + 6 > len(amd64_data) or amd64_data[pe_offset:pe_offset + 4] != b"PE\0\0" or \
+            struct.unpack_from("<H", amd64_data, pe_offset + 4)[0] != 0x8664:
+        raise ValidationError("Steam AMD64 smoke has the wrong PE Machine")
+    compare_suite = suite_definitions.get("steam-arch-compare")
+    if not isinstance(compare_suite, dict) or not isinstance(compare_suite.get("tests"), list):
+        raise ValidationError("missing Steam architecture comparison suite")
+    compare_tests = {test.get("testId"): test for test in compare_suite["tests"] if isinstance(test, dict)}
+    for test_id, executable, peer_exe, peer_arch in (
+        ("steam-process-amd64-fex", amd64_executable,
+         "C:/smoke/x86/winehua_platform_process_smoke.exe", "x86"),
+        ("steam-process-i386", "x86/winehua_platform_process_smoke.exe",
+         "C:/smoke/x64-fex/winehua_platform_process_smoke.exe", "x86_64"),
+    ):
+        test = compare_tests.get(test_id)
+        if not isinstance(test, dict):
+            raise ValidationError(f"missing Steam architecture test: {test_id}")
+        require_equal(test.get("exe"), executable, f"Steam architecture executable {test_id}")
+        environment = test.get("env")
+        if not isinstance(environment, dict):
+            raise ValidationError(f"Steam architecture test has no environment: {test_id}")
+        require_equal(environment.get("WINEHUA_PEER_EXE"), peer_exe,
+                      f"Steam architecture peer executable {test_id}")
+        require_equal(environment.get("WINEHUA_PEER_ARCH"), peer_arch,
+                      f"Steam architecture peer architecture {test_id}")
 
     process_suite = suite_definitions["platform-process"]
     for test_id, peer_exe, peer_arch in (
