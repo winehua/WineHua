@@ -1,0 +1,203 @@
+--- a/dlls/ntdll/unix/ohos_virtual.c
++++ b/dlls/ntdll/unix/ohos_virtual.c
+@@ -1068,6 +1068,33 @@
+ #ifdef __aarch64__
+     teb = NtCurrentTeb();
+ #endif
++    /* Temporary probe: saved registers only, no guest pointer dereferences,
++     * libc formatting, maps parsing or allocation in this signal handler. */
++    if (sig == SIGSEGV)
++    {
++        static unsigned int count;
++        unsigned int seq = __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED );
++        if (seq <= 65536)
++        {
++            struct ohos_signal_log log = {{0}, 0};
++            const int saved_errno = errno;
++            ohos_signal_log_str( &log, "[FAULT-MIN]" );
++            ohos_signal_log_field_dec( &log, "pid", getpid() );
++            ohos_signal_log_field_dec( &log, "tid", syscall( SYS_gettid ) );
++            ohos_signal_log_field_dec( &log, "seq", seq );
++            ohos_signal_log_field_dec( &log, "code", info ? info->si_code : 0 );
++            ohos_signal_log_field_hex( &log, "addr", (uintptr_t)(info ? info->si_addr : NULL) );
++            ohos_signal_log_field_hex( &log, "pc", pc_in );
++            ohos_signal_log_field_hex( &log, "lr", lr );
++            ohos_signal_log_field_hex( &log, "sp", sp );
++            ohos_signal_log_field_hex( &log, "teb", (uintptr_t)teb );
++            ohos_signal_log_field_hex( &log, "self", (uintptr_t)ohos_route_host_fault );
++            ohos_signal_log_field_hex( &log, "x9", uc ? uc->uc_mcontext.regs[9] : 0 );
++            ohos_signal_log_field_hex( &log, "x18", uc ? uc->uc_mcontext.regs[18] : 0 );
++            ohos_signal_log_emit( &log );
++            errno = saved_errno;
++        }
++    }
+     ohos_smc_log_enter( sig, info, pc_in, xrip_in, emu, lr, sp, x16, x17, teb, fn );
+ 
+ #ifdef __aarch64__
+@@ -1165,6 +1192,25 @@
+     struct ohos_sigchain_action sca;
+     const char *quiet = getenv( "WINEHUA_DIAG_QUIET" );
+ 
++    /* Temporary candidate-only direct stderr: the in-process pipe reader can
++     * die before it copies the final fault. Enabled by the explicit CEF probe. */
++    {
++        const char *direct = getenv( "WINEHUA_CEF_NO_CRASH_HANDLER" );
++        if (direct && !strcmp( direct, "1" ))
++        {
++            char path[128];
++            int fd;
++            snprintf( path, sizeof(path), "/data/storage/el2/base/temp/wine-native-%d.log", getpid() );
++            fd = open( path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600 );
++            if (fd >= 0)
++            {
++                if (dup2( fd, STDERR_FILENO ) >= 0)
++                    fprintf( stderr, "[NATIVE-PROBE] pid=%d direct-stderr=1\n", getpid() );
++                if (fd != STDERR_FILENO) close( fd );
++            }
++        }
++    }
++
+     ohos_diag_quiet = quiet && quiet[0] == '1';
+ 
+     wine_segv_handler = segv_handler;
+@@ -1175,6 +1221,8 @@
+ 
+     add_special = dlsym( RTLD_DEFAULT, "AddSpecialSignalHandlerFn" );
+     if (!add_special) add_special = dlsym( RTLD_DEFAULT, "add_special_signal_handler" );
++    /* Temporary candidate-only raw signal control, using the existing fallback. */
++    if (getenv( "WINEHUA_CEF_NO_CRASH_HANDLER" )) add_special = NULL;
+     if (add_special)
+     {
+         memset( &sca, 0, sizeof(sca) );
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4291,6 +4291,23 @@
+ }
+ 
+ 
++/* Temporary candidate-only TEB lifetime trace; never dereference the
++ * suspect TEB while logging. All callers hold virtual_mutex. */
++static void ohos_teb_probe( const char *event, void *ptr, SIZE_T size, ULONG value )
++{
++#ifdef __OHOS__
++    static unsigned int count;
++    char buf[240];
++    int n, saved_errno = errno;
++    if (++count > 8192) return;
++    n = snprintf( buf, sizeof(buf),
++                  "[TEB-PROBE] pid=%d tid=%ld event=%s ptr=%p size=%lx value=%x current=%p\n",
++                  getpid(), syscall( SYS_gettid ), event, ptr, size, value, NtCurrentTeb() );
++    if (n > 0) write( 2, buf, n < sizeof(buf) ? n : sizeof(buf) - 1 );
++    errno = saved_errno;
++#endif
++}
++
+ /* set some initial values in a new TEB */
+ static TEB *init_teb( void *ptr, BOOL is_wow )
+ {
+@@ -4345,6 +4362,7 @@
+     thread_data->wait_fd[0] = -1;
+     thread_data->wait_fd[1] = -1;
+     thread_data->alert_fd   = -1;
++    ohos_teb_probe( "add", teb, 0, is_wow );
+     list_add_head( &teb_list, &thread_data->entry );
+     thread_data->fsync_apc_futex = NULL;
+     return teb;
+@@ -4426,8 +4444,9 @@
+             teb_block_pos = 32;
+         }
+         ptr = ((char *)teb_block + --teb_block_pos * block_size);
+-        NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &block_size,
+-                                 MEM_COMMIT, PAGE_READWRITE );
++        status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &block_size,
++                                          MEM_COMMIT, PAGE_READWRITE );
++        ohos_teb_probe( "commit", ptr, block_size, status );
+     }
+     *ret_teb = teb = init_teb( ptr, is_wow64() );
+ 
+@@ -4477,6 +4496,7 @@
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     signal_free_thread( teb );
++    ohos_teb_probe( "remove", teb, 0, 0 );
+     list_remove( &thread_data->entry );
+     ptr = teb;
+     if (!is_win64) ptr = (char *)ptr - teb_offset;
+@@ -4636,6 +4656,7 @@
+         LIST_FOR_EACH_ENTRY( thread_data, &teb_list, struct ntdll_thread_data, entry )
+         {
+             TEB *teb = CONTAINING_RECORD( thread_data, TEB, GdiTebBatch );
++            ohos_teb_probe( "tls-clear", teb, 0, index );
+ #ifdef _WIN64
+             WOW_TEB *wow_teb = get_wow_teb( teb );
+             if (wow_teb) wow_teb->TlsSlots[index] = 0;
+@@ -4654,6 +4675,7 @@
+         LIST_FOR_EACH_ENTRY( thread_data, &teb_list, struct ntdll_thread_data, entry )
+         {
+             TEB *teb = CONTAINING_RECORD( thread_data, TEB, GdiTebBatch );
++            ohos_teb_probe( "tls-clear", teb, 0, index );
+ #ifdef _WIN64
+             WOW_TEB *wow_teb = get_wow_teb( teb );
+             if (wow_teb)
+@@ -5909,10 +5931,12 @@
+     else switch (type)
+     {
+     case MEM_DECOMMIT:
++        if ((ULONG_PTR)base < 0x1000000) ohos_teb_probe( "decommit-low", base, size, type );
+         status = decommit_pages( view, base, size );
+         break;
+     case MEM_RELEASE:
+         if (!size) size = view->size;
++        if ((ULONG_PTR)base < 0x1000000) ohos_teb_probe( "release-low", base, size, type );
+         status = free_pages( view, base, size );
+         break;
+     case MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER:
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -2180,7 +2180,7 @@
+              image[image_len - ARRAY_SIZE(cef_name) - 1] == '/') &&
+             !wcsnicmp( image + image_len - ARRAY_SIZE(cef_name), cef_name, ARRAY_SIZE(cef_name) ))
+         {
+-            cef_diag_flags = " --disable-breakpad --disable-crash-reporter --noerrdialogs";
++            cef_diag_flags = " --disable-breakpad --disable-crash-reporter --noerrdialogs --js-flags=--no-opt";
+             cef_diag_len = strlen( cef_diag_flags );
+             if (info->cmdline_len + (cef_diag_len + 1) * sizeof(WCHAR) > 0xfffe)
+                 cef_diag_len = 0;
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1611,6 +1611,7 @@
+ void process_exit_wrapper( int status )
+ {
+     close( fd_socket );
++    fprintf( stderr, "[EXIT-PROBE] pid=%d phase=libc-exit status=%d\n", getpid(), status );
+     exit( status );
+ }
+ 
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1200,6 +1200,7 @@
+  */
+ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ {
++    write( 2, "[QUIT-PROBE] pthread-exit-wrapper\n", sizeof("[QUIT-PROBE] pthread-exit-wrapper\n") - 1 );
+     close( ntdll_get_thread_data()->alert_fd );
+     close( ntdll_get_thread_data()->wait_fd[0] );
+     close( ntdll_get_thread_data()->wait_fd[1] );
+@@ -1678,6 +1679,7 @@
+  */
+ void abort_thread( int status )
+ {
++    write( 2, "[QUIT-PROBE] abort-thread\n", sizeof("[QUIT-PROBE] abort-thread\n") - 1 );
+     steam_trace_thread( "abort", status, __builtin_extract_return_addr( __builtin_return_address(0) ) );
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1353,6 +1353,7 @@
+ {
+     ucontext_t *context = sigcontext;
+ 
++    write( 2, "[QUIT-PROBE] signal-enter\n", sizeof("[QUIT-PROBE] signal-enter\n") - 1 );
+     if (!is_inside_syscall( SP_sig(context) )) user_mode_abort_thread( 0, get_syscall_frame() );
+     abort_thread(0);
+ }

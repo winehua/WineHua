@@ -1,0 +1,79 @@
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index d9727f7184b..3f29e0d8512 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -6625,6 +6625,62 @@ struct external_key
+     WCHAR       value[LF_FULLFACESIZE + 12];
+ };
+ 
++/* The per-user external-font list can survive a reset of the machine font
++ * keys. DirectWrite reads the latter, not the GDI list. Repair missing or
++ * dangling registrations, without replacing a valid user-installed font. */
++static void sync_external_font_key( HKEY key, const WCHAR *name, const WCHAR *file, DWORD len )
++{
++    KEY_VALUE_PARTIAL_INFORMATION *info;
++    UNICODE_STRING value_name;
++    OBJECT_ATTRIBUTES attr;
++    FILE_BASIC_INFORMATION basic;
++    WCHAR *path, *value;
++    DWORD size;
++    NTSTATUS status;
++
++    if (!key) return;
++    RtlInitUnicodeString( &value_name, name );
++    status = NtQueryValueKey( key, &value_name, KeyValuePartialInformation, NULL, 0, &size );
++    if (status == STATUS_OBJECT_NAME_NOT_FOUND) goto repair;
++    if (status != STATUS_BUFFER_TOO_SMALL && status != STATUS_BUFFER_OVERFLOW) return;
++    if (!(info = malloc( size + sizeof(WCHAR) ))) return;
++    status = NtQueryValueKey( key, &value_name, KeyValuePartialInformation, info, size, &size );
++    if (status || info->Type != REG_SZ || info->DataLength % sizeof(WCHAR))
++    {
++        free( info );
++        return;
++    }
++    value = (WCHAR *)info->Data;
++    value[info->DataLength / sizeof(WCHAR)] = 0;
++    if (!wcsicmp( value, file ))
++    {
++        free( info );
++        return;
++    }
++    if (!wcschr( value, '\\' ) && !wcschr( value, ':' ))
++    {
++        WCHAR prefix[MAX_PATH];
++        get_fonts_win_dir_path( NULL, prefix );
++        path = malloc( (wcslen(prefix) + wcslen(value) + 1) * sizeof(WCHAR) );
++        if (path)
++        {
++            wcscpy( path, prefix );
++            wcscat( path, value );
++        }
++    }
++    else path = get_nt_path( value );
++    free( info );
++    if (!path) return;
++    RtlInitUnicodeString( &value_name, path );
++    InitializeObjectAttributes( &attr, &value_name, OBJ_CASE_INSENSITIVE, NULL, NULL );
++    status = NtQueryAttributesFile( &attr, &basic );
++    free( path );
++    if (status != STATUS_OBJECT_NAME_NOT_FOUND && status != STATUS_OBJECT_PATH_NOT_FOUND &&
++        status != STATUS_NO_SUCH_FILE) return;
++repair:
++    set_reg_value( key, name, REG_SZ, file, len );
++}
++
+ static void update_external_font_keys(void)
+ {
+     struct list external_keys = LIST_INIT(external_keys);
+@@ -6657,6 +6713,11 @@ static void update_external_font_keys(void)
+         if ((tmp = wcsrchr( value, ' ' )) && !facename_compare( tmp, true_type_suffixW, -1 )) *tmp = 0;
+         if ((face = find_face_from_full_name( value )) && !wcsicmp( face->file, path ))
+         {
++            if (tmp && !*tmp) *tmp = ' ';
++            file = (WCHAR *)(buffer + info->DataOffset);
++            len = (lstrlenW(file) + 1) * sizeof(WCHAR);
++            sync_external_font_key( winnt_key, value, file, len );
++            sync_external_font_key( win9x_key, value, file, len );
+             face->flags |= ADDFONT_EXTERNAL_FOUND;
+             free( path );
+             continue;

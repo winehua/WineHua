@@ -1,0 +1,101 @@
+--- a/dlls/ntdll/unix/ohos_virtual.c
++++ b/dlls/ntdll/unix/ohos_virtual.c
+@@ -335,6 +335,8 @@
+ static char ohos_maps_cache[256 * 1024];
+ static size_t ohos_maps_cache_len;
+ static int ohos_maps_cache_ready;
++/* Signal handlers must never wait for an interrupted reader of this buffer. */
++static unsigned char ohos_maps_busy;
+ static int ohos_map_dump_count;
+ /* 2026-09-20: 归属配额 (按信号类型分开计数, 见 ohos_smc_log_enter)。 */
+ static int ohos_map_dump_quota;
+@@ -882,6 +884,8 @@
+     long tid;
+ 
+     if (ohos_diag_quiet) return;
++
++    if (__atomic_test_and_set( &ohos_maps_busy, __ATOMIC_ACQUIRE )) return;
+ 
+     /* 2026-09-20: 致命现场优先, 且**不受限流影响**。
+      * 现场 (17:48 起 broker 16380 那轮): renderer 的致命故障是 guest RIP==0
+@@ -941,6 +945,7 @@
+ 
+     /* Same cap as ohos_smc_log. Uncapped enter lines filled ~500MB wine_stderr
+      * when winedbg looped on a JIT NULL deref after Heaven's FS-base crash. */
++    __atomic_clear( &ohos_maps_busy, __ATOMIC_RELEASE );
+     __atomic_add_fetch( &ohos_smc_log_count, 1, __ATOMIC_RELAXED );
+     if (ohos_smc_log_count > 64 && (ohos_smc_log_count % 32) != 0) return;
+ 
+@@ -1074,69 +1079,9 @@
+         handled = fn( sig, info->si_code, info->si_addr, &pc, &xrip, &prot, &kind );
+ #endif
+ 
+-    /* 2026-09-20 (ROUND3 §9.10): OHOS 没有 RWX —— guest 申请的"可写可执行"代码页会被
+-     * 留在 **r-xp**(可读可执行、不可写)。box64/wowbox64(i386) 路线靠 unprotectDB →
+-     * ohos_mprotect_exec(RW) 把页恢复成可写; **x64/FEX(ARM64EC) 路线没有这条恢复**,
+-     * 于是 guest 自修改代码(写代码页)时 SEGV_ACCERR 直接杀死进程。
+-     * 实测证据: 崩溃前该 renderer 有 12 次 "[SMC-CODEWRITE] ... perms=r-xp" 全部落在
+-     * 0x6fbb64xxxx–0x6fbb68xxxx 匿名可执行页, 随后 signal=11 退出。
+-     *
+-     * 恢复动作: 把该页改成 RW 后**重试该指令**(返回 1)。FEX 是"翻译执行", guest 代码页
+-     * 只是数据(它的 JIT 代码在 FEXMemJIT), 因此不需要保留 X 位 —— 与 box64 那条
+-     * "unprotect only needs the guest page writable" 语义一致。
+-     * 只对 **r-xp** 页生效: 普通只读数据页(r--)或野指针写不会被放行, 仍按崩溃处理。 */
+-    if (handled != WOWBOX64_FAULT_HANDLED && sig == SIGSEGV && info &&
+-        info->si_code == SEGV_ACCERR && info->si_addr)
+-    {
+-        char perms[8] = {0}, region[64] = {0};
+-        const uintptr_t page_mask = 0xfffu;
+-        uintptr_t page = ((uintptr_t)info->si_addr) & ~page_mask;
+-
+-        /* 2026-09-20: **必须现刷 maps**。ohos_smc_region_info() 走的是"每进程只读一次"的
+-         * 缓存(首次故障时的快照); guest 的 JIT 代码页是**后来才分配**的, 用旧快照查不到,
+-         * 恢复就会被跳过 —— 实测: 致命页 0x6fbb648000 在崩溃时仍是 r-xp, 而其它早期页
+-         * 已经成功恢复过(mprotect_rw=0)。 */
+-        ohos_smc_reload_maps();
+-        /* 2026-09-20: 双向 W^X 切换 —— OHOS 不能同时给 W 和 X, 所以 guest 的 JIT 代码页
+-         * 只可能处于两种状态之一, 两种都会因"另一半权限缺失"而 ACCERR:
+-         *   r-x  + guest 写代码        → 需要临时 RW (写完成后 guest 自己会再执行)
+-         *   rw-  + guest 执行该页      → 需要临时 R+X
+-         * 只做单向(只放行写)会制造出另一种故障: 实测 v10 里 renderer 的致命 fault 就出现了
+-         * addr 落在 **rw-p** 的执行故障 (0x37bb6800ed / 0x37bb646730)。
+-         * 这与仓库里 box64 那条 "unprotect only needs the guest page writable" 是同一
+-         * 问题的两个方向, 这里按需互切即可。 */
+-        const int can_write = ohos_smc_region_info( page, perms, sizeof(perms), region, sizeof(region) );
+-        int flip_prot = 0;
+-        if (can_write && perms[0] == 'r' && perms[1] == '-' && perms[2] == 'x')
+-            flip_prot = PROT_READ | PROT_WRITE;      /* 写代码页 → 给 W (仍不给 X) */
+-        else if (can_write && perms[0] == 'r' && perms[1] == 'w' && perms[2] == '-')
+-            flip_prot = PROT_READ | PROT_EXEC;       /* 执行数据页 → 给 X (仍不给 W) */
+-
+-        /* 2026-09-20: 默认**关闭**互切 (它会把故障从一个方向搬到另一个方向, 见 §9.11)。
+-         * 只有显式 WINEHUA_WX_RECOVER=1 才启用, 用于单独评估该做法。 */
+-        static int wx_recover_env = -1;
+-        if (wx_recover_env < 0)
+-        {
+-            const char *e = getenv( "WINEHUA_WX_RECOVER" );
+-            wx_recover_env = (e && e[0] == '1') ? 1 : 0;
+-        }
+-        if (flip_prot && wx_recover_env)
+-        {
+-            const int rc = ohos_mprotect_exec( (void *)page, page_mask + 1, flip_prot );
+-            static _Thread_local int logged;
+-            if (!logged || logged < 8)
+-            {
+-                char buf[288];
+-                int n = snprintf( buf, sizeof(buf),
+-                                  "[SMC-WX-RECOVER] pid=%d tid=%ld page=%p was=%s now=%x region=%s rc=%d\n",
+-                                  getpid(), syscall( SYS_gettid ), (void *)page, perms,
+-                                  flip_prot, region[0] ? region : "<anon>", rc );
+-                if (n > 0) write( 2, buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1) );
+-                logged++;
+-            }
+-            if (!rc) return 1;   /* 已处理: 重试该指令 */
+-        }
+-    }
++    /* FEX handles guest SMC after Wine's SEH dispatch. Do not change guest
++     * page permissions here based on native maps: v9-v11 disproved that
++     * recovery, and even its disabled path raced on the diagnostic cache. */
+ 
+     dynarec = (prot & (OHOS_PROT_DYNAREC | OHOS_PROT_DYNAREC_R)) ? 1 : 0;
+     if (handled == WOWBOX64_FAULT_HANDLED)
