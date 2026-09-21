@@ -346,7 +346,12 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             "VN_WINEHUA_DIRECT_FENCE_WAIT=1",
             "VKR_WINEHUA_SHADOW_FROM_HOST=precise",
             "VKD3D_WINEHUA_FORCE_COHERENT_MAP_SYNC=1",
-            "WINEDLLOVERRIDES=d3d12=n;d3d11=n;dxgi=n",
+            /* vulkan-1=b 必须带: 本运行时的 venus ICD 是 OHOS 侧 .so
+             * (libvulkan_virtio.so), 只有 Wine 的 winevulkan 加载器能解析。
+             * 缺这一项时, exe 同目录里的原生 loader (Steam CEF 自带
+             * cef.win64\vulkan-1.dll) 会被优先探测并导致 DXVK 的
+             * vkCreateInstance 失败 (见 wine_child.cpp 的遮蔽自愈)。 */
+            "WINEDLLOVERRIDES=d3d12=n;d3d11=n;dxgi=n;vulkan-1=b",
             "WINEDLLPATH=" + wineDllPath,
             "WINEDLLDIR0=" + overlay64,
             "WINEDLLDIR1=" + dxvk64,
@@ -482,7 +487,8 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         "VN_PERF=" + std::string(modern26
             ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
             : "no_fence_feedback,no_query_feedback,no_multi_ring"),
-        "WINEDLLOVERRIDES=d3d11=n;dxgi=n",
+        /* 同上: vulkan-1=b 让 DXVK 走 winevulkan 而不是 exe 同目录的原生 loader。 */
+        "WINEDLLOVERRIDES=d3d11=n;dxgi=n;vulkan-1=b",
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,
         "WINEDLLDIR0=" + overlay64,

@@ -771,6 +771,66 @@ static void ensure_prefix_fonts_and_codepage()
     }
 }
 
+// ---- 前缀 Vulkan 加载器遮蔽自愈 (2026-09-21) ----
+//
+// Wine 解析 PE 导入时先在**可执行文件同目录**探测依赖 DLL。Steam 的 CEF 目录
+// (Steam\bin\cef\cef.win64) 自带一份原生 vulkan-1.dll, 于是 GPU 进程
+// (steamwebhelper --type=gpu-process) 加载 DXVK 的 arm64x dxgi.dll/d3d11.dll 时
+// 会先探测到这份文件; 探测失败后整条 import 链断掉, 实测现象是:
+//   DxvkInstance::createInstance: Failed to create Vulkan 1.1 instance
+//   eglInitialize D3D11 failed (No available renderers) / SwANGLE Internal Vulkan error (-3)
+//   Exiting GPU process due to errors during initialization
+//   → GPU 进程 1.5~2.5 秒崩溃重启 (单场累计 spawned=25/exited=25)
+//   → SteamUI 线程 frame stalled → Timed out waiting for mutex in PutInternal()
+//   → 整组 CEF 被终止、界面黑屏或没有窗口。
+//
+// 本运行时的 venus ICD 是 OHOS 侧 .so (/data/storage/el1/bundle/libs/arm64/
+// libvulkan_virtio.so), 只有 Wine 的 winevulkan 加载器能解析它, 原生 loader 在这
+// 里永远不可能工作。因此把这类遮蔽文件改名保留 (.winehua-shadow, 不改内容、可逆、
+// 幂等) 是安全的; 若 Steam 自检把它恢复回来, 下一次会话启动会再次改名。
+static void repair_shadowing_vulkan_loaders()
+{
+    const char* prefix = getenv("WINEPREFIX");
+    if (!prefix || !*prefix) return;
+
+    static const char* kShadowDirs[] = {
+        "/drive_c/Program Files (x86)/Steam/bin/cef/cef.win64",
+        "/drive_c/Program Files (x86)/Steam/bin/cef",
+        "/drive_c/Program Files/Steam/bin/cef/cef.win64",
+        "/drive_c/Program Files/Steam/bin/cef",
+    };
+
+    for (const char* rel : kShadowDirs)
+    {
+        std::string path = std::string(prefix) + rel + "/vulkan-1.dll";
+        if (access(path.c_str(), F_OK) != 0) continue;
+
+        std::string backup = path + ".winehua-shadow";
+        if (access(backup.c_str(), F_OK) == 0)
+        {
+            /* 备份已在, 说明 Steam 自检把原文件恢复了 — 直接摘掉恢复件。 */
+            if (unlink(path.c_str()) != 0)
+            {
+                OH_LOG_WARN(LOG_APP,
+                            "[WineChild] shadowing vulkan-1.dll remove failed path=%{public}s errno=%{public}d",
+                            path.c_str(), errno);
+                continue;
+            }
+        }
+        else if (rename(path.c_str(), backup.c_str()) != 0)
+        {
+            OH_LOG_WARN(LOG_APP,
+                        "[WineChild] shadowing vulkan-1.dll rename failed path=%{public}s errno=%{public}d",
+                        path.c_str(), errno);
+            continue;
+        }
+
+        OH_LOG_INFO(LOG_APP,
+                    "[WineChild] neutralized shadowing vulkan-1.dll path=%{public}s (kept as *.winehua-shadow)",
+                    path.c_str());
+    }
+}
+
 static void apply_entry_param_env_overrides(const std::vector<std::string>& envOverrides)
 {
     for (const std::string& envLine : envOverrides)
@@ -1751,6 +1811,10 @@ extern "C" void Main(NativeChildProcess_Args args)
     // 前缀字体/代码页自愈 (必须在 Wine 起来之前): 新装/重置 prefix 后 UI 字体链是断的,
     // 会让 win64/32 位 Steam 的 VGUI2 断言 surface_gdiwin32.cpp:1336 winFont 并卡在启动画面。
     ensure_prefix_fonts_and_codepage();
+    // 前缀 Vulkan 加载器遮蔽自愈 (必须在任何 Wine 模块解析之前): Steam CEF 自带的
+    // cef.win64\vulkan-1.dll 会让 GPU 进程里的 DXVK 建不出 Vulkan 实例, 进而
+    // GPU 进程崩溃重启、SteamUI 卡死、整组 CEF 被终止 (见函数注释)。
+    repair_shadowing_vulkan_loaders();
 
     // 父进程 __env 可能用 DXVK PE 目录覆盖 WINEDLLPATH 并丢掉 HAP native-lib
     // 目录 (wineohos.so 所在) — 按方案重Assert运行期路径 (arm64 三方案修复)。
