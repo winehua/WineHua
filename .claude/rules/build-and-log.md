@@ -30,7 +30,8 @@ make NATIVE_ARCH=x86_64
 
 Wine 构建使用 stamp 文件 + `find -newer` 检测源码变更：
 - stamp 路径: `build/.stamps/wine-arm64-v8a`
-- 任何 `thirdparty/wine/` 下的 .c/.h 文件比 stamp 新 → 触发 Wine 重编
+- 任何 `thirdparty/wine-valve/`（`Makefile: WINE_SRC`，2026-09-22 起为正式 submodule）
+  下的 .c/.h 文件比 stamp 新 → 触发 Wine 重编
 - sentinel 检查: `build/wine-native/tools/winegcc/winegcc` 必须存在
 
 ### Pad 部署
