@@ -46,7 +46,7 @@
 [submodule "thirdparty/dxvk"]
 	path = thirdparty/dxvk
 	url = https://github.com/winehua/dxvk.git
-	branch = dxvk-legacy-1.10.3
+	branch = feature/arm64-legacy
 [submodule "thirdparty/dxvk-modern"]
 	path = thirdparty/dxvk-modern
 	url = https://github.com/winehua/dxvk.git
@@ -81,3 +81,7 @@
 [submodule "thirdparty/fex"]
 	path = thirdparty/fex
 	url = https://github.com/FEX-Emu/FEX
+[submodule "thirdparty/wine-valve"]
+	path = thirdparty/wine-valve
+	url = git@github.com:winehua/wine.git
+	branch = ohos-port-steam-win64

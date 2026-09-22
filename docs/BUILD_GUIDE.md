@@ -1,6 +1,6 @@
 # Wine for HarmonyOS — 构建指南
 
-> 最后更新: 2026-07-31
+> 最后更新: 2026-09-22
 
 ## 环境
 
@@ -33,6 +33,61 @@ glslangValidator               # DXVK 配置阶段硬依赖 (缺少时 make dxvk
 > `NATIVE_ARCH=all` 双架构 HAP 已移除：单一 `WINE_ARCH` 无法同时满足方案②/③ 的 arm64 assemble。需要多个 HAP 时分别执行各方案的完整构建。
 
 > Wine 和 wineserver 通过 NCP（`OH_Ability_StartNativeChildProcess`）创建子进程。方案② 下 Box64 编译为 box64.so 由 NCP 子进程 dlopen 加载。
+
+---
+
+## 新 clone / 他人编译（与 CI 一致的流程）
+
+### 两步
+
+```bash
+# 1) 取主仓库 + 全部 submodule（含构建实际使用的 Wine 源码 thirdparty/wine-valve）
+git clone https://github.com/winehua/WineHua.git && cd WineHua
+git submodule update --init --recursive
+
+# 2) 构建（arm64 原生：FEX + wow64 box64）
+make NATIVE_ARCH=arm64-v8a WINE_ARCH=aarch64
+```
+
+- `thirdparty/wine-valve`（2026-09-22 起）是正式 submodule：`winehua/wine.git` 的
+  `ohos-port-steam-win64` 分支，`WINE_SRC`（`scripts/env.sh` / `Makefile`）指向它。
+- 历史遗留：早期它不是 submodule，而是 `thirdparty/wine` 的 git worktree；
+  `scripts/prepare-wine-valve.sh` 保留给那些旧 clone（目录已存在时直接返回，不会破坏 submodule 布局）。
+- 分支名可用 `WINE_VALVE_REF=<branch>` 覆盖（仅旧流程需要），CI 与 submodule 都以 `ohos-port-steam-win64` 为准。
+- 私有 submodule（`wine` / `box64` / `mesa-ohos`）需要访问权限；CI 用
+  `url."https://x-access-token:<TOKEN>@github.com/".insteadOf "git@github.com:"` 改成 HTTPS 取。
+- 签名用仓库私有 `sign.py`（口令在本地配置里，不进仓库）；公开/CI 产物是 **unsigned HAP**。
+
+### 构建输入各自来自哪里（改代码前必看）
+
+| 输入 | 来源 | 说明 |
+|------|------|------|
+| Wine (`WINE_SRC`) | submodule `thirdparty/wine-valve` → `winehua/wine.git` 的 **`ohos-port-steam-win64` 分支** | **Wine 侧改动必须推到这条分支**，再更新主仓库 gitlink |
+| box64（含 `wowbox64.dll`） | 主仓库 gitlink pin，submodule `thirdparty/box64` | 按 SHA 取（当前 `e970ee6f2`，在分支 `ohos-wow64-smc-fs` 上） |
+| FEX（`libarm64ecfex.dll` / `libwow64fex.dll`） | `thirdparty/fex` submodule + `scripts/patches/fex-*.patch` | 由 `make fex` / `scripts/build_fex.sh` 应用补丁后构建 |
+| dxvk | submodule `thirdparty/dxvk` → fork 分支 **`feature/arm64-legacy`** | 含 WineHua present 观测(`DXVK_WINEHUA_PERF_DIAGNOSIS` / `WineHuaPresentImage` 时间线) |
+| mesa / virglrenderer / dxvk-modern / libepoxy / vkd3d-proton | 各自 fork 的 gitlink pin | 与上游 fork 分支对应，见 [SUBMODULE_MAINTAINABILITY.md](SUBMODULE_MAINTAINABILITY.md) |
+| guest gfx / guest vulkan / host vulkan | `make deps`（源码在 submodule 内） | |
+
+> **最常踩的坑**：改了 Wine 源码但只提交在本地分支（历史上本地 `ohos-port` 与远端 `ohos-port`
+> 历史无共同祖先，直接 push 会被拒）。正确做法是在 `ohos-port-steam-win64` 上提交并快进推送，
+> 然后 `git add thirdparty/wine-valve` 更新主仓库 gitlink——否则别人 clone 到的还是旧内容。
+
+### WSL 下拉取/推送
+
+- 全局 `git config http.proxy = http://127.0.0.1:8080` 在 WSL 内不生效（代理在 Windows 侧），
+  用网关地址：`git -c http.proxy=http://172.17.80.1:8080 <cmd>`。
+- 直连 GitHub 取 ref 可以，但大 pack 上传会超时；推送统一走上面的网关代理。
+- 本机若配置了 `url.https://github.com/.insteadOf git@github.com:`，SSH 地址会被改写成 HTTPS。
+
+### 本地专属问题（不影响别人 clone）
+
+- 本地某些 submodule 未初始化（`wayland` / `freetype` / `libdrm` / `gmp` / `gnutls` / `fex` 等）：
+  依赖走预编译 `build/` 缓存，别人按上面第 1 步初始化即可。
+- `thirdparty/dxvk` 曾经因为 `.git/modules/thirdparty/dxvk` 丢失而报
+  `fatal: not a git repository`（2026-09-22 已重新初始化修复）。若再遇到：备份该目录 →
+  删掉目录 → `git submodule update --init thirdparty/dxvk`。
+- `thirdparty/wine-proton`、`build/` 下若干目录是历史遗留产物，不参与当前构建。
 
 ---
 

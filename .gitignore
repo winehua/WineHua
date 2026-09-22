@@ -85,5 +85,4 @@ __pycache__/
 /signs/
 
 # 第三方源码的本地检出（由 scripts/ 拉取，不是本仓内容）
-/thirdparty/wine-valve/
 /thirdparty/wine-proton/

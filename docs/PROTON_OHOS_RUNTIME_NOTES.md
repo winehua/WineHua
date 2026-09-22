@@ -187,22 +187,36 @@ Windows D3D  →  wined3d 或 DXVK  →  OpenGL/Vulkan(guest Mesa virtio/virgl)
 5. PAL2 的 Wayland/合成呈现（黑底白条）。
 6. 合成器坐标空间收口（`PresentedFrame` 契约、popup 偏移公式 4 份）。
 
-## 7. 提交与快照约定（2026-09-22 落库）
+## 7. 提交、子模块与快照约定（2026-09-22 更新）
 
-| 仓库 | 状态 | 说明 |
-| --- | --- | --- |
-| `WineHua`（主仓库，`feature/proton-wine-ohos`） | 已提交并推送 | 入口层 32 位基座改动、白名单、subsurface 父链修复、文档与诊断工具 |
-| `thirdparty/box64`（`ohos-wow64-smc-fs`） | 已提交并推送 | `e970ee6f2`：跨页停块 `X_PEND` + JIT 非 SMC 故障交回 epilog |
-| `thirdparty/wine-valve` | 已提交，按**根提交快照**推送 | `f207a3e5` → `ohos-port-snapshot-20260922`（沿用 09-19 的 `ohos-port-snapshot-*` 惯例） |
+| 仓库/子模块 | 远端位置 | 当前 pin | 说明 |
+| --- | --- | --- | --- |
+| `WineHua`（主仓库） | `feature/proton-wine-ohos` | — | 入口层 32 位基座改动、白名单、subsurface 父链修复、文档与诊断工具 |
+| `thirdparty/box64` | 分支 `ohos-wow64-smc-fs` | `e970ee6f2` | 跨页停块 `X_PEND` + JIT 非 SMC 故障交回 epilog |
+| `thirdparty/wine-valve`（**已正式登记为 submodule**） | `winehua/wine.git` 分支 `ohos-port-steam-win64` | `008bf8ac796` | ntdll 故障路由/SMC、信号安全栈读取、字体、opengl32、vulkan-1 回退、smoke 扩展 |
+| `thirdparty/dxvk` | `winehua/dxvk.git` 分支 `feature/arm64-legacy` | `7c5cc47f` | 新增 WineHua present 观测（`DXVK_WINEHUA_PERF_DIAGNOSIS`、`WineHuaPresentImage` 时间线） |
+
+历史快照分支仍保留：`ohos-port-snapshot-20260919` / `ohos-port-snapshot-20260922`
+（根提交快照，仅作存档，不再作为构建输入）。
 
 ### Wine 仓库的两个坑
 
-1. `thirdparty/wine-valve` 是 `thirdparty/wine` 仓库的 **linked worktree**
-   （`thirdparty/wine-valve/.git` 是指向 `thirdparty/wine/.git/worktrees/wine-valve` 的文件），
-   两处共享同一个对象库；它同时是 **partial clone + shallow**。
-2. 远端 `origin/ohos-port` 与本工作树的 `ohos-port` **没有共同祖先**（`no merge base`），
-   因此不能直接 push（会被拒为 non-fast-forward，**不要强推**）；历史上就是用
-   `ohos-port-snapshot-YYYYMMDD` 根提交快照来存档当前树。
+1. 本地 `thirdparty/wine-valve` 目前仍是 `thirdparty/wine` 仓库的 **linked worktree**
+   （`thirdparty/wine-valve/.git` 指向 `thirdparty/wine/.git/worktrees/wine-valve`），
+   两处共享对象库；新 clone 则按 submodule 正常独立检出。二者内容必须一致（都以
+   `ohos-port-steam-win64` 的 pin 为准，本地已切到该分支）。
+2. 远端 `origin/ohos-port` 与本地历史 **没有共同祖先**（`no merge base`），不能直接 push、
+   **不要强推**；要提交改动，请把当前树叠成 `ohos-port-steam-win64` 上的一次提交后快进推送
+   （本次即 `008bf8ac796`）。
+
+### 本地曾出现的两个子模块故障（已修）
+
+- `thirdparty/dxvk`：`.git/modules/thirdparty/dxvk` 丢失，导致该子模块任何 git 操作都报
+  `fatal: not a git repository`（`git status` 需要 `--ignore-submodules=all`）。修法：备份目录 →
+  删除目录 → `git submodule update --init thirdparty/dxvk`。修复时发现本地有 3 个未提交的
+  present 观测改动，已作为 `7c5cc47f` 推到 `feature/arm64-legacy` 并更新 pin——即"本地构建用的
+  dxvk 与仓库记录不一致"这个隐患已消除。
+- `thirdparty/wine-proton`、`build/` 下若干目录为历史遗留产物，不参与当前构建。
 
 ### WSL 网络（推送/拉取前必看）
 
