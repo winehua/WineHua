@@ -1,11 +1,11 @@
 [submodule "thirdparty/wine"]
 	path = thirdparty/wine
 	url = git@github.com:winehua/wine.git
-	branch = master
+	branch = feature/arm64-heaven-port
 [submodule "thirdparty/box64"]
 	path = thirdparty/box64
 	url = git@github.com:winehua/box64.git
-	branch = main
+	branch = ohos-wow64-smc-fs
 [submodule "thirdparty/wayland"]
 	path = thirdparty/wayland
 	url = https://gitlab.freedesktop.org/wayland/wayland.git
