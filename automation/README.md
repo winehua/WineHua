@@ -2,7 +2,7 @@
 
 用例、套件、判定器都在仓库里；载荷随包分发（wine-data.zip 的 smoke/ 树），
 开发环境由 host 经 hdc 推送更新（优先于包内版本），
-判定在 host 侧做。设计见 `docs/SMOKE_V2_DESIGN.md`。
+判定在 host 侧做。设计见 `docs/engineering/testing-design.md`。
 
 ## 快速开始
 
@@ -160,4 +160,4 @@ host 必须在这段时间内轮询到 `"fixed-frame"` 结果并截图。轮询�
 `// [[SMOKE]]` 标记的钩子行（`WineEnvService.attach/onNewWant/enterReady`、
 `EntryAbility.applyWant`、`Index.<SmokeDevPanel/>`）。无 `winehua.mode=smoke`
 请求时这些钩子是空操作。main-ui 合并时按
-`docs/SMOKE_REBUILD_20260831.md §11` 摘除整个目录与标记行。
+`docs/archive/SMOKE_REBUILD_20260831.md §11` 摘除整个目录与标记行。

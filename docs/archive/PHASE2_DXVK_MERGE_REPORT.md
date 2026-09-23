@@ -1,5 +1,7 @@
 # WineHua Phase 2 DXVK/Venus Merge Report
 
+> 状态：已完成（2026-09-22 整理归档）。Phase 2 的合并决策报告，合并已完成。
+
 ## 1. Purpose and release decision
 
 This document is the merge-facing summary for the WineHua Phase 2 Vulkan and

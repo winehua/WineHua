@@ -1,5 +1,7 @@
 # WineHua Phase 2 DXVK Status Memo — archived investigation sections
 
+> 状态：历史章节（2026-09-22 整理归档）。Phase 2 Status Memo 的历史调查部分。
+
 > Archived 2026-07-31 from docs/PHASE2_DXVK_STATUS_MEMO.md during the docs
 > reorganization. Contains dated investigation logs, the 2026-07-21-era
 > “Current conclusion”, “Current blocker”, numbered sections 1-9 and 11-40.

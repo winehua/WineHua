@@ -53,7 +53,7 @@ make NATIVE_ARCH=arm64-v8a
 # 仅 HAP (只改 ArkTS / C++)
 make NATIVE_ARCH=arm64-v8a hap
 
-# 详细文档: docs/BUILD_GUIDE.md
+# 详细文档: docs/build/guide.md
 ```
 
 ## 目录结构
@@ -99,11 +99,15 @@ WineHua/
 │   ├── build_vkd3d_proton.sh  # VKD3D (D3D12) 构建
 │   ├── assemble.sh            # rawfile zip + libs/ 布局
 │   └── check-submodules.sh    # Submodule 状态检查
-├── docs/                      # 详细文档
-│   ├── CURRENT_STATUS.md      # 当前状态 & 修复清单
-│   ├── ARCHITECTURE.md        # 架构详解
-│   ├── BUILD_GUIDE.md         # 构建指南
-│   └── README.md              # 文档索引
+├── docs/                      # 详细文档（入口见 docs/README.md）
+│   ├── README.md              # 文档索引（按"我要做什么"查找）
+│   ├── architecture/          # 架构与原理
+│   ├── build/                 # 构建与发布
+│   ├── debugging/             # 日志、性能与问题排查
+│   ├── engineering/           # 代码规范、质量要求、协作流程
+│   ├── assets/                # submodule 补丁清单、设备清单
+│   ├── decisions/             # 决策记录
+│   └── archive/               # 已完成的历史材料
 ├── .claude/rules/
 │   ├── build-and-log.md       # 构建命令与日志速查
 │   └── submodule-workflow.md  # Submodule 管理方案
