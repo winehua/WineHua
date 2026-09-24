@@ -1,7 +1,7 @@
 # 日志与观测
 
 > 适用场景：排查任何问题时，先看这篇搞清楚"从哪里能看到什么"。日常命令速查见 [../cheatsheet.md](../cheatsheet.md)。
-> 最后核实：2026-09-22
+> 最后核实：2026-09-24
 > 相关代码：各模块的 `OH_LOG` 调用；日志开关见 `entry/src/main/cpp/common/perf_utils.h`
 
 ## 日志通道
@@ -28,18 +28,18 @@ hdc -t <设备IP> shell "hilog -z 500 -t app"  # 取最近 500 行应用日志
 
 ### 2. Wine 标准错误文件
 
-Wine 内部（以及 box64）的输出不在 hilog 里，写在这个文件：
+Wine 内部（以及 box64）的输出写在这个文件：
 
 ```bash
 hdc -t <设备IP> shell "cat /data/app/el2/100/base/app.hackeris.winehua/temp/wine_stderr_$(date +%Y%m%d).log"
 ```
 
-**这里有什么**：Wine 的 TRACE/ERR 日志、box64 崩溃现场（寄存器、地址）、`[MUTEX-SPIN]` 这类只在 stderr 打的诊断。
+**这里有什么**：Wine 的 TRACE/ERR 日志、box64 崩溃现场（寄存器、地址）。
 
 **坑**：
-- **每次引擎会话会重写**这个文件，要跨会话留证据得先拷出来。
-- 有些诊断（如 `[MUTEX-SPIN]`）**只写这个文件**，hilog 里搜不到——曾经因为搜错地方误判"没有自旋"。
-- Wine 的 TRACE 日志默认关闭（`WINEDEBUG=-all`），而且 release 构建里 TRACE 可能被编译优化掉，需要输出时用 `fprintf(stderr, ...)`。
+- 文件**按天命名、追加写入**，每次引擎会话开头会写一行 `=== PID=... ===` 作分隔。它不会自动清理，排查时认准自己那次会话的 PID 段。
+- 同样的内容**也会转发到 hilog**（标签 `WineChild-stderr`），但代码注释里写明"hilog 转发实际不可靠"，所以排障以文件为准，两边都看。
+- Wine 的 TRACE 日志默认关闭（`WINEDEBUG=-all`），需要输出时用 `fprintf(stderr, ...)`。
 
 ### 3. 渲染器宿主日志
 
@@ -97,7 +97,7 @@ hdc -t <设备IP> shell "cat /proc/<pid>/task/*/stat | cut -d' ' -f1-3"
 | 手柄 | `WineGamepad`、`CtrlHub` | 手柄链路 |
 | 帧率 | `WL_FPS` | 每 10 秒一次帧率摘要 |
 
-合成器内部靠**消息前缀**再细分（因为协议层统一用 `WL_Server` 标签）：`[MW-RNDR]` 渲染、`[MW-TAKE]` 取帧、`[MW-SUBSURF]` 子表面、`[MW-MOVE]` 窗口拖动、`[MW-LIMITS]` 尺寸限制、`[MW-COMMIT]` 帧提交、`[MW-RAISE]` 置顶诊断。
+合成器内部靠**消息前缀**再细分（因为协议层统一用 `WL_Server` 标签）：`[MW-RNDR]` 渲染、`[MW-TAKE]` 取帧、`[MW-SUBSURF]` 子表面、`[MW-MOVE]` 窗口拖动、`[MW-GEO]` / `[MW-RESIZE]` 几何与尺寸映射、`[MW-POPUP]` 弹出层、`[MW-COMMIT]` 帧提交、`[MW-NAPI]` 界面层转发。
 
 界面层标签：`WWA`（窗口生命周期）、`WineWM`（窗口管理）、`CLICK-PIPE`（鼠标链路）、`KBD-PIPE`（键盘链路）。
 
@@ -156,6 +156,6 @@ box64 下 Wine 进程崩溃的额外手法：从 box64 崩溃信息里的地址�
 3. 复现问题，然后结束采集。保险起见再 dump 一次缓冲区（`hilog -z 8000`）补上可能漏掉的尾部。
 4. 分析时按链路分段过滤。
 
-**采样策略**：移动类日志默认按 1/120 抽样（全量会把缓冲区刷爆——一次拖动十分钟能产生十几万行），按键、滚轮、注入是全量。需要临时看全量时，把代码里对应位置的抽样条件去掉（`input_manager.cpp` 等处有 3 个 `%120==0` 的判断，注释里标注了位置）。
+**采样策略**：移动类日志默认按 1/120 抽样（全量会把缓冲区刷爆——一次拖动十分钟能产生十几万行）。按键、滚轮、注入本身是全量的，但**被抑制的输入**（窗口不可见时的丢弃日志）同样按 1/120 抽样。需要临时看全量时，把代码里对应位置的抽样条件去掉（在 `input_manager.cpp` 里搜 `% 120 ==`）。
 
 **一条经验**：死锁类问题，"卡死前的最后一条日志"就是最后一跳——问题就在它后面那一步。

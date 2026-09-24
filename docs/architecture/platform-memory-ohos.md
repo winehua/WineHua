@@ -9,8 +9,7 @@
 - **内核**: Linux 39-bit 地址空间
 - **终端测试**: hdc shell, 无 app 沙箱
 - **应用测试**: WineHua app, 带 `ALLOW_WRITABLE_CODE_MEMORY`
-  （`ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY` 仍在 module.json5 中；
-  `DISABLE_CODE_MEMORY_PROTECTION` 已不存在于仓库，当时的调研项已废弃）
+  （`ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY` 在 `module.json5` 中）
 
 ## 对比结果
 

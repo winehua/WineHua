@@ -171,7 +171,7 @@ SmokeRunner / automation 同步适配新协议（可随时推翻，不构成设�
 - 提交只含 entry/src；entry/build-profile.json5 的 abiFilters 会被 Makefile 改写，
   提交前剔除；thirdparty/wine 有用户未提交改动，不碰。
 - commit message 中文 conventional；不 push（用户明说才 push）。
-- 设备：PC 模拟器 `hdc -s 192.168.1.3:8710`；Pad `hdc -t <connectkey>`（IP 会变，
+- 设备：PC 模拟器（经远程 hdc server 连）；Pad `hdc -t <connectkey>`（IP 会变，
   用 `hdc list targets` 确认）。部署回归需用户配合操作真机。
 - 验证手段：`uitest uiInput click/dumpLayout`、`snapshot_display` 拉回 .temp 看图、
   hilog 采集分析。

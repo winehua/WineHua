@@ -1,6 +1,6 @@
 # WineHua 音频架构
 
-> 更新日期: 2026-07-31
+> 最后核实：2026-09-24
 
 ## 概览
 
@@ -195,8 +195,4 @@ flowchart TD
 - 失败日志
 - close / cleanup 统计
 
-如需更详细的 Wine 日志，可通过:
-
-- `WINEHUA_WINEDEBUG`
-
-覆盖默认 `WINEDEBUG`。
+Wine 的调试通道默认是 `-all`（全关），由 `entry/src/main/cpp/proc/wine_child.cpp` 的 `select_winedebug_profile()` 决定。

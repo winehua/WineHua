@@ -8,7 +8,7 @@ This is isolated evidence for the `feature/vkd3d-capability-probe` branch. It
 does not package VKD3D into the default Wine runtime, alter the validated DXVK
 profiles, or enable D3D12 for ordinary application launches.
 
-- Device: `62T0225B10005882` (Maleoon 910)
+- Device: `<设备序列号>` (Maleoon 910)
 - Main runtime ordering fix: `5dde3da`
 - VKD3D-Proton source: `5dd42d711dd069929d4666c51dc63e7d1e6a9dc6`
 - VKD3D-Proton version: `v2.6-4-g5dd42d71`
@@ -75,7 +75,7 @@ prefix. The test emits its final record only after object teardown,
 ## Retained log hashes
 
 The accessible Host and Wine logs are retained outside the repository at
-`D:\MyProject`.
+`<本机证据目录>`.
 
 | Log | SHA-256 |
 | --- | --- |

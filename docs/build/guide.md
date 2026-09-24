@@ -1,6 +1,6 @@
 # Wine for HarmonyOS — 构建指南
 
-> 最后更新: 2026-07-31
+> 最后核实: 2026-09-24
 
 ## 环境
 
@@ -11,7 +11,7 @@
 ```bash
 # 必备工具
 make cmake ninja meson bison flex autoconf libtoolize gcc-mingw-w64-x86-64 i686-w64-mingw32-gcc java
-glslangValidator               # DXVK 配置阶段硬依赖 (缺少时 make dxvk 失败)
+glslangValidator               # guest Vulkan 栈构建依赖 (build_ohos_guest_vulkan.sh)
 # OHOS SDK: /apps/harmony/sdk/default/openharmony/
 # wayland-scanner: /usr/local/bin/wayland-scanner (需预装)
 ```
@@ -55,12 +55,14 @@ make wine                          # Wine + wineserver
 make box64                         # Box64 ARM64 翻译器 (仅 arm64)
 make native                        # 各架构原生 compositor 依赖
 make dxvk                          # DXVK Legacy fork (x64 + x86 DLL)
+make dxvk-modern                   # DXVK 2.6.2 fork
+make vkd3d-proton                  # VKD3D-Proton (D3D12)
 make host-vulkan                   # Host Vulkan exact replay 诊断模块
 make assemble                      # 组装布局 (wine-data.zip)
 make hap                           # HAP 打包 + 签名
 ```
 
-> `assemble` 依赖 `dxvk`（4 个 DLL 硬校验）和 `host-vulkan`（manifest + replay 模块校验）。改 DXVK 源码后需 `make dxvk` 再 `make hap`。
+> `assemble` 的依赖不少：`deps`、`wine`、`native`、`host-vulkan`、两套 DXVK（`dxvk` / `dxvk-modern`）和 `vkd3d-proton` 的产物、以及 smoke 载荷（`smoke-payload`）——缺任何一个都会在这里失败。改了对应源码就重跑那一阶段，再 `make hap`。
 
 ### 增量构建
 
@@ -85,8 +87,11 @@ make clean
 ```
 build/.stamps/
 ├── deps
-├── dxvk-legacy                    # DXVK 4 个 DLL
+├── dxvk-legacy                    # DXVK 1.10.3
+├── dxvk-modern-2.6                # DXVK 2.6.2
+├── vkd3d-proton-limited-500k      # VKD3D-Proton
 ├── wine-arm64-v8a
+├── wine-x86_64
 ├── box64-arm64-v8a
 ├── arm64-v8a/
 │   ├── native
@@ -113,7 +118,7 @@ build/.stamps/
 | `OHOS_SDK` | `/apps/harmony/sdk/default/openharmony` | HarmonyOS SDK 路径 |
 | `BUILD_GUEST_GFX` | `1` (Makefile) / `0` (脚本直跑) | 构建 guest Mesa (VirGL) |
 | `BUILD_GUEST_VULKAN` | `1` (Makefile) | 构建 guest Vulkan 栈 (Loader + Venus ICD) |
-| `BUILD_WINE_MONO` | `0` | 设为 `1` 下载 Wine Mono (.NET 运行时) |
+| `BUILD_WINE_MONO` | `1` | 设为 `0` 跳过 Wine Mono（.NET 运行时），缩小产物 |
 | `TARGET_SDK_VERSION` | `6.1.0(23)` | HAP SDK 版本 |
 
 运行时变量（注入 Wine 子进程，见 `graphics_broker.cpp` / `wine_env.cpp` / `wine_child.cpp`）：
@@ -144,7 +149,6 @@ entry/libs/arm64-v8a/
 ├── box64.so                       # Box64, in-process dlopen
 ├── libwineserver.so               # wineserver NCP 入口
 ├── libwinehua_vtest_server.so     # VirGL vtest server 入口
-├── libwinehua_host_heaven_replay.so  # Host Vulkan exact replay
 ├── libvirglrenderer.so.1, libepoxy.so.0   # compositor 依赖
 ├── libwayland-{client,server,egl}.so.0    # wayland 库
 ├── libfreetype.so.6, libxkbcommon.so.0, libxkbregistry.so.0, libxml2.so.2
@@ -165,12 +169,16 @@ wine-data.zip
 │   ├── guest_vulkan/              # guest Vulkan Loader + Venus ICD (manifest.json)
 │   └── host_vulkan/               # Host Vulkan exact replay (manifest.json)
 ├── dxvk/
-│   ├── legacy/x64/{d3d11,dxgi}.dll
-│   ├── legacy/x86/{d3d11,dxgi}.dll
-│   └── manifest.json              # profile=legacy, version=1.10.3, commit
+│   ├── legacy/{x64,x86}/          # DXVK 1.10.3（d3d10 链 + d3d11 + dxgi）
+│   ├── modern-2.6/{x64,x86}/      # DXVK 2.6.2（只有 d3d11 + dxgi，2.x 没有 d3d10 链）
+│   └── manifest.json
+├── vkd3d/
+│   ├── limited-500k/              # VKD3D-Proton（D3D12）
+│   └── manifest.json
 ├── smoke/
 │   ├── x64/, x86/                 # winehua_*_smoke.exe 等受管测试
 │   ├── assets/                    # SPIR-V 采样 shader
+│   ├── suites.json                # 套件定义（跑哪些用例、声明什么档位）
 │   └── manifest.json
 ├── audio/winehua-gm.sf2           # MIDI SoundFont
 └── share/

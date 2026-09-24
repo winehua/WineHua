@@ -1,7 +1,7 @@
 # Submodule 可维护性专项报告
 
 > 更新：2026-08-01（重新梳理，同步当前落地状态）
-> 复核：2026-09-24（D/E 落地状态、符号名与行号引用按当前代码重新核对）
+> 复核：2026-09-24（D/E 落地状态、符号名与行号引用按当前代码重新核对；基线 commit 数与文件级改动量按当前 submodule 重算）
 > 初版：2026-07-31，评审时基于 `feature/render-element-completeness`（已合入 master，PR #47）
 > 目的：作为分支评审（长期可维护性维度）的依据文档。记录各 submodule 与上游的合并风险现状、改进路线图与验收标准。
 > 关联文档：[PHASE2_DXVK_STATUS_MEMO.md](../archive/PHASE2_DXVK_STATUS_MEMO.md) / [0002-d3d-backend-profiles.md](../decisions/0002-d3d-backend-profiles.md) / [CODE_IMPROVEMENT_PLAN.md](../archive/CODE_IMPROVEMENT_PLAN.md)
@@ -15,13 +15,13 @@
 | C 基线锁定 | P1 | ✅ 已落地 | 基线快照 + 重算命令入本文档 §1.1；`scripts/setup-upstream-remotes.sh` 随仓库分发（commit `a753d15`）；6 个 fork 全部可追溯；幽灵分支已清理（18 个） |
 | D dxvk 双轨 | P1 | ✅ 已落地 | 两条通道都在 `.gitmodules` 声明并进 master：`thirdparty/dxvk`（branch `dxvk-legacy-1.10.3`）与 `thirdparty/dxvk-modern`（branch `dxvk-modern-2.6`） |
 | B 补丁清单 | P0 | ✅ 已落地 | `docs/assets/submodules/` 6 篇清单完成（2026-08-01），见 §2.4 |
-| H CI submodule job | P0 | ⏳ 未开始 | build.yml 仍只有 build/release 两个 job |
+| H CI submodule job | P0 | ⏳ 部分 | build.yml 仍只有 build/release 两个 job；已有的检查是「嵌套 submodule 是否完整」（`submodules: recursive` + dxvk/vkd3d 的 `submodule status`），缺的是「submodule 的提交有没有推到它自己的远程」这项 |
 | E Profile 单一数据源 | P0 | ✅ 已落地 | 收口在 `entry/src/main/cpp/wine/env_profiles.cpp`（commit `f3370b0`，重构第 3 步）；未建 `shadow_profiles.h` |
 | A 物理隔离 | P0 | ⏳ 未开始 | `vkr_winehua_shadow.c` 未建 |
 | G 诊断分离 | P1 | ⏳ 未开始 | `vkr_winehua_perf.h` 未建 |
 | I known-regressions | P1 | ⏳ 未开始 | `scripts/qa/` 未建 |
 | F env var 目录 | P1 | ⏳ 未开始 | `docs/ENV_VAR_CATALOG.md` 未建 |
-| J smoke 治理 | P2 | ⏳ 未开始 | 单文件 5869 行依旧 |
+| J smoke 治理 | P2 | ⏳ 部分 | 主仓库的回归设施已按 v2 方案重建（用例目录化 + 载荷独立通道，见 [../engineering/testing-design.md](../engineering/testing-design.md)）；wine fork 里的 `programs/winehua_d3d11_smoke/main.c` **仍是 5869 行单文件**，未拆 |
 
 ---
 
@@ -31,9 +31,9 @@
 
 | Submodule | 上游基线 | 侵入模式 | 新增文件 | 合并方向 | 风险 |
 |-----------|---------|---------|---------|---------|------|
-| virglrenderer | freedesktop `main` | **深嵌**：`vkr_device_memory.c` +2275（8 hunks、46 处 winehua 引用、`#ifdef __OHOS__`）；`vkr_queue.c` +1134（数十个 `vkr_ohos_perf_*` atomic） | 少 | 我们合上游（上行） | 🔴 高 |
+| virglrenderer | freedesktop `main` | **深嵌**：`vkr_device_memory.c` +2464（37 处 winehua 引用、`#ifdef __OHOS__`）；`vkr_queue.c` +1190（数十个 `vkr_ohos_perf_*` atomic） | 少 | 我们合上游（上行） | 🔴 高 |
 | mesa | **OpenHarmony mesa**（tag `OpenHarmony-v6.0-Beta1`），不是 mesa main | 中：`vn_ring.c` +423，**512 槽 perf 数组直接嵌进 `struct vn_ring` 热路径**；`vn_renderer_vtest.c` +393 为新文件（好模式） | 部分 | 我们合上游（上行） | 🔴 高 |
-| dxvk | doitsujin `v1.10.3` tag（**上游死线**） | 深嵌：`dxvk_context.cpp` +1834、`dxbc_compiler.cpp` +507；已有独立层先例：`dxvk_winehua_trace.h` +442、`d3d11_bc.cpp` +203 | 6 个（含 `WINEHUA_FORK.md`） | **上游 backport 进来（下行）** | 🟡 中-高 |
+| dxvk | doitsujin `v1.10.3` tag（**上游死线**） | 深嵌：`dxvk_context.cpp` +1827、`dxbc_compiler.cpp` +506；已有独立层先例：`dxvk_winehua_trace.h` +508、`d3d11_bc.cpp` +203 | 6 个（含 `WINEHUA_FORK.md`） | **上游 backport 进来（下行）** | 🟡 中-高 |
 | wine | wine `master` | **良好**：改动几乎全是新增文件（smoke 程序、`wineohos.drv`、`mciqtz32`），修改上游文件极少 | 多 | 我们合上游（上行） | 🟢 低 |
 | box64 | ptitSeb `main` | **良好**：新增文件为主（`musl_fts.c` +1255、`musl_obstack.c` +378），修改集中在 `wrappedlibc` 系列函数包装 | 少 | 我们合上游（上行） | 🟢 低 |
 | libepoxy | anholt mirror `master` | 极浅：仅 1 个独有 commit（`gl-dev` 已随上游演进，无 fork 内容） | 0 | 我们合上游（上行） | 🟢 极低 |
@@ -41,9 +41,9 @@
 **关键认知**：
 
 1. mesa 的"上游"是 OpenHarmony 官方 mesa 分支（`.gitmodules` 中 `libdrm.branch = OpenHarmony-6.0-Beta1` 印证 OH 版本体系），基线取 OH 发布 tag，与 mesa 主线无关。
-2. dxvk 是唯一"下行合并"（上游 → 我们）：v1.10.3 已冻结，无新修复可拉，fork 处于"稳定但停滞"状态；未来切 2.x 时 5567 行 WineHua 改动是**重写不是合并**。
+2. dxvk 是唯一"下行合并"（上游 → 我们）：v1.10.3 已冻结，无新修复可拉，fork 处于"稳定但停滞"状态；未来切 2.x 时 6147 行 WineHua 改动是**重写不是合并**。
 3. virglrenderer / mesa 上游活跃 → 深嵌改动每合一次都是人工手术，是本分支最大负债。
-4. wine / box64 侵入度虽低，但改动量在持续增长（wine +21625 行），新增文件仍需逐个确认与上游无命名冲突。
+4. wine / box64 侵入度虽低，但改动量在持续增长（wine 155 个文件 +24045/-343 行），新增文件仍需逐个确认与上游无命名冲突。
 
 ---
 
@@ -55,9 +55,9 @@
 |-----------|--------------|---------------------|-------------|
 | virglrenderer | freedesktop/virglrenderer `main` | merge-base `8cb58e478`（2026-06-10） | **每季度尝试一次**，落后超两个大版本不可收拾 |
 | mesa | OpenHarmony mesa（OH 发布体系） | tag `OpenHarmony-v6.0-Beta1`（merge-base e5d8c3f2，2025-06-13） | 跟随 OH 发布节奏，记录 OH 的升级周期 |
-| wine | wine `master` | merge-base `13289668fd1`（2026-06-07，winehua 独有 89 commit） | 每次合 wine 时**先合 WineHua 侧新文件**（与上游无冲突，先落地减少 diff 堆积），再处理修改文件 |
-| box64 | ptitSeb/box64 `main` | merge-base `8f445d9a0`（2026-06-12，winehua 独有 14 commit） | 跟随 ptitSeb 发布节奏（ohos 兼容补丁多为新文件，冲突面小） |
-| dxvk | doitsujin/dxvk `v1.10.3` | tag `v1.10.3`（2022-08-02，winehua 独有 65 commit） | 无需节奏；每次 backport 上游 2.x bugfix 记录来源 commit |
+| wine | wine `master` | merge-base `13289668fd1`（2026-06-07，winehua 独有 118 commit） | 每次合 wine 时**先合 WineHua 侧新文件**（与上游无冲突，先落地减少 diff 堆积），再处理修改文件 |
+| box64 | ptitSeb/box64 `main` | merge-base `8f445d9a0`（2026-06-12，winehua 独有 15 commit） | 跟随 ptitSeb 发布节奏（ohos 兼容补丁多为新文件，冲突面小） |
+| dxvk | doitsujin/dxvk `v1.10.3` | tag `v1.10.3`（2022-08-02，winehua 独有 33 commit） | 无需节奏；每次 backport 上游 2.x bugfix 记录来源 commit |
 | libepoxy | anholt/libepoxy `master` | merge-base `d1f952c45`（2026-04-03，winehua 独有 1 commit） | 贴上游头，可随 wine 合并顺带更新 |
 
 **基线为派生数据（merge-base 可随时重算），本表只记录当前快照**：每次合并/升级后更新。升级本身是项目级事件（涉及构建 + 回归验证），不是 git 操作。重算命令：
@@ -70,18 +70,16 @@ git -C thirdparty/<name> rev-list --count $MB..HEAD   # winehua 独有 commit �
 
 上游 remote 用 `./scripts/setup-upstream-remotes.sh` 配置（新 clone 环境必跑，URL 与本表一致；mesa 上游为 gitee，受限网络下可能无法 fetch，此时用本地 tag 离线追溯）。
 
-**已完成的配套清理（2026-07-31）**：移除 wine 的 aetherium 镜像 remote；删除 18 个幽灵分支（tip SHA 安全网当时记在 `.temp/submodule-branch-cleanup-20260801.txt`，该临时文件已随 `.temp` 清理移除）。
+### 2.2 侵入度量化（2026-09-24 重算，相对 §2.1 基线）
 
-### 2.2 侵入度量化（2026-08-01 重算，相对 §2.1 基线）
-
-- **virglrenderer**（+7587 行 / 44 文件，较初版 +6215/34 增长）：
-  - `vkr_device_memory.c`：上游 ~57 行 → +2275 行，分布在 **8 个 hunk**，46 处 winehua 引用，`#ifdef __OHOS__` 守卫
-  - `vkr_queue.c`：+1134 行，文件顶部数十个 `vkr_ohos_perf_*` atomic 计数器
-  - `vkr_descriptor_set.c` +515 / `vkr_command_buffer.c` +449 / `vkr_renderer.c` +331 / `vkr_pipeline.c` +244
-- **mesa**（+1944 / 23 文件）：`vn_ring.c` +423（含 VN_RING_PERF_COMMAND_TYPE_COUNT 512 槽数组嵌入 ring 热路径结构体）、`vn_queue.c` +413、`vn_renderer_vtest.c` +393（**新文件，好模式**）、`vtest_protocol.h` +26
-- **dxvk**（+5567 / 60 文件，按 `v1.10.3` tag 计算）：仅 6 个新文件，核心改动深嵌 `dxvk_context.cpp` +1834、`dxbc_compiler.cpp` +507、`dxvk_cmdlist.cpp` +209、`dxvk_shader.cpp` +207
-- **wine**（+21625 / 86 文件，较初版 +8411/24 大幅增长）：几乎全部是**新增文件**——`programs/winehua_d3d11_smoke/main.c` +5862、`dlls/wineohos.drv/`（ohos.c +2366、tsf.h +2079、ohos_midi.c +840）、`dlls/mciqtz32/`（minimp3.h +1865、mciqtz_waveout.c +639）；删除行仅 -135，修改上游文件极少
-- **box64**（+3768 / 38 文件）：新增为主——`musl_fts.c` +1255、`musl_obstack.c` +378（OHOS musl 兼容补丁）；修改集中在 `wrappedlibc`/`wrappedlibdl` 函数包装（-1172 删除主要来自清理调试残留）
+- **virglrenderer**（+8942 行 / 53 文件，较初版 +6215/34 增长）：
+  - `vkr_device_memory.c`：上游 ~57 行 → +2464 行，37 处 winehua 引用，`#ifdef __OHOS__` 守卫
+  - `vkr_queue.c`：+1190 行，文件顶部数十个 `vkr_ohos_perf_*` atomic 计数器
+  - `vkr_command_buffer.c` +778 / `vkr_descriptor_set.c` +535 / `vkr_pipeline.c` +449 / `vkr_renderer.c` +346
+- **mesa**（+2093 / 24 文件）：`vn_ring.c` +423（含 VN_RING_PERF_COMMAND_TYPE_COUNT 512 槽数组嵌入 ring 热路径结构体）、`vn_queue.c` +413、`vn_renderer_vtest.c` +393（**新文件，好模式**）、`virgl_vtest_socket.c` +203、`vn_device_memory.c` +162
+- **dxvk**（+6147 / 66 文件，按 `v1.10.3` tag 计算）：仅 6 个新文件，核心改动深嵌 `dxvk_context.cpp` +1827、`dxvk_winehua_trace.h` +508、`dxbc_compiler.cpp` +506、`d3d11_context.cpp` +386、`dxvk_shader.cpp` +251
+- **wine**（+24045 / 155 文件，较初版 +8411/24 大幅增长）：几乎全部是**新增文件**——`programs/winehua_d3d11_smoke/main.c` +5869、`dlls/wineohos.drv/`（ohos.c +2366、tsf.h +2079、ohos_midi.c +840）、`dlls/mciqtz32/`（minimp3.h +1865、mciqtz_waveout.c +639）；修改上游文件极少
+- **box64**（+3775 / 38 文件）：新增为主——`musl_fts.c` +1255、`musl_obstack.c` +378（OHOS musl 兼容补丁）；修改集中在 `wrappedlibc`/`wrappedlibdl` 函数包装（-1172 删除主要来自清理调试残留）
 - **libepoxy**：独有 1 commit，可忽略
 
 ### 2.3 物理隔离：新代码进新文件（改进 A，P0）⏳ 未开始
@@ -140,36 +138,13 @@ docs/assets/submodules/<submodule>.md
 
 ### 3.1 Profile 映射单一数据源（改进 E，P0）✅ 已落地
 
-**问题**：`entry/src/main/cpp/bridge/napi_init.cpp:121`（`SetHostShadowProfile`，~200 行条件分支、30+ bool 变量）与 `entry/src/main/cpp/wine/wine_launch.cpp` 的 `AppendStableDesktopDxvkEnv`（~40 行，已随 `f3370b0` 删除）**各自维护一份 profile名→行为映射**。两侧语义必须一致，但没有机制保证。一次 profile 演进会同时改两个文件，漏改即静默行为漂移（guest 期望 A、host 给 B——0x887a0004 类事故的温床）。
+**落地形式**（commit `f3370b0`）：guest 侧 profile→env 映射收口在 `entry/src/main/cpp/wine/env_profiles.cpp` / `env_profiles.h`，对外只有两个入口——`AppendStableDxvkEnv()` 与 `BuildSessionEnv(SessionEnvPolicy)`；spawn 点声明 `SessionEnvPolicy` 拿成品，不再各自追加策略行。收敛的是 guest 侧 env；host 侧渲染开关仍由 `napi_init.cpp:121` 的 `SetHostShadowProfile` 单独 setenv。
 
-**落地形式**（commit `f3370b0`，重构第 3 步）：guest 侧 profile→env 映射收口到 `entry/src/main/cpp/wine/env_profiles.cpp` / `env_profiles.h`，对外只有两个入口——`AppendStableDxvkEnv()`（即原来的 `wine_launch.cpp:AppendStableDesktopDxvkEnv`，该函数已随迁移删除）与 `BuildSessionEnv(SessionEnvPolicy)`；spawn 点声明 `SessionEnvPolicy` 拿成品，不再各自追加策略行。本次收敛的是 guest 侧 env；host 侧渲染开关仍由 `napi_init.cpp:121` 的 `SetHostShadowProfile` 单独 setenv。
-
-**原始提案**（未采用下列注册表结构，仅存档）：单一注册表（常量数组），两侧共同 include：
-
-```cpp
-struct ShadowProfile {
-    const char* name;           // "shadow-precise-dirty-ring-inline-upload-coverage-sort"
-    const char* shadowMode;
-    const char* shadowSelector;
-    bool mergeRanges;
-    bool gpuUpload;
-    bool uploadWait;
-    const char* presentMode;
-    bool isProductDefault;
-    bool isDiagnosticOnly;
-};
-constexpr ShadowProfile kShadowProfiles[] = { /* 一行一个 profile */ };
-
-const ShadowProfile* FindShadowProfile(const char* name);
-void ApplyProfile(const ShadowProfile*, VirglHostConfig*);   // napi_init 侧
-void ApplyProfileEnv(const ShadowProfile*);                  // wine_launch 侧（guest env）
-```
-
-**提案验收**（未实施）：`profile_config_test` 对每个 profile 断言"napi_init 侧输出 == wine_launch 侧输出"。当前仓库没有 `profile_config_test`，一致性靠"单一入口"（`env_profiles.cpp` 是唯一的会话 env 管线定义点）保证。
+一致性靠**单一入口**保证：`env_profiles.cpp` 是唯一的会话 env 管线定义点。
 
 ### 3.2 Env Var 目录与 guest/host 握手（改进 F，P1）⏳ 未开始
 
-- **现状**：约 30 个 env var 无 schema、无版本。fingerprint 已接入两处（`graphics_broker.cpp:1314,1358` 启动日志、`:1281` 运行中配置变更强制报错"App restart required"）——但它是 **host 侧自检**，解决不了"guest 侧 DXVK 收到的 env 与 host 侧配置漂移"（两侧由不同代码生成，各自算出各自的 hash，握手不上去）。
+- **现状**：约 30 个 env var 无 schema、无版本。fingerprint 已接入两处（`graphics_broker.cpp:1313,1356` 启动日志、`:1281` 运行中配置变更强制报错"App restart required"）——但它是 **host 侧自检**，解决不了"guest 侧 DXVK 收到的 env 与 host 侧配置漂移"（两侧由不同代码生成，各自算出各自的 hash，握手不上去）。
 - **第一步（低成本）**：建 `docs/ENV_VAR_CATALOG.md`——全部 env var 表格：读取者（guest DXVK / host virglrenderer / box64 / 主仓库）、默认值、由哪个 profile 字段派生、引入版本。这张表本身就是升级手册。
 - **第二步（中期）**：把 `VirglHostLaunchConfig.fingerprint` 升级为跨 IPC 握手：guest 侧把 DXVK 实际生效的 env 组合回传，host 对比期望值，不匹配打 `WL-ERR` 级错误而不是静默跑。
 
@@ -258,10 +233,10 @@ scripts/qa/known-regressions.sh
 - `entry/src/main/cpp/bridge/napi_init.cpp:121-317` — `SetHostShadowProfile`（~200 行条件分支）
 - `entry/src/main/cpp/wine/env_profiles.cpp` — profile→env 映射单一入口（`AppendStableDxvkEnv`、`BuildSessionEnv`）；原 `wine_launch.cpp:AppendStableDesktopDxvkEnv` 已随 `f3370b0` 迁移并删除
 - `entry/src/main/cpp/wine/wine_launch.cpp` — `CopyFileIfNeeded`（mkstemp+fsync+rename 原子写，`:157`）、`EnsureWow64Files`（`:234`）
-- `entry/src/main/cpp/graphics/graphics_broker.cpp:1314,1358` — fingerprint 启动日志（phone in-process / IPC NCP 各一条，另见 `:241` 线程内日志）；`:1281` — 配置变更强制校验（"App restart required"）
+- `entry/src/main/cpp/graphics/graphics_broker.cpp:1313,1356` — fingerprint 启动日志（phone in-process / IPC NCP 各一条，另见 `:241` 线程内日志）；`:1281` — 配置变更强制校验（"App restart required"）
 - `entry/src/main/cpp/graphics/virgl_host_config.h:26,30-34` — `fingerprint` 字段 + Validate/Fingerprint/Build 三函数
 - `entry/src/main/cpp/graphics/virgl_child.cpp:477,502` — launch fingerprint 透传（`BuildVirglHostLaunchConfig` → 启动日志）
 - 基线锚点（§2.1）：virglrenderer `8cb58e478` / mesa tag `OpenHarmony-v6.0-Beta1`（e5d8c3f2）/ wine `13289668fd1` / box64 `8f445d9a0` / dxvk tag `v1.10.3` / libepoxy `d1f952c45`
 - `.gitmodules` — branch 约定：wine=master, box64=main, virglrenderer=master, libepoxy=master, mesa=main, libdrm=OpenHarmony-6.0-Beta1, dxvk=dxvk-legacy-1.10.3, dxvk-modern=dxvk-modern-2.6
 - `.github/workflows/build.yml` — 已含 PR 触发 + gitlink 校验 step（`2c0d219`）
-- `docs/decisions/0002-d3d-backend-profiles.md`（原 `docs/DXVK_MODERN_UPGRADE_READINESS.md`，已改名）— 设备能力矩阵（920 phone Vulkan 1.3.309 vs 910 tablet 1.2.275）
+- `docs/decisions/0002-d3d-backend-profiles.md` — 设备能力矩阵（920 phone Vulkan 1.3.309 vs 910 tablet 1.2.275）

@@ -9,7 +9,7 @@ product D3D11 path. It does not load the experiment-local VKD3D DLL and does
 not enable D3D12 for ordinary launches.
 
 - Branch: `feature/vkd3d-capability-probe`
-- Device: `62T0225B10005882` (910)
+- Device: `<设备序列号>` (910)
 - Runtime ordering fix in the HAP: `5dde3da`
 - Automation fixes used for artifact capture: `bb6d340`, `84c70ed`
 - Signed HAP timestamp: `2026-08-05 02:01:05.957185477 +0800`
@@ -67,7 +67,7 @@ SHA-256 is `b0a69053c74cfef159963f136705c1b936e35ac803bb3528512b669449709cb7`.
 | `hilog.txt` | `4324ff935a6b7b5762adf198af98395ee16befa696c45168cf6e095ef17089b4` |
 
 The complete archive is retained at
-`/home/maple/Work/WineHua-build/.temp/automation-logs/regression-20260805-031507`.
+`<构建机上的仓库路径>/.temp/automation-logs/regression-20260805-031507`.
 
 ## Separate Modern 2.6.2 observation
 

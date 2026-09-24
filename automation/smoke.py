@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WineHua smoke 自动化工具（host 侧）。
 
-设计见 docs/SMOKE_V2_DESIGN.md。
+设计见 docs/engineering/testing-design.md。
 
     python3 automation/smoke.py build [--suite NAME] [--case NAME] [--out DIR]
     python3 automation/smoke.py push

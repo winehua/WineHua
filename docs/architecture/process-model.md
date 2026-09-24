@@ -1,7 +1,7 @@
 # WineHua 进程启动架构
 
 > 更新日期: 2026-08-26(第 5 步重构后: 全部进程统一走 broker)
-> 最后核实: 2026-09-22。行号以 master 分支为准；main-ui 分支的界面层（.ets）文件行号与 master 不同，查界面层代码时请以所在分支为准。
+> 最后核实: 2026-09-24。行号以 master 分支为准；main-ui 分支的界面层（.ets）文件行号与 master 不同，查界面层代码时请以所在分支为准。
 
 ## 概览
 
@@ -118,9 +118,9 @@ OHOS 的 NCP 子进程**不继承主进程 environ**(`env_spec.h:7` 注释)。�
 
 **① 主进程自身 setenv(只影响主进程)**
 
-- `PROCESSBROKER=WINE_BROKER_SOCKET`(`wine_launch.cpp:367`)——broker socket 路径,供 SpawnViaBroker 与注入 ntdll 的 ohos_broker.c 定位 broker
-- `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY`(`wayland_server.cpp:58,75`)——compositor 自用
-- `SetHostShadowProfile`(`napi_init.cpp:121-317`,setenv 段 `:244-297`)——一组 `VKR_WINEHUA_*`/`WINEHUA_VENUS_PRESENT_MODE` 等 host 渲染开关(profile 字符串解码)
+- `PROCESSBROKER=WINE_BROKER_SOCKET`(`wine/wine_launch.cpp:367`)——broker socket 路径,供 SpawnViaBroker 与注入 ntdll 的 ohos_broker.c 定位 broker
+- `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY`(`compositor/wayland_server.cpp:58,74`)——compositor 自用
+- `SetHostShadowProfile`(`bridge/napi_init.cpp:121-317`,setenv 段 `:244-297`)——一组 `VKR_WINEHUA_*`/`WINEHUA_VENUS_PRESENT_MODE` 等 host 渲染开关(profile 字符串解码)
 - virgl host 配置: graphics_broker 启动时 `getenv("WINEHUA_VIRGL_HOST_*")` 组 `VirglHostConfig`,经 **IPC parcel 显式传给 virgl 子进程**,不靠继承
 
 **② 集中式工厂 BuildWineEnv(主通道)**

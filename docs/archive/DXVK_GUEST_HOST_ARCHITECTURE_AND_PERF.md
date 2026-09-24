@@ -902,7 +902,7 @@ whose recorded wall-clock duration is shorter than the requested value.
 ## 13. Source and runtime state
 
 ```text
-Repository: /home/maple/Work/WineHua-build
+Repository: <构建机上的仓库路径>
 Branch: feature/render-element-completeness
 Main baseline before the long-run update: 6c15447
 

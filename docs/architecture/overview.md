@@ -1,6 +1,6 @@
 # WineHua 总体架构
 
-> 更新日期: 2026-08-01
+> 最后核实：2026-09-24
 > 本文是**总览**：一张图讲清整个系统（wine / wayland compositor / 音频 / 图形四域）。
 > 各域的详细设计见文末 [文档导航](#8-文档导航)。
 
@@ -15,7 +15,7 @@ WineHua 在鸿蒙 App 进程内嵌一个 Wayland compositor，用 Wine（x86_64�
 graph TB
     subgraph guest["Guest 域 — wine_child 进程（x86_64，box64 动态翻译执行）"]
         APP["Windows PE 程序<br/>D3D11 / OpenGL / WinMM / WASAPI"]
-        APP --> DXVK["DXVK 1.10.3<br/>D3D11→Vulkan"]
+        APP --> DXVK["DXVK<br/>D3D11→Vulkan"]
         APP -->|OpenGL| WGL["opengl32 + wgl"]
         DXVK --> WINEVK["winevulkan.dll"]
         WINEVK --> VULKANC["win32u/vulkan.c<br/>私有 swapchain（0x574853 tag）"]
@@ -103,9 +103,11 @@ graph TB
 
 ### 3.1 D3D11 主路径（DXVK → Venus → host Vulkan）
 
+用哪一版 DXVK 由档位决定：`master` 默认 `vkd3d_limited_500k`（DXVK 轴走 legacy 1.10.3），`main-ui` 默认 `dxvk_modern_2_6`（2.6.2）。档位与设备能力的对应见 [graphics-matrix.md](graphics-matrix.md)。
+
 ```mermaid
 flowchart LR
-    A["App D3D11"] --> B["DXVK 1.10.3（D3D11→Vulkan）"]
+    A["App D3D11"] --> B["DXVK（D3D11→Vulkan）"]
     B --> C["winevulkan.dll → win32u/vulkan.c<br/>私有 swapchain（0x574853 tag）"]
     C --> D["guest Mesa venus（x86_64）"]
     D <-->|"vtest 协议"| E["virglrenderer venus"]
@@ -215,22 +217,22 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 
 | 模块 | 文件 | 域 | 职责 |
 |------|------|----|------|
-| NAPI 桥 | `napi_init.cpp` | 进程 | PIPE 事件注入入口、Wine/wineserver/wineboot 进程管理、crash 检测 |
-| Process Broker | `broker.cpp` | 进程 | Wine CreateProcess → NCP 中继（命名多 fd + env） |
-| Wine 启动 | `wine_launch.cpp` | 进程 | 启动线程：wineserver/wineboot/explorer |
-| NCP 路由 | `ncp_dispatch.cpp` + `phone_adapter/` | 进程 | phone 模式符号覆盖为 fork 实现 |
-| Wayland 服务器 | `wayland_server.cpp` | compositor | display 生命周期、global 注册、单例组装点 |
-| Wayland 协议 | `wl_core.cpp` | compositor | wl_compositor/surface/subcompositor/subsurface/viewporter |
-| xdg 协议 | `xdg_shell.cpp` | compositor | xdg_wm_base/surface/toplevel |
-| 输入 | `seat.cpp` + `input_manager.cpp` | compositor | wl_seat、事件注入、丢帧统计 |
-| 合成 | `compositor/`（toplevel_manager / desktop_compositor / frame_pipeline / input_resolver / desktop_root_manager / move_grab / display_policy / compositor_blit / blit_clip / geometry / surface_data / compositor_constants / compositor_utils / debug_assert） | compositor | z-order、帧合成（锁内规划 FramePlanner / 锁外绘制 FrameBlitter）、命中裁决、root 识别、模式策略、blit/几何纯函数、共享数据结构与常量 |
-| 图形后端 | `graphics_broker.cpp` | 图形 | Virgl/Venus 选择、IPC 配置、`WINEHUA_*` 注入 |
-| virgl 子进程 | `virgl_child.cpp` | 图形 | 加载 virglrenderer、OH_IPC 通信、host EGL |
-| GL 呈现 | `virgl_surface_presenter.cpp` | 图形 | VirGL zero-copy（OH_NativeBuffer + external OES） |
-| Vulkan 呈现 | `venus_surface_presenter.cpp` | 图形 | Vulkan/DXVK 帧上屏 |
-| EGL 上屏 | `egl_renderer.cpp` | 图形 | CPU fallback（TakeFrame → glTexSubImage2D） |
-| XComponent | `plugin_manager.cpp` | 图形 | 窗口 surface 注册、renderer 管理 |
-| 音频 Host | `audio_broker.cpp` + `audio_ipc_server.cpp` + `audio_stream.cpp` + `ring_buffer.cpp` | 音频 | OHAudio 回调、混音、memfd ring |
+| NAPI 桥 | `bridge/napi_init.cpp` | 进程 | PIPE 事件注入入口、Wine/wineserver/wineboot 进程管理、crash 检测 |
+| Process Broker | `proc/broker.cpp` | 进程 | Wine CreateProcess → NCP 中继（命名多 fd + env） |
+| Wine 启动 | `wine/wine_launch.cpp` | 进程 | 启动线程：wineserver/wineboot/explorer |
+| NCP 路由 | `proc/ncp_dispatch.cpp` + `phone_adapter/` | 进程 | phone 模式符号覆盖为 fork 实现 |
+| Wayland 服务器 | `compositor/wayland_server.cpp` | compositor | display 生命周期、global 注册、单例组装点 |
+| Wayland 协议 | `compositor/wl_core.cpp` | compositor | wl_compositor/surface/subcompositor/subsurface/viewporter |
+| xdg 协议 | `compositor/xdg_shell.cpp` | compositor | xdg_wm_base/surface/toplevel |
+| 输入 | `input/seat.cpp` + `input/input_manager.cpp` | compositor | wl_seat、事件注入、丢帧统计 |
+| 合成 | `compositor/frame/`（帧合成与几何）、`compositor/toplevel/`（窗口状态与 z-order）、`compositor/input/`（命中裁决） | compositor | z-order、帧合成（锁内规划 FramePlanner / 锁外绘制 FrameBlitter）、命中裁决、root 识别、模式策略、blit/几何纯函数 |
+| 图形后端 | `graphics/graphics_broker.cpp` | 图形 | Virgl/Venus 选择、IPC 配置、`WINEHUA_*` 注入 |
+| virgl 子进程 | `graphics/virgl_child.cpp` | 图形 | 加载 virglrenderer、OH_IPC 通信、host EGL |
+| GL 呈现 | `graphics/virgl_surface_presenter.cpp` | 图形 | VirGL zero-copy（OH_NativeBuffer + external OES） |
+| Vulkan 呈现 | `graphics/venus_surface_presenter.cpp` | 图形 | Vulkan/DXVK 帧上屏 |
+| EGL 上屏 | `graphics/egl_renderer.cpp` | 图形 | CPU fallback（TakeFrame → glTexSubImage2D） |
+| XComponent | `bridge/plugin_manager.cpp` | 图形 | 窗口 surface 注册、renderer 管理 |
+| 音频 Host | `audio/audio_broker.cpp` + `audio/audio_ipc_server.cpp` + `audio/audio_stream.cpp` + `common/ring_buffer.cpp` | 音频 | OHAudio 回调、混音、memfd ring |
 
 ### Guest 侧（thirdparty/wine/）
 
@@ -248,11 +250,12 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 
 | 仓库 | 域 | 变更要点（详见 `docs/assets/submodules/`） |
 |------|----|------|
-| wine | wine | 45 改 + 41 新；win32u/vulkan.c 私有 swapchain、DXVK overlay 搜索、ohos_broker/ohos_file/ohos_virtual |
+| wine | wine | 107 改 + 48 新（118 commit）；win32u/vulkan.c 私有 swapchain、DXVK overlay 搜索、ohos_broker/ohos_file/ohos_virtual |
 | box64 | 翻译 | musl 移植、InternalMmap 三限制、mallochook 重写、LIBBOX64_SO 模式 |
 | mesa | 图形 | 全 env opt-in（`VN_WINEHUA_*`）；vtest 私有命令与 virglrenderer 成对演进 |
 | virglrenderer | 图形 | shadow 内存路径、present 桥（`VCMD_WINEHUA_PRESENT`）、Z32 仿真 |
 | dxvk | 图形 | 兼容层：bool spec 冻结、combined-sampler、CubeArray Dref、BC 解压、cb15 border color |
+| dxvk-modern | 图形 | DXVK 2.6.2 fork（分支 `dxvk-modern-2.6`）：为 Venus 缺的特性（dualSrcBlend、multiViewport、BC 纹理压缩等）补兼容实现；2.x 已移除 d3d10 链 |
 | libepoxy | 图形 | 库名统一 `libEGL.so/libGLESv3.so` |
 
 ## 8. 文档导航

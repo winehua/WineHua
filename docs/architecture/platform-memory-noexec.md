@@ -2,8 +2,7 @@
 
 > 更新: 2026-06-12（2026-07-31 标注落地状态）
 > 主题: 在 noexec 文件系统上 mmap(MAP_PRIVATE, fd) + mprotect(PROT_EXEC) 失败的根本原因
-> 状态: ✅ **已解决**（CURRENT_STATUS 已修复问题 #2）——以下"修复方案"为当时设计，
-> 现行代码已演进为 `ohos_map_exec_section()` / `ohos_mprotect_exec()`（见文末更新）
+> 状态: 已解决，现行实现见 §三
 
 ---
 
@@ -43,50 +42,16 @@ virtual_map_builtin_module()
 
 ---
 
-## 三、修复方案（当时设计，已被现行实现取代）
+## 三、现行实现
 
-在 `map_image_into_view()` 中，可执行段 (`IMAGE_SCN_MEM_EXECUTE`) 直接用匿名 mmap + pread：
+noexec 下要给代码段加 `PROT_EXEC`，唯一的办法是先让页面**匿名化**（把内容 pread 进匿名页），再改权限。
 
-```c
-if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
-{
-    // 匿名 mmap 替代文件支持映射
-    mmap(sec_addr, sec_map_size, PROT_READ | PROT_WRITE,
-         MAP_FIXED | MAP_ANON | MAP_PRIVATE, -1, 0);
-    pread(fd, sec_addr, file_size, file_start);
-    // 后续 set_vprot → mprotect(PROT_EXEC) → ✅ 成功
-}
-```
+**为什么 prctl 绕过不够**：`prctl(0x6a6974)` 对匿名页面有效，但对**文件支持**页面（有 backing store）内核仍然拒绝 `PROT_EXEC`；而且这个 prctl 本身在 Box64 下会 SIGSEGV，不要再用。
 
-### 为什么 prctl 绕过不够
+**代码位置**：
 
-`prctl(0x6a6974)` 对匿名页面有效，但对**文件支持**页面（有 backing store），内核仍然拒绝 PROT_EXEC。必须先让页面匿名化。
-
-### `mprotect_exec()` 辅助（当时方案）
-
-```c
-static inline int mprotect_exec(void *base, size_t size, int unix_prot)
-{
-    if (unix_prot & PROT_EXEC)
-    {
-        prctl(0x6a6974, 0, 0);     // 暂时允许 exec
-        int ret = mprotect(base, size, unix_prot);
-        prctl(0x6a6974, 0, 1);     // 恢复 noexec
-        return ret;
-    }
-    return mprotect(base, size, unix_prot);
-}
-```
-
-> ⚠️ prctl(0x6a6974) 方案已废弃：该 prctl 本身在 Box64 下会 SIGSEGV（CURRENT_STATUS
-> 已修复问题 #3），且 2026-07-28 恢复了 executable PE section protection（c31c2a3）。
-
-### 现行实现（2026-07）
-
-- `dlls/ntdll/unix/ohos_virtual.c` — `ohos_map_exec_section()`（替代内嵌的匿名 mmap + pread
-  逻辑，内部 `ohos_jit_enable()` 配对）与 `ohos_mprotect_exec()`（委托 JIT enable + mprotect）
+- `dlls/ntdll/unix/ohos_virtual.c` — `ohos_map_exec_section()`（可执行段的匿名映射，内部 `ohos_jit_enable()` 配对）与 `ohos_mprotect_exec()`（委托 JIT enable + mprotect）
 - `dlls/ntdll/unix/virtual.c:1950` 附近 — `IMAGE_SCN_MEM_EXECUTE` 分支调用 `ohos_map_exec_section()`
-- 核心结论不变：noexec 下文件映射 + PROT_EXEC 必须匿名化，这是现行代码的设计依据
 
 ---
 

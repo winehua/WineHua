@@ -97,7 +97,7 @@ Inline 的帧与窗口同尺度，不需要"窗口上报尺寸与内容尺寸解
    事件）；白屏修复的 `raiseWindowGroup` 对内嵌类自然失效（无 popup 可提升，
    主窗单窗口无 z 序问题）。
 
-## 6. 设备验证记录（2026-09-10，Pad 192.168.1.6）
+## 6. 设备验证记录（2026-09-10，Pad）
 
 验证通道：`aa start --ps winehua.desktopMode fusion --ps winehua.autoStart 1
 --ps winehua.program <路径>`（5363b38 入库，无需人工点 UI）。
@@ -137,7 +137,7 @@ winemine 点「游戏(G)」菜单：
 
 ### 6.4 未覆盖项
 
-- **PC 融合模式**：唯一 2in1 设备（192.168.1.5）验证时处于锁屏，开发者模式
+- **PC 融合模式**：唯一的 2in1 设备验证时处于锁屏，开发者模式
   禁止自动解锁，需人工解锁后复验。代码路径与 Pad 共用（`WindowFrameComposer`
   在 PC 侧更早就在跑），风险低。
 - **`route=inline|popup|layer` debug 行**（§4 第 3 条）未实现：分流结果已由

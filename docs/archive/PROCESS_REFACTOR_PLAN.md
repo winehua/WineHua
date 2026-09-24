@@ -111,7 +111,7 @@ virgl host **不进这套体系**(独立进程、独立安全边界、IPC parcel
 | 4 | SpawnRequest/Spawner,四个 spawn 点收口 | 中 | 同上 + wine→wine 子进程(launcher 类) |
 | 5 | (可选,独立评估) wineserver/wineboot 走 broker;ArkTS 11 键清单单源化 | 中高 | 冷启动/重启/恢复出厂全流程 |
 
-构建: `make NATIVE_ARCH=arm64-v8a`(唯一合法手段);回归设备: Pad(192.168.1.6)+ PC 2in1(192.168.1.8)。
+构建: `make NATIVE_ARCH=arm64-v8a`(唯一合法手段);回归设备: Pad + PC 2in1。
 
 ## 进度记录
 

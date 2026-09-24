@@ -54,7 +54,7 @@ apt-get update && apt-get install -y \
   pkgconf zip git file python3 python3-pip         `# 工具` \
   libexpat1-dev libxml2-dev libffi-dev             `# wayland-scanner 原生构建 (wayland 依赖 libffi)` \
   libfreetype-dev                                  `# sfnt2fon 字体工具 (Wine 字体 .fon 生成)` \
-  glslang-tools                                    `# DXVK 配置阶段硬依赖 (生成内置 SPIR-V)` \
+  glslang-tools                                    `# guest Vulkan 栈构建 (生成内置 SPIR-V)` \
   gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64                             `# Wine OHOS 交叉 PE 编译` \
   default-jdk                                      `# HAP 签名 (java)` \
  && apt-get clean && rm -rf /var/lib/apt/lists/*

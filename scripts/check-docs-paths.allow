@@ -17,3 +17,7 @@ smoke/graphics_runtime_env.h
 
 # 维护策略文档里画的规划目录树（尚未创建）
 scripts/qa/known-regressions.sh
+
+# 协作流程里举的例子，用来演示"怎么判断文件属于 main-ui 独有"。
+# 该文件只存在于 main-ui 分支，在 master 工作区里查不到是正常的
+entry/src/main/ets/components/AppLibraryView.ets

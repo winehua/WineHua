@@ -28,7 +28,7 @@ mapped UPLOAD resources as CPU-written and explicitly excludes READBACK heaps.
 - Signed HAP SHA-256: `801d1c728108908270651f2334554c9f1af7d853790e76ddb82ed658292d0a02`
 - Embedded `wine-data.zip` SHA-256: `7ad07d7741035b2b76641633684d5f8f42d2e8cb264b8eaa6ad2c16c17c5d10b`
 - VKD3D `d3d12.dll` SHA-256: `a3810f3cc57e9290aba2f1a172350fe06bc85da146c82de090551aee80ebba61`
-- Device: `62T0225B10005882`, Maleoon 910 target
+- Device: `<设备序列号>`, Maleoon 910 target
 
 The HAP-embedded `wine-data.zip` hash matched the assembled rawfile. Guest EGL
 was x86-64 and HAP `libentry.so` was AArch64.

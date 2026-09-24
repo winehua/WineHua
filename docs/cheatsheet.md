@@ -1,7 +1,7 @@
 # 常用命令速查
 
 > 适用场景：日常开发中最常用的命令和路径，打开这一页就能找到。
-> 最后核实：2026-09-22
+> 最后核实：2026-09-24
 > 详细说明见 [build/guide.md](build/guide.md)（构建）、[debugging/observability.md](debugging/observability.md)（日志）。
 
 ## 构建
@@ -80,7 +80,7 @@ hdc -t <设备IP> shell "cat /data/app/el2/100/base/app.hackeris.winehua/temp/wi
 hdc -t <设备IP> shell "grep -i '关键词' /data/app/el2/100/base/app.hackeris.winehua/temp/wine_stderr_$(date +%Y%m%d).log"
 ```
 
-注意：有的日志（例如 `[MUTEX-SPIN]`）只写进 Wine 标准错误文件，不会出现在 hilog 里。日志标签的完整列表和各自的坑见 [debugging/observability.md](debugging/observability.md)。
+注意：有的日志只写进 Wine 标准错误文件，不会出现在 hilog 里（比如 box64 的崩溃现场）。日志标签的完整列表和各自的坑见 [debugging/observability.md](debugging/observability.md)。
 
 ## 自动化测试
 

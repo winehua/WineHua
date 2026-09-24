@@ -122,7 +122,7 @@ EntryAbility → 70s → DesktopAbility → 40s 桌面链出图 = 蓝色桌面 +
   `protocolOnly` 改 `source`）；`FindZeroCopyLayerForToplevelLocked` 保留在本类，
   改经 `zc_.IsActive` 判定——单一查找谓词不变。锁边界/读写线程域不变（tmgr 锁内）。
 - 门禁：`make test` host_tests 全绿；x86_64 + arm64-v8a hap 构建通过。
-- 设备验证（arm64 真机 192.168.1.8:33363，2026-08-29）：干净重装后首启正常；
+- 设备验证（arm64 真机，2026-08-29）：干净重装后首启正常；
   桌面正常渲染（MW-RNDR 1400x920→2800x1840 持续出帧），游戏窗口（如 toplevel #29
   800x600）经 SHM 合成正常出画面；VirGL ZC `pipeline ready tl=3 SURFACE_QUEUE`；
   全程无 compositor/ZC/CRASH/WL-ERR 错误；Wow64Install 干净（wow64 ok=747 failed=0）。
@@ -1320,7 +1320,7 @@ GetWorkAreaHeight 路径）、root 识别/切换/销毁（root/pending/taskbar �
   唯一手段，串行）；构建会改写 entry/build-profile.json5，构建后必须
   `git checkout --` 还原；构建产物是同一个 HAP 文件，arm64 构建会覆盖
   x86_64 产物，部署前 `unzip -l` 验架构；**构建运行期间绝不能动源码树**。
-- **模拟器**：`hdc -s 192.168.1.3:8710 list targets` → `-t 127.0.0.1:5555`。
+- **模拟器**：经远程 hdc server 连，目标 `127.0.0.1:5555`。
   冒烟：force-stop → EntryAbility → 等 ~20s → DesktopAbility → 等 ~22s →
   snapshot_display（.jpeg）拉回看图。成功基线：蓝色桌面 + 左下角中文
   "开始"任务栏；notepad 直启基线：中文"（未命名）- 记事本"窗口。

@@ -16,7 +16,7 @@
 
 | 事实 | 证据 | 对设计的影响 |
 |---|---|---|
-| Linux hdc 直连设备可用 | `hdc list targets` 见 `192.168.1.5:44959` / `192.168.1.2:10178`；`aa start --ps` 传参已有先例 | host 工具不再需要 Windows PowerShell / Windows HDC |
+| Linux hdc 直连设备可用 | `hdc list targets` 能看到真机设备；`aa start --ps` 传参已有先例 | host 工具不再需要 Windows PowerShell / Windows HDC |
 | mingw 交叉编译器可用 | `/usr/bin/x86_64-w64-mingw32-gcc`（GCC 13）、`i686-w64-mingw32-gcc` | payload 本地构建，不需要 Docker |
 | **无 Docker、无 PowerShell** | `which docker` / `which powershell.exe` 均空 | 现有 `invoke_build()`（`docker exec winehua-master-ext4`）在开发机跑不了 → 必须去掉 |
 | hdc 可写 App 沙箱 | `hdc file send -b app.hackeris.winehua <local> /data/storage/el2/base/files/<name>` 实测成功，落点属主 `20020229`（app UID），App 可读 | 载荷不再需要打进 HAP（§4） |
@@ -250,13 +250,15 @@ aa start -a EntryAbility -b app.hackeris.winehua \
 | `SmokeRunner.ets` | 选测三方式 + params 合并（现有 suite 循环逻辑不变） |
 | `SmokeDevPanel.ets` | 不变（侧边栏手动入口保留，跑 core） |
 
-产品文件仍只有 7 处标记钩子，抄录（合并/摘除动作见 `docs/SMOKE_REBUILD_20260831.md` §11）：
+产品文件里的标记钩子（`[[SMOKE]]` 注释行）合计 10 处，摘除动作见 `docs/archive/SMOKE_REBUILD_20260831.md` §11：
 
-| 文件 | 钩子 |
-|---|---|
-| `entryability/EntryAbility.ets` | `import { SmokeHook }` + `applyWant(parameters)` |
-| `service/WineEnvService.ets` | `import` + init 内 `attach()` 判定 + `onNewWant()` + enterReady 链尾 `onEngineReady()` |
-| `pages/Index.ets` | `import { SmokeDevPanel }` + 侧边栏 `<SmokeDevPanel />` |
+| 文件 | 处数 | 说明 |
+|---|---|---|
+| `entryability/EntryAbility.ets` | 2 | `import { SmokeHook }`；`publishLaunchRequest` 内 `applyWant(parameters)` |
+| `service/WineEnvService.ets` | 6 | `import` + init 内 `attach()` 判定 + `onNewWant()` + enterReady 链尾 `onEngineReady()`，另有测试会话自动应用引擎更新、smoke 播种触发点 |
+| `pages/Index.ets` | 2 | `import { SmokeDevPanel }`；侧边栏 `<SmokeDevPanel />` |
+
+每处都带 `[[SMOKE]] 合并到 main-ui: 删本行` 的注释，按这个标记搜就能找全。上表的分处归并会随代码变动，以代码里的标记为准。
 
 ## 7. host 工具（`automation/smoke.py`）
 

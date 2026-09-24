@@ -1,5 +1,6 @@
 # Wine on HarmonyOS — 架构设计
 
+> 最后核实：2026-09-24
 > **总览入口**：[overview.md](overview.md)（四域总架构图 + 进程拓扑 + 模块索引）。
 > 本文聚焦 Wine 内部架构与 Wayland compositor 模块结构。
 
@@ -93,37 +94,39 @@ Broker (`broker.cpp`) 中继 Wine 内部 `CreateProcess` → NCP 的转换，支
 | Broker | 中继 Wine CreateProcess → NCP，转发 env + fd |
 | Wayland compositor | 嵌入式 compositor，在 HAP ARM64 进程中运行 |
 | VirGL (fallback) | guest Mesa virpipe → vtest socket → virglrenderer → host EGL，zero-copy surface-queue present |
-| DXVK/Venus (D3D11) | guest DXVK 1.10.3 → Wine Vulkan → Mesa Venus (vtest) → virglrenderer Venus → host Vulkan，`venus_surface_presenter` 上屏 |
-| XKB 键盘 | xkeyboard-config 打包到 rawfile，XKB_CONFIG_ROOT 指向 |
+| DXVK/Venus (D3D11) | guest DXVK（`master` 默认 1.10.3，`main-ui` 默认 2.6.2）→ Wine Vulkan → Mesa Venus (vtest) → virglrenderer Venus → host Vulkan，`venus_surface_presenter` 上屏 |
+| XKB 键盘 | xkeyboard-config 随 wine-data 打包（`share/X11/xkb`），`XKB_CONFIG_ROOT` 指向它 |
 | noexec 文件系统 | 可执行段用匿名 mmap + pread 替代文件映射 |
-| dosdevices | symlink 不可用，四条代码路径硬编码 fallback |
+| dosdevices | symlink 不可用，`file.c` / `server.c` 里多处硬编码 fallback |
 
 ### Wayland compositor 模块结构 (entry/src/main/cpp)
 
-- `wayland_server.{h,cpp}` — display 生命周期、global 注册、toplevel 策略
+- `compositor/wayland_server.{h,cpp}` — display 生命周期、global 注册、toplevel 策略
   (RaiseToplevel / SetToplevel*)、事件派发；单例 WaylandServer 是各模块组装点
-- `wl_core.cpp` — wl_compositor / wl_surface / wl_region / wl_subcompositor /
+- `compositor/wl_core.cpp` — wl_compositor / wl_surface / wl_region / wl_subcompositor /
   wl_subsurface / wp_viewporter / wl_output 协议实现；`surface_commit` 按职责
   分段 (HandleNullBufferCommit → BeginShmAccess → ComputeContentArea →
   UpdateToplevelFrameOnCommit → CheckDesktopRootOnCommit →
   UpdateSubsurface(Layer)OnCommit / UpdatePopupOnCommit → FinishCommit)
-- `xdg_shell.cpp` — xdg_wm_base / xdg_surface / xdg_toplevel 协议实现
-- `compositor/` — owning classes，各管一摊状态（不变式见各类头注释）：
+- `compositor/xdg_shell.cpp` — xdg_wm_base / xdg_surface / xdg_toplevel 协议实现
+- `compositor/toplevel/` — 窗口状态，各管一摊（不变式见各类头注释）：
   - `toplevel_manager` — toplevel/popup 聚合状态 + z-order（唯一存放处）
   - `desktop_compositor` — 帧合成（root 帧为基底）+ zero-copy/subsurface layer
-  - `input_resolver` — Desktop 模式输入命中裁决（全屏→层→toplevel→root）
   - `desktop_root_manager` — desktop root 识别/切换
   - `move_grab` — xdg_toplevel.move 交互式窗口移动
+- `compositor/frame/` — 帧合成与几何：
+  - `frame_pipeline` / `frame_composer` — 锁内规划 / 锁外绘制
   - `display_policy.h` — PC/Desktop 模式差异的策略查询唯一入口（四类：
     事件派发 / subsurface / 渲染取帧 / 输入命中；phone 模式不经此，传输层隔离）
   - `geometry.{h,cpp}` — 保比例 letterbox 纯函数（`make test` 宿主单测覆盖）
   - `compositor_constants.h` / `compositor_utils.{h,cpp}` — 命名常量与启发式
   - `debug_assert.h` — MW_ASSERT 不变式断言（默认编译为空）
-- `input_manager.cpp` / `seat.cpp` — 输入事件注入与 wl_seat
-- `graphics_broker.cpp` — 图形后端管理（Virgl/Venus 选择、IPC 配置、`WINEHUA_*` 环境注入）
-- `virgl_surface_presenter.cpp` — VirGL zero-copy 呈现（OH_NativeBuffer + external OES）
-- `venus_surface_presenter.cpp` — Vulkan/DXVK 帧呈现（`venus-presenter` TAG）
-- `egl_renderer.cpp` — CPU fallback 上屏（`TakeFrame` → glTexSubImage2D）
+- `compositor/input/input_resolver` — Desktop 模式输入命中裁决（全屏→层→toplevel→root）
+- `input/input_manager.cpp` / `input/seat.cpp` — 输入事件注入与 wl_seat
+- `graphics/graphics_broker.cpp` — 图形后端管理（Virgl/Venus 选择、IPC 配置、`WINEHUA_*` 环境注入）
+- `graphics/virgl_surface_presenter.cpp` — VirGL zero-copy 呈现（OH_NativeBuffer + external OES）
+- `graphics/venus_surface_presenter.cpp` — Vulkan/DXVK 帧呈现（`venus-presenter` TAG）
+- `graphics/egl_renderer.cpp` — CPU fallback 上屏（`TakeFrame` → glTexSubImage2D）
 
 #### 日志纪律
 

@@ -8,7 +8,7 @@ This is isolated evidence for the `feature/vkd3d-capability-probe` branch. It
 does not install VKD3D into the default Wine runtime, does not change the DXVK
 Legacy/Modern selections, and does not enable D3D12 for ordinary launches.
 
-Device: `62T0225B10005882` (910)
+Device: `<设备序列号>` (910)
 
 ## Source and artifacts
 

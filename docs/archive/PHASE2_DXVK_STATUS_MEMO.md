@@ -32,7 +32,7 @@ The tested signed HAP is:
     wine-data SHA-256:
       d56c9308858b37e53fae0c7a46a9b7780fb953ab298504a452a6ee5077e8dced
     archive:
-      D:\MyProject\winehua-logs\automation\release-dxvk-1.10.3-20260730
+      <本机证据目录>\winehua-logs\automation\release-dxvk-1.10.3-20260730
 
 Physical-device evidence:
 
@@ -95,7 +95,7 @@ The current installed and regression-tested artifact is:
     device ntdll.so SHA-256:
       f0f0ca1bdb902df6964dd92e7888e84f762d85bce52a4c5da124ad51967155ba
     automation archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260728-191205
+      <本机证据目录>\winehua-logs\automation\phase2-20260728-191205
 
 The full `dxvk + reuse prefix` gate passed for x64 and x86. It covered D3D11
 feature level 11.0, texture and descriptor matrices, subresources, 3D textures,
@@ -137,7 +137,7 @@ performance diagnosis. No Steam API bypass or fake result is used.
 
 Evidence is archived at:
 
-    D:\MyProject\winehua-logs\crysis3-20260728
+    <本机证据目录>\winehua-logs\crysis3-20260728
 
 ## 0. Visual correctness ledger and non-regression rule
 

@@ -2,6 +2,7 @@
 
 > 决策日期：2026-08-26
 > 决策结论：**不替换**。继续维护自研 compositor，以"协议一致性测试 + 定点补齐协议缺口"的方式解决质量担忧。
+> 最后核实：2026-09-24（规模数字与协议清单按当前代码重算）
 > 重议条件：见文末「何时应当重新考虑替换」一节。
 
 ---
@@ -25,47 +26,52 @@
 
 ### 2.1 代码规模
 
-- compositor 全栈 native 代码约 **10,200 行**：`compositor/` 子目录 3,202 行（桌面合成、层序、输入裁决、几何计算）+ `wl_core.cpp` 1,173 行 + `wayland_server.cpp/.h` 约 800 行 + `xdg_shell.cpp` 448 行 + `seat.cpp` 233 行 + `input_manager.cpp` 1,176 行 + `pointer_extras.cpp` 419 行 + `text_input.cpp` 277 行 + `egl_renderer.cpp` 1,047 行等。不含约 2.8k 行的生成键盘映射数据与约 24k 行的生成协议头。
-- ArkTS 侧窗口管理/输入相关约 **4,700 行**（鸿蒙窗口生命周期、popup 子窗口、ARGB 子窗口、悬浮条、触控板手势等）。
+- compositor 全栈 native 代码约 **22,900 行**，分布在三个目录：`compositor/` 9,458 行（帧合成 2,861 / 窗口状态 2,547 / 输入裁决 1,507 / 协议层文件 2,543）、`input/` 6,800 行（事件注入、相对指针、输入法，含生成的键盘映射数据 2,854 行）、`graphics/` 6,601 行（渲染与图形后端）。不含约 24k 行的生成协议头。
+- ArkTS 侧的窗口管理/输入代码同样是数千行量级——仅 `service/` 一个目录就有 4,205 行（鸿蒙窗口生命周期、popup 子窗口、ARGB 子窗口、悬浮条、触控板手势等）。
 
 ### 2.2 协议覆盖
 
-注册的 wayland global 共 10 个，**全部为标准协议或上游 staging 协议，零自定义协议**：
+注册的 wayland global 共 11 个，**其中 10 个是标准协议或上游 staging 协议，1 个是自定义协议**：
 
 | 协议 | 版本 | 位置 |
 |---|---|---|
-| `wl_compositor` / `wl_shm` | v4 | `wl_core.cpp:1164`，`wayland_server.cpp:76` |
-| `wl_subcompositor` | v1 | `wl_core.cpp:1165` |
-| `wp_viewporter` | v1 | `wl_core.cpp:1166` |
-| `wl_output`（虚拟输出） | v3 | `wl_core.cpp:1167` |
-| `wl_seat`（pointer+keyboard） | v5 | `seat.cpp:90` |
-| `xdg_wm_base` | v3 | `xdg_shell.cpp:446` |
-| `zwp_pointer_constraints_v1` / `wp_pointer_warp_v1` / `zwp_relative_pointer_manager_v1` | v1 | `pointer_extras.cpp:33-37` |
-| `zwp_text_input_manager_v3` | v1 | `text_input.cpp:40` |
+| `wl_compositor` / `wl_shm` | v4 | `compositor/wl_core.cpp:1011`，`compositor/wayland_server.cpp:78` |
+| `wl_subcompositor` | v1 | `compositor/wl_core.cpp:1012` |
+| `wp_viewporter` | v1 | `compositor/wl_core.cpp:1013` |
+| `wl_output`（虚拟输出） | v3 | `compositor/wl_core.cpp:1014` |
+| `wl_seat`（pointer+keyboard） | v5 | `input/seat.cpp:86` |
+| `xdg_wm_base` | v3 | `compositor/xdg_shell.cpp:448` |
+| `zwp_pointer_constraints_v1` / `wp_pointer_warp_v1` / `zwp_relative_pointer_manager_v1` | v1 | `input/pointer_extras.cpp:36-40` |
+| `zwp_text_input_manager_v3` | v1 | `input/text_input.cpp:40` |
+| **`winehua_toplevel`**（自定义） | v1 | `compositor/winehua_toplevel.cpp:148` |
 
 其中 `wp_pointer_warp_v1` 是 wayland-protocols staging 协议（2024 年 Neal Gompa 提交），上游 Wine 亦使用同一协议，并非本项目私有发明。
 
+**自定义协议只有 `winehua_toplevel` 一个**（2026-09 支持模态对话框时引入）。xdg-shell 表达不了 Win32 的模态属主关系（一个被属主窗口禁用的弹窗），Wine 侧只能通过这个接口把关系告诉合成器，合成器据此让对话框压在属主之上、并拦截本该送给属主的输入。定义在 `entry/src/main/cpp/protocols/winehua-toplevel.xml`，只有一个请求 `set_modal`。
+
+这说明自研协议面是可控的：自定义协议只有一个，且边界清晰——它只承载 xdg-shell 表达不了的 Windows 语义，不是把通用窗口管理搬进私有协议。
+
 ### 2.3 已知的协议缺口（如实记录）
 
-- `xdg_positioner` 为**空实现**（`xdg_shell.cpp:413-416`），popup 菜单位置由自研逻辑手搓（历史上"菜单被窗口边缘裁剪"问题即源于此，后按 viewporter 语义修复）。
-- `wl_surface.set_buffer_transform / set_buffer_scale / damage_buffer / offset` 为空函数（`wayland_server.h:179-182`）。
-- `opaque_region` 被忽略；`set_input_region` 仅记录空/非空布尔（`wl_core.cpp:427-436`）。
+- `xdg_positioner` 为**空实现**（`compositor/xdg_shell.cpp:411`），popup 菜单位置由自研逻辑按 viewporter 语义手搓。
+- `wl_surface.set_buffer_transform / set_buffer_scale / damage_buffer / offset` 为空函数（`compositor/wayland_server.h:182-184`）。
+- `opaque_region` 被忽略；`set_input_region` 仅记录空/非空布尔（`compositor/wl_core.cpp:449`）。
 - 无 `wl_data_device`（剪贴板）、`zwp_linux_dmabuf`、`xdg_output`、`presentation_time`、`idle_inhibit`、`cursor-shape` 等。
 
 ### 2.4 与 Wine 的语义层耦合（非协议层）
 
-与 thirdparty/wine（Wine 11.10 fork，109 个提交，其中 25 个触碰 `winewayland.drv`）之间靠**约定**而非私有协议配合：
+与 thirdparty/wine（Wine 11.10 fork，118 个提交，其中 26 个触碰 `winewayland.drv`）之间靠**约定**而非私有协议配合：
 
-- app_id 后缀约定（如 `"explorer.exe.taskbar"`，`wayland_server.h:282`），用于区分 explorer 的桌面/任务栏窗口；
-- 桌面模式下 `window_geometry` 的 x,y 复用为虚拟桌面坐标（wine 提交 `af64af414a7` + `wl_core.cpp:562-568`）；
-- `WINEHUA_DESKTOP_MODE` 环境变量（wine `wayland_surface.c:602`）；
-- max_size → maximize 启发式（`xdg_shell.cpp:89-138`）。
+- app_id 后缀约定（如 `"explorer.exe.taskbar"`，`compositor/frame/compositor_constants.h:44`），用于区分 explorer 的桌面/任务栏窗口；
+- 桌面模式下 `window_geometry` 的 x,y 复用为虚拟桌面坐标（wine 提交 `af64af414a7` + `compositor/wl_core.cpp:524-558`）；
+- `WINEHUA_DESKTOP_MODE` 环境变量（wine `dlls/winewayland.drv/wayland_surface.c:607`）；
+- max_size → maximize 启发式（`compositor/xdg_shell.cpp:107-144`）。
 
 ### 2.5 游戏兼容 workaround（约 900~1000 行 native）
 
-这些是历史上逐款游戏调试出来的行为修正，注释中点名实测的游戏包括 PAL2（仙剑 2）、红警 2、war3 等：
+这些是逐款游戏适配出来的行为修正，注释中点名实测的游戏包括 PAL2（仙剑 2）、红警 2、war3 等：
 
-- `pointer_extras.cpp` 全文件 419 行：dinput 类老游戏依赖的 pointer constraints / warp / relative pointer 三协议栈，含 `OH_WindowManager_LockCursor/UnlockCursor` 冻结系统光标（IPC 挪独立线程防阻塞 wl 事件循环）。
+- `pointer_extras.cpp` 全文件 468 行：dinput 类老游戏依赖的 pointer constraints / warp / relative pointer 三协议栈，含 `OH_WindowManager_LockCursor/UnlockCursor` 冻结系统光标（IPC 挪独立线程防阻塞 wl 事件循环）。
 - `input_manager.cpp`：rawDelta 相对增量通道与 ±512 钳制、点击脉冲拉伸（短于 100ms 的点击延迟发 release）、相对模式下点击跳过 enter 重定位、ClampToContent 防幽灵增量。
 - `toplevel_manager.h` / `desktop_compositor.cpp`：fsPriority 全屏取号仲裁、ShouldSkipFullscreenCascade 容错（显示模式切换时 winewayland 批量标记 fullscreen 的连带问题）。
 - `wl_core.cpp`：最小化窗口 -32000 坐标补偿、全屏尺寸漂移重发 configure。
@@ -74,7 +80,7 @@
 ### 2.6 与鸿蒙的耦合方式
 
 - **窗口生命周期全部在 ArkTS**：native 只发 `created / destroyed / popup_*` 事件，ArkTS 负责 `startAbility` 拉起 multiton 窗口、创建子窗口、调用 `setWindowMask` / `setWindowBackgroundColor` 等。这个边界目前划得比较干净。
-- native 侧鸿蒙 API 依赖集中在：`egl_renderer.cpp`（OH_NativeImage 零拷贝消费端、NativeVSync 帧调度）、`graphics_broker.cpp`（OH_IPC 跨进程传 OHNativeWindow 给 guest 侧 venus/virgl presenter）、`pointer_extras.cpp`（LockCursor）、`broker.cpp`（native_child_process 拉起 wine/virgl 子进程）。
+- native 侧鸿蒙 API 依赖集中在：`graphics/egl_renderer.cpp`（OH_NativeImage 零拷贝消费端、NativeVSync 帧调度）、`graphics/graphics_broker.cpp`（OH_IPC 跨进程传 OHNativeWindow 给 guest 侧 venus/virgl presenter）、`input/pointer_extras.cpp`（LockCursor）、`proc/broker.cpp`（native_child_process 拉起 wine/virgl 子进程）。
 - zero-copy 链路完全绕开 wayland 协议，经 side-channel（surfaceKey = clientPid+surfaceId）直连，compositor 仅做层序簿记。
 
 ---
@@ -111,7 +117,7 @@ wlroots 比 libweston 组合度高，理论上可以绕开 wlr_scene 的 output 
 
 ### 3.3 wine 游戏兼容成本会原样重演
 
-历史上调试周期最长的缺陷——PAL2 的 dinput 光标漂移与点击失效、红警 2 的纵向偏移、war3 的全屏最小化/黑屏、菜单裁剪、ARGB 异形窗口、zero-copy 层序——**几乎全部位于"Wine 客户端行为 × 鸿蒙窗口系统"的语义层，而不是 wayland 协议状态机层**。weston/wlroots 不提供这些问题的任何答案，替换成它们之后，这约 1000 行 workaround 需要原样重写，并且需要用同样的真机游戏矩阵重新回归。PAL2 那两周的调试不会因为换 compositor 而省掉，只会重来一遍。
+这类缺陷——PAL2 的 dinput 光标漂移与点击失效、红警 2 的纵向偏移、war3 的全屏最小化/黑屏、菜单裁剪、ARGB 异形窗口、zero-copy 层序——**几乎全部位于"Wine 客户端行为 × 鸿蒙窗口系统"的语义层，而不是 wayland 协议状态机层**。weston/wlroots 不提供这些问题的任何答案，替换成它们之后，这约 1000 行 workaround 需要原样重写，并且要用同样的真机游戏矩阵重新回归。
 
 ---
 
@@ -164,8 +170,8 @@ wlroots 比 libweston 组合度高，理论上可以绕开 wlr_scene 的 output 
 
 ## 六、关键事实索引（备查）
 
-- 自研 compositor 规模：native ≈10,200 行 + ArkTS ≈4,700 行；协议 global 10 个，全标准协议
+- 自研 compositor 规模：native ≈22,900 行（`compositor/` + `input/` + `graphics/` 三个目录）+ ArkTS 侧 ets 共约 7,900 行（其中窗口与输入相关的 service/ 层 4,205 行）；协议 global 11 个 = 10 个标准协议 + 1 个自定义（`winehua_toplevel`）
 - weston 版本：15.0.91（`.temp/weston/meson.build:3`）；wlroots 版本：0.21.0-dev（`.temp/wlroots/meson.build:4`）
 - thirdparty 现有：wayland 1.22.0、wayland-protocols 1.39、libxkbcommon 1.7.0、libdrm 2.4.120；缺 pixman/libinput/libevdev/libudev/cairo/libdisplay-info
-- wayland-server 链接路径：`entry/libs/${OHOS_ARCH}/libwayland-server.so.0`（`entry/src/main/cpp/CMakeLists.txt:94`），由 `scripts/build_wayland.sh` 从 thirdparty/wayland 交叉编译
-- wine fork：Wine 11.10 + 109 提交，其中 25 个触碰 `dlls/winewayland.drv/`
+- wayland-server 链接路径：`entry/libs/${OHOS_ARCH}/libwayland-server.so.0`（`entry/src/main/cpp/CMakeLists.txt:117`），由 `scripts/build_wayland.sh` 从 thirdparty/wayland 交叉编译
+- wine fork：Wine 11.10 + 118 提交，其中 26 个触碰 `dlls/winewayland.drv/`

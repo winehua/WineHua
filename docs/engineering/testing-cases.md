@@ -161,7 +161,7 @@ cat build/automation-logs/<套件>-<runId>/device-results/<testId>.json
 
 | 坑 | 说明 |
 |---|---|
-| 结果路径没写盘符 | `--result` 必须是 Windows 盘符形式（`C:/smoke/...`）。native 路径转的反斜杠形式没有盘符，wine 会解析到当前盘根下，结果落错目录，host 轮询永远超时（实测踩过：渲染 613 帧完成但判定超时） |
+| 结果路径没写盘符 | `--result` 必须是 Windows 盘符形式（`C:/smoke/...`）。native 路径转的反斜杠形式没有盘符，wine 会解析到当前盘根下，结果落错目录，host 轮询永远超时（渲染 613 帧完成但判定超时） |
 | 期望设备上有载荷外的文件 | 推送先删后推，没有的东西会被清掉 |
 | `timeoutMs` 给太小 | 设备端正常跑完就超时了，失败信息只有一句轮询超时 |
 | 把 `UNSUPPORTED` 当失败 | 能力探针报 UNSUPPORTED 是合法答案，判定不算 FAIL |

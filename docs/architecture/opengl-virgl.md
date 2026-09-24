@@ -1,9 +1,8 @@
 # OpenGL / VirGL 设计说明
 
-> 更新日期: 2026-07-31
-> 本文记录 VirGL/OpenGL 链路（Step 1 → Step 3）的设计与演进。后续又增加了
-> Vulkan/DXVK 链路（见 [PHASE2_DXVK_STATUS_MEMO.md](../archive/PHASE2_DXVK_STATUS_MEMO.md)），
-> 现为 OpenGL 程序的 fallback 渲染路径。
+> 最后核实：2026-09-24
+> 本文记录 VirGL/OpenGL 链路的设计。它是 OpenGL 程序的渲染路径；D3D 程序
+> 走的是 Vulkan/DXVK 链路（见 [graphics-matrix.md](graphics-matrix.md)）。
 
 ## 目标
 
@@ -96,7 +95,7 @@ flowchart LR
 
 ## 宿主 ↔ guest 环境变量契约
 
-宿主侧 `GraphicsBroker::AppendWineEnv()`（`entry/src/main/cpp/graphics/graphics_broker.cpp`）在启动 Wine 进程时注入以下变量，guest 侧（Wine / smoke 程序）按需读取。**契约以本节为准**，两侧代码均直接写字面量字符串。历史上曾存在共享头 `shared/graphics/graphics_runtime_env.h` 统一宏名，但宿主侧实际未包含它，已于 2026-07 移除；wine 树内的 `programs/winehua_graphics_smoke/graphics_runtime_env.h` 仍保留（同样未被包含，仅供参考）。
+宿主侧 `GraphicsBroker::AppendWineEnv()`（`entry/src/main/cpp/graphics/graphics_broker.cpp`）在启动 Wine 进程时注入以下变量，guest 侧（Wine / smoke 程序）按需读取。**契约以本节为准**，两侧代码均直接写字面量字符串，没有共享头文件，改的时候两处都要改。wine 树内的 `programs/winehua_graphics_smoke/graphics_runtime_env.h` 仅供参考，没有被任何一侧包含。
 
 ### 所有模式都会注入
 
@@ -113,7 +112,7 @@ flowchart LR
 | `WINEHUA_GUEST_GFX_DIR` | 路径 | bundle 运行时目录（仅在非空时注入） |
 | `WINEHUA_VIRGL_SOCKET_READY` | `0` / `1` | vtest socket 是否就绪 |
 | `WINEHUA_VIRGL_LIBRARY_READY` | `0` / `1` | `libvirglrenderer.so` 是否就绪 |
-| `WINEHUA_VIRGL_SOCKET` | 路径 | vtest socket 路径（仅在非空时注入；`winewayland.drv` 的 guest probe 也读它） |
+| `WINEHUA_VIRGL_SOCKET` | 路径 | vtest socket 路径（仅在非空时注入） |
 | `WINEHUA_VIRGLRENDERER_LIB` | 路径 | 宿主 virglrenderer 库路径（仅在非空时注入） |
 | `WINEHUA_VIRGL_READY` | `0` / `1` | virgl backend 是否已激活 |
 | `WINEHUA_GRAPHICS_NOTE` | 字符串 | 最近一次错误信息（仅在非空时注入） |
@@ -181,14 +180,9 @@ flowchart LR
 
 ### 改动用途
 
-- `dlls/win32u/opengl.c`
-  - 新增 `WINEHUA_OPENGL_DIAG`
+- `dlls/win32u/opengl_diag.c`、`dlls/winewayland.drv/opengl_diag.c`
+  - `WINEHUA_OPENGL_DIAG` 开关
   - 打印 `libEGL` 加载、`eglGetConfigs`、像素格式数量等诊断信息
-
-- `dlls/winewayland.drv/opengl.c`
-  - 新增 `winehua_virgl_guest_probe`
-  - 在 Wine guest 侧探测 `WINEHUA_VIRGL_SOCKET` 是否可连通
-  - 用来区分“guest bundle 已接上”还是“仍在走 stock EGL”
 
 - `programs/winehua_graphics_smoke/*`
   - 增加真实 Windows 图形冒烟测试程序

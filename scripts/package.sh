@@ -169,7 +169,7 @@ with open('$module_json', 'w') as f:
 
 # ============================================================
 deploy() {
-    local device="${1:-192.168.1.4:38879}"
+    local device="${1:?用法: package.sh deploy <设备地址>}"
     local hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
 
     if [ ! -f "$hap" ]; then

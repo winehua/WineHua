@@ -64,8 +64,8 @@ the corresponding Venus adapter.
 Primary evidence:
 
 ```text
-D:\MyProject\winehua-logs\automation\capabilities-pad-910-20260730\phase2-20260730-130554\capability-matrix.json
-D:\MyProject\winehua-logs\automation\capabilities-phone-920-title-20260730\phase2-20260730-131706\capability-matrix.json
+<本机证据目录>\winehua-logs\automation\capabilities-pad-910-20260730\phase2-20260730-130554\capability-matrix.json
+<本机证据目录>\winehua-logs\automation\capabilities-phone-920-title-20260730\phase2-20260730-131706\capability-matrix.json
 ```
 
 The 920 DXVK runtime log proves that the installed Legacy runtime enables
@@ -196,7 +196,7 @@ Modern is a game-validated, capability-gated profile on 920. It must never be
 selected by pretending a Vulkan 1.2 device has Vulkan 1.3 features.
 
 The physical-device evidence includes Heaven D3D11 sessions under
-`D:\\MyProject\\winehua-logs\\automation\\heaven-modern-*`. The clean baseline
+`<本机证据目录>\\winehua-logs\\automation\\heaven-modern-*`. The clean baseline
 log records `WINEHUA_DXVK_PROFILE=modern-2.6`, `WINEHUA_DXVK_VERSION=2.6.2`,
 and the managed `modern-2.6` DLL directories; the DXVK log reports
 `DXVK: 2.6.2`. Captured frames and FPS samples prove that this was a rendered

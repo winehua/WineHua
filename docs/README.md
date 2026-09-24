@@ -31,7 +31,7 @@
 | 了解自动化测试设施 | [engineering/testing-design.md](engineering/testing-design.md)、[../automation/README.md](../automation/README.md) |
 | 提交代码、走分支流程 | [engineering/workflow.md](engineering/workflow.md) |
 | 查代码规范和日志写法 | [engineering/coding.md](engineering/coding.md) |
-| 发布版本 | [engineering/quality.md](engineering/quality.md)、[build/guide.md](build/guide.md) |
+| 发布版本 | [build/release.md](build/release.md)、[engineering/quality.md](engineering/quality.md) |
 | 查设备信息 | [assets/devices.md](assets/devices.md) |
 | 查证书、SDK、构建环境资产 | [assets/environment.md](assets/environment.md) |
 | 查某个设计为什么这么定 | [decisions/](decisions/) |
@@ -62,6 +62,7 @@
 |---|---|
 | [guide.md](build/guide.md) | 构建步骤、Makefile 各阶段、产物说明 |
 | [env.md](build/env.md) | 从零搭构建环境（Docker / WSL2） |
+| [release.md](build/release.md) | 打发布包：配置替换、签名、验证 |
 
 ### debugging/ — 日志、性能与排查
 
@@ -96,14 +97,14 @@
 | [submodules/virglrenderer.md](assets/submodules/virglrenderer.md) | virglrenderer 的改动 |
 | [submodules/libepoxy.md](assets/submodules/libepoxy.md) | libepoxy 的小改动 |
 
-### decisions/ — 决策记录
+### decisions/ — 决策记录与故障复盘
 
 | 文档 | 讲什么 |
 |---|---|
 | [0001-self-built-compositor.md](decisions/0001-self-built-compositor.md) | 为什么继续维护自研合成器，不换成 weston / wlroots |
 | [0002-d3d-backend-profiles.md](decisions/0002-d3d-backend-profiles.md) | Direct3D 后端档位怎么选（哪些设备用哪个） |
-
-（后续补充：三方案共存、平板默认虚拟桌面等）
+| [0003-three-schemes.md](decisions/0003-three-schemes.md) | 三套运行方案（x86_64 / box64+wine / 纯 arm64）为什么共存 |
+| [0004-default-display-mode.md](decisions/0004-default-display-mode.md) | 各设备形态默认用虚拟桌面还是多窗口 |
 
 ### 其他
 
