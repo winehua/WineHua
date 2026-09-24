@@ -18,6 +18,7 @@
 | 构建、打包、查构建参数 | [build/guide.md](build/guide.md)、[cheatsheet.md](cheatsheet.md) |
 | 部署到设备、看日志 | [cheatsheet.md](cheatsheet.md)、[debugging/observability.md](debugging/observability.md)、[debugging/remote-hdc.md](debugging/remote-hdc.md) |
 | 遇到白屏、卡死、无声等问题 | [debugging/troubleshooting.md](debugging/troubleshooting.md) |
+| 抓故障现场（死循环、卡死、崩溃但拿不到栈） | [debugging/fault-forensics.md](debugging/fault-forensics.md) |
 | 查性能问题 | [debugging/performance.md](debugging/performance.md) |
 | 理解图形后端和档位 | [architecture/graphics-matrix.md](architecture/graphics-matrix.md) |
 | 理解画面合成、窗口显示 | [architecture/compositor.md](architecture/compositor.md) |
@@ -71,6 +72,7 @@
 | [observability.md](debugging/observability.md) | 日志通道、日志标签速查、沙箱路径映射、崩溃定位 |
 | [performance.md](debugging/performance.md) | 卡顿和性能问题的分析方法、性能统计开关 |
 | [troubleshooting.md](debugging/troubleshooting.md) | 按问题现象查排查步骤 |
+| [fault-forensics.md](debugging/fault-forensics.md) | 进程内故障取证：自旋判定、信号现场、地址归因、guest 寄存器还原、翻译器开关、最小复现探针 |
 | [remote-hdc.md](debugging/remote-hdc.md) | hdc 跨机共享配置 |
 
 ### engineering/ — 工程规范

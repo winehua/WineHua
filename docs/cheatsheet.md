@@ -103,6 +103,16 @@ hdc -t <设备IP> shell "bm dump -n app.hackeris.winehua"            # 版本、
 hdc -t <设备IP> shell 'hidumper -s 1201 -a "-p Faultlogger -l"'    # 崩溃日志清单
 ```
 
+进程活着但不动时，先分清"自旋"还是"阻塞"（时间在涨 + 状态 `R` = 自旋；不涨 + 状态 `S` = 阻塞）：
+
+```bash
+hdc -t <设备IP> shell "cat /proc/<pid>/stat | cut -c1-60"          # 第 3 个字段是状态
+hdc -t <设备IP> shell "A=\$(cut -d' ' -f14,15 /proc/<pid>/stat); sleep 3; \
+                       B=\$(cut -d' ' -f14,15 /proc/<pid>/stat); echo \$A; echo \$B"
+```
+
+（`/proc/<pid>/maps`、`mem` 从外面读不到，地址性质要在进程内查。）自旋时的现场采集见 [debugging/fault-forensics.md](debugging/fault-forensics.md)。
+
 注意设备上的 shell **不做通配符展开**（`/proc/<pid>/task/*/stat` 这类写法会失败），也没有 `awk`。崩溃记录的完整取法见 [debugging/observability.md](debugging/observability.md)。
 
 ## 抓运行中进程的调用栈

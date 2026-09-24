@@ -120,6 +120,10 @@ hdc -t <设备IP> shell "hiperf report -i /data/local/tmp/perf.data -s"
 
 **所以做对照实验前，先确认两边真的不一样**——看日志里有没有出现预期的新内容。现在自动化测试工具会拒绝这类无效的环境变量（`smoke.py` 里有检查）。
 
+### 翻译器侧（box64）的开关
+
+box64 自己的 dump 开关（`BOX64_DYNAREC_DUMP` / `BOX64_DYNAREC_DUMP_RANGE` / `BOX64_DYNAREC_LOG`）和调档位 A/B 的手法（换 `BIGBLOCK` 看故障地址是否改变），见 [fault-forensics.md](fault-forensics.md) 第 6 节。
+
 ### 增量测试法
 
 与其对着一个大 diff 分析，不如**逐个提交单独部署实测**。配合分层诊断日志（界面层 → NAPI → 原生决策 → Wine），每一步都能看到变化，比一次性对比快得多。
