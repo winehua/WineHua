@@ -25,13 +25,11 @@ make NATIVE_ARCH=x86_64           # 模拟器 / x86_64 设备
 bash scripts/package.sh deploy <设备IP>      # 卸载 + 推送 + 安装
 ```
 
-改过 Wine 之后还要清设备上的引擎数据，让它重新解压：
+改过 Wine 之后要清掉设备上的引擎数据，让它重新解压。**这一步不能靠 `hdc shell rm -rf`**——
+删沙箱路径会被 SELinux 拒（`Permission denied`，写真实路径也一样）。正规途径有两条：
 
-```bash
-H="hdc -t <设备IP>"
-$H shell "rm -rf /data/app/el2/100/base/app.hackeris.winehua/files/.wine \
-                 /data/app/el2/100/base/app.hackeris.winehua/files/wine"
-```
+- `bash scripts/package.sh deploy <设备IP>`——卸载重装，卸载会连应用数据一起清
+- 应用界面里的「重置 Wine 引擎」——不重装，等价于恢复出厂
 
 - **部署前先确认分支和版本**：设备上装的是哪个分支的构建，就在哪个分支构建。
   跨分支安装会被系统按「版本降级」拒绝（版本号在 `AppScope/app.json5`）。
@@ -47,15 +45,27 @@ $H shell "rm -rf /data/app/el2/100/base/app.hackeris.winehua/files/.wine \
 | Wine 内部输出、box64 崩溃现场 | 沙箱的 `temp/wine_stderr_YYYYMMDD.log` |
 | 渲染器宿主日志 | 沙箱的 `cache/winehua_virgl_host.log` |
 
-三个必须知道的坑：
+五个必须知道的坑：
 
-1. **日志缓冲区只留两三分钟**，要留证据必须落盘：
-   `hdc -t <IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log' &"`。
-2. **浮点参数要加 `%{public}`**，否则打出来是 `<private>`，数字看不到。
-3. **有些输出只在 Wine 的 stderr 文件里**（比如 box64 崩溃现场），系统日志里
-   搜不到——搜不到不代表没发生。
+1. **日志缓冲区只留几分钟**，要留证据必须落盘（三个重定向别省，少了命令不返回）：
 
-日志标签表、按链路过滤的写法、崩溃定位四步：`docs/debugging/observability.md`。
+   ```bash
+   hdc -t <IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
+   ```
+
+2. **`hilog -t app` 不是按包名过滤**，它是"应用类日志"这个大类型，会把设备上所有应用的
+   日志一起打出来。只看本项目的用 `-e winehua`，或 `-T <标签列表>` 精确过滤。
+3. **浮点参数要加 `%{public}`**，否则打出来是 `<private>`，数字看不到。
+4. **Wine 的 stderr 也转发到 hilog**（标签 `WineChild-stderr`），**但转发不保证可靠**——
+   排障以沙箱里的文件为准，两边都看。
+5. **读沙箱里的文件要走 `-b` 通道**：`hdc file recv -b <包名> <沙箱视角路径> <本地>`。
+   直接 `hdc shell cat` 沙箱路径会被 SELinux 拒，而且 `-b` 只对**调试包**有效
+   （设备上装市场版时报 `Invalid bundle name`）。路径换算见
+   `docs/architecture/platform-ohos.md` 的沙箱一节。
+
+崩溃记录用 `hidumper -s 1201 -a "-p Faultlogger -m app.hackeris.winehua"` 直接取，
+比 bugreport 快得多。日志标签表、按链路过滤的写法、崩溃定位五步：
+`docs/debugging/observability.md`。
 
 ## 输入事件调试流程
 

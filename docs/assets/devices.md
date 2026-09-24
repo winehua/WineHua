@@ -58,12 +58,7 @@ make NATIVE_ARCH=arm64-v8a hap         # 构建
 bash scripts/package.sh deploy <ip>    # 安装（内部会 tconn + 卸载 + 推送 + 安装）
 ```
 
-改过 Wine 的话还要清掉设备上的引擎数据，让它重新解压：
-
-```bash
-hdc -t <ip>:<port> shell "rm -rf /data/app/el2/100/base/app.hackeris.winehua/files/.wine \
-                                /data/app/el2/100/base/app.hackeris.winehua/files/wine"
-```
+改过 Wine 的话还要清掉设备上的引擎数据，让它重新解压。**只能用卸载重装（`package.sh deploy`）或者应用里的「重置 Wine 引擎」**——`hdc shell rm -rf` 删沙箱路径会被 SELinux 拒（真实路径也一样），这条路走不通。
 
 改 Wine 之后**不一定要清数据**：只改了 Unix 层的运行时逻辑（比如进程创建那部分）可以直接复用原来的环境，省掉一次重新解压的等待；改动涉及 PE 侧的 DLL、注册表内容、`wine.inf` 或者 Wine 版本号时才需要清空重建。
 

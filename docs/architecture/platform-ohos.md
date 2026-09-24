@@ -50,28 +50,57 @@
 
 ## 沙箱
 
-### 目录与路径映射
+### 同一份数据，两套路径
 
-应用运行在沙箱里，代码看到的路径和 hdc 看到的不一样：
+应用代码里看到的路径和 hdc 看到的路径不是一回事，换算有固定规则：
 
-| 应用内代码看到的路径 | hdc 看到的路径 | 用途 |
+```
+运行时（应用进程内）                 hdc（真实路径）
+/data/storage/el<N>/<类>/[子路径]  →  /data/app/el<N>/<userId>/<类>/<包名>/[子路径]
+/storage/Users/currentUser/[子路径] →  /storage/media/<userId>/local/files/Docs/[子路径]
+```
+
+- `el1` 下是安装时就固定的应用资源（HAP 解压出来的原生库等），`el2` 下是可写的应用数据。
+- `userId` 是设备上的用户编号，主用户是 `100`。
+- 包名就是 `app.hackeris.winehua`。
+
+代进去，实际用到的就是这些：
+
+| 运行时视角 | hdc 视角 | 用途 |
 |---|---|---|
 | `/data/storage/el2/base/files/` | `/data/app/el2/100/base/app.hackeris.winehua/files/` | 应用文件根目录 |
-| `.../files/.wine/` | 同右 | Wine prefix |
-| `.../files/wine/bin/` | 同右 | Wine 程序数据（从安装包解压） |
-| `/data/storage/el2/base/temp/` | 同右 | Wine 标准错误日志 |
-| `/data/storage/el1/bundle/libs/<架构>/` | **hdc 看不到** | 打包进 HAP 的原生库 |
+| `/data/storage/el2/base/files/.wine/` | `.../files/.wine/` | Wine prefix |
+| `/data/storage/el2/base/files/.wine/drive_c/` | `.../files/.wine/drive_c/` | C 盘 |
+| `/data/storage/el2/base/files/wine/bin/` | `.../files/wine/bin/` | Wine 程序数据（从 HAP 解压） |
+| `/data/storage/el2/base/temp/` | `.../temp/` | Wine 标准错误日志 |
+| `/data/storage/el2/base/cache/` | `.../cache/` | 渲染器宿主日志、零拷贝标记 |
+| `/data/storage/el1/bundle/libs/<架构>/` | 同规则的 el1 路径，但**读不到** | 打包进 HAP 的原生库 |
+| `/storage/Users/currentUser/Download/` | `/storage/media/100/local/files/Docs/Download/` | 下载目录，Wine 的 `Z:` 和 `HOME` 指向这里 |
 
-Wine 里的 `Z:` 盘符和 `HOME` 指向同一个位置，hdc 视角是 `/storage/media/100/local/files/Docs/Download/app.hackeris.winehua/`。
+**Wine 的盘符映射**（`thirdparty/wine/dlls/ntdll/unix/ohos_file.c` 的 `ohos_drive_unix_path`）：`Z:` 指向 `$HOME`（上表最后一行那个下载目录），`C:` 到 `Y:` 指向 Wine prefix 下的 `drive_X`。沙箱里没有符号链接，所以这里是硬编码映射。
 
-### 往沙箱里传文件
+### 两套视角的访问权限不一样
 
-只有一条通道：`hdc file send -b <包名> <本地路径> <沙箱视角路径>`。几个要点：
+**`/data/app/...`（应用私有数据）不是谁都能读的**：
+
+- `hdc shell` 直接 `cat` / `ls` 私有目录会被 SELinux 拒（实测 `Permission denied`，2in1 设备）。
+- 要访问得走 `-b <包名>` 通道，而它**只对调试签名的应用有效**——设备上装的是应用市场版（`appProvisionType: release`）时会报 `Invalid bundle name`。
+- **能用的只有 `hdc file send|recv -b`**。`hdc shell -b <包名> "命令"` 即使装了调试包也报 `Invalid bundle name`；写成 `hdc -t <设备> -b <包名> shell "命令"` 时参数会被接受，但进去照样 `Permission denied`（实测 2026-09-24）。
+- 所以读沙箱里的日志（`temp/`、`cache/`）有个前提：**设备上装的是调试包**。
+
+**公共目录可以直接读**：`/storage/media/100/local/files/Docs/Download/` 实测能列出内容（同样注意，`/storage/media/100/local/files/` 这一层是被拒的，必须给到完整路径）。
+
+**`/data/local/tmp/` 是最省事的落脚点**：shell 可读写、`hdc file recv` 也能拉回来，和包签名无关。要长期留的证据往这里放。
+
+### 往沙箱里读写文件
+
+读写都走 `-b <包名>` 通道：`hdc file send -b <包名> <本地路径> <沙箱视角路径>`、`hdc file recv -b <包名> <沙箱视角路径> <本地路径>`。几个要点：
 
 - 路径必须写**沙箱视角**的，写真实路径会报"文件不存在"。
 - 不加 `-b` 直接写真实路径会权限不足（hdc shell 的 SELinux 上下文限制）。
+- **这条通道要求设备上装的是调试包**；装的是应用市场版时报 `Invalid bundle name`（见上面"两套视角的访问权限"）。
 - 推目录时，如果目标已存在，会把源目录**嵌套**进去（变成 `目标/源目录名/...`）——推之前先删目标。
-- `hdc shell` 的删除操作只认真实路径：对沙箱视角的路径执行 `rm -rf` 会**静默返回成功但实际没删**，所以删完要 `ls` 确认一下。
+- **`hdc shell` 删不掉沙箱里的东西**：`rm -rf` 对真实路径和沙箱视角路径都会被拒（`Permission denied`，实测）。要清空应用数据只能卸载重装，或者用应用里的「重置 Wine 引擎」。
 
 开发测试时用这条通道推送测试程序，可以不用重装安装包（几百 MB）。
 

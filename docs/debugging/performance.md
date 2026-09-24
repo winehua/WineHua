@@ -67,6 +67,51 @@
 | 宿主渲染日志停更 + guest 进程还活着（有 CPU 占用） | 渲染线程卡死，guest 提交不出来 |
 | 输入链路很快（1-2 毫秒）但画面滞后 | 滞后在画面的处理或呈现，不在输入 |
 
+## 系统级采样（hiperf）
+
+前面那些开关都要改代码或设环境变量、还得重启进程才生效。设备自带的 `hiperf` 什么都不用改，直接从外部采样，适合先摸底"到底是谁在烧 CPU"。
+
+```bash
+# 硬件计数器：cycles、IPC、分支预测失败、上下文切换
+hdc -t <设备IP> shell "hiperf stat -p <pid> -d 3"
+
+# 采样（-s dwarf 必须加，见下）
+hdc -t <设备IP> shell "hiperf record -p <pid> -d 5 -s dwarf -o /data/local/tmp/perf.data"
+
+# 热点函数排名
+hdc -t <设备IP> shell "hiperf report -i /data/local/tmp/perf.data"
+
+# 调用链树（每层带占比）
+hdc -t <设备IP> shell "hiperf report -i /data/local/tmp/perf.data -s"
+```
+
+**`-s dwarf` 是关键**：不加它只采到热点函数（`comm` 列是线程名，能看出哪个线程占 CPU）；加上它，`report -s` 会输出**从根一路展开到具体函数的调用链树**，每一层都带占比——这才是定位"时间花在哪个调用路径"的东西。
+
+实测输出长这样（一次音频写入路径的采样）：
+
+```
+22.22%  OS_AudioWriteCB  37576  ld-musl-aarch64.so.1  write
+  |- 99.00% libaudio_stream_client.z.so+0x65200
+            OHOS::AudioStandard::RendererInClientInner::WriteCallbackFunc()
+      |- 36.19% WaitForBufferNeedOperate()
+          |- 94.10% OHAudioBufferBase::WaitFor(long, ...)
+              |- 47.48% libaudio_common.z.so+0x79450
+                  |- 93.44% CheckBufferNeedWrite()
+                      ...
+```
+
+符号是**混合**的：有全局符号的函数能显示名字（我们自己的 `libentry.so` 里能出 `IsProcessAliveNotZombie(int)`），静态的、被 strip 掉的只剩 `libentry.so+0x141f04` 这种偏移。要全部还原得用 `--symbol-dir` 指向带符号的库。
+
+**限制**（都实测过）：
+
+- `-p <pid>` **只对 debug / profileable 应用有效**。采 shell 进程报 `-p option only support debug or profileable application`；应用市场版（release 签名）同理不行。
+- `-a`（全系统采样）需要 root，普通 shell 报 `-a option needs root privilege`。
+- **完全空闲的进程采不到样本**（`Samples Count: 0`）——采样是按 CPU 事件触发的，没有事件就没有样本。
+
+采样文件落在 `/data/local/tmp`，用完记得删。
+
+**卡死排查怎么用它**：进程卡住时，采样点会全部落在同一个调用链上，所以 3~5 秒的采样就等价于"卡住那一瞬间的栈"。再看哪一层占了 100% 就知道卡在哪。这是设备上唯一免改代码、能拿到运行中进程调用栈的办法，详见 [observability.md](observability.md) 的"运行中进程的调用栈"。
+
 ## 对比实验怎么组织
 
 ### 先确认开关真的生效

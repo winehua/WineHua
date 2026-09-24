@@ -40,12 +40,15 @@ H="hdc -t <设备IP>"
 **完整部署**（改过 Wine 之后用，会清空 Wine prefix）：
 
 ```bash
-$H shell "bm uninstall -n app.hackeris.winehua"
+$H shell "bm uninstall -n app.hackeris.winehua"   # 卸载会把应用数据（含 Wine prefix）一起清掉
 $H file send "entry/build/default/outputs/default/entry-default-signed.hap" "/data/local/tmp/winehua.hap"
 $H shell "bm install -p /data/local/tmp/winehua.hap"
-$H shell "rm -rf /data/app/el2/100/base/app.hackeris.winehua/files/.wine /data/app/el2/100/base/app.hackeris.winehua/files/wine"
 $H shell "aa start -a EntryAbility -b app.hackeris.winehua"
 ```
+
+**只想清空引擎数据、不想重装**：用应用里的「重置 Wine 引擎」（等价于恢复出厂，会重新解压）。
+
+**不要用 `hdc shell rm -rf` 删沙箱里的路径**——会被 SELinux 拒绝（`Permission denied`，真实路径和沙箱视角路径都一样）。清数据的正规途径只有上面两条。
 
 **增量部署**（只改了界面或原生代码，不用重装）：
 
@@ -56,6 +59,8 @@ $H shell "bm install -p /data/local/tmp/winehua.hap"
 $H shell "aa start -a EntryAbility -b app.hackeris.winehua"
 ```
 
+应用有四个 ability，**`aa start` 只能拉起导出的 `EntryAbility`**——`DesktopAbility` 等会报 `10103001 Failed to verify the visibility`。形态（虚拟桌面 / 多窗口）由应用自己按设备决定。
+
 设备地址和各自的状态见 [assets/devices.md](assets/devices.md)；也可以用 `hdc list targets` 看当前连了哪些设备。
 
 ## 看日志
@@ -64,23 +69,54 @@ $H shell "aa start -a EntryAbility -b app.hackeris.winehua"
 # 实时日志（全部）
 hdc -t <设备IP> hilog
 
-# 实时日志（只看关心的标签）
-hdc -t <设备IP> hilog | grep -E 'CLICK-PIPE|KBD-PIPE|WineWM|WL_Plugin|WL_Server|WL_Input|CRASH'
+# 只看本项目的（-e 匹配消息正文，-T 匹配标签、可多选）
+hdc -t <设备IP> hilog -e winehua
+hdc -t <设备IP> hilog -T WL_Server,WineChild,WL_EGL
 
-# 取最近的日志（缓冲区只保留最近几分钟）
-hdc -t <设备IP> shell "hilog -z 500 -t app"
+# 取最近的日志（缓冲区只保留几千行，约几分钟）
+hdc -t <设备IP> shell "hilog -z 500"
 
-# 清空日志缓冲区，然后复现问题，这样抓到的都是干净的
-hdc -t <设备IP> shell hilog -r
+# 落盘采集：清空 → 后台收 → 复现问题 → 拉回来分析
+hdc -t <设备IP> shell "hilog -r"
+hdc -t <设备IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
+hdc -t <设备IP> file recv /data/local/tmp/capture.log case-1.log
 
 # Wine 自己的标准错误输出（每天一个文件）
-hdc -t <设备IP> shell "cat /data/app/el2/100/base/app.hackeris.winehua/temp/wine_stderr_$(date +%Y%m%d).log"
+hdc -t <设备IP> file recv -b app.hackeris.winehua /data/storage/el2/base/temp/wine_stderr_$(date +%Y%m%d).log ./wine_stderr.log
 
-# 在里面搜关键词
-hdc -t <设备IP> shell "grep -i '关键词' /data/app/el2/100/base/app.hackeris.winehua/temp/wine_stderr_$(date +%Y%m%d).log"
+# 拉回本地后搜关键词
+grep -i '关键词' wine_stderr.log
 ```
 
-注意：有的日志只写进 Wine 标准错误文件，不会出现在 hilog 里（比如 box64 的崩溃现场）。日志标签的完整列表和各自的坑见 [debugging/observability.md](debugging/observability.md)。
+`hilog -t app` 不是按包名过滤——它选的是"应用类日志"这个大类型，会把设备上所有应用的日志一起打出来。精确过滤用 `-e`（消息正文）或 `-T`（标签）。落盘命令的三个重定向别省，少了 hdc 命令不返回（采集其实在工作）。
+
+## 看现场
+
+没有日志时（进程卡住、要确认版本、查崩溃历史）：
+
+```bash
+hdc -t <设备IP> shell "ps -ef | grep -i winehua"                  # 进程列表
+hdc -t <设备IP> shell "hidumper -p <pid>"                          # 线程列表（带线程名）
+hdc -t <设备IP> shell "hidumper --cpuusage"                        # 系统负载与 CPU 分项
+hdc -t <设备IP> shell "aa dump -l"                                 # 任务栈与前台状态
+hdc -t <设备IP> shell "bm dump -n app.hackeris.winehua"            # 版本、装机路径、调试/市场包
+hdc -t <设备IP> shell 'hidumper -s 1201 -a "-p Faultlogger -l"'    # 崩溃日志清单
+```
+
+注意设备上的 shell **不做通配符展开**（`/proc/<pid>/task/*/stat` 这类写法会失败），也没有 `awk`。崩溃记录的完整取法见 [debugging/observability.md](debugging/observability.md)。
+
+## 抓运行中进程的调用栈
+
+进程**卡死**（不是崩溃）时，设备上没有 gdb，`/proc` 也拿不到栈——从外部采样：
+
+```bash
+hdc -t <设备IP> shell "hiperf record -p <pid> -d 5 -s dwarf -o /data/local/tmp/cs.data"
+hdc -t <设备IP> shell "hiperf report -i /data/local/tmp/cs.data -s"
+```
+
+输出是带占比的调用链树。进程卡住时采样点全落在同一条链上，**哪一层占 100% 就是卡在哪**。`-s dwarf` 不能省（不加只出热点函数），`-p` 只对调试包有效。详见 [debugging/observability.md](debugging/observability.md)。
+
+注意：设备上的文件用 `hdc file recv` 拉回本地再分析，`/proc` 下的实时内容才用 `hdc shell "cat ..."`。**沙箱里的路径要加 `-b <包名>`、写沙箱视角**，而且这条通道要求设备上装的是调试包（市场版会报 `Invalid bundle name`）。路径换算规则见 [architecture/platform-ohos.md](architecture/platform-ohos.md) 的沙箱一节。Wine 的 stderr 也会转发到 hilog（标签 `WineChild-stderr`），但转发不保证可靠。日志标签的完整列表见 [debugging/observability.md](debugging/observability.md)。
 
 ## 自动化测试
 
