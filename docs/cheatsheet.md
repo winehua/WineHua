@@ -76,9 +76,9 @@ hdc -t <设备IP> hilog -T WL_Server,WineChild,WL_EGL
 # 取最近的日志（缓冲区只保留几千行，约几分钟）
 hdc -t <设备IP> shell "hilog -z 500"
 
-# 落盘采集：清空 → 后台收 → 复现问题 → 拉回来分析
+# 落盘采集：清空 → 后台收 → 复现问题 → 拉回来分析（不加过滤，全量收）
 hdc -t <设备IP> shell "hilog -r"
-hdc -t <设备IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
+hdc -t <设备IP> shell "setsid sh -c 'hilog > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
 hdc -t <设备IP> file recv /data/local/tmp/capture.log case-1.log
 
 # Wine 自己的标准错误输出（每天一个文件）
@@ -88,7 +88,7 @@ hdc -t <设备IP> file recv -b app.hackeris.winehua /data/storage/el2/base/temp/
 grep -i '关键词' wine_stderr.log
 ```
 
-`hilog -t app` 不是按包名过滤——它选的是"应用类日志"这个大类型，会把设备上所有应用的日志一起打出来。精确过滤用 `-e`（消息正文）或 `-T`（标签）。落盘命令的三个重定向别省，少了 hdc 命令不返回（采集其实在工作）。
+`hilog -t app` 不是按包名过滤——它选的是"应用类日志"这个大类型，会把设备上所有应用的日志一起打出来，还漏掉 core 类。精确过滤用 `-e`（消息正文）或 `-T`（标签），**但那是实时查看用的；落盘留证据要全量收，事后离线过滤**。落盘命令的三个重定向别省，少了 hdc 命令不返回（采集其实在工作）。
 
 ## 看现场
 

@@ -40,10 +40,11 @@ hdc -t <设备IP> hilog -e 'CRASH|WL-ERR|SIGSEGV|SIGABRT'
 
 **四个必须知道的坑**：
 
-1. **缓冲区很小**。实测全量也就八千多行，按正常刷屏速度只够几分钟。要留证据必须落盘：
+1. **缓冲区很小**。实测全量也就八千多行，按正常刷屏速度只够几分钟。要留证据必须落盘
+   （**不加过滤，全量收**——理由见下面的「采集纪律」）：
 
    ```bash
-   hdc -t <设备IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
+   hdc -t <设备IP> shell "setsid sh -c 'hilog > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
 
    # —— 采集期间在设备上复现问题 ——
 
@@ -275,14 +276,14 @@ box64 下 Wine 进程崩溃的额外手法：从 box64 崩溃信息里的地址�
 
 ```bash
 hdc -t <设备IP> shell "hilog -r"                    # 先清空，抓到的都是从零开始的
-hdc -t <设备IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
+hdc -t <设备IP> shell "setsid sh -c 'hilog > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
 
 # —— 采集期间在设备上复现问题 ——
 
 hdc -t <设备IP> file recv /data/local/tmp/capture.log case-1.log   # 拉回本地分析
 ```
 
-（落盘命令的三个重定向别省，理由见上面 hilog 那节的坑 1。采集完记得把设备上的 `hilog -t` 进程杀掉——它会一直跑到重启。）
+（落盘命令的三个重定向别省，理由见上面 hilog 那节的坑 1。采集完记得把设备上的 `hilog` 进程杀掉——它会一直跑到重启。）
 
 要留下分析就用 `file recv` 拉回本地——走 `hdc shell` 的 stdout 会经过终端层（换行可能被改写），文件大了也容易出问题。
 

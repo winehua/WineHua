@@ -50,11 +50,15 @@ bash scripts/package.sh deploy <设备IP>      # 卸载 + 推送 + 安装
 1. **日志缓冲区只留几分钟**，要留证据必须落盘（三个重定向别省，少了命令不返回）：
 
    ```bash
-   hdc -t <IP> shell "setsid sh -c 'hilog -t app > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
+   hdc -t <IP> shell "setsid sh -c 'hilog > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
    ```
 
+   **落盘时不要加任何过滤**——全量收、事后离线过滤。过滤是按假设掐日志，恰恰会漏掉
+   假设之外的原因；详见 `docs/debugging/observability.md` 的「采集纪律」。
+
 2. **`hilog -t app` 不是按包名过滤**，它是"应用类日志"这个大类型，会把设备上所有应用的
-   日志一起打出来。只看本项目的用 `-e winehua`，或 `-T <标签列表>` 精确过滤。
+   日志一起打出来，而且**漏掉 core 类**。实时查看时用 `-e winehua` 或 `-T <标签列表>`
+   精确过滤；**落盘留证据时不加过滤**（理由同上）。
 3. **浮点参数要加 `%{public}`**，否则打出来是 `<private>`，数字看不到。
 4. **Wine 的 stderr 也转发到 hilog**（标签 `WineChild-stderr`），**但转发不保证可靠**——
    排障以沙箱里的文件为准，两边都看。
