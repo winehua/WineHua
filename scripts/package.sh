@@ -203,10 +203,25 @@ deploy() {
     fi
 
     log "=== 部署到 $device ==="
-    hdc tconn "$device" || { err "hdc tconn 失败"; }
-    hdc shell bm uninstall -n app.hackeris.winehua 2>/dev/null || true
-    hdc file send "$hap" /data/local/tmp/ || { err "hdc file send 失败"; }
-    hdc shell bm install -p /data/local/tmp/entry-default-signed.hap -r || { err "bm install 失败"; }
+    if ! hdc list targets 2>/dev/null | grep -qF "$device"; then
+        hdc tconn "$device" >/dev/null 2>&1 || true
+        hdc list targets 2>/dev/null | grep -qF "$device" || err "设备不在线: $device"
+    fi
+
+    # 每条 hdc 都带 -t: 多台设备同时在线时, 不带 -t 的命令只打印
+    # "[Fail]ExecuteCommand need connect-key" 而**退出码仍是 0** —— 只看退出码会
+    # 静默假成功 (实测: 两台在线时 deploy 报"部署完成", 设备上却还是旧包)。
+    # 所以既校退出码, 也扫输出里的 [Fail] 标记。
+    local out
+    hdc -t "$device" shell bm uninstall -n app.hackeris.winehua >/dev/null 2>&1 || true
+
+    out=$(hdc -t "$device" file send "$hap" /data/local/tmp/ 2>&1) || true
+    echo "$out" | tail -1
+    echo "$out" | grep -q '\[Fail\]' && err "推送失败: $(echo "$out" | grep '\[Fail\]' | head -1)"
+
+    out=$(hdc -t "$device" shell bm install -p /data/local/tmp/entry-default-signed.hap -r 2>&1) || true
+    echo "$out" | tail -2
+    echo "$out" | grep -q '\[Fail\]' && err "安装失败: $(echo "$out" | grep '\[Fail\]' | head -1)"
 
     log "部署完成"
 }
