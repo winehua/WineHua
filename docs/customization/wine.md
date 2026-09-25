@@ -115,7 +115,7 @@
 - **依赖的上游行为**：`wayland_win_data_create` 的 GA_PARENT 过滤逻辑（整体保留在 `#else` 语义内）。
 - **验证方法**：桌面模式 explorer 桌面可见；独立模式窗口行为回归。
 
-### dlls/winewayland.drv/window.c：装饰浮层的受管判定（+12/-0，**该改动暂未提交，在工作区**）
+### dlls/winewayland.drv/window.c：装饰浮层的受管判定（f6492f84827，+12/-0）
 - **为什么存在**：程序常以「内容窗口 + 外扩一圈的装饰窗口」自绘阴影/边框（企业微信登录窗的 `PerryShadowWnd`：owner=内容窗口，style=`96880000` 含 `WS_POPUP|WS_SYSMENU`，exstyle=`080800a0` 含 `WS_EX_LAYERED|NOACTIVATE|TOOLWINDOW|TRANSPARENT`）。上游 `is_window_managed` 的"popup with sysmenu == caption"判据把它判为受管，于是调用处 `if (!(managed = is_window_managed(...)) && surface) toplevel = owner_hint;` 的 `&&` 短路掉 owner 关系，装饰窗口各自成为独立 xdg_toplevel。Windows 下靠 DWM 按 z 序合成、X11 下靠 WM 识别 `WS_EX_TOOLWINDOW`，观感都是一体；**wayland 的 xdg_toplevel 没有工具窗口概念，winewayland 也从不调用 `xdg_toplevel.set_parent`**，依附关系无处表达 → 每个装饰层多出一个独立宿主窗口（企业微信表现为纯黑窗盖在主界面上）。
 - **语义修改**：对「显式设了 owner」且「`WS_EX_LAYERED`+`WS_EX_NOACTIVATE`+`WS_EX_TOOLWINDOW` 三件套齐全」的窗口，`is_window_managed` 返回 FALSE —— 受管判定的语义由「像窗口就是独立窗口」改为「程序声明自己不参与窗口管理（纯装饰浮层）就依附到 owner」。返回 FALSE 之后走的是上游既有的 owner_hint → `wl_subsurface` 通路，不是新增路径；限定"有 owner"是为了不误伤无主的浮动面板。
 - **依赖的上游行为**：`wayland_win_data_create_wayland_surface` 的 role 分派（`toplevel_surface` 非空即 `SUBSURFACE`）；win32u 的 `owner_hint` 来源（`dlls/win32u/window.c:2405` 取 `GW_OWNER`，为空时按窗口左上角位置推断）。
