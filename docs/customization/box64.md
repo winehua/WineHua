@@ -1,8 +1,23 @@
-# box64 补丁清单
+# box64 定制
 
-> 基线：8f445d9a（2026-06-12，upstream/main merge-base，winehua 独有 15 commit）
-> 生成：2026-08-01，统计更新：2026-09-22
+> 适用场景：改 box64、排查 x86 程序在 ARM64 上的崩溃/挂起、合并上游 box64 时。
+> 基线：8f445d9a（2026-06-12，upstream/main merge-base，winehua 独有 15 commit；HEAD 0411b3856 在 feature/core-extract 上、领先 master 一笔）。`v0.4.3-3..HEAD` 的 32 = 基线之前的 17 个上游提交 + 15 个 winehua 提交，diff 统计只反映后者
+> 生成：2026-08-01；2026-09-25 逐条对照代码核实（统计复核无误，收口全部 [待确认] 条目，修正 H 节两处文件归属）
 > 说明：box64 在鸿蒙上的角色是 x86 指令翻译器（LIBBOX64_SO 共享库模式，由 wine_child 进程 dlopen）。清单服务未来合并 ptitSeb/box64 main 时确认每个 hunk 的意图与不变式
+
+## 定制点总览
+
+| 定制点 | 问题 | 思路 |
+|---|---|---|
+| LIBBOX64_SO 共享库模式 | 沙箱无 execve，box64 不能作为可执行文件 | 编成 `box64.so`，宿主 wine 子进程 dlopen 后调 `box64_hmos_main` |
+| 匿名 RWX 被拒 | 内核对匿名 RWX mmap 返回 EPERM | 先 RW 映射再 mprotect 加 X；`prctl(0x6a6974)` 打开内核 JIT 白名单 |
+| noexec 文件映射 | 文件映射 + PROT_EXEC 被拒 | 匿名映射 + pread 把内容读进内存 |
+| MAP_FIXED_NOREPLACE 不可用 | aarch64 未实现且取值与 x86 不同 | 改用 aarch64 值；低 4GB 空洞解析 `/proc/self/maps` 后 MAP_FIXED 精确抢占 |
+| BOX32 低 4GB 堆 | 32 位 guest 指针必须 <4GB | 固定 256MB bump allocator（canary 防混用），全部分配族代理 |
+| musl 缺失 libc | fts/obstack/ctype/qsort_r 等 glibc 符号不存在 | 从 NetBSD/glibc 移植 + weak stub（`__OHOS__` 之外可反哺上游 musl 支持） |
+| wrap 表 musl 差异 | glibc 私有字段/版本化符号在 musl 缺位 | 转换函数跳过私有字段；`PR_SET_NAME` 清残留寄存器参 |
+| guest 库符号桥接（`0411b3856`） | musl resolver 等 7 符号缺失，gnutls/gstreamer eager 重定位失败、HTTPS 全挂 | wrappedlibc_private.h 补符号表项 |
+| mallochook 重写 | 原拦截器疑在 musl ctor 阶段死循环 | 换 passthrough 诊断版（已知损失：guest 强覆盖 malloc 场景） |
 
 ## 变更总览
 
@@ -72,13 +87,13 @@
 #### src/custommem.c: init_custommem_helper
 - **为什么存在**：`dlsym(RTLD_NEXT, "__curbrk")` 在 musl 上无此符号（glibc 私有），改为置 `cur_brk = NULL`。
 - **依赖的上游行为**：上游用 `__curbrk` 读取 brk 位置。
-- **不变式**：`cur_brk` 为 NULL 时使用方必须走 fallback 路径——[待确认] 需核实引用处是否处理 NULL。
+- **不变式**：`cur_brk` 为 NULL 时使用方必须走 fallback 路径。已核实（2026-09-25）：三处引用均有 NULL 守卫（custommem.c:2830 `if(cur_brk)`、2882/2936 `if(pbrk && cur_brk && ...)`），NULL 时走近似 brk 路径。
 - **验证方法**：wine 全流程启动无崩溃。
 
 #### src/tools/bridge.c: NewBrick
 - **为什么存在**：bridge 代码页（JIT 翻译跳板）原一次性申请 RWX，OHOS 匿名 RWX EPERM → 改为 RW mmap 成功后 `mprotect` 加 X；mprotect 失败仅警告不 abort（保留 RW 映射"might still work"）。
 - **依赖的上游行为**：`box_mmap` 一次返回 RWX 映射。
-- **不变式**：`setProtection_box` 仍标记 RWX+NOPROT；mprotect 失败时 bridge 区不可执行——[待确认] 是否依赖后续 box64 自身的再保护逻辑，失败可能只在部分指令路径出问题。
+- **不变式**：`setProtection_box` 标记 RWX+NOPROT。已核实（2026-09-25）：mprotect 失败**没有**后续再保护——NOPROT 使 box64 信号处理器不接管该区，失败即该 brick 全部跳板不可执行。实际风险很低：RW→mprotect 加 X 与 os_linux.c 整套方案同前提（OHOS 匿名页加 X 是允许的），失败分支几乎不触发。
 - **验证方法**：任意 x86 程序执行（每个翻译块都过 bridge）。
 
 #### src/main.c: main
@@ -128,10 +143,15 @@
 - **验证方法**：启动 rundll32/wineboot 类进程不 SIGSEGV；hilog 无 prctl 崩溃。
 
 #### src/wrapped/wrappedlibc.c: rint/rintf wrap（commit 23750c922）
-- **为什么存在**：为 OHOS 上的 guest Mesa 提供 `rint/rintf` wrap——`functions_list.txt` 新增 `fFf: rintf`、`dFd: rint` 强 wrap 类型 + `wrappedlibc_private.h` 启用 `GOWM(rint, dFEd)/GOWM(rintf, fFEf)`（上游此两行被注释）。[待确认] 具体触发症状：疑为 guest 调 rint 时符号解析/版本不匹配导致；OHOS musl 的 rint 是强符号但 box64 wrap 表无此条目时按普通转发处理失败。
+- **为什么存在**：为 OHOS 上的 guest Mesa 提供 `rint/rintf` wrap——`functions_list.txt` 新增 `fFf: rintf`、`dFd: rint` 强 wrap 类型 + `wrappedlibc_private.h` 启用 `GOWM(rint, dFEd)/GOWM(rintf, fFEf)`（上游此两行被注释）。触发症状无法从仓库确认（提交无正文、代码无症状注释）；OHOS musl 的 rint 是强符号但 box64 wrap 表无此条目时按普通转发处理失败。
 - **依赖的上游行为**：上游刻意不 wrap rint（`// GOWM(rint, dFEd)` 注释态，可能因浮点返回 ABI 特殊）。
 - **不变式**：dFEd/fFEf（double,float → double）转发路径与 guest 浮点返回 ABI 匹配；generated 头（wrappedlibctypes.h 的 fFf_t/dFd_t）与 functions_list 同步。
 - **验证方法**：运行调用 rint 的 guest（DXVK/Mesa 渲染路径）回归。
+
+#### src/wrapped/wrappedlibc_private.h: guest 库符号桥接（commit 0411b3856，7 符号）
+- **为什么存在**：wrappedlibc 符号表缺 7 个 musl/BSD/resolver 符号——`__fseterr`、`issetugid`、`res_query`（5 参版）、`dn_expand`、`ns_get16`、`ns_get32`、`__fd_chk`。guest 库（gnutls、gstreamer）eager 重定位时解析不到即失败，表现为 arm64 Pad 上 HTTPS 全挂、媒体链路起不来。
+- **做法**：private.h 补 7 个符号表项，转发到 musl 真实符号。
+- **验证方法**：guest 加载 gnutls 握手成功（TLS 客户端场景）；`make NATIVE_ARCH=arm64-v8a` 链接无未定义符号。
 
 #### src/wrapped/wrappedlibc.c: PRE_INIT（OHOS_PATCH_NO_PRE_INIT_DLOPEN）
 - **为什么存在**：`PRE_INIT` 宏原为 `dlopen(NULL, RTLD_LAZY|RTLD_GLOBAL)`（拿自身 handle 供 wrapped lib 查找符号）；OHOS musl 上 dlopen(NULL) 拿不到 box64 符号 → 空宏（patch 19 注释说明）。
@@ -154,7 +174,7 @@
 #### src/libtools/threads.c / threads32.c
 - **为什么存在**：①`_pthread_cleanup_push/pop` 手写声明删除——musl `<pthread.h>` 已声明，box64 声明冲突；②`init_pthread_helper` 中 `dlsym(NULL, "_pthread_cleanup_push_defer")` 等 + `dlvsym` GLIBC_2.x 版本符号查找全跳过（musl 无版本符号，dlsym(NULL) 无全局表）→ 三个 real_ 指针置 NULL，`real_phtread_kill_old` 直接 `pthread_kill`；③`my_pthread_kill_old` 的 pthread_t 转换加显式 cast（musl pthread_t 是指针）。
 - **依赖的上游行为**：glibc 的 `_pthread_cleanup_*` 隐藏符号与 GLIBC 版本化 `pthread_kill`。
-- **不变式**：real_ 指针为 NULL 时调用方分支必须安全（上游代码已有 NULL 检查则无碍，[待确认] `real_pthread_cleanup_push_defer` 的使用点是否都有 NULL 守卫）。
+- **不变式**：real_ 指针为 NULL 时调用方分支必须安全。已核实（2026-09-25）：`real_pthread_cleanup_push_defer` 的使用点**没有** NULL 守卫——threads.c:878/890、threads32.c:812/822 是裸调用，guest 一旦走到 `_pthread_cleanup_push_defer` wrap 即 NULL 解引用（非 defer 版走 musl 真实现，安全）。**已知风险**。
 - **验证方法**：wine 多线程 guest 程序（含线程退出/清理）回归。
 
 ### E. BOX32 支持
@@ -195,7 +215,7 @@
 - **为什么存在**：原文件是 "Exterminate" 策略的全局 malloc 拦截器（内部内存池 + spin lock + 强符号覆盖 `malloc/free/calloc/realloc` + TBB/tcmalloc 兼容 + box32 低 4GB 判定）。**怀疑其在 OHOS musl 的 ctor 阶段死循环**（文件头注释原文），故整体替换为诊断 passthrough：`box_malloc/free/calloc/realloc/memalign/strdup/strndup` 直接转 libc，`box_free_internal` 直接 free，`box_malloc_usable_size` 返回 0，`init/start/endMallocHook` 空操作，`box_realpath` 保留，不再强符号覆盖系统 malloc（注释："让 musl 自己处理"）。
 - **依赖的上游行为**：上游 box64 各模块依赖 `box_*`/`box32_*` API；`box32_*` 已由 musl_compat.c 低 4GB 堆接管；mallochook 的符号覆盖能力（tcmalloc/malloc_hack_2）全部丢失。
 - **不变式**：所有调用点使用 `box_*` 符号而非直接 malloc（保持 API 面）；`box_malloc_usable_size` 返回 0 的调用方必须容忍；guest 强覆盖 malloc（tcmalloc 类）会绕过 box64——已知能力损失。
-- **验证方法**：winehua 完整启动（此文件是启动期死循环修复的关键，启动成功即验证）；注意注释自述"仅用于定位启动期死循环，不可用于真正翻译 x86 程序"——[待确认] 当前生产构建是否仍使用此 passthrough 版本（若是，guest 侧 tcmalloc 场景属已知风险）。
+- **验证方法**：winehua 完整启动（此文件是启动期死循环修复的关键，启动成功即验证）。已核实（2026-09-25）：passthrough 版**仍在生产构建**（CMakeLists.txt:491 挂在 ELFLOADER_SRC，src/ 下无其它 mallochook）——文件头"仅用于定位启动期死循环"的自述与现状矛盾，tcmalloc 场景的能力损失是既成事实而非临时状态。
 
 ### H. 日志与诊断清理
 
@@ -204,8 +224,8 @@
 - **不变式**：无（纯注释）。
 - **验证方法**：编译通过。
 
-#### 其他清理（无行为变化）
-- `my_reserveHighMem` 的 reserve 日志注释掉、`internal_customMemAligned` 的 `if(1 || ...)` 去恒真、`box64_wine || 1` → `box64_wine`（47bit 限制仅 wine 模式）、`custommem.c` 空 if 块移除、wrappedlibc 残留 `stdio.h` include 移除、libdl.c 末尾无换行修复。均不改变语义，合并时可直接丢弃。
+#### 其他清理（无行为变化，34b988751）
+- `my_reserveHighMem` 的 reserve 日志注释掉、`internal_customMemAligned` 的 `if(1 || ...)` 去恒真、`box64_wine || 1` → `box64_wine`（47bit 限制仅 wine 模式）、`os_linux.c` InternalMmap 末尾空 if 块移除、`custommmap.c`/`os_linux.c` 残留 `stdio.h` include 移除（wrappedlibc.c 的 stdio.h 是上游原有 include，未动）、libdl.c 末尾无换行修复。均不改变语义，合并时可直接丢弃。
 
 ## 合并上游注意点（摘要）
 

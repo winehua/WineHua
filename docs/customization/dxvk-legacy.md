@@ -1,13 +1,37 @@
-# dxvk 补丁清单
+# dxvk-legacy（DXVK 1.10.3）定制
 
-> 基线：v1.10.3 tag（2022-08-02，winehua 独有 33 commit，`v1.10.3..HEAD` 实测 66 文件 / +6147 / -169）
-> 生成：2026-08-01，统计更新：2026-09-22（下方逐文件的数字为生成时的快照）
-> 说明：下行合并方向；未来 2.x 迁移时本清单是现有改动的语义来源
+> 适用场景：改 legacy 档的 DXVK、排查 legacy 档渲染问题、评估 2.x 迁移时对照语义来源。
+> 基线：v1.10.3 tag（2022-08-02，`v1.10.3..HEAD` 实测 33 commit / 66 文件 / +6147 / -169）
+> 生成：2026-08-01；2026-09-25 逐条对照代码核实，补齐 A2C / instance divisor / present sRGB / STAGING 直 flush 四组遗漏
+> 说明：下行合并方向；未来 2.x 迁移时本清单是现有改动的语义来源（2.6 的移植情况见 [dxvk-modern.md](dxvk-modern.md)）
+
+## 定制点总览
+
+| 定制点 | 问题 | 思路 |
+|---|---|---|
+| 映射内存 flush 协议 | Venus shadow 映射下 CPU 写不发布，宿主读不到 | D3D11 Map/Unmap 链路补显式 flush/invalidate，cmdlist 排序合并批处理；STAGING 读回前直接 flush |
+| BC 纹理压缩缺失 | Venus 无 `textureCompressionBC`，BC 贴图建不了 | 上传时 CPU 解压 BC1-BC7（wine 的 bcdec.h），DXGI 格式表重映射到未压缩 |
+| 双源混合缺失 | Venus 无 `dualSrcBlend`，SRC1 混合不可用 | 严格条件拆两遍 draw，五种可切换模式，secondary 变体不进缓存 |
+| 单采样 A2C 透明片元（`de1f327b`） | Maleoon 单采样 alpha-to-coverage 不剔除全透明片元 | FS 输出后按 spec constant 门控 `opKill`；quirk `maleoon-single-sample-a2c` 默认开 |
+| instance divisor 缺失（`c3fc869d`） | Venus 无 `vertexAttributeInstanceRateDivisor` | fetchRate>1 时 CPU 展开 per-instance 顶点，Sha1 缓存展开结果 |
+| bool spec 常量缺陷 | 驱动编译器错误处理 bool 特化常量，采样返回错 | SPIR-V 二进制上把 `OpSpecConstantTrue/False` 烘焙成普通常量（Venus/Maleoon 自动开） |
+| CubeArray shadow 挂 ring | Maleoon 执行原生 Dref 指令挂死 host ring | 声明期把资源降为 2D-array，shader 内坐标转换 |
+| Cube Dref 坐标返回全 1 | Maleoon 编译器对最小 vec3 Cube Dref 输出错误 | Dref 坐标补齐成 vec4 |
+| RGBA8 SNORM 不能做 RT | Maleoon 暴露 sampled SNORM 但不支持 color attachment | 资源本地替换 R16G16B16A16_SFLOAT + CPU 域转换 |
+| combined 描述符采样返回 0 | Venus 分离 sampled-image 描述符路径采样为零 | 惰性生成 `OpTypeSampledImage` 变量，D3D11 侧做 s#/t# 槽位配对 |
+| custom border color 缺失 | 无 `VK_EXT_custom_border_color` | cb15 UBO 传 border 色，SampleL 后按坐标权重混回 |
+| event query 不可靠 | Venus 上 VkEvent 语义不可靠 | 改用提交完成 Fence + 单调值比较 |
+| host_query_reset 缺失 | Venus 无 `VK_EXT_host_query_reset` | 改走 `vkCmdResetQueryPool`（入 InitBuffer） |
+| 查询/流输出特性缺失 | 无 pipelineStatisticsQuery、XFB | 按特性门控，缺失返回零统计 + 一次告警 |
+| 设备建不起来 | 上游对缺失特性硬请求，vkCreateDevice 失败 | `WINEHUA_DXVK_RELAXED_FEATURES=1` 逐项告警放行（BC 除外） |
+| present 颜色空间（`5058927a`） | 源 sRGB、目标非 sRGB 时 present 后偏色 | present shader 内按 push constant 做线性→sRGB 编码 |
+| 诊断框架 | Heaven/Venus 排障需要帧级捕获 | trace.h 集中 32 个开关；RT 转储、帧边界、描述符/管线 trace，全部 opt-in |
+| MinGW 构建不兼容 | 现代工具链头文件重复定义/缺 include | 三处 `#if` 调整 + 显式 `<cstdint>` |
 
 ## 变更总览
 
 - **新增 6 文件**（+922 行），按用途：
-  - 诊断/开关集中声明：`src/dxvk/dxvk_winehua_trace.h`（+442，纯 header，全部 env 门控）
+  - 诊断/开关集中声明：`src/dxvk/dxvk_winehua_trace.h`（+508，纯 header，32 个 env 开关）
   - BC1-BC7 CPU 解码器：`src/d3d11/d3d11_bc.cpp`（+203）/ `d3d11_bc.h`（复用 Wine 自带 bcdec.h）
   - RGBA8_SNORM→RGBA16F CPU 转换：`src/d3d11/d3d11_format_convert.cpp` / `.h`
   - fork 文档：`WINEHUA_FORK.md`
@@ -19,17 +43,17 @@
   - DXBC/SPIR-V 编译兼容：12 文件（dxbc_compiler / options / analysis / decoder / dxvk_shader / dxvk_graphics / dxvk_compute / dxvk_sampler / d3d11_sampler）
   - 诊断/追踪（Heaven 调参遗留）：17 文件（context / cmdlist / presenter / gpu_query / barrier / image / device / context_imm / initializer / query / swapchain / dxgi_swapchain 等）
   - 构建与工具链：5 文件（meson.build / d3d10_interfaces.h / d3d9_include.h / config.h / util_bit.h）
-- 说明：核心改动高度交织（如 combined-sampler 模式同时改 dxbc_compiler 声明、dxvk_shader bool 冻结、dxvk_context 描述符配对、dxbc_options 开关）；下文按文件给出语义来源，供 2.x 重写时逐条对照。
+- 说明：核心改动高度交织（如 combined-sampler 模式同时改 dxbc_compiler 声明、dxvk_shader bool 冻结、dxvk_context 描述符配对、dxbc_options 开关）；下文按文件给出语义来源，供 2.x 重写时逐条对照。分组数字有交叉归属，总和大于 60。
 
 ## 变更明细
 
 ### src/dxvk/dxvk_winehua_trace.h（新增，整文件）
-- **为什么存在**：约 25 个 `DXVK_WINEHUA_*` / `WINEHUA_DXVK_*` env 开关的单一声明点：双源混合 5 种模式、sampled/render-pass/query/flow 四类 trace、RT 转储参数（frame/pass/draw/fs 匹配、字节上限、路径）、mapped-flush 批处理、precise-shadow、FIFO 切片、Heaven pass2 depth、force-sampled-GENERAL。宏在**调用点先查开关再构造字符串**，禁用时热路径零开销；多数 trace 带 atomic 计数抑制（如 render-pass 1024 条后停）。
+- **为什么存在**：32 个 `DXVK_WINEHUA_*` / `WINEHUA_DXVK_*` env 开关的单一声明点：双源混合 5 种模式、单采样 A2C、sampled/render-pass/query/flow/alpha 直方图五类 trace、RT 转储参数（frame/pass/draw/fs 匹配、字节上限、路径）、mapped-flush 批处理、precise-shadow、FIFO 切片、Heaven pass2 depth、force-sampled-GENERAL。宏在**调用点先查开关再构造字符串**，禁用时热路径零开销；多数 trace 带 atomic 计数抑制（如 render-pass 1024 条后停）。
 - **依赖的上游行为**：仅依赖 `Logger::info/err` 与 `str::format`，无其他耦合。
 - **不变式**：所有开关默认关闭；产品渲染路径不得依赖任何开关值；新增开关必须在此头登记而不是散落各处。
 - **验证方法**：全关状态下与上游基线对比（commit `52322854`/`c6657078` 等曾以此对照 Heaven 帧一致）；单个开关 1/0 A/B 验证行为差异。
 
-### src/dxvk/dxvk_context.cpp（+1834，fork 最大改动）
+### src/dxvk/dxvk_context.cpp（+1827/-7，fork 最大改动）
 #### flushMappedBuffer / flushMappedImage（`DxvkContext` 新入口）
 - **为什么存在**：WineHua 的 Venus vtest 桥接使用**独立的 Host Vulkan 映射**，CPU 写必须显式 `vkFlushMappedMemoryRanges` 发布，否则旧 fence 刷新影子映射时读不到新数据；D3D11 层（map/unmap、UpdateSubresource、初始化上传、HUD/gamma 缓冲）统一经 `EmitCs` 在此执行 flush，可走 cmdlist 批处理（见 dxvk_cmdlist）。
 - **依赖的上游行为**：`DxvkBufferSliceHandle` / `DxvkImage` 的 memory 归属（m_buffer / m_buffers 多 backing）、`nonCoherentAtomSize`。
@@ -173,9 +197,10 @@
 - **为什么存在**：着色器 uniform buffer（`m_buffer`）初始 memcpy 后 `flushMappedSlice`。
 - **验证方法**：shader uniform 生效（如 Heaven 后期参数）。
 
-### src/dxvk/dxvk_swapchain_blitter.cpp / src/dxvk/hud/dxvk_hud_renderer.cpp
-- **为什么存在**：gamma LUT 缓冲与 HUD 顶点缓冲的 CPU 写后 flush（`winehuaFlushDynamicMapped` 门控）。
-- **验证方法**：HUD 正常显示、gamma 生效。
+### src/dxvk/dxvk_swapchain_blitter.cpp / .h / present shaders / src/dxvk/hud/dxvk_hud_renderer.cpp（`5058927a`）
+- **为什么存在**：(1) gamma LUT 缓冲与 HUD 顶点缓冲的 CPU 写后 flush（`winehuaFlushDynamicMapped` 门控）。(2) present 颜色空间错配：源是 sRGB 视图、目标交换链格式非 sRGB 时，blit 直接线性拷贝导致画面偏色。
+- **做法**（`5058927a`）：blit shader 内按 push constant `encodeSrgb` 做线性→sRGB 编码（4 个 present .frag 同步修改：dxvk_present_frag{,_blit,_ms,_ms_amd}）；附 `WineHuaPresentFormat` trace 与 `DXVK_WINEHUA_TRACE_ALPHA`（RGBA alpha 直方图）。
+- **验证方法**：HUD 正常显示、gamma 生效；sRGB 源→非 sRGB 目标的交换链画面与原生一致。
 
 ### src/d3d11/d3d11_texture.cpp / .h
 - **为什么存在**：(1) **RGBA8 SNORM RT 模拟**：Maleoon 暴露 sampled R8G8B8A8_SNORM 但不支持 color attachment → `DXVK_WINEHUA_EMULATE_RGBA8_SNORM_RT=1/on/auto` 时，资源本地替换为 R16G16B16A16_SFLOAT（去掉 MUTABLE、清 viewFormats、tiling optimal→linear 回退）；`GetViewFormat` 重定向 view 格式、`IsRgba8SnormRtEmulated` 供上传/拷贝判定。(2) **BC 模拟约束**：map 模式非 NONE、RT/DS/UAV 绑定、shared 语义的 BC 纹理创建时 `throw`（只支持 device-local sampled）。(3) `winehuaForceSampledGeneral`（GENERAL vs SHADER_READ_ONLY_OPTIMAL 的 A/B）。(4) format trace（image-query + SNORM 候选格式探测）。
@@ -235,6 +260,18 @@
 - **不变式**：`static_assert(sizeof == 32)`；非 BORDER 寻址采样器不产生模拟数据。
 - **验证方法**：`WineHua: custom-border path=emulated|native|unsupported` 日志 + 边缘像素 A/B。
 
+### 单采样 A2C 透明片元 discard（`de1f327b`，dxbc_compiler / dxvk_graphics / dxvk_shader）
+- **为什么存在**：Maleoon 上单采样（无 MSAA）的 alpha-to-coverage 不剔除全透明片元——透明树叶/围栏类贴图留下整片方块。Vulkan 规范里 A2C 只在 MSAA 下定义，单采样行为是驱动自由度。
+- **做法**：FS 最后一个输出后按 spec constant 门控插入 `opKill`（alpha 低于 A2C 阈值即丢弃）；开关 `DXVK_WINEHUA_SINGLE_SAMPLE_A2C`，quirk `maleoon-single-sample-a2c`（Maleoon 设备默认开，支持 `no-` 反向前缀）。
+
+### instance divisor CPU 展开（`c3fc869d`，d3d11_context.cpp/.h、d3d11_input_layout.h）
+- **为什么存在**：Venus 无 `vertexAttributeInstanceRateDivisor`，用 instance divisor 的程序（草地/植被类 instancing）每实例只取第一个顶点。
+- **做法**：输入布局中存在 fetchRate>1 的属性且设备不支持该特性时，immediate context 在 CPU 把 per-instance 顶点按 divisor 展开成普通顶点流（展开结果按输入布局 Sha1 缓存，256MB 上限）；deferred context 不支持。
+
+### STAGING 读回前直 flush（`4d390bec`，d3d11_context_imm / d3d11_initializer）
+- **为什么存在**：STAGING 模式的 CPU 读回（CopySubresourceRegion 到 staging 后 Map READ）不走 EmitCs 批处理路径，shadow 映射下读到的可能是旧数据。
+- **做法**：STAGING 路径在读回前直接同步调 `flushMappedSlice`（不经 CS 队列）；动态模式仍走 EmitCs 批处理。
+
 ### src/dxvk/dxvk_gpu_query.cpp
 - **为什么存在**：query begin/end/result 的 `WineHuaQuery` trace（pool/id/type/vkResult）。
 - **验证方法**：`DXVK_WINEHUA_TRACE_QUERY=1`。
@@ -283,4 +320,4 @@
 
 - 上游行为依赖风险最高的三点（2.x 重写时必须先确认上游是否仍保留）：(1) 1.10.3 的绑定掩码 bool spec 常量机制（2.x 已改用其他描述符方案，冻结逻辑可整体删除）；(2) 1.10.3 的 `updateDescriptorSetWithTemplate` 描述符模板路径（split 配对依赖其槽位布局）；(3) `wine/dlls/d3dx9_36/bcdec.h` 相对包含路径（子模块布局耦合）。
 - 诊断类改动（约占 diff 一半）在 2.x 中应整体按"弃用-重写"处理，语义来源只有环境变量名与日志格式，不复用实现。
-- 未标注 [待确认] 的条目均经代码核实；commit 数 28（任务背景中的 65 与实际 `v1.10.3..HEAD` 不符，以实测为准）。
+- 未标注 [待确认] 的条目均经代码核实（2026-09-25 全量复核）；commit 数以 `v1.10.3..HEAD` 实测 33 为准。

@@ -566,7 +566,7 @@ DXVK 完全不知情 —— 它以为自己还在用普通 `VK_KHR_swapchain`。
 开关**（如 `DXVK_WINEHUA_DUAL_SRC_MODE`，见 `dxvk/src/dxvk/dxvk_winehua_trace.h`），
 都是环境变量级的，不涉及字节格式，改它们不产生版本漂移。
 
-（DXVK 的补丁清单见 `docs/assets/submodules/dxvk.md`。）
+（DXVK 的补丁清单见 `docs/customization/dxvk-legacy.md`。）
 
 ---
 
@@ -578,7 +578,7 @@ DXVK 完全不知情 —— 它以为自己还在用普通 `VK_KHR_swapchain`。
 2. **对端必须同步改**：改 C2 要同时动 mesa（发的那边）和 virglrenderer（收的
    那边）；改 C1 要同时动 wine 和 mesa；改 C8（函数签名）要同时动 win32u
    （wine）和 mesa；改 C9 要同时动 mesa 和 virglrenderer。改完跑双平台全量回归。
-3. **同步更新本文档和 `docs/assets/submodules/*.md`**：该目录记录
+3. **同步更新本文档和 `docs/customization/*.md`**：该目录记录
    "这一个仓库改了协议的哪一版"，本文档记录"整条协议长什么样"。
 4. **魔数、版本、长度、序号这四样缺一不可**：文件/包的身份证、格式版本、
    字段数量、请求-回复配对。

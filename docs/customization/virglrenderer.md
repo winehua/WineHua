@@ -1,9 +1,27 @@
-# virglrenderer 补丁清单
+# virglrenderer 定制
 
+> 适用场景：改宿主图形服务、排查 Venus/VirGL 渲染问题、合并上游 main 时。
 > 基线：8cb58e47（2026-06-10，upstream/main merge-base）
-> 生成：2026-08-01，统计更新：2026-09-22
-> 说明：本清单服务未来合并上游 main 时确认每个 hunk 的意图与不变式
-> 范围：8cb58e47..HEAD，53 files（修改 52 / 新增 1），+8942/-955，39 个 commit
+> 生成：2026-08-01；2026-09-25 逐条对照代码核实（修正 GPU upload quirk 状态、补 fence 缓存 / sRGB / 干净停止 / Gate C 诊断等 8 条遗漏）
+> 范围：8cb58e47..HEAD，53 files（修改 52 / 新增 1），+8942/-955，39 commit（38 非 merge + 1 merge）
+
+## 定制点总览
+
+| 定制点 | 问题 | 思路 |
+|---|---|---|
+| OHOS shadow 内存桥 | Maleoon 无 dma-buf 外部内存导出，guest/host 无法共享 Vulkan 内存 | host 建匿名 shadow 文件给 guest 映射，submit/fence 时机双向 memcpy + 缓存域转换 |
+| GPU upload（Maleoon 自动开启） | mapped 写对 shader 读的可见性不可靠，整内存 flush 太贵 | 脏区间录成 CmdUpdateBuffer 先于 guest submit 提交，数据经 GPU transfer 落位 |
+| present 回调桥 | 无 WSI，帧要送到 OHNativeWindow | vtest 私有命令 + 宿主注入回调；present 与 QueueSubmit 共享 vk_mutex 串行 |
+| fence 缺陷兜底 | Maleoon `GetFenceStatus` 瞬态 OOM 毒化 ring | 重试 ≤4 次后降级为 `WaitForFences(timeout=0)` 等价查询 |
+| per-client fence | 全局隐式 fence 计数造成跨 client 死锁 | 每 client 记录区间，busy-wait 只比较自己的 |
+| bool spec 常量冻结 | Maleoon 编译器错误处理 bool 特化常量 | SPIR-V 二进制上烘焙成普通常量 |
+| Z32 深度格式仿真 | GLES 宿主上 Z32 做 FBO attachment 不完整 | 按格式回填为 DEPTH24 仿真项 |
+| EGL 无 GBM | 无 GBM/libdrm 的嵌入式合成器 | surfaceless/default EGL 直接初始化（meson option 控制） |
+| vtest 干净停止（29afbab2） | 同进程 dlopen 的 vtest server 没有「停下来」的通道 | `winehua_vtest_request_stop` + wake pipe，线程安全退出 |
+| EGL fence 指针缓存（6627c031） | libepoxy 延迟 wrapper 在 GL context 销毁后查扩展必失败 → 引擎停止/重启闪退 | `eglGetProcAddress` 显式解析后缓存函数指针 |
+| sRGB destination（4c1f9abc） | sRGB attachment 判定不被遵守，输出偏色 | 附件格式判定 + `EGL_GL_COLORSPACE_SRGB_KHR` 导入属性 |
+| invalidation 保留上传（fbd32c17） | coverage 失效把 pending upload 一起丢掉，动态数据半旧 | 失效时保留 pending upload / snapshot 源选择 |
+| 同进程 render server 适配 | SCM_RIGHTS 在线程间共享 fd，close 与接收方竞争 | 发送成功不 close；thread 模式跳过 fstat 校验 |
 
 ## 变更总览
 
@@ -12,7 +30,8 @@
 | 类别 | 文件 | 性质 |
 |------|------|------|
 | OHOS shadow 内存兼容路径（核心） | vkr_device_memory.c/h、vkr_buffer.c/h、vkr_queue.c/h、vkr_context.c/h、vkr_descriptor_set.c/h、vkr_command_buffer.c、vkr_ring.c/h、vkr_transport.c | 功能 + 诊断 |
-| WineHua present 桥（vtest→Venus→平台合成器） | vkr_renderer.c/h、vkr_device.c/h、vkr_instance.c、vkr_physical_device.c/h、vkr_image.c/h、virglrenderer.c/h、vtest/vtest_renderer.c、vtest/vtest_server.c、vtest/vtest_protocol.h、vtest/vtest.h、vtest/meson.build、**vtest/winehua_vtest_server.c（新增）** | 功能 |
+| WineHua present 桥（vtest→Venus→平台合成器） | vkr_renderer.c/h、vkr_device.c/h、vkr_instance.c、vkr_physical_device.c/h、vkr_image.c/h、virglrenderer.c/h、vtest/vtest_renderer.c、vtest/vtest_server.c/h、vtest/vtest_protocol.h、vtest/vtest.h、vtest/meson.build、**vtest/winehua_vtest_server.c（新增）** | 功能 |
+| Gate C 内存同步资格验证（VKD3D Gate，152b762c/c98ed477） | src/venus/vkr_cs.c/h、4 个 venus-protocol/vn_protocol_renderer_*.h | 诊断（SHADOW_MSYNC mapping sample 哈希） |
 | Venus 诊断埋点（Heaven UBO 问题定位） | vkr_pipeline.c/h、vkr_render_pass.c、vkr_command_buffer.c、vkr_descriptor_set.c | 诊断（默认关闭） |
 | VirGL/GLES 宿主侧适配 | vrend_winsys.c、vrend_winsys_egl.c、vrend_formats.c、vrend_renderer.c/h、vrend_decode.c | 功能 |
 | 同进程 render server 适配 | server/render_context.c、src/proxy/proxy_context.c | 功能 |
@@ -33,7 +52,7 @@
 - **验证方法**：DXVK 游戏首帧渲染；`WINEHUA_RESOURCE_TRACE=1` 看 blob 创建/导出路径。
 
 #### vkr_device_memory.c: vkr_dispatch_vkFlushMappedMemoryRanges / vkr_dispatch_vkInvalidateMappedMemoryRanges
-- **为什么存在**：上游这两个 dispatch 是 NULL（guest 不做显式 flush 也有 virtio 语义保证），但 OHOS shadow 路径下 guest 的 flush/invalidate 是唯一同步信号，必须接管。flush = 把 shadow 脏区间拷到 host_map 并记录精确脏范围；invalidate 分两种模式：`VKR_WINEHUA_SHADOW_FROM_HOST=precise` 做 host→shadow 区间拷回，否则保持"写开始标记"的旧 DXVK 兼容语义（`shadow_guest_write_depth`）。
+- **为什么存在**：上游这两个 dispatch 是 NULL（guest 不做显式 flush 也有 virtio 语义保证），但 OHOS shadow 路径下 guest 的 flush/invalidate 是唯一同步信号，必须接管。flush = 把 shadow 脏区间拷到 host_map 并记录精确脏范围；invalidate 分两种模式：`VKR_WINEHUA_SHADOW_FROM_HOST=precise` 做 host→shadow 区间拷回，否则保持"写开始标记"的旧 DXVK 兼容语义（`shadow_guest_write_depth`）；modern DXVK 走 Vulkan 原语义（flush=发布、invalidate=可见性，6ad5b267）。invalidate 触发 coverage 失效时保留 pending upload / snapshot 源选择，避免动态数据半旧（fbd32c17）。
 - **依赖的上游行为**：`vkr_context_init_device_memory_dispatch` 原本将两个 dispatch 置 NULL。
 - **不变式**：flush 必须把脏数据送到 host 内存，invalidate 必须把 GPU 写回结果拷回 shadow；`shadow_generation_mutex`（serialize 模式）保证 flush 与 submit 不同步时 shadow/host 拷贝不竞争。丢失 → 动态 UBO/顶点数据错乱、渲染闪烁。
 - **验证方法**：Heaven/游戏动态 uniform 场景；`VKR_WINEHUA_SHADOW_TRACE=1` 的 OHOS shadow remote flush/invalidate 日志。
@@ -137,7 +156,7 @@
 - **验证方法**：多窗口同时运行（explorer + 游戏）；窗口频繁开关。
 
 #### vtest/winehua_vtest_server.c（新增文件）
-- 把 vtest 主程序封装成可 dlopen 的共享库 `libwinehua_vtest_server.so`，暴露 `winehua_vtest_main` 与三个 setter（present 回调、Venus present 回调、device release 回调），供鸿蒙 app 以 native child 方式启动并注入合成器回调。
+- 把 vtest 主程序封装成可 dlopen 的共享库 `libwinehua_vtest_server.so`，供鸿蒙 app 以 native child 方式启动并注入合成器回调。导出 6 个符号：`winehua_vtest_main`、三个 setter（present 回调、Venus present 回调、device release 回调）、`winehua_vtest_request_stop` / `winehua_vtest_reset_stop_request`（29afbab2，干净停止：wake pipe 唤醒阻塞中的 accept/poll，线程安全退出，配合宿主「停止引擎」路径）。
 
 #### vtest_renderer.c 其余：诊断设施
 - `WINEHUA_VIRGL_LOG_PATH` 统一诊断日志（fence submit/complete 对账、submit 失败命令流 dump（最多 64 条命令）、blob 创建/导出轨迹、busy-wait 时长）、`WINEHUA_VTEST_PRESENT_PERF_SUMMARY`、`WINEHUA_RESOURCE_TRACE`、`WINEHUA_VK_PRESENT_TRACE`。纯诊断。
@@ -160,8 +179,8 @@
 - **不变式**：元数据在 create 时快照，不受后续 host 驱动影响。
 
 #### vkr_physical_device.c/h
-- `physical_dev->instance` 回指（present 路径需要 instance handle）；`winehua_shadow_gpu_upload_quirk` 标志当前恒 false——**GPU upload 只允许显式环境变量开启**（"explicit, qualification-gated opt-in"），未来硬件验证通过后可在此改默认。
-- **不变式**：quirk 默认 false 是正确性保险，勿在上游合入时顺手置 true。
+- `physical_dev->instance` 回指（present 路径需要 instance handle）；`winehua_shadow_gpu_upload_quirk` 标志：**Maleoon 设备自动置 true**（vendorID 0x19e5 且 deviceName 含 "Maleoon"，ba8e4fa8），`VKR_WINEHUA_GPU_UPLOAD=0/1` 仍可显式覆盖。
+- **不变式**：自动开启只按 vendorID+设备名判定，非 Maleoon 设备保持 false；上游合入时注意这条 quirk 是设备经验结论，不是通用正确性。
 
 ### 四、VirGL/GLES 宿主侧适配
 
@@ -174,6 +193,17 @@
 #### vrend_renderer.c: vrend_renderer_init（VIRGL_DISABLE_EGL_FENCE）
 - **为什么存在**：OHOS EGL 的 fence 路径（eglClientWaitSyncKHR）可无限超时，允许环境变量禁用 EGL fence 改用 GL 路径（配合 vtest 的 egl-main 模式）。
 - **不变式**：无（默认启用 EGL fence 不变）。
+
+#### vrend_winsys_egl.c: EGL fence 函数指针缓存（6627c031）
+- **为什么存在**：libepoxy 的延迟解析 wrapper 在 GL context 销毁后再查扩展必然失败并 abort——手机上「停止/重启引擎」必崩（应用侧同源问题见 libepoxy 条目与手机停引擎闪退修复）。
+- **做法**：`eglGetProcAddress` 显式解析 fence 相关入口后缓存到结构体，运行时只走缓存指针，不经过 libepoxy wrapper。
+- **不变式**：解析失败不返回 false 吞错，相应功能入口保持可判空。
+- **验证方法**：手机上反复停止/重启引擎不闪退。
+
+#### vrend_winsys_egl.c: sRGB destination surface control（4c1f9abc）
+- **为什么存在**：sRGB attachment 的判定不被遵守，guest 期望 sRGB 输出时宿主按线性写，画面偏色。
+- **做法**：按附件格式判定 sRGB destination；导入表面时带 `EGL_GL_COLORSPACE_SRGB_KHR` 属性。
+- **验证方法**：sRGB 内容与原生输出对比无偏色。
 
 #### vrend_winsys.c / vrend_winsys_egl.c
 - **为什么存在**：OHOS 嵌入式合成器提供 EGL 但无 GBM/libdrm。`HAVE_EPOXY_EGL_H` 且无 ENABLE_GBM 时，用 `EGL_DEFAULT_DISPLAY` 直接初始化 surfaceless/default EGL；`vrend_winsys_cleanup` 的守卫从 ENABLE_GBM 改为 HAVE_EPOXY_EGL_H。winsys_egl 增加 `VIRGL_DISABLE_NATIVE_FENCE_FD`（绕过 native fence fd 轮询）与 `WINEHUA_VIRGL_LOG_PATH` fence-wait 诊断。
@@ -199,5 +229,5 @@
 
 1. **CRLF 噪音**：meson.build / meson_options.txt / vrend_winsys.c 用 `git diff -w` 提取真实改动，三文件真实功能改动仅 15/14/17 行。
 2. **OHOS 条件编译是安全网**：绝大部分功能代码在 `#ifdef __OHOS__` 内，非 OHOS 构建行为与上游一致（除 vrend_formats.c 的 GLES 格式 override 与 fence 诊断外），合入上游时可按平台剥离。
-3. **环境变量清单**（合并时逐一确认去留）：VKR_WINEHUA_GPU_UPLOAD / GPU_UPLOAD_INLINE / GPU_UPLOAD_WAIT / GPU_UPLOAD_SERIALIZE、VKR_WINEHUA_SHADOW_TRACE / SHADOW_TO_HOST / SHADOW_FROM_HOST / SHADOW_MSYNC / SHADOW_DIRTY_LIST / SHADOW_MERGE_RANGES / SHADOW_COVER_UPLOAD / SHADOW_SUBMIT_UNMAP_LARGE / SHADOW_GENERATION_SERIALIZE、VKR_WINEHUA_BOUND_BUFFER_LIST / BATCH_FLUSH / COVERAGE_SORT / PERF_SUMMARY / PERF_SAMPLE_INTERVAL / FRAME_TIMELINE_INTERVAL / DESCRIPTOR_UPDATE_SERIALIZE、WINEHUA_VKR_TRACE_UBO_IDENTITY / TRACE_CAPTURE / TRACE_SAMPLED / TRACE_PIPELINE / TRACE_PRESENT_IMAGE / PRESENT_STAGE_TRACE、WINEHUA_VKR_FREEZE_BOOL_SPEC、WINEHUA_VIRGL_LOG_PATH / VIRGL_SYNC_MODE / RESOURCE_TRACE / VTEST_PRESENT_PERF_SUMMARY / VK_PRESENT_TRACE、VIRGL_DISABLE_EGL_FENCE / DISABLE_NATIVE_FENCE_FD、VTEST_SYNC_GL_FINISH。
+3. **环境变量清单**（合并时逐一确认去留）：VKR_WINEHUA_GPU_UPLOAD / GPU_UPLOAD_INLINE / GPU_UPLOAD_WAIT / GPU_UPLOAD_SERIALIZE、VKR_WINEHUA_SHADOW_TRACE / SHADOW_TO_HOST / SHADOW_FROM_HOST / SHADOW_MSYNC（Gate C mapping sample 内容哈希，152b762c/c98ed477）/ SHADOW_DIRTY_LIST / SHADOW_MERGE_RANGES / SHADOW_COVER_UPLOAD / SHADOW_SUBMIT_UNMAP_LARGE / SHADOW_GENERATION_SERIALIZE、VKR_WINEHUA_BOUND_BUFFER_LIST / BATCH_FLUSH / COVERAGE_SORT / PERF_SUMMARY / PERF_SAMPLE_INTERVAL / FRAME_TIMELINE_INTERVAL / DESCRIPTOR_UPDATE_SERIALIZE、WINEHUA_VKR_TRACE_UBO_IDENTITY / TRACE_CAPTURE / TRACE_SAMPLED / TRACE_PIPELINE / TRACE_PRESENT_IMAGE / PRESENT_STAGE_TRACE、WINEHUA_VKR_FREEZE_BOOL_SPEC、WINEHUA_VIRGL_LOG_PATH / VIRGL_SYNC_MODE / RESOURCE_TRACE / VTEST_PRESENT_PERF_SUMMARY / VK_PRESENT_TRACE、VIRGL_DISABLE_EGL_FENCE / DISABLE_NATIVE_FENCE_FD、VTEST_SYNC_GL_FINISH。
 4. **已知噪音**：vkr_device_memory.c 中一处上游注释被意外截断（"mapped buffe"，少一个 'r'），是误删，合入时恢复。

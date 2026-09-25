@@ -1,18 +1,34 @@
-# mesa 补丁清单
+# mesa 定制
 
+> 适用场景：改 guest 侧 GL/Vulkan 驱动、排查 Venus 传输问题、跟随 OpenHarmony 升级 mesa 时。
 > 基线：OpenHarmony-v6.0-Beta1（merge-base e5d8c3f2，2025-06-13）
-> 生成：2026-08-01，统计更新：2026-09-22
+> 生成：2026-08-01；2026-09-25 逐条对照代码核实（统计补全，修正 perf 字段数与 ALWAYS_NOTIFY 语义，补 persistent_map_write_seen 分类判据）
 > 说明：mesa 上游是 OpenHarmony 官方分支，清单服务未来跟随 OH 发布升级时确认每个 hunk 的意图与不变式
+
+## 定制点总览
+
+| 定制点 | 问题 | 思路 |
+|---|---|---|
+| vtest present 命令 | guest 帧要显式推送到宿主窗口 | 两条私有命令（GL/VK 路径），带对象 id 与显示 deadline |
+| present 帧节奏与 ring drain | present 抢在 submit 前会拿不到对象（-EAGAIN 重试风暴甚至毒化） | present 前 ring 全量 drain + 按宿主 deadline sleep 对齐刷新 |
+| GL frontbuffer flush | Wine GL 双缓冲的 flush 收不到 | `WINEHUA_VTEST_PRESENT` 下强制走完整 flush 路径 |
+| fence 等待三模式 | fence feedback 不可用，轮询退化跨 socket | timeline 事件 / 直连等待 / 上游轮询，env 选择 |
+| ring 强制通知 | shadow 映射下宿主写的 IDLE 状态 guest 读不到 | `VN_WINEHUA_ALWAYS_NOTIFY_RING` 强制通知；`="1"` 时跳过 1ms 合并窗口逐次通知 |
+| tail 发布内存序 | Box64 下 native memcpy 拷 ring payload，x86 TSO 假设不成立 | `VN_WINEHUA_STRONG_RING_BARRIER` 加 seq_cst fence |
+| 远程内存同步 | shadow 下 coherent 写不进宿主 dirty 列表 | Flush/Invalidate 走 Venus 协议让宿主更新；persistent 映射在 submit 前发布 |
+| persistent 映射分类（2939cbb816d） | readback-only 的 persistent 映射不该 Guest→Host 发布，否则读回被宿主旧数据覆盖 | `persistent_map_write_seen` 原子标志：只有发生过显式 flush 的映射才发布 |
+| guest 侧性能归因 | vtest 下 ring 完全同步，帧时间去哪了无从知晓 | ring 热路径计时（512 槽按命令分类）+ 60 万次节流输出 |
+| 诊断打点 | guest 对象与 Venus 对象对不上账 | 描述符/图像/管线/查询的身份映射 trace，全部 env 门控 |
 
 ## 变更总览
 
-- 修改文件：24（diff 范围内无新增文件）
+- 范围：`e5d8c3f2..HEAD` 共 16 commit，修改 24 文件（无新增），+2093/-24
 - 分组：
   - 构建系统 2（meson.build ×2）
   - GL/virgl 呈现桥 6（st_manager.c、vulkan.sym、virgl_vtest_socket/winsys.c/winsys.h、vtest_protocol.h）
   - Venus 呈现桥 6（vn_renderer.h、vn_renderer_vtest.c、vn_device.c、vn_instance.c、vn_queue.c/h）
   - Venus ring 同步 2（vn_ring.c/h）
-  - Venus 内存桥 2（vn_device_memory.c/h）
+  - Venus 内存桥 3（vn_device_memory.c/h、vn_device.h）
   - 诊断打点 5（vn_command_buffer.c、vn_descriptor_set.c、vn_image.c、vn_pipeline.c、vn_query_pool.c）
 - 共性：**全部变更均为运行时环境变量 opt-in（VN_WINEHUA_*/WINEHUA_*/DXVK_WINEHUA_*），无编译期 `__OHOS__` 分支**。默认关闭时行为与上游一致，这是合并冲突时最容易误删、也最容易被上游接受的部分。
 
@@ -66,13 +82,13 @@
 - **验证方法**：`VN_WINEHUA_PERF_SUMMARY=1` 跑 Heaven/游戏，日志有 submit/seqno/space/roundtrip 分布；默认关闭时帧率与上游基线无差异。
 
 ### src/virtio/vulkan/vn_ring.c: vn_ring_store_tail / force_notify
-- **为什么存在**：两处同步修复。①`VN_WINEHUA_STRONG_RING_BARRIER=1` 在 tail 发布前加 seq_cst fence——Box64 下 ring payload 可能被 **native ARM64 memcpy** 拷贝，x86 TSO 假设不成立，此开关用于证明 tail 发布是否会超过共享内存写。②`VN_WINEHUA_ALWAYS_NOTIFY_RING`/`VN_WINEHUA_REMOTE_MEMORY_SYNC` 强制通知：WineHua 的 Guest/Host 分离 shadow 映射下，宿主侧写入的 IDLE 状态字 guest 读不到，通知不能依赖 IDLE 位，否则对象创建在 private present 前不可见。
+- **为什么存在**：两处同步修复。①`VN_WINEHUA_STRONG_RING_BARRIER=1` 在 tail 发布前加 seq_cst fence——Box64 下 ring payload 可能被 **native ARM64 memcpy** 拷贝，x86 TSO 假设不成立，此开关用于证明 tail 发布是否会超过共享内存写。②`VN_WINEHUA_ALWAYS_NOTIFY_RING`/`VN_WINEHUA_REMOTE_MEMORY_SYNC` 强制通知：WineHua 的 Guest/Host 分离 shadow 映射下，宿主侧写入的 IDLE 状态字 guest 读不到，通知不能依赖 IDLE 位，否则对象创建在 private present 前不可见。置严格 `"1"` 时进一步**跳过 1ms 通知合并窗口、逐次通知**（36d291926a3，供 uncoalesced 场景排查）；remote-memory 模式下默认仍保留合并。另有 `VN_WINEHUA_PERF_LOG`、`VN_WINEHUA_RING_NOTIFY_TRACE` 两个诊断开关（perf 落盘与通知 trace）。
 - **依赖的上游行为**：release-acquire 配对（host acquire 读 tail）、1ms 通知合并窗口。
 - **不变式**：强制通知只改变"何时发 notify"，不改变 seqno 计数与提交顺序；strong barrier 保持 opt-in（x86 默认路径不能退化）。
 - **验证方法**：DXVK 游戏启动/切场景不挂起；`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 时启动场景回归。
 
 ### src/virtio/vulkan/vn_ring.h
-- **为什么存在**：`vn_ring_perf_stats`（28 字段）、`VN_RING_PERF_TOP_REPLY_COUNT 8`、`enum vn_ring_perf_rpc` 与 4 个导出 API。
+- **为什么存在**：`vn_ring_perf_stats`（30 字段，fence status 与 query results 各含 not_ready 计数，ee411de9bb3/19fe8b684b0）、`VN_RING_PERF_TOP_REPLY_COUNT 8`、`enum vn_ring_perf_rpc` 与 4 个导出 API。
 - **不变式**：`vn_ring_get_perf_stats` 宏加载与结构体字段必须同步（跨文件对不上会读到脏字段，不崩溃但日志错乱）。
 - **验证方法**：perf 摘要日志字段齐全。
 
@@ -104,9 +120,9 @@
 - **验证方法**：编译 + 链接检查导出符号。
 
 ### src/virtio/vulkan/vn_device_memory.c/h、vn_device.c/h、vn_queue.c: remote/persistent map 同步
-- **为什么存在**：OHOS vtest 用 shadow 文件映射而非直接映射 host VkDeviceMemory，`vn_renderer_bo_flush` 只对本地映射有效。`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 时：①新增 `map_offset` 记录（上游只有 map_end）；②Unmap 时对 HOST_COHERENT 内存自动 flush 全映射区间（shadow 下 coherent 写不进 host dirty 列表）；③Flush/Invalidate 额外走 Venus 协议 `vn_call_vk*` 让宿主更新映射。VKD3D 的 upload heap 会长期保持映射，常量/实例数据没有 Unmap 边界；`VN_WINEHUA_PERSISTENT_MAP_SYNC=1` 因而在 device 上追踪当前映射的 coherent allocations，并在 QueueSubmit/QueueSubmit2 进入宿主前通过同一协议发布映射范围。
+- **为什么存在**：OHOS vtest 用 shadow 文件映射而非直接映射 host VkDeviceMemory，`vn_renderer_bo_flush` 只对本地映射有效。`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 时：①新增 `map_offset` 记录（上游只有 map_end）；②Unmap 时对 HOST_COHERENT 内存自动 flush 全映射区间（shadow 下 coherent 写不进 host dirty 列表）；③Flush/Invalidate 额外走 Venus 协议 `vn_call_vk*` 让宿主更新映射。VKD3D 的 upload heap 会长期保持映射，常量/实例数据没有 Unmap 边界；`VN_WINEHUA_PERSISTENT_MAP_SYNC=1` 因而在 device 上追踪当前映射的 coherent allocations，并在 QueueSubmit/QueueSubmit2 进入宿主前通过同一协议发布映射范围——**但只发布发生过显式 flush 的映射**（2939cbb816d：`persistent_map_write_seen` 原子标志，CPU 真写过的才发布；readback-only 的映射绝不 Guest→Host 发布，否则宿主旧数据会覆盖 guest 读回结果）；诊断开关 `VN_WINEHUA_PERSISTENT_MAP_SYNC_TRACE`。
 - **依赖的上游行为**：`vn_FlushMappedMemoryRanges` 的 bo flush 分支、`VK_WHOLE_SIZE` 语义。
-- **不变式**：`map_offset/map_end` 与上游 `map_end` 的初始化/清零位置一致（Unmap 清零）；mapped list 的加入、移除和提交遍历由 device mutex 保护；persistent 开关必须保持默认关闭且仅由 VKD3D profile 注入，DXVK 路径不能承担逐提交 flush；任一开关关闭时上游同步语义不变。
+- **不变式**：`map_offset/map_end` 与上游 `map_end` 的初始化/清零位置一致（Unmap 清零）；mapped list 的加入、移除和提交遍历由 device mutex 保护；persistent 开关必须保持默认关闭且仅由 VKD3D profile 注入，DXVK 路径不能承担逐提交 flush；write_seen 分类保证读回路径零污染；任一开关关闭时上游同步语义不变。
 - **验证方法**：`VN_WINEHUA_REMOTE_MEMORY_SYNC=1` 跑 DXVK 游戏；`REMOTE_MEMORY_SYNC=1 + PERSISTENT_MAP_SYNC=1` 跑 vkd3d-proton `triangle.exe` 与持续映射常量/实例缓冲的 `gears.exe`，确认齿轮连续旋转、Host 日志有 submit 前 flush 且无 device loss/全局 wait；关闭 persistent 开关回归 DXVK 默认路径。
 
 ### 诊断打点组（vn_command_buffer.c / vn_descriptor_set.c / vn_image.c / vn_pipeline.c / vn_query_pool.c）
@@ -123,7 +139,7 @@
 
 ## 跟进 OH 新版本时的检查要点
 
-1. 协议头两文件与 virglrenderer fork 同步 diff，确认 VERSION/字段序未漂移；
+1. 协议头两文件与 virglrenderer fork 同步 diff 时**只对 WINEHUA 命令块**（`VCMD_WINEHUA_PRESENT` 0x57485052 / `VCMD_WINEHUA_VK_PRESENT` 0x57485650 起，含 VERSION/字段序/reply 布局）——两头的上游基线本就不同（virgl 侧 VTEST_PROTOCOL_VERSION 4 带 DRM_SYNC 系列，mesa 侧 OH 旧基线为 2/3），整文件 diff 必然误报漂移。2026-09-25 实测 WINEHUA 块逐字节一致；
 2. `struct vn_ring` 若上游改动字段（如新增共享状态），perf 数组与开关字段的嵌入位置需复核；
 3. 上游若引入新 `VkCommandTypeEXT` 枚举值，确认 < 512 槽约束仍成立；
 4. 上游 vtest 命令号若增长到 0x57 区域（不可能，远小于），需重新选址。
