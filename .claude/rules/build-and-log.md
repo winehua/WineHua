@@ -53,8 +53,8 @@ bash scripts/package.sh deploy <设备IP>      # 卸载 + 推送 + 安装
    hdc -t <IP> shell "setsid sh -c 'hilog > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
    ```
 
-   **落盘时不要加任何过滤**——全量收、事后离线过滤。过滤是按假设掐日志，恰恰会漏掉
-   假设之外的原因；详见 `docs/debugging/observability.md` 的「采集纪律」。
+   **落盘时不要加任何过滤**，全量收、事后离线过滤；详见
+   `docs/debugging/observability.md` 的「采集纪律」。
 
 2. **`hilog -t app` 不是按包名过滤**，它是"应用类日志"这个大类型，会把设备上所有应用的
    日志一起打出来，而且**漏掉 core 类**。实时查看时用 `-e winehua` 或 `-T <标签列表>`
@@ -91,8 +91,6 @@ bash scripts/package.sh deploy <设备IP>      # 卸载 + 推送 + 安装
 
 3. 在设备上操作，复现问题。
 4. 停止采集，按链路分段过滤分析（链路划分见 `docs/architecture/input.md`）。
-
-**死锁类问题：卡死前的最后一条日志就是最后一跳，问题在它后面那一步。**
 
 ## 相关文档
 
