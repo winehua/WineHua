@@ -70,15 +70,32 @@ export default class WineWindowAbility extends UIAbility {
       // 注册 Window 引用
       WineWindowManager.getInstance().registerWindow(this.toplevelId, mainWindow);
       // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
+      // [WINID] WWA 主窗口身份打点 (对照 WMS win NNN 归属)
+      hilog.info(DOMAIN, TAG, '[WWA] mainWindow id=%{public}d', mainWindow.getWindowProperties().id);
       testNapi.registerHostWindow(mainWindow.getWindowProperties().id);
       // 注册 WindowStage 引用 (popup 子窗口创建入口)
       WineWindowManager.getInstance().registerWindowStage(this.toplevelId, windowStage);
 
       // 父窗口移动/缩放 → 重新定位其 popup 子窗口
-      mainWindow.on('windowRectChange', () => {
+      mainWindow.on('windowRectChange', (data: window.RectChangeOptions) => {
         const mgr = WineWindowManager.getInstance();
         PopupWindowManager.getInstance().repositionPopups(
           this.toplevelId, mainWindow, mgr.getEffectiveScale());
+        // 拖拽缩放 (DRAG_START/DRAG) → 标记缩放中, onSurfaceChanged 的
+        // configure 据此带 RESIZING (Wine 才采用新尺寸); DRAG_END 发一次
+        // 0 尺寸 configure 让 Wine 退出 size-move (保持当前尺寸)
+        if (data.reason === window.RectChangeReason.DRAG_START ||
+            data.reason === window.RectChangeReason.DRAG) {
+          mgr.setResizeDragging(this.toplevelId, true);
+        } else if (data.reason === window.RectChangeReason.DRAG_END) {
+          mgr.setResizeDragging(this.toplevelId, false);
+          try {
+            testNapi.notifyToplevelResizeEnd(this.toplevelId);
+          } catch (e) {
+            hilog.warn(DOMAIN, TAG, '[WWA] #%{public}d notifyToplevelResizeEnd fail: %{public}s',
+              this.toplevelId, JSON.stringify(e));
+          }
+        }
       });
 
       // 应用 pending 事件
@@ -121,6 +138,11 @@ export default class WineWindowAbility extends UIAbility {
             mw.setWindowTitleButtonVisible(false, false, false);
             mw.setWindowDecorVisible(false);
             mw.setWindowDecorHeight(40);
+            // 窗口底色黑 (兜底): 主修复在 WineWindow 页的 Stack 底 (ARGB 帧
+            // 画面外的透明区透出的是它), 本层防页面加载前/重建的空窗期露
+            // 系统默认色 (浅色模式白)。窗口属性须在 loadContent 后设置才生效
+            // (同上标题栏配置); popup/modal 子窗口底色各自另设
+            try { mw.setWindowBackgroundColor('#FF000000'); } catch (_) {}
             // 禁止 OHOS 标题栏双击最大化 (与 Wine 内置最大化冲突),
             // maximize() 程序调用不受影响
             try { mw.setWindowTitleMoveEnabled(false); } catch (_) {}

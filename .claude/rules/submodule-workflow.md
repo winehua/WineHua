@@ -1,164 +1,22 @@
-# Submodule 管理方案
+# 分支与 submodule
 
-## 分支约定
+两条长期分支：`master`（公共技术线）、`main-ui`（产品与发布线）。
 
-| 分支 | 用途 |
-|------|------|
-| `master` | 稳定，永远可构建 |
-| `feature/*` | 日常开发，主仓库和 submodule **同名** |
+**两边都要的改动只在 master 提交**，然后 `git checkout main-ui && git merge master`；
+main-ui 独有的代码（`git cat-file -e master:<路径>` 报错的那些）直接在 main-ui 提交。
+两边各提交一份等价的改动，merge 时会把同一段代码合出重复的两份。
 
-## 流程一：Developer（提交 PR）
+功能分支走 `feature/<名字>`，主仓库和要改的 submodule **同名**。
 
-### 1. 准备
+## submodule 改动的硬约束
 
-```bash
-git checkout master
-git pull
-git submodule update --init --recursive
-git checkout -b feature/<name>
-```
+1. **submodule 的提交必须先推到它自己的远程**，主仓库的指针才有意义——
+   没推送的话，别人拉下来构建会直接失败。
+2. 合并前跑 `./scripts/check-submodules.sh` 检查指针。
+3. **操作 submodule 前先确认当前目录**：同一个相对路径在主仓库和 submodule 里
+   指向两个不同的地方，切错目录会改错仓库。
+4. 维护者合并时，主仓库的指针要指回 submodule 的**默认分支**，不是 feature 分支。
+5. **有提交就推到远程**，不要只留在本机——未推送的提交没有恢复手段。
 
-### 2. 有 submodule 改动？
-
-**没有** → 跳到第 3 步。
-
-**有**：
-
-```bash
-# a) submodule 开同名分支
-cd thirdparty/<name>
-git checkout -b feature/<name>
-
-# b) 改代码，commit
-git add .
-git commit -m "feat: xxx"
-
-# c) 推到 submodule remote
-git push origin feature/<name>
-
-# d) 回到主仓库，登记指针（此时指向 feature/<name>）
-cd ../..
-git add thirdparty/<name>
-git commit -m "submodule: <name> → feature/<name>"
-```
-
-### 3. 改主仓库代码
-
-```bash
-# 改代码，commit
-git add .
-git commit -m "feat: xxx"
-```
-
-### 4. 自测
-
-```bash
-make NATIVE_ARCH=arm64-v8a
-# 部署测试
-./scripts/check-submodules.sh   # 确认 submodule commit 已推送到 remote
-```
-
-### 5. 推分支，提 PR
-
-```bash
-git push origin feature/<name>
-# 在 GitHub 提 PR: feature/<name> → master
-```
-
-Developer 的工作到此结束。Maintainer 接管后续。
-
----
-
-## 流程二：Maintainer（审查并合并 PR）
-
-### 1. 拉取 PR 分支
-
-```bash
-git fetch origin feature/<name>
-git checkout feature/<name>
-```
-
-### 2. 检查 submodule 状态
-
-```bash
-./scripts/check-submodules.sh
-```
-
-对比 PR 分支和 master 的 submodule 指针。对每个有变更的 submodule：
-
-**a) Developer 是否已把改动推到 remote？**
-
-```bash
-cd thirdparty/<name>
-git ls-remote origin $(git rev-parse HEAD)
-# 无输出 → Developer 忘了 push → 打回
-```
-
-**b) submodule commit 是否已在 default 分支上？**
-
-```bash
-git branch -r --contains HEAD origin/<default> 2>/dev/null
-# 无输出 → submodule 的 feature 分支还没合
-```
-
-**c) 合入 submodule 的 default 分支：**
-
-```bash
-cd thirdparty/<name>
-git fetch origin
-git checkout <default>
-git merge feature/<name>
-git push origin <default>
-cd ../..
-```
-
-**d) 更新主仓库 submodule 指针（指回 default 分支）：**
-
-```bash
-cd thirdparty/<name>
-git checkout <default> && git pull
-cd ../..
-git add thirdparty/<name>
-git commit -m "submodule: <name> 指针更新到 <default>"
-```
-
-### 3. 审查代码
-
-```bash
-git diff master...feature/<name>           # 主仓库代码变更
-git log --oneline master..feature/<name>   # commit 历史
-```
-
-### 4. 构建测试
-
-```bash
-make NATIVE_ARCH=arm64-v8a
-# 部署测试
-```
-
-### 5. 合并
-
-```bash
-git checkout master
-git merge feature/<name> --ff-only
-git push origin master
-```
-
-### 6. 清理
-
-```bash
-git branch -d feature/<name>
-git push origin --delete feature/<name>    # 可选
-```
-
----
-
-## Maintainer 检查清单
-
-| 检查项 | 命令 | 不通过 |
-|--------|------|--------|
-| submodule commit 在 remote | `git ls-remote` | 打回 |
-| submodule 在 default 分支 | `git branch -r --contains` | Maintainer 合入 |
-| 主仓库指针指向 default | `./scripts/check-submodules.sh` | Maintainer 更新指针 |
-| 构建通过 | `make` | 打回 |
-| 可 fast-forward | `git merge --ff-only` | 检查基线 |
+完整的开发者 / 维护者流程（含每一步的命令和检查清单）见
+`docs/engineering/workflow.md`。

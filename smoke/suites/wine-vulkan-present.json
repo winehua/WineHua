@@ -1,0 +1,24 @@
+{
+  "name": "wine-vulkan-present",
+  "title": "Wine Vulkan present 链路（vkd3d 档下发 venus runtime）",
+  "tests": [
+    {
+      "case": "vulkan-smoke",
+      "id": "wine-vulkan-present",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
+        "WINEHUA_VULKAN_RUNTIME": "1"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    }
+  ]
+}

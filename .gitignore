@@ -17,8 +17,11 @@
 .DS_Store
 Thumbs.db
 
-# Claude
-.claude
+# Claude：rules 下的协作约定要入库，其余（本地配置等）忽略
+.claude/*
+!.claude/rules/
+# 这个文件写的是本机环境相关的操作，其他人用不到，不入库
+.claude/rules/local.md
 
 # Temp
 .temp/
@@ -32,6 +35,8 @@ out/
 /oh_modules
 /local.properties
 **/build
+# 文档目录名正好叫 build，不跟着构建产物一起忽略
+!docs/build/
 /.hvigor
 .cxx
 /.clangd
@@ -46,7 +51,6 @@ out/
 # build_native.sh 协议代码遗留输出点 (编译用 protocols/xdg-shell-protocol.c)
 /entry/src/main/cpp/xdg-shell-protocol.c
 /build-profile.json5
-.claude/rules/local.md
 
 # Third-party submodule build artifacts
 thirdparty/wine/build-*/

@@ -1,0 +1,25 @@
+{
+  "id": "opengl-amd64",
+  "title": "WGL OpenGL 对照（AMD64 真 PE，与 x64 槽的原生 ARM64 PE 对照）",
+  "exe": "winehua_opengl_amd64.exe",
+  "exe_dir": "x64-fex",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_opengl_smoke.c"
+    ],
+    "compiler": "llvm-x86_64",
+    "cflags": [
+      "-O2",
+      "-s",
+      "-DARCH_LABEL=\"amd64\""
+    ],
+    "libs": [
+      "-lopengl32",
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

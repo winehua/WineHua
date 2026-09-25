@@ -30,13 +30,6 @@ class ToplevelManager {
 public:
     // -- 公共类型 --
 
-    struct WindowMask {
-        int w = 0, h = 0;
-        uint64_t hash = 0;
-        std::vector<uint8_t> bits;  // w*h, 每像素 0/1
-        bool dirty = false;
-    };
-
     // toplevel/popup 聚合状态。字段全部私有: 读走 getter, 写走语义方法,
     // 编译器强制外部只能通过方法访问 — 变更纪律 (minimized/fullscreen 唯一
     // 权威 + 只经 WaylandServer::SetToplevel*) 由此落实。
@@ -135,12 +128,12 @@ public:
             lastReportedW_ = w; lastReportedH_ = h; return true;
         }
 
-        // -- ARGB 窗口剪影掩码 --
-        WindowMask& MutableMask() { return mask_; }  // 仅 wl_core 掩码生成用
-        const WindowMask& Mask() const { return mask_; }
-        // 消耗型取出 (move bits + 清 dirty; mask.w==0 = 从未生成)。
-        // 两个 TakeWindowMask 实现收敛后的唯一消费入口
-        bool TakeMask(WindowMask& out);
+        // -- WineHua modal 关系 (winehua_toplevel 协议) --
+        // 0 = 非模态; 否则为本模态对话框的 owner toplevelId。
+        // 模态窗口由 ToplevelManager::modalOf_ 组员化 (不入 z-order),
+        // BuildLayerListLocked 在 owner lane 展开 → 恒在 owner 上方。
+        uint32_t ModalOwnerId() const { return modalOwnerId_; }
+        void SetModalOwnerId(uint32_t v) { modalOwnerId_ = v; }
 
     private:
         std::vector<uint8_t> pixels_;   // empty() = 尚无帧
@@ -156,8 +149,8 @@ public:
         bool maximized_ = false;        // 窗口状态三元组之一 (见 IsMaximized 注释)
         bool isBackground_ = false;     // 渲染层, 不接收输入 (被切换掉的旧 root)
         bool fullscreen_ = false;
+        uint32_t modalOwnerId_ = 0;     // WineHua modal 关系 (见访问器注释)
         uint64_t fsPriority_ = 0;       // 全屏优先级序号 (规则见 fsPriority 注释)
-        WindowMask mask_;               // mask.w==0 = 从未生成
     };
 
     // -- 访问器 --
@@ -167,6 +160,10 @@ public:
 
     // 读路径: find 语义, miss 返回 nullptr
     ToplevelState* FindToplevelLocked(uint32_t id) {
+        auto it = toplevels_.find(id);
+        return it != toplevels_.end() ? &it->second : nullptr;
+    }
+    const ToplevelState* FindToplevelLocked(uint32_t id) const {
         auto it = toplevels_.find(id);
         return it != toplevels_.end() ? &it->second : nullptr;
     }
@@ -199,6 +196,12 @@ public:
     // 置顶 (Remove+Add 一体): 已在列则提到栈顶, 不在列则入列栈顶
     // (首次入列的全屏优先级取号在 AddToZOrder 内部完成)
     void RaiseToplevel(uint32_t id) {
+        // WineHua: raise 模态对话框本体 = raise 它的 owner (组提升)。
+        // 模态组员不在 z-order, 直接 Remove+Add 无效; 组提升后对话框
+        // 恒在 owner 上方这一静态关系由 BuildLayerListLocked 展开保证。
+        if (const auto* st = FindToplevelLocked(id)) {
+            if (st->ModalOwnerId()) id = st->ModalOwnerId();
+        }
         RemoveFromZOrder(id);
         AddToZOrder(id);
     }
@@ -216,6 +219,77 @@ public:
             RaiseToplevel(pinId);
         }
     }
+
+    // -- WineHua modal 关系 (winehua_toplevel 协议) --
+    // ownerId → 模态对话框列表 (设置顺序)。模态窗口不入 toplevelZOrder_
+    // (组员化): BuildLayerListLocked 在 owner lane 展开, 恒在 owner 上方
+    // (Win32 owned 窗口语义); RaiseToplevel(owner) 天然等于"组提升"。
+    // 嵌套模态 (modal 又是另一 modal 的 owner) 用 appendModal 递归展开。
+    // 调用方须已持有 mutex。
+    void SetModalLocked(uint32_t modalId, uint32_t ownerId, bool on) {
+        if (on && ownerId && modalId != ownerId) {
+            RemoveFromZOrder(modalId);
+            ToplevelState& st = EnsureToplevelLocked(modalId);
+            st.SetModalOwnerId(ownerId);
+            auto& list = modalOf_[ownerId];
+            if (std::find(list.begin(), list.end(), modalId) == list.end())
+                list.push_back(modalId);
+        } else if (!on) {
+            EraseModalLocked(modalId);
+        }
+    }
+    void EraseModalLocked(uint32_t modalId) {
+        auto* st = FindToplevelLocked(modalId);
+        uint32_t owner = st ? st->ModalOwnerId() : 0;
+        if (!owner) return;
+        FindToplevelLocked(modalId)->SetModalOwnerId(0);
+        auto it = modalOf_.find(owner);
+        if (it != modalOf_.end()) {
+            auto& list = it->second;
+            auto it2 = std::find(list.begin(), list.end(), modalId);
+            if (it2 != list.end()) list.erase(it2);
+            if (list.empty()) modalOf_.erase(it);
+        }
+        // 脱离组后恢复独立: 可见 (未标记 background/有帧/未最小化) 经
+        // EnsureInZOrder 回到 z-order 栈顶
+        if (ToplevelState* now = FindToplevelLocked(modalId)) {
+            if (now->HasFrame() && !now->IsBackground() && !now->IsMinimized()) {
+                EnsureInZOrder(modalId);
+            }
+        }
+    }
+    // owner 的模态列表 (设置顺序; 晚设置的在列表尾 = 展开时更上层)
+    std::vector<uint32_t> ModalListLocked(uint32_t ownerId) const {
+        auto it = modalOf_.find(ownerId);
+        return it != modalOf_.end() ? it->second : std::vector<uint32_t>{};
+    }
+    bool HasModalLocked(uint32_t ownerId) const {
+        auto it = modalOf_.find(ownerId);
+        return it != modalOf_.end() && !it->second.empty();
+    }
+    // id 是否为组员化模态 (须已持锁; commit 路径用, 防止组员被 EnsureInZOrder
+    // 当独立窗口重新塞回 z-order)
+    bool IsModalIdLocked(uint32_t id) const {
+        const auto* st = FindToplevelLocked(id);
+        return st && st->ModalOwnerId() != 0;
+    }
+    // 位移同步到 id 的整条 modal 组 (嵌套递归 — 组员也可能是另一 modal 的
+    // owner)。调用方须已持有 mutex。Win32 语义: owned 窗口随 owner 拖动。
+    // 只改组的 compositor 位置 (X/Y), 不碰 wine 坐标快照 (wine 的 geo 是
+    // 它自己的坐标系, 不随拖动变)。
+    void ApplyModalDeltaLocked(uint32_t ownerId, int32_t dx, int32_t dy) {
+        if (dx == 0 && dy == 0) return;
+        for (uint32_t m : ModalListLocked(ownerId)) {
+            auto* ms = FindToplevelLocked(m);
+            if (ms && ms->HasPosition()) {
+                ms->SetPosition(ms->X() + dx, ms->Y() + dy);
+                ApplyModalDeltaLocked(m, dx, dy);
+            }
+        }
+    }
+    // 命中拦截: owner 链中第一个"可见模态" (列表尾优先 = 最上层先中;
+    // 嵌套时递归沿 modal 链下钻)。返回 0 = 无可见模态, 不拦截。
+    uint32_t FirstVisibleModalLocked(uint32_t topId, uint32_t desktopRootId);
 
     // -- 全屏优先级取号 (调用方须已持有 mutex; 规则与局限见 ToplevelState::fsPriority) --
     // 首次入 z-order 的取号在 AddToZOrder 内部完成; 此处仅"用户显式 raise
@@ -259,9 +333,6 @@ public:
     uint32_t FindToplevelBySurface(wl_resource* surf);
     size_t ToplevelSurfaceCount() const { return toplevelSurfaceMap_.size(); }
 
-    // 异型窗口掩码
-    bool TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out);
-
     // 标记 toplevel dirty (调用方须已持有 mutex)
     void MarkToplevelDirtyLocked(uint32_t id);
 
@@ -304,12 +375,6 @@ public:
     // ReassertFullscreen 同源约束 — 见 cpp 注释)。
     bool TryAutoRestoreLocked(uint32_t id, int32_t contentW, int32_t contentH);
 
-    // ARGB 窗口位置同步 (PC 多窗口模式, Wine 位置为权威 — 桌面小部件由 Wine
-    // 决定屏幕位置; 普通 PC 窗口后续 commit 忽略 geo, OHOS 窗口管理器为权威,
-    // 由调用方守卫)。返回 true = 位置变化, 调用方据此锁内发 argb_move 事件
-    // (通知 ArkTS 移动子窗口); 返回 false = 无变化不发事件。
-    bool SyncArgbPositionLocked(uint32_t id, int32_t screenX, int32_t screenY);
-
     // 桌面模式后续 commit 的位置同步: compositor 位置为权威 (move grab 后
     // Wine 不知道新位置), 但 Wine 程序主动 SetWindowPos (geo ≠ 上次 Wine
     // 快照) 必须跟随; 最小化坐标 (-32000,-32000) 只记快照不移动。判定用
@@ -318,14 +383,6 @@ public:
     // 逐字, 完整补丁说明见 cpp 定义处。
     void SyncDesktopPositionLocked(uint32_t id, int32_t screenX, int32_t screenY,
                                    bool justRestored);
-
-    // ARGB 窗口剪影掩码生成 (补丁: 从 alpha 通道生成 0/1 掩码供 setWindowMask,
-    // 阈值 128 → 半透明抗锯齿边缘向内收半像素; FNV-1a 形状哈希不变不重建 —
-    // 时钟类静态形状零开销)。pixels = ToplevelState 帧数据 (w*h 像素 BGRA,
-    // 掩码按帧分辨率存 = Wine 逻辑像素, ArkTS 侧按 effectiveScale 最近邻放大)。
-    // 返回 true = 形状/尺寸更新发生, 调用方据此发 mask_dirty 事件。
-    bool UpdateArgbMaskLocked(uint32_t id, const std::vector<uint8_t>& pixels,
-                              int32_t w, int32_t h);
 
     // 提交尺寸上报语义 (检测尺寸变化 → 通知 ArkTS 调窗; 含全屏尺寸漂移检测
     // 补丁 — war3 D3D 模式切换画面缩左上, PLAN §2.5)。锁内调用 (判定读
@@ -364,6 +421,10 @@ private:
     std::unordered_map<uint64_t, wl_resource*> surfaceResources_;
     std::unordered_map<uint32_t, ToplevelState> toplevels_;
     std::vector<uint32_t> toplevelZOrder_;
+    // WineHua modal 组 (toplevelMutex_ 保护): ownerId → 模态对话框列表。
+    // 组员不入 toplevelZOrder_ — z-order 数组与渲染/命中都经本表展开。
+    // 更新只走 SetModalLocked (xset_modal handler) / EraseModalLocked。
+    std::unordered_map<uint32_t, std::vector<uint32_t>> modalOf_;
     uint64_t nextFsPriority_ = 1;  // 全屏优先级取号器 (toplevelMutex_ 保护)
     // 以下成员由自己的 mutex 保护 (非 toplevelMutex_)
     std::unordered_map<uint32_t, wl_resource*> toplevelSurfaceMap_;

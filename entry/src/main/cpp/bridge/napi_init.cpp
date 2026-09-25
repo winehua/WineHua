@@ -22,6 +22,7 @@
 
 #include <unistd.h>
 #include <signal.h>
+#include <window_manager/oh_window.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -720,6 +721,18 @@ static napi_value GetCurrentToplevelId(napi_env env, napi_callback_info info) {
     return r;
 }
 
+// -- NAPI: cancelPendingToplevel -- (窗口在 loadContent 前被销毁时清除队列残坑,
+//   防止后续页面出队拿到死 id → 渲染器挂错 toplevel 黑屏; 未在队列时 no-op)
+static napi_value CancelPendingToplevel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    napi_get_value_uint32(env, args[0], &id);
+    PluginManager::GetInstance()->CancelPendingToplevel(id);
+    return nullptr;
+}
+
 // -- NAPI: setPendingToplevel -- (WineWindowAbility 在 loadContent 前调用)
 static napi_value SetPendingToplevel(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -740,6 +753,10 @@ static napi_value DestroyToplevel(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
     PluginManager::GetInstance()->DestroyToplevel(id);
+    // 相对模式锁定兜底: 宿主主动销毁 toplevel (WWA 关窗) 时释放 host 锁定 —
+    // 游戏卡死时 wine 不响应 sendToplevelClose, relative_pointer 永不销毁,
+    // 正常解锁回调不来 (见 PointerExtras::ReleaseLockForToplevel)
+    PointerExtras::GetInstance()->ReleaseLockForToplevel(id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyToplevel id=%{public}u", id);
     return nullptr;
 }
@@ -866,39 +883,6 @@ static napi_value GetDesktopRootId(napi_env env, napi_callback_info) {
     return r;
 }
 
-// -- NAPI: takeWindowMask -- (ARGB 异型窗口剪影掩码, ArkTS 轮询拉取)
-static napi_value TakeWindowMask(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    if (argc >= 1) {
-        napi_get_value_uint32(env, args[0], &id);
-    }
-    int w = 0, h = 0;
-    std::vector<uint8_t> bits;
-    if (!WaylandServer::GetInstance()->TakeWindowMask(id, w, h, bits)) {
-        return nullptr;
-    }
-    napi_value result, wv, hv, buf;
-    napi_create_object(env, &result);
-    napi_create_int32(env, w, &wv);
-    napi_create_int32(env, h, &hv);
-    void* data = nullptr;
-    napi_create_arraybuffer(env, bits.size(), &data, &buf);
-    if (data && !bits.empty()) {
-        memcpy(data, bits.data(), bits.size());
-    }
-    napi_value wKey, hKey, bufKey;
-    napi_create_string_utf8(env, "w", 1, &wKey);
-    napi_create_string_utf8(env, "h", 1, &hKey);
-    napi_create_string_utf8(env, "buffer", 6, &bufKey);
-    napi_set_property(env, result, wKey, wv);
-    napi_set_property(env, result, hKey, hv);
-    napi_set_property(env, result, bufKey, buf);
-    return result;
-}
-
 // -- Input forwarding NAPI (unified InputManager path) --
 static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
     size_t argc = 8;
@@ -933,6 +917,32 @@ static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
                     tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
     }
     InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
+    return nullptr;
+}
+
+// -- NAPI: dumpWindowLayout -- (WMS 全窗口布局列表, 层级排序 index 0 = 最高)
+// 白屏 z 序判定: Fusion 主窗 (335 类) 与画面 popup (336 类) 的 rect 在列表中
+// 的先后; 与 ArkTS 侧 subWinId 打点对照归属。
+static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t displayId = 0;
+    if (argc >= 1) napi_get_value_int64(env, args[0], &displayId);
+    WindowManager_Rect* list = nullptr;
+    size_t count = 0;
+    const int32_t ret = OH_WindowManager_GetAllWindowLayoutInfoList(displayId, &list, &count);
+    if (ret != 0 || !list) {
+        OH_LOG_WARN(LOG_APP, "[WinLayout] Get table failed ret=%{public}d", ret);
+        if (list) OH_WindowManager_ReleaseAllWindowLayoutInfoList(list);
+        return nullptr;
+    }
+    for (size_t i = 0; i < count; i++) {
+        OH_LOG_INFO(LOG_APP,
+                    "[WinLayout] idx=%{public}zu/%{public}zu rect=(%{public}d,%{public}d %{public}ux%{public}u)",
+                    i, count, list[i].posX, list[i].posY, list[i].width, list[i].height);
+    }
+    OH_WindowManager_ReleaseAllWindowLayoutInfoList(list);
     return nullptr;
 }
 
@@ -1039,17 +1049,33 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
 }
 
 static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc < 3) return nullptr;
     uint32_t tl; int32_t w, h;
+    bool resizing = false;
     napi_get_value_uint32(env, args[0], &tl);
     napi_get_value_int32(env, args[1], &w);
     napi_get_value_int32(env, args[2], &h);
-    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d",
-                tl, w, h);
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h);
+    if (argc >= 4) napi_get_value_bool(env, args[3], &resizing);
+    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
+                tl, w, h, resizing ? "yes" : "no");
+    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
+    return nullptr;
+}
+
+// 拖拽缩放结束 (ArkTS windowRectChange DRAG_END): 发 configure(0,0) 清 RESIZING
+// 状态, Wine 保持当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
+static napi_value NotifyToplevelResizeEnd(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    uint32_t tl;
+    napi_get_value_uint32(env, args[0], &tl);
+    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResizeEnd tl=%{public}u", tl);
+    WaylandServer::GetInstance()->NotifyToplevelResize(tl, 0, 0, false);
     return nullptr;
 }
 
@@ -1192,6 +1218,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"imeBackspace", nullptr, ImeBackspace, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getCurrentToplevelId", nullptr, GetCurrentToplevelId, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"cancelPendingToplevel", nullptr, CancelPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"destroyToplevel", nullptr, DestroyToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runWineExe",     nullptr, RunWineExe,     nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1214,9 +1241,10 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendScrollEvent",   nullptr, SendScrollEvent,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"registerHostWindow", nullptr, RegisterHostWindow, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"dumpWindowLayout", nullptr, DumpWindowLayout, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"takeWindowMask", nullptr, TakeWindowMask, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},

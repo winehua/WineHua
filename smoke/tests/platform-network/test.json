@@ -1,0 +1,29 @@
+{
+  "id": "platform-network",
+  "title": "平台网络栈（iphlpapi/dnsapi/winhttp/wininet/secur32/crypt32/ws2_32）",
+  "exe": "winehua_platform_network.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_platform_network.c",
+      "smoke/winehua_platform_wininet.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-mwindows"
+    ],
+    "libs": [
+      "-liphlpapi",
+      "-ldnsapi",
+      "-lwinhttp",
+      "-lwininet",
+      "-lsecur32",
+      "-lcrypt32",
+      "-lws2_32"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "id": "font-amd64",
+  "title": "Steam 字体契约（AMD64 真 PE，走 FEX）",
+  "exe": "font_contract_amd64.exe",
+  "exe_dir": "x64-fex",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "tools/steam-boundary/font-contract.cpp"
+    ],
+    "compiler": "llvm-x86_64-cxx",
+    "cflags": [
+      "-std=c++17",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-static"
+    ],
+    "libs": [
+      "-ldwrite",
+      "-lgdi32",
+      "-luser32",
+      "-lole32",
+      "-luuid"
+    ]
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "steam-arch-compare",
+  "title": "Steam 进程创建 AMD64 对照（真 x86_64 PE 走 FEX，对比 x64 槽原生 PE）",
+  "tests": [
+    {
+      "case": "steam-process-amd64",
+      "id": "steam-process-amd64",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {
+        "WINEHUA_PEER_EXE": "C:/smoke/x86/winehua_platform_process_smoke.exe",
+        "WINEHUA_PEER_ARCH": "x86"
+      },
+      "seconds": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "platform-process",
+      "id": "steam-process-i386",
+      "arch": [
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {
+        "WINEHUA_PEER_EXE": "C:/smoke/x64-fex/steam_process_amd64.exe",
+        "WINEHUA_PEER_ARCH": "x86_64"
+      },
+      "seconds": 0,
+      "timeoutMs": 120000
+    }
+  ]
+}

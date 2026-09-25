@@ -1,0 +1,42 @@
+{
+  "name": "steam-contract",
+  "title": "Steam 边界契约（i386 与 AMD64 真 PE 双架构）",
+  "tests": [
+    {
+      "case": "contract-i386",
+      "id": "contract",
+      "arch": [
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "argvMode": "raw",
+      "argv": [
+        "--output",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "timeoutMs": 60000
+    },
+    {
+      "case": "contract-amd64",
+      "id": "contract",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {
+        "WINEHUA_STEAM_BOUNDARY_TRACE": "1"
+      },
+      "argvMode": "raw",
+      "argv": [
+        "--output",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "timeoutMs": 60000
+    }
+  ]
+}

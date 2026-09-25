@@ -831,6 +831,15 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
 
         std::string key = envLine.substr(0, sep);
         std::string value = envLine.substr(sep + 1);
+        // WINEDEBUG 的决策点在本文件的 select_winedebug_profile (它才知道是不是
+        // audio 诊断 exe、有没有 WINEHUA_WINEDEBUG 覆盖), 通用 __env 覆盖会让
+        // 它恒等于 App 侧下发的值, profile 选择失效。显式诊断请走 WINEHUA_WINEDEBUG。
+        if (key == "WINEDEBUG")
+        {
+            OH_LOG_INFO(LOG_APP, "[WineChild] __env WINEDEBUG ignored: %{public}s",
+                        value.c_str());
+            continue;
+        }
         setenv(key.c_str(), value.c_str(), 1);
         if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0)
             OH_LOG_INFO(LOG_APP, "[WineChild] env override %{public}s=%{public}s",
@@ -1753,10 +1762,11 @@ extern "C" void Main(NativeChildProcess_Args args)
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
     apply_game_address_space_compatibility(argc, argv);
-    // entryParams 覆盖之后再选一次 WINEDEBUG 档位: select_winedebug_profile() 会优先
-    // 采用 WINEHUA_WINEDEBUG / 非 "-all" 的 WINEDEBUG, 但它上面的那次调用发生在
-    // apply_entry_param_env_overrides() 之前 (2026-09-18 实测 Want 里传的档位永远不生效,
-    // 全部退回 -all)。这里补一次, 让 Want 能开 +loaddll/+module/+seh 之类通道。
+    // entryParams 覆盖之后再选一次 WINEDEBUG 档位: 上一次调用发生在
+    // apply_entry_param_env_overrides() 之前, 取不到 entryParams 里的覆盖。
+    // 档位来源是 WINEHUA_WINEDEBUG 与内置 profile —— WINEDEBUG 键本身在
+    // apply_entry_param_env_overrides() 里被拦下 (决策点收口到设备端的
+    // select_winedebug_profile, 见该函数内注释)。
     {
         const char* profile = select_winedebug_profile(argc, argv);
         setenv("WINEDEBUG", profile, 1);

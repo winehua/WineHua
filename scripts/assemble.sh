@@ -548,7 +548,12 @@ EOF
     #   OHOS 无头环境无人响应 → wineboot 永久阻塞 (mscoree WaitForSingleObject 无限
     #   等待). 去掉 appwiz.cpl 后 control.exe 加载 cpl 失败立即退出, mscoree 走
     #   "无 .NET 运行时"路径不卡死.
-    local pe_exts="dll drv exe sys acm ax ocx tlb"
+    # msstyles: 主题文件, 名义上是 DLL 但扩展名是 .msstyles (data-only PE,
+    # 无代码只有 INI 文本 + 位图资源)。缺它时 uxtheme 加载
+    # %10%\resources\themes\aero\aero.msstyles 落空, 所有 Win32 控件退化成
+    # 经典 (无主题) 绘制 —— 窗口标题栏/边框/按钮变成 Win95 观感。
+    # x86_64 与 i386 两份都要: WoW64 下 32 位进程加载 32 位主题。
+    local pe_exts="dll drv exe sys acm ax ocx tlb msstyles"
     if [ "${BUILD_WINE_MONO:-0}" = "1" ]; then
         pe_exts="$pe_exts cpl"
     fi
@@ -593,7 +598,13 @@ EOF
 
     # 32-bit exe stubs, 放在 bin/i386-windows/.
     # Wine 通过 WINEARCH 或 exe header 判断 32/64, 自动加载对应 DLL.
+    # 排除测试程序: wine 的 bin/ 目录不放 smoke 程序, 载荷走 wine-data/smoke
+    # 独立树 (见 assemble 尾部, 设备端经 SmokeHook.seed 播种到 C:\smoke);
+    # winehua_keep.exe 是产品必需 (wine_launch.cpp 拷进 system32).
     for exe in "$wine_build_dir/programs/"*/i386-windows/*.exe; do
+        case "$(basename "$exe")" in
+            winehua_*_smoke.exe|winehua_dinput_probe.exe) continue ;;
+        esac
         [ -f "$exe" ] && cp "$exe" "$wine_data/bin/i386-windows/"
     done
     log "  i386 exe stubs → $(ls "$wine_data/bin/i386-windows"/*.exe 2>/dev/null | wc -l) files"
@@ -608,143 +619,29 @@ EOF
         warn "  i686-w64-mingw32-strip not found, skipping strip"
     fi
 
-    # *.exe stubs → rawfile
+    # *.exe stubs → rawfile (bin/ 不放 smoke 程序, 载荷走 wine-data/smoke 独立树)
     # 注意: arm64 下 pe_src_dirs 含 arm64ec-windows, 该架构只产 .o 无 .exe
     # (system DLL 为 ARM64EC+ARM64 混合, 统一在 aarch64-windows) → 需 -f 保护
     for pe_src in $pe_src_dirs; do
         for exe in "$wine_build_dir/programs/"*/$pe_src/*.exe; do
-            [ -f "$exe" ] && cp -f "$exe" "$wine_data/bin/"
+            [ -f "$exe" ] || continue
+            case "$(basename "$exe")" in
+                winehua_*_smoke.exe|winehua_dinput_probe.exe) continue ;;
+            esac
+            cp -f "$exe" "$wine_data/bin/"
         done
     done
-    # graphics smoke test (OHOS 交叉编译产物, 不在 build-native/)
-    for pe_src in $pe_src_dirs; do
-        if [ -f "$wine_build_dir/programs/winehua_graphics_smoke/$pe_src/winehua_graphics_smoke.exe" ]; then
-            cp "$wine_build_dir/programs/winehua_graphics_smoke/$pe_src/winehua_graphics_smoke.exe" "$wine_data/bin/$wine_pe_dir/"
-            log "  winehua_graphics_smoke.exe → $wine_pe_dir/"
-        fi
-    done
 
-    # Versioned, App-managed C:\smoke payload.  Keep it separate from Wine's
-    # DLL search directories so a prefix refresh can update tests without
-    # touching user files or relying on Explorer.
-    local smoke_dir="$wine_data/smoke"
-    mkdir -p "$smoke_dir/x64" "$smoke_dir/x86" "$smoke_dir/assets"
-    local cube_source="$WINEHUA/smoke/winehua_d3d_switch_cube.c"
-    local cube_libs="-ld3d9 -ld3d11 -ldxgi -ld3dcompiler -luuid -lshell32 -luser32 -lgdi32 -lm"
-    # 方案③: smoke/x64 与 winehua_d3d11_smoke 等受管 smoke 一致, 用原生 ARM64 PE
-    # (匹配 ARM64X DXVK overlay), 避免 UI「x64 cube」走 FEX 后在 ProcessInit 静默退出。
-    # 真 AMD64 (0x8664) 副本放到 smoke/amd64/ 供后续 FEX 回归; 方案①/② 仍用 x86_64 PE。
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        local aarch64_cc="$LLVM_MINGW/bin/aarch64-w64-mingw32-clang"
-        [ -x "$aarch64_cc" ] || err "aarch64 smoke cube needs $aarch64_cc"
-        mkdir -p "$smoke_dir/amd64"
-        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
-            "$smoke_dir/amd64/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
-        "$aarch64_cc" -O2 -s -mwindows -o \
-            "$smoke_dir/x64/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
-    else
-        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
-            "$smoke_dir/x64/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
-    fi
-    i686-w64-mingw32-gcc -O2 -s -mwindows -o \
-        "$smoke_dir/x86/winehua_d3d_switch_cube.exe" "$cube_source" $cube_libs
-    # The primary Wine build uses --enable-archs=i386,x86_64.  Its PE import
-    # libraries are both emitted under wine-ohos; wine-i386-pe is an obsolete
-    # standalone build directory and does not exist in a clean CI checkout.
-    # 架构参数化: wine 构建目录为 wine-ohos-$WINE_ARCH (build_wine.sh)。
-    # arm64 原生 wine (--enable-archs=arm64ec,aarch64,i386) 无 x86_64-windows PE,
-    # 此时跳过依赖 x64 import lib 的 smoke (gpu_diagnostics/dxvk26_requirements x64);
-    # 仅 x86_64 方案 (--enable-archs=i386,x86_64) 才产出 x86_64-windows。
-    local vulkan_import_x64="$wine_build_dir/dlls/vulkan-1/x86_64-windows/libvulkan-1.a"
-    local vulkan_import_x86="$wine_build_dir/dlls/vulkan-1/i386-windows/libvulkan-1.a"
-    [ -s "$vulkan_import_x86" ] || err "Wine x86 Vulkan import library missing: $vulkan_import_x86"
-    local diagnostics_source="$WINEHUA/smoke/winehua_gpu_diagnostics.c"
-    if [ -s "$vulkan_import_x64" ]; then
-        x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
-            "$smoke_dir/x64/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
-            "$vulkan_import_x64" \
-            -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
-    fi
-    i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -mwindows -I"$DXVK_SRC/include" -o \
-        "$smoke_dir/x86/winehua_gpu_diagnostics.exe" "$diagnostics_source" \
-        "$vulkan_import_x86" \
-        -ld3d11 -ldxgi -lversion -luuid -lshell32 -luser32 -lgdi32
-    local d3d8_source="$WINEHUA/smoke/winehua_d3d8_smoke.c"
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -mwindows -o \
-            "$smoke_dir/x64/winehua_d3d8_smoke.exe" "$d3d8_source" \
-            -luser32 -lgdi32
-    else
-        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
-            "$smoke_dir/x64/winehua_d3d8_smoke.exe" "$d3d8_source" \
-            -luser32 -lgdi32
-    fi
-    i686-w64-mingw32-gcc -O2 -s -mwindows -o \
-        "$smoke_dir/x86/winehua_d3d8_smoke.exe" "$d3d8_source" \
-        -luser32 -lgdi32
-    # P0-GL-5: Windows(WGL) OpenGL 能力探针。x64 用原生 ARM64 PE (与产品路径一致),
-    # amd64 用真 x86_64 PE 走 FEX 做对照, x86 走 WOW64。
-    local gl_smoke_source="$WINEHUA/smoke/winehua_opengl_smoke.c"
-    local gl_smoke_libs="-lopengl32 -luser32 -lgdi32"
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -DARCH_LABEL='"arm64"' -o \
-            "$smoke_dir/x64/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
-        x86_64-w64-mingw32-gcc -O2 -s -DARCH_LABEL='"amd64"' -o \
-            "$smoke_dir/amd64/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
-    else
-        x86_64-w64-mingw32-gcc -O2 -s -DARCH_LABEL='"amd64"' -o \
-            "$smoke_dir/x64/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
-    fi
-    i686-w64-mingw32-gcc -O2 -s -DARCH_LABEL='"x86"' -o \
-        "$smoke_dir/x86/winehua_opengl_smoke.exe" "$gl_smoke_source" $gl_smoke_libs
-    # This deliberately links Wine's own PE Vulkan import library.  The
-    # requirements probe must exercise the same vulkan-1 -> winevulkan ->
-    # x86_64 Loader -> Venus transport as a Windows DXVK process, without
-    # adding a second Windows Vulkan SDK dependency to the image.
-    local dxvk26_requirements_source="$WINEHUA/smoke/winehua_dxvk26_requirements.c"
-    if [ -s "$vulkan_import_x64" ]; then
-        x86_64-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
-            "$smoke_dir/x64/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
-            "$vulkan_import_x64" -luser32 -lcomctl32 -lgdi32
-    fi
-    i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -Werror -I"$DXVK_SRC/include" -o \
-        "$smoke_dir/x86/winehua_dxvk26_requirements.exe" "$dxvk26_requirements_source" \
-        "$vulkan_import_x86" -luser32 -lcomctl32 -lgdi32
-    local win32_driver_source="$WINEHUA/smoke/winehua_win32_driver.c"
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -municode -mwindows -o \
-            "$smoke_dir/x64/winehua_win32_driver.exe" "$win32_driver_source" \
-            -lshell32 -luser32
-    else
-        x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
-            "$smoke_dir/x64/winehua_win32_driver.exe" "$win32_driver_source" \
-            -lshell32 -luser32
-    fi
-    i686-w64-mingw32-gcc -O2 -s -municode -mwindows -o \
-        "$smoke_dir/x86/winehua_win32_driver.exe" "$win32_driver_source" \
-        -lshell32 -luser32
-    local platform_network_source="$WINEHUA/smoke/winehua_platform_network.c"
-    local platform_wininet_source="$WINEHUA/smoke/winehua_platform_wininet.c"
-    local platform_network_libs="-liphlpapi -ldnsapi -lwinhttp -lwininet -lsecur32 -lcrypt32 -lws2_32"
-    if [ "$WINE_ARCH" = "aarch64" ]; then
-        "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" -O2 -s -mwindows -o \
-            "$smoke_dir/x64/winehua_platform_network.exe" "$platform_network_source" "$platform_wininet_source" \
-            $platform_network_libs
-    else
-        x86_64-w64-mingw32-gcc -O2 -s -mwindows -o \
-            "$smoke_dir/x64/winehua_platform_network.exe" "$platform_network_source" "$platform_wininet_source" \
-            $platform_network_libs
-    fi
-    i686-w64-mingw32-gcc -O2 -s -mwindows -o \
-        "$smoke_dir/x86/winehua_platform_network.exe" "$platform_network_source" "$platform_wininet_source" \
-        $platform_network_libs
     # venus shader assets: 随 guest_vulkan bundle 打包 (aarch64/x86_64 源驱动; 无 bundle 则跳过)
+    # 载荷本体由 automation/smoke.py 产出 (见 assemble 尾部), 这里只补 Vulkan 探针
+    # 需要的 SPIR-V 资产 —— 它们来自 guest Vulkan bundle, 不在 smoke.py 的输入里。
     local guest_shader_root="$BUILD_DIR/guest_vulkan/$guest_arch/share/winehua"
     if [ -d "$guest_shader_root" ]; then
         local smoke_shader
+        mkdir -p "$wine_data/smoke/assets"
         for smoke_shader in venus_storage_write venus_storage_read venus_image_fetch venus_combined_sample venus_separated_sample; do
             [ -f "$guest_shader_root/$smoke_shader.spv" ] || err "Wine Vulkan sampled-image shader missing: $guest_shader_root/$smoke_shader.spv"
-            cp "$guest_shader_root/$smoke_shader.spv" "$smoke_dir/assets/$smoke_shader.spv"
+            cp "$guest_shader_root/$smoke_shader.spv" "$wine_data/smoke/assets/$smoke_shader.spv"
         done
     fi
     local dxvk_root="$DXVK_BUILD_ROOT"
@@ -762,7 +659,26 @@ EOF
         mkdir -p "$wine_data/dxvk/legacy/x64"
         cp "$dxvk_root/x64/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
         cp "$dxvk_root/x64/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
+        # D3D10 链必须整套装齐 (实测 WarThunderLauncher 启动器):
+        # wine builtin 的 d3d10core 是调 dxgi 的私有导出 DXGID3D10CreateDevice 建
+        # 设备的, 而 DXVK 的 dxgi 没有该导出 —— 缺 native d3d10 时程序落到 builtin
+        # 链, 又被 WINEDLLOVERRIDES=dxgi=n (禁止回退 builtin) 卡住, 直接 abort。
+        # DXVK 1.10.3 自带 d3d10/d3d10_1/d3d10core (2.x 起移除, 故只在 legacy 装),
+        # 三者与 dxgi 同一次构建产出, 整套走 native 才自洽。
+        # (方案③ 的 x64 走 ARM64X 双图, 而 arm64x 只产 d3d11/dxgi 无 d3d10,
+        # 故 x64 d3d10 只在非 aarch64 装。)
+        local dxvk_d3d10
+        for dxvk_d3d10 in d3d10.dll d3d10_1.dll d3d10core.dll; do
+            [ -f "$dxvk_root/x64/bin/$dxvk_d3d10" ] || err "DXVK Legacy x64 $dxvk_d3d10 missing"
+            cp "$dxvk_root/x64/bin/$dxvk_d3d10" "$wine_data/dxvk/legacy/x64/$dxvk_d3d10"
+        done
     fi
+    # D3D10 x86: 32 位走 FEX/wow64, 两方案都用 x86 PE
+    local dxvk_d3d10_x86
+    for dxvk_d3d10_x86 in d3d10.dll d3d10_1.dll d3d10core.dll; do
+        [ -f "$dxvk_root/x86/bin/$dxvk_d3d10_x86" ] || err "DXVK Legacy x86 $dxvk_d3d10_x86 missing"
+        cp "$dxvk_root/x86/bin/$dxvk_d3d10_x86" "$wine_data/dxvk/legacy/x86/$dxvk_d3d10_x86"
+    done
     # 方案③ ARM64X 双图 DLL: wine_env.cpp 把 x64 overlay 指向 arm64x
     if [ "$WINE_ARCH" = "aarch64" ]; then
         local dxvk_arm64x="$DXVK_BUILD_ROOT/arm64x"
@@ -816,9 +732,6 @@ EOF
         copy_arm64x_cxx_runtime "$wine_data/dxvk/modern-2.6/x64"
     fi
     local vkd3d_root="$VKD3D_PROTON_BUILD_ROOT/limited-500k"
-    [ -f "$vkd3d_root/x64/winehua-d3d12-smoke.exe" ] || \
-        err "VKD3D-Proton x64 graphics smoke missing: $vkd3d_root/x64/winehua-d3d12-smoke.exe"
-    [ -f "$vkd3d_root/manifest.json" ] || err "VKD3D-Proton manifest missing: $vkd3d_root/manifest.json"
     # 方案③: d3d12 固定用 x86_64 单图 (FEX 转译执行)。
     # vkd3d arm64x 弃用结论 (2026-09-05 最终决策, 不再重试):
     #   * 手搓链路用 --target=aarch64-w64-mingw32 -marm64x: 该 clang 对
@@ -830,133 +743,15 @@ EOF
     #   * 对照: dxvk 的 arm64x 为真双图 (0xA64E+0xA641), 与以上无关, 保留。
     # x64 单图 = 09-01 验证过的 "d12 能跑" 基线同款机制, 新特性 HAP 上实测 PASS。
     # (方案①/②/③ 统一: d3d12 均为 x64 单图)
-    [ -f "$vkd3d_root/x64/d3d12.dll" ] || \
-        err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
+    [ -f "$vkd3d_root/x64/d3d12.dll" ] || err "VKD3D-Proton x64 d3d12.dll missing: $vkd3d_root/x64/d3d12.dll"
+    [ -f "$vkd3d_root/manifest.json" ] || err "VKD3D-Proton manifest missing: $vkd3d_root/manifest.json"
     mkdir -p "$wine_data/vkd3d/limited-500k/x64"
     cp "$vkd3d_root/x64/d3d12.dll" "$wine_data/vkd3d/limited-500k/x64/d3d12.dll"
-    # Keep the upstream VKD3D-Proton demos available as ordinary managed
-    # C:\\smoke programs. They are test assets, not runtime DLLs.
-    # Prefer demos built with this limited-500K profile so CI does not depend
-    # on the gitignored .temp payload used by older local trees.
-    local vkd3d_demo_triangle="$vkd3d_root/x64/triangle.exe"
-    local vkd3d_demo_gears="$vkd3d_root/x64/gears.exe"
-    if [ ! -f "$vkd3d_demo_triangle" ] || [ ! -f "$vkd3d_demo_gears" ]; then
-        local vkd3d_upstream_demos="$WINEHUA/.temp/vkd3d-upstream-demos-20260806-payload"
-        vkd3d_demo_triangle="$vkd3d_upstream_demos/triangle.exe"
-        vkd3d_demo_gears="$vkd3d_upstream_demos/gears.exe"
-    fi
-    [ -f "$vkd3d_demo_triangle" ] || \
-        err "VKD3D-Proton triangle demo missing: $vkd3d_demo_triangle"
-    [ -f "$vkd3d_demo_gears" ] || \
-        err "VKD3D-Proton gears demo missing: $vkd3d_demo_gears"
-    cp "$vkd3d_demo_triangle" "$smoke_dir/x64/triangle.exe"
-    cp "$vkd3d_demo_gears" "$smoke_dir/x64/gears.exe"
-    local vkd3d_upstream_triangle_sha vkd3d_upstream_gears_sha
-    vkd3d_upstream_triangle_sha="$(sha256sum "$smoke_dir/x64/triangle.exe" | awk '{print $1}')"
-    vkd3d_upstream_gears_sha="$(sha256sum "$smoke_dir/x64/gears.exe" | awk '{print $1}')"
     cp "$vkd3d_root/manifest.json" "$wine_data/vkd3d/manifest.json"
-    cp "$vkd3d_root/x64/winehua-d3d12-smoke.exe" \
-        "$smoke_dir/x64/winehua_d3d12_smoke.exe"
-    # The DXVK binaries are runtime-owned overlays.  Do not place them next
-    # to the smoke executables: that would make the test layout look like a
-    # game distribution and would force real games to carry WineHua-specific
-    # DLLs.  SpawnWineProgram exposes this versioned directory through
-    # WINEDLLPATH for the selected DXVK or mixed VKD3D backend.
-    local smoke_program
-    for smoke_program in winehua_audio_smoke winehua_graphics_smoke winehua_vulkan_smoke \
-                         winehua_d3d11_smoke winehua_platform_process_smoke; do
-        local smoke64="$wine_build_dir/programs/$smoke_program/$smoke_src_dir/$smoke_program.exe"
-        local smoke32="$BUILD_DIR/wine-i386-pe/programs/$smoke_program/i386-windows/$smoke_program.exe"
-        if [ ! -f "$smoke32" ]; then
-            smoke32="$wine_build_dir/programs/$smoke_program/i386-windows/$smoke_program.exe"
-        fi
-        [ -f "$smoke64" ] || err "managed smoke x64 artifact missing: $smoke64"
-        [ -f "$smoke32" ] || err "managed smoke x86 artifact missing: $smoke32"
-        cp "$smoke64" "$smoke_dir/x64/$smoke_program.exe"
-        cp "$smoke32" "$smoke_dir/x86/$smoke_program.exe"
-    done
-    # The x64 directory contains native ARM64 PE in this build. Keep a separate
-    # AMD64 executable so this gate actually exercises ARM64EC/FEX.
-    mkdir -p "$smoke_dir/x64-fex"
-    "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" -O2 -s -mconsole -o \
-        "$smoke_dir/x64-fex/winehua_platform_process_smoke.exe" \
-        "$WINEHUA/thirdparty/wine-valve/programs/winehua_platform_process_smoke/main.c" -lws2_32
-    "$LLVM_MINGW/bin/llvm-readobj" --file-headers \
-        "$smoke_dir/x64-fex/winehua_platform_process_smoke.exe" | grep -q 'COFF-x86-64' || \
-        err "AMD64 process smoke has unexpected PE Machine"
-    bash "$WINEHUA/scripts/build_steam_arch_contract.sh"
-    cp "$WINEHUA/artifacts/steam-arch-contract/contract-amd64.exe" "$smoke_dir/x64-fex/"
-    cp "$WINEHUA/artifacts/steam-arch-contract/contract-i386.exe" "$smoke_dir/x86/"
-    bash "$WINEHUA/scripts/build_steam_font_contract.sh"
-    cp "$WINEHUA/artifacts/steam-font-contract/font-contract-amd64.exe" "$smoke_dir/x64-fex/"
-    cp "$WINEHUA/artifacts/steam-font-contract/font-contract-i386.exe" "$smoke_dir/x86/"
-    local font_amd64_sha font_i386_sha
-    font_amd64_sha="$(sha256sum "$smoke_dir/x64-fex/font-contract-amd64.exe" | awk '{print $1}')"
-    font_i386_sha="$(sha256sum "$smoke_dir/x86/font-contract-i386.exe" | awk '{print $1}')"
-    local audio64_sha graphics64_sha vulkan64_sha d3d1164_sha d3d864_sha cube64_sha diagnostics64_sha driver64_sha requirements64_sha
-    local audio32_sha graphics32_sha vulkan32_sha d3d1132_sha d3d832_sha cube32_sha diagnostics32_sha driver32_sha requirements32_sha
-    local network64_sha network32_sha process64_sha process32_sha
-    local storage_write_sha storage_read_sha image_fetch_sha combined_sample_sha separated_sample_sha
-    local vkd3d64_d3d12_sha vkd3d64_smoke_sha
-    audio64_sha="$(sha256sum "$smoke_dir/x64/winehua_audio_smoke.exe" | awk '{print $1}')"
-    graphics64_sha="$(sha256sum "$smoke_dir/x64/winehua_graphics_smoke.exe" | awk '{print $1}')"
-    vulkan64_sha="$(sha256sum "$smoke_dir/x64/winehua_vulkan_smoke.exe" | awk '{print $1}')"
-    d3d1164_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d11_smoke.exe" | awk '{print $1}')"
-    d3d864_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d8_smoke.exe" | awk '{print $1}')"
-    cube64_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d_switch_cube.exe" | awk '{print $1}')"
-    if [ -s "$vulkan_import_x64" ]; then
-        diagnostics64_sha="$(sha256sum "$smoke_dir/x64/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
-    else
-        diagnostics64_sha=""
-    fi
-    driver64_sha="$(sha256sum "$smoke_dir/x64/winehua_win32_driver.exe" | awk '{print $1}')"
-    network64_sha="$(sha256sum "$smoke_dir/x64/winehua_platform_network.exe" | awk '{print $1}')"
-    process64_sha="$(sha256sum "$smoke_dir/x64/winehua_platform_process_smoke.exe" | awk '{print $1}')"
-    local process_amd64_sha
-    process_amd64_sha="$(sha256sum "$smoke_dir/x64-fex/winehua_platform_process_smoke.exe" | awk '{print $1}')"
-    local contract_amd64_sha contract_i386_sha
-    contract_amd64_sha="$(sha256sum "$smoke_dir/x64-fex/contract-amd64.exe" | awk '{print $1}')"
-    contract_i386_sha="$(sha256sum "$smoke_dir/x86/contract-i386.exe" | awk '{print $1}')"
-    if [ -s "$vulkan_import_x64" ]; then
-        requirements64_sha="$(sha256sum "$smoke_dir/x64/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
-    else
-        requirements64_sha=""
-    fi
-    audio32_sha="$(sha256sum "$smoke_dir/x86/winehua_audio_smoke.exe" | awk '{print $1}')"
-    graphics32_sha="$(sha256sum "$smoke_dir/x86/winehua_graphics_smoke.exe" | awk '{print $1}')"
-    vulkan32_sha="$(sha256sum "$smoke_dir/x86/winehua_vulkan_smoke.exe" | awk '{print $1}')"
-    d3d1132_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d11_smoke.exe" | awk '{print $1}')"
-    d3d832_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d8_smoke.exe" | awk '{print $1}')"
-    cube32_sha="$(sha256sum "$smoke_dir/x86/winehua_d3d_switch_cube.exe" | awk '{print $1}')"
-    diagnostics32_sha="$(sha256sum "$smoke_dir/x86/winehua_gpu_diagnostics.exe" | awk '{print $1}')"
-    driver32_sha="$(sha256sum "$smoke_dir/x86/winehua_win32_driver.exe" | awk '{print $1}')"
-    network32_sha="$(sha256sum "$smoke_dir/x86/winehua_platform_network.exe" | awk '{print $1}')"
-    process32_sha="$(sha256sum "$smoke_dir/x86/winehua_platform_process_smoke.exe" | awk '{print $1}')"
-    # venus shader 资产: 随 guest_vulkan bundle 打包 (源驱动)
-    if [ -f "$smoke_dir/assets/venus_storage_write.spv" ]; then
-        storage_write_sha="$(sha256sum "$smoke_dir/assets/venus_storage_write.spv" | awk '{print $1}')"
-        storage_read_sha="$(sha256sum "$smoke_dir/assets/venus_storage_read.spv" | awk '{print $1}')"
-        image_fetch_sha="$(sha256sum "$smoke_dir/assets/venus_image_fetch.spv" | awk '{print $1}')"
-        combined_sample_sha="$(sha256sum "$smoke_dir/assets/venus_combined_sample.spv" | awk '{print $1}')"
-        separated_sample_sha="$(sha256sum "$smoke_dir/assets/venus_separated_sample.spv" | awk '{print $1}')"
-    else
-        storage_write_sha="" storage_read_sha="" image_fetch_sha="" combined_sample_sha="" separated_sample_sha=""
-    fi
-    requirements32_sha="$(sha256sum "$smoke_dir/x86/winehua_dxvk26_requirements.exe" | awk '{print $1}')"
-    # vkd3d-proton 仅在显式构建 (make vkd3d-proton) 时存在; 未构建则 manifest 记空
-    if [ -f "$wine_data/vkd3d/limited-500k/x64/d3d12.dll" ]; then
-        vkd3d64_d3d12_sha="$(sha256sum "$wine_data/vkd3d/limited-500k/x64/d3d12.dll" | awk '{print $1}')"
-    else
-        vkd3d64_d3d12_sha=""
-    fi
-    if [ -f "$smoke_dir/x64/winehua_d3d12_smoke.exe" ]; then
-        vkd3d64_smoke_sha="$(sha256sum "$smoke_dir/x64/winehua_d3d12_smoke.exe" | awk '{print $1}')"
-    else
-        vkd3d64_smoke_sha=""
-    fi
-    local process_x64_arch="x86_64"
-    [ "$WINE_ARCH" = "aarch64" ] && process_x64_arch="arm64"
-    local smoke_suite_version="phase2-vulkan-dxvk-v13-steam-arch-contract"
+    # DXVK/VKD3D 二进制是 runtime overlay: 由 SpawnWineProgram 按选定后端经
+    # WINEDLLPATH 暴露, 不作为 C:\smoke 载荷的一部分。
+    local vkd3d64_d3d12_sha
+    vkd3d64_d3d12_sha="$(sha256sum "$wine_data/vkd3d/limited-500k/x64/d3d12.dll" | awk '{print $1}')"
     local dxvk_commit dxvk_modern_commit mesa_commit virglrenderer_commit
     local guest_venus_icd_sha host_virglrenderer_sha venus_runtime_id
     dxvk_commit="$(git -c safe.directory="$DXVK_SRC" -C "$DXVK_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -1026,227 +821,9 @@ EOF
   }
 }
 EOF
-    cat > "$smoke_dir/manifest.json" <<EOF
-{
-  "schemaVersion": 1,
-  "suiteVersion": "$smoke_suite_version",
-  "enabledSuites": ["core", "audio", "platform-process", "steam-arch-compare", "steam-contract", "steam-font", "steam-contract-isolate", "platform-network", "opengl", "wine-vulkan", "d3d8", "d3d9", "dxvk", "gpu-diagnostics", "dxvk26-requirements", "dxvk-modern-baseline"],
-  "managedRoot": "C:\\\\smoke",
-  "files": {
-    "x64/winehua_audio_smoke.exe": "$audio64_sha",
-    "x64/winehua_graphics_smoke.exe": "$graphics64_sha",
-    "x64/winehua_vulkan_smoke.exe": "$vulkan64_sha",
-    "x64/winehua_d3d11_smoke.exe": "$d3d1164_sha",
-    "x64/winehua_d3d8_smoke.exe": "$d3d864_sha",
-    "x64/winehua_d3d_switch_cube.exe": "$cube64_sha",
-    "x64/winehua_gpu_diagnostics.exe": "$diagnostics64_sha",
-    "x64/winehua_win32_driver.exe": "$driver64_sha",
-    "x64/winehua_platform_network.exe": "$network64_sha",
-    "x64/winehua_platform_process_smoke.exe": "$process64_sha",
-    "x64-fex/winehua_platform_process_smoke.exe": "$process_amd64_sha",
-    "x64-fex/contract-amd64.exe": "$contract_amd64_sha",
-    "x64-fex/font-contract-amd64.exe": "$font_amd64_sha",
-    "x86/font-contract-i386.exe": "$font_i386_sha",
-    "x64/winehua_dxvk26_requirements.exe": "$requirements64_sha",
-    "x64/winehua_d3d12_smoke.exe": "$vkd3d64_smoke_sha",
-    "x64/triangle.exe": "$vkd3d_upstream_triangle_sha",
-    "x64/gears.exe": "$vkd3d_upstream_gears_sha",
-    "x86/winehua_audio_smoke.exe": "$audio32_sha",
-    "x86/winehua_graphics_smoke.exe": "$graphics32_sha",
-    "x86/winehua_vulkan_smoke.exe": "$vulkan32_sha",
-    "x86/winehua_d3d11_smoke.exe": "$d3d1132_sha",
-    "x86/winehua_d3d8_smoke.exe": "$d3d832_sha",
-    "x86/winehua_d3d_switch_cube.exe": "$cube32_sha",
-    "x86/winehua_gpu_diagnostics.exe": "$diagnostics32_sha",
-    "x86/winehua_win32_driver.exe": "$driver32_sha",
-    "x86/winehua_platform_network.exe": "$network32_sha",
-    "x86/winehua_platform_process_smoke.exe": "$process32_sha",
-    "x86/contract-i386.exe": "$contract_i386_sha",
-    "x86/winehua_dxvk26_requirements.exe": "$requirements32_sha",
-    "assets/venus_storage_write.spv": "$storage_write_sha",
-    "assets/venus_storage_read.spv": "$storage_read_sha",
-    "assets/venus_image_fetch.spv": "$image_fetch_sha",
-    "assets/venus_combined_sample.spv": "$combined_sample_sha",
-    "assets/venus_separated_sample.spv": "$separated_sample_sha"
-  }
-}
-EOF
-    # Suite 编排定义: companion of manifest.json, consumed by SmokeRunner.ets.
-    # 每 suite: tests[] → testId/exe(相对 C:\smoke 根: x64/… 或 x86/…,
-    # 载荷打包成 smoke/{x64,x86}, 播种到 C:\smoke 后即根级子目录; 无
-    # smoke/ 前缀 — runner 拼 C:\smoke\ + exe)/env(测试专属
-    # 诊断键)/d3dBackend(回归固定后端)/mode(present|offscreen)/seconds/timeoutMs
-    # (-1=取请求 longSeconds)。产品语义 env (DXVK 稳定化 overlay/perf profile)
-    # 由 native BuildSessionEnv 收口, 不在此重复; argv 协议由 runner 生成。
-    cat > "$smoke_dir/suites.json" <<SMOKE_SUITES_EOF
-{
-  "schemaVersion": 1,
-  "suiteVersion": "$smoke_suite_version",
-  "suites": {
-    "core": {
-      "tests": [
-        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
-        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000}
-      ]
-    },
-    "opengl": {
-      "tests": [
-        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
-        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000}
-      ]
-    },
-    "audio": {
-      "tests": [
-        {"testId": "audio-x64", "exe": "x64/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
-        {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000}
-      ]
-    },
-    "platform-network": {
-      "tests": [
-        {"testId": "platform-network-x64", "exe": "x64/winehua_platform_network.exe", "env": {"WINEDEBUG": "+dnsapi,+iphlpapi,+winsock,+nsi,+winhttp,+wininet,+schannel,+crypt"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 180000},
-        {"testId": "platform-network-x86", "exe": "x86/winehua_platform_network.exe", "env": {"WINEDEBUG": "+dnsapi,+iphlpapi,+winsock,+nsi,+winhttp,+wininet,+schannel,+crypt"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 180000}
-      ]
-    },
-    "platform-process": {
-      "tests": [
-        {"testId": "platform-process-x64", "exe": "x64/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x86/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000},
-        {"testId": "platform-process-x86", "exe": "x86/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x64/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "$process_x64_arch"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000}
-      ]
-    },
-    "steam-arch-compare": {
-      "tests": [
-        {"testId": "steam-process-amd64-fex", "exe": "x64-fex/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x86/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000},
-        {"testId": "steam-process-i386", "exe": "x86/winehua_platform_process_smoke.exe", "env": {"WINEHUA_PEER_EXE": "C:/smoke/x64-fex/winehua_platform_process_smoke.exe", "WINEHUA_PEER_ARCH": "x86_64"}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 120000}
-      ]
-    },
-    "steam-contract": {
-      "tests": [
-        {"testId": "contract-i386", "exe": "x86/contract-i386.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000},
-        {"testId": "contract-amd64", "exe": "x64-fex/contract-amd64.exe", "env": {"WINEHUA_STEAM_BOUNDARY_TRACE": "1"}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000}
-      ]
-    },
-    "steam-font": {
-      "tests": [
-        {"testId": "font-i386", "exe": "x86/font-contract-i386.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000},
-        {"testId": "font-amd64", "exe": "x64-fex/font-contract-amd64.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000}
-      ]
-    },
-    "steam-contract-isolate": {
-      "tests": [
-        {"testId": "format-i386", "exe": "x86/contract-i386.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--format-only", "--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 30000},
-        {"testId": "format-amd64", "exe": "x64-fex/contract-amd64.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--format-only", "--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 30000},
-        {"testId": "ipc-no-terminate-amd64", "exe": "x64-fex/contract-amd64.exe", "env": {}, "d3dBackend": "wined3d", "argvMode": "raw", "argv": ["--skip-terminate", "--output", "C:/smoke/results/<run-id>/<test-id>.json"], "timeoutMs": 60000}
-      ]
-    },
-    "d3d8": {
-      "tests": [
-        {"testId": "d3d8-capability-x86", "exe": "x86/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "d3d8-capability-x64", "exe": "x64/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000}
-      ]
-    },
-    "d3d9": {
-      "tests": [
-        {"testId": "d3d9-cube-x86", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
-        {"testId": "d3d9-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000}
-      ]
-    },
-    "wine-vulkan": {
-      "tests": [
-        {"testId": "wine-vulkan-offscreen-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "wine-vulkan-offscreen-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "wine-vulkan-sampled-only-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1", "WINEHUA_VULKAN_SAMPLED_ONLY": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "wine-vulkan-sampled-only-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1", "WINEHUA_VULKAN_SAMPLED_ONLY": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000}
-      ]
-    },
-    "wine-vulkan-present": {
-      "tests": [
-        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000}
-      ]
-    },
-    "dxvk": {
-      "tests": [
-        {"testId": "dxvk-legacy-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-legacy-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 8, "timeoutMs": 180000}
-      ]
-    },
-    "dxvk-dynamic": {
-      "tests": [
-        {"testId": "dxvk-dynamic-cb-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-dynamic-cb-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000}
-      ]
-    },
-    "dxvk-long": {
-      "tests": [
-        {"testId": "dxvk-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": -1, "timeoutMs": -1}
-      ]
-    },
-    "dxvk-modern-baseline": {
-      "tests": [
-        {"testId": "dxvk-modern-baseline-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-modern-baseline-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-modern-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": 8, "timeoutMs": 180000}
-      ]
-    },
-    "dxvk-modern-long": {
-      "tests": [
-        {"testId": "dxvk-modern-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module", "DXVK_WINEHUA_TRACE_SAMPLED": "0", "DXVK_WINEHUA_TRACE_FLOW": "0", "DXVK_WINEHUA_TRACE_API": "0"}, "d3dBackend": "dxvk_modern_2_6", "seconds": -1, "timeoutMs": -1}
-      ]
-    },
-    "gpu-diagnostics": {
-      "tests": [
-        {"testId": "gpu-diagnostics-x86", "exe": "x86/winehua_gpu_diagnostics.exe", "env": {}, "d3dBackend": "dxvk_legacy", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "gpu-diagnostics-x64", "exe": "x64/winehua_gpu_diagnostics.exe", "env": {}, "d3dBackend": "dxvk_legacy", "seconds": 0, "timeoutMs": 90000}
-      ]
-    },
-    "dxvk26-requirements": {
-      "tests": [
-        {"testId": "dxvk26-requirements-x86", "exe": "x86/winehua_dxvk26_requirements.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "dxvk26-requirements-x64", "exe": "x64/winehua_dxvk26_requirements.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 0, "timeoutMs": 90000}
-      ]
-    },
-    "d3d12": {
-      "tests": [
-        {"testId": "d3d12-1000f", "exe": "x64/winehua_d3d12_smoke.exe", "env": {}, "d3dBackend": "vkd3d_limited_500k", "argvMode": "raw",
-         "argv": ["--frames", "1000", "--result", "C:/smoke/results/<run-id>/<test-id>.json",
-                  "--checkpoint", "C:/smoke/results/<run-id>/<test-id>.ckpt"],
-         "seconds": 0, "timeoutMs": 180000}
-      ]
-    },
-    "all": {
-      "tests": [
-        {"testId": "audio-x64", "exe": "x64/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
-        {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
-        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
-        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 8, "timeoutMs": 60000},
-        {"testId": "d3d8-capability-x86", "exe": "x86/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "d3d8-capability-x64", "exe": "x64/winehua_d3d8_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "d3d9-cube-x86", "exe": "x86/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
-        {"testId": "d3d9-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {}, "d3dBackend": "wined3d", "extraArgs": ["--d3d9"], "seconds": 8, "timeoutMs": 180000},
-        {"testId": "wine-vulkan-offscreen-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "wine-vulkan-offscreen-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "mode": "offscreen", "seconds": 0, "timeoutMs": 90000},
-        {"testId": "wine-vulkan-present-x64", "exe": "x64/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "wine-vulkan-present-x86", "exe": "x86/winehua_vulkan_smoke.exe", "env": {"WINEHUA_SMOKE_ASSETS": "C:/smoke/assets", "WINEHUA_VULKAN_RUNTIME": "1"}, "d3dBackend": "wined3d", "presentBackend": "venus_broker_present", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-legacy-x86", "exe": "x86/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-legacy-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 5, "timeoutMs": 180000},
-        {"testId": "dxvk-cube-x64", "exe": "x64/winehua_d3d_switch_cube.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": 8, "timeoutMs": 180000}
-      ]
-    },
-    "long": {
-      "tests": [
-        {"testId": "audio-x64", "exe": "x64/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
-        {"testId": "audio-x86", "exe": "x86/winehua_audio_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3, "timeoutMs": 45000},
-        {"testId": "opengl-x64", "exe": "x64/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3600, "timeoutMs": 3660000},
-        {"testId": "opengl-x86", "exe": "x86/winehua_graphics_smoke.exe", "env": {}, "d3dBackend": "wined3d", "seconds": 3600, "timeoutMs": 3660000},
-        {"testId": "dxvk-long-x64", "exe": "x64/winehua_d3d11_smoke.exe", "env": {"WINEDEBUG": "+loaddll,+module"}, "d3dBackend": "dxvk_legacy", "seconds": -1, "timeoutMs": -1}
-      ]
-    }
-  }
-}
-SMOKE_SUITES_EOF
-    log "  smoke suite definitions → smoke/suites.json ($smoke_suite_version)"
-    log "  VKD3D-Proton 2.6 limited-500K (packaged, product-disabled) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
+    # Suite 编排定义由 automation/smoke.py 产出 (smoke/tests + smoke/suites),
+    # 见 assemble 尾部的载荷拷贝。
+    log "  VKD3D-Proton 2.6 limited-500K (default mixed D3D12 profile) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
 
     # fonts
     cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
@@ -1374,7 +951,7 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     if [ -f "$BUILD_DIR/guest_vulkan/$guest_arch/manifest.json" ]; then
         mkdir -p "$wine_data/bin/guest_vulkan"
         cp -a "$BUILD_DIR/guest_vulkan/$guest_arch/"* "$wine_data/bin/guest_vulkan/"
-        log "  guest_vulkan ($guest_arch): Loader + Venus ICD + offscreen smoke"
+        log "  guest_vulkan ($guest_arch): Loader + Venus ICD"
     elif [ "${BUILD_GUEST_VULKAN:-0}" = "1" ]; then
         err "BUILD_GUEST_VULKAN=1 but build/guest_vulkan/$guest_arch/manifest.json is missing"
     else
@@ -1427,6 +1004,17 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cp -a "$host_vulkan_root/"* "$wine_data/bin/host_vulkan/"
     log "  host_vulkan ($NATIVE_ARCH): native exact replay"
 
+    # Smoke 载荷 (v2, automation/smoke.py build 产出) → wine-data/smoke/。
+    # 设备端 SmokeHook.seed 的离线源就是 files/wine/smoke (解压自本 zip),
+    # 发布环境无 host 也能播种 C:\smoke; 开发环境 host 推送源
+    # files/smoke-payload 优先级更高, 改测试不用重装 HAP。
+    local smoke_payload="$BUILD_DIR/smoke-payload"
+    [ -f "$smoke_payload/manifest.json" ] || \
+        err "smoke payload missing: run 'python3 automation/smoke.py build' first"
+    mkdir -p "$wine_data/smoke"
+    cp -a "$smoke_payload/." "$wine_data/smoke/"
+    log "  smoke payload → wine-data/smoke ($(find "$wine_data/smoke" -name '*.exe' | wc -l) exe)"
+
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"
@@ -1438,6 +1026,12 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cp "$STAGING_DIR/$zip_name" "$rawfile_dir/"
     local payload_sha
     payload_sha="$(sha256sum "$rawfile_dir/$zip_name" | awk '{print $1}')"
+    # smokeSuiteVersion 落盘校验器要核对（载荷由 automation/smoke.py build 产出，
+    # 版本号即载荷内容哈希）—— HAP 里的载荷与本次构建不一致时在 package 阶段拦下
+    local smoke_suite_version
+    smoke_suite_version="$(python3 -c \
+        'import json,sys; print(json.load(open(sys.argv[1]))["suiteVersion"])' \
+        "$smoke_payload/manifest.json")"
     cat > "$rawfile_dir/wine-runtime-manifest.json" <<EOF
 {
   "schemaVersion": 1,

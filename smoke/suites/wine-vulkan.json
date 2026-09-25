@@ -1,0 +1,45 @@
+{
+  "name": "wine-vulkan",
+  "title": "Wine Vulkan offscreen 探针（vkd3d 档下发 venus runtime）",
+  "tests": [
+    {
+      "case": "vulkan-smoke",
+      "id": "wine-vulkan-offscreen",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
+        "WINEHUA_VULKAN_RUNTIME": "1"
+      },
+      "mode": "offscreen",
+      "seconds": 0,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "vulkan-smoke",
+      "id": "wine-vulkan-sampled-only",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
+        "WINEHUA_VULKAN_RUNTIME": "1",
+        "WINEHUA_VULKAN_SAMPLED_ONLY": "1"
+      },
+      "mode": "offscreen",
+      "seconds": 0,
+      "timeoutMs": 90000
+    }
+  ]
+}

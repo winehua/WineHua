@@ -113,9 +113,9 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // the front of the NCP environment list.
     winehua::controller::EnsureBridgeForWineLaunch(prefixDir);
     winehua::controller::AppendWineGamepadEnv(env);
-    // 仅主进程侧基线: locale / WINEDEBUG 静默 / GStreamer 插件路径
-    // (子进程 WINEDEBUG 由 select_winedebug_profile 决定, 不走此表)
-    env.push_back("WINEDEBUG=-all");
+    // locale / GStreamer 插件路径。WINEDEBUG 不在此注入: 本列表经 __env 通道
+    // 下发, 在 wine 侧晚于 setup_wine_env 应用, 会盖掉 select_winedebug_profile
+    // 的选择 — wine 进程 WINEDEBUG 的唯一决策点是 wine_child.cpp。
     env.push_back("LANG=" + wineLang + ".UTF-8");
     // OHOS musl 无 locale 数据, setlocale 激活失败返回 "C";
     // Wine 的 unix_to_win_locale 遇 "C" 只读 LC_ALL 兜底 (ntdll/unix/env.c),
@@ -342,6 +342,12 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             "VN_PERF=no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring",
             "VN_WINEHUA_STRONG_RING_BARRIER=1",
             "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
+            /* VN_WINEHUA_PERSISTENT_MAP_SYNC 两难（2026-09-18 实测）：
+             * vkd3d 常驻 map 上传（Map 后每帧直写、无 Unmap，如 gears 的
+             * instance buffer）必须靠它发布，去掉后 D3D12 渲染不出图；
+             * 但它每次队列提交前整段 to-host flush 会破坏 DXVK 的 staging
+             * 回读（compute UAV 拿旧数据）。500k 档两种消费者共用档位
+             * env，先保 D3D12 出图。 */
             "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
             "VN_WINEHUA_DIRECT_FENCE_WAIT=1",
             "VKR_WINEHUA_SHADOW_FROM_HOST=precise",
@@ -487,8 +493,18 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         "VN_PERF=" + std::string(modern26
             ? "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"
             : "no_fence_feedback,no_query_feedback,no_multi_ring"),
-        /* 同上: vulkan-1=b 让 DXVK 走 winevulkan 而不是 exe 同目录的原生 loader。 */
-        "WINEDLLOVERRIDES=d3d11=n;dxgi=n;vulkan-1=b",
+        /* legacy 1.10.3 自带整套 DXVK d3d10 链 (d3d10/d3d10_1/d3d10core, 见
+         * scripts/assemble.sh), 用 D3D10 的程序必须整套走 native —— 且**不能**
+         * 写成 "n,b" 兜底: 一旦回退到 wine builtin 的 d3d10core, 它建设备要调
+         * dxgi 的私有导出 DXGID3D10CreateDevice (DXVK 的 dxgi 没有该导出, 又因
+         * dxgi=n 禁止回退 builtin) → import 解析失败直接 abort。两条链不兼容,
+         * builtin 兜底等于退回一条必崩的路 (实测 WarThunderLauncher: n,b 卡死,
+         * 纯 n 后正常出界面)。modern 2.x 已移除 d3d10, 不设。
+         *
+         * vulkan-1=b: 让 DXVK 走 winevulkan 而不是 exe 同目录的原生 loader。 */
+        "WINEDLLOVERRIDES=" + std::string(modern26
+            ? "d3d11=n;dxgi=n;vulkan-1=b"
+            : "d3d10=n;d3d10_1=n;d3d10core=n;d3d11=n;dxgi=n;vulkan-1=b"),
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,
         "WINEDLLDIR0=" + overlay64,

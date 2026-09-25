@@ -1,0 +1,23 @@
+{
+  "id": "steam-process-amd64",
+  "title": "Steam 进程创建（AMD64 真 PE，aarch64 上走 FEX 对照路径）",
+  "exe": "steam_process_amd64.exe",
+  "exe_dir": "x64-fex",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "thirdparty/wine-valve/programs/winehua_platform_process_smoke/main.c"
+    ],
+    "compiler": "llvm-x86_64",
+    "cflags": [
+      "-O2",
+      "-s",
+      "-mconsole"
+    ],
+    "libs": [
+      "-lws2_32"
+    ]
+  }
+}

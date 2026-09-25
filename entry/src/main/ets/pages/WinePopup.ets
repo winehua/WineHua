@@ -47,6 +47,8 @@ class PopupXComponentController extends XComponentController {
 @Component
 struct WinePopup {
   controller: PopupXComponentController = new PopupXComponentController();
+  // popupId 由 PopupWindowManager 在 loadContent 前 setPendingToplevel 入队,
+  // aboutToAppear 出队取得 (与 PC 多窗口同款, PC 实测 OK)
   @State popupId: number = 0;
 
   // ── 触控状态机 (移植自 WineWindow.ets, 单窗口简化) ──
@@ -79,7 +81,7 @@ struct WinePopup {
   private scrollLogCounter: number = 0;
 
   aboutToAppear(): void {
-    // loadContent 同步调用, 与 setPendingToplevel 配对 (同 WineWindow)
+    // loadContent 同步调用, 与 setPendingToplevel 配对 (与 PC 多窗口同款, PC 实测 OK)
     this.popupId = testNapi.getCurrentToplevelId() as number;
     this.controller.popupId = this.popupId;
     hilog.info(DOMAIN, 'WinePopup', 'aboutToAppear popup=%{public}d', this.popupId);

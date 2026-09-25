@@ -1,0 +1,33 @@
+{
+  "name": "opengl",
+  "title": "OpenGL 固定帧",
+  "tests": [
+    {
+      "case": "graphics-smoke",
+      "id": "opengl",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "opengl-amd64",
+      "id": "opengl-amd64",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 60000
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 # WineHua DXVK Guest -> Host 架构与性能调查备忘录
 
+> 状态：已被取代（2026-09-22 整理归档）。2026-07-21 的性能调查，结论已被后续调查超越。
+
 > Updated: 2026-07-21
 >
 > Scope: Legacy DXVK 1.10.3, Wine Vulkan, Mesa Venus over vtest,
@@ -900,7 +902,7 @@ whose recorded wall-clock duration is shorter than the requested value.
 ## 13. Source and runtime state
 
 ```text
-Repository: /home/maple/Work/WineHua-build
+Repository: <构建机上的仓库路径>
 Branch: feature/render-element-completeness
 Main baseline before the long-run update: 6c15447
 

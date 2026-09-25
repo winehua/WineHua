@@ -55,4 +55,40 @@ struct DisplayPolicy {
                    ? FrameRoute::DesktopRoot
                    : FrameRoute::Window;
     }
+
+    // -- ⑥ subsurface 承载路由 (多窗口模式"客户区合入主窗"改造) --
+    //
+    // 与 ② SubsurfaceAsLayer 的关系: ② 是模式级的历史判据 (Desktop 全走
+    // layer, 多窗口模式全走 popup 子窗口); 本查询是承载级判据 — 多窗口模式
+    // 下再按 subsurface 的协议类别细分:
+    //
+    //   DesktopLayer — 桌面模式, 合成进 root 帧 (② 的等价保留)
+    //   InlineClient — 窗口内嵌客户区 (wine client surface): 合入父窗口帧
+    //                  (WindowFrameComposer 层列表), 输入穿透父窗口, 不从
+    //                  窗口边界裁剪
+    //   Popup        — 越界浮层 (菜单/未受管子窗口): 保留伪 toplevel + 独立
+    //                  OHOS 子窗口承载 (可越出窗口边界, 输入需路由到自身)
+    //
+    // 判据 = wine 侧协议级事实 (非启发式), 出处
+    // thirdparty/wine/dlls/winewayland.drv/:
+    //   - 客户区 client surface (wayland_surface.c:1184-1192) 创建时设空
+    //     input region ("Let parent handle all pointer events"), 且只设
+    //     viewport destination、从不设 source (:672-675)
+    //   - 菜单/子窗口 surface (window.c:226-229, wayland_surface.c:488-490)
+    //     input region 正常 (仅 WS_EX_TRANSPARENT|WS_EX_LAYERED 为空), 每次
+    //     attach_shm 必设 viewport source (2 的幂对齐 padding 的真实尺寸)
+    // 见 docs/SUBSURFACE_CLASSIFICATION_DESIGN.md §1。
+    enum class SubsurfaceRoute { DesktopLayer, InlineClient, Popup };
+
+    // 类别谓词单点 (host_tests 可直测): 空输入区 + 无 viewport source = 客户区。
+    static bool IsInlineClientSurface(bool inputRegionEmpty, int32_t vpSrcW) {
+        return inputRegionEmpty && vpSrcW <= 0;
+    }
+
+    SubsurfaceRoute RouteForSubsurface(bool inputRegionEmpty, int32_t vpSrcW) const {
+        if (desktop) return SubsurfaceRoute::DesktopLayer;
+        return IsInlineClientSurface(inputRegionEmpty, vpSrcW)
+                   ? SubsurfaceRoute::InlineClient
+                   : SubsurfaceRoute::Popup;
+    }
 };

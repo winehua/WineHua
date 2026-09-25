@@ -1,0 +1,20 @@
+{
+  "id": "contract-amd64",
+  "title": "Steam 边界契约全量检查（AMD64 真 PE，走 FEX）",
+  "exe": "contract_amd64.exe",
+  "exe_dir": "x64-fex",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "tools/steam-boundary/contract.c"
+    ],
+    "compiler": "llvm-x86_64",
+    "cflags": [
+      "-O2",
+      "-Wall",
+      "-Wextra"
+    ]
+  }
+}

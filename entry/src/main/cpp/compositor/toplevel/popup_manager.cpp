@@ -13,8 +13,8 @@
 #define LOG_TAG "WL_Server"
 #include <hilog/log.h>
 
-PopupManager::PopupManager(ToplevelManager& tmgr, int32_t& outputW, int32_t& outputH)
-    : tmgr_(tmgr), outputW_(outputW), outputH_(outputH) {
+PopupManager::PopupManager(ToplevelManager& tmgr)
+    : tmgr_(tmgr) {
 }
 
 PopupManager::PopupCommitEvent PopupManager::UpdatePopupOnCommit(
@@ -67,29 +67,14 @@ PopupManager::PopupCommitEvent PopupManager::UpdatePopupOnCommit(
     bool isNew = false;
     bool sizeChanged = false;
     bool posChanged = false;
-    /*
-     * 全屏主窗口的 GL client surface (war3 D3D 模式切换): wine 把客户区
-     * MoveWindow 到模式尺寸 (800x600), client surface 随之缩小, 按 1:1
-     * 上报会把画面缩在屏幕左上角。这里把"窗口上报尺寸"与"内容像素尺寸"
-     * 解耦: 窗口按全屏输出尺寸上报, FrameData 仍按内容尺寸存 — 渲染侧
-     * EglRenderer letterbox 保比例放大上屏, 输入侧 CoordTransform 按同
-     * 一 letterbox 逆映射 (与 RA2 主 surface 全屏路径同构)。
-     * 判定 = 父全屏 + 偏移 (0,0) + 内容尺寸等于父内容尺寸 (client
-     * surface 恰好覆盖整个客户区; 菜单等小 popup 不满足, 不受影响)。
-     * 本函数仅 PC 模式到达 (桌面模式走 layer 合成), 不影响 Pad 桌面。
-     * 补丁来源: PLAN §2.5 "wl_core.cpp:974-995 popup 窗口/内容尺寸解耦"。
-     */
-    int winW = dispW, winH = dispH;
+    // 窗口上报尺寸 = 内容显示尺寸。曾有的"全屏父 + off(0,0) + 尺寸相等 →
+    // 按输出尺寸上报"war3 启发式补丁已退役: 它识别的对象 (覆盖客户区的 GL
+    // client surface) 现按协议判据走 InlineClient 合入父窗口帧
+    // (DisplayPolicy::RouteForSubsurface), 该场景由主窗 renderer 的 letterbox
+    // 天然放大, 不再需要尺寸解耦 (见 docs/SUBSURFACE_CLASSIFICATION_DESIGN.md §3)。
+    const int winW = dispW, winH = dispH;
     {
         auto lk = tmgr_.Lock();
-        auto* pst = tmgr_.FindToplevelLocked(parentId);
-        if (pst && pst->IsFullscreen() && offX == 0 && offY == 0 &&
-            dispW == pst->Width() && dispH == pst->Height() &&
-            outputW_ > 0 && outputH_ > 0 &&
-            (dispW < outputW_ || dispH < outputH_)) {
-            winW = outputW_;
-            winH = outputH_;
-        }
         popupId = FindPopupBySurfaceKey(sd->surfaceKey);
         if (popupId == 0) {
             popupId = tmgr_.AllocateToplevelId();
@@ -134,20 +119,16 @@ PopupManager::PopupCommitEvent PopupManager::UpdatePopupOnCommit(
             pbuf.MarkDirty();
             pbuf.BumpFrameSerial();  // 帧序列号语义: 像素轮换重写即递增
             pbuf.SetShmFormat(fi.shmFormat);
-            // 尺寸上报语义 (重构第 5B2 步): 原 sizeChanged 用 PopupRecord::w/h
-            // 与"窗口上报尺寸"比较, 现改经 popup 自身 ToplevelState 的尺寸上报
-            // 去重通道 (5B1 收口的 HandleCommittedSizeLocked, 传自身 id/rootId=0):
-            // - 判定值逐字 = winW/H (全屏父补丁后的窗口上报尺寸), 去重状态
-            //   记录在 ToplevelState::lastReportedW_/H (随 popup 生命周期复位,
-            //   与原 rec->w/h 同语义);
-            // - popup 从不 SetToplevelFullscreen → 漂移分支 (ReassertFullscreen,
-            //   war3 主窗口补丁) 不触发; isNew 首帧调用仅为播种 lastReported
-            //   (等价旧"建档时 rec->w/h = winW"), 其 ResizeEvent 返回值被
-            //   isNew 吞掉 — 与旧"新 popup 只发 show, 第二帧同尺寸不发 resize"
-            //   逐帧一致;
-            // - 旧 rec->w/h 随此通道删除 (零外部消费, 见 PopupRecord 注释)。
+            // 尺寸上报语义: 尺寸变化经 popup 自身 ToplevelState 的去重通道
+            // (HandleCommittedSizeLocked, 传自身 id/rootId=0) → 调用方发
+            // popup_resize。output 参数 (0,0) 在此语义明确: 该参数只服务
+            // fullscreen 尺寸漂移纠偏 (ReassertFullscreen), popup 从不
+            // SetToplevelFullscreen → 恒不触发, 显式传 0 去掉对宿主 output
+            // 尺寸的伪依赖。isNew 首帧调用仅为播种 lastReported, 其返回值被
+            // isNew 吞掉 — 与旧"新 popup 只发 show, 第二帧同尺寸不发 resize"
+            // 逐帧一致。
             const auto sizeEffect = tmgr_.HandleCommittedSizeLocked(
-                popupId, 0, winW, winH, outputW_, outputH_);
+                popupId, 0, winW, winH, 0, 0);
             sizeChanged = !isNew &&
                 sizeEffect == ToplevelManager::SizeCommitEffect::ResizeEvent;
         }

@@ -105,7 +105,13 @@ if grep -Fq 'const bool deep = (depth >= 0x7000 && depth < 0x90000) ||' \
     patch -d "$FEX_SRC" -p1 -s < "$SCRIPT_DIR/patches/fex-steam-recursion-entry-limit.patch"
 fi
 
-if grep -Fq 'SteamEntryTraceEdges.fetch_add(1, std::memory_order_relaxed) < 512;' \
+# Steam 诊断补丁集（fex-steam-*.patch，10 个）从 v13–v21 的迭代快照导出，没有形成能从
+# 干净树重放的序列：实测 6/10 打不上（hunk 冲突），剩余补丁之间也有脚本未表达的顺序依赖。
+# 这些是 CEF 崩溃排查用的诊断代码，不进产品包。默认跳过；要复现当时的诊断树，先把
+# FEX_SRC 手工准备成对应状态，再开 FEX_STEAM_DIAG_PATCHES=1。
+if [ "${FEX_STEAM_DIAG_PATCHES:-0}" != "1" ]; then
+    log "跳过 Steam 诊断补丁集 (FEX_STEAM_DIAG_PATCHES=0)"
+elif grep -Fq 'SteamEntryTraceEdges.fetch_add(1, std::memory_order_relaxed) < 512;' \
      "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp"; then
     log "已验证完整 FEX Steam 诊断补丁集"
 else

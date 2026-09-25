@@ -109,6 +109,44 @@ GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
 WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-mono/wine-mono-11.1.0-x86.msi
 HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
 
+# ============================================================
+# smoke 载荷 — automation/smoke.py build 产出, assemble 打进
+# wine-data.zip 的 smoke/ 树 (设备端 SmokeHook.seed 的离线源;
+# host 推送源 files/smoke-payload 优先级更高, 供开发环境热更新)
+# ============================================================
+SMOKE_PAYLOAD_MANIFEST := $(BUILD_DIR)/smoke-payload/manifest.json
+# from_wine 用例的程序清单: exe 由 wine 构建内部产出 (build_wine.sh 不受
+# make 感知), 依赖图里必须有显式规则 — 干净 checkout (CI) 上文件不存在又
+# 无规则可生成时, make 解析阶段直接 "No rule to make target" 退出 (与
+# DXVK_ARTIFACTS 同坑, 修法同: 规则链到 wine stamp + 存在性断言)。
+WINE_SMOKE_PROGRAMS := winehua_audio_smoke winehua_vulkan_smoke \
+	winehua_d3d11_smoke winehua_graphics_smoke
+# 方案③ (WINE_ARCH=aarch64) 用 --enable-archs=arm64ec,aarch64,i386, 不产
+# x86_64-windows PE; 64 位槽取 aarch64-windows (原生 ARM64, 与 ARM64X overlay 匹配)。
+ifeq ($(WINE_ARCH),aarch64)
+SMOKE_PE_DIR_X64 := aarch64-windows
+else
+SMOKE_PE_DIR_X64 := x86_64-windows
+endif
+WINE_SMOKE_EXES := $(foreach p,$(WINE_SMOKE_PROGRAMS), \
+	$(BUILD_DIR)/wine-ohos-$(WINE_ARCH)/programs/$(p)/$(SMOKE_PE_DIR_X64)/$(p).exe \
+	$(BUILD_DIR)/wine-ohos-$(WINE_ARCH)/programs/$(p)/i386-windows/$(p).exe)
+# 源码型用例跟踪 smoke/ 全树; 产物型用例 (from_wine/from_vkd3d) 跟踪
+# 代表产物与 stamp, 重编后触发载荷重建, 防止 assemble 拷到陈旧 exe
+SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
+	$(WINE_SMOKE_EXES) \
+	$(VKD3D_PROTON_STAMP)
+
+$(WINE_SMOKE_EXES): $(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)
+	@test -s "$@" || { echo "ERROR: wine smoke exe missing after wine build: $@" >&2; exit 1; }
+
+$(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
+	@echo "=== smoke payload ==="
+	@# win32-driver: 窗口标题匹配自动点击驱动 (无人值守过启动对话框), 无套件
+	@# 引用但要在设备上随时可用 —— 与 v1 的"全量编译进载荷"行为一致
+	python3 $(ROOT)/automation/smoke.py build --case win32-driver
+	test -f $@
+
 # Guest runtime build scripts can also be invoked directly while iterating on
 # Mesa/Venus. Track their manifests as assemble inputs so a subsequent
 # `make hap` cannot silently reuse an older staged wine-data.zip.
@@ -486,12 +524,7 @@ define assemble_rule
 assemble-$(1): $$(STAMPS)/$(1)/assemble
 
 $$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
-	$(VKD3D_PROTON_ARTIFACTS) \
-	$(ROOT)/smoke/winehua_d3d8_smoke.c \
-	$(ROOT)/smoke/winehua_d3d_switch_cube.c \
-	$(ROOT)/smoke/winehua_gpu_diagnostics.c \
-	$(ROOT)/smoke/winehua_dxvk26_requirements.c \
-	$(ROOT)/smoke/winehua_win32_driver.c \
+	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
 	$$(STAMPS)/deps $$(STAMPS)/wine-$(1)-$(WINE_ARCH) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \
 	$$(ASSEMBLE_GUEST_INPUTS) | $$(STAMPS)/$(1)
@@ -532,56 +565,61 @@ HOST_TEST_DIR := $(BUILD_DIR)/host_tests
 .PHONY: test
 test:
 	@mkdir -p $(HOST_TEST_DIR)
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/geometry_test \
 	    $(ROOT)/host_tests/geometry_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/frame/geometry.cpp
 	$(HOST_TEST_DIR)/geometry_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/blit_scaled_test \
 	    $(ROOT)/host_tests/blit_scaled_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/frame/compositor_blit.cpp
 	$(HOST_TEST_DIR)/blit_scaled_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/blit_clip_test \
-	    $(ROOT)/host_tests/blit_clip_test.cpp
+	    $(ROOT)/host_tests/blit_clip_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/compositor/frame/compositor_blit.cpp
 	$(HOST_TEST_DIR)/blit_clip_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/shm_frame_source_test \
 	    $(ROOT)/host_tests/shm_frame_source_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/frame/shm_frame_source.cpp
 	$(HOST_TEST_DIR)/shm_frame_source_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/zorder_test \
 	    $(ROOT)/host_tests/zorder_test.cpp
 	$(HOST_TEST_DIR)/zorder_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/env_spec_test \
 	    $(ROOT)/host_tests/env_spec_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/env_spec.cpp
+	    $(ROOT)/entry/src/main/cpp/wine/env_spec.cpp
 	$(HOST_TEST_DIR)/env_spec_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/env_baseline_test \
 	    $(ROOT)/host_tests/env_baseline_test.cpp
 	$(HOST_TEST_DIR)/env_baseline_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/input_state_test \
 	    $(ROOT)/host_tests/input_state_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/compositor/input/input_state_tracker.cpp
 	$(HOST_TEST_DIR)/input_state_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/toplevel_event_test \
 	    $(ROOT)/host_tests/toplevel_event_test.cpp
 	$(HOST_TEST_DIR)/toplevel_event_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/presenter_common_test \
 	    $(ROOT)/host_tests/presenter_common_test.cpp
 	$(HOST_TEST_DIR)/presenter_common_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/controller_merge_test \
 	    $(ROOT)/host_tests/controller_merge_test.cpp \
 	    $(ROOT)/entry/src/main/cpp/input/controller/controller_hub.cpp
 	$(HOST_TEST_DIR)/controller_merge_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	    -o $(HOST_TEST_DIR)/display_policy_test \
+	    $(ROOT)/host_tests/display_policy_test.cpp
+	$(HOST_TEST_DIR)/display_policy_test
 
 
 # ============================================================

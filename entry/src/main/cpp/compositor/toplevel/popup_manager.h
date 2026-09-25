@@ -41,7 +41,7 @@ struct ShmCommitInfo;
 //    缩左上) 随 UpdatePopupOnCommit 正文平移, 见 cpp 定义处 --
 class PopupManager {
 public:
-    PopupManager(ToplevelManager& tmgr, int32_t& outputW, int32_t& outputH);
+    PopupManager(ToplevelManager& tmgr);
 
     // popup 记录 (原 ToplevelManager::PopupRecord 字段, 其中 w/h 已随"尺寸
     // 上报去重改经 ToplevelManager::HandleCommittedSizeLocked 通道迁出 —
@@ -133,6 +133,4 @@ private:
     std::unordered_map<uint64_t, uint32_t> popupBySurfaceKey_;
 
     ToplevelManager& tmgr_;
-    int32_t& outputW_;  // 与 DesktopCompositor 同款注入: 全屏父窗口尺寸补丁读点
-    int32_t& outputH_;
 };

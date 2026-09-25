@@ -1,5 +1,7 @@
 # WineHua Phase 2 DXVK Status Memo — archived investigation sections
 
+> 状态：历史章节（2026-09-22 整理归档）。Phase 2 Status Memo 的历史调查部分。
+
 > Archived 2026-07-31 from docs/PHASE2_DXVK_STATUS_MEMO.md during the docs
 > reorganization. Contains dated investigation logs, the 2026-07-21-era
 > “Current conclusion”, “Current blocker”, numbered sections 1-9 and 11-40.
@@ -12,7 +14,7 @@
     installed diagnostic HAP:
       15e501b8333e0e20eac5b346f35159bf89aeed50af3c85437d6ee9289ea85d74
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-frame-identity-trace-20260727-021445
+      <本机证据目录>\winehua-logs\manual\heaven-frame-identity-trace-20260727-021445
     source:
       main e5392f9, DXVK 5232285, Mesa 353e6c5, virglrenderer 59228165
     status:
@@ -50,7 +52,7 @@ the `Logger::info` camera records. Attempt 3 explicitly used
 delay:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-generation-safe-20260727-030635
+      <本机证据目录>\winehua-logs\manual\heaven-generation-safe-20260727-030635
     HAP SHA-256:
       45052dddec0f2ed208be0dc60a9cecf1aa08139b6f6a99572ff9a2904d687a20
     wine-data SHA-256:
@@ -110,7 +112,7 @@ The physical Heaven run still showed continuous backward angle jumps and is
 therefore rejected:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-shadow-generation-serialize-20260727-034900
+      <本机证据目录>\winehua-logs\manual\heaven-shadow-generation-serialize-20260727-034900
     HAP SHA-256:
       545f2ef188882daaf026de6c5d5ee943dedb23aa4292e052591f490244645baf
     wine-data SHA-256:
@@ -180,7 +182,7 @@ barrier, dirty-state mutation, descriptor mutation, or queue-order change.
 The first Host UBO identity candidate is archived before installation:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-host-ubo-identity-20260727-043000
+      <本机证据目录>\winehua-logs\manual\heaven-host-ubo-identity-20260727-043000
     HAP SHA-256:
       9a17bb21e1f7101707c146e56c97ebad8b20364406375c9d9fcdf110366d6152
     wine-data SHA-256:
@@ -231,7 +233,7 @@ The first Wine/Mesa bridge candidate is archived and was run on the physical
 device:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-full-command-identity-20260727-0235
+      <本机证据目录>\winehua-logs\manual\heaven-full-command-identity-20260727-0235
     HAP SHA-256:
       006c80f2dda71275dad3bde59d47846d58bb580cd73e6cc2ca8577aee53b308e
     wine-data SHA-256:
@@ -377,12 +379,12 @@ The ARM64 native/HAP build passed. The validated artifact is:
 
 The ordinary `shadow-precise-strong-ring` DXVK reuse suite remains PASS:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260723-184718
+    <本机证据目录>\winehua-logs\automation\phase2-20260723-184718
 
 The real Heaven `shadow-trace` run reproduced the black/missing scene while
 the Host buffer trace produced:
 
-    D:\MyProject\winehua-logs\manual\heaven-cbtrace-20260723-1853
+    <本机证据目录>\winehua-logs\manual\heaven-cbtrace-20260723-1853
 
     buffer descriptor records: 8429
     distinct Guest buffers:    741
@@ -429,7 +431,7 @@ only isolated feature probes:
 The physical ARM64 device passed this path in both x86 and x64 Wine:
 
     Session: phase2-20260723-124318
-    Archive: D:\MyProject\winehua-logs\automation\phase2-20260723-124318
+    Archive: <本机证据目录>\winehua-logs\automation\phase2-20260723-124318
     Wine commit: 5903b075e31
     Main gitlink commit: 8c5cfb7
     HAP SHA-256:
@@ -480,16 +482,16 @@ vector bug, not a DXVK decoder failure.
 
 The latest physical ARM64 device result is:
 
-    Device: 5KPBB25818203996
+    Device: <设备序列号>
     HAP SHA-256: b923bf15c774da2262ffec74714ed9695859d891f052e0db92e7cf3247d0a504
     wine-data.zip SHA-256: b59bf01e9b34e3d6f6612a1f795ff0476ac7b7b744a9d2215fd5d7aa0d5ca109
     HAP embedded wine-data.zip: matches assembled zip
 
 Archives:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260723-044615
+    <本机证据目录>\winehua-logs\automation\phase2-20260723-044615
       explicit physical-device DXVK reuse run: PASS
-    D:\MyProject\winehua-logs\automation\phase2-20260723-044951
+    <本机证据目录>\winehua-logs\automation\phase2-20260723-044951
       automatic physical-device selection DXVK reuse run: PASS
 
 Both x86 and x64 passed the full D3D11 coverage and fixed-frame visual gates.
@@ -547,7 +549,7 @@ OpImageDrefGather and a 2D, arrayed, depth image type. The same shader also
 contains ordinary sample, explicit Dref, and implicit Dref instructions, so the
 GatherCmp result was not optimized away.
 
-Evidence archive: D:\MyProject\winehua-logs\automation\phase2-20260723-023746
+Evidence archive: <本机证据目录>\winehua-logs\automation\phase2-20260723-023746
 HAP SHA-256: e4d9ca1be2bc8f6512aa56ecfc01bda2c91a251da99e99f3120b05eee2c52260
 Wine commit: 5eb480fd61d
 
@@ -607,9 +609,9 @@ frames with angleRegressions=0.
 Evidence:
 
     Guest Golden:
-      D:\MyProject\winehua-logs\automation\phase2-20260723-005718
+      <本机证据目录>\winehua-logs\automation\phase2-20260723-005718
     Full x86/x64 DXVK regression:
-      D:\MyProject\winehua-logs\automation\phase2-20260723-012108
+      <本机证据目录>\winehua-logs\automation\phase2-20260723-012108
     HAP SHA-256:
       97a4f7c712ae8deca196cd9015d264caee9b00ad5f8c2256c2cdfeb2bbc885c4
 
@@ -657,9 +659,9 @@ sampling or replace it with ordinary sampling plus a scalar compare.
 
 Evidence archives:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260722-141045
+    <本机证据目录>\winehua-logs\automation\phase2-20260722-141045
       DXVK Legacy: Cube sample PASS, Cube comparison FAIL
-    D:\MyProject\winehua-logs\automation\phase2-20260722-165213
+    <本机证据目录>\winehua-logs\automation\phase2-20260722-165213
       native combined/separated/DXVK-contract Cube Dref PASS
       native CubeArray Dref still crashes in Venus/Box64 ring path
 
@@ -674,7 +676,7 @@ launcher:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File `
-  \\wsl.localhost\Ubuntu\home\maple\Work\WineHua-build\automation\Start-WineHuaGameTest.ps1 `
+  \\wsl.localhost\<发行版>\<仓库路径>\automation\Start-WineHuaGameTest.ps1 `
   -D3DBackend dxvk_legacy -GamePreset heaven-dx11
 ```
 
@@ -691,11 +693,11 @@ Latest direct-launch evidence:
     HAP SHA-256:
       206c6288ebec1753feb8d26c5e2f3d226f8b37a32a48e9d4dbaacfb65acfdb77
     manual trace archive:
-      D:\MyProject\winehua-logs\manual\heaven-manual-20260722-1014
+      <本机证据目录>\winehua-logs\manual\heaven-manual-20260722-1014
     direct launch archive:
-      D:\MyProject\winehua-logs\automation\heaven-direct-20260722-1051
+      <本机证据目录>\winehua-logs\automation\heaven-direct-20260722-1051
     log-quiet validation archive:
-      D:\MyProject\winehua-logs\automation\heaven-direct-logquiet-20260722-1125
+      <本机证据目录>\winehua-logs\automation\heaven-direct-logquiet-20260722-1125
 
 The direct path creates a Feature Level 11.0 DXVK device and a 640x360
 BrokerPresent swapchain. Frames continue to present and there is no WineD3D
@@ -751,17 +753,17 @@ Current validated artifacts and archives:
     HAP SHA-256:
       7574327fb6ca38e4e46793cf347c00b175dc2fe027ae7d25b0498363310866b5
     capability archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260721-183330
+      <本机证据目录>\winehua-logs\automation\phase2-20260721-183330
     DXVK correctness archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260721-183531
+      <本机证据目录>\winehua-logs\automation\phase2-20260721-183531
     optimized smoke archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260721-184301
+      <本机证据目录>\winehua-logs\automation\phase2-20260721-184301
     ComputeMark stable pacing archive:
-      D:\MyProject\winehua-logs\manual\computemark-pacing-20260721-194956
+      <本机证据目录>\winehua-logs\manual\computemark-pacing-20260721-194956
     async-present failure archive:
-      D:\MyProject\winehua-logs\manual\computemark-async-present-20260721-203229
+      <本机证据目录>\winehua-logs\manual\computemark-async-present-20260721-203229
     async-present plus synchronous-submit archive:
-      D:\MyProject\winehua-logs\manual\computemark-async-present-sync-submit-20260721-204421
+      <本机证据目录>\winehua-logs\manual\computemark-async-present-sync-submit-20260721-204421
 
 The ordinary D3D11 smoke remains fast: 81.934 FPS, 549 cube frames, and zero
 angle regressions in the optimized archive. ComputeMark is a much heavier
@@ -958,12 +960,12 @@ themselves.
 ## 1. Canonical environment and source state
 
     WSL distro:       Ubuntu, WSL2
-    Repository:       /home/maple/Work/WineHua-build
-    Windows access:    \\wsl$\Ubuntu\home\maple\Work\WineHua-build
+    Repository:       <构建机上的仓库路径>
+    Windows access:    <WSL 访问路径>
     Branch:           feature/render-element-completeness
     Docker container: winehua-master-ext4
     Container source: /data/src/winehua
-    Device:           5KPBB25818203996
+    Device:           <设备序列号>
     Bundle:           app.hackeris.winehua
 
 Compile only inside the Docker container. Keep source and build output on WSL
@@ -1024,7 +1026,7 @@ fully conformant Vulkan feature set.
 
 Archive:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260721-054809
+    <本机证据目录>\winehua-logs\automation\phase2-20260721-054809
 
 Result:
 
@@ -1188,7 +1190,7 @@ For the normal D3D11 cube launch, logs already show:
 
 Physical screenshot:
 
-    D:\MyProject\winehua-cube-dx11-final.jpeg
+    <本机证据目录>\winehua-cube-dx11-final.jpeg
 
 This makes a generic DXVK device-creation failure, shader compiler failure, or
 global Venus present failure unlikely. The leading hypothesis is a presentation
@@ -1238,7 +1240,7 @@ the image sampled by the currently visible XComponent.
 
 Compare a normal-game trace against the known-good automation trace:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260720-133512\
+    <本机证据目录>\winehua-logs\automation\phase2-20260720-133512\
       phase2-20260720-133512-01-dxvk-reuse\hilog.txt
 
 Primary grep markers:
@@ -1350,7 +1352,7 @@ root cause, and remaining gates immediately after those commits.
 
 ## 12. 2026-07-25 Heaven draw0 exact replay A/B
 
-The latest HAP was installed on physical device `5KPBB25818203996`:
+The latest HAP was installed on physical device `<设备序列号>`:
 
     HAP SHA-256: 52eea041108a49966ad6e3aa034e13cb85413f94a5eca85584befe73cf47690d
     embedded wine-data.zip matches assembled payload
@@ -1359,7 +1361,7 @@ The new `venus-heaven-draw0` suite ran four exact variants using the same
 captured vertex/fragment SPIR-V, six full-mip sampled images, ten UBOs, index
 and vertex buffers, and descriptor bindings 0-21:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260725-090001
+    <本机证据目录>\winehua-logs\automation\phase2-20260725-090001
 
 All four Venus/Maleoon runs passed pipeline creation and one queue submit:
 
@@ -1513,14 +1515,14 @@ After the loop fix, the log contains three distinct final shader variants:
 The default two-pass physical screenshot restores the ship's wood, metal,
 ropes, normal detail, and lighting:
 
-    D:\MyProject\winehua-logs\manual\heaven-dual-src-scan-fix-twopass-20260725
+    <本机证据目录>\winehua-logs\manual\heaven-dual-src-scan-fix-twopass-20260725
 
 The x64 exhaustive D3D11 smoke and visible cube pass after this change. The
 cube rendered 552 frames with `angleRegressions = 0`. The first x86 smoke run
 timed out before producing a result and is being treated as a separate
 automation/runtime regression until its single allowed retry completes:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260725-215522
+    <本机证据目录>\winehua-logs\automation\phase2-20260725-215522
 
 Next work is no longer broad sampled-image correctness. It is:
 
@@ -1548,7 +1550,7 @@ not change fence, barrier, drop-buffer, or fallback behavior.
 
 The continuous Heaven run is archived at:
 
-    D:\MyProject\winehua-logs\manual\heaven-stage-trace-20260726-r3
+    <本机证据目录>\winehua-logs\manual\heaven-stage-trace-20260726-r3
 
 It produced 377 NCP/main frames. The observed invariants were:
 
@@ -1619,7 +1621,7 @@ rollback in Heaven, including the latest clean process run.
 The package described by the user as smooth at approximately 12:40 was not
 archived as a HAP. The nearest retained metadata is:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260726-130728\artifact.json
+    <本机证据目录>\winehua-logs\automation\phase2-20260726-130728\artifact.json
     HAP SHA-256:       50d4e0610e55678d4ac7b82422bfc34e279059cc236ab92ac0705cb5f8a93544
     wine-data SHA-256: 6bd3c6ca3e0ffeda9ed63d652d8e1b92fd72cfaa097d5190074b4a2a510449ca
     main commit:       ef6e1a6f87005d3d79bdc8addba01044913818ea
@@ -1719,7 +1721,7 @@ not remove Guest fences, drop frames, or rely on FIFO slice order as the fix.
 Checkpoint and evidence:
 
     DXVK diagnostic commit: 2c94fd5
-    Run root: D:\MyProject\winehua-logs\manual\heaven-camera-20260726-2030
+    Run root: <本机证据目录>\winehua-logs\manual\heaven-camera-20260726-2030
     GPU upload frames: frames-gpu-upload
     Fast mapped frames: frames-fast-no-upload-212817
     FIFO frames: frames-fast-fifo-214441
@@ -1739,7 +1741,7 @@ milestone:
     HAP SHA-256:
       9aa4428b403433975f50db72d47631686e03c6133b9ed5acdc8f070bc608dece
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-inline-upload-20260726-221238
+      <本机证据目录>\winehua-logs\manual\heaven-inline-upload-20260726-221238
 
 The archived `artifact.json` is marked
 `FAIL-user-observed-camera-rollback`. Screenshot sampling that did not catch a
@@ -1795,7 +1797,7 @@ A new candidate was built, archived before installation, and overwrite-installed
     wine-data SHA-256:
       541e9fb6c3492d1cd1210d2edb00573e09b57a34700235817892efccbf2b68ef
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-deferred-shadow-20260726-225828
+      <本机证据目录>\winehua-logs\manual\heaven-deferred-shadow-20260726-225828
 
 This candidate snapshots Guest flush contents separately and does not copy them
 immediately into live Host VkDeviceMemory. Fully covered buffer ranges are
@@ -1841,7 +1843,7 @@ with the installed deferred-copy candidate. It is therefore rejected:
     HAP SHA-256:
       fa5b6d848a90a9c467b36112f747a0220777bef00afd4a0d14ede4027ddb04c7
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-deferred-shadow-20260726-225828
+      <本机证据目录>\winehua-logs\manual\heaven-deferred-shadow-20260726-225828
     status:
       FAIL-user-observed-camera-rollback
 
@@ -1891,7 +1893,7 @@ The first descriptor-serialization artifact cannot be evaluated:
     HAP SHA-256:
       fad3600f19ba0054f74da3f2b44d30776ff67aebe54d815618d5ae49d4d
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-descriptor-serialized-20260727-0038
+      <本机证据目录>\winehua-logs\manual\heaven-descriptor-serialized-20260727-0038
     status:
       INVALID-profile-selector-not-propagated
 
@@ -1915,7 +1917,7 @@ The replacement artifact was built successfully and archived before install:
     wine-data SHA-256:
       9d791950b65302d4cdb2b67968bff4aecd16a151523e2279b2eb0f8493b67c4e
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-descriptor-serialized-valid-20260727-005103
+      <本机证据目录>\winehua-logs\manual\heaven-descriptor-serialized-valid-20260727-005103
     status:
       TESTING-runtime-proven-user-verdict-pending
 
@@ -1972,7 +1974,7 @@ overlap exclusion without single-stepping every descriptor write.
     wine-data SHA-256:
       6fa8c8c2751b7babe5ec71e06c237682f554ad4c16fc98c436a3afd89a96ead1
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-descriptor-submit-generation-20260727-012618
+      <本机证据目录>\winehua-logs\manual\heaven-descriptor-submit-generation-20260727-012618
     status:
       ARCHIVED-READY-FOR-INSTALL
 
@@ -2021,7 +2023,7 @@ The diagnostic source has been checkpointed before installation:
     wine-data SHA-256:
       7653c8f11af5789e07b02c522899d1167795203c12b39c6436f93ce8917b3f17
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-frame-assoc-trace-20260727-015003
+      <本机证据目录>\winehua-logs\manual\heaven-frame-assoc-trace-20260727-015003
     status:
       ARCHIVED-READY-FOR-INSTALL
 
@@ -2124,7 +2126,7 @@ after artifact validation and the actual run.
 The first focused artifact was built, validated and archived before install:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-focused-ubo-20260727-052720
+      <本机证据目录>\winehua-logs\manual\heaven-focused-ubo-20260727-052720
     HAP SHA-256:
       bdfa791be70adf7f964dfed26445b6931f8b39bed7e5eadae7231775eed5bb0b
     wine-data SHA-256:
@@ -2192,7 +2194,7 @@ The replacement run is valid only if all of these are observed together:
 The replacement physical-device run is valid and archived:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-bound-ubo-20260727-055932
+      <本机证据目录>\winehua-logs\manual\heaven-bound-ubo-20260727-055932
     HAP SHA-256:
       15ffdf34d5327dd07e80041ef36a84a5385fccb76e326327983ae888f62d6658
     wine-data SHA-256:
@@ -2248,7 +2250,7 @@ Decision after the exact run:
 The exact replacement run completed on the physical device and is archived:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-exact-descriptor-20260727-064031
+      <本机证据目录>\winehua-logs\manual\heaven-exact-descriptor-20260727-064031
     HAP SHA-256:
       6b2b487551fe219af350a891eed9e37c6c39648e0c91e0e34ed9fc8b72fd5032
     wine-data SHA-256:
@@ -2303,7 +2305,7 @@ The diagnostic HAP was built, validated, overwrite-installed, and run through
 the real Heaven D3D11 scene on the physical device:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-present-image-trace-20260727-075615
+      <本机证据目录>\winehua-logs\manual\heaven-present-image-trace-20260727-075615
     HAP SHA-256:
       b72296485f227837db38c1d8c8a8df94ac87b00d28a0e12e5b0ea6813c707354
     wine-data SHA-256:
@@ -2422,7 +2424,7 @@ the NCP copy observes the final presenter copy before later Guest work.
 Passing artifact and source state:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-ring-drain-pass-20260727-1045
+      <本机证据目录>\winehua-logs\manual\heaven-ring-drain-pass-20260727-1045
     HAP SHA-256:
       890664cb3859effe20f765e4ac4a5f362621203f318a7043d6261c687b2d700d
     wine-data SHA-256:
@@ -2482,7 +2484,7 @@ image is not a performance optimization and is forbidden.
 
 The rollback-free performance run is archived at:
 
-    D:\MyProject\winehua-logs\manual\
+    <本机证据目录>\winehua-logs\manual\
       heaven-correct-perf-baseline-20260727-105000
 
 For the last seven complete 120-present windows (present 2280..3120), the
@@ -2535,7 +2537,7 @@ be removed, shortened to roundtrip-only, or replaced by a timing delay.
 
 The inline candidate was archived at:
 
-    D:\MyProject\winehua-logs\manual\
+    <本机证据目录>\winehua-logs\manual\
       heaven-inline-ring-drain-ab-20260727
 
 Artifact and source state:
@@ -2570,7 +2572,7 @@ wait. No dirty gap is widened and no unknown shadow bytes are uploaded.
 
 Correctness automation is archived at:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260727-120028
+    <本机证据目录>\winehua-logs\automation\phase2-20260727-120028
 
 Results with `shadow-precise-dirty-ring-inline-upload`:
 
@@ -2632,7 +2634,7 @@ ranges. The v3 matched present window was 2280..3120 (840 frames), with:
     HAP SHA-256:
       9871d7a9ce237d2de9ce9e877d8e8cf1df1b4f051780000330cd5ec24dfef141
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-staging-v3-cached-20260727
+      <本机证据目录>\winehua-logs\manual\heaven-staging-v3-cached-20260727
     source:
       main b253993, virglrenderer fb4c20ee plus archived uncommitted A/B,
       Mesa 19fe8b6, DXVK df55b90, Wine 20559c87
@@ -2688,7 +2690,7 @@ Matched presents 2280..3120 measured:
 The CPU scan reduction, not fewer presents or weakened synchronization,
 explains the gain. The performance artifact is archived at:
 
-    D:\MyProject\winehua-logs\manual\heaven-coverage-sort-v1-20260727
+    <本机证据目录>\winehua-logs\manual\heaven-coverage-sort-v1-20260727
     HAP SHA-256:
       21edef3f25ff88c983bde22fca43f5be75d1377aaaf62ff01781add69057e7cd
 
@@ -2705,7 +2707,7 @@ The boundary-corrected HAP was rebuilt and overwrite-installed successfully:
     wine-data SHA-256:
       2126b3c967405219092ae564d0419d4076854590dfeb666f9e811143c5ec7e73
     automation:
-      D:\MyProject\winehua-logs\automation\phase2-20260727-134737
+      <本机证据目录>\winehua-logs\automation\phase2-20260727-134737
 
 Automation results with the boundary-corrected build:
 
@@ -2733,7 +2735,7 @@ The exact committed build repeated the matched 2280..3120 window and confirmed
 that the zero-byte boundary correction did not change the performance result:
 
     archive:
-      D:\MyProject\winehua-logs\manual\heaven-coverage-sort-final-20260727
+      <本机证据目录>\winehua-logs\manual\heaven-coverage-sort-final-20260727
     source:
       main 3b7ea0b, virglrenderer 3997c9d2,
       Mesa 19fe8b6, DXVK df55b90, Wine 20559c87
@@ -2779,7 +2781,7 @@ The mandatory present-order invariant remains unchanged:
 
 The exact installed candidate is archived at:
 
-    D:\MyProject\winehua-logs\manual\cmdlist-batch-heaven-20260727
+    <本机证据目录>\winehua-logs\manual\cmdlist-batch-heaven-20260727
 
 Artifact and source identity:
 
@@ -2799,7 +2801,7 @@ Artifact and source identity:
 The same HAP first ran with batching disabled and passed the complete automated
 DXVK regression at:
 
-    D:\MyProject\winehua-logs\automation\phase2-20260727-184519
+    <本机证据目录>\winehua-logs\automation\phase2-20260727-184519
 
 Both x64 and x86 comprehensive D3D11 smoke passed, including descriptor
 identity/lifetime, mip/array/3D texture, BC, MSAA, compute/UAV, D24S8 and the
@@ -2848,7 +2850,7 @@ Source identity:
 Immutable artifact identity:
 
     archive:
-      D:\MyProject\winehua-logs\manual\cmdlist-batch-heaven-20260727
+      <本机证据目录>\winehua-logs\manual\cmdlist-batch-heaven-20260727
     signed HAP:
       entry-default-signed-4cb5722f.hap
     HAP SHA-256:
@@ -2862,15 +2864,15 @@ That file is the older candidate with SHA-256
 and is not the final `KNOWN_GOOD` package. Restore the accepted package with:
 
     & 'C:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe' `
-      -t 5KPBB25818203996 install -r `
-      'D:\MyProject\winehua-logs\manual\cmdlist-batch-heaven-20260727\entry-default-signed-4cb5722f.hap'
+      -t <设备序列号> install -r `
+      '<本机证据目录>\winehua-logs\manual\cmdlist-batch-heaven-20260727\entry-default-signed-4cb5722f.hap'
 
 The command must exit successfully and report `install bundle successfully`.
 
 Automation evidence:
 
     archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260727-193134
+      <本机证据目录>\winehua-logs\automation\phase2-20260727-193134
     status:           PASS
     suite/prefix:     dxvk / reuse
     perf profile:     shadow-precise-dirty-ring-inline-upload-coverage-sort
@@ -2977,7 +2979,7 @@ Committed source identity:
 Final committed product artifact:
 
     archive:
-      D:\MyProject\winehua-logs\manual\product-batch-default-20260727
+      <本机证据目录>\winehua-logs\manual\product-batch-default-20260727
     signed HAP:
       entry-default-signed-43654ab7.hap
     HAP SHA-256:
@@ -2994,7 +2996,7 @@ overwrite installation reported `install bundle successfully`.
 Committed-product automation evidence:
 
     archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260727-210903
+      <本机证据目录>\winehua-logs\automation\phase2-20260727-210903
     status:           PASS
     suite/prefix:     dxvk / reuse
     perf profile:     shadow-precise-dirty-ring-inline-upload-coverage-sort
@@ -3061,7 +3063,7 @@ Rejected candidate identity:
     source:
       main 1428cab plus an uncommitted two-file A/B change
     signed HAP archive:
-      D:\MyProject\winehua-logs\performance\host-perf-summary-off-20260727-2130\entry-default-signed-616bf882.hap
+      <本机证据目录>\winehua-logs\performance\host-perf-summary-off-20260727-2130\entry-default-signed-616bf882.hap
     HAP SHA-256:
       616bf88291f3ba6adbfb47c8726a7f781bc9cf9b64c3de6e7d66dbdd566c1d75
     wine-data.zip SHA-256:
@@ -3134,7 +3136,7 @@ Candidate source identity before commit:
 Qualified artifact:
 
     archive:
-      D:\MyProject\winehua-logs\performance\host-perf-forward-off-20260727-2149
+      <本机证据目录>\winehua-logs\performance\host-perf-forward-off-20260727-2149
     signed HAP:
       entry-default-signed-07013f8c.hap
     HAP SHA-256:
@@ -3165,7 +3167,7 @@ candidate and reported `PASS - this version has no problem`.
 Post-visual automation evidence:
 
     archive:
-      D:\MyProject\winehua-logs\automation\phase2-20260727-220057
+      <本机证据目录>\winehua-logs\automation\phase2-20260727-220057
     status:           PASS
     suite/prefix:     dxvk / reuse
     perf profile:     shadow-precise-dirty-ring-inline-upload-coverage-sort
@@ -3216,7 +3218,7 @@ explicitly disabled. Its final D3D11 log contained:
 
 Archive:
 
-    D:\MyProject\winehua-logs\tomb-raider-20260728\snorm-ab-20260728\off
+    <本机证据目录>\winehua-logs\tomb-raider-20260728\snorm-ab-20260728\off
 
 The opt-in implementation preserves the D3D-visible RGBA8 SNORM resource while
 using `VK_FORMAT_R16G16B16A16_SFLOAT` for the physical image only when the
@@ -3244,7 +3246,7 @@ It reached the real opening game scene. The final log recorded:
 
 Archive:
 
-    D:\MyProject\winehua-logs\tomb-raider-20260728\snorm-ab-20260728\on
+    <本机证据目录>\winehua-logs\tomb-raider-20260728\snorm-ab-20260728\on
 
 Continuous frames retained skin, clothing, fire light, shadows, rain, and
 environment colour without black output or miscellaneous-colour corruption.

@@ -230,7 +230,8 @@ build_wayland() {
 
 # ── 3. xdg-shell + wayland 协议文件 (架构无关, 只生成一次) ──
 build_protocols() {
-    if [ -f "$WINEHUA_INC/xdg-shell-protocol.c" ]; then
+    if [ -f "$WINEHUA_INC/xdg-shell-protocol.c" ] \
+       && [ -f "$WINEHUA_INC/winehua-toplevel-protocol.c" ]; then
         log "协议文件已就绪，跳过"
         return 0
     fi
@@ -249,6 +250,12 @@ build_protocols() {
     "$scanner" server-header "$xdg_xml" "$WINEHUA_INC/xdg-shell-server-protocol.h"
     "$scanner" client-header "$xdg_xml" "$WINEHUA_INC/xdg-shell-client-protocol.h"
     "$scanner" private-code "$xdg_xml" "$WINEHUA_INC/xdg-shell-protocol.c"
+
+    # WineHua 私有协议 (权威源在 winewayland.drv/Makefile.in 同文件, 双端
+    # 同一 XML; server 侧只需 server-header + private-code)
+    local wh_xml="$ROOT/thirdparty/wine/dlls/winewayland.drv/winehua-toplevel.xml"
+    "$scanner" server-header "$wh_xml" "$WINEHUA_INC/winehua-toplevel-server-protocol.h"
+    "$scanner" private-code "$wh_xml" "$WINEHUA_INC/winehua-toplevel-protocol.c"
 
     log "协议文件 → $WINEHUA_INC"
 }

@@ -132,7 +132,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
         // 非全屏弹窗/对话框保留
         if (DesktopCompositor::ShouldSkipFullscreenCascade(layer, fullscreenId, fsOk, tmgr_)) continue;
 
-        if (layer.type == DesktopCompositor::CompositorLayer::Type::Subsurface) {
+        if (layer.type == CompositorLayer::Type::Subsurface) {
             // 内部菜单: enter 层自己的 wl_surface, 坐标以层原点为基。层可伸出
             // 父窗口边界 — 若改走父窗口 surface, 伸出部分产生越界的窗口相对
             // 坐标, 会被 winewayland 的 motion clamp (wayland_pointer.c
@@ -157,6 +157,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.originX = layerScrX;
                     out.originY = layerScrY;
                     out.scale = transform.scale;
+                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_);
                     finalize();
                     return out.surface != nullptr;
                 }
@@ -172,12 +173,14 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.surface = sl.surface;
                     out.originX = layer.x;
                     out.originY = layer.y;
+                    // WineHua: 命中 owner 暴露区 (菜单层归属 owner) → 拦
+                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_);
                 }
                 // scale 保持默认 1 (恒等变换), content 保持默认 0 (不钳制)
                 finalize();
                 return out.surface != nullptr;
             }
-        } else if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel) {
+        } else if (layer.type == CompositorLayer::Type::Toplevel) {
             if (fsOk && layer.toplevelId == fullscreenId) {
                 // 主全屏窗口: 内容区 (fit 矩形) 命中
                 if (x >= transform.offX && x < transform.offX + transform.dstW &&
@@ -189,6 +192,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.scale = transform.scale;
                     contentW = transform.srcW;
                     contentH = transform.srcH;
+                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(fullscreenId, desktopRootToplevelId_);
                     finalize();
                     return out.surface != nullptr;
                 }
@@ -216,6 +220,10 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                 out.originX = layer.x;
                 out.originY = layer.y;
                 out.scale = 1.0;
+                // WineHua: 命中被模态禁用的 owner → 拦截 (吞点击+焦点切 modal)
+                out.blockedModalId = layer.toplevelId != rootId
+                    ? tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_)
+                    : 0;
                 finalize();
                 return out.surface != nullptr;
             }

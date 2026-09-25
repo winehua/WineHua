@@ -1,0 +1,28 @@
+{
+  "id": "font-i386",
+  "title": "Steam 字体契约（i386，DirectWrite 枚举/渲染）",
+  "exe": "font_contract_i386.exe",
+  "arch": [
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "tools/steam-boundary/font-contract.cpp"
+    ],
+    "compiler": "llvm-i686-cxx",
+    "cflags": [
+      "-std=c++17",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-static"
+    ],
+    "libs": [
+      "-ldwrite",
+      "-lgdi32",
+      "-luser32",
+      "-lole32",
+      "-luuid"
+    ]
+  }
+}

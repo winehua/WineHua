@@ -1,0 +1,60 @@
+{
+  "name": "steam-contract-isolate",
+  "title": "Steam 契约分项隔离（只测格式 / 保留 IPC 不 terminate）",
+  "tests": [
+    {
+      "case": "contract-i386",
+      "id": "format",
+      "arch": [
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "argvMode": "raw",
+      "argv": [
+        "--format-only",
+        "--output",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "timeoutMs": 30000
+    },
+    {
+      "case": "contract-amd64",
+      "id": "format",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "argvMode": "raw",
+      "argv": [
+        "--format-only",
+        "--output",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "timeoutMs": 30000
+    },
+    {
+      "case": "contract-amd64",
+      "id": "ipc-no-terminate",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "argvMode": "raw",
+      "argv": [
+        "--skip-terminate",
+        "--output",
+        "C:/smoke/results/<run-id>/<test-id>.json"
+      ],
+      "timeoutMs": 60000
+    }
+  ]
+}

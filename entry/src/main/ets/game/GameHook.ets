@@ -123,7 +123,10 @@ export class GameHook {
         'BOX64_DYNAREC_STRONGMEM',
         'BOX64_AVX'
       ];
-      const allowedKey = /^(WINEDEBUG|DXVK_|VN_|VKR_|WINEHUA_DXVK_|WINEHUA_VKR_)[A-Za-z0-9_]*$/.test(key) ||
+      // 不含 WINEDEBUG: wine_child 的 apply_entry_param_env_overrides 显式拦下它
+      // (档位决策点收口在设备端 select_winedebug_profile), 放行等于静默失效 ——
+      // 要开调试通道用 WINEHUA_WINEDEBUG
+      const allowedKey = /^(DXVK_|VN_|VKR_|WINEHUA_DXVK_|WINEHUA_VKR_)[A-Za-z0-9_]*$/.test(key) ||
         key === 'WINEHUA_WOW64_ENGINE' ||
         key === 'WINE_LARGE_ADDRESS_AWARE' ||
         key === 'WINEHUA_FAULT_FREEZE' ||

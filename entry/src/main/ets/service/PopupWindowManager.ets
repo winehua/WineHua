@@ -150,7 +150,7 @@ export class PopupWindowManager {
     entry.fullscreenPopup = fullscreenPopup;
     this.creating.add(popupId);
 
-    // 让 pages/WinePopup 的 aboutToAppear 同步取到 popupId (FIFO, 与 WineWindow 同模式)
+    // 让 pages/WinePopup 的 aboutToAppear 同步取到 popupId (与 PC 同款 FIFO, PC 实测 OK)
     testNapi.setPendingToplevel(popupId);
 
     stage.createSubWindowWithOptions(`wine_popup_${popupId}`, {
@@ -183,6 +183,11 @@ export class PopupWindowManager {
 
       entry.subWin = subWin;
       this.creating.delete(popupId);
+
+      // [WINID] popup 子窗口身份打点: 对照 WMS 日志 win NNN parent XXX 归属。
+      // parentWin 即逻辑父窗口 (t1 的窗口); WMS 报的是物理父 (stage 主窗)。
+      hilog.info(DOMAIN, TAG, '[POPUP] #%{public}d subWinId=%{public}d parentWinId=%{public}d',
+        popupId, subWin.getWindowProperties().id, parentWin.getWindowProperties().id);
 
       // 创建期间收到 hide → 立即销毁
       if (this.pendingDestroy.has(popupId)) {
@@ -223,6 +228,7 @@ export class PopupWindowManager {
       }
     }).catch((e: Error) => {
       this.creating.delete(popupId);
+      testNapi.cancelPendingToplevel(popupId);  // 创建失败 → 同样清残坑
       hilog.error(DOMAIN, TAG, '[POPUP] #%{public}d createSubWindow FAILED: %{public}s',
         popupId, JSON.stringify(e));
     });
@@ -262,6 +268,11 @@ export class PopupWindowManager {
   private hide(popupId: number): void {
     if (this.creating.has(popupId)) {
       this.pendingDestroy.add(popupId);
+      // 窗口关闭于创建中 (destroy-while-creating): 页面可能未执行 aboutToAppear,
+      // pending 队列里的 id 无人消费 (残坑) — 立即清除, 否则后续每个 popup
+      // 出队拿到这个死 id → 渲染器挂错 toplevel 黑屏 (1.8 实测)。页面已出队
+      // 时队列无此 id, cancel 是 no-op。
+      testNapi.cancelPendingToplevel(popupId);
       return;
     }
     const entry = this.popups.get(popupId);
@@ -280,6 +291,7 @@ export class PopupWindowManager {
       entry.subWin = null;
     }
   }
+
 
   // 级联: 父窗口销毁时清理其全部 popup
   destroyPopupsForToplevel(parentToplevel: number): void {
@@ -314,7 +326,25 @@ export class PopupWindowManager {
     const rect = parentWin.getWindowProperties().windowRect;
     const gx = Math.round(rect.left + entry.offX * scale);
     const gy = Math.round(rect.top + entry.offY * scale);
-    await entry.subWin.moveWindowToGlobal(gx, gy);
+    try {
+      await entry.subWin.moveWindowToGlobal(gx, gy);
+      hilog.info(DOMAIN, TAG, '[POPUP] move ok #%{public}d → (%{public}d,%{public}d)', entry.popupId, gx, gy);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, '[POPUP] move FAIL #%{public}d → (%{public}d,%{public}d): %{public}s',
+        entry.popupId, gx, gy, JSON.stringify(e));
+    }
+  }
+
+  // z 单元提升: 主窗点击置顶时其全部 popup 必须提到主窗之上 (否则画面被
+  // 白壳主窗盖住 — 2026-09-10 白屏实锤)。主窗先 raise、popup 后 raise,
+  // 保证"画面在顶层"的不变量。
+  raisePopups(parentToplevel: number): void {
+    this.popups.forEach((entry) => {
+      if (entry.parentToplevel !== parentToplevel || !entry.subWin) return;
+      try {
+        entry.subWin.raiseToAppTop().catch(() => { /* ignore */ });
+      } catch (_) { /* ignore */ }
+    });
   }
 
   // 诊断: 某父窗口是否有活动 popup

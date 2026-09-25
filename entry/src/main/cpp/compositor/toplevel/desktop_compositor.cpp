@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 #include <hilog/log.h>
 
@@ -37,22 +38,38 @@ void DesktopCompositor::MarkDesktopRootDirtyLocked()
     tmgr_.MarkToplevelDirtyLocked(desktopRootToplevelId_);
 }
 
-void DesktopCompositor::UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y)
+bool DesktopCompositor::UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y,
+                                                           uint32_t& outParentToplevel,
+                                                           DisplayPolicy::SubsurfaceRoute& outRoute)
 {
     for (auto& layer : subsurfaceLayers_) {
         if (layer.surface == surface) {
             layer.localX = x;
             layer.localY = y;
-            return;
+            // InlineClient 的 x/y 与 localX/localY 同义 (窗口局部坐标,
+            // 见 UpdateInlineSubsurfaceOnCommit), 同步更新保持自洽;
+            // DesktopLayer 的 x/y 是桌面坐标, 由 ResolveSubsurfaceLayerPositionLocked
+            // 每帧重算, 此处不写。
+            if (layer.route == DisplayPolicy::SubsurfaceRoute::InlineClient) {
+                layer.x = x;
+                layer.y = y;
+            }
+            outParentToplevel = layer.parentToplevel;
+            outRoute = layer.route;
+            return true;
         }
     }
+    return false;
 }
 
-bool DesktopCompositor::RemoveSubsurfaceLayer(wl_resource* surface)
+bool DesktopCompositor::RemoveSubsurfaceLayer(wl_resource* surface, uint32_t& outParentToplevel,
+                                              DisplayPolicy::SubsurfaceRoute& outRoute)
 {
     auto it = std::find_if(subsurfaceLayers_.begin(), subsurfaceLayers_.end(),
                            [surface](const SubsurfaceLayer& l) { return l.surface == surface; });
     if (it == subsurfaceLayers_.end()) return false;
+    outParentToplevel = it->parentToplevel;
+    outRoute = it->route;
     subsurfaceLayers_.erase(it);
     return true;
 }
@@ -105,7 +122,7 @@ bool DesktopCompositor::ReorderSubsurfaceLayerBelow(wl_resource* child, wl_resou
     return true;
 }
 
-const DesktopCompositor::SubsurfaceLayer*
+const SubsurfaceLayer*
 DesktopCompositor::FindZeroCopyLayerForToplevelLocked(uint32_t id) const
 {
     // toplevel 的 zero-copy subsurface 层查找 — 层集合判定单一实现 (ZcBridge::
@@ -128,7 +145,7 @@ bool DesktopCompositor::GetZeroCopyContentSizeLocked(uint32_t toplevelId,
     return zc_.GetContentSize(toplevelId, outW, outH);
 }
 
-std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)
+std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)
 {
     std::vector<CompositorLayer> layers;
     const uint32_t rootId = desktopRootToplevelId_;
@@ -192,6 +209,38 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     // 可能占位在列, 原始下标会把整个 lane 序偏移, 破块序)。
     std::unordered_map<uint32_t, int64_t> laneOf;  // 父窗口 id → laneSeq
     laneOf.reserve(tmgr_.toplevelZOrder().size());
+    // WineHua: 在 owner lane 内递归展开 modal 组 (嵌套对话框: modal 又是
+    // 另一 modal 的 owner)。itemSeq 用 [100000, ...) 区间 — 与 owner 的
+    // subsurface 子层 (itemSeq=li+1) 不相撞, 且恒在同 lane 的 subsurface 之后
+    // (模态框显示在 owner 全部内容之上, Win32 owned 窗口语义)。
+    const auto kModalItemBase = 100000;
+    std::function<void(uint32_t, int64_t)> appendModals = [&](uint32_t ownerId, int64_t lane) {
+        int64_t item = kModalItemBase;
+        for (uint32_t modalId : tmgr_.ModalListLocked(ownerId)) {
+            const auto* mst = tmgr_.FindToplevelLocked(modalId);
+            if (!mst) continue;
+            PendingLayer mp;
+            mp.seq.group = winehua::ZOrderGroup::InZOrder;
+            mp.seq.laneSeq = lane;
+            mp.seq.itemSeq = item++;
+            CompositorLayer& mlayer = mp.layer;
+            mlayer.type = CompositorLayer::Type::Toplevel;
+            mlayer.visible = tmgr_.IsToplevelVisibleLocked(modalId, rootId);
+            mlayer.toplevelId = modalId;
+            mlayer.x = mst->X();
+            mlayer.y = mst->Y();
+            mlayer.w = mst->Width();
+            mlayer.h = mst->Height();
+            // modal 层恒以普通层参与 (fullscreen 位强制清零): 尺寸等于
+            // 输出尺寸的对话框 (全屏游戏的分辨率切换确认框等) 会被 wine
+            // 标 WINE_SWP_FULLSCREEN, 若带入 fullscreen 位会被
+            // ShouldSkipFullscreenCascade 连渲染带命中一起跳过, 而输入
+            // 拦截 (FirstVisibleModalLocked) 仍生效 → 对话框不可见且点不到
+            mlayer.fullscreen = false;
+            pending.push_back(std::move(mp));
+            appendModals(modalId, lane);  // 嵌套: 同一 lane, 继续展开
+        }
+    };
     int64_t zi = 0;
     for (uint32_t childId : tmgr_.toplevelZOrder()) {
         if (childId == rootId) continue;
@@ -212,6 +261,7 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
         layer.fullscreen = cst->IsFullscreen();
         laneOf.emplace(childId, zi);
         pending.push_back(std::move(p));
+        appendModals(childId, zi);  // WineHua: modal 组展开 (成员不入 z-order)
         ++zi;
     }
 
@@ -224,6 +274,10 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     // 渲染与输入共用本列表 (单一数据源), 置顶后点击菜单的命中同步优先。
     int64_t li = 0;
     for (const auto& sl : subsurfaceLayers_) {
+        // 承载路由过滤 (单一权威): 本列表只服务 root 帧合成, InlineClient
+        // 层由父窗口帧的 BuildWindowLayerListLocked 消费 — 若在此纳入会被
+        // root 与窗口双重绘制 (坐标语义也不同: 前者桌面坐标, 后者窗口局部)。
+        if (sl.route == DisplayPolicy::SubsurfaceRoute::InlineClient) continue;
         const winehua::ZOrderGroup grp = winehua::ZOrderGroupFor(
             sl.parentToplevel == rootId, sl.isExternal,
             tmgr_.IsInZOrder(sl.parentToplevel));
@@ -265,7 +319,7 @@ std::vector<DesktopCompositor::CompositorLayer> DesktopCompositor::BuildLayerLis
     return layers;
 }
 
-std::vector<DesktopCompositor::CompositorLayer>
+std::vector<CompositorLayer>
 DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int winH)
 {
     std::vector<CompositorLayer> layers;
@@ -281,12 +335,14 @@ DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int
         layers.push_back(std::move(rootLayer));
     }
 
-    // 窗口内 subsurface 层 (窗口局部坐标)。PC 模式 subsurface 全部转 popup
-    // 伪 toplevel (PopupManager::UpdatePopupOnCommit), 这里当前恒空 — 层序结构为窗口内
-    // 内容扩展预留; 若未来窗口内 layer 化, 按协议顺序 zIndex 递增。
+    // 窗口内 subsurface 层 (窗口局部坐标): 只收 InlineClient (多窗口模式客户区,
+    // 见 DisplayPolicy::SubsurfaceRoute)。判定用显式 route 字段, 不用
+    // isExternal 反推 (后者只表达"坐标是否 Wine 基底", 与承载方式正交) —
+    // DesktopLayer 层属 root 帧合成, Popup 层不在本容器 (走伪 toplevel)。
+    // 层序 = 容器顺序 (protocol 顺序, place_above/below 经同一容器重排)。
     for (const auto& sl : subsurfaceLayers_) {
         if (sl.parentToplevel != toplevelId) continue;
-        if (sl.isExternal) continue;  // 外部层 (Wine 虚拟屏幕坐标), 不属于窗口内容
+        if (sl.route != DisplayPolicy::SubsurfaceRoute::InlineClient) continue;
         CompositorLayer subLayer;
         subLayer.type = CompositorLayer::Type::Subsurface;
         subLayer.zIndex = zIndex++;

@@ -52,7 +52,12 @@ bool MoveGrabHandler::ProcessMoveGrabMotion(ToplevelManager& tmgr, int32_t gx, i
     const int32_t nx = gx - grabOffX_;
     const int32_t ny = gy - grabOffY_;
     if (nx != st->X() || ny != st->Y()) {
+        const int32_t dx = nx - st->X();
+        const int32_t dy = ny - st->Y();
         st->SetPosition(nx, ny);
+        // WineHua: 拖动 owner 时其 modal 组一起移动 (Win32 owned 窗口跟随;
+        // 拖动 modal 自身时这里为 modal 位置增量, 组员 (嵌套) 同步)
+        tmgr.ApplyModalDeltaLocked(toplevelId_, dx, dy);
         OH_LOG_INFO(LOG_APP, "[MW-MOVE] grab move tl=%{public}u ptr=(%{public}d,%{public}d) newPos=(%{public}d,%{public}d)",
                     toplevelId_, gx, gy, st->X(), st->Y());
     }

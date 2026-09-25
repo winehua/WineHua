@@ -1,0 +1,39 @@
+{
+  "name": "d3d9",
+  "title": "D3D9 立方体（固定帧）",
+  "tests": [
+    {
+      "case": "d3d-switch-cube",
+      "id": "d3d9-cube",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "extraArgs": [
+        "--d3d9"
+      ],
+      "seconds": 8,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d9-cube-amd64",
+      "id": "d3d9-cube-amd64",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "extraArgs": [
+        "--d3d9"
+      ],
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

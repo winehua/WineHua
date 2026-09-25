@@ -1,0 +1,34 @@
+{
+  "name": "core",
+  "title": "入口门禁（OpenGL + DNS）",
+  "tests": [
+    {
+      "case": "graphics-smoke",
+      "id": "opengl",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "dns-probe",
+      "id": "dns-api",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 120000
+    }
+  ]
+}

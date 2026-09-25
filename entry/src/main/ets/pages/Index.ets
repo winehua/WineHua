@@ -197,6 +197,17 @@ struct Index {
           'upgrade pending: packaged wine runtime differs from extracted data. ' +
           'Apply the runtime update to keep the existing prefix.');
       }
+      // 桌面模式镜像 (Pad/PC 可切; phone 恒虚拟桌面): 引擎按 DesktopModeService
+      // 实际模式运行, 设置的选中高亮必须与之一致 — 否则 Pad 默认虚拟桌面时
+      // UI 却显示"多窗口模式"选中 (master 提取 Pad 多窗口时漏掉的镜像配套)
+      const dm = DesktopModeService.getInstance().mode;
+      if (dm != this.desktopMode) {
+        this.desktopMode = dm;
+        const modeSel = dm == MODE_FUSION ? 0 : 1;
+        if (this.desktopModeSel[0] != modeSel) {
+          this.desktopModeSel = [modeSel];
+        }
+      }
     };
     env.subscribe(mirror);
     // 进程列表镜像 + 引擎事件驱动刷新 (WineEnvService 内部已绑定时序)
@@ -219,6 +230,11 @@ struct Index {
     // register its native callbacks before it can switch containers.
     SteamHostHook.getInstance().attachWineEnvironment();
     mirror();
+    // 自动化通道 (winehua.autoStart=1, UI 不可注入设备验证用): 主页面就绪后
+    // 自动拉起引擎 (一次消费后失效; 见 EntryAbility.publishLaunchRequest)
+    if (env.consumeAutoStart()) {
+      setTimeout(() => this.quickStart(), 300);
+    }
   }
 
   // 图形后端提供 DXVK 1.10.3、可选 DXVK 2.6.2 与 WineD3D。更新三个来源:
@@ -252,10 +268,10 @@ struct Index {
     this.desktopModeRestartHint = true;
   }
 
-  // 设置项可见性: 功能仅对 PC 可用 (Pad/phone 恒虚拟桌面, 无融合模式可切)
+  // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
   private isPcDevice(): boolean {
     const t = deviceInfo.deviceType;
-    return t !== 'tablet' && t !== 'phone';
+    return t !== 'phone';
   }
 
   // 引擎操作统一入口: 忙时 (初始化/停止编排中) 由 WineEnvService 自身拦截。
@@ -477,8 +493,8 @@ struct Index {
         }
         .width('100%').margin({ bottom: 6 })
 
-        // -- 桌面模式 (仅 PC): 融合模式 = 每个程序独立 OHOS 窗口 (多窗口, 默认);
-        // 虚拟桌面 = 独立窗口承载 Wine 桌面。切换后重启引擎生效
+        // -- 桌面模式 (Pad/PC): 多窗口模式 = 每个程序独立 OHOS 窗口 (可拖动/
+        // 缩放/置顶); 虚拟桌面 = Wine 桌面合成为单一窗口。phone 不显示。
         if (this.isPcDevice()) {
           Divider().color('#2a2a2a').width('100%')
           Text('桌面模式')
@@ -486,7 +502,7 @@ struct Index {
             .width('100%').padding({ top: 12, bottom: 8 })
           SegmentButton({
             options: SegmentButtonOptions.capsule({
-              buttons: [{ text: '融合模式' }, { text: '虚拟桌面' }],
+              buttons: [{ text: (deviceInfo.deviceType === 'tablet') ? '多窗口模式' : '融合模式' }, { text: '虚拟桌面' }],
               multiply: false
             }),
             selectedIndexes: $desktopModeSel,
@@ -495,7 +511,9 @@ struct Index {
             }
           })
           .width('100%')
-          Text('虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
+          Text(deviceInfo.deviceType === 'tablet' ?
+            '虚拟桌面: Wine 桌面在独立窗口运行; 多窗口模式: 每个程序独立窗口（试验功能）' :
+            '虚拟桌面: Wine 桌面在独立窗口运行; 融合模式: 每个程序独立窗口')
             .fontSize(12).fontColor('#777')
             .width('100%').padding({ top: 4 })
           if (this.desktopModeRestartHint) {

@@ -1,0 +1,183 @@
+# 鸿蒙平台适配
+
+> 适用场景：遇到"平台特有的限制"时看这篇；写代码需要绕开平台限制时，先看这里有没有现成做法。
+> 最后核实：2026-09-24
+> 相关代码：`entry/src/main/module.json5`、`entry/src/main/cpp/proc/`、`thirdparty/wine/dlls/ntdll/unix/ohos_virtual.c`、`ohos_file.c`
+> 相关文档：[process-model.md](process-model.md)（进程创建细节）、[platform-memory-noexec.md](platform-memory-noexec.md)、[platform-memory-ohos.md](platform-memory-ohos.md)（内存权限的完整实测记录）
+
+鸿蒙不是标准的 Linux 环境：内存权限模型、进程创建方式、文件系统挂载、沙箱限制都和普通 Linux 发行版不同。这篇记录这些限制下的做法。
+
+## 内存与可执行权限
+
+### 页面权限在创建时就定下来，之后改不了
+
+这是最反直觉的一条，也是很多怪问题的根源。
+
+**开鸿设备上实测到**：一个内存页能不能执行，由 `mmap` 创建时的参数决定。创建之后再用 `mprotect` 把页面从读写改成可执行，**函数会返回成功，但权限实际没变**——页仍然是 `rw-p`，一执行就崩溃（`SEGV_ACCERR`）。Wine 的 PE 加载器走的正是"先建页、再改权限"这条路径，在那里会静默失效：Wine 自己记的权限是可执行，内核里实际不可执行，一跑就崩。开鸿设备首次启动 wineboot 的崩溃就是这个原因（根因、修法和首启验证记录见提交 `1d79866`，改动在 `kaihong` 分支上）。
+
+**这条不同设备的结果不一致，用之前先在自己的目标设备上确认。** 另一份在 ARM64 设备上的实测（见 [platform-memory-ohos.md](platform-memory-ohos.md)）结论是相反的：
+
+| 创建方式 | ARM64 实测结果 |
+|---|---|
+| `mmap(PROT_READ\|PROT_EXEC)` | 可执行 ✓ |
+| `mmap(PROT_READ\|WRITE\|EXEC)` | 可执行 ✓ |
+| 匿名 `mmap(读写)` 之后再 `mprotect` 加执行 | **可以**（mprotect 生效）✓ |
+| 文件映射之后再 `mprotect` 加执行 | 明确失败（err=13） |
+
+差异可能来自设备或系统版本，也可能是测试场景不同（Wine 加载器处理的页 vs 普通匿名页），目前没有定论。好在现行实现不依赖这个判断：`ohos_map_exec_section` 直接创建带执行权限的匿名映射，两种情况下都能工作。
+
+**排查时的注意点**：不能看 `mprotect` 的返回值判断权限是否生效——要读 `/proc/self/maps` 看实际权限，或者干脆试着执行一下。
+
+还有一个噪音要认得：Wine 的标准错误输出里会打 `failed to set ... protection on ... noexec filesystem?`，看着像失败，其实页面是好的（匿名 RWX 映射，可以执行）。这类信息只打日志、不中断。
+
+### 可执行内存是怎么拿到的
+
+现行实现集中在 Wine 源码的 `thirdparty/wine/dlls/ntdll/unix/ohos_virtual.c`，两个入口：
+
+- `ohos_map_exec_section()`——映射可执行代码段时，**直接创建匿名内存**（带 `PROT_EXEC`），这样页面从一开始就可执行，后面权限改不动也无所谓。
+- `ohos_mprotect_exec()`——遇到"要给已有页面加执行权限"的请求时，先试着正常改；**只有失败时**才逐页兜底：把页面内容抄出来、换成匿名页、写回去、再加权限。正常程序走不到这条路，所以没有额外开销。
+
+加壳程序的情况更麻烦一些：它们会把**整个模块**（不只代码段）改成可执行。这类请求由上面那个逐页兜底逻辑覆盖。设备日志里的 `[OHOS-VIRT] ...: replaced N/N pages with anon` 就是兜底生效的打点。
+
+### 文件映射不能加执行权限
+
+文件映射（不管是不是 memfd）加 `PROT_EXEC` 会被直接拒绝（`EACCES`），之后改权限也一样。所以：
+
+- 从文件映射进来的代码页，必须先"匿名化"（把内容抄进匿名页）才能执行。
+- PE 头不属于任何节，走的是普通的文件映射路径——加壳程序要给头页加执行权限时会失败（`GetLastError() = 5`），然后壳不检查返回值继续写只读页，触发访问违例。**修法**：在鸿蒙上映射 PE 头时跳过文件映射、直接用 `pread` 读进匿名页（`thirdparty/wine/dlls/ntdll/unix/virtual.c:2761` 附近，注释里写了完整原因）。
+
+阿里的 HNP 安装路径（`/data/service/hnp/`）就是挂载成 noexec 的，从那里加载的程序都要走这套处理。
+
+## 沙箱
+
+### 同一份数据，两套路径
+
+应用代码里看到的路径和 hdc 看到的路径不是一回事，换算有固定规则：
+
+```
+运行时（应用进程内）                 hdc（真实路径）
+/data/storage/el<N>/<类>/[子路径]  →  /data/app/el<N>/<userId>/<类>/<包名>/[子路径]
+/storage/Users/currentUser/[子路径] →  /storage/media/<userId>/local/files/Docs/[子路径]
+```
+
+- `el1` 下是安装时就固定的应用资源（HAP 解压出来的原生库等），`el2` 下是可写的应用数据。
+- `userId` 是设备上的用户编号，主用户是 `100`。
+- 包名就是 `app.hackeris.winehua`。
+
+代进去，实际用到的就是这些：
+
+| 运行时视角 | hdc 视角 | 用途 |
+|---|---|---|
+| `/data/storage/el2/base/files/` | `/data/app/el2/100/base/app.hackeris.winehua/files/` | 应用文件根目录 |
+| `/data/storage/el2/base/files/.wine/` | `.../files/.wine/` | Wine prefix |
+| `/data/storage/el2/base/files/.wine/drive_c/` | `.../files/.wine/drive_c/` | C 盘 |
+| `/data/storage/el2/base/files/wine/bin/` | `.../files/wine/bin/` | Wine 程序数据（从 HAP 解压） |
+| `/data/storage/el2/base/temp/` | `.../temp/` | Wine 标准错误日志 |
+| `/data/storage/el2/base/cache/` | `.../cache/` | 渲染器宿主日志、零拷贝标记 |
+| `/data/storage/el1/bundle/libs/<架构>/` | 同规则的 el1 路径，但**读不到** | 打包进 HAP 的原生库 |
+| `/storage/Users/currentUser/Download/` | `/storage/media/100/local/files/Docs/Download/` | 下载目录，Wine 的 `Z:` 和 `HOME` 指向这里 |
+
+**Wine 的盘符映射**（`thirdparty/wine/dlls/ntdll/unix/ohos_file.c` 的 `ohos_drive_unix_path`）：`Z:` 指向 `$HOME`（上表最后一行那个下载目录），`C:` 到 `Y:` 指向 Wine prefix 下的 `drive_X`。沙箱里没有符号链接，所以这里是硬编码映射。
+
+### 两套视角的访问权限不一样
+
+**`/data/app/...`（应用私有数据）不是谁都能读的**：
+
+- `hdc shell` 直接 `cat` / `ls` 私有目录会被 SELinux 拒（实测 `Permission denied`，2in1 设备）。
+- 要访问得走 `-b <包名>` 通道，而它**只对调试签名的应用有效**——设备上装的是应用市场版（`appProvisionType: release`）时会报 `Invalid bundle name`。
+- **能用的只有 `hdc file send|recv -b`**。`hdc shell -b <包名> "命令"` 即使装了调试包也报 `Invalid bundle name`；写成 `hdc -t <设备> -b <包名> shell "命令"` 时参数会被接受，但进去照样 `Permission denied`（实测 2026-09-24）。
+- 所以读沙箱里的日志（`temp/`、`cache/`）有个前提：**设备上装的是调试包**。
+
+**公共目录可以直接读**：`/storage/media/100/local/files/Docs/Download/` 实测能列出内容（同样注意，`/storage/media/100/local/files/` 这一层是被拒的，必须给到完整路径）。
+
+**`/data/local/tmp/` 是最省事的落脚点**：shell 可读写、`hdc file recv` 也能拉回来，和包签名无关。要长期留的证据往这里放。
+
+### 往沙箱里读写文件
+
+读写都走 `-b <包名>` 通道：`hdc file send -b <包名> <本地路径> <沙箱视角路径>`、`hdc file recv -b <包名> <沙箱视角路径> <本地路径>`。几个要点：
+
+- 路径必须写**沙箱视角**的，写真实路径会报"文件不存在"。
+- 不加 `-b` 直接写真实路径会权限不足（hdc shell 的 SELinux 上下文限制）。
+- **这条通道要求设备上装的是调试包**；装的是应用市场版时报 `Invalid bundle name`（见上面"两套视角的访问权限"）。
+- 推目录时，如果目标已存在，会把源目录**嵌套**进去（变成 `目标/源目录名/...`）——推之前先删目标。
+- **`hdc shell` 删不掉沙箱里的东西**：`rm -rf` 对真实路径和沙箱视角路径都会被拒（`Permission denied`，实测）。要清空应用数据只能卸载重装，或者用应用里的「重置 Wine 引擎」。
+
+开发测试时用这条通道推送测试程序，可以不用重装安装包（几百 MB）。
+
+### 文件操作的两个坑
+
+- **`fs.copy()` 在沙箱里不能用**：用裸路径报 401（要求 file:// 格式），转成 URI 又报 13900020（权限）。要复制目录，用 `fs.mkdirSync` 建目录 + `fs.listFileSync` 逐个列文件 + `fs.copyFileSync` 复制（项目里的 `copyTree` 就是这么做的）。
+- **没有符号链接**：Wine 的盘符映射不能靠符号链接，改成硬编码映射（`ohos_file.c` 里 `z:` 指向 HOME，`c:` 到 `y:` 指向配置目录下的 `drive_X`）。
+
+## 进程创建
+
+鸿蒙应用创建原生进程走 NCP 通道（`OH_Ability_StartNativeChildProcess`），有两个关键限制：
+
+1. **NCP 子进程里不能再创建 NCP 子进程**。而 Wine 运行中经常要再起进程（启动器拉起游戏、explorer 双击 exe、补拉 wineserver），所以项目在主进程里放了一个启动代理（broker），子进程把启动参数发回主进程，由主进程代为创建。
+2. **子进程不继承主进程的环境变量**。主进程 `setenv` 对子进程无效，所以环境变量要显式序列化传递。
+
+手机和开鸿设备上系统 NCP 不可用（分别是不支持和被禁用），项目用 fork 实现了一份等价功能，由 `proc/ncp_dispatch.cpp` 按设备分流。
+
+这些细节都在 [process-model.md](process-model.md) 里。
+
+## 设备形态差异
+
+**重要原则**：进程创建方式和交互形态是两个独立的维度，不要用一个开关同时表示。把两者混在一起（"开鸿 = 移动形态"）会让开鸿 PC 的交互走手机逻辑。分维度的改动在 `kaihong` 分支上（提交 `7e5175a`），`master` 目前仍是两者混在一起的做法。
+
+判断方式：
+
+- **进程创建方式**：看系统是否支持 NCP。手机不支持、开鸿被禁用 → 走 fork。
+- **交互形态**：只看 `deviceInfo.deviceType`，与是不是开鸿无关。
+
+| 形态 | 进程创建 | 默认交互 | 平台特有的问题 |
+|---|---|---|---|
+| 平板 | 系统 NCP | 虚拟桌面（用户可切换到多窗口） | 无 |
+| 2in1 PC | 系统 NCP | 多窗口 | 无 |
+| 手机 | fork | 虚拟桌面（固定） | 系统 NCP 不可用 |
+| 开鸿 PC | fork（NCP 被禁用） | 虚拟桌面（固定） | 不支持子窗口；首启崩溃（已修，改动在 `kaihong` 分支） |
+
+**开鸿 PC 不支持子窗口**：`createSubWindowWithOptions` 返回 1300002，导致多窗口模式下菜单、提示框、模态对话框都弹不出来（它们靠子窗口承载）。2026-09-12 决定：开鸿 PC 统一用虚拟桌面，并去掉设置里的模式切换入口。将来要恢复多窗口，得先确认子窗口可用，或者改成由原生层合成。
+
+**DPI 要按形态给默认值**：默认缩放写死 2.0 是为了高 DPI 的移动屏，开鸿 PC 的系统推荐值本来就是 1.0，再乘 2 会整体放大一倍。按形态取值的改动在 `kaihong` 分支上（提交 `7e5175a`），`master` 当前仍是固定值。
+
+## 中文界面
+
+中文界面正常显示需要两步，缺一不可：
+
+**第一步，让 Wine 知道要用中文。** Wine 判断界面语言的方式是：把 `LANG` 交给 `setlocale` 解析，再查 locale 表。鸿蒙的 musl 没有 locale 数据，`setlocale` 会失败并返回 "C"，Wine 查表失败后只读 `LC_ALL` 作为兜底——所以只设 `LANG` 不够，必须同时注入 `LC_ALL`（`entry/src/main/cpp/wine/wine_env.cpp:78` 附近有完整注释）。
+
+**第二步，编译产物里要有中文翻译。** 即使语言标识对了，如果可执行文件的资源表里没有中文（0x0804）语言块，加载时还是会回落到英文。翻译资源的编译依赖一个工具（msgfmt），构建宿主机如果没有装，整个产物会静默地丢掉全部翻译——这个检查已经加到 `scripts/build_wine.sh` 开头，缺工具直接报错。
+
+## 系统库
+
+系统的 Vulkan 库在 `/system/lib64/libvulkan.so`——注意**没有版本号后缀**（不存在 `libvulkan.so.1`）。
+
+`feature/arm64` 分支上有一处针对性改动：把加载改成优先用绝对路径打开这个文件。原因是那条线（arm64 原生方案）下，应用自己的库目录里也放了一份 guest 用的 Vulkan loader（`libvulkan.so.1`），按名字搜索会先命中它而不是宿主驱动，宿主侧创建实例会返回 `INCOMPATIBLE_DRIVER`；非 OHOS 平台这个绝对路径不存在，会自动回退到按名字找。
+
+**这条改动不在 `master` 上**——主线当前的加载逻辑仍是按名字搜索（先试 `libvulkan.so.1`，再试 `libvulkan.so`），见 `thirdparty/virglrenderer/src/venus/vkr_library.c`。
+
+判断设备有没有某项能力，**只能用应用进程里实测的结果**——`hdc shell ls /system/lib64` 返回的权限不足不等于文件不存在；而且宿主侧 Vulkan 走的是 vtest/virgl 通道，本来就不依赖系统这个库。
+
+## 可复用的经验
+
+这几条是多次踩坑总结出来的，遇到新问题可以直接照做：
+
+1. **不要相信返回值和文档，要看实际效果**。`mprotect` 返回成功但权限没变；`rm -rf` 返回成功但没删掉；`hdc shell ls` 的权限错误不等于文件不存在；`fs.copy()` 文档里有但沙箱里就是不能用。都要用实际结果验证。
+
+2. **对照实验比单点分析快**。怀疑是平台问题时，先在本地 Linux 上跑同一个程序做对照，能一刀切开"是 Wine 的问题"还是"是平台的问题"。再往下就是分层对照：纯匿名内存能不能执行 → 代码段页能不能改权限 → PE 头页能不能改权限，三组一做就知道卡在哪一层。
+
+3. **验证改动真的被编译进去了**。构建系统有缓存（stamp 机制），改完不重编的情况出现过；也有把库名认错的情况（改动在 `libwine_child.so`，却去查 `libentry.so`）。改完先 grep 构建日志确认。
+
+4. **不要在"本来就不可能生效"的路径上做验证**。在必定失败的路径上打补丁，观察没变化，会误以为排除了某个原因——实际上这个实验从一开始就无效。
+
+5. **设备上没有控制台输出**。调试程序要把结果写进文件，而且要每次写完就关闭文件——崩溃前写的内容才保得住。
+
+6. **环境变量传递要显式**。子进程不继承环境，所有变量都走显式的序列化通道。
+
+7. **服务就绪要用真连接探测**。判断 socket 服务是否可用不能只看文件存在（bind 之后文件就有了，但可能还没开始监听），要真的连一次。
+
+8. **注册表里的状态，改文件不会自动更新**，要重建 prefix。
+
+## 未确认的问题
+
+- 手机的 fork 后端为什么没有遇到"box64 进程内 fork 后不能创建可执行内存"的问题。推测是因为 fork 发生在还没加载 box64 的主进程里，与那个问题出现的场景不同，但没有直接验证过。

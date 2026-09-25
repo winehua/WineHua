@@ -1,0 +1,10 @@
+{
+  "id": "platform-process",
+  "title": "跨架构进程创建（x64 与 x86 互为 peer）",
+  "exe": "winehua_platform_process_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "from_wine": "winehua_platform_process_smoke"
+}

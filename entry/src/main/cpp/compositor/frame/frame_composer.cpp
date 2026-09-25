@@ -47,15 +47,28 @@ bool DesktopRootFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
 // WindowFrameComposer: PC 单窗口帧
 // (原 DesktopCompositor::TakeWindowFrameLocked, 逐行等价)
 //
-// 窗口内层序 (阶段 3, PC 模式): Root(窗口帧) < Subsurface(窗口局部坐标) <
-// ZC 层(最顶)。窗口间层序由系统合成器保证, 不在此合成。PC 模式 subsurface
-// 当前恒空 (全部转 popup 伪 toplevel), 合成输出 = 窗口 SHM 帧; ZC 层
-// (zcActive) 合成跳过 — GPU 内容由 renderer 自绘覆盖, CPU 帧保留 SHM 内容
-// 不抠除 (与 desktop 模式同语义: GPU 帧不透明时覆盖等价, fallback 窗口期
-// 显示旧内容比黑屏稳)。
+// 窗口内层序 (阶段 3, 多窗口模式 — PC 窗口模式与 Pad 多窗口模式共用, 两者
+// DisplayPolicy::desktop 均为 false): Root(窗口帧) < 内嵌客户区 Subsurface
+// (窗口局部坐标, route=InlineClient) < ZC 层(最顶)。窗口间层序由系统合成器
+// 保证, 不在此合成。Popup 类 subsurface (菜单/越界浮层) 不在本容器 — 走
+// 伪 toplevel + 独立 OHOS 子窗口, 见 DisplayPolicy::RouteForSubsurface。
+// ZC 层 (zcActive) 合成跳过 — GPU 内容由 renderer 自绘覆盖, CPU 帧保留 SHM
+// 内容不抠除 (与 desktop 模式同语义: GPU 帧不透明时覆盖等价, fallback
+// 窗口期显示旧内容比黑屏稳)。
 // ============================================================================
 bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
                                   PresentedFrame& frame, bool frameTrace) {
+    // 全程持 tmgr 锁 (RAII, 出函数解锁): 本路径直接消费共享层 — layer.sub
+    // 指向 subsurfaceLayers_ 元素 (BuildWindowLayerListLocked), blit 会就地
+    // 写其 opaque/opaqueCheckedSerial 缓存, st/st->Pixels()/ClearDirty 亦为
+    // 锁内契约 (见 CompositorLayer 注释)。无锁时与 WL_Server 线程的
+    // UpsertSubsurfaceLayer (持锁; 首次 push_back 扩容 / 更新 move 换 pixels
+    // 缓冲) 并发 → layer.sub->pixels 悬垂 → 渲染线程 SIGSEGV (Pad 实测:
+    // 内嵌客户区 smoke 跑 ~25s 必崩, cppcrash tid=渲染线程)。按类分流前
+    // 窗口内层列表恒空 (PC 模式 subsurface 全转 popup), 该缺陷未暴露。
+    // 注: desktop 路径的"锁内规划/锁外绘制"之所以安全, 是因为 FramePlan 已
+    // 快照像素; 本路径无快照阶段, 故 blit 必须留在锁内 (窗口内层数据量小)。
+    auto lk = comp_.tmgr_.Lock();
     auto* st = comp_.tmgr_.FindToplevelLocked(id);
     if (!st || !st->IsDirty()) return false;
     const int winW = st->Width();
@@ -66,11 +79,11 @@ bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
     out = st->Pixels();
     for (const auto& layer : layers) {
         switch (layer.type) {
-            case DesktopCompositor::CompositorLayer::Type::Root:
+            case CompositorLayer::Type::Root:
                 break;  // 基底已在 out = st->pixels 拷贝
-            case DesktopCompositor::CompositorLayer::Type::Toplevel:
+            case CompositorLayer::Type::Toplevel:
                 break;  // 窗口内 ZC 整窗口层: GPU 自绘, CPU 帧跳过
-            case DesktopCompositor::CompositorLayer::Type::Subsurface:
+            case CompositorLayer::Type::Subsurface:
                 if (layer.ShouldSkipCpu()) break;  // ZC 子表面 (GPU 自绘) / 不可见: 同上
                 FrameBlitter::BlitWindowSubsurface(layer, winW, winH, out);
                 break;
@@ -86,6 +99,7 @@ bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
     frame.opaque = (st->ShmFormat() != 0);
     frame.pixels = out.data();
     st->ClearDirty();
+    lk.unlock();  // ── 锁到此为止, 以下日志/返回不持锁 ──
     if (frameTrace) {
         OH_LOG_INFO(LOG_APP, "[MW-TAKE] toplevel #%{public}u frame %{public}dx%{public}d px=%{public}zu",
                     id, frame.w, frame.h, out.size());

@@ -1,0 +1,31 @@
+{
+  "id": "d3d9-cube-amd64",
+  "title": "D3D9 立方体对照（AMD64 真 PE，走 FEX）",
+  "exe": "winehua_d3d_switch_cube.exe",
+  "exe_dir": "x64-fex",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/winehua_d3d_switch_cube.c"
+    ],
+    "compiler": "llvm-x86_64",
+    "cflags": [
+      "-O2",
+      "-s",
+      "-mwindows"
+    ],
+    "libs": [
+      "-ld3d9",
+      "-ld3d11",
+      "-ldxgi",
+      "-ld3dcompiler",
+      "-luuid",
+      "-lshell32",
+      "-luser32",
+      "-lgdi32",
+      "-lm"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "contract-i386",
+  "title": "Steam 边界契约全量检查（i386）",
+  "exe": "contract_i386.exe",
+  "arch": [
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "tools/steam-boundary/contract.c"
+    ],
+    "compiler": "llvm-i686",
+    "cflags": [
+      "-O2",
+      "-Wall",
+      "-Wextra"
+    ]
+  }
+}

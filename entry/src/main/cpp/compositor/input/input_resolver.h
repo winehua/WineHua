@@ -24,6 +24,11 @@ struct InputTarget {
     // MOVE/RELEASE 照常注入 local (已在 resolver 内钳到内容区边缘,
     // 吞掉会导致按键状态卡死)
     bool swallow = false;
+    // WineHua modal 拦截: >0 = 命中目标是被模态对话框禁用的 owner (其
+    // 对话框在队列中), 调用方吞 PRESS + raise/键盘焦点切换至该 modal
+    // (Win32 语义: 点击禁用 owner 不投递点击, 只激活模态框)。
+    // 命中目标本身是 modal 时为 0 (正常注入)。
+    uint32_t blockedModalId = 0;
     // 诊断/复核: 本命中使用的逆映射基 (local = (d - origin) / scale)。
     // 全屏窗口保比例缩放 (== FitRect off/scale), 普通窗口与 root 回退为恒等
     // (origin=0, scale=1)。精度与 geometry.h FitRect 对齐: origin 是整数

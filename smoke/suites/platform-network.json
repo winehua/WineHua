@@ -1,0 +1,20 @@
+{
+  "name": "platform-network",
+  "title": "平台网络栈（iphlpapi/dnsapi/winhttp/wininet/secur32/crypt32/ws2_32）",
+  "tests": [
+    {
+      "case": "platform-network",
+      "id": "platform-network",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 0,
+      "timeoutMs": 180000
+    }
+  ]
+}

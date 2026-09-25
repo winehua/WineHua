@@ -114,7 +114,11 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             const uint64_t surfaceKey = sd ? sd->surfaceKey : 0;
             self->toplevelMgr_.UnregisterSurfaceResource(surfaceKey);
             self->desktopCompositor_.RemoveZeroCopyKeyLocked(surfaceKey);
-            self->desktopCompositor_.RemoveSubsurfaceLayer(r);
+            uint32_t removedParent = 0;
+            DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+            if (self->desktopCompositor_.RemoveSubsurfaceLayer(r, removedParent, removedRoute)) {
+                self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+            }
             // P0-1: 窗口销毁 → 联动失效所有指向它的 PresentBinding (方案 §11)
             if (sd)
                 self->desktopCompositor_.zc().InvalidateBindingsForWindow(
@@ -124,7 +128,6 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             if (sd) {
                 popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
-            self->MarkDesktopRootDirtyLocked();
         }
         // 无条件重置输入焦点: 任何 surface (含 desktop 菜单 subsurface) 销毁时
         // 都可能是当前 pointer/keyboard 焦点 — 焦点悬垂后下一次 leave 会引用
@@ -200,8 +203,12 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
     auto* self = GetInstance();
     {
         auto lk = self->toplevelMgr_.Lock();
-        self->desktopCompositor_.UpdateSubsurfaceLayerLocalPosition(childSurf, x, y);
-        self->MarkDesktopRootDirtyLocked();
+        uint32_t layerParent = 0;
+        DisplayPolicy::SubsurfaceRoute layerRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+        if (self->desktopCompositor_.UpdateSubsurfaceLayerLocalPosition(
+                childSurf, x, y, layerParent, layerRoute)) {
+            self->MarkLayerHostDirtyLocked(layerParent, layerRoute);
+        }
     }
     // PC 模式: 更新已登记 popup 的偏移, 通知 ArkTS 移动子窗口。
     // 状态段 (popup 表查找/偏移更新) 收口于 PopupManager::UpdatePopupPositionLocked
@@ -282,7 +289,11 @@ void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
             uint32_t removedPopup = 0, popupParent = 0;
             {
                 auto lk = self->toplevelMgr_.Lock();
-                self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf);
+                uint32_t removedParent = 0;
+                DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+                if (self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf, removedParent, removedRoute)) {
+                    self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+                }
                 // popup 表已迁至 PopupManager (重构第 5B2 步, 锁域/清理顺序不变)
                 popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
             }
@@ -395,10 +406,13 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
         uint32_t removedPopup = 0, popupParent = 0;
         {
             auto lk = self->toplevelMgr_.Lock();
-            self->desktopCompositor_.RemoveSubsurfaceLayer(r);
+            uint32_t removedParent = 0;
+            DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+            if (self->desktopCompositor_.RemoveSubsurfaceLayer(r, removedParent, removedRoute)) {
+                self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+            }
             // PC popup 记录一并清除 (popup 表已迁至 PopupManager — 重构第 5B2 步)
             popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
-            if (self->Policy().RootCompositing()) self->MarkDesktopRootDirtyLocked();
         }
         if (removedPopup) {
             // 防止 pointer focus 悬在已销毁的 popup surface 上 (协议错误会断开 Wine)
@@ -475,9 +489,11 @@ bool WaylandServer::HandleNullBufferCommit(SurfaceData* sd, wl_resource* surfRes
         uint32_t removedPopup = 0, popupParent = 0;
         {
             auto lk = toplevelMgr_.Lock();
-            if (desktopCompositor_.RemoveSubsurfaceLayer(surfRes)) {
+            uint32_t removedParent = 0;
+            DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+            if (desktopCompositor_.RemoveSubsurfaceLayer(surfRes, removedParent, removedRoute)) {
                 OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] NULL buffer commit → removed layer");
-                if (Policy().RootCompositing()) MarkDesktopRootDirtyLocked();
+                MarkLayerHostDirtyLocked(removedParent, removedRoute);
             }
             // PC popup: unmap (菜单关闭) → 销毁 ArkTS 子窗口
             // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域不变)
@@ -596,6 +612,15 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
     // 注释随方法平移 (见 toplevel_manager.cpp); 返回值 = justRestored
     const bool justRestored =
         toplevelMgr_.TryAutoRestoreLocked(sd->toplevelId, fi.contentW, fi.contentH);
+    // Wine 自己把最小化窗口恢复了 (xdg 无 unset_minimized 协议, 靠 commit 正常
+    // 尺寸内容判定 — 见 compositor_utils.h IsRestoreSizeCommit): 通知 ArkTS 把
+    // OHOS 承载窗口显示回来。子窗口 minimize 后系统无 Dock 还原入口, 只能本应用
+    // showWindow (见 @ohos.window 文档), 缺此事件则 ArkTS 侧窗口永久隐藏
+    // (2026-09-14 "最小化后找不回来")。本函数持 toplevelMgr_ 锁, 但
+    // PostToplevelEvent 不碰该锁 (仅投递事件总线), 与下方 Created/Argb 同款。
+    if (justRestored && Policy().OhosWindowPerToplevel()) {
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::Restored);
+    }
     // 首帧判定只认 hasPosition, 不认条目存在
     // (pre-commit 的 SetToplevelMinimized 等路径可能已建档)
     outFirstCommit = !st.HasPosition();
@@ -605,33 +630,24 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
                     sd->toplevelId, fi.screenX, fi.screenY);
     }
     /*
-     * PC 模式: created 延迟到首帧 (此时 wl_shm 格式已确定):
-     * - XRGB → "created": 走 WineWindowAbility (multiton 主窗口)
-     * - ARGB → "argb_created": 走子窗口 + setWindowMask 异型窗口路线
-     *   (2in1 主窗口无 alpha 通道/背景透明被钳制, 实测不可行)
+     * PC 模式: created 延迟到首帧 (此时 wl_shm 格式已确定)。
+     * ARGB 窗口同样发 "created" 走 WineWindowAbility 主窗口路线 (2026-09-12
+     * 决定): 实测 WarThunder 启动器 launcher.exe 的 shm format = ARGB8888
+     * (Wine 侧 window_surface.c:391 "shape_bits || layered" 条件), 但 mask
+     * 覆盖率 95% (opaque=630000/656850) — 仅窗口边缘一圈约 4% 透明像素。
+     * 为这点装饰性透明牺牲整个窗口的独立性 (子窗口非自由窗口: 无任务栏
+     * 条目/不能系统级拖动最小化/层级跟随宿主主窗口) 不值, 故不再分流;
+     * 透明区域按窗口背景色显示。原 "argb_created" 子窗口 + setWindowMask
+     * 路线 (ArgbWindowManager) 已随本次一并删除。
      */
     if (outFirstCommit && Policy().OhosWindowPerToplevel()) {
-        if (fi.shmFormat == 0) {
-            OH_LOG_INFO(LOG_APP, "[MW] argb_created tl=%{public}u geo=(%{public}d,%{public}d %{public}dx%{public}d)",
-                        sd->toplevelId, fi.screenX, fi.screenY, fi.contentW, fi.contentH);
-            PostToplevelEvent(sd->toplevelId, ToplevelEventType::ArgbCreated,
-                              ToplevelEventBus::JsonArgbCreated(
-                                  fi.screenX, fi.screenY, fi.contentW, fi.contentH));
-        } else {
-            PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
-                              ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
-        }
+        PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
+                          ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
     }
-    // ARGB 窗口位置同步: Wine 位置为权威 (桌面小部件由 Wine 决定屏幕位置,
-    // 普通 PC 窗口后续 commit 忽略 geo, OHOS 窗口管理器为权威 — 完整补丁
-    // 说明随方法平移, 见 toplevel_manager.cpp SyncArgbPositionLocked)。
-    // 位置应用在 ToplevelManager, argb_move 事件由此处锁内发出 (原时序:
-    // 模式/格式/首帧门禁在此判定, 事件锁内发 — 行为逐字)
-    if (Policy().OhosWindowPerToplevel() && fi.shmFormat == 0 && !outFirstCommit &&
-        toplevelMgr_.SyncArgbPositionLocked(sd->toplevelId, fi.screenX, fi.screenY)) {
-        PostToplevelEvent(sd->toplevelId, ToplevelEventType::ArgbMove,
-                          ToplevelEventBus::JsonArgbMove(fi.screenX, fi.screenY));
-    }
+    // ARGB 窗口位置同步 (argb_move) 随 "ARGB 也走普通窗口" 决定停用: ARGB
+    // 窗口位置与 XRGB 窗口同规则 — OHOS 窗口管理器为权威, Wine 后续 commit
+    // 的 geo 忽略。(原语义: 子窗口路线下 Wine 位置为权威, 由
+    // ToplevelManager::SyncArgbPositionLocked 应用并发 argb_move)
     // 桌面模式后续 commit 的位置同步: 判定 (WineX/Y 快照比较) 与三分支跟随
     // (justRestored 保持 compositor 位置/最小化坐标只记快照/Wine geo 跟随)
     // 收口于 ToplevelManager::SyncDesktopPositionLocked — "compositor 为权威
@@ -658,21 +674,17 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
                               ToplevelEventBus::JsonArgb(fi.shmFormat == 0 ? 1 : 0));
         }
     }
-    // ARGB 窗口掩码: FNV-1a 形状哈希 + 阈值 0/1 剪影生成与 mask 状态更新
-    // 收口于 ToplevelManager::UpdateArgbMaskLocked (补丁注释 — 阈值 128
-    // 边缘收半像素/形状哈希不变不重建/掩码帧分辨率 — 随方法平移, 见
-    // toplevel_manager.cpp)。mask_dirty 事件由此处在锁内发出 (原时序:
-    // 事件与状态更新同段同锁, 输出条件逐字不变)
-    if (fi.shmFormat == 0 && Policy().OhosWindowPerToplevel()) {
-        if (toplevelMgr_.UpdateArgbMaskLocked(sd->toplevelId, st.Pixels(),
-                                              fi.contentW, fi.contentH)) {
-            PostToplevelEvent(sd->toplevelId, ToplevelEventType::MaskDirty);
-        }
-    }
+    // ARGB 剪影掩码生成 (mask_dirty) 随 "ARGB 也走普通窗口" 决定停用: 普通
+    // 窗口路线不需要 setWindowMask 剪影, 掩码计算每帧一次 FNV 哈希 + 位图
+    // 拷贝随之省掉。(UpdateArgbMaskLocked/SyncArgbPositionLocked 已删)
     // 新 toplevel 加到 Z-order 顶层 (首次入列的全屏优先级取号在
     // AddToZOrder 内部完成, 见 ToplevelState::fsPriority 注释)
     if (Policy().RootCompositing() && sd->toplevelId != session_.desktopRootToplevelId) {
-        toplevelMgr_.EnsureInZOrder(sd->toplevelId);
+        // WineHua: modal 组员不入 z-order (由 owner lane 展开), 跳过 —
+        // 否则每次 commit 都会被塞回独立列, 破坏恒在 owner 上方的语义
+        if (!toplevelMgr_.IsModalIdLocked(sd->toplevelId)) {
+            toplevelMgr_.EnsureInZOrder(sd->toplevelId);
+        }
     }
     OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
                 sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
@@ -706,7 +718,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
 }
 
 // Desktop 模式子窗口 commit → desktop root 识别 (判定逻辑在 DesktopRootManager)
-void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi, bool isFirstCommit) {
+void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOpportunity) {
     if (!Policy().RootCompositing() || !sd->hasToplevel || sd->toplevelId == session_.desktopRootToplevelId) return;
 
     // 任务栏身份登记 (app_id 在 xdg_toplevel 创建时已设置, 首次 commit 即有值)
@@ -720,7 +732,7 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
     DesktopRootManager::CheckRootResult cr;
     {
         auto lk = toplevelMgr_.Lock();
-        cr = desktopRootMgr_.CheckRootLocked(sd, isFirstCommit);
+        cr = desktopRootMgr_.CheckRootLocked(sd, recognitionOpportunity);
         MarkDesktopRootDirtyLocked();
     }
     if (cr.moveRendererTo)
@@ -738,8 +750,21 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi,
     }
 }
 
-// subsurface 帧分发: Desktop 模式存 layer 在 TakeToplevelFrame 中合成;
-// PC 模式登记 popup 伪 toplevel 由 ArkTS 独立子窗口渲染
+// title 到达时补一次识别机会 (声明与理由见 wayland_server.h)
+void WaylandServer::RecheckDesktopRootOnTitle(SurfaceData* sd) {
+    // 只在 root 尚未确定时补识别: root 确定后 CheckRootLocked 走的是"新
+    // desktop-shell 替换旧 root"分支 (隐藏旧 root + 切换), 而辅助窗口后来
+    // 设置 title 不该触发这种切换。
+    if (session_.desktopRootToplevelId != 0) return;
+    CheckDesktopRootOnCommit(sd, /*recognitionOpportunity=*/true);
+}
+
+// subsurface 帧分发 (承载路由见 DisplayPolicy::RouteForSubsurface):
+//   DesktopLayer — 存 layer 在 TakeToplevelFrame 中合成进 root 帧
+//   InlineClient — 多窗口模式客户区 (wine client surface): 存 layer 合入
+//                  父窗口帧 (WindowFrameComposer 层列表), 单窗口承载
+//   Popup        — 越界浮层 (菜单/子窗口): 登记 popup 伪 toplevel 由 ArkTS
+//                  独立子窗口渲染 (可越界/输入自持, 不能进窗口帧)
 void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi) {
     if (!sd->isSubsurface || !sd->parentSurface || sd->pixels.empty()) return;
     /* 子面的直接父级不一定带 xdg 角色: Wine 的 GL drawable 会挂在窗口自己的
@@ -760,10 +785,16 @@ void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfR
         ancestor = ancestorSd->parentSurface;
     }
     if (!parentSd) return;
-    if (Policy().SubsurfaceAsLayer()) {
+    const auto route = Policy().RouteForSubsurface(sd->inputRegionEmpty, sd->vpSrcW);
+    if (route == DisplayPolicy::SubsurfaceRoute::DesktopLayer) {
         UpdateSubsurfaceLayerOnCommit(sd, surfRes, parentSd->toplevelId, fi);
+    } else if (route == DisplayPolicy::SubsurfaceRoute::InlineClient) {
+        // 客户区合入父窗口帧: 与 desktop layer 同一层容器/同一合成器
+        // (WindowFrameComposer 按 parentToplevel 过滤), 仅坐标系不同 —
+        // 窗口内用 localX/localY (窗口局部), 见 BuildWindowLayerListLocked。
+        UpdateInlineSubsurfaceOnCommit(sd, surfRes, parentSd, fi);
     } else {
-        // PC 模式: popup 状态段 (裁剪/建档/帧归档/尺寸上报) 收口于
+        // Popup: popup 状态段 (裁剪/建档/帧归档/尺寸上报) 收口于
         // PopupManager::UpdatePopupOnCommit (重构第 5B2 步); 事件 fire 调用点
         // 保持现形态 — 下方事件段按返回值逐字恢复原 json/文本/顺序
         // (popup_show 后 return, 与旧实现一致)。
@@ -844,12 +875,63 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
     layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
     layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
+    layer.route = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
     // Upsert layer (pixel buffer rotation handled internally)
     sd->pixels = desktopCompositor_.UpsertSubsurfaceLayer(
         std::move(layer), std::move(sd->pixels));
     MarkDesktopRootDirtyLocked();
     OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] stored layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
                 layer.w, layer.h, layer.x, layer.y, parentId);
+}
+
+// 多窗口模式 — 内嵌客户区 (wine client surface) 合入父窗口帧。
+// 与 desktop 版共用层容器/合成器, 差异只在坐标与脏标记:
+//   - 窗口局部坐标 (localX/localY = subsurface offset), 由
+//     WindowFrameComposer 的窗口帧 (尺寸 = 窗口内容尺寸) 承接, 1:1 blit —
+//     与父帧同尺度 (Wine 逻辑像素 = 合成像素, 缩放由 ArkTS effectiveScale 承担)
+//   - 输入: client surface 空输入区 (协议保证), 命中落在父窗口, 本层不参与
+//     输入路由 (CompositorRoutesInput=false 的 PC 模式本就由 OHOS 窗口系统路由)
+//   - dirty: 窗口帧有独立 dirty 标志 (MarkToplevelDirtyLocked), 不触 root
+void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes,
+                                                   SurfaceData* parentSd, ShmCommitInfo& fi) {
+    const bool opaque = fi.shmFormat != 0;
+    const uint32_t parentId = parentSd->toplevelId;
+    auto lk = toplevelMgr_.Lock();
+    const auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
+    SubsurfaceLayer layer;
+    layer.surface = surfRes;
+    layer.surfaceKey = sd->surfaceKey;
+    layer.w = sd->w;
+    layer.h = sd->h;
+    int32_t sx = sd->subsurfaceX, sy = sd->subsurfaceY;
+    CompensateMinimizedSubsurfaceOffset(pst, sx, sy);
+    // 坐标 = 相对父窗口内容原点: 窗口帧基底 (ToplevelState::Pixels) 是
+    // content 帧 (CopyToplevelContent 自 contentOffX/Y 起拷), 其原点即父
+    // window_geometry 内容原点 — 与 popup 路径同一换算 (ComputePopupOffset
+    // 单点, geometry.h)。PC 模式 wine 的 geometry 恒 (0,0,w,h), 该式退化为
+    // subsurface offset; 用统一式保持语义稳健 (wine 若在 PC 模式发非零
+    // geometry 仍正确)。
+    const auto [offX, offY] = ComputePopupOffset(sd->subsurfaceX, sd->subsurfaceY,
+                                                 parentSd->committed.contentRect.x,
+                                                 parentSd->committed.contentRect.y);
+    layer.localX = offX;
+    layer.localY = offY;
+    // x/y 与 localX/localY 同值 (窗口局部坐标; route 已区分消费方, 不与
+    // DesktopLayer 的桌面坐标混用), 保持容器内自洽。
+    layer.x = offX;
+    layer.y = offY;
+    layer.parentToplevel = parentId;
+    layer.shmFormat = fi.shmFormat;
+    layer.opaque = opaque;
+    layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
+    layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
+    layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
+    layer.route = DisplayPolicy::SubsurfaceRoute::InlineClient;
+    sd->pixels = desktopCompositor_.UpsertSubsurfaceLayer(
+        std::move(layer), std::move(sd->pixels));
+    toplevelMgr_.MarkToplevelDirtyLocked(parentId);
+    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] inline client layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
+                sd->w, sd->h, sx, sy, parentId);
 }
 
 // PC 多窗口模式 popup 状态段已迁至 PopupManager (compositor/popup_manager.cpp
@@ -916,7 +998,7 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
 
         bool isFirstCommit = false;
         self->UpdateToplevelFrameOnCommit(sd, surfRes, fi, isFirstCommit);
-        self->CheckDesktopRootOnCommit(sd, fi, isFirstCommit);
+        self->CheckDesktopRootOnCommit(sd, isFirstCommit);
         self->UpdateSubsurfaceOnCommit(sd, surfRes, fi);
         wl_shm_buffer_end_access(fi.shm);
     }
@@ -962,14 +1044,14 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
             InputManager::GetInstance()->OnPointerWarp(surface, x, y);
         });
     // 会话引用装配 (重构第 6A 步): surface→toplevel 反查 (FindToplevelBySurface)
-    // 与 root 身份判定 (isShell) 直呼 ToplevelManager / rootId 共享引用 —
-    // 替代 WaylandServer::FindToplevelIdBySurface/GetDesktopRootToplevelId
-    // 转发 (6A 删除)。装配在 wl 事件循环启动前一次性, 之后只读 → 无锁
-    // (与 warpSink 同模式; GetToplevelManager/DesktopRootToplevelIdRef 是
-    // 装配出口, 见 wayland_server.h)。
+    // 与 isShell 判定直呼 ToplevelManager / root id / 桌面模式标志的共享引用 —
+    // 替代 WaylandServer::FindToplevelIdBySurface/GetDesktopRootToplevelId 转发
+    // (6A 删除)。装配在 wl 事件循环启动前一次性, 之后只读 → 无锁
+    // (与 warpSink 同模式; 装配出口见 wayland_server.h)。
     PointerExtras::GetInstance()->BindWaylandRefs(
         &WaylandServer::GetInstance()->GetToplevelManager(),
-        &self->DesktopRootToplevelIdRef());
+        &self->DesktopRootToplevelIdRef(),
+        &self->DesktopModeRef());
     // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
     TextInput::GetInstance()->Register(display);
 }

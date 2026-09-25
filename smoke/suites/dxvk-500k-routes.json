@@ -1,0 +1,37 @@
+{
+  "name": "dxvk-500k-routes",
+  "title": "500k 混合路由的两条 DXVK 支路（1.10.3 / 2.6.2）",
+  "checks": [
+    "coverage"
+  ],
+  "tests": [
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-500k-legacy",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d11-smoke",
+      "id": "dxvk-500k-modern",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_modern_2_6"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    }
+  ]
+}

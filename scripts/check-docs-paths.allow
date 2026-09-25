@@ -1,0 +1,23 @@
+# 文档中有意提到的历史名称或示例路径，不参与存在性检查。
+# 用法：每行一个路径，精确匹配；# 开头是注释。
+# 只在这里放"文档确实应该这么写"的条目——真实失效的引用请去改文档，不要往这里加。
+
+# v1 自动化设施的脚本名，文档讲述"v2 替代 v1"时必然提到（设施已删除）
+automation/run_regression.py
+automation/validate_frame.py
+
+# 测试设施文档里举的例子（说明新用例怎么接入），不是现存文件
+smoke/tests/dinput-probe/test.json
+
+# 用例编写规范里的示例文件名
+smoke/xxx.c
+
+# 文档明确说明"已于 2026-07 移除"的共享头
+smoke/graphics_runtime_env.h
+
+# 维护策略文档里画的规划目录树（尚未创建）
+scripts/qa/known-regressions.sh
+
+# 协作流程里举的例子，用来演示"怎么判断文件属于 main-ui 独有"。
+# 该文件只存在于 main-ui 分支，在 master 工作区里查不到是正常的
+entry/src/main/ets/components/AppLibraryView.ets

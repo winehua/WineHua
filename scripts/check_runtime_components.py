@@ -174,12 +174,12 @@ REQUIRED_PLATFORM_SMOKE_TESTS = {
         "platform-process-x86": "x86/winehua_platform_process_smoke.exe",
     },
     "steam-contract": {
-        "contract-i386": "x86/contract-i386.exe",
-        "contract-amd64": "x64-fex/contract-amd64.exe",
+        "contract-x86": "x86/contract_i386.exe",
+        "contract-x64": "x64-fex/contract_amd64.exe",
     },
     "steam-font": {
-        "font-i386": "x86/font-contract-i386.exe",
-        "font-amd64": "x64-fex/font-contract-amd64.exe",
+        "font-x86": "x86/font_contract_i386.exe",
+        "font-x64": "x64-fex/font_contract_amd64.exe",
     },
 }
 REQUIRED_ARM64_FEX_FILES = (
@@ -352,7 +352,7 @@ def validate_media_dependency_closure(payload: Archive, hap: Archive, wine_arch:
 
 def validate_platform_smoke_suites(archive: Archive) -> None:
     manifest = json.loads(archive.read("smoke/manifest.json").decode("utf-8"))
-    for path in ("x86/font-contract-i386.exe", "x64-fex/font-contract-amd64.exe"):
+    for path in ("x86/font_contract_i386.exe", "x64-fex/font_contract_amd64.exe"):
         require_equal(manifest.get("files", {}).get(path),
                       hashlib.sha256(archive.read(f"smoke/{path}")).hexdigest(),
                       f"font smoke checksum {path}")
@@ -360,8 +360,11 @@ def validate_platform_smoke_suites(archive: Archive) -> None:
         suites = json.loads(archive.read("smoke/suites.json").decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValidationError("smoke/suites.json is invalid") from exc
-    if not isinstance(suites, dict) or suites.get("schemaVersion") != 1:
-        raise ValidationError("smoke/suites.json has an invalid schema version")
+    # 套件文档由 automation/smoke.py 生成，版本键是 suiteVersion（含载荷内容
+    # 哈希，形如 smoke-v2-<hash>），不再有独立的 schemaVersion
+    if not isinstance(suites, dict) or \
+            not str(suites.get("suiteVersion", "")).startswith("smoke-v2-"):
+        raise ValidationError("smoke/suites.json has an invalid suite version")
     suite_definitions = suites.get("suites")
     if not isinstance(suite_definitions, dict):
         raise ValidationError("smoke/suites.json has no suites object")
@@ -382,10 +385,10 @@ def validate_platform_smoke_suites(archive: Archive) -> None:
             require_equal(test.get("exe"), executable, f"platform smoke executable {test_id}")
             archive.require_file(f"smoke/{executable}")
 
-    for executable, machine in (("x86/contract-i386.exe", 0x014c),
-                                ("x86/font-contract-i386.exe", 0x014c),
-                                ("x64-fex/font-contract-amd64.exe", 0x8664),
-                                ("x64-fex/contract-amd64.exe", 0x8664)):
+    for executable, machine in (("x86/contract_i386.exe", 0x014c),
+                                ("x86/font_contract_i386.exe", 0x014c),
+                                ("x64-fex/font_contract_amd64.exe", 0x8664),
+                                ("x64-fex/contract_amd64.exe", 0x8664)):
         data = archive.read(f"smoke/{executable}")
         if data[:2] != b"MZ" or len(data) < 64:
             raise ValidationError(f"{executable} is not a PE executable")
@@ -394,7 +397,7 @@ def validate_platform_smoke_suites(archive: Archive) -> None:
                 struct.unpack_from("<H", data, pe_offset + 4)[0] != machine:
             raise ValidationError(f"{executable} has the wrong PE Machine")
 
-    amd64_executable = "x64-fex/winehua_platform_process_smoke.exe"
+    amd64_executable = "x64-fex/steam_process_amd64.exe"
     archive.require_file(f"smoke/{amd64_executable}")
     amd64_data = archive.read(f"smoke/{amd64_executable}")
     if amd64_data[:2] != b"MZ" or len(amd64_data) < 64:
@@ -407,11 +410,13 @@ def validate_platform_smoke_suites(archive: Archive) -> None:
     if not isinstance(compare_suite, dict) or not isinstance(compare_suite.get("tests"), list):
         raise ValidationError("missing Steam architecture comparison suite")
     compare_tests = {test.get("testId"): test for test in compare_suite["tests"] if isinstance(test, dict)}
+    # 两个方向的 peer 都是固定的真 x86_64 PE / i386 PE（steam_process_amd64.exe
+    # 无论哪个构建都用 llvm-x86_64 编），故 peer 架构是常量
     for test_id, executable, peer_exe, peer_arch in (
-        ("steam-process-amd64-fex", amd64_executable,
+        ("steam-process-amd64-x64", amd64_executable,
          "C:/smoke/x86/winehua_platform_process_smoke.exe", "x86"),
-        ("steam-process-i386", "x86/winehua_platform_process_smoke.exe",
-         "C:/smoke/x64-fex/winehua_platform_process_smoke.exe", "x86_64"),
+        ("steam-process-i386-x86", "x86/winehua_platform_process_smoke.exe",
+         "C:/smoke/x64-fex/steam_process_amd64.exe", "x86_64"),
     ):
         test = compare_tests.get(test_id)
         if not isinstance(test, dict):

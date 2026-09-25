@@ -15,13 +15,9 @@ constexpr int32_t kOutputRefreshMillihertz = 60000;  // 60Hz, 协议单位为 mH
 constexpr int32_t kOutputPhysWidthMm = 340;
 constexpr int32_t kOutputPhysHeightMm = 190;
 
-// -- FNV-1a 64 位哈希 (ARGB 形状掩码哈希 / 桌面合成签名共用) --
+// -- FNV-1a 64 位哈希 (桌面合成签名用) --
 constexpr uint64_t kFnv1aOffsetBasis = 1469598103934665603ULL;
 constexpr uint64_t kFnv1aPrime = 1099511628211ULL;
-
-// -- ARGB 窗口剪影掩码 (setWindowMask 用) --
-// 阈值 128: 半透明抗锯齿边缘向内收半像素, 避免灰边外扩
-constexpr uint8_t kArgbMaskAlphaThreshold = 128;
 
 // -- 最小化自动恢复阈值 --
 // Wine 没有 unset_minimized 协议, 还原时直接 commit 正常尺寸内容;

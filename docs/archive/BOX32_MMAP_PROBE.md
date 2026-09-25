@@ -1,5 +1,7 @@
 # Box32 低 4GB mmap 探针报告
 
+> 状态：已完成（2026-09-22 整理归档）。Box32 的 32 位 mmap 探针，结论已落地。
+
 > 测试日期: 2026-07-04
 > 设备: Pad (ARM64), WineHua App
 > 代码: `entry/src/main/cpp/wine_mmap_test.cpp` (Phase 2) + `wine_child.cpp` (MmapTestMain NCP 入口)

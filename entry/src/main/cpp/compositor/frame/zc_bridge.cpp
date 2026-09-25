@@ -1178,7 +1178,7 @@ int ZcBridge::GetOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
     bool anchorFound = (info.parentToplevel == comp_.desktopRootToplevelId_);
     if (!anchorFound) {
         for (const auto& layer : layers) {
-            if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel &&
+            if (layer.type == CompositorLayer::Type::Toplevel &&
                 layer.toplevelId == info.parentToplevel) {
                 anchorZ = layer.zIndex;
                 anchorFound = true;
@@ -1190,10 +1190,10 @@ int ZcBridge::GetOccluders(uint64_t surfaceKey, uint32_t rendererToplevelId,
 
     for (const auto& layer : layers) {
         if (!layer.visible) continue;
-        if (layer.type == DesktopCompositor::CompositorLayer::Type::Root) continue;
+        if (layer.type == CompositorLayer::Type::Root) continue;
         if (layer.zcActive) continue;  // 跳过所有 ZC 层 (旧 activeKeys_ 检查同义)
         if (layer.zIndex <= anchorZ) continue;
-        if (layer.type == DesktopCompositor::CompositorLayer::Type::Toplevel) {
+        if (layer.type == CompositorLayer::Type::Toplevel) {
             // A native-only window may commit an all-zero SHM placeholder while
             // its pixels live in a separate, role-less present surface. Repainting
             // that placeholder over another native window hides its actual frame.

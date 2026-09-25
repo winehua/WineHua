@@ -9,7 +9,7 @@
  * 各自只保留真分歧键:
  *   - XDG_RUNTIME_DIR / WAYLAND_DISPLAY (主: 合成器 socket 参数; 子: prefix/固定名)
  *   - LD_LIBRARY_PATH 系 (主: 按图形后端拼 runtimeLibPath; 子: 系统原生路径)
- *   - 仅主进程: LANG/LC_ALL, GST_PLUGIN_PATH, WINEDEBUG=-all 基线
+ *   - 仅主进程: LANG/LC_ALL, GST_PLUGIN_PATH
  *   - 仅子进程: WINEBINDIR/WINEUNIXDIR (dladdr 路径修正), WINEDEBUG profile 选择
  *
  * header-only 的原因: wine_child 是独立 lib (libwine_child.so, 不链 entry

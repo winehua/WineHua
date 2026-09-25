@@ -3,9 +3,11 @@
 // IntersectRectWithDamage)、src∩damage 包围盒 (ClipBlitSourceToRect)。
 // 黄金值用例 + 固定种子随机用例与逐像素暴力参考实现对比。
 #include "compositor/frame/blit_clip.h"
+#include "compositor/frame/compositor_blit.h"
 #include <algorithm>
 #include <cstdio>
 #include <random>
+#include <vector>
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -227,6 +229,40 @@ int main()
             }
         }
         CHECK(fuzzFailures == 0, "fuzz vs brute force");
+    }
+
+    // -- IsFullyOpaqueArgb: ARGB 层透明性精确判定 (合成两条路径共用) --
+    {
+        // 全 255 alpha → 不透明
+        std::vector<uint8_t> opaque(4 * 4 * 4, 0);
+        for (size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
+        CHECK(IsFullyOpaqueArgb(opaque.data(), 4, 4, 4), "all alpha=255 is opaque");
+
+        // 任一像素 alpha != 255 → 非不透明
+        std::vector<uint8_t> semi = opaque;
+        semi[1 * 4 + 3] = 254;
+        CHECK(!IsFullyOpaqueArgb(semi.data(), 4, 4, 4), "alpha=254 pixel breaks opaque");
+
+        // 全透明 → 非不透明 (GL readback 未绘制区域的典型值)
+        std::vector<uint8_t> clear(4 * 4 * 4, 0);
+        CHECK(!IsFullyOpaqueArgb(clear.data(), 4, 4, 4), "all alpha=0 is not opaque");
+
+        // stride > w: 只检内容区, 跨距填充不参与 (buffer 对齐 padding 场景)
+        std::vector<uint8_t> strided(6 * 4 * 4, 0);  // stride=6, w=4, h=4
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 4; ++x) strided[(y * 6 + x) * 4 + 3] = 255;
+        CHECK(IsFullyOpaqueArgb(strided.data(), 6, 4, 4),
+              "stride padding outside content ignored");
+        // 内容区外 (padding 区) 的 alpha=0 不应影响判定
+        strided[(0 * 6 + 5) * 4 + 3] = 0;
+        CHECK(IsFullyOpaqueArgb(strided.data(), 6, 4, 4),
+              "padding alpha does not affect content verdict");
+
+        // 边界/退化入参: 空指针 / stride<w / 非正尺寸 → false (防御)
+        CHECK(!IsFullyOpaqueArgb(nullptr, 4, 4, 4), "null pixels is not opaque");
+        CHECK(!IsFullyOpaqueArgb(opaque.data(), 3, 4, 4), "stride<w rejected");
+        CHECK(!IsFullyOpaqueArgb(opaque.data(), 4, 0, 4), "zero width rejected");
+        CHECK(!IsFullyOpaqueArgb(opaque.data(), 4, 4, -1), "negative height rejected");
     }
 
     std::printf("blit_clip_test: %d checks, %d failures\n", g_checks, g_failures);

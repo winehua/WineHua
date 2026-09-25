@@ -34,7 +34,7 @@ public:
     // Re-export types moved to compositor/ (backward compat)
     using ZeroCopyLayerInfo = ::ZeroCopyLayerInfo;
     using ZeroCopyOccluderRect = ::ZeroCopyOccluderRect;
-    using SubsurfaceLayer = DesktopCompositor::SubsurfaceLayer;
+    using SubsurfaceLayer = ::SubsurfaceLayer;
     using InputTarget = ::InputTarget;
 
     using StateCb = std::function<void(const char*)>;
@@ -59,6 +59,9 @@ public:
     // root 身份的共享引用装配出口 (与 DesktopCompositor/InputResolver 注入的
     // 引用同源, 重构第 6B 步起指向 session_.desktopRootToplevelId 的 POD 字段)
     const uint32_t& DesktopRootToplevelIdRef() const { return session_.desktopRootToplevelId; }
+    // 桌面模式标志的共享引用 (PointerExtras 判"桌面未就绪不锁定"用)。
+    // policy.desktop 运行期可变 (用户切换融合/虚拟桌面), 故用引用而非值。
+    const bool& DesktopModeRef() const { return session_.policy.desktop; }
 
     bool Start(const std::string& socketPath);
     void Stop();
@@ -112,8 +115,14 @@ public:
     void SetToplevelFullscreen(uint32_t id, bool on);
     // surface 尺寸变化后强制下次渲染循环取帧重绘 (避免旧 viewport 贴新 surface 导致黑边)
     void ForceToplevelRedraw(uint32_t id);
-    // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染
-    void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h);
+    // 鸿蒙侧 surface 尺寸变化时调用: 发 configure 通知 Wine 用新尺寸渲染。
+    // resizing: 用户拖拽缩放中 (ArkTS windowRectChange DRAG_START..DRAG_END),
+    // configure 带 RESIZING 状态 — Wine 只采用带状态 (MAXIMIZED/RESIZING/
+    // TILED/FULLSCREEN) 的 configure 尺寸, 无状态尺寸被有意忽略 (winewayland
+    // window.c wayland_configure_window "Ignore size hints ... to avoid
+    // spurious resizes")。w=h=0 且 resizing=false 表示拖拽结束: Wine 保持
+    // 当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
+    void NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h, bool resizing = false);
     // 设置输出尺寸 (替换硬编码 1280x720)。权威源 = ArkTS 启动时 setOutputSize
     // (display 物理尺寸 / effectiveScale); 桌面 root 的 resize 不反写 (见
     // NotifyToplevelResize 注释)。存储 = session_.outputW/H (重构第 6B 步:
@@ -132,10 +141,6 @@ public:
     // 会对已 fullscreen 的目标重新取全屏优先级号; tl_set_fullscreen 等
     // 批处理路径必须保持默认 false。见 ToplevelState::fsPriority 注释
     void RaiseToplevel(uint32_t id, bool userInitiated = false);
-    // ARGB 异型窗口的 0/1 剪影掩码 (setWindowMask 用, ArkTS 轮询拉取)
-    using WindowMask = ToplevelManager::WindowMask;
-    // 取掩码: false = 无掩码或无更新; 取走清除 dirty
-    bool TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out);
     // Desktop 合成模式 (Tablet): 全部 toplevel 合成到一个 root framebuffer。
     // 模式差异的策略查询走 Policy() (display_policy.h); IsDesktopMode 只用于
     // 模式上报类调用 (给 wine 传环境/标记进程/日志)。
@@ -225,6 +230,12 @@ public:
     void EndMoveGrab();
     bool ProcessMoveGrabMotion(int32_t gx, int32_t gy);
 
+    // title 是与 commit 独立的协议请求, 可能晚于首个 commit 到达。真桌面靠
+    // 非空 title 识别 (空 title 的 desktop-shell 是辅助窗口), 而识别机会原本
+    // 只有首个 commit 一次 —— title 晚到会让真桌面被当辅助窗口隐藏、桌面根
+    // 永久缺失。title 到位时补一次识别机会。
+    void RecheckDesktopRootOnTitle(SurfaceData* sd);
+
 private:
     WaylandServer() = default;
     void EventLoop();
@@ -253,10 +264,12 @@ private:
 
     void UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                      ShmCommitInfo& fi, bool& outFirstCommit);
-    void CheckDesktopRootOnCommit(SurfaceData* sd, ShmCommitInfo& fi, bool isFirstCommit);
+    void CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOpportunity);
     void UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi);
     void UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* surfRes,
                                        uint32_t parentId, ShmCommitInfo& fi);
+    void UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes,
+                                        SurfaceData* parentSd, ShmCommitInfo& fi);
     void FinishCommit(SurfaceData* sd, wl_resource* surfRes);
 
     wl_display* display_ = nullptr;
@@ -267,6 +280,17 @@ private:
     ToplevelManager toplevelMgr_;
 
     void MarkDesktopRootDirtyLocked() { desktopRootMgr_.MarkRootDirtyLocked(); }
+
+    // 按层承载方标脏 (调用方须已持有 toplevelMgr 锁): DesktopLayer 层合成在
+    // root 帧 → 标 root; InlineClient 层合成在父窗口帧 → 标该窗口。
+    // 单一实现收口 route→dirty 分派, 供 commit/移动/移除三条路径复用。
+    void MarkLayerHostDirtyLocked(uint32_t parentToplevel, DisplayPolicy::SubsurfaceRoute route) {
+        if (route == DisplayPolicy::SubsurfaceRoute::InlineClient) {
+            toplevelMgr_.MarkToplevelDirtyLocked(parentToplevel);
+        } else {
+            MarkDesktopRootDirtyLocked();
+        }
+    }
 
     StateCb stateCb_;
     // toplevel 事件总线 (重构第 5D 步): 事件名 enum 化 + JSON 构造单点 +
@@ -307,9 +331,8 @@ private:
                                   session_.desktopRootToplevelId,
                                   session_.outputW, session_.outputH};
     // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
-    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h;
-    // output 注入引用指向 session_ 字段 — 重构第 6B 步)
-    PopupManager popupMgr_{toplevelMgr_, session_.outputW, session_.outputH};
+    // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
+    PopupManager popupMgr_{toplevelMgr_};
 };
 
 #include "compositor/frame/surface_data.h"  // SurfaceData 已提取至独立头文件

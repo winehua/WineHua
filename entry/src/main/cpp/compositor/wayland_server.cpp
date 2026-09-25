@@ -20,6 +20,7 @@
 
 
 extern "C" void RegisterXdgShell(wl_display* display);
+extern "C" void RegisterWinehuaToplevel(wl_display* display);
 extern "C" void RegisterWlCoreGlobals(wl_display* display);
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -77,6 +78,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
     RegisterWlCoreGlobals(display_);
     wl_display_init_shm(display_);
     RegisterXdgShell(display_);
+    RegisterWinehuaToplevel(display_);
     Seat::GetInstance()->Register(display_);
     // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
     // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
@@ -301,6 +303,16 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     bool wasDesktopRoot = false;
     {
         auto lk = toplevelMgr_.Lock();
+        // WineHua: 先清 modal 组员关系 (EraseModalLocked 依赖 ToplevelState 的
+        // owner 回查, 必须先于 EraseToplevelLocked; 组员不在 z-order, 漏清会让
+        // BuildLayerListLocked 展开出已亡窗口)。对称清理"它作为 owner 的组":
+        // owner 先亡 (wine 关闭属主窗口) 且模态对话框尚存活时, 组员带着亡
+        // owner 指针残留在 modalOf_, 其 lane 消失 → 对话框从合成/命中列表
+        // 消失且不可恢复
+        toplevelMgr_.EraseModalLocked(toplevelId);
+        for (uint32_t m : toplevelMgr_.ModalListLocked(toplevelId))
+            toplevelMgr_.EraseModalLocked(m);
+
         // A hidden Wine window can drop its xdg role while retaining wl_surface.
         // Release its native producer now, before the role loses its identity.
         for (const auto& [key, resource] : toplevelMgr_.SurfaceResources()) {
@@ -399,12 +411,6 @@ void WaylandServer::ResetSessionState() {
 // RemovePopupDataLocked / RemovePopupBySurfaceKeyLocked 已移至 PopupManager
 // (compositor/popup_manager.{h,cpp}, 重构第 5B2 步)
 
-bool WaylandServer::TakeWindowMask(uint32_t id, int& w, int& h, std::vector<uint8_t>& out) {
-    // 收敛: 掩码消费唯一入口在 ToplevelManager::TakeWindowMask
-    // (ToplevelState::TakeMask), 此处转发 (napi_init 唯一调用方)
-    return toplevelMgr_.TakeWindowMask(id, w, h, out);
-}
-
 void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
     wl_resource* tl = toplevelMgr_.FindToplevelResource(toplevelId);
     if (tl) {
@@ -439,6 +445,14 @@ void WaylandServer::SetToplevelRestored(uint32_t id) {
         auto lk = toplevelMgr_.Lock();
         if (auto* st = toplevelMgr_.FindToplevelLocked(id)) st->SetMinimized(false);
         MarkDesktopRootDirtyLocked();
+    }
+    // 通知 ArkTS 把 OHOS 承载窗口显示回来 (子窗口 minimize 后系统无 Dock 还原
+    // 入口, 只能本应用 showWindow — 见 @ohos.window 文档): 覆盖 set_maximized /
+    // set_fullscreen / NAPI setToplevelVisible 三条恢复路径。Wine 自发恢复帧
+    // 不走本函数, 由 wl_core 的 auto-restore 通道另发 (两处互补, 同一恢复动作
+    // 只会命中其一 — 都以 IsToplevelMinimized 为前置)。此处锁已释放。
+    if (Policy().OhosWindowPerToplevel()) {
+        PostToplevelEvent(id, ToplevelEventType::Restored);
     }
     // 发 configure 通知 Wine (如果 toplevel resource 存在)
     wl_resource* tl = toplevelMgr_.FindToplevelResource(id);
@@ -492,7 +506,7 @@ void WaylandServer::ForceToplevelRedraw(uint32_t id) {
     if (auto* st = toplevelMgr_.FindToplevelLocked(id)) st->MarkDirty();
 }
 
-void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h) {
+void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h, bool resizing) {
     // 最小化门禁: 窗口最小化期间不向 Wine 发任何 configure。
     // winewayland 的「最小化→还原」握手 (window.c restoring_from_minimize)
     // 依赖窗口 rect 停在 -32000 哨兵位; 此时收到 configure, wine 走普通
@@ -520,15 +534,22 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     // 6A: 状态查询直调 toplevelMgr_ (删转发; 本函数为 WaylandServer 成员, 同值)。
     const bool maximized = toplevelMgr_.IsToplevelMaximized(toplevelId);
 
-    OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s",
+    OH_LOG_INFO(LOG_APP, "[MW] NotifyToplevelResize IN id=%{public}u %{public}dx%{public}d pc=%{public}s max=%{public}s resize=%{public}s",
                 toplevelId, w, h,
                 IsDesktopMode() ? "no" : "yes",
-                maximized ? "yes" : "no");
+                maximized ? "yes" : "no",
+                resizing ? "yes" : "no");
+
+    // 拖拽缩放中: 渲染器整帧拉伸填满 — 窗口已变而 Wine 新帧未到的空档里,
+    // 等比 fit 会按旧帧比例留黑边 (拖拽结束的 0 尺寸 configure 复位)
+    PluginManager::GetInstance()->SetRendererStretchFill(toplevelId, resizing);
 
     std::vector<uint32_t> states = {XDG_TOPLEVEL_STATE_ACTIVATED};
     if (maximized) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
     // 全屏窗口在 OHOS 侧尺寸变化时保持 FULLSCREEN 状态, 否则 Wine 会退出全屏。
     if (toplevelMgr_.IsToplevelFullscreen(toplevelId)) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    // 拖拽缩放中: Wine 仅采用带 RESIZING 的 configure 尺寸 (见头文件注释)
+    if (resizing) states.push_back(XDG_TOPLEVEL_STATE_RESIZING);
     XdgConfigureSend(tl, xdg->xdgSurface, w, h, states);
 
     // 桌面 root 尺寸变化: 不反向写 output。output 的权威源是 ArkTS 启动时

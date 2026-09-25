@@ -230,7 +230,13 @@ export class WineEnvService {
     if (this.engineState == 'starting' || this.initBusy) {
       this.statusText = this.initOverlayText || '正在初始化...';
     } else if (this.engineState == 'ready') {
-      this.statusText = this.sessionAlive ? '运行中' : '已就绪';
+      // "运行中" 附用户进程数: runningCount 与"运行中"页签列表同源 (ProcessService
+      // 黑名单过滤后), 数字即用户程序数 (不含 wineserver/services 等基础进程)。
+      // 仅 >0 时显示括号 — 桌面 root 存活而列表为空的登记间隙保持"运行中",
+      // 避免出现自相矛盾的 "运行中 (0)"
+      this.statusText = this.sessionAlive
+        ? (this.runningCount > 0 ? `运行中 (${this.runningCount})` : '运行中')
+        : '已就绪';
     } else if (this.engineState == 'ready-degraded') {
       this.statusText = '桌面准备中...';
     } else if (this.engineState == 'stopping') {
@@ -393,6 +399,8 @@ export class WineEnvService {
           this.upgradeNeedsAttention() &&
           !GameHook.getInstance().isActive()) {
         this.upgradePending = true;
+        // [[SMOKE]] 合并到 main-ui: 删本行 (测试会话自动应用引擎更新)
+        SmokeHook.getInstance().onEngineUpgradePending();
         this.notify();
         return;
       }
@@ -955,6 +963,8 @@ export class WineEnvService {
       this.initOverlayVisible = false;
       this.initBusy = false;
       this.upgradePending = true;
+      // [[SMOKE]] 合并到 main-ui: 删本行 (测试会话自动应用引擎更新)
+      SmokeHook.getInstance().onEngineUpgradePending();
       this.notify();
       return;
     }
@@ -1285,5 +1295,32 @@ export class WineEnvService {
       this.opBusy = false;
       this.notify();
     })();
+  }
+
+  // -- aa want 自动化通道状态 (UI 不可注入设备上的全自动验证, 见 EntryAbility
+  //    publishLaunchRequest; 均为单次消费, 不持久化) --
+
+  // winehua.autoStart=1: 主页面就绪后自动拉起引擎
+  autoStartPending: boolean = false;
+  // winehua.program=<wine 路径>: 引擎就绪后自动启动该程序
+  autoProgram: string = '';
+
+  setAutoProgram(p: string): void {
+    this.autoProgram = p;
+  }
+
+  consumeAutoProgram(): string {
+    const p = this.autoProgram;
+    this.autoProgram = '';
+    return p;
+  }
+
+  consumeAutoStart(): boolean {
+    if (!this.autoStartPending) {
+      return false;
+    }
+    this.autoStartPending = false;
+    hilog.info(DOMAIN, 'wine', 'consumeAutoStart → ensureEngineReady');
+    return true;
   }
 }
