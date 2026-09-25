@@ -403,6 +403,9 @@ def resolve_device(hdc: str, explicit: str) -> str:
 # 用更短的值，让"设备端无响应"尽快暴露。
 HDC_SHELL_TIMEOUT_S = 60
 HDC_POLL_TIMEOUT_S = 20
+# 等应用进程起来的上限（ensure_app_running）：aa start 返回后进程出现通常在
+# 2~3s 内，冷启动建 prefix 时会久一些。
+APP_START_TIMEOUT_S = 30
 
 
 def hdc_shell(hdc: str, device: str, script: str,
@@ -417,14 +420,45 @@ def hdc_shell(hdc: str, device: str, script: str,
         return -1, ""
 
 
+def app_pid(hdc: str, device: str) -> str:
+    """应用主进程 pid（未运行时为空串）。"""
+    code, out = hdc_shell(hdc, device, f"pidof {BUNDLE} 2>/dev/null")
+    return out.strip() if code == 0 else ""
+
+
+def ensure_app_running(hdc: str, device: str) -> None:
+    """确保应用进程存在 —— 沙箱 -b 通道的前提。
+
+    `-b bundlename` 要求目标应用是**调试证书签名**且**已在设备上启动**，否则
+    报 E003001 Invalid bundle name（官方 hdc 文档列了三种原因：未安装 / 非调试
+    签名 / 未启动）。全新安装或 force-stop 之后直接推送必然撞上 —— cmd_run 是
+    先 push 再 aa start，指望不上后面那次启动。这里先补一次启动并等进程出现；
+    能起来但推送仍失败，就说明设备上装的是非调试签名的包。
+    """
+    if app_pid(hdc, device):
+        return
+    log(f"{BUNDLE} 未运行，先启动（-b 通道要求应用已启动）")
+    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE}")
+    deadline = time.time() + APP_START_TIMEOUT_S
+    while time.time() < deadline:
+        if app_pid(hdc, device):
+            return
+        time.sleep(1)
+    die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
+        "设备上装的若是非调试签名包，-b 通道同样不可用")
+
+
 def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:
     """推文件或目录到沙箱（remote 用沙箱视角路径）。"""
     result = subprocess.run(
         [hdc, "-t", device, "file", "send", "-b", BUNDLE, str(local), remote],
         capture_output=True, text=True, errors="replace")
     if result.returncode != 0 or "FileTransfer finish" not in result.stdout:
-        die(f"hdc file send failed rc={result.returncode}: "
-            f"{result.stdout.strip()} {result.stderr.strip()}")
+        detail = f"{result.stdout.strip()} {result.stderr.strip()}".strip()
+        if "Invalid bundle name" in detail:
+            detail += ("  ← E003001: 未安装 / 非调试签名 / 未启动三者之一，"
+                       "沙箱 -b 通道要求调试签名且应用在运行")
+        die(f"hdc file send failed rc={result.returncode}: {detail}")
 
 
 def hdc_recv_dir(hdc: str, device: str, rel_path: str, local_dir: Path) -> None:
@@ -493,6 +527,7 @@ def cmd_push(args: argparse.Namespace) -> int:
     payload = ensure_payload(args)
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
+    ensure_app_running(hdc, device)
     log(f"push {payload} → {device}")
     # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
     # 1) 推送源：设备端 seed 的来源（冷启动 / clean 清盘后按版本比对导入）
