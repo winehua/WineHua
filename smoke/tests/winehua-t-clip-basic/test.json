@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-clip-basic",
+  "title": "剪贴板同进程往返（wine 内部服务基线）",
+  "exe": "winehua_t_clip_basic.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/clip/clip_basic.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

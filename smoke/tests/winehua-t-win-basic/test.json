@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-win-basic",
+  "title": "窗口创建/几何往返/标题/销毁",
+  "exe": "winehua_t_win_basic.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/win/win_basic.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

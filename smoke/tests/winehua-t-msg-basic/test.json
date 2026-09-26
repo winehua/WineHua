@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-msg-basic",
+  "title": "消息循环/投递顺序/定时器/WM_QUIT",
+  "exe": "winehua_t_msg_basic.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/msg/msg_basic.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

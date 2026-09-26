@@ -18,6 +18,13 @@ smoke/graphics_runtime_env.h
 # 维护策略文档里画的规划目录树（尚未创建）
 scripts/qa/known-regressions.sh
 
+# 三问审计建议新建的构建校验脚本（尚未创建，见 docs/assets/customization-audit.md）
+scripts/verify-build.sh
+scripts/verify_hap_payload.py
+
+# 测试程序体系的共用断言头（待建，P0 首个交付，见 docs/engineering/testing-programs.md）
+smoke/t/common/winehua_t_check.h
+
 # 协作流程里举的例子，用来演示"怎么判断文件属于 main-ui 独有"。
 # 该文件只存在于 main-ui 分支，在 master 工作区里查不到是正常的
 entry/src/main/ets/components/AppLibraryView.ets

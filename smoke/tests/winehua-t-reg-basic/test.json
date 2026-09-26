@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-reg-basic",
+  "title": "注册表三类值往返/重开持久性/枚举/删除",
+  "exe": "winehua_t_reg_basic.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/reg/reg_basic.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-ladvapi32"
+    ]
+  }
+}

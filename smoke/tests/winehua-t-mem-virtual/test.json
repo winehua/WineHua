@@ -1,0 +1,20 @@
+{
+  "id": "winehua-t-mem-virtual",
+  "title": "虚拟内存执行页（noexec RWX 链）与保护属性",
+  "exe": "winehua_t_mem_virtual.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/mem/mem_virtual.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}
