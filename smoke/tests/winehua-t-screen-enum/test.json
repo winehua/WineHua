@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/gdi/screen_enum.c"
+      "smoke/programs/gdi/screen_enum.c"
     ],
     "cflags": [
       "-O2",

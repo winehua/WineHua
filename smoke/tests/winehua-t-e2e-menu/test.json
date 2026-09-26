@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/input/e2e_menu.c"
+      "smoke/programs/input/e2e_menu.c"
     ],
     "cflags": [
       "-O2",

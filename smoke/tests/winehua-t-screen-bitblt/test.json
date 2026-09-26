@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/gdi/screen_bitblt.c"
+      "smoke/programs/gdi/screen_bitblt.c"
     ],
     "cflags": [
       "-O2",

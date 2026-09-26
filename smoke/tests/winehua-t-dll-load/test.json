@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/dll_load.c"
+      "smoke/programs/rt/dll_load.c"
     ],
     "cflags": [
       "-O2",

@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/fs/fs_drives.c"
+      "smoke/programs/fs/fs_drives.c"
     ],
     "cflags": [
       "-O2",

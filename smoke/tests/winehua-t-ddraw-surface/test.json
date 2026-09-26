@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/gdi/ddraw_surface.c"
+      "smoke/programs/gdi/ddraw_surface.c"
     ],
     "cflags": [
       "-O2",

@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/fs/fs_watch.c"
+      "smoke/programs/fs/fs_watch.c"
     ],
     "cflags": [
       "-O2",

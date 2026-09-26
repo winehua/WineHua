@@ -298,6 +298,16 @@
 - 通过：echo 逐字节一致；connect/send/recv 返回值正确
 - 失败特征：connect 拒绝=socket 注入链断；传输错=ws2_32 层断（不依赖外网，可复现）
 
+**net_https — HTTPS 协议链** ｜ P6 ｜ 手段 R
+- 行为：wininet 全链访问 https://www.baidu.com——InternetOpenA→
+  InternetConnectA（INTERNET_DEFAULT_HTTPS_PORT）→HttpOpenRequestA("GET",
+  "/")→HttpSendRequestA→InternetReadFile 首块；先做 TCP 80 预检
+  （baidu IP 直连），预检不通=环境无网记 UNSUPPORTED
+- 通过：HttpSendRequestA 成功且收到 HTTP 响应（状态码进 metric）
+- 失败特征：预检通但 TLS 挂（ERROR_INTERNET_SECURITY_CHANNEL_ERROR /
+  SEC_E_*）=schannel→gnutls 链断（wine-https 回归哨兵）；DNS 断=解析链
+  （预检用 IP，DNS 单独分层）；HTTP 层错=wininet 语义断
+
 ### 3.14 DLL 与 COM
 
 **dll_load — 动态库** ｜ P1 ｜ 手段 R
@@ -495,12 +505,12 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
 
 ## 4. 实现规范
 
-1. **共用头**：`smoke/t/common/winehua_t_check.h`（已交付）—— `T_CHECK(name, expr, fmt, ...)` 累积 checks、`T_METRIC(key,val)`、`T_SKIP(reason)`、退出统一写 result JSON（格式对齐 result-json 判定器）。
+1. **共用头**：`smoke/programs/common/winehua_t_check.h`（已交付）—— `T_CHECK(name, expr, fmt, ...)` 累积 checks、`T_METRIC(key,val)`、`T_SKIP(reason)`、退出统一写 result JSON（格式对齐 result-json 判定器）。
 2. **入口**：复用 `winehua_smoke_protocol.h`（`--automation/--result/--test-id/--expect`）。
 3. **构建**：`smoke/tests/<id>/test.json` 声明 `build.sources/cflags/libs`（模板 `win32-driver`）；`-O2 -s`，保留 console；x64+x86 必出。
 4. **C 模式注入**：test.json 新增 `inject` 字段声明注入脚本（host 侧 uitest 通道）；程序 `--automation` 进入等待+自检状态。
 5. **先红合法**：收敛项（layered 均匀 alpha、capture、clip_cross、screen_bitblt）在对应实现落地前应 FAIL/UNSUPPORTED——用例先立，红转绿即收敛验收。
-6. **禁令**：不引网络（net_tcp 的 listener 由 host 注入回环端口）/时间/外部文件依赖；长跑默认关；stdout 限 100 行。
+6. **禁令**：非网络用例不引网络/时间/外部文件依赖（net_tcp 的 listener 由 host 注入回环端口）；网络域用例允许真实网络访问——目标选高稳定服务（baidu.com 等），短超时，失败必须分层（环境无网记 UNSUPPORTED ≠ 协议断 FAIL）。长跑默认关；stdout 限 100 行。
 7. **每批验收**：WSL 直跑 x86_64 PE 逻辑验证→设备 x64/x86→`smoke.py check` 归档绿→挂进新套件 `win32.json`。
 
 ## 5. 批次
@@ -513,6 +523,7 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
 | P3 | gdi_palette、fs_watch、thread_tls、mem_heap、com_basic、stress_messages、mutex_atom、shell_link、mm_timer | 9 | 已完成（2026-09-26，双架构全绿） |
 | P4 | dinput_keyboard、dinput_mouse、ddraw_surface（含调色板/Flip 组）、d3d_smoke（d3d10 链守卫）、d3d9_offscreen（离屏读回+Reset） | 5 程序 | 已完成（2026-09-26，3 全绿 + 2 定性红） |
 | P5 | gdi_leak、font_enum、reg_wow64、toolhelp_snapshot、wgl_basic、audio_waveout | 6 程序 | 已完成（2026-09-26，3 全绿 + 3 定性红；报告 `build/automation-logs/win32-p5-verification-report.md`） |
+| P6 | net_https | 1 程序 | 实现中（2026-09-26 设计定稿） |
 
 ### 5.1 待宿主能力的设计储备（不占批次编号）
 
@@ -526,9 +537,6 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
 - **WM_DROPFILES 真实投递**：RegisterDragDrop/IDropTarget 注册往返可并入
   shell 域（R 级），真实文件拖入需要宿主拖放桥（当前剪贴板通道均缺，
   收敛项③落地前先红合法）。
-- **wininet HTTPS 哨兵**：违反「不引网络」禁令；回环 TLS 需要自签证书
-  链进载荷，工程量与收益不匹配——留待 gnutls 链（wine-https-schannel）
-  出现回归再加。
 - **受管窗口判据语义**：owner/tool window/1×1 辅助窗的判据在 winewayland
   宿主层（is_window_managed），guest 可观测面只有窗口样式——由 win_owned
   与 win_zorder 覆盖 guest 侧，宿主判据的回归由宿主层日志（MW-RAISE 等）

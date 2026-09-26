@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/audio_waveout.c"
+      "smoke/programs/rt/audio_waveout.c"
     ],
     "cflags": [
       "-O2",

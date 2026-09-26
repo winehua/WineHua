@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/sync/mutex_atom.c"
+      "smoke/programs/sync/mutex_atom.c"
     ],
     "cflags": [
       "-O2",

@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/clip/clip_cross.c"
+      "smoke/programs/clip/clip_cross.c"
     ],
     "cflags": [
       "-O2",

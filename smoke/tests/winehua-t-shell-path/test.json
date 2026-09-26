@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/shell/shell_path.c"
+      "smoke/programs/shell/shell_path.c"
     ],
     "cflags": [
       "-O2",

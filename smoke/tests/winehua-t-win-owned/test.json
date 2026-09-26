@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/win/win_owned.c"
+      "smoke/programs/win/win_owned.c"
     ],
     "cflags": [
       "-O2",

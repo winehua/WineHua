@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/proc/proc_pipe.c"
+      "smoke/programs/proc/proc_pipe.c"
     ],
     "cflags": [
       "-O2",

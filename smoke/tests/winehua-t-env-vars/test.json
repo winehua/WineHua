@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/env/env_vars.c"
+      "smoke/programs/env/env_vars.c"
     ],
     "cflags": [
       "-O2",

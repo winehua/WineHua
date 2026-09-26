@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/gdi/gdi_primitives.c"
+      "smoke/programs/gdi/gdi_primitives.c"
     ],
     "cflags": [
       "-O2",

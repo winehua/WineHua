@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-net-https",
+  "title": "HTTPS协议链（baidu全链；预检不通=环境无网UNSUPPORTED，TLS断=gnutls链哨兵）",
+  "exe": "winehua_t_net_https.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/net/net_https.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lwininet",
+      "-lws2_32"
+    ]
+  }
+}

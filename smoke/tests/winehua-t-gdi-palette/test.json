@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/gdi/gdi_palette.c"
+      "smoke/programs/gdi/gdi_palette.c"
     ],
     "cflags": [
       "-O2",

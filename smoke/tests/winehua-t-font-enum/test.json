@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/gdi/font_enum.c"
+      "smoke/programs/gdi/font_enum.c"
     ],
     "cflags": [
       "-O2",

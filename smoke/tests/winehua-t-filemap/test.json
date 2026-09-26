@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/filemap.c"
+      "smoke/programs/rt/filemap.c"
     ],
     "cflags": [
       "-O2",

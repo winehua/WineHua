@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/mm_timer.c"
+      "smoke/programs/rt/mm_timer.c"
     ],
     "cflags": [
       "-O2",

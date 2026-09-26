@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/crt.c"
+      "smoke/programs/rt/crt.c"
     ],
     "cflags": [
       "-O2",

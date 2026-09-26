@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/win/win_fullscreen.c"
+      "smoke/programs/win/win_fullscreen.c"
     ],
     "cflags": [
       "-O2",

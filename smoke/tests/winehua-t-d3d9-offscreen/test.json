@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/graphics/d3d9_offscreen.c"
+      "smoke/programs/graphics/d3d9_offscreen.c"
     ],
     "cflags": [
       "-O2",

@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/com_basic.c"
+      "smoke/programs/rt/com_basic.c"
     ],
     "cflags": [
       "-O2",

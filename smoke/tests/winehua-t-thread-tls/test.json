@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/thread_tls.c"
+      "smoke/programs/rt/thread_tls.c"
     ],
     "cflags": [
       "-O2",

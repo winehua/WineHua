@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/input/input_relative.c"
+      "smoke/programs/input/input_relative.c"
     ],
     "cflags": [
       "-O2",

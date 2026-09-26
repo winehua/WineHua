@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/input/input_mouse.c"
+      "smoke/programs/input/input_mouse.c"
     ],
     "cflags": [
       "-O2",

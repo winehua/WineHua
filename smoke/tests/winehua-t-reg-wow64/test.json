@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/reg/reg_wow64.c"
+      "smoke/programs/reg/reg_wow64.c"
     ],
     "cflags": [
       "-O2",

@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/time.c"
+      "smoke/programs/rt/time.c"
     ],
     "cflags": [
       "-O2",

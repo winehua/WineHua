@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/mem_heap.c"
+      "smoke/programs/rt/mem_heap.c"
     ],
     "cflags": [
       "-O2",

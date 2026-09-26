@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/input/dinput_keyboard.c"
+      "smoke/programs/input/dinput_keyboard.c"
     ],
     "cflags": [
       "-O2",

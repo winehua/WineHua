@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/graphics/wgl_basic.c"
+      "smoke/programs/graphics/wgl_basic.c"
     ],
     "cflags": [
       "-O2",

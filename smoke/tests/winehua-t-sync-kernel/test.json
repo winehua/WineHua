@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/rt/sync_kernel.c"
+      "smoke/programs/rt/sync_kernel.c"
     ],
     "cflags": [
       "-O2",

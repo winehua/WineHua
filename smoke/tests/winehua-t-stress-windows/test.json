@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/win/stress_windows.c"
+      "smoke/programs/win/stress_windows.c"
     ],
     "cflags": [
       "-O2",

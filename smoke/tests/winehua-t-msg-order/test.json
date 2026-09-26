@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/msg/msg_order.c"
+      "smoke/programs/msg/msg_order.c"
     ],
     "cflags": [
       "-O2",

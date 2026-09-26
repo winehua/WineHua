@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/msg/msg_thread.c"
+      "smoke/programs/msg/msg_thread.c"
     ],
     "cflags": [
       "-O2",

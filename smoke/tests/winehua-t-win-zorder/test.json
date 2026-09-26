@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/win/win_zorder.c"
+      "smoke/programs/win/win_zorder.c"
     ],
     "cflags": [
       "-O2",

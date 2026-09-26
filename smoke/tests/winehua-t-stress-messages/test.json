@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/msg/stress_messages.c"
+      "smoke/programs/msg/stress_messages.c"
     ],
     "cflags": [
       "-O2",

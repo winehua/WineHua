@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/mem/mem_virtual.c"
+      "smoke/programs/mem/mem_virtual.c"
     ],
     "cflags": [
       "-O2",

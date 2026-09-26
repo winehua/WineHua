@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/net/net_tcp.c"
+      "smoke/programs/net/net_tcp.c"
     ],
     "cflags": [
       "-O2",

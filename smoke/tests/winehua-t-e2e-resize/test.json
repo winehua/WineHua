@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/win/e2e_resize.c"
+      "smoke/programs/win/e2e_resize.c"
     ],
     "cflags": [
       "-O2",

@@ -8,7 +8,7 @@
   ],
   "build": {
     "sources": [
-      "smoke/t/shell/shell_link.c"
+      "smoke/programs/shell/shell_link.c"
     ],
     "cflags": [
       "-O2",
