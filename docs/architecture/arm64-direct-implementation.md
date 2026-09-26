@@ -76,7 +76,13 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 
 - 新增 `winehua.mode=direct-gpu-sample-probe`，保留原 import 模式作回归基线。App 对每帧导入的 sampled image 提交 Vulkan compute shader：用 `VK_QUEUE_FAMILY_FOREIGN_EXT` → App 队列的 ownership/layout barrier 取得图像，`texelFetch` 读取九个位置并写入 host-visible storage buffer，再转换回 `PRESENT_SRC_KHR` 并交还 foreign queue family。等待提交 fence 后，CPU 只读取这 36 字节的 GPU 输出并核对逐帧 RGBA 图案；原 CPU map 检查保留作交叉校验。着色器源码为 `direct/direct_sample.comp`，嵌入头可在构建容器里运行 `python3 scripts/generate_direct_sample_shader.py` 重新生成。
 - 签名 HAP SHA-256：`e84d2a3bd527f605223bf9ee198d026fc2db83d99760b6cb11ee2fdf96ec60d2`。MatePad Mini 首轮与后续连续 20 轮全部 `PASS`；连续运行的 20 个子进程 PID 各不相同，共 160/160 帧 GPU 取样与 CPU 交叉校验通过。每轮 6 次导入、2 次缓存命中、8 次 GPU 取样；父进程 fd 始终为 42，RSS 在 114560–115536 KiB 间。结果见 [20 轮 JSON](evidence/direct-d2-sample-runs.ndjson)。同包 D0 Create、D1、D2 WSI 和原 D2 import 均 `PASS`，fd 为 42（[回归 JSON](evidence/direct-d2-sample-regression.ndjson)）。
-- 本探针证明跨进程 BufferQueue 图像内容可被 App 侧 Vulkan shader 实际读取，也验证了本设备上这组 foreign queue family / layout barrier 能正常运行。它仍在读取前用 CPU `poll` 等 acquire fence，提交后用 CPU 等 Vulkan fence，再用 `ReleaseNativeWindowBuffer(..., -1)` 释放；也仍有 36 字节诊断读回。**GPU semaphore fence 导入/导出、向独立 XComponent 合成、无逐帧 CPU 等待的 60 FPS 路径尚未实现和验收。**
+- 本探针证明跨进程 BufferQueue 图像内容可被 App 侧 Vulkan shader 实际读取，也验证了本设备上这组 foreign queue family / layout barrier 能正常运行。该模式仍在读取前用 CPU `poll` 等 acquire fence，提交后用 CPU 等 Vulkan fence，再用 `ReleaseNativeWindowBuffer(..., -1)` 释放；也仍有 36 字节诊断读回。GPU semaphore fence 交接见下节。
+
+## D2 SYNC_FD acquire/release 独立探针（2026-09-26）
+
+- 新增 `winehua.mode=direct-gpu-fence-probe`，沿用 GPU 采样与 NativeBuffer 缓存，但 Acquire 返回的 fence fd 通过 `vkImportSemaphoreFdKHR` 临时导入 Vulkan semaphore，提交时让 GPU 等待该 semaphore；提交后通过 `vkGetSemaphoreFdKHR` 导出 release `SYNC_FD`，直接交给 `OH_NativeImage_ReleaseNativeWindowBuffer`。成功导入的 acquire fd 由 Vulkan 接管，成功 Release 的 fd 由 BufferQueue 接管。App 在 Release **之后**才等 Vulkan submit fence 并读取 36 字节诊断结果；此模式不再 CPU `poll` acquire fd，也不再 CPU map NativeBuffer。NDK `libvulkan` 不直接导出这两个扩展函数，因此用 `vkGetDeviceProcAddr` 解析。
+- 最终签名 HAP SHA-256：`6091311a05e529ffb0736cd6a65b4a33f236cb6e4d493e0e8b17ace6403df951`。MatePad Mini 在此包上连续 30/30 轮 `PASS`，240/240 帧 GPU 像素校验通过，30 个子进程 PID 各不相同。每帧都实际导入 acquire fd、导出 release semaphore 并向 BufferQueue 提交一个 release fd，合计 **240/240 次导入、240/240 次导出、240/240 个 release fd**；每轮 6 次 NativeBuffer 导入、2 次缓存命中。父进程 fd 始终为 42，RSS 为 115548–116848 KiB。[连续运行结果](evidence/direct-d2-fence-final-runs.ndjson)。同包 D0 Create、D1、D2 WSI、D2 import、D2 sample 回归均 `PASS`、fd 42（[回归结果](evidence/direct-d2-fence-final-regression.ndjson)）。
+- 这验证了本设备上的 acquire/release `SYNC_FD` 实际交接和 GPU 图像读取。探针仍逐帧等提交 fence 才读取小型诊断缓冲区，也由子进程逐帧等待生产者提交；尚未证明多帧同时在途、独立 XComponent 合成或无逐帧 CPU 等待的 60 FPS 性能。下一步应将导入图像采样到独立 XComponent 的 Vulkan render target，并让帧槽持有命令缓冲区、输出 buffer 与同步对象直到 GPU 完成，再测连续 present 和 resize。
 
 ## 关键的未知事实
 

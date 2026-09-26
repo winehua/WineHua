@@ -10,19 +10,25 @@ struct OH_NativeBuffer;
 
 namespace winehua::direct {
 
-// Diagnostic only: imports BufferQueue images and samples their pixels on the
-// GPU. Production composition and release-fence export remain separate work.
+// Diagnostic only: imports BufferQueue images, samples them on the GPU and
+// exercises acquire/release SYNC_FD handoff. Production composition is separate.
 class DirectBufferImportProbe {
 public:
+    explicit DirectBufferImportProbe(bool enableFences = false) : fenceMode_(enableFences) {}
     ~DirectBufferImportProbe();
     bool Import(OH_NativeBuffer* buffer, int32_t width, int32_t height);
     bool Sample(OH_NativeBuffer* buffer, int32_t width, int32_t height, int32_t frame);
+    bool SubmitSampleWithFences(OH_NativeBuffer* buffer, int32_t width, int32_t height,
+                                int* acquireFence, int* releaseFence);
+    bool FinishSample(int32_t frame);
     void NewGeneration();
     int32_t VkError() const { return static_cast<int32_t>(error_); }
     const char* Stage() const { return stage_; }
     uint32_t ImportCount() const { return imports_; }
     uint32_t ReuseCount() const { return reuses_; }
     uint32_t SampleCount() const { return samples_; }
+    uint32_t AcquireImportCount() const { return acquireImports_; }
+    uint32_t ReleaseExportCount() const { return releaseExports_; }
 
 private:
     struct Entry {
@@ -33,10 +39,14 @@ private:
     };
     bool Initialize();
     bool InitializeSampler();
+    bool InitializeSync();
+    bool RecordAndSubmit(OH_NativeBuffer* buffer, int32_t width, int32_t height,
+                         int* acquireFence, int* releaseFence);
     bool Fail(const char* stage, VkResult result);
     void ClearCache();
 
     VkInstance instance_ = VK_NULL_HANDLE;
+    bool fenceMode_ = false;
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
@@ -44,6 +54,10 @@ private:
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
     VkCommandBuffer command_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
+    VkSemaphore acquireSemaphore_ = VK_NULL_HANDLE;
+    VkSemaphore releaseSemaphore_ = VK_NULL_HANDLE;
+    PFN_vkImportSemaphoreFdKHR importSemaphoreFd_ = nullptr;
+    PFN_vkGetSemaphoreFdKHR getSemaphoreFd_ = nullptr;
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
@@ -58,6 +72,8 @@ private:
     uint32_t imports_ = 0;
     uint32_t reuses_ = 0;
     uint32_t samples_ = 0;
+    uint32_t acquireImports_ = 0;
+    uint32_t releaseExports_ = 0;
 };
 
 } // namespace winehua::direct

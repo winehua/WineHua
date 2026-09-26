@@ -14,6 +14,8 @@ DirectBufferImportProbe::~DirectBufferImportProbe()
     ClearCache();
     if (device_) {
         if (fence_) vkDestroyFence(device_, fence_, nullptr);
+        if (acquireSemaphore_) vkDestroySemaphore(device_, acquireSemaphore_, nullptr);
+        if (releaseSemaphore_) vkDestroySemaphore(device_, releaseSemaphore_, nullptr);
         if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
         if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
         if (pipelineLayout_) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
@@ -102,17 +104,26 @@ bool DirectBufferImportProbe::Initialize()
     const char* extensions[] = {
         VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME,
         "VK_EXT_queue_family_foreign",
+        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
     };
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
-    deviceInfo.enabledExtensionCount = 2;
+    deviceInfo.enabledExtensionCount = fenceMode_ ? 3 : 2;
     deviceInfo.ppEnabledExtensionNames = extensions;
     result = vkCreateDevice(physical_, &deviceInfo, nullptr, &device_);
     if (result != VK_SUCCESS) return Fail("import_device", result);
     queueFamily_ = family;
     vkGetDeviceQueue(device_, family, 0, &queue_);
     if (!queue_) return Fail("sample_queue", VK_ERROR_INITIALIZATION_FAILED);
+    if (fenceMode_) {
+        importSemaphoreFd_ = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(device_, "vkImportSemaphoreFdKHR"));
+        getSemaphoreFd_ = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(device_, "vkGetSemaphoreFdKHR"));
+        if (!importSemaphoreFd_ || !getSemaphoreFd_)
+            return Fail("fence_functions", VK_ERROR_EXTENSION_NOT_PRESENT);
+    }
     return true;
 }
 
@@ -232,6 +243,20 @@ bool DirectBufferImportProbe::InitializeSampler()
     return true;
 }
 
+bool DirectBufferImportProbe::InitializeSync()
+{
+    if (acquireSemaphore_) return true;
+    VkExportSemaphoreCreateInfo exportInfo{VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
+    exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+    VkSemaphoreCreateInfo createInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    createInfo.pNext = &exportInfo;
+    VkResult result = vkCreateSemaphore(device_, &createInfo, nullptr, &acquireSemaphore_);
+    if (result != VK_SUCCESS) return Fail("fence_acquire_semaphore", result);
+    result = vkCreateSemaphore(device_, &createInfo, nullptr, &releaseSemaphore_);
+    if (result != VK_SUCCESS) return Fail("fence_release_semaphore", result);
+    return true;
+}
+
 bool DirectBufferImportProbe::Import(OH_NativeBuffer* buffer, int32_t width, int32_t height)
 {
     if (!buffer || width <= 0 || height <= 0)
@@ -334,7 +359,25 @@ bool DirectBufferImportProbe::Import(OH_NativeBuffer* buffer, int32_t width, int
 bool DirectBufferImportProbe::Sample(OH_NativeBuffer* buffer, int32_t width,
                                      int32_t height, int32_t frame)
 {
-    if (!buffer || width <= 0 || height <= 0 || frame < 0)
+    if (frame < 0) return Fail("sample_frame", VK_ERROR_INITIALIZATION_FAILED);
+    return RecordAndSubmit(buffer, width, height, nullptr, nullptr) && FinishSample(frame);
+}
+
+bool DirectBufferImportProbe::SubmitSampleWithFences(OH_NativeBuffer* buffer,
+                                                     int32_t width, int32_t height,
+                                                     int* acquireFence, int* releaseFence)
+{
+    if (!fenceMode_ || !acquireFence || !releaseFence)
+        return Fail("fence_mode_input", VK_ERROR_INITIALIZATION_FAILED);
+    *releaseFence = -1;
+    return RecordAndSubmit(buffer, width, height, acquireFence, releaseFence);
+}
+
+bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t width,
+                                               int32_t height, int* acquireFence,
+                                               int* releaseFence)
+{
+    if (!buffer || width <= 0 || height <= 0)
         return Fail("sample_input", VK_ERROR_INITIALIZATION_FAILED);
     const auto found = cache_.find(OH_NativeBuffer_GetSeqNum(buffer));
     if (found == cache_.end() || found->second.buffer != buffer)
@@ -416,9 +459,49 @@ bool DirectBufferImportProbe::Sample(OH_NativeBuffer* buffer, int32_t width,
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command_;
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (releaseFence) {
+        if (!InitializeSync()) return false;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &releaseSemaphore_;
+    }
+    if (acquireFence && *acquireFence >= 0) {
+        VkImportSemaphoreFdInfoKHR importInfo{VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR};
+        importInfo.semaphore = acquireSemaphore_;
+        importInfo.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
+        importInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        importInfo.fd = *acquireFence;
+        result = importSemaphoreFd_(device_, &importInfo);
+        if (result != VK_SUCCESS) return Fail("fence_import", result);
+        *acquireFence = -1; // Vulkan owns the fd after a successful import.
+        ++acquireImports_;
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = &acquireSemaphore_;
+        submit.pWaitDstStageMask = &waitStage;
+    }
     result = vkQueueSubmit(queue_, 1, &submit, fence_);
     if (result != VK_SUCCESS) return Fail("sample_submit", result);
-    result = vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+    if (releaseFence) {
+        VkSemaphoreGetFdInfoKHR exportInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+        exportInfo.semaphore = releaseSemaphore_;
+        exportInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        result = getSemaphoreFd_(device_, &exportInfo, releaseFence);
+        if (result != VK_SUCCESS) {
+            // Without a release fd, finish the submitted work before the caller
+            // gives the BufferQueue its buffer back.
+            vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+            return Fail("fence_export", result);
+        }
+        ++releaseExports_;
+    }
+    stage_ = "sample_submitted";
+    return true;
+}
+
+bool DirectBufferImportProbe::FinishSample(int32_t frame)
+{
+    if (frame < 0) return Fail("sample_frame", VK_ERROR_INITIALIZATION_FAILED);
+    VkResult result = vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
     if (result != VK_SUCCESS) return Fail("sample_wait", result);
     void* mapped = nullptr;
     result = vkMapMemory(device_, readbackMemory_, 0, 9 * sizeof(uint32_t), 0, &mapped);
