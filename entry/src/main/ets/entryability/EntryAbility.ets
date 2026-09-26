@@ -40,6 +40,8 @@ interface DirectSurfaceProbeResult {
   importCheck: boolean;
   importCount: number;
   reuseCount: number;
+  sampleCheck: boolean;
+  sampleCount: number;
   importVkResult: number;
   parentFdCount: number;
   parentRssKiB: number;
@@ -52,17 +54,20 @@ export default class EntryAbility extends UIAbility {
   private directSurfaceAbortMode: boolean = false;
   private directGpuSurfaceMode: boolean = false;
   private directGpuImportMode: boolean = false;
+  private directGpuSampleMode: boolean = false;
 
   private runDirectProbeIfRequested(): void {
     if (!this.directProbePending) return;
     this.directProbePending = false;
     const outputPath = this.directSurfaceProbeMode ?
-      `${this.context.cacheDir}/${this.directGpuImportMode ? 'direct-gpu-import-probe.json' :
+      `${this.context.cacheDir}/${this.directGpuSampleMode ? 'direct-gpu-sample-probe.json' :
+        this.directGpuImportMode ? 'direct-gpu-import-probe.json' :
         this.directGpuSurfaceMode ? 'direct-gpu-surface-probe.json' :
         this.directSurfaceAbortMode ? 'direct-surface-abort-probe.json' : 'direct-surface-probe.json'}` :
       `${this.context.cacheDir}/direct-vulkan-probe.json`;
     try {
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directGpuImportMode ? 'D2-IMPORT' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directGpuSampleMode ? 'D2-SAMPLE' :
+        this.directGpuImportMode ? 'D2-IMPORT' :
         this.directGpuSurfaceMode ? 'D2-WSI' :
         this.directSurfaceProbeMode ? 'D1' : 'D0',
         status: 'RUNNING', startedAt: Date.now() }));
@@ -71,7 +76,8 @@ export default class EntryAbility extends UIAbility {
     }
     if (deviceInfo.deviceType === 'phone') {
       // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directGpuImportMode ? 'D2-IMPORT' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directGpuSampleMode ? 'D2-SAMPLE' :
+        this.directGpuImportMode ? 'D2-IMPORT' :
         this.directGpuSurfaceMode ? 'D2-WSI' :
         this.directSurfaceProbeMode ? 'D1' : 'D0',
         status: 'UNSUPPORTED', stage: 'phone_fork_backend' }));
@@ -81,14 +87,17 @@ export default class EntryAbility extends UIAbility {
       this.directSurfaceProbeMode = false;
       const abortMode = this.directSurfaceAbortMode;
       const gpuMode = this.directGpuSurfaceMode;
-      const importMode = this.directGpuImportMode;
+      const sampleMode = this.directGpuSampleMode;
+      const importMode = this.directGpuImportMode || sampleMode;
       this.directSurfaceAbortMode = false;
       this.directGpuSurfaceMode = false;
       this.directGpuImportMode = false;
-      this.runDirectSurfaceProbePromise(importMode ? testNapi.runDirectGpuImportProbe() :
+      this.directGpuSampleMode = false;
+      this.runDirectSurfaceProbePromise(sampleMode ? testNapi.runDirectGpuSampleProbe() :
+        importMode ? testNapi.runDirectGpuImportProbe() :
         gpuMode ? testNapi.runDirectGpuSurfaceProbe() :
         abortMode ? testNapi.runDirectSurfaceAbortProbe() : testNapi.runDirectSurfaceProbe(),
-        outputPath, gpuMode, importMode);
+        outputPath, gpuMode, importMode, sampleMode);
     } else if (this.directProbeStartMode) {
       this.directProbeStartMode = false;
       this.runDirectProbePromise(testNapi.runDirectVulkanProbe(), outputPath);
@@ -98,19 +107,22 @@ export default class EntryAbility extends UIAbility {
   }
 
   private runDirectSurfaceProbePromise(probe: Promise<DirectSurfaceProbeResult>, outputPath: string,
-    gpuMode: boolean = false, importMode: boolean = false): void {
+    gpuMode: boolean = false, importMode: boolean = false, sampleMode: boolean = false): void {
     probe.then((result: DirectSurfaceProbeResult) => {
       writeTextFile(outputPath, JSON.stringify(result));
-      hilog.info(DOMAIN, importMode ? 'DIRECT-D2-IMPORT' : gpuMode ? 'DIRECT-D2-WSI' : 'DIRECT-D1',
-        'result=%{public}s stage=%{public}s pid=%{public}d frames=%{public}d pixel=%{public}s import=%{public}d/%{public}d fd=%{public}d rssKiB=%{public}d',
+      hilog.info(DOMAIN, sampleMode ? 'DIRECT-D2-SAMPLE' :
+        importMode ? 'DIRECT-D2-IMPORT' : gpuMode ? 'DIRECT-D2-WSI' : 'DIRECT-D1',
+        'result=%{public}s stage=%{public}s pid=%{public}d frames=%{public}d pixel=%{public}s import=%{public}d/%{public}d sample=%{public}d fd=%{public}d rssKiB=%{public}d',
         result.status, result.stage, result.pid, result.framesPassed,
-        result.pixelCheck ? '1' : '0', result.importCount, result.reuseCount,
+        result.pixelCheck ? '1' : '0', result.importCount, result.reuseCount, result.sampleCount,
         result.parentFdCount, result.parentRssKiB);
     }).catch((err: Object) => {
-      writeTextFile(outputPath, JSON.stringify({ gate: importMode ? 'D2-IMPORT' :
+      writeTextFile(outputPath, JSON.stringify({ gate: sampleMode ? 'D2-SAMPLE' :
+        importMode ? 'D2-IMPORT' :
         gpuMode ? 'D2-WSI' : 'D1', status: 'FAIL', stage: 'napi_exception',
         error: JSON.stringify(err) }));
-      hilog.error(DOMAIN, importMode ? 'DIRECT-D2-IMPORT' : gpuMode ? 'DIRECT-D2-WSI' :
+      hilog.error(DOMAIN, sampleMode ? 'DIRECT-D2-SAMPLE' :
+        importMode ? 'DIRECT-D2-IMPORT' : gpuMode ? 'DIRECT-D2-WSI' :
         'DIRECT-D1', 'probe failed: %{public}s', JSON.stringify(err));
     });
   }
@@ -152,16 +164,19 @@ export default class EntryAbility extends UIAbility {
       `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
       `${parameters['winehua.mode']}` === 'direct-surface-abort-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe' ||
-      `${parameters['winehua.mode']}` === 'direct-gpu-import-probe')) {
+      `${parameters['winehua.mode']}` === 'direct-gpu-import-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe')) {
       this.directProbePending = true;
       this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
       this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
         `${parameters['winehua.mode']}` === 'direct-surface-abort-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe' ||
-        `${parameters['winehua.mode']}` === 'direct-gpu-import-probe';
+        `${parameters['winehua.mode']}` === 'direct-gpu-import-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe';
       this.directSurfaceAbortMode = `${parameters['winehua.mode']}` === 'direct-surface-abort-probe';
       this.directGpuSurfaceMode = `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe';
       this.directGpuImportMode = `${parameters['winehua.mode']}` === 'direct-gpu-import-probe';
+      this.directGpuSampleMode = `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe';
       return;
     }
     const value = (key: string, fallback: string): string => {

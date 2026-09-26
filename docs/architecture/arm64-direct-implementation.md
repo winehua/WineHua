@@ -70,7 +70,13 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - `winehua.mode=direct-gpu-import-probe` 在上节的 Vulkan WSI producer 基础上，每组各提交四帧。App 消费端先等待 acquire fence，再按 NativeBuffer sequence 缓存 Vulkan image、memory 和 image view；同一 generation 重访 buffer 时复用这些对象，resize 前清空旧 generation 的缓存，最后释放所有 Vulkan 对象和 NativeBuffer 引用。探针用 `vkGetNativeBufferPropertiesOHOS` 确认真实 buffer 的格式和内存类型，通过 `VkImportNativeBufferInfoOHOS` 分配/绑定内存，并创建 RGBA8 sampled image view。每组的第四帧应复用已有 buffer，因此合计应是六次导入、两次缓存命中。
 - 签名 HAP SHA-256：`6bfeaa4ab362e28d262ee1dcf28a125609b50a2e3e110cda66334b40a92055a2`。MatePad Mini 连续 21 次 `PASS`、168/168 GPU producer 帧成功；每轮八帧 CPU 像素校验通过、六次 image/memory/view 导入和两次缓存命中。第一次安装后父进程 fd 为 50，第二轮起 20 次均为 42；RSS 在预热后约 102–103 MiB 范围波动，未呈持续线性增长。无探针子进程残留。同包 D0、D1、D2 WSI 入口复测均 `PASS`、fd 42。[父进程逐次日志](evidence/direct-d2-import-parents.log)、[子进程逐帧日志](evidence/direct-d2-import-children.log)、[末轮 JSON](evidence/direct-d2-import-final.json)。
 - 仅修正异常设备枚举时错误码后重构建的最终 HAP SHA-256 为 `39db6d118117293084c75eb6699022c7a3bcb9c5dfa9ba8579f792715e91d404`，已覆盖安装；导入探针再跑两轮均 `PASS`，第二轮 fd 42（[最终 JSON](evidence/direct-d2-import-39db.json)）。
-- 这证明实际跨进程 BufferQueue 的 NativeBuffer 可在 App 进程创建并缓存 Vulkan sampled image view；**尚未通过 GPU 命令从该 image 取样或合成**。现有像素判断仍靠 CPU map，acquire fence 用 CPU poll，子进程每帧等待 submit fence。下一步需在独立诊断 XComponent 上完成 GPU 采样/合成与 fence 的 GPU import/export，确认 queue-family/layout 所有权、release fence 交接，以及无逐帧 CPU wait/import 的 60 FPS 运行。
+- 这证明实际跨进程 BufferQueue 的 NativeBuffer 可在 App 进程创建并缓存 Vulkan sampled image view；该版本**尚未通过 GPU 命令从该 image 取样或合成**。像素判断仍靠 CPU map，acquire fence 用 CPU poll，子进程每帧等待 submit fence。GPU 取样见下节。
+
+## D2 NativeBuffer GPU 采样独立探针（2026-09-26）
+
+- 新增 `winehua.mode=direct-gpu-sample-probe`，保留原 import 模式作回归基线。App 对每帧导入的 sampled image 提交 Vulkan compute shader：用 `VK_QUEUE_FAMILY_FOREIGN_EXT` → App 队列的 ownership/layout barrier 取得图像，`texelFetch` 读取九个位置并写入 host-visible storage buffer，再转换回 `PRESENT_SRC_KHR` 并交还 foreign queue family。等待提交 fence 后，CPU 只读取这 36 字节的 GPU 输出并核对逐帧 RGBA 图案；原 CPU map 检查保留作交叉校验。着色器源码为 `direct/direct_sample.comp`，嵌入头可在构建容器里运行 `python3 scripts/generate_direct_sample_shader.py` 重新生成。
+- 签名 HAP SHA-256：`e84d2a3bd527f605223bf9ee198d026fc2db83d99760b6cb11ee2fdf96ec60d2`。MatePad Mini 首轮与后续连续 20 轮全部 `PASS`；连续运行的 20 个子进程 PID 各不相同，共 160/160 帧 GPU 取样与 CPU 交叉校验通过。每轮 6 次导入、2 次缓存命中、8 次 GPU 取样；父进程 fd 始终为 42，RSS 在 114560–115536 KiB 间。结果见 [20 轮 JSON](evidence/direct-d2-sample-runs.ndjson)。同包 D0 Create、D1、D2 WSI 和原 D2 import 均 `PASS`，fd 为 42（[回归 JSON](evidence/direct-d2-sample-regression.ndjson)）。
+- 本探针证明跨进程 BufferQueue 图像内容可被 App 侧 Vulkan shader 实际读取，也验证了本设备上这组 foreign queue family / layout barrier 能正常运行。它仍在读取前用 CPU `poll` 等 acquire fence，提交后用 CPU 等 Vulkan fence，再用 `ReleaseNativeWindowBuffer(..., -1)` 释放；也仍有 36 字节诊断读回。**GPU semaphore fence 导入/导出、向独立 XComponent 合成、无逐帧 CPU 等待的 60 FPS 路径尚未实现和验收。**
 
 ## 关键的未知事实
 

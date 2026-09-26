@@ -1,4 +1,5 @@
 #include "direct_buffer_import_probe.h"
+#include "direct_sample_spv.h"
 
 #include <native_buffer/native_buffer.h>
 
@@ -9,8 +10,20 @@ namespace winehua::direct {
 
 DirectBufferImportProbe::~DirectBufferImportProbe()
 {
+    if (device_) vkDeviceWaitIdle(device_);
     ClearCache();
-    if (device_) vkDestroyDevice(device_, nullptr);
+    if (device_) {
+        if (fence_) vkDestroyFence(device_, fence_, nullptr);
+        if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
+        if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
+        if (pipelineLayout_) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+        if (descriptorPool_) vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
+        if (descriptorLayout_) vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
+        if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
+        if (readback_) vkDestroyBuffer(device_, readback_, nullptr);
+        if (readbackMemory_) vkFreeMemory(device_, readbackMemory_, nullptr);
+        vkDestroyDevice(device_, nullptr);
+    }
     if (instance_) vkDestroyInstance(instance_, nullptr);
 }
 
@@ -73,7 +86,9 @@ bool DirectBufferImportProbe::Initialize()
     vkGetPhysicalDeviceQueueFamilyProperties(physical_, &familyCount, families);
     uint32_t family = UINT32_MAX;
     for (uint32_t i = 0; i < familyCount; ++i) {
-        if (families[i].queueCount && (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        if (families[i].queueCount &&
+            (families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
+                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
             family = i;
             break;
         }
@@ -95,6 +110,125 @@ bool DirectBufferImportProbe::Initialize()
     deviceInfo.ppEnabledExtensionNames = extensions;
     result = vkCreateDevice(physical_, &deviceInfo, nullptr, &device_);
     if (result != VK_SUCCESS) return Fail("import_device", result);
+    queueFamily_ = family;
+    vkGetDeviceQueue(device_, family, 0, &queue_);
+    if (!queue_) return Fail("sample_queue", VK_ERROR_INITIALIZATION_FAILED);
+    return true;
+}
+
+bool DirectBufferImportProbe::InitializeSampler()
+{
+    VkResult result;
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = 9 * sizeof(uint32_t);
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    result = vkCreateBuffer(device_, &bufferInfo, nullptr, &readback_);
+    if (result != VK_SUCCESS) return Fail("sample_buffer", result);
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_, readback_, &requirements);
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(physical_, &memoryProperties);
+    uint32_t memoryType = UINT32_MAX;
+    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+            (memoryProperties.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memoryType = i;
+            break;
+        }
+    }
+    if (memoryType == UINT32_MAX)
+        return Fail("sample_host_memory_type", VK_ERROR_FEATURE_NOT_PRESENT);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = memoryType;
+    result = vkAllocateMemory(device_, &allocation, nullptr, &readbackMemory_);
+    if (result != VK_SUCCESS) return Fail("sample_allocate", result);
+    result = vkBindBufferMemory(device_, readback_, readbackMemory_, 0);
+    if (result != VK_SUCCESS) return Fail("sample_bind", result);
+
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.maxLod = 0.0f;
+    result = vkCreateSampler(device_, &samplerInfo, nullptr, &sampler_);
+    if (result != VK_SUCCESS) return Fail("sample_sampler", result);
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    result = vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &descriptorLayout_);
+    if (result != VK_SUCCESS) return Fail("sample_descriptor_layout", result);
+    VkDescriptorPoolSize poolSizes[2] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+    };
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    result = vkCreateDescriptorPool(device_, &poolInfo, nullptr, &descriptorPool_);
+    if (result != VK_SUCCESS) return Fail("sample_descriptor_pool", result);
+    VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    setInfo.descriptorPool = descriptorPool_;
+    setInfo.descriptorSetCount = 1;
+    setInfo.pSetLayouts = &descriptorLayout_;
+    result = vkAllocateDescriptorSets(device_, &setInfo, &descriptorSet_);
+    if (result != VK_SUCCESS) return Fail("sample_descriptor_set", result);
+    VkPushConstantRange sizeRange{};
+    sizeRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    sizeRange.size = sizeof(VkExtent2D);
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorLayout_;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &sizeRange;
+    result = vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &pipelineLayout_);
+    if (result != VK_SUCCESS) return Fail("sample_pipeline_layout", result);
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    moduleInfo.codeSize = sizeof(kDirectSampleSpv);
+    moduleInfo.pCode = kDirectSampleSpv;
+    result = vkCreateShaderModule(device_, &moduleInfo, nullptr, &module);
+    if (result != VK_SUCCESS) return Fail("sample_shader_module", result);
+    VkPipelineShaderStageCreateInfo shaderStage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    shaderStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shaderStage.module = module;
+    shaderStage.pName = "main";
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pipelineInfo.stage = shaderStage;
+    pipelineInfo.layout = pipelineLayout_;
+    result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_);
+    vkDestroyShaderModule(device_, module, nullptr);
+    if (result != VK_SUCCESS) return Fail("sample_pipeline", result);
+    VkCommandPoolCreateInfo commandPoolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    commandPoolInfo.queueFamilyIndex = queueFamily_;
+    result = vkCreateCommandPool(device_, &commandPoolInfo, nullptr, &commandPool_);
+    if (result != VK_SUCCESS) return Fail("sample_command_pool", result);
+    VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    commandInfo.commandPool = commandPool_;
+    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandInfo.commandBufferCount = 1;
+    result = vkAllocateCommandBuffers(device_, &commandInfo, &command_);
+    if (result != VK_SUCCESS) return Fail("sample_command_buffer", result);
+    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    result = vkCreateFence(device_, &fenceInfo, nullptr, &fence_);
+    if (result != VK_SUCCESS) return Fail("sample_fence", result);
     return true;
 }
 
@@ -193,6 +327,111 @@ bool DirectBufferImportProbe::Import(OH_NativeBuffer* buffer, int32_t width, int
     cache_.emplace(sequence, entry);
     ++imports_;
     stage_ = "imported";
+    error_ = VK_SUCCESS;
+    return true;
+}
+
+bool DirectBufferImportProbe::Sample(OH_NativeBuffer* buffer, int32_t width,
+                                     int32_t height, int32_t frame)
+{
+    if (!buffer || width <= 0 || height <= 0 || frame < 0)
+        return Fail("sample_input", VK_ERROR_INITIALIZATION_FAILED);
+    const auto found = cache_.find(OH_NativeBuffer_GetSeqNum(buffer));
+    if (found == cache_.end() || found->second.buffer != buffer)
+        return Fail("sample_not_imported", VK_ERROR_INITIALIZATION_FAILED);
+    if (!pipeline_ && !InitializeSampler()) return false;
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.sampler = sampler_;
+    imageInfo.imageView = found->second.view;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = readback_;
+    bufferInfo.range = 9 * sizeof(uint32_t);
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descriptorSet_;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &imageInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descriptorSet_;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+
+    VkResult result = vkResetCommandBuffer(command_, 0);
+    if (result != VK_SUCCESS) return Fail("sample_command_reset", result);
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    result = vkBeginCommandBuffer(command_, &beginInfo);
+    if (result != VK_SUCCESS) return Fail("sample_command_begin", result);
+    VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    imageBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
+    imageBarrier.dstQueueFamilyIndex = queueFamily_;
+    imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    imageBarrier.image = found->second.image;
+    imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageBarrier.subresourceRange.levelCount = 1;
+    imageBarrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(command_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &imageBarrier);
+    vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+    vkCmdBindDescriptorSets(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout_,
+                            0, 1, &descriptorSet_, 0, nullptr);
+    const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    vkCmdPushConstants(command_, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(extent), &extent);
+    vkCmdDispatch(command_, 1, 1, 1);
+
+    imageBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    imageBarrier.srcQueueFamilyIndex = queueFamily_;
+    imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
+    imageBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    imageBarrier.dstAccessMask = 0;
+    vkCmdPipelineBarrier(command_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &imageBarrier);
+    VkBufferMemoryBarrier readbackBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    readbackBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    readbackBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.buffer = readback_;
+    readbackBarrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(command_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &readbackBarrier,
+                         0, nullptr);
+    result = vkEndCommandBuffer(command_);
+    if (result != VK_SUCCESS) return Fail("sample_command_end", result);
+    result = vkResetFences(device_, 1, &fence_);
+    if (result != VK_SUCCESS) return Fail("sample_fence_reset", result);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command_;
+    result = vkQueueSubmit(queue_, 1, &submit, fence_);
+    if (result != VK_SUCCESS) return Fail("sample_submit", result);
+    result = vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+    if (result != VK_SUCCESS) return Fail("sample_wait", result);
+    void* mapped = nullptr;
+    result = vkMapMemory(device_, readbackMemory_, 0, 9 * sizeof(uint32_t), 0, &mapped);
+    if (result != VK_SUCCESS) return Fail("sample_map", result);
+    const uint32_t expected = 0xffa55a00u | static_cast<uint8_t>(frame * 31 + 7);
+    bool matches = true;
+    for (uint32_t i = 0; i < 9; ++i) {
+        if (static_cast<const uint32_t*>(mapped)[i] != expected) matches = false;
+    }
+    vkUnmapMemory(device_, readbackMemory_);
+    if (!matches) return Fail("gpu_sample_mismatch", VK_ERROR_UNKNOWN);
+    ++samples_;
+    stage_ = "sampled";
     error_ = VK_SUCCESS;
     return true;
 }
