@@ -173,12 +173,32 @@ def reject_unreachable_env(context: str, env: dict) -> None:
                 f"; Wine 日志看 hilog 的 WineChild-stderr tag")
 
 
+# native 契约（wine_exe.cpp/wine_env.cpp）只认完整档位值，其余值被静默丢弃、
+# 引擎回落到无档位 env —— 表现为"该档 DLL 在位却不可用"。在这里拦死。
+D3D_BACKEND_VALUES = {"wined3d", "dxvk_legacy", "dxvk_modern_2_6", "vkd3d_limited_500k"}
+DXVK_BACKEND_VALUES = {"dxvk_legacy", "dxvk_modern_2_6"}
+
+
+def reject_bad_backend(context: str, backend: dict) -> None:
+    d3d = backend.get("d3d")
+    if d3d and d3d not in D3D_BACKEND_VALUES:
+        die(f"{context}: backend.d3d=\"{d3d}\" 不是契约值 —— "
+            f"合法值 {sorted(D3D_BACKEND_VALUES)}（不带档位后缀的 \"dxvk\" 会被"
+            f"native 静默丢弃）")
+    dxvk = backend.get("dxvk")
+    if dxvk and dxvk not in DXVK_BACKEND_VALUES:
+        die(f"{context}: backend.dxvk=\"{dxvk}\" 不是契约值 —— "
+            f"合法值 {sorted(DXVK_BACKEND_VALUES)}")
+
+
 def load_suite(path: Path, cases: dict) -> tuple:
     body = json.loads(path.read_text())
     name = body["name"]
     entries = []
     for inst in body.get("tests", []):
         reject_unreachable_env(path.name, inst.get("env"))
+        if inst.get("backend"):
+            reject_bad_backend(f"{path.name}:{inst.get('id', inst['case'])}", inst["backend"])
         case_id = inst["case"]
         if case_id not in cases:
             die(f"{path.name}: unknown case {case_id}")
@@ -578,8 +598,12 @@ def build_job(args: argparse.Namespace) -> dict:
         reject_unreachable_env("--env", overrides)
         params["env"] = overrides
     if args.d3d:
+        if args.d3d not in D3D_BACKEND_VALUES:
+            die(f"--d3d \"{args.d3d}\" 不是契约值 —— 合法值 {sorted(D3D_BACKEND_VALUES)}")
         params["d3dBackend"] = args.d3d
     if args.dxvk:
+        if args.dxvk not in DXVK_BACKEND_VALUES:
+            die(f"--dxvk \"{args.dxvk}\" 不是契约值 —— 合法值 {sorted(DXVK_BACKEND_VALUES)}")
         params["dxvkBackend"] = args.dxvk
     if args.seconds is not None:
         params["seconds"] = args.seconds
@@ -1030,8 +1054,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="内联测试定义 JSON 文件（临时用例；exe 须已在 C:\\smoke）")
     run.add_argument("--env", action="append", default=[],
                      help="KEY=VALUE 覆盖选中测试的 env（可重复）")
-    run.add_argument("--d3d", default="", help="覆盖 d3d 后端（如 dxvk_modern_2_6）")
-    run.add_argument("--dxvk", default="", help="覆盖 dxvk 后端")
+    run.add_argument("--d3d", default="", help="覆盖 d3d 后端（契约值: wined3d/dxvk_legacy/dxvk_modern_2_6/vkd3d_limited_500k）")
+    run.add_argument("--dxvk", default="", help="覆盖 dxvk 后端（契约值: dxvk_legacy/dxvk_modern_2_6）")
     run.add_argument("--seconds", type=int, default=None)
     run.add_argument("--timeout-ms", type=int, default=None, dest="timeout_ms")
     run.add_argument("--archive-root",

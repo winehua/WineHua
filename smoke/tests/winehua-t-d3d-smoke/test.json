@@ -1,6 +1,6 @@
 {
   "id": "winehua-t-d3d-smoke",
-  "title": "D3D语义守卫（d3d9离屏读回+Reset、d3d10链守卫）",
+  "title": "D3D10链守卫（档位env注入+D3D10CreateDevice；box64下d3d10.dll初始化崩溃，定性红哨兵）",
   "exe": "winehua_t_d3d_smoke.exe",
   "arch": [
     "x64",

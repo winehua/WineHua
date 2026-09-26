@@ -371,9 +371,10 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
         return joined;
     }();
     OH_LOG_INFO(LOG_APP,
-                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu [%{public}s]",
+                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu [%{public}s] "
+                "d3d=%{public}s dxvk=%{public}s",
                 options.windowsExePath.c_str(), options.argv.size(), options.environment.size(),
-                envFallback.c_str());
+                envFallback.c_str(), options.d3dBackend.c_str(), options.dxvkBackend.c_str());
 
     const pid_t pid = SpawnWineProgram(options);
     WineProcessEntry entry;

@@ -835,8 +835,7 @@
         "x86"
       ],
       "backend": {
-        "d3d": "dxvk",
-        "dxvk": "legacy"
+        "d3d": "dxvk_legacy"
       },
       "env": {},
       "seconds": 20,

@@ -392,13 +392,18 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
   wrap 链守卫，红警2 依赖线）
 
 **d3d_smoke — D3D10 链守卫** ｜ P4 ｜ 手段 R
-- 行为：D3D10CreateDevice（动态加载）设备创建+状态往返
-- 现状（2026-09-26 定性，保持 FAIL）：dxvk legacy 档设备创建 E_FAIL——DXVK
-  1.10.3 的 d3d10/d3d10_1/d3d10core 已随载荷打包（wine/dxvk/legacy/ 产物在位）
-  但未启用（prefix system32 仍是 builtin d3d10，256KB vs DXVK 2.5MB 可辨），
-  启用链缺 d3d10 覆盖；wined3d 档下 builtin d3d10 同样 E_FAIL。治本=DXVK
-  档启用链纳入 d3d10 三件套（与 d3d11/dxgi 同路径）
-- 失败特征：设备创建断=d3d10 链缺失/未启用（D3D10 程序在两档均不可用）
+- 行为：档位 env 注入守卫（WINEHUA_D3D_BACKEND/WINEDLLOVERRIDES 真实到达
+  guest）+ D3D10CreateDevice（动态加载）设备创建+状态往返
+- 现状（2026-09-26 修正定性，保持 FAIL）：dxvk_legacy 档 env 注入完整、
+  d3d10 三件套在位且 WINEDLLDIRn 搜索配置正确，LoadLibrary 仍失败——box64
+  执行 d3d10.dll 初始化确定性 SIGSEGV（固定偏移 +0x1af9，访问 0x7f00000040
+  prot=0；保守 dynarec 参数 SAFEFLAGS=2/BIGBLOCK=0 不可绕过），同链路
+  d3d11/dxgi 正常（dxvk-legacy-x86 PASS）。属 box64 平台缺口，红转绿依赖
+  box64 侧修复。早期「启用链缺失」定性被本轮实测推翻（当时套件条目档位写
+  了非契约短格式 "dxvk"，native 静默丢弃导致无档位 env——已修，smoke.py
+  build 现对非法档位值报错拦截）
+- 失败特征：d3d-env-injected 断=测试设施档位注入断；dll-load 断（env 正
+  常时）=box64 执行缺口
 
 **d3d9_offscreen — D3D9 离屏渲染读回 + 交换链 Reset** ｜ P4 ｜ 手段 R+P
 - 行为：d3d9 窗口化设备：已知色清屏+纯色三角形→GetRenderTargetData 离屏
@@ -406,8 +411,10 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
   崩溃类回归哨兵）
 - 现状（2026-09-26 定性，读回断言保持 FAIL）：设备创建/清屏/绘制/读回链路
   全部走通（早期 d3d9.dll 加载挂死为环境性现象，拆分独立用例后未再复现），
-  但 GetRenderTargetData 读回内容与清屏色不符（整幅恒定杂色 0xff476378）
-  ——wined3d 档 RT 读回内容错，游戏内截图/镜面类功能依赖
+  但 GetRenderTargetData 读回内容与清屏色不符（整幅恒定杂色 0xff476378）。
+  档位钉 wined3d = 产品真实执行链：DXVK 的 d3d9.dll 从未被启用（产品
+  WINEDLLOVERRIDES 无 d3d9=n，dxvk_legacy 档实测读回失败形态一致），D3D9
+  一律 builtin+wined3d。游戏内截图/镜面类功能依赖
 - 失败特征：读回内容错=RT 回读链断（与收敛项②同层）
 
 ## 4. 实现规范

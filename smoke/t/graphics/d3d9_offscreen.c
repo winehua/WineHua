@@ -1,10 +1,13 @@
 /* winehua_t_d3d9_offscreen — D3D9 离屏渲染读回 + 交换链 Reset（P4，手段 R+P）。
  * 判定规格见 docs/engineering/testing-programs.md §3.20。
  * 失败特征：读回空/错=d3d9 渲染语义断；Reset 断=交换链重建链。
- * 现状（2026-09-26 定性）：本程序在 smoke 虚拟桌面会话卡死于
- * LoadLibraryA("d3d9.dll")（wined3d/dxvk 档均可复现，stderr 无任何输出，
- * 与 ddraw.dll 同为 wined3d 依赖却可加载——缺口独立成谜），整段挂起由
- * timeout 判 FAIL；d3d10 链守卫拆至 t-d3d-smoke 独立运行。
+ * 档位钉 wined3d = 产品真实执行链：DXVK 的 d3d9.dll 从未被启用（产品
+ * WINEDLLOVERRIDES 无 d3d9=n），D3D9 一律 builtin+wined3d。2026-09-26
+ * 在 dxvk_legacy 档验证过读回失败形态一致（同一 builtin 链），档位无关。
+ * 当前定性：设备创建/清屏/绘制/GetRenderTargetData/Reset 全链 API 通过，
+ * 仅读回内容为恒定杂色 0xff476378——wined3d 在 virpipe 上 RT→系统内存
+ * 拷贝内容不达（游戏内截图/串流镜面类依赖），收敛项②同层，红转绿=该层
+ * 收敛验收。
  */
 #define COBJMACROS
 #include "../common/winehua_t_check.h"
