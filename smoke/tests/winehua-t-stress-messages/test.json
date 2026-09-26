@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-stress-messages",
+  "title": "消息洪泛（2万条投递全量处理比对）",
+  "exe": "winehua_t_stress_messages.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/msg/stress_messages.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

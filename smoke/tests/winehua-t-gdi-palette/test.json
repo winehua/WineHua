@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-gdi-palette",
+  "title": "调色板翻译（8位DIB已知索引色读回）",
+  "exe": "winehua_t_gdi_palette.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/gdi/gdi_palette.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lgdi32"
+    ]
+  }
+}

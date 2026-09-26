@@ -356,7 +356,7 @@
 
 ## 4. 实现规范
 
-1. **共用头**：`smoke/t/common/winehua_t_check.h`（待建，P0 首个交付）—— `T_CHECK(name, expr, fmt, ...)` 累积 checks、`T_METRIC(key,val)`、`T_SKIP(reason)`、退出统一写 result JSON（格式对齐 result-json 判定器）。
+1. **共用头**：`smoke/t/common/winehua_t_check.h`（已交付）—— `T_CHECK(name, expr, fmt, ...)` 累积 checks、`T_METRIC(key,val)`、`T_SKIP(reason)`、退出统一写 result JSON（格式对齐 result-json 判定器）。
 2. **入口**：复用 `winehua_smoke_protocol.h`（`--automation/--result/--test-id/--expect`）。
 3. **构建**：`smoke/tests/<id>/test.json` 声明 `build.sources/cflags/libs`（模板 `win32-driver`）；`-O2 -s`，保留 console；x64+x86 必出。
 4. **C 模式注入**：test.json 新增 `inject` 字段声明注入脚本（host 侧 uitest 通道）；程序 `--automation` 进入等待+自检状态。
@@ -369,9 +369,9 @@
 | 批次 | 内容 | 数量 | 状态 |
 |---|---|---|---|
 | P0 | check.h + msg_basic、win_basic、fs_drives、fs_io、reg_basic、env_vars、proc_spawn、mem_virtual、clip_basic | 9+设施 | **已实现；2026-09-26 于 192.168.1.5/1.6 双设备 18/18 全绿**（报告 `build/automation-logs/win32-p0-verification-report.md`，归档 `win32-r20260926-034047`/`-034127`；套件 `smoke/suites/win32.json`） |
-| P1 | win_zorder/minimize/maximize/fullscreen/owned/layered、msg_order、input_mouse/keyboard、gdi_primitives/text、screen_bitblt、clip_cross、seh、dll_load、e2e_click/resize、sync_kernel、filemap、shell_path | 19 | 待实现 |
-| P2 | win_child、msg_thread、input_relative/capture/wheel、gdi_bitmap、screen_enum、clip_formats、proc_pipe、crt、time、net_tcp、e2e_drag/menu、stress_windows、shell_dialogs、resource、console | 17 | 待实现 |
-| P3 | gdi_palette、fs_watch、thread_tls、mem_heap、com_basic、stress_messages、mutex_atom、shell_link、mm_timer | 9 | 待实现 |
+| P1 | win_zorder/minimize/maximize/fullscreen/owned/layered、msg_order、input_mouse/keyboard、gdi_primitives/text、screen_bitblt、clip_cross、seh、dll_load、e2e_click/resize、sync_kernel、filemap、shell_path | 19 | 已完成（2026-09-26） |
+| P2 | win_child、msg_thread、input_relative/capture/wheel、gdi_bitmap、screen_enum、clip_formats、proc_pipe、crt、time、net_tcp、e2e_drag/menu、stress_windows、shell_dialogs、resource、console | 17 | 已完成（2026-09-26） |
+| P3 | gdi_palette、fs_watch、thread_tls、mem_heap、com_basic、stress_messages、mutex_atom、shell_link、mm_timer | 9 | 已完成（2026-09-26，双架构全绿） |
 
 ## 6. 与既有资产的边界
 

@@ -1,0 +1,24 @@
+{
+  "id": "winehua-t-shell-link",
+  "title": "快捷方式（IShellLink保存解析往返）",
+  "exe": "winehua_t_shell_link.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/shell/shell_link.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lole32",
+      "-lshell32",
+      "-luuid"
+    ]
+  }
+}

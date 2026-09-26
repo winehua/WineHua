@@ -1,0 +1,20 @@
+{
+  "id": "winehua-t-fs-watch",
+  "title": "目录变更通知（ReadDirectoryChangesW建删文件）",
+  "exe": "winehua_t_fs_watch.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/fs/fs_watch.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}
