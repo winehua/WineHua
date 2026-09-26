@@ -1,0 +1,23 @@
+{
+  "id": "ddraw-surface",
+  "title": "DirectDraw表面协作（Blt往返+调色板+Flip）",
+  "exe": "ddraw_surface.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/gdi/ddraw_surface.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-ldxguid"
+    ]
+  }
+}

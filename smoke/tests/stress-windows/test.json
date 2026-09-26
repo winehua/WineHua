@@ -1,0 +1,22 @@
+{
+  "id": "stress-windows",
+  "title": "窗口账目（建100窗/EnumWindows/销毁归零）",
+  "exe": "stress_windows.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/win/stress_windows.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

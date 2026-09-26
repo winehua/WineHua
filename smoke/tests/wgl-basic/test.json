@@ -1,0 +1,25 @@
+{
+  "id": "wgl-basic",
+  "title": "WGL上下文链（像素格式/上下文全绿；glReadPixels读回不确定=virpipe回读缺口，定性红）",
+  "exe": "wgl_basic.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/graphics/wgl_basic.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32",
+      "-lopengl32",
+      "-lglu32"
+    ]
+  }
+}

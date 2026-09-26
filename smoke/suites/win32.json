@@ -1,10 +1,10 @@
 {
   "name": "win32",
-  "title": "Win32 基础功能回归线（P0 九例 + P1 十六例）",
+  "title": "Win32 基础功能回归线",
   "tests": [
     {
-      "case": "winehua-t-msg-basic",
-      "id": "t-msg-basic",
+      "case": "msg-basic",
+      "id": "msg-basic",
       "arch": [
         "x64",
         "x86"
@@ -17,8 +17,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-win-basic",
-      "id": "t-win-basic",
+      "case": "win-basic",
+      "id": "win-basic",
       "arch": [
         "x64",
         "x86"
@@ -31,8 +31,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-fs-drives",
-      "id": "t-fs-drives",
+      "case": "fs-drives",
+      "id": "fs-drives",
       "arch": [
         "x64",
         "x86"
@@ -45,8 +45,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-fs-io",
-      "id": "t-fs-io",
+      "case": "fs-io",
+      "id": "fs-io",
       "arch": [
         "x64",
         "x86"
@@ -59,8 +59,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-reg-basic",
-      "id": "t-reg-basic",
+      "case": "reg-basic",
+      "id": "reg-basic",
       "arch": [
         "x64",
         "x86"
@@ -73,8 +73,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-env-vars",
-      "id": "t-env-vars",
+      "case": "env-vars",
+      "id": "env-vars",
       "arch": [
         "x64",
         "x86"
@@ -89,8 +89,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-proc-spawn",
-      "id": "t-proc-spawn",
+      "case": "proc-spawn",
+      "id": "proc-spawn",
       "arch": [
         "x64",
         "x86"
@@ -103,8 +103,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-mem-virtual",
-      "id": "t-mem-virtual",
+      "case": "mem-virtual",
+      "id": "mem-virtual",
       "arch": [
         "x64",
         "x86"
@@ -117,8 +117,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-clip-basic",
-      "id": "t-clip-basic",
+      "case": "clip-basic",
+      "id": "clip-basic",
       "arch": [
         "x64",
         "x86"
@@ -131,8 +131,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-win-minimize",
-      "id": "t-win-minimize",
+      "case": "win-minimize",
+      "id": "win-minimize",
       "arch": [
         "x64",
         "x86"
@@ -145,8 +145,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-win-maximize",
-      "id": "t-win-maximize",
+      "case": "win-maximize",
+      "id": "win-maximize",
       "arch": [
         "x64",
         "x86"
@@ -159,8 +159,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-win-owned",
-      "id": "t-win-owned",
+      "case": "win-owned",
+      "id": "win-owned",
       "arch": [
         "x64",
         "x86"
@@ -173,8 +173,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-win-zorder",
-      "id": "t-win-zorder",
+      "case": "win-zorder",
+      "id": "win-zorder",
       "arch": [
         "x64",
         "x86"
@@ -187,8 +187,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-win-fullscreen",
-      "id": "t-win-fullscreen",
+      "case": "win-fullscreen",
+      "id": "win-fullscreen",
       "arch": [
         "x64",
         "x86"
@@ -201,8 +201,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-win-layered",
-      "id": "t-win-layered",
+      "case": "win-layered",
+      "id": "win-layered",
       "arch": [
         "x64",
         "x86"
@@ -215,8 +215,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-msg-order",
-      "id": "t-msg-order",
+      "case": "msg-order",
+      "id": "msg-order",
       "arch": [
         "x64",
         "x86"
@@ -229,8 +229,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-gdi-primitives",
-      "id": "t-gdi-primitives",
+      "case": "gdi-primitives",
+      "id": "gdi-primitives",
       "arch": [
         "x64",
         "x86"
@@ -243,8 +243,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-gdi-text",
-      "id": "t-gdi-text",
+      "case": "gdi-text",
+      "id": "gdi-text",
       "arch": [
         "x64",
         "x86"
@@ -257,8 +257,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-screen-bitblt",
-      "id": "t-screen-bitblt",
+      "case": "screen-bitblt",
+      "id": "screen-bitblt",
       "arch": [
         "x64",
         "x86"
@@ -271,8 +271,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-seh",
-      "id": "t-seh",
+      "case": "seh",
+      "id": "seh",
       "arch": [
         "x64",
         "x86"
@@ -285,8 +285,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-dll-load",
-      "id": "t-dll-load",
+      "case": "dll-load",
+      "id": "dll-load",
       "arch": [
         "x64",
         "x86"
@@ -299,8 +299,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-sync-kernel",
-      "id": "t-sync-kernel",
+      "case": "sync-kernel",
+      "id": "sync-kernel",
       "arch": [
         "x64",
         "x86"
@@ -313,8 +313,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-filemap",
-      "id": "t-filemap",
+      "case": "filemap",
+      "id": "filemap",
       "arch": [
         "x64",
         "x86"
@@ -327,8 +327,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-clip-cross",
-      "id": "t-clip-cross",
+      "case": "clip-cross",
+      "id": "clip-cross",
       "arch": [
         "x64",
         "x86"
@@ -341,8 +341,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-shell-path",
-      "id": "t-shell-path",
+      "case": "shell-path",
+      "id": "shell-path",
       "arch": [
         "x64",
         "x86"
@@ -355,8 +355,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-input-mouse",
-      "id": "t-input-mouse",
+      "case": "input-mouse",
+      "id": "input-mouse",
       "arch": [
         "x64",
         "x86"
@@ -370,8 +370,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-input-keyboard",
-      "id": "t-input-keyboard",
+      "case": "input-keyboard",
+      "id": "input-keyboard",
       "arch": [
         "x64",
         "x86"
@@ -385,8 +385,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-e2e-click",
-      "id": "t-e2e-click",
+      "case": "e2e-click",
+      "id": "e2e-click",
       "arch": [
         "x64",
         "x86"
@@ -400,8 +400,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-win-child",
-      "id": "t-win-child",
+      "case": "win-child",
+      "id": "win-child",
       "arch": [
         "x64",
         "x86"
@@ -414,8 +414,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-msg-thread",
-      "id": "t-msg-thread",
+      "case": "msg-thread",
+      "id": "msg-thread",
       "arch": [
         "x64",
         "x86"
@@ -428,8 +428,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-screen-enum",
-      "id": "t-screen-enum",
+      "case": "screen-enum",
+      "id": "screen-enum",
       "arch": [
         "x64",
         "x86"
@@ -442,8 +442,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-clip-formats",
-      "id": "t-clip-formats",
+      "case": "clip-formats",
+      "id": "clip-formats",
       "arch": [
         "x64",
         "x86"
@@ -456,8 +456,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-e2e-resize",
-      "id": "t-e2e-resize",
+      "case": "e2e-resize",
+      "id": "e2e-resize",
       "arch": [
         "x64",
         "x86"
@@ -470,8 +470,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-stress-windows",
-      "id": "t-stress-windows",
+      "case": "stress-windows",
+      "id": "stress-windows",
       "arch": [
         "x64",
         "x86"
@@ -484,8 +484,8 @@
       "timeoutMs": 150000
     },
     {
-      "case": "winehua-t-gdi-bitmap",
-      "id": "t-gdi-bitmap",
+      "case": "gdi-bitmap",
+      "id": "gdi-bitmap",
       "arch": [
         "x64",
         "x86"
@@ -498,8 +498,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-proc-pipe",
-      "id": "t-proc-pipe",
+      "case": "proc-pipe",
+      "id": "proc-pipe",
       "arch": [
         "x64",
         "x86"
@@ -512,8 +512,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-crt",
-      "id": "t-crt",
+      "case": "crt",
+      "id": "crt",
       "arch": [
         "x64",
         "x86"
@@ -526,8 +526,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-time",
-      "id": "t-time",
+      "case": "time",
+      "id": "time",
       "arch": [
         "x64",
         "x86"
@@ -540,8 +540,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-net-tcp",
-      "id": "t-net-tcp",
+      "case": "net-tcp",
+      "id": "net-tcp",
       "arch": [
         "x64",
         "x86"
@@ -554,8 +554,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-resource",
-      "id": "t-resource",
+      "case": "resource",
+      "id": "resource",
       "arch": [
         "x64",
         "x86"
@@ -568,8 +568,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-input-wheel",
-      "id": "t-input-wheel",
+      "case": "input-wheel",
+      "id": "input-wheel",
       "arch": [
         "x64",
         "x86"
@@ -583,8 +583,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-input-capture",
-      "id": "t-input-capture",
+      "case": "input-capture",
+      "id": "input-capture",
       "arch": [
         "x64",
         "x86"
@@ -598,8 +598,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-input-relative",
-      "id": "t-input-relative",
+      "case": "input-relative",
+      "id": "input-relative",
       "arch": [
         "x64",
         "x86"
@@ -613,8 +613,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-e2e-drag",
-      "id": "t-e2e-drag",
+      "case": "e2e-drag",
+      "id": "e2e-drag",
       "arch": [
         "x64",
         "x86"
@@ -628,8 +628,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-e2e-menu",
-      "id": "t-e2e-menu",
+      "case": "e2e-menu",
+      "id": "e2e-menu",
       "arch": [
         "x64",
         "x86"
@@ -643,8 +643,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-shell-dialogs",
-      "id": "t-shell-dialogs",
+      "case": "shell-dialogs",
+      "id": "shell-dialogs",
       "arch": [
         "x64",
         "x86"
@@ -658,8 +658,8 @@
       "timeoutMs": 240000
     },
     {
-      "case": "winehua-t-gdi-palette",
-      "id": "t-gdi-palette",
+      "case": "gdi-palette",
+      "id": "gdi-palette",
       "arch": [
         "x64",
         "x86"
@@ -672,8 +672,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-fs-watch",
-      "id": "t-fs-watch",
+      "case": "fs-watch",
+      "id": "fs-watch",
       "arch": [
         "x64",
         "x86"
@@ -686,8 +686,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-thread-tls",
-      "id": "t-thread-tls",
+      "case": "thread-tls",
+      "id": "thread-tls",
       "arch": [
         "x64",
         "x86"
@@ -700,8 +700,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-mem-heap",
-      "id": "t-mem-heap",
+      "case": "mem-heap",
+      "id": "mem-heap",
       "arch": [
         "x64",
         "x86"
@@ -714,8 +714,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-com-basic",
-      "id": "t-com-basic",
+      "case": "com-basic",
+      "id": "com-basic",
       "arch": [
         "x64",
         "x86"
@@ -728,8 +728,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-stress-messages",
-      "id": "t-stress-messages",
+      "case": "stress-messages",
+      "id": "stress-messages",
       "arch": [
         "x64",
         "x86"
@@ -742,8 +742,8 @@
       "timeoutMs": 150000
     },
     {
-      "case": "winehua-t-mutex-atom",
-      "id": "t-mutex-atom",
+      "case": "mutex-atom",
+      "id": "mutex-atom",
       "arch": [
         "x64",
         "x86"
@@ -756,8 +756,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-shell-link",
-      "id": "t-shell-link",
+      "case": "shell-link",
+      "id": "shell-link",
       "arch": [
         "x64",
         "x86"
@@ -770,8 +770,8 @@
       "timeoutMs": 60000
     },
     {
-      "case": "winehua-t-mm-timer",
-      "id": "t-mm-timer",
+      "case": "mm-timer",
+      "id": "mm-timer",
       "arch": [
         "x64",
         "x86"
@@ -784,8 +784,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-dinput-keyboard",
-      "id": "t-dinput-keyboard",
+      "case": "dinput-keyboard",
+      "id": "dinput-keyboard",
       "arch": [
         "x64",
         "x86"
@@ -799,8 +799,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-dinput-mouse",
-      "id": "t-dinput-mouse",
+      "case": "dinput-mouse",
+      "id": "dinput-mouse",
       "arch": [
         "x64",
         "x86"
@@ -814,8 +814,8 @@
       "timeoutMs": 180000
     },
     {
-      "case": "winehua-t-ddraw-surface",
-      "id": "t-ddraw-surface",
+      "case": "ddraw-surface",
+      "id": "ddraw-surface",
       "arch": [
         "x64",
         "x86"
@@ -828,8 +828,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-d3d-smoke",
-      "id": "t-d3d-smoke",
+      "case": "d3d-smoke",
+      "id": "d3d-smoke",
       "arch": [
         "x64",
         "x86"
@@ -842,8 +842,8 @@
       "timeoutMs": 120000
     },
     {
-      "case": "winehua-t-d3d9-offscreen",
-      "id": "t-d3d9-offscreen",
+      "case": "d3d9-offscreen",
+      "id": "d3d9-offscreen",
       "arch": [
         "x64",
         "x86"
@@ -856,8 +856,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-gdi-leak",
-      "id": "t-gdi-leak",
+      "case": "gdi-leak",
+      "id": "gdi-leak",
       "arch": [
         "x64",
         "x86"
@@ -870,8 +870,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-font-enum",
-      "id": "t-font-enum",
+      "case": "font-enum",
+      "id": "font-enum",
       "arch": [
         "x64",
         "x86"
@@ -884,8 +884,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-reg-wow64",
-      "id": "t-reg-wow64",
+      "case": "reg-wow64",
+      "id": "reg-wow64",
       "arch": [
         "x64",
         "x86"
@@ -898,8 +898,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-toolhelp-snapshot",
-      "id": "t-toolhelp-snapshot",
+      "case": "toolhelp-snapshot",
+      "id": "toolhelp-snapshot",
       "arch": [
         "x64",
         "x86"
@@ -912,8 +912,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-wgl-basic",
-      "id": "t-wgl-basic",
+      "case": "wgl-basic",
+      "id": "wgl-basic",
       "arch": [
         "x64",
         "x86"
@@ -926,8 +926,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-audio-waveout",
-      "id": "t-audio-waveout",
+      "case": "audio-waveout",
+      "id": "audio-waveout",
       "arch": [
         "x64",
         "x86"
@@ -940,8 +940,8 @@
       "timeoutMs": 90000
     },
     {
-      "case": "winehua-t-net-https",
-      "id": "t-net-https",
+      "case": "net-https",
+      "id": "net-https",
       "arch": [
         "x64",
         "x86"
