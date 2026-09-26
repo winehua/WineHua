@@ -30,6 +30,7 @@ int main(int argc, char **argv)
     HWAVEOUT out = NULL;
     WAVEFORMATEX fmt;
     WAVEHDR hdr;
+    MMTIME mm0, mm1;
     MMRESULT res;
     DWORD pos0, pos1, vol_saved = 0;
     int vol_roundtrip;
@@ -77,13 +78,19 @@ int main(int argc, char **argv)
     res = waveOutWrite(out, &hdr, sizeof(hdr));
     t_check("waveout-write", res == MMSYSERR_NOERROR, "res=%u", (unsigned)res);
 
-    /* 播放进度回传：0.5s 素材，等 ~250ms 后位置应单调前进且为 ms 量级 */
+    /* 播放进度回传：0.5s 素材，等 ~250ms 后位置应单调前进且为 ms 量级。
+     * 参数是 MMTIME（wType=TIME_MS 指定毫秒格式）；传 DWORD* 会因
+     * uSize < sizeof(MMTIME) 被 winmm 拒绝且不写缓冲（恒 0 假象）。 */
     Sleep(50);
-    pos0 = 0;
-    waveOutGetPosition(out, &pos0, sizeof(pos0));
+    memset(&mm0, 0, sizeof(mm0));
+    memset(&mm1, 0, sizeof(mm1));
+    mm0.wType = TIME_MS;
+    waveOutGetPosition(out, &mm0, sizeof(mm0));
     Sleep(200);
-    pos1 = 0;
-    waveOutGetPosition(out, &pos1, sizeof(pos1));
+    mm1.wType = TIME_MS;
+    waveOutGetPosition(out, &mm1, sizeof(mm1));
+    pos0 = mm0.wType == TIME_MS ? mm0.u.ms : 0;
+    pos1 = mm1.wType == TIME_MS ? mm1.u.ms : 0;
     t_check("position-advances", pos1 > pos0,
             "pos %lu -> %lu ms", (unsigned long)pos0, (unsigned long)pos1);
     t_check("position-ms-scale", pos1 >= 100 && pos1 <= 2000,

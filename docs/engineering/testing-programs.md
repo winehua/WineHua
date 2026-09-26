@@ -496,9 +496,11 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
 - 通过：全链 MMSYSERR_NOERROR；GetPosition 单调前进且量级合理（ms 级）；
   Close 后句柄失效
 - 现状（2026-09-26 定性，GetPosition 保持 FAIL）：open/prepare/write/播放
-  完成回调（WHDR_DONE）/unprepare/close 全链绿，但 waveOutGetPosition 恒 0
-  ——宿主播放进度不回传，声音能出但位置查询不可用（视频/游戏按进度同步
-  的场景依赖）
+  完成回调（WHDR_DONE）/unprepare/close 全链绿；宿主侧 IPC 实锤正常拉流
+  （close 时 readCalls=14/readFrames=12000≈272ms 音频被消费），但
+  waveOutGetPosition 恒 0——winmm 的 played_frames 未推进（渲染循环
+  GetBuffer/ReleaseBuffer 未执行），盲区在 mmdevapi↔驱动的 padding
+  上报。声音能出但位置查询不可用（视频/游戏按进度同步的场景依赖）
 - 失败特征：Open 断=音频设备枚举/fd 引导链断（audio bootstrap fd 的 guest
   侧观测面）；GetPosition 恒 0=宿主进度回传断（声音播放卡顿/无声类定性）
 - 说明：guest 侧 API 语义面；宿主混音/渲染链由既有 audio 套件守，不重复
