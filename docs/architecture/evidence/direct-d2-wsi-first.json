@@ -1,0 +1,1 @@
+{"gate":"D2-WSI","status":"PASS","stage":"complete","pid":4215,"framesPassed":6,"width":96,"height":48,"queueSize":3,"lastBufferSeq":2,"launchCode":0,"callbackCode":0,"killCode":-1,"abortMode":false,"gpuMode":true,"parentFdCount":42,"parentRssKiB":91216,"pixelCheck":true}

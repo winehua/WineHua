@@ -57,7 +57,13 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - JSON 的 `nativeCapabilities` 位含义：bit 0 `VK_KHR_surface`、1 `VK_OHOS_surface`、2 `VK_KHR_swapchain`、3 `VK_OHOS_external_memory`、4 `VK_KHR_external_semaphore_fd`、5 `VK_KHR_external_memory_fd`、6 `VK_EXT_queue_family_foreign`、7 `SYNC_FD` exportable、8 `SYNC_FD` importable、9 RGBA8 OHOS NativeBuffer image importable；`deviceExtensionCount` 是所选物理设备报告的扩展总数。任一位缺失都要结合后续实际路径判定，不能把头文件声明或单个位直接当作 D2 成败。
 - USB MatePad Mini `5KPBB25818203996` 上，签名 HAP `2f7344c4ae93dbc1e000064aa7ed002bfeeb836f4ef49b4c3d3e25aaafb270a9` 的 Create NCP 结果为 `PASS`、Maleoon 910、`/system/lib64/libvulkan.so`、像素校验通过。设备扩展数 68，`nativeCapabilities=1023 (0x3ff)`，上述 10 位全有；父进程 fd 为 42。原始 JSON 在 [D2 能力结果](evidence/direct-d2-capability-2f73.json)。此结果证明可开展 WSI、import 和 `SYNC_FD` 实验，但未证明实际 BufferQueue 图像可导入、跨进程 fence 无死锁、或合成性能达标。
 - 首次 `aa start` 曾因设备锁屏返回 `10106102`，手动解锁后同包运行成功。ArkTS `hilog.info` 的十六进制格式在设备上把后续字段错位显示，已改为十进制；上述数值以原始 JSON 和 NCP 日志为准。
-- 修正日志格式后重构建并覆盖安装的最终签名 HAP SHA-256 为 `3fcf359caff3d4adc729765453f71ca50a182faadc5407e7ebfb38cfe2fd5ed4`。同包 D0 Create 再次 `PASS`、`nativeCapabilities=1023`、扩展数 68、fd 42（[最终 JSON](evidence/direct-d2-capability-3fcf.json)）；D1 常规六帧回归也 `PASS`、fd 42。下一步用该设备实测 WSI swapchain 向跨进程 ConsumerSurface 写入，再验证 NativeBuffer 实际 import/cache 与 GPU fence。
+- 修正日志格式后重构建并覆盖安装的能力预检 HAP SHA-256 为 `3fcf359caff3d4adc729765453f71ca50a182faadc5407e7ebfb38cfe2fd5ed4`。同包 D0 Create 再次 `PASS`、`nativeCapabilities=1023`、扩展数 68、fd 42（[最终 JSON](evidence/direct-d2-capability-3fcf.json)）；D1 常规六帧回归也 `PASS`、fd 42。
+
+## D2 WSI producer 独立探针（2026-09-26）
+
+- `winehua.mode=direct-gpu-surface-probe` 使用独立 `libdirect_gpu_surface_probe.so`，沿用 D1 的 ConsumerSurface、IPC parcel 和 finish 所有权顺序。子进程创建系统 Vulkan instance/device/OHOS surface/swapchain，对 swapchain 图像用 GPU clear 提交六帧；父进程逐帧 Acquire、等待 acquire fence、CPU map 校验 RGBA 图案，然后 Release。前三帧 64×64，后三帧 96×48；resize 时子进程重建 swapchain。此模式逐帧提交和消费，尚未测并发队列深度。
+- 签名 HAP SHA-256：`3006c674d4a93b06ce1f28613a7a83c1765f414dc31f1c462e13928c5e3e0250`。MatePad Mini 连续 101 次启动，101/101 `PASS`、606/606 帧正确、101 个不同子进程 PID、无残留子进程；父进程 fd 全程 42。RSS 首次 91216 KiB、预热后最高 96136 KiB、末次 93508 KiB，没有随轮次持续增加。[父进程逐次日志](evidence/direct-d2-wsi-101-parents.log)、[子进程逐帧日志](evidence/direct-d2-wsi-101-children.log)、[首轮结果](evidence/direct-d2-wsi-first.json)、[末轮结果](evidence/direct-d2-wsi-101-final.json)。同包 D0 Create 与 D1 常规六帧回归均 `PASS`、fd 42。
+- 此探针证明 Create NCP 的系统 Vulkan WSI 能向跨进程 BufferQueue 写入可辨像素并处理 resize。父进程仍用 CPU map 检查，子进程每帧等待提交 fence；这不是 GPU import、零拷贝合成、GPU acquire/release fence 或 60 FPS 性能验收。下一步在父进程把收到的 NativeBuffer 按 `(bufferSeq,generation)` 导入 Vulkan、缓存 image/memory/view，并在独立 XComponent 上完成 GPU 合成，之后再移除逐帧 CPU 等待。
 
 ## 关键的未知事实
 

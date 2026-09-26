@@ -43,6 +43,7 @@ struct SurfaceWork {
     bool callbackReceived = false;
     bool pixelCheck = false;
     bool abortMode = false;
+    bool gpuMode = false;
     std::atomic<int32_t> frameSignals{0};
     char stage[64] = "pending";
 };
@@ -255,7 +256,9 @@ void ExecuteSurfaceProbe(napi_env, void* data)
     OHNativeWindow* producer = nullptr;
     bool listenerSet = false;
     do {
-        const uint64_t usage = NATIVEBUFFER_USAGE_CPU_READ | NATIVEBUFFER_USAGE_CPU_WRITE;
+        const uint64_t usage = work.gpuMode
+            ? NATIVEBUFFER_USAGE_CPU_READ | NATIVEBUFFER_USAGE_HW_RENDER | NATIVEBUFFER_USAGE_HW_TEXTURE
+            : NATIVEBUFFER_USAGE_CPU_READ | NATIVEBUFFER_USAGE_CPU_WRITE;
         if (OH_ConsumerSurface_SetDefaultSize(image, 64, 64) != 0 ||
             OH_ConsumerSurface_SetDefaultUsage(image, usage) != 0) {
             Fail(work, "consumer_configure");
@@ -289,7 +292,8 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             g_activeWork = &work;
         }
         work.launchCode = OH_Ability_CreateNativeChildProcess(
-            "libdirect_surface_probe.so", OnChildStarted);
+            work.gpuMode ? "libdirect_gpu_surface_probe.so" : "libdirect_surface_probe.so",
+            OnChildStarted);
         if (work.launchCode != NCP_NO_ERROR) {
             std::lock_guard<std::mutex> lock(g_callbackMutex);
             g_activeWork = nullptr;
@@ -321,6 +325,19 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             if (group == 1 && OH_ConsumerSurface_SetDefaultSize(image, width, height) != 0) {
                 Fail(work, "consumer_resize");
                 break;
+            }
+            if (work.gpuMode) {
+                bool groupPassed = true;
+                for (int32_t frame = firstFrame; frame < firstFrame + 3; ++frame) {
+                    if (!SendFrame(work, producer, frame, width, height) ||
+                        !ConsumeFrame(work, image, frame, width, height)) {
+                        groupPassed = false;
+                        break;
+                    }
+                    ++work.framesPassed;
+                }
+                if (!groupPassed) break;
+                continue;
             }
             if (!SendFrame(work, producer, firstFrame, width, height)) break;
             const uint32_t firstSeq = work.lastBufferSeq;
@@ -386,7 +403,7 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", "D1");
+    setString("gate", work->gpuMode ? "D2-WSI" : "D1");
     setString("status", work->pixelCheck ? "PASS" : "FAIL");
     setString("stage", work->stage);
     setInt("pid", work->childPid);
@@ -401,6 +418,9 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     napi_value abortMode;
     napi_get_boolean(env, work->abortMode, &abortMode);
     napi_set_named_property(env, object, "abortMode", abortMode);
+    napi_value gpuMode;
+    napi_get_boolean(env, work->gpuMode, &gpuMode);
+    napi_set_named_property(env, object, "gpuMode", gpuMode);
     setInt("parentFdCount", CountOpenFds());
     setInt("parentRssKiB", ReadRssKiB());
     napi_value check;
@@ -413,7 +433,7 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
 
 } // namespace
 
-napi_value QueueSurfaceProbe(napi_env env, bool abortMode)
+napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode)
 {
     auto* work = new (std::nothrow) SurfaceWork();
     if (!work) {
@@ -421,6 +441,7 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode)
         return nullptr;
     }
     work->abortMode = abortMode;
+    work->gpuMode = gpuMode;
     napi_value promise;
     if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
         delete work;
@@ -442,12 +463,17 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode)
 
 napi_value RunSurfaceProbe(napi_env env, napi_callback_info)
 {
-    return QueueSurfaceProbe(env, false);
+    return QueueSurfaceProbe(env, false, false);
 }
 
 napi_value RunSurfaceAbortProbe(napi_env env, napi_callback_info)
 {
-    return QueueSurfaceProbe(env, true);
+    return QueueSurfaceProbe(env, true, false);
+}
+
+napi_value RunGpuSurfaceProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true);
 }
 
 } // namespace winehua::direct

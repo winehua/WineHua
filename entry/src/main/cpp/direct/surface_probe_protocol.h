@@ -30,6 +30,14 @@ enum SurfaceProbeStage : int32_t {
     kSurfaceMap = 7,
     kSurfaceUnmap = 8,
     kSurfaceFlush = 9,
+    kGpuInstance = 10,
+    kGpuSurface = 11,
+    kGpuDevice = 12,
+    kGpuSwapchain = 13,
+    kGpuAcquire = 14,
+    kGpuRecord = 15,
+    kGpuSubmit = 16,
+    kGpuPresent = 17,
 };
 
 } // namespace winehua::direct

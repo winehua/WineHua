@@ -165,6 +165,19 @@ target_link_libraries(direct_surface_probe PUBLIC
     libnative_buffer.so
 )
 
+# D2 WSI experiment: a separate Vulkan producer NCP uses the D1 parcel contract.
+add_library(direct_gpu_surface_probe SHARED
+    direct/direct_gpu_surface_probe_child.cpp
+)
+target_link_libraries(direct_gpu_surface_probe PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    libipc_capi.so
+    libnative_window.so
+    libnative_buffer.so
+    libvulkan.so
+)
+
 add_library(virgl_child SHARED
     graphics/virgl_child.cpp
     graphics/virgl_host_config.cpp
