@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-reg-wow64",
+  "title": "WOW64注册表视图（HKLM重定向绿；HKCU视图隔离不生效=wine缺口，定性红）",
+  "exe": "winehua_t_reg_wow64.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/reg/reg_wow64.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-ladvapi32"
+    ]
+  }
+}

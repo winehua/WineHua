@@ -27,12 +27,12 @@
 | **L**·日志模式 | wine_stderr/hilog 特征行 → 归档后 log 判定器 | log 判定器（待建，辅助） |
 | **D**·宿主协议摘要 | 程序声明期望的宿主行为，宿主协议摘要落盘比对 | protocol-log 判定器（待建） |
 
-## 3. 详细用例清单（21 域 59 例）
+## 3. 详细用例清单（22 域 67 例）
 
-体系总览：**内核对象与内存（5）→ 文件/注册表/环境（5）→ 进程线程（3）→ 窗口管理（8）→ 消息调度（3）→ 输入（5）→ GDI 绘制（4）→ 屏幕（2）→ Shell/对话框/资源（4）→ 剪贴板（3）→ 网络（1）→ 异常运行时（2）→ 时钟定时（2）→ DLL/COM（2）→ 控制台（1）→ e2e 交互（4）→ 压力（2）→ 游戏与图形栈（4）**。每个域对应 Win32 API 的一个功能面，用例是该面内的可自检切片；游戏与图形栈域测 API 语义面与离屏渲染读回，渲染出图能力由现有图形烟测守（登记见 §3.20）。
+体系总览：**内核对象与内存（5）→ 文件/注册表/环境（6）→ 进程线程（4）→ 窗口管理（8）→ 消息调度（3）→ 输入（5）→ GDI 绘制（6）→ 屏幕（2）→ Shell/对话框/资源（4）→ 剪贴板（3）→ 网络（1）→ 异常运行时（2）→ 时钟定时（2）→ DLL/COM（2）→ 控制台（1）→ e2e 交互（4）→ 压力（2）→ 游戏与图形栈（6）→ 音频（1）**。每个域对应 Win32 API 的一个功能面，用例是该面内的可自检切片；游戏与图形栈域测 API 语义面与离屏渲染读回，渲染出图能力由现有图形烟测守（登记见 §3.20）。
 
 规格四要素：**行为**（程序做什么）/**手段**（检测手段组合）/**通过**（无问题判据）/
-**失败特征**（有问题时暴露什么——即该用例守着哪条链）。批次：P0/P1/P2/P3/P4。
+**失败特征**（有问题时暴露什么——即该用例守着哪条链）。批次：P0/P1/P2/P3/P4/P5。
 
 ### 3.1 窗口管理
 
@@ -144,6 +144,24 @@
 - 通过：读回 RGB==调色板映射值
 - 失败特征：错色=调色板翻译断（老游戏类依赖）
 
+**gdi_leak — GDI/USER 句柄守恒** ｜ P5 ｜ 手段 R
+- 行为：GetGuiResources 记基线→循环 N 次（CreateFont/CreateBrush/CreatePen/
+  CreateBitmap/RegisterClass/CreateWindow→全部 Delete/Unregister/Destroy）→
+  再取计数比对；断言循环中段峰值不超 GDI 对象上限的合理份额
+- 通过：循环后计数==基线（零泄漏）；失败特征标注泄漏者类别（Bitmap/Brush/Pen
+  分组各自独立计数）
+- 失败特征：净增=GDI 对象表泄漏（长跑游戏 10000 上限触顶的早期哨兵——应用
+  报"内存不足"而物理内存充足的那类问题）
+
+**font_enum — 字体枚举与 CJK 存在性** ｜ P5 ｜ 手段 R
+- 行为：EnumFontFamiliesEx（ANSI+SHIFTJIS+GB2312_CHARSET 各一轮）枚举系统
+  字族→查 "Microsoft YaHei"/"SimSun"/任意 CJK 字族存在性；GetGlyphOutline
+  对 U+4E2D 取轮廓验证非空
+- 通过：枚举回调≥1 次且字族名非空；CJK 字族存在于 GB2312 轮；中文轮廓
+  点数>0
+- 失败特征：CJK 缺失=字体扫描/locale 链断（wine-lang-musl-locale 的用户侧
+  观测面）；枚举空=gdi 枚举断
+
 ### 3.5 屏幕与显示
 
 **screen_bitblt — 跨窗口读屏** ｜ P1 ｜ 手段 P（收敛项②验收载荷）
@@ -202,6 +220,18 @@
 - 通过：注入键存在且值精确；遍历无重复键
 - 失败特征：键缺失/错值=__env 通道/AppendStableDxvkEnv 注入链断（env 管线的可执行判据）
 
+**reg_wow64 — WOW64 注册表视图** ｜ P5 ｜ 手段 R
+- 行为：KEY_WOW64_64KEY/KEY_WOW64_32KEY 两视图分别写同名值→交叉读取；查
+  Wow6432Node 重定向（HKLM\Software\TestKey 在 32 视图写入后从 64 视图应见
+  Wow6432Node\TestKey）；IsWow64Process 自检
+- 通过：64/32 视图互不串扰；重定向路径符合预期；清理后无残留
+- 现状（2026-09-26 定性，保持 FAIL）：HKLM 的 Wow6432Node 重定向在位
+  （redirect 组全绿），但 HKCU 的视图隔离不生效——KEY_WOW64_64KEY 打开
+  成功后读写仍落进程默认视图，x86/x64 guest 表现一致（后写覆盖先写）。
+  32 位安装器写 HKCU 落错视图的此类问题在当前平台存在
+- 失败特征：串扰=视图重定向断（32 位安装器写 HKLM 落错位置的此类问题）；
+  64 视图不可达=wow64 桥缺
+
 ### 3.9 进程与线程
 
 **proc_spawn — 子进程链** ｜ P0 ｜ 手段 R
@@ -218,6 +248,17 @@
 - 行为：TlsAlloc/4 线程各写各读+CriticalSection 并发计数+DllMain 附着记录
 - 通过：TLS 互不串扰；计数最终值==操作数（无丢增）
 - 失败特征：串扰/丢增=线程局部存储或锁语义断（box64/宿主线程栈回归）
+
+**toolhelp_snapshot — 进程/模块快照** ｜ P5 ｜ 手段 R
+- 行为：CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS) 枚举进程找自身 exe 名
+  与 explorer；TH32CS_SNAPMODULE 枚举本进程模块断言 ntdll/kernel32/user32
+  在列；Process32First/Next、Module32First/Next 遍历完整性（计数与重入）
+- 通过：快照内找到自身（含启动时序重试）；模块表含核心 DLL；两次快照计数
+  稳定（±3 内）
+- 现状（2026-09-26 定性，x64 保持 FAIL）：x64 guest 快照有自身但
+  th32ParentProcessID 恒 0——父 PID 字段缺失（x86 正常，反作弊/安装器查
+  父进程类依赖）；枚举能力面双架构全绿
+- 失败特征：枚举空/丢项=server 进程表枚举链断（任务管理器/反作弊类依赖）
 
 ### 3.10 内存
 
@@ -417,6 +458,41 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
   一律 builtin+wined3d。游戏内截图/镜面类功能依赖
 - 失败特征：读回内容错=RT 回读链断（与收敛项②同层）
 
+**wgl_basic — WGL 上下文链** ｜ P5 ｜ 手段 R+P
+- 行为：LoadLibraryA("opengl32.dll") 动态加载→GetDC→ChoosePixelFormat/
+  SetPixelFormat（PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER，
+  32bpp）→wglCreateContext/wglMakeCurrent→glGetString(GL_VERSION|GL_RENDERER)
+  落 metric→离屏 glClear 已知色+glReadPixels 读回→wglMakeCurrent(NULL)→
+  wglDeleteContext→SwapBuffers 往返
+- 通过：像素格式往返一致；MakeCurrent 成功；renderer 字串非空（virpipe/
+  llvmpipe 可辨）；readback 确定性（同帧两次读回一致且非全零）
+- 现状（2026-09-26 定性，readback 保持 FAIL）：像素格式/上下文链全绿
+  （GL 2.1 Mesa 25.0.1 virgl Maleoon 920 可辨），但 glReadPixels 读回内容
+  不确定——同帧 glFinish 后两次读回值不同且跨轮各异，virpipe 回读缓冲
+  与 host 命令流不同步（与 venus first-dispatch 读回竞态同族）。老 OpenGL
+  游戏的软读回/截屏类依赖
+- 失败特征：ChoosePixelFormat 断=wgl 像素格式链；MakeCurrent 断=GL 上下文
+  绑定链（老 OpenGL 游戏/ddraw 直绘依赖线，与 virgl host 链互补——这里测
+  guest 语义面）；readback 不确定=回读同步缺口
+- 档位：wined3d（wgl 走系统 GL，与 D3D 档位无关，任意档一致性由本用例
+  钉死）
+
+### 3.21 音频
+
+**audio_waveout — waveOut API 语义** ｜ P5 ｜ 手段 R
+- 行为：waveOutGetNumDevs≥1→waveOutOpen（WAVE_FORMAT_PCM 44100/16/立体声）
+  →waveOutPrepareHeader（注入 0.5s 正弦波）→waveOutWrite→waveOutGetPosition
+  前进→waveOutUnprepareHeader→waveOutClose；waveOutGetVolume 往返
+- 通过：全链 MMSYSERR_NOERROR；GetPosition 单调前进且量级合理（ms 级）；
+  Close 后句柄失效
+- 现状（2026-09-26 定性，GetPosition 保持 FAIL）：open/prepare/write/播放
+  完成回调（WHDR_DONE）/unprepare/close 全链绿，但 waveOutGetPosition 恒 0
+  ——宿主播放进度不回传，声音能出但位置查询不可用（视频/游戏按进度同步
+  的场景依赖）
+- 失败特征：Open 断=音频设备枚举/fd 引导链断（audio bootstrap fd 的 guest
+  侧观测面）；GetPosition 恒 0=宿主进度回传断（声音播放卡顿/无声类定性）
+- 说明：guest 侧 API 语义面；宿主混音/渲染链由既有 audio 套件守，不重复
+
 ## 4. 实现规范
 
 1. **共用头**：`smoke/t/common/winehua_t_check.h`（已交付）—— `T_CHECK(name, expr, fmt, ...)` 累积 checks、`T_METRIC(key,val)`、`T_SKIP(reason)`、退出统一写 result JSON（格式对齐 result-json 判定器）。
@@ -436,6 +512,27 @@ import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual�
 | P2 | win_child、msg_thread、input_relative/capture/wheel、gdi_bitmap、screen_enum、clip_formats、proc_pipe、crt、time、net_tcp、e2e_drag/menu、stress_windows、shell_dialogs、resource、console | 17 | 已完成（2026-09-26） |
 | P3 | gdi_palette、fs_watch、thread_tls、mem_heap、com_basic、stress_messages、mutex_atom、shell_link、mm_timer | 9 | 已完成（2026-09-26，双架构全绿） |
 | P4 | dinput_keyboard、dinput_mouse、ddraw_surface（含调色板/Flip 组）、d3d_smoke（d3d10 链守卫）、d3d9_offscreen（离屏读回+Reset） | 5 程序 | 已完成（2026-09-26，3 全绿 + 2 定性红） |
+| P5 | gdi_leak、font_enum、reg_wow64、toolhelp_snapshot、wgl_basic、audio_waveout | 6 程序 | 已完成（2026-09-26，3 全绿 + 3 定性红；报告 `build/automation-logs/win32-p5-verification-report.md`） |
+
+### 5.1 待宿主能力的设计储备（不占批次编号）
+
+- **引擎生命周期 e2e**：冷启→热重启→多 prefix 切换→会话状态清零断言。
+  历史事故最密集链（wineboot boot 事件挂死、热重启 renderer 泄漏、桌面
+  root 尺寸污染均在此链），但判定对象是宿主进程/会话状态，超出 PE 程序
+  自检能力——依赖 smoke 宿主编排（force-stop 循环 + 沙箱状态读取 + 跨
+  会话 result 聚合）。实现入口：smoke.py 新增 `lifecycle` 套件类型。
+- **IME 组合中态**：组合窗口位置/候选窗/commit 时机。依赖 C 型注入扩展
+  ime 动作的中态序列（现有 ime 动作只覆盖整段提交）。
+- **WM_DROPFILES 真实投递**：RegisterDragDrop/IDropTarget 注册往返可并入
+  shell 域（R 级），真实文件拖入需要宿主拖放桥（当前剪贴板通道均缺，
+  收敛项③落地前先红合法）。
+- **wininet HTTPS 哨兵**：违反「不引网络」禁令；回环 TLS 需要自签证书
+  链进载荷，工程量与收益不匹配——留待 gnutls 链（wine-https-schannel）
+  出现回归再加。
+- **受管窗口判据语义**：owner/tool window/1×1 辅助窗的判据在 winewayland
+  宿主层（is_window_managed），guest 可观测面只有窗口样式——由 win_owned
+  与 win_zorder 覆盖 guest 侧，宿主判据的回归由宿主层日志（MW-RAISE 等）
+  承担，不建 PE 用例。
 
 ## 6. 与既有资产的边界
 

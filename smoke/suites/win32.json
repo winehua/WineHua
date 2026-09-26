@@ -854,6 +854,90 @@
       "env": {},
       "seconds": 20,
       "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-gdi-leak",
+      "id": "t-gdi-leak",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-font-enum",
+      "id": "t-font-enum",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-reg-wow64",
+      "id": "t-reg-wow64",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-toolhelp-snapshot",
+      "id": "t-toolhelp-snapshot",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-wgl-basic",
+      "id": "t-wgl-basic",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-audio-waveout",
+      "id": "t-audio-waveout",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 90000
     }
   ]
 }
