@@ -106,15 +106,19 @@ SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
 SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
-# Linux/WSL 保留原路径；macOS/HarmonyOS 使用项目内扫描器和当前工具链的 pkg-config。
+# Linux/WSL 使用系统 pkg-config；macOS/HarmonyOS 使用当前工具链的 pkg-config。
+# wayland-scanner 各平台统一放项目内 build/host-tools（build_wayland.sh 现场编译），不写系统目录。
 if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-$(command -v pkg-config || true)}"
-    export WAYLAND_SCANNER="${WAYLAND_SCANNER:-$BUILD_DIR/host-tools/bin/wayland-scanner}"
     [ -n "${PKG_CONFIG_BIN:-}" ] || err "pkg-config not found in PATH; run: brew install pkg-config"
 else
     export PKG_CONFIG_BIN="${PKG_CONFIG_BIN:-/usr/bin/pkg-config}"
-    export WAYLAND_SCANNER="${WAYLAND_SCANNER:-/usr/local/bin/wayland-scanner}"
 fi
+export WAYLAND_SCANNER="${WAYLAND_SCANNER:-$BUILD_DIR/host-tools/bin/wayland-scanner}"
+# host 工具入 PATH: 供 command -v 探测 (如 guest_gfx 生成 PKG_CONFIG_LIBDIR 隔离用的 .pc)
+export PATH="$BUILD_DIR/host-tools/bin:$PATH"
+# host 工具的 .pc 加入 native pkg-config 搜索路径 (meson 的 native 依赖查找只认 PKG_CONFIG_PATH)
+export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 # HAP 项目
 WINEHUA="$ROOT"
@@ -190,7 +194,10 @@ meson_build() {
     # 源码时间戳可能来自 NFS (比本地时钟快), touch 到本地时间
     find "$src" -type f -exec touch {} + 2>/dev/null || true
     mkdir -p "$build"
-    meson setup "$build" "$src" --cross-file "$cross" "$@"
+    # meson 的 native 依赖查找 (如 wayland-scanner) 用 build.pkg_config_path 覆盖环境变量,
+    # 必须在此显式给项目内 host-tools 路径, 否则构建机 .pc 永远搜不到
+    meson setup "$build" "$src" --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" "$@"
 }
 
 # 日志

@@ -13,29 +13,23 @@ SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
     if [ -x "$SCANNER" ]; then return 0; fi
     log "--- 编译 wayland-scanner (native) ---"
-    if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
-        local host_build="$BUILD_DIR/wayland_native"
-        local host_prefix="$BUILD_DIR/host-tools"
-        mkdir -p "$host_build" "$host_prefix"
-        meson setup "$host_build" "$WL_SRC" \
-            --prefix "$host_prefix" \
-            -Dlibraries=false -Dscanner=true -Ddtd_validation=false \
-            -Ddocumentation=false -Dtests=false --buildtype=release
-        ninja -C "$host_build"
-        ninja -C "$host_build" install
+    # 装到项目内 build/host-tools，与 env.sh 的 WAYLAND_SCANNER 默认值一致；不写 /usr/local，无需 root
+    local host_build="$BUILD_DIR/wayland_native"
+    local host_prefix="$BUILD_DIR/host-tools"
+    mkdir -p "$host_build" "$host_prefix"
+    meson setup "$host_build" "$WL_SRC" \
+        --prefix "$host_prefix" \
+        --libdir lib \
+        -Dlibraries=false -Dscanner=true -Ddtd_validation=false \
+        -Ddocumentation=false -Dtests=false --buildtype=release
+    ninja -C "$host_build"
+    ninja -C "$host_build" install
 
-        # 安装时的 strip 操作破坏了 OHOS SDK clang 的自动签名，所以在 HarmonyOS 上需要重新签名才能运行
-        if [ "$HOST_OS" = "HarmonyOS" ]; then
-            "$SCRIPT_DIR/ohos-sign-elf.py" "$host_prefix"
-        fi
-    else
-        mkdir -p /tmp/wayland_native
-        meson setup /tmp/wayland_native "$WL_SRC" \
-            --prefix /usr/local -Ddocumentation=false -Dtests=false --buildtype=release
-        ninja -C /tmp/wayland_native
-        ninja -C /tmp/wayland_native install
+    # 安装时的 strip 操作破坏了 OHOS SDK clang 的自动签名，所以在 HarmonyOS 上需要重新签名才能运行
+    if [ "$HOST_OS" = "HarmonyOS" ]; then
+        "$SCRIPT_DIR/ohos-sign-elf.py" "$host_prefix"
     fi
-    log "wayland-scanner: $(which wayland-scanner)"
+    log "wayland-scanner: $SCANNER"
 }
 
 log "=== 构建 Wayland (x86_64) ==="
@@ -50,10 +44,9 @@ fi
 
 build_scanner
 
-if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
-    export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-    export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
-fi
+# 项目内 host-tools 前缀加入构建期 pkg-config 搜索路径（wayland-scanner 的 native 依赖经此解析）
+export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
 
 mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$SYSROOT_EXT_SHARE"
 mkdir -p "$WL_BUILD"

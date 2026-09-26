@@ -33,6 +33,8 @@ pkg-config = '$PKG_CONFIG_BIN'
 [built-in options]
 c_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-I$ffi_prefix/include']
 c_link_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-fuse-ld=lld', '-L$ffi_prefix/lib']
+# meson 构建机依赖查找 (wayland-scanner 等) 由此选项决定, 环境变量 PKG_CONFIG_PATH 会被它覆盖
+build.pkg_config_path = ['$BUILD_DIR/host-tools/lib/pkgconfig']
 
 [host_machine]
 system = 'linux'

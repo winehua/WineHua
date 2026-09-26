@@ -14,7 +14,7 @@
 | 工具根目录 | `/apps/harmony` | `TOOL_HOME`，`hvigorw`、`ohpm`、`node` 都在它的 `bin` 下 |
 | 交叉编译工具 | `$OHOS_SDK/native/llvm/bin/` | `clang`、`llvm-ar`、`llvm-strip` |
 | SDK 头文件与库 | `$OHOS_SDK/native/sysroot` | 交叉编译用 |
-| 宿主 wayland-scanner | `/usr/local/bin/wayland-scanner` | 预装，或者由依赖构建脚本生成 |
+| 宿主 wayland-scanner | `build/host-tools/bin/wayland-scanner` | 首次构建时自动编译到项目内，无需预装 |
 
 SDK 自带的链接器有个已知的兼容问题（它依赖 `libxml2.so.2`，而新系统里只有更高版本），修法在 [../build/env.md](../build/env.md) 的「libxml2 兼容性修复」一节。
 
