@@ -41,6 +41,8 @@ endif()
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
 add_library(entry SHARED
+    direct/vulkan_probe_launcher.cpp
+    direct/direct_surface_probe_launcher.cpp
     audio/audio_broker.cpp
     audio/audio_ipc_server.cpp
     audio/audio_stream.cpp
@@ -122,6 +124,7 @@ target_link_libraries(entry PUBLIC
     libace_ndk.z.so
     libnative_window.so
     libnative_image.so
+    libnative_buffer.so
     libnative_vsync.so
     libEGL.so
     libGLESv3.so
@@ -138,6 +141,29 @@ add_library(wine_child SHARED
     proc/wine_child.cpp
 )
 target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)
+
+# D0 is an independent native NCP. It resolves the system Vulkan loader with
+# dlopen at runtime and deliberately does not link Wine, Mesa or libvulkan.
+add_library(direct_vulkan_probe SHARED
+    direct/ncp_vulkan_probe.cpp
+)
+target_link_libraries(direct_vulkan_probe PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    libipc_capi.so
+)
+
+# D1 BufferQueue handoff remains isolated from the Wine/VirGL renderer.
+add_library(direct_surface_probe SHARED
+    direct/direct_surface_probe_child.cpp
+)
+target_link_libraries(direct_surface_probe PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    libipc_capi.so
+    libnative_window.so
+    libnative_buffer.so
+)
 
 add_library(virgl_child SHARED
     graphics/virgl_child.cpp

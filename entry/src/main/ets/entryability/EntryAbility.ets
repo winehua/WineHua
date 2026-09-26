@@ -3,7 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
-import { WineEnvService } from '../service/WineEnvService';
+import { WineEnvService, writeTextFile } from '../service/WineEnvService';
 import { SteamHostService } from '../service/SteamHostService';
 import { SteamHostHook } from '../service/SteamHostHook';
 import { ScreenAwake } from '../service/ScreenAwake';
@@ -16,7 +16,95 @@ import testNapi from 'libentry.so';
 
 const DOMAIN = 0x0000;
 
+interface DirectProbeResult {
+  status: string;
+  launchMode: string;
+  stage: string;
+  pid: number;
+  deviceName: string;
+  loaderPath: string;
+  pixelCheck: boolean;
+  parentFdCount: number;
+  parentRssKiB: number;
+}
+
+interface DirectSurfaceProbeResult {
+  status: string;
+  stage: string;
+  pid: number;
+  framesPassed: number;
+  pixelCheck: boolean;
+  killCode: number;
+  parentFdCount: number;
+  parentRssKiB: number;
+}
+
 export default class EntryAbility extends UIAbility {
+  private directProbePending: boolean = false;
+  private directProbeStartMode: boolean = false;
+  private directSurfaceProbeMode: boolean = false;
+  private directSurfaceAbortMode: boolean = false;
+
+  private runDirectProbeIfRequested(): void {
+    if (!this.directProbePending) return;
+    this.directProbePending = false;
+    const outputPath = this.directSurfaceProbeMode ?
+      `${this.context.cacheDir}/${this.directSurfaceAbortMode ? 'direct-surface-abort-probe.json' : 'direct-surface-probe.json'}` :
+      `${this.context.cacheDir}/direct-vulkan-probe.json`;
+    try {
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directSurfaceProbeMode ? 'D1' : 'D0',
+        status: 'RUNNING', startedAt: Date.now() }));
+    } catch (err) {
+      hilog.error(DOMAIN, 'DIRECT-D0', 'cannot prepare result file: %{public}s', JSON.stringify(err));
+    }
+    if (deviceInfo.deviceType === 'phone') {
+      // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directSurfaceProbeMode ? 'D1' : 'D0',
+        status: 'UNSUPPORTED', stage: 'phone_fork_backend' }));
+      return;
+    }
+    if (this.directSurfaceProbeMode) {
+      this.directSurfaceProbeMode = false;
+      const abortMode = this.directSurfaceAbortMode;
+      this.directSurfaceAbortMode = false;
+      this.runDirectSurfaceProbePromise(abortMode ?
+        testNapi.runDirectSurfaceAbortProbe() : testNapi.runDirectSurfaceProbe(), outputPath);
+    } else if (this.directProbeStartMode) {
+      this.directProbeStartMode = false;
+      this.runDirectProbePromise(testNapi.runDirectVulkanProbe(), outputPath);
+    } else {
+      this.runDirectProbePromise(testNapi.runDirectVulkanCreateProbe(), outputPath);
+    }
+  }
+
+  private runDirectSurfaceProbePromise(probe: Promise<DirectSurfaceProbeResult>, outputPath: string): void {
+    probe.then((result: DirectSurfaceProbeResult) => {
+      writeTextFile(outputPath, JSON.stringify(result));
+      hilog.info(DOMAIN, 'DIRECT-D1', 'result=%{public}s stage=%{public}s pid=%{public}d frames=%{public}d pixel=%{public}s fd=%{public}d rssKiB=%{public}d',
+        result.status, result.stage, result.pid, result.framesPassed,
+        result.pixelCheck ? '1' : '0', result.parentFdCount, result.parentRssKiB);
+    }).catch((err: Object) => {
+      writeTextFile(outputPath, JSON.stringify({ gate: 'D1', status: 'FAIL', stage: 'napi_exception',
+        error: JSON.stringify(err) }));
+      hilog.error(DOMAIN, 'DIRECT-D1', 'probe failed: %{public}s', JSON.stringify(err));
+    });
+  }
+
+  private runDirectProbePromise(probe: Promise<DirectProbeResult>, outputPath: string): void {
+    probe.then((result: DirectProbeResult) => {
+      writeTextFile(outputPath, JSON.stringify(result));
+      hilog.info(DOMAIN, 'DIRECT-D0', 'result=%{public}s mode=%{public}s stage=%{public}s pid=%{public}d fd=%{public}d rssKiB=%{public}d path=%{public}s',
+        result.status, result.launchMode, result.stage, result.pid,
+        result.parentFdCount, result.parentRssKiB, outputPath);
+    }).catch((err: Object) => {
+      try {
+        writeTextFile(outputPath, JSON.stringify({ gate: 'D0', status: 'FAIL', stage: 'napi_exception',
+          error: JSON.stringify(err) }));
+      } catch (_) {}
+      hilog.error(DOMAIN, 'DIRECT-D0', 'probe failed: %{public}s', JSON.stringify(err));
+    });
+  }
+
   private defaultDxvkBackend(): string {
     return 'dxvk_legacy';
   }
@@ -32,6 +120,18 @@ export default class EntryAbility extends UIAbility {
   // WineEnvService.updateLaunchRequest 依赖)。
   private publishLaunchRequest(want: Want): void {
     const parameters = want.parameters;
+    if (parameters && (`${parameters['winehua.mode']}` === 'direct-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-probe-create' ||
+      `${parameters['winehua.mode']}` === 'direct-probe-start' ||
+      `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-surface-abort-probe')) {
+      this.directProbePending = true;
+      this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
+      this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-surface-abort-probe';
+      this.directSurfaceAbortMode = `${parameters['winehua.mode']}` === 'direct-surface-abort-probe';
+      return;
+    }
     const value = (key: string, fallback: string): string => {
       if (!parameters || parameters[key] === undefined || parameters[key] === null) return fallback;
       return `${parameters[key]}`;
@@ -160,6 +260,10 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.publishLaunchRequest(want);
+    if (this.directProbePending) {
+      this.runDirectProbeIfRequested();
+      return;
+    }
     WineWindowManager.getInstance().restoreDesktopIfRunning();
     WineEnvService.getInstance().onNewWant();
     // 自动化通道 (运行中会话): winehua.program → 直启该程序
@@ -176,6 +280,16 @@ export default class EntryAbility extends UIAbility {
 
     // 手机走 fork-shim，必须在 WineEnvService.startSession 的首次 NCP 调用前设置。
     testNapi.setPhoneMode(deviceInfo.deviceType === 'phone');
+
+    if (this.directProbePending) {
+      windowStage.loadContent('pages/DirectProbe', (err) => {
+        if (err.code) {
+          hilog.error(DOMAIN, 'DIRECT-D0', 'diagnostic page failed: %{public}s', JSON.stringify(err));
+        }
+        this.runDirectProbeIfRequested();
+      });
+      return;
+    }
 
     // Phone desktop is rendered in a full-window XComponent. Let the system
     // rotate that window with the sensor; its surface callback propagates the

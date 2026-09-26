@@ -19,6 +19,8 @@
 #include "input/text_input.h"
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
+#include "direct/vulkan_probe_launcher.h"
+#include "direct/direct_surface_probe_launcher.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -1205,6 +1207,14 @@ static napi_value Init(napi_env env, napi_value exports) {
     RegisterNcpExitCallback();
 
     napi_property_descriptor desc[] = {
+        {"runDirectVulkanProbe", nullptr, winehua::direct::RunVulkanProbe,
+         nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectVulkanCreateProbe", nullptr, winehua::direct::RunVulkanCreateProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectSurfaceProbe", nullptr, winehua::direct::RunSurfaceProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectSurfaceAbortProbe", nullptr, winehua::direct::RunSurfaceAbortProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startServer",    nullptr, StartServer,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setHostShadowProfile", nullptr, SetHostShadowProfile, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"launchClient",   nullptr, LaunchClient,   nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -1,4 +1,47 @@
 export const startServer: (sockPath: string) => boolean;
+export interface DirectVulkanProbeResult {
+  gate: string;
+  status: string;
+  launchMode: string;
+  stage: string;
+  pid: number;
+  callbackStatus: number;
+  parentFdCount: number;
+  parentRssKiB: number;
+  ncpStatus: number;
+  vkResult: number;
+  loaderVersion: number;
+  requestedApiVersion: number;
+  instanceExtensionCount: number;
+  apiVersion: number;
+  icdEnvironment: string;
+  pixelCheck: boolean;
+  elapsedMs: number;
+  loaderPath: string;
+  deviceName: string;
+}
+export const runDirectVulkanProbe: () => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanCreateProbe: () => Promise<DirectVulkanProbeResult>;
+export interface DirectSurfaceProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  framesPassed: number;
+  width: number;
+  height: number;
+  queueSize: number;
+  lastBufferSeq: number;
+  launchCode: number;
+  callbackCode: number;
+  killCode: number;
+  abortMode: boolean;
+  parentFdCount: number;
+  parentRssKiB: number;
+  pixelCheck: boolean;
+}
+export const runDirectSurfaceProbe: () => Promise<DirectSurfaceProbeResult>;
+export const runDirectSurfaceAbortProbe: () => Promise<DirectSurfaceProbeResult>;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
   homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string,

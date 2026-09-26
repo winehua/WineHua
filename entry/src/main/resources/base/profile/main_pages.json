@@ -4,6 +4,7 @@
     "pages/WineWindow",
     "pages/DesktopWindow",
     "pages/WinePopup",
-    "pages/VirtualDesktop"
+    "pages/VirtualDesktop",
+    "pages/DirectProbe"
   ]
 }
