@@ -291,6 +291,8 @@ void CompleteProbe(napi_env env, napi_status status, void* data)
     SetUint(env, result, "loaderVersion", work->result.loaderVersion);
     SetUint(env, result, "requestedApiVersion", work->result.requestedApiVersion);
     SetUint(env, result, "instanceExtensionCount", work->result.instanceExtensionCount);
+    SetUint(env, result, "deviceExtensionCount", work->result.deviceExtensionCount);
+    SetUint(env, result, "nativeCapabilities", work->result.nativeCapabilities);
     SetUint(env, result, "apiVersion", work->result.apiVersion);
     SetString(env, result, "icdEnvironment", work->result.icdEnvironment);
     SetBool(env, result, "pixelCheck", work->result.pixelCheck != 0);

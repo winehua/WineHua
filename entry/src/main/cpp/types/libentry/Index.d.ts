@@ -13,6 +13,8 @@ export interface DirectVulkanProbeResult {
   loaderVersion: number;
   requestedApiVersion: number;
   instanceExtensionCount: number;
+  deviceExtensionCount: number;
+  nativeCapabilities: number;
   apiVersion: number;
   icdEnvironment: string;
   pixelCheck: boolean;

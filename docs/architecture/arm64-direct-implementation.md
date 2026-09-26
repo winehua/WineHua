@@ -51,6 +51,14 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 当前 D1 签名 HAP SHA-256 是 `2422a6c285049406109c36681d9177ab150da120ef345158c2c32f26e58931f5`。此包交替执行 20 次常规模式与 5 次异常退出模式，25/25 `PASS`、25 个不同子进程 PID；子进程日志合计 130 帧，与 `20×6+5×2` 一致。父进程 fd 全程为 42，RSS 从 95636 KiB 到 95692 KiB，未见持续增长，也无探针子进程残留。逐次日志在 [D1 父进程](evidence/direct-d1-final-2422-parent.log)与 [D1 子进程](evidence/direct-d1-final-2422-child.log)。同包 D0 Create 入口再测为 `PASS`。
 - D1 只证明 CPU 图案的跨进程 BufferQueue 交接和生命周期；resize 由尺寸与逐帧图案校验，尚未接入产品窗口的 generation 身份。Vulkan WSI、NativeBuffer GPU import、fence GPU 同步或零拷贝合成仍属 D2 Gate。Wine、DXVK、Mesa、VirGL 以及产品 XComponent 均未接入 D1 探针。
 
+## D2 设备能力预检（2026-09-26）
+
+- D0 Create 探针的协议升为 v3，在原有离屏像素校验之外，枚举所选物理设备和实例的扩展，查询 `SYNC_FD` external semaphore 的 import/export 特性，以及 RGBA8 `OHOS_NATIVE_BUFFER` sampled image 的 import 特性。探针优先创建设备支持的较高 Vulkan API 版本（1.3→1.0），因为 1.0 实例不暴露核心 1.1 的 external properties 查询。查询本身不启用扩展，也不代替实际 `OH_NativeBuffer` import、GPU fence 或 WSI 测试。
+- JSON 的 `nativeCapabilities` 位含义：bit 0 `VK_KHR_surface`、1 `VK_OHOS_surface`、2 `VK_KHR_swapchain`、3 `VK_OHOS_external_memory`、4 `VK_KHR_external_semaphore_fd`、5 `VK_KHR_external_memory_fd`、6 `VK_EXT_queue_family_foreign`、7 `SYNC_FD` exportable、8 `SYNC_FD` importable、9 RGBA8 OHOS NativeBuffer image importable；`deviceExtensionCount` 是所选物理设备报告的扩展总数。任一位缺失都要结合后续实际路径判定，不能把头文件声明或单个位直接当作 D2 成败。
+- USB MatePad Mini `5KPBB25818203996` 上，签名 HAP `2f7344c4ae93dbc1e000064aa7ed002bfeeb836f4ef49b4c3d3e25aaafb270a9` 的 Create NCP 结果为 `PASS`、Maleoon 910、`/system/lib64/libvulkan.so`、像素校验通过。设备扩展数 68，`nativeCapabilities=1023 (0x3ff)`，上述 10 位全有；父进程 fd 为 42。原始 JSON 在 [D2 能力结果](evidence/direct-d2-capability-2f73.json)。此结果证明可开展 WSI、import 和 `SYNC_FD` 实验，但未证明实际 BufferQueue 图像可导入、跨进程 fence 无死锁、或合成性能达标。
+- 首次 `aa start` 曾因设备锁屏返回 `10106102`，手动解锁后同包运行成功。ArkTS `hilog.info` 的十六进制格式在设备上把后续字段错位显示，已改为十进制；上述数值以原始 JSON 和 NCP 日志为准。
+- 修正日志格式后重构建并覆盖安装的最终签名 HAP SHA-256 为 `3fcf359caff3d4adc729765453f71ca50a182faadc5407e7ebfb38cfe2fd5ed4`。同包 D0 Create 再次 `PASS`、`nativeCapabilities=1023`、扩展数 68、fd 42（[最终 JSON](evidence/direct-d2-capability-3fcf.json)）；D1 常规六帧回归也 `PASS`、fd 42。下一步用该设备实测 WSI swapchain 向跨进程 ConsumerSurface 写入，再验证 NativeBuffer 实际 import/cache 与 GPU fence。
+
 ## 关键的未知事实
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。

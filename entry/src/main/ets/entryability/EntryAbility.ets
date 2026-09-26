@@ -23,6 +23,8 @@ interface DirectProbeResult {
   pid: number;
   deviceName: string;
   loaderPath: string;
+  deviceExtensionCount: number;
+  nativeCapabilities: number;
   pixelCheck: boolean;
   parentFdCount: number;
   parentRssKiB: number;
@@ -93,9 +95,10 @@ export default class EntryAbility extends UIAbility {
   private runDirectProbePromise(probe: Promise<DirectProbeResult>, outputPath: string): void {
     probe.then((result: DirectProbeResult) => {
       writeTextFile(outputPath, JSON.stringify(result));
-      hilog.info(DOMAIN, 'DIRECT-D0', 'result=%{public}s mode=%{public}s stage=%{public}s pid=%{public}d fd=%{public}d rssKiB=%{public}d path=%{public}s',
+      hilog.info(DOMAIN, 'DIRECT-D0', 'result=%{public}s mode=%{public}s stage=%{public}s pid=%{public}d fd=%{public}d rssKiB=%{public}d caps=%{public}d devExt=%{public}d path=%{public}s',
         result.status, result.launchMode, result.stage, result.pid,
-        result.parentFdCount, result.parentRssKiB, outputPath);
+        result.parentFdCount, result.parentRssKiB, result.nativeCapabilities,
+        result.deviceExtensionCount, outputPath);
     }).catch((err: Object) => {
       try {
         writeTextFile(outputPath, JSON.stringify({ gate: 'D0', status: 'FAIL', stage: 'napi_exception',
