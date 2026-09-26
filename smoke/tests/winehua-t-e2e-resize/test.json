@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-e2e-resize",
+  "title": "尺寸链（五组resize，configure回归哨兵）",
+  "exe": "winehua_t_e2e_resize.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/win/e2e_resize.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

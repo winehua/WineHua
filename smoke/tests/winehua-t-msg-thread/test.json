@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-msg-thread",
+  "title": "跨线程消息（SendMessage同步+Post 200条）",
+  "exe": "winehua_t_msg_thread.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/msg/msg_thread.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

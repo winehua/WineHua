@@ -398,6 +398,90 @@
       "inject": true,
       "seconds": 45,
       "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-win-child",
+      "id": "t-win-child",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-msg-thread",
+      "id": "t-msg-thread",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 25,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-screen-enum",
+      "id": "t-screen-enum",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-clip-formats",
+      "id": "t-clip-formats",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-e2e-resize",
+      "id": "t-e2e-resize",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 30,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-stress-windows",
+      "id": "t-stress-windows",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 40,
+      "timeoutMs": 150000
     }
   ]
 }
