@@ -1,0 +1,20 @@
+{
+  "id": "winehua-t-crt",
+  "title": "C运行时（格式化/宽窄转换/堆/qsort）",
+  "exe": "winehua_t_crt.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/rt/crt.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

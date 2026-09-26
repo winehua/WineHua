@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-gdi-bitmap",
+  "title": "DIB布局与BitBlt/StretchBlt",
+  "exe": "winehua_t_gdi_bitmap.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/gdi/gdi_bitmap.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

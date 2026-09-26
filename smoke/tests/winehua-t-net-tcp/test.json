@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-net-tcp",
+  "title": "回环TCP（listener+echo 4KB）",
+  "exe": "winehua_t_net_tcp.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/net/net_tcp.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lws2_32"
+    ]
+  }
+}

@@ -482,6 +482,90 @@
       "env": {},
       "seconds": 40,
       "timeoutMs": 150000
+    },
+    {
+      "case": "winehua-t-gdi-bitmap",
+      "id": "t-gdi-bitmap",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-proc-pipe",
+      "id": "t-proc-pipe",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 30,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-crt",
+      "id": "t-crt",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-time",
+      "id": "t-time",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-net-tcp",
+      "id": "t-net-tcp",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-resource",
+      "id": "t-resource",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
     }
   ]
 }
