@@ -1,0 +1,23 @@
+{
+  "id": "com-basic",
+  "title": "COM基础（CoCreateInstance ShellLink引用计数）",
+  "exe": "com_basic.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/com_basic.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lole32",
+      "-luuid"
+    ]
+  }
+}

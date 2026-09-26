@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WineHua smoke 自动化工具（host 侧）。
 
-设计见 docs/SMOKE_V2_DESIGN.md。
+设计见 docs/engineering/testing-design.md。
 
     python3 automation/smoke.py build [--suite NAME] [--case NAME] [--out DIR]
     python3 automation/smoke.py push
@@ -173,12 +173,32 @@ def reject_unreachable_env(context: str, env: dict) -> None:
                 f"; Wine 日志看 hilog 的 WineChild-stderr tag")
 
 
+# native 契约（wine_exe.cpp/wine_env.cpp）只认完整档位值，其余值被静默丢弃、
+# 引擎回落到无档位 env —— 表现为"该档 DLL 在位却不可用"。在这里拦死。
+D3D_BACKEND_VALUES = {"wined3d", "dxvk_legacy", "dxvk_modern_2_6", "vkd3d_limited_500k"}
+DXVK_BACKEND_VALUES = {"dxvk_legacy", "dxvk_modern_2_6"}
+
+
+def reject_bad_backend(context: str, backend: dict) -> None:
+    d3d = backend.get("d3d")
+    if d3d and d3d not in D3D_BACKEND_VALUES:
+        die(f"{context}: backend.d3d=\"{d3d}\" 不是契约值 —— "
+            f"合法值 {sorted(D3D_BACKEND_VALUES)}（不带档位后缀的 \"dxvk\" 会被"
+            f"native 静默丢弃）")
+    dxvk = backend.get("dxvk")
+    if dxvk and dxvk not in DXVK_BACKEND_VALUES:
+        die(f"{context}: backend.dxvk=\"{dxvk}\" 不是契约值 —— "
+            f"合法值 {sorted(DXVK_BACKEND_VALUES)}")
+
+
 def load_suite(path: Path, cases: dict) -> tuple:
     body = json.loads(path.read_text())
     name = body["name"]
     entries = []
     for inst in body.get("tests", []):
         reject_unreachable_env(path.name, inst.get("env"))
+        if inst.get("backend"):
+            reject_bad_backend(f"{path.name}:{inst.get('id', inst['case'])}", inst["backend"])
         case_id = inst["case"]
         if case_id not in cases:
             die(f"{path.name}: unknown case {case_id}")
@@ -403,6 +423,9 @@ def resolve_device(hdc: str, explicit: str) -> str:
 # 用更短的值，让"设备端无响应"尽快暴露。
 HDC_SHELL_TIMEOUT_S = 60
 HDC_POLL_TIMEOUT_S = 20
+# 等应用进程起来的上限（ensure_app_running）：aa start 返回后进程出现通常在
+# 2~3s 内，冷启动建 prefix 时会久一些。
+APP_START_TIMEOUT_S = 30
 
 
 def hdc_shell(hdc: str, device: str, script: str,
@@ -417,14 +440,52 @@ def hdc_shell(hdc: str, device: str, script: str,
         return -1, ""
 
 
+def app_pid(hdc: str, device: str) -> str:
+    """应用主进程 pid（未运行时为空串）。"""
+    code, out = hdc_shell(hdc, device, f"pidof {BUNDLE} 2>/dev/null")
+    return out.strip() if code == 0 else ""
+
+
+def ensure_app_running(hdc: str, device: str, extra_start_args: str = "") -> None:
+    """确保应用进程存在 —— 沙箱 -b 通道的前提。
+
+    `-b bundlename` 要求目标应用是**调试证书签名**且**已在设备上启动**，否则
+    报 E003001 Invalid bundle name（官方 hdc 文档列了三种原因：未安装 / 非调试
+    签名 / 未启动）。全新安装或 force-stop 之后直接推送必然撞上 —— cmd_run 是
+    先 push 再 aa start，指望不上后面那次启动。这里先补一次启动并等进程出现；
+    能起来但推送仍失败，就说明设备上装的是非调试签名的包。
+
+    extra_start_args: 附加 `--ps` 参数（如 winehua.desktopMode）。桌面模式是
+    引擎级状态（applyModePolicy 只在冷启动的 init 链上判定），必须随冷启动
+    携带；app 已在运行时不重启动，二次 want 改不了已启动引擎的模式。
+    """
+    if app_pid(hdc, device):
+        if extra_start_args:
+            die("app 已在运行：--desktop-mode 需要冷启动携带，先 `hdc shell "
+                f"aa force-stop {BUNDLE}` 再重跑")
+        return
+    log(f"{BUNDLE} 未运行，先启动（-b 通道要求应用已启动）")
+    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE} {extra_start_args}".rstrip())
+    deadline = time.time() + APP_START_TIMEOUT_S
+    while time.time() < deadline:
+        if app_pid(hdc, device):
+            return
+        time.sleep(1)
+    die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
+        "设备上装的若是非调试签名包，-b 通道同样不可用")
+
+
 def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:
     """推文件或目录到沙箱（remote 用沙箱视角路径）。"""
     result = subprocess.run(
         [hdc, "-t", device, "file", "send", "-b", BUNDLE, str(local), remote],
         capture_output=True, text=True, errors="replace")
     if result.returncode != 0 or "FileTransfer finish" not in result.stdout:
-        die(f"hdc file send failed rc={result.returncode}: "
-            f"{result.stdout.strip()} {result.stderr.strip()}")
+        detail = f"{result.stdout.strip()} {result.stderr.strip()}".strip()
+        if "Invalid bundle name" in detail:
+            detail += ("  ← E003001: 未安装 / 非调试签名 / 未启动三者之一，"
+                       "沙箱 -b 通道要求调试签名且应用在运行")
+        die(f"hdc file send failed rc={result.returncode}: {detail}")
 
 
 def hdc_recv_dir(hdc: str, device: str, rel_path: str, local_dir: Path) -> None:
@@ -493,6 +554,9 @@ def cmd_push(args: argparse.Namespace) -> int:
     payload = ensure_payload(args)
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
+    mode = getattr(args, "desktop_mode", None)
+    ensure_app_running(hdc, device,
+                       f"--ps winehua.desktopMode {mode}" if mode else "")
     log(f"push {payload} → {device}")
     # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
     # 1) 推送源：设备端 seed 的来源（冷启动 / clean 清盘后按版本比对导入）
@@ -534,8 +598,12 @@ def build_job(args: argparse.Namespace) -> dict:
         reject_unreachable_env("--env", overrides)
         params["env"] = overrides
     if args.d3d:
+        if args.d3d not in D3D_BACKEND_VALUES:
+            die(f"--d3d \"{args.d3d}\" 不是契约值 —— 合法值 {sorted(D3D_BACKEND_VALUES)}")
         params["d3dBackend"] = args.d3d
     if args.dxvk:
+        if args.dxvk not in DXVK_BACKEND_VALUES:
+            die(f"--dxvk \"{args.dxvk}\" 不是契约值 —— 合法值 {sorted(DXVK_BACKEND_VALUES)}")
         params["dxvkBackend"] = args.dxvk
     if args.seconds is not None:
         params["seconds"] = args.seconds
@@ -551,7 +619,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
     if not args.skip_push:
-        push_args = argparse.Namespace(payload=args.payload, device=args.device)
+        push_args = argparse.Namespace(payload=args.payload, device=args.device,
+                                       desktop_mode=getattr(args, "desktop_mode", None))
         if cmd_push(push_args) != 0:
             return 1
     manifest = json.loads((payload / "manifest.json").read_text())
@@ -964,11 +1033,16 @@ def build_parser() -> argparse.ArgumentParser:
     push = sub.add_parser("push", help="推送 payload 到设备沙箱（播种源）")
     push.add_argument("--payload", default=str(DEFAULT_OUT))
     push.add_argument("--device", default="")
+    push.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
+                      help="冷启动携带 winehua.desktopMode 覆盖（引擎级模式，仅冷启动生效）")
     push.set_defaults(func=cmd_push)
 
     run = sub.add_parser("run", help="跑一个套件：推送 + aa start + 轮询 + 归档")
     run.add_argument("--suite", required=True)
     run.add_argument("--prefix", choices=("reuse", "clean"), default="reuse")
+    run.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
+                     help="冷启动携带 winehua.desktopMode 覆盖（C 型注入用例需要"
+                          "桌面合成模式的输入链；app 已运行时须先 force-stop）")
     run.add_argument("--payload", default=str(DEFAULT_OUT))
     run.add_argument("--device", default="")
     run.add_argument("--run-id", default="")
@@ -980,8 +1054,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="内联测试定义 JSON 文件（临时用例；exe 须已在 C:\\smoke）")
     run.add_argument("--env", action="append", default=[],
                      help="KEY=VALUE 覆盖选中测试的 env（可重复）")
-    run.add_argument("--d3d", default="", help="覆盖 d3d 后端（如 dxvk_modern_2_6）")
-    run.add_argument("--dxvk", default="", help="覆盖 dxvk 后端")
+    run.add_argument("--d3d", default="", help="覆盖 d3d 后端（契约值: wined3d/dxvk_legacy/dxvk_modern_2_6/vkd3d_limited_500k）")
+    run.add_argument("--dxvk", default="", help="覆盖 dxvk 后端（契约值: dxvk_legacy/dxvk_modern_2_6）")
     run.add_argument("--seconds", type=int, default=None)
     run.add_argument("--timeout-ms", type=int, default=None, dest="timeout_ms")
     run.add_argument("--archive-root",

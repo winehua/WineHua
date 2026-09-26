@@ -77,11 +77,23 @@ HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
 # host 推送源 files/smoke-payload 优先级更高, 供开发环境热更新)
 # ============================================================
 SMOKE_PAYLOAD_MANIFEST := $(BUILD_DIR)/smoke-payload/manifest.json
+# from_wine 用例的程序清单: exe 由 wine 构建内部产出 (build_wine.sh 不受
+# make 感知), 依赖图里必须有显式规则 — 干净 checkout (CI) 上文件不存在又
+# 无规则可生成时, make 解析阶段直接 "No rule to make target" 退出 (与
+# DXVK_ARTIFACTS 同坑, 修法同: 规则链到 wine stamp + 存在性断言)。
+WINE_SMOKE_PROGRAMS := winehua_audio_smoke winehua_vulkan_smoke \
+	winehua_d3d11_smoke winehua_graphics_smoke
+WINE_SMOKE_EXES := $(foreach p,$(WINE_SMOKE_PROGRAMS), \
+	$(BUILD_DIR)/wine-ohos/programs/$(p)/x86_64-windows/$(p).exe \
+	$(BUILD_DIR)/wine-ohos/programs/$(p)/i386-windows/$(p).exe)
 # 源码型用例跟踪 smoke/ 全树; 产物型用例 (from_wine/from_vkd3d) 跟踪
 # 代表产物与 stamp, 重编后触发载荷重建, 防止 assemble 拷到陈旧 exe
 SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
-	$(BUILD_DIR)/wine-ohos/programs/winehua_d3d11_smoke/x86_64-windows/winehua_d3d11_smoke.exe \
+	$(WINE_SMOKE_EXES) \
 	$(VKD3D_PROTON_STAMP)
+
+$(WINE_SMOKE_EXES): $(STAMPS)/wine-$(CONFIG)
+	@test -s "$@" || { echo "ERROR: wine smoke exe missing after wine build: $@" >&2; exit 1; }
 
 $(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
 	@echo "=== smoke payload ==="

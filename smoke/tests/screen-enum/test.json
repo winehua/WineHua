@@ -1,0 +1,23 @@
+{
+  "id": "screen-enum",
+  "title": "显示器枚举（monitor/模式表一致性）",
+  "exe": "screen_enum.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/gdi/screen_enum.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

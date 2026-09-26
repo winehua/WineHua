@@ -1,5 +1,7 @@
 # WineHua Phase 2 DXVK/Venus Merge Report
 
+> 状态：已完成（2026-09-22 整理归档）。Phase 2 的合并决策报告，合并已完成。
+
 ## 1. Purpose and release decision
 
 This document is the merge-facing summary for the WineHua Phase 2 Vulkan and
@@ -266,7 +268,7 @@ Final accepted runtime automation:
 
 ```text
 archive:
-  D:\MyProject\winehua-logs\automation\phase2-20260727-220057
+  <本机证据目录>\winehua-logs\automation\phase2-20260727-220057
 
 status:
   PASS
@@ -416,14 +418,14 @@ compatible as long as master does not move first.
 Immutable runtime rollback artifact:
 
 ```text
-D:\MyProject\winehua-logs\performance\host-perf-forward-off-20260727-2149\
+<本机证据目录>\winehua-logs\performance\host-perf-forward-off-20260727-2149\
   entry-default-signed-07013f8c.hap
 ```
 
 Earlier fully conservative product rollback artifact:
 
 ```text
-D:\MyProject\winehua-logs\manual\product-batch-default-20260727\
+<本机证据目录>\winehua-logs\manual\product-batch-default-20260727\
   entry-default-signed-43654ab7.hap
 ```
 
@@ -459,7 +461,7 @@ Artifact:
 - signed HAP SHA-256: `c11a9249c1295ea69c3f1724d2f46dc5de947f09457ec25e7527e41a287a9c50`;
 - embedded `wine-data.zip` SHA-256: `32df8e8a991e338da031e39656e1311ba6f0f98f72e04ba5ea700626322ab336` (matches source);
 - Guest EGL: x86-64; host `libentry.so`: AArch64;
-- Windows HDC install: `install bundle successfully` on `5KPBB25818203996`.
+- Windows HDC install: `install bundle successfully` on `<设备序列号>`.
 
 Run `manual-final-dxvk-20260728-0400` (`reuse`, `dxvk`) passed for both
 `dxvk-legacy-x64` and `dxvk-legacy-x86`: feature level 11.0, DXVK 1.10.3,
@@ -471,4 +473,4 @@ matrix remain deferred per the current development-stage decision.
 
 The checked-in one-command runner was also executed with `-SkipBuild -Suite
 dxvk -Prefix reuse` on the same device and returned `Automation PASS`; the
-archive is `D:\MyProject\winehua-logs\automation\phase2-20260728-040847`.
+archive is `<本机证据目录>\winehua-logs\automation\phase2-20260728-040847`.

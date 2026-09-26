@@ -2,7 +2,7 @@
 
 用例、套件、判定器都在仓库里；载荷随包分发（wine-data.zip 的 smoke/ 树），
 开发环境由 host 经 hdc 推送更新（优先于包内版本），
-判定在 host 侧做。设计见 `docs/SMOKE_V2_DESIGN.md`。
+判定在 host 侧做。设计见 `docs/engineering/testing-design.md`。
 
 ## 快速开始
 
@@ -62,8 +62,8 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
 `backend.dxvk` 只在 `d3d=vkd3d_limited_500k` 档被消费（`wine_env.cpp` 的
 `AppendD3dBackendEnv` 用它选 DXVK overlay 与 `WINEHUA_DXVK_ROOT`）；其余档位走各自
 分支，写不写都一样。声明了 `d3d` 就要一起声明 `dxvk`：不声明会退回"设备当前设置"，
-而它由 `EntryAbility.defaultDxvkBackend()` 按机型与系统版本解析（`VYG-AL00` 且
-`incrementalVersion=26.0.0.32` → modern，其余 → legacy），同一套件在不同设备上测的
+而它由 `EntryAbility.defaultDxvkBackend()` 按机型与系统版本解析（命中已验证过的机型 +
+系统版本组合才用 modern，其余 → legacy），同一套件在不同设备上测的
 就不是同一个东西。
 
 `env` 里的 `WINEDEBUG` 与 `WINEHUA_WINEDEBUG` 都不生效：前者被设备端显式忽略
@@ -160,4 +160,4 @@ host 必须在这段时间内轮询到 `"fixed-frame"` 结果并截图。轮询�
 `// [[SMOKE]]` 标记的钩子行（`WineEnvService.attach/onNewWant/enterReady`、
 `EntryAbility.applyWant`、`Index.<SmokeDevPanel/>`）。无 `winehua.mode=smoke`
 请求时这些钩子是空操作。main-ui 合并时按
-`docs/SMOKE_REBUILD_20260831.md §11` 摘除整个目录与标记行。
+`docs/archive/SMOKE_REBUILD_20260831.md §11` 摘除整个目录与标记行。

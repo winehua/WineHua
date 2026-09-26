@@ -1,0 +1,20 @@
+{
+  "id": "mem-virtual",
+  "title": "虚拟内存执行页（noexec RWX 链）与保护属性",
+  "exe": "mem_virtual.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/mem/mem_virtual.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

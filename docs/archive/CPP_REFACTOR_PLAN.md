@@ -1,5 +1,7 @@
 # entry/src/main/cpp 重构规划
 
+> 状态：已完成（2026-09-22 整理归档）。合成器重构的复盘记录，重构已全部完成。
+
 > 目标读者：要改动 compositor / 渲染 / 输入代码的人。
 > 本文基于 `feature/split-wayland-server` 分支（wayland_server 已拆出 `compositor/` 模块）的现状制定，
 > 事实清单均带 `文件:行` 引用，行号以该分支为准，漂移后按符号名查找。

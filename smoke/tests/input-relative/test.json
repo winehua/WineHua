@@ -1,0 +1,22 @@
+{
+  "id": "input-relative",
+  "title": "相对指针（RAWINPUT delta±20%/clip约束）",
+  "exe": "input_relative.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/input/input_relative.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

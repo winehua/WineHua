@@ -1,0 +1,25 @@
+{
+  "id": "dinput-keyboard",
+  "title": "DirectInput键盘状态语义（注入键序状态位）",
+  "exe": "dinput_keyboard.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/input/dinput_keyboard.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-ldxguid",
+      "-ldinput8"
+    ]
+  },
+  "inject": true
+}

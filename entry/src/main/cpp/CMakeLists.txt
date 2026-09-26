@@ -122,6 +122,17 @@ add_library(wine_child SHARED
 )
 target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)
 
+# smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询/注入
+# 原语, 产品代码不引用。符号来自 entry (同进程运行时解析), 必须与 entry 同包。
+add_library(smoke_napi SHARED
+    smoke/smoke_napi.cpp
+)
+target_link_libraries(smoke_napi PRIVATE
+    entry
+    libace_napi.z.so
+    libhilog_ndk.z.so
+)
+
 add_library(virgl_child SHARED
     graphics/virgl_child.cpp
     graphics/virgl_host_config.cpp

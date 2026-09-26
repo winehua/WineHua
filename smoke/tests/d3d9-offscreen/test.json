@@ -1,0 +1,23 @@
+{
+  "id": "d3d9-offscreen",
+  "title": "D3D9离屏渲染读回+交换链Reset（API全通，RT读回恒杂色=wined3d/virpipe读回缺口，定性红）",
+  "exe": "d3d9_offscreen.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/graphics/d3d9_offscreen.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

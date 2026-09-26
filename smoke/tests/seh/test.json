@@ -1,0 +1,20 @@
+{
+  "id": "seh",
+  "title": "结构化异常捕获与恢复",
+  "exe": "seh.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/seh.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

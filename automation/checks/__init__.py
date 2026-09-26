@@ -1,6 +1,6 @@
 """smoke 判定器：把设备端结果与采集到的帧转成 PASS/FAIL/SKIP。
 
-判定与执行分离（docs/SMOKE_V2_DESIGN.md §8）：同一套判定器既服务于 run 结束
+判定与执行分离（docs/engineering/testing-design.md §8）：同一套判定器既服务于 run 结束
 时的自动判定，也服务于 `smoke.py check <run-dir>` 对历史归档重跑判定 ——
 改判定规则不需要重跑设备。
 
