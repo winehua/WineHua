@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-shell-dialogs",
+  "title": "公共对话框（GetOpenFileName键选文件）",
+  "exe": "winehua_t_shell_dialogs.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/shell/shell_dialogs.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lcomdlg32"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-e2e-menu",
+  "title": "菜单路由（TrackPopupMenu第2项，Pad哨兵）",
+  "exe": "winehua_t_e2e_menu.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/input/e2e_menu.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

@@ -394,6 +394,11 @@ export class SmokeRunner {
   private lastInjectTl: number = 0;
 
   private async injectAction(action: InjectAction): Promise<string> {
+    if (action.type === 'sleep') {
+      const ms: number = action.ms && action.ms > 0 ? action.ms : 100;
+      await new Promise<void>((r) => setTimeout(r, ms));
+      return '';
+    }
     if (action.type === 'type') {
       return this.injectTyping(action.text ? action.text : '');
     }
@@ -402,7 +407,81 @@ export class SmokeRunner {
       testNapi.sendImeCommit(action.text ? action.text : '');
       return '';
     }
+    if (action.type === 'swipe') {
+      return this.injectSwipe(action);
+    }
+    if (action.type === 'wheel') {
+      return this.injectWheel(action);
+    }
+    if (action.type === 'key') {
+      // 裸键动作（evdev 码，如 KEY_ENTER=28），发给焦点 toplevel
+      if (!this.lastInjectTl) return 'key action without a prior mouse action';
+      if (action.code === undefined) return 'key action missing code';
+      testNapi.sendKeyEvent(this.lastInjectTl, action.code, true);
+      await new Promise<void>((r) => setTimeout(r, 30));
+      testNapi.sendKeyEvent(this.lastInjectTl, action.code, false);
+      return '';
+    }
     return this.injectMouse(action);
+  }
+
+  // swipe: 等距插值 Move 序列；raw 增量走 rawDx/rawDy（相对模式 delta 通道）。
+  // 起点需先有 mouse 动作建立 toplevel，swipe 自带 x/y 也用于首次定位。
+  // 声明 button 时为首段按住拖拽（Press → Move×N → Release，标题栏拖动等）。
+  private async injectSwipe(action: InjectAction): Promise<string> {
+    if (action.x === undefined || action.y === undefined ||
+        action.dx === undefined || action.dy === undefined)
+      return 'swipe action missing x/y/dx/dy';
+    const steps: number = action.steps && action.steps > 0 ? action.steps : 10;
+    const holdBtn: boolean = action.button === 'left' || action.button === 'right';
+    const mapped0 = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
+    if (!mapped0) return 'smokeMapPoint failed (swipe)';
+    const tl = this.lastInjectTl ||
+      (() => {
+        const found = testNapi.findToplevelAt(mapped0.px, mapped0.py) as number;
+        return found > 0 ? found : 0;
+      })();
+    if (!tl) return 'swipe without toplevel';
+    this.lastInjectTl = tl;
+    const stepDx: number = action.dx / steps;
+    const stepDy: number = action.dy / steps;
+    const btn = mapMouseButton(action.button === 'right' ? 2 : 1);
+    if (holdBtn) {
+      testNapi.sendPointerEvent(tl, MouseAction.Press, mapped0.px, mapped0.py, btn);
+      await new Promise<void>((r) => setTimeout(r, 60));
+    }
+    for (let i = 0; i < steps; i++) {
+      testNapi.sendPointerEvent(tl, MouseAction.Move,
+        mapped0.px + stepDx * (i + 1), mapped0.py + stepDy * (i + 1), 0,
+        stepDx, stepDy, true);
+      await new Promise<void>((r) => setTimeout(r, 20));
+    }
+    if (holdBtn) {
+      await new Promise<void>((r) => setTimeout(r, 40));
+      testNapi.sendPointerEvent(tl, MouseAction.Release,
+        mapped0.px + action.dx, mapped0.py + action.dy, btn);
+    }
+    return '';
+  }
+
+  // wheel: 每格一次 sendScrollEvent（VERT），悬停点定位到窗口。
+  // notches 是 Windows 滚轮格语义（正 = 向前滚，WM_MOUSEWHEEL +120/格）；
+  // winewayland 对 VERTICAL axis 取负（wayland 正 = 内容下滚），故注入时取反。
+  private async injectWheel(action: InjectAction): Promise<string> {
+    if (action.x === undefined || action.y === undefined) return 'wheel action missing x/y';
+    const notches: number = action.notches ? action.notches : 3;
+    const absN: number = Math.abs(notches);
+    const sign: number = notches > 0 ? -1 : 1;
+    const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
+    if (!mapped) return 'smokeMapPoint failed (wheel)';
+    const tl = testNapi.findToplevelAt(mapped.px, mapped.py) as number;
+    if (!tl || tl <= 0) return `no toplevel at physical (${mapped.px},${mapped.py})`;
+    this.lastInjectTl = tl;
+    for (let i = 0; i < absN; i++) {
+      testNapi.sendScrollEvent(tl, 0, sign, 40, mapped.px, mapped.py);
+      await new Promise<void>((r) => setTimeout(r, 60));
+    }
+    return '';
   }
 
   // ASCII 子集展开为 evdev 键序: a-z / A-Z(shift) / 0-9。
@@ -414,9 +493,9 @@ export class SmokeRunner {
       const code: number = ch >= 'a' && ch <= 'z' ? 30 + (ch.charCodeAt(0) - 97) :
         ch >= 'A' && ch <= 'Z' ? 30 + (ch.charCodeAt(0) - 65) :
         ch >= '1' && ch <= '9' ? 2 + (ch.charCodeAt(0) - 49) :
-        ch === '0' ? 11 : -1;
+        ch === '0' ? 11 : ch === '.' ? 52 : ch === '_' ? 12 : -1;
       if (code < 0) return `unsupported char '${ch}' (ascii subset only)`;
-      const needShift: boolean = ch >= 'A' && ch <= 'Z';
+      const needShift: boolean = ch >= 'A' && ch <= 'Z' || ch === '_';
       const tl: number = this.lastInjectTl;
       if (needShift) testNapi.sendKeyEvent(tl, 42, true);  // KEY_LEFTSHIFT
       testNapi.sendKeyEvent(tl, code, true);

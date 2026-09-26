@@ -566,6 +566,96 @@
       "env": {},
       "seconds": 10,
       "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-input-wheel",
+      "id": "t-input-wheel",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-input-capture",
+      "id": "t-input-capture",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-input-relative",
+      "id": "t-input-relative",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-e2e-drag",
+      "id": "t-e2e-drag",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-e2e-menu",
+      "id": "t-e2e-menu",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-shell-dialogs",
+      "id": "t-shell-dialogs",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 60,
+      "timeoutMs": 240000
     }
   ]
 }

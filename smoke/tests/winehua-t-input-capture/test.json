@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-input-capture",
+  "title": "SetCapture窗外移动（结构性项，先红合法）",
+  "exe": "winehua_t_input_capture.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/input/input_capture.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

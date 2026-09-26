@@ -106,19 +106,21 @@
 - 失败特征：中文断=IME/keymap 链；修饰态错=修饰键快照断
 
 **input_relative — 相对指针** ｜ P2 ｜ 手段 I
-- 行为：ShowCursor(FALSE)+ClipCursor 触发相对模式→host 注入 swipe→注册 RAWINPUT 断言 delta
-- 通过：raw delta 总量与注入位移一致（±20%）；GetCursorPos 被约束在 clip 矩形内
-- 失败特征：delta=0=wine 未进相对模式；绝对坐标同时变化=双通道串扰
+- 行为：ShowCursor(FALSE)+ClipCursor 触发相对模式→host 注入单段 swipe（RIDEV_INPUTSINK 全局收 raw，不依赖焦点，不带 click 前缀）→注册 RAWINPUT 判定"连续步进段"之和
+- 通过：连续 ≥8 条步进样本之和与注入位移一致（±20%）；GetCursorPos 被约束在 clip 矩形内；无 ABSOLUTE 串扰
+- 失败特征：步进段断=REL 通道丢步变号；绝对坐标同时变化=双通道串扰
+- 注：enter 定位校准（SetCursorPos）合法产生一条相对差分并进 raw 全局累计，故判定收在步进段而非总累计
 
 **input_capture — SetCapture** ｜ P2 ｜ 手段 I
 - 行为：SetCapture 后 host 注入窗外移动
 - 通过：窗口外移动仍持续收 WM_MOUSEMOVE；ReleaseCapture 后停止
-- 失败特征：窗外断流=capture 语义缺（已知结构性项，当前应 FAIL，绕开方案落地后转绿）
+- 现状（2026-09-26 实测定性，保持 FAIL）：wine 服务器 capture 重定向只查 msg->win 所属线程 input 的 capture（server/queue.c find_hardware_message_window），窗外事件宿主经 root 直通链送达后 msg->win=桌面窗口（explorer 的 input，capture=0），不重定向——跨 input 的 capture 路由是 wine 上游语义限制；宿主链路无丢件（临时全量日志实锤 8 步 PTR_MOTION 全发出）。同 input 内 capture（程序自己拖动）不受影响
 
 **input_wheel — 滚轮** ｜ P2 ｜ 手段 I
 - 行为：等待注入滚轮
 - 通过：WM_MOUSEWHEEL 累计 delta==注入格数×120（±舍入）
 - 失败特征：delta 单位错=value120 协议断
+- 注：winewayland 对 VERTICAL axis 取负（wayland 正=内容下滚，Windows 正=向前滚），smoke 编排层按 Windows 格语义取反注入，产品触控板语义不受影响
 
 ### 3.4 GDI 绘制
 
@@ -275,9 +277,9 @@
 - 失败特征：系统性偏移=letterbox/fit 逆映射断；单象限错=hit-test 断
 
 **e2e_drag — 拖动** ｜ P2 ｜ 手段 I+R
-- 行为：host 注入标题栏按下-移动 200px-释放
-- 通过：WM_NCLBUTTONDOWN+WM_MOUSEMOVE 轨迹连续；GetWindowRect 位移≈200px；释放后位置保持
-- 失败特征：位移发散=move_grab 累积断；位置回跳=toplevel 状态失步
+- 行为：host 注入标题栏按下-移动 200px-释放（swipe 带 button=按住拖拽）
+- 通过：WM_NCLBUTTONDOWN(HTCAPTION) 到达；compositor 拖动中 wine 不收 move（xdg_toplevel.move 接管，move 计数仅作事件链路存活证明）；GetWindowRect 位移≈200px；释放后位置保持
+- 现状（2026-09-26 实测定性，window-moved 保持 FAIL）：wine 的 WAYLAND_SysCommand 把 SC_MOVE 交给 xdg_toplevel_move 后位置由 compositor 接管，拖动终态没有回填通道（winehua_toplevel 只有 set_modal），wine 端 GetWindowRect 停在拖动前位置——程序按内部位置做逻辑（菜单定位/记忆位置）会错。治本方向=拖动终态位置回填（协议两端成对），落地后此断言转绿即验收
 
 **e2e_menu — 菜单路由** ｜ P2 ｜ 手段 I+R
 - 行为：程序 TrackPopupMenu 弹菜单→host 注入第 2 项

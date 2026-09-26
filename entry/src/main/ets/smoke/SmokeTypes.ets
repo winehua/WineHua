@@ -43,15 +43,24 @@ export interface SmokeSuiteTest {
 
 // inject-request-<testId>.json 的内容（guest 声明希望被注入的序列）
 export interface InjectAction {
-  // 'click' | 'doubleClick' | 'type' | 'ime'
+  // 'click' | 'doubleClick' | 'type' | 'ime' | 'swipe' | 'wheel'
   type: string;
-  // guest 桌面坐标（click/doubleClick 用）
+  // guest 桌面坐标（click/doubleClick/swipe 起点/wheel 悬停点）
   x?: number;
   y?: number;
   // 'left' | 'right'（缺省 left）
   button?: string;
   // type/ime 的文本（type = ASCII 键序展开；ime = IME commit 字符串）
   text?: string;
+  // swipe 的总位移（等距插值 Move，raw 增量传 rawDx/rawDy）
+  dx?: number;
+  dy?: number;
+  steps?: number;
+  // wheel 的格数（每格 wheel delta 120）
+  notches?: number;
+  // sleep 的时长（ms）；key 的 evdev 键码
+  ms?: number;
+  code?: number;
 }
 
 export interface InjectSpec {
