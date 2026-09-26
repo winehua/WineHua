@@ -1,10 +1,19 @@
 import testNapi from 'libentry.so';
+import smokeNapi from 'libsmoke_napi.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   WineEnvService, DRIVE_C, readTextIfExists,
   ensureDirectory, writeTextFile
 } from '../service/WineEnvService';
-import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest } from './SmokeTypes';
+import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest,
+  InjectSpec, InjectAction } from './SmokeTypes';
+import { mapMouseButton } from '../common/MouseMap';
+
+// smokeMapPoint 返回（XComponent 内物理坐标，与 libsmoke_napi.so 的 d.ts 对应）
+interface PointMap {
+  px: number;
+  py: number;
+}
 
 const DOMAIN = 0x0000;
 const TAG = 'SMOKE';
@@ -293,6 +302,9 @@ export class SmokeRunner {
     let lastText: string = '';
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+      if (test.inject) {
+        await this.runInjectable(test);
+      }
       lastText = readTextIfExists(resultPath);
       let final: SmokeResultFile | null = SmokeRunner.parseFinal(lastText);
       const snapshot = testNapi.queryWineProcess(process.pid) as ProcessSnapshot;
@@ -331,9 +343,75 @@ export class SmokeRunner {
     return this.failure(request, 'timeout', `轮询超时 ${resolvedTimeout}ms (结果文件: ${resultPath})`, process.pid, test.testId);
   }
 
+  // 已处理完注入的 testId（同一轮询循环内只编排一次）
+  private injectHandled: Set<string> = new Set();
+
+  // C 型注入编排: 等 guest 的 inject-request-<testId>.json（guest 声明希望
+  // 被注入的序列）→ 逐条 smokeMapPoint 换算 + findToplevelAt 定位 +
+  // sendPointerEvent 注入（与 ArkTS 触摸同语义: raiseToplevel + Press/Release）
+  // → 写 inject-done-<testId>.json。失败写 error, guest 端按收不到消息断言
+  // 失败上报 — runner 不改写用例结论。
+  private async runInjectable(test: SmokeSuiteTest): Promise<void> {
+    if (this.injectHandled.has(test.testId)) return;
+    const reqPath: string = `${DRIVE_C}/smoke/inject-request-${test.testId}.json`;
+    const raw: string = readTextIfExists(reqPath);
+    if (!raw) return;
+    this.injectHandled.add(test.testId);
+
+    let status: string = 'ok';
+    let message: string = '';
+    let doneCount: number = 0;
+    let spec: InjectSpec | null = null;
+    try {
+      spec = JSON.parse(raw) as InjectSpec;
+    } catch (e) {
+      status = 'error';
+      message = 'inject-request JSON parse failed';
+    }
+    if (spec && spec.actions && spec.actions.length > 0) {
+      const gap: number = spec.actionGapMs && spec.actionGapMs > 0 ? spec.actionGapMs : 250;
+      for (const action of spec.actions) {
+        const err: string = await this.injectAction(action);
+        if (err) {
+          status = 'error';
+          message = `action ${doneCount} (${action.type}@${action.x},${action.y}): ${err}`;
+          break;
+        }
+        doneCount++;
+        await new Promise<void>((r) => setTimeout(r, gap));
+      }
+    } else if (spec && (!spec.actions || spec.actions.length === 0)) {
+      status = 'error';
+      message = 'inject-request has no actions';
+    }
+    writeTextFile(`${DRIVE_C}/smoke/inject-done-${test.testId}.json`,
+      JSON.stringify({ status: status, done: doneCount, message: message }));
+    hilog.info(DOMAIN, TAG, 'inject test=%{public}s status=%{public}s done=%{public}d %{public}s',
+      test.testId, status, doneCount, message);
+  }
+
+  private async injectAction(action: InjectAction): Promise<string> {
+    const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
+    if (!mapped) return 'smokeMapPoint failed (renderer/letterbox not ready)';
+    const px: number = mapped.px;
+    const py: number = mapped.py;
+    const tl = testNapi.findToplevelAt(px, py) as number;
+    if (!tl || tl <= 0) return `no toplevel at physical (${px},${py})`;
+    testNapi.raiseToplevel(tl);
+    // ArkUI MouseButton: Left=1, Right=2 → evdev code
+    const btn = mapMouseButton(action.button === 'right' ? 2 : 1);
+    const presses: number = action.type === 'doubleClick' ? 2 : 1;
+    for (let i = 0; i < presses; i++) {
+      if (i > 0) await new Promise<void>((r) => setTimeout(r, 120));
+      testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btn);
+      await new Promise<void>((r) => setTimeout(r, 40));
+      testNapi.sendPointerEvent(tl, MouseAction.Release, px, py, btn);
+    }
+    return '';
+  }
+
   // 结果文件 → 终态对象; 未出现 / 半写 JSON / 非终态一律 null (继续轮询)
-  private static parseFinal(text: string): SmokeResultFile | null {
-    if (!text) return null;
+  private static parseFinal(text: string): SmokeResultFile | null {    if (!text) return null;
     try {
       const obj = JSON.parse(text) as SmokeResultFile;
       const status = obj.status ? `${obj.status}` : '';

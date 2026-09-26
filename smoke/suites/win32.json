@@ -353,6 +353,21 @@
       "env": {},
       "seconds": 10,
       "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-input-mouse",
+      "id": "t-input-mouse",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
     }
   ]
 }

@@ -426,7 +426,7 @@ def app_pid(hdc: str, device: str) -> str:
     return out.strip() if code == 0 else ""
 
 
-def ensure_app_running(hdc: str, device: str) -> None:
+def ensure_app_running(hdc: str, device: str, extra_start_args: str = "") -> None:
     """确保应用进程存在 —— 沙箱 -b 通道的前提。
 
     `-b bundlename` 要求目标应用是**调试证书签名**且**已在设备上启动**，否则
@@ -434,11 +434,18 @@ def ensure_app_running(hdc: str, device: str) -> None:
     签名 / 未启动）。全新安装或 force-stop 之后直接推送必然撞上 —— cmd_run 是
     先 push 再 aa start，指望不上后面那次启动。这里先补一次启动并等进程出现；
     能起来但推送仍失败，就说明设备上装的是非调试签名的包。
+
+    extra_start_args: 附加 `--ps` 参数（如 winehua.desktopMode）。桌面模式是
+    引擎级状态（applyModePolicy 只在冷启动的 init 链上判定），必须随冷启动
+    携带；app 已在运行时不重启动，二次 want 改不了已启动引擎的模式。
     """
     if app_pid(hdc, device):
+        if extra_start_args:
+            die("app 已在运行：--desktop-mode 需要冷启动携带，先 `hdc shell "
+                f"aa force-stop {BUNDLE}` 再重跑")
         return
     log(f"{BUNDLE} 未运行，先启动（-b 通道要求应用已启动）")
-    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE}")
+    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE} {extra_start_args}".rstrip())
     deadline = time.time() + APP_START_TIMEOUT_S
     while time.time() < deadline:
         if app_pid(hdc, device):
@@ -527,7 +534,9 @@ def cmd_push(args: argparse.Namespace) -> int:
     payload = ensure_payload(args)
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
-    ensure_app_running(hdc, device)
+    mode = getattr(args, "desktop_mode", None)
+    ensure_app_running(hdc, device,
+                       f"--ps winehua.desktopMode {mode}" if mode else "")
     log(f"push {payload} → {device}")
     # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
     # 1) 推送源：设备端 seed 的来源（冷启动 / clean 清盘后按版本比对导入）
@@ -586,7 +595,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
     if not args.skip_push:
-        push_args = argparse.Namespace(payload=args.payload, device=args.device)
+        push_args = argparse.Namespace(payload=args.payload, device=args.device,
+                                       desktop_mode=getattr(args, "desktop_mode", None))
         if cmd_push(push_args) != 0:
             return 1
     manifest = json.loads((payload / "manifest.json").read_text())
@@ -999,11 +1009,16 @@ def build_parser() -> argparse.ArgumentParser:
     push = sub.add_parser("push", help="推送 payload 到设备沙箱（播种源）")
     push.add_argument("--payload", default=str(DEFAULT_OUT))
     push.add_argument("--device", default="")
+    push.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
+                      help="冷启动携带 winehua.desktopMode 覆盖（引擎级模式，仅冷启动生效）")
     push.set_defaults(func=cmd_push)
 
     run = sub.add_parser("run", help="跑一个套件：推送 + aa start + 轮询 + 归档")
     run.add_argument("--suite", required=True)
     run.add_argument("--prefix", choices=("reuse", "clean"), default="reuse")
+    run.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
+                     help="冷启动携带 winehua.desktopMode 覆盖（C 型注入用例需要"
+                          "桌面合成模式的输入链；app 已运行时须先 force-stop）")
     run.add_argument("--payload", default=str(DEFAULT_OUT))
     run.add_argument("--device", default="")
     run.add_argument("--run-id", default="")

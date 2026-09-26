@@ -35,6 +35,27 @@ export interface SmokeSuiteTest {
   dxvkBackend?: string;
   seconds?: number;
   timeoutMs?: number;
+  // C 型注入配对用例: true = runner 在轮询循环里驱动注入编排
+  // (等 guest 的 inject-request 文件 → smokeMapPoint 换算 → sendPointerEvent
+  // 逐条注入 → 写 inject-done 文件), 见 SmokeRunner.runInjectable
+  inject?: boolean;
+}
+
+// inject-request-<testId>.json 的内容（guest 声明希望被注入的序列）
+export interface InjectAction {
+  // 'click' | 'doubleClick'
+  type: string;
+  // guest 桌面坐标
+  x: number;
+  y: number;
+  // 'left' | 'right'（缺省 left）
+  button?: string;
+}
+
+export interface InjectSpec {
+  actions?: InjectAction[];
+  // 相邻动作间隔（ms），缺省 250
+  actionGapMs?: number;
 }
 
 export interface SmokeJob {
