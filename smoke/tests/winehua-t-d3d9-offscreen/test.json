@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-d3d9-offscreen",
+  "title": "D3D9离屏渲染读回+交换链Reset（当前d3d9.dll加载挂起，定性红）",
+  "exe": "winehua_t_d3d9_offscreen.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/graphics/d3d9_offscreen.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

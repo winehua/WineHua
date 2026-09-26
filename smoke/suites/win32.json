@@ -782,6 +782,79 @@
       "env": {},
       "seconds": 15,
       "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-dinput-keyboard",
+      "id": "t-dinput-keyboard",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-dinput-mouse",
+      "id": "t-dinput-mouse",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "winehua-t-ddraw-surface",
+      "id": "t-ddraw-surface",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 90000
+    },
+    {
+      "case": "winehua-t-d3d-smoke",
+      "id": "t-d3d-smoke",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk",
+        "dxvk": "legacy"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-d3d9-offscreen",
+      "id": "t-d3d9-offscreen",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 90000
     }
   ]
 }

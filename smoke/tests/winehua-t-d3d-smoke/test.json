@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-d3d-smoke",
+  "title": "D3D语义守卫（d3d9离屏读回+Reset、d3d10链守卫）",
+  "exe": "winehua_t_d3d_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/graphics/d3d_smoke.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

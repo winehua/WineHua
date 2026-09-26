@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-ddraw-surface",
+  "title": "DirectDraw表面协作（Blt往返+调色板+Flip）",
+  "exe": "winehua_t_ddraw_surface.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/gdi/ddraw_surface.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-ldxguid"
+    ]
+  }
+}

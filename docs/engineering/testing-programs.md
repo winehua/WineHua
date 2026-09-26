@@ -27,12 +27,12 @@
 | **L**·日志模式 | wine_stderr/hilog 特征行 → 归档后 log 判定器 | log 判定器（待建，辅助） |
 | **D**·宿主协议摘要 | 程序声明期望的宿主行为，宿主协议摘要落盘比对 | protocol-log 判定器（待建） |
 
-## 3. 详细用例清单（20 域 55 例）
+## 3. 详细用例清单（21 域 59 例）
 
-体系总览：**内核对象与内存（5）→ 文件/注册表/环境（5）→ 进程线程（3）→ 窗口管理（8）→ 消息调度（3）→ 输入（5）→ GDI 绘制（4）→ 屏幕（2）→ Shell/对话框/资源（4）→ 剪贴板（3）→ 网络（1）→ 异常运行时（2）→ 时钟定时（2）→ DLL/COM（2）→ 控制台（1）→ e2e 交互（4）→ 压力（2）**。每个域对应 Win32 API 的一个功能面，用例是该面内的可自检切片；图形栈（D3D/Vulkan/GL）由现有套件覆盖不在本体系。
+体系总览：**内核对象与内存（5）→ 文件/注册表/环境（5）→ 进程线程（3）→ 窗口管理（8）→ 消息调度（3）→ 输入（5）→ GDI 绘制（4）→ 屏幕（2）→ Shell/对话框/资源（4）→ 剪贴板（3）→ 网络（1）→ 异常运行时（2）→ 时钟定时（2）→ DLL/COM（2）→ 控制台（1）→ e2e 交互（4）→ 压力（2）→ 游戏与图形栈（4）**。每个域对应 Win32 API 的一个功能面，用例是该面内的可自检切片；游戏与图形栈域测 API 语义面与离屏渲染读回，渲染出图能力由现有图形烟测守（登记见 §3.20）。
 
 规格四要素：**行为**（程序做什么）/**手段**（检测手段组合）/**通过**（无问题判据）/
-**失败特征**（有问题时暴露什么——即该用例守着哪条链）。批次：P0/P1/P2/P3。
+**失败特征**（有问题时暴露什么——即该用例守着哪条链）。批次：P0/P1/P2/P3/P4。
 
 ### 3.1 窗口管理
 
@@ -354,6 +354,62 @@
 - 通过：回调次数 80–110；无重复句柄错误
 - 失败特征：丢失/漂移=winmm 定时链（游戏循环类依赖）
 
+### 3.20 游戏与图形栈
+
+域定位：测**游戏程序依赖的 API 语义面**——DirectInput 输入语义、DirectDraw 2D
+表面协作、D3D 设备与交换链行为。判定分三层，避免与渲染后端档位耦合：
+
+1. **API 往返（R）**：设备创建/数据格式/协作级别/状态往返——与后端无关，
+   wined3d/dxvk 档位下判据一致；
+2. **离屏读回（P）**：离屏 surface Lock / GetRenderTargetData 取回已知图案——
+   不依赖屏幕回灌（缺口②只挡主表面读回）；
+3. **主表面/Present 像素**：受缺口②（捕获回灌缺失）限制，凡涉此先红合法；
+   渲染出图能力由现有图形烟测守（`d3d8-smoke`、`d3d-switch-cube`、
+   `d3d11-smoke`、`d3d12-triangle/gears/1000f`、`graphics-smoke`、
+   `vulkan-smoke`——登记于此，不重复建设）。
+
+DLL 全部动态加载（GetProcAddress，与 d3d8-smoke 同模式；mingw 不链图形
+import 库）。dinput 用例依赖 C 型注入设施（--desktop-mode virtual）。
+
+**dinput_keyboard — 键盘状态语义** ｜ P4 ｜ 手段 I+R
+- 行为：DirectInput8Create→键盘设备 c_dfDIKeyboard→Acquire→host 注入键序→GetDeviceState(256B) 轮询
+- 通过：DIK_A/DIK_1 状态位随注入按下/抬起翻转且无幻影键；Acquire/Unacquire 往返 S_OK
+- 失败特征：全 0=设备创建/协作级别断；位错=DIK 码与 evdev 换算链断（键盘注入链的 dinput 视角哨兵）
+
+**dinput_mouse — 鼠标轴增量与缓冲** ｜ P4 ｜ 手段 I+R
+- 行为：c_dfDIMouse（相对轴）→Acquire→host 注入 move/click→GetDeviceState + GetDeviceData 缓冲
+- 通过：轴通道有流且方向正确、按钮位正确、缓冲与状态通道一致；click 与 swipe 起点必须重合（enter 定位差分会吃掉/抵消轴增量）
+- 现状（2026-09-26 定性）：x64 轴量级存在超注入漂移（dx 35~249 波动、dy 注入 0 实测漂至 180——wineserver 光标位移差分混入宿主合成光标管理的额外移动，FPS 视角漂移族的量化证据）；x86 轴增量确定性断流（dx 恒 0，按钮/缓冲通道正常）。两缺口记入平台缺口清单，量级以 metric 留档
+
+**ddraw_surface — 表面协作（含调色板与 Flip 组）** ｜ P4 ｜ 手段 R+P
+- 行为：DirectDrawCreateEx（动态加载）→一个程序三判定组：
+  ①离屏 32bpp 表面 Lock 写已知图案→Blt→读回逐像素一致 + BltColorFill；
+  ②8bpp 表面+CreatePalette/SetEntries→索引渲染读回 + GetEntries 往返
+  （与 gdi_palette 对应的 ddraw 视角）；
+  ③主表面+后备缓冲 Flip API 往返（像素半段受缺口②限，Flip 判定收在
+  「返回值属明确 DDERR 语义集合」，独占翻转链出图由烟测守）
+- 失败特征：Lock 失败=表面管理断；错色=Blt/调色板翻译断（cnc-ddraw 类
+  wrap 链守卫，红警2 依赖线）
+
+**d3d_smoke — D3D10 链守卫** ｜ P4 ｜ 手段 R
+- 行为：D3D10CreateDevice（动态加载）设备创建+状态往返
+- 现状（2026-09-26 定性，保持 FAIL）：dxvk legacy 档设备创建 E_FAIL——DXVK
+  1.10.3 的 d3d10/d3d10_1/d3d10core 已随载荷打包（wine/dxvk/legacy/ 产物在位）
+  但未启用（prefix system32 仍是 builtin d3d10，256KB vs DXVK 2.5MB 可辨），
+  启用链缺 d3d10 覆盖；wined3d 档下 builtin d3d10 同样 E_FAIL。治本=DXVK
+  档启用链纳入 d3d10 三件套（与 d3d11/dxgi 同路径）
+- 失败特征：设备创建断=d3d10 链缺失/未启用（D3D10 程序在两档均不可用）
+
+**d3d9_offscreen — D3D9 离屏渲染读回 + 交换链 Reset** ｜ P4 ｜ 手段 R+P
+- 行为：d3d9 窗口化设备：已知色清屏+纯色三角形→GetRenderTargetData 离屏
+  读回（三角内外两采样点）；窗口 resize→Reset→继续 Present（游戏 resize
+  崩溃类回归哨兵）
+- 现状（2026-09-26 定性，读回断言保持 FAIL）：设备创建/清屏/绘制/读回链路
+  全部走通（早期 d3d9.dll 加载挂死为环境性现象，拆分独立用例后未再复现），
+  但 GetRenderTargetData 读回内容与清屏色不符（整幅恒定杂色 0xff476378）
+  ——wined3d 档 RT 读回内容错，游戏内截图/镜面类功能依赖
+- 失败特征：读回内容错=RT 回读链断（与收敛项②同层）
+
 ## 4. 实现规范
 
 1. **共用头**：`smoke/t/common/winehua_t_check.h`（已交付）—— `T_CHECK(name, expr, fmt, ...)` 累积 checks、`T_METRIC(key,val)`、`T_SKIP(reason)`、退出统一写 result JSON（格式对齐 result-json 判定器）。
@@ -372,10 +428,14 @@
 | P1 | win_zorder/minimize/maximize/fullscreen/owned/layered、msg_order、input_mouse/keyboard、gdi_primitives/text、screen_bitblt、clip_cross、seh、dll_load、e2e_click/resize、sync_kernel、filemap、shell_path | 19 | 已完成（2026-09-26） |
 | P2 | win_child、msg_thread、input_relative/capture/wheel、gdi_bitmap、screen_enum、clip_formats、proc_pipe、crt、time、net_tcp、e2e_drag/menu、stress_windows、shell_dialogs、resource、console | 17 | 已完成（2026-09-26） |
 | P3 | gdi_palette、fs_watch、thread_tls、mem_heap、com_basic、stress_messages、mutex_atom、shell_link、mm_timer | 9 | 已完成（2026-09-26，双架构全绿） |
+| P4 | dinput_keyboard、dinput_mouse、ddraw_surface（含调色板/Flip 组）、d3d_smoke（d3d10 链守卫）、d3d9_offscreen（离屏读回+Reset） | 5 程序 | 已完成（2026-09-26，3 全绿 + 2 定性红） |
 
 ## 6. 与既有资产的边界
 
-- 图形栈（D3D8-12/Vulkan/GL）已由现有套件覆盖，本体系不含图形域
+- 渲染出图能力（D3D8-12/Vulkan/GL 的链路通断）由现有图形烟测守：`d3d8-smoke`、
+  `d3d-switch-cube`、`d3d11-smoke`、`d3d12-triangle/gears/1000f`、`graphics-smoke`、
+  `vulkan-smoke`（登记见 §3.20）；本体系的游戏域（P4）测 API 语义面与离屏读回，
+  两者互补不重叠
 - `winehua_dinput_probe` 的 `--automation` 协议是 C 模式先例，input 域与其互补
 - 收敛项映射：clip_cross/screen_bitblt=收敛项①②验收载荷；win_layered=收敛项③；win_zorder 的 D 半段=Z 序私有消息验收；win_minimize=unset_minimized 治本验收
 - 三问审计缺口映射：窗口协议（3.1）、输入（3.3）、env 管线（env_vars）、进程链（proc_spawn）、noexec（mem_virtual）逐项对上
