@@ -374,7 +374,7 @@ int OnRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* reply, voi
     if (OH_IPCParcel_ReadInt32(request, &frame) != OH_IPC_SUCCESS ||
         OH_IPCParcel_ReadInt32(request, &width) != OH_IPC_SUCCESS ||
         OH_IPCParcel_ReadInt32(request, &height) != OH_IPC_SUCCESS ||
-        frame < 0 || frame >= winehua::direct::kSurfaceProbeFrameCount ||
+        frame < 0 || frame >= winehua::direct::kGpuImportProbeFrameCount ||
         width <= 0 || height <= 0)
         return OH_IPC_CHECK_PARAM_ERROR;
     SurfaceProbeFrame output{};

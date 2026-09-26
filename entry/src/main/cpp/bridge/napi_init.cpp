@@ -1217,6 +1217,8 @@ static napi_value Init(napi_env env, napi_value exports) {
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectGpuSurfaceProbe", nullptr, winehua::direct::RunGpuSurfaceProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectGpuImportProbe", nullptr, winehua::direct::RunGpuImportProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startServer",    nullptr, StartServer,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setHostShadowProfile", nullptr, SetHostShadowProfile, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"launchClient",   nullptr, LaunchClient,   nullptr, nullptr, nullptr, napi_default, nullptr},

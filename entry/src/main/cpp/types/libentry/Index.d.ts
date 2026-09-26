@@ -41,10 +41,15 @@ export interface DirectSurfaceProbeResult {
   parentFdCount: number;
   parentRssKiB: number;
   pixelCheck: boolean;
+  importCheck: boolean;
+  importCount: number;
+  reuseCount: number;
+  importVkResult: number;
 }
 export const runDirectSurfaceProbe: () => Promise<DirectSurfaceProbeResult>;
 export const runDirectSurfaceAbortProbe: () => Promise<DirectSurfaceProbeResult>;
 export const runDirectGpuSurfaceProbe: () => Promise<DirectSurfaceProbeResult>;
+export const runDirectGpuImportProbe: () => Promise<DirectSurfaceProbeResult>;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
   homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string,

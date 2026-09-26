@@ -1,0 +1,21 @@
+09-26 21:12:17.588 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: result=PASS stage=complete pid=12331 frames=8 pixel=1 import=6/2 fd=50 rssKiB=95192
+09-26 21:12:42.524 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4ca379a2 98bb00 15da78f]result=PASS stage=complete pid=12761 frames=8 pixel=1 import=6/2 fd=42 rssKiB=103096
+09-26 21:12:43.041 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cac01ba d895 218a363]result=PASS stage=complete pid=12790 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102184
+09-26 21:12:43.602 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cb5befd 1825f94 2f22110]result=PASS stage=complete pid=12821 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102656
+09-26 21:12:44.231 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cbef459 1428c5b cf0fae]result=PASS stage=complete pid=12849 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102664
+09-26 21:12:44.809 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cc8b475 1e212da 29ccc15]result=PASS stage=complete pid=12881 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102672
+09-26 21:12:45.413 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cd26ac7 7acb83 2380335]result=PASS stage=complete pid=12911 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102664
+09-26 21:12:46.003 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cdb7e4e 2fa5f7a 2a5c129]result=PASS stage=complete pid=12940 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102708
+09-26 21:12:46.566 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4ce514e6 1d4852 4a63b5]result=PASS stage=complete pid=12982 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102128
+09-26 21:12:47.151 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4ceddb42 1493eda 14750c0]result=PASS stage=complete pid=13015 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102784
+09-26 21:12:47.751 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4cf7a21f 279c4c6 1be3a39]result=PASS stage=complete pid=13049 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102348
+09-26 21:12:48.328 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d00f6c5 9a6dc4 226bfc7]result=PASS stage=complete pid=13081 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102932
+09-26 21:12:48.913 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d0a1036 1107907 14dc9ed]result=PASS stage=complete pid=13113 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102944
+09-26 21:12:49.489 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d13c529 3c29abe 1dfe1c4]result=PASS stage=complete pid=13144 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102960
+09-26 21:12:50.184 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d1e4b02 24922a0 108bdf5]result=PASS stage=complete pid=13212 frames=8 pixel=1 import=6/2 fd=42 rssKiB=103116
+09-26 21:12:50.784 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d280030 14fa1e6 3dc6cce]result=PASS stage=complete pid=13272 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102108
+09-26 21:12:51.349 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d318dbc 1e6fe27 61e380]result=PASS stage=complete pid=13333 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102660
+09-26 21:12:51.920 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d3a4616 2fd2ce5 efb09a]result=PASS stage=complete pid=13403 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102064
+09-26 21:12:52.560 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d448e70 d9e112 266e89e]result=PASS stage=complete pid=13450 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102584
+09-26 21:12:53.099 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d4d376e 20bc893 1c50465]result=PASS stage=complete pid=13490 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102600
+09-26 21:12:53.688 12153 12153 I A00000/app.hackeris.winehua/DIRECT-D2-IMPORT: [a92ab1c4d56d07d 3ed735c 7cc99a]result=PASS stage=complete pid=13532 frames=8 pixel=1 import=6/2 fd=42 rssKiB=102600

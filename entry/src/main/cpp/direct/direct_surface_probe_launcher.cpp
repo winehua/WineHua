@@ -1,4 +1,5 @@
 #include "direct_surface_probe_launcher.h"
+#include "direct_buffer_import_probe.h"
 #include "surface_probe_protocol.h"
 
 #include <AbilityKit/native_child_process.h>
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <mutex>
+#include <memory>
 #include <new>
 #include <thread>
 
@@ -44,6 +46,12 @@ struct SurfaceWork {
     bool pixelCheck = false;
     bool abortMode = false;
     bool gpuMode = false;
+    bool importMode = false;
+    bool importCheck = false;
+    int32_t importVkResult = 0;
+    int32_t importCount = 0;
+    int32_t reuseCount = 0;
+    std::unique_ptr<DirectBufferImportProbe> importer;
     std::atomic<int32_t> frameSignals{0};
     char stage[64] = "pending";
 };
@@ -195,6 +203,11 @@ bool ConsumeFrame(SurfaceWork& work, OH_NativeImage* image,
             Fail(work, "consumer_config");
             break;
         }
+        if (work.importMode && !work.importer->Import(nativeBuffer, width, height)) {
+            work.importVkResult = work.importer->VkError();
+            Fail(work, work.importer->Stage());
+            break;
+        }
         void* address = nullptr;
         if (OH_NativeBuffer_Map(nativeBuffer, &address) != 0 || !address) {
             Fail(work, "consumer_map");
@@ -282,6 +295,13 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             Fail(work, "queue_size_below_2");
             break;
         }
+        if (work.importMode) {
+            work.importer.reset(new (std::nothrow) DirectBufferImportProbe());
+            if (!work.importer) {
+                Fail(work, "import_probe_alloc");
+                break;
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(g_callbackMutex);
             if (g_callbackPending) {
@@ -317,7 +337,7 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             break;
         }
         for (int32_t group = 0; group < 2; ++group) {
-            const int32_t firstFrame = group * 3;
+            const int32_t firstFrame = group * (work.importMode ? 4 : 3);
             const int32_t width = group == 0 ? 64 : 96;
             const int32_t height = group == 0 ? 64 : 48;
             work.width = width;
@@ -326,9 +346,11 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 Fail(work, "consumer_resize");
                 break;
             }
+            if (group == 1 && work.importMode) work.importer->NewGeneration();
             if (work.gpuMode) {
                 bool groupPassed = true;
-                for (int32_t frame = firstFrame; frame < firstFrame + 3; ++frame) {
+                for (int32_t frame = firstFrame;
+                     frame < firstFrame + (work.importMode ? 4 : 3); ++frame) {
                     if (!SendFrame(work, producer, frame, width, height) ||
                         !ConsumeFrame(work, image, frame, width, height)) {
                         groupPassed = false;
@@ -369,8 +391,15 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 break;
             ++work.framesPassed;
         }
-        if (work.framesPassed == kSurfaceProbeFrameCount) {
+        if (work.framesPassed == (work.importMode ? kGpuImportProbeFrameCount :
+                                 kSurfaceProbeFrameCount)) {
             work.pixelCheck = true;
+            work.importCheck = !work.importMode ||
+                (work.importer->ImportCount() >= 2 && work.importer->ReuseCount() >= 2);
+            if (!work.importCheck) {
+                Fail(work, "import_cache_reuse");
+                break;
+            }
             std::snprintf(work.stage, sizeof(work.stage), "complete");
         }
     } while (false);
@@ -384,6 +413,11 @@ void ExecuteSurfaceProbe(napi_env, void* data)
         work.proxy = nullptr;
     }
     if (listenerSet) OH_NativeImage_UnsetOnFrameAvailableListener(image);
+    if (work.importer) {
+        work.importCount = static_cast<int32_t>(work.importer->ImportCount());
+        work.reuseCount = static_cast<int32_t>(work.importer->ReuseCount());
+    }
+    work.importer.reset();
     OH_NativeImage_Destroy(&image);
 }
 
@@ -403,8 +437,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", work->gpuMode ? "D2-WSI" : "D1");
-    setString("status", work->pixelCheck ? "PASS" : "FAIL");
+    setString("gate", work->importMode ? "D2-IMPORT" : work->gpuMode ? "D2-WSI" : "D1");
+    setString("status", work->pixelCheck && (!work->importMode || work->importCheck) ? "PASS" : "FAIL");
     setString("stage", work->stage);
     setInt("pid", work->childPid);
     setInt("framesPassed", work->framesPassed);
@@ -421,6 +455,15 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     napi_value gpuMode;
     napi_get_boolean(env, work->gpuMode, &gpuMode);
     napi_set_named_property(env, object, "gpuMode", gpuMode);
+    napi_value importMode;
+    napi_get_boolean(env, work->importMode, &importMode);
+    napi_set_named_property(env, object, "importMode", importMode);
+    setInt("importVkResult", work->importVkResult);
+    napi_value importCheck;
+    napi_get_boolean(env, work->importCheck, &importCheck);
+    napi_set_named_property(env, object, "importCheck", importCheck);
+    setInt("importCount", work->importCount);
+    setInt("reuseCount", work->reuseCount);
     setInt("parentFdCount", CountOpenFds());
     setInt("parentRssKiB", ReadRssKiB());
     napi_value check;
@@ -433,7 +476,7 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
 
 } // namespace
 
-napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode)
+napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode, bool importMode)
 {
     auto* work = new (std::nothrow) SurfaceWork();
     if (!work) {
@@ -442,6 +485,7 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode)
     }
     work->abortMode = abortMode;
     work->gpuMode = gpuMode;
+    work->importMode = importMode;
     napi_value promise;
     if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
         delete work;
@@ -463,17 +507,22 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode)
 
 napi_value RunSurfaceProbe(napi_env env, napi_callback_info)
 {
-    return QueueSurfaceProbe(env, false, false);
+    return QueueSurfaceProbe(env, false, false, false);
 }
 
 napi_value RunSurfaceAbortProbe(napi_env env, napi_callback_info)
 {
-    return QueueSurfaceProbe(env, true, false);
+    return QueueSurfaceProbe(env, true, false, false);
 }
 
 napi_value RunGpuSurfaceProbe(napi_env env, napi_callback_info)
 {
-    return QueueSurfaceProbe(env, false, true);
+    return QueueSurfaceProbe(env, false, true, false);
+}
+
+napi_value RunGpuImportProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true);
 }
 
 } // namespace winehua::direct

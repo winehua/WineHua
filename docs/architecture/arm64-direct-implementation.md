@@ -63,7 +63,14 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 
 - `winehua.mode=direct-gpu-surface-probe` 使用独立 `libdirect_gpu_surface_probe.so`，沿用 D1 的 ConsumerSurface、IPC parcel 和 finish 所有权顺序。子进程创建系统 Vulkan instance/device/OHOS surface/swapchain，对 swapchain 图像用 GPU clear 提交六帧；父进程逐帧 Acquire、等待 acquire fence、CPU map 校验 RGBA 图案，然后 Release。前三帧 64×64，后三帧 96×48；resize 时子进程重建 swapchain。此模式逐帧提交和消费，尚未测并发队列深度。
 - 签名 HAP SHA-256：`3006c674d4a93b06ce1f28613a7a83c1765f414dc31f1c462e13928c5e3e0250`。MatePad Mini 连续 101 次启动，101/101 `PASS`、606/606 帧正确、101 个不同子进程 PID、无残留子进程；父进程 fd 全程 42。RSS 首次 91216 KiB、预热后最高 96136 KiB、末次 93508 KiB，没有随轮次持续增加。[父进程逐次日志](evidence/direct-d2-wsi-101-parents.log)、[子进程逐帧日志](evidence/direct-d2-wsi-101-children.log)、[首轮结果](evidence/direct-d2-wsi-first.json)、[末轮结果](evidence/direct-d2-wsi-101-final.json)。同包 D0 Create 与 D1 常规六帧回归均 `PASS`、fd 42。
-- 此探针证明 Create NCP 的系统 Vulkan WSI 能向跨进程 BufferQueue 写入可辨像素并处理 resize。父进程仍用 CPU map 检查，子进程每帧等待提交 fence；这不是 GPU import、零拷贝合成、GPU acquire/release fence 或 60 FPS 性能验收。下一步在父进程把收到的 NativeBuffer 按 `(bufferSeq,generation)` 导入 Vulkan、缓存 image/memory/view，并在独立 XComponent 上完成 GPU 合成，之后再移除逐帧 CPU 等待。
+- 此探针证明 Create NCP 的系统 Vulkan WSI 能向跨进程 BufferQueue 写入可辨像素并处理 resize。父进程仍用 CPU map 检查，子进程每帧等待提交 fence；这不是 GPU import、零拷贝合成、GPU acquire/release fence 或 60 FPS 性能验收。下一节单独验证实际 NativeBuffer 的 image/memory/view 导入和缓存。
+
+## D2 NativeBuffer import/cache 独立探针（2026-09-26）
+
+- `winehua.mode=direct-gpu-import-probe` 在上节的 Vulkan WSI producer 基础上，每组各提交四帧。App 消费端先等待 acquire fence，再按 NativeBuffer sequence 缓存 Vulkan image、memory 和 image view；同一 generation 重访 buffer 时复用这些对象，resize 前清空旧 generation 的缓存，最后释放所有 Vulkan 对象和 NativeBuffer 引用。探针用 `vkGetNativeBufferPropertiesOHOS` 确认真实 buffer 的格式和内存类型，通过 `VkImportNativeBufferInfoOHOS` 分配/绑定内存，并创建 RGBA8 sampled image view。每组的第四帧应复用已有 buffer，因此合计应是六次导入、两次缓存命中。
+- 签名 HAP SHA-256：`6bfeaa4ab362e28d262ee1dcf28a125609b50a2e3e110cda66334b40a92055a2`。MatePad Mini 连续 21 次 `PASS`、168/168 GPU producer 帧成功；每轮八帧 CPU 像素校验通过、六次 image/memory/view 导入和两次缓存命中。第一次安装后父进程 fd 为 50，第二轮起 20 次均为 42；RSS 在预热后约 102–103 MiB 范围波动，未呈持续线性增长。无探针子进程残留。同包 D0、D1、D2 WSI 入口复测均 `PASS`、fd 42。[父进程逐次日志](evidence/direct-d2-import-parents.log)、[子进程逐帧日志](evidence/direct-d2-import-children.log)、[末轮 JSON](evidence/direct-d2-import-final.json)。
+- 仅修正异常设备枚举时错误码后重构建的最终 HAP SHA-256 为 `39db6d118117293084c75eb6699022c7a3bcb9c5dfa9ba8579f792715e91d404`，已覆盖安装；导入探针再跑两轮均 `PASS`，第二轮 fd 42（[最终 JSON](evidence/direct-d2-import-39db.json)）。
+- 这证明实际跨进程 BufferQueue 的 NativeBuffer 可在 App 进程创建并缓存 Vulkan sampled image view；**尚未通过 GPU 命令从该 image 取样或合成**。现有像素判断仍靠 CPU map，acquire fence 用 CPU poll，子进程每帧等待 submit fence。下一步需在独立诊断 XComponent 上完成 GPU 采样/合成与 fence 的 GPU import/export，确认 queue-family/layout 所有权、release fence 交接，以及无逐帧 CPU wait/import 的 60 FPS 运行。
 
 ## 关键的未知事实
 

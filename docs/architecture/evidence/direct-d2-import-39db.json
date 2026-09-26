@@ -1,0 +1,1 @@
+{"gate":"D2-IMPORT","status":"PASS","stage":"complete","pid":16487,"framesPassed":8,"width":96,"height":48,"queueSize":3,"lastBufferSeq":0,"launchCode":0,"callbackCode":0,"killCode":-1,"abortMode":false,"gpuMode":true,"importMode":true,"importVkResult":0,"importCheck":true,"importCount":6,"reuseCount":2,"parentFdCount":42,"parentRssKiB":103116,"pixelCheck":true}
