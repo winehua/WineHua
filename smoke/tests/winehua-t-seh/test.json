@@ -1,0 +1,20 @@
+{
+  "id": "winehua-t-seh",
+  "title": "结构化异常捕获与恢复",
+  "exe": "winehua_t_seh.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/rt/seh.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

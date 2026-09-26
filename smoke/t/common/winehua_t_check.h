@@ -84,6 +84,8 @@ static void t_check(const char *name, int pass, const char *detail_fmt, ...)
 
 /* 便捷宏：断言表达式本身作为通过描述。 */
 #define TCHECK(name, expr) t_check((name), (expr) ? 1 : 0, "%s", #expr)
+/* 单参形式：断言表达式同时充当名字与描述，适合一次性布尔调用。 */
+#define TEXPR(expr) t_check(#expr, (expr) ? 1 : 0, "%s", #expr)
 
 static void t_metric(const char *key, const char *fmt, ...)
 {
@@ -105,6 +107,28 @@ static void t_skip(const char *reason)
 {
     g_t.skipped = 1;
     winehua_smoke_copy_arg(g_t.skip_reason, sizeof(g_t.skip_reason), reason);
+}
+
+/* 创建顶层窗口：优先内置控件类；smoke 自动化会话里 win32u 的内置类注册
+ * 只挂在桌面初始化链上（连已有桌面时不触发），内置类可能 1411，此时回退
+ * 自注册类并记 metric——保证各例主断言不被这个无关缺口掩盖。 */
+static HWND t_create_toplevel(const char *builtin_class, const char *fallback_class,
+                              DWORD style, DWORD ex_style, int x, int y, int w, int h,
+                              const char *title)
+{
+    WNDCLASSA wc;
+    HWND hwnd = CreateWindowExA(ex_style, builtin_class, title, style, x, y, w, h,
+                                NULL, NULL, GetModuleHandleA(NULL), NULL);
+    if (hwnd)
+        return hwnd;
+    t_metric("builtin-class-fallback", "%s err=%lu", builtin_class, GetLastError());
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = fallback_class;
+    RegisterClassA(&wc);
+    return CreateWindowExA(ex_style, fallback_class, title, style, x, y, w, h,
+                           NULL, NULL, GetModuleHandleA(NULL), NULL);
 }
 
 /* result JSON 必须是合法 UTF-8（主机侧按 utf-8 解析）；A 系列 API 在中文

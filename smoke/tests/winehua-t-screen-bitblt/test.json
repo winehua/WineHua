@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-screen-bitblt",
+  "title": "跨窗口读屏（收敛项②载荷，先红合法）",
+  "exe": "winehua_t_screen_bitblt.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/gdi/screen_bitblt.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

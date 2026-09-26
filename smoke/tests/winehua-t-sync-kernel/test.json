@@ -1,0 +1,20 @@
+{
+  "id": "winehua-t-sync-kernel",
+  "title": "事件/信号量/跨进程命名事件（wineboot回归哨兵）",
+  "exe": "winehua_t_sync_kernel.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/rt/sync_kernel.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

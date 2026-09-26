@@ -1,6 +1,6 @@
 {
   "name": "win32",
-  "title": "Win32 基础功能回归线（P0 九例）",
+  "title": "Win32 基础功能回归线（P0 九例 + P1 十六例）",
   "tests": [
     {
       "case": "winehua-t-msg-basic",
@@ -119,6 +119,230 @@
     {
       "case": "winehua-t-clip-basic",
       "id": "t-clip-basic",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-win-minimize",
+      "id": "t-win-minimize",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 25,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-win-maximize",
+      "id": "t-win-maximize",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-win-owned",
+      "id": "t-win-owned",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-win-zorder",
+      "id": "t-win-zorder",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-win-fullscreen",
+      "id": "t-win-fullscreen",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 25,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-win-layered",
+      "id": "t-win-layered",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 25,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-msg-order",
+      "id": "t-msg-order",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-gdi-primitives",
+      "id": "t-gdi-primitives",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-gdi-text",
+      "id": "t-gdi-text",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 10,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-screen-bitblt",
+      "id": "t-screen-bitblt",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-seh",
+      "id": "t-seh",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-dll-load",
+      "id": "t-dll-load",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 8,
+      "timeoutMs": 60000
+    },
+    {
+      "case": "winehua-t-sync-kernel",
+      "id": "t-sync-kernel",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-filemap",
+      "id": "t-filemap",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-clip-cross",
+      "id": "t-clip-cross",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 20,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "winehua-t-shell-path",
+      "id": "t-shell-path",
       "arch": [
         "x64",
         "x86"

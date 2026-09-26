@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-win-minimize",
+  "title": "最小化/还原循环与-32000哨兵",
+  "exe": "winehua_t_win_minimize.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/win/win_minimize.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

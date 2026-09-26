@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-win-layered",
+  "title": "分层窗口（均匀alpha/per-pixel/rgn，收敛项③载荷）",
+  "exe": "winehua_t_win_layered.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/win/win_layered.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

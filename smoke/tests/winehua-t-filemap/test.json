@@ -1,0 +1,20 @@
+{
+  "id": "winehua-t-filemap",
+  "title": "文件映射与跨进程共享内存",
+  "exe": "winehua_t_filemap.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/rt/filemap.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

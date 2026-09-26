@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-win-owned",
+  "title": "owner/owned关系与禁用链",
+  "exe": "winehua_t_win_owned.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/win/win_owned.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

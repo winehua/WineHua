@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-msg-order",
+  "title": "窗口消息时序（NCCREATE/CREATE/DESTROY序）",
+  "exe": "winehua_t_msg_order.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/msg/msg_order.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-win-zorder",
+  "title": "Z序操作（TOP/INSERTAFTER/BOTTOM）",
+  "exe": "winehua_t_win_zorder.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/win/win_zorder.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

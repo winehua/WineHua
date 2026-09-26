@@ -1,0 +1,23 @@
+{
+  "id": "winehua-t-gdi-text",
+  "title": "文本绘制与度量（中文字形）",
+  "exe": "winehua_t_gdi_text.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/gdi/gdi_text.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}
