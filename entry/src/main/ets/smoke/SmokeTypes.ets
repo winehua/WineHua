@@ -43,13 +43,15 @@ export interface SmokeSuiteTest {
 
 // inject-request-<testId>.json 的内容（guest 声明希望被注入的序列）
 export interface InjectAction {
-  // 'click' | 'doubleClick'
+  // 'click' | 'doubleClick' | 'type' | 'ime'
   type: string;
-  // guest 桌面坐标
-  x: number;
-  y: number;
+  // guest 桌面坐标（click/doubleClick 用）
+  x?: number;
+  y?: number;
   // 'left' | 'right'（缺省 left）
   button?: string;
+  // type/ime 的文本（type = ASCII 键序展开；ime = IME commit 字符串）
+  text?: string;
 }
 
 export interface InjectSpec {

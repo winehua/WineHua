@@ -1,0 +1,22 @@
+{
+  "id": "winehua-t-input-keyboard",
+  "title": "键盘注入配对（evdev键序+IME commit，中文哨兵）",
+  "exe": "winehua_t_input_keyboard.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/t/input/input_keyboard.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

@@ -390,7 +390,46 @@ export class SmokeRunner {
       test.testId, status, doneCount, message);
   }
 
+  // type/ime 动作复用上一个 mouse 动作解析出的 toplevel（键盘焦点窗口）
+  private lastInjectTl: number = 0;
+
   private async injectAction(action: InjectAction): Promise<string> {
+    if (action.type === 'type') {
+      return this.injectTyping(action.text ? action.text : '');
+    }
+    if (action.type === 'ime') {
+      if (!this.lastInjectTl) return 'ime action without a prior mouse action (no focus target)';
+      testNapi.sendImeCommit(action.text ? action.text : '');
+      return '';
+    }
+    return this.injectMouse(action);
+  }
+
+  // ASCII 子集展开为 evdev 键序: a-z / A-Z(shift) / 0-9。
+  // KEY_1=2..KEY_0=11, KEY_A=30..KEY_Z=44 (Linux include/uapi/input-event-codes.h)
+  private async injectTyping(text: string): Promise<string> {
+    if (!this.lastInjectTl) return 'type action without a prior mouse action (no focus target)';
+    for (let i = 0; i < text.length; i++) {
+      const ch: string = text.charAt(i);
+      const code: number = ch >= 'a' && ch <= 'z' ? 30 + (ch.charCodeAt(0) - 97) :
+        ch >= 'A' && ch <= 'Z' ? 30 + (ch.charCodeAt(0) - 65) :
+        ch >= '1' && ch <= '9' ? 2 + (ch.charCodeAt(0) - 49) :
+        ch === '0' ? 11 : -1;
+      if (code < 0) return `unsupported char '${ch}' (ascii subset only)`;
+      const needShift: boolean = ch >= 'A' && ch <= 'Z';
+      const tl: number = this.lastInjectTl;
+      if (needShift) testNapi.sendKeyEvent(tl, 42, true);  // KEY_LEFTSHIFT
+      testNapi.sendKeyEvent(tl, code, true);
+      await new Promise<void>((r) => setTimeout(r, 30));
+      testNapi.sendKeyEvent(tl, code, false);
+      if (needShift) testNapi.sendKeyEvent(tl, 42, false);
+      await new Promise<void>((r) => setTimeout(r, 30));
+    }
+    return '';
+  }
+
+  private async injectMouse(action: InjectAction): Promise<string> {
+    if (action.x === undefined || action.y === undefined) return 'mouse action missing x/y';
     const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
     if (!mapped) return 'smokeMapPoint failed (renderer/letterbox not ready)';
     const px: number = mapped.px;
@@ -398,6 +437,7 @@ export class SmokeRunner {
     const tl = testNapi.findToplevelAt(px, py) as number;
     if (!tl || tl <= 0) return `no toplevel at physical (${px},${py})`;
     testNapi.raiseToplevel(tl);
+    this.lastInjectTl = tl;
     // ArkUI MouseButton: Left=1, Right=2 → evdev code
     const btn = mapMouseButton(action.button === 'right' ? 2 : 1);
     const presses: number = action.type === 'doubleClick' ? 2 : 1;
