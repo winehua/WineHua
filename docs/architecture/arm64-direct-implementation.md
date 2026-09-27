@@ -145,6 +145,20 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 最终签名 HAP SHA-256 `e2de0bd6e4b5e3644e9e3b6a5af2f2bee9dba3c731bac1a9212e0784dbac9621` 已装至 MatePad Mini。最终包的会话 Create `platform-process` **2/2**，wineserver PID 57818 由 `create-ipc` 启动；默认 Start 同套 **2/2**，wineserver PID 58700 由 `start` 启动；会话 Create 加单进程 `WINEHUA_DIRECT_NCP=0` 的 x64 DNS **1/1**，探针 PID 59845 由 `start` 启动并以 0 退出。最终包的 i386 契约在跳过 `TerminateThread` 后，Start 与 Create 各 **1/1 PASS**；这把未解决的完整契约故障收窄到该路径附近，但未证明 Wine 线程终止实现的具体根因。[最终包结构化证据](evidence/direct-d25-session-route-e2de.json)、[设备路由日志](evidence/direct-d25-session-route-e2de.log)。
 - 本轮尝试真实 Steam/CEF 回归时发现当前 prefix 的 `Program Files (x86)` 下没有 Steam，`steam.exe` 启动仅报 `failed to open`。本机 Valve Corp. 有效签名的 `SteamSetup.exe`（SHA-256 `7d3654531c32d941b8cae81c4137fc542172bfa9635f169cb392f245a0a12bcb`）复制到 `C:\smoke` 后以 `/S` 运行，FEX 与显式 box64 两次均以 `exit=11` 结束，未写出 `steam.exe`；安装会话已停止。因此真实 Steam/CEF 多进程、长期 fd/proxy 稳定性与完整 `TerminateThread` 契约仍是 D2.5 未通过的门槛，不据此打开 Direct 默认路由。
 
+## D3 第一阶段：Wine Vulkan 离屏 Direct（2026-09-27）
+
+- D3 仍为**显式单进程 opt-in**：测试进程带 `WINEHUA_DIRECT_NCP=1` 和 `WINEHUA_VULKAN_BACKEND=direct`。`wine_child.cpp` 清除 guest Venus ICD 覆盖；Wine `win32u/vulkan.c` 选择 `/system/lib64/libvulkan.so`；`winewayland.drv/vulkan.c` 在 Direct 模式暂不公布 Win32 surface，也拒绝把旧私有 Venus surface tag 交给系统 loader。默认会话和默认 Wine Vulkan 仍走原有 Venus/VirGL 路径。Direct 模式的 `get_opengl_gpus` 跳过隐式 VirGL/EGL 枚举，避免离屏 Vulkan 进程在 `vkCreateInstance` 前因独立 VirGL 服务故障于 `eglInitialize` 中止；该模式不承诺 OpenGL。
+- 全新 prefix 首次启动暴露了既有启动门禁问题：wineboot 已写 `wineboot-init-ok`，但持久 wineserver 尚未把 `system.reg`、`user.reg` 落盘，App 因此在注册表条件上等待超时。ARM64 Wine PE 的 `wineboot` 现在于初始化完成、发出 boot event 前对 HKLM/HKCU 调用 `RegFlushKey`。实机复测出现 `system.reg`、`user.reg` 和 `userdef.reg`，wineboot 用 66 秒完成，App 进入 `ready`。会话级 Create 路由在**全新** prefix 上尚未用最终包单独复测；Create 的死亡通知仍不携带退出码。
+- 最终候选 signed HAP SHA-256：`e5de3ab0b4f769a7a3b0f464e708b84be2651bc344fe4246a35285ce98570763`；`scripts/w1-verify-candidate.sh` 的 binary mapping 与 runtime closure 均 `PASS`。MatePad Mini `5KPBB25818203996` 上，同包、同为单进程 Create NCP 的 Wine Vulkan 离屏 A/B 如下。四项均 `PASS`，所有图像/采样检查为真，`fallbackDetected=false`，`presentFrames=0`：
+
+  | PE | Direct 系统 Vulkan | 原 Venus 路径 |
+  | --- | --- | --- |
+  | x64 | Maleoon 910，loader API 1.3.275，[结果](evidence/direct-d3-offscreen-direct-x64.json) | Virtio-GPU Venus (Maleoon 910)，loader API 1.3.290，[结果](evidence/direct-d3-offscreen-venus-x64.json) |
+  | x86 | Maleoon 910，loader API 1.3.275，[结果](evidence/direct-d3-offscreen-direct-x86.json) | Virtio-GPU Venus (Maleoon 910)，loader API 1.3.290，[结果](evidence/direct-d3-offscreen-venus-x86.json) |
+
+- 单进程 Create NCP 的非 Vulkan x64 DNS 对照也 `PASS`（本机归档 `F:\WineHua\.temp\direct-d3-runs\core-d3-create-dns-20260927`）。修正 EGL 枚举前的 Direct 测试在 `win32u` 的 OpenGL GPU 枚举中进入 `eglInitialize → libgallium` 并 `SIGABRT`；修正后通过。此前首次冷启动包上的默认 Venus x64 测试超时，不能作为最终包回归结论；最终包的 Create/Venus x64 与 x86 上表均通过。
+- **D3 WSI 未完成**：离屏 smoke 没有 Win32 surface、swapchain、acquire、present 或 resize，也没有把产品窗口接到 D2 的 BufferQueue 和 Vulkan compositor。下一步需要把 App 的 producer window 通过 D2.5 的 IPC 交给目标 Wine NCP，建立 `(clientPid, toplevelId, generation)` surface 身份与生命周期，再实现 Direct 的 Win32 surface/swapchain/present 和 resize/device-lost 回退。D4 DXVK Direct 尚未开始。
+
 ## 关键的未知事实
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。

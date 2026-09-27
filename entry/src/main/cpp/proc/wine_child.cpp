@@ -1761,6 +1761,14 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+    const char* vulkanBackend = getenv("WINEHUA_VULKAN_BACKEND");
+    if (vulkanBackend && strcmp(vulkanBackend, "direct") == 0) {
+        // Wine's Direct Vulkan loader must discover the system driver, not the
+        // guest Venus ICD installed by the default Wine environment.
+        unsetenv("VK_DRIVER_FILES");
+        unsetenv("VK_ICD_FILENAMES");
+        OH_LOG_WARN(LOG_APP, "[WineChild] Direct Vulkan selected; guest ICD overrides cleared");
+    }
     apply_game_address_space_compatibility(argc, argv);
     // entryParams 覆盖之后再选一次 WINEDEBUG 档位: 上一次调用发生在
     // apply_entry_param_env_overrides() 之前, 取不到 entryParams 里的覆盖。

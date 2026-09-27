@@ -4,23 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+ensure_wine_patch() {
+    local patch_file="$1" description="$2"
+    # Docker mounts this managed worktree without the external Git metadata
+    # referenced by its .git file.  patch checks the source tree directly.
+    if patch -d "$WINE_SRC" -p1 --batch --dry-run -R < "$patch_file" >/dev/null 2>&1; then
+        log "$description already applied"
+    else
+        patch -d "$WINE_SRC" -p1 --batch --dry-run < "$patch_file" >/dev/null
+        patch -d "$WINE_SRC" -p1 --batch < "$patch_file" >/dev/null
+        log "$description applied"
+    fi
+}
+
 # Keep prefix font registration repair reproducible after refreshing Wine.
-font_patch="$SCRIPT_DIR/../patches/wine/0001-win32u-repair-external-font-registration.patch"
-if git -C "$WINE_SRC" apply --reverse --check "$font_patch" 2>/dev/null; then
-    log "External-font registration repair already applied"
-else
-    git -C "$WINE_SRC" apply --check "$font_patch"
-    git -C "$WINE_SRC" apply "$font_patch"
-fi
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0001-win32u-repair-external-font-registration.patch" \
+    "External-font registration repair"
 
 # Fault diagnostics must not dereference a saved FEX SP in a guard page.
-stack_patch="$SCRIPT_DIR/../patches/wine/0002-ntdll-ohos-signal-safe-stack-read.patch"
-if git -C "$WINE_SRC" apply --reverse --check "$stack_patch" 2>/dev/null; then
-    log "Signal-safe diagnostic stack reader already applied"
-else
-    git -C "$WINE_SRC" apply --check "$stack_patch"
-    git -C "$WINE_SRC" apply "$stack_patch"
-fi
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0002-ntdll-ohos-signal-safe-stack-read.patch" \
+    "Signal-safe diagnostic stack reader"
 
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
