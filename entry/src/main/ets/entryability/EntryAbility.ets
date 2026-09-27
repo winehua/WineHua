@@ -51,6 +51,22 @@ interface DirectSurfaceProbeResult {
   parentRssKiB: number;
 }
 
+interface DirectOutputProbeResult {
+  status: string;
+  stage: string;
+  vkResult: number;
+  framesPresented: number;
+  width: number;
+  height: number;
+  imageCount: number;
+  format: number;
+  surfaceId: string;
+  sequence: number;
+  pid: number;
+  parentFdCount: number;
+  parentRssKiB: number;
+}
+
 export default class EntryAbility extends UIAbility {
   private directProbePending: boolean = false;
   private directProbeStartMode: boolean = false;
@@ -60,11 +76,14 @@ export default class EntryAbility extends UIAbility {
   private directGpuImportMode: boolean = false;
   private directGpuSampleMode: boolean = false;
   private directGpuFenceMode: boolean = false;
+  private directOutputMode: boolean = false;
+  private directWindowStage: window.WindowStage | null = null;
 
   private runDirectProbeIfRequested(): void {
     if (!this.directProbePending) return;
     this.directProbePending = false;
-    const outputPath = this.directSurfaceProbeMode ?
+    const outputPath = this.directOutputMode ?
+      `${this.context.cacheDir}/direct-gpu-output-probe.json` : this.directSurfaceProbeMode ?
       `${this.context.cacheDir}/${this.directGpuFenceMode ? 'direct-gpu-fence-probe.json' :
         this.directGpuSampleMode ? 'direct-gpu-sample-probe.json' :
         this.directGpuImportMode ? 'direct-gpu-import-probe.json' :
@@ -72,7 +91,8 @@ export default class EntryAbility extends UIAbility {
         this.directSurfaceAbortMode ? 'direct-surface-abort-probe.json' : 'direct-surface-probe.json'}` :
       `${this.context.cacheDir}/direct-vulkan-probe.json`;
     try {
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directGpuFenceMode ? 'D2-FENCE' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+        this.directGpuFenceMode ? 'D2-FENCE' :
         this.directGpuSampleMode ? 'D2-SAMPLE' :
         this.directGpuImportMode ? 'D2-IMPORT' :
         this.directGpuSurfaceMode ? 'D2-WSI' :
@@ -83,7 +103,8 @@ export default class EntryAbility extends UIAbility {
     }
     if (deviceInfo.deviceType === 'phone') {
       // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directGpuFenceMode ? 'D2-FENCE' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+        this.directGpuFenceMode ? 'D2-FENCE' :
         this.directGpuSampleMode ? 'D2-SAMPLE' :
         this.directGpuImportMode ? 'D2-IMPORT' :
         this.directGpuSurfaceMode ? 'D2-WSI' :
@@ -91,7 +112,10 @@ export default class EntryAbility extends UIAbility {
         status: 'UNSUPPORTED', stage: 'phone_fork_backend' }));
       return;
     }
-    if (this.directSurfaceProbeMode) {
+    if (this.directOutputMode) {
+      this.directOutputMode = false;
+      this.runDirectOutputProbePromise(testNapi.runDirectOutputProbe(), outputPath);
+    } else if (this.directSurfaceProbeMode) {
       this.directSurfaceProbeMode = false;
       const abortMode = this.directSurfaceAbortMode;
       const gpuMode = this.directGpuSurfaceMode;
@@ -115,6 +139,19 @@ export default class EntryAbility extends UIAbility {
     } else {
       this.runDirectProbePromise(testNapi.runDirectVulkanCreateProbe(), outputPath);
     }
+  }
+
+  private runDirectOutputProbePromise(probe: Promise<DirectOutputProbeResult>, outputPath: string): void {
+    probe.then((result: DirectOutputProbeResult) => {
+      writeTextFile(outputPath, JSON.stringify(result));
+      hilog.info(DOMAIN, 'DIRECT-D2-OUTPUT',
+        'result=%{public}s stage=%{public}s frames=%{public}d extent=%{public}dx%{public}d images=%{public}d vk=%{public}d',
+        result.status, result.stage, result.framesPresented,
+        result.width, result.height, result.imageCount, result.vkResult);
+    }).catch((err: Object) => {
+      writeTextFile(outputPath, JSON.stringify({ gate: 'D2-OUTPUT', status: 'FAIL',
+        stage: 'napi_exception', error: JSON.stringify(err) }));
+    });
   }
 
   private runDirectSurfaceProbePromise(probe: Promise<DirectSurfaceProbeResult>, outputPath: string,
@@ -180,7 +217,8 @@ export default class EntryAbility extends UIAbility {
       `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-import-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe' ||
-      `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe')) {
+      `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-gpu-output-probe')) {
       this.directProbePending = true;
       this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
       this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
@@ -194,6 +232,7 @@ export default class EntryAbility extends UIAbility {
       this.directGpuImportMode = `${parameters['winehua.mode']}` === 'direct-gpu-import-probe';
       this.directGpuSampleMode = `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe';
       this.directGpuFenceMode = `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe';
+      this.directOutputMode = `${parameters['winehua.mode']}` === 'direct-gpu-output-probe';
       return;
     }
     const value = (key: string, fallback: string): string => {
@@ -325,7 +364,14 @@ export default class EntryAbility extends UIAbility {
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.publishLaunchRequest(want);
     if (this.directProbePending) {
-      this.runDirectProbeIfRequested();
+      if (this.directOutputMode && this.directWindowStage) {
+        testNapi.setDirectProbeSurfaceId(0n);
+        this.directWindowStage.loadContent('pages/DirectProbe', (err) => {
+          this.runDirectProbeIfRequested();
+        });
+      } else {
+        this.runDirectProbeIfRequested();
+      }
       return;
     }
     WineWindowManager.getInstance().restoreDesktopIfRunning();
@@ -341,6 +387,7 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+    this.directWindowStage = windowStage;
 
     // 手机走 fork-shim，必须在 WineEnvService.startSession 的首次 NCP 调用前设置。
     testNapi.setPhoneMode(deviceInfo.deviceType === 'phone');

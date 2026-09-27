@@ -21,6 +21,7 @@
 #include "input/controller/controller_napi.h"
 #include "direct/vulkan_probe_launcher.h"
 #include "direct/direct_surface_probe_launcher.h"
+#include "direct/direct_output_probe.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -1222,6 +1223,12 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"runDirectGpuSampleProbe", nullptr, winehua::direct::RunGpuSampleProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectGpuFenceProbe", nullptr, winehua::direct::RunGpuFenceProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setDirectProbeSurfaceId", nullptr, winehua::direct::SetDirectProbeSurfaceId,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"clearDirectProbeSurfaceId", nullptr, winehua::direct::ClearDirectProbeSurfaceId,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectOutputProbe", nullptr, winehua::direct::RunDirectOutputProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startServer",    nullptr, StartServer,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setHostShadowProfile", nullptr, SetHostShadowProfile, nullptr, nullptr, nullptr, napi_default, nullptr},

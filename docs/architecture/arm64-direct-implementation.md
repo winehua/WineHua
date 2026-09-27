@@ -84,6 +84,13 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 最终签名 HAP SHA-256：`6091311a05e529ffb0736cd6a65b4a33f236cb6e4d493e0e8b17ace6403df951`。MatePad Mini 在此包上连续 30/30 轮 `PASS`，240/240 帧 GPU 像素校验通过，30 个子进程 PID 各不相同。每帧都实际导入 acquire fd、导出 release semaphore 并向 BufferQueue 提交一个 release fd，合计 **240/240 次导入、240/240 次导出、240/240 个 release fd**；每轮 6 次 NativeBuffer 导入、2 次缓存命中。父进程 fd 始终为 42，RSS 为 115548–116848 KiB。[连续运行结果](evidence/direct-d2-fence-final-runs.ndjson)。同包 D0 Create、D1、D2 WSI、D2 import、D2 sample 回归均 `PASS`、fd 42（[回归结果](evidence/direct-d2-fence-final-regression.ndjson)）。
 - 这验证了本设备上的 acquire/release `SYNC_FD` 实际交接和 GPU 图像读取。探针仍逐帧等提交 fence 才读取小型诊断缓冲区，也由子进程逐帧等待生产者提交；尚未证明多帧同时在途、独立 XComponent 合成或无逐帧 CPU 等待的 60 FPS 性能。下一步应将导入图像采样到独立 XComponent 的 Vulkan render target，并让帧槽持有命令缓冲区、输出 buffer 与同步对象直到 GPU 完成，再测连续 present 和 resize。
 
+## D2 独立 XComponent Vulkan 输出探针（2026-09-27）
+
+- `winehua.mode=direct-gpu-output-probe` 在诊断页创建独立 XComponent，App 从其 surfaceId 建立 OHOS Vulkan surface 和三图像 swapchain，连续 GPU clear 并 present 八帧。每帧颜色可辨；第八帧的中心像素应为 `(224,90,165)`。最后一次 `vkQueuePresentKHR` 后保留 swapchain 100 ms，给系统合成器显示 FIFO 末帧的时间；提交 fence 与 `vkDeviceWaitIdle` 本身都不是上屏完成信号。此等待仅供诊断，不是目标帧循环策略。
+- 当前签名 HAP SHA-256 为 `605b76374fd8208624351b926ae284fc30b50ef1224c07c4957031f61763aa02`。MatePad Mini 上输出为 `760×570`、`VK_FORMAT_R8G8B8A8_UNORM (37)`、三图像 swapchain。最终 [屏幕截图](evidence/direct-d2-output-final-screen.png) 的中心像素实测为 `(224,90,165)`。通过重新加载诊断页连续创建 70 个不同 surfaceId（sequence 3–72），70/70 次均报告 `PASS`、每次 present 八帧（[逐次结果](evidence/direct-d2-output-recreate-runs.ndjson)）。
+- 70 次结果中的父进程 fd 为 44–60，RSS 为 113196–146852 KiB。fd 在 sequence 29、43、59 分别回落至 44、45、45，RSS 也曾回落；末次为 fd 58、RSS 143104 KiB。这表明 ArkUI 页面与 Vulkan 资源有延迟回收，但有限样本尚不能证明长期 RSS 稳定或完全无泄漏。最终包又复跑 D0、D1、D2 WSI、import、sample、fence 六项，全部 `PASS`，其中 fence 模式仍完成每帧 acquire/release `SYNC_FD` 交接（[回归结果](evidence/direct-d2-output-final-regression.ndjson)）。
+- 此探针只证明独立 XComponent 可由 App 的系统 Vulkan swapchain 正确显示 GPU 输出。现有 NativeBuffer import/sample/fence 探针与输出探针分别创建 `VkDevice`，**尚未**把导入图像采样到该 XComponent，也未证明零拷贝合成。下一步应把输入导入、GPU fence 和输出 swapchain 放到同一 `VkDevice`，先逐帧 render/pass 或 shader 采样呈现，再处理 resize、多帧在途与 60 FPS；不能以 CPU readback/upload 代替此验证。
+
 ## 关键的未知事实
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。

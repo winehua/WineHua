@@ -44,6 +44,7 @@ add_library(entry SHARED
     direct/vulkan_probe_launcher.cpp
     direct/direct_surface_probe_launcher.cpp
     direct/direct_buffer_import_probe.cpp
+    direct/direct_output_probe.cpp
     audio/audio_broker.cpp
     audio/audio_ipc_server.cpp
     audio/audio_stream.cpp
