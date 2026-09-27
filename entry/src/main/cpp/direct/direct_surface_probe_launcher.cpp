@@ -54,11 +54,15 @@ struct SurfaceWork {
     bool fenceMode = false;
     bool fenceCheck = false;
     bool compositeMode = false;
+    bool resizeMode = false;
     bool outputCheck = false;
     uint64_t outputSurfaceId = 0;
     int32_t outputPresentCount = 0;
     int32_t outputWidth = 0;
     int32_t outputHeight = 0;
+    int32_t outputInitialWidth = 0;
+    int32_t outputInitialHeight = 0;
+    int32_t outputRecreateCount = 0;
     int32_t importVkResult = 0;
     int32_t importCount = 0;
     int32_t reuseCount = 0;
@@ -395,6 +399,30 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             const int32_t height = group == 0 ? 64 : 48;
             work.width = width;
             work.height = height;
+            if (group == 1 && work.resizeMode) {
+                work.outputInitialWidth = static_cast<int32_t>(work.importer->OutputWidth());
+                work.outputInitialHeight = static_cast<int32_t>(work.importer->OutputHeight());
+                uint32_t resizedWidth = 0;
+                uint32_t resizedHeight = 0;
+                if (!RequestDirectProbeResize(work.outputSurfaceId,
+                                              static_cast<uint32_t>(work.outputInitialWidth),
+                                              static_cast<uint32_t>(work.outputInitialHeight),
+                                              &resizedWidth, &resizedHeight, 10000)) {
+                    Fail(work, "composite_resize_callback_timeout");
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                if (!work.importer->RecreateOutput()) {
+                    work.importVkResult = work.importer->VkError();
+                    Fail(work, work.importer->Stage());
+                    break;
+                }
+                if (work.importer->OutputWidth() != resizedWidth ||
+                    work.importer->OutputHeight() != resizedHeight) {
+                    Fail(work, "composite_resize_extent");
+                    break;
+                }
+            }
             if (group == 1 && OH_ConsumerSurface_SetDefaultSize(image, width, height) != 0) {
                 Fail(work, "consumer_resize");
                 break;
@@ -468,7 +496,11 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 break;
             }
             work.outputCheck = !work.compositeMode ||
-                work.importer->OutputPresentCount() == kGpuImportProbeFrameCount;
+                (work.importer->OutputPresentCount() == kGpuImportProbeFrameCount &&
+                 (!work.resizeMode ||
+                  (work.importer->OutputRecreateCount() == 1 &&
+                   work.importer->OutputWidth() != static_cast<uint32_t>(work.outputInitialWidth) &&
+                   work.importer->OutputHeight() != static_cast<uint32_t>(work.outputInitialHeight))));
             if (!work.outputCheck) {
                 Fail(work, "composite_present_count");
                 break;
@@ -495,6 +527,7 @@ void ExecuteSurfaceProbe(napi_env, void* data)
         work.outputPresentCount = static_cast<int32_t>(work.importer->OutputPresentCount());
         work.outputWidth = static_cast<int32_t>(work.importer->OutputWidth());
         work.outputHeight = static_cast<int32_t>(work.importer->OutputHeight());
+        work.outputRecreateCount = static_cast<int32_t>(work.importer->OutputRecreateCount());
     }
     if (work.compositeMode && work.outputCheck)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -518,7 +551,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", work->compositeMode ? "D2-COMPOSITE" :
+    setString("gate", work->resizeMode ? "D2-COMPOSITE-RESIZE" :
+              work->compositeMode ? "D2-COMPOSITE" :
               work->fenceMode ? "D2-FENCE" : work->sampleMode ? "D2-SAMPLE" :
               work->importMode ? "D2-IMPORT" :
               work->gpuMode ? "D2-WSI" : "D1");
@@ -558,6 +592,9 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     setInt("outputPresentCount", work->outputPresentCount);
     setInt("outputWidth", work->outputWidth);
     setInt("outputHeight", work->outputHeight);
+    setInt("outputInitialWidth", work->outputInitialWidth);
+    setInt("outputInitialHeight", work->outputInitialHeight);
+    setInt("outputRecreateCount", work->outputRecreateCount);
     char surfaceIdText[32]{};
     std::snprintf(surfaceIdText, sizeof(surfaceIdText), "%llu",
                   static_cast<unsigned long long>(work->outputSurfaceId));
@@ -582,7 +619,7 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
 
 napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
                              bool importMode, bool sampleMode, bool fenceMode,
-                             bool compositeMode = false)
+                             bool compositeMode = false, bool resizeMode = false)
 {
     auto* work = new (std::nothrow) SurfaceWork();
     if (!work) {
@@ -595,6 +632,7 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
     work->sampleMode = sampleMode;
     work->fenceMode = fenceMode;
     work->compositeMode = compositeMode;
+    work->resizeMode = resizeMode;
     napi_value promise;
     if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
         delete work;
@@ -647,6 +685,11 @@ napi_value RunGpuFenceProbe(napi_env env, napi_callback_info)
 napi_value RunGpuCompositeProbe(napi_env env, napi_callback_info)
 {
     return QueueSurfaceProbe(env, false, true, true, true, true, true);
+}
+
+napi_value RunGpuCompositeResizeProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true, true, true, true, true);
 }
 
 } // namespace winehua::direct

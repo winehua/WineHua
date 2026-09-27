@@ -308,6 +308,18 @@ void DirectBufferImportProbe::DestroyOutput()
     outputSwapchain_ = VK_NULL_HANDLE;
 }
 
+bool DirectBufferImportProbe::RecreateOutput()
+{
+    if (!outputSurfaceId_ || !outputSwapchain_)
+        return Fail("composite_recreate_input", VK_ERROR_INITIALIZATION_FAILED);
+    VkResult result = vkDeviceWaitIdle(device_);
+    if (result != VK_SUCCESS) return Fail("composite_recreate_idle", result);
+    DestroyOutput();
+    if (!InitializeOutput()) return false;
+    ++outputRecreates_;
+    return true;
+}
+
 bool DirectBufferImportProbe::InitializeOutput()
 {
     if (!outputSurfaceId_) return true;

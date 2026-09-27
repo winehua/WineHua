@@ -96,7 +96,13 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 新增 `winehua.mode=direct-gpu-composite-probe`。它沿用跨进程 Create NCP Vulkan producer、ConsumerSurface、按 NativeBuffer sequence 缓存导入图像和 `SYNC_FD` acquire/release。App 侧在**同一 Vulkan instance/device/queue** 上创建独立 XComponent swapchain：一个提交中先用 compute shader 取九点作诊断，再用 fragment shader 直接采样导入的 image view，绘制全屏三角形到 swapchain，随后 present。画面本体没有 CPU map、readback、memcpy 或 upload；只有 GPU fence 完成后的 36 字节九点诊断读回。输入每轮从 64×64 resize 到 96×48，输出当前为固定尺寸，按全屏拉伸显示。
 - 签名 HAP SHA-256：`cb6a29a1be6a9ee5de9594481e0baaa0a5b848f3fe7165fdc284b3dfe513dd53`。MatePad Mini 上连续重载诊断页 51 次，51/51 `PASS`、51 个不同 NCP PID 和 XComponent surfaceId，共 408 帧 GPU 取样、408 次 acquire fence 导入、408 次 release fence 导出、408 次 Vulkan present（[逐轮结果](evidence/direct-d2-composite-runs.ndjson)）。每轮六次 NativeBuffer 导入、两次缓存命中。最后一帧的[设备截图](evidence/direct-d2-composite-final-screen.jpeg)为预期的紫红色，JPEG 中心像素 `(225,90,166)`；源图案目标值为 `(224,90,165)`。
 - 51 轮父进程 fd 为 44–59，RSS 为 114376–161228 KiB，末次分别为 52 和 148488 KiB；fd 在第 28 轮回落至 44、第 44 轮回落至 45，RSS 也曾回落。这只说明观察到延迟回收，尚未证明长期内存稳定。同一 HAP 又复跑 D0、D1、WSI、import、sample、fence、独立输出和合成八个入口，全部 `PASS`（[回归结果](evidence/direct-d2-composite-regression.ndjson)）。
-- 该探针已证明本设备上输入 NativeBuffer 可经 App GPU shader 显示到独立 XComponent。它仍逐帧等待提交 fence 以读取诊断缓冲区，NCP producer 也逐帧等待；输出 surface resize、多个帧槽同时在途、60 FPS 稳定性和产品 Wayland/XComponent 接入尚未验证。生产合成器需要把 frame slot、image generation 与 surface 生命周期显式管理后再替换旧呈现链。
+- 该探针已证明本设备上输入 NativeBuffer 可经 App GPU shader 显示到独立 XComponent。它仍逐帧等待提交 fence 以读取诊断缓冲区，NCP producer 也逐帧等待；此模式没有改变输出 surface 尺寸，resize 见下节。多个帧槽同时在途、60 FPS 稳定性和产品 Wayland/XComponent 接入尚未验证。生产合成器需要把 frame slot、image generation 与 surface 生命周期显式管理后再替换旧呈现链。
+
+## D2 XComponent 输出 resize 探针（2026-09-27）
+
+- 新增 `winehua.mode=direct-gpu-composite-resize-probe`，沿用同设备 GPU 合成。前四帧以 `320×240 vp` 的 XComponent 呈现；worker 随后向诊断页请求改为 `400×160 vp`，只接受**同一 surfaceId** 的 `onSurfaceChanged` 回调。App 等该尺寸回调后在 resize 边界等待设备空闲、销毁旧输出 swapchain 的 framebuffer/view/sync 资源并重建；输入 BufferQueue 同时按既有流程从 64×64 切换为 96×48。后四帧使用新 swapchain，仍以 shader 直接采样 NativeBuffer，继续交接 `SYNC_FD`。`vkDeviceWaitIdle` 只在此诊断 resize 边界使用，当前帧循环仍逐帧等 fence。
+- 签名 HAP SHA-256：`b67d8edf00e601f2faca4e322f96c97c3b9e4723bc1c3abdb4dc1db930313ce1`。MatePad Mini 连续重载页面 30 次，30/30 `PASS`、30 个不同 NCP PID 与 XComponent surfaceId；每轮输出从物理 `760×570` 变为 `950×380`，恰好重建一次 swapchain，八帧 GPU 采样、fence 导入/导出和 present 均通过。合计 240 帧、30 次重建（[逐轮结果](evidence/direct-d2-resize-runs.ndjson)）。最后一轮的[屏幕截图](evidence/direct-d2-resize-final-screen.jpeg)显示新宽高比的末帧；JPEG 中心像素 `(225,90,166)`，与源图案目标 `(224,90,165)` 仅有压缩误差。
+- 30 轮父进程 fd 范围 44–58，RSS 范围 114828–158916 KiB；fd 在第 12、13、28 轮回落至 44，RSS 也回落。此样本仍不足以证明长期稳定。最终包复跑 D0、D1、WSI、import、sample、fence、独立输出、合成和合成 resize 九个入口，全部 `PASS`（[回归结果](evidence/direct-d2-resize-regression.ndjson)）。后续要让多个 frame slot 同时在途，去掉每帧 CPU fence 等待，再测稳定 60 FPS 与更长时间的资源占用。
 
 ## 关键的未知事实
 

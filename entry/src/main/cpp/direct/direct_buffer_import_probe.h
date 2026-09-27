@@ -25,6 +25,7 @@ public:
                                 int* acquireFence, int* releaseFence);
     bool FinishSample(int32_t frame);
     void NewGeneration();
+    bool RecreateOutput();
     int32_t VkError() const { return static_cast<int32_t>(error_); }
     const char* Stage() const { return stage_; }
     uint32_t ImportCount() const { return imports_; }
@@ -35,6 +36,7 @@ public:
     uint32_t OutputPresentCount() const { return outputPresents_; }
     uint32_t OutputWidth() const { return outputExtent_.width; }
     uint32_t OutputHeight() const { return outputExtent_.height; }
+    uint32_t OutputRecreateCount() const { return outputRecreates_; }
 
 private:
     struct Entry {
@@ -96,6 +98,7 @@ private:
     uint32_t acquireImports_ = 0;
     uint32_t releaseExports_ = 0;
     uint32_t outputPresents_ = 0;
+    uint32_t outputRecreates_ = 0;
 };
 
 } // namespace winehua::direct

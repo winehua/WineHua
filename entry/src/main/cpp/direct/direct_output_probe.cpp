@@ -23,6 +23,10 @@ namespace {
 std::mutex g_surfaceMutex;
 std::condition_variable g_surfaceReady;
 uint64_t g_surfaceId = 0;
+uint32_t g_surfaceWidth = 0;
+uint32_t g_surfaceHeight = 0;
+uint64_t g_surfaceSizeGeneration = 0;
+bool g_resizeRequested = false;
 std::atomic<uint32_t> g_runSequence{0};
 
 int CountOpenFds()
@@ -416,6 +420,28 @@ bool WaitDirectProbeSurfaceId(uint64_t* surfaceId, uint32_t timeoutMs)
     return true;
 }
 
+bool RequestDirectProbeResize(uint64_t surfaceId, uint32_t oldWidth, uint32_t oldHeight,
+                              uint32_t* newWidth, uint32_t* newHeight, uint32_t timeoutMs)
+{
+    if (!surfaceId || !newWidth || !newHeight) return false;
+    std::unique_lock<std::mutex> lock(g_surfaceMutex);
+    if (g_surfaceId != surfaceId) return false;
+    const uint64_t previousGeneration = g_surfaceSizeGeneration;
+    g_resizeRequested = true;
+    if (!g_surfaceReady.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&] {
+            return g_surfaceId != surfaceId ||
+                (g_surfaceSizeGeneration > previousGeneration && g_surfaceWidth && g_surfaceHeight &&
+                 (g_surfaceWidth != oldWidth || g_surfaceHeight != oldHeight));
+        })) {
+        g_resizeRequested = false;
+        return false;
+    }
+    if (g_surfaceId != surfaceId) return false;
+    *newWidth = g_surfaceWidth;
+    *newHeight = g_surfaceHeight;
+    return true;
+}
+
 napi_value SetDirectProbeSurfaceId(napi_env env, napi_callback_info info)
 {
     size_t argc = 1;
@@ -430,7 +456,13 @@ napi_value SetDirectProbeSurfaceId(napi_env env, napi_callback_info info)
     }
     {
         std::lock_guard<std::mutex> lock(g_surfaceMutex);
-        g_surfaceId = static_cast<uint64_t>(value);
+        if (g_surfaceId != static_cast<uint64_t>(value)) {
+            g_surfaceId = static_cast<uint64_t>(value);
+            g_surfaceWidth = 0;
+            g_surfaceHeight = 0;
+            g_resizeRequested = false;
+            ++g_surfaceSizeGeneration;
+        }
     }
     g_surfaceReady.notify_all();
     return nullptr;
@@ -449,8 +481,69 @@ napi_value ClearDirectProbeSurfaceId(napi_env env, napi_callback_info info)
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(g_surfaceMutex);
-    if (g_surfaceId == static_cast<uint64_t>(value)) g_surfaceId = 0;
+    if (g_surfaceId == static_cast<uint64_t>(value)) {
+        g_surfaceId = 0;
+        g_surfaceWidth = 0;
+        g_surfaceHeight = 0;
+        g_resizeRequested = false;
+        ++g_surfaceSizeGeneration;
+        g_surfaceReady.notify_all();
+    }
     return nullptr;
+}
+
+napi_value SetDirectProbeSurfaceSize(napi_env env, napi_callback_info info)
+{
+    size_t argc = 3;
+    napi_value args[3]{};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t surfaceId = 0;
+    bool lossless = false;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (argc != 3 ||
+        napi_get_value_bigint_int64(env, args[0], &surfaceId, &lossless) != napi_ok ||
+        !lossless || surfaceId <= 0 ||
+        napi_get_value_uint32(env, args[1], &width) != napi_ok ||
+        napi_get_value_uint32(env, args[2], &height) != napi_ok ||
+        !width || !height) {
+        napi_throw_type_error(env, nullptr, "expected surface id and positive size");
+        return nullptr;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_surfaceMutex);
+        if (g_surfaceId == static_cast<uint64_t>(surfaceId)) {
+            g_surfaceWidth = width;
+            g_surfaceHeight = height;
+            ++g_surfaceSizeGeneration;
+        }
+    }
+    g_surfaceReady.notify_all();
+    return nullptr;
+}
+
+napi_value TakeDirectProbeResizeRequest(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1]{};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t surfaceId = 0;
+    bool lossless = false;
+    if (argc != 1 ||
+        napi_get_value_bigint_int64(env, args[0], &surfaceId, &lossless) != napi_ok ||
+        !lossless || surfaceId < 0) {
+        napi_throw_type_error(env, nullptr, "expected surface id BigInt");
+        return nullptr;
+    }
+    bool requested;
+    {
+        std::lock_guard<std::mutex> lock(g_surfaceMutex);
+        requested = g_resizeRequested && g_surfaceId == static_cast<uint64_t>(surfaceId);
+        if (requested) g_resizeRequested = false;
+    }
+    napi_value result;
+    napi_get_boolean(env, requested, &result);
+    return result;
 }
 
 napi_value RunDirectOutputProbe(napi_env env, napi_callback_info)
