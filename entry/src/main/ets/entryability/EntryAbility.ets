@@ -109,7 +109,9 @@ export default class EntryAbility extends UIAbility {
     this.directProbePending = false;
     const outputPath = this.directOutputMode ?
       `${this.context.cacheDir}/direct-gpu-output-probe.json` : this.directSurfaceProbeMode ?
-      `${this.context.cacheDir}/${this.directDualSlotMode ? 'direct-gpu-dual-slot-probe.json' :
+      `${this.context.cacheDir}/${this.directDualSlotMode && this.directCompositeResizeMode ?
+        'direct-gpu-dual-slot-resize-probe.json' :
+        this.directDualSlotMode ? 'direct-gpu-dual-slot-probe.json' :
         this.directPipelineMode ? 'direct-gpu-producer-pipeline-probe.json' :
         this.directThroughputMode ? 'direct-gpu-composite-throughput-probe.json' :
         this.directCompositeResizeMode ? 'direct-gpu-composite-resize-probe.json' :
@@ -122,6 +124,7 @@ export default class EntryAbility extends UIAbility {
       `${this.context.cacheDir}/direct-vulkan-probe.json`;
     try {
       writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+        this.directDualSlotMode && this.directCompositeResizeMode ? 'D2-DUAL-SLOT-RESIZE' :
         this.directDualSlotMode ? 'D2-DUAL-SLOT' :
         this.directPipelineMode ? 'D2-PRODUCER-PIPELINE' :
         this.directThroughputMode ? 'D2-THROUGHPUT' :
@@ -139,6 +142,7 @@ export default class EntryAbility extends UIAbility {
     if (deviceInfo.deviceType === 'phone') {
       // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
       writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+        this.directDualSlotMode && this.directCompositeResizeMode ? 'D2-DUAL-SLOT-RESIZE' :
         this.directDualSlotMode ? 'D2-DUAL-SLOT' :
         this.directPipelineMode ? 'D2-PRODUCER-PIPELINE' :
         this.directThroughputMode ? 'D2-THROUGHPUT' :
@@ -177,7 +181,9 @@ export default class EntryAbility extends UIAbility {
       this.directThroughputMode = false;
       this.directPipelineMode = false;
       this.directDualSlotMode = false;
-      this.runDirectSurfaceProbePromise(dualSlotMode ? testNapi.runDirectGpuDualSlotProbe() :
+      this.runDirectSurfaceProbePromise(dualSlotMode && compositeResizeMode ?
+        testNapi.runDirectGpuDualSlotResizeProbe() :
+        dualSlotMode ? testNapi.runDirectGpuDualSlotProbe() :
         pipelineMode ? testNapi.runDirectGpuProducerPipelineProbe() :
         throughputMode ? testNapi.runDirectGpuCompositeThroughputProbe() :
         compositeResizeMode ? testNapi.runDirectGpuCompositeResizeProbe() :
@@ -218,7 +224,8 @@ export default class EntryAbility extends UIAbility {
     dualSlotMode: boolean = false): void {
     probe.then((result: DirectSurfaceProbeResult) => {
       writeTextFile(outputPath, JSON.stringify(result));
-      hilog.info(DOMAIN, dualSlotMode ? 'DIRECT-D2-DUAL-SLOT' :
+      hilog.info(DOMAIN, dualSlotMode && compositeResizeMode ? 'DIRECT-D2-DUAL-SLOT-RESIZE' :
+        dualSlotMode ? 'DIRECT-D2-DUAL-SLOT' :
         pipelineMode ? 'DIRECT-D2-PRODUCER-PIPELINE' :
         throughputMode ? 'DIRECT-D2-THROUGHPUT' :
         compositeResizeMode ? 'DIRECT-D2-COMPOSITE-RESIZE' :
@@ -231,7 +238,9 @@ export default class EntryAbility extends UIAbility {
         result.acquireImportCount, result.releaseExportCount,
         result.parentFdCount, result.parentRssKiB);
     }).catch((err: Object) => {
-      writeTextFile(outputPath, JSON.stringify({ gate: dualSlotMode ? 'D2-DUAL-SLOT' :
+      writeTextFile(outputPath, JSON.stringify({ gate: dualSlotMode && compositeResizeMode ?
+        'D2-DUAL-SLOT-RESIZE' :
+        dualSlotMode ? 'D2-DUAL-SLOT' :
         pipelineMode ? 'D2-PRODUCER-PIPELINE' :
         throughputMode ? 'D2-THROUGHPUT' :
         compositeResizeMode ? 'D2-COMPOSITE-RESIZE' :
@@ -241,7 +250,8 @@ export default class EntryAbility extends UIAbility {
         importMode ? 'D2-IMPORT' :
         gpuMode ? 'D2-WSI' : 'D1', status: 'FAIL', stage: 'napi_exception',
         error: JSON.stringify(err) }));
-      hilog.error(DOMAIN, dualSlotMode ? 'DIRECT-D2-DUAL-SLOT' :
+      hilog.error(DOMAIN, dualSlotMode && compositeResizeMode ? 'DIRECT-D2-DUAL-SLOT-RESIZE' :
+        dualSlotMode ? 'DIRECT-D2-DUAL-SLOT' :
         pipelineMode ? 'DIRECT-D2-PRODUCER-PIPELINE' :
         throughputMode ? 'DIRECT-D2-THROUGHPUT' :
         compositeResizeMode ? 'DIRECT-D2-COMPOSITE-RESIZE' :
@@ -297,7 +307,8 @@ export default class EntryAbility extends UIAbility {
       `${parameters['winehua.mode']}` === 'direct-gpu-composite-resize-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-composite-throughput-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-producer-pipeline-probe' ||
-      `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe')) {
+      `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe')) {
       this.directProbePending = true;
       this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
       this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
@@ -310,7 +321,8 @@ export default class EntryAbility extends UIAbility {
         `${parameters['winehua.mode']}` === 'direct-gpu-composite-resize-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-composite-throughput-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-producer-pipeline-probe' ||
-        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe';
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe';
       this.directSurfaceAbortMode = `${parameters['winehua.mode']}` === 'direct-surface-abort-probe';
       this.directGpuSurfaceMode = `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe';
       this.directGpuImportMode = `${parameters['winehua.mode']}` === 'direct-gpu-import-probe';
@@ -321,14 +333,18 @@ export default class EntryAbility extends UIAbility {
         `${parameters['winehua.mode']}` === 'direct-gpu-composite-resize-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-composite-throughput-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-producer-pipeline-probe' ||
-        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe';
-      this.directCompositeResizeMode = `${parameters['winehua.mode']}` === 'direct-gpu-composite-resize-probe';
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe';
+      this.directCompositeResizeMode = `${parameters['winehua.mode']}` === 'direct-gpu-composite-resize-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe';
       this.directThroughputMode = `${parameters['winehua.mode']}` === 'direct-gpu-composite-throughput-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-producer-pipeline-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe';
       this.directPipelineMode = `${parameters['winehua.mode']}` === 'direct-gpu-producer-pipeline-probe' ||
-        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe';
-      this.directDualSlotMode = `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe';
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe';
+      this.directDualSlotMode = `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe';
       AppStorage.setOrCreate<boolean>('winehua.directProbe.resize', this.directCompositeResizeMode);
       AppStorage.set<boolean>('winehua.directProbe.resize', this.directCompositeResizeMode);
       return;

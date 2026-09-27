@@ -333,6 +333,78 @@ bool FinishChild(OHIPCRemoteProxy* proxy)
     return released;
 }
 
+bool RunPipelinedFrames(SurfaceWork& work, OHNativeWindow* producer, OH_NativeImage* image,
+                        int32_t firstFrame, int32_t count, int32_t width, int32_t height,
+                        std::vector<double>* frameMs = nullptr,
+                        std::vector<double>* producerMs = nullptr,
+                        std::vector<double>* consumerMs = nullptr)
+{
+    if (count < 2) {
+        Fail(work, "pipeline_frame_count");
+        return false;
+    }
+    using Clock = std::chrono::steady_clock;
+    std::vector<Clock::time_point> starts(count);
+    uint32_t firstSeq = 0;
+    for (int32_t local = 0; local < 2; ++local) {
+        starts[local] = Clock::now();
+        if (!SendFrame(work, producer, firstFrame + local, width, height)) return false;
+        if (producerMs)
+            producerMs->push_back(std::chrono::duration<double, std::milli>(
+                Clock::now() - starts[local]).count());
+        if (local == 0) firstSeq = work.lastBufferSeq;
+        if (local == 1) {
+            if (firstSeq == work.lastBufferSeq) {
+                Fail(work, "pipeline_buffer_reused");
+                return false;
+            }
+            work.bufferedFramesPeak = 2;
+        }
+    }
+    auto complete = [&](int32_t local) {
+        if (!work.importer->FinishSample(firstFrame + local)) {
+            work.importVkResult = work.importer->VkError();
+            Fail(work, work.importer->Stage());
+            return false;
+        }
+        if (frameMs)
+            frameMs->push_back(std::chrono::duration<double, std::milli>(
+                Clock::now() - starts[local]).count());
+        ++work.framesPassed;
+        return true;
+    };
+    for (int32_t local = 0; local < count; ++local) {
+        if (work.dualSlotMode && local >= 2 && !complete(local - 2)) return false;
+        const auto consumerBegin = Clock::now();
+        if (!ConsumeFrame(work, image, firstFrame + local, width, height,
+                          work.dualSlotMode)) return false;
+        const auto consumed = Clock::now();
+        if (consumerMs)
+            consumerMs->push_back(std::chrono::duration<double, std::milli>(
+                consumed - consumerBegin).count());
+        if (work.dualSlotMode) {
+            if (local == 1) work.consumerSlotsPeak = 2;
+        } else {
+            if (frameMs)
+                frameMs->push_back(std::chrono::duration<double, std::milli>(
+                    consumed - starts[local]).count());
+            ++work.framesPassed;
+        }
+        const int32_t next = local + 2;
+        if (next < count) {
+            starts[next] = Clock::now();
+            if (!SendFrame(work, producer, firstFrame + next, width, height)) return false;
+            if (producerMs)
+                producerMs->push_back(std::chrono::duration<double, std::milli>(
+                    Clock::now() - starts[next]).count());
+        }
+    }
+    if (work.dualSlotMode)
+        for (int32_t local = count - 2; local < count; ++local)
+            if (!complete(local)) return false;
+    return true;
+}
+
 void ExecuteSurfaceProbe(napi_env, void* data)
 {
     auto& work = *static_cast<SurfaceWork*>(data);
@@ -428,78 +500,8 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             work.height = 64;
             const auto begin = std::chrono::steady_clock::now();
             if (work.pipelineMode) {
-                std::vector<std::chrono::steady_clock::time_point> frameStarts(work.frameTarget);
-                bool ready = true;
-                uint32_t firstSeq = 0;
-                for (int32_t frame = 0; frame < 2; ++frame) {
-                    frameStarts[frame] = std::chrono::steady_clock::now();
-                    if (!SendFrame(work, producer, frame, 64, 64)) {
-                        ready = false;
-                        break;
-                    }
-                    producerMs.push_back(std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - frameStarts[frame]).count());
-                    if (frame == 0) firstSeq = work.lastBufferSeq;
-                    if (frame == 1) {
-                        if (firstSeq == work.lastBufferSeq) {
-                            Fail(work, "pipeline_buffer_reused");
-                            ready = false;
-                        } else {
-                            work.bufferedFramesPeak = 2;
-                        }
-                    }
-                }
-                if (ready) {
-                    int32_t submitted = 0;
-                    for (int32_t frame = 0; frame < work.frameTarget; ++frame) {
-                        if (work.dualSlotMode && frame >= 2) {
-                            const int32_t completedFrame = frame - 2;
-                            if (!work.importer->FinishSample(completedFrame)) {
-                                work.importVkResult = work.importer->VkError();
-                                Fail(work, work.importer->Stage());
-                                break;
-                            }
-                            frameMs.push_back(std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() -
-                                frameStarts[completedFrame]).count());
-                            ++work.framesPassed;
-                        }
-                        const auto consumerBegin = std::chrono::steady_clock::now();
-                        if (!ConsumeFrame(work, image, frame, 64, 64,
-                                          work.dualSlotMode)) break;
-                        ++submitted;
-                        const auto consumed = std::chrono::steady_clock::now();
-                        consumerMs.push_back(std::chrono::duration<double, std::milli>(
-                            consumed - consumerBegin).count());
-                        if (work.dualSlotMode) {
-                            if (submitted == 2) work.consumerSlotsPeak = 2;
-                        } else {
-                            frameMs.push_back(std::chrono::duration<double, std::milli>(
-                                consumed - frameStarts[frame]).count());
-                            ++work.framesPassed;
-                        }
-                        const int32_t next = frame + 2;
-                        if (next < work.frameTarget) {
-                            frameStarts[next] = std::chrono::steady_clock::now();
-                            if (!SendFrame(work, producer, next, 64, 64)) break;
-                            producerMs.push_back(std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - frameStarts[next]).count());
-                        }
-                    }
-                    if (work.dualSlotMode && submitted == work.frameTarget) {
-                        for (int32_t frame = work.frameTarget - 2;
-                             frame < work.frameTarget; ++frame) {
-                            if (!work.importer->FinishSample(frame)) {
-                                work.importVkResult = work.importer->VkError();
-                                Fail(work, work.importer->Stage());
-                                break;
-                            }
-                            frameMs.push_back(std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - frameStarts[frame]).count());
-                            ++work.framesPassed;
-                        }
-                    }
-                }
+                RunPipelinedFrames(work, producer, image, 0, work.frameTarget, 64, 64,
+                                   &frameMs, &producerMs, &consumerMs);
             } else {
                 for (int32_t frame = 0; frame < work.frameTarget; ++frame) {
                     const auto frameBegin = std::chrono::steady_clock::now();
@@ -525,6 +527,44 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             work.frameP99Ms = PercentileMs(frameMs, 99);
             work.producerP95Ms = PercentileMs(producerMs, 95);
             work.consumerP95Ms = PercentileMs(consumerMs, 95);
+        } else if (work.dualSlotMode && work.resizeMode) {
+            for (int32_t group = 0; group < 2; ++group) {
+                const int32_t width = group == 0 ? 64 : 96;
+                const int32_t height = group == 0 ? 64 : 48;
+                work.width = width;
+                work.height = height;
+                if (group == 1) {
+                    work.outputInitialWidth = static_cast<int32_t>(work.importer->OutputWidth());
+                    work.outputInitialHeight = static_cast<int32_t>(work.importer->OutputHeight());
+                    uint32_t resizedWidth = 0;
+                    uint32_t resizedHeight = 0;
+                    if (!RequestDirectProbeResize(work.outputSurfaceId,
+                                                  static_cast<uint32_t>(work.outputInitialWidth),
+                                                  static_cast<uint32_t>(work.outputInitialHeight),
+                                                  &resizedWidth, &resizedHeight, 10000)) {
+                        Fail(work, "dual_slot_resize_callback_timeout");
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    if (!work.importer->RecreateOutput()) {
+                        work.importVkResult = work.importer->VkError();
+                        Fail(work, work.importer->Stage());
+                        break;
+                    }
+                    if (work.importer->OutputWidth() != resizedWidth ||
+                        work.importer->OutputHeight() != resizedHeight) {
+                        Fail(work, "dual_slot_resize_extent");
+                        break;
+                    }
+                    if (OH_ConsumerSurface_SetDefaultSize(image, width, height) != 0) {
+                        Fail(work, "dual_slot_consumer_resize");
+                        break;
+                    }
+                    work.importer->NewGeneration();
+                }
+                if (!RunPipelinedFrames(work, producer, image, group * 4, 4, width, height))
+                    break;
+            }
         } else {
         for (int32_t group = 0; group < 2; ++group) {
             const int32_t firstFrame = group * (work.importMode ? 4 : 3);
@@ -684,7 +724,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", work->dualSlotMode ? "D2-DUAL-SLOT" :
+    setString("gate", work->dualSlotMode && work->resizeMode ? "D2-DUAL-SLOT-RESIZE" :
+              work->dualSlotMode ? "D2-DUAL-SLOT" :
               work->pipelineMode ? "D2-PRODUCER-PIPELINE" :
               work->throughputMode ? "D2-THROUGHPUT" :
               work->resizeMode ? "D2-COMPOSITE-RESIZE" :
@@ -874,6 +915,11 @@ napi_value RunGpuProducerPipelineProbe(napi_env env, napi_callback_info)
 napi_value RunGpuDualSlotProbe(napi_env env, napi_callback_info)
 {
     return QueueSurfaceProbe(env, false, true, true, true, true, true, false, true, true, true);
+}
+
+napi_value RunGpuDualSlotResizeProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true, true, true, true, true, false, true, true);
 }
 
 } // namespace winehua::direct
