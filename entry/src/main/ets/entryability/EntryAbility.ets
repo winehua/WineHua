@@ -38,6 +38,7 @@ interface DirectWineIpcProbeResult {
   replyPid: number;
   fdCount: number;
   parentFdsOpen: number;
+  deathReceived: number;
 }
 
 interface DirectSurfaceProbeResult {

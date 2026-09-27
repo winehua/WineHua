@@ -35,6 +35,7 @@ export interface DirectWineIpcProbeResult {
   callbackCode: number;
   ipcCode: number;
   parentFdsOpen: number;
+  deathReceived: number;
 }
 export const runDirectWineIpcProbe: () => Promise<DirectWineIpcProbeResult>;
 export interface DirectSurfaceProbeResult {

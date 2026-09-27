@@ -1,0 +1,10 @@
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35644,"replyPid":35644,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35702,"replyPid":35702,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35761,"replyPid":35761,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35826,"replyPid":35826,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35886,"replyPid":35886,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35941,"replyPid":35941,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":35993,"replyPid":35993,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":36050,"replyPid":36050,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":36120,"replyPid":36120,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}
+{"gate":"D2.5-WINE-IPC","status":"PASS","stage":"complete","pid":36175,"replyPid":36175,"fdCount":2,"launchCode":0,"callbackCode":0,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1}

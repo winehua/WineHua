@@ -26,6 +26,9 @@ struct Work {
     int32_t ipcCode = -1;
     bool callbackReceived = false;
     bool parentFdsOpen = false;
+    std::mutex deathMutex;
+    std::condition_variable deathCondition;
+    bool deathReceived = false;
     wineipc::ProbeResult result{-1, -1, 0, 0};
     const char* stage = "pending";
 };
@@ -47,6 +50,16 @@ void OnStarted(int32_t code, OHIPCRemoteProxy* proxy)
         if (proxy) OH_IPCRemoteProxy_Destroy(proxy);
         g_pending = false;
     }
+}
+
+void OnChildDeath(void* data)
+{
+    auto* work = static_cast<Work*>(data);
+    {
+        std::lock_guard<std::mutex> lock(work->deathMutex);
+        work->deathReceived = true;
+    }
+    work->deathCondition.notify_one();
 }
 
 void Execute(napi_env, void* data)
@@ -88,9 +101,18 @@ void Execute(napi_env, void* data)
 
     int input[2] = {-1, -1};
     int output[2] = {-1, -1};
+    OHIPCDeathRecipient* deathRecipient = nullptr;
+    bool deathRegistered = false;
     OHIPCParcel* request = nullptr;
     OHIPCParcel* reply = nullptr;
     do {
+        deathRecipient = OH_IPCDeathRecipient_Create(OnChildDeath, nullptr, &work);
+        if (!deathRecipient ||
+            OH_IPCRemoteProxy_AddDeathRecipient(work.proxy, deathRecipient) != OH_IPC_SUCCESS) {
+            work.stage = "add_death_recipient";
+            break;
+        }
+        deathRegistered = true;
         if (pipe(input) || pipe(output)) {
             work.stage = "pipe";
             break;
@@ -140,12 +162,24 @@ void Execute(napi_env, void* data)
             work.stage = "result_mismatch";
             break;
         }
+        {
+            std::unique_lock<std::mutex> lock(work.deathMutex);
+            if (!work.deathCondition.wait_for(lock, std::chrono::seconds(5),
+                                              [&work] { return work.deathReceived; })) {
+                work.stage = "death_timeout";
+                break;
+            }
+        }
         work.stage = "complete";
     } while (false);
     if (request) OH_IPCParcel_Destroy(request);
     if (reply) OH_IPCParcel_Destroy(reply);
     for (int fd : input) if (fd >= 0) close(fd);
     for (int fd : output) if (fd >= 0) close(fd);
+    if (deathRecipient) {
+        if (deathRegistered) OH_IPCRemoteProxy_RemoveDeathRecipient(work.proxy, deathRecipient);
+        OH_IPCDeathRecipient_Destroy(deathRecipient);
+    }
     OH_IPCRemoteProxy_Destroy(work.proxy);
 }
 
@@ -179,6 +213,7 @@ void Complete(napi_env env, napi_status status, void* data)
     SetInt(env, result, "callbackCode", work->callbackCode);
     SetInt(env, result, "ipcCode", work->ipcCode);
     SetInt(env, result, "parentFdsOpen", work->parentFdsOpen ? 1 : 0);
+    SetInt(env, result, "deathReceived", work->deathReceived ? 1 : 0);
     napi_resolve_deferred(env, work->deferred, result);
     napi_delete_async_work(env, work->asyncWork);
     delete work;
