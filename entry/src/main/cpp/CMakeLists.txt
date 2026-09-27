@@ -42,6 +42,7 @@ set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
 add_library(entry SHARED
     direct/vulkan_probe_launcher.cpp
+    direct/direct_wine_ipc_probe.cpp
     direct/direct_surface_probe_launcher.cpp
     direct/direct_buffer_import_probe.cpp
     direct/direct_output_probe.cpp
@@ -141,8 +142,9 @@ target_link_libraries(entry PUBLIC
 
 add_library(wine_child SHARED
     proc/wine_child.cpp
+    proc/wine_child_ipc.cpp
 )
-target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)
+target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so libipc_capi.so)
 
 # D0 is an independent native NCP. It resolves the system Vulkan loader with
 # dlopen at runtime and deliberately does not link Wine, Mesa or libvulkan.

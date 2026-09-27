@@ -24,6 +24,19 @@ export interface DirectVulkanProbeResult {
 }
 export const runDirectVulkanProbe: () => Promise<DirectVulkanProbeResult>;
 export const runDirectVulkanCreateProbe: () => Promise<DirectVulkanProbeResult>;
+export interface DirectWineIpcProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  replyPid: number;
+  fdCount: number;
+  launchCode: number;
+  callbackCode: number;
+  ipcCode: number;
+  parentFdsOpen: number;
+}
+export const runDirectWineIpcProbe: () => Promise<DirectWineIpcProbeResult>;
 export interface DirectSurfaceProbeResult {
   gate: string;
   status: string;

@@ -20,6 +20,7 @@
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
 #include "direct/vulkan_probe_launcher.h"
+#include "direct/direct_wine_ipc_probe.h"
 #include "direct/direct_surface_probe_launcher.h"
 #include "direct/direct_output_probe.h"
 
@@ -1211,6 +1212,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"runDirectVulkanProbe", nullptr, winehua::direct::RunVulkanProbe,
          nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectVulkanCreateProbe", nullptr, winehua::direct::RunVulkanCreateProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectWineIpcProbe", nullptr, winehua::direct::RunWineIpcProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectSurfaceProbe", nullptr, winehua::direct::RunSurfaceProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},

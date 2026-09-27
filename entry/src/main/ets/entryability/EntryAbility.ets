@@ -30,6 +30,16 @@ interface DirectProbeResult {
   parentRssKiB: number;
 }
 
+interface DirectWineIpcProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  replyPid: number;
+  fdCount: number;
+  parentFdsOpen: number;
+}
+
 interface DirectSurfaceProbeResult {
   status: string;
   stage: string;
@@ -90,6 +100,7 @@ interface DirectOutputProbeResult {
 export default class EntryAbility extends UIAbility {
   private directProbePending: boolean = false;
   private directProbeStartMode: boolean = false;
+  private directWineIpcMode: boolean = false;
   private directSurfaceProbeMode: boolean = false;
   private directSurfaceAbortMode: boolean = false;
   private directGpuSurfaceMode: boolean = false;
@@ -107,7 +118,8 @@ export default class EntryAbility extends UIAbility {
   private runDirectProbeIfRequested(): void {
     if (!this.directProbePending) return;
     this.directProbePending = false;
-    const outputPath = this.directOutputMode ?
+    const outputPath = this.directWineIpcMode ?
+      `${this.context.cacheDir}/direct-wine-ipc-probe.json` : this.directOutputMode ?
       `${this.context.cacheDir}/direct-gpu-output-probe.json` : this.directSurfaceProbeMode ?
       `${this.context.cacheDir}/${this.directDualSlotMode && this.directCompositeResizeMode ?
         'direct-gpu-dual-slot-resize-probe.json' :
@@ -123,7 +135,8 @@ export default class EntryAbility extends UIAbility {
         this.directSurfaceAbortMode ? 'direct-surface-abort-probe.json' : 'direct-surface-probe.json'}` :
       `${this.context.cacheDir}/direct-vulkan-probe.json`;
     try {
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directWineIpcMode ? 'D2.5-WINE-IPC' :
+        this.directOutputMode ? 'D2-OUTPUT' :
         this.directDualSlotMode && this.directCompositeResizeMode ? 'D2-DUAL-SLOT-RESIZE' :
         this.directDualSlotMode ? 'D2-DUAL-SLOT' :
         this.directPipelineMode ? 'D2-PRODUCER-PIPELINE' :
@@ -141,7 +154,8 @@ export default class EntryAbility extends UIAbility {
     }
     if (deviceInfo.deviceType === 'phone') {
       // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directWineIpcMode ? 'D2.5-WINE-IPC' :
+        this.directOutputMode ? 'D2-OUTPUT' :
         this.directDualSlotMode && this.directCompositeResizeMode ? 'D2-DUAL-SLOT-RESIZE' :
         this.directDualSlotMode ? 'D2-DUAL-SLOT' :
         this.directPipelineMode ? 'D2-PRODUCER-PIPELINE' :
@@ -156,7 +170,17 @@ export default class EntryAbility extends UIAbility {
         status: 'UNSUPPORTED', stage: 'phone_fork_backend' }));
       return;
     }
-    if (this.directOutputMode) {
+    if (this.directWineIpcMode) {
+      this.directWineIpcMode = false;
+      testNapi.runDirectWineIpcProbe().then((result: DirectWineIpcProbeResult) => {
+        writeTextFile(outputPath, JSON.stringify(result));
+        hilog.info(DOMAIN, 'DIRECT-D2.5-WINE-IPC', 'status=%{public}s stage=%{public}s pid=%{public}d',
+          result.status, result.stage, result.pid);
+      }).catch((err: Object) => {
+        writeTextFile(outputPath, JSON.stringify({ gate: 'D2.5-WINE-IPC', status: 'FAIL',
+          stage: 'napi_exception', error: JSON.stringify(err) }));
+      });
+    } else if (this.directOutputMode) {
       this.directOutputMode = false;
       this.runDirectOutputProbePromise(testNapi.runDirectOutputProbe(), outputPath);
     } else if (this.directSurfaceProbeMode) {
@@ -294,6 +318,7 @@ export default class EntryAbility extends UIAbility {
   private publishLaunchRequest(want: Want): void {
     const parameters = want.parameters;
     if (parameters && (`${parameters['winehua.mode']}` === 'direct-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-wine-ipc-probe' ||
       `${parameters['winehua.mode']}` === 'direct-probe-create' ||
       `${parameters['winehua.mode']}` === 'direct-probe-start' ||
       `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
@@ -310,6 +335,7 @@ export default class EntryAbility extends UIAbility {
       `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe')) {
       this.directProbePending = true;
+      this.directWineIpcMode = `${parameters['winehua.mode']}` === 'direct-wine-ipc-probe';
       this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
       this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
         `${parameters['winehua.mode']}` === 'direct-surface-abort-probe' ||
