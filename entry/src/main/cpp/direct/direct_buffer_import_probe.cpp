@@ -17,17 +17,19 @@ DirectBufferImportProbe::~DirectBufferImportProbe()
     ClearCache();
     DestroyOutput();
     if (device_) {
-        if (fence_) vkDestroyFence(device_, fence_, nullptr);
-        if (acquireSemaphore_) vkDestroySemaphore(device_, acquireSemaphore_, nullptr);
-        if (releaseSemaphore_) vkDestroySemaphore(device_, releaseSemaphore_, nullptr);
+        for (FrameSlot& slot : frameSlots_) {
+            if (slot.fence) vkDestroyFence(device_, slot.fence, nullptr);
+            if (slot.acquireSemaphore) vkDestroySemaphore(device_, slot.acquireSemaphore, nullptr);
+            if (slot.releaseSemaphore) vkDestroySemaphore(device_, slot.releaseSemaphore, nullptr);
+            if (slot.readback) vkDestroyBuffer(device_, slot.readback, nullptr);
+            if (slot.readbackMemory) vkFreeMemory(device_, slot.readbackMemory, nullptr);
+        }
         if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
         if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
         if (pipelineLayout_) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
         if (descriptorPool_) vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         if (descriptorLayout_) vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
         if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
-        if (readback_) vkDestroyBuffer(device_, readback_, nullptr);
-        if (readbackMemory_) vkFreeMemory(device_, readbackMemory_, nullptr);
         vkDestroyDevice(device_, nullptr);
     }
     if (outputSurface_) vkDestroySurfaceKHR(instance_, outputSurface_, nullptr);
@@ -157,35 +159,40 @@ bool DirectBufferImportProbe::Initialize()
 bool DirectBufferImportProbe::InitializeSampler()
 {
     VkResult result;
-    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufferInfo.size = 9 * sizeof(uint32_t);
-    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    result = vkCreateBuffer(device_, &bufferInfo, nullptr, &readback_);
-    if (result != VK_SUCCESS) return Fail("sample_buffer", result);
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device_, readback_, &requirements);
+    if (frameSlotCount_ == 0 || frameSlotCount_ > 3)
+        return Fail("sample_slot_count", VK_ERROR_INITIALIZATION_FAILED);
+    frameSlots_.resize(frameSlotCount_);
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     vkGetPhysicalDeviceMemoryProperties(physical_, &memoryProperties);
-    uint32_t memoryType = UINT32_MAX;
-    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
-        if ((requirements.memoryTypeBits & (1u << i)) &&
-            (memoryProperties.memoryTypes[i].propertyFlags &
-             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
-                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memoryType = i;
-            break;
+    for (FrameSlot& slot : frameSlots_) {
+        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = 9 * sizeof(uint32_t);
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        result = vkCreateBuffer(device_, &bufferInfo, nullptr, &slot.readback);
+        if (result != VK_SUCCESS) return Fail("sample_buffer", result);
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, slot.readback, &requirements);
+        uint32_t memoryType = UINT32_MAX;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if ((requirements.memoryTypeBits & (1u << i)) &&
+                (memoryProperties.memoryTypes[i].propertyFlags &
+                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                memoryType = i;
+                break;
+            }
         }
+        if (memoryType == UINT32_MAX)
+            return Fail("sample_host_memory_type", VK_ERROR_FEATURE_NOT_PRESENT);
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType;
+        result = vkAllocateMemory(device_, &allocation, nullptr, &slot.readbackMemory);
+        if (result != VK_SUCCESS) return Fail("sample_allocate", result);
+        result = vkBindBufferMemory(device_, slot.readback, slot.readbackMemory, 0);
+        if (result != VK_SUCCESS) return Fail("sample_bind", result);
     }
-    if (memoryType == UINT32_MAX)
-        return Fail("sample_host_memory_type", VK_ERROR_FEATURE_NOT_PRESENT);
-    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = memoryType;
-    result = vkAllocateMemory(device_, &allocation, nullptr, &readbackMemory_);
-    if (result != VK_SUCCESS) return Fail("sample_allocate", result);
-    result = vkBindBufferMemory(device_, readback_, readbackMemory_, 0);
-    if (result != VK_SUCCESS) return Fail("sample_bind", result);
 
     VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     samplerInfo.magFilter = VK_FILTER_NEAREST;
@@ -213,21 +220,24 @@ bool DirectBufferImportProbe::InitializeSampler()
     result = vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &descriptorLayout_);
     if (result != VK_SUCCESS) return Fail("sample_descriptor_layout", result);
     VkDescriptorPoolSize poolSizes[2] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frameSlotCount_},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frameSlotCount_},
     };
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = frameSlotCount_;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
     result = vkCreateDescriptorPool(device_, &poolInfo, nullptr, &descriptorPool_);
     if (result != VK_SUCCESS) return Fail("sample_descriptor_pool", result);
     VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     setInfo.descriptorPool = descriptorPool_;
-    setInfo.descriptorSetCount = 1;
-    setInfo.pSetLayouts = &descriptorLayout_;
-    result = vkAllocateDescriptorSets(device_, &setInfo, &descriptorSet_);
+    std::vector<VkDescriptorSetLayout> layouts(frameSlotCount_, descriptorLayout_);
+    std::vector<VkDescriptorSet> sets(frameSlotCount_, VK_NULL_HANDLE);
+    setInfo.descriptorSetCount = frameSlotCount_;
+    setInfo.pSetLayouts = layouts.data();
+    result = vkAllocateDescriptorSets(device_, &setInfo, sets.data());
     if (result != VK_SUCCESS) return Fail("sample_descriptor_set", result);
+    for (uint32_t i = 0; i < frameSlotCount_; ++i) frameSlots_[i].descriptorSet = sets[i];
     VkPushConstantRange sizeRange{};
     sizeRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     sizeRange.size = sizeof(VkExtent2D);
@@ -262,26 +272,33 @@ bool DirectBufferImportProbe::InitializeSampler()
     VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     commandInfo.commandPool = commandPool_;
     commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandInfo.commandBufferCount = 1;
-    result = vkAllocateCommandBuffers(device_, &commandInfo, &command_);
+    commandInfo.commandBufferCount = frameSlotCount_;
+    std::vector<VkCommandBuffer> commands(frameSlotCount_, VK_NULL_HANDLE);
+    result = vkAllocateCommandBuffers(device_, &commandInfo, commands.data());
     if (result != VK_SUCCESS) return Fail("sample_command_buffer", result);
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    result = vkCreateFence(device_, &fenceInfo, nullptr, &fence_);
-    if (result != VK_SUCCESS) return Fail("sample_fence", result);
+    for (uint32_t i = 0; i < frameSlotCount_; ++i) {
+        FrameSlot& slot = frameSlots_[i];
+        slot.command = commands[i];
+        result = vkCreateFence(device_, &fenceInfo, nullptr, &slot.fence);
+        if (result != VK_SUCCESS) return Fail("sample_fence", result);
+    }
     return true;
 }
 
 bool DirectBufferImportProbe::InitializeSync()
 {
-    if (acquireSemaphore_) return true;
+    if (!frameSlots_.empty() && frameSlots_[0].acquireSemaphore) return true;
     VkExportSemaphoreCreateInfo exportInfo{VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
     exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     VkSemaphoreCreateInfo createInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     createInfo.pNext = &exportInfo;
-    VkResult result = vkCreateSemaphore(device_, &createInfo, nullptr, &acquireSemaphore_);
-    if (result != VK_SUCCESS) return Fail("fence_acquire_semaphore", result);
-    result = vkCreateSemaphore(device_, &createInfo, nullptr, &releaseSemaphore_);
-    if (result != VK_SUCCESS) return Fail("fence_release_semaphore", result);
+    for (FrameSlot& slot : frameSlots_) {
+        VkResult result = vkCreateSemaphore(device_, &createInfo, nullptr, &slot.acquireSemaphore);
+        if (result != VK_SUCCESS) return Fail("fence_acquire_semaphore", result);
+        result = vkCreateSemaphore(device_, &createInfo, nullptr, &slot.releaseSemaphore);
+        if (result != VK_SUCCESS) return Fail("fence_release_semaphore", result);
+    }
     return true;
 }
 
@@ -291,8 +308,9 @@ void DirectBufferImportProbe::DestroyOutput()
     for (VkSemaphore semaphore : outputRendered_)
         if (semaphore) vkDestroySemaphore(device_, semaphore, nullptr);
     outputRendered_.clear();
-    if (outputAcquired_) vkDestroySemaphore(device_, outputAcquired_, nullptr);
-    outputAcquired_ = VK_NULL_HANDLE;
+    for (VkSemaphore semaphore : outputAcquired_)
+        if (semaphore) vkDestroySemaphore(device_, semaphore, nullptr);
+    outputAcquired_.clear();
     for (VkFramebuffer framebuffer : outputFramebuffers_)
         if (framebuffer) vkDestroyFramebuffer(device_, framebuffer, nullptr);
     outputFramebuffers_.clear();
@@ -496,8 +514,11 @@ bool DirectBufferImportProbe::InitializeOutput()
     for (VkShaderModule module : modules) vkDestroyShaderModule(device_, module, nullptr);
     if (result != VK_SUCCESS) return Fail("composite_pipeline", result);
     VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    result = vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &outputAcquired_);
-    if (result != VK_SUCCESS) return Fail("composite_acquire_semaphore", result);
+    outputAcquired_.resize(frameSlotCount_, VK_NULL_HANDLE);
+    for (VkSemaphore& semaphore : outputAcquired_) {
+        result = vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &semaphore);
+        if (result != VK_SUCCESS) return Fail("composite_acquire_semaphore", result);
+    }
     outputRendered_.resize(imageCount, VK_NULL_HANDLE);
     for (VkSemaphore& semaphore : outputRendered_) {
         result = vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &semaphore);
@@ -609,21 +630,22 @@ bool DirectBufferImportProbe::Sample(OH_NativeBuffer* buffer, int32_t width,
                                      int32_t height, int32_t frame)
 {
     if (frame < 0) return Fail("sample_frame", VK_ERROR_INITIALIZATION_FAILED);
-    return RecordAndSubmit(buffer, width, height, nullptr, nullptr) && FinishSample(frame);
+    return RecordAndSubmit(buffer, width, height, frame, nullptr, nullptr) && FinishSample(frame);
 }
 
 bool DirectBufferImportProbe::SubmitSampleWithFences(OH_NativeBuffer* buffer,
                                                      int32_t width, int32_t height,
-                                                     int* acquireFence, int* releaseFence)
+                                                     int32_t frame, int* acquireFence,
+                                                     int* releaseFence)
 {
-    if (!fenceMode_ || !acquireFence || !releaseFence)
+    if (!fenceMode_ || frame < 0 || !acquireFence || !releaseFence)
         return Fail("fence_mode_input", VK_ERROR_INITIALIZATION_FAILED);
     *releaseFence = -1;
-    return RecordAndSubmit(buffer, width, height, acquireFence, releaseFence);
+    return RecordAndSubmit(buffer, width, height, frame, acquireFence, releaseFence);
 }
 
 bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t width,
-                                               int32_t height, int* acquireFence,
+                                               int32_t height, int32_t frame, int* acquireFence,
                                                int* releaseFence)
 {
     if (!buffer || width <= 0 || height <= 0)
@@ -632,11 +654,14 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
     if (found == cache_.end() || found->second.buffer != buffer)
         return Fail("sample_not_imported", VK_ERROR_INITIALIZATION_FAILED);
     if (!pipeline_ && !InitializeSampler()) return false;
+    FrameSlot& slot = frameSlots_[static_cast<uint32_t>(frame) % frameSlotCount_];
+    if (slot.inFlight) return Fail("sample_slot_busy", VK_ERROR_INITIALIZATION_FAILED);
     if (outputSurfaceId_ && !InitializeOutput()) return false;
     uint32_t outputImageIndex = 0;
     if (outputSurfaceId_) {
         VkResult acquired = vkAcquireNextImageKHR(device_, outputSwapchain_, 5'000'000'000ULL,
-                                                    outputAcquired_, VK_NULL_HANDLE,
+                                                    outputAcquired_[static_cast<uint32_t>(frame) % frameSlotCount_],
+                                                    VK_NULL_HANDLE,
                                                     &outputImageIndex);
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
             return Fail("composite_acquire", acquired);
@@ -647,28 +672,28 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
     imageInfo.imageView = found->second.view;
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = readback_;
+    bufferInfo.buffer = slot.readback;
     bufferInfo.range = 9 * sizeof(uint32_t);
     VkWriteDescriptorSet writes[2]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = descriptorSet_;
+    writes[0].dstSet = slot.descriptorSet;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[0].pImageInfo = &imageInfo;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = descriptorSet_;
+    writes[1].dstSet = slot.descriptorSet;
     writes[1].dstBinding = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[1].pBufferInfo = &bufferInfo;
     vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
 
-    VkResult result = vkResetCommandBuffer(command_, 0);
+    VkResult result = vkResetCommandBuffer(slot.command, 0);
     if (result != VK_SUCCESS) return Fail("sample_command_reset", result);
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    result = vkBeginCommandBuffer(command_, &beginInfo);
+    result = vkBeginCommandBuffer(slot.command, &beginInfo);
     if (result != VK_SUCCESS) return Fail("sample_command_begin", result);
     VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     imageBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -680,18 +705,18 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
     imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     imageBarrier.subresourceRange.levelCount = 1;
     imageBarrier.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(command_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
                              (outputSurfaceId_ ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : 0),
                          0, 0, nullptr, 0, nullptr,
                          1, &imageBarrier);
-    vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(command_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout_,
-                            0, 1, &descriptorSet_, 0, nullptr);
+    vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+    vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout_,
+                            0, 1, &slot.descriptorSet, 0, nullptr);
     const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
-    vkCmdPushConstants(command_, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
+    vkCmdPushConstants(slot.command, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(extent), &extent);
-    vkCmdDispatch(command_, 1, 1, 1);
+    vkCmdDispatch(slot.command, 1, 1, 1);
     if (outputSurfaceId_) {
         VkClearValue clear{};
         VkRenderPassBeginInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -700,12 +725,12 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
         render.renderArea = {{0, 0}, outputExtent_};
         render.clearValueCount = 1;
         render.pClearValues = &clear;
-        vkCmdBeginRenderPass(command_, &render, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_GRAPHICS, outputPipeline_);
-        vkCmdBindDescriptorSets(command_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-                                0, 1, &descriptorSet_, 0, nullptr);
-        vkCmdDraw(command_, 3, 1, 0, 0);
-        vkCmdEndRenderPass(command_);
+        vkCmdBeginRenderPass(slot.command, &render, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_GRAPHICS, outputPipeline_);
+        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
+                                0, 1, &slot.descriptorSet, 0, nullptr);
+        vkCmdDraw(slot.command, 3, 1, 0, 0);
+        vkCmdEndRenderPass(slot.command);
     }
 
     imageBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -714,7 +739,7 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
     imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
     imageBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     imageBarrier.dstAccessMask = 0;
-    vkCmdPipelineBarrier(command_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+    vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
                              (outputSurfaceId_ ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : 0),
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
                          1, &imageBarrier);
@@ -723,28 +748,28 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
     readbackBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.buffer = readback_;
+    readbackBarrier.buffer = slot.readback;
     readbackBarrier.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(command_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &readbackBarrier,
                          0, nullptr);
-    result = vkEndCommandBuffer(command_);
+    result = vkEndCommandBuffer(slot.command);
     if (result != VK_SUCCESS) return Fail("sample_command_end", result);
-    result = vkResetFences(device_, 1, &fence_);
+    result = vkResetFences(device_, 1, &slot.fence);
     if (result != VK_SUCCESS) return Fail("sample_fence_reset", result);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &command_;
+    submit.pCommandBuffers = &slot.command;
     VkSemaphore waitSemaphores[2]{};
     VkPipelineStageFlags waitStages[2]{};
     VkSemaphore signalSemaphores[2]{};
     if (releaseFence) {
         if (!InitializeSync()) return false;
-        signalSemaphores[submit.signalSemaphoreCount++] = releaseSemaphore_;
+        signalSemaphores[submit.signalSemaphoreCount++] = slot.releaseSemaphore;
     }
     if (acquireFence && *acquireFence >= 0) {
         VkImportSemaphoreFdInfoKHR importInfo{VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR};
-        importInfo.semaphore = acquireSemaphore_;
+        importInfo.semaphore = slot.acquireSemaphore;
         importInfo.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
         importInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         importInfo.fd = *acquireFence;
@@ -752,28 +777,32 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
         if (result != VK_SUCCESS) return Fail("fence_import", result);
         *acquireFence = -1; // Vulkan owns the fd after a successful import.
         ++acquireImports_;
-        waitSemaphores[submit.waitSemaphoreCount] = acquireSemaphore_;
+        waitSemaphores[submit.waitSemaphoreCount] = slot.acquireSemaphore;
         waitStages[submit.waitSemaphoreCount++] = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     }
     if (outputSurfaceId_) {
-        waitSemaphores[submit.waitSemaphoreCount] = outputAcquired_;
+        waitSemaphores[submit.waitSemaphoreCount] =
+            outputAcquired_[static_cast<uint32_t>(frame) % frameSlotCount_];
         waitStages[submit.waitSemaphoreCount++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         signalSemaphores[submit.signalSemaphoreCount++] = outputRendered_[outputImageIndex];
     }
     submit.pWaitSemaphores = waitSemaphores;
     submit.pWaitDstStageMask = waitStages;
     submit.pSignalSemaphores = signalSemaphores;
-    result = vkQueueSubmit(queue_, 1, &submit, fence_);
+    result = vkQueueSubmit(queue_, 1, &submit, slot.fence);
     if (result != VK_SUCCESS) return Fail("sample_submit", result);
+    slot.frame = frame;
+    slot.inFlight = true;
     if (releaseFence) {
         VkSemaphoreGetFdInfoKHR exportInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
-        exportInfo.semaphore = releaseSemaphore_;
+        exportInfo.semaphore = slot.releaseSemaphore;
         exportInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
         result = getSemaphoreFd_(device_, &exportInfo, releaseFence);
         if (result != VK_SUCCESS) {
             // Without a release fd, finish the submitted work before the caller
             // gives the BufferQueue its buffer back.
-            vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+            vkWaitForFences(device_, 1, &slot.fence, VK_TRUE, 5'000'000'000ULL);
+            slot.inFlight = false;
             return Fail("fence_export", result);
         }
         ++releaseExports_;
@@ -787,7 +816,8 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
         present.pImageIndices = &outputImageIndex;
         result = vkQueuePresentKHR(queue_, &present);
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-            vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+            vkWaitForFences(device_, 1, &slot.fence, VK_TRUE, 5'000'000'000ULL);
+            slot.inFlight = false;
             if (releaseFence && *releaseFence >= 0) {
                 close(*releaseFence);
                 *releaseFence = -1;
@@ -802,18 +832,23 @@ bool DirectBufferImportProbe::RecordAndSubmit(OH_NativeBuffer* buffer, int32_t w
 
 bool DirectBufferImportProbe::FinishSample(int32_t frame)
 {
-    if (frame < 0) return Fail("sample_frame", VK_ERROR_INITIALIZATION_FAILED);
-    VkResult result = vkWaitForFences(device_, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+    if (frame < 0 || frameSlots_.empty())
+        return Fail("sample_frame", VK_ERROR_INITIALIZATION_FAILED);
+    FrameSlot& slot = frameSlots_[static_cast<uint32_t>(frame) % frameSlotCount_];
+    if (!slot.inFlight || slot.frame != frame)
+        return Fail("sample_slot_frame", VK_ERROR_INITIALIZATION_FAILED);
+    VkResult result = vkWaitForFences(device_, 1, &slot.fence, VK_TRUE, 5'000'000'000ULL);
     if (result != VK_SUCCESS) return Fail("sample_wait", result);
+    slot.inFlight = false;
     void* mapped = nullptr;
-    result = vkMapMemory(device_, readbackMemory_, 0, 9 * sizeof(uint32_t), 0, &mapped);
+    result = vkMapMemory(device_, slot.readbackMemory, 0, 9 * sizeof(uint32_t), 0, &mapped);
     if (result != VK_SUCCESS) return Fail("sample_map", result);
     const uint32_t expected = 0xffa55a00u | static_cast<uint8_t>((frame % 8) * 31 + 7);
     bool matches = true;
     for (uint32_t i = 0; i < 9; ++i) {
         if (static_cast<const uint32_t*>(mapped)[i] != expected) matches = false;
     }
-    vkUnmapMemory(device_, readbackMemory_);
+    vkUnmapMemory(device_, slot.readbackMemory);
     if (!matches) return Fail("gpu_sample_mismatch", VK_ERROR_UNKNOWN);
     ++samples_;
     stage_ = "sampled";

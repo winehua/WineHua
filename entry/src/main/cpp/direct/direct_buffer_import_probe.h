@@ -16,13 +16,15 @@ namespace winehua::direct {
 // exercises acquire/release SYNC_FD handoff. Production composition is separate.
 class DirectBufferImportProbe {
 public:
-    explicit DirectBufferImportProbe(bool enableFences = false, uint64_t outputSurfaceId = 0)
-        : fenceMode_(enableFences), outputSurfaceId_(outputSurfaceId) {}
+    explicit DirectBufferImportProbe(bool enableFences = false, uint64_t outputSurfaceId = 0,
+                                     uint32_t frameSlots = 1)
+        : fenceMode_(enableFences), outputSurfaceId_(outputSurfaceId),
+          frameSlotCount_(frameSlots) {}
     ~DirectBufferImportProbe();
     bool Import(OH_NativeBuffer* buffer, int32_t width, int32_t height);
     bool Sample(OH_NativeBuffer* buffer, int32_t width, int32_t height, int32_t frame);
     bool SubmitSampleWithFences(OH_NativeBuffer* buffer, int32_t width, int32_t height,
-                                int* acquireFence, int* releaseFence);
+                                int32_t frame, int* acquireFence, int* releaseFence);
     bool FinishSample(int32_t frame);
     void NewGeneration();
     bool RecreateOutput();
@@ -45,12 +47,23 @@ private:
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;
     };
+    struct FrameSlot {
+        VkCommandBuffer command = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        VkSemaphore acquireSemaphore = VK_NULL_HANDLE;
+        VkSemaphore releaseSemaphore = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        VkBuffer readback = VK_NULL_HANDLE;
+        VkDeviceMemory readbackMemory = VK_NULL_HANDLE;
+        int32_t frame = -1;
+        bool inFlight = false;
+    };
     bool Initialize();
     bool InitializeSampler();
     bool InitializeSync();
     bool InitializeOutput();
     void DestroyOutput();
-    bool RecordAndSubmit(OH_NativeBuffer* buffer, int32_t width, int32_t height,
+    bool RecordAndSubmit(OH_NativeBuffer* buffer, int32_t width, int32_t height, int32_t frame,
                          int* acquireFence, int* releaseFence);
     bool Fail(const char* stage, VkResult result);
     void ClearCache();
@@ -58,6 +71,7 @@ private:
     VkInstance instance_ = VK_NULL_HANDLE;
     bool fenceMode_ = false;
     uint64_t outputSurfaceId_ = 0;
+    uint32_t frameSlotCount_ = 1;
     OHNativeWindow* outputWindow_ = nullptr;
     VkSurfaceKHR outputSurface_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
@@ -65,16 +79,12 @@ private:
     VkQueue queue_ = VK_NULL_HANDLE;
     uint32_t queueFamily_ = UINT32_MAX;
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
-    VkCommandBuffer command_ = VK_NULL_HANDLE;
-    VkFence fence_ = VK_NULL_HANDLE;
-    VkSemaphore acquireSemaphore_ = VK_NULL_HANDLE;
-    VkSemaphore releaseSemaphore_ = VK_NULL_HANDLE;
+    std::vector<FrameSlot> frameSlots_;
     PFN_vkImportSemaphoreFdKHR importSemaphoreFd_ = nullptr;
     PFN_vkGetSemaphoreFdKHR getSemaphoreFd_ = nullptr;
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkSwapchainKHR outputSwapchain_ = VK_NULL_HANDLE;
@@ -85,10 +95,8 @@ private:
     std::vector<VkImage> outputImages_;
     std::vector<VkImageView> outputViews_;
     std::vector<VkFramebuffer> outputFramebuffers_;
-    VkSemaphore outputAcquired_ = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> outputAcquired_;
     std::vector<VkSemaphore> outputRendered_;
-    VkBuffer readback_ = VK_NULL_HANDLE;
-    VkDeviceMemory readbackMemory_ = VK_NULL_HANDLE;
     std::unordered_map<uint32_t, Entry> cache_;
     VkResult error_ = VK_SUCCESS;
     const char* stage_ = "pending";

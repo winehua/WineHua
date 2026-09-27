@@ -25,6 +25,13 @@ namespace {
 using winehua::direct::SurfaceProbeFrame;
 
 struct GpuProducer {
+    static constexpr uint32_t kFrameSlots = 3;
+    struct FrameSlot {
+        VkCommandBuffer command = VK_NULL_HANDLE;
+        VkSemaphore acquired = VK_NULL_HANDLE;
+        VkFence submitted = VK_NULL_HANDLE;
+        bool inFlight = false;
+    };
     OHNativeWindow* window = nullptr; // Owned by the IPC handler, not by Vulkan.
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -33,9 +40,7 @@ struct GpuProducer {
     VkQueue queue = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    VkSemaphore acquired = VK_NULL_HANDLE;
-    VkFence submitted = VK_NULL_HANDLE;
+    FrameSlot slots[kFrameSlots]{};
     std::vector<VkImage> images;
     std::vector<VkSemaphore> presented;
     std::vector<bool> initialized;
@@ -63,8 +68,10 @@ struct GpuProducer {
     {
         DestroySwapchain();
         if (device) {
-            if (submitted) vkDestroyFence(device, submitted, nullptr);
-            if (acquired) vkDestroySemaphore(device, acquired, nullptr);
+            for (FrameSlot& slot : slots) {
+                if (slot.submitted) vkDestroyFence(device, slot.submitted, nullptr);
+                if (slot.acquired) vkDestroySemaphore(device, slot.acquired, nullptr);
+            }
             if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
             vkDestroyDevice(device, nullptr);
         }
@@ -76,9 +83,7 @@ struct GpuProducer {
         device = VK_NULL_HANDLE;
         queue = VK_NULL_HANDLE;
         commandPool = VK_NULL_HANDLE;
-        command = VK_NULL_HANDLE;
-        acquired = VK_NULL_HANDLE;
-        submitted = VK_NULL_HANDLE;
+        for (FrameSlot& slot : slots) slot = {};
         queueFamily = UINT32_MAX;
         width = height = 0;
         window = nullptr;
@@ -156,15 +161,19 @@ struct GpuProducer {
         VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         commandInfo.commandPool = commandPool;
         commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        commandInfo.commandBufferCount = 1;
-        result = vkAllocateCommandBuffers(device, &commandInfo, &command);
+        commandInfo.commandBufferCount = kFrameSlots;
+        VkCommandBuffer commands[kFrameSlots]{};
+        result = vkAllocateCommandBuffers(device, &commandInfo, commands);
         if (result != VK_SUCCESS) return result;
         VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        result = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &acquired);
-        if (result != VK_SUCCESS) return result;
         VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        result = vkCreateFence(device, &fenceInfo, nullptr, &submitted);
-        if (result != VK_SUCCESS) return result;
+        for (uint32_t i = 0; i < kFrameSlots; ++i) {
+            slots[i].command = commands[i];
+            result = vkCreateSemaphore(device, &semaphoreInfo, nullptr, &slots[i].acquired);
+            if (result != VK_SUCCESS) return result;
+            result = vkCreateFence(device, &fenceInfo, nullptr, &slots[i].submitted);
+            if (result != VK_SUCCESS) return result;
+        }
         return CreateSwapchain(w, h, output);
     }
 
@@ -260,19 +269,27 @@ struct GpuProducer {
             VkResult result = CreateSwapchain(w, h, output);
             if (result != VK_SUCCESS) return result;
         }
+        FrameSlot& slot = slots[static_cast<uint32_t>(frame) % kFrameSlots];
+        if (slot.inFlight) {
+            output.stage = winehua::direct::kGpuSubmit;
+            VkResult result = vkWaitForFences(device, 1, &slot.submitted, VK_TRUE,
+                                              5'000'000'000ULL);
+            if (result != VK_SUCCESS) return result;
+            slot.inFlight = false;
+        }
         output.stage = winehua::direct::kGpuAcquire;
         uint32_t imageIndex = 0;
         VkResult result = vkAcquireNextImageKHR(device, swapchain, 5'000'000'000ULL,
-                                                 acquired, VK_NULL_HANDLE, &imageIndex);
+                                                 slot.acquired, VK_NULL_HANDLE, &imageIndex);
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) return result;
         if (imageIndex >= images.size()) return VK_ERROR_INITIALIZATION_FAILED;
         output.bufferSeq = imageIndex; // Swapchain image index, not NativeBuffer sequence.
 
         output.stage = winehua::direct::kGpuRecord;
-        result = vkResetCommandPool(device, commandPool, 0);
+        result = vkResetCommandBuffer(slot.command, 0);
         if (result != VK_SUCCESS) return result;
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        result = vkBeginCommandBuffer(command, &begin);
+        result = vkBeginCommandBuffer(slot.command, &begin);
         if (result != VK_SUCCESS) return result;
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.oldLayout = initialized[imageIndex]
@@ -285,7 +302,7 @@ struct GpuProducer {
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
                              1, &barrier);
         VkClearColorValue color{};
@@ -297,34 +314,33 @@ struct GpuProducer {
         range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         range.levelCount = 1;
         range.layerCount = 1;
-        vkCmdClearColorImage(command, images[imageIndex],
+        vkCmdClearColorImage(slot.command, images[imageIndex],
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = 0;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
                              1, &barrier);
-        result = vkEndCommandBuffer(command);
+        result = vkEndCommandBuffer(slot.command);
         if (result != VK_SUCCESS) return result;
 
         output.stage = winehua::direct::kGpuSubmit;
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &acquired;
+        submit.pWaitSemaphores = &slot.acquired;
         submit.pWaitDstStageMask = &waitStage;
         submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &command;
+        submit.pCommandBuffers = &slot.command;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &presented[imageIndex];
-        result = vkResetFences(device, 1, &submitted);
+        result = vkResetFences(device, 1, &slot.submitted);
         if (result != VK_SUCCESS) return result;
-        result = vkQueueSubmit(queue, 1, &submit, submitted);
+        result = vkQueueSubmit(queue, 1, &submit, slot.submitted);
         if (result != VK_SUCCESS) return result;
-        result = vkWaitForFences(device, 1, &submitted, VK_TRUE, 5'000'000'000ULL);
-        if (result != VK_SUCCESS) return result;
+        slot.inFlight = true;
         initialized[imageIndex] = true;
 
         output.stage = winehua::direct::kGpuPresent;

@@ -58,6 +58,10 @@ struct SurfaceWork {
     bool compositeMode = false;
     bool resizeMode = false;
     bool throughputMode = false;
+    bool pipelineMode = false;
+    bool dualSlotMode = false;
+    int32_t bufferedFramesPeak = 0;
+    int32_t consumerSlotsPeak = 0;
     int32_t frameTarget = kGpuImportProbeFrameCount;
     double elapsedMs = 0.0;
     double fps = 0.0;
@@ -203,7 +207,8 @@ bool SendFrame(SurfaceWork& work, OHNativeWindow* producer,
 }
 
 bool ConsumeFrame(SurfaceWork& work, OH_NativeImage* image,
-                  int32_t frame, int32_t width, int32_t height)
+                  int32_t frame, int32_t width, int32_t height,
+                  bool deferFinish = false)
 {
     OHNativeWindowBuffer* windowBuffer = nullptr;
     int fence = -1;
@@ -251,7 +256,7 @@ bool ConsumeFrame(SurfaceWork& work, OH_NativeImage* image,
         }
         if (work.fenceMode) {
             int releaseFence = -1;
-            if (!work.importer->SubmitSampleWithFences(nativeBuffer, width, height,
+            if (!work.importer->SubmitSampleWithFences(nativeBuffer, width, height, frame,
                                                        &fence, &releaseFence)) {
                 work.importVkResult = work.importer->VkError();
                 Fail(work, work.importer->Stage());
@@ -266,7 +271,7 @@ bool ConsumeFrame(SurfaceWork& work, OH_NativeImage* image,
                 break;
             }
             released = true;
-            valid = work.importer->FinishSample(frame);
+            valid = deferFinish || work.importer->FinishSample(frame);
             if (!valid) {
                 work.importVkResult = work.importer->VkError();
                 Fail(work, work.importer->Stage());
@@ -372,7 +377,7 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 break;
             }
             work.importer.reset(new (std::nothrow) DirectBufferImportProbe(
-                work.fenceMode, work.outputSurfaceId));
+                work.fenceMode, work.outputSurfaceId, work.dualSlotMode ? 2u : 1u));
             if (!work.importer) {
                 Fail(work, "import_probe_alloc");
                 break;
@@ -422,19 +427,94 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             work.width = 64;
             work.height = 64;
             const auto begin = std::chrono::steady_clock::now();
-            for (int32_t frame = 0; frame < work.frameTarget; ++frame) {
-                const auto frameBegin = std::chrono::steady_clock::now();
-                if (!SendFrame(work, producer, frame, 64, 64)) break;
-                const auto produced = std::chrono::steady_clock::now();
-                if (!ConsumeFrame(work, image, frame, 64, 64)) break;
-                const auto consumed = std::chrono::steady_clock::now();
-                frameMs.push_back(std::chrono::duration<double, std::milli>(
-                    consumed - frameBegin).count());
-                producerMs.push_back(std::chrono::duration<double, std::milli>(
-                    produced - frameBegin).count());
-                consumerMs.push_back(std::chrono::duration<double, std::milli>(
-                    consumed - produced).count());
-                ++work.framesPassed;
+            if (work.pipelineMode) {
+                std::vector<std::chrono::steady_clock::time_point> frameStarts(work.frameTarget);
+                bool ready = true;
+                uint32_t firstSeq = 0;
+                for (int32_t frame = 0; frame < 2; ++frame) {
+                    frameStarts[frame] = std::chrono::steady_clock::now();
+                    if (!SendFrame(work, producer, frame, 64, 64)) {
+                        ready = false;
+                        break;
+                    }
+                    producerMs.push_back(std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - frameStarts[frame]).count());
+                    if (frame == 0) firstSeq = work.lastBufferSeq;
+                    if (frame == 1) {
+                        if (firstSeq == work.lastBufferSeq) {
+                            Fail(work, "pipeline_buffer_reused");
+                            ready = false;
+                        } else {
+                            work.bufferedFramesPeak = 2;
+                        }
+                    }
+                }
+                if (ready) {
+                    int32_t submitted = 0;
+                    for (int32_t frame = 0; frame < work.frameTarget; ++frame) {
+                        if (work.dualSlotMode && frame >= 2) {
+                            const int32_t completedFrame = frame - 2;
+                            if (!work.importer->FinishSample(completedFrame)) {
+                                work.importVkResult = work.importer->VkError();
+                                Fail(work, work.importer->Stage());
+                                break;
+                            }
+                            frameMs.push_back(std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() -
+                                frameStarts[completedFrame]).count());
+                            ++work.framesPassed;
+                        }
+                        const auto consumerBegin = std::chrono::steady_clock::now();
+                        if (!ConsumeFrame(work, image, frame, 64, 64,
+                                          work.dualSlotMode)) break;
+                        ++submitted;
+                        const auto consumed = std::chrono::steady_clock::now();
+                        consumerMs.push_back(std::chrono::duration<double, std::milli>(
+                            consumed - consumerBegin).count());
+                        if (work.dualSlotMode) {
+                            if (submitted == 2) work.consumerSlotsPeak = 2;
+                        } else {
+                            frameMs.push_back(std::chrono::duration<double, std::milli>(
+                                consumed - frameStarts[frame]).count());
+                            ++work.framesPassed;
+                        }
+                        const int32_t next = frame + 2;
+                        if (next < work.frameTarget) {
+                            frameStarts[next] = std::chrono::steady_clock::now();
+                            if (!SendFrame(work, producer, next, 64, 64)) break;
+                            producerMs.push_back(std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - frameStarts[next]).count());
+                        }
+                    }
+                    if (work.dualSlotMode && submitted == work.frameTarget) {
+                        for (int32_t frame = work.frameTarget - 2;
+                             frame < work.frameTarget; ++frame) {
+                            if (!work.importer->FinishSample(frame)) {
+                                work.importVkResult = work.importer->VkError();
+                                Fail(work, work.importer->Stage());
+                                break;
+                            }
+                            frameMs.push_back(std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - frameStarts[frame]).count());
+                            ++work.framesPassed;
+                        }
+                    }
+                }
+            } else {
+                for (int32_t frame = 0; frame < work.frameTarget; ++frame) {
+                    const auto frameBegin = std::chrono::steady_clock::now();
+                    if (!SendFrame(work, producer, frame, 64, 64)) break;
+                    const auto produced = std::chrono::steady_clock::now();
+                    if (!ConsumeFrame(work, image, frame, 64, 64)) break;
+                    const auto consumed = std::chrono::steady_clock::now();
+                    frameMs.push_back(std::chrono::duration<double, std::milli>(
+                        consumed - frameBegin).count());
+                    producerMs.push_back(std::chrono::duration<double, std::milli>(
+                        produced - frameBegin).count());
+                    consumerMs.push_back(std::chrono::duration<double, std::milli>(
+                        consumed - produced).count());
+                    ++work.framesPassed;
+                }
             }
             const auto end = std::chrono::steady_clock::now();
             work.elapsedMs = std::chrono::duration<double, std::milli>(end - begin).count();
@@ -604,7 +684,9 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", work->throughputMode ? "D2-THROUGHPUT" :
+    setString("gate", work->dualSlotMode ? "D2-DUAL-SLOT" :
+              work->pipelineMode ? "D2-PRODUCER-PIPELINE" :
+              work->throughputMode ? "D2-THROUGHPUT" :
               work->resizeMode ? "D2-COMPOSITE-RESIZE" :
               work->compositeMode ? "D2-COMPOSITE" :
               work->fenceMode ? "D2-FENCE" : work->sampleMode ? "D2-SAMPLE" :
@@ -613,11 +695,15 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     setString("status", work->pixelCheck && (!work->importMode || work->importCheck) &&
               (!work->sampleMode || work->sampleCheck) &&
               (!work->fenceMode || work->fenceCheck) &&
+              (!work->pipelineMode || work->bufferedFramesPeak == 2) &&
+              (!work->dualSlotMode || work->consumerSlotsPeak == 2) &&
               (!work->compositeMode || work->outputCheck) ? "PASS" : "FAIL");
     setString("stage", work->stage);
     setInt("pid", work->childPid);
     setInt("framesPassed", work->framesPassed);
     setInt("frameTarget", work->frameTarget);
+    setInt("bufferedFramesPeak", work->bufferedFramesPeak);
+    setInt("consumerSlotsPeak", work->consumerSlotsPeak);
     auto setDouble = [&](const char* key, double value) {
         napi_value item;
         napi_create_double(env, value, &item);
@@ -633,6 +719,12 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     napi_value throughputAtLeast60;
     napi_get_boolean(env, work->throughputMode && work->fps >= 60.0, &throughputAtLeast60);
     napi_set_named_property(env, object, "throughputAtLeast60", throughputAtLeast60);
+    napi_value pipelineMode;
+    napi_get_boolean(env, work->pipelineMode, &pipelineMode);
+    napi_set_named_property(env, object, "pipelineMode", pipelineMode);
+    napi_value dualSlotMode;
+    napi_get_boolean(env, work->dualSlotMode, &dualSlotMode);
+    napi_set_named_property(env, object, "dualSlotMode", dualSlotMode);
     setInt("width", work->width);
     setInt("height", work->height);
     setInt("queueSize", work->queueSize);
@@ -690,7 +782,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
 napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
                              bool importMode, bool sampleMode, bool fenceMode,
                              bool compositeMode = false, bool resizeMode = false,
-                             bool throughputMode = false)
+                             bool throughputMode = false, bool pipelineMode = false,
+                             bool dualSlotMode = false)
 {
     auto* work = new (std::nothrow) SurfaceWork();
     if (!work) {
@@ -705,6 +798,8 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
     work->compositeMode = compositeMode;
     work->resizeMode = resizeMode;
     work->throughputMode = throughputMode;
+    work->pipelineMode = pipelineMode;
+    work->dualSlotMode = dualSlotMode;
     work->frameTarget = throughputMode ? kGpuThroughputProbeFrameCount :
         importMode ? kGpuImportProbeFrameCount : kSurfaceProbeFrameCount;
     napi_value promise;
@@ -769,6 +864,16 @@ napi_value RunGpuCompositeResizeProbe(napi_env env, napi_callback_info)
 napi_value RunGpuCompositeThroughputProbe(napi_env env, napi_callback_info)
 {
     return QueueSurfaceProbe(env, false, true, true, true, true, true, false, true);
+}
+
+napi_value RunGpuProducerPipelineProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true, true, true, true, false, true, true);
+}
+
+napi_value RunGpuDualSlotProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true, true, true, true, false, true, true, true);
 }
 
 } // namespace winehua::direct
