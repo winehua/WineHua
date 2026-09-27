@@ -35,6 +35,23 @@ assemble_pad() {
     # -- 1. 原生 .so → libs/$NATIVE_ARCH/ (由各 build 脚本完成) --
     mkdir -p "$NATIVE_LIBS"
 
+    # -- 1a. 显示路线 host 依赖 (build/host-ext) → libs/: entry/libs 是打包
+    # 视图, host-ext 是唯一构建落点——libxwayland_ohos.so 及其 NEEDED 闭包
+    # (pixman/drm/xcb 栈/X11/Xfont2/xkbfile/xcvt...) 真机加载全靠这份拷贝。
+    # 只拷 SONAME 级文件 (*.so.<数字>): 运行时按 DT_NEEDED 名加载, 多级别名
+    # (.so 链接名 / .so.X.Y.Z 实体名) 是同一库的多份拷贝, 徒增包体。
+    # HAP 不支持 symlink, cp -L 取实体; 静态库 (.a) 不进包。
+    # 例外: 无版本号 .so 按文件名直载的 (现仅 libxwayland_ohos.so) 逐个列名。
+    if [ -d "$HOST_EXT_LIB" ]; then
+        _n=0
+        for so in "$HOST_EXT_LIB"/*.so.[0-9] "$HOST_EXT_LIB"/libxwayland_ohos.so; do
+            [ -e "$so" ] || continue
+            cp -L "$so" "$NATIVE_LIBS/"
+            _n=$((_n + 1))
+        done
+        log "  → host-ext .so → libs/$NATIVE_ARCH/: $_n files"
+    fi
+
     if [ "$NATIVE_ARCH" = "x86_64" ]; then
         # x86_64 Pad: Wine .so 是原生架构, 直接放 libs/
         log "  → Wine .so → libs/x86_64/"

@@ -81,3 +81,6 @@
 [submodule "thirdparty/wlroots"]
 	path = thirdparty/wlroots
 	url = https://gitlab.freedesktop.org/wlroots/wlroots.git
+[submodule "thirdparty/xserver"]
+	path = thirdparty/xserver
+	url = https://gitlab.freedesktop.org/xorg/xserver.git

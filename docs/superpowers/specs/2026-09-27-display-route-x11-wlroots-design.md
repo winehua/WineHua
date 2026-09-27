@@ -110,13 +110,27 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 
 ```
 必做升级:  thirdparty/wayland 1.22 → ≥1.26（wlroots 0.20.2 要 server/client ≥1.24, xserver 主线要 client ≥1.26, 取高者一并满足）
-钉版待定:  Xwayland 版本（主线 26.x vs 稳定系 24.1.x, 影响 xkb/xwayland-shell 行为面）—— M0 首项裁决
+钉版已裁:  Xwayland = xwayland-24.1.13（xorg/xserver 仓库 xwayland-24.1 分支 tag c5a47fda8, 2026-07-08 发布）
 新增依赖:  libdrm ≥2.4.129（wlroots 无条件依赖, 关不掉——像素格式头; 另 pixman ≥0.43.0 有版本门槛）
 X client:  xorgproto → xcb-proto → libxcb(shm/randr/xfixes/composite/res 分模块) → libX11 → libXext
            可选扩展: Xrender/Xrandr/Xfixes/Xcursor/Xi/Xinerama/Xcomposite/Xxf86vm（soname 逐个降级）
-Xwayland:  pixman, libxau, libxdmcp, xtrans, libxfont2, libxshmfence, libxcvt, xkbcomp + XKB 数据
+Xwayland:  pixman, libxau, libxdmcp, xtrans, libfontenc, libXfont2, libxshmfence, libxcvt, libxkbfile, libsha1 + XKB 数据（xkbcomp 可执行不可得, 见 R-xkb 备注）
 wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm ≥2.4.129
 ```
+
+### 6.1 Xwayland 钉版裁决（M0-T5/T6 实测, 2026-09-27）
+
+**结论：钉 xwayland-24.1.13。** 证据（候选项 24.1.13 vs 主线 master 0da4d248）：
+
+| # | 判据 | xwayland-24.1.13 | master | 裁决 |
+|---|---|---|---|---|
+| 1 | xwayland-shell-v1（rootless toplevel 标记） | ✓ `hw/xwayland/meson.build:50` | ✓ 同 | 平手 |
+| 2 | wlroots 消费的 pc 变量（have_listenfd/terminate_delay/no_touch_pointer_emulation/force_xrandr_emulation 全 true）+ have_initfd（fd 直传, R-SPAWN 关键） | ✓ `:167-177` | ✓ 同 | 平手 |
+| 3 | OHOS 构建面 | 整分支即独立 Xwayland 项目（root meson `project('xwayland')`），无 Xorg DDX 选项面 | 全量 xserver, 需逐项裁剪 | **24.1 胜** |
+| 4 | 维护/安全 | Xwayland 独立发布线（24.1.13 于 2026-07-08 发布），安全修复主线 | 快速演进, API 漂移不利钉版 | **24.1 胜** |
+| 5 | NCP 适配面（executable→shared 补丁） | 同样补丁, 分支面小 | 面大 | **24.1 胜** |
+
+行为面实测补充：`wayland_req >= 1.21.0`（`meson.build:66`，我方 1.26 满足）；`-shm` 选项在（`xwayland.c:214`，M0 shm-only 依据）；xwayland_shell_v1 bind 以 rootless 为门（`xwayland-screen.c:533-535`，与 §2 一致）；`-force-xrandr-emulation` 在（`xwayland.c:247`）。
 
 ## 7. 里程碑与回退线
 

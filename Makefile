@@ -411,6 +411,7 @@ $(foreach a,arm64-v8a x86_64,$(eval $(call display_libs_rule,$(a))))
 # ============================================================
 # display-route — M0 显示路线构建链 (全部 host 侧, 依赖顺序执行)
 #   xcb 栈 → libX11/libXext → native (wayland .so + host pc + 头) → wlroots
+#   → Xwayland (libxwayland_ohos.so, NCP 形态)
 #   各脚本自带就绪守卫, stamp 因 FORCE 每次重跑但只做增量校验
 #   (M1 时在此追加 SIDE=guest 变体, 供 winex11.drv 消费)
 # ============================================================
@@ -421,11 +422,12 @@ define display_route_rule
 .PHONY: display-route-$(1)
 display-route-$(1): $$(STAMPS)/$(1)/display-route
 
-$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
 	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xcb_stack.sh && \
 	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_x11_client.sh && \
 	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_native.sh && \
-	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_wlroots.sh && touch $$@
+	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_wlroots.sh && \
+	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xwayland.sh && touch $$@
 endef
 $(foreach a,arm64-v8a x86_64,$(eval $(call display_route_rule,$(a))))
 
