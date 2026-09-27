@@ -19,7 +19,7 @@ Wine 程序 → winex11.drv（上游） → Xwayland（上游, shm-only） → w
               → OHOS 适配层（唯一自养, 薄壳） → 鸿蒙窗口
 ```
 
-- **出图**：wlroots headless output（pixman 软渲染起步）→ 适配层 → NativeWindow/XComponent。像素搬运走自定义 `wlr_allocator`：帧直接落进 OH_NativeBuffer 承载的自定义 `wlr_buffer`，output commit 后适配层直推 NativeWindow（不走 read_pixels 二次拷贝；与 §5 R-ZC① 同一套自定义 buffer 机制）。PC 模式 = 每 toplevel 一个 output 配一个鸿蒙系统窗；Pad 模式 = 单 output 虚拟桌面（策略层合成，非 X root 桌面）
+- **出图**：wlroots headless output（pixman 软渲染起步）→ 适配层 → NativeWindow/XComponent。像素搬运走自定义 `wlr_allocator`：帧直接落进 OH_NativeBuffer 承载的自定义 `wlr_buffer`，output commit 后适配层直推 NativeWindow（不走 read_pixels 二次拷贝；与 §5 R-ZC① 同一套自定义 buffer 机制；NativeWindow 直推的具体 API 与 CPU 写入 usage 组合为 **M0 真机首验项**）。PC 模式 = 每 toplevel 一个 output 配一个鸿蒙系统窗；Pad 模式 = 单 output 虚拟桌面（策略层合成，非 X root 桌面）
 - **Xwayland 固定 rootless**：钉版 wlroots 启动 Xwayland 的 argv 硬编码 `-rootless`（`xwayland/server.c:50`）；且 rootful 下不存在每窗 wl_surface，§4.2 的 present 重锚与 ZC per-window 通路整体失效。Pad 的「虚拟桌面」= 策略层把全部 xwayland surface 合成到单 output（与 gamescope 形态一致），不是 X root 窗
 - **输入**：OHOS 事件 → `wlr_seat_notify_*` 注入（`wlr_seat.h:461-679`；notify 函数不收设备参数，seat 创建不依赖 backend，`types/seat/wlr_seat.c:282`）。键盘侧需自建假 `wlr_keyboard`（`wlr/interfaces/wlr_keyboard.h:20` `wlr_keyboard_init` + `wlr_seat_set_keyboard`）为客户端提供 keymap，缺这步 Xwayland 键盘死
 - **IME**：鸿蒙输入法 ↔ text-input-v3（wlroots 内置 `wlr_text_input_v3.c`）↔ Xwayland（需移植下游 IME 桥，见 §5 R-IME）
@@ -29,7 +29,7 @@ Wine 程序 → winex11.drv（上游） → Xwayland（上游, shm-only） → w
 
 | 选型 | 判定 | 关键证据 |
 |---|---|---|
-| **wlroots 钉上游稳定 tag** | ✅ | 最小集合 `-Dauto_features=disabled -Dxwayland=enabled`；GBM/udev/libinput/session 全可关（`wlroots meson.build:96-134`、`backend/meson.build:11-29`）；全树无 udev/systemd/logind 硬引用。**gamescope 钉 0.20.2 零补丁**（`.gitmodules` 直指 freedesktop，无 Valve fork）；headless 可动态多 output（`headless.h:25`）；自定义 `wlr_buffer` 公开 API（`wlr_buffer.h` impl 五函数指针）；text-input-v3 完整 |
+| **wlroots 钉上游稳定 tag** | ✅ | 最小集合 `-Dauto_features=disabled -Dxwayland=enabled`；GBM/udev/libinput/session 全可关（`wlroots meson.build:96-134`、`backend/meson.build:11-29`）；全树无 udev/systemd/logind 硬引用。**gamescope 钉 0.20.2 零补丁**（`.gitmodules` 直指 freedesktop，无 Valve fork）；headless 可动态多 output（`headless.h:25`）；自定义 `wlr_buffer` 公开 API（`wlr_buffer.h` impl 五函数指针）；text-input-v3 内置（`types/wlr_text_input_v3.c`，350 行全请求实现） |
 | **Xwayland 纯 shm** | ✅ 一等公民 | `-Dglamor=false` 编译 + `-shm` 运行时（`xwayland.c:109,214`），glamor 失败自动回退（`xwayland-screen.c:1102-1107`）；无 glamor 内容走 memfd/tmpfile→wl_shm（`xwayland-shm.c:126-305`）；rootless 下 managed toplevel 不经 xdg_toplevel，是裸 wl_surface + xwayland_shell_v1 标记（`xwayland-window.c:1538-1541`；wlroots 侧 `xwayland/shell.c:173` 建 global，`wlr_xwayland_create` 自动创建 `xwayland/xwayland.c:139`）；global 缺失无 fatal 项（bind 清单 `xwayland-screen.c:520-601`，wl_seat 在 `xwayland-input.c:3411` 且要求 version≥3） |
 | **winex11.drv 上游原版** | ✅ 极简且零包袱 | 硬依赖仅 libX11+libXext（`configure.ac:1278-1280`），其余 X 扩展可选 soname 探测逐个降级；驱动源码零 Linux 桌面设施（grep /proc、/tmp、udev、dbus、abstract 全空）；**上游零修改**（git log 全上游作者）；与 winewayland 可同编（各驱动独立 enable 变量 `configure.ac:1466,1474,1478`；`:3383-3384` 仅 MAKEFILE 注册） |
 | **模态语义走 X11 标准机制** | ✅ | WM_TRANSIENT_FOR + _NET_WM_STATE_MODAL 经 XWM 解析为 `wlr_xwayland_surface` 的 `modal`/`parent` 字段 + request_* 信号（`xwayland.h:181,197-203`）；PC 模式上报由此重建 |
@@ -72,7 +72,7 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 | 剪贴板/X 选区/拖放 | wlroots XWM 内建选区同步（`xwayland/selection/{selection,incoming,outgoing,dnd}.c`） | **变好**：旧路线完全缺失（旧盘点列为最大实际硬伤，`win32-window-model-x11-wayland.md:32`）；剩 OHOS pasteboard 桥适配 |
 | 屏幕捕获（root 读屏类） | rootless 下 root 无内容，`XGetImage` 读 root 为黑；落点改走 wlroots 输出导出或适配层合成帧回灌 | **不继承旧盘点「X 读屏便宜」的结论**，落点 M2 定 |
 
-真正要写的策略代码：①窗口放置/焦点策略——Pad 模式近免费（winex11 虚拟桌面模式按弱 WM 设计），PC 模式 = output↔OHOS 系统窗生命周期绑定（异步时序，等价物为现有 ArkTS service 4,205 行的平移）；②参考实现 = gamescope steamcompmgr + 本项目 `toplevel_manager` 语义资产。PC 模式的 surface→output 绑定规则（X 全局坐标编址、output 建/销时机——headless 0.20.2 仅 `wlr_headless_add_output`，销毁走通用 `wlr_output_destroy`、OR 菜单跟随父窗所在 output）**为显式留白，M1 设计定**。M1/M2 验收补：PC 多窗、菜单 tooltip、模态对话框用例。
+真正要写的策略代码：①窗口放置/焦点策略——Pad 模式近免费（winex11 虚拟桌面模式按弱 WM 设计：`winex11.drv/window.c:1749` 忽略 WM 配置变更、`:2712-2715` 自建桌面窗），PC 模式 = output↔OHOS 系统窗生命周期绑定（异步时序，等价物为现有 ArkTS service 4,205 行的平移）；②参考实现 = gamescope steamcompmgr + 本项目 `toplevel_manager` 语义资产。PC 模式的 surface→output 绑定规则（X 全局坐标编址、output 建/销时机——headless 0.20.2 仅 `wlr_headless_add_output`，销毁走通用 `wlr_output_destroy`、OR 菜单跟随父窗所在 output）**为显式留白，M1 设计定**。M1/M2 验收补：PC 多窗、菜单 tooltip、模态对话框用例。
 
 ## 5. 风险清单
 
@@ -103,7 +103,7 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 | P4 | unix socket | abstract 绑定 ✅；路径绑定在 app temp ✅、在 /tmp ❌（/tmp 不存在） | X11 客户端可走 abstract 传输（不依赖文件系统） |
 | P5 | /tmp | **/tmp 整个不存在**（ENOENT） | 触发路径策略决策，见下 |
 
-**路径策略决策（2026-09-27）**：一切硬编码宿主路径（`/tmp` 系）**统一重定向到沙箱目录**，不做「/tmp 可否创建」的探针与适配。涉及：wlroots `xwayland/sockets.c`（lock 文件与 unix socket 创建，~20 行，指到 `$XDG_RUNTIME_DIR` 注入目录）；Xwayland xkm 输出与 shm tmpfile 已有 `$XDG_RUNTIME_DIR` 回退链（`xkb/ddxLoad.c:62-95`、`xwayland-shm.c:135-167`）。X11 abstract socket 名保持原字符串（P4 证明 abstract 不触碰文件系统，双侧均为我方构建，无需改名）。
+**路径策略决策（2026-09-27）**：一切硬编码宿主路径（`/tmp` 系）**统一重定向到沙箱目录**，不做「/tmp 可否创建」的探针与适配。涉及：wlroots `xwayland/sockets.c`（lock/socket 路径常量硬编码 `/tmp/.X%d-lock`、`/tmp/.X11-unix/X%d`，`sockets.c:19-23`；重定向 = 换常量 + 确保 socket_dir 存在，~20 行）；Xwayland xkm 输出与 shm tmpfile 已有 `$XDG_RUNTIME_DIR` 回退链（`xkb/ddxLoad.c:62-95`、`xwayland-shm.c:135-167`）。X11 abstract socket 名保持原字符串（P4 证明 abstract 不触碰文件系统，双侧均为我方构建，无需改名）。
 
 ## 6. 交叉构建清单
 
@@ -131,3 +131,4 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 1. 触发重开的那些长尾样本（结构性不兼容类）在 X 路线可启动且行为正确；样本清单与「行为正确」判据在 M1 落定为具体程序列表
 2. 现有 core / wine-vulkan / dxvk 自动化套件不回退
 3. 档位系统（graphics-matrix 四档）在新链路语义不变
+4. 出图/合成性能：M2 起以 dxvk、core 套件运行数据与旧链路对照，作为**观察项**（不设硬线；要设硬线则在 M1 钉基准程序与分辨率）
