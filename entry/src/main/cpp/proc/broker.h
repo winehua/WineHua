@@ -9,6 +9,10 @@
 extern std::string gBrokerHomeDir;
 extern std::string gBrokerPrefixDir;
 
+// Set before the first spawn of a session. Individual __env=WINEHUA_DIRECT_NCP
+// tokens still override this default for one child.
+void SetBrokerDirectNcpSessionDefault(bool enabled);
+
 // 启动 Process Broker Unix socket server（在后台线程运行）
 // 返回 0 表示成功，非 0 表示失败
 int StartBrokerServer();

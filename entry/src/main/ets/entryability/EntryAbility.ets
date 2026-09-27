@@ -410,6 +410,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    WineEnvService.getInstance().setDirectNcpSession(value('winehua.direct_ncp_session', '0') === '1');
     // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
     // subWindow 承载 (见 WineWindowManager.fusionUsesSubWindow)。仅显式 want
     // 生效, 不持久化。

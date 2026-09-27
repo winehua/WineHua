@@ -138,11 +138,18 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 旧 Start 路径 `core` 首轮为 **3/4**：x86 OpenGL、x64/x86 DNS 通过，x64 OpenGL 在结果写入前以 `exit=1` 退出；仅重跑 x64 OpenGL 随即通过，且固定帧校验通过。这个单次失败不能归因于 fd 回收，也不能称旧路径整套稳定通过。用 `WINEHUA_DIRECT_NCP=1` 对真实 Wine 进程跑 `core` 为 **4/4**，x64/x86 OpenGL 固定帧与 DNS 均通过；最终包的 x64 DNS 单项复验也通过（[回归摘要](evidence/direct-d25-core-regression.json)）。自动化脚本的日志超时处理原先把字符串当字节串解码，会在设备 `hilog` 超时后异常退出；已兼容两种返回类型。一次从诊断页直接 `aa start` smoke 只进入现有 Ability 的 `onNewWant`，没有构成有效回归；正式测试前已 `force-stop` 并重新启动。
 - 此结果证明可选 Create 路由能启动一个真实 Wine 测试进程，并保留旧 Start 路径。会话的 wineserver、其他服务进程未逐个验证为 Create，Steam/CEF 多进程与游戏、异常退出分类、长期 proxy/fd 稳定性仍是 D2.5 完整切换前的门槛；当前不改默认路由，也不接产品 Direct WSI。
 
+## D2.5 会话级 Create 路由与最终包复测（2026-09-27）
+
+- Wine 会话新增显式 `winehua.direct_ncp_session=1` Want：broker 对该会话的 Wine 子进程默认选择 Create 型 NCP；没有该键仍用 Start。单次请求的 `__env=WINEHUA_DIRECT_NCP=0/1` 覆盖会话默认。此 Want 在启动 Wine 会话时生效，测试前须冷启动应用；已有会话的 `onNewWant` 不会切换正在运行的 broker。手机 fork 模式将会话 Create 默认值强制归零，避免整个手机会话误入不支持的路由。`automation/smoke.py` 可用 `--direct-ncp-session` 做冷启动对照，`tools/steam-rwx/launch_want.py` 也可传同名选项。smoke 推送验证按 manifest 清单核对文件；host 判定和 `check` 重判会按 `inline` / `tests` 选测范围收敛，避免把未运行的原套件用例误报为缺失。
+- 在手机保护修改之前的候选包，单进程 opt-in 的 `platform-process`、`steam-arch-compare` 均 **2/2 PASS**，默认 Start 对照亦各 **2/2 PASS**；会话 Create 的 `platform-process`、`steam-arch-compare` 为 **2/2 PASS**，`core` 为 **4/4 PASS**。完整 `steam-contract` 无论 Create 还是 Start 均 **1/2**：i386 用例分别在写结果前以 `ipc-death` 退出、在 `terminate-code` 阶段以 `exit=11` 退出，因此不能把失败归咎于 Create。`steam-contract-isolate` 两路径各 **3/3 PASS**。这些记录留在本机 `F:\WineHua\.temp\smoke-d26-logs` 对应 run ID 归档中。
+- 最终签名 HAP SHA-256 `e2de0bd6e4b5e3644e9e3b6a5af2f2bee9dba3c731bac1a9212e0784dbac9621` 已装至 MatePad Mini。最终包的会话 Create `platform-process` **2/2**，wineserver PID 57818 由 `create-ipc` 启动；默认 Start 同套 **2/2**，wineserver PID 58700 由 `start` 启动；会话 Create 加单进程 `WINEHUA_DIRECT_NCP=0` 的 x64 DNS **1/1**，探针 PID 59845 由 `start` 启动并以 0 退出。最终包的 i386 契约在跳过 `TerminateThread` 后，Start 与 Create 各 **1/1 PASS**；这把未解决的完整契约故障收窄到该路径附近，但未证明 Wine 线程终止实现的具体根因。[最终包结构化证据](evidence/direct-d25-session-route-e2de.json)、[设备路由日志](evidence/direct-d25-session-route-e2de.log)。
+- 本轮尝试真实 Steam/CEF 回归时发现当前 prefix 的 `Program Files (x86)` 下没有 Steam，`steam.exe` 启动仅报 `failed to open`。本机 Valve Corp. 有效签名的 `SteamSetup.exe`（SHA-256 `7d3654531c32d941b8cae81c4137fc542172bfa9635f169cb392f245a0a12bcb`）复制到 `C:\smoke` 后以 `/S` 运行，FEX 与显式 box64 两次均以 `exit=11` 结束，未写出 `steam.exe`；安装会话已停止。因此真实 Steam/CEF 多进程、长期 fd/proxy 稳定性与完整 `TerminateThread` 契约仍是 D2.5 未通过的门槛，不据此打开 Direct 默认路由。
+
 ## 关键的未知事实
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。
 - ConsumerSurface producer 能在独立 NCP 通过 IPC parcel 稳定使用，双 buffer 与 CPU fence/resize/异常退出已实测；D1 已回答此范围。
 - 设备实际是否支持 `OH_NativeBuffer` 的 Vulkan 导入、GPU fence 交接和零拷贝合成；D2 回答。`VK_OHOS_external_memory` 等符号存在于 SDK 只说明可以编译。
-- Wine NCP 的 Create 型 IPC bootstrap 已在真实 `libwine_child.so` 验证 argv 串、两个命名 fd、PID 和 proxy 死亡通知；broker 可选路由已接入进程登记，真实 Wine `core` 可选路径 4/4 通过。仍需验证 wineserver、Wine 多进程、Steam、异常退出与长期资源稳定性后，才能回答完整的 D2.5 默认切换问题。
+- Wine NCP 的 Create 型 IPC bootstrap 已在真实 `libwine_child.so` 验证 argv 串、两个命名 fd、PID 和 proxy 死亡通知；broker 会话级可选路由已接入进程登记。最终包已核对 wineserver 的 Create/Start A/B、跨架构多进程 `platform-process` 2/2、单进程回退；此前 `core` 可选路径 4/4 通过。仍需验证真实 Steam/CEF、完整 i386 `TerminateThread` 契约、异常退出分类与长期资源稳定性，才能回答完整的 D2.5 默认切换问题。
 
 这些 Gate 的任一项失败，保留当前 Venus/VirGL 路径，记录设备与失败阶段；不提前在 Wine 主路径上堆条件分支。Direct 的默认启用要等 D3/D4 真实游戏 A/B 和回退验证完成。

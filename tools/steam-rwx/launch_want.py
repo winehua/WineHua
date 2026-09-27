@@ -21,6 +21,8 @@ def main():
     parser.add_argument("--container", default="default")
     parser.add_argument("--arg", action="append", default=[])
     parser.add_argument("--env", action="append", default=[])
+    parser.add_argument("--direct-ncp-session", action="store_true",
+                        help="request Create NCP for a new Wine session (cold start required)")
     args = parser.parse_args()
     env = []
     for value in args.env:
@@ -36,6 +38,8 @@ def main():
         "winehua.container_id": quote(args.container, safe=""),
         "winehua.d3d_env_json": quote(json.dumps(env), safe=""),
     }
+    if args.direct_ncp_session:
+        values["winehua.direct_ncp_session"] = "1"
     command = "aa start -b app.hackeris.winehua -a EntryAbility"
     for key, value in values.items():
         command += f" --ps {key} {value}"

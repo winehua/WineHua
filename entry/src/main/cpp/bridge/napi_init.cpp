@@ -324,8 +324,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 9;
-    napi_value args[9] = {};
+    size_t argc = 10;
+    napi_value args[10] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -395,6 +395,16 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "en_US"))
             p->wineLang = wineLang;
     }
+    if (argc >= 10) {
+        bool directNcpSession = false;
+        if (napi_get_value_bool(env, args[9], &directNcpSession) != napi_ok) {
+            delete p;
+            napi_value failed;
+            napi_create_int32(env, -1, &failed);
+            return failed;
+        }
+        p->directNcpSession = directNcpSession;
+    }
     // 向后兼容: 旧调用未传 homeDir 时使用默认路径
     if (p->homeDir.empty()) {
         p->homeDir = "/storage/Users/currentUser/Download";
@@ -405,8 +415,9 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
                 p->containerId.c_str(),
                 p->exePath.c_str(), p->sockPath.c_str(), p->libPath.c_str(), p->homeDir.c_str(),
                 p->prefixDir.c_str());
-    OH_LOG_WARN(LOG_APP, "[Launch] desktop D3D=%{public}s DXVK=%{public}s lang=%{public}s",
-                p->d3dBackend.c_str(), p->dxvkBackend.c_str(), p->wineLang.c_str());
+    OH_LOG_WARN(LOG_APP, "[Launch] desktop D3D=%{public}s DXVK=%{public}s lang=%{public}s directNcp=%{public}d",
+                p->d3dBackend.c_str(), p->dxvkBackend.c_str(), p->wineLang.c_str(),
+                p->directNcpSession ? 1 : 0);
 
     // 保证可执行
     if (access(p->exePath.c_str(), X_OK) != 0) chmod(p->exePath.c_str(), 0755);

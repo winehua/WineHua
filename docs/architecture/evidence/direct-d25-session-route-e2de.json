@@ -1,0 +1,57 @@
+{
+  "date": "2026-09-27",
+  "device": "5KPBB25818203996",
+  "signedHapSha256": "e2de0bd6e4b5e3644e9e3b6a5af2f2bee9dba3c731bac1a9212e0784dbac9621",
+  "runs": [
+    {
+      "runId": "r20260927-final-create",
+      "suite": "platform-process",
+      "sessionDefault": "create-ipc",
+      "passed": 2,
+      "total": 2,
+      "wineserverPid": 57818,
+      "wineserverRoute": "create-ipc"
+    },
+    {
+      "runId": "r20260927-final-start",
+      "suite": "platform-process",
+      "sessionDefault": "start",
+      "passed": 2,
+      "total": 2,
+      "wineserverPid": 58700,
+      "wineserverRoute": "start"
+    },
+    {
+      "runId": "r20260927-final-override0",
+      "suite": "core",
+      "testId": "dns-api-x64",
+      "sessionDefault": "create-ipc",
+      "processOverride": "WINEHUA_DIRECT_NCP=0",
+      "passed": 1,
+      "total": 1,
+      "probePid": 59845,
+      "probeRoute": "start",
+      "probeExit": 0
+    },
+    {
+      "runId": "r20260927-final-x86-no-term",
+      "suite": "steam-contract",
+      "testId": "contract-x86-no-terminate",
+      "sessionDefault": "start",
+      "passed": 1,
+      "total": 1
+    },
+    {
+      "runId": "r20260927-final-x86-no-term-create",
+      "suite": "steam-contract",
+      "testId": "contract-x86-no-terminate",
+      "sessionDefault": "create-ipc",
+      "passed": 1,
+      "total": 1
+    }
+  ],
+  "unresolved": {
+    "fullContract": "Earlier full steam-contract runs were 1/2 on both Create and Start. The i386 Start case reached terminate-code then exited 11; the Create case exited before writing a result. Skipping TerminateThread passes on both routes, but does not establish a root cause.",
+    "realSteam": "The current device prefix has no Steam client. Valve-signed SteamSetup.exe (sha256 7d3654531c32d941b8cae81c4137fc542172bfa9635f169cb392f245a0a12bcb) exited 11 under both FEX and box64; no Steam executable was installed."
+  }
+}

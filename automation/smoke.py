@@ -646,7 +646,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         hdc_send(hdc, device, payload, f"{SANDBOX_FILES}/{DRIVE_C_REL}")
     else:
         log("prefix 未创建：仅更新推送源，C:\\smoke 由设备端 seed 播种")
-    for probe in ("suites.json", "x64/winehua_graphics_smoke.exe", "x86/winehua_graphics_smoke.exe"):
+    manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+    for probe in ("suites.json", "manifest.json", *manifest["files"]):
         code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
         if code != 0 or not out.strip():
             die(f"push verification failed: missing {probe}")
@@ -713,6 +714,8 @@ def cmd_run(args: argparse.Namespace) -> int:
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
+    if args.direct_ncp_session:
+        start += " --ps winehua.direct_ncp_session 1"
     log(f"run {args.suite} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
@@ -723,8 +726,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     cases = load_cases()
     suites = load_suites(cases)
     suite_tests = suites[args.suite]["tests"] if args.suite in suites else []
-    if args.tests:
-        wanted = {item.strip() for item in args.tests.split(",") if item.strip()}
+    suite_def = suites.get(args.suite)
+    if job.get("inline"):
+        suite_tests = []
+        suite_def = None
+    elif job.get("tests"):
+        wanted = set(job["tests"])
         suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
     entries = {entry.test_id: entry for entry in suite_tests}
     frame_targets = {tid: entry for tid, entry in entries.items() if entry.case.needs_frame}
@@ -751,13 +758,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             "runId": run_id, "suite": args.suite, "prefix": args.prefix,
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device, "longSeconds": long_seconds,
+            "directNcpSession": args.direct_ncp_session,
             "wineArchitecture": WINE_ARCH,
             "wineCommit": git_capture(wine_src, "rev-parse", "HEAD"),
             "wineDirtySummary": git_capture(wine_src, "status", "--short").splitlines(),
         }, indent=2, ensure_ascii=False) + "\n")
         # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）
         host = judge_run(archive, entries, frames, summary.get("tests", []),
-                         suites.get(args.suite), args.suite, long_seconds)
+                         suite_def, args.suite, long_seconds)
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
@@ -790,7 +798,17 @@ def cmd_check(args: argparse.Namespace) -> int:
     cases = load_cases()
     suites = load_suites(cases)
     suite = summary.get("suite", "")
-    entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
+    suite_tests = suites[suite]["tests"] if suite in suites else []
+    suite_def = suites.get(suite)
+    job_path = archive / "job.json"
+    job = json.loads(job_path.read_text()) if job_path.is_file() else {}
+    if job.get("inline"):
+        suite_tests = []
+        suite_def = None
+    elif job.get("tests"):
+        wanted = set(job["tests"])
+        suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
+    entries = {entry.test_id: entry for entry in suite_tests}
     # 帧分组：<test_id>.jpeg 与重试帧 <test_id>-<n>.jpeg（testId 以 -x64/-x86 结尾，
     # 去掉末尾纯数字后缀即归属测试）
     frames = {}
@@ -801,7 +819,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     if artifact_path.is_file():
         long_seconds = int(json.loads(artifact_path.read_text()).get("longSeconds", 3600))
     host = judge_run(archive, entries, frames, summary.get("tests", []),
-                     suites.get(suite), suite, long_seconds)
+                     suite_def, suite, long_seconds)
     (archive / "host-summary.json").write_text(
         json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     for test in host["tests"]:
@@ -1147,6 +1165,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--poll-seconds", type=int, default=5)
     run.add_argument("--keep-app", action="store_true", dest="keep_app",
                      help="跑完不 force-stop（连续 run 保 NCP 注册表，见 cmd_gate）")
+    run.add_argument("--direct-ncp-session", action="store_true",
+                     help="冷启动时让整个 Wine 会话默认走 Create NCP（单次请求可覆盖）")
     run.set_defaults(func=cmd_run)
 
     install = sub.add_parser("install", help="安装当前 HAP 到设备")

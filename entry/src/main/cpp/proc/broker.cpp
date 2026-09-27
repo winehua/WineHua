@@ -3,8 +3,8 @@
  *
  * 在主进程中运行，接收来自 spawn_process (ntdll.so) 的子进程创建请求。
  * 每个请求包含 entryParams 字符串 + N 个命名 fd (SCM_RIGHTS, 可选 FDS 命名行)。
- * Broker 在主进程上下文调用 OH_Ability_StartNativeChildProcess，
- * 从而绕过 appspawn 子进程中无法嵌套调用 NCP API 的限制。
+ * Broker 在主进程上下文调用 NCP API，从而绕过 appspawn 子进程中
+ * 无法嵌套调用 NCP API 的限制。默认使用 Start；显式会话/进程开关走 Create。
  *
  * 协议 (简单二进制):
  *   请求: "SPAWN\n{entryParams}\n[FDS:name0,name1,...\n]" + SCM_RIGHTS{N fd, N<=16}
@@ -64,11 +64,20 @@ static int32_t QueryPeerPid(int connFd) {
 }
 
 static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
+static std::atomic<bool> gDirectNcpSessionDefault{false};
 
-// The Direct route is opt-in per spawn via the serialized environment. The
-// default SPAWN protocol and all existing clients continue to use Start NCP.
+void SetBrokerDirectNcpSessionDefault(bool enabled) {
+    // Phone sessions use the fork backend; never turn a session request into
+    // an unsupported Create NCP route for all of their children.
+    if (PhoneAdapter_IsPhoneMode()) enabled = false;
+    gDirectNcpSessionDefault.store(enabled, std::memory_order_release);
+    OH_LOG_WARN(LOG_APP, "[Broker] Create NCP session default=%{public}d", enabled ? 1 : 0);
+}
+
+// A session can opt in to Create NCP; the serialized environment can override
+// it for one child. Without either opt-in, all clients continue to use Start.
 static bool WantsDirectWineIpc(const std::string& params) {
-    bool enabled = false;
+    bool enabled = gDirectNcpSessionDefault.load(std::memory_order_acquire);
     size_t pos = 0;
     while (pos < params.size()) {
         const size_t end = params.find('|', pos);

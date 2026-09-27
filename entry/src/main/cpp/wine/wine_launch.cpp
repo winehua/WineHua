@@ -362,6 +362,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     // homeDir 前缀 / WINEPREFIX 权威 / audio fd 由 broker 服务端补齐。
     gBrokerHomeDir = p->homeDir;
     gBrokerPrefixDir = p->prefixDir;
+    SetBrokerDirectNcpSessionDefault(p->directNcpSession);
     StartBrokerServer();
     setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
 

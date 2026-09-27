@@ -18,6 +18,7 @@ struct LaunchParams {
     std::string dxvkBackend = "dxvk_legacy";
     // Wine locale 语言 ("zh_CN"/"en_US"), 来自设置页, 决定桌面会话的 LANG
     std::string wineLang = "zh_CN";
+    bool directNcpSession = false;
 };
 
 void LaunchThreadFunc(LaunchParams* p);

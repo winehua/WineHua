@@ -69,7 +69,7 @@ export const runDirectGpuImportProbe: () => Promise<DirectSurfaceProbeResult>;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
   homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string,
-  containerId?: string) => number;
+  containerId?: string, directNcpSession?: boolean) => number;
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;

@@ -1,0 +1,7 @@
+09-27 15:36:25.313 57403 57765 W A02330/app.hackeris.winehua/WL_Broker: [Broker] Create NCP session default=1
+09-27 15:36:25.413 57403 57806 I A02330/app.hackeris.winehua/WL_Broker: [Broker] launch mode=create-ipc ret=0 childPid=57818
+09-27 15:36:52.576 58201 58682 W A02330/app.hackeris.winehua/WL_Broker: [Broker] Create NCP session default=0
+09-27 15:36:52.668 58201 58697 I A02330/app.hackeris.winehua/WL_Broker: [Broker] launch mode=start ret=0 childPid=58700
+09-27 15:37:27.965 58633 59455 W A02330/app.hackeris.winehua/WL_Broker: [Broker] Create NCP session default=1
+09-27 15:37:32.083 58633 59481 I A02330/app.hackeris.winehua/WL_Broker: [Broker] launch mode=start ret=0 childPid=59845
+09-27 15:37:33.101 58633 59399 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] complete pid=59845 name=winehua_dns_probe.exe exit=0 source=ncp-exit

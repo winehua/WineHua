@@ -189,6 +189,11 @@ export class WineEnvService {
   private wineLang: string = 'zh_CN';
   private settingsStore: preferences.Preferences | null = null;
   private perfProfile: string = 'baseline';
+  private directNcpSession: boolean = false;
+
+  setDirectNcpSession(enabled: boolean): void {
+    this.directNcpSession = enabled;
+  }
 
   // 极简订阅: 状态变化后逐个调用
   subscribe(listener: () => void): void {
@@ -989,7 +994,8 @@ export class WineEnvService {
     // 注意 native BuildWineEnv 已忽略 libPath 形参 (void), 此处仅为语义/日志正确。
     const wineUnixSubdir = pathExists(`${WINE_BIN}/aarch64-unix`) ? 'aarch64-unix' : 'x86_64-unix';
     testNapi.launchClient(BOX64, [], socketPath, `${BIN_DIR}:${WINE_BIN}/${wineUnixSubdir}`, this.zHome,
-      this.d3dBackend, this.dxvkBackend, this.wineLang, this.activeContainerId);
+      this.d3dBackend, this.dxvkBackend, this.wineLang, this.activeContainerId,
+      this.directNcpSession);
   }
 
   // 停止会话原语: 编排 stopAll 并等 native state:stopped (注册表进程全死
