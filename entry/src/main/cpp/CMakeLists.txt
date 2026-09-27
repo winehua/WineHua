@@ -39,6 +39,7 @@ add_library(entry SHARED
     input/controller/gamepad_bridge.cpp
     input/controller/physical_gamepad.cpp
     bridge/napi_init.cpp
+    bridge/sandbox_probe.cpp
     proc/wine_process.cpp
     wine/wine_env.cpp
     wine/env_spec.cpp
