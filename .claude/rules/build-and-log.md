@@ -18,6 +18,9 @@ make NATIVE_ARCH=x86_64           # 模拟器 / x86_64 设备
 - Wine 构建用 stamp 文件 + `find -newer` 判断源码变更（stamp 在
   `build/.stamps/wine-arm64-v8a`）。
 - 构建目录按架构隔离，不要混用。
+- **构建依赖与产物一律限制在 `build/` 目录内**：下载的 tarball（`build/downloads/`）、
+  DESTDIR/staging、日志、探针源码等中间物不得写 `/tmp`、不得散落仓库根目录。
+  毁灭性重建时 `rm -rf build/` 下对应子目录即可恢复，不污染系统与他人环境。
 
 ## 架构侧别纪律（guest vs host）
 

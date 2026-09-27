@@ -1,9 +1,10 @@
 #!/bin/bash
 # build_xkbcommon.sh — libffi + libxml2 + xkbcommon → sysroot-ext
+# 构建依赖与产物一律限 build/ 目录内 (项目纪律), DESTDIR 也不得落 /tmp
 set -euo pipefail
-TMPDIR="${TMPDIR:-/tmp}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
+TMPDIR="$BUILD_DIR/tmp"
 
 log "=== 构建 xkbcommon 依赖 (x86_64) ==="
 
@@ -22,7 +23,9 @@ if [ -f "$SYSROOT_EXT_LIB/libxkbcommon.so.0" ] \
    && [ -f "$SYSROOT_EXT_LIB/libxml2.so" ] \
    && [ -f "$SYSROOT_EXT_PC/libxml-2.0.pc" ] \
    && [ -d "$SYSROOT_EXT_INC/xkbcommon" ] \
-   && [ -f "$SYSROOT_EXT_PC/xkbcommon.pc" ]; then
+   && [ -f "$SYSROOT_EXT_PC/xkbcommon.pc" ] \
+   && [ "$(pkg-config --modversion xkbcommon 2>/dev/null || echo none)" = \
+        "$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$ROOT/thirdparty/libxkbcommon/meson.build" | head -1)" ]; then
     log "xkbcommon 依赖已就绪，跳过"
     exit 0
 fi
@@ -102,9 +105,13 @@ EOF
 # ── 3. xkbcommon ──
 build_xkbcommon() {
     local src="$ROOT/thirdparty/libxkbcommon"
-    local build="$BUILD_DIR/xkbcommon_build"
+    # 版本取自源码; 构建目录按版本隔离 (升级时旧 meson 缓存不可复用, 同 build_wayland.sh 教训)
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "无法从 $src/meson.build 解析 version"; return 1; }
+    local build="$BUILD_DIR/xkbcommon_build_$ver"
 
-    log "--- xkbcommon + xkbregistry ---"
+    log "--- xkbcommon + xkbregistry ($ver) ---"
     find "$src" -type f -exec touch -d '2 seconds ago' {} + 2>/dev/null || true
     meson_build "$build" "$src" \
         -Denable-x11=false -Denable-wayland=true \
@@ -113,8 +120,8 @@ build_xkbcommon() {
 
     # 安装 (DESTDIR, 然后拷贝到 sysroot-ext)
     DESTDIR=$TMPDIR/xkc ninja -C "$build" install
-    find $TMPDIR/xkc -name "libxkbcommon.so.0.0.0" -exec cp {} "$SYSROOT_EXT_LIB/libxkbcommon.so.0" \;
-    find $TMPDIR/xkc -name "libxkbregistry.so.0.0.0" -exec cp {} "$SYSROOT_EXT_LIB/libxkbregistry.so.0" \;
+    find $TMPDIR/xkc -name "libxkbcommon.so.0.*" -exec cp {} "$SYSROOT_EXT_LIB/libxkbcommon.so.0" \;
+    find $TMPDIR/xkc -name "libxkbregistry.so.0.*" -exec cp {} "$SYSROOT_EXT_LIB/libxkbregistry.so.0" \;
     ln -sf libxkbcommon.so.0 "$SYSROOT_EXT_LIB/libxkbcommon.so"
     ln -sf libxkbregistry.so.0 "$SYSROOT_EXT_LIB/libxkbregistry.so"
     find $TMPDIR/xkc -path "*/include/xkbcommon" -type d | while read d; do
@@ -127,7 +134,7 @@ includedir=\${prefix}/include
 libdir=\${prefix}/lib/x86_64-linux-ohos
 Name: xkbcommon
 Description: XKB API common to servers and clients
-Version: 1.7.0
+Version: $ver
 Libs: -L\${libdir} -lxkbcommon
 Cflags: -I\${includedir}
 EOF
@@ -137,7 +144,7 @@ includedir=\${prefix}/include
 libdir=\${prefix}/lib/x86_64-linux-ohos
 Name: xkbregistry
 Description: XKB API to query available rules, models, layouts, etc.
-Version: 1.7.0
+Version: $ver
 Libs: -L\${libdir} -lxkbregistry
 Cflags: -I\${includedir}
 EOF
