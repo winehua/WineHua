@@ -233,9 +233,12 @@ meson_build() {
 gen_host_cross() {
     local cross="$BUILD_DIR/ohos-host-${NATIVE_ARCH}-cross.txt"
     local pcwrap="$BUILD_DIR/pkg-config-host-${NATIVE_ARCH}.sh"
+    # HOST_EXT_SHARE/pkgconfig 不可省: xorgproto 等纯数据包的 pc 装在 share 下
+    # (实测: 缺它时 xau.pc Requires xproto 解析失败, wlroots configure 中断;
+    # 同 build_wayland.sh wayland-protocols 教训, host 侧同款)
     cat > "$pcwrap" << PWEOF
 #!/bin/sh
-export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig"
+export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$HOST_EXT_SHARE/pkgconfig:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig"
 exec "$PKG_CONFIG_BIN" "\$@"
 PWEOF
     chmod +x "$pcwrap"

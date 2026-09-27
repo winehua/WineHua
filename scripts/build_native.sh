@@ -253,6 +253,46 @@ build_wayland() {
     log "wayland ($NATIVE_ARCH, $ver) → $NATIVE_LIBS"
 }
 
+# host 侧 wayland .pc: NATIVE_LIBS 里的 aarch64 .so 是 host 进程 (Xwayland 子进程、
+# display_compositor) 的链接目标, 但此前只有 .so 没有 pc——host 消费者 (wlroots/
+# meson_host_build) 会静默回退解析到 sysroot-ext 的 GUEST 侧 (x86_64) pc, 侧别错乱。
+# 本函数无条件执行 (自身带版本守卫), 让 pc 与 .so 同源同版本。
+emit_wayland_host_pc() {
+    local src="$ROOT/thirdparty/wayland"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "emit_wayland_host_pc: 无法解析 version"; return 1; }
+
+    [ -f "$NATIVE_LIBS/libwayland-server.so.0" ] \
+        && [ -f "$NATIVE_LIBS/libwayland-client.so.0" ] \
+        || { err "emit_wayland_host_pc: $NATIVE_LIBS 缺 wayland .so, 先跑 build_wayland"; return 1; }
+
+    # 版本守卫: pc 已存在且 Version 行一致才跳过 (直接读文件, 不走 pkg-config——
+    # 顶层 PKG_CONFIG_LIBDIR 里 guest 侧同名 pc 同版本, 会混淆判读)
+    if [ -f "$HOST_EXT_PC/wayland-server.pc" ] && [ -f "$HOST_EXT_PC/wayland-client.pc" ] \
+       && [ "$(sed -n 's/^Version: //p' "$HOST_EXT_PC/wayland-server.pc")" = "$ver" ]; then
+        return 0
+    fi
+
+    cat > "$HOST_EXT_PC/wayland-client.pc" << EOF
+Name: Wayland Client
+Description: Wayland client side library (host 侧, $NATIVE_ARCH, 链接目标是 entry/libs)
+Version: $ver
+Requires.private: libffi
+Libs: -L$NATIVE_LIBS -lwayland-client
+Cflags: -I$WINEHUA_INC
+EOF
+    cat > "$HOST_EXT_PC/wayland-server.pc" << EOF
+Name: Wayland Server
+Description: Wayland server side library (host 侧, $NATIVE_ARCH, 链接目标是 entry/libs)
+Version: $ver
+Requires.private: libffi
+Libs: -L$NATIVE_LIBS -lwayland-server
+Cflags: -I$WINEHUA_INC
+EOF
+    log "wayland host pc ($NATIVE_ARCH, $ver) → $HOST_EXT_PC"
+}
+
 # ── 3. xdg-shell + wayland 协议文件 (架构无关, 只生成一次) ──
 build_protocols() {
     if [ -f "$WINEHUA_INC/xdg-shell-protocol.c" ] \
@@ -285,16 +325,29 @@ build_protocols() {
     log "协议文件 → $WINEHUA_INC"
 }
 
-# ── 4. wayland 头文件 (架构无关, 只安装一次) ──
+# ── 4. wayland 头文件 (架构无关, 按版本守卫安装) ──
 install_headers() {
-    if [ -f "$WINEHUA_INC/wayland-server-core.h" ]; then
-        log "wayland 头文件已就绪，跳过"
+    # 守卫比对已装 wayland-version.h 的 WAYLAND_VERSION 与源码版本, 不一致即重装。
+    # 踩坑: 旧版用"文件存在"守卫, 1.22 时代的遗留头(实为更早的手工截短 stub,
+    # 连 wl_proxy_get_queue 都没有)一直挡住 1.26 重装, 直到 wlroots 编译报
+    # undeclared 才暴露——文件存在守卫在升级场景失明, 本项目第三次踩同款坑。
+    local src="$ROOT/thirdparty/wayland"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "install_headers: 无法从 $src/meson.build 解析 version"; return 1; }
+
+    local inst_ver
+    inst_ver=$(sed -n 's/^#define WAYLAND_VERSION "\(.*\)"/\1/p' "$WINEHUA_INC/wayland-version.h" 2>/dev/null | head -1)
+    if [ -n "$inst_ver" ] && [ "$inst_ver" = "$ver" ]; then
+        log "wayland 头文件 ($ver) 已就绪，跳过"
         return 0
     fi
 
-    log "--- 安装 wayland 头文件 ---"
-    local src="$ROOT/thirdparty/wayland"
-    local build="$NATIVE_BUILD/wayland"
+    log "--- 安装 wayland 头文件 (已装=${inst_ver:-无} → $ver) ---"
+    # 生成头取自版本化构建目录 (T1 起构建目录带版本后缀, 未版本化旧路径已废)
+    local build="$NATIVE_BUILD/wayland_$ver"
+    [ -f "$build/src/wayland-version.h" ] \
+        || { err "install_headers: $build 缺生成头, 先跑本脚本完成 build_wayland"; return 1; }
 
     cp "$src/src/wayland-server-core.h" \
        "$src/src/wayland-server.h" \
@@ -307,7 +360,7 @@ install_headers() {
        "$build/src/wayland-client-protocol.h" \
        "$build/src/wayland-version.h" \
        "$WINEHUA_INC/"
-    log "wayland 头文件 → $WINEHUA_INC"
+    log "wayland 头文件 ($ver) → $WINEHUA_INC"
 }
 
 # ── 5. libepoxy (VirGL host 渲染器依赖, EGL 函数加载) ──
@@ -437,6 +490,7 @@ build_native_freetype
 build_native_libxml2
 build_native_xkbcommon
 build_wayland
+emit_wayland_host_pc
 build_protocols
 install_headers
 build_libepoxy
