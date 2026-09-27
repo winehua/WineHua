@@ -3,7 +3,7 @@
 > 状态：设计提案（待实现计划）
 > 日期：2026-09-27
 > 取代关系：本文显式取代 [0001-self-built-compositor.md](../../decisions/0001-self-built-compositor.md) 的「不替换合成器」结论——该结论的前提是 winewayland 驱动路线；其自设的重开条件（[win32-window-model-x11-wayland.md](../../architecture/win32-window-model-x11-wayland.md) §复核点：「长尾程序出现窗口树/override-redirect 类结构性不兼容的聚集模式」）已被实际触发（2026-09-27 用户实证：长尾程序结构性不兼容 + 窗口语义长尾两类痛点聚集）。
-> 证据纪律：本文所有论断要么带 file:line 源码依据，要么显式标注为「M0 设备探针」。考证过程中三个初始论断被源码推翻，已按实况修正（见 §4.3）。
+> 证据纪律：本文所有论断要么带 file:line 源码依据，要么显式标注为「M0 设备探针」。
 
 ## 1. 背景与动机
 
@@ -31,14 +31,12 @@ Wine 程序 → winex11.drv（上游） → Xwayland（上游, shm-only） → w
 | **wlroots 钉上游稳定 tag** | ✅ | 最小集合 `-Dauto_features=disabled -Dxwayland=enabled`；GBM/udev/libinput/session 全可关（`wlroots meson.build:96-134`、`backend/meson.build:11-29`）；全树无 udev/systemd/logind 硬引用。**gamescope 钉 0.20.2 零补丁**（`.gitmodules` 直指 freedesktop，无 Valve fork）；headless 可动态多 output（`headless.h:25`）；自定义 `wlr_buffer` 公开 API（`wlr_buffer.h` impl 五函数指针）；text-input-v3 完整 |
 | **Xwayland 纯 shm** | ✅ 一等公民 | `-Dglamor=false` 编译 + `-shm` 运行时（`xwayland.c:109,214`），glamor 失败自动回退（`xwayland-screen.c:1102-1107`）；无 glamor 内容走 memfd/tmpfile→wl_shm（`xwayland-shm.c:126-305`）；rootless 对合成器最低要求 wl_compositor+wl_shm+wl_seat（`xwayland-screen.c:520-601`） |
 | **winex11.drv 上游原版** | ✅ 极简且零包袱 | 硬依赖仅 libX11+libXext（`configure.ac:1278-1280`），其余 X 扩展可选 soname 探测逐个降级；驱动源码零 Linux 桌面设施（grep /proc、/tmp、udev、dbus、abstract 全空）；**上游零修改**（git log 全上游作者）；与 winewayland 可同编（各驱动独立 enable 变量，`configure.ac:3383-3384`） |
-| ~~mutter~~ | 砍 | 硬依赖 /dev/input、DRM、logind，OHOS 全拿不到；PC 系统窗口承载做不到 |
-| ~~weston~~ | 降为不推荐 | libinput/libdrm/udev/cairo 顶层无条件硬依赖无开关（`weston/meson.build:161-181`）= 补丁发行版；无 text-input-v3 |
-| ~~私有协议 winehua_toplevel~~ | 整体拆除 | 12 行单接口，Wine 侧引用全收敛在 winewayland.drv（modal.c 专为此建）；X11 模态走 WM_TRANSIENT_FOR+_NET_WM_STATE_MODAL；PC 模式上报改用 `wlr_xwayland_surface` 的 `modal` 字段 + request_* 信号（`xwayland.h:181,197-203`） |
+| **模态语义走 X11 标准机制** | ✅ | WM_TRANSIENT_FOR + _NET_WM_STATE_MODAL 经 XWM 解析为 `wlr_xwayland_surface` 的 `modal`/`parent` 字段 + request_* 信号（`xwayland.h:181,197-203`）；PC 模式上报由此重建 |
 | 同形态先例 | Steam Deck gamescope | Valve 官方（ValveSoftware/gamescope），wlroots 内核，游戏链路 = winex11→Xwayland→gamescope→屏幕，与本方案只差最后一跳（DRM ↔ NativeWindow） |
 
 ## 4. 现行机制实证（迁移的对接面）
 
-### 4.1 ZC 传输真相（考证修正后）
+### 4.1 ZC 传输机制
 
 virglrenderer 跑在**独立 NCP 子进程**（`graphics_broker.cpp:1322` libvirgl_child.so；`:196` dlopen 备选）。ZC 跨进程传输 = **OHOS BufferQueue**：合成器侧 `OH_NativeImage_AcquireNativeWindow` 得生产者窗口（`egl_renderer.cpp:225-228`）→ 交 virgl_child 渲染 → `OH_NativeImage_UpdateSurfaceImage` 回收为 GL 纹理（`native_image.h:114,157`）。握手文件 `winehua_zc_surface_*`（`graphics_broker.cpp:81-82`）只做就绪协商。
 
@@ -46,21 +44,16 @@ virglrenderer 跑在**独立 NCP 子进程**（`graphics_broker.cpp:1322` libvir
 
 WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高位 tag `0x574853` + wl_surface id（`contracts.md:344-350`），venus 经 `VCMD_WINEHUA_VK_PRESENT` 把 SURFACE_ID 送 virglrenderer（`contracts.md:473`），宿主回调回主仓库。**M2 重锚 = 把 id 来源从 winewayland 的 wl_surface id 换成 X window id（经 `wlr_xwayland_surface` 双字段映射，`xwayland.h` window_id+surface），链路其余不动。**
 
-### 4.3 考证中被源码推翻的三个初始论断（留档防复发）
+### 4.3 其他对接事实
 
-1. ~~"gamescope 用 Valve 补丁版 wlroots"~~ → 实为上游 0.20.2 纯净 tag 零补丁
-2. ~~"virglrenderer 与合成器同进程、EGLImage 句柄直通"~~ → 实为独立 NCP 进程 + BufferQueue
-3. ~~"wine 用 memfd/tmpfile 建 wl_shm"~~ → 实为 wineserver section 转 fd（`wayland_surface.c:880-908` `wine_server_handle_to_fd` → `wl_shm_create_pool`）；沙箱内跨进程 fd 共享已被生产验证
-
-### 4.4 其他对接事实
-
+- Wine 窗口 shm：wineserver section 转 fd（`wayland_surface.c:880-908` `wine_server_handle_to_fd` → `wl_shm_create_pool`）——沙箱内跨进程 fd 共享已在生产验证
 - GL 现状：winewayland GL = EGL window surface（`opengl.c:122-123`）+ pbuffer 模拟（`:141,168-172`）+ readback（`opengl_readback.c`）
 - winex11 GLX 面：`winex11.drv/opengl.c` 内部 42 个 glX/FBConfig 实现函数 = GLX-over-EGL 桥的覆盖清单
 - DXVK d3d9：**编了没打包**（`build_dxvk.sh:61` 只装 d3d11/dxgi；`assemble.sh:325-334`）——启用是打包+验证工作
 - 驱动选择单点：`win32u/driver.c:1015-1035` OHOS bypass 强制直载 winewayland——切换的唯一 Wine 侧硬改动
 - 隐藏依赖：wayland-server 头/.pc 目前靠 `BUILD_GUEST_GFX=1` 才装（`build_ohos_guest_gfx.sh:589-601,654-666`）——先固化进 build_wayland.sh
 
-### 4.5 窗口管理体系差异分析（X11/ICCCM ↔ wlroots 策略层 ↔ 鸿蒙）
+### 4.4 窗口管理体系差异分析（X11/ICCCM ↔ wlroots 策略层 ↔ 鸿蒙）
 
 层级澄清：X11 的窗口管理不是 X server 的能力，而是 WM（普通客户端）与程序间的约定（ICCCM/EWMH）。因此真正的对比是四层错位：winex11 期望 ↔ XWM 翻译（上游养）↔ **wlroots+适配层=策略层（权威归我们）** ↔ 鸿蒙。鸿蒙"缺"的都发生在策略层与鸿蒙之间，而虚拟 root/输出/桌面尺寸均由策略层自定义。
 
