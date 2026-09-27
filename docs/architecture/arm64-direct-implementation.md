@@ -156,7 +156,8 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
   | x64 | Maleoon 910，loader API 1.3.275，[结果](evidence/direct-d3-offscreen-direct-x64.json) | Virtio-GPU Venus (Maleoon 910)，loader API 1.3.290，[结果](evidence/direct-d3-offscreen-venus-x64.json) |
   | x86 | Maleoon 910，loader API 1.3.275，[结果](evidence/direct-d3-offscreen-direct-x86.json) | Virtio-GPU Venus (Maleoon 910)，loader API 1.3.290，[结果](evidence/direct-d3-offscreen-venus-x86.json) |
 
-- 单进程 Create NCP 的非 Vulkan x64 DNS 对照也 `PASS`（本机归档 `F:\WineHua\.temp\direct-d3-runs\core-d3-create-dns-20260927`）。修正 EGL 枚举前的 Direct 测试在 `win32u` 的 OpenGL GPU 枚举中进入 `eglInitialize → libgallium` 并 `SIGABRT`；修正后通过。此前首次冷启动包上的默认 Venus x64 测试超时，不能作为最终包回归结论；最终包的 Create/Venus x64 与 x86 上表均通过。
+- 单进程 Create NCP 的非 Vulkan x64 DNS 对照也 `PASS`（本机归档 `F:\WineHua\.temp\direct-d3-runs\core-d3-create-dns-20260927`）。修正 EGL 枚举前的 Direct 测试在 `win32u` 的 OpenGL GPU 枚举中进入 `eglInitialize → libgallium` 并 `SIGABRT`；修正后通过。
+- 最终包又测了**缺省 Start + Venus**，x86 离屏 `PASS`，x64 在进入 `__wine_main` 后 90 秒没有写出结果，[套件摘要](evidence/direct-d3-venus-start-final-summary.json)。同包 Create + Venus 的 x64/x86 则均通过；不能把 Start x64 超时归因于 Direct loader，也不能称缺省生产路径的 Vulkan 回归已全绿。Start 与 Create 的 x64 差异仍须单独定位；D3 Direct 继续只在 Create NCP 显式启用。
 - **D3 WSI 未完成**：离屏 smoke 没有 Win32 surface、swapchain、acquire、present 或 resize，也没有把产品窗口接到 D2 的 BufferQueue 和 Vulkan compositor。下一步需要把 App 的 producer window 通过 D2.5 的 IPC 交给目标 Wine NCP，建立 `(clientPid, toplevelId, generation)` surface 身份与生命周期，再实现 Direct 的 Win32 surface/swapchain/present 和 resize/device-lost 回退。D4 DXVK Direct 尚未开始。
 
 ## 关键的未知事实
