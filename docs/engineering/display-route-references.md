@@ -14,7 +14,7 @@
 | `xserver/` | 主线 26.1.99.1 | `doc/`（Xserver-spec.xml 等）、`hw/xwayland/man/Xwayland.man`（命令行/env 权威） | M0 `-shm`/`-xkbdir` 参数、 glamor 开关；`xwayland-shm.c`/`xkb/ddxLoad.c` 已在 spec 引用 |
 | `weston/` | 15.0.91 | — | 备选对照（已降级），仅 wlroots 裁剪失败时翻 |
 | `wayland-protocols/` | fd.o 主线 | `stable/xdg-shell/xdg-shell.xml`、`unstable/pointer-constraints/`、`staging/`（cursor-shape、tearing、color-management…） | **协议 XML 即规范本体**：XWM↔合成器交互（xdg-shell）、输入捕获（M1）、IME（M2 text-input-v3）按此读 |
-| `mutter/`、`winlator/`、`crossover/`、`proton/` | — | — | 背景参考：GNOME 的 Xwayland IME 补丁（mutter 树内搜 text-input）、移动沙箱先例 |
+| `mutter/`、`winlator/`、`crossover/`、`proton/` | — | — | 背景参考：移动沙箱/兼容层先例。注：mutter 树的 text-input 是 Wayland 客户端侧实现，**无 Xwayland IME 桥**（2026-09-27 实查）——R-IME 补丁源需另行定位 |
 
 ## 2. 规范文档（.temp/docs/specs/）
 
