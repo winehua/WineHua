@@ -494,7 +494,7 @@ hdc -t 192.168.1.6 hilog 2>/dev/null | grep --line-buffered -E "XWAYLAND-NCP|Dis
 - Consumes: Task 4 libX11/libXext、Task 7 的 Xwayland 运行态、Task 8 出图链
 - Produces: 屏幕上一个由真实 X client 绘制的窗口 = spec §7 M0 出口（「Xwayland 跑 xterm」的等价最小件，见下方说明）
 
-> **范围说明（待用户确认的 spec 偏差）**：spec 写 "Xwayland 跑 xterm"。xterm 全栈需额外 7 个库（libXt/libXaw/libXmu/libXpm/libICE/libSM/ncurses），且 M0 无输入链（M1 才有），xterm 装上也只能看不能敲。本计划以 mini client 作 M0 门（依赖面恰 = winex11 硬依赖 libX11+libXext，一石二鸟）；xterm 全栈列为 M0 可选延伸任务，由用户定夺。
+> **范围决议（2026-09-27 用户定案）**：M0 出口件 = mini client（依赖面恰 = winex11 硬依赖 libX11+libXext，构建栈即最终栈）。spec 的「Xwayland 跑 xterm」由 mini client 等价承担——xterm 全栈（libXt/libXaw/libXmu/libXpm/libICE/libSM/ncurses 7 库）无输入链时也只能看不能敲，留作 M1 可选延伸。
 
 - [ ] **Step 1: 写 mini client + 部署**
 - [ ] **Step 2: 真机门（M0 出口判据）**
