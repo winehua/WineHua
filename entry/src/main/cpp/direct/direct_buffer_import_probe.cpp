@@ -808,7 +808,7 @@ bool DirectBufferImportProbe::FinishSample(int32_t frame)
     void* mapped = nullptr;
     result = vkMapMemory(device_, readbackMemory_, 0, 9 * sizeof(uint32_t), 0, &mapped);
     if (result != VK_SUCCESS) return Fail("sample_map", result);
-    const uint32_t expected = 0xffa55a00u | static_cast<uint8_t>(frame * 31 + 7);
+    const uint32_t expected = 0xffa55a00u | static_cast<uint8_t>((frame % 8) * 31 + 7);
     bool matches = true;
     for (uint32_t i = 0; i < 9; ++i) {
         if (static_cast<const uint32_t*>(mapped)[i] != expected) matches = false;

@@ -289,7 +289,7 @@ struct GpuProducer {
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
                              1, &barrier);
         VkClearColorValue color{};
-        color.float32[0] = static_cast<float>(frame * 31 + 7) / 255.0f;
+        color.float32[0] = static_cast<float>((frame % 8) * 31 + 7) / 255.0f;
         color.float32[1] = 90.0f / 255.0f;
         color.float32[2] = 165.0f / 255.0f;
         color.float32[3] = 1.0f;
@@ -374,7 +374,7 @@ int OnRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* reply, voi
     if (OH_IPCParcel_ReadInt32(request, &frame) != OH_IPC_SUCCESS ||
         OH_IPCParcel_ReadInt32(request, &width) != OH_IPC_SUCCESS ||
         OH_IPCParcel_ReadInt32(request, &height) != OH_IPC_SUCCESS ||
-        frame < 0 || frame >= winehua::direct::kGpuImportProbeFrameCount ||
+        frame < 0 || frame >= winehua::direct::kGpuThroughputProbeFrameCount ||
         width <= 0 || height <= 0)
         return OH_IPC_CHECK_PARAM_ERROR;
     SurfaceProbeFrame output{};
@@ -409,6 +409,6 @@ extern "C" __attribute__((visibility("default"))) OHIPCRemoteStub* NativeChildPr
 extern "C" __attribute__((visibility("default"))) void NativeChildProcess_MainProc()
 {
     std::unique_lock<std::mutex> lock(g_mutex);
-    g_condition.wait_for(lock, std::chrono::seconds(30), [] { return g_finished; });
+    g_condition.wait_for(lock, std::chrono::seconds(120), [] { return g_finished; });
     ReleaseLocked();
 }

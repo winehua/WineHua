@@ -104,6 +104,12 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 签名 HAP SHA-256：`b67d8edf00e601f2faca4e322f96c97c3b9e4723bc1c3abdb4dc1db930313ce1`。MatePad Mini 连续重载页面 30 次，30/30 `PASS`、30 个不同 NCP PID 与 XComponent surfaceId；每轮输出从物理 `760×570` 变为 `950×380`，恰好重建一次 swapchain，八帧 GPU 采样、fence 导入/导出和 present 均通过。合计 240 帧、30 次重建（[逐轮结果](evidence/direct-d2-resize-runs.ndjson)）。最后一轮的[屏幕截图](evidence/direct-d2-resize-final-screen.jpeg)显示新宽高比的末帧；JPEG 中心像素 `(225,90,166)`，与源图案目标 `(224,90,165)` 仅有压缩误差。
 - 30 轮父进程 fd 范围 44–58，RSS 范围 114828–158916 KiB；fd 在第 12、13、28 轮回落至 44，RSS 也回落。此样本仍不足以证明长期稳定。最终包复跑 D0、D1、WSI、import、sample、fence、独立输出、合成和合成 resize 九个入口，全部 `PASS`（[回归结果](evidence/direct-d2-resize-regression.ndjson)）。后续要让多个 frame slot 同时在途，去掉每帧 CPU fence 等待，再测稳定 60 FPS 与更长时间的资源占用。
 
+## D2 连续提交吞吐基线（2026-09-27）
+
+- 新增 `winehua.mode=direct-gpu-composite-throughput-probe`，在现有 NCP Vulkan WSI → 跨进程 NativeBuffer → App Vulkan shader → 独立 XComponent 的链路上连续提交 600 帧。每帧仍先完成 producer IPC，再 acquire/submit/release/present，最后等待 App 提交 fence 并读取 36 字节诊断结果；没有 CPU 图像拷贝或逐帧导入，但生产端和消费端都仍**逐帧串行等待**。JSON 的 `fps` 是 `framesPassed / elapsedMs` 算出的**提交吞吐率**，不是 RenderService 已显示帧率；`throughputAtLeast60` 只判断这个提交率。
+- 已安装的签名 HAP SHA-256 为 `0be8175533bdac3876b0d71ead9f32abd55908834caac15609cd729a96b2ccb5`。MatePad Mini `5KPBB25818203996` 上六次连续重载均 `PASS`，合计 3600/3600 帧、3600 次 shader 采样、acquire fence 导入、release semaphore 导出与 Vulkan present。每轮导入 3 个 NativeBuffer，复用 597 次；六轮的提交率为 88.83–91.05 次/秒，帧时 p95 为 13.23–13.76 ms，父进程 fd 为 44–47，RSS 为 124276–130092 KiB（[逐轮 JSON](evidence/direct-d2-throughput-runs.ndjson)）。同包 D0、D1、WSI、import、sample、fence、独立输出、合成和 resize 九个入口全部 `PASS`（[回归 JSON](evidence/direct-d2-throughput-regression.ndjson)）。
+- `releaseExportCount` 每轮为 600，实际非负的 `releaseFdCount` 为 555–567；导出成功不等于每次都返回非负 fd，`-1` 被原样交给 BufferQueue。后续应结合设备实现核对已完成 `SYNC_FD` 返回 `-1` 的语义。RenderService 的 `fps` 命令在此诊断窗口上没有给出可归属的采样，因此**屏幕连续 60 FPS 尚未验收**。下一步须使至少两个 frame slot 同时在途：各槽独立持有命令缓冲区、descriptor、诊断缓冲区、提交 fence 和 acquire/release 同步对象；在槽回收时才等待，并在 producer 端移除逐帧提交 fence 等待。之后再取 RenderService/显示时间戳证据和长时 fd/RSS 曲线。现有数据只作为串行基线。
+
 ## 关键的未知事实
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。

@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -26,6 +27,7 @@
 #include <memory>
 #include <new>
 #include <thread>
+#include <vector>
 
 namespace winehua::direct {
 namespace {
@@ -55,6 +57,15 @@ struct SurfaceWork {
     bool fenceCheck = false;
     bool compositeMode = false;
     bool resizeMode = false;
+    bool throughputMode = false;
+    int32_t frameTarget = kGpuImportProbeFrameCount;
+    double elapsedMs = 0.0;
+    double fps = 0.0;
+    double frameP50Ms = 0.0;
+    double frameP95Ms = 0.0;
+    double frameP99Ms = 0.0;
+    double producerP95Ms = 0.0;
+    double consumerP95Ms = 0.0;
     bool outputCheck = false;
     uint64_t outputSurfaceId = 0;
     int32_t outputPresentCount = 0;
@@ -107,6 +118,14 @@ int ReadRssKiB()
     const int scanned = std::fscanf(statm, "%lu %lu", &totalPages, &residentPages);
     std::fclose(statm);
     return scanned == 2 ? static_cast<int>(residentPages * sysconf(_SC_PAGESIZE) / 1024) : -1;
+}
+
+double PercentileMs(std::vector<double> samples, uint32_t percentile)
+{
+    if (samples.empty()) return 0.0;
+    std::sort(samples.begin(), samples.end());
+    const size_t rank = (static_cast<size_t>(percentile) * samples.size() + 99) / 100;
+    return samples[std::min(samples.size() - 1, std::max<size_t>(rank, 1) - 1)];
 }
 
 void Fail(SurfaceWork& work, const char* stage)
@@ -393,6 +412,40 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             Fail(work, "create_callback");
             break;
         }
+        if (work.throughputMode) {
+            std::vector<double> frameMs;
+            std::vector<double> producerMs;
+            std::vector<double> consumerMs;
+            frameMs.reserve(work.frameTarget);
+            producerMs.reserve(work.frameTarget);
+            consumerMs.reserve(work.frameTarget);
+            work.width = 64;
+            work.height = 64;
+            const auto begin = std::chrono::steady_clock::now();
+            for (int32_t frame = 0; frame < work.frameTarget; ++frame) {
+                const auto frameBegin = std::chrono::steady_clock::now();
+                if (!SendFrame(work, producer, frame, 64, 64)) break;
+                const auto produced = std::chrono::steady_clock::now();
+                if (!ConsumeFrame(work, image, frame, 64, 64)) break;
+                const auto consumed = std::chrono::steady_clock::now();
+                frameMs.push_back(std::chrono::duration<double, std::milli>(
+                    consumed - frameBegin).count());
+                producerMs.push_back(std::chrono::duration<double, std::milli>(
+                    produced - frameBegin).count());
+                consumerMs.push_back(std::chrono::duration<double, std::milli>(
+                    consumed - produced).count());
+                ++work.framesPassed;
+            }
+            const auto end = std::chrono::steady_clock::now();
+            work.elapsedMs = std::chrono::duration<double, std::milli>(end - begin).count();
+            if (work.elapsedMs > 0.0)
+                work.fps = static_cast<double>(work.framesPassed) * 1000.0 / work.elapsedMs;
+            work.frameP50Ms = PercentileMs(frameMs, 50);
+            work.frameP95Ms = PercentileMs(frameMs, 95);
+            work.frameP99Ms = PercentileMs(frameMs, 99);
+            work.producerP95Ms = PercentileMs(producerMs, 95);
+            work.consumerP95Ms = PercentileMs(consumerMs, 95);
+        } else {
         for (int32_t group = 0; group < 2; ++group) {
             const int32_t firstFrame = group * (work.importMode ? 4 : 3);
             const int32_t width = group == 0 ? 64 : 96;
@@ -472,8 +525,8 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 break;
             ++work.framesPassed;
         }
-        if (work.framesPassed == (work.importMode ? kGpuImportProbeFrameCount :
-                                 kSurfaceProbeFrameCount)) {
+        }
+        if (work.framesPassed == work.frameTarget) {
             work.pixelCheck = true;
             work.importCheck = !work.importMode ||
                 (work.importer->ImportCount() >= 2 && work.importer->ReuseCount() >= 2);
@@ -482,21 +535,21 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 break;
             }
             work.sampleCheck = !work.sampleMode ||
-                work.importer->SampleCount() == kGpuImportProbeFrameCount;
+                work.importer->SampleCount() == static_cast<uint32_t>(work.frameTarget);
             if (!work.sampleCheck) {
                 Fail(work, "sample_count");
                 break;
             }
             work.fenceCheck = !work.fenceMode ||
                 (work.importer->AcquireImportCount() > 0 &&
-                 work.importer->ReleaseExportCount() == kGpuImportProbeFrameCount &&
+                 work.importer->ReleaseExportCount() == static_cast<uint32_t>(work.frameTarget) &&
                  work.releaseFdCount > 0);
             if (!work.fenceCheck) {
                 Fail(work, "fence_not_exercised");
                 break;
             }
             work.outputCheck = !work.compositeMode ||
-                (work.importer->OutputPresentCount() == kGpuImportProbeFrameCount &&
+                (work.importer->OutputPresentCount() == static_cast<uint32_t>(work.frameTarget) &&
                  (!work.resizeMode ||
                   (work.importer->OutputRecreateCount() == 1 &&
                    work.importer->OutputWidth() != static_cast<uint32_t>(work.outputInitialWidth) &&
@@ -551,7 +604,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", work->resizeMode ? "D2-COMPOSITE-RESIZE" :
+    setString("gate", work->throughputMode ? "D2-THROUGHPUT" :
+              work->resizeMode ? "D2-COMPOSITE-RESIZE" :
               work->compositeMode ? "D2-COMPOSITE" :
               work->fenceMode ? "D2-FENCE" : work->sampleMode ? "D2-SAMPLE" :
               work->importMode ? "D2-IMPORT" :
@@ -563,6 +617,22 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     setString("stage", work->stage);
     setInt("pid", work->childPid);
     setInt("framesPassed", work->framesPassed);
+    setInt("frameTarget", work->frameTarget);
+    auto setDouble = [&](const char* key, double value) {
+        napi_value item;
+        napi_create_double(env, value, &item);
+        napi_set_named_property(env, object, key, item);
+    };
+    setDouble("elapsedMs", work->elapsedMs);
+    setDouble("fps", work->fps);
+    setDouble("frameP50Ms", work->frameP50Ms);
+    setDouble("frameP95Ms", work->frameP95Ms);
+    setDouble("frameP99Ms", work->frameP99Ms);
+    setDouble("producerP95Ms", work->producerP95Ms);
+    setDouble("consumerP95Ms", work->consumerP95Ms);
+    napi_value throughputAtLeast60;
+    napi_get_boolean(env, work->throughputMode && work->fps >= 60.0, &throughputAtLeast60);
+    napi_set_named_property(env, object, "throughputAtLeast60", throughputAtLeast60);
     setInt("width", work->width);
     setInt("height", work->height);
     setInt("queueSize", work->queueSize);
@@ -619,7 +689,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
 
 napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
                              bool importMode, bool sampleMode, bool fenceMode,
-                             bool compositeMode = false, bool resizeMode = false)
+                             bool compositeMode = false, bool resizeMode = false,
+                             bool throughputMode = false)
 {
     auto* work = new (std::nothrow) SurfaceWork();
     if (!work) {
@@ -633,6 +704,9 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
     work->fenceMode = fenceMode;
     work->compositeMode = compositeMode;
     work->resizeMode = resizeMode;
+    work->throughputMode = throughputMode;
+    work->frameTarget = throughputMode ? kGpuThroughputProbeFrameCount :
+        importMode ? kGpuImportProbeFrameCount : kSurfaceProbeFrameCount;
     napi_value promise;
     if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
         delete work;
@@ -690,6 +764,11 @@ napi_value RunGpuCompositeProbe(napi_env env, napi_callback_info)
 napi_value RunGpuCompositeResizeProbe(napi_env env, napi_callback_info)
 {
     return QueueSurfaceProbe(env, false, true, true, true, true, true, true);
+}
+
+napi_value RunGpuCompositeThroughputProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true, true, true, true, false, true);
 }
 
 } // namespace winehua::direct

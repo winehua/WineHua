@@ -9,6 +9,7 @@ constexpr uint32_t kSurfaceProbeProduce = 1;
 constexpr uint32_t kSurfaceProbeFinish = 2;
 constexpr int32_t kSurfaceProbeFrameCount = 6;
 constexpr int32_t kGpuImportProbeFrameCount = 8;
+constexpr int32_t kGpuThroughputProbeFrameCount = 600;
 
 struct SurfaceProbeFrame {
     int32_t status = -1;
