@@ -19,7 +19,7 @@ Wine 程序 → winex11.drv（上游） → Xwayland（上游, shm-only） → w
               → OHOS 适配层（唯一自养, 薄壳） → 鸿蒙窗口
 ```
 
-- **出图**：wlroots headless output（pixman 软渲染起步）→ 适配层 → NativeWindow/XComponent。像素搬运走自定义 `wlr_allocator`：帧直接落进 OH_NativeBuffer 承载的自定义 `wlr_buffer`，output commit 后适配层直推 NativeWindow（不走 read_pixels 二次拷贝；与 §5 R-ZC① 同一套自定义 buffer 机制；NativeWindow 直推的具体 API 与 CPU 写入 usage 组合为 **M0 真机首验项**）。PC 模式 = 每 toplevel 一个 output 配一个鸿蒙系统窗；Pad 模式 = 单 output 虚拟桌面（策略层合成，非 X root 桌面）
+- **出图**：wlroots headless output → 适配层 → NativeWindow/XComponent。像素搬运走自定义 `wlr_allocator`：帧直接落进 OH_NativeBuffer 承载的自定义 `wlr_buffer`，output commit 后适配层直推 NativeWindow（NativeWindow 直推的具体 API 与 CPU 写入 usage 组合为 **M0 真机首验项**）。渲染器两态：**M0 起步 = pixman 软合成**（bootstrap，游戏热路径有每帧两次全幅 CPU 搬运代价）；**M2 必达终态 = wlroots GLES2 + OH_NativeBuffer EGLImage 导入**（`EGL_OHOS_image_native_buffer` 扩展，SDK `eglext.h:1441-1444` + `egl.h:329` eglCreateImage），全链 GPU 零 CPU 拷贝、拷贝数与旧路线持平（§5 R-ZC②）。PC 模式 = 每 toplevel 一个 output 配一个鸿蒙系统窗；Pad 模式 = 单 output 虚拟桌面（策略层合成，非 X root 桌面）
 - **Xwayland 固定 rootless**：钉版 wlroots 启动 Xwayland 的 argv 硬编码 `-rootless`（`xwayland/server.c:50`）；且 rootful 下不存在每窗 wl_surface，§4.2 的 present 重锚与 ZC per-window 通路整体失效。Pad 的「虚拟桌面」= 策略层把全部 xwayland surface 合成到单 output（与 gamescope 形态一致），不是 X root 窗
 - **输入**：OHOS 事件 → `wlr_seat_notify_*` 注入（`wlr_seat.h:461-679`；notify 函数不收设备参数，seat 创建不依赖 backend，`types/seat/wlr_seat.c:282`）。键盘侧需自建假 `wlr_keyboard`（`wlr/interfaces/wlr_keyboard.h:20` `wlr_keyboard_init` + `wlr_seat_set_keyboard`）为客户端提供 keymap，缺这步 Xwayland 键盘死
 - **IME**：鸿蒙输入法 ↔ text-input-v3（wlroots 内置 `wlr_text_input_v3.c`）↔ Xwayland（需移植下游 IME 桥，见 §5 R-IME）
@@ -81,7 +81,8 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 | ID | 风险 | 证据 | 缓解 |
 |---|---|---|---|
 | R1 | GLX 管线断点：D3D8/9/OpenGL 现走 winewayland EGL readback；winex11 需 GLX，shm Xwayland 无 GLX 扩展 | `build_wine.sh:118-122`、`configure.ac:1408-1425`（缺 libGL 仅 WARNING，会静默失效） | ①GLX-over-EGL 桥（winex11 opengl.c 后端替换为 virpipe EGL，蓝图 = 现有 opengl.c 的结构；成败级无理论风险，全是工作量）。present 通路被 shm 约束唯一决定：wine 侧摸不到 X 窗口像素 ⇒ EGL surfaceless/pbuffer 离屏渲染 → glReadPixels → `XShmPutImage` 回 X 窗口，代价与现 winewayland EGL readback 同级；spike 裁决判据 = virpipe EGL surfaceless/pbuffer 可用性 + 常见分辨率 readback 带宽实测 ②DXVK d3d9 打包启用收窄 GL 面 ③DirectDraw/OpenGL 程序由①覆盖。**M0/M1 spike 裁决最小原型** |
-| R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:419-422`），不认识 BufferQueue | 同左 | ①data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer。获取链三跳（API 实证）：`OH_NativeImage_AcquireNativeWindowBuffer`（SDK `native_image.h:300`，`AcquireLatestNativeWindowBuffer` `:485`，since 22 ≤ 本档 23）→ `OH_NativeBuffer_FromNativeWindowBuffer`（`native_buffer.h:286`）→ `OH_NativeBuffer_Map`（`:233`）。**口径：API 存在已证、组合未验证**——现行合成器零 `OH_NativeBuffer` 命中（全程纹理模式 `UpdateSurfaceImage` `native_image.h:157`），纹理/缓冲两种消费模式能否共存同一 OH_NativeImage 未验证，M2 探针裁决 ②GL 门小补丁：纹理模式导入分支。传输层已被现行 ZC 生产验证 |
+| R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:419-422`），不认识 BufferQueue；pixman 起步态下游戏热路径 = GPU→CPU map→CPU 合成→GPU，每帧两次全幅搬运（bootstrap 代价，非终态） | 同左 | ①（bootstrap）data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer。获取链三跳（API 实证）：`OH_NativeImage_AcquireNativeWindowBuffer`（SDK `native_image.h:300`，`AcquireLatestNativeWindowBuffer` `:485`，since 22 ≤ 本档 23）→ `OH_NativeBuffer_FromNativeWindowBuffer`（`native_buffer.h:286`）→ `OH_NativeBuffer_Map`（`:233`）。**口径：API 存在已证、组合未验证**——现行合成器零 `OH_NativeBuffer` 命中（全程纹理模式 `UpdateSurfaceImage` `native_image.h:157`），纹理/缓冲两种消费模式能否共存同一 OH_NativeImage 未验证，M2 探针裁决 ②**M2 必达终态（GL 门）**：wlroots gles2 加 OHOS 导入分支——`eglCreateImage` + `EGL_NATIVE_BUFFER_OHOS`（SDK `eglext.h:1441-1444`），输入帧与输出 buffer 全程 GPU，拷贝数与旧路线持平。**扩展运行时可用性 = M2 探针；不可用则效果上限退化为 ① 的 CPU 合成**。传输层已被现行 ZC 生产验证 |
+| R-SPAWN | wlroots 启动 Xwayland 只有 fork+execvp 一条路（`xwayland/server.c:133` `execvp`；`wlr_xwayland_server_create` `server.h:64` 同源内部 exec），无「接管外部已启动 Xwayland」的公开 API；OHOS 应用沙箱能否 fork/exec 未探针（现行 Wine 子进程全走 NCP 系统接口） | 同左 | **M0 探针：应用进程 fork+exec bundle 内二进制**。不通则评估 wlroots 启动路径小补丁（NCP 化）或 exec 放行策略，钉版零补丁口径相应修正 |
 | R2 | wlroots shm 分配器走 shm_open→/dev/shm（`util/shm.c:30`），沙箱可能没有 | 同左 | **已探针解除（2026-09-27，见 B 类 P1/P2）**：shm_open 与 memfd_create 在沙箱均可用，默认分配器直接工作；自定义 `wlr_allocator` 降级为备胎 |
 | R-VER | wlroots 0.20.2 与 0.21 均要求 wayland-server ≥1.24（`wlroots meson.build:88-90`）；项目现有 1.22 | 同左 | **升 thirdparty/wayland ≥1.24 为必做项**（关键路径） |
 | R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包 |
@@ -121,7 +122,7 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
-| M0 | 设备探针（本文 B 类）+ wlroots OHOS 交叉编译 + headless/pixman 出图进 NativeWindow + Xwayland 跑 xterm | 跑不通 → 回退「现有合成器 + Xwayland」（winex11 收益保留；rootless 回退需先给旧合成器补 xwayland-shell-v1——现零实现，协议面很小；旧合成器 xdg_wm_base 已具备 `xdg_shell.cpp:428-433`，rootful 可跑但 present 重锚不成立，仅保窗口不保 ZC） |
+| M0 | Xwayland 钉版裁决 + wlroots OHOS 交叉编译 + fork/exec 探针（R-SPAWN）+ NativeWindow 直推真机首验 + headless/pixman 出图进 NativeWindow + Xwayland 跑 xterm | 跑不通 → 回退「现有合成器 + Xwayland」（winex11 收益保留；rootless 回退需先给旧合成器补 xwayland-shell-v1——现零实现，协议面很小；旧合成器 xdg_wm_base 已具备 `xdg_shell.cpp:428-433`，rootful 可跑但 present 重锚不成立，仅保窗口不保 ZC） |
 | M1 | winex11 交叉接入，窗口语义验收；GLX-over-EGL 桥最小原型裁决；R-WSI 探针 | 记事本类输入/窗口正确 |
 | M2 | Venus/ZC 重锚（§4.2/§5 R-ZC）、IME、双窗口形态 | dxvk 套件出图正常 |
 | M3 | 旧合成器退役 | core / wine-vulkan / dxvk 套件不回退 + 长尾样本验收 |
