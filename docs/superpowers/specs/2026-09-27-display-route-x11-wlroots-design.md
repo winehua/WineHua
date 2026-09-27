@@ -60,6 +60,24 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 - 驱动选择单点：`win32u/driver.c:1015-1035` OHOS bypass 强制直载 winewayland——切换的唯一 Wine 侧硬改动
 - 隐藏依赖：wayland-server 头/.pc 目前靠 `BUILD_GUEST_GFX=1` 才装（`build_ohos_guest_gfx.sh:589-601,654-666`）——先固化进 build_wayland.sh
 
+### 4.5 窗口管理体系差异分析（X11/ICCCM ↔ wlroots 策略层 ↔ 鸿蒙）
+
+层级澄清：X11 的窗口管理不是 X server 的能力，而是 WM（普通客户端）与程序间的约定（ICCCM/EWMH）。因此真正的对比是四层错位：winex11 期望 ↔ XWM 翻译（上游养）↔ **wlroots+适配层=策略层（权威归我们）** ↔ 鸿蒙。鸿蒙"缺"的都发生在策略层与鸿蒙之间，而虚拟 root/输出/桌面尺寸均由策略层自定义。
+
+| X11/ICCCM 期望 | 落点 | 判定 |
+|---|---|---|
+| 全局 root 坐标系 | 自定义虚拟 root：Pad=单 output、PC=多 output | 平价（与现状同构） |
+| 客户端自由定位 | XWM 转 `request_configure` 信号（`xwayland.h:198`），策略层批准 | 平价，标准路径 |
+| Z 序权威 | Pad=策略层全权；PC 跨应用置顶今日同做不到，非新增 | 平价 |
+| override-redirect 窗口（菜单/tooltip） | XWM 一等公民：`xwayland.h:145` 字段、`:227` 信号、`:394` wants_focus | **变好**（上游管，gamescope 蒸汽菜单同款） |
+| 模态/属主（WM_TRANSIENT_FOR/_NET_WM_STATE_MODAL） | XWM 解析为 `modal`/`parent`（`:181,26-28`）→ PC 模式沿用现有模态子窗承载 | 已有等价物 |
+| 焦点（server 全局） | XWM+适配层三方翻译；winex11 本为双焦点适配谱系 | 平价 |
+| XRandR 模式切换 | `force_xrandr_emulation`（gamescope `wlserver.cpp:1883`）；headless output 尺寸任意设 | **变好**（缩放模拟→真改虚拟 output） |
+| 装饰（_MOTIF_WM_HINTS） | winex11 默认自绘 NC，XWM 报 undecorated | 平价 |
+| XGrabPointer/confine | pointer-constraints（现有栈已支持） | 平价 |
+
+真正要写的策略代码：①窗口放置/焦点策略——Pad 模式近免费（winex11 虚拟桌面模式按弱 WM 设计），PC 模式 = output↔OHOS 系统窗生命周期绑定（异步时序，等价物为现有 ArkTS service 4,205 行的平移）；②参考实现 = gamescope steamcompmgr + 本项目 `toplevel_manager` 语义资产。M1/M2 验收补：PC 多窗、菜单 tooltip、模态对话框用例。
+
 ## 5. 风险清单
 
 ### A 类：已源码实证 + 缓解路径明确
