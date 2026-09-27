@@ -73,6 +73,10 @@ Wine 日志看 hilog 的 `WineChild-stderr` tag。
 
 ## 判定
 
+判定机（host）python 依赖见 `automation/requirements.txt`：
+`pip3 install --user --break-system-packages -r automation/requirements.txt`
+（缺了会在视觉校验阶段报 `No module named 'numpy'` 之类的错。）
+
 设备端只产出原始数据（结果 JSON、固定帧），PASS/FAIL 由 `automation/checks/` 解释：
 能力探针的 `UNSUPPORTED` 是合法答案，不会因为设备端 suite 汇总记 FAIL 而误判。
 判定规则改了不用重跑设备：
