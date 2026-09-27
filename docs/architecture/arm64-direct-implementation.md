@@ -89,7 +89,14 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - `winehua.mode=direct-gpu-output-probe` 在诊断页创建独立 XComponent，App 从其 surfaceId 建立 OHOS Vulkan surface 和三图像 swapchain，连续 GPU clear 并 present 八帧。每帧颜色可辨；第八帧的中心像素应为 `(224,90,165)`。最后一次 `vkQueuePresentKHR` 后保留 swapchain 100 ms，给系统合成器显示 FIFO 末帧的时间；提交 fence 与 `vkDeviceWaitIdle` 本身都不是上屏完成信号。此等待仅供诊断，不是目标帧循环策略。
 - 当前签名 HAP SHA-256 为 `605b76374fd8208624351b926ae284fc30b50ef1224c07c4957031f61763aa02`。MatePad Mini 上输出为 `760×570`、`VK_FORMAT_R8G8B8A8_UNORM (37)`、三图像 swapchain。最终 [屏幕截图](evidence/direct-d2-output-final-screen.png) 的中心像素实测为 `(224,90,165)`。通过重新加载诊断页连续创建 70 个不同 surfaceId（sequence 3–72），70/70 次均报告 `PASS`、每次 present 八帧（[逐次结果](evidence/direct-d2-output-recreate-runs.ndjson)）。
 - 70 次结果中的父进程 fd 为 44–60，RSS 为 113196–146852 KiB。fd 在 sequence 29、43、59 分别回落至 44、45、45，RSS 也曾回落；末次为 fd 58、RSS 143104 KiB。这表明 ArkUI 页面与 Vulkan 资源有延迟回收，但有限样本尚不能证明长期 RSS 稳定或完全无泄漏。最终包又复跑 D0、D1、D2 WSI、import、sample、fence 六项，全部 `PASS`，其中 fence 模式仍完成每帧 acquire/release `SYNC_FD` 交接（[回归结果](evidence/direct-d2-output-final-regression.ndjson)）。
-- 此探针只证明独立 XComponent 可由 App 的系统 Vulkan swapchain 正确显示 GPU 输出。现有 NativeBuffer import/sample/fence 探针与输出探针分别创建 `VkDevice`，**尚未**把导入图像采样到该 XComponent，也未证明零拷贝合成。下一步应把输入导入、GPU fence 和输出 swapchain 放到同一 `VkDevice`，先逐帧 render/pass 或 shader 采样呈现，再处理 resize、多帧在途与 60 FPS；不能以 CPU readback/upload 代替此验证。
+- 此独立输出探针只证明 XComponent 可由 App 的系统 Vulkan swapchain 正确显示 GPU 输出。NativeBuffer import/sample/fence 模式与此模式分别创建 `VkDevice`，因此这些独立结果本身不能证明输入图像已显示。下一节把输入导入、GPU fence 和输出 swapchain 放到同一 `VkDevice`，用 shader 直接采样呈现；CPU readback/upload 不能代替该验证。
+
+## D2 同设备 GPU 合成探针（2026-09-27）
+
+- 新增 `winehua.mode=direct-gpu-composite-probe`。它沿用跨进程 Create NCP Vulkan producer、ConsumerSurface、按 NativeBuffer sequence 缓存导入图像和 `SYNC_FD` acquire/release。App 侧在**同一 Vulkan instance/device/queue** 上创建独立 XComponent swapchain：一个提交中先用 compute shader 取九点作诊断，再用 fragment shader 直接采样导入的 image view，绘制全屏三角形到 swapchain，随后 present。画面本体没有 CPU map、readback、memcpy 或 upload；只有 GPU fence 完成后的 36 字节九点诊断读回。输入每轮从 64×64 resize 到 96×48，输出当前为固定尺寸，按全屏拉伸显示。
+- 签名 HAP SHA-256：`cb6a29a1be6a9ee5de9594481e0baaa0a5b848f3fe7165fdc284b3dfe513dd53`。MatePad Mini 上连续重载诊断页 51 次，51/51 `PASS`、51 个不同 NCP PID 和 XComponent surfaceId，共 408 帧 GPU 取样、408 次 acquire fence 导入、408 次 release fence 导出、408 次 Vulkan present（[逐轮结果](evidence/direct-d2-composite-runs.ndjson)）。每轮六次 NativeBuffer 导入、两次缓存命中。最后一帧的[设备截图](evidence/direct-d2-composite-final-screen.jpeg)为预期的紫红色，JPEG 中心像素 `(225,90,166)`；源图案目标值为 `(224,90,165)`。
+- 51 轮父进程 fd 为 44–59，RSS 为 114376–161228 KiB，末次分别为 52 和 148488 KiB；fd 在第 28 轮回落至 44、第 44 轮回落至 45，RSS 也曾回落。这只说明观察到延迟回收，尚未证明长期内存稳定。同一 HAP 又复跑 D0、D1、WSI、import、sample、fence、独立输出和合成八个入口，全部 `PASS`（[回归结果](evidence/direct-d2-composite-regression.ndjson)）。
+- 该探针已证明本设备上输入 NativeBuffer 可经 App GPU shader 显示到独立 XComponent。它仍逐帧等待提交 fence 以读取诊断缓冲区，NCP producer 也逐帧等待；输出 surface resize、多个帧槽同时在途、60 FPS 稳定性和产品 Wayland/XComponent 接入尚未验证。生产合成器需要把 frame slot、image generation 与 surface 生命周期显式管理后再替换旧呈现链。
 
 ## 关键的未知事实
 

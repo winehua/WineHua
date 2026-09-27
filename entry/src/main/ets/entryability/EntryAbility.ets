@@ -45,6 +45,10 @@ interface DirectSurfaceProbeResult {
   acquireImportCount: number;
   releaseExportCount: number;
   releaseFdCount: number;
+  outputPresentCount: number;
+  outputWidth: number;
+  outputHeight: number;
+  outputSurfaceId: string;
   fenceCheck: boolean;
   importVkResult: number;
   parentFdCount: number;
@@ -77,6 +81,7 @@ export default class EntryAbility extends UIAbility {
   private directGpuSampleMode: boolean = false;
   private directGpuFenceMode: boolean = false;
   private directOutputMode: boolean = false;
+  private directCompositeMode: boolean = false;
   private directWindowStage: window.WindowStage | null = null;
 
   private runDirectProbeIfRequested(): void {
@@ -84,7 +89,8 @@ export default class EntryAbility extends UIAbility {
     this.directProbePending = false;
     const outputPath = this.directOutputMode ?
       `${this.context.cacheDir}/direct-gpu-output-probe.json` : this.directSurfaceProbeMode ?
-      `${this.context.cacheDir}/${this.directGpuFenceMode ? 'direct-gpu-fence-probe.json' :
+      `${this.context.cacheDir}/${this.directCompositeMode ? 'direct-gpu-composite-probe.json' :
+        this.directGpuFenceMode ? 'direct-gpu-fence-probe.json' :
         this.directGpuSampleMode ? 'direct-gpu-sample-probe.json' :
         this.directGpuImportMode ? 'direct-gpu-import-probe.json' :
         this.directGpuSurfaceMode ? 'direct-gpu-surface-probe.json' :
@@ -92,6 +98,7 @@ export default class EntryAbility extends UIAbility {
       `${this.context.cacheDir}/direct-vulkan-probe.json`;
     try {
       writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+        this.directCompositeMode ? 'D2-COMPOSITE' :
         this.directGpuFenceMode ? 'D2-FENCE' :
         this.directGpuSampleMode ? 'D2-SAMPLE' :
         this.directGpuImportMode ? 'D2-IMPORT' :
@@ -104,6 +111,7 @@ export default class EntryAbility extends UIAbility {
     if (deviceInfo.deviceType === 'phone') {
       // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
       writeTextFile(outputPath, JSON.stringify({ gate: this.directOutputMode ? 'D2-OUTPUT' :
+        this.directCompositeMode ? 'D2-COMPOSITE' :
         this.directGpuFenceMode ? 'D2-FENCE' :
         this.directGpuSampleMode ? 'D2-SAMPLE' :
         this.directGpuImportMode ? 'D2-IMPORT' :
@@ -119,6 +127,7 @@ export default class EntryAbility extends UIAbility {
       this.directSurfaceProbeMode = false;
       const abortMode = this.directSurfaceAbortMode;
       const gpuMode = this.directGpuSurfaceMode;
+      const compositeMode = this.directCompositeMode;
       const fenceMode = this.directGpuFenceMode;
       const sampleMode = this.directGpuSampleMode || fenceMode;
       const importMode = this.directGpuImportMode || sampleMode;
@@ -127,12 +136,14 @@ export default class EntryAbility extends UIAbility {
       this.directGpuImportMode = false;
       this.directGpuSampleMode = false;
       this.directGpuFenceMode = false;
-      this.runDirectSurfaceProbePromise(fenceMode ? testNapi.runDirectGpuFenceProbe() :
+      this.directCompositeMode = false;
+      this.runDirectSurfaceProbePromise(compositeMode ? testNapi.runDirectGpuCompositeProbe() :
+        fenceMode ? testNapi.runDirectGpuFenceProbe() :
         sampleMode ? testNapi.runDirectGpuSampleProbe() :
         importMode ? testNapi.runDirectGpuImportProbe() :
         gpuMode ? testNapi.runDirectGpuSurfaceProbe() :
         abortMode ? testNapi.runDirectSurfaceAbortProbe() : testNapi.runDirectSurfaceProbe(),
-        outputPath, gpuMode, importMode, sampleMode, fenceMode);
+        outputPath, gpuMode, importMode, sampleMode, fenceMode, compositeMode);
     } else if (this.directProbeStartMode) {
       this.directProbeStartMode = false;
       this.runDirectProbePromise(testNapi.runDirectVulkanProbe(), outputPath);
@@ -156,10 +167,12 @@ export default class EntryAbility extends UIAbility {
 
   private runDirectSurfaceProbePromise(probe: Promise<DirectSurfaceProbeResult>, outputPath: string,
     gpuMode: boolean = false, importMode: boolean = false,
-    sampleMode: boolean = false, fenceMode: boolean = false): void {
+    sampleMode: boolean = false, fenceMode: boolean = false,
+    compositeMode: boolean = false): void {
     probe.then((result: DirectSurfaceProbeResult) => {
       writeTextFile(outputPath, JSON.stringify(result));
-      hilog.info(DOMAIN, fenceMode ? 'DIRECT-D2-FENCE' : sampleMode ? 'DIRECT-D2-SAMPLE' :
+      hilog.info(DOMAIN, compositeMode ? 'DIRECT-D2-COMPOSITE' :
+        fenceMode ? 'DIRECT-D2-FENCE' : sampleMode ? 'DIRECT-D2-SAMPLE' :
         importMode ? 'DIRECT-D2-IMPORT' : gpuMode ? 'DIRECT-D2-WSI' : 'DIRECT-D1',
         'result=%{public}s stage=%{public}s pid=%{public}d frames=%{public}d pixel=%{public}s import=%{public}d/%{public}d sample=%{public}d fences=%{public}d/%{public}d fd=%{public}d rssKiB=%{public}d',
         result.status, result.stage, result.pid, result.framesPassed,
@@ -167,12 +180,14 @@ export default class EntryAbility extends UIAbility {
         result.acquireImportCount, result.releaseExportCount,
         result.parentFdCount, result.parentRssKiB);
     }).catch((err: Object) => {
-      writeTextFile(outputPath, JSON.stringify({ gate: fenceMode ? 'D2-FENCE' :
+      writeTextFile(outputPath, JSON.stringify({ gate: compositeMode ? 'D2-COMPOSITE' :
+        fenceMode ? 'D2-FENCE' :
         sampleMode ? 'D2-SAMPLE' :
         importMode ? 'D2-IMPORT' :
         gpuMode ? 'D2-WSI' : 'D1', status: 'FAIL', stage: 'napi_exception',
         error: JSON.stringify(err) }));
-      hilog.error(DOMAIN, fenceMode ? 'DIRECT-D2-FENCE' : sampleMode ? 'DIRECT-D2-SAMPLE' :
+      hilog.error(DOMAIN, compositeMode ? 'DIRECT-D2-COMPOSITE' :
+        fenceMode ? 'DIRECT-D2-FENCE' : sampleMode ? 'DIRECT-D2-SAMPLE' :
         importMode ? 'DIRECT-D2-IMPORT' : gpuMode ? 'DIRECT-D2-WSI' :
         'DIRECT-D1', 'probe failed: %{public}s', JSON.stringify(err));
     });
@@ -218,7 +233,8 @@ export default class EntryAbility extends UIAbility {
       `${parameters['winehua.mode']}` === 'direct-gpu-import-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe' ||
-      `${parameters['winehua.mode']}` === 'direct-gpu-output-probe')) {
+      `${parameters['winehua.mode']}` === 'direct-gpu-output-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-gpu-composite-probe')) {
       this.directProbePending = true;
       this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
       this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
@@ -226,13 +242,15 @@ export default class EntryAbility extends UIAbility {
         `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-import-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe' ||
-        `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe';
+        `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe' ||
+        `${parameters['winehua.mode']}` === 'direct-gpu-composite-probe';
       this.directSurfaceAbortMode = `${parameters['winehua.mode']}` === 'direct-surface-abort-probe';
       this.directGpuSurfaceMode = `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe';
       this.directGpuImportMode = `${parameters['winehua.mode']}` === 'direct-gpu-import-probe';
       this.directGpuSampleMode = `${parameters['winehua.mode']}` === 'direct-gpu-sample-probe';
       this.directGpuFenceMode = `${parameters['winehua.mode']}` === 'direct-gpu-fence-probe';
       this.directOutputMode = `${parameters['winehua.mode']}` === 'direct-gpu-output-probe';
+      this.directCompositeMode = `${parameters['winehua.mode']}` === 'direct-gpu-composite-probe';
       return;
     }
     const value = (key: string, fallback: string): string => {
@@ -364,7 +382,7 @@ export default class EntryAbility extends UIAbility {
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.publishLaunchRequest(want);
     if (this.directProbePending) {
-      if (this.directOutputMode && this.directWindowStage) {
+      if ((this.directOutputMode || this.directCompositeMode) && this.directWindowStage) {
         testNapi.setDirectProbeSurfaceId(0n);
         this.directWindowStage.loadContent('pages/DirectProbe', (err) => {
           this.runDirectProbeIfRequested();

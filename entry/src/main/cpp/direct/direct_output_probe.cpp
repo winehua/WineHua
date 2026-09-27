@@ -406,6 +406,16 @@ void CompleteOutput(napi_env env, napi_status status, void* data)
 
 } // namespace
 
+bool WaitDirectProbeSurfaceId(uint64_t* surfaceId, uint32_t timeoutMs)
+{
+    if (!surfaceId) return false;
+    std::unique_lock<std::mutex> lock(g_surfaceMutex);
+    if (!g_surfaceReady.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                 [] { return g_surfaceId != 0; })) return false;
+    *surfaceId = g_surfaceId;
+    return true;
+}
+
 napi_value SetDirectProbeSurfaceId(napi_env env, napi_callback_info info)
 {
     size_t argc = 1;

@@ -1,5 +1,6 @@
 #include "direct_surface_probe_launcher.h"
 #include "direct_buffer_import_probe.h"
+#include "direct_output_probe.h"
 #include "surface_probe_protocol.h"
 
 #include <AbilityKit/native_child_process.h>
@@ -52,6 +53,12 @@ struct SurfaceWork {
     bool sampleCheck = false;
     bool fenceMode = false;
     bool fenceCheck = false;
+    bool compositeMode = false;
+    bool outputCheck = false;
+    uint64_t outputSurfaceId = 0;
+    int32_t outputPresentCount = 0;
+    int32_t outputWidth = 0;
+    int32_t outputHeight = 0;
     int32_t importVkResult = 0;
     int32_t importCount = 0;
     int32_t reuseCount = 0;
@@ -336,7 +343,13 @@ void ExecuteSurfaceProbe(napi_env, void* data)
             break;
         }
         if (work.importMode) {
-            work.importer.reset(new (std::nothrow) DirectBufferImportProbe(work.fenceMode));
+            if (work.compositeMode &&
+                !WaitDirectProbeSurfaceId(&work.outputSurfaceId, 10000)) {
+                Fail(work, "composite_surface_timeout");
+                break;
+            }
+            work.importer.reset(new (std::nothrow) DirectBufferImportProbe(
+                work.fenceMode, work.outputSurfaceId));
             if (!work.importer) {
                 Fail(work, "import_probe_alloc");
                 break;
@@ -454,6 +467,12 @@ void ExecuteSurfaceProbe(napi_env, void* data)
                 Fail(work, "fence_not_exercised");
                 break;
             }
+            work.outputCheck = !work.compositeMode ||
+                work.importer->OutputPresentCount() == kGpuImportProbeFrameCount;
+            if (!work.outputCheck) {
+                Fail(work, "composite_present_count");
+                break;
+            }
             std::snprintf(work.stage, sizeof(work.stage), "complete");
         }
     } while (false);
@@ -473,7 +492,12 @@ void ExecuteSurfaceProbe(napi_env, void* data)
         work.sampleCount = static_cast<int32_t>(work.importer->SampleCount());
         work.acquireImportCount = static_cast<int32_t>(work.importer->AcquireImportCount());
         work.releaseExportCount = static_cast<int32_t>(work.importer->ReleaseExportCount());
+        work.outputPresentCount = static_cast<int32_t>(work.importer->OutputPresentCount());
+        work.outputWidth = static_cast<int32_t>(work.importer->OutputWidth());
+        work.outputHeight = static_cast<int32_t>(work.importer->OutputHeight());
     }
+    if (work.compositeMode && work.outputCheck)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     work.importer.reset();
     OH_NativeImage_Destroy(&image);
 }
@@ -494,12 +518,14 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
         napi_create_int32(env, value, &item);
         napi_set_named_property(env, object, key, item);
     };
-    setString("gate", work->fenceMode ? "D2-FENCE" : work->sampleMode ? "D2-SAMPLE" :
+    setString("gate", work->compositeMode ? "D2-COMPOSITE" :
+              work->fenceMode ? "D2-FENCE" : work->sampleMode ? "D2-SAMPLE" :
               work->importMode ? "D2-IMPORT" :
               work->gpuMode ? "D2-WSI" : "D1");
     setString("status", work->pixelCheck && (!work->importMode || work->importCheck) &&
               (!work->sampleMode || work->sampleCheck) &&
-              (!work->fenceMode || work->fenceCheck) ? "PASS" : "FAIL");
+              (!work->fenceMode || work->fenceCheck) &&
+              (!work->compositeMode || work->outputCheck) ? "PASS" : "FAIL");
     setString("stage", work->stage);
     setInt("pid", work->childPid);
     setInt("framesPassed", work->framesPassed);
@@ -529,6 +555,13 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
     setInt("acquireImportCount", work->acquireImportCount);
     setInt("releaseExportCount", work->releaseExportCount);
     setInt("releaseFdCount", work->releaseFdCount);
+    setInt("outputPresentCount", work->outputPresentCount);
+    setInt("outputWidth", work->outputWidth);
+    setInt("outputHeight", work->outputHeight);
+    char surfaceIdText[32]{};
+    std::snprintf(surfaceIdText, sizeof(surfaceIdText), "%llu",
+                  static_cast<unsigned long long>(work->outputSurfaceId));
+    setString("outputSurfaceId", surfaceIdText);
     napi_value fenceCheck;
     napi_get_boolean(env, work->fenceCheck, &fenceCheck);
     napi_set_named_property(env, object, "fenceCheck", fenceCheck);
@@ -548,7 +581,8 @@ void CompleteSurfaceProbe(napi_env env, napi_status status, void* data)
 } // namespace
 
 napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
-                             bool importMode, bool sampleMode, bool fenceMode)
+                             bool importMode, bool sampleMode, bool fenceMode,
+                             bool compositeMode = false)
 {
     auto* work = new (std::nothrow) SurfaceWork();
     if (!work) {
@@ -560,6 +594,7 @@ napi_value QueueSurfaceProbe(napi_env env, bool abortMode, bool gpuMode,
     work->importMode = importMode;
     work->sampleMode = sampleMode;
     work->fenceMode = fenceMode;
+    work->compositeMode = compositeMode;
     napi_value promise;
     if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
         delete work;
@@ -607,6 +642,11 @@ napi_value RunGpuSampleProbe(napi_env env, napi_callback_info)
 napi_value RunGpuFenceProbe(napi_env env, napi_callback_info)
 {
     return QueueSurfaceProbe(env, false, true, true, true, true);
+}
+
+napi_value RunGpuCompositeProbe(napi_env env, napi_callback_info)
+{
+    return QueueSurfaceProbe(env, false, true, true, true, true, true);
 }
 
 } // namespace winehua::direct
