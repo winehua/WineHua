@@ -68,7 +68,7 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 |---|---|---|---|
 | R1 | GLX 管线断点：D3D8/9/OpenGL 现走 winewayland EGL readback；winex11 需 GLX，shm Xwayland 无 GLX 扩展 | `build_wine.sh:118-122`、`configure.ac:1408-1425`（缺 libGL 仅 WARNING，会静默失效） | ①GLX-over-EGL 桥（winex11 opengl.c 后端替换为 virpipe EGL，蓝图 = 现有 opengl.c 的结构；成败级无理论风险，全是工作量）②DXVK d3d9 打包启用收窄 GL 面 ③DirectDraw/OpenGL 程序由①覆盖。**M0/M1 spike 裁决最小原型** |
 | R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:442-449`），不认识 BufferQueue | 同左 | ①data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer（`OH_NativeBuffer_Map` CPU 映射，SDK `native_buffer.h:233`，已验证存在）②GL 门小补丁：`OH_NativeImage_UpdateSurfaceImage`（`native_image.h:157`）导入分支。传输层已被现行 ZC 生产验证 |
-| R2 | wlroots shm 分配器走 shm_open→/dev/shm（`util/shm.c:30`），沙箱可能没有 | 同左 | 自定义 `wlr_allocator`（公开 API，两函数指针）；自身 swapchain 可纯 malloc（无需 fd）。**真正待探针的只剩 Xwayland 建 shm 的 memfd/XDG_RUNTIME_DIR 路径**（见 B 类） |
+| R2 | wlroots shm 分配器走 shm_open→/dev/shm（`util/shm.c:30`），沙箱可能没有 | 同左 | **已探针解除（2026-09-27，见 B 类 P1/P2）**：shm_open 与 memfd_create 在沙箱均可用，默认分配器直接工作；自定义 `wlr_allocator` 降级为备胎 |
 | R-VER | wlroots 0.20.2 与 0.21 均要求 wayland-server ≥1.24（`wlroots meson.build:88-90`）；项目现有 1.22 | 同左 | **升 thirdparty/wayland ≥1.24 为必做项**（关键路径） |
 | R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包 |
 | R-IME | 主线 xserver 无 text-input 桥 | grep XWAYLAND_IME 零命中 | 移植下游 IME 补丁或 OHOS 应用层注入（M2） |
@@ -79,13 +79,17 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 
 ### B 类：设备探针（本机源码不可验，真机裁决）
 
-| ID | 探针 | 判定标准 |
-|---|---|---|
-| P1 | shm_open 在应用沙箱可用性（/dev/shm 可写？） | shm_open 返回有效 fd 或明确 errno |
-| P2 | memfd_create 可用性（Xwayland/wlroots shm 的首选路径） | syscall 返回 fd |
-| P3 | XDG_RUNTIME_DIR tmpfile 路径（xwayland-shm.c:135-167 回退 + xkm 输出） | mkostemp 成功 |
-| P4 | unix socket：路径绑定 + abstract 绑定（X11 传输两形态） | bind 成功或 errno |
-| P5 | /tmp 可写性（X lock/socket 硬编码路径） | access W_OK + 实建文件 |
+**2026-09-27 已在真机 192.168.1.6:33363 执行完毕**（探针件：`feature/sandbox-probe` 分支 `cc03d0d`，结果落盘 el2/base/temp/sandbox_probe_result.txt，uid=20020250）：
+
+| ID | 探针 | 结果 | 对设计的影响 |
+|---|---|---|---|
+| P1 | shm_open（/dev/shm） | ✅ OK（access W_OK 通过、O_CREAT\|O_EXCL 得 fd=30；opendir EACCES 仅不可枚举，不影响） | **wlroots 默认 shm 分配器可直接用**，R2 的自定义 allocator 降级为备胎 |
+| P2 | memfd_create + ftruncate + mmap | ✅ OK | Xwayland `xwayland-shm.c` 首选路径可用；wl_shm 全链成立 |
+| P3 | tmpfile 候选目录 | XDG_RUNTIME_DIR 未设（启动时注入即可）；el2/base/temp、el2/base/cache mkostemp ✅ | env 注入机制现成，无阻塞 |
+| P4 | unix socket | abstract 绑定 ✅；路径绑定在 app temp ✅、在 /tmp ❌（/tmp 不存在） | X11 客户端可走 abstract 传输（不依赖文件系统） |
+| P5 | /tmp | **/tmp 整个不存在**（ENOENT） | 触发路径策略决策，见下 |
+
+**路径策略决策（2026-09-27）**：一切硬编码宿主路径（`/tmp` 系）**统一重定向到沙箱目录**，不做「/tmp 可否创建」的探针与适配。涉及：wlroots `xwayland/sockets.c`（lock 文件与 unix socket 创建，~20 行，指到 `$XDG_RUNTIME_DIR` 注入目录）；Xwayland xkm 输出与 shm tmpfile 已有 `$XDG_RUNTIME_DIR` 回退链（`xkb/ddxLoad.c:62-95`、`xwayland-shm.c:135-167`）。X11 abstract socket 名保持原字符串（P4 证明 abstract 不触碰文件系统，双侧均为我方构建，无需改名）。
 
 ## 6. 交叉构建清单
 
