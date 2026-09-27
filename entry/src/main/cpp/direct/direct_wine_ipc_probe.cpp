@@ -1,10 +1,15 @@
 #include "direct_wine_ipc_probe.h"
 #include "proc/wine_child_ipc.h"
+#include "proc/broker.h"
+#include "proc/wine_process.h"
+#include "wine/wine_constants.h"
 
 #include <AbilityKit/native_child_process.h>
 #include <IPCKit/ipc_kit.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -12,6 +17,7 @@
 #include <cstring>
 #include <mutex>
 #include <new>
+#include <string>
 
 namespace winehua::direct {
 namespace {
@@ -25,7 +31,9 @@ struct Work {
     int32_t replyPid = -1;
     int32_t ipcCode = -1;
     bool callbackReceived = false;
+    bool brokerMode = false;
     bool parentFdsOpen = false;
+    bool registryExited = false;
     std::mutex deathMutex;
     std::condition_variable deathCondition;
     bool deathReceived = false;
@@ -183,6 +191,110 @@ void Execute(napi_env, void* data)
     OH_IPCRemoteProxy_Destroy(work.proxy);
 }
 
+void ExecuteBroker(napi_env, void* data)
+{
+    auto& work = *static_cast<Work*>(data);
+    work.brokerMode = true;
+    if (StartBrokerServer() != 0) {
+        work.stage = "broker_start";
+        return;
+    }
+    int input[2] = {-1, -1};
+    int output[2] = {-1, -1};
+    int broker = -1;
+    do {
+        if (pipe(input) || pipe(output)) {
+            work.stage = "pipe";
+            break;
+        }
+        const uint32_t token = wineipc::kProbeToken;
+        if (write(input[1], &token, sizeof(token)) != sizeof(token)) {
+            work.stage = "write_token";
+            break;
+        }
+        broker = socket(AF_UNIX, SOCK_STREAM, 0);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        if (broker < 0 || std::strlen(WINE_BROKER_SOCKET) >= sizeof(addr.sun_path)) {
+            work.stage = "broker_socket";
+            break;
+        }
+        std::strcpy(addr.sun_path, WINE_BROKER_SOCKET);
+        if (connect(broker, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            work.stage = "broker_connect";
+            break;
+        }
+        const std::string message = std::string("SPAWN\n") + wineipc::kProbeParams +
+            "|__env=WINEHUA_DIRECT_NCP=1\nFDS:probe_input,probe_output\n";
+        iovec iov{const_cast<char*>(message.data()), message.size()};
+        union {
+            char bytes[CMSG_SPACE(sizeof(int) * 2)];
+            cmsghdr align;
+        } control{};
+        msghdr msg{};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.bytes;
+        msg.msg_controllen = sizeof(control.bytes);
+        cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int) * 2);
+        int passed[2] = {input[0], output[1]};
+        std::memcpy(CMSG_DATA(cmsg), passed, sizeof(passed));
+        if (sendmsg(broker, &msg, MSG_NOSIGNAL) != static_cast<ssize_t>(message.size())) {
+            work.stage = "broker_send";
+            break;
+        }
+        int32_t response[2] = {-1, -1};
+        if (recv(broker, response, sizeof(response), MSG_WAITALL) != sizeof(response)) {
+            work.stage = "broker_reply";
+            break;
+        }
+        work.replyPid = response[0];
+        work.launchCode = response[1];
+        work.parentFdsOpen = fcntl(input[0], F_GETFD) >= 0 &&
+                             fcntl(output[1], F_GETFD) >= 0;
+        if (work.launchCode != 0 || work.replyPid <= 0) {
+            work.stage = "broker_launch";
+            break;
+        }
+        close(input[0]); input[0] = -1;
+        close(output[1]); output[1] = -1;
+        pollfd pfd{output[0], POLLIN, 0};
+        if (poll(&pfd, 1, 5000) <= 0 || !(pfd.revents & (POLLIN | POLLHUP))) {
+            work.stage = "result_timeout";
+            break;
+        }
+        if (read(output[0], &work.result, sizeof(work.result)) != sizeof(work.result) ||
+            work.result.pid != work.replyPid || work.result.status != 0 ||
+            work.result.token != wineipc::kProbeToken || work.result.fdCount < 2 ||
+            !work.parentFdsOpen) {
+            work.stage = "result_mismatch";
+            break;
+        }
+        for (int i = 0; i < 50; ++i) {
+            WineProcessEntry entry{};
+            if (IsPidExited(work.replyPid) && QueryProcessSnapshot(work.replyPid, &entry) &&
+                !entry.running && entry.exitCodeSource == "ipc-death") {
+                work.registryExited = true;
+                break;
+            }
+            usleep(100000);
+        }
+        if (!work.registryExited) {
+            work.stage = "registry_exit_timeout";
+            break;
+        }
+        work.deathReceived = true;
+        work.ipcCode = 0;
+        work.stage = "complete";
+    } while (false);
+    if (broker >= 0) close(broker);
+    for (int fd : input) if (fd >= 0) close(fd);
+    for (int fd : output) if (fd >= 0) close(fd);
+}
+
 void SetInt(napi_env env, napi_value object, const char* key, int32_t value)
 {
     napi_value field;
@@ -203,7 +315,7 @@ void Complete(napi_env env, napi_status status, void* data)
     if (status != napi_ok) work->stage = "async_work";
     napi_value result;
     napi_create_object(env, &result);
-    SetString(env, result, "gate", "D2.5-WINE-IPC");
+    SetString(env, result, "gate", work->brokerMode ? "D2.5-BROKER-IPC" : "D2.5-WINE-IPC");
     SetString(env, result, "status", std::strcmp(work->stage, "complete") == 0 ? "PASS" : "FAIL");
     SetString(env, result, "stage", work->stage);
     SetInt(env, result, "pid", work->result.pid);
@@ -214,6 +326,7 @@ void Complete(napi_env env, napi_status status, void* data)
     SetInt(env, result, "ipcCode", work->ipcCode);
     SetInt(env, result, "parentFdsOpen", work->parentFdsOpen ? 1 : 0);
     SetInt(env, result, "deathReceived", work->deathReceived ? 1 : 0);
+    SetInt(env, result, "registryExited", work->registryExited ? 1 : 0);
     napi_resolve_deferred(env, work->deferred, result);
     napi_delete_async_work(env, work->asyncWork);
     delete work;
@@ -241,6 +354,31 @@ napi_value RunWineIpcProbe(napi_env env, napi_callback_info)
         if (work->asyncWork) napi_delete_async_work(env, work->asyncWork);
         delete work;
         napi_throw_error(env, nullptr, "D2.5 probe queue failed");
+        return nullptr;
+    }
+    return promise;
+}
+
+napi_value RunWineBrokerIpcProbe(napi_env env, napi_callback_info)
+{
+    auto* work = new (std::nothrow) Work();
+    if (!work) {
+        napi_throw_error(env, nullptr, "D2.5 broker probe allocation failed");
+        return nullptr;
+    }
+    napi_value promise;
+    if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
+        delete work;
+        return nullptr;
+    }
+    napi_value name;
+    napi_create_string_utf8(env, "WineHuaDirectWineBrokerIpc", NAPI_AUTO_LENGTH, &name);
+    if (napi_create_async_work(env, nullptr, name, ExecuteBroker, Complete,
+                               work, &work->asyncWork) != napi_ok ||
+        napi_queue_async_work(env, work->asyncWork) != napi_ok) {
+        if (work->asyncWork) napi_delete_async_work(env, work->asyncWork);
+        delete work;
+        napi_throw_error(env, nullptr, "D2.5 broker probe queue failed");
         return nullptr;
     }
     return promise;

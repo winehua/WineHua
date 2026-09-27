@@ -80,6 +80,9 @@ void NotifyWhenSessionDrained();
 // 可能不可见, 轮询判活不可靠 — 退出检测以系统回调为权威信号。无条件注册:
 // 手机 fork 模式 (fork 子进程不走 NCP) 注册后不触发, 空转无害
 void RegisterNcpExitCallback();
+// Create NCP does not invoke the Start NCP exit callback. Its IPC proxy death
+// recipient calls this after the broker has registered the returned pid.
+void NoteCreateNcpDeath(int32_t pid);
 // 启动编排等待子进程退出 (wineboot 等待用), 按设备模式分流:
 // 手机 fork 模式走 /proc 判活 (可见有效); NCP 模式查退出回调标记
 bool IsLaunchChildExited(pid_t pid);

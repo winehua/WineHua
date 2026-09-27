@@ -1,0 +1,10 @@
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25102,"replyPid":25102,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25160,"replyPid":25160,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25223,"replyPid":25223,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25285,"replyPid":25285,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25344,"replyPid":25344,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25398,"replyPid":25398,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25451,"replyPid":25451,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25515,"replyPid":25515,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25573,"replyPid":25573,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}
+{"gate":"D2.5-BROKER-IPC","status":"PASS","stage":"complete","pid":25634,"replyPid":25634,"fdCount":2,"launchCode":0,"callbackCode":-1,"ipcCode":0,"parentFdsOpen":1,"deathReceived":1,"registryExited":1}

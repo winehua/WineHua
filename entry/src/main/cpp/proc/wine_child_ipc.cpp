@@ -70,6 +70,13 @@ int OnRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* reply, voi
         received.push_back({name, fd});
     }
 
+    // Do not release MainProc until the PID reply is ready. A short-lived
+    // child could otherwise exit before SendRequest receives its response.
+    if (OH_IPCParcel_WriteInt32(reply, getpid()) != OH_IPC_SUCCESS) {
+        CloseFds(received);
+        return OH_IPC_CHECK_PARAM_ERROR;
+    }
+
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_received) {
@@ -81,7 +88,7 @@ int OnRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* reply, voi
         g_received = true;
     }
     g_ready.notify_one();
-    return OH_IPCParcel_WriteInt32(reply, getpid());
+    return OH_IPC_SUCCESS;
 }
 
 void RunProbe(std::vector<NamedFd>& fds)
@@ -93,7 +100,7 @@ void RunProbe(std::vector<NamedFd>& fds)
         if (item.name == "probe_output") output = item.fd;
     }
     winehua::wineipc::ProbeResult result{getpid(), -1, 0, static_cast<int32_t>(fds.size())};
-    if (input >= 0 && output >= 0 && fds.size() == 2 &&
+    if (input >= 0 && output >= 0 && fds.size() >= 2 &&
         read(input, &result.token, sizeof(result.token)) == sizeof(result.token) &&
         result.token == winehua::wineipc::kProbeToken)
         result.status = 0;
@@ -121,7 +128,8 @@ extern "C" __attribute__((visibility("default"))) void NativeChildProcess_MainPr
         params = std::move(g_params);
         fds = std::move(g_fds);
     }
-    if (params == winehua::wineipc::kProbeParams) {
+    if (params == winehua::wineipc::kProbeParams ||
+        params.rfind(std::string(winehua::wineipc::kProbeParams) + "|__env=WINEHUA_DIRECT_NCP=1", 0) == 0) {
         RunProbe(fds);
         return;
     }

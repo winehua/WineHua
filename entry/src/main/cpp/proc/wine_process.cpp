@@ -491,6 +491,11 @@ static void OnNcpChildExit(int32_t pid, int32_t signal) {
     HandleProcessDeath((pid_t)pid, signal, "ncp-exit");
 }
 
+void NoteCreateNcpDeath(int32_t pid) {
+    OH_LOG_WARN(LOG_APP, "[ProcReg] Create NCP proxy died pid=%{public}d", pid);
+    HandleProcessDeath((pid_t)pid, -1, "ipc-death");
+}
+
 void RegisterNcpExitCallback() {
     if (gNcpExitCbRegistered.load(std::memory_order_acquire)) return;
     // 无条件注册 (napi Init 最早时机): 沙箱 /proc 对 NCP 进程不可见,

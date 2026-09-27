@@ -36,8 +36,10 @@ export interface DirectWineIpcProbeResult {
   ipcCode: number;
   parentFdsOpen: number;
   deathReceived: number;
+  registryExited: number;
 }
 export const runDirectWineIpcProbe: () => Promise<DirectWineIpcProbeResult>;
+export const runDirectWineBrokerIpcProbe: () => Promise<DirectWineIpcProbeResult>;
 export interface DirectSurfaceProbeResult {
   gate: string;
   status: string;

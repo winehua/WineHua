@@ -1215,6 +1215,8 @@ static napi_value Init(napi_env env, napi_value exports) {
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectWineIpcProbe", nullptr, winehua::direct::RunWineIpcProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectWineBrokerIpcProbe", nullptr, winehua::direct::RunWineBrokerIpcProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectSurfaceProbe", nullptr, winehua::direct::RunSurfaceProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectSurfaceAbortProbe", nullptr, winehua::direct::RunSurfaceAbortProbe,

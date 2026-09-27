@@ -128,13 +128,21 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - `libwine_child.so` 增加 Create 型 NCP 的 `NativeChildProcess_OnConnect` / `NativeChildProcess_MainProc` 入口，保留原有 `Main(NativeChildProcess_Args)` 入口和 broker 的 `StartNativeChildProcess` 默认路径。新入口只接受一个带版本号的 bootstrap IPC 请求：完整 `entryParams`、0–16 个具名 fd。子进程通过 `OH_IPCParcel_ReadFileDescriptor` 取得自己的 fd，在回包中报告真实 PID，再把这些参数交给现有 `Main`。父进程的 fd 在 `WriteFileDescriptor` / `SendRequest` 后仍归父进程管理，不能沿用旧 broker 注释中的“所有权已转移”假设。
 - 独立 `winehua.mode=direct-wine-ipc-probe` 直接创建**真实 `libwine_child.so`**，向其传入诊断参数及 `probe_input`、`probe_output` 两个命名 fd；子进程的 `MainProc` 读取预置 token 并通过第二个 fd 回报 PID、状态和 fd 数量。此探针不启动 Wine 游戏。签名 HAP SHA-256 为 `2bbac02ce24a65cb97bd6e73ddc56dbb227e164a6f78f4458be7e37464462919`。MatePad Mini 上先跑单次通过，随后每轮 `aa force-stop` 后重新启动，**10/10 次通过且 10 个 PID 各异**；每轮 `launchCode=callbackCode=ipcCode=0`、`fdCount=2`、`pid=replyPid`、`parentFdsOpen=1`（[逐轮结果](evidence/direct-d25-wine-ipc-runs.ndjson)）。只对已在前台的 Ability 连续调用 `aa start` 会读到同一份旧结果，不算重复验证。
 - 后续给 Create 型 proxy 注册 `OHIPCDeathRecipient`，要求子进程写完结果并退出后父进程收到死亡通知。新签名 HAP SHA-256 为 `22b4083135e3218d7f19e226d869ca06c4f2e094d788fdd29f640cc3d0de0b56`；MatePad Mini 单次及随后 **10/10 次独立启动**均 `PASS`，10 个不同 PID、每轮 `deathReceived=1`（[逐轮结果](evidence/direct-d25-death-runs.ndjson)）。这给 Create 型 NCP 提供了可用的死亡信号，但死亡回调不携带退出码或 signal，broker 的进程登记、异常分类与 proxy 清理仍未接入。
-- 用设备 SDK 的 `llvm-readelf --dyn-syms` 核对打包前 ARM64 库同时导出 `Main`、`NativeChildProcess_OnConnect` 和 `NativeChildProcess_MainProc`；两版 `assembleHap` 均成功。此阶段证明参数、双 fd、PID 和 proxy 死亡通知的 Create 型 bootstrap，**尚未**把 broker 切到该路径，也未验证 Wine/wineserver 多进程或 Steam。平台文档指出 `RegisterNativeChildProcessExitCallback` 只覆盖 Start 型 NCP；在 Direct 默认切换前，须把死亡通知与 proxy 生命周期纳入 broker，并在 D3 按实际 Wine surface 发送 producer window，而不是把启动探针等同于产品图形接入。
+- 用设备 SDK 的 `llvm-readelf --dyn-syms` 核对打包前 ARM64 库同时导出 `Main`、`NativeChildProcess_OnConnect` 和 `NativeChildProcess_MainProc`；两版 `assembleHap` 均成功。此阶段证明参数、双 fd、PID 和 proxy 死亡通知的 Create 型 bootstrap；broker 接入与后续验证见下节。平台文档指出 `RegisterNativeChildProcessExitCallback` 只覆盖 Start 型 NCP；Direct 仍须在 D3 按实际 Wine surface 发送 producer window，不能把启动探针等同于产品图形接入。
+
+## D2.5 broker 可选 Create 路由（2026-09-27）
+
+- `proc/broker.cpp` 按每次 SPAWN 的序列化环境 token `__env=WINEHUA_DIRECT_NCP=1` 选择 Create 型 IPC；缺省和 `=0` 继续使用 Start 型 NCP。Create 变体在 `wine_child_ipc_launcher.cpp` 中保留 proxy，收到死亡通知后更新现有进程登记，来源记为 `ipc-death`。死亡通知没有退出码或 signal，因此此来源的 `reason=-1`，不能据此判断进程是正常退出还是崩溃。手机 fork 模式不启用此路由。
+- broker 对接收的 SCM_RIGHTS fd 和音频 bootstrap fd 在 NCP 调用前记录设备/inode，调用后仅在原 fd 身份未变时关闭父进程副本；之前把 fd 所有权误认为已转移的注释已修正。Create 路由先验证参数长度、fd 数量、名称和有效性，拒绝明显无效的请求而不创建 NCP。子进程在 PID 回包写入 parcel 后才唤醒 Wine 主函数，避免短命子进程先退出。bootstrap/回包失败会释放父进程 proxy、parcel 和本地 fd；已创建但未收到有效 bootstrap 的子进程由 15 秒等待超时退出。若请求已被子进程接收但回包在传输中失败，仍存在无法从父进程确认是否已开始执行的边界，尚需两阶段确认或可取消启动协议。
+- broker 双命名 fd 短探针在此前候选包上 **10/10 次独立启动 `PASS`**，PID 各不相同，均收到 `ipc-death` 并在注册表完成退出登记（[逐轮结果](evidence/direct-d25-broker-ipc-runs.ndjson)）。最终修正包 SHA-256 为 `943d1b3782d305667c354c688056c471502d0b0e98d197bc465f5c22eacfeb59`，已安装到 MatePad Mini；同包 broker 探针再次 `PASS`，随后真实 x64 Wine DNS 进程 PID 38280 经 `create-ipc` 启动、测试通过并由 proxy 死亡通知收口（[设备日志](evidence/direct-d25-broker-ipc-final.log)）。
+- 旧 Start 路径 `core` 首轮为 **3/4**：x86 OpenGL、x64/x86 DNS 通过，x64 OpenGL 在结果写入前以 `exit=1` 退出；仅重跑 x64 OpenGL 随即通过，且固定帧校验通过。这个单次失败不能归因于 fd 回收，也不能称旧路径整套稳定通过。用 `WINEHUA_DIRECT_NCP=1` 对真实 Wine 进程跑 `core` 为 **4/4**，x64/x86 OpenGL 固定帧与 DNS 均通过；最终包的 x64 DNS 单项复验也通过（[回归摘要](evidence/direct-d25-core-regression.json)）。自动化脚本的日志超时处理原先把字符串当字节串解码，会在设备 `hilog` 超时后异常退出；已兼容两种返回类型。一次从诊断页直接 `aa start` smoke 只进入现有 Ability 的 `onNewWant`，没有构成有效回归；正式测试前已 `force-stop` 并重新启动。
+- 此结果证明可选 Create 路由能启动一个真实 Wine 测试进程，并保留旧 Start 路径。会话的 wineserver、其他服务进程未逐个验证为 Create，Steam/CEF 多进程与游戏、异常退出分类、长期 proxy/fd 稳定性仍是 D2.5 完整切换前的门槛；当前不改默认路由，也不接产品 Direct WSI。
 
 ## 关键的未知事实
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。
 - ConsumerSurface producer 能在独立 NCP 通过 IPC parcel 稳定使用，双 buffer 与 CPU fence/resize/异常退出已实测；D1 已回答此范围。
 - 设备实际是否支持 `OH_NativeBuffer` 的 Vulkan 导入、GPU fence 交接和零拷贝合成；D2 回答。`VK_OHOS_external_memory` 等符号存在于 SDK 只说明可以编译。
-- Wine NCP 的 Create 型 IPC bootstrap 已在真实 `libwine_child.so` 验证 argv 串、两个命名 fd、PID 和 proxy 死亡通知；尚需把 proxy 与进程登记/退出语义接入 broker，并验证 wineserver、Wine 多进程和 Steam 后才能回答完整的 D2.5 切换问题。
+- Wine NCP 的 Create 型 IPC bootstrap 已在真实 `libwine_child.so` 验证 argv 串、两个命名 fd、PID 和 proxy 死亡通知；broker 可选路由已接入进程登记，真实 Wine `core` 可选路径 4/4 通过。仍需验证 wineserver、Wine 多进程、Steam、异常退出与长期资源稳定性后，才能回答完整的 D2.5 默认切换问题。
 
 这些 Gate 的任一项失败，保留当前 Venus/VirGL 路径，记录设备与失败阶段；不提前在 Wine 主路径上堆条件分支。Direct 的默认启用要等 D3/D4 真实游戏 A/B 和回退验证完成。

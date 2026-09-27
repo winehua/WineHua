@@ -1,0 +1,51 @@
+{
+  "device": "5KPBB25818203996",
+  "suite": "core",
+  "payloadVersion": "smoke-v2-83c3ad9b5724",
+  "runs": [
+    {
+      "runId": "r20260927-145832",
+      "route": "start-default",
+      "result": "FAIL",
+      "passed": 3,
+      "total": 4,
+      "tests": {
+        "opengl-x64": "FAIL: exited before result (exit=1, source=ncp-exit)",
+        "opengl-x86": "PASS",
+        "dns-api-x64": "PASS",
+        "dns-api-x86": "PASS"
+      }
+    },
+    {
+      "runId": "r20260927-150110",
+      "route": "start-default",
+      "result": "PASS",
+      "passed": 1,
+      "total": 1,
+      "tests": { "opengl-x64": "PASS: result and fixed-frame visual" }
+    },
+    {
+      "runId": "r20260927-151011",
+      "route": "create-ipc-opt-in",
+      "hapSha256": "21d8d562a5343ada8d685b2be95a2b62126c19ce1b41ad4aa287b2535c67322f",
+      "result": "PASS",
+      "passed": 4,
+      "total": 4,
+      "tests": {
+        "opengl-x64": "PASS: result and fixed-frame visual",
+        "opengl-x86": "PASS: result and fixed-frame visual",
+        "dns-api-x64": "PASS",
+        "dns-api-x86": "PASS"
+      }
+    },
+    {
+      "runId": "r20260927-151223",
+      "route": "create-ipc-opt-in",
+      "hapSha256": "943d1b3782d305667c354c688056c471502d0b0e98d197bc465f5c22eacfeb59",
+      "result": "PASS",
+      "passed": 1,
+      "total": 1,
+      "tests": { "dns-api-x64": "PASS" }
+    }
+  ]
+}

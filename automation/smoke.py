@@ -835,7 +835,8 @@ def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
         return result.stdout or ""
     except subprocess.TimeoutExpired as error:
         if error.stdout:
-            return error.stdout.decode("utf-8", errors="replace")
+            return (error.stdout.decode("utf-8", errors="replace")
+                    if isinstance(error.stdout, bytes) else error.stdout)
         return ""
 
 

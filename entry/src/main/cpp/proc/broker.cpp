@@ -15,12 +15,15 @@
 #include "wine/wine_constants.h"
 #include "audio/audio_broker.h"
 #include "wine_process.h"
+#include "wine_child_ipc_launcher.h"
+#include "phone_adapter/phone_adapter.h"
 #include "cef_utility_probe.h"
 // 由 LaunchPadMode 在启动 Broker 前设置
 std::string gBrokerHomeDir;
 std::string gBrokerPrefixDir;
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <cstdio>
@@ -61,6 +64,30 @@ static int32_t QueryPeerPid(int connFd) {
 }
 
 static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
+
+// The Direct route is opt-in per spawn via the serialized environment. The
+// default SPAWN protocol and all existing clients continue to use Start NCP.
+static bool WantsDirectWineIpc(const std::string& params) {
+    bool enabled = false;
+    size_t pos = 0;
+    while (pos < params.size()) {
+        const size_t end = params.find('|', pos);
+        const std::string token = params.substr(pos, end == std::string::npos ?
+            std::string::npos : end - pos);
+        if (token == "__env=WINEHUA_DIRECT_NCP=1") enabled = true;
+        else if (token == "__env=WINEHUA_DIRECT_NCP=0") enabled = false;
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return enabled;
+}
+
+static void CloseOwnedFdIfRetained(int fd, const struct stat& original, bool haveOriginal) {
+    struct stat current{};
+    if (haveOriginal && fstat(fd, &current) == 0 &&
+        current.st_dev == original.st_dev && current.st_ino == original.st_ino)
+        close(fd);
+}
 
 static std::atomic<bool> gBrokerRunning{false};
 
@@ -250,13 +277,28 @@ static void HandleRequest(int conn_fd)
     NativeChildProcess_Options options = {};
     options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
 
-    // 5) 调用 StartNativeChildProcess (在主进程上下文，可以调用多次)
-    int32_t childPid = -1;
-    int32_t ret = OH_Ability_StartNativeChildProcess(
-        const_cast<char*>("libwine_child.so:Main"), args, options, &childPid);
+    // SCM_RIGHTS and AudioBroker return descriptors owned by this parent.
+    // Both NCP APIs copy them for the child; device evidence showed Start
+    // leaves the parent originals open. Keep identities to avoid closing a
+    // number already recycled by an API or another thread.
+    struct stat recvIdentity[kMaxFds]{};
+    bool haveRecvIdentity[kMaxFds]{};
+    for (int i = 0; i < nFds; ++i)
+        haveRecvIdentity[i] = fstat(recvFds[i], &recvIdentity[i]) == 0;
+    struct stat audioIdentity{};
+    const bool haveAudioIdentity = audioBootstrapFd >= 0 &&
+        fstat(audioBootstrapFd, &audioIdentity) == 0;
 
-    OH_LOG_INFO(LOG_APP, "[Broker] StartNativeChildProcess ret=%{public}d childPid=%{public}d",
-                ret, childPid);
+    const bool directIpc = WantsDirectWineIpc(fullParams);
+    int32_t childPid = -1;
+    int32_t ret = directIpc ?
+        (PhoneAdapter_IsPhoneMode() ? NCP_ERR_NOT_SUPPORTED :
+         StartWineChildViaIpc(args, &childPid)) :
+        OH_Ability_StartNativeChildProcess(
+            const_cast<char*>("libwine_child.so:Main"), args, options, &childPid);
+
+    OH_LOG_INFO(LOG_APP, "[Broker] launch mode=%{public}s ret=%{public}d childPid=%{public}d",
+                directIpc ? "create-ipc" : "start", ret, childPid);
     // TEMP-DIAG(PROC-SPAWN): 谁 fork 了谁。Steam/CEF 这类多进程客户端只有一个父进程
     // 会拉起一串子进程, 崩溃归属必须能对上 parentHostPid -> childHostPid。
     OH_LOG_INFO(LOG_APP,
@@ -272,10 +314,14 @@ static void HandleRequest(int conn_fd)
         // CEF 子进程生命周期观测: 记录这个 pid 是谁 (browser/network.mojom.*/…) 与
         // 谁创建的, 等 NCP 退出回调回来时配对算 lifetimeMs/signal。
         WineHuaCefUtilityProbeNoteSpawn(childPid, peerPid, fullParams.c_str());
+        if (directIpc) MarkWineIpcChildRegistered(childPid);
     }
 
     free(entryParamsCopy);
-    // 注意: 所有 fd 的所有权已转移给 StartNativeChildProcess，不要在这里 close
+    for (int i = 0; i < nFds; ++i)
+        CloseOwnedFdIfRetained(recvFds[i], recvIdentity[i], haveRecvIdentity[i]);
+    if (audioBootstrapFd >= 0)
+        CloseOwnedFdIfRetained(audioBootstrapFd, audioIdentity, haveAudioIdentity);
 
     // 6) 发送响应: childPid + status (8 字节，小端序)
     int32_t response[2];

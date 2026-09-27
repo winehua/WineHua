@@ -68,6 +68,7 @@ add_library(entry SHARED
     wine/wine_launch.cpp
     wine/wine_exe.cpp
     proc/broker.cpp
+    proc/wine_child_ipc_launcher.cpp
     proc/ncp_dispatch.cpp
     proc/cef_utility_probe.cpp
     common/perf_utils.cpp

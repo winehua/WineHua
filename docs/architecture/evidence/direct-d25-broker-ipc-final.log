@@ -1,0 +1,12 @@
+09-27 15:12:00.169 37445 37696 I A02330/app.hackeris.winehua/WL_Broker: [Broker] launch mode=create-ipc ret=0 childPid=37706
+09-27 15:12:00.169 37445 37696 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] add pid=37706 name=__winehua_direct_ipc_probe__ total=1
+09-27 15:12:00.179 37445 37712 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] Create NCP proxy died pid=37706
+09-27 15:12:00.179 37445 37712 W A00000/app.hackeris.winehua/WL_NAPI: [ProcMon] pid=37706 no longer alive name=__winehua_direct_ipc_probe__ reason=-1(0xffffffff) source=ipc-death
+09-27 15:12:00.179 37445 37712 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] complete pid=37706 name=__winehua_direct_ipc_probe__ exit=-1 source=ipc-death
+09-27 15:12:00.270 37445 37445 I A00000/app.hackeris.winehua/DIRECT-D2.5-WINE-IPC: status=PASS stage=complete pid=37706
+09-27 15:12:30.216 37872 38080 I A02330/app.hackeris.winehua/WL_Broker: [Broker] launch mode=create-ipc ret=0 childPid=38280
+09-27 15:12:30.216 37872 38080 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] add pid=38280 name=winehua_dns_probe.exe total=15
+09-27 15:12:30.216 37872 37872 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] add pid=38280 name=winehua_dns_probe.exe total=15
+09-27 15:12:31.073 37872 38388 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] Create NCP proxy died pid=38280
+09-27 15:12:31.073 37872 38388 W A00000/app.hackeris.winehua/WL_NAPI: [ProcMon] pid=38280 no longer alive name=winehua_dns_probe.exe reason=-1(0xffffffff) source=ipc-death
+09-27 15:12:31.073 37872 38388 W A00000/app.hackeris.winehua/WL_NAPI: [ProcReg] complete pid=38280 name=winehua_dns_probe.exe exit=-1 source=ipc-death
