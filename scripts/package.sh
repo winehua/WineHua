@@ -177,10 +177,11 @@ deploy() {
     fi
 
     log "=== 部署到 $device ==="
+    # 多目标在线时裸 hdc shell 会报 "need connect-key"，所有命令必须 -t 定向
     hdc tconn "$device" || { err "hdc tconn 失败"; }
-    hdc shell bm uninstall -n app.hackeris.winehua 2>/dev/null || true
-    hdc file send "$hap" /data/local/tmp/ || { err "hdc file send 失败"; }
-    hdc shell bm install -p /data/local/tmp/entry-default-signed.hap -r || { err "bm install 失败"; }
+    hdc -t "$device" shell bm uninstall -n app.hackeris.winehua 2>/dev/null || true
+    hdc -t "$device" file send "$hap" /data/local/tmp/ || { err "hdc file send 失败"; }
+    hdc -t "$device" shell bm install -p /data/local/tmp/entry-default-signed.hap -r || { err "bm install 失败"; }
 
     log "部署完成"
 }
