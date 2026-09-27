@@ -6,15 +6,21 @@ source "$SCRIPT_DIR/env.sh"
 
 WL_SRC="$ROOT/thirdparty/wayland"
 WP_SRC="$ROOT/thirdparty/wayland-protocols"
-WL_BUILD="$BUILD_DIR/wayland_build"
 
-# 确保 native wayland-scanner 可用
+# 版本取自源码 meson.build。构建目录按版本隔离：升级 tag 后旧 build 目录的 meson
+# 缓存会用旧 scanner/旧配置 regenerate（实测: 1.22→1.26 时缓存 scanner 1.22 不满足
+# 1.26 门槛直接失败），必须换目录，不能复用。
+WL_VERSION=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$WL_SRC/meson.build" | head -1)
+[ -n "$WL_VERSION" ] || err "无法从 $WL_SRC/meson.build 解析 version"
+WL_BUILD="$BUILD_DIR/wayland_build_$WL_VERSION"
+
+# 确保 native wayland-scanner 可用且与源码同版本（1.26 源码要求 scanner ≥1.26）
 SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
-    if [ -x "$SCANNER" ]; then return 0; fi
-    log "--- 编译 wayland-scanner (native) ---"
+    if [ -x "$SCANNER" ] && "$SCANNER" --version 2>/dev/null | grep -q "$WL_VERSION"; then return 0; fi
+    log "--- 编译 wayland-scanner (native, $WL_VERSION) ---"
     # 装到项目内 build/host-tools，与 env.sh 的 WAYLAND_SCANNER 默认值一致；不写 /usr/local，无需 root
-    local host_build="$BUILD_DIR/wayland_native"
+    local host_build="$BUILD_DIR/wayland_native_$WL_VERSION"
     local host_prefix="$BUILD_DIR/host-tools"
     mkdir -p "$host_build" "$host_prefix"
     meson setup "$host_build" "$WL_SRC" \
@@ -32,14 +38,20 @@ build_scanner() {
     log "wayland-scanner: $SCANNER"
 }
 
-log "=== 构建 Wayland (x86_64) ==="
+log "=== 构建 Wayland (x86_64, $WL_VERSION) ==="
+
+# wayland-protocols 版本同样取自源码（卫语句校验已装版本与源码一致, 防 bump 后被跳过）
+WP_VERSION=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$WP_SRC/meson.build" | head -1)
+[ -n "$WP_VERSION" ] || err "无法从 $WP_SRC/meson.build 解析 version"
+WP_INSTALLED=$(PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC" pkg-config --modversion wayland-protocols 2>/dev/null || echo none)
 
 if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
    && [ -f "$SYSROOT_EXT_LIB/libwayland-server.so.0" ] \
    && [ -f "$SYSROOT_EXT_INC/wayland-client.h" ] \
    && [ -f "$SYSROOT_EXT_INC/wayland-server.h" ] \
    && [ -f "$SYSROOT_EXT_PC/wayland-client.pc" ] \
-   && [ -f "$SYSROOT_EXT_PC/wayland-server.pc" ]; then
+   && [ -f "$SYSROOT_EXT_PC/wayland-server.pc" ] \
+   && [ "$WP_INSTALLED" = "$WP_VERSION" ]; then
     log "Wayland 已就绪，跳过"
     exit 0
 fi
@@ -58,9 +70,7 @@ meson_build "$WL_BUILD/x86_64" "$WL_SRC" \
     -Ddocumentation=false -Dtests=false -Dscanner=false
 ninja -C "$WL_BUILD/x86_64"
 
-# 版本号取自源码 meson.build（.pc 的 Version 与产物尾缀随 tag 走，不写死）
-WL_VERSION=$(sed -n "s/^ *version *: *'\([^']*\)'.*/\1/p" "$WL_SRC/meson.build" | head -1)
-[ -n "$WL_VERSION" ] || err "无法从 $WL_SRC/meson.build 解析 version"
+# 版本已在上文从源码解析（.pc 的 Version 与产物尾缀随 tag 走，不写死）
 
 # 安装 .so (文件名 = SONAME; 版本尾缀随 tag 变, glob 取实际产物, 取不到即失败)
 install_soname() {  # $1=产物 glob  $2=目标 SONAME 名
@@ -92,16 +102,12 @@ cp "$WL_SRC/src/wayland-server.h" \
 cp "$WL_SRC/egl/wayland-egl.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
 cp "$WL_SRC/egl/wayland-egl-core.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
 
-# 2. wayland-protocols
-meson_build "$WL_BUILD/protocols" "$WP_SRC" \
+# 2. wayland-protocols（整树 XML 安装: wlroots 经 wl_protocol_dir 引用
+#    staging/xwayland-shell 等任意协议, 单拷 xdg-shell 不够; .pc 由安装自带, 不手写）
+meson_build "$WL_BUILD/protocols_$WP_VERSION" "$WP_SRC" \
+    --prefix="$SYSROOT_EXT/usr" --libdir=lib/x86_64-linux-ohos \
     -Dtests=false
-ninja -C "$WL_BUILD/protocols"
-
-# 安装协议 XML 到 sysroot-ext
-mkdir -p "$SYSROOT_EXT_SHARE/wayland-protocols/stable/xdg-shell" \
-         "$SYSROOT_EXT_SHARE/wayland"
-cp "$WP_SRC/stable/xdg-shell/xdg-shell.xml" "$SYSROOT_EXT_SHARE/wayland-protocols/stable/xdg-shell/"
-cp "$WL_SRC/protocol/wayland.xml" "$SYSROOT_EXT_SHARE/wayland/"
+ninja -C "$WL_BUILD/protocols_$WP_VERSION" install
 
 # .pc 文件
 cat > "$SYSROOT_EXT_PC/wayland-client.pc" << EOF
@@ -140,15 +146,6 @@ Description: Wayland EGL platform library
 Version: $WL_VERSION
 Libs: -L\${libdir} -lwayland-egl
 Cflags: -I\${includedir}
-EOF
-
-cat > "$SYSROOT_EXT_PC/wayland-protocols.pc" << EOF
-prefix=$SYSROOT_EXT/usr
-datarootdir=\${prefix}/share
-pkgdatadir=\${datarootdir}/wayland-protocols
-Name: Wayland Protocols
-Description: Wayland protocol files
-Version: 1.32
 EOF
 
 # ---- 验收断言: 版本门槛（wlroots 0.20.2 要 ≥1.24, xserver 主线要 client ≥1.26）----

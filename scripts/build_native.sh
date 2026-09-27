@@ -158,22 +158,29 @@ build_native_libxml2() {
     cmake --build "$build"
     cmake --install "$build"
 
-    copy_soname_with_linker_alias "$build/libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so"
+    copy_soname_with_linker_alias "$(compgen -G "$build/libxml2.so.2.*" | head -1)" "libxml2.so.2" "libxml2.so"
     log "libxml2 ($NATIVE_ARCH) → $NATIVE_LIBS"
 }
 
 build_native_xkbcommon() {
+    # 版本取自源码; 装好后记 marker, 守卫校验一致 (防升级后被"文件存在"误跳过)
+    local src="$ROOT/thirdparty/libxkbcommon"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "无法从 $src/meson.build 解析 version"; return 1; }
+
     if [ -f "$NATIVE_LIBS/libxkbcommon.so.0" ] \
        && [ -f "$NATIVE_LIBS/libxkbcommon.so" ] \
        && [ -f "$NATIVE_LIBS/libxkbregistry.so.0" ] \
-       && [ -f "$NATIVE_LIBS/libxkbregistry.so" ]; then
-        log "xkbcommon ($NATIVE_ARCH) 已就绪，跳过"
+       && [ -f "$NATIVE_LIBS/libxkbregistry.so" ] \
+       && [ "$(cat "$NATIVE_LIBS/.xkbcommon_version" 2>/dev/null)" = "$ver" ]; then
+        log "xkbcommon ($NATIVE_ARCH, $ver) 已就绪，跳过"
         return 0
     fi
 
-    log "--- xkbcommon ($NATIVE_ARCH) ---"
-    local src="$ROOT/thirdparty/libxkbcommon"
-    local build="$NATIVE_BUILD/xkbcommon"
+    log "--- xkbcommon ($NATIVE_ARCH, $ver) ---"
+    # 构建目录按版本隔离 (升级时旧 meson 缓存不可复用)
+    local build="$NATIVE_BUILD/xkbcommon_$ver"
     local cross
     cross="$(gen_native_cross)"
 
@@ -189,23 +196,33 @@ build_native_xkbcommon() {
         -Denable-bash-completion=false
     ninja -C "$build"
 
-    copy_soname_with_linker_alias "$build/libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so"
-    copy_soname_with_linker_alias "$build/libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so"
-    log "xkbcommon ($NATIVE_ARCH) → $NATIVE_LIBS"
+    # 产物尾缀随版本变 (实测: 1.7.0=so.0.0.0, 1.13.2 不同), glob 取实际产物
+    copy_soname_with_linker_alias "$(compgen -G "$build/libxkbcommon.so.0.*" | head -1)" "libxkbcommon.so.0" "libxkbcommon.so"
+    copy_soname_with_linker_alias "$(compgen -G "$build/libxkbregistry.so.0.*" | head -1)" "libxkbregistry.so.0" "libxkbregistry.so"
+    echo "$ver" > "$NATIVE_LIBS/.xkbcommon_version"
+    log "xkbcommon ($NATIVE_ARCH, $ver) → $NATIVE_LIBS"
 }
 
 # ── 3. wayland (server + client) ──
 build_wayland() {
+    # 版本取自源码; 装好后记版本到 marker, 守卫校验 marker 与源码一致
+    # (防升级 submodule 后被"文件存在"误跳过 — 实测: 1.22→1.26 时旧 .so 原样留存)
+    local src="$ROOT/thirdparty/wayland"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "无法从 $src/meson.build 解析 version"; return 1; }
+
     if [ -f "$NATIVE_LIBS/libwayland-server.so.0" ] \
        && [ -f "$NATIVE_LIBS/libwayland-client.so.0" ] \
-       && [ -f "$NATIVE_LIBS/libwayland-egl.so.1" ]; then
-        log "wayland ($NATIVE_ARCH) 已就绪，跳过"
+       && [ -f "$NATIVE_LIBS/libwayland-egl.so.1" ] \
+       && [ "$(cat "$NATIVE_LIBS/.wayland_version" 2>/dev/null)" = "$ver" ]; then
+        log "wayland ($NATIVE_ARCH, $ver) 已就绪，跳过"
         return 0
     fi
 
-    log "--- wayland ($NATIVE_ARCH) ---"
-    local src="$ROOT/thirdparty/wayland"
-    local build="$NATIVE_BUILD/wayland"
+    log "--- wayland ($NATIVE_ARCH, $ver) ---"
+    # 构建目录按版本隔离: 旧版本 meson 缓存不可复用 (同 build_wayland.sh 教训)
+    local build="$NATIVE_BUILD/wayland_$ver"
     local cross
     cross="$(gen_native_cross)"
 
@@ -217,15 +234,23 @@ build_wayland() {
 
     ninja -C "$build"
 
-    # 安装 .so 到 Native libs
-    cp "$build/src/libwayland-server.so.0.22.0" "$NATIVE_LIBS/libwayland-server.so.0"
-    cp "$build/src/libwayland-client.so.0.22.0" "$NATIVE_LIBS/libwayland-client.so.0"
-    cp "$build/egl/libwayland-egl.so.1.22.0" "$NATIVE_LIBS/libwayland-egl.so.1"
+    # 安装 .so 到 Native libs (版本尾缀随 tag 走, glob 取实际产物, 取不到即失败)
+    local f
+    for f in server client; do
+        local g
+        g=$(ls "$build/src/libwayland-$f.so.0."* 2>/dev/null | head -1)
+        [ -n "$g" ] || { err "未找到产物 libwayland-$f"; return 1; }
+        cp "$g" "$NATIVE_LIBS/libwayland-$f.so.0"
+    done
+    g=$(ls "$build/egl/libwayland-egl.so.1."* 2>/dev/null | head -1)
+    [ -n "$g" ] || { err "未找到产物 libwayland-egl"; return 1; }
+    cp "$g" "$NATIVE_LIBS/libwayland-egl.so.1"
     ln -sf libwayland-server.so.0 "$NATIVE_LIBS/libwayland-server.so"
     ln -sf libwayland-client.so.0 "$NATIVE_LIBS/libwayland-client.so"
-    ln -sf libwayland-egl.so.1 "$NATIVE_LIBS/libwayland-egl.so"
+    ln -sf libwayland-egl.so.1    "$NATIVE_LIBS/libwayland-egl.so"
+    echo "$ver" > "$NATIVE_LIBS/.wayland_version"
 
-    log "wayland ($NATIVE_ARCH) → $NATIVE_LIBS"
+    log "wayland ($NATIVE_ARCH, $ver) → $NATIVE_LIBS"
 }
 
 # ── 3. xdg-shell + wayland 协议文件 (架构无关, 只生成一次) ──
