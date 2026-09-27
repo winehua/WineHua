@@ -115,7 +115,8 @@ build_xkbcommon() {
     find "$src" -type f -exec touch -d '2 seconds ago' {} + 2>/dev/null || true
     meson_build "$build" "$src" \
         -Denable-x11=false -Denable-wayland=true \
-        -Denable-xkbregistry=true -Denable-docs=false
+        -Denable-xkbregistry=true -Denable-docs=false \
+        -Denable-tools=false
     ninja -C "$build"
 
     # 安装 (DESTDIR, 然后拷贝到 sysroot-ext)

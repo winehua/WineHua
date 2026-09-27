@@ -113,6 +113,8 @@ HOST_EXT_INC="$HOST_EXT_USR/include"
 HOST_EXT_LIB="$HOST_EXT_USR/lib"
 HOST_EXT_PC="$HOST_EXT_USR/lib/pkgconfig"
 HOST_EXT_SHARE="$HOST_EXT_USR/share"
+
+# 顶层默认 pc 搜索路径 (gen_cross_file/gen_host_cross 各有隔离版 wrapper, 此处是默认值)。
 SYSROOT_EXT="$BUILD_DIR/sysroot-ext"  # 交叉编译扩展 (不污染 SDK)
 STAGING_DIR="$BUILD_DIR/staging"   # 打包临时目录
 DXVK_BUILD_ROOT="$BUILD_DIR/dxvk/legacy"
@@ -124,6 +126,10 @@ SYSROOT_EXT_INC="$SYSROOT_EXT/usr/include"
 SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
 SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
+
+# 顶层默认 pc 搜索路径 (gen_cross_file/gen_host_cross 各有隔离版 wrapper, 此处是默认值)。
+# usr/share/pkgconfig 不可省: 纯数据包 (如 wayland-protocols) 的 pc 装在 share 下。
+export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig:$SYSROOT_EXT/usr/share/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
 
 # Linux/WSL 使用系统 pkg-config；macOS/HarmonyOS 使用当前工具链的 pkg-config。
 # wayland-scanner 各平台统一放项目内 build/host-tools（build_wayland.sh 现场编译），不写系统目录。
@@ -166,7 +172,8 @@ gen_cross_file() {
     cat > "$pcwrap" << PWEOF
 #!/bin/sh
 # PKG_CONFIG_LIBDIR 替换默认搜索路径 (--with-path 只是追加, 宿主 /usr/lib 仍混入)
-export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
+# usr/share/pkgconfig 不可省: 纯数据包 (如 wayland-protocols) 的 pc 装在 share 下
+export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig:$SYSROOT_EXT/usr/share/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
 exec "$PKG_CONFIG_BIN" "\$@"
 PWEOF
     chmod +x "$pcwrap"
@@ -228,7 +235,7 @@ gen_host_cross() {
     local pcwrap="$BUILD_DIR/pkg-config-host-${NATIVE_ARCH}.sh"
     cat > "$pcwrap" << PWEOF
 #!/bin/sh
-export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC"
+export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig"
 exec "$PKG_CONFIG_BIN" "\$@"
 PWEOF
     chmod +x "$pcwrap"

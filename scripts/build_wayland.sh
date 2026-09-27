@@ -40,10 +40,11 @@ build_scanner() {
 
 log "=== 构建 Wayland (x86_64, $WL_VERSION) ==="
 
-# wayland-protocols 版本同样取自源码（卫语句校验已装版本与源码一致, 防 bump 后被跳过）
+# wayland-protocols 版本同样取自源码（卫语句校验已装版本与源码一致, 防 bump 后被跳过;
+# 版本查询用 env.sh 顶层 PKG_CONFIG_LIBDIR——share/pkgconfig 下的数据包 pc 不在 SYSROOT_EXT_PC）
 WP_VERSION=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$WP_SRC/meson.build" | head -1)
 [ -n "$WP_VERSION" ] || err "无法从 $WP_SRC/meson.build 解析 version"
-WP_INSTALLED=$(PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC" pkg-config --modversion wayland-protocols 2>/dev/null || echo none)
+WP_INSTALLED=$(pkg-config --modversion wayland-protocols 2>/dev/null || echo none)
 
 if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
    && [ -f "$SYSROOT_EXT_LIB/libwayland-server.so.0" ] \
@@ -108,6 +109,8 @@ meson_build "$WL_BUILD/protocols_$WP_VERSION" "$WP_SRC" \
     --prefix="$SYSROOT_EXT/usr" --libdir=lib/x86_64-linux-ohos \
     -Dtests=false
 ninja -C "$WL_BUILD/protocols_$WP_VERSION" install
+# 清除历史手写 pc 残留 (旧位置 usr/lib/pkgconfig 会在搜索序里遮蔽新装的 1.49, 实测踩坑)
+rm -f "$SYSROOT_EXT_PC/wayland-protocols.pc"
 
 # .pc 文件
 cat > "$SYSROOT_EXT_PC/wayland-client.pc" << EOF

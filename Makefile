@@ -393,6 +393,22 @@ endef
 $(foreach a,arm64-v8a x86_64,$(eval $(call native_rule,$(a))))
 
 # ============================================================
+# display-libs — 显示路线 host 侧基础库 (wlroots/Xwayland 消费)
+#   架构相关 → build/host-ext/<NATIVE_ARCH> (侧别纪律见 .claude/rules/build-and-log.md)
+# ============================================================
+.PHONY: display-libs
+display-libs: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/display-libs)
+
+define display_libs_rule
+.PHONY: display-libs-$(1)
+display-libs-$(1): $$(STAMPS)/$(1)/display-libs
+
+$$(STAMPS)/$(1)/display-libs: $(SCRIPTS)/build_display_libs.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_display_libs.sh && touch $$@
+endef
+$(foreach a,arm64-v8a x86_64,$(eval $(call display_libs_rule,$(a))))
+
+# ============================================================
 # assemble — 组装布局 (架构 + 设备类型相关)
 # ============================================================
 .PHONY: assemble
