@@ -15,7 +15,7 @@
 ## 2. 目标架构
 
 ```
-Wine 程序 → winex11.drv（上游） → Xwayland（上游, shm-only） → wlroots（上游, 钉 tag）
+Wine 程序 → winex11.drv（上游） → Xwayland（上游, shm-only） → wlroots（上游, 钉 tag + 1 处隔离启动补丁, §5 R-SPAWN）
               → OHOS 适配层（唯一自养, 薄壳） → 鸿蒙窗口
 ```
 
@@ -82,7 +82,7 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 |---|---|---|---|
 | R1 | GLX 管线断点：D3D8/9/OpenGL 现走 winewayland EGL readback；winex11 需 GLX，shm Xwayland 无 GLX 扩展 | `build_wine.sh:118-122`、`configure.ac:1408-1425`（缺 libGL 仅 WARNING，会静默失效） | ①GLX-over-EGL 桥（winex11 opengl.c 后端替换为 virpipe EGL，蓝图 = 现有 opengl.c 的结构；成败级无理论风险，全是工作量）。present 通路被 shm 约束唯一决定：wine 侧摸不到 X 窗口像素 ⇒ EGL surfaceless/pbuffer 离屏渲染 → glReadPixels → `XShmPutImage` 回 X 窗口，代价与现 winewayland EGL readback 同级；spike 裁决判据 = virpipe EGL surfaceless/pbuffer 可用性 + 常见分辨率 readback 带宽实测 ②DXVK d3d9 打包启用收窄 GL 面 ③DirectDraw/OpenGL 程序由①覆盖。**M0/M1 spike 裁决最小原型** |
 | R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:419-422`），不认识 BufferQueue；pixman 起步态下游戏热路径 = GPU→CPU map→CPU 合成→GPU，每帧两次全幅搬运（bootstrap 代价，非终态） | 同左 | ①（bootstrap）data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer。获取链三跳（API 实证）：`OH_NativeImage_AcquireNativeWindowBuffer`（SDK `native_image.h:300`，`AcquireLatestNativeWindowBuffer` `:485`，since 22 ≤ 本档 23）→ `OH_NativeBuffer_FromNativeWindowBuffer`（`native_buffer.h:286`）→ `OH_NativeBuffer_Map`（`:233`）。**口径：API 存在已证、组合未验证**——现行合成器零 `OH_NativeBuffer` 命中（全程纹理模式 `UpdateSurfaceImage` `native_image.h:157`），纹理/缓冲两种消费模式能否共存同一 OH_NativeImage 未验证，M2 探针裁决 ②**M2 必达终态（GL 门）**：wlroots gles2 加 OHOS 导入分支——`eglCreateImage` + `EGL_NATIVE_BUFFER_OHOS`（SDK `eglext.h:1441-1444`），输入帧与输出 buffer 全程 GPU，拷贝数与旧路线持平。**扩展运行时可用性 = M2 探针；不可用则效果上限退化为 ① 的 CPU 合成**。传输层已被现行 ZC 生产验证 |
-| R-SPAWN | wlroots 启动 Xwayland 只有 fork+execvp 一条路（`xwayland/server.c:133` `execvp`；`wlr_xwayland_server_create` `server.h:64` 同源内部 exec），无「接管外部已启动 Xwayland」的公开 API；OHOS 应用沙箱能否 fork/exec 未探针（现行 Wine 子进程全走 NCP 系统接口） | 同左 | **M0 探针：应用进程 fork+exec bundle 内二进制**。不通则评估 wlroots 启动路径小补丁（NCP 化）或 exec 放行策略，钉版零补丁口径相应修正 |
+| R-SPAWN | **决策（平台硬约束）：子进程必须走 NCP**，fork/exec 不可用；而 wlroots 启动 Xwayland 只有 fork+execvp（`xwayland/server.c:133`；`server.h:64` 同源内部 exec），无「接管外部进程」公开 API → 启动路径必须 NCP 化适配 | 同左 | 三件套（全部落在已有机制上）：①xserver 构建增出 `libxwayland` 共享库（构建级小补丁，代码零改）②NCP shim 子进程 `libxwayland_child.so`：入口同 `virgl_child.cpp:471` `Main(NativeChildProcess_Args)` 形态——起 abstract unix socket（生产先例：wine NCP 子进程连合成器即走 abstract，P4）收 SCM_RIGHTS 传来的 {x_fd×2, wl_fd[1], wm_fd[0], displayfd}，以 `-listenfd` argv 直调 Xwayland main ③wlroots `server.c` 启动点补丁：跳过 fork/execvp，改 NCP spawn + fd 下发。fd 跨进程传递先例：winewayland section→fd→wl_shm（`wayland_surface.c:880-908`，NCP 子进程↔app 通道在产）。wlroots 钉版口径由此修正为「1 处隔离启动补丁」 |
 | R2 | wlroots shm 分配器走 shm_open→/dev/shm（`util/shm.c:30`），沙箱可能没有 | 同左 | **已探针解除（2026-09-27，见 B 类 P1/P2）**：shm_open 与 memfd_create 在沙箱均可用，默认分配器直接工作；自定义 `wlr_allocator` 降级为备胎 |
 | R-VER | wlroots 0.20.2 与 0.21 均要求 wayland-server ≥1.24（`wlroots meson.build:88-90`）；项目现有 1.22 | 同左 | **升 thirdparty/wayland ≥1.24 为必做项**（关键路径） |
 | R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包 |
@@ -122,7 +122,7 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
-| M0 | Xwayland 钉版裁决 + wlroots OHOS 交叉编译 + fork/exec 探针（R-SPAWN）+ NativeWindow 直推真机首验 + headless/pixman 出图进 NativeWindow + Xwayland 跑 xterm | 跑不通 → 回退「现有合成器 + Xwayland」（winex11 收益保留；rootless 回退需先给旧合成器补 xwayland-shell-v1——现零实现，协议面很小；旧合成器 xdg_wm_base 已具备 `xdg_shell.cpp:428-433`，rootful 可跑但 present 重锚不成立，仅保窗口不保 ZC） |
+| M0 | Xwayland 钉版裁决 + wlroots OHOS 交叉编译 + Xwayland NCP 启动适配原型（R-SPAWN）+ NativeWindow 直推真机首验 + headless/pixman 出图进 NativeWindow + Xwayland 跑 xterm | 跑不通 → 回退「现有合成器 + Xwayland」（winex11 收益保留；rootless 回退需先给旧合成器补 xwayland-shell-v1——现零实现，协议面很小；旧合成器 xdg_wm_base 已具备 `xdg_shell.cpp:428-433`，rootful 可跑但 present 重锚不成立，仅保窗口不保 ZC） |
 | M1 | winex11 交叉接入，窗口语义验收；GLX-over-EGL 桥最小原型裁决；R-WSI 探针 | 记事本类输入/窗口正确 |
 | M2 | Venus/ZC 重锚（§4.2/§5 R-ZC）、IME、双窗口形态 | dxvk 套件出图正常 |
 | M3 | 旧合成器退役 | core / wine-vulkan / dxvk 套件不回退 + 长尾样本验收 |
