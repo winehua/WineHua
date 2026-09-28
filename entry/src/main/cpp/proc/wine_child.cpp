@@ -477,6 +477,17 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+    // M1-T4 X 档位: 路由键 (per-app env 显式传入) 声明时撤掉 wayland socket
+    // 键 —— win32u driver.c 的驱动选择按键存在性判路, X 路线要求
+    // DISPLAY 设而 WAYLAND_DISPLAY 不设 (基线在上面的 setup_wine_env 无条件
+    // 设置, 且本处覆盖晚于基线, 只有删除能表达互斥)。DISPLAY 本体随 __env
+    // 注入。
+    const char *displayRoute = getenv("WINEHUA_DISPLAY_ROUTE");
+    if (displayRoute && strcmp(displayRoute, "x11") == 0)
+    {
+        unsetenv("WAYLAND_DISPLAY");
+        OH_LOG_INFO(LOG_APP, "[WineChild] display route=x11 (WAYLAND_DISPLAY removed)");
+    }
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.

@@ -142,6 +142,14 @@ void UpsertEnvLine(std::vector<std::string>& env, const std::string& line)
     env.push_back(line);
 }
 
+void RemoveEnvLine(std::vector<std::string>& env, const std::string& key)
+{
+    env.erase(std::remove_if(env.begin(), env.end(), [&](const std::string& existing) {
+        return existing.compare(0, key.size(), key) == 0 &&
+               existing.size() > key.size() && existing[key.size()] == '=';
+    }), env.end());
+}
+
 void AppendD3dBackendEnv(std::vector<std::string>& env,
                          const std::string& d3dBackend,
                          const std::string& dxvkBackend,

@@ -17,17 +17,30 @@ case "$SIDE" in
         ;;
     guest)
         T="$GUEST_TARGET"; PRE="$SYSROOT_EXT/usr"; INC="$SYSROOT_EXT_INC"
+        # guest 代码库统一装 multiarch (wayland/freetype 同款, assemble 的
+        # _pick_lib_pad_rf 与 wine 链接的 -L 都从这里取)
         LIB="$SYSROOT_EXT_LIB"; PC="$SYSROOT_EXT_PC"; SPC="$SYSROOT_EXT_SHARE/pkgconfig"
         ;;
     *) err "SIDE 必须是 host|guest" ;;
 esac
-export PKG_CONFIG_PATH="$PC:$SPC${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-export PKG_CONFIG_LIBDIR="$PC:$SPC:$SYSROOT/usr/lib/pkgconfig"
+# 搜索面含 $LIB/pkgconfig: guest 侧 libdir=multiarch, 这批包的 .pc 跟
+# libdir 走 (Makefile 硬编码 pkgconfigdir=$(libdir)/pkgconfig, 不支持
+# --with-pkgconfigdir; glib/gstreamer 的 .pc 也在此, 既有先例)
+export PKG_CONFIG_PATH="$PC:$LIB/pkgconfig:$SPC${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export PKG_CONFIG_LIBDIR="$PC:$LIB/pkgconfig:$SPC:$SYSROOT/usr/lib/pkgconfig"
+
+# .pc 就位检查 (两个历史落点: $PC = usr/lib/pkgconfig, $LIB/pkgconfig)
+have_pc() { [ -f "$PC/$1.pc" ] || [ -f "$LIB/pkgconfig/$1.pc" ]; }
 CC_BIN="$OHOS_SDK/native/llvm/bin/clang"
 
 DL="$BUILD_DIR/downloads"
 mkdir -p "$DL" "$PRE" "$INC" "$LIB" "$PC" "$SPC"
 
+# 解包按目标隔离 ($BUILD_DIR/$T/<pkg>): host 与 guest pass 严禁共享
+# configure/build 树 —— M1-T4 实测踩坑: 共享目录下 guest 重跑 configure
+# 不会作废 host 的 arm64 对象缓存, make 直接重链 arm64 .so 并装进 guest
+# 树 (libXau/libXdmcp 中招), 下游按 .la 链到 host-ext 库报
+# "incompatible with elf_x86_64"。
 fetch_and_unpack() {  # $1=url  $2=sha256  $3=解压后目录名
     local tgz="$DL/$(basename "$1")"
     if [ ! -f "$tgz" ]; then
@@ -35,7 +48,8 @@ fetch_and_unpack() {  # $1=url  $2=sha256  $3=解压后目录名
         curl -fsSL -o "$tgz" "$1"
     fi
     echo "$2  $tgz" | sha256sum -c - || { err "sha256 不匹配: $tgz"; }
-    [ -d "$BUILD_DIR/$3" ] || tar -C "$BUILD_DIR" -xf "$tgz"
+    mkdir -p "$BUILD_DIR/$T"
+    [ -d "$BUILD_DIR/$T/$3" ] || tar -C "$BUILD_DIR/$T" -xf "$tgz"
 }
 
 assert_min_ver() {  # $1=当前  $2=下限  $3=名称
@@ -59,7 +73,9 @@ conf_ohos() {  # $1=源码目录; autotools 配置 (CC wrapper 携带真实目�
     # --host=x86_64-linux-gnu 为固定谎言值 (build_xkbcommon.sh libffi/libxml2 同款):
     # 1) 哄过 config.sub (ohos 不被识别); 2) 让 libtool 走"同机"模式——
     # 否则 aarch64 gnu 三元组会塞 -lgcc_s (bionic 无此库, 链接失败); 真实目标在 CC wrapper。
-    ( cd "$1" && ./configure --host=x86_64-linux-gnu --prefix="$PRE" \
+    # --libdir 必须显式: guest 默认 $prefix/lib 会把库装到 sysroot-ext/usr/lib
+    # 根, 而 _pick_lib_pad_rf (assemble) / wine -L 都从 multiarch 取 (M1-T4 实测)。
+    ( cd "$1" && ./configure --host=x86_64-linux-gnu --prefix="$PRE" --libdir="$LIB" \
         CC="$CCWRAP" \
         CFLAGS="-I$INC" \
         LDFLAGS="-fuse-ld=lld -L$LIB -L$SYSROOT/usr/lib/$T" \
@@ -75,7 +91,7 @@ build_autotools() {  # $1=源码目录
 if [ ! -f "$INC/X11/X.h" ]; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2024.1.tar.xz" \
         "372225fd40815b8423547f5d890c5debc72e88b91088fbfb13158c20495ccb59" "xorgproto-2024.1"
-    build_autotools "$BUILD_DIR/xorgproto-2024.1"
+    build_autotools "$BUILD_DIR/$T/xorgproto-2024.1"
 fi
 [ -f "$INC/X11/X.h" ] || err "xorgproto 未就绪 (缺 $INC/X11/X.h)"
 
@@ -83,40 +99,40 @@ fi
 if [ ! -f "$SPC/xcb-proto.pc" ]; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/xcb/xcb-proto-1.17.0.tar.xz" \
         "2c1bacd2110f4799f74de6ebb714b94cf6f80fb112316b1219480fd22562148c" "xcb-proto-1.17.0"
-    build_autotools "$BUILD_DIR/xcb-proto-1.17.0"
+    build_autotools "$BUILD_DIR/$T/xcb-proto-1.17.0"
 fi
 [ -f "$SPC/xcb-proto.pc" ] || err "xcb-proto 未就绪"
 
 # ── 3. libXau + libXdmcp (libxcb configure 硬依赖 xau; xdmcp 供 Xwayland) ──
-if [ ! -f "$PC/xau.pc" ]; then
+if ! have_pc xau; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/libXau-1.0.12.tar.xz" \
         "74d0e4dfa3d39ad8939e99bda37f5967aba528211076828464d2777d477fc0fb" "libXau-1.0.12"
-    build_autotools "$BUILD_DIR/libXau-1.0.12"
+    build_autotools "$BUILD_DIR/$T/libXau-1.0.12"
 fi
-[ -f "$PC/xau.pc" ] || err "libXau 未就绪"
+have_pc xau || err "libXau 未就绪"
 
-if [ ! -f "$PC/xdmcp.pc" ]; then
+if ! have_pc xdmcp; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/libXdmcp-1.1.5.tar.gz" \
         "31a7abc4f129dcf6f27ae912c3eedcb94d25ad2e8f317f69df6eda0bc4e4f2f3" "libXdmcp-1.1.5"
-    build_autotools "$BUILD_DIR/libXdmcp-1.1.5"
+    build_autotools "$BUILD_DIR/$T/libXdmcp-1.1.5"
 fi
-[ -f "$PC/xdmcp.pc" ] || err "libXdmcp 未就绪"
+have_pc xdmcp || err "libXdmcp 未就绪"
 
 # ── 4. libxcb (xcb/composite/render/res/xfixes 都在其中, ≥1.15) ──
-if [ ! -f "$PC/xcb.pc" ]; then
+if ! have_pc xcb; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/xcb/libxcb-1.17.0.tar.xz" \
         "599ebf9996710fea71622e6e184f3a8ad5b43d0e5fa8c4e407123c88a59a6d55" "libxcb-1.17.0"
-    build_autotools "$BUILD_DIR/libxcb-1.17.0"
+    build_autotools "$BUILD_DIR/$T/libxcb-1.17.0"
 fi
 assert_min_ver "$(PKG_CONFIG_LIBDIR="$PC:$SPC" pkg-config --modversion xcb 2>/dev/null)" "1.15.0" "$SIDE xcb"
 
 # ── 5. xcb-util-wm (ewmh + icccm) ──
-if [ ! -f "$PC/xcb-icccm.pc" ]; then
+if ! have_pc xcb-icccm; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/xcb/xcb-util-wm-0.4.2.tar.xz" \
         "62c34e21d06264687faea7edbf63632c9f04d55e72114aa4a57bb95e4f888a0b" "xcb-util-wm-0.4.2"
-    build_autotools "$BUILD_DIR/xcb-util-wm-0.4.2"
+    build_autotools "$BUILD_DIR/$T/xcb-util-wm-0.4.2"
 fi
-[ -f "$PC/xcb-ewmh.pc" ] && [ -f "$PC/xcb-icccm.pc" ] || err "xcb-util-wm 未就绪"
+{ have_pc xcb-ewmh && have_pc xcb-icccm; } || err "xcb-util-wm 未就绪"
 
 # ── 侧别架构断言 ──
 want=AArch64

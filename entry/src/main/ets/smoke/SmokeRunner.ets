@@ -2,7 +2,7 @@ import testNapi from 'libentry.so';
 import smokeNapi from 'libsmoke_napi.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  WineEnvService, DRIVE_C, readTextIfExists,
+  WineEnvService, DRIVE_C, readTextIfExists, removeFileIfExists,
   ensureDirectory, writeTextFile
 } from '../service/WineEnvService';
 import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest,
@@ -157,10 +157,22 @@ export class SmokeRunner {
         hilog.info(DOMAIN, TAG, 'job.displayroute: triggering DisplayRoute start');
         // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
         const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
+        // M1-T4: X 档位用例与出图链的就绪同步 —— 先删旧标记再触发, 等新
+        // 标记 (display_compositor 链尾写入) 后才 spawn, 否则 X client
+        // 抢在 X socket 就绪前连接 (winemine 首跑实测竞态)。
+        removeFileIfExists(`${DRIVE_C}/displayroute-ready`);
         smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n);
         if (!request.job.inline || request.job.inline.length === 0) {
           await this.finishSuite(request, []);
           return;
+        }
+        const readyDeadline = Date.now() + 15000;
+        while (!readTextIfExists(`${DRIVE_C}/displayroute-ready`)) {
+          if (Date.now() > readyDeadline) {
+            hilog.error(DOMAIN, TAG, 'displayroute-ready marker timeout (15s)');
+            break;
+          }
+          await new Promise<void>((r) => setTimeout(r, 200));
         }
       }
       // 测试清单来源 (job > suites.json): inline 自带完整定义不读 suites.json;

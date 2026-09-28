@@ -132,11 +132,16 @@ build_ohos_unix() {
             MINGW_CC="gcc"
         fi
 
+        # guest 无桌面 GLX 栈: OpenGL 走 wayland/EGL, winex11 编出但无 GLX
+        # (configure.ac 的 WINEHUA_ALLOW_X11_NO_GLX 豁免, soname 检查空 =
+        # glx.c 编译出)。不设则上游行为 = 缺 libGL 即 configure 失败。
+        # GLX-over-EGL 裁决属 M1-T6 spike, 落地后由此供 libGL。
+        export WINEHUA_ALLOW_X11_NO_GLX=1
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CFLAGS="${WINE_CFLAGS:-} -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \
         LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET -L$SYSROOT_EXT_LIB" \
         PKG_CONFIG="$pkg_config" \
-        PKG_CONFIG_PATH="$SYSROOT_EXT_PC" \
+        PKG_CONFIG_PATH="$SYSROOT_EXT_PC:$SYSROOT_EXT_LIB/pkgconfig" \
         "$CONFIGURE_BIN" --srcdir="$WINE_SRC" \
             --host=x86_64-linux-ohos \
             --enable-archs=i386,x86_64 \
@@ -145,7 +150,7 @@ build_ohos_unix() {
             --with-wine-tools="$BUILD_DIR/wine-native" \
             --with-mingw="$MINGW_CC" \
             --disable-tests \
-            --without-x --without-alsa \
+            --with-x --without-alsa \
             --with-opengl --with-vulkan
     fi
 

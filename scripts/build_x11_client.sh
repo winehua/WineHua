@@ -15,12 +15,17 @@ case "$SIDE" in
         ;;
     guest)
         T="$GUEST_TARGET"; PRE="$SYSROOT_EXT/usr"; INC="$SYSROOT_EXT_INC"
+        # guest 代码库统一装 multiarch (同 build_xcb_stack.sh 注释)
         LIB="$SYSROOT_EXT_LIB"; PC="$SYSROOT_EXT_PC"; SPC="$SYSROOT_EXT_SHARE/pkgconfig"
         ;;
     *) err "SIDE 必须是 host|guest" ;;
 esac
-export PKG_CONFIG_PATH="$PC:$SPC${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-export PKG_CONFIG_LIBDIR="$PC:$SPC:$SYSROOT/usr/lib/pkgconfig"
+# 搜索面含 $LIB/pkgconfig (理由同 build_xcb_stack.sh: .pc 跟 libdir 走)
+export PKG_CONFIG_PATH="$PC:$LIB/pkgconfig:$SPC${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export PKG_CONFIG_LIBDIR="$PC:$LIB/pkgconfig:$SPC:$SYSROOT/usr/lib/pkgconfig"
+
+# .pc 就位检查 (两个历史落点: $PC = usr/lib/pkgconfig, $LIB/pkgconfig)
+have_pc() { [ -f "$PC/$1.pc" ] || [ -f "$LIB/pkgconfig/$1.pc" ]; }
 
 # CC wrapper: 真实目标固定在编译器层 (同 build_xcb_stack.sh 教训: libtool 交叉模式
 # 会吞 --target 且塞 -lgcc_s; --host 谎言值 x86_64-linux-gnu 哄 config.sub + 同机 libtool)
@@ -34,6 +39,9 @@ chmod +x "$CCWRAP"
 DL="$BUILD_DIR/downloads"
 mkdir -p "$DL" "$PRE" "$INC" "$LIB" "$PC" "$SPC"
 
+# 解包按目标隔离 ($BUILD_DIR/$T/<pkg>): host 与 guest pass 严禁共享
+# configure/build 树 —— 见 build_xcb_stack.sh 同名注释 (M1-T4 实测踩坑:
+# 共享目录下 guest 复用 host 的对象缓存, make 重链 arm64 .so 装进 guest 树)。
 fetch_and_unpack() {
     local tgz="$DL/$(basename "$1")"
     if [ ! -f "$tgz" ]; then
@@ -41,13 +49,15 @@ fetch_and_unpack() {
         curl -fsSL -o "$tgz" "$1"
     fi
     echo "$2  $tgz" | sha256sum -c - || { err "sha256 不匹配: $tgz"; }
-    [ -d "$BUILD_DIR/$3" ] || tar -C "$BUILD_DIR" -xf "$tgz"
+    mkdir -p "$BUILD_DIR/$T"
+    [ -d "$BUILD_DIR/$T/$3" ] || tar -C "$BUILD_DIR/$T" -xf "$tgz"
 }
 
 build_autotools() {  # $1=源码目录
     # --enable-malloc0returnsnull=yes: libX11 的 malloc(0) 运行检查交叉编译时无法执行 (实测踩坑);
     # 该值是 AC_ARG_ENABLE 选项, env 前缀会被 option 解析的 auto 默认值覆盖, 必须走命令行
-    ( cd "$1" && ./configure --host=x86_64-linux-gnu --prefix="$PRE" \
+    # --libdir 必须显式 (同 build_xcb_stack.sh: 默认 $prefix/lib 会装错到根目录)
+    ( cd "$1" && ./configure --host=x86_64-linux-gnu --prefix="$PRE" --libdir="$LIB" \
         CC="$CCWRAP" \
         CFLAGS="-I$INC" \
         LDFLAGS="-fuse-ld=lld -L$LIB -L$SYSROOT/usr/lib/$T" \
@@ -61,7 +71,7 @@ build_autotools() {  # $1=源码目录
 # local 传输走 abstract 名——沙箱无 /tmp, 不打则 XOpenDisplay 永远 ENOENT
 # (M0-T9 真机实证)。补丁打在解包后的源码上; libX11 编译时 #include 的就是
 # 本包装进 $PRE/include 的 Xtranssock.c, 改动随之生效。
-XTRANS_SRC="$BUILD_DIR/xtrans-1.5.2"
+XTRANS_SRC="$BUILD_DIR/$T/xtrans-1.5.2"
 if [ ! -f "$SPC/xtrans.pc" ] || ! grep -q "WineHua (M0-T9)" "$XTRANS_SRC/Xtranssock.c" 2>/dev/null; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/xtrans-1.5.2.tar.xz" \
         "5c5cbfe34764a9131d048f03c31c19e57fb4c682d67713eab6a65541b4dff86c" "xtrans-1.5.2"
@@ -76,20 +86,20 @@ grep -q "WineHua (M0-T9)" "$PRE/include/X11/Xtrans/Xtranssock.c" \
     || err "安装后的 Xtranssock.c 缺 abstract-client 补丁"
 
 # ── 1. libX11 (≥1.8; 关 udc/xlocale 收窄) ──
-if [ ! -f "$PC/x11.pc" ]; then
+if ! have_pc x11; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/libX11-1.8.10.tar.xz" \
         "2b3b3dad9347db41dca56beb7db5878f283bde1142f04d9f8e478af435dfdc53" "libX11-1.8.10"
-    build_autotools "$BUILD_DIR/libX11-1.8.10"
+    build_autotools "$BUILD_DIR/$T/libX11-1.8.10"
 fi
-[ -f "$PC/x11.pc" ] || err "libX11 未就绪"
+have_pc x11 || err "libX11 未就绪"
 
 # ── 2. libXext ──
-if [ ! -f "$PC/xext.pc" ]; then
+if ! have_pc xext; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/libXext-1.3.6.tar.xz" \
         "edb59fa23994e405fdc5b400afdf5820ae6160b94f35e3dc3da4457a16e89753" "libXext-1.3.6"
-    build_autotools "$BUILD_DIR/libXext-1.3.6"
+    build_autotools "$BUILD_DIR/$T/libXext-1.3.6"
 fi
-[ -f "$PC/xext.pc" ] || err "libXext 未就绪"
+have_pc xext || err "libXext 未就绪"
 
 # ── 侧别架构断言 ──
 want=AArch64

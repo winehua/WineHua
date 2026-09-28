@@ -46,8 +46,19 @@ export function ensureDirectory(path: string): boolean {
   }
 }
 
-export function readTextIfExists(path: string): string {
+// 删除文件 (不存在视为成功) —— M1-T4 就绪标记的触发前清理用
+export function removeFileIfExists(path: string): boolean {
   try {
+    if (!pathExists(path)) return true;
+    fs.unlinkSync(path);
+    return true;
+  } catch (e) {
+    hilog.warn(DOMAIN, 'wine', 'remove failed path=%{public}s err=%{public}s', path, JSON.stringify(e));
+    return false;
+  }
+}
+
+export function readTextIfExists(path: string): string {  try {
     if (!pathExists(path)) return '';
     const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
     try {

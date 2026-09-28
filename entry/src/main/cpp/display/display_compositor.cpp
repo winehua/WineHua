@@ -337,6 +337,19 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
             OH_LOG_INFO(LOG_APP, "no present surface, T8 output chain skipped");
         }
 
+        // M1-T4: 就绪标记 —— X socket/xwm/出图链全部就位。smoke 编排
+        // (winemine/notepad 的 X 档位 spawn) 以该文件出现为同步判据;
+        // 旧标记由触发方在 bring-up 前删除。
+        {
+            FILE *f = fopen("/data/storage/el2/base/files/.wine/drive_c/displayroute-ready", "w");
+            if (f)
+            {
+                fputs("ready\n", f);
+                fclose(f);
+                OH_LOG_INFO(LOG_APP, "displayroute-ready marker written");
+            }
+        }
+
         OH_LOG_INFO(LOG_APP, "started, dispatching event loop");
         while (!g_stop)
         {

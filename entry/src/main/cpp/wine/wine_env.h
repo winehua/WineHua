@@ -38,6 +38,8 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
 
 // -- 环境变量辅助 --
 void UpsertEnvLine(std::vector<std::string>& env, const std::string& line);
+// 删除指定 key 的全部条目 (per-app env "KEY=" 空值删除契约的底层, M1-T4)
+void RemoveEnvLine(std::vector<std::string>& env, const std::string& key);
 
 // -- Audio bootstrap --
 int CreateAudioBootstrapFd(const std::string& runtimeDir);

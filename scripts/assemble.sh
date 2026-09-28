@@ -189,6 +189,13 @@ assemble_pad() {
         _pick_lib_pad_rf "libwayland-egl.so.1.22.0"     "libwayland-egl.so.1"    "libwayland-egl.so"
         _pick_lib_pad_rf "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
         _pick_lib_pad_rf "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
+        # X11 客户端栈 (M1-T4: winex11.drv 运行时链, guest 侧构建, DT_NEEDED
+        # 逐级: winex11→X11/Xext→xcb→Xau/Xdmcp)
+        _pick_lib_pad_rf "libX11.so.6.4.0"              "libX11.so.6"
+        _pick_lib_pad_rf "libXext.so.6.4.0"             "libXext.so.6"
+        _pick_lib_pad_rf "libxcb.so.1.1.0"              "libxcb.so.1"
+        _pick_lib_pad_rf "libXau.so.6.0.0"              "libXau.so.6"
+        _pick_lib_pad_rf "libXdmcp.so.6.0.0"            "libXdmcp.so.6"
         _pick_lib_pad_rf "libxml2.so.2.12.0"            "libxml2.so.2"
         _pick_lib_pad_rf "libffi.so.8.1.4"              "libffi.so.8"
         # GnuTLS 链 (schannel TLS 后端, x86_64 guest) → rawfile
