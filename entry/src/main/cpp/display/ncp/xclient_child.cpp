@@ -125,7 +125,8 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                                      100, 100, 320, 240, 2,
                                      BlackPixel(dpy, scr), WhitePixel(dpy, scr));
     XStoreName(dpy, win, "WineHua-MiniX");
-    XSelectInput(dpy, win, ExposureMask);
+    // M1-T1: 键盘回显——注入链的出口证据 (seat → Xwayland → 本进程 X 事件)
+    XSelectInput(dpy, win, ExposureMask | KeyPressMask | KeyReleaseMask);
 
     XImage* img = XCreateImage(dpy, DefaultVisual(dpy, scr), DefaultDepth(dpy, scr),
                                ZPixmap, 0, nullptr, 320, 240, 32, 0);
@@ -163,6 +164,18 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 if (exposes <= 3 || exposes % 50 == 0)
                     OH_LOG_INFO(LOG_APP, "expose #%{public}d draw", exposes);
                 DrawFrame(dpy, win, gc, img, frame++);
+            }
+            else if (ev.type == KeyPress || ev.type == KeyRelease)
+            {
+                // XLookupString 需要 event.display 补全 (XNextEvent 不填)
+                ev.xkey.display = dpy;
+                char buf[16] = {0};
+                KeySym ks = NoSymbol;
+                int n = XLookupString(&ev.xkey, buf, sizeof(buf) - 1, &ks, nullptr);
+                OH_LOG_INFO(LOG_APP,
+                            "key %{public}s '%{public}s' (sym=%{public}lu n=%{public}d)",
+                            ev.type == KeyPress ? "press" : "release",
+                            n > 0 ? buf : "", (unsigned long)ks, n);
             }
         }
     }

@@ -51,6 +51,14 @@ static napi_value SmokeMapPoint(napi_env env, napi_callback_info info) {
 extern "C" void WineHua_DisplayRoute_Start();
 // T8: surfaceId 非零时同步启动出图链 (XComponent → NativeWindow 直推)
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id);
+// M1-T1: 注入桥 (display/display_input.c)。key = evdev 键码; motion =
+// client surface 相对坐标 0..1, phase 0=enter 1=motion 2=leave。
+// 注意线程约束: 合成器事件循环线程。NAPI 调用来自 ArkTS 线程, 直接调用
+// 有跨线程风险——当前 displayroute 注入仅测试编排使用, 与 smokeDisplayRoute
+// 的触发同序 (displayroute 事件循环 dispatch 间隙处理), T5 编排化时若出现
+// 事件丢失/竞态, 迁移到事件循环队列 (wlr_seat 无锁, 不得并发)。
+extern "C" void display_input_inject_key(uint32_t keycode, bool press);
+extern "C" void display_input_inject_motion(float nx, float ny, int phase);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -69,11 +77,48 @@ static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
     return ok;
 }
 
+// smokeDisplayRouteKey(keycode, press) — T1 键注入 (真机门自动定时器之外的
+// 手动通道); T5 记事本编排用它驱动文字输入
+static napi_value SmokeDisplayRouteKey(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    double code = 0;
+    bool press = false;
+    napi_get_value_double(env, args[0], &code);
+    napi_get_value_bool(env, args[1], &press);
+    display_input_inject_key(static_cast<uint32_t>(code), press);
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
+// smokeDisplayRouteMotion(nx, ny, phase)
+static napi_value SmokeDisplayRouteMotion(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    double nx = 0, ny = 0;
+    double phase = 0;
+    napi_get_value_double(env, args[0], &nx);
+    napi_get_value_double(env, args[1], &ny);
+    napi_get_value_double(env, args[2], &phase);
+    display_input_inject_motion(static_cast<float>(nx), static_cast<float>(ny),
+                                static_cast<int>(phase));
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
 EXTERN_C_START
 static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
     napi_property_descriptor props[] = {
         {"smokeMapPoint", nullptr, SmokeMapPoint, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRoute", nullptr, SmokeDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRouteKey", nullptr, SmokeDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRouteMotion", nullptr, SmokeDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
     return exports;

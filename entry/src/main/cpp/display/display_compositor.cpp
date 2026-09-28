@@ -65,6 +65,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include <AbilityKit/native_child_process.h>
 
 #include "ohos_output.h"
+#include "display_input.h"
 
 extern "C" {
 #include <native_buffer/native_buffer.h>
@@ -268,6 +269,14 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
             OH_LOG_ERROR(LOG_APP, "compositor create failed");
             return;
         }
+        // M1-T1 输入链: seat + 虚拟键盘。须在 Xwayland server create 之前
+        // (seat global 先于 Xwayland 客户端连接存在); set_seat 在下方
+        // create_with_server 之后 (xwm 同步建立, M0 实证)
+        if (wl_ohos_input_seat_create(wl, loop) != 0)
+        {
+            OH_LOG_ERROR(LOG_APP, "input seat create failed");
+            return;
+        }
         // wl_shm/wl_drm 全局: wlr_compositor_create 不建, 必须显式初始化。
         // 缺它 Xwayland 的 registry 无 wl_shm → 首个窗口 Map 时
         // xwl_shm_create_pixmap 解引用 NULL proxy 段错误 (T9 真机 cppcrash
@@ -309,6 +318,9 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
             OH_LOG_ERROR(LOG_APP, "wlr_xwayland_create_with_server failed");
             return;
         }
+        // M1-T1: xwm 已同步建立 (M0 实证), 接 seat——"no seat assigned to
+        // xwayland" 告警自此消失, 键盘/指针经 wl_seat 进 Xwayland
+        wl_ohos_input_xwayland_set_seat(xwayland);
 
         // ── T8 出图链: 自定义 allocator + headless output + 帧直推
         //    (实现整体在 ohos_output.c, wlr_output.h 的 C++ 不兼容见其头注释);

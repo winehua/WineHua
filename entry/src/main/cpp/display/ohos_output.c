@@ -419,6 +419,12 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     OHLOG("client surface created (%dx%d)", xs->width, xs->height);
 }
 
+/* M1-T1: 注入取数口 (display_input.c 调用) */
+struct wlr_xwayland_surface *wl_ohos_output_client_xs(void)
+{
+    return g_client ? g_client->xs : NULL;
+}
+
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,

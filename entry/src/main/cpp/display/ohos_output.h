@@ -12,11 +12,19 @@ struct wlr_backend;
 struct wlr_renderer;
 struct wl_event_loop;
 struct wlr_xwayland;
+struct wlr_xwayland_surface;
 #include <native_window/external_window.h> /* OHNativeWindow (tag=NativeWindow) */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// 当前跟踪的 client xwayland surface (M0-T9 most-recent-wins; 无 = NULL)。
+// display_input 注入取数口: xs->surface 为焦点面, activate 亦需 xs 本体
+// (wlr_xwayland_surface_activate 是合成器侧 API, 不调则 X server 焦点
+// 永不设置, 键事件无投递目标 —— 2026-09-29 gate5 实测)。T2 列表化后
+// 语义随任务更新。
+struct wlr_xwayland_surface *wl_ohos_output_client_xs(void);
 
 // 建 headless output (800x600) + 自定义 OHOS allocator + 帧定时器:
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。

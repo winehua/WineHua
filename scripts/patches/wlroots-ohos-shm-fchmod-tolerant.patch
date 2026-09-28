@@ -1,0 +1,68 @@
+diff --git a/util/shm.c b/util/shm.c
+index 5eb87bb8..5e5c2b25 100644
+--- a/util/shm.c
++++ b/util/shm.c
+@@ -6,6 +6,7 @@
+ #include <time.h>
+ #include <unistd.h>
+ #include <wlr/config.h>
++#include <wlr/util/log.h>
+ #include "util/shm.h"
+ 
+ #define RANDNAME_PATTERN "/wlroots-XXXXXX"
+@@ -33,6 +34,9 @@ static int excl_shm_open(char *name) {
+ 		}
+ 	} while (retries > 0 && errno == EEXIST);
+ 
++	// WineHua (M1-T1): 失败面留证 —— OHOS 沙箱实测 shm_open 可用
++	// (fallback=0, 见 allocate_shm_file_pair), 此日志只在异常沙箱触发
++	wlr_log(WLR_ERROR, "shm: shm_open failed errno=%d (name=%s)", errno, name);
+ 	return -1;
+ }
+ 
+@@ -49,6 +53,8 @@ int allocate_shm_file(size_t size) {
+ 		ret = ftruncate(fd, size);
+ 	} while (ret < 0 && errno == EINTR);
+ 	if (ret < 0) {
++		// WineHua (M1-T1): 分支留证
++		wlr_log(WLR_ERROR, "shm: file ftruncate failed errno=%d", errno);
+ 		close(fd);
+ 		return -1;
+ 	}
+@@ -66,6 +72,8 @@ bool allocate_shm_file_pair(size_t size, int *rw_fd_ptr, int *ro_fd_ptr) {
+ 	// CLOEXEC is guaranteed to be set by shm_open
+ 	int ro_fd = shm_open(name, O_RDONLY, 0);
+ 	if (ro_fd < 0) {
++		// WineHua (M1-T1): 分支留证
++		wlr_log(WLR_ERROR, "shm: pair ro_fd open failed errno=%d", errno);
+ 		shm_unlink(name);
+ 		close(rw_fd);
+ 		return false;
+@@ -75,10 +83,15 @@ bool allocate_shm_file_pair(size_t size, int *rw_fd_ptr, int *ro_fd_ptr) {
+ 
+ 	// Make sure the file cannot be re-opened in read-write mode (e.g. via
+ 	// "/proc/self/fd/" on Linux)
++	//
++	// WineHua (M1-T1 实测, 2026-09-29 hilog): OHOS app 沙箱对 shm_open
++	// 产出的 tmpfs 文件 fchmod 返回 EACCES (errno=13, SELinux setattr
++	// 限制)。该步骤是防护性强化 (防 /proc/self/fd 重开写), 不是 shm pair
++	// 协议的正确性前提 —— keymap 只消费 ro_fd。降级为 best-effort, 失败
++	// 留证继续。桌面 Linux 行为不变 (fchmod 仍成功, 日志静默)。
+ 	if (fchmod(rw_fd, 0) != 0) {
+-		close(rw_fd);
+-		close(ro_fd);
+-		return false;
++		wlr_log(WLR_INFO, "shm: fchmod(0) unsupported errno=%d "
++			"(continuing best-effort)", errno);
+ 	}
+ 
+ 	int ret;
+@@ -86,6 +99,8 @@ bool allocate_shm_file_pair(size_t size, int *rw_fd_ptr, int *ro_fd_ptr) {
+ 		ret = ftruncate(rw_fd, size);
+ 	} while (ret < 0 && errno == EINTR);
+ 	if (ret < 0) {
++		// WineHua (M1-T1): 分支留证
++		wlr_log(WLR_ERROR, "shm: pair ftruncate failed errno=%d", errno);
+ 		close(rw_fd);
+ 		close(ro_fd);
+ 		return false;

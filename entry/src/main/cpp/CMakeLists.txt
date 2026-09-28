@@ -81,6 +81,7 @@ add_library(entry SHARED
     display/display_compositor.cpp
     display/ohos_buffer.cpp
     display/ohos_output.c
+    display/display_input.c
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp
     compositor/toplevel/toplevel_event_bus.cpp
