@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 分支：`feature/display-route-m0` 续推（用户裁决 2026-09-29，不合 master）
-- submodule 保持上游净树，一切改动走 `scripts/patches/*.patch`；主仓库指针只在 submodule 推送到自身远程后才有意义
+- submodule 改动分两类：**wine = 自己的 fork**（`github.com:winehua/wine`，可推送，历史 OHOS 修复均为直接提交）→ 在 submodule 同名 feature 分支提交，**先推自身远程再升主仓库指针**（workflow 硬约束 #1）；**wlroots = 上游只读**（gitlab.freedesktop.org）→ 保持净树，改动走 `scripts/patches/*.patch`
 - Xwayland 钉 24.1.13、wlroots 0.20.2、wayland 1.26 不动版
 - Wine 图形驱动选择只扩 `win32u/driver.c` 的 `__OHOS__` bypass，不动 PnP/注册表机制
 - Xwayland argv 已带 `-ac`（沙箱 peercred 豁免未生效，M0-T9 实证）；输入链落地后若可换 peercred/xauth 另议，本计划不改
@@ -148,7 +148,7 @@ Expected: 双窗口内容正常、条带滚动、commit ≥25fps。`feat(display
 - Modify: `scripts/build_xcb_stack.sh` / `build_x11_client.sh`（guest 侧 pass）
 - Modify: `scripts/assemble.sh`（x86_64 libX11/libXext/libxcb 装配进 wine-data guest 面）
 - Modify: `scripts/build_wine.sh:148`（`--without-x` → `--with-x`，仅 guest pass）
-- Modify: `thirdparty/wine/dlls/win32u/driver.c`（经 `scripts/patches/wine-x11-route.patch` 新增）
+- Modify: `thirdparty/wine/dlls/win32u/driver.c`（wine submodule 直接提交，fork 远程）
 
 **Interfaces:**
 - Consumes: M0 的按侧参数化（`build_native.sh` 的 GUEST/HOST 侧 pkg-config 分目录惯例，`scripts/build_native.sh:258` 注释）
@@ -177,7 +177,7 @@ else if (getenv("DISPLAY"))
     ... 同款 KeUserModeCallback(NtUserLoadDriver, winex11W, sizeof(winex11W), &ret_ptr, &ret_len)
 }
 ```
-打成 `scripts/patches/wine-x11-route.patch`（submodule 净树纪律）。
+wine submodule 直接提交：`thirdparty/wine` 内切 `feature/display-route-m0` 分支（与主仓库同名，workflow 惯例），提交后**先推 wine 自身远程**，再回主仓库升 submodule 指针；合并前跑 `./scripts/check-submodules.sh`。操作 submodule 前确认当前目录（同名相对路径指向两个仓库）。
 Expected（Review Focus #1）: 不设 DISPLAY 跑 core 套件 PASS（旧链路零变化）；设 DISPLAY 时 hilog 见 winex11 加载。
 
 - [ ] **Step 4: wine 冒烟——xeyes 类最小程序**
