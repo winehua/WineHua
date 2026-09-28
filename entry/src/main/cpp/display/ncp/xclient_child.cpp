@@ -211,7 +211,12 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 XFlush(dpy);
                 ++moves;
             }
-            sleep(1);
+            // mode=2 以 ~30fps 重绘 (T3 帧率测量的内容源; 单窗模式保持
+            // 1Hz 人眼判活节奏)
+            if (mode == 2)
+                usleep(33000);
+            else
+                sleep(1);
         }
         while (XPending(dpy) > 0)
         {

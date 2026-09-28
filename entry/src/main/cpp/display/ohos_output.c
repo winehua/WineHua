@@ -46,12 +46,12 @@
 #define LOG_TAG "ohos-output"
 #define OHLOG(...) OH_LOG_INFO(LOG_APP, __VA_ARGS__)
 
+#include <wlr/types/wlr_scene.h>
+
 struct wl_ohos_output {
     struct wlr_output *output;
-    struct wlr_buffer *frame_buf;
-    OH_NativeBuffer *frame_nb; /* 帧背书; commit 回调直接 Map 读 (见下) */
-    size_t frame_stride;       /* 字节/行, GetConfig 回读 */
-    OHNativeWindowBuffer *frame_win_buf;
+    struct wlr_scene *scene;            /* M1-T3: scene 图形栈 */
+    struct wlr_scene_output *scene_output;
     OHNativeWindow *window;
     struct wl_listener commit_listener;
     struct wl_listener xnew_surface; /* xwayland->events.new_surface (T9) */
@@ -67,8 +67,11 @@ struct wl_ohos_output {
 struct ohos_client_surface {
     struct wlr_xwayland_surface *xs;
     struct wl_list link; /* g_clients */
+    struct wlr_scene_surface *scene_surf; /* M1-T3: scene 节点 */
     struct wl_listener destroy;
     struct wl_listener request_configure;
+    struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
+    struct wl_listener dissociate;
 };
 
 static struct wl_ohos_output g_out;
@@ -84,120 +87,38 @@ static uint32_t FrameCrc(const uint8_t *p, size_t n)
     return (sum & 0xffffu) ^ (sum >> 16);
 }
 
-// 渐变 + 黄边框测试图案写入已映射的帧内存; ABGR8888 = 内存字节 R,G,B,A
-// (与 OHOS RGBA_8888 一致)
-static void RenderTestPattern(uint8_t *px, int w, int h, uint32_t seq)
-{
-    for (int y = 0; y < h; ++y) {
-        uint8_t *row = px + (size_t)y * g_out.frame_stride;
-        for (int x = 0; x < w; ++x) {
-            uint8_t r, g, b;
-            if (x < 8 || x >= w - 8 || y < 8 || y >= h - 8) {
-                r = 255; g = 255; b = 0; /* 黄边框 */
-            } else {
-                r = (uint8_t)(x * 255 / w);
-                g = (uint8_t)(y * 255 / h);
-                b = (uint8_t)((seq * 7) & 0xff); /* 随帧蓝道, 人眼确认刷新 */
-            }
-            row[(size_t)x * 4 + 0] = r;
-            row[(size_t)x * 4 + 1] = g;
-            row[(size_t)x * 4 + 2] = b;
-            row[(size_t)x * 4 + 3] = 255;
-        }
-    }
-}
+/* M1-T3: 手搓渲染链 (RenderTestPattern/BlitClientSurface/RenderFrame,
+ * 逐像素图案 + R/B 互换 blit) 已由 wlr_scene 取代 —— scene 经 pixman
+ * 合成, X client surface 直接挂 scene graph, 不再逐像素手拷。帧率
+ * 基线与分段耗时见 ledger。 */
 
-/* T9/T2 端到端: 单个 X client 窗口内容 blit 进帧, 位置 = xs->x/y (X 屏
- * 坐标即帧内像素坐标, 等比无缩放)。X shm buffer 是 ARGB8888/XRGB8888
- * (内存字节 B,G,R,A), 帧是 ABGR8888 (R,G,B,A)——逐像素 R/B 互换。窗口
- * 越界 (含负坐标) 裁剪。读失败返回 false。 */
-static bool BlitOneClientSurface(struct wlr_xwayland_surface *xs, uint8_t *px,
-                                 int fw, int fh)
+/* T3: xs->surface 在 associate 事件才可用 (M0 spec §6.2 实测结论:
+ * new_surface 时为 NULL, 手搓链靠逐帧轮询掩盖了这点, scene 挂载必须
+ * 等 associate)。surface 销毁时 scene 节点由 wlroots 自动回收;
+ * dissociate (M2+ 窗口管理复用语义) 时清指针。 */
+static void ClientAssociate(struct wl_listener *listener, void *data)
 {
-    if (!xs)
-        return false;
-    struct wlr_surface *surf = xs->surface;
-    if (!wl_ohos_surface_has_content(surf))
-        return false;
-    /* 显示中内容在 surface->buffer (wlr_client_buffer)——current.buffer 是
-     * 最近一次 commit 的裸 buffer, Xwayland child 的空 commit 会让它为 NULL
-     * (T9 实测)。client buffer 的 base 即 wlr_buffer, shm 内容可直读。 */
-    struct wlr_buffer *cbuf = surf->buffer ? &surf->buffer->base : NULL;
-    if (!cbuf || cbuf->width <= 0 || cbuf->height <= 0)
-    {
-        static int said2;
-        if (++said2 == 60)
-            OHLOG("client buffer missing: cbuf=%{public}p w=%{public}d h=%{public}d "
-                  "current.buffer=%{public}p",
-                  (void *)cbuf, cbuf ? cbuf->width : -1, cbuf ? cbuf->height : -1,
-                  (void *)surf->current.buffer);
-        return false;
-    }
-    void *data = NULL;
-    uint32_t format = 0;
-    size_t cstride = 0;
-    if (!wlr_buffer_begin_data_ptr_access(cbuf, WLR_BUFFER_DATA_PTR_ACCESS_READ,
-                                          &data, &format, &cstride))
-    {
-        static int said3;
-        if (++said3 == 60)
-            OHLOG("client buffer access denied (renderer 持锁?)");
-        return false;
-    }
-    int cw = cbuf->width, ch = cbuf->height;
-    int ox = xs->x, oy = xs->y;   /* 目标 (帧内) */
-    int sx0 = 0, sy0 = 0;         /* 源裁剪起点 (负偏移时) */
-    if (ox < 0) { sx0 = -ox; ox = 0; }
-    if (oy < 0) { sy0 = -oy; oy = 0; }
-    int cols = cw - sx0 < fw - ox ? cw - sx0 : fw - ox;
-    int rows = ch - sy0 < fh - oy ? ch - sy0 : fh - oy;
-    for (int y = 0; rows > 0 && y < rows; ++y) {
-        const uint8_t *src = (const uint8_t *)data +
-                             (size_t)(sy0 + y) * cstride + (size_t)sx0 * 4;
-        uint8_t *dst = px + (size_t)(oy + y) * g_out.frame_stride +
-                       (size_t)ox * 4;
-        for (int x = 0; x < cols; ++x) {
-            /* BGRA(mem) → RGBA(mem): R/B 互换, A 取满 */
-            dst[(size_t)x * 4 + 0] = src[(size_t)x * 4 + 2];
-            dst[(size_t)x * 4 + 1] = src[(size_t)x * 4 + 1];
-            dst[(size_t)x * 4 + 2] = src[(size_t)x * 4 + 0];
-            dst[(size_t)x * 4 + 3] = 255;
-        }
-    }
-    wlr_buffer_end_data_ptr_access(cbuf);
-    return rows > 0 && cols > 0;
-}
-
-/* T2: 全部已映射 client 按创建序 blit (链尾 = 最上层 = 最后画)。
- * 返回成功 blit 的窗口数。 */
-static int BlitAllClientSurfaces(uint8_t *px, int fw, int fh)
-{
-    int n = 0;
-    struct ohos_client_surface *c;
-    wl_list_for_each(c, &g_clients, link) {
-        if (BlitOneClientSurface(c->xs, px, fw, fh))
-            ++n;
-    }
-    return n;
-}
-
-static void RenderFrame(struct wlr_buffer *buf, uint32_t seq)
-{
-    void *data = NULL;
-    uint32_t format = 0;
-    size_t stride = 0;
-    if (!wlr_buffer_begin_data_ptr_access(buf, WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
-                                          &data, &format, &stride))
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, associate);
+    struct wlr_xwayland_surface *xs = c->xs;
+    (void)data;
+    if (!xs || !xs->surface || !g_out.scene)
         return;
-    uint8_t *px = data;
-    int w = buf->width, h = buf->height;
-    /* 图案兜底永远画 (窗口间隙/无窗口时可见); client 窗口按序压上 */
-    RenderTestPattern(px, w, h, seq);
-    BlitAllClientSurfaces(px, w, h);
-    /* CRC 必须在 end_data_ptr_access (Unmap) 之前算——Unmap 后 px 失效,
-     * 解引用即 SEGV (T8 实测: row 599 日志后崩, use-after-unmap) */
-    g_out.last_crc = FrameCrc(px, (size_t)h * g_out.frame_stride);
-    wlr_buffer_end_data_ptr_access(buf);
+    c->scene_surf = wlr_scene_surface_create(&g_out.scene->tree, xs->surface);
+    if (!c->scene_surf)
+        OH_LOG_ERROR(LOG_APP, "scene_surface create failed (associate)");
+    OHLOG("client associated surf=%{public}p (scene attached)",
+          (void *)xs->surface);
+}
+
+static void ClientDissociate(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, dissociate);
+    (void)data;
+    /* surface 已随 dissociate 失效; scene 节点由 wlroots 随 surface 销毁
+     * 回收, 这里只清引用 */
+    c->scene_surf = NULL;
 }
 
 // commit 帧 → 推 NativeWindow。
@@ -233,33 +154,23 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
 {
     (void)listener;
     struct wlr_output_event_commit *event = data;
+    struct timespec ts_enter;
+    clock_gettime(CLOCK_MONOTONIC, &ts_enter);
     if (!event || !event->state || !event->state->buffer)
         return;
     ++g_out.frame_seq;
 
-    /* T9: 应答 client surface 的 frame callback。Xwayland child 首帧 commit
-     * 后会等 frame 事件再提交后续 damage; 无 scene 图形栈, 须手动应答,
-     * 否则 X 窗口内容永远停在首帧/空帧 (T9 实测: surface mapped 但
-     * current.buffer 恒 NULL)。T2: 遍历全部已映射 client 逐个应答。 */
-    {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        struct ohos_client_surface *c;
-        wl_list_for_each(c, &g_clients, link) {
-            if (c->xs && wl_ohos_surface_has_content(c->xs->surface))
-                wlr_surface_send_frame_done(c->xs->surface, &now);
-        }
-    }
-
     /* Region 无内嵌数组: rects 是独立指针, 必须指向外部 RegionRect。
      * 之前写 `region.rects = &region.rects[0]` 是对未初始化指针取下标
      * (= 自赋垃圾值), 随栈残留值偶发可写不崩、常则 SEGV——T8 真机三次
-     * cppcrash (20:23:33/20:23:57/20:34:37, Faultlogger 定位到本行) 的根因 */
+     * cppcrash (20:23:33/20:23:57/20:34:37, Faultlogger 定位到本行) 的根因。
+     * M1-T3: 尺寸取 commit 的 swapchain buffer (scene 渲染目标),
+     * 不再是固定的 frame_buf。 */
     struct Rect rect;
     rect.x = 0;
     rect.y = 0;
-    rect.w = (uint32_t)g_out.frame_buf->width;
-    rect.h = (uint32_t)g_out.frame_buf->height;
+    rect.w = (uint32_t)event->state->buffer->width;
+    rect.h = (uint32_t)event->state->buffer->height;
     Region region;
     region.rects = &rect;
     region.rectNumber = 1;
@@ -324,13 +235,16 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
         mapped = 1;
     }
 
-    /* 帧已在 g_out.frame_buf (OH_NativeBuffer) 里; 拷贝进 window buffer。
+    /* 帧在 commit 的 swapchain buffer (M1-T3: scene 渲染目标, 经我们的
+     * OHOS allocator 背书) 里; 拷贝进 window buffer。
      * 源读取绕开 wlr_buffer access 计数: commit 事件在 commit_state 内同步
-     * 发射, 此时 pixman renderer 尚未 end 对 frame_buf 的 access, 再 begin
+     * 发射, 此时 pixman renderer 尚未 end 对该 buffer 的 access, 再 begin
      * 会命中 accessing_data 断言 → abort (T8 实测 cppcrash)。
      * OH_NativeBuffer_Map 直接映射同一物理内存, 与访问计数无关。 */
+    OH_NativeBuffer *src_nb = wl_ohos_buffer_native(event->state->buffer);
+    size_t src_stride = wl_ohos_buffer_stride(event->state->buffer);
     void *src = NULL;
-    if (OH_NativeBuffer_Map(g_out.frame_nb, &src) != 0 || !src) {
+    if (!src_nb || OH_NativeBuffer_Map(src_nb, &src) != 0 || !src) {
         if (fence >= 0) close(fence);
         return;
     }
@@ -338,14 +252,16 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     size_t copy_bytes = (size_t)w * 4;
     uint8_t *d = dst;
     uint8_t *s = src;
-    /* 双侧行距一致 (frame_stride) 且 >= 行宽才拷; 行数钳到两侧较小者 */
-    if (dst_stride == g_out.frame_stride && dst_stride >= copy_bytes) {
+    /* 双侧行距一致且 >= 行宽才拷; 行数钳到两侧较小者 */
+    if (dst_stride == src_stride && dst_stride >= copy_bytes) {
         int rows = (dst_rows > 0 && dst_rows < ht) ? dst_rows : ht;
         for (int y = 0; y < rows; ++y)
-            memcpy(d + (size_t)y * dst_stride, s + (size_t)y * g_out.frame_stride,
+            memcpy(d + (size_t)y * dst_stride, s + (size_t)y * src_stride,
                    copy_bytes);
+        if ((g_out.frame_seq % 30) == 1)
+            g_out.last_crc = FrameCrc(s, (size_t)ht * src_stride);
     }
-    OH_NativeBuffer_Unmap(g_out.frame_nb);
+    OH_NativeBuffer_Unmap(src_nb);
 
     if (mapped) {
         size_t bytes = (size_t)ht * dst_stride;
@@ -363,25 +279,82 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     }
     if ((g_out.frame_seq % 30) == 1)
         OHLOG("commit seq=%{public}u crc=%{public}x", g_out.frame_seq, g_out.last_crc);
+    /* T3 分段计时: commit→NativeWindow 拷贝推屏段的每帧耗时 (平均/最大,
+     * 每 120 帧打一次)。零拷贝重构属 M2, 本任务只出数据。 */
+    {
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        int64_t us = (int64_t)(ts_now.tv_sec - ts_enter.tv_sec) * 1000000 +
+                     (ts_now.tv_nsec - ts_enter.tv_nsec) / 1000;
+        static int64_t sum_us;
+        static int64_t max_us;
+        static int n;
+        sum_us += us;
+        if (us > max_us) max_us = us;
+        if (++n >= 120) {
+            OHLOG("segment copy+flush: avg=%{public}lldus max=%{public}lldus n=%{public}d",
+                  (long long)(sum_us / n), (long long)max_us, n);
+            sum_us = 0;
+            max_us = 0;
+            n = 0;
+        }
+    }
 }
 
-// 30fps 帧驱动: 重绘同一 buffer → state_set_buffer → commit → commit 事件推屏
+// 30fps 帧时钟 (M1-T3 scene 版): frame_done 无条件按节拍泵出 (client 的
+// frame 节流靠它解锁 —— 不泵则 client 等回调、无新 damage、scene 无帧
+// 可提, 互等死锁, gate1 实测停在首帧), commit 由 scene damage 门控
+// (画面静止时零渲染零拷贝)。headless output 无自身 frame 事件, 本定时器
+// 即帧时钟。
 static int FrameTick(void *data)
 {
-    struct wlr_output *output = data;
-    static uint32_t tick_seq = 0;
-    RenderFrame(g_out.frame_buf, ++tick_seq);
-    struct wlr_output_state state;
-    wlr_output_state_init(&state);
-    wlr_output_state_set_buffer(&state, g_out.frame_buf);
-    pixman_region32_t dmg;
-    pixman_region32_init_rect(&dmg, 0, 0,
-                              (unsigned int)output->width, (unsigned int)output->height);
-    wlr_output_state_set_damage(&state, &dmg);
-    wlr_output_test_state(output, &state);
-    wlr_output_commit_state(output, &state);
-    pixman_region32_fini(&dmg);
-    wlr_output_state_finish(&state);
+    (void)data;
+    struct ohos_client_surface *c;
+    wl_list_for_each(c, &g_clients, link) {
+        if (c->scene_surf && c->xs)
+            wlr_scene_node_set_position(&c->scene_surf->buffer->node,
+                                        c->xs->x, c->xs->y);
+    }
+    if (g_out.scene_output) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        /* frame_done 直发 client surface: scene 级泵 (wlr_scene_output_
+         * send_frame_done) 按 node.visible 过滤, 而 visible 只在渲染遍历
+         * 时填充 —— headless 无 frame 事件 + commit 按 damage 门控时,
+         * 无内容节点永远不可见, 首帧互等死锁 (gate2 探针: needs_frame
+         * 恒 0, withbuf 恒 1)。surface 级直发不依赖渲染遍历, 与真合成器
+         * 在 output frame 事件中的做法一致。 */
+        struct ohos_client_surface *pc;
+        wl_list_for_each(pc, &g_clients, link) {
+            if (pc->xs && pc->xs->surface)
+                wlr_surface_send_frame_done(pc->xs->surface, &now);
+        }
+        /* scene 提交段计时 (仅统计实际渲染帧: 无 damage 的 commit 内部
+         * 直接跳过, 混入会稀释均值)。分段基线 ~18-20ms/帧 (T3 ledger),
+         * 零拷贝重构属 M2 present 重构, 本遥测作其前后对照。 */
+        bool render = wlr_scene_output_needs_frame(g_out.scene_output);
+        struct timespec ts_r0;
+        clock_gettime(CLOCK_MONOTONIC, &ts_r0);
+        wlr_scene_output_commit(g_out.scene_output, NULL);
+        struct timespec ts_r1;
+        clock_gettime(CLOCK_MONOTONIC, &ts_r1);
+        if (render) {
+            int64_t us = (int64_t)(ts_r1.tv_sec - ts_r0.tv_sec) * 1000000 +
+                         (ts_r1.tv_nsec - ts_r0.tv_nsec) / 1000;
+            static int64_t rsum;
+            static int64_t rmax;
+            static int rn;
+            rsum += us;
+            if (us > rmax) rmax = us;
+            if (++rn >= 120) {
+                OHLOG("segment scene render+commit: avg=%{public}lldus max=%{public}lldus n=%{public}d",
+                      (long long)(rsum / rn), (long long)rmax, rn);
+                rsum = 0;
+                rmax = 0;
+                rn = 0;
+            }
+        }
+    }
     wl_event_source_timer_update(g_out.frame_timer, 33);
     return 0;
 }
@@ -394,6 +367,8 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     (void)data;
     wl_list_remove(&c->destroy.link);
     wl_list_remove(&c->request_configure.link);
+    wl_list_remove(&c->associate.link);
+    wl_list_remove(&c->dissociate.link);
     wl_list_remove(&c->link);
     free(c);
 }
@@ -427,6 +402,10 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     wl_signal_add(&xs->events.destroy, &c->destroy);
     c->request_configure.notify = ClientRequestConfigure;
     wl_signal_add(&xs->events.request_configure, &c->request_configure);
+    c->associate.notify = ClientAssociate;
+    wl_signal_add(&xs->events.associate, &c->associate);
+    c->dissociate.notify = ClientDissociate;
+    wl_signal_add(&xs->events.dissociate, &c->dissociate);
     wl_list_insert(g_clients.prev, &c->link); /* 链尾 = 最上层 */
     OHLOG("client surface created (%{public}dx%{public}d @%{public}d,%{public}d)",
           xs->width, xs->height, xs->x, xs->y);
@@ -468,19 +447,6 @@ struct wlr_xwayland_surface *wl_ohos_output_client_topmost_at(int fx, int fy)
             fy >= xs->y && fy < xs->y + xs->height) {
             hit = xs;
             break;
-        }
-    }
-    if (!hit) {
-        /* T2 门诊断 (脚本驱动低频, 保留至 scene 化前): miss 时列出全部
-         * 候选态, 供判 content/几何哪一环不符 */
-        wl_list_for_each_reverse(c, &g_clients, link) {
-            struct wlr_xwayland_surface *xs = c->xs;
-            OHLOG("hit miss cand xs=%{public}p content=%{public}d "
-                  "geom=%{public}dx%{public}d@%{public}d,%{public}d",
-                  (void *)xs,
-                  xs ? wl_ohos_surface_has_content(xs->surface) : -1,
-                  xs ? xs->width : -1, xs ? xs->height : -1,
-                  xs ? xs->x : -1, xs ? xs->y : -1);
         }
     }
     return hit;
@@ -529,30 +495,30 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     }
     wlr_output_state_finish(&st);
 
-    struct wlr_drm_format fmt;
-    memset(&fmt, 0, sizeof(fmt));
-    fmt.format = DRM_FORMAT_ABGR8888;
-    fmt.len = 0;
-    fmt.capacity = 0;
-    g_out.frame_buf = alloc->impl->create_buffer(alloc, 800, 600, &fmt);
-    if (!g_out.frame_buf) {
-        OH_LOG_ERROR(LOG_APP, "frame buffer alloc failed");
+    /* M1-T3: scene 图形栈取代手搓帧缓冲。scene 经 pixman 渲染到 output
+     * 的 swapchain (buffer 由我们的 OHOS allocator 背书), commit 事件把
+     * swapchain buffer 带给 HandleOutputCommit 拷推 NativeWindow ——
+     * 下游推屏链路不变。背景 rect 兜底承担原测试图案的"无窗口可见"职责
+     * (premultiplied 深灰)。 */
+    g_out.scene = wlr_scene_create();
+    if (!g_out.scene) {
+        OH_LOG_ERROR(LOG_APP, "scene create failed");
         return -1;
     }
-    g_out.frame_nb = wl_ohos_buffer_native(g_out.frame_buf);
-    g_out.frame_stride = wl_ohos_buffer_stride(g_out.frame_buf);
+    const float bg[4] = {0.10f, 0.10f, 0.12f, 1.0f};
+    if (!wlr_scene_rect_create(&g_out.scene->tree, 800, 600, bg)) {
+        OH_LOG_ERROR(LOG_APP, "scene background rect failed");
+        return -1;
+    }
+    g_out.scene_output = wlr_scene_output_create(g_out.scene, g_out.output);
+    if (!g_out.scene_output) {
+        OH_LOG_ERROR(LOG_APP, "scene_output create failed");
+        return -1;
+    }
 
-    OH_NativeBuffer *nb = wl_ohos_buffer_native(g_out.frame_buf);
-    g_out.frame_win_buf = OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer(nb);
-    if (!g_out.frame_win_buf) {
-        OH_LOG_ERROR(LOG_APP, "CreateNativeWindowBufferFromNativeBuffer failed");
-        return -1;
-    }
-    int32_t rc = OH_NativeWindow_NativeWindowAttachBuffer(window, g_out.frame_win_buf);
-    OHLOG("AttachBuffer rc=%{public}d", rc);
-    // window 队列 buffer 几何跟随帧缓冲 (Request 按此分配, memcpy 尺寸才对)
-    rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
-                                               800, 600);
+    // window 队列 buffer 几何声明 (Request 按此分配, memcpy 尺寸才对)
+    int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
+                                                       800, 600);
     OHLOG("SET_BUFFER_GEOMETRY rc=%{public}d", rc);
 
     g_out.commit_listener.notify = HandleOutputCommit;
