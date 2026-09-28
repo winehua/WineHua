@@ -1,5 +1,6 @@
 import { SmokeRunner } from './SmokeRunner';
 import { WineEnvService } from '../service/WineEnvService';
+import smokeNapi from 'libsmoke_napi.so';
 
 // 侧边栏「开发测试」区 (Index 唯一的 smoke 侵入行: <SmokeDevPanel />)。
 // 使能与进度全部内部镜像, Index 零状态零逻辑。合并 main-ui 摘除 =
@@ -44,6 +45,12 @@ export struct SmokeDevPanel {
             prefix: 'reuse',
             source: 'ui'
           });
+        })
+        .margin({ bottom: 6 })
+      Button('DisplayRoute 启动')
+        .width('100%').height(32).backgroundColor('#748')
+        .onClick(() => {
+          smokeNapi.smokeDisplayRoute();
         })
         .margin({ bottom: 6 })
       if (this.smokeStatus) {

@@ -61,7 +61,14 @@ EOF
     log "xwayland.pc ($XWLR_PIN 暂存复刻) → $HOST_EXT_PC"
 fi
 
-if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ]; then
+# OHOS NCP 启动补丁 (out-of-tree, submodule 钉 tag 零本地提交, 同 xserver 惯例):
+# fork/exec 替换为 NCP spawn 钩子 + 导出 argv 哨兵构建器。守卫 = 补丁签名,
+# 只看产物存在会吃掉补丁改动 (wayland 头/xwayland 补丁同款教训)。
+WLR_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-ncp-spawn.patch"
+WLR_PATCH_SIG=$(sha256sum "$WLR_PATCH" | cut -d' ' -f1)
+
+if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ] \
+   && [ "$(cat "$HOST_EXT_LIB/.wlroots_patch_sig" 2>/dev/null)" = "$WLR_PATCH_SIG" ]; then
     log "wlroots ($NATIVE_ARCH, $WLR_VER) 已就绪，跳过"
 else
     # 构建目录带版本后缀 (旧 meson 缓存不可复用)
@@ -72,6 +79,14 @@ else
     # werror=false。实测依据: OHOS bionic sysroot 的 __assert_fail 不带 noreturn
     # 属性 (glibc 带), xwm.c:306 的 assert 终止路径被 clang 判为缺 return,
     # -Werror 下直接失败; 关掉 -Werror 后该警告仍留在日志里可见。
+    # 补丁应用: 本分支入口 = 补丁签名与守卫不符 (补丁变更或首次构建)。
+    # 先复位子模块工作区到基线再 apply——sentinel 命中会把「树里是旧补丁」
+    # 误判为「已应用」, 新 hunks 静默丢失 (与 build_xwayland.sh 同款教训)。
+    git -C "$WLR_SRC" checkout -- xwayland include/wlr/xwayland/server.h
+    rm -f "$WLR_SRC/xwayland/ohos_spawn.c"
+    git -C "$WLR_SRC" apply --check "$WLR_PATCH" \
+        || err "wlroots NCP 补丁无法应用 (submodule 工作区与补丁基线不符)"
+    git -C "$WLR_SRC" apply "$WLR_PATCH"
     meson_host_build "$BUILD_DIR/wlroots_build_${WLR_VER}" "$WLR_SRC" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dauto_features=disabled \
@@ -81,6 +96,7 @@ else
         -Dwerror=false
     ninja -C "$BUILD_DIR/wlroots_build_${WLR_VER}"
     ninja -C "$BUILD_DIR/wlroots_build_${WLR_VER}" install
+    echo "$WLR_PATCH_SIG" > "$HOST_EXT_LIB/.wlroots_patch_sig"
 fi
 
 # ── 验收断言 ──

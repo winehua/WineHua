@@ -150,12 +150,15 @@ XS_PATCH_SIG=$(sha256sum "$XS_PATCH" | cut -d' ' -f1)
 if [ ! -f "$HOST_EXT_LIB/libxwayland_ohos.so" ] \
    || [ "$(cat "$HOST_EXT_LIB/.xwayland_ohos_sig" 2>/dev/null)" != "$XS_PATCH_SIG" ]; then
     [ -f "$XSERVE_SRC/hw/xwayland/meson.build" ] || err "thirdparty/xserver 缺源码"
-    # 幂等应用: sentinel 命中视为已应用 (构建中途重跑不重复 apply)
-    if ! grep -q "xwayland_ohos_lib" "$XSERVE_SRC/hw/xwayland/meson.build"; then
-        git -C "$XSERVE_SRC" apply --check "$XS_PATCH" \
-            || err "xserver 补丁无法应用 (submodule 工作区与补丁基线不符)"
-        git -C "$XSERVE_SRC" apply "$XS_PATCH"
-    fi
+    # 幂等 + 补丁演进安全: 本分支入口 = 补丁签名与守卫不符 (即补丁已变更或
+    # 首次构建)。先复位子模块工作区到基线 (checkout 只动已跟踪文件, 再删补丁
+    # 新增的未跟踪文件), 保证 apply 永远从干净基线出发——否则 sentinel 命中
+    # 会把「树里是旧补丁」误判为「已应用」, 新补丁 hunks 静默丢失 (实测踩坑)。
+    git -C "$XSERVE_SRC" checkout -- hw/xwayland xkb/ddxLoad.c
+    rm -f "$XSERVE_SRC/hw/xwayland/xwayland_ohos_main.c"
+    git -C "$XSERVE_SRC" apply --check "$XS_PATCH" \
+        || err "xserver 补丁无法应用 (submodule 工作区与补丁基线不符)"
+    git -C "$XSERVE_SRC" apply "$XS_PATCH"
     # 24.1 独立分支无 xorg/xephyr/xnest 选项 (Xwayland-only 项目, 结构性裁剪);
     # xvfb/docs*/glamor 逐项关闭至依赖闭包最小 (sha1/libdecor/ei 走 auto 探测);
     # glx=false 同时让 include/meson.build:9 的 dri_dep 转 optional

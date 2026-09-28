@@ -76,6 +76,8 @@ export interface SmokeJob {
   params?: SmokeJobParams;
   prefix?: string;
   longSeconds?: number;
+  // M0-T7: true = run 开始时触发显示路线 bring-up (smokeNapi.smokeDisplayRoute)
+  displayroute?: boolean;
 }
 
 export interface SmokeRequest {

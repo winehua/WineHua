@@ -65,3 +65,40 @@ index 000000000..8d39749bc
 +{
 +    return dix_main(argc, argv, envp);
 +}
+diff --git a/xkb/ddxLoad.c b/xkb/ddxLoad.c
+index 18e0ec3be..94acf1869 100644
+--- a/xkb/ddxLoad.c
++++ b/xkb/ddxLoad.c
+@@ -101,6 +101,10 @@ OutputDirectory(char *outdir, size_t size)
+  */
+ typedef void (*xkbcomp_buffer_callback)(FILE *out, void *userdata);
+ 
++/* OHOS (WineHua): forward decl for the prebuilt-keymap cache check below. */
++static FILE *XkbDDXOpenConfigFile(const char *mapName, char *fileNameRtrn,
++                                  int fileNameRtrnLen);
++
+ /**
+  * Start xkbcomp, let the callback write into xkbcomp's stdin. When done,
+  * return a strdup'd copy of the file name we've written to.
+@@ -129,6 +133,21 @@ RunXkbComp(xkbcomp_buffer_callback callback, void *userdata)
+ 
+     OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));
+ 
++    /* OHOS (WineHua): NCP 子进程不能 fork/exec xkbcomp (实测 exec=FAIL
++     * errno=13), 而本函数没有缓存查找——keymap 加载必然失败 →
++     * "Failed to activate virtual core keyboard" FatalError (T7 实测)。
++     * keymap 缓存由 assemble 期宿主 xkbcomp 预生成 (wine-data/xkm/)，
++     * NCP shim 启动时拷到 XDG_RUNTIME_DIR。命中即直接走 LoadXKM，
++     * 与下方 Pclose 成功路径 (return xnfstrdup(keymap)) 同构。 */
++    {
++        FILE *cached = XkbDDXOpenConfigFile(keymap, NULL, 0);
++        if (cached != NULL) {
++            fclose(cached);
++            DebugF("[xkb] using prebuilt keymap cache: %s.xkm\n", keymap);
++            return xnfstrdup(keymap);
++        }
++    }
++
+ #ifdef WIN32
+     strcpy(tmpname, Win32TempDir());
+     strcat(tmpname, "\\xkb_XXXXXX");

@@ -588,6 +588,43 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cp -a "$smoke_payload/." "$wine_data/smoke/"
     log "  smoke payload → wine-data/smoke ($(find "$wine_data/smoke" -name '*.exe' | wc -l) exe)"
 
+    # XKB 键盘布局数据 → wine-data/xkb/ (xkeyboard-config, 架构无关)。
+    # Xwayland 的 XKB_BASE_DIRECTORY 是编译期宿主绝对路径, 设备上不存在 →
+    # 虚拟核心键盘激活失败 FatalError (T7 bring-up 实测); 运行时由 wlroots
+    # spawn 补丁的 -xkbdir 指向 files/wine/xkb (解压自本目录)。
+    local xkb_src="$SYSROOT_EXT/usr/share/X11/xkb"
+    [ -f "$xkb_src/rules/evdev" ] || err "xkb data missing: $xkb_src (run scripts/build_xkbconfig.sh)"
+    mkdir -p "$wine_data/xkb"
+    cp -a "$xkb_src/." "$wine_data/xkb/"
+    log "  xkb data → wine-data/xkb ($(du -sh "$wine_data/xkb" | cut -f1))"
+
+    # 预编译 keymap 缓存 → wine-data/xkm/server-0.xkm。
+    # Xwayland 加载 keymap 的正规路径是 fork/exec xkbcomp (xkb/ddxLoad.c
+    # RunXkbComp)——NCP 内 exec 被拒 (实测 errno 13) → keymap 加载失败 →
+    # "Failed to activate virtual core keyboard" FatalError (T7 实测)。
+    # RunXkbComp 先查 <XDG_RUNTIME_DIR>/server-0.xkm 缓存, 命中则跳过
+    # xkbcomp; .xkm 是架构无关数据, 宿主 xkbcomp 生成的设备端直接可用。
+    # NCP shim 启动时把本文件拷到 XDG_RUNTIME_DIR (setenv 同步补上) 命中缓存。
+    local xkm_tmp="$STAGING_DIR/xkm-build"
+    mkdir -p "$xkm_tmp" "$wine_data/xkm"
+    cat > "$xkm_tmp/keymap.txt" << 'XKB_KEYMAP'
+xkb_keymap {
+  xkb_keycodes { include "evdev" };
+  xkb_types { include "complete" };
+  xkb_compat { include "complete" };
+  xkb_symbols { include "pc+us" };
+};
+XKB_KEYMAP
+    # 注意 -R 会重锚所有相对路径, 源/目标均用绝对路径
+    # (SYSROOT_EXT/STAGING_DIR 定义即绝对, 不再拼 $PWD)
+    /usr/bin/xkbcomp -w 1 "-R$xkb_src" "$xkm_tmp/keymap.txt" \
+        "$wine_data/xkm/server-0.xkm" > "$xkm_tmp/xkbcomp.log" 2>&1
+    # xkm 魔数 = 0x0f "mkx" (xkbfile.h XKM file header)
+    if ! head -c 4 "$wine_data/xkm/server-0.xkm" 2>/dev/null | od -An -tx1 | grep -q "0f 6d 6b 78"; then
+        err "xkm 生成失败: $(head -3 "$xkm_tmp/xkbcomp.log") (需要宿主 xkbcomp)"
+    fi
+    log "  xkm cache → wine-data/xkm/server-0.xkm ($(stat -c%s "$wine_data/xkm/server-0.xkm") B)"
+
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"

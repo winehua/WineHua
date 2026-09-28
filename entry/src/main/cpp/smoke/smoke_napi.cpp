@@ -46,10 +46,23 @@ static napi_value SmokeMapPoint(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// DisplayRoute M0 bring-up 触发 (计划 M0-T7 Step 3): 测试设施不进产品路径,
+// 显示路线入口在 entry.so 的 display/display_compositor.cpp, 同进程符号直解
+extern "C" void WineHua_DisplayRoute_Start();
+
+static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
+    (void)env; (void)info;
+    WineHua_DisplayRoute_Start();
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
 EXTERN_C_START
 static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
     napi_property_descriptor props[] = {
         {"smokeMapPoint", nullptr, SmokeMapPoint, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRoute", nullptr, SmokeDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
     return exports;

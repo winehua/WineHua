@@ -1,0 +1,436 @@
+diff --git a/include/wlr/xwayland/server.h b/include/wlr/xwayland/server.h
+index b699b8f4..aaf4d5ae 100644
+--- a/include/wlr/xwayland/server.h
++++ b/include/wlr/xwayland/server.h
+@@ -65,4 +65,15 @@ struct wlr_xwayland_server *wlr_xwayland_server_create(
+ 	struct wl_display *display, struct wlr_xwayland_server_options *options);
+ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server);
+ 
++/**
++ * OHOS (WineHua R-SPAWN): build the Xwayland argv for the NCP child.
++ * Identical to the argv the upstream exec path would use, except fd numbers
++ * are "@XFD0@", "@XFD1@", "@DISPLAYFD@", "@WMFD@" sentinels — the NCP shim
++ * substitutes the fd numbers it received from the NCP framework by name.
++ * WAYLAND_SOCKET is set by the shim from its "wl_fd" named fd, not here.
++ * argv must have room for at least 64 entries (NULL-terminated on success).
++ */
++bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
++	int notify_fd, char *argv[], size_t argv_max);
++
+ #endif
+diff --git a/xwayland/server.c b/xwayland/server.c
+index 8401c9e6..dea0577b 100644
+--- a/xwayland/server.c
++++ b/xwayland/server.c
+@@ -24,31 +24,31 @@ static void safe_close(int fd) {
+ 	}
+ }
+ 
+-noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+-		int notify_fd) {
+-	if (!set_cloexec(server->x_fd[0], false) ||
+-			!set_cloexec(server->x_fd[1], false) ||
+-			!set_cloexec(server->wl_fd[1], false)) {
+-		wlr_log(WLR_ERROR, "Failed to unset CLOEXEC on FD");
+-		_exit(EXIT_FAILURE);
+-	}
+-	if (server->options.enable_wm && !set_cloexec(server->wm_fd[1], false)) {
+-		wlr_log(WLR_ERROR, "Failed to unset CLOEXEC on FD");
+-		_exit(EXIT_FAILURE);
+-	}
+-
+-	char *argv[64] = {0};
++// OHOS (WineHua R-SPAWN): NCP 子进程无法 fork/exec, Xwayland 以共享库形态
++// (libxwayland.so, 导出 main) 由 NCP shim 直接调用。本函数构建与原 exec_xwayland
++// 完全一致的 argv, 但 fd 数值以哨兵占位——shim 收到 NCP 框架下发的命名 fd 后
++// 按名替换。WAYLAND_SOCKET 亦由 shim 自行 setenv。
++bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
++		int notify_fd, char *argv[], size_t argv_max) {
+ 	size_t i = 0;
+ 
+-	char listenfd0[16], listenfd1[16], displayfd[16];
+-	snprintf(listenfd0, sizeof(listenfd0), "%d", server->x_fd[0]);
+-	snprintf(listenfd1, sizeof(listenfd1), "%d", server->x_fd[1]);
+-	snprintf(displayfd, sizeof(displayfd), "%d", notify_fd);
+-
+ 	argv[i++] = "Xwayland";
+ 	argv[i++] = server->display_name;
+ 	argv[i++] = "-rootless";
+ 	argv[i++] = "-core";
++	// OHOS (WineHua): stderr 是唯一可观测面 (NCP 子进程, 落盘重定向), 强制详细日志。
++	// 注意是 -verbose (Xwayland 支持), 不是 Xorg 的 -logverbose (实测 Fatal:
++	// Unrecognized option)
++	argv[i++] = "-verbose";
++	argv[i++] = "7";
++	argv[i++] = "-nolock";
++	// OHOS (WineHua): XKB 规则数据随 wine-data.zip 解压到 files/wine/xkb
++	// (assemble.sh staging wine_data/xkb)。编译期 XKB_BASE_DIRECTORY 是宿主
++	// 绝对路径, 设备上不存在 → 虚拟核心键盘激活失败 FatalError (T7 bring-up
++	// 实测 stderr: "Failed to activate virtual core keyboard")。-xkbdir 直接
++	// 赋 XkbBaseDirectory (xkb/xkbInit.c:756)。
++	argv[i++] = "-xkbdir";
++	argv[i++] = "/data/storage/el2/base/files/wine/xkb";
+ 
+ 	argv[i++] = "-terminate";
+ #if HAVE_XWAYLAND_TERMINATE_DELAY
+@@ -62,23 +62,21 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+ 
+ #if HAVE_XWAYLAND_LISTENFD
+ 	argv[i++] = "-listenfd";
+-	argv[i++] = listenfd0;
++	argv[i++] = "@XFD0@";
+ 	argv[i++] = "-listenfd";
+-	argv[i++] = listenfd1;
++	argv[i++] = "@XFD1@";
+ #else
+ 	argv[i++] = "-listen";
+-	argv[i++] = listenfd0;
++	argv[i++] = "@XFD0@";
+ 	argv[i++] = "-listen";
+-	argv[i++] = listenfd1;
++	argv[i++] = "@XFD1@";
+ #endif
+ 	argv[i++] = "-displayfd";
+-	argv[i++] = displayfd;
++	argv[i++] = "@DISPLAYFD@";
+ 
+-	char wmfd[16];
+ 	if (server->options.enable_wm) {
+-		snprintf(wmfd, sizeof(wmfd), "%d", server->wm_fd[1]);
+ 		argv[i++] = "-wm";
+-		argv[i++] = wmfd;
++		argv[i++] = "@WMFD@";
+ 	}
+ 
+ #if HAVE_XWAYLAND_NO_TOUCH_POINTER_EMULATION
+@@ -97,44 +95,11 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+ 	server->options.force_xrandr_emulation = false;
+ #endif
+ 
+-	argv[i++] = NULL;
+-
+-	assert(i <= sizeof(argv) / sizeof(argv[0]));
+-
+-	char wayland_socket_str[16];
+-	snprintf(wayland_socket_str, sizeof(wayland_socket_str), "%d", server->wl_fd[1]);
+-	setenv("WAYLAND_SOCKET", wayland_socket_str, true);
+-
+-	wlr_log(WLR_INFO, "Starting Xwayland on :%d", server->display);
+-
+-	// Closes stdout/stderr depending on log verbosity
+-	enum wlr_log_importance verbosity = wlr_log_get_verbosity();
+-	int devnull = open("/dev/null", O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+-	if (devnull < 0) {
+-		wlr_log_errno(WLR_ERROR, "XWayland: failed to open /dev/null");
+-		_exit(EXIT_FAILURE);
+-	}
+-	if (verbosity < WLR_INFO) {
+-		dup2(devnull, STDOUT_FILENO);
+-	}
+-	if (verbosity < WLR_ERROR) {
+-		dup2(devnull, STDERR_FILENO);
+-	}
+-
+-	const char *xwayland_path = getenv("WLR_XWAYLAND");
+-	if (xwayland_path) {
+-		wlr_log(WLR_INFO, "Using Xwayland binary '%s' due to WLR_XWAYLAND",
+-			xwayland_path);
+-	} else {
+-		xwayland_path = XWAYLAND_PATH;
++	if (i + 1 > argv_max) {
++		return false;
+ 	}
+-
+-	// This returns if and only if the call fails
+-	execvp(xwayland_path, argv);
+-
+-	wlr_log_errno(WLR_ERROR, "failed to exec %s", xwayland_path);
+-	close(devnull);
+-	_exit(EXIT_FAILURE);
++	argv[i] = NULL;
++	return true;
+ }
+ 
+ static void server_finish_process(struct wlr_xwayland_server *server) {
+@@ -254,24 +219,8 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
+ 		}
+ 	}
+ 
+-	while (waitpid(server->pid, NULL, 0) < 0) {
+-		if (errno == EINTR) {
+-			continue;
+-		}
+-
+-		/* If some application has installed a SIGCHLD handler, they
+-		 * may race and waitpid() on our child, which will cause this
+-		 * waitpid() to fail. We have a signal from the
+-		 * notify pipe that things are ready, so this waitpid() is only
+-		 * to prevent zombies, which will have already been reaped by
+-		 * the application's SIGCHLD handler.
+-		 */
+-		if (errno == ECHILD) {
+-			break;
+-		}
+-		wlr_log_errno(WLR_ERROR, "waitpid for Xwayland fork failed");
+-		goto error;
+-	}
++	// OHOS (WineHua R-SPAWN): Xwayland 运行于 NCP 子进程 (非本进程 fork 产物),
++	// 无僵尸可收, 生命周期由 NCP 框架管理; 原 waitpid 收尸块整体移除。
+ 	/* Xwayland will only write on the fd once it has finished its
+ 	 * initial setup. Getting an event here without READABLE means
+ 	 * the server end failed.
+@@ -281,7 +230,7 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
+ 		wlr_log(WLR_ERROR, "Xwayland startup failed, not setting up xwm");
+ 		goto error;
+ 	}
+-	wlr_log(WLR_DEBUG, "Xserver is ready");
++	wlr_log(WLR_INFO, "Xwayland ready (OHOS NCP), display %s", server->display_name);
+ 
+ 	close(fd);
+ 	wl_event_source_remove(server->pipe_source);
+@@ -321,6 +270,14 @@ static bool server_start_display(struct wlr_xwayland_server *server,
+ 	return true;
+ }
+ 
++static bool server_start(struct wlr_xwayland_server *server);
++
++// OHOS (WineHua R-SPAWN): 定义于 app 侧 glue (display_compositor.cpp)。
++// 职责: 用 wlr_xwayland_server_ohos_build_argv 产出 argv, 连同五个命名 fd
++// 经 NCP 启动 Xwayland 子进程。返回 false 表示 spawn 失败。
++extern bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
++	int display_fd);
++
+ static bool server_start(struct wlr_xwayland_server *server) {
+ 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, server->wl_fd) != 0) {
+ 		wlr_log_errno(WLR_ERROR, "socketpair failed");
+@@ -349,18 +306,6 @@ static bool server_start(struct wlr_xwayland_server *server) {
+ 
+ 	server->server_start = time(NULL);
+ 
+-	server->client = wl_client_create(server->wl_display, server->wl_fd[0]);
+-	if (!server->client) {
+-		wlr_log_errno(WLR_ERROR, "wl_client_create failed");
+-		server_finish_process(server);
+-		return false;
+-	}
+-
+-	server->wl_fd[0] = -1; /* not ours anymore */
+-
+-	server->client_destroy.notify = handle_client_destroy;
+-	wl_client_add_destroy_listener(server->client, &server->client_destroy);
+-
+ 	int notify_fd[2];
+ 	if (pipe(notify_fd) == -1) {
+ 		wlr_log_errno(WLR_ERROR, "pipe failed");
+@@ -381,30 +326,32 @@ static bool server_start(struct wlr_xwayland_server *server) {
+ 
+ 	wl_signal_emit_mutable(&server->events.start, NULL);
+ 
+-	server->pid = fork();
+-	if (server->pid < 0) {
+-		wlr_log_errno(WLR_ERROR, "fork failed");
++	// OHOS (WineHua R-SPAWN): fork/exec 不可用, 由 app 侧 glue 实现
++	// wlr_ohos_spawn_xwayland: 经 OHOS NCP (OH_Ability_StartNativeChildProcess)
++	// 启动 libxwayland_child.so, 把 x_fd/wl_fd/wm_fd/displayfd 以命名 fd 下发,
++	// 子进程内 dlopen libxwayland.so 调 main()。spawn 成功后五个 fd 所有权归
++	// NCP 框架, 父侧不得 close (仅做 -1 记账防后续误关)。
++	// OHOS (WineHua): wl_client_create 后移到 spawn 之后——实测先注册的 epoll
++	// source 会被 spawn IPC 静默搞丢 (epoll-reg=none 且 child 端无 HUP);
++	// child 早期请求由内核缓冲, client 建好后一次派发。
++	if (!wlr_ohos_spawn_xwayland(server, notify_fd[1])) {
++		wlr_log(WLR_ERROR, "OHOS NCP spawn for Xwayland failed");
+ 		close(notify_fd[0]);
+ 		close(notify_fd[1]);
+ 		server_finish_process(server);
+ 		return false;
+-	} else if (server->pid == 0) {
+-		pid_t pid = fork();
+-		if (pid < 0) {
+-			wlr_log_errno(WLR_ERROR, "second fork failed");
+-			_exit(EXIT_FAILURE);
+-		} else if (pid == 0) {
+-			exec_xwayland(server, notify_fd[1]);
+-		}
+-
+-		_exit(EXIT_SUCCESS);
+ 	}
+ 
+-	/* close child fds */
+ 	/* remain managing x sockets for lazy start */
+-	close(notify_fd[1]);
+-	close(server->wl_fd[1]);
+-	safe_close(server->wm_fd[1]);
++	server->client = wl_client_create(server->wl_display, server->wl_fd[0]);
++	if (!server->client) {
++		wlr_log_errno(WLR_ERROR, "wl_client_create failed");
++		server_finish_process(server);
++		return false;
++	}
++	server->wl_fd[0] = -1; /* not ours anymore */
++	server->client_destroy.notify = handle_client_destroy;
++	wl_client_add_destroy_listener(server->client, &server->client_destroy);
+ 	server->wl_fd[1] = server->wm_fd[1] = -1;
+ 
+ 	return true;
+@@ -469,11 +416,9 @@ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server) {
+ struct wlr_xwayland_server *wlr_xwayland_server_create(
+ 		struct wl_display *wl_display,
+ 		struct wlr_xwayland_server_options *options) {
+-	if (!getenv("WLR_XWAYLAND") && access(XWAYLAND_PATH, X_OK) != 0) {
+-		wlr_log(WLR_ERROR, "Cannot find Xwayland binary \"%s\"", XWAYLAND_PATH);
+-		return NULL;
+-	}
+-
++	// OHOS (WineHua R-SPAWN): NCP 形态无 Xwayland 可执行文件, shim dlopen
++	// libxwayland.so 直调 main; 原可执行文件 access(WLR_XWAYLAND/XWAYLAND_PATH)
++	// 检查不适用, 整体移除。
+ 	struct wlr_xwayland_server *server = calloc(1, sizeof(*server));
+ 	if (!server) {
+ 		return NULL;
+diff --git a/xwayland/sockets.c b/xwayland/sockets.c
+index 364fbc47..68a5dbfc 100644
+--- a/xwayland/sockets.c
++++ b/xwayland/sockets.c
+@@ -16,12 +16,38 @@
+ #include "sockets.h"
+ #include "util/fd.h"
+ 
+-static const char lock_fmt[] = "/tmp/.X%d-lock";
++// OHOS (WineHua): app sandbox 不提供可写的 /tmp, X11 socket 目录与 lock 文件
++// 优先放 $XDG_RUNTIME_DIR/.X11-unix (与上游 xserver 的 XDG 优先解析同序),
++// /tmp 仅作非沙箱环境的回退。以下三个 *_r 在 resolve_x11_dir() 后生效。
+ static const char socket_dir[] = "/tmp/.X11-unix";
+-static const char socket_fmt[] = "/tmp/.X11-unix/X%d";
+-#ifndef __linux__
+-static const char socket_fmt2[] = "/tmp/.X11-unix/X%d_";
+-#endif
++static char x11_dir[256];
++static char lock_fmt_r[288];
++static char socket_fmt_r[288];
++
++static bool resolve_x11_dir(void) {
++	if (x11_dir[0]) {
++		return true;
++	}
++	const char *xdg = getenv("XDG_RUNTIME_DIR");
++	if (xdg) {
++		int n = snprintf(x11_dir, sizeof(x11_dir), "%s/.X11-unix", xdg);
++		if (n > 0 && (size_t)n < sizeof(x11_dir) &&
++				(mkdir(x11_dir, 0755) == 0 || errno == EEXIST)) {
++			snprintf(lock_fmt_r, sizeof(lock_fmt_r), "%s/.X%%d-lock", x11_dir);
++			snprintf(socket_fmt_r, sizeof(socket_fmt_r), "%s/X%%d", x11_dir);
++			return true;
++		}
++		x11_dir[0] = '\0';
++	}
++	if (mkdir(socket_dir, 0755) == 0 || errno == EEXIST) {
++		snprintf(x11_dir, sizeof(x11_dir), "%s", socket_dir);
++		snprintf(lock_fmt_r, sizeof(lock_fmt_r), "%s/.X%%d-lock", x11_dir);
++		snprintf(socket_fmt_r, sizeof(socket_fmt_r), "%s/X%%d", x11_dir);
++		return true;
++	}
++	wlr_log_errno(WLR_ERROR, "no usable X11 socket directory");
++	return false;
++}
+ 
+ static int open_socket(struct sockaddr_un *addr, size_t path_size) {
+ 	int fd, rc;
+@@ -71,23 +97,23 @@ cleanup:
+ static bool check_socket_dir(void) {
+ 	struct stat buf;
+ 
+-	if (lstat(socket_dir, &buf)) {
+-		wlr_log_errno(WLR_ERROR, "Failed to stat %s", socket_dir);
++	if (lstat(x11_dir, &buf)) {
++		wlr_log_errno(WLR_ERROR, "Failed to stat %s", x11_dir);
+ 		return false;
+ 	}
+ 	if (!(buf.st_mode & S_IFDIR)) {
+-		wlr_log(WLR_ERROR, "%s is not a directory", socket_dir);
++		wlr_log(WLR_ERROR, "%s is not a directory", x11_dir);
+ 		return false;
+ 	}
+ 	if (!((buf.st_uid == 0) || (buf.st_uid == getuid()))) {
+-		wlr_log(WLR_ERROR, "%s not owned by root or us", socket_dir);
++		wlr_log(WLR_ERROR, "%s not owned by root or us", x11_dir);
+ 		return false;
+ 	}
+ 	if (!(buf.st_mode & S_ISVTX)) {
+ 		/* we can deal with no sticky bit... */
+ 		if ((buf.st_mode & (S_IWGRP | S_IWOTH))) {
+ 			/* but not if other users can mess with our sockets */
+-			wlr_log(WLR_ERROR, "sticky bit not set on %s", socket_dir);
++			wlr_log(WLR_ERROR, "sticky bit not set on %s", x11_dir);
+ 			return false;
+ 		}
+ 	}
+@@ -98,29 +124,23 @@ static bool open_sockets(int socks[2], int display) {
+ 	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+ 	size_t path_size;
+ 
+-	if (mkdir(socket_dir, 0755) == 0) {
+-		wlr_log(WLR_INFO, "Created %s ourselves -- other users will "
+-			"be unable to create X11 UNIX sockets of their own",
+-			socket_dir);
+-	} else if (errno != EEXIST) {
+-		wlr_log_errno(WLR_ERROR, "Unable to mkdir %s", socket_dir);
+-		return false;
+-	} else if (!check_socket_dir()) {
++	// OHOS (WineHua): 目录在 resolve_x11_dir() 建好并校验过, 这里仅复查
++	if (!resolve_x11_dir() || !check_socket_dir()) {
+ 		return false;
+ 	}
+ 
+ #ifdef __linux__
+ 	addr.sun_path[0] = 0;
+-	path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, socket_fmt, display);
++	path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, socket_fmt_r, display);
+ #else
+-	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt2, display);
++	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt_r, display);
+ #endif
+ 	socks[0] = open_socket(&addr, path_size);
+ 	if (socks[0] < 0) {
+ 		return false;
+ 	}
+ 
+-	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt, display);
++	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt_r, display);
+ 	socks[1] = open_socket(&addr, path_size);
+ 	if (socks[1] < 0) {
+ 		close(socks[0]);
+@@ -134,15 +154,14 @@ static bool open_sockets(int socks[2], int display) {
+ void unlink_display_sockets(int display) {
+ 	char sun_path[64];
+ 
+-	snprintf(sun_path, sizeof(sun_path), socket_fmt, display);
+-	unlink(sun_path);
++	if (!resolve_x11_dir()) {
++		return;
++	}
+ 
+-#ifndef __linux__
+-	snprintf(sun_path, sizeof(sun_path), socket_fmt2, display);
++	snprintf(sun_path, sizeof(sun_path), socket_fmt_r, display);
+ 	unlink(sun_path);
+-#endif
+ 
+-	snprintf(sun_path, sizeof(sun_path), lock_fmt, display);
++	snprintf(sun_path, sizeof(sun_path), lock_fmt_r, display);
+ 	unlink(sun_path);
+ }
+ 
+@@ -150,8 +169,12 @@ int open_display_sockets(int socks[2]) {
+ 	int lock_fd, display;
+ 	char lock_name[64];
+ 
++	if (!resolve_x11_dir()) {
++		return -1;
++	}
++
+ 	for (display = 0; display <= 32; display++) {
+-		snprintf(lock_name, sizeof(lock_name), lock_fmt, display);
++		snprintf(lock_name, sizeof(lock_name), lock_fmt_r, display);
+ 		if ((lock_fd = open(lock_name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444)) >= 0) {
+ 			if (!open_sockets(socks, display)) {
+ 				unlink(lock_name);

@@ -150,6 +150,17 @@ export class SmokeRunner {
         ]);
         return;
       }
+      // [[SMOKE]] M0-T7: job.displayroute=true 触发显示路线 bring-up
+      // (smokeNapi → entry WineHua_DisplayRoute_Start), 供无 UI 自动化编排;
+      // displayroute-only (无测试项) 触发后即收尾
+      if (request.job && request.job.displayroute) {
+        hilog.info(DOMAIN, TAG, 'job.displayroute: triggering DisplayRoute start');
+        smokeNapi.smokeDisplayRoute();
+        if (!request.job.inline || request.job.inline.length === 0) {
+          await this.finishSuite(request, []);
+          return;
+        }
+      }
       // 测试清单来源 (job > suites.json): inline 自带完整定义不读 suites.json;
       // tests 是在 suite 上的过滤; 都没有则跑整个 suite
       const job: SmokeJob | undefined = request.job;
@@ -397,6 +408,12 @@ export class SmokeRunner {
     if (action.type === 'sleep') {
       const ms: number = action.ms && action.ms > 0 ? action.ms : 100;
       await new Promise<void>((r) => setTimeout(r, ms));
+      return '';
+    }
+    if (action.type === 'displayroute') {
+      // [[SMOKE]] M0-T7: 触发显示路线 bring-up (smokeNapi → entry WineHua_DisplayRoute_Start)
+      smokeNapi.smokeDisplayRoute();
+      await new Promise<void>((r) => setTimeout(r, 300));
       return '';
     }
     if (action.type === 'type') {

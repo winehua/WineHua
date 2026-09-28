@@ -26,6 +26,16 @@ endif()
 # 预编译 ARM64 wayland-server (放在 libs/ 下，hvigor 自动打包)
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
+# 显示路线 wlroots (静态库) — 构建产物在 build/host-ext (纪律: build/ 内唯一落点),
+# 其 NEEDED 闭包 .so 由 assemble.sh 装配进 libs/ (打包视图)
+# 注: NATIVERENDER_ROOT_PATH = entry/src/main/cpp, 仓库根在四级上
+set(WLR_DIR ${NATIVERENDER_ROOT_PATH}/../../../../build/host-ext/${OHOS_ARCH})
+set(WLR_STATIC ${WLR_DIR}/usr/lib/libwlroots-0.20.a)
+set(WLR_INC ${WLR_DIR}/usr/include/wlroots-0.20)
+set(WLR_PIXMAN_INC ${WLR_DIR}/usr/include/pixman-1)
+# xwayland.h 需要 xcb/xcb.h 等 (host-ext usr/include)
+set(WLR_XCB_INC ${WLR_DIR}/usr/include)
+
 add_library(entry SHARED
     audio/audio_broker.cpp
     audio/audio_ipc_server.cpp
@@ -68,6 +78,7 @@ add_library(entry SHARED
     compositor/input/input_space_mapper.cpp
     compositor/input/input_queue.cpp
     compositor/input/input_state_tracker.cpp
+    display/display_compositor.cpp
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp
     compositor/toplevel/toplevel_event_bus.cpp
@@ -100,6 +111,8 @@ add_library(entry SHARED
 # -O2 属性必须跟着代码走 — 漏挂曾致 blit 段从 26ms 劣化到 ~240ms。
 set_source_files_properties(compositor/frame/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")
 
+target_include_directories(entry PRIVATE ${WLR_INC} ${WLR_PIXMAN_INC} ${WLR_XCB_INC})
+
 target_link_libraries(entry PUBLIC
     libace_napi.z.so
     libace_ndk.z.so
@@ -114,13 +127,33 @@ target_link_libraries(entry PUBLIC
     libipc_capi.so
     libohaudio.so
     libnative_window_manager.so
+    # wlroots 静态库 + 其 NEEDED 闭包 (顺序敏感: .a 在前, 依赖 .so 在后)
+    ${WLR_STATIC}
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
+    ${WAYLAND_LIBS_DIR}/libwayland-client.so.0
+    ${WAYLAND_LIBS_DIR}/libxkbcommon.so.0
+    ${WAYLAND_LIBS_DIR}/libpixman-1.so.0
+    ${WAYLAND_LIBS_DIR}/libdrm.so.2
+    ${WAYLAND_LIBS_DIR}/libxcb.so.1
+    ${WAYLAND_LIBS_DIR}/libxcb-composite.so.0
+    ${WAYLAND_LIBS_DIR}/libxcb-ewmh.so.2
+    ${WAYLAND_LIBS_DIR}/libxcb-icccm.so.4
+    ${WAYLAND_LIBS_DIR}/libxcb-render.so.0
+    ${WAYLAND_LIBS_DIR}/libxcb-res.so.0
+    ${WAYLAND_LIBS_DIR}/libxcb-xfixes.so.0
 )
 
 add_library(wine_child SHARED
     proc/wine_child.cpp
 )
 target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)
+
+# Xwayland NCP shim: 收父进程命名 fd 五连 + entryParams, dlopen
+# libxwayland_ohos.so 调 main (spec R-SPAWN; 入口形态同 wine_child)
+add_library(xwayland_child SHARED
+    display/ncp/xwayland_child.cpp
+)
+target_link_libraries(xwayland_child PUBLIC libhilog_ndk.z.so libchild_process.so)
 
 # smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询/注入
 # 原语, 产品代码不引用。符号来自 entry (同进程运行时解析), 必须与 entry 同包。
