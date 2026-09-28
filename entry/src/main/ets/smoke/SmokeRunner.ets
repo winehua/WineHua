@@ -155,7 +155,9 @@ export class SmokeRunner {
       // displayroute-only (无测试项) 触发后即收尾
       if (request.job && request.job.displayroute) {
         hilog.info(DOMAIN, TAG, 'job.displayroute: triggering DisplayRoute start');
-        smokeNapi.smokeDisplayRoute();
+        // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
+        const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
+        smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n);
         if (!request.job.inline || request.job.inline.length === 0) {
           await this.finishSuite(request, []);
           return;

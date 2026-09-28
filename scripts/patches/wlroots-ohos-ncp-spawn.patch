@@ -434,3 +434,32 @@ index 364fbc47..68a5dbfc 100644
  		if ((lock_fd = open(lock_name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444)) >= 0) {
  			if (!open_sockets(socks, display)) {
  				unlink(lock_name);
+diff --git a/xwayland/xwayland.c b/xwayland/xwayland.c
+index 300b582e..60212548 100644
+--- a/xwayland/xwayland.c
++++ b/xwayland/xwayland.c
+@@ -127,6 +127,24 @@ struct wlr_xwayland *wlr_xwayland_create_with_server(struct wl_display *wl_displ
+ 
+ 	wl_list_init(&xwayland->shell_destroy.link);
+ 
++	// WineHua: shell_v1 全局由本函数创建并拥有 (wlr_xwayland_destroy 会
++	// shell_v1_destroy)。上游把它放在 wlr_xwayland_create 包装层, 两段式
++	// 调用方 (C++ 宿主, 不 include xwayland.h) 无人创建 → xwayland->shell_v1
++	// 为 NULL, xwm_create 无条件 wl_signal_add 挂它 → SIGSEGV (T8 真机
++	// cppcrash 20260928204712, wl_signal_add @NULL+0x18)。server->client
++	// 已连接时手动补 handle_server_start 的 set_client (该事件先于本函数,
++	// 监听来得晚收不到)。
++	xwayland->shell_v1 = wlr_xwayland_shell_v1_create(wl_display, 1);
++	if (xwayland->shell_v1 == NULL) {
++		free(xwayland);
++		return NULL;
++	}
++	if (server->client != NULL) {
++		wlr_xwayland_shell_v1_set_client(xwayland->shell_v1, server->client);
++	}
++	xwayland->shell_destroy.notify = handle_shell_destroy;
++	wl_signal_add(&xwayland->shell_v1->events.destroy, &xwayland->shell_destroy);
++
+ 	if (server->ready) {
+ 		xwayland_mark_ready(xwayland);
+ 	}

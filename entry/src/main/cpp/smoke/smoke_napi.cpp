@@ -49,10 +49,21 @@ static napi_value SmokeMapPoint(napi_env env, napi_callback_info info) {
 // DisplayRoute M0 bring-up 触发 (计划 M0-T7 Step 3): 测试设施不进产品路径,
 // 显示路线入口在 entry.so 的 display/display_compositor.cpp, 同进程符号直解
 extern "C" void WineHua_DisplayRoute_Start();
+// T8: surfaceId 非零时同步启动出图链 (XComponent → NativeWindow 直推)
+extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
-    (void)env; (void)info;
-    WineHua_DisplayRoute_Start();
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        uint64_t surface_id = 0;
+        bool lossless = false;
+        napi_get_value_bigint_uint64(env, args[0], &surface_id, &lossless);
+        WineHua_DisplayRoute_StartWithSurface(surface_id);
+    } else {
+        WineHua_DisplayRoute_Start();
+    }
     napi_value ok;
     napi_get_boolean(env, true, &ok);
     return ok;

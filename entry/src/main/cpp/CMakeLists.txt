@@ -79,6 +79,8 @@ add_library(entry SHARED
     compositor/input/input_queue.cpp
     compositor/input/input_state_tracker.cpp
     display/display_compositor.cpp
+    display/ohos_buffer.cpp
+    display/ohos_output.c
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp
     compositor/toplevel/toplevel_event_bus.cpp
@@ -117,6 +119,7 @@ target_link_libraries(entry PUBLIC
     libace_napi.z.so
     libace_ndk.z.so
     libnative_window.so
+    libnative_buffer.so
     libnative_image.so
     libnative_vsync.so
     libEGL.so
@@ -127,8 +130,12 @@ target_link_libraries(entry PUBLIC
     libipc_capi.so
     libohaudio.so
     libnative_window_manager.so
-    # wlroots 静态库 + 其 NEEDED 闭包 (顺序敏感: .a 在前, 依赖 .so 在后)
+    # wlroots 静态库 + 其 NEEDED 闭包 (顺序敏感: .a 在前, 依赖 .so 在后)。
+    # start-group 防静态库内部 member 依赖环 (output.c.o→allocator.c.o,
+    # 单遍扫描报 undefined wlr_allocator_init, T8 实测)
+    -Wl,--start-group
     ${WLR_STATIC}
+    -Wl,--end-group
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
     ${WAYLAND_LIBS_DIR}/libwayland-client.so.0
     ${WAYLAND_LIBS_DIR}/libxkbcommon.so.0

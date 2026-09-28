@@ -1,0 +1,346 @@
+/*
+ * ohos_output.c — T8 出图链: headless output + 测试图案 + NativeWindow 直推
+ *
+ * 链路 (全部 C 编译, 见 ohos_output.h 的 C++ 兼容性说明):
+ *   wl_ohos_allocator_create (ohos_buffer.cpp) → headless output 800x600
+ *   → wlr_output_init_render → enable commit
+ *   → allocator.create_buffer 分配帧缓冲 (OH_NativeBuffer 背书)
+ *   → OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer + AttachBuffer
+ *   → 30fps 定时器: 渐变+边框图案 → state_set_buffer → commit_state
+ *   → events.commit → state->buffer → NativeWindowFlushBuffer 直推
+ *
+ * SDK 实测要点:
+ * - NativeWindowBuffer 结构 opaque, 自建不可行; 正规路径是
+ *   CreateNativeWindowBufferFromNativeBuffer 包装自有的 OH_NativeBuffer
+ *   后 AttachBuffer, 每帧直接 FlushBuffer 该 buffer (T8 首选路径)。
+ *   首验失败矩阵: Flush 报错 → 改 Request→GetBufferHandleFromNative→
+ *   virAddr 写→UnlockAndFlush。
+ */
+#define WLR_USE_UNSTABLE
+#include "ohos_output.h"
+#include "ohos_buffer.h"
+
+#include <dlfcn.h>
+#include <sys/mman.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <hilog/log.h>
+#include <native_buffer/native_buffer.h>
+#include <native_window/external_window.h>
+#include <libdrm/drm_fourcc.h>
+#include <pixman-1/pixman.h>
+#include <wlr/interfaces/wlr_buffer.h>
+#include <wlr/render/allocator.h>
+#include <wlr/render/drm_format_set.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/util/log.h>
+#include <wlr/backend/headless.h>
+#include <wlr/render/pixman.h>
+
+#define LOG_TAG "ohos-output"
+#define OHLOG(...) OH_LOG_INFO(LOG_APP, __VA_ARGS__)
+
+struct wl_ohos_output {
+    struct wlr_output *output;
+    struct wlr_buffer *frame_buf;
+    OH_NativeBuffer *frame_nb; /* 帧背书; commit 回调直接 Map 读 (见下) */
+    size_t frame_stride;       /* 字节/行, GetConfig 回读 */
+    OHNativeWindowBuffer *frame_win_buf;
+    OHNativeWindow *window;
+    struct wl_listener commit_listener;
+    struct wl_event_source *frame_timer;
+    uint32_t frame_seq;
+    uint32_t last_crc;
+};
+
+static struct wl_ohos_output g_out;
+
+// 帧数据的 32 位折叠校验 (高低 16 位异或), 用于 hilog 判帧稳定
+static uint32_t FrameCrc(const uint8_t *p, size_t n)
+{
+    uint32_t sum = 0;
+    for (size_t i = 0; i < n; i += 4)
+        sum += p[i] + ((uint32_t)p[i + 1] << 8) + ((uint32_t)p[i + 2] << 16) +
+               ((uint32_t)p[i + 3] << 24);
+    return (sum & 0xffffu) ^ (sum >> 16);
+}
+
+// 渐变 + 黄边框测试图案; ABGR8888 = 内存字节 R,G,B,A (与 OHOS RGBA_8888 一致)
+static void RenderTestPattern(struct wlr_buffer *buf, uint32_t seq)
+{
+    void *data = NULL;
+    uint32_t format = 0;
+    size_t stride = 0;
+    if (!wlr_buffer_begin_data_ptr_access(buf, WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
+                                          &data, &format, &stride))
+        return;
+    uint8_t *px = data;
+    int w = buf->width, h = buf->height;
+    for (int y = 0; y < h; ++y) {
+        uint8_t *row = px + (size_t)y * stride;
+        for (int x = 0; x < w; ++x) {
+            uint8_t r, g, b;
+            if (x < 8 || x >= w - 8 || y < 8 || y >= h - 8) {
+                r = 255; g = 255; b = 0; /* 黄边框 */
+            } else {
+                r = (uint8_t)(x * 255 / w);
+                g = (uint8_t)(y * 255 / h);
+                b = (uint8_t)((seq * 7) & 0xff); /* 随帧蓝道, 人眼确认刷新 */
+            }
+            row[(size_t)x * 4 + 0] = r;
+            row[(size_t)x * 4 + 1] = g;
+            row[(size_t)x * 4 + 2] = b;
+            row[(size_t)x * 4 + 3] = 255;
+        }
+    }
+    /* CRC 必须在 end_data_ptr_access (Unmap) 之前算——Unmap 后 px 失效,
+     * 解引用即 SEGV (T8 实测: row 599 日志后崩, use-after-unmap) */
+    g_out.last_crc = FrameCrc(px, (size_t)h * g_out.frame_stride);
+    wlr_buffer_end_data_ptr_access(buf);
+}
+
+// commit 帧 → 推 NativeWindow。
+// 实测矩阵: 路径 A (Attach 后直接 FlushBuffer) = 41207000 BUFFER_STATE_INVALID;
+// 路径 B (RequestBuffer→GetBufferHandleFromNative) = handle 在但 virAddr=NULL
+// (BufferQueue 不自动 map 给生产者)。路径 C (本实现): LockBuffer+UnlockFlush
+// (native_window.h:962/978, since API 23)——Lock 语义即 map, 锁后 virAddr 应
+// 有效。LockBuffer 用 dlsym 运行时解析: 直接链接会让 entry.so 在缺符号的
+// 老设备上加载失败。
+typedef int32_t (*LockBufferFn)(OHNativeWindow *, Region, OHNativeWindowBuffer **);
+typedef int32_t (*UnlockFlushFn)(OHNativeWindow *);
+static LockBufferFn g_lock_buffer;
+static UnlockFlushFn g_unlock_flush;
+static int g_lock_symbols; /* -1 未试, 0 设备无, 1 可用 */
+
+static int ResolveLockSymbols(void)
+{
+    if (g_lock_symbols >= 0)
+        return g_lock_symbols;
+    void *h = dlopen("libnative_window.so", RTLD_NOW | RTLD_NOLOAD);
+    if (!h)
+        h = dlopen("libnative_window.so", RTLD_NOW);
+    if (h) {
+        g_lock_buffer = (LockBufferFn)dlsym(h, "OH_NativeWindow_LockBuffer");
+        g_unlock_flush = (UnlockFlushFn)dlsym(h, "OH_NativeWindow_UnlockAndFlushBuffer");
+    }
+    g_lock_symbols = (g_lock_buffer && g_unlock_flush) ? 1 : 0;
+    OHLOG("LockBuffer symbols available=%{public}d", g_lock_symbols);
+    return g_lock_symbols;
+}
+
+static void HandleOutputCommit(struct wl_listener *listener, void *data)
+{
+    (void)listener;
+    struct wlr_output_event_commit *event = data;
+    if (!event || !event->state || !event->state->buffer)
+        return;
+    ++g_out.frame_seq;
+
+    /* Region 无内嵌数组: rects 是独立指针, 必须指向外部 RegionRect。
+     * 之前写 `region.rects = &region.rects[0]` 是对未初始化指针取下标
+     * (= 自赋垃圾值), 随栈残留值偶发可写不崩、常则 SEGV——T8 真机三次
+     * cppcrash (20:23:33/20:23:57/20:34:37, Faultlogger 定位到本行) 的根因 */
+    struct Rect rect;
+    rect.x = 0;
+    rect.y = 0;
+    rect.w = (uint32_t)g_out.frame_buf->width;
+    rect.h = (uint32_t)g_out.frame_buf->height;
+    Region region;
+    region.rects = &rect;
+    region.rectNumber = 1;
+
+    OHNativeWindowBuffer *win_buf = NULL;
+    int mapped = 0;
+    int dst_rows = 0;
+    void *dst = NULL;
+    size_t dst_stride = 0;
+    int fence = -1;
+
+    if (ResolveLockSymbols()) {
+        /* 路径 C: Lock 即 map */
+        int32_t rc = g_lock_buffer(g_out.window, region, &win_buf);
+        if (rc != 0 || !win_buf) {
+            OH_LOG_ERROR(LOG_APP, "LockBuffer rc=%{public}d (帧 %{public}u)",
+                         rc, g_out.frame_seq);
+            return;
+        }
+        BufferHandle *h = OH_NativeWindow_GetBufferHandleFromNative(win_buf);
+        if (h && h->virAddr) {
+            dst = h->virAddr;
+            dst_stride = (size_t)h->stride;
+            mapped = 0; /* UnlockAndFlush 负责解除 */
+        } else {
+            g_unlock_flush(g_out.window); /* 归还队列状态 */
+            win_buf = NULL;
+        }
+    }
+
+    if (!win_buf) {
+        /* 路径 G: RequestBuffer + 自行 mmap handle->fd (virAddr 由系统
+         * map 的场景只有 LockBuffer; 老设备无 LockBuffer, fd mmap 等价) */
+        int32_t rc = OH_NativeWindow_NativeWindowRequestBuffer(
+            g_out.window, &win_buf, &fence);
+        if (rc != 0 || !win_buf) {
+            if (g_out.frame_seq % 30 == 1)
+                OH_LOG_ERROR(LOG_APP, "RequestBuffer rc=%{public}d (帧 %{public}u)",
+                             rc, g_out.frame_seq);
+            return;
+        }
+        BufferHandle *h = OH_NativeWindow_GetBufferHandleFromNative(win_buf);
+        if (!h || h->fd < 0) {
+            if (g_out.frame_seq == 1)
+                OH_LOG_ERROR(LOG_APP, "no buffer fd h=%{public}p", (void *)h);
+            if (fence >= 0) close(fence);
+            return;
+        }
+        /* BufferHandle.stride 语义 = 字节/行 (size = stride*height);
+         * 之前误 ×4 导致写越界 SEGV (T8 实测 cppcrash) */
+        size_t bytes = (h->size > 0) ? (size_t)h->size
+                                     : (size_t)h->stride * h->height;
+        dst = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, h->fd, 0);
+        if (dst == MAP_FAILED) {
+            OH_LOG_ERROR(LOG_APP, "mmap fd=%{public}d errno=%{public}d",
+                         h->fd, errno);
+            if (fence >= 0) close(fence);
+            return;
+        }
+        dst_stride = (size_t)h->stride;
+        dst_rows = h->height > 0 ? h->height : 0;
+        mapped = 1;
+    }
+
+    /* 帧已在 g_out.frame_buf (OH_NativeBuffer) 里; 拷贝进 window buffer。
+     * 源读取绕开 wlr_buffer access 计数: commit 事件在 commit_state 内同步
+     * 发射, 此时 pixman renderer 尚未 end 对 frame_buf 的 access, 再 begin
+     * 会命中 accessing_data 断言 → abort (T8 实测 cppcrash)。
+     * OH_NativeBuffer_Map 直接映射同一物理内存, 与访问计数无关。 */
+    void *src = NULL;
+    if (OH_NativeBuffer_Map(g_out.frame_nb, &src) != 0 || !src) {
+        if (fence >= 0) close(fence);
+        return;
+    }
+    int w = region.rects[0].w, ht = region.rects[0].h;
+    size_t copy_bytes = (size_t)w * 4;
+    uint8_t *d = dst;
+    uint8_t *s = src;
+    /* 双侧行距一致 (frame_stride) 且 >= 行宽才拷; 行数钳到两侧较小者 */
+    if (dst_stride == g_out.frame_stride && dst_stride >= copy_bytes) {
+        int rows = (dst_rows > 0 && dst_rows < ht) ? dst_rows : ht;
+        for (int y = 0; y < rows; ++y)
+            memcpy(d + (size_t)y * dst_stride, s + (size_t)y * g_out.frame_stride,
+                   copy_bytes);
+    }
+    OH_NativeBuffer_Unmap(g_out.frame_nb);
+
+    if (mapped) {
+        size_t bytes = (size_t)ht * dst_stride;
+        munmap(dst, bytes);
+        /* fence 归还系统 (FlushBuffer 文档: fenceFd 由系统关闭) */
+        int32_t rc = OH_NativeWindow_NativeWindowFlushBuffer(
+            g_out.window, win_buf, fence, region);
+        if (rc != 0 && g_out.frame_seq % 30 == 1)
+            OH_LOG_ERROR(LOG_APP, "FlushBuffer rc=%{public}d", rc);
+    } else {
+        int32_t rc = g_unlock_flush(g_out.window);
+        if (rc != 0)
+            OH_LOG_ERROR(LOG_APP, "UnlockFlush rc=%{public}d (帧 %{public}u)",
+                         rc, g_out.frame_seq);
+    }
+    if ((g_out.frame_seq % 30) == 1)
+        OHLOG("commit seq=%{public}u crc=%{public}x", g_out.frame_seq, g_out.last_crc);
+}
+
+// 30fps 帧驱动: 重绘同一 buffer → state_set_buffer → commit → commit 事件推屏
+static int FrameTick(void *data)
+{
+    struct wlr_output *output = data;
+    static uint32_t tick_seq = 0;
+    RenderTestPattern(g_out.frame_buf, ++tick_seq);
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_buffer(&state, g_out.frame_buf);
+    pixman_region32_t dmg;
+    pixman_region32_init_rect(&dmg, 0, 0,
+                              (unsigned int)output->width, (unsigned int)output->height);
+    wlr_output_state_set_damage(&state, &dmg);
+    wlr_output_test_state(output, &state);
+    wlr_output_commit_state(output, &state);
+    pixman_region32_fini(&dmg);
+    wlr_output_state_finish(&state);
+    wl_event_source_timer_update(g_out.frame_timer, 33);
+    return 0;
+}
+
+int wl_ohos_output_chain_start(struct wlr_backend *backend,
+                               struct wlr_renderer *renderer,
+                               struct wl_event_loop *loop,
+                               OHNativeWindow *window)
+{
+    memset(&g_out, 0, sizeof(g_out));
+    g_out.window = window;
+
+    struct wlr_allocator *alloc = wl_ohos_allocator_create();
+    if (!alloc) {
+        OH_LOG_ERROR(LOG_APP, "ohos allocator create failed");
+        return -1;
+    }
+    g_out.output = wlr_headless_add_output(backend, 800, 600);
+    if (!g_out.output) {
+        OH_LOG_ERROR(LOG_APP, "headless add_output failed");
+        return -1;
+    }
+    if (!wlr_output_init_render(g_out.output, alloc, renderer)) {
+        OH_LOG_ERROR(LOG_APP, "output_init_render failed (caps 不匹配?)");
+        return -1;
+    }
+    struct wlr_output_state st;
+    wlr_output_state_init(&st);
+    wlr_output_state_set_enabled(&st, true);
+    // headless output 首次 commit 必须带 mode (只 set_enabled 实测 commit
+    // 失败); refresh=0 交由后端补默认
+    wlr_output_state_set_custom_mode(&st, 800, 600, 0);
+    if (!wlr_output_commit_state(g_out.output, &st)) {
+        OH_LOG_ERROR(LOG_APP, "output enable commit failed");
+        wlr_output_state_finish(&st);
+        return -1;
+    }
+    wlr_output_state_finish(&st);
+
+    struct wlr_drm_format fmt;
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.format = DRM_FORMAT_ABGR8888;
+    fmt.len = 0;
+    fmt.capacity = 0;
+    g_out.frame_buf = alloc->impl->create_buffer(alloc, 800, 600, &fmt);
+    if (!g_out.frame_buf) {
+        OH_LOG_ERROR(LOG_APP, "frame buffer alloc failed");
+        return -1;
+    }
+    g_out.frame_nb = wl_ohos_buffer_native(g_out.frame_buf);
+    g_out.frame_stride = wl_ohos_buffer_stride(g_out.frame_buf);
+
+    OH_NativeBuffer *nb = wl_ohos_buffer_native(g_out.frame_buf);
+    g_out.frame_win_buf = OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer(nb);
+    if (!g_out.frame_win_buf) {
+        OH_LOG_ERROR(LOG_APP, "CreateNativeWindowBufferFromNativeBuffer failed");
+        return -1;
+    }
+    int32_t rc = OH_NativeWindow_NativeWindowAttachBuffer(window, g_out.frame_win_buf);
+    OHLOG("AttachBuffer rc=%{public}d", rc);
+    // window 队列 buffer 几何跟随帧缓冲 (Request 按此分配, memcpy 尺寸才对)
+    rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
+                                               800, 600);
+    OHLOG("SET_BUFFER_GEOMETRY rc=%{public}d", rc);
+
+    g_out.commit_listener.notify = HandleOutputCommit;
+    wl_signal_add(&g_out.output->events.commit, &g_out.commit_listener);
+
+    g_out.frame_timer = wl_event_loop_add_timer(loop, FrameTick, g_out.output);
+    if (g_out.frame_timer)
+        wl_event_source_timer_update(g_out.frame_timer, 100);
+    OHLOG("output chain up: 800x600@30fps");
+    return 0;
+}

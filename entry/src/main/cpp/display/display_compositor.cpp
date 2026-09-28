@@ -40,23 +40,34 @@
 extern "C" {
 #include <wlr/util/log.h>
 #include <wlr/xwayland/server.h>
+#include <wlr/render/allocator.h>
+#include <wlr/interfaces/wlr_buffer.h>
 struct wlr_renderer;
 struct wlr_compositor;
 struct wlr_backend;
 struct wlr_xwayland;
+struct wlr_output;
 struct wlr_renderer *wlr_pixman_renderer_create(void);
 struct wlr_compositor *wlr_compositor_create(struct wl_display *display,
 	uint32_t version, struct wlr_renderer *renderer);
 struct wlr_backend *wlr_headless_backend_create(struct wl_event_loop *loop);
 bool wlr_backend_start(struct wlr_backend *backend);
+// WineHua 补丁新增 (scripts/patches/wlroots-ohos-ncp-spawn.patch)
 struct wlr_xwayland *wlr_xwayland_create_with_server(struct wl_display *display,
 	struct wlr_compositor *compositor, struct wlr_xwayland_server *server);
-// WineHua 补丁新增 (scripts/patches/wlroots-ohos-ncp-spawn.patch)
 bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 	int notify_fd, char *argv[], size_t argv_max);
 }
 
 #include <AbilityKit/native_child_process.h>
+
+#include "ohos_output.h"
+
+extern "C" {
+#include <native_buffer/native_buffer.h>
+#include <native_window/external_window.h>
+#include <native_window/buffer_handle.h>
+}
 
 #define LOG_TAG "DisplayRoute"
 
@@ -94,6 +105,9 @@ void HandleXwaylandReady(struct wl_listener *listener, void *data)
 }
 struct wl_listener g_xwayland_ready_listener;
 
+// ── T8 出图链: 测试图案 → OH_NativeBuffer → NativeWindow 直推 ─────────────
+// ArkTS 侧经 XComponent surfaceId 创建的 NativeWindow; smoke 面板持有 surface
+OHNativeWindow *g_present_window = nullptr;
 } // namespace
 
 // ── wlroots 补丁的 spawn 钩子 (server.c 调用) ──────────────────────────
@@ -170,7 +184,16 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 }
 
 // ── smoke 调试入口 ─────────────────────────────────────────────────────
+extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id);
+
 extern "C" void WineHua_DisplayRoute_Start()
+{
+    WineHua_DisplayRoute_StartWithSurface(0);
+}
+
+// surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;
+// 为 0 时维持 T7 行为 (仅合成器内核 + Xwayland, 不建 output)
+extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
@@ -180,6 +203,16 @@ extern "C" void WineHua_DisplayRoute_Start()
     }
     g_started = true;
     g_stop = false;
+
+    if (surface_id != 0)
+    {
+        int32_t rc = OH_NativeWindow_CreateNativeWindowFromSurfaceId(
+            surface_id, &g_present_window);
+        OH_LOG_INFO(LOG_APP, "present window from surface %{public}llu rc=%{public}d",
+                    (unsigned long long)surface_id, rc);
+        if (rc != 0)
+            g_present_window = nullptr;
+    }
 
     std::thread([] {
         // 日志桥先装: 后续 wlroots/协议层错误必须可见 (app stderr 不可观测)
@@ -246,6 +279,19 @@ extern "C" void WineHua_DisplayRoute_Start()
         {
             OH_LOG_ERROR(LOG_APP, "wlr_xwayland_create_with_server failed");
             return;
+        }
+
+        // ── T8 出图链: 自定义 allocator + headless output + 帧直推
+        //    (实现整体在 ohos_output.c, wlr_output.h 的 C++ 不兼容见其头注释)
+        if (g_present_window)
+        {
+            int rc = wl_ohos_output_chain_start(backend, renderer, loop,
+                                                g_present_window);
+            OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d", rc);
+        }
+        else
+        {
+            OH_LOG_INFO(LOG_APP, "no present surface, T8 output chain skipped");
         }
 
         OH_LOG_INFO(LOG_APP, "started, dispatching event loop");
