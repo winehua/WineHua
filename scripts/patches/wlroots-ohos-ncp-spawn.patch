@@ -19,10 +19,10 @@ index b699b8f4..aaf4d5ae 100644
 +
  #endif
 diff --git a/xwayland/server.c b/xwayland/server.c
-index 8401c9e6..dea0577b 100644
+index 8401c9e6..d6e22233 100644
 --- a/xwayland/server.c
 +++ b/xwayland/server.c
-@@ -24,31 +24,31 @@ static void safe_close(int fd) {
+@@ -24,31 +24,36 @@ static void safe_close(int fd) {
  	}
  }
  
@@ -57,6 +57,11 @@ index 8401c9e6..dea0577b 100644
  	argv[i++] = server->display_name;
  	argv[i++] = "-rootless";
  	argv[i++] = "-core";
++	// OHOS (WineHua T9): 关访问控制。实测无 -auth 时 Xwayland 对本地 client
++	// 仍回 "Authorization required, but no authorization protocol specified"
++	// (T9-10 字节级 setup 探针拿到 reason 串; 本地 peercred 豁免在 OHOS
++	// 沙箱未生效)。连接全部来自同 uid 的沙箱内进程, -ac 无越权面。
++	argv[i++] = "-ac";
 +	// OHOS (WineHua): stderr 是唯一可观测面 (NCP 子进程, 落盘重定向), 强制详细日志。
 +	// 注意是 -verbose (Xwayland 支持), 不是 Xorg 的 -logverbose (实测 Fatal:
 +	// Unrecognized option)
@@ -73,7 +78,7 @@ index 8401c9e6..dea0577b 100644
  
  	argv[i++] = "-terminate";
  #if HAVE_XWAYLAND_TERMINATE_DELAY
-@@ -62,23 +62,21 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+@@ -62,23 +67,21 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
  
  #if HAVE_XWAYLAND_LISTENFD
  	argv[i++] = "-listenfd";
@@ -103,7 +108,7 @@ index 8401c9e6..dea0577b 100644
  	}
  
  #if HAVE_XWAYLAND_NO_TOUCH_POINTER_EMULATION
-@@ -97,44 +95,11 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+@@ -97,44 +100,11 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
  	server->options.force_xrandr_emulation = false;
  #endif
  
@@ -152,7 +157,7 @@ index 8401c9e6..dea0577b 100644
  }
  
  static void server_finish_process(struct wlr_xwayland_server *server) {
-@@ -254,24 +219,8 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
+@@ -254,24 +224,8 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
  		}
  	}
  
@@ -179,7 +184,7 @@ index 8401c9e6..dea0577b 100644
  	/* Xwayland will only write on the fd once it has finished its
  	 * initial setup. Getting an event here without READABLE means
  	 * the server end failed.
-@@ -281,7 +230,7 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
+@@ -281,7 +235,7 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
  		wlr_log(WLR_ERROR, "Xwayland startup failed, not setting up xwm");
  		goto error;
  	}
@@ -188,7 +193,7 @@ index 8401c9e6..dea0577b 100644
  
  	close(fd);
  	wl_event_source_remove(server->pipe_source);
-@@ -321,6 +270,14 @@ static bool server_start_display(struct wlr_xwayland_server *server,
+@@ -321,6 +275,14 @@ static bool server_start_display(struct wlr_xwayland_server *server,
  	return true;
  }
  
@@ -203,7 +208,7 @@ index 8401c9e6..dea0577b 100644
  static bool server_start(struct wlr_xwayland_server *server) {
  	if (socketpair(AF_UNIX, SOCK_STREAM, 0, server->wl_fd) != 0) {
  		wlr_log_errno(WLR_ERROR, "socketpair failed");
-@@ -349,18 +306,6 @@ static bool server_start(struct wlr_xwayland_server *server) {
+@@ -349,18 +311,6 @@ static bool server_start(struct wlr_xwayland_server *server) {
  
  	server->server_start = time(NULL);
  
@@ -222,10 +227,12 @@ index 8401c9e6..dea0577b 100644
  	int notify_fd[2];
  	if (pipe(notify_fd) == -1) {
  		wlr_log_errno(WLR_ERROR, "pipe failed");
-@@ -381,30 +326,32 @@ static bool server_start(struct wlr_xwayland_server *server) {
+@@ -379,34 +329,42 @@ static bool server_start(struct wlr_xwayland_server *server) {
+ 	server->pipe_source = wl_event_loop_add_fd(loop, notify_fd[0],
+ 		WL_EVENT_READABLE, xserver_handle_ready, server);
  
- 	wl_signal_emit_mutable(&server->events.start, NULL);
- 
+-	wl_signal_emit_mutable(&server->events.start, NULL);
+-
 -	server->pid = fork();
 -	if (server->pid < 0) {
 -		wlr_log_errno(WLR_ERROR, "fork failed");
@@ -237,6 +244,12 @@ index 8401c9e6..dea0577b 100644
 +	// OHOS (WineHua): wl_client_create 后移到 spawn 之后——实测先注册的 epoll
 +	// source 会被 spawn IPC 静默搞丢 (epoll-reg=none 且 child 端无 HUP);
 +	// child 早期请求由内核缓冲, client 建好后一次派发。
++	//
++	// OHOS (WineHua T9): 'start' 事件 emit 在 wl_client_create 之后——上游
++	// 时序 client 先于 emit 存在, 消费方 handle_server_start (xwayland.c)
++	// 靠它读 server->client 给 shell_v1 设白名单; R-SPAWN 改动把 client
++	// 后移后 emit 还在原位, 白名单读到 NULL 恒为空, Xwayland bind
++	// xwayland_shell_v1 被拒 ("Permission denied", T9 真机实测) → 起动即崩。
 +	if (!wlr_ohos_spawn_xwayland(server, notify_fd[1])) {
 +		wlr_log(WLR_ERROR, "OHOS NCP spawn for Xwayland failed");
  		close(notify_fd[0]);
@@ -271,8 +284,12 @@ index 8401c9e6..dea0577b 100644
 +	wl_client_add_destroy_listener(server->client, &server->client_destroy);
  	server->wl_fd[1] = server->wm_fd[1] = -1;
  
++	wl_signal_emit_mutable(&server->events.start, NULL);
++
  	return true;
-@@ -469,11 +416,9 @@ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server) {
+ }
+ 
+@@ -469,11 +427,9 @@ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server) {
  struct wlr_xwayland_server *wlr_xwayland_server_create(
  		struct wl_display *wl_display,
  		struct wlr_xwayland_server_options *options) {
@@ -288,17 +305,19 @@ index 8401c9e6..dea0577b 100644
  	if (!server) {
  		return NULL;
 diff --git a/xwayland/sockets.c b/xwayland/sockets.c
-index 364fbc47..68a5dbfc 100644
+index 364fbc47..2afa3df6 100644
 --- a/xwayland/sockets.c
 +++ b/xwayland/sockets.c
-@@ -16,12 +16,38 @@
+@@ -16,12 +16,40 @@
  #include "sockets.h"
  #include "util/fd.h"
  
 -static const char lock_fmt[] = "/tmp/.X%d-lock";
-+// OHOS (WineHua): app sandbox 不提供可写的 /tmp, X11 socket 目录与 lock 文件
-+// 优先放 $XDG_RUNTIME_DIR/.X11-unix (与上游 xserver 的 XDG 优先解析同序),
-+// /tmp 仅作非沙箱环境的回退。以下三个 *_r 在 resolve_x11_dir() 后生效。
++// OHOS (WineHua): X11 socket 目录与 lock 文件优先放标准 /tmp/.X11-unix——
++// libX11 客户端 (Xtrans Xtranssock.c:219) 硬编码只探测 /tmp/.X11-unix,
++// 不认 XDG 路径, socket 放 XDG 则 XOpenDisplay 永远连不上 (T9 实证)。
++// /tmp 不可写 (沙箱) 才退 $XDG_RUNTIME_DIR/.X11-unix (Xwayland 独享形态,
++// 连接方只能走父进程 fd 传递)。以下三个 *_r 在 resolve_x11_dir() 后生效。
  static const char socket_dir[] = "/tmp/.X11-unix";
 -static const char socket_fmt[] = "/tmp/.X11-unix/X%d";
 -#ifndef __linux__
@@ -312,6 +331,12 @@ index 364fbc47..68a5dbfc 100644
 +	if (x11_dir[0]) {
 +		return true;
 +	}
++	if (mkdir(socket_dir, 0755) == 0 || errno == EEXIST) {
++		snprintf(x11_dir, sizeof(x11_dir), "%s", socket_dir);
++		snprintf(lock_fmt_r, sizeof(lock_fmt_r), "%s/.X%%d-lock", x11_dir);
++		snprintf(socket_fmt_r, sizeof(socket_fmt_r), "%s/X%%d", x11_dir);
++		return true;
++	}
 +	const char *xdg = getenv("XDG_RUNTIME_DIR");
 +	if (xdg) {
 +		int n = snprintf(x11_dir, sizeof(x11_dir), "%s/.X11-unix", xdg);
@@ -323,19 +348,13 @@ index 364fbc47..68a5dbfc 100644
 +		}
 +		x11_dir[0] = '\0';
 +	}
-+	if (mkdir(socket_dir, 0755) == 0 || errno == EEXIST) {
-+		snprintf(x11_dir, sizeof(x11_dir), "%s", socket_dir);
-+		snprintf(lock_fmt_r, sizeof(lock_fmt_r), "%s/.X%%d-lock", x11_dir);
-+		snprintf(socket_fmt_r, sizeof(socket_fmt_r), "%s/X%%d", x11_dir);
-+		return true;
-+	}
 +	wlr_log_errno(WLR_ERROR, "no usable X11 socket directory");
 +	return false;
 +}
  
  static int open_socket(struct sockaddr_un *addr, size_t path_size) {
  	int fd, rc;
-@@ -71,23 +97,23 @@ cleanup:
+@@ -71,23 +99,23 @@ cleanup:
  static bool check_socket_dir(void) {
  	struct stat buf;
  
@@ -364,7 +383,7 @@ index 364fbc47..68a5dbfc 100644
  			return false;
  		}
  	}
-@@ -98,29 +124,23 @@ static bool open_sockets(int socks[2], int display) {
+@@ -98,29 +126,36 @@ static bool open_sockets(int socks[2], int display) {
  	struct sockaddr_un addr = { .sun_family = AF_UNIX };
  	size_t path_size;
  
@@ -381,25 +400,39 @@ index 364fbc47..68a5dbfc 100644
  		return false;
  	}
  
++	// OHOS (WineHua T9): abstract 一侧固定绑标准名 /tmp/.X11-unix/X%d——
++	// abstract 名是 netns 内的纯字符串, 不需要 /tmp 真实存在; libX11
++	// (Xtrans Xtranssock.c) 的 abstract 探测名恰是它。XDG 回退形态下若绑
++	// XDG 抽象名, 客户端永远探不到 (T9 真机实证: /tmp ENOENT +
++	// XOpenDisplay 失败)。标准环境两名字相同, 行为不变。
++	// SELinux 若拒 abstract bind, 这里 open 失败 → server_create 失败,
++	// 现场可见 (hilog), 不会静默降级。
  #ifdef __linux__
  	addr.sun_path[0] = 0;
 -	path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, socket_fmt, display);
-+	path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, socket_fmt_r, display);
++	path_size = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1,
++		"/tmp/.X11-unix/X%d", display);
++	socks[0] = open_socket(&addr, path_size);
++	if (socks[0] < 0) {
++		return false;
++	}
  #else
 -	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt2, display);
+-#endif
 +	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt_r, display);
- #endif
  	socks[0] = open_socket(&addr, path_size);
  	if (socks[0] < 0) {
  		return false;
  	}
++#endif
  
 -	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt, display);
++	// filesystem 一侧落 x11_dir (标准环境 == /tmp/.X11-unix, 沙箱回退 == XDG)
 +	path_size = snprintf(addr.sun_path, sizeof(addr.sun_path), socket_fmt_r, display);
  	socks[1] = open_socket(&addr, path_size);
  	if (socks[1] < 0) {
  		close(socks[0]);
-@@ -134,15 +154,14 @@ static bool open_sockets(int socks[2], int display) {
+@@ -134,15 +169,14 @@ static bool open_sockets(int socks[2], int display) {
  void unlink_display_sockets(int display) {
  	char sun_path[64];
  
@@ -420,7 +453,7 @@ index 364fbc47..68a5dbfc 100644
  	unlink(sun_path);
  }
  
-@@ -150,8 +169,12 @@ int open_display_sockets(int socks[2]) {
+@@ -150,8 +184,12 @@ int open_display_sockets(int socks[2]) {
  	int lock_fd, display;
  	char lock_name[64];
  
@@ -435,10 +468,10 @@ index 364fbc47..68a5dbfc 100644
  			if (!open_sockets(socks, display)) {
  				unlink(lock_name);
 diff --git a/xwayland/xwayland.c b/xwayland/xwayland.c
-index 300b582e..60212548 100644
+index 300b582e..11708705 100644
 --- a/xwayland/xwayland.c
 +++ b/xwayland/xwayland.c
-@@ -127,6 +127,24 @@ struct wlr_xwayland *wlr_xwayland_create_with_server(struct wl_display *wl_displ
+@@ -127,6 +127,21 @@ struct wlr_xwayland *wlr_xwayland_create_with_server(struct wl_display *wl_displ
  
  	wl_list_init(&xwayland->shell_destroy.link);
  
@@ -446,16 +479,13 @@ index 300b582e..60212548 100644
 +	// shell_v1_destroy)。上游把它放在 wlr_xwayland_create 包装层, 两段式
 +	// 调用方 (C++ 宿主, 不 include xwayland.h) 无人创建 → xwayland->shell_v1
 +	// 为 NULL, xwm_create 无条件 wl_signal_add 挂它 → SIGSEGV (T8 真机
-+	// cppcrash 20260928204712, wl_signal_add @NULL+0x18)。server->client
-+	// 已连接时手动补 handle_server_start 的 set_client (该事件先于本函数,
-+	// 监听来得晚收不到)。
++	// cppcrash 20260928204712, wl_signal_add @NULL+0x18)。
++	// 白名单 (set_client) 由 handle_server_start 在 'start' 事件里做——
++	// 该事件现保证在 server->client 建好后 emit (server.c T9 时序修正)。
 +	xwayland->shell_v1 = wlr_xwayland_shell_v1_create(wl_display, 1);
 +	if (xwayland->shell_v1 == NULL) {
 +		free(xwayland);
 +		return NULL;
-+	}
-+	if (server->client != NULL) {
-+		wlr_xwayland_shell_v1_set_client(xwayland->shell_v1, server->client);
 +	}
 +	xwayland->shell_destroy.notify = handle_shell_destroy;
 +	wl_signal_add(&xwayland->shell_v1->events.destroy, &xwayland->shell_destroy);

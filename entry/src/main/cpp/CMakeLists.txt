@@ -162,6 +162,21 @@ add_library(xwayland_child SHARED
 )
 target_link_libraries(xwayland_child PUBLIC libhilog_ndk.z.so libchild_process.so)
 
+# mini X client NCP 子进程 (M0-T9 出口件): XOpenDisplay 自行连 Xwayland,
+# 无命名 fd。依赖面恰 = winex11 硬依赖 (libX11+libXext ONLY, 范围决议
+# 2026-09-27); libX11.so.6 由 assemble.sh 装进打包视图, 运行时同目录解析
+add_library(xclient_child SHARED
+    display/ncp/xclient_child.cpp
+)
+# X11 头在 host-ext usr/include (T4 libX11 安装位); 链接面仍只有 libX11/libXext
+target_include_directories(xclient_child PRIVATE ${WLR_XCB_INC})
+target_link_libraries(xclient_child PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    ${WAYLAND_LIBS_DIR}/libX11.so.6
+    ${WAYLAND_LIBS_DIR}/libXext.so.6
+)
+
 # smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询/注入
 # 原语, 产品代码不引用。符号来自 entry (同进程运行时解析), 必须与 entry 同包。
 add_library(smoke_napi SHARED

@@ -1,0 +1,50 @@
+--- a/Xtranssock.c
++++ b/Xtranssock.c
+@@ -1888,21 +1888,40 @@
+ 
+     sockname.sun_family = AF_UNIX;
+ 
+-    if (set_sun_path(port, UNIX_PATH, sockname.sun_path, 0) != 0) {
+-	prmsg (1, "SocketUNIXConnect: path too long\n");
+-	return TRANS_CONNECT_FAILED;
+-    }
++    /* WineHua (M0-T9): local 传输客户端也走 abstract 名 (沙箱无 /tmp)。
++     * 服务端 listener 已用 TRANS_ABSTRACT 绑 @/tmp/.X11-unix/X<n>,
++     * 此处对齐。unix 传输 flags 无 TRANS_ABSTRACT, 走原 fs 路径。 */
++    {
++	int abstract = 0;
++#ifdef HAVE_ABSTRACT_SOCKETS
++	abstract = ciptr->transptr->flags & TRANS_ABSTRACT;
++#endif
++	if (set_sun_path(port, UNIX_PATH, sockname.sun_path, abstract) != 0) {
++	    prmsg (1, "SocketUNIXConnect: path too long\n");
++	    return TRANS_CONNECT_FAILED;
++	}
+ 
+ #if defined(BSD44SOCKETS)
+-    sockname.sun_len = strlen (sockname.sun_path);
++	sockname.sun_len = strlen (sockname.sun_path);
+ #endif
+ 
+ #if defined(BSD44SOCKETS) || defined(SUN_LEN)
+-    namelen = SUN_LEN (&sockname);
++	namelen = SUN_LEN (&sockname);
+ #else
+-    namelen = strlen (sockname.sun_path) + offsetof(struct sockaddr_un, sun_path);
++	namelen = strlen (sockname.sun_path) + offsetof(struct sockaddr_un, sun_path);
+ #endif
+ 
++	/* WineHua: abstract 名把 '@' 占位换成 NUL, 长度 = offsetof + 1 + 名长
++	 * (与服务端 SocketCreateListener 的 namelen 语义一致) */
++#ifdef HAVE_ABSTRACT_SOCKETS
++	if (abstract) {
++	    sockname.sun_path[0] = '\0';
++	    namelen = offsetof(struct sockaddr_un, sun_path) + 1 +
++		      strlen (&sockname.sun_path[1]);
++	}
++#endif
++    }
++
+ 
+     /*
+      * Do the connect()

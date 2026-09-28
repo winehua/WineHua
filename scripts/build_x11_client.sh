@@ -57,12 +57,23 @@ build_autotools() {  # $1=源码目录
 }
 
 # ── 0. xtrans (libX11 configure 硬依赖 xtrans.pc; 纯头文件包) ──
-if [ ! -f "$SPC/xtrans.pc" ]; then
+# WineHua 补丁 (scripts/patches/xtrans-abstract-client.patch): 客户端
+# local 传输走 abstract 名——沙箱无 /tmp, 不打则 XOpenDisplay 永远 ENOENT
+# (M0-T9 真机实证)。补丁打在解包后的源码上; libX11 编译时 #include 的就是
+# 本包装进 $PRE/include 的 Xtranssock.c, 改动随之生效。
+XTRANS_SRC="$BUILD_DIR/xtrans-1.5.2"
+if [ ! -f "$SPC/xtrans.pc" ] || ! grep -q "WineHua (M0-T9)" "$XTRANS_SRC/Xtranssock.c" 2>/dev/null; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/xtrans-1.5.2.tar.xz" \
         "5c5cbfe34764a9131d048f03c31c19e57fb4c682d67713eab6a65541b4dff86c" "xtrans-1.5.2"
-    build_autotools "$BUILD_DIR/xtrans-1.5.2"
+    if ! grep -q "WineHua (M0-T9)" "$XTRANS_SRC/Xtranssock.c"; then
+        patch -d "$XTRANS_SRC" -p1 --forward < "$SCRIPT_DIR/patches/xtrans-abstract-client.patch" \
+            || err "xtrans abstract-client 补丁应用失败"
+    fi
+    build_autotools "$XTRANS_SRC"
 fi
 [ -f "$SPC/xtrans.pc" ] || err "xtrans 未就绪"
+grep -q "WineHua (M0-T9)" "$PRE/include/X11/Xtrans/Xtranssock.c" \
+    || err "安装后的 Xtranssock.c 缺 abstract-client 补丁"
 
 # ── 1. libX11 (≥1.8; 关 udc/xlocale 收窄) ──
 if [ ! -f "$PC/x11.pc" ]; then

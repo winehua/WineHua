@@ -48,6 +48,9 @@ struct wlr_backend;
 struct wlr_xwayland;
 struct wlr_output;
 struct wlr_renderer *wlr_pixman_renderer_create(void);
+// render/wlr_renderer.h:91 (头 C++ 不安全, 手写原型, 签名逐一核对)
+bool wlr_renderer_init_wl_display(struct wlr_renderer *r,
+	struct wl_display *wl_display);
 struct wlr_compositor *wlr_compositor_create(struct wl_display *display,
 	uint32_t version, struct wlr_renderer *renderer);
 struct wlr_backend *wlr_headless_backend_create(struct wl_event_loop *loop);
@@ -102,6 +105,23 @@ void WlServerLogBridge(const char *fmt, va_list args)
 void HandleXwaylandReady(struct wl_listener *listener, void *data)
 {
     OH_LOG_INFO(LOG_APP, "Xwayland ready signal received (displayfd handshake OK)");
+
+    // T9 M0 出口: Xwayland 就绪 (XWM 已建) 即拉起 mini X client (NCP,
+    // libX11+libXext ONLY)。连接由 Xlib 发起 (无命名 fd) —— 这正是 M0 出口
+    // 要验证的事。entryParams: "<stderrPath>|<xdgDir>"
+    std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
+    std::string params = (xdg.empty() ? "" : xdg + "/xclient_stderr.log") + "|" + xdg;
+    NativeChildProcess_Args args = {};
+    args.entryParams = strdup(params.c_str());
+    NativeChildProcess_Options options = {};
+    options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
+    int32_t pid = -1;
+    int32_t ret = OH_Ability_StartNativeChildProcess(
+        const_cast<char*>("libxclient_child.so:Main"), args, options, &pid);
+    if (ret != 0)
+        OH_LOG_ERROR(LOG_APP, "xclient StartNativeChildProcess ret=%{public}d", ret);
+    else
+        OH_LOG_INFO(LOG_APP, "xclient NCP spawned pid=%{public}d", pid);
 }
 struct wl_listener g_xwayland_ready_listener;
 
@@ -248,6 +268,15 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
             OH_LOG_ERROR(LOG_APP, "compositor create failed");
             return;
         }
+        // wl_shm/wl_drm 全局: wlr_compositor_create 不建, 必须显式初始化。
+        // 缺它 Xwayland 的 registry 无 wl_shm → 首个窗口 Map 时
+        // xwl_shm_create_pixmap 解引用 NULL proxy 段错误 (T9 真机 cppcrash
+        // 20260928213732: MapWindow→compNewPixmap→wl_shm_create_pool(NULL))
+        if (!wlr_renderer_init_wl_display(renderer, wl))
+        {
+            OH_LOG_ERROR(LOG_APP, "renderer_init_wl_display failed (无 shm 全局)");
+            return;
+        }
 
         struct wlr_backend *backend = wlr_headless_backend_create(loop);
         if (!backend || !wlr_backend_start(backend))
@@ -282,11 +311,12 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
         }
 
         // ── T8 出图链: 自定义 allocator + headless output + 帧直推
-        //    (实现整体在 ohos_output.c, wlr_output.h 的 C++ 不兼容见其头注释)
+        //    (实现整体在 ohos_output.c, wlr_output.h 的 C++ 不兼容见其头注释);
+        //    T9: 带 xwayland, 已映射 X client 窗口优先合成上屏
         if (g_present_window)
         {
             int rc = wl_ohos_output_chain_start(backend, renderer, loop,
-                                                g_present_window);
+                                                g_present_window, xwayland);
             OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d", rc);
         }
         else

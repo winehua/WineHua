@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <hilog/log.h>
@@ -36,6 +37,8 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/drm_format_set.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/xwayland/xwayland.h>
 #include <wlr/util/log.h>
 #include <wlr/backend/headless.h>
 #include <wlr/render/pixman.h>
@@ -51,12 +54,23 @@ struct wl_ohos_output {
     OHNativeWindowBuffer *frame_win_buf;
     OHNativeWindow *window;
     struct wl_listener commit_listener;
+    struct wl_listener xnew_surface; /* xwayland->events.new_surface (T9) */
     struct wl_event_source *frame_timer;
     uint32_t frame_seq;
     uint32_t last_crc;
 };
 
+/* T9: 最近一个新建的 X client surface (most-recent-wins, M0 单窗口足够)。
+ * 映射状态不挂监听器——wlr_surface.mapped 轮询 (33ms 帧驱动内天然覆盖),
+ * 只需 destroy 监听防悬垂。 */
+struct ohos_client_surface {
+    struct wlr_xwayland_surface *xs;
+    struct wl_listener destroy;
+    struct wl_listener request_configure;
+};
+
 static struct wl_ohos_output g_out;
+static struct ohos_client_surface *g_client;
 
 // 帧数据的 32 位折叠校验 (高低 16 位异或), 用于 hilog 判帧稳定
 static uint32_t FrameCrc(const uint8_t *p, size_t n)
@@ -68,19 +82,12 @@ static uint32_t FrameCrc(const uint8_t *p, size_t n)
     return (sum & 0xffffu) ^ (sum >> 16);
 }
 
-// 渐变 + 黄边框测试图案; ABGR8888 = 内存字节 R,G,B,A (与 OHOS RGBA_8888 一致)
-static void RenderTestPattern(struct wlr_buffer *buf, uint32_t seq)
+// 渐变 + 黄边框测试图案写入已映射的帧内存; ABGR8888 = 内存字节 R,G,B,A
+// (与 OHOS RGBA_8888 一致)
+static void RenderTestPattern(uint8_t *px, int w, int h, uint32_t seq)
 {
-    void *data = NULL;
-    uint32_t format = 0;
-    size_t stride = 0;
-    if (!wlr_buffer_begin_data_ptr_access(buf, WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
-                                          &data, &format, &stride))
-        return;
-    uint8_t *px = data;
-    int w = buf->width, h = buf->height;
     for (int y = 0; y < h; ++y) {
-        uint8_t *row = px + (size_t)y * stride;
+        uint8_t *row = px + (size_t)y * g_out.frame_stride;
         for (int x = 0; x < w; ++x) {
             uint8_t r, g, b;
             if (x < 8 || x >= w - 8 || y < 8 || y >= h - 8) {
@@ -96,6 +103,86 @@ static void RenderTestPattern(struct wlr_buffer *buf, uint32_t seq)
             row[(size_t)x * 4 + 3] = 255;
         }
     }
+}
+
+/* T9 端到端: X client 窗口内容 blit 进帧 (居中)。X shm buffer 是
+ * ARGB8888/XRGB8888 (内存字节 B,G,R,A), 帧是 ABGR8888 (R,G,B,A)——逐像素
+ * R/B 互换。窗口大于帧时裁剪 (取左上)。读失败或无窗口返回 false。 */
+static bool BlitClientSurface(uint8_t *px, int fw, int fh)
+{
+    if (!g_client || !g_client->xs)
+        return false;
+    struct wlr_surface *surf = g_client->xs->surface;
+    if (!surf || !surf->mapped)
+    {
+        /* 一次性诊断: surface 在但未 map = X 窗口内容未走 wayland 提交 */
+        static int said;
+        if (++said == 60) /* ~7s 后打一次 */
+            OHLOG("client not blitting: surf=%{public}p mapped=%{public}d "
+                  "xs->surface=%{public}p",
+                  (void *)surf, surf ? surf->mapped : -1,
+                  (void *)g_client->xs->surface);
+        return false;
+    }
+    /* 显示中内容在 surface->buffer (wlr_client_buffer)——current.buffer 是
+     * 最近一次 commit 的裸 buffer, Xwayland child 的空 commit 会让它为 NULL
+     * (T9 实测)。client buffer 的 base 即 wlr_buffer, shm 内容可直读。 */
+    struct wlr_buffer *cbuf = surf->buffer ? &surf->buffer->base : NULL;
+    if (!cbuf || cbuf->width <= 0 || cbuf->height <= 0)
+    {
+        static int said2;
+        if (++said2 == 60)
+            OHLOG("client buffer missing: cbuf=%{public}p w=%{public}d h=%{public}d "
+                  "current.buffer=%{public}p",
+                  (void *)cbuf, cbuf ? cbuf->width : -1, cbuf ? cbuf->height : -1,
+                  (void *)surf->current.buffer);
+        return false;
+    }
+    void *data = NULL;
+    uint32_t format = 0;
+    size_t cstride = 0;
+    if (!wlr_buffer_begin_data_ptr_access(cbuf, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+                                          &data, &format, &cstride))
+    {
+        static int said3;
+        if (++said3 == 60)
+            OHLOG("client buffer access denied (renderer 持锁?)");
+        return false;
+    }
+    int cw = cbuf->width, ch = cbuf->height;
+    int ox = (fw - cw) / 2, oy = (fh - ch) / 2;
+    if (ox < 0) ox = 0;
+    if (oy < 0) oy = 0;
+    int rows = (oy + ch <= fh) ? ch : (fh - oy);
+    int cols = (ox + cw <= fw) ? cw : (fw - ox);
+    for (int y = 0; y < rows; ++y) {
+        const uint8_t *src = (const uint8_t *)data + (size_t)y * cstride;
+        uint8_t *dst = px + (size_t)(oy + y) * g_out.frame_stride +
+                       (size_t)ox * 4;
+        for (int x = 0; x < cols; ++x) {
+            /* BGRA(mem) → RGBA(mem): R/B 互换, A 取满 */
+            dst[(size_t)x * 4 + 0] = src[(size_t)x * 4 + 2];
+            dst[(size_t)x * 4 + 1] = src[(size_t)x * 4 + 1];
+            dst[(size_t)x * 4 + 2] = src[(size_t)x * 4 + 0];
+            dst[(size_t)x * 4 + 3] = 255;
+        }
+    }
+    wlr_buffer_end_data_ptr_access(cbuf);
+    return true;
+}
+
+static void RenderFrame(struct wlr_buffer *buf, uint32_t seq)
+{
+    void *data = NULL;
+    uint32_t format = 0;
+    size_t stride = 0;
+    if (!wlr_buffer_begin_data_ptr_access(buf, WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
+                                          &data, &format, &stride))
+        return;
+    uint8_t *px = data;
+    int w = buf->width, h = buf->height;
+    if (!BlitClientSurface(px, w, h))
+        RenderTestPattern(px, w, h, seq);
     /* CRC 必须在 end_data_ptr_access (Unmap) 之前算——Unmap 后 px 失效,
      * 解引用即 SEGV (T8 实测: row 599 日志后崩, use-after-unmap) */
     g_out.last_crc = FrameCrc(px, (size_t)h * g_out.frame_stride);
@@ -138,6 +225,18 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     if (!event || !event->state || !event->state->buffer)
         return;
     ++g_out.frame_seq;
+
+    /* T9: 应答 client surface 的 frame callback。Xwayland child 首帧 commit
+     * 后会等 frame 事件再提交后续 damage; 无 scene 图形栈, 须手动应答,
+     * 否则 X 窗口内容永远停在首帧/空帧 (T9 实测: surface mapped 但
+     * current.buffer 恒 NULL)。 */
+    if (g_client && g_client->xs && g_client->xs->surface
+            && g_client->xs->surface->mapped)
+    {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        wlr_surface_send_frame_done(g_client->xs->surface, &now);
+    }
 
     /* Region 无内嵌数组: rects 是独立指针, 必须指向外部 RegionRect。
      * 之前写 `region.rects = &region.rects[0]` 是对未初始化指针取下标
@@ -258,7 +357,7 @@ static int FrameTick(void *data)
 {
     struct wlr_output *output = data;
     static uint32_t tick_seq = 0;
-    RenderTestPattern(g_out.frame_buf, ++tick_seq);
+    RenderFrame(g_out.frame_buf, ++tick_seq);
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_buffer(&state, g_out.frame_buf);
@@ -274,10 +373,57 @@ static int FrameTick(void *data)
     return 0;
 }
 
+// ── T9: xwayland surface 跟踪 (most-recent-wins) ──────────────────────────
+static void ClientDestroy(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, destroy);
+    (void)data;
+    wl_list_remove(&c->destroy.link);
+    wl_list_remove(&c->request_configure.link);
+    if (g_client == c)
+        g_client = NULL;
+    free(c);
+}
+
+/* XWM 的 geometry 请求必须应答: 不调 wlr_xwayland_surface_configure 则
+ * surface 的 commit 全部滞留 cached state, current.buffer 恒 NULL
+ * (T9 实测: surface mapped 但无 buffer, 窗口内容不上屏) */
+static void ClientRequestConfigure(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, request_configure);
+    struct wlr_xwayland_surface_configure_event *ev = data;
+    if (!ev || ev->surface != c->xs)
+        return;
+    wlr_xwayland_surface_configure(c->xs, ev->x, ev->y,
+                                   ev->width, ev->height);
+}
+
+static void HandleNewSurface(struct wl_listener *listener, void *data)
+{
+    struct wl_ohos_output *o = wl_container_of(listener, o, xnew_surface);
+    (void)o;
+    struct wlr_xwayland_surface *xs = data;
+    if (!xs)
+        return;
+    struct ohos_client_surface *c = calloc(1, sizeof(*c));
+    if (!c)
+        return;
+    c->xs = xs;
+    c->destroy.notify = ClientDestroy;
+    wl_signal_add(&xs->events.destroy, &c->destroy);
+    c->request_configure.notify = ClientRequestConfigure;
+    wl_signal_add(&xs->events.request_configure, &c->request_configure);
+    g_client = c;
+    OHLOG("client surface created (%dx%d)", xs->width, xs->height);
+}
+
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
-                               OHNativeWindow *window)
+                               OHNativeWindow *window,
+                               struct wlr_xwayland *xwayland)
 {
     memset(&g_out, 0, sizeof(g_out));
     g_out.window = window;
@@ -337,6 +483,11 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
 
     g_out.commit_listener.notify = HandleOutputCommit;
     wl_signal_add(&g_out.output->events.commit, &g_out.commit_listener);
+
+    if (xwayland) {
+        g_out.xnew_surface.notify = HandleNewSurface;
+        wl_signal_add(&xwayland->events.new_surface, &g_out.xnew_surface);
+    }
 
     g_out.frame_timer = wl_event_loop_add_timer(loop, FrameTick, g_out.output);
     if (g_out.frame_timer)
