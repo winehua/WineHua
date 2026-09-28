@@ -19,12 +19,20 @@ struct wlr_xwayland_surface;
 extern "C" {
 #endif
 
-// 当前跟踪的 client xwayland surface (M0-T9 most-recent-wins; 无 = NULL)。
-// display_input 注入取数口: xs->surface 为焦点面, activate 亦需 xs 本体
-// (wlr_xwayland_surface_activate 是合成器侧 API, 不调则 X server 焦点
-// 永不设置, 键事件无投递目标 —— 2026-09-29 gate5 实测)。T2 列表化后
-// 语义随任务更新。
+// 当前跟踪的 client xwayland surface 取数口 (display_input 注入用)。
+// client_xs = 最上层已映射窗口 (T1 自动注入目标); client_topmost_at =
+// 帧坐标命中测试 (T2 多窗口); frame_size = 归一化注入坐标的基准。
+// activate 需 xs 本体: wlr_xwayland_surface_activate 是合成器侧 API,
+// 不调则 X server 焦点永不设置, 键事件无投递目标 (2026-09-29 gate5 实测)。
 struct wlr_xwayland_surface *wl_ohos_output_client_xs(void);
+struct wlr_xwayland_surface *wl_ohos_output_client_topmost_at(int fx, int fy);
+void wl_ohos_output_frame_size(int *w, int *h);
+
+// X 窗口可见性谓词: surface->buffer (最后有效像素) 存在即视为有内容。
+// 不得用 surface->mapped —— Xwayland 例行空 commit 会翻转它 (0.20
+// surface_commit_state: NULL buffer commit → unmap), T2 实测闪断。
+struct wlr_surface;
+int wl_ohos_surface_has_content(struct wlr_surface *surf);
 
 // 建 headless output (800x600) + 自定义 OHOS allocator + 帧定时器:
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。

@@ -4,11 +4,14 @@
  * M0 出口件: 依赖面恰 = winex11.drv 硬依赖 (libX11+libXext ONLY, 用户范围
  * 决议 2026-09-27)。经 XOpenDisplay(":0") 连 Xwayland (NCP 形态同 T7 shim,
  * 但无命名 fd——X 连接由 Xlib 自行发起, 这正是 M0 出口要验证的事)。
- * 序列: connect → 建窗 320x240 → XStoreName → XPutImage 图案 (与 wlroots
- * 出图链测试图案不同的另一图案: 品红/青对角条纹, 每帧滚动) → XMapWindow
+ * 序列: connect → 建窗 → XStoreName → XPutImage 图案 → XMapWindow
  * → Expose 重绘循环。hilog 标签 XCLIENT-NCP。
  *
- * entryParams: "<stderrPath>|<xdgDir>" (f0 stderr 落盘, f1 XDG_RUNTIME_DIR)
+ * T2 起支持双窗口 (mode=2): 两窗不同图案色 + 周期 XMoveWindow +
+ * StructureNotify 日志, 供合成器多窗口 blit / 注入命中 / 焦点切换的门判。
+ * 单窗模式 (mode=1) 保持 M0/T1 行为。键盘回显带窗口 id (M1-T1)。
+ *
+ * entryParams: "<stderrPath>|<xdgDir>|<mode>" (mode 缺省 1)
  */
 #include <AbilityKit/native_child_process.h>
 #include <hilog/log.h>
@@ -31,22 +34,60 @@
 
 namespace {
 
-// 品红/青对角滚动条纹 + 白边框——与 T8 出图链图案 (黄边框+正交渐变) 可辨
-uint32_t PatternPixel(int x, int y, int frame)
+// 窗口上下文: 双窗口模式下每窗独立图案/GC/XImage
+struct WinCtx
 {
-    if (x < 4 || x >= 320 - 4 || y < 4 || y >= 240 - 4)
+    Window win = None;
+    GC gc = nullptr;
+    XImage* img = nullptr;
+    int w = 0, h = 0;
+    int base_x = 0, base_y = 0;
+    uint32_t color_a = 0, color_b = 0;
+    const char* tag = "win";
+    int exposes = 0;
+};
+
+// 对角滚动条纹 + 白边框; color_a/b 为 ABGR 像素值 (0x00RRGGBB 直填低 24 位,
+// 位序由 XImage/视觉决定, 测试图案只要求可辨)
+uint32_t PatternPixel(const WinCtx& c, int x, int y, int frame)
+{
+    if (x < 4 || x >= c.w - 4 || y < 4 || y >= c.h - 4)
         return 0xFFFFFF; /* 白边框 */
-    return ((x + y + frame) / 16) % 2 ? 0xFF00FF /* 品红 */ : 0x00FFFF /* 青 */;
+    return ((x + y + frame) / 16) % 2 ? c.color_a : c.color_b;
 }
 
-void DrawFrame(Display* dpy, Window win, GC gc, XImage* img, int frame)
+void DrawFrame(Display* dpy, WinCtx& c, int frame)
 {
-    uint32_t* px = reinterpret_cast<uint32_t*>(img->data);
-    for (int y = 0; y < 240; ++y)
-        for (int x = 0; x < 320; ++x)
-            px[(size_t)y * 320 + x] = PatternPixel(x, y, frame);
-    XPutImage(dpy, win, gc, img, 0, 0, 0, 0, 320, 240);
+    uint32_t* px = reinterpret_cast<uint32_t*>(c.img->data);
+    for (int y = 0; y < c.h; ++y)
+        for (int x = 0; x < c.w; ++x)
+            px[(size_t)y * c.w + x] = PatternPixel(c, x, y, frame);
+    XPutImage(dpy, c.win, c.gc, c.img, 0, 0, 0, 0, c.w, c.h);
     XFlush(dpy);
+}
+
+void SetupWindow(Display* dpy, Window root, int scr, WinCtx& c,
+                 int x, int y, int w, int h, uint32_t ca, uint32_t cb,
+                 const char* name)
+{
+    c.w = w;
+    c.h = h;
+    c.base_x = x;
+    c.base_y = y;
+    c.color_a = ca;
+    c.color_b = cb;
+    c.tag = name;
+    c.win = XCreateSimpleWindow(dpy, root, x, y, w, h, 2,
+                                BlackPixel(dpy, scr), WhitePixel(dpy, scr));
+    XStoreName(dpy, c.win, name);
+    // T2: StructureNotify 看 XMoveWindow 的随动; 键盘回显见事件循环
+    XSelectInput(dpy, c.win,
+                 ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask);
+    c.img = XCreateImage(dpy, DefaultVisual(dpy, scr), DefaultDepth(dpy, scr),
+                         ZPixmap, 0, nullptr, w, h, 32, 0);
+    c.img->data = static_cast<char*>(calloc(1, static_cast<size_t>(w) * h * 4));
+    c.img->byte_order = LSBFirst;
+    c.gc = XCreateGC(dpy, c.win, 0, nullptr);
 }
 
 } // namespace
@@ -56,11 +97,22 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     const char* params = args.entryParams ? args.entryParams : "";
     OH_LOG_INFO(LOG_APP, "Main enter pid=%{public}d params=%{public}s", getpid(), params);
 
-    // entryParams: "<stderrPath>|<xdgDir>"
+    // entryParams: "<stderrPath>|<xdgDir>|<mode>"
     std::string entryParams(params);
-    size_t bar = entryParams.find('|');
-    std::string stderrPath = bar == std::string::npos ? entryParams : entryParams.substr(0, bar);
-    std::string xdgDir = bar == std::string::npos ? "" : entryParams.substr(bar + 1);
+    std::string parts[3];
+    size_t start = 0;
+    for (int i = 0; i < 3; ++i)
+    {
+        size_t bar = entryParams.find('|', start);
+        parts[i] = bar == std::string::npos ? entryParams.substr(start)
+                                            : entryParams.substr(start, bar - start);
+        if (bar == std::string::npos) break;
+        start = bar + 1;
+    }
+    std::string stderrPath = parts[0];
+    std::string xdgDir = parts[1];
+    int mode = atoi(parts[2].c_str());
+    if (mode != 2) mode = 1;
 
     if (!stderrPath.empty())
     {
@@ -121,49 +173,61 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 DisplayString(dpy), DisplayWidth(dpy, scr), DisplayHeight(dpy, scr),
                 DefaultDepth(dpy, scr));
 
-    Window win = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy),
-                                     100, 100, 320, 240, 2,
-                                     BlackPixel(dpy, scr), WhitePixel(dpy, scr));
-    XStoreName(dpy, win, "WineHua-MiniX");
-    // M1-T1: 键盘回显——注入链的出口证据 (seat → Xwayland → 本进程 X 事件)
-    XSelectInput(dpy, win, ExposureMask | KeyPressMask | KeyReleaseMask);
+    Window root = DefaultRootWindow(dpy);
+    // 窗口摆位与 display_input.c 的 T2 注入脚本坐标成对维护:
+    // win1 @60,80 320x240 (品红/青), win2 @380,300 280x200 (绿/黄)
+    WinCtx w1, w2;
+    SetupWindow(dpy, root, scr, w1, 60, 80, 320, 240,
+                0xFF00FF, 0x00FFFF, "WineHua-MiniX-1");
+    if (mode == 2)
+        SetupWindow(dpy, root, scr, w2, 380, 300, 280, 200,
+                    0x00FF00, 0xFFFF00, "WineHua-MiniX-2");
 
-    XImage* img = XCreateImage(dpy, DefaultVisual(dpy, scr), DefaultDepth(dpy, scr),
-                               ZPixmap, 0, nullptr, 320, 240, 32, 0);
-    if (!img)
-    {
-        OH_LOG_ERROR(LOG_APP, "XCreateImage failed");
-        return;
-    }
-    img->data = static_cast<char*>(calloc(1, static_cast<size_t>(320) * 240 * 4));
-    img->byte_order = LSBFirst;
-
-    GC gc = XCreateGC(dpy, win, 0, nullptr);
-    XMapWindow(dpy, win);
+    XMapWindow(dpy, w1.win);
+    if (mode == 2) XMapWindow(dpy, w2.win);
     XFlush(dpy);
-    OH_LOG_INFO(LOG_APP, "window mapped (320x240 @100,100)");
+    OH_LOG_INFO(LOG_APP, "mode=%{public}d mapped (win1=0x%{public}lx 320x240 @60,80"
+                "%{public}s), center1=(220,200) center2=(520,400)",
+                mode, (unsigned long)w1.win,
+                mode == 2 ? ", win2=280x200 @380,300" : "");
 
     int frame = 0;
-    int exposes = 0;
-    // 事件循环: Expose 重绘; 无事件时每秒重绘一帧 (条纹滚动 = 人眼判活)
+    int moves = 0;
+    // 事件循环: Expose/按键/结构随动; 无事件每秒重绘 (条纹滚动 = 人眼判活)
     while (true)
     {
         bool hasEvent = XPending(dpy) > 0;
         if (!hasEvent)
         {
-            DrawFrame(dpy, win, gc, img, frame++);
+            DrawFrame(dpy, w1, frame);
+            if (mode == 2) DrawFrame(dpy, w2, frame);
+            ++frame;
+            // T2: 周期移动 win1 (8 步往返, 每步 8px), 验证 xs 位置随动
+            if (mode == 2 && frame % 3 == 0)
+            {
+                int step = moves % 8;
+                int dx = (step < 4 ? step : 7 - step) * 8;
+                XMoveWindow(dpy, w1.win, w1.base_x + dx, w1.base_y);
+                XFlush(dpy);
+                ++moves;
+            }
             sleep(1);
         }
         while (XPending(dpy) > 0)
         {
             XEvent ev;
             XNextEvent(dpy, &ev);
+            WinCtx* c = nullptr;
+            if (ev.xany.window == w1.win) c = &w1;
+            else if (mode == 2 && ev.xany.window == w2.win) c = &w2;
+            if (!c) continue;
             if (ev.type == Expose)
             {
-                ++exposes;
-                if (exposes <= 3 || exposes % 50 == 0)
-                    OH_LOG_INFO(LOG_APP, "expose #%{public}d draw", exposes);
-                DrawFrame(dpy, win, gc, img, frame++);
+                ++c->exposes;
+                if (c->exposes <= 3 || c->exposes % 50 == 0)
+                    OH_LOG_INFO(LOG_APP, "expose #%{public}d %{public}s draw",
+                                c->exposes, c->tag);
+                DrawFrame(dpy, *c, frame++);
             }
             else if (ev.type == KeyPress || ev.type == KeyRelease)
             {
@@ -173,9 +237,19 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 KeySym ks = NoSymbol;
                 int n = XLookupString(&ev.xkey, buf, sizeof(buf) - 1, &ks, nullptr);
                 OH_LOG_INFO(LOG_APP,
-                            "key %{public}s '%{public}s' (sym=%{public}lu n=%{public}d)",
+                            "key %{public}s win=%{public}lx '%{public}s' (sym=%{public}lu n=%{public}d)",
                             ev.type == KeyPress ? "press" : "release",
-                            n > 0 ? buf : "", (unsigned long)ks, n);
+                            (unsigned long)c->win, n > 0 ? buf : "",
+                            (unsigned long)ks, n);
+            }
+            else if (ev.type == ConfigureNotify)
+            {
+                if (moves <= 8 || moves % 20 == 0)
+                    OH_LOG_INFO(LOG_APP,
+                                "configure win=%{public}lx %{public}dx%{public}d @%{public}d,%{public}d",
+                                (unsigned long)c->win, ev.xconfigure.width,
+                                ev.xconfigure.height, ev.xconfigure.x,
+                                ev.xconfigure.y);
             }
         }
     }

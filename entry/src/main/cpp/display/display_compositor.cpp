@@ -109,9 +109,10 @@ void HandleXwaylandReady(struct wl_listener *listener, void *data)
 
     // T9 M0 出口: Xwayland 就绪 (XWM 已建) 即拉起 mini X client (NCP,
     // libX11+libXext ONLY)。连接由 Xlib 发起 (无命名 fd) —— 这正是 M0 出口
-    // 要验证的事。entryParams: "<stderrPath>|<xdgDir>"
+    // 要验证的事。entryParams: "<stderrPath>|<xdgDir>|<mode>"; T2 起
+    // mode=2 (双窗口 + 周期移动, 与 display_input.c 注入脚本坐标成对)
     std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
-    std::string params = (xdg.empty() ? "" : xdg + "/xclient_stderr.log") + "|" + xdg;
+    std::string params = (xdg.empty() ? "" : xdg + "/xclient_stderr.log") + "|" + xdg + "|2";
     NativeChildProcess_Args args = {};
     args.entryParams = strdup(params.c_str());
     NativeChildProcess_Options options = {};

@@ -60,17 +60,19 @@ struct wl_ohos_output {
     uint32_t last_crc;
 };
 
-/* T9: 最近一个新建的 X client surface (most-recent-wins, M0 单窗口足够)。
- * 映射状态不挂监听器——wlr_surface.mapped 轮询 (33ms 帧驱动内天然覆盖),
- * 只需 destroy 监听防悬垂。 */
+/* T9: X client surface 跟踪。T2 起为链表 (创建序, 链尾 = 最上层):
+ * 多窗口 blit 按序画 (后创建压前), 注入命中测试按几何反查。映射状态
+ * 不挂监听器——wlr_surface.mapped 轮询 (33ms 帧驱动内天然覆盖),
+ * destroy 监听防悬垂。 */
 struct ohos_client_surface {
     struct wlr_xwayland_surface *xs;
+    struct wl_list link; /* g_clients */
     struct wl_listener destroy;
     struct wl_listener request_configure;
 };
 
 static struct wl_ohos_output g_out;
-static struct ohos_client_surface *g_client;
+static struct wl_list g_clients;
 
 // 帧数据的 32 位折叠校验 (高低 16 位异或), 用于 hilog 判帧稳定
 static uint32_t FrameCrc(const uint8_t *p, size_t n)
@@ -105,25 +107,18 @@ static void RenderTestPattern(uint8_t *px, int w, int h, uint32_t seq)
     }
 }
 
-/* T9 端到端: X client 窗口内容 blit 进帧 (居中)。X shm buffer 是
- * ARGB8888/XRGB8888 (内存字节 B,G,R,A), 帧是 ABGR8888 (R,G,B,A)——逐像素
- * R/B 互换。窗口大于帧时裁剪 (取左上)。读失败或无窗口返回 false。 */
-static bool BlitClientSurface(uint8_t *px, int fw, int fh)
+/* T9/T2 端到端: 单个 X client 窗口内容 blit 进帧, 位置 = xs->x/y (X 屏
+ * 坐标即帧内像素坐标, 等比无缩放)。X shm buffer 是 ARGB8888/XRGB8888
+ * (内存字节 B,G,R,A), 帧是 ABGR8888 (R,G,B,A)——逐像素 R/B 互换。窗口
+ * 越界 (含负坐标) 裁剪。读失败返回 false。 */
+static bool BlitOneClientSurface(struct wlr_xwayland_surface *xs, uint8_t *px,
+                                 int fw, int fh)
 {
-    if (!g_client || !g_client->xs)
+    if (!xs)
         return false;
-    struct wlr_surface *surf = g_client->xs->surface;
-    if (!surf || !surf->mapped)
-    {
-        /* 一次性诊断: surface 在但未 map = X 窗口内容未走 wayland 提交 */
-        static int said;
-        if (++said == 60) /* ~7s 后打一次 */
-            OHLOG("client not blitting: surf=%{public}p mapped=%{public}d "
-                  "xs->surface=%{public}p",
-                  (void *)surf, surf ? surf->mapped : -1,
-                  (void *)g_client->xs->surface);
+    struct wlr_surface *surf = xs->surface;
+    if (!wl_ohos_surface_has_content(surf))
         return false;
-    }
     /* 显示中内容在 surface->buffer (wlr_client_buffer)——current.buffer 是
      * 最近一次 commit 的裸 buffer, Xwayland child 的空 commit 会让它为 NULL
      * (T9 实测)。client buffer 的 base 即 wlr_buffer, shm 内容可直读。 */
@@ -150,13 +145,15 @@ static bool BlitClientSurface(uint8_t *px, int fw, int fh)
         return false;
     }
     int cw = cbuf->width, ch = cbuf->height;
-    int ox = (fw - cw) / 2, oy = (fh - ch) / 2;
-    if (ox < 0) ox = 0;
-    if (oy < 0) oy = 0;
-    int rows = (oy + ch <= fh) ? ch : (fh - oy);
-    int cols = (ox + cw <= fw) ? cw : (fw - ox);
-    for (int y = 0; y < rows; ++y) {
-        const uint8_t *src = (const uint8_t *)data + (size_t)y * cstride;
+    int ox = xs->x, oy = xs->y;   /* 目标 (帧内) */
+    int sx0 = 0, sy0 = 0;         /* 源裁剪起点 (负偏移时) */
+    if (ox < 0) { sx0 = -ox; ox = 0; }
+    if (oy < 0) { sy0 = -oy; oy = 0; }
+    int cols = cw - sx0 < fw - ox ? cw - sx0 : fw - ox;
+    int rows = ch - sy0 < fh - oy ? ch - sy0 : fh - oy;
+    for (int y = 0; rows > 0 && y < rows; ++y) {
+        const uint8_t *src = (const uint8_t *)data +
+                             (size_t)(sy0 + y) * cstride + (size_t)sx0 * 4;
         uint8_t *dst = px + (size_t)(oy + y) * g_out.frame_stride +
                        (size_t)ox * 4;
         for (int x = 0; x < cols; ++x) {
@@ -168,7 +165,20 @@ static bool BlitClientSurface(uint8_t *px, int fw, int fh)
         }
     }
     wlr_buffer_end_data_ptr_access(cbuf);
-    return true;
+    return rows > 0 && cols > 0;
+}
+
+/* T2: 全部已映射 client 按创建序 blit (链尾 = 最上层 = 最后画)。
+ * 返回成功 blit 的窗口数。 */
+static int BlitAllClientSurfaces(uint8_t *px, int fw, int fh)
+{
+    int n = 0;
+    struct ohos_client_surface *c;
+    wl_list_for_each(c, &g_clients, link) {
+        if (BlitOneClientSurface(c->xs, px, fw, fh))
+            ++n;
+    }
+    return n;
 }
 
 static void RenderFrame(struct wlr_buffer *buf, uint32_t seq)
@@ -181,8 +191,9 @@ static void RenderFrame(struct wlr_buffer *buf, uint32_t seq)
         return;
     uint8_t *px = data;
     int w = buf->width, h = buf->height;
-    if (!BlitClientSurface(px, w, h))
-        RenderTestPattern(px, w, h, seq);
+    /* 图案兜底永远画 (窗口间隙/无窗口时可见); client 窗口按序压上 */
+    RenderTestPattern(px, w, h, seq);
+    BlitAllClientSurfaces(px, w, h);
     /* CRC 必须在 end_data_ptr_access (Unmap) 之前算——Unmap 后 px 失效,
      * 解引用即 SEGV (T8 实测: row 599 日志后崩, use-after-unmap) */
     g_out.last_crc = FrameCrc(px, (size_t)h * g_out.frame_stride);
@@ -229,13 +240,15 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     /* T9: 应答 client surface 的 frame callback。Xwayland child 首帧 commit
      * 后会等 frame 事件再提交后续 damage; 无 scene 图形栈, 须手动应答,
      * 否则 X 窗口内容永远停在首帧/空帧 (T9 实测: surface mapped 但
-     * current.buffer 恒 NULL)。 */
-    if (g_client && g_client->xs && g_client->xs->surface
-            && g_client->xs->surface->mapped)
+     * current.buffer 恒 NULL)。T2: 遍历全部已映射 client 逐个应答。 */
     {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        wlr_surface_send_frame_done(g_client->xs->surface, &now);
+        struct ohos_client_surface *c;
+        wl_list_for_each(c, &g_clients, link) {
+            if (c->xs && wl_ohos_surface_has_content(c->xs->surface))
+                wlr_surface_send_frame_done(c->xs->surface, &now);
+        }
     }
 
     /* Region 无内嵌数组: rects 是独立指针, 必须指向外部 RegionRect。
@@ -381,8 +394,7 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     (void)data;
     wl_list_remove(&c->destroy.link);
     wl_list_remove(&c->request_configure.link);
-    if (g_client == c)
-        g_client = NULL;
+    wl_list_remove(&c->link);
     free(c);
 }
 
@@ -415,14 +427,69 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     wl_signal_add(&xs->events.destroy, &c->destroy);
     c->request_configure.notify = ClientRequestConfigure;
     wl_signal_add(&xs->events.request_configure, &c->request_configure);
-    g_client = c;
-    OHLOG("client surface created (%dx%d)", xs->width, xs->height);
+    wl_list_insert(g_clients.prev, &c->link); /* 链尾 = 最上层 */
+    OHLOG("client surface created (%{public}dx%{public}d @%{public}d,%{public}d)",
+          xs->width, xs->height, xs->x, xs->y);
 }
 
-/* M1-T1: 注入取数口 (display_input.c 调用) */
+/* 可见性谓词: Xwayland 表面的空 commit 会翻转 surface->mapped (0.20
+ * surface_commit_state: NULL buffer commit → unmap, xwl 表面例行发空
+ * commit), 而最后有效像素仍在 surface->buffer —— 以 buffer 存在性为准
+ * (M0-T9 实证: 内容在 surf->buffer, current.buffer 可为 NULL)。mapped
+ * 保留协议意义; withdrawn/最小化语义归 M2+ 窗口管理。 */
+int wl_ohos_surface_has_content(struct wlr_surface *surf)
+{
+    return surf && surf->buffer != NULL;
+}
+
+/* M1-T1/T2: 注入取数口 (display_input.c 调用)。
+ * client_xs = 最上层已映射窗口 (T1 自动注入目标);
+ * client_topmost_at = 帧坐标命中 (T2 注入几何换算);
+ * frame_size = 命中坐标归一化的基准 (输出尺寸当前固定 800x600)。 */
 struct wlr_xwayland_surface *wl_ohos_output_client_xs(void)
 {
-    return g_client ? g_client->xs : NULL;
+    struct ohos_client_surface *c;
+    wl_list_for_each_reverse(c, &g_clients, link) {
+        if (c->xs && wl_ohos_surface_has_content(c->xs->surface))
+            return c->xs;
+    }
+    return NULL;
+}
+
+struct wlr_xwayland_surface *wl_ohos_output_client_topmost_at(int fx, int fy)
+{
+    struct ohos_client_surface *c;
+    struct wlr_xwayland_surface *hit = NULL;
+    wl_list_for_each_reverse(c, &g_clients, link) {
+        struct wlr_xwayland_surface *xs = c->xs;
+        if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
+            continue;
+        if (fx >= xs->x && fx < xs->x + xs->width &&
+            fy >= xs->y && fy < xs->y + xs->height) {
+            hit = xs;
+            break;
+        }
+    }
+    if (!hit) {
+        /* T2 门诊断 (脚本驱动低频, 保留至 scene 化前): miss 时列出全部
+         * 候选态, 供判 content/几何哪一环不符 */
+        wl_list_for_each_reverse(c, &g_clients, link) {
+            struct wlr_xwayland_surface *xs = c->xs;
+            OHLOG("hit miss cand xs=%{public}p content=%{public}d "
+                  "geom=%{public}dx%{public}d@%{public}d,%{public}d",
+                  (void *)xs,
+                  xs ? wl_ohos_surface_has_content(xs->surface) : -1,
+                  xs ? xs->width : -1, xs ? xs->height : -1,
+                  xs ? xs->x : -1, xs ? xs->y : -1);
+        }
+    }
+    return hit;
+}
+
+void wl_ohos_output_frame_size(int *w, int *h)
+{
+    if (w) *w = 800;
+    if (h) *h = 600;
 }
 
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
@@ -433,6 +500,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
 {
     memset(&g_out, 0, sizeof(g_out));
     g_out.window = window;
+    wl_list_init(&g_clients);
 
     struct wlr_allocator *alloc = wl_ohos_allocator_create();
     if (!alloc) {
