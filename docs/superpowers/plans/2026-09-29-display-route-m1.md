@@ -168,8 +168,13 @@ xcb 栈/X11 脚本按 M0 的参数化加 guest pass：目标 `x86_64-linux-ohos`
 ```c
 else if (getenv("DISPLAY"))
 {
-    /* X 路线 (displayroute): DISPLAY 已设即走 winex11, 优先于 wayland */
-    ... 同款 KeUserModeCallback(NtUserModeCallback(NtUserLoadDriver), L"winex11.drv", ...)
+    /* X 路线 (displayroute): DISPLAY 已设即走 winex11。
+     * 摆位在 WAYLAND_DISPLAY 之后 = 双设时 wayland 赢 (保守默认,
+     * Review Focus #1); 路线选择靠 env 注入互斥 (X 档位只设 DISPLAY
+     * 不设 WAYLAND_DISPLAY), 不靠分支顺序。
+     * 注: 既有代码约定 KeUserModeCallback 返回 0 = 加载成功 (见上方
+     * winewayland 分支的 ! 判断), 新分支照抄同款判断。 */
+    ... 同款 KeUserModeCallback(NtUserLoadDriver, winex11W, sizeof(winex11W), &ret_ptr, &ret_len)
 }
 ```
 打成 `scripts/patches/wine-x11-route.patch`（submodule 净树纪律）。
