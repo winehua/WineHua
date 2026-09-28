@@ -82,10 +82,10 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 |---|---|---|---|
 | R1 | GLX 管线断点：D3D8/9/OpenGL 现走 winewayland EGL readback；winex11 需 GLX，shm Xwayland 无 GLX 扩展 | `build_wine.sh:118-122`、`configure.ac:1408-1425`（缺 libGL 仅 WARNING，会静默失效） | ①GLX-over-EGL 桥（winex11 opengl.c 后端替换为 virpipe EGL，蓝图 = 现有 opengl.c 的结构；成败级无理论风险，全是工作量）。present 通路被 shm 约束唯一决定：wine 侧摸不到 X 窗口像素 ⇒ EGL surfaceless/pbuffer 离屏渲染 → glReadPixels → `XShmPutImage` 回 X 窗口，代价与现 winewayland EGL readback 同级；spike 裁决判据 = virpipe EGL surfaceless/pbuffer 可用性 + 常见分辨率 readback 带宽实测 ②DXVK d3d9 打包启用收窄 GL 面 ③DirectDraw/OpenGL 程序由①覆盖。**M0/M1 spike 裁决最小原型** |
 | R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:419-422`），不认识 BufferQueue；pixman 起步态下游戏热路径 = GPU→CPU map→CPU 合成→GPU，每帧两次全幅搬运（bootstrap 代价，非终态） | 同左 | ①（bootstrap）data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer。获取链三跳（API 实证）：`OH_NativeImage_AcquireNativeWindowBuffer`（SDK `native_image.h:300`，`AcquireLatestNativeWindowBuffer` `:485`，since 22 ≤ 本档 23）→ `OH_NativeBuffer_FromNativeWindowBuffer`（`native_buffer.h:286`）→ `OH_NativeBuffer_Map`（`:233`）。**口径：API 存在已证、组合未验证**——现行合成器零 `OH_NativeBuffer` 命中（全程纹理模式 `UpdateSurfaceImage` `native_image.h:157`），纹理/缓冲两种消费模式能否共存同一 OH_NativeImage 未验证，M2 探针裁决 ②**M2 必达终态（GL 门）**：wlroots gles2 加 OHOS 导入分支——`eglCreateImage` + `EGL_NATIVE_BUFFER_OHOS`（SDK `eglext.h:1441-1444`），输入帧与输出 buffer 全程 GPU，拷贝数与旧路线持平。**扩展运行时可用性 = M2 探针；不可用则效果上限退化为 ① 的 CPU 合成**。传输层已被现行 ZC 生产验证 |
-| R-SPAWN | **决策（平台硬约束）：子进程必须走 NCP**，fork/exec 不可用；而 wlroots 启动 Xwayland 只有 fork+execvp（`xwayland/server.c:133`；`server.h:64` 同源内部 exec），无「接管外部进程」公开 API → 启动路径必须 NCP 化适配 | 同左 | 三件套（全部落在已有机制上）：①xserver 构建增出 `libxwayland` 共享库（构建级小补丁，代码零改）②NCP shim 子进程 `libxwayland_child.so`：入口同 `virgl_child.cpp:471` `Main(NativeChildProcess_Args)` 形态——起 abstract unix socket（生产先例：wine NCP 子进程连合成器即走 abstract，P4）收 SCM_RIGHTS 传来的 {x_fd×2, wl_fd[1], wm_fd[0], displayfd}，以 `-listenfd` argv 直调 Xwayland main ③wlroots `server.c` 启动点补丁：跳过 fork/execvp，改 NCP spawn + fd 下发。fd 跨进程传递先例：winewayland section→fd→wl_shm（`wayland_surface.c:880-908`，NCP 子进程↔app 通道在产）。wlroots 钉版口径由此修正为「1 处隔离启动补丁」 |
+| R-SPAWN | **决策（平台硬约束）：子进程必须走 NCP**，fork/exec 不可用；而 wlroots 启动 Xwayland 只有 fork+execvp（`xwayland/server.c:133`；`server.h:64` 同源内部 exec），无「接管外部进程」公开 API → 启动路径必须 NCP 化适配 | 同左 | 三件套（全部落在已有机制上）：①xserver 构建增出 `libxwayland` 共享库（构建级小补丁，代码零改）②NCP shim 子进程 `libxwayland_child.so`：入口同 `virgl_child.cpp:471` `Main(NativeChildProcess_Args)` 形态——起 abstract unix socket（生产先例：wine NCP 子进程连合成器即走 abstract，P4）收 SCM_RIGHTS 传来的 {x_fd×2, wl_fd[1], wm_fd[0], displayfd}，以 `-listenfd` argv 直调 Xwayland main ③wlroots `server.c` 启动点补丁：跳过 fork/execvp，改 NCP spawn + fd 下发。fd 跨进程传递先例：winewayland section→fd→wl_shm（`wayland_surface.c:880-908`，NCP 子进程↔app 通道在产）。wlroots 钉版口径由此修正为「1 处隔离启动补丁」。**M0 已落地（T7/T9，2026-09-28）**：三件套按此形态实现并真机跑通；补丁增量两条实测教训——`wl_client_create` 后移到 spawn 之后时 `'start'` 事件 emit 必须随之后移（消费方 handle_server_start 读 `server->client` 给 shell_v1 设白名单，时序破即 bind 拒）；两段式 `wlr_xwayland_create_with_server` 调用方（C++ 宿主）不经 `wlr_xwayland_create` 包装层，shell_v1 全局须由 with_server 自建（否则 xwm_create 挂 NULL 信号 SEGV） |
 | R2 | wlroots shm 分配器走 shm_open→/dev/shm（`util/shm.c:30`），沙箱可能没有 | 同左 | **已探针解除（2026-09-27，见 B 类 P1/P2）**：shm_open 与 memfd_create 在沙箱均可用，默认分配器直接工作；自定义 `wlr_allocator` 降级为备胎 |
 | R-VER | wlroots 0.20.2 与 0.21 均要求 wayland-server ≥1.24（`wlroots meson.build:88-90`）；项目现有 1.22 | 同左 | **升 thirdparty/wayland ≥1.24 为必做项**（关键路径） |
-| R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包 |
+| R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包。**M0 已落地（T7）**：xkbcomp 不可执行（NCP exec 禁令）→ 宿主侧预编译 xkm 缓存（assemble 期 `xkbcomp -w 1 -R<xkb树> keymap.txt → wine-data/xkm/server-0.xkm`），xserver RunXkbComp 打缓存命中补丁（命中即跳过 fork/exec），shim 拷入 `$XDG_RUNTIME_DIR`；真机日志 "XKB: Reusing cached keymap" 实证，键盘激活 FatalError 解除 |
 | R-IME | 主线 xserver 无 text-input 桥 | grep XWAYLAND_IME 零命中；mutter 树亦无 Xwayland IME 桥（text-input 均为 Wayland 客户端侧，实查） | 下游补丁源待定位；否则自写 XWM↔text-input 桥或 OHOS 应用层注入，M2 裁决 |
 | R-WSI | Venus 是否暴露 VK_KHR_xcb_surface 未实测 | `winex11.drv/vulkan.c` 走 X11 WSI | M1 探针 |
 | R-CPL | win32u present_rect 补丁按 wayland 握手写 | `dlls/win32u/window.c:2312-2335` | 切换时回归 war3 全屏场景 |
@@ -105,6 +105,8 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 | P5 | /tmp | **/tmp 整个不存在**（ENOENT） | 触发路径策略决策，见下 |
 
 **路径策略决策（2026-09-27）**：一切硬编码宿主路径（`/tmp` 系）**统一重定向到沙箱目录**，不做「/tmp 可否创建」的探针与适配。涉及：wlroots `xwayland/sockets.c`（lock/socket 路径常量硬编码 `/tmp/.X%d-lock`、`/tmp/.X11-unix/X%d`，`sockets.c:19-23`；重定向 = 换常量 + 确保 socket_dir 存在，~20 行）；Xwayland xkm 输出与 shm tmpfile 已有 `$XDG_RUNTIME_DIR` 回退链（`xkb/ddxLoad.c:62-95`、`xwayland-shm.c:135-167`）。X11 abstract socket 名保持原字符串（P4 证明 abstract 不触碰文件系统，双侧均为我方构建，无需改名）。
+
+**T9 实测修正（2026-09-28）**：决策方向正确但「abstract 名保持原字符串」不完整——libX11 客户端（XCB 传输）只探测**标准名** `@/tmp/.X11-unix/X<n>`，而 filesystem 侧必须落 XDG（/tmp 不存在）。落地形态：wlroots `sockets.c` abstract 侧固定绑标准名（abstract 名是 netns 内纯字符串，无需 /tmp 存在）、fs 侧按「标准 /tmp 优先，失败回退 XDG」解析；xtrans 1.5.2 客户端 `SocketUNIXConnect` 写死 fs 路径（`abstract=0`），补丁 `scripts/patches/xtrans-abstract-client.patch` 让 local 传输客户端走 abstract 名。
 
 ## 6. 交叉构建清单
 
@@ -131,6 +133,25 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 | 5 | NCP 适配面（executable→shared 补丁） | 同样补丁, 分支面小 | 面大 | **24.1 胜** |
 
 行为面实测补充：`wayland_req >= 1.21.0`（`meson.build:66`，我方 1.26 满足）；`-shm` 选项在（`xwayland.c:214`，M0 shm-only 依据）；xwayland_shell_v1 bind 以 rootless 为门（`xwayland-screen.c:533-535`，与 §2 一致）；`-force-xrandr-emulation` 在（`xwayland.c:247`）。
+
+### 6.2 M0 实测结论（2026-09-28，T7-T9 全链真机）
+
+**出口状态：M0 达成。** 全链 = libX11 client → abstract socket → Xwayland（NCP）→ XWM/xwayland_shell_v1（wlroots）→ pixman/自定义 allocator → NativeWindow 直推 XComponent，真机出图，5 分钟+ 存活 0 喷溃，伴随轮 core 套件 PASS 4/4。
+
+**NativeWindow 首验矩阵（T8，全部实测）**：
+
+| 路径 | 结果 | 结论 |
+|---|---|---|
+| AttachBuffer 后直接 FlushBuffer | 41207000 BUFFER_STATE_INVALID | 不可行 |
+| Request→GetBufferHandleFromNative→virAddr 写 | handle 在但 virAddr=NULL（BufferQueue 不自动 map 给生产者），帧 5 起 Request 报 40601000 | 不可行 |
+| LockBuffer/UnlockAndFlushBuffer（API 23） | 设备无符号（dlsym 守卫落空） | 老设备不可用 |
+| **Request → mmap(handle->fd) → memcpy → FlushBuffer（采纳）** | 稳定出图 | stride 语义 = 字节/行（size=stride*height，误 ×4 曾写越界）；CRC 必须在 wlr_buffer end_data_ptr_access 之前算（Unmap 后指针失效） |
+
+格式：wlr_buffer 背书 OH_NativeBuffer，DRM↔OHOS 映射 ABGR/XBGR8888→RGBA_8888、ARGB/XRGB8888→BGRA_8888；usage = CPU_READ\|CPU_WRITE\|CPU_READ_OFTEN；stride 由 OH_NativeBuffer_GetConfig 回读（800 宽实测 3328）。headless output 首次 enable commit 必须带 custom_mode。帧率实测 ~8fps（每帧完整 Request→mmap→memcpy→munmap→Flush + BufferQueue 节流），零拷贝归 M1。
+
+**合成器最小件实测必备集（缺一即断链）**：`wlr_renderer_init_wl_display`（wl_shm 全局——缺则 Xwayland 首窗 Map 即 NULL proxy SEGV）、`wlr_compositor_create` + headless backend + 自定义 allocator、XWM 的 `request_configure` 应答（`wlr_xwayland_surface_configure`）与每帧 `wlr_surface_send_frame_done`（无 scene 栈须手动，否则 client 内容不提交）；X 窗口像素读 `surface->buffer`（wlr_client_buffer）而非 `current.buffer`（空 commit 后者为 NULL）。
+
+**X11 连接面（T9）**：libX11/XCB 客户端只探标准 abstract 名 `@/tmp/.X11-unix/X<n>` 与 fs 路径 `/tmp/.X11-unix/X<n>`；沙箱 /tmp 不存在 → 服务端 abstract 固定绑标准名 + xtrans 客户端补丁（见 §5 路径策略修正）；Xwayland 无 -auth 也拒本地 client（peercred 豁免沙箱未生效）→ NCP 形态加 `-ac`。
 
 ## 7. 里程碑与回退线
 
