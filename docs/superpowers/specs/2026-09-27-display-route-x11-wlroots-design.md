@@ -87,7 +87,7 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 | R-VER | wlroots 0.20.2 与 0.21 均要求 wayland-server ≥1.24（`wlroots meson.build:88-90`）；项目现有 1.22 | 同左 | **升 thirdparty/wayland ≥1.24 为必做项**（关键路径） |
 | R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包。**M0 已落地（T7）**：xkbcomp 不可执行（NCP exec 禁令）→ 宿主侧预编译 xkm 缓存（assemble 期 `xkbcomp -w 1 -R<xkb树> keymap.txt → wine-data/xkm/server-0.xkm`），xserver RunXkbComp 打缓存命中补丁（命中即跳过 fork/exec），shim 拷入 `$XDG_RUNTIME_DIR`；真机日志 "XKB: Reusing cached keymap" 实证，键盘激活 FatalError 解除 |
 | R-IME | 主线 xserver 无 text-input 桥 | grep XWAYLAND_IME 零命中；mutter 树亦无 Xwayland IME 桥（text-input 均为 Wayland 客户端侧，实查） | 下游补丁源待定位；否则自写 XWM↔text-input 桥或 OHOS 应用层注入，M2 裁决 |
-| R-WSI | Venus 是否暴露 VK_KHR_xcb_surface 未实测 | `winex11.drv/vulkan.c` 走 X11 WSI | M1 探针 |
+| R-WSI | Venus 是否暴露 VK_KHR_xcb_surface 未实测 | `winex11.drv/vulkan.c` 走 X11 WSI | **M1-T7 探针已裁决（2026-09-29，真机 r0929121315-t7b，`wsi_xcb_probe` 两路线 SKIP=能力缺席）**：venus **不暴露** `VK_KHR_xcb_surface`（也不暴露 xlib；`VK_KHR_surface` 在，spec=25）⇒ winex11 路线无 Vulkan present，X 路线的 D3D/Vulkan 呈现只能走 M2 重锚（SURFACE_ID 来源换成 X window id，§4.2）；Vulkan 程序切到 X 路线前（M2 前）呈现仍依赖 wayland 路线私有 WSI。与 R1 裁决合并后的 X 路线能力边界：GL 有（winex11 GLX/drisw，M2 验 present 链）、Vulkan 无（重锚制） |
 | R-CPL | win32u present_rect 补丁按 wayland 握手写 | `dlls/win32u/window.c:2312-2335` | 切换时回归 war3 全屏场景 |
 | R-REPRO | wayland-server 头/.pc 隐藏依赖 | `build_ohos_guest_gfx.sh:589-601` | 先固化进 build_wayland.sh，rm sysroot-ext 重建演练 |
 | R-ARK | ArkTS modal 事件源随私有协议消失 | `toplevel_event_bus` | 用 `wlr_xwayland_surface` 事件重建（§4.4 模态行；request_*/set_* 信号群 `xwayland.h:197-203,220-227`） |

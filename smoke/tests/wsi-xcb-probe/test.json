@@ -1,0 +1,21 @@
+{
+  "id": "wsi-xcb-probe",
+  "title": "R-WSI: guest Vulkan loader 是否暴露 VK_KHR_xcb_surface (winex11 X11 WSI 门槛)",
+  "exe": "wsi_xcb_probe.exe",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/graphics/wsi_xcb_probe.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}
