@@ -260,10 +260,9 @@ static bool derive_launch_cwd(int argc, char *argv[], const char *homeDir, std::
     return false;
 }
 
-static const char *select_winedebug_profile(int argc, char *argv[])
+static const char *select_winedebug_profile(int argc, char *argv[],
+                                            const char *override)
 {
-    const char *override = getenv("WINEHUA_WINEDEBUG");
-
     if (override && override[0]) return override;
     if (is_audio_test_exe(argc, argv)) return midi_diag_winedebug_profile();
     if (is_sdl_audio_test_exe(argc, argv)) return sdl_audio_diag_winedebug_profile();
@@ -455,7 +454,18 @@ extern "C" void Main(NativeChildProcess_Args args)
                 homeDir ? homeDir : "(null)", binDir, argc, argc > 0 ? argv[0] : "(none)");
 
     // 2. Step A: 设置 Wine 环境变量 baseline (硬编码默认值, 确保非 broker 路径可用)
-    const char *winedebug = select_winedebug_profile(argc, argv);
+    // WINEHUA_WINEDEBUG 的显式诊断值允许随 __env (per-app job env) 下发: 它的
+    // 消费点在 setup_wine_env (先于覆盖应用), 故从覆盖列表提前摘取传参——
+    // profile 决策点不变, 只是取值时机提前到覆盖可见处。
+    std::string winedebugOverride;
+    for (const std::string& envLine : envOverrides)
+    {
+        const char kKey[] = "WINEHUA_WINEDEBUG=";
+        if (envLine.compare(0, sizeof(kKey) - 1, kKey) == 0)
+            winedebugOverride = envLine.substr(sizeof(kKey) - 1);
+    }
+    const char *winedebug = select_winedebug_profile(argc, argv,
+                                                     winedebugOverride.c_str());
     OH_LOG_INFO(LOG_APP, "[WineChild] WINEDEBUG=%{public}s", winedebug);
     setup_wine_env(binDir, homeDir, winedebug);
 

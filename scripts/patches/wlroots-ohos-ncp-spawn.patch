@@ -22,7 +22,7 @@ diff --git a/xwayland/server.c b/xwayland/server.c
 index 8401c9e6..d6e22233 100644
 --- a/xwayland/server.c
 +++ b/xwayland/server.c
-@@ -24,31 +24,36 @@ static void safe_close(int fd) {
+@@ -24,31 +24,45 @@ static void safe_close(int fd) {
  	}
  }
  
@@ -68,6 +68,15 @@ index 8401c9e6..d6e22233 100644
 +	argv[i++] = "-verbose";
 +	argv[i++] = "7";
 +	argv[i++] = "-nolock";
++	// OHOS (WineHua M1-T5): 禁用 MIT-SHM 扩展。XShmAttach → Xwayland 侧
++	// shmat() 触发应用沙箱 seccomp SIGSYS, Xwayland 直接 Fatal abort
++	// (实测 stderr: "Caught signal 31 (Bad system call). Server aborting"),
++	// 全部 X client 连接断开, wine 窗口永远无法 map (T5 t5m 实测, winemine
++	// T4 同因)。-extension 是 Xserver 标准参数 (dix EnableDisableExtension);
++	// 扩展不存在时 winex11 的 XShmQueryExtension 探测为否, 自动走普通
++	// XPutImage 路径。未来若沙箱放开 SysV IPC 可移除此参数提速位图传输。
++	argv[i++] = "-extension";
++	argv[i++] = "MIT-SHM";
 +	// OHOS (WineHua): XKB 规则数据随 wine-data.zip 解压到 files/wine/xkb
 +	// (assemble.sh staging wine_data/xkb)。编译期 XKB_BASE_DIRECTORY 是宿主
 +	// 绝对路径, 设备上不存在 → 虚拟核心键盘激活失败 FatalError (T7 bring-up

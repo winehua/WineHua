@@ -30,6 +30,11 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
 // 自动接线, 故提前调用亦安全。
 void wl_ohos_input_xwayland_set_seat(struct wlr_xwayland *xwayland);
 
+// 真机门自动注入脚本重挂 (M1-T5): 重复触发 displayroute 时刷新每轮自动化
+// (步序归零 + 8s 起重排)。必须在合成器事件循环线程调用 (内部操作事件
+// 循环定时器); 链未建 (无 seat) 时为 no-op。
+void wl_ohos_input_script_restart(void);
+
 // OHOS 侧注入入口 (smoke NAPI / 后续编排调用)。必须在合成器事件循环线程调。
 // key: evdev 键码 (KEY_A=30)。wire 语义 = wl_keyboard.key 原值, Xwayland
 // 内部 +8 对 XKB keymap (libinput 后端同款直传, keyboard.c:52 实读)。

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <fcntl.h>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -208,6 +209,31 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 // ── smoke 调试入口 ─────────────────────────────────────────────────────
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id);
 
+// 重复触发刷新通道: 刷新动作必须落在 loop 线程 (定时器/事件源操作非线程
+// 安全, M1-T5 实测: 第二轮 smoke 复用既有链时 marker 不重写、注入脚本不
+// 重挂, 编排整体落空)。loop 线程建 pipe 事件源, 触发侧只 write 一个字节
+// (write 线程安全), loop 线程收到后执行刷新。
+static int g_retrigger_pipe[2] = {-1, -1};
+
+static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
+{
+    (void)mask;
+    (void)data;
+    char b;
+    while (read(fd, &b, 1) == 1)
+    {
+    }
+    FILE *f = fopen("/data/storage/el2/base/files/.wine/drive_c/displayroute-ready", "w");
+    if (f)
+    {
+        fputs("ready\n", f);
+        fclose(f);
+    }
+    wl_ohos_input_script_restart();
+    OH_LOG_INFO(LOG_APP, "displayroute retrigger: marker rewritten, script re-armed");
+    return 0;
+}
+
 extern "C" void WineHua_DisplayRoute_Start()
 {
     WineHua_DisplayRoute_StartWithSurface(0);
@@ -220,7 +246,13 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
     {
-        OH_LOG_INFO(LOG_APP, "already started");
+        OH_LOG_INFO(LOG_APP, "already started, refresh for retrigger");
+        if (g_retrigger_pipe[1] >= 0)
+        {
+            char b = 'r';
+            ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
+            (void)rc;
+        }
         return;
     }
     g_started = true;
@@ -257,6 +289,22 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
             return;
         }
         struct wl_event_loop *loop = wl_display_get_event_loop(wl);
+        // 重复触发刷新通道 (pipe 事件源, 触发侧仅 write)。两端必须
+        // O_NONBLOCK: wake 处理器的排空循环 read 到管道空时会一直阻塞
+        // (pipe() 默认阻塞语义, libwayland 不改 added fd 的标志), loop
+        // 线程卡死 = 整个合成器冻结 (T5 t5k 实测: 触发后帧时钟/Xwayland
+        // 全停, 后续 X client 连接握手挂死)。
+        if (pipe(g_retrigger_pipe) == 0)
+        {
+            for (int i = 0; i < 2; ++i)
+                fcntl(g_retrigger_pipe[i], F_SETFL, O_NONBLOCK);
+            wl_event_loop_add_fd(loop, g_retrigger_pipe[0], WL_EVENT_READABLE,
+                                 DisplayRouteRetriggerWake, nullptr);
+        }
+        else
+        {
+            OH_LOG_ERROR(LOG_APP, "retrigger pipe create failed errno=%{public}d", errno);
+        }
 
         struct wlr_renderer *renderer = wlr_pixman_renderer_create();
         if (!renderer)
@@ -328,7 +376,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
         //    T9: 带 xwayland, 已映射 X client 窗口优先合成上屏
         if (g_present_window)
         {
-            int rc = wl_ohos_output_chain_start(backend, renderer, loop,
+            int rc = wl_ohos_output_chain_start(backend, renderer, loop, wl,
                                                 g_present_window, xwayland);
             OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d", rc);
         }

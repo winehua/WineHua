@@ -37,6 +37,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/drm_format_set.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/xwayland/xwayland.h>
 #include <wlr/util/log.h>
@@ -50,6 +51,7 @@
 
 struct wl_ohos_output {
     struct wlr_output *output;
+    struct wlr_output_layout *layout; /* wl_output global 载体 (Xwayland 镜像) */
     struct wlr_scene *scene;            /* M1-T3: scene 图形栈 */
     struct wlr_scene_output *scene_output;
     OHNativeWindow *window;
@@ -72,6 +74,7 @@ struct ohos_client_surface {
     struct wl_listener request_configure;
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
     struct wl_listener dissociate;
+    struct wl_listener map_request; /* 生命周期仪器 (M1-T5, 见 ClientMapRequest) */
 };
 
 static struct wl_ohos_output g_out;
@@ -119,6 +122,22 @@ static void ClientDissociate(struct wl_listener *listener, void *data)
     /* surface 已随 dissociate 失效; scene 节点由 wlroots 随 surface 销毁
      * 回收, 这里只清引用 */
     c->scene_surf = NULL;
+}
+
+/* 生命周期仪器 (M1-T5 起, 低量永久保留): MapRequest = client 调了
+ * XMapWindow, 与 associate (Xwayland 建 xwl_window + wl_surface 配对)
+ * 是独立事件——中间任何一环卡住都表现为「窗口已建但永不上屏」(T5 排障
+ * 实证: 屏幕尺寸 0x0 时 created 有而 map request 无)。 */
+static void ClientMapRequest(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, map_request);
+    struct wlr_xwayland_surface *xs = c->xs;
+    (void)data;
+    if (!xs)
+        return;
+    OHLOG("client map request %{public}dx%{public}d@%{public}d,%{public}d",
+          xs->width, xs->height, xs->x, xs->y);
 }
 
 // commit 帧 → 推 NativeWindow。
@@ -369,6 +388,7 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     wl_list_remove(&c->request_configure.link);
     wl_list_remove(&c->associate.link);
     wl_list_remove(&c->dissociate.link);
+    wl_list_remove(&c->map_request.link);
     wl_list_remove(&c->link);
     free(c);
 }
@@ -406,6 +426,8 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     wl_signal_add(&xs->events.associate, &c->associate);
     c->dissociate.notify = ClientDissociate;
     wl_signal_add(&xs->events.dissociate, &c->dissociate);
+    c->map_request.notify = ClientMapRequest;
+    wl_signal_add(&xs->events.map_request, &c->map_request);
     wl_list_insert(g_clients.prev, &c->link); /* 链尾 = 最上层 */
     OHLOG("client surface created (%{public}dx%{public}d @%{public}d,%{public}d)",
           xs->width, xs->height, xs->x, xs->y);
@@ -461,6 +483,7 @@ void wl_ohos_output_frame_size(int *w, int *h)
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
+                               struct wl_display *display,
                                OHNativeWindow *window,
                                struct wlr_xwayland *xwayland)
 {
@@ -494,6 +517,17 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         return -1;
     }
     wlr_output_state_finish(&st);
+
+    /* wl_output global 载体: Xwayland rootless 镜像 compositor 的
+     * wl_output 为 xwl_output (RANDR/Xinerama), 没有它 X 屏幕 0x0 →
+     * wine is_window_rect_mapped 恒 FALSE → 窗口永不 map (T5 实测)。
+     * late-arriving global 会被既有客户端 (xwm/已连 X client) 经
+     * registry 广播收到, 无需时序。 */
+    g_out.layout = wlr_output_layout_create(display);
+    if (!g_out.layout || !wlr_output_layout_add_auto(g_out.layout, g_out.output)) {
+        OH_LOG_ERROR(LOG_APP, "output layout create/add failed");
+        return -1;
+    }
 
     /* M1-T3: scene 图形栈取代手搓帧缓冲。scene 经 pixman 渲染到 output
      * 的 swapchain (buffer 由我们的 OHOS allocator 背书), commit 事件把

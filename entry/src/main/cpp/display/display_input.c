@@ -229,17 +229,26 @@ void display_input_inject_motion(float nx, float ny, int phase)
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
 }
 
-/* ── T1/T2 真机门自动注入脚本: 定时器驱动确定性输入序列 ────────────────
+/* ── T1/T2/T5 真机门自动注入脚本: 定时器驱动确定性输入序列 ──────────────
  * 仅存在于 displayroute smoke 链 (本身就是测试路径, principles #22 不进
- * 产品)。T5 编排化后由 NAPI 驱动替代。
+ * 产品)。
  *   t=8s  KEY_A → 最上层窗口 (win1) 回显
  *   t=12s motion 到 win2 中心 (悬停切换焦点) + KEY_B → win2 回显
  *   t=16s motion 回 win1 中心 + KEY_C → win1 回显, 且 12~16s 间 win1 无键
+ *   t=20s  KEY_N: notepad 把 smoke 附加参数当文件名, 弹"新建文件?"模态
+ *          框吃掉后续键 (t5o 实测) —— 先应答它; N=IDNO 继续无标题文档
+ *          (ESC=IDCANCEL 会让 notepad 整个退出, t5s 实测)
+ *   t=20.5s motion 到 notepad 文本区中心 (T5: X 档位 guest 程序) + KEY_H
+ *   t=21s  KEY_I → notepad 文本区出现 "hi"
  * 坐标与 xclient_child mode=2 的窗口摆位耦合 (win1 @60,80 320x240,
- * win2 @380,300 280x200; 帧 800x600) —— 两侧常量成对维护。 */
+ * win2 @380,300 280x200; 帧 800x600), notepad 坐标 = 真机实测几何
+ * (874x655 @4,30, r0929092617-t5o) —— 两侧常量成对维护。 */
 #define KEY_A 30 /* linux/input-event-codes.h evdev 键码 */
 #define KEY_B 48
 #define KEY_C 46
+#define KEY_H 35
+#define KEY_I 23
+#define KEY_N 49
 
 static struct wl_event_source *g_script_timer;
 static int g_script_step;
@@ -267,6 +276,39 @@ static int ScriptTick(void *data)
     case 3: /* 悬停回 win1 中心 + KEY_C */
         display_input_inject_motion(220 / 800.0f, 200 / 600.0f, 1);
         display_input_inject_key(KEY_C, true);
+        if (g_release_timer)
+            wl_event_source_timer_update(g_release_timer, 300);
+        wl_event_source_timer_update(g_script_timer, 4000);
+        break;
+    case 4: /* T5: 关掉 notepad 的"新建文件?"模态框 (见头注释)。模态期主窗口
+             * disabled, 键须先落到对话框; 对话框几何随主窗摆位浮动 (t5r 实测
+             * 379x136@210,241 vs t5p 381x136@509,405), 几何命中不可靠 ——
+             * 直接聚焦「最后创建且有内容」的窗口 (创建序 = z 序, 对话框必然
+             * 最上)。按键必须是 N (IDNO=继续无标题文档): ESC=IDCANCEL 会让
+             * notepad DestroyWindow 整个退出 (t5s 实测 exit=9)。 */
+        FocusClient(wl_ohos_output_client_xs());
+        if (g_display)
+            wl_display_flush_clients(g_display);
+        display_input_inject_key(KEY_N, true);
+        if (g_release_timer)
+            wl_event_source_timer_update(g_release_timer, 300);
+        wl_event_source_timer_update(g_script_timer, 500);
+        break;
+    case 5: /* 悬停 notepad 文本区 (主窗内点 217,190) + KEY_H。焦点必须显式
+             * 重选: case 4 聚焦的对话框已被销毁, g_kbd_focus 悬垂 (destroy
+             * 监听只摘链表不清焦点指针), EnsureKeyboardFocus 的 has_content
+             * 判定读到陈旧值会跳过重聚焦 (t5t 实测 H/I 打进已死对话框)。 */
+        display_input_inject_motion(217 / 800.0f, 190 / 600.0f, 1);
+        FocusClient(wl_ohos_output_client_topmost_at(217, 190));
+        if (g_display)
+            wl_display_flush_clients(g_display);
+        display_input_inject_key(KEY_H, true);
+        if (g_release_timer)
+            wl_event_source_timer_update(g_release_timer, 300);
+        wl_event_source_timer_update(g_script_timer, 500);
+        break;
+    case 6: /* KEY_I → notepad 文本区 "hi", 序列结束 */
+        display_input_inject_key(KEY_I, true);
         if (g_release_timer)
             wl_event_source_timer_update(g_release_timer, 300);
         break; /* 序列结束, 不重排 */
@@ -346,4 +388,13 @@ void wl_ohos_input_xwayland_set_seat(struct wlr_xwayland *xwayland)
         return;
     wlr_xwayland_set_seat(xwayland, g_seat);
     OHLOG("xwayland seat attached");
+}
+
+void wl_ohos_input_script_restart(void)
+{
+    if (!g_loop || !g_script_timer)
+        return;
+    g_script_step = 0;
+    wl_event_source_timer_update(g_script_timer, 8000);
+    OHLOG("inject script re-armed (t=8/12/16/20/20.5/21s)");
 }

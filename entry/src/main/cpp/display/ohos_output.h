@@ -10,6 +10,7 @@
 
 struct wlr_backend;
 struct wlr_renderer;
+struct wl_display;
 struct wl_event_loop;
 struct wlr_xwayland;
 struct wlr_xwayland_surface;
@@ -38,11 +39,17 @@ int wl_ohos_surface_has_content(struct wlr_surface *surf);
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。
 // xwayland 非 NULL 时监听其 new_surface, 已映射的 X client 窗口优先于测试
 // 图案合成上屏 (T9 端到端)。
+// display 用于建 wlr_output_layout (wl_output global 的载体): Xwayland
+// rootless 的 X 屏幕尺寸来自它镜像的 wl_output global —— 没有 layout 时
+// X 屏幕 0x0, wine xinerama 枚举到 0x0 显示器, is_window_rect_mapped 恒
+// FALSE, 所有 wine 窗口永不 XMapWindow (T5 t5l trace 实测)。须在 output
+// 创建后调用。
 // window 为 NULL 时调用方不应调用本函数。
 // 返回 0 = 链路建立; 非 0 = 失败 (hilog 已打点, 具体步骤看 "ohos-output" 标签)。
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
+                               struct wl_display *display,
                                OHNativeWindow *window,
                                struct wlr_xwayland *xwayland);
 
