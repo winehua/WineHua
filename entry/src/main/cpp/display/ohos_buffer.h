@@ -84,6 +84,34 @@ int wl_ohos_present_buffer_returned(struct wlr_buffer *buffer);
 // buffer 本身就是, 直接返回)
 struct NativeWindowBuffer *wl_ohos_present_buffer_window_buffer(struct wlr_buffer *buffer);
 
+/*
+ * ── guest frame buffer: OH_NativeImage 消费者队列借来的 buffer (M2-T5) ──
+ *
+ * 生产者是宿主 virgl/vtest 侧按 SURFACE_ID (= X window id) 路由进来的 guest
+ * Vulkan 帧 (win32u 私有 present 送出)。消费者侧与 present 侧同构: 一格一
+ * 借、一帧一还, 未归还就销毁等于队列槽位泄漏 (销毁时兜底归还并留证)。导入
+ * 沿用 T4 的 EGL_NATIVE_BUFFER_OHOS 路径, 因此没有 data_ptr 访问。
+ */
+struct OH_NativeImage;
+
+// 借一格 guest 帧 buffer 并包成 wlr_buffer。无新帧 (生产者没提交) 或失败
+// 返回 NULL —— 都是正常状态, 调用方按"本轮无帧"处理。
+struct wlr_buffer *wl_ohos_consumer_buffer_acquire(struct OH_NativeImage *image);
+
+// 是否本模块 guest 帧 buffer
+int wl_ohos_consumer_buffer_owns(struct wlr_buffer *buffer);
+
+// 归还队列: ReleaseNativeWindowBuffer (dequeued→free, 生产者可再写)。
+// 与 present 侧同样传 -1 (不做 GPU 侧同步), 依据: T4 输出路径实测口径。
+int32_t wl_ohos_consumer_buffer_release(struct wlr_buffer *buffer, int fence_fd);
+
+// 丢弃未上屏的一帧 (释放 buffer 对象并归还队列槽位)。未挂上 scene 的帧必须
+// 走这里 —— 只调 release 的话 buffer 对象仍持一次引用, 没人再释放它。
+void wl_ohos_consumer_buffer_drop(struct wlr_buffer *buffer);
+
+// EGL 导入载荷 (同上, 队列 buffer 本身就是)
+struct NativeWindowBuffer *wl_ohos_consumer_buffer_window_buffer(struct wlr_buffer *buffer);
+
 #ifdef __cplusplus
 }
 #endif

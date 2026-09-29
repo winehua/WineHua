@@ -75,6 +75,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 
 #include "ohos_output.h"
 #include "display_input.h"
+#include "display_guest_frames.h"
 #include "ohos_egl_import_probe.h"
 #include "ohos_egl_import.h"
 
@@ -539,6 +540,9 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // 统一收尾 (M2-T1, known-issues §1.2): 正常退出与启动失败共用。
         // 逆序销毁; with_server 形态的 server 不归 wlr_xwayland_destroy 管
         // (own_server=false, xwayland.c:91), 须显式销毁。
+        // M2-T5: guest 帧接收侧先收 (摘帧 → 解绑 → 销毁消费者面), 早了会漏
+        // 归还借来的队列帧, 晚了会在 scene 销毁后动悬垂节点。
+        display_guest_frames_shutdown();
         if (xwayland)
             wlr_xwayland_destroy(xwayland);
         if (server)

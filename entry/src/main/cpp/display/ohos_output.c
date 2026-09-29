@@ -51,6 +51,8 @@
 
 #include <wlr/types/wlr_scene.h>
 
+#include "display_guest_frames.h" /* M2-T5: guest Vulkan 帧接收侧 (帧时钟内驱动) */
+
 struct wl_ohos_output {
     struct wlr_output *output;
     struct wlr_output_layout *layout; /* wl_output global 载体 (Xwayland 镜像) */
@@ -72,6 +74,7 @@ struct ohos_client_surface {
     struct wlr_xwayland_surface *xs;
     struct wl_list link; /* g_clients */
     struct wlr_scene_surface *scene_surf; /* M1-T3: scene 节点 */
+    struct wlr_scene_buffer *frame_node;  /* M2-T5: guest Vulkan 帧节点 (X 面之上) */
     struct wl_listener destroy;
     struct wl_listener request_configure;
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
@@ -122,8 +125,11 @@ static void ClientDissociate(struct wl_listener *listener, void *data)
         wl_container_of(listener, c, dissociate);
     (void)data;
     /* surface 已随 dissociate 失效; scene 节点由 wlroots 随 surface 销毁
-     * 回收, 这里只清引用 */
+     * 回收, 这里只清引用。帧节点是 X 面节点的子节点, 同一波回收 —— 指针必须
+     * 一起清, 否则下次挂在同窗上会踩悬垂 (dissociate 先于 surface destroy
+     * 送达: 本监听器注册早于 scene_surface 自建的销毁监听器)。 */
     c->scene_surf = NULL;
+    c->frame_node = NULL;
 }
 
 /* 生命周期仪器 (M1-T5 起, 低量永久保留): MapRequest = client 调了
@@ -520,10 +526,19 @@ static int FrameTick(void *data)
 {
     (void)data;
     struct ohos_client_surface *c;
+    /* M2-T5: guest Vulkan 帧先落点再摆位 (frame_set 建/置节点, 下面的循环
+     * 统一按窗几何校正)。必须在 scene 提交之前 —— 本拍到的帧本拍就上屏。 */
+    display_guest_frames_tick();
     wl_list_for_each(c, &g_clients, link) {
         if (c->scene_surf && c->xs)
             wlr_scene_node_set_position(&c->scene_surf->buffer->node,
                                         c->xs->x, c->xs->y);
+        /* M2-T5: 帧节点跟窗走 (位置/尺寸以窗为准, 帧尺寸不合时按窗缩放) */
+        if (c->frame_node && c->xs) {
+            wlr_scene_node_set_position(&c->frame_node->node, c->xs->x, c->xs->y);
+            wlr_scene_buffer_set_dest_size(c->frame_node, c->xs->width,
+                                           c->xs->height);
+        }
     }
     if (g_out.scene_output) {
         struct timespec now;
@@ -677,6 +692,87 @@ void wl_ohos_output_frame_size(int *w, int *h)
 {
     if (w) *w = 800;
     if (h) *h = 600;
+}
+
+/* ── M2-T5: guest Vulkan 帧 (Venus 私有 present) 的落点 ─────────────────────
+ * 查找一律按 window_id 每次遍历 (映射表不另存): 窗口销毁即从 g_clients 摘除,
+ * 因此"查不到"就是「该 id 已失效」——X window id 会被 X server 复用, 复用的
+ * 新窗是另一条 g_clients 记录, 老帧进不了新窗。 */
+
+static struct ohos_client_surface *FindClientByWindow(uint32_t xwindow)
+{
+    struct ohos_client_surface *c;
+    if (!xwindow)
+        return NULL;
+    wl_list_for_each(c, &g_clients, link) {
+        if (c->xs && c->xs->window_id == xwindow)
+            return c;
+    }
+    return NULL;
+}
+
+int wl_ohos_output_client_frame_anchor(uint32_t xwindow, int *x, int *y, int *w, int *h)
+{
+    struct ohos_client_surface *c = FindClientByWindow(xwindow);
+    struct wlr_xwayland_surface *xs;
+    if (!c)
+        return 0;
+    xs = c->xs;
+    /* scene 锚 = 该窗 X 面的节点 (associate 才建; 未 associate 时帧无处可挂) */
+    if (!c->scene_surf || !c->scene_surf->buffer)
+        return 0;
+    if (x) *x = xs->x;
+    if (y) *y = xs->y;
+    if (w) *w = xs->width;
+    if (h) *h = xs->height;
+    return 1;
+}
+
+int wl_ohos_output_client_xwindow_alive(uint32_t xwindow)
+{
+    return FindClientByWindow(xwindow) != NULL;
+}
+
+int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
+{
+    struct ohos_client_surface *c = FindClientByWindow(xwindow);
+    struct wlr_xwayland_surface *xs;
+    if (!c || !buffer)
+        return 0;
+    xs = c->xs;
+    if (!c->scene_surf || !c->scene_surf->buffer)
+        return 0;
+    if (!c->frame_node) {
+        /* 节点必须与 X 面同父: scene 的子节点按注册序绘制, 建在 scene 根上
+         * 会压到后注册的窗口之上 (Z 序错乱的经典形态)。建好后 place_above
+         * 贴住 X 面 —— 同窗内先画面、后画帧。 */
+        struct wlr_scene_tree *parent =
+            wlr_scene_tree_from_node(c->scene_surf->buffer->node.parent);
+        c->frame_node = wlr_scene_buffer_create(parent, NULL);
+        if (!c->frame_node) {
+            OH_LOG_ERROR(LOG_APP, "guest frame node create failed xwin=%{public}u",
+                         xwindow);
+            return 0;
+        }
+        wlr_scene_node_place_above(&c->frame_node->node,
+                                   &c->scene_surf->buffer->node);
+    }
+    /* set_buffer 解锁旧帧 (归还队列槽位由 buffer 析构兜底), dest_size 按窗口
+     * 几何 —— 帧尺寸与窗一致时是恒等变换, 不一致时按窗口缩放 (不留黑边)。 */
+    wlr_scene_buffer_set_buffer(c->frame_node, buffer);
+    wlr_scene_buffer_set_dest_size(c->frame_node, xs->width, xs->height);
+    wlr_scene_node_set_position(&c->frame_node->node, xs->x, xs->y);
+    wlr_scene_node_set_enabled(&c->frame_node->node, true);
+    return 1;
+}
+
+void wl_ohos_output_client_frame_clear(uint32_t xwindow)
+{
+    struct ohos_client_surface *c = FindClientByWindow(xwindow);
+    if (!c || !c->frame_node)
+        return;
+    wlr_scene_buffer_set_buffer(c->frame_node, NULL);
+    wlr_scene_node_set_enabled(&c->frame_node->node, false);
 }
 
 int wl_ohos_output_chain_start(struct wlr_backend *backend,

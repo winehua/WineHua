@@ -45,6 +45,27 @@ virglrenderer 跑在**独立 NCP 子进程**（`graphics_broker.cpp:1322` libvir
 
 WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高位 tag `0x574853` + wl_surface id（`contracts.md:360`），venus 经 `VCMD_WINEHUA_VK_PRESENT` 把 SURFACE_ID 送 virglrenderer（`contracts.md:461`），宿主回调回主仓库。**M2 重锚 = 把 id 来源从 winewayland 的 wl_surface id 换成 X window id（经 `wlr_xwayland_surface` 双字段映射，`xwayland.h` window_id+surface），链路其余不动。**
 
+**M2 重锚落地形态（2026-09-30 实测，设备 .5）**：
+
+1. **id 来源**：`winex11.drv/vulkan.c` 私有面无分支取 `X11DRV_get_whole_window(hwnd)`
+   （受管顶层窗），面值 = `0x574853 | xwindow`，不建原生 Xlib 面；无受管顶层时
+   返回失败而不是投到空处。
+2. **宿主路由键不变**：`(clientPid << 32) | surfaceId`（`virgl_surface_presenter.cpp`）；
+   无目标时 present 等 2.5s 后返 EAGAIN 让 guest 重试，限频记 `target missing`
+   ——「无目标即丢弃并计数」就是投错窗的护栏。
+3. **合成器侧接收**（`display/display_guest_frames.cpp`，帧时钟同线程）：按
+   `window_id` 在册核对 → 建 `OH_ConsumerSurface` → `AcquireNativeWindow` 的生产窗
+   交 `GraphicsBroker::AttachZeroCopyTarget` → 每帧 `Acquire/ReleaseNativeWindowBuffer`
+   借还一格队列 buffer，经 T4 的 `EGL_NATIVE_BUFFER_OHOS` 导入挂到该窗 scene 节点
+   （与 X 面同父、`place_above` 贴其上，随窗销毁由 wlroots 连带回收）。
+4. **销毁即失效**：X 窗 destroy → 当拍摘帧 + 解绑 + 计数；同 id 的新窗是另一条
+   在册记录，老帧进不了它。
+
+**实测**：X 路线 present 用例 6/6 PASS（r062155–r063126）：`presentFrames=150`、
+`presentFailureFrame=0`；每次 attach → 133~137 帧消费 → `detach reason=xwindow
+destroyed`；运行中截屏出现逐帧清屏色的大色块（0x1FC73D/0xD12D3D/0x1FC7A8），
+帧确实经队列→EGL 导入→scene 上了屏。
+
 ### 4.3 其他对接事实
 
 - Wine 窗口 shm：wineserver section 转 fd（`wayland_surface.c:880-908` `wine_server_handle_to_fd` → `wl_shm_create_pool`）——沙箱内跨进程 fd 共享已在生产验证

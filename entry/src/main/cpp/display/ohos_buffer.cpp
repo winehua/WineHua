@@ -24,6 +24,8 @@
 
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
+/* M2-T5 消费者: OH_NativeImage_Acquire/ReleaseNativeWindowBuffer */
+#include <native_image/native_image.h>
 #include <libdrm/drm_fourcc.h>
 
 #define WLR_USE_UNSTABLE
@@ -303,6 +305,64 @@ const struct wlr_buffer_impl kPresentBufferImpl = {
     .end_data_ptr_access = PresentEndDataPtr,
 };
 
+/* ── guest frame buffer (OH_NativeImage 消费者队列借来的一格, M2-T5) ──
+ *
+ * 生产者是宿主 virgl/vtest 侧按 X window id 路由进来的 guest Vulkan 帧
+ * (win32u 送出的 SURFACE_ID = xwindow)。消费者侧与 present 侧同构: 一格一
+ * 借、一帧一还, 未归还就销毁 = 队列槽位泄漏 (兜底归还并留证)。导入沿用
+ * T4 的 EGL_NATIVE_BUFFER_OHOS 路径, 因此不提供 data_ptr 访问。
+ */
+struct WlOhosConsumerBuffer {
+    struct wlr_buffer base;
+    OH_NativeImage *image = nullptr;
+    OHNativeWindowBuffer *window_buffer = nullptr;
+    bool returned = false; /* 已 ReleaseNativeWindowBuffer 归还队列 */
+    uint32_t format = 0;
+    size_t stride = 0;
+};
+
+struct WlOhosConsumerBuffer *ConsumerFromBase(struct wlr_buffer *base)
+{
+    return reinterpret_cast<WlOhosConsumerBuffer *>(base);
+}
+
+/* 队列归还 + 自持引用释放。Acquire 出来的 buffer 由本模块持一次引用
+ * (native_image.h:281 契约: 用毕须 NativeObjectUnreference), 归还队列本身
+ * 不退引用 —— 引用退在销毁时, 保证归还后到销毁前对象不会被队列回收。 */
+void ConsumerReleaseQueueSlot(WlOhosConsumerBuffer *buf, int fence_fd, bool logDrop)
+{
+    if (buf->returned)
+        return;
+    if (logDrop)
+        wlr_log(WLR_ERROR, "ohos guest frame dropped without release, releasing");
+    if (buf->image && buf->window_buffer)
+        OH_NativeImage_ReleaseNativeWindowBuffer(buf->image, buf->window_buffer,
+                                                 fence_fd);
+    buf->returned = true;
+}
+
+void ConsumerDestroy(struct wlr_buffer *wlr_buf)
+{
+    WlOhosConsumerBuffer *buf = ConsumerFromBase(wlr_buf);
+    ConsumerReleaseQueueSlot(buf, -1, true);
+    if (buf->window_buffer)
+        OH_NativeWindow_NativeObjectUnreference(buf->window_buffer);
+    free(buf);
+}
+
+bool ConsumerGetDmabuf(struct wlr_buffer *, struct wlr_dmabuf_attributes *)
+{
+    return false; /* 队列 buffer 无 dmabuf 导出, 走 EGL_NATIVE_BUFFER_OHOS 导入 */
+}
+
+const struct wlr_buffer_impl kConsumerBufferImpl = {
+    .destroy = ConsumerDestroy,
+    .get_dmabuf = ConsumerGetDmabuf,
+    .get_shm = nullptr,
+    .begin_data_ptr_access = nullptr,
+    .end_data_ptr_access = nullptr,
+};
+
 } // namespace
 
 extern "C" struct wlr_allocator *wl_ohos_allocator_create(void)
@@ -329,6 +389,8 @@ extern "C" size_t wl_ohos_buffer_stride(struct wlr_buffer *buffer)
         return 0;
     if (buffer->impl == &kPresentBufferImpl)
         return PresentFromBase(buffer)->stride;
+    if (buffer->impl == &kConsumerBufferImpl)
+        return ConsumerFromBase(buffer)->stride;
     if (buffer->impl != &kBufferImpl)
         return 0;
     return BufferFromBase(buffer)->stride;
@@ -340,6 +402,8 @@ extern "C" uint32_t wl_ohos_buffer_drm_format(struct wlr_buffer *buffer)
         return 0;
     if (buffer->impl == &kPresentBufferImpl)
         return PresentFromBase(buffer)->format;
+    if (buffer->impl == &kConsumerBufferImpl)
+        return ConsumerFromBase(buffer)->format;
     if (buffer->impl != &kBufferImpl)
         return 0;
     return BufferFromBase(buffer)->format;
@@ -440,14 +504,98 @@ extern "C" struct NativeWindowBuffer *wl_ohos_present_buffer_window_buffer(struc
     return PresentFromBase(buffer)->window_buffer;
 }
 
+extern "C" struct wlr_buffer *wl_ohos_consumer_buffer_acquire(struct OH_NativeImage *image)
+{
+    if (!image)
+        return nullptr;
+    OHNativeWindowBuffer *wb = nullptr;
+    int32_t fence = -1;
+    int32_t rc = OH_NativeImage_AcquireNativeWindowBuffer(image, &wb, &fence);
+    if (rc != 0 || !wb)
+    {
+        /* 没有新帧是正常状态 (生产者没提交), 调用方按"本轮无帧"处理 */
+        if (fence >= 0)
+            close(fence);
+        return nullptr;
+    }
+    /* 同步 fence 不往下传 (EGL_NATIVE_BUFFER_OHOS 导入由系统图形栈在首次使用
+     * 时消费 buffer 自带 fence, T4 输出侧同口径), 但必须关掉 —— SDK 契约。 */
+    if (fence >= 0)
+        close(fence);
+    /* SDK 契约 (native_image.h:281): Acquire 出的 OHNativeWindowBuffer 要自持
+     * 一次引用, 用毕 NativeObjectUnreference (退还点在 ConsumerDestroy)。 */
+    if (OH_NativeWindow_NativeObjectReference(wb) != 0)
+    {
+        OH_NativeImage_ReleaseNativeWindowBuffer(image, wb, -1);
+        return nullptr;
+    }
+    BufferHandle *h = OH_NativeWindow_GetBufferHandleFromNative(wb);
+    if (!h || h->width <= 0 || h->height <= 0 || h->stride <= 0)
+    {
+        OH_NativeImage_ReleaseNativeWindowBuffer(image, wb, -1);
+        OH_NativeWindow_NativeObjectUnreference(wb);
+        return nullptr;
+    }
+    auto *buf = static_cast<WlOhosConsumerBuffer *>(calloc(1, sizeof(WlOhosConsumerBuffer)));
+    if (!buf)
+    {
+        OH_NativeImage_ReleaseNativeWindowBuffer(image, wb, -1);
+        OH_NativeWindow_NativeObjectUnreference(wb);
+        return nullptr;
+    }
+    buf->image = image;
+    buf->window_buffer = wb;
+    buf->stride = static_cast<size_t>(h->stride);
+    buf->format = OhosFormatToDrm(h->format);
+    wlr_buffer_init(&buf->base, &kConsumerBufferImpl,
+                    static_cast<int>(h->width), static_cast<int>(h->height));
+    return &buf->base;
+}
+
+extern "C" int wl_ohos_consumer_buffer_owns(struct wlr_buffer *buffer)
+{
+    return buffer && buffer->impl == &kConsumerBufferImpl;
+}
+
+extern "C" int32_t wl_ohos_consumer_buffer_release(struct wlr_buffer *buffer, int fence_fd)
+{
+    if (!buffer || buffer->impl != &kConsumerBufferImpl)
+        return -1;
+    WlOhosConsumerBuffer *buf = ConsumerFromBase(buffer);
+    if (buf->returned)
+        return -1;
+    const int32_t rc = OH_NativeImage_ReleaseNativeWindowBuffer(
+        buf->image, buf->window_buffer, fence_fd);
+    buf->returned = true;
+    return rc;
+}
+
+extern "C" void wl_ohos_consumer_buffer_drop(struct wlr_buffer *buffer)
+{
+    /* 未挂上 scene 的帧必须显式丢弃: 走 wlr_buffer 析构 → ConsumerDestroy
+     * 归还槽位 (不能用 release —— 那只归还队列, buffer 对象仍占用一次引用,
+     * 调用方手上就没有再释放它的机会了) */
+    if (buffer)
+        wlr_buffer_drop(buffer);
+}
+
+extern "C" struct NativeWindowBuffer *wl_ohos_consumer_buffer_window_buffer(struct wlr_buffer *buffer)
+{
+    if (!buffer || buffer->impl != &kConsumerBufferImpl)
+        return nullptr;
+    return ConsumerFromBase(buffer)->window_buffer;
+}
+
 extern "C" struct NativeWindowBuffer *wl_ohos_buffer_window_buffer(struct wlr_buffer *buffer)
 {
     if (!buffer)
         return nullptr;
-    /* 一种判据一处实现: 导入器只认这一个入口, 两类 buffer (自有 / 队列借来)
-     * 的载荷在内部区分 */
+    /* 一种判据一处实现: 导入器只认这一个入口, 三类 buffer (自有 / 输出队列
+     * 借来 / guest 帧队列借来) 的载荷在内部区分 */
     if (buffer->impl == &kPresentBufferImpl)
         return PresentFromBase(buffer)->window_buffer;
+    if (buffer->impl == &kConsumerBufferImpl)
+        return ConsumerFromBase(buffer)->window_buffer;
     if (buffer->impl != &kBufferImpl)
         return nullptr;
     WlOhosBuffer *buf = BufferFromBase(buffer);

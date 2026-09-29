@@ -35,6 +35,30 @@ void wl_ohos_output_frame_size(int *w, int *h);
 struct wlr_surface;
 int wl_ohos_surface_has_content(struct wlr_surface *surf);
 
+/* ── M2-T5: guest Vulkan 帧 (Venus 私有 present) 的落点 ─────────────────────
+ * 私有 present 的 SURFACE_ID 是 X 顶层窗 id, 帧按 clientPid<<32|id 路由进来,
+ * 落点就是这个 id 对应的 X 窗。scene 侧由本文件持有帧节点 (wlr_scene_buffer):
+ * 与同窗 X 面同父、紧贴其上, 随窗销毁由 wlroots 连带回收。 */
+struct wlr_buffer; /* 前置声明必须在文件作用域: 只出现在原型里的 tag 会被
+                    * 当成原型作用域的新类型, 定义处就报 conflicting types */
+
+// 锚可用判据 + 几何回填 (入参可为 NULL): 1 = 窗口在册且 X 面已 associate
+// (帧可以挂了); 0 = 不可用 (窗口不在册, 或 wl_surface 还没到) —— 调用方
+// 等下一轮再试。
+int wl_ohos_output_client_frame_anchor(uint32_t xwindow, int *x, int *y, int *w, int *h);
+
+// X window id 是否仍在册。销毁即失效判据: 窗口销毁后同 id 会随复用的新窗
+// 重新在册, 老帧必须在这条缝里丢弃 (不能投进新窗)。
+int wl_ohos_output_client_xwindow_alive(uint32_t xwindow);
+
+// 把一帧挂到该窗 (首次调用建节点并置顶于 X 面之上; 旧帧随节点解锁归还)。
+// 返回 0 = 窗口不可挂 (不在册 / 锚不可用) —— 调用方必须自行丢弃 buffer。
+int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer);
+
+// 摘掉该窗的帧 (解绑/收尾): 清 buffer + 停用节点 (节点随窗销毁回收)。
+// 窗口已销毁时是 no-op。
+void wl_ohos_output_client_frame_clear(uint32_t xwindow);
+
 // 建 headless output (800x600) + 自定义 OHOS allocator + 帧定时器:
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。
 // xwayland 非 NULL 时监听其 new_surface, 已映射的 X client 窗口优先于测试
