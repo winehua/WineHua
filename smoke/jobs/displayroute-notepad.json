@@ -1,5 +1,8 @@
 {
   "displayroute": true,
+  "checks": [
+    "marker:displayroute-egl-import-probe"
+  ],
   "inline": [
     {
       "testId": "m1t5-notepad",

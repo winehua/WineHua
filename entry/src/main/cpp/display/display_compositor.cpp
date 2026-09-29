@@ -75,6 +75,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 
 #include "ohos_output.h"
 #include "display_input.h"
+#include "ohos_egl_import_probe.h"
 
 extern "C" {
 #include <native_buffer/native_buffer.h>
@@ -334,6 +335,11 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         {
             OH_LOG_ERROR(LOG_APP, "retrigger pipe create failed errno=%{public}d", errno);
         }
+
+        // M2-T2: R-ZC ② 探针 —— 标记文件不存在时真跑一次 host EGL OHOS
+        // 导入链, 结论落盘 (drive_c/displayroute-egl-import-probe), gles2
+        // 零拷贝路线 (T4) 按它裁决。自缓存, 一次性几 ms。
+        ohos_egl_import_probe_run();
 
         renderer = wlr_pixman_renderer_create();
         if (!renderer)

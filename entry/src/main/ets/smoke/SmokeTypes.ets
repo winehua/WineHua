@@ -78,6 +78,10 @@ export interface SmokeJob {
   longSeconds?: number;
   // M0-T7: true = run 开始时触发显示路线 bring-up (smokeNapi.smokeDisplayRoute)
   displayroute?: boolean;
+  // 套件级判定器声明（host 侧消费，设备端不读）：无套件运行时承载
+  // bring-up 级 check，如 "marker:displayroute-egl-import-probe"
+  //（M2-T2 能力探针标记）。见 automation/smoke.py judge_run。
+  checks?: string[];
 }
 
 export interface SmokeRequest {

@@ -385,6 +385,11 @@ REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
 PAYLOAD_REL = "smoke-payload"
 # 当前 prefix 的实际载荷：二次 Want 不触发设备端 seed，必须直接更新这里
 DRIVE_C_REL = ".wine/drive_c/smoke"
+# drive_c 根（displayroute bring-up 标记所在，与 smoke/ 载荷树平级）
+DRIVE_C_ROOT_REL = ".wine/drive_c"
+# displayroute bring-up 阶段的能力探针标记（app 进程内探针写，非 wine 结果
+# 协议）：run 结束逐个尝试归档，marker 判定器据此裁决。
+DISPLAYROUTE_MARKERS = ("displayroute-egl-import-probe",)
 # job 文件（host 生成）：debug 参数组合 / 选测 / 内联临时用例走它下发
 JOB_REL = "smoke-job.json"
 
@@ -494,6 +499,17 @@ def hdc_recv_dir(hdc: str, device: str, rel_path: str, local_dir: Path) -> None:
     subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
                     f"{SANDBOX_FILES}/{rel_path}", str(local_dir)],
                    capture_output=True, text=True, errors="replace")
+
+
+def hdc_recv_file_if_present(hdc: str, device: str, rel_path: str, local: Path) -> bool:
+    """把 files/ 下的单个文件拉回本地；不存在返回 False（调用方决定容忍度）。
+
+    沙箱视角路径（不加 -b 会被 SELinux 拒，见文件头沙箱路径约定）。"""
+    local.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                             f"{SANDBOX_FILES}/{rel_path}", str(local)],
+                            capture_output=True, text=True, errors="replace")
+    return result.returncode == 0 and local.is_file()
 
 
 def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
@@ -647,6 +663,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     remove_sandbox_path(hdc, device, JOB_REL)
     hdc_send(hdc, device, job_path, f"{SANDBOX_FILES}/{JOB_REL}")
 
+    # displayroute 运行：清掉上次的能力探针标记 —— 探针自缓存 (标记在即
+    # 跳过), 不清则改了探针代码也不会重跑, 归档到的是上一版结论 (实测踩坑)。
+    # 每次 run 一次现测, 才是回归该有的语义。
+    if job.get("displayroute"):
+        for marker_name in DISPLAYROUTE_MARKERS:
+            remove_sandbox_path(hdc, device, f"{DRIVE_C_ROOT_REL}/{marker_name}")
+
     start = (f"aa start -a {ABILITY} -b {BUNDLE} "
              f"--ps winehua.mode smoke "
              f"--ps winehua.job_file {SANDBOX_FILES}/{JOB_REL} "
@@ -683,6 +706,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         hdc_recv_dir(hdc, device, f"{DRIVE_C_REL}/results/{run_id}",
                      archive / "device-results")
+        # 能力探针标记 (M2-T2): displayroute bring-up 阶段在 app 进程内跑的
+        # 探针把结论枚举写成标记文件, 不走 wine 结果协议 —— 逐个尝试归档进
+        # device-results/, 由 marker 判定器裁决 (判定只读归档)。不存在即跳过
+        # (非 displayroute 运行没有这些标记; 该跑没跑由 marker 判定器判 FAIL)。
+        for marker_name in DISPLAYROUTE_MARKERS:
+            hdc_recv_file_if_present(hdc, device,
+                                     f"{DRIVE_C_ROOT_REL}/{marker_name}",
+                                     archive / "device-results" / marker_name)
         (archive / "suite-summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
         long_seconds = args.long_seconds or int(job.get("longSeconds", 0)) or 3600
@@ -691,9 +722,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device, "longSeconds": long_seconds,
         }, indent=2, ensure_ascii=False) + "\n")
-        # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）
+        # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）。
+        # 套件级 checks 来源: 套件定义 > job 声明 (displayroute 无套件运行
+        # 时把 bring-up 级 check —— 如能力探针 marker —— 写在 job 里)。
+        suite_def = suites.get(args.suite)
+        if suite_def is None and job.get("checks"):
+            suite_def = {"checks": job["checks"]}
         host = judge_run(archive, entries, frames, summary.get("tests", []),
-                         suites.get(args.suite), args.suite, long_seconds)
+                         suite_def, args.suite, long_seconds)
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
@@ -732,13 +768,24 @@ def cmd_check(args: argparse.Namespace) -> int:
     long_seconds = 3600
     if artifact_path.is_file():
         long_seconds = int(json.loads(artifact_path.read_text()).get("longSeconds", 3600))
+    # 套件级 checks 来源与 cmd_run 一致: 套件定义 > 归档 job 声明 (重跑判定
+    # 必须与首次判定同源, 否则 check 会把 job 声明的 bring-up check 丢掉)
+    suite_def = suites.get(suite)
+    if suite_def is None:
+        job_path = archive / "job.json"
+        job = json.loads(job_path.read_text()) if job_path.is_file() else {}
+        if job.get("checks"):
+            suite_def = {"checks": job["checks"]}
     host = judge_run(archive, entries, frames, summary.get("tests", []),
-                     suites.get(suite), suite, long_seconds)
+                     suite_def, suite, long_seconds)
     (archive / "host-summary.json").write_text(
         json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     for test in host["tests"]:
         log(f"  {test['testId']:<28} {test['status']:<10} "
             f"{test.get('stage', '')} {test.get('message', '')[:70]}")
+    for verdict in host.get("suiteVerdicts", []):
+        log(f"  [suite:{verdict.get('check', '')}] {verdict.get('status', '')} "
+            f"{verdict.get('message', '')[:70]}")
     log(f"check {host['status']} ({host['passed']}/{host['total']}) → {archive}")
     return 0 if host["status"] == "PASS" else 1
 

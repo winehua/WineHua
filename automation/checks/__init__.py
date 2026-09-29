@@ -25,6 +25,8 @@ checks 声明（test.json / suite 定义）:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import coverage as _coverage
 from . import frame
 
@@ -85,9 +87,32 @@ def visual(ctx: dict) -> dict:
     }
 
 
+def marker(ctx: dict) -> dict:
+    """能力标记判定：读归档的探针结论文件，首行 `pass` 前缀 = PASS，其余 FAIL。
+
+    「设备端只跑不判」的落地形态之一：app 进程内的探针（不走 wine 结果
+    协议）把结论枚举写标记文件，harness 归档后由本判定器裁决 —— 判定只读
+    归档，设备不必重跑。argument = 归档 device-results/ 下的文件名。
+
+    标记缺失 = FAIL（不是 SKIP）：探针自缓存且每次 bring-up 都跑，没归档
+    到标记说明 bring-up 或归档链本身出了问题，静默 SKIP 会把这类故障判绿。
+    """
+    name = ctx.get("validator") or ""
+    path = Path(ctx["run_dir"]) / "device-results" / name if ctx.get("run_dir") else None
+    if not path or not path.is_file():
+        return {"status": "FAIL", "stage": "marker",
+                "message": f"标记文件未归档: {name}（bring-up 未跑或归档链断）"}
+    text = path.read_text(errors="replace").strip()
+    if text.startswith("pass"):
+        return {"status": "PASS", "stage": "marker", "message": text}
+    return {"status": "FAIL", "stage": "marker",
+            "message": text or "(空标记)"}
+
+
 REGISTRY = {
     "result-json": result_json,
     "visual": visual,
+    "marker": marker,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }
