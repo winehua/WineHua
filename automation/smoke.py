@@ -389,7 +389,10 @@ DRIVE_C_REL = ".wine/drive_c/smoke"
 DRIVE_C_ROOT_REL = ".wine/drive_c"
 # displayroute bring-up 阶段的能力探针标记（app 进程内探针写，非 wine 结果
 # 协议）：run 结束逐个尝试归档，marker 判定器据此裁决。
-DISPLAYROUTE_MARKERS = ("displayroute-egl-import-probe",)
+DISPLAYROUTE_MARKERS = (
+    "displayroute-egl-import-probe",   # M2-T2 导入链裁决
+    "displayroute-present-probe",      # M2-T4 队列 buffer 直渲染裁决
+)
 # job 文件（host 生成）：debug 参数组合 / 选测 / 内联临时用例走它下发
 JOB_REL = "smoke-job.json"
 

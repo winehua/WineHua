@@ -76,6 +76,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include "ohos_output.h"
 #include "display_input.h"
 #include "ohos_egl_import_probe.h"
+#include "ohos_egl_import.h"
 
 extern "C" {
 #include <native_buffer/native_buffer.h>
@@ -140,6 +141,77 @@ struct wl_listener g_xwayland_ready_listener;
 // ── T8 出图链: 测试图案 → OH_NativeBuffer → NativeWindow 直推 ─────────────
 // ArkTS 侧经 XComponent surfaceId 创建的 NativeWindow; smoke 面板持有 surface
 OHNativeWindow *g_present_window = nullptr;
+// gles2 是否已激活 (渲染器选择结果; 出图链延后启动时也要用, 故提到文件作用域)
+static bool g_gles2_active = false;
+
+// M2-T4: present 前置探针的定时器回调 —— 排在事件循环启动后 1s, 即晚于
+// Xwayland/wine 这些 NCP 子进程的 fork (理由与实测见调用点)
+static int PresentProbeTimer(void *data)
+{
+    (void)data;
+    bool ok = wl_ohos_egl_present_probe(
+        g_present_window,
+        "/data/storage/el2/base/files/.wine/drive_c/displayroute-present-probe");
+    OH_LOG_INFO(LOG_APP, "present probe done ok=%{public}d", ok ? 1 : 0);
+    return 0; /* 一次性 */
+}
+
+/* M2-T4 次序约束 (真机实测): Xwayland 是 NCP 子进程 (fork 本进程), 而 gles2
+ * 出图链的 EGL 导入/GL 渲染必须在**它 fork 之后**才开始 —— 反过来 (同步段里
+ * 先做导入再 fork) 实测 Xwayland 在早期初始化处挂死, displayfd 握手永不完成,
+ * 没有 X 客户端, 合成器 surfaces 恒 0。对照实验 (2026-09-30 设备 .5):
+ *   pixman 渲染器 + 出图链照常 (无 GL 导入) → Xwayland 正常, X 客户端出图;
+ *   gles2 渲染器 + 出图链 → Xwayland 挂死; 只建 gles2 渲染器不出图 → 正常。
+ * 出图链因此延后到事件循环第一拍 (定时器晚于 Xwayland 的 spawn idle):
+ * 先 fork 子进程, 再做 GL。 */
+struct DeferredOutputChainStart {
+    struct wlr_backend *backend;
+    struct wlr_renderer *renderer;
+    struct wl_event_loop *loop;
+    struct wl_display *display;
+    OHNativeWindow *window;
+    struct wlr_xwayland *xwayland;
+};
+static struct DeferredOutputChainStart g_deferred_chain;
+
+static void WriteDisplayRouteReady(void)
+{
+    FILE *f = fopen("/data/storage/el2/base/files/.wine/drive_c/displayroute-ready", "w");
+    if (f)
+    {
+        fputs("ready\n", f);
+        fclose(f);
+        OH_LOG_INFO(LOG_APP, "displayroute-ready marker written");
+    }
+}
+
+static int StartOutputChainTimer(void *data)
+{
+    struct DeferredOutputChainStart *c = (struct DeferredOutputChainStart *)data;
+    int rc = wl_ohos_output_chain_start(c->backend, c->renderer, c->loop,
+                                        c->display, c->window, c->xwayland);
+    OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d (deferred)", rc);
+    WriteDisplayRouteReady();
+
+    // present 零拷贝前置探针: 再往后 1s (同样只为避开子进程 fork 窗口)
+    const char *probe_env = getenv("WINEHUA_COMPOSITOR_PROBE");
+    if (rc == 0 && g_gles2_active && c->window &&
+        (probe_env == nullptr || strcmp(probe_env, "0") != 0))
+    {
+        struct wl_event_source *probe_timer =
+            wl_event_loop_add_timer(c->loop, PresentProbeTimer, nullptr);
+        if (probe_timer)
+        {
+            wl_event_source_timer_update(probe_timer, 1000);
+            OH_LOG_INFO(LOG_APP, "present probe timer armed (+1000ms)");
+        }
+        else
+        {
+            OH_LOG_ERROR(LOG_APP, "present probe timer 建不起来");
+        }
+    }
+    return 0; /* 一次性 */
+}
 } // namespace
 
 // ── wlroots 补丁的 spawn 钩子 (server.c 调用) ──────────────────────────
@@ -298,6 +370,10 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         struct wlr_backend *backend = nullptr;
         struct wlr_xwayland_server *server = nullptr;
         struct wlr_xwayland *xwayland = nullptr;
+        // 渲染器选择 (M2-T4) 的判据也提升到顶: goto fail 不可跨带初始化的
+        // 声明 (C++ 规则, T1 同款坑)
+        bool gles2_active = false;
+        const char *renderer_env = nullptr;
 
         // 日志桥先装: 后续 wlroots/协议层错误必须可见 (app stderr 不可观测)
         wlr_log_init(WLR_INFO, WlrLogBridge);
@@ -341,12 +417,29 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // 零拷贝路线 (T4) 按它裁决。自缓存, 一次性几 ms。
         ohos_egl_import_probe_run();
 
-        renderer = wlr_pixman_renderer_create();
+        // M2-T4: 渲染器选择 —— 默认 gles2 (T2 探针裁决 EGL_NATIVE_BUFFER_OHOS
+        // 导入链可用, 零拷贝据此成立), 建不起来自动回退 pixman;
+        // WINEHUA_COMPOSITOR_RENDERER=pixman 强制旧路 (排障/对照用)。
+        renderer_env = getenv("WINEHUA_COMPOSITOR_RENDERER");
+        if (renderer_env == nullptr || strcmp(renderer_env, "pixman") != 0)
+        {
+            renderer = wl_ohos_egl_renderer_create();
+            gles2_active = renderer != nullptr;
+            g_gles2_active = gles2_active;
+            if (!renderer)
+                OH_LOG_ERROR(LOG_APP, "gles2 renderer 不可用, 回退 pixman");
+        }
         if (!renderer)
         {
-            OH_LOG_ERROR(LOG_APP, "pixman renderer create failed");
-            goto fail;
+            renderer = wlr_pixman_renderer_create();
+            if (!renderer)
+            {
+                OH_LOG_ERROR(LOG_APP, "pixman renderer create failed");
+                goto fail;
+            }
         }
+        OH_LOG_INFO(LOG_APP, "compositor renderer=%{public}s",
+                    gles2_active ? "gles2" : "pixman");
         compositor = wlr_compositor_create(wl, 5, renderer);
         if (!compositor)
         {
@@ -411,26 +504,21 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         //    T9: 带 xwayland, 已映射 X client 窗口优先合成上屏
         if (g_present_window)
         {
-            int rc = wl_ohos_output_chain_start(backend, renderer, loop, wl,
-                                                g_present_window, xwayland);
-            OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d", rc);
+            /* 出图链延后到事件循环第一拍 (定时器晚于 Xwayland 的 spawn idle):
+             * 先 fork 子进程, 再做 GL —— 次序约束与实测见 DeferredOutputChainStart
+             * 上方注释。就绪标记也在那一刻才写 (标记语义 = 出图链已就位)。 */
+            g_deferred_chain = (struct DeferredOutputChainStart){
+                backend, renderer, loop, wl, g_present_window, xwayland};
+            struct wl_event_source *chain_timer =
+                wl_event_loop_add_timer(loop, StartOutputChainTimer, &g_deferred_chain);
+            if (chain_timer)
+                wl_event_source_timer_update(chain_timer, 1);
+            else
+                OH_LOG_ERROR(LOG_APP, "output chain timer 建不起来 (出图链不会启动)");
         }
         else
         {
             OH_LOG_INFO(LOG_APP, "no present surface, T8 output chain skipped");
-        }
-
-        // M1-T4: 就绪标记 —— X socket/xwm/出图链全部就位。smoke 编排
-        // (winemine/notepad 的 X 档位 spawn) 以该文件出现为同步判据;
-        // 旧标记由触发方在 bring-up 前删除。
-        {
-            FILE *f = fopen("/data/storage/el2/base/files/.wine/drive_c/displayroute-ready", "w");
-            if (f)
-            {
-                fputs("ready\n", f);
-                fclose(f);
-                OH_LOG_INFO(LOG_APP, "displayroute-ready marker written");
-            }
         }
 
         OH_LOG_INFO(LOG_APP, "started, dispatching event loop");

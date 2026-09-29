@@ -82,6 +82,7 @@ add_library(entry SHARED
     display/ohos_buffer.cpp
     display/ohos_output.c
     display/ohos_egl_import_probe.c
+    display/ohos_egl_import.c
     display/display_input.c
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp

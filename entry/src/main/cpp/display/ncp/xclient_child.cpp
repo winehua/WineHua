@@ -197,7 +197,12 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     while (true)
     {
         bool hasEvent = XPending(dpy) > 0;
-        if (!hasEvent)
+        /* mode=2 每拍都重绘, **不因事件积压跳过** —— 实测 (2026-09-30, 设备 .5):
+         * 本合成器下 Xwayland 的回包/配置事件是持续的, 旧写法「有事件就不画」
+         * 让实际内容率掉到 ~2fps (合成器侧 commit 计数实测 2.0/s), mode=2
+         * 作为帧率内容源 (T3/T4 判据) 失效。单窗 mode=1 保持原节奏 (有事件
+         * 只处理事件, 无事件才画 + 1Hz 睡)。 */
+        if (mode == 2 || !hasEvent)
         {
             DrawFrame(dpy, w1, frame);
             if (mode == 2) DrawFrame(dpy, w2, frame);

@@ -61,15 +61,46 @@ EOF
     log "xwayland.pc ($XWLR_PIN 暂存复刻) → $HOST_EXT_PC"
 fi
 
+# ── host 侧 EGL / GLESv2 pc (M2-T4: wlroots gles2 渲染器) ──
+# OHOS SDK sysroot 只装 .so 不装 .pc, 而 wlroots gles2 依赖 egl/glesv2 两个
+# pkg-config 依赖项。这里按 SDK sysroot 实测路径生成(与 xwayland.pc 同款
+# 就地生成法); 路径按 NATIVE_TARGET 取, 侧别不会串 (host-ext 目录本身就是
+# 按 NATIVE_ARCH 隔离的)。
+# 注: SDK 的 libEGL.so 是「桥接库」(真实现在 libEGL_inner 之类), 链接期
+# 只需要 -lEGL/-lGLESv2 能被 --sysroot 找到 —— 与 entry 的 CMake 构建同源。
+SDK_GL_LIBDIR="$SYSROOT/usr/lib/$NATIVE_TARGET"
+[ -d "$SDK_GL_LIBDIR" ] || err "SDK 图形库目录不存在: $SDK_GL_LIBDIR"
+cat > "$HOST_EXT_PC/egl.pc" << EOF
+Name: egl
+Description: EGL (OHOS SDK sysroot, host 侧)
+Version: 1.5
+Libs: -L$SDK_GL_LIBDIR -lEGL
+Cflags: -I$SYSROOT/usr/include
+EOF
+cat > "$HOST_EXT_PC/glesv2.pc" << EOF
+Name: glesv2
+Description: OpenGL ES 2/3 (OHOS SDK sysroot, host 侧)
+Version: 3.2
+Libs: -L$SDK_GL_LIBDIR -lGLESv2
+Cflags: -I$SYSROOT/usr/include
+EOF
+log "egl.pc / glesv2.pc → $HOST_EXT_PC (SDK $NATIVE_TARGET)"
+
 # OHOS NCP 启动补丁 (out-of-tree, submodule 钉 tag 零本地提交, 同 xserver 惯例):
 # fork/exec 替换为 NCP spawn 钩子 + 导出 argv 哨兵构建器。守卫 = 补丁签名,
 # 只看产物存在会吃掉补丁改动 (wayland 头/xwayland 补丁同款教训)。
 WLR_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-ncp-spawn.patch"
 # shm fchmod 容忍补丁 (M1-T1): OHOS 沙箱对 shm_open 文件 fchmod(0) 返回
 # EACCES (SELinux setattr 限制, 2026-09-29 实测 errno=13), 该步骤是防护性
-# 强化非正确性前提 → best-effort 降级。守卫签名 = 两份补丁串联哈希。
+# 强化非正确性前提 → best-effort 降级。守卫签名 = 多份补丁串联哈希。
 WLR_SHM_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-shm-fchmod-tolerant.patch"
-WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" | sha256sum | cut -d' ' -f1)
+# gles2 + EGLImage 导入补丁 (M2-T4): OHOS 无 DRM/GBM, 上游 render/meson.build
+# 把 gbm 依赖设为 required:'gles2' in renderers ⇒ 无 gbm.pc 时 gles2 整个不
+# 可用 (而 gles2 渲染器本体不用 GBM, 只有 render/egl.c 的平台选择用)。同一
+# 补丁加通用导入钩子: 无 DMA-BUF 的 wlr_buffer (OHOS NativeBuffer) 由宿主侧
+# 注册的导入器接管成 EGLImage, 渲染目标与采样纹理共用同一 GL 对象。
+WLR_GLES2_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-gles2-egl-import.patch"
+WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" | sha256sum | cut -d' ' -f1)
 
 if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ] \
    && [ "$(cat "$HOST_EXT_LIB/.wlroots_patch_sig" 2>/dev/null)" = "$WLR_PATCH_SIG" ]; then
@@ -86,15 +117,19 @@ else
     # 补丁应用: 本分支入口 = 补丁签名与守卫不符 (补丁变更或首次构建)。
     # 先复位子模块工作区到基线再 apply——sentinel 命中会把「树里是旧补丁」
     # 误判为「已应用」, 新 hunks 静默丢失 (与 build_xwayland.sh 同款教训)。
-    git -C "$WLR_SRC" checkout -- xwayland include/wlr/xwayland/server.h util/shm.c
+    git -C "$WLR_SRC" checkout -- xwayland include/wlr/xwayland/server.h util/shm.c \
+        meson.build render/meson.build include/wlr/config.h.in \
+        include/wlr/render/egl.h include/render/egl.h include/render/gles2.h \
+        render/egl.c render/gles2/renderer.c render/gles2/texture.c
     rm -f "$WLR_SRC/xwayland/ohos_spawn.c"
-    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" \
+    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" \
         || err "wlroots 补丁无法应用 (submodule 工作区与补丁基线不符)"
-    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH"
+    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH"
     meson_host_build "$BUILD_DIR/wlroots_build_${WLR_VER}" "$WLR_SRC" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dauto_features=disabled \
         -Dxwayland=enabled \
+        -Drenderers=gles2 \
         -Ddefault_library=static \
         -Dexamples=false \
         -Dwerror=false
@@ -106,7 +141,8 @@ fi
 # ── 验收断言 ──
 # 注: wlroots 无单头 wlr.h, 消费方按模块 include (wlr/backend.h 等)
 [ -f "$OUT_LIB" ] || err "libwlroots-0.20.a 未产出"
-for h in backend.h render/wlr_renderer.h render/pixman.h xwayland/xwayland.h; do
+for h in backend.h render/wlr_renderer.h render/pixman.h render/gles2.h \
+         render/egl.h xwayland/xwayland.h; do
     [ -f "$OUT_INC/wlr/$h" ] || err "wlr 头未安装: $h"
 done
 [ -f "$HOST_EXT_PC/$WLR_PC_NAME.pc" ] || err "wlroots pc 未安装"
@@ -118,9 +154,17 @@ want=AArch64
 [ "$m" = "$want" ] || err "架构侧别错误 (期望 $want): $OUT_LIB → $m"
 # grep -q 命中即早退会让上游 nm 吃 SIGPIPE 非零退出, 在 pipefail 下整条管道
 # 被判失败——命中也报"缺符号" (实测踩坑)。grep -c 消费全量输入, 无此问题。
-for sym in wlr_headless_backend_create wlr_seat_create wlr_xwayland_create wlr_pixman_renderer_create; do
+for sym in wlr_headless_backend_create wlr_seat_create wlr_xwayland_create \
+           wlr_pixman_renderer_create wlr_gles2_renderer_create \
+           wlr_egl_create_with_context wlr_egl_set_buffer_image_importer \
+           wlr_egl_set_buffer_image_importer_formats; do
     [ "$("$LLVM/llvm-nm" "$OUT_LIB" | grep -c " T $sym\$")" -ge 1 ] || err "缺符号: $sym"
 done
+# 源级补丁断言: 客户端扩展查询不可用时的降级路径必须真在源里。产物侧看不出来
+# —— 丢了这段 hunk, gles2 渲染器在 OHOS 上整条不启动 (实测: egl_create 里
+# EGL_EXT_client_extensions 缺失 ⇒ 回退 pixman), 只有真机日志能看出。
+[ "$(grep -c "egl_create_with_client_exts" "$WLR_SRC/render/egl.c")" -ge 2 ] \
+    || err "render/egl.c 缺客户端扩展降级路径 (gles2-egl-import 补丁 hunk 丢失?)"
 
 # 试链接: .a 的未定义符号必须能被 pc 依赖链 (wayland/xkbcommon/pixman/drm/xcb)
 # 完整闭合——静态构建本身不链接, 侧别/路径错乱只有链接时暴露 (真实链接, 非

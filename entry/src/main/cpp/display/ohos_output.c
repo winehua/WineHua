@@ -19,6 +19,7 @@
 #define WLR_USE_UNSTABLE
 #include "ohos_output.h"
 #include "ohos_buffer.h"
+#include "ohos_egl_import.h"
 
 #include <dlfcn.h>
 #include <sys/mman.h>
@@ -35,6 +36,7 @@
 #include <pixman-1/pixman.h>
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/swapchain.h>
 #include <wlr/render/drm_format_set.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
@@ -169,6 +171,8 @@ static int ResolveLockSymbols(void)
     return g_lock_symbols;
 }
 
+static void LogPresentSegment(struct timespec ts_enter);
+
 static void HandleOutputCommit(struct wl_listener *listener, void *data)
 {
     (void)listener;
@@ -178,6 +182,22 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     if (!event || !event->state || !event->state->buffer)
         return;
     ++g_out.frame_seq;
+
+    /* M2-T4 零拷贝分支: 提交的 buffer 就是窗口队列 buffer —— GPU 已经画在
+     * 它上面, 这里只剩 GPU 同步 + 归还队列, 没有 mmap/memcpy。判据是 buffer
+     * 归属 (present buffer 由 ohos_buffer 包队列 buffer 而来)。 */
+    if (wl_ohos_present_buffer_owns(event->state->buffer)) {
+        if (wl_ohos_egl_active())
+            wl_ohos_egl_finish(); /* 显示消费前必须 GPU 写完 (glFinish) */
+        int32_t prc = wl_ohos_present_buffer_present(event->state->buffer, -1);
+        if (prc != 0 && (g_out.frame_seq % 30) == 1)
+            OH_LOG_ERROR(LOG_APP, "present FlushBuffer rc=%{public}d (帧 %{public}u)",
+                         prc, g_out.frame_seq);
+        if ((g_out.frame_seq % 30) == 1)
+            OHLOG("commit seq=%{public}u mode=present", g_out.frame_seq);
+        LogPresentSegment(ts_enter);
+        return;
+    }
 
     /* Region 无内嵌数组: rects 是独立指针, 必须指向外部 RegionRect。
      * 之前写 `region.rects = &region.rects[0]` 是对未初始化指针取下标
@@ -265,6 +285,11 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     OH_NativeBuffer *src_nb = wl_ohos_buffer_native(event->state->buffer);
     size_t src_stride = wl_ohos_buffer_stride(event->state->buffer);
     void *src = NULL;
+    /* M2-T4: gles2 渲染器下源 buffer 是 GL 渲染目标 —— 读像素前必须等 GPU
+     * 写完 (pass submit 只 glFlush, 同步到 CPU 可见要 glFinish)。pixman
+     * 路径是 CPU 直接写, 本调用空转。零拷贝输出落地后本段整体退位。 */
+    if (wl_ohos_egl_active())
+        wl_ohos_egl_finish();
     if (!src_nb || OH_NativeBuffer_Map(src_nb, &src) != 0 || !src) {
         /* 源映射失败: window buffer 必须归还, 否则路径 G 的 BufferQueue
          * 槽位连续泄漏几次即 RequestBuffer 饿死 (known-issues §1.1,
@@ -325,26 +350,165 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     }
     if ((g_out.frame_seq % 30) == 1)
         OHLOG("commit seq=%{public}u crc=%{public}x", g_out.frame_seq, g_out.last_crc);
-    /* T3 分段计时: commit→NativeWindow 拷贝推屏段的每帧耗时 (平均/最大,
-     * 每 120 帧打一次)。零拷贝重构属 M2, 本任务只出数据。 */
-    {
-        struct timespec ts_now;
-        clock_gettime(CLOCK_MONOTONIC, &ts_now);
-        int64_t us = (int64_t)(ts_now.tv_sec - ts_enter.tv_sec) * 1000000 +
-                     (ts_now.tv_nsec - ts_enter.tv_nsec) / 1000;
-        static int64_t sum_us;
-        static int64_t max_us;
-        static int n;
-        sum_us += us;
-        if (us > max_us) max_us = us;
-        if (++n >= 120) {
-            OHLOG("segment copy+flush: avg=%{public}lldus max=%{public}lldus n=%{public}d",
-                  (long long)(sum_us / n), (long long)max_us, n);
-            sum_us = 0;
-            max_us = 0;
-            n = 0;
-        }
+    LogPresentSegment(ts_enter);
+}
+
+/* 分段计时: commit→NativeWindow 段的每帧耗时 (平均/最大, 每 120 帧打一次)。
+ * 拷贝路径的量是 mmap 拷贝 + Flush; 零拷贝 present 路径的量是 GPU 同步 +
+ * Flush —— 段名不变, 前后可直接对照 (M2-T4 出口判据看的就是这一段归零)。 */
+static void LogPresentSegment(struct timespec ts_enter)
+{
+    struct timespec ts_now;
+    clock_gettime(CLOCK_MONOTONIC, &ts_now);
+    int64_t us = (int64_t)(ts_now.tv_sec - ts_enter.tv_sec) * 1000000 +
+                 (ts_now.tv_nsec - ts_enter.tv_nsec) / 1000;
+    static int64_t sum_us;
+    static int64_t max_us;
+    static int n;
+    static struct timespec win_start;
+    sum_us += us;
+    if (us > max_us) max_us = us;
+    if (n == 0)
+        win_start = ts_enter;
+    if (++n >= 120) {
+        OHLOG("segment copy+flush: avg=%{public}lldus max=%{public}lldus n=%{public}d",
+              (long long)(sum_us / n), (long long)max_us, n);
+        /* 提交节拍 (T4 出口判据): 分段量是**工作**时间, 本行是**节拍**时间
+         * (含帧时钟空转) —— 与 M1-T3 基线 18.6fps (33ms 时钟 + ~20ms 工作,
+         * 2 倍关系在同一模型下自洽) 对照的是本行的 period/fps。 */
+        int64_t span_us = (int64_t)(ts_enter.tv_sec - win_start.tv_sec) * 1000000 +
+                          (ts_enter.tv_nsec - win_start.tv_nsec) / 1000;
+        int64_t period_us = (n > 1) ? span_us / (n - 1) : 0;
+        OHLOG("commit rate: period=%{public}lldus fps_x10=%{public}lld n=%{public}d",
+              (long long)period_us,
+              (long long)(period_us > 0 ? 10000000LL / period_us : 0), n);
+        sum_us = 0;
+        max_us = 0;
+        n = 0;
     }
+}
+
+/* ── M2-T4 零拷贝 present: 每帧借一格队列 buffer 当渲染目标 ─────────────
+ *
+ * 队列 buffer 不能跨帧复用 (见 ohos_buffer.h: 未重新 Request 就写 = 状态
+ * 非法), 而 wlroots 的 output swapchain 是长期复用同一批 buffer 的模型 ——
+ * 两者对不上, 所以 present 路径**每帧新建一个只服务本帧的 swapchain**, 并把
+ * 刚借到的那一格经下面的单次 allocator 交给它。scene 渲染直接落在队列
+ * buffer 上 (gles2 经导入器把 buffer 当 FBO), commit 事件里只做 GPU 同步 +
+ * FlushBuffer (见 HandleOutputCommit 的 present 分支) —— 全程无 mmap/memcpy。
+ *
+ * 任一环节失败都归还队列并返回 false: 调用方回落既有拷贝路径 (pixman 与
+ * gles2 都仍可用), 不会出现黑屏。 */
+struct PresentOneShotAllocator {
+    struct wlr_allocator base;
+    struct wlr_buffer *buffer;
+    int taken;
+};
+
+static struct wlr_buffer *OneShotCreateBuffer(struct wlr_allocator *alloc,
+                                             int width, int height,
+                                             const struct wlr_drm_format *format)
+{
+    struct PresentOneShotAllocator *one = (struct PresentOneShotAllocator *)alloc;
+    (void)width; (void)height; (void)format; /* 存储已由队列 buffer 定 */
+    if (one->taken || !one->buffer)
+        return NULL;
+    /* 所有权移交, 不是借用: wlr_allocator_create_buffer 返回的 buffer 由
+     * 调用方 (swapchain 槽) 持有, 槽在 slot_reset 里 drop 恰好一次
+     * (render/swapchain.c:40-48,107)。这里若再加一次 wlr_buffer_lock,
+     * 槽的 drop 会把 dropped 置位而 n_locks>0 使其不销毁 → 包装泄漏, 且
+     * 调用方事后的 drop 命中 assert(!dropped) —— 实测: assert 走 OHOS
+     * AssertCallback → SendSyncEvent 等主线程, 事件循环线程从此永久停在
+     * wlr_buffer_drop 里 (Faultlogger cppcrash 20260930042002 栈:
+     * __assert_fail ← wlr_buffer_drop+84 ← … ← wl_event_loop_dispatch),
+     * 合成停摆、Xwayland 握手不完成。 */
+    one->taken = 1;
+    return one->buffer;
+}
+
+static void OneShotAllocatorDestroy(struct wlr_allocator *alloc)
+{
+    free(alloc);
+}
+
+static const struct wlr_allocator_interface kOneShotAllocatorImpl = {
+    .create_buffer = OneShotCreateBuffer,
+    .destroy = OneShotAllocatorDestroy,
+};
+
+static struct wlr_allocator *OneShotAllocatorCreate(struct wlr_buffer *buffer)
+{
+    struct PresentOneShotAllocator *one =
+        calloc(1, sizeof(struct PresentOneShotAllocator));
+    if (!one)
+        return NULL;
+    one->buffer = buffer;
+    wlr_allocator_init(&one->base, &kOneShotAllocatorImpl,
+                       WLR_BUFFER_CAP_DATA_PTR);
+    return &one->base;
+}
+
+/* 零拷贝一帧。返回 true = 已渲染并提交 (flush 在 commit 监听器里完成);
+ * false = 本帧没出 (调用方回落拷贝路径或丢帧)。 */
+static int PresentFrameZeroCopy(void)
+{
+    struct wlr_buffer *buf = wl_ohos_present_buffer_acquire(g_out.window);
+    if (!buf)
+        return 0; /* 队列无空槽 = 显示端背压, 本帧丢 (与拷贝路径同语义) */
+
+    /* scene 的 build_state 对渲染目标有尺寸断言: 队列 buffer 与输出尺寸
+     * 不一致时必须在这里挡下 (回落拷贝路径), 不能带进 wlroots */
+    if (g_out.output && (buf->width != g_out.output->width ||
+                         buf->height != g_out.output->height)) {
+        static unsigned mismatch;
+        if ((mismatch++ % 30) == 0)
+            OH_LOG_ERROR(LOG_APP, "present buffer %{public}dx%{public}d != output "
+                         "%{public}dx%{public}d, 本帧回落拷贝路径 (count=%{public}u)",
+                         buf->width, buf->height, g_out.output->width,
+                         g_out.output->height, mismatch);
+        wl_ohos_present_buffer_abort(buf);
+        wlr_buffer_drop(buf);
+        return 0;
+    }
+
+    int ok = 0;
+    struct wlr_allocator *alloc = OneShotAllocatorCreate(buf);
+    struct PresentOneShotAllocator *one =
+        (struct PresentOneShotAllocator *)alloc; /* taken 判据 (见 out:) */
+    struct wlr_swapchain *swapchain = NULL;
+    if (!alloc)
+        goto out;
+    {
+        /* 格式只作 swapchain 记账 (存储由队列 buffer 定); 取队列 buffer 的
+         * 实际 DRM 码, 认不出时用 XRGB8888 兜底 (与输出 primary format 同族) */
+        uint32_t drm = wl_ohos_buffer_drm_format(buf);
+        struct wlr_drm_format format = {0};
+        format.format = drm ? drm : DRM_FORMAT_XRGB8888;
+        swapchain = wlr_swapchain_create(alloc, buf->width, buf->height, &format);
+        if (!swapchain)
+            goto out;
+        struct wlr_scene_output_state_options options = {0};
+        options.swapchain = swapchain;
+        ok = wlr_scene_output_commit(g_out.scene_output, &options);
+    }
+out:
+    /* 队列槽位归还必须在 swapchain 销毁**之前**: 交给 swapchain 的 buffer 由
+     * slot_reset 在这次销毁里 drop (唯一一次) → n_locks 归零随即 impl->destroy
+     * 释放包装 —— 之后再访问 buf 就是 UAF。没被 present 分支归还的
+     * (commit 失败 / 未走到) 在这里归还, 否则这一格队列槽位永久留在 dequeued,
+     * 几次之后 RequestBuffer 饿死 (known-issues §1.1)。 */
+    if (!wl_ohos_present_buffer_returned(buf))
+        wl_ohos_present_buffer_abort(buf);
+    bool taken = (one != NULL && one->taken);
+    if (swapchain)
+        wlr_swapchain_destroy(swapchain);
+    if (alloc)
+        wlr_allocator_destroy(alloc);
+    if (!taken) {
+        /* 没交出去 (alloc 没被取走 / swapchain 建不起来): 唯一一次 drop 归我们 */
+        wlr_buffer_drop(buf);
+    }
+    return ok;
 }
 
 // 30fps 帧时钟 (M1-T3 scene 版): frame_done 无条件按节拍泵出 (client 的
@@ -381,7 +545,15 @@ static int FrameTick(void *data)
         bool render = wlr_scene_output_needs_frame(g_out.scene_output);
         struct timespec ts_r0;
         clock_gettime(CLOCK_MONOTONIC, &ts_r0);
-        wlr_scene_output_commit(g_out.scene_output, NULL);
+        /* M2-T4: gles2 + 可见窗 ⇒ 零拷贝 present (渲染直落队列 buffer);
+         * 其余情形 (pixman 回退 / 无窗 / present 失败) 走既有 scene+拷贝路径。
+         * 先判 needs_frame: 无 damage 时 scene 直接返回 true 不渲染, 而借用
+         * 的队列 buffer 必须归还 (漏还 = 槽位永久丢失) —— 别进那条路。 */
+        bool presented = false;
+        if (render && wl_ohos_egl_active() && g_out.window && g_out.scene_output)
+            presented = PresentFrameZeroCopy() != 0;
+        if (!presented)
+            wlr_scene_output_commit(g_out.scene_output, NULL);
         struct timespec ts_r1;
         clock_gettime(CLOCK_MONOTONIC, &ts_r1);
         if (render) {

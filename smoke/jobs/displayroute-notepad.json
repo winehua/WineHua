@@ -1,7 +1,8 @@
 {
   "displayroute": true,
   "checks": [
-    "marker:displayroute-egl-import-probe"
+    "marker:displayroute-egl-import-probe",
+    "marker:displayroute-present-probe"
   ],
   "inline": [
     {
