@@ -153,6 +153,26 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 
 **X11 连接面（T9）**：libX11/XCB 客户端只探标准 abstract 名 `@/tmp/.X11-unix/X<n>` 与 fs 路径 `/tmp/.X11-unix/X<n>`；沙箱 /tmp 不存在 → 服务端 abstract 固定绑标准名 + xtrans 客户端补丁（见 §5 路径策略修正）；Xwayland 无 -auth 也拒本地 client（peercred 豁免沙箱未生效）→ NCP 形态加 `-ac`。
 
+### 6.3 M1 实测结论（2026-09-29，T1-T8 全链真机）
+
+**出口状态：M1 达成。** 出口判据 = notepad 经 winex11→Xwayland→xwm→scene→NativeWindow 端到端输入出字（T5 "hi" 实测截图）；伴随轮 core 4/4 PASS（T5 两轮 + T8 冷启一轮）。
+
+**winex11 接入形态（T4/T5）**：guest X11 栈（libX11 + xkb 数据）随 wine-data 进沙箱；驱动选择 = `DISPLAY` 环境变量分支（`WINEHUA_DISPLAY_ROUTE=x11` + `WAYLAND_DISPLAY` 清空 → winex11，否则 winewayland），不改 win32u bypass 单点。三个 M1 实测必修点（各自独立断链）：
+
+1. **X screen 尺寸 = wl_output 全局镜像**：无 `wlr_output_layout` 时 Xwayland 报 screen 0×0 → wine `xinerama_init` 得 0×0 桌面 → `get_desired_wm_state` 永远 WithdrawnState，**wine 永不 XMapWindow**。修 = 合成器持 layout 并 `add_auto` output。
+2. **MIT-SHM 沙箱双向致命**：Xwayland 侧 shmat → seccomp SIGSYS（"Server aborting"，全体 X client 掉线）；wine 子进程侧 shmget → SIGSYS → box64 信号处理器 siglongjmp 破坏 wine 执行流（SetWindowPos 中途消失）。修 = Xwayland `-extension MIT-SHM` + wine configure `--without-xshm`（winex11 走纯 XImage 路径）。
+3. **重触发管道阻塞读**：libwayland 对新增 fd 不设 O_NONBLOCK，drain 循环第二次 read 永久阻塞 → 合成器+Xwayland 全冻结。修 = pipe 两端 fcntl O_NONBLOCK。
+
+**输入链（T1/T2/T5）**：OHOS 触摸/键盘 → 注入桥 → wlr_seat → xwm → wine。多窗口语义 = surface 列表 + 命中测试 + 焦点随动；模态对话框焦点不依赖几何，`FocusClient(client_xs)` 几何无关寻址（notepad 对话框几何逐轮漂移实测 874×655@4,30 ↔ 562×400@4,23）。**挂起**：最后一键间歇不入编辑控件（注入侧日志逐字节同形，差异在 wine 内部非确定路径），T8 未复现到根因。
+
+**合成帧率（T3）**：scene 化管线贯通，**18.6-18.7fps 持续**（M0 8.5fps 的 2.2 倍），~54ms/帧 = copy+flush 17-19ms + scene render+commit 18-20ms；瓶颈在 NativeWindow BufferQueue copy+flush 段，零拷贝归 M2 present 重构（≥25fps 目标随零拷贝达成）。
+
+**GLX 裁决（T6）**：①GLX-over-EGL 桥 **no-go**（wayland EGL+virpipe 回读 19.2MB/s，800×600 全帧 96.3ms ≈ 10fps，超 30fps 预算 3 倍）；**改判第三路线** = wine 原生 winex11 GLX（mesa drisw + virpipe）800×600 全帧 6.5ms ≈ 150fps 大幅达标，自研桥取消。M2 待验 drisw 可见窗 present 链。
+
+**R-WSI 裁决（T7）**：venus 不暴露 `VK_KHR_xcb_surface`/xlib（`VK_KHR_surface` 在）⇒ winex11 路线无 Vulkan present，X 路线 Vulkan 呈现走 M2 重锚（§4.2）。X 路线能力边界：**GL 有、Vulkan 无（重锚制）**。
+
+**回归与状态残留（T8）**：core + wine-vulkan 在冷启干净态 4/4 + 4/4 PASS。**displayroute 会话状态会残留到后续套件**（T5 t5v、T8 两度复现：displayroute 任务后直接跑 core，帧采集抓到 app UI+虚拟桌面合成帧而非测试全屏窗口；生产者帧率 88fps 正常，仅采集面错位）⇒ **套件回归前 force-stop + 冷启动**为既定流程。
+
 ## 7. 里程碑与回退线
 
 | 阶段 | 内容 | 退出条件 |
