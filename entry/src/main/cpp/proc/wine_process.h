@@ -83,6 +83,9 @@ void RegisterNcpExitCallback();
 // Create NCP does not invoke the Start NCP exit callback. Its IPC proxy death
 // recipient calls this after the broker has registered the returned pid.
 void NoteCreateNcpDeath(int32_t pid);
+// The early phone server owns waitpid for these grandchildren and forwards
+// the real wait status after broker registration, including fast child exits.
+void NotePhoneForkServerChildExit(int32_t pid, int waitStatus);
 // 启动编排等待子进程退出 (wineboot 等待用), 按设备模式分流:
 // 手机 fork 模式走 /proc 判活 (可见有效); NCP 模式查退出回调标记
 bool IsLaunchChildExited(pid_t pid);

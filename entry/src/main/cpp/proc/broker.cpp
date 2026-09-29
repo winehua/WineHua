@@ -17,6 +17,7 @@
 #include "wine_process.h"
 #include "wine_child_ipc_launcher.h"
 #include "phone_adapter/phone_adapter.h"
+#include "phone_adapter/phone_process.h"
 #include "cef_utility_probe.h"
 // 由 LaunchPadMode 在启动 Broker 前设置
 std::string gBrokerHomeDir;
@@ -89,6 +90,22 @@ static bool WantsDirectWineIpc(const std::string& params) {
         pos = end + 1;
     }
     return enabled;
+}
+
+static bool PhoneSpawnFlag(const std::string& params, const char* key) {
+    bool enabled = false;
+    const std::string flag = std::string("__env=") + key + "=";
+    size_t pos = 0;
+    while (pos < params.size()) {
+        const size_t end = params.find('|', pos);
+        const std::string token = params.substr(pos, end == std::string::npos ?
+            std::string::npos : end - pos);
+        if (token == flag + "1") enabled = true;
+        else if (token == flag + "0") enabled = false;
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return PhoneAdapter_IsPhoneMode() && enabled;
 }
 
 static void CloseOwnedFdIfRetained(int fd, const struct stat& original, bool haveOriginal) {
@@ -299,15 +316,17 @@ static void HandleRequest(int conn_fd)
         fstat(audioBootstrapFd, &audioIdentity) == 0;
 
     const bool directIpc = WantsDirectWineIpc(fullParams);
+    const bool phoneForkServer = !directIpc && PhoneSpawnFlag(fullParams, "WINEHUA_PHONE_DIRECT_FORK");
     int32_t childPid = -1;
     int32_t ret = directIpc ?
         (PhoneAdapter_IsPhoneMode() ? NCP_ERR_NOT_SUPPORTED :
-         StartWineChildViaIpc(args, &childPid)) :
+         StartWineChildViaIpc(args, &childPid)) : phoneForkServer ?
+        Phone_StartViaDirectForkServer("libwine_child.so:Main", args, &childPid) :
         OH_Ability_StartNativeChildProcess(
             const_cast<char*>("libwine_child.so:Main"), args, options, &childPid);
 
     OH_LOG_INFO(LOG_APP, "[Broker] launch mode=%{public}s ret=%{public}d childPid=%{public}d",
-                directIpc ? "create-ipc" : "start", ret, childPid);
+                directIpc ? "create-ipc" : phoneForkServer ? "phone-fork-server" : "start", ret, childPid);
     // TEMP-DIAG(PROC-SPAWN): 谁 fork 了谁。Steam/CEF 这类多进程客户端只有一个父进程
     // 会拉起一串子进程, 崩溃归属必须能对上 parentHostPid -> childHostPid。
     OH_LOG_INFO(LOG_APP,
@@ -320,6 +339,7 @@ static void HandleRequest(int conn_fd)
         // 统一登记使 explorer 里双击的 exe 出现在任务列表; App 侧调用者随后
         // 会用更准确的路径 AddProcess 覆盖 (AddProcess 同 pid 幂等)。
         AddProcess(childPid, ParseProcessPath(fullParams.c_str()), -1);
+        if (phoneForkServer) Phone_MarkDirectForkChildRegistered(childPid);
         // CEF 子进程生命周期观测: 记录这个 pid 是谁 (browser/network.mojom.*/…) 与
         // 谁创建的, 等 NCP 退出回调回来时配对算 lifetimeMs/signal。
         WineHuaCefUtilityProbeNoteSpawn(childPid, peerPid, fullParams.c_str());

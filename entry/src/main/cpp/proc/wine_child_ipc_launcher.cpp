@@ -1,13 +1,16 @@
 #include "wine_child_ipc_launcher.h"
 #include "wine_child_ipc.h"
 #include "wine_process.h"
+#include "direct/direct_wine_surface_controller.h"
 
 #include <IPCKit/ipc_kit.h>
 #include <hilog/log.h>
+#include <native_window/external_window.h>
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <climits>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -26,6 +29,8 @@ struct ChildRecord {
     std::atomic<bool> dead{false};
     std::atomic<bool> registered{false};
     std::atomic<bool> cleanupQueued{false};
+    bool directVulkan = false;
+    std::mutex requestMutex;
 };
 
 struct LaunchWork {
@@ -48,11 +53,57 @@ void CleanupRecord(const std::shared_ptr<ChildRecord>& record)
         auto it = g_records.find(record->pid);
         if (it != g_records.end() && it->second == record) g_records.erase(it);
     }
+    std::lock_guard<std::mutex> requestLock(record->requestMutex);
     if (record->recipient) {
         OH_IPCRemoteProxy_RemoveDeathRecipient(record->proxy, record->recipient);
         OH_IPCDeathRecipient_Destroy(record->recipient);
     }
     if (record->proxy) OH_IPCRemoteProxy_Destroy(record->proxy);
+    record->proxy = nullptr;
+}
+
+bool WriteSurfaceToken(OHIPCParcel* request,
+                       const winehua::wineipc::DirectSurfaceToken& token)
+{
+    return OH_IPCParcel_WriteInt32(request, winehua::wineipc::kVersion) == OH_IPC_SUCCESS &&
+           OH_IPCParcel_WriteInt32(request, token.clientPid) == OH_IPC_SUCCESS &&
+           OH_IPCParcel_WriteInt32(request, static_cast<int32_t>(token.toplevelId)) == OH_IPC_SUCCESS &&
+           OH_IPCParcel_WriteInt32(request, static_cast<int32_t>(token.wlSurfaceId)) == OH_IPC_SUCCESS &&
+           OH_IPCParcel_WriteInt64(request, static_cast<int64_t>(token.generation)) == OH_IPC_SUCCESS &&
+           OH_IPCParcel_WriteInt32(request, token.width) == OH_IPC_SUCCESS &&
+           OH_IPCParcel_WriteInt32(request, token.height) == OH_IPC_SUCCESS;
+}
+
+bool SendSurfaceRequest(const winehua::wineipc::DirectSurfaceToken& token,
+                        uint32_t code, OHNativeWindow* producerWindow)
+{
+    if (token.clientPid <= 0 || !token.toplevelId || !token.wlSurfaceId ||
+        !token.generation || token.generation > INT64_MAX ||
+        token.width <= 0 || token.height <= 0 ||
+        (code == winehua::wineipc::kAttachSurface && !producerWindow))
+        return false;
+    std::shared_ptr<ChildRecord> record;
+    {
+        std::lock_guard<std::mutex> lock(g_recordsMutex);
+        auto it = g_records.find(token.clientPid);
+        if (it == g_records.end()) return false;
+        record = it->second;
+    }
+    OHIPCParcel* request = OH_IPCParcel_Create();
+    OHIPCParcel* reply = OH_IPCParcel_Create();
+    bool ok = request && reply && WriteSurfaceToken(request, token);
+    if (ok && code == winehua::wineipc::kAttachSurface)
+        ok = OH_NativeWindow_WriteToParcel(producerWindow, request) == 0;
+    int32_t childResult = -1;
+    if (ok) {
+        std::lock_guard<std::mutex> lock(record->requestMutex);
+        ok = !record->dead.load(std::memory_order_acquire) && record->proxy &&
+             OH_IPCRemoteProxy_SendRequest(record->proxy, code, request, reply, nullptr) == OH_IPC_SUCCESS &&
+             OH_IPCParcel_ReadInt32(reply, &childResult) == OH_IPC_SUCCESS && childResult == 0;
+    }
+    if (reply) OH_IPCParcel_Destroy(reply);
+    if (request) OH_IPCParcel_Destroy(request);
+    return ok;
 }
 
 void MaybeHandleDeath(const std::shared_ptr<ChildRecord>& record)
@@ -139,6 +190,13 @@ int32_t StartWineChildViaIpc(const NativeChildProcess_Args& args, int32_t* child
 
     auto record = std::make_shared<ChildRecord>();
     record->proxy = work.proxy;
+    {
+        const char* marker = std::strstr(args.entryParams,
+            "|__env=WINEHUA_VULKAN_BACKEND=direct");
+        record->directVulkan = marker &&
+            (marker[sizeof("|__env=WINEHUA_VULKAN_BACKEND=direct") - 1] == '|' ||
+             marker[sizeof("|__env=WINEHUA_VULKAN_BACKEND=direct") - 1] == '\0');
+    }
     auto* holder = new std::shared_ptr<ChildRecord>(record);
     record->recipient = OH_IPCDeathRecipient_Create(OnChildDeath, OnRecipientDestroyed, holder);
     if (!record->recipient) {
@@ -196,5 +254,62 @@ void MarkWineIpcChildRegistered(int32_t childPid)
     if (record) {
         record->registered.store(true, std::memory_order_release);
         MaybeHandleDeath(record);
+        DirectWineSurfaceChildReady(static_cast<uint32_t>(childPid));
     }
+}
+
+bool WineIpcChildUsesDirectVulkan(int32_t childPid)
+{
+    std::lock_guard<std::mutex> lock(g_recordsMutex);
+    auto it = g_records.find(childPid);
+    return it != g_records.end() && it->second->directVulkan &&
+           !it->second->dead.load(std::memory_order_acquire);
+}
+
+bool AttachWineDirectSurface(const winehua::wineipc::DirectSurfaceToken& token,
+                             OHNativeWindow* producerWindow)
+{
+    return SendSurfaceRequest(token, winehua::wineipc::kAttachSurface, producerWindow);
+}
+
+bool DetachWineDirectSurface(const winehua::wineipc::DirectSurfaceToken& token)
+{
+    return SendSurfaceRequest(token, winehua::wineipc::kDetachSurface, nullptr);
+}
+
+bool ResizeWineDirectSurface(const winehua::wineipc::DirectSurfaceToken& token)
+{
+    return SendSurfaceRequest(token, winehua::wineipc::kResizeSurface, nullptr);
+}
+
+bool QueryWineDirectSurface(const winehua::wineipc::DirectSurfaceToken& token)
+{
+    return SendSurfaceRequest(token, winehua::wineipc::kQuerySurface, nullptr);
+}
+
+bool FinishWineDirectSurfaceProbe(int32_t childPid)
+{
+    if (childPid <= 0) return false;
+    std::shared_ptr<ChildRecord> record;
+    {
+        std::lock_guard<std::mutex> lock(g_recordsMutex);
+        auto it = g_records.find(childPid);
+        if (it == g_records.end()) return false;
+        record = it->second;
+    }
+    OHIPCParcel* request = OH_IPCParcel_Create();
+    OHIPCParcel* reply = OH_IPCParcel_Create();
+    int32_t result = -1;
+    bool ok = request && reply &&
+        OH_IPCParcel_WriteInt32(request, winehua::wineipc::kVersion) == OH_IPC_SUCCESS;
+    if (ok) {
+        std::lock_guard<std::mutex> lock(record->requestMutex);
+        ok = !record->dead.load(std::memory_order_acquire) && record->proxy &&
+             OH_IPCRemoteProxy_SendRequest(record->proxy,
+                 winehua::wineipc::kFinishSurfaceProbe, request, reply, nullptr) == OH_IPC_SUCCESS &&
+             OH_IPCParcel_ReadInt32(reply, &result) == OH_IPC_SUCCESS && result == 0;
+    }
+    if (reply) OH_IPCParcel_Destroy(reply);
+    if (request) OH_IPCParcel_Destroy(request);
+    return ok;
 }

@@ -136,10 +136,21 @@ bool HasExtension(const std::vector<VkExtensionProperties>& extensions, const ch
     return false;
 }
 
-bool RunProbe(VulkanProbeResult& out)
+void ReportStage(int fd, char stage)
+{
+    if (fd < 0) return;
+    while (write(fd, &stage, 1) < 0 && errno == EINTR) {}
+}
+
+bool RunProbe(VulkanProbeResult& out, int stageFd = -1)
 {
     VulkanState s;
+    ReportStage(stageFd, 'L');
+    OH_LOG_INFO(LOG_APP, "[DIRECT-D0] entering system Vulkan dlopen pid=%{public}d", getpid());
     s.loader = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    ReportStage(stageFd, 'l');
+    OH_LOG_INFO(LOG_APP, "[DIRECT-D0] system Vulkan dlopen completed loaded=%{public}d",
+                s.loader ? 1 : 0);
     if (!s.loader) return Fail(out, "dlopen_libvulkan");
     s.vk.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         dlsym(s.loader, "vkGetInstanceProcAddr"));
@@ -179,7 +190,9 @@ bool RunProbe(VulkanProbeResult& out)
     if (s.vk.enumerateInstanceVersion)
         s.vk.enumerateInstanceVersion(&out.loaderVersion);
     uint32_t extensionCount = 0;
+    ReportStage(stageFd, 'E');
     const VkResult extensionResult = s.vk.enumerateInstanceExtensions(nullptr, &extensionCount, nullptr);
+    ReportStage(stageFd, 'e');
     if (extensionResult == VK_SUCCESS) out.instanceExtensionCount = extensionCount;
     if (extensionResult == VK_SUCCESS && extensionCount && extensionCount <= 1024) {
         std::vector<VkExtensionProperties> extensions(extensionCount);
@@ -203,16 +216,23 @@ bool RunProbe(VulkanProbeResult& out)
     for (const uint32_t version : requestedVersions) {
         if (version > out.loaderVersion) continue;
         app.apiVersion = version;
+        ReportStage(stageFd, 'I');
         result = s.vk.createInstance(&instanceInfo, nullptr, &s.instance);
+        ReportStage(stageFd, 'i');
         OH_LOG_INFO(LOG_APP, "[DIRECT-D0] vkCreateInstance api=%{public}u result=%{public}d",
                     version, result);
+        ReportStage(stageFd, 'h');
         if (result == VK_SUCCESS) {
             out.requestedApiVersion = version;
             break;
         }
     }
-    if (result != VK_SUCCESS) return Fail(out, "vkCreateInstance", result);
+    if (result != VK_SUCCESS) {
+        ReportStage(stageFd, 'f');
+        return Fail(out, "vkCreateInstance", result);
+    }
 
+    ReportStage(stageFd, 'J');
     LOAD_INSTANCE(destroyInstance, vkDestroyInstance);
     LOAD_INSTANCE(enumeratePhysicalDevices, vkEnumeratePhysicalDevices);
     LOAD_INSTANCE(getPhysicalDeviceProperties, vkGetPhysicalDeviceProperties);
@@ -225,17 +245,23 @@ bool RunProbe(VulkanProbeResult& out)
         s.vk.getInstanceProcAddr(s.instance, "vkGetPhysicalDeviceExternalSemaphoreProperties"));
     s.vk.getImageFormatProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
         s.vk.getInstanceProcAddr(s.instance, "vkGetPhysicalDeviceImageFormatProperties2"));
+    ReportStage(stageFd, 'j');
 
     uint32_t physicalCount = 0;
+    ReportStage(stageFd, 'P');
     result = s.vk.enumeratePhysicalDevices(s.instance, &physicalCount, nullptr);
+    ReportStage(stageFd, 'p');
     if (result != VK_SUCCESS || !physicalCount) return Fail(out, "vkEnumeratePhysicalDevices", result);
     // A bounded list is enough for the probe; fail explicitly if a device behaves unexpectedly.
     if (physicalCount > 16) return Fail(out, "physical_device_count");
     VkPhysicalDevice physicals[16]{};
+    ReportStage(stageFd, 'R');
     result = s.vk.enumeratePhysicalDevices(s.instance, &physicalCount, physicals);
+    ReportStage(stageFd, 'r');
     if (result != VK_SUCCESS) return Fail(out, "vkEnumeratePhysicalDevices", result);
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     uint32_t queueFamily = UINT32_MAX;
+    ReportStage(stageFd, 'G');
     for (uint32_t i = 0; i < physicalCount && !physical; ++i) {
         VkPhysicalDeviceProperties properties{};
         s.vk.getPhysicalDeviceProperties(physicals[i], &properties);
@@ -255,6 +281,7 @@ bool RunProbe(VulkanProbeResult& out)
             }
         }
     }
+    ReportStage(stageFd, 'g');
     if (!physical) return Fail(out, "native_graphics_device");
 
     uint32_t deviceExtensionCount = 0;
@@ -273,6 +300,7 @@ bool RunProbe(VulkanProbeResult& out)
         {"VK_OHOS_external_memory", winehua::direct::kDeviceOhosExternalMemory},
         {"VK_KHR_external_semaphore_fd", winehua::direct::kDeviceExternalSemaphoreFd},
         {"VK_KHR_external_memory_fd", winehua::direct::kDeviceExternalMemoryFd},
+        {"VK_EXT_external_memory_dma_buf", winehua::direct::kDeviceExternalMemoryDmaBuf},
         {"VK_EXT_queue_family_foreign", winehua::direct::kDeviceForeignQueueFamily},
     };
     for (const auto& extension : trackedExtensions) {
@@ -312,6 +340,78 @@ bool RunProbe(VulkanProbeResult& out)
              VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
             out.nativeCapabilities |= winehua::direct::kOhosImageImportable;
     }
+    // Keep query failures in the result: D0 passing does not imply that
+    // external images can be shared with the App compositor.
+    constexpr VkImageUsageFlags renderUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    constexpr VkImageUsageFlags colorSampleUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    const struct {
+        VkExternalMemoryHandleTypeFlagBits handle;
+        VkFormat format;
+        VkImageTiling tiling;
+        VkImageUsageFlags usage;
+        uint32_t capability;
+    } imageCases[] = {
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, renderUsage, winehua::direct::kDeviceExternalMemoryFd},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, colorSampleUsage, winehua::direct::kDeviceExternalMemoryFd},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, winehua::direct::kDeviceExternalMemoryFd},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, winehua::direct::kDeviceExternalMemoryFd},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, renderUsage, winehua::direct::kDeviceExternalMemoryFd},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, colorSampleUsage, winehua::direct::kDeviceExternalMemoryFd},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OHOS_NATIVE_BUFFER_BIT_OHOS, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, renderUsage, winehua::direct::kDeviceOhosExternalMemory},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_OHOS_NATIVE_BUFFER_BIT_OHOS, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, winehua::direct::kDeviceOhosExternalMemory},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, renderUsage, winehua::direct::kDeviceExternalMemoryDmaBuf},
+        {VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, winehua::direct::kDeviceExternalMemoryDmaBuf},
+    };
+    static_assert(sizeof(imageCases) / sizeof(imageCases[0]) == winehua::direct::kExternalImageProbeCount);
+    for (const auto& item : imageCases) {
+        auto& audit = out.externalImages[out.externalImageCount++];
+        audit.handleType = item.handle;
+        audit.format = item.format;
+        audit.tiling = item.tiling;
+        audit.usage = item.usage;
+        if (!s.vk.getImageFormatProperties2 || !(out.nativeCapabilities & item.capability)) continue;
+        VkPhysicalDeviceExternalImageFormatInfo external{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
+        external.handleType = item.handle;
+        VkPhysicalDeviceImageFormatInfo2 info{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};
+        info.pNext = &external;
+        info.format = item.format;
+        info.type = VK_IMAGE_TYPE_2D;
+        info.tiling = item.tiling;
+        info.usage = item.usage;
+        VkExternalImageFormatProperties externalProperties{
+            VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+        VkImageFormatProperties2 properties{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+        properties.pNext = &externalProperties;
+        audit.result = s.vk.getImageFormatProperties2(physical, &info, &properties);
+        if (audit.result == VK_SUCCESS) {
+            audit.features = externalProperties.externalMemoryProperties.externalMemoryFeatures;
+            audit.compatibleHandleTypes = externalProperties.externalMemoryProperties.compatibleHandleTypes;
+            audit.exportFromImportedHandleTypes = externalProperties.externalMemoryProperties.exportFromImportedHandleTypes;
+        }
+        if (out.externalImageCount == 1 && audit.result == VK_SUCCESS) {
+            const auto features = externalProperties.externalMemoryProperties.externalMemoryFeatures;
+            if (features & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)
+                out.nativeCapabilities |= winehua::direct::kOpaqueFdImageImportable;
+            if (features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)
+                out.nativeCapabilities |= winehua::direct::kOpaqueFdImageExportable;
+            if (features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT)
+                out.nativeCapabilities |= winehua::direct::kOpaqueFdImageDedicatedOnly;
+        }
+    }
+    auto getExternalBufferProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceExternalBufferProperties>(
+        s.vk.getInstanceProcAddr(s.instance, "vkGetPhysicalDeviceExternalBufferProperties"));
+    if (getExternalBufferProperties && (out.nativeCapabilities & winehua::direct::kDeviceExternalMemoryFd)) {
+        VkPhysicalDeviceExternalBufferInfo info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO};
+        info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkExternalBufferProperties properties{VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+        getExternalBufferProperties(physical, &info, &properties);
+        out.opaqueFdBufferQueried = 1;
+        out.opaqueFdBufferFeatures = properties.externalMemoryProperties.externalMemoryFeatures;
+    }
     OH_LOG_INFO(LOG_APP, "[DIRECT-D2-CAPS] pid=%{public}d ext=%{public}u mask=0x%{public}x",
                 out.pid, out.deviceExtensionCount, out.nativeCapabilities);
 
@@ -323,7 +423,9 @@ bool RunProbe(VulkanProbeResult& out)
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
+    ReportStage(stageFd, 'D');
     result = s.vk.createDevice(physical, &deviceInfo, nullptr, &s.device);
+    ReportStage(stageFd, 'd');
     if (result != VK_SUCCESS) return Fail(out, "vkCreateDevice", result);
 
     LOAD_DEVICE(destroyDevice, vkDestroyDevice);
@@ -561,6 +663,20 @@ int OnDiagnosticRequest(uint32_t code, const OHIPCParcel* data, OHIPCParcel* rep
 
 } // namespace
 
+// Diagnostic only: run in the app process to separate phone fork state from
+// Vulkan driver capability. The caller must not invoke this concurrently.
+extern "C" __attribute__((visibility("default"))) void DirectVulkanProbe_RunInline(
+    winehua::direct::VulkanProbeResult* output)
+{
+    if (!output) return;
+    *output = {};
+    output->pid = getpid();
+    const uint64_t started = MonotonicMs();
+    const bool passed = RunProbe(*output);
+    output->elapsedMs = MonotonicMs() - started;
+    output->status = passed ? 0 : -1;
+}
+
 extern "C" __attribute__((visibility("default"))) OHIPCRemoteStub* NativeChildProcess_OnConnect()
 {
     return OH_IPCRemoteStub_Create("winehua.direct.D0", OnDiagnosticRequest, nullptr, nullptr);
@@ -596,13 +712,19 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     result.pid = getpid();
     const uint64_t started = MonotonicMs();
     int outputFd = -1;
+    int stageFd = -1;
     for (NativeChildProcess_Fd* item = args.fdList.head; item; item = item->next) {
         if (item->fdName && std::strcmp(item->fdName, winehua::direct::kVulkanProbeFdName) == 0) {
             outputFd = item->fd;
-            break;
+        } else if (item->fdName &&
+                   std::strcmp(item->fdName, winehua::direct::kVulkanProbeStageFdName) == 0) {
+            stageFd = item->fd;
         }
     }
-    const bool passed = RunProbe(result);
+    ReportStage(stageFd, 'M');
+    OH_LOG_INFO(LOG_APP, "[DIRECT-D0] Start child Main entered pid=%{public}d", getpid());
+    const bool passed = RunProbe(result, stageFd);
+    ReportStage(stageFd, 'C');
     result.status = passed ? 0 : -1;
     result.elapsedMs = MonotonicMs() - started;
     OH_LOG_INFO(LOG_APP,
@@ -614,7 +736,10 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 result.requestedApiVersion, result.instanceExtensionCount,
                 static_cast<unsigned long long>(result.elapsedMs));
     if (outputFd >= 0) {
+        ReportStage(stageFd, 'W');
         WriteResult(outputFd, result);
+        ReportStage(stageFd, 'w');
         close(outputFd);
     }
+    if (stageFd >= 0) close(stageFd);
 }

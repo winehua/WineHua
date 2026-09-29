@@ -1,0 +1,14 @@
+{
+  "id": "d3d11-benchmark-amd64",
+  "title": "AMD64 FEX D3D11 steady-state benchmark",
+  "exe": "winehua_d3d_benchmark.exe",
+  "exe_dir": "x64-fex",
+  "arch": ["x64"],
+  "build": {
+    "compiler": "llvm-x86_64",
+    "sources": ["smoke/winehua_d3d_benchmark.c"],
+    "cflags": ["-O2", "-s", "-mwindows"],
+    "libs": ["-ld3d9", "-ld3d11", "-ldxgi", "-ld3dcompiler", "-luuid", "-lshell32", "-luser32", "-lgdi32", "-lm"]
+  },
+  "checks": ["result-json", "benchmark"]
+}

@@ -7,6 +7,7 @@
 #include "common/fps_counter.h"
 #include "proc/wine_process.h"
 #include "compositor/frame/debug_assert.h"
+#include "direct/direct_wine_surface_controller.h"
 #include "frame/surface_data.h"   // window registry probe (P0-1, 2026-09-17)
 #include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
@@ -109,6 +110,7 @@ void WaylandServer::Stop() {
     // 旧窗口画面共存、占 zOrder、不响应事件)。此处显式遍历逐个收口并补发
     // destroyed 通知给 ArkTS (让 Wine 子窗口正确关闭)
     DestroyAllToplevels();
+    DirectWineSurfaceReset();
     InputManager::GetInstance()->Shutdown();
     Seat::GetInstance()->Unregister();
     TextInput::GetInstance()->Unregister();
@@ -299,6 +301,7 @@ void WaylandServer::UnregisterToplevelResource(uint32_t toplevelId) {
 }
 
 void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
+    DirectWineSurfaceDestroyed(toplevelId);
     std::vector<uint32_t> cascadePopups;
     bool wasDesktopRoot = false;
     {
@@ -526,6 +529,7 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     if (!td || !td->xdgSurface) return;
     auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
     if (!xdg) return;
+    if (w > 0 && h > 0) DirectWineSurfaceResized(toplevelId, w, h);
 
     // maximized 状态位权威在 ToplevelState (重构第 5C 步: 旧读 sd->maximized
     // 迁移为读 ToplevelState; 未建档/sd 缺失同值 false)。一次读取供本函数

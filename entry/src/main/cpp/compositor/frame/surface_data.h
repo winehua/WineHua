@@ -7,6 +7,7 @@
 
 #include "shm_frame_source.h"     // ShmCommitInfo (SHM 帧上下文随 ShmFrameSource 纯函数迁出)
 #include "committed_surface.h"    // CommittedSurface 快照 (重构第 5A2 步: commit 产物命名快照)
+#include "direct_viewport.h"
 
 // wl_surface 的每个实例携带的数据。
 // 提取为独立头文件: compositor 子模块和 WaylandServer 各自 include, 无需互相依赖。
@@ -65,6 +66,10 @@ struct SurfaceData {
     // wp_viewport source rectangle (buffer 内的真实内容区域, -1=未设置/全 buffer)
     // Wine popup 的 shm buffer 常按 2 的幂次对齐填充, 真实尺寸经 set_source 给出
     int32_t vpSrcX = 0, vpSrcY = 0, vpSrcW = -1, vpSrcH = -1;
+
+    // Preserve fixed-point source precision for GPU images. Protocol setters
+    // write pending on the Wayland thread; commit publishes under tmgr's lock.
+    DirectViewportState directViewportPending, directViewport;
 
     // window states
     // 状态边界: 窗口状态三元组 (minimized/fullscreen/maximized) 的"生效状态"

@@ -1,4 +1,81 @@
 export const startServer: (sockPath: string) => boolean;
+export interface NativePerformanceSnapshot {
+  pid: number;
+  monotonicAvailable: boolean;
+  cpuAvailable: boolean;
+  rssAvailable: boolean;
+  monotonicNs: number;
+  processCpuNs: number;
+  rssHighWaterKiB: number;
+  clockTicksPerSecond: number;
+  directActive: boolean;
+  directPresents: number;
+  directGamePresents: number;
+  eglPresents: number;
+  eglGpuPresents: number;
+}
+export const captureNativePerformance: () => NativePerformanceSnapshot;
+export interface PhoneSharedBufferProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  lastChildStage: string;
+  loaderPath: string;
+  deviceName: string;
+  childStderr: string;
+  parentPid: number;
+  pid: number;
+  forkServerPid: number;
+  launchCode: number;
+  childExitCode: number;
+  childWaitStatus: number;
+  childSignal: number;
+  childReaped: boolean;
+  childExitObserved: boolean;
+  localParcelRoundtrip: boolean;
+  preserveLowMappings: boolean;
+  standardFork: boolean;
+  systemStart: boolean;
+  guestExport: boolean;
+  childImageAllocations: number;
+  childNativeBufferExports: number;
+  childRealReleaseFenceImports: number;
+  childRealRenderFenceExports: number;
+  hostRealRenderFenceImports: number;
+  hostRealReleaseFenceExports: number;
+  childKilledByProbe: boolean;
+  childDeviceCreated: boolean;
+  vkResult: number;
+  systemError: number;
+  parentFdBefore: number;
+  parentFdAfter: number;
+  backingFds: number;
+  originalFieldCount: number;
+  framesVerified: number;
+  childImageImports: number;
+  childReleaseFenceImports: number;
+  childRenderFenceExports: number;
+  hostImageImports: number;
+  hostImageReuses: number;
+  hostRenderFenceImports: number;
+  hostReleaseFenceExports: number;
+  diagnosticCpuReadBytes: number;
+  imageCpuReadBytes: number;
+  imageCpuUploadBytes: number;
+  imageGpuCopyCount: number;
+}
+export const runPhoneSharedBufferProbe: (preserveLowMappings?: boolean, standardFork?: boolean,
+  systemStart?: boolean, guestExport?: boolean) => Promise<PhoneSharedBufferProbeResult>;
+export interface ExternalImageProbeResult {
+  handleType: number;
+  format: number;
+  tiling: number;
+  usage: number;
+  result: number;
+  features: number;
+  compatibleHandleTypes: number;
+  exportFromImportedHandleTypes: number;
+}
 export interface DirectVulkanProbeResult {
   gate: string;
   status: string;
@@ -15,6 +92,9 @@ export interface DirectVulkanProbeResult {
   instanceExtensionCount: number;
   deviceExtensionCount: number;
   nativeCapabilities: number;
+  externalImages: ExternalImageProbeResult[];
+  opaqueFdBufferQueried: boolean;
+  opaqueFdBufferFeatures: number;
   apiVersion: number;
   icdEnvironment: string;
   pixelCheck: boolean;
@@ -22,8 +102,12 @@ export interface DirectVulkanProbeResult {
   loaderPath: string;
   deviceName: string;
 }
-export const runDirectVulkanProbe: () => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanProbe: (earlyPhoneFork?: boolean) => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanInlineProbe: () => Promise<DirectVulkanProbeResult>;
+export const preparePhoneDirectForkServer: () => number;
+export const runDirectVulkanForkServerProbe: () => Promise<DirectVulkanProbeResult>;
 export const runDirectVulkanCreateProbe: () => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanSystemCreateProbe: () => Promise<DirectVulkanProbeResult>;
 export interface DirectWineIpcProbeResult {
   gate: string;
   status: string;
@@ -40,6 +124,25 @@ export interface DirectWineIpcProbeResult {
 }
 export const runDirectWineIpcProbe: () => Promise<DirectWineIpcProbeResult>;
 export const runDirectWineBrokerIpcProbe: () => Promise<DirectWineIpcProbeResult>;
+export interface DirectWineSurfaceIpcProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  launchCode: number;
+  firstAttach: number;
+  directRoute: number;
+  firstQuery: number;
+  staleRejected: number;
+  staleAttachAccepted: number;
+  firstQueryAfterStale: number;
+  resized: number;
+  oldGenerationRejected: number;
+  detach: number;
+  detachedQueryRejected: number;
+  deathReceived: number;
+}
+export const runDirectWineSurfaceIpcProbe: () => Promise<DirectWineSurfaceIpcProbeResult>;
 export interface DirectSurfaceProbeResult {
   gate: string;
   status: string;
@@ -69,7 +172,8 @@ export const runDirectGpuImportProbe: () => Promise<DirectSurfaceProbeResult>;
 export const setHostShadowProfile: (profile: string) => boolean;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
   homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string,
-  containerId?: string, directNcpSession?: boolean) => number;
+  containerId?: string, directNcpSession?: boolean, desktopVulkanCompositor?: boolean,
+  desktopStallSeconds?: number) => number;
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;

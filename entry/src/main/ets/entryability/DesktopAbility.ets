@@ -4,12 +4,14 @@ import { window } from '@kit.ArkUI';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { ScreenAwake } from '../service/ScreenAwake';
 
 const DOMAIN = 0x0000;
 const TAG = 'DWA';
 
 export default class DesktopAbility extends UIAbility {
   private toplevelId: number = 0;
+  private screenAwake: ScreenAwake = new ScreenAwake('DesktopAbility');
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
@@ -24,6 +26,7 @@ export default class DesktopAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '[DWA] onWindowStageCreate tl=%{public}d', this.toplevelId);
+    this.screenAwake.attach(windowStage.getMainWindowSync());
     if (deviceInfo.deviceType === 'phone') {
       try {
         const mainWindow = windowStage.getMainWindowSync();
@@ -67,6 +70,7 @@ export default class DesktopAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '[DWA] onForeground tl=%{public}d', this.toplevelId);
+    this.screenAwake.setKeepScreenOn(true);
   }
 
   onNewWant(want: Want): void {
@@ -77,10 +81,16 @@ export default class DesktopAbility extends UIAbility {
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '[DWA] onBackground tl=%{public}d', this.toplevelId);
+    this.screenAwake.setKeepScreenOn(false);
+  }
+
+  onWindowStageDestroy(): void {
+    this.screenAwake.detach();
   }
 
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, '[DWA] onDestroy tl=%{public}d', this.toplevelId);
+    this.screenAwake.detach();
     try {
       testNapi.destroyToplevel(this.toplevelId);
       WineWindowManager.getInstance().unregisterDesktopAbility();

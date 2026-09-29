@@ -242,6 +242,8 @@ class TestEntry:
         backend = params.pop("backend", None) or {}
         payload = {"testId": self.test_id,
                    "exe": f"{self.case.subdir(self.arch)}/{self.case.exe}"}
+        if self.case.needs_frame and params.get("mode", "present") != "offscreen":
+            payload["requiresDesktop"] = True
         payload.update(params)
         if backend.get("d3d"):
             payload["d3dBackend"] = backend["d3d"]
@@ -500,6 +502,7 @@ ABILITY = "EntryAbility"
 #   hdc shell：只认真实路径；对沙箱视角路径的 rm -rf 会静默返回 0 而实际不删
 SANDBOX_FILES = "/data/storage/el2/base/files"
 REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
+DEBUG_FILES = "data/storage/el2/base/files"
 # 载荷推送源（相对 files/）：设备端 SmokeHook.seed 的优先源，按 manifest 版本
 # 比对后导入 C:\smoke（HAP rawfile 树 files/wine/smoke 为兜底，host 不写）。
 PAYLOAD_REL = "smoke-payload"
@@ -557,6 +560,18 @@ def hdc_shell(hdc: str, device: str, script: str,
         return -1, ""
 
 
+def hdc_sandbox_shell(hdc: str, device: str, script: str,
+                      timeout: int = HDC_SHELL_TIMEOUT_S) -> tuple:
+    """Run in the debug app view; API 26 denies plain shell access to app files."""
+    try:
+        result = subprocess.run([hdc, "-t", device, "shell", "-b", BUNDLE, script],
+                                capture_output=True, text=True,
+                                timeout=timeout, errors="replace")
+        return result.returncode, result.stdout
+    except subprocess.TimeoutExpired:
+        return -1, ""
+
+
 def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:
     """推文件或目录到沙箱（remote 用沙箱视角路径）。"""
     result = subprocess.run(
@@ -576,18 +591,20 @@ def hdc_recv_dir(hdc: str, device: str, rel_path: str, local_dir: Path) -> None:
 
 
 def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
-    """删除 files/ 下的一条路径（相对 files/）。用真实路径 + 事后校验：
+    """删除 files/ 下的一条路径（相对 files/）。用 debug app 视图 + 事后校验：
     `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。"""
-    real = f"{REAL_FILES}/{rel_path}"
-    hdc_shell(hdc, device, f"rm -rf '{real}'")
-    code, out = hdc_shell(hdc, device, f"ls -d '{real}' 2>/dev/null")
-    if code == 0 and out.strip():
-        die(f"remove verification failed (still exists): {real}")
+    path = f"{DEBUG_FILES}/{rel_path}"
+    hdc_sandbox_shell(hdc, device, f"rm -rf '{path}'")
+    code, out = hdc_sandbox_shell(
+        hdc, device, f"if [ ! -e '{path}' ]; then echo ABSENT; else echo PRESENT; fi")
+    if code != 0 or out.strip() != "ABSENT":
+        die(f"remove verification failed: {rel_path} ({out.strip()})")
 
 
 def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
-    """读 files/ 下的文本文件（真实路径，空/不存在返回空串）。"""
-    code, out = hdc_shell(hdc, device, f"cat '{REAL_FILES}/{rel_path}' 2>/dev/null")
+    """读 files/ 下的文本文件（debug app 视图，空/不存在返回空串）。"""
+    code, out = hdc_sandbox_shell(hdc, device,
+                                  f"cat '{DEBUG_FILES}/{rel_path}' 2>/dev/null")
     return out if code == 0 else ""
 
 
@@ -601,8 +618,8 @@ def sandbox_texts(hdc: str, device: str, rel_paths: list) -> dict:
         return {}
     marker = "@@@SMOKE@@@"
     script = f"; echo '{marker}'; ".join(
-        f"cat '{REAL_FILES}/{path}' 2>/dev/null" for path in rel_paths)
-    code, out = hdc_shell(hdc, device, script, timeout=HDC_POLL_TIMEOUT_S)
+        f"cat '{DEBUG_FILES}/{path}' 2>/dev/null" for path in rel_paths)
+    code, out = hdc_sandbox_shell(hdc, device, script, timeout=HDC_POLL_TIMEOUT_S)
     if code == -1:
         return {}
     if code != 0:
@@ -640,7 +657,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     hdc_send(hdc, device, payload, f"{SANDBOX_FILES}/{PAYLOAD_REL}")
     # 2) 当前 prefix 的 C:\smoke：立即生效。二次 Want 不触发 seed（seed 只在
     #    引擎 ready 链上跑），只更新推送源会导致本次会话仍读旧载荷。
-    code, out = hdc_shell(hdc, device, f"ls -d '{REAL_FILES}/.wine/drive_c' 2>/dev/null")
+    code, out = hdc_sandbox_shell(
+        hdc, device, f"ls -d '{DEBUG_FILES}/.wine/drive_c' 2>/dev/null")
     if code == 0 and out.strip():
         remove_sandbox_path(hdc, device, DRIVE_C_REL)
         hdc_send(hdc, device, payload, f"{SANDBOX_FILES}/{DRIVE_C_REL}")
@@ -648,7 +666,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         log("prefix 未创建：仅更新推送源，C:\\smoke 由设备端 seed 播种")
     manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
     for probe in ("suites.json", "manifest.json", *manifest["files"]):
-        code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
+        code, out = hdc_sandbox_shell(
+            hdc, device, f"ls '{DEBUG_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
         if code != 0 or not out.strip():
             die(f"push verification failed: missing {probe}")
     log("push done")
@@ -716,10 +735,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
     if args.direct_ncp_session:
         start += " --ps winehua.direct_ncp_session 1"
+    if args.desktop_renderer:
+        start += f" --ps winehua.desktop_renderer {args.desktop_renderer}"
+    if args.desktop_stall_seconds:
+        start += f" --ps winehua.desktop_stall_seconds {args.desktop_stall_seconds}"
+    if args.phone_direct_fork_server:
+        start += " --ps winehua.phone_direct_fork_server 1"
+    if args.desktop_mode:
+        start += f" --ps winehua.desktopMode {args.desktop_mode}"
     log(f"run {args.suite} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
-    if code != 0:
+    # On API 26, aa start can print an ability error while hdc itself exits 0.
+    # Treat the command's diagnostic as a launch failure before polling results.
+    if code != 0 or re.search(r"(?im)^\s*(?:error: failed to start ability\.|error code:)", out):
         die(f"aa start failed: {out.strip()}")
 
     # 本地套件定义：给判定器提供用例的 checks 声明（inline 等未定义测试退回默认判定）
@@ -740,7 +769,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         summary, frames = poll_run(hdc, device, archive, run_id, frame_targets,
                                    args.timeout_minutes, args.poll_seconds,
-                                   start_command=start)
+                                   start_command=("" if args.no_start_retry or
+                                       any("benchmark" in entry.case.declared_checks for entry in entries.values())
+                                       else start))
         if summary is None:
             die(f"suite summary not found within {args.timeout_minutes} min: "
                 f"{REAL_FILES}/{summary_rel} "
@@ -759,6 +790,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device, "longSeconds": long_seconds,
             "directNcpSession": args.direct_ncp_session,
+            "phoneDirectForkServer": args.phone_direct_fork_server,
+            "desktopModeOverride": args.desktop_mode,
+            "desktopRendererOverride": args.desktop_renderer,
             "wineArchitecture": WINE_ARCH,
             "wineCommit": git_capture(wine_src, "rev-parse", "HEAD"),
             "wineDirtySummary": git_capture(wine_src, "status", "--short").splitlines(),
@@ -1158,6 +1192,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--d3d", default="", help="覆盖 d3d 后端（如 dxvk_modern_2_6）")
     run.add_argument("--dxvk", default="", help="覆盖 dxvk 后端")
     run.add_argument("--seconds", type=int, default=None)
+    run.add_argument("--desktop-stall-seconds", type=int, choices=(0, 5, 10, 20, 30, 60, 120), default=0,
+                     help="仅诊断：采样 Explorer 桌面线程，默认关闭，不用于性能测量")
     run.add_argument("--timeout-ms", type=int, default=None, dest="timeout_ms")
     run.add_argument("--archive-root",
                      default=str(REPO_ROOT / "build/automation-logs"))
@@ -1165,8 +1201,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--poll-seconds", type=int, default=5)
     run.add_argument("--keep-app", action="store_true", dest="keep_app",
                      help="跑完不 force-stop（连续 run 保 NCP 注册表，见 cmd_gate）")
+    run.add_argument("--no-start-retry", action="store_true",
+                     help="桌面未就绪时保留首次失败，不重启重试（benchmark 自动启用）")
     run.add_argument("--direct-ncp-session", action="store_true",
                      help="冷启动时让整个 Wine 会话默认走 Create NCP（单次请求可覆盖）")
+    run.add_argument("--phone-direct-fork-server", action="store_true",
+                     help="手机冷启动时预建 Direct fork server；用 WINEHUA_PHONE_DIRECT_FORK=1 选用")
+    run.add_argument("--desktop-mode", choices=("fusion", "virtual"), default="",
+                     help="仅本次冷启动覆盖桌面模式；测试切换前须先 force-stop App")
+    run.add_argument("--desktop-renderer", choices=("egl", "vulkan"), default="",
+                     help="冷启动时选择虚拟桌面合成器；vulkan 仅用于 Direct 桌面验证")
     run.set_defaults(func=cmd_run)
 
     install = sub.add_parser("install", help="安装当前 HAP 到设备")

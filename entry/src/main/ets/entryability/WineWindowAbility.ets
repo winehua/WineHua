@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { PopupWindowManager } from '../service/PopupWindowManager';
+import { ScreenAwake } from '../service/ScreenAwake';
 
 const DOMAIN = 0x0000;
 const TAG = 'WWA';
@@ -11,6 +12,7 @@ const TAG = 'WWA';
 export default class WineWindowAbility extends UIAbility {
   private toplevelId: number = 0;
   private cleanedUp: boolean = false;
+  private screenAwake: ScreenAwake = new ScreenAwake('WineWindowAbility');
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
@@ -68,6 +70,7 @@ export default class WineWindowAbility extends UIAbility {
       }
 
       // 注册 Window 引用
+      this.screenAwake.attach(mainWindow);
       WineWindowManager.getInstance().registerWindow(this.toplevelId, mainWindow);
       // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
       // [WINID] WWA 主窗口身份打点 (对照 WMS win NNN 归属)
@@ -164,15 +167,22 @@ export default class WineWindowAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '[WWA] onForeground tl=%{public}d', this.toplevelId);
+    this.screenAwake.setKeepScreenOn(true);
   }
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '[WWA] onBackground tl=%{public}d', this.toplevelId);
+    this.screenAwake.setKeepScreenOn(false);
+  }
+
+  onWindowStageDestroy(): void {
+    this.screenAwake.detach();
   }
 
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, '[WWA]  onDestroy tl=%{public}d (cleanedUp=%{public}s)',
       this.toplevelId, this.cleanedUp ? 'yes' : 'no');
+    this.screenAwake.detach();
     try {
       if (!this.cleanedUp) {
         this.cleanup();
@@ -190,6 +200,7 @@ export default class WineWindowAbility extends UIAbility {
       return;
     }
     this.cleanedUp = true;
+    this.screenAwake.detach();
     hilog.info(DOMAIN, TAG, '[WWA]  cleanup tl=%{public}d START: sendToplevelClose -> destroyToplevel -> unregisterAbility',
       this.toplevelId);
     try {

@@ -19,6 +19,8 @@ struct LaunchParams {
     // Wine locale 语言 ("zh_CN"/"en_US"), 来自设置页, 决定桌面会话的 LANG
     std::string wineLang = "zh_CN";
     bool directNcpSession = false;
+    bool desktopVulkanCompositor = false;
+    int desktopStallSeconds = 0; // opt-in startup diagnostic, never persisted
 };
 
 void LaunchThreadFunc(LaunchParams* p);

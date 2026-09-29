@@ -4,44 +4,70 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN = 0x0000;
 const TAG = 'WineHuaScreenAwake';
 
-/**
- * 屏幕常亮控制 (2026-09-18)
- *
- * 为什么产品化: 设备熄屏后会自动锁屏, 而锁屏状态下 `aa start` 会被系统拒绝
- * (10106102 The device screen is locked), 表现为"命令成功但什么都没启动"——
- * 自动化测试与 Steam 会话都会被这一点打断。应用在前台时保持屏幕常亮是最直接
- * 的解法, 顺带也符合游戏/桌面会话的使用预期 (玩的时候不该熄屏)。
- *
- * 只在 ability 前台期间开启, 退到后台立即关闭, 不影响后台耗电。
- */
+// Each binding serializes its own window operations. An old completion must not
+// update a replacement window, or re-enable keep-awake after onBackground.
+class ScreenAwakeWindow {
+  readonly win: window.Window;
+  private owner: string;
+  private desired: boolean = false;
+  private applied: boolean | undefined = undefined;
+  private pending: boolean = false;
+
+  constructor(win: window.Window, owner: string) {
+    this.win = win;
+    this.owner = owner;
+  }
+
+  setKeepScreenOn(on: boolean): void {
+    this.desired = on;
+    this.apply();
+  }
+
+  private async apply(): Promise<void> {
+    if (this.pending || this.applied === this.desired) return;
+    const requested = this.desired;
+    this.pending = true;
+    try {
+      await this.win.setWindowKeepScreenOn(requested);
+      this.applied = requested;
+      hilog.info(DOMAIN, TAG, 'owner=%{public}s keepScreenOn=%{public}s', this.owner, String(requested));
+    } catch (err) {
+      this.applied = undefined;
+      hilog.warn(DOMAIN, TAG, 'owner=%{public}s keepScreenOn=%{public}s failed: %{public}s',
+        this.owner, String(requested), JSON.stringify(err));
+    } finally {
+      this.pending = false;
+      // Consume a lifecycle change received while the request was pending.
+      // A failed unchanged request is not retried indefinitely.
+      if (this.desired !== requested) this.apply();
+    }
+  }
+}
+
+/** Per-Ability control: foreground game/desktop windows stay awake. */
 export class ScreenAwake {
-  private static mainWindow: window.Window | undefined = undefined;
-  private static desired: boolean = false;
-  private static applied: boolean | undefined = undefined;
+  private owner: string;
+  private binding: ScreenAwakeWindow | undefined = undefined;
+  private desired: boolean = false;
 
-  /** EntryAbility.onWindowStageCreate 里绑定主窗口。 */
-  static attach(win: window.Window): void {
-    ScreenAwake.mainWindow = win;
-    ScreenAwake.applied = undefined;   // 换窗口后需要重新下发
-    ScreenAwake.apply();
+  constructor(owner: string) {
+    this.owner = owner;
   }
 
-  static setKeepScreenOn(on: boolean): void {
-    ScreenAwake.desired = on;
-    ScreenAwake.apply();
+  attach(win: window.Window): void {
+    if (this.binding?.win === win) return;
+    this.detach();
+    this.binding = new ScreenAwakeWindow(win, this.owner);
+    this.binding.setKeepScreenOn(this.desired);
   }
 
-  private static apply(): void {
-    const win = ScreenAwake.mainWindow;
-    if (!win) return;
-    if (ScreenAwake.applied === ScreenAwake.desired) return;
-    const desired = ScreenAwake.desired;
-    win.setWindowKeepScreenOn(desired).then(() => {
-      ScreenAwake.applied = desired;
-      hilog.info(DOMAIN, TAG, 'keepScreenOn=%{public}s', String(desired));
-    }).catch((err: Error) => {
-      hilog.warn(DOMAIN, TAG, 'keepScreenOn=%{public}s failed: %{public}s',
-        String(desired), JSON.stringify(err));
-    });
+  setKeepScreenOn(on: boolean): void {
+    this.desired = on;
+    this.binding?.setKeepScreenOn(on);
+  }
+
+  detach(): void {
+    this.binding?.setKeepScreenOn(false);
+    this.binding = undefined;
   }
 }

@@ -3,6 +3,7 @@
 #include "wayland_server.h"
 #include "xdg_shell.h"
 #include "xdg_configure.h"
+#include "direct/direct_wine_surface_controller.h"
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -346,6 +347,7 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             d->toplevelId = sd->toplevelId;
             td->toplevelId = sd->toplevelId;
             WaylandServer::GetInstance()->RegisterToplevelResource(sd->toplevelId, tl);
+            DirectWineSurfaceCreated(sd->clientPid, sd->toplevelId, sd->protocolId);
             // WineHua: 应用暂存的 modal 关系 (set_modal 早于 get_toplevel 到达)。
             // 在 created 事件之前执行 — PC 模式 ArkTS 据此把 modal 窗口接入
             // owner 的子窗口路径而非启动独立 Ability (事件顺序红线)

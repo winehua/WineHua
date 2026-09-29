@@ -1,0 +1,12 @@
+{
+  "id": "direct-desktop-scene",
+  "title": "Direct 桌面双窗口与 GDI 遮挡生命周期",
+  "exe": "winehua_direct_desktop_scene.exe",
+  "arch": ["x64"],
+  "build": {
+    "sources": ["smoke/winehua_direct_desktop_scene.c"],
+    "cflags": ["-O2", "-s", "-mwindows"],
+    "libs": ["-lshell32", "-luser32", "-lgdi32"]
+  },
+  "checks": ["result-json"]
+}

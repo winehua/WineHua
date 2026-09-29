@@ -43,8 +43,17 @@ set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 add_library(entry SHARED
     direct/vulkan_probe_launcher.cpp
     direct/direct_wine_ipc_probe.cpp
+    direct/direct_wine_surface_ipc_probe.cpp
+    direct/direct_wine_surface_controller.cpp
+    direct/direct_desktop_compositor.cpp
+    direct/direct_vulkan_desktop_compositor.cpp
     direct/direct_surface_probe_launcher.cpp
     direct/direct_buffer_import_probe.cpp
+    direct/direct_vulkan_context.cpp
+    direct/direct_vulkan_presenter.cpp
+    direct/direct_shared_buffer_probe.cpp
+    direct/native_buffer_socket.cpp
+    direct/native_buffer_parcel.cpp
     direct/direct_output_probe.cpp
     audio/audio_broker.cpp
     audio/audio_ipc_server.cpp
@@ -145,7 +154,7 @@ add_library(wine_child SHARED
     proc/wine_child.cpp
     proc/wine_child_ipc.cpp
 )
-target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so libipc_capi.so)
+target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so libipc_capi.so libnative_window.so)
 
 # D0 is an independent native NCP. It resolves the system Vulkan loader with
 # dlopen at runtime and deliberately does not link Wine, Mesa or libvulkan.
@@ -156,6 +165,18 @@ target_link_libraries(direct_vulkan_probe PUBLIC
     libhilog_ndk.z.so
     libchild_process.so
     libipc_capi.so
+)
+
+# Phone P0: shared image memory and sync fds, no remote GPU command stream.
+add_library(direct_shared_buffer_probe SHARED
+    direct/direct_shared_buffer_child.cpp
+    direct/direct_native_read_watchdog.cpp
+    direct/native_buffer_socket.cpp
+    direct/native_buffer_parcel.cpp
+)
+target_link_libraries(direct_shared_buffer_probe PUBLIC
+    libhilog_ndk.z.so libchild_process.so libipc_capi.so
+    libnative_window.so libnative_buffer.so libvulkan.so
 )
 
 # D1 BufferQueue handoff remains isolated from the Wine/VirGL renderer.

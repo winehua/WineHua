@@ -8,7 +8,10 @@ ensure_wine_patch() {
     local patch_file="$1" description="$2"
     # Docker mounts this managed worktree without the external Git metadata
     # referenced by its .git file.  patch checks the source tree directly.
-    if patch -d "$WINE_SRC" -p1 --batch --dry-run -R < "$patch_file" >/dev/null 2>&1; then
+    # GNU patch may silently undo -R when it recognizes an unpatched source.
+    # Force the requested direction so that detection cannot report a clean
+    # checkout as "already applied".
+    if patch -d "$WINE_SRC" -p1 --batch --force --dry-run -R < "$patch_file" >/dev/null 2>&1; then
         log "$description already applied"
     else
         patch -d "$WINE_SRC" -p1 --batch --dry-run < "$patch_file" >/dev/null
@@ -24,6 +27,17 @@ ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0001-win32u-repair-external-font-
 # Fault diagnostics must not dereference a saved FEX SP in a guard page.
 ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0002-ntdll-ohos-signal-safe-stack-read.patch" \
     "Signal-safe diagnostic stack reader"
+
+# The App owns a virtual shell desktop across application launches. Native
+# child startup must not race Wine's idle close timer.
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0006-app-managed-desktop-lifetime.patch" \
+    "App-managed desktop lifetime"
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0007-client-only-window-state.patch" \
+    "Client-only window state refresh"
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0008-win32u-surface-region-lock-order.patch" \
+    "Surface region update without USER lock inversion"
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0009-direct-ohos-wsi-and-resize-smoke.patch" \
+    "Direct OHOS WSI and running-window resize smoke"
 
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \

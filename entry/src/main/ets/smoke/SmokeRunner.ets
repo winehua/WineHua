@@ -1,4 +1,4 @@
-import testNapi from 'libentry.so';
+import testNapi, { NativePerformanceSnapshot } from 'libentry.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   WineEnvService, DRIVE_C, readTextIfExists,
@@ -54,6 +54,22 @@ interface ProcessSnapshot {
   status: string;
   exitCode?: number | null;
   exitCodeSource?: string;
+}
+
+interface BenchmarkWindow {
+  phase: string;
+  startTickMs: number;
+  endTickMs: number;
+}
+
+interface BenchmarkHostWindow {
+  runId: string;
+  testId: string;
+  startTickMs: number;
+  endTickMs: number;
+  start: NativePerformanceSnapshot;
+  end: NativePerformanceSnapshot;
+  pollIntervalMs: number;
 }
 
 // 结果 JSON 的终态集合 (与 smoke 程序协议一致: PASS/FAIL/SKIP/UNSUPPORTED)
@@ -137,8 +153,8 @@ export class SmokeRunner {
   }
 
   private async run(request: SmokeRequest): Promise<void> {
-    hilog.info(DOMAIN, TAG, 'run begin suite=%{public}s runId=%{public}s prefixReady=%{public}d',
-      request.suite, request.runId, WineEnvService.getInstance().prefixReady);
+    hilog.info(DOMAIN, TAG, 'run begin suite=%{public}s runId=%{public}s prefixReady=%{public}s',
+      request.suite, request.runId, `${WineEnvService.getInstance().prefixReady}`);
     try {
       const envSvc = WineEnvService.getInstance();
       if (!envSvc.prefixReady) {
@@ -215,6 +231,17 @@ export class SmokeRunner {
 
   private async runTest(request: SmokeRequest, test: SmokeSuiteTest, resultsDir: string): Promise<SmokeTestResult> {
     const envSvc = WineEnvService.getInstance();
+    if (test.requiresDesktop === true) {
+      const started = Date.now();
+      hilog.info(DOMAIN, TAG, 'desktop wait test=%{public}s active=%{public}s surfaceReady=%{public}s',
+        test.testId, `${envSvc.desktopActive}`, `${envSvc.desktopSurfaceReady}`);
+      const ready = await envSvc.ensureDesktop();
+      hilog.info(DOMAIN, TAG, 'desktop wait done test=%{public}s ready=%{public}s elapsedMs=%{public}d',
+        test.testId, `${ready}`, Date.now() - started);
+      if (!ready) {
+        return this.failure(request, 'desktop-startup', 'desktop surface not ready', -1, test.testId);
+      }
+    }
     // job.params 是对选中测试的统一覆盖 (调试参数组合): env 合并 (params 优先),
     // argv 追加, 后端与时长参数覆盖测试定义
     const params: SmokeJobParams = request.job && request.job.params ? request.job.params : {};
@@ -298,8 +325,33 @@ export class SmokeRunner {
     // 即判失败并带上退出码与来源。
     const deadline = Date.now() + resolvedTimeout;
     let lastText: string = '';
+    let benchmarkBegin: NativePerformanceSnapshot | null = null;
+    let benchmarkComplete: boolean = false;
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+      if (test.benchmarkMonitor && !benchmarkComplete) {
+        const windowText: string = readTextIfExists(`${resultPath}.perf-window.json`);
+        if (windowText) {
+          try {
+            const window = JSON.parse(windowText) as BenchmarkWindow;
+            if (window.phase === 'measuring' && !benchmarkBegin) {
+              benchmarkBegin = testNapi.captureNativePerformance();
+            } else if (window.phase === 'complete' && benchmarkBegin) {
+              const hostWindow: BenchmarkHostWindow = {
+                runId: request.runId, testId: test.testId,
+                startTickMs: window.startTickMs, endTickMs: window.endTickMs,
+                start: benchmarkBegin, end: testNapi.captureNativePerformance(),
+                pollIntervalMs: POLL_INTERVAL_MS
+              };
+              writeTextFile(`${resultPath}.hap-performance.json`, JSON.stringify(hostWindow));
+              benchmarkComplete = true;
+            }
+          } catch (_) {
+            // Ignore a transient incomplete boundary file; artifact checks
+            // reject a missing measurement window after the run ends.
+          }
+        }
+      }
       lastText = readTextIfExists(resultPath);
       let final: SmokeResultFile | null = SmokeRunner.parseFinal(lastText);
       const snapshot = testNapi.queryWineProcess(process.pid) as ProcessSnapshot;

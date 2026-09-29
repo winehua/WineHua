@@ -38,6 +38,9 @@
 #include <time.h>
 #include <link.h>
 #include <sys/ucontext.h>
+#if defined(__aarch64__)
+#include <hidebug/hidebug.h>
+#endif
 
 // 从 stderr pipe 读取 Wine 内部日志，同时转发到 hilog 和文件
 struct stderr_ctx { int fd; int fileFd; };
@@ -1040,7 +1043,8 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
 // "空闲等待"零输出。这个看门狗在**进程内部**观测: 若一个窗口期内本进程 utime+stime 完全
 // 没有增长, 就把每个线程的 comm/wchan/内核栈落到 stderr (即 wine_stderr 文件)。
 // 开关: WINEHUA_STALL_DUMP=<秒窗口> (默认 20), 0/未设 = 关闭。
-static void WineHuaStallSampleAllThreads(void);   // 定义在 EARLY-FAULT 段之后 (要用模块表)
+static void WineHuaStallPrepareBacktrace(void);
+static void WineHuaStallSampleAllThreads(void);
 static long WineHuaProcCpuTicks()
 {
     char buf[1024];
@@ -1081,8 +1085,8 @@ static void WineHuaDumpSelfThreads(const char *why)
         f = fopen(path, "r");
         if (f) { if (!fgets(wchan, sizeof(wchan), f)) wchan[0] = 0; fclose(f); }
         nl = strchr(wchan, '\n'); if (nl) *nl = 0;
-        n = snprintf(line, sizeof(line), "[stall-dump] tid=%s comm=%s wchan=%s\n",
-                     ent->d_name, comm, wchan);
+        n = snprintf(line, sizeof(line), "[stall-dump] pid=%d tid=%s comm=%s wchan=%s\n",
+                     getpid(), ent->d_name, comm, wchan);
         if (n > 0) write(2, line, (size_t)n);
         snprintf(path, sizeof(path), "/proc/self/task/%s/stack", ent->d_name);
         f = fopen(path, "r");
@@ -1098,8 +1102,8 @@ static void WineHuaDumpSelfThreads(const char *why)
         }
     }
     closedir(d);
-    const char *end = "[stall-dump] end\n";
-    write(2, end, strlen(end));
+    n = snprintf(line, sizeof(line), "[stall-dump] pid=%d end\n", getpid());
+    if (n > 0) write(2, line, (size_t)n);
 }
 
 static void *WineHuaStallWatchdog(void *)
@@ -1553,13 +1557,16 @@ void OhosInstallEarlyFaultLogger() {
 
 // ---- 用户态栈采样: 卡住线程到底停在哪个函数 (2026-09-19) ----
 // wchan 只说明"在 futex 上等", 看不到调用者。这里对每个线程 tgkill(SIGPROF),
-// 在 handler 里记录 pc/lr/fp, 再用 dl_iterate_phdr 的模块表解析成 模块+偏移。
+// 在 handler 里记录 pc/lr/fp, 再用 /proc/self/maps 解析映射, 不触碰 loader 锁。
 // 只在 WINEHUA_STALL_DUMP 打开、且判定为卡住时触发。
 #define WINEHUA_STALL_MAX_SAMPLES 256
 
 struct WineHuaStallSample {
     int tid;
     uintptr_t pc, lr, fp;
+    int ready;
+    void* frames[12];
+    int frameCount;
 };
 
 static WineHuaStallSample g_stallSamples[WINEHUA_STALL_MAX_SAMPLES];
@@ -1570,28 +1577,63 @@ static volatile sig_atomic_t g_stallSampling;
 // 否则本文件安装 handler 会把对方顶掉 (实测: 只能拿到 host 侧 pc).
 static struct sigaction g_stallPrevSa;
 static int g_stallChainPrev;
+static bool g_stallHandlerInstalled;
+#if defined(__aarch64__)
+static HiDebug_Backtrace_Object g_stallBacktraceObject;
+static decltype(&OH_HiDebug_BacktraceFromFp) g_stallUnwind;
+static int g_stallUnwindBusy;
+#endif
+
+static void WineHuaStallPrepareBacktrace(void)
+{
+#if defined(__aarch64__)
+    // Resolve the public signal-safe FP unwinder before entering Wine/loader
+    // code. Never dlopen or symbolize from the sampling signal handler.
+    void* library = dlopen("libohhidebug.so", RTLD_NOW | RTLD_LOCAL);
+    if (!library) return;
+    auto create = reinterpret_cast<decltype(&OH_HiDebug_CreateBacktraceObject)>(
+        dlsym(library, "OH_HiDebug_CreateBacktraceObject"));
+    g_stallUnwind = reinterpret_cast<decltype(g_stallUnwind)>(dlsym(library, "OH_HiDebug_BacktraceFromFp"));
+    if (create && g_stallUnwind) g_stallBacktraceObject = create();
+#endif
+}
 
 static void WineHuaStallSampleHandler(int sig, siginfo_t* info, void* uctx)
 {
+    const int savedErrno = errno;
     (void)sig; (void)info;
-    if (!g_stallSampling) return;
     ucontext_t* uc = static_cast<ucontext_t*>(uctx);
-    if (uc)
+    if (__atomic_load_n(&g_stallSampling, __ATOMIC_ACQUIRE) && uc)
     {
-        int slot = g_stallSampleCount;
+        int slot = __atomic_fetch_add(&g_stallSampleCount, 1, __ATOMIC_RELAXED);
         if (slot >= 0 && slot < WINEHUA_STALL_MAX_SAMPLES)
         {
-            g_stallSampleCount = slot + 1;
             g_stallSamples[slot].tid = (int)syscall(SYS_gettid);
 #if defined(__aarch64__)
             g_stallSamples[slot].pc = (uintptr_t)uc->uc_mcontext.pc;
             g_stallSamples[slot].lr = (uintptr_t)uc->uc_mcontext.regs[30];
             g_stallSamples[slot].fp = (uintptr_t)uc->uc_mcontext.regs[29];
+            g_stallSamples[slot].frameCount = 0;
+            // Capture lock holders as well as the main thread. The object must
+            // never be used concurrently: a signal that finds it busy skips
+            // unwinding, without spinning or waiting inside the handler.
+            int expected = 0;
+            if (g_stallUnwind && g_stallBacktraceObject &&
+                __atomic_compare_exchange_n(&g_stallUnwindBusy, &expected, 1, false,
+                                            __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+            {
+                g_stallSamples[slot].frameCount = g_stallUnwind(g_stallBacktraceObject,
+                    (void*)g_stallSamples[slot].fp, g_stallSamples[slot].frames, 12);
+                __atomic_store_n(&g_stallUnwindBusy, 0, __ATOMIC_RELEASE);
+            }
 #else
             g_stallSamples[slot].pc = g_stallSamples[slot].lr = g_stallSamples[slot].fp = 0;
+            g_stallSamples[slot].frameCount = 0;
 #endif
+            __atomic_store_n(&g_stallSamples[slot].ready, 1, __ATOMIC_RELEASE);
         }
     }
+    errno = savedErrno;
     // 链式调用 wine 侧采样器 (它会在 ARM64EC 进程里打 [prof-guest] ...)
     if (g_stallChainPrev)
     {
@@ -1607,35 +1649,62 @@ static void WineHuaStallSampleHandler(int sig, siginfo_t* info, void* uctx)
     }
 }
 
-static void WineHuaStallEmitPc(const char* what, uintptr_t v, const OhosEarlyCtx& ctx)
+static void WineHuaStallEmitPc(int tid, const char* what, uintptr_t raw)
 {
-    char line[256];
-    for (int i = 0; i < ctx.count; i++)
+    uintptr_t v = raw;
+#if defined(__aarch64__)
+    // Preserve the raw register above; strip PAC bits only for map lookup.
+    v &= 0x0000ffffffffffffULL;
+#endif
+    char line[512], path[192], perms[5];
+    FILE* maps = fopen("/proc/self/maps", "r");
+    if (maps)
     {
-        if (v >= ctx.mods[i].start && v < ctx.mods[i].end)
+        int count = 0;
+        while (count++ < 4096 && fgets(line, sizeof(line), maps))
         {
-            int n = snprintf(line, sizeof(line), "[stall-pc] %s=%p %s+0x%lx\n", what,
-                             (void*)v, ctx.mods[i].name, (unsigned long)(v - ctx.mods[i].start));
+            unsigned long start, end, offset;
+            path[0] = 0;
+            if (sscanf(line, "%lx-%lx %4s %lx %*s %*s %191[^\n]",
+                       &start, &end, perms, &offset, path) < 4) continue;
+            if (v < start || v >= end) continue;
+            int n = snprintf(line, sizeof(line),
+                             "[stall-map] pid=%d tid=%d %s=%p lookup=%p map=%lx-%lx prot=%s fileOffset=0x%lx %s\n",
+                             getpid(), tid, what, (void*)raw, (void*)v, start, end,
+                             perms, offset + (unsigned long)v - start, path);
             if (n > 0) write(2, line, (size_t)n);
+            fclose(maps);
             return;
         }
+        fclose(maps);
     }
-    int n = snprintf(line, sizeof(line), "[stall-pc] %s=%p <unmapped>\n", what, (void*)v);
+    int n = snprintf(line, sizeof(line), "[stall-map] pid=%d tid=%d %s=%p lookup=%p <unmapped>\n",
+                     getpid(), tid, what, (void*)raw, (void*)v);
     if (n > 0) write(2, line, (size_t)n);
 }
 
 static void WineHuaStallSampleAllThreads(void)
 {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = WineHuaStallSampleHandler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART;
-    sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGPROF, &sa, &g_stallPrevSa) != 0) return;
-    g_stallChainPrev = 1;
+    // Install once. Installing on every sample saves our own handler as the
+    // previous action on sample #2, causing recursive chaining and stack overflow.
+    if (!g_stallHandlerInstalled)
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = WineHuaStallSampleHandler;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+        sigemptyset(&sa.sa_mask);
+        if (sigaction(SIGPROF, &sa, &g_stallPrevSa) != 0) return;
+        g_stallChainPrev = g_stallPrevSa.sa_handler != SIG_DFL &&
+                           g_stallPrevSa.sa_handler != SIG_IGN &&
+                           g_stallPrevSa.sa_sigaction != WineHuaStallSampleHandler;
+        g_stallHandlerInstalled = true;
+    }
 
-    g_stallSampleCount = 0;
-    g_stallSampling = 1;
+    __atomic_store_n(&g_stallSampleCount, 0, __ATOMIC_RELAXED);
+    for (auto& sample : g_stallSamples)
+        __atomic_store_n(&sample.ready, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_stallSampling, 1, __ATOMIC_RELEASE);
     DIR* d = opendir("/proc/self/task");
     if (d)
     {
@@ -1653,26 +1722,33 @@ static void WineHuaStallSampleAllThreads(void)
         closedir(d);
     }
     usleep(200000);   /* 收尾: 等最后几个线程把 handler 跑完 */
-    g_stallSampling = 0;
+    __atomic_store_n(&g_stallSampling, 0, __ATOMIC_RELEASE);
 
-    OhosEarlyCtx ctx;
-    ctx.count = 0;
-    dl_iterate_phdr(OhosEarlyPhdrCb, &ctx);
-
-    char comm[64] = {0}, path[96], line[160];
-    for (int i = 0; i < g_stallSampleCount; i++)
+    char comm[64] = {0}, path[96], line[320];
+    int count = __atomic_load_n(&g_stallSampleCount, __ATOMIC_RELAXED);
+    if (count > WINEHUA_STALL_MAX_SAMPLES) count = WINEHUA_STALL_MAX_SAMPLES;
+    for (int i = 0; i < count; i++)
     {
+        if (!__atomic_load_n(&g_stallSamples[i].ready, __ATOMIC_ACQUIRE)) continue;
         comm[0] = 0;
         snprintf(path, sizeof(path), "/proc/self/task/%d/comm", g_stallSamples[i].tid);
         FILE* f = fopen(path, "r");
         if (f) { if (!fgets(comm, sizeof(comm), f)) comm[0] = 0; fclose(f); }
         char* nl = strchr(comm, '\n'); if (nl) *nl = 0;
-        int n = snprintf(line, sizeof(line), "[stall-pc] tid=%d comm=%s\n",
-                         g_stallSamples[i].tid, comm);
+        int n = snprintf(line, sizeof(line), "[stall-pc] pid=%d tid=%d comm=%s pc=%p lr=%p fp=%p frames=%d\n",
+                         getpid(), g_stallSamples[i].tid, comm, (void*)g_stallSamples[i].pc,
+                         (void*)g_stallSamples[i].lr, (void*)g_stallSamples[i].fp, g_stallSamples[i].frameCount);
         if (n > 0) write(2, line, (size_t)n);
-        WineHuaStallEmitPc("pc", g_stallSamples[i].pc, ctx);
-        WineHuaStallEmitPc("lr", g_stallSamples[i].lr, ctx);
-        WineHuaStallEmitPc("fp", g_stallSamples[i].fp, ctx);
+        WineHuaStallEmitPc(g_stallSamples[i].tid, "pc", g_stallSamples[i].pc);
+        WineHuaStallEmitPc(g_stallSamples[i].tid, "lr", g_stallSamples[i].lr);
+        WineHuaStallEmitPc(g_stallSamples[i].tid, "fp", g_stallSamples[i].fp);
+        for (int depth = 0; depth < g_stallSamples[i].frameCount && depth < 12; depth++)
+        {
+            int n = snprintf(line, sizeof(line), "[stall-frame] pid=%d tid=%d depth=%d return=%p\n",
+                             getpid(), g_stallSamples[i].tid, depth, g_stallSamples[i].frames[depth]);
+            if (n > 0) write(2, line, (size_t)n);
+            WineHuaStallEmitPc(g_stallSamples[i].tid, "return", (uintptr_t)g_stallSamples[i].frames[depth]);
+        }
     }
 }
 
@@ -1909,6 +1985,8 @@ extern "C" void Main(NativeChildProcess_Args args)
     // 空闲卡死看门狗 (WINEHUA_STALL_DUMP=<秒> 才启动): 必须在 stderr 已重定向到
     // wine_stderr 之后启动, 这样 dump 才落在同一个文件里。
     {
+        const char* stallEnv = getenv("WINEHUA_STALL_DUMP");
+        if (stallEnv && atoi(stallEnv) > 0) WineHuaStallPrepareBacktrace();
         pthread_t watchdog;
         if (pthread_create(&watchdog, nullptr, WineHuaStallWatchdog, nullptr) == 0)
             pthread_detach(watchdog);

@@ -1,14 +1,19 @@
 #include "vulkan_probe_launcher.h"
 #include "vulkan_probe_protocol.h"
+#include "phone_adapter/phone_adapter.h"
+#include "phone_adapter/phone_process.h"
 
 #include <AbilityKit/native_child_process.h>
 #include <IPCKit/ipc_kit.h>
+#include <dlfcn.h>
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "DIRECT_D0_MAIN"
 #include <hilog/log.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -17,8 +22,10 @@
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <memory>
 #include <mutex>
 #include <new>
+#include <thread>
 
 namespace winehua::direct {
 namespace {
@@ -32,6 +39,15 @@ struct ProbeWork {
     const char* launchMode = "StartNativeChildProcess";
     OHIPCRemoteProxy* proxy = nullptr;
     bool callbackReceived = false;
+    bool systemCreate = false;
+    bool prepared = false;
+    bool forkServer = false;
+    int32_t forkServerPid = -1;
+    int32_t childExitCode = -1;
+    int32_t childWaitStatus = -1;
+    bool childReaped = false;
+    int resultFd = -1;
+    int stageFd = -1;
 };
 
 std::mutex g_createMutex;
@@ -113,33 +129,64 @@ void SetFailure(ProbeWork& work, const char* stage)
     std::snprintf(work.result.stage, sizeof(work.result.stage), "%s", stage);
 }
 
-void ExecuteProbe(napi_env, void* data)
+bool StartProbe(ProbeWork& work)
 {
-    auto& work = *static_cast<ProbeWork*>(data);
+    work.prepared = true;
     int sockets[2] = {-1, -1};
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
         SetFailure(work, "socketpair");
-        return;
+        return false;
+    }
+    int stages[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, stages) != 0) {
+        close(sockets[0]);
+        close(sockets[1]);
+        SetFailure(work, "stage_socketpair");
+        return false;
     }
     struct stat outputIdentity{};
     const bool haveOutputIdentity = fstat(sockets[1], &outputIdentity) == 0;
+    struct stat stageIdentity{};
+    const bool haveStageIdentity = fstat(stages[1], &stageIdentity) == 0;
 
     NativeChildProcess_Fd output{};
     output.fdName = const_cast<char*>(kVulkanProbeFdName);
     output.fd = sockets[1];
+    NativeChildProcess_Fd stage{};
+    stage.fdName = const_cast<char*>(kVulkanProbeStageFdName);
+    stage.fd = stages[1];
+    output.next = &stage;
     NativeChildProcess_Args args{};
     args.entryParams = const_cast<char*>("d0");
     args.fdList.head = &output;
     NativeChildProcess_Options options{};
     options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
     int32_t childPid = -1;
-    work.ncpStatus = OH_Ability_StartNativeChildProcess(
-        "libdirect_vulkan_probe.so:Main", args, options, &childPid);
+    work.ncpStatus = work.forkServer ?
+        Phone_StartViaDirectForkServer("libdirect_vulkan_probe.so:Main", args, &childPid) :
+        OH_Ability_StartNativeChildProcess("libdirect_vulkan_probe.so:Main", args, options, &childPid);
     if (work.ncpStatus != NCP_NO_ERROR || childPid <= 0) {
+        char stagesSeen[64];
+        const ssize_t stageCount = recv(stages[0], stagesSeen, sizeof(stagesSeen), MSG_DONTWAIT);
+        const char lastStage = stageCount > 0 ? stagesSeen[stageCount - 1] : 0;
         close(sockets[0]);
         close(sockets[1]);
+        close(stages[0]);
+        close(stages[1]);
         SetFailure(work, "start_ncp");
-        return;
+        if (lastStage >= '1' && lastStage <= '5')
+            std::snprintf(work.result.stage, sizeof(work.result.stage), "start_ncp_after_stage_%c", lastStage);
+        if (work.forkServer && childPid > 0) {
+            work.result.pid = childPid;
+            int status = 0;
+            for (int attempt = 0; attempt < 100; ++attempt) {
+                if ((work.childReaped = Phone_QueryDirectForkChildExit(childPid, &status))) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (work.childReaped && WIFEXITED(status)) work.childExitCode = WEXITSTATUS(status);
+            if (work.childReaped) work.childWaitStatus = status;
+        }
+        return false;
     }
     // The device's Start API duplicates the descriptor for the child but leaves
     // the caller's original open. Close only if it is still the same socket.
@@ -152,56 +199,123 @@ void ExecuteProbe(napi_env, void* data)
                 outputFdRetained ? 1 : 0, sockets[1]);
     if (outputFdRetained)
         close(sockets[1]);
-    // Read the fixed packet rather than waiting for EOF, which may be held by the NCP runtime.
+    const bool stageFdRetained = haveStageIdentity &&
+        fstat(stages[1], &currentIdentity) == 0 &&
+        currentIdentity.st_dev == stageIdentity.st_dev &&
+        currentIdentity.st_ino == stageIdentity.st_ino;
+    if (stageFdRetained) close(stages[1]);
     work.result.pid = childPid;
+    work.resultFd = sockets[0];
+    work.stageFd = stages[0];
+    return true;
+}
+
+void ExecuteProbe(napi_env, void* data)
+{
+    auto& work = *static_cast<ProbeWork*>(data);
+    if (!work.prepared) StartProbe(work);
+    if (work.resultFd < 0) return;
+    const int childPid = work.result.pid;
+    int resultFd = work.resultFd;
+    int stageFd = work.stageFd;
+    // Read the fixed packet rather than waiting for EOF, which may be held by the NCP runtime.
     auto* bytes = reinterpret_cast<uint8_t*>(&work.result);
     size_t received = 0;
+    char lastStage = 0;
+    const char* transportFailure = nullptr;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (received < sizeof(work.result)) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            SetFailure(work, "result_timeout");
             break;
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-        pollfd pfd{};
-        pfd.fd = sockets[0];
-        pfd.events = POLLIN;
-        const int polled = poll(&pfd, 1, static_cast<int>(remaining));
+        pollfd pfd[2] = {{resultFd, POLLIN, 0}, {stageFd, POLLIN, 0}};
+        const int polled = poll(pfd, 2, static_cast<int>(remaining));
         if (polled < 0 && errno == EINTR) continue;
         if (polled < 0) {
-            SetFailure(work, "result_poll");
+            transportFailure = "result_poll";
             break;
         }
-        if (!polled) {
-            SetFailure(work, "result_timeout");
+        if (!polled) break;
+        if (stageFd >= 0 && (pfd[1].revents & (POLLIN | POLLHUP))) {
+            char reported[16];
+            const ssize_t count = read(stageFd, reported, sizeof(reported));
+            if (count > 0) lastStage = reported[count - 1];
+            else if (count == 0) {
+                close(stageFd);
+                stageFd = -1;
+            }
+        }
+        if (!pfd[0].revents) continue;
+        if (!(pfd[0].revents & (POLLIN | POLLHUP))) {
+            transportFailure = "result_socket";
             break;
         }
-        if (!(pfd.revents & (POLLIN | POLLHUP))) {
-            SetFailure(work, "result_socket");
-            break;
-        }
-        const ssize_t count = read(sockets[0], bytes + received, sizeof(work.result) - received);
+        const ssize_t count = read(resultFd, bytes + received, sizeof(work.result) - received);
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) {
-            SetFailure(work, "result_eof");
+            transportFailure = "result_eof";
             break;
         }
         received += static_cast<size_t>(count);
     }
-    close(sockets[0]);
+    close(resultFd);
+    if (stageFd >= 0) close(stageFd);
+    work.resultFd = work.stageFd = -1;
+    if (received != sizeof(work.result)) {
+        const char* stage = "result_timeout_before_main";
+        switch (lastStage) {
+            case 'M': stage = "timeout_after_main"; break;
+            case 'L': stage = "timeout_in_vulkan_dlopen"; break;
+            case 'l': stage = "timeout_after_vulkan_dlopen"; break;
+            case 'E': stage = "timeout_in_extension_query"; break;
+            case 'e': stage = "timeout_after_extension_query"; break;
+            case 'I': stage = "timeout_in_vkCreateInstance"; break;
+            case 'i': stage = "timeout_after_vkCreateInstance"; break;
+            case 'h': stage = "timeout_after_instance_log"; break;
+            case 'f': stage = "timeout_in_instance_failure_cleanup"; break;
+            case 'J': stage = "timeout_resolving_instance_functions"; break;
+            case 'j': stage = "timeout_after_instance_functions"; break;
+            case 'P': stage = "timeout_enumerating_devices_count"; break;
+            case 'p': stage = "timeout_after_devices_count"; break;
+            case 'R': stage = "timeout_enumerating_devices_list"; break;
+            case 'r': stage = "timeout_after_devices_list"; break;
+            case 'G': stage = "timeout_selecting_graphics_device"; break;
+            case 'g': stage = "timeout_after_graphics_selection"; break;
+            case 'D': stage = "timeout_in_vkCreateDevice"; break;
+            case 'd': stage = "timeout_after_vkCreateDevice"; break;
+            case 'C': stage = "timeout_after_probe_cleanup"; break;
+            case 'W': stage = "timeout_writing_result"; break;
+            case 'w': stage = "timeout_after_result_write"; break;
+        }
+        SetFailure(work, transportFailure ? transportFailure : stage);
+    }
     if (received == sizeof(work.result) &&
         (work.result.magic != kVulkanProbeMagic ||
          work.result.version != kVulkanProbeVersion ||
          work.result.size != sizeof(work.result) ||
          work.result.pid != childPid))
         SetFailure(work, "result_protocol");
+    if (work.forkServer) {
+        if (received != sizeof(work.result)) kill(childPid, SIGKILL);
+        int waitStatus = 0;
+        const auto reapDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < reapDeadline &&
+               !(work.childReaped = Phone_QueryDirectForkChildExit(childPid, &waitStatus)))
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (work.childReaped && WIFEXITED(waitStatus)) work.childExitCode = WEXITSTATUS(waitStatus);
+        if (work.childReaped) work.childWaitStatus = waitStatus;
+        if (work.result.status == 0 && (!work.childReaped || work.childExitCode != 0))
+            SetFailure(work, "fork_server_child_exit");
+    }
 }
 
 void ExecuteCreateProbe(napi_env, void* data)
 {
     auto& work = *static_cast<ProbeWork*>(data);
-    work.launchMode = "CreateNativeChildProcess";
+    work.launchMode = work.systemCreate ?
+        "CreateNativeChildProcess(system)" : "CreateNativeChildProcess";
     {
         std::lock_guard<std::mutex> lock(g_createMutex);
         if (g_createPending) {
@@ -211,8 +325,27 @@ void ExecuteCreateProbe(napi_env, void* data)
         g_createPending = true;
         g_createWork = &work;
     }
-    work.ncpStatus = OH_Ability_CreateNativeChildProcess(
-        "libdirect_vulkan_probe.so", OnCreateProbeStarted);
+    if (work.systemCreate) {
+        // A phone normally interposes Create with its fork adapter. This
+        // diagnostic calls the OS implementation explicitly so its result
+        // cannot be mistaken for the adapter's dummy proxy.
+        static void* systemLibrary = dlopen("libchild_process.so", RTLD_NOW | RTLD_LOCAL);
+        auto systemCreate = systemLibrary ?
+            reinterpret_cast<decltype(&OH_Ability_CreateNativeChildProcess)>(
+                dlsym(systemLibrary, "OH_Ability_CreateNativeChildProcess")) : nullptr;
+        if (!systemCreate || systemCreate == &OH_Ability_CreateNativeChildProcess) {
+            std::lock_guard<std::mutex> lock(g_createMutex);
+            g_createWork = nullptr;
+            g_createPending = false;
+            work.ncpStatus = NCP_ERR_NOT_SUPPORTED;
+            SetFailure(work, "system_create_symbol");
+            return;
+        }
+        work.ncpStatus = systemCreate("libdirect_vulkan_probe.so", OnCreateProbeStarted);
+    } else {
+        work.ncpStatus = OH_Ability_CreateNativeChildProcess(
+            "libdirect_vulkan_probe.so", OnCreateProbeStarted);
+    }
     if (work.ncpStatus != NCP_NO_ERROR) {
         std::lock_guard<std::mutex> lock(g_createMutex);
         g_createWork = nullptr;
@@ -270,6 +403,46 @@ void ExecuteCreateProbe(napi_env, void* data)
     OH_IPCRemoteProxy_Destroy(work.proxy);
 }
 
+void ExecuteInlineProbe(napi_env, void* data)
+{
+    auto& work = *static_cast<ProbeWork*>(data);
+    work.launchMode = "InProcess";
+    work.result.pid = getpid();
+    void* library = dlopen("libdirect_vulkan_probe.so", RTLD_NOW | RTLD_LOCAL);
+    if (!library) {
+        SetFailure(work, "inline_dlopen");
+        return;
+    }
+    using RunFn = void (*)(VulkanProbeResult*);
+    auto run = reinterpret_cast<RunFn>(dlsym(library, "DirectVulkanProbe_RunInline"));
+    if (!run) {
+        SetFailure(work, "inline_symbol");
+        return;
+    }
+    struct State {
+        std::mutex mutex;
+        std::condition_variable condition;
+        VulkanProbeResult result{};
+        bool done = false;
+    };
+    auto state = std::make_shared<State>();
+    std::thread([state, run] {
+        run(&state->result);
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->done = true;
+        }
+        state->condition.notify_one();
+    }).detach();
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->condition.wait_for(lock, std::chrono::seconds(15),
+                                   [&] { return state->done; })) {
+        SetFailure(work, "inline_timeout");
+        return;
+    }
+    work.result = state->result;
+}
+
 void CompleteProbe(napi_env env, napi_status status, void* data)
 {
     auto* work = static_cast<ProbeWork*>(data);
@@ -285,6 +458,12 @@ void CompleteProbe(napi_env env, napi_status status, void* data)
     SetInt(env, result, "pid", work->result.pid);
     SetInt(env, result, "ncpStatus", work->ncpStatus);
     SetInt(env, result, "callbackStatus", work->callbackStatus);
+    if (work->forkServer) {
+        SetInt(env, result, "forkServerPid", work->forkServerPid);
+        SetInt(env, result, "childExitCode", work->childExitCode);
+        SetInt(env, result, "childWaitStatus", work->childWaitStatus);
+        SetBool(env, result, "childReaped", work->childReaped);
+    }
     SetInt(env, result, "parentFdCount", CountOpenFds());
     SetInt(env, result, "parentRssKiB", ReadRssKiB());
     SetInt(env, result, "vkResult", work->result.vkResult);
@@ -293,6 +472,25 @@ void CompleteProbe(napi_env env, napi_status status, void* data)
     SetUint(env, result, "instanceExtensionCount", work->result.instanceExtensionCount);
     SetUint(env, result, "deviceExtensionCount", work->result.deviceExtensionCount);
     SetUint(env, result, "nativeCapabilities", work->result.nativeCapabilities);
+    napi_value externalImages;
+    napi_create_array(env, &externalImages);
+    for (uint32_t i = 0; i < work->result.externalImageCount && i < kExternalImageProbeCount; ++i) {
+        const auto& audit = work->result.externalImages[i];
+        napi_value item;
+        napi_create_object(env, &item);
+        SetUint(env, item, "handleType", audit.handleType);
+        SetUint(env, item, "format", audit.format);
+        SetUint(env, item, "tiling", audit.tiling);
+        SetUint(env, item, "usage", audit.usage);
+        SetInt(env, item, "result", audit.result);
+        SetUint(env, item, "features", audit.features);
+        SetUint(env, item, "compatibleHandleTypes", audit.compatibleHandleTypes);
+        SetUint(env, item, "exportFromImportedHandleTypes", audit.exportFromImportedHandleTypes);
+        napi_set_element(env, externalImages, i, item);
+    }
+    napi_set_named_property(env, result, "externalImages", externalImages);
+    SetBool(env, result, "opaqueFdBufferQueried", work->result.opaqueFdBufferQueried != 0);
+    SetUint(env, result, "opaqueFdBufferFeatures", work->result.opaqueFdBufferFeatures);
     SetUint(env, result, "apiVersion", work->result.apiVersion);
     SetString(env, result, "icdEnvironment", work->result.icdEnvironment);
     SetBool(env, result, "pixelCheck", work->result.pixelCheck != 0);
@@ -306,11 +504,25 @@ void CompleteProbe(napi_env env, napi_status status, void* data)
 
 } // namespace
 
-napi_value RunVulkanProbe(napi_env env, napi_callback_info)
+napi_value RunVulkanProbe(napi_env env, napi_callback_info info)
 {
     auto* work = new (std::nothrow) ProbeWork();
     if (!work) {
         napi_throw_error(env, nullptr, "failed to allocate D0 probe work");
+        return nullptr;
+    }
+    size_t argc = 1;
+    napi_value argument;
+    bool earlyPhoneFork = false;
+    napi_get_cb_info(env, info, &argc, &argument, nullptr, nullptr);
+    if (argc && napi_get_value_bool(env, argument, &earlyPhoneFork) != napi_ok) {
+        delete work;
+        napi_throw_type_error(env, nullptr, "earlyPhoneFork must be a boolean");
+        return nullptr;
+    }
+    if (earlyPhoneFork && !PhoneAdapter_IsPhoneMode()) {
+        delete work;
+        napi_throw_error(env, nullptr, "early fork diagnostic requires phone mode");
         return nullptr;
     }
     napi_value promise;
@@ -322,9 +534,23 @@ napi_value RunVulkanProbe(napi_env env, napi_callback_info)
     napi_value resourceName;
     napi_create_string_utf8(env, "WineHuaDirectD0", NAPI_AUTO_LENGTH, &resourceName);
     if (napi_create_async_work(env, nullptr, resourceName, ExecuteProbe, CompleteProbe,
-                               work, &work->work) != napi_ok ||
-        napi_queue_async_work(env, work->work) != napi_ok) {
+                               work, &work->work) != napi_ok) {
         if (work->work) napi_delete_async_work(env, work->work);
+        delete work;
+        napi_throw_error(env, nullptr, "failed to create D0 probe work");
+        return nullptr;
+    }
+    if (earlyPhoneFork) {
+        work->launchMode = "StartNativeChildProcess(early-phone-fork)";
+        // Launch synchronously from Ability.onCreate, before ArkUI loads the
+        // diagnostic page. Only result polling is sent to the async worker.
+        StartProbe(*work);
+    }
+    if (napi_queue_async_work(env, work->work) != napi_ok) {
+        if (work->resultFd >= 0) close(work->resultFd);
+        if (work->stageFd >= 0) close(work->stageFd);
+        if (earlyPhoneFork && work->result.pid > 0) kill(work->result.pid, SIGKILL);
+        napi_delete_async_work(env, work->work);
         delete work;
         napi_throw_error(env, nullptr, "failed to queue D0 probe");
         return nullptr;
@@ -332,13 +558,73 @@ napi_value RunVulkanProbe(napi_env env, napi_callback_info)
     return promise;
 }
 
-napi_value RunVulkanCreateProbe(napi_env env, napi_callback_info)
+napi_value RunVulkanInlineProbe(napi_env env, napi_callback_info)
+{
+    auto* work = new (std::nothrow) ProbeWork();
+    if (!work) {
+        napi_throw_error(env, nullptr, "failed to allocate inline D0 probe work");
+        return nullptr;
+    }
+    napi_value promise;
+    if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
+        delete work;
+        napi_throw_error(env, nullptr, "failed to create inline D0 probe promise");
+        return nullptr;
+    }
+    napi_value resourceName;
+    napi_create_string_utf8(env, "WineHuaDirectD0Inline", NAPI_AUTO_LENGTH, &resourceName);
+    if (napi_create_async_work(env, nullptr, resourceName, ExecuteInlineProbe, CompleteProbe,
+                               work, &work->work) != napi_ok ||
+        napi_queue_async_work(env, work->work) != napi_ok) {
+        if (work->work) napi_delete_async_work(env, work->work);
+        delete work;
+        napi_throw_error(env, nullptr, "failed to queue inline D0 probe");
+        return nullptr;
+    }
+    return promise;
+}
+
+napi_value PreparePhoneDirectForkServer(napi_env env, napi_callback_info)
+{
+    const int32_t status = PhoneAdapter_IsPhoneMode() ?
+        Phone_PrepareDirectForkServer() : NCP_ERR_NOT_SUPPORTED;
+    napi_value result;
+    napi_create_int32(env, status, &result);
+    return result;
+}
+
+napi_value RunVulkanForkServerProbe(napi_env env, napi_callback_info)
+{
+    auto* work = new (std::nothrow) ProbeWork();
+    if (!work) {
+        napi_throw_error(env, nullptr, "failed to allocate fork server probe");
+        return nullptr;
+    }
+    work->forkServer = true;
+    work->forkServerPid = Phone_GetDirectForkServerPid();
+    work->launchMode = "StartNativeChildProcess(early-phone-fork-server)";
+    napi_value promise, resourceName;
+    napi_create_string_utf8(env, "WineHuaDirectD0ForkServer", NAPI_AUTO_LENGTH, &resourceName);
+    if (napi_create_promise(env, &work->deferred, &promise) != napi_ok ||
+        napi_create_async_work(env, nullptr, resourceName, ExecuteProbe, CompleteProbe,
+                               work, &work->work) != napi_ok ||
+        napi_queue_async_work(env, work->work) != napi_ok) {
+        if (work->work) napi_delete_async_work(env, work->work);
+        delete work;
+        napi_throw_error(env, nullptr, "failed to queue fork server probe");
+        return nullptr;
+    }
+    return promise;
+}
+
+napi_value QueueCreateProbe(napi_env env, bool systemCreate)
 {
     auto* work = new (std::nothrow) ProbeWork();
     if (!work) {
         napi_throw_error(env, nullptr, "failed to allocate D0 Create probe work");
         return nullptr;
     }
+    work->systemCreate = systemCreate;
     napi_value promise;
     if (napi_create_promise(env, &work->deferred, &promise) != napi_ok) {
         delete work;
@@ -356,6 +642,16 @@ napi_value RunVulkanCreateProbe(napi_env env, napi_callback_info)
         return nullptr;
     }
     return promise;
+}
+
+napi_value RunVulkanCreateProbe(napi_env env, napi_callback_info)
+{
+    return QueueCreateProbe(env, false);
+}
+
+napi_value RunVulkanSystemCreateProbe(napi_env env, napi_callback_info)
+{
+    return QueueCreateProbe(env, true);
 }
 
 } // namespace winehua::direct

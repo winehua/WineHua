@@ -1,0 +1,19 @@
+{
+  "name": "direct-desktop-scene",
+  "title": "Direct 桌面双窗口 GPU 合成",
+  "tests": [
+    {
+      "case": "direct-desktop-scene",
+      "id": "direct-desktop-scene",
+      "arch": ["x64"],
+      "requiresDesktop": true,
+      "backend": { "d3d": "dxvk_legacy" },
+      "env": {
+        "WINEHUA_DIRECT_NCP": "1",
+        "WINEHUA_VULKAN_BACKEND": "direct",
+        "WINEHUA_D3D11_RESIZE": "1"
+      },
+      "timeoutMs": 120000
+    }
+  ]
+}

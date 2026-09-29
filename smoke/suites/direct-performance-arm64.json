@@ -1,0 +1,10 @@
+{
+  "name": "direct-performance-arm64",
+  "title": "Direct/Venus performance on native ARM64 PE control",
+  "tests": [{
+    "case": "d3d11-benchmark-arm64", "id": "d3d11-benchmark-arm64", "arch": ["x64"],
+    "requiresDesktop": true, "benchmarkMonitor": true, "backend": {"d3d": "dxvk_legacy"},
+    "env": {"WINEHUA_DIRECT_NCP": "1", "WINEHUA_WINEDEBUG": "-all", "WINEHUA_FRAME_TRACE": "0", "DXVK_LOG_LEVEL": "none"},
+    "seconds": 75, "timeoutMs": 240000
+  }]
+}

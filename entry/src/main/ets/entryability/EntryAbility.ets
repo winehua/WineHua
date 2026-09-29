@@ -30,6 +30,13 @@ interface DirectProbeResult {
   parentRssKiB: number;
 }
 
+interface PhoneSharedBufferProbeResult {
+  status: string;
+  stage: string;
+  lastChildStage: string;
+  pid: number;
+}
+
 interface DirectWineIpcProbeResult {
   gate: string;
   status: string;
@@ -40,6 +47,25 @@ interface DirectWineIpcProbeResult {
   parentFdsOpen: number;
   deathReceived: number;
   registryExited: number;
+}
+
+interface DirectWineSurfaceIpcProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  launchCode: number;
+  firstAttach: number;
+  directRoute: number;
+  firstQuery: number;
+  staleRejected: number;
+  staleAttachAccepted: number;
+  firstQueryAfterStale: number;
+  resized: number;
+  oldGenerationRejected: number;
+  detach: number;
+  detachedQueryRejected: number;
+  deathReceived: number;
 }
 
 interface DirectSurfaceProbeResult {
@@ -100,9 +126,22 @@ interface DirectOutputProbeResult {
 }
 
 export default class EntryAbility extends UIAbility {
+  private screenAwake: ScreenAwake = new ScreenAwake('EntryAbility');
   private directProbePending: boolean = false;
+  private phoneSharedBufferMode: boolean = false;
+  private phoneSharedBufferPreserveMappings: boolean = false;
+  private phoneSharedBufferStandardFork: boolean = false;
+  private phoneSharedBufferSystemStart: boolean = false;
+  private phoneSharedBufferGuestExport: boolean = false;
   private directProbeStartMode: boolean = false;
+  private directProbeInlineMode: boolean = false;
+  private directProbeEarlyMode: boolean = false;
+  private directProbeForkServerMode: boolean = false;
+  private directForkServerStatus: number = -1;
+  private directEarlyProbe: Promise<DirectProbeResult> | null = null;
+  private directProbeSystemCreateMode: boolean = false;
   private directWineIpcMode: boolean = false;
+  private directWineSurfaceIpcMode: boolean = false;
   private directWineBrokerIpcMode: boolean = false;
   private directSurfaceProbeMode: boolean = false;
   private directSurfaceAbortMode: boolean = false;
@@ -121,7 +160,13 @@ export default class EntryAbility extends UIAbility {
   private runDirectProbeIfRequested(): void {
     if (!this.directProbePending) return;
     this.directProbePending = false;
-    const outputPath = this.directWineBrokerIpcMode ?
+    const outputPath = this.phoneSharedBufferMode ?
+      `${this.context.cacheDir}/direct-phone-shared-buffer-probe.json` : this.directProbeForkServerMode ?
+      `${this.context.cacheDir}/direct-vulkan-fork-server-probe.json` : this.directProbeEarlyMode ?
+      `${this.context.cacheDir}/direct-vulkan-early-probe.json` : this.directProbeInlineMode ?
+      `${this.context.cacheDir}/direct-vulkan-inline-probe.json` : this.directProbeSystemCreateMode ?
+      `${this.context.cacheDir}/direct-vulkan-system-create-probe.json` : this.directWineSurfaceIpcMode ?
+      `${this.context.cacheDir}/direct-wine-surface-ipc-probe.json` : this.directWineBrokerIpcMode ?
       `${this.context.cacheDir}/direct-wine-broker-ipc-probe.json` : this.directWineIpcMode ?
       `${this.context.cacheDir}/direct-wine-ipc-probe.json` : this.directOutputMode ?
       `${this.context.cacheDir}/direct-gpu-output-probe.json` : this.directSurfaceProbeMode ?
@@ -139,7 +184,9 @@ export default class EntryAbility extends UIAbility {
         this.directSurfaceAbortMode ? 'direct-surface-abort-probe.json' : 'direct-surface-probe.json'}` :
       `${this.context.cacheDir}/direct-vulkan-probe.json`;
     try {
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directWineBrokerIpcMode ? 'D2.5-BROKER-IPC' :
+      writeTextFile(outputPath, JSON.stringify({ gate: this.phoneSharedBufferMode ? 'P0-PHONE-SHARED-NATIVEBUFFER' :
+        this.directWineSurfaceIpcMode ? 'D3-WINE-SURFACE-IPC' :
+        this.directWineBrokerIpcMode ? 'D2.5-BROKER-IPC' :
         this.directWineIpcMode ? 'D2.5-WINE-IPC' :
         this.directOutputMode ? 'D2-OUTPUT' :
         this.directDualSlotMode && this.directCompositeResizeMode ? 'D2-DUAL-SLOT-RESIZE' :
@@ -157,9 +204,14 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'DIRECT-D0', 'cannot prepare result file: %{public}s', JSON.stringify(err));
     }
-    if (deviceInfo.deviceType === 'phone') {
-      // The phone adapter uses fork instead of a system NCP; it cannot prove D0.
-      writeTextFile(outputPath, JSON.stringify({ gate: this.directWineBrokerIpcMode ? 'D2.5-BROKER-IPC' :
+    if (deviceInfo.deviceType === 'phone' &&
+      !this.directProbeSystemCreateMode && !this.directProbeStartMode &&
+      !this.directProbeInlineMode && !this.directProbeEarlyMode && !this.directProbeForkServerMode &&
+      !this.phoneSharedBufferMode) {
+      // The phone fork adapter cannot prove the system NCP D0 gate. Keep its
+      // Start path available as a separate offscreen Vulkan diagnostic.
+      writeTextFile(outputPath, JSON.stringify({ gate: this.directWineSurfaceIpcMode ? 'D3-WINE-SURFACE-IPC' :
+        this.directWineBrokerIpcMode ? 'D2.5-BROKER-IPC' :
         this.directWineIpcMode ? 'D2.5-WINE-IPC' :
         this.directOutputMode ? 'D2-OUTPUT' :
         this.directDualSlotMode && this.directCompositeResizeMode ? 'D2-DUAL-SLOT-RESIZE' :
@@ -176,7 +228,31 @@ export default class EntryAbility extends UIAbility {
         status: 'UNSUPPORTED', stage: 'phone_fork_backend' }));
       return;
     }
-    if (this.directWineBrokerIpcMode || this.directWineIpcMode) {
+    if (this.phoneSharedBufferMode) {
+      this.phoneSharedBufferMode = false;
+      testNapi.runPhoneSharedBufferProbe(this.phoneSharedBufferPreserveMappings,
+        this.phoneSharedBufferStandardFork, this.phoneSharedBufferSystemStart,
+        this.phoneSharedBufferGuestExport).then((result: PhoneSharedBufferProbeResult) => {
+        writeTextFile(outputPath, JSON.stringify(result));
+        hilog.info(DOMAIN, 'DIRECT-PHONE-P0', 'status=%{public}s stage=%{public}s child=%{public}s pid=%{public}d',
+          result.status, result.stage, result.lastChildStage, result.pid);
+      }).catch((err: Object) => {
+        writeTextFile(outputPath, JSON.stringify({ gate: 'P0-PHONE-SHARED-NATIVEBUFFER',
+          status: 'FAIL', stage: 'napi_exception', error: JSON.stringify(err) }));
+      });
+    } else if (this.directWineSurfaceIpcMode) {
+      this.directWineSurfaceIpcMode = false;
+      testNapi.runDirectWineSurfaceIpcProbe()
+        .then((result: DirectWineSurfaceIpcProbeResult) => {
+          writeTextFile(outputPath, JSON.stringify(result));
+          hilog.info(DOMAIN, 'DIRECT-D3-WINE-SURFACE-IPC',
+            'status=%{public}s stage=%{public}s pid=%{public}d',
+            result.status, result.stage, result.pid);
+        }).catch((err: Object) => {
+          writeTextFile(outputPath, JSON.stringify({ gate: 'D3-WINE-SURFACE-IPC',
+            status: 'FAIL', stage: 'napi_exception', error: JSON.stringify(err) }));
+        });
+    } else if (this.directWineBrokerIpcMode || this.directWineIpcMode) {
       const brokerMode = this.directWineBrokerIpcMode;
       this.directWineIpcMode = false;
       this.directWineBrokerIpcMode = false;
@@ -229,6 +305,30 @@ export default class EntryAbility extends UIAbility {
         abortMode ? testNapi.runDirectSurfaceAbortProbe() : testNapi.runDirectSurfaceProbe(),
         outputPath, gpuMode, importMode, sampleMode, fenceMode, compositeMode,
         compositeResizeMode, throughputMode, pipelineMode, dualSlotMode);
+    } else if (this.directProbeEarlyMode) {
+      this.directProbeEarlyMode = false;
+      const probe = this.directEarlyProbe;
+      this.directEarlyProbe = null;
+      if (probe) {
+        this.runDirectProbePromise(probe, outputPath);
+      } else {
+        writeTextFile(outputPath, JSON.stringify({ gate: 'D0', status: 'FAIL',
+          stage: 'early_requires_phone_cold_start' }));
+      }
+    } else if (this.directProbeForkServerMode) {
+      this.directProbeForkServerMode = false;
+      if (this.directForkServerStatus === 0) {
+        this.runDirectProbePromise(testNapi.runDirectVulkanForkServerProbe(), outputPath);
+      } else {
+        writeTextFile(outputPath, JSON.stringify({ gate: 'D0', status: 'FAIL',
+          stage: 'early_fork_server_unavailable', ncpStatus: this.directForkServerStatus }));
+      }
+    } else if (this.directProbeInlineMode) {
+      this.directProbeInlineMode = false;
+      this.runDirectProbePromise(testNapi.runDirectVulkanInlineProbe(), outputPath);
+    } else if (this.directProbeSystemCreateMode) {
+      this.directProbeSystemCreateMode = false;
+      this.runDirectProbePromise(testNapi.runDirectVulkanSystemCreateProbe(), outputPath);
     } else if (this.directProbeStartMode) {
       this.directProbeStartMode = false;
       this.runDirectProbePromise(testNapi.runDirectVulkanProbe(), outputPath);
@@ -330,7 +430,13 @@ export default class EntryAbility extends UIAbility {
     if (parameters && (`${parameters['winehua.mode']}` === 'direct-probe' ||
       `${parameters['winehua.mode']}` === 'direct-wine-broker-ipc-probe' ||
       `${parameters['winehua.mode']}` === 'direct-wine-ipc-probe' ||
+      `${parameters['winehua.mode']}` === 'direct-wine-surface-ipc-probe' ||
       `${parameters['winehua.mode']}` === 'direct-probe-create' ||
+      `${parameters['winehua.mode']}` === 'direct-probe-system-create' ||
+      `${parameters['winehua.mode']}` === 'direct-probe-inline' ||
+      `${parameters['winehua.mode']}` === 'direct-probe-early-start' ||
+      `${parameters['winehua.mode']}` === 'direct-probe-fork-server' ||
+      `${parameters['winehua.mode']}` === 'direct-phone-shared-buffer-probe' ||
       `${parameters['winehua.mode']}` === 'direct-probe-start' ||
       `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
       `${parameters['winehua.mode']}` === 'direct-surface-abort-probe' ||
@@ -346,9 +452,20 @@ export default class EntryAbility extends UIAbility {
       `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-probe' ||
       `${parameters['winehua.mode']}` === 'direct-gpu-dual-slot-resize-probe')) {
       this.directProbePending = true;
+      this.phoneSharedBufferMode = `${parameters['winehua.mode']}` === 'direct-phone-shared-buffer-probe';
+      this.phoneSharedBufferPreserveMappings = `${parameters['winehua.shared-buffer-preserve-maps']}` === '1';
+      this.phoneSharedBufferStandardFork = `${parameters['winehua.shared-buffer-standard-fork']}` === '1';
+      this.phoneSharedBufferSystemStart = `${parameters['winehua.shared-buffer-system-start']}` === '1';
+      this.phoneSharedBufferGuestExport = `${parameters['winehua.shared-buffer-guest-export']}` === '1';
       this.directWineIpcMode = `${parameters['winehua.mode']}` === 'direct-wine-ipc-probe';
+      this.directWineSurfaceIpcMode = `${parameters['winehua.mode']}` === 'direct-wine-surface-ipc-probe';
       this.directWineBrokerIpcMode = `${parameters['winehua.mode']}` === 'direct-wine-broker-ipc-probe';
       this.directProbeStartMode = `${parameters['winehua.mode']}` === 'direct-probe-start';
+      this.directProbeInlineMode = `${parameters['winehua.mode']}` === 'direct-probe-inline';
+      this.directProbeEarlyMode = `${parameters['winehua.mode']}` === 'direct-probe-early-start';
+      this.directProbeForkServerMode = `${parameters['winehua.mode']}` === 'direct-probe-fork-server';
+      this.directProbeSystemCreateMode =
+        `${parameters['winehua.mode']}` === 'direct-probe-system-create';
       this.directSurfaceProbeMode = `${parameters['winehua.mode']}` === 'direct-surface-probe' ||
         `${parameters['winehua.mode']}` === 'direct-surface-abort-probe' ||
         `${parameters['winehua.mode']}` === 'direct-gpu-surface-probe' ||
@@ -411,6 +528,8 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
     WineEnvService.getInstance().setDirectNcpSession(value('winehua.direct_ncp_session', '0') === '1');
+    WineEnvService.getInstance().setDesktopVulkanCompositor(value('winehua.desktop_renderer', 'egl') === 'vulkan');
+    WineEnvService.getInstance().setDesktopStallSeconds(Number(value('winehua.desktop_stall_seconds', '0')));
     // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
     // subWindow 承载 (见 WineWindowManager.fusionUsesSubWindow)。仅显式 want
     // 生效, 不持久化。
@@ -511,6 +630,16 @@ export default class EntryAbility extends UIAbility {
     }
     SteamHostService.getInstance().init(this.context);
     this.publishLaunchRequest(want);
+    if ((this.directProbeForkServerMode || this.phoneSharedBufferMode ||
+      `${want.parameters?.['winehua.phone_direct_fork_server']}` === '1') &&
+      deviceInfo.deviceType === 'phone') {
+      testNapi.setPhoneMode(true);
+      this.directForkServerStatus = testNapi.preparePhoneDirectForkServer();
+    }
+    if (this.directProbeEarlyMode && deviceInfo.deviceType === 'phone') {
+      testNapi.setPhoneMode(true);
+      this.directEarlyProbe = testNapi.runDirectVulkanProbe(true);
+    }
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
@@ -523,7 +652,10 @@ export default class EntryAbility extends UIAbility {
           this.runDirectProbeIfRequested();
         });
       } else {
-        this.runDirectProbeIfRequested();
+        // Wait for the page's graphics initialization before sending the late
+        // request. The clean server must work independently of the App GPU.
+        if (this.directProbeForkServerMode) setTimeout(() => this.runDirectProbeIfRequested(), 1000);
+        else this.runDirectProbeIfRequested();
       }
       return;
     }
@@ -535,6 +667,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
+    this.screenAwake.detach();
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -550,7 +683,9 @@ export default class EntryAbility extends UIAbility {
         if (err.code) {
           hilog.error(DOMAIN, 'DIRECT-D0', 'diagnostic page failed: %{public}s', JSON.stringify(err));
         }
-        this.runDirectProbeIfRequested();
+        this.screenAwake.attach(windowStage.getMainWindowSync());
+        if (this.directProbeForkServerMode) setTimeout(() => this.runDirectProbeIfRequested(), 1000);
+        else this.runDirectProbeIfRequested();
       });
       return;
     }
@@ -585,7 +720,7 @@ export default class EntryAbility extends UIAbility {
         mainWin.setWindowDecorVisible(false);
         // 前台期间保持屏幕常亮: 熄屏会自动锁屏, 而锁屏状态下 aa start 被拒
         // (10106102), 自动化回归与 Steam 会话都会被打断。
-        ScreenAwake.attach(mainWin);
+        this.screenAwake.attach(mainWin);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
       // 自动化通道 (冷启动): winehua.program → 引擎就绪后直启该程序
@@ -597,17 +732,18 @@ export default class EntryAbility extends UIAbility {
   onWindowStageDestroy(): void {
     // Main window is destroyed, release UI related resources
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
+    this.screenAwake.detach();
   }
 
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
-    ScreenAwake.setKeepScreenOn(true);
+    this.screenAwake.setKeepScreenOn(true);
   }
 
   onBackground(): void {
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
-    ScreenAwake.setKeepScreenOn(false);
+    this.screenAwake.setKeepScreenOn(false);
   }
 }

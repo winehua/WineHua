@@ -10,6 +10,17 @@ Ability_NativeChildProcess_ErrCode Phone_StartNativeChildProcess(
 int Phone_CreateNativeChildProcess(
     const char* libName, OH_Ability_OnNativeChildProcessStarted onProcessStarted);
 
+// Explicit Direct diagnostics only. Prepare synchronously in Ability.onCreate,
+// before ArkUI initializes GPU state; later requests fork from this clean server.
+int Phone_PrepareDirectForkServer();
+int32_t Phone_GetDirectForkServerPid();
+// Unlike the legacy phone Start adapter, the caller retains all supplied fds.
+Ability_NativeChildProcess_ErrCode Phone_StartViaDirectForkServer(
+    const char* entry, NativeChildProcess_Args args, int32_t* pid);
+bool Phone_QueryDirectForkChildExit(int32_t pid, int* waitStatus);
+bool Phone_IsDirectForkServerChild(int32_t pid);
+void Phone_MarkDirectForkChildRegistered(int32_t pid);
+
 // Proxy 查询接口（graphics_broker.cpp 使用）
 bool PhoneAdapter_IsDummyProxy(const void* p);
 int  PhoneAdapter_GetConfigSocket(void);

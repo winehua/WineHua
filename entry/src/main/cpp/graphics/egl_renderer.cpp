@@ -5,6 +5,8 @@
 #include "shader_utils.h"
 #include "compositor/toplevel/desktop_compositor.h"  // DesktopCompositor (6A 构造注入: 取帧/ZC 直连)
 #include "common/fps_counter.h"
+#include "direct/direct_desktop_compositor.h"
+#include "direct/direct_vulkan_desktop_compositor.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -29,6 +31,9 @@
 // -- 共享 EGLDisplay: 整个进程只初始化一次, 避免反复 init/terminate 导致 GPU 驱动竞争 --
 static EGLDisplay gSharedDisplay = EGL_NO_DISPLAY;
 static std::once_flag gDisplayOnce;
+static std::atomic<uint64_t> gAcceptedPresents{0}, gAcceptedGpuPresents{0};
+uint64_t GetEglAcceptedPresents() { return gAcceptedPresents.load(std::memory_order_relaxed); }
+uint64_t GetEglAcceptedGpuPresents() { return gAcceptedGpuPresents.load(std::memory_order_relaxed); }
 
 using winehua::PerfClock;
 using winehua::PerfNowUs;
@@ -49,6 +54,7 @@ static void ComposeZeroCopySamplingTransform(const float* nativeTransform,
 }
 
 EglRenderer::EglRenderer(DesktopCompositor& compositor) : compositor_(compositor) {}
+EglRenderer::~EglRenderer() = default;
 
 void EglRenderer::OnVSync(long long timestamp, void* data)
 {
@@ -682,6 +688,14 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
     width_ = w;
     height_ = h;
 
+    if (compositor_.Policy().RootCompositing() && winehua::direct::DirectDesktopVulkanEnabled()) {
+        vulkanDesktop_ = std::make_unique<winehua::direct::DirectVulkanDesktopCompositor>(compositor_);
+        if (!vulkanDesktop_->Initialize(window)) { vulkanDesktop_.reset(); return false; }
+        running_ = true;
+        thread_ = std::thread(&EglRenderer::VulkanRenderLoop, this);
+        return true;
+    }
+
     // P0-GL-1: 首个窗口出现时做一次 Host EGL/GLES 能力探测 (后台线程, 单次)。
     // 放在这里是因为合成器一定会在会话早期走到, 且此时 EGL 已可用。
     WineHuaProbeHostGlCapability();
@@ -776,6 +790,21 @@ uint32_t EglRenderer::DirectPassCapabilities() const
     //   (直传帧整屏覆盖有效)。
     // 当前实现恒备全部能力 → 合成侧查询恒通过 (无能力位时判定不变)。
     return winehua::kDirectPassCapabilitiesAll;
+}
+
+void EglRenderer::VulkanRenderLoop() {
+    while (running_) {
+        if (!vulkanDesktop_->Render(expectW_ > 0 ? expectW_ : width_, expectH_ > 0 ? expectH_ : height_)) break;
+        width_ = vulkanDesktop_->Width(); height_ = vulkanDesktop_->Height();
+        frameW_ = contentW_ = vulkanDesktop_->ContentWidth();
+        frameH_ = contentH_ = vulkanDesktop_->ContentHeight();
+        ComputeFitRect(width_, height_, frameW_, frameH_, letterbox_);
+        // FIFO present paces active frames. Before the first root exists,
+        // yield instead of spinning while the Wine desktop initializes.
+        if (frameW_ <= 0 || frameH_ <= 0) std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+    vulkanDesktop_.reset(); // drain all GPU reads before XComponent destruction
+    running_ = false;
 }
 
 void EglRenderer::RenderLoop() {
@@ -921,6 +950,10 @@ void EglRenderer::RenderLoop() {
     OH_LOG_INFO(LOG_APP, "[MW-RNDR] tl=%{public}u render loop started pacing=%{public}s",
                 toplevelId_, nativeVsync ? "NativeVSync" : "deadline-60Hz");
 
+    std::unique_ptr<winehua::direct::DirectDesktopCompositor> directDesktop;
+    if (compositor_.Policy().RootCompositing())
+        directDesktop = std::make_unique<winehua::direct::DirectDesktopCompositor>(compositor_, display_);
+
     while (running_) {
         const uint64_t frameStartedUs = PerfNowUs();
         const uint64_t takeStartedUs = frameStartedUs;
@@ -935,6 +968,7 @@ void EglRenderer::RenderLoop() {
         // (6A: 配置经构造注入的 DesktopCompositor 引用直读 — 与旧
         // WaylandServer::Policy()/GetDesktopRootToplevelId() 同一引用成员, 同值)
         if (compositor_.Policy().RootCompositing()) useToplevel = compositor_.DesktopRootToplevelId();
+        const bool directFrame = directDesktop && directDesktop->Update();
         TryAttachZeroCopySurface(useToplevel);
         const bool zeroCopyGeometryFrame = zeroCopyGeometryDirty_;
         zeroCopyGeometryDirty_ = false;
@@ -990,7 +1024,7 @@ void EglRenderer::RenderLoop() {
                 contentH_ = frame.contentH;
             }
         }
-        haveFrame = cpuFrame || zeroCopyFrame || zeroCopyGeometryFrame;
+        haveFrame = cpuFrame || zeroCopyFrame || zeroCopyGeometryFrame || directFrame;
         const uint64_t takeUs = PerfNowUs() - takeStartedUs;
 
         if (cpuFrame && fw > 0 && fh > 0) {
@@ -1272,11 +1306,15 @@ void EglRenderer::RenderLoop() {
             }
         }
 
+        if (directDesktop) directDesktop->Draw(useToplevel, frameW_, frameH_, letterbox_);
+
         const uint64_t swapStartedUs = PerfNowUs();
         const bool swapOk = eglSwapBuffers(display_, surface_) == EGL_TRUE;
         // 记录"这次真正上屏的绘制尺寸" — 无帧循环据此判断当前 surface 是否已经
         // 与画面不一致 (不一致就重绘)。swap 失败时不记录, 下一轮会再试。
         if (swapOk) {
+            gAcceptedPresents.fetch_add(1, std::memory_order_relaxed);
+            if (zeroCopyFrame) gAcceptedGpuPresents.fetch_add(1, std::memory_order_relaxed);
             lastDrawW_ = drawW;
             lastDrawH_ = drawH;
             swapFailStreak_ = 0;
@@ -1309,6 +1347,7 @@ void EglRenderer::RenderLoop() {
         if (!waitForFrameTick()) break;
     }
 
+    directDesktop.reset();
     ShutdownZeroCopyConsumer();
     if (nativeVsync) OH_NativeVSync_Destroy(nativeVsync);
 }

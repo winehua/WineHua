@@ -179,8 +179,8 @@ public:
     static void surface_commit(wl_client*, wl_resource*);
     static void surface_set_opaque_region(wl_client*, wl_resource*, wl_resource*) {}
     static void surface_set_input_region(wl_client*, wl_resource*, wl_resource*);
-    static void surface_set_buffer_transform(wl_client*, wl_resource*, int32_t) {}
-    static void surface_set_buffer_scale(wl_client*, wl_resource*, int32_t) {}
+    static void surface_set_buffer_transform(wl_client*, wl_resource*, int32_t);
+    static void surface_set_buffer_scale(wl_client*, wl_resource*, int32_t);
     static void surface_damage_buffer(wl_client*, wl_resource*, int32_t, int32_t, int32_t, int32_t) {}
     static void surface_offset(wl_client*, wl_resource*, int32_t, int32_t) {}
 
@@ -210,7 +210,7 @@ public:
     static void viewporter_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
     static void viewporter_get_viewport(wl_client*, wl_resource*, uint32_t, wl_resource*);
     /* wp_viewport */
-    static void viewport_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+    static void viewport_destroy(wl_client*, wl_resource*);
     static void viewport_set_source(wl_client*, wl_resource*, wl_fixed_t, wl_fixed_t, wl_fixed_t, wl_fixed_t);
     static void viewport_set_destination(wl_client*, wl_resource*, int32_t, int32_t);
 

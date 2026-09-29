@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from . import coverage as _coverage
 from . import frame
+from . import benchmark
 
 # 终态集合，与 smoke 程序协议一致 (thirdparty/wine/programs/winehua_smoke_protocol.h)
 FINAL_STATUSES = ("PASS", "FAIL", "SKIP", "UNSUPPORTED")
@@ -55,6 +56,70 @@ def result_json(ctx: dict) -> dict:
         "message": result.get("message", ""),
         "metrics": result.get("metrics", {}),
     }
+
+
+def vulkan_resize(ctx: dict) -> dict:
+    """Check that a running Vulkan window presented through a rebuilt swapchain."""
+    summary = ctx.get("summary") or {}
+    tests = summary.get("tests", [])
+    if len(tests) != 1:
+        return {"status": "FAIL", "stage": "vulkan-resize",
+                "message": f"expected one Vulkan resize result, got {len(tests)}"}
+    result = tests[0]
+    metrics = result.get("metrics") or {}
+    initial = metrics.get("initialExtent") or []
+    resized = metrics.get("resizedExtent") or []
+    valid_extents = (isinstance(initial, list) and isinstance(resized, list) and
+                     len(initial) == 2 and len(resized) == 2 and
+                     all(isinstance(value, int) and value > 0
+                         for value in [*initial, *resized]) and initial != resized)
+    passed = (result.get("status") == "PASS" and
+              metrics.get("resizeRequested") is True and
+              metrics.get("resizeCompleted") is True and
+              metrics.get("swapchainRebuilds") == 1 and
+              isinstance(metrics.get("presentFrames"), int) and
+              metrics["presentFrames"] >= 150 and
+              metrics.get("presentQueueResult") == 0 and
+              metrics.get("fallbackDetected") is False and valid_extents)
+    return {"status": "PASS" if passed else "FAIL", "stage": "vulkan-resize",
+            "message": (f"{metrics.get('presentFrames', 0)} frames, "
+                        f"extent {initial} -> {resized}, "
+                        f"rebuilds={metrics.get('swapchainRebuilds', 0)}"),
+            "metrics": metrics}
+
+
+def d3d11_resize(ctx: dict) -> dict:
+    """Require post-resize D3D11 presents on the same device/swapchain object."""
+    tests = (ctx.get("summary") or {}).get("tests", [])
+    if len(tests) != 1:
+        return {"status": "FAIL", "stage": "d3d11-resize",
+                "message": f"expected one D3D11 resize result, got {len(tests)}"}
+    result = tests[0]
+    initial = result.get("initialExtent") or []
+    resized = result.get("resizedExtent") or []
+    valid_extents = (isinstance(initial, list) and isinstance(resized, list) and
+                     len(initial) == 2 and len(resized) == 2 and
+                     all(isinstance(value, int) and value > 0
+                         for value in [*initial, *resized]) and initial != resized)
+    passed = (result.get("status") == "PASS" and
+              result.get("renderer") == "D3D11" and
+              result.get("resizeRequested") is True and
+              result.get("resizeCompleted") is True and
+              result.get("resizeHresult") == "0x00000000" and
+              result.get("swapchainRebuilds") == 1 and
+              isinstance(result.get("frames"), int) and result["frames"] >= 120 and
+              isinstance(result.get("postResizeFrames"), int) and
+              result["postResizeFrames"] >= 60 and
+              result.get("angleRegressions") == 0 and valid_extents)
+    return {"status": "PASS" if passed else "FAIL", "stage": "d3d11-resize",
+            "message": (f"{result.get('frames', 0)} frames, "
+                        f"post-resize={result.get('postResizeFrames', 0)}, "
+                        f"extent {initial} -> {resized}, "
+                        f"rebuilds={result.get('swapchainRebuilds', 0)}"),
+            "metrics": {key: result.get(key) for key in (
+                "resizeRequested", "resizeCompleted", "resizeHresult",
+                "initialExtent", "resizedExtent", "swapchainRebuilds",
+                "frames", "postResizeFrames", "angleRegressions")}}
 
 
 def visual(ctx: dict) -> dict:
@@ -88,6 +153,9 @@ def visual(ctx: dict) -> dict:
 REGISTRY = {
     "result-json": result_json,
     "visual": visual,
+    "vulkan-resize": vulkan_resize,
+    "d3d11-resize": d3d11_resize,
+    "benchmark": benchmark.check,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }

@@ -1,0 +1,20 @@
+{
+  "name": "dxvk-direct-cube",
+  "title": "ARM64 Direct Vulkan DXVK D3D11 cube 探针",
+  "tests": [
+    {
+      "case": "d3d-switch-cube",
+      "id": "dxvk-direct-cube",
+      "arch": ["x64"],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_DIRECT_NCP": "1",
+        "WINEHUA_VULKAN_BACKEND": "direct"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

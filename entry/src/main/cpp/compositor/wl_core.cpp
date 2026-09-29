@@ -16,6 +16,7 @@
 #include "compositor/frame/compositor_constants.h"
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
+#include "direct/direct_wine_surface_controller.h"
 #include "protocols/viewporter-server-protocol.h"
 #include "common/perf_utils.h"
 #include <algorithm>
@@ -108,6 +109,7 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
     wl_resource_set_implementation(surfRes, &kSurfaceImpl, sd, [](wl_resource* r) {
         auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
         auto* self = GetInstance();
+        if (sd && sd->hasToplevel) DirectWineSurfaceDestroyed(sd->toplevelId);
         uint32_t removedPopup = 0, popupParent = 0;
         {
             auto lk = self->toplevelMgr_.Lock();
@@ -307,6 +309,22 @@ void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
 }
 
 // -- viewporter 实现 --
+namespace {
+struct ViewportResource {
+    wl_listener surfaceDestroyed{};
+    wl_resource* surface = nullptr;
+};
+
+wl_resource* ViewportSurface(wl_resource* viewport) {
+    auto* data = static_cast<ViewportResource*>(wl_resource_get_user_data(viewport));
+    if (!data || !data->surface) {
+        wl_resource_post_error(viewport, WP_VIEWPORT_ERROR_NO_SURFACE, "viewport surface destroyed");
+        return nullptr;
+    }
+    return data->surface;
+}
+}
+
 void WaylandServer::viewporter_bind(wl_client* client, void* data, uint32_t version, uint32_t id) {
     OH_LOG_INFO(LOG_APP, "[WL] wp_viewporter bound v=%{public}u", version);
     wl_resource* res = wl_resource_create(client, &wp_viewporter_interface, version, id);
@@ -316,25 +334,47 @@ void WaylandServer::viewporter_bind(wl_client* client, void* data, uint32_t vers
 void WaylandServer::viewporter_get_viewport(wl_client* client, wl_resource*,
                                              uint32_t id, wl_resource* surface) {
     wl_resource* vp = wl_resource_create(client, &wp_viewport_interface, 1, id);
-    // 把 surface resource 存为 viewport 的 user_data,
-    // 这样 viewport_set_destination 就能通过 surface 找到 SurfaceData
-    wl_resource_set_implementation(vp, &kViewportImpl, surface, nullptr);
+    if (!vp) { wl_client_post_no_memory(client); return; }
+    auto* data = new ViewportResource;
+    data->surface = surface;
+    data->surfaceDestroyed.notify = [](wl_listener* listener, void*) {
+        auto* data = reinterpret_cast<ViewportResource*>(listener); // first member
+        data->surface = nullptr;
+        wl_list_remove(&listener->link);
+        wl_list_init(&listener->link);
+    };
+    wl_resource_add_destroy_listener(surface, &data->surfaceDestroyed);
+    wl_resource_set_implementation(vp, &kViewportImpl, data, [](wl_resource* resource) {
+        auto* data = static_cast<ViewportResource*>(wl_resource_get_user_data(resource));
+        wl_list_remove(&data->surfaceDestroyed.link);
+        delete data;
+    });
 }
 
 void WaylandServer::viewport_set_source(wl_client*, wl_resource* vpRes,
                                         wl_fixed_t fx, wl_fixed_t fy, wl_fixed_t fw, wl_fixed_t fh) {
-    auto* surf = static_cast<wl_resource*>(wl_resource_get_user_data(vpRes));
+    auto* surf = ViewportSurface(vpRes);
     if (!surf) return;
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
     if (!sd) return;
-    if (wl_fixed_to_int(fw) == -1 && wl_fixed_to_int(fh) == -1) {
+    if (fx == wl_fixed_from_int(-1) && fy == fx && fw == fx && fh == fx) {
         // unset: 恢复全 buffer (注意参数是 wl_fixed_t, unset 编码为 wl_fixed_from_int(-1))
         sd->vpSrcX = 0;
         sd->vpSrcY = 0;
         sd->vpSrcW = -1;
         sd->vpSrcH = -1;
+        sd->directViewportPending.x = sd->directViewportPending.y = 0;
+        sd->directViewportPending.width = sd->directViewportPending.height = -1;
         return;
     }
+    if (fx < 0 || fy < 0 || fw <= 0 || fh <= 0) {
+        wl_resource_post_error(vpRes, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid viewport source");
+        return;
+    }
+    sd->directViewportPending.x = wl_fixed_to_double(fx);
+    sd->directViewportPending.y = wl_fixed_to_double(fy);
+    sd->directViewportPending.width = wl_fixed_to_double(fw);
+    sd->directViewportPending.height = wl_fixed_to_double(fh);
     sd->vpSrcX = wl_fixed_to_int(fx);
     sd->vpSrcY = wl_fixed_to_int(fy);
     sd->vpSrcW = wl_fixed_to_int(fw);
@@ -344,12 +384,48 @@ void WaylandServer::viewport_set_source(wl_client*, wl_resource* vpRes,
 }
 
 void WaylandServer::viewport_set_destination(wl_client*, wl_resource* vpRes, int32_t w, int32_t h) {
-    auto* surf = static_cast<wl_resource*>(wl_resource_get_user_data(vpRes));
+    auto* surf = ViewportSurface(vpRes);
     if (!surf) return;
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
     if (!sd) return;
+    if (!((w == -1 && h == -1) || (w > 0 && h > 0))) {
+        wl_resource_post_error(vpRes, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid viewport destination");
+        return;
+    }
+    sd->directViewportPending.destinationW = w;
+    sd->directViewportPending.destinationH = h;
     sd->vpDstW = w;
     sd->vpDstH = h;
+}
+
+void WaylandServer::viewport_destroy(wl_client*, wl_resource* resource) {
+    auto* data = static_cast<ViewportResource*>(wl_resource_get_user_data(resource));
+    auto* surface = data ? data->surface : nullptr;
+    auto* sd = surface ? static_cast<SurfaceData*>(wl_resource_get_user_data(surface)) : nullptr;
+    if (sd) {
+        sd->directViewportPending.x = sd->directViewportPending.y = 0;
+        sd->directViewportPending.width = sd->directViewportPending.height = -1;
+        sd->directViewportPending.destinationW = sd->directViewportPending.destinationH = -1;
+    }
+    wl_resource_destroy(resource);
+}
+
+void WaylandServer::surface_set_buffer_transform(wl_client*, wl_resource* surface, int32_t transform) {
+    if (transform < 0 || transform > 7) {
+        wl_resource_post_error(surface, WL_SURFACE_ERROR_INVALID_TRANSFORM, "invalid buffer transform");
+        return;
+    }
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surface));
+    if (sd) sd->directViewportPending.transform = transform;
+}
+
+void WaylandServer::surface_set_buffer_scale(wl_client*, wl_resource* surface, int32_t scale) {
+    if (scale <= 0) {
+        wl_resource_post_error(surface, WL_SURFACE_ERROR_INVALID_SCALE, "invalid buffer scale");
+        return;
+    }
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surface));
+    if (sd) sd->directViewportPending.scale = scale;
 }
 
 // -- output 实现 --
@@ -965,6 +1041,10 @@ void WaylandServer::FinishCommit(SurfaceData* sd, wl_resource* surfRes) {
 void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surfRes));
     auto* self = GetInstance();  // static 回调无 this, 分段均为实例方法
+    {
+        auto lock = self->toplevelMgr_.Lock();
+        sd->directViewport = sd->directViewportPending;
+    }
     // WL-T 临时诊断: commit 在 wl 事件循环线程上的占用 — >2ms 打单行,
     // 另按 5s 窗口汇总, 与 LAT-NAPI→LAT-INJ 的 8ms/86ms 对时。
     // 默认关闭 (WINEHUA_FRAME_TRACE=1 开启, 见 perf_utils.h FrameTraceEnabled);

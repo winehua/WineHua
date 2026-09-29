@@ -1,0 +1,20 @@
+{
+  "name": "dxvk-direct-resize",
+  "title": "ARM64 Direct DXVK D3D11 运行中 swapchain resize",
+  "checks": ["d3d11-resize"],
+  "tests": [
+    {
+      "case": "d3d11-resize-cube",
+      "id": "dxvk-direct-resize",
+      "arch": ["x64"],
+      "backend": { "d3d": "dxvk_legacy" },
+      "env": {
+        "WINEHUA_DIRECT_NCP": "1",
+        "WINEHUA_VULKAN_BACKEND": "direct",
+        "WINEHUA_D3D11_RESIZE": "1"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

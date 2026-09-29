@@ -10,6 +10,7 @@
 #include "display_policy.h"
 #include "geometry.h"
 #include "presented_frame.h"
+#include "compositor/frame/gpu_desktop_scene.h"
 #include "zc_bridge.h"  // ZC 层几何/状态类型与 ZcBridge (原 ZeroCopyLayerInfo/ZeroCopyOccluderRect)
 
 class ToplevelManager;
@@ -34,6 +35,16 @@ class ToplevelManager;
 //   CompositorLayer 列表 (BuildLayerListLocked), 合成与输入遍历同一个
 //   按 zIndex 升序的列表; 各层的合成/命中特判逻辑原样保留 (等价形式),
 //   阶段 2 起 ZC 层入列参与层序。
+
+// Immutable geometry copied under the window-tree lock. Direct content uses
+// the explicit owner surface, and its empty-input client subsurface, rather
+// than the size-based producer binding used by legacy renderers.
+struct DirectDesktopLayout {
+    int x = 0, y = 0, w = 0, h = 0;
+    size_t z = 0;
+    bool fullscreen = false;
+    std::vector<ZeroCopyOccluderRect> occluders;
+};
 
 class DesktopCompositor {
 public:
@@ -76,6 +87,13 @@ public:
     // 合成 (TakeToplevelFrame) 与输入 (InputResolver) 遍历同一列表;
     // rootW/rootH 用于 Root 层几何 (输入侧仅作占位, 不参与命中)。
     std::vector<CompositorLayer> BuildLayerListLocked(int rootW, int rootH);
+
+    bool GetDirectDesktopLayout(uint32_t pid, uint32_t toplevelId, uint32_t wlSurfaceId,
+                                int imageW, int imageH, DirectDesktopLayout& out);
+
+    bool SnapshotGpuDesktopScene(const std::vector<GpuDesktopDirectSource>& direct,
+                                 GpuDesktopSnapshotCache& cache, GpuDesktopScene& out);
+    void ClearDirectDesktopContentSizes();
 
     // 窗口内 Layer 列表 (阶段 3, 多窗口模式 — PC 窗口模式与 Pad 多窗口模式
     // 共用): 单窗口合成数据源, 与 BuildLayerListLocked 对称但用窗口局部坐标:
@@ -243,6 +261,7 @@ private:
      * dirty 序号, 各层内容变化判定) 是不同概念, 不合一 — 前者是 root 帧
      * 级"根帧又新了"的全局序号, 后者是 each-toplevel 内容版本号。 */
     std::atomic<uint64_t> desktopRootFrameSerial_{0};
+    std::unordered_map<uint32_t, std::pair<int, int>> directDesktopContentSizes_;
     // TakeToplevelFrame 快照缓冲池 (仅渲染线程访问): 跨帧复用容量,
     // 避免每帧新建多 MB vector 的分配+缺页开销 — 见 cpp 快照阶段注释
     std::vector<std::vector<uint8_t>> snapPool_;

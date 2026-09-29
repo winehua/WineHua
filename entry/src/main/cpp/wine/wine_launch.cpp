@@ -8,6 +8,7 @@
 #include "compositor/wayland_server.h"
 #include "audio_ipc_protocol.h"
 #include "graphics/graphics_broker.h"
+#include "direct/direct_vulkan_desktop_compositor.h"
 #include "input/controller/controller_runtime.h"
 
 #include <unistd.h>
@@ -363,6 +364,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     gBrokerHomeDir = p->homeDir;
     gBrokerPrefixDir = p->prefixDir;
     SetBrokerDirectNcpSessionDefault(p->directNcpSession);
+    winehua::direct::SetDirectDesktopVulkanEnabled(p->desktopVulkanCompositor);
     StartBrokerServer();
     setenv("PROCESSBROKER", WINE_BROKER_SOCKET, 1);
 
@@ -607,6 +609,9 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // 会为子进程自动创建 audio bootstrap fd。
         winehua::SessionEnvPolicy explorerPolicy = SessionPolicyFromLaunch(*p, audioBootstrapFd);
         explorerPolicy.applyStableOverlay = true;
+        explorerPolicy.extraEnv.push_back("WINEHUA_DESKTOP_PERSISTENT=1");
+        if (p->desktopStallSeconds > 0)
+            explorerPolicy.extraEnv.push_back("WINEHUA_STALL_DUMP=" + std::to_string(p->desktopStallSeconds));
         std::vector<std::string> explorerEnv = winehua::BuildSessionEnv(explorerPolicy);
 
         winehua::SpawnRequest exReq{winehua::SpawnKind::DesktopShell};

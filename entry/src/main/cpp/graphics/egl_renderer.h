@@ -9,12 +9,16 @@
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
+#include <memory>
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/presented_frame.h"
 #include "compositor/frame/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
 
 struct OH_NativeImage;
 class DesktopCompositor;
+uint64_t GetEglAcceptedPresents();
+uint64_t GetEglAcceptedGpuPresents();
+namespace winehua::direct { class DirectVulkanDesktopCompositor; }
 
 // 最小 EGL 渲染器: 从 DesktopCompositor 取帧 -> GL 纹理 -> XComponent 上屏
 // 所有实例共享同一个 EGLDisplay (避免反复 init/terminate 导致 GPU 驱动竞争)
@@ -28,6 +32,7 @@ public:
     // compositor 生命周期长于一切 renderer (WaylandServer 单例成员), 只读
     // 引用共享与 InputResolver/PopupManager 注入同模式, 无新锁。
     explicit EglRenderer(DesktopCompositor& compositor);
+    ~EglRenderer();
 
     // 获取/初始化共享的 EGLDisplay (首次调用时初始化, 线程安全)
     static EGLDisplay GetSharedDisplay();
@@ -68,6 +73,8 @@ public:
 
 private:
     void RenderLoop();
+    void VulkanRenderLoop();
+    std::unique_ptr<winehua::direct::DirectVulkanDesktopCompositor> vulkanDesktop_;
     static void OnVSync(long long timestamp, void* data);
     static void OnZeroCopyFrameAvailable(void* data);
     bool InitZeroCopyConsumer();

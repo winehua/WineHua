@@ -190,9 +190,17 @@ export class WineEnvService {
   private settingsStore: preferences.Preferences | null = null;
   private perfProfile: string = 'baseline';
   private directNcpSession: boolean = false;
+  private desktopVulkanCompositor: boolean = false;
+  setDesktopVulkanCompositor(enabled: boolean): void { this.desktopVulkanCompositor = enabled; }
 
   setDirectNcpSession(enabled: boolean): void {
     this.directNcpSession = enabled;
+  }
+
+  private desktopStallSeconds: number = 0;
+
+  setDesktopStallSeconds(seconds: number): void {
+    this.desktopStallSeconds = Number.isFinite(seconds) ? Math.max(0, Math.min(120, Math.floor(seconds))) : 0;
   }
 
   // 极简订阅: 状态变化后逐个调用
@@ -995,7 +1003,7 @@ export class WineEnvService {
     const wineUnixSubdir = pathExists(`${WINE_BIN}/aarch64-unix`) ? 'aarch64-unix' : 'x86_64-unix';
     testNapi.launchClient(BOX64, [], socketPath, `${BIN_DIR}:${WINE_BIN}/${wineUnixSubdir}`, this.zHome,
       this.d3dBackend, this.dxvkBackend, this.wineLang, this.activeContainerId,
-      this.directNcpSession);
+      this.directNcpSession, this.desktopVulkanCompositor, this.desktopStallSeconds);
   }
 
   // 停止会话原语: 编排 stopAll 并等 native state:stopped (注册表进程全死

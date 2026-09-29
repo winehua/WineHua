@@ -29,6 +29,9 @@ export interface SmokeSuiteTest {
   argv?: string[];
   // 'present'（默认，带 --seconds）/ 'offscreen'（wine-vulkan offscreen 系）
   mode?: string;
+  // Display tests wait for the same desktop surface readiness as product launches.
+  requiresDesktop?: boolean;
+  benchmarkMonitor?: boolean;
   // 追加参数（如 d3d9-cube 的 --d3d9）
   extraArgs?: string[];
   d3dBackend?: string;

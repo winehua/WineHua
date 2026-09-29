@@ -1,0 +1,25 @@
+{
+  "name": "wine-vulkan-resize",
+  "title": "ARM64 Direct Vulkan 运行中窗口 resize 与旧 swapchain 重建",
+  "checks": ["vulkan-resize"],
+  "tests": [
+    {
+      "case": "vulkan-smoke",
+      "id": "wine-vulkan-resize",
+      "arch": ["x64"],
+      "backend": {
+        "d3d": "vkd3d_limited_500k",
+        "dxvk": "dxvk_legacy"
+      },
+      "env": {
+        "WINEHUA_SMOKE_ASSETS": "C:/smoke/assets",
+        "WINEHUA_VULKAN_RUNTIME": "1",
+        "WINEHUA_DIRECT_NCP": "1",
+        "WINEHUA_VULKAN_BACKEND": "direct",
+        "WINEHUA_VULKAN_RESIZE": "1"
+      },
+      "seconds": 5,
+      "timeoutMs": 180000
+    }
+  ]
+}

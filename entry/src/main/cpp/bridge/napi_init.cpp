@@ -20,15 +20,20 @@
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
 #include "direct/vulkan_probe_launcher.h"
+#include "direct/direct_shared_buffer_probe.h"
 #include "direct/direct_wine_ipc_probe.h"
 #include "direct/direct_surface_probe_launcher.h"
 #include "direct/direct_output_probe.h"
+#include "direct/direct_wine_surface_controller.h"
+#include "direct/direct_vulkan_desktop_compositor.h"
 
 #include <unistd.h>
 #include <signal.h>
 #include <window_manager/oh_window.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <dirent.h>
@@ -324,8 +329,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 10;
-    napi_value args[10] = {};
+    size_t argc = 12;
+    napi_value args[12] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -404,6 +409,19 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
             return failed;
         }
         p->directNcpSession = directNcpSession;
+    }
+    if (argc >= 11 && napi_get_value_bool(env, args[10], &p->desktopVulkanCompositor) != napi_ok) {
+        delete p;
+        napi_value failed;
+        napi_create_int32(env, -1, &failed);
+        return failed;
+    }
+    if (argc >= 12 && (napi_get_value_int32(env, args[11], &p->desktopStallSeconds) != napi_ok ||
+                       p->desktopStallSeconds < 0 || p->desktopStallSeconds > 120)) {
+        delete p;
+        napi_value failed;
+        napi_create_int32(env, -1, &failed);
+        return failed;
     }
     // 向后兼容: 旧调用未传 homeDir 时使用默认路径
     if (p->homeDir.empty()) {
@@ -767,7 +785,8 @@ static napi_value DestroyToplevel(napi_env env, napi_callback_info info) {
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->DestroyToplevel(id);
+    if (!DirectWineSurfaceUnbindOutput(id))
+        PluginManager::GetInstance()->DestroyToplevel(id);
     // 相对模式锁定兜底: 宿主主动销毁 toplevel (WWA 关窗) 时释放 host 锁定 —
     // 游戏卡死时 wine 不响应 sendToplevelClose, relative_pointer 永不销毁,
     // 正常解锁回调不来 (见 PointerExtras::ReleaseLockForToplevel)
@@ -807,6 +826,15 @@ static napi_value CreateRenderer(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] createRenderer tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
+    // Only managed mode has a dedicated XComponent for this toplevel. A
+    // Direct producer must own that output exclusively; desktop mode keeps
+    // its EGL root until a separate multi-window overlay is implemented.
+    if (WaylandServer::GetInstance()->Policy().OhosWindowPerToplevel() &&
+        !PluginManager::GetInstance()->GetRendererForToplevel(tid) &&
+        DirectWineSurfaceBindOutput(tid, static_cast<uint64_t>(surfaceId))) {
+        OH_LOG_INFO(LOG_APP, "[MW-NAPI] Direct Vulkan output bound tl=%{public}u", tid);
+        return nullptr;
+    }
     PluginManager::GetInstance()->CreateRenderer(tid, surfaceId);
     return nullptr;
 }
@@ -826,7 +854,8 @@ static napi_value ResizeRenderer(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &w);
     napi_get_value_int32(env, args[2], &h);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
-    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
+    if (!DirectWineSurfaceResizeOutput(tid, w, h))
+        PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
     return nullptr;
 }
 
@@ -840,7 +869,8 @@ static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
         napi_get_value_uint32(env, args[0], &tid);
     }
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
-    PluginManager::GetInstance()->DestroyToplevel(tid);
+    if (!DirectWineSurfaceUnbindOutput(tid))
+        PluginManager::GetInstance()->DestroyToplevel(tid);
     return nullptr;
 }
 
@@ -1208,6 +1238,37 @@ static napi_value KillProcess(napi_env env, napi_callback_info info) {
 
 // -- 模块注册 --
 EXTERN_C_START
+static napi_value CaptureNativePerformance(napi_env env, napi_callback_info) {
+    napi_value result;
+    napi_create_object(env, &result);
+    auto number = [&](const char* name, double value) {
+        napi_value property; napi_create_double(env, value, &property);
+        napi_set_named_property(env, result, name, property);
+    };
+    auto boolean = [&](const char* name, bool value) {
+        napi_value property; napi_get_boolean(env, value, &property);
+        napi_set_named_property(env, result, name, property);
+    };
+    timespec monotonic{}, cpu{};
+    const bool timeOk = clock_gettime(CLOCK_MONOTONIC, &monotonic) == 0;
+    const bool cpuOk = clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu) == 0;
+    rusage usage{};
+    const bool rssOk = getrusage(RUSAGE_SELF, &usage) == 0 && usage.ru_maxrss > 0;
+    const auto direct = winehua::direct::GetDirectDesktopPerformance();
+    number("pid", getpid());
+    boolean("monotonicAvailable", timeOk); boolean("cpuAvailable", cpuOk); boolean("rssAvailable", rssOk);
+    number("monotonicNs", static_cast<double>(monotonic.tv_sec) * 1e9 + monotonic.tv_nsec);
+    number("processCpuNs", static_cast<double>(cpu.tv_sec) * 1e9 + cpu.tv_nsec);
+    number("rssHighWaterKiB", usage.ru_maxrss);
+    number("clockTicksPerSecond", sysconf(_SC_CLK_TCK));
+    boolean("directActive", direct.active);
+    number("directPresents", static_cast<double>(direct.presents));
+    number("directGamePresents", static_cast<double>(direct.gamePresents));
+    number("eglPresents", static_cast<double>(GetEglAcceptedPresents()));
+    number("eglGpuPresents", static_cast<double>(GetEglAcceptedGpuPresents()));
+    return result;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
     OH_LOG_WARN(LOG_APP, "[MW-NAPI]  Init called, env=%{public}p", env);
     LogWineScheme("libentry.so (主进程)");
@@ -1220,13 +1281,26 @@ static napi_value Init(napi_env env, napi_value exports) {
     RegisterNcpExitCallback();
 
     napi_property_descriptor desc[] = {
+        {"captureNativePerformance", nullptr, CaptureNativePerformance, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectVulkanProbe", nullptr, winehua::direct::RunVulkanProbe,
+             nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runPhoneSharedBufferProbe", nullptr, winehua::direct::RunPhoneSharedBufferProbe,
+             nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"preparePhoneDirectForkServer", nullptr, winehua::direct::PreparePhoneDirectForkServer,
+             nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectVulkanForkServerProbe", nullptr, winehua::direct::RunVulkanForkServerProbe,
+         nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectVulkanInlineProbe", nullptr, winehua::direct::RunVulkanInlineProbe,
          nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectVulkanCreateProbe", nullptr, winehua::direct::RunVulkanCreateProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectVulkanSystemCreateProbe", nullptr, winehua::direct::RunVulkanSystemCreateProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectWineIpcProbe", nullptr, winehua::direct::RunWineIpcProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectWineBrokerIpcProbe", nullptr, winehua::direct::RunWineBrokerIpcProbe,
+          nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runDirectWineSurfaceIpcProbe", nullptr, winehua::direct::RunWineSurfaceIpcProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectSurfaceProbe", nullptr, winehua::direct::RunSurfaceProbe,
           nullptr, nullptr, nullptr, napi_default, nullptr},

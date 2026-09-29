@@ -562,8 +562,29 @@ arm64ec-release-gate:
 # ============================================================
 HOST_TEST_DIR := $(BUILD_DIR)/host_tests
 
+.PHONY: test-direct-viewport
+test-direct-viewport:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/direct_viewport_test $(ROOT)/host_tests/direct_viewport_test.cpp
+	$(HOST_TEST_DIR)/direct_viewport_test
+
+.PHONY: test-benchmark-statistics
+test-benchmark-statistics:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -o $(HOST_TEST_DIR)/benchmark_statistics_test $(ROOT)/host_tests/benchmark_statistics_test.cpp
+	$(HOST_TEST_DIR)/benchmark_statistics_test
+
 .PHONY: test
-test:
+.PHONY: test-wine-surface-region-lock
+test-wine-surface-region-lock:
+	python3 $(ROOT)/host_tests/wine_surface_region_lock_test.py
+
+.PHONY: test-wine-patch-detection
+test-wine-patch-detection:
+	python3 $(ROOT)/host_tests/wine_patch_detection_test.py
+
+test: test-direct-viewport test-benchmark-statistics test-wine-surface-region-lock test-wine-patch-detection
 	@mkdir -p $(HOST_TEST_DIR)
 	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/geometry_test \

@@ -1,6 +1,7 @@
 #include "wine_process.h"
 #include "wine/wine_constants.h"
 #include "phone_adapter/phone_adapter.h"
+#include "phone_adapter/phone_process.h"
 #include "cef_utility_probe.h"
 
 #include <unistd.h>
@@ -325,6 +326,10 @@ void KillAllProcesses() {
     }
 
     const pid_t self = getpid();
+    // The early phone server belongs to the App lifetime. Runtime refresh and
+    // session restart must drain its Wine children without discarding the
+    // clean pre-ArkUI process from which Direct children are launched.
+    const pid_t directForkServer = Phone_GetDirectForkServerPid();
     std::vector<pid_t> descendants = SnapshotProcessDescendants(self);
     OH_LOG_INFO(LOG_APP,
                 "[ProcReg] killAll session descendants=%{public}zu tracked=%{public}zu",
@@ -332,7 +337,7 @@ void KillAllProcesses() {
     for (pid_t pid : trackedPids)
         if (pid != self) kill(pid, SIGKILL);
     for (pid_t pid : descendants)
-        if (pid != self) kill(pid, SIGKILL);
+        if (pid != self && pid != directForkServer) kill(pid, SIGKILL);
 
     /* AppSpawn children are not waitable by the main process.  Give the
      * kernel a short, bounded opportunity to reap them and repeat the scan in
@@ -343,6 +348,7 @@ void KillAllProcesses() {
         bool anyAlive = false;
         descendants = SnapshotProcessDescendants(self);
         for (pid_t pid : descendants) {
+            if (pid == directForkServer) continue;
             if (!IsProcessAliveNotZombie(pid)) continue;
             anyAlive = true;
             kill(pid, SIGKILL);
@@ -496,6 +502,12 @@ void NoteCreateNcpDeath(int32_t pid) {
     HandleProcessDeath((pid_t)pid, -1, "ipc-death");
 }
 
+void NotePhoneForkServerChildExit(int32_t pid, int waitStatus) {
+    LogProcessExit("phone-fork-server", pid, waitStatus);
+    HandleProcessDeath(pid, WIFEXITED(waitStatus) ? WEXITSTATUS(waitStatus) : -1,
+                       WIFEXITED(waitStatus) ? "phone-fork-server" : "phone-fork-server-signal");
+}
+
 void RegisterNcpExitCallback() {
     if (gNcpExitCbRegistered.load(std::memory_order_acquire)) return;
     // 无条件注册 (napi Init 最早时机): 沙箱 /proc 对 NCP 进程不可见,
@@ -557,6 +569,7 @@ static void EnsureMonitorRunning() {
 
 // -- 客户端 stdout/stderr 读取线程 (每个进程独立) --
 void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> active) {
+    const bool forkServerChild = Phone_IsDirectForkServerChild(pid);
     char buf[2048];
     std::string pending;
     while (*active) {
@@ -581,6 +594,10 @@ void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> active) 
         OH_LOG_INFO(LOG_APP, "[wine:%{public}d] %{public}s", pid, pending.c_str());
     }
     close(fd);
+
+    // These Wine processes are grandchildren. The server owns waitpid and
+    // delivers their exit status; an App waitpid would fail with ECHILD.
+    if (forkServerChild) return;
 
     int status;
     waitpid(pid, &status, 0);

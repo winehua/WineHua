@@ -1,0 +1,13 @@
+{
+  "id": "d3d11-benchmark-arm64",
+  "title": "ARM64 native D3D11 steady-state benchmark control",
+  "exe": "winehua_d3d_benchmark.exe",
+  "arch": ["x64"],
+  "build": {
+    "compiler": "llvm-aarch64",
+    "sources": ["smoke/winehua_d3d_benchmark.c"],
+    "cflags": ["-O2", "-s", "-mwindows"],
+    "libs": ["-ld3d9", "-ld3d11", "-ldxgi", "-ld3dcompiler", "-luuid", "-lshell32", "-luser32", "-lgdi32", "-lm"]
+  },
+  "checks": ["result-json", "benchmark"]
+}

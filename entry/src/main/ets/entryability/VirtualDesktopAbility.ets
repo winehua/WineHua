@@ -3,6 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { ScreenAwake } from '../service/ScreenAwake';
 
 const DOMAIN = 0x0000;
 const TAG = 'VDA';
@@ -21,6 +22,7 @@ const TAG = 'VDA';
 //   - root 销毁 (会话结束/热重启): WineWindowManager 持 ctx terminateSelf
 export default class VirtualDesktopAbility extends UIAbility {
   private cleanedUp: boolean = false;
+  private screenAwake: ScreenAwake = new ScreenAwake('VirtualDesktopAbility');
   // 沉浸最大化进行中 (windowStatusChange 防递归, 见 onWindowStageCreate)
   private immersiveMaximized: boolean = false;
 
@@ -54,6 +56,7 @@ export default class VirtualDesktopAbility extends UIAbility {
         return;
       }
       mainWindow.setWindowTitle('Wine 桌面');
+      this.screenAwake.attach(mainWindow);
       // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
       testNapi.registerHostWindow(mainWindow.getWindowProperties().id);
       // 窗口用系统默认初始大小 — "虚拟桌面按屏幕大小初始化"由 Wine 桌面
@@ -130,14 +133,21 @@ export default class VirtualDesktopAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '[VDA] onForeground');
+    this.screenAwake.setKeepScreenOn(true);
   }
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '[VDA] onBackground');
+    this.screenAwake.setKeepScreenOn(false);
+  }
+
+  onWindowStageDestroy(): void {
+    this.screenAwake.detach();
   }
 
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, '[VDA] onDestroy (cleanedUp=%{public}s)', this.cleanedUp ? 'yes' : 'no');
+    this.screenAwake.detach();
     if (!this.cleanedUp) {
       this.cleanup();
     }
@@ -149,6 +159,7 @@ export default class VirtualDesktopAbility extends UIAbility {
       return;
     }
     this.cleanedUp = true;
+    this.screenAwake.detach();
     hilog.info(DOMAIN, TAG, '[VDA] cleanup START');
     try {
       // 引擎会话继续后台运行, 仅清窗口标记 (重开入口由启动器提供)
