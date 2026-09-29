@@ -159,9 +159,9 @@ def load_cases() -> dict:
 UNREACHABLE_ENV_KEYS = {
     # 设计上忽略: profile 选择要自己判断 exe 类型与覆盖来源, 通用覆盖会让它失效
     "WINEDEBUG": "设备端显式忽略（wine_child.cpp select_winedebug_profile）",
-    # 时序缺陷: 该函数在 458 行读它, __env 覆盖在 479 行才应用 —— 属待修 bug,
-    # 不是设计意图 (同处注释声称这条通道可用)
-    "WINEHUA_WINEDEBUG": "设备端读取早于 __env 应用（wine_child.cpp:458 vs 479）",
+    # WINEHUA_WINEDEBUG 曾在这里（读取早于 __env 应用的时序缺陷）；M1-T5 已修
+    # （wine_child.cpp Main() 先从 __env 摘取该键再选 profile），显式诊断
+    # 通道现可用，不再是 unreachable。
 }
 
 
@@ -580,7 +580,19 @@ def cmd_push(args: argparse.Namespace) -> int:
 
 def build_job(args: argparse.Namespace) -> dict:
     """host 侧的运行描述（设备端 SmokeHook.applyWant 解析）。"""
-    job = {"suite": args.suite, "prefix": args.prefix}
+    job = {"prefix": args.prefix}
+    if args.suite:
+        job["suite"] = args.suite
+    # 无 suite 键 = 只跑 job/inline 自带内容（手动 displayroute 编排同形态,
+    # 实测 t6/t7 手动 run: 设备端无 suite 键时不展开套件用例）
+    if getattr(args, "job", ""):
+        job_path = Path(args.job)
+        if not job_path.is_file():
+            die(f"--job 文件不存在: {job_path}")
+        loaded = json.loads(job_path.read_text())
+        if not isinstance(loaded, dict):
+            die(f"--job 文件必须是 JSON 对象: {job_path}")
+        job.update(loaded)
     if args.tests:
         job["tests"] = [item.strip() for item in args.tests.split(",") if item.strip()]
     if args.inline:
@@ -625,7 +637,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
     manifest = json.loads((payload / "manifest.json").read_text())
     run_id = args.run_id or time.strftime("r%Y%m%d-%H%M%S")
-    archive = Path(args.archive_root).resolve() / f"{args.suite}-{run_id}"
+    archive = Path(args.archive_root).resolve() / f"{args.suite or 'job'}-{run_id}"
     archive.mkdir(parents=True, exist_ok=True)
 
     # job 文件：选测 / 参数覆盖 / 内联用例走它；5 键仍然带，兼容未升级的设备端
@@ -638,11 +650,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     start = (f"aa start -a {ABILITY} -b {BUNDLE} "
              f"--ps winehua.mode smoke "
              f"--ps winehua.job_file {SANDBOX_FILES}/{JOB_REL} "
-             f"--ps winehua.suite {args.suite} "
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
+    if args.suite:
+        start += f" --ps winehua.suite {args.suite}"
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
-    log(f"run {args.suite} (runId={run_id}, prefix={args.prefix}, "
+    log(f"run {args.suite or 'job'} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
     if code != 0:
@@ -1038,7 +1051,13 @@ def build_parser() -> argparse.ArgumentParser:
     push.set_defaults(func=cmd_push)
 
     run = sub.add_parser("run", help="跑一个套件：推送 + aa start + 轮询 + 归档")
-    run.add_argument("--suite", required=True)
+    run.add_argument("--suite", default="",
+                     help="套件名；空 = 只跑 --job/--inline 的内容（displayroute "
+                          "编排重放等非套件运行）")
+    run.add_argument("--job", default="",
+                     help="job JSON 文件（设备端 job schema: displayroute/inline/"
+                          "tests/params），先加载文件、CLI 显式键再覆盖 —— 里程碑"
+                          "验证编排入库复现用（如 smoke/jobs/displayroute-notepad.json）")
     run.add_argument("--prefix", choices=("reuse", "clean"), default="reuse")
     run.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
                      help="冷启动携带 winehua.desktopMode 覆盖（C 型注入用例需要"

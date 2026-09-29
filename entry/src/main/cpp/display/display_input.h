@@ -35,7 +35,20 @@ void wl_ohos_input_xwayland_set_seat(struct wlr_xwayland *xwayland);
 // 循环定时器); 链未建 (无 seat) 时为 no-op。
 void wl_ohos_input_script_restart(void);
 
-// OHOS 侧注入入口 (smoke NAPI / 后续编排调用)。必须在合成器事件循环线程调。
+// 真机门自动注入脚本开关 (默认关)。编排 = 测试资产 (定时重放按键 +
+// 硬编码窗口几何), 只应在 smoke/displayroute 验证流程开启; 不开 = 无此
+// 行为 (原则 #23)。必须在 wl_ohos_input_seat_create 之前调。
+void wl_ohos_input_set_script_enabled(bool enabled);
+
+// OHOS 侧注入入口 —— 任意线程安全版 (smoke NAPI 用): 内部经投递队列
+// 转合成器事件循环线程执行, 立即返回。key: evdev 键码 (KEY_A=30)。
+void wl_ohos_input_post_key(uint32_t keycode, bool press);
+
+// 指针注入的任意线程安全版 (语义同 display_input_inject_motion)。
+void wl_ohos_input_post_motion(float nx, float ny, int phase);
+
+// OHOS 侧注入入口 (循环线程直呼版: 注入脚本/队列 drain 内部使用)。
+// 必须在合成器事件循环线程调用 (wlr_seat 无锁)。
 // key: evdev 键码 (KEY_A=30)。wire 语义 = wl_keyboard.key 原值, Xwayland
 // 内部 +8 对 XKB keymap (libinput 后端同款直传, keyboard.c:52 实读)。
 // 发 key 前内部保证对当前 client surface 已 keyboard enter。
@@ -43,7 +56,7 @@ void display_input_inject_key(uint32_t keycode, bool press);
 
 // 指针注入。nx/ny = client surface 相对坐标 0..1 (左上原点);
 // phase: 0=enter 1=motion 2=leave。T1 单窗口阶段不分辨命中窗口 (T2 列表化
-// 后换真命中测试)。
+// 后换真命中测试)。必须在合成器事件循环线程调用。
 void display_input_inject_motion(float nx, float ny, int phase);
 
 #ifdef __cplusplus

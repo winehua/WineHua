@@ -207,7 +207,8 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 }
 
 // ── smoke 调试入口 ─────────────────────────────────────────────────────
-extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id);
+extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
+                                                      bool script_enabled);
 
 // 重复触发刷新通道: 刷新动作必须落在 loop 线程 (定时器/事件源操作非线程
 // 安全, M1-T5 实测: 第二轮 smoke 复用既有链时 marker 不重写、注入脚本不
@@ -236,12 +237,15 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 
 extern "C" void WineHua_DisplayRoute_Start()
 {
-    WineHua_DisplayRoute_StartWithSurface(0);
+    WineHua_DisplayRoute_StartWithSurface(0, false);
 }
 
 // surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;
-// 为 0 时维持 T7 行为 (仅合成器内核 + Xwayland, 不建 output)
-extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
+// 为 0 时维持 T7 行为 (仅合成器内核 + Xwayland, 不建 output)。
+// script_enabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
+// 不默认进产品行为, 原则 #23)。
+extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
+                                                      bool script_enabled)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
@@ -257,6 +261,9 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id)
     }
     g_started = true;
     g_stop = false;
+    // 脚本门在 seat_create (子线程) 之前定值: 开启态决定注入编排定时器
+    // 是否武装。每轮显示路线触发都经这里, retrigger 路径同样先过此门。
+    wl_ohos_input_set_script_enabled(script_enabled);
 
     if (surface_id != 0)
     {

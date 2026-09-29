@@ -1,0 +1,19 @@
+{
+  "name": "displayroute",
+  "title": "displayroute X 路线验证（用例随载荷收集；运行须经 displayroute job 编排触发，见 smoke/jobs/displayroute-notepad.json）",
+  "tests": [
+    {
+      "case": "dx-notepad",
+      "id": "dx-notepad",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 60,
+      "timeoutMs": 90000
+    }
+  ]
+}

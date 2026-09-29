@@ -98,8 +98,24 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 | `gate` | 入口门禁：3×reuse core + 1×clean core（引擎健康与基础渲染的最小回归） |
 
 `run` 的常用参数：`--prefix reuse\|clean`、`--tests ID,ID`（选测）、`--inline FILE`
-（内联临时用例，exe 须已在 `C:\smoke`）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
+（内联临时用例，exe 须已在 `C:\smoke`）、`--job FILE`（job JSON 文件，先文件后
+CLI 覆盖；里程碑验证编排的入库复现）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
 `--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`。
+
+### displayroute 验证编排（M1 出口判据复现）
+
+`smoke/jobs/displayroute-notepad.json` = M1-T5 notepad 端到端编排：displayroute
+bring-up（含注入脚本门开启）→ X 路线 notepad，脚本在 t=8/12/16/20/20.5/21s 驱动
+双窗口焦点切换 + 模态应答 + "hi" 键入（编排定义见 `display_input.c` 头注释）。
+
+```bash
+python3 automation/smoke.py run --suite core --job smoke/jobs/displayroute-notepad.json
+```
+
+**判定口径**：run 的 result-json 检查**预期 FAIL**（notepad 不写结果文件）——
+判据是行为面：归档帧/hilog 里确认 win1→win2→win1 键回显、模态框 N 应答、
+notepad 文本区出现 "hi"。WINEHUA_WINEDEBUG 诊断通道已开（M1-T5 修复），
+wine_stderr 的 `+x11drv/+event` 轨迹可逐键核对注入路径。
 
 设备选择：`--device` → `WINEHUA_DEVICE` → `hdc list targets` 唯一设备。hdc 路径：
 `WINEHUA_HDC` → PATH。

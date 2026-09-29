@@ -1,0 +1,17 @@
+{
+  "displayroute": true,
+  "inline": [
+    {
+      "testId": "m1t5-notepad",
+      "exe": "x64/notepad.exe",
+      "env": {
+        "DISPLAY": ":0",
+        "WINEHUA_DISPLAY_ROUTE": "x11",
+        "WAYLAND_DISPLAY": "",
+        "WINEHUA_WINEDEBUG": "+win,+x11drv,+event"
+      },
+      "seconds": 60,
+      "timeoutMs": 90000
+    }
+  ]
+}

@@ -161,7 +161,10 @@ export class SmokeRunner {
         // 标记 (display_compositor 链尾写入) 后才 spawn, 否则 X client
         // 抢在 X socket 就绪前连接 (winemine 首跑实测竞态)。
         removeFileIfExists(`${DRIVE_C}/displayroute-ready`);
-        smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n);
+        // 第二参 = 真机门自动注入脚本 (T1-T5 验证编排): 本路径是 displayroute
+        // 回归验证流, 编排即判据载体; 手动面板/injectAction 路径不传 = 默认关
+        // (测试资产不默认进产品行为)。
+        smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n, true);
         if (!request.job.inline || request.job.inline.length === 0) {
           await this.finishSuite(request, []);
           return;

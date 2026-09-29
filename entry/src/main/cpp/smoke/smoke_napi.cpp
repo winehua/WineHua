@@ -49,26 +49,32 @@ static napi_value SmokeMapPoint(napi_env env, napi_callback_info info) {
 // DisplayRoute M0 bring-up 触发 (计划 M0-T7 Step 3): 测试设施不进产品路径,
 // 显示路线入口在 entry.so 的 display/display_compositor.cpp, 同进程符号直解
 extern "C" void WineHua_DisplayRoute_Start();
-// T8: surfaceId 非零时同步启动出图链 (XComponent → NativeWindow 直推)
-extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id);
+// T8: surfaceId 非零时同步启动出图链 (XComponent → NativeWindow 直推);
+// scriptEnabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
+// 不默认进产品行为)
+extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
+                                                      bool script_enabled);
 // M1-T1: 注入桥 (display/display_input.c)。key = evdev 键码; motion =
 // client surface 相对坐标 0..1, phase 0=enter 1=motion 2=leave。
-// 注意线程约束: 合成器事件循环线程。NAPI 调用来自 ArkTS 线程, 直接调用
-// 有跨线程风险——当前 displayroute 注入仅测试编排使用, 与 smokeDisplayRoute
-// 的触发同序 (displayroute 事件循环 dispatch 间隙处理), T5 编排化时若出现
-// 事件丢失/竞态, 迁移到事件循环队列 (wlr_seat 无锁, 不得并发)。
-extern "C" void display_input_inject_key(uint32_t keycode, bool press);
-extern "C" void display_input_inject_motion(float nx, float ny, int phase);
+// 线程纪律: wlr_seat 无锁, 注入必须落在合成器事件循环线程; NAPI 调用来自
+// ArkTS 线程, 一律走 post 投递队列 (display_input 内部转循环线程执行),
+// 不得直呼循环线程版 (2026-09-29 评审 fix#2)。
+extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
+extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 2;
+    napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool script_enabled = false;
+    if (argc >= 2) {
+        napi_get_value_bool(env, args[1], &script_enabled);
+    }
     if (argc >= 1) {
         uint64_t surface_id = 0;
         bool lossless = false;
         napi_get_value_bigint_uint64(env, args[0], &surface_id, &lossless);
-        WineHua_DisplayRoute_StartWithSurface(surface_id);
+        WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled);
     } else {
         WineHua_DisplayRoute_Start();
     }
@@ -78,7 +84,7 @@ static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
 }
 
 // smokeDisplayRouteKey(keycode, press) — T1 键注入 (真机门自动定时器之外的
-// 手动通道); T5 记事本编排用它驱动文字输入
+// 手动通道); 投递到合成循环执行 (线程纪律见上方注入桥注释)
 static napi_value SmokeDisplayRouteKey(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
@@ -88,7 +94,7 @@ static napi_value SmokeDisplayRouteKey(napi_env env, napi_callback_info info) {
     bool press = false;
     napi_get_value_double(env, args[0], &code);
     napi_get_value_bool(env, args[1], &press);
-    display_input_inject_key(static_cast<uint32_t>(code), press);
+    wl_ohos_input_post_key(static_cast<uint32_t>(code), press);
     napi_value ok;
     napi_get_boolean(env, true, &ok);
     return ok;
@@ -105,8 +111,8 @@ static napi_value SmokeDisplayRouteMotion(napi_env env, napi_callback_info info)
     napi_get_value_double(env, args[0], &nx);
     napi_get_value_double(env, args[1], &ny);
     napi_get_value_double(env, args[2], &phase);
-    display_input_inject_motion(static_cast<float>(nx), static_cast<float>(ny),
-                                static_cast<int>(phase));
+    wl_ohos_input_post_motion(static_cast<float>(nx), static_cast<float>(ny),
+                              static_cast<int>(phase));
     napi_value ok;
     napi_get_boolean(env, true, &ok);
     return ok;

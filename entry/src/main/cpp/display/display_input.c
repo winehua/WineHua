@@ -26,6 +26,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -58,6 +59,78 @@ static struct wl_event_source *g_release_timer;
 static uint32_t g_held_keycode; /* 已按下待释放的键 (release 定时器目标) */
 static struct wl_display *g_display; /* 键/焦点批次的显式 flush 用 */
 static int64_t g_focus_switched_ms; /* 最近一次焦点切换时刻 (settle 判定) */
+static bool g_script_enabled; /* 真机门自动注入脚本 (默认关, smoke 开启) */
+
+/* 焦点 surface 的存活绑定: client (Xwayland) 销毁 wl_surface 时 wlroots
+ * 先发 events.destroy 再释放内存 —— 监听自清指针。不清的话
+ * wl_ohos_surface_has_content(g_kbd_focus) 就是对已释放内存的读 (T5 t5t
+ * 实测: 对话框 surface 销毁后旧焦点悬垂, EnsureKeyboardFocus 因此永不
+ * 重选)。监听挂在指针所有者层 (本文件), 不借 ohos_output 的 xs 生命
+ * 周期事件 —— xs destroy 与 wl_surface destroy 是两个信号, 时序分离。
+ * kbd/ptr 各一个 listener: 同一 surface 可能同时是两种焦点, 而
+ * wl_listener 同一时刻只能挂进一个链。
+ * 摘链纪律: destroy 发射期内 wl_list_remove 安全 (发射后 surface 连同
+ * 链表头一起释放, 之后再摘 = UAF) —— handler 内自摘是 wlroots 惯例。 */
+static bool g_kbd_focus_tracked;
+static bool g_ptr_focus_tracked;
+
+static void HandleKbdFocusDestroy(struct wl_listener *listener, void *data)
+{
+    (void)data;
+    wl_list_remove(&listener->link);
+    g_kbd_focus = NULL;
+    g_kbd_focus_tracked = false;
+    OHLOG("kbd focus surface destroyed (pointer cleared)");
+}
+
+static void HandlePtrFocusDestroy(struct wl_listener *listener, void *data)
+{
+    (void)data;
+    wl_list_remove(&listener->link);
+    g_ptr_focus = NULL;
+    g_ptr_focus_tracked = false;
+}
+
+static struct wl_listener g_kbd_focus_destroy = {
+    .notify = HandleKbdFocusDestroy,
+};
+static struct wl_listener g_ptr_focus_destroy = {
+    .notify = HandlePtrFocusDestroy,
+};
+
+static void TrackKbdFocus(struct wlr_surface *surf)
+{
+    if (g_kbd_focus == surf)
+        return;
+    if (g_kbd_focus_tracked)
+    {
+        wl_list_remove(&g_kbd_focus_destroy.link);
+        g_kbd_focus_tracked = false;
+    }
+    g_kbd_focus = surf;
+    if (surf)
+    {
+        wl_signal_add(&surf->events.destroy, &g_kbd_focus_destroy);
+        g_kbd_focus_tracked = true;
+    }
+}
+
+static void TrackPtrFocus(struct wlr_surface *surf)
+{
+    if (g_ptr_focus == surf)
+        return;
+    if (g_ptr_focus_tracked)
+    {
+        wl_list_remove(&g_ptr_focus_destroy.link);
+        g_ptr_focus_tracked = false;
+    }
+    g_ptr_focus = surf;
+    if (surf)
+    {
+        wl_signal_add(&surf->events.destroy, &g_ptr_focus_destroy);
+        g_ptr_focus_tracked = true;
+    }
+}
 
 /* 焦点切换后按键的 settle 窗口: enter 与 key 写入同一 wl 连接缓冲会被
  * 对端一次 read 同时收达, Xwayland 先派发 wayland 事件 (enter+key) 后
@@ -116,7 +189,7 @@ static void FocusClient(struct wlr_xwayland_surface *xs)
     uint32_t keycodes[1] = {0};
     struct wlr_keyboard_modifiers mods = {0};
     wlr_seat_keyboard_notify_enter(g_seat, xs->surface, keycodes, 0, &mods);
-    g_kbd_focus = xs->surface;
+    TrackKbdFocus(xs->surface);
     g_focus_switched_ms = NowMsec();
     OHLOG("keyboard enter xs=%{public}p surf=%{public}p (activated)",
           (void *)xs, (void *)xs->surface);
@@ -200,7 +273,7 @@ void display_input_inject_motion(float nx, float ny, int phase)
         if (g_ptr_focus)
         {
             wlr_seat_pointer_notify_clear_focus(g_seat);
-            g_ptr_focus = NULL;
+            TrackPtrFocus(NULL);
         }
         return;
     }
@@ -222,11 +295,106 @@ void display_input_inject_motion(float nx, float ny, int phase)
         if (g_display)
             wl_display_flush_clients(g_display); /* 焦点批先行 (同键纪律) */
         wlr_seat_pointer_notify_enter(g_seat, xs->surface, sx, sy);
-        g_ptr_focus = xs->surface;
+        TrackPtrFocus(xs->surface);
         OHLOG("pointer enter xs=%{public}p @%{public}d,%{public}d",
               (void *)xs, xs->x, xs->y);
     }
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
+}
+
+/* ── 跨线程注入投递 (NAPI/ArkTS 线程 → 合成循环线程) ─────────────────────
+ * wlr_seat 无锁, 注入必须落在事件循环线程。ArkTS 侧入口 (smoke_napi) 走
+ * 队列: 加锁入队 + 管道写 1 字节唤醒循环, 循环侧 fd 回调清队逐条执行
+ * 真实注入。管道两端 O_NONBLOCK —— 与 retrigger 管道同坑: libwayland 不
+ * 给新增 fd 设非阻塞, 阻塞读会冻死循环线程 (T5 t5k 实测)。唤醒字节写
+ * 失败 (EAGAIN=管道满) 无害: 说明已有未消费的唤醒字节, drain 一定会跑。
+ * 队列上限 64, 超限丢最旧并记日志 (注入不保证不丢, 但不阻塞 UI 线程)。 */
+#define INJECT_QUEUE_CAP 64
+
+struct inject_item
+{
+    bool is_key;
+    uint32_t keycode;
+    bool press;
+    float nx, ny;
+    int phase;
+};
+
+static struct inject_item g_inject_queue[INJECT_QUEUE_CAP];
+static size_t g_inject_head, g_inject_tail;
+static pthread_mutex_t g_inject_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_inject_wake[2] = {-1, -1};
+
+static void InjectQueuePush(const struct inject_item *item)
+{
+    char b = 1;
+    pthread_mutex_lock(&g_inject_mutex);
+    {
+        size_t next = (g_inject_tail + 1) % INJECT_QUEUE_CAP;
+        if (next == g_inject_head)
+        {
+            g_inject_head = (g_inject_head + 1) % INJECT_QUEUE_CAP;
+            OHLOG("inject queue full, dropped oldest");
+        }
+        g_inject_queue[g_inject_tail] = *item;
+        g_inject_tail = next;
+    }
+    pthread_mutex_unlock(&g_inject_mutex);
+    if (g_inject_wake[1] >= 0)
+    {
+        ssize_t rc = write(g_inject_wake[1], &b, 1);
+        (void)rc; /* EAGAIN = 唤醒已在途 */
+    }
+}
+
+static int InjectQueueDrain(void *data)
+{
+    (void)data;
+    char buf[64];
+    ssize_t n;
+    while ((n = read(g_inject_wake[0], buf, sizeof buf)) > 0 || errno == EINTR)
+        ;
+    for (;;)
+    {
+        struct inject_item item;
+        pthread_mutex_lock(&g_inject_mutex);
+        if (g_inject_head == g_inject_tail)
+        {
+            pthread_mutex_unlock(&g_inject_mutex);
+            break;
+        }
+        item = g_inject_queue[g_inject_head];
+        g_inject_head = (g_inject_head + 1) % INJECT_QUEUE_CAP;
+        pthread_mutex_unlock(&g_inject_mutex);
+        if (item.is_key)
+            display_input_inject_key(item.keycode, item.press);
+        else
+            display_input_inject_motion(item.nx, item.ny, item.phase);
+    }
+    if (g_display)
+        wl_display_flush_clients(g_display);
+    return 0;
+}
+
+void wl_ohos_input_post_key(uint32_t keycode, bool press)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_key = true;
+    item.keycode = keycode;
+    item.press = press;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_motion(float nx, float ny, int phase)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_key = false;
+    item.nx = nx;
+    item.ny = ny;
+    item.phase = phase;
+    InjectQueuePush(&item);
 }
 
 /* ── T1/T2/T5 真机门自动注入脚本: 定时器驱动确定性输入序列 ──────────────
@@ -294,10 +462,10 @@ static int ScriptTick(void *data)
             wl_event_source_timer_update(g_release_timer, 300);
         wl_event_source_timer_update(g_script_timer, 500);
         break;
-    case 5: /* 悬停 notepad 文本区 (主窗内点 217,190) + KEY_H。焦点必须显式
-             * 重选: case 4 聚焦的对话框已被销毁, g_kbd_focus 悬垂 (destroy
-             * 监听只摘链表不清焦点指针), EnsureKeyboardFocus 的 has_content
-             * 判定读到陈旧值会跳过重聚焦 (t5t 实测 H/I 打进已死对话框)。 */
+    case 5: /* 悬停 notepad 文本区 (主窗内点 217,190) + KEY_H。case 4 聚焦
+             * 的对话框随后被销毁 —— 焦点指针的销毁自清已落在 Track*
+             * (surface destroy 监听), EnsureKeyboardFocus 的 has_content
+             * 不会再读到陈旧值; 这里的显式重选保留为双窗口重聚焦覆盖。 */
         display_input_inject_motion(217 / 800.0f, 190 / 600.0f, 1);
         FocusClient(wl_ohos_output_client_topmost_at(217, 190));
         if (g_display)
@@ -341,6 +509,22 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
     g_loop = loop;
     g_display = wl;
 
+    /* 跨线程注入的唤醒通道: 建在 loop 线程上 (fd 源必须挂在同一 loop)。
+     * 两端 O_NONBLOCK, 理由见 InjectQueueDrain 注释。 */
+    if (g_loop && pipe(g_inject_wake) == 0)
+    {
+        int i;
+        for (i = 0; i < 2; ++i)
+            fcntl(g_inject_wake[i], F_SETFL, O_NONBLOCK);
+        wl_event_loop_add_fd(g_loop, g_inject_wake[0], WL_EVENT_READABLE,
+                             InjectQueueDrain, NULL);
+    }
+    else
+    {
+        OH_LOG_ERROR(LOG_APP, "inject wake pipe create failed errno=%{public}d",
+                     errno);
+    }
+
     struct xkb_keymap *km = BuildKeymap();
     wlr_keyboard_init(&g_kb, &k_kb_impl, "displayroute-vkbd");
     if (km && !wlr_keyboard_set_keymap(&g_kb, km))
@@ -358,23 +542,30 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
                               WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_seat_set_keyboard(g_seat, &g_kb);
 
-    /* 真机门自动注入: T2 脚本序列 (case 1 即 T1 的 KEY_A 步) */
+    /* 真机门自动注入: T2 脚本序列 (case 1 即 T1 的 KEY_A 步)。
+     * 门控 = wl_ohos_input_set_script_enabled (默认关): 编排是测试资产
+     * (定时重放按键 + 硬编码窗口几何), 不经开启就重放 = 产品路径里藏
+     * 幽灵输入 (原则 #23: 定制默认关闭、关闭态 = 无此行为)。手动注入
+     * (队列/手动键) 不受此门影响。 */
     if (g_loop)
     {
         g_release_timer = wl_event_loop_add_timer(g_loop, KeyReleaseTick, NULL);
         g_key_timer = wl_event_loop_add_timer(g_loop, DeliverPendingKey,
                                               &g_pending_key);
-        g_script_timer = wl_event_loop_add_timer(g_loop, ScriptTick, NULL);
-        if (g_script_timer && g_release_timer)
+        if (g_script_enabled)
         {
-            wl_event_source_timer_update(g_script_timer, 8000);
-        }
-        else
-        {
-            /* 兜底: 脚本定时器建失败退回 T1 单键序列 */
-            g_press_timer = wl_event_loop_add_timer(g_loop, KeyPressTick, NULL);
-            if (g_press_timer && g_release_timer)
-                wl_event_source_timer_update(g_press_timer, 8000);
+            g_script_timer = wl_event_loop_add_timer(g_loop, ScriptTick, NULL);
+            if (g_script_timer && g_release_timer)
+            {
+                wl_event_source_timer_update(g_script_timer, 8000);
+            }
+            else
+            {
+                /* 兜底: 脚本定时器建失败退回 T1 单键序列 */
+                g_press_timer = wl_event_loop_add_timer(g_loop, KeyPressTick, NULL);
+                if (g_press_timer && g_release_timer)
+                    wl_event_source_timer_update(g_press_timer, 8000);
+            }
         }
     }
     OHLOG("seat up (keymap=%{public}s, script @8/12/16s)",
@@ -397,4 +588,11 @@ void wl_ohos_input_script_restart(void)
     g_script_step = 0;
     wl_event_source_timer_update(g_script_timer, 8000);
     OHLOG("inject script re-armed (t=8/12/16/20/20.5/21s)");
+}
+
+void wl_ohos_input_set_script_enabled(bool enabled)
+{
+    /* 只在 seat_create 前生效 (开启态决定定时器是否武装); 链建后再翻转
+     * 不追认 —— 显示路线每轮触发走完整 seat 生命周期 (retrigger 重进)。 */
+    g_script_enabled = enabled;
 }
