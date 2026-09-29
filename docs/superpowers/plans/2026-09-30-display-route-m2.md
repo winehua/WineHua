@@ -1,5 +1,13 @@
 # Display-Route M2 实现计划——呈现链零拷贝 + Venus 重锚 + IME + PC 窗口形态
 
+> **执行状态（2026-09-30）**：阶段 A（T1–T6）+ A 收尾（T9 的 A 面）**已完成并
+> 推送**（`b6f674c` 收尾笔；wine fork 两笔 `9f7a73d5`/`a1e0d586`）。判据裁定与
+> 既有红项见 `docs/superpowers/specs/2026-09-30-display-route-m2-acceptance.md`；
+> 实测结论回填在 spec §4.2/§6.4/§7/§8.4。**T7（IME，阶段 B）与 T8（PC 形态，
+> 阶段 C）按 scope ruling 暂缓，未开工**——下方对应步骤的勾选框保持未勾。
+> 本文的正文章节保留为执行时的原始计划（不追改），执行记录以验收报告与
+> spec 回填为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** X 路线跑通真实 D3D 负载（dxvk 套件出图正常）且合成性能达 ≥25fps，IME 与 PC 双窗口形态落地。
