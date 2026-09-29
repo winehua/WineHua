@@ -8,8 +8,6 @@
  */
 #pragma once
 
-#pragma once
-
 /*
  * WLR_USE_UNSTABLE + extern "C": wlroots 头无 C++ guard, C++ TU 直接
  * include 会把符号按 C++ mangle, 链接报 undefined (T8 实测)。

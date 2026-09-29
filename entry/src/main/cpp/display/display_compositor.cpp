@@ -56,6 +56,14 @@ struct wlr_compositor *wlr_compositor_create(struct wl_display *display,
 	uint32_t version, struct wlr_renderer *renderer);
 struct wlr_backend *wlr_headless_backend_create(struct wl_event_loop *loop);
 bool wlr_backend_start(struct wlr_backend *backend);
+// 销毁族 (M2-T1 启动失败统一收尾): 签名逐一核对 wlroots 头
+// (render/wlr_renderer.h, backend.h, xwayland/xwayland.h —— 后者 C++
+// 不安全, 只手写销毁原型)。注: 0.20.2 无 wlr_compositor_destroy
+// (types/wlr_compositor.c 无此函数), compositor global 随
+// wl_display_destroy 撤销。
+void wlr_renderer_destroy(struct wlr_renderer *r);
+void wlr_backend_destroy(struct wlr_backend *backend);
+void wlr_xwayland_destroy(struct wlr_xwayland *wlr_xwayland);
 // WineHua 补丁新增 (scripts/patches/wlroots-ohos-ncp-spawn.patch)
 struct wlr_xwayland *wlr_xwayland_create_with_server(struct wl_display *display,
 	struct wlr_compositor *compositor, struct wlr_xwayland_server *server);
@@ -255,7 +263,10 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         {
             char b = 'r';
             ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
-            (void)rc;
+            /* EAGAIN = 唤醒字节已在途 (管道满), 无害; 其余失败记日志
+             * (M2-T1: 静默丢触发排查代价过高) */
+            if (rc < 0 && errno != EAGAIN)
+                OH_LOG_ERROR(LOG_APP, "retrigger write failed errno=%{public}d", errno);
         }
         return;
     }
@@ -276,6 +287,17 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     }
 
     std::thread([] {
+        // 对象提升到函数顶部 (M2-T1): 失败路径统一 goto fail 收尾, 逆序
+        // 销毁 —— 之前中途 return 泄漏已建对象 (known-issues §1.2), 且
+        // g_started 不复位导致失败后无法重试。
+        struct wl_display *wl = nullptr;
+        struct wl_event_loop *loop = nullptr;
+        struct wlr_renderer *renderer = nullptr;
+        struct wlr_compositor *compositor = nullptr;
+        struct wlr_backend *backend = nullptr;
+        struct wlr_xwayland_server *server = nullptr;
+        struct wlr_xwayland *xwayland = nullptr;
+
         // 日志桥先装: 后续 wlroots/协议层错误必须可见 (app stderr 不可观测)
         wlr_log_init(WLR_INFO, WlrLogBridge);
         wl_log_set_handler_server(WlServerLogBridge);
@@ -289,13 +311,13 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             setenv("XDG_RUNTIME_DIR", dir.c_str(), 1);
         }
 
-        struct wl_display *wl = wl_display_create();
+        wl = wl_display_create();
         if (!wl)
         {
             OH_LOG_ERROR(LOG_APP, "wl_display_create failed");
-            return;
+            goto fail;
         }
-        struct wl_event_loop *loop = wl_display_get_event_loop(wl);
+        loop = wl_display_get_event_loop(wl);
         // 重复触发刷新通道 (pipe 事件源, 触发侧仅 write)。两端必须
         // O_NONBLOCK: wake 处理器的排空循环 read 到管道空时会一直阻塞
         // (pipe() 默认阻塞语义, libwayland 不改 added fd 的标志), loop
@@ -313,17 +335,17 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             OH_LOG_ERROR(LOG_APP, "retrigger pipe create failed errno=%{public}d", errno);
         }
 
-        struct wlr_renderer *renderer = wlr_pixman_renderer_create();
+        renderer = wlr_pixman_renderer_create();
         if (!renderer)
         {
             OH_LOG_ERROR(LOG_APP, "pixman renderer create failed");
-            return;
+            goto fail;
         }
-        struct wlr_compositor *compositor = wlr_compositor_create(wl, 5, renderer);
+        compositor = wlr_compositor_create(wl, 5, renderer);
         if (!compositor)
         {
             OH_LOG_ERROR(LOG_APP, "compositor create failed");
-            return;
+            goto fail;
         }
         // M1-T1 输入链: seat + 虚拟键盘。须在 Xwayland server create 之前
         // (seat global 先于 Xwayland 客户端连接存在); set_seat 在下方
@@ -331,7 +353,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         if (wl_ohos_input_seat_create(wl, loop) != 0)
         {
             OH_LOG_ERROR(LOG_APP, "input seat create failed");
-            return;
+            goto fail;
         }
         // wl_shm/wl_drm 全局: wlr_compositor_create 不建, 必须显式初始化。
         // 缺它 Xwayland 的 registry 无 wl_shm → 首个窗口 Map 时
@@ -340,39 +362,39 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         if (!wlr_renderer_init_wl_display(renderer, wl))
         {
             OH_LOG_ERROR(LOG_APP, "renderer_init_wl_display failed (无 shm 全局)");
-            return;
+            goto fail;
         }
 
-        struct wlr_backend *backend = wlr_headless_backend_create(loop);
+        backend = wlr_headless_backend_create(loop);
         if (!backend || !wlr_backend_start(backend))
         {
             OH_LOG_ERROR(LOG_APP, "headless backend failed");
-            return;
+            goto fail;
         }
 
         // 二段式建 Xwayland (绕开 wlr_xwayland 结构的 `class` 成员, C++ 不可见):
         // 先 server (发起 NCP 启动), 挂 ready 监听, 再拼 XWM
-        struct wlr_xwayland_server_options options = {};
-        options.lazy = false;
-        options.enable_wm = true;
-        struct wlr_xwayland_server *server =
-            wlr_xwayland_server_create(wl, &options);
+        {
+            struct wlr_xwayland_server_options options = {};
+            options.lazy = false;
+            options.enable_wm = true;
+            server = wlr_xwayland_server_create(wl, &options);
+        }
         if (!server)
         {
             OH_LOG_ERROR(LOG_APP, "wlr_xwayland_server_create failed");
-            return;
+            goto fail;
         }
         OH_LOG_INFO(LOG_APP, "server created, XDG_RUNTIME_DIR=%{public}s",
                     getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "(unset)");
         g_xwayland_ready_listener.notify = HandleXwaylandReady;
         wl_signal_add(&server->events.ready, &g_xwayland_ready_listener);
 
-        struct wlr_xwayland *xwayland =
-            wlr_xwayland_create_with_server(wl, compositor, server);
+        xwayland = wlr_xwayland_create_with_server(wl, compositor, server);
         if (!xwayland)
         {
             OH_LOG_ERROR(LOG_APP, "wlr_xwayland_create_with_server failed");
-            return;
+            goto fail;
         }
         // M1-T1: xwm 已同步建立 (M0 实证), 接 seat——"no seat assigned to
         // xwayland" 告警自此消失, 键盘/指针经 wl_seat 进 Xwayland
@@ -418,5 +440,43 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             wl_display_flush_clients(wl);
         }
         OH_LOG_INFO(LOG_APP, "event loop exit");
+
+    fail:
+        // 统一收尾 (M2-T1, known-issues §1.2): 正常退出与启动失败共用。
+        // 逆序销毁; with_server 形态的 server 不归 wlr_xwayland_destroy 管
+        // (own_server=false, xwayland.c:91), 须显式销毁。
+        if (xwayland)
+            wlr_xwayland_destroy(xwayland);
+        if (server)
+        {
+            wl_list_remove(&g_xwayland_ready_listener.link);
+            wlr_xwayland_server_destroy(server);
+        }
+        if (backend)
+            wlr_backend_destroy(backend);
+        /* compositor 无 destroy API (0.20.2): global 随下方
+         * wl_display_destroy 撤销, 无需也无法单独销毁 */
+        if (renderer)
+            wlr_renderer_destroy(renderer);
+        if (g_retrigger_pipe[0] >= 0)
+        {
+            close(g_retrigger_pipe[0]);
+            close(g_retrigger_pipe[1]);
+            g_retrigger_pipe[0] = g_retrigger_pipe[1] = -1;
+        }
+        if (wl)
+            wl_display_destroy(wl);
+        {
+            // 状态复位 (锁内): 失败/停止后允许下次触发重新走完整 bring-up
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_present_window)
+            {
+                OH_NativeWindow_DestroyNativeWindow(g_present_window);
+                g_present_window = nullptr;
+            }
+            g_started = false;
+            g_stop = false;
+        }
+        OH_LOG_INFO(LOG_APP, "displayroute stopped or failed; cleaned up (retry possible)");
     }).detach();
 }

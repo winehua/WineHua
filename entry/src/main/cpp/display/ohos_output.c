@@ -199,6 +199,7 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     int dst_rows = 0;
     void *dst = NULL;
     size_t dst_stride = 0;
+    size_t mapped_bytes = 0; /* mmap 的实际长度 (M2-T1: munmap 必须同源配对) */
     int fence = -1;
 
     if (ResolveLockSymbols()) {
@@ -251,6 +252,7 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
         }
         dst_stride = (size_t)h->stride;
         dst_rows = h->height > 0 ? h->height : 0;
+        mapped_bytes = bytes;
         mapped = 1;
     }
 
@@ -264,6 +266,22 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     size_t src_stride = wl_ohos_buffer_stride(event->state->buffer);
     void *src = NULL;
     if (!src_nb || OH_NativeBuffer_Map(src_nb, &src) != 0 || !src) {
+        /* 源映射失败: window buffer 必须归还, 否则路径 G 的 BufferQueue
+         * 槽位连续泄漏几次即 RequestBuffer 饿死 (known-issues §1.1,
+         * M2-T1)。AbortBuffer (since 8) = 无内容归还, 槽位立即可复用;
+         * 路径 C 走 UnlockFlush。fence 归属: FlushBuffer 文档明确由系统
+         * 关闭, AbortBuffer 文档未提 —— 自行关闭 (保守侧, 防 fd 泄漏)。 */
+        if (mapped)
+        {
+            int32_t rc = OH_NativeWindow_NativeWindowAbortBuffer(g_out.window, win_buf);
+            if (rc != 0)
+                OH_LOG_ERROR(LOG_APP, "AbortBuffer rc=%{public}d (帧 %{public}u)",
+                             rc, g_out.frame_seq);
+        }
+        else
+        {
+            g_unlock_flush(g_out.window);
+        }
         if (fence >= 0) close(fence);
         return;
     }
@@ -279,12 +297,21 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
                    copy_bytes);
         if ((g_out.frame_seq % 30) == 1)
             g_out.last_crc = FrameCrc(s, (size_t)ht * src_stride);
+    } else {
+        /* 行距分叉: 当前无逐行变 stride 拷贝能力, 本帧只能丢弃 —— 但必须
+         * 可见 (known-issues §1.1): 无日志的丢帧 = "偶发掉帧且零证据"。
+         * M2-T4 零拷贝落地后此分支整体退位。 */
+        static unsigned stride_mismatch_count;
+        ++stride_mismatch_count;
+        if ((stride_mismatch_count % 30) == 1)
+            OH_LOG_ERROR(LOG_APP, "stride mismatch dst=%{public}zu src=%{public}zu "
+                         "copy=%{public}zu, frame dropped (count=%{public}u)",
+                         dst_stride, src_stride, copy_bytes, stride_mismatch_count);
     }
     OH_NativeBuffer_Unmap(src_nb);
 
     if (mapped) {
-        size_t bytes = (size_t)ht * dst_stride;
-        munmap(dst, bytes);
+        munmap(dst, mapped_bytes); /* 与 mmap 同源 (M2-T1) */
         /* fence 归还系统 (FlushBuffer 文档: fenceFd 由系统关闭) */
         int32_t rc = OH_NativeWindow_NativeWindowFlushBuffer(
             g_out.window, win_buf, fence, region);

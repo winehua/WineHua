@@ -107,7 +107,7 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     // terminateDelay/noTouch/forceXrandr 曾驱动 shim 侧 argv 副本; argv 改由
     // app 侧唯一来源传递后此处仅按位置跳过 (字段仍在 params 里, 诊断可读)
     enable_wm = enable_wm && atoi(f[4].c_str()) != 0;
-    int appPid = f.size() > 6 ? atoi(f[6].c_str()) : -1;
+    // f[6] = appPid: shim 侧无消费方 (父进程存活由 NCP 框架管理), 仅按位保留
     std::string xdgDir = f.size() > 7 ? f[7] : "";
 
     // Xwayland stdout/stderr 落盘 (父侧下发的沙箱路径); Xwayland 自身日志走
