@@ -20,7 +20,11 @@
 
 ## 挂起项（随分支携带，非阻塞）
 
-- 最后一键间歇不入编辑控件（注入侧日志同形，wine 内部非确定路径）
+完整清单（代码埋雷 / 排查悬案 / 操作协议 / 前置条件 / 文档欠账）统一在
+`docs/engineering/display-route-known-issues.md` 维护（M2 开工逐条过），
+此处只列技术悬案梗概：
+
+- 最后一键间歇不入编辑控件（注入侧日志同形，wine 内部非确定路径；排查入口见 known-issues §2.1）
 - 引擎冷启 wineboot 偶发 box64 SIGSEGV 崩溃循环（重试即过，未定性）
 - 两 GL 路线 renderer 同串但回读带宽差 16 倍的机制未解释（drisw 本地 shadow vs vtest 往返，嫌疑）
 - hdc -b 热更 payload 与 app 挂载视图按文件不一致（t6d-f 实锤；出口 = 完整 deploy；根因未追）
