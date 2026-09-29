@@ -1,0 +1,12 @@
+{
+  "id": "dx-glx-present",
+  "title": "X 路线 OpenGL present 链（可见窗 SwapBuffers 出图）—— 未落地栈的验收用例，非回归门槛：Xwayland 无 GLX / guest 无 libGL / winex11 GL 段未编入（M2-T3 定位，docs/engineering/display-route-known-issues.md §2.4）。当前跑必有 FAIL，且两处判定器都不适用本场景：程序侧 displayed 门读 WINEHUA_DISPLAY_FPS_FILE（wayland 路线渲染器产物），visual 判定器对全屏截图 + 侧栏预览框做四象限也是错的——补栈时一并换判定器",
+  "exe": "winehua_graphics_smoke.exe",
+  "arch": [
+    "x64"
+  ],
+  "from_wine": "winehua_graphics_smoke",
+  "checks": [
+    "result-json"
+  ]
+}

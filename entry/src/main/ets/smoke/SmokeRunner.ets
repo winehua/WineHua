@@ -165,7 +165,13 @@ export class SmokeRunner {
         // 回归验证流, 编排即判据载体; 手动面板/injectAction 路径不传 = 默认关
         // (测试资产不默认进产品行为)。
         smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n, true);
-        if (!request.job.inline || request.job.inline.length === 0) {
+        // 早退 = 本次运行确实没有测试要跑: 既无 inline, 也无套件/选测声明。
+        // (M2-T3 实测: 只看 inline 会把「displayroute + 套件用例」的编排
+        // 挡在 bring-up 之后直接收尾 —— 套件用例一条都不跑。)
+        const noInline: boolean = !request.job.inline || request.job.inline.length === 0;
+        const noSuiteWork: boolean = !request.job.suite &&
+          (!request.job.tests || request.job.tests.length === 0);
+        if (noInline && noSuiteWork) {
           await this.finishSuite(request, []);
           return;
         }

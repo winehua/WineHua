@@ -1,6 +1,6 @@
 {
   "name": "displayroute",
-  "title": "displayroute X 路线验证（用例随载荷收集；运行须经 displayroute job 编排触发，见 smoke/jobs/displayroute-notepad.json）",
+  "title": "displayroute X 路线验证（用例随载荷收集；运行须经 displayroute job 编排触发，见 smoke/jobs/displayroute-notepad.json）。dx-glx-present 不入本套件：X 路线 GL 呈现链当前不存在（M2-T3 定位，见 docs/engineering/display-route-known-issues.md §2.4），它是对该栈的验收用例而非回归门槛——补栈落地后再入套件",
   "tests": [
     {
       "case": "dx-notepad",

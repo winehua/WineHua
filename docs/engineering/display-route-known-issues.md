@@ -76,15 +76,17 @@ T5 起挂起：脚本末两键 H/I 四轮真机 2 轮全成、1 轮只有 "h"、
 `WINEHUA_WINEDEBUG=+win,+x11drv,+event`，复现时 wine_stderr 有逐键完整
 轨迹（T5 当时缺的就是它）——一旦复现，哪一跳吃键有据可查。
 
-### 2.2 两条 GL 路线回读带宽差 16 倍的机制
+### 2.2 两条 GL 路线回读带宽差 16 倍的机制（M2-T3 后改形）
 
 T6 实测：同 guest mesa virpipe、renderer 串相同，wayland-EGL 读回
-19.2MB/s vs X 路线（GLX/drisw）310.9MB/s。假设：drisw 有本地 shadow
-framebuffer（读回=本地 memcpy），EGL-wayland 读回走 vtest→host 往返。
-**未验证**。R1 裁决基于实测数字、不依赖机制解释，裁决不受影响；但若
-机制可利用（本地 shadow 可在 EGL 侧复用），wayland 读回瓶颈可能推翻，
-部分 M2 决策会不同。**顺序**：先做 M2 的 drisw present 链验证（验收报
-告入口 ②）——若通过，本条紧迫性大降；若需要 EGL 侧优化再投入查机制。
+19.2MB/s vs「X 路线」310.9MB/s。**M2-T3 实测推翻了其中一项前提**：那条
+「X 路线」没有走 X——winex11 的 GL 段在本构建里根本没编入（见 2.4），
+WGL 落到 win32u 通用 EGL 驱动 + FBO，无 GLX、无 drisw、无 X 窗口参与。
+所以 16 倍差不是「drisw 本地 shadow vs vtest 往返」的路线差，而是两条测
+量各自的读回管路差。**待查**：两边具体差在哪一段（嫌疑：wayland 侧读回
+经 WineHua 呈现/读回机制，FBO 侧走 virgl 自身 transfer）。**顺带作废**：
+「X 路线 310MB/s ≈150fps」不能作为 X 路线 GL 能力或性能的依据，R1 的改
+判理由不成立（见 2.4）。
 
 ### 2.3 引擎冷启 wineboot 偶发 box64 SIGSEGV 崩溃循环
 
@@ -93,6 +95,47 @@ T5 期 t5q 一例：同套二进制 force-stop 重试一次即成；M1 期未复
 hilog 全量落盘 + stderr 只截尾部 ~1MB（t5q 整拉 744MB 失败教训），再
 重试恢复。M2 期复发 ≥3 次升级专项（方向：box64 dynarec 对 wineboot 某
 代码段的翻译）。
+
+### 2.4 X 路线没有 GL 呈现（M2-T3 实测定位，补栈与否待范围裁决）
+
+M2-T3 真机（r20260930-014632 与带 `+wgl` 复跑 r-t3glx，设备 .5）判据
+不成立，定位到**三处构建层缺件**——X 路线的 OpenGL 呈现链当前不存在，
+不是「drisw present 有没有 bug」的问题：
+
+| 环节 | 现状 | 证据 |
+|---|---|---|
+| Xwayland GLX 扩展 | 无（`-Dglx=false -Dglamor=false`，M0 shm-only 决定） | `scripts/build_xwayland.sh:172` |
+| guest libGL（GLX 客户端） | 无：guest_gfx 只有 EGL/GLES/gallium + `dri/swrast_dri.so` | 设备 `guest_gfx/lib` 清单 |
+| winex11 GL 段 | 未编入：`WINEHUA_ALLOW_X11_NO_GLX=1`，configure 拿不到 `GL/glx.h` → `X11DRV_OpenGLInit` 落 `#else` stub | 运行期 `display_funcs_init Failed to initialize the driver OpenGL functions, status 0xc0000002` |
+
+状态码是判据：stub 返回 `STATUS_NOT_IMPLEMENTED`(0xC0000002)，真实的
+libGL 加载失败返回 `STATUS_NOT_SUPPORTED`(0xC00000BB) 并附 ERR 行——实
+测是前者，故为编译期缺件，非运行期缺库。
+
+**实际行为**：WGL → win32u 通用 EGL 驱动 → `egldrv_surface_create` 造
+**FBO drawable**（`framebuffer_surface`），`framebuffer_surface_swap` 是
+**空实现**（`dlls/win32u/opengl.c:407` 直接 `return TRUE`）⇒ 帧进 FBO、
+没有任何真 present。实测吻合：5568 帧 @542fps、`WINEHUA_VTEST_FRONT‐
+BUFFER_LOG` 全程一次未写（winsys present 从未被调用）、X 窗口零 damage、
+截屏里只有合成器背景 + 注入测试窗（Xlib 路径），固帧四象限始终不出现。
+**X 窗口 → scene → 输出 → XComponent 这一段是好的**（注入测试窗正常出
+图并动），缺口只在 GL 客户端出图这一跳。
+
+**影响面**：X 路线当前只有「X 窗口语义 + 输入」，OpenGL 程序（含 wined3d
+走 GL 的 D3D8/9）在 X 路线不出图；Vulkan 侧（venus / DXVK / vkd3d，即
+M2-T5/T6）不经这条链，不受影响。**补栈清单**（三件套，缺一不可）：①
+Xwayland `-Dglx=true`（连带 host 侧 DRI/swrast 依赖）；② guest mesa 出
+`libGL` + `GL/glx.h` 头（同源、guest 架构）；③ 撤 `WINEHUA_ALLOW_X11_
+NO_GLX` 重编 wine。**未做**——属栈建设，超出 M2 阶段 A 范围，等裁决。
+
+**补栈时要一并换的判定器**（两处都不适用本场景，不是补栈就能自动绿的）：
+① `dx-glx-present` 程序侧 `displayed` 门读 `WINEHUA_DISPLAY_FPS_FILE`，而该
+文件由 wayland 路线渲染器写（`entry/src/main/cpp/common/perf_utils.cpp:32`），
+X 路线永远缺 → 它是路线外来判据；应按 T3 计划改程序侧出**帧内容 CRC 序列**
+（证明客户端在画），出图与否交给主机侧。② `visual:rgba-quadrants` 对**全屏
+截图**做四象限，而 displayroute 的出图面是侧栏里的**预览小框**（`SmokeDev-
+Panel` 的 XComponent，4:3、约 500×390 物理像素），四象限永远判不出来；主
+机侧需要按区域裁剪的视觉判定器（或按框内 CRC 变化判活）。
 
 ## 3. 操作协议（必须遵守，违反即隐性故障）
 

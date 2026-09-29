@@ -1,0 +1,7 @@
+{
+  "displayroute": true,
+  "suite": "displayroute",
+  "tests": [
+    "dx-glx-present-x64"
+  ]
+}
