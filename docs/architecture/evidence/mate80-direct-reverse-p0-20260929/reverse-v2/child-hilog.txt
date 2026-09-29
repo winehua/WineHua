@@ -1,0 +1,22 @@
+09-29 22:40:11.347 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.349 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.349 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.350 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.351 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.351 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.352 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.352 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.352 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.353 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.353 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.383 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.384 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.384 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:11.385 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:11.386 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:12.775 35331 35331 W C03F07/MUSL-LDSO: prelink: relro partial sharing mmap failed, errno=9
+09-29 22:40:12.800 35331 35331 W C03F07/MUSL-LDSO: prelink: relro sharing mmap failed, errno=9
+09-29 22:40:12.855 35331 35331 E C02C03/PARAM_WATCHER: Failed to add watcher for persist.graphic.profiler.beta_dfx
+09-29 22:40:12.855 35331 35331 I C02C03/PARAM_WATCHER: [watcher_manager_kits.cpp:276]ParamWatcher destructor start
+09-29 22:40:12.855 35331 35331 E C02C03/PARAM_WATCHER: SystemWatchParameter is failed!keyPrefix is:persist.graphic.profiler.beta_dfx,errNum is:-1
+09-29 22:40:12.855 35331 35331 E C02C0B/BEGET: [service_watcher.c:85]WatchParameter failed! the errNum is -1

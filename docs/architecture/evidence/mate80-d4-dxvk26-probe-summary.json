@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "runId": "mate80-d4-dxvk26-venus-20260927",
+  "suite": "dxvk26-requirements",
+  "status": "FAIL",
+  "tests": [
+    {
+      "schemaVersion": 1,
+      "runId": "mate80-d4-dxvk26-venus-20260927",
+      "testId": "dxvk26-requirements-x64",
+      "status": "FAIL",
+      "stage": "crashed",
+      "message": "进程在写出结果前退出 (exit=0, source=sigchld)",
+      "pid": 60832
+    }
+  ]
+}

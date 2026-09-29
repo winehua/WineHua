@@ -1,0 +1,322 @@
+{
+  "hapSha256": "4b92988e0a5a569ab26d313a605ffbc41012be369a1147efa3ed7b758f7a287f",
+  "completed": 12,
+  "expected": 12,
+  "metricsScope": "Game + HAP only; accepted presents are not physical scan-out FPS. CPU excludes wineserver and system services.",
+  "samples": [
+    {
+      "index": 1,
+      "runId": "perf-amd64-fixed60-20260929-220100-1-venus",
+      "backend": "venus",
+      "gameFps": 59.99480624,
+      "hapAcceptedFps": 59.03520106124385,
+      "frameP95Ms": 18.6192,
+      "frameP99Ms": 22.8355,
+      "gameCpuMsPerGameFrame": 5.393164768,
+      "estimatedHapCpuMsPerGameFrame": 7.934147292159698,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.5439448054205,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 2,
+      "runId": "perf-amd64-fixed60-20260929-220100-2-direct",
+      "backend": "direct",
+      "gameFps": 60.014048854,
+      "hapAcceptedFps": 59.52115846720351,
+      "frameP95Ms": 18.398,
+      "frameP99Ms": 20.3588,
+      "gameCpuMsPerGameFrame": 6.873090808,
+      "estimatedHapCpuMsPerGameFrame": 5.838817899982576,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.81717510006985,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 3,
+      "runId": "perf-amd64-fixed60-20260929-220100-3-direct",
+      "backend": "direct",
+      "gameFps": 60.00814211,
+      "hapAcceptedFps": 59.55282108865746,
+      "frameP95Ms": 18.1047,
+      "frameP99Ms": 19.7739,
+      "gameCpuMsPerGameFrame": 6.91752291,
+      "estimatedHapCpuMsPerGameFrame": 5.962778030769665,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.978779429123966,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 4,
+      "runId": "perf-amd64-fixed60-20260929-220100-4-venus",
+      "backend": "venus",
+      "gameFps": 59.964653753,
+      "hapAcceptedFps": 59.033758244313105,
+      "frameP95Ms": 18.7604,
+      "frameP99Ms": 22.3756,
+      "gameCpuMsPerGameFrame": 5.394663702,
+      "estimatedHapCpuMsPerGameFrame": 8.105940505638085,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.71349344594958,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 5,
+      "runId": "perf-amd64-fixed60-20260929-220100-5-venus",
+      "backend": "venus",
+      "gameFps": 59.97678715,
+      "hapAcceptedFps": 59.14221369807875,
+      "frameP95Ms": 18.5386,
+      "frameP99Ms": 21.6614,
+      "gameCpuMsPerGameFrame": 5.419677599,
+      "estimatedHapCpuMsPerGameFrame": 8.114170000784084,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.724827767403482,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 6,
+      "runId": "perf-amd64-fixed60-20260929-220100-6-direct",
+      "backend": "direct",
+      "gameFps": 60.009769144,
+      "hapAcceptedFps": 59.5344744755702,
+      "frameP95Ms": 18.2619,
+      "frameP99Ms": 19.8881,
+      "gameCpuMsPerGameFrame": 6.998056096,
+      "estimatedHapCpuMsPerGameFrame": 5.954845430778719,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.056311274824166,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 7,
+      "runId": "perf-amd64-fixed60-20260929-220100-7-direct",
+      "backend": "direct",
+      "gameFps": 60.00812281,
+      "hapAcceptedFps": 59.96465193326118,
+      "frameP95Ms": 18.2417,
+      "frameP99Ms": 20.1328,
+      "gameCpuMsPerGameFrame": 6.978617051,
+      "estimatedHapCpuMsPerGameFrame": 5.8635048297902985,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.851431670315995,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 8,
+      "runId": "perf-amd64-fixed60-20260929-220100-8-venus",
+      "backend": "venus",
+      "gameFps": 60.004289531,
+      "hapAcceptedFps": 59.43972098969785,
+      "frameP95Ms": 18.3651,
+      "frameP99Ms": 21.8485,
+      "gameCpuMsPerGameFrame": 5.509863851,
+      "estimatedHapCpuMsPerGameFrame": 8.032346345760164,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.670836403941305,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 9,
+      "runId": "perf-amd64-fixed60-20260929-220100-9-venus",
+      "backend": "venus",
+      "gameFps": 59.966943614,
+      "hapAcceptedFps": 58.91473617761838,
+      "frameP95Ms": 18.6052,
+      "frameP99Ms": 22.1084,
+      "gameCpuMsPerGameFrame": 5.294608116,
+      "estimatedHapCpuMsPerGameFrame": 7.8941769274438185,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.424334560884223,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 10,
+      "runId": "perf-amd64-fixed60-20260929-220100-10-direct",
+      "backend": "direct",
+      "gameFps": 60.010545791,
+      "hapAcceptedFps": 59.58038405394402,
+      "frameP95Ms": 18.4067,
+      "frameP99Ms": 20.1791,
+      "gameCpuMsPerGameFrame": 6.942515968,
+      "estimatedHapCpuMsPerGameFrame": 5.879854023158766,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.914945643762449,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 11,
+      "runId": "perf-amd64-fixed60-20260929-220100-11-direct",
+      "backend": "direct",
+      "gameFps": 60.010672901,
+      "hapAcceptedFps": 59.506060177847075,
+      "frameP95Ms": 18.0547,
+      "frameP99Ms": 19.7229,
+      "gameCpuMsPerGameFrame": 6.995279089,
+      "estimatedHapCpuMsPerGameFrame": 5.874230380010624,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.97864319763802,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    },
+    {
+      "index": 12,
+      "runId": "perf-amd64-fixed60-20260929-220100-12-venus",
+      "backend": "venus",
+      "gameFps": 59.956266229,
+      "hapAcceptedFps": 59.31808655399746,
+      "frameP95Ms": 18.762,
+      "frameP99Ms": 21.875,
+      "gameCpuMsPerGameFrame": 5.326661106,
+      "estimatedHapCpuMsPerGameFrame": 7.9940114861842755,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 13.463984405348736,
+      "desktopForegroundAtEnd": true,
+      "desktopBackgroundObserved": false
+    }
+  ],
+  "medians": {
+    "venus": {
+      "gameFps": {
+        "median": 59.971865382000004,
+        "min": 59.956266229,
+        "max": 60.004289531
+      },
+      "hapAcceptedFps": {
+        "median": 59.0887073796613,
+        "min": 58.91473617761838,
+        "max": 59.43972098969785
+      },
+      "frameP95Ms": {
+        "median": 18.6122,
+        "min": 18.3651,
+        "max": 18.762
+      },
+      "frameP99Ms": {
+        "median": 21.9917,
+        "min": 21.6614,
+        "max": 22.8355
+      },
+      "gameCpuMsPerGameFrame": {
+        "median": 5.3939142350000004,
+        "min": 5.294608116,
+        "max": 5.509863851
+      },
+      "estimatedHapCpuMsPerGameFrame": {
+        "median": 8.013178915972219,
+        "min": 7.8941769274438185,
+        "max": 8.114170000784084
+      },
+      "observedTwoProcessCpuMsPerAcceptedPresent": {
+        "median": 13.607390604680901,
+        "min": 13.424334560884223,
+        "max": 13.724827767403482
+      }
+    },
+    "direct": {
+      "gameFps": {
+        "median": 60.0101574675,
+        "min": 60.00812281,
+        "max": 60.014048854
+      },
+      "hapAcceptedFps": {
+        "median": 59.54364778211383,
+        "min": 59.506060177847075,
+        "max": 59.96465193326118
+      },
+      "frameP95Ms": {
+        "median": 18.251800000000003,
+        "min": 18.0547,
+        "max": 18.4067
+      },
+      "frameP99Ms": {
+        "median": 20.01045,
+        "min": 19.7229,
+        "max": 20.3588
+      },
+      "gameCpuMsPerGameFrame": {
+        "median": 6.9605665094999996,
+        "min": 6.873090808,
+        "max": 6.998056096
+      },
+      "estimatedHapCpuMsPerGameFrame": {
+        "median": 5.877042201584695,
+        "min": 5.838817899982576,
+        "max": 5.962778030769665
+      },
+      "observedTwoProcessCpuMsPerAcceptedPresent": {
+        "median": 12.946794420700234,
+        "min": 12.81717510006985,
+        "max": 13.056311274824166
+      }
+    }
+  },
+  "fullSequenceCompleted": true,
+  "performanceGainVerified": false,
+  "failures": [],
+  "allDesktopForegroundAtEnd": true,
+  "anyDesktopBackgroundObserved": false,
+  "completeBlocks": [
+    {
+      "block": 1,
+      "meanCpu": {
+        "venus": 13.62871912568504,
+        "direct": 12.897977264596907
+      },
+      "directCpuChangePercent": -5.361779447864301
+    },
+    {
+      "block": 2,
+      "meanCpu": {
+        "venus": 13.697832085672394,
+        "direct": 12.95387147257008
+      },
+      "directCpuChangePercent": -5.431228886799378
+    },
+    {
+      "block": 3,
+      "meanCpu": {
+        "venus": 13.44415948311648,
+        "direct": 12.946794420700234
+      },
+      "directCpuChangePercent": -3.699487967550885
+    }
+  ],
+  "temperatureRawRanges": {
+    "Battery": {
+      "min": 33000,
+      "max": 33000
+    },
+    "ambient": {
+      "min": 28543,
+      "max": 28543
+    },
+    "charger": {
+      "min": 35578,
+      "max": 35947
+    },
+    "dot": {
+      "min": 33052,
+      "max": 34350
+    },
+    "rfboard": {
+      "min": 34000,
+      "max": 35210
+    },
+    "shell_back": {
+      "min": 34482,
+      "max": 34916
+    },
+    "shell_frame": {
+      "min": 35068,
+      "max": 35725
+    },
+    "shell_front": {
+      "min": 35238,
+      "max": 35748
+    },
+    "system_h": {
+      "min": 35842,
+      "max": 36555
+    }
+  },
+  "uniqueDisplayBoundaryDumps": 2
+}

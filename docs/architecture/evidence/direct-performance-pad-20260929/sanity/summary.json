@@ -1,0 +1,19 @@
+{
+  "sanityOnly": true,
+  "performanceGainVerified": false,
+  "samples": {
+    "venus": {
+      "count": 1,
+      "medianGamePresentFps": 79.135378415,
+      "medianFrameMsP95": 16.5355,
+      "medianFrameMsP99": 20.2417
+    },
+    "direct": {
+      "count": 1,
+      "medianGamePresentFps": 90.064656762,
+      "medianFrameMsP95": 14.4546,
+      "medianFrameMsP99": 16.7912
+    }
+  },
+  "nextReview": "Validate matching accepted output work, thermal/foreground conditions, noise and real-game coverage before claiming a gain."
+}

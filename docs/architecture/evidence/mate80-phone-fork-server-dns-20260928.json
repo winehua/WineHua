@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "runId": "mate80-phone-fork-server-dns-control-20260928",
+  "testId": "dns-api-x64",
+  "status": "PASS",
+  "stage": "dns-api",
+  "message": "resolve \"www.baidu.com\" -> ok (110.242.69.21); NX \"winehua-dns-probe.invalid\" -> rc=9003 expected",
+  "pid": 168,
+  "heartbeatTimestampMs": 1790603154932,
+  "architecture": {
+    "peArchitecture": "x86_64",
+    "wineUnixArchitecture": "aarch64",
+    "vulkanLoaderArchitecture": "unavailable",
+    "venusIcdArchitecture": "unavailable",
+    "hostArchitecture": "aarch64",
+    "wow64ThunkEnabled": false,
+    "box64Enabled": false
+  },
+  "metrics": {"ip": "110.242.69.21", "err": 0, "nx_err": 9003}
+}

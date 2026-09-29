@@ -1,0 +1,27 @@
+{
+  "sanityOnly": false,
+  "performanceGainVerified": false,
+  "samples": {
+    "venus": {
+      "count": 6,
+      "medianGamePresentFps": 59.971865382000004,
+      "medianFrameMsP95": 18.6122,
+      "medianFrameMsP99": 21.9917,
+      "median_cpuMsPerFrame": 5.3939142350000004,
+      "median_hapAcceptedGamePresentFps": 59.0887073796613,
+      "median_hapCpuMsPerSecond": 480.63315832648607,
+      "median_estimatedHapCpuMsPerGameFrame": 8.013178915972219
+    },
+    "direct": {
+      "count": 6,
+      "medianGamePresentFps": 60.0101574675,
+      "medianFrameMsP95": 18.251800000000003,
+      "medianFrameMsP99": 20.01045,
+      "median_cpuMsPerFrame": 6.9605665094999996,
+      "median_hapAcceptedGamePresentFps": 59.54364778211383,
+      "median_hapCpuMsPerSecond": 352.68488348968697,
+      "median_estimatedHapCpuMsPerGameFrame": 5.877042201584695
+    }
+  },
+  "nextReview": "Validate matching accepted output work, thermal/foreground conditions, noise and real-game coverage before claiming a gain."
+}

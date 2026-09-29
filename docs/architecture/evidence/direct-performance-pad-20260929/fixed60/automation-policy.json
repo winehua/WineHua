@@ -1,0 +1,7 @@
+{
+  "mode": "automation",
+  "target": "5KPBB25818203996",
+  "artifactDir": "F:\\WineHua\\.temp\\direct-performance-pad-20260929\\fixed60-abba-20260929",
+  "redaction": "No signing logs, raw environment, tokens or unrelated app data.",
+  "actions": "Install the exact HAP, push fixture payload, stop/start test app, bounded measurements, restore screen timeout."
+}

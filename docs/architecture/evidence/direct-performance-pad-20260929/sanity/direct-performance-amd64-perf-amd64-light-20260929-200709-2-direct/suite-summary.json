@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "runId": "perf-amd64-light-20260929-200709-2-direct",
+  "suite": "direct-performance-amd64",
+  "status": "PASS",
+  "tests": [
+    {
+      "schemaVersion": 1,
+      "runId": "perf-amd64-light-20260929-200709-2-direct",
+      "testId": "d3d11-benchmark-amd64-x64",
+      "status": "PASS",
+      "stage": "present",
+      "pid": 60798
+    }
+  ]
+}

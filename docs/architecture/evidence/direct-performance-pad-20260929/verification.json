@@ -1,0 +1,37 @@
+{
+  "recheckedCompleteSamples": [
+    {
+      "runId": "perf-amd64-fixed60-20260929-201057-3-direct",
+      "status": "PASS",
+      "message": "3601 steady-state frames; measurement valid, no speedup assertion"
+    },
+    {
+      "runId": "perf-amd64-fixed60-20260929-201057-2-direct",
+      "status": "PASS",
+      "message": "3601 steady-state frames; measurement valid, no speedup assertion"
+    },
+    {
+      "runId": "perf-amd64-fixed60-20260929-201057-1-venus",
+      "status": "PASS",
+      "message": "3599 steady-state frames; measurement valid, no speedup assertion"
+    },
+    {
+      "runId": "perf-amd64-fixed60-20260929-201057-4-venus",
+      "status": "PASS",
+      "message": "3600 steady-state frames; measurement valid, no speedup assertion"
+    },
+    {
+      "runId": "perf-amd64-light-20260929-200709-1-venus",
+      "status": "PASS",
+      "message": "712 steady-state frames; measurement valid, no speedup assertion"
+    },
+    {
+      "runId": "perf-amd64-light-20260929-200709-2-direct",
+      "status": "PASS",
+      "message": "811 steady-state frames; measurement valid, no speedup assertion"
+    }
+  ],
+  "failedSamplePreserved": true,
+  "benchmarkCheckerUnitTests": "5 PASS",
+  "runnerPlanOnly": "12 ABBA runs with explicit same payload; PASS"
+}

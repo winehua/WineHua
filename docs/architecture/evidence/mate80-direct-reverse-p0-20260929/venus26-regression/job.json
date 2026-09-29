@@ -1,0 +1,15 @@
+{
+  "suite": "dxvk-direct-cube",
+  "prefix": "reuse",
+  "params": {
+    "env": {
+      "WINEHUA_VULKAN_BACKEND": "venus",
+      "WINEHUA_DIRECT_NCP": "0",
+      "WINEHUA_PHONE_DIRECT_FORK": "0",
+      "WINEHUA_WINEDEBUG": "-all,err+module,warn+module,err+seh",
+      "WINEHUA_DIAG_QUIET": "1"
+    },
+    "d3dBackend": "dxvk_modern_2_6",
+    "seconds": 8
+  }
+}

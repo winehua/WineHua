@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "scenarios": [
+    "pending foreground/background order",
+    "independent Ability windows",
+    "replacement and detach",
+    "no unbounded error retry",
+    "changed state after failed request"
+  ],
+  "scope": "Exact ETS implementation transpiled with bundled TypeScript; mocked Window promises. HAP compile validates ArkTS; device keep-awake is separate."
+}

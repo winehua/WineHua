@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "runId": "mate80-d4-direct-create-offscreen-20260927",
+  "suite": "wine-vulkan",
+  "status": "FAIL",
+  "tests": [
+    {
+      "schemaVersion": 1,
+      "runId": "mate80-d4-direct-create-offscreen-20260927",
+      "testId": "wine-vulkan-offscreen-x64",
+      "status": "FAIL",
+      "stage": "timeout",
+      "message": "轮询超时 90000ms (结果文件: /data/storage/el2/base/files/.wine/drive_c/smoke/results/mate80-d4-direct-create-offscreen-20260927/wine-vulkan-offscreen-x64.json)",
+      "pid": 5933
+    }
+  ]
+}

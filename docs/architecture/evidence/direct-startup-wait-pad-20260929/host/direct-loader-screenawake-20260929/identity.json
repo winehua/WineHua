@@ -1,0 +1,9 @@
+{
+  "previousHapSha256": "d37139a585b8e231d79257530eabe02b76620d7bfa8267b4bc688ac93c1c3e73",
+  "backup": "/data/src/winehua/build/direct-loader-screenawake-20260929/entry-performance-d37139a585b8-signed.hap",
+  "packageExit": 0,
+  "candidateHapSha256": "4b92988e0a5a569ab26d313a605ffbc41012be369a1147efa3ed7b758f7a287f",
+  "candidateHapBytes": 350923640,
+  "verifyExit": 0,
+  "candidate": "/data/src/winehua/build/direct-loader-screenawake-20260929/entry-loader-screenawake-4b92988e0a5a-signed.hap"
+}

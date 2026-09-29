@@ -1,0 +1,4 @@
+09-29 07:22:08.722 43427 44506 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: roundtrip: seq=2846031873/2846031873 reserveFds=1/1 reserveInts=65/65 geometryEqual=1 usageEqual=1 phyEqual=1 originalCount=5/5 originalEqual=1
+09-29 07:22:08.722 43427 44506 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: roundtrip reserveInt changed index=14 value=90/91 mainFd=49/55 extraFd=50/56
+09-29 07:23:19.871 43427 45541 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: [a92ab1f6e7be821 37c6abd 15ae52]roundtrip: seq=2846031874/2846031874 reserveFds=1/1 reserveInts=65/65 geometryEqual=1 usageEqual=1 phyEqual=1 originalCount=5/5 originalEqual=1
+09-29 07:23:19.871 43427 45541 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: [a92ab1f6e7be821 37c6abd 15ae52]roundtrip reserveInt changed index=14 value=90/91 mainFd=49/55 extraFd=50/56

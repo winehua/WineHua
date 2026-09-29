@@ -1,0 +1,4 @@
+09-29 19:08:02.717 24007 24007 I A00000/app.hackeris.winehua/wine: desktop mode override set: virtual
+09-29 19:08:05.768 24007 24007 W A00000/app.hackeris.winehua/wine: state: evt:desktop-ready
+09-29 19:08:05.861 24007 24007 W A00000/app.hackeris.winehua/wine: state: state:ready
+09-29 19:08:07.826 24007 24007 I A00000/app.hackeris.winehua/wine: [a92ab19c17b315e 3c714ee 1dcbce7]desktop mode override set: virtual

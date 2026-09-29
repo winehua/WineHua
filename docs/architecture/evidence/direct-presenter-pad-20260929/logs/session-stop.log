@@ -1,0 +1,10 @@
+Test-owned Wine NCP SIGTERM: exit=0
+/bin/sh: kill: 1398: Operation not permitted
+/bin/sh: kill: 1489: Operation not permitted
+/bin/sh: kill: 1576: Operation not permitted
+
+Use App restartEngine button, verified from fresh layout (enabled, bounds [361,899][680,980]).
+No Error
+
+
+Observed after aa force-stop (before cold scene): ps -A filter for App UID 20020271 returned no processes.

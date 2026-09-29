@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "runId": "loader-screenawake-d7636555-amd64-venus-2-20260929-212040",
+  "suite": "direct-performance-amd64",
+  "status": "PASS",
+  "tests": [
+    {
+      "schemaVersion": 1,
+      "runId": "loader-screenawake-d7636555-amd64-venus-2-20260929-212040",
+      "testId": "d3d11-benchmark-amd64-x64",
+      "status": "PASS",
+      "stage": "present",
+      "pid": 38739
+    }
+  ]
+}

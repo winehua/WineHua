@@ -1,0 +1,52 @@
+{
+  "hapSha256": "b741c40f669798a6311dc7f4c383c061891406ccafb64b0165148044d24f9f0d",
+  "sourceFiles": {
+    "smoke/winehua_d3d_benchmark.c": {
+      "bytes": 221,
+      "sha256": "70bfa5d0e7646a65421ce5d9677fb84d9c719e954089aeffa0112da7ed4329ee"
+    },
+    "smoke/winehua_d3d_resize_cube.c": {
+      "bytes": 45927,
+      "sha256": "f0989315c8975bc2baff982c351fd787adae3261f9b051326015e3df4a639106"
+    },
+    "smoke/d3d_benchmark_measurement.h": {
+      "bytes": 9665,
+      "sha256": "739c300c9b24d271e73508b54c3b681ed4e799f548c4ed36fed240f0945dfd3f"
+    },
+    "smoke/benchmark_statistics.h": {
+      "bytes": 667,
+      "sha256": "0b7f995a0950f6656d96d12569765207407f2ce5bc79167ba453ff637f0910e8"
+    },
+    "entry/src/main/cpp/bridge/napi_init.cpp": {
+      "bytes": 68668,
+      "sha256": "a66b8c3c01aa45bf7de8a1289e997e38dc80a940d6cc0fdf2e82c2136ae549e5"
+    },
+    "entry/src/main/ets/smoke/SmokeRunner.ets": {
+      "bytes": 17595,
+      "sha256": "b01274021817159f8d742a378e23446c29a925ffa0e6c4768e026b2c66de9f6d"
+    },
+    "entry/src/main/cpp/direct/direct_vulkan_desktop_compositor.cpp": {
+      "bytes": 38949,
+      "sha256": "7a955a026ace32b2701ba9ba229772f527e38e700f48de161da3c09f478c1094"
+    },
+    "entry/src/main/cpp/graphics/egl_renderer.cpp": {
+      "bytes": 72550,
+      "sha256": "fe219821c1301c5077954274fd25a934b6c594f7caf0c89cc2595f480264d36e"
+    },
+    "automation/run_direct_performance.py": {
+      "bytes": 11420,
+      "sha256": "65e7a0ead05e997b3170bdac1ef05d7c9c876543a840c7344b51fdd43ff9dd5b"
+    },
+    "automation/checks/benchmark.py": {
+      "bytes": 6373,
+      "sha256": "9a01ff24eeb256762ca48b844f12fca337cee60b8b6a7c645ccf13267db73701"
+    },
+    "automation/test_benchmark_check.py": {
+      "bytes": 3893,
+      "sha256": "37ee4a43bd0d36c0d06f61742e7d16da021b0027e6d9b8a20389edeb2e341149"
+    }
+  },
+  "runtimeManifestSha256PreviouslyVerified": "b97cd72c2d3ee4ee8534ddc78103e3423910c264d439a8c3831fa652e0b043ea",
+  "signingLogsArchived": false,
+  "performanceGainVerified": false
+}

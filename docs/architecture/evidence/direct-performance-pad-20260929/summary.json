@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "hapSha256": "b741c40f669798a6311dc7f4c383c061891406ccafb64b0165148044d24f9f0d",
+  "payloadVersion": "smoke-v2-474c8f475ecd",
+  "architecture": "AMD64 PE via FEX",
+  "performanceGainVerified": false,
+  "sanitySamples": 2,
+  "plannedTimedSamples": 12,
+  "completedTimedSamples": 4,
+  "failedTimedAttempts": 1,
+  "unattemptedTimedSamples": 7,
+  "fullSequenceCompleted": false,
+  "failureStage": "program launched; no benchmark result before 240s device timeout",
+  "observedTwoProcessCpuCostChangePercent": 4.765955887384421,
+  "claimBoundary": "Preliminary one ABBA block only; game + HAP CPU, accepted presents, no scan-out or energy measurement. No significant gain conclusion.",
+  "runnerRevision": "Preparation identity is the measured revision; revised-runner.py and revised-runner-plan.json are later fixes, not a rerun."
+}

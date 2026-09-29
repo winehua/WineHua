@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "runId": "venus-d4-cube-control-20260927",
+  "testId": "dxvk-direct-cube-x64",
+  "status": "PASS",
+  "stage": "present",
+  "message": "cube rendered and presented",
+  "renderer": "D3D11",
+  "d3dBackend": "dxvk_legacy",
+  "peArchitecture": "x64",
+  "featureLevel": "11_0",
+  "initHresult": "0x00000000",
+  "presentHresult": "0x00000000",
+  "frames": 648,
+  "renderSequence": 648,
+  "angleRegressions": 0,
+  "lastAngle": 8.002583504,
+  "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/d3d11.dll",
+  "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/dxgi.dll"
+}

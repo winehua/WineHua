@@ -1,0 +1,5 @@
+{
+  "status": "CANCELLED",
+  "reason": "Smoke Want was sent to existing native DirectProbe process (PID 35008); no Wine session/test results were created. Stopped host runner and force-stopped App before the explicit cold regression.",
+  "gpuVerdict": "NOT_RUN"
+}

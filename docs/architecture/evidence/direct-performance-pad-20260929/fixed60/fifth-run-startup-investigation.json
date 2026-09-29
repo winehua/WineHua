@@ -1,0 +1,57 @@
+{
+  "appPidText": "1551",
+  "pidExit": 0,
+  "logs": {
+    "SMOKE": {
+      "exit": 0,
+      "lines": [
+        "09-29 20:17:29.527  1551  1551 I A00000/app.hackeris.winehua/SMOKE: want request: suite=direct-performance-amd64 runId=perf-amd64-fixed60-20260929-201057-5-venus prefix=reuse job=yes",
+        "09-29 20:17:29.665  1551  1551 I A00000/app.hackeris.winehua/SMOKE: request consumed: suite=direct-performance-amd64 runId=perf-amd64-fixed60-20260929-201057-5-venus prefix=reuse",
+        "09-29 20:17:32.705  1551  1551 I A00000/app.hackeris.winehua/SMOKE: run begin suite=direct-performance-amd64 runId=perf-amd64-fixed60-20260929-201057-5-venus prefixReady=true",
+        "09-29 20:17:32.710  1551  1551 I A00000/app.hackeris.winehua/SMOKE: desktop wait test=d3d11-benchmark-amd64-x64 active=true surfaceReady=false",
+        "09-29 20:17:33.021  1551  1551 I A00000/app.hackeris.winehua/SMOKE: desktop wait done test=d3d11-benchmark-amd64-x64 ready=true elapsedMs=311",
+        "09-29 20:17:33.022  1551  1551 I A00000/app.hackeris.winehua/SMOKE: spawn test=d3d11-benchmark-amd64-x64 exe=C:\\smoke\\x64-fex\\winehua_d3d_benchmark.exe seconds=75 timeoutMs=240000 back=dxvk_legacy"
+      ]
+    },
+    "wine": {
+      "exit": 0,
+      "lines": [
+        "09-29 20:17:29.526  1551  1551 I A00000/app.hackeris.winehua/wine: desktop mode override set: virtual",
+        "09-29 20:17:30.036  1551  1551 W A00000/app.hackeris.winehua/wine: state: state:starting:wineserver",
+        "09-29 20:17:30.159  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:30.159  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:30.159  1551  1551 W A00000/app.hackeris.winehua/wine: state: state:starting:wineboot",
+        "09-29 20:17:30.204  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:30.324  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:30.512  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:30.795  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-exited:2037",
+        "09-29 20:17:30.943  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:31.127  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:31.284  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-exited:2117",
+        "09-29 20:17:31.450  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-exited:2026",
+        "09-29 20:17:31.796  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:31.797  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:32.184  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:32.551  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:32.662  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:desktop-ready",
+        "09-29 20:17:32.698  1551  1551 W A00000/app.hackeris.winehua/wine: state: state:ready",
+        "09-29 20:17:32.934  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:33.019  1551  1551 W A00000/app.hackeris.winehua/wine: state: active",
+        "09-29 20:17:33.109  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:33.109  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:33.109  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated",
+        "09-29 20:17:33.109  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:launch-accepted:2294",
+        "09-29 20:17:33.238  1551  1551 W A00000/app.hackeris.winehua/wine: state: evt:proc-exited:2263"
+      ]
+    },
+    "DWA": {
+      "exit": 0,
+      "lines": [
+        "09-29 20:17:32.778  1551  1551 I A00000/app.hackeris.winehua/DWA: [a92ab1ac5ca1eac 3900f9 3a4d198][DWA]  onCreate: tl=1",
+        "09-29 20:17:32.797  1551  1551 I A00000/app.hackeris.winehua/DWA: [a92ab1ac5ca1eac 3900f9 3a4d198][DWA] onWindowStageCreate tl=1",
+        "09-29 20:17:32.799  1551  1551 I A00000/app.hackeris.winehua/DWA: [a92ab1ac5ca1eac 3900f9 3a4d198][DWA] onForeground tl=1",
+        "09-29 20:17:32.840  1551  1551 I A00000/app.hackeris.winehua/DWA: [a92ab1ac5ca1eac 25ad9d5 3900f9][DWA] loadContent OK tl=1"
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "suite": "direct-performance-amd64",
+  "prefix": "reuse",
+  "params": {
+    "env": {
+      "WINEHUA_VULKAN_BACKEND": "direct",
+      "WINEHUA_BENCHMARK_WARMUP_MS": "15000",
+      "WINEHUA_BENCHMARK_DRAWS": "100",
+      "WINEHUA_BENCHMARK_SMALL_SCISSOR": "1",
+      "WINEHUA_BENCHMARK_FPS": "60"
+    },
+    "seconds": 75,
+    "timeoutMs": 240000
+  }
+}

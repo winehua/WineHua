@@ -1,0 +1,15 @@
+{
+  "policy": "automation",
+  "riskLevel": "automation",
+  "target": "USB MatePad Mini",
+  "artifactDir": "F:\\WineHua\\.temp\\direct-pad-20260929\\presenter",
+  "redactionPolicy": "test-app-only, bounded logs; exclude signing secrets and full environment",
+  "screenTimeoutOverrideMs": 600000,
+  "restoreCommand": "power-shell timeout -r",
+  "operations": [
+    "build HAP",
+    "install HAP",
+    "start smoke suites",
+    "collect fixture screenshots and bounded renderer logs"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "policy": "automation",
+  "operation": "Direct fork-server diagnostic build/install/start",
+  "target": "192.168.180.76:44559",
+  "artifactDir": "docs/architecture/evidence",
+  "redactionStatus": "technical probe results only; signing logs private",
+  "sourceCommand": "hdc -t explicit-Mate80 install; aa force-stop/start winehua.mode=direct-probe-fork-server",
+  "decision": "allowed",
+  "timeoutSeconds": 45
+}

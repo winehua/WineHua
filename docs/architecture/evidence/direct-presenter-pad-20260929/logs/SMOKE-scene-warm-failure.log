@@ -1,0 +1,25 @@
+09-29 18:30:10.862  1058  1058 I A00000/app.hackeris.winehua/SMOKE: want request: suite=dxvk-direct-cube runId=pad-presenter-fusion-20260929 prefix=reuse job=yes
+09-29 18:30:11.026  1058  1058 I A00000/app.hackeris.winehua/SMOKE: request consumed: suite=dxvk-direct-cube runId=pad-presenter-fusion-20260929 prefix=reuse
+09-29 18:30:13.293  1058  1058 I A00000/app.hackeris.winehua/SMOKE: run begin suite=dxvk-direct-cube runId=pad-presenter-fusion-20260929 prefixReady=
+09-29 18:30:13.298  1058  1058 I A00000/app.hackeris.winehua/SMOKE: spawn test=dxvk-direct-cube-x64 exe=C:\smoke\x64\winehua_d3d_switch_cube.exe seconds=12 timeoutMs=180000 back=dxvk_legacy
+09-29 18:30:26.928  1058  1058 I A00000/app.hackeris.winehua/SMOKE: test done suite=dxvk-direct-cube test=dxvk-direct-cube-x64 status=PASS stage=present
+09-29 18:30:26.929  1058  1058 I A00000/app.hackeris.winehua/SMOKE: run done suite=dxvk-direct-cube status=PASS 1/1
+09-29 18:30:48.400  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab193584a73f a1deaf fc4284]want request: suite=dxvk-direct-cube runId=pad-presenter-fusion-utf8-20260929 prefix=reuse job=yes
+09-29 18:30:48.400  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab193584a73f a1deaf fc4284]request consumed: suite=dxvk-direct-cube runId=pad-presenter-fusion-utf8-20260929 prefix=reuse
+09-29 18:30:48.405  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab193584a73f a1deaf fc4284]run begin suite=dxvk-direct-cube runId=pad-presenter-fusion-utf8-20260929 prefixReady=
+09-29 18:30:48.410  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab193584a73f a1deaf fc4284]spawn test=dxvk-direct-cube-x64 exe=C:\smoke\x64\winehua_d3d_switch_cube.exe seconds=12 timeoutMs=180000 back=dxvk_legacy
+09-29 18:31:02.026  1058  1058 I A00000/app.hackeris.winehua/SMOKE: test done suite=dxvk-direct-cube test=dxvk-direct-cube-x64 status=PASS stage=present
+09-29 18:31:02.027  1058  1058 I A00000/app.hackeris.winehua/SMOKE: run done suite=dxvk-direct-cube status=PASS 1/1
+09-29 18:31:35.801  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19387a2386 3a2b33c 3f2b57f]want request: suite=dxvk-direct-resize runId=pad-presenter-resize-20260929 prefix=reuse job=yes
+09-29 18:31:35.802  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19387a2386 3a2b33c 3f2b57f]request consumed: suite=dxvk-direct-resize runId=pad-presenter-resize-20260929 prefix=reuse
+09-29 18:31:35.804  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19387a2386 3a2b33c 3f2b57f]run begin suite=dxvk-direct-resize runId=pad-presenter-resize-20260929 prefixReady=
+09-29 18:31:35.810  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19387a2386 3a2b33c 3f2b57f]spawn test=dxvk-direct-resize-x64 exe=C:\smoke\x64\winehua_d3d_resize_cube.exe seconds=12 timeoutMs=180000 back=dxvk_legacy
+09-29 18:31:49.494  1058  1058 I A00000/app.hackeris.winehua/SMOKE: test done suite=dxvk-direct-resize test=dxvk-direct-resize-x64 status=PASS stage=present
+09-29 18:31:49.496  1058  1058 I A00000/app.hackeris.winehua/SMOKE: run done suite=dxvk-direct-resize status=PASS 1/1
+09-29 18:36:00.980  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19490cdbc3 f331d0 14f9112]want request: suite=direct-desktop-scene runId=pad-presenter-vulkan-scene-20260929 prefix=reuse job=yes
+09-29 18:36:00.981  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19490cdbc3 f331d0 14f9112]request consumed: suite=direct-desktop-scene runId=pad-presenter-vulkan-scene-20260929 prefix=reuse
+09-29 18:36:01.005  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19490cdbc3 f331d0 14f9112]run begin suite=direct-desktop-scene runId=pad-presenter-vulkan-scene-20260929 prefixReady=
+09-29 18:36:01.014  1058  1058 I A00000/app.hackeris.winehua/SMOKE: [a92ab19490cdbc3 f331d0 14f9112]spawn test=direct-desktop-scene-x64 exe=C:\smoke\x64\winehua_direct_desktop_scene.exe seconds=0 timeoutMs=120000 back=dxvk_legacy
+09-29 18:38:01.542  1058  1058 E A00000/app.hackeris.winehua/SMOKE: timeout test=direct-desktop-scene-x64 lastText=
+09-29 18:38:01.543  1058  1058 I A00000/app.hackeris.winehua/SMOKE: test done suite=direct-desktop-scene test=direct-desktop-scene-x64 status=FAIL stage=timeout
+09-29 18:38:01.545  1058  1058 I A00000/app.hackeris.winehua/SMOKE: run done suite=direct-desktop-scene status=FAIL 0/1

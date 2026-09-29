@@ -1,6 +1,20 @@
 # ARM64 Direct 渐进实施方案（feature/proton-wine-ohos）
 
+> **2026-09-29 晚，手机路线决定**：Mate 80 重新在线后，反向共享图像 P0 已实现并实测。Guest 的可导出 Vulkan 图像分配实际进入 `vkAllocateMemory → OH_NativeBuffer_Alloc → HDI/SAMGR`，仍超时、0 帧，未解决手机 Direct。按用户最新意见，**手机继续原 Venus 路线，暂停 Direct 上屏研究**；实测 c56 包的 Venus + DXVK 2.6.2 冷启动立方体 **871 帧、呈现与视觉检查通过**。平板 Direct 进度不变。详见 [本轮证据与边界](mate80-direct-reverse-export-20260929.md)。以下“最新包”均需结合设备与时间阅读。
+
+> **2026-09-29 最新装机与验证**：signed HAP `4b92988e…a287f`。第一版 d371 遗漏 caller 的外层递归 USER 锁，诊断短测 12/12 不足以证明修复；第二版同时修正 caller/callee，18 项宿主检查及原版/第一版死锁负对照通过。关闭采样器的正式 AMD64/FEX 75 秒负载 **12/12 冷启动通过**（Venus、Direct 各 6）；另一次 Direct 运行中 resize **878 帧、resize 后 818 帧通过**。本组 Direct 两进程 CPU/accepted present 中位数低约 4.85%，仍未完成真实游戏/整体收益验收，保持 opt-in。参见 [深审与根因](direct-startup-lock-audit-20260929.md)、[最终实机报告](direct-startup-fix-validation-20260929.md)。手机继续搁置，Steam/FEX/default 未调整。以下各旧包记录是阶段历史。
+
+> **2026-09-29 生产 presenter 最新包**：signed HAP `00b507b6…3c5e6`。fusion 已独立为 `DirectVulkanPresenter`，产品调用点不再使用诊断 probe。fusion 1063 帧、运行中 resize 1057 帧及生产输出重建、虚拟桌面单窗口 586 帧通过；同 App 单窗口通过后的双窗口 scene 11 阶段/触摸 2/2 通过。未经预热启动 scene 的两次 120000 ms 超时仍待定位，不能称冷启动矩阵已通过；[实现、失败记录与证据](direct-vulkan-presenter-20260929.md)。手机继续搁置。
+
 > 2026-09-26，基于主仓库 `7fc70bfc`、`thirdparty/wine-valve` `8b5bee4` 和本机 OpenHarmony SDK 头文件核对。`WineHua_ARM64_Direct_渐进式架构重构指导.md` 是目标与阶段建议；此文把它落到当前分支的实际进程、图形和构建接口。设备能力和性能结论必须以新 HAP 的实测为准。
+
+> **2026-09-29 最新平板进展**：按用户要求搁置手机验证，已接入真正的 **HAP Vulkan 桌面 compositor**。平板 Direct 双进程 DXVK 窗口、遮挡/透明、最小化/恢复、resize、全屏退出与实际触摸坐标已通过实机 fixture 验收；游戏图像沿共享 NativeBuffer 直接 GPU 导入，关闭诊断回读。仍是显式 opt-in，尚未完成真实游戏、性能 A/B 和完整异常/窗口矩阵；详见 [本轮实现与验收](direct-vulkan-desktop-20260929.md)。历史记录中的“下一步手机 P0”已由本次工作顺序取代。
+
+> **公共核心最新包复核**：signed HAP `64cbd659…3021f`，payload `smoke-v2-c87c4aa03bfc`；桌面已从 probe/friend 迁到独立 `DirectVulkanContext`。双槽输出 resize 8/8、Wine/DXVK 桌面 11/11 阶段、真触摸 2/2、fusion 707 帧均通过；完整证据和采集时序修复见 [公共核心记录](direct-vulkan-context-20260929.md)。前一包 `65203256…6414c` 的 Create NCP + Venus/EGL 对照另存，不算此次新包回归。之前 Start NCP 的 timeout、安装冷启动边界和整个重构剩余项仍单列。
+
+> **手机历史结论（2026-09-28～29）**：Mate 80 的早期 fork server、真实 Wine x64/x86 Direct 离屏和 DXVK 2.6.2 功能资格检查已通过；Direct 上屏与跨进程 NativeBuffer 注册仍未通过。通用 OPAQUE_FD 能力检查未通过，OHOS NativeBuffer 目标格式支持 import/export，但不能代替真实共享图像验证。以下手机记录保留；恢复手机工作时先解决注册/系统服务上下文，不调整 Steam/FEX。
+
+> 后续设计：[Direct 渲染与共享图像呈现设计](direct-render-shared-image-design.md)，明确本地 Vulkan、共享图像与控制 IPC 的边界，以及手机 P0～P4 的实现顺序。
 
 ## 当前基础与边界
 
@@ -160,11 +174,171 @@ OpenGL/Zink、Audio Direct、Gamepad Shared State 是后续独立 Gate；不要�
 - 最终包又测了**缺省 Start + Venus**，x86 离屏 `PASS`，x64 在进入 `__wine_main` 后 90 秒没有写出结果，[套件摘要](evidence/direct-d3-venus-start-final-summary.json)。同包 Create + Venus 的 x64/x86 则均通过；不能把 Start x64 超时归因于 Direct loader，也不能称缺省生产路径的 Vulkan 回归已全绿。Start 与 Create 的 x64 差异仍须单独定位；D3 Direct 继续只在 Create NCP 显式启用。
 - **D3 WSI 未完成**：离屏 smoke 没有 Win32 surface、swapchain、acquire、present 或 resize，也没有把产品窗口接到 D2 的 BufferQueue 和 Vulkan compositor。下一步需要把 App 的 producer window 通过 D2.5 的 IPC 交给目标 Wine NCP，建立 `(clientPid, toplevelId, generation)` surface 身份与生命周期，再实现 Direct 的 Win32 surface/swapchain/present 和 resize/device-lost 回退。D4 DXVK Direct 尚未开始。
 
-## 关键的未知事实
+### D3 第二阶段：真实 Wine NCP 的 surface 控制面（2026-09-27）
+
+- App 已把独立 `OH_ConsumerSurface` 的 producer window 通过 IPC parcel 交给真实 Create 型 `libwine_child.so`。身份为 `(clientPid, toplevelId, wlSurfaceId, generation)`；attach/query/detach、旧代拒绝、resize 换代和 NCP 死亡回调已有独立探针。首版协议冷启动 **10/10 PASS**（[逐轮结果](evidence/direct-d3-wine-surface-ipc-runs.ndjson)）；增加 Direct 进程路由断言后，SHA-256 `87a6f1d2…` 候选又冷启动 **10/10 PASS**、10 个 PID 各异、每轮 `directRoute=1`（[逐轮结果](evidence/direct-d3-wine-surface-ipc-final-runs.ndjson)）。
+- Wayland toplevel 创建、resize、销毁已接入后台 surface 控制器；它只为显式 Direct Create NCP 建立队列。Wine `winewayland.drv` 的显式 Direct 分支已尝试从同进程 `libwine_child.so` 取得 producer，并调用系统 Vulkan 的 `vkCreateSurfaceOHOS`。`win32u` 将 Win32 surface 扩展映射到实例扩展 `VK_OHOS_surface`；曾误在设备扩展列表中查找该实例扩展，现已改为在实例扩展枚举时记录。
+- Wine 源码已用 `scripts/w1-m4-build-merged.sh` 真正编译成功（ARM64 `win32u.so`、`winewayland.so`），随后 `scripts/w1-m2-assemble.sh` 和 `scripts/w1-m3-build-hap.sh` 成功，候选映射与 runtime closure 均 `PASS`。未消费帧的候选 SHA-256 `87a6f1d24a9d16ffbc7d1d9ad7ed40ec7170e8af2b62659f528ef3ba71fae78b` 在 MatePad Mini 的温启动 Win32 Vulkan 用例中成功创建 OHOS surface，提交 3 帧后第 4 次 acquire 返回 `VK_ERROR_SURFACE_LOST_KHR`（[结果](evidence/direct-d3-wsi-preconsumer-x64.json)）；App 日志同时确认真实 toplevel 的 producer 已 attach。
+- 当前 App 控制器已增加 NativeBuffer GPU 导入、双帧槽和 acquire/release `SYNC_FD` 传递，按帧消费真实 Wine 的 ConsumerSurface；此路径关闭诊断像素读回，**仍未把帧绘制到 XComponent**。新 signed HAP SHA-256 `9cc8019a165af525cf9aafb59157ccef86c76aa3a614e0c7f61d09e92d4cf4b5` 已构建、校验并装机。同包、同前缀的 Direct 离屏 x64 [对照](evidence/direct-d3-wsi-consumer-offscreen-x64.json) 为 `PASS`；温启动 Win32 WSI [30 帧结果](evidence/direct-d3-wsi-consumer-x64.json) 和 [150 帧结果](evidence/direct-d3-wsi-consumer-150-x64.json) 均 `PASS`。150 帧耗时 2147 ms（约 70 帧/秒的 producer 完成速率），`cpuReadBytes=cpuUploadBytes=0`、`perFrameDeviceWaitIdle=0`；App 消费者日志累计报告第 60/120 帧，真实帧尺寸 632×446。测试程序结果里的 `private BrokerPresent` 文案是旧诊断文本；设备名 Maleoon 910、Direct NCP 日志和系统 loader 版本共同确定这次走的是 Direct OHOS WSI。
+- **边界仍在**：当前 30 帧证明 producer→BufferQueue→GPU consumer 与 fence 回收，不证明画面上屏、60 FPS、多窗口混合合成或 resize。旧 producer 在 resize 后的窗口/`VkSurfaceKHR` 生命周期、跨进程窗口呈现和 device-lost 回退均未实测。缺省 Venus 路由未切换。新包冷启动第一次 present 曾在 PE 写 `STARTED` 前超时，随后的温启动离屏与 present 均通过；需区分 prefix/Wine 初始化和 WSI 后再判稳定性。下一 Gate 是把真实帧接到产品 XComponent Vulkan compositor，并验证 resize、异常退出和持续资源占用。
+- 设备解锁后，以同一已安装 HAP 对 D3 surface IPC 再做 **10 次强停后冷启动**：10/10 `PASS`，10 个不同的 NCP PID；每轮 `directRoute=1`，首次 attach/query、旧代拒绝、resize 换代、detach 与死亡通知均通过（[逐轮 JSON](evidence/direct-d3-wine-surface-ipc-unlock-runs.ndjson)）。这验证的是控制面冷启动，不等同于 Wine WSI 的冷启动 present 或产品上屏。
+- 第二阶段的产品显示接入点核对：非桌面窗口由 `WineWindow.ets` 为每个 toplevel 创建独立 XComponent，当时 `PluginManager::CreateRenderer` 无条件给它创建 EGL renderer；桌面模式仅有 root toplevel 的 EGL XComponent，真实 Direct Wine 窗口是其他 toplevel。`DirectBufferImportProbe` 已有同设备 GPU sample→Vulkan swapchain present 能力，可复用于独占的 Direct XComponent；第三阶段按此接入独立窗口，桌面叠层仍未完成。
+
+### D3 第三阶段：独立窗口产品 XComponent 上屏（2026-09-27）
+
+- 显式 Direct Create NCP 的非桌面 toplevel 现在由 `createRenderer` 绑定到 App 的 Vulkan consumer；同一 XComponent 不再创建 EGL renderer。`resizeRenderer`/`destroyRenderer` 和窗口关闭走同一个输出所有者，工作线程在解绑前等待旧 GPU 提交和 swapchain 释放。桌面模式仍保持原 EGL root，未创建 Direct 叠层；缺省 Venus/Start 路由不变。`automation/smoke.py --desktop-mode fusion|virtual` 增加仅本次冷启动生效的模式覆盖和归档字段。
+- 首次 fusion x64 实测在第 10 帧得到 `VK_ERROR_SURFACE_LOST_KHR`（[失败 JSON](evidence/direct-d3-fusion-pre-inplace-x64.json)）。设备日志显示原因为 Wine 已持有 generation 1 的 producer，随后 xdg 尺寸回报让 App 建 generation 2 并销毁旧 ConsumerSurface。现把**同一 `(clientPid, toplevelId, wlSurfaceId)` 的普通 resize**改为原队列 `SetDefaultSize` + IPC 尺寸元数据更新，不换 producer/generation；身份变化或销毁仍按原代际规则处理。修正后的 IPC 探针仍 `PASS`，包括旧代拒绝和死亡通知（[最终 IPC JSON](evidence/direct-d3-fusion-final-ipc.json)）。
+- MatePad Mini 的 `fusion` 独立窗口模式，Win32 x64 Direct WSI 实测 **150/150 PASS**，随后 **900/900 PASS**，长跑 **1800/1800 PASS、22933 ms**（[长跑 JSON](evidence/direct-d3-fusion-output-x64.json)）。App 侧日志持续报告同一 XComponent 上 `presents=1728`（其余前导帧在 XComponent 绑定前消费），并记录原位 resize（[设备日志](evidence/direct-d3-fusion-output-device.log)）；运行中的[设备截图](evidence/direct-d3-fusion-live2.png)显示 Wine Vulkan 测试窗口的黄色帧。生产者报告 `cpuReadBytes=cpuUploadBytes=0`、`perFrameDeviceWaitIdle=0`；不能仅凭 1800 帧/22933 ms 推断显示器实际刷新率。
+- 产品路径进一步在 `verifyPixels=false` 时跳过诊断 storage/readback buffer、compute shader/pipeline 和相关 descriptor；只保留 fragment 取样与 Vulkan 输出。最终 signed HAP SHA-256 `6e0ee5ccc9a075ba3ea07c592e8344a8e7debc9a17dc457cdb87861f4b8ac822` 已构建、候选校验并装机。该包在 `fusion` 模式再次完成 **150/150 PASS**、App 输出 `presents=114`（[最终 JSON](evidence/direct-d3-fusion-no-readback-x64.json)）。
+- 同一最终包对保留诊断校验的 D2 路径补测：fence 模式 8/8 帧、8 次 acquire/release `SYNC_FD`、像素检查均 `PASS`（[结果](evidence/direct-d3-fusion-final-d2-fence.json)）；同设备合成探针 8/8 帧、8 次 Vulkan output present、GPU 像素检查 `PASS`（[结果](evidence/direct-d3-fusion-final-d2-composite.json)）。
+- 同一最终包、同一 `fusion` 会话的 Venus 对照完成 **150/150 PASS**，设备报告 `Virtio-GPU Venus (Maleoon 910)`、loader 1.3.290（[结果](evidence/direct-d3-fusion-venus-control-x64.json)）；随后再次切回 Direct，也 **150/150 PASS**，报告 Maleoon 910、系统 loader 1.3.275（[结果](evidence/direct-d3-fusion-direct-after-venus-x64.json)）。该结果证明本包在这一 x64 用例上保留了双后端，并不覆盖 Steam/游戏或全套默认生产路径。
+- 虚拟桌面最终包的冷/温对照各在 Win32 测试写结果前超时，设备进程表同时留有上次强停后的 Wine NCP，且首次冷启动测试期间 App/DesktopAbility 曾处于后台；这两次不构成 WSI 失败判据，也**不能算虚拟桌面回归通过**。桌面模式的 Direct 多窗口叠层、运行中窗口尺寸变化/旧 swapchain 处理、异常退出和资源长期稳定性仍待验证；本阶段只证明独立窗口产品上屏。
+
+### D3 第四阶段：运行中 resize 与旧 swapchain（2026-09-27）
+
+- `winehua_vulkan_smoke` 新增显式 `WINEHUA_VULKAN_RESIZE=1` 路径：在 150 帧中点用 `SetWindowPos` 把同一 Win32 窗口从 640×480 改为 800×600，重新查询 surface capabilities，等待队列空闲，以旧 swapchain 作为 `oldSwapchain` 创建新链，重取图像并清除旧布局状态，然后继续 acquire/submit/present。结果 JSON 记录 `resizeRequested`、`resizeCompleted`、`swapchainRebuilds` 和前后 client extent。新增独立 `wine-vulkan-resize` 套件及宿主判定器，要求帧数、尺寸变化、重建次数和无 fallback 同时成立；旧 `wine-vulkan-present` 套件保持默认行为。
+- MatePad Mini 同一已装 D3 HAP 上，**Direct 150/150 PASS**，client extent `632×446 → 792×566`、重建 1 次（[原始结果](evidence/direct-d3-resize-x64.json)）；**Venus 150/150 PASS**、同样尺寸与重建（[对照](evidence/direct-d3-resize-venus-x64.json)）；再切回 **Direct 1800/1800 PASS**、23,404 ms、无 fallback（[长跑](evidence/direct-d3-resize-after-venus-x64.json)）。新独立 gate 实跑 **150/150、设备端与宿主均 PASS**（[结果](evidence/direct-d3-resize-gate-x64.json)、[宿主判定](evidence/direct-d3-resize-gate-host.json)）。
+- App 侧 `DirectWineSurface` 证据显示同一个 `top=6`、`gen=4`、`output=7224134993359` 在 resize 前消费 632×446 帧，收到 800×600 的原位 resize 后消费 792×566 帧，输出 `presents` 在新输出链上持续增长到 831；[筛选后的设备日志](evidence/direct-d3-resize-output-device.log)。这证明 producer→consumer→Vulkan 输出在运行中 resize 后继续工作。运行中截图落在 App 游戏库页，没有可用画面证据，因此本项只以帧/输出日志为判据；不宣称虚拟桌面、多窗口或 device-lost 已通过。
+- 这轮只改了探针和自动化判定器，未修改已安装 HAP 的产品代码。Windows 宿主运行 `automation/smoke.py` 时需要 `PYTHONUTF8=1`，否则默认 GBK 解码会在设备测试已启动后中断归档；首次 Direct 结果是直接从设备文件沙箱取回，后续归档正常。
+
+### D4 第一阶段：ARM64X DXVK 1.10.3 Direct（2026-09-27）
+
+- 新增显式 `dxvk-direct-cube` 套件：ARM64X `d3d11.dll`/`dxgi.dll`、Create NCP、`WINEHUA_VULKAN_BACKEND=direct`，在 `fusion` 独立窗口模式运行。MatePad Mini 上立方体 **695 帧、设备端和视觉判定均 PASS**（[PE 结果](evidence/direct-d4-cube-x64.json)、[宿主判定](evidence/direct-d4-cube-host.json)、[运行中截图](evidence/direct-d4-cube-live.jpeg)）。App 记录同一个 Direct toplevel 的 960×640 GPU 帧持续消费并输出到 XComponent，至少到 660 帧（[设备日志](evidence/direct-d4-cube-output-device.log)）。同 HAP、同 ARM64X DXVK DLL、只把 Vulkan 路由覆盖为 Venus 的对照 **648 帧、视觉判定 PASS**（[PE 结果](evidence/direct-d4-cube-venus-x64.json)、[宿主判定](evidence/direct-d4-cube-venus-host.json)）。
+- `dxvk` 原有 D3D11 资源覆盖探针在显式 Direct 下 **60/60 present PASS，suite coverage PASS**；包括 RGBA8 Load/POINT/LINEAR、descriptor、subresource 和纹理采样等矩阵，`cpuReadBytes=cpuUploadBytes=0`（[PE 结果](evidence/direct-d4-d3d11-x64.json)、[宿主判定](evidence/direct-d4-d3d11-host.json)）。App 的 Direct surface 日志显示 632×446 帧被消费并输出 60 次（[设备日志](evidence/direct-d4-d3d11-output-device.log)）。Venus 对照在同包同探针也 **60/60、coverage PASS**（[PE 结果](evidence/direct-d4-d3d11-venus-x64.json)、[宿主判定](evidence/direct-d4-d3d11-venus-host.json)）。探针原先把 `vulkanDevice` 写死为 `via winevulkan/Venus`，已改成中性的 `via winevulkan`；实际 Direct 路由由显式环境、surface attach/consumer/output 和 cube 截图共同确认。两轮的总用时含启动与资源检查，不能据此宣称性能收益。
+- DXVK 2.6.2 的 Vulkan transport 资格探针在 Direct Maleoon 910 和 Venus Virtio-GPU 上均返回设备端 `UNSUPPORTED`：两侧底层 Vulkan API 都是 1.2.309，缺 Vulkan 1.3、robustness2、dynamic rendering、synchronization2、maintenance4，故 `eligibility.transport=FAIL`、`bringup=BLOCKED`（[Direct](evidence/direct-d4-dxvk26-capability-x64.json)、[Venus](evidence/direct-d4-dxvk26-capability-venus-x64.json)）。此探针的宿主 PASS 只表示正确识别了不支持状态，不表示 2.6.2 已可运行；不在 Direct 上强启现代 DXVK。
+- D4 当前结论限定为 **ARM64X DXVK 1.10.3 的单窗口立方体和 D3D11 smoke A/B**。真实 D3D11 游戏、帧时/CPU/拷贝量的同场景测量、异常退出回退，以及 D3 的 device-lost 和 D5 虚拟桌面多窗口仍未验收；默认路由保持 Venus。
+
+### D4 Mate 80 无线实机：DXVK 2.6.2 的已验证范围（2026-09-27）
+
+- 测试目标是无线 HDC `192.168.180.76:44559` 的 **Mate 80 / VYG-AL00 / API 26**，不是 USB `5KPBB25818203996` 的 MatePad Mini。已安装并由 `bm dump` 核验 `app.hackeris.winehua`；签名 HAP SHA-256 为 `6e0ee5ccc9a075ba3ea07c592e8344a8e7debc9a17dc457cdb87861f4b8ac822`。初始验证只推送 smoke 载荷，后续复测重装同哈希的 HAP；没有重新构建产品 HAP。
+- 手机的现有 **Venus/fork** 路径上，项目定制的 ARM64X **DXVK 2.6.2** D3D11 立方体完成 **876 帧、设备端 PASS、视觉校验 PASS**（[PE 结果](evidence/mate80-d4-modern-cube-venus-x64.json)、[实机截图](evidence/mate80-d4-modern-cube-live.jpeg)）。因此该手机能运行 2.6.2 的这条 D3D11 呈现路径；这不代表 Direct 路由已通过。
+- 同手机同 HAP 的 2.6.2 完整 D3D11 资源覆盖探针在首帧前 **FAIL**（[结果](evidence/mate80-d4-modern-baseline-venus-x64.json)、[宿主判定](evidence/mate80-d4-modern-host.json)）。错误文案写作“initialization or required feature contract failed”，但数据中的 `featureProbeGpuCopies=70` 证明 D3D11 device/swapchain 创建和多项探针已经执行；源码中 `run_feature_probes()` 返回后，`run_heaven_resource_probes()` 的资源矩阵失败使 `create_device()` 早退。RGBA8 采样/更新读回均为零、Heaven 资源矩阵全未通过，`presentFrames=0`。**DXVK 1.10.3** 同探针在此手机为 **60/60 帧、覆盖 PASS**（[对照](evidence/mate80-d4-legacy-venus-x64.json)），故需继续定位现代 DXVK 与这组资源/同步操作的差异，不能把失败泛称为设备不支持 2.6.2。
+- Wine Vulkan Venus 离屏对照枚举到 `Virtio-GPU Venus (Maleoon 920)`、设备 Vulkan **1.3.269**；buffer copy 和 image clear 通过，但 `venus_storage_write.spv` 的读回保持 `0xdeadbeef`，探针 FAIL（[结果](evidence/mate80-d4-vulkan-venus-offscreen-x64.json)）。这为存储图像/读回路径提供独立线索，尚未证明它与上述 DXVK 2.6.2 资源矩阵同根因。DXVK 2.6.2 资格探针在写出能力结果前退出（[摘要](evidence/mate80-d4-dxvk26-probe-summary.json)），该次退出同样不能作为“不支持”的结论。
+- 对 Direct 请求了显式 `WINEHUA_VULKAN_BACKEND=direct`、`--direct-ncp-session` 和 `fusion` 独立窗口：Wine Vulkan 离屏探针 **90 秒未写结果**（[摘要](evidence/mate80-d4-direct-create-offscreen-summary.json)），2.6.2 立方体 **60 秒未写结果**（[摘要](evidence/mate80-d4-modern-direct-create-summary.json)）。随后核对发现手机模式的 `SetBrokerDirectNcpSessionDefault()` 会强制关闭会话级 Create NCP，设备 broker 对测试 PID 记录的实际启动方式是 `launch mode=start`。因此这两次是 **phone fork/Start 路径的超时**，没有运行 Pad 上的 Create NCP Direct surface 控制面，不能拿来判定 Direct WSI 或手机 Vulkan 驱动失败。Mate 80 的 Direct WSI/DXVK 2.6.2 仍未验收；要在手机上验收，先需建立 phone fork 到 Direct NativeWindow 的受控传递与生命周期，再按离屏→WSI→DXVK 顺序复测。手机默认 Venus 路由保持原状。
+- 同日按用户要求在无线 Mate 80 上重装上述同 SHA-256 的签名 HAP，并用新载荷复测。**Venus + DXVK 2.6.2** 的原版 ARM64X D3D11 立方体再次 **911 帧 PASS**，实际加载 `modern-2.6/arm64x/d3d11.dll` 和 `dxgi.dll`；[设备结果](evidence/mate80-d4-reinstall-modern-cube-x64.json)、[实机截图](evidence/mate80-d4-reinstall-modern-cube-live.jpeg)。同配置仅切换为 DXVK 1.10.3 的对照 **893 帧 PASS**（[设备结果](evidence/mate80-d4-reinstall-legacy-control-x64.json)）。这两轮仅选立方体，`dxvk-modern-baseline` 套件级 coverage 因未选资源矩阵用例而显示 FAIL，不能把该 coverage 状态误读成这两个立方体失败。
+- 新增的运行中 resize 立方体探针在手机上即使未设置 `WINEHUA_D3D11_RESIZE`，手工替换同一个 `C:\smoke\x64` 测试程序后仍伴随宿主退出；Hiview fault 记录为 `SIGABRT`，栈落在 `virgl_renderer_cleanup → libepoxy → abort`。整套载荷重新推送后的首轮也出现相同宿主崩溃，而不再推送的旧探针复测通过，因此目前只能把 resize 探针和首轮推送/启动状态列为触发条件，不能由清理栈反推 DXVK 根因（[诊断摘要](evidence/mate80-d4-reinstall-diagnostics.json)）。已把 resize 探针独立为 `d3d11-resize-cube` 用例，常规 DXVK 回归继续用原版立方体；两者均编译通过。完整资源矩阵复测在写出设备结果前又触发同一宿主清理栈，维持上条已记录的资源覆盖未通过结论。
+- 重装后的显式 Direct 2.6.2 立方体复测仍无设备结果；broker 对该测试 PID 再次记录 `launch mode=start`，未进入 Create NCP Direct surface 路径。这次结果仍不能作为手机 Direct 2.6.2 兼容或不兼容的判据。
+
+### Mate 80 Direct 启动链路暂停点（2026-09-27）
+
+- 新增仅诊断用的 `direct-probe-system-create`，绕过手机 fork 拦截层，直接调用系统 `libchild_process.so` 的 Create。Mate 80 返回 `NCP_ERR_MULTI_PROCESS_DISABLED (16010004)`，在创建子进程前被拒绝（[原始结果](evidence/mate80-direct-system-create-20260927.json)）。`bm dump` 显示本应用 `allowMultiProcess: false`；抽查系统设置、相机和两个其他应用也为 `false`。本轮没有找到可由应用声明启用的依据，不把它写成已证实的手机硬件不支持。
+- 显式开放手机上的 `direct-probe-start` 作为独立诊断。phone fork `Start` 返回成功和 PID，但两次均在 15 秒内没有写出 Vulkan 结果；最近一次为 `stage=result_timeout`（[原始结果](evidence/mate80-direct-phone-fork-start-20260927.json)）。子进程仍存活，新增的 `Main` 入口和 Vulkan `dlopen` 阶段日志均未出现，故尚无法判定手机系统 Vulkan 能力。当前应先定位 fork 子进程在加载诊断库或进入入口函数前的阻塞，再测离屏 Vulkan。
+- 当前安装在无线 Mate 80 的诊断 HAP SHA-256 为 `cce3905fc248e14c70a3380c8ed6ddfb837b8a6aac4c81408b8cb2c05a58c7dd`，签名构建通过。它只新增诊断入口/日志，默认 Wine 路由仍是原有 Venus/fork。安装后的 Venus + 2.6.2 立方体尝试从仍停留在 DirectProbe 页的会话发起，SmokeHook 接收了请求但测试没有执行；该次已中止，**不能算新包回归**。暂停前已 force-stop App。上文的 911 帧 PASS 是此前同手机、此前 HAP 的有效结果；恢复工作时先冷启动做当前包的 Venus 基线，再继续 Direct。
+- 恢复调试时为 phone fork `Start` 探针增加独立阶段 fd：子进程用单字节报告进入 `Main`、系统 Vulkan `dlopen`、扩展查询与 `vkCreateInstance` 的前后阶段；父进程同时轮询阶段 fd 和原结果 fd，短包不会被误判为 PASS。签名 HAP SHA-256 `eafd89fcde678d78eeeb747b62b6f30753fca5022f3e754a3d67dc55efc56941` 已构建并校验，但**尚未装机**。Mate 80 无线 HDC 在此时显示 `Offline`，旧 IP:端口的 TCP 可连接但 HDC 握手失败；这属于设备连接状态，不能计为渲染测试结果。装机恢复后先冷启动重测 Venus + 2.6.2，再运行 `direct-probe-start` 读取精确阻塞阶段。
+
+## Mate 80 根因修复与手机上屏方案（2026-09-28）
+
+### 已解决：早期 fork、trace fd 污染与会话重启
+
+1. 晚期 App fork 的子进程在系统 GPU 初始化附近阻塞。将单线程 fork server 放在 `EntryAbility.onCreate`、ArkUI 页面创建之前，再在该 server 中通过系统 musl 的 `_Fork()` 派生子进程；不能在 server 中再次普通 `fork()`，否则会执行继承的 atfork 回调。原生 D0 **10/10 PASS**，不同 child PID、exit 0、全部回收（[逐轮结果](evidence/mate80-direct-fork-server-runs-20260928.ndjson)）。此特殊 `_Fork` 路径仅用于这个尚未初始化 GPU 的单线程 server。
+2. Wine 随后遇到 `Protocol error: partial recvmsg 7 for fd`。报错位置是 `server/request.c:receive_fd()`；抓到的七字节为 `63735f7465735f`（`cs_tes_`），没有 SCM_RIGHTS（[原始日志](evidence/mate80-direct-wine-fd-bytes-20260928.log)）。server 继承 fd 4、9 指向 `/sys/kernel/debug/tracing/trace_marker`（[fd 证据](evidence/mate80-direct-fork-inherited-fds-20260928.log)）。原先全部关闭，系统 tracing 库仍可能按缓存编号写入，被 Wine 复用的编号便会污染协议通道。**仅保留 tracing fd 的单变量 A/B** 使真实 Wine Direct 离屏由失败变为通过，有无 Vulkan warmup 都通过（[有 warmup](evidence/mate80-direct-wine-keep-trace-warmup-20260928.json)、[无 warmup](evidence/mate80-direct-wine-keep-trace-no-warmup-20260928.json)）。尚未取得具体写入库的调用栈；结论依据为实际错误字节、继承 fd 和 A/B。
+3. `phone_adapter/phone_process.cpp:DirectForkServerMain()` 现按 `/proc/self/fd` 的实际路径保留 `/sys/kernel/debug/tracing/trace_marker`、`/sys/kernel/tracing/trace_marker`，并保留控制/退出/握手 fd。没有硬编码 fd 4、9。临时 warmup 和 wineserver FD-PROBE 插桩已移除，没有放宽 wineserver 协议校验。
+4. 运行库刷新和实际 UI“重启 Wine”会调用 `KillAllProcesses()`；原逻辑同时杀死了早期 server，导致后续 `launch mode=phone-fork-server ret=801 childPid=-1`。`proc/wine_process.cpp` 两轮 descendants 清理均跳过 `Phone_GetDirectForkServerPid()`，仍清理 Wine 子进程。实际 UI 重启时 App PID `58080`、server PID `58903` 保持，wineserver `58972 → 60243`；同 App 重启后 Direct x64 离屏再次通过（[结果](evidence/mate80-direct-after-engine-restart-20260928.json)）。server 生命周期仍跟随 App，未重置用户 prefix 来模拟验证。
+
+以上产品修复包 SHA-256：`30b38d23319440d219dce9cae417205f8d45d983b7f7b63bb9a2ed49d59af209`。真实 Wine Direct [x64](evidence/mate80-direct-trace-lifecycle-final-x64-20260928.json)、[x86](evidence/mate80-direct-trace-lifecycle-final-x86-20260928.json) **2/2 PASS**：系统 loader、Maleoon 920、Vulkan 1.3.309，buffer copy、image clear、storage write/read、sampled fetch 和组合/分离 sampler 均通过，无 fallback。专用 [DXVK 2.6.2 资格检查](evidence/mate80-direct-dxvk26-final-20260928.json) 为真实设备端 **PASS**，包括 Vulkan 1.3、robustness2、dynamic rendering、synchronization2、maintenance4、device create 与 timeline 往返；这不是 DXVK Direct 上屏通过。
+
+同包默认 **Venus + ARM64X DXVK 2.6.2 cube 885 帧 PASS**，设备结果和宿主单项视觉判定均通过（[设备结果](evidence/mate80-trace-fix-venus26-final-20260928.json)、[宿主结果](evidence/mate80-trace-fix-venus26-host-20260928.json)、[截图](evidence/mate80-trace-fix-venus26-live-20260928.jpeg)）。仅选了 cube，套件级 coverage 因未选资源矩阵而 FAIL；不能把它误记为 cube 失败，也不能把 cube 通过当作完整资源矩阵回归。
+
+### 未解决：手机 Direct 上屏缺少 producer
+
+真实 Wine Direct WSI 已明确到达 surface 创建，但记录 `WineHua Direct producer unavailable owner_wl=3 pid=59267`，`presentFrames=0`、`VK_ERROR_SURFACE_LOST_KHR (-1000000000)`（[设备结果](evidence/mate80-direct-trace-wsi-20260928.json)，对应日志未归档）。这是该手机历史截点的首帧阻塞点，不能用离屏 PASS 替代。
+
+代码链为 `direct_wine_surface_controller.cpp` 的 `WineIpcChildUsesDirectVulkan(pid)` 登记 → `wine_child_ipc_launcher.cpp` 的真实 `OHIPCRemoteProxy` 和 `OH_NativeWindow_WriteToParcel` → 子进程 producer registry → `winewayland.drv/vulkan.c:winehua_direct_surface_create()`。平板 Create NCP 具有该通道；手机早期 fork server 只建立了 argv/fd/退出通道，没有 Binder proxy 和 producer 登记，surface 获取等待后失败。仅修改登记布尔值、传 surfaceId 或父进程指针，都不能补齐资源交接。
+
+本机官方离线 `@ohos.app.ability.childProcessManager` 文档明确 SELF_FORK 不能用 Binder 与其他进程通信，而 APP_SPAWN_FORK 可以；相关 ArkTS 接口本身只在 Tablet/PC 正常调用。手机系统 Create 实测返回 `16010004`。官方 `OH_NativeWindow_CreateNativeWindowFromSurfaceId` 文档又明确只允许获取本进程创建的 surface。因此不能把手机 dummy proxy 当真 proxy 使用，也不能将平板的生产者窗口原样搬过来。
+
+### 共享图像方案的实测能力与取舍
+
+为避免仅凭扩展名实施新 WSI，D0 结果协议升级为 version 4，记录每组 external image 的 handle、格式、tiling、usage、VkResult、features 和 compatible handles，并单独记录 external buffer 查询。最终能力诊断包 SHA-256：`b360f4a02f01d7984c7e202e1180f0387297de9a1e0ccc6c617bdf5bf3f7dfb4`，已构建、签名、候选校验并装机。原生 D0 PASS，child PID `6500`、server PID `6394`、child exit 0 且已回收。**此 PASS 只属于 D0**；[完整能力结果](evidence/mate80-direct-external-memory-audit-20260928.json) 应逐项读取：
+
+| 方案/查询 | Mate 80 结果 | 含义 |
+| --- | --- | --- |
+| OPAQUE_FD 图像：RGBA8 optimal，render+sample+transfer / color+sample / sample；RGBA8 linear transfer；BGRA8 optimal 两种 usage | 六项均 `VK_ERROR_FORMAT_NOT_SUPPORTED (-11)` | 此次所测配置均不支持；不能采用通用 fd 图像方案 |
+| OPAQUE_FD buffer：transfer src+dst | 查询执行，features=0 | 不能以共享 buffer 加 GPU 拷贝绕过上述限制 |
+| DMA_BUF 图像 | 未公布 `VK_EXT_external_memory_dma_buf`，未查询；记录的 -7 为探针跳过标记 | 没有可依赖的 DMA_BUF Vulkan 导入路径 |
+| OHOS NativeBuffer：RGBA8 optimal，color+sample+transfer / sample | 两项 `VK_SUCCESS`，features=7，compatible handles=`0xa000` | 支持 import/export，要求 dedicated allocation；仍需实际分配、跨进程导入验证 |
+| SYNC_FD semaphore | 支持 import/export | 具备 GPU fence 交接的能力前提，手机新桥尚未实测往返 |
+
+初始只查一组 OPAQUE_FD 的候选 `d00f359a…` 已装机测得 mask=1023（[原始结果](evidence/mate80-direct-fd-capability-initial-20260928.json)）。最终矩阵排除了单一格式或过宽 usage 导致误判的情况，但不泛化为驱动在所有场景均不支持 external memory。
+
+最终 `b360f4a0…` 包的真实 Wine Direct 离屏复测 **x64/x86 2/2 PASS**（[x64](evidence/mate80-memory-audit-final-x64-20260928.json)、[x86](evidence/mate80-memory-audit-final-x86-20260928.json)、[宿主](evidence/mate80-memory-audit-final-host-20260928.json)）。首次冷启动在 wineboot 阶段等待 180 秒失败，测试未执行；强停 App 后原配置、原 prefix 重试即通过。保留[首轮超时日志](evidence/mate80-memory-audit-wineboot-timeout-20260928.log)，不将重试通过描述为冷启动稳定性已验收。
+
+同包温启动默认 Venus + 2.6.2 [878 帧设备结果](evidence/mate80-memory-audit-venus26-final-20260928.json) PASS；[自动视觉判定](evidence/mate80-memory-audit-venus26-host-20260928.json)也写了 PASS，**但人工逐张检查四张截图均是控制页，没有立方体，因此撤销该轮视觉通过结论**（[原图](evidence/mate80-memory-audit-venus26-live-20260928.jpeg)）。`d3d11-cube-color-depth-v1` 仅检查全图 RGB/暗色分布，控制页彩色按钮能触发假阳性；后续必须同时确认测试窗口/目标区域，不能只看这个自动 PASS。此轮只证明 PE present 完成，前述 `30b38…` 包的 885 帧截图经人工核对确实包含立方体。
+
+随后同一最终包、同一 prefix 冷启动 Venus + 2.6.2，**891 帧 PASS，人工复核截图确有立方体**（[设备结果](evidence/mate80-memory-audit-venus26-cold-20260928.json)、[宿主结果](evidence/mate80-memory-audit-venus26-cold-host-20260928.json)、[实际画面](evidence/mate80-memory-audit-venus26-cold-live-20260928.jpeg)）。仍只选 cube，套件 coverage FAIL 的原因仍是未运行资源矩阵。结束时 App 已由 smoke 强停，没有 WineDirectFork/wineserver 残留，临时熄屏设置已通过 `power-shell timeout -r` 恢复。
+
+### 推荐的手机实现路径及下一个验收点
+
+采用**手机专用 NativeBuffer 图像槽交接**，保持 Wine/DXVK 在自己的进程直接执行系统 Vulkan：
+
+```text
+App 分配 NativeBuffer 槽并管理窗口/代际
+  ↕ Unix socket：缓冲区 fd（SCM_RIGHTS）、有界元数据、slot/generation、SYNC_FD
+Wine 子进程导入 NativeBuffer → 系统 Vulkan 渲染
+  → 帧完成 fence → App Vulkan consumer/compositor → XComponent
+```
+
+这条候选路径不传 Vulkan 绘制命令；跨进程仍需要窗口控制、图像身份和同步。它与已完成的平板 BufferQueue/Binder 路径并行，不能直接复用当前 `VkSurfaceKHR` 构造而省略手机 swapchain/acquire/present 实现。
+
+实现前必须先做一个隔离探针：App 分配 64×64 NativeBuffer，传完整 buffer handle/附加 fd/元数据至早期 fork 子进程，子进程按 dedicated allocation 导入、GPU 写已知图案并导出 SYNC_FD，App GPU 等待/采样验证，交还 release fence，再复用第二帧。后续才扩到双槽、resize 换代、异常退出和真实 Wine WSI。App 的诊断 GPU 取样读回只用于证明像素，正式路径关闭读回。
+
+2026-09-29 更新：**P0 交接代码已实现，但跨进程 NativeBuffer 注册门槛未通过；手机 Wine/DXVK Direct 上屏仍未完成。** 公开 NativeBuffer C API 提供 `WriteToParcel/ReadFromParcel`，并未直接提供 Unix socket 导入/导出接口。OpenHarmony 上游代码显示其序列化对象是 SurfaceBuffer 的 handle/字段，区别于包含远程 producer 的 NativeWindow；但这只支持选定调查方向，不证明 Mate 80 的版本兼容性。本轮设备限定的实验 codec 已验证本地序列化布局、附加 fd backing identity 和重新编码；实际 fork child 的注册却触发 HDI/SAMGR 服务获取等待，尚未进入 Vulkan 图像导入。不得直接拷贝 parcel 字节中的 fd 整数、虚拟地址或指针，也不得把 NativeWindow parcel 当作普通 buffer parcel。保留手机现有路由，单列未满足的系统接口，不将探针代码或 0 帧计数写成 Direct 成功。
+
+上游核对入口（仅作设计参考，未将其代码加入产品）：[native_buffer.cpp](https://github.com/openharmony/graphic_graphic_surface/blob/master/surface/src/native_buffer.cpp)、[buffer_utils.cpp](https://github.com/openharmony/graphic_graphic_surface/blob/master/surface/src/buffer_utils.cpp)、[surface_buffer_impl.cpp](https://github.com/openharmony/graphic_graphic_surface/blob/master/surface/src/surface_buffer_impl.cpp)。`master` 不代表 Mate 80 固件对应版本。
+
+本轮没有切换默认 Vulkan 路由，没有调整 Steam/FEX，也没有提交或批量恢复工作树的现有改动。完整 smoke 载荷保持 `smoke-v2-2e5e6843ea9d`。
+
+## 手机 P0 共享 NativeBuffer 实现与最终实测（2026-09-29）
+
+目标仍是 Wine 进程执行系统 Vulkan、App GPU 采样成品图像。新增 opt-in `winehua.mode=direct-phone-shared-buffer-probe`，只运行隔离的 P0，不启动 Steam、不改变 FEX/默认图形路由，也没有提交现有工作树。
+
+- `direct_shared_buffer_probe.cpp`：App 分配 64×64 RGBA8 单槽、本地 codec 往返、启动 child、GPU sampler 和 SYNC_FD 归还；15 秒 packet deadline、3 秒退出观察、失败清理与结果 JSON。系统 Start 用 `dlopen/dlsym` 直接解析真实实现，并独立记录系统退出回调；不伪报系统 child 的 waitpid/reaping。
+- `direct_shared_buffer_child.cpp`：系统 Vulkan device-first 初始化、dedicated NativeBuffer import、GENERAL/EXTERNAL ownership、四帧 GPU clear、render/release fence 往返与最终 drain。NativeBuffer RAII 的声明顺序保证 Vulkan image/memory/device 先析构。上述是代码契约；实际未执行到图像导入。
+- `native_buffer_socket.{h,cpp}`：wire v4、SOCK_SEQPACKET/SCM_RIGHTS、CLOEXEC、截断/长度/fd 数量校验、RAII；最多 16 fd 和 256 ints。Linux 真实 socket 测试通过，包括 backing alias、400 个非法包、无 fd 泄漏和超时。
+- `native_buffer_parcel.cpp`：使用公开 WriteToParcel/ReadFromParcel，避免 SDK `BufferHandle` 尾部与 Mate 80 ABI 不一致；只接受简单布局或设备实测的 `reserveFds=1/reserveInts=65`。第 13/14 项作为私有字段对清零并要求系统重建；其含义未公开，不能由本地校验断言跨进程安全。其他字段严格匹配，两个 fd 的 `st_dev/st_ino/st_size` 相同。该适配器仍不能作为通用稳定协议。
+- `direct_native_read_watchdog.cpp`：child 内用官方 `libohhidebug.so` 的 FP unwinder 采集有限等待栈。普通 fork/保留映射的实验分支仅对 P0 SO 和参数生效；其他 Wine/探针继续原路由。
+
+最终 HAP SHA-256 **`04e91fb20aa6834e2e68c0b71a74a9180f581ea24e5cfca34c9a0d69b25d5a79`**，构建、签名、候选校验并装机完成。完整 smoke 保持 `smoke-v2-2e5e6843ea9d`、33 个测试 EXE。最终同包三组结果：
+
+| 启动方式 | 结果 |
+| --- | --- |
+| 真实系统 Start | 本地 NativeBuffer 往返通过；`launchCode=16010004`、PID=-1，未创建子进程（[JSON](evidence/mate80-phone-shared-p0-system-start-v4-20260929.json)） |
+| 早期 server 的 `_Fork()`，device-first | 系统 Vulkan/Maleoon 920 device 创建成功；ReadFromParcel 的 HDI/SAMGR 获取超时，0 帧（[JSON 与栈](evidence/mate80-phone-shared-p0-device-first-v4-20260929.json)） |
+| 早期 server 的普通 `fork()`，保留映射/高编号 fd | 同样创建 device 后卡在同一服务获取栈，0 帧（[JSON 与栈](evidence/mate80-phone-shared-p0-standard-fork-v4-20260929.json)） |
+
+栈为 `OH_NativeBuffer_ReadFromParcel → SurfaceBufferImpl::SetBufferHandle → IDisplayBuffer::Get → IAllocator::Get → HDI ServiceManager::Get → SAMGR GetSystemAbilityWrapper/Recompute → usleep`。它证明本地 parcel 重建仍需要接收进程访问系统服务，与官方 SELF_FORK 的 Binder 限制相符；没有明确 Binder 拒绝码，不能将推断写成已取得拒绝日志。两次 fork 的 SIGKILL=9 均由探针超时清理发送，server 已回收 child，不能算原生崩溃。保留/清理低映射、普通 fork/_Fork、Vulkan 初始化顺序都未解决注册等待。
+
+同包原生 D0 **PASS**，系统 Vulkan 1.3.309、Maleoon 920、离屏像素正确、exit 0 且已回收（[结果](evidence/mate80-phone-shared-p0-final-d0-20260929.json)）。本轮未重跑真实 Wine/DXVK 上屏；此前手机 2.6.2 的 Venus 和 Direct 离屏结论仍按各自历史包记录，不扩展为最终包的新回归。
+
+当前停在 **P0 FAIL/0 帧**。下一步先核实能访问 SAMGR/HDI 的受系统管理进程入口，或官方无需此注册链的 NativeBuffer 导入接口。通过共享图像和 SYNC_FD 的真实往返后，才推进双槽/resize/异常生命周期（P1）、Wine 手机 WSI（P2）和同手机 1.10.3/2.6.2 Direct 对照（P3）。完整设计、最终包身份和实验边界见 [共享图像设计 §8](direct-render-shared-image-design.md#8-p0-实现与实验边界2026-09-29)。
+
+结束前 App 已 force-stop，设备进程列表无本应用/fork server/P0 child/wineserver 残留；临时熄屏设置已恢复。`git diff --check` 通过，工作树未提交。
+
+### DXVK Native 手机成功路径的代码核对（2026-09-29）
+
+已阅读 PomeloTechLabs 的 OHOS Native 1.10.3（`fb2cfafb…`）和 2.6.2（`7b924f77…`）。两版都在进程内登记 XComponent NativeWindow，由同进程 DXVK WSI 创建 OHOS surface/系统 swapchain 并直接 present，没有我们 P0 的跨进程 NativeBuffer 重建。用户反馈的手机运行成功与此路径相符，但仓库没有手机 HAP 启动代码，不能由库源码断言调用应用整体无其他进程。
+
+手机当前受限的是所测系统 NCP 入口及自行 fork 后的图形服务/资源交接，不应概括成手机不支持 Vulkan Direct 上屏。下一设计决策应围绕渲染进程的窗口归属与系统服务上下文；同进程 Native 方案并不证明现有 fork Wine 能直接使用 App 的窗口 ID。完整固定版本源码依据与差异见 [设计记录 §9](direct-render-shared-image-design.md#9-pomelotechlabs-dxvk-native-代码对照2026-09-29)。
+
+### 手机恢复后的候选：反向 Vulkan NativeBuffer 导出（尚未实测，已搁置）
+
+现有自定义 fd/元数据 transport 已通；新增优先实验是 Guest 通过 dedicated Vulkan image/memory 和公开 `vkGetMemoryNativeBufferOHOS` 导出，再由正常 App 接收/注册并 GPU 采样。NDK 已确认该 API，手机 RGBA8 OHOS external memory 的 exportable 位也已查询；驱动 allocation/export 内是否仍访问 HDI/SAMGR 尚未知。此方案只改变分配与注册方向，保留 Guest GPU 渲染、App 贴图；不提前声称可行或零拷贝通过。先做 64×64 单槽四帧、实际 SYNC_FD 往返、资源清理探针，细节见 [设计记录 §10](direct-render-shared-image-design.md#10-自定义图像交接的新候选guest-vulkan-导出2026-09-29)。
+
+用户明确排除 CPU 图像回读/共享像素/上传呈现：此次优化只推进 Guest 本地执行 Vulkan、GPU 图像共享和 fence 交接。若该路径不通，继续现有 Venus；不新增低性能回读 fallback。探针的小型像素校验仅用于验收，正式帧路径与性能 A/B 关闭诊断读回。
+
+## 平板 D5 当前落点（2026-09-29）
+
+当前平板装机为 [性能基准候选](direct-performance-preparation-20260929.md) `b741c40f…9f0d`，包含 viewport 采样与 Native 性能计数，已构建/签名/安装；完整 host payload 为 `smoke-v2-474c8f475ecd`。真实 AMD64 的短工具检查与第一组 fixed60 ABBA 已运行，后续第五轮启动后超时；初组未显示两进程 CPU 节省，见 [初步数据](direct-performance-results-20260929.md)。此前 `c64d3c85…7ea62` 的初次显示回归被锁屏阻止。性能方案与旧包结果分别记录，未宣称显著性能提升或整体验收完成。
+
+新增 `DirectVulkanDesktopCompositor` 已独占虚拟桌面 XComponent 的 Vulkan 输出。游戏用系统 Vulkan 渲染，App 缓存导入共享 NativeBuffer，按 Wayland scene 合成，并用 acquire/release SYNC_FD 交接 GPU 所有权；GDI/ARGB UI 上传单独计数。输出方向、client-only 窗口退出全屏状态同步已修复，最终包的双窗口、透明遮挡、客户区 resize、全屏切换、实际触摸与 fusion 方向均有有效证据，见 [实现与验收](direct-vulkan-desktop-20260929.md)。
+
+公共 Vulkan device/import/output 核心已拆出为 `DirectVulkanContext`，桌面不再依赖 probe 私有状态；后续 fusion 也已独立为 `DirectVulkanPresenter`，生产 fusion 输出 resize 通过，见 [最新记录](direct-vulkan-presenter-20260929.md)。显示 smoke 已补齐产品 ensureDesktop 就绪等待，[三轮未经预热 scene 启动](direct-desktop-startup-20260929.md) 的宿主/设备与输入通过。性能尚未量化，下一门槛是 [同设备 Direct/Venus A/B](direct-performance-gate-20260929.md)。下一阶段仍在平板上：补完整窗口与异常生命周期、生产桌面输出 resize/旋转和长期资源稳定性，再做真实游戏与性能 A/B。手机候选留档，暂不运行；Steam/FEX 不随本轮切换。
+
+## 能力事实与剩余边界
 
 - 目标设备的 Create 类型 NCP 能加载系统 Vulkan，并暴露 Maleoon 910 queue/device；D0 已实测。Start 类型 NCP 的 `vkCreateInstance=-9` 原因未查明。
 - ConsumerSurface producer 能在独立 NCP 通过 IPC parcel 稳定使用，双 buffer 与 CPU fence/resize/异常退出已实测；D1 已回答此范围。
-- 设备实际是否支持 `OH_NativeBuffer` 的 Vulkan 导入、GPU fence 交接和零拷贝合成；D2 回答。`VK_OHOS_external_memory` 等符号存在于 SDK 只说明可以编译。
+- 平板 `OH_NativeBuffer` 的 Vulkan 导入、GPU fence 交接和共享图像合成已由 D2 及最终 D5 fixture 实测。手机的跨进程注册仍未通过。设备结论分别记录，不能由 SDK 符号存在或平板通过外推手机支持。
 - Wine NCP 的 Create 型 IPC bootstrap 已在真实 `libwine_child.so` 验证 argv 串、两个命名 fd、PID 和 proxy 死亡通知；broker 会话级可选路由已接入进程登记。最终包已核对 wineserver 的 Create/Start A/B、跨架构多进程 `platform-process` 2/2、单进程回退；此前 `core` 可选路径 4/4 通过。仍需验证真实 Steam/CEF、完整 i386 `TerminateThread` 契约、异常退出分类与长期资源稳定性，才能回答完整的 D2.5 默认切换问题。
 
 这些 Gate 的任一项失败，保留当前 Venus/VirGL 路径，记录设备与失败阶段；不提前在 Wine 主路径上堆条件分支。Direct 的默认启用要等 D3/D4 真实游戏 A/B 和回退验证完成。

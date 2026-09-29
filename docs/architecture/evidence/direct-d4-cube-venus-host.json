@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "passed": 1,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "dxvk-direct-cube-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "present",
+          "message": "cube rendered and presented",
+          "metrics": {}
+        },
+        {
+          "check": "visual",
+          "argument": "d3d11-cube",
+          "status": "PASS",
+          "stage": "visual:d3d11-cube",
+          "message": "d3d11-cube-color-depth-v1 on dxvk-direct-cube-x64.jpeg",
+          "metrics": {
+            "schemaVersion": 1,
+            "status": "PASS",
+            "validator": "d3d11-cube-color-depth-v1",
+            "image": "F:\\WineHua\\.temp\\direct-d4-runs\\dxvk-direct-cube-venus-d4-cube-control-20260927\\frames\\dxvk-direct-cube-x64.jpeg",
+            "width": 2560,
+            "height": 1600,
+            "coloredSamples": 20957,
+            "minimumColoredSamples": 1280,
+            "darkSamples": 214618,
+            "activeColorBuckets": 3,
+            "colorBuckets": {
+              "red": 770,
+              "green": 12398,
+              "blue": 7789
+            },
+            "coloredBounds": {
+              "x": 36,
+              "y": 116,
+              "width": 1709,
+              "height": 1461
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": []
+}

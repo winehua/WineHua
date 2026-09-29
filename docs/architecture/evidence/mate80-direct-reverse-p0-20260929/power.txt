@@ -1,0 +1,42 @@
+
+-------------------------------[ability]-------------------------------
+
+
+----------------------------------PowerManagerService----------------------------------
+POWER STATE DUMP:
+Current State: AWAKE  Reason: 35  Time: 65769
+ScreenOffTime: Timeout=600000ms
+DUMP DETAILS:
+Last Screen On: 167539
+Last Screen Off: 0
+Last SuspendDevice: 0
+Last WakeupDevice: 65767
+Last Refresh: 167538
+DUMP EACH STATES:
+State: AWAKE   Reason: PICKUP   Time: 65769
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: FREEZE   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: INACTIVE   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: STAND_BY   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: DOZE   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: SLEEP   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: HIBERNATE   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: SHUTDOWN   Reason: INIT   Time: 0
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+
+State: DIM   Reason: TIMEOUT   Time: 63628
+   Failure: INIT   Reason:    From: AWAKE   Time: 0
+

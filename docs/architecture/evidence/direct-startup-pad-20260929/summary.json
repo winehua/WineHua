@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "hapSha256": "f5dbf2521faa102a36427d32dfdc790baf09357c6b9ecf2fa7f06db454e1df23",
+  "payloadVersion": "smoke-v2-df9a09211262",
+  "device": "USB MatePad Mini (Maleoon 910)",
+  "rootCommit": "b53ca22fd1a7f8a96c2392f5931f51cd4436d70d",
+  "wineCommit": "4d3ec031c42a232e15a860274f743f756e047e8d",
+  "rootDirty": true,
+  "wineDirty": true,
+  "wineRuntimeModifiedThisStep": false,
+  "change": "Display smoke cases wait for the product ensureDesktop readiness gate before spawn.",
+  "sourceSha256": {
+    "automation/smoke.py": "639cda36f7c45030b664c7dc70dc61f5b7e34bd6bf461b4dc4a65d80f5235fcd",
+    "smoke/suites/direct-desktop-scene.json": "6bdcc64632c2e6ffa15909d9e92a4014dafba405737271ba66202a8dd909e2ba",
+    "entry/src/main/ets/smoke/SmokeTypes.ets": "8d540f38142a72013d1c995152fa8d7871a0602b5b5a59e1a01ac823d6de7659",
+    "entry/src/main/ets/smoke/SmokeRunner.ets": "71682cd0863a4a54373fbc997635be698be1b276f20adf59cfb731f7438b0ab7"
+  },
+  "runs": [
+    {
+      "runId": "pad-scene-ready-cold-1-20260929",
+      "appPid": 23129,
+      "coldProcessListEmpty": true,
+      "prewarm": false,
+      "stallDump": false,
+      "smokeExit": 0,
+      "captureExit": 0,
+      "desktopWaitMs": 335,
+      "childFrames": {
+        "a": 3020,
+        "b": 2723
+      },
+      "childSwapchainRebuilds": {
+        "a": 5,
+        "b": 3
+      },
+      "inputChecksPassed": 2,
+      "capturedPhases": 11,
+      "visualReview": "11 phase contact sheet reviewed"
+    },
+    {
+      "runId": "pad-scene-ready-cold-2-20260929",
+      "appPid": 24007,
+      "coldProcessListEmpty": true,
+      "prewarm": false,
+      "stallDump": false,
+      "smokeExit": 0,
+      "captureExit": 0,
+      "desktopWaitMs": 151,
+      "childFrames": {
+        "a": 2856,
+        "b": 2636
+      },
+      "childSwapchainRebuilds": {
+        "a": 5,
+        "b": 3
+      },
+      "inputChecksPassed": 2,
+      "capturedPhases": 11,
+      "visualReview": "windowed image missed phase"
+    },
+    {
+      "runId": "pad-scene-ready-cold-3-20260929",
+      "appPid": 24745,
+      "coldProcessListEmpty": true,
+      "prewarm": false,
+      "stallDump": false,
+      "smokeExit": 0,
+      "captureExit": 0,
+      "desktopWaitMs": 358,
+      "childFrames": {
+        "a": 2968,
+        "b": 2699
+      },
+      "childSwapchainRebuilds": {
+        "a": 5,
+        "b": 3
+      },
+      "inputChecksPassed": 2,
+      "capturedPhases": 11,
+      "visualReview": "11 phase contact sheet reviewed"
+    }
+  ],
+  "limitations": [
+    "No failed Wine wait stack was captured; the old package passed with stall diagnostics enabled.",
+    "Cold App process with reused prefix; not first install or a new prefix.",
+    "Run 2 windowed screenshot shows desktop after the short phase ended; input and fixture passed but that image does not verify the windowed phase.",
+    "No fusion, Venus, full host suite, phone, real game or performance A/B retest on this package."
+  ]
+}

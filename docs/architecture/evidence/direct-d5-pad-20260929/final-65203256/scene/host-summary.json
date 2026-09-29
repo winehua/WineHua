@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "passed": 1,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "direct-desktop-scene-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "destroy-a",
+          "message": "Win32 operations and child results; visible GPU composition requires screenshots and App logs",
+          "metrics": {}
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": []
+}

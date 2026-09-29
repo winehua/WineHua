@@ -1,0 +1,29 @@
+[
+  {
+    "runId": "pad-scene-ready-cold-1-20260929",
+    "appPid": 23129,
+    "coldProcessListEmpty": true,
+    "prewarm": false,
+    "stallDump": false,
+    "smokeExit": 0,
+    "captureExit": 0
+  },
+  {
+    "runId": "pad-scene-ready-cold-2-20260929",
+    "appPid": 24007,
+    "coldProcessListEmpty": true,
+    "prewarm": false,
+    "stallDump": false,
+    "smokeExit": 0,
+    "captureExit": 0
+  },
+  {
+    "runId": "pad-scene-ready-cold-3-20260929",
+    "appPid": 24745,
+    "coldProcessListEmpty": true,
+    "prewarm": false,
+    "stallDump": false,
+    "smokeExit": 0,
+    "captureExit": 0
+  }
+]

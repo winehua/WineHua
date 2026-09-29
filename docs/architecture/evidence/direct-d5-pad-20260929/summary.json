@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-29",
+  "device": "5KPBB25818203996",
+  "hapSha256": "65203256f2c52de7cb88de4c355bb846630e39c18581efca6c9495caf946414c",
+  "payloadVersion": "smoke-v2-c87c4aa03bfc",
+  "rootCommit": "b53ca22fd1a7f8a96c2392f5931f51cd4436d70d",
+  "wineCommit": "4d3ec031c42a232e15a860274f743f756e047e8d",
+  "rootDirty": true,
+  "wineDirty": true,
+  "commitProvenance": "Checked using WSL git; raw Windows runner artifact wineCommit is empty.",
+  "scene": {
+    "runId": "pad-final-vulkan-cold-scene-20260929",
+    "status": "PASS",
+    "appPid": 40911,
+    "observedRenderer": "vulkan",
+    "visualPhases": 11,
+    "windowActions": 12,
+    "childAFrames": 2967,
+    "childASwapchainRebuilds": 5,
+    "childBFrames": 2710,
+    "childBSwapchainRebuilds": 3,
+    "inputChecks": [
+      {
+        "stage": "fullscreen",
+        "tap": [
+          1280,
+          800
+        ],
+        "status": "PASS",
+        "commandExit": 0,
+        "received": [
+          640,
+          400
+        ],
+        "clientExtent": [
+          1280,
+          800
+        ],
+        "expected": [
+          640,
+          400
+        ]
+      },
+      {
+        "stage": "windowed",
+        "tap": [
+          948,
+          710
+        ],
+        "status": "PASS",
+        "commandExit": 0,
+        "received": [
+          350,
+          225
+        ],
+        "clientExtent": [
+          700,
+          450
+        ],
+        "expected": [
+          350,
+          225
+        ]
+      }
+    ],
+    "gpuCountersLastSample": {
+      "presents": 2880,
+      "directDraws": 4968,
+      "acquireWaits": 4559,
+      "releaseFences": 4539,
+      "producerRetired": 18,
+      "releaseErrors": 0,
+      "imports": 44,
+      "reuses": 4515,
+      "uiUploadBytes": 341524256
+    },
+    "gameCpuReadbackAndUpload": "Absent in product path by code audit; zero fields are path assertions, not hardware byte measurements.",
+    "coldStartScope": "App restart with existing Wine prefix, not fresh installation."
+  },
+  "resize": {
+    "runId": "pad-final-vulkan-reuse-resize-20260929",
+    "status": "PASS",
+    "frames": 593,
+    "postResizeFrames": 533,
+    "swapchainRebuilds": 1,
+    "visualEvidence": "Auto screenshots show the foreground manager. Functional JSON and GPU log pass; visual resize evidence comes from scene."
+  },
+  "fusion": {
+    "runId": "pad-final-fusion-identity-20260929",
+    "status": "PASS",
+    "frames": 707,
+    "visualEvidence": "live.jpeg: marker upper-left and cube orientation correct"
+  },
+  "venusCreate": {
+    "runId": "pad-final-venus-create-control-20260929",
+    "status": "PASS",
+    "frames": 604,
+    "requestedBackend": "venus",
+    "desktopRenderer": "egl",
+    "visualEvidence": "live.jpeg",
+    "limit": "Create NCP control only; preceding Start NCP timeout remains unresolved."
+  },
+  "excludedRendererOverrideRun": {
+    "runId": "pad-final-vulkan-scene-20260929",
+    "actualAppPid": 40095,
+    "actualRenderer": "egl",
+    "reason": "Reused existing EGL App. Requested renderer override does not prove active renderer."
+  },
+  "remaining": [
+    "real games and performance A/B",
+    "complete popup/subsurface/viewport and exceptional lifecycle matrix",
+    "output resize/rotation and device-lost",
+    "long-duration RSS/fd stability",
+    "shared Vulkan core production interface cleanup",
+    "phone validation deferred",
+    "Zink, Audio Direct and XInput subsequent gates"
+  ],
+  "deviceScreenTimeoutRestored": true
+}

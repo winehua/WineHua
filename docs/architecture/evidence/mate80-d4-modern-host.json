@@ -1,0 +1,913 @@
+{
+  "schemaVersion": 1,
+  "status": "FAIL",
+  "passed": 1,
+  "total": 2,
+  "tests": [
+    {
+      "testId": "dxvk-modern-baseline-x64",
+      "status": "FAIL",
+      "stage": "dxvk",
+      "message": "D3D11 initialization or required feature contract failed",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "FAIL",
+          "stage": "dxvk",
+          "message": "D3D11 initialization or required feature contract failed",
+          "metrics": {
+            "d3dBackend": "dxvk_modern_2_6",
+            "dxvkVersion": "2.6.2",
+            "d3d11Module": "unix/data/storage/el2/base/files/wine/dxvk/modern-2.6_arm64x_d3d11.dll",
+            "dxgiModule": "unix/data/storage/el2/base/files/wine/dxvk/modern-2.6_arm64x_dxgi.dll",
+            "featureLevel": "11.0",
+            "adapter": "DXVK Vulkan",
+            "vulkanDevice": "via winevulkan",
+            "cpuReadBytes": 0,
+            "cpuUploadBytes": 0,
+            "gpuCopyCount": 1,
+            "queueSubmitCount": 0,
+            "presentFrames": 0,
+            "presentFailureFrame": 0,
+            "presentResult": -2147467259,
+            "fallbackDetected": false,
+            "perFrameDeviceWaitIdle": 0,
+            "bcTextureTest": "created_sampled",
+            "bcFormat": "BC1_UNORM",
+            "bcEmulation": true,
+            "patternTexture": "created_sampled",
+            "textureUpdate": true,
+            "textureUploadReadback": false,
+            "alphaBlend": true,
+            "stencilTest": true,
+            "cubeGeometry": false,
+            "depthStencil": true,
+            "constantBuffer": false,
+            "rasterizerState": false,
+            "shaderModel": "5.0",
+            "shaderModel5": true,
+            "drawIndexedInstanced": false,
+            "instanceCount": 2,
+            "offscreenRenderTarget": true,
+            "bcSamplingSubmitted": true,
+            "bcSamplingFunctional": false,
+            "bcFormatMipMatrix": false,
+            "bcFormatMatrixValues": [
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000",
+              "0x00000000"
+            ],
+            "msaa4xSupported": true,
+            "msaaResolveFunctional": false,
+            "computeShaderDispatch": true,
+            "computeUavSubmitted": true,
+            "computeUavFunctional": false,
+            "computeSampledImageFunctional": false,
+            "stencilQueryEnabled": false,
+            "stencilPixelFunctional": false,
+            "stencilFunctional": false,
+            "occlusionQuerySamples": 0,
+            "featureProbeReadBytes": 880720,
+            "featureProbeGpuCopies": 70,
+            "constantBufferMode": "immutable_upload",
+            "dynamicConstantBuffer": false,
+            "dynamicConstantReadback": false,
+            "textureSampling": false,
+            "rgba8SampleMatrix": {
+              "texture": "immutable",
+              "expectedValue": "0xff332211",
+              "markerValue": "0xdeadbeef",
+              "loadPs": {
+                "value": "0x00000000",
+                "pass": false
+              },
+              "loadCs": {
+                "value": "0x00000000",
+                "pass": false
+              },
+              "pointPs": {
+                "value": "0x00000000",
+                "pass": false
+              },
+              "pointCs": {
+                "value": "0x00000000",
+                "pass": false
+              },
+              "linearPs": {
+                "value": "0x00000000",
+                "pass": false
+              },
+              "linearCs": {
+                "value": "0x00000000",
+                "pass": false
+              },
+              "updated": {
+                "uploadValue": "0x00000000",
+                "uploadPass": false,
+                "loadPs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "loadCs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "pointPs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "pointCs": {
+                  "value": "0x00000000",
+                  "pass": false
+                }
+              }
+            },
+            "descriptorMatrix": {
+              "initial": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              },
+              "rebind": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              },
+              "unbound": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              },
+              "lifetime": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              }
+            },
+            "samplerPairMatrix": {
+              "shader": "t0-t3_shared_s0",
+              "values": [
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000"
+              ],
+              "pass": false
+            },
+            "subresourceMatrix": {
+              "initialValues": [
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000"
+              ],
+              "updatedValues": [
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000"
+              ],
+              "arrayLayers": false,
+              "mipLevels": false,
+              "explicitLod": false,
+              "barrierUpdate": false,
+              "pass": false
+            },
+            "texture3dMatrix": {
+              "format": "R32G32B32A32_FLOAT",
+              "created": true,
+              "upload": false,
+              "singleDispatch": false,
+              "uavToSrvBarrier": false,
+              "pingPong": false,
+              "uploadMismatches": 255,
+              "singleMismatches": 256,
+              "pingPongMismatches": 256,
+              "oobLoad": false,
+              "oobIndex": false,
+              "borderPoint": false,
+              "borderLinear": false,
+              "boundaryMismatches": [
+                0,
+                0,
+                7,
+                12
+              ],
+              "oobValues": [
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000"
+              ],
+              "borderPointValues": [
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000"
+              ],
+              "borderLinearValues": [
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000",
+                "0x00000000"
+              ]
+            },
+            "heavenResourceMatrix": {
+              "cube": {
+                "rgba8": false,
+                "rgba8Srgb": false,
+                "rgba16Float": false,
+                "bc1": false,
+                "bc1Srgb": false,
+                "mismatches": [
+                  12,
+                  12,
+                  12,
+                  12,
+                  12
+                ],
+                "pass": false
+              },
+              "texture3d": {
+                "r8": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "rg8": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                }
+              },
+              "comparisonSampler": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              },
+              "depthComparisonSampler": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              },
+              "d24s8DepthComparisonSampler": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "pass": false
+              },
+              "d24s8ExtendedMatrix": {
+                "resourceFormat": "R24G8_TYPELESS",
+                "dsvFormat": "D24_UNORM_S8_UINT",
+                "srvFormat": "R24_UNORM_X8_TYPELESS",
+                "array": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 6,
+                  "pass": false
+                },
+                "arrayViews": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 6,
+                  "pass": false
+                },
+                "cubeAsArray": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 6,
+                  "pass": false
+                },
+                "cubeSample": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 6,
+                  "pass": false
+                },
+                "cube": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 6,
+                  "pass": false
+                },
+                "cubeArray": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 12,
+                  "pass": false
+                },
+                "linearBorder": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "mismatches": 4,
+                  "pass": false
+                },
+                "pass": false
+              },
+              "pass": false
+            },
+            "heavenPassMatrix": {
+              "mrtGbuffer": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "mismatches": 0,
+                "pass": false
+              },
+              "d24ReadonlyShadow": {
+                "initial": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "compare": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "rewrite": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "mismatches": 0,
+                "pass": false
+              },
+              "rgba16fRtvSrvLoad": {
+                "initial": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "added": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "tonemap": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "mismatches": 0,
+                "pass": false
+              },
+              "miniPipeline": {
+                "values": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "mismatches": 0,
+                "pass": false
+              },
+              "pass": false
+            },
+            "decodedFormat": "R8G8B8A8_UNORM",
+            "decodedBytes": 256,
+            "cpuDecodeUs": 0,
+            "durationMs": 1651
+          }
+        }
+      ]
+    },
+    {
+      "testId": "dxvk-modern-cube-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "present",
+          "message": "cube rendered and presented",
+          "metrics": {}
+        },
+        {
+          "check": "visual",
+          "argument": "d3d11-cube",
+          "status": "PASS",
+          "stage": "visual:d3d11-cube",
+          "message": "d3d11-cube-color-depth-v1 on dxvk-modern-cube-x64-1.jpeg",
+          "metrics": {
+            "schemaVersion": 1,
+            "status": "PASS",
+            "validator": "d3d11-cube-color-depth-v1",
+            "image": "F:\\WineHua\\.temp\\direct-d4-phone-runs\\dxvk-modern-baseline-mate80-d4-modern-venus-20260927\\frames\\dxvk-modern-cube-x64-1.jpeg",
+            "width": 2832,
+            "height": 1280,
+            "coloredSamples": 26706,
+            "minimumColoredSamples": 1132,
+            "darkSamples": 196808,
+            "activeColorBuckets": 3,
+            "colorBuckets": {
+              "red": 1613,
+              "green": 560,
+              "blue": 24533
+            },
+            "coloredBounds": {
+              "x": 1128,
+              "y": 40,
+              "width": 577,
+              "height": 1221
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": [
+    {
+      "check": "coverage",
+      "argument": "",
+      "status": "FAIL",
+      "stage": "coverage",
+      "message": "未通过: dxvk-modern-baseline-x64",
+      "metrics": {
+        "schemaVersion": 1,
+        "suite": "dxvk-modern-baseline",
+        "status": "FAIL",
+        "tests": [
+          {
+            "testId": "dxvk-modern-baseline-x64",
+            "appStatus": "FAIL",
+            "requiredPass": false,
+            "missingRequired": [
+              "bcSamplingFunctional",
+              "computeSampledImageFunctional",
+              "computeUavFunctional",
+              "constantBuffer",
+              "cubeGeometry",
+              "descriptorIdentity",
+              "descriptorLifetime",
+              "descriptorRebindDirtyState",
+              "descriptorUnbound",
+              "drawIndexedInstanced",
+              "heavenCubeMatrix",
+              "heavenD24S8DepthComparison",
+              "heavenD24S8ExtendedMatrix",
+              "heavenD32DepthComparison",
+              "heavenResourceMatrix",
+              "heavenTexture3dR8",
+              "heavenTexture3dRg8",
+              "msaaResolveFunctional",
+              "present60Frames",
+              "presentResultSuccess",
+              "rasterizerState",
+              "rgba8LinearCs",
+              "rgba8LinearPs",
+              "rgba8LoadCs",
+              "rgba8LoadPs",
+              "rgba8PointCs",
+              "rgba8PointPs",
+              "rgba8UpdatedLoadCs",
+              "rgba8UpdatedLoadPs",
+              "rgba8UpdatedPointCs",
+              "rgba8UpdatedPointPs",
+              "rgba8UpdatedUpload",
+              "subresourceArrayLayers",
+              "subresourceBarrierUpdate",
+              "subresourceExplicitLod",
+              "subresourceMatrix",
+              "subresourceMipLevels",
+              "texture3dPingPong",
+              "texture3dSingleDispatch",
+              "texture3dUavToSrvBarrier",
+              "texture3dUpload",
+              "textureSamplingFunctional",
+              "textureUploadReadback"
+            ],
+            "submittedOnly": [
+              "bcSampling",
+              "computeUav"
+            ],
+            "optionalDiagnostics": {
+              "stencilQueryEnabled": false,
+              "stencilPixelFunctional": false,
+              "stencilQueryFunctional": false
+            },
+            "metrics": {
+              "presentFrames": 0,
+              "queueSubmitCount": 0,
+              "featureProbeReadBytes": 880720,
+              "featureProbeGpuCopies": 70,
+              "durationMs": 1651,
+              "rgba8SampleMatrix": {
+                "texture": "immutable",
+                "expectedValue": "0xff332211",
+                "markerValue": "0xdeadbeef",
+                "loadPs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "loadCs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "pointPs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "pointCs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "linearPs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "linearCs": {
+                  "value": "0x00000000",
+                  "pass": false
+                },
+                "updated": {
+                  "uploadValue": "0x00000000",
+                  "uploadPass": false,
+                  "loadPs": {
+                    "value": "0x00000000",
+                    "pass": false
+                  },
+                  "loadCs": {
+                    "value": "0x00000000",
+                    "pass": false
+                  },
+                  "pointPs": {
+                    "value": "0x00000000",
+                    "pass": false
+                  },
+                  "pointCs": {
+                    "value": "0x00000000",
+                    "pass": false
+                  }
+                }
+              },
+              "descriptorMatrix": {
+                "initial": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "rebind": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "unbound": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "lifetime": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                }
+              },
+              "subresourceMatrix": {
+                "initialValues": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "updatedValues": [
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000",
+                  "0x00000000"
+                ],
+                "arrayLayers": false,
+                "mipLevels": false,
+                "explicitLod": false,
+                "barrierUpdate": false,
+                "pass": false
+              },
+              "heavenResourceMatrix": {
+                "cube": {
+                  "rgba8": false,
+                  "rgba8Srgb": false,
+                  "rgba16Float": false,
+                  "bc1": false,
+                  "bc1Srgb": false,
+                  "mismatches": [
+                    12,
+                    12,
+                    12,
+                    12,
+                    12
+                  ],
+                  "pass": false
+                },
+                "texture3d": {
+                  "r8": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "pass": false
+                  },
+                  "rg8": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "pass": false
+                  }
+                },
+                "comparisonSampler": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "depthComparisonSampler": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "d24s8DepthComparisonSampler": {
+                  "values": [
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000",
+                    "0x00000000"
+                  ],
+                  "pass": false
+                },
+                "d24s8ExtendedMatrix": {
+                  "resourceFormat": "R24G8_TYPELESS",
+                  "dsvFormat": "D24_UNORM_S8_UINT",
+                  "srvFormat": "R24_UNORM_X8_TYPELESS",
+                  "array": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 6,
+                    "pass": false
+                  },
+                  "arrayViews": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 6,
+                    "pass": false
+                  },
+                  "cubeAsArray": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 6,
+                    "pass": false
+                  },
+                  "cubeSample": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 6,
+                    "pass": false
+                  },
+                  "cube": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 6,
+                    "pass": false
+                  },
+                  "cubeArray": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 12,
+                    "pass": false
+                  },
+                  "linearBorder": {
+                    "values": [
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000",
+                      "0x00000000"
+                    ],
+                    "mismatches": 4,
+                    "pass": false
+                  },
+                  "pass": false
+                },
+                "pass": false
+              },
+              "cpuReadBytes": 0,
+              "cpuUploadBytes": 0
+            }
+          }
+        ],
+        "policy": "required API/object/RGBA8 Load-POINT-LINEAR PS-CS/descriptor/subresource array-mip-explicit-LOD-update/texture sampling/D24S8 2D-array-per-view-cube-cube-array-linear-border/present/readback coverage; ordinary R32_FLOAT comparison, optional MSAA resolve, and stencil query are reported separately"
+      }
+    }
+  ]
+}

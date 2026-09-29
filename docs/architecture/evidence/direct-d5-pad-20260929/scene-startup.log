@@ -1,0 +1,8 @@
+09-29 17:29:27.550 30042 30042 I A00000/app.hackeris.winehua/SMOKE: want request: suite=direct-desktop-scene runId=pad-vulkan-scene-config-fix-20260929 prefix=reuse job=yes
+09-29 17:29:27.696 30042 30042 I A00000/app.hackeris.winehua/SMOKE: request consumed: suite=direct-desktop-scene runId=pad-vulkan-scene-config-fix-20260929 prefix=reuse
+09-29 17:29:27.698 30042 30042 W A00000/app.hackeris.winehua/SMOKE: engine upgrade pending: auto doReset (smoke session)
+09-29 17:30:37.680 30042 30042 W A00000/app.hackeris.winehua/SMOKE: seeded smoke payload smoke-v2-c87c4aa03bfc → C:\smoke
+09-29 17:30:37.682 30042 30042 I A00000/app.hackeris.winehua/SMOKE: run begin suite=direct-desktop-scene runId=pad-vulkan-scene-config-fix-20260929 prefixReady=
+09-29 17:30:37.686 30042 30042 I A00000/app.hackeris.winehua/SMOKE: spawn test=direct-desktop-scene-x64 exe=C:\smoke\x64\winehua_direct_desktop_scene.exe seconds=0 timeoutMs=120000 back=dxvk_legacy
+09-29 17:31:29.939 30042 30042 I A00000/app.hackeris.winehua/SMOKE: test done suite=direct-desktop-scene test=direct-desktop-scene-x64 status=PASS stage=destroy-a
+09-29 17:31:29.940 30042 30042 I A00000/app.hackeris.winehua/SMOKE: run done suite=direct-desktop-scene status=PASS 1/1

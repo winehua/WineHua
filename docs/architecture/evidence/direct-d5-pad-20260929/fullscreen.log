@@ -1,0 +1,2 @@
+09-29 17:31:20.287 30042 30879 I A00000/app.hackeris.winehua/WL_Xdg: [XDG] tl_set_fullscreen tl=5 → configure(1280,800)
+09-29 17:31:24.324 30042 30879 I A00000/app.hackeris.winehua/WL_Xdg: [XDG] tl_unset_fullscreen tl=5 → configure(708,484)

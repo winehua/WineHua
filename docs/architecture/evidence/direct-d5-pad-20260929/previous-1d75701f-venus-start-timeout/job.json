@@ -1,0 +1,10 @@
+{
+  "suite": "dxvk-direct-cube",
+  "prefix": "reuse",
+  "params": {
+    "env": {
+      "WINEHUA_DIRECT_NCP": "0",
+      "WINEHUA_VULKAN_BACKEND": "venus"
+    }
+  }
+}

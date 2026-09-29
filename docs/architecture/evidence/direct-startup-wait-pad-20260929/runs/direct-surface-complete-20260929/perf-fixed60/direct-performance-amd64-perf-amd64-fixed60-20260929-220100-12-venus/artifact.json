@@ -1,0 +1,15 @@
+{
+  "runId": "perf-amd64-fixed60-20260929-220100-12-venus",
+  "suite": "direct-performance-amd64",
+  "prefix": "reuse",
+  "payloadVersion": "smoke-v2-474c8f475ecd",
+  "device": "5KPBB25818203996",
+  "longSeconds": 3600,
+  "directNcpSession": true,
+  "phoneDirectForkServer": false,
+  "desktopModeOverride": "virtual",
+  "desktopRendererOverride": "egl",
+  "wineArchitecture": "aarch64",
+  "wineCommit": "",
+  "wineDirtySummary": []
+}

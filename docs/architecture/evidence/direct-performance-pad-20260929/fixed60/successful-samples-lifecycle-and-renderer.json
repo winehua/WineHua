@@ -1,0 +1,35 @@
+{
+  "pids": [
+    62203,
+    63431,
+    64354,
+    64721
+  ],
+  "tagResults": {
+    "DWA": {
+      "exit": 0,
+      "lines": [
+        "09-29 20:11:44.776 62203 62203 I A00000/app.hackeris.winehua/DWA: [a92ab1ab009d1aa 33401e9 1b3ba1e][DWA] onForeground tl=1",
+        "09-29 20:13:12.067 63431 63431 I A00000/app.hackeris.winehua/DWA: [a92ab1ab57e4c83 6e8099 73bcbc][DWA] onForeground tl=1",
+        "09-29 20:14:38.298 64354 64354 I A00000/app.hackeris.winehua/DWA: [a92ab1abae2da53 194f1d6 b2a8fb][DWA] onForeground tl=1",
+        "09-29 20:16:05.349 64721 64721 I A00000/app.hackeris.winehua/DWA: [a92ab1ac053568f 1e93495 31f7a01][DWA] onForeground tl=1"
+      ]
+    },
+    "DirectVkDesktop": {
+      "exit": 0,
+      "lines": [
+        "09-29 20:13:12.168 63431 63431 I A02330/app.hackeris.winehua/DirectVkDesktop: Vulkan desktop enabled surface=7224134997225 extent=2560x1600 slots=2 preTransform=identity gameCpuReadBytes=0 gameCpuUploadBytes=0",
+        "09-29 20:14:13.269 63431 63803 I A02330/app.hackeris.winehua/DirectVkDesktop: scene presents=3600 layers=4 direct=1 draws=3593 acquireWaits=3593 releaseFences=3591 producerRetired=0 releaseErrors=0 imports=4 reuses=3589 uiUploadBytes=25032384 gameCpuReadBytes=0 gameCpuUploadBytes=0",
+        "09-29 20:14:38.412 64354 64354 I A02330/app.hackeris.winehua/DirectVkDesktop: Vulkan desktop enabled surface=7224134997231 extent=2560x1600 slots=2 preTransform=identity gameCpuReadBytes=0 gameCpuUploadBytes=0",
+        "09-29 20:15:39.188 64354 64915 I A02330/app.hackeris.winehua/DirectVkDesktop: scene presents=3600 layers=4 direct=1 draws=3591 acquireWaits=3591 releaseFences=3589 producerRetired=0 releaseErrors=0 imports=4 reuses=3587 uiUploadBytes=27642112 gameCpuReadBytes=0 gameCpuUploadBytes=0"
+      ]
+    },
+    "DirectWineSurface": {
+      "exit": 0,
+      "lines": [
+        "09-29 20:14:30.104 63431 63803 I A02330/app.hackeris.winehua/DirectWineSurface: queue buffer retired by producer result=41210000",
+        "09-29 20:15:54.716 64354 64915 I A02330/app.hackeris.winehua/DirectWineSurface: queue buffer retired by producer result=41210000"
+      ]
+    }
+  }
+}

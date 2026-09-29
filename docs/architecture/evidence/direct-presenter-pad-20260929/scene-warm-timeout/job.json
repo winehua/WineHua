@@ -1,0 +1,9 @@
+{
+  "suite": "direct-desktop-scene",
+  "prefix": "reuse",
+  "params": {
+    "env": {
+      "WINEHUA_D3D_INPUT_TRACE": "1"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+09-28 23:28:19.003 36567 36972 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: parcel/handle: w=64/64 h=64/64 stride=256/256 size=20480/20480 format=12/12 usage=776/776 fds=1/48 ints=65/4294967295 phyEqual=0
+09-28 23:34:49.128 40923 41467 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: roundtrip: seq=2681929729/2681929729 reserveFds=1/1 reserveInts=65/65 geometryEqual=1 usageEqual=1 phyEqual=1 originalCount=5/5 originalEqual=1
+09-28 23:34:49.128 40923 41467 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: roundtrip reserveInt changed index=13
+09-28 23:38:20.609 43617 43892 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: roundtrip: seq=2858483713/2858483713 reserveFds=1/1 reserveInts=65/65 geometryEqual=1 usageEqual=1 phyEqual=1 originalCount=5/5 originalEqual=1
+09-28 23:38:20.609 43617 43892 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: roundtrip reserveInt changed index=13 value=284639232/284684288 mainFd=49/55 extraFd=50/56
+09-28 23:43:49.297 48638 49053 E A00000/app.hackeris.winehua/DIRECT_SHARED_BUFFER: allocator metadata mapping not recognized

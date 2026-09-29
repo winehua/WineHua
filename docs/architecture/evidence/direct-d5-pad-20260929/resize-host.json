@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "passed": 1,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "dxvk-direct-resize-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "present",
+          "message": "cube rendered and presented",
+          "metrics": {}
+        },
+        {
+          "check": "visual",
+          "argument": "d3d11-cube",
+          "status": "PASS",
+          "stage": "visual:d3d11-cube",
+          "message": "d3d11-cube-color-depth-v1 on dxvk-direct-resize-x64.jpeg",
+          "metrics": {
+            "schemaVersion": 1,
+            "status": "PASS",
+            "validator": "d3d11-cube-color-depth-v1",
+            "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\dxvk-direct-resize-pad-vulkan-final-restart-resize-20260929\\frames\\dxvk-direct-resize-x64.jpeg",
+            "width": 2560,
+            "height": 1600,
+            "coloredSamples": 137324,
+            "minimumColoredSamples": 1280,
+            "darkSamples": 100889,
+            "activeColorBuckets": 3,
+            "colorBuckets": {
+              "red": 2969,
+              "green": 7794,
+              "blue": 126561
+            },
+            "coloredBounds": {
+              "x": 0,
+              "y": 0,
+              "width": 2557,
+              "height": 1573
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": [
+    {
+      "check": "d3d11-resize",
+      "argument": "",
+      "status": "PASS",
+      "stage": "d3d11-resize",
+      "message": "591 frames, post-resize=531, extent [960, 640] -> [800, 600], rebuilds=1",
+      "metrics": {
+        "resizeRequested": true,
+        "resizeCompleted": true,
+        "resizeHresult": "0x00000000",
+        "initialExtent": [
+          960,
+          640
+        ],
+        "resizedExtent": [
+          800,
+          600
+        ],
+        "swapchainRebuilds": 1,
+        "frames": 591,
+        "postResizeFrames": 531,
+        "angleRegressions": 0
+      }
+    }
+  ]
+}

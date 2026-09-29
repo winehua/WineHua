@@ -1,0 +1,7 @@
+{
+  "mode": "diagnostic",
+  "target": "5KPBB25818203996",
+  "artifactDir": "F:\\WineHua\\.temp\\direct-loader-screenawake-pad-20260929\\212040",
+  "redaction": "Only explicit-PID startup and sampler records; bounded shared stderr tail. No signing logs or full environment.",
+  "actions": "Cold App sessions with unchanged prefix/payload, opt-in sampling; no global HDC restart."
+}

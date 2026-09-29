@@ -1,0 +1,159 @@
+{
+  "completed": 4,
+  "expected": 12,
+  "metricsScope": "game process + HAP only; accepted presents are not scan-out FPS",
+  "samples": [
+    {
+      "index": 1,
+      "runId": "perf-amd64-fixed60-20260929-201057-1-venus",
+      "backend": "venus",
+      "gameFps": 59.993987466,
+      "hapAcceptedFps": 59.62240308609877,
+      "frameP95Ms": 18.7719,
+      "frameP99Ms": 20.8359,
+      "gameCpuMsPerGameFrame": 4.4818005,
+      "estimatedHapCpuMsPerGameFrame": 6.967322209043701,
+      "observedTwoProcessCpuMsPerGameFrame": 11.449122709043701,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 11.52047701456742
+    },
+    {
+      "index": 2,
+      "runId": "perf-amd64-fixed60-20260929-201057-2-direct",
+      "backend": "direct",
+      "gameFps": 60.010950024,
+      "hapAcceptedFps": 59.64797586531002,
+      "frameP95Ms": 18.4073,
+      "frameP99Ms": 20.1459,
+      "gameCpuMsPerGameFrame": 6.503748959,
+      "estimatedHapCpuMsPerGameFrame": 5.48936522458736,
+      "observedTwoProcessCpuMsPerGameFrame": 11.993114183587359,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.066095545316289
+    },
+    {
+      "index": 3,
+      "runId": "perf-amd64-fixed60-20260929-201057-3-direct",
+      "backend": "direct",
+      "gameFps": 60.007594718,
+      "hapAcceptedFps": 59.62976454736364,
+      "frameP95Ms": 18.452,
+      "frameP99Ms": 20.1063,
+      "gameCpuMsPerGameFrame": 6.481532908,
+      "estimatedHapCpuMsPerGameFrame": 5.555095861362707,
+      "observedTwoProcessCpuMsPerGameFrame": 12.036628769362707,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 12.112896075025533
+    },
+    {
+      "index": 4,
+      "runId": "perf-amd64-fixed60-20260929-201057-4-venus",
+      "backend": "venus",
+      "gameFps": 60.012534418,
+      "hapAcceptedFps": 59.56195497354702,
+      "frameP95Ms": 18.6828,
+      "frameP99Ms": 20.8839,
+      "gameCpuMsPerGameFrame": 4.525,
+      "estimatedHapCpuMsPerGameFrame": 6.946794244563291,
+      "observedTwoProcessCpuMsPerGameFrame": 11.471794244563291,
+      "observedTwoProcessCpuMsPerAcceptedPresent": 11.55857706892935
+    }
+  ],
+  "medians": {
+    "venus": {
+      "gameFps": {
+        "median": 60.003260942,
+        "min": 59.993987466,
+        "max": 60.012534418
+      },
+      "hapAcceptedFps": {
+        "median": 59.592179029822894,
+        "min": 59.56195497354702,
+        "max": 59.62240308609877
+      },
+      "frameP95Ms": {
+        "median": 18.72735,
+        "min": 18.6828,
+        "max": 18.7719
+      },
+      "frameP99Ms": {
+        "median": 20.8599,
+        "min": 20.8359,
+        "max": 20.8839
+      },
+      "gameCpuMsPerGameFrame": {
+        "median": 4.50340025,
+        "min": 4.4818005,
+        "max": 4.525
+      },
+      "estimatedHapCpuMsPerGameFrame": {
+        "median": 6.957058226803496,
+        "min": 6.946794244563291,
+        "max": 6.967322209043701
+      },
+      "observedTwoProcessCpuMsPerGameFrame": {
+        "median": 11.460458476803495,
+        "min": 11.449122709043701,
+        "max": 11.471794244563291
+      },
+      "observedTwoProcessCpuMsPerAcceptedPresent": {
+        "median": 11.539527041748386,
+        "min": 11.52047701456742,
+        "max": 11.55857706892935
+      }
+    },
+    "direct": {
+      "gameFps": {
+        "median": 60.009272371,
+        "min": 60.007594718,
+        "max": 60.010950024
+      },
+      "hapAcceptedFps": {
+        "median": 59.63887020633683,
+        "min": 59.62976454736364,
+        "max": 59.64797586531002
+      },
+      "frameP95Ms": {
+        "median": 18.429650000000002,
+        "min": 18.4073,
+        "max": 18.452
+      },
+      "frameP99Ms": {
+        "median": 20.1261,
+        "min": 20.1063,
+        "max": 20.1459
+      },
+      "gameCpuMsPerGameFrame": {
+        "median": 6.492640933500001,
+        "min": 6.481532908,
+        "max": 6.503748959
+      },
+      "estimatedHapCpuMsPerGameFrame": {
+        "median": 5.522230542975033,
+        "min": 5.48936522458736,
+        "max": 5.555095861362707
+      },
+      "observedTwoProcessCpuMsPerGameFrame": {
+        "median": 12.014871476475033,
+        "min": 11.993114183587359,
+        "max": 12.036628769362707
+      },
+      "observedTwoProcessCpuMsPerAcceptedPresent": {
+        "median": 12.089495810170911,
+        "min": 12.066095545316289,
+        "max": 12.112896075025533
+      }
+    }
+  },
+  "fullSequenceCompleted": false,
+  "performanceGainVerified": false,
+  "failures": [
+    {
+      "runId": "perf-amd64-fixed60-20260929-201057-5-venus",
+      "backend": "venus",
+      "exit": 124,
+      "status": "TIMEOUT",
+      "coldProcessListEmpty": true,
+      "benchmark": null,
+      "measurementValid": false,
+      "reason": "Outer 240s timeout terminated smoke collection. Desktop ready in 311ms and game launched; no completed benchmark. Not a timed performance sample."
+    }
+  ]
+}

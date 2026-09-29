@@ -1,0 +1,3 @@
+09-28 20:54:35.278 48716 49301 E A00000/app.hackeris.winehua/PhoneAdapt: [PhoneExec] launch failed status=-1 errno=13 path=/data/storage/el1/bundle/libs/arm64/libphone_vulkan_exec_probe.so
+09-28 21:00:08.928 53582 53716 I A00000/app.hackeris.winehua/PhoneAdapt: [PhoneExec] packaged stat=0 mode=420 x=-1
+09-28 21:00:08.950 53582 53716 E A00000/app.hackeris.winehua/PhoneAdapt: [PhoneExec] launch failed status=-1 errno=13 path=/data/storage/el2/base/haps/entry/cache/phone-vulkan-exec-probe

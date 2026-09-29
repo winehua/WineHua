@@ -1,0 +1,22 @@
+[
+  {
+    "hap": "entry-performance-d7636555182d-signed.hap",
+    "bytes": 350923652,
+    "members": {
+      "libs/arm64-v8a/ntdll.so": "ca48843e864550ee12ffcba79c1d490f49098d2e90514d282eb93282a6699c49",
+      "libs/arm64-v8a/win32u.so": "fa08071182c8e479fb1f2e16219b36a70b7da05d6f64f0d970ef5ef08b9bcff6",
+      "libs/arm64-v8a/winewayland.so": "7c5d1087ed274f53b8a6339d2a107e86d7f4622658a521d3feab175a42f3115d",
+      "resources/rawfile/wine-runtime-manifest.json": "b97cd72c2d3ee4ee8534ddc78103e3423910c264d439a8c3831fa652e0b043ea"
+    }
+  },
+  {
+    "hap": "entry-loader-screenawake-d37139a585b8-signed.hap",
+    "bytes": 350923644,
+    "members": {
+      "libs/arm64-v8a/ntdll.so": "ca48843e864550ee12ffcba79c1d490f49098d2e90514d282eb93282a6699c49",
+      "libs/arm64-v8a/win32u.so": "1ebe753491889cc331b87e91d137cb96d79fd00a2fb79ca89e94bb95e3b6e150",
+      "libs/arm64-v8a/winewayland.so": "7c5d1087ed274f53b8a6339d2a107e86d7f4622658a521d3feab175a42f3115d",
+      "resources/rawfile/wine-runtime-manifest.json": "b97cd72c2d3ee4ee8534ddc78103e3423910c264d439a8c3831fa652e0b043ea"
+    }
+  }
+]

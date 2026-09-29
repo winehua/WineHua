@@ -1,0 +1,8 @@
+09-29 19:07:11.282 23129 23129 I A00000/app.hackeris.winehua/SMOKE: want request: suite=direct-desktop-scene runId=pad-scene-ready-cold-1-20260929 prefix=reuse job=yes
+09-29 19:07:11.427 23129 23129 I A00000/app.hackeris.winehua/SMOKE: request consumed: suite=direct-desktop-scene runId=pad-scene-ready-cold-1-20260929 prefix=reuse
+09-29 19:07:14.278 23129 23129 I A00000/app.hackeris.winehua/SMOKE: run begin suite=direct-desktop-scene runId=pad-scene-ready-cold-1-20260929 prefixReady=true
+09-29 19:07:14.283 23129 23129 I A00000/app.hackeris.winehua/SMOKE: desktop wait test=direct-desktop-scene-x64 active=true surfaceReady=false
+09-29 19:07:14.618 23129 23129 I A00000/app.hackeris.winehua/SMOKE: desktop wait done test=direct-desktop-scene-x64 ready=true elapsedMs=335
+09-29 19:07:14.619 23129 23129 I A00000/app.hackeris.winehua/SMOKE: spawn test=direct-desktop-scene-x64 exe=C:\smoke\x64\winehua_direct_desktop_scene.exe seconds=0 timeoutMs=120000 back=dxvk_legacy
+09-29 19:07:58.369 23129 23129 I A00000/app.hackeris.winehua/SMOKE: test done suite=direct-desktop-scene test=direct-desktop-scene-x64 status=PASS stage=destroy-a
+09-29 19:07:58.372 23129 23129 I A00000/app.hackeris.winehua/SMOKE: run done suite=direct-desktop-scene status=PASS 1/1

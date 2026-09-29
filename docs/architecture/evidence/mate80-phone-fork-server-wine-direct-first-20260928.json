@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "runId": "mate80-direct-phone-fork-server-offscreen-diag-20260928",
+  "suite": "wine-vulkan",
+  "status": "FAIL",
+  "tests": [
+    {
+      "schemaVersion": 1,
+      "runId": "mate80-direct-phone-fork-server-offscreen-diag-20260928",
+      "testId": "wine-vulkan-offscreen-x64",
+      "status": "FAIL",
+      "stage": "crashed",
+      "message": "进程在写出结果前退出 (exit=0, source=phone-fork-server)",
+      "pid": 28829
+    }
+  ],
+  "hapSha256": "0d196a442efa08291aae77d0712f74d6e28f87ef3c771d6864b44bd7cc95af88"
+}

@@ -1,0 +1,334 @@
+{
+  "schemaVersion": 1,
+  "hapSha256": "00b507b659659c3a5202568b20d09d26ffc0826405c0a59bbb63aa4ea483c5e6",
+  "payloadVersion": "smoke-v2-c87c4aa03bfc",
+  "device": "USB MatePad Mini (Maleoon 910)",
+  "rootCommit": "b53ca22fd1a7f8a96c2392f5931f51cd4436d70d",
+  "wineCommit": "4d3ec031c42a232e15a860274f743f756e047e8d",
+  "rootDirty": true,
+  "wineDirty": true,
+  "wineRuntimeModifiedThisStep": false,
+  "change": "Independent production DirectVulkanPresenter; dual-slot reuse, bounded imports, output rebuild and fenced buffer return. Shared core tracks complete initialization.",
+  "sourceSha256": {
+    "entry/src/main/cpp/direct/direct_vulkan_presenter.h": "065dbb26fe7ea3fd99b741cffbc0e7fe692aebaf8241c366bab3599778ec91b8",
+    "entry/src/main/cpp/direct/direct_vulkan_presenter.cpp": "5de4a686082fb4b926a34e9ea3ce7096e4342a3092a48dcd3dbd1069dac36a36",
+    "entry/src/main/cpp/direct/direct_vulkan_context.h": "bac32e904ea5267791950cc8010c41a0d170526bb2b34d383a98cf2c5281e91c",
+    "entry/src/main/cpp/direct/direct_vulkan_context.cpp": "7cfaf9a28d4f16e20068f86f52b369ba3a5336c5a3d6bf34f73eba5ce4637376",
+    "entry/src/main/cpp/direct/direct_wine_surface_controller.cpp": "5345cf5591ee34c12138b196f4ec3997debf3ad7fcacfdaf58ae50aab47f4d7c",
+    "entry/src/main/cpp/direct/direct_wine_surface_controller.h": "ea338792dd0d3ef34906844e2ad805182860051d7eaa865565668c14bf04150e",
+    "entry/src/main/cpp/direct/direct_buffer_import_probe.h": "d3901e90ba6a26fc2c61c020e0d1dc953f47824f4c0a2b8b75e7a566c9fc08ef",
+    "entry/src/main/cpp/CMakeLists.txt": "5d6821b96eae036f5cb64d1badbf265691fa20ad1c394e21ff12c091dd998c08"
+  },
+  "fusion": {
+    "schemaVersion": 1,
+    "runId": "pad-presenter-fusion-utf8-20260929",
+    "testId": "dxvk-direct-cube-x64",
+    "status": "PASS",
+    "stage": "present",
+    "message": "cube rendered and presented",
+    "renderer": "D3D11",
+    "d3dBackend": "dxvk_legacy",
+    "peArchitecture": "x64",
+    "featureLevel": "11_0",
+    "initHresult": "0x00000000",
+    "presentHresult": "0x00000000",
+    "frames": 1063,
+    "renderSequence": 1063,
+    "angleRegressions": 0,
+    "lastAngle": 12.00856781,
+    "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/d3d11.dll",
+    "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/dxgi.dll"
+  },
+  "resize": {
+    "schemaVersion": 1,
+    "runId": "pad-presenter-resize-20260929",
+    "testId": "dxvk-direct-resize-x64",
+    "status": "PASS",
+    "stage": "present",
+    "message": "cube rendered and presented",
+    "renderer": "D3D11",
+    "d3dBackend": "dxvk_legacy",
+    "peArchitecture": "x64",
+    "featureLevel": "11_0",
+    "initHresult": "0x00000000",
+    "presentHresult": "0x00000000",
+    "frames": 1057,
+    "renderSequence": 1057,
+    "angleRegressions": 0,
+    "lastAngle": 11.998069763,
+    "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/d3d11.dll",
+    "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/dxgi.dll",
+    "resizeRequested": true,
+    "resizeCompleted": true,
+    "resizeHresult": "0x00000000",
+    "initialExtent": [
+      960,
+      640
+    ],
+    "resizedExtent": [
+      800,
+      600
+    ],
+    "swapchainRebuilds": 1,
+    "postResizeFrames": 997
+  },
+  "virtualCube": {
+    "schemaVersion": 1,
+    "runId": "pad-presenter-virtual-cube-20260929",
+    "testId": "dxvk-direct-cube-x64",
+    "status": "PASS",
+    "stage": "present",
+    "message": "cube rendered and presented",
+    "renderer": "D3D11",
+    "d3dBackend": "dxvk_legacy",
+    "peArchitecture": "x64",
+    "featureLevel": "11_0",
+    "initHresult": "0x00000000",
+    "presentHresult": "0x00000000",
+    "frames": 586,
+    "renderSequence": 586,
+    "angleRegressions": 0,
+    "lastAngle": 8.007899284,
+    "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/d3d11.dll",
+    "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/dxgi.dll"
+  },
+  "scene": {
+    "result": {
+      "schemaVersion": 1,
+      "runId": "pad-presenter-scene-after-cube-20260929",
+      "testId": "direct-desktop-scene-x64",
+      "status": "PASS",
+      "stage": "destroy-a",
+      "message": "Win32 operations and child results; visible GPU composition requires screenshots and App logs",
+      "windowActions": 12,
+      "childA": true,
+      "childB": true
+    },
+    "childA": {
+      "schemaVersion": 1,
+      "runId": "pad-presenter-scene-after-cube-20260929",
+      "testId": "scene-a",
+      "status": "PASS",
+      "stage": "present",
+      "message": "cube rendered and presented",
+      "renderer": "D3D11",
+      "d3dBackend": "dxvk_legacy",
+      "peArchitecture": "x64",
+      "featureLevel": "11_0",
+      "initHresult": "0x00000000",
+      "presentHresult": "0x00000000",
+      "frames": 2967,
+      "renderSequence": 2967,
+      "angleRegressions": 0,
+      "lastAngle": 39.057582855,
+      "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/d3d11.dll",
+      "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/dxgi.dll",
+      "resizeRequested": true,
+      "resizeCompleted": true,
+      "resizeHresult": "0x00000000",
+      "initialExtent": [
+        960,
+        640
+      ],
+      "resizedExtent": [
+        700,
+        450
+      ],
+      "swapchainRebuilds": 5,
+      "postResizeFrames": 2907
+    },
+    "childB": {
+      "schemaVersion": 1,
+      "runId": "pad-presenter-scene-after-cube-20260929",
+      "testId": "scene-b",
+      "status": "PASS",
+      "stage": "present",
+      "message": "cube rendered and presented",
+      "renderer": "D3D11",
+      "d3dBackend": "dxvk_legacy",
+      "peArchitecture": "x64",
+      "featureLevel": "11_0",
+      "initHresult": "0x00000000",
+      "presentHresult": "0x00000000",
+      "frames": 2717,
+      "renderSequence": 2717,
+      "angleRegressions": 0,
+      "lastAngle": 26.245889664,
+      "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/d3d11.dll",
+      "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/legacy/arm64x/dxgi.dll",
+      "resizeRequested": true,
+      "resizeCompleted": true,
+      "resizeHresult": "0x00000000",
+      "initialExtent": [
+        960,
+        640
+      ],
+      "resizedExtent": [
+        540,
+        360
+      ],
+      "swapchainRebuilds": 3,
+      "postResizeFrames": 2657
+    },
+    "inputChecks": [
+      {
+        "stage": "fullscreen",
+        "tap": [
+          1280,
+          800
+        ],
+        "status": "PASS",
+        "phaseBeforeTap": "218635442 fullscreen",
+        "commandExit": 0,
+        "receivedTickMs": 218637436,
+        "received": [
+          640,
+          400
+        ],
+        "clientExtent": [
+          1280,
+          800
+        ],
+        "expected": [
+          640,
+          400
+        ],
+        "elapsedSinceObservedMs": 2140
+      },
+      {
+        "stage": "windowed",
+        "tap": [
+          948,
+          710
+        ],
+        "status": "PASS",
+        "phaseBeforeTap": "218639492 windowed",
+        "commandExit": 0,
+        "receivedTickMs": 218641476,
+        "received": [
+          350,
+          225
+        ],
+        "clientExtent": [
+          700,
+          450
+        ],
+        "expected": [
+          350,
+          225
+        ],
+        "elapsedSinceObservedMs": 1922
+      }
+    ],
+    "phases": 11,
+    "appPid": 9631,
+    "prerequisite": "same App after virtual-cube PASS; not an unprimed cold-scene PASS"
+  },
+  "fusionPresenterLogSample": {
+    "appPid": 1058,
+    "frames": 1020,
+    "completed": 1018,
+    "presents": 1020,
+    "imports": 4,
+    "reuses": 1016,
+    "acquireImports": 1020,
+    "releaseExports": 1020
+  },
+  "resizePresenterLogSample": {
+    "appPid": 1058,
+    "frames": 1020,
+    "completed": 1018,
+    "presents": 1020,
+    "imports": 8,
+    "reuses": 1012,
+    "cache": 4,
+    "outputRecreates": 1,
+    "initialOutput": [
+      1936,
+      1348
+    ],
+    "resizedOutput": [
+      1616,
+      1268
+    ]
+  },
+  "desktopPeriodicSample": {
+    "presents": 3480,
+    "draws": 5559,
+    "acquireWaits": 5153,
+    "releaseFences": 5133,
+    "producerRetired": 19,
+    "releaseErrors": 0,
+    "imports": 48,
+    "reuses": 5105,
+    "uiUploadBytes": 429606016,
+    "includesVirtualCubeAndScene": true,
+    "exactFinalTotals": false
+  },
+  "gameCpuBytes": {
+    "read": 0,
+    "upload": 0,
+    "measurementType": "audited code path, not hardware traffic"
+  },
+  "retainedFailures": [
+    {
+      "run": "pad-presenter-fusion-20260929",
+      "stage": "host load_cases",
+      "status": "ERROR",
+      "reason": "Windows GBK decoding UTF-8 fixture JSON; device PASS; retry using python -X utf8"
+    },
+    {
+      "run": "pad-presenter-vulkan-scene-20260929",
+      "appPid": 1058,
+      "status": "FAIL",
+      "stage": "timeout",
+      "timeoutMs": 120000,
+      "phases": 0,
+      "afterInAppEngineRestart": true
+    },
+    {
+      "run": "pad-presenter-vulkan-cold-20260929",
+      "appPid": 5626,
+      "status": "FAIL",
+      "stage": "timeout",
+      "timeoutMs": 120000,
+      "phases": 0,
+      "coldApp": true
+    }
+  ],
+  "resourceSample": {
+    "appPid": 9631,
+    "rssKiB": 178000,
+    "highWaterKiB": 200636,
+    "fdCount": null,
+    "fdReadError": "permission denied",
+    "longTermStabilityVerified": false
+  },
+  "verification": {
+    "buildSignCandidate": "PASS",
+    "fusionHostJudge": "PASS",
+    "resizeHostJudge": "PASS",
+    "virtualCubeHostJudge": "PASS",
+    "primedSceneHostJudge": "PASS",
+    "unprimedSceneStartup": "FAIL",
+    "faultInjection": "not run",
+    "latestPackageVenusControl": "not run",
+    "fullHostTestSuite": "not run",
+    "gitDiffCheck": "PASS",
+    "evidenceHashes": "PASS",
+    "docLinks": "PASS",
+    "pythonCompile": "PASS",
+    "productProbeDependencyAbsent": "PASS",
+    "productReadbackApiAbsent": "PASS"
+  },
+  "remaining": [
+    "unprimed desktop fixture startup hang",
+    "desktop output resize/rotation",
+    "popup/subsurface/viewport",
+    "child/device-lost and semaphore error injection",
+    "long-term RSS/fd",
+    "real games and same-device performance A/B",
+    "Zink, Audio Direct, XInput and default/capability selection"
+  ],
+  "screenTimeoutRestored": true
+}

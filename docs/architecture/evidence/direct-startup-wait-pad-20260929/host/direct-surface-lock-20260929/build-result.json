@@ -1,0 +1,13 @@
+{
+  "before": {
+    "nativeSha256": "e0368f53d0f4fadce13f55a66769371e4a9028ec2e136d2fb100698d84e54e69",
+    "debugSha256": "e0368f53d0f4fadce13f55a66769371e4a9028ec2e136d2fb100698d84e54e69"
+  },
+  "makeExit": 0,
+  "target": "dlls/win32u/win32u.so",
+  "after": {
+    "nativeSha256": "b6e01478237e67984d0808b82efa136497c5501e3686e25f04a41a17f74aa9be",
+    "debugSha256": "b6e01478237e67984d0808b82efa136497c5501e3686e25f04a41a17f74aa9be"
+  },
+  "rawfileUnchanged": true
+}

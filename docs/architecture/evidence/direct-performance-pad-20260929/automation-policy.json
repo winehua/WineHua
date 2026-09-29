@@ -1,0 +1,6 @@
+{
+  "mode": "automation",
+  "artifactDir": "F:\\WineHua\\proton-ohos-worktree\\docs\\architecture\\evidence\\direct-performance-pad-20260929",
+  "scope": "MatePad Mini Direct/Venus performance evidence",
+  "redaction": "Only test fixture output, filtered app lifecycle and current thermal/display/battery properties. No signing logs, raw environments or unrelated app names."
+}

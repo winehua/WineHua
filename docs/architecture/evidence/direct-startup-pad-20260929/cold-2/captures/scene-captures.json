@@ -1,0 +1,57 @@
+[
+  {
+    "stage": "initial-render",
+    "deviceTickMs": "219870944",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-initial-render.jpeg"
+  },
+  {
+    "stage": "overlap",
+    "deviceTickMs": "219873995",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-overlap.jpeg"
+  },
+  {
+    "stage": "move",
+    "deviceTickMs": "219878025",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-move.jpeg"
+  },
+  {
+    "stage": "gdi-cover",
+    "deviceTickMs": "219882144",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-gdi-cover.jpeg"
+  },
+  {
+    "stage": "alpha-cover",
+    "deviceTickMs": "219886198",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-alpha-cover.jpeg"
+  },
+  {
+    "stage": "minimize",
+    "deviceTickMs": "219890266",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-minimize.jpeg"
+  },
+  {
+    "stage": "restore",
+    "deviceTickMs": "219893326",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-restore.jpeg"
+  },
+  {
+    "stage": "destroy-b",
+    "deviceTickMs": "219897553",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-destroy-b.jpeg"
+  },
+  {
+    "stage": "fullscreen",
+    "deviceTickMs": "219901664",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-fullscreen.jpeg"
+  },
+  {
+    "stage": "windowed",
+    "deviceTickMs": "219905698",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-windowed.jpeg"
+  },
+  {
+    "stage": "desktop-idle",
+    "deviceTickMs": "219908821",
+    "image": "F:\\WineHua\\.temp\\direct-pad-startup-20260929\\cold-2-captures\\frames\\scene-desktop-idle.jpeg"
+  }
+]

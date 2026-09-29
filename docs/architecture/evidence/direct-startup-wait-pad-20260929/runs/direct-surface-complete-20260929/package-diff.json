@@ -1,0 +1,11 @@
+{
+  "compared": 125,
+  "addedOrRemoved": [],
+  "changed": [
+    {
+      "path": "libs/arm64-v8a/win32u.so",
+      "before": "1ebe753491889cc331b87e91d137cb96d79fd00a2fb79ca89e94bb95e3b6e150",
+      "after": "b76da9d96ce1679b5453159cbc66cdaebacc23c9c7730ab518041052418a7fb2"
+    }
+  ]
+}

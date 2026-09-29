@@ -1,0 +1,72 @@
+{
+  "date": "2026-09-28",
+  "device": "Mate 80 / Maleoon 920",
+  "installedHapSha256": "b360f4a02f01d7984c7e202e1180f0387297de9a1e0ccc6c617bdf5bf3f7dfb4",
+  "productFixHapSha256": "30b38d23319440d219dce9cae417205f8d45d983b7f7b63bb9a2ed49d59af209",
+  "fixed": [
+    "early single-threaded fork server using musl _Fork",
+    "preserve cached trace_marker fds to avoid wineserver socket corruption",
+    "exclude App-lifetime fork server from session descendant cleanup"
+  ],
+  "finalPackage": {
+    "nativeD0": "PASS",
+    "childExitCode": 0,
+    "childReaped": true,
+    "wineDirectOffscreen": {
+      "x64": "PASS",
+      "x86": "PASS"
+    },
+    "coldStartCaveat": "First attempt timed out at wineboot before tests; unchanged retry passed. Repeated cold-start reliability remains open.",
+    "venusDxvk262Cube": {
+      "status": "PASS",
+      "frames": 891,
+      "humanVisualReview": "PASS: cube and dxvk_modern_2_6 window title visible",
+      "suiteCoverage": "FAIL: resource matrix case not selected"
+    },
+    "warmCubeVisualOverride": {
+      "frames": 878,
+      "automated": "PASS",
+      "humanReview": "REJECTED: all four screenshots show the control page"
+    }
+  },
+  "directDxvk262Eligibility": {
+    "status": "PASS",
+    "testedOn": "productFixHapSha256",
+    "doesNotProvePresentation": true
+  },
+  "directWsi": {
+    "status": "FAIL",
+    "presentFrames": 0,
+    "vkResult": -1000000000,
+    "cause": "phone fork route has no real Binder proxy / producer handoff; surface registry lookup expires"
+  },
+  "externalMemoryAudit": {
+    "opaqueFdImages": {
+      "queriedCases": 6,
+      "allResults": -11
+    },
+    "opaqueFdBufferFeatures": 0,
+    "dmaBufExtension": false,
+    "ohosNativeBufferImageFeatures": 7,
+    "dedicatedAllocationRequired": true,
+    "actualCrossProcessImportVerified": false
+  },
+  "recommendedNextGate": "Isolated NativeBuffer handle/metadata + SCM_RIGHTS transfer, fork-child Vulkan import, GPU pattern, SYNC_FD acquire/release, App GPU sample verification; then two slots, resize, death cleanup, Wine WSI.",
+  "unresolvedTransportContract": "Public NativeBuffer parcel APIs do not provide a Unix socket codec. Device-version handle serialization and child registration without forbidden Binder calls remain unverified.",
+  "cleanup": {
+    "appStopped": true,
+    "temporaryScreenTimeoutRestored": true,
+    "gitCommitted": false
+  },
+  "diagnosticPolicy": {
+    "policy": "diagnostic",
+    "riskLevel": "evidence",
+    "artifactDir": "docs/architecture/evidence",
+    "redactionStatus": "application rendering logs and probe results only; no signing logs or credentials",
+    "sourceCommands": [
+      "hdc targeted install/start/sandbox result read",
+      "automation/smoke.py selected Vulkan/cube runs",
+      "bounded hilog filtered to application tags"
+    ]
+  }
+}

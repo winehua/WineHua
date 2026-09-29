@@ -1,0 +1,57 @@
+[
+  {
+    "stage": "initial-render",
+    "deviceTickMs": "215077766",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-initial-render.jpeg"
+  },
+  {
+    "stage": "overlap",
+    "deviceTickMs": "215080845",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-overlap.jpeg"
+  },
+  {
+    "stage": "move",
+    "deviceTickMs": "215084875",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-move.jpeg"
+  },
+  {
+    "stage": "gdi-cover",
+    "deviceTickMs": "215088955",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-gdi-cover.jpeg"
+  },
+  {
+    "stage": "alpha-cover",
+    "deviceTickMs": "215093032",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-alpha-cover.jpeg"
+  },
+  {
+    "stage": "minimize",
+    "deviceTickMs": "215097154",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-minimize.jpeg"
+  },
+  {
+    "stage": "restore",
+    "deviceTickMs": "215100204",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-restore.jpeg"
+  },
+  {
+    "stage": "destroy-b",
+    "deviceTickMs": "215105810",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-destroy-b.jpeg"
+  },
+  {
+    "stage": "fullscreen",
+    "deviceTickMs": "215109855",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-fullscreen.jpeg"
+  },
+  {
+    "stage": "windowed",
+    "deviceTickMs": "215113899",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-windowed.jpeg"
+  },
+  {
+    "stage": "desktop-idle",
+    "deviceTickMs": "215118503",
+    "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\scene-vulkan-final-cold\\frames\\scene-desktop-idle.jpeg"
+  }
+]

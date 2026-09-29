@@ -1,0 +1,452 @@
+[
+  {
+    "runId": "perf-amd64-fixed60-20260929-201057-1-venus",
+    "backend": "venus",
+    "exit": 0,
+    "coldProcessListEmpty": true,
+    "environmentBefore": {
+      "capturedAt": "2026-09-29T20:11:38.914075+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 47827\nType: charger\nTemperature: 33263\nType: dot\nTemperature: 32450\nType: rfboard\nTemperature: 32900\nType: shell_back\nTemperature: 32395\nType: shell_frame\nTemperature: 33082\nType: shell_front\nTemperature: 33266\nType: system_h\nTemperature: 33789"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:11:40.026\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4268081 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -39 \ncurrentAverage: -52 \ntotalEnergy: 6424 \nremainingEnergy: 5292 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      }
+    },
+    "benchmark": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "venus",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3599,
+      "measuredMs": 59989.3448,
+      "averageFps": 59.993987466,
+      "frameMsP50": 16.7135,
+      "frameMsP95": 18.7719,
+      "frameMsP99": 20.8359,
+      "over16_67Ms": 1976,
+      "over33_33Ms": 2,
+      "presentMeanMs": 0.554074965,
+      "presentMsP95": 1.5349,
+      "presentMsP99": 3.8062,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 16130.0,
+      "cpuMsPerFrame": 4.4818005
+    },
+    "status": "PASS",
+    "validatedMetrics": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "venus",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3599,
+      "measuredMs": 59989.3448,
+      "averageFps": 59.993987466,
+      "frameMsP50": 16.7135,
+      "frameMsP95": 18.7719,
+      "frameMsP99": 20.8359,
+      "over16_67Ms": 1976,
+      "over33_33Ms": 2,
+      "presentMeanMs": 0.554074965,
+      "presentMsP95": 1.5349,
+      "presentMsP99": 3.8062,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 16130.0,
+      "cpuMsPerFrame": 4.4818005,
+      "hapAcceptedGamePresentFps": 59.62240308609877,
+      "hapCpuMsPerSecond": 417.9974412780764,
+      "estimatedHapCpuMsPerGameFrame": 6.967322209043701,
+      "hapObservationMs": 60010.99947
+    },
+    "environmentAfter": {
+      "capturedAt": "2026-09-29T20:13:04.149983+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 46120\nType: charger\nTemperature: 33842\nType: dot\nTemperature: 32550\nType: rfboard\nTemperature: 33315\nType: shell_back\nTemperature: 33179\nType: shell_frame\nTemperature: 33826\nType: shell_front\nTemperature: 33995\nType: system_h\nTemperature: 34700"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:13:05.218\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4269279 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -26 \ncurrentAverage: -51 \ntotalEnergy: 6424 \nremainingEnergy: 5291 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      },
+      "appLifecycle": {
+        "pid": 62203,
+        "exit": 0,
+        "events": [
+          "09-29 20:11:41.619 62203 62203 I A00000/app.hackeris.winehua/testTag: Ability onForeground",
+          "09-29 20:11:44.739 62203 62203 I A00000/app.hackeris.winehua/testTag: [a92ab1ab009d1aa 3994bf9 1d57f4f]Ability onBackground"
+        ],
+        "backgroundObserved": true
+      }
+    }
+  },
+  {
+    "runId": "perf-amd64-fixed60-20260929-201057-2-direct",
+    "backend": "direct",
+    "exit": 0,
+    "coldProcessListEmpty": true,
+    "environmentBefore": {
+      "capturedAt": "2026-09-29T20:13:05.958939+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 46120\nType: charger\nTemperature: 33842\nType: dot\nTemperature: 32550\nType: rfboard\nTemperature: 33315\nType: shell_back\nTemperature: 33179\nType: shell_frame\nTemperature: 33826\nType: shell_front\nTemperature: 33995\nType: system_h\nTemperature: 34700"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:13:06.833\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4239919 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -491 \ncurrentAverage: -51 \ntotalEnergy: 6424 \nremainingEnergy: 5291 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  120\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  120\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      }
+    },
+    "benchmark": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "direct",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3601,
+      "measuredMs": 60005.7156,
+      "averageFps": 60.010950024,
+      "frameMsP50": 16.7651,
+      "frameMsP95": 18.4073,
+      "frameMsP99": 20.1459,
+      "over16_67Ms": 2075,
+      "over33_33Ms": 1,
+      "presentMeanMs": 0.692261899,
+      "presentMsP95": 1.6401,
+      "presentMsP99": 3.1005,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 23420.0,
+      "cpuMsPerFrame": 6.503748959
+    },
+    "status": "PASS",
+    "validatedMetrics": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "direct",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3601,
+      "measuredMs": 60005.7156,
+      "averageFps": 60.010950024,
+      "frameMsP50": 16.7651,
+      "frameMsP95": 18.4073,
+      "frameMsP99": 20.1459,
+      "over16_67Ms": 2075,
+      "over33_33Ms": 1,
+      "presentMeanMs": 0.692261899,
+      "presentMsP95": 1.6401,
+      "presentMsP99": 3.1005,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 23420.0,
+      "cpuMsPerFrame": 6.503748959,
+      "hapAcceptedGamePresentFps": 59.64797586531002,
+      "hapCpuMsPerSecond": 329.42202215382093,
+      "estimatedHapCpuMsPerGameFrame": 5.48936522458736,
+      "hapObservationMs": 60035.566137
+    },
+    "environmentAfter": {
+      "capturedAt": "2026-09-29T20:14:30.960132+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 46120\nType: charger\nTemperature: 34250\nType: dot\nTemperature: 32700\nType: rfboard\nTemperature: 33631\nType: shell_back\nTemperature: 33514\nType: shell_frame\nTemperature: 34200\nType: shell_front\nTemperature: 34414\nType: system_h\nTemperature: 35105"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:14:32.039\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4269017 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -26 \ncurrentAverage: -65 \ntotalEnergy: 6424 \nremainingEnergy: 5290 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      },
+      "appLifecycle": {
+        "pid": 63431,
+        "exit": 0,
+        "events": [
+          "09-29 20:13:08.387 63431 63431 I A00000/app.hackeris.winehua/testTag: Ability onForeground",
+          "09-29 20:13:12.025 63431 63431 I A00000/app.hackeris.winehua/testTag: [a92ab1ab57e4c83 49f963 38bd41d]Ability onBackground"
+        ],
+        "backgroundObserved": true
+      }
+    }
+  },
+  {
+    "runId": "perf-amd64-fixed60-20260929-201057-3-direct",
+    "backend": "direct",
+    "exit": 0,
+    "coldProcessListEmpty": true,
+    "environmentBefore": {
+      "capturedAt": "2026-09-29T20:14:32.782226+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 46120\nType: charger\nTemperature: 34250\nType: dot\nTemperature: 32700\nType: rfboard\nTemperature: 33631\nType: shell_back\nTemperature: 33514\nType: shell_frame\nTemperature: 34200\nType: shell_front\nTemperature: 34414\nType: system_h\nTemperature: 35105"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:14:33.713\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4241278 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -467 \ncurrentAverage: -65 \ntotalEnergy: 6424 \nremainingEnergy: 5290 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      }
+    },
+    "benchmark": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "direct",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3601,
+      "measuredMs": 60009.0708,
+      "averageFps": 60.007594718,
+      "frameMsP50": 16.7704,
+      "frameMsP95": 18.452,
+      "frameMsP99": 20.1063,
+      "over16_67Ms": 2117,
+      "over33_33Ms": 0,
+      "presentMeanMs": 0.672936906,
+      "presentMsP95": 1.6724,
+      "presentMsP99": 3.1224,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 23340.0,
+      "cpuMsPerFrame": 6.481532908
+    },
+    "status": "PASS",
+    "validatedMetrics": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "direct",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3601,
+      "measuredMs": 60009.0708,
+      "averageFps": 60.007594718,
+      "frameMsP50": 16.7704,
+      "frameMsP95": 18.452,
+      "frameMsP99": 20.1063,
+      "over16_67Ms": 2117,
+      "over33_33Ms": 0,
+      "presentMeanMs": 0.672936906,
+      "presentMsP95": 1.6724,
+      "presentMsP99": 3.1224,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 23340.0,
+      "cpuMsPerFrame": 6.481532908,
+      "hapAcceptedGamePresentFps": 59.62976454736364,
+      "hapCpuMsPerSecond": 333.347941071054,
+      "estimatedHapCpuMsPerGameFrame": 5.555095861362707,
+      "hapObservationMs": 60037.131241
+    },
+    "environmentAfter": {
+      "capturedAt": "2026-09-29T20:15:57.807946+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 52148\nType: charger\nTemperature: 34550\nType: dot\nTemperature: 33157\nType: rfboard\nTemperature: 33947\nType: shell_back\nTemperature: 33836\nType: shell_frame\nTemperature: 34508\nType: shell_front\nTemperature: 34675\nType: system_h\nTemperature: 35368"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:15:58.840\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4268677 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -27 \ncurrentAverage: -57 \ntotalEnergy: 6424 \nremainingEnergy: 5288 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      },
+      "appLifecycle": {
+        "pid": 64354,
+        "exit": 0,
+        "events": [
+          "09-29 20:14:35.241 64354 64354 I A00000/app.hackeris.winehua/testTag: Ability onForeground",
+          "09-29 20:14:38.364 64354 64354 I A00000/app.hackeris.winehua/testTag: [a92ab1abae2da53 10b9288 2d3e1a9]Ability onBackground"
+        ],
+        "backgroundObserved": true
+      }
+    }
+  },
+  {
+    "runId": "perf-amd64-fixed60-20260929-201057-4-venus",
+    "backend": "venus",
+    "exit": 0,
+    "coldProcessListEmpty": true,
+    "environmentBefore": {
+      "capturedAt": "2026-09-29T20:15:59.580413+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 31000\nType: ambient\nTemperature: 52148\nType: charger\nTemperature: 34550\nType: dot\nTemperature: 33157\nType: rfboard\nTemperature: 33947\nType: shell_back\nTemperature: 33836\nType: shell_frame\nTemperature: 34508\nType: shell_front\nTemperature: 34675\nType: system_h\nTemperature: 35368"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:16:00.534\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4234873 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -557 \ncurrentAverage: -57 \ntotalEnergy: 6424 \nremainingEnergy: 5288 \nremainingChargeTime: 0 \ntemperature: 310 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      }
+    },
+    "benchmark": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "venus",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3600,
+      "measuredMs": 59987.4682,
+      "averageFps": 60.012534418,
+      "frameMsP50": 16.7114,
+      "frameMsP95": 18.6828,
+      "frameMsP99": 20.8839,
+      "over16_67Ms": 1949,
+      "over33_33Ms": 0,
+      "presentMeanMs": 0.565242056,
+      "presentMsP95": 1.4849,
+      "presentMsP99": 4.1745,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 16290.0,
+      "cpuMsPerFrame": 4.525
+    },
+    "status": "PASS",
+    "validatedMetrics": {
+      "complete": true,
+      "valid": true,
+      "peMachine": "AMD64",
+      "vulkanBackend": "venus",
+      "warmupMs": 15000,
+      "configuredRunMs": 75000,
+      "drawsPerFrame": 100,
+      "smallScissor": true,
+      "targetFps": 60,
+      "measuredFrames": 3600,
+      "measuredMs": 59987.4682,
+      "averageFps": 60.012534418,
+      "frameMsP50": 16.7114,
+      "frameMsP95": 18.6828,
+      "frameMsP99": 20.8839,
+      "over16_67Ms": 1949,
+      "over33_33Ms": 0,
+      "presentMeanMs": 0.565242056,
+      "presentMsP95": 1.4849,
+      "presentMsP99": 4.1745,
+      "cpuAvailable": true,
+      "cpuQueryError": 0,
+      "cpuMs": 16290.0,
+      "cpuMsPerFrame": 4.525,
+      "hapAcceptedGamePresentFps": 59.56195497354702,
+      "hapCpuMsPerSecond": 416.89472869648205,
+      "estimatedHapCpuMsPerGameFrame": 6.946794244563291,
+      "hapObservationMs": 60004.746345
+    },
+    "environmentAfter": {
+      "capturedAt": "2026-09-29T20:17:25.052560+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 32000\nType: ambient\nTemperature: 51680\nType: charger\nTemperature: 34850\nType: dot\nTemperature: 33157\nType: rfboard\nTemperature: 34200\nType: shell_back\nTemperature: 34071\nType: shell_frame\nTemperature: 34795\nType: shell_front\nTemperature: 34896\nType: system_h\nTemperature: 35789"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 20:17:26.186\ncapacity: 91 \nbatteryLevel: 2 \nchargingStatus: 2 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4268271 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: -28 \ncurrentAverage: -58 \ntotalEnergy: 6423 \nremainingEnergy: 5286 \nremainingChargeTime: 0 \ntemperature: 320 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\n---------------- Screen ID: 1012 ----------------\nRSScreenId:                   4294967295\nactiveModes<id, W, H, RS>:    0, 1280, 800, 90\nRotation:                     0\nScreenPowerState:             10\nVirtualWidth:                 3\nVirtualHeight:                2\nRotation:                     0\nRotation:                     0\nPhyWidth:                     0\nPhyHeight:                    0\nRefreshRate:                  90\nScreenRotation:               0\nWidth:                        2560\nHeight:                       1600\nWidth:                        1280\nHeight:                       800\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      },
+      "appLifecycle": {
+        "pid": 64721,
+        "exit": 0,
+        "events": [
+          "09-29 20:16:02.229 64721 64721 I A00000/app.hackeris.winehua/testTag: Ability onForeground",
+          "09-29 20:16:05.297 64721 64721 I A00000/app.hackeris.winehua/testTag: [a92ab1ac053568f 5a8f24 9e5288]Ability onBackground"
+        ],
+        "backgroundObserved": true
+      }
+    }
+  },
+  {
+    "runId": "perf-amd64-fixed60-20260929-201057-5-venus",
+    "backend": "venus",
+    "exit": 124,
+    "status": "TIMEOUT",
+    "coldProcessListEmpty": true,
+    "benchmark": null,
+    "measurementValid": false,
+    "reason": "Outer 240s timeout terminated smoke collection. Desktop ready in 311ms and game launched; no completed benchmark. Not a timed performance sample."
+  }
+]

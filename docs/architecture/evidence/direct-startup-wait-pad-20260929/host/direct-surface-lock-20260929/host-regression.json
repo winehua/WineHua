@@ -1,0 +1,40 @@
+{
+  "scope": "Production update_surface_region extracted verbatim; deterministic Linux lock/lifetime harness, not device or GPU validation.",
+  "cases": {
+    "race": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "replacement": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "shape-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "clip-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "no-clip": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "rtl": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "no-surface": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    }
+  }
+}

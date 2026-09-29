@@ -1,0 +1,158 @@
+[
+  {
+    "label": "stop",
+    "command": [
+      "shell",
+      "aa",
+      "force-stop",
+      "app.hackeris.winehua"
+    ],
+    "code": 0,
+    "seconds": 0.2718038558959961
+  },
+  {
+    "label": "clear-result",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "rm -f data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.12283587455749512
+  },
+  {
+    "label": "start",
+    "command": [
+      "shell",
+      "aa",
+      "start",
+      "-a",
+      "EntryAbility",
+      "-b",
+      "app.hackeris.winehua",
+      "--ps",
+      "winehua.mode",
+      "direct-phone-shared-buffer-probe",
+      "--ps",
+      "winehua.shared-buffer-guest-export",
+      "1"
+    ],
+    "code": 0,
+    "seconds": 0.2623739242553711
+  },
+  {
+    "label": "result-00",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.16002154350280762
+  },
+  {
+    "label": "result-01",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.15475034713745117
+  },
+  {
+    "label": "result-02",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.170640230178833
+  },
+  {
+    "label": "result-03",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.20404624938964844
+  },
+  {
+    "label": "result-04",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.26199936866760254
+  },
+  {
+    "label": "result-05",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.14972567558288574
+  },
+  {
+    "label": "result-06",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.18883585929870605
+  },
+  {
+    "label": "result-07",
+    "command": [
+      "shell",
+      "-b",
+      "app.hackeris.winehua",
+      "cat data/storage/el2/base/haps/entry/cache/direct-phone-shared-buffer-probe.json"
+    ],
+    "code": 0,
+    "seconds": 0.10621190071105957
+  },
+  {
+    "label": "processes",
+    "command": [
+      "shell",
+      "ps",
+      "-A",
+      "-o",
+      "USER,PID,PPID,NAME"
+    ],
+    "code": 0,
+    "seconds": 0.1406106948852539
+  },
+  {
+    "label": "hilog",
+    "command": [
+      "shell",
+      "hilog",
+      "-x",
+      "-t",
+      "app",
+      "-z",
+      "2000"
+    ],
+    "code": 0,
+    "seconds": 0.15387344360351562
+  }
+]

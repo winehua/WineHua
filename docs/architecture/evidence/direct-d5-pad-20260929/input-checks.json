@@ -1,0 +1,44 @@
+[
+  {
+    "stage": "fullscreen",
+    "tap": [
+      1280,
+      800
+    ],
+    "status": "PASS",
+    "commandExit": 0,
+    "received": [
+      640,
+      400
+    ],
+    "clientExtent": [
+      1280,
+      800
+    ],
+    "expected": [
+      640,
+      400
+    ]
+  },
+  {
+    "stage": "windowed",
+    "tap": [
+      948,
+      710
+    ],
+    "status": "PASS",
+    "commandExit": 0,
+    "received": [
+      350,
+      225
+    ],
+    "clientExtent": [
+      700,
+      450
+    ],
+    "expected": [
+      350,
+      225
+    ]
+  }
+]

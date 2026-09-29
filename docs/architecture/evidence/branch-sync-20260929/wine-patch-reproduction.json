@@ -1,0 +1,44 @@
+{
+  "status": "PASS",
+  "pinnedWineHead": "4d3ec031c42a232e15a860274f743f756e047e8d",
+  "patches": [
+    {
+      "patch": "0001-win32u-repair-external-font-registration.patch",
+      "status": "already in pinned HEAD"
+    },
+    {
+      "patch": "0002-ntdll-ohos-signal-safe-stack-read.patch",
+      "status": "already in pinned HEAD"
+    },
+    {
+      "patch": "0006-app-managed-desktop-lifetime.patch",
+      "status": "applied"
+    },
+    {
+      "patch": "0007-client-only-window-state.patch",
+      "status": "applied"
+    },
+    {
+      "patch": "0008-win32u-surface-region-lock-order.patch",
+      "status": "applied"
+    },
+    {
+      "patch": "0009-direct-ohos-wsi-and-resize-smoke.patch",
+      "status": "applied"
+    }
+  ],
+  "dirtyFilesReproduced": [
+    "dlls/win32u/vulkan.c",
+    "dlls/win32u/window.c",
+    "dlls/win32u/winstation.c",
+    "dlls/winewayland.drv/vulkan.c",
+    "dlls/winewayland.drv/wayland_surface.c",
+    "dlls/winewayland.drv/waylanddrv.h",
+    "dlls/winewayland.drv/window.c",
+    "programs/explorer/desktop.c",
+    "programs/winehua_d3d11_smoke/main.c",
+    "programs/winehua_vulkan_smoke/main.c",
+    "server/winstation.c"
+  ],
+  "filesCompared": 13
+}

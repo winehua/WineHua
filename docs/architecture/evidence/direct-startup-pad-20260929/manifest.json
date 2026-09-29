@@ -1,0 +1,353 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "automation-policy.json": {
+      "bytes": 469,
+      "sha256": "b4c09896e70a6a16fb7676d858aaa89a578cf3d847e425e9e6dac05c5d75ba67"
+    },
+    "cold-1/captures/frames/scene-alpha-cover.jpeg": {
+      "bytes": 127473,
+      "sha256": "ae0f3d6b6e29b949d45f688c21fafd221e1c074580539118bda0aa585cfede64"
+    },
+    "cold-1/captures/frames/scene-desktop-idle.jpeg": {
+      "bytes": 68066,
+      "sha256": "10021e09f838ec617ddf0e0a0b07c0759169f2047827f1501c56fe90a99627bf"
+    },
+    "cold-1/captures/frames/scene-destroy-b.jpeg": {
+      "bytes": 97618,
+      "sha256": "4e3d99f59baa586248b134c564484ea02bfd5c4be6c98608020c0bc38399632d"
+    },
+    "cold-1/captures/frames/scene-fullscreen.jpeg": {
+      "bytes": 76648,
+      "sha256": "4f481570fa8ca1fe2d77fc9106de807008d871ee6f1cc81ec1f3c29d49721d4d"
+    },
+    "cold-1/captures/frames/scene-gdi-cover.jpeg": {
+      "bytes": 130327,
+      "sha256": "82c4a27e0552c5b2f3c284939193762f154dc4228ed6af86ac5ee0f808391863"
+    },
+    "cold-1/captures/frames/scene-initial-render.jpeg": {
+      "bytes": 111431,
+      "sha256": "5c5cc95f60f0e68dd95702e2117d23223c14734bd3117522dbb24a361dd1058f"
+    },
+    "cold-1/captures/frames/scene-minimize.jpeg": {
+      "bytes": 102097,
+      "sha256": "9826fa54b3dfd70a0bc0d1b1491e229bcf32df46b602d636eb4b5ec4ac31e795"
+    },
+    "cold-1/captures/frames/scene-move.jpeg": {
+      "bytes": 127356,
+      "sha256": "925b9fa5ae33ab3df8435bf26f51fde3dc77a5b9cdf2b671817f2b2b665e2729"
+    },
+    "cold-1/captures/frames/scene-overlap.jpeg": {
+      "bytes": 115756,
+      "sha256": "4918f2ca5d234d4fe601e562dd7ba44e86d666c032cfbc3d1748f12a904e2290"
+    },
+    "cold-1/captures/frames/scene-restore.jpeg": {
+      "bytes": 118839,
+      "sha256": "ebd86ebbf68a433add04cce3459b6e4b43902e03633eca917e53a3f4281c3343"
+    },
+    "cold-1/captures/frames/scene-windowed.jpeg": {
+      "bytes": 98152,
+      "sha256": "ac3db1e394db1a726258ed5ec4cf94e3e21a84298162c1774b01356e230d4ec5"
+    },
+    "cold-1/captures/input-checks.json": {
+      "bytes": 805,
+      "sha256": "f95bfa6e50cbfb019469e33e3d0b05467198fa0bb75b2cb833c7a649d3f61f2e"
+    },
+    "cold-1/captures/scene-captures.json": {
+      "bytes": 2018,
+      "sha256": "6b630990ba47e7f80a541e551189cd6e995d3d27e57cedc7b4bf4395a5076221"
+    },
+    "cold-1/logs/DirectVkDesktop.log": {
+      "bytes": 7587,
+      "sha256": "c6735f279692049d4ee81f99192f3bf7931042714f893bb3a0303fcde6112e27"
+    },
+    "cold-1/logs/DirectWineSurface.log": {
+      "bytes": 3089,
+      "sha256": "f560ca026ae04a6a1f601110084f4ab9502c5d684980bb053a78c50823ba84ad"
+    },
+    "cold-1/logs/SMOKE.log": {
+      "bytes": 1256,
+      "sha256": "03deefd0f2aeb934d363e67613e0db17e6c3bbee407d0b59b1fccc67dc7ced3e"
+    },
+    "cold-1/logs/wine.log": {
+      "bytes": 415,
+      "sha256": "7b8cc019acfaaf528b0bb2e1f5b85cf0d0ee96831f3fbbbc6970d0a24c160827"
+    },
+    "cold-1/smoke/artifact.json": {
+      "bytes": 436,
+      "sha256": "093efd98424fa1d167743e34ae31c8a9e44bd5249c6d8e9d60445b4481670553"
+    },
+    "cold-1/smoke/device-results/direct-desktop-scene-x64.json": {
+      "bytes": 287,
+      "sha256": "6488008f5ae5568a2224f26a79656b668ee3df5af83cb1ec901c059bbf0fe136"
+    },
+    "cold-1/smoke/device-results/direct-desktop-scene-x64.json.a.json": {
+      "bytes": 819,
+      "sha256": "0d87121c1d8a29da8bf533f8096594d17a40c5b77839c731afdfbfbb1a88b178"
+    },
+    "cold-1/smoke/device-results/direct-desktop-scene-x64.json.a.json.input.log": {
+      "bytes": 53,
+      "sha256": "3156bca11da58e235127978fbf4d4b6bcef6da5571b14dc13a2e51f7848c9b2a"
+    },
+    "cold-1/smoke/device-results/direct-desktop-scene-x64.json.b.json": {
+      "bytes": 819,
+      "sha256": "5d483ada225bdc2c5661ffde8fde63278a3513ee29b40936d06a7d1d3df29847"
+    },
+    "cold-1/smoke/device-results/direct-desktop-scene-x64.json.steps.log": {
+      "bytes": 220,
+      "sha256": "e8efcd036c27ec98f823749be874c73f29a3f051c85c5fdc83fe9fd4f2e4362d"
+    },
+    "cold-1/smoke/device-results/suite-summary.json": {
+      "bytes": 264,
+      "sha256": "eac91fbcbdcde23e4f457a3effaec4e2d985315c481c640dca9736ddfaf7a14e"
+    },
+    "cold-1/smoke/host-summary.json": {
+      "bytes": 570,
+      "sha256": "5c0332497e844ba09df71e96f65f090e2424d04593927ccf87a8ac6ad585fdbe"
+    },
+    "cold-1/smoke/job.json": {
+      "bytes": 143,
+      "sha256": "a34984aa131cb5d7f7c8b156d0f6f28bbf947345fa84e930e2f08dea7d208b5f"
+    },
+    "cold-1/smoke/suite-summary.json": {
+      "bytes": 363,
+      "sha256": "19739f146b4cc281ee49874e69538840b8cf6e4e29a3544fba7440cddc42060a"
+    },
+    "cold-2/captures/frames/scene-alpha-cover.jpeg": {
+      "bytes": 126852,
+      "sha256": "de91ff8e6cd4c14bc3d1fb3f929a540abb11fc730fbdf2a87522e6bdd99c6589"
+    },
+    "cold-2/captures/frames/scene-desktop-idle.jpeg": {
+      "bytes": 68066,
+      "sha256": "10021e09f838ec617ddf0e0a0b07c0759169f2047827f1501c56fe90a99627bf"
+    },
+    "cold-2/captures/frames/scene-destroy-b.jpeg": {
+      "bytes": 94777,
+      "sha256": "ef26a13b07f274e2908b8bee7f33600a908383ff68ee57a8ceadd32af455e510"
+    },
+    "cold-2/captures/frames/scene-fullscreen.jpeg": {
+      "bytes": 85194,
+      "sha256": "c81adc653fe7d3aa08fd799853dffb47c1f408d5242103984746d932a228562b"
+    },
+    "cold-2/captures/frames/scene-gdi-cover.jpeg": {
+      "bytes": 132802,
+      "sha256": "b19293dfde0dc72000ba0484f5e7d201d4a3cbecdf882878760ba97ffa0768a2"
+    },
+    "cold-2/captures/frames/scene-initial-render.jpeg": {
+      "bytes": 111500,
+      "sha256": "a842dc5bb31e5641abd636046e0dceb648949f8d6650dbd6b17729ae8201fff3"
+    },
+    "cold-2/captures/frames/scene-minimize.jpeg": {
+      "bytes": 101411,
+      "sha256": "f07c631c37d774009de022daa3d4229e5bba48b9bb8269bf5359d02d852109f1"
+    },
+    "cold-2/captures/frames/scene-move.jpeg": {
+      "bytes": 121040,
+      "sha256": "cf62f1bcfa004bbd5cf24fd2713cf2f9ad03742d8fcc6d0146650292fdf0c77e"
+    },
+    "cold-2/captures/frames/scene-overlap.jpeg": {
+      "bytes": 115524,
+      "sha256": "59fcc4db99a5a632867209471246aead5fd61703257dcbfea6858f0dc852136c"
+    },
+    "cold-2/captures/frames/scene-restore.jpeg": {
+      "bytes": 117857,
+      "sha256": "bccd5205b3e84fcbd74fc6bc6c33d3004a36f2da098fd569024c95e09acab78d"
+    },
+    "cold-2/captures/frames/scene-windowed.jpeg": {
+      "bytes": 68066,
+      "sha256": "10021e09f838ec617ddf0e0a0b07c0759169f2047827f1501c56fe90a99627bf"
+    },
+    "cold-2/captures/input-checks.json": {
+      "bytes": 805,
+      "sha256": "f59fa607f9e576350abced0927630aac9a24ecdd4f8b43673de9b1ed2280181d"
+    },
+    "cold-2/captures/scene-captures.json": {
+      "bytes": 2018,
+      "sha256": "c526224796096f415c57ec18e56e314a806daed0df107076fbb3edf9d728e872"
+    },
+    "cold-2/logs/DirectVkDesktop.log": {
+      "bytes": 7025,
+      "sha256": "ec341cf2745f0231d0cc8e215f9803b3c7a39563b3742212138a075caee33794"
+    },
+    "cold-2/logs/DirectWineSurface.log": {
+      "bytes": 3218,
+      "sha256": "3403532cef5a38bd84bcec5addf4714bcfd87fb3d9945158c43d0901ca956a11"
+    },
+    "cold-2/logs/SMOKE.log": {
+      "bytes": 1256,
+      "sha256": "1a4e5fcc60cf54404c84159ea7d103c34c429aeb142078d91deba74a3b126769"
+    },
+    "cold-2/logs/wine.log": {
+      "bytes": 415,
+      "sha256": "4b3a07efdc2b19677de17590e3199e69d54148b6969b3b29616eb37e537f5e58"
+    },
+    "cold-2/smoke/artifact.json": {
+      "bytes": 436,
+      "sha256": "3391eeb01fd23c67ae9bafda0a6946cee267d45f4054103b25b869435c649c04"
+    },
+    "cold-2/smoke/device-results/direct-desktop-scene-x64.json": {
+      "bytes": 287,
+      "sha256": "23f90e1f63b88eb8811dc28ede39d5ff0ed73b14e6688961fc492e99e6ec2cfc"
+    },
+    "cold-2/smoke/device-results/direct-desktop-scene-x64.json.a.json": {
+      "bytes": 819,
+      "sha256": "449cd6216a7d7b1241804daa6900fd06ddd8467a5124adb8b21a88eda6dbb602"
+    },
+    "cold-2/smoke/device-results/direct-desktop-scene-x64.json.a.json.input.log": {
+      "bytes": 53,
+      "sha256": "f003e13336585b0d5abcb1adf2493a9e919b90267a1a7fd383f79162430ba2af"
+    },
+    "cold-2/smoke/device-results/direct-desktop-scene-x64.json.b.json": {
+      "bytes": 819,
+      "sha256": "3e45f5939120b808fc1afa13c8403cdb7a59b8f76cd9f40316ed569891ec1ab1"
+    },
+    "cold-2/smoke/device-results/direct-desktop-scene-x64.json.steps.log": {
+      "bytes": 220,
+      "sha256": "0d9b24e0287e19a476d7b6edd56024468bada9a9905b4c1f10e9ee1e63ccbe65"
+    },
+    "cold-2/smoke/device-results/suite-summary.json": {
+      "bytes": 264,
+      "sha256": "1ebbe33b776b2f8dae884c28a06176d9f95e1c21aefb01dfd00371e00cd045d7"
+    },
+    "cold-2/smoke/host-summary.json": {
+      "bytes": 570,
+      "sha256": "5c0332497e844ba09df71e96f65f090e2424d04593927ccf87a8ac6ad585fdbe"
+    },
+    "cold-2/smoke/job.json": {
+      "bytes": 143,
+      "sha256": "a34984aa131cb5d7f7c8b156d0f6f28bbf947345fa84e930e2f08dea7d208b5f"
+    },
+    "cold-2/smoke/suite-summary.json": {
+      "bytes": 363,
+      "sha256": "ae1c052aaf3c299cbb213a825588127b979e98b8f5be1dbe935bac3cd4be6c55"
+    },
+    "cold-3/captures/frames/scene-alpha-cover.jpeg": {
+      "bytes": 128171,
+      "sha256": "7fbac3a848a502ff39f70af58578914400bc84ce78a31b19661952f747cce49a"
+    },
+    "cold-3/captures/frames/scene-desktop-idle.jpeg": {
+      "bytes": 68066,
+      "sha256": "10021e09f838ec617ddf0e0a0b07c0759169f2047827f1501c56fe90a99627bf"
+    },
+    "cold-3/captures/frames/scene-destroy-b.jpeg": {
+      "bytes": 97846,
+      "sha256": "354254f07a032742670dd275c8e97fed6a15d205f28f74c130b0796421adfd4c"
+    },
+    "cold-3/captures/frames/scene-fullscreen.jpeg": {
+      "bytes": 77039,
+      "sha256": "7c401b91c51dcda6b92782470c756126c7d5ad76c6f2779be3c2fb7ef09cd3a6"
+    },
+    "cold-3/captures/frames/scene-gdi-cover.jpeg": {
+      "bytes": 132589,
+      "sha256": "dac69b7e82d4e078a496468f076cab9a15cb15a22dfa7e34e9ff33de6c362467"
+    },
+    "cold-3/captures/frames/scene-initial-render.jpeg": {
+      "bytes": 112468,
+      "sha256": "0714aa42ec62d57a294549151191023c7289012d6bf5f86fdee5b46c778e7a46"
+    },
+    "cold-3/captures/frames/scene-minimize.jpeg": {
+      "bytes": 101854,
+      "sha256": "69887d0a96bcc4769bce841ee59fdd41ff9e7a107360bd3031ee0ace6ac053dd"
+    },
+    "cold-3/captures/frames/scene-move.jpeg": {
+      "bytes": 123078,
+      "sha256": "fcdd2ef518557b2dd22ce869250036ef671027aad6ada96968c392cf0ade7756"
+    },
+    "cold-3/captures/frames/scene-overlap.jpeg": {
+      "bytes": 114344,
+      "sha256": "db04e1103a3a317de389fa0afc38c65eb4bdce4b02379695bd6fce31f6cf87cc"
+    },
+    "cold-3/captures/frames/scene-restore.jpeg": {
+      "bytes": 119293,
+      "sha256": "4b100a81be2a7585e34e691ab33a5373528813c6de1f9f2ad21e70492927c739"
+    },
+    "cold-3/captures/frames/scene-windowed.jpeg": {
+      "bytes": 97924,
+      "sha256": "9d68b7081a9ae2afa7d5cf362cf0dbe785fb09f8e446133ec185db04812366f6"
+    },
+    "cold-3/captures/input-checks.json": {
+      "bytes": 805,
+      "sha256": "e95c10c3e9dcf8060fead6894389df087827dc14eaa06bf2bec14b5ac7e1e8f2"
+    },
+    "cold-3/captures/scene-captures.json": {
+      "bytes": 2018,
+      "sha256": "f872213409954c02455b24a23ad216933dd515103f152c5780f279d0c6ca490d"
+    },
+    "cold-3/logs/DirectVkDesktop.log": {
+      "bytes": 7304,
+      "sha256": "0d95192702f4c77be32156295bece0bb59fefac47f1f074df99bd85f090be19d"
+    },
+    "cold-3/logs/DirectWineSurface.log": {
+      "bytes": 3218,
+      "sha256": "da08a890b3706a9c2d6e0fb8180373e1183c3109d548a885a09488149758083e"
+    },
+    "cold-3/logs/SMOKE.log": {
+      "bytes": 1256,
+      "sha256": "3f8d2a6713d625ca643397982c576e81c8f6128191e8542d6d078503058c475f"
+    },
+    "cold-3/logs/wine.log": {
+      "bytes": 413,
+      "sha256": "decf6e4b95fa367938aa3351faffca53257a29444d3311f756ab2940959fffe8"
+    },
+    "cold-3/smoke/artifact.json": {
+      "bytes": 436,
+      "sha256": "424bab8b8f01c9fbc6abf3980e62451c177c3140133fad0c453ec59d2326c1bd"
+    },
+    "cold-3/smoke/device-results/direct-desktop-scene-x64.json": {
+      "bytes": 287,
+      "sha256": "9f3059e9f187c2b32f073401917fba1157f9ea925b52899aa7fe7310928f6e35"
+    },
+    "cold-3/smoke/device-results/direct-desktop-scene-x64.json.a.json": {
+      "bytes": 819,
+      "sha256": "bba7d96142a6d71a3ff77817097362f9b789acddcb126498459303c5cb10ac8e"
+    },
+    "cold-3/smoke/device-results/direct-desktop-scene-x64.json.a.json.input.log": {
+      "bytes": 53,
+      "sha256": "62488e0446bb19db507fd64003b8b92bdcaaf0256190c7f1a4ad73f9c7a72bfa"
+    },
+    "cold-3/smoke/device-results/direct-desktop-scene-x64.json.b.json": {
+      "bytes": 819,
+      "sha256": "f008ae5be9fb879782e2a4615f2b1bb9274e2f8be6548fca58d583e579c0a1d1"
+    },
+    "cold-3/smoke/device-results/direct-desktop-scene-x64.json.steps.log": {
+      "bytes": 220,
+      "sha256": "b92540939d763ccd15fa5e40316939519c9e1f59aed8c0bd54cc7efe372674c7"
+    },
+    "cold-3/smoke/device-results/suite-summary.json": {
+      "bytes": 264,
+      "sha256": "1712b42aa54f551aaa1771c835a9208c1698906cda000253e452e9b2256b89db"
+    },
+    "cold-3/smoke/host-summary.json": {
+      "bytes": 570,
+      "sha256": "5c0332497e844ba09df71e96f65f090e2424d04593927ccf87a8ac6ad585fdbe"
+    },
+    "cold-3/smoke/job.json": {
+      "bytes": 143,
+      "sha256": "a34984aa131cb5d7f7c8b156d0f6f28bbf947345fa84e930e2f08dea7d208b5f"
+    },
+    "cold-3/smoke/suite-summary.json": {
+      "bytes": 363,
+      "sha256": "471fcf6a20d60e540c9d470723f45df0713e08c840d2df3e6e6223b398854f86"
+    },
+    "cold-scene-outcomes.json": {
+      "bytes": 600,
+      "sha256": "8a0664b46dcf6636176ae3dce9c58901c6da31b7889d21d4903f6bcc95e18093"
+    },
+    "payload-identity.json": {
+      "bytes": 3764,
+      "sha256": "9ecad4f2fd0dd63ac5243715635e2b78e9424881f6ccf4f5d2cf7b305c269f90"
+    },
+    "run_cold_scenes.py": {
+      "bytes": 3587,
+      "sha256": "74a04e2efdd0a94322916ee854ef81cf5c92742f9e0b67359bb9451319210b09"
+    },
+    "screen-timeout-restored.log": {
+      "bytes": 24,
+      "sha256": "c4c124b5fded66c61d6de106b62c5592e63e83010d589d1c182e1357031c34c6"
+    },
+    "summary.json": {
+      "bytes": 2943,
+      "sha256": "4cc9939759edc6bb16cb80706a6ce6079be847e14d821edbe7f7c996559a8478"
+    }
+  }
+}

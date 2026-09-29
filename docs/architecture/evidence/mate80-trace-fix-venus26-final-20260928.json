@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "runId": "mate80-trace-fix-venus26-final-20260928",
+  "testId": "dxvk-modern-cube-x64",
+  "status": "PASS",
+  "stage": "present",
+  "message": "cube rendered and presented",
+  "renderer": "D3D11",
+  "d3dBackend": "dxvk_modern_2_6",
+  "peArchitecture": "x64",
+  "featureLevel": "11_0",
+  "initHresult": "0x00000000",
+  "presentHresult": "0x00000000",
+  "frames": 885,
+  "renderSequence": 885,
+  "angleRegressions": 0,
+  "lastAngle": 7.998476505,
+  "d3d11Dll": "unix/data/storage/el2/base/files/wine/dxvk/modern-2.6/arm64x/d3d11.dll",
+  "dxgiDll": "unix/data/storage/el2/base/files/wine/dxvk/modern-2.6/arm64x/dxgi.dll"
+}

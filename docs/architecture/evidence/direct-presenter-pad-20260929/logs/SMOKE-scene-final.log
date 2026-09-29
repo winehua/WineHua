@@ -1,0 +1,12 @@
+09-29 18:44:53.359  9631  9631 I A00000/app.hackeris.winehua/SMOKE: want request: suite=dxvk-direct-cube runId=pad-presenter-virtual-cube-20260929 prefix=reuse job=yes
+09-29 18:44:53.500  9631  9631 I A00000/app.hackeris.winehua/SMOKE: request consumed: suite=dxvk-direct-cube runId=pad-presenter-virtual-cube-20260929 prefix=reuse
+09-29 18:44:56.306  9631  9631 I A00000/app.hackeris.winehua/SMOKE: run begin suite=dxvk-direct-cube runId=pad-presenter-virtual-cube-20260929 prefixReady=
+09-29 18:44:56.311  9631  9631 I A00000/app.hackeris.winehua/SMOKE: spawn test=dxvk-direct-cube-x64 exe=C:\smoke\x64\winehua_d3d_switch_cube.exe seconds=8 timeoutMs=180000 back=dxvk_legacy
+09-29 18:45:05.469  9631  9631 I A00000/app.hackeris.winehua/SMOKE: test done suite=dxvk-direct-cube test=dxvk-direct-cube-x64 status=PASS stage=present
+09-29 18:45:05.471  9631  9631 I A00000/app.hackeris.winehua/SMOKE: run done suite=dxvk-direct-cube status=PASS 1/1
+09-29 18:46:58.611  9631  9631 I A00000/app.hackeris.winehua/SMOKE: [a92ab1972269baa fa12f1 20860e3]want request: suite=direct-desktop-scene runId=pad-presenter-scene-after-cube-20260929 prefix=reuse job=yes
+09-29 18:46:58.613  9631  9631 I A00000/app.hackeris.winehua/SMOKE: [a92ab1972269baa fa12f1 20860e3]request consumed: suite=direct-desktop-scene runId=pad-presenter-scene-after-cube-20260929 prefix=reuse
+09-29 18:46:58.615  9631  9631 I A00000/app.hackeris.winehua/SMOKE: [a92ab1972269baa fa12f1 20860e3]run begin suite=direct-desktop-scene runId=pad-presenter-scene-after-cube-20260929 prefixReady=
+09-29 18:46:58.626  9631  9631 I A00000/app.hackeris.winehua/SMOKE: [a92ab1972269baa fa12f1 20860e3]spawn test=direct-desktop-scene-x64 exe=C:\smoke\x64\winehua_direct_desktop_scene.exe seconds=0 timeoutMs=120000 back=dxvk_legacy
+09-29 18:47:42.367  9631  9631 I A00000/app.hackeris.winehua/SMOKE: test done suite=direct-desktop-scene test=direct-desktop-scene-x64 status=PASS stage=destroy-a
+09-29 18:47:42.368  9631  9631 I A00000/app.hackeris.winehua/SMOKE: run done suite=direct-desktop-scene status=PASS 1/1

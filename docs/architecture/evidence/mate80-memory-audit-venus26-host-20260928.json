@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "status": "FAIL",
+  "passed": 1,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "dxvk-modern-cube-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "present",
+          "message": "cube rendered and presented",
+          "metrics": {}
+        },
+        {
+          "check": "visual",
+          "argument": "d3d11-cube",
+          "status": "PASS",
+          "stage": "visual:d3d11-cube",
+          "message": "d3d11-cube-color-depth-v1 on dxvk-modern-cube-x64.jpeg",
+          "metrics": {
+            "schemaVersion": 1,
+            "status": "PASS",
+            "validator": "d3d11-cube-color-depth-v1",
+            "image": "F:\\WineHua\\.temp\\direct-d4-phone-runs\\dxvk-modern-baseline-mate80-memory-audit-venus26-final-20260928\\frames\\dxvk-modern-cube-x64.jpeg",
+            "width": 1280,
+            "height": 2832,
+            "coloredSamples": 14200,
+            "minimumColoredSamples": 1132,
+            "darkSamples": 195444,
+            "activeColorBuckets": 3,
+            "colorBuckets": {
+              "red": 3848,
+              "green": 3568,
+              "blue": 6784
+            },
+            "coloredBounds": {
+              "x": 52,
+              "y": 56,
+              "width": 1193,
+              "height": 2537
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": [
+    {
+      "check": "coverage",
+      "argument": "",
+      "status": "FAIL",
+      "stage": "coverage",
+      "message": "无含 rgba8SampleMatrix 指标的测试（套件不含 d3d11 矩阵用例）",
+      "metrics": {
+        "schemaVersion": 1,
+        "suite": "dxvk-modern-baseline",
+        "status": "FAIL",
+        "tests": [],
+        "policy": "required API/object/RGBA8 Load-POINT-LINEAR PS-CS/descriptor/subresource array-mip-explicit-LOD-update/texture sampling/D24S8 2D-array-per-view-cube-cube-array-linear-border/present/readback coverage; ordinary R32_FLOAT comparison, optional MSAA resolve, and stencil query are reported separately"
+      }
+    }
+  ]
+}

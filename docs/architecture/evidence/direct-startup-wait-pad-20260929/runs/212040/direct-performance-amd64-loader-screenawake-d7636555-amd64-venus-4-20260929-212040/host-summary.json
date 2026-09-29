@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "passed": 1,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "d3d11-benchmark-amd64-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "present",
+          "message": "cube rendered and presented",
+          "metrics": {}
+        },
+        {
+          "check": "benchmark",
+          "argument": "",
+          "status": "PASS",
+          "stage": "benchmark",
+          "message": "541 steady-state frames; measurement valid, no speedup assertion",
+          "metrics": {
+            "complete": true,
+            "valid": true,
+            "peMachine": "AMD64",
+            "vulkanBackend": "venus",
+            "warmupMs": 3000,
+            "configuredRunMs": 12000,
+            "drawsPerFrame": 100,
+            "smallScissor": true,
+            "targetFps": 60,
+            "measuredFrames": 541,
+            "measuredMs": 9001.8391,
+            "averageFps": 60.098830249,
+            "frameMsP50": 16.7125,
+            "frameMsP95": 18.4771,
+            "frameMsP99": 21.8599,
+            "over16_67Ms": 283,
+            "over33_33Ms": 0,
+            "presentMeanMs": 0.790177634,
+            "presentMsP95": 2.1901,
+            "presentMsP99": 6.5317,
+            "cpuAvailable": true,
+            "cpuQueryError": 0,
+            "cpuMs": 2750.0,
+            "cpuMsPerFrame": 5.083179298,
+            "hapAcceptedGamePresentFps": 56.555078495788116,
+            "hapCpuMsPerSecond": 459.4926829844391,
+            "estimatedHapCpuMsPerGameFrame": 7.645617744645524,
+            "hapObservationMs": 9106.167186
+          }
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": []
+}

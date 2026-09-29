@@ -1,0 +1,11 @@
+{
+  "directViewport": "87 checks PASS",
+  "benchmarkStatistics": "PASS",
+  "wineSurfaceRegionLock": "18 cases PASS (entry-contract expected assertion rejection)",
+  "benchmarkArtifactValidation": "5 tests PASS",
+  "winePatchDirectionDetection": "3 tests PASS",
+  "nativeBufferSocket": "fd aliasing/CLOEXEC/400 invalid packets/no leak PASS",
+  "latestSignedHap": "1e85b09941fe653a342af9af926f7687bfc43023f4b65b10ef36311c98fab551 (build-only; latest source runtime changes already compiled)",
+  "fullMakeTest": "Not reported PASS: existing toplevel_event_test compile failure documented by prior runs",
+  "phoneRegression": "Venus + DXVK 2.6.2 x64 cube: 871 frames, host/render/visual PASS"
+}

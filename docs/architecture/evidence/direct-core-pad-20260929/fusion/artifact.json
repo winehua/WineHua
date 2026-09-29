@@ -1,0 +1,15 @@
+{
+  "runId": "pad-core-fusion-20260929",
+  "suite": "dxvk-direct-cube",
+  "prefix": "reuse",
+  "payloadVersion": "smoke-v2-c87c4aa03bfc",
+  "device": "5KPBB25818203996",
+  "longSeconds": 3600,
+  "directNcpSession": true,
+  "phoneDirectForkServer": false,
+  "desktopModeOverride": "fusion",
+  "desktopRendererOverride": "",
+  "wineArchitecture": "aarch64",
+  "wineCommit": "",
+  "wineDirtySummary": []
+}

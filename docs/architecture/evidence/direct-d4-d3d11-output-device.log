@@ -1,0 +1,5 @@
+09-27 20:26:25.387 40215 41809 I A02330/app.hackeris.winehua/DirectWineSurface: attached pid=44878 top=4 wl=3 gen=3 size=64x64
+09-27 20:26:26.342 40215 40215 I A02330/app.hackeris.winehua/DirectWineSurface: bind output top=4 surface=7224134993385
+09-27 20:26:26.349 40215 41809 I A02330/app.hackeris.winehua/DirectWineSurface: resized in place pid=44878 top=4 gen=3 size=640x480
+09-27 20:26:26.509 40215 41809 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1 top=4 size=632x446 presents=1 output=7224134993385
+09-27 20:26:27.162 40215 41809 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=60 top=4 size=632x446 presents=60 output=7224134993385

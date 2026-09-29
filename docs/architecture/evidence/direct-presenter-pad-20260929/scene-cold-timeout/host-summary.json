@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "status": "FAIL",
+  "passed": 0,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "direct-desktop-scene-x64",
+      "status": "FAIL",
+      "stage": "timeout",
+      "message": "轮询超时 120000ms (结果文件: /data/storage/el2/base/files/.wine/drive_c/smoke/results/pad-presenter-vulkan-cold-20260929/direct-desktop-scene-x64.json)",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "FAIL",
+          "stage": "timeout",
+          "message": "轮询超时 120000ms (结果文件: /data/storage/el2/base/files/.wine/drive_c/smoke/results/pad-presenter-vulkan-cold-20260929/direct-desktop-scene-x64.json)",
+          "metrics": {}
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": []
+}

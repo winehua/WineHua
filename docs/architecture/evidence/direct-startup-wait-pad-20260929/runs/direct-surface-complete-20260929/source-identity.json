@@ -1,0 +1,5 @@
+{
+  "window-complete-fix.c": "d0e9cb138e544c3a01991220f841b2dcece0a190d8f613e7cb97e931d5c8e4ec",
+  "winehua-window-before-surface-lock.c": "5b8a0f382df00eafd8f1893ee884d2f90fa49bee89f8df3a1e00487b6022f7ba",
+  "winehua-window-partial-surface-lock.c": "1ceb595b4c89b1ad1b8cda521ae4fc58debfc514f6e4d29c45ddb54261b58b25"
+}

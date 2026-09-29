@@ -1,0 +1,105 @@
+{
+  "scope": "Complete production apply_window_pos + update_surface_region extracted verbatim; recursive USER, deterministic Linux lock/lifetime harness with platform stubs, not device or GPU validation.",
+  "cases": {
+    "race": {
+      "exit": 0,
+      "stdout": "REGION user_depth=0\nFLUSH owns_surface_and_win_data; requesting_USER\nUPDATER waiting_surface user_depth=0\nPASS\n",
+      "stderr": ""
+    },
+    "replacement": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "shape-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "clip-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "no-clip": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "rtl": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "no-surface": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "caller-race": {
+      "exit": 0,
+      "stdout": "REGION user_depth=0\nFLUSH owns_surface_and_win_data; requesting_USER\nUPDATER waiting_surface user_depth=0\nPASS\n",
+      "stderr": ""
+    },
+    "caller-parent-race": {
+      "exit": 0,
+      "stdout": "REGION user_depth=0\nFLUSH owns_surface_and_win_data; requesting_USER\nUPDATER waiting_surface user_depth=0\nPASS\n",
+      "stderr": ""
+    },
+    "caller-shape-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "caller-clip-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "caller-no-surface": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "caller-server-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "entry-contract": {
+      "exit": -6,
+      "stdout": "",
+      "stderr": "region-fixed: /data/src/winehua/build/direct-surface-lock-20260929/region-fixed.c:44: user_check_not_lock: Assertion `user_depth == 0' failed.\n"
+    },
+    "no-shape": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "no-shape-no-clip": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    },
+    "caller-swap-race": {
+      "exit": 0,
+      "stdout": "REGION user_depth=0\nFLUSH owns_surface_and_win_data; requesting_USER\nUPDATER waiting_surface user_depth=0\nPASS\n",
+      "stderr": ""
+    },
+    "caller-swap-clip-error": {
+      "exit": 0,
+      "stdout": "PASS\n",
+      "stderr": ""
+    }
+  },
+  "baselineRace": {
+    "result": "cycle reproduced; killed at 2 seconds",
+    "stdout": "REGION user_depth=2\nFLUSH owns_surface_and_win_data; requesting_USER\nUPDATER waiting_surface user_depth=2\n",
+    "sourceSha256": "5b8a0f382df00eafd8f1893ee884d2f90fa49bee89f8df3a1e00487b6022f7ba"
+  },
+  "partialRace": {
+    "result": "cycle reproduced; killed at 2 seconds",
+    "stdout": "REGION user_depth=1\nFLUSH owns_surface_and_win_data; requesting_USER\nUPDATER waiting_surface user_depth=1\n",
+    "sourceSha256": "1ceb595b4c89b1ad1b8cda521ae4fc58debfc514f6e4d29c45ddb54261b58b25"
+  }
+}

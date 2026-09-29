@@ -1,0 +1,64 @@
+09-29 18:30:14.367  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: attached pid=1607 top=1 wl=3 gen=1 size=64x64
+09-29 18:30:14.630  1058  1058 I A02330/app.hackeris.winehua/DirectWineSurface: bind output top=1 surface=7224134997150
+09-29 18:30:14.640  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: resized in place pid=1607 top=1 gen=1 size=968x674
+09-29 18:30:14.829  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1 top=1 size=960x640 presents=1 output=7224134997150 presenter=singleImage
+09-29 18:30:15.486  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=60 top=1 size=960x640 presents=60 output=7224134997150 presenter=singleImage
+09-29 18:30:16.149  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=120 top=1 size=960x640 presents=120 output=7224134997150 presenter=singleImage
+09-29 18:30:16.839  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=180 top=1 size=960x640 presents=180 output=7224134997150 presenter=singleImage
+09-29 18:30:17.530  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=240 top=1 size=960x640 presents=240 output=7224134997150 presenter=singleImage
+09-29 18:30:18.194  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=300 top=1 size=960x640 presents=300 output=7224134997150 presenter=singleImage
+09-29 18:30:18.862  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=360 top=1 size=960x640 presents=360 output=7224134997150 presenter=singleImage
+09-29 18:30:19.528  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=420 top=1 size=960x640 presents=420 output=7224134997150 presenter=singleImage
+09-29 18:30:20.195  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=480 top=1 size=960x640 presents=480 output=7224134997150 presenter=singleImage
+09-29 18:30:20.863  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=540 top=1 size=960x640 presents=540 output=7224134997150 presenter=singleImage
+09-29 18:30:21.548  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=600 top=1 size=960x640 presents=600 output=7224134997150 presenter=singleImage
+09-29 18:30:22.228  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=660 top=1 size=960x640 presents=660 output=7224134997150 presenter=singleImage
+09-29 18:30:22.905  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=720 top=1 size=960x640 presents=720 output=7224134997150 presenter=singleImage
+09-29 18:30:23.593  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=780 top=1 size=960x640 presents=780 output=7224134997150 presenter=singleImage
+09-29 18:30:24.263  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=840 top=1 size=960x640 presents=840 output=7224134997150 presenter=singleImage
+09-29 18:30:24.938  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=900 top=1 size=960x640 presents=900 output=7224134997150 presenter=singleImage
+09-29 18:30:25.607  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=960 top=1 size=960x640 presents=960 output=7224134997150 presenter=singleImage
+09-29 18:30:26.274  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1020 top=1 size=960x640 presents=1020 output=7224134997150 presenter=singleImage
+09-29 18:30:49.537  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: attached pid=2493 top=2 wl=3 gen=2 size=64x64
+09-29 18:30:49.835  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1 top=2 size=960x640 presents=0 output=0 presenter=singleImage
+09-29 18:30:49.871  1058  1058 I A02330/app.hackeris.winehua/DirectWineSurface: bind output top=2 surface=7224134997153
+09-29 18:30:49.878  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: resized in place pid=2493 top=2 gen=2 size=968x674
+09-29 18:30:50.555  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=60 top=2 size=960x640 presents=57 output=7224134997153 presenter=singleImage
+09-29 18:30:51.223  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=120 top=2 size=960x640 presents=117 output=7224134997153 presenter=singleImage
+09-29 18:30:51.899  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=180 top=2 size=960x640 presents=177 output=7224134997153 presenter=singleImage
+09-29 18:30:52.566  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=240 top=2 size=960x640 presents=237 output=7224134997153 presenter=singleImage
+09-29 18:30:53.245  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=300 top=2 size=960x640 presents=297 output=7224134997153 presenter=singleImage
+09-29 18:30:53.923  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=360 top=2 size=960x640 presents=357 output=7224134997153 presenter=singleImage
+09-29 18:30:54.602  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=420 top=2 size=960x640 presents=417 output=7224134997153 presenter=singleImage
+09-29 18:30:55.272  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=480 top=2 size=960x640 presents=477 output=7224134997153 presenter=singleImage
+09-29 18:30:55.956  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=540 top=2 size=960x640 presents=537 output=7224134997153 presenter=singleImage
+09-29 18:30:56.623  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=600 top=2 size=960x640 presents=597 output=7224134997153 presenter=singleImage
+09-29 18:30:57.297  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=660 top=2 size=960x640 presents=657 output=7224134997153 presenter=singleImage
+09-29 18:30:57.968  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=720 top=2 size=960x640 presents=717 output=7224134997153 presenter=singleImage
+09-29 18:30:58.642  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=780 top=2 size=960x640 presents=777 output=7224134997153 presenter=singleImage
+09-29 18:30:59.321  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=840 top=2 size=960x640 presents=837 output=7224134997153 presenter=singleImage
+09-29 18:30:59.998  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=900 top=2 size=960x640 presents=897 output=7224134997153 presenter=singleImage
+09-29 18:31:00.667  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=960 top=2 size=960x640 presents=957 output=7224134997153 presenter=singleImage
+09-29 18:31:01.336  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1020 top=2 size=960x640 presents=1017 output=7224134997153 presenter=singleImage
+09-29 18:31:37.110  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: attached pid=3077 top=3 wl=3 gen=3 size=64x64
+09-29 18:31:37.409  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1 top=3 size=960x640 presents=0 output=0 presenter=singleImage
+09-29 18:31:37.462  1058  1058 I A02330/app.hackeris.winehua/DirectWineSurface: bind output top=3 surface=7224134997156
+09-29 18:31:37.468  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: resized in place pid=3077 top=3 gen=3 size=968x674
+09-29 18:31:38.135  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=60 top=3 size=960x640 presents=55 output=7224134997156 presenter=singleImage
+09-29 18:31:38.189  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: resized in place pid=3077 top=3 gen=3 size=808x634
+09-29 18:31:38.893  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=120 top=3 size=800x600 presents=115 output=7224134997156 presenter=singleImage
+09-29 18:31:39.549  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=180 top=3 size=800x600 presents=175 output=7224134997156 presenter=singleImage
+09-29 18:31:40.215  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=240 top=3 size=800x600 presents=235 output=7224134997156 presenter=singleImage
+09-29 18:31:40.892  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=300 top=3 size=800x600 presents=295 output=7224134997156 presenter=singleImage
+09-29 18:31:41.559  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=360 top=3 size=800x600 presents=355 output=7224134997156 presenter=singleImage
+09-29 18:31:42.237  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=420 top=3 size=800x600 presents=415 output=7224134997156 presenter=singleImage
+09-29 18:31:42.904  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=480 top=3 size=800x600 presents=475 output=7224134997156 presenter=singleImage
+09-29 18:31:43.590  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=540 top=3 size=800x600 presents=535 output=7224134997156 presenter=singleImage
+09-29 18:31:44.260  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=600 top=3 size=800x600 presents=595 output=7224134997156 presenter=singleImage
+09-29 18:31:44.947  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=660 top=3 size=800x600 presents=655 output=7224134997156 presenter=singleImage
+09-29 18:31:45.614  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=720 top=3 size=800x600 presents=715 output=7224134997156 presenter=singleImage
+09-29 18:31:46.288  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=780 top=3 size=800x600 presents=775 output=7224134997156 presenter=singleImage
+09-29 18:31:46.960  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=840 top=3 size=800x600 presents=835 output=7224134997156 presenter=singleImage
+09-29 18:31:47.628  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=900 top=3 size=800x600 presents=895 output=7224134997156 presenter=singleImage
+09-29 18:31:48.308  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=960 top=3 size=800x600 presents=955 output=7224134997156 presenter=singleImage
+09-29 18:31:48.985  1058  1418 I A02330/app.hackeris.winehua/DirectWineSurface: GPU consumer frames=1020 top=3 size=800x600 presents=1015 output=7224134997156 presenter=singleImage

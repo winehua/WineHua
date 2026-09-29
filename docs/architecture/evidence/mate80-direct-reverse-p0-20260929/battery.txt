@@ -1,0 +1,21 @@
+
+-------------------------------[ability]-------------------------------
+
+
+----------------------------------BatteryService----------------------------------
+Current time: 2026-09-29 22:29:13.116
+capacity: 83 
+batteryLevel: 3 
+chargingStatus: 0 
+healthState: 1 
+pluggedType: 0 
+voltage: 4193416 
+present: 1 
+technology: Li-poly 
+nowCurrent: -322 
+currentAverage: -244 
+totalEnergy: 5501 
+remainingEnergy: 4394 
+remainingChargeTime: 0 
+temperature: 350 
+chargeType: 0 

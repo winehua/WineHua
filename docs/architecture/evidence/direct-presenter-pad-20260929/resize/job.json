@@ -1,0 +1,7 @@
+{
+  "suite": "dxvk-direct-resize",
+  "prefix": "reuse",
+  "params": {
+    "seconds": 12
+  }
+}

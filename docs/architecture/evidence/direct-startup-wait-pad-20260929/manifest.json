@@ -1,0 +1,1808 @@
+{
+  "scope": "Versioned startup diagnosis and regression. Formal ABBA rows are under their own HAP plan identity; diagnostic short runs are not performance samples.",
+  "currentSourceCandidate": "4b92988e0a5a569ab26d313a605ffbc41012be369a1147efa3ed7b758f7a287f",
+  "sourceScope": "final-source and latest host regression refer to second fix, not the d371 first fix.",
+  "hostRegressionVersions": {
+    "host/direct-surface-lock-20260929/host-regression.json": "Historical first fix d371: isolated callee only, insufficient to close the bug.",
+    "host/direct-surface-lock-20260929/host-regression-with-baseline.json": "Second fix 4b92988e: complete caller/callee, recursive USER, both old and partial controls."
+  },
+  "historicalRuns": {
+    "211230": "d9e49dba",
+    "212040": "d7636555",
+    "212331": "d7636555",
+    "213232": "d37139a5",
+    "direct-surface-lock-perf-fixed60-20260929": "d37139a5"
+  },
+  "files": [
+    {
+      "path": "final-source/automation/run_direct_performance.py",
+      "bytes": 15529,
+      "sha256": "af65fcc6da0831887ee1abed005a3787873e2a1839546dc9da6ef1e36646f3d8"
+    },
+    {
+      "path": "final-source/automation/smoke.py",
+      "bytes": 57797,
+      "sha256": "b147a94643d65789d699be1d4b0ced65c16766cbf2a15ff3f4194fe00b6f017b"
+    },
+    {
+      "path": "final-source/entry/src/main/cpp/proc/wine_child.cpp",
+      "bytes": 93090,
+      "sha256": "c2b7e5102792e50e4b4b8d9cce6674c1d2681697b2964a397f430c929fb16893"
+    },
+    {
+      "path": "final-source/entry/src/main/ets/service/ScreenAwake.ets",
+      "bytes": 2219,
+      "sha256": "1bf6d5ef3e282b273b508aba0a3c99d6cbe09707e2885487b61940f0b95c3bcd"
+    },
+    {
+      "path": "final-source/host_tests/wine_surface_region_lock_test.py",
+      "bytes": 17080,
+      "sha256": "1931acd8cc07bf02f529da0523bea57a6758a73477ffb68f46c09b574efe672d"
+    },
+    {
+      "path": "final-source/Makefile",
+      "bytes": 33236,
+      "sha256": "948770c75ecf156470662113ff524619422013380aec900467078bf31cdc585a"
+    },
+    {
+      "path": "final-source/patches/wine/0008-win32u-surface-region-lock-order.patch",
+      "bytes": 3105,
+      "sha256": "eb3258cd8c50d1c074ce5e1294ae76a7735b88f9ded2aa2ecb6feef34dda784d"
+    },
+    {
+      "path": "final-source/scripts/build_wine.sh",
+      "bytes": 19892,
+      "sha256": "86da9d1e91e888d5ab36088683b0d696f2cf91f068d3bc22192455f037e603eb"
+    },
+    {
+      "path": "final-source/thirdparty/wine-valve/dlls/win32u/window.c",
+      "bytes": 217748,
+      "sha256": "d0e9cb138e544c3a01991220f841b2dcece0a190d8f613e7cb97e931d5c8e4ec"
+    },
+    {
+      "path": "host/direct-loader-screenawake-20260929/identity.json",
+      "bytes": 501,
+      "sha256": "046cd5ca9c01fd57678fe09e318af5887565de044d1e13d2500948a091fb56bc"
+    },
+    {
+      "path": "host/direct-loader-screenawake-20260929/screen-awake-host-regression.json",
+      "bytes": 385,
+      "sha256": "f59a708a6c05100da1b874be88c8283e4374401bd1023a82d93ce73661e6e8ea"
+    },
+    {
+      "path": "host/direct-stall-host-regression/result.json",
+      "bytes": 4447,
+      "sha256": "85806c51f3ffc5cef495d016f01ab6e1506a77f8bf7673a1bd206ef1dd8a48b2"
+    },
+    {
+      "path": "host/direct-surface-lock-20260929/build-result.json",
+      "bytes": 470,
+      "sha256": "f37f993e9687b9f6afd0efb8335c40d5b748bde10003637fa7d0aa4a62453f82"
+    },
+    {
+      "path": "host/direct-surface-lock-20260929/host-regression-with-baseline.json",
+      "bytes": 3040,
+      "sha256": "c416df89a03bcbe2ee1763324e7838ab6334f1a31adc55a3fe14f10e9a012c93"
+    },
+    {
+      "path": "host/direct-surface-lock-20260929/host-regression.json",
+      "bytes": 769,
+      "sha256": "2f7514150e6db696a0c4197ae8e6187757cc0d3f0fdd5073aea0aaa87feba6d1"
+    },
+    {
+      "path": "reproduction/build_candidate.py",
+      "bytes": 1936,
+      "sha256": "75fe1cda7b6ee0b0630afba545f6fefa608c402375549ed69c10851cf86e5515"
+    },
+    {
+      "path": "reproduction/build_surface_fix.py",
+      "bytes": 1360,
+      "sha256": "12154f9604dcab367555b2ac32fab459e1ef45003d90a7d1dcf82eddfc3316d1"
+    },
+    {
+      "path": "reproduction/check_screen_awake.py",
+      "bytes": 2683,
+      "sha256": "fa48f60857ec94a36cd35617fa349668bca0e72e0f798fc516f087dc69e9bcc2"
+    },
+    {
+      "path": "reproduction/package-changed-members.json",
+      "bytes": 83,
+      "sha256": "d6b9043549056140a2ebff9c5d9b4632629de7c1803cff580a891c2b7590c00a"
+    },
+    {
+      "path": "reproduction/package-runtime-identity.json",
+      "bytes": 1116,
+      "sha256": "c815f11d2eeb1469fc286fc0052ae9f577e0dd33bc8485d22ad4ce7e2aa1d00a"
+    },
+    {
+      "path": "reproduction/review_fixed60.py",
+      "bytes": 4272,
+      "sha256": "4f21cfacccf2540c7fa4388c1028c94d0ffccc789cf7011ff231ebd8e30fcc17"
+    },
+    {
+      "path": "reproduction/run_candidate_diagnostic.py",
+      "bytes": 6156,
+      "sha256": "f4a069cb632aa1d07d880f1abb5065eb490b115a23fe57fbfb661a2cc3542b75"
+    },
+    {
+      "path": "reproduction/screen-awake-device.json",
+      "bytes": 5838,
+      "sha256": "1bb7717aeab0e9c6f82564d8ec29138672b852d2541dc112cb12c6d1903a212e"
+    },
+    {
+      "path": "reproduction/test_screen_awake.js",
+      "bytes": 3589,
+      "sha256": "410a0c17f009c41a410ea5868565064914f7b09f73949aa39a377d82fc320383"
+    },
+    {
+      "path": "reproduction/test_stall_sampler.py",
+      "bytes": 2897,
+      "sha256": "4e1f84af5c48c5fe030331065cafe0eef4987c52fff598af1cb92df3cd841241"
+    },
+    {
+      "path": "runs/211230/automation-policy.json",
+      "bytes": 388,
+      "sha256": "d9535acab64c5d6455c5d5a3d51a76ca136d2c8f42f6de21bd7e84808d1ebdf3"
+    },
+    {
+      "path": "runs/211230/direct-performance-amd64-loader-screenawake-d9e49dba-amd64-venus-1-20260929-211230/artifact.json",
+      "bytes": 463,
+      "sha256": "0026562c0d375c88b1e8286451edbc1e35094ac517b882a0f3f1e75be480970d"
+    },
+    {
+      "path": "runs/211230/direct-performance-amd64-loader-screenawake-d9e49dba-amd64-venus-1-20260929-211230/device-results/suite-summary.json",
+      "bytes": 515,
+      "sha256": "4d373f6fbabf525bdc510f4d10d91226446d8363e9a61a8afaa1d5ad0e9fe991"
+    },
+    {
+      "path": "runs/211230/direct-performance-amd64-loader-screenawake-d9e49dba-amd64-venus-1-20260929-211230/host-summary.json",
+      "bytes": 1050,
+      "sha256": "33dca8bbdbc3fc8a6cddb9cd04bc3110832a2bf959268b9d8625da0ffdba4f12"
+    },
+    {
+      "path": "runs/211230/direct-performance-amd64-loader-screenawake-d9e49dba-amd64-venus-1-20260929-211230/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/211230/direct-performance-amd64-loader-screenawake-d9e49dba-amd64-venus-1-20260929-211230/suite-summary.json",
+      "bytes": 623,
+      "sha256": "0721b2a04bc302e646731822e11696f1126ee28e6fc8a63f62638f331b735129"
+    },
+    {
+      "path": "runs/211230/live-stall.json",
+      "bytes": 112876,
+      "sha256": "5523f67b14f9ca55559fd9353354e8b67a528b68a8b4f267c93b6219814098ca"
+    },
+    {
+      "path": "runs/211230/run-1-diagnostic.json",
+      "bytes": 45855,
+      "sha256": "01f9c7d113b71e97a7bdeb993dc8dff4c952093c60dd13d279014bd0f51cf014"
+    },
+    {
+      "path": "runs/211230/screen-timeout-restored.log",
+      "bytes": 25,
+      "sha256": "9a11e4c4782c91ff4f38bd78a4b1e428d155d04d36d84a81e8e12a15288ff725"
+    },
+    {
+      "path": "runs/212040/automation-policy.json",
+      "bytes": 388,
+      "sha256": "5d5f677dfb0f45955e42a5f59aaf9d4e4b98e0c34f66da6fff6160caffd75132"
+    },
+    {
+      "path": "runs/212040/current-stall.json",
+      "bytes": 221,
+      "sha256": "a0cbbe1de0a2ad1ac504dfec096852908b599be3bdc9473cae791aad195c2867"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/artifact.json",
+      "bytes": 463,
+      "sha256": "8f5c22471f6e07788e6ba6a7297afd1506eb9ef514b6811328f72cceeec9b70c"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "37b3ef7e36fd779b363f4cc3002e66bda1f2ad0a22b215fa09ca5eb8a753c112"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "05df0bbe336c0548885a622a78fefd0333ed91d17f1a108d16a3fbd5e161dc64"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "b91a0a6d7e70d0f01c2a6c3dc2dcc9c8d016833843920869cedbc8d66c198e45"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "1dbc92eca0f171038b3491102311d9b6a6f090199f2ff2f7ec5f0878fea06a77"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/host-summary.json",
+      "bytes": 1846,
+      "sha256": "b70f08b0fbf5a3c627758fa6623157419af9e20b6a98ab017617cc161515e77c"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212040/suite-summary.json",
+      "bytes": 418,
+      "sha256": "57e77029f95f4bd8e6a29f34363ac6a8211d05848a182c6620ba766b888a134c"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/artifact.json",
+      "bytes": 463,
+      "sha256": "2827de89efc9183de51477899c4f745ad41ad8868ed74e35d359f3fb2ca11dca"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "4a75a7bc41e3bd02f04b297c270efb134ac034f839a68a35a4bd70f851ebfd47"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "55a6e23c2f0eaff19041146d7a1efc9808ab3033fbecdfbd8ed624137c2e9798"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "75ac9fd0279e059e278a977278559cd53dc7b5d98ac57d6b17fdec081df6371f"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "2aea5e8b71bbfdc7ac97aca6951f0823baa1ff07b2249291338ea30225ee7515"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/host-summary.json",
+      "bytes": 1847,
+      "sha256": "8cbbf0cedac9a5541d17678c0d617014c2c6a343d26e5feb106b6b2c1196b923"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212040/suite-summary.json",
+      "bytes": 418,
+      "sha256": "b2e7a374e4af4c9f3a41a51a8bd8509e6573ebe6d0ded998377ab870147208dc"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/artifact.json",
+      "bytes": 463,
+      "sha256": "0738f502d7b104389f02d3e301c83c8b88f33addd2e11706b3c35e092e26004d"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "c0b723519a3713d69e24451b06f339339e492eeb0c0ac45c4bd04efb4c1548da"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "4c05e63a9ecdfe2030f61a1f066bafa1d419460d61f86182d187abc5f7e32dcb"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "58b5d53af847b50c88ba9e5f036da909bb49a4c1b1d5e5881226e6b180027062"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "d80cdb1157feacf92200270f8e384b9424181f271e1a01214d9758b93b8c8c23"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/host-summary.json",
+      "bytes": 1848,
+      "sha256": "bf9233cb19c672ae117c306f8972af2d826bfdc15e1ba08c962c7896bafaec04"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-3-20260929-212040/suite-summary.json",
+      "bytes": 418,
+      "sha256": "527227e37cee972fac0c18bb6552f4398906d5884bf9599e181e792583322218"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/artifact.json",
+      "bytes": 463,
+      "sha256": "21e9ddc4933eb5a29c9c372ece3802854985bcd13ca2ddb7115fbdc83d140891"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "c529e78781b7a206311425ac4b9a9ef49b86f0032098d3400d5c924927458a78"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "a983c1ebceb6cbf460575929a530983368c92a0d3f69b8d7c37abdfa842fbcb1"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "9281648c4ce9fc37ddbef9904dad6481ae039156af113d494116ba3b8f503ef8"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "db3065c64e8ec67b8c5cd4e95cd93a0e4b62312a3004f4f04dac95163719563f"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/host-summary.json",
+      "bytes": 1848,
+      "sha256": "3db49c416bd1b036b5321b3927c93894e27c3b95c3ce4c595b26ed5d12fe1a0b"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-4-20260929-212040/suite-summary.json",
+      "bytes": 418,
+      "sha256": "7911ad7a02dd87dfdec24f4f7022e1156b46bc5b97726d07adc4eec122e5aa5c"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/artifact.json",
+      "bytes": 463,
+      "sha256": "aa70a9f10967807fa8978e5484da7d2d98093eb3b6683c0d744aa5e51a080bb9"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "55a4cefb2d95467410b7d41f020937edb5e417a7613e1a5288673f9f02acac9e"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "59ad3483457783ef71ceb83d29782f183a14e77b3123b0e304cbb7f2250e867a"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "fb89db09ff0f4db824516409d77b5893ff14453e7c99baeff5f50f9ff25fc92a"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "ace278b82ffe8d7a078d8caeefedb7b695639163c70f4d1ce4244fad1258a647"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/host-summary.json",
+      "bytes": 1849,
+      "sha256": "81df20a576ba1da0d21309fe78319687604bd23b26411400bff168763e4c5649"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-5-20260929-212040/suite-summary.json",
+      "bytes": 418,
+      "sha256": "4200e6ac7191aeb05078ef448141beafcdbfb87ca6ef93a0bdfd17657064d89d"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/artifact.json",
+      "bytes": 463,
+      "sha256": "0d39f2eb53fc7961092a81a093ed7da378d82b1734f820483d2b3779cacdf8fc"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1398,
+      "sha256": "48962d49a0d446cef536ff386a35826634d3fcafb0f03467ae3aeb43abc7183d"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "f0e23df19af7754ec66e34c8ad8683a4c9827614e8394d8f60617882ebd55357"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "bf5bf1ab4c6ce8851ea013d994831535868eea85213cc59e097e11b51dac0d44"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "908070c2b3c0bc3122b55c2edfdf2abfa63f7f9a0bf1b1c9a9cfba732dbceff0"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/host-summary.json",
+      "bytes": 1847,
+      "sha256": "ee92b0adb760150b0fbf8b376f42e26027141224754ee906351845294b1f7a87"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212040/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-6-20260929-212040/suite-summary.json",
+      "bytes": 418,
+      "sha256": "50a656e6f8a3f9e73cd6c83596ea99cffdee4feddd1027617f651f1c5d7b1bba"
+    },
+    {
+      "path": "runs/212040/live-stall.json",
+      "bytes": 120730,
+      "sha256": "4cb31a5e9be38a03e9c9162dcb5a291b09a14bc9fc08bbe4a2665966c4a99a31"
+    },
+    {
+      "path": "runs/212040/run-1-diagnostic.json",
+      "bytes": 12452,
+      "sha256": "984534b2b7b0b665d1ca943bd0095d44d8f216e40bc3f07ef15928c5c4ad3996"
+    },
+    {
+      "path": "runs/212040/run-2-diagnostic.json",
+      "bytes": 12947,
+      "sha256": "ef16fa97e95368c9e0aaa7f80ddd056d83a3be49ec401e3742b04834dedd5c1b"
+    },
+    {
+      "path": "runs/212040/run-3-diagnostic.json",
+      "bytes": 13681,
+      "sha256": "48b2292c743c9b93545bea8d8ab2aa67d517bcc929f2eb788250b273de887fea"
+    },
+    {
+      "path": "runs/212040/run-4-diagnostic.json",
+      "bytes": 14177,
+      "sha256": "2a25ada3b6a819318874de3e976a2834dbe5885ef2df3d30f16d6cd0c400e113"
+    },
+    {
+      "path": "runs/212040/run-5-diagnostic.json",
+      "bytes": 14792,
+      "sha256": "ce2fbf3d192071774a444540e5459f544b8806ea944c72f2a81bc67b9f5e28d0"
+    },
+    {
+      "path": "runs/212040/run-6-diagnostic.json",
+      "bytes": 15404,
+      "sha256": "9a306700096c057d1d4657649049af80b1bde1927709fdfcb38f1ed08fbe0117"
+    },
+    {
+      "path": "runs/212040/screen-timeout-restored.log",
+      "bytes": 25,
+      "sha256": "9a11e4c4782c91ff4f38bd78a4b1e428d155d04d36d84a81e8e12a15288ff725"
+    },
+    {
+      "path": "runs/212331/automation-policy.json",
+      "bytes": 388,
+      "sha256": "8685f972a62ffb14b16eed4c679b729331d86a5874079ed69ccec32742815682"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/artifact.json",
+      "bytes": 463,
+      "sha256": "58f15848d8cd087811bad4bf3013ff7434980075cc446b71a9ba395270c6d318"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1398,
+      "sha256": "4565d1f8400039564087f6ce46ef9ce28f234cca8314fb3a0f262cc6b1623cb9"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "92a7f49aa53f6c5ec333ef00df018a24be5cb8aebfdc026644627733629f93e5"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "367bce02965d1e896cb2a5df8153d71ec43ac95e0c1b5517b4f313b95c8b0421"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "a91b3764d5e22728e65d1bad5bf4fbfa0a4671dde2e3e23e3402cbd1a98b8cee"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/host-summary.json",
+      "bytes": 1848,
+      "sha256": "142aa95af4180aabee104ebd8f7f6bc9eb60df89c113acf09d6dca220510d9d8"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-1-20260929-212331/suite-summary.json",
+      "bytes": 418,
+      "sha256": "9bc3a55c4d411218ffbaaff3d1838d94cb779d7eba09fb79fb8a692a2a55385f"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212331/artifact.json",
+      "bytes": 463,
+      "sha256": "6df77d021788b56fce69768f74beecd18649ed426a1b5c7a0a3804f0bc8838d0"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212331/device-results/suite-summary.json",
+      "bytes": 515,
+      "sha256": "1d94bee18c0655b6f57218a47a1a362b61f820c2d5b1e1d5c8cdffbbe2ca22f3"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212331/host-summary.json",
+      "bytes": 1050,
+      "sha256": "fd1e532f7166e3b32d6836891526dbd6b81e28c90802d1564fbb63c966f85be4"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212331/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/212331/direct-performance-amd64-loader-screenawake-d7636555-amd64-venus-2-20260929-212331/suite-summary.json",
+      "bytes": 623,
+      "sha256": "28e27fa37f225afbc2eb7f11f6994f8323296e66cc65861de4fdca6fc46e6c97"
+    },
+    {
+      "path": "runs/212331/live-stall.json",
+      "bytes": 270991,
+      "sha256": "6983fbed5aaffb8ff06fc0a96a62245e1761710209a68d8a4d93d6003c9a7ed4"
+    },
+    {
+      "path": "runs/212331/run-1-diagnostic.json",
+      "bytes": 15646,
+      "sha256": "b47cf469a2bc068dd7a2823109cc0595632238e3352494f7718fc099ec850229"
+    },
+    {
+      "path": "runs/212331/run-2-diagnostic.json",
+      "bytes": 358163,
+      "sha256": "a0a67b2151de045ce46464a9ccedbacf22cee5e48b068afc49b6fbd5773ea90b"
+    },
+    {
+      "path": "runs/212331/screen-timeout-restored.log",
+      "bytes": 25,
+      "sha256": "9a11e4c4782c91ff4f38bd78a4b1e428d155d04d36d84a81e8e12a15288ff725"
+    },
+    {
+      "path": "runs/213232/automation-policy.json",
+      "bytes": 388,
+      "sha256": "8edfefdc9287c59c305c1c97efa1eb5fce36b929fa7ce8c662fdf6d1b6f43b0b"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/artifact.json",
+      "bytes": 468,
+      "sha256": "3fece206e6fd2681893b9ebc0cea35ab5acf60aad1ea90620cb0389685502229"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1400,
+      "sha256": "326abdb64c2c5c3efce2c6f4548e6fb288660900ba41984429aa170489717f29"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "937789187f8bfbd4e588974dad70b71f976f3475ac2854aaf58e101efa00bd11"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 175,
+      "sha256": "30ce9c1927710395424d369817615014869da2b9f2b1cee4b228f5f7479c153d"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/device-results/suite-summary.json",
+      "bytes": 323,
+      "sha256": "d5f7e82054cf3ca784267eaf6c52bbe7d3de8899d0404d61f6a75c8fe102d939"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/host-summary.json",
+      "bytes": 1847,
+      "sha256": "91715824581ff0f27b597706328cdf75f7aa56c34f1b9ae3ab013a450e707cc9"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/job.json",
+      "bytes": 404,
+      "sha256": "c5c4b25ed9f456b029393b47884e15a9df614db030166797a03eae6d23de9519"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-10-20260929-213232/suite-summary.json",
+      "bytes": 422,
+      "sha256": "bc36a67a53a3e65d4e7be269924901f80809c5c7a25d3d8feaef1150c3d40406"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/artifact.json",
+      "bytes": 468,
+      "sha256": "92f3b711aaa472971020dcabe812aadadd5fc20125fbbec1b6252679b1e6ca3d"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1400,
+      "sha256": "bc6206831ad93001a5578eac79c9bf8bcf0226db9de29bc2896cf1c90c921fa9"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "9d80e88dd2e0e99b5aefe550f0cb53f8693b1094e65553abd19ff4bcc0ee4fa5"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 175,
+      "sha256": "41307a803412b69b5ab512e8e737d4c8ed662805f4aa9f2e441f8446265c398b"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/device-results/suite-summary.json",
+      "bytes": 323,
+      "sha256": "3d7a2ab43e17948923efb1b54398ab46e9e78691c9e1b0e95aa8d7a7d303a1bd"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/host-summary.json",
+      "bytes": 1851,
+      "sha256": "64f233deabcbf91d9dfb4b41b3159945916d4724202a6c7895c9548fa75a1a12"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/job.json",
+      "bytes": 404,
+      "sha256": "c5c4b25ed9f456b029393b47884e15a9df614db030166797a03eae6d23de9519"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-12-20260929-213232/suite-summary.json",
+      "bytes": 422,
+      "sha256": "ad46dd9acbf6b1f7c3c0c8cd55c17c0bce6ce44b9b91706495222b5e728c3f54"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/artifact.json",
+      "bytes": 467,
+      "sha256": "a09ff5fd0df7699c3aaa48aa363901e8cb42e89e78b82527f8a592afb1179411"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1399,
+      "sha256": "37c099ad8495144006bb9e96441cf3be823f89f631c17cef6c1468402dcf8a83"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 764,
+      "sha256": "a4eb582df4a2f76eb00a45eaf95b81b94d30e719e2c82261f88dccad537fc584"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 174,
+      "sha256": "0b884492a54f0d8c3dbb67abc182137bfb1be4dba4f2409058e803ddf90057b4"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/device-results/suite-summary.json",
+      "bytes": 321,
+      "sha256": "6bf0a70172d446ddc7af94ad430063d678689f7902043378ee1ee5a7d3a7b52a"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/host-summary.json",
+      "bytes": 1847,
+      "sha256": "d408af5b223ac0de67c0c663e56fc9403889fb363ce46e1e8f564dfedebe23fa"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/job.json",
+      "bytes": 404,
+      "sha256": "c5c4b25ed9f456b029393b47884e15a9df614db030166797a03eae6d23de9519"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-2-20260929-213232/suite-summary.json",
+      "bytes": 420,
+      "sha256": "233b1706bcae0ca614e81ccb87dc96f465679a6a483813049254e92f8a9a571c"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/artifact.json",
+      "bytes": 467,
+      "sha256": "a19b480ac935b708ee1acacdd6824c2e96fb061408b2649dbfe1b65f174f1185"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1399,
+      "sha256": "f03c00bfa93efc2159f1d710723e8ab9953776684f5b55f2a1df1b8a81232f68"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 764,
+      "sha256": "abc98e925ccb6d46e0c73a4155e3508feca68c5cfe17bc3bf949313bf8e810c1"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 174,
+      "sha256": "f55d90326ea4a6d337eb2799febb2a61af00a2472401b5c05b26886ae87ca705"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/device-results/suite-summary.json",
+      "bytes": 321,
+      "sha256": "c6e77ad016e151c665b0fecbfead457d0d925f69665720e906a43f0b5b63cee6"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/host-summary.json",
+      "bytes": 1847,
+      "sha256": "1afda818146715ee6bf6a81249cd1f8cbf47595107565165848982e042ff584b"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/job.json",
+      "bytes": 404,
+      "sha256": "c5c4b25ed9f456b029393b47884e15a9df614db030166797a03eae6d23de9519"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-4-20260929-213232/suite-summary.json",
+      "bytes": 420,
+      "sha256": "296befa573a35642d919c4c219f932eec45218886b4b7bc726b08d37ba569dcf"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/artifact.json",
+      "bytes": 467,
+      "sha256": "bf7a742daa6b0163e7a8ef797bd059e7a563e5f8addb0abad8cb9790a3d181bd"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1399,
+      "sha256": "b094784dea2bc18c41c9ee60dd11c8060103dbb1382a7895b5ff0dc382d1c6a9"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 764,
+      "sha256": "a6cb7a12c998f80a1e97a416ab812c5ae1ca6f3db5daf73707c66d3a743012e1"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 174,
+      "sha256": "db780a491cbb3e25446f0f1368bbefb6b6fdfa34ae9cde98cbd0d2be2fe74682"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/device-results/suite-summary.json",
+      "bytes": 321,
+      "sha256": "5c800effdff71ac71b6680a6b8ddcb7b2392445091bd0ced7ad0236fe8488848"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/host-summary.json",
+      "bytes": 1845,
+      "sha256": "4af6c1be22707114f8f87bbe225d92449b05bac310f15fba38880de2bc9efcda"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/job.json",
+      "bytes": 404,
+      "sha256": "c5c4b25ed9f456b029393b47884e15a9df614db030166797a03eae6d23de9519"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-6-20260929-213232/suite-summary.json",
+      "bytes": 420,
+      "sha256": "dfed74daaa28f4bda3e2d3d42b587720aeda7dc7858ff57d21acebb23731b3ea"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/artifact.json",
+      "bytes": 467,
+      "sha256": "a619e9cde73b04cd8c4085eb9c8e0aa1f2d7a2820297cf9cf993569df63c372c"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1399,
+      "sha256": "1b3616f1b48b92b5c468e2934a4eac44de80e4967519c5770f3f0eab78b27914"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 764,
+      "sha256": "c8e69036c3b897ed60c8f9a3f4aad6513dc396f6cfb43a4cc86398588c0ff91c"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 174,
+      "sha256": "6775ce68251ed1ead8c70a10ea760f7c9654fef09fb3487a91010972f7f847d3"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/device-results/suite-summary.json",
+      "bytes": 321,
+      "sha256": "9ad97dc4275fa3dbc667d607678d085bfc9ac53b14e626a25852865d3423dfd8"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/host-summary.json",
+      "bytes": 1848,
+      "sha256": "e0bb3c912caf7c8ea998101ab96f34af5408b33cf136f2116d9c3ee3490b3018"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/job.json",
+      "bytes": 404,
+      "sha256": "c5c4b25ed9f456b029393b47884e15a9df614db030166797a03eae6d23de9519"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-direct-8-20260929-213232/suite-summary.json",
+      "bytes": 420,
+      "sha256": "79f3b3729926e4b033d72f6b47e6e29482d2a929b6dd35082758f0063ffeefa2"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/artifact.json",
+      "bytes": 463,
+      "sha256": "bd29e095680fac8941732f7f1db52989cc2676f6908c655f10a390ba0745cc9a"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "2cfd8ae03df69c7062665888fb791d90d435c9fb19a57231210de0c2adf25a29"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "14c0ef356c25fdea3a688ef71e2fb365f8e9912047a5131e823bcefca561928e"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "44376a52181cc6de1c197db92746871f873fc69307ab797c982c80ee52e79b3f"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "c1300e68ef0352a3f5db546024f7b18c2f03e2095f7e70091847a297ed66393e"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/host-summary.json",
+      "bytes": 1849,
+      "sha256": "c2b403c75c2fb4094d61aca8fad61ba5a611c44e6c8f35df4f22f03254673430"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-1-20260929-213232/suite-summary.json",
+      "bytes": 418,
+      "sha256": "2a6bcdb81b9dcca8f5c99c964992f83fbb40f5f430ba9719b283e8428cf2947b"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/artifact.json",
+      "bytes": 464,
+      "sha256": "2775cc9799b4335e3bce017cedfcae32ae36ad9dc0d6c425427c21323a3bd5bf"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1399,
+      "sha256": "2c77e1c232ef1332059ff4d3ff477ef3223f8cada02506e5ca94cdfe572d3ff1"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 766,
+      "sha256": "19494367fb42df8105f0d9a815204ce9520d6613948e117b72a5aa3a6b6c262c"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 174,
+      "sha256": "bd8cfa78b924c393d3e377f63c2965ee88e83473b335e5bad6f5ca02da4f2433"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/device-results/suite-summary.json",
+      "bytes": 321,
+      "sha256": "1e710e54670292bf41f14031ce25cf8348145f26af080a9eb358201553091abf"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/host-summary.json",
+      "bytes": 1848,
+      "sha256": "a544827c51871add5c01760015d9682c224d63d81f106a349283e221fc39750d"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-11-20260929-213232/suite-summary.json",
+      "bytes": 420,
+      "sha256": "a7d69eed7d0e1ca8d4e1976be193bcd2772ce098684824b09cf4b2e4e3da02c0"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/artifact.json",
+      "bytes": 463,
+      "sha256": "cc72c3aff4b42f7e8870118355f8c9b1c4da2a0fb0333bb90c792e74c66f45c8"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1398,
+      "sha256": "9857234dceab83d9c1d92c1ee49c1201ba81d2bf2c5f0d086c4f78df8063524f"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "ffb1ff11876b968afa625483e9773959f12a37b1bb7ed36f64218af1e319bad5"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "fd565bda69236ea1da0f7334167587dc63f25e8a23cece77de2f5e2a6277c942"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "9b3d92fe5c1b072c43e15d3bc5e74af972f835445146b800c5bd4ea80126e044"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/host-summary.json",
+      "bytes": 1847,
+      "sha256": "a69fb9589cb38e44604088e2a930db19a343be3c70fdf8c6745160371363153b"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-3-20260929-213232/suite-summary.json",
+      "bytes": 418,
+      "sha256": "b7b9817c00e551b8867767a7837aff85bb38095e325c1e0a286960cd045fd1ed"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/artifact.json",
+      "bytes": 463,
+      "sha256": "569dec1322b14107d14572f64e1002e59e311a6e24c16472b834dd8eae694320"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "3e790516ba49230d3f43acc3ebf3bfd7f1e98a20bfdc7c61599fb010a1f4033d"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "645db3bc8aac2b86b29e34b7217c8fc234cbc5b72c7fb75431f5daba9e52c5f9"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "8cf0a54a69f1bb9e8b54675c63a3cd8a1cb9ac4e12d301b87bcf0ff76e0aa74f"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "0d0da3a21aa227c2fb5f0c8d41d3ad240dce5f6449999c885c9bada445c91d6e"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/host-summary.json",
+      "bytes": 1847,
+      "sha256": "4fb681cf9193dff2906edc2a87402c870d259dcc93f80c4c8cec804119baf130"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-5-20260929-213232/suite-summary.json",
+      "bytes": 418,
+      "sha256": "84c38c10027199672981a181e4ca94283c6c9536acc6db6f37f242e8ae17328e"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/artifact.json",
+      "bytes": 463,
+      "sha256": "f3c0de3cb42efc607d84ac766bf67e2b159c802a18087364e6163440d0355d2a"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "8143215eb2660e65412675aa2fd8127b101861de63be2a3459f400796085e097"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "5e8ff4b29773b08aa560cfb6dd1bff74ff09372e9e4c71568816a675bfaf8322"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "f143c1cc5a03fdfe5525a926d65dff8d75072a5c9c68d05689aafc8b372aa281"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "cb65b1335a494741b4ce026aa5c25b73a81ea38b233d8acd01aefd34201b2033"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/host-summary.json",
+      "bytes": 1846,
+      "sha256": "abcf9fb938634a79844fdbdf46238335fb399732b638bf6f37957edee9fd5591"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-7-20260929-213232/suite-summary.json",
+      "bytes": 418,
+      "sha256": "a918d40f79c6d5d284acefe19db0636577e56a652bc19a9382c91cfcd3232a5e"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/artifact.json",
+      "bytes": 463,
+      "sha256": "ca43b57bb41d974a55184fc773f64c2cc4ba5a032936b5e51600b55dd7910a8f"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1397,
+      "sha256": "a481ffaa750fa9476b2875905edcff26c6a0256a029e5cb66425ba1cc98da669"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 765,
+      "sha256": "ebfeb99c785041ad02c152399d6057ed1f6c1dface218e538e8dfda2303f5265"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 173,
+      "sha256": "facb0a9bdb073ea9c6dd1fd52f5bbd40e45d159d4c3955da5ab4b35900a6d206"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/device-results/suite-summary.json",
+      "bytes": 319,
+      "sha256": "09304010fdf47c54e98544d1f17d580bd14d42aca2f9e39873c235975982edb9"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/host-summary.json",
+      "bytes": 1849,
+      "sha256": "8b09e1ebed9d5da9dc3b8ae305b607c3e1510869d55b061f4c5f8f91bd1e24d5"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/job.json",
+      "bytes": 403,
+      "sha256": "c3cb0f8319964ffc29ee70905ea6c31c3101c49bd95f764411144caee22f74ce"
+    },
+    {
+      "path": "runs/213232/direct-performance-amd64-loader-screenawake-d37139a5-amd64-venus-9-20260929-213232/suite-summary.json",
+      "bytes": 418,
+      "sha256": "23152af48d76c36b287d5d669663dcae5ac2d8e943b17f35cb3db054ccfe92b6"
+    },
+    {
+      "path": "runs/213232/run-1-diagnostic.json",
+      "bytes": 15666,
+      "sha256": "aaed4c0771279e5f0048be64d9c846b1a74efdaefbcbb07434befa98cc7fe268"
+    },
+    {
+      "path": "runs/213232/run-10-diagnostic.json",
+      "bytes": 18013,
+      "sha256": "2a12a3baeb3b9eb8887ab5fb8581a032830c8baf9d270060e64f79071f17a3c1"
+    },
+    {
+      "path": "runs/213232/run-11-diagnostic.json",
+      "bytes": 18742,
+      "sha256": "37db91fb89de83bfa824a756d639116b62d7ca7de5a2a7c36780aa64904e2ca4"
+    },
+    {
+      "path": "runs/213232/run-12-diagnostic.json",
+      "bytes": 18627,
+      "sha256": "8d4f18cc9d3dd675b175247e4fc0490b2b45b52d51194803bd2885a59ed44e98"
+    },
+    {
+      "path": "runs/213232/run-2-diagnostic.json",
+      "bytes": 16168,
+      "sha256": "adddc5a58c793a651d59d24d54d29598a835873813a693c2d404be83703d43f6"
+    },
+    {
+      "path": "runs/213232/run-3-diagnostic.json",
+      "bytes": 16154,
+      "sha256": "f52e0f558cc6ecf0ce711a20b64ed7b9ecb8fdd5a87757571f97e1fa8ab27713"
+    },
+    {
+      "path": "runs/213232/run-4-diagnostic.json",
+      "bytes": 15923,
+      "sha256": "25f4edab4d43aa211866237b51b51b97cfe5545ef5b2a3263754b5c7840d3bfa"
+    },
+    {
+      "path": "runs/213232/run-5-diagnostic.json",
+      "bytes": 16281,
+      "sha256": "5374da884bc3fd2c02eed650d86ed56cc6a3f1bec4af0317f3606f266cba16dc"
+    },
+    {
+      "path": "runs/213232/run-6-diagnostic.json",
+      "bytes": 16166,
+      "sha256": "db243d64910210ce91680cf352fbe3de98dadd22cb795844f63f2bea4ff16122"
+    },
+    {
+      "path": "runs/213232/run-7-diagnostic.json",
+      "bytes": 17014,
+      "sha256": "46a171d630b5c63deed2002a910f7ef5c117ad64c84a4a8d69b1e8a873f841af"
+    },
+    {
+      "path": "runs/213232/run-8-diagnostic.json",
+      "bytes": 17150,
+      "sha256": "264baa3712bf5d50b73d4a5d560ef52cffef18c5493f2aea57aa7cb36965ff8b"
+    },
+    {
+      "path": "runs/213232/run-9-diagnostic.json",
+      "bytes": 17998,
+      "sha256": "8f4a7924a4631857bc6f8aa3902993dbfafe5e6c4a0a2e4fd60c541ff105437e"
+    },
+    {
+      "path": "runs/213232/screen-timeout-restored.log",
+      "bytes": 25,
+      "sha256": "9a11e4c4782c91ff4f38bd78a4b1e428d155d04d36d84a81e8e12a15288ff725"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/candidate-identity.json",
+      "bytes": 501,
+      "sha256": "046cd5ca9c01fd57678fe09e318af5887565de044d1e13d2500948a091fb56bc"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/package-diff.json",
+      "bytes": 295,
+      "sha256": "8bf2d3f703ecd595b71fbcc5dcffcea5edf3b6fe44e56c2966eb245a6f32881f"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/automation-policy.json",
+      "bytes": 363,
+      "sha256": "a9d8f932546aeea0edddbe263bb7e958657bec8c284a73209f7684bd7f02d602"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/artifact.json",
+      "bytes": 448,
+      "sha256": "02c9816663c3ed282f7a8d57868355b2edc04625d9b47d76fab4129cce782580"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1389,
+      "sha256": "fb8241561a76fb6dc91450b992bf2b8892cf74a330415ce053ed64dfd592320d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106887,
+      "sha256": "df44067bfd2a7e6d44f8c04cd4b822fb2b016e71f750a2c6173c60843cdee870"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 751,
+      "sha256": "d50d0b60732933de53561bb5e5c57de1ce0ec3a3a5d71dd7ed6053c71a92fdc4"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 159,
+      "sha256": "a094a75296875c94e5a8e38ebb1f186d4f7643b6ee61906edc642a9104fd71ac"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/device-results/suite-summary.json",
+      "bytes": 288,
+      "sha256": "f28ef80d89d164946fc6b1aeb76c35053f441d3ecf9f7bbf8b688e99b30fabbb"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/host-summary.json",
+      "bytes": 1854,
+      "sha256": "c7f3b6d414a6976f032afe8a0ecf8ebb8c853f212afebd7c85b09435c6a90c91"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/job.json",
+      "bytes": 369,
+      "sha256": "c63b06e496fbcd6b6f53d247304bacd433638fc3b15a4ea118b5c0dbb789a009"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-1-venus/suite-summary.json",
+      "bytes": 387,
+      "sha256": "4670c989fd150570d10e4be91e2ed3dfa014172d97f80c8205323fb915eadd18"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/artifact.json",
+      "bytes": 453,
+      "sha256": "79c3ed681d9f09eaef50e1363f9f15fb043b3398c64a44c49511d5850b6418f3"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1392,
+      "sha256": "c4a42888e9df01105a23dd39f1c00b8fa0cb8eff1db62278084aa5ab327ef9ea"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106941,
+      "sha256": "257fb5d2d865f782b02611bf3d539f292f97dfc77e103783a6b464cf925155aa"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 753,
+      "sha256": "660ca04f9eee7a9ba574735f52aa1fca499a6db1d67abe0ed3f9b03fb8eb069a"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 161,
+      "sha256": "192c5757c53533624a1daf54fc216e5d582214540fc6c011281c2f1c5b6f1b5d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/device-results/suite-summary.json",
+      "bytes": 293,
+      "sha256": "9323faf0234d53affecf812691abdc4b0aa60aff4fa767e075f54d53ef0b187a"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/host-summary.json",
+      "bytes": 1856,
+      "sha256": "ebad7216bb0966aba195f53dcd1f250785dfb37b194ed820a6b3e1e680ec64c6"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/job.json",
+      "bytes": 370,
+      "sha256": "c4147c5c37120ec18d924d866d20d4048f0819338309d0ef863b217db897bdf2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-10-direct/suite-summary.json",
+      "bytes": 392,
+      "sha256": "8593e7d9b6810f969288702bbc6ed4f803747c01663338dacf5d3a1c52b7d72b"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/artifact.json",
+      "bytes": 453,
+      "sha256": "f3e9409303b245c1e9e4e35d62dbaa54f7c8c0f91f7ae16db6939d1300684690"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1392,
+      "sha256": "633a116a0c872c2cbee9356e23b4523fbd221ece1611e5643506d9102bcf22ff"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106940,
+      "sha256": "c86557b1ee180789cb65f2a4c3bd10d0c1204c08a30bc2640bcedbd6ab22cac4"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 753,
+      "sha256": "bf4d5f655c552277bd4a5353b7e55614849cb8c58196bb3206cb8fe2f313c3ca"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 161,
+      "sha256": "e3146b5d0ccdcbda9d5e5a7765329d00c10e28d68824ecede765bc1bdb739c2a"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/device-results/suite-summary.json",
+      "bytes": 293,
+      "sha256": "5122edf3356a7311114a67a28d386dd30481cc96c2f0b4df13f345baf5786168"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/host-summary.json",
+      "bytes": 1856,
+      "sha256": "4923c1522bfd073ecc238968af5d884657fb4f5437d02ba51d060064e61aa5c2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/job.json",
+      "bytes": 370,
+      "sha256": "c4147c5c37120ec18d924d866d20d4048f0819338309d0ef863b217db897bdf2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-11-direct/suite-summary.json",
+      "bytes": 392,
+      "sha256": "02209e745491a79b3e8778b3785cf59090112ac00d86d4571779167fc305693e"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/artifact.json",
+      "bytes": 449,
+      "sha256": "e59758dc7d59cce4c2619b826e73061132147e5bc71859a373d1f7ec041d6594"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1390,
+      "sha256": "6efd976f6cbc5ca0abe4c487eec51ba2aaead7bcffee0e9ddfbadb3236e39474"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106839,
+      "sha256": "636f38af857fefbf1509be92021176ec503dc44e0b372ab732ad1daaf0586b58"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 754,
+      "sha256": "28638dd3cf732fbef717a7451ede0cb60319ef84529bb19722bad55994de9b26"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 160,
+      "sha256": "503b0d8673a04902c686c7d6057f043a7795a829b2dc7ea4bfcae596ad430f0c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/device-results/suite-summary.json",
+      "bytes": 291,
+      "sha256": "483b7a524dbe24bcc03ba202b44ad03adda65d407eb3abe68fb060d21d46c0d2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/host-summary.json",
+      "bytes": 1853,
+      "sha256": "940cb96b26feeb8d30a528c138f62e3e52760f737f16c02126a7dec72f60243d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/job.json",
+      "bytes": 369,
+      "sha256": "c63b06e496fbcd6b6f53d247304bacd433638fc3b15a4ea118b5c0dbb789a009"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-12-venus/suite-summary.json",
+      "bytes": 390,
+      "sha256": "d1a959e0b43f251b28a1c848c6a003120f8417cdbfe2a42752cedb7cbcca29bd"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/artifact.json",
+      "bytes": 452,
+      "sha256": "1a62d0a8dcaf4838ea326d0d34bc655af2d8760671c9a1d885d6fe5155935edb"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1391,
+      "sha256": "9fa83a3544656684211301ebf8f7ded11e0137a69475e71c5e3cb8faecefb861"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106936,
+      "sha256": "1dcd73498bf72ce3018fad1107a2910af1708e455dde022489162942d1115dc4"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 750,
+      "sha256": "e29067624940df77133e78c50b5c85589f59225685277df07a0ebfdfa05beb19"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 160,
+      "sha256": "4600b71531f6d1b3136dd35e53d5a2069f9dd679bd8bc7d4d30496aeded5ac5a"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/device-results/suite-summary.json",
+      "bytes": 290,
+      "sha256": "22a88559cb89b4e0811250a1a8044e879dd3473fdf5f877dd56f747f478db623"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/host-summary.json",
+      "bytes": 1855,
+      "sha256": "7870049219cf3001dd37b0bf1c4b5046b163e95e5de815b105a9758c5fde3f51"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/job.json",
+      "bytes": 370,
+      "sha256": "c4147c5c37120ec18d924d866d20d4048f0819338309d0ef863b217db897bdf2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-2-direct/suite-summary.json",
+      "bytes": 389,
+      "sha256": "299c1d25df9546977836dd000898fe70aa4c163bcbd87a229a4e0e6f95a417a0"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/artifact.json",
+      "bytes": 452,
+      "sha256": "4e541dd56b9dcf1b053ba159acfca0e0ac9bf123fad212c3b836e8eb0fb5b74d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1391,
+      "sha256": "fc55660c6b30305162e6d58702c5cab271ba6c05e917058df0a00ed745f25400"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106943,
+      "sha256": "6e7cf1bbaaa917d9f6af29135b7b193ffd606f08ae58bfb52e02d3cb19981c65"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 750,
+      "sha256": "9cc5d5d56b93e022f6e2f3165b182000ec796792303f91c28430f22297b7338b"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 160,
+      "sha256": "bf2eed0457107ce5b0f9defde7053254ba5cfd50bf42b71e775062cbf454bf68"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/device-results/suite-summary.json",
+      "bytes": 290,
+      "sha256": "e9ed1a2f35f058aa762f055d65b2d182da3a66dce3baaf1af55c7a009c0d9881"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/host-summary.json",
+      "bytes": 1854,
+      "sha256": "ec5976d729e78421822ab72dabb1ba5042784bc045e158eda64bbb80540bae5c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/job.json",
+      "bytes": 370,
+      "sha256": "c4147c5c37120ec18d924d866d20d4048f0819338309d0ef863b217db897bdf2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-3-direct/suite-summary.json",
+      "bytes": 389,
+      "sha256": "f4d0fc9d2c5af43af81c1f90b4cc1bf43f304d27896de3952eb10174a3cf6d3c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/artifact.json",
+      "bytes": 448,
+      "sha256": "641bf15a6342a98de24600f3b7f2c8579bb30a92d6c8474b894242c9aceb343e"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1389,
+      "sha256": "ee0f8c7c7b203bbf81baba200ac50d962d5ce98bb1d0c734d66910b8abfe96b7"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106865,
+      "sha256": "1c52be9f9528b62f0acf14e8786070a2499179f04004b35df04003516845fefb"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 751,
+      "sha256": "2a03c6711d31723623f230457ab0057cbff83f3074ce5a5ab6487bdc4be0b1c3"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 159,
+      "sha256": "1459bfa447ff6788e71f022e790c4836ffcba549ff6a3021c2d79a6ccfd2cbd5"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/device-results/suite-summary.json",
+      "bytes": 288,
+      "sha256": "b1a71be6d8804ecbca1ac63b7b64c155fd1be03793534bd7ba292926b23d1d89"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/host-summary.json",
+      "bytes": 1856,
+      "sha256": "934fea3af3d9481a3f3b3d5f710ffc9b8c8edea9adaa275dff1bf743b66930a8"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/job.json",
+      "bytes": 369,
+      "sha256": "c63b06e496fbcd6b6f53d247304bacd433638fc3b15a4ea118b5c0dbb789a009"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-4-venus/suite-summary.json",
+      "bytes": 387,
+      "sha256": "10f6807ab485e293709c9f8301b6ba76ffb323296d37f56884e0a2065a3e1af5"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/artifact.json",
+      "bytes": 448,
+      "sha256": "03a8fbf92add89eec74fa5ec06443829ed9e142c1168e801c1ca3247e2d25814"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1389,
+      "sha256": "8cf843e2f10836bbe51d5b6aea53b179e1289353e705a027d8801ba333ea58e5"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106879,
+      "sha256": "2f47cae96b2258abfec8dfa64bb067b2af8fdea4c069c732eed835a2c1e58018"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 751,
+      "sha256": "5063400b62a18b9d81c3f6e142418039c0bccb3448c4a91e8ea62a8c2fcff9e4"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 159,
+      "sha256": "74eeaaca57aa5d3e6d4849efc0ab3e5e851ac682242aff3ccce645d13cade62d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/device-results/suite-summary.json",
+      "bytes": 288,
+      "sha256": "6e085c1c463b162fe250a120714f259a696128939b63607e3f7c8dade6dce73c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/host-summary.json",
+      "bytes": 1854,
+      "sha256": "15e85497d6c81649a9f9b3c3656b78d6fbb919b98dc854bea07a7aa1b225aaaa"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/job.json",
+      "bytes": 369,
+      "sha256": "c63b06e496fbcd6b6f53d247304bacd433638fc3b15a4ea118b5c0dbb789a009"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-5-venus/suite-summary.json",
+      "bytes": 387,
+      "sha256": "c4a99c1702e0418725ebb8b03c4925420a359122ec1ab66c21a2c2aec729e983"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/artifact.json",
+      "bytes": 452,
+      "sha256": "2f86d85df3a4c93dc6284b3917a2b14a17c6c8b43587245b627a1edef475512c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1391,
+      "sha256": "c91358e904ab32eea50551477e5d0fe4e6d240031e98b02b67be7a288b9bb056"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106942,
+      "sha256": "224112b01d8094ab5f9c5e4d9184b51cb7fd181b7f5751dac3fc23427b424e80"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 750,
+      "sha256": "19513c6c6c170f0b1d8804232299be9130e2804e1a1cb55d80c41f4e24558903"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 160,
+      "sha256": "8c984fa61dec0a0cc230402ca967ec625d488d66649f619688b8b59c840b7d1e"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/device-results/suite-summary.json",
+      "bytes": 290,
+      "sha256": "fba44f28d923a7796f724a36a9b8b7f68d9b2026a0ef220142d7b718c9f951d9"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/host-summary.json",
+      "bytes": 1853,
+      "sha256": "d79bb4a08f28d784047a0d019d0c4e67215dd5891ede3d0cc61598786fdf20cc"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/job.json",
+      "bytes": 370,
+      "sha256": "c4147c5c37120ec18d924d866d20d4048f0819338309d0ef863b217db897bdf2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-6-direct/suite-summary.json",
+      "bytes": 389,
+      "sha256": "8c8960ff6e3fefab11ee9e53de3aca11502c6239cdc387a8b9870cbb020a8e84"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/artifact.json",
+      "bytes": 452,
+      "sha256": "43d928f746e7ecca5446e62768793c1c6edf101eb2160e96f0ce699b46afe81d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1391,
+      "sha256": "97494b0cbbed32abfad5cc94a54929ba891f966d1952b1a081262f6ffc55e05c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106943,
+      "sha256": "48570d4f09673aa52a757bf51b02c576cd8f1f187e93853bef333008ef10861b"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 750,
+      "sha256": "f8d9bb4d94ee7f6cc24ddb2501d355403f9ca2ce58af2eba15c592df3c701d3c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 160,
+      "sha256": "6c33334f68f9241a67cf3affb52cdc748742e71060a10c31889c658c2cc19a47"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/device-results/suite-summary.json",
+      "bytes": 290,
+      "sha256": "e0ceab09bdebd5f98f666758393f8a0335d80b9cdcf2b1f1537adaecef55201b"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/host-summary.json",
+      "bytes": 1855,
+      "sha256": "39d6aff9e1d0efb421223647b6769d8c4dbeae5cab509ae6361330cdabf3ed43"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/job.json",
+      "bytes": 370,
+      "sha256": "c4147c5c37120ec18d924d866d20d4048f0819338309d0ef863b217db897bdf2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-7-direct/suite-summary.json",
+      "bytes": 389,
+      "sha256": "0ade787753429a2fb0b2fdcde15b9b7c0f9f105403a65aeb4981f98e3addeba7"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/artifact.json",
+      "bytes": 448,
+      "sha256": "918f68751a7adb96f74d3a3ed1e8c62fb8ef17adcde0e99c8a82e19be3e448e2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1389,
+      "sha256": "d512828913078698c1335f267c5b6c1ef1e7dcce86b4b9ed8edc05b25f83ed7b"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106889,
+      "sha256": "db3a0d901c40f68ad052fc328c7b08ec36ebb59087baa482dd82a1ef5b48bbab"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 751,
+      "sha256": "3681f2ece92d165f37a00554735499cab35e0158faeee23a8aca01ca75f83200"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 159,
+      "sha256": "255c13996cc030ba2228fd032d1b0a593a1376d9aef1561094893bdfcc4dc589"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/device-results/suite-summary.json",
+      "bytes": 288,
+      "sha256": "9ec0b19f89423803e0f98261fd60e5521f2a6698a6713973f06b97f834bb34c8"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/host-summary.json",
+      "bytes": 1854,
+      "sha256": "79b777f198a0fea944b1b3cc39efbe411486c4147a3a918be53e11628930e3d7"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/job.json",
+      "bytes": 369,
+      "sha256": "c63b06e496fbcd6b6f53d247304bacd433638fc3b15a4ea118b5c0dbb789a009"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-8-venus/suite-summary.json",
+      "bytes": 387,
+      "sha256": "7efc2adb64e02e94cb3f105dd0b60cbdf6b255866753a9bf95d5426542f097a3"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/artifact.json",
+      "bytes": 448,
+      "sha256": "06a5477afbee543070787b5e23f5983c73d4c061966c4683b013eabf14dbc264"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/device-results/d3d11-benchmark-amd64-x64.json",
+      "bytes": 1389,
+      "sha256": "40bf062aa0eda4c9f4d9528de2c22008fafe82b1c4478b47d2cef695ab3a817e"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/device-results/d3d11-benchmark-amd64-x64.json.frames.csv",
+      "bytes": 106871,
+      "sha256": "c9266f0745a18e63cadaaefacc6debdf120ab7ff4daabc500eb44f7309a67d43"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/device-results/d3d11-benchmark-amd64-x64.json.hap-performance.json",
+      "bytes": 751,
+      "sha256": "123cc6c39f83c1509517a7f2810789e028e3ef80fdc942592a6d9d00d6610dd2"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/device-results/d3d11-benchmark-amd64-x64.json.perf-window.json",
+      "bytes": 159,
+      "sha256": "934f861e9149b84d843edba22b241d0f69a77670d155dec7d4d1dbff0e11f882"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/device-results/suite-summary.json",
+      "bytes": 288,
+      "sha256": "cdf87a5cb3aed18dbb99d98438cb906c99cd19c3f544d5afe30d1917c07b2b44"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/host-summary.json",
+      "bytes": 1856,
+      "sha256": "ea69044a4b7763e331b9788d556d3b0d8c943b413d23faf3a50cae68bca33419"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/job.json",
+      "bytes": 369,
+      "sha256": "c63b06e496fbcd6b6f53d247304bacd433638fc3b15a4ea118b5c0dbb789a009"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/direct-performance-amd64-perf-amd64-fixed60-20260929-220100-9-venus/suite-summary.json",
+      "bytes": 387,
+      "sha256": "3f14b5cdc8cb21707d1e2bad90aaf6c6d5c717c19bdac5e4f61f09335e7f26f3"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/outcomes.json",
+      "bytes": 87283,
+      "sha256": "59f0390c60b873054a912e4536fa7b9a6cac0e1f215ddc93410217d787662095"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/plan.json",
+      "bytes": 17910,
+      "sha256": "036d469442b4c7fdb7b4793663822e42eb21e73c38938d04361ce3a0e035b941"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/review.json",
+      "bytes": 9938,
+      "sha256": "aa2c1e078275db74a6494031989461c99e9a42cdf8a1a881701b6fd7376874c6"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/screen-timeout-restored.log",
+      "bytes": 25,
+      "sha256": "9a11e4c4782c91ff4f38bd78a4b1e428d155d04d36d84a81e8e12a15288ff725"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/perf-fixed60/summary.json",
+      "bytes": 1036,
+      "sha256": "b692532d6243a663ba55fa1004c4baf14bbdab9d5462acbc10d866ac54c9a511"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/artifact.json",
+      "bytes": 434,
+      "sha256": "c98e5111ef8c0a3d3dab69ec36e791165c320fc33a60553f764726fed22cc976"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/device-results/dxvk-direct-resize-x64.json",
+      "bytes": 831,
+      "sha256": "e28a39bdec544ed7c990711ab99b46411ba378e07be3fad5e5d2458283ab456a"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/device-results/suite-summary.json",
+      "bytes": 258,
+      "sha256": "5a0a2bba1b7b52cbae4458a82a208ad4cd3d18e7427d14e1432d6ee63d5df073"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/frames/dxvk-direct-resize-x64-1.jpeg",
+      "bytes": 109658,
+      "sha256": "712f9208a6a9410603d766fc4290f920f2b09f91c6b1281ed95ec3a5bb6635d1"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/frames/dxvk-direct-resize-x64-2.jpeg",
+      "bytes": 106946,
+      "sha256": "f982c06f55146e96012ac189a089ea5694f31352bdb9cfa50adebd5d93f6a230"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/frames/dxvk-direct-resize-x64-3.jpeg",
+      "bytes": 105495,
+      "sha256": "4f09d0d65ee3dd01fab0060dca2192d4a17b58f8540b57f603d3786c64ef833d"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/frames/dxvk-direct-resize-x64.jpeg",
+      "bytes": 107971,
+      "sha256": "8e9603f77e71e1e07dc92a3400b4e26ddae5d26b2ddaa026731c47d580fef88c"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/host-summary.json",
+      "bytes": 2200,
+      "sha256": "43f13ab7034ff7a366bfc05a0fab021e0bf51461d86ec6925229f433ac84cc39"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/job.json",
+      "bytes": 127,
+      "sha256": "048bcd3b64cc4ed75b8dbf0214f8231021a3b70fb947d94bf41a6f4d992bec06"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/resize/dxvk-direct-resize-surface-lock-v2-resize-20260929/suite-summary.json",
+      "bytes": 357,
+      "sha256": "fb55c95b7d4ad00c7df01148e8f59306382bbb71ad3ac332cba965e035283bfa"
+    },
+    {
+      "path": "runs/direct-surface-complete-20260929/source-identity.json",
+      "bytes": 322,
+      "sha256": "91c2aa0bb199ed81d34276983462fe53f7e66048e7fb42d21949d66a641c407d"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/automation-policy.json",
+      "bytes": 358,
+      "sha256": "fc552a8ce504b312b603daf31835bc00b4588a52bb3fbe4c4ccd3da6c2f8de07"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/direct-performance-amd64-perf-amd64-fixed60-20260929-213913-1-venus/job.json",
+      "bytes": 343,
+      "sha256": "db1679921b403af25038c632d9dc4b10fccb81c88ae433aad04fe9938ecc8dc5"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/first-game-diagnostic.json",
+      "bytes": 20558,
+      "sha256": "a92a8a2017562b086fcf7b70d599edab9dade70162bd7ad983ce1c28d07d9e3e"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/first-launch-diagnostic.json",
+      "bytes": 154114,
+      "sha256": "4958650a51fa981785a289fb85d2b2bba08880de16bee92ce150438563a0e93e"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/late-suite-summary.json",
+      "bytes": 470,
+      "sha256": "fa1332b90fbd832f37a2f06c822085e438e47008b0d6225414de8325a15d4bd9"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/outcomes.json",
+      "bytes": 4546,
+      "sha256": "67a11787bacb097ab5652e9154abe1196ab5a709c1a295451e1ad0dadbdef98e"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/plan.json",
+      "bytes": 17322,
+      "sha256": "901433206bf14f7c403198518741399642ff77e4d0ba9563a7353ac084bca5d8"
+    },
+    {
+      "path": "runs/direct-surface-lock-perf-fixed60-20260929/screen-timeout-restored.log",
+      "bytes": 25,
+      "sha256": "9a11e4c4782c91ff4f38bd78a4b1e428d155d04d36d84a81e8e12a15288ff725"
+    },
+    {
+      "path": "source-versions/window-complete-fix.c",
+      "bytes": 217748,
+      "sha256": "d0e9cb138e544c3a01991220f841b2dcece0a190d8f613e7cb97e931d5c8e4ec"
+    },
+    {
+      "path": "source-versions/winehua-window-before-surface-lock.c",
+      "bytes": 217195,
+      "sha256": "5b8a0f382df00eafd8f1893ee884d2f90fa49bee89f8df3a1e00487b6022f7ba"
+    },
+    {
+      "path": "source-versions/winehua-window-partial-surface-lock.c",
+      "bytes": 217561,
+      "sha256": "1ceb595b4c89b1ad1b8cda521ae4fc58debfc514f6e4d29c45ddb54261b58b25"
+    }
+  ]
+}

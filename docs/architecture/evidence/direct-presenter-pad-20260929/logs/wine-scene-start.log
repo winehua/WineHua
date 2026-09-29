@@ -1,0 +1,4 @@
+09-29 18:30:13.283  1058  1058 W A00000/app.hackeris.winehua/wine: state: state:ready
+09-29 18:35:36.527  1058  1058 W A00000/app.hackeris.winehua/wine: restartEngine: engineState=ready sessionAlive=false initFailed=false
+09-29 18:35:36.545  1058  1058 W A00000/app.hackeris.winehua/wine: state: state:stopped
+09-29 18:35:41.346  1058  1058 W A00000/app.hackeris.winehua/wine: state: state:ready

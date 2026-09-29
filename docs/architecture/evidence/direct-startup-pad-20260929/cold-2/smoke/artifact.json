@@ -1,0 +1,15 @@
+{
+  "runId": "pad-scene-ready-cold-2-20260929",
+  "suite": "direct-desktop-scene",
+  "prefix": "reuse",
+  "payloadVersion": "smoke-v2-df9a09211262",
+  "device": "5KPBB25818203996",
+  "longSeconds": 3600,
+  "directNcpSession": true,
+  "phoneDirectForkServer": false,
+  "desktopModeOverride": "virtual",
+  "desktopRendererOverride": "vulkan",
+  "wineArchitecture": "aarch64",
+  "wineCommit": "",
+  "wineDirtySummary": []
+}

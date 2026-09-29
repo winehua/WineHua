@@ -1,0 +1,20 @@
+09-28 22:41:25.963  7138  7138 I A00000/app.hackeris.winehua/wine: desktop mode override set: fusion
+09-28 22:41:26.068  7138  7138 W A00000/app.hackeris.winehua/wine: rawfile: wine-data.zip exists len=219074837
+09-28 22:41:26.069  7138  7138 I A00000/app.hackeris.winehua/wine: listDir: path=/data/storage/el2/base/files/.wine/drive_c
+09-28 22:41:26.069  7138  7138 I A00000/app.hackeris.winehua/wine: listDir: got 6 entries
+09-28 22:41:26.302  7138  7138 W A00000/app.hackeris.winehua/wine: auto-init: Z home=/storage/Users/currentUser/Download/app.hackeris.winehua/
+09-28 22:41:26.304  7138  7138 W A00000/app.hackeris.winehua/wine: auto-init: games directory=/storage/Users/currentUser/Download/app.hackeris.winehua/games
+09-28 22:41:26.304  7138  7138 W A00000/app.hackeris.winehua/wine: auto-init: check marker=/data/storage/el2/base/files/wine/share/wine/wine.inf
+09-28 22:41:26.305  7138  7138 W A00000/app.hackeris.winehua/wine: auto-init: starting Wine...
+09-28 22:41:26.461  7138  7138 W A00000/app.hackeris.winehua/wine: state: state:starting:wineserver
+09-28 22:41:26.646  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:41:26.665  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:41:26.672  7138  7138 W A00000/app.hackeris.winehua/wine: state: state:starting:wineboot
+09-28 22:41:26.683  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:41:26.743  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:41:26.838  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:41:27.044  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-exited:8437
+09-28 22:41:27.197  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:41:27.320  7138  7138 W A00000/app.hackeris.winehua/wine: state: evt:proc-updated
+09-28 22:44:26.833  7138  7138 W A00000/app.hackeris.winehua/wine: state: state:failed:wineboot
+09-28 22:44:26.834  7138  7138 E A00000/app.hackeris.winehua/wine: failInit: Wine 引擎启动失败 (wineboot) (engineState=failed bgStart=true)

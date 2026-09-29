@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "runId": "mate80-direct-memory-audit-retry-20260928",
+  "testId": "wine-vulkan-offscreen-x86",
+  "status": "PASS",
+  "stage": "wine-vulkan",
+  "message": "Wine Vulkan sampled-image and buffer/image checks passed",
+  "pid": 288,
+  "heartbeatTimestampMs": 1790606748333,
+  "architecture": {
+    "peArchitecture": "x86",
+    "wineUnixArchitecture": "aarch64",
+    "vulkanLoaderArchitecture": "aarch64",
+    "venusIcdArchitecture": "aarch64",
+    "hostArchitecture": "aarch64",
+    "wow64ThunkEnabled": true,
+    "box64Enabled": false
+  },
+  "metrics": {"loaderApiVersion":"1.3.309","deviceApiVersion":"1.3.309","deviceName":"Maleoon 920","vendorId":6629,"deviceId":4096,"driverVersion":3104880233,"graphicsQueueFamily":0,"descriptorIndexing":false,"robustness2":false,"timelineSemaphore":false,"synchronization2":false,"dynamicRendering":false,"maintenance4":false,"bufferDeviceAddress":false,"updateAfterBindLimits":{"maxUpdateAfterBindDescriptorsInAllPools":0,"maxDescriptorSetUpdateAfterBindSampledImages":0,"maxDescriptorSetUpdateAfterBindStorageImages":0,"maxDescriptorSetUpdateAfterBindStorageBuffers":0},"capabilityAudit":{},"vulkanModule":"unix_data_storage_el2_base_files_wine_bin_i386-windows_vulkan-1.dll","winevulkanModule":"unix_data_storage_el2_base_files_wine_bin_i386-windows_winevulkan.dll","checks":{"bufferCopy":true,"imageClear":true,"storageImageWrite":true,"storageImageRead":true,"sampledImageFetch":true,"combinedImageSampler":true,"separatedImageSampler":true,"shaderExecuted":true,"imageReadCompleted":true},"sampledImage":{"sampledValue":"0xff332211","expectedValue":"0xff332211","sampledOnly":false},"cpuReadBytes":5120,"cpuUploadBytes":4096,"gpuCopyCount":2,"queueSubmitCount":7,"presentFrames":0,"resizeRequested":false,"resizeCompleted":false,"swapchainRebuilds":0,"initialExtent":[0,0],"resizedExtent":[0,0],"presentFailureFrame":0,"presentAcquireResult":0,"presentAcquireWaitResult":0,"presentSubmitResult":0,"presentSubmitWaitResult":0,"presentQueueResult":0,"presentError":"","perFrameDeviceWaitIdle":0,"fallbackDetected":false,"durationMs":365}
+}

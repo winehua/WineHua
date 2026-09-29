@@ -1,0 +1,26 @@
+09-29 18:40:13.447  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] Main() ENTER pid=9965 entryParams=/storage/Users/currentUser/Download/app.hackeris.winehua/|/data/storage/el2/base/files/wine/bin|wine|C:\smoke\x64\winehua_direct_desktop_scene.exe|--automation|--run-id|pad-presenter-vulkan-cold-20260929|--test-id|direct-desktop-scene-x64|--result|C:\smoke\results\pad-presenter-vulkan-cold-20260929\direct-desktop-scene-x64.json|--present|--seconds|0
+09-29 18:40:13.447  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] early fault logger installed
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] homeDir=/storage/Users/currentUser/Download/app.hackeris.winehua/ binDir=/data/storage/el2/base/files/wine/bin argc=12 argv[0]=wine
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] WINEDEBUG=-all
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] audio bootstrap fd=10
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] env override BOX64_DYNAREC_SAFEFLAGS=1
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] env override BOX64_DYNAREC_BIGBLOCK=3
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] env override BOX64_DYNAREC_CALLRET=2
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] env override BOX64_DYNAREC_FORWARD=1024
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] env override BOX64_DYNAREC_VOLATILE_METADATA=0
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] env override BOX64_DYNAREC_WEAKBARRIER=0
+09-29 18:40:13.448  9965  9965 W A00000/winehua:Native_libwine_child10/WineChild: [WineChild] Direct Vulkan selected; guest ICD overrides cleared
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] final WINEDEBUG=-all (after entry env)
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] early fault logger=on
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] CEF backend policy: force_gpu=0 force_software=(unset/clean)
+09-29 18:40:13.448  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] HODLL=libwow64fex.dll (WINEHUA_WOW64_ENGINE=(unset))
+09-29 18:40:13.496  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] reassert WINEDLLDIR=/data/storage/el2/base/files/wine/bin/aarch64-unix WINEDLLDIR0=/data/storage/el2/base/files/wine/dxvk/legacy/arm64x WINEDLLPATH=/data/storage/el2/base/files/wine/dxvk/legacy/arm64x:/data/storage/el2/base/files/wine/dxvk/legacy/x86:/data/storage/el2/base/files/wine/bin/aarch64-windows:/data/storage/el2/base/files/wine/bin/i386-windows:/data/storage/el2/base/files/wine/bin:/data/storage/el2/base/files/wine/bin/aarch64-unix:/data/storage/el1/bundle/libs/arm64 LD_LIBRARY_PATH=/data/storage/el1/bundle/libs/arm64
+09-29 18:40:13.496  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] final D3D env backend=dxvk_legacy dxvkVersion=1.10.3 override=d3d10=n;d3d10_1=n;d3d10core=n;d3d11=n;dxgi=n;vulkan-1=b dllPath=/data/storage/el2/base/files/wine/dxvk/legacy/arm64x:/data/storage/el2/base/files/wine/dxvk/legacy/x86:/data/storage/el2/base/files/wine/bin/aarch64-windows:/data/storage/el2/base/files/wine/bin/i386-windows:/data/storage/el2/base/files/wine/bin:/data/storage/el2/base/files/wine/bin/aarch64-unix:/data/storage/el1/bundle/libs/arm64 root=/data/storage/el2/base/files/wine/dxvk/legacy x64=(present,present) x86=(present,present) profile=shadow-precise-dirty-ring-inline-upload-coverage-sort logLevel=warn logPath=C:\windows\temp dumpPath= traceSampled= traceFlow= vnPerfSummary= vnPerfLog= mesaLogLevel= batchMappedFlush=1 rgba8SnormRt=auto
+09-29 18:40:13.496  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] vulkan scan LD_LIBRARY_PATH=/data/storage/el1/bundle/libs/arm64 VK_ICD_FILENAMES= VK_DRIVER_FILES=
+09-29 18:40:13.497  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] libvulkan.so.1 loaded from /data/storage/el1/bundle/libs/arm64/libvulkan.so.1
+09-29 18:40:13.508  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] final WINEDLLDIR=/data/storage/el2/base/files/wine/bin/aarch64-unix WINEDEBUG=-all
+09-29 18:40:13.509  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] audio bootstrap fd dup 10 -> 512 (guard high)
+09-29 18:40:13.509  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] AUDIO fd=512 (own fd)
+09-29 18:40:13.509  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] cwd=/data/storage/el2/base/files/.wine/drive_c/smoke
+09-29 18:40:13.510  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] dlopen ntdll.so...
+09-29 18:40:13.510  9965  9965 I A00000/winehua:Native_libwine_child10/WineChild: [WineChild] calling __wine_main

@@ -1,0 +1,50 @@
+[
+  {
+    "stage": "fullscreen",
+    "tap": [
+      1280,
+      800
+    ],
+    "status": "PASS",
+    "phaseBeforeTap": "219952373 fullscreen",
+    "commandExit": 0,
+    "receivedTickMs": 219954547,
+    "received": [
+      640,
+      400
+    ],
+    "clientExtent": [
+      1280,
+      800
+    ],
+    "expected": [
+      640,
+      400
+    ],
+    "elapsedSinceObservedMs": 2266
+  },
+  {
+    "stage": "windowed",
+    "tap": [
+      948,
+      710
+    ],
+    "status": "PASS",
+    "phaseBeforeTap": "219956420 windowed",
+    "commandExit": 0,
+    "receivedTickMs": 219958994,
+    "received": [
+      350,
+      225
+    ],
+    "clientExtent": [
+      700,
+      450
+    ],
+    "expected": [
+      350,
+      225
+    ],
+    "elapsedSinceObservedMs": 2109
+  }
+]

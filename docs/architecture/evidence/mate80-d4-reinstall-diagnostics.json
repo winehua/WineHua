@@ -1,0 +1,35 @@
+{
+  "date": "2026-09-27",
+  "device": "Mate 80 / VYG-AL00 / API 26",
+  "hapSha256": "6e0ee5ccc9a075ba3ea07c592e8344a8e7debc9a17dc457cdb87861f4b8ac822",
+  "observations": [
+    {
+      "runId": "mate80-modern-oldprobe-control-20260927",
+      "route": "Venus / DXVK 2.6.2 / original cube probe",
+      "result": "PASS",
+      "frames": 911
+    },
+    {
+      "runId": "mate80-reinstall-legacy-control-20260927",
+      "route": "Venus / DXVK 1.10.3 / resize-capable cube probe, resize disabled",
+      "result": "PASS",
+      "frames": 893
+    },
+    {
+      "runId": "mate80-modern-newprobe-skip-20260927",
+      "route": "Venus / DXVK 2.6.2 / resize-capable cube probe, resize disabled",
+      "result": "NO_DEVICE_RESULT",
+      "faultSource": "HiviewFaultLogger",
+      "faultReason": "SIGABRT",
+      "faultStack": ["virgl_renderer_cleanup", "libvirglrenderer.so.1", "libepoxy.so.0", "abort"],
+      "rootCause": "unresolved"
+    },
+    {
+      "runId": "mate80-modern-direct-reinstall-20260927",
+      "routeRequested": "Direct / DXVK 2.6.2 / Create NCP session / fusion",
+      "actualBrokerLaunchMode": "start",
+      "result": "NO_DEVICE_RESULT",
+      "interpretation": "phone fork/Start path; Direct WSI not exercised"
+    }
+  ]
+}

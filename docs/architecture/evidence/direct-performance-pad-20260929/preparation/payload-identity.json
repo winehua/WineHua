@@ -1,0 +1,21 @@
+{
+  "baselineExes": 34,
+  "baselineExeBytesUnchanged": true,
+  "exeCount": 36,
+  "payloadVersion": "smoke-v2-474c8f475ecd",
+  "newExes": {
+    "x64-fex/winehua_d3d_benchmark.exe": {
+      "sha256": "77e797a1bbc41094986f2276927509b95cbf8345148444a83748b66adcc08f58",
+      "peMachine": "0x8664"
+    },
+    "x64/winehua_d3d_benchmark.exe": {
+      "sha256": "94a0480ded5773a7180fe9450c77d1a276ae7d666a1f3ae4e4b5a8103a5813a6",
+      "peMachine": "0xaa64"
+    }
+  },
+  "oldFixtureMachine": {
+    "x64/winehua_d3d_switch_cube.exe": "0xaa64",
+    "x64/winehua_d3d_resize_cube.exe": "0xaa64",
+    "x64/winehua_direct_desktop_scene.exe": "0xaa64"
+  }
+}

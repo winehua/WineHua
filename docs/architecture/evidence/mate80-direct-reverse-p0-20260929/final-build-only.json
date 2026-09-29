@@ -1,0 +1,11 @@
+{
+  "sha256": "1e85b09941fe653a342af9af926f7687bfc43023f4b65b10ef36311c98fab551",
+  "bytes": 350926310,
+  "hap": "F:\\WineHua\\.temp\\mate80-direct-reverse-p0-20260929\\entry-reverse-final-1e85b09941fe-signed.hap",
+  "deviceInstalled": false,
+  "changesFromDeviceRuntime": [
+    "libs/arm64-v8a/libdirect_shared_buffer_probe.so",
+    "libs/arm64-v8a/libentry.so"
+  ],
+  "purpose": "Final source cleanup and stage counter propagation only; device stays on tested c56eb3a80121."
+}

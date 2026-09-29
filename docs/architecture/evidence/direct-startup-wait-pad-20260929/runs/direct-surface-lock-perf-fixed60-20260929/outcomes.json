@@ -1,0 +1,47 @@
+[
+  {
+    "runId": "perf-amd64-fixed60-20260929-213913-1-venus",
+    "backend": "venus",
+    "exit": 1,
+    "coldProcessListEmpty": true,
+    "environmentBefore": {
+      "capturedAt": "2026-09-29T21:39:48.905941+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 33000\nType: ambient\nTemperature: 45029\nType: charger\nTemperature: 36000\nType: dot\nTemperature: 34400\nType: rfboard\nTemperature: 35210\nType: shell_back\nTemperature: 34762\nType: shell_frame\nTemperature: 35627\nType: shell_front\nTemperature: 35546\nType: system_h\nTemperature: 36333"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 21:39:49.944\ncapacity: 90 \nbatteryLevel: 3 \nchargingStatus: 1 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4292710 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: 371 \ncurrentAverage: 305 \ntotalEnergy: 6423 \nremainingEnergy: 5246 \nremainingChargeTime: 1491200 \ntemperature: 330 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\nWidth:                        2560\nHeight:                       1600\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      }
+    },
+    "measurementValid": false,
+    "environmentAfter": {
+      "capturedAt": "2026-09-29T21:43:54.600047+08:00",
+      "thermal": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------\nType: Battery\nTemperature: 33000\nType: ambient\nTemperature: 45029\nType: charger\nTemperature: 35684\nType: dot\nTemperature: 34200\nType: rfboard\nTemperature: 35052\nType: shell_back\nTemperature: 34725\nType: shell_frame\nTemperature: 35352\nType: shell_front\nTemperature: 35487\nType: system_h\nTemperature: 36055"
+      },
+      "thermalLevel": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------ThermalService----------------------------------"
+      },
+      "battery": {
+        "exit": 0,
+        "output": "-------------------------------[ability]-------------------------------\n\n\n----------------------------------BatteryService----------------------------------\nCurrent time: 2026-09-29 21:43:55.969\ncapacity: 90 \nbatteryLevel: 3 \nchargingStatus: 1 \nhealthState: 1 \npluggedType: 1 \nvoltage: 4308036 \npresent: 1 \ntechnology: Li-poly \nnowCurrent: 415 \ncurrentAverage: 462 \ntotalEnergy: 6423 \nremainingEnergy: 5276 \nremainingChargeTime: 1491200 \ntemperature: 330 \nchargeType: 1"
+      },
+      "display": {
+        "exit": 0,
+        "output": "RSScreenId:                   0\nactiveModes<id, W, H, RS>:    0, 1600, 2560, 60\nRotation:                     3\nScreenPowerState:             0\nVirtualWidth:                 673\nVirtualHeight:                1077\nRotation:                     3\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  90\nScreenRotation:               270\nWidth:                        2560\nHeight:                       1600\nRSScreenId:                   0\nRotation:                     270\nPhyWidth:                     118\nPhyHeight:                    189\nRefreshRate:                  60"
+      }
+    }
+  }
+]

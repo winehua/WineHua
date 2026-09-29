@@ -1,0 +1,2 @@
+09-29 18:40:13.569  5626  5626 I A02330/app.hackeris.winehua/DirectVkDesktop: Vulkan desktop enabled surface=7224134997167 extent=2560x1600 slots=2 preTransform=identity gameCpuReadBytes=0 gameCpuUploadBytes=0
+09-29 18:40:13.576  5626 10006 I A02330/app.hackeris.winehua/DirectVkDesktop: scene presents=1 layers=0 direct=0 draws=0 acquireWaits=0 releaseFences=0 producerRetired=0 releaseErrors=0 imports=0 reuses=0 uiUploadBytes=0 gameCpuReadBytes=0 gameCpuUploadBytes=0

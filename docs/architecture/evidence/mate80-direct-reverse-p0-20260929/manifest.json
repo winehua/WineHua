@@ -1,0 +1,74 @@
+{
+  "battery.txt": {
+    "sha256": "2a017de356edf3b0f8a708bfb5037007dec189c9da1fcea886a37b5ea61559d3",
+    "bytes": 489
+  },
+  "candidate-v2.json": {
+    "sha256": "5042ccf1e5bca3886b4c5b6e9a6ebe8c6cd70975af6d783cc934aebe4f62b560",
+    "bytes": 213
+  },
+  "os.txt": {
+    "sha256": "202456f0ee41c0bfbb7eb58ab327f8e8e0f05ce67fff498457ebba0d59c243a5",
+    "bytes": 24
+  },
+  "venus26-first-launch-cancelled.json": {
+    "sha256": "5350e293f4b87805b917f7dafd0dfd37c1c2d6111e1e6f409e0f9888f633afb2",
+    "bytes": 267
+  },
+  "identity.txt": {
+    "sha256": "f7e57d3d95463d5cc75e6c86211ba8c38551e56847df522f78468787779a4d3c",
+    "bytes": 11
+  },
+  "final-build-only.json": {
+    "sha256": "a87d6e203765709f941bd9a79fbd6abffecef73f5336fe242baab551f3be3827",
+    "bytes": 490
+  },
+  "device-cleanup.json": {
+    "sha256": "a87798ac6e4268b434e456a0fb7d1f23af8f9490b10fe121134f157818e615a7",
+    "bytes": 119
+  },
+  "power.txt": {
+    "sha256": "a7c9e385f9584c073d67c7fa060cbe8523514c51d6da490f52ede88ea26454a3",
+    "bytes": 1286
+  },
+  "venus26-regression/host-summary.json": {
+    "sha256": "725d8bb42fa178c77200269800fcaa187af67ea2a6bf1a76b927c43927a31e6a",
+    "bytes": 1576
+  },
+  "venus26-regression/job.json": {
+    "sha256": "e7073797feb6a237ae8622d30b27f1a992156e469eedfbd181ee971be5036198",
+    "bytes": 375
+  },
+  "venus26-regression/artifact.json": {
+    "sha256": "333e071caacac806e1b3c345cf9b7a840f45b9ea834e412b4e9dcdaff646f2f3",
+    "bytes": 437
+  },
+  "venus26-regression/suite-summary.json": {
+    "sha256": "a3aabdb51b1d242c93dedd8cad4629d5d9b9468e29ec07e507cb15689226f5da",
+    "bytes": 361
+  },
+  "reverse-v1/result.json": {
+    "sha256": "7571f7e0c6f3b641fce88d8e839ba6390b756155aa13ffad8ebc7a5eb73bea33",
+    "bytes": 1352
+  },
+  "reverse-v2/child-hilog.txt": {
+    "sha256": "9185945161d4c4d1ac3a4f875c528c52102de2b1a0d829a7542a16bdfce894c7",
+    "bytes": 2289
+  },
+  "reverse-v2/commands.json": {
+    "sha256": "638a36a3c0d0eca2882c992c77decfa0a81a061bcaf49d7f1e1f8b90f0e02117",
+    "bytes": 3387
+  },
+  "reverse-v2/result.json": {
+    "sha256": "483c413253b14009ff466d6194fe15356050a3525e5ce2ed0f7aa67e0b8dfa36",
+    "bytes": 3310
+  },
+  "venus26-regression/frames/dxvk-direct-cube-x64.jpeg": {
+    "sha256": "37ce9274b4e57d6f3c9e9d0fef5befbac6476d807421305363da1c9cafd6613c",
+    "bytes": 91726
+  },
+  "venus26-regression/device-results/dxvk-direct-cube-x64.json": {
+    "sha256": "dccc399eb74d7a90feef833c880a36d158925d845d089fb0cddb23b45456de26",
+    "bytes": 642
+  }
+}

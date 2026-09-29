@@ -1,0 +1,14 @@
+{
+  "policy": "automation",
+  "riskLevel": "diagnostic",
+  "target": "USB MatePad Mini",
+  "artifactDir": "F:\\WineHua\\.temp\\direct-pad-startup-20260929",
+  "redactionPolicy": "bounded test-only logs; redact __env entries; exclude credentials and full environment",
+  "operations": [
+    "cold scene with bounded stall dump",
+    "collect process waits",
+    "build/install scoped fix",
+    "repeat Direct fixture"
+  ],
+  "restoreCommand": "power-shell timeout -r"
+}

@@ -1,0 +1,119 @@
+[broker-argv-diag] pid=9937 image_wlen=30 image='C:\windows\system32\tabtip.exe'
+[broker-argv-diag] pid=9937 cmd_wlen=32 cmdline='"C:\windows\system32\tabtip.exe"'
+[broker-argv-diag] pid=9937 argv[0]='C:\windows\system32\tabtip.exe'
+[broker-argv-diag] pid=9937 consumed=1 image_len=30 image_path='C:\windows\system32\tabtip.exe'
+[ntdll] OHOS sigchain claimed SIGSEGV/SIGBUS/SIGILL/SIGTRAP (before DFX/Wine SEH)
+[thread-start] LdrInitializeThunk tid=0088 wow=0 dispatcher=0000005ABD0A66C0
+[TEB-PROBE] pid=9972 tid=9972 event=release-low ptr=0x10000 size=4000 value=8000 current=0x20220000
+[dlopen-trace] load_builtin_unixlib path=0x5aae2875c0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/kernel32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287140 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shell32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aad508680 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/kernelbase.so'
+[thread-start] pBaseThreadInitThunk=0000006FFFD6767C (kernel32 base=0000006FFFD30000, fallback=0000006FFFE7FC3C)
+[dlopen-trace] load_builtin_unixlib path=0x5aae287d40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shlwapi.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287c00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shcore.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287c00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/rpcrt4.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287b80 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/advapi32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287b40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/advapi32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287700 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/sechost.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287cc0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/sechost.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287cc0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/ucrtbase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287d00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/ucrtbase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287e00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/msvcrt.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287ec0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/cryptbase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287e40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/msvcrt.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287f40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/user32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287f80 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/gdi32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287fc0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/user32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287fc0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/win32u.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287e80 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/gdi32.so'
+[dlopen-trace] get_builtin_unix_funcs path=0x5aae287ff3 str='win32u.so'
+
+[dlopen-trace] load_builtin_unixlib path=0x5aae287f80 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/win32u.so'
+[dlopen-trace] get_builtin_unix_funcs path=0x5aae287fb3 str='win32u.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae359a40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/imm32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aad509940 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/winewayland.so'
+[dlopen-trace] get_builtin_unix_funcs path=0x5aad509973 str='winewayland.so'
+[TEB-PROBE] pid=10019 tid=10019 event=add ptr=0x20220000 size=0 value=0 current=0x5a0ea02e00
+[dlopen-trace] load_builtin_unixlib path=0x5aae2ae280 str='/data/storage/el2/base/files/wine/bin/tabtip.so'
+[ntdll] OHOS sigchain claimed SIGSEGV/SIGBUS/SIGILL/SIGTRAP (before DFX/Wine SEH)
+[thread-start] LdrInitializeThunk tid=00ac wow=0 dispatcher=0000005ABD0E66C0
+[TEB-PROBE] pid=10019 tid=10019 event=release-low ptr=0x10000 size=4000 value=8000 current=0x20220000
+[dlopen-trace] load_builtin_unixlib path=0x5aae287600 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/kernel32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aad508950 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/kernelbase.so'
+[thread-start] pBaseThreadInitThunk=0000006FFFD6767C (kernel32 base=0000006FFFD30000, fallback=0000006FFFE7FC3C)
+[TEB-PROBE] pid=9972 tid=9972 event=commit ptr=0x20210000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=9972 tid=9972 event=add ptr=0x20210000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00b0 wow=0 dispatcher=0000005ABD0A66C0
+[TEB-PROBE] pid=9972 tid=9972 event=commit ptr=0x20200000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=9972 tid=9972 event=add ptr=0x20200000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00b4 wow=0 dispatcher=0000005ABD0A66C0
+[dlopen-trace] load_builtin_unixlib path=0x5aae287700 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/ole32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287c80 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/advapi32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2878c0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/sechost.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae359700 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/uxtheme.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287c40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/ucrtbase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287cc0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/msvcrt.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287e40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/user32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287f40 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/gdi32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287e80 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/win32u.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287fc0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/combase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae287e00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/rpcrt4.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2e9080 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/cryptbase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2e9140 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/coml2.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae9144c0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shell32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2e91c0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shell32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae914480 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shlwapi.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2e9100 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shlwapi.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae914080 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shcore.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2e90c0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/shcore.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae2e9340 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/oleaut32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae914180 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/ole32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae914300 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/combase.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae914100 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/coml2.so'
+[dlopen-trace] get_builtin_unix_funcs path=0x5aae287eb3 str='win32u.so'
+[TEB-PROBE] pid=9972 tid=9972 event=commit ptr=0x201f0000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=9972 tid=9972 event=add ptr=0x201f0000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00b8 wow=0 dispatcher=0000005ABD0A66C0
+[dlopen-trace] load_builtin_unixlib path=0x5aae914380 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/actxprxy.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae359d00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/oleaut32.so'
+[TEB-PROBE] pid=9853 tid=9861 event=commit ptr=0x201f0000 size=10000 value=0 current=0x20210000
+[TEB-PROBE] pid=9853 tid=9861 event=add ptr=0x201f0000 size=0 value=0 current=0x20210000
+[thread-start] LdrInitializeThunk tid=00bc wow=0 dispatcher=0000005ABD0E66C0
+[TEB-PROBE] pid=9853 tid=10042 event=commit ptr=0x201e0000 size=10000 value=0 current=0x201f0000
+[TEB-PROBE] pid=9853 tid=10042 event=add ptr=0x201e0000 size=0 value=0 current=0x201f0000
+[thread-start] LdrInitializeThunk tid=00c0 wow=0 dispatcher=0000005ABD0E66C0
+[exit] RtlExitUserProcess tid=0088 status=0x00000000
+[QUIT-PROBE] signal-enter
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[early-fault] #9 pid=9972 tid=9972 sig=11 code=1 addr=0x200c0 pc=0x6fffe7ad50 lr=0x6fffe7b4f4 sp=0x2033d7f0
+[dlopen-trace] load_builtin_unixlib path=0x5aae359d00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/imm32.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aad5098f0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/uiautomationcore.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aae359c00 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/oleacc.so'
+[dlopen-trace] load_builtin_unixlib path=0x5aad509990 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/winewayland.so'
+[dlopen-trace] get_builtin_unix_funcs path=0x5aad5099c3 str='winewayland.so'
+[TEB-PROBE] pid=10019 tid=10019 event=commit ptr=0x20210000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=10019 tid=10019 event=add ptr=0x20210000 size=0 value=0 current=0x20220000
+[TEB-PROBE] pid=10019 tid=10019 event=commit ptr=0x20200000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=10019 tid=10019 event=add ptr=0x20200000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00c4 wow=0 dispatcher=0000005ABD0E66C0
+[thread-start] LdrInitializeThunk tid=00c8 wow=0 dispatcher=0000005ABD0E66C0
+[dlopen-trace] load_builtin_unixlib path=0x5ab1f9a8c0 str='/data/storage/el2/base/files/wine/bin/aarch64-unix/uxtheme.so'
+[TEB-PROBE] pid=10019 tid=10019 event=commit ptr=0x201f0000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=10019 tid=10019 event=add ptr=0x201f0000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00cc wow=0 dispatcher=0000005ABD0E66C0
+[TEB-PROBE] pid=10019 tid=10019 event=commit ptr=0x201e0000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=10019 tid=10019 event=add ptr=0x201e0000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00d0 wow=0 dispatcher=0000005ABD0E66C0
+[QUIT-PROBE] pthread-exit-wrapper
+[TEB-PROBE] pid=10019 tid=10019 event=commit ptr=0x201d0000 size=10000 value=0 current=0x20220000
+[TEB-PROBE] pid=10019 tid=10019 event=add ptr=0x201d0000 size=0 value=0 current=0x20220000
+[thread-start] LdrInitializeThunk tid=00d4 wow=0 dispatcher=0000005ABD0E66C0
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] pthread-exit-wrapper
+[TEB-PROBE] pid=9853 tid=10043 event=remove ptr=0x201f0000 size=0 value=0 current=0x201e0000
+[QUIT-PROBE] pthread-exit-wrapper

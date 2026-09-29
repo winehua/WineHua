@@ -1,0 +1,134 @@
+{
+  "candidate": "d37139a585b8",
+  "mode": "automation",
+  "actions": "Temporarily shorten screen timeout, wait in foreground, Home, resume Desktop, restore timeout.",
+  "redaction": "Only power state, window locks and test-app Ability/lifecycle records.",
+  "appPid": 50565,
+  "before": {
+    "at": "2026-09-29T21:38:18.606961+08:00",
+    "powerExit": 0,
+    "powerState": [
+      "Current State: AWAKE  Reason: 20  Time: 226079946",
+      "ScreenOffTime: Timeout=600000ms"
+    ],
+    "windowLocks": [
+      "  index=36 time=344519 type=SCREEN name=windowLock_1636_228538834 uid=20020030 pid=5776 state=0",
+      "  index=63 time=199394390 type=SCREEN name=windowLock_47_29488964 uid=20020030 pid=5776 state=0",
+      "  index=66 time=84673 type=SCREEN name=windowLock_1671_228798682 uid=20020030 pid=5776 state=1",
+      "  index=69 time=143484013 type=SCREEN name=windowLock_650_85399341 uid=20020030 pid=5776 state=0"
+    ],
+    "appAbilities": [
+      [
+        "        main name [EntryAbility]",
+        "        state #BACKGROUND  start time [228794613]",
+        "        app state #FOREGROUND"
+      ],
+      [
+        "        main name [DesktopAbility]",
+        "        state #FOREGROUND  start time [228798574]",
+        "        app state #FOREGROUND"
+      ]
+    ]
+  },
+  "override": [
+    0,
+    "Override screen off time to 10000\n"
+  ],
+  "foregroundAfter18Seconds": {
+    "at": "2026-09-29T21:38:37.430397+08:00",
+    "powerExit": 0,
+    "powerState": [
+      "Current State: AWAKE  Reason: 20  Time: 226079946",
+      "ScreenOffTime: Timeout=600000ms  OverrideTimeout=10000ms"
+    ],
+    "windowLocks": [
+      "  index=36 time=363336 type=SCREEN name=windowLock_1636_228538834 uid=20020030 pid=5776 state=0",
+      "  index=63 time=199413207 type=SCREEN name=windowLock_47_29488964 uid=20020030 pid=5776 state=0",
+      "  index=66 time=103490 type=SCREEN name=windowLock_1671_228798682 uid=20020030 pid=5776 state=1",
+      "  index=69 time=143502830 type=SCREEN name=windowLock_650_85399341 uid=20020030 pid=5776 state=0"
+    ],
+    "appAbilities": [
+      [
+        "        main name [EntryAbility]",
+        "        state #BACKGROUND  start time [228794613]",
+        "        app state #FOREGROUND"
+      ],
+      [
+        "        main name [DesktopAbility]",
+        "        state #FOREGROUND  start time [228798574]",
+        "        app state #FOREGROUND"
+      ]
+    ]
+  },
+  "home": [
+    0,
+    "No Error\n"
+  ],
+  "background": {
+    "at": "2026-09-29T21:38:39.674000+08:00",
+    "powerExit": 0,
+    "powerState": [
+      "Current State: AWAKE  Reason: 20  Time: 226079946",
+      "ScreenOffTime: Timeout=600000ms  OverrideTimeout=10000ms"
+    ],
+    "windowLocks": [
+      "  index=36 time=365574 type=SCREEN name=windowLock_1636_228538834 uid=20020030 pid=5776 state=0",
+      "  index=63 time=199415445 type=SCREEN name=windowLock_47_29488964 uid=20020030 pid=5776 state=0",
+      "  index=66 time=105728 type=SCREEN name=windowLock_1671_228798682 uid=20020030 pid=5776 state=0",
+      "  index=69 time=143505068 type=SCREEN name=windowLock_650_85399341 uid=20020030 pid=5776 state=0"
+    ],
+    "appAbilities": [
+      [
+        "        main name [EntryAbility]",
+        "        state #BACKGROUND  start time [228794613]",
+        "        app state #BACKGROUND"
+      ],
+      [
+        "        main name [DesktopAbility]",
+        "        state #BACKGROUND  start time [228798574]",
+        "        app state #BACKGROUND"
+      ]
+    ]
+  },
+  "restore": [
+    0,
+    "Restore screen off time\n"
+  ],
+  "resume": [
+    0,
+    "error: failed to start ability.\nError Code:10103001  Error Message:Failed to verify the visibility of the target ability.\nError cause: Application visibility check failed\n  Try the following:\n  > Check if the exported configuration of the Ability field in the module.json5 of the pulled application is set to true. If not, set it to true\n\n"
+  ],
+  "screenAwake": [
+    "09-29 21:36:50.961 50565 50565 I A00000/app.hackeris.winehua/WineHuaScreenAwake: owner=EntryAbility keepScreenOn=true",
+    "09-29 21:36:54.760 50565 50565 I A00000/app.hackeris.winehua/WineHuaScreenAwake: [a92ab1bef697bda 2c4e049 1696bba]owner=EntryAbility keepScreenOn=false",
+    "09-29 21:36:54.793 50565 50565 I A00000/app.hackeris.winehua/WineHuaScreenAwake: [a92ab1bef697bda 54c20a 183e730]owner=DesktopAbility keepScreenOn=false",
+    "09-29 21:36:54.795 50565 50565 I A00000/app.hackeris.winehua/WineHuaScreenAwake: [a92ab1bef697bda 3306c09 2074ae]owner=DesktopAbility keepScreenOn=true",
+    "09-29 21:38:39.159 50565 50565 I A00000/app.hackeris.winehua/WineHuaScreenAwake: owner=DesktopAbility keepScreenOn=false"
+  ],
+  "afterRestore": {
+    "at": "2026-09-29T21:38:41.029029+08:00",
+    "powerExit": 0,
+    "powerState": [
+      "Current State: AWAKE  Reason: 20  Time: 226079946",
+      "ScreenOffTime: Timeout=600000ms"
+    ],
+    "windowLocks": [
+      "  index=36 time=366830 type=SCREEN name=windowLock_1636_228538834 uid=20020030 pid=5776 state=0",
+      "  index=63 time=199416701 type=SCREEN name=windowLock_47_29488964 uid=20020030 pid=5776 state=0",
+      "  index=66 time=106984 type=SCREEN name=windowLock_1671_228798682 uid=20020030 pid=5776 state=0",
+      "  index=69 time=143506324 type=SCREEN name=windowLock_650_85399341 uid=20020030 pid=5776 state=0"
+    ],
+    "appAbilities": [
+      [
+        "        main name [EntryAbility]",
+        "        state #BACKGROUND  start time [228794613]",
+        "        app state #BACKGROUND"
+      ],
+      [
+        "        main name [DesktopAbility]",
+        "        state #BACKGROUND  start time [228798574]",
+        "        app state #BACKGROUND"
+      ]
+    ]
+  }
+}

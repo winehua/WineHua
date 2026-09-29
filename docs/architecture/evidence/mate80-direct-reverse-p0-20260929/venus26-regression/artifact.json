@@ -1,0 +1,15 @@
+{
+  "runId": "mate80-retain-venus26-cold-20260929",
+  "suite": "dxvk-direct-cube",
+  "prefix": "reuse",
+  "payloadVersion": "smoke-v2-474c8f475ecd",
+  "device": "192.168.180.76:44559",
+  "longSeconds": 3600,
+  "directNcpSession": false,
+  "phoneDirectForkServer": false,
+  "desktopModeOverride": "fusion",
+  "desktopRendererOverride": "egl",
+  "wineArchitecture": "aarch64",
+  "wineCommit": "",
+  "wineDirtySummary": []
+}

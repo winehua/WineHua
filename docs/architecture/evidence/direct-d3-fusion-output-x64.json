@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "runId": "direct-d3-fusion-live2-20260927",
+  "testId": "wine-vulkan-present-x64",
+  "status": "PASS",
+  "stage": "present",
+  "message": "Wine Vulkan private BrokerPresent fixed-frame check passed",
+  "pid": 320,
+  "heartbeatTimestampMs": 1790509546320,
+  "architecture": {
+    "peArchitecture": "x86_64",
+    "wineUnixArchitecture": "aarch64",
+    "vulkanLoaderArchitecture": "aarch64",
+    "venusIcdArchitecture": "aarch64",
+    "hostArchitecture": "aarch64",
+    "wow64ThunkEnabled": false,
+    "box64Enabled": false
+  },
+  "metrics": {"loaderApiVersion":"1.3.275","deviceApiVersion":"1.2.309","deviceName":"Maleoon 910","vendorId":6629,"deviceId":4096,"driverVersion":1226238595,"graphicsQueueFamily":0,"descriptorIndexing":false,"robustness2":false,"timelineSemaphore":false,"synchronization2":false,"dynamicRendering":false,"maintenance4":false,"bufferDeviceAddress":false,"updateAfterBindLimits":{"maxUpdateAfterBindDescriptorsInAllPools":0,"maxDescriptorSetUpdateAfterBindSampledImages":0,"maxDescriptorSetUpdateAfterBindStorageImages":0,"maxDescriptorSetUpdateAfterBindStorageBuffers":0},"capabilityAudit":{},"vulkanModule":"unix_data_storage_el2_base_files_wine_bin_aarch64-windows_vulkan-1.dll","winevulkanModule":"unix_data_storage_el2_base_files_wine_bin_aarch64-windows_winevulkan.dll","checks":{"bufferCopy":false,"imageClear":false,"storageImageWrite":false,"storageImageRead":false,"sampledImageFetch":false,"combinedImageSampler":false,"separatedImageSampler":false,"shaderExecuted":false,"imageReadCompleted":false},"sampledImage":{"sampledValue":"0x00000000","expectedValue":"0x00000000","sampledOnly":false},"cpuReadBytes":0,"cpuUploadBytes":0,"gpuCopyCount":1,"queueSubmitCount":1800,"presentFrames":1800,"presentFailureFrame":0,"presentAcquireResult":0,"presentAcquireWaitResult":0,"presentSubmitResult":0,"presentSubmitWaitResult":0,"presentQueueResult":0,"presentError":"","perFrameDeviceWaitIdle":0,"fallbackDetected":false,"durationMs":22933}
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "runId": "pad-presenter-vulkan-scene-20260929",
+  "suite": "direct-desktop-scene",
+  "status": "FAIL",
+  "tests": [
+    {
+      "schemaVersion": 1,
+      "runId": "pad-presenter-vulkan-scene-20260929",
+      "testId": "direct-desktop-scene-x64",
+      "status": "FAIL",
+      "stage": "timeout",
+      "message": "轮询超时 120000ms (结果文件: /data/storage/el2/base/files/.wine/drive_c/smoke/results/pad-presenter-vulkan-scene-20260929/direct-desktop-scene-x64.json)",
+      "pid": 6076
+    }
+  ]
+}

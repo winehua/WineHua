@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "hapSha256": "64cbd659505ba1c1c3d70c83cc9d7380a48b41abe1149206e1489f636783021f",
+  "payloadVersion": "smoke-v2-c87c4aa03bfc",
+  "device": "5KPBB25818203996",
+  "rootCommit": "b53ca22fd1a7f8a96c2392f5931f51cd4436d70d",
+  "wineCommit": "4d3ec031c42a232e15a860274f743f756e047e8d",
+  "rootDirty": true,
+  "wineDirty": true,
+  "change": "Production DirectVulkanContext owns device, submission resources, NativeBuffer imports and output swapchain. Desktop has no probe dependency or friend access.",
+  "dualSlotResize": {
+    "gate": "D2-DUAL-SLOT-RESIZE",
+    "status": "PASS",
+    "stage": "complete",
+    "pid": 53708,
+    "framesPassed": 8,
+    "frameTarget": 8,
+    "bufferedFramesPeak": 2,
+    "consumerSlotsPeak": 2,
+    "elapsedMs": 0,
+    "fps": 0,
+    "frameP50Ms": 0,
+    "frameP95Ms": 0,
+    "frameP99Ms": 0,
+    "producerP95Ms": 0,
+    "consumerP95Ms": 0,
+    "throughputAtLeast60": false,
+    "pipelineMode": true,
+    "dualSlotMode": true,
+    "width": 96,
+    "height": 48,
+    "queueSize": 3,
+    "lastBufferSeq": 0,
+    "launchCode": 0,
+    "callbackCode": 0,
+    "killCode": -1,
+    "abortMode": false,
+    "gpuMode": true,
+    "importMode": true,
+    "importVkResult": 0,
+    "importCheck": true,
+    "importCount": 6,
+    "reuseCount": 2,
+    "sampleCount": 8,
+    "acquireImportCount": 8,
+    "releaseExportCount": 8,
+    "releaseFdCount": 7,
+    "outputPresentCount": 8,
+    "outputWidth": 950,
+    "outputHeight": 380,
+    "outputInitialWidth": 760,
+    "outputInitialHeight": 570,
+    "outputRecreateCount": 1,
+    "outputSurfaceId": "7224134997121",
+    "fenceCheck": true,
+    "sampleCheck": true,
+    "parentFdCount": 44,
+    "parentRssKiB": 116380,
+    "pixelCheck": true
+  },
+  "scene": {
+    "runId": "pad-core-vulkan-input-order-20260929",
+    "status": "PASS",
+    "appPid": 55410,
+    "phases": 11,
+    "inputChecks": [
+      {
+        "stage": "fullscreen",
+        "tap": [
+          1280,
+          800
+        ],
+        "status": "PASS",
+        "phaseBeforeTap": "216530384 fullscreen",
+        "commandExit": 0,
+        "receivedTickMs": 216532771,
+        "received": [
+          640,
+          400
+        ],
+        "clientExtent": [
+          1280,
+          800
+        ],
+        "expected": [
+          640,
+          400
+        ],
+        "elapsedSinceObservedMs": 1938
+      },
+      {
+        "stage": "windowed",
+        "tap": [
+          948,
+          710
+        ],
+        "status": "PASS",
+        "phaseBeforeTap": "216534432 windowed",
+        "commandExit": 0,
+        "receivedTickMs": 216536604,
+        "received": [
+          350,
+          225
+        ],
+        "clientExtent": [
+          700,
+          450
+        ],
+        "expected": [
+          350,
+          225
+        ],
+        "elapsedSinceObservedMs": 2078
+      }
+    ],
+    "childAFrames": 2979,
+    "childBFrames": 2713,
+    "lastPeriodicGpuSample": {
+      "presents": 2880,
+      "directDraws": 4956,
+      "acquireWaits": 4550,
+      "releaseFences": 4531,
+      "producerRetired": 18,
+      "releaseErrors": 0,
+      "imports": 44,
+      "reuses": 4506,
+      "uiUploadBytes": 339046496
+    },
+    "gameCpuReadAndUpload": "Zero path assertions; code has no game image map/readback/upload. Not a system-wide hardware byte measurement."
+  },
+  "fusion": {
+    "runId": "pad-core-fusion-20260929",
+    "status": "PASS",
+    "frames": 707,
+    "visual": "live.jpeg: marker upper-left, orientation correct"
+  },
+  "inputTimingFailure": {
+    "runId": "pad-core-vulkan-scene-20260929",
+    "fixture": "PASS",
+    "input": "1/2 PASS",
+    "cause": "Old capture order took a screenshot before injecting into the three-second windowed phase. Only the preceding fullscreen input appeared in the sidecar.",
+    "fix": "Inject before capture, confirm fixture phase, poll only for fresh WM_LBUTTONUP, and require exact client dimensions. No game/HAP code changed for this fix."
+  },
+  "screenTimeoutRestored": true,
+  "notVerified": [
+    "production output resize/rotation",
+    "popup/subsurface/viewport complete matrix",
+    "device-lost and exceptional child lifecycle",
+    "long-duration resource stability",
+    "real games and performance A/B",
+    "Venus on this new package"
+  ],
+  "remainingArchitecture": [
+    "fusion single-image presentation still uses probe wrapper with diagnostics disabled",
+    "OpenGL/WineD3D through Zink",
+    "Audio Direct",
+    "XInput shared state",
+    "capability/default selection"
+  ],
+  "sourceSha256": {
+    "entry/src/main/cpp/direct/direct_vulkan_context.h": "46de9e15c7d807da043b4594454dd00cb84ea486d1ad4200c15a7d9e724d8c35",
+    "entry/src/main/cpp/direct/direct_vulkan_context.cpp": "f820045f40e3855bb34347b83d08105e8174ad12e29699ce1cd637ab537318e0",
+    "entry/src/main/cpp/direct/direct_buffer_import_probe.h": "bd37d61996e8228de149e0e2bc49a472ae52044621afa537b07ffe40fdaf89c5",
+    "entry/src/main/cpp/direct/direct_buffer_import_probe.cpp": "42a7813b1d040c757647e315cebccd118fae448f2e996fee9b705a11511cb5f8",
+    "entry/src/main/cpp/direct/direct_vulkan_desktop_compositor.cpp": "69da60dd53392526457f093a9abe29a51e5176fe9007a217adbba5c0a66d9edb",
+    "entry/src/main/cpp/CMakeLists.txt": "7b0646006859579d6507a3676c3c66b38fb873fb69f51028c5a4fec12375eef6",
+    "automation/capture_direct_desktop_scene.py": "012350e2aa53a959247e90b9fd86f96ab9b4ae9452c0091ae897294900384c6c"
+  }
+}

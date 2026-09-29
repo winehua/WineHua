@@ -1,0 +1,100 @@
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkReleaseSwapchainImagesEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkReleaseSwapchainImagesKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkResetQueryPoolEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetDebugUtilsObjectNameEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetDebugUtilsObjectTagEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetDeviceMemoryPriorityEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetHdrMetadataEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetLatencyMarkerNV not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetLatencySleepModeNV not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetPrivateDataEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSetSwapchainPresentTimingQueueSizeEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkSignalSemaphoreKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkTransitionImageLayoutEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkTrimCommandPoolKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUninitializePerformanceApiINTEL not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUnmapMemory2KHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUnregisterCustomBorderColorEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUpdateDescriptorSetWithTemplateKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUpdateIndirectExecutionSetPipelineEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUpdateIndirectExecutionSetShaderEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkUpdateVideoSessionParametersKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWaitForPresent2KHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWaitForPresentKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWaitSemaphoresKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWriteAccelerationStructuresPropertiesKHR not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWriteMicromapsPropertiesEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWriteResourceDescriptorsEXT not found.
+0108:trace:vulkan:win32u_vkCreateDevice Device proc vkWriteSamplerDescriptorsEXT not found.
+0108:trace:vulkan:init_device_queues Queue family index 0, queue count 1.
+0108:trace:vulkan:init_device_queues Got device 0x5b2b46c800 queue 0x5b2b46dbe8, host_queue 0x5b13baeb20.
+0108:trace:vulkan:win32u_vkCreateDevice Created device 0x5b2b46c800, host_device 0x5a8a2b7858.
+0108:trace:vulkan:thunk64_vkGetDeviceQueue 0x17017c0, 0, 0, 0x43f5e8
+0108:trace:vulkan:thunk64_vkCreateCommandPool 0x17017c0, 0x43f420, 0, 0x43f5e0
+0108:trace:vulkan:thunk64_vkAllocateCommandBuffers 0x17017c0, 0x43f500, 0x43f5d8
+0108:trace:vulkan:wine_vkAllocateCommandBuffers Allocating command buffer 0 from pool 0x5b13bed088.
+0108:trace:vulkan:thunk64_vkCreateFence 0x17017c0, 0x43f470, 0, 0x43f5d0
+0108:trace:vulkan:win32u_vkCreateFence device 0x5b2b46c800, create_info 0x1000ffc50, allocator 0, ret 0x43f5d0
+0108:trace:vulkan:thunk64_vkCreateBuffer 0x17017c0, 0x43f130, 0, 0x43f5c8
+0108:trace:vulkan:thunk64_vkGetBufferMemoryRequirements 0x17017c0, 0x5b13c39140, 0x43f118
+0108:trace:vulkan:thunk64_vkGetPhysicalDeviceMemoryProperties 0x1704528, 0x43f168
+0108:trace:vulkan:thunk64_vkAllocateMemory 0x17017c0, 0x43f0f0, 0, 0x43f5b0
+0108:trace:vulkan:thunk64_vkBindBufferMemory 0x17017c0, 0x5b13c39140, 0x5b3d000f40, 0x0
+0108:trace:vulkan:thunk64_vkCreateBuffer 0x17017c0, 0x43f130, 0, 0x43f5c0
+0108:trace:vulkan:thunk64_vkGetBufferMemoryRequirements 0x17017c0, 0x5b13c39218, 0x43f118
+0108:trace:vulkan:thunk64_vkGetPhysicalDeviceMemoryProperties 0x1704528, 0x43f168
+0108:trace:vulkan:thunk64_vkAllocateMemory 0x17017c0, 0x43f0f0, 0, 0x43f5a8
+0108:trace:vulkan:thunk64_vkBindBufferMemory 0x17017c0, 0x5b13c39218, 0x5b3d001b20, 0x0
+0108:trace:vulkan:thunk64_vkMapMemory 0x17017c0, 0x5b3d000f40, 0x0, 0x1000, 0, 0x43f558
+0108:trace:vulkan:thunk64_vkUnmapMemory 0x17017c0, 0x5b3d000f40
+0108:trace:vulkan:win32u_vkUnmapMemory2KHR device 0x5b2b46c800, unmap_info 0x1000ffc80
+0108:trace:vulkan:thunk64_vkBeginCommandBuffer 0x17015d0, 0x43f420
+0108:trace:vulkan:thunk64_vkEndCommandBuffer 0x17015d0
+0108:trace:vulkan:thunk64_vkQueueSubmit 0x1701800, 1, 0x43f500, 0x5b2b2b2f40
+0108:trace:vulkan:win32u_vkQueueSubmit queue 0x5b2b46dbe8, count 1, submits 0x1000ff450, fence 0x5b2b2b2f40
+0108:trace:vulkan:thunk64_vkWaitForFences 0x17017c0, 1, 0x43f5d0, 1, 0x12a05f200
+0108:trace:vulkan:thunk64_vkMapMemory 0x17017c0, 0x5b3d001b20, 0x0, 0x1000, 0, 0x43f558
+0108:trace:vulkan:thunk64_vkUnmapMemory 0x17017c0, 0x5b3d001b20
+0108:trace:vulkan:win32u_vkUnmapMemory2KHR device 0x5b2b46c800, unmap_info 0x1000ffc80
+0108:trace:vulkan:thunk64_vkCreateImage 0x17017c0, 0x43f500, 0, 0x43f590
+0108:trace:vulkan:thunk64_vkGetImageMemoryRequirements 0x17017c0, 0x5b13c6bda8, 0x43f470
+0108:trace:vulkan:thunk64_vkGetPhysicalDeviceMemoryProperties 0x1704528, 0x43f178
+0108:trace:vulkan:thunk64_vkAllocateMemory 0x17017c0, 0x43f420, 0, 0x43f598
+0108:trace:vulkan:thunk64_vkBindImageMemory 0x17017c0, 0x5b13c6bda8, 0x5b3cfffb40, 0x0
+0108:trace:vulkan:thunk64_vkCreateBuffer 0x17017c0, 0x43f130, 0, 0x43f5b8
+0108:trace:vulkan:thunk64_vkGetBufferMemoryRequirements 0x17017c0, 0x5b13c392f0, 0x43f118
+0108:trace:vulkan:thunk64_vkGetPhysicalDeviceMemoryProperties 0x1704528, 0x43f168
+0108:trace:vulkan:thunk64_vkAllocateMemory 0x17017c0, 0x43f0f0, 0, 0x43f5a0
+0108:trace:vulkan:thunk64_vkBindBufferMemory 0x17017c0, 0x5b13c392f0, 0x5b3cfffd20, 0x0
+0108:trace:vulkan:thunk64_vkResetFences 0x17017c0, 1, 0x43f5d0
+0108:trace:vulkan:thunk64_vkResetCommandPool 0x17017c0, 0x17015a0, 0
+0108:trace:vulkan:thunk64_vkBeginCommandBuffer 0x17015d0, 0x43f4e0
+0108:trace:vulkan:thunk64_vkEndCommandBuffer 0x17015d0
+0108:trace:vulkan:thunk64_vkQueueSubmit 0x1701800, 1, 0x43f420, 0x5b2b2b2f40
+0108:trace:vulkan:win32u_vkQueueSubmit queue 0x5b2b46dbe8, count 1, submits 0x1000ff450, fence 0x5b2b2b2f40
+0108:trace:vulkan:thunk64_vkWaitForFences 0x17017c0, 1, 0x43f5d0, 1, 0x12a05f200
+0108:trace:vulkan:thunk64_vkMapMemory 0x17017c0, 0x5b3cfffd20, 0x0, 0x400, 0, 0x43f558
+0108:trace:vulkan:thunk64_vkUnmapMemory 0x17017c0, 0x5b3cfffd20
+0108:trace:vulkan:win32u_vkUnmapMemory2KHR device 0x5b2b46c800, unmap_info 0x1000ffc80
+0108:trace:vulkan:thunk64_vkCreateImageView 0x17017c0, 0x43f500, 0, 0x43f588
+0108:trace:vulkan:thunk64_vkCreateSampler 0x17017c0, 0x43f420, 0, 0x43f580
+0108:trace:vulkan:thunk64_vkCreateDescriptorSetLayout 0x17017c0, 0x43efa0, 0, 0x43ee98
+0108:trace:vulkan:thunk64_vkCreateDescriptorPool 0x17017c0, 0x43ef70, 0, 0x43ee90
+0108:trace:vulkan:thunk64_vkAllocateDescriptorSets 0x17017c0, 0x43ef40, 0x43ee88
+0108:trace:vulkan:thunk64_vkCreateShaderModule 0x17017c0, 0x43f040, 0, 0x43ee70
+0108:trace:vulkan:thunk64_vkCreatePipelineLayout 0x17017c0, 0x43ef10, 0, 0x43ee80
+0108:trace:vulkan:thunk64_vkCreateComputePipelines 0x17017c0, 0x0, 1, 0x43eeb0, 0, 0x43ee78
+Protocol error: process 0104: partial recvmsg 7 for fd
+[QUIT-PROBE] signal-enter
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper
+[QUIT-PROBE] abort-thread
+[QUIT-PROBE] pthread-exit-wrapper

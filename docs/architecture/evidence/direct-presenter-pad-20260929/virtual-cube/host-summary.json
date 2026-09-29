@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "passed": 1,
+  "total": 1,
+  "tests": [
+    {
+      "testId": "dxvk-direct-cube-x64",
+      "status": "PASS",
+      "stage": "",
+      "message": "",
+      "verdicts": [
+        {
+          "check": "result-json",
+          "argument": "",
+          "status": "PASS",
+          "stage": "present",
+          "message": "cube rendered and presented",
+          "metrics": {}
+        },
+        {
+          "check": "visual",
+          "argument": "d3d11-cube",
+          "status": "PASS",
+          "stage": "visual:d3d11-cube",
+          "message": "d3d11-cube-color-depth-v1 on dxvk-direct-cube-x64.jpeg",
+          "metrics": {
+            "schemaVersion": 1,
+            "status": "PASS",
+            "validator": "d3d11-cube-color-depth-v1",
+            "image": "F:\\WineHua\\.temp\\direct-pad-20260929\\presenter\\dxvk-direct-cube-pad-presenter-virtual-cube-20260929\\frames\\dxvk-direct-cube-x64.jpeg",
+            "width": 2560,
+            "height": 1600,
+            "coloredSamples": 105562,
+            "minimumColoredSamples": 1280,
+            "darkSamples": 132093,
+            "activeColorBuckets": 3,
+            "colorBuckets": {
+              "red": 2075,
+              "green": 10942,
+              "blue": 92545
+            },
+            "coloredBounds": {
+              "x": 0,
+              "y": 0,
+              "width": 2557,
+              "height": 1573
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "suiteVerdicts": []
+}

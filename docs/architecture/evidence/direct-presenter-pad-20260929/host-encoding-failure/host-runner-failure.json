@@ -1,0 +1,9 @@
+{
+  "status": "ERROR",
+  "stage": "host load_cases",
+  "exception": "UnicodeDecodeError: gbk decoding UTF-8 case JSON",
+  "deviceTest": "PASS",
+  "hostJudgment": "not completed",
+  "visualCapture": "not collected",
+  "retryRunId": "pad-presenter-fusion-utf8-20260929"
+}

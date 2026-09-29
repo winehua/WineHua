@@ -1,0 +1,7 @@
+{
+  "suite": "dxvk-direct-cube",
+  "prefix": "reuse",
+  "params": {
+    "seconds": 8
+  }
+}
