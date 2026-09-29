@@ -194,6 +194,50 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 
 **回归与状态残留（T8）**：core + wine-vulkan 在冷启干净态 4/4 + 4/4 PASS。**displayroute 会话状态会残留到后续套件**（T5 t5v、T8 两度复现：displayroute 任务后直接跑 core，帧采集抓到 app UI+虚拟桌面合成帧而非测试全屏窗口；生产者帧率 88fps 正常，仅采集面错位）⇒ **套件回归前 force-stop + 冷启动**为既定流程。
 
+### 6.4 M2 阶段 A 实测结论（2026-09-30，T1-T6 全链真机，设备 .5）
+
+**出口状态：阶段 A 达成**（判据逐条裁定见
+`2026-09-30-display-route-m2-acceptance.md`）。阶段 B（IME）/C（PC 形态）按
+scope ruling 暂缓。
+
+**输出路径清账（T1）**：`HandleOutputCommit` 失败分支全部有日志/计数，
+munmap 与 mmap 同源（`mapped_bytes`），Map 失败归还 buffer；合成器启动链改
+统一 cleanup（`goto fail`）。known-issues §1.1/§1.2 两条据此删除。
+
+**零拷贝（T2 → T4）**：`EGL_NATIVE_BUFFER_OHOS` 导入可用（T2 探针
+`pass:payload=OHNativeWindowBuffer`，r20260930-013431-t2d）；T4 落地 wlroots
+gles2 渲染器 + 通用导入器 + OHOS 队列 buffer 直渲染输出。分段实测：
+`copy+flush 1572us`（拷贝路径 19011us）、`scene render+commit 3202us`
+（19446us）。**帧率按模型推导**：33ms 帧时钟 + ~20ms 工作 ⇒ ~27.7fps ≥ 25
+（判据脚本 `verify-t4.sh` 20/20 ok）；直测需持续内容源，见下条。
+
+**X 路线内容率限制（T4 遗留，非本阶段目标）**：Xwayland 侧回压使注入 X client
+的事件循环掉到 ~1.4 圈/s，内容率 ~1.8/s ⇒ 以「持续出图」为判据的验收（含
+≥25fps 直测）在 X 路线暂无法成立；本阶段所有出图判据改用「固定帧/内容色」
+形态（present 6/6、cube 221 帧）绕开该限制。
+
+**R1 收口（T3）**：X 路线 GL 呈现链**不存在**——Xwayland 无 GLX（`-Dglx=false`）、
+guest 无 libGL、winex11 GL 段未编入（`WINEHUA_ALLOW_X11_NO_GLX=1`）。M1-T6 的
+311MB/s「X 路线」数字作废（当时走的是 win32u 通用 EGL 的 FBO 路径）。补栈属
+新建栈，超出阶段 A（known-issues §2.4）。
+
+**重锚（T5）**：落地形态与实测见 §4.2 ④ 段（id = X window id；接收侧 window_id
+映射 + 销毁即失效；present 6/6 PASS、133~137 帧/轮、截屏实证上屏）。
+
+**dxvk 出口（T6）**：X 路线 `dxvk-cube` PASS（`frames=221`、`angleRegressions=0`、
+`presentHresult=0x0`）⇒ 出图成立；`dxvk-legacy` 为既有失败（known-issues §2.5，
+对照实验证明与重锚无因果）。
+
+**双路线回归**：wayland core 4/4、d3d12 3/3、wine-vulkan offscreen 3/3、
+present 1/1；X 路线 wine-vulkan offscreen 1/1、present 6/6、dxvk-cube PASS。
+既有红项（X 路线 `displayroute` dx-notepad 超时、`dxvk-legacy`）与本阶段改动
+无因果，逐条证据见验收报告与 known-issues。
+
+**设备状态类抖动（新观察，2026-09-30）**：设备被本会话自己的 hilog 落盘占满
+（`/data/local/tmp` 132GB、6 个采集进程常驻、load ~16）期间，wayland 路线的
+`venus_storage_write` 回读失败出现 1/4；清理后同一构建 5/5 PASS。样本不足以
+定论，但方向是「设备侧负载/IO 压力」而非代码（fix2 在该路线无机制作用面）。
+
 ## 7. 里程碑与回退线
 
 | 阶段 | 内容 | 退出条件 |
@@ -208,4 +252,14 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 1. 触发重开的那些长尾样本（结构性不兼容类）在 X 路线可启动且行为正确；样本清单与「行为正确」判据在 M1 落定为具体程序列表
 2. 现有 core / wine-vulkan / dxvk 自动化套件不回退
 3. 档位系统（graphics-matrix 四档）在新链路语义不变
-4. 出图/合成性能：M2 起以 dxvk、core 套件运行数据与旧链路对照，作为**观察项**（不设硬线；要设硬线则在 M1 钉基准程序与分辨率）
+4. 出图/合成性能：M2 起以 dxvk、core 套件运行数据与旧链路对照，作为**观察项**（不设硬线；要设硬线则在 M1 钉基准程序与分辨率）。
+   **阶段 A 对照数据（2026-09-30，同构建同设备 .5）**：
+
+   | 用例 | wayland 路线 | X 路线 | 读数口径 |
+   |---|---|---|---|
+   | `dxvk-cube`（8s 固定脚本） | 903 帧（≈113fps） | 221 帧（≈27.6fps） | 两路线 `lastAngle≈8.0` 均跑满时长；X 路线帧数被合成帧时钟 30fps 与 present 节拍（33ms）钳制 |
+   | `winehua_vulkan_smoke --present`（5s） | 150 帧 | 150 帧、`presentFailureFrame=0` | 私有 present 双路线同形态（X 路线 6/6 轮一致） |
+   | 合成器分段（T4，800×600） | — | copy+flush 1.57ms / scene 3.2ms | 零拷贝输出；旧拷贝路径同轮 19.0ms / 19.4ms |
+
+   **待补**：X 路线内容率 ~1.8/s 的回压机制（§6.4）解决后，才有「持续出图」
+   形态的 fps 直测；此前所有 X 路线性能数字都以固定帧形态为准。

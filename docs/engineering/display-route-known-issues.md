@@ -11,34 +11,6 @@
 
 ## 1. 代码埋雷（按触发时机排序）
 
-### 1.1 munmap 长度与 mmap 不一致（M2 动输出路径前必修）
-
-`ohos_output.c` `HandleOutputCommit` 路径 G（无 LockBuffer 的老设备回退）：
-映射用 `bytes = h->size`（BufferHandle 自报总量），解除用
-`munmap(dst, (size_t)ht * dst_stride)`（行数×行距自算）。两者在当前
-800×600 固定输出下恰好相等所以无症状；只要 buffer 带尾部填充或高度被
-钳制，munmap 长度就对不上 mmap——严格说踩在未定义行为边上。
-**修法**：munmap 复用同一个 `bytes` 变量，半小时。
-**同区另两处顺手修**（同一函数、同一时机）：
-
-- stride 不一致时整帧静默跳过（`dst_stride == src_stride` 不满足即丢帧，
-  无日志无计数）——M2 换零拷贝/分辨率后 stride 可能分叉，届时表现为
-  "偶发掉帧且零证据"。修法：else 分支加限频日志 + 计数。
-- `OH_NativeBuffer_Map` 源映射失败早退不归还 window buffer（路径 G 已
-  RequestBuffer 拿到的槽位泄漏，连续几次 RequestBuffer 即饿死）。修法：
-  失败分支 FlushBuffer 或取消归还。
-
-### 1.2 合成器启动失败路径资源泄漏 + retrigger 管道无锁赋值（M2 结构整理时收）
-
-`display_compositor.cpp` 启动链（wl_display → loop → renderer → … →
-Xwayland）任一环失败即线程 return，已建资源不销毁；`g_retrigger_pipe`
-由 worker 线程赋值、主线程读判空，无锁（当前时序安全：赋值发生在
-`g_started=true` 锁内之后，无同步保证）。同区：retrigger `write()` 返回
-值未查、`ohos_buffer.h` 重复 `#pragma once`、`xclient_child.cpp` 解析
-`appPid` 后未消费。**修法**：线程体改统一 cleanup 收尾 + 全局管道变量
-收进锁内，一并收掉杂项。触发时机 = displayroute 变常态路径后启动失败
-从"开发期偶见"变"用户可触发"。
-
 ### 1.3 host-ext 打包 glob 漏两位数 SONAME（下次动 host-ext 依赖时修）
 
 `scripts/assemble.sh:47` `*.so.[0-9]` 只匹配一位版本号——`libx.so.10`
@@ -88,13 +60,19 @@ WGL 落到 win32u 通用 EGL 驱动 + FBO，无 GLX、无 drisw、无 X 窗口�
 「X 路线 310MB/s ≈150fps」不能作为 X 路线 GL 能力或性能的依据，R1 的改
 判理由不成立（见 2.4）。
 
-### 2.3 引擎冷启 wineboot 偶发 box64 SIGSEGV 崩溃循环
+### 2.3 引擎冷启 wineboot 偶发 box64 SIGSEGV 崩溃循环 / 停滞
 
 T5 期 t5q 一例：同套二进制 force-stop 重试一次即成；M1 期未复现。位
 于引擎启动路径（wine+box64），本分支代码之外。**复现时先保现场**：
 hilog 全量落盘 + stderr 只截尾部 ~1MB（t5q 整拉 744MB 失败教训），再
 重试恢复。M2 期复发 ≥3 次升级专项（方向：box64 dynarec 对 wineboot 某
 代码段的翻译）。
+
+**变体（M2 收尾，2026-09-30）**：core 首轮 r20260930-064926 停在第一个
+用例（opengl-x64 结果停在 STARTED，app 与 wine 子进程全 idle、无自旋，13
+分钟不终态），重跑 r20260930-065058 **4/4 PASS**。与上面同形（冷启期），
+区别是「停滞」不是崩溃 —— 同样按「保现场 + 重试」处理；判据：设备侧进程
+CPU 全 idle 即不是自旋死锁，先别当代码 bug 查。
 
 ### 2.4 X 路线没有 GL 呈现（M2-T3 实测定位，补栈与否待范围裁决）
 
@@ -161,6 +139,21 @@ feature contract failed`；设备端 metrics 给出失败点：`featureLevel=11.
 `CreateSwapChain` 前后的 DXVK 报文，比对该次的私有面能力返回值
 （formats/present modes）。**影响面**：DXVK 矩阵的 cube 用例与 vkd3d 侧不受
 影响（M2-T6 出图判据由 cube 兑现）；它只影响 d3d11-smoke 这一条深度用例。
+
+### 2.6 guest 帧归还队列不带 GPU 侧同步（观察项，M2-T5 引入的路径）
+
+`display/ohos_buffer.cpp` 的 guest 帧归还走
+`OH_NativeImage_ReleaseNativeWindowBuffer(image, buffer, -1)`，即**不做 GPU 侧
+同步**（与 T4 的输出 present 侧同口径）。语义上：合成器上一帧的 GPU 采样可能
+还在飞，生产者已可覆写该槽位。理论症状 = 偶发撕裂/闪帧。
+
+**当前证据（不足以判为问题）**：X 路线 present 6 轮 + 销毁竞态 4 轮 + dxvk-cube
+（X 路线 221 帧、`angleRegressions=0`）均无可见异常；上屏快照的纯色块内容正确。
+
+**要做实它的办法**：给该路径加一帧延迟的持有（双缓冲 hold，归还推后一拍）或
+取渲染侧 fence（wlroots gles2 当前不直接给出 pass 结束的 sync file，需自建
+GL 同步对象 → dma-fence 的转换）。**升级条件**：真机出现撕裂/错帧截图，
+或引入对同步敏感的内容源时。
 
 ## 3. 操作协议（必须遵守，违反即隐性故障）
 
