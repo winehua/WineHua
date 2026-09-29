@@ -137,6 +137,31 @@ X 路线永远缺 → 它是路线外来判据；应按 T3 计划改程序侧出
 Panel` 的 XComponent，4:3、约 500×390 物理像素），四象限永远判不出来；主
 机侧需要按区域裁剪的视觉判定器（或按框内 CRC 变化判活）。
 
+### 2.5 dxvk 套件的 `dxvk-legacy`（d3d11-smoke）既有失败（M2-T6 期间实锤）
+
+**现象**：`dxvk-legacy-x64` FAIL，报文 `D3D11 initialization or required
+feature contract failed`；设备端 metrics 给出失败点：`featureLevel=11.0`、
+`adapter="DXVK Vulkan"` 都已拿到，`presentResult=-2147024809`
+（`E_INVALIDARG`）、`presentFrames=0` ⇒ 卡在
+`D3D11CreateDeviceAndSwapChain`（`programs/winehua_d3d11_smoke/main.c:5249`）。
+
+**判据（三条，缺一不足以定性）**：
+1. **与显示路线无关**：wayland（r20260930-063529）与 X 路线（r20260930-063322）
+   同构建同报文；
+2. **不是静态能力拒绝**：同参数同调用的 `d3d-switch-cube`
+   （`BufferCount=2 / R8G8B8A8_UNORM / RENDER_TARGET_OUTPUT / DISCARD / windowed`，
+   与 smoke 逐字段相同）在两条路线上都 PASS（`cube rendered and presented`）；
+3. **与 M2-T5 无关（对照实验）**：wine fork stash 回 `a46a545169c`（T5 wine
+   侧改动全部移除）后完整构建 + 卸载重装，wayland 上 **2/2 同样失败**
+   （r20260930-064027 / r20260930-064134）。
+
+**未定位**：失败发生在 swapchain 创建一刻的哪个校验（DXVK 的 DXGI 参数校验
+与 WineHua 私有 WSI 的交界）。**下次从哪继续**：给该用例单开 trace
+（`DXVK_LOG_LEVEL=debug` + `WINEHUA_DXVK_*` trace 开关）抓
+`CreateSwapChain` 前后的 DXVK 报文，比对该次的私有面能力返回值
+（formats/present modes）。**影响面**：DXVK 矩阵的 cube 用例与 vkd3d 侧不受
+影响（M2-T6 出图判据由 cube 兑现）；它只影响 d3d11-smoke 这一条深度用例。
+
 ## 3. 操作协议（必须遵守，违反即隐性故障）
 
 ### 3.1 hdc -b 热更后必须 sha256 对账

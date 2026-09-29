@@ -200,7 +200,7 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 |---|---|---|
 | M0 | Xwayland 钉版裁决 + wlroots OHOS 交叉编译 + Xwayland NCP 启动适配原型（R-SPAWN）+ NativeWindow 直推真机首验 + headless/pixman 出图进 NativeWindow + Xwayland 跑 xterm | 跑不通 → 回退「现有合成器 + Xwayland」（winex11 收益保留；rootless 回退需先给旧合成器补 xwayland-shell-v1——现零实现，协议面很小；旧合成器 xdg_wm_base 已具备 `xdg_shell.cpp:428-433`，rootful 可跑但 present 重锚不成立，仅保窗口不保 ZC） |
 | M1 | winex11 交叉接入，窗口语义验收；GLX-over-EGL 桥最小原型裁决；R-WSI 探针 | 记事本类输入/窗口正确 |
-| M2 | Venus/ZC 重锚（§4.2/§5 R-ZC）、IME、双窗口形态 | dxvk 套件出图正常 |
+| M2 | Venus/ZC 重锚（§4.2/§5 R-ZC）、IME、双窗口形态 | dxvk 套件出图正常（**阶段 A 实测 2026-09-30，设备 .5**：X 路线 `dxvk-cube` PASS——`frames=221`、`angleRegressions=0`、`presentHresult=0x0`（同名用例 wayland 903 帧，帧数差 = 合成帧时钟 30fps 对呈现节奏的钳制，见 §8.4 观察项；`dxvk-legacy` 为既有失败，与重锚无因果——对照实验见 known-issues §2.5） |
 | M3 | 旧合成器退役 | core / wine-vulkan / dxvk 套件不回退 + 长尾样本验收 |
 
 ## 8. 验收标准

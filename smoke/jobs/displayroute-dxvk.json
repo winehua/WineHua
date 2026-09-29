@@ -1,0 +1,12 @@
+{
+  "displayroute": true,
+  "suite": "dxvk",
+  "tests": ["dxvk-legacy-x64", "dxvk-cube-x64"],
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "x11",
+      "DISPLAY": ":0",
+      "WAYLAND_DISPLAY": ""
+    }
+  }
+}
