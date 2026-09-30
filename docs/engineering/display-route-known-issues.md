@@ -241,7 +241,34 @@ render+commit` 在 120Hz 输出下 avg=3.4~3.9ms / max≈8~13ms（含 present，
 `rel=840 rel_synced=840 rel_unsynced_presented=0`（job r20260930-233209 系）
 ⇒ 高帧率下不变量仍成立。
 
-### 2.7 同 id 复用窗口的「销毁即失效」是按 id 判的，不是按记录判的（窄竞态，未复现）
+**新观察（2026-10-01，未查清）**：X 路线 GL 用例每轮稳定出现
+`rel_unsynced_presented=3`，且**计数不随时间增长**（962 → 1245 帧期间恒为 3）
+⇒ 集中在启动期；resize 与不 resize 两轮都复现（`job-r20261001-034611` /
+`job-r20261001-035107`），wayland 路线此前为 0。判定代码见
+`display/ohos_buffer.cpp` `ConsumerReleaseQueueSlot`（"上过屏却没有同步点"）。
+**待查方向**：宿主挂接前后的前若干帧 in-flight 归还是否走了一条没有 glFinish
+的路径（present 路径的 glFinish 只覆盖"提交给 output"的分支）。在查清前，这个
+计数在 X 路线上的基线是 3，不是 0。
+
+### 2.7 同 id 复用窗口的「销毁即失效」是按 id 判的（2026-10-01 已按记录身份修掉）
+
+**已修（2026-10-01）**：`ohos_client_surface` 加进程内单调 `generation`，
+`wl_ohos_output_client_xwindow_generation()` 把身份给消费者；`display_guest_frames`
+的绑定在挂接时记下 generation，每拍（sweep 与 PullFrame 两道闸）按**记录身份**
+而不是 id 判失效 —— 同 id 新窗会让老绑定失效（计数 `reused_windows` + WARN），
+老 guest 的最后一帧不会再落进新窗。原「先装仪器再修」的方案已并入本次修复：
+那个计数器现在就是真仪器（此前 `stale_frames` 永远是 0，见 §2.12）。
+
+原记录（保留作判据依据）：X window id 会回收复用，而 T5 的失效判据全是**按 id**
+做的：`wl_ohos_output_client_xwindow_alive(id)`（display_guest_frames 每拍
+sweep）与 `FindClientByWindow(id)`（frame_set 落点）都只比 `xs->window_id`。
+于是存在这样一条时序：窗 A(id=X) 销毁 → 新窗 B 立刻复用 id X → sweep 查 `X`
+**在册**（那是 B 的记录）⇒ 老绑定不摘；若 A 的 guest 尚未退出、又往老路由键
+`(A.pid<<32)|X` 投了最后一帧，该帧会经 `frame_set(X, …)` 落进 **B 的窗口**。
+
+**为什么当时不修**：需要「同 id 在一个 33ms 拍内被复用」且「A 的 guest 在窗销毁
+后仍投帧」，当前证据面里未出现（present 6/6 + 销毁竞态 4 轮 + dxvk-cube 均无
+错帧）。本次按原则 15 落在机制层（记录身份），不再依赖"未复现"这一前提。
 
 X window id 会回收复用，而 T5 的失效判据全是**按 id** 做的：
 `wl_ohos_output_client_xwindow_alive(id)`（display_guest_frames 每拍 sweep）与
@@ -377,200 +404,138 @@ GL 通了。**判 X 路线必须同时看 `[GUEST-FRAMES] attach`/`stats binding
 教训（判据层）：**跑 displayroute 用例时，`--seconds`/`--env` 这类覆盖必须核对
 启动 env 计数**；`displayFps>0` 单独不构成「X 路线出图」的证据。
 
-### 2.11 全景 review（2026-10-01）：guest 侧 GL 私有通道
+### 2.11 全景 review（2026-10-01）：guest 侧 GL 私有通道 —— 残留项
 
-四个方向并行 review 的产物之一，逐条有 file:line 证据（完整报告
-`~/.claude/jobs/5a90fd84/tmp/review-*.md` 为会话临时物；结论已固化到本节）。
-**未修**——按处置优先级排序，修之前先按判据复现。
+四个方向并行 review 的产物（完整报告为会话临时物，结论已固化在本节）。
+**2026-10-01 当天已修并实测的部分**（提交在 wine/mesa 子模块，验收证据见括号）：
 
-- **pbuffer 尺寸冻结在创建时刻（CONFIRMED 机制）**：`winex11.drv/opengl_winehua.c`
-  创建 drawable 时按 client rect 定死 pbuffer 尺寸，而 `winehua_x11_drawable_flush`
-  是只打 TRACE 的空实现（`GL_FLUSH_UPDATED` 被吞）。基础设施是现成的：win32u 在
-  窗口几何变化时给 client surface 置 `updated`，下一次 swap 会以该标志调驱动 flush
-  ——egldrv 的 FBO 正是靠这一跳 resize，wayland readback 也显式重建 pbuffer（注释
-  记「曾潜伏 7 天」），X 驱动两者都没有。**触发**：窗口 resize（应用改窗/最大化/
-  DPI 变化）后渲染目标不跟随 ⇒ 内容被裁 + 主机按窗几何拉伸，guest 侧零错误。
-  最坏形态：drawable 在窗口 0 尺寸时创建 ⇒ `max(1,…)` 得 1×1 pbuffer 终生。
-  **判据**：resize 前后比对 `[GUEST-FRAMES] attach … src=WxH`（src 直接来自 pbuffer
-  尺寸）看是否停在旧值。与 §2.9 的「子窗帧按窗几何拉伸」是两件事（那条是宿主落点
-  几何，这条是 guest 渲染目标），触发条件不同。
-- **子窗（WS_CHILD）GL 整条静默不呈现（CONFIRMED）**：实现用
-  `X11DRV_get_whole_window(自己的 hwnd)` 取 id，而子窗永远没有 whole_window
-  （`is_window_managed` 明确 child 不受管、`create_whole_window` 只在 parent==desktop
-  时调）⇒ 每帧走「no managed toplevel」分支：不调 `eglSwapBuffers`、只打**一条**
-  WARN、`unpresented` 计数不再上报。应用侧 SwapBuffers 成功、glGetError 干净，用户
-  看到那块区域停在最后的 GDI 内容。对比：Vulkan 私有面同情形是 ERR + 建面失败，
-  **GL 比 Vulkan 更静默**。**判据**：子窗上建 GL 上下文，看 guest stderr 是否只有
-  一条 `has no managed toplevel` 且预览框无内容。
-- **EGLSurface 双重销毁（CONFIRMED）**：驱动 destroy 回调里 `eglDestroySurface`
-  且不清 `base->surface`，而 `win32u/opengl.c` 的 `opengl_drawable_release` 在调完
-  驱动 destroy 之后**又**销毁同一个 surface（上游约定是驱动**不**销毁）。第二次传入
-  已释放句柄 ⇒ Mesa 侧先解引用 Magic 再查表（释放后读）+ 显示表 last error 被污染
-  （驱动失败路径打出的 EGL 错误码可能是上一次 destroy 的残留）。wayland 侧
-  `opengl_readback.c` 是**改造前就有**的同款写法，修要两条一起。
-- **ready 标记在 X 路线无人发布（CONFIRMED，两位 reviewer 独立命中）**：唯一写者
-  `SetZeroCopySurfaceReady` 只有 wayland 渲染器那条路会调（`zc_bridge.cpp` ←
-  `egl_renderer.cpp`）；X 路线消费者 `display_guest_frames` 走
-  `AttachZeroCopyTarget` **只登记不写 ready** ⇒ guest 侧 `ready` 恒假、每帧
-  `unpresented++`，每 300 帧一条 `host has no present target … check display route /
-  window registration`——**而此时帧正在正常上屏**（§2.10 的 GREEN 就是这种形态）。
-  **放大风险**：wayland 路线正是拿 ready 当零拷贝门控（`opengl_readback.c`），谁若
-  把写法对齐到 X 路线，X 路线 GL 会直接全哑。**判据**：跑 X job 时 grep guest
-  stderr 是否出现该 WARN 且 `[GUEST-FRAMES] stats frames=` 同时在增长。
-- **降级可见性两缺口（CONFIRMED）**：①无窗分支的 WARN 每个 drawable 只可能打一次
-  （`!gl->unpresented++`），持续故障只有一行日志；②`unpresented` 一个字段同时承担
-  「没有 X 窗」与「宿主没挂接」两种语义，而 header 把区分职责交给了
-  `winehua_present_surface_mapped()`——X 驱动 import 了却**从未调用**（wayland 侧是
-  打的）。若 TMPDIR 缺失/mmap 失败（页建不起来 ⇒ 一帧都不会 present），X 路线的日志
-  会说「宿主没挂接」，把排查引向不存在的方向。
-- **全局 present 锁横跨会阻塞的 swap（PLAUSIBLE）**：`win32u/winehua_present.c` 的
-  begin 持锁到 end，临界区包住 `glFlush` + `eglSwapBuffers`；而 guest mesa 的 present
-  是同步请求/应答且带 pacing（失败重试最多 8 次、按宿主回复的 deadline 睡，单次上限
-  50ms）⇒ 同进程多 GL 窗互相串行化：A 在等宿主节拍时，B 的 SwapBuffers 卡在同一把锁
-  上，表现为两窗共同抖动放大。锁本身必要（防串窗），问题只在临界区越过了阻塞点。
-  **判据**：双 GL 窗用例，比对 B 的封包等待时间是否 ≈ A 的。
-- **小项（均有据）**：`.shm` 页（`$TMPDIR/winehua_present_surface_<pid>.shm`）只建不
-  删，guest 每次启动留一个残留；`winehua_present_surface_ready()` 每次 swap 都
-  `getenv`+`access`（117fps ⇒ 每秒百余次 stat，且在渲染线程上，getenv 并发 setenv
-  非线程安全）；无 EGL 时返回 `STATUS_NOT_SUPPORTED`，而 §2.4 的判据表把
-  NOT_SUPPORTED 定义为「运行期缺 libGL」⇒ 现在「通道已武装但进程没有 egl_handle」
-  也走它，按旧含义会误读。
+- pbuffer 尺寸冻结 ⇒ 跟随 client rect（`winehua_x11_drawable_flush` 处理
+  `GL_FLUSH_UPDATED`，重建 pbuffer + 重绑 context）。验收：resize job
+  `job-r20261001-034611` 的 present 日志 size 从 960x540 跟到 632x326，显示
+  序列继续推进到 117fps（`smoke/jobs/displayroute-gl-resize.json`）。
+- 子窗 GL 不再静默不呈现（id 改取 `NtUserGetAncestor(hwnd, GA_ROOT)` 的受管顶层）。
+- EGLSurface 双重销毁（X 与 wayland 两条驱动一起删驱动侧销毁）。
+- ready 标记由 X 路线消费者发布/撤销 ⇒ `host has no present target` 假告警消失
+  （同一 job 的 guest stderr 里计数为 0）。
+- `winehua_present_surface_mapped()` 探针接上（通道断了 vs 宿主没挂接可区分）、
+  `.shm` 页退出时删除、ready 探测的 getenv 结果缓存、`STATUS_NOT_SUPPORTED`
+  的两种来源显式区分。
 
-### 2.12 全景 review（2026-10-01）：宿主合成器与帧时钟
+**残留（未修）**：
 
-- **output 窗口未设 `SET_TIMEOUT 0`（PLAUSIBLE，最坏面大）**：`ohos_output.c` 的两处
-  `OH_NativeWindow_NativeWindowRequestBuffer`（零拷贝与拷贝回落）都在**帧时钟的
-  event loop 线程**上；`g_out.window` 从未设 `SET_TIMEOUT`，SDK 默认 **3000ms**。
-  两个 presenter 的窗口都显式设了 0，唯独这个没有。**触发**：XComponent 消费者停止
-  归还槽位（ArkTS 销毁/遮挡预览框、UI 线程卡住）⇒ 队列满 ⇒ loop 线程冻结最多 3s：
-  scene 不提交、Xwayland 协议包不 flush、注入队列不 drain ⇒ 表观"全链路停滞、进程
-  idle"，与 §2.3 变体同形，容易误判为 box64/冷启。**判据**：加 `SET_TIMEOUT 0` 前后
-  对比 `segment scene render+commit` 的 max 与 rate 行 `over=`。
-- **`stale_frames` 计数器不可能自增 ⇒ §2.7 实际没有仪器（CONFIRMED）**：
-  `display_guest_frames.cpp` 的「销毁即失效」两道闸（每拍 sweep 与 PullFrame 开头）
-  用**同一个谓词**、同一线程、同一拍内无让出点 ⇒ 凡 sweep 没摘掉的绑定，第二道闸
-  必然为真。更糟的是 §2.7 那种「id 被新窗复用」场景恰好骗过两道闸（`xwindow_alive`
-  正因复用才为真），帧落进新窗且**无任何计数**。修法见 §2.7（按记录 generation 而不是
-  再查一次 id）。
-- **兜底→VSync 交接瞬间的双泵（CONFIRMED，低危）**：同一次 `epoll_wait` 同时返回
-  定时器与 eventfd 时，一轮 dispatch 会走两次 `FrameStep`（相隔几百 µs）：第二次
-  commit 被 damage 门控挡掉，但 `wlr_surface_send_frame_done` 是无条件发的 ⇒ 按
-  frame_done 驱动的 guest 多产一帧（随后被 throttled/空队列吃掉），`ticks` 多记一拍。
-  指纹：rate 行同一秒同时出现 `vsync>=1` 与 `timer>=1`。只发生在每次 VSync 恢复时。
-- **`AttachZeroCopyTarget` 早退不校验目标身份（PLAUSIBLE）**：对已挂接的 key 直接
-  `return true` 且无日志 ⇒ 查询与挂接之间的 TOCTOU 窗口里，后到者拿到"假成功"并把
-  `zeroCopyRegistered_` 记上，而生产窗仍是先到者的 ⇒ 它此后一帧都收不到（队列恒空），
-  但所有日志显示"挂接成功"。
-- **显示序列文件两个发布者共用临时名（PLAUSIBLE，本次改造新引入）**：
-  `perf_utils.cpp` 的临时路径从 `%s.tmp.%d.%p`（pid+this）变成 `%s.tmp.%d`（仅 pid）。
-  同进程发布者有 X 路线合成器（每秒一次）与 wayland 渲染器**每个 toplevel 一个** ⇒
-  A 写完待 rename 时 B 截断同名临时文件：guest 可能读到空行/半行，或 A 的 rename 失败
-  ⇒ 序号不推进（返回值门控）⇒ `displayed` 门假失败。窗口微秒级。
-- **帧时钟资源没有任何释放路径（当前不可达，属埋雷）**：`OH_NativeVSync`/eventfd/事件
-  源/定时器全仓无销毁对应物，`ohos_output.h` 也没有 stop 接口；`g_stop` 只有赋 false 的
-  两处、循环无法正常退出，`chain_start` 每进程生命周期最多跑一次 ⇒ 今天只泄漏不复用。
-  若将来给 `g_stop` 接上真停止入口，第二轮 `memset(&g_out,…)` 会把 `vsync_fd` 清 0，
-  在途回调会**向 fd 0（stdin）写一个 eventfd 计数**。
-- **小项（均有据）**：拷贝路径 `OH_NativeBuffer_Map` 失败完全静默（同函数 stride
-  mismatch 却有限流留痕）⇒ 零拷贝回落时可能每帧静默丢弃；`FrameCrc` 对非 4 倍数长度
-  越界读 3 字节（当前 stride 4 对齐，不可达）；`wl_ohos_consumer_buffer_release`
-  置 `returned` 但绕过 §2.6 的 rel/rel_synced 计数与 ERROR——全仓无人调用，但它是现成
-  的旁路，下一个人拿它当归还接口就静默失效；`VsyncRearm` 失败无限流（停摆态 ~30 行/秒），
-  `frame_timer` 建失败无一行日志（那种情况下看门狗与 33ms 兜底整体不存在且不可见）。
+- **子窗落位仍按整窗矩形**（`GA_ROOT` 修好了"有没有 id"，没修"落哪"）：present
+  通道只带 surface_id 与源尺寸，没有子矩形偏移字段 ⇒ 子窗内容会占满顶层窗。
+  **修法**：present 线协议加子矩形（x,y,w,h）字段 —— 跨仓库契约（mesa ↔
+  virglrenderer ↔ 宿主），按 §25 的规矩成对改、升版本、先改文档、跑
+  `scripts/check-contracts.sh`。
+- **全局 present 锁横跨会阻塞的 swap（PLAUSIBLE）**：`win32u/winehua_present.c`
+  的 begin 持锁到 end，临界区包住 `glFlush` + `eglSwapBuffers`；guest mesa 的
+  present 是同步请求/应答且带 pacing（重试最多 8 次、按宿主 deadline 睡，单次
+  上限 50ms）⇒ 同进程多 GL 窗互相串行化，表现为两窗共同抖动放大。锁本身必要
+  （防串窗），问题只在临界区越过了阻塞点。**判据**：双 GL 窗用例，比对 B 的
+  封包等待时间是否 ≈ A 的。
 
-### 2.13 全景 review（2026-10-01）：跨层契约与词汇
+### 2.12 全景 review（2026-10-01）：宿主合成器与帧时钟 —— 残留项
 
-- **`WINEHUA_VTEST_PRESENT` 两端值语义相反（CONFIRMED）**：mesa 侧只看变量**在不在**
-  （`st_manager.c`、`virgl_vtest_winsys.c`），wine 侧 `opengl_winehua.c` 把 `"0"` 当关。
-  于是置 `"0"` 时 wine 不装私有驱动（回 win32u 通用 EGL，swap 空实现），mesa 却因
-  "变量存在"跳过上游呈现路径 ⇒ **两头都不出图**，唯一提示是 `win32u/opengl.c` 一行
-  WARN。当前宿主固定注入 `surface-queue`，未触发；对照实验/灰度一旦用它就会踩。
-- **路线没有宿主侧真相源（CONFIRMED）**：全库没有任何宿主 C/C++ 写
-  `WINEHUA_DISPLAY_ROUTE` 或 `DISPLAY`（只在 `smoke/jobs/*.json` 的 params.env 与
-  ArkTS 每应用 env），而「默认 wayland」是 `proc/wine_child.cpp` 无条件
-  `setenv("WAYLAND_DISPLAY", …)` 制造的 ⇒ 丢了不报错、静默走 wayland，且两个消费者
-  都在跑（§2.10 是实例）。配套机制：驱动是单槽 CAS，败者**静默 free**（无日志）；
-  `__wine_set_user_driver(NULL,…)` 在 wayland init 失败时会 free 掉**已安装**的
-  x11drv 并退回 lazy loader。判据侧的现实结论：**路线归属只能靠
-  `[GUEST-FRAMES] attach` / presenter key 这类间接证据**（本次新增的 guest 自报
-  `expectedRoute/presentedRoute` 是对此的第一块自动判据）。
-- **跨路线 id 撞车只有一道窄闸（PLAUSIBLE，概率低）**：`display_guest_frames` 对
-  presenter 报的**全部**面 TryAttach（线上没有路线标签），唯一把关是「id 恰好等于
-  在册 X 窗号」的锚判定。wayland 的 wl_proxy id 与 X 资源号量级差很大，但机制上没有
-  路线校验；撞上即错挂 + 按 GL 规则翻转。
-- **presenter 目标表无上界、无淘汰（PLAUSIBLE，低危）**：`surfaces_[key]` 在**首帧
-  且无目标**时就建条目，唯一 erase 是 Detach ⇒ 反复建窗的 guest 长期会话里，未被
-  detach 的条目永久残留（`kMaxSurfaces=16` 只限查询回复数组，不限表）。
-- **帧几何 = X 窗矩形，帧内容 = client rect（待实测）**：发布 id 用 whole_window，
-  消费面尺寸取宿主报的**源尺寸**、落点取 X 面几何（`ohos_output.c` dest_size）⇒ 若
-  whole_window 大于客户区则拉伸且无子矩形偏移。§2.9 已记子窗形态；**顶层窗是否命中
-  未实证**。**判据**：比对 `[GUEST-FRAMES] attach` 的 `src=WxH` 与 `win=WxH`。
-- **手抄副本常量无检查脚本（CONFIRMED）**：①`vtest_protocol.h` 两份
-  （mesa / virglrenderer，当前 WineHua 段逐字节相同）；②present 页结构
-  （`win32u/winehua_present.c` ↔ `mesa/.../virgl_vtest_socket.c`）；③display-fps 路径
-  （`graphics_broker.cpp` 的 Windows 字面量 ↔ `perf_utils.cpp` 的 Unix 字面量，隐含绑定
-  `WINEPREFIX`）。失效后果分级：vtest VERSION 不符是**响**的（`-EPROTONOSUPPORT`）；
-  页 magic/字段序不符是**静默全哑**；fps 路径漂移是**判据静默失效**（§2.4 的 RED
-  基线正是这条吐的 `no compositor display sequence observed`）。建议随
-  `scripts/check-submodules.sh` 增加一处常量一致性检查。
-- **`presentedSelf` 的 pid 语义：实测不等，已改由宿主两侧事实对账（已修）**：key
-  高位 = 本进程 **Unix** `getpid()`（mesa/win32u 填），而 guest 只拿得到 Wine 的
-  ptid（`GetCurrentProcessId`，与服务端 `unix_pid` 是两个字段）。2026-10-01 实测
-  `key pid=10765` vs `ptid=596` ⇒ guest 侧比对恒假（`presentedSelf` 永远是根"说不"
-  的假指标）。**处置**：guest 侧删掉该字段（保留 `presentedKey`），归属断言移到判定
-  层——`presentedKey>>32` 与设备端 suite-summary 的 `tests[].pid`（运行器记录的
-  spawn pid，宿主自己的调起事实）比对，两来源互相独立，不是自证。
+**已修并实测**：
 
-### 2.14 全景 review（2026-10-01）：门禁层（本次已修 5 条）
+- output 窗口 `SET_TIMEOUT 0`（帧时钟线程上不再可能阻塞 3s；两个 presenter
+  的对照片是同一写法）。
+- 显示序列临时名冲突 ⇒ 每次发布用唯一临时名（此前 `%s.tmp.%d` 仅 pid，
+  同进程多发布者互截）。
+- `AttachZeroCopyTarget` 早退不再假成功：按**目标身份**判幂等，同窗重挂 =
+  幂等，换窗重挂 = 重新下发并留痕（`attach retarget`）。
+- `stale_frames` 恒 0 ⇒ 换成按**记录身份**（generation）的仪器，并顺带把 §2.7
+  的竞态修对：同 id 新窗会让老绑定按记录失效（新计数 `reused_windows`，命中
+  即 WARN + 解绑）。实测一轮 X 路线：`destroyed_windows=1 reused_windows=0
+  stale_frames=0`，退役路径正常。
 
-**已修（2026-10-01，判定设施）**：①**F1 用例定义加载同源**——`run` 侧的 entries 改从
-下发的 job 取 suite/tests（此前只认 CLI `--suite`，而 displayroute 的套件名写在 job
-文件里 ⇒ entries 空、用例声明的判定器一条不加载、`frame_targets` 空 ⇒ 不抓帧，判定
-静默退回默认 `result-json`；铁证：30+ 个 `job-*` 归档零 `frames/`）。②**F2 check 与
-run 同源**——`check` 读归档 job.json 的 suite/tests，且**有 job.json 就只信它**（回退
-到 summary 的 suite 会把设备端默认标签 "core" 当成本次选测，判出 run 侧根本不存在的
-missing-result 假红）。③**F3 套件级 checks 取并集**——套件定义管矩阵/覆盖、job 声明管
-bring-up 探针，此前是「套件优先、job 丢弃」，README 记录的命令
-`run --suite core --job …notepad.json` 会把该 job 唯一的 marker 判定静默丢掉。
-④**F9 marker 归档与清理同条件**（都看 `job.displayroute`）——此前归档无条件、清理有
-门控，普通 run 会把上一轮 displayroute 的旧标记搬进自己的归档判 PASS。
-⑤**F4 全 SKIP 不再记 PASS**（`judge_run`：无 FAIL 且有断言通过才 PASS）——`SKIP ≠
-验过了` 此前只落在文档上，退出码把"没验"当"验过"。
-⑥**x11 归属断言改用宿主事实**（见 §2.13 末条：guest 的 `presentedSelf` 恒假）：
-判定层比 `presentedKey>>32` 与设备端 `tests[].pid`。为此 `judge_run` 把设备端
-summary 条目（含 pid）一并发给判定器。**连带**：此前 job 跑法不抓帧、不加载判定
-器，这个字段根本到不了判定层，F1 修好后才暴露。
-⑦**`visual` 对 X 路线 SKIP**（证据见 §2.4 残留判据债）：X 路线出图面在侧栏预览框，
-整屏四象限判定结构性失效；F1 修好后它会从"没下判定"变成"假红"，故显式 SKIP 并
-在输出里写明原因。出图与否由 `presented-route` 与宿主显示序列门裁定。按区域裁剪的
-判定器做出来后这一格才能变回 PASS/FAIL。
+**残留（未修）**：
 
-**未修**：
+- **兜底→VSync 交接瞬间的双泵（CONFIRMED，低危）**：同一次 `epoll_wait` 同时
+  返回定时器与 eventfd 时，一轮 dispatch 会走两次 `FrameStep`（相隔几百 µs）：
+  第二次 commit 被 damage 门控挡掉，但 `wlr_surface_send_frame_done` 无条件发
+  ⇒ 按 frame_done 驱动的 guest 多产一帧，`ticks` 多记一拍。指纹：rate 行同一秒
+  同时出现 `vsync>=1` 与 `timer>=1`。只发生在每次 VSync 恢复时。
+- **帧时钟资源没有释放路径（当前不可达，属埋雷）**：`OH_NativeVSync`/eventfd/
+  事件源/定时器全仓无销毁对应物，`g_stop` 无正常退出路径、`chain_start` 每进程
+  最多跑一次 ⇒ 今天只泄漏不复用。若将来接上真停止入口，第二轮 `memset(&g_out)`
+  会把 `vsync_fd` 清 0，在途回调会向 fd 0（stdin）写 eventfd 计数。
+- **小项（均有据）**：拷贝路径 `OH_NativeBuffer_Map` 失败完全静默；`FrameCrc`
+  对非 4 倍数长度越界读 3 字节（当前 stride 4 对齐，不可达）；
+  `wl_ohos_consumer_buffer_release` 绕过 §2.6 的 rel/rel_synced 计数（全仓无
+  调用，是现成旁路）；`VsyncRearm` 失败无限流、`frame_timer` 建失败无日志。
 
-- **F5 归档可被别的运行污染**：设备端结果目录只 mkdir 从不清、`poll_run` 读到任何
-  合法 summary 就收工、`archive.mkdir(exist_ok=True)` ⇒ 显式 `--run-id` 复用同一 id 时
-  会读到上一轮 summary 与旧帧。机制成立，未见实例（默认 run-id 是时间戳）。
-- **F6 `presented-route` 无新鲜度要求**：guest 的 `presentedRoute/presentedSelf/displayFps`
-  是**粘性状态**（只在序号变化时更新，置位后不回落）⇒ 头 1 秒出过图、之后宿主完全停摆
-  仍 PASS。需要的量已在 metrics 里（displayFps vs producerFps、frames），加"末段仍
-  有序列推进/比值下限"即可闭合。
-- **F7 期望路线与实跑路线同源**：`WINEHUA_SMOKE_EXPECT_ROUTE` 从合并后的 env 推导
-  ⇒ `--env WINEHUA_DISPLAY_ROUTE=wayland` 会把期望一起改掉（expected==presented），
-  归档只留合并后的 job.json，事后分不清文件里写的与 CLI 加的。
-- **F8 归档不能复盘「谁呈现的帧」**：归档没有 hilog / wine stderr / display-fps 文件
-  本体 / 宿主侧对账物，§2.10 要求的 `[GUEST-FRAMES] attach`/`stats` 只在 hilog 且不落
-  盘（缓冲几分钟）。`artifact.json` 只有 host 侧 manifest 的 payloadVersion——**无法
-  证明设备上跑的就是这份载荷**。host 侧证据落归档是下一个该做的设施项。
-- **F10 job/inline 通道不受校验护栏**：`reject_bad_backend`/`reject_unreachable_env`
-  只覆盖套件定义与 CLI `--env`；job 文件 params.env（`displayroute-notepad/rate` 的
-  inline 条目完全没有 backend 字段）直通 ⇒ 落「设备当前档位」，正是套件钉档位硬约束
-  要禁止的形态。
-- **F11 `smoke/jobs/displayroute-glx-present.json` 已是死 job**：它选的
-  `dx-glx-present-x64` 在 M2-T3 已移出 displayroute 套件 ⇒ 设备端"过滤后为空"直接
-  收尾失败。GLX 补栈为被否决方案，该 job 要么删要么改指向 `opengl-x64`（等阶段 C 收编）。
-- **F12 视觉门对 `seconds` 有隐藏下限**：固定帧只在 `duration_ms >= 2500` 且进入末
-  2 秒时写 `fixed-frame` ⇒ `seconds < 2.5` 时永远没有 fixed-frame，判定是
-  "未采集到固定帧截图"，与"渲染失败"不可区分。
+### 2.13 全景 review（2026-10-01）：跨层契约 —— 残留项
+
+**已修**：
+
+- `WINEHUA_VTEST_PRESENT` 值语义两端对齐（mesa 侧新增 `util/winehua_env.h`
+  的 `winehua_env_enabled()`：未设/空/"0" = 关；两处调用点改用它）。
+- presenter 目标表加上界与淘汰（无目标且 30s 未投帧的条目在查询路径清掉；
+  有目标的活绑定不动）。
+- 跨路线撞车加一道 id 段闸（guest X 窗口 id ≥ 0x200000，wayland proxy id 是
+  小整数 ⇒ 低于该段一律不挂）。
+- 路线真相源：`wine_child.cpp` 在"要求 x11 却没给 DISPLAY"时显式 ERR（那种
+  组合会落到 null driver，窗口全无），不再只有一行 INFO。
+- 手抄常量有检查脚本：`scripts/check-contracts.sh`（vtest WineHua 段、
+  present 页结构、display-fps 路径、guest 判定字段，共四组；做了负向验证）。
+- `presentedSelf` 的 pid 语义（见 §2.14 ⑥）。
+
+**残留（未修）**：
+
+- **路线仍无宿主侧真相源**：全库没有任何宿主 C/C++ 写 `WINEHUA_DISPLAY_ROUTE`
+  或 `DISPLAY`（只在 job env 与 ArkTS 每应用 env），默认 wayland 由
+  `wine_child.cpp` 无条件 `setenv("WAYLAND_DISPLAY", …)` 制造 ⇒ 丢了不报错。
+  现在的兜底是**判定层**：`presented-route` 用 guest 自报的 requested/presented
+  与 job 声明三方对照（§2.14）。要根治得让宿主把生效路线写进可归档的载体。
+- **帧几何 = X 窗矩形 vs 帧内容 = client rect**：2026-10-01 实测（顶层窗场景）
+  `src=960x540` 与 client rect 一致，未发现偏差；**子窗场景**是已知限制（见
+  §2.11 残留第一条）。
+- 驱动单槽 CAS 败者静默 free；`__wine_set_user_driver(NULL,…)` 在 wayland
+  init 失败时会拆掉已装的 x11drv —— 均为上游行为，未动。
+
+### 2.14 全景 review（2026-10-01）：门禁层
+
+**已全部修完（2026-10-01），逐条列改动与验收**：
+
+①**F1 用例定义加载同源**：run 侧 entries 改从下发的 job 取 suite/tests（此前
+只认 CLI `--suite` ⇒ entries 空、用例声明的判定器一条不加载、不抓帧）。
+验收：X 路线 job（`r20261001-013542`）出现 `frame: opengl-x64 captured x4`
+且三个判定器全部加载。
+②**F2 check 与 run 同源**：check 读归档 job.json 且**有 job.json 就只信它**。
+验收：`wine-vulkan-r20260930-063302` 由 FAIL 1/4 → PASS 1/1。
+③**F3 套件级 checks 取并集**（套件管覆盖、job 管 bring-up 探针）。
+④**F9 marker 归档与清理同条件**（都看 `job.displayroute`）。
+⑤**F4 全 SKIP 不再记 PASS**（无 FAIL 且有断言通过才 PASS；suite 级通过也算）。
+⑥**presented-route 的 x11 归属**改用宿主两侧事实对账：`presentedKey>>32` 与
+设备端 `tests[].pid`（运行器记录的 spawn pid）。验收：`r20261001-013542`
+`路线一致 (x11) 且归属本进程 (pid=18425)`。
+⑦**visual 对 X 路线 SKIP** 并写明原因（§2.4 判据债；不 SKIP 会变假红）。
+⑧**F5 归档污染**：归档目录非空即拒绝复用；`poll_run` 按 runId 认领 summary。
+⑨**F6 判定新鲜度**：guest 新增 `displayStallMs`（显示序列最后一次推进距结束），
+判定阈值 2500ms。**踩坑记录**：固定帧阶段（最后 2s）原 `continue` 跳过了 fps
+轮询，导致"没在观测"被算成"没在推进"（实测 stall=2978ms 而 displayed 一路
+117fps）—— 已让固定帧阶段继续观测。
+⑩**F7 期望路线取 job 声明**：`build_job` 在合并 CLI 覆盖**之前**抄下 job 文件
+的 `WINEHUA_DISPLAY_ROUTE` 并下发 `WINEHUA_SMOKE_DECLARED_ROUTE`；判定层在
+"呈现 ≠ 声明"时 FAIL（CLI 覆盖可以改实跑，改不掉声明）。
+⑪**F10 job/inline 护栏**：job 文件的 `params.env` 与 inline 条目现在也过
+`reject_unreachable_env` / `reject_bad_backend`。
+⑫**F11 死 job**：`smoke/jobs/displayroute-glx-present.json` 已删（GLX 为被否决
+方案，用例早已移出套件）。
+⑬**F12 视觉门的 seconds 下限**：run 前拦（声明 visual 且 seconds<2.5 直接 die）；
+判定侧在 fixedFrame 缺失时把"时长不足"写进失败信息。
+⑭**F8 归档可复盘"谁呈现的帧"**：新增 `device-evidence/`（显示序列文件本体 +
+wine stderr + vtest present 日志），已在每轮 run 落盘 —— 本次多项验收证据就取自
+它（present 日志的 size 序列、guest stderr 的 resized 行）。
+
+**新发现（本轮实测，未修）**：§2.6 的不变量 `rel_unsynced_presented` 在 X 路线
+每轮稳定出现 3 次（resize 与不 resize 两轮都复现，且计数不随时间增长 ⇒ 集中在
+启动期；wayland 路线此前实测为 0）。判定逻辑见 `display/ohos_buffer.cpp`
+`ConsumerReleaseQueueSlot`：该格交出去后"上过屏但无 GPU 同步"。**待查方向**：
+启动期的前若干帧（宿主挂接前后的 in-flight 归还）是否走了一条没有 glFinish 的
+归还路径；若是，需要在 present 路径补同步点或调整归还时机。
 
 
 ### 3.1 hdc -b 热更后必须 sha256 对账
