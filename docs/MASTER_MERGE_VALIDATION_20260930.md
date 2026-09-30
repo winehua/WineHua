@@ -60,6 +60,32 @@ wayland-scanner 落位项目内 host-tools、hdc 多目标定向修复、显示�
   `shell-dialogs` —— 带 `--desktop-mode virtual` 冷启动定向复测（runId
   `r20260930-211942`，10/10）仍全部失败，注入链在该支线未打通，与桌面模式无关
 
+### 其中 15/31 在合并前就有"保持 FAIL"的书面记录（2026-09-30 补证）
+
+`docs/engineering/testing-programs.md`（随 master 合入）中以下用例带
+**2026-09-26 实测定性、保持 FAIL** 的现状注记——即 master 自己的线在本次合并前
+就是红的（多为"用例先红合法"的收敛项，等桥/回灌/回填能力落地后转绿）：
+
+| 用例 | 文档记录的失败原因 | 本轮失败形态 |
+| --- | --- | --- |
+| input-capture ×2 | wine 上游 capture 跨 input 路由限制（server/queue.c） | 窗外 move=0，一致 |
+| reg-wow64 ×2 | HKCU 的 WOW64 视图隔离不生效 | 读回 32 位值，一致 |
+| toolhelp-snapshot x64 | 父 pid 恒 0 | parent=0，一致 |
+| screen-bitblt ×2 | 捕获回灌缺失，"回灌落地前应 FAIL" | hit=30 miss=30，一致 |
+| win-layered ×2 | 均匀 alpha 被忽略，"桥实现前应 FAIL" | alpha 读回全 FF，一致 |
+| e2e-drag ×2 | xdg_toplevel.move 接管后无终态回填通道 | dx=0，一致 |
+| audio-waveout ×2 | waveOutGetPosition 恒 0（mmdevapi padding 盲区） | pos 0→0，一致 |
+| d3d-smoke ×2 | d3d10 缺口（master 定性为 box64 执行崩溃） | hmod=0 加载失败（FEX 线形态不同，同缺口域） |
+
+其余 16 例（seh ×2、wgl-basic ×2、win-zorder ×2、d3d9-offscreen ×2、
+input-relative ×2、dinput-mouse ×2、shell-dialogs ×2、mem-virtual-x64、
+toolhelp-x86）：master 线（box64 引擎）能过、feature 线（FEX/ARM64EC）首次
+运行即红。这套测试在本支线此前不存在，无"合并前成绩"可比；失败子系统
+（异常翻译/WGL/z 序/离屏像素/raw 输入/dinput 缓冲/对话框）的代码在
+backup..HEAD diff 中均为零改动，属两线引擎差异被新测试首次暴露。
+基础注入链本身是通的：input-mouse、input-keyboard、e2e-click、e2e-menu、
+win-basic、win-owned 本轮全 PASS。
+
 ## 环境备注
 
 - smoke.py 需在 Windows python 下跑（WSL python + Windows hdc.exe 的本地路径拼接损坏）；
