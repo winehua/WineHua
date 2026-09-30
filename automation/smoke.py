@@ -1277,8 +1277,6 @@ def build_parser() -> argparse.ArgumentParser:
                      help="冷启动时让整个 Wine 会话默认走 Create NCP（单次请求可覆盖）")
     run.add_argument("--phone-direct-fork-server", action="store_true",
                      help="手机冷启动时预建 Direct fork server；用 WINEHUA_PHONE_DIRECT_FORK=1 选用")
-    run.add_argument("--desktop-mode", choices=("fusion", "virtual"), default="",
-                     help="仅本次冷启动覆盖桌面模式；测试切换前须先 force-stop App")
     run.add_argument("--desktop-renderer", choices=("egl", "vulkan"), default="",
                      help="冷启动时选择虚拟桌面合成器；vulkan 仅用于 Direct 桌面验证")
     run.set_defaults(func=cmd_run)
