@@ -1,0 +1,46 @@
+From f6492f848273ae3f4220151c8049e1202669cd49 Mon Sep 17 00:00:00 2001
+From: hackeris <hackeris@qq.com>
+Date: Fri, 25 Sep 2026 22:44:05 +0800
+Subject: [PATCH] fix(winewayland): 带 owner 的纯装饰浮层不再判为受管, 修企业微信黑窗
+
+程序常以「内容窗口 + 外扩一圈的装饰窗口」自绘阴影/边框（企业微信登录窗
+PerryShadowWnd: owner=内容窗, style 含 WS_POPUP|WS_SYSMENU, exstyle 含
+LAYERED|NOACTIVATE|TOOLWINDOW）。上游 is_window_managed 的
+"popup with sysmenu == caption" 判据把这类窗判为受管, owner 关系被
+&& 短路掉, 每个装饰层各自成为独立 xdg_toplevel 叠在主界面上, 呈纯黑窗。
+
+对「显式设了 owner 且 LAYERED+NOACTIVATE+TOOLWINDOW 三件套齐全」的窗口
+返回 FALSE, 走上游既有的 owner_hint -> wl_subsurface 通路; 限定有 owner
+是为了不误伤无主的浮动面板。winex11.drv 的同名函数保持上游原样。
+
+同源修复已进 master 的 thirdparty/wine (f6492f8); 本补丁把它移植到
+wine-valve 固定基线 4d3ec031, 由 build_wine.sh 幂等应用。
+---
+ dlls/winewayland.drv/window.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 96b3aa9821c..fad103362fe 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -386,6 +386,18 @@ static BOOL is_window_managed(HWND hwnd, UINT swp_flags, BOOL fullscreen)
+     /* child windows are not managed */
+     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+     if ((style & (WS_CHILD|WS_POPUP)) == WS_CHILD) return FALSE;
++    /* WineHua: 显式设了 owner 的装饰浮层 (分层 + 不激活 + 工具窗) 不是用户感知的
++     * 独立窗口。程序用这类窗口画阴影/外框, Windows 下靠 DWM 按 z 序合成才看起来
++     * 是一体; X11 下靠 WM 识别 WS_EX_TOOLWINDOW 来特殊处理。Wayland 的
++     * xdg_toplevel 没有"工具窗口"概念, 唯一能表达依附关系的就是下面调用处的
++     * owner_hint → wl_subsurface 路径。这类窗口若在这里因 WS_SYSMENU 之类判为
++     * 受管 (企业微信阴影窗口 style 含 WS_POPUP|WS_SYSMENU 即命中), 调用处的
++     * `&&` 会短路丢掉 owner_hint, 装饰窗口就各自变成一个独立顶层窗口。
++     * 限定"有 owner"是为了不误伤无主的浮动面板/迷你窗口等真正独立的窗口。 */
++    ex_style = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
++    if ((ex_style & (WS_EX_LAYERED|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW)) ==
++        (WS_EX_LAYERED|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW) &&
++        NtUserGetWindowRelative(hwnd, GW_OWNER)) return FALSE;
+     /* activated windows are managed */
+     if (!(swp_flags & (SWP_NOACTIVATE|SWP_HIDEWINDOW))) return TRUE;
+     if (hwnd == get_active_window()) return TRUE;
+--
+2.43.0

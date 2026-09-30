@@ -38,6 +38,11 @@ ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0008-win32u-surface-region-lock-o
     "Surface region update without USER lock inversion"
 ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0009-direct-ohos-wsi-and-resize-smoke.patch" \
     "Direct OHOS WSI and running-window resize smoke"
+# Owner-attached pure decoration floats (WeCom shadow windows) must take the
+# owner subsurface path instead of independent xdg_toplevels. Master carries
+# the same change in thirdparty/wine f6492f8.
+ensure_wine_patch "$SCRIPT_DIR/../patches/wine/0010-winewayland-decoration-owner-floating.patch" \
+    "Owner-attached decoration float not managed"
 
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
