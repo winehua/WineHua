@@ -620,6 +620,15 @@ X 面节点的 scene damage 按**可见区域**算：被完全遮挡的窗口不
 **协议**：视觉判定 FAIL 时先看归档 `frames/` 再定性——设备端 `result-json` 为 PASS
 且帧内容不是固定帧相位 ⇒ 采集面问题，重跑判定，不得记为回归红项。
 
+### 3.6 push 前应用在跑会删不掉 drive_c/smoke
+
+实测（2026-10-01，连跑两轮）：`smoke.py run` 的 push 阶段先删设备上的
+`files/.wine/drive_c/smoke` 再校验，应用进程活着时占用该目录 ⇒ 删除失败、
+`remove verification failed (still exists)`，本轮直接不跑（不是设备故障）。
+**协议**：出现该报错时先 `aa force-stop app.hackeris.winehua`（或直接重跑——
+push 前会重新拉起应用并重试），不要在设备上手工 `rm` 后当作已修。同一次连跑的
+上一轮能过是因为那时目录没被持有，属于时序，不是版本差异。
+
 ## 4. 前置条件（场景切换才触发）
 
 - **沙箱安全审计**：wlroots/xserver 补丁含三处在桌面 Linux 语境"看起来
