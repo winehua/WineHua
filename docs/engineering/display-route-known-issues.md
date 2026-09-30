@@ -43,7 +43,10 @@ release 与 press 配对所有权）。
 
 T5 起挂起：脚本末两键 H/I 四轮真机 2 轮全成、1 轮只有 "h"、1 轮全无；
 注入侧日志逐字节同形，差异在 wine 进程内部非确定路径。嫌疑：① §1.5
-的单槽机制；② caret blink/damage 竞态；③ 模态关闭后 edit 重聚焦时序。
+的单槽机制；② caret blink/damage 竞态；③ 模态关闭后 edit 重聚焦时序；
+④ **记事本的「错误」对话框抢焦点**（见 §2.8：该对话框是 harness 参数被
+当文件名导致的，它一生出就占焦点，注入的键/点击落点随之改变 —— 这能同时
+解释"逐字节同形却结果不同"，因为差异在对话框出现的时序而非注入侧）。
 **排查武器已就位**：`smoke/jobs/displayroute-notepad.json` 重放自带
 `WINEHUA_WINEDEBUG=+win,+x11drv,+event`，复现时 wine_stderr 有逐键完整
 轨迹（T5 当时缺的就是它）——一旦复现，哪一跳吃键有据可查。
@@ -174,6 +177,33 @@ generation 并在 `frame_set` 里核对（或直接存记录指针 + generation 
 **先装仪器再修**：绑定创建时存该记录的 generation，每拍比对不一致即计数 + 打
 日志（等价于一个不变量检查器），跑一轮有窗口 churn 的用例（notepad 类多 helper
 窗口场景最可能命中）看它是否真会触发。
+
+### 2.8 notepad 类用例的「错误」对话框（根因已定位，2026-09-30）
+
+**现象**：跑 `displayroute-notepad`（内联 `m1t5-notepad`）或 displayroute 套件的
+`dx-notepad`，屏幕/预览框里会弹出一个标题为**「错误」**的小对话框；用例随后
+90s 超时、结果文件不写出（X 与 wayland 两条路线同形，见验收报告红项表）。
+
+**根因（源码 + trace 双向对上）**：用例把 harness 参数交给了**真实的内置记事本** ——
+启动行是 `C:\smoke\x64\notepad.exe --automation --run-id … --result …`（guest stderr
+可查），而 payload 的 `notepad.exe` 是 wine 内置记事本（`programs/notepad/` 无任何
+automation 支持）⇒ 记事本把 `--automation` 等**当文件名**逐个打开、失败，走到
+`programs/notepad/main.c:645-650` 的 `MessageBoxW(hMainWnd, …, STRING_ERROR, …)`
+⇒ 弹「错误」。X 侧 trace 吻合：`#32770` 对话框、`parent=0x10058`（记事本窗）、
+384×319@176,161、`set_window_text 0x10078, L"\9519\8bef"`（=「错误」）。
+
+**修法（二选一，未做）**：① 用例换成 payload 里的自动化程序（不吃文件名的宿主），
+或 ② 保持真记事本但改由宿主注入驱动、不再传 `--automation` 类参数。修掉它
+同时消掉 §2.1 嫌疑④与验收报告那条红项。
+
+**未决观察（同日实测边界，别再重复这一步）**：跑该用例时观察到「对话框画面持续
+闪烁」。**未复现**：把当天 4 次运行的 guest 日志分段核对，每次运行该对话框
+**只创建 1 次、销毁 1 次**（无窗口管理层高频循环），存活期 ~25s 内 `nc_paint` 5 次、
+`show_window` 2 次（≈1Hz 量级）；主机侧 `snapshot_display` 最快 ~1.2s/帧，36 帧
+连拍（覆盖 45s）里预览框静止、未拍到该对话框 ⇒ **采样分辨力不足以定性**。
+**要定性就装帧级仪器**：合成器收到标记后把连续 N 帧输出落盘（PNG/JPEG），
+再比对帧间差异；在那之前不要按「显示链缺陷」修 —— 现有一切证据都指向它是
+用例自身的对话框，而非输出链在循环。
 
 ## 3. 操作协议（必须遵守，违反即隐性故障）
 
