@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <native_window/external_window.h>
@@ -142,7 +143,9 @@ private:
     int virglIpcError_ = 0;
     VirglHostConfig virglHostConfig_;
     uint64_t virglHostConfigHash_ = 0;
-    std::unordered_set<uint64_t> zeroCopyAttachedSurfaces_;
+    /* key → 已挂接的生产窗: 幂等判定要按**目标身份**做, 只看 key 在不在会把
+     * "另一个消费者先挂上了"误报成成功 (见 AttachZeroCopyTarget 注释)。 */
+    std::unordered_map<uint64_t, OHNativeWindow*> zeroCopyAttachedSurfaces_;
 };
 
 } // namespace winehua

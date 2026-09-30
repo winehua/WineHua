@@ -58,6 +58,8 @@ struct Binding {
     uint64_t surfaceKey = 0;    /* 宿主路由键: (clientPid << 32) | surfaceId */
     uint32_t clientPid = 0;
     uint32_t surfaceId = 0;     /* = X window id (私有面低 32 位) */
+    uint64_t generation = 0;    /* 挂接那一刻该窗**记录**的身份 (见 ohos_output.h);
+                                 * 只比 id 的判据会被同 id 新窗骗过 (§2.7) */
     OH_NativeImage *image = nullptr;
     /* 引用归 OH_NativeImage (AcquireNativeWindow 的引用), 本模块不另持;
      * 宿主侧的引用由 broker 按 kSurfaceNativeObjectReference 自理。 */
@@ -74,7 +76,8 @@ uint64_t g_lastAttachPollNs = 0;
 uint64_t g_lastStatsNs = 0;
 uint64_t g_totalFrames = 0;
 uint64_t g_destroyedWindows = 0; /* 窗口销毁 → 解绑次数 */
-uint64_t g_staleFrames = 0;      /* 取到帧时窗口已失效 → 丢弃次数 */
+uint64_t g_reusedWindows = 0;    /* 同 id 换记录 (§2.7 竞态) → 解绑次数 */
+uint64_t g_staleFrames = 0;      /* 取到帧时记录已失效 → 丢弃次数 */
 uint64_t g_orphanFrames = 0;     /* 窗口在册但帧无处可挂 (锚不可用) → 丢弃次数 */
 
 uint64_t NowNs()
@@ -92,7 +95,12 @@ void DropBinding(Binding &b, const char *reason)
 {
     wl_ohos_output_client_frame_clear(b.surfaceId);
     if (b.surfaceKey)
+    {
+        /* ready 先撤再退订 (与 wayland 侧 zc_bridge 的次序一致): guest 下一拍
+         * 就不会再往一个正在消失的目标投帧。 */
+        GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(b.surfaceKey, false);
         GraphicsBroker::GetInstance().DetachZeroCopyTarget(b.surfaceKey);
+    }
     if (b.image)
         OH_NativeImage_Destroy(&b.image);
     b.producerWindow = nullptr;
@@ -108,9 +116,10 @@ void PullFrame(Binding &b)
     struct wlr_buffer *frame;
     if (!b.image)
         return;
-    /* 销毁即失效的第二道闸 (第一道是本拍开头的 sweep): 窗口已不在册的帧
-     * 一律不挂 —— 同 id 可能已被新窗占用。 */
-    if (!wl_ohos_output_client_xwindow_alive(b.surfaceId))
+    /* 销毁即失效的第二道闸 (第一道是本拍开头的 sweep): 窗口已不在册、或该 id
+     * 已被**另一条记录**占用 (generation 变了) 的帧一律不挂。 */
+    uint64_t gen = 0;
+    if (!wl_ohos_output_client_xwindow_generation(b.surfaceId, &gen) || gen != b.generation)
     {
         frame = wl_ohos_consumer_buffer_acquire(b.image);
         if (frame)
@@ -154,8 +163,14 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
     /* 锚可用 = 窗口在册且 X 面已 associate (帧节点要挂在那个位置) */
     if (!wl_ohos_output_client_frame_anchor(s.surfaceId, &x, &y, &w, &h))
         return;
+    /* 记下这条窗口**记录**的身份 (不是 id): 之后每拍比对, id 被复用/窗口被
+     * 销毁都会让 generation 对不上 (见 sweep 与 PullFrame 的两道闸)。 */
+    uint64_t generation = 0;
+    if (!wl_ohos_output_client_xwindow_generation(s.surfaceId, &generation))
+        return;
 
     b.surfaceKey = s.surfaceKey;
+    b.generation = generation;
     b.clientPid = s.clientPid;
     b.surfaceId = s.surfaceId;
     b.flipVertical = s.vulkan ? 0 : 1;
@@ -198,6 +213,11 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
                 "kind=%{public}s flip=%{public}d",
                 static_cast<unsigned long long>(b.surfaceKey), b.surfaceId, b.clientPid,
                 s.width, s.height, w, h, x, y, s.vulkan ? "vulkan" : "gl", b.flipVertical);
+    /* 挂好目标 = 契约里的 ready (host has a target)。X 路线此前**从不发布**
+     * ready ⇒ guest 侧探针恒假、每 300 帧一条「host has no present target」的
+     * 假告警，而帧其实正在上屏 (review 2026-10-01)。wayland 侧由 zc_bridge
+     * 的 Activate/revoke 发布，两条路线语义一致: 宿主有目标即 ready。 */
+    GraphicsBroker::GetInstance().SetZeroCopySurfaceReady(b.surfaceKey, true);
     g_bindings.emplace(b.surfaceId, b);
 }
 
@@ -207,11 +227,14 @@ void LogStats(uint64_t nowNs)
         return;
     const uint64_t frames = g_totalFrames;
     const uint64_t destroyed = g_destroyedWindows;
+    const uint64_t reused = g_reusedWindows;
     const uint64_t stale = g_staleFrames;
     const uint64_t orphan = g_orphanFrames;
-    static uint64_t lastFrames = 0, lastDestroyed = 0, lastStale = 0, lastOrphan = 0;
+    static uint64_t lastFrames = 0, lastDestroyed = 0, lastReused = 0,
+                    lastStale = 0, lastOrphan = 0;
     const bool changed = frames != lastFrames || destroyed != lastDestroyed ||
-                         stale != lastStale || orphan != lastOrphan;
+                         reused != lastReused || stale != lastStale ||
+                         orphan != lastOrphan;
     if (!changed && g_bindings.empty())
     {
         g_lastStatsNs = nowNs;
@@ -219,6 +242,7 @@ void LogStats(uint64_t nowNs)
     }
     lastFrames = frames;
     lastDestroyed = destroyed;
+    lastReused = reused;
     lastStale = stale;
     lastOrphan = orphan;
     g_lastStatsNs = nowNs;
@@ -230,13 +254,15 @@ void LogStats(uint64_t nowNs)
                                    &relUnrendered);
     OH_LOG_INFO(LOG_APP,
                 "[GUEST-FRAMES] stats bindings=%{public}u frames=%{public}llu "
-                "destroyed_windows=%{public}llu stale_frames=%{public}llu "
+                "destroyed_windows=%{public}llu reused_windows=%{public}llu "
+                "stale_frames=%{public}llu "
                 "orphan_frames=%{public}llu scene_frames=%{public}u "
                 "rel=%{public}llu rel_synced=%{public}llu "
                 "rel_unsynced_presented=%{public}llu rel_unrendered=%{public}llu",
                 static_cast<uint32_t>(g_bindings.size()),
                 static_cast<unsigned long long>(frames),
                 static_cast<unsigned long long>(destroyed),
+                static_cast<unsigned long long>(reused),
                 static_cast<unsigned long long>(stale),
                 static_cast<unsigned long long>(orphan),
                 wl_ohos_output_frames_in_scene(),
@@ -257,13 +283,30 @@ extern "C" void display_guest_frames_tick(void)
     if (!wl_ohos_egl_active())
         return;
 
-    /* 1) 销毁即失效: 窗口不在册 → 摘帧 + 解绑。同 id 的新窗是另一条在册记录,
-     *    老绑定不会被复用到它上面 (查表按 window_id 每次遍历, 不缓存指针)。 */
+    /* 1) 销毁即失效: 窗口不在册 **或该 id 已换记录** → 摘帧 + 解绑。
+     *    判据是记录身份 (generation) 而不是 id: 同 id 复用窗口这条时序
+     *    (§2.7) 下, 只比 id 会让老绑定被新窗"继承" —— 老 guest 的最后一帧
+     *    落进新窗且无任何计数。改成按记录判之后, g_reusedWindows 就是 §2.7
+     *    那道竞态的真仪器, 命中即判定为失效并留痕。 */
     for (auto it = g_bindings.begin(); it != g_bindings.end();)
     {
-        if (!wl_ohos_output_client_xwindow_alive(it->first))
+        uint64_t gen = 0;
+        const bool alive =
+            wl_ohos_output_client_xwindow_generation(it->first, &gen) != 0;
+        if (!alive || gen != it->second.generation)
         {
-            DropBinding(it->second, "xwindow destroyed");
+            if (alive)
+            {
+                /* 同 id 新窗: 老绑定按记录身份失效 (这正是 §2.7 要的处置) */
+                ++g_reusedWindows;
+                OH_LOG_WARN(LOG_APP,
+                            "[GUEST-FRAMES] xwindow id reused xwin=%{public}u "
+                            "old_gen=%{public}llu new_gen=%{public}llu — binding dropped",
+                            it->first,
+                            static_cast<unsigned long long>(it->second.generation),
+                            static_cast<unsigned long long>(gen));
+            }
+            DropBinding(it->second, alive ? "xwindow id reused" : "xwindow destroyed");
             ++g_destroyedWindows;
             it = g_bindings.erase(it);
         }
@@ -315,6 +358,13 @@ extern "C" void display_guest_frames_tick(void)
             {
                 if (s.attached || !s.surfaceId)
                     continue;
+                /* 跨路线撞车再压一层 (review P4): presenter 报的面没有路线标签,
+                 * 唯一把关是"id 恰好等于在册 X 窗号"。X 资源号 = (client << 22) |
+                 * local, guest 窗口的 client 号 ≥ 1 ⇒ id ≥ 0x200000; 而 wayland
+                 * 的 wl_proxy id 是小整数。低于该段的一律不是 guest 的 X 窗
+                 * (X 服务端自有 id 段), 直接跳过, 不去赌撞号。 */
+                if (s.surfaceId < 0x200000)
+                    continue;
                 if (g_bindings.find(s.surfaceId) != g_bindings.end())
                     continue;
                 TryAttach(s);
@@ -332,9 +382,11 @@ extern "C" void display_guest_frames_shutdown(void)
     g_bindings.clear();
     OH_LOG_INFO(LOG_APP,
                 "[GUEST-FRAMES] shutdown frames=%{public}llu destroyed_windows=%{public}llu "
-                "stale_frames=%{public}llu orphan_frames=%{public}llu",
+                "reused_windows=%{public}llu stale_frames=%{public}llu "
+                "orphan_frames=%{public}llu",
                 static_cast<unsigned long long>(g_totalFrames),
                 static_cast<unsigned long long>(g_destroyedWindows),
+                static_cast<unsigned long long>(g_reusedWindows),
                 static_cast<unsigned long long>(g_staleFrames),
                 static_cast<unsigned long long>(g_orphanFrames));
 }

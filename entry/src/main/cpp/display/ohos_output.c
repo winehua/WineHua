@@ -83,6 +83,10 @@ struct wl_ohos_output {
  * destroy 监听防悬垂。 */
 struct ohos_client_surface {
     struct wlr_xwayland_surface *xs;
+    /* 记录身份: X window id 会回收复用, 只比 id 的失效判据会被"同 id 新窗"
+     * 骗过 (§2.7)。绑定方存挂接时的 generation, 每拍比对 —— 这就是 §2.7
+     * 要求的"按记录身份而不是按 id"的仪器。 */
+    uint64_t generation;
     struct wl_list link; /* g_clients */
     struct wlr_scene_surface *scene_surf; /* M1-T3: scene 节点 */
     struct wlr_scene_buffer *frame_node;  /* M2-T5: guest Vulkan 帧节点 (X 面之上) */
@@ -96,6 +100,7 @@ struct ohos_client_surface {
 
 static struct wl_ohos_output g_out;
 static struct wl_list g_clients;
+static uint64_t g_clientGeneration; /* 只增: 每条 client surface 记录一个身份 */
 
 static void DumpSceneRoot(const char *why); /* 诊断用, 见下方定义 */
 
@@ -827,6 +832,7 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     if (!c)
         return;
     c->xs = xs;
+    c->generation = ++g_clientGeneration;
     c->destroy.notify = ClientDestroy;
     wl_signal_add(&xs->events.destroy, &c->destroy);
     c->request_configure.notify = ClientRequestConfigure;
@@ -926,6 +932,16 @@ int wl_ohos_output_client_frame_anchor(uint32_t xwindow, int *x, int *y, int *w,
 int wl_ohos_output_client_xwindow_alive(uint32_t xwindow)
 {
     return FindClientByWindow(xwindow) != NULL;
+}
+
+int wl_ohos_output_client_xwindow_generation(uint32_t xwindow, uint64_t *generation)
+{
+    struct ohos_client_surface *c = FindClientByWindow(xwindow);
+    if (!c)
+        return 0;
+    if (generation)
+        *generation = c->generation;
+    return 1;
 }
 
 int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
@@ -1122,6 +1138,14 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
                                                        800, 600);
     OHLOG("SET_BUFFER_GEOMETRY rc=%{public}d", rc);
+    /* 超时必须显式设 0: SDK 默认 3000ms, 而本窗口的 RequestBuffer 跑在**帧
+     * 时钟的 event loop 线程**上 —— 消费者(预览 XComponent)不还槽位时会把
+     * 整条链冻结 3s (scene 不提交、Xwayland 包不 flush、注入队列不 drain),
+     * 表观与 §2.3 的"停滞"同形，排查容易误判成 box64/冷启。两个 presenter
+     * 的窗口都设了 0 (virgl_surface_presenter.cpp / venus_surface_presenter.cpp)，
+     * 这里此前漏了。 */
+    int32_t rcTimeout = OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, 0);
+    OHLOG("SET_TIMEOUT(0) rc=%{public}d", rcTimeout);
 
     g_out.commit_listener.notify = HandleOutputCommit;
     wl_signal_add(&g_out.output->events.commit, &g_out.commit_listener);

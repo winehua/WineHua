@@ -53,6 +53,11 @@ int wl_ohos_output_client_frame_anchor(uint32_t xwindow, int *x, int *y, int *w,
 // 重新在册, 老帧必须在这条缝里丢弃 (不能投进新窗)。
 int wl_ohos_output_client_xwindow_alive(uint32_t xwindow);
 
+// 记录身份查询: 窗口 id 会被 X 复用, 只比 id 的失效判据会被"同 id 新窗"骗过
+// (§2.7)。绑定方在挂接时存下 generation, 之后每拍比对 —— 不一致即该 id 已换
+// 记录, 绑定失效。返回 0 = 该 id 当前不在册。
+int wl_ohos_output_client_xwindow_generation(uint32_t xwindow, uint64_t *generation);
+
 // 把一帧挂到该窗 (首次调用建节点并置顶于 X 面之上; 旧帧随节点解锁归还)。
 // 返回 0 = 窗口不可挂 (不在册 / 锚不可用) —— 调用方必须自行丢弃 buffer。
 // flip_vertical: 帧内容行序修正, 按 presenter 目标类型定 (实测依据:

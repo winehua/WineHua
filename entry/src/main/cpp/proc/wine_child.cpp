@@ -497,6 +497,15 @@ extern "C" void Main(NativeChildProcess_Args args)
     {
         unsetenv("WAYLAND_DISPLAY");
         OH_LOG_INFO(LOG_APP, "[WineChild] display route=x11 (WAYLAND_DISPLAY removed)");
+        /* 路线唯一真相源就是这个 env (review P3): 它丢了不报错、静默落 wayland,
+         * 而两个消费者都在跑 ⇒ displayFps>0 不构成路线证据 (§2.10 实例)。这里
+         * 至少把"要求 x11 却没给 DISPLAY"这种自相矛盾的组合喊出来 —— 那种情况
+         * 下 win32u 的驱动选择会落到 null driver, 窗口全无。 */
+        const char *display = getenv("DISPLAY");
+        if (!display || !display[0])
+            OH_LOG_ERROR(LOG_APP,
+                         "[WineChild] route=x11 但 DISPLAY 未设: win32u 将无驱动可选 "
+                         "(预期 null driver, 窗口不会出现) — 检查 __env/DISPLAY 注入");
     }
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix

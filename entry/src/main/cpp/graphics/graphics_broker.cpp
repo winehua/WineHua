@@ -265,8 +265,11 @@ void GraphicsBroker::ResetVirglInProcessSurfacesLocked()
 {
     auto resetFn = reinterpret_cast<VirglInProcessResetFn>(virglInProcessReset_);
     if (resetFn) resetFn();
-    for (uint64_t surfaceKey : zeroCopyAttachedSurfaces_)
+    for (const auto& [surfaceKey, boundWindow] : zeroCopyAttachedSurfaces_)
+    {
+        (void)boundWindow;
         unlink(ZeroCopyReadyPath(surfaceKey).c_str());
+    }
     zeroCopyAttachedSurfaces_.clear();
 }
 
@@ -512,13 +515,34 @@ bool GraphicsBroker::AttachZeroCopyTarget(uint64_t surfaceKey,
         return false;
 
     std::lock_guard<std::mutex> lock(virglIpcMutex_);
-    if (zeroCopyAttachedSurfaces_.count(surfaceKey)) return true;
+    /* 幂等按**目标身份**判，不能只看 key 在不在（review 2026-10-01）: 两个
+     * 消费者（X 路线 display_guest_frames / wayland 渲染器）的"查询→挂接"
+     * 之间有 TOCTOU 窗口，后到者曾拿到"已挂接 ⇒ return true"的假成功，而
+     * presenter 里的生产窗仍是先到者的 ⇒ 它此后一帧都收不到，日志却显示挂接
+     * 成功。同窗重挂 = 真幂等；换窗重挂 = 目标已变，重新下发（后到者胜）并
+     * 留痕 —— 拒绝会让合法重建路径永久卡死，静默接受则正是要修的那种假成功。 */
+    auto bound = zeroCopyAttachedSurfaces_.find(surfaceKey);
+    if (bound != zeroCopyAttachedSurfaces_.end())
+    {
+        if (bound->second == producerWindow)
+        {
+            OH_LOG_INFO(LOG_APP,
+                        "[VIRGL-ZC][MAIN] attach idempotent key=%{public}llu window=%{public}p",
+                        static_cast<unsigned long long>(surfaceKey),
+                        static_cast<void*>(producerWindow));
+            return true;
+        }
+        OH_LOG_WARN(LOG_APP,
+                    "[VIRGL-ZC][MAIN] attach retarget key=%{public}llu old=%{public}p new=%{public}p",
+                    static_cast<unsigned long long>(surfaceKey),
+                    static_cast<void*>(bound->second), static_cast<void*>(producerWindow));
+    }
     uint32_t flags = vulkanPresentMode_.load(std::memory_order_acquire)
         ? virgl_ipc::kSurfaceVulkan : 0;
     if (virglServerUsesInProcess_.load(std::memory_order_acquire))
         flags |= virgl_ipc::kSurfaceNativeObjectReference;
     if (!SendVirglTargetLocked(surfaceKey, producerWindow, framePeriodNs, flags)) return false;
-    zeroCopyAttachedSurfaces_.insert(surfaceKey);
+    zeroCopyAttachedSurfaces_[surfaceKey] = producerWindow;
     return true;
 }
 
@@ -683,8 +707,11 @@ void GraphicsBroker::ShutdownVirglIpc()
     }
     virglIpcConfigured_ = false;
     virglIpcCallbackComplete_ = false;
-    for (uint64_t surfaceKey : zeroCopyAttachedSurfaces_)
+    for (const auto& [surfaceKey, boundWindow] : zeroCopyAttachedSurfaces_)
+    {
+        (void)boundWindow;
         unlink(ZeroCopyReadyPath(surfaceKey).c_str());
+    }
     zeroCopyAttachedSurfaces_.clear();
 }
 

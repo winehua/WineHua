@@ -41,7 +41,14 @@ extern "C" int winehua_display_fps_publish(uint32_t surface_id, uint64_t sequenc
         static_cast<unsigned long long>(sequence), fps, surface_id,
         route && route[0] ? route : "-",
         static_cast<unsigned long long>(surface_key));
-    std::snprintf(tempPath, sizeof(tempPath), "%s.tmp.%d", kPath, getpid());
+    /* 临时名必须逐次唯一: 同进程的发布者有多个 (X 路线合成器每秒一次 +
+     * wayland 渲染器每个 toplevel 一个, 二者已确认同进程共存)。曾经用
+     * pid+对象地址, 2026-10-01 改成仅 pid ⇒ 两个发布者可同时 O_TRUNC 同一个
+     * 临时文件, guest 可能读到空行/半行, 或 rename 失败致序号不推进
+     * (调用方按返回值决定是否推进) ⇒ displayed 门假失败。计数器保证唯一。 */
+    static std::atomic<unsigned> tempSeq{0};
+    std::snprintf(tempPath, sizeof(tempPath), "%s.tmp.%d.%u", kPath, getpid(),
+                  tempSeq.fetch_add(1, std::memory_order_relaxed));
 
     const int fd = payloadLength > 0 && payloadLength < static_cast<int>(sizeof(payload))
         ? open(tempPath, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;

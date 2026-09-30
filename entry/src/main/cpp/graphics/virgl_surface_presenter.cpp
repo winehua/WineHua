@@ -712,6 +712,19 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         winehua::virgl_ipc::SurfaceQueryReply reply;
         const uint64_t nowUs = NowUs();
+        // 目标表此前无上界、无淘汰 (review P5): `surfaces_[key]` 在**首帧且无
+        // 目标**时就建条目, 唯一 erase 是 Detach ⇒ 反复建窗的 guest 会把表
+        // 越撑越大, 从未被 detach 的条目 (投了帧就死掉的进程) 永久残留。
+        // 查询路径被两个消费者每 100~200ms 调一次, 在这里顺带淘汰: 无目标且
+        // 30s 内没再投帧的条目 = 死条目。**不淘汰有目标的**: 那是活着的绑定。
+        for (auto it = surfaces_.begin(); it != surfaces_.end();)
+        {
+            const Entry& entry = it->second;
+            if (!entry.target && nowUs - entry.lastPresentUs > 30000000)
+                it = surfaces_.erase(it);
+            else
+                ++it;
+        }
         std::vector<const Entry*> candidates;
         candidates.reserve(surfaces_.size());
         for (const auto& [surfaceKey, entry] : surfaces_)
@@ -785,7 +798,9 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable targetCondition_;
-    std::unordered_map<uint64_t, Entry> surfaces_;
+    /* mutable: Query() 是逻辑上的读操作, 但顺带淘汰死条目 (见 Query 注释) ——
+     * 表本身是带锁的内部缓存, 不是对外状态。 */
+    mutable std::unordered_map<uint64_t, Entry> surfaces_;
     std::unordered_map<uint64_t, uint64_t> surfaceGenerations_;
     // 仅存 venus (has Vk device) 目标; 类型为通用 present_target 接口
     std::vector<std::unique_ptr<PresentTarget>> retiredVenusTargets_;
