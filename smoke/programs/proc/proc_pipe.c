@@ -10,7 +10,9 @@
 
 #define PAYLOAD_SIZE (64 * 1024)
 
-static DWORD WINAPI named_server(LPVOID arg)
+/* _beginthreadex_proc_type 是 unsigned int (*)(void *)；DWORD WINAPI 签名在新
+ * llvm-mingw 下因返回类型/调用约定不匹配直接报错。 */
+static unsigned int __stdcall named_server(void *arg)
 {
     char name_pipe[] = "\\\\.\\pipe\\winehua_t_pipe_srv";
     char buffer[4096];
