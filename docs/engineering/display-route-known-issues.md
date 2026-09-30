@@ -20,6 +20,20 @@ xclient_child 窗口摆位耦合）、`SmokeDevPanel.ets`（4:3 aspectRatio）�
 率参数化设计单一来源（ohos_output 导出查询，ETS 侧从配置/ready 标记
 读），不要现在单独修——M2 改分辨率还得再动一次。
 
+**现状清单（2026-10-01 复核，按符号记避免行号漂移）**：
+
+| 层 | 位置 | 内容 |
+|---|---|---|
+| 输出（真相源） | `display/ohos_output.c` `wl_ohos_output_chain_start` | `wlr_headless_add_output` / `wlr_output_state_set_custom_mode` / 背景 `wlr_scene_rect_create` / `SET_BUFFER_GEOMETRY`，同一函数内 4~5 个 `800, 600` |
+| 注入 | `display/display_input.c` | 归一化分母**已**走查询（`wl_ohos_output_frame_size()`）；但注入脚本里的窗口摆位/点击坐标是按 800×600 画布实测的常量（注释：win1 @0,320 320x240、notepad 坐标=真机实测几何） |
+| 界面 | `ets/smoke/SmokeDevPanel.ets` | 预览 XComponent `.aspectRatio(4 / 3)` |
+
+**触发条件（到点必做，不是"有空再说"）**：PC 模式 / 多 output / 要按真机
+分辨率出图时。**今天实测的代价面**：真机 3120×2080，我们只在 800×600 画布上
+合成再放大进侧栏预览框 ⇒ 分辨率损失 + 与 `visual:rgba-quadrants`（整屏截图判定）
+的比例/位置错配（§2.4 残留判据债）。**与阶段 C（每窗直进系统窗）同批做**——
+那一批会让"输出尺寸"这个概念本身变成每窗尺寸。
+
 ### 1.5 单槽 pending key + 孤儿 release（与 §2.1 绑定排查，不单独修）
 
 `display_input.c`：settle 窗口（焦点切换后 40ms）内的待发键只有**一个**
