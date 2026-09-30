@@ -70,6 +70,8 @@ struct wl_ohos_output {
     int vsync_fd;                         /* eventfd: VSync 线程 -> event loop */
     int64_t vsync_last_ns;                /* 最近 VSync 回调时刻 (跨线程, __atomic) */
     int64_t frame_period_ns;              /* 显示周期 (VSync 上报, 0 = 未接入) */
+    uint64_t last_frame_key;              /* 最近交给 scene 的 guest 帧归属键 */
+    uint64_t last_frame_ns;               /* 该帧的交出时刻 (归属发布用) */
     bool vsync_stalled;                   /* VSync 停摆/未启动 ⇒ 走兜底节拍 */
     uint32_t frame_seq;
     uint32_t last_crc;
@@ -724,9 +726,17 @@ static void FrameStep(bool via_vsync)
                 {
                     uint64_t outCommits = g_out.frame_seq - s_lastOut;
                     if (outCommits)
+                    {
+                        /* 归属: 本秒内交给 scene 的 guest 面 (1 秒内没有则 0) */
+                        uint64_t frameNs =
+                            __atomic_load_n(&g_out.last_frame_ns, __ATOMIC_RELAXED);
+                        uint64_t key = (frameNs && ns - frameNs <= 1000000000ull)
+                                           ? g_out.last_frame_key : 0;
                         winehua_display_fps_publish(
                             0, g_out.frame_seq,
-                            (double)outCommits * 1e9 / (double)(ns - s_lastNs));
+                            (double)outCommits * 1e9 / (double)(ns - s_lastNs),
+                            "x11", key);
+                    }
                 }
                 OHLOG("rate surfCommits=%{public}llu outCommits=%{public}llu "
                       "needsFrame=%{public}llu ticks=%{public}llu vsync=%{public}llu "
@@ -919,7 +929,7 @@ int wl_ohos_output_client_xwindow_alive(uint32_t xwindow)
 }
 
 int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
-                                    int flip_vertical)
+                                    int flip_vertical, uint64_t surface_key)
 {
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     struct wlr_xwayland_surface *xs;
@@ -963,6 +973,10 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
     wlr_scene_buffer_set_dest_size(c->frame_node, xs->width, xs->height);
     wlr_scene_node_set_position(&c->frame_node->node, xs->x, xs->y);
     wlr_scene_node_set_enabled(&c->frame_node->node, true);
+    /* 归属证据: 本秒内交给 scene 的是谁家的帧 (随显示序列发布给 guest,
+     * 见 common/display_fps.h)。新帧即 damage ⇒ 本拍就会提交。 */
+    g_out.last_frame_key = surface_key;
+    __atomic_store_n(&g_out.last_frame_ns, (uint64_t)NowNs(), __ATOMIC_RELAXED);
     return 1;
 }
 

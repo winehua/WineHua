@@ -128,7 +128,8 @@ void PullFrame(Binding &b)
         return;
     }
     const bool shown =
-        wl_ohos_output_client_frame_set(b.surfaceId, frame, b.flipVertical) != 0;
+        wl_ohos_output_client_frame_set(b.surfaceId, frame, b.flipVertical,
+                                        b.surfaceKey) != 0;
     /* 无论上没上屏, 本模块这一份引用都放掉 (wlr_scene.c: 节点自己
      * wlr_buffer_lock 一份, 不消费调用方的引用): 上屏了对象由节点持有、下次
      * set/摘除时析构归还队列; 没上屏 (窗口在册但锚不可用) 就是丢弃 —— 借来的

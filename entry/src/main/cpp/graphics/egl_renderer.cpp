@@ -1068,6 +1068,7 @@ void EglRenderer::RenderLoop() {
                             frameEndedUs - swapStartedUs);
             }
             skipFrames_ = 0;
+            perf.surfaceKey = zeroCopySurfaceKey_; /* 随显示序列发布, 见 display_fps.h */
             perf.Add(useToplevel, takeUs, uploadUs, frameEndedUs - swapStartedUs,
                      frameEndedUs - frameStartedUs, cpuFrame ? px.size() : 0, swapOk);
         }

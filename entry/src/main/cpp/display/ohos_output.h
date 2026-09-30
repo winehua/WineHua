@@ -60,8 +60,10 @@ int wl_ohos_output_client_xwindow_alive(uint32_t xwindow);
 //   的采样变换是 flipY = vulkanSource —— 即 venus(Vulkan) 面直取, GL(virgl) 面
 //   要翻一次; wlroots 消费不带任何采样变换, 所以本侧要显式补: GL 面 = 1,
 //   Vulkan 面 = 0。判反的症状: 图像上下颠倒)。
+// surface_key: 该帧的归属键 ((pid<<32)|surface_id), 随显示序列发布给 guest
+//   做"上屏的是不是我"的归属判定 (见 common/display_fps.h)。
 int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
-                                    int flip_vertical);
+                                    int flip_vertical, uint64_t surface_key);
 
 // 摘掉该窗的帧 (解绑/收尾): 清 buffer + 停用节点。节点本身留到窗口记录
 // 销毁时回收 (DestroyFrameNode), 届时一并归还它持有的队列 buffer。
