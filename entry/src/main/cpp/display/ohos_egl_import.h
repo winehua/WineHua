@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct wlr_renderer;
 
@@ -35,6 +36,14 @@ bool wl_ohos_egl_active(void);
  * 退位为零拷贝后, 本调用连同 memcpy 一并消失。
  */
 void wl_ohos_egl_finish(void);
+
+/*
+ * GPU 同步点计数: 每次 glFinish 成功自增。guest 帧归还侧用它做不变量检查
+ * (known-issues §2.6): 「buffer 交给合成器之后有没有发生过一次 GPU 同步」
+ * —— 计数只由 wl_ohos_egl_finish 自增, 把 glFinish 换成 fence 的人必须同时
+ * 改这里, 否则归还侧会立刻报不变量破损 (防静默退化)。
+ */
+uint64_t wl_ohos_egl_sync_count(void);
 
 /*
  * present 前置探针 (M2-T4 Step 3 门): window 队列借一格 buffer → 生产导入器

@@ -208,16 +208,28 @@ void LogStats(uint64_t nowNs)
     lastStale = stale;
     lastOrphan = orphan;
     g_lastStatsNs = nowNs;
+    /* 归还侧不变量计数 (known-issues §2.6): rel_synced = 交出去后发生过 GPU
+     * 同步; rel_unsynced_presented = 上屏过却没同步点 (**不变量破损, 必须为
+     * 0**, 破损时归还路径还会打 ERROR); rel_unrendered = 未上屏即归还 (合法). */
+    uint64_t relTotal = 0, relSynced = 0, relViolations = 0, relUnrendered = 0;
+    wl_ohos_consumer_handoff_stats(&relTotal, &relSynced, &relViolations,
+                                   &relUnrendered);
     OH_LOG_INFO(LOG_APP,
                 "[GUEST-FRAMES] stats bindings=%{public}u frames=%{public}llu "
                 "destroyed_windows=%{public}llu stale_frames=%{public}llu "
-                "orphan_frames=%{public}llu scene_frames=%{public}u",
+                "orphan_frames=%{public}llu scene_frames=%{public}u "
+                "rel=%{public}llu rel_synced=%{public}llu "
+                "rel_unsynced_presented=%{public}llu rel_unrendered=%{public}llu",
                 static_cast<uint32_t>(g_bindings.size()),
                 static_cast<unsigned long long>(frames),
                 static_cast<unsigned long long>(destroyed),
                 static_cast<unsigned long long>(stale),
                 static_cast<unsigned long long>(orphan),
-                wl_ohos_output_frames_in_scene());
+                wl_ohos_output_frames_in_scene(),
+                static_cast<unsigned long long>(relTotal),
+                static_cast<unsigned long long>(relSynced),
+                static_cast<unsigned long long>(relViolations),
+                static_cast<unsigned long long>(relUnrendered));
 }
 
 } // namespace

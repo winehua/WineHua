@@ -109,6 +109,30 @@ int32_t wl_ohos_consumer_buffer_release(struct wlr_buffer *buffer, int fence_fd)
 // 走这里 —— 只调 release 的话 buffer 对象仍持一次引用, 没人再释放它。
 void wl_ohos_consumer_buffer_drop(struct wlr_buffer *buffer);
 
+/*
+ * ── 不使用 GPU fence 的依据 + 不变量检查器 (known-issues §2.6) ──
+ *
+ * 归还时传 fence -1 (无同步), 安全性**不**来自 fence, 而来自这条不变量:
+ *
+ *   present 路径每帧 glFinish (零拷贝分支 ohos_output.c HandleOutputCommit
+ *   在 FlushBuffer 前、拷贝分支在读像素前) ⇒ 被本帧采样的 guest 纹理在该帧
+ *   交给显示栈之前 GPU 已画完 ⇒ guest 槽位的归还发生在下一帧 set 时, 此时
+ *   采样早已完成, 生产者覆写安全。
+ *
+ * 风险不是「今天不安全」, 是「这条保证藏在远处, 被删掉没人知道」。检查器
+ * 把两半都记在 buffer 上 (交出去那一刻的 present 序号 + GPU 同步点计数),
+ * 归还时比对并计数; 破损 (上屏过却没有同步点) 立刻打 ERROR。
+ */
+// 记下 buffer 交给 scene 的时刻 (在 wlr_scene_buffer_set_buffer 之后调用)
+void wl_ohos_consumer_buffer_note_handoff(struct wlr_buffer *buffer,
+                                          uint32_t present_seq, uint64_t sync_count);
+
+// 统计: total 归还总数; synced 交出去后发生过 GPU 同步; violations = 上屏过
+// 却没有同步点 (不变量破损, 真问题); unrendered = 交出去后没上过屏 (未被采样,
+// 归还安全 —— 提前归还的合法情形)
+void wl_ohos_consumer_handoff_stats(uint64_t *total, uint64_t *synced,
+                                    uint64_t *violations, uint64_t *unrendered);
+
 // EGL 导入载荷 (同上, 队列 buffer 本身就是)
 struct NativeWindowBuffer *wl_ohos_consumer_buffer_window_buffer(struct wlr_buffer *buffer);
 

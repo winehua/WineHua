@@ -826,10 +826,20 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
     /* set_buffer 解锁旧帧 (归还队列槽位由 buffer 析构兜底), dest_size 按窗口
      * 几何 —— 帧尺寸与窗一致时是恒等变换, 不一致时按窗口缩放 (不留黑边)。 */
     wlr_scene_buffer_set_buffer(c->frame_node, buffer);
+    /* 打上「交出去的时刻」: 归还时拿它比对 (known-issues §2.6 不变量检查器)。
+     * 必须在 set_buffer 之后 —— 旧帧的归还发生在 set_buffer 内部, 它比对的
+     * 是上一拍打的标记。 */
+    wl_ohos_consumer_buffer_note_handoff(buffer, g_out.frame_seq,
+                                         wl_ohos_egl_sync_count());
     wlr_scene_buffer_set_dest_size(c->frame_node, xs->width, xs->height);
     wlr_scene_node_set_position(&c->frame_node->node, xs->x, xs->y);
     wlr_scene_node_set_enabled(&c->frame_node->node, true);
     return 1;
+}
+
+uint32_t wl_ohos_output_present_seq(void)
+{
+    return g_out.frame_seq;
 }
 
 void wl_ohos_output_client_frame_clear(uint32_t xwindow)

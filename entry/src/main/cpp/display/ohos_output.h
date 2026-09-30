@@ -67,6 +67,9 @@ void wl_ohos_output_client_frame_clear(uint32_t xwindow);
 // 记录早已 free, 只有 scene 上还留着它: 鬼影 + 队列槽位泄漏。
 uint32_t wl_ohos_output_frames_in_scene(void);
 
+/* 输出 present 序号 (每帧一次自增) —— 不变量检查器用 (known-issues §2.6) */
+uint32_t wl_ohos_output_present_seq(void);
+
 // 建 headless output (800x600) + 自定义 OHOS allocator + 帧定时器:
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。
 // xwayland 非 NULL 时监听其 new_surface, 已映射的 X client 窗口优先于测试

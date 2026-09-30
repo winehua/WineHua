@@ -70,6 +70,10 @@ present 用例 PASS）。详情与证据表见 spec §6.4；回归：X 路线 `d
    同一件事）。
 2. **dxvk-legacy 定位**（§2.5）：DXVK 侧 trace + 私有 WSI 能力输出比对；它是
    DXVK 矩阵里唯一未绿项。
-3. **帧同步收口**（§2.6）：给 guest 帧路径加渲染侧同步（fence 或双缓冲 hold）。
+3. ~~**帧同步收口**（§2.6）~~ **已结清（2026-09-30，定性更正）**：不是缺同步
+   —— present 路径每帧 glFinish 已提供该保证（时序见 §2.6）；已装不变量检查器
+   （归还时比对 present 序号 + GPU 同步点，破损即 ERROR，RED→GREEN 实测）。
+   残留从「补同步」改为**性能升级项**：glFinish → native fence（原语在 wlroots，
+   动手前先确认本机 EGL 扩展）。
 4. 阶段 B（IME 三候选裁决）与阶段 C（PC 形态 output↔系统窗绑定）按 spec §7
    顺位推进；两者都不依赖阶段 A 的残留项。

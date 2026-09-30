@@ -14,6 +14,8 @@
  * - get_dmabuf 返回失败: 合法 (DATA_PTR caps), pixman 不走 dmabuf 门
  */
 #include "ohos_buffer.h"
+#include "ohos_egl_import.h" /* wl_ohos_egl_sync_count (不变量检查器) */
+#include "ohos_output.h"     /* wl_ohos_output_present_seq (不变量检查器) */
 
 #include <cstddef>
 #include <cstdint>
@@ -317,9 +319,18 @@ struct WlOhosConsumerBuffer {
     OH_NativeImage *image = nullptr;
     OHNativeWindowBuffer *window_buffer = nullptr;
     bool returned = false; /* 已 ReleaseNativeWindowBuffer 归还队列 */
+    /* 不变量检查器 (见 ohos_buffer.h): 交给 scene 那一刻的 present 序号与
+     * GPU 同步点计数; 归还时比对 —— handoff_valid 为假表示这格从没交给
+     * scene (未上屏即丢弃), 不参与判定。 */
+    bool handoff_valid = false;
+    uint32_t handoff_present_seq = 0;
+    uint64_t handoff_sync_count = 0;
     uint32_t format = 0;
     size_t stride = 0;
 };
+
+/* 归还侧统计 (每秒随 [GUEST-FRAMES] stats 行输出) */
+uint64_t g_relTotal, g_relSynced, g_relViolations, g_relUnrendered;
 
 struct WlOhosConsumerBuffer *ConsumerFromBase(struct wlr_buffer *base)
 {
@@ -333,6 +344,34 @@ void ConsumerReleaseQueueSlot(WlOhosConsumerBuffer *buf, int fence_fd, bool logD
 {
     if (buf->returned)
         return;
+    /* 不变量检查 (known-issues §2.6): 这格交出去之后, 有没有发生过
+     *   presented = 上过屏 (scene 渲染采样过它) —— 用 present 序号比对;
+     *   synced    = 发生过 GPU 同步 (glFinish 自增的计数动了)。
+     * 上屏过却没有同步点 = 安全性依赖的那条不变量破了 (有人拿掉了 present
+     * 路径的 glFinish, 或改了归还时机), 必须叫。两者都没有 = 这格没被采样
+     * 过就归还, 合法。 */
+    if (buf->handoff_valid) {
+        const uint32_t now_seq = wl_ohos_output_present_seq();
+        const uint64_t now_sync = wl_ohos_egl_sync_count();
+        const bool presented = now_seq != buf->handoff_present_seq;
+        const bool synced = now_sync != buf->handoff_sync_count;
+        ++g_relTotal;
+        if (synced)
+            ++g_relSynced;
+        else if (presented) {
+            ++g_relViolations;
+            if (g_relViolations <= 5u)
+                wlr_log(WLR_ERROR,
+                        "guest frame 不变量破损: 已上屏但交付后无 GPU 同步 "
+                        "(present %u→%u sync %llu→%llu) —— present 路径的 "
+                        "glFinish 是否还在?",
+                        buf->handoff_present_seq, now_seq,
+                        (unsigned long long)buf->handoff_sync_count,
+                        (unsigned long long)now_sync);
+        } else {
+            ++g_relUnrendered;
+        }
+    }
     if (logDrop)
         wlr_log(WLR_ERROR, "ohos guest frame dropped without release, releasing");
     if (buf->image && buf->window_buffer)
@@ -577,6 +616,28 @@ extern "C" void wl_ohos_consumer_buffer_drop(struct wlr_buffer *buffer)
      * 调用方手上就没有再释放它的机会了) */
     if (buffer)
         wlr_buffer_drop(buffer);
+}
+
+extern "C" void wl_ohos_consumer_buffer_note_handoff(struct wlr_buffer *buffer,
+                                                     uint32_t present_seq,
+                                                     uint64_t sync_count)
+{
+    if (!buffer || !wl_ohos_consumer_buffer_owns(buffer))
+        return;
+    WlOhosConsumerBuffer *buf = ConsumerFromBase(buffer);
+    buf->handoff_valid = true;
+    buf->handoff_present_seq = present_seq;
+    buf->handoff_sync_count = sync_count;
+}
+
+extern "C" void wl_ohos_consumer_handoff_stats(uint64_t *total, uint64_t *synced,
+                                               uint64_t *violations,
+                                               uint64_t *unrendered)
+{
+    if (total) *total = g_relTotal;
+    if (synced) *synced = g_relSynced;
+    if (violations) *violations = g_relViolations;
+    if (unrendered) *unrendered = g_relUnrendered;
 }
 
 extern "C" struct NativeWindowBuffer *wl_ohos_consumer_buffer_window_buffer(struct wlr_buffer *buffer)

@@ -60,6 +60,12 @@ static EGLDisplay g_display = EGL_NO_DISPLAY;
 static EGLContext g_context = EGL_NO_CONTEXT;
 static struct wlr_egl *g_egl;
 static struct wlr_renderer *g_renderer;
+/* GPU 同步点计数 (known-issues §2.6 不变量): 每次 glFinish 成功 ++。
+ * guest 帧归还侧用它判断「这格 buffer 交出去之后, 有没有发生过一次 GPU
+ * 同步」——没有就说明采样它的那个 pass 可能还在飞。计数**只在本函数里
+ * 自增**: 谁把 glFinish 换成 fence, 谁就必须同时改这里 (不变量检查器
+ * 的意义就是让这类改动不可能静默)。 */
+static uint64_t g_eglSyncCount;
 static PFN_eglCreateImageKHR_ g_create_image;
 
 /* 导入器: wlr_buffer → EGLImage。谢绝 = 返回 false (wlroots 回落其它路径;
@@ -587,4 +593,10 @@ void wl_ohos_egl_finish(void)
         return;
     }
     glFinish();
+    ++g_eglSyncCount;
+}
+
+uint64_t wl_ohos_egl_sync_count(void)
+{
+    return g_eglSyncCount;
 }

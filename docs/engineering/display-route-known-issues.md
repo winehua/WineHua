@@ -168,20 +168,37 @@ feature contract failed`；设备端 metrics 给出失败点：`featureLevel=11.
 兑现）；它只影响 d3d11-smoke 这一条深度用例。**本轮（2026-09-30）裁决：用户
 决定先跳过**——按上面两步入口留档，不投入本轮。
 
-### 2.6 guest 帧归还队列不带 GPU 侧同步（观察项，M2-T5 引入的路径）
+### 2.6 guest 帧归还的 GPU 同步由 present 侧 glFinish 提供（2026-09-30 定性更正 + 不变量检查器）
 
-`display/ohos_buffer.cpp` 的 guest 帧归还走
-`OH_NativeImage_ReleaseNativeWindowBuffer(image, buffer, -1)`，即**不做 GPU 侧
-同步**（与 T4 的输出 present 侧同口径）。语义上：合成器上一帧的 GPU 采样可能
-还在飞，生产者已可覆写该槽位。理论症状 = 偶发撕裂/闪帧。
+**原记录（「归还传 fence -1 = 不做 GPU 侧同步，采样可能还在飞」）不成立**：归还
+确实传 -1（`ohos_buffer.cpp` ConsumerReleaseQueueSlot），但链路里**不是没有同步**
+—— present 路径**每帧 glFinish**：零拷贝分支在 FlushBuffer 前（`ohos_output.c`
+HandleOutputCommit「显示消费前必须 GPU 写完」），拷贝分支在读像素前。而归还发生
+在**下一帧**替换 scene 节点时（wlr_buffer 引用归零 → ConsumerDestroy）。
 
-**当前证据（不足以判为问题）**：X 路线 present 6 轮 + 销毁竞态 4 轮 + dxvk-cube
-（X 路线 221 帧、`angleRegressions=0`）均无可见异常；上屏快照的纯色块内容正确。
+次序：本帧采样 → 本帧 present 前 glFinish → 下一帧 set 时归还槽位 ⇒ 生产者覆写
+时 GPU 早已读完。**真正的债是耦合**：这条保证藏在两处相距很远、互不引用的代码里，
+谁为性能拿掉 glFinish（或换 fence 而不改归还侧）就会**静默**打开竞态。
 
-**要做实它的办法**：给该路径加一帧延迟的持有（双缓冲 hold，归还推后一拍）或
-取渲染侧 fence（wlroots gles2 当前不直接给出 pass 结束的 sync file，需自建
-GL 同步对象 → dma-fence 的转换）。**升级条件**：真机出现撕裂/错帧截图，
-或引入对同步敏感的内容源时。
+**已装不变量检查器（本次落地）**：`wl_ohos_egl_finish` 内自增 GPU 同步点计数
+（`ohos_egl_import.c`，注释写明「换 fence 必须同时改这里」）；guest 帧交给 scene
+时记下那一刻的 present 序号 + 同步点计数；归还时比对并计数（`[GUEST-FRAMES]
+stats` 行的 `rel` / `rel_synced` / `rel_unsynced_presented` / `rel_unrendered`）。
+`rel_unsynced_presented > 0`（上屏过却没有同步点）= 不变量破损，归还路径同时打
+ERROR（限流 5 条）。
+
+**RED→GREEN（设备 .5，X 路线 dxvk 用例，2026-09-30）**：
+- GREEN（正常构建）：`rel=201 rel_synced=201 rel_unsynced_presented=0
+  rel_unrendered=0`，告警 0 条（job-r20260930-222811）
+- RED（临时拿掉 present 前的 glFinish，验完立即还原重建）：215/215 次归还算作
+  「已上屏无同步」，告警 5 条（job-r20260930-223143）⇒ 检查器确实会叫
+
+**升级项（性能，未做）**：每帧 glFinish 是 CPU 阻塞等 GPU 的固定成本；可换成
+native fence（归还侧与输出 present 侧都能带 fd）。**原语 wlroots 里已有**：
+`wlr_egl_create_sync` / `wlr_egl_dup_fence_fd`（`include/render/egl.h`），能力由
+`render/egl.c` 初始化时检查（`EGL_KHR_fence_sync` + `EGL_ANDROID_native_fence_sync`）
+—— 动手前先打一行启动日志确认本机命中。换 fence 时必须让同步点计数继续自增
+（或改检查器判据），否则会被当破损报出来（刻意设计，防静默退化）。
 
 ### 2.7 同 id 复用窗口的「销毁即失效」是按 id 判的，不是按记录判的（窄竞态，未复现）
 
