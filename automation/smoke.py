@@ -647,8 +647,16 @@ def build_job(args: argparse.Namespace) -> dict:
         params["seconds"] = args.seconds
     if args.timeout_ms is not None:
         params["timeoutMs"] = args.timeout_ms
-    if params:
-        job["params"] = params
+    # 期望路线随环境一起下发: 判据侧拿它跟宿主自报的 presentedRoute 对照
+    # (checks.presented_route)。放这里而不是让判据回读 job 文件 —— 归档要自带
+    # 判定所需的输入 (判定只读归档), 且"环境被丢"这个失效模式本身也要能被抓到:
+    # 丢了环境 ⇒ 期望路线也没了 ⇒ 判 FAIL 而不是默认成 wayland。
+    # 无条件注入: 不带 --job 的套件跑 (wayland 默认) 也要有期望值。
+    route_env = dict(params.get("env") or {})
+    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
+        "WINEHUA_DISPLAY_ROUTE") or "wayland"
+    params["env"] = route_env
+    job["params"] = params
     return job
 
 
@@ -694,12 +702,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     if code != 0:
         die(f"aa start failed: {out.strip()}")
 
-    # 本地套件定义：给判定器提供用例的 checks 声明（inline 等未定义测试退回默认判定）
+    # 本地套件定义：给判定器提供用例的 checks 声明（inline 等未定义测试退回默认判定）。
+    # 选测来源必须与设备端**同源** = 下发的 job（job 文件 > CLI, 见 build_job）:
+    # 只看 CLI 时 `run --job displayroute-gl-baseline.json`（suite/tests 写在 job
+    # 文件里）会得到空 entries ⇒ 用例声明的判定器一条不加载、frame_targets 空 ⇒
+    # 不抓帧，判定静默退回默认 result-json —— 用例声明整个空转 (review 实测发现)。
     cases = load_cases()
     suites = load_suites(cases)
-    suite_tests = suites[args.suite]["tests"] if args.suite in suites else []
-    if args.tests:
-        wanted = {item.strip() for item in args.tests.split(",") if item.strip()}
+    suite_name = job.get("suite", "")
+    suite_tests = suites[suite_name]["tests"] if suite_name in suites else []
+    wanted = {item for item in (job.get("tests") or []) if item}
+    if wanted:
         suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
     entries = {entry.test_id: entry for entry in suite_tests}
     frame_targets = {tid: entry for tid, entry in entries.items() if entry.case.needs_frame}
@@ -720,10 +733,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 探针把结论枚举写成标记文件, 不走 wine 结果协议 —— 逐个尝试归档进
         # device-results/, 由 marker 判定器裁决 (判定只读归档)。不存在即跳过
         # (非 displayroute 运行没有这些标记; 该跑没跑由 marker 判定器判 FAIL)。
-        for marker_name in DISPLAYROUTE_MARKERS:
-            hdc_recv_file_if_present(hdc, device,
-                                     f"{DRIVE_C_ROOT_REL}/{marker_name}",
-                                     archive / "device-results" / marker_name)
+        # 归档条件与上面的清理条件同款 (job.displayroute): 无条件归档会把上
+        # 一轮 displayroute 留下的旧标记搬进本次归档, 让没跑探针的 run 拿旧
+        # 结论判 PASS (实测: 清理有门控而归档没有)。
+        if job.get("displayroute"):
+            for marker_name in DISPLAYROUTE_MARKERS:
+                hdc_recv_file_if_present(hdc, device,
+                                         f"{DRIVE_C_ROOT_REL}/{marker_name}",
+                                         archive / "device-results" / marker_name)
         (archive / "suite-summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
         long_seconds = args.long_seconds or int(job.get("longSeconds", 0)) or 3600
@@ -733,13 +750,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             "device": device, "longSeconds": long_seconds,
         }, indent=2, ensure_ascii=False) + "\n")
         # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）。
-        # 套件级 checks 来源: 套件定义 > job 声明 (displayroute 无套件运行
-        # 时把 bring-up 级 check —— 如能力探针 marker —— 写在 job 里)。
-        suite_def = suites.get(args.suite)
-        if suite_def is None and job.get("checks"):
-            suite_def = {"checks": job["checks"]}
+        # 套件级 checks 来源: 套件定义 + job 声明（并集）。二者不是二选一 ——
+        # 套件级管矩阵/覆盖 (coverage)，job 声明的管本次 bring-up 探针
+        # (marker:*)。曾按「套件定义 > job」二选一，于是 README 记录的命令
+        # `run --suite core --job displayroute-notepad.json` 把该 job 唯一的
+        # 两条 marker 判定静默丢掉 (实测 review 发现)。
+        suite_def = suites.get(suite_name)
+        declared_suite_checks = list(suite_def.get("checks", [])) if suite_def else []
+        for check in job.get("checks") or []:
+            if check not in declared_suite_checks:
+                declared_suite_checks.append(check)
+        if declared_suite_checks:
+            suite_def = {"checks": declared_suite_checks}
         host = judge_run(archive, entries, frames, summary.get("tests", []),
-                         suite_def, args.suite, long_seconds)
+                         suite_def, suite_name, long_seconds)
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
@@ -767,8 +791,20 @@ def cmd_check(args: argparse.Namespace) -> int:
     summary = json.loads(summary_path.read_text())
     cases = load_cases()
     suites = load_suites(cases)
-    suite = summary.get("suite", "")
+    # 归档里的 job.json 是首次跑的那份选测/参数描述 —— 判定必须与它同源，
+    # 否则对 `run --job` 的归档重跑判定会丢掉用例声明的判定器与抓帧目标
+    # （summary 的 suite 字段在 job 跑法下可能为空，见 cmd_run 同款修复）。
+    # 有 job.json 就**只信它**（`or summary[...]` 这种回退会重新引入分叉：
+    # 纯 job 跑法下归档 job.json 没有 suite 键，而设备端 suite-summary 里
+    # 写的是默认标签 "core" ⇒ check 会把 core 全套 4 个用例当成 entries，
+    # 判出 run 侧根本没有的 missing-result 假红，实测 job-r20260930-190858）。
+    job_path = archive / "job.json"
+    job = json.loads(job_path.read_text()) if job_path.is_file() else {}
+    suite = job.get("suite", "") if job_path.is_file() else summary.get("suite", "")
     entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
+    wanted = {item for item in (job.get("tests") or []) if item}
+    if wanted:
+        entries = {tid: entry for tid, entry in entries.items() if tid in wanted}
     # 帧分组：<test_id>.jpeg 与重试帧 <test_id>-<n>.jpeg（testId 以 -x64/-x86 结尾，
     # 去掉末尾纯数字后缀即归属测试）
     frames = {}
@@ -778,14 +814,16 @@ def cmd_check(args: argparse.Namespace) -> int:
     long_seconds = 3600
     if artifact_path.is_file():
         long_seconds = int(json.loads(artifact_path.read_text()).get("longSeconds", 3600))
-    # 套件级 checks 来源与 cmd_run 一致: 套件定义 > 归档 job 声明 (重跑判定
-    # 必须与首次判定同源, 否则 check 会把 job 声明的 bring-up check 丢掉)
+    # 套件级 checks 来源与 cmd_run 一致: 套件定义 + 归档 job 声明（并集；
+    # 重跑判定必须与首次判定同源，否则 check 会把 job 声明的 bring-up check
+    # 丢掉）
     suite_def = suites.get(suite)
-    if suite_def is None:
-        job_path = archive / "job.json"
-        job = json.loads(job_path.read_text()) if job_path.is_file() else {}
-        if job.get("checks"):
-            suite_def = {"checks": job["checks"]}
+    declared_suite_checks = list(suite_def.get("checks", [])) if suite_def else []
+    for check in job.get("checks") or []:
+        if check not in declared_suite_checks:
+            declared_suite_checks.append(check)
+    if declared_suite_checks:
+        suite_def = {"checks": declared_suite_checks}
     host = judge_run(archive, entries, frames, summary.get("tests", []),
                      suite_def, suite, long_seconds)
     (archive / "host-summary.json").write_text(
@@ -927,20 +965,25 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
                 result = json.loads(result_path.read_text())
             except json.JSONDecodeError:
                 result = None
+        # 设备端 summary 条目：既做结果文件缺失时的回退，也作为判定输入之一
+        # （含运行器记录的 spawn pid —— presented-route 的归属断言要用它比对
+        # key 的 pid，那是宿主自己记录的事实，不是 guest 自报）。
+        device_entry = next((item for item in device_tests or []
+                             if item.get("testId") == test_id), None)
         if result is None and device_tests:
             # 结果文件缺失：测试超时/崩溃时设备端只把结论写进 suite-summary
             # （SmokeRunner 的 failure() 是内存对象），不落结果文件。回退到
             # summary 条目以保住 stage/message —— 否则判定只剩一句"结果文件
             # 缺失"，超时原因整个丢掉（实测 --timeout-ms 1500 即如此）。
-            result = next((item for item in device_tests
-                           if item.get("testId") == test_id), None)
+            result = device_entry
         if result is not None:
             collected.append(result)
         declared = entry.case.declared_checks if entry else ["result-json"]
         verdict = evaluate_checks(declared, {
             "run_dir": archive, "test_id": test_id,
             "test": entry.to_suite_json() if entry else {},
-            "result": result, "frames": frames.get(test_id, []),
+            "result": result, "device": device_entry,
+            "frames": frames.get(test_id, []),
         })
         results[test_id] = verdict
 
@@ -957,10 +1000,14 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
         })
 
     failed = [v for v in results.values() if v["status"] == "FAIL"]
-    per_test = "PASS" if results and not failed else ("FAIL" if failed else "SKIP")
+    passed = [v for v in results.values() if v["status"] == "PASS"]
+    # 全 SKIP 不是 PASS: 一条断言都没被验过 (displayroute-suite.json 的唯一
+    # 用例是 external 载体 → 全 SKIP) 记 PASS 会让退出码把"没验"当"验过"
+    # (testing-cases.md「SKIP ≠ 验过了」, 而 CI/脚本消费的正是退出码)。
+    per_test = "FAIL" if failed else ("PASS" if passed else "SKIP")
     if per_test == "FAIL" or suite_verdict["status"] == "FAIL":
         status = "FAIL"
-    elif per_test == "PASS":
+    elif per_test == "PASS" or suite_verdict["status"] == "PASS":
         status = "PASS"
     else:
         status = "SKIP"

@@ -9,6 +9,7 @@
   "from_wine": "winehua_graphics_smoke",
   "checks": [
     "result-json",
+    "presented-route",
     "visual:rgba-quadrants"
   ]
 }

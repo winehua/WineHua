@@ -61,8 +61,20 @@ def result_json(ctx: dict) -> dict:
 
 def visual(ctx: dict) -> dict:
     """对采集到的固定帧跑视觉校验。多帧任一通过即通过 —— 立方体/场景随
-    动画相位波动（旋转角度不同颜色桶分布不同），单帧采样会把瞬时相位判成
-    失败；采集侧按序多截，判定取最好的一帧。"""
+    动画相位波动（旋转角度不同颜色桶分布不同），单帧相位判不过，采集侧按序
+    多截、判定取最好的一帧。
+
+    X 路线 SKIP（判据债，证据在 docs/engineering/display-route-known-issues.md
+    §2.4）：displayroute 的出图面是侧栏里的**预览小框**（SmokeDevPanel 的
+    XComponent，4:3、约 500×390 物理像素），而本判定器对**整屏截图**做四象限
+    ⇒ 在该场景结构性失效（2026-10-01 实测：X 路线 GL 用例 4 帧全 FAIL，而
+    帧内容与 [GUEST-FRAMES] 统计都证明出图正常）。SKIP 是诚实答案：这一格
+    没验，不是验过了 —— 出图与否由 presented-route 与宿主显示序列门裁定。
+    按区域裁剪的判定器未做（做了才能把这一格从 SKIP 变回 PASS/FAIL）。"""
+    result = ctx.get("result") or {}
+    if ((result.get("metrics") or {}).get("expectedRoute")) == "x11":
+        return {"status": "SKIP", "stage": "visual:x11-preview-pane",
+                "message": "X 路线出图面在侧栏预览框，整屏四象限判定不适用（§2.4 判据债）"}
     paths = ctx.get("frames") or []
     if not paths:
         return {"status": "FAIL", "stage": "missing-frame",
@@ -109,10 +121,76 @@ def marker(ctx: dict) -> dict:
             "message": text or "(空标记)"}
 
 
+def presented_route(ctx: dict) -> dict:
+    """呈现归属判定：**本路线**有没有把**这个客户端的**帧送上屏。
+
+    为什么需要它（2026-10-01 实测）：job 声明 `WINEHUA_DISPLAY_ROUTE=x11`，
+    但那次启动 env 丢了路线键，GL 帧被 wayland 渲染器取走、X 路线一帧没收到，
+    用例照样 PASS —— `displayFps > 0` 只证明"有人在出图"。
+
+    判据三段（缺一段即 FAIL，不 SKIP —— 这正是要防的静默）：
+      1. expectedRoute 必须在结果里：它是 smoke.py 随环境下发的期望路线
+         （build_job 注入 WINEHUA_SMOKE_EXPECT_ROUTE）。**缺了就是环境被丢**，
+         正是 2026-10-01 那次事故的形态 —— 不能默默当成 wayland 默认。
+      2. expectedRoute == presentedRoute（宿主自报的呈现路线）；
+      3. presentedRoute == x11 时还要求归属：呈现那一帧的 surface key 高 32 位
+         必须等于**运行器记录的 spawn pid**（设备端 suite-summary 的
+         tests[].pid，宿主的调起事实）。
+
+    第 3 段为什么不用 guest 自报的 presentedSelf（2026-10-01 实测）：key 高 32
+    位是 Unix getpid()（mesa/win32u 填），而 guest 只拿得到 Wine ptid
+    （GetCurrentProcessId，实测 key pid=10765 vs ptid=596）⇒ guest 侧比对恒假、
+    是根"永远说不"的假指标。归属只能由宿主两侧事实对账：key pid 来自线上自报，
+    spawn pid 来自宿主自己的调起记录 —— 两者相等才证明这一帧是本进程的面。
+    """
+    result = ctx.get("result") or {}
+    metrics = result.get("metrics") or {}
+    expected = metrics.get("expectedRoute")
+    presented = metrics.get("presentedRoute")
+    if expected is None or presented is None:
+        return {"status": "FAIL", "stage": "presented-route",
+                "message": "结果里缺 expectedRoute/presentedRoute"
+                           "（设备端构建过旧，或启动环境被丢 —— 后者正是本判据要抓的）"}
+
+    if expected != presented:
+        return {"status": "FAIL", "stage": "presented-route",
+                "message": f"路线漂移: 期望 {expected}，宿主实际呈现 {presented}",
+                "metrics": {"expected": expected, "presented": presented}}
+
+    if presented == "x11":
+        key = metrics.get("presentedKey") or 0
+        if not key:
+            return {"status": "FAIL", "stage": "presented-route",
+                    "message": "x11 路线在出图，但显示序列里没有 guest 面的 key "
+                               "(presentedKey=0) —— 出的是 X 服务端内容，不是 guest 面"}
+        spawn_pid = (ctx.get("device") or {}).get("pid")
+        if not spawn_pid:
+            return {"status": "FAIL", "stage": "presented-route",
+                    "message": "归档缺运行器记录的 spawn pid（设备端构建过旧），"
+                               "无法做 x11 归属断言"}
+        key_pid = key >> 32
+        if key_pid != spawn_pid:
+            return {"status": "FAIL", "stage": "presented-route",
+                    "message": f"呈现的不是本次运行进程的面: key pid={key_pid} "
+                               f"spawn pid={spawn_pid}",
+                    "metrics": {"expected": expected, "presented": presented,
+                                "presentedKey": key, "spawnPid": spawn_pid}}
+        return {"status": "PASS", "stage": "presented-route",
+                "message": f"路线一致 ({presented}) 且归属本进程 "
+                           f"(pid={spawn_pid}, key={key})",
+                "metrics": {"expected": expected, "presented": presented,
+                            "presentedKey": key, "spawnPid": spawn_pid}}
+    return {"status": "PASS", "stage": "presented-route",
+            "message": f"路线一致 ({presented}, key={metrics.get('presentedKey')})",
+            "metrics": {"expected": expected, "presented": presented,
+                        "presentedKey": metrics.get("presentedKey")}}
+
+
 REGISTRY = {
     "result-json": result_json,
     "visual": visual,
     "marker": marker,
+    "presented-route": presented_route,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }
