@@ -38,14 +38,22 @@ assemble_pad() {
     # -- 1a. 显示路线 host 依赖 (build/host-ext) → libs/: entry/libs 是打包
     # 视图, host-ext 是唯一构建落点——libxwayland_ohos.so 及其 NEEDED 闭包
     # (pixman/drm/xcb 栈/X11/Xfont2/xkbfile/xcvt...) 真机加载全靠这份拷贝。
-    # 只拷 SONAME 级文件 (*.so.<数字>): 运行时按 DT_NEEDED 名加载, 多级别名
+    # 只拷 SONAME 级文件 (*.so.<纯数字>): 运行时按 DT_NEEDED 名加载, 多级别名
     # (.so 链接名 / .so.X.Y.Z 实体名) 是同一库的多份拷贝, 徒增包体。
     # HAP 不支持 symlink, cp -L 取实体; 静态库 (.a) 不进包。
     # 例外: 无版本号 .so 按文件名直载的 (现仅 libxwayland_ohos.so) 逐个列名。
+    # glob 用 *.so.[0-9]* 再按 case 剔除带点实体名 —— 旧写法 *.so.[0-9] 只认
+    # 一位数 SONAME, libx.so.10 存在时构建成功、打包静默漏掉, 设备端 dlopen
+    # 失败且病灶离现象很远 (known-issues §1.3)。2026-09-30 实测: 放一个
+    # libfake2digit.so.10 进 host-ext, 旧写法日志报 41 files 且该库不在 entry/
+    # libs 里 (被静默漏); 改后 42 files 且拷入 (RED→GREEN 对照留档在本次提交)。
     if [ -d "$HOST_EXT_LIB" ]; then
         _n=0
-        for so in "$HOST_EXT_LIB"/*.so.[0-9] "$HOST_EXT_LIB"/libxwayland_ohos.so; do
+        for so in "$HOST_EXT_LIB"/*.so.[0-9]* "$HOST_EXT_LIB"/libxwayland_ohos.so; do
             [ -e "$so" ] || continue
+            case "$so" in
+                *.so.*) case "${so##*.so.}" in *[!0-9]*) continue ;; esac ;;
+            esac
             cp -L "$so" "$NATIVE_LIBS/"
             _n=$((_n + 1))
         done
