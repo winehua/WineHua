@@ -340,6 +340,7 @@ export class SmokeRunner {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
       if (test.inject) {
         await this.runInjectable(test);
+      }
       if (test.benchmarkMonitor && !benchmarkComplete) {
         const windowText: string = readTextIfExists(`${resultPath}.perf-window.json`);
         if (windowText) {
