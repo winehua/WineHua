@@ -155,6 +155,26 @@ feature contract failed`；设备端 metrics 给出失败点：`featureLevel=11.
 GL 同步对象 → dma-fence 的转换）。**升级条件**：真机出现撕裂/错帧截图，
 或引入对同步敏感的内容源时。
 
+### 2.7 同 id 复用窗口的「销毁即失效」是按 id 判的，不是按记录判的（窄竞态，未复现）
+
+X window id 会回收复用，而 T5 的失效判据全是**按 id** 做的：
+`wl_ohos_output_client_xwindow_alive(id)`（display_guest_frames 每拍 sweep）与
+`FindClientByWindow(id)`（frame_set 落点）都只比 `xs->window_id`。于是存在这样
+一条时序：窗 A(id=X) 销毁 → 新窗 B 立刻复用 id X → sweep 查 `X` **在册**（那是
+B 的记录）⇒ 老绑定不摘；若 A 的 guest 尚未退出、又往老路由键
+`(A.pid<<32)|X` 投了最后一帧，该帧会经 `frame_set(X, …)` 落进 **B 的窗口**。
+
+**为什么是窄竞态**：需要「同 id 在一个 33ms 拍内被复用」且「A 的 guest 在窗销毁
+后仍投帧」。当前证据面里未出现（present 6/6 + 销毁竞态 4 轮 + dxvk-cube 均无
+错帧），**未复现 ⇒ 不修**（竞态类不拿到可复现时序不动手，原则 14）。
+
+**修法（拿到时序后再做）**：失效判据改按**记录身份**——给 `ohos_client_surface`
+加进程内单调 generation，`wl_ohos_output_client_frame_anchor` 一并回填，绑定存
+generation 并在 `frame_set` 里核对（或直接存记录指针 + generation 防 ABA）。
+**先装仪器再修**：绑定创建时存该记录的 generation，每拍比对不一致即计数 + 打
+日志（等价于一个不变量检查器），跑一轮有窗口 churn 的用例（notepad 类多 helper
+窗口场景最可能命中）看它是否真会触发。
+
 ## 3. 操作协议（必须遵守，违反即隐性故障）
 
 ### 3.1 hdc -b 热更后必须 sha256 对账
