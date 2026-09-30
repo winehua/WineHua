@@ -332,7 +332,7 @@ GL 用例同源：`winehua_graphics_smoke` X 路线 `producerFps=117.2 / display
 **仍开着**：多窗口/子窗 GL 的落点（子窗帧按窗几何拉伸，无子矩形偏移；
 要正确须把 client rect 偏移带进通道或做 guest 侧子窗合成），未做。
 
-### 2.10 同一个 displayroute job，有一次落到了 wayland 路线（2026-10-01，一次，未复现）
+### 2.10 同一个 displayroute job 落到 wayland 路线（2026-10-01，已定位：CLI 覆盖丢 job params）
 
 **现象**：`smoke/jobs/displayroute-gl-baseline.json`（env 钉死
 `WINEHUA_DISPLAY_ROUTE=x11`）连跑三次，其中 **23:57 那次**的 GL 帧被 **wayland
@@ -348,11 +348,20 @@ GL 通了。**判 X 路线必须同时看 `[GUEST-FRAMES] attach`/`stats binding
 `displayFps>0` 单独不构成证据（X 路线的显示序列是按整个 output 的提交数发布的，
 任何 X 面 damage 都会推进它）。
 
-**候选原因（未验证，别按记忆修）**：① 穿透 NCP/Box64 边界的子进程拿不到 per-launch
-env（`include/wine/winehua_vulkan.h` 里记过同类现象）；② 宿主两条链的启动/存活时序
-让 guest 在解析路线前先摸到了 wayland。**下次复现时的取证**：guest stderr 里的
-driver 装载行（`OHOS: display route=x11, loading winex11`）与该进程的 `DISPLAY`/
-`WAYLAND_DISPLAY` 实际取值。
+**根因（已定位并修复，同日）**：不是设备/路线选择，是**判定设施自己的 bug** ——
+`automation/smoke.py` 的 `build_job` 把 CLI 覆盖参数写成一个**全新的 `params` 字典
+整体赋给 `job["params"]`**，于是 `--seconds`/`--timeout-ms`（以及 `--env`/`--d3d`/
+`--dxvk` 同形）会把 job 文件里的 `params.env` 一起丢掉。取证是宿主日志的启动 env
+计数：X 路线那次 `env=5 [WINEHUA_DISPLAY_ROUTE=x11;DISPLAY=:0;WAYLAND_DISPLAY=]`，
+落到 wayland 那次 `env=2`。**两次「跑偏」都恰好是带 `--seconds` 的那两次**。
+
+修法：`params` 从 job 已有 `params` 起底，`--env` 按键合并而不是整表替换
+（提交 `fix(automation): CLI 覆盖参数改为并入 job params`）。**验证**：同 job 加
+`--seconds 200` 后启动 env 回到 5 个变量、`[GUEST-FRAMES] attach … kind=gl flip=1`
+出现、`displayFps=113.2 ≈ producerFps=111.7`（job-r20261001-000822）。
+
+教训（判据层）：**跑 displayroute 用例时，`--seconds`/`--env` 这类覆盖必须核对
+启动 env 计数**；`displayFps>0` 单独不构成「X 路线出图」的证据。
 
 
 
