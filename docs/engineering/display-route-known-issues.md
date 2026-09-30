@@ -70,46 +70,67 @@ hilog 全量落盘 + stderr 只截尾部 ~1MB（t5q 整拉 744MB 失败教训）
 区别是「停滞」不是崩溃 —— 同样按「保现场 + 重试」处理；判据：设备侧进程
 CPU 全 idle 即不是自旋死锁，先别当代码 bug 查。
 
-### 2.4 X 路线没有 GL 呈现（M2-T3 实测定位，补栈与否待范围裁决）
+### 2.4 X 路线 GL 呈现：走私有通道（2026-09-30 落地；GLX 补栈为被否决方案）
 
-M2-T3 真机（r20260930-014632 与带 `+wgl` 复跑 r-t3glx，设备 .5）判据
-不成立，定位到**三处构建层缺件**——X 路线的 OpenGL 呈现链当前不存在，
-不是「drisw present 有没有 bug」的问题：
+**现状（已修，实测）**：`winex11.drv` 增私有 present 驱动
+（`dlls/winex11.drv/opengl_winehua.c`，由 `X11DRV_OpenGLInit` 在无 GLX 时装入，
+通道未武装时返回 `STATUS_NOT_IMPLEMENTED` 退回上游行为）。它保留**已经跑通的
+surfaceless EGL 渲染**，只把 drawable 从 FBO 换成 **pbuffer**（有 display target
+才有真正的 present 语义——这正是 T3 实测「`WINEHUA_VTEST_FRONTBUFFER_LOG` 一次未
+写」的原因），swap 时发布 **X window id**（与 Vulkan 私有面同一把钥匙），宿主
+presenter 把该纹理 blit 进同窗 scene 节点。
+
+- 判据（设备 .5，`smoke/jobs/displayroute-gl-baseline.json`）：
+  RED 基线 `frames=3028 producerFps=447 displayFps=-1.0` + 程序侧
+  `no compositor display sequence observed`（r20260930-014632 系）；
+  GREEN `frames=849 producerFps=117.2 displayFps=117.07`，
+  `opengl-x64 PASS`（job-r20260930-234637）——`displayFps` 由宿主发布显示序列
+  （见 §2.9）后才有值。
+- 宿主侧配套：`display_guest_frames` 的面发现从「只收 vulkan=1」改为两类都收
+  （virgl 面走 `SurfaceQueueTarget`，与 wayland 路线同一个 present 目标），挂接
+  仍以「X 窗在册且已 associate」的锚判定把关。
+- 行序：wlroots 消费**不带任何采样变换**，而 wayland 渲染器的采样变换是
+  `flipY = vulkanSource`（`graphics/egl_renderer.cpp:329`）⇒ GL(virgl) 面要显式
+  翻一次、Vulkan(venus) 面不翻。已在 `wl_ohos_output_client_frame_set` 按面类型
+  下发（`WL_OUTPUT_TRANSFORM_FLIPPED_180` / `NORMAL`）；判反的症状是图像上下颠倒。
+- id 发布/就绪握手从 wayland 的 readback 文件提取为共享实现
+  （`dlls/win32u/winehua_present.c` + `include/wine/winehua_present.h`），两条
+  路线共用一份（原语对齐 Mesa 侧的页格式，见下）。
+
+**T3 的定位仍然成立**（它解释了为什么必须换 pbuffer）：X 路线无 GLX ⇒ WGL 落到
+win32u 通用 EGL 驱动，`egldrv_surface_create` 造 **FBO drawable**，
+`framebuffer_surface_swap` 是**空实现**（`dlls/win32u/opengl.c:407`）⇒ 帧进 FBO、
+没有任何真 present。原来的三件套「补栈清单」（① Xwayland `-Dglx=true`；② guest
+mesa 出 `libGL` + `GL/glx.h`；③ 撤 `WINEHUA_ALLOW_X11_NO_GLX` 重编 wine）**未采
+用**：guest 是 box64 翻译的 x86_64，而 GLX 直通要求 guest 与宿主同架构共享
+DRM/GEM（DRI3），在该形态下结构性不成立；私有通道复用宿主已在用的
+presenter 与 id 键，代价与风险都更低。**未做**：`dx-glx-present` 的判据改造
+（程序侧 CRC 序列 + 主机的区域裁剪判定）——`opengl-*` 已用宿主显示序列门替代。
+
+T3 的实测证据（保留，它是「必须 pbuffer 而非 FBO」的判据）：
 
 | 环节 | 现状 | 证据 |
 |---|---|---|
 | Xwayland GLX 扩展 | 无（`-Dglx=false -Dglamor=false`，M0 shm-only 决定） | `scripts/build_xwayland.sh:172` |
 | guest libGL（GLX 客户端） | 无：guest_gfx 只有 EGL/GLES/gallium + `dri/swrast_dri.so` | 设备 `guest_gfx/lib` 清单 |
-| winex11 GL 段 | 未编入：`WINEHUA_ALLOW_X11_NO_GLX=1`，configure 拿不到 `GL/glx.h` → `X11DRV_OpenGLInit` 落 `#else` stub | 运行期 `display_funcs_init Failed to initialize the driver OpenGL functions, status 0xc0000002` |
+| winex11 GL 段 | 未编入：`WINEHUA_ALLOW_X11_NO_GLX=1`，configure 拿不到 `GL/glx.h` → `X11DRV_OpenGLInit` 落 `#else` | 运行期 `display_funcs_init Failed to initialize the driver OpenGL functions, status 0xc0000002` |
 
-状态码是判据：stub 返回 `STATUS_NOT_IMPLEMENTED`(0xC0000002)，真实的
-libGL 加载失败返回 `STATUS_NOT_SUPPORTED`(0xC00000BB) 并附 ERR 行——实
-测是前者，故为编译期缺件，非运行期缺库。
+状态码是判据：上游 stub 返回 `STATUS_NOT_IMPLEMENTED`(0xC0000002)，真实的
+libGL 加载失败返回 `STATUS_NOT_SUPPORTED`(0xC00000BB) 并附 ERR 行——实测是前者，
+故为编译期缺件，非运行期缺库。私有通道下该状态码的含义不变：**通道未武装时
+本驱动同样返回 `NOT_IMPLEMENTED`**，行为回到上游（不出图）。
 
-**实际行为**：WGL → win32u 通用 EGL 驱动 → `egldrv_surface_create` 造
-**FBO drawable**（`framebuffer_surface`），`framebuffer_surface_swap` 是
-**空实现**（`dlls/win32u/opengl.c:407` 直接 `return TRUE`）⇒ 帧进 FBO、
-没有任何真 present。实测吻合：5568 帧 @542fps、`WINEHUA_VTEST_FRONT‐
-BUFFER_LOG` 全程一次未写（winsys present 从未被调用）、X 窗口零 damage、
-截屏里只有合成器背景 + 注入测试窗（Xlib 路径），固帧四象限始终不出现。
-**X 窗口 → scene → 输出 → XComponent 这一段是好的**（注入测试窗正常出
-图并动），缺口只在 GL 客户端出图这一跳。
+**实际行为（修前）**：WGL → win32u 通用 EGL 驱动 → FBO drawable、swap 空实现 ⇒
+5568 帧 @542fps、`WINEHUA_VTEST_FRONTBUFFER_LOG` 全程一次未写（winsys present
+从未被调用）、X 窗口零 damage、固帧四象限始终不出现。**X 窗口 → scene → 输出
+→ XComponent 这一段一直是好的**（注入测试窗正常出图并动），缺口只在 GL 客户端
+出图这一跳。
 
-**影响面**：X 路线当前只有「X 窗口语义 + 输入」，OpenGL 程序（含 wined3d
-走 GL 的 D3D8/9）在 X 路线不出图；Vulkan 侧（venus / DXVK / vkd3d，即
-M2-T5/T6）不经这条链，不受影响。**补栈清单**（三件套，缺一不可）：①
-Xwayland `-Dglx=true`（连带 host 侧 DRI/swrast 依赖）；② guest mesa 出
-`libGL` + `GL/glx.h` 头（同源、guest 架构）；③ 撤 `WINEHUA_ALLOW_X11_
-NO_GLX` 重编 wine。**未做**——属栈建设，超出 M2 阶段 A 范围，等裁决。
-
-**补栈时要一并换的判定器**（两处都不适用本场景，不是补栈就能自动绿的）：
-① `dx-glx-present` 程序侧 `displayed` 门读 `WINEHUA_DISPLAY_FPS_FILE`，而该
-文件由 wayland 路线渲染器写（`entry/src/main/cpp/common/perf_utils.cpp:32`），
-X 路线永远缺 → 它是路线外来判据；应按 T3 计划改程序侧出**帧内容 CRC 序列**
-（证明客户端在画），出图与否交给主机侧。② `visual:rgba-quadrants` 对**全屏
-截图**做四象限，而 displayroute 的出图面是侧栏里的**预览小框**（`SmokeDev-
-Panel` 的 XComponent，4:3、约 500×390 物理像素），四象限永远判不出来；主
-机侧需要按区域裁剪的视觉判定器（或按框内 CRC 变化判活）。
+**残留判据债**：`visual:rgba-quadrants` 对**全屏截图**做四象限，而 displayroute
+的出图面是侧栏里的**预览小框**（`SmokeDevPanel` 的 XComponent，4:3、约 500×390
+物理像素）⇒ 该判定器在本场景失效（`opengl-x64` 跑 X 路线时它没有下判定；出图
+与否目前由**宿主显示序列门**（§2.9）与人工目视兜底）。按区域裁剪的视觉判定器
+未做。
 
 ### 2.5 dxvk 套件的 `dxvk-legacy`（d3d11-smoke）既有失败（M2-T6 期间实锤）
 
@@ -200,6 +221,12 @@ native fence（归还侧与输出 present 侧都能带 fd）。**原语 wlroots 
 —— 动手前先打一行启动日志确认本机命中。换 fence 时必须让同步点计数继续自增
 （或改检查器判据），否则会被当破损报出来（刻意设计，防静默退化）。
 
+**120Hz 下的实测预算（2026-09-30，帧时钟改 VSync 后）**：`segment scene
+render+commit` 在 120Hz 输出下 avg=3.4~3.9ms / max≈8~13ms（含 present，预算
+8.33ms）⇒ **当前未超预算，fence 属备选而非必需**；同一时段
+`rel=840 rel_synced=840 rel_unsynced_presented=0`（job r20260930-233209 系）
+⇒ 高帧率下不变量仍成立。
+
 ### 2.7 同 id 复用窗口的「销毁即失效」是按 id 判的，不是按记录判的（窄竞态，未复现）
 
 X window id 会回收复用，而 T5 的失效判据全是**按 id** 做的：
@@ -265,7 +292,69 @@ PASS 且两条 bring-up marker 全过）；guest trace 该轮**对话框创建 0
 再比对帧间差异；在那之前不要按「显示链缺陷」修 —— 现有一切证据都指向它是
 用例自身的对话框，而非输出链在循环。
 
-## 3. 操作协议（必须遵守，违反即隐性故障）
+### 2.9 帧率上限：宿主的 30fps 节拍 + 硬编码 guest pacing（2026-09-30 修复）
+
+**两个独立的上限**，都不是 guest 慢：
+
+1. **帧时钟自建 30Hz**：`display/ohos_output.c` 用
+   `wl_event_source_timer_update(…, 33)` 当帧时钟 ⇒ 输出被钳在 ~30fps。已换
+   系统 VSync 主驱动（`OH_NativeVSync`，期望区间 `{60,120,120}`，回调写 eventfd
+   → `wl_event_loop_add_fd` 唤醒 event loop；渲染仍在 loop 线程），33ms 定时器
+   降级为看门狗/兜底（VSync 停摆 200ms 判定、250ms 看门狗、恢复自动切回）。
+   遥测：`rate … ticks=N vsync=N timer=N` 直接看得出节拍来源。
+2. **guest 被宿主按 33ms 回压**：`display_guest_frames.cpp` 硬编码
+   `kFramePeriodNs = 33ms` 传给 `AttachZeroCopyTarget`，而 presenter 正是按
+   `framePeriodNs` 节流 guest 的 present（`kPresentThrottled`）⇒ 即使帧时钟到
+   120Hz，guest 仍按 30fps 生产。改为跟随 `wl_ohos_output_frame_period_ns()`
+   （VSync 上报的显示周期，兜底 33ms），周期变化时逐面
+   `SetZeroCopyFramePeriod` 重发；上报值逐拍抖动几微秒，故只认 >0.5ms 的变化
+   （与 `egl_renderer` 同阈值）。
+
+**实测（设备 .5，X 路线，`displayroute-dxvk` 同一 job 前后对照）**：
+
+| | 修前 | 修后 |
+|---|---|---|
+| cube 帧数（同 job 同时长） | 225 | 857（wayland 路线参照 903） |
+| `outCommits`/s | 30 | 111~114 |
+| `ticks`/s | 30（timer） | 120（vsync=120 timer=0） |
+| `segment scene render+commit` | 3.0~4.1ms | 3.4~3.9ms |
+
+GL 用例同源：`winehua_graphics_smoke` X 路线 `producerFps=117.2 / displayFps=117.07`
+（job-r20260930-234637）。
+
+**附带判据（宿主显示序列）**：guest 用例的 `displayed` 门读
+`WINEHUA_DISPLAY_FPS_FILE`，此前只有 wayland 渲染器写、X 路线永远缺（判据是
+路线外来的）。现在 X 路线合成器在每秒 `rate` 行处发布同一文件（
+`common/display_fps.h` + `common/perf_utils.cpp` 一份实现），序号 = 输出提交
+计数，**只有该秒真提交过帧才推进** ⇒ 「序号不动 = 宿主没出图」这条判据在两
+条路线上一致。
+
+**仍开着**：多窗口/子窗 GL 的落点（子窗帧按窗几何拉伸，无子矩形偏移；
+要正确须把 client rect 偏移带进通道或做 guest 侧子窗合成），未做。
+
+### 2.10 同一个 displayroute job，有一次落到了 wayland 路线（2026-10-01，一次，未复现）
+
+**现象**：`smoke/jobs/displayroute-gl-baseline.json`（env 钉死
+`WINEHUA_DISPLAY_ROUTE=x11`）连跑三次，其中 **23:57 那次**的 GL 帧被 **wayland
+渲染器**取走：guest 日志里是 `WL_EGL: [VIRGL-ZC][MAIN] frame=… key=49147310768154
+source=960x540`（key 的 pid/surface 段是 wayland 形态的小 id），
+**一条 `[GUEST-FRAMES] attach` 都没有**；而 23:47 与 00:01 两次都是 X 路线
+（`[GUEST-FRAMES] attach …` 有，且 00:01 那次带 `flip=1`）。
+
+**为什么危险**：两条路线的宿主消费者在同一个进程里都在跑，guest 用哪条路线决定
+帧落到谁手里。**判据会因此说谎**：那次运行 `displayFps=39.7`（wayland 渲染器
+发布的数字），而 X 路线消费者一帧没收到 —— 只看 `opengl-x64 PASS` 会以为 X 路线
+GL 通了。**判 X 路线必须同时看 `[GUEST-FRAMES] attach`/`stats bindings=1`**，
+`displayFps>0` 单独不构成证据（X 路线的显示序列是按整个 output 的提交数发布的，
+任何 X 面 damage 都会推进它）。
+
+**候选原因（未验证，别按记忆修）**：① 穿透 NCP/Box64 边界的子进程拿不到 per-launch
+env（`include/wine/winehua_vulkan.h` 里记过同类现象）；② 宿主两条链的启动/存活时序
+让 guest 在解析路线前先摸到了 wayland。**下次复现时的取证**：guest stderr 里的
+driver 装载行（`OHOS: display route=x11, loading winex11`）与该进程的 `DISPLAY`/
+`WAYLAND_DISPLAY` 实际取值。
+
+
 
 ### 3.1 hdc -b 热更后必须 sha256 对账
 
