@@ -379,6 +379,7 @@ ABILITY = "EntryAbility"
 #   hdc file send -b <bundle>：remote 必须写沙箱视角，写真实路径会落到不存在的相对位置
 #   hdc shell：只认真实路径；对沙箱视角路径的 rm -rf 会静默返回 0 而实际不删
 SANDBOX_FILES = "/data/storage/el2/base/files"
+SANDBOX_BASE = "/data/storage/el2/base"
 REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
 # 载荷推送源（相对 files/）：设备端 SmokeHook.seed 的优先源，按 manifest 版本
 # 比对后导入 C:\smoke（HAP rawfile 树 files/wine/smoke 为兜底，host 不写）。
@@ -515,6 +516,43 @@ def hdc_recv_file_if_present(hdc: str, device: str, rel_path: str, local: Path) 
     return result.returncode == 0 and local.is_file()
 
 
+def hdc_recv_abs_if_present(hdc: str, device: str, sandbox_path: str, local: Path) -> bool:
+    """拉回**绝对**沙箱路径的文件（files/ 之外的 el2/base/temp 等，同一 -b 视图）。"""
+    local.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                             sandbox_path, str(local)],
+                            capture_output=True, text=True, errors="replace")
+    return result.returncode == 0 and local.is_file()
+
+
+def archive_evidence(hdc: str, device: str, archive: Path) -> None:
+    """把设备侧证据拉进归档（device-evidence/）。
+
+    为什么必须归档它们（review F8）：§2.10 的教训要求判"谁在呈现"必须同时看
+    `[GUEST-FRAMES]` 日志与显示序列文件本体，但它们此前只存在于设备 —— hilog
+    缓冲只留几分钟、stderr 在沙箱 temp。判定只读归档的原则，前提是归档里得有
+    可判可复盘的东西。文件缺失不致命（老构建/首次跑），但会记一行。
+    """
+    evidence = archive / "device-evidence"
+    found = []
+    if hdc_recv_file_if_present(hdc, device,
+                                f"{DRIVE_C_ROOT_REL}/windows/temp/winehua_display_fps.txt",
+                                evidence / "winehua_display_fps.txt"):
+        found.append("winehua_display_fps.txt")
+    code, out = hdc_shell(hdc, device, "date +%Y%m%d")
+    day = out.strip().splitlines()[-1].strip() if code == 0 and out.strip() else ""
+    if len(day) == 8 and day.isdigit():
+        if hdc_recv_abs_if_present(hdc, device,
+                                   f"{SANDBOX_BASE}/temp/wine_stderr_{day}.log",
+                                   evidence / f"wine_stderr_{day}.log"):
+            found.append(f"wine_stderr_{day}.log")
+    if hdc_recv_abs_if_present(hdc, device,
+                               f"{SANDBOX_BASE}/temp/winehua_vtest_frontbuffer.log",
+                               evidence / "winehua_vtest_frontbuffer.log"):
+        found.append("winehua_vtest_frontbuffer.log")
+    log(f"evidence → {evidence} ({', '.join(found) if found else '无'})")
+
+
 def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
     """删除 files/ 下的一条路径（相对 files/）。用真实路径 + 事后校验：
     `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。"""
@@ -611,6 +649,16 @@ def build_job(args: argparse.Namespace) -> dict:
         loaded = json.loads(job_path.read_text())
         if not isinstance(loaded, dict):
             die(f"--job 文件必须是 JSON 对象: {job_path}")
+        # job 文件的 env/inline 与套件定义走同一套护栏: 它们同样直通设备, 此前
+        # 只有套件定义与 CLI --env 被校验 ⇒ 手写 job 能把不可达 env / 非契约
+        # 档位静默送下去 (review F10)。inline 条目缺 backend 就是"落设备当前
+        # 档位", 由硬约束禁止 —— 这里只拦非法值, 缺省仍允许 (纯仪器 job)。
+        reject_unreachable_env(f"{job_path.name}: params.env", (loaded.get("params") or {}).get("env"))
+        for entry in loaded.get("inline") or []:
+            label = f"{job_path.name}:{entry.get('testId', 'inline')}"
+            reject_unreachable_env(label, entry.get("env"))
+            if entry.get("backend"):
+                reject_bad_backend(label, entry["backend"])
         job.update(loaded)
     if args.tests:
         job["tests"] = [item.strip() for item in args.tests.split(",") if item.strip()]
@@ -624,6 +672,7 @@ def build_job(args: argparse.Namespace) -> dict:
     # guest 只收到 harness 自己的 2 个变量 ⇒ 静默落到 wayland 路线,
     # 用例照样 PASS 但测的不是 X 路线 (known-issues §2.10)。
     params = dict(job.get("params") or {})
+    declared_env = dict(params.get("env") or {})  # 合并 CLI 覆盖之前的 job 文件声明
     if args.env:
         overrides = {}
         for item in args.env:
@@ -653,8 +702,16 @@ def build_job(args: argparse.Namespace) -> dict:
     # 丢了环境 ⇒ 期望路线也没了 ⇒ 判 FAIL 而不是默认成 wayland。
     # 无条件注入: 不带 --job 的套件跑 (wayland 默认) 也要有期望值。
     route_env = dict(params.get("env") or {})
+    # job 文件里声明的路线 (若 CLI --env 又改过它, 上面的合并已经把它覆盖掉了,
+    # 所以要在合并前就抄一份)。期望值与实跑值同源会被同一个开关一起改掉 ——
+    # `--env WINEHUA_DISPLAY_ROUTE=wayland` 曾能把 X 路线 job 变成 expected=
+    # presented=wayland 而完全不自知 (review F7)。声明单独下发, 判定层用它兜底:
+    # CLI 覆盖可以改实跑路线, 但改不掉"这个 job 声明的是什么"。
+    declared_route = declared_env.get("WINEHUA_DISPLAY_ROUTE") if declared_env else None
     route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
         "WINEHUA_DISPLAY_ROUTE") or "wayland"
+    if declared_route:
+        route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
     params["env"] = route_env
     job["params"] = params
     return job
@@ -672,6 +729,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     manifest = json.loads((payload / "manifest.json").read_text())
     run_id = args.run_id or time.strftime("r%Y%m%d-%H%M%S")
     archive = Path(args.archive_root).resolve() / f"{args.suite or 'job'}-{run_id}"
+    # run-id 复用防护 (review F5): 归档目录复用会把上一轮的 device-results/
+    # frames 混进本次归档, `check` 会拿旧帧、旧结果下判定 —— 证据必须属于本次。
+    if archive.exists() and any(archive.iterdir()):
+        die(f"归档目录已存在且非空: {archive}\n"
+            f"  run-id 复用会让旧结果/旧帧混进本次判定。换一个 --run-id，"
+            f"或先删掉该目录再跑。")
     archive.mkdir(parents=True, exist_ok=True)
 
     # job 文件：选测 / 参数覆盖 / 内联用例走它；5 键仍然带，兼容未升级的设备端
@@ -716,6 +779,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
     entries = {entry.test_id: entry for entry in suite_tests}
     frame_targets = {tid: entry for tid, entry in entries.items() if entry.case.needs_frame}
+    # 固定帧只在 duration_ms >= 2500ms 且进入末 2 秒时才渲染 (guest main.c):
+    # seconds < 2.5 的用例声明 visual 永远抓不到帧, 判定只会说"未采集到固定帧",
+    # 与"渲染失败"不可区分 —— 在跑之前拦下 (review F12)。
+    for entry in frame_targets.values():
+        seconds = entry.params.get("seconds",
+                                   (job.get("params") or {}).get("seconds"))
+        if seconds is not None and float(seconds) < 2.5:
+            die(f"{entry.test_id} 声明了视觉判定但 seconds={seconds} < 2.5: "
+                f"固定帧只在时长 >= 2.5s 的用例里渲染, 抓帧必然为空")
 
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
     try:
@@ -741,6 +813,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 hdc_recv_file_if_present(hdc, device,
                                          f"{DRIVE_C_ROOT_REL}/{marker_name}",
                                          archive / "device-results" / marker_name)
+        # 宿主/设备侧证据落归档 (见 archive_evidence 注释): 显示序列文件本体 +
+        # wine stderr + present 日志。复盘"谁呈现的帧"不再依赖设备现场。
+        archive_evidence(hdc, device, archive)
         (archive / "suite-summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
         long_seconds = args.long_seconds or int(job.get("longSeconds", 0)) or 3600
@@ -920,10 +995,15 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
         text = texts.get(summary_rel, "")
         if text.strip().startswith("{"):
             try:
-                summary = json.loads(text)
-                break
+                candidate = json.loads(text)
             except json.JSONDecodeError:
                 continue
+            # 设备端结果目录只 mkdir 从不清 ⇒ 同 run-id 重跑时上一轮的 summary
+            # 还在盘上, 顺手就被当成本次结果归档 (review F5)。按 runId 认领。
+            if candidate.get("runId") and candidate["runId"] != run_id:
+                continue
+            summary = candidate
+            break
         # 引擎 ready-degraded 自愈（见 docstring）
         if (not retried and start_command and not frames
                 and time.time() - started > probe_after_s):

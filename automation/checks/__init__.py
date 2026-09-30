@@ -33,6 +33,11 @@ from . import frame
 # 终态集合，与 smoke 程序协议一致 (thirdparty/wine/programs/winehua_smoke_protocol.h)
 FINAL_STATUSES = ("PASS", "FAIL", "SKIP", "UNSUPPORTED")
 
+# 显示序列"新鲜度"上限：程序结束前这么久内序列都没再推进 ⇒ 帧只在前段出过
+# （粘性的 displayed 字段看不出来，见 presented_route）。用例本身按秒轮询，
+# 正常跑时该值 ≈ 一个轮询周期 (1s)，2.5s 留出抖动余量。
+MAX_DISPLAY_STALL_MS = 2500
+
 
 def result_json(ctx: dict) -> dict:
     result = ctx.get("result")
@@ -77,8 +82,13 @@ def visual(ctx: dict) -> dict:
                 "message": "X 路线出图面在侧栏预览框，整屏四象限判定不适用（§2.4 判据债）"}
     paths = ctx.get("frames") or []
     if not paths:
+        # 固定帧只在 duration_ms >= 2500 且进入末 2 秒时渲染；结果里没有
+        # fixedFrame 就说明程序根本没到那个阶段（时长不够），与"渲染失败"是
+        # 两回事 —— 按现象给方向，别让人去查渲染 (review F12)。
+        detail = "" if (result.get("metrics") or {}).get("fixedFrame") else \
+            "；结果里没有 fixedFrame —— 用例时长不足 2.5s 时固定帧不会渲染"
         return {"status": "FAIL", "stage": "missing-frame",
-                "message": "未采集到固定帧截图（截图时机错过或测试未渲染）"}
+                "message": f"未采集到固定帧截图（截图时机错过或测试未渲染）{detail}"}
     reports = []
     for path in paths:
         report = frame.validate(ctx["validator"], path)
@@ -156,6 +166,27 @@ def presented_route(ctx: dict) -> dict:
         return {"status": "FAIL", "stage": "presented-route",
                 "message": f"路线漂移: 期望 {expected}，宿主实际呈现 {presented}",
                 "metrics": {"expected": expected, "presented": presented}}
+
+    # 声明路线兜底（F7）：declaredRoute 是 job 文件里写的路线，smoke.py 在合并
+    # CLI 覆盖**之前**抄下来随环境下发，所以它改不掉。CLI --env 可以把期望值与
+    # 实跑值一起改（两者同源），但改不掉声明 —— 呈现与声明不符 = 这次跑的不是
+    # job 声明的场景，不能算过。
+    declared = metrics.get("declaredRoute")
+    if declared and declared != "-" and declared != presented:
+        return {"status": "FAIL", "stage": "presented-route",
+                "message": f"呈现路线 {presented} 与 job 声明 {declared} 不符"
+                           f"（CLI --env 覆盖改了 job 的语义；归档 job.json 里是合并后的 env）",
+                "metrics": {"declared": declared, "presented": presented}}
+
+    # 新鲜度（F6）：displayed 那几个字段是**粘性**的（观察到一次就不再回落），
+    # 只证明"曾经出过图"。displayStallMs = 显示序列最后一次推进距程序结束的
+    # 时间，只有它能否掉"头 1 秒出过、之后宿主停摆"。
+    stall = metrics.get("displayStallMs")
+    if isinstance(stall, (int, float)) and stall > MAX_DISPLAY_STALL_MS:
+        return {"status": "FAIL", "stage": "presented-route",
+                "message": f"显示序列在结束前 {stall} ms 就不再推进（帧只在前段出过；"
+                           f"阈值 {MAX_DISPLAY_STALL_MS}ms）",
+                "metrics": {"displayStallMs": stall}}
 
     if presented == "x11":
         key = metrics.get("presentedKey") or 0
