@@ -259,6 +259,19 @@ X 面节点的 scene damage 按**可见区域**算：被完全遮挡的窗口不
 （干净入口 `smoke/jobs/displayroute-rate.json`：bring-up + 无窗 guest 程序
 占位）；读数配合两行速率仪（客户端 `XCLIENT-STAT` / 合成器 `rate`）交叉看。
 
+### 3.5 视觉判定取的是整屏截图，FAIL 先看归档帧
+
+`snapshot_display` 取**整屏**（含其他应用窗口），判定因此取决于截图瞬间前台是谁。
+实测（2026-09-30，新构建重装后首轮 core，r20260930-205405）：`opengl-x64` 设备端
+`result-json` PASS（778 帧 / 112fps），主机侧 `visual:rgba-quadrants` 四帧全 FAIL
+——归档帧内容是**该程序自己的动画相位**（立方体 + HUD `FPS --.--`），而用例固定帧
+（四色象限）只在最后 2s 渲染（`winehua_graphics_smoke/main.c:781-802`，套件
+`seconds: 8`）。同构建重跑 4/4 PASS（r20260930-205740：两用例都在第 0 帧采到象限，
+四色各 ~3.3 万采样）。与 §3.2 同形（生产者帧率正常、仅采集面错位），差别是本次无
+前置 displayroute 任务，触发条件**未复现**（候选：全新安装后的首轮冷启动）。
+**协议**：视觉判定 FAIL 时先看归档 `frames/` 再定性——设备端 `result-json` 为 PASS
+且帧内容不是固定帧相位 ⇒ 采集面问题，重跑判定，不得记为回归红项。
+
 ## 4. 前置条件（场景切换才触发）
 
 - **沙箱安全审计**：wlroots/xserver 补丁含三处在桌面 Linux 语境"看起来
