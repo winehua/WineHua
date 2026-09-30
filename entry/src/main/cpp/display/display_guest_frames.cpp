@@ -1,8 +1,9 @@
 /*
  * display_guest_frames.cpp — M2-T5 接收侧 (设计见 display_guest_frames.h)
  *
- * 一个 guest Vulkan 窗的生命周期:
- *   guest vkCreateWin32SurfaceKHR → 私有面 (tag|X window id)
+ * 一个 guest 私有呈现窗的生命周期 (Vulkan/Venus 与 OpenGL/virgl 同形, 后者见
+ * dlls/winex11.drv/opengl_winehua.c; 两者的 surfaceId 都是 X window id):
+ *   guest vkCreateWin32SurfaceKHR / wgl 私有 swap → 私有面 (tag|X window id)
  *   → guest present → 宿主 SurfaceQueuePresenterManager 按 (pid<<32)|id 找目标
  *   → 无目标: 丢弃并等 2.5s (virgl_surface_presenter.cpp)
  *   → 本模块限频查询发现该面 → 建 OH_ConsumerSurface → 生产窗交 broker 绑定
@@ -43,9 +44,15 @@ using winehua::ZeroCopySurfaceInfo;
 /* 宿主侧 present 在无目标时等 kVenusTargetAttachTimeout (2.5s) 后返 EAGAIN
  * 重试, 因此挂接晚一拍对 guest 只是一次重试 —— 没必要每帧扫宿主面表。 */
 constexpr uint64_t kAttachPollIntervalNs = 200ull * 1000 * 1000;
-/* 生产侧节拍 (与 33ms 帧时钟同源): broker 用它给宿主 venus target 做 pacing */
-constexpr uint64_t kFramePeriodNs = 33ull * 1000 * 1000;
+/* 生产侧节拍 = 帧时钟的显示周期 (wl_ohos_output_frame_period_ns: VSync 上报值,
+ * 兜底时 33ms)。broker 拿它给 guest 做 pacing —— 硬编码 33ms 会把 guest 钳在
+ * 30fps (M2 帧率债), 所以周期变化时下面会逐面重发 (SetZeroCopyFramePeriod)。 */
 constexpr uint64_t kStatsLogIntervalNs = 2000ull * 1000 * 1000;
+
+uint64_t CurrentFramePeriodNs()
+{
+    return wl_ohos_output_frame_period_ns();
+}
 
 struct Binding {
     uint64_t surfaceKey = 0;    /* 宿主路由键: (clientPid << 32) | surfaceId */
@@ -55,6 +62,9 @@ struct Binding {
     /* 引用归 OH_NativeImage (AcquireNativeWindow 的引用), 本模块不另持;
      * 宿主侧的引用由 broker 按 kSurfaceNativeObjectReference 自理。 */
     OHNativeWindow *producerWindow = nullptr;
+    /* 帧内容行序修正 (挂接时按面类型定死): GL(virgl) 面要纵向翻, Vulkan(venus)
+     * 面不翻 —— 依据见 ohos_output.h wl_ohos_output_client_frame_set 注释。 */
+    int flipVertical = 0;
     uint64_t frames = 0;
     uint64_t emptyPolls = 0;
 };
@@ -117,7 +127,8 @@ void PullFrame(Binding &b)
         ++b.emptyPolls;
         return;
     }
-    const bool shown = wl_ohos_output_client_frame_set(b.surfaceId, frame) != 0;
+    const bool shown =
+        wl_ohos_output_client_frame_set(b.surfaceId, frame, b.flipVertical) != 0;
     /* 无论上没上屏, 本模块这一份引用都放掉 (wlr_scene.c: 节点自己
      * wlr_buffer_lock 一份, 不消费调用方的引用): 上屏了对象由节点持有、下次
      * set/摘除时析构归还队列; 没上屏 (窗口在册但锚不可用) 就是丢弃 —— 借来的
@@ -146,6 +157,7 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
     b.surfaceKey = s.surfaceKey;
     b.clientPid = s.clientPid;
     b.surfaceId = s.surfaceId;
+    b.flipVertical = s.vulkan ? 0 : 1;
 
     b.image = OH_ConsumerSurface_Create();
     if (!b.image)
@@ -168,7 +180,7 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
     b.producerWindow = OH_NativeImage_AcquireNativeWindow(b.image);
     if (!b.producerWindow ||
         !GraphicsBroker::GetInstance().AttachZeroCopyTarget(b.surfaceKey, b.producerWindow,
-                                                           kFramePeriodNs))
+                                                           CurrentFramePeriodNs()))
     {
         OH_LOG_WARN(LOG_APP,
                     "[GUEST-FRAMES] attach failed key=%{public}llu xwin=%{public}u "
@@ -181,9 +193,10 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
 
     OH_LOG_INFO(LOG_APP,
                 "[GUEST-FRAMES] attach key=%{public}llu xwin=%{public}u pid=%{public}u "
-                "src=%{public}ux%{public}u win=%{public}dx%{public}d@%{public}d,%{public}d",
+                "src=%{public}ux%{public}u win=%{public}dx%{public}d@%{public}d,%{public}d "
+                "kind=%{public}s flip=%{public}d",
                 static_cast<unsigned long long>(b.surfaceKey), b.surfaceId, b.clientPid,
-                s.width, s.height, w, h, x, y);
+                s.width, s.height, w, h, x, y, s.vulkan ? "vulkan" : "gl", b.flipVertical);
     g_bindings.emplace(b.surfaceId, b);
 }
 
@@ -263,7 +276,34 @@ extern "C" void display_guest_frames_tick(void)
     for (auto &kv : g_bindings)
         PullFrame(kv.second);
 
-    /* 3) 限频发现新的 guest Vulkan 面 (只查未绑定的活面) */
+    /* 2b) 显示周期变化 (VSync 接入/停摆、刷新率切换) ⇒ 逐面重发 guest pacing。
+     * 不发的话 guest 一直按挂接那一刻的周期生产, 而 presenter 正是按 framePeriodNs
+     * 节流 guest 的 present (kPresentThrottled) —— 挂接早于 VSync 上报或刷新率
+     * 变化时, 周期就停在旧值。SetZeroCopyFramePeriod 在 broker 侧按已挂接面过滤。 */
+    {
+        static uint64_t s_periodNs = 0;
+        const uint64_t periodNs = CurrentFramePeriodNs();
+        if (periodNs != s_periodNs && !g_bindings.empty())
+        {
+            s_periodNs = periodNs;
+            for (auto &kv : g_bindings)
+                GraphicsBroker::GetInstance().SetZeroCopyFramePeriod(kv.second.surfaceKey,
+                                                                     periodNs);
+            OH_LOG_INFO(LOG_APP,
+                        "[GUEST-FRAMES] frame period → %{public}llu us (%{public}.1fHz) "
+                        "bindings=%{public}llu",
+                        (unsigned long long)(periodNs / 1000), 1000000000.0 / (double)periodNs,
+                        (unsigned long long)g_bindings.size());
+        }
+    }
+
+    /* 3) 限频发现新的 guest 面 (只查未绑定的活面)。两类都收:
+     *    vulkan=1 → Venus 目标 (guest Vulkan)
+     *    vulkan=0 → virgl 目标 (guest OpenGL; winex11 私有 present, 见
+     *               dlls/winex11.drv/opengl_winehua.c)
+     * 面的归属由下面的锚判定把关 —— 只有 surfaceId 是本路线在册且已 associate
+     * 的 X 窗才会被挂接 (锚在 wl_ohos_output_client_frame_anchor 里查), 所以
+     * 拿到别的路线的面也不会错挂。 */
     if (nowNs - g_lastAttachPollNs >= kAttachPollIntervalNs)
     {
         g_lastAttachPollNs = nowNs;
@@ -272,7 +312,7 @@ extern "C" void display_guest_frames_tick(void)
         {
             for (const auto &s : surfaces)
             {
-                if (!s.vulkan || s.attached || !s.surfaceId)
+                if (s.attached || !s.surfaceId)
                     continue;
                 if (g_bindings.find(s.surfaceId) != g_bindings.end())
                     continue;

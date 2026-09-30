@@ -26,35 +26,43 @@ uint64_t RendererPerfWindow::Percentile(std::array<uint64_t, kSamples> values, s
     return values[index];
 }
 
-void RendererPerfWindow::PublishDisplayedFps(uint32_t toplevelId, uint64_t nowUs)
+/* 显示序列文件写入 —— 两条路线的宿主渲染器共用这一份 (X 路线见 display/ohos_output.c,
+ * 声明见 common/display_fps.h)。原子 tmp+rename: guest 读到的永远是完整一行。
+ * 返回 0 = 写入成功 (调用方据此决定序号是否推进, 与变更前语义一致)。 */
+extern "C" int winehua_display_fps_publish(uint32_t surface_id, uint64_t sequence, double fps)
 {
     static constexpr const char* kPath =
         "/data/storage/el2/base/files/.wine/drive_c/windows/temp/winehua_display_fps.txt";
+    char tempPath[192];
+    char payload[128];
+    const int payloadLength = std::snprintf(
+        payload, sizeof(payload), "%llu %.3f %u\n",
+        static_cast<unsigned long long>(sequence), fps, surface_id);
+    std::snprintf(tempPath, sizeof(tempPath), "%s.tmp.%d", kPath, getpid());
+
+    const int fd = payloadLength > 0 && payloadLength < static_cast<int>(sizeof(payload))
+        ? open(tempPath, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
+    if (fd < 0) return -1;
+    const ssize_t written = write(fd, payload, static_cast<size_t>(payloadLength));
+    close(fd);
+    if (written != payloadLength || rename(tempPath, kPath))
+    {
+        unlink(tempPath);
+        return -1;
+    }
+    return 0;
+}
+
+void RendererPerfWindow::PublishDisplayedFps(uint32_t toplevelId, uint64_t nowUs)
+{
     const uint64_t elapsedUs = nowUs - publishStartedUs;
     if (elapsedUs < 1000000) return;
 
     const double fps = static_cast<double>(publishFrames) * 1000000.0 /
                        static_cast<double>(std::max<uint64_t>(1, elapsedUs));
-    char tempPath[192];
-    char payload[128];
-    const unsigned long long nextSequence =
-        static_cast<unsigned long long>(publishSequence + 1);
-    const int payloadLength = std::snprintf(
-        payload, sizeof(payload), "%llu %.3f %u\n", nextSequence, fps, toplevelId);
-    std::snprintf(tempPath, sizeof(tempPath), "%s.tmp.%d.%p",
-                  kPath, getpid(), static_cast<void*>(this));
-
-    const int fd = payloadLength > 0 && payloadLength < static_cast<int>(sizeof(payload))
-        ? open(tempPath, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
-    if (fd >= 0)
-    {
-        const ssize_t written = write(fd, payload, static_cast<size_t>(payloadLength));
-        close(fd);
-        if (written == payloadLength && !rename(tempPath, kPath))
-            publishSequence++;
-        else
-            unlink(tempPath);
-    }
+    /* 序号只在写入成功后前进 (guest 侧以"序号变化"判定宿主出图) */
+    if (!winehua_display_fps_publish(toplevelId, publishSequence + 1, fps))
+        publishSequence++;
 
     publishFrames = 0;
     publishStartedUs = nowUs;

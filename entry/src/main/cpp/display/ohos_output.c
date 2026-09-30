@@ -22,6 +22,8 @@
 #include "ohos_egl_import.h"
 
 #include <dlfcn.h>
+#include <sys/eventfd.h>
+#include <native_vsync/native_vsync.h> /* 帧时钟 (任务 2): 系统 VSync 驱动 */
 #include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +54,7 @@
 #include <wlr/types/wlr_scene.h>
 
 #include "display_guest_frames.h" /* M2-T5: guest Vulkan 帧接收侧 (帧时钟内驱动) */
+#include "../common/display_fps.h" /* 宿主显示序列发布 (guest displayed 门判据) */
 
 struct wl_ohos_output {
     struct wlr_output *output;
@@ -61,7 +64,13 @@ struct wl_ohos_output {
     OHNativeWindow *window;
     struct wl_listener commit_listener;
     struct wl_listener xnew_surface; /* xwayland->events.new_surface (T9) */
-    struct wl_event_source *frame_timer;
+    struct wl_event_source *frame_timer;  /* 兜底节拍 + VSync 看门狗 (任务 2) */
+    struct wl_event_source *vsync_source; /* wl_event_loop_add_fd(vsync_fd) */
+    OH_NativeVSync *vsync;                /* 帧时钟主驱动 (任务 2) */
+    int vsync_fd;                         /* eventfd: VSync 线程 -> event loop */
+    int64_t vsync_last_ns;                /* 最近 VSync 回调时刻 (跨线程, __atomic) */
+    int64_t frame_period_ns;              /* 显示周期 (VSync 上报, 0 = 未接入) */
+    bool vsync_stalled;                   /* VSync 停摆/未启动 ⇒ 走兜底节拍 */
     uint32_t frame_seq;
     uint32_t last_crc;
 };
@@ -537,14 +546,85 @@ out:
     return ok;
 }
 
-// 30fps 帧时钟 (M1-T3 scene 版): frame_done 无条件按节拍泵出 (client 的
-// frame 节流靠它解锁 —— 不泵则 client 等回调、无新 damage、scene 无帧
-// 可提, 互等死锁, gate1 实测停在首帧), commit 由 scene damage 门控
-// (画面静止时零渲染零拷贝)。headless output 无自身 frame 事件, 本定时器
-// 即帧时钟。
-static int FrameTick(void *data)
+/* ── 帧时钟 (任务 2): 系统 VSync 主驱动, 33ms 定时器兜底 ──────────────────
+ * 变更前: `wl_event_source_timer_update(…, 33)` 自建 30Hz 节拍 ⇒ 输出被钳在
+ * ~30fps (spec §1.3 实测)。现在主驱动是系统 VSync (期望区间 {60,120,120},
+ * 与 wayland 渲染器同口径), 回调只写 eventfd 唤醒 event loop —— 渲染仍在
+ * loop 线程 (wlroots 非线程安全)。VSync 缺席/停摆 ⇒ 自动退回 33ms 定时器
+ * (行为与本变更前一致), 回调恢复 ⇒ 自动切回 VSync。 */
+#define FRAME_FALLBACK_MS 33  /* 兜底节拍 (与本变更前口径一致) */
+#define VSYNC_STALL_MS 200    /* 超过此时长未见回调 ⇒ 判停摆 */
+#define VSYNC_WATCHDOG_MS 250 /* VSync 存活时的看门狗周期 */
+
+static void FrameStep(bool via_vsync);
+
+static int64_t NowNs(void)
 {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000ll + (int64_t)ts.tv_nsec;
+}
+
+/* VSync 回调 (VSync 线程): 只记时刻 + 写 eventfd 唤醒, 不碰渲染状态。 */
+static void OnVSync(long long timestamp, void *data)
+{
+    (void)timestamp;
     (void)data;
+    __atomic_store_n(&g_out.vsync_last_ns, NowNs(), __ATOMIC_RELAXED);
+    if (g_out.vsync_fd >= 0) {
+        uint64_t one = 1;
+        /* EAGAIN = 本拍已有待处理唤醒, 合并即可 (时钟不数拍, 只做节拍) */
+        ssize_t n = write(g_out.vsync_fd, &one, sizeof(one));
+        (void)n;
+    }
+}
+
+static void VsyncRearm(void)
+{
+    if (g_out.vsync && OH_NativeVSync_RequestFrame(g_out.vsync, OnVSync, NULL) != 0)
+        OHLOG("帧时钟: RequestFrame 失败, 等看门狗续订");
+}
+
+/* eventfd 唤醒 (event loop 线程): 渲染一帧后按拍续订 —— 渲染完成再续订,
+ * 掉帧时丢拍而不是堆积多个待处理唤醒。 */
+static int HandleVSyncWake(int fd, uint32_t mask, void *data)
+{
+    (void)mask;
+    (void)data;
+    uint64_t v;
+    while (read(fd, &v, sizeof(v)) == (ssize_t)sizeof(v))
+        ;
+    if (g_out.vsync_stalled) {
+        g_out.vsync_stalled = false;
+        OHLOG("帧时钟: VSync 回调恢复, 从 %{public}dms 兜底节拍切回", FRAME_FALLBACK_MS);
+    }
+    {
+        /* 显示周期只有回调之后才可用 (native_vsync.h:159 说明)。guest 侧
+         * present 节奏要跟随它, 所以每次唤醒都取一次 —— 但上报值逐拍抖动
+         * 几微秒 (实测 8330~8334us), 原样下发会让每次抖动都变成一次 IPC 与
+         * 一行日志, 所以只认超过 0.5ms 的变化 (与 egl_renderer 同阈值)。 */
+        long long period = 0;
+        if (OH_NativeVSync_GetPeriod(g_out.vsync, &period) == 0 && period > 0) {
+            int64_t prev = __atomic_load_n(&g_out.frame_period_ns, __ATOMIC_RELAXED);
+            if (prev == 0 || period > prev + 500000 || period < prev - 500000) {
+                __atomic_store_n(&g_out.frame_period_ns, (int64_t)period, __ATOMIC_RELAXED);
+                OHLOG("帧时钟: 显示周期 %{public}lldns (%{public}.2fHz), 前值 %{public}lldns",
+                      period, 1000000000.0 / (double)period, (long long)prev);
+            }
+        }
+    }
+    FrameStep(true);
+    VsyncRearm();
+    return 0;
+}
+
+/* 一拍 (M1-T3 scene 版): frame_done 无条件按节拍泵出 (client 的 frame 节流
+ * 靠它解锁 —— 不泵则 client 等回调、无新 damage、scene 无帧可提, 互等死锁,
+ * gate1 实测停在首帧), commit 由 scene damage 门控 (画面静止时零渲染零拷贝)。
+ * headless output 无自身 frame 事件, 本函数即帧时钟的一拍。
+ * via_vsync 只用于 rate 行的节拍来源归因。 */
+static void FrameStep(bool via_vsync)
+{
     struct ohos_client_surface *c;
     /* M2-T5: guest Vulkan 帧先落点再摆位 (frame_set 建/置节点, 下面的循环
      * 统一按窗几何校正)。必须在 scene 提交之前 —— 本拍到的帧本拍就上屏。 */
@@ -618,6 +698,7 @@ static int FrameTick(void *data)
         {
             struct ohos_client_surface *rc;
             static uint64_t s_surfCommits, s_needsFrame, s_ticks, s_lastOut, s_lastNs;
+            static uint64_t s_vsyncTicks, s_timerTicks;
             wl_list_for_each(rc, &g_clients, link) {
                 if (!rc->xs || !rc->xs->surface)
                     continue;
@@ -626,6 +707,10 @@ static int FrameTick(void *data)
                 rc->lastSeq = seq;
             }
             ++s_ticks;
+            if (via_vsync)
+                ++s_vsyncTicks;
+            else
+                ++s_timerTicks;
             if (render)
                 ++s_needsFrame;
             uint64_t ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
@@ -633,21 +718,59 @@ static int FrameTick(void *data)
                 s_lastNs = ns;
                 s_lastOut = g_out.frame_seq;
             } else if (ns - s_lastNs >= 1000000000ull) {
+                /* 宿主显示序列发布 (guest 用例的 displayed 门读它, 与 wayland
+                 * 渲染器共用 common/perf_utils.cpp 的写入实现): 只有当这一秒
+                 * 真的提交过帧才推进序号 —— 序号不动 = 宿主没出图。 */
+                {
+                    uint64_t outCommits = g_out.frame_seq - s_lastOut;
+                    if (outCommits)
+                        winehua_display_fps_publish(
+                            0, g_out.frame_seq,
+                            (double)outCommits * 1e9 / (double)(ns - s_lastNs));
+                }
                 OHLOG("rate surfCommits=%{public}llu outCommits=%{public}llu "
-                      "needsFrame=%{public}llu ticks=%{public}llu over=%{public}llums",
+                      "needsFrame=%{public}llu ticks=%{public}llu vsync=%{public}llu "
+                      "timer=%{public}llu over=%{public}llums",
                       (unsigned long long)s_surfCommits,
                       (unsigned long long)(g_out.frame_seq - s_lastOut),
                       (unsigned long long)s_needsFrame, (unsigned long long)s_ticks,
+                      (unsigned long long)s_vsyncTicks,
+                      (unsigned long long)s_timerTicks,
                       (unsigned long long)((ns - s_lastNs) / 1000000));
                 s_lastOut = g_out.frame_seq;
                 s_surfCommits = 0;
                 s_needsFrame = 0;
                 s_ticks = 0;
+                s_vsyncTicks = 0;
+                s_timerTicks = 0;
                 s_lastNs = ns;
             }
         }
     }
-    wl_event_source_timer_update(g_out.frame_timer, 33);
+}
+
+/* 兜底节拍 + VSync 看门狗 (同一个定时器): VSync 存活时本回调只做停摆检测,
+ * 不渲染; 停摆/缺席时按 33ms 泵帧 (对本变更前行为)。 */
+static int FrameTick(void *data)
+{
+    (void)data;
+    if (g_out.vsync && !g_out.vsync_stalled) {
+        int64_t last = __atomic_load_n(&g_out.vsync_last_ns, __ATOMIC_RELAXED);
+        int64_t now = NowNs();
+        if (!last || now - last > (int64_t)VSYNC_STALL_MS * 1000000ll) {
+            g_out.vsync_stalled = true;
+            OHLOG("帧时钟: VSync 停摆 (最后回调 %{public}lldms 前) ⇒ 降级 %{public}dms 兜底节拍",
+                  (long long)(last ? (now - last) / 1000000 : -1), FRAME_FALLBACK_MS);
+        }
+    }
+    if (g_out.vsync && !g_out.vsync_stalled) {
+        wl_event_source_timer_update(g_out.frame_timer, VSYNC_WATCHDOG_MS);
+        return 0;
+    }
+    if (g_out.vsync) /* 停摆中: 每拍重试续订, 恢复由 HandleVSyncWake 收敛 */
+        VsyncRearm();
+    FrameStep(false);
+    wl_event_source_timer_update(g_out.frame_timer, FRAME_FALLBACK_MS);
     return 0;
 }
 
@@ -795,7 +918,8 @@ int wl_ohos_output_client_xwindow_alive(uint32_t xwindow)
     return FindClientByWindow(xwindow) != NULL;
 }
 
-int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
+int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
+                                    int flip_vertical)
 {
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     struct wlr_xwayland_surface *xs;
@@ -823,6 +947,11 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
                                    &c->scene_surf->buffer->node);
         DumpSceneRoot("frame node created");
     }
+    /* 行序修正必须在 set_buffer 之前定下 (见头文件 flip_vertical 的实测依据):
+     * GL(virgl) 面纵向翻一次, Vulkan(venus) 面不翻。 */
+    wlr_scene_buffer_set_transform(c->frame_node,
+                                   flip_vertical ? WL_OUTPUT_TRANSFORM_FLIPPED_180
+                                                 : WL_OUTPUT_TRANSFORM_NORMAL);
     /* set_buffer 解锁旧帧 (归还队列槽位由 buffer 析构兜底), dest_size 按窗口
      * 几何 —— 帧尺寸与窗一致时是恒等变换, 不一致时按窗口缩放 (不留黑边)。 */
     wlr_scene_buffer_set_buffer(c->frame_node, buffer);
@@ -840,6 +969,15 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
 uint32_t wl_ohos_output_present_seq(void)
 {
     return g_out.frame_seq;
+}
+
+uint64_t wl_ohos_output_frame_period_ns(void)
+{
+    int64_t period = __atomic_load_n(&g_out.frame_period_ns, __ATOMIC_RELAXED);
+
+    if (period > 0 && g_out.vsync && !g_out.vsync_stalled)
+        return (uint64_t)period;
+    return (uint64_t)FRAME_FALLBACK_MS * 1000000ull;
 }
 
 void wl_ohos_output_client_frame_clear(uint32_t xwindow)
@@ -979,9 +1117,44 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         wl_signal_add(&xwayland->events.new_surface, &g_out.xnew_surface);
     }
 
+    /* 帧时钟 (任务 2, 见 FrameTick 上方注释): 主驱动 = 系统 VSync, 33ms 定时器
+     * 兜底。接入失败/停摆都不静默 —— 降级会把节拍来源打进日志与 rate 行。 */
+    g_out.vsync_fd = -1;
     g_out.frame_timer = wl_event_loop_add_timer(loop, FrameTick, g_out.output);
+    {
+        static char vsyncName[] = "WineHuaDisplay";
+        g_out.vsync = OH_NativeVSync_Create(vsyncName, sizeof(vsyncName) - 1);
+        if (g_out.vsync) {
+            OH_NativeVSync_ExpectedRateRange range = {60, 120, 120};
+            int rr = OH_NativeVSync_SetExpectedFrameRateRange(g_out.vsync, &range);
+            g_out.vsync_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+            if (g_out.vsync_fd >= 0)
+                g_out.vsync_source = wl_event_loop_add_fd(loop, g_out.vsync_fd,
+                                                          WL_EVENT_READABLE,
+                                                          HandleVSyncWake, NULL);
+            if (!g_out.vsync_source) {
+                if (g_out.vsync_fd >= 0) {
+                    close(g_out.vsync_fd);
+                    g_out.vsync_fd = -1;
+                }
+                OH_NativeVSync_Destroy(g_out.vsync);
+                g_out.vsync = NULL;
+                OH_LOG_ERROR(LOG_APP, "帧时钟: VSync 接入失败 (eventfd/add_fd) ⇒ 33ms 兜底");
+            } else {
+                g_out.vsync_stalled = true; /* 首次续订到回调之间按停摆算 */
+                VsyncRearm();
+                OHLOG("帧时钟: VSync 主驱动已接入 (min=%{public}d max=%{public}d "
+                      "expected=%{public}d setRangeRc=%{public}d fd=%{public}d)",
+                      range.min, range.max, range.expected, rr, g_out.vsync_fd);
+            }
+        } else {
+            OH_LOG_ERROR(LOG_APP, "帧时钟: OH_NativeVSync_Create 失败 ⇒ 33ms 兜底");
+        }
+    }
     if (g_out.frame_timer)
-        wl_event_source_timer_update(g_out.frame_timer, 100);
-    OHLOG("output chain up: 800x600@30fps");
+        wl_event_source_timer_update(g_out.frame_timer,
+                                     g_out.vsync ? VSYNC_WATCHDOG_MS : 100);
+    OHLOG("output chain up: 800x600, 帧时钟=%{public}s",
+          g_out.vsync ? "VSync(期望 60-120Hz)" : "33ms 兜底");
     return 0;
 }

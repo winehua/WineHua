@@ -55,7 +55,13 @@ int wl_ohos_output_client_xwindow_alive(uint32_t xwindow);
 
 // 把一帧挂到该窗 (首次调用建节点并置顶于 X 面之上; 旧帧随节点解锁归还)。
 // 返回 0 = 窗口不可挂 (不在册 / 锚不可用) —— 调用方必须自行丢弃 buffer。
-int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer);
+// flip_vertical: 帧内容行序修正, 按 presenter 目标类型定 (实测依据:
+//   wayland 渲染器 (graphics/egl_renderer.cpp ComposeZeroCopySamplingTransform)
+//   的采样变换是 flipY = vulkanSource —— 即 venus(Vulkan) 面直取, GL(virgl) 面
+//   要翻一次; wlroots 消费不带任何采样变换, 所以本侧要显式补: GL 面 = 1,
+//   Vulkan 面 = 0。判反的症状: 图像上下颠倒)。
+int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
+                                    int flip_vertical);
 
 // 摘掉该窗的帧 (解绑/收尾): 清 buffer + 停用节点。节点本身留到窗口记录
 // 销毁时回收 (DestroyFrameNode), 届时一并归还它持有的队列 buffer。
@@ -69,6 +75,11 @@ uint32_t wl_ohos_output_frames_in_scene(void);
 
 /* 输出 present 序号 (每帧一次自增) —— 不变量检查器用 (known-issues §2.6) */
 uint32_t wl_ohos_output_present_seq(void);
+
+/* 当前显示周期 (ns): VSync 已接入时取系统上报值, 兜底节拍/未接入时 = 33ms。
+ * guest 帧的生产节奏 (presenter 的 framePeriod) 必须跟这个走 —— 宿主按它
+ * 回压 guest, 硬编码 30fps 会把 guest 钳在 30fps (M2 帧率债)。 */
+uint64_t wl_ohos_output_frame_period_ns(void);
 
 // 建 headless output (800x600) + 自定义 OHOS allocator + 帧定时器:
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。
