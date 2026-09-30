@@ -211,12 +211,13 @@ void LogStats(uint64_t nowNs)
     OH_LOG_INFO(LOG_APP,
                 "[GUEST-FRAMES] stats bindings=%{public}u frames=%{public}llu "
                 "destroyed_windows=%{public}llu stale_frames=%{public}llu "
-                "orphan_frames=%{public}llu",
+                "orphan_frames=%{public}llu scene_frames=%{public}u",
                 static_cast<uint32_t>(g_bindings.size()),
                 static_cast<unsigned long long>(frames),
                 static_cast<unsigned long long>(destroyed),
                 static_cast<unsigned long long>(stale),
-                static_cast<unsigned long long>(orphan));
+                static_cast<unsigned long long>(orphan),
+                wl_ohos_output_frames_in_scene());
 }
 
 } // namespace

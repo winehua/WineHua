@@ -57,7 +57,9 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
    `window_id` 在册核对 → 建 `OH_ConsumerSurface` → `AcquireNativeWindow` 的生产窗
    交 `GraphicsBroker::AttachZeroCopyTarget` → 每帧 `Acquire/ReleaseNativeWindowBuffer`
    借还一格队列 buffer，经 T4 的 `EGL_NATIVE_BUFFER_OHOS` 导入挂到该窗 scene 节点
-   （与 X 面同父、`place_above` 贴其上，随窗销毁由 wlroots 连带回收）。
+   （挂在 X 面节点同一父树——X 面节点由 `wlr_scene_surface_create` 直接建在 scene
+   根上——再 `place_above` 该面；**帧节点所有权在合成器**，随窗记录
+   dissociate/destroy 显式销毁，wlroots 不连带回收它）。
 4. **销毁即失效**：X 窗 destroy → 当拍摘帧 + 解绑 + 计数；同 id 的新窗是另一条
    在册记录，老帧进不了它。
 
@@ -224,6 +226,15 @@ guest 无 libGL、winex11 GL 段未编入（`WINEHUA_ALLOW_X11_NO_GLX=1`）。M1
 **重锚（T5）**：落地形态与实测见 §4.2 ④ 段（id = X window id；接收侧 window_id
 映射 + 销毁即失效；present 6/6 PASS、133~137 帧/轮、截屏实证上屏）。
 
+**重锚附带修的 guest 侧卡死（wine fork `9f7a73d5`）**：X 路线上 win32u 的 Vulkan
+init（`pthread_once`）里走到 lazy 驱动入口时，`load_driver()` 的显示缓存刷新会
+拿 force 分支（刚加载的 winex11 改写 video 注册表），在本进程自身 Vulkan 初始化
+未完成时驱动宿主 loader/ICD 建第二个实例 —— 重入调用正常返回后卡死在
+`p_vkCreateInstance` 一侧，进程 ~100% CPU 自旋。修法 = `__wine_get_vulkan_driver()`
+在 once 之前**只加载显示驱动**（`load_display_driver()`，不刷缓存；把刷新搬到
+这里会让两条路线都在首个 Vulkan 调用上多一次 GPU 枚举，实测 wayland 路线的
+storage image 回读随即失效）。修后 X 路线 present 从「首帧卡死」变为 6/6 通过。
+
 **dxvk 出口（T6）**：X 路线 `dxvk-cube` PASS（`frames=221`、`angleRegressions=0`、
 `presentHresult=0x0`）⇒ 出图成立；`dxvk-legacy` 为既有失败（known-issues §2.5，
 对照实验证明与重锚无因果）。
@@ -237,6 +248,34 @@ present 1/1；X 路线 wine-vulkan offscreen 1/1、present 6/6、dxvk-cube PASS�
 （`/data/local/tmp` 132GB、6 个采集进程常驻、load ~16）期间，wayland 路线的
 `venus_storage_write` 回读失败出现 1/4；清理后同一构建 5/5 PASS。样本不足以
 定论，但方向是「设备侧负载/IO 压力」而非代码（fix2 在该路线无机制作用面）。
+
+**收尾评审修复：guest 帧节点的所有权（2026-09-30，设备 .5）**。帧节点原先只挂
+在窗口记录上，并假定「随 X 面节点一起被 wlroots 回收」——实测不成立：
+`wlr_scene_surface_create` 把 X 面节点**直接**建在 scene 根上（wlroots 侧没有
+中间 tree），帧节点只是它的同父兄弟；surface 销毁时 wlroots 只回收自己那一个。
+于是窗口销毁后帧节点留在 scene 上：**最后一帧成鬼影 + 节点与队列槽位泄漏**，
+且它持有的队列 buffer 指向已销毁的 `OH_NativeImage`（悬垂调用面）。修复 =
+`DestroyFrameNode()` 在 dissociate / destroy 两条路径显式销毁——节点所有权在
+合成器，不在 wlroots。判据（新仪器 `scene_frames=`：递归数 scene 里仍挂着本模块
+队列 buffer 的节点；窗口全部销毁后必须为 0）：
+
+| 构建 | 结果 |
+|---|---|
+| 对照（仅停用销毁路径，r20260930-080324） | 窗销毁后 `bindings=0 destroyed_windows=1 scene_frames=1` —— 节点留在 scene 上 |
+| 修复（r20260930-080927） | 同点 `scene_frames=0` + 日志 `guest frame node destroyed … (dissociate)`，present 用例 PASS（`frames=136`） |
+
+回归（同构建）：X 路线 `dxvk-cube` PASS（r081450）、wayland core 4/4（r081523）。
+
+**`displayroute` 的 `dx-notepad` 红项裁定更正（2026-09-30）**：此前记为「X 路线
+内容率回压」，证据不支持。实况是该用例**两条路线同形失败**——X 路线（经 job
+编排 + 路线 env，r20260930-081040）与默认 wayland 路线（r20260930-081257）均
+为 90s 超时、无结果文件；guest stderr 显示 `C:\smoke\x64\notepad.exe --automation
+…` 启动后无任何输出（进程提前退出）。即：**不是 X 路线的问题，也不是内容率
+问题**，属该用例自身待查（入口：其结果文件写盘路径 + `WINEHUA_WINEDEBUG` trace，
+与 known-issues §2.1 的记事本线同源）。同批复跑的另一条教训：不经 job 编排、
+不带 `displayroute` 标志与路线 env 的 `--suite displayroute` 是**无效调用**
+（跑在与 X 无关的默认路线上），不能进证据链——运行入口固定用
+`smoke/jobs/displayroute-suite.json`。
 
 ## 7. 里程碑与回退线
 

@@ -38,7 +38,9 @@ int wl_ohos_surface_has_content(struct wlr_surface *surf);
 /* ── M2-T5: guest Vulkan 帧 (Venus 私有 present) 的落点 ─────────────────────
  * 私有 present 的 SURFACE_ID 是 X 顶层窗 id, 帧按 clientPid<<32|id 路由进来,
  * 落点就是这个 id 对应的 X 窗。scene 侧由本文件持有帧节点 (wlr_scene_buffer):
- * 与同窗 X 面同父、紧贴其上, 随窗销毁由 wlroots 连带回收。 */
+ * 挂在 X 面节点同一父树 (scene 根) 并 place_above 到该面之上。**所有权在本
+ * 文件**: wlroots 只回收它自己那个 X 面节点, 帧节点随窗记录 (dissociate /
+ * destroy) 显式销毁。 */
 struct wlr_buffer; /* 前置声明必须在文件作用域: 只出现在原型里的 tag 会被
                     * 当成原型作用域的新类型, 定义处就报 conflicting types */
 
@@ -55,9 +57,15 @@ int wl_ohos_output_client_xwindow_alive(uint32_t xwindow);
 // 返回 0 = 窗口不可挂 (不在册 / 锚不可用) —— 调用方必须自行丢弃 buffer。
 int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer);
 
-// 摘掉该窗的帧 (解绑/收尾): 清 buffer + 停用节点 (节点随窗销毁回收)。
-// 窗口已销毁时是 no-op。
+// 摘掉该窗的帧 (解绑/收尾): 清 buffer + 停用节点。节点本身留到窗口记录
+// 销毁时回收 (DestroyFrameNode), 届时一并归还它持有的队列 buffer。
+// 窗口已销毁时是 no-op (那种情况节点已经没了)。
 void wl_ohos_output_client_frame_clear(uint32_t xwindow);
+
+// scene 里还挂着本模块队列 buffer 的节点数 (回归仪器, 判据: 窗口全部销毁后
+// = 0)。数的是 scene 真实状态而不是本文件的记录 —— 帧节点一旦漏销毁, 窗口
+// 记录早已 free, 只有 scene 上还留着它: 鬼影 + 队列槽位泄漏。
+uint32_t wl_ohos_output_frames_in_scene(void);
 
 // 建 headless output (800x600) + 自定义 OHOS allocator + 帧定时器:
 // 每帧绘制渐变+边框测试图案 → commit → NativeWindow 直推 (Attach+Flush)。

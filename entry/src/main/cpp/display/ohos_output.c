@@ -85,6 +85,8 @@ struct ohos_client_surface {
 static struct wl_ohos_output g_out;
 static struct wl_list g_clients;
 
+static void DumpSceneRoot(const char *why); /* 诊断用, 见下方定义 */
+
 // 帧数据的 32 位折叠校验 (高低 16 位异或), 用于 hilog 判帧稳定
 static uint32_t FrameCrc(const uint8_t *p, size_t n)
 {
@@ -119,17 +121,33 @@ static void ClientAssociate(struct wl_listener *listener, void *data)
           (void *)xs->surface);
 }
 
+/* M2-T5 帧节点的所有权在本文件, 不在 wlroots: 节点由 frame_set 建在 scene
+ * 根上 (X 面节点的同一父树), wlroots 只认识自己那个 X 面节点 —— surface 销毁
+ * 时它回收自己的, 不会连带帧节点。因此窗口消失的每条路径都要显式销毁, 否则
+ * 留下最后一帧的鬼影 + 节点/队列槽位泄漏 (M2 收尾评审对照实验: 停用本函数后
+ * 窗销毁, scene_frames 停在 1)。 */
+static void DestroyFrameNode(struct ohos_client_surface *c, const char *why)
+{
+    if (!c->frame_node)
+        return;
+    OHLOG("guest frame node destroyed xwin=%{public}u (%{public}s)",
+          c->xs ? c->xs->window_id : 0u, why);
+    wlr_scene_node_destroy(&c->frame_node->node); /* 连带释放其持有的队列 buffer */
+    c->frame_node = NULL;
+    DumpSceneRoot(why);
+}
+
 static void ClientDissociate(struct wl_listener *listener, void *data)
 {
     struct ohos_client_surface *c =
         wl_container_of(listener, c, dissociate);
     (void)data;
-    /* surface 已随 dissociate 失效; scene 节点由 wlroots 随 surface 销毁
-     * 回收, 这里只清引用。帧节点是 X 面节点的子节点, 同一波回收 —— 指针必须
-     * 一起清, 否则下次挂在同窗上会踩悬垂 (dissociate 先于 surface destroy
-     * 送达: 本监听器注册早于 scene_surface 自建的销毁监听器)。 */
+    /* surface 已随 dissociate 失效; X 面节点由 wlroots 随 surface 销毁回收,
+     * 这里只清引用 (dissociate 先于 surface destroy 送达: 本监听器注册早于
+     * scene_surface 自建的销毁监听器)。帧节点不同父属 wlroots, 必须在此显式
+     * 销毁: 窗口内容都已消失, 帧不能留下。 */
+    DestroyFrameNode(c, "dissociate");
     c->scene_surf = NULL;
-    c->frame_node = NULL;
 }
 
 /* 生命周期仪器 (M1-T5 起, 低量永久保留): MapRequest = client 调了
@@ -598,6 +616,9 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     struct ohos_client_surface *c =
         wl_container_of(listener, c, destroy);
     (void)data;
+    /* dissociate 通常先到, 但 destroy 可能单独送达 (未 associate 就销毁, 或
+     * 事件顺序变化): 帧节点的销毁不能只挂在 dissociate 上。 */
+    DestroyFrameNode(c, "destroy");
     wl_list_remove(&c->destroy.link);
     wl_list_remove(&c->request_configure.link);
     wl_list_remove(&c->associate.link);
@@ -743,9 +764,12 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
     if (!c->scene_surf || !c->scene_surf->buffer)
         return 0;
     if (!c->frame_node) {
-        /* 节点必须与 X 面同父: scene 的子节点按注册序绘制, 建在 scene 根上
-         * 会压到后注册的窗口之上 (Z 序错乱的经典形态)。建好后 place_above
-         * 贴住 X 面 —— 同窗内先画面、后画帧。 */
+        /* 挂到 X 面节点的同一父树 —— wlr_scene_surface_create 把 X 面节点直接
+         * 建在 scene 根上 (wlroots 侧没有中间 tree, 见 types/scene/surface.c),
+         * 所以这里取到的父就是 scene 根。place_above 把帧插到本窗 X 面之后:
+         * scene 按父节点子表序绘制, 该位置既压住本窗内容, 又不会越过后注册
+         * 的窗口 (后建窗口仍在子表更后)。节点归本文件所有, 窗口消失时必须
+         * 显式销毁 (DestroyFrameNode) —— wlroots 不连带回收它。 */
         struct wlr_scene_tree *parent =
             wlr_scene_tree_from_node(c->scene_surf->buffer->node.parent);
         c->frame_node = wlr_scene_buffer_create(parent, NULL);
@@ -756,6 +780,7 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer)
         }
         wlr_scene_node_place_above(&c->frame_node->node,
                                    &c->scene_surf->buffer->node);
+        DumpSceneRoot("frame node created");
     }
     /* set_buffer 解锁旧帧 (归还队列槽位由 buffer 析构兜底), dest_size 按窗口
      * 几何 —— 帧尺寸与窗一致时是恒等变换, 不一致时按窗口缩放 (不留黑边)。 */
@@ -773,6 +798,50 @@ void wl_ohos_output_client_frame_clear(uint32_t xwindow)
         return;
     wlr_scene_buffer_set_buffer(c->frame_node, NULL);
     wlr_scene_node_set_enabled(&c->frame_node->node, false);
+}
+
+/* 递归数 scene 里还挂着本模块借来的队列 buffer 的节点 (即活着的 guest 帧).
+ * 数 scene 真实状态而不是本文件的记录: 窗口记录在销毁时已 free, 孤儿节点却
+ * 还挂在 scene 上 —— 那正是泄漏看不见的原因。判据: 窗口全部销毁后回 0。 */
+static uint32_t CountOwnedFrames(struct wlr_scene_tree *tree)
+{
+    struct wlr_scene_node *n;
+    uint32_t count = 0;
+    wl_list_for_each(n, &tree->children, link) {
+        if (n->type == WLR_SCENE_NODE_TREE) {
+            count += CountOwnedFrames(wlr_scene_tree_from_node(n));
+        } else if (n->type == WLR_SCENE_NODE_BUFFER) {
+            struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(n);
+            if (sb->buffer && wl_ohos_consumer_buffer_owns(sb->buffer))
+                ++count;
+        }
+    }
+    return count;
+}
+
+uint32_t wl_ohos_output_frames_in_scene(void)
+{
+    return g_out.scene ? CountOwnedFrames(&g_out.scene->tree) : 0;
+}
+
+/* 诊断: 逐个子节点打类型/位置/启用态。计数对不上时靠它定位是谁的节点
+ * (本文件建的只有背景 rect、X 面节点、帧节点三类)。 */
+static void DumpSceneRoot(const char *why)
+{
+    struct wlr_scene_node *n;
+    char line[512];
+    int off = 0;
+    if (!g_out.scene)
+        return;
+    wl_list_for_each(n, &g_out.scene->tree.children, link) {
+        const char *t = n->type == WLR_SCENE_NODE_TREE ? "tree" :
+                        (n->type == WLR_SCENE_NODE_BUFFER ? "buf" : "rect");
+        off += snprintf(line + off, sizeof(line) - (size_t)off, " %s@%d,%d%s",
+                        t, n->x, n->y, n->enabled ? "" : "*off");
+        if (off >= (int)sizeof(line) - 32)
+            break;
+    }
+    OHLOG("scene root (%{public}s):%{public}s", why, line);
 }
 
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
@@ -839,6 +908,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         OH_LOG_ERROR(LOG_APP, "scene background rect failed");
         return -1;
     }
+    DumpSceneRoot("chain start");
     g_out.scene_output = wlr_scene_output_create(g_out.scene, g_out.output);
     if (!g_out.scene_output) {
         OH_LOG_ERROR(LOG_APP, "scene_output create failed");

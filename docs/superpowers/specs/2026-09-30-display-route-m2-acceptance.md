@@ -25,12 +25,19 @@
 **阶段 A 总体：达成**（判据 1–7 全过；三条既有红项在 T5/T6 期间以对照实验
 逐条与本次改动解耦）。
 
+**收尾修复（终审 fix pass，2026-09-30）**：whole-branch 评审发现 guest 帧节点
+无主（假定随 X 面节点被 wlroots 回收，实为同父兄弟；窗口销毁后留鬼影 + 节点与
+队列槽位泄漏 + 悬垂调用面）。修复 = dissociate / destroy 两条路径显式销毁节点，
+判据仪器 `scene_frames=` 对照实验（停用销毁路径 r080324 `=1` → 修复 r080927 `=0`，
+present 用例 PASS）。详情与证据表见 spec §6.4；回归：X 路线 `dxvk-cube` PASS
+（r081450）、wayland core 4/4（r081523）。
+
 ## 既有红项（非本阶段引入，逐条有对照证据）
 
 | 项 | 现象 | 与本次改动解耦的证据 |
 |---|---|---|
 | `dxvk-legacy`（d3d11-smoke） | `D3D11CreateDeviceAndSwapChain` 返 `E_INVALIDARG`（`presentResult=-2147024809`） | ①两条显示路线同报文；②同参数同调用的 cube 双路线 PASS（非静态能力拒绝）；③wine fork stash 回 T5 之前完整构建 + 卸载重装后 wayland 2/2 复现（r064027/r064134）。详见 known-issues §2.5 |
-| X 路线 `displayroute`（dx-notepad） | 超时/结果文件缺失 | 02:19 的归档（r20260930-021916 / r021440）在我方改动之前已是同形失败；根因方向 = X 路线内容率 ~1.8/s（§6.4） |
+| `displayroute`（dx-notepad） | 90s 超时、设备端无结果文件 | **与路线无关**：X 路线（经 job 编排 + 路线 env，r20260930-081040）与默认 wayland 路线（r20260930-081257）同形失败；guest stderr 显示 `notepad.exe --automation …` 启动后无输出（进程提前退出）。历史归档 r021916/r021440 同形（更早，且含内联 `m1t5-notepad` 的记事本 CLI 参数问题）。**根因未定**，属该用例自身待查；此前记的「X 路线内容率回压」无证据支持，已在 spec §6.4 更正 |
 | wayland `venus_storage_write` 回读抖动 | 偶发 `value=0xdeadbeef` | 出现窗与设备被本会话 hilog 落盘占满（132GB/6 采集进程/load ~16）重合；清理后同构建 5/5 PASS。样本不足以定论，记观察（§6.4） |
 
 ## 挂起项（随分支携带，非阻塞）
@@ -52,8 +59,10 @@
 
 1. **旧合成器退役清单**（M3 主题）：wayland 路线现走 `compositor/` + `egl_renderer`
    的旧链，X 路线走 `display/`（wlroots）。退役前必须先把 X 路线的既有红项
-   收掉：①内容率回压（§6.4，影响所有「持续出图」验收）；②GL 呈现链补栈
-   （§2.4）或明确裁剪「X 路线不承接 OpenGL 程序」。
+   收掉：①**注入 X 客户端**内容率回压（§6.4 开头，T4 遗留；影响「持续出图」
+   形态验收——注意它与 `dx-notepad` 无关，那条是路由无关的用例自身失败，见上表）；
+   ②GL 呈现链补栈（§2.4）或明确裁剪「X 路线不承接 OpenGL 程序」；③`dx-notepad`
+   用例自身的待查项（其结果文件从未写出）。
 2. **dxvk-legacy 定位**（§2.5）：DXVK 侧 trace + 私有 WSI 能力输出比对；它是
    DXVK 矩阵里唯一未绿项。
 3. **帧同步收口**（§2.6）：给 guest 帧路径加渲染侧同步（fence 或双缓冲 hold）。
