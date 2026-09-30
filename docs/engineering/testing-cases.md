@@ -112,6 +112,7 @@ winehua_smoke_write_result(&options, status, "dns-api", message, metrics);
 | `env` | 诊断用的 env。有硬性限制，见第 5 节 |
 | `argvMode` | 缺省 `std`：runner 自动生成协议参数（`--automation --run-id --test-id --result`，带 `--seconds`）；`raw`：原样用你写的 argv，`<run-id>` / `<test-id>` 占位符会被替换。自有参数体系的程序（d3d12 系列）用 `raw` |
 | `mode` | `present`（默认，开窗口跑）/ `offscreen`（离屏，wine-vulkan 系用） |
+| `judge` | `external` = **载体用例**：跑的是真实应用（如内置 notepad），它不认 smoke 结果协议、永远写不出结果文件。runner 只跑完 `seconds` 声明的窗口，到点结束该进程，落一条 `status=SKIP`、`stage=external-vehicle` 的"无结论"结果——**设备端不判定**，行为判定归编排（displayroute 注入脚本）与外部证据。不写 = 普通用例（等结果文件，超时即失败）。载体用例不是门禁，别把它的 SKIP 当"验过了"（同 §3.3「测量仪不是门禁」口径） |
 | `seconds` | std 模式下传给程序的运行秒数；`-1` 表示用本次请求的长跑时长（默认 3600s） |
 | `timeoutMs` | 设备端轮询超时，缺省 120000。**要给足程序实际运行时间**，正常跑完都到不了线 |
 
@@ -130,6 +131,8 @@ winehua_smoke_write_result(&options, status, "dns-api", message, metrics);
 | `coverage` | 套件级，检查一组功能矩阵是否都覆盖到（数据来自各测试的 metrics） |
 
 判定器是纯函数、只读归档数据。改判定规则不用重跑设备：`python3 automation/smoke.py check <归档目录>` 对历史结果重新判定。
+
+载体用例（`judge: external`）落的是 `status=SKIP`，`result-json` 原样透传 ⇒ 该用例计 SKIP（不计 FAIL，"passed/total" 里自然也不算 PASS）。谁要用它的行为当判据，得另加编排侧检查或视觉/追踪判定器——SKIP 本身不含"行为正确"的断言。
 
 ## 7. 独立性和可复现
 

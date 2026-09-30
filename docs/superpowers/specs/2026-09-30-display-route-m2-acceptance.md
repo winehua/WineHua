@@ -37,7 +37,7 @@ present 用例 PASS）。详情与证据表见 spec §6.4；回归：X 路线 `d
 | 项 | 现象 | 与本次改动解耦的证据 |
 |---|---|---|
 | `dxvk-legacy`（d3d11-smoke） | `D3D11CreateDeviceAndSwapChain` 返 `E_INVALIDARG`（`presentResult=-2147024809`） | ①两条显示路线同报文；②同参数同调用的 cube 双路线 PASS（非静态能力拒绝）；③wine fork stash 回 T5 之前完整构建 + 卸载重装后 wayland 2/2 复现（r064027/r064134）。详见 known-issues §2.5 |
-| `displayroute`（dx-notepad） | 90s 超时、设备端无结果文件 | **与路线无关**：X 路线（经 job 编排 + 路线 env，r20260930-081040）与默认 wayland 路线（r20260930-081257）同形失败。**根因已定位（同日追到底，见 known-issues §2.8）**：用例把 `--automation …` 交给真实内置记事本，记事本当文件名打开失败 ⇒ 弹「错误」框（`notepad/main.c:645-650` 的 `MessageBoxW(STRING_ERROR)`，X trace 吻合）⇒ 自动化走不下去。此前记的「X 路线内容率回压」无证据支持，已在 spec §6.4 更正 |
+| `displayroute`（dx-notepad） | ~~90s 超时、设备端无结果文件~~ **已清（2026-09-30）** | 根因是**把载体用例套进了自报契约**：用例把 `--automation …` 交给真实内置记事本 ⇒ 记事本当文件名打开失败弹「错误」框（`notepad/main.c:645-650`），且真应用永远写不出结果文件 ⇒ 轮询必然超时。修法 = 新增`judge: "external"` 载体语义（跑完声明时长即落 `SKIP`，设备不判）+ `raw argv` 无参数启动 + 脚本去弹框应答步骤；验收 r20260930-190858/191114（用例 SKIP、job PASS、guest trace 弹框 0 次、截屏文本区 "abchi"）。详见 known-issues §2.8。此前记的「X 路线内容率回压」无证据支持，已在 spec §6.4 更正 |
 | wayland `venus_storage_write` 回读抖动 | 偶发 `value=0xdeadbeef` | 出现窗与设备被本会话 hilog 落盘占满（132GB/6 采集进程/load ~16）重合；清理后同构建 5/5 PASS。样本不足以定论，记观察（§6.4） |
 
 ## 挂起项（随分支携带，非阻塞）
@@ -63,8 +63,9 @@ present 用例 PASS）。详情与证据表见 spec §6.4；回归：X 路线 `d
    的旧链，X 路线走 `display/`（wlroots）。退役前必须先把 X 路线的既有红项
    收掉：①**注入 X 客户端**内容率回压（§6.4 开头，T4 遗留；影响「持续出图」
    形态验收——注意它与 `dx-notepad` 无关，那条是路由无关的用例自身失败，见上表）；
-   ②GL 呈现链补栈（§2.4）或明确裁剪「X 路线不承接 OpenGL 程序」；③`dx-notepad`
-   用例自身（根因已定位：harness 参数喂给真实记事本 ⇒ 「错误」框，修法见 §2.8）。
+   ②GL 呈现链补栈（§2.4）或明确裁剪「X 路线不承接 OpenGL 程序」；③**载体用例
+   （notepad）目前无自动行为判定**（已修成不误报的 SKIP；要当门禁得补视觉/追踪
+   判定器，与 §2.4 的判定器欠账同一件事）。
 2. **dxvk-legacy 定位**（§2.5）：DXVK 侧 trace + 私有 WSI 能力输出比对；它是
    DXVK 矩阵里唯一未绿项。
 3. **帧同步收口**（§2.6）：给 guest 帧路径加渲染侧同步（fence 或双缓冲 hold）。

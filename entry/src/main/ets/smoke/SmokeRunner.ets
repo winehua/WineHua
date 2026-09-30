@@ -328,6 +328,29 @@ export class SmokeRunner {
     if (!process || process.pid <= 0) {
       return this.failure(request, 'startup', `runWineProgram failed: ${winPath}`, -1, test.testId);
     }
+    // 载体用例 (judge='external'): 真应用写不出结果文件, 等文件必然拖满 timeout
+    // 并被判成失败 —— 那是把"无自报"误判成"没跑成"。这里只跑声明的时长窗口,
+    // 到点结束进程, 落一条 status=SKIP 的"无结论"结果: 设备端不判定, 行为判定
+    // 归编排 (displayroute 注入脚本) 与外部证据。
+    if (test.judge === 'external') {
+      const windowMs: number = (seconds > 0 ? seconds : 60) * 1000;
+      hilog.info(DOMAIN, TAG, 'external vehicle test=%{public}s window=%{public}dms pid=%{public}d',
+        test.testId, windowMs, process.pid);
+      await new Promise<void>((r) => setTimeout(r, windowMs));
+      const alive = testNapi.queryWineProcess(process.pid) as ProcessSnapshot;
+      if (alive.found && alive.status === 'running') {
+        testNapi.terminateWineProcess(process.pid);
+      }
+      writeTextFile(resultPath, JSON.stringify({
+        schemaVersion: 1, runId: request.runId, testId: test.testId,
+        status: 'SKIP', stage: 'external-vehicle',
+        message: '载体用例: 无自报结论 (判定在编排/外部证据)', seconds: seconds
+      }));
+      return {
+        schemaVersion: 1, runId: request.runId, testId: test.testId,
+        status: 'SKIP', stage: 'external-vehicle', pid: process.pid
+      };
+    }
     // 子进程死了 (崩溃/被杀) 就不会再有结果文件, 只盯文件的轮询会把崩溃拖满
     // 整个 timeout, 失败信息只剩一句"轮询超时", 崩溃原因整个丢掉。查一次
     // native 进程注册表 (无 IO) 确认已退出的: 宽限几轮等结果落盘, 仍无终态

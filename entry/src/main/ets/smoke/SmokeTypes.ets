@@ -39,6 +39,11 @@ export interface SmokeSuiteTest {
   // (等 guest 的 inject-request 文件 → smokeMapPoint 换算 → sendPointerEvent
   // 逐条注入 → 写 inject-done 文件), 见 SmokeRunner.runInjectable
   inject?: boolean;
+  // 'external' = 载体用例: 跑的是真实应用 (notepad 这类), 不认 smoke 结果协议、
+  // 写不出结果文件。runner 只负责跑完声明时长、到点结束进程、落一条
+  // status=SKIP 的"无结论"结果 (设备端不判定); 行为判定归编排与外部证据。
+  // 与"测量仪不是门禁"同口径 (display-route-known-issues §3.3)。
+  judge?: string;
 }
 
 // inject-request-<testId>.json 的内容（guest 声明希望被注入的序列）

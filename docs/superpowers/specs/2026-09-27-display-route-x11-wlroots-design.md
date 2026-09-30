@@ -266,16 +266,20 @@ present 1/1；X 路线 wine-vulkan offscreen 1/1、present 6/6、dxvk-cube PASS�
 
 回归（同构建）：X 路线 `dxvk-cube` PASS（r081450）、wayland core 4/4（r081523）。
 
-**`displayroute` 的 `dx-notepad` 红项裁定更正（2026-09-30）**：此前记为「X 路线
-内容率回压」，证据不支持。实况是该用例**两条路线同形失败**——X 路线（经 job
-编排 + 路线 env，r20260930-081040）与默认 wayland 路线（r20260930-081257）均
-为 90s 超时、无结果文件；guest stderr 显示 `C:\smoke\x64\notepad.exe --automation
-…` 启动后无任何输出（进程提前退出）。即：**不是 X 路线的问题，也不是内容率
-问题**，属该用例自身待查（入口：其结果文件写盘路径 + `WINEHUA_WINEDEBUG` trace，
-与 known-issues §2.1 的记事本线同源）。同批复跑的另一条教训：不经 job 编排、
-不带 `displayroute` 标志与路线 env 的 `--suite displayroute` 是**无效调用**
-（跑在与 X 无关的默认路线上），不能进证据链——运行入口固定用
-`smoke/jobs/displayroute-suite.json`。
+**`displayroute` 的 `dx-notepad` 红项（2026-09-30 定性并修复）**：此前记为
+「X 路线内容率回压」，证据不支持——实况是该用例**两条路线同形失败**（X 路线
+r20260930-081040、默认 wayland 路线 r20260930-081257，均 90s 超时无结果文件）。
+追到底的根因是**契约错配**：该用例是**载体**（跑真实内置记事本，它既不做
+automation 也永远写不出结果文件），却被当成自报用例驱动——参数被记事本当文件名，
+弹出「错误」框（`notepad/main.c:645-650`），随后轮询等一个永远不会出现的结果文件。
+修法（known-issues §2.8 有完整证据）：新增 `judge: "external"` 载体语义（跑完
+声明时长即落 `SKIP`，设备端不判定），`argvMode=raw` + 空 argv 让记事本干净启动，
+注入脚本删掉应答弹框的步骤。验收 r20260930-190858/191114：用例 SKIP、job PASS
+（bring-up marker 全过）、该轮 guest trace 弹框创建 0 次、截屏文本区 "abchi"。
+**它的结论是 SKIP 而非绿**：X 路线真正的自动化门禁是
+`smoke/jobs/displayroute-vulkan-present.json` 与 `displayroute-dxvk.json`
+（自报结果的用例）；另注：不经 job 编排、不带 `displayroute` 标志与路线 env 的
+`--suite displayroute` 是无效调用（跑在默认路线上），不能进证据链。
 
 ## 7. 里程碑与回退线
 

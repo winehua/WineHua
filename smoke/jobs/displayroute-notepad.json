@@ -8,6 +8,9 @@
     {
       "testId": "m1t5-notepad",
       "exe": "x64/notepad.exe",
+      "argvMode": "raw",
+      "argv": [],
+      "judge": "external",
       "env": {
         "DISPLAY": ":0",
         "WINEHUA_DISPLAY_ROUTE": "x11",
