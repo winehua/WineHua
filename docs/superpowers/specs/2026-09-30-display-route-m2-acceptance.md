@@ -36,7 +36,7 @@ present 用例 PASS）。详情与证据表见 spec §6.4；回归：X 路线 `d
 
 | 项 | 现象 | 与本次改动解耦的证据 |
 |---|---|---|
-| `dxvk-legacy`（d3d11-smoke） | `D3D11CreateDeviceAndSwapChain` 返 `E_INVALIDARG`（`presentResult=-2147024809`） | ①两条显示路线同报文；②同参数同调用的 cube 双路线 PASS（非静态能力拒绝）；③wine fork stash 回 T5 之前完整构建 + 卸载重装后 wayland 2/2 复现（r064027/r064134）。详见 known-issues §2.5 |
+| `dxvk-legacy`（d3d11-smoke） | `D3D11CreateDeviceAndSwapChain` 返 `E_INVALIDARG`（`presentResult=-2147024809`） | ①两条显示路线同报文；②同参数同调用的 cube 双路线 PASS（非静态能力拒绝）；③wine fork stash 回 T5 之前完整构建 + 卸载重装后 wayland 2/2 复现（r064027/r064134）。**④ 2026-09-30 复盘（性质修正）**：8/5 在**另一台设备（910）**上该用例 PASS（60 帧真出图、同 DXVK 1.10.3），测试程序自 8/1 未改、DXVK submodule 自 8/9 未变 ⇒ **不能记作"能力天生如此"**，性质待定（设备特定 vs 8/5 后栈回归）；判据②的 cube 前提（未记降级档位）也待坐实。用户裁决本轮先跳过，两步入口见 known-issues §2.5 |
 | `displayroute`（dx-notepad） | ~~90s 超时、设备端无结果文件~~ **已清（2026-09-30）** | 根因是**把载体用例套进了自报契约**：用例把 `--automation …` 交给真实内置记事本 ⇒ 记事本当文件名打开失败弹「错误」框（`notepad/main.c:645-650`），且真应用永远写不出结果文件 ⇒ 轮询必然超时。修法 = 新增`judge: "external"` 载体语义（跑完声明时长即落 `SKIP`，设备不判）+ `raw argv` 无参数启动 + 脚本去弹框应答步骤；验收 r20260930-190858/191114（用例 SKIP、job PASS、guest trace 弹框 0 次、截屏文本区 "abchi"）。详见 known-issues §2.8。此前记的「X 路线内容率回压」无证据支持，已在 spec §6.4 更正 |
 | wayland `venus_storage_write` 回读抖动 | 偶发 `value=0xdeadbeef` | 出现窗与设备被本会话 hilog 落盘占满（132GB/6 采集进程/load ~16）重合；清理后同构建 5/5 PASS。样本不足以定论，记观察（§6.4） |
 
@@ -45,8 +45,9 @@ present 用例 PASS）。详情与证据表见 spec §6.4；回归：X 路线 `d
 完整清单在 `docs/engineering/display-route-known-issues.md`（M3 开工逐条过）。
 本阶段新增/改形：
 
-- §2.5 `dxvk-legacy` 既有失败（含三条判据与下次入口：DXVK `CreateSwapChain`
-  trace 对齐私有 WSI 的能力返回值）
+- §2.5 `dxvk-legacy`：既有失败，**性质待定**（设备特定 vs 8/5 后栈回归——见上表
+  ④）。下次入口（15 分钟）：同一构建在另一台设备跑一次以分开两个假设；若是回归
+  再按候选提交二分。**用户裁决（2026-09-30）本轮跳过**
 - §2.6 guest 帧归还队列不带 GPU 侧同步（观察项；升级条件 = 出现撕裂/错帧或引入
   对同步敏感的内容源）
 - §2.7 「销毁即失效」按 id 判而非按记录判（窄竞态，未复现 ⇒ 不修；修法与先装的

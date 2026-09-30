@@ -132,16 +132,48 @@ feature contract failed`；设备端 metrics 给出失败点：`featureLevel=11.
 2. **不是静态能力拒绝**：同参数同调用的 `d3d-switch-cube`
    （`BufferCount=2 / R8G8B8A8_UNORM / RENDER_TARGET_OUTPUT / DISCARD / windowed`，
    与 smoke 逐字段相同）在两条路线上都 PASS（`cube rendered and presented`）；
+   **⚠️ 但这条判据的前提从未被仪器化（2026-09-30 补注）**：cube 的建链带三级
+   降级梯子（HARDWARE+BC=2 → HARDWARE+BC=1 → WARP，`smoke/winehua_d3d_switch_cube.c:723-743`），
+   结果 JSON 只记 `initHresult`，**不记停在哪一级**；其 `app_log` 写 CWD 的
+   `wined3d_switch_cube.log`（不可写 ⇒ 从未落盘）。即 cube 的 PASS 可能是降级
+   档拿到的，"同参数同调用能过"在坐实之前不能当证据用。
 3. **与 M2-T5 无关（对照实验）**：wine fork stash 回 `a46a545169c`（T5 wine
    侧改动全部移除）后完整构建 + 卸载重装，wayland 上 **2/2 同样失败**
    （r20260930-064027 / r20260930-064134）。
 
-**未定位**：失败发生在 swapchain 创建一刻的哪个校验（DXVK 的 DXGI 参数校验
-与 WineHua 私有 WSI 的交界）。**下次从哪继续**：给该用例单开 trace
-（`DXVK_LOG_LEVEL=debug` + `WINEHUA_DXVK_*` trace 开关）抓
-`CreateSwapChain` 前后的 DXVK 报文，比对该次的私有面能力返回值
-（formats/present modes）。**影响面**：DXVK 矩阵的 cube 用例与 vkd3d 侧不受
-影响（M2-T6 出图判据由 cube 兑现）；它只影响 d3d11-smoke 这一条深度用例。
+**这不是"天生如此"（2026-09-30 归档复盘）**：
+- **8/5 有 PASS 记录**，但是**另一台设备（910）**上的（`docs/archive/evidence/
+  VKD3D_DXVK_REGRESSION_910_20260805.md`：`dxvk-legacy-x64/x86` 各 60 帧、
+  present 成功、DXVK 也是 1.10.3，测试程序与今日同一份）；
+- **测试程序自 8/1 起一行未改**（wine fork `programs/winehua_d3d11_smoke/main.c`
+  无提交）；DXVK submodule 自 8/9 起未变。⇒ 变的是**栈或设备**。
+- **当前这台设备（.5，MOR-M1 2in1 笔记本）上从未见过绿**：归档里 6 条记录
+  （r20260930-063232/063322/063529/064027/064134/205638）全部同一报错；平板
+  （.6）期间没跑过该用例。⚠️ 设备换过的时点：9/27~9/30 01:15 用平板，02:27
+  起换成笔记本。
+
+**两个开放假设，15 分钟可分开**：
+- **A 设备特定**（这台笔记本的 GPU/驱动下，私有 WSI 建链被拒）：同一构建在
+  **另一台设备**（平板 .6 在线；910 不在线）跑 `dxvk-legacy-x64` —— 过 ⇒ A 成立。
+  头号候选差异：smoke 在 `WS_OVERLAPPEDWINDOW`（640×480 **外层**尺寸）窗口上
+  请求 640×480 **客户区**建链，cube 走 `WM_SIZE` 后按**客户区**尺寸建链
+  （`smoke/winehua_d3d_switch_cube.c:1046-1066` vs `winehua_d3d11_smoke/main.c:5233-5251`）。
+- **B 8/5 之后的栈回归**：若是 B，按时间二分。候选提交（wine fork）：
+  `b7f43d4bd96` 8/10 CDS 分辨率模拟 / `037984bdc80` 8/15 present_rect /
+  `6569cd8dbd9` 8/20 上游 merge / `3ce65ee4225` 9/14 最外 1px 圈 /
+  `cf39fdf1df6` 9/16 窗口尺寸锁死修复。
+
+**快复现器**（做 A/B 都先用它，避免每次重建整个 wine）：把 cube 改成 smoke 的
+精确复现——去掉梯子 + 采用 smoke 的建窗方式（`thirdparty/wine/` 下改一次 =
+整条 Wine 构建，二十分钟起；cube 是宿主编译，秒级迭代）。
+
+**已排除的假线索**（防下次绕路）：两份结果 JSON 里 DXVK 模块路径不同
+（`legacy/x64/d3d11.dll` vs `legacy_x64_d3d11.dll`）是 smoke 的
+`safe_json_text()` 把 `\` 替换成 `_` 所致，**不是两份 DLL**。
+
+**影响面**：DXVK 矩阵的 cube 用例与 vkd3d 侧不受影响（M2-T6 出图判据由 cube
+兑现）；它只影响 d3d11-smoke 这一条深度用例。**本轮（2026-09-30）裁决：用户
+决定先跳过**——按上面两步入口留档，不投入本轮。
 
 ### 2.6 guest 帧归还队列不带 GPU 侧同步（观察项，M2-T5 引入的路径）
 
