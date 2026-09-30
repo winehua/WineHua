@@ -618,7 +618,12 @@ def build_job(args: argparse.Namespace) -> dict:
         job["inline"] = json.loads(Path(args.inline).read_text())
     if args.long_seconds:
         job["longSeconds"] = args.long_seconds
-    params = {}
+    # 覆盖参数必须**并入** job 文件已有的 params, 不能整体替换: 实测
+    # `--job displayroute-gl-baseline.json --seconds 240` 曾把 job 里的
+    # `params.env`(WINEHUA_DISPLAY_ROUTE=x11/DISPLAY/WAYLAND_DISPLAY) 一起丢掉,
+    # guest 只收到 harness 自己的 2 个变量 ⇒ 静默落到 wayland 路线,
+    # 用例照样 PASS 但测的不是 X 路线 (known-issues §2.10)。
+    params = dict(job.get("params") or {})
     if args.env:
         overrides = {}
         for item in args.env:
@@ -627,7 +632,9 @@ def build_job(args: argparse.Namespace) -> dict:
                 die(f"--env 需要 KEY=VALUE 形式: {item}")
             overrides[key] = value
         reject_unreachable_env("--env", overrides)
-        params["env"] = overrides
+        merged_env = dict(params.get("env") or {})
+        merged_env.update(overrides)
+        params["env"] = merged_env
     if args.d3d:
         if args.d3d not in D3D_BACKEND_VALUES:
             die(f"--d3d \"{args.d3d}\" 不是契约值 —— 合法值 {sorted(D3D_BACKEND_VALUES)}")
