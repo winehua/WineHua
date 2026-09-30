@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -54,6 +55,14 @@ uint32_t PatternPixel(const WinCtx& c, int x, int y, int frame)
     if (x < 4 || x >= c.w - 4 || y < 4 || y >= c.h - 4)
         return 0xFFFFFF; /* 白边框 */
     return ((x + y + frame) / 16) % 2 ? c.color_a : c.color_b;
+}
+
+/* 单调时钟微秒 (速率仪表用; 与 xclient_child.h 无关的本地工具) */
+int64_t NowUs()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
 void DrawFrame(Display* dpy, WinCtx& c, int frame)
@@ -193,7 +202,14 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
 
     int frame = 0;
     int moves = 0;
-    // 事件循环: Expose/按键/结构随动; 无事件每秒重绘 (条纹滚动 = 人眼判活)
+    /* 速率仪表 (M2-B 内容率排查, 每秒一行): 客户端侧的真实内容率与分相耗时。
+     * drawUs 覆盖「填图案 + XPutImage + XFlush」——非 shm 的整幅像素走 X socket,
+     * 被服务端回压时阻塞就在这里发生, 表现为 drawMax 飙升、fps 掉下来。
+     * evTypes 给事件构成 (C=Configure E=Expose K=Key O=其他), 用来判断是否有
+     * 事件风暴在拖循环。判读见 docs/engineering/display-route-known-issues.md §3.4。 */
+    int64_t statT0 = NowUs();
+    int64_t drawSum = 0, drawMax = 0, evSum = 0, evMax = 0;
+    int drawn = 0, evCount = 0, evConf = 0, evExp = 0, evKey = 0, evOther = 0;
     while (true)
     {
         bool hasEvent = XPending(dpy) > 0;
@@ -204,9 +220,14 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
          * 只处理事件, 无事件才画 + 1Hz 睡)。 */
         if (mode == 2 || !hasEvent)
         {
+            int64_t d0 = NowUs();
             DrawFrame(dpy, w1, frame);
             if (mode == 2) DrawFrame(dpy, w2, frame);
             ++frame;
+            int64_t d1 = NowUs();
+            drawSum += d1 - d0;
+            if (d1 - d0 > drawMax) drawMax = d1 - d0;
+            ++drawn;
             // T2: 周期移动 win1 (8 步往返, 每步 8px), 验证 xs 位置随动
             if (mode == 2 && frame % 3 == 0)
             {
@@ -223,10 +244,16 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
             else
                 sleep(1);
         }
+        int64_t e0 = NowUs();
         while (XPending(dpy) > 0)
         {
             XEvent ev;
             XNextEvent(dpy, &ev);
+            ++evCount;
+            if (ev.type == ConfigureNotify) ++evConf;
+            else if (ev.type == Expose) ++evExp;
+            else if (ev.type == KeyPress || ev.type == KeyRelease) ++evKey;
+            else ++evOther;
             WinCtx* c = nullptr;
             if (ev.xany.window == w1.win) c = &w1;
             else if (mode == 2 && ev.xany.window == w2.win) c = &w2;
@@ -261,6 +288,23 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                                 ev.xconfigure.height, ev.xconfigure.x,
                                 ev.xconfigure.y);
             }
+        }
+        int64_t e1 = NowUs();
+        evSum += e1 - e0;
+        if (e1 - e0 > evMax) evMax = e1 - e0;
+        if (e1 - statT0 >= 1000000)
+        {
+            OH_LOG_INFO(LOG_APP,
+                        "XCLIENT-STAT fps=%{public}d drawn=%{public}d drawAvg=%{public}lldus "
+                        "drawMax=%{public}lldus ev=%{public}d evAvg=%{public}lldus evMax=%{public}lldus "
+                        "evTypes=C%{public}d/E%{public}d/K%{public}d/O%{public}d over=%{public}lldms",
+                        drawn, drawn, drawn ? (long long)(drawSum / drawn) : 0,
+                        (long long)drawMax, evCount, evCount ? (long long)(evSum / evCount) : 0,
+                        (long long)evMax, evConf, evExp, evKey, evOther,
+                        (long long)((e1 - statT0) / 1000));
+            statT0 = e1;
+            drawSum = drawMax = evSum = evMax = 0;
+            drawn = evCount = evConf = evExp = evKey = evOther = 0;
         }
     }
 }

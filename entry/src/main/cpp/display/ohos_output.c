@@ -75,6 +75,7 @@ struct ohos_client_surface {
     struct wl_list link; /* g_clients */
     struct wlr_scene_surface *scene_surf; /* M1-T3: scene 节点 */
     struct wlr_scene_buffer *frame_node;  /* M2-T5: guest Vulkan 帧节点 (X 面之上) */
+    uint32_t lastSeq; /* lastSeq: 速率仪表的提交序号基线 (见 FrameTick 的 rate 行) */
     struct wl_listener destroy;
     struct wl_listener request_configure;
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
@@ -117,6 +118,7 @@ static void ClientAssociate(struct wl_listener *listener, void *data)
     c->scene_surf = wlr_scene_surface_create(&g_out.scene->tree, xs->surface);
     if (!c->scene_surf)
         OH_LOG_ERROR(LOG_APP, "scene_surface create failed (associate)");
+    c->lastSeq = xs->surface->current.seq;
     OHLOG("client associated surf=%{public}p (scene attached)",
           (void *)xs->surface);
 }
@@ -603,6 +605,45 @@ static int FrameTick(void *data)
                 rsum = 0;
                 rmax = 0;
                 rn = 0;
+            }
+        }
+        /* 速率仪表 (M2-B 内容率排查, 每秒一行, 低量常驻): 链路每一跳的通过量。
+         *   surfCommits = Σ client surface 的 current.seq 增量 —— Xwayland 把
+         *                 X 窗口内容推给我们的频率 (跳 ③→④)
+         *   outCommits  = 输出 commit 增量 —— 真正上屏的帧数 (跳 ⑥)
+         *   needsFrame  = 本秒内"有 damage"的帧时钟拍数 (跳 ⑤ 的入口条件)
+         *   ticks       = 帧时钟拍数 (应 ~30/s)
+         * 判读: 客户端侧速率 (XCLIENT-STAT 行) 高而 surfCommits 低 ⇒ 丢在 ②~④;
+         * surfCommits 高而 outCommits 低 ⇒ 丢在 ⑤/⑥。 */
+        {
+            struct ohos_client_surface *rc;
+            static uint64_t s_surfCommits, s_needsFrame, s_ticks, s_lastOut, s_lastNs;
+            wl_list_for_each(rc, &g_clients, link) {
+                if (!rc->xs || !rc->xs->surface)
+                    continue;
+                uint32_t seq = rc->xs->surface->current.seq;
+                s_surfCommits += (uint32_t)(seq - rc->lastSeq);
+                rc->lastSeq = seq;
+            }
+            ++s_ticks;
+            if (render)
+                ++s_needsFrame;
+            uint64_t ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+            if (!s_lastNs) {
+                s_lastNs = ns;
+                s_lastOut = g_out.frame_seq;
+            } else if (ns - s_lastNs >= 1000000000ull) {
+                OHLOG("rate surfCommits=%{public}llu outCommits=%{public}llu "
+                      "needsFrame=%{public}llu ticks=%{public}llu over=%{public}llums",
+                      (unsigned long long)s_surfCommits,
+                      (unsigned long long)(g_out.frame_seq - s_lastOut),
+                      (unsigned long long)s_needsFrame, (unsigned long long)s_ticks,
+                      (unsigned long long)((ns - s_lastNs) / 1000000));
+                s_lastOut = g_out.frame_seq;
+                s_surfCommits = 0;
+                s_needsFrame = 0;
+                s_ticks = 0;
+                s_lastNs = ns;
             }
         }
     }

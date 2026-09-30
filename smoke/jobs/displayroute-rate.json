@@ -1,0 +1,16 @@
+{
+  "displayroute": true,
+  "inline": [
+    {
+      "testId": "rate-hold",
+      "exe": "x64/winehua_dns_probe.exe",
+      "env": {
+        "DISPLAY": ":0",
+        "WINEHUA_DISPLAY_ROUTE": "x11",
+        "WAYLAND_DISPLAY": ""
+      },
+      "seconds": 40,
+      "timeoutMs": 90000
+    }
+  ]
+}
