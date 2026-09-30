@@ -1,0 +1,20 @@
+{
+  "id": "thread-tls",
+  "title": "TLS与同步（4线程不串扰+CS无丢增）",
+  "exe": "thread_tls.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/thread_tls.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

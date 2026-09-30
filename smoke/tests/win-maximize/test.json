@@ -1,0 +1,22 @@
+{
+  "id": "win-maximize",
+  "title": "最大化与MINMAXINFO钳制",
+  "exe": "win_maximize.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/win/win_maximize.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

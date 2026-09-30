@@ -1,0 +1,20 @@
+{
+  "id": "env-vars",
+  "title": "环境变量注入管线断言（env 键由套件注入）",
+  "exe": "env_vars.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/env/env_vars.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

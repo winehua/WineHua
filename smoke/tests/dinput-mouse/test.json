@@ -1,0 +1,25 @@
+{
+  "id": "dinput-mouse",
+  "title": "DirectInput鼠标轴增量与缓冲（注入swipe）",
+  "exe": "dinput_mouse.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/input/dinput_mouse.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-ldxguid",
+      "-ldinput8"
+    ]
+  },
+  "inject": true
+}

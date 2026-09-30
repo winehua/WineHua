@@ -1,0 +1,20 @@
+{
+  "id": "proc-spawn",
+  "title": "子进程创建/等待/退出码/broker链",
+  "exe": "proc_spawn.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/proc/proc_spawn.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

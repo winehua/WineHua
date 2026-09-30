@@ -115,7 +115,7 @@ flowchart LR
     F --> G["OH_NativeWindow"]
 ```
 
-- guest 侧 DXVK 的 present 走 `win32u/vulkan.c` 的**私有 swapchain**（`0x574853` tag），再经 guest Mesa venus 编码为 vtest 命令：`win32u` dlopen `libvulkan_virtio.so` 取 `vn_winehua_present` 入口，发私有命令 `VCMD_WINEHUA_VK_PRESENT`（0x57485650）；host 端 `vkr_renderer_winehua_present` 按 Venus 对象 ID 查表后 `vkQueuePresentKHR`。这三处（win32u swapchain / mesa vn_winehua_present / virglrenderer vkr_winehua_present）是**跨 fork 成对演进的私有接口**（见 `docs/assets/submodules/wine.md`、`mesa.md`、`virglrenderer.md`）。
+- guest 侧 DXVK 的 present 走 `win32u/vulkan.c` 的**私有 swapchain**（`0x574853` tag），再经 guest Mesa venus 编码为 vtest 命令：`win32u` dlopen `libvulkan_virtio.so` 取 `vn_winehua_present` 入口，发私有命令 `VCMD_WINEHUA_VK_PRESENT`（0x57485650）；host 端 `vkr_renderer_winehua_present` 按 Venus 对象 ID 查表后 `vkQueuePresentKHR`。这三处（win32u swapchain / mesa vn_winehua_present / virglrenderer vkr_winehua_present）是**跨 fork 成对演进的私有接口**（见 `docs/customization/wine.md`、`mesa.md`、`virglrenderer.md`）。
 - host 侧 `venus_surface_presenter.cpp` 把 virglrenderer 渲染的 Vulkan 图像经 OH_NativeWindow 上屏。
 - **shadow 内存路径**：Maleoon 等设备无 dma-buf 导出，走匿名文件 shadow + memcpy 同步（flush/invalidate/GPU upload），profile 契约见 STATUS_MEMO。
 
@@ -209,7 +209,7 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 
 - PE↔Unix 分层与桥接点（`__wine_syscall_dispatcher` / `__wine_unix_call_dispatcher`）详见 [wine-internals.md](wine-internals.md) §1。
 - 信号处理：`arch_prctl(ARCH_SET_GS/FS, teb)` 设置 GS/FS 段基址；wineserver I/O 循环 4 层 fallback（`epoll_pwait2` → `epoll_wait` → `kqueue` → `poll`），musl 上 `epoll_pwait2` stub 后自动降级。
-- box64 适配要点（musl 移植、InternalMmap 三限制、mallochook）见 `docs/assets/submodules/box64.md`。
+- box64 适配要点（musl 移植、InternalMmap 三限制、mallochook）见 `docs/customization/box64.md`。
 
 ## 7. 模块索引
 
@@ -248,7 +248,7 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 
 ### Fork 侧（thirdparty/）
 
-| 仓库 | 域 | 变更要点（详见 `docs/assets/submodules/`） |
+| 仓库 | 域 | 变更要点（详见 `docs/customization/`） |
 |------|----|------|
 | wine | wine | 107 改 + 48 新（118 commit）；win32u/vulkan.c 私有 swapchain、DXVK overlay 搜索、ohos_broker/ohos_file/ohos_virtual |
 | box64 | 翻译 | musl 移植、InternalMmap 三限制、mallochook 重写、LIBBOX64_SO 模式 |
@@ -268,4 +268,4 @@ Windows PE 程序 ──► ntdll.dll (PE 侧, x86_64)
 | [PHASE2_DXVK_STATUS_MEMO.md](../archive/PHASE2_DXVK_STATUS_MEMO.md) | DXVK/Venus 调查活文档（handoff） | 改 DXVK/Venus/present 前必读 |
 | [audio.md](audio.md) | 音频架构（控制面/数据面、混音、边界） | 改音频链路前 |
 | [0002-d3d-backend-profiles.md](../decisions/0002-d3d-backend-profiles.md) | DXVK 2.x 升级能力矩阵 | 升级 DXVK 前 |
-| `docs/assets/submodules/*.md` | 6 个 fork 的鸿蒙变更清单 | 重合并 fork 时 |
+| `docs/customization/*.md` | 7 个 fork 的鸿蒙定制文档（含总览与构建适配） | 重合并 fork 时 |

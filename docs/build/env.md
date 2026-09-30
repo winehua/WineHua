@@ -121,8 +121,8 @@ test -f /apps/harmony/bin/hvigorw && echo "✓ hvigorw" || echo "✗ hvigorw MIS
 /apps/harmony/sdk/default/hms/native/BiSheng/bin/ld.lld --version >/dev/null 2>&1 \
   && echo "✓ ld.lld" || echo "✗ ld.lld MISSING (check libxml2.so.2 symlink)"
 
-# 验证 wayland-scanner
-test -f /usr/local/bin/wayland-scanner && echo "✓ wayland-scanner" || echo "~ wayland-scanner (will be built by build_deps.sh)"
+# 验证 wayland-scanner (首次构建时自动编译到项目内, 无需预装)
+test -f build/host-tools/bin/wayland-scanner && echo "✓ wayland-scanner" || echo "~ wayland-scanner (will be built by build_deps.sh)"
 ```
 
 ---

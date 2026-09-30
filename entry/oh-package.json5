@@ -6,6 +6,7 @@
   "author": "",
   "license": "",
   "dependencies": {
-    "libentry.so": "file:./src/main/cpp/types/libentry"
+    "libentry.so": "file:./src/main/cpp/types/libentry",
+    "libsmoke_napi.so": "file:./src/main/cpp/types/smoke_napi"
   }
 }

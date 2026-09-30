@@ -27,7 +27,8 @@
 | 理解音频链路 | [architecture/audio.md](architecture/audio.md) |
 | 理解跨仓库的私有协议 | [architecture/contracts.md](architecture/contracts.md) |
 | 处理鸿蒙平台的限制（权限、沙箱、字体等） | [architecture/platform-ohos.md](architecture/platform-ohos.md) |
-| 改 wine / dxvk / box64 等 submodule | [assets/submodules/](assets/submodules/)、[assets/submodule-maintainability.md](assets/submodule-maintainability.md) |
+| 改 wine / dxvk / box64 等 submodule | [customization/](customization/)、[assets/submodule-maintainability.md](assets/submodule-maintainability.md) |
+| 查某个开源模块为鸿蒙改了什么、为什么改 | [customization/README.md](customization/README.md) |
 | 写自动化测试用例 | [engineering/testing-cases.md](engineering/testing-cases.md) |
 | 了解自动化测试设施 | [engineering/testing-design.md](engineering/testing-design.md)、[../automation/README.md](../automation/README.md) |
 | 提交代码、走分支流程 | [engineering/workflow.md](engineering/workflow.md) |
@@ -92,12 +93,22 @@
 | [devices.md](assets/devices.md) | 设备清单、形态差异、部署注意点 |
 | [environment.md](assets/environment.md) | SDK、证书签名、构建配置、网络代理 |
 | [submodule-maintainability.md](assets/submodule-maintainability.md) | 各 submodule 的分支现状与维护策略 |
-| [submodules/wine.md](assets/submodules/wine.md) | wine fork 改了哪些文件（显示驱动、ntdll、wineserver 等） |
-| [submodules/dxvk.md](assets/submodules/dxvk.md) | DXVK（Legacy 分支）的改动 |
-| [submodules/box64.md](assets/submodules/box64.md) | box64 的改动（musl 适配等） |
-| [submodules/mesa.md](assets/submodules/mesa.md) | mesa 的改动（Venus、VirGL 相关） |
-| [submodules/virglrenderer.md](assets/submodules/virglrenderer.md) | virglrenderer 的改动 |
-| [submodules/libepoxy.md](assets/submodules/libepoxy.md) | libepoxy 的小改动 |
+
+### customization/ — 开源模块定制
+
+各开源模块为在鸿蒙上工作所做的定制：每个定制点讲解决了什么问题、怎么解决的。
+
+| 文档 | 讲什么 |
+|---|---|
+| [customization/README.md](customization/README.md) | 定制总览：平台差异来源、图形链全景、模块一览、按问题域的定制点地图 |
+| [customization/wine.md](customization/wine.md) | wine fork：进程模型、文件系统、私有 swapchain、音频驱动、窗口管理等 |
+| [customization/virglrenderer.md](customization/virglrenderer.md) | 宿主图形服务：shadow 内存桥、present 回调、Venus 缺陷兜底 |
+| [customization/mesa.md](customization/mesa.md) | guest 侧 GL/Vulkan 驱动：vtest present、ring 同步、fence 等待 |
+| [customization/dxvk-legacy.md](customization/dxvk-legacy.md) | DXVK 1.10.3：Venus 缺特性兜底（BC 纹理、双源混合等） |
+| [customization/dxvk-modern.md](customization/dxvk-modern.md) | DXVK 2.6.2：同一套兜底的 2.x 版 + vkd3d 2.6 兼容 |
+| [customization/box64.md](customization/box64.md) | box64：musl 适配、RWX/noexec、共享库模式、BOX32 |
+| [customization/libepoxy.md](customization/libepoxy.md) | libepoxy：OHOS EGL/GLES 库解析 |
+| [customization/build-adaptations.md](customization/build-adaptations.md) | 构建级小适配（glib/gstreamer）与 TLS 链引入 |
 
 ### decisions/ — 决策记录与故障复盘
 
@@ -107,6 +118,7 @@
 | [0002-d3d-backend-profiles.md](decisions/0002-d3d-backend-profiles.md) | Direct3D 后端档位怎么选（哪些设备用哪个） |
 | [0003-three-schemes.md](decisions/0003-three-schemes.md) | 三套运行方案（x86_64 / box64+wine / 纯 arm64）为什么共存 |
 | [0004-default-display-mode.md](decisions/0004-default-display-mode.md) | 各设备形态默认用虚拟桌面还是多窗口 |
+| [0005-proton-trunk-roadmap.md](decisions/0005-proton-trunk-roadmap.md) | 把 Proton 路线（Valve Wine + FEX + ARM64EC）收敛为主干的五个阶段与三个卡点 |
 
 ### 其他
 

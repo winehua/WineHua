@@ -1,0 +1,22 @@
+{
+  "id": "mm-timer",
+  "title": "多媒体定时器（10ms周期100次+timeGetTime单调）",
+  "exe": "mm_timer.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/mm_timer.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lwinmm"
+    ]
+  }
+}

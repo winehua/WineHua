@@ -1,0 +1,22 @@
+{
+  "id": "clip-cross",
+  "title": "跨进程剪贴板（收敛项①载荷）",
+  "exe": "clip_cross.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/clip/clip_cross.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

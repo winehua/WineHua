@@ -14,7 +14,7 @@
 |--------|--------|------|------|
 | C 基线锁定 | P1 | ✅ 已落地 | 基线快照 + 重算命令入本文档 §1.1；`scripts/setup-upstream-remotes.sh` 随仓库分发（commit `a753d15`）；6 个 fork 全部可追溯；幽灵分支已清理（18 个） |
 | D dxvk 双轨 | P1 | ✅ 已落地 | 两条通道都在 `.gitmodules` 声明并进 master：`thirdparty/dxvk`（branch `dxvk-legacy-1.10.3`）与 `thirdparty/dxvk-modern`（branch `dxvk-modern-2.6`） |
-| B 补丁清单 | P0 | ✅ 已落地 | `docs/assets/submodules/` 6 篇清单完成（2026-08-01），见 §2.4 |
+| B 补丁清单 | P0 | ✅ 已落地 | `docs/customization/` 清单完成（2026-08-01 起，2026-09-25 迁入并增补 dxvk-modern 等），见 §2.4 |
 | H CI submodule job | P0 | ⏳ 部分 | build.yml 仍只有 build/release 两个 job；已有的检查是「嵌套 submodule 是否完整」（`submodules: recursive` + dxvk/vkd3d 的 `submodule status`），缺的是「submodule 的提交有没有推到它自己的远程」这项 |
 | E Profile 单一数据源 | P0 | ✅ 已落地 | 收口在 `entry/src/main/cpp/wine/env_profiles.cpp`（commit `f3370b0`，重构第 3 步）；未建 `shadow_profiles.h` |
 | A 物理隔离 | P0 | ⏳ 未开始 | `vkr_winehua_shadow.c` 未建 |
@@ -107,10 +107,10 @@ src/venus/vkr_winehua_perf.h        ← 性能计数器独立层，产品代码�
 
 合并冲突时最痛苦的是不知道"这个 hunk 对应我们的哪个改动、为什么存在、丢了它的后果"。
 
-**已完成**：`docs/assets/submodules/` 下 6 篇清单（virglrenderer / mesa / wine / box64 / dxvk / libepoxy），每篇按以下结构记录：
+**已完成**：`docs/customization/` 下的模块清单（virglrenderer / mesa / wine / box64 / dxvk-legacy / dxvk-modern / libepoxy / build-adaptations，另有一篇总览 README），每篇按以下结构记录：
 
 ```
-docs/assets/submodules/<submodule>.md
+docs/customization/<submodule>.md
 ├── 变更总览：修改 vs 新增文件的分类统计
 ├── 变更明细：文件:函数 | 为什么存在 | 依赖的上游行为 | 不变式 | 验证方法
 └── 合并注意点（冲突敏感度分级 / 上游变化检查要点 / CRLF 噪音提示）

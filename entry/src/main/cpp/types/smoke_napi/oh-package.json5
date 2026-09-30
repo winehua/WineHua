@@ -1,0 +1,6 @@
+{
+  "name": "libsmoke_napi.so",
+  "types": "./Index.d.ts",
+  "version": "1.0.0",
+  "description": "smoke 测试设施原生侧的类型声明 (测试专用, 产品代码不引用)。"
+}

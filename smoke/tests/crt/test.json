@@ -1,0 +1,20 @@
+{
+  "id": "crt",
+  "title": "C运行时（格式化/宽窄转换/堆/qsort）",
+  "exe": "crt.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/crt.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

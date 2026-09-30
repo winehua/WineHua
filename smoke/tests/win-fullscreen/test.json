@@ -1,0 +1,23 @@
+{
+  "id": "win-fullscreen",
+  "title": "显示模式切换与全屏四象限",
+  "exe": "win_fullscreen.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/win/win_fullscreen.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "fs-io",
+  "title": "文件读写/目录枚举/长路径/Z盘一致性",
+  "exe": "fs_io.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/fs/fs_io.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

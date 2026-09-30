@@ -13,7 +13,7 @@
 make cmake ninja meson bison flex autoconf libtoolize gcc-mingw-w64-x86-64 i686-w64-mingw32-gcc java
 glslangValidator               # guest Vulkan 栈构建依赖 (build_ohos_guest_vulkan.sh)
 # OHOS SDK: /apps/harmony/sdk/default/openharmony/
-# wayland-scanner: /usr/local/bin/wayland-scanner (需预装)
+# wayland-scanner: 无需预装，构建时自动编译到 build/host-tools/bin/
 ```
 
 ---
