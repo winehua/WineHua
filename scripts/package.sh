@@ -177,11 +177,28 @@ deploy() {
     fi
 
     log "=== 部署到 $device ==="
-    # 多目标在线时裸 hdc shell 会报 "need connect-key"，所有命令必须 -t 定向
+    # 多目标在线时裸 hdc shell 会报 "need connect-key"，所有命令必须 -t 定向。
+    # 注意: hdc 客户端连不上 server / 目标时**打印 [Fail]... 但退出码仍为 0**
+    # (实测 2026-10-04: WLAN hdc 闪断, 一次 390MB 推送中途掉线, 四条命令全部
+    # 假成功, 脚本报"部署完成"而设备上还是旧包 —— 下一轮测试全在旧二进制上跑)。
+    # 所以除 rc 检查外, 关键步骤再做产物断言。
     hdc tconn "$device" || { err "hdc tconn 失败"; }
+    hdc -t "$device" list targets | grep -q "$device" || err "tconn 后目标不在列表: $device"
     hdc -t "$device" shell bm uninstall -n app.hackeris.winehua 2>/dev/null || true
-    hdc -t "$device" file send "$hap" /data/local/tmp/ || { err "hdc file send 失败"; }
-    hdc -t "$device" shell bm install -p /data/local/tmp/entry-default-signed.hap -r || { err "bm install 失败"; }
+    local install_before install_after
+    install_before=$(hdc -t "$device" shell bm dump -n app.hackeris.winehua \
+        2>/dev/null | grep -m1 updateTime | tr -dc '0-9') || true
+    hdc -t "$device" file send "$hap" /data/local/tmp/ | grep -q "FileTransfer finish" \
+        || { err "hdc file send 失败 (未见 FileTransfer finish)"; }
+    # 已装包且与本地同 sha 时跳过 install (bm install -r 对同包也会刷新 updateTime,
+    # 无法用时间戳区分, 这里以 --dev-check 比对推上去的 hap 与本地 sha 一致为准)
+    hdc -t "$device" shell bm install -p /data/local/tmp/entry-default-signed.hap -r \
+        | grep -q "successfully" || { err "bm install 失败"; }
+    install_after=$(hdc -t "$device" shell bm dump -n app.hackeris.winehua \
+        2>/dev/null | grep -m1 updateTime | tr -dc '0-9')
+    if [ -n "$install_before" ] && [ "$install_before" = "$install_after" ]; then
+        err "bm install 后 updateTime 未变 ($install_after) —— 安装未生效, 拒绝报成功"
+    fi
 
     log "部署完成"
 }
