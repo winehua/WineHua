@@ -470,7 +470,8 @@ def ensure_app_running(hdc: str, device: str, extra_start_args: str = "") -> Non
     """
     if app_pid(hdc, device):
         if extra_start_args:
-            die("app 已在运行：--desktop-mode 需要冷启动携带，先 `hdc shell "
+            die("app 已在运行：冷启参数（--desktop-mode/--display-route）需要"
+                "冷启动携带，先 `hdc shell "
                 f"aa force-stop {BUNDLE}` 再重跑")
         return
     log(f"{BUNDLE} 未运行，先启动（-b 通道要求应用已启动）")
@@ -612,8 +613,12 @@ def cmd_push(args: argparse.Namespace) -> int:
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
     mode = getattr(args, "desktop_mode", None)
-    ensure_app_running(hdc, device,
-                       f"--ps winehua.desktopMode {mode}" if mode else "")
+    route = getattr(args, "display_route", None)
+    extra = " ".join(x for x in (
+        f"--ps winehua.desktopMode {mode}" if mode else "",
+        f"--ps winehua.displayRoute {route}" if route else "",
+    ) if x)
+    ensure_app_running(hdc, device, extra)
     log(f"push {payload} → {device}")
     # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
     # 1) 推送源：设备端 seed 的来源（冷启动 / clean 清盘后按版本比对导入）
@@ -712,6 +717,33 @@ def build_job(args: argparse.Namespace) -> dict:
         "WINEHUA_DISPLAY_ROUTE") or "wayland"
     if declared_route:
         route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
+    # M3a 一致性检查: host 裁决 (app 冷启参数 winehua.displayRoute=x11) 会经
+    # BuildWineEnv stamp 改写所有子进程的 guest env —— 声明里没有 x11 的套件
+    # (如 core) 会被静默拖进 x11 跑, 期望路线判定随之失真。声明可以钉 guest
+    # 档位, 改不了 host 裁决, 两处各说各话 = 排查地狱 (spec 2026-10-03 §5)。
+    # 声明源 = params.env (套件级, 合并 CLI 前的 declared_env) 与 inline 条目
+    # env (rate 类 job 的声明在条目上); 套件用例自身的 x11 约定走 params 层
+    # (displayroute-suite.json 形态), 用例 env 不另查。
+    display_route = getattr(args, "display_route", None)
+    if display_route == "x11":
+        offenders = []
+        inline_entries = job.get("inline") or []
+        if inline_entries:
+            for entry in inline_entries:
+                r = (entry.get("env") or {}).get("WINEHUA_DISPLAY_ROUTE") or declared_route
+                if r != "x11":
+                    offenders.append(entry.get("testId", "inline"))
+        elif declared_route != "x11":
+            offenders.append(f"suite={job.get('suite') or '(none)'}")
+        if offenders:
+            die("--display-route x11 要求所有选中测试显式声明 "
+                "WINEHUA_DISPLAY_ROUTE=x11 (未声明的: "
+                f"{', '.join(offenders)}) —— host 裁决会经 BuildWineEnv 改写 "
+                "guest env, 未声明的套件不许隐式换路线。")
+        # 期望路线跟随 host 裁决: --display-route x11 就是下发给 app 的冷启参数,
+        # 两者同源 (单一裁决点)。inline 声明型 job (rate 类) 的 route 只在条目
+        # env 上, 不修这里期望值会停在 wayland, presented_route 判定失真。
+        route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = "x11"
     params["env"] = route_env
     job["params"] = params
     return job
@@ -721,9 +753,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     payload = ensure_payload(args)
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
+    # job 构建（含 --display-route x11 一致性检查）先于 push：push 会冷启 app
+    # 并带上 host 裁决参数，校验死在 push 之后会把 app 留在 x11 形态，下一轮
+    # 不带参数的 run 撞上运行中的 x11 app 就是静默路线污染。
+    job = build_job(args)
     if not args.skip_push:
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
-                                       desktop_mode=getattr(args, "desktop_mode", None))
+                                       desktop_mode=getattr(args, "desktop_mode", None),
+                                       display_route=getattr(args, "display_route", None))
         if cmd_push(push_args) != 0:
             return 1
     manifest = json.loads((payload / "manifest.json").read_text())
@@ -738,7 +775,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     archive.mkdir(parents=True, exist_ok=True)
 
     # job 文件：选测 / 参数覆盖 / 内联用例走它；5 键仍然带，兼容未升级的设备端
-    job = build_job(args)
     job_path = archive / "job.json"
     job_path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n")
     remove_sandbox_path(hdc, device, JOB_REL)
@@ -1232,6 +1268,9 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--device", default="")
     push.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
                       help="冷启动携带 winehua.desktopMode 覆盖（引擎级模式，仅冷启动生效）")
+    push.add_argument("--display-route", choices=("wayland", "x11"), default=None,
+                      help="冷启动携带 winehua.displayRoute 覆盖（M3a 显示路线，"
+                           "仅冷启动生效；x11 要求选中测试声明 x11）")
     push.set_defaults(func=cmd_push)
 
     run = sub.add_parser("run", help="跑一个套件：推送 + aa start + 轮询 + 归档")
@@ -1246,6 +1285,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
                      help="冷启动携带 winehua.desktopMode 覆盖（C 型注入用例需要"
                           "桌面合成模式的输入链；app 已运行时须先 force-stop）")
+    run.add_argument("--display-route", choices=("wayland", "x11"), default=None,
+                     help="冷启动携带 winehua.displayRoute 覆盖（M3a 显示路线，"
+                          "仅冷启动生效；x11 要求选中测试声明 x11）")
     run.add_argument("--payload", default=str(DEFAULT_OUT))
     run.add_argument("--device", default="")
     run.add_argument("--run-id", default="")
