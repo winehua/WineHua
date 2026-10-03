@@ -53,7 +53,8 @@ extern "C" void WineHua_DisplayRoute_Start();
 // scriptEnabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
 // 不默认进产品行为)
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
-                                                      bool script_enabled);
+                                                      bool script_enabled,
+                                                      int out_w, int out_h);
 // M1-T1: 注入桥 (display/display_input.c)。key = evdev 键码; motion =
 // client surface 相对坐标 0..1, phase 0=enter 1=motion 2=leave。
 // 线程纪律: wlr_seat 无锁, 注入必须落在合成器事件循环线程; NAPI 调用来自
@@ -63,18 +64,28 @@ extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     bool script_enabled = false;
     if (argc >= 2) {
         napi_get_value_bool(env, args[1], &script_enabled);
     }
+    /* M3a: 可选 w/h (x11 台架 = surface 实际尺寸); 缺省 0 ⇒ 800x600,
+     * smoke 台架调用方 (SmokeDevPanel/SmokeRunner) 不传即零差异 */
+    int out_w = 0, out_h = 0;
+    if (argc >= 4) {
+        double w = 0, h = 0;
+        napi_get_value_double(env, args[2], &w);
+        napi_get_value_double(env, args[3], &h);
+        out_w = static_cast<int>(w);
+        out_h = static_cast<int>(h);
+    }
     if (argc >= 1) {
         uint64_t surface_id = 0;
         bool lossless = false;
         napi_get_value_bigint_uint64(env, args[0], &surface_id, &lossless);
-        WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled);
+        WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled, out_w, out_h);
     } else {
         WineHua_DisplayRoute_Start();
     }

@@ -172,6 +172,8 @@ struct DeferredOutputChainStart {
     struct wl_display *display;
     OHNativeWindow *window;
     struct wlr_xwayland *xwayland;
+    int out_w; /* ≤0 = 未指定 ⇒ 800x600 (smoke 台架口径) */
+    int out_h;
 };
 static struct DeferredOutputChainStart g_deferred_chain;
 
@@ -190,7 +192,8 @@ static int StartOutputChainTimer(void *data)
 {
     struct DeferredOutputChainStart *c = (struct DeferredOutputChainStart *)data;
     int rc = wl_ohos_output_chain_start(c->backend, c->renderer, c->loop,
-                                        c->display, c->window, c->xwayland);
+                                        c->display, c->window, c->xwayland,
+                                        c->out_w, c->out_h);
     OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d (deferred)", rc);
     WriteDisplayRouteReady();
 
@@ -290,7 +293,8 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 
 // ── smoke 调试入口 ─────────────────────────────────────────────────────
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
-                                                      bool script_enabled);
+                                                      bool script_enabled,
+                                                      int out_w, int out_h);
 
 // 重复触发刷新通道: 刷新动作必须落在 loop 线程 (定时器/事件源操作非线程
 // 安全, M1-T5 实测: 第二轮 smoke 复用既有链时 marker 不重写、注入脚本不
@@ -319,7 +323,7 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 
 extern "C" void WineHua_DisplayRoute_Start()
 {
-    WineHua_DisplayRoute_StartWithSurface(0, false);
+    WineHua_DisplayRoute_StartWithSurface(0, false, 0, 0);
 }
 
 // surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;
@@ -327,7 +331,8 @@ extern "C" void WineHua_DisplayRoute_Start()
 // script_enabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
 // 不默认进产品行为, 原则 #23)。
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
-                                                      bool script_enabled)
+                                                      bool script_enabled,
+                                                      int out_w, int out_h)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
@@ -360,7 +365,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             g_present_window = nullptr;
     }
 
-    std::thread([] {
+    std::thread([out_w, out_h] {
         // 对象提升到函数顶部 (M2-T1): 失败路径统一 goto fail 收尾, 逆序
         // 销毁 —— 之前中途 return 泄漏已建对象 (known-issues §1.2), 且
         // g_started 不复位导致失败后无法重试。
@@ -509,7 +514,8 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
              * 先 fork 子进程, 再做 GL —— 次序约束与实测见 DeferredOutputChainStart
              * 上方注释。就绪标记也在那一刻才写 (标记语义 = 出图链已就位)。 */
             g_deferred_chain = (struct DeferredOutputChainStart){
-                backend, renderer, loop, wl, g_present_window, xwayland};
+                backend, renderer, loop, wl, g_present_window, xwayland,
+                out_w, out_h};
             struct wl_event_source *chain_timer =
                 wl_event_loop_add_timer(loop, StartOutputChainTimer, &g_deferred_chain);
             if (chain_timer)

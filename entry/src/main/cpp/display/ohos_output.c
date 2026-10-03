@@ -74,6 +74,9 @@ struct wl_ohos_output {
     uint64_t last_frame_key;              /* 最近交给 scene 的 guest 帧归属键 */
     uint64_t last_frame_ns;               /* 该帧的交出时刻 (归属发布用) */
     bool vsync_stalled;                   /* VSync 停摆/未启动 ⇒ 走兜底节拍 */
+    int out_w;                            /* 输出尺寸 (chain_start 入参, M3a);
+                                           * ≤0 视为未设, frame_size 回退 800x600 */
+    int out_h;
     uint32_t frame_seq;
     uint32_t last_crc;
 };
@@ -1034,7 +1037,7 @@ int wl_ohos_surface_has_content(struct wlr_surface *surf)
 /* M1-T1/T2: 注入取数口 (display_input.c 调用)。
  * client_xs = 最上层已映射窗口 (T1 自动注入目标);
  * client_topmost_at = 帧坐标命中 (T2 注入几何换算);
- * frame_size = 命中坐标归一化的基准 (输出尺寸当前固定 800x600)。 */
+ * frame_size = 命中坐标归一化的基准 (chain_start 入参, M3a 起可参数化)。 */
 struct wlr_xwayland_surface *wl_ohos_output_client_xs(void)
 {
     struct ohos_client_surface *c;
@@ -1064,8 +1067,9 @@ struct wlr_xwayland_surface *wl_ohos_output_client_topmost_at(int fx, int fy)
 
 void wl_ohos_output_frame_size(int *w, int *h)
 {
-    if (w) *w = 800;
-    if (h) *h = 600;
+    /* 链未建时 g_out 为零值 ⇒ 回退 800x600 (与 chain_start 未指定同口径) */
+    if (w) *w = g_out.out_w > 0 ? g_out.out_w : 800;
+    if (h) *h = g_out.out_h > 0 ? g_out.out_h : 600;
 }
 
 /* ── M2-T5: guest Vulkan 帧 (Venus 私有 present) 的落点 ─────────────────────
@@ -1241,10 +1245,15 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wl_event_loop *loop,
                                struct wl_display *display,
                                OHNativeWindow *window,
-                               struct wlr_xwayland *xwayland)
+                               struct wlr_xwayland *xwayland,
+                               int out_w, int out_h)
 {
     memset(&g_out, 0, sizeof(g_out));
     g_out.window = window;
+    /* M3a 尺寸参数化: ≤0 = 未指定 (smoke 台架), 回退 800x600 —— 台架证据链
+     * (探测器基线/presented-route 判定) 在该尺寸上校准, 不随调用方漂移 */
+    g_out.out_w = out_w > 0 ? out_w : 800;
+    g_out.out_h = out_h > 0 ? out_h : 600;
     wl_list_init(&g_clients);
 
     struct wlr_allocator *alloc = wl_ohos_allocator_create();
@@ -1252,7 +1261,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         OH_LOG_ERROR(LOG_APP, "ohos allocator create failed");
         return -1;
     }
-    g_out.output = wlr_headless_add_output(backend, 800, 600);
+    g_out.output = wlr_headless_add_output(backend, g_out.out_w, g_out.out_h);
     if (!g_out.output) {
         OH_LOG_ERROR(LOG_APP, "headless add_output failed");
         return -1;
@@ -1266,7 +1275,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     wlr_output_state_set_enabled(&st, true);
     // headless output 首次 commit 必须带 mode (只 set_enabled 实测 commit
     // 失败); refresh=0 交由后端补默认
-    wlr_output_state_set_custom_mode(&st, 800, 600, 0);
+    wlr_output_state_set_custom_mode(&st, g_out.out_w, g_out.out_h, 0);
     if (!wlr_output_commit_state(g_out.output, &st)) {
         OH_LOG_ERROR(LOG_APP, "output enable commit failed");
         wlr_output_state_finish(&st);
@@ -1296,7 +1305,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         return -1;
     }
     const float bg[4] = {0.10f, 0.10f, 0.12f, 1.0f};
-    if (!wlr_scene_rect_create(&g_out.scene->tree, 800, 600, bg)) {
+    if (!wlr_scene_rect_create(&g_out.scene->tree, g_out.out_w, g_out.out_h, bg)) {
         OH_LOG_ERROR(LOG_APP, "scene background rect failed");
         return -1;
     }
@@ -1309,7 +1318,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
 
     // window 队列 buffer 几何声明 (Request 按此分配, memcpy 尺寸才对)
     int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
-                                                       800, 600);
+                                                       g_out.out_w, g_out.out_h);
     OHLOG("SET_BUFFER_GEOMETRY rc=%{public}d", rc);
     /* 超时必须显式设 0: SDK 默认 3000ms, 而本窗口的 RequestBuffer 跑在**帧
      * 时钟的 event loop 线程**上 —— 消费者(预览 XComponent)不还槽位时会把
@@ -1365,7 +1374,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     if (g_out.frame_timer)
         wl_event_source_timer_update(g_out.frame_timer,
                                      g_out.vsync ? VSYNC_WATCHDOG_MS : 100);
-    OHLOG("output chain up: 800x600, 帧时钟=%{public}s",
+    OHLOG("output chain up: %{public}dx%{public}d, 帧时钟=%{public}s",
+          g_out.out_w, g_out.out_h,
           g_out.vsync ? "VSync(期望 60-120Hz)" : "33ms 兜底");
     return 0;
 }

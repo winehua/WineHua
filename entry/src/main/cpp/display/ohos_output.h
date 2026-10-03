@@ -98,13 +98,16 @@ uint64_t wl_ohos_output_frame_period_ns(void);
 // FALSE, 所有 wine 窗口永不 XMapWindow (T5 t5l trace 实测)。须在 output
 // 创建后调用。
 // window 为 NULL 时调用方不应调用本函数。
+// out_w/out_h: 输出尺寸 (M3a 参数化, x11 台架 = surface 实际尺寸); ≤0 =
+// 未指定, 回退 800x600 (smoke 台架口径, 证据链在该尺寸上校准)。
 // 返回 0 = 链路建立; 非 0 = 失败 (hilog 已打点, 具体步骤看 "ohos-output" 标签)。
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
                                struct wl_display *display,
                                OHNativeWindow *window,
-                               struct wlr_xwayland *xwayland);
+                               struct wlr_xwayland *xwayland,
+                               int out_w, int out_h);
 
 #ifdef __cplusplus
 }
