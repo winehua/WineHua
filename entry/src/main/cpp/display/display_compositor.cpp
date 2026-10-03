@@ -309,7 +309,14 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
     char b;
     while (read(fd, &b, 1) == 1)
     {
+        /* 协议字节: 's' = 停机 (M3a: 桌面 surface 销毁 → 主循环退出 → 走
+         * 循环后统一收尾段)。其它字节 = retrigger (历史语义, 触发方只写
+         * 任意非 's' 字节)。 */
+        if (b == 's')
+            g_stop = true;
     }
+    if (g_stop)
+        return 0; /* 主循环 while(!g_stop) 退出, 收尾在循环外 */
     FILE *f = fopen("/data/storage/el2/base/files/.wine/drive_c/displayroute-ready", "w");
     if (f)
     {
@@ -324,6 +331,20 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 extern "C" void WineHua_DisplayRoute_Start()
 {
     WineHua_DisplayRoute_StartWithSurface(0, false, 0, 0);
+}
+
+// M3a: 停机入口 (桌面 surface 销毁 → x11 台架回收合成器)。经 retrigger
+// pipe 写 's' 唤醒 loop 线程走统一收尾段 (g_started 复位, 可再次启动)。
+// 未启动 = no-op。线程安全 (与触发侧同一把锁)。
+extern "C" void WineHua_DisplayRoute_Stop()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_started || g_retrigger_pipe[1] < 0)
+        return;
+    ssize_t rc = write(g_retrigger_pipe[1], "s", 1);
+    /* EAGAIN = 已有待处理字节 (含一次 stop), 无害; 其余失败记日志 */
+    if (rc < 0 && errno != EAGAIN)
+        OH_LOG_ERROR(LOG_APP, "displayroute stop write failed errno=%{public}d", errno);
 }
 
 // surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;

@@ -6,6 +6,7 @@ import { pointer } from '@kit.InputKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ModalWindowManager } from './ModalWindowManager';
+import { DisplayRouteService } from './DisplayRouteService';
 import { FusionWindowManager } from './FusionWindowManager';
 import { DesktopModeService } from './DesktopModeService';
 
@@ -176,6 +177,13 @@ export class WineWindowManager {
     // 化"), 且 MANAGED 端不 spawn explorer, desktopSurfaceReady 永远等不到,
     // 25s 超时报"桌面启动失败" (实测 2026-09-13, tablet 切多窗口后重启引擎)
     this.notify();
+    // M3a x11 台架: 桌面窗的既有打开路径由 wayland 私有协议 desktop_root 事件
+    // 驱动, x11 路线没有该事件 (wine 走 Xwayland, 无 winehua_toplevel) ——
+    // 引擎会话启动时直接拉起桌面窗 (rootId=0, x11 分支不消费该值)。
+    // singleton 模式下重复调用安全。wayland 路线 (默认) 零影响。
+    if (this.isDesktopMode && DisplayRouteService.getInstance().isX11()) {
+      this.startDesktopAbility(0);
+    }
   }
 
   // -- Pad 多窗口承载判定: 非 desktop 模式下, 每窗口是独立 UIAbility 主窗口

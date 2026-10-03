@@ -49,6 +49,7 @@ static napi_value SmokeMapPoint(napi_env env, napi_callback_info info) {
 // DisplayRoute M0 bring-up 触发 (计划 M0-T7 Step 3): 测试设施不进产品路径,
 // 显示路线入口在 entry.so 的 display/display_compositor.cpp, 同进程符号直解
 extern "C" void WineHua_DisplayRoute_Start();
+extern "C" void WineHua_DisplayRoute_Stop();
 // T8: surfaceId 非零时同步启动出图链 (XComponent → NativeWindow 直推);
 // scriptEnabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
 // 不默认进产品行为)
@@ -96,6 +97,14 @@ static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
 
 // smokeDisplayRouteKey(keycode, press) — T1 键注入 (真机门自动定时器之外的
 // 手动通道); 投递到合成循环执行 (线程纪律见上方注入桥注释)
+static napi_value SmokeDisplayRouteStop(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    WineHua_DisplayRoute_Stop();
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
 static napi_value SmokeDisplayRouteKey(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
@@ -134,6 +143,7 @@ static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
     napi_property_descriptor props[] = {
         {"smokeMapPoint", nullptr, SmokeMapPoint, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRoute", nullptr, SmokeDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRouteStop", nullptr, SmokeDisplayRouteStop, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteKey", nullptr, SmokeDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteMotion", nullptr, SmokeDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
     };

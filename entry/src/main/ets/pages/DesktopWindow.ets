@@ -1,15 +1,27 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import smokeNapi from 'libsmoke_napi.so';
 import { WineWindowManager } from '../service/WineWindowManager';
+import { DisplayRouteService } from '../service/DisplayRouteService';
 import { OH2EVDEV } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 
 const DOMAIN = 0x0000;
 
 class DesktopController extends XComponentController {
+  // x11 台架 (M3a): 合成器随桌面 surface 启/停。尺寸取绑定时刻 (onSurfaceChanged
+  // 首拍, rect 此刻才可用); 运行中尺寸变化只记日志不重建 (spec §3.2)。surfaceId
+  // 每次创建都变, 旧值不可复用 —— 停机后重开桌面走完整重启。
+  private x11Started: boolean = false;
+  private x11W: number = 0;
+  private x11H: number = 0;
+
   onSurfaceCreated(surfaceId: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceCreated rootId=%{public}d surfaceId=%{public}s', rootId, surfaceId);
+    if (DisplayRouteService.getInstance().isX11()) {
+      return; // x11: 出图链归合成器, 不建 wayland 渲染器 (启动在 onSurfaceChanged)
+    }
     if (rootId > 0) {
       try { testNapi.createRenderer(rootId, BigInt(surfaceId)); } catch (_) {}
     }
@@ -17,6 +29,22 @@ class DesktopController extends XComponentController {
   onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceChanged rootId=%{public}d %{public}dx%{public}d', rootId, rect.surfaceWidth, rect.surfaceHeight);
+    if (DisplayRouteService.getInstance().isX11()) {
+      this.x11W = rect.surfaceWidth;
+      this.x11H = rect.surfaceHeight;
+      if (this.x11Started) {
+        return; // 已启动: 运行中 resize 只更新记录, 不重建 (spec §3.2)
+      }
+      this.x11Started = true;
+      try {
+        smokeNapi.smokeDisplayRoute(BigInt(surfaceId), false,
+          rect.surfaceWidth, rect.surfaceHeight);
+      } catch (e) {
+        this.x11Started = false;
+        hilog.error(DOMAIN, 'LIFE', '[XComp] x11 chain start failed: %{public}s', String(e));
+      }
+      return;
+    }
     if (rootId > 0) {
       try {
         testNapi.resizeRenderer(rootId, rect.surfaceWidth, rect.surfaceHeight);
@@ -30,6 +58,14 @@ class DesktopController extends XComponentController {
   onSurfaceDestroyed(_s: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed rootId=%{public}d', rootId);
+    if (DisplayRouteService.getInstance().isX11()) {
+      // x11: surface 没了 ⇒ 合成器停机 (走统一收尾, 可再次启动)
+      if (this.x11Started) {
+        this.x11Started = false;
+        try { smokeNapi.smokeDisplayRouteStop(); } catch (_) {}
+      }
+      return;
+    }
     if (rootId > 0) {
       try { testNapi.destroyRenderer(rootId); } catch (_) {}
     }
