@@ -302,6 +302,32 @@ void display_input_inject_motion(float nx, float ny, int phase)
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
 }
 
+/* 按钮注入 (M3a-T4): button = evdev 按钮码 (BTN_LEFT 0x110 / BTN_RIGHT
+ * 0x111 / BTN_MIDDLE 0x112, linux/input-event-codes.h), 与键注入同口径 ——
+ * wlr_seat_pointer_notify_button 的 button 逐字上 wire (wlr_seat_pointer.c
+ * 无偏移), libinput 后端同款直传 evdev 码 (backend/libinput/cursor.c),
+ * Xwayland 侧按 X 按钮映射表换算。投递前提 = pointer enter 已建立 (motion
+ * 先行; 无焦点时丢弃, 与键注入的"无 keyboard 焦点"同语义)。 */
+void display_input_inject_button(uint32_t button, bool press)
+{
+    if (!g_seat)
+        return;
+    if (!g_ptr_focus)
+    {
+        static int said;
+        if (++said == 1)
+            OH_LOG_ERROR(LOG_APP, "inject_button: 无 pointer 焦点 (motion 未先行?)");
+        return;
+    }
+    OHLOG("inject button evdev=0x%{public}x %{public}s", button,
+          press ? "press" : "release");
+    wlr_seat_pointer_notify_button(g_seat, NowMsec(), button,
+                                   press ? WL_POINTER_BUTTON_STATE_PRESSED
+                                         : WL_POINTER_BUTTON_STATE_RELEASED);
+    if (g_display)
+        wl_display_flush_clients(g_display);
+}
+
 /* ── 跨线程注入投递 (NAPI/ArkTS 线程 → 合成循环线程) ─────────────────────
  * wlr_seat 无锁, 注入必须落在事件循环线程。ArkTS 侧入口 (smoke_napi) 走
  * 队列: 加锁入队 + 管道写 1 字节唤醒循环, 循环侧 fd 回调清队逐条执行
@@ -314,7 +340,8 @@ void display_input_inject_motion(float nx, float ny, int phase)
 struct inject_item
 {
     bool is_key;
-    uint32_t keycode;
+    bool is_button;
+    uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
     int phase;
@@ -368,6 +395,8 @@ static int InjectQueueDrain(void *data)
         pthread_mutex_unlock(&g_inject_mutex);
         if (item.is_key)
             display_input_inject_key(item.keycode, item.press);
+        else if (item.is_button)
+            display_input_inject_button(item.keycode, item.press);
         else
             display_input_inject_motion(item.nx, item.ny, item.phase);
     }
@@ -394,6 +423,16 @@ void wl_ohos_input_post_motion(float nx, float ny, int phase)
     item.nx = nx;
     item.ny = ny;
     item.phase = phase;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_button(uint32_t button, bool press)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_button = true;
+    item.keycode = button; /* 按钮码复用 keycode 字段 (见 inject_item 注释) */
+    item.press = press;
     InjectQueuePush(&item);
 }
 

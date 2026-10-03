@@ -47,6 +47,12 @@ void wl_ohos_input_post_key(uint32_t keycode, bool press);
 // 指针注入的任意线程安全版 (语义同 display_input_inject_motion)。
 void wl_ohos_input_post_motion(float nx, float ny, int phase);
 
+// 按钮注入的任意线程安全版 (M3a-T4)。button: evdev 按钮码 (BTN_LEFT 0x110
+// / BTN_RIGHT 0x111 / BTN_MIDDLE 0x112); wire 语义 = wl_pointer.button 原值,
+// Xwayland 按 X 按钮映射换算 (libinput 后端同款直传)。投递前提 = pointer
+// enter 已建立 (motion 先行), 无焦点时丢弃并记日志。
+void wl_ohos_input_post_button(uint32_t button, bool press);
+
 // OHOS 侧注入入口 (循环线程直呼版: 注入脚本/队列 drain 内部使用)。
 // 必须在合成器事件循环线程调用 (wlr_seat 无锁)。
 // key: evdev 键码 (KEY_A=30)。wire 语义 = wl_keyboard.key 原值, Xwayland
@@ -58,6 +64,10 @@ void display_input_inject_key(uint32_t keycode, bool press);
 // phase: 0=enter 1=motion 2=leave。T1 单窗口阶段不分辨命中窗口 (T2 列表化
 // 后换真命中测试)。必须在合成器事件循环线程调用。
 void display_input_inject_motion(float nx, float ny, int phase);
+
+// 按钮注入 (循环线程直呼版)。button: evdev 按钮码; 必须在合成器事件循环
+// 线程调用。发 button 前需 pointer enter 已建立 (display_input_inject_motion)。
+void display_input_inject_button(uint32_t button, bool press);
 
 #ifdef __cplusplus
 }

@@ -12,9 +12,11 @@ class DesktopController extends XComponentController {
   // x11 台架 (M3a): 合成器随桌面 surface 启/停。尺寸取绑定时刻 (onSurfaceChanged
   // 首拍, rect 此刻才可用); 运行中尺寸变化只记日志不重建 (spec §3.2)。surfaceId
   // 每次创建都变, 旧值不可复用 —— 停机后重开桌面走完整重启。
-  private x11Started: boolean = false;
-  private x11W: number = 0;
-  private x11H: number = 0;
+  // 尺寸字段供本页输入处理器做归一化换算 (x11W/H 为 0 = surface 未绑定,
+  // 输入直接丢弃 —— 零尺寸除零防护)。
+  x11Started: boolean = false;
+  x11W: number = 0;
+  x11H: number = 0;
 
   onSurfaceCreated(surfaceId: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
@@ -76,6 +78,9 @@ class DesktopController extends XComponentController {
 @Component
 struct DesktopPage {
   controller: DesktopController = new DesktopController();
+  // x11 直连输入 (M3a-T4): 触摸按下状态 (Down=左键 press 即发, 不走手势
+  // 状态机 —— X 路线的判定全在 Xwayland/X client 侧, 无需 ArkTS 折算)。
+  private x11Pressed: boolean = false;
   // 触控状态机: IDLE → PENDING → (DRAGGING | 长按 | 点击)
   // 双指进入 SCROLLING 模式, 覆盖单指状态
   private touchPending: boolean = false;
@@ -119,6 +124,19 @@ struct DesktopPage {
   // hover 移动抽样日志计数
   private hoverLogCounter: number = 0;
 
+  // evdev 按钮码 (linux/input-event-codes.h) —— x11 直连注入用。ArkTS
+  // MouseButton 枚举: Left=0 Right=1 Middle=2。
+  private static readonly X11_BTN_LEFT: number = 0x110;
+  private static readonly X11_BTN_RIGHT: number = 0x111;
+  private static readonly X11_BTN_MIDDLE: number = 0x112;
+
+  private x11ButtonCode(button: number): number {
+    if (button === MouseButton.Left) return DesktopPage.X11_BTN_LEFT;
+    if (button === MouseButton.Right) return DesktopPage.X11_BTN_RIGHT;
+    if (button === MouseButton.Middle) return DesktopPage.X11_BTN_MIDDLE;
+    return 0;
+  }
+
   build() {
     Stack() {
       XComponent({
@@ -130,6 +148,33 @@ struct DesktopPage {
       // ── 触控处理: 单指→左键/右键/拖拽, 双指→滚轮 ──
       .onTouch((ev: TouchEvent) => {
         try {
+          // ── x11 直连 (M3a-T4): 触摸 = 左键按下拖动, 不走 wayland 手势状态机。
+          // X 路线的焦点/拖拽判定都在 Xwayland 侧 (motion 的悬停激活 + 按钮时序
+          // 直通), ArkTS 折算反而会二次变形。坐标归一化基准 = surface 尺寸
+          // (chain_start 入参同源); 0 = surface 未绑定, 直接丢弃 (除零防护)。
+          if (DisplayRouteService.getInstance().isX11()) {
+            const cw = this.controller.x11W;
+            const ch = this.controller.x11H;
+            if (cw <= 0 || ch <= 0) return;
+            const t = ev.changedTouches[0];
+            if (!t) return;
+            const px = vp2px(t.x) / cw;
+            const py = vp2px(t.y) / ch;
+            if (ev.type === TouchType.Down) {
+              smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+              smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
+              this.x11Pressed = true;
+            } else if (ev.type === TouchType.Move) {
+              if (this.x11Pressed) smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+            } else if (ev.type === TouchType.Up || ev.type === TouchType.Cancel) {
+              if (this.x11Pressed) {
+                smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
+                smokeNapi.smokeDisplayRouteMotion(px, py, 2);
+                this.x11Pressed = false;
+              }
+            }
+            return;
+          }
           // ── 双指滚动 ──
           if (ev.touches.length >= 2) {
             // 取消单指状态
@@ -331,6 +376,31 @@ struct DesktopPage {
       // (触屏长按合成右键不受影响)。
       .onMouse((ev: MouseEvent) => {
         try {
+          // ── x11 直连 (M3a-T4): 真实时序直通, 按下捕获语义不需要 (无 tl
+          // 目标概念, 焦点在 Xwayland 侧按 motion 命中走)。滚轮 (onAxisEvent)
+          // 不在本任务范围, x11 分支暂不处理。
+          if (DisplayRouteService.getInstance().isX11()) {
+            const cw = this.controller.x11W;
+            const ch = this.controller.x11H;
+            if (cw <= 0 || ch <= 0) return;
+            const px = vp2px(ev.x) / cw;
+            const py = vp2px(ev.y) / ch;
+            if (ev.action === MouseAction.Move) {
+              smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+              return;
+            }
+            if (ev.action !== MouseAction.Press && ev.action !== MouseAction.Release) return;
+            const btn = this.x11ButtonCode(ev.button);
+            if (btn <= 0) return;
+            const press = ev.action === MouseAction.Press;
+            if (press) smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+            smokeNapi.smokeDisplayRouteButton(btn, press);
+            if (!press && btn === DesktopPage.X11_BTN_LEFT) {
+              // 触摸按住时鼠标插入抬起: 状态机复位, 防悬挂的按下
+              this.x11Pressed = false;
+            }
+            return;
+          }
           // 诊断 (临时): 非 Move 事件在处理器入口记录硬件时间戳 — 同一物理
           // 事件被框架重复派发时 timestamp 相同, 独立事件则不同 (排查 explorer
           // 单击变双击: 日志出现 ~150ms 间隔的同坐标 MOUSE-LEFT press 对)
@@ -429,6 +499,15 @@ struct DesktopPage {
 
       // ── 键盘事件 ──
       .onKeyEvent((ev: KeyEvent) => {
+        // x11 直连 (M3a-T4): evdev 键码直投注入桥 (Xwayland +8 对 XKB keymap,
+        // 与键注入 wire 语义一致)。无 rootId 概念 —— 焦点在 Xwayland 侧。
+        if (DisplayRouteService.getInstance().isX11()) {
+          ev.stopPropagation();
+          const code = OH2EVDEV[ev.keyCode] ?? 0;
+          if (code <= 0) return;
+          try { smokeNapi.smokeDisplayRouteKey(code, ev.type === KeyType.Down); } catch (_) {}
+          return;
+        }
         const rootId = WineWindowManager.getInstance().getDesktopRootId();
         if (rootId <= 0) return;
         ev.stopPropagation();

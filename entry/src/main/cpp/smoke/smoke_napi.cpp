@@ -64,6 +64,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
 // 不得直呼循环线程版 (2026-09-29 评审 fix#2)。
 extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
+extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
     size_t argc = 4;
@@ -153,6 +154,23 @@ static napi_value SmokeDisplayRouteMotion(napi_env env, napi_callback_info info)
     return ok;
 }
 
+// smokeDisplayRouteButton(button, press) — M3a-T4 按钮注入; button = evdev
+// 按钮码 (BTN_LEFT 0x110 / BTN_RIGHT 0x111 / BTN_MIDDLE 0x112)
+static napi_value SmokeDisplayRouteButton(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    double button = 0;
+    bool press = false;
+    napi_get_value_double(env, args[0], &button);
+    napi_get_value_bool(env, args[1], &press);
+    wl_ohos_input_post_button(static_cast<uint32_t>(button), press);
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
 EXTERN_C_START
 static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
     napi_property_descriptor props[] = {
@@ -162,6 +180,7 @@ static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
         {"setDisplayRoute", nullptr, SmokeSetDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteKey", nullptr, SmokeDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteMotion", nullptr, SmokeDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRouteButton", nullptr, SmokeDisplayRouteButton, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
     return exports;
