@@ -457,11 +457,14 @@ extern "C" uint32_t wl_ohos_buffer_drm_format(struct wlr_buffer *buffer)
  * 每帧只做队列契约要求的 Request/Flush; "Allocating new swapchain buffer"
  * 从每帧一次降到每槽位生命周期一次。
  *
- * wrapper 生命周期 (两持有者, 释放顺序无关 —— buffer_consider_destroy 要求
- * dropped 且 n_locks==0 才真正销毁):
- *   swapchain slot: 持唯一 drop (OneShotCreateBuffer 所有权移交, slot_reset
- *     在 swapchain 销毁时 drop 恰好一次 —— 与 T6.5 前同一条语义);
- *   slot 表: 持 1 引用 (wlr_buffer_lock), shutdown 时退。
+ * wrapper 生命周期: swapchain slot 持唯一 drop (OneShotCreateBuffer 所有权
+ * 移交, slot_reset 在 swapchain 销毁时 drop 恰好一次 —— 与 T6.5 前同一条
+ * 语义); slot 表只存裸指针, 不持 wlr_buffer_lock —— **不能持锁**: release
+ * 事件只在 n_locks 归零时发 (types/buffer/buffer.c:68), 表的常驻锁会让
+ * swapchain 槽位的 acquired 永不清除, 下一帧 acquire 全部落到 allocator
+ * (容量 1) → "Failed to allocate buffer" 每帧掉链 (实测 2026-10-04)。
+ * 代价是表与 wrapper 的存活强绑定: 逐出/停机必须先销毁 swapchain (触发
+ * 唯一 drop) 再摘表项, 中途不得再触碰 buf 指针。
  * 队列深度上界 = 表容量: 队列循环复用固定几格, 同句柄不会并发两个 wrapper
  * (那会让两个 swapchain 指向同一块存储, 是数据竞争)。 */
 #define PRESENT_SLOT_CAP 4
@@ -476,6 +479,15 @@ struct PresentSlot
 
 static PresentSlot g_present_slots[PRESENT_SLOT_CAP];
 static size_t g_present_slot_count;
+
+/* 拆一个表项: swapchain 先 (slot_reset 对 wrapper 唯一一次 drop, 随即
+ * buffer_consider_destroy 真正销毁 wrapper), allocator 随后。调用后 entry
+ * 里的 buf 指针即悬垂, 只许整项移除。 */
+static void PresentSlotTeardown(PresentSlot *slot)
+{
+    wlr_swapchain_destroy(slot->swapchain);
+    wlr_allocator_destroy(slot->alloc);
+}
 
 /* 一次性 allocator: wlr_swapchain_create 不立即向 allocator 取 buffer
  * (render/swapchain.c:104 惰性分配在首个 slot_acquire), 首次 acquire 时把
@@ -584,7 +596,6 @@ extern "C" struct wlr_buffer *wl_ohos_present_slot_acquire(struct NativeWindow *
     buf->stride = static_cast<size_t>(h->stride);
     buf->format = OhosFormatToDrm(h->format);
     wlr_buffer_init(&buf->base, &kPresentBufferImpl, h->width, h->height);
-    wlr_buffer_lock(&buf->base); /* slot 表的生命周期引用 (见上方生命周期注释) */
     if (fence >= 0)
         close(fence);
     wlr_log(WLR_DEBUG, "ohos present slot new %dx%d stride=%zu fmt=0x%x drm=0x%x",
@@ -593,8 +604,7 @@ extern "C" struct wlr_buffer *wl_ohos_present_slot_acquire(struct NativeWindow *
     auto *one = (PresentOneShotAllocator *)calloc(1, sizeof(PresentOneShotAllocator));
     if (!one)
     {
-        wlr_buffer_drop(&buf->base);   /* 无人接手: 唯一 drop 归我们 */
-        wlr_buffer_unlock(&buf->base); /* 退表引用 → 真正销毁 */
+        wlr_buffer_drop(&buf->base); /* 无人接手: 唯一 drop 归我们, 即刻销毁 */
         return nullptr;
     }
     one->buffer = &buf->base;
@@ -609,24 +619,20 @@ extern "C" struct wlr_buffer *wl_ohos_present_slot_acquire(struct NativeWindow *
     if (!swapchain)
     {
         /* swapchain 建失败发生在向 allocator 取 buffer 之前 (惰性), wrapper
-         * 未被接手 —— 唯一 drop 与表引用都在我们。 */
-        wlr_buffer_drop(&buf->base);
-        wlr_buffer_unlock(&buf->base);
+         * 未被接手 —— 唯一 drop 归我们; queue 槽位由销毁兜底归还。 */
         wlr_allocator_destroy(&one->base);
+        wlr_buffer_drop(&buf->base);
         return nullptr;
     }
 
     if (g_present_slot_count == PRESENT_SLOT_CAP)
     {
-        /* 表满 = 队列深度超出预期 (正常 ≤3)。被逐三元组的 wrapper 若还在
-         * swapchain 槽位上, drop 已随之发生; 表引用是最后一计数, 这里按
-         * swapchain → allocator → 引用的顺序拆, 与 shutdown 同构。 */
+        /* 表满 = 队列深度超出预期 (正常 ≤3)。逐出 = 整项拆毁 (swapchain 的
+         * slot_reset 触发唯一 drop, wrapper 随即销毁), 与 shutdown 同构。 */
         PresentSlot *evict = &g_present_slots[0];
         wlr_log(WLR_INFO, "ohos present slot table full (%d), evicting oldest",
                 PRESENT_SLOT_CAP);
-        wlr_swapchain_destroy(evict->swapchain);
-        wlr_allocator_destroy(evict->alloc);
-        wlr_buffer_unlock(&evict->buf->base);
+        PresentSlotTeardown(evict);
         for (size_t j = 0; j + 1 < PRESENT_SLOT_CAP; ++j)
             g_present_slots[j] = g_present_slots[j + 1];
         g_present_slot_count--;
@@ -640,15 +646,7 @@ extern "C" struct wlr_buffer *wl_ohos_present_slot_acquire(struct NativeWindow *
 extern "C" void wl_ohos_present_slots_shutdown(void)
 {
     for (size_t i = 0; i < g_present_slot_count; ++i)
-    {
-        PresentSlot *slot = &g_present_slots[i];
-        /* 顺序: swapchain 先 (slot_reset 对 wrapper 唯一一次 drop), allocator
-         * 随后 (swapchain 挂着它的 destroy 监听), 表引用最后退 —— 三步之后
-         * dropped && n_locks==0, wrapper 真正销毁 (munmap + 归还兜底)。 */
-        wlr_swapchain_destroy(slot->swapchain);
-        wlr_allocator_destroy(slot->alloc);
-        wlr_buffer_unlock(&slot->buf->base);
-    }
+        PresentSlotTeardown(&g_present_slots[i]);
     g_present_slot_count = 0;
 }
 

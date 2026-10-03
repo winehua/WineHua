@@ -80,6 +80,20 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include "ohos_egl_import_probe.h"
 #include "ohos_egl_import.h"
 
+#include "compositor/wayland_server.h" /* FireDesktopReady 经会话状态通道补发 */
+
+// x11 路线的 evt:desktop-ready 补发 (M3a): 桌面根 toplevel 是 wayland 私有
+// 协议概念, X 路线没有该事件 —— LaunchPadMode 超时发 state:ready-degraded
+// 后, ArkTS 状态机靠 evt:desktop-ready 升级为正式 ready, 没有它 engineState
+// 永停 degraded, smoke 跑测门永不过 (实测 2026-10-04)。触发点在 ohos_output
+// 的 ClientMapRequest (首个 client XMapWindow = 桌面 shell 就绪的 X 等价
+// 信号); 经 WaylandServer 单例的会话状态通道发同一消息 —— stateCb 是引擎
+// 消息通道 (napi_init 注册, 与路线无关), wayland 合成器本体未运行也照达。
+extern "C" void WineHua_DisplayRoute_FireDesktopReady()
+{
+    WaylandServer::GetInstance()->FireState("evt:desktop-ready");
+}
+
 extern "C" {
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>

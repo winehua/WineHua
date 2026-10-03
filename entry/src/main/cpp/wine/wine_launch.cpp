@@ -6,6 +6,7 @@
 #include "proc/spawner.h"
 #include "wine_constants.h"
 #include "compositor/wayland_server.h"
+#include "display/ohos_output.h" /* WineHua_DisplayRoute_DesktopShellMapped (x11 桌面就绪) */
 #include "audio_ipc_protocol.h"
 #include "graphics/graphics_broker.h"
 #include "input/controller/controller_runtime.h"
@@ -630,9 +631,15 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
          * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
          * surface。等待桌面根 toplevel 就绪后再发 state:ready,
-         * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
+         * 否则自动化游戏可能抢跑而死于 DXGI 初始化。
+         * x11 路线 (M3a): 桌面根 toplevel 是 wayland 私有协议概念, X 路线
+         * 没有 —— 谓词并上 X 等价信号 (首个 client XMapWindow), 否则 15s
+         * 必超时降级且永无 evt:desktop-ready 补票 (实测 2026-10-04)。 */
         if (!WaitFor("explorer desktop root", [ws]() {
-                return ws->GetDesktopRootToplevelId() != 0;
+                if (ws->GetDesktopRootToplevelId() != 0)
+                    return true;
+                return WineHua_DisplayRouteIsX11() &&
+                       WineHua_DisplayRoute_DesktopShellMapped() != 0;
             }, 15000, 100)) {
             /* 超时不再装死放行: 降级 ready-degraded (UI 显示"桌面准备中…"),
              * root 出现后由 desktop_root 钩子补发 evt:desktop-ready,

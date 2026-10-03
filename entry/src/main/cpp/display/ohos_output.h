@@ -29,6 +29,12 @@ struct wlr_xwayland_surface *wl_ohos_output_client_xs(void);
 struct wlr_xwayland_surface *wl_ohos_output_client_topmost_at(int fx, int fy);
 void wl_ohos_output_frame_size(int *w, int *h);
 
+// x11 桌面 shell 是否已映射 (M3a): 首个 client XMapWindow 置位, 每轮
+// chain_start 复位。LaunchPadMode 的桌面根等待谓词在 x11 路线用它同源判定
+// (桌面根 toplevel 是 wayland 私有概念, X 路线没有, 不接这根线状态机永远
+// 停在 ready-degraded —— 实测 2026-10-04, smoke runner 永不启动)。
+int WineHua_DisplayRoute_DesktopShellMapped(void);
+
 // X 窗口可见性谓词: surface->buffer (最后有效像素) 存在即视为有内容。
 // 不得用 surface->mapped —— Xwayland 例行空 commit 会翻转它 (0.20
 // surface_commit_state: NULL buffer commit → unmap), T2 实测闪断。

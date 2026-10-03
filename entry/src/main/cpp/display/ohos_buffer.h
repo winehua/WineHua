@@ -63,7 +63,9 @@ struct NativeWindowBuffer *wl_ohos_buffer_window_buffer(struct wlr_buffer *buffe
  * CPU 侧 MemAvailable 全程充裕; wayland 路线对照组同尺寸长期存活; 实测
  * 2026-10-04, 六次复现, ledger "Blocker 发现")。持久化后 per-frame 只剩
  * Request/Flush + swapchain 槽位 acquire/release —— wlroots 输出路径的原生
- * 模型 (render/swapchain.c slot 复用)。
+ * 模型 (render/swapchain.c slot 复用)。注意 slot 表不持 wlr_buffer_lock
+ * (release 事件只在 n_locks 归零时发, 常驻锁会卡死槽位轮转 —— 实测见
+ * ohos_buffer.cpp 的表注释)。
  *
  * 行距/尺寸/格式以 BufferHandle 为准 (系统定的, 可能带 padding) —— 与
  * allocator buffer 不同, 这里没有 stride==width*4 的假设。

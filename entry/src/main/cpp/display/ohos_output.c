@@ -177,6 +177,25 @@ static void ClientDissociate(struct wl_listener *listener, void *data)
  * XMapWindow, 与 associate (Xwayland 建 xwl_window + wl_surface 配对)
  * 是独立事件——中间任何一环卡住都表现为「窗口已建但永不上屏」(T5 排障
  * 实证: 屏幕尺寸 0x0 时 created 有而 map request 无)。 */
+/* x11 桌面 shell 就绪标志 (M3a): 桌面根 toplevel 是 wayland 私有协议的
+ * 概念, X 路线没有 —— LaunchPadMode 的 15s 根等待 (wine_launch.cpp) 只认
+ * GetDesktopRootToplevelId, x11 下必然超时 → state:ready-degraded → 没有
+ * evt:desktop-ready 补票 → engineState 永远停在 degraded, smoke 跑测门
+ * (engineState==='ready') 永不过, runner 永不启动 (实测 2026-10-04, rate
+ * job 三轮 15min 超时)。X 等价信号 = 首个 client 的 XMapWindow (桌面
+ * shell 是链上第一个映射者); 置位供 launch 等待谓词同源判定, 并补发同一
+ * 条 evt:desktop-ready (超时后迟到的映射走 ArkTS degraded 升级路径)。 */
+static int g_desktop_shell_mapped;
+
+int WineHua_DisplayRoute_DesktopShellMapped(void)
+{
+    return g_desktop_shell_mapped;
+}
+
+/* 定义在 display_compositor.cpp: 经会话状态通道补发 evt:desktop-ready
+ * (WaylandServer 单例的 stateCb 与路线无关 —— napi_init 的引擎消息通道)。 */
+extern void WineHua_DisplayRoute_FireDesktopReady(void);
+
 static void ClientMapRequest(struct wl_listener *listener, void *data)
 {
     struct ohos_client_surface *c =
@@ -187,6 +206,10 @@ static void ClientMapRequest(struct wl_listener *listener, void *data)
         return;
     OHLOG("client map request %{public}dx%{public}d@%{public}d,%{public}d",
           xs->width, xs->height, xs->x, xs->y);
+    if (!g_desktop_shell_mapped) {
+        g_desktop_shell_mapped = 1;
+        WineHua_DisplayRoute_FireDesktopReady();
+    }
 }
 
 // commit 帧 → 推 NativeWindow。
@@ -1179,6 +1202,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     g_out.out_w = out_w > 0 ? out_w : 800;
     g_out.out_h = out_h > 0 ? out_h : 600;
     wl_list_init(&g_clients);
+    g_desktop_shell_mapped = 0; /* 每轮链路独立判定 (x11 桌面就绪, 见定义处) */
 
     struct wlr_allocator *alloc = wl_ohos_allocator_create();
     if (!alloc) {
