@@ -236,6 +236,10 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 XMoveWindow(dpy, w1.win, w1.base_x + dx, w1.base_y);
                 XFlush(dpy);
                 ++moves;
+                /* 诊断: 每次移动的发起时刻 (与合成器 XPOS/PRES 行并排 = 随动延迟) */
+                if (moves <= 400)
+                    OH_LOG_INFO(LOG_APP, "XMOVE t=%{public}lldms n=%{public}d dx=%{public}d",
+                                (long long)(NowUs() / 1000), moves, dx);
             }
             // mode=2 以 ~30fps 重绘 (T3 帧率测量的内容源; 单窗模式保持
             // 1Hz 人眼判活节奏)

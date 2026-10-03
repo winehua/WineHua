@@ -25,6 +25,7 @@
 #include <sys/eventfd.h>
 #include <native_vsync/native_vsync.h> /* 帧时钟 (任务 2): 系统 VSync 驱动 */
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,6 +92,7 @@ struct ohos_client_surface {
     struct wlr_scene_surface *scene_surf; /* M1-T3: scene 节点 */
     struct wlr_scene_buffer *frame_node;  /* M2-T5: guest Vulkan 帧节点 (X 面之上) */
     uint32_t lastSeq; /* lastSeq: 速率仪表的提交序号基线 (见 FrameTick 的 rate 行) */
+    int dbgLastX;     /* 诊断: 上次记录过的 xs->x (XPOS 时间线) */
     struct wl_listener destroy;
     struct wl_listener request_configure;
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
@@ -215,6 +217,131 @@ static int ResolveLockSymbols(void)
 
 static void LogPresentSegment(struct timespec ts_enter);
 
+/* ── 诊断: 背景像素异常检测 (常驻门禁) + 呈现时间线 (marker 开启) ──────────
+ * 背景: 矩形移动场景曾出现「宿主送出的帧背景整块黑」(局部 damage 落到从没
+ * 画过背景的队列槽位, 见 PresentFrameZeroCopy 的修复说明)。这里对每帧送屏
+ * 前的背景采样点做校验, 偏离即 ERROR + 落 PPM 取证 —— 修复回归的第一现场。
+ * 时间线 (XPOS/PRES) 与落盘预算默认关, 用 drive_c 下的 marker 文件打开
+ * (diag-present-timeline / WINEHUA_PRESENT_DUMP), 避免常驻日志量。 */
+static int64_t NowNs(void);
+static int DiagFlagFile(const char *name);
+
+/* 诊断开关 (默认关, 验证/排障时在 drive_c 下放 marker 文件打开):
+ *   drive_c/diag-present-timeline  XPOS/PRES 呈现时间线日志
+ *   WINEHUA_PRESENT_DUMP: 异常帧落盘预算 (张), 背景像素校验常驻 (门禁) */
+static int DiagTimelineOn(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("WINEHUA_PRESENT_TIMELINE");
+        if (v && *v)
+            on = strcmp(v, "0") != 0;
+        else
+            on = DiagFlagFile("diag-present-timeline");
+    }
+    return on;
+}
+
+static int DiagDumpBudget(void)
+{
+    static int budget = -2;
+    if (budget == -2) {
+        const char *v = getenv("WINEHUA_PRESENT_DUMP");
+        budget = (v && *v) ? atoi(v) : 40; /* 诊断期默认 40 张 */
+        if (budget > 0) {
+            mkdir("/data/storage/el2/base/files/.wine/drive_c/framedump", 0755);
+            OHLOG("diag: 背景异常落盘已开, budget=%{public}d", budget);
+        }
+    }
+    return budget;
+}
+
+/* ── 诊断开关: 文件存在即生效 (免重编; 1s 缓存) ────────────────────────────
+ * drive_c/force-copy-present   跳过零拷贝, 走 M1 式 渲染→mmap→memcpy 路径
+ * drive_c/force-timer-clock    停用 VSync 主驱动, 退 33ms 定时节拍
+ * drive_c/diag-present-timeline 打开 XPOS/PRES 呈现时间线日志 */
+static int DiagFlagFile(const char *name)
+{
+    static const char *names[3] = {"force-copy-present", "force-timer-clock",
+                                   "diag-present-timeline"};
+    static int val[3] = {-1, -1, -1};
+    static int64_t lastNs[3];
+    int idx = (strcmp(name, names[0]) == 0) ? 0
+              : (strcmp(name, names[1]) == 0) ? 1 : 2;
+    int64_t now = NowNs();
+    if (val[idx] < 0 || now - lastNs[idx] > 1000000000ll) {
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "/data/storage/el2/base/files/.wine/drive_c/%s", names[idx]);
+        struct stat st;
+        val[idx] = (stat(path, &st) == 0);
+        lastNs[idx] = now;
+    }
+    return val[idx];
+}
+
+/* 背景采样点 (避开两窗几何: win1 x60..404 y80..320, win2 x380..660 y300..500) */
+static const int kBgPts[][2] = {{700, 560}, {30, 560}, {760, 40}, {350, 560}, {700, 120}};
+
+/* 校验「刚渲染完、即将交给消费者的那一帧」的深色底 (期望 ~26,26,31)。
+ * 偏离即 ERROR + 落 PPM (最多 budget 张; 另存一张基准帧)。 */
+static void DiagPresentFrame(struct wlr_buffer *buffer, uint32_t seq)
+{
+    static int dumped, refd;
+    if (DiagDumpBudget() <= 0)
+        return;
+    struct NativeWindowBuffer *nwb = wl_ohos_present_buffer_window_buffer(buffer);
+    BufferHandle *h = nwb ? OH_NativeWindow_GetBufferHandleFromNative(nwb) : NULL;
+    if (!h || h->fd < 0)
+        return;
+    size_t bytes = (h->size > 0) ? (size_t)h->size : (size_t)h->stride * h->height;
+    if (bytes < (size_t)h->stride * (size_t)buffer->height)
+        return;
+    const uint8_t *base = mmap(NULL, bytes, PROT_READ, MAP_SHARED, h->fd, 0);
+    if (base == MAP_FAILED)
+        return;
+    int bad = 0, bi = -1;
+    uint8_t br = 0, bg = 0, bb = 0;
+    for (size_t i = 0; i < sizeof(kBgPts) / sizeof(kBgPts[0]); ++i) {
+        const uint8_t *px = base + (size_t)kBgPts[i][1] * h->stride +
+                            (size_t)kBgPts[i][0] * 4;
+        if (!(px[0] >= 8 && px[0] <= 56 && px[1] >= 8 && px[1] <= 56 &&
+              px[2] >= 8 && px[2] <= 56)) {
+            bad = 1;
+            bi = (int)i;
+            br = px[0];
+            bg = px[1];
+            bb = px[2];
+            break;
+        }
+    }
+    if (bad) {
+        ++dumped;
+        OH_LOG_ERROR(LOG_APP,
+                     "diag: 背景采样偏离 frame=%{public}u pt=%{public}d rgb=%{public}u,%{public}u,%{public}u count=%{public}d",
+                     seq, bi, br, bg, bb, dumped);
+    }
+    /* 落盘条件: 异常帧 (预算内) / 启动前 12 帧 / 一张基准帧 */
+    if ((bad && dumped <= DiagDumpBudget()) || seq <= 12 || (!refd && seq > 3)) {
+        refd = 1;
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "/data/storage/el2/base/files/.wine/drive_c/framedump/f%06u.ppm",
+                 seq);
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            fprintf(f, "P6\n%d %d\n255\n", buffer->width, buffer->height);
+            for (int y = 0; y < buffer->height; ++y) {
+                const uint8_t *row = base + (size_t)y * h->stride;
+                for (int x = 0; x < buffer->width; ++x)
+                    fwrite(row + (size_t)x * 4, 1, 3, f);
+            }
+            fclose(f);
+        }
+    }
+    munmap((void *)base, bytes);
+}
+
 static void HandleOutputCommit(struct wl_listener *listener, void *data)
 {
     (void)listener;
@@ -231,6 +358,7 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     if (wl_ohos_present_buffer_owns(event->state->buffer)) {
         if (wl_ohos_egl_active())
             wl_ohos_egl_finish(); /* 显示消费前必须 GPU 写完 (glFinish) */
+        DiagPresentFrame(event->state->buffer, g_out.frame_seq);
         int32_t prc = wl_ohos_present_buffer_present(event->state->buffer, -1);
         if (prc != 0 && (g_out.frame_seq % 30) == 1)
             OH_LOG_ERROR(LOG_APP, "present FlushBuffer rc=%{public}d (帧 %{public}u)",
@@ -513,6 +641,22 @@ static int PresentFrameZeroCopy(void)
         return 0;
     }
 
+    /* 借来的队列 buffer 内容对本帧不可信: 槽位轮转, 拿到哪块存储是随机的,
+     * 可能是一块从没画过背景的地盘。damage ring 的跨帧局部记账只对「自己
+     * 全生命周期持有的 swapchain buffer」成立, 而本路径的包装每帧新建、
+     * 生命周期又被 GPU 在途引用拉长 —— 记账与物理存储错配时, 局部 damage
+     * 落到没画过背景的槽位上 = 背景黑帧 (设备 .5 实测: 每次会话 frame
+     * 14~47 每 5 帧一黑; 设备 .206 同代码 0 复现, 强堆布局相关)。
+     * 所以本路径每帧按全幅 damage 重绘。代价: 只有帧内确有 damage 才进本
+     * 路径 (静止仍零渲染), 全幅重绘实测 segment avg ~4.4ms, 120Hz 预算
+     * 8.3ms 内。不用 wlr_damage_ring_add_whole: 它从 ring 现存 buffer 取
+     * 尺寸, ring 为空时是空操作。 */
+    pixman_region32_t whole;
+    pixman_region32_init_rect(&whole, 0, 0,
+                              (int)buf->width, (int)buf->height);
+    wlr_damage_ring_add(&g_out.scene_output->damage_ring, &whole);
+    pixman_region32_fini(&whole);
+
     int ok = 0;
     struct wlr_allocator *alloc = OneShotAllocatorCreate(buf);
     struct PresentOneShotAllocator *one =
@@ -640,6 +784,13 @@ static void FrameStep(bool via_vsync)
         if (c->scene_surf && c->xs)
             wlr_scene_node_set_position(&c->scene_surf->buffer->node,
                                         c->xs->x, c->xs->y);
+        /* 诊断 (XPOS): 位置实际生效的时刻 —— 与客户端 XMOVE 行并排即得随动延迟 */
+        if (c->xs && DiagTimelineOn() && c->dbgLastX != c->xs->x) {
+            OHLOG("XPOS t=%{public}lldms win=0x%{public}lx x=%{public}d y=%{public}d",
+                  (long long)(NowNs() / 1000000), (unsigned long)c->xs->window_id,
+                  c->xs->x, c->xs->y);
+            c->dbgLastX = c->xs->x;
+        }
         /* M2-T5: 帧节点跟窗走 (位置/尺寸以窗为准, 帧尺寸不合时按窗缩放) */
         if (c->frame_node && c->xs) {
             wlr_scene_node_set_position(&c->frame_node->node, c->xs->x, c->xs->y);
@@ -672,10 +823,26 @@ static void FrameStep(bool via_vsync)
          * 先判 needs_frame: 无 damage 时 scene 直接返回 true 不渲染, 而借用
          * 的队列 buffer 必须归还 (漏还 = 槽位永久丢失) —— 别进那条路。 */
         bool presented = false;
-        if (render && wl_ohos_egl_active() && g_out.window && g_out.scene_output)
+        if (render && !DiagFlagFile("force-copy-present") && wl_ohos_egl_active() &&
+            g_out.window && g_out.scene_output)
             presented = PresentFrameZeroCopy() != 0;
         if (!presented)
             wlr_scene_output_commit(g_out.scene_output, NULL);
+        /* 诊断 (PRES): 每帧上屏 + 各窗当前 x —— 「同一位置连续几帧」直接可数 */
+        if (render && DiagTimelineOn()) {
+            char pos[64] = {0};
+            struct ohos_client_surface *tc;
+            wl_list_for_each(tc, &g_clients, link) {
+                if (!tc->xs)
+                    continue;
+                char one[24];
+                snprintf(one, sizeof(one), "%s%d", pos[0] ? "," : "", tc->xs->x);
+                strncat(pos, one, sizeof(pos) - strlen(pos) - 1);
+            }
+            OHLOG("PRES t=%{public}lldms seq=%{public}u zc=%{public}d x=[%{public}s]",
+                  (long long)(NowNs() / 1000000), g_out.frame_seq,
+                  presented ? 1 : 0, pos);
+        }
         struct timespec ts_r1;
         clock_gettime(CLOCK_MONOTONIC, &ts_r1);
         if (render) {
@@ -769,6 +936,12 @@ static void FrameStep(bool via_vsync)
 static int FrameTick(void *data)
 {
     (void)data;
+    /* A/B: 强制 33ms 定时节拍 (M1 口径), 用于对照「滞留是否 VSync 时钟引入」 */
+    if (DiagFlagFile("force-timer-clock")) {
+        FrameStep(false);
+        wl_event_source_timer_update(g_out.frame_timer, FRAME_FALLBACK_MS);
+        return 0;
+    }
     if (g_out.vsync && !g_out.vsync_stalled) {
         int64_t last = __atomic_load_n(&g_out.vsync_last_ns, __ATOMIC_RELAXED);
         int64_t now = NowNs();

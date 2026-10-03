@@ -538,6 +538,44 @@ wine stderr + vtest present 日志），已在每轮 run 落盘 —— 本次多
 归还路径；若是，需要在 present 路径补同步点或调整归还时机。
 
 
+### 2.15 零拷贝 present 的背景黑帧（2026-10-03 已修：present 路径每帧全幅 damage）
+
+**现象**：DisplayRoute 双窗场景偶发整块背景闪黑。帧 dump 实测：黑区占 71%
+（≈ 窗外全部面积），即宿主送出的帧只有窗口内容、背景根本没画；集中在场景
+启动后第一秒（frame 14~47，每 5 帧一次）后自愈。设备相关性极强：设备 .5
+三次会话 3/3 复现（帧号稳定 14~47、步长 5），设备 .206 全新场景两轮 0 复现
+——强堆布局相关。
+
+**与「矩形移动滞留」的关系：无关。** 滞留是测试客户端自身节奏：xclient
+mode=2 每 3 帧移 8px（实测每位置保持 97~134ms，端点 210~232ms），合成器
+随动 p50 0~14ms（1~2 个显示帧内生效）。M1 时代客户端内容率 ~2fps、画面接近
+静止所以看不出跳步；M2-B 内容率修复后 23fps 才显出来 —— 测试资产行为变化，
+非管线回归。
+
+**根因**：零拷贝 present 每帧从 NativeWindow 队列借一格 buffer 并新建
+wlr_buffer 包装。wlroots damage ring 的跨帧局部记账默认 buffer 由它自己的
+swapchain 全生命周期持有；本路径的包装每帧新建、生命周期又被 GPU 在途引用
+拉长，记账与物理存储错配时，局部 damage 落到从未画过背景的槽位 = 背景黑帧。
+
+**修复**（`display/ohos_output.c` PresentFrameZeroCopy）：借来的队列 buffer
+内容对本帧不可信 → 提交前按全幅 damage 重绘。用显式全幅矩形
+`wlr_damage_ring_add`，不用 `wlr_damage_ring_add_whole`（后者从 ring 现存
+buffer 取尺寸，ring 为空时是空操作）。静止仍零渲染（needs_frame 门控在前）；
+实测 .206 全幅重绘后 segment render+commit avg 3.1ms（修复前局部重绘 4.3ms，
+clip 复杂度下降反而更低），max 6.5ms，120Hz 预算 8.3ms 内。
+
+**验收**：常驻门禁 = `DiagPresentFrame` 每帧送屏前背景采样点校验（偏离即
+ERROR + framedump 落 PPM）。修复前 .5 基线 8~9 次偏离/会话（3/3）；修复后
+.206 rate job 0 偏离 + core 4/4 PASS（r20261003-163023 /
+core-r20261003-163312）。**待补**：黑帧只在 .5 复现，治愈判定（修复前 3/3 →
+修复后 0/3）要在复现机上做；.5 当前不可达，可达后补。
+
+**伴随诊断开关**（默认关，drive_c 放 marker 文件即开，免重编）：
+`diag-present-timeline`（XPOS/PRES 呈现时间线）、`force-copy-present`
+（强制拷贝路径对照）、`force-timer-clock`（33ms 定时节拍对照）；
+`WINEHUA_PRESENT_DUMP`（异常帧落盘预算）。
+
+
 ### 3.1 hdc -b 热更后必须 sha256 对账
 
 实测（M1-T6，t6d/t6e/t6f 三轮）：`hdc file send -b` 热更沙箱文件后，
