@@ -5,6 +5,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
 import { DesktopModeService } from '../service/DesktopModeService';
+import { DisplayRouteService } from '../service/DisplayRouteService';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
@@ -70,6 +71,13 @@ export default class EntryAbility extends UIAbility {
       parameters['winehua.desktopMode'] !== null;
     if (explicitDesktopMode) {
       DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
+    }
+    // 显示路线显式覆盖 (wayland|x11): 仅显式 want 生效, 不持久化 (spec
+    // 2026-10-03 §2.2)。消费点白名单见 DisplayRouteService 头注释。
+    const explicitDisplayRoute = !!parameters && parameters['winehua.displayRoute'] !== undefined &&
+      parameters['winehua.displayRoute'] !== null;
+    if (explicitDisplayRoute) {
+      DisplayRouteService.getInstance().setOverrideMode(value('winehua.displayRoute', ''));
     }
     // 自动化通道 (UI 点击/输入不可注入设备的全自动验证):
     // winehua.autoStart=1 → 主页面就绪后自动拉起引擎 (一次消费)
