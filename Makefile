@@ -366,6 +366,9 @@ define native_rule
 native-$(1): $$(STAMPS)/$(1)/native
 
 $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+# virgl (native) 与 libdrm (display-libs) 的关系见 build_native.sh virgl 段
+# 注释: virgl 的 meson 视野收窄到 epoxy, 豁免分支确定性生效, 与构建顺序无关
+# (2026-10-04 毁灭性重建实证并修复)。
 	@sentinel="$(NATIVE_SENTINEL_$(subst -,_,$(1)))"; \
 	libs_dir="$(ROOT)/entry/libs/$(1)"; \
 		if [ -f $$@ ] && [ -f "$$$$sentinel" ] && \

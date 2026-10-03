@@ -155,12 +155,16 @@ struct DesktopPage {
           if (DisplayRouteService.getInstance().isX11()) {
             const cw = this.controller.x11W;
             const ch = this.controller.x11H;
-            if (cw <= 0 || ch <= 0) return;
+            if (cw <= 0 || ch <= 0) {
+              hilog.warn(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH dropped (surface %{public}dx%{public}d)', cw, ch);
+              return;
+            }
             const t = ev.changedTouches[0];
             if (!t) return;
             const px = vp2px(t.x) / cw;
             const py = vp2px(t.y) / ch;
             if (ev.type === TouchType.Down) {
+              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH down (%{public}d,%{public}d)', Math.round(px * cw), Math.round(py * ch));
               smokeNapi.smokeDisplayRouteMotion(px, py, 1);
               smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
               this.x11Pressed = true;

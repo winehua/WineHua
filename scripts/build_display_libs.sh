@@ -50,6 +50,10 @@ DRM_VER=2.4.134
 DRM_SHA=ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95
 # 守卫用 host-ext 文件存在性而非 pkg-config 查询: SDK sysroot 自带 libdrm.pc(2.4.120)
 # 会短路 --exists → 误跳过 2.4.129 门槛的自建 (实测踩坑)
+# 注意: 此处**不得**试图给 virglrenderer 供 gbm (libdrm ≥2.4.121 已无 gbm
+# 选项, 它拆去了 mesa)。virgl 的 meson 视野已在 build_native.sh 收窄到
+# epoxy —— 豁免分支确定性生效, 与本目录是否装 libdrm 无关 (2026-10-04
+# 毁灭性重建实证)。
 if [ ! -f "$HOST_EXT_PC/libdrm.pc" ]; then
     fetch_and_unpack "https://dri.freedesktop.org/libdrm/libdrm-${DRM_VER}.tar.xz" \
         "$DRM_SHA" "libdrm-${DRM_VER}"

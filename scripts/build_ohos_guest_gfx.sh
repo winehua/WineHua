@@ -647,7 +647,15 @@ copy_if_missing() {
 ensure_wayland_dev_headers() {
     local wl_src="$ROOT/thirdparty/wayland/src"
     local wl_egl="$ROOT/thirdparty/wayland/egl"
-    local wl_build="$BUILD_DIR/wayland_build/x86_64/src"
+    # 产物目录随版本隔离 (build_wayland.sh: 升级 tag 必须换目录, 旧缓存
+    # scanner 不满足新源码门槛), 这里按同一规则从源码推导 —— 此前写死
+    # wayland_build/x86_64, 版本化改名后一直靠旧 build/ 树里的冻结拷贝
+    # 喂 sysroot-ext, 毁灭性重建 (rm -rf build/) 当场断链 (2026-10-04 演练)。
+    local wl_version
+    wl_version=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" \
+        "$ROOT/thirdparty/wayland/meson.build" | head -1)
+    [ -n "$wl_version" ] || err "无法从 $ROOT/thirdparty/wayland/meson.build 解析 version"
+    local wl_build="$BUILD_DIR/wayland_build_$wl_version/x86_64/src"
 
     mkdir -p "$SYSROOT_EXT_INC"
 

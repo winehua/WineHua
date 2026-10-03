@@ -267,6 +267,11 @@ emit_wayland_host_pc() {
         && [ -f "$NATIVE_LIBS/libwayland-client.so.0" ] \
         || { err "emit_wayland_host_pc: $NATIVE_LIBS 缺 wayland .so, 先跑 build_wayland"; return 1; }
 
+    # HOST_EXT 目录树此前由 display-libs 的首个 meson_host_build 顺带建立;
+    # 毁灭性重建 (rm -rf build/) 里 build_native 与 display 链是并行分支,
+    # 本函数可能先跑到 —— 目录自建, 不依赖别人的副作用 (T7 演练实测断链)。
+    mkdir -p "$HOST_EXT_PC"
+
     # 版本守卫: pc 已存在且 Version 行一致才跳过 (直接读文件, 不走 pkg-config——
     # 顶层 PKG_CONFIG_LIBDIR 里 guest 侧同名 pc 同版本, 会混淆判读)
     if [ -f "$HOST_EXT_PC/wayland-server.pc" ] && [ -f "$HOST_EXT_PC/wayland-client.pc" ] \
@@ -444,7 +449,15 @@ build_virglrenderer() {
     export PATH="$(dirname "$python_with_yaml"):$PATH"
 
     rm -rf "$build"
-    meson setup "$build" "$src" \
+    # external-egl-without-gbm 的豁免分支只在 libdrm_dep **未找到**时生效
+    # (virglrenderer meson.build:302)。libdrm.pc 在 sysroot-ext (guest 侧
+    # 2.4.134) 与 SDK sysroot (2.4.120) 恒可见, meson 的 found 只看 pc 存在
+    # (guest x86_64 .so 链接试跑失败也照 found), 一旦 found → 强制要求
+    # gbm.pc —— 而 libdrm ≥2.4.121 已无 gbm (拆去 mesa), gbm 永远供不出来。
+    # 本库编出后 NEEDED 只有 epoxy+libc (无 gbm, 2026-10-04 老产物实证),
+    # 所以收窄视野到 epoxy: 豁免分支确定性生效, 不再依赖构建顺序。
+    # 改动若要让 virgl 真用 gbm, 需 host 侧 mesa libgbm 链, 另立项。
+    PKG_CONFIG_LIBDIR="$epoxy_pc" meson setup "$build" "$src" \
         --cross-file "$cross" \
         --prefix "$build/install" \
         --libdir lib \
