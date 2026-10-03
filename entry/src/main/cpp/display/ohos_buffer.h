@@ -49,23 +49,42 @@ uint32_t wl_ohos_buffer_drm_format(struct wlr_buffer *buffer);
 struct NativeWindowBuffer *wl_ohos_buffer_window_buffer(struct wlr_buffer *buffer);
 
 /*
- * ── present buffer: window BufferQueue 借来的 buffer (M2-T4 零拷贝输出) ──
+ * ── present slot: 队列槽位 → 持久 (wrapper + swapchain) (M2-T4, T6.5 重构) ──
  *
  * 来源是 NativeWindow 队列 (RequestBuffer 借一格 → 写 → FlushBuffer 归还),
  * 不是 allocator 分配 —— 因此**一帧一借**: 队列状态机不允许跨帧复用同一个
  * buffer (未重新 Request 就写 = 状态非法, T8 路径 A BUFFER_STATE_INVALID
- * 的实测教训)。wlroots swapchain 的复用模型与它对不上, present 路径每帧
- * 新建 swapchain (见 ohos_output.c)。
+ * 的实测教训)。每帧仍 Request/Flush, 契约不变; 持久化的是**包装层**:
+ * wrapper + allocator + swapchain 三元组按 RequestBuffer 返回的句柄缓存。
+ *
+ * 旧设计每帧新建一次性 swapchain (T6.5 前的实现): 桌面尺寸 (2800x1840) 下
+ * 每帧 20MB 级分配风暴 —— EGL 导入/FBO 重建、damage ring 新条目、swapchain
+ * 与 wrapper 全部一帧一造 —— 内核图形侧 ~230s 压爆 (OOM_KILLER killId=4000,
+ * CPU 侧 MemAvailable 全程充裕; wayland 路线对照组同尺寸长期存活; 实测
+ * 2026-10-04, 六次复现, ledger "Blocker 发现")。持久化后 per-frame 只剩
+ * Request/Flush + swapchain 槽位 acquire/release —— wlroots 输出路径的原生
+ * 模型 (render/swapchain.c slot 复用)。
  *
  * 行距/尺寸/格式以 BufferHandle 为准 (系统定的, 可能带 padding) —— 与
  * allocator buffer 不同, 这里没有 stride==width*4 的假设。
  */
 /* SDK 侧 typedef struct NativeWindow OHNativeWindow; 前置声明要用真 tag */
 struct NativeWindow;
+struct wlr_swapchain;
 
-// 借一格队列 buffer 并包成 wlr_buffer (失败返回 NULL)。
-// 失败时内部已归还可能的 fence, 调用方无需处理。
-struct wlr_buffer *wl_ohos_present_buffer_acquire(struct NativeWindow *window);
+// 借一格队列 buffer, 并给出可直接交给 wlr_scene_output_commit 的 swapchain
+// (options.swapchain)。命中句柄缓存则复用三元组, miss 则新建。任一步失败
+// 返回 NULL (内部已归还可能的 fence 与队列槽位, 调用方无需处理)。
+//
+// 调用方约定: 不 drop 返回的 buffer、不销毁 swapchain —— 生命周期归 slot 表,
+// 由 wl_ohos_present_slots_shutdown 统一回收。帧内失败路径只 abort 队列
+// (wl_ohos_present_buffer_abort), 下一帧同句柄回来照常复用。
+struct wlr_buffer *wl_ohos_present_slot_acquire(struct NativeWindow *window,
+                                                struct wlr_swapchain **out_swapchain);
+
+// 回收全部 slot (swapchain destroy → wrapper 唯一 drop → 引用退 → 释放)。
+// 链路停机 / 换 NativeWindow 时必须调用, 且须在销毁 window 本体之前。
+void wl_ohos_present_slots_shutdown(void);
 
 // 是否本模块 present buffer (供提交路径分流: present = 直推, 其他 = 拷贝)
 int wl_ohos_present_buffer_owns(struct wlr_buffer *buffer);

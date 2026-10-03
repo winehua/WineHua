@@ -379,7 +379,10 @@ bool wl_ohos_egl_present_probe(struct NativeWindow *window,
         return false;
     }
 
-    struct wlr_buffer *buf = wl_ohos_present_buffer_acquire(window);
+    /* 探针经 slot API 借格 (与渲染路径同一张 slot 表, wrapper 复用):
+     * 一次性借用+销毁的旧语义随 T6.5 移除 —— 调用方不再 drop, 生命周期归
+     * slot 表 (见 ohos_buffer.h)。swapchain 探针用不上, 传 NULL 不取。 */
+    struct wlr_buffer *buf = wl_ohos_present_slot_acquire(window, NULL);
     if (!buf)
     {
         P_ERR("RequestBuffer failed (队列空或窗口未就绪)");
@@ -567,12 +570,11 @@ out:
     {
         wl_ohos_present_buffer_abort(buf);
     }
-    wlr_buffer_drop(buf);
+    /* 不 drop (T6.5 契约): wrapper 归 slot 表, 下一帧同句柄复用 */
     return ok;
 
 out_abort:
     wl_ohos_present_buffer_abort(buf);
-    wlr_buffer_drop(buf);
     return false;
 }
 

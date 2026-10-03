@@ -74,6 +74,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include <AbilityKit/native_child_process.h>
 
 #include "ohos_output.h"
+#include "ohos_buffer.h" /* wl_ohos_present_slots_shutdown (停机回收 present slot) */
 #include "display_input.h"
 #include "display_guest_frames.h"
 #include "ohos_egl_import_probe.h"
@@ -596,6 +597,9 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             std::lock_guard<std::mutex> lock(g_mutex);
             if (g_present_window)
             {
+                // present slot 三元组 (wrapper/allocator/swapchain) 持有该
+                // window 的队列槽位, 必须先于 window 本体销毁回收 (T6.5)。
+                wl_ohos_present_slots_shutdown();
                 OH_NativeWindow_DestroyNativeWindow(g_present_window);
                 g_present_window = nullptr;
             }

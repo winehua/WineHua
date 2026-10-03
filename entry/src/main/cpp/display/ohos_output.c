@@ -563,74 +563,29 @@ static void LogPresentSegment(struct timespec ts_enter)
 
 /* ── M2-T4 零拷贝 present: 每帧借一格队列 buffer 当渲染目标 ─────────────
  *
- * 队列 buffer 不能跨帧复用 (见 ohos_buffer.h: 未重新 Request 就写 = 状态
- * 非法), 而 wlroots 的 output swapchain 是长期复用同一批 buffer 的模型 ——
- * 两者对不上, 所以 present 路径**每帧新建一个只服务本帧的 swapchain**, 并把
- * 刚借到的那一格经下面的单次 allocator 交给它。scene 渲染直接落在队列
- * buffer 上 (gles2 经导入器把 buffer 当 FBO), commit 事件里只做 GPU 同步 +
- * FlushBuffer (见 HandleOutputCommit 的 present 分支) —— 全程无 mmap/memcpy。
+ * 队列 buffer 不能跨帧**免 Request**复用 (见 ohos_buffer.h: 未重新 Request
+ * 就写 = 状态非法), 而每帧仍要 Request/Flush; 持久化的是包装层 —— wrapper +
+ * allocator + swapchain 三元组按队列句柄缓存 (见 ohos_buffer.h 的 slot 一节,
+ * T6.5; 旧一次性 swapchain 在桌面尺寸下是每帧 20MB 级分配风暴, 内核图形侧
+ * ~230s 压爆)。scene 渲染直接落在队列 buffer 上 (gles2 经导入器把 buffer 当
+ * FBO, 导入随 wrapper 持久化), commit 事件里只做 GPU 同步 + FlushBuffer
+ * (见 HandleOutputCommit 的 present 分支) —— 全程无 mmap/memcpy。
  *
  * 任一环节失败都归还队列并返回 false: 调用方回落既有拷贝路径 (pixman 与
  * gles2 都仍可用), 不会出现黑屏。 */
-struct PresentOneShotAllocator {
-    struct wlr_allocator base;
-    struct wlr_buffer *buffer;
-    int taken;
-};
-
-static struct wlr_buffer *OneShotCreateBuffer(struct wlr_allocator *alloc,
-                                             int width, int height,
-                                             const struct wlr_drm_format *format)
-{
-    struct PresentOneShotAllocator *one = (struct PresentOneShotAllocator *)alloc;
-    (void)width; (void)height; (void)format; /* 存储已由队列 buffer 定 */
-    if (one->taken || !one->buffer)
-        return NULL;
-    /* 所有权移交, 不是借用: wlr_allocator_create_buffer 返回的 buffer 由
-     * 调用方 (swapchain 槽) 持有, 槽在 slot_reset 里 drop 恰好一次
-     * (render/swapchain.c:40-48,107)。这里若再加一次 wlr_buffer_lock,
-     * 槽的 drop 会把 dropped 置位而 n_locks>0 使其不销毁 → 包装泄漏, 且
-     * 调用方事后的 drop 命中 assert(!dropped) —— 实测: assert 走 OHOS
-     * AssertCallback → SendSyncEvent 等主线程, 事件循环线程从此永久停在
-     * wlr_buffer_drop 里 (Faultlogger cppcrash 20260930042002 栈:
-     * __assert_fail ← wlr_buffer_drop+84 ← … ← wl_event_loop_dispatch),
-     * 合成停摆、Xwayland 握手不完成。 */
-    one->taken = 1;
-    return one->buffer;
-}
-
-static void OneShotAllocatorDestroy(struct wlr_allocator *alloc)
-{
-    free(alloc);
-}
-
-static const struct wlr_allocator_interface kOneShotAllocatorImpl = {
-    .create_buffer = OneShotCreateBuffer,
-    .destroy = OneShotAllocatorDestroy,
-};
-
-static struct wlr_allocator *OneShotAllocatorCreate(struct wlr_buffer *buffer)
-{
-    struct PresentOneShotAllocator *one =
-        calloc(1, sizeof(struct PresentOneShotAllocator));
-    if (!one)
-        return NULL;
-    one->buffer = buffer;
-    wlr_allocator_init(&one->base, &kOneShotAllocatorImpl,
-                       WLR_BUFFER_CAP_DATA_PTR);
-    return &one->base;
-}
-
 /* 零拷贝一帧。返回 true = 已渲染并提交 (flush 在 commit 监听器里完成);
  * false = 本帧没出 (调用方回落拷贝路径或丢帧)。 */
 static int PresentFrameZeroCopy(void)
 {
-    struct wlr_buffer *buf = wl_ohos_present_buffer_acquire(g_out.window);
-    if (!buf)
+    struct wlr_swapchain *swapchain = NULL;
+    struct wlr_buffer *buf =
+        wl_ohos_present_slot_acquire(g_out.window, &swapchain);
+    if (!buf || !swapchain)
         return 0; /* 队列无空槽 = 显示端背压, 本帧丢 (与拷贝路径同语义) */
 
     /* scene 的 build_state 对渲染目标有尺寸断言: 队列 buffer 与输出尺寸
-     * 不一致时必须在这里挡下 (回落拷贝路径), 不能带进 wlroots */
+     * 不一致时必须在这里挡下 (回落拷贝路径), 不能带进 wlroots。只 abort
+     * 不 drop —— wrapper 归 slot 表, 尺寸切换的旧句柄由表容量自然淘汰。 */
     if (g_out.output && (buf->width != g_out.output->width ||
                          buf->height != g_out.output->height)) {
         static unsigned mismatch;
@@ -640,63 +595,32 @@ static int PresentFrameZeroCopy(void)
                          buf->width, buf->height, g_out.output->width,
                          g_out.output->height, mismatch);
         wl_ohos_present_buffer_abort(buf);
-        wlr_buffer_drop(buf);
         return 0;
     }
 
-    /* 借来的队列 buffer 内容对本帧不可信: 槽位轮转, 拿到哪块存储是随机的,
-     * 可能是一块从没画过背景的地盘。damage ring 的跨帧局部记账只对「自己
-     * 全生命周期持有的 swapchain buffer」成立, 而本路径的包装每帧新建、
-     * 生命周期又被 GPU 在途引用拉长 —— 记账与物理存储错配时, 局部 damage
-     * 落到没画过背景的槽位上 = 背景黑帧 (设备 .5 实测: 每次会话 frame
-     * 14~47 每 5 帧一黑; 设备 .206 同代码 0 复现, 强堆布局相关)。
-     * 所以本路径每帧按全幅 damage 重绘。代价: 只有帧内确有 damage 才进本
-     * 路径 (静止仍零渲染), 全幅重绘实测 segment avg ~4.4ms, 120Hz 预算
-     * 8.3ms 内。不用 wlr_damage_ring_add_whole: 它从 ring 现存 buffer 取
-     * 尺寸, ring 为空时是空操作。 */
+    /* 每帧按全幅 damage 重绘 (本变更只做持久化一件事, 控制变量): 旧一次性
+     * wrapper 下 ring 记账与物理存储错配, 局部 damage 落到没画过背景的槽位
+     * = 背景黑帧 (设备 .5 实测, known-issues §2.15)。T6.5 起三元组按句柄
+     * 持久, ring 条目 ↔ wrapper ↔ 存储一一对应, 局部 damage 的前提已成立
+     * —— 但它与持久化是两个变量, 收益也未测量 (原则 #19): 先持久化过验证,
+     * 局部 damage 作为后续实测过的优化单独做。代价: 全幅重绘实测 segment
+     * avg ~4.4ms, 120Hz 预算 8.3ms 内。不用 wlr_damage_ring_add_whole: 它
+     * 从 ring 现存 buffer 取尺寸, ring 为空时是空操作。 */
     pixman_region32_t whole;
     pixman_region32_init_rect(&whole, 0, 0,
                               (int)buf->width, (int)buf->height);
     wlr_damage_ring_add(&g_out.scene_output->damage_ring, &whole);
     pixman_region32_fini(&whole);
 
-    int ok = 0;
-    struct wlr_allocator *alloc = OneShotAllocatorCreate(buf);
-    struct PresentOneShotAllocator *one =
-        (struct PresentOneShotAllocator *)alloc; /* taken 判据 (见 out:) */
-    struct wlr_swapchain *swapchain = NULL;
-    if (!alloc)
-        goto out;
-    {
-        /* 格式只作 swapchain 记账 (存储由队列 buffer 定); 取队列 buffer 的
-         * 实际 DRM 码, 认不出时用 XRGB8888 兜底 (与输出 primary format 同族) */
-        uint32_t drm = wl_ohos_buffer_drm_format(buf);
-        struct wlr_drm_format format = {0};
-        format.format = drm ? drm : DRM_FORMAT_XRGB8888;
-        swapchain = wlr_swapchain_create(alloc, buf->width, buf->height, &format);
-        if (!swapchain)
-            goto out;
-        struct wlr_scene_output_state_options options = {0};
-        options.swapchain = swapchain;
-        ok = wlr_scene_output_commit(g_out.scene_output, &options);
-    }
-out:
-    /* 队列槽位归还必须在 swapchain 销毁**之前**: 交给 swapchain 的 buffer 由
-     * slot_reset 在这次销毁里 drop (唯一一次) → n_locks 归零随即 impl->destroy
-     * 释放包装 —— 之后再访问 buf 就是 UAF。没被 present 分支归还的
-     * (commit 失败 / 未走到) 在这里归还, 否则这一格队列槽位永久留在 dequeued,
-     * 几次之后 RequestBuffer 饿死 (known-issues §1.1)。 */
+    struct wlr_scene_output_state_options options = {0};
+    options.swapchain = swapchain;
+    int ok = wlr_scene_output_commit(g_out.scene_output, &options);
+
+    /* 队列槽位归还: 没被 present 分支归还的 (commit 失败 / 未走到) 在这里
+     * 归还, 否则这一格队列槽位永久留在 dequeued, 几次之后 RequestBuffer
+     * 饿死 (known-issues §1.1)。wrapper 本体归 slot 表, 不 drop 不销毁。 */
     if (!wl_ohos_present_buffer_returned(buf))
         wl_ohos_present_buffer_abort(buf);
-    bool taken = (one != NULL && one->taken);
-    if (swapchain)
-        wlr_swapchain_destroy(swapchain);
-    if (alloc)
-        wlr_allocator_destroy(alloc);
-    if (!taken) {
-        /* 没交出去 (alloc 没被取走 / swapchain 建不起来): 唯一一次 drop 归我们 */
-        wlr_buffer_drop(buf);
-    }
     return ok;
 }
 

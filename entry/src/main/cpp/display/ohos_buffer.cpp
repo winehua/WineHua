@@ -33,7 +33,9 @@
 #define WLR_USE_UNSTABLE
 extern "C" {
 #include <wlr/interfaces/wlr_buffer.h>
+#include <wlr/render/allocator.h>
 #include <wlr/render/drm_format_set.h>
+#include <wlr/render/swapchain.h>
 #include <wlr/util/log.h>
 }
 
@@ -448,8 +450,82 @@ extern "C" uint32_t wl_ohos_buffer_drm_format(struct wlr_buffer *buffer)
     return BufferFromBase(buffer)->format;
 }
 
-extern "C" struct wlr_buffer *wl_ohos_present_buffer_acquire(struct NativeWindow *window)
+/* ── present slot (T6.5): 队列句柄 → 持久 (wrapper + allocator + swapchain) ──
+ *
+ * 一次性 swapchain 设计的每帧分配风暴在桌面尺寸下压爆内核图形侧 (证据与
+ * 对照组见 ohos_buffer.h 头注释)。三元组按 RequestBuffer 返回的句柄缓存,
+ * 每帧只做队列契约要求的 Request/Flush; "Allocating new swapchain buffer"
+ * 从每帧一次降到每槽位生命周期一次。
+ *
+ * wrapper 生命周期 (两持有者, 释放顺序无关 —— buffer_consider_destroy 要求
+ * dropped 且 n_locks==0 才真正销毁):
+ *   swapchain slot: 持唯一 drop (OneShotCreateBuffer 所有权移交, slot_reset
+ *     在 swapchain 销毁时 drop 恰好一次 —— 与 T6.5 前同一条语义);
+ *   slot 表: 持 1 引用 (wlr_buffer_lock), shutdown 时退。
+ * 队列深度上界 = 表容量: 队列循环复用固定几格, 同句柄不会并发两个 wrapper
+ * (那会让两个 swapchain 指向同一块存储, 是数据竞争)。 */
+#define PRESENT_SLOT_CAP 4
+
+struct PresentSlot
 {
+    OHNativeWindowBuffer *wb;
+    WlOhosPresentBuffer *buf;
+    struct wlr_allocator *alloc;
+    struct wlr_swapchain *swapchain;
+};
+
+static PresentSlot g_present_slots[PRESENT_SLOT_CAP];
+static size_t g_present_slot_count;
+
+/* 一次性 allocator: wlr_swapchain_create 不立即向 allocator 取 buffer
+ * (render/swapchain.c:104 惰性分配在首个 slot_acquire), 首次 acquire 时把
+ * wrapper 移交给 swapchain slot。容量 1 的 "allocator" 是把队列 buffer 塞进
+ * swapchain 记账模型的接口适配, 不是真的分配器。 */
+struct PresentOneShotAllocator
+{
+    struct wlr_allocator base;
+    struct wlr_buffer *buffer;
+    int taken;
+};
+
+static struct wlr_buffer *OneShotCreateBuffer(struct wlr_allocator *alloc,
+                                              int width, int height,
+                                              const struct wlr_drm_format *format)
+{
+    struct PresentOneShotAllocator *one = (struct PresentOneShotAllocator *)alloc;
+    (void)width;
+    (void)height;
+    (void)format; /* 存储已由队列 buffer 定 */
+    if (one->taken || !one->buffer)
+        return NULL;
+    /* 所有权移交, 不是借用: wlr_allocator_create_buffer 返回的 buffer 由
+     * 调用方 (swapchain 槽) 持有, 槽在 slot_reset 里 drop 恰好一次
+     * (render/swapchain.c:40-48,107)。这里若再加一次 wlr_buffer_lock,
+     * 槽的 drop 会把 dropped 置位而 n_locks>0 使其不销毁 → 包装泄漏, 且
+     * 调用方事后的 drop 命中 assert(!dropped) —— 实测: assert 走 OHOS
+     * AssertCallback → SendSyncEvent 等主线程, 事件循环线程从此永久停在
+     * wlr_buffer_drop 里 (Faultlogger cppcrash 20260930042002 栈:
+     * __assert_fail ← wlr_buffer_drop+84 ← … ← wl_event_loop_dispatch),
+     * 合成停摆、Xwayland 握手不完成。 */
+    one->taken = 1;
+    return one->buffer;
+}
+
+static void OneShotAllocatorDestroy(struct wlr_allocator *alloc)
+{
+    free(alloc);
+}
+
+static const struct wlr_allocator_interface kOneShotAllocatorImpl = {
+    .create_buffer = OneShotCreateBuffer,
+    .destroy = OneShotAllocatorDestroy,
+};
+
+extern "C" struct wlr_buffer *wl_ohos_present_slot_acquire(struct NativeWindow *window,
+                                                           struct wlr_swapchain **out_swapchain)
+{
+    if (out_swapchain)
+        *out_swapchain = nullptr;
     if (!window)
         return nullptr;
     OHNativeWindowBuffer *wb = nullptr;
@@ -460,19 +536,41 @@ extern "C" struct wlr_buffer *wl_ohos_present_buffer_acquire(struct NativeWindow
         /* 队列空 (消费者未释放) 是正常背压, 调用方按丢帧处理 */
         if (fence >= 0)
             close(fence);
-        wlr_log(WLR_DEBUG, "ohos present buffer: RequestBuffer rc=%d", rc);
+        wlr_log(WLR_DEBUG, "ohos present slot: RequestBuffer rc=%d", rc);
         return nullptr;
     }
+
+    /* 命中: 同一队列槽位回来了 —— 复用三元组。returned 按新一次 Request
+     * 周期重置; swapchain 的槽位上一帧已随 commit 结束释放 (scene 的
+     * output state finish 会 unlock), 本帧可再次 acquire。 */
+    for (size_t i = 0; i < g_present_slot_count; ++i)
+    {
+        if (g_present_slots[i].wb != wb)
+            continue;
+        /* LRU 触底: 命中项挪表尾 (逐出固定打表头) */
+        PresentSlot hit = g_present_slots[i];
+        for (size_t j = i; j + 1 < g_present_slot_count; ++j)
+            g_present_slots[j] = g_present_slots[j + 1];
+        g_present_slots[g_present_slot_count - 1] = hit;
+        hit.buf->returned = false;
+        if (fence >= 0)
+            close(fence); /* Request 的 fence 只对「写前等消费者」有意义, 本路径
+                           * 不等待 (与既有拷贝路径同语义, 真机验证无撕裂) */
+        if (out_swapchain)
+            *out_swapchain = hit.swapchain;
+        return &hit.buf->base;
+    }
+
+    /* miss: 新建三元组 */
     BufferHandle *h = OH_NativeWindow_GetBufferHandleFromNative(wb);
     if (!h || h->width <= 0 || h->height <= 0 || h->stride <= 0)
     {
-        wlr_log(WLR_ERROR, "ohos present buffer: bad handle %p", (void *)h);
+        wlr_log(WLR_ERROR, "ohos present slot: bad handle %p", (void *)h);
         OH_NativeWindow_NativeWindowAbortBuffer(window, wb);
         if (fence >= 0)
             close(fence);
         return nullptr;
     }
-
     auto *buf = static_cast<WlOhosPresentBuffer *>(calloc(1, sizeof(WlOhosPresentBuffer)));
     if (!buf)
     {
@@ -486,12 +584,72 @@ extern "C" struct wlr_buffer *wl_ohos_present_buffer_acquire(struct NativeWindow
     buf->stride = static_cast<size_t>(h->stride);
     buf->format = OhosFormatToDrm(h->format);
     wlr_buffer_init(&buf->base, &kPresentBufferImpl, h->width, h->height);
+    wlr_buffer_lock(&buf->base); /* slot 表的生命周期引用 (见上方生命周期注释) */
     if (fence >= 0)
-        close(fence); /* Request 的 fence 只对「写前等消费者」有意义, 本路径
-                       * 不等待 (与既有拷贝路径同语义, 真机验证无撕裂) */
-    wlr_log(WLR_DEBUG, "ohos present buffer %dx%d stride=%zu fmt=0x%x drm=0x%x",
+        close(fence);
+    wlr_log(WLR_DEBUG, "ohos present slot new %dx%d stride=%zu fmt=0x%x drm=0x%x",
             h->width, h->height, buf->stride, h->format, buf->format);
+
+    auto *one = (PresentOneShotAllocator *)calloc(1, sizeof(PresentOneShotAllocator));
+    if (!one)
+    {
+        wlr_buffer_drop(&buf->base);   /* 无人接手: 唯一 drop 归我们 */
+        wlr_buffer_unlock(&buf->base); /* 退表引用 → 真正销毁 */
+        return nullptr;
+    }
+    one->buffer = &buf->base;
+    wlr_allocator_init(&one->base, &kOneShotAllocatorImpl, WLR_BUFFER_CAP_DATA_PTR);
+
+    /* 格式只作 swapchain 记账 (存储由队列 buffer 定); 认不出时用 XRGB8888
+     * 兜底 (与输出 primary format 同族) */
+    struct wlr_drm_format format = {0};
+    format.format = buf->format ? buf->format : DRM_FORMAT_XRGB8888;
+    struct wlr_swapchain *swapchain =
+        wlr_swapchain_create(&one->base, h->width, h->height, &format);
+    if (!swapchain)
+    {
+        /* swapchain 建失败发生在向 allocator 取 buffer 之前 (惰性), wrapper
+         * 未被接手 —— 唯一 drop 与表引用都在我们。 */
+        wlr_buffer_drop(&buf->base);
+        wlr_buffer_unlock(&buf->base);
+        wlr_allocator_destroy(&one->base);
+        return nullptr;
+    }
+
+    if (g_present_slot_count == PRESENT_SLOT_CAP)
+    {
+        /* 表满 = 队列深度超出预期 (正常 ≤3)。被逐三元组的 wrapper 若还在
+         * swapchain 槽位上, drop 已随之发生; 表引用是最后一计数, 这里按
+         * swapchain → allocator → 引用的顺序拆, 与 shutdown 同构。 */
+        PresentSlot *evict = &g_present_slots[0];
+        wlr_log(WLR_INFO, "ohos present slot table full (%d), evicting oldest",
+                PRESENT_SLOT_CAP);
+        wlr_swapchain_destroy(evict->swapchain);
+        wlr_allocator_destroy(evict->alloc);
+        wlr_buffer_unlock(&evict->buf->base);
+        for (size_t j = 0; j + 1 < PRESENT_SLOT_CAP; ++j)
+            g_present_slots[j] = g_present_slots[j + 1];
+        g_present_slot_count--;
+    }
+    g_present_slots[g_present_slot_count++] = {wb, buf, &one->base, swapchain};
+    if (out_swapchain)
+        *out_swapchain = swapchain;
     return &buf->base;
+}
+
+extern "C" void wl_ohos_present_slots_shutdown(void)
+{
+    for (size_t i = 0; i < g_present_slot_count; ++i)
+    {
+        PresentSlot *slot = &g_present_slots[i];
+        /* 顺序: swapchain 先 (slot_reset 对 wrapper 唯一一次 drop), allocator
+         * 随后 (swapchain 挂着它的 destroy 监听), 表引用最后退 —— 三步之后
+         * dropped && n_locks==0, wrapper 真正销毁 (munmap + 归还兜底)。 */
+        wlr_swapchain_destroy(slot->swapchain);
+        wlr_allocator_destroy(slot->alloc);
+        wlr_buffer_unlock(&slot->buf->base);
+    }
+    g_present_slot_count = 0;
 }
 
 extern "C" int wl_ohos_present_buffer_owns(struct wlr_buffer *buffer)
