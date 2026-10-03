@@ -19,6 +19,23 @@
 #define LOG_TAG "WL_NAPI"
 #include <hilog/log.h>
 
+// M3a 显示路线 native 镜像 (契约见 wine_env.h)。进程内单写点 (NAPI set,
+// ArkTS 冷启解析后调一次), 读点仅 BuildWineEnv 的 stamp。
+static char g_display_route[8] = {0};
+
+extern "C" void WineHua_SetDisplayRoute(const char* route)
+{
+    if (!route || (strcmp(route, "x11") != 0 && strcmp(route, "wayland") != 0))
+        return;
+    strncpy(g_display_route, route, sizeof(g_display_route) - 1);
+    g_display_route[sizeof(g_display_route) - 1] = '\0';
+}
+
+bool WineHua_DisplayRouteIsX11()
+{
+    return strcmp(g_display_route, "x11") == 0;
+}
+
 int CreateAudioBootstrapFd(const std::string& runtimeDir) {
     if (!winehua::AudioBroker::GetInstance().EnsureStarted(runtimeDir)) {
         OH_LOG_ERROR(LOG_APP, "[AudioBroker] failed to start for runtimeDir=%{public}s", runtimeDir.c_str());
@@ -61,6 +78,13 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "XDG_RUNTIME_DIR=" + sockDir,
         "WAYLAND_DISPLAY=" + sockName,
     };
+    // M3a 显示路线: x11 时 stamp 两键 (后写胜出)。WAYLAND_DISPLAY 的删除由
+    // 子进程 wine_child.cpp 的既有路由分支完成 (route=x11 ⇒ unset), 这里
+    // 不表达删除语义。smoke 套件 env 里的同名键与本 stamp 同值, 无冲突。
+    if (WineHua_DisplayRouteIsX11()) {
+        env.push_back("WINEHUA_DISPLAY_ROUTE=x11");
+        env.push_back("DISPLAY=:0");
+    }
     {
         std::vector<std::string> baseline = winehua::BuildWineBaselineLines(
             {binDir, homeDir, prefixDir});

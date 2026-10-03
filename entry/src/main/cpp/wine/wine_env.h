@@ -28,6 +28,18 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& prefixDir = WINE_PREFIX,
                                       const std::string& wineLang = "zh_CN");
 
+// M3a 显示路线 native 镜像 (唯一写点 = ArkTS 启动解析后经 NAPI 调一次;
+// 唯一读点 = BuildWineEnv 的 env stamp)。空串/其它值 = wayland 默认。
+// extern "C": smoke_napi.so 跨 DSO 直呼 (与 DisplayRoute 入口同款)。
+#ifdef __cplusplus
+extern "C" {
+#endif
+void WineHua_SetDisplayRoute(const char* route);
+bool WineHua_DisplayRouteIsX11();
+#ifdef __cplusplus
+}
+#endif
+
 // Add the managed product D3D overlays to a process environment. D3D12 and
 // D3D11/DXGI are selected independently so a qualified DXVK 2.6.2 device does
 // not get downgraded merely because the session also enables VKD3D 2.6.

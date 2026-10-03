@@ -9,6 +9,7 @@ import { DisplayRouteService } from '../service/DisplayRouteService';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
+import smokeNapi from 'libsmoke_napi.so';
 
 const DOMAIN = 0x0000;
 
@@ -74,10 +75,13 @@ export default class EntryAbility extends UIAbility {
     }
     // 显示路线显式覆盖 (wayland|x11): 仅显式 want 生效, 不持久化 (spec
     // 2026-10-03 §2.2)。消费点白名单见 DisplayRouteService 头注释。
+    // native 镜像同步写一次 (guest env stamp 的唯一读点, 见 wine_env.cpp)。
     const explicitDisplayRoute = !!parameters && parameters['winehua.displayRoute'] !== undefined &&
       parameters['winehua.displayRoute'] !== null;
     if (explicitDisplayRoute) {
-      DisplayRouteService.getInstance().setOverrideMode(value('winehua.displayRoute', ''));
+      const routeValue = value('winehua.displayRoute', '');
+      DisplayRouteService.getInstance().setOverrideMode(routeValue);
+      try { smokeNapi.setDisplayRoute(routeValue); } catch (_) {}
     }
     // 自动化通道 (UI 点击/输入不可注入设备的全自动验证):
     // winehua.autoStart=1 → 主页面就绪后自动拉起引擎 (一次消费)
