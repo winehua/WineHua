@@ -130,10 +130,21 @@ void WlServerLogBridge(const char *fmt, va_list args)
 }
 
 // displayfd 握手完成的 hilog 直证 (wlroots 自身日志走 stderr, 主进程不可见)
+// xclient 测试客户端门控 (M3a): mode=2 双窗口+周期移动是 M0-T9/M1-T2 的
+// bring-up 测试资产 (与 display_input 注入脚本坐标成对), 只应在 smoke 编排
+// (script_enabled=true) 拉起。无条件 spawn 让产品桌面里常驻一个 320x240
+// 测试窗在桌面上晃 —— 真实桌面 shell (explorer, 引擎会话拉起) 的输入命中
+// 也被它搅局 (2026-10-04 实测: 点击命中测试只能看到测试窗)。原则 #23。
+static bool g_xclient_test_client_enabled;
+
 void HandleXwaylandReady(struct wl_listener *listener, void *data)
 {
     OH_LOG_INFO(LOG_APP, "Xwayland ready signal received (displayfd handshake OK)");
 
+    if (!g_xclient_test_client_enabled) {
+        OH_LOG_INFO(LOG_APP, "xclient test client skipped (script disabled, product desktop)");
+        return;
+    }
     // T9 M0 出口: Xwayland 就绪 (XWM 已建) 即拉起 mini X client (NCP,
     // libX11+libXext ONLY)。连接由 Xlib 发起 (无命名 fd) —— 这正是 M0 出口
     // 要验证的事。entryParams: "<stderrPath>|<xdgDir>|<mode>"; T2 起
@@ -390,6 +401,8 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     // 脚本门在 seat_create (子线程) 之前定值: 开启态决定注入编排定时器
     // 是否武装。每轮显示路线触发都经这里, retrigger 路径同样先过此门。
     wl_ohos_input_set_script_enabled(script_enabled);
+    // xclient 测试客户端与注入脚本同源 (同一 smoke 编排语义), 共用此门。
+    g_xclient_test_client_enabled = script_enabled;
 
     if (surface_id != 0)
     {
