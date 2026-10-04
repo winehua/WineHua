@@ -80,7 +80,11 @@ export class WineWindowManager {
   // 触发相对模式的约束 surface 的 toplevelId (解锁时=0)。用于区分"桌面 shell
   // 自身藏光标 (启动瞬时 toplevelId==desktopRootId)"与"游戏子窗口真相对模式"。
   private pointerLockToplevel: number = 0;
-  private desktopRootId: number = 0;
+  // -1 = 未注册。0 是合法 root id (x11 路线 applyModePolicy 主动拉起即以 0
+  // 注册), 哨兵不能用 0 —— restoreDesktopIfRunning 等恢复路径靠它区分
+  // "没有桌面"和"桌面 root id 恰为 0" (实测 2026-10-05: 哨兵 0 使 x11 虚拟
+  // 桌面被外部 Want 压后台后永远无法自行夺回前台)。
+  private desktopRootId: number = -1;
   private desktopAbilityRunning: boolean = false;
   private desktopAbilityCtx: common.UIAbilityContext | null = null;
   // 桌面 root 存在信号 (WineEnvService 镜像 → sessionAlive 判定):
@@ -187,6 +191,11 @@ export class WineWindowManager {
     // M3a-T4 已接), 两种桌面模式都需要它。wayland 路线 (默认) 零影响。
     // singleton 模式下重复调用安全。
     if (DisplayRouteService.getInstance().isX11()) {
+      // x11 没有桌面 root 事件, 这里主动注册 root id 0: 恢复路径
+      // (registerHostWindow / restoreDesktopIfRunning) 据此在外部 Want 把
+      // 桌面窗压后台后把它拉回前台 (实测 2026-10-05: 不注册则恢复守卫
+      // desktopRootId<0 恒拒, 桌面窗被压后台后永远回不来)。
+      this.desktopRootId = 0;
       this.startDesktopAbility(0);
     }
   }
@@ -271,7 +280,7 @@ export class WineWindowManager {
     // A launcher resume recreates EntryAbility while the Wine desktop root can
     // still be alive.  No new desktop_root event is emitted in that case, so
     // explicitly bring the existing desktop compositor back to the foreground.
-    if (this.isDesktopMode && this.desktopRootId > 0) {
+    if (this.isDesktopMode && this.desktopRootId >= 0) {
       hilog.info(DOMAIN, TAG, '[MW] restoring existing DesktopAbility root=%{public}d',
         this.desktopRootId);
       this.startDesktopAbility(this.desktopRootId);
@@ -1072,7 +1081,9 @@ export class WineWindowManager {
     // Desktop 模式: root 销毁 → 关闭桌面窗口, 回到主页面
     if (this.isDesktopMode && id === this.desktopRootId) {
       hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed', id);
-      this.desktopRootId = 0;
+      // -1 (未注册) 而非 0: 0 是合法 root id, 留 0 会让恢复路径在桌面销毁后
+      // 仍把已不存在的桌面拉回前台 (与 init 哨兵语义一致, 见字段注释)
+      this.desktopRootId = -1;
       this.desktopSurfaceReady = false;
       this.desktopActive = false;
       if (this.desktopSeparateWindow) {
@@ -1158,7 +1169,7 @@ export class WineWindowManager {
   }
 
   restoreDesktopIfRunning(): void {
-    if (!this.isDesktopMode || this.desktopRootId <= 0) return;
+    if (!this.isDesktopMode || this.desktopRootId < 0) return;
     // A new Want foregrounds EntryAbility even though the desktop compositor
     // remains alive. Re-starting the singleton moves that existing desktop
     // back to the foreground without recreating or stopping the Wine session.
