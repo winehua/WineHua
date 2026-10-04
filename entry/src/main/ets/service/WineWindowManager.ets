@@ -180,8 +180,13 @@ export class WineWindowManager {
     // M3a x11 台架: 桌面窗的既有打开路径由 wayland 私有协议 desktop_root 事件
     // 驱动, x11 路线没有该事件 (wine 走 Xwayland, 无 winehua_toplevel) ——
     // 引擎会话启动时直接拉起桌面窗 (rootId=0, x11 分支不消费该值)。
-    // singleton 模式下重复调用安全。wayland 路线 (默认) 零影响。
-    if (this.isDesktopMode && DisplayRouteService.getInstance().isX11()) {
+    // 2026-10-04 起不再限虚拟桌面: fusion+x11 的 X 链路同样无人调
+    // StartWithSurface (fusion 无桌面页), 引擎会静默回退 wayland 合成器,
+    // notepad 等程序根本不走 X (实测 2026-10-04)。x11 路线画布页是唯一
+    // surface 宿主 + 产品输入入口 (onTouch/onKeyEvent 的 x11 直连分支,
+    // M3a-T4 已接), 两种桌面模式都需要它。wayland 路线 (默认) 零影响。
+    // singleton 模式下重复调用安全。
+    if (DisplayRouteService.getInstance().isX11()) {
       this.startDesktopAbility(0);
     }
   }
