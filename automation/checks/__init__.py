@@ -29,6 +29,7 @@ from pathlib import Path
 
 from . import coverage as _coverage
 from . import frame
+from . import wine_trace as _wine_trace
 
 # 终态集合，与 smoke 程序协议一致 (thirdparty/wine/programs/winehua_smoke_protocol.h)
 FINAL_STATUSES = ("PASS", "FAIL", "SKIP", "UNSUPPORTED")
@@ -222,6 +223,7 @@ REGISTRY = {
     "visual": visual,
     "marker": marker,
     "presented-route": presented_route,
+    "wine-trace": _wine_trace.wine_trace,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }

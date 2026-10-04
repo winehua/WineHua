@@ -11,10 +11,16 @@
       "backend": {
         "d3d": "wined3d"
       },
-      "env": {},
+      "env": {
+        "WINEHUA_WINEDEBUG": "+x11drv,+event"
+      },
       "argvMode": "raw",
       "argv": [],
       "judge": "external",
+      "checks": [
+        "result-json",
+        "wine-trace"
+      ],
       "seconds": 60,
       "timeoutMs": 90000
     }
