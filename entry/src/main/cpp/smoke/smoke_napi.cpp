@@ -56,7 +56,8 @@ extern "C" void WineHua_SetDisplayRoute(const char* route);
 // 不默认进产品行为)
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
-                                                      int out_w, int out_h);
+                                                      int out_w, int out_h,
+                                                      bool canvas_egl_present);
 // M1-T1: 注入桥 (display/display_input.c)。key = evdev 键码; motion =
 // client surface 相对坐标 0..1, phase 0=enter 1=motion 2=leave。
 // 线程纪律: wlr_seat 无锁, 注入必须落在合成器事件循环线程; NAPI 调用来自
@@ -67,8 +68,8 @@ extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
+    size_t argc = 5;
+    napi_value args[5];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     bool script_enabled = false;
     if (argc >= 2) {
@@ -84,11 +85,19 @@ static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
         out_w = static_cast<int>(w);
         out_h = static_cast<int>(h);
     }
+    /* M3a-T7: 可选第 5 参 = 画布绑定 (DesktopAbility 全屏窗), present 走
+     * EGL swap —— 该 surface 对手工 FlushBuffer 冻结 (语义见 ohos_output.h)。
+     * 缺省 false = fusion/smoke 台架零差异。 */
+    bool canvas_egl_present = false;
+    if (argc >= 5) {
+        napi_get_value_bool(env, args[4], &canvas_egl_present);
+    }
     if (argc >= 1) {
         uint64_t surface_id = 0;
         bool lossless = false;
         napi_get_value_bigint_uint64(env, args[0], &surface_id, &lossless);
-        WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled, out_w, out_h);
+        WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled, out_w,
+                                              out_h, canvas_egl_present);
     } else {
         WineHua_DisplayRoute_Start();
     }

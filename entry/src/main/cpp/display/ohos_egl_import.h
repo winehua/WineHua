@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 struct wlr_renderer;
+struct wlr_buffer;
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,23 @@ uint64_t wl_ohos_egl_sync_count(void);
 struct NativeWindow;
 bool wl_ohos_egl_present_probe(struct NativeWindow *window,
                                const char *marker_path);
+
+/* ── 画布 EGL swap 呈现 (M3a-T7, 2026-10-05) ────────────────────────────
+ * 背景: 手工 slot + NativeWindowFlushBuffer 对 DesktopAbility 全屏窗的
+ * surface 消费侧冻结在首帧 (vd12/红背景/A-B 三重实测; 证据链见
+ * progress.md 2026-10-05), 同一 surface 对 eglSwapBuffers 正常 (vd13)。
+ * 机制: 场景经默认 swapchain 渲染进 allocator buffer (gles2 渲染器本就
+ * 以 EGLImage 画入), commit 后把该 buffer 导入为纹理 → blit 到窗口
+ * EGLSurface → swap —— GPU-GPU 全程, 不占队列槽位 (与零拷贝共用水式
+ * 队列会 frame 2 起饥饿, vd22c 实测), 无 CPU 视图 (CPU mmap 与 GPU 写
+ * 入不可靠一致, vd21 probe/framedump 实测)。fusion 预览不建面, 保持
+ * 零拷贝 + FlushBuffer 已证路径。create 须在 NativeWindow 建立后调用
+ * 一次; present 由 output commit 事件驱动, frame = committed buffer。 */
+bool wl_ohos_egl_window_surface_create(struct NativeWindow *window);
+void wl_ohos_egl_window_surface_destroy(void);
+int wl_ohos_egl_window_surface_active(void);
+int wl_ohos_egl_window_present(struct wlr_buffer *frame,
+                               struct NativeWindow *window);
 
 #ifdef __cplusplus
 }

@@ -39,8 +39,10 @@ class DesktopController extends XComponentController {
       }
       this.x11Started = true;
       try {
+        // 第 5 参 true = 画布绑定: present 走 EGL swap (该全屏窗对手工
+        // FlushBuffer 冻结, 语义见 display/ohos_output.h)
         smokeNapi.smokeDisplayRoute(BigInt(surfaceId), false,
-          rect.surfaceWidth, rect.surfaceHeight);
+          rect.surfaceWidth, rect.surfaceHeight, true);
       } catch (e) {
         this.x11Started = false;
         hilog.error(DOMAIN, 'LIFE', '[XComp] x11 chain start failed: %{public}s', String(e));

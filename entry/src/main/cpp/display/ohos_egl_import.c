@@ -37,6 +37,7 @@
 #include <native_window/external_window.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <errno.h>
 
 #define WLR_USE_UNSTABLE
 #include <wlr/interfaces/wlr_buffer.h>
@@ -601,4 +602,247 @@ void wl_ohos_egl_finish(void)
 uint64_t wl_ohos_egl_sync_count(void)
 {
     return g_eglSyncCount;
+}
+
+/* ── 画布 EGL swap 呈现 (M3a-T7, 2026-10-05) ─────────────────────────────
+ * 手工 slot + SET_UI_TIMESTAMP + NativeWindowFlushBuffer(fence=-1) 对
+ * DesktopAbility 全屏窗的 surface 冻结在首帧 (屏显一直是系统初始填充
+ * 0x112233 通道反转色; 纯产品会话复现, 见 progress.md 2026-10-05), 而同
+ * 一 surface 对 wayland presenter 的 eglSwapBuffers 路径正常 (vd13 实测:
+ * 桌面蓝+任务栏)。对齐之: 场景帧 (output 自己 swapchain 的 committed
+ * buffer) 经 EGL_NATIVE_BUFFER_OHOS 导入为纹理 → FBO → ES2 shader blit
+ * 到窗口 EGLSurface → SET_UI_TIMESTAMP + eglSwapBuffers。
+ * 上下文复用: wlroots gles2 就建在 g_context 上 (renderer_create),
+ * 场景帧与 blit 同上下文, 无跨上下文共享问题。 */
+
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+#include <time.h>
+
+static EGLSurface g_win_surface = EGL_NO_SURFACE;
+static GLuint g_blit_prog = 0;
+
+static int64_t WinPresentNowNs(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000ll + (int64_t)ts.tv_nsec;
+}
+
+bool wl_ohos_egl_window_surface_create(struct NativeWindow *window)
+{
+    if (g_display == EGL_NO_DISPLAY || g_context == EGL_NO_CONTEXT)
+    {
+        TAG_ERR("window surface create: EGL 未初始化");
+        return false;
+    }
+    if (g_win_surface != EGL_NO_SURFACE)
+        return true; /* 已建 (重触发路径), 复用 */
+    const EGLint cfg_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8, EGL_NONE};
+    EGLConfig cfg = NULL;
+    EGLint n_cfg = 0;
+    if (!eglChooseConfig(g_display, cfg_attrs, &cfg, 1, &n_cfg) || n_cfg < 1)
+    {
+        TAG_ERR("window surface: eglChooseConfig(WINDOW) failed eglErr=0x%{public}x",
+                eglGetError());
+        return false;
+    }
+    g_win_surface = eglCreateWindowSurface(g_display, cfg,
+                                           (EGLNativeWindowType)window, NULL);
+    if (g_win_surface == EGL_NO_SURFACE)
+    {
+        TAG_ERR("eglCreateWindowSurface failed eglErr=0x%{public}x",
+                eglGetError());
+        return false;
+    }
+    TAG_INFO("canvas EGL window surface created");
+    return true;
+}
+
+void wl_ohos_egl_window_surface_destroy(void)
+{
+    if (g_win_surface != EGL_NO_SURFACE)
+    {
+        eglMakeCurrent(g_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroySurface(g_display, g_win_surface);
+        g_win_surface = EGL_NO_SURFACE;
+    }
+    g_blit_prog = 0; /* context 销毁链带走 program 对象 */
+}
+
+int wl_ohos_egl_window_surface_active(void)
+{
+    return g_win_surface != EGL_NO_SURFACE;
+}
+
+/* 全屏 pass-through blit program (ES2, 无 glBlitFramebuffer)。
+ * 无通道 swizzle: 源是 allocator buffer 的 EGLImage —— gles2 渲染器把场景
+ * GPU-GPU 画进同一 EGLImage, 采样读到的就是渲染器写下的逻辑色 (DRM 四字码
+ * ABGR8888 == OHOS RGBA8888, 同一布局)。旧 CPU 上传路径的 .bgra 补偿
+ * (vd20/vd21) 随 mmap 上传一并删除。uv 不翻转: GL 渲染 → GL 采样 → GL
+ * 窗口 surface, 同一 GL 约定全程不变 (对齐 virgl presenter 的已证方向)。 */
+static GLuint WindowBlitProgram(void)
+{
+    if (g_blit_prog)
+        return g_blit_prog;
+    static const char *vs =
+        "attribute vec2 p;\n"
+        "varying vec2 uv;\n"
+        "void main(){ uv = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }\n";
+    static const char *fs =
+        "precision mediump float;\n"
+        "varying vec2 uv;\n"
+        "uniform sampler2D s;\n"
+        "void main(){ gl_FragColor = texture2D(s, uv); }\n";
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, NULL);
+    glCompileShader(v);
+    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, NULL);
+    glCompileShader(f);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    if (!linked)
+    {
+        char log[256];
+        log[0] = 0;
+        glGetProgramInfoLog(p, sizeof(log), NULL, log);
+        TAG_ERR("blit program link failed: %{public}s", log);
+        glDeleteProgram(p);
+        return 0;
+    }
+    g_blit_prog = p;
+    return p;
+}
+
+int wl_ohos_egl_window_present(struct wlr_buffer *frame,
+                               struct NativeWindow *window)
+{
+    if (g_win_surface == EGL_NO_SURFACE || g_display == EGL_NO_DISPLAY ||
+        g_context == EGL_NO_CONTEXT)
+        return 0;
+
+    typedef void (*PFN_img_tex)(GLenum, GLeglImageOES);
+    PFN_img_tex img_tex =
+        (PFN_img_tex)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    typedef EGLBoolean (*PFN_destroy_img)(EGLDisplay, EGLImageKHR);
+    PFN_destroy_img destroy_image =
+        (PFN_destroy_img)eglGetProcAddress("eglDestroyImageKHR");
+    if (!img_tex || !destroy_image)
+    {
+        static uint32_t api_fail;
+        if (api_fail++ < 5u)
+            TAG_ERR("window present: EGLImage 入口不可用");
+        return 0;
+    }
+
+    /* 场景帧导入: frame = 默认 swapchain 的 allocator buffer (OH_NativeBuffer
+     * 背书)。取其 OHNativeWindowBuffer 包装走 EGL_NATIVE_BUFFER_OHOS 导入
+     * (M2-T2 实测: 裸 OH_NativeBuffer 被拒, 包装载荷是唯一 accepted 形态;
+     * 探针 direct import ok 同款)。GPU-GPU 全程无 CPU 视图 —— vd21/vd22c
+     * 实测 CPU mmap 与 GPU 写入不可靠一致 (probe fail:pixel-compare、
+     * framedump 内容 ≠ 屏幕内容)。 */
+    OHNativeWindowBuffer *payload =
+        (OHNativeWindowBuffer *)wl_ohos_buffer_window_buffer(frame);
+    if (!payload)
+    {
+        static uint32_t h_fail;
+        if (h_fail++ < 5u)
+            TAG_ERR("window present: allocator buffer 无 EGL 载荷");
+        return 0;
+    }
+    EGLImageKHR image =
+        g_create_image(g_display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_OHOS,
+                       (EGLClientBuffer)payload, NULL);
+    if (image == EGL_NO_IMAGE_KHR)
+    {
+        static uint32_t img_fail;
+        if (img_fail++ < 5u)
+            TAG_ERR("window present: EGLImage 导入失败 eglErr=0x%{public}x",
+                    eglGetError());
+        return 0;
+    }
+
+    if (!eglMakeCurrent(g_display, g_win_surface, g_win_surface, g_context))
+    {
+        static uint32_t mc_fail;
+        if (mc_fail++ < 5u)
+            TAG_ERR("window present: eglMakeCurrent failed eglErr=0x%{public}x",
+                    eglGetError());
+        destroy_image(g_display, image);
+        return 0;
+    }
+
+    int ok = 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    img_tex(GL_TEXTURE_2D, image);
+    if (glGetError() != GL_NO_ERROR)
+    {
+        static uint32_t ti_fail;
+        if (ti_fail++ < 5u)
+            TAG_ERR("window present: EGLImage 挂纹理失败");
+        goto out;
+    }
+
+    {
+        GLuint prog = WindowBlitProgram();
+        if (!prog)
+            goto out;
+        glUseProgram(prog);
+        GLint sloc = glGetUniformLocation(prog, "s");
+        glUniform1i(sloc, 0);
+        GLint ploc = glGetAttribLocation(prog, "p");
+        static const GLfloat quad[8] = {-1.0f, -1.0f, 1.0f, -1.0f,
+                                        -1.0f, 1.0f, 1.0f, 1.0f};
+        glVertexAttribPointer((GLuint)ploc, 2, GL_FLOAT, GL_FALSE, 0, quad);
+        glEnableVertexAttribArray((GLuint)ploc);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glViewport(0, 0, frame->width, frame->height);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glFlush();
+    }
+
+    {
+        int64_t ts = WinPresentNowNs();
+        int32_t ts_rc = OH_NativeWindow_NativeWindowHandleOpt(
+            (OHNativeWindow *)window, SET_UI_TIMESTAMP, ts);
+        static uint32_t ts_fail;
+        if (ts_rc != 0 && ts_fail++ < 5u)
+            TAG_ERR("SET_UI_TIMESTAMP rc=%{public}d", ts_rc);
+    }
+
+    ok = (eglSwapBuffers(g_display, g_win_surface) == EGL_TRUE);
+    if (!ok)
+    {
+        static uint32_t sw_fail;
+        if (sw_fail++ < 5u)
+            TAG_ERR("eglSwapBuffers failed eglErr=0x%{public}x",
+                    eglGetError());
+    }
+
+out:
+    if (tex)
+        glDeleteTextures(1, &tex);
+    destroy_image(g_display, image);
+    return ok;
 }

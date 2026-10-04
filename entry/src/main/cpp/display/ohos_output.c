@@ -379,9 +379,26 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
         return;
     ++g_out.frame_seq;
 
-    /* M2-T4 零拷贝分支: 提交的 buffer 就是窗口队列 buffer —— GPU 已经画在
-     * 它上面, 这里只剩 GPU 同步 + 归还队列, 没有 mmap/memcpy。判据是 buffer
-     * 归属 (present buffer 由 ohos_buffer 包队列 buffer 而来)。 */
+    /* M3a-T7 画布 EGL swap 呈现: 提交的 buffer 是默认 swapchain 的
+     * allocator buffer (OH_NativeBuffer 背书, gles2 渲染器本就经 EGLImage
+     * 画入), 导入为纹理 → blit 到窗口 EGLSurface → swap。全程 GPU-GPU,
+     * 不碰队列槽位、不 FlushBuffer、无 CPU 视图 —— 手工 FlushBuffer 对
+     * 画布 surface 消费侧冻结 (vd12), CPU mmap 又与 GPU 写入不可靠一致
+     * (vd21/22c: probe fail:pixel-compare + framedump 垃圾)。判据 = buffer
+     * 由本 allocator 背书 (wl_ohos_buffer_native 仅认 allocator buffer)。 */
+    if (wl_ohos_egl_window_surface_active() &&
+        wl_ohos_buffer_native(event->state->buffer) &&
+        wl_ohos_egl_window_present(event->state->buffer, g_out.window)) {
+        if ((g_out.frame_seq % 30) == 1)
+            OHLOG("commit seq=%{public}u mode=egl-swap-tex", g_out.frame_seq);
+        LogPresentSegment(ts_enter);
+        return;
+    }
+
+    /* M2-T4 零拷贝分支 (fusion 预览路径, 已证): 提交的 buffer 就是窗口队列
+     * buffer —— GPU 已经画在它上面, 这里只剩 GPU 同步 + 归还队列, 没有
+     * mmap/memcpy。判据是 buffer 归属 (present buffer 由 ohos_buffer 包
+     * 队列 buffer 而来)。 */
     if (wl_ohos_present_buffer_owns(event->state->buffer)) {
         if (wl_ohos_egl_active())
             wl_ohos_egl_finish(); /* 显示消费前必须 GPU 写完 (glFinish) */
@@ -607,6 +624,19 @@ static int PresentFrameZeroCopy(void)
     if (!buf || !swapchain)
         return 0; /* 队列无空槽 = 显示端背压, 本帧丢 (与拷贝路径同语义) */
 
+    /* M3a-T7 修复实验 (2026-10-05): 画布 surface (DesktopAbility 全屏窗)
+     * 消费侧冻结在首帧 —— 同一 flush 代码对主窗预览面正常、对画布面冻结,
+     * 而 wayland presenter (virgl_surface_presenter.cpp:192) 每次 present
+     * 前 SET_UI_TIMESTAMP, 本链路此前不带。对齐之。 */
+    {
+        int32_t ts_rc = OH_NativeWindow_NativeWindowHandleOpt(
+            g_out.window, SET_UI_TIMESTAMP, NowNs());
+        static int ts_bad;
+        if (ts_rc != 0 && (ts_bad++ % 120) == 0)
+            OH_LOG_ERROR(LOG_APP, "SET_UI_TIMESTAMP rc=%{public}d (count=%{public}d)",
+                         ts_rc, ts_bad);
+    }
+
     /* scene 的 build_state 对渲染目标有尺寸断言: 队列 buffer 与输出尺寸
      * 不一致时必须在这里挡下 (回落拷贝路径), 不能带进 wlroots。只 abort
      * 不 drop —— wrapper 归 slot 表, 尺寸切换的旧句柄由表容量自然淘汰。 */
@@ -772,10 +802,14 @@ static void FrameStep(bool via_vsync)
         /* M2-T4: gles2 + 可见窗 ⇒ 零拷贝 present (渲染直落队列 buffer);
          * 其余情形 (pixman 回退 / 无窗 / present 失败) 走既有 scene+拷贝路径。
          * 先判 needs_frame: 无 damage 时 scene 直接返回 true 不渲染, 而借用
-         * 的队列 buffer 必须归还 (漏还 = 槽位永久丢失) —— 别进那条路。 */
+         * 的队列 buffer 必须归还 (漏还 = 槽位永久丢失) —— 别进那条路。
+         * 画布 EGL swap 路径 (window surface active) 不借队列槽位: EGL 面
+         * 已占格, 再借 = frame 2 起饥饿 (vd22c 实测), 场景渲染走默认
+         * swapchain (allocator buffer), commit 后由 EGLImage 导入分支上屏。 */
         bool presented = false;
         if (render && !DiagFlagFile("force-copy-present") && wl_ohos_egl_active() &&
-            g_out.window && g_out.scene_output)
+            g_out.window && g_out.scene_output &&
+            !wl_ohos_egl_window_surface_active())
             presented = PresentFrameZeroCopy() != 0;
         if (!presented)
             wlr_scene_output_commit(g_out.scene_output, NULL);
@@ -1282,7 +1316,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wl_display *display,
                                OHNativeWindow *window,
                                struct wlr_xwayland *xwayland,
-                               int out_w, int out_h)
+                               int out_w, int out_h,
+                               bool canvas_egl_present)
 {
     memset(&g_out, 0, sizeof(g_out));
     g_out.window = window;
@@ -1365,6 +1400,31 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
      * 这里此前漏了。 */
     int32_t rcTimeout = OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, 0);
     OHLOG("SET_TIMEOUT(0) rc=%{public}d", rcTimeout);
+
+    /* M3a-T7 (2026-10-05): 窗口队列 buffer 的格式与用途声明 —— 对齐
+     * virgl_surface_presenter.cpp:301-305 的已证配置。缺失后果 (实测):
+     * 队列 buffer 按消费侧默认 (CPU 向) usage 分配, DesktopAbility 全屏
+     * 窗的合成层只吃 GPU buffer → 画面冻结在首帧 (预览面合成路径不同,
+     * 容忍 CPU buffer, 故只有画布冻)。SET_FORMAT(RGBA) 同时决定 slot
+     * buffer 内存序 = R,G,B,A (呈现上传不再需要 R/B 对调)。 */
+    OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT,
+                                          NATIVEBUFFER_PIXEL_FMT_RGBA_8888);
+    OH_NativeWindow_NativeWindowHandleOpt(
+        window, SET_USAGE,
+        (uint64_t)(NATIVEBUFFER_USAGE_HW_RENDER | NATIVEBUFFER_USAGE_HW_TEXTURE));
+
+    /* M3a-T7: 画布 EGL swap 呈现面。手工 slot+FlushBuffer 对 DesktopAbility
+     * 全屏窗的 surface 消费侧冻结在首帧 (纯产品会话/红背景/A-B 三重实测,
+     * 证据链 progress.md 2026-10-05), 呈现改走 eglSwapBuffers —— 同一
+     * surface 对 wayland presenter 的 EGL swap 正常 (vd13: 桌面蓝+任务栏)。
+     * 建面失败保持返回 true: 旧路径 (零拷贝/拷贝) 原样生效, 行为不变。
+     * 仅画布绑定创建 (canvas_egl_present): EGL 面与零拷贝共用水式队列时,
+     * EGL 的 dequeue/enqueue 占格, frame 2 起零拷贝 slot_acquire 静默失
+     * 败回退拷贝路径 (vd22c 实测), 故画布同时改走默认 swapchain 渲染
+     * (见 FrameStep 与 HandleOutputCommit 的 allocator 分支), fusion 预览
+     * 保持已证零拷贝路径不变。 */
+    if (canvas_egl_present)
+        wl_ohos_egl_window_surface_create(window);
 
     g_out.commit_listener.notify = HandleOutputCommit;
     wl_signal_add(&g_out.output->events.commit, &g_out.commit_listener);

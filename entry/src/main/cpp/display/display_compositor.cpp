@@ -217,6 +217,7 @@ struct DeferredOutputChainStart {
     struct wlr_xwayland *xwayland;
     int out_w; /* ≤0 = 未指定 ⇒ 800x600 (smoke 台架口径) */
     int out_h;
+    bool canvas_egl_present; /* 画布绑定 = EGL swap 呈现 (见 ohos_output.h) */
 };
 static struct DeferredOutputChainStart g_deferred_chain;
 
@@ -236,7 +237,8 @@ static int StartOutputChainTimer(void *data)
     struct DeferredOutputChainStart *c = (struct DeferredOutputChainStart *)data;
     int rc = wl_ohos_output_chain_start(c->backend, c->renderer, c->loop,
                                         c->display, c->window, c->xwayland,
-                                        c->out_w, c->out_h);
+                                        c->out_w, c->out_h,
+                                        c->canvas_egl_present);
     OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d (deferred)", rc);
     WriteDisplayRouteReady();
 
@@ -337,7 +339,8 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 // ── smoke 调试入口 ─────────────────────────────────────────────────────
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
-                                                      int out_w, int out_h);
+                                                      int out_w, int out_h,
+                                                      bool canvas_egl_present);
 
 // 重复触发刷新通道: 刷新动作必须落在 loop 线程 (定时器/事件源操作非线程
 // 安全, M1-T5 实测: 第二轮 smoke 复用既有链时 marker 不重写、注入脚本不
@@ -376,7 +379,7 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 
 extern "C" void WineHua_DisplayRoute_Start()
 {
-    WineHua_DisplayRoute_StartWithSurface(0, false, 0, 0);
+    WineHua_DisplayRoute_StartWithSurface(0, false, 0, 0, false);
 }
 
 // M3a: 停机入口 (桌面 surface 销毁 → x11 台架回收合成器)。经 retrigger
@@ -397,9 +400,12 @@ extern "C" void WineHua_DisplayRoute_Stop()
 // 为 0 时维持 T7 行为 (仅合成器内核 + Xwayland, 不建 output)。
 // script_enabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
 // 不默认进产品行为, 原则 #23)。
+// canvas_egl_present = 画布 (DesktopAbility 全屏窗) 绑定, present 走
+// EGL swap (该 surface 对手工 FlushBuffer 冻结; 语义见 ohos_output.h)。
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
-                                                      int out_w, int out_h)
+                                                      int out_w, int out_h,
+                                                      bool canvas_egl_present)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
@@ -443,7 +449,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             g_present_window = nullptr;
     }
 
-    std::thread([out_w, out_h] {
+    std::thread([out_w, out_h, canvas_egl_present] {
         // 对象提升到函数顶部 (M2-T1): 失败路径统一 goto fail 收尾, 逆序
         // 销毁 —— 之前中途 return 泄漏已建对象 (known-issues §1.2), 且
         // g_started 不复位导致失败后无法重试。
@@ -593,7 +599,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
              * 上方注释。就绪标记也在那一刻才写 (标记语义 = 出图链已就位)。 */
             g_deferred_chain = (struct DeferredOutputChainStart){
                 backend, renderer, loop, wl, g_present_window, xwayland,
-                out_w, out_h};
+                out_w, out_h, canvas_egl_present};
             struct wl_event_source *chain_timer =
                 wl_event_loop_add_timer(loop, StartOutputChainTimer, &g_deferred_chain);
             if (chain_timer)
@@ -656,6 +662,8 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                 // present slot 三元组 (wrapper/allocator/swapchain) 持有该
                 // window 的队列槽位, 必须先于 window 本体销毁回收 (T6.5)。
                 wl_ohos_present_slots_shutdown();
+                // M3a-T7: 画布 EGL swap 呈现面同样持有该 window, 先于销毁。
+                wl_ohos_egl_window_surface_destroy();
                 OH_NativeWindow_DestroyNativeWindow(g_present_window);
                 g_present_window = nullptr;
             }

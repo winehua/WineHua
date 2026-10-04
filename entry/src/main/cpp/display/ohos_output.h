@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 struct wlr_backend;
 struct wlr_renderer;
@@ -106,6 +107,12 @@ uint64_t wl_ohos_output_frame_period_ns(void);
 // window 为 NULL 时调用方不应调用本函数。
 // out_w/out_h: 输出尺寸 (M3a 参数化, x11 台架 = surface 实际尺寸); ≤0 =
 // 未指定, 回退 800x600 (smoke 台架口径, 证据链在该尺寸上校准)。
+// canvas_egl_present: 画布 (DesktopAbility 全屏窗) 绑定时为 true —— 该
+// surface 的消费侧对手工 FlushBuffer 冻结 (vd12/红背景/A-B 三重实测),
+// 场景改经「默认 swapchain 渲染 → EGLImage 导入 → blit → eglSwapBuffers」
+// 呈现 (vd22c 实测: 与零拷贝共用水式队列时 EGL 占格导致零拷贝 frame 2 起
+// 静默回退拷贝路径, FlushBuffer 又不显示 ⇒ 画面冻在首帧)。fusion 预览窗
+// 传 false, 保持已证零拷贝 + FlushBuffer 路径, 两模式互不干扰。
 // 返回 0 = 链路建立; 非 0 = 失败 (hilog 已打点, 具体步骤看 "ohos-output" 标签)。
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
@@ -113,7 +120,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wl_display *display,
                                OHNativeWindow *window,
                                struct wlr_xwayland *xwayland,
-                               int out_w, int out_h);
+                               int out_w, int out_h,
+                               bool canvas_egl_present);
 
 #ifdef __cplusplus
 }
