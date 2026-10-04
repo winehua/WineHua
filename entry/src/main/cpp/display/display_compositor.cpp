@@ -136,15 +136,32 @@ void WlServerLogBridge(const char *fmt, va_list args)
 // 测试窗在桌面上晃 —— 真实桌面 shell (explorer, 引擎会话拉起) 的输入命中
 // 也被它搅局 (2026-10-04 实测: 点击命中测试只能看到测试窗)。原则 #23。
 static bool g_xclient_test_client_enabled;
+static bool g_xwayland_ready_seen;
+static bool g_xclient_spawned;
+
+/* 拉起条件三合一: 门开 (最新 script 意图) + Xwayland 就绪 + 未拉过。
+ * 从两个时机调用: Xwayland ready (常规路径) / retrigger 刷新 (补拉) ——
+ * 竞态下 retrigger 可能晚于 ready (2026-10-04 实测: 产品链先建 → ready
+ * 时门还关着 → smoke 触发补开门时 ready 事件已过, 不补拉则 smoke 套件
+ * 永远等不到测试窗)。条件不满足时静默返回 (后续时机再试)。 */
+static void TrySpawnXclientTestClient();
 
 void HandleXwaylandReady(struct wl_listener *listener, void *data)
 {
     OH_LOG_INFO(LOG_APP, "Xwayland ready signal received (displayfd handshake OK)");
-
-    if (!g_xclient_test_client_enabled) {
+    g_xwayland_ready_seen = true;
+    if (!g_xclient_test_client_enabled)
         OH_LOG_INFO(LOG_APP, "xclient test client skipped (script disabled, product desktop)");
+    TrySpawnXclientTestClient();
+}
+
+static void TrySpawnXclientTestClient()
+{
+    if (g_xclient_spawned)
         return;
-    }
+    if (!g_xclient_test_client_enabled || !g_xwayland_ready_seen)
+        return;
+    g_xclient_spawned = true;
     // T9 M0 出口: Xwayland 就绪 (XWM 已建) 即拉起 mini X client (NCP,
     // libX11+libXext ONLY)。连接由 Xlib 发起 (无命名 fd) —— 这正是 M0 出口
     // 要验证的事。entryParams: "<stderrPath>|<xdgDir>|<mode>"; T2 起
@@ -351,6 +368,9 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
     }
     wl_ohos_input_script_restart();
     OH_LOG_INFO(LOG_APP, "displayroute retrigger: marker rewritten, script re-armed");
+    /* 门被本次 retrigger 重开时, Xwayland ready 事件可能早已过去
+     * (产品链先建 + ready 先到的竞态), 此处补拉测试窗。 */
+    TrySpawnXclientTestClient();
     return 0;
 }
 
@@ -385,6 +405,15 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     if (g_started)
     {
         OH_LOG_INFO(LOG_APP, "already started, refresh for retrigger");
+        // 重触发携带本次调用方的 script 意图 (最新意图优先): 冷启时产品桌面页
+        // 与 smoke 编排都会调 StartWithSurface, 谁先到谁建链; 若重触发不刷新
+        // script 门, 门就永远停在先到者的值 —— 2026-10-04 实测: DesktopWindow
+        // 先启 (script=false), 随后 rate job 的 displayroute 触发 (script=true)
+        // 落在早退上, xclient 测试窗不再出现, smoke 套件依赖的注入编排失效。
+        // 产品桌面运行中不会被重触发 (surface 重建走 stop/start 全链), 不存在
+        // "smoke 运行中被产品意图打断"的反向场景。
+        wl_ohos_input_set_script_enabled(script_enabled);
+        g_xclient_test_client_enabled = script_enabled;
         if (g_retrigger_pipe[1] >= 0)
         {
             char b = 'r';

@@ -29,6 +29,10 @@ extern "C" void WineHua_SetDisplayRoute(const char* route)
         return;
     strncpy(g_display_route, route, sizeof(g_display_route) - 1);
     g_display_route[sizeof(g_display_route) - 1] = '\0';
+    /* 唯一写点必须可观测 (2026-10-04 实测: xwedge3 会话印章缺失, 排查时
+     * 无从判断"没调到"还是"调了没生效" —— 印章缺失的直接下游是 spawn 出
+     * 来的 wine 进程走错路线, 代价是一整轮实验)。 */
+    OH_LOG_INFO(LOG_APP, "[DisplayRoute] mirror set: %{public}s", g_display_route);
 }
 
 bool WineHua_DisplayRouteIsX11()

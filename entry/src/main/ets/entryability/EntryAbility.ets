@@ -81,7 +81,16 @@ export default class EntryAbility extends UIAbility {
     if (explicitDisplayRoute) {
       const routeValue = value('winehua.displayRoute', '');
       DisplayRouteService.getInstance().setOverrideMode(routeValue);
-      try { smokeNapi.setDisplayRoute(routeValue); } catch (_) {}
+      // 不得吞异常: 这条调用是 guest env 印章的唯一写点 (wine_env.cpp 镜像),
+      // 静默失败 = spawn 出来的 wine 进程全部走错路线且零痕迹 (2026-10-04
+      // xwedge3 实测: 印章缺失但无任何日志, 排查多耗一轮构建)。
+      try {
+        smokeNapi.setDisplayRoute(routeValue);
+        hilog.info(DOMAIN, 'testTag', 'displayRoute applied: %{public}s', routeValue);
+      } catch (e) {
+        hilog.error(DOMAIN, 'testTag', 'displayRoute apply FAILED: %{public}s %{public}s',
+          routeValue, JSON.stringify(e));
+      }
     }
     // 自动化通道 (UI 点击/输入不可注入设备的全自动验证):
     // winehua.autoStart=1 → 主页面就绪后自动拉起引擎 (一次消费)
