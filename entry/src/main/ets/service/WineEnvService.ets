@@ -352,6 +352,14 @@ export class WineEnvService {
       const savedLang = this.settingsStore.getSync('lang', 'zh_CN') as string;
       this.wineLang = savedLang === 'en_US' ? 'en_US' : 'zh_CN';
       this.skippedUpgradeSha = this.settingsStore.getSync('skipped_upgrade_sha', '') as string;
+      // zHome 持久化 (M3a 实测): picker 需要前台, 而 x11 路线的桌面窗会在
+      // 冷启后 ~150ms 抢走前台 —— 每次冷启都 re-pick 的旧形态让后台自动
+      // 拉起必然失败 (failInit: 获取下载目录失败, bgStart=true)。路径稳定
+      // (Download/<bundle>/), 首次 picker 成功后落盘, 后续进程直读。
+      const savedZHome = this.settingsStore.getSync('z_home', '') as string;
+      if (savedZHome && savedZHome.startsWith('/')) {
+        this.zHome = savedZHome;
+      }
     } catch (e) {
       hilog.error(DOMAIN, 'wine', 'lang settings load fail: %{public}s', JSON.stringify(e));
     }
@@ -854,6 +862,15 @@ export class WineEnvService {
       }
       const pickerHome = new fileUri.FileUri(documentSaveResult[0]).path;
       this.zHome = pickerHome.endsWith('/') ? pickerHome : `${pickerHome}/`;
+      // 落盘 (带结尾斜杠的原样值, 见 line-135 注释的路径拼接契约)
+      if (this.settingsStore) {
+        try {
+          this.settingsStore.putSync('z_home', this.zHome);
+          this.settingsStore.flush();
+        } catch (e) {
+          hilog.warn(DOMAIN, 'wine', 'z_home persist fail: %{public}s', JSON.stringify(e));
+        }
+      }
     }
     hilog.warn(DOMAIN, 'wine', 'auto-init: Z home=%{public}s', this.zHome);
     this.notify();
