@@ -132,6 +132,28 @@ class TestEntry:
         return payload
 
 
+def inline_test_entries(job: dict) -> dict:
+    """inline 用例里声明了 checks 的条目 → 判定层 TestEntry。
+
+    判定与执行分离的缺口 (2026-10-05 实测): inline 条目直接下设备跑, 但
+    判定层此前只认套件定义, inline 用例永远落默认 result-json —— external
+    载体 (notepad) 设备端写不出结果协议, 于是永远 SKIP、job 恒 FAIL。
+    条目自带 "checks" 键即按声明判定, 语义与套件定义的 checks 字段一致。
+    """
+    entries = {}
+    for entry in job.get("inline") or []:
+        test_id = entry.get("testId", "")
+        checks = list(entry.get("checks") or [])
+        if not test_id or not checks:
+            continue
+        exe = entry.get("exe", "")
+        arch, _, bare = exe.replace("\\", "/").rpartition("/")
+        case = Case(id=test_id, exe=bare or exe, arch=[], checks=checks)
+        entries[test_id] = TestEntry(test_id=test_id, case=case, arch=arch,
+                                     params={"env": entry.get("env") or {}})
+    return entries
+
+
 def load_cases() -> dict:
     cases = {}
     for path in sorted(TESTS_DIR.glob("*/test.json")):
@@ -757,6 +779,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     # 并带上 host 裁决参数，校验死在 push 之后会把 app 留在 x11 形态，下一轮
     # 不带参数的 run 撞上运行中的 x11 app 就是静默路线污染。
     job = build_job(args)
+    # 能力探针标记清理必须在冷启 (cmd_push → bring-up → 探针写标记) 之前:
+    # push 会把 app 拉起并走到链路 bring-up, 探针在那时写"本次"标记; 清理
+    # 若排在 push 后, 刚写的新鲜标记被当"上一轮"清掉, 归档必然缺失
+    # (2026-10-05 vd25 实测: 探针 05:23:24 写, 清理在其后, 归档 absent)。
+    if job.get("displayroute"):
+        for marker_name in DISPLAYROUTE_MARKERS:
+            remove_sandbox_path(hdc, device, f"{DRIVE_C_ROOT_REL}/{marker_name}")
     if not args.skip_push:
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
                                        desktop_mode=getattr(args, "desktop_mode", None),
@@ -780,12 +809,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     remove_sandbox_path(hdc, device, JOB_REL)
     hdc_send(hdc, device, job_path, f"{SANDBOX_FILES}/{JOB_REL}")
 
-    # displayroute 运行：清掉上次的能力探针标记 —— 探针自缓存 (标记在即
-    # 跳过), 不清则改了探针代码也不会重跑, 归档到的是上一版结论 (实测踩坑)。
-    # 每次 run 一次现测, 才是回归该有的语义。
-    if job.get("displayroute"):
-        for marker_name in DISPLAYROUTE_MARKERS:
-            remove_sandbox_path(hdc, device, f"{DRIVE_C_ROOT_REL}/{marker_name}")
+    # displayroute 运行：标记清理已上移到冷启之前 (见 build_job 后的清理块),
+    # 这里不再清 —— 在 bring-up 之后清理会把本次探针刚写的新鲜标记删掉。
 
     start = (f"aa start -a {ABILITY} -b {BUNDLE} "
              f"--ps winehua.mode smoke "
@@ -814,6 +839,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if wanted:
         suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
     entries = {entry.test_id: entry for entry in suite_tests}
+    # inline 条目自带 checks 的按声明判定 (套件定义优先, 见 inline_test_entries)
+    entries = {**inline_test_entries(job), **entries}
     frame_targets = {tid: entry for tid, entry in entries.items() if entry.case.needs_frame}
     # 固定帧只在 duration_ms >= 2500ms 且进入末 2 秒时才渲染 (guest main.c):
     # seconds < 2.5 的用例声明 visual 永远抓不到帧, 判定只会说"未采集到固定帧",
@@ -916,6 +943,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     wanted = {item for item in (job.get("tests") or []) if item}
     if wanted:
         entries = {tid: entry for tid, entry in entries.items() if tid in wanted}
+    # inline 条目自带 checks 的按声明判定 (与 cmd_run 同源, 见 helper 注释)
+    entries = {**inline_test_entries(job), **entries}
     # 帧分组：<test_id>.jpeg 与重试帧 <test_id>-<n>.jpeg（testId 以 -x64/-x86 结尾，
     # 去掉末尾纯数字后缀即归属测试）
     frames = {}

@@ -37,6 +37,7 @@
 #include <native_window/external_window.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 
 #define WLR_USE_UNSTABLE
@@ -508,10 +509,33 @@ bool wl_ohos_egl_present_probe(struct NativeWindow *window,
     glFinish(); /* GPU 结果落到内存, 下面 CPU 读 */
 
     {
+        /* 判据读回通道 = glReadPixels (GPU→CPU, GL 规范保证一致), 不再用
+         * CPU mmap 视图: HW usage 队列 buffer 的 CPU 映射与 GPU 写入不可靠
+         * 一致 (2026-10-05 vd21-vd25 实测: GPU 渲染 + glFinish 后 CPU 逐像
+         * 素校验 100% 失配 = fail:pixel-compare 假阴性, 而同 buffer 经
+         * EGL swap 显示内容正确)。探针命题不变 —— 「队列 buffer 可作 GPU
+         * 渲染目标 (导入链 + FBO 完整)」, 换的是失效的测量通道。 */
+        size_t rb_bytes = (size_t)w * (size_t)h * 4;
+        uint8_t *rb = (uint8_t *)malloc(rb_bytes);
+        if (!rb)
+        {
+            PresentVerdict(marker_path, "fail:oom");
+            goto out;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rb);
+        if (glGetError() != GL_NO_ERROR)
+        {
+            free(rb);
+            P_ERR("glReadPixels 失败 glErr=0x%{public}x", glGetError());
+            PresentVerdict(marker_path, "fail:readback");
+            goto out;
+        }
         int first[6] = {0};
-        int mism_noflip = PresentVerify((const uint8_t *)map, stride, w, h, 0, first);
+        int mism_noflip = PresentVerify(rb, (size_t)w * 4, w, h, 0, first);
         int first_flip[6] = {0};
-        int mism_flip = PresentVerify((const uint8_t *)map, stride, w, h, 1, first_flip);
+        int mism_flip = PresentVerify(rb, (size_t)w * 4, w, h, 1, first_flip);
+        free(rb);
         P_LOG("verify %{public}dx%{public}d stride=%{public}zu: "
               "noflip mism=%{public}d flip mism=%{public}d",
               w, h, stride, mism_noflip, mism_flip);

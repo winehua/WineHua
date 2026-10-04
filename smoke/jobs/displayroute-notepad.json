@@ -11,6 +11,7 @@
       "argvMode": "raw",
       "argv": [],
       "judge": "external",
+      "checks": ["wine-trace"],
       "env": {
         "DISPLAY": ":0",
         "WINEHUA_DISPLAY_ROUTE": "x11",
