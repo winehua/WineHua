@@ -443,7 +443,8 @@ void wl_ohos_input_post_button(uint32_t button, bool press)
  *   t=12s motion 到 win2 中心 (悬停切换焦点) + KEY_B → win2 回显
  *   t=16s motion 回 win1 中心 + KEY_C → win1 回显, 且 12~16s 间 win1 无键
  *   t=20s motion 到 notepad 文本区中心 + KEY_H
- *   t=20.5s KEY_I → notepad 文本区出现 "hi"
+ *   t=21.5/23/24.5/26s KEY_E/L/L/O → notepad 文本区出现 "HELLO"
+ *   (终证判据, 2026-10-04 从 "hi" 扩展)
  * notepad 以**无参数**启动 (载体用例 argvMode=raw/argv=[], 见
  * smoke/suites/displayroute.json): 不再有"把 smoke 参数当文件名"的弹框,
  * 键直达文本区。坐标与 xclient_child mode=2 的窗口摆位耦合 (win1 @60,80
@@ -452,8 +453,11 @@ void wl_ohos_input_post_button(uint32_t button, bool press)
 #define KEY_A 30 /* linux/input-event-codes.h evdev 键码 */
 #define KEY_B 48
 #define KEY_C 46
+#define KEY_E 18
 #define KEY_H 35
 #define KEY_I 23
+#define KEY_L 38
+#define KEY_O 24 /* 注意不是 32 —— evdev 32=KEY_D, 2026-10-04 实测打成了 "d" */
 
 static struct wl_event_source *g_script_timer;
 static int g_script_step;
@@ -495,10 +499,30 @@ static int ScriptTick(void *data)
         display_input_inject_key(KEY_H, true);
         if (g_release_timer)
             wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 500);
+        wl_event_source_timer_update(g_script_timer, 1500);
         break;
-    case 5: /* KEY_I → notepad 文本区 "hi", 序列结束 */
-        display_input_inject_key(KEY_I, true);
+    case 5: /* KEY_E ── HELLO 终证序列 (2026-10-04: 目标链判据从 "hi"
+             * 扩为 "HELLO"; 1.5s 间隔避开 §1.5 单槽 pending key 的
+             * settle 丢键窗口) */
+        display_input_inject_key(KEY_E, true);
+        if (g_release_timer)
+            wl_event_source_timer_update(g_release_timer, 300);
+        wl_event_source_timer_update(g_script_timer, 1500);
+        break;
+    case 6: /* KEY_L */
+        display_input_inject_key(KEY_L, true);
+        if (g_release_timer)
+            wl_event_source_timer_update(g_release_timer, 300);
+        wl_event_source_timer_update(g_script_timer, 1500);
+        break;
+    case 7: /* KEY_L */
+        display_input_inject_key(KEY_L, true);
+        if (g_release_timer)
+            wl_event_source_timer_update(g_release_timer, 300);
+        wl_event_source_timer_update(g_script_timer, 1500);
+        break;
+    case 8: /* KEY_O → notepad 文本区出现 "HELLO", 序列结束 */
+        display_input_inject_key(KEY_O, true);
         if (g_release_timer)
             wl_event_source_timer_update(g_release_timer, 300);
         break; /* 序列结束, 不重排 */
