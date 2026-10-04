@@ -683,8 +683,11 @@ int wl_ohos_egl_window_surface_active(void)
  * 无通道 swizzle: 源是 allocator buffer 的 EGLImage —— gles2 渲染器把场景
  * GPU-GPU 画进同一 EGLImage, 采样读到的就是渲染器写下的逻辑色 (DRM 四字码
  * ABGR8888 == OHOS RGBA8888, 同一布局)。旧 CPU 上传路径的 .bgra 补偿
- * (vd20/vd21) 随 mmap 上传一并删除。uv 不翻转: GL 渲染 → GL 采样 → GL
- * 窗口 surface, 同一 GL 约定全程不变 (对齐 virgl presenter 的已证方向)。 */
+ * (vd20/vd21) 随 mmap 上传一并删除。
+ * uv.y 必须翻转: EGLImage 行序 = 显示行序 (row 0 = 场景顶, 零拷贝+Flush
+ * 路径按行序直出即证), 而 GL 窗口 surface 的原点在左下 —— 不翻转把场景
+ * 顶行画到屏幕底 (vd23b/hello 实测: notepad 标题栏在窗口底部、xclient
+ * 窗位置 y=1840-(y+h), 整幅垂直镜像)。 */
 static GLuint WindowBlitProgram(void)
 {
     if (g_blit_prog)
@@ -692,7 +695,8 @@ static GLuint WindowBlitProgram(void)
     static const char *vs =
         "attribute vec2 p;\n"
         "varying vec2 uv;\n"
-        "void main(){ uv = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }\n";
+        "void main(){ uv = vec2(p.x*0.5+0.5, 0.5 - p.y*0.5);"
+        " gl_Position = vec4(p,0.0,1.0); }\n";
     static const char *fs =
         "precision mediump float;\n"
         "varying vec2 uv;\n"

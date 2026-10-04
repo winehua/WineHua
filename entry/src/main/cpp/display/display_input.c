@@ -629,7 +629,15 @@ void wl_ohos_input_xwayland_set_seat(struct wlr_xwayland *xwayland)
 
 void wl_ohos_input_script_restart(void)
 {
-    if (!g_loop || !g_script_timer)
+    if (!g_loop)
+        return;
+    /* 建链时 script_enabled=false (产品桌面页先到抢建) 而重触发翻转为
+     * true 的路径: seat_create 没建脚本定时器, 这里必须补建 —— 否则
+     * restart 静默 no-op 而调用方照打 "re-armed" (2026-10-05 hello 实测:
+     * inject key 0 条, 注入脚本一次没跑, HELLO 终证落空)。 */
+    if (!g_script_timer && g_script_enabled)
+        g_script_timer = wl_event_loop_add_timer(g_loop, ScriptTick, NULL);
+    if (!g_script_timer)
         return;
     g_script_step = 0;
     wl_event_source_timer_update(g_script_timer, 8000);

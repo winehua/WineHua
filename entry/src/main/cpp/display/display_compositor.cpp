@@ -370,7 +370,8 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
         fclose(f);
     }
     wl_ohos_input_script_restart();
-    OH_LOG_INFO(LOG_APP, "displayroute retrigger: marker rewritten, script re-armed");
+    /* script 是否真的 re-armed 由 restart 自己打点 (定时器缺建时不再无声) */
+    OH_LOG_INFO(LOG_APP, "displayroute retrigger: marker rewritten");
     /* 门被本次 retrigger 重开时, Xwayland ready 事件可能早已过去
      * (产品链先建 + ready 先到的竞态), 此处补拉测试窗。 */
     TrySpawnXclientTestClient();
