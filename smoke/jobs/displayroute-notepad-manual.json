@@ -1,0 +1,25 @@
+{
+  "displayroute": true,
+  "checks": [
+    "marker:displayroute-egl-import-probe",
+    "marker:displayroute-present-probe"
+  ],
+  "inline": [
+    {
+      "testId": "m1t5-notepad",
+      "exe": "x64/notepad.exe",
+      "argvMode": "raw",
+      "argv": [],
+      "judge": "external",
+      "checks": ["wine-trace"],
+      "env": {
+        "DISPLAY": ":0",
+        "WINEHUA_DISPLAY_ROUTE": "x11",
+        "WAYLAND_DISPLAY": "",
+        "WINEHUA_WINEDEBUG": "+win,+x11drv,+event"
+      },
+      "seconds": 1800,
+      "timeoutMs": 1900000
+    }
+  ]
+}
