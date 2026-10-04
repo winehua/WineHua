@@ -22,6 +22,7 @@
 #include "ohos_egl_import.h"
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <sys/eventfd.h>
 #include <native_vsync/native_vsync.h> /* 帧时钟 (任务 2): 系统 VSync 驱动 */
 #include <sys/mman.h>
@@ -869,6 +870,94 @@ static void FrameStep(bool via_vsync)
                       (unsigned long long)s_vsyncTicks,
                       (unsigned long long)s_timerTicks,
                       (unsigned long long)((ns - s_lastNs) / 1000000));
+                /* 客户端面状态dump (2026-10-04 全黑排查落地, M3 后续
+                 * fusion+x11 接线期保留): buffer=NULL + mapped=1 = XWM
+                 * 已映射但内容未到达; mapped=0 = XWM 未映射; buffer≠NULL
+                 * + seq 推进 = 内容链路通。每秒一行, 与 rate 同生命周期。 */
+                wl_list_for_each(rc, &g_clients, link) {
+                    if (!rc->xs || !rc->xs->surface)
+                        continue;
+                    /* hilog 隐私规则: 裸 %p/%d/%u 打成 <private>, 指针按本文件
+                     * rate 行的惯例转 unsigned long long 配 %{public}llu。 */
+                    OHLOG("client-state surf=%{public}llx buffer=%{public}llx "
+                          "mapped=%{public}d %{public}dx%{public}d@%{public}d,%{public}d "
+                          "seq=%{public}u",
+                          (unsigned long long)(uintptr_t)rc->xs->surface,
+                          (unsigned long long)(uintptr_t)rc->xs->surface->buffer,
+                          rc->xs->surface->mapped ? 1 : 0,
+                          rc->xs->width, rc->xs->height, rc->xs->x, rc->xs->y,
+                          rc->xs->surface->current.seq);
+                }
+                /* 一次性 buffer 像素 dump (2026-10-04 蓝底暗化排查):
+                 * 实测结论 —— 桌面窗 mirror buffer 是 GL/dmabuf (access
+                 * denied, 无 data ptr), Xwayland glamor 路径; 像素级判别
+                 * 需走 EGL import + glReadPixels, 未做。保留接入点: 若
+                 * 再需像素对质, 从这里扩 EGL import 路径。 */
+                static bool s_buffer_dumped;
+                static int s_buffer_dump_tries;
+                if (!s_buffer_dumped && s_buffer_dump_tries < 15) {
+                    s_buffer_dump_tries++;
+                    struct ohos_client_surface *dc = NULL, *it;
+                    wl_list_for_each_reverse(it, &g_clients, link) {
+                        if (wl_ohos_surface_has_content(it->xs ? it->xs->surface
+                                                               : NULL)) {
+                            dc = it;
+                            break;
+                        }
+                    }
+                    if (dc) {
+                        s_buffer_dumped = true;
+                        struct wlr_buffer *wb = &dc->xs->surface->buffer->base;
+                        void *data = NULL;
+                        uint32_t fmt = 0;
+                        size_t stride = 0;
+                        if (wlr_buffer_begin_data_ptr_access(wb, 0, &data,
+                                                             &fmt, &stride)) {
+                            int bw = wb->width, bh = wb->height;
+                            uint32_t *row0 = (uint32_t *)data;
+                            uint32_t *rowN = (uint32_t *)((char *)data +
+                                (size_t)(bh - 1) * stride);
+                            uint32_t *center = (uint32_t *)((char *)data +
+                                (size_t)(bh / 2) * stride +
+                                (size_t)(bw / 2) * 4);
+                            OHLOG("buf-dump fmt=%{public}u stride=%{public}zu "
+                                  "%{public}dx%{public}d tl=%{public}08x "
+                                  "tr=%{public}08x bl=%{public}08x "
+                                  "br=%{public}08x c=%{public}08x",
+                                  fmt, stride, bw, bh,
+                                  row0[0], row0[bw - 1],
+                                  rowN[0], rowN[bw - 1], *center);
+                            FILE *f = fopen(
+                                "/data/storage/el2/base/cache/desktop_dump.ppm",
+                                "wb");
+                            if (f) {
+                                fprintf(f, "P6\n%d %d\n255\n", bw, bh);
+                                for (int y = 0; y < bh; y++) {
+                                    uint32_t *r = (uint32_t *)((char *)data +
+                                        (size_t)y * stride);
+                                    for (int x = 0; x < bw; x++) {
+                                        uint32_t p = r[x]; /* ARGB8888 */
+                                        uint8_t bgr[3] = { (uint8_t)p,
+                                            (uint8_t)(p >> 8),
+                                            (uint8_t)(p >> 16) };
+                                        fwrite(bgr, 1, 3, f);
+                                    }
+                                }
+                                fclose(f);
+                                OHLOG("buf-dump written desktop_dump.ppm");
+                            } else {
+                                OHLOG("buf-dump fopen failed errno=%{public}d",
+                                      errno);
+                            }
+                            wlr_buffer_end_data_ptr_access(wb);
+                        } else {
+                            /* GL/dmabuf 后端可能无 data ptr —— 也算结论:
+                             * mirror 走的是 texture 路径而非 shm。一次性
+                             * 不重试 (dc 命中即置 s_buffer_dumped)。 */
+                            OHLOG("buf-dump access denied (GL/dmabuf buffer)");
+                        }
+                    }
+                }
                 s_lastOut = g_out.frame_seq;
                 s_surfCommits = 0;
                 s_needsFrame = 0;
