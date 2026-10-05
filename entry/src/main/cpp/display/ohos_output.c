@@ -63,6 +63,7 @@ struct wl_ohos_output {
     struct wlr_output_layout *layout; /* wl_output global 载体 (Xwayland 镜像) */
     struct wlr_scene *scene;            /* M1-T3: scene 图形栈 */
     struct wlr_scene_output *scene_output;
+    struct wlr_scene_rect *bg_rect;     /* 背景兜底 rect (resize 随动, D10) */
     OHNativeWindow *window;
     struct wl_listener commit_listener;
     struct wl_listener xnew_surface; /* xwayland->events.new_surface (T9) */
@@ -1385,6 +1386,44 @@ int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present
     return rc;
 }
 
+/* 输出几何动态响应 (D10, 2026-10-05): 折叠/旋转使画布 surface 物理尺寸
+ * 变化 (实测 2800x1840 ↔ 1840x2800), 此前链几何启动时钉死 → 旧帧多时期
+ * 合成 (花屏) / 输入归一化分母错位 (touch y=2798 > 1840) / 转回后呈现
+ * 倍率失效 (内容缩小)。resize = output custom_mode 重提交 + 背景 rect +
+ * buffer geometry; 输入归一化 (frame_size) 与呈现 blit 随 g_out 自愈。
+ * loop 线程调用。返回 0 = 已应用 (含 no-op)。 */
+int wl_ohos_output_resize(int w, int h)
+{
+    if (!g_out.output || w <= 0 || h <= 0)
+        return -1;
+    if (w == g_out.out_w && h == g_out.out_h)
+        return 0;
+    int old_w = g_out.out_w, old_h = g_out.out_h;
+    g_out.out_w = w;
+    g_out.out_h = h;
+    struct wlr_output_state st;
+    wlr_output_state_init(&st);
+    wlr_output_state_set_custom_mode(&st, w, h, 0);
+    if (!wlr_output_commit_state(g_out.output, &st))
+    {
+        OH_LOG_ERROR(LOG_APP, "resize commit failed (%{public}dx%{public}d)", w, h);
+        wlr_output_state_finish(&st);
+        /* 回滚内存态, 与 output 实际 mode 保持一致 */
+        g_out.out_w = old_w;
+        g_out.out_h = old_h;
+        return -1;
+    }
+    wlr_output_state_finish(&st);
+    if (g_out.bg_rect)
+        wlr_scene_rect_set_size(g_out.bg_rect, w, h);
+    if (g_out.window)
+        OH_NativeWindow_NativeWindowHandleOpt(g_out.window, SET_BUFFER_GEOMETRY,
+                                              w, h);
+    OHLOG("output resized %{public}dx%{public}d -> %{public}dx%{public}d",
+          old_w, old_h, w, h);
+    return 0;
+}
+
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
@@ -1466,7 +1505,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         return -1;
     }
     const float bg[4] = {0.10f, 0.10f, 0.12f, 1.0f};
-    if (!wlr_scene_rect_create(&g_out.scene->tree, g_out.out_w, g_out.out_h, bg)) {
+    g_out.bg_rect = wlr_scene_rect_create(&g_out.scene->tree, g_out.out_w, g_out.out_h, bg);
+    if (!g_out.bg_rect) {
         OH_LOG_ERROR(LOG_APP, "scene background rect failed");
         return -1;
     }

@@ -122,6 +122,24 @@ static napi_value SmokeSetDisplayRoute(napi_env env, napi_callback_info info) {
     napi_get_boolean(env, true, &ok);
     return ok;
 }
+extern "C" void WineHua_DisplayRoute_Resize(int w, int h);
+
+// smokeDisplayRouteResize(w, h) — D10: 画布尺寸动态响应 (折叠/旋转后
+// onSurfaceChanged 的逻辑尺寸), 链已启动时同步 output 几何。
+static napi_value SmokeDisplayRouteResize(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 2) {
+        double w = 0, h = 0;
+        napi_get_value_double(env, args[0], &w);
+        napi_get_value_double(env, args[1], &h);
+        WineHua_DisplayRoute_Resize((int)w, (int)h);
+    }
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
 static napi_value SmokeDisplayRouteStop(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;
@@ -186,6 +204,7 @@ static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
         {"smokeMapPoint", nullptr, SmokeMapPoint, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRoute", nullptr, SmokeDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteStop", nullptr, SmokeDisplayRouteStop, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRouteResize", nullptr, SmokeDisplayRouteResize, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRoute", nullptr, SmokeSetDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteKey", nullptr, SmokeDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteMotion", nullptr, SmokeDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},

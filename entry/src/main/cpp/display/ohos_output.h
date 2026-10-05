@@ -131,6 +131,11 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
 // loop 线程调用。canvas_egl_present 语义同 chain_start。
 int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present);
 
+// 输出几何动态响应 (D10): 折叠/旋转使画布尺寸变化时同步 output mode /
+// 背景 rect / buffer geometry。输入归一化与呈现 blit 随 g_out 自愈。
+// loop 线程调用。返回 0 = 已应用 (含同尺寸 no-op)。
+int wl_ohos_output_resize(int w, int h);
+
 #ifdef __cplusplus
 }
 #endif

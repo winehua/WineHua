@@ -397,6 +397,13 @@ static std::mutex g_late_window_mutex;
 static OHNativeWindow *g_late_window = nullptr;
 static bool g_late_canvas_egl = false; /* 挂载时补跑画布 EGL swap 建面 (M3a-T7) */
 
+// 画布 resize 交接槽 (D10): 折叠/旋转使画布尺寸变化 (实测 2800x1840 ↔
+// 1840x2800), ArkTS onSurfaceChanged 把逻辑尺寸投进槽 + retrigger 唤醒,
+// loop 线程消费 (output/背景/buffer geometry 同步)。w>0 = 待处理。
+static std::mutex g_resize_mutex;
+static int g_resize_w = 0;
+static int g_resize_h = 0;
+
 static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 {
     (void)mask;
@@ -445,6 +452,19 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
             OH_NativeWindow_DestroyNativeWindow(late);
         }
     }
+    /* 画布 resize (D10): 旋转/折叠后 onSurfaceChanged 的逻辑尺寸到货 */
+    {
+        int rw = 0, rh = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_resize_mutex);
+            rw = g_resize_w;
+            rh = g_resize_h;
+            g_resize_w = 0;
+            g_resize_h = 0;
+        }
+        if (rw > 0 && rh > 0)
+            wl_ohos_output_resize(rw, rh);
+    }
     /* 门被本次 retrigger 重开时, Xwayland ready 事件可能早已过去
      * (产品链先建 + ready 先到的竞态), 此处补拉测试窗。 */
     TrySpawnXclientTestClient();
@@ -468,6 +488,32 @@ extern "C" void WineHua_DisplayRoute_Stop()
     /* EAGAIN = 已有待处理字节 (含一次 stop), 无害; 其余失败记日志 */
     if (rc < 0 && errno != EAGAIN)
         OH_LOG_ERROR(LOG_APP, "displayroute stop write failed errno=%{public}d", errno);
+}
+
+// 画布 resize 入口 (D10): 折叠/旋转后 onSurfaceChanged 的逻辑尺寸。
+// 未启动 = no-op (链首启自带尺寸); 已启动 → 槽 + retrigger, loop 线程
+// 应用。尺寸无效值静默忽略。
+extern "C" void WineHua_DisplayRoute_Resize(int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (!g_started)
+            return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_resize_mutex);
+        g_resize_w = w;
+        g_resize_h = h;
+    }
+    if (g_retrigger_pipe[1] >= 0)
+    {
+        char b = 'r';
+        ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
+        if (rc < 0 && errno != EAGAIN)
+            OH_LOG_ERROR(LOG_APP, "resize retrigger write failed errno=%{public}d", errno);
+    }
 }
 
 // surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;

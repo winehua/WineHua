@@ -43,7 +43,19 @@ class DesktopController extends XComponentController {
       this.x11W = rect.surfaceWidth;
       this.x11H = rect.surfaceHeight;
       if (this.x11Started) {
-        return; // 已启动: 运行中 resize 只更新记录, 不重建 (spec §3.2)
+        // D10 (2026-10-05): 折叠/旋转使画布物理尺寸真实变化 (实测
+        // 2800x1840 ↔ 1840x2800)。此前只更新记录 —— 链几何 (output mode/
+        // buffer geometry/呈现倍率/输入归一化分母) 全部钉死在启动值,
+        // 旋转后花屏 (多时期旧帧合成) + 坐标错位 + 转回后内容缩小。
+        // 逻辑尺寸同步进链, output 重提交, 输入/呈现随 frame_size 自愈。
+        try {
+          const sr = WineWindowManager.getInstance().getEffectiveScale();
+          smokeNapi.smokeDisplayRouteResize(
+            Math.round(rect.surfaceWidth / sr), Math.round(rect.surfaceHeight / sr));
+        } catch (e) {
+          hilog.error(DOMAIN, 'LIFE', '[XComp] x11 resize failed: %{public}s', String(e));
+        }
+        return;
       }
       this.x11Started = true;
       try {
