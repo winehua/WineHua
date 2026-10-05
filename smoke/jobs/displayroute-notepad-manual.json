@@ -1,5 +1,6 @@
 {
   "displayroute": true,
+  "displayrouteScript": false,
   "checks": [
     "marker:displayroute-egl-import-probe",
     "marker:displayroute-present-probe"

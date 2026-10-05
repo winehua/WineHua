@@ -83,6 +83,11 @@ export interface SmokeJob {
   longSeconds?: number;
   // M0-T7: true = run 开始时触发显示路线 bring-up (smokeNapi.smokeDisplayRoute)
   displayroute?: boolean;
+  // 显示路线注入编排门 (script_enabled): true = 注入脚本定时器 + xclient
+  // 测试窗 (HELLO 键入类用例的载体)。缺省 true = 既有套件行为不变;
+  // 手动验收类 job 设 false = 产品级干净会话, 桌面不出现测试窗
+  // (2026-10-05 验收 D4: 条纹测试窗被误认为 wine 窗口)。
+  displayrouteScript?: boolean;
   // 套件级判定器声明（host 侧消费，设备端不读）：无套件运行时承载
   // bring-up 级 check，如 "marker:displayroute-egl-import-probe"
   //（M2-T2 能力探针标记）。见 automation/smoke.py judge_run。
