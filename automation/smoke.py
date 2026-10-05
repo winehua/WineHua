@@ -512,13 +512,14 @@ def ensure_app_running(hdc: str, device: str, extra_start_args: str = "") -> Non
         die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
             "设备上装的若是非调试签名包，-b 通道同样不可用")
     if extra_start_args:
-        # 已知设备坑 (2026-10-05 v16/v17 实测; 2026-10-06 实锤机制): aa start
-        # 带 --ps 冷启确定性 failInit「获取下载目录失败」—— 带参路由 ~150ms
-        # 拉起 DWA 抢走焦点, picker 调用方退后台后恒返回空, 重试结构性无效
-        # (机制详见 WineEnvService.startSession 的 zHome 注释 / 任务 D14)
-        # —— 冷启必须裸启。
-        # 路线参数改走二次 startAbility → onNewWant → publishLaunchRequest
-        # 双盖章 (ArkTS override + native mirror → BuildWineEnv 路由键)。
+        # 历史坑 (2026-10-05 v16/v17 实测; 2026-10-06 实锤机制, D16 已治本):
+        # aa start 带 --ps 冷启曾确定性 failInit「获取下载目录失败」—— 带参
+        # 路由 ~150ms 拉起 DWA 抢走焦点, picker 调用方退后台后恒返回空,
+        # 重试结构性无效 (两触发模型详见 WineEnvService.startSession 注释
+        # / 任务 D14; 治本 = 44f8575 zHome 就绪门, DWA 启动前消竞态)。
+        # 本纪律保留: 裸启 + 二次 startAbility → onNewWant →
+        # publishLaunchRequest 双盖章 (ArkTS override + native mirror →
+        # BuildWineEnv 路由键)。它不依赖 app 侧门的存在, 新旧构建都成立。
         # 重发必须早于桌面链 spawn: explorer 的 env 在 wineboot 等待之后才
         # 构建 (wine_launch Launch-Async 桌面段), 暖启 ~10s+ 才到, t0+3s
         # 重发稳稳抢先; 首启 (wineboot --init ~70s) 更宽裕。
