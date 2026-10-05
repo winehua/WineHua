@@ -407,7 +407,10 @@ static int g_resize_h = 0;
 static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 {
     (void)mask;
-    (void)data;
+    /* data = 本链的 wl_event_loop (注册处传入): 晚到画布挂载后在这里武装
+     * present 探针定时器, 没有别的 loop 取数口 (本进程可能同时存在多条
+     * wayland 链, 环境变量取 loop 不可行)。 */
+    struct wl_event_loop *loop = (struct wl_event_loop *)data;
     char b;
     while (read(fd, &b, 1) == 1)
     {
@@ -450,6 +453,37 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
         {
             OH_LOG_WARN(LOG_APP, "late canvas attach refused, destroying window");
             OH_NativeWindow_DestroyNativeWindow(late);
+        }
+        else
+        {
+            /* present 探针 (M2-T4) 随画布挂载武装 (2026-10-06 修): 原武装点
+             * 在 chain_start 定时器, 条件 c->window 在 output/画布解耦
+             * (67f287b) 后于产品路径恒 NULL —— 探针永不跑, 归档缺
+             * displayroute-present-probe 标记, suite 判 FAIL
+             * (job-r20261006-001311 实测; 211218 PASS 是解耦前的旧口径)。
+             * attach 成功时刻 Xwayland 早已 fork (画布晚于 explorer 60s+),
+             * 原「先 fork 子进程再 GL」次序约束天然满足; 1s 延迟保留, 避开
+             * attach 当拍的 present 建立窗。
+             * g_present_window 同步记名: 收尾段只销毁它 (槽位/EGL 面先收),
+             * 晚到画布此前在 stop 时无人销毁 —— 顺带闭合。attach 一次性
+             * (拒绝重复挂载), 探针至多武装一次。 */
+            g_present_window = late;
+            const char *probe_env = getenv("WINEHUA_COMPOSITOR_PROBE");
+            if (g_gles2_active &&
+                (probe_env == nullptr || strcmp(probe_env, "0") != 0))
+            {
+                struct wl_event_source *probe_timer =
+                    wl_event_loop_add_timer(loop, PresentProbeTimer, nullptr);
+                if (probe_timer)
+                {
+                    wl_event_source_timer_update(probe_timer, 1000);
+                    OH_LOG_INFO(LOG_APP, "present probe timer armed on canvas attach (+1000ms)");
+                }
+                else
+                {
+                    OH_LOG_ERROR(LOG_APP, "present probe timer 建不起来");
+                }
+            }
         }
     }
     /* 画布 resize (D10): 旋转/折叠后 onSurfaceChanged 的逻辑尺寸到货 */
@@ -632,8 +666,10 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         {
             for (int i = 0; i < 2; ++i)
                 fcntl(g_retrigger_pipe[i], F_SETFL, O_NONBLOCK);
+            /* data = loop: wake 处理器在晚到画布挂载后武装 present 探针
+             * (见 DisplayRouteRetriggerWake 内注释) */
             wl_event_loop_add_fd(loop, g_retrigger_pipe[0], WL_EVENT_READABLE,
-                                 DisplayRouteRetriggerWake, nullptr);
+                                 DisplayRouteRetriggerWake, loop);
         }
         else
         {
