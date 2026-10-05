@@ -184,7 +184,14 @@ struct DesktopPage {
               smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
               this.x11Pressed = true;
             } else if (ev.type === TouchType.Move) {
-              if (this.x11Pressed) smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+              if (this.x11Pressed) {
+                smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+                // D9 拖拽排查: down/up 都有日志而 move 静默, 事件序列断在哪
+                // 一跳无法从日志判读 (2026-10-05 实测: notepad 4.6s 按住仅
+                // 收到 1 条 MotionNotify)。与 down 同款打点。
+                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH move (%{public}d,%{public}d)',
+                  Math.round(px * cw), Math.round(py * ch));
+              }
             } else if (ev.type === TouchType.Up || ev.type === TouchType.Cancel) {
               if (this.x11Pressed) {
                 smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);

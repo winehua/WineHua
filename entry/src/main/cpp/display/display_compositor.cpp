@@ -275,6 +275,44 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
         OH_LOG_ERROR(LOG_APP, "build argv failed");
         return false;
     }
+
+    // 引擎包就绪门 (D8 冷启竞争, 2026-10-05 实测): want 时刻早启链后,
+    // Xwayland 的 -xkbdir 指向引擎解包产物 (wine-data.zip), 全新安装首次
+    // 启动时解包尚未发生 → XKB rules 缺失 → Xwayland "Failed to activate
+    // virtual core keyboard" SIGABRT (xwayland_stderr.log 实证), 桌面黑屏
+    // + root 恒超时。
+    // 等待无超时 (23:33 实测教训: 引擎初始化可由用户交互/重试触发 ——
+    // 带参冷启 failInit 后用户手动初始化, 包在任意时刻就绪; 30s 有界等待
+    // 会把「晚到」误判成「不到」)。Xwayland 只能在包就绪后出生, 门等到位
+    // 为止, 5s 心跳留证。阻塞发生在 compositor 线程 loop 启动前, 无并发
+    // 消费者, 安全。
+    for (size_t i = 0; argv[i]; ++i)
+    {
+        if (strcmp(argv[i], "-xkbdir") != 0 || !argv[i + 1])
+            continue;
+        char rules[512];
+        snprintf(rules, sizeof(rules), "%s/rules/evdev", argv[i + 1]);
+        struct stat st;
+        int waited_ms = 0;
+        bool announced = false;
+        while (stat(rules, &st) != 0)
+        {
+            if (!announced)
+            {
+                OH_LOG_WARN(LOG_APP,
+                            "engine payload not unpacked yet (%{public}s missing), waiting indefinitely",
+                            rules);
+                announced = true;
+            }
+            usleep(100 * 1000);
+            waited_ms += 100;
+            if (waited_ms % 5000 == 0)
+                OH_LOG_WARN(LOG_APP, "engine payload wait: %{public}d s", waited_ms / 1000);
+        }
+        if (waited_ms > 0)
+            OH_LOG_INFO(LOG_APP, "engine payload ready after %{public}d ms", waited_ms);
+        break;
+    }
     std::string joined;
     for (size_t i = 0; argv[i]; ++i)
         joined += (i ? " " : "") + std::string(argv[i]);

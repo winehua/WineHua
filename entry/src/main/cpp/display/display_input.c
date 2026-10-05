@@ -284,8 +284,18 @@ void display_input_inject_motion(float nx, float ny, int phase)
     int fx = (int)(nx * (float)fw);
     int fy = (int)(ny * (float)fh);
     struct wlr_xwayland_surface *xs = wl_ohos_output_client_topmost_at(fx, fy);
+    /* D9 拖拽排查 (2026-10-05): notepad 4.6s 按住仅收到 1 条 MotionNotify,
+     * ArkTS/队列/drain 全通 —— 断点在本函数的 hit-test 丢弃还是 seat 投递,
+     * 无法从既有日志判读。每 100 条采样一次命中/丢弃两端。 */
+    static unsigned hit_seq;
+    bool sampled = (++hit_seq % 100 == 1);
     if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
+    {
+        if (sampled)
+            OHLOG("motion DROP at (%{public}d,%{public}d) xs=%{public}p frame=%{public}dx%{public}d",
+                  fx, fy, (void *)xs, fw, fh);
         return;
+    }
     double sx = (double)(fx - xs->x);
     double sy = (double)(fy - xs->y);
     if (xs->surface != g_ptr_focus)
@@ -300,6 +310,17 @@ void display_input_inject_motion(float nx, float ny, int phase)
               (void *)xs, xs->x, xs->y);
     }
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
+    /* wl_pointer.frame 必发 (D9, 2026-10-05 实测): Xwayland 的绝对指针输入
+     * 按 frame 批量派发 —— motion 入队, frame 才译成 X MotionNotify。此前
+     * 从不发 frame, 拖拽的 motion 流全程滞留 (notepad 4.6s 按住仅 1 条
+     * MotionNotify, 还是 button 前置 flush 冲出来的), 拖拽永不动。逐条
+     * motion+frame 协议开销可接受 (人手 ~60-120 事件/s), 正确性优先。 */
+    wlr_seat_pointer_notify_frame(g_seat);
+    if (sampled)
+        OHLOG("motion hit xs=%{public}p win %{public}d,%{public}d %{public}ux%{public}u "
+              "at (%{public}d,%{public}d) local (%{public}.0f,%{public}.0f) focus_kept=%{public}d",
+              (void *)xs, xs->x, xs->y, xs->width, xs->height,
+              fx, fy, sx, sy, xs->surface == g_ptr_focus);
 }
 
 /* 按钮注入 (M3a-T4): button = evdev 按钮码 (BTN_LEFT 0x110 / BTN_RIGHT
@@ -398,7 +419,16 @@ static int InjectQueueDrain(void *data)
         else if (item.is_button)
             display_input_inject_button(item.keycode, item.press);
         else
+        {
             display_input_inject_motion(item.nx, item.ny, item.phase);
+            /* D9 拖拽排查: motion 注入全程静默 (只有 enter 才打点), 事件流
+             * 断在 ArkTS 还是队列/注入侧无从判读 (2026-10-05 实测: notepad
+             * 4.6s 按住仅 1 条 MotionNotify)。每 50 条打一次样。 */
+            static unsigned motion_drained;
+            if (++motion_drained % 50 == 1)
+                OHLOG("inject motion #%{public}u (%.3f,%.3f phase=%{public}d)",
+                      motion_drained, item.nx, item.ny, item.phase);
+        }
     }
     if (g_display)
         wl_display_flush_clients(g_display);
