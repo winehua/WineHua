@@ -345,6 +345,12 @@ void display_input_inject_button(uint32_t button, bool press)
     wlr_seat_pointer_notify_button(g_seat, NowMsec(), button,
                                    press ? WL_POINTER_BUTTON_STATE_PRESSED
                                          : WL_POINTER_BUTTON_STATE_RELEASED);
+    /* wl_pointer.frame 必发 (D15, 2026-10-06 用户实测): button 与 motion 同
+     * 受 Xwayland 的 frame 批量派发 —— press/release 不发 frame 就滞留队列,
+     * 到下一拍 frame (常来自之后的第一条 motion) 才冲出, 双击两拍的事件
+     * 时间被压扁/错位, wine 判成慢速双击 (点文件触发重命名而非打开)。
+     * motion 侧同款修复见 D9 注释 (上方 313)。 */
+    wlr_seat_pointer_notify_frame(g_seat);
     if (g_display)
         wl_display_flush_clients(g_display);
 }
