@@ -196,7 +196,10 @@ static int PresentProbeTimer(void *data)
     (void)data;
     bool ok = wl_ohos_egl_present_probe(
         g_present_window,
-        "/data/storage/el2/base/files/.wine/drive_c/displayroute-present-probe");
+        /* files 根 (D10b): 与 egl-import 探针同款迁移, 理由见
+         * ohos_egl_import_probe.c kMarkerPath 注释 —— drive_c 是 wine
+         * prefix, fresh install 时不存在 */
+        "/data/storage/el2/base/files/displayroute-present-probe");
     OH_LOG_INFO(LOG_APP, "present probe done ok=%{public}d", ok ? 1 : 0);
     return 0; /* 一次性 */
 }
@@ -677,7 +680,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         }
 
         // M2-T2: R-ZC ② 探针 —— 标记文件不存在时真跑一次 host EGL OHOS
-        // 导入链, 结论落盘 (drive_c/displayroute-egl-import-probe), gles2
+        // 导入链, 结论落盘 (files 根/displayroute-egl-import-probe), gles2
         // 零拷贝路线 (T4) 按它裁决。自缓存, 一次性几 ms。
         ohos_egl_import_probe_run();
 

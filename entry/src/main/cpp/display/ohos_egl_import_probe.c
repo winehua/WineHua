@@ -10,7 +10,8 @@
  * FBO attach → glReadPixels 回读 → 与写入图案比对。
  *
  * 载体: 合成器 bring-up 内嵌 (display_compositor 调本文件唯一入口),
- * 标记文件 displayroute-egl-import-probe 不存在时执行 (自缓存: 一次性
+ * 标记文件 displayroute-egl-import-probe (files 根) 不存在时执行 (自缓存:
+ * 一次性
  * 几 ms, 结论落盘后不再重跑; 重跑 = 删标记)。设备端只跑不判: 结论枚举
  * 写标记文件 + hilog, 判定在主机 (smoke check 读归档)。
  *
@@ -52,8 +53,15 @@ typedef void (*PFN_glEGLImageTargetTexture2DOES_)(GLenum, GLeglImageOES);
 #define PROBE_W 64
 #define PROBE_H 64
 
+/* 标记落点 = files 根 (D10b, 2026-10-06): 原在 .wine/drive_c/ 下，但那是
+ * wine prefix，全新安装要等 wineboot 初始化才存在 —— D8 早启后本探针跑在
+ * prefix 初始化之前，fopen("w") 落进不存在的目录静默失败 (WriteMarker 只
+ * 打日志无重试)，归档缺标记判 FAIL (job-r20261006-005354 实测)。files 根
+ * fresh install 即存在，与 prefix 生命周期解耦。不能反过来在探针里建
+ * drive_c: WineEnvService 用 drive_c 存在性判「prefix 已初始化」(ets:835)，
+ * 预建会骗过首启引导流。 */
 static const char *kMarkerPath =
-    "/data/storage/el2/base/files/.wine/drive_c/displayroute-egl-import-probe";
+    "/data/storage/el2/base/files/displayroute-egl-import-probe";
 
 static void WriteMarker(const char *verdict)
 {

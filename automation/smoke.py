@@ -408,10 +408,15 @@ REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
 PAYLOAD_REL = "smoke-payload"
 # 当前 prefix 的实际载荷：二次 Want 不触发设备端 seed，必须直接更新这里
 DRIVE_C_REL = ".wine/drive_c/smoke"
-# drive_c 根（displayroute bring-up 标记所在，与 smoke/ 载荷树平级）
+# drive_c 根（smoke/ 载荷树所在；displayroute 能力探针标记**不在**这里，
+# 见 DISPLAYROUTE_MARKERS 注释）
 DRIVE_C_ROOT_REL = ".wine/drive_c"
 # displayroute bring-up 阶段的能力探针标记（app 进程内探针写，非 wine 结果
 # 协议）：run 结束逐个尝试归档，marker 判定器据此裁决。
+# 落点 = files 根（D10b, 2026-10-06）：原在 drive_c/ 下，但那是 wine prefix，
+# 全新安装要等 wineboot 初始化才存在，而 D8 早启后探针跑在其之前，写标记
+# 静默失败（r20261006-005354 实测 egl-import-probe 缺失）。files 根 fresh
+# install 即存在。判定器只读归档内容，落点迁移对判定无感。
 DISPLAYROUTE_MARKERS = (
     "displayroute-egl-import-probe",   # M2-T2 导入链裁决
     "displayroute-present-probe",      # M2-T4 队列 buffer 直渲染裁决
@@ -809,7 +814,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # (2026-10-05 vd25 实测: 探针 05:23:24 写, 清理在其后, 归档 absent)。
     if job.get("displayroute"):
         for marker_name in DISPLAYROUTE_MARKERS:
-            remove_sandbox_path(hdc, device, f"{DRIVE_C_ROOT_REL}/{marker_name}")
+            remove_sandbox_path(hdc, device, marker_name)  # files 根 (D10b)
     if not args.skip_push:
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
                                        desktop_mode=getattr(args, "desktop_mode", None),
@@ -899,8 +904,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 结论判 PASS (实测: 清理有门控而归档没有)。
         if job.get("displayroute"):
             for marker_name in DISPLAYROUTE_MARKERS:
-                hdc_recv_file_if_present(hdc, device,
-                                         f"{DRIVE_C_ROOT_REL}/{marker_name}",
+                hdc_recv_file_if_present(hdc, device, marker_name,  # files 根 (D10b)
                                          archive / "device-results" / marker_name)
         # 宿主/设备侧证据落归档 (见 archive_evidence 注释): 显示序列文件本体 +
         # wine stderr + present 日志。复盘"谁呈现的帧"不再依赖设备现场。
