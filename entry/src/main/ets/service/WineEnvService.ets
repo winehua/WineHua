@@ -910,15 +910,15 @@ export class WineEnvService {
     this.initBusy = true;
     this.initFailed = false;
     if (!await this.acquireZHome(this.ctx)) {
-      // 已知设备坑 (2026-10-05 发现, 2026-10-06 实锤机制): aa start 带参
-      // (--ps) 冷启时确定性 failInit「获取下载目录失败」。机制不是时序:
-      // x11 带参路由在 ~150ms 内拉起 DWA 抢走焦点 (onForeground 40ms 即到,
-      // 焦点随后归 DWA), EntryAbility/Index 窗口退后台 —— 后台调用方的
-      // DOWNLOAD picker 恒返回空 (05:31 取证: 7 次重试 21.5s 全部
-      // "empty result", 无异常; 裸启路径 DWA 不存在故成功)。
-      // ⇒ 重试结构性无效 (smoke.py 同款结论「重试无效, 冷启必须裸启」),
-      //    绕行 = 裸启 + 补参 (onNewWant), smoke.py 启动器即此纪律。
-      // 治本 = 启动顺序修复 (zHome 获取先于 DWA 启动), 见任务 D14。
+      // failInit「获取下载目录失败」排查史 (2026-10-05 起两轮误判后定论):
+      // 真因 = 设备存储耗尽 —— /data/local/tmp 积到 77G 把盘打到 100%,
+      // DOWNLOAD picker (走系统服务) 恒返回空 (05:31 取证: 7 次重试全部
+      // "empty result" 无异常); 清理出 51G 后同场景一次成功 (05:51 A/B,
+      // 无任何 app 侧改动)。重试治不了满盘, 任何 app 侧时序/绑定假设都是
+      // 误判 (先后有过「前台授权晚」「DWA 抢焦点」两版错误结论, 已废)。
+      // 对策: 设备侧保持 /data/local/tmp 卫生 (harness/部署流程 df 检查);
+      // 下方退避重试仅兜存储紧张边缘态, smoke.py 的裸启+补参纪律保留
+      // (它同时是参数双盖章的载体)。
       let zHomeOk = false;
       const backoffs = [1500, 2000, 3000, 4000, 5000, 6000];
       for (let i = 0; i < backoffs.length && !zHomeOk; i++) {
