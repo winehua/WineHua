@@ -339,6 +339,47 @@ export class WineEnvService {
     this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
   }
 
+  // zHome 获取 + 退避重试 (startSession 与 ensureZHomeReady 共用同一判据,
+  // 两处不得各写一份退避表)。首次直取, 败则 1.5/2/3/4/5/6s 共 6 次重试。
+  private async acquireZHomeWithRetry(): Promise<boolean> {
+    if (!this.ctx) {
+      return false;
+    }
+    if (await this.acquireZHome(this.ctx)) {
+      return true;
+    }
+    const backoffs = [1500, 2000, 3000, 4000, 5000, 6000];
+    for (let i = 0; i < backoffs.length; i++) {
+      await new Promise<void>((r) => setTimeout(r, backoffs[i]));
+      if (await this.acquireZHome(this.ctx)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // zHome 就绪门 (D16, DWA 启动前调用): 带参冷启时 init 的 picker 与 DWA
+  // 启动抢前台窗口, 调用方失焦后 picker 恒空 (failInit, 见 startSession
+  // 注释)。本门在 startDesktopAbility 里先于 startAbility 调用 —— 此刻
+  // EntryAbility 仍持焦点, 首装无 z_home 时 picker 在无竞态窗口内完成,
+  // 竞态从构造上消除。zHome 已在 (二次启动/已持久化) 时立即返回 true。
+  // 未 init (Index 尚未装配) 时先补 init —— settingsStore 里持久化的
+  // z_home 依赖它读出。失败仅记日志不阻启动: startSession 自带重试与
+  // failInit 路径, 门是消除竞态不是新增失败分支。
+  async ensureZHomeReady(ctx: common.Context): Promise<boolean> {
+    this.init(ctx);
+    if (!this.ctx) {
+      return false;
+    }
+    if (this.zHome) {
+      return true;
+    }
+    const ok = await this.acquireZHomeWithRetry();
+    hilog.warn(DOMAIN, 'wine', 'ensureZHomeReady: %{public}s',
+      ok ? `ok (${this.zHome})` : 'failed (startSession will retry/failInit)');
+    return ok;
+  }
+
   // 原 aboutToAppear 的初始化流程; 幂等, 重复调用直接返回 (native 回调只注册一次)
   init(ctx: common.Context): void {
     if (this.initialized) {
@@ -909,26 +950,20 @@ export class WineEnvService {
     this.bgStart = !foreground;
     this.initBusy = true;
     this.initFailed = false;
-    if (!await this.acquireZHome(this.ctx)) {
-      // failInit「获取下载目录失败」排查史 (2026-10-05 起两轮误判后定论):
-      // 真因 = 设备存储耗尽 —— /data/local/tmp 积到 77G 把盘打到 100%,
-      // DOWNLOAD picker (走系统服务) 恒返回空 (05:31 取证: 7 次重试全部
-      // "empty result" 无异常); 清理出 51G 后同场景一次成功 (05:51 A/B,
-      // 无任何 app 侧改动)。重试治不了满盘, 任何 app 侧时序/绑定假设都是
-      // 误判 (先后有过「前台授权晚」「DWA 抢焦点」两版错误结论, 已废)。
-      // 对策: 设备侧保持 /data/local/tmp 卫生 (harness/部署流程 df 检查);
-      // 下方退避重试仅兜存储紧张边缘态, smoke.py 的裸启+补参纪律保留
-      // (它同时是参数双盖章的载体)。
-      let zHomeOk = false;
-      const backoffs = [1500, 2000, 3000, 4000, 5000, 6000];
-      for (let i = 0; i < backoffs.length && !zHomeOk; i++) {
-        await new Promise<void>((r) => setTimeout(r, backoffs[i]));
-        zHomeOk = await this.acquireZHome(this.ctx);
-      }
-      if (!zHomeOk) {
-        this.failInit('获取下载目录失败');
-        return;
-      }
+    if (!await this.acquireZHomeWithRetry()) {
+      // failInit「获取下载目录失败」— 2026-10-06 定论 (三轮误判后):
+      // picker 空结果有两个独立触发, 可叠加:
+      //   ① 设备存储耗尽: /data/local/tmp 积 77G 把盘打到 100% 时必现
+      //      (05:31 取证 7 次全 empty; 清出 51G 后 05:51 同场景成功)。
+      //   ② 带参冷启竞态: init 的 picker 与 DWA 启动 (~150ms) 抢前台窗口,
+      //      调用方 (Index/EntryAbility) 失焦后 picker 恒空 —— 07:09 在
+      //      102G 空闲 (存储健康) 下复现失败, 05:51 同路径却成功, 竞态
+      //      输赢随机; 用户触屏改变焦点时序会提高失败率。
+      // 裸启+补参 (smoke.py 纪律) 不进竞态: picker 在无参首启完成, 参数
+      // 经 onNewWant 后到。治本 = D16 顺序门: WineWindowManager 在拉起
+      // DWA 前先 ensureZHomeReady (此刻调用方仍持焦点, picker 必成)。
+      this.failInit('获取下载目录失败');
+      return;
     }
     const gamesDir = `${this.zHome}games`;
     if (!ensureDirectory(gamesDir)) {

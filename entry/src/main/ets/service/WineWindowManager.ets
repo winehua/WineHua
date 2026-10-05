@@ -6,6 +6,7 @@ import { pointer } from '@kit.InputKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ModalWindowManager } from './ModalWindowManager';
+import { WineEnvService } from './WineEnvService';
 import { DisplayRouteService } from './DisplayRouteService';
 import { FusionWindowManager } from './FusionWindowManager';
 import { DesktopModeService } from './DesktopModeService';
@@ -1164,6 +1165,22 @@ export class WineWindowManager {
     if (!this.desktopAbilityRunning) {
       this.desktopAbilityRunning = true;
     }
+    // D16 zHome 就绪门: 带参冷启时 init 的 DOWNLOAD picker 与本次 DWA 启动
+    // 抢前台窗口, 调用方失焦后 picker 恒空 → failInit 黑屏 (机制见
+    // WineEnvService.startSession 注释)。先在这里把 zHome 拿到 (此刻
+    // EntryAbility 仍持焦点, picker 必成), 再放行 DWA —— 竞态从构造上
+    // 消除。zHome 已在/拿取失败都不阻启动 (后者由 startSession 自带的重试
+    // 与 failInit 路径承接, 门只负责消除竞态)。
+    const env = WineEnvService.getInstance();
+    env.ensureZHomeReady(this.uiAbilityContext!).then((ok) => {
+      if (!ok) {
+        hilog.warn(DOMAIN, TAG, '[MW] zHome gate failed, starting DWA anyway (startSession owns retry)');
+      }
+      this.doStartDesktopAbility(rootId);
+    });
+  }
+
+  private doStartDesktopAbility(rootId: number): void {
     try {
       const want: Want = {
         bundleName: 'app.hackeris.winehua',
