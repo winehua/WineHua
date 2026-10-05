@@ -86,6 +86,16 @@ export default class EntryAbility extends UIAbility {
       // xwedge3 实测: 印章缺失但无任何日志, 排查多耗一轮构建)。
       try {
         smokeNapi.setDisplayRoute(routeValue);
+        // x11 路线必须同时起合成基础设施 (surfaceId=0 = 仅合成器内核 +
+        // Xwayland, 不建 output 不开窗口): Launch-Async 在 engine-ready 才
+        // 开画布建 output, 而 explorer 在 wineboot 后立刻 spawn —— 基础设施
+        // 晚于 explorer 到达 (2026-10-05 实测: 晚 59s, explorer XOpenDisplay
+        // (:0) 落空, 桌面 root 永不出现, 60s 等待必然 degraded)。画布后到
+        // 时经 StartWithSurface refresh 挂 output (first-caller-wins, 与
+        // smoke 路径同款时序); 不开窗口故不涉 #68 窗管竞态。
+        if (routeValue === 'x11') {
+          smokeNapi.smokeDisplayRoute(0n, false);
+        }
         hilog.info(DOMAIN, 'testTag', 'displayRoute applied: %{public}s', routeValue);
       } catch (e) {
         hilog.error(DOMAIN, 'testTag', 'displayRoute apply FAILED: %{public}s %{public}s',

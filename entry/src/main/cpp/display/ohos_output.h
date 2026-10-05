@@ -104,7 +104,9 @@ uint64_t wl_ohos_output_frame_period_ns(void);
 // X 屏幕 0x0, wine xinerama 枚举到 0x0 显示器, is_window_rect_mapped 恒
 // FALSE, 所有 wine 窗口永不 XMapWindow (T5 t5l trace 实测)。须在 output
 // 创建后调用。
-// window 为 NULL 时调用方不应调用本函数。
+// window 为 NULL 合法 (D8, 2026-10-05): output/wl_output 照常建立 (X 屏幕
+// 尺寸立刻正确, wine 桌面窗口的 map 判定不依赖画布时机), present 挂起,
+// 画布后到经 wl_ohos_output_attach_window 挂载。
 // out_w/out_h: 输出尺寸 (M3a 参数化, x11 台架 = surface 实际尺寸); ≤0 =
 // 未指定, 回退 800x600 (smoke 台架口径, 证据链在该尺寸上校准)。
 // canvas_egl_present: 画布 (DesktopAbility 全屏窗) 绑定时为 true —— 该
@@ -122,6 +124,12 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_xwayland *xwayland,
                                int out_w, int out_h,
                                bool canvas_egl_present);
+
+// 画布晚到挂载 (D8): 在已启动的链的 output 上补跑窗口 present 配置, 下一
+// 帧起出屏。仅允许 NULL→窗口 的一次转移 (运行中换窗不存在合法场景, surface
+// 重建走 stop/start 全链); 已绑定返回非 0, 调用方负责销毁被拒窗口。
+// loop 线程调用。canvas_egl_present 语义同 chain_start。
+int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present);
 
 #ifdef __cplusplus
 }

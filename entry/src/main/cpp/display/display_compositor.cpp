@@ -77,6 +77,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include "ohos_buffer.h" /* wl_ohos_present_slots_shutdown (停机回收 present slot) */
 #include "display_input.h"
 #include "display_guest_frames.h"
+#include "compositor/wayland_server.h" /* WaylandServer session (无画布早启的输出尺寸源) */
 #include "ohos_egl_import_probe.h"
 #include "ohos_egl_import.h"
 
@@ -348,6 +349,16 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
 // (write 线程安全), loop 线程收到后执行刷新。
 static int g_retrigger_pipe[2] = {-1, -1};
 
+// 画布晚到交接槽 (D8, 2026-10-05): 链先建 (无画布, output 仍在场) 后,
+// 画布 surface 才到达 —— 产品路径 want 时起链, DWA 画布页 engine-ready 才
+// 开。触发侧 (任意线程) 把 NativeWindow 放进槽再写 retrigger 字节; loop
+// 线程的 retrigger 处理取走并挂到既有 output 上 (present 从挂起转活跃)。
+// 独立互斥锁 (不碰 g_mutex): wake 处理器跑在 loop 线程, 触发侧持 g_mutex
+// 写 pipe, 两锁若相同会互相等。
+static std::mutex g_late_window_mutex;
+static OHNativeWindow *g_late_window = nullptr;
+static bool g_late_canvas_egl = false; /* 挂载时补跑画布 EGL swap 建面 (M3a-T7) */
+
 static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 {
     (void)mask;
@@ -372,6 +383,30 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
     wl_ohos_input_script_restart();
     /* script 是否真的 re-armed 由 restart 自己打点 (定时器缺建时不再无声) */
     OH_LOG_INFO(LOG_APP, "displayroute retrigger: marker rewritten");
+    /* 画布晚到挂载 (D8): 槽里有窗口 = 本次重触发带着出画面任务。链已建
+     * 而 output 无窗时挂上即开始 present; output 已有窗 (smoke 画布先行)
+     * 时拒绝并销毁新窗 —— surface 重建走 stop/start 全链 (见 StartWithSurface
+     * 重触发注释), 不存在运行中换窗的合法场景。 */
+    OHNativeWindow *late = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_late_window_mutex);
+        late = g_late_window;
+        g_late_window = nullptr;
+    }
+    if (late)
+    {
+        bool egl_flag;
+        {
+            std::lock_guard<std::mutex> lk(g_late_window_mutex);
+            egl_flag = g_late_canvas_egl;
+            g_late_canvas_egl = false;
+        }
+        if (wl_ohos_output_attach_window(late, egl_flag) != 0)
+        {
+            OH_LOG_WARN(LOG_APP, "late canvas attach refused, destroying window");
+            OH_NativeWindow_DestroyNativeWindow(late);
+        }
+    }
     /* 门被本次 retrigger 重开时, Xwayland ready 事件可能早已过去
      * (产品链先建 + ready 先到的竞态), 此处补拉测试窗。 */
     TrySpawnXclientTestClient();
@@ -421,6 +456,24 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // "smoke 运行中被产品意图打断"的反向场景。
         wl_ohos_input_set_script_enabled(script_enabled);
         g_xclient_test_client_enabled = script_enabled;
+        if (surface_id != 0)
+        {
+            // 画布晚到 (D8): 链已建而画布后才到 —— 从 surface 建 NativeWindow
+            // 放进交接槽, 由 loop 线程 retrigger 处理挂载 (见槽定义处)。
+            // 创建失败只丢画面不丢链 (与首启路径同判)。
+            OHNativeWindow *late = nullptr;
+            int32_t rc = OH_NativeWindow_CreateNativeWindowFromSurfaceId(
+                surface_id, &late);
+            OH_LOG_INFO(LOG_APP,
+                        "late present window from surface %{public}llu rc=%{public}d",
+                        (unsigned long long)surface_id, rc);
+            if (rc == 0 && late)
+            {
+                std::lock_guard<std::mutex> lk(g_late_window_mutex);
+                g_late_window = late;
+                g_late_canvas_egl = canvas_egl_present;
+            }
+        }
         if (g_retrigger_pipe[1] >= 0)
         {
             char b = 'r';
@@ -593,24 +646,35 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // ── T8 出图链: 自定义 allocator + headless output + 帧直推
         //    (实现整体在 ohos_output.c, wlr_output.h 的 C++ 不兼容见其头注释);
         //    T9: 带 xwayland, 已映射 X client 窗口优先合成上屏
-        if (g_present_window)
+        // D8 (2026-10-05): 出图链无条件启动, window 可为 NULL —— output/
+        // wl_output 在链启动即存在, X 屏幕尺寸立刻正确; 画布 (present 窗)
+        // 晚到经 g_late_window 槽挂载。实测: 产品路径画布 engine-ready 才开
+        // (晚于 explorer 60s+), 无 output ⇒ X 屏幕 0x0 (T5) ⇒ 桌面窗口永不
+        // map ⇒ root 恒不就绪。无窗时 present 段在 ohos_output 内挂起。
         {
+            int cw = out_w, ch = out_h;
+            if (!g_present_window && (cw <= 0 || ch <= 0))
+            {
+                /* 无画布早启: 尺寸取会话态 (setOutputSize) —— 与 explorer
+                 * 桌面尺寸同源同值 (wine_launch Launch-Async 同款读法), X
+                 * 屏幕 == wine 桌面由构造保证。smoke 台架带 dr surface
+                 * (window 非 NULL), 仍走 ohos_output 的 800x600 校准口径。 */
+                auto *wsess = WaylandServer::GetInstance();
+                cw = wsess->OutputWidth() > 0 ? wsess->OutputWidth() : 1280;
+                ch = wsess->OutputHeight() > 0 ? wsess->OutputHeight() : 720;
+            }
             /* 出图链延后到事件循环第一拍 (定时器晚于 Xwayland 的 spawn idle):
              * 先 fork 子进程, 再做 GL —— 次序约束与实测见 DeferredOutputChainStart
              * 上方注释。就绪标记也在那一刻才写 (标记语义 = 出图链已就位)。 */
             g_deferred_chain = (struct DeferredOutputChainStart){
                 backend, renderer, loop, wl, g_present_window, xwayland,
-                out_w, out_h, canvas_egl_present};
+                cw, ch, canvas_egl_present};
             struct wl_event_source *chain_timer =
                 wl_event_loop_add_timer(loop, StartOutputChainTimer, &g_deferred_chain);
             if (chain_timer)
                 wl_event_source_timer_update(chain_timer, 1);
             else
                 OH_LOG_ERROR(LOG_APP, "output chain timer 建不起来 (出图链不会启动)");
-        }
-        else
-        {
-            OH_LOG_INFO(LOG_APP, "no present surface, T8 output chain skipped");
         }
 
         OH_LOG_INFO(LOG_APP, "started, dispatching event loop");

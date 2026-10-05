@@ -377,6 +377,11 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
     clock_gettime(CLOCK_MONOTONIC, &ts_enter);
     if (!event || !event->state || !event->state->buffer)
         return;
+    /* present 挂起 (D8): 画布未到, output 照常推进 (frame_done 驱动 X client
+     * 绘制, scene 照常渲染进 swapchain —— 桌面内容在合成器里活着), 只是
+     * 无消费者不出屏。frame_seq 不计 (它语义 = 已 present 帧)。 */
+    if (!g_out.window)
+        return;
     ++g_out.frame_seq;
 
     /* M3a-T7 画布 EGL swap 呈现: 提交的 buffer 是默认 swapchain 的
@@ -1310,6 +1315,76 @@ static void DumpSceneRoot(const char *why)
     OHLOG("scene root (%{public}s):%{public}s", why, line);
 }
 
+/* 窗口 present 配置段 (D8 自 chain_start 抽出): 窗口可在链启动后才到达
+ * (产品路径 want 时起链、画布 engine-ready 才开), 首配与晚到挂载共用同一
+ * 份声明, 漏一项的症状见各段注释。loop 线程调用。返回 0 = 就绪。 */
+static int WindowPresentSetup(OHNativeWindow *window, bool canvas_egl_present)
+{
+    // window 队列 buffer 几何声明 (Request 按此分配, memcpy 尺寸才对)
+    int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
+                                                       g_out.out_w, g_out.out_h);
+    OHLOG("SET_BUFFER_GEOMETRY rc=%{public}d", rc);
+    /* 超时必须显式设 0: SDK 默认 3000ms, 而本窗口的 RequestBuffer 跑在**帧
+     * 时钟的 event loop 线程**上 —— 消费者(预览 XComponent)不还槽位时会把
+     * 整条链冻结 3s (scene 不提交、Xwayland 包不 flush、注入队列不 drain),
+     * 表观与 §2.3 的"停滞"同形，排查容易误判成 box64/冷启。两个 presenter
+     * 的窗口都设了 0 (virgl_surface_presenter.cpp / venus_surface_presenter.cpp)，
+     * 这里此前漏了。 */
+    int32_t rcTimeout = OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, 0);
+    OHLOG("SET_TIMEOUT(0) rc=%{public}d", rcTimeout);
+
+    /* M3a-T7 (2026-10-05): 窗口队列 buffer 的格式与用途声明 —— 对齐
+     * virgl_surface_presenter.cpp:301-305 的已证配置。缺失后果 (实测):
+     * 队列 buffer 按消费侧默认 (CPU 向) usage 分配, DesktopAbility 全屏
+     * 窗的合成层只吃 GPU buffer → 画面冻结在首帧 (预览面合成路径不同,
+     * 容忍 CPU buffer, 故只有画布冻)。SET_FORMAT(RGBA) 同时决定 slot
+     * buffer 内存序 = R,G,B,A (呈现上传不再需要 R/B 对调)。 */
+    OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT,
+                                          NATIVEBUFFER_PIXEL_FMT_RGBA_8888);
+    OH_NativeWindow_NativeWindowHandleOpt(
+        window, SET_USAGE,
+        (uint64_t)(NATIVEBUFFER_USAGE_HW_RENDER | NATIVEBUFFER_USAGE_HW_TEXTURE));
+
+    /* M3a-T7: 画布 EGL swap 呈现面。手工 slot+FlushBuffer 对 DesktopAbility
+     * 全屏窗的 surface 消费侧冻结在首帧 (纯产品会话/红背景/A-B 三重实测,
+     * 证据链 progress.md 2026-10-05), 呈现改走 eglSwapBuffers —— 同一
+     * surface 对 wayland presenter 的 EGL swap 正常 (vd13: 桌面蓝+任务栏)。
+     * 建面失败保持返回 true: 旧路径 (零拷贝/拷贝) 原样生效, 行为不变。
+     * 仅画布绑定创建 (canvas_egl_present): EGL 面与零拷贝共用水式队列时,
+     * EGL 的 dequeue/enqueue 占格, frame 2 起零拷贝 slot_acquire 静默失
+     * 败回退拷贝路径 (vd22c 实测), 故画布同时改走默认 swapchain 渲染
+     * (见 FrameStep 与 HandleOutputCommit 的 allocator 分支), fusion 预览
+     * 保持已证零拷贝路径不变。 */
+    if (canvas_egl_present)
+        wl_ohos_egl_window_surface_create(window);
+    return 0;
+}
+
+/* 画布晚到挂载 (D8, 2026-10-05): 链先建 (window=NULL, output/wl_output 已
+ * 在场, present 挂起) 后画布到达 —— 在既有 output 上补跑窗口配置, 下一帧
+ * 起正常出屏。canvas_egl_present 语义与 chain_start 同名参数一致 (产品画布
+ * = true: 该全屏窗对手工 FlushBuffer 冻结, 必须 EGL swap 呈现)。
+ * loop 线程调用 (与帧时钟同线程, g_out.window 无需加锁)。
+ * 返回 0 = 已挂载; 非 0 = 拒绝 (output 已有窗口 —— surface 重建走 stop/start
+ * 全链, 不存在运行中换窗的合法场景; 调用方负责销毁被拒窗口)。 */
+int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present)
+{
+    if (!window || !g_out.output)
+        return -1;
+    if (g_out.window) {
+        OH_LOG_WARN(LOG_APP, "attach window refused: output already bound");
+        return -1;
+    }
+    g_out.window = window;
+    /* 挂载时按输出当前尺寸配置 (无窗早启的尺寸来源见 display_compositor
+     * 的 deferred 段; 画布逻辑尺寸与之同源同值)。尺寸不一致只告警不重建
+     * (output resize 是独立路径, M0 无此场景)。 */
+    int rc = WindowPresentSetup(window, canvas_egl_present);
+    OHLOG("attach window rc=%{public}d egl=%{public}d out=%{public}dx%{public}d",
+          rc, canvas_egl_present, g_out.out_w, g_out.out_h);
+    return rc;
+}
+
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
@@ -1403,42 +1478,9 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     }
 
     // window 队列 buffer 几何声明 (Request 按此分配, memcpy 尺寸才对)
-    int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY,
-                                                       g_out.out_w, g_out.out_h);
-    OHLOG("SET_BUFFER_GEOMETRY rc=%{public}d", rc);
-    /* 超时必须显式设 0: SDK 默认 3000ms, 而本窗口的 RequestBuffer 跑在**帧
-     * 时钟的 event loop 线程**上 —— 消费者(预览 XComponent)不还槽位时会把
-     * 整条链冻结 3s (scene 不提交、Xwayland 包不 flush、注入队列不 drain),
-     * 表观与 §2.3 的"停滞"同形，排查容易误判成 box64/冷启。两个 presenter
-     * 的窗口都设了 0 (virgl_surface_presenter.cpp / venus_surface_presenter.cpp)，
-     * 这里此前漏了。 */
-    int32_t rcTimeout = OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, 0);
-    OHLOG("SET_TIMEOUT(0) rc=%{public}d", rcTimeout);
-
-    /* M3a-T7 (2026-10-05): 窗口队列 buffer 的格式与用途声明 —— 对齐
-     * virgl_surface_presenter.cpp:301-305 的已证配置。缺失后果 (实测):
-     * 队列 buffer 按消费侧默认 (CPU 向) usage 分配, DesktopAbility 全屏
-     * 窗的合成层只吃 GPU buffer → 画面冻结在首帧 (预览面合成路径不同,
-     * 容忍 CPU buffer, 故只有画布冻)。SET_FORMAT(RGBA) 同时决定 slot
-     * buffer 内存序 = R,G,B,A (呈现上传不再需要 R/B 对调)。 */
-    OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT,
-                                          NATIVEBUFFER_PIXEL_FMT_RGBA_8888);
-    OH_NativeWindow_NativeWindowHandleOpt(
-        window, SET_USAGE,
-        (uint64_t)(NATIVEBUFFER_USAGE_HW_RENDER | NATIVEBUFFER_USAGE_HW_TEXTURE));
-
-    /* M3a-T7: 画布 EGL swap 呈现面。手工 slot+FlushBuffer 对 DesktopAbility
-     * 全屏窗的 surface 消费侧冻结在首帧 (纯产品会话/红背景/A-B 三重实测,
-     * 证据链 progress.md 2026-10-05), 呈现改走 eglSwapBuffers —— 同一
-     * surface 对 wayland presenter 的 EGL swap 正常 (vd13: 桌面蓝+任务栏)。
-     * 建面失败保持返回 true: 旧路径 (零拷贝/拷贝) 原样生效, 行为不变。
-     * 仅画布绑定创建 (canvas_egl_present): EGL 面与零拷贝共用水式队列时,
-     * EGL 的 dequeue/enqueue 占格, frame 2 起零拷贝 slot_acquire 静默失
-     * 败回退拷贝路径 (vd22c 实测), 故画布同时改走默认 swapchain 渲染
-     * (见 FrameStep 与 HandleOutputCommit 的 allocator 分支), fusion 预览
-     * 保持已证零拷贝路径不变。 */
-    if (canvas_egl_present)
-        wl_ohos_egl_window_surface_create(window);
+    // D8: 窗口可晚到 —— 配置段抽成 WindowPresentSetup, 挂载时补跑。
+    if (window && WindowPresentSetup(window, canvas_egl_present) != 0)
+        return -1;
 
     g_out.commit_listener.notify = HandleOutputCommit;
     wl_signal_add(&g_out.output->events.commit, &g_out.commit_listener);
