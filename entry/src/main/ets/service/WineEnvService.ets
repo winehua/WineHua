@@ -907,11 +907,15 @@ export class WineEnvService {
       // 已知设备坑 (2026-10-05, 见 init() 里 zHome 落盘注释): aa start 带参
       // (--ps) 冷启时窗口前台授权晚于 init ~0.5s, DOWNLOAD picker 首拍必失败
       // (v16 实测: failInit 获取下载目录失败, 引擎永不启动, x11 want 冷启
-      // 全卡死)。DOWNLOAD 模式不弹界面, 前台就绪后重试即成功 —— 1s 间隔
-      // 最多 3 次, 仍败才终态。
+      // 全卡死)。DOWNLOAD 模式不弹界面, 前台就绪后重试即成功。
+      // 2026-10-06 扩预算: 3×1s (总窗 ~3s) 在全新安装冷启上仍全败
+      // (04:46 实测 failInit 复现 —— 重装后系统忙, 前台授权就绪远超 3s),
+      // 退避到 1.5/2/3/4/5/6s 共 6 次重试 (总窗 ~21.5s); 前台就绪即成功,
+      // 正常路径 (首次就拿到) 零改动。
       let zHomeOk = false;
-      for (let i = 0; i < 3 && !zHomeOk; i++) {
-        await new Promise<void>((r) => setTimeout(r, 1000));
+      const backoffs = [1500, 2000, 3000, 4000, 5000, 6000];
+      for (let i = 0; i < backoffs.length && !zHomeOk; i++) {
+        await new Promise<void>((r) => setTimeout(r, backoffs[i]));
         zHomeOk = await this.acquireZHome(this.ctx);
       }
       if (!zHomeOk) {
