@@ -861,6 +861,12 @@ export class WineEnvService {
       let documentSaveResult: string[] = [];
       try {
         documentSaveResult = await documentViewPicker.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+        // 逐次取证 (D14): 空结果当前无任何日志 —— 全新安装带参冷启连败 7 次
+        // (2026-10-06 04:46/05:23) 时「为何败」不可辨 (异常? 取消? 服务拒?),
+        // 排障只能黑猜。空结果也打出调用时窗内焦点窗信息供关联。
+        if (!documentSaveResult || documentSaveResult.length == 0) {
+          hilog.warn(DOMAIN, 'wine', 'Z home picker: empty result (foreground window may not be caller)');
+        }
       } catch (e) {
         hilog.warn(DOMAIN, 'wine', 'Z home picker failed: %{public}s', JSON.stringify(e));
       }
@@ -904,14 +910,15 @@ export class WineEnvService {
     this.initBusy = true;
     this.initFailed = false;
     if (!await this.acquireZHome(this.ctx)) {
-      // 已知设备坑 (2026-10-05, 见 init() 里 zHome 落盘注释): aa start 带参
-      // (--ps) 冷启时窗口前台授权晚于 init ~0.5s, DOWNLOAD picker 首拍必失败
-      // (v16 实测: failInit 获取下载目录失败, 引擎永不启动, x11 want 冷启
-      // 全卡死)。DOWNLOAD 模式不弹界面, 前台就绪后重试即成功。
-      // 2026-10-06 扩预算: 3×1s (总窗 ~3s) 在全新安装冷启上仍全败
-      // (04:46 实测 failInit 复现 —— 重装后系统忙, 前台授权就绪远超 3s),
-      // 退避到 1.5/2/3/4/5/6s 共 6 次重试 (总窗 ~21.5s); 前台就绪即成功,
-      // 正常路径 (首次就拿到) 零改动。
+      // 已知设备坑 (2026-10-05 发现, 2026-10-06 实锤机制): aa start 带参
+      // (--ps) 冷启时确定性 failInit「获取下载目录失败」。机制不是时序:
+      // x11 带参路由在 ~150ms 内拉起 DWA 抢走焦点 (onForeground 40ms 即到,
+      // 焦点随后归 DWA), EntryAbility/Index 窗口退后台 —— 后台调用方的
+      // DOWNLOAD picker 恒返回空 (05:31 取证: 7 次重试 21.5s 全部
+      // "empty result", 无异常; 裸启路径 DWA 不存在故成功)。
+      // ⇒ 重试结构性无效 (smoke.py 同款结论「重试无效, 冷启必须裸启」),
+      //    绕行 = 裸启 + 补参 (onNewWant), smoke.py 启动器即此纪律。
+      // 治本 = 启动顺序修复 (zHome 获取先于 DWA 启动), 见任务 D14。
       let zHomeOk = false;
       const backoffs = [1500, 2000, 3000, 4000, 5000, 6000];
       for (let i = 0; i < backoffs.length && !zHomeOk; i++) {
