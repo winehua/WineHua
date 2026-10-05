@@ -455,6 +455,10 @@ export class WineEnvService {
       this.setInitStatus('Wine 正在初始化...', !this.bgStart);
     } else if (name == 'ready') {
       this.enterReady();
+      // x11 路线: 画布页在引擎就绪时打开 (与 wayland desktop_root 事件同时
+      // 机语义 — 先会话后开窗; applyModePolicy 早期拉起会与 run-job Want
+      // 抢跑, #68 2026-10-05)。ready-degraded 也要开 (引擎已起, 桌面慢)。
+      WineWindowManager.getInstance().openX11Canvas();
     } else if (name == 'ready-degraded') {
       // 桌面根 15s 未就绪 (仅 desktop 模式): 引擎活着但桌面没起来 — 进行中
       // 而非就绪。canLaunch 不放行 (程序抢跑会死在 DXGI 初始化); root 出现后
@@ -468,6 +472,9 @@ export class WineEnvService {
       this.opBusy = false;
       this.bgStart = false;
       this.setInitStatus('桌面准备中...', false);
+      // x11: 引擎已起 (degraded 只是桌面 shell 慢), 画布页照常打开 —
+      // 桌面 shell map 后画面自然出现; 不开画布则用户全程无窗口可看 (#68)
+      WineWindowManager.getInstance().openX11Canvas();
     } else if (name == 'failed') {
       // 覆盖启动失败 (wineserver spawn/wineboot) 与运行中主 wineserver 非预期
       // 死亡 (ProcMon 上报) — 失败统一进 failInit: overlay 给 重试/重置 入口,
@@ -897,8 +904,20 @@ export class WineEnvService {
     this.initBusy = true;
     this.initFailed = false;
     if (!await this.acquireZHome(this.ctx)) {
-      this.failInit('获取下载目录失败');
-      return;
+      // 已知设备坑 (2026-10-05, 见 init() 里 zHome 落盘注释): aa start 带参
+      // (--ps) 冷启时窗口前台授权晚于 init ~0.5s, DOWNLOAD picker 首拍必失败
+      // (v16 实测: failInit 获取下载目录失败, 引擎永不启动, x11 want 冷启
+      // 全卡死)。DOWNLOAD 模式不弹界面, 前台就绪后重试即成功 —— 1s 间隔
+      // 最多 3 次, 仍败才终态。
+      let zHomeOk = false;
+      for (let i = 0; i < 3 && !zHomeOk; i++) {
+        await new Promise<void>((r) => setTimeout(r, 1000));
+        zHomeOk = await this.acquireZHome(this.ctx);
+      }
+      if (!zHomeOk) {
+        this.failInit('获取下载目录失败');
+        return;
+      }
     }
     const gamesDir = `${this.zHome}games`;
     if (!ensureDirectory(gamesDir)) {

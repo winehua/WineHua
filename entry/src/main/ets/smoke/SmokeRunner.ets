@@ -8,6 +8,8 @@ import {
 import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest,
   InjectSpec, InjectAction } from './SmokeTypes';
 import { mapMouseButton } from '../common/MouseMap';
+import { DisplayRouteService } from '../service/DisplayRouteService';
+import { WineWindowManager } from '../service/WineWindowManager';
 
 // smokeMapPoint 返回（XComponent 内物理坐标，与 libsmoke_napi.so 的 d.ts 对应）
 interface PointMap {
@@ -155,8 +157,34 @@ export class SmokeRunner {
       // displayroute-only (无测试项) 触发后即收尾
       if (request.job && request.job.displayroute) {
         hilog.info(DOMAIN, TAG, 'job.displayroute: triggering DisplayRoute start');
-        // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
-        const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
+        // D8: 引擎代际守卫 —— x11 路线的印章必须随冷启 want 盖下
+        // (Entry onCreate 双写 ArkTS override + native mirror → BuildWineEnv
+        // 给引擎全部代际发路由键)。job.displayroute 触发晚于冷启时, 引擎
+        // (含桌面 explorer 链) 已按 wayland 驱动 spawn, 此刻补章无法改写
+        // 已有代际 —— 桌面建到 wine-wayland socket, X 上永无桌面窗
+        // (v11-v13 实证); 触发后重启引擎又会在首启半程杀坏 prefix
+        // (v14/v15 实测)。所以只认真冷启会话, 否则失败并指路。
+        const wasX11 = DisplayRouteService.getInstance().isX11();
+        if (!wasX11) {
+          await this.finishSuite(request, [
+            this.failure(request, 'suites',
+              'displayroute 需要 x11 冷启: 用 --display-route x11 重跑 (want 随冷启盖章); 运行中补章改不了已 spawn 的引擎代际', -1)
+          ]);
+          return;
+        }
+        // D5: 路线状态先于链启动。smoke 接入不经 want (裸 aa start 带参
+        // failInit), ArkTS 路线必须在此补齐 —— 否则画布页 (DesktopWindow)
+        // 按 wayland 分支处理 surface/输入, 合成器绑到 dev panel 800x600
+        // 小面, 全屏画布全程不绑定 (v9 实测三症状同此根因)。
+        DisplayRouteService.getInstance().setOverrideMode('x11');
+        // D8: native 镜像同步盖章 (与 EntryAbility want 路径同款双写)。
+        // BuildWineEnv 的印章读点在此镜像 —— 缺它 = 会话 env 不带路由键
+        // 和 DISPLAY=:0, wine_child 的撤 WAYLAND_DISPLAY 分支不触发, 桌面
+        // 链 (explorer/keep) 走 wayland 驱动把桌面建到 wine-wayland socket
+        // 上, X 上永远没有桌面窗 (v11/v12 tree-dump 实证: 树上只有
+        // notepad+菜单, 无 DESKTOP 类窗)。引擎重启代际在 stamp 之后 spawn,
+        // 新代际全部吃到盖章。
+        smokeNapi.setDisplayRoute('x11');
         // M1-T4: X 档位用例与出图链的就绪同步 —— 先删旧标记再触发, 等新
         // 标记 (display_compositor 链尾写入) 后才 spawn, 否则 X client
         // 抢在 X socket 就绪前连接 (winemine 首跑实测竞态)。
@@ -165,8 +193,34 @@ export class SmokeRunner {
         // 回归验证流, 编排即判据载体, 缺省开; 手动面板/injectAction 路径不传 =
         // 默认关 (测试资产不默认进产品行为)。job 可显式关 (手动验收类 job
         // 用产品级干净会话, 见 SmokeTypes.displayrouteScript)。
-        smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n,
-          request.job.displayrouteScript !== false);
+        const scriptFlag = request.job.displayrouteScript !== false;
+        // D5: 画布优先 —— 链是 first-caller-wins (g_started 后到者仅
+        // refresh), 所以必须等画布就绪再启动链。裸启动流程画布由 wayland
+        // 段开窗, 与 job 触发存在竞态: v10 实测触发早 120ms 到, 画布未
+        // 登记 → 回退 drSid 小面重演 (present window from surface …254,
+        // 画布分支落在 already started)。画布不在则主动拉起桌面窗
+        // (openX11Canvas, isX11 已置位) 再等; 5s 超时才回退 dev panel
+        // 小面 / headless (CI 无 UI 场景)。
+        const wm = WineWindowManager.getInstance();
+        let canvas = wm.getDesktopCanvas();
+        if (canvas === null) {
+          wm.openX11Canvas();
+        }
+        const canvasDeadline = Date.now() + 5000;
+        while ((canvas === null || canvas.w === 0) && Date.now() < canvasDeadline) {
+          await new Promise<void>((r) => setTimeout(r, 100));
+          canvas = wm.getDesktopCanvas();
+        }
+        if (canvas !== null && canvas.w > 0) {
+          const s = wm.getEffectiveScale();
+          smokeNapi.smokeDisplayRoute(BigInt(canvas.surfaceId), scriptFlag,
+            Math.round(canvas.w / s), Math.round(canvas.h / s), true);
+        } else {
+          hilog.warn(DOMAIN, TAG, 'displayroute: canvas not ready in 5s, fallback to dr surface');
+          // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
+          const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
+          smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n, scriptFlag);
+        }
         // 早退 = 本次运行确实没有测试要跑: 既无 inline, 也无套件/选测声明。
         // (M2-T3 实测: 只看 inline 会把「displayroute + 套件用例」的编排
         // 挡在 bring-up 之后直接收尾 —— 套件用例一条都不跑。)

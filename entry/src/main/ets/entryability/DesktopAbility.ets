@@ -10,6 +10,7 @@ const TAG = 'DWA';
 
 export default class DesktopAbility extends UIAbility {
   private toplevelId: number = 0;
+  private windowStage: window.WindowStage | null = null;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
@@ -24,6 +25,7 @@ export default class DesktopAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '[DWA] onWindowStageCreate tl=%{public}d', this.toplevelId);
+    this.windowStage = windowStage;
     if (deviceInfo.deviceType === 'phone') {
       try {
         const mainWindow = windowStage.getMainWindowSync();
@@ -67,6 +69,9 @@ export default class DesktopAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '[DWA] onForeground tl=%{public}d', this.toplevelId);
+    // 注: raiseToAppTop 抬升画布窗实测无效 (1300009, 主窗口不适用该 API,
+    // 2026-10-05 移除)。同应用双窗 z-order 的实际修复 = moveToForeground/
+    // 延迟 refocus (WineWindowManager #68 路径), 不在此处。
   }
 
   onNewWant(want: Want): void {

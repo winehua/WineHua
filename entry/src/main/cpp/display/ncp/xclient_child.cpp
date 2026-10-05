@@ -183,6 +183,95 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 DefaultDepth(dpy, scr));
 
     Window root = DefaultRootWindow(dpy);
+
+    // ── X 侧窗口树 dump (M3a-T7 虚拟桌面排查, 2026-10-04) ──
+    // 回答「任务栏/notepad 子窗在 X 服务器里的真实状态」: root 两层
+    // (顶层窗 + 各自子窗) 的 id/几何/深度/类/映射态 + WM_CLASS/WM_NAME。
+    // v2: 几何改 %{public} (hilog 隐私吃数字, 首轮作废); 窗口归属靠
+    // WM_CLASS; 周期 dump (8s x 4) 看 reparent/映射演化。XGetWindowAttributes
+    // 的 x,y 相对父窗。
+    for (int round = 0; round < 4; ++round)
+    {
+        Window drr, dpw, *kids = nullptr;
+        unsigned int nk = 0;
+        XQueryTree(dpy, root, &drr, &dpw, &kids, &nk);
+        OH_LOG_INFO(LOG_APP, "tree-dump r%{public}d root=0x%{public}lx children=%{public}u",
+                    round, (unsigned long)root, nk);
+        for (unsigned int i = 0; kids && i < nk; i++)
+        {
+            XWindowAttributes a;
+            if (!XGetWindowAttributes(dpy, kids[i], &a)) continue;
+            XClassHint ch = {nullptr, nullptr};
+            XGetClassHint(dpy, kids[i], &ch);
+            char *nm = nullptr;
+            XFetchName(dpy, kids[i], &nm);
+            OH_LOG_INFO(LOG_APP,
+                        "tree L1 r%{public}d win=0x%{public}lx %{public}dx%{public}d"
+                        "@%{public}d,%{public}d depth=%{public}d %{public}s "
+                        "map=%{public}d cls=%{public}s.%{public}s name=%{public}s",
+                        round, (unsigned long)kids[i], a.width, a.height,
+                        a.x, a.y, a.depth, a.c_class == InputOutput ? "IO" : "I",
+                        a.map_state != IsUnmapped,
+                        ch.res_name ? ch.res_name : "?",
+                        ch.res_class ? ch.res_class : "?", nm ? nm : "?");
+            if (ch.res_name) XFree(ch.res_name);
+            if (ch.res_class) XFree(ch.res_class);
+            // 像素对质 (M3a-T7): 对最大的 mapped IO 顶层窗直接 XGetImage
+            // 采样 (composite redirect 下读窗口 = 读展平 backing pixmap,
+            // 含子窗内容)。采样点: 左上/中心/右下/任务带 (h-10)。
+            // 判读: pixmap 有任务带像素而屏无 → 断在 mirror/scene;
+            //       pixmap 也均匀 → 断在 X 渲染 (redirect/绘制)。
+            if (a.c_class == InputOutput && a.map_state != IsUnmapped &&
+                a.width > 100 && a.height > 100)
+            {
+                XImage *img = XGetImage(dpy, kids[i], 0, 0, a.width, a.height,
+                                        AllPlanes, ZPixmap);
+                if (img)
+                {
+                    auto px = [&](int x, int y) -> unsigned long {
+                        return XGetPixel(img, x, y);
+                    };
+                    OH_LOG_INFO(LOG_APP,
+                                "pix r%{public}d win=0x%{public}lx "
+                                "tl=%{public}06lx c=%{public}06lx "
+                                "tr=%{public}06lx taskbar=%{public}06lx "
+                                "mid=%{public}06lx",
+                                round, (unsigned long)kids[i],
+                                px(5, 5), px(a.width / 2, a.height / 2),
+                                px(a.width - 5, 5), px(100, a.height - 10),
+                                px(a.width / 2, a.height / 4));
+                    XDestroyImage(img);
+                }
+                else
+                {
+                    OH_LOG_INFO(LOG_APP, "pix r%{public}d win=0x%{public}lx "
+                                "XGetImage failed", round,
+                                (unsigned long)kids[i]);
+                }
+            }
+            if (nm) XFree(nm);
+            Window crr, cpw, *ckids = nullptr;
+            unsigned int cnk = 0;
+            XQueryTree(dpy, kids[i], &crr, &cpw, &ckids, &cnk);
+            for (unsigned int j = 0; ckids && j < cnk && j < 40; j++)
+            {
+                XWindowAttributes ca;
+                if (!XGetWindowAttributes(dpy, ckids[j], &ca)) continue;
+                OH_LOG_INFO(LOG_APP,
+                            "tree L2 r%{public}d win=0x%{public}lx %{public}dx%{public}d"
+                            "@%{public}d,%{public}d depth=%{public}d %{public}s "
+                            "map=%{public}d",
+                            round, (unsigned long)ckids[j], ca.width, ca.height,
+                            ca.x, ca.y, ca.depth,
+                            ca.c_class == InputOutput ? "IO" : "I",
+                            ca.map_state != IsUnmapped);
+            }
+            if (ckids) XFree(ckids);
+        }
+        if (kids) XFree(kids);
+        sleep(8);
+    }
+
     // 窗口摆位与 display_input.c 的 T2 注入脚本坐标成对维护:
     // win1 @60,80 320x240 (品红/青), win2 @380,300 280x200 (绿/黄)
     WinCtx w1, w2;

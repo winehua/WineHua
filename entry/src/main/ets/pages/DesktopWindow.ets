@@ -21,6 +21,9 @@ class DesktopController extends XComponentController {
   onSurfaceCreated(surfaceId: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceCreated rootId=%{public}d surfaceId=%{public}s', rootId, surfaceId);
+    // D5: 无条件登记画布 surface (SmokeRunner 画布优先启动链用); w/h 待
+    // onSurfaceChanged 首拍回填。
+    WineWindowManager.getInstance().registerDesktopCanvas(surfaceId, 0, 0);
     if (DisplayRouteService.getInstance().isX11()) {
       return; // x11: 出图链归合成器, 不建 wayland 渲染器 (启动在 onSurfaceChanged)
     }
@@ -31,7 +34,12 @@ class DesktopController extends XComponentController {
   onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceChanged rootId=%{public}d %{public}dx%{public}d', rootId, rect.surfaceWidth, rect.surfaceHeight);
+    // D5: 画布登记回填实际尺寸 (分支无关 —— SmokeRunner 画布优先启动链读)
+    WineWindowManager.getInstance().registerDesktopCanvas(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
     if (DisplayRouteService.getInstance().isX11()) {
+      // 注意 x11W/H 保持物理像素: 本页输入处理器用它做归一化分母
+      // (nx = 物理 x / 物理宽), 合成器侧再乘逻辑帧宽还原 —— 链尺寸传
+      // 逻辑值不改这里的语义。
       this.x11W = rect.surfaceWidth;
       this.x11H = rect.surfaceHeight;
       if (this.x11Started) {
@@ -40,9 +48,13 @@ class DesktopController extends XComponentController {
       this.x11Started = true;
       try {
         // 第 5 参 true = 画布绑定: present 走 EGL swap (该全屏窗对手工
-        // FlushBuffer 冻结, 语义见 display/ohos_output.h)
+        // FlushBuffer 冻结, 语义见 display/ohos_output.h)。
+        // D6 Plan B: 链尺寸 = 逻辑分辨率 (物理 / 呈现倍率, 与 wayland
+        // 分支同款折算) —— wlroots output=1400x920, wine 96dpi 桌面度量
+        // 正确, 呈现时缓冲放大铺满物理画布。
+        const s = WineWindowManager.getInstance().getEffectiveScale();
         smokeNapi.smokeDisplayRoute(BigInt(surfaceId), false,
-          rect.surfaceWidth, rect.surfaceHeight, true);
+          Math.round(rect.surfaceWidth / s), Math.round(rect.surfaceHeight / s), true);
       } catch (e) {
         this.x11Started = false;
         hilog.error(DOMAIN, 'LIFE', '[XComp] x11 chain start failed: %{public}s', String(e));
@@ -62,6 +74,7 @@ class DesktopController extends XComponentController {
   onSurfaceDestroyed(_s: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed rootId=%{public}d', rootId);
+    WineWindowManager.getInstance().unregisterDesktopCanvas();
     if (DisplayRouteService.getInstance().isX11()) {
       // x11: surface 没了 ⇒ 合成器停机 (走统一收尾, 可再次启动)
       if (this.x11Started) {

@@ -497,14 +497,27 @@ def ensure_app_running(hdc: str, device: str, extra_start_args: str = "") -> Non
                 f"aa force-stop {BUNDLE}` 再重跑")
         return
     log(f"{BUNDLE} 未运行，先启动（-b 通道要求应用已启动）")
-    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE} {extra_start_args}".rstrip())
+    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE}")
     deadline = time.time() + APP_START_TIMEOUT_S
     while time.time() < deadline:
         if app_pid(hdc, device):
-            return
+            break
         time.sleep(1)
-    die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
-        "设备上装的若是非调试签名包，-b 通道同样不可用")
+    else:
+        die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
+            "设备上装的若是非调试签名包，-b 通道同样不可用")
+    if extra_start_args:
+        # 已知设备坑 (2026-10-05 v16/v17 实测): aa start 带 --ps 冷启确定性
+        # failInit「获取下载目录失败」(前台授权晚于 init, 重试无效, 见
+        # WineEnvService.startSession 的 zHome 重试注释) —— 冷启必须裸启。
+        # 路线参数改走二次 startAbility → onNewWant → publishLaunchRequest
+        # 双盖章 (ArkTS override + native mirror → BuildWineEnv 路由键)。
+        # 重发必须早于桌面链 spawn: explorer 的 env 在 wineboot 等待之后才
+        # 构建 (wine_launch Launch-Async 桌面段), 暖启 ~10s+ 才到, t0+3s
+        # 重发稳稳抢先; 首启 (wineboot --init ~70s) 更宽裕。
+        time.sleep(3)
+        hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE} {extra_start_args}".rstrip())
+    return
 
 
 def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:

@@ -13,6 +13,14 @@ import { DesktopModeService } from './DesktopModeService';
 const DOMAIN = 0x0000;
 const TAG = 'WineWM';
 
+// D5: 桌面画布 surface 快照 (registerDesktopCanvas 登记, getDesktopCanvas 读)。
+// w/h = surface 物理像素; 0 = onSurfaceChanged 尚未首拍。
+export interface DesktopCanvasInfo {
+  surfaceId: string;
+  w: number;
+  h: number;
+}
+
 // 单个 Wine toplevel 在 ArkTS 侧的聚合状态 (参照 PopupEntry 模式)。
 // 'created' 事件 (或首个提前到达的事件) 时经 ensureEntry 建档,
 // ctx/win/stage 由 WineWindowAbility 三步回填 (registerAbility/Window/WindowStage),
@@ -195,8 +203,12 @@ export class WineWindowManager {
       // (registerHostWindow / restoreDesktopIfRunning) 据此在外部 Want 把
       // 桌面窗压后台后把它拉回前台 (实测 2026-10-05: 不注册则恢复守卫
       // desktopRootId<0 恒拒, 桌面窗被压后台后永远回不来)。
+      // 桌面窗的打开不放这里: applyModePolicy 在会话一开始跑, 与 run-job
+      // Want 抢跑, DWA 输掉 z-order 被主页压住 (#68 三连挂)。改由
+      // WineEnvService 在 state:ready / ready-degraded 时调 openX11Canvas()
+      // —— 引擎就绪 = x11 桌面 shell 已 map (wine_launch 的就绪谓词),
+      // 时序与 wayland 的 desktop_root 事件对齐 (先会话后开窗)。
       this.desktopRootId = 0;
-      this.startDesktopAbility(0);
     }
   }
 
@@ -1173,8 +1185,28 @@ export class WineWindowManager {
     // A new Want foregrounds EntryAbility even though the desktop compositor
     // remains alive. Re-starting the singleton moves that existing desktop
     // back to the foreground without recreating or stopping the Wine session.
-    hilog.info(DOMAIN, TAG, '[MW] refocusing DesktopAbility root=%{public}d', this.desktopRootId);
-    this.startDesktopAbility(this.desktopRootId);
+    // 重拉必须延后: 本函数在 Entry.onNewWant 里跑, 此刻系统还在处理本次
+    // Want 的窗口迁移 — 同步 startAbility 会被迁移吞掉 (DWA onForeground
+    // 后 20ms 又 onBackground, 2026-10-05 08:42 与 09:19 两轮实测, 屏幕停
+    // 留主页)。延迟 300ms 落在迁移完成后, 稳定把画布窗带回前台。
+    hilog.info(DOMAIN, TAG, '[MW] refocusing DesktopAbility root=%{public}d (delayed 300ms)', this.desktopRootId);
+    const rootId = this.desktopRootId;
+    setTimeout(() => {
+      hilog.info(DOMAIN, TAG, '[MW] delayed refocus firing root=%{public}d', rootId);
+      this.startDesktopAbility(rootId);
+    }, 300);
+  }
+
+  // x11 路线画布页打开 (引擎就绪时机)。与 wayland 的 desktop_root 事件同款
+  // 晚触发: 先会话后开窗。调用方 = WineEnvService (state:ready /
+  // ready-degraded); 早期版本在 applyModePolicy (会话开始) 拉起, 与 run-job
+  // Want 抢跑导致 DWA 被主页压住 (#68, 2026-10-05 三连挂)。singleton 重复
+  // 调用安全 (已开 = onNewWant, 顺带把被压的画布窗拉回前台)。
+  openX11Canvas(): void {
+    if (!DisplayRouteService.getInstance().isX11()) return;
+    this.desktopRootId = 0;
+    hilog.info(DOMAIN, TAG, '[MW] x11 canvas open at engine-ready (root=0)');
+    this.startDesktopAbility(0);
   }
 
   getDesktopRootId(): number { return this.desktopRootId; }
@@ -1340,5 +1372,43 @@ export class WineWindowManager {
     hilog.info(DOMAIN, TAG, '[MW] unregisterDesktopAbility');
     this.desktopAbilityCtx = null;
     this.desktopAbilityRunning = false;
+  }
+
+  // ── D5 画布登记: DesktopWindow 的 XComponent surface 信息 ──────────────
+  // SmokeRunner 的 displayroute 触发用它做「画布优先启动链」: 链的
+  // first-caller-wins 契约下, 谁带 surface 启动谁定型 present 面 —— 产品
+  // 会话必须是全屏画布面, dev panel 小面 (800x600) 只是无画布时的回退
+  // (v9 实测: 回退被走到, 桌面画布全程不绑定)。登记/注销挂在 surface
+  // 创建/销毁上, 与「surface 可用于 present」语义一致。
+  private canvasSurfaceId: string = '';
+  private canvasW: number = 0;
+  private canvasH: number = 0;
+
+  registerDesktopCanvas(surfaceId: string, w: number, h: number): void {
+    this.canvasSurfaceId = surfaceId;
+    this.canvasW = w;
+    this.canvasH = h;
+    hilog.info(DOMAIN, TAG, '[MW] registerDesktopCanvas %{public}s %{public}dx%{public}d', surfaceId, w, h);
+  }
+
+  unregisterDesktopCanvas(): void {
+    if (this.canvasSurfaceId !== '') {
+      hilog.info(DOMAIN, TAG, '[MW] unregisterDesktopCanvas %{public}s', this.canvasSurfaceId);
+    }
+    this.canvasSurfaceId = '';
+    this.canvasW = 0;
+    this.canvasH = 0;
+  }
+
+  getDesktopCanvas(): DesktopCanvasInfo | null {
+    if (this.canvasSurfaceId === '') {
+      return null;
+    }
+    const info: DesktopCanvasInfo = {
+      surfaceId: this.canvasSurfaceId,
+      w: this.canvasW,
+      h: this.canvasH
+    };
+    return info;
   }
 }
