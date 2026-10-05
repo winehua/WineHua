@@ -1,6 +1,7 @@
 {
   "displayroute": true,
   "displayrouteScript": false,
+  "timeoutMinutes": 40,
   "checks": [
     "marker:displayroute-egl-import-probe",
     "marker:displayroute-present-probe"

@@ -792,6 +792,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     # 并带上 host 裁决参数，校验死在 push 之后会把 app 留在 x11 形态，下一轮
     # 不带参数的 run 撞上运行中的 x11 app 就是静默路线污染。
     job = build_job(args)
+    # 宿主侧等 summary 时长: 长会话载体 (manual job inline seconds=1800) 的
+    # 设备端 summary 要等会话结束才写, 宿主默认 15 分钟 poll 必然超时
+    # (2026-10-05 r20261005-204806 实测: 设备侧正常, 宿主 15 min 放弃)。
+    # job 文件用 timeoutMinutes 与会话时长钉死; CLI 显式 --timeout-minutes
+    # 优先级最高。pop 掉再下发, 宿主编排参数不进设备契约。
+    timeout_minutes = args.timeout_minutes
+    if timeout_minutes is None:
+        job_timeout = job.pop("timeoutMinutes", None)
+        timeout_minutes = int(job_timeout) if job_timeout else 15
+    else:
+        job.pop("timeoutMinutes", None)
     # 能力探针标记清理必须在冷启 (cmd_push → bring-up → 探针写标记) 之前:
     # push 会把 app 拉起并走到链路 bring-up, 探针在那时写"本次"标记; 清理
     # 若排在 push 后, 刚写的新鲜标记被当"上一轮"清掉, 归档必然缺失
@@ -866,12 +877,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                 f"固定帧只在时长 >= 2.5s 的用例里渲染, 抓帧必然为空")
 
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
+    restamp = (f"--ps winehua.displayRoute {args.display_route}"
+               if getattr(args, "display_route", None) else "")
     try:
         summary, frames = poll_run(hdc, device, archive, run_id, frame_targets,
-                                   args.timeout_minutes, args.poll_seconds,
-                                   start_command=start)
+                                   timeout_minutes, args.poll_seconds,
+                                   start_command=start, restamp_extra=restamp)
         if summary is None:
-            die(f"suite summary not found within {args.timeout_minutes} min: "
+            die(f"suite summary not found within {timeout_minutes} min: "
                 f"{REAL_FILES}/{summary_rel} "
                 f"(引擎未就绪? 设备端 ready-degraded 时不会跑测试)")
 
@@ -1022,7 +1035,7 @@ def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
 def poll_run(hdc: str, device: str, archive: Path, run_id: str,
              frame_targets: dict, timeout_minutes: int, poll_seconds: int,
              frame_attempts: int = 4, start_command: str = "",
-             probe_after_s: int = 90) -> tuple:
+             restamp_extra: str = "", probe_after_s: int = 90) -> tuple:
     """轮询 suite-summary；期间对需要视觉判定的测试采集固定帧。
 
     截图时机沿用旧脚本语义：测试程序完成固定帧渲染后写结果文件（message 含
@@ -1090,6 +1103,12 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
                 log("检测到 ready-degraded（桌面根未起）：重启 App 重试")
                 hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
                 time.sleep(3)
+                # 重启代际必须重新盖章: 裸启 + t0+3s 路线 want 重发 (同
+                # ensure_app_running 纪律) → onNewWant 双盖章。2026-10-05 验收
+                # 实测: 裸重启不带章, 新代际被 runner 代际守卫拦截 (by design),
+                # 自愈重试白白空转。
+                ensure_app_running(hdc, device, restamp_extra)
+                time.sleep(1)
                 hdc_shell(hdc, device, start_command)
                 retried = True
                 started = time.time()
@@ -1347,7 +1366,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-ms", type=int, default=None, dest="timeout_ms")
     run.add_argument("--archive-root",
                      default=str(REPO_ROOT / "build/automation-logs"))
-    run.add_argument("--timeout-minutes", type=int, default=15)
+    run.add_argument("--timeout-minutes", type=int, default=None,
+                     help="等 suite summary 的时长 (分钟); 缺省取 job 的 "
+                          "timeoutMinutes, 都没有则 15")
     run.add_argument("--poll-seconds", type=int, default=5)
     run.set_defaults(func=cmd_run)
 

@@ -1371,6 +1371,20 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
      * swapchain buffer 带给 HandleOutputCommit 拷推 NativeWindow ——
      * 下游推屏链路不变。背景 rect 兜底承担原测试图案的"无窗口可见"职责
      * (premultiplied 深灰)。 */
+    /* 关闭 direct scan-out (2026-10-05 实测): 场景仅剩一个全覆盖 surface 时
+     * wlroots 会绕过 scene 渲染, 把该 surface 的 buffer (XWAYLAND 的 shm
+     * buffer, 非我们 allocator 背书) 直接作为 output commit buffer —— 而本
+     * 文 HandleOutputCommit 三个呈现分支 (egl-swap-tex / 零拷贝 / CPU 拷贝)
+     * 全部只认自家 buffer, CPU 拷贝分支 wl_ohos_buffer_native() 返回 NULL
+     * 后静默丢帧 → 画布冻结在 scan-out 生效前的最后一帧 (实测: 探针帧深蓝底
+     * + 四角点, 桌面 surface 自身 mapped 且 2 commits/s 却整屏黑)。
+     * 触发条件还随输入状态漂移: 软件光标挂在输出上时 scan-out 被抑制
+     * (wlr_output_is_direct_scanout_allowed), 光标一离开即复发 —— 必须机制
+     * 级关闭, 不做调用点特判。
+     * scene->direct_scanout 在 WLR_PRIVATE 匿名成员里不可直赋, 走官方
+     * env 开关 (wlr_scene_create 内 env_parse_bool, 仅认字面 "1"); 必须在
+     * create 之前 setenv。 */
+    setenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT", "1", 1);
     g_out.scene = wlr_scene_create();
     if (!g_out.scene) {
         OH_LOG_ERROR(LOG_APP, "scene create failed");

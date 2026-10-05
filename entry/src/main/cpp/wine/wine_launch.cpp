@@ -640,11 +640,14 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
                     return true;
                 return WineHua_DisplayRouteIsX11() &&
                        WineHua_DisplayRoute_DesktopShellMapped() != 0;
-            }, 15000, 100)) {
+            }, 60000, 100)) {
             /* 超时不再装死放行: 降级 ready-degraded (UI 显示"桌面准备中…"),
              * root 出现后由 desktop_root 钩子补发 evt:desktop-ready,
-             * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。 */
-            OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready in 15s; "
+             * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。
+             * 60s (2026-10-05 实测, 原 15s): box64 explorer 从 spawn 到 X 映射
+             * 空载 ~2s, 但多代 wineserver 残留/熄屏限流下实测 16s+, 15s 门槛
+             * 差 1s 触发降级 → harness 重启 → 又留一代 wineserver, 恶性循环。 */
+            OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready in 60s; "
                         "launch will report ready-degraded");
             *desktopDegraded = true;
         }
