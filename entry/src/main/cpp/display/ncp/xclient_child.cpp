@@ -273,9 +273,13 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     }
 
     // 窗口摆位与 display_input.c 的 T2 注入脚本坐标成对维护:
-    // win1 @60,80 320x240 (品红/青), win2 @380,300 280x200 (绿/黄)
+    // win1 @1000,600 320x240 (品红/青), win2 @380,300 280x200 (绿/黄)。
+    // D30 (r20261007-065721 探针实证): win1 原摆 60,80 正盖住 smoke 测试窗
+    // 区 (用例窗 ~@60,50 326x272)——新用例窗 surface 首帧未提交时
+    // (topmost_at 的 has_content 跳过), 常驻重绘的 MiniX-1 赢得命中,
+    // C 型注入的 click/wheel 全进这个不消费输入的台架窗。挪出工作区。
     WinCtx w1, w2;
-    SetupWindow(dpy, root, scr, w1, 60, 80, 320, 240,
+    SetupWindow(dpy, root, scr, w1, 1000, 600, 320, 240,
                 0xFF00FF, 0x00FFFF, "WineHua-MiniX-1");
     if (mode == 2)
         SetupWindow(dpy, root, scr, w2, 380, 300, 280, 200,
@@ -284,8 +288,8 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     XMapWindow(dpy, w1.win);
     if (mode == 2) XMapWindow(dpy, w2.win);
     XFlush(dpy);
-    OH_LOG_INFO(LOG_APP, "mode=%{public}d mapped (win1=0x%{public}lx 320x240 @60,80"
-                "%{public}s), center1=(220,200) center2=(520,400)",
+    OH_LOG_INFO(LOG_APP, "mode=%{public}d mapped (win1=0x%{public}lx 320x240 @1000,600"
+                "%{public}s), center1=(1160,720) center2=(520,400)",
                 mode, (unsigned long)w1.win,
                 mode == 2 ? ", win2=280x200 @380,300" : "");
 

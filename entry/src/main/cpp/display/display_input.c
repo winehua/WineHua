@@ -308,8 +308,6 @@ void display_input_inject_motion(float nx, float ny, int phase)
             wl_display_flush_clients(g_display); /* 焦点批先行 (同键纪律) */
         wlr_seat_pointer_notify_enter(g_seat, xs->surface, sx, sy);
         TrackPtrFocus(xs->surface);
-        OHLOG("pointer enter xs=%{public}p @%{public}d,%{public}d",
-              (void *)xs, xs->x, xs->y);
     }
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
     /* wl_pointer.frame 必发 (D9, 2026-10-05 实测): Xwayland 的绝对指针输入
@@ -705,8 +703,11 @@ static int ScriptTick(void *data)
     ++g_script_step;
     switch (g_script_step)
     {
-    case 1: /* 悬停到 win1 中心 + KEY_A: (60+160, 80+120) = (220,200) */
-        display_input_inject_motion(220 / 800.0f, 200 / 600.0f, 1);
+    case 1: /* 悬停到 win1 中心 + KEY_A: MiniX-1 @1000,600 320x240 (与
+             * xclient_child.cpp 摆位成对维护, D30 挪离 smoke 工作区)。
+             * 归一化分母 = 实际帧 1400x920 (§1.4 的 800x600 假设在本链
+             * 不成立, 整体收敛随 M2 分辨率参数化)。 */
+        display_input_inject_motion(1160 / 1400.0f, 720 / 920.0f, 1);
         display_input_inject_key(KEY_A, true);
         if (g_release_timer)
             wl_event_source_timer_update(g_release_timer, 300);
@@ -719,8 +720,8 @@ static int ScriptTick(void *data)
             wl_event_source_timer_update(g_release_timer, 300);
         wl_event_source_timer_update(g_script_timer, 4000);
         break;
-    case 3: /* 悬停回 win1 中心 + KEY_C */
-        display_input_inject_motion(220 / 800.0f, 200 / 600.0f, 1);
+    case 3: /* 悬停回 win1 中心 + KEY_C (win1 新位, 同 case 1) */
+        display_input_inject_motion(1160 / 1400.0f, 720 / 920.0f, 1);
         display_input_inject_key(KEY_C, true);
         if (g_release_timer)
             wl_event_source_timer_update(g_release_timer, 300);

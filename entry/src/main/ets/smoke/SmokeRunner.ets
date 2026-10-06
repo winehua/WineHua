@@ -377,6 +377,16 @@ export class SmokeRunner {
     const d3dBackend: string = params.d3dBackend ? params.d3dBackend :
       (test.d3dBackend ? test.d3dBackend : envSvc.getD3dBackend());
     const winPath: string = 'C:\\smoke\\' + test.exe.replace(/\//g, '\\');
+    // 注入残留清理 (D30, r20261007-054026 实锤): 上一轮的 inject-request/
+    // inject-done 落盘后不自动消失, runner 轮询先于 guest 清理时会把**上一
+    // 轮的请求**当本轮的注入 (打在前一会话的桌面状态上), 随后 injectHandled
+    // 拉黑 testId, guest 的真正请求永不被处理 —— 表现为成套跑注入类用例
+    // 间歇全空而 inject-done 显示 ok。spawn 前删双文件, 只认本轮 guest 的
+    // 新请求。
+    if (test.inject) {
+      removeFileIfExists(`${DRIVE_C}/smoke/inject-request-${test.testId}.json`);
+      removeFileIfExists(`${DRIVE_C}/smoke/inject-done-${test.testId}.json`);
+    }
     hilog.info(DOMAIN, TAG, 'spawn test=%{public}s exe=%{public}s seconds=%{public}d timeoutMs=%{public}d back=%{public}s',
       test.testId, winPath, seconds, resolvedTimeout, d3dBackend);
     const dxvkBackend: string = params.dxvkBackend ? params.dxvkBackend :
@@ -449,6 +459,17 @@ export class SmokeRunner {
         }
       }
       if (final) {
+        // 用例独立 (硬约束 5): 结果文件先于进程退出出现 (用例写完结果还有
+        // 收尾 pump+销毁窗), 立刻 spawn 下一个会与前窗短暂共存 —— x11 虚拟
+        // 桌面的注入按 win32 位置路由, 残留窗盖住注入点时 click/wheel 落进
+        // 残留窗、焦点被夺 (D29 实测 r20261007-051133: keyboard 窗未退,
+        // wheel 的 click 全空)。等进程真退再返回; 超时强杀兜底。
+        if (!(await this.waitForProcessExit(process.pid, 3000))) {
+          hilog.warn(DOMAIN, TAG, 'test=%{public}s pid=%{public}d 退出宽限超时, 强杀',
+            test.testId, process.pid);
+          testNapi.terminateWineProcess(process.pid);
+          await this.waitForProcessExit(process.pid, 2000);
+        }
         return {
           schemaVersion: 1,
           runId: request.runId,
@@ -461,7 +482,22 @@ export class SmokeRunner {
     }
     hilog.error(DOMAIN, TAG, 'timeout test=%{public}s lastText=%{public}s',
       test.testId, lastText.substring(0, 200));
+    // 超时路径同样清进程: 残留存活进程会以同样方式毒化下一个用例
+    testNapi.terminateWineProcess(process.pid);
+    await this.waitForProcessExit(process.pid, 2000);
     return this.failure(request, 'timeout', `轮询超时 ${resolvedTimeout}ms (结果文件: ${resultPath})`, process.pid, test.testId);
+  }
+
+  private async waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const snap = testNapi.queryWineProcess(pid) as ProcessSnapshot;
+      if (!snap.found || snap.status !== 'running') {
+        return true;
+      }
+      await new Promise<void>((r) => setTimeout(r, 100));
+    }
+    return false;
   }
 
   // 已处理完注入的 testId（同一轮询循环内只编排一次）
