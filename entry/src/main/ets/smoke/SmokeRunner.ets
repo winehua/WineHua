@@ -678,6 +678,11 @@ export class SmokeRunner {
   }
 
   private async x11Wheel(action: InjectAction, f: FrameSize): Promise<string> {
+    // wheel 按 win32 焦点窗分发 (wine server/queue.c:1827 input_shm->focus,
+    // 实锤): 前置 click 激活 (用例协议已改) 后焦点应在程序窗, 但实测仍
+    // 0 events (r20261007-022336)——断点在 Xwayland axis→Button 转换之后,
+    // 下一跳 = WINEHUA_WINEDEBUG=+mouse 差分 (#93)。300ms 激活等待假设
+    // 已实测推翻, 不留 workaround。
     const notches: number = action.notches ? action.notches : 3;
     const absN: number = Math.abs(notches);
     // 与 wayland 分支同号公式: guest 正 notches (向前滚) → 负 discrete

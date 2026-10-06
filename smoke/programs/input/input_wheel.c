@@ -1,7 +1,10 @@
 /* winehua_t_input_wheel — 滚轮注入配对（P2，手段 I）。
  * 判定规格见 docs/engineering/testing-programs.md §3.3。
  * 失败特征：delta 单位错 = value120 协议断。
- * 协议：悬停窗口中心 → 注入 3 格滚轮 → WM_MOUSEWHEEL 累计 delta == 3*120。
+ * 协议：点击窗口中心激活（x11 路线走真实 X/win32 焦点语义: wheel 按
+ * win32 焦点窗分发, 未激活时焦点在桌面窗收不到——wayland 编排定向
+ * toplevel surface 无此语义, 2026-10-07 实测 0 events）→ 注入 3 格滚轮
+ * → WM_MOUSEWHEEL 累计 delta == 3*120。
  */
 #include "../common/winehua_t_check.h"
 
@@ -85,7 +88,9 @@ int main(int argc, char **argv)
             DestroyWindow(hwnd);
             return t_finish();
         }
-        fprintf(f, "{\"actions\":[{\"type\":\"wheel\",\"x\":%d,\"y\":%d,\"notches\":3}]}",
+        fprintf(f, "{\"actions\":[{\"type\":\"mouse\",\"x\":%d,\"y\":%d},"
+                "{\"type\":\"wheel\",\"x\":%d,\"y\":%d,\"notches\":3}]}",
+                origin.x + CLIENT_W / 2, origin.y + CLIENT_H / 2,
                 origin.x + CLIENT_W / 2, origin.y + CLIENT_H / 2);
         fclose(f);
     }
