@@ -1,6 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
-import smokeNapi from 'libsmoke_napi.so';
+import displayRouteNapi from 'libdisplay_route_napi.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
 import { WineWindowManager } from '../service/WineWindowManager';
@@ -52,7 +52,7 @@ class DesktopController extends XComponentController {
         // 逻辑尺寸同步进链, output 重提交, 输入/呈现随 frame_size 自愈。
         try {
           const sr = WineWindowManager.getInstance().getEffectiveScale();
-          smokeNapi.smokeDisplayRouteResize(
+          displayRouteNapi.resizeDisplayRouteOutput(
             Math.round(rect.surfaceWidth / sr), Math.round(rect.surfaceHeight / sr));
         } catch (e) {
           hilog.error(DOMAIN, 'LIFE', '[XComp] x11 resize failed: %{public}s', String(e));
@@ -67,7 +67,7 @@ class DesktopController extends XComponentController {
         // 分支同款折算) —— wlroots output=1400x920, wine 96dpi 桌面度量
         // 正确, 呈现时缓冲放大铺满物理画布。
         const s = WineWindowManager.getInstance().getEffectiveScale();
-        smokeNapi.smokeDisplayRoute(BigInt(surfaceId), false,
+        displayRouteNapi.startDisplayRouteChain(BigInt(surfaceId), false,
           Math.round(rect.surfaceWidth / s), Math.round(rect.surfaceHeight / s), true);
       } catch (e) {
         this.x11Started = false;
@@ -93,7 +93,7 @@ class DesktopController extends XComponentController {
       // x11: surface 没了 ⇒ 合成器停机 (走统一收尾, 可再次启动)
       if (this.x11Started) {
         this.x11Started = false;
-        try { smokeNapi.smokeDisplayRouteStop(); } catch (_) {}
+        try { displayRouteNapi.stopDisplayRouteChain(); } catch (_) {}
       }
       return;
     }
@@ -157,7 +157,7 @@ struct DesktopPage {
   // winex11 没有文本框焦点通知 (X11 是裸窗口, 不存在 wayland 的 text-input
   // 协议), 触发改手动: 按钮 attach/detach 软键盘。文本出口与 wayland 不同:
   // sendImeCommit 走 wayland commit_string 协议路径, x11 侧把字符折成
-  // evdev 键事件过注入桥 (smokeDisplayRouteKey), 由 Xwayland 按物理键同款
+  // evdev 键事件过注入桥 (injectDisplayRouteKey), 由 Xwayland 按物理键同款
   // 路径派发。attach/off()/on() 纪律照抄 Index.ets 的 wayland 桥 (同款坑
   // 已踩平: on() 重复注册累积回调 → 重复注入; 回车走 sendFunctionKey 不发
   // insertText('\n'); 系统吞 KeyDown 只派 KeyUp → 手动补发完整 down+up)。
@@ -167,7 +167,7 @@ struct DesktopPage {
   private imeController: inputMethod.InputMethodController | null = null;
 
   private imeX11Key(code: number, down: boolean): void {
-    try { smokeNapi.smokeDisplayRouteKey(code, down); } catch (_) {}
+    try { displayRouteNapi.injectDisplayRouteKey(code, down); } catch (_) {}
   }
 
   private imeX11TypeChar(ch: string): void {
@@ -220,7 +220,7 @@ struct DesktopPage {
             }
           } else {
             try {
-              smokeNapi.smokeDisplayRouteClipboard(text);
+              displayRouteNapi.setDisplayRouteClipboard(text);
               // 剪贴板与粘贴键背靠背入队, 无需延迟。2026-10-06 x11 路线
               // 实测 (哥/地 2/2): 五项同一毫秒入队, wine 在和弦后 10-15ms
               // 主动 ConvertSelection 拉取 (clip send 日志), 上屏成功 ——
@@ -333,12 +333,12 @@ struct DesktopPage {
             const py = vp2px(t.y) / ch;
             if (ev.type === TouchType.Down) {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH down (%{public}d,%{public}d)', Math.round(px * cw), Math.round(py * ch));
-              smokeNapi.smokeDisplayRouteMotion(px, py, 1);
-              smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
+              displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
+              displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
               this.x11Pressed = true;
             } else if (ev.type === TouchType.Move) {
               if (this.x11Pressed) {
-                smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+                displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
                 // D9 拖拽排查: down/up 都有日志而 move 静默, 事件序列断在哪
                 // 一跳无法从日志判读 (2026-10-05 实测: notepad 4.6s 按住仅
                 // 收到 1 条 MotionNotify)。与 down 同款打点。
@@ -347,8 +347,8 @@ struct DesktopPage {
               }
             } else if (ev.type === TouchType.Up || ev.type === TouchType.Cancel) {
               if (this.x11Pressed) {
-                smokeNapi.smokeDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
-                smokeNapi.smokeDisplayRouteMotion(px, py, 2);
+                displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
+                displayRouteNapi.injectDisplayRouteMotion(px, py, 2);
                 this.x11Pressed = false;
               }
             }
@@ -565,15 +565,15 @@ struct DesktopPage {
             const px = vp2px(ev.x) / cw;
             const py = vp2px(ev.y) / ch;
             if (ev.action === MouseAction.Move) {
-              smokeNapi.smokeDisplayRouteMotion(px, py, 1);
+              displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
               return;
             }
             if (ev.action !== MouseAction.Press && ev.action !== MouseAction.Release) return;
             const btn = this.x11ButtonCode(ev.button);
             if (btn <= 0) return;
             const press = ev.action === MouseAction.Press;
-            if (press) smokeNapi.smokeDisplayRouteMotion(px, py, 1);
-            smokeNapi.smokeDisplayRouteButton(btn, press);
+            if (press) displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
+            displayRouteNapi.injectDisplayRouteButton(btn, press);
             if (!press && btn === DesktopPage.X11_BTN_LEFT) {
               // 触摸按住时鼠标插入抬起: 状态机复位, 防悬挂的按下
               this.x11Pressed = false;
@@ -684,7 +684,7 @@ struct DesktopPage {
           ev.stopPropagation();
           const code = OH2EVDEV[ev.keyCode] ?? 0;
           if (code <= 0) return;
-          try { smokeNapi.smokeDisplayRouteKey(code, ev.type === KeyType.Down); } catch (_) {}
+          try { displayRouteNapi.injectDisplayRouteKey(code, ev.type === KeyType.Down); } catch (_) {}
           return;
         }
         const rootId = WineWindowManager.getInstance().getDesktopRootId();

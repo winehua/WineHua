@@ -1,6 +1,6 @@
 import { SmokeRunner } from './SmokeRunner';
 import { WineEnvService } from '../service/WineEnvService';
-import smokeNapi from 'libsmoke_napi.so';
+import displayRouteNapi from 'libdisplay_route_napi.so';
 
 // 侧边栏「开发测试」区 (Index 唯一的 smoke 侵入行: <SmokeDevPanel />)。
 // 使能与进度全部内部镜像, Index 零状态零逻辑。合并 main-ui 摘除 =
@@ -55,7 +55,7 @@ export struct SmokeDevPanel {
         .onClick(() => {
           // surfaceId 已就绪则带出图链启动, 否则仅合成器内核 (T7 行为)
           const sid = this.drSurfaceId !== '' ? BigInt(this.drSurfaceId) : 0n;
-          smokeNapi.smokeDisplayRoute(sid);
+          displayRouteNapi.startDisplayRouteChain(sid);
         })
         .margin({ bottom: 6 })
       XComponent({

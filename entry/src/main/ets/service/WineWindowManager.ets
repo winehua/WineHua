@@ -303,7 +303,7 @@ export class WineWindowManager {
     // x11 画布 root 恒 0, 判据只能是「窗开过」。开窗时序 = openX11Canvas
     // (engine-ready, 先会话后开窗, 与 wayland desktop_root 对齐);
     // 链早启不受影响 —— 链在 EntryAbility 参数落地时 windowless 启动
-    // (smokeDisplayRoute(0n,false)), 不依赖桌面窗。
+    // (startDisplayRouteChain(0n,false)), 不依赖桌面窗。
     if (this.isDesktopMode && this.desktopAbilityRunning) {
       hilog.info(DOMAIN, TAG, '[MW] restoring existing DesktopAbility root=%{public}d',
         this.desktopRootId);

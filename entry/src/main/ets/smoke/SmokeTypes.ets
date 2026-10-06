@@ -81,7 +81,7 @@ export interface SmokeJob {
   params?: SmokeJobParams;
   prefix?: string;
   longSeconds?: number;
-  // M0-T7: true = run 开始时触发显示路线 bring-up (smokeNapi.smokeDisplayRoute)
+  // M0-T7: true = run 开始时触发显示路线 bring-up (displayRouteNapi.startDisplayRouteChain)
   displayroute?: boolean;
   // 显示路线注入编排门 (script_enabled): true = 注入脚本定时器 + xclient
   // 测试窗 (HELLO 键入类用例的载体)。缺省 true = 既有套件行为不变;

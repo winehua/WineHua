@@ -1,5 +1,6 @@
 import testNapi from 'libentry.so';
 import smokeNapi from 'libsmoke_napi.so';
+import displayRouteNapi from 'libdisplay_route_napi.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   WineEnvService, DRIVE_C, readTextIfExists, removeFileIfExists,
@@ -184,7 +185,7 @@ export class SmokeRunner {
         // 上, X 上永远没有桌面窗 (v11/v12 tree-dump 实证: 树上只有
         // notepad+菜单, 无 DESKTOP 类窗)。引擎重启代际在 stamp 之后 spawn,
         // 新代际全部吃到盖章。
-        smokeNapi.setDisplayRoute('x11');
+        displayRouteNapi.setDisplayRoute('x11');
         // M1-T4: X 档位用例与出图链的就绪同步 —— 先删旧标记再触发, 等新
         // 标记 (display_compositor 链尾写入) 后才 spawn, 否则 X client
         // 抢在 X socket 就绪前连接 (winemine 首跑实测竞态)。
@@ -213,13 +214,13 @@ export class SmokeRunner {
         }
         if (canvas !== null && canvas.w > 0) {
           const s = wm.getEffectiveScale();
-          smokeNapi.smokeDisplayRoute(BigInt(canvas.surfaceId), scriptFlag,
+          displayRouteNapi.startDisplayRouteChain(BigInt(canvas.surfaceId), scriptFlag,
             Math.round(canvas.w / s), Math.round(canvas.h / s), true);
         } else {
           hilog.warn(DOMAIN, TAG, 'displayroute: canvas not ready in 5s, fallback to dr surface');
           // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
           const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
-          smokeNapi.smokeDisplayRoute(drSid !== '' ? BigInt(drSid) : 0n, scriptFlag);
+          displayRouteNapi.startDisplayRouteChain(drSid !== '' ? BigInt(drSid) : 0n, scriptFlag);
         }
         // 早退 = 本次运行确实没有测试要跑: 既无 inline, 也无套件/选测声明。
         // (M2-T3 实测: 只看 inline 会把「displayroute + 套件用例」的编排
@@ -513,8 +514,8 @@ export class SmokeRunner {
       return '';
     }
     if (action.type === 'displayroute') {
-      // [[SMOKE]] M0-T7: 触发显示路线 bring-up (smokeNapi → entry WineHua_DisplayRoute_Start)
-      smokeNapi.smokeDisplayRoute();
+      // [[SMOKE]] M0-T7: 触发显示路线 bring-up (displayRouteNapi → entry WineHua_DisplayRoute_Start)
+      displayRouteNapi.startDisplayRouteChain();
       await new Promise<void>((r) => setTimeout(r, 300));
       return '';
     }

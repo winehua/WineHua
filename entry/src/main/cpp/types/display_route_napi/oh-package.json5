@@ -1,0 +1,6 @@
+{
+  "name": "libdisplay_route_napi.so",
+  "types": "./Index.d.ts",
+  "version": "1.0.0",
+  "description": "display-route 控制面产品接口的类型声明 (桌面窗/启动链/输入/剪贴板桥)。"
+}

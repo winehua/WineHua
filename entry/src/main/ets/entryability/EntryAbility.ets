@@ -9,7 +9,7 @@ import { DisplayRouteService } from '../service/DisplayRouteService';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
-import smokeNapi from 'libsmoke_napi.so';
+import displayRouteNapi from 'libdisplay_route_napi.so';
 
 const DOMAIN = 0x0000;
 
@@ -85,7 +85,7 @@ export default class EntryAbility extends UIAbility {
       // 静默失败 = spawn 出来的 wine 进程全部走错路线且零痕迹 (2026-10-04
       // xwedge3 实测: 印章缺失但无任何日志, 排查多耗一轮构建)。
       try {
-        smokeNapi.setDisplayRoute(routeValue);
+        displayRouteNapi.setDisplayRoute(routeValue);
         // x11 路线必须同时起合成基础设施 (surfaceId=0 = 仅合成器内核 +
         // Xwayland, 不建 output 不开窗口): Launch-Async 在 engine-ready 才
         // 开画布建 output, 而 explorer 在 wineboot 后立刻 spawn —— 基础设施
@@ -94,7 +94,7 @@ export default class EntryAbility extends UIAbility {
         // 时经 StartWithSurface refresh 挂 output (first-caller-wins, 与
         // smoke 路径同款时序); 不开窗口故不涉 #68 窗管竞态。
         if (routeValue === 'x11') {
-          smokeNapi.smokeDisplayRoute(0n, false);
+          displayRouteNapi.startDisplayRouteChain(0n, false);
         }
         hilog.info(DOMAIN, 'testTag', 'displayRoute applied: %{public}s', routeValue);
       } catch (e) {

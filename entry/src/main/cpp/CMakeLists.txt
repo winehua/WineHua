@@ -181,8 +181,20 @@ target_link_libraries(xclient_child PUBLIC
     ${WAYLAND_LIBS_DIR}/libXext.so.6
 )
 
-# smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询/注入
-# 原语, 产品代码不引用。符号来自 entry (同进程运行时解析), 必须与 entry 同包。
+# display-route 控制面的产品入口 (D21): 桌面窗/启动链/IME 桥的 ArkTS 调用面。
+# 符号来自 entry (同进程运行时解析), 必须与 entry 同包。
+add_library(display_route_napi SHARED
+    display_route/display_route_napi.cpp
+)
+target_link_libraries(display_route_napi PRIVATE
+    entry
+    libace_napi.z.so
+    libhilog_ndk.z.so
+)
+
+# smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询原语
+# (smokeMapPoint), 产品代码不引用。符号来自 entry (同进程运行时解析),
+# 必须与 entry 同包。
 add_library(smoke_napi SHARED
     smoke/smoke_napi.cpp
 )
