@@ -140,7 +140,11 @@ export default class EntryAbility extends UIAbility {
           }
           return;
         }
-        if (++tries < 60) {  // ~60s 上限 (首次初始化含 wineboot)
+        // 外层重试只是兜底 ensureEngineReady 返回 false 的情形 (busy/failed);
+        // 引擎 starting 时 ensureEngineReady 自己会 restartEngine 并等 300s。
+        // 上限与其 deadline 对齐: 60s 曾早于全新安装首启实测耗时 (74s,
+        // 2026-10-06 23:20:39 'skip' 复现), 直启被静默跳过。
+        if (++tries < 300) {
           setTimeout(tick, 1000);
         } else {
           hilog.warn(DOMAIN, 'testTag', 'autoRun: engine not ready after %{public}d tries, skip %{public}s',
