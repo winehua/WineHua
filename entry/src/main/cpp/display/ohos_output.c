@@ -81,7 +81,22 @@ struct wl_ohos_output {
     int out_h;
     uint32_t frame_seq;
     uint32_t last_crc;
+    struct wlr_xwayland *xwayland; /* D23 子窗几何查询 (chain_start 入参) */
 };
+
+/* D23 子窗 face 绑定: 虚拟桌面应用窗是 X 子窗口, 不在 g_clients (xwm 只
+ * associate 顶层)。几何走 wlr_xwayland_query_child_geometry (wlroots xwm
+ * 子窗表, 见 wlroots-ohos-xwm-child-geometry.patch), 帧节点挂 scene 根、
+ * 按 guest 绝对坐标定位。注册表只管节点生命周期: 窗口消失 (查询失败) 由
+ * wl_ohos_output_child_faces_sweep 回收 —— 与 g_clients 的 DestroyFrameNode
+ * 同一泄漏防线 (M2-T5: wlroots 不连带回收本模块的帧节点)。 */
+struct ohos_child_face {
+    uint32_t xwindow;
+    uint64_t generation;
+    struct wlr_scene_buffer *frame_node;
+    struct wl_list link;
+};
+static struct wl_list g_child_faces;
 
 /* T9: X client surface 跟踪。T2 起为链表 (创建序, 链尾 = 最上层):
  * 多窗口 blit 按序画 (后创建压前), 注入命中测试按几何反查。映射状态
@@ -1153,6 +1168,61 @@ void wl_ohos_output_frame_size(int *w, int *h)
  * 因此"查不到"就是「该 id 已失效」——X window id 会被 X server 复用, 复用的
  * 新窗是另一条 g_clients 记录, 老帧进不了新窗。 */
 
+/* D23: 子窗几何查询 (g_clients 未命中时的回退)。命中 = 活着的虚拟桌面子
+ * 窗口; 失败 = 窗口不存在 (TryAttach 闸门/sweep 回收据此判定)。 */
+static int ChildQuery(uint32_t xwindow, int *x, int *y, int *w, int *h,
+                      uint64_t *generation)
+{
+    if (!g_out.xwayland)
+        return 0;
+    int32_t qx, qy;
+    uint32_t qw, qh;
+    uint64_t qg;
+    if (!wlr_xwayland_query_child_geometry(g_out.xwayland, xwindow,
+                                           &qx, &qy, &qw, &qh, &qg))
+        return 0;
+    if (x) *x = qx;
+    if (y) *y = qy;
+    if (w) *w = (int)qw;
+    if (h) *h = (int)qh;
+    if (generation) *generation = qg;
+    return 1;
+}
+
+static struct ohos_child_face *ChildFaceFind(uint32_t xwindow)
+{
+    struct ohos_child_face *f;
+    wl_list_for_each(f, &g_child_faces, link) {
+        if (f->xwindow == xwindow)
+            return f;
+    }
+    return NULL;
+}
+
+static void ChildFaceDestroy(struct ohos_child_face *f, const char *why)
+{
+    OHLOG("child face node destroyed xwin=%{public}u (%{public}s)",
+          f->xwindow, why);
+    if (f->frame_node)
+        wlr_scene_node_destroy(&f->frame_node->node);
+    wl_list_remove(&f->link);
+    free(f);
+}
+
+void wl_ohos_output_child_faces_sweep(void)
+{
+    struct ohos_child_face *f, *tmp;
+    wl_list_for_each_safe(f, tmp, &g_child_faces, link) {
+        uint64_t gen = 0;
+        if (ChildQuery(f->xwindow, NULL, NULL, NULL, NULL, &gen) &&
+            gen == f->generation)
+            continue;
+        /* 窗口没了, 或同 id 重建 (generation 变了) ⇒ 节点必须销毁:
+         * 重建场景下一帧 frame_set 会以新 generation 重挂。 */
+        ChildFaceDestroy(f, gen != f->generation ? "regenerated" : "window gone");
+    }
+}
+
 static struct ohos_client_surface *FindClientByWindow(uint32_t xwindow)
 {
     struct ohos_client_surface *c;
@@ -1170,7 +1240,10 @@ int wl_ohos_output_client_frame_anchor(uint32_t xwindow, int *x, int *y, int *w,
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     struct wlr_xwayland_surface *xs;
     if (!c)
-        return 0;
+    {
+        /* D23: 虚拟桌面子窗口不在 g_clients —— 几何走 xwm 子窗表。 */
+        return ChildQuery(xwindow, x, y, w, h, NULL);
+    }
     xs = c->xs;
     /* scene 锚 = 该窗 X 面的节点 (associate 才建; 未 associate 时帧无处可挂) */
     if (!c->scene_surf || !c->scene_surf->buffer)
@@ -1191,7 +1264,10 @@ int wl_ohos_output_client_xwindow_generation(uint32_t xwindow, uint64_t *generat
 {
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     if (!c)
-        return 0;
+    {
+        /* D23: 子窗口 generation = xwm 子窗表的单调计数 (重建即变)。 */
+        return ChildQuery(xwindow, NULL, NULL, NULL, NULL, generation);
+    }
     if (generation)
         *generation = c->generation;
     return 1;
@@ -1202,7 +1278,58 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
 {
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     struct wlr_xwayland_surface *xs;
-    if (!c || !buffer)
+    if (!c)
+    {
+        /* D23: 虚拟桌面子窗口 —— 帧节点挂 scene 根, 按 guest 绝对坐标定位。
+         * 已知限制 (首版): 节点在 scene 根 = 对全部兄弟子窗置顶, 被其他
+         * 窗口遮挡的 GL 窗会穿帮; 遮挡正确性待 X stacking 查询补。 */
+        int x, y, w, h;
+        uint64_t gen = 0;
+        if (!buffer || !ChildQuery(xwindow, &x, &y, &w, &h, &gen))
+            return 0;
+        struct ohos_child_face *f = ChildFaceFind(xwindow);
+        if (f && f->generation != gen)
+        {
+            /* 同 id 重建: 旧节点作废, 下一帧以新 generation 重挂 */
+            ChildFaceDestroy(f, "regenerated");
+            f = NULL;
+        }
+        if (!f)
+        {
+            f = calloc(1, sizeof(*f));
+            if (!f)
+                return 0;
+            f->xwindow = xwindow;
+            f->generation = gen;
+            f->frame_node = wlr_scene_buffer_create(&g_out.scene->tree, NULL);
+            if (!f->frame_node)
+            {
+                OH_LOG_ERROR(LOG_APP,
+                             "child face node create failed xwin=%{public}u",
+                             xwindow);
+                free(f);
+                return 0;
+            }
+            wl_list_insert(&g_child_faces, &f->link);
+            DumpSceneRoot("child face node created");
+        }
+        /* 行序修正与顶层路径同口径: GL(virgl) 翻, Vulkan(venus) 不翻。 */
+        wlr_scene_buffer_set_transform(f->frame_node,
+                                       flip_vertical
+                                           ? WL_OUTPUT_TRANSFORM_FLIPPED_180
+                                           : WL_OUTPUT_TRANSFORM_NORMAL);
+        wlr_scene_buffer_set_buffer(f->frame_node, buffer);
+        wl_ohos_consumer_buffer_note_handoff(buffer, g_out.frame_seq,
+                                             wl_ohos_egl_sync_count());
+        wlr_scene_buffer_set_dest_size(f->frame_node, (uint32_t)w, (uint32_t)h);
+        wlr_scene_node_set_position(&f->frame_node->node, x, y);
+        wlr_scene_node_set_enabled(&f->frame_node->node, true);
+        g_out.last_frame_key = surface_key;
+        __atomic_store_n(&g_out.last_frame_ns, (uint64_t)NowNs(),
+                         __ATOMIC_RELAXED);
+        return 1;
+    }
+    if (!buffer)
         return 0;
     xs = c->xs;
     if (!c->scene_surf || !c->scene_surf->buffer)
@@ -1266,7 +1393,12 @@ uint64_t wl_ohos_output_frame_period_ns(void)
 void wl_ohos_output_client_frame_clear(uint32_t xwindow)
 {
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
-    if (!c || !c->frame_node)
+    if (!c)
+    {
+        /* D23: 子窗 face 的清理走 sweep (查询失败即销毁), 这里无帧可清 */
+        return;
+    }
+    if (!c->frame_node)
         return;
     wlr_scene_buffer_set_buffer(c->frame_node, NULL);
     wlr_scene_node_set_enabled(&c->frame_node->node, false);
@@ -1440,6 +1572,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     g_out.out_w = out_w > 0 ? out_w : 800;
     g_out.out_h = out_h > 0 ? out_h : 600;
     wl_list_init(&g_clients);
+    wl_list_init(&g_child_faces);
+    g_out.xwayland = xwayland; /* D23: 子窗几何查询句柄 */
     g_desktop_shell_mapped = 0; /* 每轮链路独立判定 (x11 桌面就绪, 见定义处) */
 
     struct wlr_allocator *alloc = wl_ohos_allocator_create();

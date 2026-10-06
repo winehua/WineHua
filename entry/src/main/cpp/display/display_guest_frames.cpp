@@ -196,7 +196,8 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
     b.producerWindow = OH_NativeImage_AcquireNativeWindow(b.image);
     if (!b.producerWindow ||
         !GraphicsBroker::GetInstance().AttachZeroCopyTarget(b.surfaceKey, b.producerWindow,
-                                                           CurrentFramePeriodNs()))
+                                                           CurrentFramePeriodNs(),
+                                                           s.vulkan != 0))
     {
         OH_LOG_WARN(LOG_APP,
                     "[GUEST-FRAMES] attach failed key=%{public}llu xwin=%{public}u "
@@ -373,6 +374,15 @@ extern "C" void display_guest_frames_tick(void)
     }
 
     LogStats(nowNs);
+    /* D23: 子窗 face 生命周期巡检 (2s 档与 LogStats 同门) —— 虚拟桌面的
+     * GL/dxvk 窗口销毁后, 节点没有 DestroyFrameNode 那样的显式销毁路径,
+     * 只能靠这里按查询失败回收 (鬼影 + 队列槽位泄漏的同一防线)。 */
+    static uint64_t lastSweepNs = 0;
+    if (nowNs - lastSweepNs >= 2000ull * 1000 * 1000)
+    {
+        lastSweepNs = nowNs;
+        wl_ohos_output_child_faces_sweep();
+    }
 }
 
 extern "C" void display_guest_frames_shutdown(void)

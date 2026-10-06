@@ -82,6 +82,11 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
 // 窗口已销毁时是 no-op (那种情况节点已经没了)。
 void wl_ohos_output_client_frame_clear(uint32_t xwindow);
 
+// D23: 子窗 face 注册表巡检 —— 查询失败的窗口 (已销毁) 或同 id 重建
+// (generation 变化) 的帧节点在此销毁归还。周期调用 (帧 tick 侧), 必须
+// 在合成器事件循环线程。
+void wl_ohos_output_child_faces_sweep(void);
+
 // scene 里还挂着本模块队列 buffer 的节点数 (回归仪器, 判据: 窗口全部销毁后
 // = 0)。数的是 scene 真实状态而不是本文件的记录 —— 帧节点一旦漏销毁, 窗口
 // 记录早已 free, 只有 scene 上还留着它: 鬼影 + 队列槽位泄漏。

@@ -1,0 +1,244 @@
+diff --git a/include/wlr/xwayland/xwayland.h b/include/wlr/xwayland/xwayland.h
+index f36912b7..8f7055ef 100644
+--- a/include/wlr/xwayland/xwayland.h
++++ b/include/wlr/xwayland/xwayland.h
+@@ -427,4 +427,15 @@ bool wlr_xwayland_surface_fetch_icon(
+ xcb_connection_t *wlr_xwayland_get_xwm_connection(
+ 	struct wlr_xwayland *wlr_xwayland);
+ 
++/**
++ * WineHua (D23): on-root geometry of a CHILD window of a managed toplevel
++ * (e.g. wine virtual-desktop app windows). Tracked via SubstructureNotify;
++ * generation increments on each (re)creation of the window id, a failed
++ * query means the window is gone. Managed (toplevel) windows are NOT served
++ * here — hosts track those via the new_surface/associate events.
++ */
++bool wlr_xwayland_query_child_geometry(struct wlr_xwayland *wlr_xwayland,
++	xcb_window_t window_id, int32_t *x, int32_t *y,
++	uint32_t *width, uint32_t *height, uint64_t *generation);
++
+ #endif
+diff --git a/include/xwayland/xwm.h b/include/xwayland/xwm.h
+index 302518d3..fe374329 100644
+--- a/include/xwayland/xwm.h
++++ b/include/xwayland/xwm.h
+@@ -136,6 +136,13 @@ struct wlr_xwm {
+ 	struct wl_list unpaired_surfaces; // wlr_xwayland_surface.unpaired_link
+ 	struct wl_list pending_startup_ids; // pending_startup_id
+ 
++	// WineHua (D23): children of MANAGED windows (e.g. wine virtual-desktop
++	// app windows inside the explorer desktop toplevel). They get no
++	// wlr_xwayland_surface (xwm must not manage them) — only geometry, fed
++	// by the SubstructureNotify mask we select on managed windows. Consumed
++	// by the host zero-copy face anchoring (wlr_xwayland_query_window_geometry).
++	struct wl_list child_windows; // xwm_child_window.link
++
+ 	struct wlr_drag *drag;
+ 	struct wlr_xwayland_surface *drag_focus;
+ 	struct wlr_xwayland_surface *drop_focus;
+@@ -169,6 +176,11 @@ struct wlr_xwm *xwm_create(struct wlr_xwayland *wlr_xwayland, int wm_fd);
+ 
+ void xwm_destroy(struct wlr_xwm *xwm);
+ 
++// WineHua (D23): child-window geometry table upkeep. See
++// wlr_xwayland_query_window_geometry() for the consumer-facing contract.
++void xwm_child_window_remove_all(struct wlr_xwm *xwm,
++	struct wlr_xwayland_surface *parent);
++
+ void xwm_set_cursor(struct wlr_xwm *xwm, struct wlr_buffer *buffer,
+ 	int32_t hotspot_x, int32_t hotspot_y);
+ 
+diff --git a/xwayland/xwm.c b/xwayland/xwm.c
+index f31163d9..f1f49c0b 100644
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -138,6 +138,70 @@ static struct wlr_xwayland_surface *lookup_surface(struct wlr_xwm *xwm,
+ 	return NULL;
+ }
+ 
++// WineHua (D23): geometry of children of MANAGED windows. Wine's virtual
++// desktop hosts every app window as an X child of the desktop toplevel; the
++// host compositor anchors zero-copy guest frames by window id and needs their
++// on-root geometry. We deliberately do NOT create wlr_xwayland_surface for
++// children (xwm must not manage/restack them) — this table is geometry only.
++struct xwm_child_window {
++	xcb_window_t window_id;
++	struct wlr_xwayland_surface *parent; // managed toplevel
++	int16_t x, y; // parent-relative (absolute = parent->x/y + rel, computed
++	              // at query time so toplevel moves need no per-child events)
++	uint16_t width, height;
++	uint64_t generation; // monotonic per (re)creation; query fail = gone
++	struct wl_list link;
++};
++
++static uint64_t xwm_child_generation_next = 1;
++
++static struct xwm_child_window *xwm_child_window_find(struct wlr_xwm *xwm,
++		xcb_window_t window_id) {
++	struct xwm_child_window *child;
++	wl_list_for_each(child, &xwm->child_windows, link) {
++		if (child->window_id == window_id) {
++			return child;
++		}
++	}
++	return NULL;
++}
++
++static void xwm_child_window_add(struct wlr_xwm *xwm,
++		struct wlr_xwayland_surface *parent, xcb_create_notify_event_t *ev) {
++	struct xwm_child_window *child = calloc(1, sizeof(*child));
++	if (!child) {
++		return;
++	}
++	child->window_id = ev->window;
++	child->parent = parent;
++	child->x = ev->x;
++	child->y = ev->y;
++	child->width = ev->width;
++	child->height = ev->height;
++	child->generation = xwm_child_generation_next++;
++	wl_list_insert(&xwm->child_windows, &child->link);
++}
++
++static void xwm_child_window_remove(struct wlr_xwm *xwm,
++		xcb_window_t window_id) {
++	struct xwm_child_window *child = xwm_child_window_find(xwm, window_id);
++	if (child) {
++		wl_list_remove(&child->link);
++		free(child);
++	}
++}
++
++void xwm_child_window_remove_all(struct wlr_xwm *xwm,
++		struct wlr_xwayland_surface *parent) {
++	struct xwm_child_window *child, *tmp;
++	wl_list_for_each_safe(child, tmp, &xwm->child_windows, link) {
++		if (child->parent == parent) {
++			wl_list_remove(&child->link);
++			free(child);
++		}
++	}
++}
++
+ static int xwayland_surface_handle_ping_timeout(void *data) {
+ 	struct wlr_xwayland_surface *surface = data;
+ 
+@@ -198,7 +262,11 @@ static struct wlr_xwayland_surface *xwayland_surface_create(
+ 	uint32_t values[1];
+ 	values[0] =
+ 		XCB_EVENT_MASK_FOCUS_CHANGE |
+-		XCB_EVENT_MASK_PROPERTY_CHANGE;
++		XCB_EVENT_MASK_PROPERTY_CHANGE |
++		// WineHua (D23): track children of managed windows — wine's virtual
++		// desktop hosts app windows as X children of the desktop toplevel,
++		// and the host zero-copy face anchoring needs their geometry.
++		XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
+ 	xcb_change_window_attributes(xwm->xcb_conn, window_id,
+ 		XCB_CW_EVENT_MASK, values);
+ 
+@@ -574,6 +642,9 @@ static void xwayland_surface_dissociate(struct wlr_xwayland_surface *xsurface) {
+ }
+ 
+ static void xwayland_surface_destroy(struct wlr_xwayland_surface *xsurface) {
++	// WineHua (D23): dying toplevel takes its children table entries with it.
++	xwm_child_window_remove_all(xsurface->xwm, xsurface);
++
+ 	xwayland_surface_dissociate(xsurface);
+ 
+ 	wl_signal_emit_mutable(&xsurface->events.destroy, NULL);
+@@ -1248,12 +1319,30 @@ static void xwm_handle_create_notify(struct wlr_xwm *xwm,
+ 		return;
+ 	}
+ 
++	// WineHua (D23): child of a managed toplevel (e.g. wine virtual-desktop
++	// app window) — geometry-only tracking, no wlr_xwayland_surface.
++	struct wlr_xwayland_surface *parent = lookup_surface(xwm, ev->parent);
++	if (parent != NULL) {
++		xwm_child_window_remove(xwm, ev->window); // id reuse safety
++		xwm_child_window_add(xwm, parent, ev);
++		return;
++	}
++
+ 	xwayland_surface_create(xwm, ev->window, ev->x, ev->y,
+ 		ev->width, ev->height, ev->override_redirect);
+ }
+ 
+ static void xwm_handle_destroy_notify(struct wlr_xwm *xwm,
+ 		xcb_destroy_notify_event_t *ev) {
++	// WineHua (D23): child windows die here too (no xsurface to destroy).
++	if (lookup_surface(xwm, ev->window) == NULL) {
++		struct xwm_child_window *child =
++			xwm_child_window_find(xwm, ev->window);
++		if (child != NULL) {
++			xwm_child_window_remove(xwm, ev->window);
++			return;
++		}
++	}
+ 	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
+ 	if (xsurface == NULL) {
+ 		return;
+@@ -1310,10 +1399,21 @@ static void xwm_update_override_redirect(struct wlr_xwayland_surface *xsurface,
+ 
+ static void xwm_handle_configure_notify(struct wlr_xwm *xwm,
+ 		xcb_configure_notify_event_t *ev) {
+-	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
+-	if (!xsurface) {
++	// WineHua (D23): children report parent-relative x/y — store as-is,
++	// absolute position is computed at query time from the parent.
++	struct wlr_xwayland_surface *managed = lookup_surface(xwm, ev->window);
++	if (managed == NULL) {
++		struct xwm_child_window *child =
++			xwm_child_window_find(xwm, ev->window);
++		if (child != NULL) {
++			child->x = ev->x;
++			child->y = ev->y;
++			child->width = ev->width;
++			child->height = ev->height;
++		}
+ 		return;
+ 	}
++	struct wlr_xwayland_surface *xsurface = managed;
+ 
+ 	bool geometry_changed =
+ 		(xsurface->x != ev->x || xsurface->y != ev->y ||
+@@ -2586,6 +2686,7 @@ struct wlr_xwm *xwm_create(struct wlr_xwayland *xwayland, int wm_fd) {
+ 	wl_list_init(&xwm->surfaces_in_stack_order);
+ 	wl_list_init(&xwm->unpaired_surfaces);
+ 	wl_list_init(&xwm->pending_startup_ids);
++	wl_list_init(&xwm->child_windows); // WineHua (D23)
+ 	wl_list_init(&xwm->seat_drag_source_destroy.link);
+ 	wl_list_init(&xwm->drag_focus_destroy.link);
+ 	wl_list_init(&xwm->drop_focus_destroy.link);
+@@ -2923,3 +3024,32 @@ void xwm_schedule_flush(struct wlr_xwm *xwm) {
+ 
+ 	wl_event_source_fd_update(xwm->event_source, WL_EVENT_READABLE | WL_EVENT_WRITABLE);
+ }
++
++bool wlr_xwayland_query_child_geometry(struct wlr_xwayland *wlr_xwayland,
++		xcb_window_t window_id, int32_t *x, int32_t *y,
++		uint32_t *width, uint32_t *height, uint64_t *generation) {
++	struct wlr_xwm *xwm = wlr_xwayland->xwm;
++	if (!xwm) {
++		return false;
++	}
++	struct xwm_child_window *child = xwm_child_window_find(xwm, window_id);
++	if (!child) {
++		return false;
++	}
++	if (x) {
++		*x = (int32_t)child->parent->x + child->x;
++	}
++	if (y) {
++		*y = (int32_t)child->parent->y + child->y;
++	}
++	if (width) {
++		*width = child->width;
++	}
++	if (height) {
++		*height = child->height;
++	}
++	if (generation) {
++		*generation = child->generation;
++	}
++	return true;
++}

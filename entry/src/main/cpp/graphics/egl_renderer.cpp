@@ -230,7 +230,8 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         if (!zeroCopyProducerWindow_ ||
             !broker.AttachZeroCopyTarget(
                 surface.surfaceKey, zeroCopyProducerWindow_,
-                static_cast<uint64_t>(vsyncPeriodNs_.load(std::memory_order_relaxed))))
+                static_cast<uint64_t>(vsyncPeriodNs_.load(std::memory_order_relaxed)),
+                surface.vulkan))
         {
             ReleaseZeroCopyBinding();
             continue;

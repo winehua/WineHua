@@ -68,8 +68,15 @@ public:
     GraphicsBackendState GetState() const;
 
     void AppendWineEnv(std::vector<std::string>& env) const;
+    /* vulkan: 该面的呈现通道类型 (QueryZeroCopySurfaces 报的 surface.vulkan,
+     * 即 guest 注册面时声明的通道 —— venus=Vulkan / virgl=GL)。NCP presenter
+     * 按它选 VenusSurfaceQueueTarget / GL SurfaceQueueTarget, 选错则对面的
+     * present 全部收 kPresentInvalid。不得用 IsVulkanPresentMode() (d3d 档位
+     * 的全局模式) 代替 —— 档位只约束 d3d 程序的 D3D→Vulkan 路由, 与单个面
+     * 的实际通道无关 (vkd3d 档位下 GL 程序的面是 virgl 通道, D23 实测:
+     * blit=-22 每帧失败)。 */
     bool AttachZeroCopyTarget(uint64_t surfaceKey, OHNativeWindow* producerWindow,
-                              uint64_t framePeriodNs);
+                              uint64_t framePeriodNs, bool vulkan);
     void SetZeroCopyFramePeriod(uint64_t surfaceKey, uint64_t framePeriodNs);
     void DetachZeroCopyTarget(uint64_t surfaceKey);
     bool QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo>& surfaces) const;

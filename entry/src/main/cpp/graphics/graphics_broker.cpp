@@ -509,7 +509,7 @@ bool GraphicsBroker::SendVirglDetachLocked(uint64_t surfaceKey)
 
 bool GraphicsBroker::AttachZeroCopyTarget(uint64_t surfaceKey,
                                           OHNativeWindow* producerWindow,
-                                          uint64_t framePeriodNs)
+                                          uint64_t framePeriodNs, bool vulkan)
 {
     if (!surfaceKey || !producerWindow || GetState().active != GraphicsBackend::Virgl)
         return false;
@@ -537,8 +537,11 @@ bool GraphicsBroker::AttachZeroCopyTarget(uint64_t surfaceKey,
                     static_cast<unsigned long long>(surfaceKey),
                     static_cast<void*>(bound->second), static_cast<void*>(producerWindow));
     }
-    uint32_t flags = vulkanPresentMode_.load(std::memory_order_acquire)
-        ? virgl_ipc::kSurfaceVulkan : 0;
+    /* 面类型由调用方按 QueryZeroCopySurfaces 报的通道声明 (D23): 全局
+     * vulkanPresentMode_ 只描述 d3d 档位的 D3D→Vulkan 路由, 不是面的类型 ——
+     * vkd3d 档位下挂 GL 面会把它错装成 Venus target, 对面每帧 present 收
+     * kPresentInvalid (实测 blit=-22, 21s/5600 帧零上屏)。 */
+    uint32_t flags = vulkan ? virgl_ipc::kSurfaceVulkan : 0;
     if (virglServerUsesInProcess_.load(std::memory_order_acquire))
         flags |= virgl_ipc::kSurfaceNativeObjectReference;
     if (!SendVirglTargetLocked(surfaceKey, producerWindow, framePeriodNs, flags)) return false;

@@ -100,7 +100,14 @@ WLR_SHM_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-shm-fchmod-tolerant.patch"
 # 补丁加通用导入钩子: 无 DMA-BUF 的 wlr_buffer (OHOS NativeBuffer) 由宿主侧
 # 注册的导入器接管成 EGLImage, 渲染目标与采样纹理共用同一 GL 对象。
 WLR_GLES2_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-gles2-egl-import.patch"
-WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" | sha256sum | cut -d' ' -f1)
+# xwm 子窗几何跟踪补丁 (D23): wine 虚拟桌面的应用窗都是桌面顶层的 X 子窗口,
+# xwm 原本只在 root 选 SubstructureNotify (只覆盖顶层), 子窗几何无人跟踪 ⇒
+# host 零拷贝面锚定查不到 (TryAttach 死区, dxvk/GL 44 帧后停摆)。补丁给托管
+# 窗加选 SUBSTRUCTURE_NOTIFY, 维护子窗几何表 (相对坐标, 查询时算绝对), 暴露
+# wlr_xwayland_query_child_geometry() 供 ohos_output 锚定回退。不建 xsurface
+# (不污染 client list / restack 语义)。
+WLR_XWM_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-child-geometry.patch"
+WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" | sha256sum | cut -d' ' -f1)
 
 if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ] \
    && [ "$(cat "$HOST_EXT_LIB/.wlroots_patch_sig" 2>/dev/null)" = "$WLR_PATCH_SIG" ]; then
@@ -117,14 +124,15 @@ else
     # 补丁应用: 本分支入口 = 补丁签名与守卫不符 (补丁变更或首次构建)。
     # 先复位子模块工作区到基线再 apply——sentinel 命中会把「树里是旧补丁」
     # 误判为「已应用」, 新 hunks 静默丢失 (与 build_xwayland.sh 同款教训)。
-    git -C "$WLR_SRC" checkout -- xwayland include/wlr/xwayland/server.h util/shm.c \
+    git -C "$WLR_SRC" checkout -- xwayland include/xwayland/xwm.h include/wlr/xwayland/server.h \
+        include/wlr/xwayland/xwayland.h util/shm.c \
         meson.build render/meson.build include/wlr/config.h.in \
         include/wlr/render/egl.h include/render/egl.h include/render/gles2.h \
         render/egl.c render/gles2/renderer.c render/gles2/texture.c
     rm -f "$WLR_SRC/xwayland/ohos_spawn.c"
-    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" \
+    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" \
         || err "wlroots 补丁无法应用 (submodule 工作区与补丁基线不符)"
-    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH"
+    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH"
     meson_host_build "$BUILD_DIR/wlroots_build_${WLR_VER}" "$WLR_SRC" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dauto_features=disabled \
