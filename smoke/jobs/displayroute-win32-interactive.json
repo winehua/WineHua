@@ -1,0 +1,35 @@
+{
+  "displayroute": true,
+  "suite": "win32",
+  "title": "X 路线交互核心子集（displayroute 编排 + x11 路线环境）：e2e 点击/拖拽/菜单/缩放 + 输入注入 + 窗口管理（最大化/Z序/属主/子窗/全屏）。选例原则 = 「可日常使用」的交互验收面；win32 套件无套件级 checks，全量回归仍走 `--suite win32`（wayland 基线）",
+  "tests": [
+    "e2e-click-x64",
+    "e2e-click-x86",
+    "e2e-drag-x64",
+    "e2e-drag-x86",
+    "e2e-menu-x64",
+    "e2e-menu-x86",
+    "e2e-resize-x64",
+    "e2e-resize-x86",
+    "input-mouse-x64",
+    "input-mouse-x86",
+    "input-keyboard-x64",
+    "input-keyboard-x86",
+    "input-wheel-x64",
+    "input-capture-x64",
+    "input-relative-x64",
+    "win-maximize-x64",
+    "win-zorder-x64",
+    "win-owned-x64",
+    "win-child-x64",
+    "win-fullscreen-x64",
+    "msg-order-x64"
+  ],
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "x11",
+      "DISPLAY": ":0",
+      "WAYLAND_DISPLAY": ""
+    }
+  }
+}
