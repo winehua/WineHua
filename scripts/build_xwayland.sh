@@ -154,7 +154,9 @@ if [ ! -f "$HOST_EXT_LIB/libxwayland_ohos.so" ] \
     # 首次构建)。先复位子模块工作区到基线 (checkout 只动已跟踪文件, 再删补丁
     # 新增的未跟踪文件), 保证 apply 永远从干净基线出发——否则 sentinel 命中
     # 会把「树里是旧补丁」误判为「已应用」, 新补丁 hunks 静默丢失 (实测踩坑)。
-    git -C "$XSERVE_SRC" checkout -- hw/xwayland xkb/ddxLoad.c
+    # 复位清单必须覆盖补丁触碰的全部已跟踪文件 (dix/getevents.c 是 #93 诊断
+    # 探针新增的补丁文件; 漏列则二次构建 apply 撞上已应用 hunk 直接失败)
+    git -C "$XSERVE_SRC" checkout -- hw/xwayland xkb/ddxLoad.c dix/getevents.c
     rm -f "$XSERVE_SRC/hw/xwayland/xwayland_ohos_main.c"
     git -C "$XSERVE_SRC" apply --check "$XS_PATCH" \
         || err "xserver 补丁无法应用 (submodule 工作区与补丁基线不符)"

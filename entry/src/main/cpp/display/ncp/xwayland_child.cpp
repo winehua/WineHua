@@ -111,7 +111,11 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     std::string xdgDir = f.size() > 7 ? f[7] : "";
 
     // Xwayland stdout/stderr 落盘 (父侧下发的沙箱路径); Xwayland 自身日志走
-    // stderr, NCP 子进程默认不可见, 必须重定向才能排障
+    // stderr, NCP 子进程默认不可见, 必须重定向才能排障。
+    // 已知坑 (D29 实测 r20261007): 本文件可能落子进程私有 mount 视图, 宿主
+    // 侧 hdc file recv 读不到 (同型 xclient 日志可见而本文件不可见, 分裂原
+    // 因未查)。需要看 Xwayland stderr 时: 临时在 dup2 之后加 pipe→hilog 转
+    // 发线程 (D29 诊断用过, 已撤), 或扩 docs/debugging 观测面。
     if (f.size() > 5 && !f[5].empty())
     {
         int logFd = open(f[5].c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);

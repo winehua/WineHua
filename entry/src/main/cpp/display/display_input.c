@@ -408,16 +408,22 @@ void display_input_inject_button(uint32_t button, bool press)
         wl_display_flush_clients(g_display);
 }
 
-/* 轴注入 (D15 手势层): 双指滚动/物理滚轮 → wl_pointer.axis discrete。
- * which 0=纵向 1=横向 (WL_POINTER_AXIS_* 枚举同序), steps = ±N。wire 语义
- * 实读源码钉死: Xwayland 把 discrete 累成 v120 (xwayland-input.c:901,
- * scroll_dy_v120 = 120*discrete), dispatch_scroll_motion 折回 valuator
- * (v120/120 = discrete), DIX emulate_scroll_button_events (getevents.c)
- * 按增量符号出 Button4/5 —— 滚轴 increment=+1.0 (xwayland-input.c:218)
- * ⇒ discrete>0 → Button5 (滚轮向下, winex11 → WM_MOUSEWHEEL 负值)。
- * 与 wayland 分支「向上=正=向下滚」同号, 手势层可直接复用同一 accum
- * 符号约定。value 只喂平滑滚动路径 (winex11 不消费), 取 libinput 滚轮
- * 惯例 10/步。frame 必发, 同 button 注释 (D15)。 */
+/* 轴注入 (D15 手势层): 双指滚动/物理滚轮 → wl_pointer.axis。
+ * which 0=纵向 1=横向 (WL_POINTER_AXIS_* 枚举同序), steps = ±N 格。
+ * wire 语义按客户端协商版本分叉 (D29 实测, #93 根因): Xwayland 绑
+ * wl_seat v8 (xwayland-input.c:1966 seat_version=8) ⇒ wlroots 走
+ * axis_value120 (v8+) 分支, value_discrete 按 wire 协议必须已是
+ * 1/120 格单位 (1 格 = 120)——按格数直传会被 Xwayland 折成
+ * v120/120 ≈ 0.008 格, DIX 永远凑不满 1 格增量, Button4/5 不产生
+ * (r20261007-041520 探针实证: v120=-1 → emulate delta=-0.01
+ * num_events=0)。注: v5-v7 的 axis_discrete 分支才是「格数」语义
+ * (Xwayland 侧 120*discrete 折算), 不可混用。
+ * 折算链: axis_value120(±120N) → dispatch_scroll_motion valuator
+ * v120/120 = ±N → DIX emulate_scroll_button_events 按增量符号出
+ * Button4/5 (increment=+1.0) → wine X11DRV_ButtonPress → SendInput
+ * WHEEL。discrete>0 → Button5 (滚轮向下, winex11 → WM_MOUSEWHEEL 负
+ * 值)。与 wayland 分支「向上=正=向下滚」同号。value 只喂平滑滚动路
+ * 径 (winex11 不消费), 取 libinput 滚轮惯例 10/格。frame 必发 (D9)。 */
 void display_input_inject_axis(int which, int steps)
 {
     if (!g_seat)
@@ -435,7 +441,7 @@ void display_input_inject_axis(int which, int steps)
     wlr_seat_pointer_notify_axis(g_seat, NowMsec(),
                                  which == 1 ? WL_POINTER_AXIS_HORIZONTAL_SCROLL
                                             : WL_POINTER_AXIS_VERTICAL_SCROLL,
-                                 (double)steps * 10.0, steps,
+                                 (double)steps * 10.0, steps * 120,
                                  WL_POINTER_AXIS_SOURCE_WHEEL,
                                  WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     wlr_seat_pointer_notify_frame(g_seat);

@@ -38,6 +38,32 @@ index 9fff6445d..9f6488a25 100644
  xwayland_vars = [
      'have_glamor=' + build_glamor.to_string(),
      'have_glamor_api=' + build_glamor.to_string(),
+diff --git a/hw/xwayland/xwayland-window.c b/hw/xwayland/xwayland-window.c
+index 4a9a58a2f..b2917e271 100644
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -2079,6 +2079,21 @@ xwl_window_post_damage(struct xwl_window *xwl_window)
+ {
+     assert(!xwl_window->frame_callback);
+ 
++    {
++        /* OHOS (WineHua M3a-T7 诊断): 桌面窗 mirror 内容不落地排查 —
++         * 每次 post_damage 打窗口与 damage 范围, 走 stderr
++         * (xwayland_stderr.log)。定位后撤。 */
++        WindowPtr w = xwl_window->surface_window;
++        RegionPtr dmg = window_get_damage(w);
++        ErrorF("OHOS-damage: win 0x%lx %dx%d dmg=%d,%d %dx%d n=%d\n",
++               (unsigned long)w->drawable.id, w->drawable.width,
++               w->drawable.height,
++               RegionRects(dmg) ? RegionRects(dmg)->x1 : -1,
++               RegionRects(dmg) ? RegionRects(dmg)->y1 : -1,
++               RegionRects(dmg) ? (RegionRects(dmg)->x2 - RegionRects(dmg)->x1) : 0,
++               RegionRects(dmg) ? (RegionRects(dmg)->y2 - RegionRects(dmg)->y1) : 0,
++               RegionNumRects(dmg));
++    }
+     if (!xwl_window_attach_buffer(xwl_window))
+         return;
+ 
 diff --git a/hw/xwayland/xwayland_ohos_main.c b/hw/xwayland/xwayland_ohos_main.c
 new file mode 100644
 index 000000000..8d39749bc
@@ -102,27 +128,3 @@ index 18e0ec3be..94acf1869 100644
  #ifdef WIN32
      strcpy(tmpname, Win32TempDir());
      strcat(tmpname, "\\xkb_XXXXXX");
---- a/hw/xwayland/xwayland-window.c
-+++ b/hw/xwayland/xwayland-window.c
-@@ -2078,6 +2078,21 @@ xwl_window_post_damage(struct xwl_window *xwl_window)
- xwl_window_post_damage(struct xwl_window *xwl_window)
- {
-     assert(!xwl_window->frame_callback);
- 
-+    {
-+        /* OHOS (WineHua M3a-T7 诊断): 桌面窗 mirror 内容不落地排查 —
-+         * 每次 post_damage 打窗口与 damage 范围, 走 stderr
-+         * (xwayland_stderr.log)。定位后撤。 */
-+        WindowPtr w = xwl_window->surface_window;
-+        RegionPtr dmg = window_get_damage(w);
-+        ErrorF("OHOS-damage: win 0x%lx %dx%d dmg=%d,%d %dx%d n=%d\n",
-+               (unsigned long)w->drawable.id, w->drawable.width,
-+               w->drawable.height,
-+               RegionRects(dmg) ? RegionRects(dmg)->x1 : -1,
-+               RegionRects(dmg) ? RegionRects(dmg)->y1 : -1,
-+               RegionRects(dmg) ? (RegionRects(dmg)->x2 - RegionRects(dmg)->x1) : 0,
-+               RegionRects(dmg) ? (RegionRects(dmg)->y2 - RegionRects(dmg)->y1) : 0,
-+               RegionNumRects(dmg));
-+    }
-     if (!xwl_window_attach_buffer(xwl_window))
-         return;
