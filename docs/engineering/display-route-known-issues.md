@@ -124,7 +124,7 @@ CPU 全 idle 即不是自旋死锁，先别当代码 bug 查。
 surfaceless EGL 渲染**，只把 drawable 从 FBO 换成 **pbuffer**（有 display target
 才有真正的 present 语义——这正是 T3 实测「`WINEHUA_VTEST_FRONTBUFFER_LOG` 一次未
 写」的原因），swap 时发布 **X window id**（与 Vulkan 私有面同一把钥匙），宿主
-presenter 把该纹理 blit 进同窗 scene 节点。
+presenter 把该纹理 blit 进该窗的 scene 节点。
 
 - 判据（设备 .5，`smoke/jobs/displayroute-gl-baseline.json`）：
   RED 基线 `frames=3028 producerFps=447 displayFps=-1.0` + 程序侧
@@ -134,7 +134,14 @@ presenter 把该纹理 blit 进同窗 scene 节点。
   （见 §2.9）后才有值。
 - 宿主侧配套：`display_guest_frames` 的面发现从「只收 vulkan=1」改为两类都收
   （virgl 面走 `SurfaceQueueTarget`，与 wayland 路线同一个 present 目标），挂接
-  仍以「X 窗在册且已 associate」的锚判定把关。
+  以「X 窗在册且已 associate」的锚判定把关。虚拟桌面的应用窗是桌面顶层的
+  **X 子窗口**，锚定在 D23 补齐：xwm 维护子窗几何表
+  （`scripts/patches/wlroots-ohos-xwm-child-geometry.patch`，查询走
+  `wlr_xwayland_query_child_geometry`），`ohos_output` 顶层记录查不到时回退
+  子窗表（face 节点 + generation 防同 id 复用，周期 sweep 回收）。挂接目标
+  类型按面声明（`AttachZeroCopyTarget(..., vulkan)`），不再按全局 d3d 档位
+  猜——vkd3d 档位下 GL 面曾被错装 Venus target，每帧 present 收
+  kPresentInvalid（2026-10-06 实测 blit=-22）。
 - 行序：wlroots 消费**不带任何采样变换**，而 wayland 渲染器的采样变换是
   `flipY = vulkanSource`（`graphics/egl_renderer.cpp:329`）⇒ GL(virgl) 面要显式
   翻一次、Vulkan(venus) 面不翻。已在 `wl_ohos_output_client_frame_set` 按面类型

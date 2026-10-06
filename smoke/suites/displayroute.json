@@ -1,6 +1,6 @@
 {
   "name": "displayroute",
-  "title": "displayroute X 路线载体（用例随载荷收集；运行须经 displayroute job 编排触发，见 smoke/jobs/displayroute-notepad.json）。dx-notepad 是【载体用例】(judge=external)：跑真实内置记事本，它写不出 smoke 结果文件，设备端落 SKIP（无自报结论），行为判定在编排侧（注入脚本 + 人工/截屏证据）——它不构成门禁。X 路线真正的自动化门禁在 job 侧：displayroute-vulkan-present.json（私有 present 自报结果）与 displayroute-dxvk.json（dxvk 出图）。dx-glx-present 不入本套件：X 路线 GL 呈现链当前不存在（M2-T3 定位，见 docs/engineering/display-route-known-issues.md §2.4），它是对该栈的验收用例而非回归门槛——补栈落地后再入套件",
+  "title": "displayroute X 路线载体（用例随载荷收集；运行须经 displayroute job 编排触发，见 smoke/jobs/displayroute-notepad.json）。dx-notepad 是【载体用例】(judge=external)：跑真实内置记事本，它写不出 smoke 结果文件，设备端落 SKIP（无自报结论），行为判定在编排侧（注入脚本 + 人工/截屏证据）——它不构成门禁。X 路线真正的自动化门禁在 job 侧（均含 displayroute 编排 + x11 路线环境）：displayroute-vulkan-present.json（私有 present 自报结果）、displayroute-dxvk.json（dxvk 出图）与 displayroute-gl-baseline.json（GL 出图，rgba-quadrants-v1 判定器按区域裁剪）。dx-glx-present 不入本套件：GL 呈现链已落地（私有通道，2026-10-06 D23 真机 88fps 出图；GL 呈现缺位的历史定位见 docs/engineering/display-route-known-issues.md §2.4 已废），其验收走 gl-baseline job 而非本套件用例",
   "tests": [
     {
       "case": "dx-notepad",
