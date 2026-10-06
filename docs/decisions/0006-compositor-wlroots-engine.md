@@ -6,7 +6,9 @@
 
 ## 1. 决策
 
-自研 wayland compositor（`entry/src/main/cpp/compositor/` 约 1.1 万行协议与合成代码）**由 wlroots 直接替换**：wlroots 作为 wayland 服务端承接 winewayland.drv，ArkTS 窗口管理层保留，OHOS 呈现/输入胶水复用 x11 路线已建成的 `display/` 设施。验收标准 = **wine 的 wayland 体验尽可能完整**（逐条对照 winewayland.drv 的协议 bind 名单）。
+自研 wayland compositor（`entry/src/main/cpp/compositor/` 约 1.1 万行协议与合成代码）**由 wlroots 直接替换**：wlroots 作为 wayland 服务端承接 winewayland.drv，ArkTS 窗口管理层保留。验收标准 = **wine 的 wayland 体验尽可能完整**（逐条对照 winewayland.drv 的协议 bind 名单 + 真实 wine 程序行为）。
+
+**校准目标声明：本决策只对 wine 体验完整性负责，不以 x11 路线为校准目标。** x11 路线自身仍有未解问题（D23 guest GL 面挂接、§1.6 虚拟桌面不可用、§2.6 启动期同步基线异常等），它既不是本工作的参照系，也不是依赖项；winewayland.drv 是 wine 自己的现代原生驱动，把它服务正确本身就是终值，不需要借道 x11 的完成度。
 
 mutter 候选否决，weston 维持既有降级（见 §4）。
 
@@ -54,15 +56,16 @@ wine (winewayland.drv，基本不动；__OHOS__ 私有协议保留)
 ```
 
 - 平板虚拟桌面 = 单 output 全合成：wlr_scene 原生 GPU 合成，替换 `frame_pipeline.cpp` 885 行 CPU blit——compositor.md 已知五问题（叠放隐患/全屏黑边/resize 不刷新/直传半透明丢失等）全是 CPU blit 路径的病，模型上消除。
-- PC 多窗口 = 每 xdg_toplevel 一个 headless output ↔ 每窗画布（与 x11 阶段 C 同构；「wlroots+适配层 = 策略层，权威归我们」沿用 x11 spec §4.4）。
+- PC 多窗口 = 每 xdg_toplevel 一个 headless output ↔ 每窗画布（形态与 x11 阶段 C 相似，但按 wine 客户端语义独立设计，不继承 x11 的实现与问题清单）。
 - ZC 游戏旁路（GraphicsBroker → NativeWindow）在 wayland 协议之外，不受影响。
 - ArkTS 窗口管理层（22 种 toplevel 事件、WineWindowManager、任务栏）保留，事件源从自研 event bus 换成 wlr xdg_shell 事件转发。
+- **代码级复用与校准分离**：`display/` 的 OHOS 胶水（output/present/seat 桥）是同进程同仓库的复用候选，但其服务对象从 xwm 换成 xdg 客户端，复用必须逐段重新校验；display/ 自身的未解问题（D23 挂接类）**不随迁**——凡进本路线的代码按 wine 体验标准重新验收。
 
 **组件处置**：`compositor/` 9458 行 + `seat.cpp`/`input_manager.cpp`/`text_input.cpp`/`pointer_extras.cpp` 约 1800 行 → 退役；`egl_renderer` 每窗渲染 → ohos_output 呈现链顶替；ArkTS 层保留换事件源。
 
 ## 6. 风险
 
-1. 工作量 M0+M1 同量级（数周）：OHOS 胶水复用率高是最大成本优势，但 xdg 事件的窗口策略层（z-order/模态/popup→OHOS 窗映射）是真活。
+1. 工作量 M0+M1 同量级（数周）：`display/` 胶水可作复用起点（§5），但按「复用与校准分离」原则需逐段重验，xdg 事件的窗口策略层（z-order/模态/popup→OHOS 窗映射）是真活——成本估算不因复用而乐观。
 2. configure/serial 生命周期与自研即时应答不同，wine 的响应模式需实测调校——「体验完整」的主战场。
 3. 引擎替换**就地**进行（用户 2026-10-06 已裁决，见 §7.1）：同一 socket 路径，ArkTS 无感，不出现第三栈。
 4. pointer-warp 缺失仅影响个别绝对 warp 场景（可选 bind）；钉 0.21+ 回头补。
