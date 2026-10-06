@@ -34,11 +34,13 @@
 extern "C" void WineHua_DisplayRoute_Start();
 extern "C" void WineHua_DisplayRoute_Stop();
 extern "C" void WineHua_SetDisplayRoute(const char* route);
+extern "C" bool WineHua_DisplayRouteIsX11();
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
                                                       int out_w, int out_h,
                                                       bool canvas_egl_present);
 extern "C" void WineHua_DisplayRoute_Resize(int w, int h);
+extern "C" void wl_ohos_output_frame_size(int *w, int *h);
 extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
@@ -167,6 +169,32 @@ static napi_value InjectDisplayRouteButton(napi_env env, napi_callback_info info
     return ok;
 }
 
+/* displayRouteIsX11() — 进程内路线镜像 (wine_env.cpp 的唯一写点) 的读取口。
+ * smoke 注入编排按它分叉: x11 走 injectDisplayRoute* (归一化画布坐标),
+ * wayland 走 testNapi.sendPointerEvent (toplevel 像素坐标)。 */
+static napi_value DisplayRouteIsX11(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result;
+    napi_get_boolean(env, WineHua_DisplayRouteIsX11(), &result);
+    return result;
+}
+
+/* displayRouteFrameSize() — X 屏幕逻辑尺寸 (guest 桌面坐标系, 即 wine 桌面
+ * 坐标 = 该坐标系)。C 型注入编排把 guest 坐标换算成 injectDisplayRouteMotion
+ * 的 0..1 归一化坐标时作分母。链未起时返回 0x0, 调用方按失败处理。 */
+static napi_value DisplayRouteFrameSize(napi_env env, napi_callback_info info) {
+    (void)info;
+    int w = 0, h = 0;
+    wl_ohos_output_frame_size(&w, &h);
+    napi_value result, nw, nh;
+    napi_create_object(env, &result);
+    napi_create_int32(env, w, &nw);
+    napi_create_int32(env, h, &nh);
+    napi_set_named_property(env, result, "w", nw);
+    napi_set_named_property(env, result, "h", nh);
+    return result;
+}
+
 /* injectDisplayRouteAxis(which, steps) — D15 手势层: 滚轮注入。which
  * 0=纵向 1=横向; steps=±N discrete 步, 方向判据见 display_input.c
  * (discrete>0 → 滚轮向下, 与 wayland 分支「向上=正」同号)。 */
@@ -213,6 +241,8 @@ static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
         {"startDisplayRouteChain", nullptr, StartDisplayRouteChain, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopDisplayRouteChain", nullptr, StopDisplayRouteChain, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRoute", nullptr, SetDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"displayRouteIsX11", nullptr, DisplayRouteIsX11, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"displayRouteFrameSize", nullptr, DisplayRouteFrameSize, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resizeDisplayRouteOutput", nullptr, ResizeDisplayRouteOutput, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteKey", nullptr, InjectDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteMotion", nullptr, InjectDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},

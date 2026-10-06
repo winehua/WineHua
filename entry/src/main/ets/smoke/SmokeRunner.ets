@@ -18,6 +18,13 @@ interface PointMap {
   py: number;
 }
 
+// displayRouteFrameSize 返回（X 屏幕逻辑尺寸 = guest 桌面坐标系，
+// 与 libdisplay_route_napi.so 的 d.ts 对应）
+interface FrameSize {
+  w: number;
+  h: number;
+}
+
 const DOMAIN = 0x0000;
 const TAG = 'SMOKE';
 
@@ -535,8 +542,9 @@ export class SmokeRunner {
     }
     if (action.type === 'key') {
       // 裸键动作（evdev 码，如 KEY_ENTER=28），发给焦点 toplevel
-      if (!this.lastInjectTl) return 'key action without a prior mouse action';
       if (action.code === undefined) return 'key action missing code';
+      if (this.x11Frame()) return this.x11Key(action.code);
+      if (!this.lastInjectTl) return 'key action without a prior mouse action';
       testNapi.sendKeyEvent(this.lastInjectTl, action.code, true);
       await new Promise<void>((r) => setTimeout(r, 30));
       testNapi.sendKeyEvent(this.lastInjectTl, action.code, false);
@@ -552,6 +560,8 @@ export class SmokeRunner {
     if (action.x === undefined || action.y === undefined ||
         action.dx === undefined || action.dy === undefined)
       return 'swipe action missing x/y/dx/dy';
+    const x11f = this.x11Frame();
+    if (x11f) return this.x11Swipe(action, x11f);
     const steps: number = action.steps && action.steps > 0 ? action.steps : 10;
     const holdBtn: boolean = action.button === 'left' || action.button === 'right';
     const mapped0 = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
@@ -589,6 +599,8 @@ export class SmokeRunner {
   // winewayland 对 VERTICAL axis 取负（wayland 正 = 内容下滚），故注入时取反。
   private async injectWheel(action: InjectAction): Promise<string> {
     if (action.x === undefined || action.y === undefined) return 'wheel action missing x/y';
+    const x11f = this.x11Frame();
+    if (x11f) return this.x11Wheel(action, x11f);
     const notches: number = action.notches ? action.notches : 3;
     const absN: number = Math.abs(notches);
     const sign: number = notches > 0 ? -1 : 1;
@@ -604,10 +616,98 @@ export class SmokeRunner {
     return '';
   }
 
+  // ── x11 注入分支 (D28): C 型注入按路线分叉。wayland 走 sendPointerEvent/
+  // sendKeyEvent (toplevel 像素坐标, 上方各 inject*); x11 走 displayRouteNapi
+  // 控制面注入 (帧归一化坐标, 桥内 topmost_at 命中 → 窗口局部坐标; 虚拟桌面
+  // 里命中桌面顶层窗后由 wine 自行路由子窗事件)。x11 无 toplevel 语义,
+  // lastInjectTl 不参与——键盘焦点由先行 mouse 动作的 motion enter 建立
+  // (display_input.c 悬停即激活 FocusClient), 故 type/key 仍要求 mouse 先行。
+
+  // x11 帧尺寸 (guest 桌面坐标系) + 路线判定; 链未起或非 x11 返回 null。
+  // 尺寸不缓存: D10 旋转会改帧几何, 缓存会注入到过期坐标系。
+  private x11Frame(): FrameSize | null {
+    if (!displayRouteNapi.displayRouteIsX11()) {
+      return null;
+    }
+    const size = displayRouteNapi.displayRouteFrameSize() as FrameSize;
+    if (!size || size.w <= 0 || size.h <= 0) {
+      return null;
+    }
+    return size;
+  }
+
+  private async x11Mouse(action: InjectAction, f: FrameSize): Promise<string> {
+    const nx: number = action.x! / f.w;
+    const ny: number = action.y! / f.h;
+    const btn: number = mapMouseButton(action.button === 'right' ? 2 : 1);
+    // enter 建立指针/键盘焦点 (悬停即激活), motion 定位到注入点
+    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 0);
+    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
+    const presses: number = action.type === 'doubleClick' ? 2 : 1;
+    for (let i = 0; i < presses; i++) {
+      if (i > 0) await new Promise<void>((r) => setTimeout(r, 120));
+      displayRouteNapi.injectDisplayRouteButton(btn, true);
+      await new Promise<void>((r) => setTimeout(r, 40));
+      displayRouteNapi.injectDisplayRouteButton(btn, false);
+    }
+    return '';
+  }
+
+  private async x11Swipe(action: InjectAction, f: FrameSize): Promise<string> {
+    const steps: number = action.steps && action.steps > 0 ? action.steps : 10;
+    const holdBtn: boolean = action.button === 'left' || action.button === 'right';
+    const btn: number = mapMouseButton(action.button === 'right' ? 2 : 1);
+    const stepDx: number = action.dx! / steps;
+    const stepDy: number = action.dy! / steps;
+    displayRouteNapi.injectDisplayRouteMotion(action.x! / f.w, action.y! / f.h, 0);
+    displayRouteNapi.injectDisplayRouteMotion(action.x! / f.w, action.y! / f.h, 1);
+    if (holdBtn) {
+      displayRouteNapi.injectDisplayRouteButton(btn, true);
+      await new Promise<void>((r) => setTimeout(r, 60));
+    }
+    for (let i = 0; i < steps; i++) {
+      displayRouteNapi.injectDisplayRouteMotion(
+        (action.x! + stepDx * (i + 1)) / f.w, (action.y! + stepDy * (i + 1)) / f.h, 1);
+      await new Promise<void>((r) => setTimeout(r, 20));
+    }
+    if (holdBtn) {
+      await new Promise<void>((r) => setTimeout(r, 40));
+      displayRouteNapi.injectDisplayRouteButton(btn, false);
+    }
+    return '';
+  }
+
+  private async x11Wheel(action: InjectAction, f: FrameSize): Promise<string> {
+    const notches: number = action.notches ? action.notches : 3;
+    const absN: number = Math.abs(notches);
+    // 与 wayland 分支同号公式: guest 正 notches (向前滚) → 负 discrete
+    // (display_input.c discrete>0 = 滚轮向下)
+    const sign: number = notches > 0 ? -1 : 1;
+    const nx: number = action.x! / f.w;
+    const ny: number = action.y! / f.h;
+    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 0);
+    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
+    for (let i = 0; i < absN; i++) {
+      displayRouteNapi.injectDisplayRouteAxis(0, sign);
+      await new Promise<void>((r) => setTimeout(r, 60));
+    }
+    return '';
+  }
+
+  private async x11Key(code: number): Promise<string> {
+    displayRouteNapi.injectDisplayRouteKey(code, true);
+    await new Promise<void>((r) => setTimeout(r, 30));
+    displayRouteNapi.injectDisplayRouteKey(code, false);
+    return '';
+  }
+
   // ASCII 子集展开为 evdev 键序: a-z / A-Z(shift) / 0-9。
   // KEY_1=2..KEY_0=11, KEY_A=30..KEY_Z=44 (Linux include/uapi/input-event-codes.h)
   private async injectTyping(text: string): Promise<string> {
-    if (!this.lastInjectTl) return 'type action without a prior mouse action (no focus target)';
+    const x11f = this.x11Frame();
+    if (!x11f && !this.lastInjectTl) {
+      return 'type action without a prior mouse action (no focus target)';
+    }
     for (let i = 0; i < text.length; i++) {
       const ch: string = text.charAt(i);
       const code: number = ch >= 'a' && ch <= 'z' ? 30 + (ch.charCodeAt(0) - 97) :
@@ -616,6 +716,17 @@ export class SmokeRunner {
         ch === '0' ? 11 : ch === '.' ? 52 : ch === '_' ? 12 : -1;
       if (code < 0) return `unsupported char '${ch}' (ascii subset only)`;
       const needShift: boolean = ch >= 'A' && ch <= 'Z' || ch === '_';
+      if (x11f) {
+        if (needShift) {
+          displayRouteNapi.injectDisplayRouteKey(42, true);  // KEY_LEFTSHIFT
+        }
+        await this.x11Key(code);
+        if (needShift) {
+          displayRouteNapi.injectDisplayRouteKey(42, false);
+        }
+        await new Promise<void>((r) => setTimeout(r, 30));
+        continue;
+      }
       const tl: number = this.lastInjectTl;
       if (needShift) testNapi.sendKeyEvent(tl, 42, true);  // KEY_LEFTSHIFT
       testNapi.sendKeyEvent(tl, code, true);
@@ -629,6 +740,8 @@ export class SmokeRunner {
 
   private async injectMouse(action: InjectAction): Promise<string> {
     if (action.x === undefined || action.y === undefined) return 'mouse action missing x/y';
+    const x11f = this.x11Frame();
+    if (x11f) return this.x11Mouse(action, x11f);
     const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
     if (!mapped) return 'smokeMapPoint failed (renderer/letterbox not ready)';
     const px: number = mapped.px;

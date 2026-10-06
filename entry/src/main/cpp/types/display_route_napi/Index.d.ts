@@ -19,13 +19,23 @@ export const stopDisplayRouteChain: () => boolean;
 /** 路线选择 ("fusion"/"x11")。 */
 export const setDisplayRoute: (route: string) => boolean;
 
+/** 进程内路线镜像读取口 (wine_env.cpp 唯一写点): true = x11 路线。
+ *  smoke 注入编排按它分叉注入通道。 */
+export const displayRouteIsX11: () => boolean;
+
+/** X 屏幕逻辑尺寸 (guest 桌面坐标系; 链未起时 0x0)。
+ *  guest 桌面坐标 → injectDisplayRouteMotion 归一化坐标的换算分母。 */
+export const displayRouteFrameSize: () => { w: number, h: number };
+
 /** 画布尺寸动态响应 (折叠/旋转后 onSurfaceChanged 的逻辑尺寸)。 */
 export const resizeDisplayRouteOutput: (w: number, h: number) => boolean;
 
 /** evdev 键码注入 (KEY_A=30)。 */
 export const injectDisplayRouteKey: (keycode: number, press: boolean) => boolean;
 
-/** 指针注入。nx/ny = client surface 相对坐标 0..1; phase: 0=enter 1=motion 2=leave。 */
+/** 指针注入。nx/ny = 帧归一化坐标 0..1 (X 屏幕逻辑尺寸即 guest 桌面坐标系,
+ *  桥内换算: 帧 px → topmost_at 命中 → 窗口局部坐标; 虚拟桌面里命中桌面
+ *  顶层窗后由 wine 自行路由子窗)。phase: 0=enter 1=motion 2=leave。 */
 export const injectDisplayRouteMotion: (nx: number, ny: number, phase: number) => boolean;
 
 /** 按钮注入 (BTN_LEFT 0x110 / BTN_RIGHT 0x111 / BTN_MIDDLE 0x112)。 */
