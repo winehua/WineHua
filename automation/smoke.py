@@ -149,8 +149,15 @@ def inline_test_entries(job: dict) -> dict:
         exe = entry.get("exe", "")
         arch, _, bare = exe.replace("\\", "/").rpartition("/")
         case = Case(id=test_id, exe=bare or exe, arch=[], checks=checks)
+        # params 与套件条目同款展开 (load_suite: 除 case/id/testId/arch 外全进
+        # params) —— 此前只带 env, inline 条目的 backend 被静默丢弃, 用例落回
+        # 设备当前档位 (硬约束 3 的失效模式; 实测 dxvk-cube inline 跑落
+        # vkd3d_limited_500k, 设备端按档位不符判 FAIL, r20261007-011201)。
+        params = {k: v for k, v in entry.items()
+                  if k not in ("testId", "exe", "arch", "checks", "env")}
+        params["env"] = entry.get("env") or {}
         entries[test_id] = TestEntry(test_id=test_id, case=case, arch=arch,
-                                     params={"env": entry.get("env") or {}})
+                                     params=params)
     return entries
 
 

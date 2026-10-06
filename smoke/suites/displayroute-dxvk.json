@@ -1,0 +1,19 @@
+{
+  "name": "displayroute-dxvk",
+  "title": "X 路线 dxvk 出图门禁（displayroute 编排专用套件）。不声明 coverage：dxvk.json 的矩阵用例 dxvk-legacy (d3d11-smoke) 在 x11 路线是 §2.5 在案失败（E_INVALIDARG，实测拖死整个 suite 15 分钟超时，r20261007-003719），按 §2.5 裁定不进 x11 判据；其修复回归用 `--suite dxvk`（wayland 基线，coverage 照常）。本套件只带出图门禁用例（d3d-switch-cube，dxvk_legacy 档隐含 dxvk 1.10.3，判定器 d3d11-cube-color-depth-v1）",
+  "checks": [],
+  "tests": [
+    {
+      "case": "d3d-switch-cube",
+      "id": "displayroute-dxvk-cube",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

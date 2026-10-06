@@ -1,7 +1,6 @@
 {
   "displayroute": true,
-  "suite": "dxvk",
-  "tests": ["dxvk-legacy-x64", "dxvk-cube-x64"],
+  "suite": "displayroute-dxvk",
   "params": {
     "env": {
       "WINEHUA_DISPLAY_ROUTE": "x11",
