@@ -1,9 +1,11 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 import smokeNapi from 'libsmoke_napi.so';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { inputMethod } from '@kit.IMEKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DisplayRouteService } from '../service/DisplayRouteService';
-import { OH2EVDEV } from '../common/KeyMap';
+import { OH2EVDEV, charToEvdev, EVDEV_KEY_ENTER, EVDEV_KEY_BACKSPACE, EVDEV_KEY_LEFTSHIFT } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 
 const DOMAIN = 0x0000;
@@ -150,6 +152,114 @@ struct DesktopPage {
   private mouseLeftActive: boolean = false;
   // hover 移动抽样日志计数
   private hoverLogCounter: number = 0;
+
+  // ── D13 x11 软键盘桥 (2026-10-06 用户批准设计) ──
+  // winex11 没有文本框焦点通知 (X11 是裸窗口, 不存在 wayland 的 text-input
+  // 协议), 触发改手动: 按钮 attach/detach 软键盘。文本出口与 wayland 不同:
+  // sendImeCommit 走 wayland commit_string 协议路径, x11 侧把字符折成
+  // evdev 键事件过注入桥 (smokeDisplayRouteKey), 由 Xwayland 按物理键同款
+  // 路径派发。attach/off()/on() 纪律照抄 Index.ets 的 wayland 桥 (同款坑
+  // 已踩平: on() 重复注册累积回调 → 重复注入; 回车走 sendFunctionKey 不发
+  // insertText('\n'); 系统吞 KeyDown 只派 KeyUp → 手动补发完整 down+up)。
+  // 窗口为 layout-fullscreen (DesktopAbility), 软键盘覆盖不压缩画布,
+  // surface 尺寸不变 → 不触发 resize 链。
+  @State imeOn: boolean = false;
+  private imeController: inputMethod.InputMethodController | null = null;
+
+  private imeX11Key(code: number, down: boolean): void {
+    try { smokeNapi.smokeDisplayRouteKey(code, down); } catch (_) {}
+  }
+
+  private imeX11TypeChar(ch: string): void {
+    const key = charToEvdev(ch);
+    if (!key) {
+      // CJK 等未映射字符: Latin 先行范围外, 丢弃留痕 (中文输入走预编辑
+      // 层, 需独立设计, 见任务 D13 备注)
+      hilog.warn(DOMAIN, 'IME-X11', '[char] unsupported "%{public}s" dropped', ch);
+      return;
+    }
+    if (key.shift) this.imeX11Key(EVDEV_KEY_LEFTSHIFT, true);
+    this.imeX11Key(key.code, true);
+    this.imeX11Key(key.code, false);
+    if (key.shift) this.imeX11Key(EVDEV_KEY_LEFTSHIFT, false);
+  }
+
+  private imeAttach(): void {
+    hilog.info(DOMAIN, 'IME-X11', '[attach] begin');
+    try {
+      const controller = inputMethod.getController();
+      this.imeController = controller;
+      // 与 Index.ets 同坑: attach 前先清回调, 否则重复注册累积 → 一次
+      // 输入多次注入
+      controller.off('insertText');
+      controller.off('deleteLeft');
+      controller.off('deleteRight');
+      controller.off('sendFunctionKey');
+      const attr: inputMethod.InputAttribute = {
+        textInputType: inputMethod.TextInputType.TEXT,
+        enterKeyType: inputMethod.EnterKeyType.NEWLINE
+      };
+      const cfg: inputMethod.TextConfig = { inputAttribute: attr };
+      controller.attach(true, cfg).then(() => {
+        hilog.info(DOMAIN, 'IME-X11', '[attach] OK');
+        controller.on('insertText', (text: string) => {
+          hilog.info(DOMAIN, 'IME-X11', '[insertText] "%{public}s"', text);
+          for (let i = 0; i < text.length; i++) {
+            this.imeX11TypeChar(text.charAt(i));
+          }
+        });
+        controller.on('deleteLeft', (len: number) => {
+          hilog.info(DOMAIN, 'IME-X11', '[deleteLeft] len=%{public}d', len);
+          this.imeX11Key(EVDEV_KEY_BACKSPACE, true);
+          this.imeX11Key(EVDEV_KEY_BACKSPACE, false);
+        });
+        controller.on('deleteRight', (len: number) => {
+          // Latin 先行无前向删除需求, 与退格同款兜底
+          hilog.info(DOMAIN, 'IME-X11', '[deleteRight] len=%{public}d', len);
+          this.imeX11Key(EVDEV_KEY_BACKSPACE, true);
+          this.imeX11Key(EVDEV_KEY_BACKSPACE, false);
+        });
+        // 回车: IME 不发 insertText('\n') (wayland 桥实测), 走功能键;
+        // 系统吞 KeyDown 只派 KeyUp → 这里补发完整 down+up
+        controller.on('sendFunctionKey', (_fk: inputMethod.FunctionKey) => {
+          this.imeX11Key(EVDEV_KEY_ENTER, true);
+          this.imeX11Key(EVDEV_KEY_ENTER, false);
+        });
+      }).catch((err: BusinessError) => {
+        hilog.error(DOMAIN, 'IME-X11', '[attach] FAILED code=%{public}d msg=%{public}s', err.code, err.message);
+        this.imeOn = false;
+      });
+    } catch (e) {
+      hilog.error(DOMAIN, 'IME-X11', '[attach] EXCEPTION: %{public}s', JSON.stringify(e));
+      this.imeOn = false;
+    }
+  }
+
+  private imeDetach(): void {
+    const c = this.imeController;
+    if (!c) return;
+    try {
+      c.off('insertText');
+      c.off('deleteLeft');
+      c.off('deleteRight');
+      c.off('sendFunctionKey');
+      c.hideTextInput();
+      c.detach();
+    } catch (e) {
+      hilog.error(DOMAIN, 'IME-X11', '[detach] EXCEPTION: %{public}s', JSON.stringify(e));
+    }
+    this.imeController = null;
+  }
+
+  private imeToggle(): void {
+    this.imeOn = !this.imeOn;
+    hilog.info(DOMAIN, 'IME-X11', '[toggle] → %{public}s', this.imeOn ? 'ON' : 'OFF');
+    if (this.imeOn) {
+      this.imeAttach();
+    } else {
+      this.imeDetach();
+    }
+  }
 
   // evdev 按钮码 (linux/input-event-codes.h) —— x11 直连注入用。ArkTS
   // MouseButton 枚举: Left=0 Right=1 Middle=2。
@@ -567,6 +677,13 @@ struct DesktopPage {
         if (vert !== 0) testNapi.sendScrollEvent(tl, 0, vert, step, wpx, wpy);
         if (horiz !== 0) testNapi.sendScrollEvent(tl, 1, horiz, step, wpx, wpy);
       })
+      // ── D13 软键盘切换 (x11): winex11 无文本焦点通知, 手动开关。挂
+      // Stack 顶层右上角; 键盘弹起时覆盖下半屏 (layout-fullscreen 不压缩
+      // 画布), 被遮区域的触摸由系统层拦截, 坐标管线无感。
+      Button(this.imeOn ? '收起键盘' : '键盘')
+        .onClick(() => { this.imeToggle(); })
+        .position({ x: '86%', y: 8 })
+        .height(36)
     }
     .width('100%').height('100%').backgroundColor('#000')
   }

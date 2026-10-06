@@ -146,3 +146,48 @@ export const MODIFIER_CODES: number[] = [
 // evdev 键码常量 (Linux input-event-codes.h)。注入路径 (sendKeyEvent) 直接用,
 // 避免各处散落裸数字。命名对齐 Linux 头文件 KEY_*。
 export const EVDEV_KEY_ENTER: number = 28;       // KEY_ENTER
+export const EVDEV_KEY_BACKSPACE: number = 14;   // KEY_BACKSPACE
+export const EVDEV_KEY_LEFTSHIFT: number = 42;   // KEY_LEFTSHIFT
+
+// ── ASCII 字符 → evdev (D13 x11 软键盘桥) ──
+// IME insertText 给的是字符不是键码; x11 路线没有 wayland 的 commit_string
+// 通道, 文本必须折成键事件过注入桥。大写由调用方先发 KEY_LEFTSHIFT。
+// 字母行按 QWERTY 物理排布 (KEY_A=30 起), 不按字母序 —— 照抄
+// linux/input-event-codes.h, 勿"修正"成连续值。
+const EVDEV_LETTERS: Record<string, number> = {
+  'a': 30, 'b': 48, 'c': 46, 'd': 32, 'e': 18, 'f': 33, 'g': 34, 'h': 35,
+  'i': 23, 'j': 36, 'k': 37, 'l': 38, 'm': 50, 'n': 49, 'o': 24, 'p': 25,
+  'q': 16, 'r': 19, 's': 31, 't': 20, 'u': 22, 'v': 47, 'w': 17, 'x': 45,
+  'y': 21, 'z': 44,
+};
+
+// 非字母可打印 ASCII (Latin 先行范围)。CJK 字符不在表内, 调用方按未支持
+// 丢弃 (中文输入走预编辑层, 另立设计任务)。
+const EVDEV_SYMBOLS: Record<string, number> = {
+  ' ': 57, '\n': 28, '\r': 28, '\t': 15,
+  '1': 2, '2': 3, '3': 4, '4': 5, '5': 6, '6': 7, '7': 8, '8': 9, '9': 10, '0': 11,
+  '-': 12, '=': 13, ',': 51, '.': 52, '/': 53, ';': 39, "'": 40,
+  '[': 26, ']': 27, '\\': 43, '`': 41,
+};
+
+export interface CharKey {
+  code: number;
+  shift: boolean;
+}
+
+// 字符 → evdev 键码 + 是否需 shift。未映射字符 (CJK 等) 返回 null。
+export function charToEvdev(ch: string): CharKey | null {
+  const lower = EVDEV_LETTERS[ch];
+  if (lower !== undefined) {
+    return { code: lower, shift: false };
+  }
+  const upper = EVDEV_LETTERS[ch.toLowerCase()];
+  if (upper !== undefined) {
+    return { code: upper, shift: true };
+  }
+  const sym = EVDEV_SYMBOLS[ch];
+  if (sym !== undefined) {
+    return { code: sym, shift: false };
+  }
+  return null;
+}
