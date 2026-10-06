@@ -1,6 +1,7 @@
 import { SmokeRunner } from './SmokeRunner';
-import { WineEnvService } from '../service/WineEnvService';
+import { WineEnvService, writeTextFile } from '../service/WineEnvService';
 import displayRouteNapi from 'libdisplay_route_napi.so';
+import { componentUtils } from '@kit.ArkUI';
 
 // 侧边栏「开发测试」区 (Index 唯一的 smoke 侵入行: <SmokeDevPanel />)。
 // 使能与进度全部内部镜像, Index 零状态零逻辑。合并 main-ui 摘除 =
@@ -20,7 +21,31 @@ export struct SmokeDevPanel {
     this.smokeStatus = runner.statusText();
     this.smokeResult = runner.resultText();
     this.canRun = !envSvc.isBusy() && envSvc.prefixReady && !runner.isRunning();
+    if (runner.isRunning()) {
+      this.writePreviewRect();
+    }
   };
+
+  // D22 §2.4 判据债的设备端数据落盘: 把预览 XComponent 的 on-screen 物理
+  // 矩形写成 files 根下的标记文件 (smoke.py 按 DISPLAYROUTE_MARKERS 归档进
+  // device-results/)。设备端只产数据, 裁剪与四象限判定都在主机侧 —— 判定
+  // 只读归档。运行期间每次刷新都重写 (布局随窗口状态变化的场景留新值);
+  // 组件未挂载时静默跳过, 归档缺文件 = 判定器诚实 SKIP。
+  private writePreviewRect(): void {
+    try {
+      const info: componentUtils.ComponentInfo =
+        this.getUIContext().getComponentUtils().getRectangleById('displayroute-test');
+      const payload = JSON.stringify({
+        x: Math.round(info.screenOffset.x), y: Math.round(info.screenOffset.y),
+        width: Math.round(info.size.width), height: Math.round(info.size.height),
+        surfaceId: this.drSurfaceId,
+      });
+      writeTextFile(`${getContext(this).filesDir}/displayroute-preview-rect.json`,
+        payload);
+    } catch (_) {
+      // 组件未挂载/未布局: 不写文件, 判定侧按矩形缺失走 SKIP
+    }
+  }
 
   aboutToAppear(): void {
     SmokeRunner.getInstance().subscribe(this.onRefresh);

@@ -25,6 +25,7 @@ checks 声明（test.json / suite 定义）:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from . import coverage as _coverage
@@ -65,22 +66,46 @@ def result_json(ctx: dict) -> dict:
     }
 
 
+def _load_preview_rect(run_dir) -> dict | None:
+    """读归档的预览框物理矩形（D22 §2.4 判据债的设备端数据落盘）。
+
+    SmokeDevPanel 在 smoke 运行期间把 displayroute 预览 XComponent 的
+    on-screen 矩形写成 device-results/displayroute-preview-rect.json ——
+    设备端只产数据，裁剪与判定都在主机侧。文件缺失/损坏 = None（老归档
+    无此文件，保持 SKIP 语义，不装作能判）。"""
+    if not run_dir:
+        return None
+    path = Path(run_dir) / "device-results" / "displayroute-preview-rect.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(errors="replace"))
+        rect = {"x": int(data["x"]), "y": int(data["y"]),
+                "width": int(data["width"]), "height": int(data["height"])}
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+    if rect["width"] <= 0 or rect["height"] <= 0:
+        return None
+    return rect
+
+
 def visual(ctx: dict) -> dict:
     """对采集到的固定帧跑视觉校验。多帧任一通过即通过 —— 立方体/场景随
     动画相位波动（旋转角度不同颜色桶分布不同），单帧相位判不过，采集侧按序
     多截、判定取最好的一帧。
 
-    X 路线 SKIP（判据债，证据在 docs/engineering/display-route-known-issues.md
-    §2.4）：displayroute 的出图面是侧栏里的**预览小框**（SmokeDevPanel 的
-    XComponent，4:3、约 500×390 物理像素），而本判定器对**整屏截图**做四象限
-    ⇒ 在该场景结构性失效（2026-10-01 实测：X 路线 GL 用例 4 帧全 FAIL，而
-    帧内容与 [GUEST-FRAMES] 统计都证明出图正常）。SKIP 是诚实答案：这一格
-    没验，不是验过了 —— 出图与否由 presented-route 与宿主显示序列门裁定。
-    按区域裁剪的判定器未做（做了才能把这一格从 SKIP 变回 PASS/FAIL）。"""
+    X 路线（§2.4，D22 已还债）：displayroute 的出图面是侧栏里的**预览小框**
+    （SmokeDevPanel 的 XComponent），整屏四象限对该场景结构性失效。现按归档
+    的预览框矩形（displayroute-preview-rect.json）先裁剪再判定，X 路线同
+    样出 PASS/FAIL；矩形未归档（老归档 / 面板未挂载）保持 SKIP —— SKIP 是
+    诚实答案：这一格没验，不是验过了。"""
     result = ctx.get("result") or {}
+    region = None
     if ((result.get("metrics") or {}).get("expectedRoute")) == "x11":
-        return {"status": "SKIP", "stage": "visual:x11-preview-pane",
-                "message": "X 路线出图面在侧栏预览框，整屏四象限判定不适用（§2.4 判据债）"}
+        region = _load_preview_rect(ctx.get("run_dir"))
+        if region is None:
+            return {"status": "SKIP", "stage": "visual:x11-preview-pane",
+                    "message": "X 路线预览框矩形未归档，无法做区域四象限判定（§2.4）"}
     paths = ctx.get("frames") or []
     if not paths:
         # 固定帧只在 duration_ms >= 2500 且进入末 2 秒时渲染；结果里没有
@@ -92,7 +117,7 @@ def visual(ctx: dict) -> dict:
                 "message": f"未采集到固定帧截图（截图时机错过或测试未渲染）{detail}"}
     reports = []
     for path in paths:
-        report = frame.validate(ctx["validator"], path)
+        report = frame.validate(ctx["validator"], path, region=region)
         reports.append(report)
         if report["status"] == "PASS":
             return {

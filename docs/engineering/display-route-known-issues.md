@@ -30,8 +30,8 @@ xclient_child 窗口摆位耦合）、`SmokeDevPanel.ets`（4:3 aspectRatio）�
 
 **触发条件（到点必做，不是"有空再说"）**：PC 模式 / 多 output / 要按真机
 分辨率出图时。**今天实测的代价面**：真机 3120×2080，我们只在 800×600 画布上
-合成再放大进侧栏预览框 ⇒ 分辨率损失 + 与 `visual:rgba-quadrants`（整屏截图判定）
-的比例/位置错配（§2.4 残留判据债）。**与阶段 C（每窗直进系统窗）同批做**——
+合成再放大进侧栏预览框 ⇒ 分辨率损失（判定侧的比例错配已由 D22 区域裁剪
+判定器消解，见 §2.4）。**与阶段 C（每窗直进系统窗）同批做**——
 那一批会让"输出尺寸"这个概念本身变成每窗尺寸。
 
 ### 1.5 单槽 pending key + 孤儿 release（与 §2.1 绑定排查，不单独修）
@@ -172,11 +172,14 @@ libGL 加载失败返回 `STATUS_NOT_SUPPORTED`(0xC00000BB) 并附 ERR 行——
 → XComponent 这一段一直是好的**（注入测试窗正常出图并动），缺口只在 GL 客户端
 出图这一跳。
 
-**残留判据债**：`visual:rgba-quadrants` 对**全屏截图**做四象限，而 displayroute
-的出图面是侧栏里的**预览小框**（`SmokeDevPanel` 的 XComponent，4:3、约 500×390
-物理像素）⇒ 该判定器在本场景失效（`opengl-x64` 跑 X 路线时它没有下判定；出图
-与否目前由**宿主显示序列门**（§2.9）与人工目视兜底）。按区域裁剪的视觉判定器
-未做。
+**~~残留判据债~~（D22 已还，2026-10-06）**：`visual:rgba-quadrants` 原对**全屏
+截图**做四象限，而 displayroute 的出图面是侧栏里的**预览小框**（`SmokeDevPanel`
+的 XComponent，4:3、约 500×390 物理像素）⇒ 该判定器在本场景结构性失效，X 路线
+只能 SKIP。现按区域裁剪判定：`SmokeDevPanel` 在 smoke 运行期间把预览框 on-screen
+物理矩形写成 `displayroute-preview-rect.json`（files 根，随 `DISPLAYROUTE_MARKERS`
+归档进 device-results/ —— 设备端只产数据），判定器读归档矩形先裁剪再四象限，
+X 路线同样出 PASS/FAIL。矩形未归档（老归档 / 面板未挂载）保持 SKIP 语义。
+宿主显示序列门（§2.9）继续并行把关「帧是否还在推进」。
 
 ### 2.5 dxvk 套件的 `dxvk-legacy`（d3d11-smoke）既有失败（M2-T6 期间实锤）
 
@@ -543,7 +546,8 @@ GL 通了。**判 X 路线必须同时看 `[GUEST-FRAMES] attach`/`stats binding
 ⑥**presented-route 的 x11 归属**改用宿主两侧事实对账：`presentedKey>>32` 与
 设备端 `tests[].pid`（运行器记录的 spawn pid）。验收：`r20261001-013542`
 `路线一致 (x11) 且归属本进程 (pid=18425)`。
-⑦**visual 对 X 路线 SKIP** 并写明原因（§2.4 判据债；不 SKIP 会变假红）。
+⑦**visual 对 X 路线 SKIP** 并写明原因（§2.4；D22 后按归档矩形裁剪判定，矩形
+缺失才 SKIP）。
 ⑧**F5 归档污染**：归档目录非空即拒绝复用；`poll_run` 按 runId 认领 summary。
 ⑨**F6 判定新鲜度**：guest 新增 `displayStallMs`（显示序列最后一次推进距结束），
 判定阈值 2500ms。**踩坑记录**：固定帧阶段（最后 2s）原 `continue` 跳过了 fps

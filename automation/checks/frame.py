@@ -6,27 +6,43 @@ import math
 from pathlib import Path
 
 
-def _load_sampled_rgb(path: Path, step: int = 4):
+def _load_sampled_rgb(path: Path, step: int = 4, region: dict | None = None):
     """返回 (采样像素, 坐标网格, 宽, 高)；网格带原始像素坐标，使质心/边界
-    与历史 System.Drawing 实现一致。"""
+    与历史 System.Drawing 实现一致。
+
+    region (D22 §2.4 判据债): 出图面不是全屏时按 {"x","y","width","height"}
+    (物理像素, 与 snapshot_display 全屏截图同坐标系) 先裁剪再分析 —— 裁剪后
+    的宽高即后续判定器的相对阈值基准。"""
     import numpy as np
     from PIL import Image
 
     with Image.open(path) as image:
         rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
         width, height = image.size
+    if region is not None:
+        x = max(0, int(region["x"]))
+        y = max(0, int(region["y"]))
+        w = int(region["width"])
+        h = int(region["height"])
+        if w <= 0 or h <= 0 or x + w > width or y + h > height:
+            raise ValueError(
+                f"region 超出截图边界: region=({x},{y},{w},{h}) image=({width}x{height})")
+        rgb = rgb[y:y + h, x:x + w]
+        width, height = w, h
     xs = np.arange(0, width, step)
     ys = np.arange(0, height, step)
     xgrid, ygrid = np.meshgrid(xs, ys)
     return rgb[::step, ::step], xgrid, ygrid, width, height
 
 
-def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
+def validate_rgba_quadrants(image_path: Path, step: int = 4,
+                            region: dict | None = None) -> dict:
     """四色象限拓扑，旋转不变（rgba-quadrants-v1-rotations）。镜像或象限
     重复/缺失即 FAIL。"""
     import numpy as np
 
-    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step)
+    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step,
+                                                            region)
     r = pixels[..., 0].astype(np.int16)
     g = pixels[..., 1].astype(np.int16)
     b = pixels[..., 2].astype(np.int16)
@@ -88,6 +104,7 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
         "image": str(image_path),
         "width": width,
         "height": height,
+        "region": dict(region) if region else None,
         "minimumSamplesPerColor": minimum,
         "detectedTransform": detected_transform,
         "quadrants": quadrants,
@@ -95,11 +112,13 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4) -> dict:
     }
 
 
-def validate_d3d11_cube(image_path: Path, step: int = 4) -> dict:
+def validate_d3d11_cube(image_path: Path, step: int = 4,
+                        region: dict | None = None) -> dict:
     """带深度/背景色差的彩色立方体（d3d11-cube-color-depth-v1）。"""
     import numpy as np
 
-    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step)
+    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step,
+                                                            region)
     r = pixels[..., 0].astype(np.int16)
     g = pixels[..., 1].astype(np.int16)
     b = pixels[..., 2].astype(np.int16)
@@ -159,13 +178,13 @@ VALIDATORS = {
 }
 
 
-def validate(name: str, image_path: Path) -> dict:
+def validate(name: str, image_path: Path, region: dict | None = None) -> dict:
     runner = VALIDATORS.get(name)
     if runner is None:
         return {"status": "FAIL", "validator": name,
                 "message": f"未知视觉校验器: {name}（可用: {', '.join(sorted(VALIDATORS))}）"}
     try:
-        return runner(image_path)
+        return runner(image_path, region=region)
     except Exception as error:  # noqa: BLE001 - 校验器依赖缺失/图片损坏都要有明确结论
         return {"status": "FAIL", "validator": name,
                 "message": f"视觉校验异常: {error}"}
