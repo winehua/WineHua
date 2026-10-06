@@ -5,7 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DisplayRouteService } from '../service/DisplayRouteService';
-import { OH2EVDEV, charToEvdev, EVDEV_KEY_ENTER, EVDEV_KEY_BACKSPACE, EVDEV_KEY_LEFTSHIFT } from '../common/KeyMap';
+import { OH2EVDEV, charToEvdev, EVDEV_KEY_ENTER, EVDEV_KEY_BACKSPACE, EVDEV_KEY_LEFTSHIFT, EVDEV_KEY_LEFTCTRL, EVDEV_KEY_V } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 
 const DOMAIN = 0x0000;
@@ -204,8 +204,36 @@ struct DesktopPage {
         hilog.info(DOMAIN, 'IME-X11', '[attach] OK');
         controller.on('insertText', (text: string) => {
           hilog.info(DOMAIN, 'IME-X11', '[insertText] "%{public}s"', text);
+          // D19 分流: 全部字符可映射 → 逐键 (Latin 路径); 含不可映射
+          // (CJK 等) → 剪贴板桥整串粘贴 (中文无键码, 走 X selection +
+          // Ctrl+V; 拼音组合/候选全在系统输入法内, 这里只承接最终串)
+          let allMappable = true;
           for (let i = 0; i < text.length; i++) {
-            this.imeX11TypeChar(text.charAt(i));
+            if (!charToEvdev(text.charAt(i))) {
+              allMappable = false;
+              break;
+            }
+          }
+          if (allMappable) {
+            for (let i = 0; i < text.length; i++) {
+              this.imeX11TypeChar(text.charAt(i));
+            }
+          } else {
+            try {
+              smokeNapi.smokeDisplayRouteClipboard(text);
+              // 粘贴键延后: 剪贴板设置与 Ctrl+V 背靠背入队会让 wine 的
+              // 粘贴请求跑在 xwm 完成 X selection 所有权握手之前 (首轮
+              // 实测粘贴扑空)。200ms 足够 xwm 拿到 CLIPBOARD 所有权。
+              setTimeout(() => {
+                this.imeX11Key(EVDEV_KEY_LEFTCTRL, true);
+                this.imeX11Key(EVDEV_KEY_V, true);
+                this.imeX11Key(EVDEV_KEY_V, false);
+                this.imeX11Key(EVDEV_KEY_LEFTCTRL, false);
+                hilog.info(DOMAIN, 'IME-X11', '[paste] Ctrl+V injected (%{public}d chars)', text.length);
+              }, 200);
+            } catch (e) {
+              hilog.error(DOMAIN, 'IME-X11', '[clipboard] FAILED: %{public}s', String(e));
+            }
           }
         });
         controller.on('deleteLeft', (len: number) => {

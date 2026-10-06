@@ -66,6 +66,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
 extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
+extern "C" void wl_ohos_input_post_clipboard(const char *utf8);
 
 static napi_value SmokeDisplayRoute(napi_env env, napi_callback_info info) {
     size_t argc = 5;
@@ -163,6 +164,29 @@ static napi_value SmokeDisplayRouteKey(napi_env env, napi_callback_info info) {
     return ok;
 }
 
+// smokeDisplayRouteClipboard(text) — D19 CJK 剪贴板桥: UTF-8 串设为 seat
+// selection (xwm 桥接 Xwayland CLIPBOARD), 供注入 Ctrl+V 后 wine 粘贴。
+// 典型调用序: setClipboard(中文串) → key(29,true) key(47,true)
+// key(47,false) key(29,false)。
+static napi_value SmokeDisplayRouteClipboard(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        size_t len = 0;
+        napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+        char *text = static_cast<char *>(malloc(len + 1));
+        if (text) {
+            napi_get_value_string_utf8(env, args[0], text, len + 1, &len);
+            wl_ohos_input_post_clipboard(text);
+            free(text);
+        }
+    }
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
 // smokeDisplayRouteMotion(nx, ny, phase)
 static napi_value SmokeDisplayRouteMotion(napi_env env, napi_callback_info info) {
     size_t argc = 3;
@@ -207,6 +231,7 @@ static napi_value SmokeNapiInit(napi_env env, napi_value exports) {
         {"smokeDisplayRouteResize", nullptr, SmokeDisplayRouteResize, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRoute", nullptr, SmokeSetDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteKey", nullptr, SmokeDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"smokeDisplayRouteClipboard", nullptr, SmokeDisplayRouteClipboard, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteMotion", nullptr, SmokeDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"smokeDisplayRouteButton", nullptr, SmokeDisplayRouteButton, nullptr, nullptr, nullptr, napi_default, nullptr},
     };

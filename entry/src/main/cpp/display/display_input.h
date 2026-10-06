@@ -38,6 +38,12 @@ void wl_ohos_input_script_restart(void);
 // 真机门自动注入脚本开关 (默认关)。编排 = 测试资产 (定时重放按键 +
 // 硬编码窗口几何), 只应在 smoke/displayroute 验证流程开启; 不开 = 无此
 // 行为 (原则 #23)。必须在 wl_ohos_input_seat_create 之前调。
+
+// D19 CJK 剪贴板桥: 把 UTF-8 串设为 seat selection (xwm 自动桥接为
+// Xwayland CLIPBOARD, wine Ctrl+V 可粘贴)。任意线程可调 (内部经注入
+// 队列移交 loop 线程); 链未建 (无 seat) 时串被丢弃。串复制进队, 调用
+// 后调用方即可释放。
+void wl_ohos_input_post_clipboard(const char *utf8);
 void wl_ohos_input_set_script_enabled(bool enabled);
 
 // OHOS 侧注入入口 —— 任意线程安全版 (smoke NAPI 用): 内部经投递队列

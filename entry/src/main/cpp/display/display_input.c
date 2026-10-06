@@ -20,6 +20,7 @@
 #define WLR_USE_UNSTABLE
 #include "display_input.h"
 #include "ohos_output.h"
+#include <wlr/types/wlr_data_device.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 #include <unistd.h>
 
 #include <hilog/log.h>
@@ -368,10 +370,12 @@ struct inject_item
 {
     bool is_key;
     bool is_button;
+    bool is_clipboard; /* D19: text 所有权随队列移交, drain 时交 Apply 释放 */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
     int phase;
+    char *text; /* is_clipboard: UTF-8 串 (heap) */
 };
 
 static struct inject_item g_inject_queue[INJECT_QUEUE_CAP];
@@ -401,6 +405,8 @@ static void InjectQueuePush(const struct inject_item *item)
     }
 }
 
+static void ApplySetClipboard(char *text); /* D19 剪贴板桥, 定义在 post 段 */
+
 static int InjectQueueDrain(void *data)
 {
     (void)data;
@@ -424,6 +430,8 @@ static int InjectQueueDrain(void *data)
             display_input_inject_key(item.keycode, item.press);
         else if (item.is_button)
             display_input_inject_button(item.keycode, item.press);
+        else if (item.is_clipboard)
+            ApplySetClipboard(item.text);
         else
         {
             display_input_inject_motion(item.nx, item.ny, item.phase);
@@ -469,6 +477,92 @@ void wl_ohos_input_post_button(uint32_t button, bool press)
     item.is_button = true;
     item.keycode = button; /* 按钮码复用 keycode 字段 (见 inject_item 注释) */
     item.press = press;
+    InjectQueuePush(&item);
+}
+
+/* ── D19 CJK 剪贴板桥 ───────────────────────────────────────────────
+ * x11 路线的 Wine 文本框没有 wayland commit_string 通道 (那是
+ * winewayland.drv 的 text-input 协议路径), 中文上屏串也折不成键码 ——
+ * 走 X selection: wlr_seat_set_selection 由 xwm 自动桥接为 Xwayland 的
+ * CLIPBOARD 所有权, wine 作为 X client Ctrl+V 即得全文 (拼音组合/候选
+ * 全在系统输入法内完成, 本桥只承接最终串)。串与 source 都在 loop 线程
+ * 操作 (与键注入同线程纪律); send 回调由 xwm 在同一 loop 调, 读
+ * g_clip_text 无竞争。 */
+static char *g_clip_text;
+static uint32_t g_clip_serial;
+
+static void ClipSourceSend(struct wlr_data_source *source,
+                           const char *mime_type, int32_t fd)
+{
+    (void)source;
+    if (!g_clip_text || !mime_type || strstr(mime_type, "utf-8") == NULL)
+    {
+        close(fd);
+        return;
+    }
+    size_t len = strlen(g_clip_text), off = 0;
+    while (off < len)
+    {
+        ssize_t n = write(fd, g_clip_text + off, len - off);
+        if (n <= 0)
+        {
+            if (n < 0 && errno == EINTR)
+                continue;
+            break;
+        }
+        off += (size_t)n;
+    }
+    close(fd);
+}
+
+static const struct wlr_data_source_impl CLIP_SOURCE_IMPL = {
+    .send = ClipSourceSend,
+    /* accept/destroy 留空: destroy 由 wlroots 兜底 free(source) 并释放
+     * mime_types 字符串 (types/data_device/wlr_data_source.c 实测);
+     * accept 无需应答; dnd_* 仅拖放用 */
+};
+
+static void ApplySetClipboard(char *text) /* loop 线程, 接管 text 所有权 */
+{
+    if (!g_seat)
+    {
+        free(text);
+        return;
+    }
+    struct wlr_data_source *src = calloc(1, sizeof(*src));
+    if (!src)
+    {
+        free(text);
+        return;
+    }
+    /* 必须经 init: 它零化结构体并初始化 events.destroy 信号 —— 直接
+     * calloc 后手工装配会漏信号初始化, wlr_seat_set_selection 绑定
+     * offer 时 wl_list_insert 解引用野列表 (12:18 cppcrash 实证)。 */
+    wlr_data_source_init(src, &CLIP_SOURCE_IMPL);
+    const char *mimes[] = {"text/plain;charset=utf-8", "text/plain"};
+    for (size_t i = 0; i < sizeof(mimes) / sizeof(mimes[0]); i++)
+    {
+        char **slot = wl_array_add(&src->mime_types, sizeof(char *));
+        if (slot)
+            *slot = strdup(mimes[i]);
+    }
+    free(g_clip_text);
+    g_clip_text = text; /* send 回调读, 同 loop 线程 */
+    g_clip_serial++;
+    wlr_seat_set_selection(g_seat, src, g_clip_serial);
+    OHLOG("clipboard set (%zu bytes)", strlen(g_clip_text));
+}
+
+void wl_ohos_input_post_clipboard(const char *utf8)
+{
+    if (!utf8)
+        return;
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_clipboard = true;
+    item.text = strdup(utf8);
+    if (!item.text)
+        return;
     InjectQueuePush(&item);
 }
 

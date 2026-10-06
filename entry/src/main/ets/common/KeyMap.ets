@@ -148,6 +148,8 @@ export const MODIFIER_CODES: number[] = [
 export const EVDEV_KEY_ENTER: number = 28;       // KEY_ENTER
 export const EVDEV_KEY_BACKSPACE: number = 14;   // KEY_BACKSPACE
 export const EVDEV_KEY_LEFTSHIFT: number = 42;   // KEY_LEFTSHIFT
+export const EVDEV_KEY_LEFTCTRL: number = 29;    // KEY_LEFTCTRL
+export const EVDEV_KEY_V: number = 47;           // KEY_V
 
 // ── ASCII 字符 → evdev (D13 x11 软键盘桥) ──
 // IME insertText 给的是字符不是键码; x11 路线没有 wayland 的 commit_string
