@@ -31,6 +31,10 @@ export const injectDisplayRouteMotion: (nx: number, ny: number, phase: number) =
 /** 按钮注入 (BTN_LEFT 0x110 / BTN_RIGHT 0x111 / BTN_MIDDLE 0x112)。 */
 export const injectDisplayRouteButton: (button: number, press: boolean) => boolean;
 
+/** 轴注入 (D15 手势层): which 0=纵向 1=横向; steps=±N discrete 步,
+ *  discrete>0 → 滚轮向下 (与 wayland 分支「向上=正」同号)。 */
+export const injectDisplayRouteAxis: (which: number, steps: number) => boolean;
+
 /** D19 CJK 剪贴板桥: UTF-8 串设为 seat selection (xwm 桥接 Xwayland CLIPBOARD),
  *  配合 Ctrl+V 注入粘贴。 */
 export const setDisplayRouteClipboard: (text: string) => boolean;

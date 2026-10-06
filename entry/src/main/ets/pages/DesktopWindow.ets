@@ -107,9 +107,29 @@ class DesktopController extends XComponentController {
 @Component
 struct DesktopPage {
   controller: DesktopController = new DesktopController();
-  // x11 直连输入 (M3a-T4): 触摸按下状态 (Down=左键 press 即发, 不走手势
-  // 状态机 —— X 路线的判定全在 Xwayland/X client 侧, 无需 ArkTS 折算)。
-  private x11Pressed: boolean = false;
+  // x11 手势状态机 (D15 重定界, 2026-10-06): 语义对齐 wayland 分支的状态机
+  // (本文件下方 + DesktopLayer.ets, 用户实测背书的双击/长按右键/双指滚轮
+  // 手感), 判据常量复用 DesktopPage 既有副本 (LONG_PRESS_MS/DRAG_THRESHOLD/
+  // DOUBLE_TAP_MS/DOUBLE_TAP_DIST/SCROLL_STEP_PX —— 判据一处定义两分支共
+  // 用)。此前 x11 分支是裸透传 (Down 即发 press), 双击由 wine 内核按鼠标
+  // 口径 (±2px/500ms) 判真实手指抖动, 常态判成两次单击; 现在 PENDING 缓发
+  // + 双击按首击坐标重放, wine 判定位移恒 0。
+  private x11Pending: boolean = false;   // Down 已收, 未发 button (等判定)
+  private x11Dragging: boolean = false;
+  private x11DownMs: number = 0;
+  private x11DownNx: number = 0;         // Down 点归一化坐标 (注入用)
+  private x11DownNy: number = 0;
+  private x11DownPx: number = 0;         // Down 点物理画布坐标 (手势判定用)
+  private x11DownPy: number = 0;
+  private x11LastTapMs: number = 0;      // 双击检测: 上次单击的发送时刻+位置
+  private x11LastTapPx: number = 0;
+  private x11LastTapPy: number = 0;
+  // 双指滚动 (语义对齐 wayland 分支: 中点位移累积, 向上=正=向下滚)
+  private x11TwoFinger: boolean = false;
+  private x11LastMidPx: number = 0;
+  private x11LastMidPy: number = 0;
+  private x11AccumY: number = 0;
+  private x11AccumX: number = 0;
   // 触控状态机: IDLE → PENDING → (DRAGGING | 长按 | 点击)
   // 双指进入 SCROLLING 模式, 覆盖单指状态
   private touchPending: boolean = false;
@@ -316,10 +336,14 @@ struct DesktopPage {
       // ── 触控处理: 单指→左键/右键/拖拽, 双指→滚轮 ──
       .onTouch((ev: TouchEvent) => {
         try {
-          // ── x11 直连 (M3a-T4): 触摸 = 左键按下拖动, 不走 wayland 手势状态机。
-          // X 路线的焦点/拖拽判定都在 Xwayland 侧 (motion 的悬停激活 + 按钮时序
-          // 直通), ArkTS 折算反而会二次变形。坐标归一化基准 = surface 尺寸
-          // (chain_start 入参同源); 0 = surface 未绑定, 直接丢弃 (除零防护)。
+          // ── x11 手势状态机 (D15 重定界, 2026-10-06): 语义对齐 wayland 分支
+          // (本文件下方 + DesktopLayer.ets, 用户实测背书的双击/长按右键/双指
+          // 滚轮手感)。此前是裸透传 (Down 即发 press), 双击由 wine 内核按鼠
+          // 标口径 (±2px/500ms, win32u/message.c) 判真实手指抖动, 常态判成
+          // 两次单击; 现在 PENDING 缓发 + 双击按首击坐标重放, wine 判定位移
+          // 恒 0。X 路线的焦点/拖拽目标判定仍在 Xwayland 侧 (motion 命中即
+          // 激活), ArkTS 只做手势分类不做窗口裁决。坐标归一化基准 = surface
+          // 尺寸 (chain_start 入参同源); 0 = surface 未绑定, 丢弃 (除零防护)。
           if (DisplayRouteService.getInstance().isX11()) {
             const cw = this.controller.x11W;
             const ch = this.controller.x11H;
@@ -327,30 +351,136 @@ struct DesktopPage {
               hilog.warn(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH dropped (surface %{public}dx%{public}d)', cw, ch);
               return;
             }
+            // 物理鼠标左键的合成 touch: 已由 onMouse 真实时序直通 (x11 分支),
+            // 进手势机会把同一击发两遍 (wayland 分支同款守卫; mouseLeftActive
+            // 由 onMouse x11 分支维护)
+            if (this.mouseLeftActive) return;
             const t = ev.changedTouches[0];
             if (!t) return;
-            const px = vp2px(t.x) / cw;
-            const py = vp2px(t.y) / ch;
+            const pxp = vp2px(t.x); // 物理画布坐标: 手势判定口径 (阈值均为物理px)
+            const pyp = vp2px(t.y);
+            const nx = pxp / cw;    // 归一化坐标: 注入口径 (0..1)
+            const ny = pyp / ch;
+
+            // ── 双指 → 滚轮 (wayland 分支同语义: 中点位移累积, 40物理px/步;
+            //    向上=正=向下滚, 与 Xwayland discrete 同号 —— 判据链实读源码
+            //    钉死, 见 display_input.c inject_axis 注释) ──
+            if (ev.touches.length >= 2) {
+              if (this.x11Pending || this.x11Dragging) {
+                // 双指打断单指: 拖拽中补发抬起; PENDING 直接作废 (尚未发过按下)
+                if (this.x11Dragging) {
+                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
+                }
+                this.x11Pending = false;
+                this.x11Dragging = false;
+              }
+              let midX = 0, midY = 0;
+              for (let i = 0; i < ev.touches.length; i++) {
+                midX += vp2px(ev.touches[i].x);
+                midY += vp2px(ev.touches[i].y);
+              }
+              midX = Math.round(midX / ev.touches.length);
+              midY = Math.round(midY / ev.touches.length);
+              if (!this.x11TwoFinger) {
+                this.x11TwoFinger = true;
+                this.x11LastMidPx = midX;
+                this.x11LastMidPy = midY;
+                this.x11AccumY = 0;
+                this.x11AccumX = 0;
+                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-SCROLL-START');
+              } else {
+                this.x11AccumY += this.x11LastMidPy - midY; // 向上=正=向下滚
+                this.x11AccumX += midX - this.x11LastMidPx; // 向右=正=向右滚
+                this.x11LastMidPx = midX;
+                this.x11LastMidPy = midY;
+                while (Math.abs(this.x11AccumY) >= DesktopPage.SCROLL_STEP_PX) {
+                  const sign = this.x11AccumY > 0 ? 1 : -1;
+                  displayRouteNapi.injectDisplayRouteAxis(0, sign);
+                  this.x11AccumY -= sign * DesktopPage.SCROLL_STEP_PX;
+                }
+                while (Math.abs(this.x11AccumX) >= DesktopPage.SCROLL_STEP_PX) {
+                  const sign = this.x11AccumX > 0 ? 1 : -1;
+                  displayRouteNapi.injectDisplayRouteAxis(1, sign);
+                  this.x11AccumX -= sign * DesktopPage.SCROLL_STEP_PX;
+                }
+              }
+              return;
+            }
+            // ── 双指刚结束: 残留手指的事件吞掉, 不产生误点击 ──
+            if (this.x11TwoFinger) {
+              this.x11TwoFinger = false;
+              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-SCROLL-END');
+              return;
+            }
+
             if (ev.type === TouchType.Down) {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH down (%{public}d,%{public}d)', Math.round(px * cw), Math.round(py * ch));
-              displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
-              displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
-              this.x11Pressed = true;
+              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH down (%{public}d,%{public}d)', Math.round(pxp), Math.round(pyp));
+              // Down 只发 motion (悬停激活, X 路线焦点按命中走, 与裸透传时代
+              // 一致); button 缓发, 等 Up 判定单击/双击/长按。
+              displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
+              this.x11Pending = true;
+              this.x11Dragging = false;
+              this.x11DownMs = Date.now();
+              this.x11DownNx = nx;
+              this.x11DownNy = ny;
+              this.x11DownPx = pxp;
+              this.x11DownPy = pyp;
             } else if (ev.type === TouchType.Move) {
-              if (this.x11Pressed) {
-                displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
-                // D9 拖拽排查: down/up 都有日志而 move 静默, 事件序列断在哪
-                // 一跳无法从日志判读 (2026-10-05 实测: notepad 4.6s 按住仅
-                // 收到 1 条 MotionNotify)。与 down 同款打点。
-                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-TOUCH move (%{public}d,%{public}d)',
-                  Math.round(px * cw), Math.round(py * ch));
+              if (!this.x11Pending && !this.x11Dragging) return;
+              const dist = Math.abs(pxp - this.x11DownPx) + Math.abs(pyp - this.x11DownPy);
+              if (this.x11Pending && dist >= DesktopPage.DRAG_THRESHOLD) {
+                // 进入拖拽: 按下补在 Down 点 (wayland 分支同款), 再随动
+                this.x11Pending = false;
+                this.x11Dragging = true;
+                this.x11LastTapMs = 0; // 拖拽打断双击序列
+                displayRouteNapi.injectDisplayRouteMotion(this.x11DownNx, this.x11DownNy, 1);
+                displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
+                displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
+                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-DRAG-START dist=%{public}d', Math.round(dist));
+              } else {
+                // 拖拽随动; PENDING 未过阈值时 motion 直通 (hover 菜单/高亮)
+                displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
               }
             } else if (ev.type === TouchType.Up || ev.type === TouchType.Cancel) {
-              if (this.x11Pressed) {
+              if (this.x11Dragging) {
                 displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
-                displayRouteNapi.injectDisplayRouteMotion(px, py, 2);
-                this.x11Pressed = false;
+                this.x11Dragging = false;
+              } else if (this.x11Pending) {
+                this.x11Pending = false;
+                const elapsed = Date.now() - this.x11DownMs;
+                if (elapsed >= DesktopPage.LONG_PRESS_MS) {
+                  // 长按 → 右键 (Down 点; wayland 分支同款)
+                  this.x11LastTapMs = 0;
+                  displayRouteNapi.injectDisplayRouteMotion(this.x11DownNx, this.x11DownNy, 1);
+                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_RIGHT, true);
+                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_RIGHT, false);
+                  hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-LONGPRESS->RIGHTCLICK elapsed=%{public}dms', Math.round(elapsed));
+                } else {
+                  const now = Date.now();
+                  const dist = Math.abs(this.x11DownPx - this.x11LastTapPx) +
+                    Math.abs(this.x11DownPy - this.x11LastTapPy);
+                  const isDouble = this.x11LastTapMs > 0 &&
+                    (now - this.x11LastTapMs) < DesktopPage.DOUBLE_TAP_MS &&
+                    dist < DesktopPage.DOUBLE_TAP_DIST;
+                  // 双击: 第二击按首击坐标重放 (wine ±2px 判定恒过);
+                  // 单击: Down 点发出并记为双击序列首击
+                  displayRouteNapi.injectDisplayRouteMotion(this.x11DownNx, this.x11DownNy, 1);
+                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
+                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
+                  if (isDouble) {
+                    this.x11LastTapMs = 0;
+                    hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-DOUBLE-TAP');
+                  } else {
+                    this.x11LastTapMs = now;
+                    this.x11LastTapPx = this.x11DownPx;
+                    this.x11LastTapPy = this.x11DownPy;
+                  }
+                }
               }
+              // 不发 leave (phase 2): wayland 路线从不清指针焦点 (手势后指针
+              // 停在原地), 实测 leave 会打断 wine 的菜单跟踪 (2026-10-06) 且
+              // 与原生层的脉冲拉伸定时抬起乱序。下次手势 Down 的 motion 会
+              // 重新锚定位置。
             }
             return;
           }
@@ -556,8 +686,9 @@ struct DesktopPage {
       .onMouse((ev: MouseEvent) => {
         try {
           // ── x11 直连 (M3a-T4): 真实时序直通, 按下捕获语义不需要 (无 tl
-          // 目标概念, 焦点在 Xwayland 侧按 motion 命中走)。滚轮 (onAxisEvent)
-          // 不在本任务范围, x11 分支暂不处理。
+          // 目标概念, 焦点在 Xwayland 侧按 motion 命中走)。左键维护
+          // mouseLeftActive 守卫 (抑制 OHOS 为左键合成的 touch 进手势状态
+          // 机 → 同一击双发, wayland 分支同款)。
           if (DisplayRouteService.getInstance().isX11()) {
             const cw = this.controller.x11W;
             const ch = this.controller.x11H;
@@ -565,6 +696,8 @@ struct DesktopPage {
             const px = vp2px(ev.x) / cw;
             const py = vp2px(ev.y) / ch;
             if (ev.action === MouseAction.Move) {
+              // 手势进行中 (拖拽/PENDING): motion 由 onTouch 状态机发, 不双发
+              if (this.x11Pending || this.x11Dragging) return;
               displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
               return;
             }
@@ -574,9 +707,17 @@ struct DesktopPage {
             const press = ev.action === MouseAction.Press;
             if (press) displayRouteNapi.injectDisplayRouteMotion(px, py, 1);
             displayRouteNapi.injectDisplayRouteButton(btn, press);
-            if (!press && btn === DesktopPage.X11_BTN_LEFT) {
-              // 触摸按住时鼠标插入抬起: 状态机复位, 防悬挂的按下
-              this.x11Pressed = false;
+            if (btn === DesktopPage.X11_BTN_LEFT) {
+              if (press) {
+                this.mouseLeftActive = true;
+                // 竞态: 合成 touch 可能先一步进入手势状态, 静默清除
+                this.x11Pending = false;
+                this.x11Dragging = false;
+              } else {
+                this.mouseLeftActive = false;
+                // 触摸按住时鼠标插入抬起: 状态机复位, 防悬挂的按下
+                this.x11Dragging = false;
+              }
             }
             return;
           }
@@ -697,8 +838,19 @@ struct DesktopPage {
 
       // ── 滚轮事件 ──
       .onAxisEvent((ev?: AxisEvent) => {
+        if (!ev) return;
+        // x11: 物理滚轮过轴注入 (D15)。OHOS 轴值符号与 discrete 同约定
+        // (正=向下), 一次事件 = 1 步; 方向判据链见 display_input.c
+        // inject_axis 注释 (discrete>0 → Button5 → 滚轮向下)。
+        if (DisplayRouteService.getInstance().isX11()) {
+          const vert = ev.getVerticalAxisValue();
+          const horiz = ev.getHorizontalAxisValue();
+          if (vert !== 0) displayRouteNapi.injectDisplayRouteAxis(0, vert > 0 ? 1 : -1);
+          if (horiz !== 0) displayRouteNapi.injectDisplayRouteAxis(1, horiz > 0 ? 1 : -1);
+          return;
+        }
         const rootId = WineWindowManager.getInstance().getDesktopRootId();
-        if (rootId <= 0 || !ev) return;
+        if (rootId <= 0) return;
         const wpx = Math.round(vp2px(ev.x));
         const wpy = Math.round(vp2px(ev.y));
         const vert = ev.getVerticalAxisValue();

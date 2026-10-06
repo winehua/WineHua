@@ -325,6 +325,32 @@ void display_input_inject_motion(float nx, float ny, int phase)
               fx, fy, sx, sy, xs->surface == g_ptr_focus);
 }
 
+/* 脉冲拉伸 (D15, 对齐 wayland 路线 input_manager 的同款机制
+ * docs/architecture/input.md「脉冲拉伸」): 触屏合成点击的按下/抬起同毫秒
+ * 到达, wine 抬起沿驱动的路径在 0ms 脉冲下丢效 —— 2026-10-06 实测: 同一
+ * wire 序列 (enter→press→release), 开始钮/弹窗菜单项可用, 而对话框按钮/
+ * 菜单栏下拉/右键菜单全哑; swipe 把间隔拉开后同一目标立即可用 —— 间隔
+ * 即判据。抬起间隔 <100ms 的点击经 one-shot 定时器延迟抬起补足 100ms,
+ * 定时器回调自带 frame+flush (顺序: press, [≥100ms], release)。 */
+#define PULSE_MIN_MS 100
+static int64_t g_pulse_press_ms;
+static uint32_t g_pulse_pending_btn;
+static struct wl_event_source *g_pulse_release_timer;
+
+static int DeliverPulseRelease(void *data)
+{
+    (void)data;
+    if (!g_seat || !g_pulse_pending_btn)
+        return 0;
+    wlr_seat_pointer_notify_button(g_seat, NowMsec(), g_pulse_pending_btn,
+                                   WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(g_seat);
+    if (g_display)
+        wl_display_flush_clients(g_display);
+    g_pulse_pending_btn = 0;
+    return 0; /* one-shot */
+}
+
 /* 按钮注入 (M3a-T4): button = evdev 按钮码 (BTN_LEFT 0x110 / BTN_RIGHT
  * 0x111 / BTN_MIDDLE 0x112, linux/input-event-codes.h), 与键注入同口径 ——
  * wlr_seat_pointer_notify_button 的 button 逐字上 wire (wlr_seat_pointer.c
@@ -344,14 +370,74 @@ void display_input_inject_button(uint32_t button, bool press)
     }
     OHLOG("inject button evdev=0x%{public}x %{public}s", button,
           press ? "press" : "release");
+    if (press)
+    {
+        /* 新按下到来而上一发拉伸抬起还没出: 先立即补发, 保 down/up 配对 */
+        if (g_pulse_pending_btn)
+            DeliverPulseRelease(NULL);
+        wlr_seat_pointer_notify_button(g_seat, NowMsec(), button,
+                                       WL_POINTER_BUTTON_STATE_PRESSED);
+        /* wl_pointer.frame 必发 (D15, 2026-10-06 用户实测): button 与 motion
+         * 同受 Xwayland 的 frame 批量派发 —— 不发 frame 就滞留队列, 到下一
+         * 拍 frame (常来自之后的第一条 motion) 才冲出, 双击两拍的事件时间
+         * 被压扁/错位。motion 侧同款修复见 D9 注释。 */
+        wlr_seat_pointer_notify_frame(g_seat);
+        g_pulse_press_ms = NowMsec();
+        g_pulse_pending_btn = button;
+        if (g_display)
+            wl_display_flush_clients(g_display);
+        return;
+    }
+    /* 抬起: 距上次按下不足 PULSE_MIN_MS 则经定时器补足 (无定时器 = 链未全
+     * 建, 退回直发)。timer 路径的 frame+flush 在回调里。 */
+    if (g_pulse_release_timer)
+    {
+        int64_t wait = PULSE_MIN_MS - (NowMsec() - g_pulse_press_ms);
+        if (wait > 0)
+        {
+            g_pulse_pending_btn = button;
+            wl_event_source_timer_update(g_pulse_release_timer, (int)wait);
+            return;
+        }
+    }
     wlr_seat_pointer_notify_button(g_seat, NowMsec(), button,
-                                   press ? WL_POINTER_BUTTON_STATE_PRESSED
-                                         : WL_POINTER_BUTTON_STATE_RELEASED);
-    /* wl_pointer.frame 必发 (D15, 2026-10-06 用户实测): button 与 motion 同
-     * 受 Xwayland 的 frame 批量派发 —— press/release 不发 frame 就滞留队列,
-     * 到下一拍 frame (常来自之后的第一条 motion) 才冲出, 双击两拍的事件
-     * 时间被压扁/错位, wine 判成慢速双击 (点文件触发重命名而非打开)。
-     * motion 侧同款修复见 D9 注释 (上方 313)。 */
+                                   WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(g_seat);
+    g_pulse_pending_btn = 0;
+    if (g_display)
+        wl_display_flush_clients(g_display);
+}
+
+/* 轴注入 (D15 手势层): 双指滚动/物理滚轮 → wl_pointer.axis discrete。
+ * which 0=纵向 1=横向 (WL_POINTER_AXIS_* 枚举同序), steps = ±N。wire 语义
+ * 实读源码钉死: Xwayland 把 discrete 累成 v120 (xwayland-input.c:901,
+ * scroll_dy_v120 = 120*discrete), dispatch_scroll_motion 折回 valuator
+ * (v120/120 = discrete), DIX emulate_scroll_button_events (getevents.c)
+ * 按增量符号出 Button4/5 —— 滚轴 increment=+1.0 (xwayland-input.c:218)
+ * ⇒ discrete>0 → Button5 (滚轮向下, winex11 → WM_MOUSEWHEEL 负值)。
+ * 与 wayland 分支「向上=正=向下滚」同号, 手势层可直接复用同一 accum
+ * 符号约定。value 只喂平滑滚动路径 (winex11 不消费), 取 libinput 滚轮
+ * 惯例 10/步。frame 必发, 同 button 注释 (D15)。 */
+void display_input_inject_axis(int which, int steps)
+{
+    if (!g_seat)
+        return;
+    if (!g_ptr_focus)
+    {
+        static int said;
+        if (++said == 1)
+            OH_LOG_ERROR(LOG_APP, "inject_axis: 无 pointer 焦点 (motion 未先行?)");
+        return;
+    }
+    if (steps == 0)
+        return;
+    OHLOG("inject axis which=%{public}d steps=%{public}d", which, steps);
+    wlr_seat_pointer_notify_axis(g_seat, NowMsec(),
+                                 which == 1 ? WL_POINTER_AXIS_HORIZONTAL_SCROLL
+                                            : WL_POINTER_AXIS_VERTICAL_SCROLL,
+                                 (double)steps * 10.0, steps,
+                                 WL_POINTER_AXIS_SOURCE_WHEEL,
+                                 WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     wlr_seat_pointer_notify_frame(g_seat);
     if (g_display)
         wl_display_flush_clients(g_display);
@@ -370,11 +456,13 @@ struct inject_item
 {
     bool is_key;
     bool is_button;
+    bool is_axis;      /* D15: 轴注入 (which/Steps 复用 axis 字段) */
     bool is_clipboard; /* D19: text 所有权随队列移交, drain 时交 Apply 释放 */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
     int phase;
+    int axis_which, axis_steps; /* is_axis: 0=纵向 1=横向, ±N 步 */
     char *text; /* is_clipboard: UTF-8 串 (heap) */
 };
 
@@ -430,6 +518,8 @@ static int InjectQueueDrain(void *data)
             display_input_inject_key(item.keycode, item.press);
         else if (item.is_button)
             display_input_inject_button(item.keycode, item.press);
+        else if (item.is_axis)
+            display_input_inject_axis(item.axis_which, item.axis_steps);
         else if (item.is_clipboard)
             ApplySetClipboard(item.text);
         else
@@ -477,6 +567,16 @@ void wl_ohos_input_post_button(uint32_t button, bool press)
     item.is_button = true;
     item.keycode = button; /* 按钮码复用 keycode 字段 (见 inject_item 注释) */
     item.press = press;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_axis(int which, int steps)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_axis = true;
+    item.axis_which = which;
+    item.axis_steps = steps;
     InjectQueuePush(&item);
 }
 
@@ -729,6 +829,9 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
         g_release_timer = wl_event_loop_add_timer(g_loop, KeyReleaseTick, NULL);
         g_key_timer = wl_event_loop_add_timer(g_loop, DeliverPendingKey,
                                               &g_pending_key);
+        g_pulse_release_timer = wl_event_loop_add_timer(g_loop,
+                                                        DeliverPulseRelease,
+                                                        NULL);
         if (g_script_enabled)
         {
             g_script_timer = wl_event_loop_add_timer(g_loop, ScriptTick, NULL);

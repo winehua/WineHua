@@ -20,6 +20,7 @@
  *   injectDisplayRouteMotion(nx, ny, phase) — 指针注入 (0..1, 0=enter
  *     1=motion 2=leave)
  *   injectDisplayRouteButton(button, press) — 按钮注入 (BTN_LEFT 0x110 等)
+ *   injectDisplayRouteAxis(which, steps) — 轴注入 (滚轮; D15 手势层)
  *   setDisplayRouteClipboard(utf8) — D19 CJK 剪贴板桥: UTF-8 串设为 seat
  *     selection (xwm 桥接 Xwayland CLIPBOARD), 配合 Ctrl+V 注入粘贴
  *
@@ -41,6 +42,7 @@ extern "C" void WineHua_DisplayRoute_Resize(int w, int h);
 extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
+extern "C" void wl_ohos_input_post_axis(int which, int steps);
 extern "C" void wl_ohos_input_post_clipboard(const char *utf8);
 
 static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) {
@@ -165,6 +167,23 @@ static napi_value InjectDisplayRouteButton(napi_env env, napi_callback_info info
     return ok;
 }
 
+/* injectDisplayRouteAxis(which, steps) — D15 手势层: 滚轮注入。which
+ * 0=纵向 1=横向; steps=±N discrete 步, 方向判据见 display_input.c
+ * (discrete>0 → 滚轮向下, 与 wayland 分支「向上=正」同号)。 */
+static napi_value InjectDisplayRouteAxis(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    double which = 0, steps = 0;
+    napi_get_value_double(env, args[0], &which);
+    napi_get_value_double(env, args[1], &steps);
+    wl_ohos_input_post_axis(static_cast<int>(which), static_cast<int>(steps));
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
 /* setDisplayRouteClipboard(text) — D19 CJK 剪贴板桥。典型调用序:
  * setDisplayRouteClipboard(中文串) → injectDisplayRouteKey(29,true)
  * injectDisplayRouteKey(47,true) injectDisplayRouteKey(47,false)
@@ -198,6 +217,7 @@ static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
         {"injectDisplayRouteKey", nullptr, InjectDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteMotion", nullptr, InjectDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteButton", nullptr, InjectDisplayRouteButton, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"injectDisplayRouteAxis", nullptr, InjectDisplayRouteAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRouteClipboard", nullptr, SetDisplayRouteClipboard, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);

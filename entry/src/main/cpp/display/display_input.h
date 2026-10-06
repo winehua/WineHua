@@ -59,6 +59,15 @@ void wl_ohos_input_post_motion(float nx, float ny, int phase);
 // enter 已建立 (motion 先行), 无焦点时丢弃并记日志。
 void wl_ohos_input_post_button(uint32_t button, bool press);
 
+// 轴注入的任意线程安全版 (D15 手势层: 双指滚动/物理滚轮)。which: 0=纵向
+// 1=横向 (WL_POINTER_AXIS_* 枚举同序); steps = discrete 步数 (±N)。方向判据
+// 实读源码钉死: Xwayland 滚轴 increment=+1.0 (xwayland-input.c:218),
+// discrete>0 → DIX emulate_scroll_button_events 出 Button5 (滚轮向下);
+// 与 wayland 分支的「向上=正=向下滚」(DesktopWindow.ets) 同号 —— 手指上扫
+// accum 为正 → discrete +1 → 滚轮向下, 两条路线手感一致。投递前提 = pointer
+// enter 已建立 (motion 先行), 无焦点时丢弃并记日志。
+void wl_ohos_input_post_axis(int which, int steps);
+
 // OHOS 侧注入入口 (循环线程直呼版: 注入脚本/队列 drain 内部使用)。
 // 必须在合成器事件循环线程调用 (wlr_seat 无锁)。
 // key: evdev 键码 (KEY_A=30)。wire 语义 = wl_keyboard.key 原值, Xwayland
@@ -74,6 +83,10 @@ void display_input_inject_motion(float nx, float ny, int phase);
 // 按钮注入 (循环线程直呼版)。button: evdev 按钮码; 必须在合成器事件循环
 // 线程调用。发 button 前需 pointer enter 已建立 (display_input_inject_motion)。
 void display_input_inject_button(uint32_t button, bool press);
+
+// 轴注入 (循环线程直呼版)。which/steps 语义同 wl_ohos_input_post_axis。
+// 必须在合成器事件循环线程调用。
+void display_input_inject_axis(int which, int steps);
 
 #ifdef __cplusplus
 }
