@@ -495,6 +495,7 @@ static void ClipSourceSend(struct wlr_data_source *source,
                            const char *mime_type, int32_t fd)
 {
     (void)source;
+    OHLOG("clip send: mime=%{public}s fd=%{public}d", mime_type ? mime_type : "(null)", fd);
     if (!g_clip_text || !mime_type || strstr(mime_type, "utf-8") == NULL)
     {
         close(fd);

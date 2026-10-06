@@ -221,16 +221,19 @@ struct DesktopPage {
           } else {
             try {
               smokeNapi.smokeDisplayRouteClipboard(text);
-              // 粘贴键延后: 剪贴板设置与 Ctrl+V 背靠背入队会让 wine 的
-              // 粘贴请求跑在 xwm 完成 X selection 所有权握手之前 (首轮
-              // 实测粘贴扑空)。200ms 足够 xwm 拿到 CLIPBOARD 所有权。
-              setTimeout(() => {
-                this.imeX11Key(EVDEV_KEY_LEFTCTRL, true);
-                this.imeX11Key(EVDEV_KEY_V, true);
-                this.imeX11Key(EVDEV_KEY_V, false);
-                this.imeX11Key(EVDEV_KEY_LEFTCTRL, false);
-                hilog.info(DOMAIN, 'IME-X11', '[paste] Ctrl+V injected (%{public}d chars)', text.length);
-              }, 200);
+              // 剪贴板与粘贴键背靠背入队, 无需延迟。2026-10-06 x11 路线
+              // 实测 (哥/地 2/2): 五项同一毫秒入队, wine 在和弦后 10-15ms
+              // 主动 ConvertSelection 拉取 (clip send 日志), 上屏成功 ——
+              // 曾按到达序竞态加过 200ms setTimeout, 源码走读 + 零延迟
+              // 复测双双推翻, 已移除。排障警示: 剪贴板/和弦在无 x11 seat
+              // 的路线上被静默丢弃 (display_input 文档化行为), 套件跑过
+              // fusion 后裸启会继承覆盖路线 —— 判障前先核对启动日志的
+              // display route 标记, 别把路线残留当桥故障。
+              this.imeX11Key(EVDEV_KEY_LEFTCTRL, true);
+              this.imeX11Key(EVDEV_KEY_V, true);
+              this.imeX11Key(EVDEV_KEY_V, false);
+              this.imeX11Key(EVDEV_KEY_LEFTCTRL, false);
+              hilog.info(DOMAIN, 'IME-X11', '[paste] Ctrl+V injected (%{public}d chars)', text.length);
             } catch (e) {
               hilog.error(DOMAIN, 'IME-X11', '[clipboard] FAILED: %{public}s', String(e));
             }
