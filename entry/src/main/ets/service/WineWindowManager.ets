@@ -293,7 +293,18 @@ export class WineWindowManager {
     // A launcher resume recreates EntryAbility while the Wine desktop root can
     // still be alive.  No new desktop_root event is emitted in that case, so
     // explicitly bring the existing desktop compositor back to the foreground.
-    if (this.isDesktopMode && this.desktopRootId >= 0) {
+    // 恢复 ≠ 打开 (D18, 2026-10-06 用户拍板恢复 master 时序): 门用
+    // desktopAbilityRunning (桌面窗真开过且未关; 后台化不清), 不用
+    // desktopRootId >= 0 —— x11 把 root 注册成 0 (为恢复路径, 见
+    // applyModePolicy 注释), >= 0 在任何冷启都为真, 恢复路径变成冷启
+    // 无条件提前开窗, 与 startSession 的 zHome picker 抢前台 → failInit
+    // (07:09 实证: 51.704 "restoring root=0" → picker 失焦 7 连败)。
+    // master 的 > 0 能当门是因为 wayland root 来自真实 toplevel 事件;
+    // x11 画布 root 恒 0, 判据只能是「窗开过」。开窗时序 = openX11Canvas
+    // (engine-ready, 先会话后开窗, 与 wayland desktop_root 对齐);
+    // 链早启不受影响 —— 链在 EntryAbility 参数落地时 windowless 启动
+    // (smokeDisplayRoute(0n,false)), 不依赖桌面窗。
+    if (this.isDesktopMode && this.desktopAbilityRunning) {
       hilog.info(DOMAIN, TAG, '[MW] restoring existing DesktopAbility root=%{public}d',
         this.desktopRootId);
       this.startDesktopAbility(this.desktopRootId);
@@ -1199,6 +1210,9 @@ export class WineWindowManager {
 
   restoreDesktopIfRunning(): void {
     if (!this.isDesktopMode || this.desktopRootId < 0) return;
+    // D18: 同 registerHostWindow 恢复块 —— 只恢复真开过的窗。x11 root 恒 0,
+    // rootId 判据在冷启恒过, 会把恢复路径变成冷启早开窗 (DWA 抢跑 picker)。
+    if (!this.desktopAbilityRunning) return;
     // A new Want foregrounds EntryAbility even though the desktop compositor
     // remains alive. Re-starting the singleton moves that existing desktop
     // back to the foreground without recreating or stopping the Wine session.
