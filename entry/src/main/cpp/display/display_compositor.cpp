@@ -79,6 +79,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include "display_guest_frames.h"
 #include "compositor/wayland_server.h" /* WaylandServer session (无画布早启的输出尺寸源) */
 #include "ohos_egl_import_probe.h"
+#include "xim_bridge.h"
 #include "ohos_egl_import.h"
 
 #include "compositor/wayland_server.h" /* FireDesktopReady 经会话状态通道补发 */
@@ -245,6 +246,12 @@ static int StartOutputChainTimer(void *data)
                                         c->canvas_egl_present);
     OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d (deferred)", rc);
     WriteDisplayRouteReady();
+
+    /* XIM 桥探针 (XIM spec Task 1) 已完成使命并撤调用: 主进程 XOpenDisplay
+     * 实测挂起不返回 (2026-10-07, 探针线程化后无害但不撤则每次冷启泄漏一个
+     * 挂起线程)。X1 结论 = 主进程 X 不可达, 桥承载改 NCP 子进程 (与
+     * Xwayland 同 mount namespace, xclient_child 已证连接可行)——spec §3
+     * 修正后 xim_bridge 文件按新架构重写。 */
 
     // present 零拷贝前置探针: 再往后 1s (同样只为避开子进程 fork 窗口)
     const char *probe_env = getenv("WINEHUA_COMPOSITOR_PROBE");

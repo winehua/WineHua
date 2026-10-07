@@ -85,6 +85,7 @@ add_library(entry SHARED
     display/ohos_egl_import_probe.c
     display/ohos_egl_import.c
     display/display_input.c
+    display/xim_bridge.c
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp
     compositor/toplevel/toplevel_event_bus.cpp
@@ -119,7 +120,11 @@ set_source_files_properties(compositor/frame/compositor_blit.cpp PROPERTIES COMP
 
 target_include_directories(entry PRIVATE ${WLR_INC} ${WLR_PIXMAN_INC} ${WLR_XCB_INC})
 
+# xim_bridge (XIM spec Task 1): Xlib 客户端面, 头在 WLR_XCB_INC (host-ext
+# usr/include), 运行时 libX11.so.6 由 assemble.sh 装进打包视图 (同 xclient
+# 子进程的依赖面, CMakeLists xclient 段注释)。
 target_link_libraries(entry PUBLIC
+    ${WAYLAND_LIBS_DIR}/libX11.so.6
     libace_napi.z.so
     libace_ndk.z.so
     libnative_window.so
