@@ -63,12 +63,25 @@ wine (winewayland.drv，基本不动；__OHOS__ 私有协议保留)
 
 **组件处置**：`compositor/` 9458 行 + `seat.cpp`/`input_manager.cpp`/`text_input.cpp`/`pointer_extras.cpp` 约 1800 行 → 退役；`egl_renderer` 每窗渲染 → ohos_output 呈现链顶替；ArkTS 层保留换事件源。
 
+### 5.1 驱动侧附带裁决：winewayland.drv 的 `__OHOS__` 定制分类（2026-10-07 实查）
+
+驱动 16 处定制**无一为 OHOS 平台必需**，全部源于合成器侧行为，分三类处置：
+
+| 定制 | 内容 | 处置 |
+|---|---|---|
+| 模态私有协议整链 | `modal.c` 全文件 + `window.c:508`/`wayland_surface.c:218` 调用 + `wayland.c:208` 注册 | **退役**。出生原因 = 自研合成器不认 transient 叠放（`modal.c` 头注释自述）；wlroots 原生遵守 `xdg_toplevel.set_parent` 叠放。前提：策略层接住「transient 子窗恒在 owner 之上、owner 禁用拦输入」两条规则，否则问题换个地方复发 |
+| `wayland_surface_ohos.c` min/max 约束 | 不可 resize 窗锁 min=max，交合成器执行 | **对齐上游后大概率退役**（标准 xdg 合成器本应执行 min/max；需对照 wine 上游同版确认差异，spec 待办） |
+| `wayland_surface.c:606` 虚拟桌面坐标转发 | 把窗口屏幕坐标塞进 `xdg_surface.set_window_geometry` x/y | **不能保留，需换正式通道**：该 API 协议语义是 surface 内内容偏移而非屏幕位置，标准合成器按语义处理会错位——虚拟桌面摆位需要显式通道（私有协议扩展或策略层另行取位），是 B2 的设计点 |
+
+驱动侧差异因此收敛到「虚拟桌面摆位通道（+可能保留的 winehua_toplevel）」，wine 体验完整性在驱动侧与合成器侧双向贴上游。
+
 ## 6. 风险
 
 1. 工作量 M0+M1 同量级（数周）：`display/` 胶水可作复用起点（§5），但按「复用与校准分离」原则需逐段重验，xdg 事件的窗口策略层（z-order/模态/popup→OHOS 窗映射）是真活——成本估算不因复用而乐观。
 2. configure/serial 生命周期与自研即时应答不同，wine 的响应模式需实测调校——「体验完整」的主战场。
 3. 引擎替换**就地**进行（用户 2026-10-06 已裁决，见 §7.1）：同一 socket 路径，ArkTS 无感，不出现第三栈。
 4. pointer-warp 缺失仅影响个别绝对 warp 场景（可选 bind）；钉 0.21+ 回头补。
+5. 驱动定制退役的次序约束（§5.1）：模态协议退役前，策略层的 transient 叠放/禁用拦截规则必须先落地并实测，否则模态对话框遮挡问题复发。
 
 ## 7. 开放问题（spec 前需裁决）
 
@@ -80,6 +93,6 @@ wine (winewayland.drv，基本不动；__OHOS__ 私有协议保留)
 - **B0**：wlroots 起 xdg 服务端，notepad 经 winewayland.drv 上屏（单 output + 现成呈现链）——协议正确性第一证。
 - **B1**：输入全通（pointer/keyboard/text-input），拖拽/resize/双击（复用 D15 手势层，输出端换 wlroots seat 注入）。
 - **B2**：平板虚拟桌面完整形态（scene 合成 + 任务栏事件）+ 剪贴板（data-control）+ 真光标（cursor-shape）。
-- **B3**：PC 多窗口（每窗 output）+ winehua_toplevel 模态重挂 + 长尾样本验收。
+- **B3**：PC 多窗口（每窗 output）+ 驱动定制退役（§5.1：模态协议退役、min/max 对齐上游，前置 = 策略层 transient 叠放/禁用拦截规则落地实测）+ 长尾样本验收。
 
 > 后续 spec 落于 `docs/superpowers/specs/`，本文只承载方向裁决与证据；实现结论写进 spec 与代码注释，不在这里复制（同一判据只留一处）。
