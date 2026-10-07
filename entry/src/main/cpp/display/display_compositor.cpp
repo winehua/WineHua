@@ -147,6 +147,7 @@ static bool g_xclient_spawned;
  * 时门还关着 → smoke 触发补开门时 ready 事件已过, 不补拉则 smoke 套件
  * 永远等不到测试窗)。条件不满足时静默返回 (后续时机再试)。 */
 static void TrySpawnXclientTestClient();
+static void TrySpawnXimServer();
 
 void HandleXwaylandReady(struct wl_listener *listener, void *data)
 {
@@ -155,6 +156,44 @@ void HandleXwaylandReady(struct wl_listener *listener, void *data)
     if (!g_xclient_test_client_enabled)
         OH_LOG_INFO(LOG_APP, "xclient test client skipped (script disabled, product desktop)");
     TrySpawnXclientTestClient();
+    TrySpawnXimServer();
+}
+
+/* XIM server NCP 子进程 (XIM spec §3 NCP 承载): 与 xclient 同时机 (Xwayland
+ * ready 后), socketpair 子端经命名 fd "xim_fd" 传入。 */
+static void TrySpawnXimServer()
+{
+    static bool spawned = false;
+    if (spawned)
+        return;
+    spawned = true;
+
+    int child_fd = xim_bridge_channel_init();
+    if (child_fd < 0)
+        return;
+
+    std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
+    std::string params = (xdg.empty() ? "" : xdg + "/xim_server_stderr.log") + "|" + xdg;
+
+    NativeChildProcess_Fd node = {};
+    node.fdName = const_cast<char *>("xim_fd");
+    node.fd = child_fd;
+    NativeChildProcess_FdList fdList = {};
+    fdList.head = &node;
+    NativeChildProcess_Args args = {};
+    args.entryParams = strdup(params.c_str());
+    args.fdList = fdList;
+    NativeChildProcess_Options options = {};
+    options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
+
+    int32_t pid = -1;
+    int32_t ret = OH_Ability_StartNativeChildProcess(
+        const_cast<char *>("libxim_server_child.so:Main"), args, options, &pid);
+    if (ret != 0)
+        OH_LOG_ERROR(LOG_APP, "xim StartNativeChildProcess ret=%{public}d", ret);
+    else
+        OH_LOG_INFO(LOG_APP, "xim NCP spawned pid=%{public}d", pid);
+    /* 成功后子端 fd 所有权转移给 NCP 框架, 不得 close (对齐 xwayland 段注释) */
 }
 
 static void TrySpawnXclientTestClient()

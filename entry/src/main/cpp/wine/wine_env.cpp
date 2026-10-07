@@ -107,6 +107,10 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // 单设 LANG 无效, 必须补 LC_ALL 才能解析出对应 LCID (0x0804 zh-CN),
     // 与 LANG 同取设置页 wineLang (zh_CN/en_US)
     env.push_back("LC_ALL=" + wineLang + ".UTF-8");
+    // XIM server (XIM spec §3): libX11 XOpenIM 读 XMODIFIERS 定位输入法,
+    // 指向 xim_server_child 注册的 "winehua"。缺省行为不变 = 无此串时
+    // XOpenIM 走默认探测 (失败静默, 与引入 XIM 前一致)。
+    env.push_back("XMODIFIERS=@im=winehua");
     // winegstreamer 运行时加载 GStreamer 插件 (gst-plugins-base/good/libav)
     env.push_back("GST_PLUGIN_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
     env.push_back("GST_PLUGIN_SYSTEM_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");

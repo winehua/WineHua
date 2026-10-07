@@ -1,18 +1,21 @@
 #ifndef WINEHUA_XIM_BRIDGE_H
 #define WINEHUA_XIM_BRIDGE_H
 
-/* x11 路线 XIM server 桥 (spec docs/superpowers/specs/2026-10-07-display-route-x11-xim-server-design.md)。
- * 链启动后调用; 结果与状态走 hilog (tag: xim-bridge)。
- * 线程纪律: 桥内 Xlib 连接仅在合成器 loop 线程使用, 跨线程请求经
- * display_input 注入队列转交 (同 D19 剪贴板桥纪律)。 */
+/* XIM 桥主进程侧通道 (spec docs/superpowers/specs/2026-10-07-display-route-x11-xim-server-design.md §3 NCP 承载)。
+ * XIM server 本体在 NCP 子进程 (xim_server_child.cpp); X1 实测主进程 X
+ * 不可达 (提交 1392d60), 本文件只管 socketpair 通道。
+ * 线程纪律: send_text 任意线程可调 (内部互斥); channel_init 在 spawn 前
+ * (合成器线程) 调一次。 */
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* X1 探针 (计划 Task 1): 验证 app 主进程 XOpenDisplay(":0") 可行 + root
- * window XIM_SERVERS property 写入成功。每次链启动都跑, 结果只进 hilog
- * (不做标记文件缓存——部署代际无法感知)。返回 0 = 探针已发起。 */
-int xim_bridge_probe_start(void);
+/* 创建通道对, 返回子端 fd (调用方随 NCP spawn 以 fdName "xim_fd" 传递,
+ * 所有权转移); 失败返回 -1。 */
+int xim_bridge_channel_init(void);
+
+/* 转投 UTF-8 文本 (smoke ime / 产品 text-input), 子进程未就绪时 -1。 */
+int xim_bridge_send_text(const char *utf8);
 
 #ifdef __cplusplus
 }

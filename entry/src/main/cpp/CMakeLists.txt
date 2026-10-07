@@ -186,6 +186,20 @@ target_link_libraries(xclient_child PUBLIC
     ${WAYLAND_LIBS_DIR}/libXext.so.6
 )
 
+# XIM server NCP 子进程 (XIM spec §3 NCP 承载): X 连接面同 xclient_child
+# (与 Xwayland 同 namespace; 主进程 XOpenDisplay 已实测挂起)。通道子端经
+# 命名 fd "xim_fd" 传入 (xwayland 五连同款机制)。
+add_library(xim_server_child SHARED
+    display/ncp/xim_server_child.cpp
+)
+target_include_directories(xim_server_child PRIVATE ${WLR_XCB_INC})
+target_link_libraries(xim_server_child PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    ${WAYLAND_LIBS_DIR}/libX11.so.6
+    ${WAYLAND_LIBS_DIR}/libXext.so.6
+)
+
 # display-route 控制面的产品入口 (D21): 桌面窗/启动链/IME 桥的 ArkTS 调用面。
 # 符号来自 entry (同进程运行时解析), 必须与 entry 同包。
 add_library(display_route_napi SHARED
