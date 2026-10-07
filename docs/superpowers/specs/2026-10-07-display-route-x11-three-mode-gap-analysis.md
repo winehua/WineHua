@@ -197,7 +197,7 @@ override_redirect / transient_for 两个 X 属性）。菜单越出父窗边界�
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| M4-0 | XTEST Unicode keysym 通道（§5 第 1 点，独立小项可先行） | keyboard 两项转 PASS |
+| M4-0 | （原 XTEST 通道计划已实测否证，见 §5；keyboard 两项的转绿依赖 XIM server 立项，归决策点 3） | — |
 | M4a | PC 多窗口最小闭环：per-xs 呈现 + created/resize/close 映射 + 按窗输入；单程序双窗 | smoke 新增 x11-fusion 套件，双窗内容/点击路由 PASS |
 | M4b | 窗口状态面：minimize/fullscreen/activate/title/modal 双向映射 | 同上扩展 |
 | M4c | 弹出层：override-redirect → 独立子窗 | 菜单用例（越界可点） |
@@ -213,16 +213,32 @@ override_redirect / transient_for 两个 X 属性）。菜单越出父窗边界�
 现状两层：
 
 1. **smoke 注入面**：`ime` 动作在 wayland 走合成器 text-input 提交
-   （SmokeRunner.ets:565-572 → `testNapi.sendImeCommit`）；x11 分支无对应通道，
-   keyboard 用例 2/13 FAIL（char-count 差 E5 一位）。**低成本修法**：XTEST 打
-   Unicode keysym（0x01000000+UCS；fcitx5 对 Xwayland 无 XIM 时的同款 fallback，
-   wine 侧 keysym→Unicode 折算现成）——smoke 面即可闭合，不等产品桥。
+   （SmokeRunner.ets → `testNapi.sendImeCommit`）；x11 分支无对应通道，
+   keyboard 用例 2/13 FAIL（char-count 差 E5 一位）。
 2. **产品面（真实 IME 打字）**：OHOS 输入法框架 → text-input-v3 → wlroots 后
-   需要 X 侧通道把最终串送进 winex11。winex11 有完整 XIM 客户端（xim.c）但
-   Xwayland 的 XIM server 生态支持差（win32-window-model 文档 §13）；候选：
-   (a) XTEST fake keysym 直打（同 1，产品桥也可先走）；(b) 实现 XIM server
-   （完整 preedit/候选语义，工作量大）；(c) D19 剪贴板桥承接（已建，仅粘贴语义）。
-   决策点：先 (a) 后评 (b)，与 wayland 路线的 text-input 完整度对齐时再评。
+   需要 X 侧通道把最终串送进 winex11。winex11 有完整 XIM 客户端（xim.c）。
+
+**实测否证记录（2026-10-07，keymap 扩展实验 r20261007-080136/081012）**：
+X 键盘链上的 Unicode 注入（keymap 槽位扩展，把 `key <I248> { [ U4E2D ] }`
+插进合成器自编 keymap）**结构性不可行**，三层独立证据：
+
+- **双编译器分叉**：合成器侧 xkbcommon 接受 `Uxxxx` Unicode keysym 名
+  （keysym.c 源码实证，from_name("U4E2D") → 0x01004e2d）；Xwayland 侧
+  xserver 走 `XkbCompileKeymapFromString` → xkbcomp，**xkbcomp（1.4.7
+  最新版实测）拒绝 Uxxxx、十进制/hex keysym 字面量**——Unicode 区无具名
+  keysym，xkbcomp 无任何写法可表达。
+- **xkm 预生成缓存按名短路**：本仓库 xserver 补丁（NCP 沙箱不能
+  fork/exec xkbcomp，T7 实测）把编译路径改为 assemble 期预生成
+  wine-data/xkm/ + 按名命中（ddxLoad.c:141-148）——keymap 热更新即使
+  送达，也命中旧缓存，扩展条目永不生效。
+- **设备实测**：keymap 重建日志确认发出（"ime keymap rebuilt"）、
+  evdev 240 注入确认发出（hilog），但 wine 侧 X KeyPress 无 keycode 248
+  事件、WM_CHAR 不产生；XTEST 通道同理不成立（合成器非 X client，且
+  keymap 无 CJK 条目时 XTEST 打任意 keycode 都折不出目标字符）。
+
+实验代码已撤除（无活消费方不留死代码）。**治本路径 = XIM server**（winex11
+xim.c 是完整 XIM 客户端，commit 串不经 keymap；fcitx5/ibus 对 Xwayland 的
+同款行业标准通道），量级数百行，属产品面 IME 桥工程，待拍板（决策点 3）。
 
 ## 6. 待用户拍板的决策点
 
@@ -233,8 +249,10 @@ override_redirect / transient_for 两个 X 属性）。菜单越出父窗边界�
    换引擎直接复用；但 per-xs 呈现与状态映射层的验收要按 wine 标准走两遍。
 2. **弹出层承载**：§4.3 推荐 override-redirect → 独立系统子窗（对齐 popup
    路线）；备选是先在父窗 buffer 内合成（实现更薄，但菜单越界会被裁剪）。
-3. **ime 通道**：§5 第 1 点的 XTEST Unicode keysym 通道是否先行（不依赖 1 的
-   拍板，独立小项，直接把 keyboard 两项转绿）。
+3. **ime 通道**：X 键盘链注入已实测否证（§5）；治本 = XIM server（数百行
+   产品面工程，兼作真实 IME 打字的产品桥）。是否立项、何时立项（smoke 面
+   可先用「x11 路线 ime 动作报 UNSUPPORTED」的诚实记账过渡，套件维持
+   11/13 + 缺口显式记录）。
 4. **退役判据的时间表**：三形态对齐是 M3 退役的硬前提（记忆
    x11-retirement-three-mode-parity），但 wlroots-serve-winewayland 方向
    （记忆 wlroots-serves-winewayland-direction）下「退役」的紧迫度重估——
