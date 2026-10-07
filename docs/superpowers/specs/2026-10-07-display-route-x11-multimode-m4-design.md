@@ -65,11 +65,16 @@ surfaceKey = `(clientPid << 32) | xs window_id`（对齐 wayland 的
 `(pid<<32)|surfaceId` 位宽语义，x11 侧 window_id 天然唯一）。
 
 **渲染循环**（映射层内，帧时钟复用 ohos_output 的 VSync 驱动）：
-每 tick 遍历活跃 toplevel → `wlr_renderer` begin(该窗 buffer) → 画
-`xs->surface` 的 texture（`wlr_render_texture`，含 alpha）→ commit → NativeWindow
-直推（复用 ohos_output 的路径 C Lock/Flush 纪律）。**帧跳过**：surface buffer
+每 tick 遍历活跃 toplevel → `wlr_renderer_begin_buffer_pass`(该窗 buffer)
+（wlroots 0.20 render pass 模型，pass.h:57）→ `wlr_render_pass_add_texture`
+画 `wlr_surface_get_texture(xs->surface)`（wlr_compositor.h:363；texture 由
+本渲染循环按 buffer 指纹经 `wlr_texture_from_buffer` 按需创建并缓存——
+scene/cursor 同款用法，wlr_scene.c:1201）→ submit → NativeWindow 直推（复用
+ohos_output 的路径 C Lock/Flush 纪律）。**源码验证（2026-10-07）**：texture
+不随 commit 自动创建、由消费方在自己 renderer 上按需建是 wlroots 全树一致
+模式，per-xs 独立渲染无 scene 依赖，方案成立。**帧跳过**：surface buffer
 未变（提交序号 same）且窗口未 resize → 跳帧。guest Vulkan 帧（M2-T5 的
-frame_node 机制）：多窗模式下改画进所属窗的 buffer（同 tick 内先 surface
+frame_node 机制）：多窗模式下改画进所属窗的 buffer（同 pass 内先 surface
 texture 后 guest 帧叠加，几何用 D23 的子窗/顶层锚定查询）。
 
 ### 3.2 ohos_output.c 多窗模式分支
