@@ -118,6 +118,12 @@ inline std::vector<std::string> BuildWineBaselineLines(const WineBaselinePaths& 
         "WINEDLLDIR2=" + binDir,
         "WINEDLLPATH=" + dllPath,
         "XKB_CONFIG_ROOT=" + shareDir + "/X11/xkb",
+        // Xlib i18n 数据库 (XLC_LOCALE/locale.alias)。缺它 XSupportsLocale()
+        // 返回 False, winex11.drv xim_init 直接放弃 → XOpenIM 不执行, XIM
+        // server 永远等不到 client (2026-10-07 实测 "X does not support
+        // locale")。libX11 1.8.10 lcFile.c 先读本 env 再退编译期路径;
+        // locale.dir 条目为相对形态, 搬移后按本目录拼接即生效。
+        "XLOCALEDIR=" + shareDir + "/X11/locale",
         "PATH=/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:" + binDir +
             "/x86_64-windows:" + binDir + "/i386-windows:" + binDir,
         "TMPDIR=" WINE_TMPDIR,

@@ -538,6 +538,18 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
         cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
     fi
 
+    # Xlib i18n 数据库: XLOCALEDIR (wine_env_baseline.h) 指向此处, 缺它
+    # XSupportsLocale() 失败 → winex11 xim_init 放弃 → XIM 链不通
+    # (2026-10-07 实测 "X does not support locale")。
+    if [ -d "$SYSROOT_EXT_SHARE/X11/locale" ]; then
+        cp -r "$SYSROOT_EXT_SHARE/X11/locale" "$wine_data/share/X11/"
+    fi
+    # 验收断言: C 基线 + zh_CN.UTF-8 (产品 locale, LANG=zh_CN.UTF-8) 必须在包内
+    for lc in C zh_CN.UTF-8; do
+        [ -f "$wine_data/share/X11/locale/$lc/XLC_LOCALE" ] ||
+            err "X11 locale data missing: $lc/XLC_LOCALE (libX11 构建段未产出? 查 build_x11.sh)"
+    done
+
     # guest GPU 库 (Mesa/VirGL, 供 GraphicsBroker 注入到 Wine LD_LIBRARY_PATH)
     if [ -d "$BUILD_DIR/guest_gfx/$guest_arch/lib" ]; then
         mkdir -p "$wine_data/bin/guest_gfx"
