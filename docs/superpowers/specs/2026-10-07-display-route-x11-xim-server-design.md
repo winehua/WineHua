@@ -36,32 +36,38 @@ fcitx5/ibus 在 Xwayland 下的同款通道，行业标准答案。选型对比�
 
 ```
 [产品面]  OHOS IME → ArkTS inputMethod 框架 → text-input-v3 (wlroots 内置)
-          → wlr_text_input commit 事件 → [XIM 桥] → XIM 协议 → winex11 xim.c
+          → wlr_text_input commit 事件 → [主进程注入队列]
+          → socket 通道 → [XIM 桥 NCP 子进程] → XIM 协议 → winex11 xim.c
           → ImmProcessKey/ImmCommitString → WM_CHAR
 
-[smoke面] injectDisplayRouteText(text)（复用已撤实验的入口签名）
-          → [XIM 桥] 直接走 commit 分支 → 同上
+[smoke面] injectDisplayRouteText(text)
+          → display_input 队列 (is_text) → drain → socket 写入 → 同上
 ```
 
-**XIM 桥落点**：新文件 `display/xim_bridge.c`，跑在合成器进程，作为 **X
-client** 连本机 Xwayland（`XOpenDisplay(":0")`——合成器进程此前无 X 连接，
-这是新增面；权限面 = Xwayland 本地连接，与 xclient_child 同款）。
-实现最小 XIM server：
+**XIM 桥落点（X1 实测修正，2026-10-07）**：**NCP 子进程**
+（`display/ncp/xim_server_child.cpp`，对齐 xclient_child 模式：NCP spawn +
+命名 fd + entryParams）。原设计（合成器进程直连）已被 X1 探针否证：
+`XOpenDisplay(":0")` 在 app 主进程**挂起不返回**（X socket 对主进程 mount
+namespace 不可达；xclient_child 连接成功是因为 NCP 子进程与 Xwayland 同
+命名空间，不能外推）。子进程内实现最小 XIM server：
 
-- XIM 协议走 XIMSERVER 属性（XIM_TRANSPORT）：XIM server 之间经
-  `_XIM_SERVERS` root property 注册 + XIM 事件流（XIM_PROTOCOL via
-  ClientMessage）。最小实现面：注册 → 接受 IM 开启 → RECEIVE seen →
-  commit 串投递（`XIM_COMMIT`，XIM compound text / UTF-8 编码）。
-- 目标窗选择：smoke 面 = 当前 seat 键盘焦点 xs 的 X window；产品面 =
-  text-input 的 focused surface 对应 xs。
-- winex11 xim.c 侧预期行为：应用 SetFocus+CreateCaret 后 wine 会尝试
-  XOpenIM——server 在位时 IM 挂载成功，commit → WM_CHAR（用例断言面）。
+- XIM 协议走 XIMSERVER 属性（XIM_TRANSPORT）：root 的 `_XIM_SERVERS`
+  property 注册 + selection `XIM_SERVERS` owner 应答 + `XIM_PROTOCOL`
+  ClientMessage 握手/commit（发现→CONNECT→OPEN→IC→COMMIT 最小状态机）。
+- 目标窗选择：子进程内 `XGetInputFocus` 所在 client 的 IC（wine 单窗应用
+  单 IC 兜底）。
+- 主进程 ↔ 子进程通道：socketpair（NCP 命名 fd 机制，xwayland_child 五连
+  先例），协议极简 = `{magic, len, utf8 bytes}`；主进程侧 drain 线程写
+  socket（write 原子性足够），子进程读线程发 XIM COMMIT。
+- winex11 xim.c 侧预期行为不变：应用 SetFocus+CreateCaret 后 wine 尝试
+  XOpenIM（`@im=winehua`）——server 在位时 IM 挂载成功，commit → WM_CHAR。
 
 **既有资产对位**：
-- 合成器侧 text-input：wlroots 内置 `wlr_text_input_v3`（M0 spec 选型时已
-  确认内置），需在 display 栈 enable + 监听 commit（当前未接，接入 ~50 行）。
-- smoke 注入入口：恢复 `injectDisplayRouteText`（NAPI + display_input 队列
-  is_text 分支），消费点改调 XIM 桥（实验代码结构可复用，机制换 XIM）。
+- NCP 子进程骨架：xclient_child（X 连接已证）+ xwayland_child（命名 fd 五连）。
+- 合成器侧 text-input：wlroots 内置 `wlr_text_input_v3`，需在 display 栈
+  enable + 监听 commit（当前未接，接入 ~50 行，X3）。
+- smoke 注入入口：`injectDisplayRouteText`（NAPI + display_input 队列
+  is_text 分支），drain 改写 socket 而非直调（承载变更后的唯一接线差异）。
 
 ## 4. 数据流（smoke 面最小闭环）
 
@@ -76,19 +82,19 @@ SmokeRunner ime 动作 → injectDisplayRouteText("中")
 
 | 风险 | 对策 |
 |---|---|
-| XIM 协议细节多（transport 分代、复合文本编码） | 锚定 fcitx 前端 + 上游 wine xim.c 实读；先只支持 UTF8 commit（XIM_EXT_MOVE 之类不碰）；smoke 用例先行验证最小闭环 |
+| XIM 协议细节多（transport 分代、复合文本编码） | 锚定 fcitx 前端 + libX11 ximcp 实测行为；先只支持 UTF8 commit；smoke 用例先行验证最小闭环 |
 | wine 侧 XIM 挂载条件（locale/修饰符） | LANG=zh_CN.UTF-8 已在 env（entryParams 实证）；XMODIFIERS 需下发 `@im=winehua`（wine_env 汇集点加一项，随 __env 下发） |
 | 两实例冲突（合会话内 wine 多进程各开 IM） | XIM server 单实例按 display 注册；多 wine 进程共享同一 IM 连接（XIM 协议原生多客户） |
 | 产品面 text-input enable 影响 wayland 路线 | wlroots text_input_v3 global 只在 display 栈（x11 链）创建；wayland 路线合成器不动 |
-| 合成器进程起 X 连接的沙箱权限 | M0 式真机首验项：XOpenDisplay(":0") 在 app 进程的可行性探针（xclient_child 已证同进程族可行） |
+| ~~app 主进程 X 连接沙箱权限~~ | **已实测否证（X1，2026-10-07）**：主进程 XOpenDisplay 挂起不返回 → 桥承载改 NCP 子进程（见 §3）；socketpair 通道为新增面，命名 fd 机制有 xwayland_child 先例 |
 
 ## 6. 里程碑
 
 | 阶段 | 内容 | 通过判据 |
 |---|---|---|
-| X1 | 沙箱探针：app 进程 XOpenDisplay + `_XIM_SERVERS` 注册可见性 | 探针程序在设备端输出注册成功 + xprop 可见 |
-| X2 | XIM 桥最小 commit 通道 + smoke ime 接入 | input-keyboard-x64/x86 char-cjk 转 PASS（13 前缀 13/13） |
-| X3 | 产品面：text-input-v3 接入 + XMODIFIERS 下发 | 真机软键盘/实体键 IME 打字「中」进 notepad（手测） |
+| X1 ✅ | 沙箱探针（**已完成 2026-10-07，否定性结论**）：主进程 XOpenDisplay 挂起 → 承载改 NCP 子进程；探针调用撤除（提交 1392d60） | ~~探针注册成功~~ → 按停止条件转向 NCP 承载 |
+| X2 | XIM 桥最小 commit 通道（NCP 子进程版）+ smoke ime 接入 | input-keyboard-x64/x86 char-cjk 转 PASS（13 前缀 13/13） |
+| X3 | 产品面：text-input-v3 接入（XMODIFIERS 下发随 X2 提前落地） | 真机软键盘/实体键 IME 打字「中」进 notepad（手测） |
 
 X2 通过前不开 X3。虚拟桌面零回退判据同 M4 §7。
 

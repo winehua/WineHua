@@ -137,187 +137,129 @@ git commit -m "feat(display): X1 探针——主进程 X 连接与 XIM_SERVERS p
 
 ---
 
-### Task 2: XIM server 注册与 selection 应答（libX11 发现面）
+### Task 2（NCP 版）: xim_server_child 骨架——spawn + socketpair 通道 + XIM 注册面
 
 **Files:**
-- Modify: `entry/src/main/cpp/display/xim_bridge.c`（注册 + selection owner + 事件循环接入）
+- Create: `entry/src/main/cpp/display/ncp/xim_server_child.cpp`（NCP Main 入口）
+- Modify: `entry/src/main/cpp/display/xim_bridge.c`（改造：主进程侧通道客户端——socketpair 主端创建/监听 + `xim_bridge_send_text()`；探针函数删除，X1 结论已在案）
+- Modify: `entry/src/main/cpp/display/xim_bridge.h`（新接口声明）
+- Modify: `entry/src/main/cpp/display/display_compositor.cpp`（`TrySpawnXimServer()`：锚定 `TrySpawnXclientTestClient`（display_compositor.cpp:161-184）与 `g_xwayland_ready_listener`；named fd 传递锚定 xwayland spawn 段的 `wlr_ohos_spawn_xwayland` 接线）
+- Modify: `entry/src/main/cpp/CMakeLists.txt`（`add_library(xim_server_child SHARED display/ncp/xim_server_child.cpp)` + 链接同 xclient_child 段：libX11.so.6/libXext.so.6/libhilog/libchild_process + `${WLR_XCB_INC}` include）
+- Modify: `entry/src/main/cpp/wine/wine_env.cpp:104` 附近（`env.push_back("XMODIFIERS=@im=winehua");`，与 LANG/LC_ALL 同列）
 
 **Interfaces:**
-- Consumes: Task 1 的 `g_xdpy`（loop 线程独占）。
-- Produces: `void xim_bridge_tick(void)`——桥事件泵，由既有帧时钟每拍调（ohos_output.c FrameTick 内加一行；XPending 处理，无事件立即返回，零开销）。
+- Consumes: xclient_child 的 NCP Main 形态（`extern "C" void Main(NativeChildProcess_Args)`，entryParams `|` 分隔，xim_server_child 用 `"<stderrPath>|<xdgDir>"` 两段）；xwayland_child 的命名 fd 传递先例。
+- Produces: `int xim_bridge_send_text(const char *utf8)`——任意线程安全（socket write），子进程未就绪返回 -1。
+- Produces: 子进程 X 连接面（XOpenDisplay 在 NCP namespace 已证可行，xclient_child.cpp:143-153 + `sockets.c 标准路径优先` 补丁）。
 
-- [ ] **Step 1: 注册面实现（真代码骨架）**
+- [ ] **Step 1: 子进程骨架（真代码结构）**
 
-在 xim_bridge.c 追加（Task 1 的探针函数改造为 `xim_bridge_start`）：
+`xim_server_child.cpp` 结构（对齐 xclient_child.cpp:104-141 的 Main/entryParams/stderr 重定向/XDG_RUNTIME_DIR setenv；X 连接后）：
 
-```c
-/* XIM server 发现面 (libX11 ximcp 的探测序列, 锚定 Xlib 内置 IM 实现):
- * 1. root 的 XIM_SERVERS property (ATOM 类型) 列出 server 名 atom
- * 2. selection XIM_SERVERS 的 owner = 本桥窗口
- * 3. libX11 XOpenIM 读 XMODIFIERS=@im=winehua → 匹配 property →
- *    XConvertSelection(XIM_SERVERS) → SelectionNotify → 向 owner 窗口
- *    发 _XIM_MOREDATA/_XIM_PROTOCOL ClientMessage 握手 (Task 3) */
-static Window g_srv_win;
-
-static char *SelTargets(Display *d, Window w); /* selection 应答体, 见下 */
-
-void xim_bridge_tick(void)
-{
-    if (!g_xdpy) return;
-    while (XPending(g_xdpy)) {
-        XEvent ev;
-        XNextEvent(g_xdpy, &ev);
-        if (ev.type == SelectionRequest) {
-            XSelectionEvent sev = {
-                .type = SelectionNotify, .display = g_xdpy,
-                .requestor = ev.xselectionrequest.requestor,
-                .selection = ev.xselectionrequest.selection,
-                .target = ev.xselectionrequest.target,
-                .property = ev.xselectionrequest.property, .time = CurrentTime };
-            const char *names = "winehua\0";
-            XChangeProperty(g_xdpy, sev.requestor, sev.property, XA_ATOM, 32,
-                            PropModeReplace,
-                            (const unsigned char *)&(Atom){XInternAtom(g_xdpy, "winehua", False)},
-                            1);
-            XSendEvent(g_xdpy, sev.requestor, False, 0, (XEvent *)&sev);
-        }
-    }
-}
+```cpp
+// 1. XOpenDisplay(":0") (同 xclient_child.cpp:153)
+// 2. XIM 注册面: root 的 XIM_SERVERS property (值 = atom "winehua")
+//    + 创建 server 窗口 + XSetSelectionOwner(XIM_SERVERS selection)
+// 3. socketpair 子端 (named fd 传入, fd 号经 entryParams 第三段传)
+//    → 读线程: recv {magic(4B),len(4B),utf8} → 发 XIM COMMIT (Task 4)
+// 4. X 事件循环: XPending 处理 SelectionRequest/ClientMessage (Task 3 状态机)
 ```
 
-xim_bridge_start 追加：`XSelectInput` 无需（SelectionRequest 要选——
-`XSelectInput(g_xdpy, root, 0)` 不够；SelectionRequest 送达 owner 窗口，
-`g_srv_win = XCreateSimpleWindow(...)` 后 `XSetSelectionOwner(g_xdpy,
-XInternAtom(g_xdpy,"XIM_SERVERS",False), g_srv_win, CurrentTime)`，
-`XSelectInput(g_xdpy, g_srv_win, 0)`（SelectionRequest 事件无需窗口选掩码，
-Xlib 全收）。
+主进程侧 `xim_bridge.c`：`xim_bridge_channel_init()` 创建 socketpair、
+子端经 NCP options 的 named fd 机制随 spawn 下发（锚定 xwayland spawn 的
+fd 传递 API 面）；`xim_bridge_send_text()` 加锁写主端（`{0x57485349, len, bytes}`）。
 
-ohos_output.c FrameTick 内加 `xim_bridge_tick();`（include xim_bridge.h）。
+- [ ] **Step 2: spawn 接线（display_compositor.cpp）**
 
-- [ ] **Step 2: 构建部署 + 判据**
+`TrySpawnXimServer()`：`g_xwayland_ready_seen` 后触发一次；`OH_Ability_StartNativeChildProcess("libxim_server_child.so:Main", args, options, &pid)`；entryParams = `"<files>/xim_server_stderr.log|<xdgDir>|<fd号>"`。启动日志 `xim NCP spawned pid=`。
 
-判据（新增桥日志，start 时打）：`xim-bridge: registered selection XIM_SERVERS owner=0x...`。
-wine 侧判据（发现面被触发）：
+- [ ] **Step 3: 构建部署 + 判据**
 
 ```bash
-# 套件 env 加 WINEHUA_WINEDEBUG=+xim 临时跑 input-keyboard-x64:
-python3 automation/smoke.py run --job smoke/jobs/displayroute-win32-interactive.json \
-  --display-route x11 --tests input-keyboard-x64 --env WINEHUA_WINEDEBUG=+xim 2>&1 | tail -3
-hdc -t 192.168.0.206:33363 file recv -b app.hackeris.winehua /data/storage/el2/base/temp/wine_stderr_$(date +%Y%m%d).log /home/rianm/.claude/jobs/5a90fd84/tmp/wsx.log
-grep -c "trace:xim" /home/rianm/.claude/jobs/5a90fd84/tmp/wsx.log
+set -o pipefail
+rm -f entry/build/default/intermediates/libs/default/arm64-v8a/libentry.so
+make NATIVE_ARCH=arm64-v8a hap 2>&1 | tail -2
+bash scripts/package.sh deploy 192.168.0.206:33363 2>&1 | tail -1
+hdc -t 192.168.0.206:33363 shell "aa start -a EntryAbility -b app.hackeris.winehua --ps winehua.displayRoute x11"
+sleep 30
+hdc -t 192.168.0.206:33363 shell "hilog -x 2>/dev/null | grep -E 'xim NCP|xim-bridge' | tail -4"
 ```
 
-Expected: `trace:xim` 行数 > 0（XOpenIM 被尝试；此时握手未完成属预期——Task 3 补）。若为 0：查 XMODIFIERS 未下发（Task 6 的 env 项提前到本 Task 验证——wine_env.cpp:104 附近加 `env.push_back("XMODIFIERS=@im=winehua");` 并重跑本步）。
-
-- [ ] **Step 3: 零回退门（同 Task 1 Step 3，3/3 PASS）**
+Expected: `xim NCP spawned pid=` + 子进程日志（`xim-server: X connected` + `registered XIM_SERVERS`）。零回退门 3/3 PASS。
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add entry/src/main/cpp/display/xim_bridge.c entry/src/main/cpp/display/ohos_output.c entry/src/main/cpp/wine/wine_env.cpp
-git commit -m "feat(display): XIM server 注册面 + 帧时钟事件泵 + XMODIFIERS 下发 (XIM spec Task 2)"
+git add entry/src/main/cpp/display/ncp/xim_server_child.cpp entry/src/main/cpp/display/xim_bridge.c entry/src/main/cpp/display/xim_bridge.h entry/src/main/cpp/display/display_compositor.cpp entry/src/main/cpp/CMakeLists.txt entry/src/main/cpp/wine/wine_env.cpp
+git commit -m "feat(display): XIM server NCP 子进程骨架 + socketpair 通道 + XMODIFIERS 下发 (XIM spec Task 2 NCP 版)"
 ```
 
 ---
 
-### Task 3: XIM 协议握手（XCONNECT → CONNECT → OPEN → OPEN_REPLY）
+### Task 3（落点子进程）: XIM 协议握手（CONNECT → OPEN → OPEN_REPLY → IC）
 
 **Files:**
-- Modify: `entry/src/main/cpp/display/xim_bridge.c`（ClientMessage 状态机）
+- Modify: `entry/src/main/cpp/display/ncp/xim_server_child.cpp`（ClientMessage 状态机；协议内容与原 Task 3 相同，落点从主进程 xim_bridge.c 挪到子进程）
 
 **Interfaces:**
-- Consumes: Task 2 的 selection 注册（libX11 拿到 owner 后向 `g_srv_win` 发 ClientMessage）。
-- Produces: `struct xim_client`（每 wine 进程一个：Window xconnect_win、 major/minor 版本、locale 名、byte order）；多 client 表（数组 ≤8，覆盖 explorer+应用并发，见 Review Focus 2）。
+- Consumes: Task 2 的注册面（libX11 拿到 selection owner 后向 server 窗口发 `_XIM_PROTOCOL` ClientMessage）。
+- Produces: `struct xim_client` 表（每 wine 进程一项：xconnect 窗、byte order、locale、IC 列表；≤8 项覆盖 explorer+应用并发）。
 
-- [ ] **Step 1: 协议常量与状态机骨架（真代码）**
-
-XIM wire 协议要点（对端 libX11 ximcp，锚定 XIM 协议规范「The Input Method Protocol」；包格式 = ClientMessage 32 字节 + 超长数据走 `XIM_PROTOCOL` property）：
+- [ ] **Step 1: 协议常量与状态机（真代码，同原 Task 3 全部内容）**
 
 ```c
-/* 事件类型 (XIM wire): */
 #define XIM_CONNECT 1
 #define XIM_CONNECT_REPLY 2
 #define XIM_OPEN 30
 #define XIM_OPEN_REPLY 31
 #define XIM_CLOSE 32
 #define XIM_CREATE_IC 20
-#define XIM_COMMIT 69   /* XIM_COMMIT = 69 (XIM_LOOKUPCHARS 子模式) */
-#define XIM_STR_CONVERSION 73
-/* transport: libX11 发 ClientMessage (message_type=_XIM_PROTOCOL),
- * l[0]=ser#, l[1]=major opcode, l[2]=minor, 载荷走 _XIM_PROTOCOL property
- * (连接建立后), 或 l[3..] 内联 (小包)。回程同构, 目标 = client 的
- * xconnect window。 */
+#define XIM_COMMIT 69  /* minor = XIM_LOOKUPCHARS */
 ```
 
-状态机：`ClientMessage(message_type=XInternAtom("_XIM_PROTOCOL"))` →
-按 major opcode 分派：
-- `XIM_CONNECT`: 读 byte-order('l'/'B') + 版本 → 建表项 → 回 `XIM_CONNECT_REPLY`(接受)
-- `XIM_OPEN`: 读 locale 名（UTF-8 外部名，"zh_CN"/"C" 都要收，Review Focus 1）→ 回 `XIM_OPEN_REPLY`：**最小 IM 属性表**（separator: XIM_NS Native-Style ";\x00"、input-styles 至少含 `OffTheSpot,None` 组合对 `XIMSTYLEDRAW` 之外 wine 只用 on-spot——styles 列表回 `[(XIMPreeditNone|XIMStatusNone), (XIMPreeditPosition|XIMStatusArea), (XIMPreeditNothing|XIMStatusNothing)]` 三组，锚定 wine xim.c 的 `xim_create` 对 style 的过滤（xim.c:440-455 一带, 实读为准））
-- `XIM_CREATE_IC`: 回 IC id（递增）——IC 属性读写最小实现 = 全部忽略写、GET_IC_VALUES 回过滤属性（Task 4 再按 wine 实际 GET 列表补）
-
-超长载荷：事件 l[2] 后带 property 名时读 `_XIM_PROTOCOL` property 完整包（XIM 包头 = 2 字节 ser + 2 字节 major + 2 字节 minor + 2 字节 length（32bit words）+ 载荷），组包/拆包写两个 helper（`xim_pkt_put`/`xim_pkt_get`，大端序统一——XIM wire 固定大端，CONNECT 阶段协商的 byte order 只影响后续整数字段——锚定 libX11 实测行为，按实测日志修）。
+分派：CONNECT（byte-order 'l'/'B' + 版本 → 回 CONNECT_REPLY）→ OPEN
+（locale "zh_CN"/"C" 都收 → OPEN_REPLY 带**最小 IM 属性表**：separator
+`;\0` + input-styles 三组 `[(PreeditNone|StatusNone), (PreeditPosition|
+StatusArea), (PreeditNothing|StatusNothing)]`，锚定 wine xim.c `xim_create`
+的 style 过滤面实读）→ CREATE_IC（发 IC id）。包格式：ClientMessage 32B
+内联小包 + `_XIM_PROTOCOL` property 超长包；组包/拆包 helper `xim_pkt_put/
+get`（XIM wire 大端）。
 
 - [ ] **Step 2: 构建部署 + 逐跳判据**
 
 ```bash
-# 同 Task 2 Step 2 的 +xim 跑批, 收 wine stderr 后:
+# +xim 跑批 (同原 Task 2 Step 2 命令), 收 wine stderr:
 grep -E "trace:xim" /home/rianm/.claude/jobs/5a90fd84/tmp/wsx.log | tail -10
 ```
 
-Expected 顺序（wine 侧）：`xim_create`/`XOpenIM` 成功路径日志 + 无
-`Failed to open input method`。桥侧日志：`xim-bridge: client connected win=0x... locale=zh_CN`。
-判据不达时的调参纪律：**按桥日志最后一跳打**（停滞类问题：最后一条日志就是最后一跳，build-and-log 规则 8）——XIM 握手逐包对账以 libX11 实测行为为准，协议文档存疑处一律以「wine 挂载成功」为验收。
+Expected: wine 侧 XOpenIM 成功路径 + 无 `Failed to open input method`；子进程日志 `xim-server: client connected locale=zh_CN`。停滞时按最后一跳打（桥日志规则）；协议存疑处一律以「wine 挂载成功」为验收。
 
-- [ ] **Step 3: 零回退门（3/3 PASS）**
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: 零回退门（3/3 PASS）+ Commit**
 
 ```bash
-git add entry/src/main/cpp/display/xim_bridge.c
-git commit -m "feat(display): XIM 握手状态机——CONNECT/OPEN/OPEN_REPLY 多 client (XIM spec Task 3)"
+git add entry/src/main/cpp/display/ncp/xim_server_child.cpp
+git commit -m "feat(display): XIM 握手状态机 (NCP 子进程)——CONNECT/OPEN/IC 多 client (XIM spec Task 3)"
 ```
 
 ---
 
-### Task 4: IC 管理 + COMMIT + smoke ime 接入
+### Task 4: COMMIT + smoke ime 接入
 
 **Files:**
-- Modify: `entry/src/main/cpp/display/xim_bridge.c`（IC 表 + commit API）
-- Modify: `entry/src/main/cpp/display/display_input.c`（队列 is_text 分支恢复 + drain 调 commit）
-- Modify: `entry/src/main/cpp/display/display_input.h`（`wl_ohos_input_post_text` 声明）
-- Modify: `entry/src/main/cpp/display_route/display_route_napi.cpp`（`injectDisplayRouteText` NAPI 恢复）
+- Modify: `entry/src/main/cpp/display/ncp/xim_server_child.cpp`（XIM_COMMIT 发送：读线程收到 socket 串 → 向焦点 IC client 发 COMMIT(XIM_LOOKUPCHARS, UTF-8)）
+- Modify: `entry/src/main/cpp/display/xim_bridge.c`（`xim_bridge_send_text` 对外 API 定型）
+- Modify: `entry/src/main/cpp/display/display_input.c` + `.h`（队列 `is_text` 分支 + `wl_ohos_input_post_text`，drain 调 send_text）
+- Modify: `entry/src/main/cpp/display_route/display_route_napi.cpp`（`injectDisplayRouteText` NAPI）
 - Modify: `entry/src/main/cpp/types/display_route_napi/Index.d.ts`（声明）
-- Modify: `entry/src/main/ets/smoke/SmokeRunner.ets`（ime 动作 x11 分支）
+- Modify: `entry/src/main/ets/smoke/SmokeRunner.ets`（ime 动作 x11 分支 → `injectDisplayRouteText`）
 
 **Interfaces:**
-- Consumes: Task 3 的 client 表（commit 目标 = 键盘焦点窗所属 client）。
-- Produces: `void xim_bridge_commit_text(const char *utf8)`——loop 线程调用，向当前焦点 IC 所在 client 发 XIM_COMMIT(XIM_LOOKUPCHARS, UTF-8 串)。
-- Produces: `void wl_ohos_input_post_text(const char *utf8)`——任意线程安全入口（队列 is_text item，drain 在 loop 线程调 commit）。
+- Produces: `int xim_bridge_send_text(const char *utf8)`（Task 2 定型）——drain 调用点唯一变化。
+- Produces: `void wl_ohos_input_post_text(const char *utf8)`——任意线程安全入口。
 
-- [ ] **Step 1: IC 表与焦点跟随（真代码骨架）**
+- [ ] **Step 1: 子进程 COMMIT + 主进程队列接线**（结构同原 Task 4：IC 焦点兜底 = `XGetInputFocus` 所属 client 的最近 IC；drain `is_text` → `xim_bridge_send_text` → free；NAPI/d.ts/SmokeRunner 三处与已撤实验同型）
 
-```c
-/* IC 最小语义: wine 对每个带焦点窗口建 XIC (xim.c xic_create); 桥按
- * client 记 IC 列表 (ic id -> focus window)。commit 目标 = X 侧当前
- * 输入焦点窗口 (XGetInputFocus) 所属 IC; 查不到时取该 client 最近 IC
- * (wine 单窗应用只有一个 IC)。 */
-struct xim_client { Window xconnect; char locale[32]; int n_ic; int last_ic; };
-```
-
-`xim_bridge_commit_text`：组 `XIM_COMMIT` 包（minor = XIM_LOOKUPCHARS=1，
-载荷 = flag(1B XimCommitWithKeyPrint=0) + keyprint len + 串），经 client 的
-xconnect window 以 ClientMessage(_XIM_PROTOCOL)+超长 property 发送。
-
-- [ ] **Step 2: smoke 通道接线（恢复已撤实验的结构, 机制换 XIM）**
-
-display_input.c：`struct inject_item` 加 `bool is_text;`（keycode 字段存
-UCS——**本 Task 仅整串透传**，`char *text` 字段 strdup 整串，drain 调
-`xim_bridge_commit_text(item.text)` 后 free）；`wl_ohos_input_post_text`
-（UTF-8 串入队）。display_route_napi.cpp / Index.d.ts / SmokeRunner ime 分支
-x11 调 `displayRouteNapi.injectDisplayRouteText(text)`——三处与已撤实验
-diff 相同（git show 0009924 前一版的撤除面可参考，重新实现按本步语义）。
-
-- [ ] **Step 3: 判据——keyboard 单项转绿**
+- [ ] **Step 2: 判据——keyboard 转绿**
 
 ```bash
 set -o pipefail
@@ -328,17 +270,15 @@ python3 automation/smoke.py run --job smoke/jobs/displayroute-win32-interactive.
   --display-route x11 --tests input-keyboard-x64,input-keyboard-x86 2>&1 | tail -4
 ```
 
-Expected: 2/2 PASS，`chars` metric = `0041,0061,0031,4E2D`。
-若 char-cjk 收到乱码：Review Focus 3（编码协商）——检查桥 COMMIT 的编码声明
-与 wine locale 折算，按 `chars` metric 实际字节定位。
+Expected: 2/2 PASS，`chars` metric = `0041,0061,0031,4E2D`。乱码时按 Review Focus 3（编码协商）核对。
 
-- [ ] **Step 4: 零回退门（3/3 PASS）**
+- [ ] **Step 3: 零回退门（3/3 PASS）**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add entry/src/main/cpp/display/xim_bridge.c entry/src/main/cpp/display/display_input.c entry/src/main/cpp/display/display_input.h entry/src/main/cpp/display_route/display_route_napi.cpp entry/src/main/cpp/types/display_route_napi/Index.d.ts entry/src/main/ets/smoke/SmokeRunner.ets
-git commit -m "feat(display)+feat(smoke): XIM COMMIT 通道 + ime 动作 x11 接入 (XIM spec Task 4)"
+git add entry/src/main/cpp/display/ncp/xim_server_child.cpp entry/src/main/cpp/display/xim_bridge.c entry/src/main/cpp/display/display_input.c entry/src/main/cpp/display/display_input.h entry/src/main/cpp/display_route/display_route_napi.cpp entry/src/main/cpp/types/display_route_napi/Index.d.ts entry/src/main/ets/smoke/SmokeRunner.ets
+git commit -m "feat(display)+feat(smoke): XIM COMMIT 通道 (NCP) + ime 动作 x11 接入 (XIM spec Task 4)"
 ```
 
 ---
