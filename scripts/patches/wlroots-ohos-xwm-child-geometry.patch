@@ -1,8 +1,8 @@
 diff --git a/include/wlr/xwayland/xwayland.h b/include/wlr/xwayland/xwayland.h
-index f36912b7..8f7055ef 100644
+index f36912b7..b0ce338e 100644
 --- a/include/wlr/xwayland/xwayland.h
 +++ b/include/wlr/xwayland/xwayland.h
-@@ -427,4 +427,15 @@ bool wlr_xwayland_surface_fetch_icon(
+@@ -427,4 +427,26 @@ bool wlr_xwayland_surface_fetch_icon(
  xcb_connection_t *wlr_xwayland_get_xwm_connection(
  	struct wlr_xwayland *wlr_xwayland);
  
@@ -17,12 +17,31 @@ index f36912b7..8f7055ef 100644
 +	xcb_window_t window_id, int32_t *x, int32_t *y,
 +	uint32_t *width, uint32_t *height, uint64_t *generation);
 +
++/**
++ * WineHua (D31): CLIENT area of a child window of a managed toplevel,
++ * honoring the client-declared _NET_WM_FRAME_EXTENTS ([left,right,top,
++ * bottom] EWMH insets — wine desktop mode draws its own decorations).
++ * Falls back to the full window rect when the client declares no insets.
++ * Same liveness/generation contract as query_child_geometry().
++ */
++bool wlr_xwayland_query_child_client_area(struct wlr_xwayland *wlr_xwayland,
++	xcb_window_t window_id, int32_t *x, int32_t *y,
++	uint32_t *width, uint32_t *height, uint64_t *generation);
++
  #endif
 diff --git a/include/xwayland/xwm.h b/include/xwayland/xwm.h
-index 302518d3..fe374329 100644
+index 302518d3..4021e88c 100644
 --- a/include/xwayland/xwm.h
 +++ b/include/xwayland/xwm.h
-@@ -136,6 +136,13 @@ struct wlr_xwm {
+@@ -103,6 +103,7 @@ enum atom_name {
+ 	NET_CLIENT_LIST,
+ 	NET_CLIENT_LIST_STACKING,
+ 	NET_WORKAREA,
++	NET_WM_FRAME_EXTENTS,
+ 	ATOM_LAST // keep last
+ };
+ 
+@@ -136,6 +137,13 @@ struct wlr_xwm {
  	struct wl_list unpaired_surfaces; // wlr_xwayland_surface.unpaired_link
  	struct wl_list pending_startup_ids; // pending_startup_id
  
@@ -36,7 +55,7 @@ index 302518d3..fe374329 100644
  	struct wlr_drag *drag;
  	struct wlr_xwayland_surface *drag_focus;
  	struct wlr_xwayland_surface *drop_focus;
-@@ -169,6 +176,11 @@ struct wlr_xwm *xwm_create(struct wlr_xwayland *wlr_xwayland, int wm_fd);
+@@ -169,6 +177,11 @@ struct wlr_xwm *xwm_create(struct wlr_xwayland *wlr_xwayland, int wm_fd);
  
  void xwm_destroy(struct wlr_xwm *xwm);
  
@@ -49,10 +68,18 @@ index 302518d3..fe374329 100644
  	int32_t hotspot_x, int32_t hotspot_y);
  
 diff --git a/xwayland/xwm.c b/xwayland/xwm.c
-index f31163d9..f1f49c0b 100644
+index f31163d9..303d4e33 100644
 --- a/xwayland/xwm.c
 +++ b/xwayland/xwm.c
-@@ -138,6 +138,70 @@ static struct wlr_xwayland_surface *lookup_surface(struct wlr_xwm *xwm,
+@@ -104,6 +104,7 @@ static const char *const atom_map[ATOM_LAST] = {
+ 	[NET_CLIENT_LIST] = "_NET_CLIENT_LIST",
+ 	[NET_CLIENT_LIST_STACKING] = "_NET_CLIENT_LIST_STACKING",
+ 	[NET_WORKAREA] = "_NET_WORKAREA",
++	[NET_WM_FRAME_EXTENTS] = "_NET_WM_FRAME_EXTENTS",
+ };
+ 
+ #define STARTUP_INFO_REMOVE_PREFIX "remove: ID="
+@@ -138,6 +139,117 @@ static struct wlr_xwayland_surface *lookup_surface(struct wlr_xwm *xwm,
  	return NULL;
  }
  
@@ -68,6 +95,14 @@ index f31163d9..f1f49c0b 100644
 +	              // at query time so toplevel moves need no per-child events)
 +	uint16_t width, height;
 +	uint64_t generation; // monotonic per (re)creation; query fail = gone
++	// WineHua (D31): client-area insets declared by the client itself via
++	// _NET_WM_FRAME_EXTENTS ([left,right,top,bottom], EWMH). Wine desktop
++	// mode draws its own decorations, so only the client knows them; the
++	// host anchors zero-copy faces at the client rect. Unknown until the
++	// property is seen — queries then fall back to the full window rect,
++	// which is exact for borderless children.
++	int16_t frame_l, frame_r, frame_t, frame_b;
++	bool frame_known;
 +	struct wl_list link;
 +};
 +
@@ -84,6 +119,34 @@ index f31163d9..f1f49c0b 100644
 +	return NULL;
 +}
 +
++// WineHua (D31): refresh the cached _NET_WM_FRAME_EXTENTS of a child.
++// Synchronous round trip — called once per child creation and then only on
++// PropertyNotify, never per frame.
++static void xwm_child_window_read_frame_extents(struct wlr_xwm *xwm,
++		struct xwm_child_window *child) {
++	xcb_get_property_cookie_t cookie = xcb_get_property(xwm->xcb_conn, 0,
++		child->window_id, xwm->atoms[NET_WM_FRAME_EXTENTS],
++		XCB_ATOM_CARDINAL, 0, 4);
++	xcb_get_property_reply_t *reply =
++		xcb_get_property_reply(xwm->xcb_conn, cookie, NULL);
++	if (reply == NULL) {
++		return;
++	}
++	if (reply->type == XCB_ATOM_CARDINAL && xcb_get_property_value_length(reply) >= 16) {
++		int32_t *v = xcb_get_property_value(reply);
++		child->frame_l = v[0] > 0 ? v[0] : 0;
++		child->frame_r = v[1] > 0 ? v[1] : 0;
++		child->frame_t = v[2] > 0 ? v[2] : 0;
++		child->frame_b = v[3] > 0 ? v[3] : 0;
++		child->frame_known = true;
++	} else {
++		// absent or malformed: declare unknown, not zero — a stale insets
++		// cache would misplace the face after the client drops decorations
++		child->frame_known = false;
++	}
++	free(reply);
++}
++
 +static void xwm_child_window_add(struct wlr_xwm *xwm,
 +		struct wlr_xwayland_surface *parent, xcb_create_notify_event_t *ev) {
 +	struct xwm_child_window *child = calloc(1, sizeof(*child));
@@ -98,6 +161,17 @@ index f31163d9..f1f49c0b 100644
 +	child->height = ev->height;
 +	child->generation = xwm_child_generation_next++;
 +	wl_list_insert(&xwm->child_windows, &child->link);
++
++	// WineHua (D31): the frame-extents property may or may not exist yet
++	// when CreateNotify arrives (wine writes it between create and map, we
++	// race with that). Order-safe either way: the PropertyChangeMask
++	// selection below is issued on the wire BEFORE the read, so a property
++	// write landing after the read hits the already-active mask and comes
++	// back as PropertyNotify; one landing before the read is simply read.
++	uint32_t mask_values[1] = {XCB_EVENT_MASK_PROPERTY_CHANGE};
++	xcb_change_window_attributes(xwm->xcb_conn, child->window_id,
++		XCB_CW_EVENT_MASK, mask_values);
++	xwm_child_window_read_frame_extents(xwm, child);
 +}
 +
 +static void xwm_child_window_remove(struct wlr_xwm *xwm,
@@ -123,7 +197,7 @@ index f31163d9..f1f49c0b 100644
  static int xwayland_surface_handle_ping_timeout(void *data) {
  	struct wlr_xwayland_surface *surface = data;
  
-@@ -198,7 +262,11 @@ static struct wlr_xwayland_surface *xwayland_surface_create(
+@@ -198,7 +310,11 @@ static struct wlr_xwayland_surface *xwayland_surface_create(
  	uint32_t values[1];
  	values[0] =
  		XCB_EVENT_MASK_FOCUS_CHANGE |
@@ -136,7 +210,7 @@ index f31163d9..f1f49c0b 100644
  	xcb_change_window_attributes(xwm->xcb_conn, window_id,
  		XCB_CW_EVENT_MASK, values);
  
-@@ -574,6 +642,9 @@ static void xwayland_surface_dissociate(struct wlr_xwayland_surface *xsurface) {
+@@ -574,6 +690,9 @@ static void xwayland_surface_dissociate(struct wlr_xwayland_surface *xsurface) {
  }
  
  static void xwayland_surface_destroy(struct wlr_xwayland_surface *xsurface) {
@@ -146,7 +220,7 @@ index f31163d9..f1f49c0b 100644
  	xwayland_surface_dissociate(xsurface);
  
  	wl_signal_emit_mutable(&xsurface->events.destroy, NULL);
-@@ -1248,12 +1319,30 @@ static void xwm_handle_create_notify(struct wlr_xwm *xwm,
+@@ -1248,12 +1367,30 @@ static void xwm_handle_create_notify(struct wlr_xwm *xwm,
  		return;
  	}
  
@@ -177,7 +251,7 @@ index f31163d9..f1f49c0b 100644
  	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
  	if (xsurface == NULL) {
  		return;
-@@ -1310,10 +1399,21 @@ static void xwm_update_override_redirect(struct wlr_xwayland_surface *xsurface,
+@@ -1310,10 +1447,21 @@ static void xwm_update_override_redirect(struct wlr_xwayland_surface *xsurface,
  
  static void xwm_handle_configure_notify(struct wlr_xwm *xwm,
  		xcb_configure_notify_event_t *ev) {
@@ -201,7 +275,21 @@ index f31163d9..f1f49c0b 100644
  
  	bool geometry_changed =
  		(xsurface->x != ev->x || xsurface->y != ev->y ||
-@@ -2586,6 +2686,7 @@ struct wlr_xwm *xwm_create(struct wlr_xwayland *xwayland, int wm_fd) {
+@@ -1447,6 +1595,13 @@ static void xwm_handle_property_notify(struct wlr_xwm *xwm,
+ 		xcb_property_notify_event_t *ev) {
+ 	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
+ 	if (xsurface == NULL) {
++		// WineHua (D31): child windows are not xsurfaces, but their
++		// _NET_WM_FRAME_EXTENTS updates land here (PropertyChangeMask is
++		// selected on them at tracking time)
++		struct xwm_child_window *child = xwm_child_window_find(xwm, ev->window);
++		if (child != NULL && ev->atom == xwm->atoms[NET_WM_FRAME_EXTENTS]) {
++			xwm_child_window_read_frame_extents(xwm, child);
++		}
+ 		return;
+ 	}
+ 
+@@ -2586,6 +2741,7 @@ struct wlr_xwm *xwm_create(struct wlr_xwayland *xwayland, int wm_fd) {
  	wl_list_init(&xwm->surfaces_in_stack_order);
  	wl_list_init(&xwm->unpaired_surfaces);
  	wl_list_init(&xwm->pending_startup_ids);
@@ -209,7 +297,7 @@ index f31163d9..f1f49c0b 100644
  	wl_list_init(&xwm->seat_drag_source_destroy.link);
  	wl_list_init(&xwm->drag_focus_destroy.link);
  	wl_list_init(&xwm->drop_focus_destroy.link);
-@@ -2923,3 +3024,32 @@ void xwm_schedule_flush(struct wlr_xwm *xwm) {
+@@ -2923,3 +3079,71 @@ void xwm_schedule_flush(struct wlr_xwm *xwm) {
  
  	wl_event_source_fd_update(xwm->event_source, WL_EVENT_READABLE | WL_EVENT_WRITABLE);
  }
@@ -236,6 +324,45 @@ index f31163d9..f1f49c0b 100644
 +	}
 +	if (height) {
 +		*height = child->height;
++	}
++	if (generation) {
++		*generation = child->generation;
++	}
++	return true;
++}
++
++bool wlr_xwayland_query_child_client_area(struct wlr_xwayland *wlr_xwayland,
++		xcb_window_t window_id, int32_t *x, int32_t *y,
++		uint32_t *width, uint32_t *height, uint64_t *generation) {
++	struct wlr_xwm *xwm = wlr_xwayland->xwm;
++	if (!xwm) {
++		return false;
++	}
++	struct xwm_child_window *child = xwm_child_window_find(xwm, window_id);
++	if (!child) {
++		return false;
++	}
++	// WineHua (D31): insets declared by the client via _NET_WM_FRAME_EXTENTS.
++	// Without a declaration (borderless child, or the property has not
++	// landed yet) the client area IS the full window rect — same placement
++	// the pre-D31 face anchoring used, so behavior degrades gracefully.
++	int32_t l = child->frame_known ? child->frame_l : 0;
++	int32_t t = child->frame_known ? child->frame_t : 0;
++	int32_t r = child->frame_known ? child->frame_r : 0;
++	int32_t b = child->frame_known ? child->frame_b : 0;
++	int32_t cw = (int32_t)child->width - l - r;
++	int32_t ch = (int32_t)child->height - t - b;
++	if (x) {
++		*x = (int32_t)child->parent->x + child->x + l;
++	}
++	if (y) {
++		*y = (int32_t)child->parent->y + child->y + t;
++	}
++	if (width) {
++		*width = cw > 1 ? cw : 1;
++	}
++	if (height) {
++		*height = ch > 1 ? ch : 1;
 +	}
 +	if (generation) {
 +		*generation = child->generation;

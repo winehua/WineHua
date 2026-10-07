@@ -1189,6 +1189,29 @@ static int ChildQuery(uint32_t xwindow, int *x, int *y, int *w, int *h,
     return 1;
 }
 
+/* D31: 子窗客户区查询。GL/Vulkan 帧内容是客户区 (GL drawable), 面锚必须
+ * 扣掉 wine 自绘装饰的内缩 (客户端经 _NET_WM_FRAME_EXTENTS 声明), 否则
+ * face 拉伸铺满全窗矩形、盖住标题栏。客户端未声明 (无边框窗/属性未到)
+ * 时回退全窗矩形 = 客户区, 退化安全。liveness/generation 语义同 ChildQuery。 */
+static int ChildClientAreaQuery(uint32_t xwindow, int *x, int *y, int *w, int *h,
+                                uint64_t *generation)
+{
+    if (!g_out.xwayland)
+        return 0;
+    int32_t qx, qy;
+    uint32_t qw, qh;
+    uint64_t qg;
+    if (!wlr_xwayland_query_child_client_area(g_out.xwayland, xwindow,
+                                              &qx, &qy, &qw, &qh, &qg))
+        return 0;
+    if (x) *x = qx;
+    if (y) *y = qy;
+    if (w) *w = (int)qw;
+    if (h) *h = (int)qh;
+    if (generation) *generation = qg;
+    return 1;
+}
+
 static struct ohos_child_face *ChildFaceFind(uint32_t xwindow)
 {
     struct ohos_child_face *f;
@@ -1281,11 +1304,13 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
     if (!c)
     {
         /* D23: 虚拟桌面子窗口 —— 帧节点挂 scene 根, 按 guest 绝对坐标定位。
+         * D31: 锚矩形用客户区 (帧内容 = GL drawable = 客户区), 装饰区让给
+         * 桌面缓冲里 wine 自绘的标题栏/边框。
          * 已知限制 (首版): 节点在 scene 根 = 对全部兄弟子窗置顶, 被其他
          * 窗口遮挡的 GL 窗会穿帮; 遮挡正确性待 X stacking 查询补。 */
         int x, y, w, h;
         uint64_t gen = 0;
-        if (!buffer || !ChildQuery(xwindow, &x, &y, &w, &h, &gen))
+        if (!buffer || !ChildClientAreaQuery(xwindow, &x, &y, &w, &h, &gen))
             return 0;
         struct ohos_child_face *f = ChildFaceFind(xwindow);
         if (f && f->generation != gen)
@@ -1312,6 +1337,12 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
             }
             wl_list_insert(&g_child_faces, &f->link);
             DumpSceneRoot("child face node created");
+            /* D31 诊断: 首挂锚矩形 (客户区 = 全矩形 - FRAME_EXTENTS 内缩)
+             * 与 buffer 实际尺寸。二者不等 = 局部/拉伸形态的来源。 */
+            OHLOG("child face anchor xwin=%{public}u %{public}dx%{public}d@%{public}d,%{public}d buf=%{public}ux%{public}u gen=%{public}llu",
+                  xwindow, w, h, x, y,
+                  (unsigned int)buffer->width, (unsigned int)buffer->height,
+                  (unsigned long long)gen);
         }
         /* 行序修正与顶层路径同口径: GL(virgl) 翻, Vulkan(venus) 不翻。 */
         wlr_scene_buffer_set_transform(f->frame_node,
