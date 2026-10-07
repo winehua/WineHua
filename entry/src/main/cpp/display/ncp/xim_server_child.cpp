@@ -580,6 +580,17 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     if (pthread_create(&chan, NULL, ChanThread, NULL) == 0)
         pthread_detach(chan);
 
+    /* 异步 X 错误不许杀进程: client 退出瞬间其窗口销毁, 对死窗口的
+     * XSendEvent (major 25) 会产生 BadWindow——Xlib 默认错误处理器打印
+     * 后直接 exit 本进程 (2026-10-08 实测: 探针退出竞态把 xim server
+     * 带死, D32 链第二现场)。server 是长生命周期服务, 单个 client 的
+     * 竞态错误只应丢弃该次交互。 */
+    XSetErrorHandler([](Display *, XErrorEvent *ev) -> int {
+        fprintf(stderr, "[xim-server] X error opcode=%u id=0x%lx (ignored)\n",
+                (unsigned)ev->request_code, (unsigned long)ev->resourceid);
+        return 0;
+    });
+
     /* X 事件循环: SelectionRequest (发现面) + ClientMessage (transport:
      * _XIM_XCONNECT 应答 / _XIM_PROTOCOL 收包)。 */
     Atom aProtocol = XInternAtom(g_dpy, "_XIM_PROTOCOL", False);

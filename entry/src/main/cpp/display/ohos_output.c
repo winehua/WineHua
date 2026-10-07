@@ -1395,7 +1395,14 @@ void wl_ohos_output_client_frame_clear(uint32_t xwindow)
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     if (!c)
     {
-        /* D23: 子窗 face 的清理走 sweep (查询失败即销毁), 这里无帧可清 */
+        /* D23: 子窗 face。与顶层同口径, 必须在调用方 (DropBinding) 销毁
+         * OH_NativeImage **之前**摘掉帧节点: 节点上挂着借自该 image 的
+         * 队列 buffer, image 先死后归还 = 悬垂间接调用 → CFI 陷阱
+         * (2026-10-08 实测, GL 程序退出致 app 崩溃, D32 主进程死因;
+         * 旧注释「清理走 sweep」的次序不成立 —— sweep 发生在 image 死后)。 */
+        struct ohos_child_face *f = ChildFaceFind(xwindow);
+        if (f)
+            ChildFaceDestroy(f, "binding dropped");
         return;
     }
     if (!c->frame_node)
