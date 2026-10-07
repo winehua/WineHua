@@ -71,7 +71,7 @@ wine (winewayland.drv，基本不动；__OHOS__ 私有协议保留)
 |---|---|---|
 | 模态私有协议整链 | `modal.c` 全文件 + `window.c:508`/`wayland_surface.c:218` 调用 + `wayland.c:208` 注册 | **退役**。出生原因 = 自研合成器不认 transient 叠放（`modal.c` 头注释自述）；wlroots 原生遵守 `xdg_toplevel.set_parent` 叠放。前提：策略层接住「transient 子窗恒在 owner 之上、owner 禁用拦输入」两条规则，否则问题换个地方复发 |
 | `wayland_surface_ohos.c` min/max 约束 | 不可 resize 窗锁 min=max，交合成器执行 | **对齐上游后大概率退役**（标准 xdg 合成器本应执行 min/max；需对照 wine 上游同版确认差异，spec 待办） |
-| `wayland_surface.c:606` 虚拟桌面坐标转发 | 把窗口屏幕坐标塞进 `xdg_surface.set_window_geometry` x/y | **不能保留，需换正式通道**：该 API 协议语义是 surface 内内容偏移而非屏幕位置，标准合成器按语义处理会错位——虚拟桌面摆位需要显式通道（私有协议扩展或策略层另行取位），是 B2 的设计点 |
+| `wayland_surface.c:606` 虚拟桌面坐标转发 | 把窗口屏幕坐标塞进 `xdg_surface.set_window_geometry` x/y | **不能保留，需换正式通道**：该 API 协议语义是 surface 内内容偏移而非屏幕位置，标准合成器按语义处理会错位。两条候选架构（B2 spec 核心裁决）：**(a) subsurface 方案**——桌面 = 一个 toplevel、应用窗 = subsurface，wine 经 `wl_subsurface.set_position`（core 协议，客户端可控定位）摆位，全标准协议、驱动定制可归零且可上游化，代价是驱动实现工作量大；**(b) 私有协议方案**——保持每窗 toplevel，winehua_toplevel 扩展摆位消息，改动最小但私有通道常驻。注：wayland 只是「toplevel 定位权归合成器」，并非不支持虚拟桌面——上游 winewayland.drv 是「没实现」，非「做不到」 |
 
 驱动侧差异因此收敛到「虚拟桌面摆位通道（+可能保留的 winehua_toplevel）」，wine 体验完整性在驱动侧与合成器侧双向贴上游。
 
