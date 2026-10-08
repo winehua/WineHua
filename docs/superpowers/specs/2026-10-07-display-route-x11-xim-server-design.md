@@ -93,8 +93,8 @@ SmokeRunner ime 动作 → injectDisplayRouteText("中")
 | 阶段 | 内容 | 通过判据 |
 |---|---|---|
 | X1 ✅ | 沙箱探针（**已完成 2026-10-07，否定性结论**）：主进程 XOpenDisplay 挂起 → 承载改 NCP 子进程；探针调用撤除（提交 1392d60） | ~~探针注册成功~~ → 按停止条件转向 NCP 承载 |
-| X2 | XIM 桥最小 commit 通道（NCP 子进程版）+ smoke ime 接入 | input-keyboard-x64/x86 char-cjk 转 PASS（13 前缀 13/13） |
-| X3 | 产品面：text-input-v3 接入（XMODIFIERS 下发随 X2 提前落地） | 真机软键盘/实体键 IME 打字「中」进 notepad（手测） |
+| X2 ✅ | XIM 桥最小 commit 通道（NCP 子进程版）+ smoke ime 接入（**已完成 2026-10-08，提交 a9c53a7**：OPEN_REPLY 段长 + XICATTR 全集声明等协议栈九处修复，chars=0041,0061,0031,4E2D） | input-keyboard-x64/x86 char-cjk 转 PASS ✅ |
+| X3 | 产品面 IME 接入。**2026-10-08 平台现实修订**：`wlr_text_input_v3` 接线在本平台没有客户端——OHOS 系统 IME 是系统服务，不经 wayland 连到应用内合成器。软键盘场景由 D13 桥覆盖（insertText → ASCII 折 evdev / CJK 走 D19 剪贴板桥），硬件键盘组合输入同走 inputMethod 框架的 insertText 回调、同一座桥。text-input 接线仅在出现真实 wayland text-input 客户端时再评估 | 真机软键盘/实体键 IME 打字「中」进 notepad（手测；XMODIFIERS 下发已随 X2 落地） |
 
 X2 通过前不开 X3。虚拟桌面零回退判据同 M4 §7。
 
