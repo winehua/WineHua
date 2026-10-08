@@ -1284,6 +1284,29 @@ void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs)
     client_restack(xs, NULL, XCB_STACK_MODE_ABOVE);
 }
 
+/* D25-A2: 强制下一帧时钟拍整幅重绘并上屏。供 present 探针这类"借队列
+ * buffer flush 过"的调用方交还显示权 —— 探针帧是最后写入者时, 静态桌面
+ * 不再产生 damage, 画布就永远停在探针内容上 (2026-10-09 用户实测: 桌面
+ * 内容其实已画出, 屏上却是探针的深色拷贝)。needs_frame 闸门读
+ * pending_commit_damage (WLR_PRIVATE 命名成员) —— 只加 damage_ring 不够
+ * (ring 是渲染器侧的 buffer damage 账本, 不进 needs_frame 判定), 两处都
+ * 要喂。下一拍 commit 会按 damage 结算扣减, 账目自洽。 */
+void wl_ohos_output_force_redraw(void)
+{
+    if (!g_out.scene_output || !g_out.output)
+        return;
+    pixman_region32_t whole;
+    pixman_region32_init_rect(&whole, 0, 0,
+                              g_out.output->width, g_out.output->height);
+    pixman_region32_union(
+        &g_out.scene_output->WLR_PRIVATE.pending_commit_damage,
+        &g_out.scene_output->WLR_PRIVATE.pending_commit_damage, &whole);
+    wlr_damage_ring_add(&g_out.scene_output->damage_ring, &whole);
+    pixman_region32_fini(&whole);
+    wlr_output_schedule_frame(g_out.output);
+    OHLOG("force redraw scheduled (whole output)");
+}
+
 static void ClientRequestRestack(struct wl_listener *listener, void *data)
 {
     struct ohos_client_surface *c =

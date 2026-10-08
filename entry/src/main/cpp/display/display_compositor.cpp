@@ -241,6 +241,10 @@ static int PresentProbeTimer(void *data)
          * prefix, fresh install 时不存在 */
         "/data/storage/el2/base/files/displayroute-present-probe");
     OH_LOG_INFO(LOG_APP, "present probe done ok=%{public}d", ok ? 1 : 0);
+    /* D25-A2: 探针借队列 buffer flush 过, 是首批帧之后的最后写入者 ——
+     * 静态桌面不再产生 damage 时画布会停在探针内容上。强制整幅重绘交还
+     * 显示权。 */
+    wl_ohos_output_force_redraw();
     return 0; /* 一次性 */
 }
 

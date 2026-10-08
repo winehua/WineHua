@@ -38,6 +38,11 @@ void wl_ohos_output_frame_size(int *w, int *h);
 // xwm request_restack 事件, 同一实现承接, 不另出公开入口。
 void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs);
 
+// 强制下一帧整幅重绘并上屏 (D25-A2): 供借窗口队列 buffer flush 过的调用
+// 方 (present 探针) 交还显示权 —— 否则静态桌面无 damage, 画布停在调用方
+// 的内容上。仅排程, 渲染在下一帧时钟拍完成。
+void wl_ohos_output_force_redraw(void);
+
 // x11 桌面 shell 是否已映射 (M3a): 首个 client XMapWindow 置位, 每轮
 // chain_start 复位。LaunchPadMode 的桌面根等待谓词在 x11 路线用它同源判定
 // (桌面根 toplevel 是 wayland 私有概念, X 路线没有, 不接这根线状态机永远
