@@ -307,12 +307,22 @@ static int DiagDumpBudget(void)
  * drive_c/diag-present-timeline 打开 XPOS/PRES 呈现时间线日志 */
 static int DiagFlagFile(const char *name)
 {
-    static const char *names[3] = {"force-copy-present", "force-timer-clock",
-                                   "diag-present-timeline"};
-    static int val[3] = {-1, -1, -1};
-    static int64_t lastNs[3];
-    int idx = (strcmp(name, names[0]) == 0) ? 0
-              : (strcmp(name, names[1]) == 0) ? 1 : 2;
+    static const char *const names[] = {
+        "force-copy-present", "force-timer-clock",
+        "diag-present-timeline", "scene-damage-diag",
+    };
+    static int val[sizeof(names) / sizeof(names[0])] = {0};
+    static int64_t lastNs[sizeof(names) / sizeof(names[0])] = {0};
+    const int count = (int)(sizeof(names) / sizeof(names[0]));
+    int idx = -1;
+    for (int i = 0; i < count; ++i) {
+        if (strcmp(name, names[i]) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0)
+        return 0; /* 未登记的旗标名一律视为不存在 (旧实现会错落到表尾) */
     int64_t now = NowNs();
     if (val[idx] < 0 || now - lastNs[idx] > 1000000000ll) {
         char path[256];
@@ -944,6 +954,41 @@ static void FrameStep(bool via_vsync)
                           rc->xs->surface->mapped ? 1 : 0,
                           rc->xs->width, rc->xs->height, rc->xs->x, rc->xs->y,
                           rc->xs->surface->current.seq);
+                }
+                /* D25 scene damage 插桩 (scene-damage-diag 旗标门控, 每秒一行):
+                 * 判别 set_buffer_with_options 三类静默早退 —— 节点 disabled
+                 * (提前 return, damage 全丢) / scene outputs 空 / damage 裁剪
+                 * 成空集。判据组合: 客户端 seq 推进而 needsFrame=0 ⇒ damage
+                 * 丢失实锤; nodeEnabled/nOut/out 尺寸区分三类成因。
+                 * (wlr_scene_output.pending_commit_damage 在无名嵌套结构体里,
+                 * 本文件编译标准下不可直接访问 —— 用公共状态等价判别。)
+                 * 推旗标: hdc file send -b app.hackeris.winehua <任意文件>
+                 *   /data/storage/el2/base/files/.wine/drive_c/scene-damage-diag */
+                if (DiagFlagFile("scene-damage-diag")) {
+                    struct ohos_client_surface *dc = NULL;
+                    wl_list_for_each(dc, &g_clients, link) {
+                        if (dc->scene_surf && dc->xs && dc->xs->surface &&
+                            dc->xs->surface->mapped)
+                            break;
+                    }
+                    int dnx = 0, dny = 0;
+                    /* buffer 非空守卫: dissociate/销毁窗口期 scene_surf->buffer
+                     * 可为 NULL (实测 2026-10-08 13:30:38 SIGSEGV, 栈顶
+                     * wlr_scene_node_coords) —— 与上方 client-state 行只触
+                     * xs->surface 的保守取法对齐。 */
+                    bool dn = dc && dc->scene_surf && dc->scene_surf->buffer
+                                  ? wlr_scene_node_coords(
+                                        &dc->scene_surf->buffer->node, &dnx, &dny)
+                                  : false;
+                    OHLOG("scenediag needsFrame=%{public}d "
+                          "out=%{public}dx%{public}d nodeEnabled=%{public}d "
+                          "node@%{public}d,%{public}d nOut=%{public}d seq=%{public}u",
+                          (int)render,
+                          g_out.output ? g_out.output->width : -1,
+                          g_out.output ? g_out.output->height : -1,
+                          dc ? (int)dn : -1, dnx, dny,
+                          g_out.scene ? wl_list_length(&g_out.scene->outputs) : -1,
+                          dc && dc->xs->surface ? dc->xs->surface->current.seq : 0);
                 }
                 /* 一次性 buffer 像素 dump (2026-10-04 蓝底暗化排查):
                  * 实测结论 —— 桌面窗 mirror buffer 是 GL/dmabuf (access
