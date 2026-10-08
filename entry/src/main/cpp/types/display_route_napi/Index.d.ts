@@ -45,6 +45,10 @@ export const injectDisplayRouteButton: (button: number, press: boolean) => boole
  *  discrete>0 → 滚轮向下 (与 wayland 分支「向上=正」同号)。 */
 export const injectDisplayRouteAxis: (which: number, steps: number) => boolean;
 
+/** 文本上屏注入 (XIM Task 4): x11 路线 IME commit —— UTF-8 串经 xim bridge
+ *  以 XIM_COMMIT 投给 wine 焦点 IC。Wayland 路线的上屏走 text-input, 不经此。 */
+export const injectDisplayRouteText: (text: string) => boolean;
+
 /** D19 CJK 剪贴板桥: UTF-8 串设为 seat selection (xwm 桥接 Xwayland CLIPBOARD),
  *  配合 Ctrl+V 注入粘贴。 */
 export const setDisplayRouteClipboard: (text: string) => boolean;

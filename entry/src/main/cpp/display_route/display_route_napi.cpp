@@ -45,6 +45,7 @@ extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
 extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
 extern "C" void wl_ohos_input_post_axis(int which, int steps);
+extern "C" void wl_ohos_input_post_text(const char* utf8);
 extern "C" void wl_ohos_input_post_clipboard(const char *utf8);
 
 static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) {
@@ -212,6 +213,28 @@ static napi_value InjectDisplayRouteAxis(napi_env env, napi_callback_info info) 
     return ok;
 }
 
+/* injectDisplayRouteText(text) — XIM spec Task 4: x11 路线 IME commit。
+ * UTF-8 串经 post 队列转 xim bridge, NCP xim server 以 XIM_COMMIT 投给
+ * wine (Wayland 路线的上屏走 winewayland.drv text-input, 不经此)。 */
+static napi_value InjectDisplayRouteText(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        size_t len = 0;
+        napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+        char *text = static_cast<char *>(malloc(len + 1));
+        if (text) {
+            napi_get_value_string_utf8(env, args[0], text, len + 1, &len);
+            wl_ohos_input_post_text(text);
+            free(text);
+        }
+    }
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
 /* setDisplayRouteClipboard(text) — D19 CJK 剪贴板桥。典型调用序:
  * setDisplayRouteClipboard(中文串) → injectDisplayRouteKey(29,true)
  * injectDisplayRouteKey(47,true) injectDisplayRouteKey(47,false)
@@ -248,6 +271,7 @@ static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
         {"injectDisplayRouteMotion", nullptr, InjectDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteButton", nullptr, InjectDisplayRouteButton, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteAxis", nullptr, InjectDisplayRouteAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"injectDisplayRouteText", nullptr, InjectDisplayRouteText, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRouteClipboard", nullptr, SetDisplayRouteClipboard, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);

@@ -566,6 +566,12 @@ export class SmokeRunner {
       return this.injectTyping(action.text ? action.text : '');
     }
     if (action.type === 'ime') {
+      // XIM Task 4: x11 路线上屏走 XIM_COMMIT (焦点由 X 侧 XGetInputFocus
+      // 决定, 不需要 wayland toplevel 句柄 —— 分支须在 lastInjectTl 检查前)。
+      if (displayRouteNapi.displayRouteIsX11()) {
+        displayRouteNapi.injectDisplayRouteText(action.text ? action.text : '');
+        return '';
+      }
       if (!this.lastInjectTl) return 'ime action without a prior mouse action (no focus target)';
       testNapi.sendImeCommit(action.text ? action.text : '');
       return '';

@@ -68,6 +68,13 @@ void wl_ohos_input_post_button(uint32_t button, bool press);
 // enter 已建立 (motion 先行), 无焦点时丢弃并记日志。
 void wl_ohos_input_post_axis(int which, int steps);
 
+// 文本上屏注入的任意线程安全版 (XIM spec Task 4: x11 路线 IME commit)。
+// utf8 经投递队列到 loop 线程后转 xim_bridge_send_text (NCP xim server 以
+// XIM_COMMIT 投给 wine)。串复制进队, 调用后调用方即可释放。x11 路线文本
+// 注入唯一通道 —— wayland 路线的 commit_string 属 winewayland.drv text-input,
+// 两者在 drain 分支互斥。
+void wl_ohos_input_post_text(const char *utf8);
+
 // OHOS 侧注入入口 (循环线程直呼版: 注入脚本/队列 drain 内部使用)。
 // 必须在合成器事件循环线程调用 (wlr_seat 无锁)。
 // key: evdev 键码 (KEY_A=30)。wire 语义 = wl_keyboard.key 原值, Xwayland

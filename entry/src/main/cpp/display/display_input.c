@@ -20,6 +20,7 @@
 #define WLR_USE_UNSTABLE
 #include "display_input.h"
 #include "ohos_output.h"
+#include "xim_bridge.h"
 #include <wlr/types/wlr_data_device.h>
 
 #include <stdio.h>
@@ -462,12 +463,13 @@ struct inject_item
     bool is_button;
     bool is_axis;      /* D15: 轴注入 (which/Steps 复用 axis 字段) */
     bool is_clipboard; /* D19: text 所有权随队列移交, drain 时交 Apply 释放 */
+    bool is_text;      /* Task 4: x11 路线 IME commit, text 复用 heap 串 */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
     int phase;
     int axis_which, axis_steps; /* is_axis: 0=纵向 1=横向, ±N 步 */
-    char *text; /* is_clipboard: UTF-8 串 (heap) */
+    char *text; /* is_clipboard/is_text: UTF-8 串 (heap) */
 };
 
 static struct inject_item g_inject_queue[INJECT_QUEUE_CAP];
@@ -524,6 +526,15 @@ static int InjectQueueDrain(void *data)
             display_input_inject_button(item.keycode, item.press);
         else if (item.is_axis)
             display_input_inject_axis(item.axis_which, item.axis_steps);
+        else if (item.is_text)
+        {
+            /* Task 4: x11 路线 IME commit —— 转 xim bridge (NCP 子进程以
+             * XIM_COMMIT 投给 wine)。与 is_clipboard 同所有权: 所有权随队列
+             * 移交, 这里释放。桥未就绪 (chan 未建) 时 send_text 内部丢弃。 */
+            if (xim_bridge_send_text(item.text) != 0)
+                OHLOG("xim bridge send failed (chan down?), text dropped");
+            free(item.text);
+        }
         else if (item.is_clipboard)
             ApplySetClipboard(item.text);
         else
@@ -581,6 +592,19 @@ void wl_ohos_input_post_axis(int which, int steps)
     item.is_axis = true;
     item.axis_which = which;
     item.axis_steps = steps;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_text(const char *utf8)
+{
+    if (!utf8 || !*utf8)
+        return;
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_text = true;
+    item.text = strdup(utf8);
+    if (!item.text)
+        return;
     InjectQueuePush(&item);
 }
 

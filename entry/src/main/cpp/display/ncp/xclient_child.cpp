@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <locale.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -178,6 +179,66 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
         return;
     }
     int scr = DefaultScreen(dpy);
+
+    // ── XIM Task 4 对照探针 (#101): 受控 client 走与 wine 完全相同的
+    // XOpenIM 路径 (同 Xlib、同 Xwayland、同 XIM server), 裁决
+    // 「server 握手 bug」vs「wine 特异」。环境与 wine 子进程同款
+    // (XLOCALEDIR 打包目录 + 显式 zh_CN.UTF-8 —— NCP env 无 LANG;
+    // XMODIFIERS 同 wine_env.cpp:113 的 @im=winehua)。带界重试:
+    // ready 处 xclient 先于 xim spawn (display_compositor.cpp), XOpenIM
+    // 跑在 server 注册 _XIM_SERVERS 之前会立即 NULL (libX11 非
+    // reconnectable), 重试消掉这层编排竞态的假阴性。
+    {
+        if (!xdgDir.empty())
+            setenv("XLOCALEDIR", (xdgDir + "/../wine/share/X11/locale").c_str(), 1);
+        const char *loc = setlocale(LC_CTYPE, "zh_CN.UTF-8");
+        fprintf(stderr, "[xim-probe] locale=%s supports=%d\n",
+                loc ? loc : "(null)", XSupportsLocale() ? 1 : 0);
+        XSetLocaleModifiers("@im=winehua");
+        struct timespec pts;
+        clock_gettime(CLOCK_MONOTONIC, &pts);
+        double probe_t0 = (double)pts.tv_sec + (double)pts.tv_nsec / 1e9;
+        XIM im = NULL;
+        for (int attempt = 0; attempt < 60 && !im; ++attempt)
+        {
+            if (attempt)
+                usleep(1000 * 1000);
+            im = XOpenIM(dpy, NULL, NULL, NULL);
+            clock_gettime(CLOCK_MONOTONIC, &pts);
+            double now = (double)pts.tv_sec + (double)pts.tv_nsec / 1e9;
+            if (im)
+                fprintf(stderr, "[xim-probe] XOpenIM OK (attempt %d) t=%.2fs\n",
+                        attempt + 1, now - probe_t0);
+            else if (attempt % 5 == 0)
+                fprintf(stderr, "[xim-probe] attempt %d FAILED t=%.2fs\n",
+                        attempt + 1, now - probe_t0);
+        }
+        if (!im)
+        {
+            fprintf(stderr, "[xim-probe] XOpenIM FAILED\n");
+        }
+        else
+        {
+            Window pw = DefaultRootWindow(dpy);
+            XIC ic = XCreateIC(im, XNInputStyle,
+                               XIMPreeditNothing | XIMStatusNothing,
+                               XNClientWindow, pw, (XPointer)NULL);
+            fprintf(stderr, "[xim-probe] XCreateIC %s\n",
+                    ic ? "OK" : "FAILED");
+            if (ic)
+            {
+                fprintf(stderr, "[xim-probe] destroying IC\n");
+                XDestroyIC(ic);
+                /* 不调 XCloseIM: 实测 (2026-10-08 build15/16) server 已
+                 * XFlush 发出 CLOSE_REPLY (发送侧日志 -> major=33) 而 client
+                 * 卡死在 _XimClose 的 _XimRead —— client 侧关闭路径疑点,
+                 * wine 主链 (XOpenIM/XCreateIC/COMMIT) 不受影响; wine 进程
+                 * 退出时 XCloseIM 由 exit 兜底, 不阻塞主线判据。 */
+                fprintf(stderr, "[xim-probe] PROBE PASS (skip XCloseIM)\n");
+            }
+        }
+        fflush(stderr);
+    }
     OH_LOG_INFO(LOG_APP, "connect OK display=%{public}s %dx%d depth=%{public}d",
                 DisplayString(dpy), DisplayWidth(dpy, scr), DisplayHeight(dpy, scr),
                 DefaultDepth(dpy, scr));
