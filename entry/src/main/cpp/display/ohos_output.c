@@ -116,6 +116,7 @@ struct ohos_client_surface {
     struct wl_listener destroy;
     struct wl_listener request_configure;
     struct wl_listener request_activate; /* D36: wine 激活请求 = 置前 */
+    struct wl_listener request_restack;  /* D37: wine SetWindowPos Z 序变更 */
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
     struct wl_listener dissociate;
     struct wl_listener map_request; /* 生命周期仪器 (M1-T5, 见 ClientMapRequest) */
@@ -1069,6 +1070,7 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     wl_list_remove(&c->destroy.link);
     wl_list_remove(&c->request_configure.link);
     wl_list_remove(&c->request_activate.link);
+    wl_list_remove(&c->request_restack.link);
     wl_list_remove(&c->associate.link);
     wl_list_remove(&c->dissociate.link);
     wl_list_remove(&c->map_request.link);
@@ -1090,19 +1092,25 @@ static void ClientRequestConfigure(struct wl_listener *listener, void *data)
                                    ev->width, ev->height);
 }
 
-/* ── D36: 窗口置前 (raise) ───────────────────────────────────────────
+/* ── D36/D37: 窗口序 (raise/restack) ─────────────────────────────────
  * 此前 g_clients 与 scene 节点都只在 map 时插入 (创建序 = 视觉序, 永不
- * 重排): 点后台窗只有输入焦点过去、画面不动; wine SetWindowPos(HWND_TOP)/
- * 对话框弹出 (走 _NET_ACTIVE_WINDOW → xwm request_activate 事件) 同样
- * 被忽略。两个触发点共用本助手: ①request_activate 监听 (客户端主动激活)
- * ②display_input 的 button press (点击置前, 注入与真触同路径)。
- * wine SetWindowPos(HWND_BOTTOM/兄弟相对插序) 的 X 侧 restack 走
- * XReconfigureWMWindow → xwm_handle_configure_request 对 stack-only
- * 请求 (geo_mask==0) 直接丢弃 (wlroots 0.20 上游 TODO), 需 wlroots 补丁
- * 才能覆盖 —— 未做, 本助手只承接激活/点击驱动的置前 (真实应用主通路)。 */
-void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs)
+ * 重排)。现在两个通道驱动重排: ①request_activate (wine 激活/对话框弹出,
+ * _NET_ACTIVE_WINDOW) + display_input 的 button press (点击置前) 走
+ * wl_ohos_output_client_raise; ②wine SetWindowPos 的 Z 序变更
+ * (XReconfigureWMWindow → stack-only ConfigureRequest, D37 wlroots 补丁
+ * 应用后发 request_restack 事件) 走 client_restack —— to-top/to-bottom
+ * 与兄弟相对插序都在此承接。
+ * g_clients 约定: 链头 = 最底层, 链尾 = 最上层。scene 节点序与链表同步:
+ * 窗口单元 = X 面节点 + 帧节点 (帧在自己窗口的 X 面之上, 与创建时的相对
+ * 序一致)。0.20 的 wlr_scene_surface 无公开 tree 字段, 节点走
+ * buffer->node。本函数在 wlroots 侧完成 X restack 之后被调用 (D37 事件
+ * 时序保证), X 侧 _NET_CLIENT_LIST_STACKING 与合成器视觉序一致。 */
+static void client_restack(struct wlr_xwayland_surface *xs,
+                           struct wlr_xwayland_surface *sibling_xs,
+                           enum xcb_stack_mode_t mode)
 {
     struct ohos_client_surface *target = NULL;
+    struct ohos_client_surface *sib = NULL;
     struct ohos_client_surface *c;
     wl_list_for_each(c, &g_clients, link) {
         if (c->xs == xs) {
@@ -1112,17 +1120,94 @@ void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs)
     }
     if (!target)
         return;
-    wl_list_remove(&target->link);
-    wl_list_insert(g_clients.prev, &target->link); /* 链尾 = 最上层 */
-    /* scene 节点序与 g_clients 同步: X 面节点先提, 帧节点后提 (保持帧在
-     * 自己窗口的 X 面之上, 与创建时的相对序一致)。0.20 的
-     * wlr_scene_surface 无公开 tree 字段, 节点走 buffer->node。 */
-    if (target->scene_surf)
-        wlr_scene_node_raise_to_top(&target->scene_surf->buffer->node);
-    if (target->frame_node)
-        wlr_scene_node_raise_to_top(&target->frame_node->node);
-    OHLOG("client raise xs=%{public}p xwin=%{public}u",
-          (void *)xs, xs ? xs->window_id : 0u);
+    if (sibling_xs && sibling_xs != xs) {
+        wl_list_for_each(c, &g_clients, link) {
+            if (c->xs == sibling_xs) {
+                sib = c;
+                break;
+            }
+        }
+        if (!sib)
+            return; /* 兄弟不在跟踪表内, 无法相对定位 (X 侧已 restack, 不破坏现状) */
+    }
+
+    if (mode == XCB_STACK_MODE_ABOVE) {
+        if (sib) {
+            wl_list_remove(&target->link);
+            wl_list_insert(&sib->link, &target->link); /* sib 之后 = sib 之上 */
+        } else {
+            wl_list_remove(&target->link);
+            wl_list_insert(g_clients.prev, &target->link); /* 链尾 = 最上层 */
+        }
+    } else if (mode == XCB_STACK_MODE_BELOW) {
+        if (sib) {
+            wl_list_remove(&target->link);
+            wl_list_insert(sib->link.prev, &target->link); /* sib 之前 = sib 之下 */
+        } else {
+            wl_list_remove(&target->link);
+            wl_list_insert(g_clients.next, &target->link); /* 链头 = 最底层 */
+        }
+    } else {
+        return; /* TopIf/BottomIf/Opposite: D37 补丁在 xwm 侧同样跳过 */
+    }
+
+    /* scene 节点跟随。成对移动保帧/面相对序:
+     * to-top: 面先提、帧后提; to-bottom: 帧先沉底、面再沉底 (帧留在面上方);
+     * 兄弟相对: 以兄弟的节点为锚逐个 place (锚取兄弟最外层节点)。 */
+    if (sib) {
+        struct wlr_scene_node *sib_face =
+            sib->scene_surf ? &sib->scene_surf->buffer->node : NULL;
+        struct wlr_scene_node *sib_top =
+            sib->frame_node ? &sib->frame_node->node : sib_face;
+        struct wlr_scene_node *sib_bottom = sib_face ? sib_face : sib_top;
+        if (!sib_bottom) {
+            return; /* 兄弟尚无 scene 节点 (未 associate): 链表序已更新, 节点序随其挂载自愈 */
+        }
+        if (mode == XCB_STACK_MODE_BELOW) {
+            /* 锚 = 兄弟最底层节点 (面): 帧先落到锚下、面再落到帧下,
+             * 整对插进兄弟对之下 (锚取 sib_top 会插进兄弟的面/帧对中间)。 */
+            if (target->frame_node)
+                wlr_scene_node_place_below(&target->frame_node->node, sib_bottom);
+            if (target->scene_surf)
+                wlr_scene_node_place_below(&target->scene_surf->buffer->node,
+                                           target->frame_node
+                                               ? &target->frame_node->node
+                                               : sib_bottom);
+        } else if (target->scene_surf) {
+            /* 锚 = 兄弟最上层节点 (帧): 面先提、帧后提, 整对落在兄弟对之上 */
+            wlr_scene_node_place_above(&target->scene_surf->buffer->node, sib_top);
+            if (target->frame_node)
+                wlr_scene_node_place_above(&target->frame_node->node,
+                                           &target->scene_surf->buffer->node);
+        }
+    } else if (mode == XCB_STACK_MODE_ABOVE) {
+        if (target->scene_surf)
+            wlr_scene_node_raise_to_top(&target->scene_surf->buffer->node);
+        if (target->frame_node)
+            wlr_scene_node_raise_to_top(&target->frame_node->node);
+    } else {
+        if (target->frame_node)
+            wlr_scene_node_lower_to_bottom(&target->frame_node->node);
+        if (target->scene_surf)
+            wlr_scene_node_lower_to_bottom(&target->scene_surf->buffer->node);
+    }
+    OHLOG("client restack xs=%{public}p xwin=%{public}u mode=%{public}d sib=%{public}p",
+          (void *)xs, xs ? xs->window_id : 0u, (int)mode, (void *)sibling_xs);
+}
+
+void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs)
+{
+    client_restack(xs, NULL, XCB_STACK_MODE_ABOVE);
+}
+
+static void ClientRequestRestack(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, request_restack);
+    const struct wlr_xwayland_surface_restack_event *ev = data;
+    if (!ev)
+        return;
+    client_restack(c->xs, ev->sibling, ev->mode);
 }
 
 static void ClientRequestActivate(struct wl_listener *listener, void *data)
@@ -1151,6 +1236,8 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     wl_signal_add(&xs->events.request_configure, &c->request_configure);
     c->request_activate.notify = ClientRequestActivate;
     wl_signal_add(&xs->events.request_activate, &c->request_activate);
+    c->request_restack.notify = ClientRequestRestack;
+    wl_signal_add(&xs->events.request_restack, &c->request_restack);
     c->associate.notify = ClientAssociate;
     wl_signal_add(&xs->events.associate, &c->associate);
     c->dissociate.notify = ClientDissociate;

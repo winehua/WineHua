@@ -107,7 +107,16 @@ WLR_GLES2_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-gles2-egl-import.patch"
 # wlr_xwayland_query_child_geometry() 供 ohos_output 锚定回退。不建 xsurface
 # (不污染 client list / restack 语义)。
 WLR_XWM_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-child-geometry.patch"
-WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" | sha256sum | cut -d' ' -f1)
+# xwm stack-only restack 补丁 (D37): wine SetWindowPos 的 Z 序变更走
+# XReconfigureWMWindow (window.c:1514) → 顶层 ConfigureRequest, 上游 xwm 对
+# 无几何位的请求 (geo_mask==0) 直接丢弃 (TODO) ⇒ HWND_TOP/BOTTOM 带
+# SWP_NOACTIVATE 的 restack 全部蒸发, win32 内序 (D33 修复) 与合成器视觉序
+# 脱节。补丁对 Above/Below 的 stack-only 请求调 wlr_xwayland_surface_restack
+# (TopIf/BottomIf/Opposite 沿 restack() 的 abort 语义跳过, wine 不发),
+# 并发新事件 request_restack{surface,sibling,mode} 供 ohos_output 把
+# g_clients 链表序 + scene 节点序跟着改 (事件在 X 侧 restack 之后发, 两侧一致)。
+WLR_RESTACK_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-restack-event.patch"
+WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" | sha256sum | cut -d' ' -f1)
 
 if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ] \
    && [ "$(cat "$HOST_EXT_LIB/.wlroots_patch_sig" 2>/dev/null)" = "$WLR_PATCH_SIG" ]; then
@@ -130,9 +139,9 @@ else
         include/wlr/render/egl.h include/render/egl.h include/render/gles2.h \
         render/egl.c render/gles2/renderer.c render/gles2/texture.c
     rm -f "$WLR_SRC/xwayland/ohos_spawn.c"
-    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" \
+    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" \
         || err "wlroots 补丁无法应用 (submodule 工作区与补丁基线不符)"
-    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH"
+    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH"
     meson_host_build "$BUILD_DIR/wlroots_build_${WLR_VER}" "$WLR_SRC" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dauto_features=disabled \
@@ -173,6 +182,8 @@ done
 # EGL_EXT_client_extensions 缺失 ⇒ 回退 pixman), 只有真机日志能看出。
 [ "$(grep -c "egl_create_with_client_exts" "$WLR_SRC/render/egl.c")" -ge 2 ] \
     || err "render/egl.c 缺客户端扩展降级路径 (gles2-egl-import 补丁 hunk 丢失?)"
+[ "$(grep -c "request_restack" "$WLR_SRC/xwayland/xwm.c")" -ge 2 ] \
+    || err "xwm.c 缺 stack-only restack 通道 (restack-event 补丁 hunk 丢失?)"
 
 # 试链接: .a 的未定义符号必须能被 pc 依赖链 (wayland/xkbcommon/pixman/drm/xcb)
 # 完整闭合——静态构建本身不链接, 侧别/路径错乱只有链接时暴露 (真实链接, 非

@@ -32,7 +32,10 @@ void wl_ohos_output_frame_size(int *w, int *h);
 
 // 窗口置前 (D36): g_clients 链序移尾 + scene 两节点 (X 面/帧) 提顶。
 // 触发点 = request_activate 监听 (wine 激活请求) 与 button press (点击
-// 置前)。xs 不在 g_clients (子窗/已销毁) 时为无操作。
+// 置前)。xs 不在 g_clients (子窗/已销毁) 时为无操作。等价于按
+// XCB_STACK_MODE_ABOVE 无兄弟 restack (实现在 ohos_output.c 的
+// client_restack, D37); Z 序全量通道 (HWND_TOP/BOTTOM/兄弟相对) 走
+// xwm request_restack 事件, 同一实现承接, 不另出公开入口。
 void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs);
 
 // x11 桌面 shell 是否已映射 (M3a): 首个 client XMapWindow 置位, 每轮

@@ -1,0 +1,82 @@
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -347,6 +347,7 @@
+ 	wl_signal_init(&surface->events.request_above);
+ 	wl_signal_init(&surface->events.request_below);
+ 	wl_signal_init(&surface->events.request_demands_attention);
++	wl_signal_init(&surface->events.request_restack);
+ 	wl_signal_init(&surface->events.associate);
+ 	wl_signal_init(&surface->events.dissociate);
+ 	wl_signal_init(&surface->events.set_class);
+@@ -1406,12 +1407,44 @@
+ 		return;
+ 	}
+ 
+-	// TODO: handle ev->{parent,sibling}?
+-
++	// WineHua (D37): stack-only requests (no geometry bits) used to be dropped
++	// here (upstream TODO). wine's SetWindowPos restacks managed top-levels via
++	// XReconfigureWMWindow (window.c:1514), which surfaces as exactly such a
++	// ConfigureRequest — dropping it left the compositor's visual order
++	// disconnected from the win32 Z-order. Apply the X-side restack with the
++	// same helper the map/override-redirect paths use, then announce it so the
++	// compositor can mirror the order on its scene graph.
+ 	uint16_t mask = ev->value_mask;
+ 	uint16_t geo_mask = XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+ 		XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
+ 	if ((mask & geo_mask) == 0) {
++		if (!(mask & XCB_CONFIG_WINDOW_STACK_MODE) || surface->override_redirect) {
++			return;
++		}
++		// restack() aborts on TOP_IF/BOTTOM_IF/OPPOSITE; wine's X11DRV only
++		// sends Above/Below for Z-order changes (X11DRV_SetWindowPos). Skip
++		// anything else rather than dying on an unobserved path.
++		if (ev->stack_mode != XCB_STACK_MODE_ABOVE &&
++				ev->stack_mode != XCB_STACK_MODE_BELOW) {
++			return;
++		}
++		struct wlr_xwayland_surface *sibling = NULL;
++		if (mask & XCB_CONFIG_WINDOW_SIBLING) {
++			sibling = lookup_surface(xwm, ev->sibling);
++			if (sibling == NULL || sibling->override_redirect) {
++				// An override-redirect sibling's stack_link is detached
++				// (xwm_update_override_redirect); restacking relative to it
++				// would corrupt the stacking list.
++				return;
++			}
++		}
++		wlr_xwayland_surface_restack(surface, sibling, ev->stack_mode);
++		struct wlr_xwayland_surface_restack_event wlr_event = {
++			.surface = surface,
++			.sibling = sibling,
++			.mode = ev->stack_mode,
++		};
++		wl_signal_emit_mutable(&surface->events.request_restack, &wlr_event);
+ 		return;
+ 	}
+ 
+--- a/include/wlr/xwayland/xwayland.h
++++ b/include/wlr/xwayland/xwayland.h
+@@ -210,6 +210,7 @@
+ 		struct wl_signal request_above;
+ 		struct wl_signal request_below;
+ 		struct wl_signal request_demands_attention;
++		struct wl_signal request_restack; // struct wlr_xwayland_surface_restack_event
+ 
+ 		struct wl_signal associate;
+ 		struct wl_signal dissociate;
+@@ -253,6 +254,14 @@
+ 	uint16_t mask; // xcb_config_window_t
+ };
+ 
++// WineHua (D37): emitted after a stack-only ConfigureRequest was applied via
++// wlr_xwayland_surface_restack(). sibling is NULL for to-top/to-bottom moves.
++struct wlr_xwayland_surface_restack_event {
++	struct wlr_xwayland_surface *surface;
++	struct wlr_xwayland_surface *sibling;
++	enum xcb_stack_mode_t mode;
++};
++
+ struct wlr_xwayland_remove_startup_info_event  {
+ 	const char *id;
+ 	xcb_window_t window;
