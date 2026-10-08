@@ -1189,6 +1189,24 @@ static void ClientRequestConfigure(struct wl_listener *listener, void *data)
  * 序一致)。0.20 的 wlr_scene_surface 无公开 tree 字段, 节点走
  * buffer->node。本函数在 wlroots 侧完成 X restack 之后被调用 (D37 事件
  * 时序保证), X 侧 _NET_CLIENT_LIST_STACKING 与合成器视觉序一致。 */
+/* toplevel restack 收尾: 全部 child face 帧节点重新置顶 (D38)。
+ * X 子窗语义 = 子窗恒在父窗之上; toplevel 的 raise_to_top 会把桌面 X 面
+ * 抬到所有 child face 之上, GL 内容随即被桌面 buffer 遮住 —— 2026-10-09
+ * 实测: 点开始按钮 (D36 raise 桌面) 后 cube 即白窗, 而 guest 帧流 /
+ * binding / face 节点全部健在, 纯 scene z 序遮挡。只有 raise_to_top 能
+ * 埋掉 face (兄弟相对插序 / 沉底都在 face 之下), 故只在 ABOVE 收尾补。
+ * 范围注记: 当前唯一 toplevel = wine 虚拟桌面, "face 在一切 toplevel
+ * 节点之上" 与 X 序一致; face 之间的相对序 = g_child_faces 链序 (创建
+ * 序), 多 GL 子窗叠窗的精确 stacking 待 M4 按 X 序归位。 */
+static void ReraiseChildFaces(void)
+{
+    struct ohos_child_face *f;
+    wl_list_for_each(f, &g_child_faces, link) {
+        if (f->frame_node)
+            wlr_scene_node_raise_to_top(&f->frame_node->node);
+    }
+}
+
 static void client_restack(struct wlr_xwayland_surface *xs,
                            struct wlr_xwayland_surface *sibling_xs,
                            enum xcb_stack_mode_t mode)
@@ -1269,6 +1287,7 @@ static void client_restack(struct wlr_xwayland_surface *xs,
             wlr_scene_node_raise_to_top(&target->scene_surf->buffer->node);
         if (target->frame_node)
             wlr_scene_node_raise_to_top(&target->frame_node->node);
+        ReraiseChildFaces();
     } else {
         if (target->frame_node)
             wlr_scene_node_lower_to_bottom(&target->frame_node->node);
