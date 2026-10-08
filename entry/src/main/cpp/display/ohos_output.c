@@ -119,6 +119,11 @@ struct ohos_client_surface {
     struct wl_listener request_restack;  /* D37: wine SetWindowPos Z 序变更 */
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
     struct wl_listener dissociate;
+    /* D25: wlroots 会沿 surface 销毁自毁 scene_surface, 该路径可先于
+     * dissociate 事件到达 —— 无此监听则 scene_surf 悬垂至下一跳, 首个
+     * 触碰它的代码 (FrameTick 的 client-state/scenediag/位置更新) SEGV
+     * (faultlogger 20261008235329 实测, 栈顶 wlr_scene_node_coords)。 */
+    struct wl_listener scene_node_destroy;
     struct wl_listener map_request; /* 生命周期仪器 (M1-T5, 见 ClientMapRequest) */
 };
 
@@ -147,6 +152,17 @@ static uint32_t FrameCrc(const uint8_t *p, size_t n)
  * new_surface 时为 NULL, 手搓链靠逐帧轮询掩盖了这点, scene 挂载必须
  * 等 associate)。surface 销毁时 scene 节点由 wlroots 自动回收;
  * dissociate (M2+ 窗口管理复用语义) 时清指针。 */
+/* D25: wlroots 销毁 scene_surface 的时刻 (surface 销毁路径自毁) 立即清引用。
+ * dissociate 事件通常先到并已置空 —— 此时本监听器已摘链, 不会再来。 */
+static void ClientSceneNodeDestroy(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, scene_node_destroy);
+    (void)data;
+    wl_list_remove(&listener->link);
+    c->scene_surf = NULL;
+}
+
 static void ClientAssociate(struct wl_listener *listener, void *data)
 {
     struct ohos_client_surface *c =
@@ -155,9 +171,18 @@ static void ClientAssociate(struct wl_listener *listener, void *data)
     (void)data;
     if (!xs || !xs->surface || !g_out.scene)
         return;
+    if (c->scene_surf) {
+        /* 防御: 同一 client 重复 associate —— 摘旧监听再建, 否则旧节点的
+         * 自毁回调会清掉新 scene_surf */
+        wl_list_remove(&c->scene_node_destroy.link);
+        c->scene_surf = NULL;
+    }
     c->scene_surf = wlr_scene_surface_create(&g_out.scene->tree, xs->surface);
     if (!c->scene_surf)
         OH_LOG_ERROR(LOG_APP, "scene_surface create failed (associate)");
+    else
+        wl_signal_add(&c->scene_surf->buffer->node.events.destroy,
+                      &c->scene_node_destroy);
     c->lastSeq = xs->surface->current.seq;
     OHLOG("client associated surf=%{public}p (scene attached)",
           (void *)xs->surface);
@@ -189,7 +214,12 @@ static void ClientDissociate(struct wl_listener *listener, void *data)
      * scene_surface 自建的销毁监听器)。帧节点不同父属 wlroots, 必须在此显式
      * 销毁: 窗口内容都已消失, 帧不能留下。 */
     DestroyFrameNode(c, "dissociate");
-    c->scene_surf = NULL;
+    if (c->scene_surf) {
+        /* scene_surface 仍在 (常规次序): 摘掉 D25 自毁监听再清引用;
+         * 若 wlroots 已自毁 (监听器先跑过), scene_surf 已是 NULL。 */
+        wl_list_remove(&c->scene_node_destroy.link);
+        c->scene_surf = NULL;
+    }
 }
 
 /* 生命周期仪器 (M1-T5 起, 低量永久保留): MapRequest = client 调了
@@ -982,12 +1012,15 @@ static void FrameStep(bool via_vsync)
                                   : false;
                     OHLOG("scenediag needsFrame=%{public}d "
                           "out=%{public}dx%{public}d nodeEnabled=%{public}d "
-                          "node@%{public}d,%{public}d nOut=%{public}d seq=%{public}u",
+                          "node@%{public}d,%{public}d nOut=%{public}d "
+                          "ss=%{public}d sbuf=%{public}d seq=%{public}u",
                           (int)render,
                           g_out.output ? g_out.output->width : -1,
                           g_out.output ? g_out.output->height : -1,
                           dc ? (int)dn : -1, dnx, dny,
                           g_out.scene ? wl_list_length(&g_out.scene->outputs) : -1,
+                          dc ? (dc->scene_surf ? 1 : 0) : -1,
+                          dc && dc->scene_surf ? (dc->scene_surf->buffer ? 1 : 0) : -1,
                           dc && dc->xs->surface ? dc->xs->surface->current.seq : 0);
                 }
                 /* 一次性 buffer 像素 dump (2026-10-04 蓝底暗化排查):
@@ -1112,6 +1145,12 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     /* dissociate 通常先到, 但 destroy 可能单独送达 (未 associate 就销毁, 或
      * 事件顺序变化): 帧节点的销毁不能只挂在 dissociate 上。 */
     DestroyFrameNode(c, "destroy");
+    if (c->scene_surf) {
+        /* 防御: dissociate 未先到时 scene_node_destroy 监听器还挂在
+         * wlroots 节点上 —— 节点归 wlroots 所有不随本结构释放, 必须摘链。 */
+        wl_list_remove(&c->scene_node_destroy.link);
+        c->scene_surf = NULL;
+    }
     wl_list_remove(&c->destroy.link);
     wl_list_remove(&c->request_configure.link);
     wl_list_remove(&c->request_activate.link);
