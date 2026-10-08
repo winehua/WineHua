@@ -570,6 +570,14 @@ bool wl_ohos_egl_present_probe(struct NativeWindow *window,
                      stride, flip, importer_refused ? 1 : 0);
             PresentVerdict(marker_path, verdict);
         }
+        /* 呈现前把测试图案清回背景色 (2026-10-08): 探针帧是 attach+1s 的
+         * 最后写入者, 桌面若不再重绘 (静态桌面/坏变体), 图案会一直滞留
+         * 屏上被误读为花屏 (用户实测 2026-10-08)。清背景保留 present 验证
+         * 语义 (队列 buffer 真实走一次上屏), 只是留下的不是图案。FBO 仍
+         * 绑定, GPU 清屏与上面图案同一渲染路径。 */
+        glClearColor(0x11 / 255.0f, 0x22 / 255.0f, 0x33 / 255.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        P_LOG("pattern restored to background before present");
         ok = true;
     }
 
