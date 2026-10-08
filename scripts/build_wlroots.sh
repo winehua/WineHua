@@ -116,7 +116,13 @@ WLR_XWM_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-child-geometry.patch"
 # 并发新事件 request_restack{surface,sibling,mode} 供 ohos_output 把
 # g_clients 链表序 + scene 节点序跟着改 (事件在 X 侧 restack 之后发, 两侧一致)。
 WLR_RESTACK_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-restack-event.patch"
-WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" | sha256sum | cut -d' ' -f1)
+# scene damage 台账插桩补丁 (D25-B): 画布冻结坏变体「seq 推进而
+# needsFrame=0」的抓捕仪器 —— 三个记账点 (surface commit 到达 /
+# scene_output_damage 入账 / output commit 消费) 对账定位断跳。旗标文件
+# 与宿主 DiagFlagFile 同一个 (.wine/drive_c/scene-damage-diag, 1s 缓存),
+# 关闭近零开销, 可常驻。
+WLR_DIAG_PATCH="$SCRIPT_DIR/patches/wlroots-scene-damage-diag.patch"
+WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH" | sha256sum | cut -d' ' -f1)
 
 if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ] \
    && [ "$(cat "$HOST_EXT_LIB/.wlroots_patch_sig" 2>/dev/null)" = "$WLR_PATCH_SIG" ]; then
@@ -137,11 +143,18 @@ else
         include/wlr/xwayland/xwayland.h util/shm.c \
         meson.build render/meson.build include/wlr/config.h.in \
         include/wlr/render/egl.h include/render/egl.h include/render/gles2.h \
-        render/egl.c render/gles2/renderer.c render/gles2/texture.c
+        render/egl.c render/gles2/renderer.c render/gles2/texture.c \
+        types/scene/wlr_scene.c types/scene/surface.c
     rm -f "$WLR_SRC/xwayland/ohos_spawn.c"
-    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" \
+    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH" \
         || err "wlroots 补丁无法应用 (submodule 工作区与补丁基线不符)"
-    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH"
+    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH"
+    # 源级断言 (D25-B): sentinel 命中会把「树里是旧补丁」误判为已应用,
+    # 新 hunks 静默丢失 —— apply 后核对插桩代码里的旗标路径串 (存在性,
+    # 非精确计数: 注释+代码可多处命中, 实测 wlr_scene.c=2 surface.c=1)
+    [ "$(grep -c 'scene-damage-diag' "$WLR_SRC/types/scene/wlr_scene.c")" -ge 1 ] \
+        && [ "$(grep -c 'scene-damage-diag' "$WLR_SRC/types/scene/surface.c")" -ge 1 ] \
+        || err "scene damage diag 插桩缺失 (D25-B 补丁未生效)"
     meson_host_build "$BUILD_DIR/wlroots_build_${WLR_VER}" "$WLR_SRC" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dauto_features=disabled \
