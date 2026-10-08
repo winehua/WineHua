@@ -115,6 +115,7 @@ struct ohos_client_surface {
     int dbgLastX;     /* 诊断: 上次记录过的 xs->x (XPOS 时间线) */
     struct wl_listener destroy;
     struct wl_listener request_configure;
+    struct wl_listener request_activate; /* D36: wine 激活请求 = 置前 */
     struct wl_listener associate; /* xs->surface 后到 (M0 spec §6.2) */
     struct wl_listener dissociate;
     struct wl_listener map_request; /* 生命周期仪器 (M1-T5, 见 ClientMapRequest) */
@@ -1067,6 +1068,7 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     DestroyFrameNode(c, "destroy");
     wl_list_remove(&c->destroy.link);
     wl_list_remove(&c->request_configure.link);
+    wl_list_remove(&c->request_activate.link);
     wl_list_remove(&c->associate.link);
     wl_list_remove(&c->dissociate.link);
     wl_list_remove(&c->map_request.link);
@@ -1088,6 +1090,49 @@ static void ClientRequestConfigure(struct wl_listener *listener, void *data)
                                    ev->width, ev->height);
 }
 
+/* ── D36: 窗口置前 (raise) ───────────────────────────────────────────
+ * 此前 g_clients 与 scene 节点都只在 map 时插入 (创建序 = 视觉序, 永不
+ * 重排): 点后台窗只有输入焦点过去、画面不动; wine SetWindowPos(HWND_TOP)/
+ * 对话框弹出 (走 _NET_ACTIVE_WINDOW → xwm request_activate 事件) 同样
+ * 被忽略。两个触发点共用本助手: ①request_activate 监听 (客户端主动激活)
+ * ②display_input 的 button press (点击置前, 注入与真触同路径)。
+ * wine SetWindowPos(HWND_BOTTOM/兄弟相对插序) 的 X 侧 restack 走
+ * XReconfigureWMWindow → xwm_handle_configure_request 对 stack-only
+ * 请求 (geo_mask==0) 直接丢弃 (wlroots 0.20 上游 TODO), 需 wlroots 补丁
+ * 才能覆盖 —— 未做, 本助手只承接激活/点击驱动的置前 (真实应用主通路)。 */
+void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs)
+{
+    struct ohos_client_surface *target = NULL;
+    struct ohos_client_surface *c;
+    wl_list_for_each(c, &g_clients, link) {
+        if (c->xs == xs) {
+            target = c;
+            break;
+        }
+    }
+    if (!target)
+        return;
+    wl_list_remove(&target->link);
+    wl_list_insert(g_clients.prev, &target->link); /* 链尾 = 最上层 */
+    /* scene 节点序与 g_clients 同步: X 面节点先提, 帧节点后提 (保持帧在
+     * 自己窗口的 X 面之上, 与创建时的相对序一致)。0.20 的
+     * wlr_scene_surface 无公开 tree 字段, 节点走 buffer->node。 */
+    if (target->scene_surf)
+        wlr_scene_node_raise_to_top(&target->scene_surf->buffer->node);
+    if (target->frame_node)
+        wlr_scene_node_raise_to_top(&target->frame_node->node);
+    OHLOG("client raise xs=%{public}p xwin=%{public}u",
+          (void *)xs, xs ? xs->window_id : 0u);
+}
+
+static void ClientRequestActivate(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c =
+        wl_container_of(listener, c, request_activate);
+    (void)data;
+    wl_ohos_output_client_raise(c->xs);
+}
+
 static void HandleNewSurface(struct wl_listener *listener, void *data)
 {
     struct wl_ohos_output *o = wl_container_of(listener, o, xnew_surface);
@@ -1104,6 +1149,8 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     wl_signal_add(&xs->events.destroy, &c->destroy);
     c->request_configure.notify = ClientRequestConfigure;
     wl_signal_add(&xs->events.request_configure, &c->request_configure);
+    c->request_activate.notify = ClientRequestActivate;
+    wl_signal_add(&xs->events.request_activate, &c->request_activate);
     c->associate.notify = ClientAssociate;
     wl_signal_add(&xs->events.associate, &c->associate);
     c->dissociate.notify = ClientDissociate;

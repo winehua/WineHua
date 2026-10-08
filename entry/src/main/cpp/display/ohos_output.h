@@ -30,6 +30,11 @@ struct wlr_xwayland_surface *wl_ohos_output_client_xs(void);
 struct wlr_xwayland_surface *wl_ohos_output_client_topmost_at(int fx, int fy);
 void wl_ohos_output_frame_size(int *w, int *h);
 
+// 窗口置前 (D36): g_clients 链序移尾 + scene 两节点 (X 面/帧) 提顶。
+// 触发点 = request_activate 监听 (wine 激活请求) 与 button press (点击
+// 置前)。xs 不在 g_clients (子窗/已销毁) 时为无操作。
+void wl_ohos_output_client_raise(struct wlr_xwayland_surface *xs);
+
 // x11 桌面 shell 是否已映射 (M3a): 首个 client XMapWindow 置位, 每轮
 // chain_start 复位。LaunchPadMode 的桌面根等待谓词在 x11 路线用它同源判定
 // (桌面根 toplevel 是 wayland 私有概念, X 路线没有, 不接这根线状态机永远

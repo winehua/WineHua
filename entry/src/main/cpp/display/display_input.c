@@ -57,6 +57,7 @@ static struct wlr_keyboard g_kb;
 static struct wl_event_loop *g_loop;
 static struct wlr_surface *g_kbd_focus; /* 已 keyboard enter 的 surface */
 static struct wlr_surface *g_ptr_focus; /* 已 pointer enter 的 surface */
+static struct wlr_xwayland_surface *g_ptr_focus_xs; /* 命中的 xs (D36 点击置前用) */
 static struct wl_event_source *g_press_timer;
 static struct wl_event_source *g_release_timer;
 static uint32_t g_held_keycode; /* 已按下待释放的键 (release 定时器目标) */
@@ -278,6 +279,7 @@ void display_input_inject_motion(float nx, float ny, int phase)
             wlr_seat_pointer_notify_clear_focus(g_seat);
             TrackPtrFocus(NULL);
         }
+        g_ptr_focus_xs = NULL;
         return;
     }
     /* 归一化 (XComponent 局部) → 帧坐标 → 命中窗口 → 窗口局部坐标。
@@ -310,6 +312,7 @@ void display_input_inject_motion(float nx, float ny, int phase)
         wlr_seat_pointer_notify_enter(g_seat, xs->surface, sx, sy);
         TrackPtrFocus(xs->surface);
     }
+    g_ptr_focus_xs = xs; /* D36: 点击置前的目标 (悬停不置前, 按下才置) */
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
     /* wl_pointer.frame 必发 (D9, 2026-10-05 实测): Xwayland 的绝对指针输入
      * 按 frame 批量派发 —— motion 入队, frame 才译成 X MotionNotify。此前
@@ -374,6 +377,10 @@ void display_input_inject_button(uint32_t button, bool press)
         /* 新按下到来而上一发拉伸抬起还没出: 先立即补发, 保 down/up 配对 */
         if (g_pulse_pending_btn)
             DeliverPulseRelease(NULL);
+        /* D36 点击置前: 按下即把命中窗口提到最上 (g_clients 链序 + scene
+         * 节点序)。悬停只换焦点不换序, 按下才置前 —— 与桌面合成器惯例
+         * 一致, 否则点到的窗口画面不动、输入却进去了。 */
+        wl_ohos_output_client_raise(g_ptr_focus_xs);
         wlr_seat_pointer_notify_button(g_seat, NowMsec(), button,
                                        WL_POINTER_BUTTON_STATE_PRESSED);
         /* wl_pointer.frame 必发 (D15, 2026-10-06 用户实测): button 与 motion
