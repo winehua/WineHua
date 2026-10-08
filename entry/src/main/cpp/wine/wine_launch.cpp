@@ -469,6 +469,22 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
             return false;
         }
         OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
+        /* D25 复现辅助 (默认关): 沙箱旗标 files/.wine/.winehua-diag-fail-init
+         * 存在时, wineboot spawn 后立即按 completion 失败同款语义上报
+         * state:failed:wineboot 并返回 —— 抑制态保持置位, 与真实「init 中途
+         * 失败」路径状态一致。旗标命中即自删: 受控复现「失败→会话内重试→
+         * 重试轮成功」恰好一次, 重试轮不再命中。推旗标:
+         * hdc file send -b app.hackeris.winehua <本地任意非空文件> files/.wine/.winehua-diag-fail-init
+         * (设备 SELinux 拒绝 shell 域 kill app 子进程, kill 注入不可行 —
+         * 2026-10-08 实测 Operation not permitted, 故走旗标。) */
+        const std::string diagFailInit = p->prefixDir + "/.winehua-diag-fail-init";
+        if (access(diagFailInit.c_str(), F_OK) == 0) {
+            unlink(diagFailInit.c_str());
+            OH_LOG_WARN(LOG_APP, "[Launch-Async] diag flag fail-init hit, reporting wineboot failure");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
+            return false;
+        }
         /* 首次初始化 (wine.inf 的 PreInstall/DefaultInstall/Wow64Install + 可选 Mono)
          * 耗时与设备性能强相关, 模拟器上可超过 30s。先等 wineboot 进程退出
          * (NCP 退出回调确认 — 沙箱 /proc 对 NCP 不可见, 进程存活轮询不可用),
