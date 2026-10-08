@@ -100,7 +100,10 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 `run` 的常用参数：`--prefix reuse\|clean`、`--tests ID,ID`（选测）、`--inline FILE`
 （内联临时用例，exe 须已在 `C:\smoke`）、`--job FILE`（job JSON 文件，先文件后
 CLI 覆盖；里程碑验证编排的入库复现）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
-`--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`。
+`--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`、
+`--retry-failed`（D35 防抖：判定 FAIL 的用例单独重跑一次，终判取重试、首判留档
+于自完备子归档 `retry-R<N>/`——`check` 可独立重判。默认关；套件级 checks 不参与
+重试。背景：成套跑每轮随机 1 项间歇失败是 D30 残留时序窗，单测复跑即绿）。
 
 ### displayroute 验证编排（M1 出口判据复现）
 

@@ -943,6 +943,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             suite_def = {"checks": declared_suite_checks}
         host = judge_run(archive, entries, frames, summary.get("tests", []),
                          suite_def, suite_name, long_seconds)
+        if getattr(args, "retry_failed", False):
+            suite_ps = f" --ps winehua.suite {args.suite}" if args.suite else ""
+            host = retry_failed_tests(hdc, device, archive, run_id, job, args,
+                                      manifest, entries, host, frames,
+                                      timeout_minutes, restamp, suite_ps)
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
@@ -1128,6 +1133,105 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
                 retried = True
                 started = time.time()
     return summary, frames
+
+
+def retry_failed_tests(hdc, device, archive: Path, run_id: str, job: dict,
+                       args, manifest: dict, entries: dict,
+                       first_host: dict, frames: dict,
+                       timeout_minutes: int, restamp: str, start_suffix: str) -> dict:
+    """D35 防抖 (--retry-failed): 判定 FAIL 的用例单独重跑一次。
+
+    背景 (2026-10-08 实测四连): 全量 x11 交互 job 成套跑每轮随机 1 项间歇
+    失败 (right-up 丢失 / 前导多键 / release 后 +1 过渡事件 / chars 多
+    'l'), 单测复跑即绿 —— 单条事件在成套节奏下偶发丢失, 是 D30 残留时序
+    窗的验收面表现。重试让 21/21 判据不被随机噪声掩盖。
+
+    形态: 重试是自完备子归档 archive/retry-R<N>/ (device-results/frames/
+    suite-summary/job 同构) —— `check` 可对它独立重判, 首判证据不动。
+    终判取重试结果并在 host-summary 标注 retried/firstAttempt 溯源; 套件
+    级 checks 不参与重试 (管矩阵/覆盖, 不属间歇噪声面)。全部重试仍 FAIL
+    的用例, 终判维持 FAIL (重试只消间歇, 不掩盖真回归 —— D33/D34 类
+    一致性失败重跑一次不会变绿)。"""
+    failed = [t["testId"] for t in first_host.get("tests", [])
+              if t.get("status") == "FAIL"]
+    if not failed:
+        return first_host
+    for n in (1, 2, 3):
+        retry_dir = archive / f"retry-R{n}"
+        if not retry_dir.exists():
+            break
+    else:
+        log("retry: 子归档 R1-R3 已存在, 跳过重试")
+        return first_host
+    retry_run_id = f"{run_id}R{n}"
+    retry_dir.mkdir(parents=True, exist_ok=True)
+    retry_job = dict(job)
+    retry_job["tests"] = failed
+    retry_job_path = retry_dir / "job.json"
+    retry_job_path.write_text(json.dumps(retry_job, indent=2,
+                                         ensure_ascii=False) + "\n")
+    remove_sandbox_path(hdc, device, JOB_REL)
+    hdc_send(hdc, device, retry_job_path, f"{SANDBOX_FILES}/{JOB_REL}")
+    retry_entries = {tid: entries[tid] for tid in failed if tid in entries}
+    retry_frames_targets = {tid: entry for tid, entry in retry_entries.items()
+                            if entry.case.needs_frame}
+    start = (f"aa start -a {ABILITY} -b {BUNDLE} "
+             f"--ps winehua.mode smoke "
+             f"--ps winehua.job_file {SANDBOX_FILES}/{JOB_REL} "
+             f"--ps winehua.run_id {retry_run_id} --ps winehua.prefix {args.prefix}"
+             f"{start_suffix}")
+    log(f"retry R{n}: 重跑判定 FAIL 的 {len(failed)} 项: {', '.join(failed)}")
+    code, out = hdc_shell(hdc, device, start)
+    if code != 0:
+        log(f"retry: aa start 失败, 维持首判 ({out.strip()[:70]})")
+        return first_host
+    retry_summary_rel = f"{DRIVE_C_REL}/results/{retry_run_id}/suite-summary.json"
+    try:
+        retry_summary, retry_frames = poll_run(
+            hdc, device, retry_dir, retry_run_id, retry_frames_targets,
+            timeout_minutes, args.poll_seconds,
+            start_command=start, restamp_extra=restamp)
+        if retry_summary is None:
+            log(f"retry: summary 未在 {timeout_minutes} min 内出现, 维持首判")
+            return first_host
+        hdc_recv_dir(hdc, device, f"{DRIVE_C_REL}/results/{retry_run_id}",
+                     retry_dir / "device-results")
+        (retry_dir / "suite-summary.json").write_text(
+            json.dumps(retry_summary, indent=2, ensure_ascii=False) + "\n")
+        (retry_dir / "artifact.json").write_text(json.dumps({
+            "runId": retry_run_id, "suite": args.suite, "prefix": args.prefix,
+            "payloadVersion": manifest.get("suiteVersion"),
+            "device": device, "retryOf": run_id,
+        }, indent=2, ensure_ascii=False) + "\n")
+    finally:
+        hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
+    retry_host = judge_run(retry_dir, retry_entries, retry_frames,
+                           retry_summary.get("tests", []), None, "", 3600)
+    (archive / f"retry-R{n}-summary.json").write_text(
+        json.dumps(retry_host, indent=2, ensure_ascii=False) + "\n")
+    # 合并: 重试结果覆盖终判, 首判留档 (判定只读归档, 两份都在盘上)。
+    retried = {t["testId"]: t for t in retry_host.get("tests", [])}
+    merged = []
+    for t in first_host.get("tests", []):
+        tid = t["testId"]
+        if tid in retried:
+            r = dict(retried[tid])
+            r["retried"] = True
+            r["firstAttempt"] = t
+            if r["status"] != t["status"]:
+                log(f"  retry: {tid} {t['status']} → {r['status']} (R{n})")
+            merged.append(r)
+        else:
+            merged.append(t)
+    first_host["tests"] = merged
+    first_host["passed"] = sum(1 for t in merged if t["status"] == "PASS")
+    first_host["failed"] = sum(1 for t in merged if t["status"] == "FAIL")
+    first_host["skipped"] = sum(1 for t in merged if t["status"] == "SKIP")
+    first_host["total"] = len(merged)
+    first_host["status"] = "FAIL" if first_host["failed"] else (
+        "PASS" if first_host["passed"] else "SKIP")
+    first_host["retriedTests"] = sorted(retried.keys())
+    return first_host
 
 
 def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = None,
@@ -1385,6 +1489,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="等 suite summary 的时长 (分钟); 缺省取 job 的 "
                           "timeoutMinutes, 都没有则 15")
     run.add_argument("--poll-seconds", type=int, default=5)
+    run.add_argument("--retry-failed", action="store_true",
+                     help="D35 防抖: 判定 FAIL 的用例单独重跑一次 (自完备子归档 "
+                          "retry-R<N>/, check 可独立重判); 终判取重试, 首判留档。"
+                          "默认关 —— 套件级 checks 不重试")
     run.set_defaults(func=cmd_run)
 
     install = sub.add_parser("install", help="安装当前 HAP 到设备")
