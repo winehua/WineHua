@@ -50,6 +50,9 @@ export class ProcessService {
   private refreshTimer: number = -1;
   // D45: proc-exited 待检测标记 (节流刷新完成点消费, 见 bindEnv 注释)
   private desktopGoneCheckPending: boolean = false;
+  // D45 判据门: 本会话内见过 desktopShell 打标 (桌面 root 确实出现过)。
+  // 引擎 stopped 时重置 (clear() 由 WineEnvService 停止编排调用)。
+  private desktopShellSeen: boolean = false;
 
   // 极简订阅: 状态变化后逐个调用
   subscribe(listener: () => void): void {
@@ -67,6 +70,13 @@ export class ProcessService {
     try {
       const all = testNapi.getProcessList() as ProcessInfo[];
       this.processList = all.filter((p: ProcessInfo) => SYSTEM_PROC_BLACKLIST.indexOf(p.name) < 0);
+      // D45 判据门: desktopShell 打标发生在桌面 root 首现时刻 (native
+      // MarkDesktopShellProcesses) —— ready 后 root 出现前的窗口期里集合
+      // 必然为空, 那不是"桌面退出"而是"桌面还没到"。见过打标才允许后续
+      // 的全灭判定 (checkDesktopShellGone), 见 desktopGoneCheckPending。
+      if (!this.desktopShellSeen && this.processList.some((p: ProcessInfo) => p.desktopShell)) {
+        this.desktopShellSeen = true;
+      }
     } catch (e) {
       this.processList = [];
     }
@@ -95,7 +105,15 @@ export class ProcessService {
   // 清空列表 (WineEnvService.doReset 用, 原 this.processList = [])
   clear(): void {
     this.processList = [];
+    this.resetDesktopShellSeen();
     this.notify();
+  }
+
+  // D45: 会话结束 (stopAll→stopped) 时重置打标历史, 新会话 init 窗口期
+  // 不得判全灭 (见 checkDesktopShellGone 的 desktopShellSeen 门)
+  resetDesktopShellSeen(): void {
+    this.desktopShellSeen = false;
+    this.desktopGoneCheckPending = false;
   }
 
   // 节流刷新: 引擎事件驱动 (proc-updated 高频), 手动 ↻ 走 refresh 直刷
@@ -144,9 +162,16 @@ export class ProcessService {
   // 时对当时 running 进程的打标 (ProcessInfo 字段注释); 过滤黑名单 (基础设施
   // 进程不入列) 后集合空 = desktop + explorer 全退。teardown 的连续
   // proc-exited 合并进同一次节流刷新, 幂等 (closeX11Canvas 内部短路)。
+  // desktopShellSeen 门: 打标在桌面 root 首现时才发生 —— ready 后 root
+  // 出现前的窗口期集合恒空, 没见过打标就判"全灭"会把自己误杀
+  // (2026-10-10 01:0x 三连崩的根因: onTerminateScene callerContainerSession
+  // EntryAbility, init 窗口期 proc-exited 一到就误判)。
   private checkDesktopShellGone(): void {
     const wm = WineWindowManager.getInstance();
     if (!wm.isDesktopAbilityRunning()) {
+      return;
+    }
+    if (!this.desktopShellSeen) {
       return;
     }
     if (this.processList.some((p: ProcessInfo) => p.desktopShell)) {

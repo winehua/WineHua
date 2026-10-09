@@ -531,6 +531,9 @@ export class WineEnvService {
       // (startSession/删 prefix), 由各编排自己在完成时清
       this.engineState = 'idle';
       this.engineStage = '';
+      // D45: 会话结束, 打标历史作废 —— 重启 (stopAll→start 不经 clear())
+      // 后新会话的 init 窗口期 desktopShell 集合恒空, 残留 seen 会再误杀
+      ProcessService.getInstance().resetDesktopShellSeen();
       const waiters = this.stopWaiters.splice(0);
       for (const resolve of waiters) {
         resolve();
