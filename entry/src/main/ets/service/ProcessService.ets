@@ -141,11 +141,14 @@ export class ProcessService {
   // 改变 init 期 JS 线程时序, 把既有的 wine 子进程 SIGSEGV 竞态触发概率
   // 放大到启动必崩 (D47, 7+ 连崩); revert 恢复原时序后即正常。时序敏感,
   // 机制未明, 见 D47)。
+  private env: WineEnvService | null = null;
+
   bindEnv(env: WineEnvService): void {
     if (this.envBound) {
       return;
     }
     this.envBound = true;
+    this.env = env;
     env.subscribeEvents((evt: string) => {
       if (evt.startsWith('proc-') || evt.startsWith('launch-')) {
         this.refreshThrottled();
@@ -166,12 +169,18 @@ export class ProcessService {
   // 出现前的窗口期集合恒空, 没见过打标就判"全灭"会把自己误杀
   // (2026-10-10 01:0x 三连崩的根因: onTerminateScene callerContainerSession
   // EntryAbility, init 窗口期 proc-exited 一到就误判)。
+  // engineState=='ready' 是 seen 的充分补位: ready 有 degraded→desktop-ready
+  // 补票机制背书 (root 确认画过桌面), 而 seen 依赖 refresh 被动观察 ——
+  // 桌面静默期 (无进程事件, refresh 不跑) 后直接退出的场景 seen 恒 false,
+  // 2026-10-10 01:41 首验正当关窗被 seen 拦下 (黑屏残留) 即此漏。
   private checkDesktopShellGone(): void {
     const wm = WineWindowManager.getInstance();
     if (!wm.isDesktopAbilityRunning()) {
       return;
     }
-    if (!this.desktopShellSeen) {
+    const desktopConfirmed = this.desktopShellSeen ||
+      this.env?.engineState === 'ready';
+    if (!desktopConfirmed) {
       return;
     }
     if (this.processList.some((p: ProcessInfo) => p.desktopShell)) {
