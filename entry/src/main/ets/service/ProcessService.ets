@@ -156,6 +156,14 @@ export class ProcessService {
           this.desktopGoneCheckPending = true;
         }
       }
+      // D45 seen 的权威置位点: evt:desktop-ready 与打标 (MarkDesktopShellProcesses)
+      // 在 native 同一分支发出 (wayland_server.cpp DesktopRoot), = 本 app 进程
+      // 亲历了桌面 root 出现。refresh 的被动观察仅作兜底 —— 接管残留会话时
+      // 注册表带旧打标但本进程没见过 root, 不得置 seen (02:06 误关窗教训:
+      // deploy 后 wineserver 残留, 旧 explorer 退出被新 app 误判为桌面退出)。
+      if (evt === 'desktop-ready') {
+        this.desktopShellSeen = true;
+      }
     });
   }
 
@@ -165,22 +173,20 @@ export class ProcessService {
   // 时对当时 running 进程的打标 (ProcessInfo 字段注释); 过滤黑名单 (基础设施
   // 进程不入列) 后集合空 = desktop + explorer 全退。teardown 的连续
   // proc-exited 合并进同一次节流刷新, 幂等 (closeX11Canvas 内部短路)。
-  // desktopShellSeen 门: 打标在桌面 root 首现时才发生 —— ready 后 root
-  // 出现前的窗口期集合恒空, 没见过打标就判"全灭"会把自己误杀
-  // (2026-10-10 01:0x 三连崩的根因: onTerminateScene callerContainerSession
-  // EntryAbility, init 窗口期 proc-exited 一到就误判)。
-  // engineState=='ready' 是 seen 的充分补位: ready 有 degraded→desktop-ready
-  // 补票机制背书 (root 确认画过桌面), 而 seen 依赖 refresh 被动观察 ——
-  // 桌面静默期 (无进程事件, refresh 不跑) 后直接退出的场景 seen 恒 false,
-  // 2026-10-10 01:41 首验正当关窗被 seen 拦下 (黑屏残留) 即此漏。
+  // desktopShellSeen 门: 唯一权威置位点 = evt:desktop-ready (与 native 打标
+  // 同分支发出, = 本 app 进程亲历桌面 root 出现)。两轮教训:
+  //   ① init 窗口期 (root 未现) 集合恒空, 无门则 proc-exited 一到就误判
+  //     (01:0x 三连崩, onTerminateScene callerContainerSession EntryAbility);
+  //   ② seen 依赖 refresh 被动观察会漏掉静默期退出 (01:41 正当关窗被拦);
+  //   ③ 接管残留会话 (deploy 后 wineserver 存活, 新 app 同步旧注册表) 时
+  //     旧会话进程死亡也被误判 —— 故 engineState=='ready' 不可作替代条件
+  //     (接管后同样达 ready), 只有 desktop-ready 事件能区分「亲历」与「接管」。
   private checkDesktopShellGone(): void {
     const wm = WineWindowManager.getInstance();
     if (!wm.isDesktopAbilityRunning()) {
       return;
     }
-    const desktopConfirmed = this.desktopShellSeen ||
-      this.env?.engineState === 'ready';
-    if (!desktopConfirmed) {
+    if (!this.desktopShellSeen) {
       return;
     }
     if (this.processList.some((p: ProcessInfo) => p.desktopShell)) {
