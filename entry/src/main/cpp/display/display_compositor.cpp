@@ -873,6 +873,11 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         display_guest_frames_shutdown();
         if (xwayland)
             wlr_xwayland_destroy(xwayland);
+        // D45: 摘 ohos_output 挂在 output events 上的 listener (commit) +
+        // scene_output —— wlr_backend_destroy 的 wlr_output_finish 断言
+        // events.* 全空, 早摘会 UAF ClientDestroy 正在动的 scene 帧节点
+        // (故在 xwayland destroy 之后), 晚摘/不摘则 assert 炸。
+        wl_ohos_output_shutdown();
         if (server)
         {
             wl_list_remove(&g_xwayland_ready_listener.link);

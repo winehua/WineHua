@@ -108,6 +108,14 @@ uint32_t wl_ohos_output_frames_in_scene(void);
 /* 输出 present 序号 (每帧一次自增) —— 不变量检查器用 (known-issues §2.6) */
 uint32_t wl_ohos_output_present_seq(void);
 
+// teardown: 摘本模块挂在 output events 上的 listener (commit) 并销毁
+// scene_output (其内部挂 output 的 commit/damage/needs_frame)。不摘则
+// wlr_backend_destroy → wlr_output_finish 的 events.* 全空断言炸
+// (D45 退出桌面 SIGABRT, 03:18:52 崩溃栈)。必须在合成器线程、
+// wlr_xwayland_destroy 之后 (ClientDestroy 还要动 scene 帧节点)、
+// wlr_backend_destroy 之前调用; chain_start 未跑过时安全 no-op。
+void wl_ohos_output_shutdown(void);
+
 /* 当前显示周期 (ns): VSync 已接入时取系统上报值, 兜底节拍/未接入时 = 33ms。
  * guest 帧的生产节奏 (presenter 的 framePeriod) 必须跟这个走 —— 宿主按它
  * 回压 guest, 硬编码 30fps 会把 guest 钳在 30fps (M2 帧率债)。 */

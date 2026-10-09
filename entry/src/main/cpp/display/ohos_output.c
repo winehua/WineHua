@@ -66,6 +66,7 @@ struct wl_ohos_output {
     struct wlr_scene_rect *bg_rect;     /* 背景兜底 rect (resize 随动, D10) */
     OHNativeWindow *window;
     struct wl_listener commit_listener;
+    bool commit_attached; /* commit_listener 已注册 (防未注册态 wl_list_remove) */
     struct wl_listener xnew_surface; /* xwayland->events.new_surface (T9) */
     struct wl_listener xwayland_destroy; /* xwayland->events.destroy: 摘 xnew_surface (D45) */
     struct wl_event_source *frame_timer;  /* 兜底节拍 + VSync 看门狗 (任务 2) */
@@ -1877,6 +1878,30 @@ int wl_ohos_output_resize(int w, int h)
     return 0;
 }
 
+/* teardown 摘除本模块挂在 output events 上的 listener (D45 第四层之二:
+ * 03:18:52 崩溃栈 LastFatalMessage "wl_list_empty(&output->events.commit.
+ * listener_list)" @ wlr_output_finish:399 —— backend destroy 走 output
+ * finish, 断言九个 events.* 全空; 挂着的本模块 commit_listener 与
+ * scene_output 的 commit/damage/needs_frame (wlr_scene_output_create 内
+ * 注册) 全部拦截)。scene 树/layout 本体不持 output events listener, 归
+ * wl_display_destroy 自动清理; frame_timer/vsync_source 归 event loop。
+ * 调用点: display_compositor fail 收尾, wlr_xwayland_destroy 之后
+ * (per-client ClientDestroy 还要动 scene 帧节点, scene 此处必须仍活着)、
+ * wlr_backend_destroy 之前。 */
+void wl_ohos_output_shutdown(void)
+{
+    if (g_out.scene_output)
+    {
+        wlr_scene_output_destroy(g_out.scene_output);
+        g_out.scene_output = NULL;
+    }
+    if (g_out.commit_attached)
+    {
+        wl_list_remove(&g_out.commit_listener.link);
+        g_out.commit_attached = false;
+    }
+}
+
 int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                struct wlr_renderer *renderer,
                                struct wl_event_loop *loop,
@@ -1979,6 +2004,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
 
     g_out.commit_listener.notify = HandleOutputCommit;
     wl_signal_add(&g_out.output->events.commit, &g_out.commit_listener);
+    g_out.commit_attached = true;
 
     if (xwayland) {
         g_out.xnew_surface.notify = HandleNewSurface;
