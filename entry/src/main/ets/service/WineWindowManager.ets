@@ -1240,6 +1240,32 @@ export class WineWindowManager {
     this.startDesktopAbility(0);
   }
 
+  isDesktopAbilityRunning(): boolean {
+    return this.desktopAbilityRunning;
+  }
+
+  // x11 桌面窗关闭 (D45): 桌面 shell 进程全灭 = 桌面会话结束, 与 wayland
+  // desktop_root destroyed 分支 (onToplevelDestroyed → terminateSelf) 同
+  // 语义关 DWA 回主页。x11 桥无 toplevel destroyed 事件, 判据走进程面,
+  // 调用方 = ProcessService (节流刷新完成点, desktopShell 打标集合空)。
+  // 手动关 DWA 窗 (✕) 不经此: DesktopAbility.onDestroy →
+  // unregisterDesktopAbility 自有路径, 引擎后台继续语义不变。
+  closeX11Canvas(): void {
+    if (this.desktopAbilityCtx) {
+      const ctx = this.desktopAbilityCtx;
+      this.desktopAbilityCtx = null;
+      hilog.info(DOMAIN, TAG, '[MW] x11 desktop shell exited → terminateSelf(DesktopAbility)');
+      ctx.terminateSelf().catch((err: Error) => {
+        hilog.warn(DOMAIN, TAG, '[MW] ERR terminateSelf DesktopAbility: %{public}s', JSON.stringify(err));
+      });
+    }
+    // root 置 -1 (非 0): 0 是 x11 的合法 root id, 留 0 会让 restoreDesktopIfRunning
+    // 在桌面结束后把已销毁的画布窗拉回前台 (与 onToplevelDestroyed 的 -1 语义一致)
+    this.desktopAbilityRunning = false;
+    this.desktopRootId = -1;
+    this.notify();
+  }
+
   getDesktopRootId(): number { return this.desktopRootId; }
 
   // -- PC 虚拟桌面独立窗口 (VirtualDesktopAbility) --

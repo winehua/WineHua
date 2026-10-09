@@ -47,6 +47,8 @@ export class ProcessService {
   // 合并到 300ms 内一次刷新, 避免 UI 反复重建列表 (master 同款策略)
   private refreshPending: boolean = false;
   private refreshTimer: number = -1;
+  // D45: proc-exited 待检测标记 (节流刷新完成点消费, 见 bindEnv 注释)
+  private desktopGoneCheckPending: boolean = false;
 
   // 极简订阅: 状态变化后逐个调用
   subscribe(listener: () => void): void {
@@ -105,11 +107,21 @@ export class ProcessService {
       this.refreshPending = false;
       this.refreshTimer = -1;
       this.refresh();
+      // D45: 桌面 shell 全灭检测挂在刷新完成点之后 (见 bindEnv 注释)
+      if (this.desktopGoneCheckPending) {
+        this.desktopGoneCheckPending = false;
+        this.checkDesktopShellGone();
+      }
     }, 300);
   }
 
   // 订阅引擎事件: 进程相关事件 (含 broker 登记的 proc-updated) 到达时节流刷新;
-  // 复刻 master refreshProcessList 的触发集 + 300ms 合并
+  // 复刻 master refreshProcessList 的触发集 + 300ms 合并。
+  // D45: proc-exited 只置 pending 标记, 检测延到节流刷新完成点 —— 不得在
+  // evt 分发同步路径上加 native 调用 (2026-10-10 实测教训: 同步 refresh()
+  // 改变 init 期 JS 线程时序, 把既有的 wine 子进程 SIGSEGV 竞态触发概率
+  // 放大到启动必崩 (D47, 7+ 连崩); revert 恢复原时序后即正常。时序敏感,
+  // 机制未明, 见 D47)。
   bindEnv(env: WineEnvService): void {
     if (this.envBound) {
       return;
@@ -118,7 +130,27 @@ export class ProcessService {
     env.subscribeEvents((evt: string) => {
       if (evt.startsWith('proc-') || evt.startsWith('launch-')) {
         this.refreshThrottled();
+        if (evt.startsWith('proc-exited')) {
+          this.desktopGoneCheckPending = true;
+        }
       }
     });
+  }
+
+  // D45: x11 路线桌面 shell 全灭 = 桌面会话结束 → 关画布窗回主页。wayland
+  // 有 toplevel destroyed 事件链 (WineWindowManager.onToplevelDestroyed),
+  // x11 桥无此事件。判据走进程面: desktopShell 是 native 在桌面 root 首现
+  // 时对当时 running 进程的打标 (ProcessInfo 字段注释); 过滤黑名单 (基础设施
+  // 进程不入列) 后集合空 = desktop + explorer 全退。teardown 的连续
+  // proc-exited 合并进同一次节流刷新, 幂等 (closeX11Canvas 内部短路)。
+  private checkDesktopShellGone(): void {
+    const wm = WineWindowManager.getInstance();
+    if (!wm.isDesktopAbilityRunning()) {
+      return;
+    }
+    if (this.processList.some((p: ProcessInfo) => p.desktopShell)) {
+      return;
+    }
+    wm.closeX11Canvas();
   }
 }
