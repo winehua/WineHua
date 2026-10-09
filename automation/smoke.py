@@ -591,6 +591,17 @@ def archive_evidence(hdc: str, device: str, archive: Path) -> None:
                                 f"{DRIVE_C_ROOT_REL}/windows/temp/winehua_display_fps.txt",
                                 evidence / "winehua_display_fps.txt"):
         found.append("winehua_display_fps.txt")
+    # [GUEST-FRAMES] 帧面事件日志 (attach/detach, 含 key/pid)。display_fps
+    # 单值文件与 suite-summary 的 presentedKey 是两个时刻的粘性快照 (2026-10-10
+    # D49 实测: x11 下 explorer 桌面窗在探针退出瞬间刷帧抢走粘性 latest, 两
+    # 快照互相矛盾且都不含历史), 判定「本进程面上过屏」需要帧面 attach 的
+    # 全量事实。hilog 缓冲只留几分钟 —— suite 结束立即拉, wine 刷屏可能冲掉
+    # 早段 (opengl 是 suite 前两项, 风险最低); 拉不到不致命, 判定侧回落粘性。
+    code, gf_out = hdc_shell(hdc, device,
+                             "hilog -x 2>/dev/null | grep -a GUEST-FRAMES | tail -300")
+    if code == 0 and gf_out.strip():
+        (evidence / "guest-frames.log").write_text(gf_out, errors="replace")
+        found.append("guest-frames.log")
     code, out = hdc_shell(hdc, device, "date +%Y%m%d")
     day = out.strip().splitlines()[-1].strip() if code == 0 and out.strip() else ""
     if len(day) == 8 and day.isdigit():

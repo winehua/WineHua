@@ -26,6 +26,7 @@ checks 声明（test.json / suite 定义）:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from . import coverage as _coverage
@@ -227,11 +228,33 @@ def presented_route(ctx: dict) -> dict:
                                "无法做 x11 归属断言"}
         key_pid = key >> 32
         if key_pid != spawn_pid:
-            return {"status": "FAIL", "stage": "presented-route",
-                    "message": f"呈现的不是本次运行进程的面: key pid={key_pid} "
-                               f"spawn pid={spawn_pid}",
+            # 粘性 latest 被别的面抢走 ≠ 本进程面没上屏。x11 虚拟桌面下探针
+            # 退出/失焦的瞬间 explorer 桌面窗刷帧即成 displayed 粘性 latest
+            # (2026-10-10 D49 实测: opengl-x86 两轮同位 FAIL, key pid 比
+            # spawn pid 大 10-12 = x11 会话全家桶的 explorer)。归档的
+            # [GUEST-FRAMES] 帧面事件是全量事实: 本 pid 的帧面 attach 过
+            # (进入呈现链) = 本进程的面确实上过屏, 归属成立。日志缺失
+            # (hilog 被冲/旧运行器) 时回落 FAIL 并注明证据缺口。
+            attach = _x11_guest_attach_of_pid(ctx.get("run_dir"), spawn_pid)
+            if attach is None:
+                return {"status": "FAIL", "stage": "presented-route",
+                        "message": f"呈现的不是本次运行进程的面: key pid={key_pid} "
+                                   f"spawn pid={spawn_pid}，且归档无 [GUEST-FRAMES] "
+                                   f"attach 佐证 (日志被冲或运行器过旧)",
+                        "metrics": {"expected": expected, "presented": presented,
+                                    "presentedKey": key, "spawnPid": spawn_pid}}
+            return {"status": "PASS", "stage": "presented-route",
+                    "message": f"路线一致 ({presented}) 且归属本进程 "
+                               f"(pid={spawn_pid} 面已 attach; 粘性 latest="
+                               f"{key_pid} 为桌面焦点回归帧)",
                     "metrics": {"expected": expected, "presented": presented,
-                                "presentedKey": key, "spawnPid": spawn_pid}}
+                                "presentedKey": key, "spawnPid": spawn_pid,
+                                "attachKey": attach}}
+        return {"status": "PASS", "stage": "presented-route",
+                "message": f"路线一致 ({presented}) 且归属本进程 "
+                           f"(pid={spawn_pid}, key={key})",
+                "metrics": {"expected": expected, "presented": presented,
+                            "presentedKey": key, "spawnPid": spawn_pid}}
         return {"status": "PASS", "stage": "presented-route",
                 "message": f"路线一致 ({presented}) 且归属本进程 "
                            f"(pid={spawn_pid}, key={key})",
@@ -241,6 +264,20 @@ def presented_route(ctx: dict) -> dict:
             "message": f"路线一致 ({presented}, key={metrics.get('presentedKey')})",
             "metrics": {"expected": expected, "presented": presented,
                         "presentedKey": metrics.get("presentedKey")}}
+
+
+def _x11_guest_attach_of_pid(run_dir, spawn_pid: int):
+    """从归档 [GUEST-FRAMES] 日志找本 pid 帧面的 attach 事实。
+    attach 行: "[GUEST-FRAMES] attach key=<十进制key> xwin=... pid=..."。
+    返回 attach 的 key (int) 或 None (文件缺失/无本 pid 行)。只读归档。"""
+    path = (Path(run_dir) if run_dir else None) / "device-evidence" / "guest-frames.log"
+    if not path.is_file():
+        return None
+    for line in path.read_text(errors="replace").splitlines():
+        m = re.search(r"\[GUEST-FRAMES\] attach key=(\d+)", line)
+        if m and (int(m.group(1)) >> 32) == spawn_pid:
+            return int(m.group(1))
+    return None
 
 
 REGISTRY = {
