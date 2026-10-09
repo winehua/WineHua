@@ -181,6 +181,13 @@ export class ProcessService {
   //   ③ 接管残留会话 (deploy 后 wineserver 存活, 新 app 同步旧注册表) 时
   //     旧会话进程死亡也被误判 —— 故 engineState=='ready' 不可作替代条件
   //     (接管后同样达 ready), 只有 desktop-ready 事件能区分「亲历」与「接管」。
+  //   ④ D48 (2026-10-10 03:43 实测): DesktopRoot 存在 init 期误触发 (explorer
+  //     尚未 spawn 时被识别为 root) → 打标集合 = 当时的 init 进程, explorer/
+  //     desktop 之后 spawn 反而不带标 (gDesktopShellMarked 防重锁) → init
+  //     进程一退 (winedevice exit=0), 带标集合假性「全灭」→ 误关窗 → 合成
+  //     器随 surface 销毁停机 → X 消失 → explorer 断连重启循环 → 恒
+  //     ready-degraded。故判空必须 AND shell 本体判据: explorer.exe/desktop
+  //     任一在列表 (running) = 桌面仍在, 与标无关。两者同时成立才关窗。
   private checkDesktopShellGone(): void {
     const wm = WineWindowManager.getInstance();
     if (!wm.isDesktopAbilityRunning()) {
@@ -190,6 +197,11 @@ export class ProcessService {
       return;
     }
     if (this.processList.some((p: ProcessInfo) => p.desktopShell)) {
+      return;
+    }
+    const shellAlive = this.processList.some((p: ProcessInfo) =>
+      p.name === 'explorer.exe' || p.name === 'desktop');
+    if (shellAlive) {
       return;
     }
     wm.closeX11Canvas();
