@@ -916,7 +916,14 @@ static void FrameStep(bool via_vsync)
          *   needsFrame  = 本秒内"有 damage"的帧时钟拍数 (跳 ⑤ 的入口条件)
          *   ticks       = 帧时钟拍数 (应 ~30/s)
          * 判读: 客户端侧速率 (XCLIENT-STAT 行) 高而 surfCommits 低 ⇒ 丢在 ②~④;
-         * surfCommits 高而 outCommits 低 ⇒ 丢在 ⑤/⑥。 */
+         * surfCommits 高而 outCommits 低 ⇒ 丢在 ⑤/⑥。
+         * 两条防误读 (D25-B「坏变体」误判的根源, 2026-10-09 三场景实测:
+         * notepad 静止/拖拽、cube GL 渲染, 计数与流量全部吻合):
+         *   1. 静止期全零是正常语义 —— commit 按 damage 门控, 无变化不出帧,
+         *      别把全零当「合成器冻结」; 冻结判据用视觉真值 (截屏 diff)。
+         *   2. GL 直推面 (D23: guest GL 内容宿主侧锚定, 不经 wl_surface
+         *      commit) 的内容更新不计入 surfCommits —— 场景内容率看
+         *      outCommits; surfCommits 此时只计窗口装饰等 GDI 面提交。 */
         {
             struct ohos_client_surface *rc;
             static uint64_t s_surfCommits, s_needsFrame, s_ticks, s_lastOut, s_lastNs;
