@@ -67,6 +67,7 @@ struct wl_ohos_output {
     OHNativeWindow *window;
     struct wl_listener commit_listener;
     struct wl_listener xnew_surface; /* xwayland->events.new_surface (T9) */
+    struct wl_listener xwayland_destroy; /* xwayland->events.destroy: 摘 xnew_surface (D45) */
     struct wl_event_source *frame_timer;  /* 兜底节拍 + VSync 看门狗 (任务 2) */
     struct wl_event_source *vsync_source; /* wl_event_loop_add_fd(vsync_fd) */
     OH_NativeVSync *vsync;                /* 帧时钟主驱动 (任务 2) */
@@ -1351,6 +1352,21 @@ static void ClientRequestActivate(struct wl_listener *listener, void *data)
     wl_ohos_output_client_raise(c->xs);
 }
 
+/* wlr_xwayland_destroy 约定 (xwayland.c:78-83): 先 emit events.destroy, 再
+ * 断言四个 events.* 信号上已无 listener。new_surface 在 chain_start 注册
+ * (T9) 而从不摘除的话, teardown 断言必炸 —— D45 第四层实测: 退出桌面
+ * closeX11Canvas 链 SIGABRT, LastFatalMessage
+ * "wl_list_empty(&xwayland->events.new_surface...)"。destroy 回调摘
+ * xnew_surface + 自身 —— wlroots 标准姿势 (emit_mutable 期间回调里 remove
+ * 自己安全; 上游 handle_shell_destroy 同款自述)。 */
+static void HandleXwaylandDestroy(struct wl_listener *listener, void *data)
+{
+    struct wl_ohos_output *o = wl_container_of(listener, o, xwayland_destroy);
+    (void)data;
+    wl_list_remove(&o->xnew_surface.link);
+    wl_list_remove(&o->xwayland_destroy.link);
+}
+
 static void HandleNewSurface(struct wl_listener *listener, void *data)
 {
     struct wl_ohos_output *o = wl_container_of(listener, o, xnew_surface);
@@ -1967,6 +1983,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     if (xwayland) {
         g_out.xnew_surface.notify = HandleNewSurface;
         wl_signal_add(&xwayland->events.new_surface, &g_out.xnew_surface);
+        g_out.xwayland_destroy.notify = HandleXwaylandDestroy;
+        wl_signal_add(&xwayland->events.destroy, &g_out.xwayland_destroy);
     }
 
     /* 帧时钟 (任务 2, 见 FrameTick 上方注释): 主驱动 = 系统 VSync, 33ms 定时器
