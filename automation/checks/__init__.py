@@ -227,6 +227,23 @@ def presented_route(ctx: dict) -> dict:
                     "message": "归档缺运行器记录的 spawn pid（设备端构建过旧），"
                                "无法做 x11 归属断言"}
         key_pid = key >> 32
+        # guest 事实自洽 (D49 彻底修复, 2026-10-10): 探针上报自己的 Unix
+        # getpid (msvcrt _getpid, 与 presentedKey 高 32 位同源 —— mesa/win32u
+        # 填 key 就用它)。key 的 pid == selfPid ⇒ 帧是本进程的面, 与 host 侧
+        # spawn 记录无关 (x86 链 fork 偏移使两者结构性不等, 不能互为断言)。
+        self_pid = metrics.get("selfPid")
+        if self_pid:
+            if key_pid != int(self_pid):
+                return {"status": "FAIL", "stage": "presented-route",
+                        "message": f"呈现的不是本次运行进程的面: key pid={key_pid} "
+                                   f"本进程 getpid={self_pid} (guest 事实自洽断言)",
+                        "metrics": {"expected": expected, "presented": presented,
+                                    "presentedKey": key, "selfPid": self_pid}}
+            return {"status": "PASS", "stage": "presented-route",
+                    "message": f"路线一致 ({presented}) 且归属本进程 "
+                               f"(guest getpid={self_pid}, key={key})",
+                    "metrics": {"expected": expected, "presented": presented,
+                                "presentedKey": key, "selfPid": self_pid}}
         if key_pid != spawn_pid:
             # 粘性 latest 被别的面抢走 ≠ 本进程面没上屏。x11 虚拟桌面下探针
             # 退出/失焦的瞬间 explorer 桌面窗刷帧即成 displayed 粘性 latest
