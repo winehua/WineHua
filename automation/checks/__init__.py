@@ -227,12 +227,16 @@ def presented_route(ctx: dict) -> dict:
                     "message": "归档缺运行器记录的 spawn pid（设备端构建过旧），"
                                "无法做 x11 归属断言"}
         key_pid = key >> 32
-        # guest 事实自洽 (D49 彻底修复, 2026-10-10): 探针上报自己的 Unix
-        # getpid (msvcrt _getpid, 与 presentedKey 高 32 位同源 —— mesa/win32u
-        # 填 key 就用它)。key 的 pid == selfPid ⇒ 帧是本进程的面, 与 host 侧
-        # spawn 记录无关 (x86 链 fork 偏移使两者结构性不等, 不能互为断言)。
+        # guest 事实自洽 (D49): 探针上报 selfPid 时, 只有它声明了与 key 同源
+        # 的通道 (selfPidSource="unix-bridge", 待 unix 桥方案落地) 断言才启用
+        # —— 三通道实验实证 (c394f259bdd): msvcrt _getpid=Wine ptid、/proc
+        # 直读被 wine 文件层劫持 (两用例同值), 都与 key 不同源, 盲断言会让
+        # 诚实值错杀 (05:21/05:42 两轮 x64/x86 全 FAIL)。通道未就位 → 跳过
+        # 本段, 回落 spawn pid/attach 路径 (x64 快捷 PASS, x86 结构性 FAIL
+        # 已知, D49 #118)。
         self_pid = metrics.get("selfPid")
-        if self_pid:
+        self_pid_source = metrics.get("selfPidSource")
+        if self_pid and self_pid_source == "unix-bridge":
             if key_pid != int(self_pid):
                 return {"status": "FAIL", "stage": "presented-route",
                         "message": f"呈现的不是本次运行进程的面: key pid={key_pid} "
@@ -287,8 +291,8 @@ def _x11_guest_attach_of_pid(run_dir, spawn_pid: int):
     """从归档 [GUEST-FRAMES] 日志找本 pid 帧面的 attach 事实。
     attach 行: "[GUEST-FRAMES] attach key=<十进制key> xwin=... pid=..."。
     返回 attach 的 key (int) 或 None (文件缺失/无本 pid 行)。只读归档。"""
-    path = (Path(run_dir) if run_dir else None) / "device-evidence" / "guest-frames.log"
-    if not path.is_file():
+    path = (Path(run_dir) / "device-evidence" / "guest-frames.log") if run_dir else None
+    if not path or not path.is_file():
         return None
     for line in path.read_text(errors="replace").splitlines():
         m = re.search(r"\[GUEST-FRAMES\] attach key=(\d+)", line)
