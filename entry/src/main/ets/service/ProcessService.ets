@@ -1,6 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 import { WineEnvService } from './WineEnvService';
+import { WineWindowManager } from './WineWindowManager';
 
 const DOMAIN = 0x0000;
 
