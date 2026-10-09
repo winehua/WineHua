@@ -764,8 +764,13 @@ def build_job(args: argparse.Namespace) -> dict:
     # presented=wayland 而完全不自知 (review F7)。声明单独下发, 判定层用它兜底:
     # CLI 覆盖可以改实跑路线, 但改不掉"这个 job 声明的是什么"。
     declared_route = declared_env.get("WINEHUA_DISPLAY_ROUTE") if declared_env else None
+    # 兜底期望 = 产品缺省路线 (EntryAbility publishLaunchRequest 的 routeValue
+    # 缺省; 2026-10-10 用户拍板缺省 x11)。套件/条目显式声明时跟随声明; 什么都不
+    # 声明 = 设备按产品缺省跑 —— 期望值必须与产品缺省一致, 否则裸跑必假 FAIL
+    # (core opengl 两项 2026-10-10 04:36 实测: 期望 wayland/实际 x11)。两处
+    # 分属 smoke 与 app, 无单一来源, 改产品缺省必须同步这里 (grep 本注释)。
     route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
-        "WINEHUA_DISPLAY_ROUTE") or "wayland"
+        "WINEHUA_DISPLAY_ROUTE") or "x11"
     if declared_route:
         route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
     # M3a 一致性检查: host 裁决 (app 冷启参数 winehua.displayRoute=x11) 会经
