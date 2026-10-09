@@ -1,7 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 import { WineEnvService } from './WineEnvService';
-import { WineWindowManager } from './WineWindowManager';
 
 const DOMAIN = 0x0000;
 
@@ -119,31 +118,7 @@ export class ProcessService {
     env.subscribeEvents((evt: string) => {
       if (evt.startsWith('proc-') || evt.startsWith('launch-')) {
         this.refreshThrottled();
-        // D45: proc-exited 时同步直刷 + 检测 x11 桌面 shell 全灭。节流刷新
-        // 是异步 300ms, 此刻 processList 还是退出现场之前的旧表, 直接判会漏
-        // —— refresh() 同步取新表后再判 (见 checkDesktopShellGone)。
-        if (evt.startsWith('proc-exited')) {
-          this.refresh();
-          this.checkDesktopShellGone();
-        }
       }
     });
-  }
-
-  // D45: x11 路线桌面 shell 全灭 = 桌面会话结束 → 关画布窗回主页。wayland
-  // 有 toplevel destroyed 事件链 (WineWindowManager.onToplevelDestroyed),
-  // x11 桥无此事件。判据走进程面: desktopShell 是 native 在桌面 root 首现
-  // 时对当时 running 进程的打标 (ProcessInfo 字段注释); 过滤黑名单 (基础设施
-  // 进程不入列) 后集合空 = desktop + explorer 全退。teardown 的连续
-  // proc-exited 会多次进入, closeX11Canvas 内部幂等 (ctx 置空后短路)。
-  private checkDesktopShellGone(): void {
-    const wm = WineWindowManager.getInstance();
-    if (!wm.isDesktopAbilityRunning()) {
-      return;
-    }
-    if (this.processList.some((p: ProcessInfo) => p.desktopShell)) {
-      return;
-    }
-    wm.closeX11Canvas();
   }
 }
