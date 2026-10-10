@@ -843,8 +843,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         for marker_name in DISPLAYROUTE_MARKERS:
             remove_sandbox_path(hdc, device, marker_name)  # files 根 (D10b)
     if not args.skip_push:
+        # M10 (M4a deferred 治本): 套件级 desktopMode 钉死 —— CLI 未显式给时
+        # 采纳套件声明, 防「换人跑/改 job 时 mode 漂移」(设备当前设置由机型
+        # 与系统版本决定, 同一套件在不同设备上测的不是一回事)。CLI 显式给
+        # 且与声明不同 → 覆盖生效但打 NOTE 留痕。
+        suite_mode = ""
+        if args.suite:
+            sp = SUITES_DIR / f"{args.suite}.json"
+            if sp.is_file():
+                suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
+        cli_mode = getattr(args, "desktop_mode", None)
+        if suite_mode and cli_mode and cli_mode != suite_mode:
+            log(f"NOTE: CLI --desktop-mode {cli_mode} 覆盖套件声明 {suite_mode}")
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
-                                       desktop_mode=getattr(args, "desktop_mode", None),
+                                       desktop_mode=cli_mode or suite_mode or None,
                                        display_route=getattr(args, "display_route", None))
         if cmd_push(push_args) != 0:
             return 1

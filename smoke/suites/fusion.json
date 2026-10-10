@@ -1,9 +1,9 @@
 {
   "name": "fusion",
   "title": "x11 fusion 多窗 (M4a 验收)",
-  "checks": [
-    "coverage"
-  ],
+  "desktopMode": "fusion",
+  "checks": [],
+  "_checks_note": "不带 coverage: 其 rgba8SampleMatrix 矩阵判据只适用于 d3d11 用例, fusion (wined3d GDI 探针) 无矩阵指标, 空 entries 恒 FAIL。用例级 checks 已含全部 M4a 判定 (test.json)。",
   "tests": [
     {
       "case": "fusion-probe",
