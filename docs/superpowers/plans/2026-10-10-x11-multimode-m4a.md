@@ -346,7 +346,7 @@ display_input.c 暴露 `wl_ohos_input_pointer_notify(struct wlr_surface*, int gx
 
 napi_init.cpp 注册 `x11SendPointer`/`x11SendKey`（照抄现有 testNapi 注入类函数的参数解析模板）。WineWindowAbility 触摸回调（现走 testNapi 注入的调用点）加 x11 分支：`shouldUseMultiwindow ? x11SendPointer(this.toplevelId, x, y, action) : 现有调用`。按键同构。
 
-- [ ] **Step 3: 构建部署验证——点击命中**
+- [x] **Step 3: 构建部署验证——点击命中**
 
 直启 notepad + 第二窗，uitest 点击窗 A 文本区（物理坐标换算 OHOS 窗局部）：光标出现于窗 A；点击窗 B 标题栏：窗 B 激活置前。归档截屏 `.temp/m4a-t5-click-routing.jpeg`。
 
@@ -394,7 +394,7 @@ git commit -m "feat(display+ets): M4a-T5 按窗输入路由——pointer/key 按
 
 判定实现：`visual:fusion-window-a/b` 在 `visual` 判定器（checks/__init__.py:93-136）加 case——region 取 preview-rect 左/右半（displayroute-preview-rect.json 的 rect 各切 50%），A 区验纯红+白十字、B 区验四象限（复用 validate_rgba_quadrants 的 B 侧与新增纯色校验）。`wine-trace:fusion-click-a` 校验 result JSON `clickCounts.a >= 1 且 b == 0`（点击只发给窗 A——host 用 uitest 点击窗 A 中心，编排进 suite argv 或 `--seconds` 内的固定点击脚本，复用 D11 的 uitest 驱动模式）。
 
-- [ ] **Step 3: 跑通验收**
+- [x] **Step 3: 跑通验收**
 
 Run: `python3 automation/smoke.py run --suite fusion --device <DEV>`（或 job 文件跑法照 displayroute-suite）
 Expected: fusion-probe PASS——双窗呈现（A 区红/十字、B 区四象限）、点击窗 A 计数 +1 且 B 为 0。
@@ -414,17 +414,17 @@ git commit -m "feat(smoke): M4a-T6 fusion_probe 双窗探针 + x11-fusion 套件
 - Modify: `docs/engineering/display-route-known-issues.md`（M4a 状态行）
 - Modify: 本计划文件勾选完成项
 
-- [ ] **Step 1: 虚拟桌面全量回归**
+- [x] **Step 1: 虚拟桌面全量回归**
 
 Run: `displayroute-win32-interactive` 前缀组全量（spec §6 冻结行为门禁）
 Expected: 11/13 维持（keyboard 两项已知 XIM 缺口）。
 
-- [ ] **Step 2: core 基线**
+- [x] **Step 2: core 基线**
 
 Run: `python3 automation/smoke.py run --suite core --device <DEV>`
 Expected: 3/4（opengl-x86 = D49 已知）。
 
-- [ ] **Step 3: 已知限制记录**
+- [x] **Step 3: 已知限制记录**
 
 Pad 承载（M4d）未含；弹出层（M4c）未含；fusion 模式下 closeX11Canvas/ProcessService 的 D45 判据不适用（无 desktop shell——记录到 known-issues，防后续误判）。
 

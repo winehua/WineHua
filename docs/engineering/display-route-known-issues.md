@@ -116,6 +116,29 @@ DATA_PTR，per-xs 消费需 EGL 渲染器。fusion_probe（T6）用 GDI 自画�
 spawn explorer /desktop（非 wine_launch 分支行为）；其 desktop 窗也是
 managed xs 并参与呈现，z 序由点击激活驱动（实测 notepad 正确置前）。
 
+### 2.12 M4a 收口：fusion 多窗验收全绿与已知边界（2026-10-10）
+
+**验收状态**：x11-fusion 套件（fusion_probe_x64）判定 PASS——双窗按
+guest 坐标并排呈现、byTitle 按窗点击命中（a=1, b=0 不泄漏）、路线自报
+x11；T7 回归 displayroute-win32-interactive 有效 20/21（唯一缺口 =
+keyboard char-count，XIM 已知）+ core 3/4（opengl-x86 = D49 已知）。
+
+**收口修复**（D50 之后的三件，指纹与根因见各自提交）：
+承载层定位（fusion 走 FusionWindowManager 子窗而非
+WineWindowAbility——修复必须落在实际承载路径，7d340f7）；title 异步
+时序（created 落地补发，3816df1）；byTitle 按钮码 evdev 契约
+（9cc6878，日志指纹 `[PIPE] ptr btn=0x1` + `inject button evdev=0x1`
+同现即按钮码未映射）。
+
+**判据不适用**：fusion 模式无 desktop shell（per-xs 承载窗，无
+DesktopAbility 画布），§2.9/D45 的「退出桌面」类判据与
+closeX11Canvas 路径不适用——fusion 会话的清理语义 = 最后一个承载窗
+销毁即回主页面。后续在 fusion 会话上复用 D45 判据会得到假 FAIL。
+
+**环境干扰记录**：设备上 Sandbox POC（app.hackeris.sandbox）会间歇性
+抢回前台，污染 snapshot 帧采集——判定 FAIL 时先看帧内容是否 POC UI，
+是则重跑，不进代码排查。
+
 ## 2. 技术悬案（M2 排查入口）
 
 ### 2.1 「最后一键」间歇不入编辑控件
