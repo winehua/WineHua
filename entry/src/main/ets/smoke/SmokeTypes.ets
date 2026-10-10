@@ -62,6 +62,8 @@ export interface InjectAction {
   dy?: number;
   steps?: number;
   // wheel 的格数（每格 wheel delta 120）
+  // byTitle (M4a-T6 I4): fusion 多窗按窗注入的目标窗标题
+  title?: string;
   notches?: number;
   // sleep 的时长（ms）；key 的 evdev 键码
   ms?: number;

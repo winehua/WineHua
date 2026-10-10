@@ -348,6 +348,24 @@ export class WineWindowManager {
       toplevelId, this.entries.size, e.starting ? 'yes' : 'no');
   }
 
+  // M4a-T6 (I4): 按标题查已承载的 toplevel (fusion_probe 的 byTitle 注入:
+  // 探针窗 title 由 xs title 事件同步到 entry, 见 onToplevelEvent 'title')。
+  // 返回 0 = 无匹配 (未承载/未同步)。仅统计 win 就绪的 entry。
+  findToplevelByTitle(title: string): number {
+    let found: number = 0;
+    this.entries.forEach((e: WineWindowEntry, id: number) => {
+      if (!found && e.win && e.title === title) {
+        found = id;
+      }
+    });
+    return found;
+  }
+
+  // M4a-T6 (I4): 按 toplevel 取已注册的 OHOS 窗 (byTitle 注入读窗 rect)。
+  getWindowForToplevel(toplevelId: number): window.Window | null {
+    return this.entries.get(toplevelId)?.win ?? null;
+  }
+
   registerWindowStage(toplevelId: number, stage: window.WindowStage): void {
     this.ensureEntry(toplevelId).stage = stage;
     hilog.info(DOMAIN, TAG, '[MW]  registerWindowStage #%{public}d (entries=%{public}d)',

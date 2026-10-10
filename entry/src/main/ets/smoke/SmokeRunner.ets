@@ -579,6 +579,27 @@ export class SmokeRunner {
     if (action.type === 'swipe') {
       return this.injectSwipe(action);
     }
+    if (action.type === 'byTitle') {
+      // M4a-T6 (I4): fusion 多窗按窗注入 —— 目标窗由 title 定位 (探针窗
+      // 的 xs title 经 title 事件同步到 entry), 点击窗内中心。坐标基准 =
+      // OHOS 承载窗局部物理像素 (sendPointerEvent 契约, x11 分叉按
+      // win_w/win_h 比例换算到 X 逻辑)。wayland 路线不用本分支 (无 title
+      // 定位需求), 走它会静默找不到窗。
+      if (!action.title) return 'byTitle action missing title';
+      const tl = WineWindowManager.getInstance().findToplevelByTitle(action.title);
+      if (!tl) return `no window titled "${action.title}" (not attached or title not synced)`;
+      const win = WineWindowManager.getInstance().getWindowForToplevel(tl);
+      if (!win) return `window for "${action.title}" not registered`;
+      const rect = win.getWindowProperties().windowRect;
+      const cx: number = rect.width / 2;
+      const cy: number = rect.height / 2;
+      testNapi.sendPointerEvent(tl, 3, cx, cy, 0);   // Move
+      await new Promise<void>((r) => setTimeout(r, 60));
+      testNapi.sendPointerEvent(tl, 1, cx, cy, 1);   // Press (left)
+      await new Promise<void>((r) => setTimeout(r, 40));
+      testNapi.sendPointerEvent(tl, 2, cx, cy, 1);   // Release
+      return '';
+    }
     if (action.type === 'wheel') {
       return this.injectWheel(action);
     }

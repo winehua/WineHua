@@ -228,6 +228,24 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* I4: 声明按窗点击 (byTitle fusion-A) —— SmokeRunner 轮询发现后执行
+     * ( ArkTS 侧按 title 找承载窗, 点窗内中心, 走按窗路由)。仅自动化模式
+     * 写; 文件协议与 D28 的 inject-request-<testId>.json 同款。 */
+    if (state.options.automation && state.options.test_id[0])
+    {
+        char path[MAX_PATH];
+        snprintf(path, sizeof(path), "C:\\smoke\\inject-request-%s.json",
+                 state.options.test_id);
+        FILE *f = fopen(path, "w");
+        if (f)
+        {
+            fputs("{\"actions\":[{\"type\":\"sleep\",\"ms\":2500},"
+                  "{\"type\":\"byTitle\",\"title\":\"fusion-A\","
+                  "\"button\":\"left\"}]}", f);
+            fclose(f);
+        }
+    }
+
     /* M9 (review): 不依赖 msg 残值判断退出; 心跳/deadline 在队列排空后
      * 每轮都检查 (不被消息流饿死)。 */
     for (;;)
