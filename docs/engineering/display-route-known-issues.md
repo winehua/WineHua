@@ -76,6 +76,31 @@ wine 虚拟桌面把 `root_window` 重定义为桌面窗（`winex11.drv/desktop.
  notepad 静默变成 wayland 客户端。需要给 wlroots output 接产品侧
  surface 提供方（M3a T3/T4 范围）。
 
+### 2.11 D50：fusion 多窗模式 wine 程序不绘制（M4a-T4 发现，2026-10-10）
+
+**现象**：x11 fusion 多窗模式直启 notepad / GL 探针，窗口
+created→attach→呈现链全通但内容全黑；virtual 模式（explorer /desktop
+存在）同程序完整渲染。
+
+**已实锤（勿重复排查）**：合成器读到的 client buffer 全 0（fmt=
+XRGB8888，stride 正确）；xwayland_stderr `OHOS-damage: win 0x800003
+dmg=0,0 0x0 n=1`——wine 从未提交有效 damage（0×0 疑似 XClearArea 类
+Expose 请求，wine 在等 Expose）；wl_surface mapped=1；DISPLAY=:0 已
+下发（entryParams 实录）。M4a 承载层无罪：呈现链红底实验实证
+（pixman→slot→Flush→上屏）。WINEHUA_DESKTOP_MODE 只被 winewayland.drv
+消费，winex11 无该 env 分叉——managed/virtual 在 wine 侧的差异只剩
+explorer 存在与否，根因在那条线上。
+
+**诊断通道**：`--ps winehua.env 'WINEHUA_WINEDEBUG=+event,+win'`
+（EntryAbility runProgram 的 K=V;K=V 通道，88bdfe8）；smoke 套件 env
+同可用。判因指纹：A=`+win` 无 CreateWindow 日志（winex11 未达）；
+B=有 map 无绘制 + 等 Expose（事件未回）；C=有绘制请求但 damage 0
+（XPutImage 分叉）。
+
+**附带缺口（M4b）**：多窗模式 guest GL 帧无消费者——FrameStep
+multiwindow 早退跳过 display_guest_frames_tick()；consumer buffer 无
+DATA_PTR，per-xs 消费需 EGL 渲染器。fusion_probe（T6）用 GDI 自画绕开。
+
 ## 2. 技术悬案（M2 排查入口）
 
 ### 2.1 「最后一键」间歇不入编辑控件
