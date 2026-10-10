@@ -252,7 +252,12 @@ void PresentDestroy(struct wlr_buffer *wlr_buf)
     WlOhosPresentBuffer *buf = PresentFromBase(wlr_buf);
     PresentUnmap(buf);
     /* 未归还就销毁 = 调用方漏了 present/abort, 槽位会永久留在 dequeued
-     * (泄漏几次 RequestBuffer 即饿死): 兜底归还并留证。 */
+     * (泄漏几次 RequestBuffer 即饿死): 兜底归还并留证。
+     * I5 剩余评估 (M4a 终验): 此处解引用 buf->window 依赖「NativeWindow
+     * 比 wlr_buffer 长寿」—— 现有路径成立 (DestroyToplevel x11 分支只
+     * detach 不销毁窗; attach 竞态销毁发生在任何借出之前; 会话重置走
+     * slot 表 teardown 先于窗销毁)。若未来 ArkTS 侧增加承载窗的直接
+     * 销毁通道, 必须先清 slot 表/借出 buffer 再销毁窗, 否则此处 UAF。 */
     if (!buf->returned)
     {
         int32_t rc = OH_NativeWindow_NativeWindowAbortBuffer(
