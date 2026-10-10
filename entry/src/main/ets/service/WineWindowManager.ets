@@ -1079,10 +1079,16 @@ export class WineWindowManager {
 
     let initW = 0;
     let initH = 0;
+    let initX = -1;
+    let initY = -1;
     try {
       const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
       initW = Number(obj.w) || 0;
       initH = Number(obj.h) || 0;
+      // D52: x11 created 带 guest 坐标 (xs->x/y) —— 承载窗按 guest 位置
+      // 摆放 (双窗并排)。-1 = created 无坐标 (wayland), 走 cascade 层叠。
+      initX = obj.x === undefined ? -1 : Number(obj.x);
+      initY = obj.y === undefined ? -1 : Number(obj.y);
     } catch (_) { /* use defaults */ }
 
     if (!this.mainWindowStage) {
@@ -1092,8 +1098,8 @@ export class WineWindowManager {
       return;
     }
 
-    hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d wine=%{public}dx%{public}d',
-      id, initW, initH);
+    hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d wine=%{public}dx%{public}d guest=(%{public}d,%{public}d)',
+      id, initW, initH, initX, initY);
     FusionWindowManager.getInstance().initIfNeeded(this.mainWindowStage, () => this.getEffectiveScale());
     FusionWindowManager.getInstance().ensure(id, initW, initH,
       (winId: number, subWin: window.Window) => {
@@ -1123,7 +1129,7 @@ export class WineWindowManager {
       this.entries.delete(id);
       hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d failed → sendToplevelClose', id);
       testNapi.sendToplevelClose(id);
-    });
+    }, initX, initY);
   }
 
   // subWindow 就绪后处理: subWindow 无系统装饰, 不存在 decor 校准/标题重设

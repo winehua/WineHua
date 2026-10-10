@@ -76,9 +76,12 @@ export class FusionWindowManager {
   // onFail 在创建失败时调用 (WineWindowManager 清理 entry + 通知 Wine 关闭,
   // 否则 starting 标记卡死 — Wine 侧窗口不存在重发 created)。
   // w/h 为 wine 逻辑尺寸 (created 事件携带)。
+  // x/y 为 guest 逻辑坐标 (D52, x11 created 携带): >=0 时承载窗按 guest
+  // 位置摆放 (双窗并排), 否则走 cascadePoint 层叠 (wayland created 无坐标,
+  // incumbent 不变)。
   ensure(tl: number, w: number, h: number,
          onReady: (tl: number, win: window.Window) => void,
-         onFail?: () => void): void {
+         onFail?: () => void, gx: number = -1, gy: number = -1): void {
     const existing = this.entries.get(tl);
     if (existing?.subWin) {
       this.resize(tl, Math.max(1, w), Math.max(1, h));
@@ -154,10 +157,13 @@ export class FusionWindowManager {
         return;
       }
 
-      // 位置: wine 逻辑 × scale; 初始为右下方向层叠 (无系统排布, 自定)
+      // 位置: wine 逻辑 × scale; 有 guest 坐标 (x11 created) 按 guest 位置
+      // 摆放 (双窗并排), 否则右下方向层叠 (无系统排布, 自定)
       try {
         await subWin.resize(this.toPx(entry.w), this.toPx(entry.h));
-        const pos = this.cascadePoint(this.toPx(entry.w), this.toPx(entry.h));
+        const pos = (gx >= 0 && gy >= 0)
+          ? [Math.round(gx * this.getScale()), Math.round(gy * this.getScale())]
+          : this.cascadePoint(this.toPx(entry.w), this.toPx(entry.h));
         await subWin.moveWindowToGlobal(pos[0], pos[1]);
         await subWin.showWindow();
       } catch (e) {
