@@ -13,8 +13,14 @@
 #include <string.h>
 
 #include <wayland-server-core.h>
+#include <wlr/render/allocator.h>
+#include <wlr/render/pass.h>
+#include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_buffer.h> /* wlr_client_buffer 完整定义 (surface->buffer) */
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/xwayland/xwayland.h>
+
+#include "ohos_buffer.h"
 
 /* C++ 桥 (x11_toplevel_bridge.cpp): 事件投递单点。evt 值 = ToplevelEventType
  * 的底层 uint32 (枚举定义 toplevel_event_bus.h, C 侧只透传不解释)。 */
@@ -24,6 +30,14 @@ void x11_toplevel_bridge_post_resize(uint32_t id, int32_t w, int32_t h);
 void x11_toplevel_bridge_post_destroyed(uint32_t id);
 uint32_t x11_toplevel_bridge_allocate_id(void);
 
+/* OHOS 侧日志 (hilog); ohos_output.c 的 OHLOG 是 static 宏, 本文件自取。
+ * LOG_DOMAIN/LOG_TAG 必须在 include 前 define —— 缺省时 OH_LOG_INFO 展开
+ * 出的 tag 为空, 日志整条丢弃 (T3 真机实测: skip 采样日志 0 条)。 */
+#define LOG_DOMAIN 0x0000
+#define LOG_TAG "x11-toplevel"
+#include <hilog/log.h>
+#define XTL_LOG(...) ((void)OH_LOG_INFO(LOG_APP, __VA_ARGS__))
+
 #define X11_TOPLEVEL_MAX 64
 
 struct x11_xs_entry {
@@ -31,15 +45,26 @@ struct x11_xs_entry {
     uint32_t toplevelId;
     bool createdPosted; /* created 只发一次 (associate + 首帧判定的入口去重) */
     bool dead;          /* destroy 已到: session_reset 时不再重复补发 */
+    bool dirty;         /* surface commit 待渲染 (render_tick 消费) */
+    uint32_t skip_count; /* 未 attach 窗口的跳帧计数 (采样日志) */
+    /* texture 不自管: surface->buffer 是 wlr_client_buffer, 其 ->texture
+     * 由 wlroots 随 buffer 建好/销毁 (wlr_buffer.h:157), 渲染当帧直取 ——
+     * 同帧同步 submit 完才释放引用, 无缓存失效问题。 */
+    struct NativeWindow *win;   /* ArkTS 回绑的呈现窗 (NULL = 未 attach) */
+    int win_w, win_h;
     struct wl_listener destroy;
     struct wl_listener associate;
+    struct wl_listener dissociate; /* surface 解绑: 摘 surface_commit */
     struct wl_listener set_title;
     struct wl_listener request_configure;
+    struct wl_listener surface_commit; /* xs->surface->events.commit → dirty */
 };
 
 static struct x11_xs_entry g_entries[X11_TOPLEVEL_MAX];
 static size_t g_entry_count;
 static bool g_active = false;
+static struct wlr_allocator *g_alloc;   /* chain_start 注入 (buffer 目标) */
+static struct wlr_renderer *g_renderer; /* render pass 用 */
 
 static struct x11_xs_entry *entry_of_xs(struct wlr_xwayland_surface *xs)
 {
@@ -51,15 +76,20 @@ static struct x11_xs_entry *entry_of_xs(struct wlr_xwayland_surface *xs)
 
 static void detach_listeners(struct x11_xs_entry *e)
 {
+    /* 前提: notify_new_surface 已对所有 listener wl_list_init —— 未 add 过
+     * 的 (如 surface_commit/dissociate 在 associate 前) 是空链自摘, 安全。 */
     wl_list_remove(&e->destroy.link);
     wl_list_remove(&e->associate.link);
+    wl_list_remove(&e->dissociate.link);
     wl_list_remove(&e->set_title.link);
     wl_list_remove(&e->request_configure.link);
+    wl_list_remove(&e->surface_commit.link);
     wl_list_init(&e->destroy.link);   /* 防 double-remove (session_reset 后
                                        * destroy 再到的悬挂回调安全化) */
     wl_list_init(&e->associate.link);
     wl_list_init(&e->set_title.link);
     wl_list_init(&e->request_configure.link);
+    wl_list_init(&e->surface_commit.link);
 }
 
 static void entry_remove(struct x11_xs_entry *e)
@@ -85,12 +115,38 @@ static void try_post_created(struct x11_xs_entry *e)
         e->toplevelId, (int32_t)e->xs->width, (int32_t)e->xs->height);
 }
 
+static void handle_surface_commit(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, surface_commit);
+    (void)data;
+    e->dirty = true;
+    /* 首帧判定 (wayland PC 模式同款延后语义): commit 可能先于 associate ——
+     * buffer 就位即补发 created, 不漏首帧。 */
+    try_post_created(e);
+}
+
 static void handle_associate(struct wl_listener *listener, void *data)
 {
     struct x11_xs_entry *e =
         wl_container_of(listener, e, associate);
     (void)data;
+    /* commit 监听挂 surface (associate 才 valid); dissociate 时摘除, 防
+     * surface 销毁后悬挂。 */
+    if (e->xs->surface) {
+        e->surface_commit.notify = handle_surface_commit;
+        wl_signal_add(&e->xs->surface->events.commit, &e->surface_commit);
+    }
     try_post_created(e);
+}
+
+static void handle_dissociate(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, dissociate);
+    (void)data;
+    wl_list_remove(&e->surface_commit.link);
+    wl_list_init(&e->surface_commit.link);
 }
 
 static void handle_set_title(struct wl_listener *listener, void *data)
@@ -107,14 +163,14 @@ static void handle_request_configure(struct wl_listener *listener, void *data)
 {
     struct x11_xs_entry *e =
         wl_container_of(listener, e, request_configure);
-    (void)data;
-    /* M4a 只上送 resize 语义 (ArkTS 权威回写走 ResizeRenderer); 应用应答
-     * (wlr_xwayland_surface_configure) 在多窗模式由 Task 3 渲染循环节按需
-     * 处理 —— 无 scene 缓冲依赖, 不应答会造成 commit 滞留 (T9 教训), 落在
-     * Task 3 的 render_entry 内。 */
+    const struct wlr_xwayland_surface_configure_event *ev = data;
+    /* 应用应答必须发 (T9 教训: 不应答 commit 滞留 cached state 窗口不上
+     * 屏)。多窗模式 X 侧几何跟随应用请求 (无 scene 布局器); ArkTS 权威
+     * 尺寸回写走 ResizeRenderer, 这里只上送 resize 语义事件。 */
+    wlr_xwayland_surface_configure(e->xs, ev->x, ev->y, ev->width, ev->height);
     if (!e->createdPosted) return;
     x11_toplevel_bridge_post_resize(
-        e->toplevelId, (int32_t)e->xs->width, (int32_t)e->xs->height);
+        e->toplevelId, (int32_t)ev->width, (int32_t)ev->height);
 }
 
 static void handle_xs_destroy(struct wl_listener *listener, void *data)
@@ -125,6 +181,9 @@ static void handle_xs_destroy(struct wl_listener *listener, void *data)
     if (e->dead) return;
     e->dead = true;
     detach_listeners(e);
+    /* win 引用随 destroyed 事件由 ArkTS 关窗路径回收 (不在此碰
+     * NativeWindow); texture 归 client_buffer 所有, 无需我们放。 */
+    e->win = NULL;
     x11_toplevel_bridge_post_destroyed(e->toplevelId);
     entry_remove(e);
 }
@@ -141,10 +200,20 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     memset(e, 0, sizeof(*e));
     e->xs = xs;
     e->toplevelId = x11_toplevel_bridge_allocate_id();
+    /* 全部 listener 先空链自引 (detach_listeners 前提, 见其注释):
+     * surface_commit/dissociate 是 associate 时才 add 的。 */
+    wl_list_init(&e->destroy.link);
+    wl_list_init(&e->associate.link);
+    wl_list_init(&e->dissociate.link);
+    wl_list_init(&e->set_title.link);
+    wl_list_init(&e->request_configure.link);
+    wl_list_init(&e->surface_commit.link);
     e->destroy.notify = handle_xs_destroy;
     wl_signal_add(&xs->events.destroy, &e->destroy);
     e->associate.notify = handle_associate;
     wl_signal_add(&xs->events.associate, &e->associate);
+    e->dissociate.notify = handle_dissociate;
+    wl_signal_add(&xs->events.dissociate, &e->dissociate);
     e->set_title.notify = handle_set_title;
     wl_signal_add(&xs->events.set_title, &e->set_title);
     e->request_configure.notify = handle_request_configure;
@@ -164,6 +233,7 @@ void x11_toplevel_session_reset(void)
         if (e->dead) continue;
         e->dead = true;
         detach_listeners(e);
+        e->win = NULL;
         x11_toplevel_bridge_post_destroyed(e->toplevelId);
     }
     g_entry_count = 0;
@@ -181,4 +251,124 @@ uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs)
 {
     struct x11_xs_entry *e = entry_of_xs(xs);
     return e ? e->toplevelId : 0;
+}
+
+/* ── Task 3: per-xs 呈现 ── */
+
+static struct x11_xs_entry *entry_of_id(uint32_t toplevelId)
+{
+    for (size_t i = 0; i < g_entry_count; ++i) {
+        if (g_entries[i].toplevelId == toplevelId && !g_entries[i].dead)
+            return &g_entries[i];
+    }
+    return NULL;
+}
+
+void x11_toplevel_set_render_ctx(struct wlr_allocator *alloc,
+                                 struct wlr_renderer *renderer)
+{
+    g_alloc = alloc;
+    g_renderer = renderer;
+}
+
+void x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
+                                int w, int h)
+{
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    if (!e) return;
+    e->win = win;
+    e->win_w = w;
+    e->win_h = h;
+    e->skip_count = 0;
+    e->dirty = true; /* attach 后强制画一帧 (commit 已过的话别等下一帧) */
+    XTL_LOG("XTL attach id=%{public}u win=%{public}p %{public}dx%{public}d",
+            toplevelId, (void *)win, w, h);
+}
+
+void x11_toplevel_detach_window(uint32_t toplevelId)
+{
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    if (!e) return;
+    e->win = NULL;
+    XTL_LOG("XTL detach id=%{public}u", toplevelId);
+}
+
+void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
+{
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    if (!e) return;
+    e->win_w = w;
+    e->win_h = h;
+}
+
+/* 画一帧: surface->buffer 的 texture (wlroots 自管) → 该窗队列 buffer →
+ * present。dst 尺寸取队列 buffer 本体 (ArkTS 侧窗口多大, 队列 buffer 就
+ * 多大), 源整幅拉伸 —— 首版不做 aspect/裁剪策略 (spec §3.2 呈现走最短
+ * 路径)。 */
+static void render_entry(struct x11_xs_entry *e)
+{
+    if (!g_renderer) return;
+    struct wlr_client_buffer *cb = e->xs->surface->buffer;
+    /* texture 为 NULL: client 提前释放了 buffer (wlr_buffer.h:157 注释) */
+    if (!cb || !cb->texture) return;
+
+    struct wlr_swapchain *swapchain = NULL;
+    struct wlr_buffer *dst = wl_ohos_present_slot_acquire(e->win, &swapchain);
+    if (!dst) {
+        XTL_LOG("XTL slot-fail id=%{public}u", e->toplevelId);
+        return;
+    }
+
+    struct wlr_render_pass *pass =
+        wlr_renderer_begin_buffer_pass(g_renderer, dst, NULL);
+    if (!pass) {
+        wl_ohos_present_buffer_abort(dst);
+        XTL_LOG("XTL pass-fail id=%{public}u", e->toplevelId);
+        return;
+    }
+
+    struct wlr_render_texture_options opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.texture = cb->texture;
+    opts.dst_box.x = 0;
+    opts.dst_box.y = 0;
+    opts.dst_box.width = dst->width;
+    opts.dst_box.height = dst->height;
+    /* 0 不是合法 transfer function (SRGB = 1<<0), 必须显式给 */
+    opts.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_SRGB;
+    wlr_render_pass_add_texture(pass, &opts);
+
+    if (!wlr_render_pass_submit(pass)) {
+        wl_ohos_present_buffer_abort(dst);
+        XTL_LOG("XTL submit-fail id=%{public}u", e->toplevelId);
+        return;
+    }
+
+    int32_t rc = wl_ohos_present_buffer_present(dst, -1);
+    if (rc != 0) {
+        /* 未归还的 buffer 销毁时才兜底 abort (只留日志), 显式归还防槽位泄漏 */
+        if (!wl_ohos_present_buffer_returned(dst))
+            wl_ohos_present_buffer_abort(dst);
+        XTL_LOG("XTL present-fail rc=%{public}d id=%{public}u", (int)rc, e->toplevelId);
+    }
+}
+
+void x11_toplevel_render_tick(void)
+{
+    if (!g_active) return;
+    for (size_t i = 0; i < g_entry_count; ++i) {
+        struct x11_xs_entry *e = &g_entries[i];
+        if (e->dead) continue;
+        /* created 补发兜底: buffer 在 attach 之后才到 (associate/commit 都
+         * 已试过) 的时序由帧钟收口。 */
+        try_post_created(e);
+        if (!e->win || !e->dirty) {
+            if (!e->win && ++e->skip_count % 600 == 0)
+                XTL_LOG("XTL skip-no-window id=%{public}u n=%{public}u",
+                        e->toplevelId, (unsigned)e->skip_count);
+            continue;
+        }
+        e->dirty = false;
+        render_entry(e);
+    }
 }

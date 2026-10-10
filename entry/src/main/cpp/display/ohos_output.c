@@ -825,6 +825,13 @@ static int HandleVSyncWake(int fd, uint32_t mask, void *data)
 static void FrameStep(bool via_vsync)
 {
     struct ohos_client_surface *c;
+    /* M4a 多窗模式: 无 scene/output 提交路径 (surface 全部走 x11_toplevel
+     * per-xs 呈现), 帧钟只驱动 per-xs 渲染循环。所有驱动源 (vsync 直推 /
+     * timer 兜底) 都经本函数, 分叉在此单点。 */
+    if (g_out.multiwindow) {
+        x11_toplevel_render_tick();
+        return;
+    }
     /* M2-T5: guest Vulkan 帧先落点再摆位 (frame_set 建/置节点, 下面的循环
      * 统一按窗几何校正)。必须在 scene 提交之前 —— 本拍到的帧本拍就上屏。 */
     display_guest_frames_tick();
@@ -1121,6 +1128,7 @@ static void FrameStep(bool via_vsync)
 static int FrameTick(void *data)
 {
     (void)data;
+    /* M4a 多窗模式的分叉在 FrameStep 入口 (vsync 直推不经 FrameTick)。 */
     /* A/B: 强制 33ms 定时节拍 (M1 口径), 用于对照「滞留是否 VSync 时钟引入」 */
     if (DiagFlagFile("force-timer-clock")) {
         FrameStep(false);
@@ -1946,6 +1954,9 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
         OH_LOG_ERROR(LOG_APP, "output_init_render failed (caps 不匹配?)");
         return -1;
     }
+    /* M4a: per-xs 呈现上下文 (alloc 生命周期归 output, renderer 归调用方) */
+    if (g_out.multiwindow)
+        x11_toplevel_set_render_ctx(alloc, renderer);
     struct wlr_output_state st;
     wlr_output_state_init(&st);
     wlr_output_state_set_enabled(&st, true);

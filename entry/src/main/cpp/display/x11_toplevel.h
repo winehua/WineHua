@@ -8,6 +8,9 @@ extern "C" {
 #endif
 
 struct wlr_xwayland_surface;
+struct NativeWindow; /* 真身 SDK 侧 typedef OHNativeWindow; 文件作用域前置
+                      * 声明 —— 原型作用域声明会在 .c 侧报 conflicting
+                      * types (build 实测) */
 
 /* M4a: xs 生命周期 → toplevel_event_bus 映射 (spec §3.1)。
  * 只做映射不做策略 —— 策略在 ArkTS 承载层 (与 wayland 路线同构)。id 复用
@@ -28,6 +31,22 @@ void x11_toplevel_session_reset(void);
 /* 输入路由查表 (Task 5); id_of_xs 返回 0 = 未登记。 */
 struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId);
 uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs);
+
+/* ── Task 3: per-xs 呈现 ── */
+struct wlr_allocator;
+struct wlr_renderer;
+/* chain_start 后注入 (render_tick 画 buffer 用); 均为合成器线程对象。 */
+void x11_toplevel_set_render_ctx(struct wlr_allocator *alloc,
+                                 struct wlr_renderer *renderer);
+/* ArkTS createRenderer 回绑 (plugin_manager x11 分支): 窗口 ←→ toplevel。 */
+void x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
+                                int w, int h);
+void x11_toplevel_detach_window(uint32_t toplevelId);
+void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h);
+/* 帧时钟驱动 (ohos_output FrameTick 的 multiwindow 分支): 遍历已 attach 的
+ * entry, 有新 commit 则画进该窗队列 buffer 并呈现; 未 attach 跳帧 (skip
+ * 计数采样日志); xs 首帧到达时补发 created 事件。合成器线程调用。 */
+void x11_toplevel_render_tick(void);
 
 #ifdef __cplusplus
 }
