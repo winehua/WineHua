@@ -67,6 +67,33 @@ def result_json(ctx: dict) -> dict:
     }
 
 
+def fusion_state(ctx: dict) -> dict:
+    """M4b-T4: 状态序列判定 —— result JSON 的 metrics.stateSeq。
+    判据: 5 步全 true (minimized/restored/fullscreen/unfullscreen/
+    modal_b_owned, 探针 win32 状态确认驱动上报, 见 fusion_probe.c
+    state_seq_*)。stateSeq 缺失 = env WINEHUA_SMOKE_PROBE_STATE 未到
+    guest (同 fusion-clicks 的 expectedRoute 抓点)。stateNote 非空 =
+    确认超时, 报超时步骤。全屏视觉帧判定已砍 (T3 Ruling: 帧采集时序
+    竞争不可靠), 全屏链的 host 侧证据 = 归档事件流 (event=fullscreen)。"""
+    result = ctx.get("result") or {}
+    metrics = result.get("metrics") or {}
+    seq = metrics.get("stateSeq")
+    if not isinstance(seq, dict) or not seq:
+        return {"status": "FAIL", "stage": "fusion-state",
+                "message": "stateSeq 缺失 —— WINEHUA_SMOKE_PROBE_STATE env "
+                           "未到 guest (job env 未下发或探针构建过旧)"}
+    expected = ["minimized_a", "restored_a", "fullscreen_a",
+                "unfullscreen_a", "modal_b_owned_a"]
+    missing = [k for k in expected if not seq.get(k)]
+    if missing:
+        note = metrics.get("stateNote", "")
+        return {"status": "FAIL", "stage": "fusion-state",
+                "message": f"状态序列未达成: 缺 {','.join(missing)}"
+                           f"{f' ({note})' if note else ''}"}
+    return {"status": "PASS", "stage": "fusion-state",
+            "message": "状态序列 5/5 (win32 确认驱动)"}
+
+
 def fusion_clicks(ctx: dict) -> dict:
     """M4a-T6: 按窗点击计数判定 —— result JSON 的 metrics.clickCounts。
     判据: a >= 1 (窗 A 至少收到一次点击) 且 b == 0 (窗 B 未收到 —— 点击
@@ -346,6 +373,7 @@ REGISTRY = {
     "presented-route": presented_route,
     "wine-trace": _wine_trace.wine_trace,
     "fusion-clicks": fusion_clicks,
+    "fusion-state": fusion_state,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }
