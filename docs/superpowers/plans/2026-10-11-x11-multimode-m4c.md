@@ -49,20 +49,21 @@
   - popup_move/resize（request_configure 应答后，X 全局坐标）
   - popup_hide（unmap 与 destroy 双触发，幂等）
 
-- [ ] **Step 1: OR 分叉 + popup 表**
+- [x] **Step 1: OR 分叉 + popup 表**
 
 notify_new_surface 入口：`if (xs->override_redirect) { popup_entry_init(e); return; }`（跳过 toplevel listener 挂接与 created 兜底）；popup listener：surface map/unmap + destroy + request_configure（move/resize 用）。
+执行修订：OR 窗无 map/unmap/request_configure 信号可用（实读 xwm.c）——show 门 = associate+buffer、hide = dissociate、几何 = set_geometry，见 c5c586c 提交注释。
 
-- [ ] **Step 2: 事件翻译 + 桥**
+- [x] **Step 2: 事件翻译 + 桥**
 
 按 Interfaces 块翻译；hide 幂等（`e->popup_visible` 标记去重，Review Focus #4）。
 
-- [ ] **Step 3: 构建**
+- [x] **Step 3: 构建**
 
 Run: `make NATIVE_ARCH=arm64-v8a hap`
-Expected: 绿。
+Expected: 绿。（两轮绿：初版 + owner 链上行修正后）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git commit -m "feat(display): M4c-T1 映射层 popup 识别——OR 分叉 + popup_show/move/resize/hide 直译"
@@ -80,14 +81,22 @@ git commit -m "feat(display): M4c-T1 映射层 popup 识别——OR 分叉 + pop
 - Consumes: Task 1 事件；PopupWindowManager 现有 handlePopupEvent（PopupWindowManager.ets:105-114 case 已全）
 - Produces: OH 子窗创建/定位/销毁零改动复用
 
-- [ ] **Step 1: 分发接线**（x11 popup 事件按 wayland 同款 JSON 进现有 case）
-- [ ] **Step 2: 焦点让渡**（popup_show → FocusClient(popup xs)；popup_hide → FocusClient(owner xs)）
-- [ ] **Step 3: 构建 + Commit**
+- [x] **Step 1: 分发接线**（x11 popup 事件按 wayland 同款 JSON 进现有 case）
+  执行结论：零改动——WineWindowManager popup case（:764）不分路线，事件 id =
+  owner toplevelId 时 getWindow/getWindowStage/entries 查表对 x11 fusion 承载
+  窗全部成立（startFusionSubWindow onReady 已 registerWindow）；raiseWindowGroup
+  同覆盖（WineWindow 页 onTouch 调用，fusionUsesSubWindow 门放行）。
+- [x] **Step 2: 焦点让渡**（popup_show → FocusClient(popup xs)；popup_hide → FocusClient(owner xs)）
+  落点 = 映射层（plan 允许的 x11_toplevel.c 选项），随 T1 提交（c5c586c）。
+- [x] **Step 3: 构建 + Commit**
 
 ```bash
 make NATIVE_ARCH=arm64-v8a hap
 git commit -m "feat(ets+display): M4c-T2 popup ArkTS 接线 + seat 焦点让渡"
 ```
+  执行裁定：代码面（焦点让渡 + 分发所需全部既有管线）已随 T1 提交且构建绿，
+  ArkTS 零改动无独立可提交物 —— 本勾选即 T2 收口（沿用 M4b T1/T2 「事件链
+  两半分开提交但构建合跑」裁定的镜像情形：两半并成一半）。
 
 ---
 
