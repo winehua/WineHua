@@ -364,15 +364,16 @@ void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
  * present。dst 尺寸取队列 buffer 本体 (ArkTS 侧窗口多大, 队列 buffer 就
  * 多大), 源整幅拉伸 —— 首版不做 aspect/裁剪策略 (spec §3.2 呈现走最短
  * 路径)。 */
-static void render_entry(struct x11_xs_entry *e)
+/* 返回 false = 本帧没画出去 (M8: 调用方保留 dirty 下一帧重试)。
+ * nocb (client 提前释放 buffer) 不算失败 —— 窗口内容已亡, 无帧可画。 */
+static bool render_entry(struct x11_xs_entry *e)
 {
-    if (!g_renderer) return;
+    if (!g_renderer) return true;
     struct wlr_client_buffer *cb = e->xs->surface->buffer;
-    /* texture 为 NULL: client 提前释放了 buffer (wlr_buffer.h:157 注释) */
     if (!cb || !cb->texture) {
         XTL_LOG("XTL render-skip nocb id=%{public}u cb=%{public}p",
                 e->toplevelId, (void *)cb);
-        return;
+        return true;
     }
     XTL_LOG("XTL render id=%{public}u tex=%{public}p %dx%d -> dst",
             e->toplevelId, (void *)cb->texture,
@@ -384,7 +385,7 @@ static void render_entry(struct x11_xs_entry *e)
     struct wlr_buffer *dst = wl_ohos_present_slot_acquire(e->win, &swapchain);
     if (!dst) {
         XTL_LOG("XTL slot-fail id=%{public}u", e->toplevelId);
-        return;
+        return false;
     }
     XTL_LOG("XTL render id=%{public}u dst=%{public}p %dx%d",
             e->toplevelId, (void *)dst, dst->width, dst->height);
@@ -394,7 +395,7 @@ static void render_entry(struct x11_xs_entry *e)
     if (!pass) {
         wl_ohos_present_buffer_abort(dst);
         XTL_LOG("XTL pass-fail id=%{public}u", e->toplevelId);
-        return;
+        return false;
     }
 
     struct wlr_render_texture_options opts;
@@ -411,7 +412,7 @@ static void render_entry(struct x11_xs_entry *e)
     if (!wlr_render_pass_submit(pass)) {
         wl_ohos_present_buffer_abort(dst);
         XTL_LOG("XTL submit-fail id=%{public}u", e->toplevelId);
-        return;
+        return false;
     }
 
     int32_t rc = wl_ohos_present_buffer_present(dst, -1);
@@ -420,9 +421,10 @@ static void render_entry(struct x11_xs_entry *e)
         if (!wl_ohos_present_buffer_returned(dst))
             wl_ohos_present_buffer_abort(dst);
         XTL_LOG("XTL present-fail rc=%{public}d id=%{public}u", (int)rc, e->toplevelId);
-    } else {
-        XTL_LOG("XTL present ok id=%{public}u", e->toplevelId);
+        return false;
     }
+    XTL_LOG("XTL present ok id=%{public}u", e->toplevelId);
+    return true;
 }
 
 void x11_toplevel_render_tick(void)
@@ -441,6 +443,10 @@ void x11_toplevel_render_tick(void)
             continue;
         }
         e->dirty = false;
-        render_entry(e);
+        if (!render_entry(e)) {
+            /* M8 (review): 本帧没画出去 (slot 借不到/pass 失败) —— 保留
+             * dirty, 下一帧重试; 否则静止窗停在旧帧无自愈。 */
+            e->dirty = true;
+        }
     }
 }

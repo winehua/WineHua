@@ -205,7 +205,6 @@ int main(int argc, char **argv)
     struct probe_state state;
     MSG msg;
     ULONGLONG start_ms, deadline_ms, last_report;
-    BOOL have_msg;
 
     memset(&state, 0, sizeof(state));
     if (!winehua_smoke_parse_options(&state.options, argc, argv, 12)) return 6;
@@ -229,24 +228,28 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    while ((have_msg = PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) != 0 || msg.message != WM_QUIT)
+    /* M9 (review): 不依赖 msg 残值判断退出; 心跳/deadline 在队列排空后
+     * 每轮都检查 (不被消息流饿死)。 */
+    for (;;)
     {
-        if (have_msg)
+        BOOL got = PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE);
+        if (!got)
         {
-            TranslateMessage(&msg);
-            DispatchMessageA(&msg);
+            ULONGLONG now = GetTickCount64();
+            if (now - last_report >= 2000)
+            {
+                last_report = now;
+                report_heartbeat(&state, "RUNNING", "present", "heartbeat");
+            }
+            if (now >= deadline_ms)
+                break;
+            Sleep(15);
             continue;
         }
-
-        ULONGLONG now = GetTickCount64();
-        if (now - last_report >= 2000)
-        {
-            last_report = now;
-            report_heartbeat(&state, "RUNNING", "present", "heartbeat");
-        }
-        if (now >= deadline_ms)
+        if (msg.message == WM_QUIT)
             break;
-        Sleep(15);
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
     }
 
     /* 终态: 双窗建出即 PASS (呈现/点击判定归 host 侧判定器 — 视觉证据与

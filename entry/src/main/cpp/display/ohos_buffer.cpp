@@ -466,8 +466,11 @@ extern "C" uint32_t wl_ohos_buffer_drm_format(struct wlr_buffer *buffer)
  * 代价是表与 wrapper 的存活强绑定: 逐出/停机必须先销毁 swapchain (触发
  * 唯一 drop) 再摘表项, 中途不得再触碰 buf 指针。
  * 队列深度上界 = 表容量: 队列循环复用固定几格, 同句柄不会并发两个 wrapper
- * (那会让两个 swapchain 指向同一块存储, 是数据竞争)。 */
-#define PRESENT_SLOT_CAP 4
+ * (那会让两个 swapchain 指向同一块存储, 是数据竞争)。
+ * M7 (M4a review): 多窗模式下工作集 = 窗数 × 队列深度 (≥3/窗), 4 的单窗
+ * 口径会让第二窗起每帧 miss (拆毁重建 swapchain) —— 容量按 4 窗 × 4 格
+ * 预留, 表项只存指针, 空项无成本。 */
+#define PRESENT_SLOT_CAP 16
 
 struct PresentSlot
 {
