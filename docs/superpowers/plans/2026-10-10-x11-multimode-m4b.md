@@ -111,7 +111,7 @@ git commit -m "feat(display): M4b-T1 映射层状态面——minimize/fullscreen
 - Consumes: Task 1 的 TSFN 事件（ArkTS setToplevelCallback 现有分发点扩 case）
 - Produces: 承载窗状态动作幂等（已在目标态不重复调用系统 API——Review Focus #2/#4）
 
-- [ ] **Step 1: 事件分发**
+- [x] **Step 1: 事件分发**
 
 ```ts
 // WineWindowManager toplevel 回调新增 case（照抄 resize 分支形态）:
@@ -123,11 +123,11 @@ case 'unfullscreen':
 case 'modal':       // 记录 modalOwner 关系表（跟随置顶用）
 ```
 
-- [ ] **Step 2: 幂等守卫**
+- [x] **Step 2: 幂等守卫**
 
 每个动作先查当前态（windowLayoutFullScreen 当前值/minimize 态），目标态==当前态直接 return（Review Focus #4 断环）。
 
-- [ ] **Step 3: 构建 + Commit**
+- [x] **Step 3: 构建 + Commit**
 
 ```bash
 make NATIVE_ARCH=arm64-v8a hap   # ArkTS 构建绿

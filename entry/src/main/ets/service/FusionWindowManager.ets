@@ -319,6 +319,10 @@ export class FusionWindowManager {
     const e = this.entries.get(tl);
     if (!e?.subWin) return;
     e.subWin.showWindow().catch(() => { /* ignore */ });
+    // M4b-T2: x11 request_activate 复用 Restored 事件 (22 事件红线, 见
+    // x11_toplevel.c handle_request_activate), 激活语义 = 置前 —— 还原态
+    // 的窗也该到前台, 对 minimize-restore 同样正确; 重复调用幂等 (RF#2)。
+    e.subWin.raiseToAppTop().catch(() => { /* ignore */ });
     hilog.info(DOMAIN, TAG, '[FWM] #%{public}d show (wine restored)', tl);
   }
 
