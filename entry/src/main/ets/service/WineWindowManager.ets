@@ -1015,6 +1015,8 @@ export class WineWindowManager {
     let title = '';
     let initW = 0;
     let initH = 0;
+    let initX = -1;
+    let initY = -1;
     try {
       const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
       if (obj.title) title = obj.title as string;
@@ -1023,6 +1025,10 @@ export class WineWindowManager {
       // 接受 configure resize → 内容不缩放 (画面缩在左上角 + 反馈环)
       initW = Number(obj.w) || 0;
       initH = Number(obj.h) || 0;
+      // D52: x11 created 带 guest 坐标 (xs->x/y) —— 承载窗按 guest 位置
+      // 摆放 (双窗并排)。-1 = created 无坐标 (wayland), 不定位保持 incumbent。
+      initX = obj.x === undefined ? -1 : Number(obj.x);
+      initY = obj.y === undefined ? -1 : Number(obj.y);
     } catch (_) { /* use defaults */ }
 
     hilog.info(DOMAIN, TAG, '[MW]  startAbility(WineWindowAbility) #%{public}d title="%{public}s"',
@@ -1037,7 +1043,8 @@ export class WineWindowManager {
     const want: Want = {
       bundleName: 'app.hackeris.winehua',
       abilityName: 'WineWindowAbility',
-      parameters: { toplevelId: id, title: title, w: initW, h: initH }
+      parameters: { toplevelId: id, title: title, w: initW, h: initH,
+                    x: initX, y: initY }
     };
 
     hilog.info(DOMAIN, TAG, '[MW] startAbility want: bundle=%{public}s ability=%{public}s params=%{public}s',

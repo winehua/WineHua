@@ -134,6 +134,14 @@ public:
         snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d}", w, h);
         return buf;
     }
+    // D52: 带 guest 坐标的 created (x11 多窗) —— OHOS 承载窗按 guest 位置
+    // 摆放 (双窗并排用例的承载窗重叠根因)。x/y 缺省 0 = 不定位 (wayland
+    // created 走 JsonCreated 无此键, ArkTS 侧 0,0 不定位, incumbent 不变)。
+    static std::string JsonCreatedAt(int32_t w, int32_t h, int32_t x, int32_t y) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d,\"x\":%d,\"y\":%d}", w, h, x, y);
+        return buf;
+    }
     static std::string JsonCreatedDefault() { return "{\"w\":640,\"h\":480}"; }
 
     static std::string JsonPopupHide(uint32_t popupId) {

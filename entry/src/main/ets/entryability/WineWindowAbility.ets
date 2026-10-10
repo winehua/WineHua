@@ -11,12 +11,22 @@ const TAG = 'WWA';
 export default class WineWindowAbility extends UIAbility {
   private toplevelId: number = 0;
   private cleanedUp: boolean = false;
+  // D52: guest 坐标 (created 事件携带)。x/y = -1 表示无坐标 (wayland),
+  // 不定位保持 incumbent 默认摆放。
+  private initX: number = -1;
+  private initY: number = -1;
+  private initW: number = 0;
+  private initH: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
       const params = want.parameters ?? {};
       this.toplevelId = Number(params.toplevelId) || 0;
       const title = params.title as string ?? '';
+      this.initX = params.x === undefined ? -1 : Number(params.x);
+      this.initY = params.y === undefined ? -1 : Number(params.y);
+      this.initW = Number(params.w) || 0;
+      this.initH = Number(params.h) || 0;
 
       hilog.info(DOMAIN, TAG, '[WWA]  onCreate: tl=%{public}d title="%{public}s" launchReason=%{public}d params=%{public}s',
         this.toplevelId, title, launchParam.launchReason, JSON.stringify(params));
@@ -65,6 +75,26 @@ export default class WineWindowAbility extends UIAbility {
       if (!mainWindow) {
         hilog.error(DOMAIN, TAG, '[WWA] ERR #%{public}d getMainWindowSync returned NULL!', this.toplevelId);
         return;
+      }
+
+      // D52: x11 多窗按 guest 坐标摆放承载窗 (双窗并排, 不再叠放)。
+      // guest 逻辑坐标 × effectiveScale = OHOS 物理像素。x/y = -1 (wayland
+      // created 无坐标) 时跳过, 保持 OHOS 默认摆放 —— incumbent 不变。
+      if (this.initX >= 0 && this.initY >= 0 && this.initW > 0 && this.initH > 0) {
+        try {
+          const scale = WineWindowManager.getInstance().getEffectiveScale();
+          const px = Math.round(this.initX * scale);
+          const py = Math.round(this.initY * scale);
+          const pw = Math.round(this.initW * scale);
+          const ph = Math.round(this.initH * scale);
+          mainWindow.resize(pw, ph);
+          mainWindow.moveWindowToGlobal(px, py);
+          hilog.info(DOMAIN, TAG, '[WWA] #%{public}d positioned guest(%{public}d,%{public}d %{public}dx%{public}d) → px(%{public}d,%{public}d %{public}dx%{public}d)',
+            this.toplevelId, this.initX, this.initY, this.initW, this.initH, px, py, pw, ph);
+        } catch (e) {
+          hilog.error(DOMAIN, TAG, '[WWA] ERR #%{public}d window position: %{public}s',
+            this.toplevelId, JSON.stringify(e));
+        }
       }
 
       // 注册 Window 引用

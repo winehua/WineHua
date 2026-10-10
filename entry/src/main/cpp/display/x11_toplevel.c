@@ -26,7 +26,8 @@
 
 /* C++ 桥 (x11_toplevel_bridge.cpp): 事件投递单点。evt 值 = ToplevelEventType
  * 的底层 uint32 (枚举定义 toplevel_event_bus.h, C 侧只透传不解释)。 */
-void x11_toplevel_bridge_post_created(uint32_t id, int32_t w, int32_t h);
+void x11_toplevel_bridge_post_created(uint32_t id, int32_t w, int32_t h,
+                                      int32_t x, int32_t y);
 void x11_toplevel_bridge_post_title(uint32_t id, const char *title);
 void x11_toplevel_bridge_post_resize(uint32_t id, int32_t w, int32_t h);
 void x11_toplevel_bridge_post_destroyed(uint32_t id);
@@ -116,7 +117,8 @@ static void try_post_created(struct x11_xs_entry *e)
     if (e->createdPosted || !e->xs->surface || !e->xs->surface->buffer) return;
     e->createdPosted = true;
     x11_toplevel_bridge_post_created(
-        e->toplevelId, (int32_t)e->xs->width, (int32_t)e->xs->height);
+        e->toplevelId, (int32_t)e->xs->width, (int32_t)e->xs->height,
+        e->xs->x, e->xs->y);
 }
 
 static void handle_surface_commit(struct wl_listener *listener, void *data)

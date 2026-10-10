@@ -8,11 +8,12 @@
 
 extern "C" {
 
-void x11_toplevel_bridge_post_created(uint32_t id, int32_t w, int32_t h)
+void x11_toplevel_bridge_post_created(uint32_t id, int32_t w, int32_t h,
+                                      int32_t x, int32_t y)
 {
     WaylandServer::GetInstance()->PostToplevelEvent(
         id, ToplevelEventType::Created,
-        ToplevelEventBus::JsonCreated(w, h));
+        ToplevelEventBus::JsonCreatedAt(w, h, x, y));
 }
 
 void x11_toplevel_bridge_post_title(uint32_t id, const char *title)
