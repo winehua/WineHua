@@ -184,12 +184,15 @@ git commit -m "feat(smoke): M4b-T3 fusion_probe 状态序列——minimize/resto
 - Consumes: Task 3 的 stateSeq JSON + Task 1/2 的全链
 - Produces: x11-fusion 套件 M4b 判定 PASS
 
-- [ ] **Step 1: 判定器（合成数据自测先行，同 M4a 方法）**
+- [x] **Step 1: 判定器（合成数据自测先行，同 M4a 方法）**
 
 `validate_fusion_state(result_json)`：stateSeq 5 步全到位 + 顺序正确。
 `validate_fusion_fullscreen_frame(png)`：全屏帧 = 红底覆盖（窗 A 全屏态截图）。
+（落地调整：全屏帧判定已砍 —— T3 Ruling 帧采集时序竞争不可靠，host 侧
+全屏证据改读归档事件流 event=fullscreen；fusion_state 落 checks/__init__.py，
+合成自测 7 形态 GREEN + 真机两轮 PASS。）
 
-- [ ] **Step 2: 真机跑批**
+- [x] **Step 2: 真机跑批**
 
 ```bash
 hdc -t <DEV> shell "aa force-stop app.hackeris.winehua"
@@ -200,8 +203,10 @@ Expected: fusion-probe 全 checks PASS（M4a 的双窗判定不回归 + 新 fusi
 - [ ] **Step 3: 手工对照（自动化≠功能可用，原则 21）**
 
 双窗下点击窗 B → 窗 B 置前；窗 A 最小化图标还原 → 内容完整；截图归档 `.temp/m4b-manual-*.jpeg`。
+（未做，留 T5：设备限时前台窗口期全部用于跑批取证 + 回归门禁；且 T4 期间
+POC 前台约束下人工操作会互相抢占。T5 收口时随 POC 归还一并做。）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add automation/ smoke/ docs/
