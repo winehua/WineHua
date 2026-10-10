@@ -47,7 +47,7 @@
 - Consumes: `DisplayRouteService.isX11()`（DisplayRouteService.ets:35）、`DesktopModeService.getInstance().mode`（DesktopModeService.ets:30，'virtual'|'fusion'）
 - Produces: `wl_ohos_output_chain_start(..., bool multiwindow)`（ohos_output.h 尾部追加参数，默认 false 语义不变）；`g_out.multiwindow`（bool，全文件可读）；ArkTS `WineWindowManager.shouldUseMultiwindow(): boolean`（= isX11 && mode==='fusion'）
 
-- [ ] **Step 1: ArkTS 联合决策函数（写实现前先写调用点使编译失败）**
+- [x] **Step 1: ArkTS 联合决策函数（写实现前先写调用点使编译失败）**
 
 在 `WineWindowManager.ets` 的 `isDesktopMode` 字段定义（:64）附近加：
 
@@ -63,23 +63,23 @@
 
 文件头 import 补 `DesktopModeService`（若无）。
 
-- [ ] **Step 2: NAPI 与 chain_start 参数贯通**
+- [x] **Step 2: NAPI 与 chain_start 参数贯通**
 
 `display_route_napi.cpp` 的 `StartDisplayRouteChain`（现为 `(surfaceId, script_enabled, w, h, canvas_egl_present)` 5 参）：追加第 6 可选参 `multiwindow`（napi 可选参数取法照抄第 5 参）。透传至 `WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled, out_w, out_h, canvas_egl_present, multiwindow)`；`display_compositor.cpp:612` 签名同步扩参，存入 `DeferredOutputChainStart`（:268 附近结构体加字段）与 `ohos_output_chain_start` 调用（:286）；`ohos_output.c` chain_start 实现签名扩参 + `g_out.multiwindow = multiwindow;`（memset 之后、任何使用之前）。struct 加 `bool multiwindow;`。
 
 ArkTS 调用点：`DesktopWindow.ets:70`（onSurfaceCreated 的 startDisplayRouteChain）与 `DesktopAbility.ets` 的同款调用点，末尾追加第 6 参 `this.multiwindow`（两文件各自从 `WineWindowManager.getInstance().shouldUseMultiwindow()` 取，构造字段缓存）。注意 DesktopWindow/DesktopAbility 在多窗模式**不应被打开**（Task 4 的门禁管），本 task 只透传参数保证语义完整。
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `make NATIVE_ARCH=arm64-v8a hap`
 Expected: 构建绿（虚拟桌面行为不变——multiwindow 缺省 false 时所有路径与现状逐字节等价）
 
-- [ ] **Step 4: 虚拟桌面冒烟（零回退门禁）**
+- [x] **Step 4: 虚拟桌面冒烟（零回退门禁）**
 
 Run: 部署后 `python3 automation/smoke.py run --suite core --device <DEV>` 
 Expected: 3/4（opengl-x86 已知 D49 FAIL，其余 PASS）——虚拟桌面路径未受影响
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A entry/src/
@@ -105,7 +105,7 @@ git commit -m "feat(display): M4a-T1 模式位贯通——chain_start multiwindo
   - `uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs);`（0 = 未登记）
   - `bool x11_toplevel_active(void);`（g_multiwindow 位镜像，供 plugin_manager 分支判断）
 
-- [ ] **Step 1: 写映射层骨架（头文件 + 三个生命周期函数体）**
+- [x] **Step 1: 写映射层骨架（头文件 + 三个生命周期函数体）**
 
 `x11_toplevel.h`：
 
@@ -175,7 +175,7 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs) {
 
 注意 `ToplevelManagerRef()` 若 WaylandServer 无此访问器，用现有公开口（侦察确认 `GetDesktopCompositor()` 同级有 toplevelMgr_ 的访问需求时在 wayland_server.h 加 `ToplevelManager &ToplevelManagerRef()` 一行转发——最小改动）。
 
-- [ ] **Step 2: ohos_output 模式分叉 + 会话重置挂点**
+- [x] **Step 2: ohos_output 模式分叉 + 会话重置挂点**
 
 `ohos_output.c` `HandleNewSurface`（原 :1354，D45 修复后行号 +20 左右）入口加：
 
@@ -188,12 +188,12 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs) {
 
 `display_compositor.cpp` fail 收尾（`wl_ohos_output_shutdown();` 之后）加 `x11_toplevel_session_reset();`；`StartWithSurface` 的非 already-started 分支在起线程前加 `x11_toplevel_set_active(multiwindow);`。`ohos_output.c` include `x11_toplevel.h`。
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `make NATIVE_ARCH=arm64-v8a hap`
 Expected: 绿。虚拟桌面（active=false）行为逐字节不变。
 
-- [ ] **Step 4: 真机冒烟——多窗模式 created/destroyed 事件到达**
+- [x] **Step 4: 真机冒烟——多窗模式 created/destroyed 事件到达**
 
 部署后，临时验证通道（不进产品）：`aa start --ps winehua.displayRoute x11 --ps winehua.desktopMode fusion --ps winehua.autoStart 1`（managed 模式，无 explorer desktop——Task 1 的门禁未完成前 desktop-shell 分支仍会跑，此处只验证映射层事件），随后 `winehua.program` 直启 notepad：
 
@@ -203,7 +203,7 @@ hdc -t <DEV> shell "hilog -x | grep -E 'FireToplevel|created'" # 期待 [MW] Fir
 
 Expected: notepad 窗口创建时 `created` 事件日志（含 w/h），关闭时 `destroyed`。虚拟桌面模式（无 desktopMode fusion 参数）回归：notepad 走旧 scene 路径，无 FireToplevel。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add entry/src/main/cpp/display/x11_toplevel.* entry/src/main/cpp/display/ohos_output.c entry/src/main/cpp/display/display_compositor.cpp
@@ -223,7 +223,7 @@ git commit -m "feat(display): M4a-T2 x11 toplevel 映射层骨架——created/d
 - Consumes: `wlr_renderer_begin_buffer_pass` / `wlr_render_pass_add_texture` / `wlr_texture_from_buffer`（wlroots 0.20 render/pass.h:57、wlr_compositor.h:363——spec §3.1 已源码验证）、`wlr_surface_get_texture(xs->surface)`、ohos_output 的 VSync 帧时钟（FrameTick，ohos_output.c）
 - Produces: `x11_toplevel_render_tick(void)`（每帧调，遍历 entries：已 attach 且 surface 有新 buffer → 画进该窗 buffer 并 Flush；未 attach → skip 计数并 hilog 采样）；attach 的窗走 ohos_buffer 的 Request/Lock/Flush 纪律（`wl_ohos_buffer_*` 现有口，ohos_buffer.h）
 
-- [ ] **Step 1: texture 缓存与跳帧骨架**
+- [x] **Step 1: texture 缓存与跳帧骨架**
 
 XsEntry 增字段：`struct wl_listener commit; struct wlr_texture *tex; uint64_t last_commit_seq; OHNativeWindow *win; int win_w, win_h; uint32_t skip_count;`。commit 回调置 dirty 位（记录 `xs->surface->commit_seq`）。`x11_toplevel_render_tick()` 遍历：
 
@@ -238,16 +238,16 @@ for (XsEntry *e : g_entries) {
 
 `render_entry` 的 buffer 获取复用 `wl_ohos_buffer` 现有 Request/Slot 纪律（ohos_buffer.h 公开口；每窗独立 slot 组——若现有 slot 结构是全局单窗形态，本 task 内参数化：`wl_ohos_buffer_request_for(uintptr_t key)` 以 toplevelId 为 key 分组）。texture 创建缓存于 e->tex（`wlr_texture_from_buffer`，buffer 变更时销毁重建）。
 
-- [ ] **Step 2: destroy/resize 竞态防御**
+- [x] **Step 2: destroy/resize 竞态防御**
 
 `handle_xs_destroy`（Task 2）扩展：先 `wl_list_remove(&e->commit.link)` + 若 e->tex `wlr_texture_destroy` + detach window（不销毁 ArkTS 窗，只解绑）。resize：ArkTS `ResizeRenderer` 的 x11 分支（Task 4）调 `x11_toplevel_resize_window(id, w, h)` 置 e->win_w/h + buffer geometry。
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `make NATIVE_ARCH=arm64-v8a hap`
 Expected: 绿。虚拟桌面路径不变（render_tick 在 FrameTick 的 `if (g_out.multiwindow)` 分支内）。
 
-- [ ] **Step 4: 真机验证——双窗呈现（临时通道，无 ArkTS 承载前的裸证）**
+- [x] **Step 4: 真机验证——双窗呈现（临时通道，无 ArkTS 承载前的裸证）**
 
 融合模式起会话，直启 notepad + 第二程序（或 notepad 内开新窗）：两窗的 xs 各自 created；**宿主侧无窗呈现不可见**——本步只验证 render_tick 的 skip 计数日志与 commit dirty 日志（`hilog -x | grep -E 'skip no-window|render tick'`）。真呈现验证在 Task 4 承载接通后。
 
@@ -272,7 +272,7 @@ git commit -m "feat(display): M4a-T3 per-xs 渲染循环——texture 缓存 + b
 - Consumes: Task 2 的 created 事件（ArkTS `onToplevelEvent` 'created' case → `startWineWindowAbility(id, data)` 现链 :581-588）、Task 3 的 `x11_toplevel_attach_window`、`PluginManager::CreateRenderer(uint32_t, int64_t)`（plugin_manager.h:33）
 - Produces: `PluginManager::CreateRenderer` x11 分支——`x11_toplevel_active()` 时：`OH_NativeWindow_CreateNativeWindowFromSurfaceId(surfaceId, &win)` 后调 `x11_toplevel_attach_window(toplevelId, win, w, h)`（不建 EglRenderer，不进 toplevelRenderers_）；`ResizeRenderer`/`DestroyToplevel` 同样分支（resize→`x11_toplevel_resize_window`，destroy→`x11_toplevel_detach_window` + `sendToplevelClose` 语义不变）
 
-- [ ] **Step 1: plugin_manager x11 分支**
+- [x] **Step 1: plugin_manager x11 分支**
 
 `plugin_manager.cpp` `CreateRenderer`（:39-80 绑定链）入口加：
 
@@ -288,7 +288,7 @@ git commit -m "feat(display): M4a-T3 per-xs 渲染循环——texture 缓存 + b
 
 `ResizeRenderer`（:89-108）与 `DestroyToplevel` 同样入口分支（后者先 detach 再走既有清理）。
 
-- [ ] **Step 2: ArkTS 门禁与事件流**
+- [x] **Step 2: ArkTS 门禁与事件流**
 
 `WineEnvService.ets` :502/:518 的 `openX11Canvas()` 调用点加门：`if (!WineWindowManager.getInstance().shouldUseMultiwindow()) openX11Canvas();`——多窗模式不开虚拟桌面画布（spec §3.4「openX11Canvas 仅虚拟桌面分支调用」）。`WineWindowManager.onToplevelEvent` 的 'created' case（:581-588）：现状 `isDesktopMode` 跳过——多窗模式下 `isDesktopMode=false`（mode=fusion 非 virtual），case 自然落入 `startWineWindowAbility` ✓；但 `desktopRootId` 相关的 'desktop_root' case 在多窗模式不会触发（无 explorer desktop）✓ 零改动。
 
@@ -305,7 +305,7 @@ Expected（截屏）：两个独立 OHOS 窗口各自呈现对应 X 窗内容；
 Run: core 套件 + 手动虚拟桌面模式起 notepad
 Expected: 3/4 基线；虚拟桌面 notepad 走单画布（无 WineWindowAbility 弹窗）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add entry/src/
@@ -326,7 +326,7 @@ git commit -m "feat(ets+bridge): M4a-T4 ArkTS 承载接线——created→WineWi
 - Consumes: Task 2 的 `x11_toplevel_xs_of(id)`、wlroots seat（`wl_ohos_input_seat_create` 已建，display_input.c）、`wlr_seat_pointer_notify_enter/motion/button`、`wlr_xwayland_surface_activate`
 - Produces: 坐标反推——ArkTS 窗局部 (x,y) + xs 偏移 → X 全局 = `xs->x + x_local, xs->y + y_local`（x_local 越界 [0,xs->width) 不投递）；按键先 `wlr_seat_keyboard_notify_enter(xs->surface)` 再 notify_key
 
-- [ ] **Step 1: 映射层路由实现**
+- [x] **Step 1: 映射层路由实现**
 
 ```cpp
 void x11_toplevel_input_pointer(uint32_t id, int lx, int ly, uint32_t action) {
@@ -342,7 +342,7 @@ void x11_toplevel_input_pointer(uint32_t id, int lx, int ly, uint32_t action) {
 
 display_input.c 暴露 `wl_ohos_input_pointer_notify(struct wlr_surface*, int gx, int gy, uint32_t action)`（内部 enter/motion/button 序列，焦点 settle 纪律沿用 :358 FOCUS_SETTLE_MS 机制）；多窗模式下合成器命中路径（`client_topmost_at`）天然不活跃（无 g_clients）。
 
-- [ ] **Step 2: NAPI + ArkTS**
+- [x] **Step 2: NAPI + ArkTS**
 
 napi_init.cpp 注册 `x11SendPointer`/`x11SendKey`（照抄现有 testNapi 注入类函数的参数解析模板）。WineWindowAbility 触摸回调（现走 testNapi 注入的调用点）加 x11 分支：`shouldUseMultiwindow ? x11SendPointer(this.toplevelId, x, y, action) : 现有调用`。按键同构。
 
@@ -350,7 +350,7 @@ napi_init.cpp 注册 `x11SendPointer`/`x11SendKey`（照抄现有 testNapi 注�
 
 直启 notepad + 第二窗，uitest 点击窗 A 文本区（物理坐标换算 OHOS 窗局部）：光标出现于窗 A；点击窗 B 标题栏：窗 B 激活置前。归档截屏 `.temp/m4a-t5-click-routing.jpeg`。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add entry/src/
@@ -373,11 +373,11 @@ git commit -m "feat(display+ets): M4a-T5 按窗输入路由——pointer/key 按
 - Consumes: mingw 编译链（smoke.py:41 MINGW）、`visual` 判定器 region 裁剪（frame.py:38 `validate_rgba_quadrants(path, step, region)`）、`presented-route` 判定器
 - Produces: fusion_probe 的 result JSON 含 `clickCounts: {"a": N, "b": M}`（窗内 WM_LBUTTONDOWN 计数，经 winehua_smoke_protocol 的 result 文件上报）；两窗并排布局（窗 A 左 50% 纯色 #FF0000 + 白色十字标，窗 B 右 50% 四象限 rgba-quadrants-v1 同款标记）——**并排不重叠**（Review Focus #5）
 
-- [ ] **Step 1: fusion_probe.c**
+- [x] **Step 1: fusion_probe.c**
 
 双窗 Win32 程序（`smoke/programs/win/winehua_dns_probe.c` 为模板——同款 result 协议 + 消息循环）：`WinMain` 创建两个 WNDCLASS 窗（A: `CreateWindowExA` 800x600 @ (100,100) 背景 RGB(255,0,0)，WM_PAINT FillRect 纯色+中心白十字；B: 800x600 @ (920,100) 四象限 FillRect：左上 R/右上 G/左下 B/右下 白，各带 2px 黑边）；WM_LBUTTONDOWN 计数入 `g_clicks[wnd]`；定时（2s）把 `{"clickCounts":{"a":N,"b":M},"fixedFrame":"fusion-two-window-v1"}` 写 result 文件（协议头复用 `winehua_t_check.h`/protocol 模式——smoke/programs/common/winehua_t_check.h）。两窗同时显示。
 
-- [ ] **Step 2: 套件与判定声明**
+- [x] **Step 2: 套件与判定声明**
 
 `smoke/tests/fusion-probe/test.json`：
 
@@ -399,7 +399,7 @@ git commit -m "feat(display+ets): M4a-T5 按窗输入路由——pointer/key 按
 Run: `python3 automation/smoke.py run --suite fusion --device <DEV>`（或 job 文件跑法照 displayroute-suite）
 Expected: fusion-probe PASS——双窗呈现（A 区红/十字、B 区四象限）、点击窗 A 计数 +1 且 B 为 0。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add smoke/ automation/
