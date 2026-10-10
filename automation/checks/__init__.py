@@ -89,8 +89,16 @@ def fusion_clicks(ctx: dict) -> dict:
     if b != 0:
         return {"status": "FAIL", "stage": "fusion-clicks",
                 "message": f"窗 B 收到点击 (b={b}) —— 按窗路由泄漏"}
+    # 路线自报校验 (M4a 终验): expectedRoute 缺失/非 x11 = 冷启 env 被丢
+    # (presented-route 判据不适用于 GDI 探针 —— 见 test.json checks 注释,
+    # env 丢失检测由本条承担)。探针 "-" = env 没到 guest, 同 FAIL。
+    expect = metrics.get("expectedRoute")
+    if expect != "x11":
+        return {"status": "FAIL", "stage": "fusion-clicks",
+                "message": f"expectedRoute={expect!r} (期望 x11) —— smoke env "
+                           f"未到 guest (冷启参数被丢或探针构建过旧)"}
     return {"status": "PASS", "stage": "fusion-clicks",
-            "message": f"点击按窗命中 (a={a}, b=0)"}
+            "message": f"点击按窗命中 (a={a}, b=0), route 自报 x11"}
 
 
 def _load_preview_rect(run_dir) -> dict | None:

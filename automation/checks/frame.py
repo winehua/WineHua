@@ -196,12 +196,17 @@ def _classify_pixels(image_path: Path, step: int = 8):
     # I2 (review): 品红 = 窗 B 左上象限专用 (窗 A 纯红主体会把 B 的纯红
     # 象限并进同一 bbox, 拓扑判定结构性误判 —— 品红与红空间可分)
     magenta = (r > 170) & (b > 170) & (g < 110)
+    # 终验预演 (2026-10-10): 白色同病 —— 窗 A 的白十字与 B 的白象限跨窗
+    # 并 bbox, 拓扑同样结构误判; B 右下象限改青 (与探针 paint_window_b
+    # 成对改, 原则 25), cyan 与 green/blue 按 r 通道可分。
+    cyan = (g > 170) & (b > 170) & (r < 110)
     return {
         "red": (xgrid[red], ygrid[red]),
         "green": (xgrid[green], ygrid[green]),
         "blue": (xgrid[blue], ygrid[blue]),
         "white": (xgrid[white], ygrid[white]),
         "magenta": (xgrid[magenta], ygrid[magenta]),
+        "cyan": (xgrid[cyan], ygrid[cyan]),
         "total": (xgrid, ygrid),
     }, width, height
 
@@ -248,20 +253,22 @@ def validate_fusion_window_a(image_path: Path, region: dict | None = None) -> di
 
 
 def validate_fusion_window_b(image_path: Path, region: dict | None = None) -> dict:
-    """M4a 窗 B: 四象限拓扑自动定位版 —— 独立找出 M(品红)/G/B/白 四块的
-    bbox, 验证空间拓扑 (G 在 M 右侧同排 / B 在 M 下侧同列 / W 在 B 右侧
+    """M4a 窗 B: 四象限拓扑自动定位版 —— 独立找出 M(品红)/G/B/C(青) 四块
+    的 bbox, 验证空间拓扑 (G 在 M 右侧同排 / B 在 M 下侧同列 / C 在 B 右侧
     同排)。左上用品红不纯红 (I2): 窗 A 的纯红主体会与 B 的红象限并成
-    一个 bbox, 纯红拓扑结构性误判 —— 品红与红空间可分。"""
+    一个 bbox, 纯红拓扑结构性误判 —— 品红与红空间可分。右下用青不用白
+    (终验预演 2026-10-10): 窗 A 白十字与白象限跨窗并 bbox 同病, 青与
+    green/blue 按 r 通道可分。"""
     classes, width, height = _classify_pixels(image_path)
     boxes = {name: _bbox(*classes[name])
-             for name in ("magenta", "green", "blue", "white")}
+             for name in ("magenta", "green", "blue", "cyan")}
     for name, box in boxes.items():
         if box is None or box["w"] * box["h"] < 0.01 * width * height:
             return {"status": "FAIL", "validator": "fusion-window-b",
                     "message": f"象限色 {name} 未定位到大块 (bbox={box})"}
 
     magenta, green = boxes["magenta"], boxes["green"]
-    blue, white = boxes["blue"], boxes["white"]
+    blue, white = boxes["blue"], boxes["cyan"]
     tol = 0.12 * height
     # G 在 M 右侧 (水平排), 顶部对齐
     if green["x"] < magenta["x"] + magenta["w"] * 0.5:

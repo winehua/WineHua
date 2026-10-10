@@ -23,9 +23,9 @@
   "timeoutMs": 120000,
   "checks": [
     "result-json",
-    "presented-route",
     "visual:fusion-window-a",
     "visual:fusion-window-b",
     "fusion-clicks"
   ]
+  ,"_checks_note": "不含 presented-route: 其三段判定 (expected==presented/pid 归属/surfaceKey) 为 graphics smoke 的 EGL 呈现链设计, GDI/shm 探针无该通道。env 丢失检测由 fusion-clicks 的 expectedRoute 校验承担 (M4a 终验预演发现, 2026-10-10)。"
 }

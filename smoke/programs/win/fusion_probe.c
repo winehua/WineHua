@@ -90,11 +90,14 @@ static void paint_window_b(HWND hwnd)
     GetClientRect(hwnd, &rc);
     /* I2 (review): 左上用品红 (255,0,255) 不用纯红 —— 窗 A 是纯红主体,
      * B 的左上若也用红, 全屏分类器会把两窗的红色并成一个 bbox, 拓扑
-     * 判定结构性误判。品红保留「四色象限拓扑」语义且与 A 可分离。 */
+     * 判定结构性误判。品红保留「四色象限拓扑」语义且与 A 可分离。
+     * 终验预演 (2026-10-10): 白色同病 —— 窗 A 的白十字与 B 的白象限
+     * 跨窗并 bbox, 拓扑同样结构误判; 右下改青 (0,255,255), 与
+     * frame.py 分类器成对改 (原则 25)。 */
     bm = CreateSolidBrush(RGB(255, 0, 255));
     bg = CreateSolidBrush(RGB(0, 255, 0));
     bb = CreateSolidBrush(RGB(0, 0, 255));
-    bw = CreateSolidBrush(RGB(255, 255, 255));
+    bw = CreateSolidBrush(RGB(0, 255, 255));
     bk = CreateSolidBrush(RGB(0, 0, 0));
 
     /* 四象限: 左上 M / 右上 G / 左下 B / 右下 白 */
@@ -192,11 +195,21 @@ static void report_heartbeat(struct probe_state *state, const char *status,
                              const char *stage, const char *message)
 {
     char metrics[512];
+    /* 路线自报 (如实环境事实, 非呈现归因): GDI/shm 呈现链没有 graphics
+     * smoke 的 surfaceKey/displayStallMs 通道, presented-route 三段判定
+     * 不适用 (checks 已移除, 见 test.json); expectedRoute 存在性由
+     * fusion-clicks 判定器校验 —— env 被丢 = 冷启参数被丢 = 本判据抓点。 */
+    const char *expect = getenv("WINEHUA_SMOKE_EXPECT_ROUTE");
+    const char *req = getenv("WINEHUA_DISPLAY_ROUTE");
+    if (!expect || !expect[0]) expect = "-";
+    if (!req || !req[0]) req = "-";
     snprintf(metrics, sizeof(metrics),
              "{\"clickCounts\":{\"a\":%u,\"b\":%u},"
-             "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\"}",
+             "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\","
+             "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\"}",
              state->clicks_a, state->clicks_b,
-             state->windows_created ? "true" : "false");
+             state->windows_created ? "true" : "false",
+             expect, req);
     winehua_smoke_write_result(&state->options, status, stage, message, metrics);
 }
 
