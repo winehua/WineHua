@@ -119,6 +119,15 @@ static void try_post_created(struct x11_xs_entry *e)
     x11_toplevel_bridge_post_created(
         e->toplevelId, (int32_t)e->xs->width, (int32_t)e->xs->height,
         e->xs->x, e->xs->y);
+    /* title 补发 (T6 byTitle 实锤, 兜底 2/2): WM_NAME 经 xcb get_property
+     * 异步到达, new_surface 兜底时可能还是空; 而 created 前到的 set_title
+     * 信号被 handle_set_title 的 createdPosted 门丢弃, title 不再变化则信
+     * 号永不再发 —— 在 created 落地时用当前值补一次, 覆盖全部时序:
+     *   先于 new_surface → notify_new_surface 兜底;
+     *   new_surface~created 之间 → 此处;
+     *   created 之后变化 → handle_set_title 正常通道。 */
+    if (e->xs->title && e->xs->title[0])
+        x11_toplevel_bridge_post_title(e->toplevelId, e->xs->title);
 }
 
 static void handle_surface_commit(struct wl_listener *listener, void *data)
