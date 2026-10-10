@@ -95,6 +95,18 @@ void display_input_inject_button(uint32_t button, bool press);
 // 必须在合成器事件循环线程调用。
 void display_input_inject_axis(int which, int steps);
 
+// ── M4a-T5: x11 多窗模式按窗路由口 (x11_toplevel_input_* 的执行端) ──
+// 目标窗口由调用方给 (toplevelId 反查的 xs), 不走 hit-test; lx/ly 是该窗
+// 局部坐标。action: ArkTS MouseAction Press=1 Release=2 Move=3; button:
+// evdev 按钮码。焦点/activate/frame/脉冲/settle 纪律内部全复用。
+// 必须在合成器事件循环线程调用。
+struct wlr_xwayland_surface;
+void wl_ohos_input_multimode_pointer(struct wlr_xwayland_surface *xs,
+                                     double lx, double ly,
+                                     int action, uint32_t button);
+void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
+                                 uint32_t keycode, bool press);
+
 #ifdef __cplusplus
 }
 #endif

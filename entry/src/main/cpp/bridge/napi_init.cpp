@@ -17,6 +17,7 @@
 #include "input/text_input.h"
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
+#include "display/x11_toplevel.h" /* M4a-T5: 多窗输入路由分叉 */
 
 #include <unistd.h>
 #include <signal.h>
@@ -833,6 +834,13 @@ static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
                     "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
                     tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
     }
+    // M4a-T5: x11 多窗模式按窗直达 (px/py 是承载窗局部坐标, 越界即缝隙
+    // 由映射层丢弃), 不进 wayland 的 InputManager seat 面
+    if (x11_toplevel_active()) {
+        x11_toplevel_input_pointer(tl, (int)px, (int)py, action,
+                                   (uint32_t)button);
+        return nullptr;
+    }
     InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
     return nullptr;
 }
@@ -943,6 +951,11 @@ static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
     napi_get_value_bool(env, args[2], &pressed);
     OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
                 tl, evdevCode, pressed ? "true" : "false");
+    // M4a-T5: x11 多窗模式按窗直达 (FocusClient + settle 纪律在映射层)
+    if (x11_toplevel_active()) {
+        x11_toplevel_input_key(tl, (uint32_t)evdevCode, pressed);
+        return nullptr;
+    }
     InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
     return nullptr;
 }

@@ -32,6 +32,15 @@ void x11_toplevel_session_reset(void);
 struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId);
 uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs);
 
+/* ── Task 5: 按窗输入路由 ── */
+/* lx/ly = ArkTS 承载窗局部坐标 (越界 [0,w/h) 即窗间缝隙, 不投递)。
+ * action: ArkTS MouseAction Press=1 Release=2 Move=3。button: evdev 码。
+ * 合成器线程调用 (napi 注入面已在该线程排队)。 */
+void x11_toplevel_input_pointer(uint32_t toplevelId, int lx, int ly,
+                                int action, uint32_t button);
+void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
+                            bool press);
+
 /* ── Task 3: per-xs 呈现 ── */
 struct wlr_allocator;
 struct wlr_renderer;

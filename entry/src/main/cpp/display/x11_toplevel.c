@@ -21,6 +21,7 @@
 #include <wlr/xwayland/xwayland.h>
 
 #include "ohos_buffer.h"
+#include "display_input.h" /* Task 5: multimode pointer/key 路由口 */
 
 /* C++ 桥 (x11_toplevel_bridge.cpp): 事件投递单点。evt 值 = ToplevelEventType
  * 的底层 uint32 (枚举定义 toplevel_event_bus.h, C 侧只透传不解释)。 */
@@ -299,6 +300,29 @@ void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
     if (!e) return;
     e->win_w = w;
     e->win_h = h;
+}
+
+/* ── Task 5: 按窗输入路由 ── */
+
+void x11_toplevel_input_pointer(uint32_t toplevelId, int lx, int ly,
+                                int action, uint32_t button)
+{
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    if (!e || !e->xs) return;
+    /* 缝隙不投递 (spec §4): 越界窗口局部坐标 = 点在窗间空隙/标题条外 */
+    if (lx < 0 || ly < 0 ||
+        lx >= (int)e->xs->width || ly >= (int)e->xs->height)
+        return;
+    wl_ohos_input_multimode_pointer(e->xs, (double)lx, (double)ly,
+                                    action, button);
+}
+
+void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
+                            bool press)
+{
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    if (!e || !e->xs) return;
+    wl_ohos_input_multimode_key(e->xs, keycode, press);
 }
 
 /* 画一帧: surface->buffer 的 texture (wlroots 自管) → 该窗队列 buffer →

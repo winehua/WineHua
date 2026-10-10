@@ -922,3 +922,53 @@ void wl_ohos_input_set_script_enabled(bool enabled)
      * 不追认 —— 显示路线每轮触发走完整 seat 生命周期 (retrigger 重进)。 */
     g_script_enabled = enabled;
 }
+
+/* ── M4a-T5: x11 多窗模式按窗路由口 (x11_toplevel_input_* 的执行端) ──
+ * 与 hit-test 路径 (post_motion) 的区别: 目标窗口由调用方给 (ArkTS 承载
+ * 窗 → toplevelId → xs), 不走 client_topmost_at 命中; 坐标已是窗口局部
+ * 值。纪律全部复用: FocusClient (activate+keyboard enter+settle 记录) /
+ * pointer frame (D9) / button 脉冲 (D15/D30, inject_button 内部) / 注入
+ * 队列 settle (键)。多窗模式无 g_clients/scene, raise 不适用 (z 序归
+ * ArkTS 承载窗, inject_button 内的 client_raise 对非命中 xs 为 no-op)。 */
+void wl_ohos_input_multimode_pointer(struct wlr_xwayland_surface *xs,
+                                     double lx, double ly,
+                                     int action, uint32_t button)
+{
+    if (!g_seat || !xs || !xs->surface)
+        return;
+    /* ArkTS MouseAction: Press=1 Release=2 Move=3 (input_manager.cpp 同注) */
+    const int ACT_PRESS = 1;
+    const int ACT_RELEASE = 2;
+    const int ACT_MOVE = 3;
+
+    if (xs->surface != g_ptr_focus)
+    {
+        FocusClient(xs); /* activate + keyboard enter + settle 记录 */
+        if (g_display)
+            wl_display_flush_clients(g_display); /* 焦点批先行 (同键纪律) */
+        wlr_seat_pointer_notify_enter(g_seat, xs->surface, lx, ly);
+        TrackPtrFocus(xs->surface);
+    }
+    /* g_ptr_focus_xs 供 pulse/断言读; 多窗模式不 raise (z 序归 ArkTS) */
+    g_ptr_focus_xs = xs;
+
+    if (action == ACT_MOVE)
+    {
+        wlr_seat_pointer_notify_motion(g_seat, NowMsec(), lx, ly);
+        wlr_seat_pointer_notify_frame(g_seat); /* D9: motion 必配 frame */
+        if (g_display)
+            wl_display_flush_clients(g_display);
+        return;
+    }
+    if (action == ACT_PRESS || action == ACT_RELEASE)
+        display_input_inject_button(button, action == ACT_PRESS);
+}
+
+void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
+                                 uint32_t keycode, bool press)
+{
+    if (!g_seat || !xs || !xs->surface)
+        return;
+    FocusClient(xs); /* 幂等 (同 surface 短路); 切窗首击也过 settle */
+    wl_ohos_input_post_key(keycode, press);
+}
