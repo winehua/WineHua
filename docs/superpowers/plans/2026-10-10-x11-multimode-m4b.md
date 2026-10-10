@@ -68,7 +68,7 @@
   - `x11_toplevel_bridge_post_activated(uint32_t id)` → RaiseToplevel 等价直调（不经枚举）
   - `x11_toplevel_bridge_post_modal(uint32_t id, uint32_t owner_id, bool modal)` → bus `Modal`（JSON 带 owner）
 
-- [ ] **Step 1: 四 listener 挂接（notify_new_surface 内）**
+- [x] **Step 1: 四 listener 挂接（notify_new_surface 内）**
 
 ```c
 /* entry 模式照抄 set_title/request_configure: 字段声明 + wl_list_init +
@@ -82,12 +82,12 @@ request_fullscreen：读 `xs->fullscreen` 状态位（信号无 payload）post_f
 request_activate：查 entry → `x11_toplevel_bridge_post_activated(id)`（桥内做 RaiseToplevel 等价，见桥 Step）。
 set_parent：`owner = entry_of_xs(xs->parent)`；`owner ? post_modal(id, owner->toplevelId, xs->modal) : 降级 log`（Review Focus #3）。
 
-- [ ] **Step 2: 桥实现（x11_toplevel_bridge.cpp）**
+- [x] **Step 2: 桥实现（x11_toplevel_bridge.cpp）**
 
 前三个照抄 post_title 模板（JSON 构造 + ToplevelEventType + Post）。
 post_activated：**执行时核实** wayland 置前终点——`grep -n "RaiseToplevel" entry/src/main/cpp/compositor/`，x11 桥直调同一 ToplevelManager/WineWindowManager 终点；若终点在 ArkTS 侧（napi 回调），则发 `Restored` 同款 TSFN 通道带 `event=activate` 自定义字符串并同步扩 ToplevelEventName（红线修改点，commit message 记录依据）。
 
-- [ ] **Step 3: 构建 + 已有套件不回归**
+- [x] **Step 3: 构建 + 已有套件不回归**
 
 Run: `make NATIVE_ARCH=arm64-v8a hap`
 Expected: 构建绿（wl_list_init 配对齐全，无编译错）。
