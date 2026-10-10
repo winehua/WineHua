@@ -42,6 +42,15 @@ struct probe_state
     unsigned clicks_a;
     unsigned clicks_b;
     BOOL windows_created;
+    /* M4b-T3: 状态序列 (--probe-state env 开关)。状态确认驱动 (RF#5):
+     * 每步动作后轮询 win32 状态 ≤2s, 确认才记 stateSeq, 不用固定 sleep。 */
+    BOOL probe_state;        /* env WINEHUA_SMOKE_PROBE_STATE=1 */
+    int state_step;          /* 0..N 步骤游标; <0 = 序列结束 */
+    ULONGLONG step_since_ms; /* 当前步骤动作发出的时刻 (超时判失败) */
+    RECT a_orig_rect;        /* 全屏步还原基准 */
+    LONG a_orig_style;
+    BOOL seq_minimized, seq_restored, seq_fullscreen, seq_unfullscreen, seq_modal;
+    char seq_note[128];      /* 首个失败步骤的原因 (判定器提示用) */
 };
 
 /* 中心白十字: 半长 1/4 窗宽/高, 臂宽 12px (逻辑坐标, 缩放后仍可辨) */
@@ -194,7 +203,7 @@ static BOOL create_windows(struct probe_state *state)
 static void report_heartbeat(struct probe_state *state, const char *status,
                              const char *stage, const char *message)
 {
-    char metrics[512];
+    char metrics[768];
     /* 路线自报 (如实环境事实, 非呈现归因): GDI/shm 呈现链没有 graphics
      * smoke 的 surfaceKey/displayStallMs 通道, presented-route 三段判定
      * 不适用 (checks 已移除, 见 test.json); expectedRoute 存在性由
@@ -203,14 +212,187 @@ static void report_heartbeat(struct probe_state *state, const char *status,
     const char *req = getenv("WINEHUA_DISPLAY_ROUTE");
     if (!expect || !expect[0]) expect = "-";
     if (!req || !req[0]) req = "-";
-    snprintf(metrics, sizeof(metrics),
-             "{\"clickCounts\":{\"a\":%u,\"b\":%u},"
-             "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\","
-             "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\"}",
-             state->clicks_a, state->clicks_b,
-             state->windows_created ? "true" : "false",
-             expect, req);
+    if (state->probe_state)
+        snprintf(metrics, sizeof(metrics),
+                 "{\"clickCounts\":{\"a\":%u,\"b\":%u},"
+                 "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\","
+                 "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\","
+                 "\"stateSeq\":{\"minimized_a\":%s,\"restored_a\":%s,"
+                 "\"fullscreen_a\":%s,\"unfullscreen_a\":%s,"
+                 "\"modal_b_owned_a\":%s},\"stateNote\":\"%s\"}",
+                 state->clicks_a, state->clicks_b,
+                 state->windows_created ? "true" : "false",
+                 expect, req,
+                 state->seq_minimized ? "true" : "false",
+                 state->seq_restored ? "true" : "false",
+                 state->seq_fullscreen ? "true" : "false",
+                 state->seq_unfullscreen ? "true" : "false",
+                 state->seq_modal ? "true" : "false",
+                 state->seq_note);
+    else
+        snprintf(metrics, sizeof(metrics),
+                 "{\"clickCounts\":{\"a\":%u,\"b\":%u},"
+                 "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\","
+                 "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\"}",
+                 state->clicks_a, state->clicks_b,
+                 state->windows_created ? "true" : "false",
+                 expect, req);
     winehua_smoke_write_result(&state->options, status, stage, message, metrics);
+}
+
+/* ── M4b-T3: 状态序列状态机 (空闲时驱动, 每轮最多一步动作) ──
+ * 步骤: 动作 → 后续轮询 win32 状态确认 (≤2s) → 记 stateSeq。确认驱动
+ * (RF#5): wine→x11drv→xwm→host 链有延迟, 按 sleep 写终态会把「未达」
+ * 写成「已达」。失败 = 记 seq_note 后跳过余下步骤 (判定器按缺步 FAIL)。 */
+
+#define STEP_MINIMIZE 0
+#define STEP_RESTORE 1
+#define STEP_FULLSCREEN 2
+#define STEP_UNFULLSCREEN 3
+#define STEP_MODAL 4
+#define STEP_DONE 5
+#define STEP_CONFIRM_MS 2000
+
+static void state_seq_begin(struct probe_state *state)
+{
+    state->probe_state = TRUE;
+    state->state_step = -1; /* -1 = 等双窗稳定后从 STEP_MINIMIZE 进入 */
+}
+
+/* 当前步骤的确认条件; 达成返回 TRUE */
+static BOOL state_seq_confirmed(struct probe_state *state)
+{
+    switch (state->state_step)
+    {
+    case STEP_MINIMIZE: return IsIconic(state->wnd_a) ? TRUE : FALSE;
+    case STEP_RESTORE: return !IsIconic(state->wnd_a) ? TRUE : FALSE;
+    case STEP_FULLSCREEN:
+    {
+        RECT rc, dr;
+        if (!GetWindowRect(state->wnd_a, &rc)) return FALSE;
+        dr.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        dr.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        dr.right = dr.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        dr.bottom = dr.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        return rc.left <= dr.left && rc.top <= dr.top &&
+               rc.right >= dr.right && rc.bottom >= dr.bottom ? TRUE : FALSE;
+    }
+    case STEP_UNFULLSCREEN:
+    {
+        RECT rc;
+        if (!GetWindowRect(state->wnd_a, &rc)) return FALSE;
+        return rc.left == state->a_orig_rect.left &&
+               rc.top == state->a_orig_rect.top &&
+               (rc.right - rc.left) == (state->a_orig_rect.right -
+                                        state->a_orig_rect.left) &&
+               (rc.bottom - rc.top) == (state->a_orig_rect.bottom -
+                                        state->a_orig_rect.top) ? TRUE : FALSE;
+    }
+    case STEP_MODAL:
+        return (LONG_PTR)GetWindowLongPtrA(state->wnd_b, GWLP_HWNDPARENT) ==
+               (LONG_PTR)state->wnd_a ? TRUE : FALSE;
+    default: return FALSE;
+    }
+}
+
+/* 发出当前步骤的动作 (每步只发一次, 由 step_since_ms==0 门控) */
+static void state_seq_act(struct probe_state *state)
+{
+    switch (state->state_step)
+    {
+    case STEP_MINIMIZE:
+        ShowWindow(state->wnd_a, SW_MINIMIZE);
+        break;
+    case STEP_RESTORE:
+        ShowWindow(state->wnd_a, SW_RESTORE);
+        break;
+    case STEP_FULLSCREEN:
+        GetWindowRect(state->wnd_a, &state->a_orig_rect);
+        state->a_orig_style = GetWindowLongA(state->wnd_a, GWL_STYLE);
+        /* 去边框 + 全屏矩形: x11drv 据此置 _NET_WM_STATE_FULLSCREEN →
+         * xwm request_fullscreen → host Fullscreen 事件链 */
+        SetWindowLongA(state->wnd_a, GWL_STYLE,
+                       (state->a_orig_style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+        SetWindowPos(state->wnd_a, HWND_TOP,
+                     GetSystemMetrics(SM_XVIRTUALSCREEN),
+                     GetSystemMetrics(SM_YVIRTUALSCREEN),
+                     GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                     GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                     SWP_FRAMECHANGED);
+        break;
+    case STEP_UNFULLSCREEN:
+        SetWindowLongA(state->wnd_a, GWL_STYLE, state->a_orig_style);
+        SetWindowPos(state->wnd_a, HWND_TOP,
+                     state->a_orig_rect.left, state->a_orig_rect.top,
+                     state->a_orig_rect.right - state->a_orig_rect.left,
+                     state->a_orig_rect.bottom - state->a_orig_rect.top,
+                     SWP_FRAMECHANGED);
+        break;
+    case STEP_MODAL:
+        /* owned 关系: wnd_b 的 owner = wnd_a (GWLP_HWNDPARENT)。host 侧
+         * xwm set_parent → Modal 事件 → ModalWindowManager 跟随链 */
+        SetWindowLongPtrA(state->wnd_b, GWLP_HWNDPARENT,
+                          (LONG_PTR)state->wnd_a);
+        break;
+    default:
+        break;
+    }
+}
+
+/* 空闲时驱动 (PeekMessage 排空后调用)。返回 TRUE = 序列已结束。 */
+static BOOL state_seq_tick(struct probe_state *state)
+{
+    ULONGLONG now;
+    if (state->state_step == STEP_DONE) return TRUE;
+
+    now = GetTickCount64();
+    if (state->state_step < 0)
+    {
+        /* 入口延迟: 双窗 attach+首帧稳定 (宿主侧 ~2s), 序列总预算 12s 内 */
+        if (now < (ULONGLONG)state->options.seconds * 1000ULL / 4)
+            return FALSE;
+        state->state_step = STEP_MINIMIZE;
+        state->step_since_ms = 0;
+    }
+
+    if (state->step_since_ms == 0)
+    {
+        state_seq_act(state);
+        state->step_since_ms = now ? now : 1;
+        return FALSE;
+    }
+
+    if (state_seq_confirmed(state))
+    {
+        switch (state->state_step)
+        {
+        case STEP_MINIMIZE: state->seq_minimized = TRUE; break;
+        case STEP_RESTORE: state->seq_restored = TRUE; break;
+        case STEP_FULLSCREEN: state->seq_fullscreen = TRUE; break;
+        case STEP_UNFULLSCREEN: state->seq_unfullscreen = TRUE; break;
+        case STEP_MODAL: state->seq_modal = TRUE; break;
+        default: break;
+        }
+        state->state_step++;
+        state->step_since_ms = 0;
+        if (state->state_step == STEP_DONE)
+            return TRUE;
+        return FALSE;
+    }
+
+    if (now - state->step_since_ms > STEP_CONFIRM_MS)
+    {
+        /* 确认超时: 记失败原因, 跳过余下 (判定器按缺步 FAIL) */
+        const char *names[] = { "minimized_a", "restored_a", "fullscreen_a",
+                                "unfullscreen_a", "modal_b_owned_a" };
+        if (state->state_step >= STEP_MINIMIZE &&
+            state->state_step <= STEP_MODAL)
+            snprintf(state->seq_note, sizeof(state->seq_note),
+                     "timeout at %s", names[state->state_step]);
+        state->state_step = STEP_DONE;
+        return TRUE;
+    }
+    return FALSE;
 }
 
 int main(int argc, char **argv)
@@ -262,12 +444,19 @@ int main(int argc, char **argv)
     /* M9 (review): 不依赖 msg 残值判断退出; 心跳/deadline 在队列排空后
      * 每轮都检查 (不被消息流饿死)。 */
     BOOL fixed_frame_announced = FALSE;
+    /* M4b-T3: env 开关 (--probe-state 等价物, 不动 smoke 协议头) */
+    {
+        const char *ps = getenv("WINEHUA_SMOKE_PROBE_STATE");
+        if (ps && ps[0] == '1') state_seq_begin(&state);
+    }
     for (;;)
     {
         BOOL got = PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE);
         if (!got)
         {
             ULONGLONG now = GetTickCount64();
+            if (state.probe_state)
+                state_seq_tick(&state);
             if (now - last_report >= 2000)
             {
                 last_report = now;
@@ -296,10 +485,19 @@ int main(int argc, char **argv)
     /* 终态: 双窗建出即 PASS (呈现/点击判定归 host 侧判定器 — 视觉证据与
      * 注入编排都在 host, guest 只负责事实上报)。 */
     {
-        char message[128];
+        char message[192];
         BOOL passed = state.windows_created;
-        snprintf(message, sizeof(message),
-                 "clicks a=%u b=%u", state.clicks_a, state.clicks_b);
+        if (state.probe_state)
+            snprintf(message, sizeof(message),
+                     "clicks a=%u b=%u seq m%d r%d f%d u%d o%d %s",
+                     state.clicks_a, state.clicks_b,
+                     state.seq_minimized, state.seq_restored,
+                     state.seq_fullscreen, state.seq_unfullscreen,
+                     state.seq_modal,
+                     state.seq_note[0] ? state.seq_note : "ok");
+        else
+            snprintf(message, sizeof(message),
+                     "clicks a=%u b=%u", state.clicks_a, state.clicks_b);
         report_heartbeat(&state, passed ? "PASS" : "FAIL", "present", message);
     }
     return state.windows_created ? 0 : 1;

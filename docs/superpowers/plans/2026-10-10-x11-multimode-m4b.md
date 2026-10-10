@@ -49,7 +49,7 @@
 
   `validate_fusion_window_*` 在 M4b 状态序列帧里对 explorer 桌面窗的象限外内容（桌面底色/图标）不误判；实帧验证。
 
-- [ ] **Step 3: Commit**（决策记录 + 代码/文档落地，一行 message 注明三选一结果）
+- [x] **Step 3: Commit**（决策记录 + 代码/文档落地，一行 message 注明三选一结果）
 
 ---
 
@@ -146,7 +146,7 @@ git commit -m "feat(ets): M4b-T2 承载层状态动作——minimize/fullscreen/
 - Consumes: M4a 的双窗骨架（wnd_a/wnd_b）
 - Produces: result JSON 扩 `"stateSeq": ["minimized_a","restored_a","fullscreen_a","unfullscreen_a","modal_b_owned_a"]` 每步实际达成态（Review Focus #5：状态确认驱动，非 sleep）
 
-- [ ] **Step 1: 状态序列实现**
+- [x] **Step 1: 状态序列实现**
 
 ```c
 /* 序列 (每步: 动作 → 轮询确认 ≤2s → 记录):
@@ -158,12 +158,12 @@ git commit -m "feat(ets): M4b-T2 承载层状态动作——minimize/fullscreen/
  * 每步结果写 result JSON (RUNNING 心跳实时更新 stateSeq) */
 ```
 
-- [ ] **Step 2: mingw 构建绿**
+- [x] **Step 2: mingw 构建绿**
 
 Run: `python3 automation/smoke.py build --suite fusion`
 Expected: fusion_probe.exe 重编译成功。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add smoke/programs/win/fusion_probe.c
