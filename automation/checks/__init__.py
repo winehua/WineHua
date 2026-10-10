@@ -67,6 +67,32 @@ def result_json(ctx: dict) -> dict:
     }
 
 
+def fusion_clicks(ctx: dict) -> dict:
+    """M4a-T6: 按窗点击计数判定 —— result JSON 的 metrics.clickCounts。
+    判据: a >= 1 (窗 A 至少收到一次点击) 且 b == 0 (窗 B 未收到 —— 点击
+    命中窗 A 时不泄漏给窗 B, 按窗路由的排他性)。windowsCreated=false 时
+    FAIL (探针窗都没建出, 计数无意义)。"""
+    result = ctx.get("result") or {}
+    metrics = result.get("metrics") or {}
+    clicks = metrics.get("clickCounts") or {}
+    if metrics.get("windowsCreated") is False:
+        return {"status": "FAIL", "stage": "fusion-clicks",
+                "message": "探针双窗未创建 (windowsCreated=false)"}
+    if not clicks:
+        return {"status": "FAIL", "stage": "fusion-clicks",
+                "message": "结果缺少 clickCounts 指标"}
+    a = int(clicks.get("a", 0))
+    b = int(clicks.get("b", 0))
+    if a < 1:
+        return {"status": "FAIL", "stage": "fusion-clicks",
+                "message": f"窗 A 零点击 (clickCounts={{'a':{a},'b':{b}}}) —— 注入未命中或按窗路由未达"}
+    if b != 0:
+        return {"status": "FAIL", "stage": "fusion-clicks",
+                "message": f"窗 B 收到点击 (b={b}) —— 按窗路由泄漏"}
+    return {"status": "PASS", "stage": "fusion-clicks",
+            "message": f"点击按窗命中 (a={a}, b=0)"}
+
+
 def _load_preview_rect(run_dir) -> dict | None:
     """读归档的预览框物理矩形（D22 §2.4 判据债的设备端数据落盘）。
 
@@ -102,7 +128,11 @@ def visual(ctx: dict) -> dict:
     诚实答案：这一格没验，不是验过了。"""
     result = ctx.get("result") or {}
     region = None
-    if ((result.get("metrics") or {}).get("expectedRoute")) == "x11":
+    validator = ctx.get("validator", "")
+    # M4a-T6: fusion 双窗判定器自带全屏定位 (独立 OHOS 窗, 屏幕位置由窗管
+    # 决定, host 无 preview-rect 可裁) —— 跳过 §2.4 的 region 门。
+    fusion_locating = validator.startswith("fusion-window")
+    if ((result.get("metrics") or {}).get("expectedRoute")) == "x11" and not fusion_locating:
         region = _load_preview_rect(ctx.get("run_dir"))
         if region is None:
             return {"status": "SKIP", "stage": "visual:x11-preview-pane",
@@ -307,6 +337,7 @@ REGISTRY = {
     "marker": marker,
     "presented-route": presented_route,
     "wine-trace": _wine_trace.wine_trace,
+    "fusion-clicks": fusion_clicks,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }

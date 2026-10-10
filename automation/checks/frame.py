@@ -178,6 +178,117 @@ VALIDATORS = {
 }
 
 
+def _classify_pixels(image_path: Path, step: int = 8):
+    """fusion 双窗定位共用: 全屏采样并按主色分类。
+    返回 (分类掩码 dict[name->(xs,ys)], width, height)。分类阈值宽松
+    (JPEG 压缩/缩放容差), 命中率比精确色值重要。"""
+    import numpy as np
+
+    samples, xgrid, ygrid, width, height = _load_sampled_rgb(
+        image_path, step=step)
+    r = samples[:, :, 0].astype(int)
+    g = samples[:, :, 1].astype(int)
+    b = samples[:, :, 2].astype(int)
+    red = (r > 170) & (g < 110) & (b < 110)
+    green = (g > 170) & (r < 110) & (b < 110)
+    blue = (b > 170) & (r < 110) & (g < 110)
+    white = (r > 210) & (g > 210) & (b > 210)
+    return {
+        "red": (xgrid[red], ygrid[red]),
+        "green": (xgrid[green], ygrid[green]),
+        "blue": (xgrid[blue], ygrid[blue]),
+        "white": (xgrid[white], ygrid[white]),
+        "total": (xgrid, ygrid),
+    }, width, height
+
+
+def _bbox(xs, ys):
+    if len(xs) == 0:
+        return None
+    return {"x": int(xs.min()), "y": int(ys.min()),
+            "w": int(xs.max() - xs.min()), "h": int(ys.max() - ys.min())}
+
+
+def validate_fusion_window_a(image_path: Path, region: dict | None = None) -> dict:
+    """M4a 窗 A: 全屏定位纯红大块 (fusion_probe 窗 A 的 GDI 输出), 再验证
+    中心白十字。不依赖 region —— 双窗是独立 OHOS 窗, 屏幕位置由窗管决定,
+    host 侧无 preview-rect 可裁 (与 §2.4 单画布场景的本质区别)。"""
+    import numpy as np
+
+    classes, width, height = _classify_pixels(image_path)
+    rx, ry = classes["red"]
+    box = _bbox(rx, ry)
+    if box is None or box["w"] * box["h"] < 0.02 * width * height:
+        return {"status": "FAIL", "validator": "fusion-window-a",
+                "message": f"未定位到纯红大块 (red px={len(rx)}, bbox={box})"}
+
+    # 红块内部红色覆盖率 (排除整屏红误定位: 十字与噪声稀释后仍应过半)
+    area = box["w"] * box["h"]
+    inside = (rx >= box["x"]) & (rx <= box["x"] + box["w"]) & \
+             (ry >= box["y"]) & (ry <= box["y"] + box["h"])
+    coverage = float(inside.sum()) / max(1, area / 64)  # step=8 → 每样本代表 64px²
+    if coverage < 0.5:
+        return {"status": "FAIL", "validator": "fusion-window-a",
+                "message": f"红块覆盖率不足: {coverage:.2f} (bbox={box})"}
+
+    # 中心白十字: 窗几何中心附近应有白色 (横竖臂交点)
+    cx, cy = box["x"] + box["w"] // 2, box["y"] + box["h"] // 2
+    wx, wy = classes["white"]
+    near = (np.abs(wx - cx) < box["w"] // 6) & (np.abs(wy - cy) < box["h"] // 6)
+    if int(near.sum()) < 3:
+        return {"status": "FAIL", "validator": "fusion-window-a",
+                "message": f"红块中心无白十字 (center=({cx},{cy}), white near={int(near.sum())})"}
+    return {"status": "PASS", "validator": "fusion-window-a",
+            "message": f"红窗+白十字定位通过 (bbox={box})",
+            "metrics": {"bbox": box, "coverage": round(coverage, 2)}}
+
+
+def validate_fusion_window_b(image_path: Path, region: dict | None = None) -> dict:
+    """M4a 窗 B: 四象限拓扑自动定位版 —— 独立找出 R/G/B/白 四块的 bbox,
+    验证空间拓扑 (G 在 R 右侧同排 / B 在 R 下侧同列 / W 在 B 右侧同排)。
+    与 rgba-quadrants 的差别: 不需要 region 裁剪 (定位内建), 且容忍
+    fusion_probe 的 2px 黑分隔线 (采样步长 8px 跳得过)。"""
+    classes, width, height = _classify_pixels(image_path)
+    boxes = {name: _bbox(*classes[name]) for name in ("red", "green", "blue", "white")}
+    for name, box in boxes.items():
+        if box is None or box["w"] * box["h"] < 0.01 * width * height:
+            return {"status": "FAIL", "validator": "fusion-window-b",
+                    "message": f"象限色 {name} 未定位到大块 (bbox={box})"}
+
+    red, green, blue, white = boxes["red"], boxes["green"], boxes["blue"], boxes["white"]
+    tol = 0.12 * height
+    # G 在 R 右侧 (水平排), 顶部对齐
+    if green["x"] < red["x"] + red["w"] * 0.5:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"G 不在 R 右侧: red={red} green={green}"}
+    if abs(int(green["y"]) - int(red["y"])) > tol:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"G 与 R 顶部未对齐: red.y={red['y']} green.y={green['y']} (tol={tol:.0f})"}
+    # B 在 R 下侧 (垂直排), 左对齐
+    if blue["y"] < red["y"] + red["h"] * 0.5:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"B 不在 R 下侧: red={red} blue={blue}"}
+    if abs(int(blue["x"]) - int(red["x"])) > tol:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"B 与 R 左侧未对齐: red.x={red['x']} blue.x={blue['x']}"}
+    # W 在 B 右侧同排 (右下象限)
+    if white["x"] < blue["x"] + blue["w"] * 0.5:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"W 不在 B 右侧: blue={blue} white={white}"}
+    if abs(int(white["y"]) - int(blue["y"])) > tol:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"W 与 B 顶部未对齐: blue.y={blue['y']} white.y={white['y']}"}
+    return {"status": "PASS", "validator": "fusion-window-b",
+            "message": "四象限拓扑定位通过",
+            "metrics": {"boxes": boxes}}
+
+
+VALIDATORS.update({
+    "fusion-window-a": validate_fusion_window_a,
+    "fusion-window-b": validate_fusion_window_b,
+})
+
+
 def validate(name: str, image_path: Path, region: dict | None = None) -> dict:
     runner = VALIDATORS.get(name)
     if runner is None:

@@ -1,0 +1,19 @@
+{
+  "name": "fusion",
+  "title": "x11 fusion 多窗 (M4a 验收)",
+  "checks": [
+    "coverage"
+  ],
+  "tests": [
+    {
+      "case": "fusion-probe",
+      "id": "fusion-probe",
+      "backend": {
+        "d3d": "wined3d",
+        "dxvk": "dxvk_legacy"
+      },
+      "seconds": 12,
+      "timeoutMs": 120000
+    }
+  ]
+}

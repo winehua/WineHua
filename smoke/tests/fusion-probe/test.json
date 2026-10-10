@@ -1,0 +1,31 @@
+{
+  "id": "fusion-probe",
+  "title": "M4a 双窗呈现+按窗输入 (fusion 多窗模式)",
+  "exe": "fusion_probe.exe",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/win/fusion_probe.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  },
+  "seconds": 12,
+  "timeoutMs": 120000,
+  "checks": [
+    "result-json",
+    "presented-route",
+    "visual:fusion-window-a",
+    "visual:fusion-window-b",
+    "fusion-clicks"
+  ]
+}

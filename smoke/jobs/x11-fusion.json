@@ -1,0 +1,11 @@
+{
+  "displayroute": true,
+  "suite": "fusion",
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "x11",
+      "DISPLAY": ":0",
+      "WAYLAND_DISPLAY": ""
+    }
+  }
+}

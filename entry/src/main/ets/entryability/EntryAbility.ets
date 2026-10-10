@@ -123,6 +123,11 @@ export default class EntryAbility extends UIAbility {
       parameters['winehua.program'] !== null) {
       WineEnvService.getInstance().setAutoProgram(value('winehua.program', ''));
     }
+    // winehua.env=<K=V;K=V> → 直启程序追加环境 (调试通道, 见 runProgram)
+    if (parameters && parameters['winehua.env'] !== undefined &&
+      parameters['winehua.env'] !== null) {
+      AppStorage.setOrCreate<string>('winehua.env', value('winehua.env', ''));
+    }
     // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
     // 在 SmokeHook, 模式非 smoke 时零行为)
     SmokeHook.getInstance().applyWant(parameters);
@@ -173,10 +178,20 @@ export default class EntryAbility extends UIAbility {
   private runProgram(windowsPath: string): void {
     const slash = windowsPath.lastIndexOf('/');
     const dir = slash > 0 ? windowsPath.substring(0, slash) : windowsPath;
+    // winehua.env=<K=V;K=V>: 直启程序的追加环境。调试通道 (D50 WINEDEBUG
+    // 等排查), 非产品语义 —— ';' 分隔, 值内不容 ';'。
+    const environment: Record<string, string> = {};
+    const envSpec = AppStorage.get<string>('winehua.env') ?? '';
+    for (const pair of envSpec.split(';')) {
+      const eq = pair.indexOf('=');
+      if (eq > 0) {
+        environment[pair.substring(0, eq)] = pair.substring(eq + 1);
+      }
+    }
     testNapi.runWineProgram({
       windowsExePath: windowsPath,
       argv: [],
-      environment: {},
+      environment: environment,
       workingDirectory: dir,
       d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k',
       dxvkBackend: AppStorage.get<string>('winehua.dxvk.backend') ?? 'auto'
