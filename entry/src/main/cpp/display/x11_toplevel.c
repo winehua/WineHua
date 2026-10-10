@@ -88,6 +88,8 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_init(&e->destroy.link);   /* 防 double-remove (session_reset 后
                                        * destroy 再到的悬挂回调安全化) */
     wl_list_init(&e->associate.link);
+    wl_list_init(&e->dissociate.link); /* M11 (review): 与其余 listener 同款
+                                        * 重置, 维持「全空链自引」不变量 */
     wl_list_init(&e->set_title.link);
     wl_list_init(&e->request_configure.link);
     wl_list_init(&e->surface_commit.link);
@@ -272,11 +274,13 @@ void x11_toplevel_set_render_ctx(struct wlr_allocator *alloc,
     g_renderer = renderer;
 }
 
-void x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
+/* 返回 false = toplevel 已死 (created 与 createRenderer 的竞态, I5):
+ * 调用方必须销毁 win, 所有权未转移。 */
+bool x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
                                 int w, int h)
 {
     struct x11_xs_entry *e = entry_of_id(toplevelId);
-    if (!e) return;
+    if (!e) return false;
     e->win = win;
     e->win_w = w;
     e->win_h = h;
@@ -284,6 +288,7 @@ void x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
     e->dirty = true; /* attach 后强制画一帧 (commit 已过的话别等下一帧) */
     XTL_LOG("XTL attach id=%{public}u win=%{public}p %{public}dx%{public}d",
             toplevelId, (void *)win, w, h);
+    return true;
 }
 
 void x11_toplevel_detach_window(uint32_t toplevelId)
@@ -304,12 +309,42 @@ void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
 
 /* ── Task 5: 按窗输入路由 ── */
 
-void x11_toplevel_input_pointer(uint32_t toplevelId, int lx, int ly,
+/* napi 线程入口 (C1 review 修复): 只入队, loop 线程 dispatch 执行。
+ * px/py 是 OHOS 承载窗局部物理像素 (SendPointerEvent 契约), 坐标空间
+ * 换算 (物理 → X 逻辑) 在 dispatch 里做 —— 比例取决于承载窗尺寸, 而
+ * win_w/win_h 只在 loop 线程稳定。 */
+void x11_toplevel_input_pointer(uint32_t toplevelId, int px, int py,
                                 int action, uint32_t button)
 {
+    wl_ohos_input_post_mm_pointer(toplevelId, px, py, action, button);
+}
+
+void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
+                            bool press)
+{
+    wl_ohos_input_post_mm_key(toplevelId, keycode, press);
+}
+
+/* loop 线程执行 (InjectQueueDrain 分派): 查表 + 坐标空间换算 + 纪律投递 */
+void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
+                                         int action, uint32_t button)
+{
     struct x11_xs_entry *e = entry_of_id(toplevelId);
-    if (!e || !e->xs) return;
-    /* 缝隙不投递 (spec §4): 越界窗口局部坐标 = 点在窗间空隙/标题条外 */
+    int lx, ly;
+    if (!e || !e->xs || !e->win) return;
+    /* I3 (review): 物理像素 → X 逻辑坐标。承载窗尺寸由 onSurfaceChanged
+     * 维护 (win_w/win_h); 未校准 (attach 初值 1x1) 时比例未知, 丢弃并
+     * 采样留痕 —— 比乱投好 (scale≠1 设备上乱投 = 命中点偏 2 倍)。 */
+    if (e->win_w <= 2 || e->win_h <= 2) {
+        static unsigned skip_n;
+        if (++skip_n % 60 == 1)
+            XTL_LOG("XTL mm-ptr skip uncalibrated id=%{public}u win=%{public}dx%{public}d",
+                    toplevelId, e->win_w, e->win_h);
+        return;
+    }
+    lx = (int)((int64_t)px * (int)e->xs->width / e->win_w);
+    ly = (int)((int64_t)py * (int)e->xs->height / e->win_h);
+    /* 缝隙不投递 (spec §4): 换算后越界 = 点在窗间空隙/标题条外 */
     if (lx < 0 || ly < 0 ||
         lx >= (int)e->xs->width || ly >= (int)e->xs->height)
         return;
@@ -317,8 +352,8 @@ void x11_toplevel_input_pointer(uint32_t toplevelId, int lx, int ly,
                                     action, button);
 }
 
-void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
-                            bool press)
+void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
+                                     bool press)
 {
     struct x11_xs_entry *e = entry_of_id(toplevelId);
     if (!e || !e->xs) return;

@@ -33,13 +33,19 @@ struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId);
 uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs);
 
 /* ── Task 5: 按窗输入路由 ── */
-/* lx/ly = ArkTS 承载窗局部坐标 (越界 [0,w/h) 即窗间缝隙, 不投递)。
- * action: ArkTS MouseAction Press=1 Release=2 Move=3。button: evdev 码。
- * 合成器线程调用 (napi 注入面已在该线程排队)。 */
-void x11_toplevel_input_pointer(uint32_t toplevelId, int lx, int ly,
+/* napi 线程入口 (C1): 只入队, 实际执行在 loop 线程的 *_dispatch。
+ * px/py = OHOS 承载窗局部物理像素 (SendPointerEvent 契约); action:
+ * ArkTS MouseAction Press=1 Release=2 Move=3; button: evdev 码。 */
+void x11_toplevel_input_pointer(uint32_t toplevelId, int px, int py,
                                 int action, uint32_t button);
 void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
                             bool press);
+/* loop 线程执行端 (InjectQueueDrain 分派, display_input.c 调): 查表 +
+ * 物理像素→X 逻辑坐标换算 + 缝隙丢弃 + 纪律投递。勿在其他线程调。 */
+void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
+                                         int action, uint32_t button);
+void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
+                                     bool press);
 
 /* ── Task 3: per-xs 呈现 ── */
 struct wlr_allocator;
@@ -47,8 +53,9 @@ struct wlr_renderer;
 /* chain_start 后注入 (render_tick 画 buffer 用); 均为合成器线程对象。 */
 void x11_toplevel_set_render_ctx(struct wlr_allocator *alloc,
                                  struct wlr_renderer *renderer);
-/* ArkTS createRenderer 回绑 (plugin_manager x11 分支): 窗口 ←→ toplevel。 */
-void x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
+/* ArkTS createRenderer 回绑 (plugin_manager x11 分支): 窗口 ←→ toplevel。
+ * 返回 false = toplevel 已死 (竞态), 调用方须销毁 win (I5)。 */
+bool x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
                                 int w, int h);
 void x11_toplevel_detach_window(uint32_t toplevelId);
 void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h);

@@ -107,6 +107,14 @@ void wl_ohos_input_multimode_pointer(struct wlr_xwayland_surface *xs,
 void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
                                  uint32_t keycode, bool press);
 
+// M4a-T5 (C1 review 修复): 多窗注入的 napi 线程入口 —— 只入队 (lock +
+// pipe 唤醒), loop 线程 drain 分派到 x11_toplevel_input_*_dispatch。
+// 任意线程可调。
+void wl_ohos_input_post_mm_pointer(uint32_t toplevelId, int lx, int ly,
+                                   int action, uint32_t button);
+void wl_ohos_input_post_mm_key(uint32_t toplevelId, uint32_t keycode,
+                               bool press);
+
 #ifdef __cplusplus
 }
 #endif

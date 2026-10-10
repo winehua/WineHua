@@ -49,7 +49,13 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
                          toplevelId, ret);
             return;
         }
-        x11_toplevel_attach_window(toplevelId, win, 1, 1);
+        /* I5 (review): attach 返回 false = toplevel 已死 (created 事件与
+         * createRenderer 之间 xs 销毁的竞态) —— 窗当场销毁, 不留泄漏。 */
+        if (!x11_toplevel_attach_window(toplevelId, win, 1, 1)) {
+            OH_LOG_WARN(LOG_APP, "[MW-Create] x11 tl #%{public}u gone before attach, window destroyed", toplevelId);
+            OH_NativeWindow_DestroyNativeWindow(win);
+            return;
+        }
         OH_LOG_INFO(LOG_APP, "[MW-Create] x11 tl #%{public}u window attached (no EglRenderer)", toplevelId);
         return;
     }

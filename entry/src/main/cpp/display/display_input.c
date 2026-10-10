@@ -21,6 +21,7 @@
 #include "display_input.h"
 #include "ohos_output.h"
 #include "xim_bridge.h"
+#include "x11_toplevel.h" /* M4a-T5: mm 注入 drain 分派 (C1: loop 线程) */
 #include <wlr/types/wlr_data_device.h>
 
 #include <stdio.h>
@@ -471,12 +472,23 @@ struct inject_item
     bool is_axis;      /* D15: 轴注入 (which/Steps 复用 axis 字段) */
     bool is_clipboard; /* D19: text 所有权随队列移交, drain 时交 Apply 释放 */
     bool is_text;      /* Task 4: x11 路线 IME commit, text 复用 heap 串 */
+    bool is_mm_ptr;    /* M4a-T5: x11 多窗按窗指针 (C1: napi 线程只入队,
+                        * drain 在 loop 线程执行 —— wlr_seat/wl_display
+                        * 全部事件循环线程专用) */
+    bool is_mm_key;    /* 同上, 按窗键盘 */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
     int phase;
     int axis_which, axis_steps; /* is_axis: 0=纵向 1=横向, ±N 步 */
     char *text; /* is_clipboard/is_text: UTF-8 串 (heap) */
+    /* is_mm_*: 按窗注入参数 (mm_lx/mm_ly 是 OHOS 承载窗局部物理像素,
+     * 换算到 X 逻辑坐标在 loop 线程的 dispatch 里做 —— win_w 未校准
+     * 前不知道比例) */
+    uint32_t mm_toplevel_id;
+    int mm_lx, mm_ly;
+    int mm_action;
+    uint32_t mm_button;
 };
 
 static struct inject_item g_inject_queue[INJECT_QUEUE_CAP];
@@ -531,6 +543,13 @@ static int InjectQueueDrain(void *data)
             display_input_inject_key(item.keycode, item.press);
         else if (item.is_button)
             display_input_inject_button(item.keycode, item.press);
+        else if (item.is_mm_ptr)
+            x11_toplevel_input_pointer_dispatch(
+                item.mm_toplevel_id, item.mm_lx, item.mm_ly,
+                item.mm_action, item.mm_button);
+        else if (item.is_mm_key)
+            x11_toplevel_input_key_dispatch(
+                item.mm_toplevel_id, item.keycode, item.press);
         else if (item.is_axis)
             display_input_inject_axis(item.axis_which, item.axis_steps);
         else if (item.is_text)
@@ -971,4 +990,35 @@ void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
         return;
     FocusClient(xs); /* 幂等 (同 surface 短路); 切窗首击也过 settle */
     wl_ohos_input_post_key(keycode, press);
+}
+
+/* ── M4a-T5 (C1 review 修复): 多窗注入的线程边界 ──
+ * napi/JS 线程只入队 (本文件 InjectQueue 的加锁 + pipe 唤醒), loop 线程
+ * 的 InjectQueueDrain 分派到 x11_toplevel_input_*_dispatch —— 后者在
+ * loop 线程查 entry 表并执行 wlr_seat/XCB 操作。此前分叉在 JS 线程直调
+ * wlr_seat/wl_display_flush (与 InputManager 的排队模型相悖, review C1)。 */
+void wl_ohos_input_post_mm_pointer(uint32_t toplevelId, int lx, int ly,
+                                   int action, uint32_t button)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_mm_ptr = true;
+    item.mm_toplevel_id = toplevelId;
+    item.mm_lx = lx;
+    item.mm_ly = ly;
+    item.mm_action = action;
+    item.mm_button = button;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_mm_key(uint32_t toplevelId, uint32_t keycode,
+                               bool press)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_mm_key = true;
+    item.mm_toplevel_id = toplevelId;
+    item.keycode = keycode;
+    item.press = press;
+    InjectQueuePush(&item);
 }

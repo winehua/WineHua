@@ -85,19 +85,22 @@ static void paint_window_b(HWND hwnd)
     PAINTSTRUCT ps;
     HDC dc = BeginPaint(hwnd, &ps);
     RECT rc, q;
-    HBRUSH br, bg, bb, bw, bk;
+    HBRUSH bm, bg, bb, bw, bk;
 
     GetClientRect(hwnd, &rc);
-    br = CreateSolidBrush(RGB(255, 0, 0));
+    /* I2 (review): 左上用品红 (255,0,255) 不用纯红 —— 窗 A 是纯红主体,
+     * B 的左上若也用红, 全屏分类器会把两窗的红色并成一个 bbox, 拓扑
+     * 判定结构性误判。品红保留「四色象限拓扑」语义且与 A 可分离。 */
+    bm = CreateSolidBrush(RGB(255, 0, 255));
     bg = CreateSolidBrush(RGB(0, 255, 0));
     bb = CreateSolidBrush(RGB(0, 0, 255));
     bw = CreateSolidBrush(RGB(255, 255, 255));
     bk = CreateSolidBrush(RGB(0, 0, 0));
 
-    /* 四象限 (rgba-quadrants-v1 同款排布): 左上 R / 右上 G / 左下 B / 右下 白 */
+    /* 四象限: 左上 M / 右上 G / 左下 B / 右下 白 */
     q.left = rc.left; q.top = rc.top;
     q.right = (rc.left + rc.right) / 2; q.bottom = (rc.top + rc.bottom) / 2;
-    FillRect(dc, &q, br);
+    FillRect(dc, &q, bm);
     q.left = (rc.left + rc.right) / 2; q.right = rc.right;
     FillRect(dc, &q, bg);
     q.left = rc.left; q.right = (rc.left + rc.right) / 2;
@@ -116,7 +119,7 @@ static void paint_window_b(HWND hwnd)
     q.top = (rc.top + rc.bottom) / 2 - 1; q.bottom = q.top + 2; q.left = rc.left; q.right = rc.right;
     FillRect(dc, &q, bk);
 
-    DeleteObject(br); DeleteObject(bg); DeleteObject(bb);
+    DeleteObject(bm); DeleteObject(bg); DeleteObject(bb);
     DeleteObject(bw); DeleteObject(bk);
     EndPaint(hwnd, &ps);
 }

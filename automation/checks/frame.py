@@ -193,11 +193,15 @@ def _classify_pixels(image_path: Path, step: int = 8):
     green = (g > 170) & (r < 110) & (b < 110)
     blue = (b > 170) & (r < 110) & (g < 110)
     white = (r > 210) & (g > 210) & (b > 210)
+    # I2 (review): 品红 = 窗 B 左上象限专用 (窗 A 纯红主体会把 B 的纯红
+    # 象限并进同一 bbox, 拓扑判定结构性误判 —— 品红与红空间可分)
+    magenta = (r > 170) & (b > 170) & (g < 110)
     return {
         "red": (xgrid[red], ygrid[red]),
         "green": (xgrid[green], ygrid[green]),
         "blue": (xgrid[blue], ygrid[blue]),
         "white": (xgrid[white], ygrid[white]),
+        "magenta": (xgrid[magenta], ygrid[magenta]),
         "total": (xgrid, ygrid),
     }, width, height
 
@@ -244,33 +248,35 @@ def validate_fusion_window_a(image_path: Path, region: dict | None = None) -> di
 
 
 def validate_fusion_window_b(image_path: Path, region: dict | None = None) -> dict:
-    """M4a 窗 B: 四象限拓扑自动定位版 —— 独立找出 R/G/B/白 四块的 bbox,
-    验证空间拓扑 (G 在 R 右侧同排 / B 在 R 下侧同列 / W 在 B 右侧同排)。
-    与 rgba-quadrants 的差别: 不需要 region 裁剪 (定位内建), 且容忍
-    fusion_probe 的 2px 黑分隔线 (采样步长 8px 跳得过)。"""
+    """M4a 窗 B: 四象限拓扑自动定位版 —— 独立找出 M(品红)/G/B/白 四块的
+    bbox, 验证空间拓扑 (G 在 M 右侧同排 / B 在 M 下侧同列 / W 在 B 右侧
+    同排)。左上用品红不纯红 (I2): 窗 A 的纯红主体会与 B 的红象限并成
+    一个 bbox, 纯红拓扑结构性误判 —— 品红与红空间可分。"""
     classes, width, height = _classify_pixels(image_path)
-    boxes = {name: _bbox(*classes[name]) for name in ("red", "green", "blue", "white")}
+    boxes = {name: _bbox(*classes[name])
+             for name in ("magenta", "green", "blue", "white")}
     for name, box in boxes.items():
         if box is None or box["w"] * box["h"] < 0.01 * width * height:
             return {"status": "FAIL", "validator": "fusion-window-b",
                     "message": f"象限色 {name} 未定位到大块 (bbox={box})"}
 
-    red, green, blue, white = boxes["red"], boxes["green"], boxes["blue"], boxes["white"]
+    magenta, green = boxes["magenta"], boxes["green"]
+    blue, white = boxes["blue"], boxes["white"]
     tol = 0.12 * height
-    # G 在 R 右侧 (水平排), 顶部对齐
-    if green["x"] < red["x"] + red["w"] * 0.5:
+    # G 在 M 右侧 (水平排), 顶部对齐
+    if green["x"] < magenta["x"] + magenta["w"] * 0.5:
         return {"status": "FAIL", "validator": "fusion-window-b",
-                "message": f"G 不在 R 右侧: red={red} green={green}"}
-    if abs(int(green["y"]) - int(red["y"])) > tol:
+                "message": f"G 不在 M 右侧: magenta={magenta} green={green}"}
+    if abs(int(green["y"]) - int(magenta["y"])) > tol:
         return {"status": "FAIL", "validator": "fusion-window-b",
-                "message": f"G 与 R 顶部未对齐: red.y={red['y']} green.y={green['y']} (tol={tol:.0f})"}
-    # B 在 R 下侧 (垂直排), 左对齐
-    if blue["y"] < red["y"] + red["h"] * 0.5:
+                "message": f"G 与 M 顶部未对齐: magenta.y={magenta['y']} green.y={green['y']} (tol={tol:.0f})"}
+    # B 在 M 下侧 (垂直排), 左对齐
+    if blue["y"] < magenta["y"] + magenta["h"] * 0.5:
         return {"status": "FAIL", "validator": "fusion-window-b",
-                "message": f"B 不在 R 下侧: red={red} blue={blue}"}
-    if abs(int(blue["x"]) - int(red["x"])) > tol:
+                "message": f"B 不在 M 下侧: magenta={magenta} blue={blue}"}
+    if abs(int(blue["x"]) - int(magenta["x"])) > tol:
         return {"status": "FAIL", "validator": "fusion-window-b",
-                "message": f"B 与 R 左侧未对齐: red.x={red['x']} blue.x={blue['x']}"}
+                "message": f"B 与 M 左侧未对齐: magenta.x={magenta['x']} blue.x={blue['x']}"}
     # W 在 B 右侧同排 (右下象限)
     if white["x"] < blue["x"] + blue["w"] * 0.5:
         return {"status": "FAIL", "validator": "fusion-window-b",
