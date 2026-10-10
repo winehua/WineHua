@@ -266,6 +266,7 @@ struct DeferredOutputChainStart {
     int out_w; /* ≤0 = 未指定 ⇒ 800x600 (smoke 台架口径) */
     int out_h;
     bool canvas_egl_present; /* 画布绑定 = EGL swap 呈现 (见 ohos_output.h) */
+    bool multiwindow; /* M4a: x11 多窗模式位 (route=x11 × mode=fusion) */
 };
 static struct DeferredOutputChainStart g_deferred_chain;
 
@@ -286,7 +287,8 @@ static int StartOutputChainTimer(void *data)
     int rc = wl_ohos_output_chain_start(c->backend, c->renderer, c->loop,
                                         c->display, c->window, c->xwayland,
                                         c->out_w, c->out_h,
-                                        c->canvas_egl_present);
+                                        c->canvas_egl_present,
+                                        c->multiwindow);
     OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d (deferred)", rc);
     WriteDisplayRouteReady();
 
@@ -432,7 +434,8 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
                                                       int out_w, int out_h,
-                                                      bool canvas_egl_present);
+                                                      bool canvas_egl_present,
+                                                      bool multiwindow);
 
 // 重复触发刷新通道: 刷新动作必须落在 loop 线程 (定时器/事件源操作非线程
 // 安全, M1-T5 实测: 第二轮 smoke 复用既有链时 marker 不重写、注入脚本不
@@ -560,7 +563,7 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
 
 extern "C" void WineHua_DisplayRoute_Start()
 {
-    WineHua_DisplayRoute_StartWithSurface(0, false, 0, 0, false);
+    WineHua_DisplayRoute_StartWithSurface(0, false, 0, 0, false, false);
 }
 
 // M3a: 停机入口 (桌面 surface 销毁 → x11 台架回收合成器)。经 retrigger
@@ -612,7 +615,8 @@ extern "C" void WineHua_DisplayRoute_Resize(int w, int h)
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
                                                       int out_w, int out_h,
-                                                      bool canvas_egl_present)
+                                                      bool canvas_egl_present,
+                                                      bool multiwindow)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
@@ -674,7 +678,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             g_present_window = nullptr;
     }
 
-    std::thread([out_w, out_h, canvas_egl_present] {
+    std::thread([out_w, out_h, canvas_egl_present, multiwindow] {
         // 对象提升到函数顶部 (M2-T1): 失败路径统一 goto fail 收尾, 逆序
         // 销毁 —— 之前中途 return 泄漏已建对象 (known-issues §1.2), 且
         // g_started 不复位导致失败后无法重试。
@@ -841,7 +845,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
              * 上方注释。就绪标记也在那一刻才写 (标记语义 = 出图链已就位)。 */
             g_deferred_chain = (struct DeferredOutputChainStart){
                 backend, renderer, loop, wl, g_present_window, xwayland,
-                cw, ch, canvas_egl_present};
+                cw, ch, canvas_egl_present, multiwindow};
             struct wl_event_source *chain_timer =
                 wl_event_loop_add_timer(loop, StartOutputChainTimer, &g_deferred_chain);
             if (chain_timer)

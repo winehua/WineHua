@@ -14,6 +14,9 @@ import displayRouteNapi from 'libdisplay_route_napi.so';
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
+  // 显示路线首施标记: onCreate 应用缺省/显式值后置位, onNewWant 无参重拉
+  // 不再重复应用 (见 publishLaunchRequest 的 route 段注释)
+  private displayRouteApplied: boolean = false;
   private defaultDxvkBackend(): string {
     /* This is an evidence allowlist, not a Host-to-Guest capability inference.
      * The bundled Guest Mesa/DXVK payload is fixed by the HAP manifest, while
@@ -73,13 +76,19 @@ export default class EntryAbility extends UIAbility {
     if (explicitDesktopMode) {
       DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
     }
-    // 显示路线显式覆盖 (wayland|x11): 仅显式 want 生效, 不持久化 (spec
-    // 2026-10-03 §2.2)。消费点白名单见 DisplayRouteService 头注释。
+    // 显示路线 (wayland|x11): 显式 want 覆盖, 缺省 x11 (2026-10-10 用户拍板:
+    // x11 为当前主线, 默认即 x11 方便手工随时测试; 回 wayland 用显式
+    // --ps winehua.displayRoute wayland)。不持久化 (spec 2026-10-03 §2.2)。
+    // 消费点白名单见 DisplayRouteService 头注释。
     // native 镜像同步写一次 (guest env stamp 的唯一读点, 见 wine_env.cpp)。
     const explicitDisplayRoute = !!parameters && parameters['winehua.displayRoute'] !== undefined &&
       parameters['winehua.displayRoute'] !== null;
-    if (explicitDisplayRoute) {
-      const routeValue = value('winehua.displayRoute', '');
+    const routeValue = explicitDisplayRoute ? value('winehua.displayRoute', '') : 'x11';
+    // 本函数 onCreate/onNewWant 双入口: 缺省 x11 只在首施时应用 —— 重复
+    // startDisplayRouteChain 幂等性无保, 且无参重拉不得把显式切到 wayland
+    // 的运行中会话拉回缺省。带显式参数时随时生效 (切换/测试通道)。
+    if (explicitDisplayRoute || !this.displayRouteApplied) {
+      this.displayRouteApplied = true;
       DisplayRouteService.getInstance().setOverrideMode(routeValue);
       // 不得吞异常: 这条调用是 guest env 印章的唯一写点 (wine_env.cpp 镜像),
       // 静默失败 = spawn 出来的 wine 进程全部走错路线且零痕迹 (2026-10-04
@@ -94,7 +103,9 @@ export default class EntryAbility extends UIAbility {
         // 时经 StartWithSurface refresh 挂 output (first-caller-wins, 与
         // smoke 路径同款时序); 不开窗口故不涉 #68 窗管竞态。
         if (routeValue === 'x11') {
-          displayRouteNapi.startDisplayRouteChain(0n, false);
+          // M4a 第 6 参: 多窗模式位 (route=x11 × mode=fusion 实时判定)
+          displayRouteNapi.startDisplayRouteChain(0n, false, 0, 0, false,
+            WineWindowManager.getInstance().shouldUseMultiwindow());
         }
         hilog.info(DOMAIN, 'testTag', 'displayRoute applied: %{public}s', routeValue);
       } catch (e) {

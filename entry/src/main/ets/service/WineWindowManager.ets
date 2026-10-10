@@ -62,6 +62,24 @@ export class WineWindowManager {
 
   // -- Desktop 模式 (Tablet / PC 虚拟桌面) --
   isDesktopMode: boolean = false;  // 公开: WineEnvService 镜像
+  // M4a: x11 多窗模式快照 (applyModePolicy 派生: 非 virtual 且 route=x11)。
+  // shouldUseMultiwindow() 为公开查询口。
+  multiwindow: boolean = false;
+
+  // M4a: x11 多窗模式 = route(x11) × mode(fusion)。消费点: 画布启动参数
+  // (DesktopAbility/DesktopWindow 第 6 参) 与 openX11Canvas 门禁。
+  // 实时查询而非读快照: 冷启早启链 (EntryAbility onCreate) 先于
+  // applyModePolicy 跑, 快照字段当时未定值。
+  shouldUseMultiwindow(): boolean {
+    if (!DisplayRouteService.getInstance().isX11()) {
+      return false;
+    }
+    const explicitMode = DesktopModeService.getInstance().getOverrideMode();
+    const savedMode = DesktopModeService.getInstance().mode;
+    const effectiveMode = (explicitMode === 'fusion' || explicitMode === 'virtual') ?
+      explicitMode : savedMode;
+    return effectiveMode === 'fusion';
+  }
   // PC 虚拟桌面: 桌面 root surface 承载在独立 VirtualDesktopAbility 窗口
   // (master 的 tablet/phone 走 DesktopAbility 全屏窗口)。由 applyModePolicy 派生。
   desktopSeparateWindow: boolean = false;
@@ -174,6 +192,10 @@ export class WineWindowManager {
       explicitMode : savedMode;
     this.isDesktopMode = isPhone || effectiveMode === 'virtual';
     this.desktopSeparateWindow = this.isDesktopMode && !isPhone && deviceInfo.deviceType !== 'tablet';
+    // M4a: x11 多窗模式快照 (route(x11) × mode(fusion))。会话启动时定值,
+    // 会话内不切换 (spec §3.4); 画布启动参数与 openX11Canvas 门禁消费。
+    this.multiwindow = !this.isDesktopMode &&
+      DisplayRouteService.getInstance().isX11();
     testNapi.setDesktopMode(this.isDesktopMode);
     hilog.info(DOMAIN, TAG,
       '[MW] mode policy: type=%{public}s → %{public}s (separateWindow=%{public}s explicit=%{public}s)',

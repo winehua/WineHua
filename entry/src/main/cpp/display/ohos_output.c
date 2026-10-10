@@ -84,6 +84,7 @@ struct wl_ohos_output {
     uint32_t frame_seq;
     uint32_t last_crc;
     struct wlr_xwayland *xwayland; /* D23 子窗几何查询 (chain_start 入参) */
+    bool multiwindow; /* M4a: 多窗模式位 (route=x11 × mode=fusion) */
 };
 
 /* D23 子窗 face 绑定: 虚拟桌面应用窗是 X 子窗口, 不在 g_clients (xwm 只
@@ -1909,9 +1910,11 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                OHNativeWindow *window,
                                struct wlr_xwayland *xwayland,
                                int out_w, int out_h,
-                               bool canvas_egl_present)
+                               bool canvas_egl_present,
+                               bool multiwindow)
 {
     memset(&g_out, 0, sizeof(g_out));
+    g_out.multiwindow = multiwindow; /* M4a: 模式位 (映射层/渲染分叉消费) */
     g_out.window = window;
     /* M3a 尺寸参数化: ≤0 = 未指定 (smoke 台架), 回退 800x600 —— 台架证据链
      * (探测器基线/presented-route 判定) 在该尺寸上校准, 不随调用方漂移 */

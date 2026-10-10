@@ -149,7 +149,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
                                OHNativeWindow *window,
                                struct wlr_xwayland *xwayland,
                                int out_w, int out_h,
-                               bool canvas_egl_present);
+                               bool canvas_egl_present,
+                               bool multiwindow);
 
 // 画布晚到挂载 (D8): 在已启动的链的 output 上补跑窗口 present 配置, 下一
 // 帧起出屏。仅允许 NULL→窗口 的一次转移 (运行中换窗不存在合法场景, surface

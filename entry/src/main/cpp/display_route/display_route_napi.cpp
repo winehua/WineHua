@@ -38,7 +38,8 @@ extern "C" bool WineHua_DisplayRouteIsX11();
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool script_enabled,
                                                       int out_w, int out_h,
-                                                      bool canvas_egl_present);
+                                                      bool canvas_egl_present,
+                                                      bool multiwindow);
 extern "C" void WineHua_DisplayRoute_Resize(int w, int h);
 extern "C" void wl_ohos_output_frame_size(int *w, int *h);
 extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
@@ -49,8 +50,8 @@ extern "C" void wl_ohos_input_post_text(const char* utf8);
 extern "C" void wl_ohos_input_post_clipboard(const char *utf8);
 
 static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) {
-    size_t argc = 5;
-    napi_value args[5];
+    size_t argc = 6;
+    napi_value args[6];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     bool script_enabled = false;
     if (argc >= 2) {
@@ -70,12 +71,19 @@ static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) 
     if (argc >= 5) {
         napi_get_value_bool(env, args[4], &canvas_egl_present);
     }
+    /* 可选第 6 参 = M4a 多窗模式 (route=x11 × mode=fusion), 贯通到
+     * chain_start → ohos_output g_out.multiwindow → 映射层/渲染分叉 */
+    bool multiwindow = false;
+    if (argc >= 6) {
+        napi_get_value_bool(env, args[5], &multiwindow);
+    }
     if (argc >= 1) {
         uint64_t surface_id = 0;
         bool lossless = false;
         napi_get_value_bigint_uint64(env, args[0], &surface_id, &lossless);
         WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled, out_w,
-                                              out_h, canvas_egl_present);
+                                              out_h, canvas_egl_present,
+                                              multiwindow);
     } else {
         WineHua_DisplayRoute_Start();
     }

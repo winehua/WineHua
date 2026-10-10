@@ -68,7 +68,8 @@ class DesktopController extends XComponentController {
         // 正确, 呈现时缓冲放大铺满物理画布。
         const s = WineWindowManager.getInstance().getEffectiveScale();
         displayRouteNapi.startDisplayRouteChain(BigInt(surfaceId), false,
-          Math.round(rect.surfaceWidth / s), Math.round(rect.surfaceHeight / s), true);
+          Math.round(rect.surfaceWidth / s), Math.round(rect.surfaceHeight / s), true,
+          WineWindowManager.getInstance().shouldUseMultiwindow());
       } catch (e) {
         this.x11Started = false;
         hilog.error(DOMAIN, 'LIFE', '[XComp] x11 chain start failed: %{public}s', String(e));
