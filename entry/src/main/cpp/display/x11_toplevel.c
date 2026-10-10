@@ -32,6 +32,14 @@ void x11_toplevel_bridge_post_created(uint32_t id, int32_t w, int32_t h,
 void x11_toplevel_bridge_post_title(uint32_t id, const char *title);
 void x11_toplevel_bridge_post_resize(uint32_t id, int32_t w, int32_t h);
 void x11_toplevel_bridge_post_destroyed(uint32_t id);
+/* M4b-T1: 状态面 (bus 既有枚举; activated 复用 Restored, 见
+ * handle_request_activate 注释) */
+void x11_toplevel_bridge_post_minimized(uint32_t id, bool minimized);
+void x11_toplevel_bridge_post_fullscreen(uint32_t id, bool fullscreen);
+void x11_toplevel_bridge_post_activated(uint32_t id);
+void x11_toplevel_bridge_post_modal(uint32_t id, uint32_t owner_id,
+                                    int32_t modal, int32_t dx, int32_t dy,
+                                    int32_t w, int32_t h);
 uint32_t x11_toplevel_bridge_allocate_id(void);
 
 /* OHOS 侧日志 (hilog); ohos_output.c 的 OHLOG 是 static 宏, 本文件自取。
@@ -62,6 +70,12 @@ struct x11_xs_entry {
     struct wl_listener set_title;
     struct wl_listener request_configure;
     struct wl_listener surface_commit; /* xs->surface->events.commit → dirty */
+    /* M4b-T1: 状态面 (minimize/fullscreen/activate/parent 直译 bus 既有
+     * 枚举, 不做策略) */
+    struct wl_listener request_minimize;
+    struct wl_listener request_fullscreen;
+    struct wl_listener request_activate;
+    struct wl_listener set_parent;
 };
 
 static struct x11_xs_entry g_entries[X11_TOPLEVEL_MAX];
@@ -104,6 +118,10 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_remove(&e->set_title.link);
     wl_list_remove(&e->request_configure.link);
     wl_list_remove(&e->surface_commit.link);
+    wl_list_remove(&e->request_minimize.link);
+    wl_list_remove(&e->request_fullscreen.link);
+    wl_list_remove(&e->request_activate.link);
+    wl_list_remove(&e->set_parent.link);
     wl_list_init(&e->destroy.link);   /* 防 double-remove (session_reset 后
                                        * destroy 再到的悬挂回调安全化) */
     wl_list_init(&e->associate.link);
@@ -112,6 +130,10 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_init(&e->set_title.link);
     wl_list_init(&e->request_configure.link);
     wl_list_init(&e->surface_commit.link);
+    wl_list_init(&e->request_minimize.link);
+    wl_list_init(&e->request_fullscreen.link);
+    wl_list_init(&e->request_activate.link);
+    wl_list_init(&e->set_parent.link);
 }
 
 static void entry_remove(struct x11_xs_entry *e)
@@ -221,6 +243,85 @@ static void handle_request_configure(struct wl_listener *listener, void *data)
     pthread_mutex_unlock(&g_lock);
 }
 
+/* ── M4b-T1: 状态面直译 (bus 既有枚举, 不做策略) ── */
+
+static void handle_request_minimize(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, request_minimize);
+    const struct wlr_xwayland_minimize_event *ev = data;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    /* minimize=false = 还原请求 → Restored (与 request_activate 的
+     * Restored 复用同动作幂等, ArkTS 侧均为拉回前台) */
+    x11_toplevel_bridge_post_minimized(e->toplevelId, ev && ev->minimize);
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void handle_request_fullscreen(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, request_fullscreen);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    /* 信号无 payload, 读 xs 状态位 */
+    x11_toplevel_bridge_post_fullscreen(e->toplevelId, e->xs->fullscreen);
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void handle_request_activate(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, request_activate);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    /* 定案 (plan T1): 不新增枚举 (22 事件红线), 复用 Restored —— 语义
+     * 「wine 主动显示窗口」, x11 fusion 的 z 序在 ArkTS 承载窗层, ArkTS
+     * restored 动作 = 拉回前台即置前; 与 minimize-restore 同动作幂等。 */
+    x11_toplevel_bridge_post_activated(e->toplevelId);
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void handle_set_parent(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, set_parent);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    /* Review Focus #3: owner 可能已 destroyed —— owner 在册才报 modal
+     * 关系, 不在册降级 (不报, wine 侧行为不受影响)。dx/dy = modal 相对
+     * owner 的 guest 坐标差 (对齐 wayland JsonModal 的 PC 定位语义)。 */
+    struct x11_xs_entry *owner =
+        e->xs->parent ? entry_of_xs(e->xs->parent) : NULL;
+    if (owner) {
+        x11_toplevel_bridge_post_modal(e->toplevelId, owner->toplevelId,
+                                       e->xs->modal,
+                                       e->xs->x - owner->xs->x,
+                                       e->xs->y - owner->xs->y,
+                                       (int32_t)e->xs->width,
+                                       (int32_t)e->xs->height);
+    } else {
+        XTL_LOG("XTL set-parent owner-not-tracked id=%{public}u (degraded)",
+                e->toplevelId);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void handle_xs_destroy(struct wl_listener *listener, void *data)
 {
     struct x11_xs_entry *e =
@@ -264,6 +365,10 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_list_init(&e->set_title.link);
     wl_list_init(&e->request_configure.link);
     wl_list_init(&e->surface_commit.link);
+    wl_list_init(&e->request_minimize.link);
+    wl_list_init(&e->request_fullscreen.link);
+    wl_list_init(&e->request_activate.link);
+    wl_list_init(&e->set_parent.link);
     e->destroy.notify = handle_xs_destroy;
     wl_signal_add(&xs->events.destroy, &e->destroy);
     e->associate.notify = handle_associate;
@@ -274,6 +379,14 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_signal_add(&xs->events.set_title, &e->set_title);
     e->request_configure.notify = handle_request_configure;
     wl_signal_add(&xs->events.request_configure, &e->request_configure);
+    e->request_minimize.notify = handle_request_minimize;
+    wl_signal_add(&xs->events.request_minimize, &e->request_minimize);
+    e->request_fullscreen.notify = handle_request_fullscreen;
+    wl_signal_add(&xs->events.request_fullscreen, &e->request_fullscreen);
+    e->request_activate.notify = handle_request_activate;
+    wl_signal_add(&xs->events.request_activate, &e->request_activate);
+    e->set_parent.notify = handle_set_parent;
+    wl_signal_add(&xs->events.set_parent, &e->set_parent);
     /* 创建期 title 丢失兜底 (T6 byTitle 实锤): xwm 在 manage 时同步读
      * WM_NAME, set_title 信号可能先于 new_surface 发过 —— 挂 listener 后
      * 补发当前值, 否则 byTitle/按 title 定位在 ArkTS 侧永远找不到窗。 */

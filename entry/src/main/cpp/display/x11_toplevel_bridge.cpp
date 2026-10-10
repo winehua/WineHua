@@ -35,6 +35,41 @@ void x11_toplevel_bridge_post_destroyed(uint32_t id)
         id, ToplevelEventType::Destroyed);
 }
 
+/* ── M4b-T1: 状态面直译 (bus 既有枚举, 不做策略) ──
+ * minimized=false 与 activated 都落 Restored: 语义同为「wine 主动显示
+ * 窗口」, ArkTS 侧动作一致 (拉回前台), 幂等无冲突。 */
+
+void x11_toplevel_bridge_post_minimized(uint32_t id, bool minimized)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        id, minimized ? ToplevelEventType::Minimized
+                      : ToplevelEventType::Restored);
+}
+
+void x11_toplevel_bridge_post_fullscreen(uint32_t id, bool fullscreen)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        id, fullscreen ? ToplevelEventType::Fullscreen
+                       : ToplevelEventType::Unfullscreen);
+}
+
+void x11_toplevel_bridge_post_activated(uint32_t id)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        id, ToplevelEventType::Restored);
+}
+
+void x11_toplevel_bridge_post_modal(uint32_t id, uint32_t owner_id,
+                                    int32_t modal, int32_t dx, int32_t dy,
+                                    int32_t w, int32_t h)
+{
+    /* JsonModal(modalId, ownerId, modal, dx, dy, w, h) —— 模板键序与
+     * wayland 调用点逐字 (tl=id, owner=owner_id) */
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        id, ToplevelEventType::Modal,
+        ToplevelEventBus::JsonModal(id, owner_id, modal, dx, dy, w, h));
+}
+
 uint32_t x11_toplevel_bridge_allocate_id(void)
 {
     return WaylandServer::GetInstance()->GetToplevelManager().AllocateToplevelId();
