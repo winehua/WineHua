@@ -1,5 +1,6 @@
 {
   "displayroute": true,
+  "displayrouteScript": false,
   "suite": "fusion",
   "params": {
     "env": {
@@ -7,5 +8,6 @@
       "DISPLAY": ":0",
       "WAYLAND_DISPLAY": ""
     }
-  }
+  },
+  "_note": "displayrouteScript=false (D4 教训): fusion 多窗会话要产品级干净桌面, 注入脚本定时器 + xclient 测试窗 UI 不进会话 —— 它们与承载窗的窗口栈交互是 D51 黑屏嫌疑之一。byTitle 注入走 SmokeRunner 文件协议, 不依赖脚本。"
 }
