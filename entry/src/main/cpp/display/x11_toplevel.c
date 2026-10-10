@@ -76,6 +76,7 @@ struct x11_xs_entry {
     struct wl_listener request_fullscreen;
     struct wl_listener request_activate;
     struct wl_listener set_parent;
+    struct wl_listener map_request; /* M4b-T4: wine 还原窗口的唯一宿主信号 */
 };
 
 static struct x11_xs_entry g_entries[X11_TOPLEVEL_MAX];
@@ -122,6 +123,7 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_remove(&e->request_fullscreen.link);
     wl_list_remove(&e->request_activate.link);
     wl_list_remove(&e->set_parent.link);
+    wl_list_remove(&e->map_request.link);
     wl_list_init(&e->destroy.link);   /* 防 double-remove (session_reset 后
                                        * destroy 再到的悬挂回调安全化) */
     wl_list_init(&e->associate.link);
@@ -134,6 +136,7 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_init(&e->request_fullscreen.link);
     wl_list_init(&e->request_activate.link);
     wl_list_init(&e->set_parent.link);
+    wl_list_init(&e->map_request.link);
 }
 
 static void entry_remove(struct x11_xs_entry *e)
@@ -258,6 +261,60 @@ static void handle_request_minimize(struct wl_listener *listener, void *data)
     /* minimize=false = 还原请求 → Restored (与 request_activate 的
      * Restored 复用同动作幂等, ArkTS 侧均为拉回前台) */
     x11_toplevel_bridge_post_minimized(e->toplevelId, ev && ev->minimize);
+    /* ICCCM 应答半边 (M4b-T4 实锤): 合成器必须回写状态, 否则 wine 的
+     * restore 是无操作 —— wine 侧 window_set_wm_state 用 wm_state_serial
+     * 门等 WM_STATE PropertyNotify (Iconic→Normal 的 Mutter workaround 入口
+     * `if (data->wm_state_serial) return`), 没人写 WM_STATE=Iconic 该 serial
+     * 永不清零, XWithdrawWindow/XMapWindow 永不发出 (实测 r20261010-234547:
+     * minimize 事件到达后 restore 全链静默)。set_minimized 只写属性不解 map,
+     * 与「X 窗保持 mapped、ArkTS 承载窗负责可视性」的模型一致。 */
+    wlr_xwayland_surface_set_minimized(e->xs, ev && ev->minimize);
+    pthread_mutex_unlock(&g_lock);
+}
+
+/* M4b-T4: wine 还原 (deiconify) 的宿主信号 = map_request。
+ *
+ * 实测链 (job-r20261010-232352 + r20261010-234547 + 源码对读):
+ *   - minimize: wine X11DRV window_set_wm_state Normal→Iconic 走
+ *     XIconifyWindow = WM_CHANGE_STATE(IconicState) client message →
+ *     xwm_handle_wm_change_state_message → request_minimize(true) ✓ (本
+ *     函数上方的 request_minimize 监听已覆盖; X 窗不解 map, 呈现不断流)
+ *   - restore: 同函数 Iconic→Normal 走 Mutter workaround (window.c
+ *     「transition through WithdrawnState」) = XWithdrawWindow (synthetic
+ *     UnmapNotify → xwm dissociate+withdrawn) + XMapWindow。X 对 withdrawn
+ *     受管窗的 map 产生 MapRequest (非 MapNotify), xwm_handle_map_request
+ *     发 events.map_request —— 全程无 WM_CHANGE_STATE(Normal)、无
+ *     _NET_WM_STATE 翻转, request_minimize(false) 结构性不会发
+ *     (wlroots 只在 WM_CHANGE_STATE / _NET_WM_STATE delta 两处发)。
+ *   - 前提 (request_minimize 里的 ICCCM 应答): 不回写 WM_STATE=Iconic 时
+ *     wine 的 wm_state_serial 不清零, workaround 入口
+ *     `if (data->wm_state_serial) return` 让 restore 整体成无操作,
+ *     map_request 根本不产生 (234547 轮实锤: 只挂 map_request 监听零触发)。
+ *   ⇒ 两半齐备后: minimize → 承载窗最小化; restore → map_request →
+ *     Restored → ArkTS FWM.show() (showWindow 是 d.ts 载明的 subWindow
+ *     恢复 API) → 承载窗回显。缺任何一半 = 窗口从屏幕消失, fusion
+ *     visual-a 红帧缺失。
+ * createdPosted 门: 首次 map (创建) 时 created 尚未发 (associate/commit
+ * 才补), map_request 穿过不处理; 其后的每次 map_request = wine 主动重显
+ * 窗 (还原图标化 / SW_SHOW), 语义「wine 主动显示窗口」→ Restored
+ * (bridge 后处理同 activated, ArkTS 动作幂等)。 */
+static void handle_map_request(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, map_request);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    x11_toplevel_bridge_post_minimized(e->toplevelId, false);
+    /* 配对清 minimized (M4b-T4): 不清则随后 map_notify → set_withdrawn(false)
+     * 会按 stale minimized=true 写出 WM_STATE=Iconic, wine 收到「刚 map 完
+     * 又被最小化」的假象。此刻 withdrawn 仍 true, 本调用先写 Withdrawn,
+     * map_notify 的 set_withdrawn(false) 随后写 Normal 收敛 —— 与 wine 自身
+     * withdraw→map 序列同形, window_wm_state_notify 状态机按序消化。 */
+    wlr_xwayland_surface_set_minimized(e->xs, false);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -369,6 +426,7 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_list_init(&e->request_fullscreen.link);
     wl_list_init(&e->request_activate.link);
     wl_list_init(&e->set_parent.link);
+    wl_list_init(&e->map_request.link);
     e->destroy.notify = handle_xs_destroy;
     wl_signal_add(&xs->events.destroy, &e->destroy);
     e->associate.notify = handle_associate;
@@ -387,6 +445,8 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_signal_add(&xs->events.request_activate, &e->request_activate);
     e->set_parent.notify = handle_set_parent;
     wl_signal_add(&xs->events.set_parent, &e->set_parent);
+    e->map_request.notify = handle_map_request;
+    wl_signal_add(&xs->events.map_request, &e->map_request);
     /* 创建期 title 丢失兜底 (T6 byTitle 实锤): xwm 在 manage 时同步读
      * WM_NAME, set_title 信号可能先于 new_surface 发过 —— 挂 listener 后
      * 补发当前值, 否则 byTitle/按 title 定位在 ArkTS 侧永远找不到窗。 */
