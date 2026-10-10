@@ -260,15 +260,46 @@ def validate_fusion_window_b(image_path: Path, region: dict | None = None) -> di
     (终验预演 2026-10-10): 窗 A 白十字与白象限跨窗并 bbox 同病, 青与
     green/blue 按 r 通道可分。"""
     classes, width, height = _classify_pixels(image_path)
-    boxes = {name: _bbox(*classes[name])
-             for name in ("magenta", "green", "blue", "cyan")}
+    m_xs, m_ys = classes["magenta"]
+    m_box = _bbox(m_xs, m_ys)
+    if m_box is None or m_box["w"] * m_box["h"] < 0.01 * width * height:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"象限色 magenta 未定位到大块 (bbox={m_box})"}
+    # 锚定过滤 (真机 171703 实测): 全屏帧里蓝/青类会被屏幕上其它蓝色 UI
+    # (键盘按钮等) 拉爆 bbox —— 以品红象限为锚, G/B/C 只取 M 邻域
+    # (右/下/右下三个方向, 容差 tol) 内的样本再取 bbox。拓扑检查本身
+    # 验证的就是这些方向关系, 过滤与判据同源, 不引入新假设。
+    tol = 0.12 * height
+    mx0, mx1 = m_box["x"], m_box["x"] + m_box["w"]
+    my0, my1 = m_box["y"], m_box["y"] + m_box["h"]
+
+    def _bbox_near(xs, ys, x0, x1, y0, y1):
+        keep = (xs >= x0) & (xs <= x1) & (ys >= y0) & (ys <= y1)
+        return _bbox(xs[keep], ys[keep])
+
+    green = _bbox_near(classes["green"][0], classes["green"][1],
+                       mx1 - tol, mx1 + 2 * m_box["w"] + tol,
+                       my0 - tol, my1 + tol)
+    blue = _bbox_near(classes["blue"][0], classes["blue"][1],
+                      mx0 - tol, mx1 + tol,
+                      my1 - tol, my1 + 2 * m_box["h"] + tol)
+    boxes = {"magenta": m_box, "green": green, "blue": blue}
     for name, box in boxes.items():
         if box is None or box["w"] * box["h"] < 0.01 * width * height:
             return {"status": "FAIL", "validator": "fusion-window-b",
                     "message": f"象限色 {name} 未定位到大块 (bbox={box})"}
+    # C(青) 在 B 右侧: 以过滤后的 B 为锚
+    bx0, bx1 = blue["x"], blue["x"] + blue["w"]
+    by0, by1 = blue["y"], blue["y"] + blue["h"]
+    white = _bbox_near(classes["cyan"][0], classes["cyan"][1],
+                       bx1 - tol, bx1 + 2 * blue["w"] + tol,
+                       by0 - tol, by1 + tol)
+    boxes["cyan"] = white
+    if white is None or white["w"] * white["h"] < 0.01 * width * height:
+        return {"status": "FAIL", "validator": "fusion-window-b",
+                "message": f"象限色 cyan 未定位到大块 (bbox={white})"}
 
-    magenta, green = boxes["magenta"], boxes["green"]
-    blue, white = boxes["blue"], boxes["cyan"]
+    magenta = m_box
     tol = 0.12 * height
     # G 在 M 右侧 (水平排), 顶部对齐
     if green["x"] < magenta["x"] + magenta["w"] * 0.5:

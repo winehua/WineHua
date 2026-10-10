@@ -211,7 +211,10 @@ export class SmokeRunner {
         // 小面 / headless (CI 无 UI 场景)。
         const wm = WineWindowManager.getInstance();
         let canvas = wm.getDesktopCanvas();
-        if (canvas === null) {
+        if (canvas === null && !wm.shouldUseMultiwindow()) {
+          // D51 (真机 175709/181829 实锤): fusion 多窗无画布 (per-xs 承载窗
+          // 呈现) —— 此处无门拉起 DesktopAbility 全屏画布会盖住承载窗
+          // (链路全通但屏幕黑)。fusion 走 headless chain_start (surfaceId=0)。
           wm.openX11Canvas();
         }
         const canvasDeadline = Date.now() + 5000;
@@ -599,11 +602,15 @@ export class SmokeRunner {
       const rect = win.getWindowProperties().windowRect;
       const cx: number = rect.width / 2;
       const cy: number = rect.height / 2;
-      testNapi.sendPointerEvent(tl, 3, cx, cy, 0);   // Move
+      // button 契约 = evdev 码 (同 injectMouse/injectSwipe 的 mapMouseButton
+      // 预处理); 直传 ArkTS 值 1 上 wire 后 Xwayland 不认 (BTN_LEFT=0x110),
+      // 点击静默丢弃 —— 19261010 轮 clickCounts a=0 的根因
+      const btn: number = mapMouseButton(1);   // 左键
+      testNapi.sendPointerEvent(tl, 3, cx, cy, btn);   // Move
       await new Promise<void>((r) => setTimeout(r, 60));
-      testNapi.sendPointerEvent(tl, 1, cx, cy, 1);   // Press (left)
+      testNapi.sendPointerEvent(tl, 1, cx, cy, btn);   // Press (left)
       await new Promise<void>((r) => setTimeout(r, 40));
-      testNapi.sendPointerEvent(tl, 2, cx, cy, 1);   // Release
+      testNapi.sendPointerEvent(tl, 2, cx, cy, btn);   // Release
       return '';
     }
     if (action.type === 'wheel') {
