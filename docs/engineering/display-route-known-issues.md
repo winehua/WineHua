@@ -76,30 +76,45 @@ wine 虚拟桌面把 `root_window` 重定义为桌面窗（`winex11.drv/desktop.
  notepad 静默变成 wayland 客户端。需要给 wlroots output 接产品侧
  surface 提供方（M3a T3/T4 范围）。
 
-### 2.11 D50：fusion 多窗模式 wine 程序不绘制（M4a-T4 发现，2026-10-10）
+### 2.11 D50：fusion 多窗模式 wine 程序不绘制（M4a-T4 发现，2026-10-10 破案）
 
 **现象**：x11 fusion 多窗模式直启 notepad / GL 探针，窗口
 created→attach→呈现链全通但内容全黑；virtual 模式（explorer /desktop
 存在）同程序完整渲染。
 
-**已实锤（勿重复排查）**：合成器读到的 client buffer 全 0（fmt=
-XRGB8888，stride 正确）；xwayland_stderr `OHOS-damage: win 0x800003
-dmg=0,0 0x0 n=1`——wine 从未提交有效 damage（0×0 疑似 XClearArea 类
-Expose 请求，wine 在等 Expose）；wl_surface mapped=1；DISPLAY=:0 已
-下发（entryParams 实录）。M4a 承载层无罪：呈现链红底实验实证
-（pixman→slot→Flush→上屏）。WINEHUA_DESKTOP_MODE 只被 winewayland.drv
-消费，winex11 无该 env 分叉——managed/virtual 在 wine 侧的差异只剩
-explorer 存在与否，根因在那条线上。
+**根因（已修复）**：multiwindow 呈现路径绕过 wlr_output（手动
+render pass + OH_NativeWindow present），没人回发客户端 frame
+callback。Xwayland 的 damage 提交被 pending frame 节流——xserver
+xwayland-screen.c block handler 里 `if (xwl_window->frame_callback)
+continue`，post_damage 首次 commit 时 `wl_surface_frame` 挂上回调后，
+后续全部 damage 永久卡在 `continue`，直到合成器回发 frame done。
+结果：每窗只 commit 一次（map 时的初始全 0 buffer），内容永不更新。
+normal 路线无此问题——wlroots 场景图输出循环自动回发
+（ohos_output.c 的 g_clients frame done 泵）。
 
-**诊断通道**：`--ps winehua.env 'WINEHUA_WINEDEBUG=+event,+win'`
-（EntryAbility runProgram 的 K=V;K=V 通道，88bdfe8）；smoke 套件 env
-同可用。判因指纹：A=`+win` 无 CreateWindow 日志（winex11 未达）；
-B=有 map 无绘制 + 等 Expose（事件未回）；C=有绘制请求但 damage 0
-（XPutImage 分叉）。
+**证据链**：wine 侧绘制完整正常（`+event,+win` 诊断轮：Expose 到达 →
+BeginPaint → `window_surface_flush` 全窗 dirty）；host 侧
+attach→render→present ok 只跑一次后 commit 永不再来（dirty 恒 0）；
+修复后同一场景 render 894 次 / present 447 次，notepad 完整绘制
+（菜单栏/编辑区/状态栏），z 序正确压在 explorer 桌面窗之上。
+
+**修复**：`x11_toplevel_render_tick` 开头对全部活动 xs 泵
+`wlr_surface_send_frame_done`（每帧，FrameStep 90Hz 时钟）——角色
+等价真合成器的 output frame。任何绕过 wlr_output 的自绘呈现路径都
+必须自己泵 frame done，否则 Xwayland 客户端首帧后全部冻结。
+
+**判因教训**：「buffer 全 0 + damage 0×0」最初被解读为「wine 在等
+Expose」（指纹 B/C），方向性错误——wine 侧证据（flush 全窗 dirty）
+当时即可排除，二手推断（XClearArea/Expose 机制）拖了两天。断点类
+问题按「现场最后一条日志 = 最后一跳」分层取证，每跳拿本侧硬证据。
 
 **附带缺口（M4b）**：多窗模式 guest GL 帧无消费者——FrameStep
 multiwindow 早退跳过 display_guest_frames_tick()；consumer buffer 无
 DATA_PTR，per-xs 消费需 EGL 渲染器。fusion_probe（T6）用 GDI 自画绕开。
+
+**附带发现**：managed 模式 wine user32 的 `get_desktop_window` 会自动
+spawn explorer /desktop（非 wine_launch 分支行为）；其 desktop 窗也是
+managed xs 并参与呈现，z 序由点击激活驱动（实测 notepad 正确置前）。
 
 ## 2. 技术悬案（M2 排查入口）
 

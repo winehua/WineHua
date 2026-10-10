@@ -11,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> /* clock_gettime (D50 frame done 泵) */
 
 #include <wayland-server-core.h>
 #include <wlr/render/allocator.h>
@@ -430,6 +431,20 @@ static bool render_entry(struct x11_xs_entry *e)
 void x11_toplevel_render_tick(void)
 {
     if (!g_active) return;
+    /* D50: multiwindow 呈现绕过 wlr_output（手动 render pass + OH_NativeWindow
+     * present），没人回发客户端 frame callback —— Xwayland 的 damage 提交被
+     * pending frame 节流（xserver xwayland-screen.c block handler：
+     * frame_callback 非空则 continue 跳过提交），首帧 commit 后永久冻结，
+     * xs->buffer 停在初始全 0。此处角色 = 真合成器的 output frame：每帧对
+     * 全部活动 xs 泵 frame done，机制与 normal 路径 ohos_output.c 的
+     * g_clients 直发一致。 */
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    for (size_t i = 0; i < g_entry_count; ++i) {
+        struct x11_xs_entry *e = &g_entries[i];
+        if (!e->dead && e->xs && e->xs->surface)
+            wlr_surface_send_frame_done(e->xs->surface, &now);
+    }
     for (size_t i = 0; i < g_entry_count; ++i) {
         struct x11_xs_entry *e = &g_entries[i];
         if (e->dead) continue;
