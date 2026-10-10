@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h> /* clock_gettime (D50 frame done 泵) */
+#include <pthread.h>
 
 #include <wayland-server-core.h>
 #include <wlr/render/allocator.h>
@@ -68,6 +69,22 @@ static size_t g_entry_count;
 static bool g_active = false;
 static struct wlr_allocator *g_alloc;   /* chain_start 注入 (buffer 目标) */
 static struct wlr_renderer *g_renderer; /* render pass 用 */
+
+/* entry 表锁 (M4a 收口 final review I1): 表在两个线程被访问 ——
+ *   loop 线程: listener 回调 / render_tick / session_reset / 输入 dispatch
+ *   napi 线程: attach/detach/resize_window (plugin_manager 承载窗回绑)
+ * entry_remove 的 memmove 会让内嵌 entry 移位, 跨线程并发查表+写字段 =
+ * 错窗回绑/形式数据竞态。一把非递归大锁; 纪律:
+ *   - 公开入口全加锁; static 内部函数 (entry_of_xxx、entry_remove、
+ *     detach_listeners、try_post_created、render_entry) 约定调用方持锁,
+ *     不加锁
+ *   - 同线程重入检查: listener 回调互相不嵌套、render_tick 不重入, 安全
+ *   - render_entry 持锁执行 (GL draw + present 数 ms): napi attach 最多
+ *     等一帧 (90Hz 约 11ms), 可接受 —— 换队列化的复杂度不值得 (首版
+ *     InjectQueue 方案真机三轮 crash 已弃, 机制未明)
+ *   - 持锁期调 bridge_post_xxx 走 napi_call_threadsafe_function (异步投
+ *     递, 不阻塞) —— 持锁进 JS 投递安全 */
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static struct x11_xs_entry *entry_of_xs(struct wlr_xwayland_surface *xs)
 {
@@ -135,10 +152,12 @@ static void handle_surface_commit(struct wl_listener *listener, void *data)
     struct x11_xs_entry *e =
         wl_container_of(listener, e, surface_commit);
     (void)data;
+    pthread_mutex_lock(&g_lock);
     e->dirty = true;
     /* 首帧判定 (wayland PC 模式同款延后语义): commit 可能先于 associate ——
      * buffer 就位即补发 created, 不漏首帧。 */
     try_post_created(e);
+    pthread_mutex_unlock(&g_lock);
 }
 
 static void handle_associate(struct wl_listener *listener, void *data)
@@ -148,11 +167,13 @@ static void handle_associate(struct wl_listener *listener, void *data)
     (void)data;
     /* commit 监听挂 surface (associate 才 valid); dissociate 时摘除, 防
      * surface 销毁后悬挂。 */
+    pthread_mutex_lock(&g_lock);
     if (e->xs->surface) {
         e->surface_commit.notify = handle_surface_commit;
         wl_signal_add(&e->xs->surface->events.commit, &e->surface_commit);
     }
     try_post_created(e);
+    pthread_mutex_unlock(&g_lock);
 }
 
 static void handle_dissociate(struct wl_listener *listener, void *data)
@@ -160,8 +181,10 @@ static void handle_dissociate(struct wl_listener *listener, void *data)
     struct x11_xs_entry *e =
         wl_container_of(listener, e, dissociate);
     (void)data;
+    pthread_mutex_lock(&g_lock);
     wl_list_remove(&e->surface_commit.link);
     wl_list_init(&e->surface_commit.link);
+    pthread_mutex_unlock(&g_lock);
 }
 
 static void handle_set_title(struct wl_listener *listener, void *data)
@@ -169,9 +192,14 @@ static void handle_set_title(struct wl_listener *listener, void *data)
     struct x11_xs_entry *e =
         wl_container_of(listener, e, set_title);
     (void)data;
-    if (!e->createdPosted) return;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     x11_toplevel_bridge_post_title(e->toplevelId,
                                    e->xs->title ? e->xs->title : "");
+    pthread_mutex_unlock(&g_lock);
 }
 
 static void handle_request_configure(struct wl_listener *listener, void *data)
@@ -183,9 +211,14 @@ static void handle_request_configure(struct wl_listener *listener, void *data)
      * 屏)。多窗模式 X 侧几何跟随应用请求 (无 scene 布局器); ArkTS 权威
      * 尺寸回写走 ResizeRenderer, 这里只上送 resize 语义事件。 */
     wlr_xwayland_surface_configure(e->xs, ev->x, ev->y, ev->width, ev->height);
-    if (!e->createdPosted) return;
+    pthread_mutex_lock(&g_lock);
+    if (!e->createdPosted) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     x11_toplevel_bridge_post_resize(
         e->toplevelId, (int32_t)ev->width, (int32_t)ev->height);
+    pthread_mutex_unlock(&g_lock);
 }
 
 static void handle_xs_destroy(struct wl_listener *listener, void *data)
@@ -193,7 +226,11 @@ static void handle_xs_destroy(struct wl_listener *listener, void *data)
     struct x11_xs_entry *e =
         wl_container_of(listener, e, destroy);
     (void)data;
-    if (e->dead) return;
+    pthread_mutex_lock(&g_lock);
+    if (e->dead) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     e->dead = true;
     detach_listeners(e);
     /* win 引用随 destroyed 事件由 ArkTS 关窗路径回收 (不在此碰
@@ -201,6 +238,7 @@ static void handle_xs_destroy(struct wl_listener *listener, void *data)
     e->win = NULL;
     x11_toplevel_bridge_post_destroyed(e->toplevelId);
     entry_remove(e);
+    pthread_mutex_unlock(&g_lock);
 }
 
 void x11_toplevel_set_active(bool on) { g_active = on; }
@@ -209,8 +247,11 @@ bool x11_toplevel_active(void) { return g_active; }
 void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
 {
     if (!g_active || !xs) return;
-    if (entry_of_xs(xs)) return; /* 重复 new_surface 防御 */
-    if (g_entry_count >= X11_TOPLEVEL_MAX) return;
+    pthread_mutex_lock(&g_lock);
+    if (entry_of_xs(xs) || g_entry_count >= X11_TOPLEVEL_MAX) {
+        pthread_mutex_unlock(&g_lock);
+        return; /* 重复 new_surface 防御 / 表满 (review minor: 满时静默) */
+    }
     struct x11_xs_entry *e = &g_entries[g_entry_count++];
     memset(e, 0, sizeof(*e));
     e->xs = xs;
@@ -241,6 +282,7 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     /* xs 可能 associate 先于 new_surface 到达 (xwm 时序): 已有 surface 就
      * 立即判定, 否则等 associate 回调。 */
     try_post_created(e);
+    pthread_mutex_unlock(&g_lock);
 }
 
 void x11_toplevel_session_reset(void)
@@ -248,6 +290,7 @@ void x11_toplevel_session_reset(void)
     /* 会话重置 (spec §3.4): 对仍登记的 toplevel 补发 destroyed (ArkTS 清窗
      * 依赖), 再清表。active 位保持 (链重启时 StartWithSurface 按新模式位
      * 重置)。 */
+    pthread_mutex_lock(&g_lock);
     for (size_t i = 0; i < g_entry_count; ++i) {
         struct x11_xs_entry *e = &g_entries[i];
         if (e->dead) continue;
@@ -257,20 +300,30 @@ void x11_toplevel_session_reset(void)
         x11_toplevel_bridge_post_destroyed(e->toplevelId);
     }
     g_entry_count = 0;
+    pthread_mutex_unlock(&g_lock);
 }
 
 struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId)
 {
+    pthread_mutex_lock(&g_lock);
     for (size_t i = 0; i < g_entry_count; ++i) {
-        if (g_entries[i].toplevelId == toplevelId) return g_entries[i].xs;
+        if (g_entries[i].toplevelId == toplevelId) {
+            struct wlr_xwayland_surface *xs = g_entries[i].xs;
+            pthread_mutex_unlock(&g_lock);
+            return xs;
+        }
     }
+    pthread_mutex_unlock(&g_lock);
     return NULL;
 }
 
 uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs)
 {
+    pthread_mutex_lock(&g_lock);
     struct x11_xs_entry *e = entry_of_xs(xs);
-    return e ? e->toplevelId : 0;
+    uint32_t id = e ? e->toplevelId : 0;
+    pthread_mutex_unlock(&g_lock);
+    return id;
 }
 
 /* ── Task 3: per-xs 呈现 ── */
@@ -296,13 +349,18 @@ void x11_toplevel_set_render_ctx(struct wlr_allocator *alloc,
 bool x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
                                 int w, int h)
 {
+    pthread_mutex_lock(&g_lock);
     struct x11_xs_entry *e = entry_of_id(toplevelId);
-    if (!e) return false;
+    if (!e) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
     e->win = win;
     e->win_w = w;
     e->win_h = h;
     e->skip_count = 0;
     e->dirty = true; /* attach 后强制画一帧 (commit 已过的话别等下一帧) */
+    pthread_mutex_unlock(&g_lock);
     XTL_LOG("XTL attach id=%{public}u win=%{public}p %{public}dx%{public}d",
             toplevelId, (void *)win, w, h);
     return true;
@@ -310,16 +368,21 @@ bool x11_toplevel_attach_window(uint32_t toplevelId, struct NativeWindow *win,
 
 void x11_toplevel_detach_window(uint32_t toplevelId)
 {
+    pthread_mutex_lock(&g_lock);
     struct x11_xs_entry *e = entry_of_id(toplevelId);
-    if (!e) return;
-    e->win = NULL;
-    XTL_LOG("XTL detach id=%{public}u", toplevelId);
+    if (e) e->win = NULL;
+    pthread_mutex_unlock(&g_lock);
+    if (e) XTL_LOG("XTL detach id=%{public}u", toplevelId);
 }
 
 void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
 {
+    pthread_mutex_lock(&g_lock);
     struct x11_xs_entry *e = entry_of_id(toplevelId);
-    if (!e) return;
+    if (!e) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     e->win_w = w;
     e->win_h = h;
     /* D51 (真机 175709 实锤): resize 后必须强制重渲染一帧 —— 承载窗
@@ -327,6 +390,7 @@ void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
      * 尺寸后若 guest 内容静态 (无新 commit), surface 永远停留 1x1 帧
      * = 黑屏。notepad 类活窗被光标闪烁 commit 掩盖, 静态探针必现。 */
     e->dirty = true;
+    pthread_mutex_unlock(&g_lock);
 }
 
 /* ── Task 5: 按窗输入路由 ── */
@@ -351,9 +415,17 @@ void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
 void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
                                          int action, uint32_t button)
 {
-    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    struct x11_xs_entry *e;
     int lx, ly;
-    if (!e || !e->xs || !e->win) return;
+    /* I1: 查表与字段读取持锁 (win_w/win_h 会被 napi 线程 resize_window 写);
+     * wl_ohos_input_multimode_pointer 的 seat 操作在锁外 (seat 不属 entry
+     * 表, 且持锁调 seat 与 render_tick 的 present 无依赖冲突但没必要)。 */
+    pthread_mutex_lock(&g_lock);
+    e = entry_of_id(toplevelId);
+    if (!e || !e->xs || !e->win) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     /* I3 (review): 物理像素 → X 逻辑坐标。承载窗尺寸由 onSurfaceChanged
      * 维护 (win_w/win_h); 未校准 (attach 初值 1x1) 时比例未知, 丢弃并
      * 采样留痕 —— 比乱投好 (scale≠1 设备上乱投 = 命中点偏 2 倍)。 */
@@ -362,14 +434,18 @@ void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
         if (++skip_n % 60 == 1)
             XTL_LOG("XTL mm-ptr skip uncalibrated id=%{public}u win=%{public}dx%{public}d",
                     toplevelId, e->win_w, e->win_h);
+        pthread_mutex_unlock(&g_lock);
         return;
     }
     lx = (int)((int64_t)px * (int)e->xs->width / e->win_w);
     ly = (int)((int64_t)py * (int)e->xs->height / e->win_h);
     /* 缝隙不投递 (spec §4): 换算后越界 = 点在窗间空隙/标题条外 */
     if (lx < 0 || ly < 0 ||
-        lx >= (int)e->xs->width || ly >= (int)e->xs->height)
+        lx >= (int)e->xs->width || ly >= (int)e->xs->height) {
+        pthread_mutex_unlock(&g_lock);
         return;
+    }
+    pthread_mutex_unlock(&g_lock);
     wl_ohos_input_multimode_pointer(e->xs, (double)lx, (double)ly,
                                     action, button);
 }
@@ -377,9 +453,12 @@ void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
 void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
                                      bool press)
 {
+    pthread_mutex_lock(&g_lock);
     struct x11_xs_entry *e = entry_of_id(toplevelId);
-    if (!e || !e->xs) return;
-    wl_ohos_input_multimode_key(e->xs, keycode, press);
+    struct wlr_xwayland_surface *xs = e ? e->xs : NULL;
+    pthread_mutex_unlock(&g_lock);
+    if (!xs) return;
+    wl_ohos_input_multimode_key(xs, keycode, press);
 }
 
 /* 画一帧: surface->buffer 的 texture (wlroots 自管) → 该窗队列 buffer →
@@ -391,6 +470,12 @@ void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
 static bool render_entry(struct x11_xs_entry *e)
 {
     if (!g_renderer) return true;
+    /* unmap (close/minimize) 走 dissociate: surface 置 NULL 但 dirty 可能
+     * 残留 (dissociate 前的末批 commit / M8 失败重试保留) —— 与本文件
+     * try_post_created/render_tick 的 surface 判空同款, 缺此守卫 = compositor
+     * loop 线程空指针崩溃 (final review C1, M4b 最小化路径必踩)。返回
+     * false = 本帧没画出去, dirty 保留, remap 后首帧重绘。 */
+    if (!e->xs->surface) return false;
     struct wlr_client_buffer *cb = e->xs->surface->buffer;
     if (!cb || !cb->texture) {
         XTL_LOG("XTL render-skip nocb id=%{public}u cb=%{public}p",
@@ -459,6 +544,9 @@ void x11_toplevel_render_tick(void)
      * xs->buffer 停在初始全 0。此处角色 = 真合成器的 output frame：每帧对
      * 全部活动 xs 泵 frame done，机制与 normal 路径 ohos_output.c 的
      * g_clients 直发一致。 */
+    /* I1: 全程持锁 (render_entry 持锁执行, napi attach 最多等一帧 ——
+     * 见 g_lock 注释)。 */
+    pthread_mutex_lock(&g_lock);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     for (size_t i = 0; i < g_entry_count; ++i) {
@@ -485,4 +573,5 @@ void x11_toplevel_render_tick(void)
             e->dirty = true;
         }
     }
+    pthread_mutex_unlock(&g_lock);
 }
