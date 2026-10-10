@@ -251,7 +251,7 @@ Expected: 绿。虚拟桌面路径不变（render_tick 在 FrameTick 的 `if (g_
 
 融合模式起会话，直启 notepad + 第二程序（或 notepad 内开新窗）：两窗的 xs 各自 created；**宿主侧无窗呈现不可见**——本步只验证 render_tick 的 skip 计数日志与 commit dirty 日志（`hilog -x | grep -E 'skip no-window|render tick'`）。真呈现验证在 Task 4 承载接通后。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add entry/src/main/cpp/display/x11_toplevel.cpp entry/src/main/cpp/display/x11_toplevel.h entry/src/main/cpp/display/ohos_output.c
@@ -294,13 +294,13 @@ git commit -m "feat(display): M4a-T3 per-xs 渲染循环——texture 缓存 + b
 
 `WineWindowAbility.ets`：`onSurfaceCreated` 现有 `createRenderer(toplevelId, surfaceId)` 调用不动（plugin_manager 内部分支）；确认 `onSurfaceDestroyed` 走 `destroyToplevel` → x11 分支 detach。
 
-- [ ] **Step 3: 构建部署验证——双窗真实呈现**
+- [x] **Step 3: 构建部署验证——双窗真实呈现**
 
 Run: `make NATIVE_ARCH=arm64-v8a hap` + 部署 + 融合模式会话 + `winehua.program` 直启 notepad，notepad 内开第二窗（或直启两个程序）。
 
 Expected（截屏）：两个独立 OHOS 窗口各自呈现对应 X 窗内容；关闭一窗另一窗存活；`hilog` 无 skip no-window 持续刷屏（回绑后追上）。截屏归档 `.temp/m4a-t4-two-windows.jpeg`。
 
-- [ ] **Step 4: 虚拟桌面回归**
+- [x] **Step 4: 虚拟桌面回归**
 
 Run: core 套件 + 手动虚拟桌面模式起 notepad
 Expected: 3/4 基线；虚拟桌面 notepad 走单画布（无 WineWindowAbility 弹窗）。
