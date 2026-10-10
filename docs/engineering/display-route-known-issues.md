@@ -135,6 +135,15 @@ DesktopAbility 画布），§2.9/D45 的「退出桌面」类判据与
 closeX11Canvas 路径不适用——fusion 会话的清理语义 = 最后一个承载窗
 销毁即回主页面。后续在 fusion 会话上复用 D45 判据会得到假 FAIL。
 
+**explorer 桌面窗处置（M4b Task-0 决策 = 接受）**：managed 模式
+user32 `get_desktop_window` 自动 spawn 的 explorer /desktop 桌面窗
+（class = atom #32769，`explorer/desktop.c:40`）会作为普通承载窗进入
+fusion 窗口集（全屏、永远在最底层）。接受的理由：D50 验证轮实测程序窗
+正确压其上、点击桌面 raise 桌面 = Windows 正确语义；过滤方案的特征值
+（atom → X 侧 WM_CLASS 字符串）需实测且随 wine 版本漂移，维护成本大于
+被盖住的无害窗。**M4b+ 判定器须容忍其存在**（状态序列帧里的桌面底色/
+图标不算 FAIL）；它的承载窗参与 z 序仲裁但恒在底层。
+
 **环境干扰记录**：设备上 Sandbox POC（app.hackeris.sandbox）会间歇性
 抢回前台，污染 snapshot 帧采集——判定 FAIL 时先看帧内容是否 POC UI，
 是则重跑，不进代码排查。

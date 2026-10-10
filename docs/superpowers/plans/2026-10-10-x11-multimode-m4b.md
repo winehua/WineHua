@@ -29,6 +29,30 @@
 
 ---
 
+### Task 0: explorer 桌面窗处置决策（M4a final review I2 强制项）
+
+**Files:**
+- Modify: `entry/src/main/cpp/display/x11_toplevel.c`（若决策 = 过滤）
+- Modify: `docs/engineering/display-route-known-issues.md`（若决策 = 接受，记录语义边界）
+
+**Interfaces:**
+- Consumes: M4a 实测（D50 附带发现 + final review）：managed 模式 wine user32 `get_desktop_window` 自动 spawn explorer /desktop，其 desktop xs 走 created → startFusionSubWindow 被当普通承载窗（屏幕尺寸全屏窗），spec §2/§3.4「managed 不启 explorer desktop」只在 wine_launch 分支成立
+- Produces: 三选一的**已实施处置**，M4b 后续任务以此为前提
+
+- [x] **Step 1: 决策并实施（三选一，先在会话内陈述理由再动手）——选 a 接受**
+
+  a. **接受**（最低成本）：explorer 桌面窗作为底层承载窗存在，M4b 的 activate/minimize 流在其上自然工作（D50 验证轮已见 notepad 正确压其上）；代价 = 每个 fusion 会话多一个无用全屏窗 + raise 顺序参与仲裁。落地 = known-issues 记录 + M4b 判定器容忍其存在（帧里有 explorer 桌面底色不算 FAIL）。
+  b. **按 class 过滤**：映射层对 `xs->role`/window class = explorer 桌面特征（执行时实测抓取具体值）不 post created（同 skip-no-window 语义）；代价 = 需实测特征值且 wine 升级可能变。
+  c. **抑制 spawn**：修 wine_launch/user32 路径让 managed 模式不自动 spawn（越出 M4 范围，碰 wine 源码需完整构建——除非 a/b 都不可行否则不选）。
+
+- [x] **Step 2: 判定器适配**（选 a/b 时）——判定器容忍要求已写入 known-issues §2.12, M4b-T4 实帧验证
+
+  `validate_fusion_window_*` 在 M4b 状态序列帧里对 explorer 桌面窗的象限外内容（桌面底色/图标）不误判；实帧验证。
+
+- [ ] **Step 3: Commit**（决策记录 + 代码/文档落地，一行 message 注明三选一结果）
+
+---
+
 ### Task 1: 映射层状态面 listener（minimize/fullscreen/activate/parent）
 
 **Files:**
