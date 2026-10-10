@@ -310,7 +310,16 @@ static void render_entry(struct x11_xs_entry *e)
     if (!g_renderer) return;
     struct wlr_client_buffer *cb = e->xs->surface->buffer;
     /* texture 为 NULL: client 提前释放了 buffer (wlr_buffer.h:157 注释) */
-    if (!cb || !cb->texture) return;
+    if (!cb || !cb->texture) {
+        XTL_LOG("XTL render-skip nocb id=%{public}u cb=%{public}p",
+                e->toplevelId, (void *)cb);
+        return;
+    }
+    XTL_LOG("XTL render id=%{public}u tex=%{public}p %dx%d -> dst",
+            e->toplevelId, (void *)cb->texture,
+            cb->base.width, cb->base.height);
+    /* 逐帧 render 日志: commit 驱动 (静止窗零日志), 频率安全。D50 排查期
+     * 保留 —— 收口时降为失败路径日志。 */
 
     struct wlr_swapchain *swapchain = NULL;
     struct wlr_buffer *dst = wl_ohos_present_slot_acquire(e->win, &swapchain);
@@ -318,6 +327,8 @@ static void render_entry(struct x11_xs_entry *e)
         XTL_LOG("XTL slot-fail id=%{public}u", e->toplevelId);
         return;
     }
+    XTL_LOG("XTL render id=%{public}u dst=%{public}p %dx%d",
+            e->toplevelId, (void *)dst, dst->width, dst->height);
 
     struct wlr_render_pass *pass =
         wlr_renderer_begin_buffer_pass(g_renderer, dst, NULL);
@@ -350,6 +361,8 @@ static void render_entry(struct x11_xs_entry *e)
         if (!wl_ohos_present_buffer_returned(dst))
             wl_ohos_present_buffer_abort(dst);
         XTL_LOG("XTL present-fail rc=%{public}d id=%{public}u", (int)rc, e->toplevelId);
+    } else {
+        XTL_LOG("XTL present ok id=%{public}u", e->toplevelId);
     }
 }
 

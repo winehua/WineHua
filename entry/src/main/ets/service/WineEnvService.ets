@@ -499,7 +499,10 @@ export class WineEnvService {
       // x11 路线: 画布页在引擎就绪时打开 (与 wayland desktop_root 事件同时
       // 机语义 — 先会话后开窗; applyModePolicy 早期拉起会与 run-job Want
       // 抢跑, #68 2026-10-05)。ready-degraded 也要开 (引擎已起, 桌面慢)。
-      WineWindowManager.getInstance().openX11Canvas();
+      // M4a 多窗模式不开虚拟桌面画布 (openX11Canvas 仅虚拟桌面分支, spec §3.4)。
+      if (!WineWindowManager.getInstance().shouldUseMultiwindow()) {
+        WineWindowManager.getInstance().openX11Canvas();
+      }
     } else if (name == 'ready-degraded') {
       // 桌面根 15s 未就绪 (仅 desktop 模式): 引擎活着但桌面没起来 — 进行中
       // 而非就绪。canLaunch 不放行 (程序抢跑会死在 DXGI 初始化); root 出现后
@@ -514,8 +517,11 @@ export class WineEnvService {
       this.bgStart = false;
       this.setInitStatus('桌面准备中...', false);
       // x11: 引擎已起 (degraded 只是桌面 shell 慢), 画布页照常打开 —
-      // 桌面 shell map 后画面自然出现; 不开画布则用户全程无窗口可看 (#68)
-      WineWindowManager.getInstance().openX11Canvas();
+      // 桌面 shell map 后画面自然出现; 不开画布则用户全程无窗口可看 (#68)。
+      // M4a 多窗模式同上不开 (spec §3.4)。
+      if (!WineWindowManager.getInstance().shouldUseMultiwindow()) {
+        WineWindowManager.getInstance().openX11Canvas();
+      }
     } else if (name == 'failed') {
       // 覆盖启动失败 (wineserver spawn/wineboot) 与运行中主 wineserver 非预期
       // 死亡 (ProcMon 上报) — 失败统一进 failInit: overlay 给 重试/重置 入口,
