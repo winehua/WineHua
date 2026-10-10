@@ -200,11 +200,17 @@ python3 automation/smoke.py run --job smoke/jobs/x11-fusion.json --desktop-mode 
 ```
 Expected: fusion-probe 全 checks PASS（M4a 的双窗判定不回归 + 新 fusion-state PASS）。
 
-- [ ] **Step 3: 手工对照（自动化≠功能可用，原则 21）**
+- [x] **Step 3: 手工对照（自动化≠功能可用，原则 21）**（T5 完成——降级为
+      可行等效对照，原文场景的「最小化图标还原」在 fusion 子窗无 UI 入口）
 
 双窗下点击窗 B → 窗 B 置前；窗 A 最小化图标还原 → 内容完整；截图归档 `.temp/m4b-manual-*.jpeg`。
-（未做，留 T5：设备限时前台窗口期全部用于跑批取证 + 回归门禁；且 T4 期间
-POC 前台约束下人工操作会互相抢占。T5 收口时随 POC 归还一并做。）
+（T5 落地：fusion 子窗无标题栏按钮（M4a 实测），「最小化图标还原」无 UI
+入口。等效对照：① 窗 A 还原 = 探针 stateSeq 覆盖（restored_a=true + 归档
+帧窗 A 可见，fusion-r20261011-003113）；② 点击窗 B = x11-fusion 长秒跑批
+存续期内 uitest 点 B 中心 (2160,706) → 输入日志 tl=23 TOUCH / TAP->
+LEFTCLICK / keyboard enter (activated)，截帧
+`.temp/m4b-manual-b-before.jpeg` / `.temp/m4b-manual-b-click.jpeg`
+（fusion-r20261011-manual-b2，证据轮不作验收）。）
 
 - [x] **Step 4: Commit**
 
@@ -217,21 +223,24 @@ git commit -m "feat(smoke+checks): M4b-T4 状态面判定 + x11-fusion 套件扩
 
 ### Task 5: 回归门禁 + 收口
 
-- [ ] **Step 1: displayroute-win32-interactive 前缀组全量**
+- [x] **Step 1: displayroute-win32-interactive 前缀组全量**（T5：
+      20/21，job-r20261011-002451——唯一缺口 = input-keyboard-x64
+      char-count（XIM 已知）；D35 间歇家族本轮未出现，= 基线）
 
 Run: 同 M4a T7 的跑法
 Expected: 11/13 维持（keyboard 两项已知 XIM 缺口）。
 
-- [ ] **Step 2: core 基线**
+- [x] **Step 2: core 基线**（T5：3/4，core-r20261011-002802，
+      opengl-x86 = D49 已知）
 
 Run: `python3 automation/smoke.py run --suite core --device <DEV>`
 Expected: 3/4（opengl-x86 = D49 已知）。
 
-- [ ] **Step 3: known-issues M4b 段 + Pad 限制注记**
+- [x] **Step 3: known-issues M4b 段 + Pad 限制注记**（T5：§2.13 落地）
 
 spec §5：Pad subWindow 承载近似（hide/minimize 无系统能力）= 继承 incumbent 限制，注记进验收说明（M4d 才做 Pad 承载，本阶段 Pad 形态仍走旧路）。
 
-- [ ] **Step 4: Commit + 文档**
+- [x] **Step 4: Commit + 文档**
 
 ```bash
 git add docs/

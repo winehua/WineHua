@@ -148,6 +148,51 @@ fusion 窗口集（全屏、永远在最底层）。接受的理由：D50 验证
 抢回前台，污染 snapshot 帧采集——判定 FAIL 时先看帧内容是否 POC UI，
 是则重跑，不进代码排查。
 
+### 2.13 M4b 收口：x11 状态面四语义全链 PASS 与遗留边界（2026-10-11）
+
+**验收状态**：状态面四语义（minimize/restore、fullscreen/unfullscreen、
+modal owner、activate 置前）全链 PASS——fusion_probe stateSeq 5/5
+（win32 侧逐步确认；T4 两轮 + T5 复核共三轮一致）；x11-fusion 5 checks
+（result-json / visual-a / visual-b / fusion-clicks / fusion-state）全
+PASS（fusion-r20261011-003113）。回归门禁（T5 独立复跑，不引用 T4 轮
+数字）均 = 基线：前缀组 displayroute-win32-interactive（x11 + virtual）
+20/21（job-r20261011-002451，唯一缺口 = input-keyboard-x64 char-count，
+XIM 已知；D35 注入间歇家族 input-mouse-x64 / input-relative-x64 本轮
+未出现，无需复跑）；core 3/4（core-r20261011-002802，opengl-x86 = D49
+已知）。
+
+**关键根因（minimize 协议闭环，b569684）**：映射层（x11_toplevel）收到
+request_minimize 只发 bus 事件、从不调
+`wlr_xwayland_surface_set_minimized` 回写 WM_STATE → wine 侧
+wm_state_serial 永不清零 → window_set_wm_state Iconic→Normal 的 Mutter
+workaround 入口（`if (data->wm_state_serial) return`）让 restore 整体
+成无操作——X 层无 withdraw/map、map_request 不产生、Restored 事件结构性
+缺发。修复两半齐备：request_minimize 补 ICCCM 应答（set_minimized 只写
+属性不解 map，可视性仍归 ArkTS 承载窗）+ map_request listener
+（createdPosted 门）→ Restored（wine 重显窗的唯一宿主信号），restore 时
+配对 set_minimized(false) 防 stale minimized 写出假 Iconic。附带收益：
+wine 状态机解封后 fullscreen/unfullscreen 语义事件同链到达。
+
+**判定器盲区教训**：修复前的 RED 轮里 stateSeq（win32 事实）5/5 全过
+而 visual-a FAIL——win32 侧 IsIconic 已解、OHOS 承载窗却停在 minimize()
+隐藏态，「状态面通了」与「画面回来了」完全脱钩。单层判定（只看 result
+JSON 或只看帧）都会漏掉这类断链；多层互证（win32 事实 + 帧内容 + FWM
+日志时序）是判定器的下限配置。
+
+**Pad 限制注记（spec §5 风险 #4）**：subWindow 承载的 hide/minimize 是
+近似实现——Window 无隐藏 API（hideWindow 不存在），FWM.hide() 用
+minimize() 近似，非自由窗口设备上不生效也不报错，最坏 = 窗口保持显示
+（`FusionWindowManager.ets` hide() 注释载明，与 maximize 同款设备行为
+差异）= 继承 incumbent 已知限制、不新增债。M4d 才做 Pad 承载，本阶段
+Pad 形态仍走旧路，fusion/x11 状态语义不向 Pad 下发。
+
+**遗留观察（不阻塞，M4c 前置排查点）**：
+- modal 步宿主侧 set_parent 未触发——wine 侧 owner 变更
+  （SetWindowLongPtr GWLP_HWNDPARENT）是否更新 WM_TRANSIENT_FOR 待查；
+  win32 侧确认已过、判定不受影响。
+- fullscreen 语义事件虽通，wine 对「WS_POPUP + 全屏矩形」走的几何路
+  （request_configure resize）与 _NET_WM_STATE 路并存的边界未系统梳理。
+
 ## 2. 技术悬案（M2 排查入口）
 
 ### 2.1 「最后一键」间歇不入编辑控件
