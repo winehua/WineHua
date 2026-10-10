@@ -51,6 +51,11 @@ struct probe_state
     LONG a_orig_style;
     BOOL seq_minimized, seq_restored, seq_fullscreen, seq_unfullscreen, seq_modal;
     char seq_note[128];      /* 首个失败步骤的原因 (判定器提示用) */
+    ULONGLONG start_ms;      /* main 起点 tick。入口延迟必须相对它: 本构建
+                              * GetTickCount64 = CLOCK_BOOTTIME (设备启动起算,
+                              * wineserver monotonic_counter, wine
+                              * server/request.c:508-520), 裸 seconds/4 恒过
+                              * = 延迟死代码 (M4b final review C1)。 */
 };
 
 /* 中心白十字: 半长 1/4 窗宽/高, 臂宽 12px (逻辑坐标, 缩放后仍可辨) */
@@ -348,8 +353,13 @@ static BOOL state_seq_tick(struct probe_state *state)
     now = GetTickCount64();
     if (state->state_step < 0)
     {
-        /* 入口延迟: 双窗 attach+首帧稳定 (宿主侧 ~2s), 序列总预算 12s 内 */
-        if (now < (ULONGLONG)state->options.seconds * 1000ULL / 4)
+        /* 入口延迟 (run 相对): 双窗 attach+首帧稳定 (宿主侧 ~2s), 序列总
+         * 预算 12s 内。必须与 start_ms + seconds/4 比较 —— GetTickCount64
+         * 基点是设备启动 (见 struct start_ms 注释), 裸 seconds/4 恒过,
+         * 序列会在首个空闲 tick (~15ms) 触发, 宿主 attach+首帧的等待门
+         * 形同虚设 (final review C1)。 */
+        if (now < state->start_ms +
+                  (ULONGLONG)state->options.seconds * 1000ULL / 4)
             return FALSE;
         state->state_step = STEP_MINIMIZE;
         state->step_since_ms = 0;
@@ -406,6 +416,7 @@ int main(int argc, char **argv)
 
     start_ms = GetTickCount64();
     deadline_ms = start_ms + state.options.seconds * 1000ULL;
+    state.start_ms = start_ms;
     last_report = 0;
 
     winehua_smoke_write_result(&state.options, "STARTED", "startup",
