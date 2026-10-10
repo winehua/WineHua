@@ -124,21 +124,36 @@ git commit -m "feat(ets+display): M4c-T2 popup ArkTS 接线 + seat 焦点让渡"
 - Modify: `smoke/tests/fusion-probe/test.json`（或新增 fusion-popup 用例：探针/编排点菜单 + popup 判定）
 - Modify: `smoke/suites/fusion.json`（追加用例）
 
-- [ ] **Step 1: 判定器 + 合成数据自测**（同 M4a/M4b 方法）
-- [ ] **Step 2: 真机跑批**（`--job x11-fusion.json --desktop-mode fusion`）Expected: 全 PASS
-- [ ] **Step 3: Commit**
+- [x] **Step 1: 判定器 + 合成数据自测**（同 M4a/M4b 方法）
+  执行结果: validate_fusion_popup_menu（绿锚点密度带定位 + 邻域最大白色
+  连通分量 = 菜单底色 + 细采样暗色文字条带 ≥2 = 条目结构）；合成自测
+  11/11 形态 GREEN（PASS: 窗内/越界/带 decoy/真机 T3 截图真实像素;
+  FAIL: 无锚点/无菜单/空菜单/单行/底色缺失/仅 decoy），输出记 ledger。
+- [x] **Step 2: 真机跑批**（`--job x11-fusion.json --desktop-mode fusion`）Expected: 全 PASS
+  执行结果: fusion-r20261011-040837 3/3 PASS（既有 5 checks 不回归 +
+  popup 两用例全 checks; fusion-popup-selection 恒 SKIP = 移交标记）。
+  跑批现场两破案记 §2.14: ① entry_remove memmove 错位 wl_listener →
+  fusion 收尾必炸（M4a 起被单用例套件掩盖, 已修 = 墓碑槽）; ② 探针窗
+  WS_POPUP 被 wine 判不托管 → 全落 OR 路径不渲染（改托管样式）。
+- [x] **Step 3: Commit**
 
 ```bash
 git commit -m "feat(smoke+checks): M4c-T4 popup 判定 + 套件扩展"
 ```
+  执行修订: display 侧 memmove 修复独立成 fix 提交（机制修复对应机制
+  缺陷, 不与套件扩展混变更）。
 
 ---
 
 ### Task 5: 回归门禁 + 收口
 
-- [ ] **Step 1: displayroute 前缀组 + core**（判据同前：11/13 + 3/4）
-- [ ] **Step 2: known-issues M4c 段**
-- [ ] **Step 3: Commit + 文档**
+- [x] **Step 1: displayroute 前缀组 + core**（判据同前：11/13 + 3/4）
+  执行结果: 前缀组 20/21（job-r20261011-041723, 唯一缺口 = keyboard
+  char-count XIM 已知）; core 3/4（core-r20261011-042220, opengl-x86 =
+  D49 已知）。均达基线。
+- [x] **Step 2: known-issues M4c 段**（§2.14: 收口数字 + 越界点选悬案
+  完整记档 + OHOS 拖拽 resize 不回写模型缺口 + 三个核实点结论）
+- [x] **Step 3: Commit + 文档**
 
 ---
 

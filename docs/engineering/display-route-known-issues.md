@@ -212,6 +212,87 @@ Pad 形态仍走旧路，fusion/x11 状态语义不向 Pad 下发。
 - fullscreen 语义事件虽通，wine 对「WS_POPUP + 全屏矩形」走的几何路
   （request_configure resize）与 _NET_WM_STATE 路并存的边界未系统梳理。
 
+### 2.14 M4c 收口：popup 链套件全 PASS 与两项现场破案（2026-10-11）
+
+**验收状态**：x11 fusion popup 链（OR 菜单窗 → OHOS popup 子窗）套件化
+完成——fusion 套件 3 用例（fusion-probe / fusion-popup / fusion-popup-oob）
+判定全 PASS（fusion-r20261011-040837：既有 5 checks 不回归 + visual:
+fusion-popup-menu 窗内/越界两形态菜单渲染 + fusion-popup 开关链 +
+fusion-popup-selection SKIP 移交标记），复跑轮（041228）popup 两用例
+再绿、probe 轮 missing-frame 为 host 抓帧时序（设备端 PASS，单点复跑
+041623 PASS）。回归门禁达基线：前缀组 displayroute-win32-interactive
+（x11 + virtual）20/21（job-r20261011-041723，唯一缺口 = input-keyboard
+char-count，XIM 已知；D35 间歇家族本轮未现）；core 3/4
+（core-r20261011-042220，opengl-x86 = D49 已知）。判定器合成自测 11/11
+形态 GREEN（含真机 T3 截图真实像素形态，输出记 SDD ledger）。
+
+**现场破案一：entry_remove memmove 错位 wl_listener —— fusion 会话收尾
+必炸（已修）**。多用例 fusion 跑批首轮（r20261011-032733）在 probe → popup
+切换时整会话死亡。faultlogger（cppcrash-20261011033916）：app 进程
+SIGABRT，`Assertion failed: wl_list_empty(&xsurface->events.destroy.
+listener_list) (xwayland/xwm.c:701)`。根因：`entry_remove` 用 memmove 压缩
+entry 数组，而 entry 内嵌 wl_listener 的 link 节点地址被活跃信号链直接
+引用——移除前位 entry 使后位 entry 的 link 全部指向错位地址，下一个销毁
+的 surface 走不到 destroy 回调、listener 摘不掉，wlroots 断言炸掉组合器
+（全部 wine 子进程陪葬）。M4a 起「先删前位 entry + 后销毁后位 entry」
+即触发；单用例套件 summary 先落地把它掩盖成收尾噪音（faultlogger 在库
+最早同签名记录 2026-10-10 23:24，M4b 期；032733 轮起套件多用例化才把
+crash 移进跑批中段现形）。修复 = 墓碑槽 + 复用（entry 地址终身稳定），
+`x11_toplevel_xs_of` 补 dead 守卫。D45 的「wl_signal_add 必须配对销毁且
+整链审计」教训由此有了第一个实锤实例：配对本身没错，错在销毁后数组还
+会挪动。WS_POPUP 探针窗同轮暴露第二问题：wine 把无 caption 的 POPUP 窗
+判为不托管 → X 侧 override_redirect → 窗和菜单全走 OR-popup 路径且无
+owner 可挂 → 什么都不渲染——探针窗样式回归 popup_overflow 同款托管样式
+（本栈非客户区不绘制，视觉判定不受标题栏影响）。
+
+**越界点选悬案（未闭合，移交 M4d）**：越界（整条菜单越出窗 rect 底缘）
+场景下点击菜单项，wine 收到按钮事件且菜单关闭，但不产生 WM_COMMAND——
+探针以 command-item2 自证落空。四轮控制变量全部排除：几何（窗界内对照
+同败）、owner 先导点击（两段式复刻 notepad 流同败）、SetForegroundWindow
+前置（对齐 e2e_menu 同款同败）、坐标换算（OHOS 子窗尺寸 = w×scale 精确，
+guest local 恒在目标项区内）。关键证据（wine +event trace）：点击的
+Enter/Motion/Press/Release 四事件送达 explorer 桌面窗（hwnd 0x10068 /
+X 1000003）而非探针菜单窗；wine 菜单 grab 收到点击（菜单关闭）但命中
+判定按错误位置处理。收敛位置：Xwayland rootless 对 OR 菜单窗的
+wl_pointer enter 路由 / X 堆叠 hit-test（fusion 无 scene 布局器，X 堆叠
+归 wine+explorer），或自研探针消息循环形态与 wine 菜单跟踪的交互差异
+（唯一全绿组合 = notepad 真实程序）。影响面：窗界内菜单（notepad 形态）
+不受影响；真实应用的越界菜单需在真实程序上复测后才能定界——探针形态
+的失败不能直接归因产品链路。复现资产：`smoke/jobs/popup-overflow-x11.json`
+（`--desktop-mode fusion --display-route x11`，uitest 按物理坐标点选）。
+套件判定口径（Ruling）：自动判定只覆盖已验证行为（渲染/关闭链）——
+`fusion-popup-selection` 判定器对越界用例恒 SKIP 并注明移交，不做会假
+PASS 的点选判据。负全局坐标（菜单越出屏幕左/上，RF#5 后半）行为未测，
+不进自动化套件，只有手动路径。
+
+**OHOS 拖拽 resize 在 x11 路线不回写 wine（M4a 模型缺口，T3 现场确认，
+待治本）**：fusion+x11 下拖拽子窗边框，OHOS 子窗缩放只是渲染拉伸，几何
+不回写 guest——`NotifyToplevelResize` 找不到 xdg resource 直接早退
+（wayland_server.cpp:470），x11 路线缺 host→wine 的
+`wlr_xwayland_surface_configure` 应答通道（现有几何流只有 wine→host
+单向）。根治落点在 wayland_server 的 x11 分支补 configure 回写。
+
+**三个执行时核实点结论（plan Self-Review #2 的实测沉淀）**：
+- OR 窗 associate 行为：wlroots 对 OR 窗与受管窗同样发 associate/
+  dissociate（xwm.c:1306 无 OR 门禁）；OR 窗无 map_request/
+  request_configure（X 对 OR 直通 map/configure），生命周期信号收敛为
+  show = associate+buffer、hide = dissociate（X unmap 与 destroy 都经
+  xwayland_surface_dissociate，xwm.c:668，单点覆盖双终态）、几何 =
+  set_geometry（ConfigureNotify，xwm.c:1512）。
+- createRenderer popup 查表：零改动——popupId 存进 entry.toplevelId 后
+  attach/resize/detach/输入 dispatch 全走 entry_of_id 既有路径。
+- offX/offY 语义：PopupWindowManager.positionEntry 定位公式 = 「父窗
+  windowRect 全局原点 + off×scale」，映射层把 X 全局坐标换算成父相对
+  偏移直传（off = popup.x − owner.x，单点在
+  try_post_popup_show/handle_popup_geometry）；负偏移路径未测（菜单都在
+  父窗右/下方），与 RF#5 后半同属待测。
+
+**遗留观察（不阻塞）**：① popup 用例的 byTitle owner 点击
+（ownerClicked）命中率不稳定（035938/040837 两轮均 false，菜单链不受
+影响——开关菜单不依赖它），待 M4d 与点选路由一并查；② fusion 套件
+跑批中段 crash 修复后，host 抓帧时序（missing-frame）成为新的间歇项
+（D35 家族新形态），单点复跑即可判绿。
+
 ## 2. 技术悬案（M2 排查入口）
 
 ### 2.1 「最后一键」间歇不入编辑控件
