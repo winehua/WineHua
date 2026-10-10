@@ -992,6 +992,17 @@ void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
     wl_ohos_input_post_key(keycode, press);
 }
 
+/* M4c-T2: seat 焦点让渡导出口 (x11_toplevel.c 的 popup show/hide 调)。
+ * 语义与 multimode 口的 FocusClient 完全一致 —— 这里只做导出包装, 不复制
+ * 逻辑。调用方 (popup show/hide) 在合成器 loop 线程持映射层 g_lock 时调:
+ * FocusClient 内部只碰 seat/xcb, 无回入映射层查表的重入路径 (与
+ * multimode_pointer 「seat 操作在锁外」纪律的差异见其注释 —— 那里是
+ * 「没必要」, 这里是锁内必要: popup_visible 状态与焦点还原须同拍)。 */
+void wl_ohos_input_focus_xs(struct wlr_xwayland_surface *xs)
+{
+    FocusClient(xs);
+}
+
 /* ── M4a-T5 (C1 review 修复): 多窗注入的线程边界 ──
  * napi/JS 线程只入队 (本文件 InjectQueue 的加锁 + pipe 唤醒), loop 线程
  * 的 InjectQueueDrain 分派到 x11_toplevel_input_*_dispatch —— 后者在

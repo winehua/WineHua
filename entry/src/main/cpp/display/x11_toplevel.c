@@ -40,6 +40,16 @@ void x11_toplevel_bridge_post_activated(uint32_t id);
 void x11_toplevel_bridge_post_modal(uint32_t id, uint32_t owner_id,
                                     int32_t modal, int32_t dx, int32_t dy,
                                     int32_t w, int32_t h);
+/* M4c-T1: x11 popup (override_redirect 窗) 四事件; 事件 id = owner
+ * toplevelId, popup_id 走独立基址空间 (下方 X11_POPUP_ID_BASE) */
+void x11_toplevel_bridge_post_popup_show(uint32_t parent_id, uint32_t popup_id,
+                                         int32_t x, int32_t y,
+                                         int32_t w, int32_t h, int32_t argb01);
+void x11_toplevel_bridge_post_popup_move(uint32_t parent_id, uint32_t popup_id,
+                                         int32_t x, int32_t y);
+void x11_toplevel_bridge_post_popup_resize(uint32_t parent_id, uint32_t popup_id,
+                                           int32_t w, int32_t h);
+void x11_toplevel_bridge_post_popup_hide(uint32_t parent_id, uint32_t popup_id);
 uint32_t x11_toplevel_bridge_allocate_id(void);
 
 /* OHOS 侧日志 (hilog); ohos_output.c 的 OHLOG 是 static 宏, 本文件自取。
@@ -52,13 +62,33 @@ uint32_t x11_toplevel_bridge_allocate_id(void);
 
 #define X11_TOPLEVEL_MAX 64
 
+/* M4c-T1: x11 popup id 独立基址 (plan RF#2)。ArkTS 侧 wayland popupId 与
+ * x11 toplevelId 同出一个递增计数器 (AllocateToplevelId), 三个 id 空间在
+ * setPendingToplevel/渲染器表汇合 —— popup 用 1<<20 基址避开两个既有空间
+ * (计数器从 1 递增, 会话内不可达 2^20)。 */
+#define X11_POPUP_ID_BASE (1u << 20)
+static uint32_t g_popup_id_seq;
+
 struct x11_xs_entry {
     struct wlr_xwayland_surface *xs;
+    /* 语义按 is_popup 分叉: toplevel = AllocateToplevelId 分配的 id;
+     * popup = X11_POPUP_ID_BASE+seq。ArkTS 侧 createRenderer/输入/渲染
+     * 全按此 id 查表, popup 与 toplevel 共用同一查表路径。 */
     uint32_t toplevelId;
+    bool is_popup;      /* OR 窗 (xs->override_redirect): popup 分支 ——
+                         * 不发 created、不进 toplevel 事件流, 事件面 =
+                         * popup_show/move/resize/hide 四事件 */
     bool createdPosted; /* created 只发一次 (associate + 首帧判定的入口去重) */
     bool dead;          /* destroy 已到: session_reset 时不再重复补发 */
     bool dirty;         /* surface commit 待渲染 (render_tick 消费) */
     uint32_t skip_count; /* 未 attach 窗口的跳帧计数 (采样日志) */
+    /* M4c-T1: popup 事件状态 (仅 is_popup 条目使用) */
+    bool popup_visible;      /* popup_show 已发 (unmap/destroy 双触发 hide 的去重) */
+    uint32_t popup_parent_id; /* show 时用的 owner toplevelId (hide 事件 id) */
+    struct wlr_xwayland_surface *popup_owner_xs; /* show 时的 owner (焦点还原
+                         * 用; hide 时经 entry_of_xs 复验存活) */
+    bool popup_owner_logged; /* owner 缺失的降级日志只打一次 */
+    int popup_px, popup_py, popup_pw, popup_ph; /* 已上报几何 (move/resize 去重) */
     /* texture 不自管: surface->buffer 是 wlr_client_buffer, 其 ->texture
      * 由 wlroots 随 buffer 建好/销毁 (wlr_buffer.h:157), 渲染当帧直取 ——
      * 同帧同步 submit 完才释放引用, 无缓存失效问题。 */
@@ -77,6 +107,11 @@ struct x11_xs_entry {
     struct wl_listener request_activate;
     struct wl_listener set_parent;
     struct wl_listener map_request; /* M4b-T4: wine 还原窗口的唯一宿主信号 */
+    /* M4c-T1: OR 窗几何变化 (wine XMoveResizeWindow → ConfigureNotify →
+     * set_geometry)。request_configure 对 OR 窗结构性不发 (X server 直通
+     * 应答, 无 MapRequest/ConfigureRequest 事件), move/resize 信号源只有
+     * set_geometry (xwm.c:1512)。 */
+    struct wl_listener set_geometry;
 };
 
 static struct x11_xs_entry g_entries[X11_TOPLEVEL_MAX];
@@ -91,8 +126,8 @@ static struct wlr_renderer *g_renderer; /* render pass 用 */
  * entry_remove 的 memmove 会让内嵌 entry 移位, 跨线程并发查表+写字段 =
  * 错窗回绑/形式数据竞态。一把非递归大锁; 纪律:
  *   - 公开入口全加锁; static 内部函数 (entry_of_xxx、entry_remove、
- *     detach_listeners、try_post_created、render_entry) 约定调用方持锁,
- *     不加锁
+ *     detach_listeners、try_post_created、try_post_popup_show、
+ *     post_popup_hide、render_entry) 约定调用方持锁, 不加锁
  *   - 同线程重入检查: listener 回调互相不嵌套、render_tick 不重入, 安全
  *   - render_entry 持锁执行 (GL draw + present 数 ms): napi attach 最多
  *     等一帧 (90Hz 约 11ms), 可接受 —— 换队列化的复杂度不值得 (首版
@@ -124,6 +159,7 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_remove(&e->request_activate.link);
     wl_list_remove(&e->set_parent.link);
     wl_list_remove(&e->map_request.link);
+    wl_list_remove(&e->set_geometry.link);
     wl_list_init(&e->destroy.link);   /* 防 double-remove (session_reset 后
                                        * destroy 再到的悬挂回调安全化) */
     wl_list_init(&e->associate.link);
@@ -137,6 +173,7 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_init(&e->request_activate.link);
     wl_list_init(&e->set_parent.link);
     wl_list_init(&e->map_request.link);
+    wl_list_init(&e->set_geometry.link);
 }
 
 static void entry_remove(struct x11_xs_entry *e)
@@ -172,6 +209,129 @@ static void try_post_created(struct x11_xs_entry *e)
         x11_toplevel_bridge_post_title(e->toplevelId, e->xs->title);
 }
 
+/* ── M4c-T1: popup (override_redirect 窗) 事件翻译 ──
+ *
+ * 生命周期信号 (wlroots xwayland 对 OR 窗无 map/unmap 信号, 实读 xwm.c):
+ *   - show ≈ associate (wl_surface 绑定) + buffer 到位 —— 与 toplevel 的
+ *     created 判定同构 (try_post_created 同款门)。X map 对 OR 窗不发
+ *     MapRequest (X server 直通, xwm_handle_map_request 不会到达), 宿主
+ *     可观测的首个信号即 associate/commit。
+ *   - hide ≈ dissociate —— X unmap 与 destroy 都经 xwayland_surface_dissociate
+ *     (xwm.c:668, unmap_notify 与 destroy 两路都调; OR 窗不走 withdrawn),
+ *     surface 置 NULL 一站覆盖 plan RF#4 的双终态。
+ *   - move/resize ≈ set_geometry (ConfigureNotify, xwm.c:1512)。
+ * 坐标: xs->x/y 是 X 全局坐标; ArkTS PopupWindowManager.positionEntry 按
+ * 「父窗口全局原点 + off×scale」定位 (offX/offY 语义 = 相对父窗口原点,
+ * wayland 路线同款), 故这里换算成父相对偏移再上报 —— plan 架构句「X 全局
+ * 坐标直传」按消费端语义落为「父相对直传」, 换算单点在 show/geometry 两处;
+ * 全局定位由父窗定位链保证 (FWM 承载窗按 created 的 guest 坐标摆放,
+ * WineWindowManager.startFusionSubWindow D52)。 */
+/* owner 链上行: 沿 xs->parent 找最近的「已登记 toplevel」条目。子菜单的
+ * TRANSIENT_FOR 直接指向父菜单窗 (OR popup), 而 ArkTS PopupWindowManager
+ * 的定位/级联都以 toplevelId 为键 (parentWin = entries.get(id), popup id
+ * 查不到 → 事件永久积压), 故 popup 事件一律挂到根 toplevel 上, 偏移按
+ * 根 toplevel 原点计。链上窗未登记 (路线切换前创建等) → NULL 降级。 */
+static struct x11_xs_entry *popup_root_owner(struct wlr_xwayland_surface *xs)
+{
+    struct wlr_xwayland_surface *p = xs->parent;
+    while (p) {
+        struct x11_xs_entry *pe = entry_of_xs(p);
+        if (!pe) return NULL;
+        if (!pe->is_popup) return pe;
+        p = p->parent;
+    }
+    return NULL;
+}
+
+static void try_post_popup_show(struct x11_xs_entry *e)
+{
+    if (e->popup_visible || !e->xs->surface || !e->xs->surface->buffer) return;
+    struct x11_xs_entry *owner = popup_root_owner(e->xs);
+    if (!owner) {
+        /* 退化: owner 不在册 (无 TRANSIENT_FOR hint / owner 未登记)。
+         * 菜单无父链不可承载 (ArkTS 定位/级联销毁都以 parentToplevel 为键),
+         * 丢弃并留一次痕; 后续 commit 到达会重试 (属性读取与 commit 的
+         * 时序竞态自愈)。wine 菜单窗带 owner 创建 (win32u/menu.c:3357) 且
+         * set_style_hints 无条件写 TRANSIENT_FOR (window.c:1162), 常规
+         * 路径不进此分支。 */
+        if (!e->popup_owner_logged) {
+            e->popup_owner_logged = true;
+            XTL_LOG("XTL popup owner-not-tracked id=%{public}u (drop show)",
+                    e->toplevelId);
+        }
+        return;
+    }
+    e->popup_visible = true;
+    e->popup_parent_id = owner->toplevelId;
+    e->popup_owner_xs = owner->xs;
+    e->popup_px = (int)e->xs->x - (int)owner->xs->x;
+    e->popup_py = (int)e->xs->y - (int)owner->xs->y;
+    e->popup_pw = (int)e->xs->width;
+    e->popup_ph = (int)e->xs->height;
+    x11_toplevel_bridge_post_popup_show(
+        e->popup_parent_id, e->toplevelId,
+        e->popup_px, e->popup_py, e->popup_pw, e->popup_ph,
+        e->xs->has_alpha ? 1 : 0);
+    /* seat 焦点让渡 (plan T2 / RF#3): 键盘焦点随菜单走; activate 对 OR 窗
+     * 在 xwm 侧结构性 no-op (xwm_surface_activate 的 OR 门), keyboard
+     * enter 照发。菜单打开期间的指针事件由 popup 承载子窗直送 (multimode
+     * 口), 不依赖 seat 焦点。 */
+    wl_ohos_input_focus_xs(e->xs);
+    XTL_LOG("XTL popup-show id=%{public}u parent=%{public}u off=(%{public}d,%{public}d) %{public}ux%{public}u",
+            e->toplevelId, e->popup_parent_id,
+            e->popup_px, e->popup_py, e->xs->width, e->xs->height);
+}
+
+static void post_popup_hide(struct x11_xs_entry *e)
+{
+    if (!e->popup_visible) return;
+    e->popup_visible = false;
+    x11_toplevel_bridge_post_popup_hide(e->popup_parent_id, e->toplevelId);
+    /* 焦点还 owner (plan T2): 只还在册且存活的 owner; owner 已死时 seat
+     * 键盘焦点随 popup surface 销毁自清 (display_input TrackKbdFocus 的
+     * destroy 监听), 无悬挂引用。 */
+    struct x11_xs_entry *owner =
+        e->popup_owner_xs ? entry_of_xs(e->popup_owner_xs) : NULL;
+    if (owner) wl_ohos_input_focus_xs(owner->xs);
+    e->popup_owner_xs = NULL;
+    XTL_LOG("XTL popup-hide id=%{public}u parent=%{public}u",
+            e->toplevelId, e->popup_parent_id);
+}
+
+/* OR 窗几何变化 (wine XMoveResizeWindow → ConfigureNotify)。去重按已上报
+ * 值 (set_geometry 在鼠标 hover 高亮等纯重绘时不发, 只在几何真变时发)。 */
+static void handle_popup_geometry(struct wl_listener *listener, void *data)
+{
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, set_geometry);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    if (!e->popup_visible) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    int nx = e->popup_px, ny = e->popup_py;
+    const int nw = (int)e->xs->width, nh = (int)e->xs->height;
+    struct x11_xs_entry *owner = popup_root_owner(e->xs);
+    if (owner) {
+        nx = (int)e->xs->x - (int)owner->xs->x;
+        ny = (int)e->xs->y - (int)owner->xs->y;
+    } /* owner 已死: 保持上次父相对偏移 (菜单随父亡, 下一拍 hide 收尾) */
+    if (nx != e->popup_px || ny != e->popup_py) {
+        e->popup_px = nx;
+        e->popup_py = ny;
+        x11_toplevel_bridge_post_popup_move(e->popup_parent_id, e->toplevelId,
+                                            nx, ny);
+    }
+    if (nw != e->popup_pw || nh != e->popup_ph) {
+        e->popup_pw = nw;
+        e->popup_ph = nh;
+        x11_toplevel_bridge_post_popup_resize(e->popup_parent_id, e->toplevelId,
+                                              nw, nh);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void handle_surface_commit(struct wl_listener *listener, void *data)
 {
     struct x11_xs_entry *e =
@@ -180,8 +340,11 @@ static void handle_surface_commit(struct wl_listener *listener, void *data)
     pthread_mutex_lock(&g_lock);
     e->dirty = true;
     /* 首帧判定 (wayland PC 模式同款延后语义): commit 可能先于 associate ——
-     * buffer 就位即补发 created, 不漏首帧。 */
-    try_post_created(e);
+     * buffer 就位即补发 created, 不漏首帧。popup 分支 = show 判定 (同款门)。 */
+    if (e->is_popup)
+        try_post_popup_show(e);
+    else
+        try_post_created(e);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -197,7 +360,10 @@ static void handle_associate(struct wl_listener *listener, void *data)
         e->surface_commit.notify = handle_surface_commit;
         wl_signal_add(&e->xs->surface->events.commit, &e->surface_commit);
     }
-    try_post_created(e);
+    if (e->is_popup)
+        try_post_popup_show(e);
+    else
+        try_post_created(e);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -209,6 +375,10 @@ static void handle_dissociate(struct wl_listener *listener, void *data)
     pthread_mutex_lock(&g_lock);
     wl_list_remove(&e->surface_commit.link);
     wl_list_init(&e->surface_commit.link);
+    /* popup: X unmap 对 OR 窗 = dissociate (无 withdrawn 路径) → popup_hide
+     * (幂等, popup_visible 去重); 焦点还 owner。 */
+    if (e->is_popup)
+        post_popup_hide(e);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -394,7 +564,12 @@ static void handle_xs_destroy(struct wl_listener *listener, void *data)
     /* win 引用随 destroyed 事件由 ArkTS 关窗路径回收 (不在此碰
      * NativeWindow); texture 归 client_buffer 所有, 无需我们放。 */
     e->win = NULL;
-    x11_toplevel_bridge_post_destroyed(e->toplevelId);
+    /* popup: destroyed 不发 (ArkTS 的 onToplevelDestroyed 按 toplevel 语义
+     * 清 FWM/Ability, 不识别 popup id); hide 已由 destroy 路径前站的
+     * dissociate (xwayland_surface_destroy 先 dissociate 后发 destroy 信号)
+     * 发出 —— destroy 在此只是表回收。 */
+    if (!e->is_popup)
+        x11_toplevel_bridge_post_destroyed(e->toplevelId);
     entry_remove(e);
     pthread_mutex_unlock(&g_lock);
 }
@@ -413,7 +588,15 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     struct x11_xs_entry *e = &g_entries[g_entry_count++];
     memset(e, 0, sizeof(*e));
     e->xs = xs;
-    e->toplevelId = x11_toplevel_bridge_allocate_id();
+    /* M4c-T1: OR 分叉在最早入口 (plan RF#1) —— 判据只看 xs->override_redirect
+     * (spec §3.5 红线, 不依赖 surface 存在; OR 窗 associate 是否发生不进判据)。 */
+    e->is_popup = xs->override_redirect;
+    if (e->is_popup) {
+        /* popup id 独立基址 (RF#2), 不占 toplevel id 计数器 */
+        e->toplevelId = X11_POPUP_ID_BASE + g_popup_id_seq++;
+    } else {
+        e->toplevelId = x11_toplevel_bridge_allocate_id();
+    }
     /* 全部 listener 先空链自引 (detach_listeners 前提, 见其注释):
      * surface_commit/dissociate 是 associate 时才 add 的。 */
     wl_list_init(&e->destroy.link);
@@ -427,12 +610,27 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_list_init(&e->request_activate.link);
     wl_list_init(&e->set_parent.link);
     wl_list_init(&e->map_request.link);
+    wl_list_init(&e->set_geometry.link);
     e->destroy.notify = handle_xs_destroy;
     wl_signal_add(&xs->events.destroy, &e->destroy);
     e->associate.notify = handle_associate;
     wl_signal_add(&xs->events.associate, &e->associate);
     e->dissociate.notify = handle_dissociate;
     wl_signal_add(&xs->events.dissociate, &e->dissociate);
+    if (e->is_popup) {
+        /* popup 事件面: map 状态走 associate/commit (见 try_post_popup_show
+         * 注释), 几何走 set_geometry (OR 窗无 request_configure)。不挂
+         * toplevel 状态面 (minimize/fullscreen/activate/parent/map_request
+         * 对 OR 菜单结构性不会发 —— wine 菜单不解 map/不改状态), 挂了也无
+         * 消费者 (createdPosted 恒 false 的门会全部拦下)。 */
+        e->set_geometry.notify = handle_popup_geometry;
+        wl_signal_add(&xs->events.set_geometry, &e->set_geometry);
+        /* wine 的 dummy parent (winex11.drv get_dummy_parent, OR 1x1) 等
+         * 无 surface 的 OR 窗也会进表 —— 永不 associate 即永不 show,
+         * 静默等 destroy (与 toplevel 的未 attach 静默同款)。 */
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     e->set_title.notify = handle_set_title;
     wl_signal_add(&xs->events.set_title, &e->set_title);
     e->request_configure.notify = handle_request_configure;
@@ -470,11 +668,16 @@ void x11_toplevel_session_reset(void)
         e->dead = true;
         detach_listeners(e);
         e->win = NULL;
-        x11_toplevel_bridge_post_destroyed(e->toplevelId);
+        /* popup: destroyed 不发 (同 handle_xs_destroy) —— ArkTS 的 popup
+         * 子窗经父 toplevel destroyed 的 destroyPopupsForToplevel 级联销毁
+         * (本循环对 owner 发的 destroyed 即触发), 无孤儿路径。 */
+        if (!e->is_popup)
+            x11_toplevel_bridge_post_destroyed(e->toplevelId);
     }
     g_entry_count = 0;
     pthread_mutex_unlock(&g_lock);
 }
+
 
 struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId)
 {
@@ -731,8 +934,11 @@ void x11_toplevel_render_tick(void)
         struct x11_xs_entry *e = &g_entries[i];
         if (e->dead) continue;
         /* created 补发兜底: buffer 在 attach 之后才到 (associate/commit 都
-         * 已试过) 的时序由帧钟收口。 */
-        try_post_created(e);
+         * 已试过) 的时序由帧钟收口。popup 条目跳过 —— created 是 toplevel
+         * 专属事件, 对 popup 发 = ArkTS 按 popupId 建 toplevel 承载 (M4c-T1
+         * 自查修: associate/commit 兜底已覆盖 popup show, 帧钟只需渲染)。 */
+        if (!e->is_popup)
+            try_post_created(e);
         if (!e->win || !e->dirty) {
             if (!e->win && ++e->skip_count % 600 == 0)
                 XTL_LOG("XTL skip-no-window id=%{public}u n=%{public}u",

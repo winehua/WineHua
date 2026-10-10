@@ -115,6 +115,12 @@ void wl_ohos_input_post_mm_pointer(uint32_t toplevelId, int lx, int ly,
 void wl_ohos_input_post_mm_key(uint32_t toplevelId, uint32_t keycode,
                                bool press);
 
+// M4c-T2: seat 键盘焦点让渡 (x11 popup 焦点链) —— activate + keyboard
+// enter, 同 multimode 口的焦点纪律 (幂等: 同 surface 短路; 无内容 surface
+// 丢弃)。必须在合成器事件循环线程调用 (wlr_seat 无锁)。对 OR 窗 activate
+// 在 xwm 侧结构性 no-op (xwm_surface_activate 的 OR 门), keyboard enter 照发。
+void wl_ohos_input_focus_xs(struct wlr_xwayland_surface *xs);
+
 #ifdef __cplusplus
 }
 #endif

@@ -70,6 +70,44 @@ void x11_toplevel_bridge_post_modal(uint32_t id, uint32_t owner_id,
         ToplevelEventBus::JsonModal(id, owner_id, modal, dx, dy, w, h));
 }
 
+/* ── M4c-T1: x11 popup (override_redirect 窗) 四事件 ──
+ * 事件 id = owner toplevelId (ArkTS PopupWindowManager 的 parentToplevel,
+ * 承载子窗定位/级联销毁都以它为键); popupId 走独立基址空间
+ * (X11_POPUP_ID_BASE, x11_toplevel.c), 不占 toplevel id。JSON 形态与
+ * wayland 路线 (wl_core.cpp UpdateSubsurfaceOnCommit) 逐字一致。 */
+
+void x11_toplevel_bridge_post_popup_show(uint32_t parent_id, uint32_t popup_id,
+                                         int32_t x, int32_t y,
+                                         int32_t w, int32_t h, int32_t argb01)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        parent_id, ToplevelEventType::PopupShow,
+        ToplevelEventBus::JsonPopupShow(popup_id, x, y, w, h, argb01));
+}
+
+void x11_toplevel_bridge_post_popup_move(uint32_t parent_id, uint32_t popup_id,
+                                         int32_t x, int32_t y)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        parent_id, ToplevelEventType::PopupMove,
+        ToplevelEventBus::JsonPopupMove(popup_id, x, y));
+}
+
+void x11_toplevel_bridge_post_popup_resize(uint32_t parent_id, uint32_t popup_id,
+                                           int32_t w, int32_t h)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        parent_id, ToplevelEventType::PopupResize,
+        ToplevelEventBus::JsonPopupResize(popup_id, w, h));
+}
+
+void x11_toplevel_bridge_post_popup_hide(uint32_t parent_id, uint32_t popup_id)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(
+        parent_id, ToplevelEventType::PopupHide,
+        ToplevelEventBus::JsonPopupHide(popup_id));
+}
+
 uint32_t x11_toplevel_bridge_allocate_id(void)
 {
     return WaylandServer::GetInstance()->GetToplevelManager().AllocateToplevelId();
