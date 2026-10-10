@@ -1,0 +1,31 @@
+{
+  "id": "fusion-popup",
+  "title": "M4c popup 菜单链（窗界内菜单, OR 子窗呈现+关闭）",
+  "exe": "fusion_popup.exe",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/win/fusion_popup.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  },
+  "seconds": 20,
+  "timeoutMs": 120000,
+  "inject": true,
+  "checks": [
+    "result-json",
+    "visual:fusion-popup-menu",
+    "fusion-popup"
+  ],
+  "_checks_note": "M4c-T4 判定域 = popup 渲染/关闭链（已验证行为）。点选（WM_COMMAND）不注入不判 —— T3 越界点选悬案移交 M4d（checks/fusion-popup-selection 的 SKIP 口径）。"
+}

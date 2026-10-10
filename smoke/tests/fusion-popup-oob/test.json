@@ -1,0 +1,35 @@
+{
+  "id": "fusion-popup-oob",
+  "title": "M4c popup 菜单链（越界形态: 菜单整条越出窗底缘, 只判渲染/关闭）",
+  "exe": "fusion_popup.exe",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/win/fusion_popup.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  },
+  "seconds": 20,
+  "timeoutMs": 120000,
+  "inject": true,
+  "env": {
+    "WINEHUA_POPUP_OOB": "1"
+  },
+  "checks": [
+    "result-json",
+    "visual:fusion-popup-menu",
+    "fusion-popup",
+    "fusion-popup-selection"
+  ],
+  "_checks_note": "M4c-T4 Ruling: 越界渲染已证（T3 m4c-oob-2）、点选悬案未闭合 —— fusion-popup-selection 恒 SKIP 注明移交 M4d，不做成会假 PASS 的判据；渲染与关闭链照常判定。负全局坐标（越出屏幕左/上）不在本用例范围（RF#5 后半未测，仅手动路径）。"
+}

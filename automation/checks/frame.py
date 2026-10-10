@@ -178,10 +178,10 @@ VALIDATORS = {
 }
 
 
-def _classify_pixels(image_path: Path, step: int = 8):
-    """fusion 双窗定位共用: 全屏采样并按主色分类。
-    返回 (分类掩码 dict[name->(xs,ys)], width, height)。分类阈值宽松
-    (JPEG 压缩/缩放容差), 命中率比精确色值重要。"""
+def _classify_masks(image_path: Path, step: int = 8):
+    """全屏采样并按主色分类的 2D 掩码形态（阈值单源在这里；
+    _classify_pixels 与 fusion-popup-menu 的连通分量定位都引用它）。
+    分类阈值宽松 (JPEG 压缩/缩放容差), 命中率比精确色值重要。"""
     import numpy as np
 
     samples, xgrid, ygrid, width, height = _load_sampled_rgb(
@@ -201,14 +201,18 @@ def _classify_pixels(image_path: Path, step: int = 8):
     # 成对改, 原则 25), cyan 与 green/blue 按 r 通道可分。
     cyan = (g > 170) & (b > 170) & (r < 110)
     return {
-        "red": (xgrid[red], ygrid[red]),
-        "green": (xgrid[green], ygrid[green]),
-        "blue": (xgrid[blue], ygrid[blue]),
-        "white": (xgrid[white], ygrid[white]),
-        "magenta": (xgrid[magenta], ygrid[magenta]),
-        "cyan": (xgrid[cyan], ygrid[cyan]),
-        "total": (xgrid, ygrid),
-    }, width, height
+        "red": red, "green": green, "blue": blue, "white": white,
+        "magenta": magenta, "cyan": cyan,
+    }, xgrid, ygrid, width, height
+
+
+def _classify_pixels(image_path: Path, step: int = 8):
+    """fusion 双窗定位共用: 全屏采样并按主色分类。
+    返回 (分类掩码 dict[name->(xs,ys)], width, height)。"""
+    masks, xgrid, ygrid, width, height = _classify_masks(image_path, step)
+    coords = {name: (xgrid[m], ygrid[m]) for name, m in masks.items()}
+    coords["total"] = (xgrid, ygrid)
+    return coords, width, height
 
 
 def _bbox(xs, ys):
@@ -327,9 +331,185 @@ def validate_fusion_window_b(image_path: Path, region: dict | None = None) -> di
             "metrics": {"boxes": boxes}}
 
 
+def _dense_band(values, gap: int = 16):
+    """一维坐标的最宽「密集连续段」(lo, hi)。密集 = 该坐标上的样本计数
+    ≥ max(3, 峰值×0.25)。散点 UI (按钮/图标/文字) 计数远低于窗体行/列,
+    进不了带 —— fusion-popup 的绿锚点定位用它, 不被屏上零散绿色元素
+    (VKD3D 按钮/文件夹图标) 拉爆 bbox (fusion-window-b 锚定过滤同思路,
+    但按钮可能与锚点同排, 单靠邻域过滤不够, 按密度取主矩形)。gap = 相邻
+    密集坐标的最大空隙 (采样格单位), 容 JPEG 噪声断点。"""
+    import numpy as np
+
+    if len(values) == 0:
+        return None
+    uniq, counts = np.unique(values, return_counts=True)
+    threshold = max(3, int(counts.max() * 0.25))
+    dense = uniq[counts >= threshold]
+    if len(dense) == 0:
+        return None
+    best_lo = lo = int(dense[0])
+    best_hi = hi = int(dense[0])
+    for value in dense[1:]:
+        if int(value) - hi <= gap:
+            hi = int(value)
+        else:
+            if hi - lo > best_hi - best_lo:
+                best_lo, best_hi = lo, hi
+            lo = hi = int(value)
+    if hi - lo > best_hi - best_lo:
+        best_lo, best_hi = lo, hi
+    return best_lo, best_hi
+
+
+def _largest_component_bbox(mask, cell: int = 1):
+    """粗网格布尔掩码的最大 4-连通分量 bbox (原始像素坐标, cell = 网格
+    步长)。菜单定位用它而不是全体白像素的 bbox: 搜索区里其它白色元素
+    (按钮白字/状态文字) 会把 bbox 并成跨矩形大框, 底色占比判定整段失真
+    (合成自测 pass-with-decoy 形态实锤)。网格 ~80k 格, BFS 开销可忽略。"""
+    from collections import deque
+
+    import numpy as np
+
+    active = np.argwhere(mask)
+    if len(active) == 0:
+        return None, 0
+    seen = np.zeros(mask.shape, dtype=bool)
+    best_box = None
+    best_size = 0
+    for sy, sx in active:
+        if seen[sy, sx]:
+            continue
+        seen[sy, sx] = True
+        queue = deque([(sy, sx)])
+        ys0 = ys1 = sy
+        xs0 = xs1 = sx
+        size = 0
+        while queue:
+            y, x = queue.popleft()
+            size += 1
+            ys0, ys1 = min(ys0, y), max(ys1, y)
+            xs0, xs1 = min(xs0, x), max(xs1, x)
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if (0 <= ny < mask.shape[0] and 0 <= nx < mask.shape[1]
+                        and mask[ny, nx] and not seen[ny, nx]):
+                    seen[ny, nx] = True
+                    queue.append((ny, nx))
+        if size > best_size:
+            best_size = size
+            best_box = {"x": int(xs0) * cell, "y": int(ys0) * cell,
+                        "w": int(xs1 - xs0) * cell, "h": int(ys1 - ys0) * cell}
+    return best_box, best_size
+
+
+def validate_fusion_popup_menu(image_path: Path, region: dict | None = None) -> dict:
+    """M4c popup 菜单帧内容判定（fusion-popup / fusion-popup-oob 探针）。
+
+    场景: fusion_popup 探针单窗纯绿锚点（WS_POPUP 无非客户区, 客户区全绿,
+    不画任何白色 —— 白块唯一来源是菜单），TrackPopupMenu 程序化弹菜单，
+    OR 菜单窗以独立 OHOS 子窗呈现在锚点窗内（fusion-popup）或底缘下
+    （fusion-popup-oob）。判据三段：
+      1. 绿锚点窗定位（主色分类器 green）+ 密度带取主矩形；
+      2. 锚点邻域白块 = 菜单底色（真机 m4c-popup-1 / m4c-oob-2 实测
+         menu bg RGB≥243；白块在锚点 bbox 内或正下方 ≤1.5 倍锚点高 ——
+         oob 形态菜单整条越出窗底缘）；
+      3. 白块内暗色文字条带 ≥2（条目结构）。细采样 step=2 —— 菜单文字
+         笔画在 2800px 整屏帧里约 2px 宽，粗采样 (step=8) 会整行漏掉
+         （真机实测条目行高 17-19px、项距 ~36px）。
+
+    只判渲染呈现（已验证域）。点选（WM_COMMAND）不在本判定范围 —— T3
+    越界点选悬案移交 M4d（checks 侧由 fusion-popup-selection 出 SKIP
+    标记，不做成会假 PASS 的判据）。"""
+    import numpy as np
+
+    masks, xgrid, ygrid, width, height = _classify_masks(image_path)
+    gx, gy = xgrid[masks["green"]], ygrid[masks["green"]]
+    band_x = _dense_band(gx)
+    band_y = _dense_band(gy)
+    if band_x is None or band_y is None:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": "绿锚点未定位 (探针窗缺失或被遮挡)"}
+    ax0, ax1 = band_x
+    ay0, ay1 = band_y
+    if (ax1 - ax0) * (ay1 - ay0) < 0.01 * width * height:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": f"绿锚点过小 ({ax1 - ax0}x{ay1 - ay0}, "
+                           f"screen={width}x{height}) —— 探针窗未呈现?"}
+
+    # 菜单搜索区: 锚点 x 邻域 ±1/4 宽; y 从锚点顶到其下 1.6 倍高 (oob 悬挂)。
+    # 白块 = 区内最大白色连通分量 (不是全体白像素 bbox: 按钮白字等散点白
+    # 会把 bbox 并成跨矩形大框, 底色占比判定失真 —— 合成自测
+    # pass-with-decoy 形态实锤)。
+    rx0 = max(0, ax0 - (ax1 - ax0) // 4)
+    rx1 = min(width - 1, ax1 + (ax1 - ax0) // 4)
+    ry0 = max(0, ay0 - (ay1 - ay0) // 10)
+    ry1 = min(height - 1, ay1 + (ay1 - ay0) * 3 // 2)
+    region_white = masks["white"] & (xgrid >= rx0) & (xgrid <= rx1) & \
+                   (ygrid >= ry0) & (ygrid <= ry1)
+    menu, comp = _largest_component_bbox(region_white, cell=8)
+    if menu is None or comp < 40:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": f"锚点邻域无菜单白块 (largest={comp} samples, "
+                           f"region=({rx0},{ry0})-({rx1},{ry1})) —— 菜单未渲染"}
+    aw, ah = ax1 - ax0, ay1 - ay0
+    if menu["w"] > aw * 1.2 or menu["h"] > ah * 1.2:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": f"白块尺寸超出菜单形态 ({menu} vs 锚点 {aw}x{ah})"}
+    if menu["w"] < 24 or menu["h"] < 16:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": f"白块过小不成菜单 ({menu})"}
+
+    # 细采样: 菜单 bbox (pad 4px) 内找暗色文字条带
+    fx0 = max(0, menu["x"] - 4)
+    fy0 = max(0, menu["y"] - 4)
+    fine_region = {"x": fx0, "y": fy0,
+                   "width": min(width - fx0, menu["w"] + 8),
+                   "height": min(height - fy0, menu["h"] + 8)}
+    samples, fxg, fyg, _, _ = _load_sampled_rgb(image_path, step=2,
+                                                region=fine_region)
+    r = samples[:, :, 0].astype(int)
+    g = samples[:, :, 1].astype(int)
+    b = samples[:, :, 2].astype(int)
+    dark = (r < 120) & (g < 120) & (b < 120)
+    white = (r > 210) & (g > 210) & (b > 210)  # 同 _classify_masks 白阈值
+    white_ratio = float(white.sum()) / max(1, white.size)
+    if white_ratio < 0.35:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": f"菜单底色占比不足 ({white_ratio:.2f} < 0.35) —— "
+                           f"白块不是菜单 (按钮文字类小面积白)"}
+    rows = dark.sum(axis=1)
+    text_rows = np.nonzero(rows >= 2)[0]
+    if len(text_rows) == 0:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": "菜单白块内无文字 —— 条目结构缺失 (空菜单?)"}
+    # 行聚类成条带 (间隙 ≤3 个采样格 = 6px; 真机项距 ~36px 远大于此)
+    bands = []
+    start = prev = int(text_rows[0])
+    for y in text_rows[1:]:
+        y = int(y)
+        if y - prev <= 3:
+            prev = y
+            continue
+        bands.append((start, prev))
+        start = prev = y
+    bands.append((start, prev))
+    bands = [band for band in bands if band[1] - band[0] >= 2]  # ≥4px 行高
+    if len(bands) < 2:
+        return {"status": "FAIL", "validator": "fusion-popup-menu",
+                "message": f"文字条带 {len(bands)} < 2 —— 条目结构缺失 "
+                           f"(探针菜单固定 3 项; 单行白 = 按钮文字类误定位)"}
+    return {"status": "PASS", "validator": "fusion-popup-menu",
+            "message": f"菜单底色+条目结构定位通过 ({len(bands)} 条目行, "
+                       f"menu={menu})",
+            "metrics": {"anchor": {"x": ax0, "y": ay0, "w": aw, "h": ah},
+                        "menu": menu,
+                        "textBands": len(bands),
+                        "whiteRatio": round(white_ratio, 2)}}
+
+
 VALIDATORS.update({
     "fusion-window-a": validate_fusion_window_a,
     "fusion-window-b": validate_fusion_window_b,
+    "fusion-popup-menu": validate_fusion_popup_menu,
 })
 
 

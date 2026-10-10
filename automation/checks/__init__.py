@@ -130,6 +130,67 @@ def fusion_clicks(ctx: dict) -> dict:
             "message": f"点击按窗命中 (a={a}, b=0), route 自报 x11"}
 
 
+def fusion_popup(ctx: dict) -> dict:
+    """M4c-T4: popup 链判定 —— result JSON 的 metrics.popupSeq。
+
+    判据: opened（TrackPopupMenu 进入且驻留 ≥3s = OR 菜单窗 show 链在
+    guest 侧成立；驻留时长是事实门 —— 立即返回 = 菜单没弹出）且 closed
+    （程序化 WM_CANCELMODE 后返回 = close 链闭合；宿主侧 popup_hide →
+    子窗销毁链 T3 已人工验证，本判定不重复覆盖）。expectedRoute 校验同
+    fusion-clicks（env 丢失抓点）。ownerClicked 只记录不判（注入编排不是
+    本链判据）。渲染呈现由 visual:fusion-popup-menu 另判。
+
+    点选（WM_COMMAND）明确不判 —— T3 越界点选悬案未闭合（点击到达 wine
+    但不产生 WM_COMMAND，四轮控制变量未收敛），移交 M4d；探针固定程序化
+    开关菜单，不存在点选注入，无假 PASS 路径。"""
+    result = ctx.get("result") or {}
+    metrics = result.get("metrics") or {}
+    seq = metrics.get("popupSeq")
+    if not isinstance(seq, dict) or not seq:
+        return {"status": "FAIL", "stage": "fusion-popup",
+                "message": "popupSeq 缺失 —— 探针构建过旧（无 popup 指标）"}
+    if metrics.get("windowsCreated") is False:
+        return {"status": "FAIL", "stage": "fusion-popup",
+                "message": "探针窗未创建 (windowsCreated=false)"}
+    expect = metrics.get("expectedRoute")
+    if expect != "x11":
+        return {"status": "FAIL", "stage": "fusion-popup",
+                "message": f"expectedRoute={expect!r} (期望 x11) —— smoke env "
+                           f"未到 guest (冷启参数被丢或探针构建过旧)"}
+    if not seq.get("opened"):
+        return {"status": "FAIL", "stage": "fusion-popup",
+                "message": f"菜单未弹出 (trackMs={seq.get('trackMs')}, "
+                           f"result={seq.get('result')}) —— popup show 链断"}
+    if not seq.get("closed"):
+        return {"status": "FAIL", "stage": "fusion-popup",
+                "message": "菜单未关闭 —— popup hide 链断（探针程序化关闭"
+                           "未返回）"}
+    return {"status": "PASS", "stage": "fusion-popup",
+            "message": f"popup 开关链闭合 (trackMs={seq.get('trackMs')}, "
+                       f"menuSeen={seq.get('menuSeen')}, "
+                       f"rect={seq.get('menuRect')}), route 自报 "
+                       f"{metrics.get('expectedRoute')}",
+            "metrics": seq}
+
+
+def fusion_popup_selection(ctx: dict) -> dict:
+    """M4c-T4 Ruling: 越界点选拒绝做自动判据 —— 恒 SKIP 并注明移交。
+
+    T3 悬案：越界菜单项点击到达 wine 且菜单关闭，但不产生 WM_COMMAND
+    （四轮控制变量——几何/owner 先导点击/SetForegroundWindow/坐标换算
+    ——全部排除，唯一全绿组合 = notepad 真实流）。悬案收敛位置 =
+    Xwayland rootless OR 窗指针路由 vs 探针消息循环形态，未闭合；复现
+    资产在库（smoke/jobs/popup-overflow-x11.json）。本判定器存在的意义
+    = 把「这一格没验」显式写进每轮 host-summary，而不是让 oob 用例的
+    PASS 被读成「越界点选已验证」。SKIP 是合法答案，不硬造 PASS。"""
+    return {"status": "SKIP", "stage": "fusion-popup-selection",
+            "message": "越界点选路由悬案移交 M4d（T3: 点击到达 wine 菜单"
+                       "关闭但不产生 WM_COMMAND；复现资产 smoke/jobs/"
+                       "popup-overflow-x11.json）——本用例不注入点选，"
+                       "渲染/关闭链由 visual:fusion-popup-menu 与 "
+                       "fusion-popup 另判"}
+
+
 def _load_preview_rect(run_dir) -> dict | None:
     """读归档的预览框物理矩形（D22 §2.4 判据债的设备端数据落盘）。
 
@@ -167,8 +228,10 @@ def visual(ctx: dict) -> dict:
     region = None
     validator = ctx.get("validator", "")
     # M4a-T6: fusion 双窗判定器自带全屏定位 (独立 OHOS 窗, 屏幕位置由窗管
-    # 决定, host 无 preview-rect 可裁) —— 跳过 §2.4 的 region 门。
-    fusion_locating = validator.startswith("fusion-window")
+    # 决定, host 无 preview-rect 可裁) —— 跳过 §2.4 的 region 门。M4c-T4
+    # popup 菜单判定同形态 (popup 子窗位置 = 父窗原点+off×scale, host 侧
+    # 同样无矩形可裁)。
+    fusion_locating = validator.startswith(("fusion-window", "fusion-popup"))
     if ((result.get("metrics") or {}).get("expectedRoute")) == "x11" and not fusion_locating:
         region = _load_preview_rect(ctx.get("run_dir"))
         if region is None:
@@ -376,6 +439,8 @@ REGISTRY = {
     "wine-trace": _wine_trace.wine_trace,
     "fusion-clicks": fusion_clicks,
     "fusion-state": fusion_state,
+    "fusion-popup": fusion_popup,
+    "fusion-popup-selection": fusion_popup_selection,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
 }
