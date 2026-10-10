@@ -222,6 +222,11 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_signal_add(&xs->events.set_title, &e->set_title);
     e->request_configure.notify = handle_request_configure;
     wl_signal_add(&xs->events.request_configure, &e->request_configure);
+    /* 创建期 title 丢失兜底 (T6 byTitle 实锤): xwm 在 manage 时同步读
+     * WM_NAME, set_title 信号可能先于 new_surface 发过 —— 挂 listener 后
+     * 补发当前值, 否则 byTitle/按 title 定位在 ArkTS 侧永远找不到窗。 */
+    if (xs->title && xs->title[0])
+        x11_toplevel_bridge_post_title(e->toplevelId, xs->title);
     /* xs 可能 associate 先于 new_surface 到达 (xwm 时序): 已有 surface 就
      * 立即判定, 否则等 associate 回调。 */
     try_post_created(e);
