@@ -178,14 +178,32 @@ static void detach_listeners(struct x11_xs_entry *e)
 
 static void entry_remove(struct x11_xs_entry *e)
 {
+    /* 不 memmove (M4c-T4 现场实锤, cppcrash 20261011033916): entry 内嵌的
+     * wl_listener link 节点地址被活跃信号链 (xs->events.destroy 等) 直接
+     * 引用, memmove 挪动 entry = 其余 entry 的 link 全部指向错位地址 ——
+     * 下一个销毁 surface 的 destroy 回调走不到, wlroots
+     * xwayland_surface_destroy 的 assert(wl_list_empty(destroy
+     * listener_list)) (xwm.c:701) 必炸, app 整进程 SIGABRT (组合器死 =
+     * 全部 wine 子进程陪葬)。M4a 起每轮 fusion 收尾都在炸 (单用例套件
+     * summary 先落地被掩盖, faultlogger cppcrash-app.hackeris.winehua 自
+     * 20261010041412 起一路有账); M4c-T4 套件扩成多用例后 crash 移进跑批
+     * 中段才现形。改为墓碑槽 + 复用, entry 地址终身稳定。前置: 两个死亡
+     * 入口 (handle_xs_destroy / session_reset) 都先 detach_listeners 再
+     * 进这里, 槽内 link 已全部空链自引。 */
+    e->dead = true;
+    e->xs = NULL;
+    e->win = NULL;
+}
+
+/* 空槽分配: 优先复用墓碑槽 (地址稳定, 见 entry_remove 注释), 无则追加。 */
+static struct x11_xs_entry *entry_alloc(void)
+{
     for (size_t i = 0; i < g_entry_count; ++i) {
-        if (&g_entries[i] == e) {
-            memmove(&g_entries[i], &g_entries[i + 1],
-                    (g_entry_count - i - 1) * sizeof(*e));
-            g_entry_count--;
-            return;
-        }
+        if (g_entries[i].dead && g_entries[i].xs == NULL)
+            return &g_entries[i];
     }
+    if (g_entry_count >= X11_TOPLEVEL_MAX) return NULL;
+    return &g_entries[g_entry_count++];
 }
 
 /* created 时机 (spec §3.1): associate + 首帧 buffer 存在 —— 对齐 wayland
@@ -581,11 +599,15 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
 {
     if (!g_active || !xs) return;
     pthread_mutex_lock(&g_lock);
-    if (entry_of_xs(xs) || g_entry_count >= X11_TOPLEVEL_MAX) {
+    if (entry_of_xs(xs)) {
         pthread_mutex_unlock(&g_lock);
-        return; /* 重复 new_surface 防御 / 表满 (review minor: 满时静默) */
+        return; /* 重复 new_surface 防御 */
     }
-    struct x11_xs_entry *e = &g_entries[g_entry_count++];
+    struct x11_xs_entry *e = entry_alloc();
+    if (!e) {
+        pthread_mutex_unlock(&g_lock);
+        return; /* 表满 (review minor: 满时静默) */
+    }
     memset(e, 0, sizeof(*e));
     e->xs = xs;
     /* M4c-T1: OR 分叉在最早入口 (plan RF#1) —— 判据只看 xs->override_redirect
@@ -667,6 +689,7 @@ void x11_toplevel_session_reset(void)
         if (e->dead) continue;
         e->dead = true;
         detach_listeners(e);
+        e->xs = NULL; /* 墓碑态同 entry_remove (entry_alloc 复用判据) */
         e->win = NULL;
         /* popup: destroyed 不发 (同 handle_xs_destroy) —— ArkTS 的 popup
          * 子窗经父 toplevel destroyed 的 destroyPopupsForToplevel 级联销毁
@@ -683,7 +706,7 @@ struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId)
 {
     pthread_mutex_lock(&g_lock);
     for (size_t i = 0; i < g_entry_count; ++i) {
-        if (g_entries[i].toplevelId == toplevelId) {
+        if (g_entries[i].toplevelId == toplevelId && !g_entries[i].dead) {
             struct wlr_xwayland_surface *xs = g_entries[i].xs;
             pthread_mutex_unlock(&g_lock);
             return xs;
