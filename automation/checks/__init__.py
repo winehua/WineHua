@@ -74,7 +74,9 @@ def fusion_state(ctx: dict) -> dict:
     state_seq_*)。stateSeq 缺失 = env WINEHUA_SMOKE_PROBE_STATE 未到
     guest (同 fusion-clicks 的 expectedRoute 抓点)。stateNote 非空 =
     确认超时, 报超时步骤。全屏视觉帧判定已砍 (T3 Ruling: 帧采集时序
-    竞争不可靠), 全屏链的 host 侧证据 = 归档事件流 (event=fullscreen)。"""
+    竞争不可靠)。本判定只覆盖 win32 侧事实: host 侧事件到达 (FWM
+    hilog 的 minimize/show/fullscreen/restore 时序) 不进自动判定, 以
+    FWM 日志人工核验, capture 不归档 (final review I3)。"""
     result = ctx.get("result") or {}
     metrics = result.get("metrics") or {}
     seq = metrics.get("stateSeq")

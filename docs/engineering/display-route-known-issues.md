@@ -148,15 +148,19 @@ fusion 窗口集（全屏、永远在最底层）。接受的理由：D50 验证
 抢回前台，污染 snapshot 帧采集——判定 FAIL 时先看帧内容是否 POC UI，
 是则重跑，不进代码排查。
 
-### 2.13 M4b 收口：x11 状态面四语义全链 PASS 与遗留边界（2026-10-11）
+### 2.13 M4b 收口：状态面三语义端到端 PASS 与遗留边界（2026-10-11）
 
-**验收状态**：状态面四语义（minimize/restore、fullscreen/unfullscreen、
-modal owner、activate 置前）全链 PASS——fusion_probe stateSeq 5/5
-（win32 侧逐步确认；T4 两轮 + T5 复核共三轮一致）；x11-fusion 5 checks
-（result-json / visual-a / visual-b / fusion-clicks / fusion-state）全
-PASS（fusion-r20261011-003113）。回归门禁（T5 独立复跑，不引用 T4 轮
-数字）均 = 基线：前缀组 displayroute-win32-interactive（x11 + virtual）
-20/21（job-r20261011-002451，唯一缺口 = input-keyboard-x64 char-count，
+**验收状态**：minimize/restore、fullscreen/unfullscreen、activate 置前
+三语义端到端 PASS（guest win32 确认 + 宿主 FWM 事件链均验证）；modal
+owner 仅 win32 侧确认，宿主链未触发（见本节遗留观察，宿主侧验证属
+M4c）——fusion_probe stateSeq 5/5（win32 侧逐步确认；T4 两轮 + T5 复核
+共三轮一致）；x11-fusion 5 checks（result-json / visual-a / visual-b /
+fusion-clicks / fusion-state）全 PASS（fusion-r20261011-003113）。宿主
+侧事件到达以 FWM hilog 人工核验（minimize → show×2 → fullscreen →
+restore 全链到达），该 capture 未归档，不进自动判定。回归门禁（T5 独立
+复跑，不引用 T4 轮数字）均 = 基线：前缀组
+displayroute-win32-interactive（x11 + virtual）20/21
+（job-r20261011-002451，唯一缺口 = input-keyboard-x64 char-count，
 XIM 已知；D35 注入间歇家族 input-mouse-x64 / input-relative-x64 本轮
 未出现，无需复跑）；core 3/4（core-r20261011-002802，opengl-x86 = D49
 已知）。
@@ -187,9 +191,24 @@ minimize() 近似，非自由窗口设备上不生效也不报错，最坏 = 窗
 Pad 形态仍走旧路，fusion/x11 状态语义不向 Pad 下发。
 
 **遗留观察（不阻塞，M4c 前置排查点）**：
-- modal 步宿主侧 set_parent 未触发——wine 侧 owner 变更
-  （SetWindowLongPtr GWLP_HWNDPARENT）是否更新 WM_TRANSIENT_FOR 待查；
-  win32 侧确认已过、判定不受影响。
+- modal 步宿主侧 set_parent 未触发，根因已实锤（final review I1）：wine
+  只在创建/管理路径写 `XSetTransientForHint`（set_style_hints，
+  window.c:1162，由 create_window → set_wm_hints 驱动）；运行期 owner
+  变更（SetWindowLongPtr GWLP_HWNDPARENT）不经过任何重写路径（owner 非
+  style、不触发 style-change hook，也不单独触发 SWP_FRAMECHANGED），
+  hint 不更新 → xwm 的 WM_TRANSIENT_FOR handler 不 fire → 宿主
+  set_parent 结构性不可达（T4 真机实测一致）。probe 的 modal 步因此只
+  覆盖 win32 记账，宿主链（Modal 事件 → ArkTS 模态跟随）零覆盖且套件
+  无法感知回归。宿主侧验证属 M4c：走 owned 窗创建时建立关系（探测
+  CreateWindowExA 带 owner 的路径——创建即写 transient → manage →
+  set_parent fire），不用运行期 owner 变更驱动。
+- wine SW_HIDE 幽灵窗（final review I2）：guest 对受管顶层窗 SW_HIDE
+  在 X 侧只是 unmap——xwm dissociate + set_withdrawn(true)
+  （xwayland/xwm.c:1613-1624），映射层无对应 listener、宿主侧无事件 →
+  OHOS 承载窗保持显示最后一帧（幽灵窗），直至 re-show（map_request →
+  Restored 已覆盖该半边）。任何隐藏顶层窗的 win32 应用（splash、
+  launcher→game 交接、托盘应用）都会留下死窗影像。低成本处置 = 本条
+  记录；withdraw/unmap listener（发 hide 族事件）留 M4c 评估。
 - fullscreen 语义事件虽通，wine 对「WS_POPUP + 全屏矩形」走的几何路
   （request_configure resize）与 _NET_WM_STATE 路并存的边界未系统梳理。
 

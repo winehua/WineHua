@@ -17,6 +17,13 @@
 - popup xs 不进映射层 toplevel 表、不发 created（§3.5）。
 - 映射层纪律同 M4a（wl_list_init 配对 / napi 只入队 / 事件名红线——popup_* 四事件已在 ToplevelEventName）。
 - 判定只读归档数据；跑批 `--desktop-mode fusion` 显式钉档。
+- **模态/owned 链的宿主侧验证（M4b 移交，final review I1）必须走「owned 窗创建时
+  建立」**：探测 CreateWindowExA 带 owner 的路径（创建即写 transient → manage →
+  set_parent fire），不得用运行期 owner 变更（SetWindowLongPtr GWLP_HWNDPARENT）
+  驱动。依据：wine 只在创建/管理路径写 `XSetTransientForHint`（set_style_hints，
+  wine window.c:1162），运行期 owner 变更不经过任何重写路径 → xwm 的
+  WM_TRANSIENT_FOR handler 不 fire → 宿主 set_parent 结构性不可达（M4b-T4 真机
+  实测一致；known-issues §2.13 遗留观察）。
 
 ## Review Focus
 
