@@ -80,6 +80,8 @@ add_library(entry SHARED
     compositor/input/input_state_tracker.cpp
     display/display_compositor.cpp
     display/display_guest_frames.cpp
+    display/x11_toplevel.c
+    display/x11_toplevel_bridge.cpp
     display/ohos_buffer.cpp
     display/ohos_output.c
     display/ohos_egl_import_probe.c

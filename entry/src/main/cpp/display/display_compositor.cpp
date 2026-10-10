@@ -77,6 +77,7 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include "ohos_buffer.h" /* wl_ohos_present_slots_shutdown (停机回收 present slot) */
 #include "display_input.h"
 #include "display_guest_frames.h"
+#include "x11_toplevel.h" /* M4a: 多窗映射层 (active 位/session_reset) */
 #include "compositor/wayland_server.h" /* WaylandServer session (无画布早启的输出尺寸源) */
 #include "ohos_egl_import_probe.h"
 #include "xim_bridge.h"
@@ -679,6 +680,10 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     }
 
     std::thread([out_w, out_h, canvas_egl_present, multiwindow] {
+        // M4a: 多窗映射层 active 位 (HandleNewSurface 分叉 + ArkTS 事件流
+        // 的模式开关)。链失败/停止后 session_reset 清表, active 位随下次
+        // StartWithSurface 重置 (会话内模式位不变, spec §3.4)。
+        x11_toplevel_set_active(multiwindow);
         // 对象提升到函数顶部 (M2-T1): 失败路径统一 goto fail 收尾, 逆序
         // 销毁 —— 之前中途 return 泄漏已建对象 (known-issues §1.2), 且
         // g_started 不复位导致失败后无法重试。
@@ -882,6 +887,11 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // events.* 全空, 早摘会 UAF ClientDestroy 正在动的 scene 帧节点
         // (故在 xwayland destroy 之后), 晚摘/不摘则 assert 炸。
         wl_ohos_output_shutdown();
+        // M4a: 多窗映射层会话重置 (补发 destroyed + 清 id 表; 幂等, 单窗
+        // 模式下空表 no-op)。xwayland destroy 之后 (xs 已全灭, 补发的是
+        // ArkTS 清理语义), x11_toplevel_active 位在此不翻 — 链重启时
+        // StartWithSurface 按新模式位重置。
+        x11_toplevel_session_reset();
         if (server)
         {
             wl_list_remove(&g_xwayland_ready_listener.link);

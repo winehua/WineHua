@@ -19,6 +19,7 @@
 #define WLR_USE_UNSTABLE
 #include "ohos_output.h"
 #include "ohos_buffer.h"
+#include "x11_toplevel.h" /* M4a: 多窗模式分叉 (HandleNewSurface) */
 #include "ohos_egl_import.h"
 
 #include <dlfcn.h>
@@ -1376,6 +1377,12 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     struct wlr_xwayland_surface *xs = data;
     if (!xs)
         return;
+    if (x11_toplevel_active()) {
+        /* M4a 多窗模式: 不建 ohos_client_surface/scene 节点 (spec §3.2),
+         * xs 交给映射层 (per-xs 渲染, 无单画布合成)。 */
+        x11_toplevel_notify_new_surface(xs);
+        return;
+    }
     struct ohos_client_surface *c = calloc(1, sizeof(*c));
     if (!c)
         return;
