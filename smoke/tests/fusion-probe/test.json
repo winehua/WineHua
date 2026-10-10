@@ -21,6 +21,7 @@
   },
   "seconds": 12,
   "timeoutMs": 120000,
+  "inject": true,
   "checks": [
     "result-json",
     "visual:fusion-window-a",

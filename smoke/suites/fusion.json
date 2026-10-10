@@ -13,7 +13,8 @@
         "dxvk": "dxvk_legacy"
       },
       "seconds": 12,
-      "timeoutMs": 120000
+      "timeoutMs": 120000,
+      "inject": true
     }
   ]
 }

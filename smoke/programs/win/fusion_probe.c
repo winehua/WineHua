@@ -261,6 +261,7 @@ int main(int argc, char **argv)
 
     /* M9 (review): 不依赖 msg 残值判断退出; 心跳/deadline 在队列排空后
      * 每轮都检查 (不被消息流饿死)。 */
+    BOOL fixed_frame_announced = FALSE;
     for (;;)
     {
         BOOL got = PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE);
@@ -271,6 +272,15 @@ int main(int argc, char **argv)
             {
                 last_report = now;
                 report_heartbeat(&state, "RUNNING", "present", "heartbeat");
+            }
+            /* 帧采集协议: host 的 poll_run 只在 result 出现 "fixed-frame"
+             * (stage+message) 字面量时截屏 —— 进入末 2 秒宣告一次
+             * (graphics_smoke main.c:883 同款)。首跑 (job-r20261010-170854)
+             * 缺此宣告 = missing-frame 根因。 */
+            if (!fixed_frame_announced && now >= deadline_ms - 2000)
+            {
+                fixed_frame_announced = TRUE;
+                report_heartbeat(&state, "RUNNING", "fixed-frame", "fixed-frame");
             }
             if (now >= deadline_ms)
                 break;
