@@ -1,0 +1,21 @@
+{
+  "id": "popup-overflow",
+  "title": "x11 fusion 弹出层越界（短窗菜单弹在窗底缘外，M4c-T3）",
+  "exe": "popup_overflow.exe",
+  "arch": [
+    "x64"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/input/popup_overflow.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

@@ -108,9 +108,12 @@ git commit -m "feat(ets+display): M4c-T2 popup ArkTS 接线 + seat 焦点让渡"
 **Interfaces:**
 - Consumes: M4a render_tick（popup entry 已在表内）；ArkTS WinePopup surfaceId 回绑（createRenderer 的 x11 分支按 popupId 查 popup entry——**执行时核实** plugin_manager CreateRenderer 的 id 查表函数是否需 popup 分支）
 
-- [ ] **Step 1: 真机场景验证**：fusion 冷启 notepad → uitest 点「格式(O)」→ 菜单子窗出现且有内容（截图归档 `.temp/m4c-popup-1.jpeg`）→ 点菜单项（越界场景：先点靠底部菜单）→ 菜单关闭无残留
-- [ ] **Step 2: 按现象修**（渲染/定位/焦点三类问题各自的日志指纹：XTL popup render 缺失 = 渲染断；子窗位置错 = 坐标换算断；点击无响应 = 焦点让渡断）
-- [ ] **Step 3: Commit**（若有修复）
+- [x] **Step 1: 真机场景验证**：fusion 冷启 notepad → uitest 点「格式(O)」→ 菜单子窗出现且有内容（截图归档 `.temp/m4c-popup-1.jpeg`）→ 点菜单项（越界场景：先点靠底部菜单）→ 菜单关闭无残留
+  执行结果: notepad 链全绿（菜单渲染带勾选 ✓ / 项点选生效 = 换行开关翻转 ✓ / 关闭无残留 ✓, 证据见 ledger）。**越界项点选未闭合**: popup_overflow 探针形态下越界渲染 ✓、点击到达 wine 且菜单关闭 ✓、但不产生 WM_COMMAND —— 4 轮控制变量（窗界内对照 / owner 先导点击 / SetForegroundWindow）均排除, 唯一全绿组合 = notepad 真实流; 悬案与复现资产记 ledger「T3 越界项点选 悬案」节, 收口留 T4/M4d。
+- [x] **Step 2: 按现象修**（渲染/定位/焦点三类问题各自的日志指纹：XTL popup render 缺失 = 渲染断；子窗位置错 = 坐标换算断；点击无响应 = 焦点让渡断）
+  执行结论: 三类指纹均未命中（渲染/定位/焦点让渡全链日志正常）; 失败点在更深的 Xwayland 指针路由或探针形态差异（见 ledger 悬案节）—— 无映射层可修项, 不打第四个补丁。
+- [x] **Step 3: Commit**（若有修复）
+  T3 资产（探针 + test.json + job）随收口提交; 映射层修复 = 无（悬案不在本层）。
 
 ---
 

@@ -1,0 +1,29 @@
+{
+  "displayroute": true,
+  "displayrouteScript": false,
+  "timeoutMinutes": 20,
+  "checks": [],
+  "inline": [
+    {
+      "testId": "popup-overflow",
+      "exe": "x64/popup_overflow.exe",
+      "argvMode": "raw",
+      "argv": [],
+      "judge": "external",
+      "checks": [],
+      "env": {
+        "DISPLAY": ":0",
+        "WINEHUA_DISPLAY_ROUTE": "x11",
+        "WAYLAND_DISPLAY": ""
+      },
+      "seconds": 300,
+      "timeoutMs": 400000
+    }
+  ],
+  "params": {
+    "env": {
+      "WINEHUA_SMOKE_EXPECT_ROUTE": "x11"
+    }
+  },
+  "_note": "M4c-T3 手动验证载体: x11 fusion 冷启直启 popup_overflow.exe (短窗+菜单弹窗底缘外)。菜单项由验证者 uitest 点物理坐标 (fusion+x11 文件协议仅 byTitle 窗中心, 够不到越界项); 探针以 WM_COMMAND==第2项自证命中, checks 读 device-results。运行: python3 automation/smoke.py run --job smoke/jobs/popup-overflow-x11.json --desktop-mode fusion --display-route x11"
+}
