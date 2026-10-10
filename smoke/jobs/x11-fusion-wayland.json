@@ -1,0 +1,13 @@
+{
+  "displayroute": true,
+  "displayrouteScript": false,
+  "suite": "fusion",
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "wayland",
+      "DISPLAY": "",
+      "WAYLAND_DISPLAY": "wayland-0"
+    }
+  },
+  "_note": "D51 对照实验 (ledger 「D51 实验轮 175709」段): 与 x11-fusion.json 唯一差异 = route(wayland)。wayland fusion 双窗走 wayland 承载链 (incumbent), 若同样黑屏 = OHOS 窗口层共性 (查 WineWindowAbility 窗口标志); 正常双窗 = x11 承载特有。跑法: smoke.py run --job 本文件 --desktop-mode fusion --display-route wayland。"
+}
