@@ -586,7 +586,13 @@ export class SmokeRunner {
       // win_w/win_h 比例换算到 X 逻辑)。wayland 路线不用本分支 (无 title
       // 定位需求), 走它会静默找不到窗。
       if (!action.title) return 'byTitle action missing title';
-      const tl = WineWindowManager.getInstance().findToplevelByTitle(action.title);
+      // title 事件是异步链 (winex11→xwm→FireToplevel→本表), 找不到时等它
+      // 收敛而不是判死 —— 探针写 inject-request 后 title 同步有秒级窗口。
+      let tl = WineWindowManager.getInstance().findToplevelByTitle(action.title);
+      for (let tries = 0; !tl && tries < 10; tries++) {
+        await new Promise<void>((r) => setTimeout(r, 500));
+        tl = WineWindowManager.getInstance().findToplevelByTitle(action.title);
+      }
       if (!tl) return `no window titled "${action.title}" (not attached or title not synced)`;
       const win = WineWindowManager.getInstance().getWindowForToplevel(tl);
       if (!win) return `window for "${action.title}" not registered`;
