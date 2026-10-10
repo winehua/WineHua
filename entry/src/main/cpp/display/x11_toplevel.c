@@ -306,6 +306,11 @@ void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
     if (!e) return;
     e->win_w = w;
     e->win_h = h;
+    /* D51 (真机 175709 实锤): resize 后必须强制重渲染一帧 —— 承载窗
+     * attach 时是 1x1, 首帧 render 也在 1x1 上; onSurfaceChanged 更新
+     * 尺寸后若 guest 内容静态 (无新 commit), surface 永远停留 1x1 帧
+     * = 黑屏。notepad 类活窗被光标闪烁 commit 掩盖, 静态探针必现。 */
+    e->dirty = true;
 }
 
 /* ── Task 5: 按窗输入路由 ── */
