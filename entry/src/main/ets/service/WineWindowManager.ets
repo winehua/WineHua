@@ -6,11 +6,21 @@ import { pointer } from '@kit.InputKit';
 import testNapi from 'libentry.so';
 import { PopupWindowManager } from './PopupWindowManager';
 import { ModalWindowManager } from './ModalWindowManager';
+import { WineEnvService } from './WineEnvService';
+import { DisplayRouteService } from './DisplayRouteService';
 import { FusionWindowManager } from './FusionWindowManager';
 import { DesktopModeService } from './DesktopModeService';
 
 const DOMAIN = 0x0000;
 const TAG = 'WineWM';
+
+// D5: 桌面画布 surface 快照 (registerDesktopCanvas 登记, getDesktopCanvas 读)。
+// w/h = surface 物理像素; 0 = onSurfaceChanged 尚未首拍。
+export interface DesktopCanvasInfo {
+  surfaceId: string;
+  w: number;
+  h: number;
+}
 
 // 单个 Wine toplevel 在 ArkTS 侧的聚合状态 (参照 PopupEntry 模式)。
 // 'created' 事件 (或首个提前到达的事件) 时经 ensureEntry 建档,
@@ -39,7 +49,16 @@ export class WineWindowManager {
   private uiAbilityContext: common.UIAbilityContext | null = null;
   // 设备显示密度 + 屏幕尺寸 (用于缩放)
   private displayScale: number = 1.0;
-  private scaleBoost: number = 1.0;  // 放大系数, 使 effectiveScale = displayScale × boost = 2.0
+  private scaleBoost: number = 1.0;  // 放大系数, 使 effectiveScale = displayScale × boost = DESKTOP_PRESENT_SCALE
+
+  // ── 桌面呈现倍率的权威定义点 (唯一) ──────────────────────────────────
+  // 桌面分辨率 = 屏幕物理尺寸 / 本值; init 的 scaleBoost (使 effectiveScale
+  // 收敛到它) 与 desktopOutputSize (x11 链起参数, 承载统一 2026-10-17) 都以
+  // 它为准。静态常量而非实例字段: desktopOutputSize 在 EntryAbility.onCreate
+  // (applyRoute) 调用, 早于 init (onWindowStageCreate), 实例字段彼时未定值
+  // (实测 2026-10-18: 用 getEffectiveScale() 算出物理分辨率, 元素缩小一半)。
+  // 未来开放用户调整缩放: 本常量改为从设置服务读的静态取值 — 消费方不动。
+  static readonly DESKTOP_PRESENT_SCALE: number = 2.0;
   // 标题栏 + 边框总高度 (VP), 用于窗口 resize
   // = getWindowDecorHeight() + decorBorderOffset
   private measuredTitleBarH: number = 56;
@@ -52,6 +71,30 @@ export class WineWindowManager {
 
   // -- Desktop 模式 (Tablet / PC 虚拟桌面) --
   isDesktopMode: boolean = false;  // 公开: WineEnvService 镜像
+  // M4a: x11 多窗模式快照 (applyModePolicy 派生: 非 virtual 且 route=x11)。
+  // shouldUseMultiwindow() 为公开查询口。
+  multiwindow: boolean = false;
+
+  // M4a: x11 多窗模式 = route(x11) × mode(fusion)。消费点: 画布启动参数
+  // (DesktopAbility/DesktopWindow 第 6 参) 与 openX11Canvas 门禁。
+  // 实时查询而非读快照: 冷启早启链 (EntryAbility onCreate) 先于
+  // applyModePolicy 跑, 快照字段当时未定值。
+  // 多窗模式判据。targetRoute 供「切换尚未应用」的调用方以**目标路线**求值
+  // (applyRoute 的 multiwindow 入参): 已应用值在切换时刻仍是旧路线, 用它算
+  // 会把 wayland→x11 的目标误判成 false —— 链落虚拟桌面模式, 程序窗走
+  // g_clients 画布路径而无宿主, 窗口不可见 (#172 实测指纹 = #145 同款)。
+  // 无参 = 按当前已应用路线求值 (既有调用方语义不变)。
+  shouldUseMultiwindow(targetRoute?: string): boolean {
+    const r = targetRoute ?? DisplayRouteService.getInstance().routeName();
+    if (r !== 'x11') {
+      return false;
+    }
+    const explicitMode = DesktopModeService.getInstance().getOverrideMode();
+    const savedMode = DesktopModeService.getInstance().mode;
+    const effectiveMode = (explicitMode === 'fusion' || explicitMode === 'virtual') ?
+      explicitMode : savedMode;
+    return effectiveMode === 'fusion';
+  }
   // PC 虚拟桌面: 桌面 root surface 承载在独立 VirtualDesktopAbility 窗口
   // (master 的 tablet/phone 走 DesktopAbility 全屏窗口)。由 applyModePolicy 派生。
   desktopSeparateWindow: boolean = false;
@@ -79,7 +122,11 @@ export class WineWindowManager {
   // 触发相对模式的约束 surface 的 toplevelId (解锁时=0)。用于区分"桌面 shell
   // 自身藏光标 (启动瞬时 toplevelId==desktopRootId)"与"游戏子窗口真相对模式"。
   private pointerLockToplevel: number = 0;
-  private desktopRootId: number = 0;
+  // -1 = 未注册。0 是合法 root id (x11 路线 applyModePolicy 主动拉起即以 0
+  // 注册), 哨兵不能用 0 —— restoreDesktopIfRunning 等恢复路径靠它区分
+  // "没有桌面"和"桌面 root id 恰为 0" (实测 2026-10-05: 哨兵 0 使 x11 虚拟
+  // 桌面被外部 Want 压后台后永远无法自行夺回前台)。
+  private desktopRootId: number = -1;
   private desktopAbilityRunning: boolean = false;
   private desktopAbilityCtx: common.UIAbilityContext | null = null;
   // 桌面 root 存在信号 (WineEnvService 镜像 → sessionAlive 判定):
@@ -97,6 +144,18 @@ export class WineWindowManager {
     if (!this.listeners.includes(listener)) {
       this.listeners.push(listener);
     }
+  }
+
+  unsubscribe(listener: () => void): void {
+    const i = this.listeners.indexOf(listener);
+    if (i >= 0) this.listeners.splice(i, 1);
+  }
+
+  // 任务 #129: 顶条标题读取口 (WineWindow 页在 notify 后经此刷新)。
+  // modal 承载不建 entry (#167 续), 兜底到 ModalWindowManager 的 titles 表。
+  getWindowTitle(tl: number): string {
+    return this.entries.get(tl)?.title ??
+      ModalWindowManager.getInstance().titleOf(tl);
   }
 
   private notify(): void {
@@ -160,6 +219,10 @@ export class WineWindowManager {
       explicitMode : savedMode;
     this.isDesktopMode = isPhone || effectiveMode === 'virtual';
     this.desktopSeparateWindow = this.isDesktopMode && !isPhone && deviceInfo.deviceType !== 'tablet';
+    // M4a: x11 多窗模式快照 (route(x11) × mode(fusion))。会话启动时定值,
+    // 会话内不切换 (spec §3.4); 画布启动参数与 openX11Canvas 门禁消费。
+    this.multiwindow = !this.isDesktopMode &&
+      DisplayRouteService.getInstance().isX11();
     testNapi.setDesktopMode(this.isDesktopMode);
     hilog.info(DOMAIN, TAG,
       '[MW] mode policy: type=%{public}s → %{public}s (separateWindow=%{public}s explicit=%{public}s)',
@@ -176,6 +239,27 @@ export class WineWindowManager {
     // 化"), 且 MANAGED 端不 spawn explorer, desktopSurfaceReady 永远等不到,
     // 25s 超时报"桌面启动失败" (实测 2026-09-13, tablet 切多窗口后重启引擎)
     this.notify();
+    // M3a x11 台架: 桌面窗的既有打开路径由 wayland 私有协议 desktop_root 事件
+    // 驱动, x11 路线没有该事件 (wine 走 Xwayland, 无 winehua_toplevel) ——
+    // 引擎会话启动时直接拉起桌面窗 (rootId=0, x11 分支不消费该值)。
+    // 2026-10-04 起不再限虚拟桌面: fusion+x11 的 X 链路同样无人调
+    // StartWithSurface (fusion 无桌面页), 引擎会静默回退 wayland 合成器,
+    // notepad 等程序根本不走 X (实测 2026-10-04)。x11 路线画布页是唯一
+    // surface 宿主 + 产品输入入口 (onTouch/onKeyEvent 的 x11 直连分支,
+    // M3a-T4 已接), 两种桌面模式都需要它。wayland 路线 (默认) 零影响。
+    // singleton 模式下重复调用安全。
+    if (DisplayRouteService.getInstance().isX11()) {
+      // x11 没有桌面 root 事件, 这里主动注册 root id 0: 恢复路径
+      // (registerHostWindow / restoreDesktopIfRunning) 据此在外部 Want 把
+      // 桌面窗压后台后把它拉回前台 (实测 2026-10-05: 不注册则恢复守卫
+      // desktopRootId<0 恒拒, 桌面窗被压后台后永远回不来)。
+      // 桌面窗的打开不放这里: applyModePolicy 在会话一开始跑, 与 run-job
+      // Want 抢跑, DWA 输掉 z-order 被主页压住 (#68 三连挂)。改由
+      // WineEnvService 在 state:ready / ready-degraded 时调 openX11Canvas()
+      // —— 引擎就绪 = x11 桌面 shell 已 map (wine_launch 的就绪谓词),
+      // 时序与 wayland 的 desktop_root 事件对齐 (先会话后开窗)。
+      this.desktopRootId = 0;
+    }
   }
 
   // -- Pad 多窗口承载判定: 非 desktop 模式下, 每窗口是独立 UIAbility 主窗口
@@ -191,6 +275,15 @@ export class WineWindowManager {
     }
     const forced = AppStorage.get<string>('winehua.fusionHost') ?? '';
     return forced === 'subwindow';
+  }
+
+  // 系统装饰承载判据 (本文件唯一出处): x11 路线 ∧ ability 承载。满足时承载
+  // 窗的标题栏在系统层 —— wine 的窗口内绝对坐标不含它, 凡按内容原点落坐标
+  // 的场合需 +getWindowDecorHeight×scale 补偿 (modal 装饰制度注入 #170 /
+  // popup 定位补偿 #171); wayland 自绘 caption、Pad 页面内顶条
+  // (stripPxOf) 各自天然自洽, 不在本档
+  systemDecorCarrying(): boolean {
+    return DisplayRouteService.getInstance().isX11() && !this.fusionUsesSubWindow();
   }
 
   async init(windowStage: window.WindowStage, abilityContext: common.UIAbilityContext): Promise<void> {
@@ -211,9 +304,10 @@ export class WineWindowManager {
     try {
       const d = display.getDefaultDisplaySync();
       this.displayScale = d.densityPixels;
-      this.scaleBoost = 2.0 / this.displayScale;  // 使 effectiveScale = 2.0
-      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=2.0',
-        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2));
+      this.scaleBoost = WineWindowManager.DESKTOP_PRESENT_SCALE / this.displayScale;
+      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=%{public}f',
+        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2),
+        WineWindowManager.DESKTOP_PRESENT_SCALE);
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
 
       // Wine 输出尺寸: 沉浸模式下 avoid area 为 0, 直接用显示尺寸
@@ -258,7 +352,18 @@ export class WineWindowManager {
     // A launcher resume recreates EntryAbility while the Wine desktop root can
     // still be alive.  No new desktop_root event is emitted in that case, so
     // explicitly bring the existing desktop compositor back to the foreground.
-    if (this.isDesktopMode && this.desktopRootId > 0) {
+    // 恢复 ≠ 打开 (D18, 2026-10-06 用户拍板恢复 master 时序): 门用
+    // desktopAbilityRunning (桌面窗真开过且未关; 后台化不清), 不用
+    // desktopRootId >= 0 —— x11 把 root 注册成 0 (为恢复路径, 见
+    // applyModePolicy 注释), >= 0 在任何冷启都为真, 恢复路径变成冷启
+    // 无条件提前开窗, 与 startSession 的 zHome picker 抢前台 → failInit
+    // (07:09 实证: 51.704 "restoring root=0" → picker 失焦 7 连败)。
+    // master 的 > 0 能当门是因为 wayland root 来自真实 toplevel 事件;
+    // x11 画布 root 恒 0, 判据只能是「窗开过」。开窗时序 = openX11Canvas
+    // (engine-ready, 先会话后开窗, 与 wayland desktop_root 对齐);
+    // 链早启不受影响 —— 链在 EntryAbility 参数落地时 windowless 启动
+    // (startDisplayRouteChain(0n,false)), 不依赖桌面窗。
+    if (this.isDesktopMode && this.desktopAbilityRunning) {
       hilog.info(DOMAIN, TAG, '[MW] restoring existing DesktopAbility root=%{public}d',
         this.desktopRootId);
       this.startDesktopAbility(this.desktopRootId);
@@ -280,6 +385,24 @@ export class WineWindowManager {
       toplevelId, this.entries.size, e.starting ? 'yes' : 'no');
   }
 
+  // M4a-T6 (I4): 按标题查已承载的 toplevel (fusion_probe 的 byTitle 注入:
+  // 探针窗 title 由 xs title 事件同步到 entry, 见 onToplevelEvent 'title')。
+  // 返回 0 = 无匹配 (未承载/未同步)。仅统计 win 就绪的 entry。
+  findToplevelByTitle(title: string): number {
+    let found: number = 0;
+    this.entries.forEach((e: WineWindowEntry, id: number) => {
+      if (!found && e.win && e.title === title) {
+        found = id;
+      }
+    });
+    return found;
+  }
+
+  // M4a-T6 (I4): 按 toplevel 取已注册的 OHOS 窗 (byTitle 注入读窗 rect)。
+  getWindowForToplevel(toplevelId: number): window.Window | null {
+    return this.entries.get(toplevelId)?.win ?? null;
+  }
+
   registerWindowStage(toplevelId: number, stage: window.WindowStage): void {
     this.ensureEntry(toplevelId).stage = stage;
     hilog.info(DOMAIN, TAG, '[MW]  registerWindowStage #%{public}d (entries=%{public}d)',
@@ -293,6 +416,20 @@ export class WineWindowManager {
   // effectiveScale = displayScale × scaleBoost (Wine 逻辑坐标 → 物理像素)
   getEffectiveScale(): number {
     return this.displayScale * this.scaleBoost;
+  }
+
+  // 桌面输出逻辑尺寸 (物理 / DESKTOP_PRESENT_SCALE): 桌面分辨率判据的唯一定义处 —
+  // wayland 决定点 (init 的 setOutputSize) 与 x11 链起参数 (applyRoute 的
+  // outW/H, 承载统一 2026-10-17) 共用, 倍率取权威常量 (见其注释: 时序坑
+  // 记档 — 不可用 getEffectiveScale(), applyRoute 时实例字段未定值)。
+  desktopOutputSize(): number[] {
+    try {
+      const d = display.getDefaultDisplaySync();
+      const s = WineWindowManager.DESKTOP_PRESENT_SCALE;
+      return [Math.round(d.width / s), Math.round(d.height / s)];
+    } catch (_) {
+      return [0, 0];
+    }
   }
 
   // 拖拽缩放标记 (见 WineWindowEntry.resizeDragging 注释): windowRectChange
@@ -490,6 +627,8 @@ export class WineWindowManager {
           const obj: Record<string, number> = JSON.parse(data) as Record<string, number>;
           if (obj.modal === 1) {
             this.modalToplevelIds.add(id);
+            // modal 装饰制度 (任务 #170): 判据收口 systemDecorCarrying()
+            ModalWindowManager.getInstance().setUseSystemDecor(this.systemDecorCarrying());
             // 清 title 先到时的幽灵 entry (modal 无 ability, 不建 entry)。
             // 守卫: 真 Ability (win/ctx/starting 已回填) 存在时绝不删 —
             // 若因时序它先建 (C++ pending 未兜住等), 删掉会让双窗口并存
@@ -526,8 +665,30 @@ export class WineWindowManager {
         this.entries.delete(id);
         return;
       }
-      // title/limits/argb/surface/...: 模态子窗口不需要 (窗口标题由 Wine
-      // 像素自带, 无独立 entry)
+      if (event === 'title') {
+        // #167 续: modal 承载的自绘顶条标题 (stripPxOf 经 modalStripProvider
+        // 对 modal 放行, 页面经 getWindowTitle → titleOf 读)。存表后 notify
+        // 刷新已订阅的顶条。
+        ModalWindowManager.getInstance().onTitle(id, data);
+        this.notify();
+        return;
+      }
+      // limits/argb/surface/...: 模态子窗口不需要 (标题经 onTitle 走顶条,
+      // 其余由 Wine 像素自带, 无独立 entry)。
+      // popup_* (parent = 对话框 toplevelId, #168): 原落本分支被丢弃
+      // —— 对话框内右键菜单不出现。路由给 PopupWindowManager, 锚窗 =
+      // modal 自身 (定位/移动都相对它), 与常规 popup 同一套定位与
+      // 装饰补偿判据 (systemDecorCarrying)。
+      if (event === 'popup_show' || event === 'popup_move' ||
+          event === 'popup_resize' || event === 'popup_hide') {
+        PopupWindowManager.getInstance().setParentSystemDecor(this.systemDecorCarrying());
+        PopupWindowManager.getInstance().onPopupEvent(
+          id, event, data,
+          ModalWindowManager.getInstance().stageOf(id) ?? this.mainWindowStage,
+          ModalWindowManager.getInstance().winOf(id),
+          this.getEffectiveScale());
+        return;
+      }
       return;
     }
 
@@ -681,6 +842,9 @@ export class WineWindowManager {
       case 'popup_hide':
         // PC 模式 popup 子窗口 (desktop 模式 C++ 不会发这些事件)
         if (this.isDesktopMode) return;
+        // popup 定位的系统装饰补偿判据 (任务 #171, 与 modal 的 ModalDecor
+        // 注入同源单点 systemDecorCarrying)
+        PopupWindowManager.getInstance().setParentSystemDecor(this.systemDecorCarrying());
         // 父窗口 Wine 尺寸传给 PopupWindowManager: 全屏游戏把渲染 surface 放
         // popup (popup 尺寸==模拟分辨率==父窗口尺寸), 需判定并拉伸到宿主屏幕;
         // 普通菜单 popup 不受影响。
@@ -719,14 +883,26 @@ export class WineWindowManager {
 
     // Pad 多窗口 (subWindow 承载): 系统接口差异适配 —
     //   title     → subWindow decorEnabled:false 时 setWindowTitle 报 1300002,
-    //               标题由 Wine 像素自带, 只记录不改 (e.title 由 queueOrApply 维护)
+    //               标题由 Wine 像素/ArkTS 顶条自带, 只记录不改 (e.title 由
+    //               queueOrApply 与此处共同维护, findToplevelByTitle 消费)
     //   minimized → 独立于任务栏, 最小化近似为隐藏 (restored 恢复显示)
     //   maximized/unmaximized/fullscreen/unfullscreen → subWindow 无系统最大化
     //               (非自由窗口不支持), 全屏化 = resize 到显示尺寸 + 定位 0,0
     if (this.fusionUsesSubWindow() && FusionWindowManager.getInstance().has(toplevelId)) {
       switch (event) {
         case 'title':
-          hilog.info(DOMAIN, TAG, '[MW] fusion #%{public}d title (record only, subwindow no decor)', toplevelId);
+          try {
+            const tobj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
+            if (tobj.title) e.title = tobj.title as string;
+          } catch (_) { /* keep previous title */
+          }
+          hilog.info(DOMAIN, TAG, '[MW] fusion #%{public}d title="%{public}s"',
+            toplevelId, e.title);
+          // 任务 #129: 顶条标题同步 — 仅顶条存在时通知 (stripPxOf > 0 即
+          // x11 fusion 子窗); wayland 分支不新增任何行为 (隔离红线)。
+          if (FusionWindowManager.getInstance().stripPxOf(toplevelId) > 0) {
+            this.notify();
+          }
           return;
         case 'minimized':
           FusionWindowManager.getInstance().hide(toplevelId);
@@ -778,7 +954,11 @@ export class WineWindowManager {
             break;
           }
           if (w && h) {
-            const barH = 0; //  标题栏已通过 setWindowDecorVisible(false) 隐藏
+            // barH: 顶条物理高 (任务 #129 回退路线, x11 fusion 子窗非 0,
+            // 判据单点 FusionWindowManager.stripPxOf; 其余形态恒 0)。
+            // 换算单点在承载 resize 前完成 (plan RF#1): surface 保持 wine
+            // 尺寸, 无差值进 onSurfaceChanged 反馈。
+            const barH = FusionWindowManager.getInstance().stripPxOf(toplevelId);
             const s = this.displayScale * this.scaleBoost;  // effective scale = 2.0
             const winW = Math.round(w * s);
             const winH = Math.round(h * s + barH);
@@ -929,6 +1109,8 @@ export class WineWindowManager {
     let title = '';
     let initW = 0;
     let initH = 0;
+    let initX = -1;
+    let initY = -1;
     try {
       const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
       if (obj.title) title = obj.title as string;
@@ -937,6 +1119,10 @@ export class WineWindowManager {
       // 接受 configure resize → 内容不缩放 (画面缩在左上角 + 反馈环)
       initW = Number(obj.w) || 0;
       initH = Number(obj.h) || 0;
+      // D52: x11 created 带 guest 坐标 (xs->x/y) —— 承载窗按 guest 位置
+      // 摆放 (双窗并排)。-1 = created 无坐标 (wayland), 不定位保持 incumbent。
+      initX = obj.x === undefined ? -1 : Number(obj.x);
+      initY = obj.y === undefined ? -1 : Number(obj.y);
     } catch (_) { /* use defaults */ }
 
     hilog.info(DOMAIN, TAG, '[MW]  startAbility(WineWindowAbility) #%{public}d title="%{public}s"',
@@ -951,7 +1137,8 @@ export class WineWindowManager {
     const want: Want = {
       bundleName: 'app.hackeris.winehua',
       abilityName: 'WineWindowAbility',
-      parameters: { toplevelId: id, title: title, w: initW, h: initH }
+      parameters: { toplevelId: id, title: title, w: initW, h: initH,
+                    x: initX, y: initY }
     };
 
     hilog.info(DOMAIN, TAG, '[MW] startAbility want: bundle=%{public}s ability=%{public}s params=%{public}s',
@@ -986,10 +1173,16 @@ export class WineWindowManager {
 
     let initW = 0;
     let initH = 0;
+    let initX = -1;
+    let initY = -1;
     try {
       const obj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
       initW = Number(obj.w) || 0;
       initH = Number(obj.h) || 0;
+      // D52: x11 created 带 guest 坐标 (xs->x/y) —— 承载窗按 guest 位置
+      // 摆放 (双窗并排)。-1 = created 无坐标 (wayland), 走 cascade 层叠。
+      initX = obj.x === undefined ? -1 : Number(obj.x);
+      initY = obj.y === undefined ? -1 : Number(obj.y);
     } catch (_) { /* use defaults */ }
 
     if (!this.mainWindowStage) {
@@ -999,9 +1192,13 @@ export class WineWindowManager {
       return;
     }
 
-    hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d wine=%{public}dx%{public}d',
-      id, initW, initH);
+    hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d wine=%{public}dx%{public}d guest=(%{public}d,%{public}d)',
+      id, initW, initH, initX, initY);
     FusionWindowManager.getInstance().initIfNeeded(this.mainWindowStage, () => this.getEffectiveScale());
+    // #167 续: stripPxOf 的 modal 判据注入 (本类同时认识 FWM 与
+    // ModalWindowManager, 在此接线避免两者直接互相 import 成环)
+    FusionWindowManager.getInstance().setModalStripProvider(
+      (tl: number) => ModalWindowManager.getInstance().isModalToplevel(tl));
     FusionWindowManager.getInstance().ensure(id, initW, initH,
       (winId: number, subWin: window.Window) => {
       e.starting = false;
@@ -1009,9 +1206,12 @@ export class WineWindowManager {
       // 锁光标 (相对模式) 的 host window: PC 每窗 Ability 都注册, 这里等效
       try { testNapi.registerHostWindow(subWin.getWindowProperties().id); } catch (_) { /* ignore */ }
       // 拖动/系统 resize → popup 实时重新定位 (画面跟随主窗, 不再拖后瞬移)
+      // + 任务 #135: 位置回写 guest (host→wine 几何回写的移动半边; 与
+      // popup 重排同一事件源, 判据/来源单点)。
       try {
         subWin.on('windowRectChange', () => {
           PopupWindowManager.getInstance().repositionPopups(winId, subWin, this.getEffectiveScale());
+          this.reportCarrierMove(winId, subWin);
         });
       } catch (_) { /* ignore */ }
       // 兜底: 子窗口被系统销毁 (间接路径) → 走标准销毁
@@ -1030,12 +1230,29 @@ export class WineWindowManager {
       this.entries.delete(id);
       hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d failed → sendToplevelClose', id);
       testNapi.sendToplevelClose(id);
-    });
+    }, initX, initY);
   }
 
-  // subWindow 就绪后处理: subWindow 无系统装饰, 不存在 decor 校准/标题重设
-  // (decorEnabled:false 时 setWindowTitle 报 1300002, 标题由 Wine 像素自带),
-  // 只保留圆角直角化。返回上级事件处理一致 (resize 已由 applyEvent 走 win 接口)。
+  // 任务 #135: 承载窗全局位置上报 (host→wine 几何回写的移动半边 —— §2.14
+  // 缺口: 拖动承载窗后 wine 侧位置陈旧)。值源 = getWindowProperties()
+  // .windowRect (与 PopupWindowManager.positionEntry 同源, 全链唯一坐标
+  // 来源); guest 逻辑坐标 = 物理原点 / effectiveScale (创建摆放
+  // FWM.ensure `pos = gx×scale` 的逆式; strip 形态不参与换算 —— X 窗纵
+  // 坐标与承载窗原点的关系里 strip 两侧抵消, 见 x11_toplevel.c geom 注释)。
+  // 仅 x11 路线调用 (wayland toplevel 位置归合成器, 隔离红线; native 侧
+  // x11_toplevel_active 仍是权威门 + 值未变跳过)。
+  private reportCarrierMove(tl: number, win: window.Window): void {
+    if (!DisplayRouteService.getInstance().isX11()) return;
+    try {
+      const s = this.getEffectiveScale();
+      const rect = win.getWindowProperties().windowRect;
+      testNapi.notifyToplevelMove(tl, Math.round(rect.left / s), Math.round(rect.top / s));
+    } catch (_) { /* ignore: 位置上报失败非致命 (下一拍事件会重试) */ }
+  }
+
+  // subWindow 就绪后处理: 圆角直角化对 decor:false/true 都执行 (decor true
+  // 跳过会残留系统默认圆角, 2026-10-11 真机实测)。无 decor 校准/标题重设
+  // (标题走 applyEvent title → setWindowTitle, 系统装饰承载)。
   private onFusionWindowReady(toplevelId: number): void {
     const win = FusionWindowManager.getInstance().getWindow(toplevelId);
     if (!win) return;
@@ -1059,7 +1276,9 @@ export class WineWindowManager {
     // Desktop 模式: root 销毁 → 关闭桌面窗口, 回到主页面
     if (this.isDesktopMode && id === this.desktopRootId) {
       hilog.info(DOMAIN, TAG, '[MW] desktop root #%{public}d destroyed', id);
-      this.desktopRootId = 0;
+      // -1 (未注册) 而非 0: 0 是合法 root id, 留 0 会让恢复路径在桌面销毁后
+      // 仍把已不存在的桌面拉回前台 (与 init 哨兵语义一致, 见字段注释)
+      this.desktopRootId = -1;
       this.desktopSurfaceReady = false;
       this.desktopActive = false;
       if (this.desktopSeparateWindow) {
@@ -1128,6 +1347,22 @@ export class WineWindowManager {
     if (!this.desktopAbilityRunning) {
       this.desktopAbilityRunning = true;
     }
+    // D16 zHome 就绪门: 带参冷启时 init 的 DOWNLOAD picker 与本次 DWA 启动
+    // 抢前台窗口, 调用方失焦后 picker 恒空 → failInit 黑屏 (机制见
+    // WineEnvService.startSession 注释)。先在这里把 zHome 拿到 (此刻
+    // EntryAbility 仍持焦点, picker 必成), 再放行 DWA —— 竞态从构造上
+    // 消除。zHome 已在/拿取失败都不阻启动 (后者由 startSession 自带的重试
+    // 与 failInit 路径承接, 门只负责消除竞态)。
+    const env = WineEnvService.getInstance();
+    env.ensureZHomeReady(this.uiAbilityContext!).then((ok) => {
+      if (!ok) {
+        hilog.warn(DOMAIN, TAG, '[MW] zHome gate failed, starting DWA anyway (startSession owns retry)');
+      }
+      this.doStartDesktopAbility(rootId);
+    });
+  }
+
+  private doStartDesktopAbility(rootId: number): void {
     try {
       const want: Want = {
         bundleName: 'app.hackeris.winehua',
@@ -1145,12 +1380,110 @@ export class WineWindowManager {
   }
 
   restoreDesktopIfRunning(): void {
-    if (!this.isDesktopMode || this.desktopRootId <= 0) return;
+    if (!this.isDesktopMode || this.desktopRootId < 0) return;
+    // x11 PC (VDA 承载, 承载统一 2026-10-17): 桌面窗存活性以
+    // desktopWindowActive 判; singleton 重拉 startAbility = onNewWant 带回
+    // 前台。wayland PC 不进此分支 (现状 restore 对 VDA 承载是 no-op —
+    // desktopAbilityRunning 只由 DWA 维护; 对齐它是行为变化, 不夹带)。
+    if (this.desktopSeparateWindow && DisplayRouteService.getInstance().isX11()) {
+      if (!this.desktopWindowActive) return;
+      hilog.info(DOMAIN, TAG, '[MW] refocusing VirtualDesktopAbility (x11, delayed 300ms)');
+      // 延迟对齐 D18: Entry.onNewWant 窗口迁移未完成时同步 startAbility 会被吞
+      setTimeout(() => {
+        if (this.uiAbilityContext) {
+          const want: Want = {
+            bundleName: 'app.hackeris.winehua',
+            abilityName: 'VirtualDesktopAbility'
+          };
+          this.uiAbilityContext.startAbility(want).catch((err: Error) => {
+            hilog.warn(DOMAIN, TAG, '[MW] refocus VirtualDesktopAbility failed: %{public}s',
+              JSON.stringify(err));
+          });
+        }
+      }, 300);
+      return;
+    }
+    // D18: 同 registerHostWindow 恢复块 —— 只恢复真开过的窗。x11 root 恒 0,
+    // rootId 判据在冷启恒过, 会把恢复路径变成冷启早开窗 (DWA 抢跑 picker)。
+    if (!this.desktopAbilityRunning) return;
     // A new Want foregrounds EntryAbility even though the desktop compositor
     // remains alive. Re-starting the singleton moves that existing desktop
     // back to the foreground without recreating or stopping the Wine session.
-    hilog.info(DOMAIN, TAG, '[MW] refocusing DesktopAbility root=%{public}d', this.desktopRootId);
-    this.startDesktopAbility(this.desktopRootId);
+    // 重拉必须延后: 本函数在 Entry.onNewWant 里跑, 此刻系统还在处理本次
+    // Want 的窗口迁移 — 同步 startAbility 会被迁移吞掉 (DWA onForeground
+    // 后 20ms 又 onBackground, 2026-10-05 08:42 与 09:19 两轮实测, 屏幕停
+    // 留主页)。延迟 300ms 落在迁移完成后, 稳定把画布窗带回前台。
+    hilog.info(DOMAIN, TAG, '[MW] refocusing DesktopAbility root=%{public}d (delayed 300ms)', this.desktopRootId);
+    const rootId = this.desktopRootId;
+    setTimeout(() => {
+      hilog.info(DOMAIN, TAG, '[MW] delayed refocus firing root=%{public}d', rootId);
+      this.startDesktopAbility(rootId);
+    }, 300);
+  }
+
+  // x11 路线桌面窗打开 (引擎就绪时机)。与 wayland 的 desktop_root 事件同款
+  // 晚触发: 先会话后开窗。调用方 = WineEnvService (state:ready /
+  // ready-degraded); 早期版本在 applyModePolicy (会话开始) 拉起, 与 run-job
+  // Want 抢跑导致 DWA 被主页压住 (#68, 2026-10-05 三连挂)。singleton 重复
+  // 调用安全 (已开 = onNewWant, 顺带把被压的画布窗拉回前台)。
+  // 承载分派 (2026-10-17 承载统一): PC (desktopSeparateWindow) 走
+  // VirtualDesktopAbility — 与 wayland PC 同承载, 沉浸最大化/退出全屏按钮/
+  // 关窗后台+Index 重开入口/分辨率解耦 letterbox 全部由该承载提供; 出图
+  // 绑定经 DesktopLayer 的 X11Sink (链已由 applyRoute 早启, surface 晚到
+  // 挂载 D8)。Pad 维持 DesktopAbility (DesktopWindow 画布页, Pad 语义已
+  // 在 M4d 收口, 不动)。
+  openX11Canvas(): void {
+    if (!DisplayRouteService.getInstance().isX11()) return;
+    this.desktopRootId = 0;
+    // desktopActive = wayland desktop_root 事件的 x11 等价置位: Index
+    // 「打开桌面」按钮判据的第一条件 (关闭路径对称复位 closeX11Canvas)
+    this.desktopActive = true;
+    if (this.desktopSeparateWindow) {
+      hilog.info(DOMAIN, TAG, '[MW] x11 desktop open at engine-ready (VDA, root=0)');
+      this.openDesktopWindow();
+      return;
+    }
+    hilog.info(DOMAIN, TAG, '[MW] x11 canvas open at engine-ready (DWA, root=0)');
+    this.startDesktopAbility(0);
+  }
+
+  isDesktopAbilityRunning(): boolean {
+    return this.desktopAbilityRunning;
+  }
+
+  // x11 桌面窗关闭 (D45): 桌面 shell 进程全灭 = 桌面会话结束, 与 wayland
+  // desktop_root destroyed 分支 (onToplevelDestroyed → terminateSelf) 同
+  // 语义关 DWA 回主页。x11 桥无 toplevel destroyed 事件, 判据走进程面,
+  // 调用方 = ProcessService (节流刷新完成点, desktopShell 打标集合空)。
+  // 手动关 DWA 窗 (✕) 不经此: DesktopAbility.onDestroy →
+  // unregisterDesktopAbility 自有路径, 引擎后台继续语义不变。
+  closeX11Canvas(): void {
+    // 桌面窗承载两形态 (PC=VDA / Pad=DWA): shell 全灭时按存活的那个关
+    if (this.desktopWinCtx) {
+      const ctx = this.desktopWinCtx;
+      this.desktopWinCtx = null;
+      hilog.info(DOMAIN, TAG, '[MW] x11 desktop shell exited → terminateSelf(VirtualDesktopAbility)');
+      ctx.terminateSelf().catch((err: Error) => {
+        hilog.warn(DOMAIN, TAG, '[MW] ERR terminateSelf VirtualDesktopAbility: %{public}s', JSON.stringify(err));
+      });
+      this.desktopWindowActive = false;
+    }
+    if (this.desktopAbilityCtx) {
+      const ctx = this.desktopAbilityCtx;
+      this.desktopAbilityCtx = null;
+      hilog.info(DOMAIN, TAG, '[MW] x11 desktop shell exited → terminateSelf(DesktopAbility)');
+      ctx.terminateSelf().catch((err: Error) => {
+        hilog.warn(DOMAIN, TAG, '[MW] ERR terminateSelf DesktopAbility: %{public}s', JSON.stringify(err));
+      });
+    }
+    // root 置 -1 (非 0): 0 是 x11 的合法 root id, 留 0 会让 restoreDesktopIfRunning
+    // 在桌面结束后把已销毁的画布窗拉回前台 (与 onToplevelDestroyed 的 -1 语义一致)
+    this.desktopAbilityRunning = false;
+    // desktopActive 同步复位: 它是 Index「打开桌面」按钮判据的第一条件
+    // (x11 无 desktop_root destroyed 事件, 打开/关闭路径都要显式维护)
+    this.desktopActive = false;
+    this.desktopRootId = -1;
+    this.notify();
   }
 
   getDesktopRootId(): number { return this.desktopRootId; }
@@ -1198,6 +1531,13 @@ export class WineWindowManager {
   // 故本调用当前保护对象 = 浮层。
   raiseWindowGroup(toplevelId: number): void {
     if (!this.fusionUsesSubWindow()) return;
+    // 模态阻断 (任务 #167): owner 被模态对话框禁用时点击不置前 —— Windows
+    // 语义是点击禁用 owner 无效果; 抬 owner 会把它压到 modal 子窗之下层序
+    // 反转, 焦点观感也归 owner。X 侧夺焦由 native FocusClient 门独立拦截。
+    if (ModalWindowManager.getInstance().isModalBlocked(toplevelId)) {
+      hilog.info(DOMAIN, TAG, '[MW] raise-blocked tl=%{public}d (owns modal)', toplevelId);
+      return;
+    }
     FusionWindowManager.getInstance().raise(toplevelId);
     PopupWindowManager.getInstance().raisePopups(toplevelId);
   }
@@ -1250,6 +1590,42 @@ export class WineWindowManager {
     } catch (e) {
       hilog.warn(DOMAIN, TAG, '[MW] recoverDesktopWindow failed: %{public}s', JSON.stringify(e));
     }
+  }
+
+  // 游戏全屏适配 (2026-10-15): 桌面内容矩形变化 → PC/2in1 承载窗跟随
+  // (ProcessService 转发 native evt:desktop-content-resize)。w/h = wine 桌面
+  // 逻辑尺寸 (游戏 CDS 后 = 游戏分辨率; 退出恢复后再发一次原尺寸)。
+  // 语义对齐 Linux "虚拟桌面窗按全屏分辨率 resize": 承载窗客户区 =
+  // 桌面逻辑尺寸 × effectiveScale (与 MW resize 先例同口径)。
+  // Pad: desktopSeparateWindow=false (tablet 全屏承载) → 空操作 —— 缩放由
+  // native letterbox 承担, 窗口尺寸不动。
+  // 防回环: 目标尺寸与当前窗尺寸相等即跳过 (窗口 resize 会经 DesktopWindow
+  // 的 surface 回调反推 output 尺寸, 那是既有单向收敛; 本方法只由 native
+  // 桌面矩形事件驱动, 不消费窗口尺寸, 两者不构成环)。
+  applyDesktopContentSize(w: number, h: number): void {
+    if (!this.desktopSeparateWindow) {
+      return;
+    }
+    const ctx = this.desktopAbilityCtx;
+    if (!ctx) {
+      return;
+    }
+    const s = this.displayScale * this.scaleBoost;
+    const winW = Math.round(w * s);
+    const winH = Math.round(h * s);
+    window.getLastWindow(ctx).then((win: window.Window) => {
+      const cur = win.getWindowProperties().windowRect;
+      if (cur.width === winW && cur.height === winH) {
+        return;
+      }
+      hilog.info(DOMAIN, TAG, '[MW-DESKTOP] content %{public}dx%{public}d → window %{public}dx%{public}d',
+        w, h, winW, winH);
+      win.resize(winW, winH).catch((e: Error) => {
+        hilog.warn(DOMAIN, TAG, '[MW-DESKTOP] resize failed: %{public}s', JSON.stringify(e));
+      });
+    }).catch((e: Error) => {
+      hilog.warn(DOMAIN, TAG, '[MW-DESKTOP] getLastWindow failed: %{public}s', JSON.stringify(e));
+    });
   }
 
   // 启动器可见性写回 (Index 调用; PC 虚拟桌面模式 Index 不挂 DesktopLayer,
@@ -1316,5 +1692,43 @@ export class WineWindowManager {
     hilog.info(DOMAIN, TAG, '[MW] unregisterDesktopAbility');
     this.desktopAbilityCtx = null;
     this.desktopAbilityRunning = false;
+  }
+
+  // ── D5 画布登记: DesktopWindow 的 XComponent surface 信息 ──────────────
+  // SmokeRunner 的 displayroute 触发用它做「画布优先启动链」: 链的
+  // first-caller-wins 契约下, 谁带 surface 启动谁定型 present 面 —— 产品
+  // 会话必须是全屏画布面, dev panel 小面 (800x600) 只是无画布时的回退
+  // (v9 实测: 回退被走到, 桌面画布全程不绑定)。登记/注销挂在 surface
+  // 创建/销毁上, 与「surface 可用于 present」语义一致。
+  private canvasSurfaceId: string = '';
+  private canvasW: number = 0;
+  private canvasH: number = 0;
+
+  registerDesktopCanvas(surfaceId: string, w: number, h: number): void {
+    this.canvasSurfaceId = surfaceId;
+    this.canvasW = w;
+    this.canvasH = h;
+    hilog.info(DOMAIN, TAG, '[MW] registerDesktopCanvas %{public}s %{public}dx%{public}d', surfaceId, w, h);
+  }
+
+  unregisterDesktopCanvas(): void {
+    if (this.canvasSurfaceId !== '') {
+      hilog.info(DOMAIN, TAG, '[MW] unregisterDesktopCanvas %{public}s', this.canvasSurfaceId);
+    }
+    this.canvasSurfaceId = '';
+    this.canvasW = 0;
+    this.canvasH = 0;
+  }
+
+  getDesktopCanvas(): DesktopCanvasInfo | null {
+    if (this.canvasSurfaceId === '') {
+      return null;
+    }
+    const info: DesktopCanvasInfo = {
+      surfaceId: this.canvasSurfaceId,
+      w: this.canvasW,
+      h: this.canvasH
+    };
+    return info;
   }
 }

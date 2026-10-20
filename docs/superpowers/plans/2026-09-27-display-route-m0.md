@@ -12,11 +12,12 @@
 
 ## Global Constraints
 
+- **架构侧别纪律（2026-09-27 用户定案，入 `.claude/rules/build-and-log.md`）**：每个组件构建前必须先回答运行在 guest 还是 host。guest=`GUEST_ARCH/GUEST_TARGET`（现 x86_64，Wine+box64），产物进 `build/sysroot-ext/`；host=`NATIVE_ARCH/NATIVE_TARGET`（真机 arm64-v8a），新增 host 交叉依赖进 `build/host-ext/<NATIVE_ARCH>/`（`env.sh` 的 `HOST_EXT_*` + `meson_host_build`）。组合三种（x86_64+arm64 / x86_64+x86_64 / arm64+arm64），判断依据是**组件运行在哪个进程**。无架构数据（协议 XML/XKB 数据）放 sysroot-ext 共享。host 组件只链 host 架构 .so，跨侧只经 socket/fd/IPC。
 - 子进程一律走 NCP（平台硬约束，用户 2026-09-27 定案），**任何代码不得 fork/exec**；`wlr_xwayland_server_create` 的 fork/execvp 路径必须被补丁替换
 - wayland 库版本 ≥1.26.0（wlroots 0.20.2 要 server/client ≥1.24，xserver 要 client ≥1.26）；wlroots 钉 `0.20.2`，构建集合 `-Dauto_features=disabled -Dxwayland=enabled`
-- 所有交叉构建只进 `$SYSROOT_EXT`（`build/sysroot-ext/`），头/.pc 随装随验（`pkg-config --modversion` 断言），禁止手工伪造 .pc（R-REPRO 教训：`build_ohos_guest_gfx.sh:589-601` 的伪 pc 是隐藏依赖源头）
+- 交叉构建产物头/.pc 随装随验（`pkg-config --modversion` 断言），禁止手工伪造 .pc（R-REPRO 教训：`build_ohos_guest_gfx.sh:589-601` 的伪 pc 是隐藏依赖源头）
 - 构建脚本一律 `set -euo pipefail`、分阶段 log、产物断言失败即非零退出（`.claude/rules/reproducibility.md`）
-- 每个新脚本完成后做一次毁灭性重建：`rm -rf build/sysroot-ext && make deps` 全绿
+- 每个新脚本完成后做一次毁灭性重建演练
 - 改动验证范围跟随变更范围：wayland 升级后必须 `make NATIVE_ARCH=arm64-v8a` + core 套件回归（`.claude/rules/smoke-regression.md`）
 - 提交即推送（主仓库 + submodule 一视同仁）；功能分支主仓库与 submodule 同名 `feature/display-route-m0`（wlroots/xserver 的钉版分支同样用此名，分支内容 = 钉版 tag + 各自的 OHOS 补丁提交）
 - 联网步骤（submodule add / tarball 下载）按需 `export https_proxy=http://192.168.1.2:7897`（npm 例外，直连）
@@ -140,111 +141,52 @@ git push origin feature/display-route-m0
 
 ---
 
-### Task 2: 图形基础库交叉构建（pixman / libxkbcommon / libdrm / wayland-protocols 升版）
+### Task 2: host 侧图形基础库（pixman / libdrm / xkbcommon-host → host-ext）+ guest 侧 xkbcommon 升版 + wayland-protocols 升 1.49
+
+> 侧别：pixman/libdrm/xkbcommon(host) 全是 **host** 组件（wlroots/Xwayland 消费）→ `meson_host_build` → `$HOST_EXT`。guest 侧 xkbcommon（Wine 消费）走既有 `build_xkbcommon.sh` 升版。wayland-protocols 是无架构数据 → sysroot-ext 共享。
 
 **Files:**
-- Create: `scripts/build_display_libs.sh`
-- Modify: `Makefile`（deps 目标追加调用 + stamp）
-- Modify: `thirdparty/wayland-protocols`（submodule 升 ≥1.47，同 feature 分支）
+- Create: `scripts/build_display_libs.sh`（host 侧）
+- Modify: `scripts/build_xkbcommon.sh`（guest 侧升版守卫, 已完成于 T1 期间的先行修改）
+- Modify: `thirdparty/libxkbcommon`（guest+host 共用源码, submodule → tag `xkbcommon-1.13.2`）
+- Modify: `thirdparty/wayland-protocols`（→ tag `1.49`, 分支推 winehua fork）
+- Modify: `Makefile`（deps 序列挂载）
 
 **Interfaces:**
-- Consumes: Task 1 的 wayland .pc
-- Produces: `$SYSROOT_EXT` 内 `pixman-1`（≥0.43.0）、`xkbcommon`（≥1.8.0）、`libdrm`（≥2.4.129）的头/.pc/.so；`wayland-protocols.pc` 版本 ≥1.47——Task 3/5/6 消费
+- Produces: `$HOST_EXT` 内 `pixman-1`（0.46.4）、`drm`（2.4.134）、`xkbcommon`（1.13.2, 含 xkbregistry）的头/.pc/.so——**AArch64**；sysroot-ext 内 xkbcommon 1.13.2（guest x86_64）；`wayland-protocols.pc` = 1.49——Task 3/5/6 消费
 
-- [ ] **Step 1: 钉版本（联网步骤，取最新满足下限的稳定 tag，逐个断言下限）**
+- [ ] **Step 1: submodule 钉版**（已执行: protocols→1.49 分支推 fork; libxkbcommon→1.13.2 纯 tag 指针, 无 fork——上游 URL 可满足克隆, 出现补丁再议）
 
-```bash
-git -C thirdparty/wayland-protocols ls-remote --tags origin | grep -oE 'refs/tags/1\.[0-9]+$' | sort -V | tail -3
-# 选 ≥1.47 最新, 切 feature/display-route-m0 分支, 推送
-```
+- [ ] **Step 2: 写 scripts/build_display_libs.sh**（已写就: pinned tarball+sha256=pixman 0.46.4/d09c44eb.., drm 2.4.134/ac5e74d1..; **须改用 `meson_host_build` + `$HOST_EXT` prefix**, xkbcommon-host 从 `thirdparty/libxkbcommon` 源码构建, 构建目录版本后缀）
 
-pixman/libxkbcommon/libdrm 用 pinned tarball + sha256（URL 写死进脚本，`curl -fsSL` 下载到 `build/downloads/`，`sha256sum -c` 校验后才解压；版本下限不满足即 `exit 1`）。
+- [ ] **Step 3: Makefile deps 挂载**（display-libs stamp, 方式同 DXVK_STAMP; 追加进 deps 规则脚本序列）
 
-- [ ] **Step 2: 写 scripts/build_display_libs.sh**
-
-骨架（三个库同构，全部走 `meson_build`，**不得**绕过 cross file；卫语句 + 逐库 modversion 断言 + 末尾汇总）：
+- [ ] **Step 4: 门——全量断言**
 
 ```bash
-#!/bin/bash
-# build_display_libs.sh — 显示路线基础库: pixman + libxkbcommon + libdrm → sysroot-ext
-# 用法: make deps 时被 Makefile 调用; 也可独立 bash scripts/build_display_libs.sh
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/env.sh"
-
-DL="$BUILD_DIR/downloads"; mkdir -p "$DL"
-fetch_and_unpack() {  # $1=url $2=sha256 $3=解压目录名
-    local tgz="$DL/$(basename "$1")"
-    [ -f "$tgz" ] || curl -fsSL -o "$tgz" "$1"
-    echo "$2  $tgz" | sha256sum -c - || { err "sha256 不匹配: $tgz"; exit 1; }
-    [ -d "$BUILD_DIR/$3" ] || tar -C "$BUILD_DIR" -xf "$tgz"
-}
-
-# --- pixman (wlroots pixman 渲染器 + Xwayland 依赖, ≥0.43.0) ---
-if ! pkg-config --exists pixman-1; then
-    fetch_and_unpack "https://www.cairographics.org/releases/pixman-<钉版>.tar.gz" "<sha256>" "pixman-<钉版>"
-    meson_build "$BUILD_DIR/pixman_build" "$BUILD_DIR/pixman-<钉版>" -Dtests=disabled -Ddemos=disabled
-    ninja -C "$BUILD_DIR/pixman_build" install
-fi
-[ "$(pkg-config --modversion pixman-1)" \> "0.42.99" ] || { err "pixman < 0.43.0"; exit 1; }
-
-# --- libxkbcommon (wlroots 键盘, ≥1.8.0; xkbregistry 关闭) ---
-if ! pkg-config --exists xkbcommon; then
-    fetch_and_unpack "https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-<钉版>.tar.gz" "<sha256>" "libxkbcommon-xkbcommon-<钉版>"
-    meson_build "$BUILD_DIR/xkbcommon_build" "$BUILD_DIR/libxkbcommon-xkbcommon-<钉版>" \
-        -Denable-xkbregistry=false -Denable-docs=false -Denable-tools=disabled
-    ninja -C "$BUILD_DIR/xkbcommon_build" install
-fi
-[ "$(pkg-config --modversion xkbcommon)" \> "1.7.99" ] || { err "xkbcommon < 1.8.0"; exit 1; }
-
-# --- libdrm (wlroots 无条件依赖, ≥2.4.129; 只需头与 .pc, 全功能可编) ---
-if ! pkg-config --exists drm; then
-    fetch_and_unpack "https://dri.freedesktop.org/libdrm/libdrm-<钉版>.tar.xz" "<sha256>" "libdrm-<钉版>"
-    meson_build "$BUILD_DIR/drm_build" "$BUILD_DIR/libdrm-<钉版>" -Domap=disabled -Dintel=disabled \
-        -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled -Dvmwgfx=disabled -Dtests=false
-    ninja -C "$BUILD_DIR/drm_build" install
-fi
-[ "$(pkg-config --modversion drm)" \> "2.4.128" ] || { err "libdrm < 2.4.129"; exit 1; }
-
-log "display libs OK: pixman=$(pkg-config --modversion pixman-1) xkbcommon=$(pkg-config --modversion xkbcommon) drm=$(pkg-config --modversion drm)"
+make deps
+PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$SYSROOT/usr/lib/pkgconfig" pkg-config --modversion pixman-1 drm xkbcommon
+LLVM=$OHOS_SDK/native/llvm/bin
+$LLVM/llvm-readelf -h "$HOST_EXT_LIB/libpixman-1.so" | grep -m1 Machine   # 期望 AArch64 (host)
+$LLVM/llvm-readelf -h build/sysroot-ext/usr/lib/x86_64-linux-ohos/libxkbcommon.so.0 | grep -m1 Machine  # 期望 X86-64 (guest)
+pkg-config --modversion wayland-protocols   # 期望 1.49
 ```
 
-注意：libxkbcommon 的 xkb_data 路径经 `-Dxkb-config-root` 指到 `$SYSROOT_EXT_SHARE/X11/xkb`（Task 1 确认 `build/sysroot-ext/usr/share/X11/xkb` 已存在）；若 meson 探测缺 xkeyboard-config，用该参数显式指定。
+Expected: host 三库 ≥下限且 AArch64；guest xkbcommon=1.13.2 且 X86-64；protocols=1.49。
 
-- [ ] **Step 3: Makefile deps 挂载（DXVK_STAMP 同款）**
-
-```make
-DISPLAY_LIBS_STAMP := $(BUILD_DIR)/.stamps/display-libs
-$(DISPLAY_LIBS_STAMP): $(SCRIPTS)/build_display_libs.sh | $(STAMPS)
-	bash $(SCRIPTS)/build_display_libs.sh
-	@touch $@
-```
-
-并加入 `deps` 目标依赖序列（wayland 之后）。
-
-- [ ] **Step 4: 门——毁灭性重建 + 全量断言**
-
-```bash
-rm -rf build/sysroot-ext && make deps
-for p in pixman-1 xkbcommon drm wayland-server wayland-client wayland-protocols; do
-  pkg-config --modversion $p || exit 1
-done
-llvm-readelf -h build/sysroot-ext/usr/lib/x86_64-linux-ohos/libpixman-1.so | grep -q AArch64
-```
-
-Expected: 四库 modversion 全部打印且达下限；`make deps` rc=0。
-
-- [ ] **Step 5: 提交推送**（脚本 + Makefile + wayland-protocols 指针，message: `build(deps): 显示路线基础库 pixman/xkbcommon/libdrm 交叉构建, wayland-protocols 升 ≥1.47`）
+- [ ] **Step 5: 提交推送**（`build(deps): host-ext 基础库 pixman/drm/xkbcommon(侧别纪律参数化), guest xkbcommon 1.13.2, wayland-protocols 1.49`）
 
 ---
 
-### Task 3: X 协议头与 libxcb 栈（wlroots xwayland 与 X client 的共同前置）
+### Task 3: X 协议头与 libxcb 栈（按侧参数化; M0 构建侧 = host——Xwayland 与 mini client 是 host 进程）
+
+> 脚本以 `SIDE=guest|host` 参数化：guest→sysroot-ext（M1 时 winex11.drv 消费），host→HOST_EXT（`meson_host_build`）。M0 只构建 host 侧。
 
 **Files:**
-- Create: `scripts/build_xcb_stack.sh` + Makefile stamp
+- Create: `scripts/build_xcb_stack.sh`（SIDE 参数）+ Makefile stamp（host 侧）
 
 **Interfaces:**
-- Produces: `xorgproto`（头）、`xcb-proto`（数据）、`libxcb` 及 wlroots 实际需要的 xcb 辅助模块 `.so/.pc`
+- Produces: `$HOST_EXT` 内 `xorgproto`（头）、`xcb-proto`（数据）、`libxcb` 及 wlroots 实际需要的 xcb 辅助模块 `.so/.pc`（AArch64）
 
 - [ ] **Step 1: 从钉版源码枚举依赖清单（不凭记忆）**
 
@@ -254,58 +196,47 @@ grep -n "dependency('" .temp/gamescope/subprojects/wlroots/xwayland/meson.build 
 
 记录 wlroots 要求的 xcb 模块全集（预期含 `xcb`、`xcb-shm`、`xcb-render`、`xcb-composite`、`xcb-res`、`xcb-xfixes`、`xcb-icccm`(xcb-util-wm)、`xcb-image`/`xcb-keysyms`(xcb-util, 以实际 grep 为准)）。
 
-- [ ] **Step 2: 写脚本构建**（autotools 序列；每个库用同一套 OHOS configure 模板）
+- [ ] **Step 2: 写脚本构建**（autotools 序列；每个库用同一套 OHOS configure 模板，**SIDE 参数决定目标三元组与 prefix**：host→`$NATIVE_TARGET`+`$HOST_EXT/usr`，guest→`$GUEST_TARGET`+`$SYSROOT_EXT/usr`；M0 调 `SIDE=host`）
 
-xorgproto 与 xcb-proto 只装数据/头（`./configure --prefix=$SYSROOT_EXT/usr`，无编译）；libxcb 需要 host 侧 `xcb-proto` + python；xcb 辅助库（xcb-util 系列）逐个 `--host` 交叉 configure。OHOS configure 模板：
+xorgproto 与 xcb-proto 只装数据/头（`./configure --prefix=...`，无编译）；libxcb 需要 build 机侧 `xcb-proto` + python；xcb 辅助库（xcb-util 系列）逐个交叉 configure。configure 模板：
 
 ```bash
-conf_ohos() {  # $1=源码目录
-    ( cd "$1" && ./configure --host=aarch64-linux-ohos --prefix="$SYSROOT_EXT/usr" \
-        CC="$CC" CXX="$CXX" LD="$LD" \
-        CFLAGS="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC" \
-        LDFLAGS="--target=$TARGET --sysroot=$SYSROOT -fuse-ld=lld -L$SYSROOT_EXT_LIB" \
-        PKG_CONFIG_PATH="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig" \
+conf_ohos() {  # $1=源码目录; 依赖 SIDE 变量(host|guest)
+    local t="$NATIVE_TARGET" pre="$HOST_EXT/usr" inc="$HOST_EXT_INC" lib="$HOST_EXT_LIB" pc="$HOST_EXT_PC"
+    [ "$SIDE" = guest ] && { t="$GUEST_TARGET"; pre="$SYSROOT_EXT/usr"; inc="$SYSROOT_EXT_INC"; lib="$SYSROOT_EXT_LIB"; pc="$SYSROOT_EXT_PC"; }
+    ( cd "$1" && ./configure --host="$t" --prefix="$pre" \
+        CC="$OHOS_SDK/native/llvm/bin/clang" \
+        CFLAGS="--target=$t --sysroot=$SYSROOT -I$inc" \
+        LDFLAGS="--target=$t --sysroot=$SYSROOT -fuse-ld=lld -L$lib" \
+        PKG_CONFIG_PATH="$pc" \
         --disable-static --enable-shared )
 }
 ```
 
-（`$CC/$CXX/$LD/$TARGET` 均来自 env.sh；若 env.sh 变量名不同以 env.sh 为准并在脚本注释记录映射。）
-
-- [ ] **Step 3: 门**——逐模块 `pkg-config --modversion xcb` 等可查 + 试编译：
-
-```bash
-printf '#include <xcb/xcb.h>\n#include <xcb/xcb_icccm.h>\nint main(){return 0;}\n' > /tmp/x.c && \
-$CC --target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -L$SYSROOT_EXT_LIB -fuse-ld=lld \
-    /tmp/x.c $(pkg-config --cflags --libs xcb xcb-icccm) -o /dev/null
-```
-
-Expected: rc=0。产物 `llvm-readelf -h` 断言 AArch64。毁灭性重建一次（`rm -rf build/sysroot-ext && make deps`）。
+- [ ] **Step 3: 门**——逐模块 `pkg-config --modversion xcb` 等可查 + 试编译 + **架构断言按侧**（host 侧产物必须 AArch64，guest 侧必须 X86-64——`llvm-readelf -h`）。毁灭性重建一次（`rm -rf "$HOST_EXT" && make deps`）。
 
 - [ ] **Step 4: 提交推送**（`build(deps): xorgproto/xcb-proto/libxcb+xcb-util 栈交叉构建`）
 
 ---
 
-### Task 4: libX11 + libXext（X client 硬依赖，即 winex11 的硬依赖面）
+### Task 4: libX11 + libXext（按侧参数化; M0 构建 host 侧供 mini client；guest 侧留 M1 供 winex11.drv——同一脚本 `SIDE` 参数）
 
 **Files:**
-- Create: `scripts/build_x11_client.sh` + Makefile stamp
+- Create: `scripts/build_x11_client.sh`（SIDE 参数, 模板同 Task 3）+ Makefile stamp（host 侧）
 
 **Interfaces:**
-- Consumes: Task 3 的 libxcb/xorgproto
-- Produces: `libX11.so.6`、`libXext.so.6` + `.pc`（Task 7 mini client 直接链接；这正是 spec §3 winex11 行的硬依赖清单）
+- Consumes: Task 3 的 libxcb/xorgproto（对应侧）
+- Produces: 对应侧的 `libX11.so.6`、`libXext.so.6` + `.pc`；M0 = `$HOST_EXT`（AArch64, Task 9 mini client 链接）。guest 侧 = spec §3 winex11 行的硬依赖清单，M1 构建。
 
-- [ ] **Step 1: 构建**（libX11 需 xtrans——libX11 tarball 自带；`--disable-udc --disable-xlocale` 收窄；libXext 常规）+ libX11 的 keysymdef 数据来自 xorgproto（Task 3 已装）。
+- [ ] **Step 1: 构建**（host 侧; libX11 需 xtrans——libX11 tarball 自带；`--disable-udc --disable-xlocale` 收窄；libXext 常规）+ libX11 的 keysymdef 数据来自 xorgproto（Task 3 已装）。
 - [ ] **Step 2: 门**
 
 ```bash
-pkg-config --modversion x11 xext
-llvm-readelf -h build/sysroot-ext/usr/lib/x86_64-linux-ohos/libX11.so.6 | grep -m1 Machine  # AArch64
-printf '#include <X11/Xlib.h>\n#include <X11/Xutil.h>\nint main(){return 0;}\n' > /tmp/xx.c && \
-$CC --target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -L$SYSROOT_EXT_LIB -fuse-ld=lld \
-    /tmp/xx.c $(pkg-config --cflags --libs x11 xext) -o /dev/null
+PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$SYSROOT/usr/lib/pkgconfig" pkg-config --modversion x11 xext
+llvm-readelf -h "$HOST_EXT_LIB/libX11.so.6" | grep -m1 Machine  # AArch64
 ```
 
-Expected: rc=0，架构断言 AArch64。提交推送（`build(deps): libX11/libXext 交叉构建`）。
+试编译用 `meson_host_build` 同款参数（`--target=$NATIVE_TARGET`），rc=0。提交推送（`build(deps): libX11/libXext 交叉构建(按侧参数化, M0=host)`）。
 
 ---
 
@@ -316,8 +247,8 @@ Expected: rc=0，架构断言 AArch64。提交推送（`build(deps): libX11/libX
 - Create: `scripts/build_wlroots.sh` + Makefile stamp
 
 **Interfaces:**
-- Consumes: Task 1 wayland-server ≥1.26、Task 2 pixman/xkbcommon/drm/wayland-protocols、Task 3 xcb 栈
-- Produces: `$SYSROOT_EXT_LIB/libwlroots.a`（静态）+ `$SYSROOT_EXT_INC/wlr/**` 头——Task 7/8 链接消费
+- Consumes: **host 侧全量**——wayland-server 头（sysroot-ext, 无架构）+ `$NATIVE_LIBS/libwayland-server.so.0`（AArch64, build_native.sh 产物, cross file `-L$NATIVE_LIBS` 解析）、Task 2 的 `$HOST_EXT` pixman/xkbcommon/drm、Task 3 的 `$HOST_EXT` xcb 栈、wayland-protocols 数据（sysroot-ext, 经 .pc 兜底路径）
+- Produces: `$HOST_EXT_LIB/libwlroots.a`（静态, AArch64）+ `$HOST_EXT_INC/wlr/**` 头——Task 7/8 链接消费
 
 - [ ] **Step 1: submodule 钉版**
 
@@ -328,26 +259,24 @@ cd thirdparty/wlroots && git checkout -b feature/display-route-m0 0.20.2 && git 
 git add thirdparty/wlroots   # 主仓库指针（Task 7 会在此分支提交启动补丁）
 ```
 
-- [ ] **Step 2: 写 scripts/build_wlroots.sh**（关键构建项，其余卫语句/断言同前）：
+- [ ] **Step 2: 写 scripts/build_wlroots.sh**（**host 侧: `meson_host_build`**，构建目录版本/tag 后缀；关键构建项）：
 
 ```bash
-meson_build "$BUILD_DIR/wlroots_build" "$ROOT/thirdparty/wlroots" \
+meson_host_build "$BUILD_DIR/wlroots_build_0.20.2" "$ROOT/thirdparty/wlroots" \
+    --prefix="$HOST_EXT_USR" --libdir=lib \
     -Dauto_features=disabled \
     -Dxwayland=enabled \
     -Ddefault-library=static \
     -Dexamples=false
-ninja -C "$BUILD_DIR/wlroots_build"
-# 安装: 静态库 + 头 + 生成协议头
-cp "$BUILD_DIR/wlroots_build/libwlroots.a" "$SYSROOT_EXT_LIB/"
-meson install -C "$BUILD_DIR/wlroots_build" --destdir "$BUILD_DIR/wlroots_dest"
-cp -r "$BUILD_DIR"/wlroots_dest/usr/local/include/wlr "$SYSROOT_EXT_INC/"
+ninja -C "$BUILD_DIR/wlroots_build_0.20.2"
+ninja -C "$BUILD_DIR/wlroots_build_0.20.2" install   # libwlroots.a + wlr/** 头 → $HOST_EXT
 ```
 
 - [ ] **Step 3: 门**
 
 ```bash
-llvm-readelf -h build/sysroot-ext/usr/lib/x86_64-linux-ohos/libwlroots.a | grep -m1 Machine  # AArch64
-llvm-nm build/sysroot-ext/usr/lib/x86_64-linux-ohos/libwlroots.a | grep -E "T wlr_headless_backend_create|T wlr_seat_create|T wlr_xwayland_create|pixman_renderer_create"
+llvm-readelf -h "$HOST_EXT_LIB/libwlroots.a" | grep -m1 Machine  # AArch64
+llvm-nm "$HOST_EXT_LIB/libwlroots.a" | grep -E "T wlr_headless_backend_create|T wlr_seat_create|T wlr_xwayland_create|pixman_renderer_create"
 ```
 
 Expected: 符号齐备（pixman 渲染器入口以 `include/wlr/render/pixman.h` 实际签名为准，构建前先 `grep "wlr_.*renderer_create" thirdparty/wlroots/include/wlr/render/pixman.h` 记录）。试链接：编译引用上述符号的 `main` 并 `-lwlroots -lwayland-server -lpixman-1 ...` rc=0。
@@ -364,8 +293,8 @@ Expected: 符号齐备（pixman 渲染器入口以 `include/wlr/render/pixman.h`
 - Modify: xserver 的 `hw/xwayland/meson.build`（submodule 内提交：新增 shared_library 目标，与可执行文件同源对象）
 
 **Interfaces:**
-- Consumes: Task 1-5 全部产物（wayland-client ≥1.26、pixman、xtrans/libxau/libxdmcp/libxfont2/libxshmfence/libxcvt、xorgproto、xcb 栈、xkbcomp 数据树）
-- Produces: `$SYSROOT_EXT_LIB/libxwayland.so`（导出 `main` 或等价入口符号）——Task 7 shim dlopen/直链调用
+- Consumes: **host 侧全量**（Xwayland 是 host 进程）——wayland-client ≥1.26（guest sysroot 头无架构 + `$NATIVE_LIBS` aarch64 .so 链接）、`$HOST_EXT` pixman/xcb 栈、伴生库（Task 6 Step 2 的 conf_ohos host 模式装 `$HOST_EXT`）、xkbcomp 数据树（sysroot-ext 共享）
+- Produces: `$HOST_EXT_LIB/libxwayland.so`（AArch64, 导出 `main`）——Task 7 shim 直链调用
 
 - [ ] **Step 1: 钉版裁决（输出证据表回填 spec §6）**
 

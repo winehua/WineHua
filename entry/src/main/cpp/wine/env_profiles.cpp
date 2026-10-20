@@ -130,9 +130,18 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
         AppendStableDxvkEnv(env, env, p.d3dBackend, p.dxvkBackend);
     if (p.desktopShellFlag)
         UpsertEnvLine(env, "WINEHUA_DESKTOP=shell");
-    // per-app 覆盖最后写入, 优先级最高
-    for (const std::string& line : p.extraEnv)
-        UpsertEnvLine(env, line);
+    // per-app 覆盖最后写入, 优先级最高。契约: 值为空 ("KEY=") = 删除该键
+    // 而非置空 —— 驱动选择分支 (win32u driver.c) 按键存在性判路,
+    // X 档位的互斥语义 ("只设 DISPLAY 不设 WAYLAND_DISPLAY", M1-T4) 只能
+    // 靠删除实现; 置空仍非 NULL, 会被当作 wayland 路线。
+    for (const std::string& line : p.extraEnv) {
+        size_t eq = line.find('=');
+        if (eq != std::string::npos && eq + 1 == line.size()) {
+            RemoveEnvLine(env, line.substr(0, eq));
+        } else {
+            UpsertEnvLine(env, line);
+        }
+    }
     return env;
 }
 

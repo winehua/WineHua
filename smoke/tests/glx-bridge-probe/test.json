@@ -1,0 +1,12 @@
+{
+  "id": "glx-bridge-probe",
+  "title": "GLX-over-EGL 桥 R1 spike：GL 渲染+回读 / 投递到 X 窗口 分段耗时 (终态 PASS 大写)",
+  "exe": "winehua_glx_bridge_probe.exe",
+  "arch": [
+    "x64"
+  ],
+  "from_wine": "winehua_glx_bridge_probe",
+  "checks": [
+    "result-json"
+  ]
+}

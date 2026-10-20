@@ -1,0 +1,104 @@
+diff --git a/hw/xwayland/meson.build b/hw/xwayland/meson.build
+index 9fff6445d..9f6488a25 100644
+--- a/hw/xwayland/meson.build
++++ b/hw/xwayland/meson.build
+@@ -165,6 +165,35 @@ xwayland_server = executable(
+     install_dir: xwayland_path
+ )
+ 
++# OHOS: NCP 子进程无法 exec 可执行文件, Xwayland 以共享库形态承载 (WineHua
++# spec R-SPAWN), 与可执行目标同源对象并存, 不参与上游 install——由构建脚本
++# 拷贝部署。c_args -fvisibility=default 抵消根 meson.build 的全局
++# -fvisibility=hidden; main 由 xwayland_ohos_main.c 提供 (stubmain.o 链静态
++# 归档时因无人引用不被拉入, 且其符号编译为 hidden 进不了 dynsym)。
++xwayland_ohos_lib = shared_library(
++    'xwayland_ohos',
++    srcs + files('xwayland_ohos_main.c'),
++    include_directories: wayland_inc,
++    c_args: ['-fvisibility=default'],
++    dependencies: [
++        common_dep,
++        epoll_dep,
++        xwayland_dep,
++        xwaylandproto_dep,
++    ],
++    link_with: [
++        xwayland_glamor,
++        libxserver_fb,
++        libxserver,
++        libxserver_xext_vidmode,
++        libxserver_xkb_stubs,
++        libxserver_xi_stubs,
++        libxserver_glx,
++        libglxvnd,
++    ],
++    install: false,
++)
++
+ xwayland_vars = [
+     'have_glamor=' + build_glamor.to_string(),
+     'have_glamor_api=' + build_glamor.to_string(),
+diff --git a/hw/xwayland/xwayland_ohos_main.c b/hw/xwayland/xwayland_ohos_main.c
+new file mode 100644
+index 000000000..8d39749bc
+--- /dev/null
++++ b/hw/xwayland/xwayland_ohos_main.c
+@@ -0,0 +1,21 @@
++/*
++ * Copyright 2026 WineHua project
++ *
++ * OHOS NCP adaptation (WineHua spec R-SPAWN): Xwayland ships as a shared
++ * library (libxwayland_ohos.so) because NativeChildProcess cannot exec
++ * executables. NCP shim loads this library and calls its exported main().
++ *
++ * This file exists because the executable target gets its main() from
++ * dix/stubmain.c, which is compiled with the project-wide
++ * -fvisibility=hidden; symbols inside a static archive that nothing
++ * references are also never pulled in by the linker. Defining main() here,
++ * as a target source compiled with -fvisibility=default, solves both.
++ */
++
++int dix_main(int argc, char *argv[], char *envp[]);
++
++int
++main(int argc, char *argv[], char *envp[])
++{
++    return dix_main(argc, argv, envp);
++}
+diff --git a/xkb/ddxLoad.c b/xkb/ddxLoad.c
+index 18e0ec3be..94acf1869 100644
+--- a/xkb/ddxLoad.c
++++ b/xkb/ddxLoad.c
+@@ -101,6 +101,10 @@ OutputDirectory(char *outdir, size_t size)
+  */
+ typedef void (*xkbcomp_buffer_callback)(FILE *out, void *userdata);
+ 
++/* OHOS (WineHua): forward decl for the prebuilt-keymap cache check below. */
++static FILE *XkbDDXOpenConfigFile(const char *mapName, char *fileNameRtrn,
++                                  int fileNameRtrnLen);
++
+ /**
+  * Start xkbcomp, let the callback write into xkbcomp's stdin. When done,
+  * return a strdup'd copy of the file name we've written to.
+@@ -129,6 +133,21 @@ RunXkbComp(xkbcomp_buffer_callback callback, void *userdata)
+ 
+     OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));
+ 
++    /* OHOS (WineHua): NCP 子进程不能 fork/exec xkbcomp (实测 exec=FAIL
++     * errno=13), 而本函数没有缓存查找——keymap 加载必然失败 →
++     * "Failed to activate virtual core keyboard" FatalError (T7 实测)。
++     * keymap 缓存由 assemble 期宿主 xkbcomp 预生成 (wine-data/xkm/)，
++     * NCP shim 启动时拷到 XDG_RUNTIME_DIR。命中即直接走 LoadXKM，
++     * 与下方 Pclose 成功路径 (return xnfstrdup(keymap)) 同构。 */
++    {
++        FILE *cached = XkbDDXOpenConfigFile(keymap, NULL, 0);
++        if (cached != NULL) {
++            fclose(cached);
++            DebugF("[xkb] using prebuilt keymap cache: %s.xkm\n", keymap);
++            return xnfstrdup(keymap);
++        }
++    }
++
+ #ifdef WIN32
+     strcpy(tmpname, Win32TempDir());
+     strcat(tmpname, "\\xkb_XXXXXX");

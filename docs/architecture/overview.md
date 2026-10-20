@@ -103,7 +103,7 @@ graph TB
 
 ### 3.1 D3D11 主路径（DXVK → Venus → host Vulkan）
 
-用哪一版 DXVK 由档位决定：`master` 默认 `vkd3d_limited_500k`（DXVK 轴走 legacy 1.10.3），`main-ui` 默认 `dxvk_modern_2_6`（2.6.2）。档位与设备能力的对应见 [graphics-matrix.md](graphics-matrix.md)。
+用哪一版 DXVK 由档位决定：master 线默认 `dxvk_modern_2_6`（DXVK 2.6.2；2026-10-11 起），main-ui 线默认 `dxvk_legacy`（1.10.3）。档位与设备能力的对应见 [graphics-matrix.md](graphics-matrix.md)。
 
 ```mermaid
 flowchart LR

@@ -19,6 +19,27 @@
 #define LOG_TAG "WL_NAPI"
 #include <hilog/log.h>
 
+// M3a 显示路线 native 镜像 (契约见 wine_env.h)。进程内单写点 (NAPI set,
+// ArkTS 冷启解析后调一次), 读点仅 BuildWineEnv 的 stamp。
+static char g_display_route[8] = {0};
+
+extern "C" void WineHua_SetDisplayRoute(const char* route)
+{
+    if (!route || (strcmp(route, "x11") != 0 && strcmp(route, "wayland") != 0))
+        return;
+    strncpy(g_display_route, route, sizeof(g_display_route) - 1);
+    g_display_route[sizeof(g_display_route) - 1] = '\0';
+    /* 唯一写点必须可观测 (2026-10-04 实测: xwedge3 会话印章缺失, 排查时
+     * 无从判断"没调到"还是"调了没生效" —— 印章缺失的直接下游是 spawn 出
+     * 来的 wine 进程走错路线, 代价是一整轮实验)。 */
+    OH_LOG_INFO(LOG_APP, "[DisplayRoute] mirror set: %{public}s", g_display_route);
+}
+
+bool WineHua_DisplayRouteIsX11()
+{
+    return strcmp(g_display_route, "x11") == 0;
+}
+
 int CreateAudioBootstrapFd(const std::string& runtimeDir) {
     if (!winehua::AudioBroker::GetInstance().EnsureStarted(runtimeDir)) {
         OH_LOG_ERROR(LOG_APP, "[AudioBroker] failed to start for runtimeDir=%{public}s", runtimeDir.c_str());
@@ -61,6 +82,13 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
         "XDG_RUNTIME_DIR=" + sockDir,
         "WAYLAND_DISPLAY=" + sockName,
     };
+    // M3a 显示路线: x11 时 stamp 两键 (后写胜出)。WAYLAND_DISPLAY 的删除由
+    // 子进程 wine_child.cpp 的既有路由分支完成 (route=x11 ⇒ unset), 这里
+    // 不表达删除语义。smoke 套件 env 里的同名键与本 stamp 同值, 无冲突。
+    if (WineHua_DisplayRouteIsX11()) {
+        env.push_back("WINEHUA_DISPLAY_ROUTE=x11");
+        env.push_back("DISPLAY=:0");
+    }
     {
         std::vector<std::string> baseline = winehua::BuildWineBaselineLines(
             {binDir, homeDir, prefixDir});
@@ -79,6 +107,10 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // 单设 LANG 无效, 必须补 LC_ALL 才能解析出对应 LCID (0x0804 zh-CN),
     // 与 LANG 同取设置页 wineLang (zh_CN/en_US)
     env.push_back("LC_ALL=" + wineLang + ".UTF-8");
+    // XIM server (XIM spec §3): libX11 XOpenIM 读 XMODIFIERS 定位输入法,
+    // 指向 xim_server_child 注册的 "winehua"。缺省行为不变 = 无此串时
+    // XOpenIM 走默认探测 (失败静默, 与引入 XIM 前一致)。
+    env.push_back("XMODIFIERS=@im=winehua");
     // winegstreamer 运行时加载 GStreamer 插件 (gst-plugins-base/good/libav)
     env.push_back("GST_PLUGIN_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
     env.push_back("GST_PLUGIN_SYSTEM_PATH=" + binDir + "/x86_64-unix/gstreamer-1.0");
@@ -140,6 +172,14 @@ void UpsertEnvLine(std::vector<std::string>& env, const std::string& line)
                existing.size() > key.size() && existing[key.size()] == '=';
     }), env.end());
     env.push_back(line);
+}
+
+void RemoveEnvLine(std::vector<std::string>& env, const std::string& key)
+{
+    env.erase(std::remove_if(env.begin(), env.end(), [&](const std::string& existing) {
+        return existing.compare(0, key.size(), key) == 0 &&
+               existing.size() > key.size() && existing[key.size()] == '=';
+    }), env.end());
 }
 
 void AppendD3dBackendEnv(std::vector<std::string>& env,

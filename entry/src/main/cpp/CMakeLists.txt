@@ -26,6 +26,16 @@ endif()
 # 预编译 ARM64 wayland-server (放在 libs/ 下，hvigor 自动打包)
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
+# 显示路线 wlroots (静态库) — 构建产物在 build/host-ext (纪律: build/ 内唯一落点),
+# 其 NEEDED 闭包 .so 由 assemble.sh 装配进 libs/ (打包视图)
+# 注: NATIVERENDER_ROOT_PATH = entry/src/main/cpp, 仓库根在四级上
+set(WLR_DIR ${NATIVERENDER_ROOT_PATH}/../../../../build/host-ext/${OHOS_ARCH})
+set(WLR_STATIC ${WLR_DIR}/usr/lib/libwlroots-0.20.a)
+set(WLR_INC ${WLR_DIR}/usr/include/wlroots-0.20)
+set(WLR_PIXMAN_INC ${WLR_DIR}/usr/include/pixman-1)
+# xwayland.h 需要 xcb/xcb.h 等 (host-ext usr/include)
+set(WLR_XCB_INC ${WLR_DIR}/usr/include)
+
 add_library(entry SHARED
     audio/audio_broker.cpp
     audio/audio_ipc_server.cpp
@@ -68,6 +78,16 @@ add_library(entry SHARED
     compositor/input/input_space_mapper.cpp
     compositor/input/input_queue.cpp
     compositor/input/input_state_tracker.cpp
+    display/display_compositor.cpp
+    display/display_guest_frames.cpp
+    display/x11_toplevel.c
+    display/x11_toplevel_bridge.cpp
+    display/ohos_buffer.cpp
+    display/ohos_output.c
+    display/ohos_egl_import_probe.c
+    display/ohos_egl_import.c
+    display/display_input.c
+    display/xim_bridge.c
     compositor/input/input_injector.cpp
     compositor/toplevel/desktop_root_manager.cpp
     compositor/toplevel/toplevel_event_bus.cpp
@@ -100,10 +120,17 @@ add_library(entry SHARED
 # -O2 属性必须跟着代码走 — 漏挂曾致 blit 段从 26ms 劣化到 ~240ms。
 set_source_files_properties(compositor/frame/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")
 
+target_include_directories(entry PRIVATE ${WLR_INC} ${WLR_PIXMAN_INC} ${WLR_XCB_INC})
+
+# xim_bridge (XIM spec Task 1): Xlib 客户端面, 头在 WLR_XCB_INC (host-ext
+# usr/include), 运行时 libX11.so.6 由 assemble.sh 装进打包视图 (同 xclient
+# 子进程的依赖面, CMakeLists xclient 段注释)。
 target_link_libraries(entry PUBLIC
+    ${WAYLAND_LIBS_DIR}/libX11.so.6
     libace_napi.z.so
     libace_ndk.z.so
     libnative_window.so
+    libnative_buffer.so
     libnative_image.so
     libnative_vsync.so
     libEGL.so
@@ -114,7 +141,24 @@ target_link_libraries(entry PUBLIC
     libipc_capi.so
     libohaudio.so
     libnative_window_manager.so
+    # wlroots 静态库 + 其 NEEDED 闭包 (顺序敏感: .a 在前, 依赖 .so 在后)。
+    # start-group 防静态库内部 member 依赖环 (output.c.o→allocator.c.o,
+    # 单遍扫描报 undefined wlr_allocator_init, T8 实测)
+    -Wl,--start-group
+    ${WLR_STATIC}
+    -Wl,--end-group
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
+    ${WAYLAND_LIBS_DIR}/libwayland-client.so.0
+    ${WAYLAND_LIBS_DIR}/libxkbcommon.so.0
+    ${WAYLAND_LIBS_DIR}/libpixman-1.so.0
+    ${WAYLAND_LIBS_DIR}/libdrm.so.2
+    ${WAYLAND_LIBS_DIR}/libxcb.so.1
+    ${WAYLAND_LIBS_DIR}/libxcb-composite.so.0
+    ${WAYLAND_LIBS_DIR}/libxcb-ewmh.so.2
+    ${WAYLAND_LIBS_DIR}/libxcb-icccm.so.4
+    ${WAYLAND_LIBS_DIR}/libxcb-render.so.0
+    ${WAYLAND_LIBS_DIR}/libxcb-res.so.0
+    ${WAYLAND_LIBS_DIR}/libxcb-xfixes.so.0
 )
 
 add_library(wine_child SHARED
@@ -122,8 +166,56 @@ add_library(wine_child SHARED
 )
 target_link_libraries(wine_child PUBLIC libhilog_ndk.z.so libchild_process.so)
 
-# smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询/注入
-# 原语, 产品代码不引用。符号来自 entry (同进程运行时解析), 必须与 entry 同包。
+# Xwayland NCP shim: 收父进程命名 fd 五连 + entryParams, dlopen
+# libxwayland_ohos.so 调 main (spec R-SPAWN; 入口形态同 wine_child)
+add_library(xwayland_child SHARED
+    display/ncp/xwayland_child.cpp
+)
+target_link_libraries(xwayland_child PUBLIC libhilog_ndk.z.so libchild_process.so)
+
+# mini X client NCP 子进程 (M0-T9 出口件): XOpenDisplay 自行连 Xwayland,
+# 无命名 fd。依赖面恰 = winex11 硬依赖 (libX11+libXext ONLY, 范围决议
+# 2026-09-27); libX11.so.6 由 assemble.sh 装进打包视图, 运行时同目录解析
+add_library(xclient_child SHARED
+    display/ncp/xclient_child.cpp
+)
+# X11 头在 host-ext usr/include (T4 libX11 安装位); 链接面仍只有 libX11/libXext
+target_include_directories(xclient_child PRIVATE ${WLR_XCB_INC})
+target_link_libraries(xclient_child PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    ${WAYLAND_LIBS_DIR}/libX11.so.6
+    ${WAYLAND_LIBS_DIR}/libXext.so.6
+)
+
+# XIM server NCP 子进程 (XIM spec §3 NCP 承载): X 连接面同 xclient_child
+# (与 Xwayland 同 namespace; 主进程 XOpenDisplay 已实测挂起)。通道子端经
+# 命名 fd "xim_fd" 传入 (xwayland 五连同款机制)。
+add_library(xim_server_child SHARED
+    display/ncp/xim_server_child.cpp
+)
+target_include_directories(xim_server_child PRIVATE ${WLR_XCB_INC})
+target_link_libraries(xim_server_child PUBLIC
+    libhilog_ndk.z.so
+    libchild_process.so
+    ${WAYLAND_LIBS_DIR}/libX11.so.6
+    ${WAYLAND_LIBS_DIR}/libXext.so.6
+)
+
+# display-route 控制面的产品入口 (D21): 桌面窗/启动链/IME 桥的 ArkTS 调用面。
+# 符号来自 entry (同进程运行时解析), 必须与 entry 同包。
+add_library(display_route_napi SHARED
+    display_route/display_route_napi.cpp
+)
+target_link_libraries(display_route_napi PRIVATE
+    entry
+    libace_napi.z.so
+    libhilog_ndk.z.so
+)
+
+# smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询原语
+# (smokeMapPoint), 产品代码不引用。符号来自 entry (同进程运行时解析),
+# 必须与 entry 同包。
 add_library(smoke_napi SHARED
     smoke/smoke_napi.cpp
 )

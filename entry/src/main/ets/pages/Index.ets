@@ -3,13 +3,12 @@ import testNapi from 'libentry.so';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
-import { SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
+import { SegmentButton, SegmentButtonOptions, promptAction } from '@kit.ArkUI';
 import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
-// [[SMOKE]] 合并到 main-ui: 删本行与侧边栏的 <SmokeDevPanel /> 调用
-import { SmokeDevPanel } from '../smoke/SmokeDevPanel';
+import { DisplayRouteService, ROUTE_WAYLAND, ROUTE_X11 } from '../service/DisplayRouteService';
 
 const DOMAIN = 0x0000;
 
@@ -19,8 +18,8 @@ const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
 @Entry
 @Component
 struct Index {
-  @StorageLink('winehua.d3d.backend') d3dBackendText: string = 'vkd3d_limited_500k';
-  @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = 'vkd3d_limited_500k';
+  @StorageLink('winehua.d3d.backend') d3dBackendText: string = 'dxvk_modern_2_6';
+  @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = 'dxvk_modern_2_6';
   @StorageLink('winehua.dxvk.backend') dxvkBackendText: string = 'dxvk_legacy';
   @StorageLink('winehua.dxvk.preference') dxvkPreferenceText: string = 'auto';
   private env = WineEnvService.getInstance();
@@ -47,6 +46,10 @@ struct Index {
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
   @State desktopModeRestartHint: boolean = false;
+
+  // -- 显示路线 (实验, Pad/PC): x11 主线 / wayland 对照 (镜像 DisplayRouteService) --
+  @State routeSel: number[] = [0];   // 0=X11, 1=Wayland
+  @State routeRestartHint: boolean = false;
   // -- PC 虚拟桌面窗口状态 (镜像 WineWindowManager) --
   @State desktopActive: boolean = false;
   @State desktopWindowActive: boolean = false;
@@ -54,9 +57,9 @@ struct Index {
   // 图形后端互斥单选状态 (响应式, 高亮判据唯一来源)。区别于 @StorageLink
   // 文本字段: 后者由 AppStorage/PersistentStorage 恢复, 非点击驱动;
   // 直接绑 private 字段做高亮是旧实现"选中无高亮"根因 (非响应式)。
-  @State backendSel: string = 'vkd3d_limited_500k';
+  @State backendSel: string = 'dxvk_modern_2_6';
   // doRun 传参用的后端值: 与 backendSel 同步 (selectBackend 内联更新)
-  private d3dBackend: string = 'vkd3d_limited_500k';
+  private d3dBackend: string = 'dxvk_modern_2_6';
   private dxvkBackend: string = 'dxvk_legacy';
   // 升级提示日志只打一次 (master 版无弹卡 UI, 检测到不一致仅留痕 +
   // 快速操作按钮转为"应用更新"语义, 见 quickStart)
@@ -204,6 +207,14 @@ struct Index {
           this.desktopModeSel = [modeSel];
         }
       }
+      // 显示路线镜像: 以持久化选择值 (preferredRoute) 为准 — 本会话已应用值
+      // (routeName) 在「已选待重启」窗口内落后于选择, 用它回翻高亮会把刚选
+      // 的项跳回旧值 (选 Wayland 后高亮弹回 X11, 复核 #136); 运行中/待生效
+      // 的差异由 routeRestartHint 表达, 与 selectRoute 的选中语义同源
+      const routeIdx = DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1;
+      if (this.routeSel[0] != routeIdx) {
+        this.routeSel = [routeIdx];
+      }
     };
     env.subscribe(mirror);
     // 进程列表镜像 + 引擎事件驱动刷新 (WineEnvService 内部已绑定时序)
@@ -265,6 +276,35 @@ struct Index {
     this.desktopModeRestartHint = true;
   }
 
+  // 显示路线切换 (实验对照): 即改即生效 (#172) —— 单点应用 (盖 env 章 +
+  // 拆/起 x11 链) 后重启引擎会话, 新 wine 进程 spawn 现读新章; 不再要求
+  // 完全退出应用。引擎忙时显式拒绝 (quickReset 的 F2 同款: 忙态是瞬态,
+  // 是否重来由用户决定) —— 先应用后拒绝会出现旧会话 display 已被拆而
+  // 重启未发生的破窗态
+  private selectRoute(route: string): void {
+    // 早退判据必须是持久化选择值 (preferredRoute) 而非已应用值 (routeName):
+    // x11 会话里选 Wayland 后 routeName 仍是 x11, 用 routeName 判「已选中」
+    // 会把「选回 X11」的一击吞掉 (复核 #136)
+    if (route == DisplayRouteService.getInstance().preferredRoute()) {
+      return;
+    }
+    if (this.env.isBusy()) {
+      promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
+      this.routeSel = [DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1];
+      return;
+    }
+    DisplayRouteService.getInstance().setPreferred(route);
+    // x11 链起尺寸 = 桌面分辨率 (屏幕/scale, 同 entry 路径判据)
+    const outSize = this.wm.desktopOutputSize();
+    DisplayRouteService.getInstance().applyRoute(route, 'settings',
+      this.wm.shouldUseMultiwindow(route), outSize[0], outSize[1]);
+    this.routeSel = [route == ROUTE_X11 ? 0 : 1];
+    // 提示只在应用值落后于选择时成立 (重启被打断时可见, 正常路径重启完成
+    // 即随镜像刷新消失)
+    this.routeRestartHint = (route != DisplayRouteService.getInstance().routeName());
+    this.env.restartEngine();
+  }
+
   // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
   private isPcDevice(): boolean {
     const t = deviceInfo.deviceType;
@@ -296,7 +336,12 @@ struct Index {
         value: '重置',
         fontColor: '#ff5555',
         action: () => {
-          this.env.doReset();
+          // F2 (复核): doReset 忙时静默 return false (防重入) —— 用户视角是
+          // 「点了没反应」。给可感知的拒绝反馈, 不排队重试 (忙态是瞬态,
+          // 是否重来由用户决定)。
+          if (!this.env.doReset()) {
+            promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
+          }
         }
       }
     });
@@ -416,6 +461,9 @@ struct Index {
       // ============================================================
       //  侧边栏
       // ============================================================
+      // 设置区滚动容器 (2026-10-11 用户要求: 累计内容超出屏高, 需上下滑动)。
+      // 内层内容缩进保留原层级, 不做纯缩进的整段重排。
+      Scroll() {
       Column() {
         // -- Wine 环境状态 --
         Text('Wine 环境')
@@ -497,6 +545,36 @@ struct Index {
           }
         }
 
+        // -- 显示路线 (实验, Pad/PC): x11 = winex11 + Xwayland (当前主线,
+        // 多窗/顶条/几何回写等能力只在 x11 生效); wayland = 原生路线 (对照)。
+        // 切换即改即生效 (#172: applyRoute 单点 + 引擎会话重启); 命令行
+        // --ps winehua.displayRoute 优先级更高 (自动化钉档位)。
+        if (this.isPcDevice()) {
+          Divider().color('#2a2a2a').width('100%')
+          Text('显示路线（实验）')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 12, bottom: 8 })
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              buttons: [{ text: 'X11' }, { text: 'Wayland' }],
+              multiply: false
+            }),
+            selectedIndexes: $routeSel,
+            onItemClicked: (index: number) => {
+              this.selectRoute(index == 0 ? ROUTE_X11 : ROUTE_WAYLAND);
+            }
+          })
+          .width('100%')
+          Text('X11: winex11 + Xwayland（主线）; Wayland: 原生路线（对照）')
+            .fontSize(12).fontColor('#777')
+            .width('100%').padding({ top: 4 })
+          if (this.routeRestartHint) {
+            Text('显示路线已更改, 重启 Wine 引擎后生效')
+              .fontSize(12).fontColor('#f84')
+              .width('100%').padding({ top: 4 })
+          }
+        }
+
         // -- 快速操作 --
         Text('快速操作')
           .fontWeight(FontWeight.Bold).fontColor('#999')
@@ -542,11 +620,6 @@ struct Index {
 
         Divider().color('#2a2a2a').width('100%')
 
-        // [[SMOKE]] 合并到 main-ui: 删本行 (开发测试区组件)
-        SmokeDevPanel()
-
-        Divider().color('#2a2a2a').width('100%')
-
         // -- 运行中进程 --
         Row() {
           Text('运行中进程')
@@ -588,7 +661,9 @@ struct Index {
               .backgroundColor('#1e1e1e')
             })
           }
-          .width('100%').layoutWeight(1)
+          .width('100%')
+          // 进程列表限高 (Scroll 内 layoutWeight 失效): 最多 8 行, 超出内部滚动
+          .height(Math.min(this.processList.length, 8) * 44)
           .margin({ left: -14, right: -14 })
           .scrollBar(BarState.Off)
         } else {
@@ -597,9 +672,13 @@ struct Index {
             .width('100%').padding({ top: 8 })
         }
       }
+      .width('100%')
+      .constraintSize({ minHeight: '100%' }) // 内容矮于视口时撑满顶对齐 (Scroll 默认居中)
+      }
       .width(300).height('100%')
       .backgroundColor('#141414')
       .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+      .scrollBar(BarState.Auto)
 
       // -- 侧边栏分隔线 --
       Divider().vertical(true).color('#2a2a2a').height('100%')

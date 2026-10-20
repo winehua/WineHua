@@ -1,0 +1,14 @@
+{
+  "displayroute": true,
+  "suite": "wine-vulkan",
+  "tests": [
+    "wine-vulkan-offscreen-x64"
+  ],
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "x11",
+      "DISPLAY": ":0",
+      "WAYLAND_DISPLAY": ""
+    }
+  }
+}

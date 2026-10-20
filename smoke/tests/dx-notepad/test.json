@@ -1,0 +1,10 @@
+{
+  "id": "dx-notepad",
+  "title": "displayroute X 路线 notepad（M1 出口判据载体，行为判定见 displayroute job 编排）",
+  "exe": "notepad.exe",
+  "arch": [
+    "x64"
+  ],
+  "from_wine": "notepad",
+  "checks": []
+}

@@ -1,5 +1,6 @@
 {
   "name": "d3d12",
+  "desktopMode": "virtual",
   "title": "VKD3D-Proton limited-500k 图形 smoke",
   "tests": [
     {

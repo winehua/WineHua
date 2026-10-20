@@ -1,0 +1,26 @@
+{
+  "displayroute": true,
+  "desktopMode": "fusion",
+  "displayrouteXclient": false,
+  "timeoutMinutes": 20,
+  "checks": [],
+  "inline": [
+    {
+      "testId": "popup-overflow",
+      "exe": "x64/popup_overflow.exe",
+      "env": {
+        "DISPLAY": ":0",
+        "WINEHUA_DISPLAY_ROUTE": "x11",
+        "WAYLAND_DISPLAY": ""
+      },
+      "seconds": 300,
+      "timeoutMs": 400000
+    }
+  ],
+  "params": {
+    "env": {
+      "WINEHUA_SMOKE_EXPECT_ROUTE": "x11"
+    }
+  },
+  "_note": "M4c-T3 越界点选门禁（2026-10-13 判定重连）: x11 fusion 冷启直启 popup_overflow.exe（短窗+菜单弹窗底缘外; exe 随标准载荷构建 —— Makefile 载荷目标带 --case popup-overflow, 该用例不进任何套件）。argvMode/judge 均缺省 = std 协议:runner 自动下发 --automation/--result C:\\smoke\\results\\<run>/popup-overflow.json, 探针 checks[] 随归档由 result-json 判定器裁决（判定只读归档; 此前 raw/argv=[] 无 --result + judge=external 的组合让探针自证永远不落盘, 归档只有 external-vehicle SKIP 占位）。点击仍由验证者 uitest 按 popup 子窗几何点第 2 项（fusion+x11 文件协议仅 byTitle 窗中心, 够不到越界项）, 探针以 WM_COMMAND==202 自证; 无人点击 = item2/command 项 FAIL 属预期（本 job 是人工触发门禁, 不进无人套件）。几何前置断言已重设计为实测: item2-below-window 用菜单显示后 GetMenuItemRect 修正矩形（Δ=菜单窗-rect 屏幕原点−owner 客户区原点, 实测公式; 旧 menu-below-window 拿自算值自比恒假, 159<162 三像素 off-by, 已删）, menu-item2-rect/center 落归档供点选定位。运行: python3 automation/smoke.py run --job smoke/jobs/popup-overflow-x11.json --desktop-mode fusion --display-route x11"
+}

@@ -1,5 +1,6 @@
 {
   "name": "dxvk26-requirements",
+  "desktopMode": "virtual",
   "title": "DXVK 2.6.2 transport 资格 probe（vkd3d 档下发 venus runtime）",
   "tests": [
     {

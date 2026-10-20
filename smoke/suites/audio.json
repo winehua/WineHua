@@ -1,5 +1,6 @@
 {
   "name": "audio",
+  "desktopMode": "virtual",
   "title": "音频",
   "tests": [
     {

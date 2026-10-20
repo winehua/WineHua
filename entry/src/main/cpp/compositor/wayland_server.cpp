@@ -4,6 +4,8 @@
 #include "input/input_manager.h"
 #include "xdg_shell.h"
 #include "xdg_configure.h"
+#include "display/x11_toplevel.h" /* 任务 #135: NotifyToplevelResize 的 x11 分支
+                                   * (几何回写走 X 协议, 无 xdg resource) */
 #include "common/fps_counter.h"
 #include "proc/wine_process.h"
 #include "compositor/frame/debug_assert.h"
@@ -453,6 +455,17 @@ void WaylandServer::ForceToplevelRedraw(uint32_t id) {
 }
 
 void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h, bool resizing) {
+    // 任务 #135 (M4a 模型缺口 §2.14): x11 路线无 xdg resource —— host→wine
+    // 几何回写改走 X 协议 (映射层 x11_toplevel.c 的 wlr_xwayland_surface_configure,
+    // napi 线程只入队; 最小化门禁/无变化跳过/echo 抑制都在那边, 语义与下方
+    // xdg 侧对位)。门 = 路线旗标 ∧ id 在 x11 登记表: 后者防「旗标与具体 id
+    // 空间错配」时误劫 wayland toplevel (双隔离红线; 其他输入口同款旗标门,
+    // napi_init.cpp SendKeyEvent)。wayland 侧取值清单: 本分支不满足时不执行,
+    // 下方原路径逐字节不变 (对照轮判据: wayland 会话回写日志 0 行)。
+    if (x11_toplevel_active() && x11_toplevel_owns(toplevelId)) {
+        x11_toplevel_geometry_size(toplevelId, w, h);
+        return;
+    }
     // 最小化门禁: 窗口最小化期间不向 Wine 发任何 configure。
     // winewayland 的「最小化→还原」握手 (window.c restoring_from_minimize)
     // 依赖窗口 rect 停在 -32000 哨兵位; 此时收到 configure, wine 走普通

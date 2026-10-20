@@ -49,6 +49,10 @@ struct RendererPerfWindow {
     uint64_t publishFrames = 0;
     uint64_t publishSequence = 0;
 
+    /* surfaceKey: 本渲染器正在呈现的 guest 面 ((pid<<32)|surface_id), 会随
+     * 显示序列一起发布 (归属证据, 见 common/display_fps.h) */
+    uint64_t surfaceKey = 0;
+
     void PublishDisplayedFps(uint32_t toplevelId, uint64_t nowUs);
 
     static uint64_t Percentile(std::array<uint64_t, kSamples> values, size_t count,

@@ -1,5 +1,6 @@
 {
   "name": "dxvk-long",
+  "desktopMode": "virtual",
   "title": "DXVK Legacy 长跑",
   "checks": [
     "coverage"

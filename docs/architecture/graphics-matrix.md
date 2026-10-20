@@ -35,12 +35,12 @@
 2. **用户上次的选择**（设置页切换后存在 preferences 里）。
 3. **默认值**。
 
-**默认值在两个分支上不同**：
+**默认值在两个分支上不同**（2026-10-11 勘误：原 main-ui 一行记 `dxvk_modern_2_6`，与 main-ui 代码 `DEFAULT_D3D_BACKEND='dxvk_legacy'` 不符，按代码修正；master 行同步当日用户拍板的默认档翻转）：
 
 | 分支 | 默认档位 |
 |---|---|
-| master | `vkd3d_limited_500k` |
-| main-ui（rc 发布线） | `dxvk_modern_2_6` |
+| master（本线） | `dxvk_modern_2_6`（DXVK 2.6.2） |
+| main-ui（rc 发布线） | `dxvk_legacy`（DXVK 1.10.3） |
 
 读代码时注意确认自己在哪个分支。
 

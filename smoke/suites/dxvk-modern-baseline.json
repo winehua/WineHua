@@ -1,5 +1,6 @@
 {
   "name": "dxvk-modern-baseline",
+  "desktopMode": "virtual",
   "title": "DXVK Modern（2.6.2）baseline",
   "checks": [
     "coverage"

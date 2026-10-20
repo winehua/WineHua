@@ -1,5 +1,6 @@
 {
   "name": "dxvk-modern-long",
+  "desktopMode": "virtual",
   "title": "DXVK Modern 长跑",
   "checks": [
     "coverage"

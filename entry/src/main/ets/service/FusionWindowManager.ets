@@ -1,6 +1,7 @@
 import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import { DisplayRouteService } from './DisplayRouteService';
 
 const DOMAIN = 0x0000;
 const TAG = 'FusionWM';
@@ -63,8 +64,55 @@ export class FusionWindowManager {
     return this.scaleProvider ? this.scaleProvider() : this.scale;
   }
 
+  // ── 顶条 (任务 #129, plan 2026-10-11-x11-window-decorations 回退路线落地
+  // 2026-10-11 真机实验裁决) ──
+  // 系统装饰路线实测不可用: Pad subWindow decorEnabled:true 两轮实验
+  // (title 传值 + maximizeSupported:true) 均不渲染可见装饰 UI (标题栏/三键/
+  // 关闭按钮都不出现; SDK 明示装饰按钮只在「自由窗口模式」生效——Pad 当前
+  // subWindow 场景不在该模式), 只带来浮窗圆角样式 (setWindowCornerRadius(0)
+  // 可抵消) 与顶边 ~2px 系统热区。按 plan 回退节落几何补偿式自绘顶条:
+  // 承载窗总高 = guest h + STRIP (20 逻辑px × scale), XComponent 保持 guest
+  // 尺寸 (几何补偿, plan RF#1), 顶条 Row 由 WineWindow 页渲染 (标题+三键)。
+  //
+  // 判据与换算单点 = stripPxOf: 页面渲染 (顶条 Row/hit-test 守卫/坐标换算)
+  // 与全部尺寸补偿 (ensure/resize/restore + WineWindowManager.applyEvent
+  // barH + PopupWindowManager.positionEntry) 共用。判据必须能区分「x11
+  // fusion 子窗」与「wayland fusion 子窗」(fusionUsesSubWindow 是 route
+  // 无关的, 不能用作装饰判据) —— wayland 恒 0 = incumbent 逐字节不变。
+  // 28 = 用户裁定收窄 (2026-10-17 真机过 32 偏大; Win11 caption 基线 32,
+  // 初版 20vp 观感/触控热区均不达标, 观感升级为 Win11 caption 风格随改;
+  // 消费方全部经 stripPxOf 单点)。
+  private static readonly STRIP_LOGICAL_PX: number = 28;
+
+  // modal 承载顶条判据注入点 (#167 续: x11 路线 modal 对话框承载也吃自绘
+  // 顶条 —— modal 承载链不建 FWM entry, 判据经 provider 问
+  // ModalWindowManager)。经 provider 而非直接 import: ModalWindowManager
+  // 已 import 本文件, 反向依赖成环。WineWindowManager 在 initIfNeeded 旁
+  // 接线 (它同时认识两端)。
+  private modalStripProvider: ((tl: number) => boolean) | null = null;
+  setModalStripProvider(fn: ((tl: number) => boolean) | null): void {
+    this.modalStripProvider = fn;
+  }
+
+  // 本 toplevel 的顶条物理高度; 0 = 无顶条 (不渲染、尺寸不补偿)。
+  // 判据 = fusion 子窗 (entries.has) ∨ modal 承载 (provider); WWA ability /
+  // popup 不建 entry 也不经 modal 链, 恒 0。wayland 路线在 isX11 门恒 0 =
+  // incumbent 不变。
+  stripPxOf(tl: number): number {
+    if (!DisplayRouteService.getInstance().isX11()) return 0;
+    if (!this.entries.has(tl) && !(this.modalStripProvider?.(tl) ?? false)) {
+      return 0;
+    }
+    return Math.round(FusionWindowManager.STRIP_LOGICAL_PX * this.getScale());
+  }
+
   has(tl: number): boolean {
     return this.entries.has(tl);
+  }
+
+  // 顶条 max 键的态判定 (fullscreen(tl) 置位 / restore(tl) 清位)。
+  isFullscreen(tl: number): boolean {
+    return this.entries.get(tl)?.fullscreen ?? false;
   }
 
   getWindow(tl: number): window.Window | null {
@@ -76,9 +124,12 @@ export class FusionWindowManager {
   // onFail 在创建失败时调用 (WineWindowManager 清理 entry + 通知 Wine 关闭,
   // 否则 starting 标记卡死 — Wine 侧窗口不存在重发 created)。
   // w/h 为 wine 逻辑尺寸 (created 事件携带)。
+  // x/y 为 guest 逻辑坐标 (D52, x11 created 携带): >=0 时承载窗按 guest
+  // 位置摆放 (双窗并排), 否则走 cascadePoint 层叠 (wayland created 无坐标,
+  // incumbent 不变)。
   ensure(tl: number, w: number, h: number,
          onReady: (tl: number, win: window.Window) => void,
-         onFail?: () => void): void {
+         onFail?: () => void, gx: number = -1, gy: number = -1): void {
     const existing = this.entries.get(tl);
     if (existing?.subWin) {
       this.resize(tl, Math.max(1, w), Math.max(1, h));
@@ -104,6 +155,10 @@ export class FusionWindowManager {
     // (与 PC 同款 FIFO, PC 实测 OK)
     testNapi.setPendingToplevel(tl);
 
+    // decorEnabled:false = 无系统装饰, 装饰全由 Wine 自绘/ArkTS 顶条提供
+    // (任务 #129: 系统装饰路线 2026-10-11 两轮真机实验不渲染装饰 UI, 按
+    // plan 回退节落自绘顶条; Pad subWindow 的系统装饰显形条件待隔离测试
+    // 定论, 见 ledger)
     this.hostStage.createSubWindowWithOptions(`wine_fusion_${tl}`, {
       title: '',
       decorEnabled: false,
@@ -135,7 +190,8 @@ export class FusionWindowManager {
       hilog.info(DOMAIN, TAG, '[FWM] #%{public}d subWinId=%{public}d hostMainId=%{public}d',
         tl, subWin.getWindowProperties().id, hostId);
 
-      // 无系统装饰 → 只保留内容, 圆角/直角对齐 PC 承载
+      // 无系统装饰 → 只保留内容, 圆角/直角对齐 PC 承载 (decor:true 实验期
+      // 实测: 此调用跳过会残留系统默认圆角, 不可省)
       try { subWin.setWindowCornerRadius(0); } catch (_) { /* ignore */ }
       // 窗口级拉伸 (边缘拖拽): API 20+, Phone/Tablet/2in1 可用
       try { await subWin.enableDrag(true); } catch (e) {
@@ -154,10 +210,17 @@ export class FusionWindowManager {
         return;
       }
 
-      // 位置: wine 逻辑 × scale; 初始为右下方向层叠 (无系统排布, 自定)
+      // 位置: wine 逻辑 × scale; 有 guest 坐标 (x11 created) 按 guest 位置
+      // 摆放 (双窗并排), 否则右下方向层叠 (无系统排布, 自定)。
+      // 高度 +stripPxOf 为顶条补偿位 (任务 #129 路线; x11 fusion 子窗非 0,
+      // 其余形态恒 0, 见该方法注释)
       try {
-        await subWin.resize(this.toPx(entry.w), this.toPx(entry.h));
-        const pos = this.cascadePoint(this.toPx(entry.w), this.toPx(entry.h));
+        await subWin.resize(this.toPx(entry.w),
+                            this.toPx(entry.h) + this.stripPxOf(tl));
+        const pos = (gx >= 0 && gy >= 0)
+          ? [Math.round(gx * this.getScale()), Math.round(gy * this.getScale())]
+          : this.cascadePoint(this.toPx(entry.w),
+                              this.toPx(entry.h) + this.stripPxOf(tl));
         await subWin.moveWindowToGlobal(pos[0], pos[1]);
         await subWin.showWindow();
       } catch (e) {
@@ -238,14 +301,17 @@ export class FusionWindowManager {
     }
   }
 
-  // -- resize (wine 逻辑 × scale; WineWindowManager resize 事件转发) --
+  // -- resize (wine 逻辑 × scale; ensure 已存在分支走这里) --
   resize(tl: number, w: number, h: number): void {
     const e = this.entries.get(tl);
     if (!e?.subWin) return;
     e.w = Math.max(1, w);
     e.h = Math.max(1, h);
     if (e.fullscreen) return; // 全屏期间不响应内容尺寸 (由 fullscreen/restore 掌管)
-    e.subWin.resize(this.toPx(e.w), this.toPx(e.h)).catch(() => { /* ignore */ });
+    // +stripPxOf 为顶条补偿位 (任务 #129 路线; x11 fusion 子窗非 0, 其余形态
+    // 恒 0, 见该方法注释)
+    e.subWin.resize(this.toPx(e.w), this.toPx(e.h) + this.stripPxOf(tl))
+      .catch(() => { /* ignore */ });
   }
 
   // Wine xdg_toplevel.move 拖动期间: OHOS 系统拖拽接管, 窗口位置由系统驱动
@@ -287,13 +353,14 @@ export class FusionWindowManager {
     const e = this.entries.get(tl);
     if (!e?.subWin) return;
     if (!e.fullscreen) {
-      // 非全屏态: 按 wine 内容尺寸复位 (配置回弹场景)
-      e.subWin.resize(this.toPx(e.w), this.toPx(e.h)).catch(() => { /* ignore */ });
+      // 非全屏态: 按 wine 内容尺寸复位 (配置回弹场景); +strip 补偿同 resize
+      e.subWin.resize(this.toPx(e.w), this.toPx(e.h) + this.stripPxOf(tl))
+        .catch(() => { /* ignore */ });
       return;
     }
     e.fullscreen = false;
     const frame = e.frame ?? [48, 48];
-    e.subWin.resize(this.toPx(e.w), this.toPx(e.h)).then(() => {
+    e.subWin.resize(this.toPx(e.w), this.toPx(e.h) + this.stripPxOf(tl)).then(() => {
       return e.subWin!.moveWindowToGlobal(frame[0], frame[1]);
     }).catch(() => { /* ignore */ });
     hilog.info(DOMAIN, TAG, '[FWM] #%{public}d restore (%{public}d,%{public}d)', tl, frame[0], frame[1]);
@@ -313,6 +380,10 @@ export class FusionWindowManager {
     const e = this.entries.get(tl);
     if (!e?.subWin) return;
     e.subWin.showWindow().catch(() => { /* ignore */ });
+    // M4b-T2: x11 request_activate 复用 Restored 事件 (22 事件红线, 见
+    // x11_toplevel.c handle_request_activate), 激活语义 = 置前 —— 还原态
+    // 的窗也该到前台, 对 minimize-restore 同样正确; 重复调用幂等 (RF#2)。
+    e.subWin.raiseToAppTop().catch(() => { /* ignore */ });
     hilog.info(DOMAIN, TAG, '[FWM] #%{public}d show (wine restored)', tl);
   }
 

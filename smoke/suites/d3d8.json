@@ -1,5 +1,6 @@
 {
   "name": "d3d8",
+  "desktopMode": "virtual",
   "title": "D3D8 能力",
   "tests": [
     {

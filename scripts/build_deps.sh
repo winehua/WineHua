@@ -12,6 +12,13 @@ bash "$SCRIPT_DIR/build_freetype.sh"
 bash "$SCRIPT_DIR/build_libffi.sh"
 bash "$SCRIPT_DIR/build_wayland.sh"
 bash "$SCRIPT_DIR/build_xkbcommon.sh"
+# guest 侧 X 客户端栈 (winex11.drv 的 --with-x 硬依赖面)。M3a-T7 毁灭性
+# 重建暴露: 此前 guest libX11 是 M1 手工 `SIDE=guest` 塞进旧 build/ 树的,
+# 一键链里没有 —— rm -rf build/ 后 wine configure 直接断 ("X 64-bit
+# development files not found")。链必须自供给 (xcb 栈先行: xorgproto 的
+# keysymdef 是 libX11 configure 的输入)。
+SIDE=guest bash "$SCRIPT_DIR/build_xcb_stack.sh"
+SIDE=guest bash "$SCRIPT_DIR/build_x11_client.sh"
 # GnuTLS 链 (Wine schannel TLS 后端: gmp/nettle/libtasn1/libunistring/gnutls)
 bash "$SCRIPT_DIR/build_gnutls.sh"
 # GStreamer 链 (Wine winegstreamer 后端: pcre2/glib/gstreamer/gst-plugins-base)

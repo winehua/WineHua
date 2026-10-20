@@ -1,0 +1,5 @@
+# 判定机 (host 侧) python 依赖 — automation/smoke.py 判定阶段所需
+# 安装: pip3 install --user --break-system-packages -r automation/requirements.txt
+# 背景: 视觉帧校验器 automation/checks/frame.py 用 numpy 比对、Pillow 解码截图
+numpy
+pillow

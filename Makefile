@@ -94,10 +94,17 @@ SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/nu
 
 $(WINE_SMOKE_EXES): $(STAMPS)/wine-$(CONFIG)
 	@test -s "$@" || { echo "ERROR: wine smoke exe missing after wine build: $@" >&2; exit 1; }
+	@# 存在性断言通过必须 touch: 否则目标 mtime 不变 (比 wine stamp 旧),
+	@# make 视为「每轮重做」→ 永久脏 → 依赖它的 manifest/assemble 每轮重跑
+	@# (#164: assemble 永不跳过的第三环, 2026-10-17)
+	@touch -c "$@"
 
 $(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
 	@echo "=== smoke payload ==="
-	python3 $(ROOT)/automation/smoke.py build
+	# popup-overflow 是 job 级人工门禁 (smoke/jobs/popup-overflow-x11.json),
+	# 不接入任何套件 —— 按 testing-cases.md §1 不会自动进载荷; 但它是门禁
+	# 不是手动工具: 缺 exe = 新环境跑门禁必炸, 故显式随标准载荷构建。
+	python3 $(ROOT)/automation/smoke.py build --case popup-overflow
 	test -f $@
 
 # Guest runtime build scripts can also be invoked directly while iterating on
@@ -126,6 +133,7 @@ $(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
 # packaging a partial or truncated DXVK install.
 $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 	@test -s "$@" || { echo "ERROR: DXVK artifact missing after build: $@" >&2; exit 1; }
+	@touch -c "$@"  # 同 WINE_SMOKE_EXES: 断言不 touch = 永久脏 → assemble 每轮重跑 (#164)
 
 # ============================================================
 # dxvk-modern — WineHua DXVK 2.6.2 compatibility profile (x64 + x86)
@@ -140,6 +148,7 @@ $(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(DXVK_MODERN_SOURCE_INPUT
 
 $(DXVK_MODERN_ARTIFACTS): $(DXVK_MODERN_STAMP)
 	@test -s "$@" || { echo "ERROR: DXVK Modern artifact missing after build: $@" >&2; exit 1; }
+	@touch -c "$@"  # 同 WINE_SMOKE_EXES (#164)
 ifeq ($(BUILD_GUEST_VULKAN),1)
 ASSEMBLE_GUEST_INPUTS += $(wildcard $(GUEST_VULKAN_SENTINEL))
 endif
@@ -157,6 +166,7 @@ $(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_IN
 
 $(VKD3D_PROTON_ARTIFACTS): $(VKD3D_PROTON_STAMP)
 	@test -s "$@" || { echo "ERROR: VKD3D-Proton artifact missing after build: $@" >&2; exit 1; }
+	@touch -c "$@"  # 同 WINE_SMOKE_EXES (#164)
 
 # ============================================================
 # 默认目标
@@ -366,6 +376,9 @@ define native_rule
 native-$(1): $$(STAMPS)/$(1)/native
 
 $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+# virgl (native) 与 libdrm (display-libs) 的关系见 build_native.sh virgl 段
+# 注释: virgl 的 meson 视野收窄到 epoxy, 豁免分支确定性生效, 与构建顺序无关
+# (2026-10-04 毁灭性重建实证并修复)。
 	@sentinel="$(NATIVE_SENTINEL_$(subst -,_,$(1)))"; \
 	libs_dir="$(ROOT)/entry/libs/$(1)"; \
 		if [ -f $$@ ] && [ -f "$$$$sentinel" ] && \
@@ -393,6 +406,54 @@ endef
 $(foreach a,arm64-v8a x86_64,$(eval $(call native_rule,$(a))))
 
 # ============================================================
+# display-libs — 显示路线 host 侧基础库 (wlroots/Xwayland 消费)
+#   架构相关 → build/host-ext/<NATIVE_ARCH> (侧别纪律见 .claude/rules/build-and-log.md)
+# ============================================================
+.PHONY: display-libs
+display-libs: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/display-libs)
+
+define display_libs_rule
+.PHONY: display-libs-$(1)
+display-libs-$(1): $$(STAMPS)/$(1)/display-libs
+
+$$(STAMPS)/$(1)/display-libs: $(SCRIPTS)/build_display_libs.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_display_libs.sh && touch $$@
+endef
+$(foreach a,arm64-v8a x86_64,$(eval $(call display_libs_rule,$(a))))
+
+# ============================================================
+# display-route — M0 显示路线构建链 (全部 host 侧, 依赖顺序执行)
+#   xcb 栈 → libX11/libXext → native (wayland .so + host pc + 头) → wlroots
+#   → Xwayland (libxwayland_ohos.so, NCP 形态)
+#   各脚本自带就绪守卫。曾经的 FORCE (每次重跑做增量校验) 与 assemble 前置
+#   组合后 = assemble 永不跳过 → 每轮 make hap 重打包 wine-data.zip, sha 随
+#   strip/smoke 载荷时间戳漂移, 设备端升级卡每次重装必弹 (任务 #164,
+#   2026-10-17 拔除)。改脚本/stamp 触发; xcb/xserver 源码级变更需显式
+#   `make display-route` (脚本内部哨兵随后接管增量)。
+#   (M1 时在此追加 SIDE=guest 变体, 供 winex11.drv 消费)
+# ============================================================
+.PHONY: display-route
+display-route: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/display-route)
+
+define display_route_rule
+.PHONY: display-route-$(1)
+display-route-$(1): $$(STAMPS)/$(1)/display-route
+
+$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
+	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xcb_stack.sh && \
+	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_x11_client.sh && \
+	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_native.sh && \
+	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_wlroots.sh && \
+	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xwayland.sh && touch $$@
+endef
+$(foreach a,arm64-v8a x86_64,$(eval $(call display_route_rule,$(a))))
+
+# stamp 文件不作为中间文件删除 (默认行为会把链条中的 stamp 判定为
+# intermediate 并在 make 结束时删掉, 下一轮重跑其规则 → vkd3d stamp 被删 →
+# smoke 载荷重生 (mingw PE 时间戳翻新) → wine-data.zip 内容漂移, #164 第二环)
+.SECONDARY:
+
+# ============================================================
 # assemble — 组装布局 (架构 + 设备类型相关)
 # ============================================================
 .PHONY: assemble
@@ -407,6 +468,7 @@ $$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFA
 	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
 	$$(STAMPS)/deps $$(STAMPS)/wine-$(1) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \
+	$$(STAMPS)/$(1)/display-route \
 	$$(ASSEMBLE_GUEST_INPUTS) | $$(STAMPS)/$(1)
 	@echo "=== assemble ($(1)) ==="
 	NATIVE_ARCH=$(1) GUEST_ARCH=$(GUEST_ARCH) BUILD_GUEST_GFX=$(BUILD_GUEST_GFX) bash $(SCRIPTS)/assemble.sh

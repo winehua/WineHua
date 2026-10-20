@@ -37,7 +37,8 @@ out/
 **/build
 # 文档目录名正好叫 build，不跟着构建产物一起忽略
 !docs/build/
-/.hvigor
+# hvigor 构建缓存（根目录与 entry/ 等子目录都会生成 outputs/）
+**/.hvigor
 .cxx
 /.clangd
 /.clang-format

@@ -7,6 +7,7 @@
   "license": "",
   "dependencies": {
     "libentry.so": "file:./src/main/cpp/types/libentry",
+    "libdisplay_route_napi.so": "file:./src/main/cpp/types/display_route_napi",
     "libsmoke_napi.so": "file:./src/main/cpp/types/smoke_napi"
   }
 }

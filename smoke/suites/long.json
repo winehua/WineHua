@@ -1,5 +1,6 @@
 {
   "name": "long",
+  "desktopMode": "virtual",
   "title": "组合：长跑",
   "tests": [
     {

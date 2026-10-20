@@ -28,10 +28,15 @@ python3 automation/smoke.py run --suite core    # 3. 跑套件
 1. **设备端只跑不判**：设备端产出原始数据，通过还是失败由主机判定。
    能力探针报 `UNSUPPORTED` 是合法答案，不算失败。
 2. **判定只读归档数据，不依赖设备现场**——守住这条，改判定规则不用重跑设备。
-3. **套件要钉死档位**：声明了 `backend.d3d` 就一起声明 `backend.dxvk`。不声明会退回
-   「设备当前设置」，而它由机型与系统版本决定——同一个套件在不同设备上测的不是一回事。
-4. **`WINEDEBUG` / `WINEHUA_WINEDEBUG` 不能声明**：设备端读不到（前者被显式忽略，
-   后者在环境变量应用之前就被读了），`smoke.py` 装载套件时直接拦下。Wine 日志看
+3. **套件要钉死档位**：`backend.d3d` 必须写，不写就退回「设备当前设置」，而它由机型与
+   系统版本决定——同一个套件在不同设备上测的不是一回事。`backend.dxvk` 只在
+   `d3d=vkd3d_limited_500k` 时**必须一起写**（该档 dxvk 轴会被消费，选混合路由的
+   DXVK 支路）；`dxvk_*` 档的 DXVK 版本由档位名自带（`dxvk_legacy`=1.10.3，
+   `dxvk_modern_2_6`=2.6.2），wined3d 档不涉 DXVK——这两类可省。细节见
+   `docs/engineering/testing-cases.md` 第 4 节。
+4. **`WINEDEBUG` 不能声明**：设备端显式忽略（profile 选择自判覆盖来源，通用
+   覆盖会让它失效），`smoke.py` 装载套件时直接拦下。显式 Wine 诊断走
+   `WINEHUA_WINEDEBUG`（M1-T5 起随 `__env`/`--env` 下发生效）。Wine 日志看
    hilog 的 `WineChild-stderr`。
 5. **用例要独立、可复现**：不依赖上一个用例的残留，不依赖时间/网络；改完先跑通再提交。
 

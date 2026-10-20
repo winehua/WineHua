@@ -1,5 +1,6 @@
 {
   "name": "wine-vulkan",
+  "desktopMode": "virtual",
   "title": "Wine Vulkan offscreen 探针（vkd3d 档下发 venus runtime）",
   "tests": [
     {

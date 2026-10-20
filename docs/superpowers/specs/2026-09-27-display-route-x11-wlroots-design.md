@@ -45,6 +45,29 @@ virglrenderer 跑在**独立 NCP 子进程**（`graphics_broker.cpp:1322` libvir
 
 WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高位 tag `0x574853` + wl_surface id（`contracts.md:360`），venus 经 `VCMD_WINEHUA_VK_PRESENT` 把 SURFACE_ID 送 virglrenderer（`contracts.md:461`），宿主回调回主仓库。**M2 重锚 = 把 id 来源从 winewayland 的 wl_surface id 换成 X window id（经 `wlr_xwayland_surface` 双字段映射，`xwayland.h` window_id+surface），链路其余不动。**
 
+**M2 重锚落地形态（2026-09-30 实测，设备 .5）**：
+
+1. **id 来源**：`winex11.drv/vulkan.c` 私有面无分支取 `X11DRV_get_whole_window(hwnd)`
+   （受管顶层窗），面值 = `0x574853 | xwindow`，不建原生 Xlib 面；无受管顶层时
+   返回失败而不是投到空处。
+2. **宿主路由键不变**：`(clientPid << 32) | surfaceId`（`virgl_surface_presenter.cpp`）；
+   无目标时 present 等 2.5s 后返 EAGAIN 让 guest 重试，限频记 `target missing`
+   ——「无目标即丢弃并计数」就是投错窗的护栏。
+3. **合成器侧接收**（`display/display_guest_frames.cpp`，帧时钟同线程）：按
+   `window_id` 在册核对 → 建 `OH_ConsumerSurface` → `AcquireNativeWindow` 的生产窗
+   交 `GraphicsBroker::AttachZeroCopyTarget` → 每帧 `Acquire/ReleaseNativeWindowBuffer`
+   借还一格队列 buffer，经 T4 的 `EGL_NATIVE_BUFFER_OHOS` 导入挂到该窗 scene 节点
+   （挂在 X 面节点同一父树——X 面节点由 `wlr_scene_surface_create` 直接建在 scene
+   根上——再 `place_above` 该面；**帧节点所有权在合成器**，随窗记录
+   dissociate/destroy 显式销毁，wlroots 不连带回收它）。
+4. **销毁即失效**：X 窗 destroy → 当拍摘帧 + 解绑 + 计数；同 id 的新窗是另一条
+   在册记录，老帧进不了它。
+
+**实测**：X 路线 present 用例 6/6 PASS（r062155–r063126）：`presentFrames=150`、
+`presentFailureFrame=0`；每次 attach → 133~137 帧消费 → `detach reason=xwindow
+destroyed`；运行中截屏出现逐帧清屏色的大色块（0x1FC73D/0xD12D3D/0x1FC7A8），
+帧确实经队列→EGL 导入→scene 上了屏。
+
 ### 4.3 其他对接事实
 
 - Wine 窗口 shm：wineserver section 转 fd（`wayland_surface.c:880-908` `wine_server_handle_to_fd` → `wl_shm_create_pool`）——沙箱内跨进程 fd 共享已在生产验证
@@ -80,14 +103,14 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 
 | ID | 风险 | 证据 | 缓解 |
 |---|---|---|---|
-| R1 | GLX 管线断点：D3D8/9/OpenGL 现走 winewayland EGL readback；winex11 需 GLX，shm Xwayland 无 GLX 扩展 | `build_wine.sh:118-122`、`configure.ac:1408-1425`（缺 libGL 仅 WARNING，会静默失效） | ①GLX-over-EGL 桥（winex11 opengl.c 后端替换为 virpipe EGL，蓝图 = 现有 opengl.c 的结构；成败级无理论风险，全是工作量）。present 通路被 shm 约束唯一决定：wine 侧摸不到 X 窗口像素 ⇒ EGL surfaceless/pbuffer 离屏渲染 → glReadPixels → `XShmPutImage` 回 X 窗口，代价与现 winewayland EGL readback 同级；spike 裁决判据 = virpipe EGL surfaceless/pbuffer 可用性 + 常见分辨率 readback 带宽实测 ②DXVK d3d9 打包启用收窄 GL 面 ③DirectDraw/OpenGL 程序由①覆盖。**M0/M1 spike 裁决最小原型** |
-| R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:419-422`），不认识 BufferQueue；pixman 起步态下游戏热路径 = GPU→CPU map→CPU 合成→GPU，每帧两次全幅搬运（bootstrap 代价，非终态） | 同左 | ①（bootstrap）data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer。获取链三跳（API 实证）：`OH_NativeImage_AcquireNativeWindowBuffer`（SDK `native_image.h:300`，`AcquireLatestNativeWindowBuffer` `:485`，since 22 ≤ 本档 23）→ `OH_NativeBuffer_FromNativeWindowBuffer`（`native_buffer.h:286`）→ `OH_NativeBuffer_Map`（`:233`）。**口径：API 存在已证、组合未验证**——现行合成器零 `OH_NativeBuffer` 命中（全程纹理模式 `UpdateSurfaceImage` `native_image.h:157`），纹理/缓冲两种消费模式能否共存同一 OH_NativeImage 未验证，M2 探针裁决 ②**M2 必达终态（GL 门）**：wlroots gles2 加 OHOS 导入分支——`eglCreateImage` + `EGL_NATIVE_BUFFER_OHOS`（SDK `eglext.h:1441-1444`），输入帧与输出 buffer 全程 GPU，拷贝数与旧路线持平。**扩展运行时可用性 = M2 探针；不可用则效果上限退化为 ① 的 CPU 合成**。传输层已被现行 ZC 生产验证 |
-| R-SPAWN | **决策（平台硬约束）：子进程必须走 NCP**，fork/exec 不可用；而 wlroots 启动 Xwayland 只有 fork+execvp（`xwayland/server.c:133`；`server.h:64` 同源内部 exec），无「接管外部进程」公开 API → 启动路径必须 NCP 化适配 | 同左 | 三件套（全部落在已有机制上）：①xserver 构建增出 `libxwayland` 共享库（构建级小补丁，代码零改）②NCP shim 子进程 `libxwayland_child.so`：入口同 `virgl_child.cpp:471` `Main(NativeChildProcess_Args)` 形态——起 abstract unix socket（生产先例：wine NCP 子进程连合成器即走 abstract，P4）收 SCM_RIGHTS 传来的 {x_fd×2, wl_fd[1], wm_fd[0], displayfd}，以 `-listenfd` argv 直调 Xwayland main ③wlroots `server.c` 启动点补丁：跳过 fork/execvp，改 NCP spawn + fd 下发。fd 跨进程传递先例：winewayland section→fd→wl_shm（`wayland_surface.c:880-908`，NCP 子进程↔app 通道在产）。wlroots 钉版口径由此修正为「1 处隔离启动补丁」 |
+| R1 | GLX 管线断点：D3D8/9/OpenGL 现走 winewayland EGL readback；winex11 需 GLX，shm Xwayland 无 GLX 扩展 | `build_wine.sh:118-122`、`configure.ac:1408-1425`（缺 libGL 仅 WARNING，会静默失效） | **M1-T6 spike 已裁决（2026-09-29，真机 r0929115004-t6j，探针 `winehua_glx_bridge_probe`）**：①GLX-over-EGL 桥 **no-go**——桥按设计走 EGL wayland + virpipe + glReadPixels，实测回读带宽仅 19.2MB/s，800×600 全帧 96.3ms（gen 1.1 + read 95.2）≈10fps，超 30fps 预算 3 倍；512×512 同样超（53.2ms）。**实测发现第三路线（改判依据）**：X 路线（DISPLAY=:0）WGL→winex11 GLX 上下文创建**成功**（预期失败点未发生）——guest mesa 经 drisw（GLX on X）+ `GALLIUM_DRIVER=virpipe` 到同一 virgl (Maleoon 920)，800×600 全帧 6.5ms（读 310.9MB/s，比 EGL-wayland 回读快 16 倍）≈150fps，大幅达标 ⇒ **R1 改走 wine 原生 winex11 GLX（drisw+virpipe），自研桥取消**。M2 待验：可见窗 present 链（探针 A 段用隐藏窗上下文，drisw present→XPutImage→Xwayland→scene 未过真机）；renderer 字符串两路线相同但 16 倍读出差的机制未解释（drisw 本地 shadow vs vtest 往返，挂起）。②DXVK d3d9 收窄面降级为 x11drv GLX 不可用时的备胎。B 段投递（BitBlt→winex11）实测 0.10ms/1MB——量到的是 GDI 本地 blit，真实屏幕投递走 surface commit 路径，其成本已由 M1-T3 合成帧率（≥25fps）与 T5 端到端覆盖。**M2-T3 收口（2026-09-30，真机 r20260930-014632，设备 .5）**：X 路线**可见窗 GL present 链不存在**——三处构建层缺件：Xwayland `-Dglx=false`、guest 无 `libGL`、winex11 GL 段因 `WINEHUA_ALLOW_X11_NO_GLX=1` 未编入（运行期 `X11DRV_OpenGLInit` 落 stub，`display_funcs_init` 报 `STATUS_NOT_IMPLEMENTED` 0xC0000002）。实际路径 = win32u 通用 EGL 驱动 → FBO drawable（`framebuffer_surface`），其 swap 是空实现 ⇒ 渲染进 FBO、零 present（5568 帧 @542fps、winsys frontbuffer 回调一次未触发、X 窗口零 damage、固帧四象限始终不出现）。**同时作废 T6 的改判依据**：T6 记的「X 路线 310.9MB/s ≈150fps」测的不是 winex11 GLX/drisw——那条路当时就不存在，同一 stub 回退已适用；两组数字的 16 倍差是各自读回管路差，不是路线差（known-issues §2.2）。X 窗口→scene→输出→XComponent 一段**已证可用**（注入 X 客户端出图并动），缺口只在 GL 客户端这一跳。补栈清单见 known-issues §2.4；未落地前 X 路线 GL 能力记为**无** |
+| R-ZC | wlroots 只认 buffer 的 fd 门（dma-buf，OHOS 无）或 data_ptr 门（`render/pixman/renderer.c:251-255`、`render/gles2/texture.c:419-422`），不认识 BufferQueue；pixman 起步态下游戏热路径 = GPU→CPU map→CPU 合成→GPU，每帧两次全幅搬运（bootstrap 代价，非终态） | 同左 | ①（bootstrap）data_ptr 门零补丁：自定义 wlr_buffer 包 OH_NativeBuffer。获取链三跳（API 实证）：`OH_NativeImage_AcquireNativeWindowBuffer`（SDK `native_image.h:300`，`AcquireLatestNativeWindowBuffer` `:485`，since 22 ≤ 本档 23）→ `OH_NativeBuffer_FromNativeWindowBuffer`（`native_buffer.h:286`）→ `OH_NativeBuffer_Map`（`:233`）。**口径：API 存在已证、组合未验证**——现行合成器零 `OH_NativeBuffer` 命中（全程纹理模式 `UpdateSurfaceImage` `native_image.h:157`），纹理/缓冲两种消费模式能否共存同一 OH_NativeImage 未验证 ②**M2 必达终态（GL 门）**：wlroots gles2 加 OHOS 导入分支——`eglCreateImage` + `EGL_NATIVE_BUFFER_OHOS`（SDK `eglext.h:1441-1444`），输入帧与输出 buffer 全程 GPU，拷贝数与旧路线持平。传输层已被现行 ZC 生产验证。**② 运行时可用性 M2-T2 已裁决（2026-09-30，真机 r0930013431-t2d，探针 `ohos_egl_import_probe`）：可用，EGL 导入全链通（分配→Map 写→eglCreateImage→glEGLImageTargetTexture2DOES→FBO 回读逐像素比对一致）。关键实测约束：`EGL_NATIVE_BUFFER_OHOS` 的 EGLClientBuffer **不能是裸 `OH_NativeBuffer*`**（被 EGL 实现按 native_window 对象校验拒，EGL_BAD_PARAMETER 0x300c），必须先经 `OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer` 包成 `OHNativeWindowBuffer*`（`external_window.h:468`）再传——这是 gles2 导入分支的实现前提。探针在每次 displayroute run 自动重跑（harness 先清标记），结论经 `marker:` 判定器裁决（smoke/jobs/displayroute-notepad.json 声明）** |
+| R-SPAWN | **决策（平台硬约束）：子进程必须走 NCP**，fork/exec 不可用；而 wlroots 启动 Xwayland 只有 fork+execvp（`xwayland/server.c:133`；`server.h:64` 同源内部 exec），无「接管外部进程」公开 API → 启动路径必须 NCP 化适配 | 同左 | 三件套（全部落在已有机制上）：①xserver 构建增出 `libxwayland` 共享库（构建级小补丁，代码零改）②NCP shim 子进程 `libxwayland_child.so`：入口同 `virgl_child.cpp:471` `Main(NativeChildProcess_Args)` 形态——起 abstract unix socket（生产先例：wine NCP 子进程连合成器即走 abstract，P4）收 SCM_RIGHTS 传来的 {x_fd×2, wl_fd[1], wm_fd[0], displayfd}，以 `-listenfd` argv 直调 Xwayland main ③wlroots `server.c` 启动点补丁：跳过 fork/execvp，改 NCP spawn + fd 下发。fd 跨进程传递先例：winewayland section→fd→wl_shm（`wayland_surface.c:880-908`，NCP 子进程↔app 通道在产）。wlroots 钉版口径由此修正为「1 处隔离启动补丁」。**M0 已落地（T7/T9，2026-09-28）**：三件套按此形态实现并真机跑通；补丁增量两条实测教训——`wl_client_create` 后移到 spawn 之后时 `'start'` 事件 emit 必须随之后移（消费方 handle_server_start 读 `server->client` 给 shell_v1 设白名单，时序破即 bind 拒）；两段式 `wlr_xwayland_create_with_server` 调用方（C++ 宿主）不经 `wlr_xwayland_create` 包装层，shell_v1 全局须由 with_server 自建（否则 xwm_create 挂 NULL 信号 SEGV） |
 | R2 | wlroots shm 分配器走 shm_open→/dev/shm（`util/shm.c:30`），沙箱可能没有 | 同左 | **已探针解除（2026-09-27，见 B 类 P1/P2）**：shm_open 与 memfd_create 在沙箱均可用，默认分配器直接工作；自定义 `wlr_allocator` 降级为备胎 |
 | R-VER | wlroots 0.20.2 与 0.21 均要求 wayland-server ≥1.24（`wlroots meson.build:88-90`）；项目现有 1.22 | 同左 | **升 thirdparty/wayland ≥1.24 为必做项**（关键路径） |
-| R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包 |
+| R-xkb | xkbcomp 是 Xwayland 硬运行时依赖，缺 = 键盘死 | `xkb/ddxLoad.c:105-212` → `xwayland-input.c:372-374` BadValue | xkbcomp 二进制 + XKB 数据树（项目已带 share/X11/xkb）+ `-xkbdir` 进沙箱包。**M0 已落地（T7）**：xkbcomp 不可执行（NCP exec 禁令）→ 宿主侧预编译 xkm 缓存（assemble 期 `xkbcomp -w 1 -R<xkb树> keymap.txt → wine-data/xkm/server-0.xkm`），xserver RunXkbComp 打缓存命中补丁（命中即跳过 fork/exec），shim 拷入 `$XDG_RUNTIME_DIR`；真机日志 "XKB: Reusing cached keymap" 实证，键盘激活 FatalError 解除 |
 | R-IME | 主线 xserver 无 text-input 桥 | grep XWAYLAND_IME 零命中；mutter 树亦无 Xwayland IME 桥（text-input 均为 Wayland 客户端侧，实查） | 下游补丁源待定位；否则自写 XWM↔text-input 桥或 OHOS 应用层注入，M2 裁决 |
-| R-WSI | Venus 是否暴露 VK_KHR_xcb_surface 未实测 | `winex11.drv/vulkan.c` 走 X11 WSI | M1 探针 |
+| R-WSI | Venus 是否暴露 VK_KHR_xcb_surface 未实测 | `winex11.drv/vulkan.c` 走 X11 WSI | **M1-T7 探针已裁决（2026-09-29，真机 r0929121315-t7b，`wsi_xcb_probe` 两路线 SKIP=能力缺席）**：venus **不暴露** `VK_KHR_xcb_surface`（也不暴露 xlib；`VK_KHR_surface` 在，spec=25）⇒ winex11 路线无 Vulkan present，X 路线的 D3D/Vulkan 呈现只能走 M2 重锚（SURFACE_ID 来源换成 X window id，§4.2）；Vulkan 程序切到 X 路线前（M2 前）呈现仍依赖 wayland 路线私有 WSI。与 R1 裁决合并后的 X 路线能力边界：GL 有（winex11 GLX/drisw，M2 验 present 链）、Vulkan 无（重锚制） |
 | R-CPL | win32u present_rect 补丁按 wayland 握手写 | `dlls/win32u/window.c:2312-2335` | 切换时回归 war3 全屏场景 |
 | R-REPRO | wayland-server 头/.pc 隐藏依赖 | `build_ohos_guest_gfx.sh:589-601` | 先固化进 build_wayland.sh，rm sysroot-ext 重建演练 |
 | R-ARK | ArkTS modal 事件源随私有协议消失 | `toplevel_event_bus` | 用 `wlr_xwayland_surface` 事件重建（§4.4 模态行；request_*/set_* 信号群 `xwayland.h:197-203,220-227`） |
@@ -106,17 +129,181 @@ WSI 整体私有化：guest 永远拿不到真 VkSurfaceKHR，窗口身份 = 高
 
 **路径策略决策（2026-09-27）**：一切硬编码宿主路径（`/tmp` 系）**统一重定向到沙箱目录**，不做「/tmp 可否创建」的探针与适配。涉及：wlroots `xwayland/sockets.c`（lock/socket 路径常量硬编码 `/tmp/.X%d-lock`、`/tmp/.X11-unix/X%d`，`sockets.c:19-23`；重定向 = 换常量 + 确保 socket_dir 存在，~20 行）；Xwayland xkm 输出与 shm tmpfile 已有 `$XDG_RUNTIME_DIR` 回退链（`xkb/ddxLoad.c:62-95`、`xwayland-shm.c:135-167`）。X11 abstract socket 名保持原字符串（P4 证明 abstract 不触碰文件系统，双侧均为我方构建，无需改名）。
 
+**T9 实测修正（2026-09-28）**：决策方向正确但「abstract 名保持原字符串」不完整——libX11 客户端（XCB 传输）只探测**标准名** `@/tmp/.X11-unix/X<n>`，而 filesystem 侧必须落 XDG（/tmp 不存在）。落地形态：wlroots `sockets.c` abstract 侧固定绑标准名（abstract 名是 netns 内纯字符串，无需 /tmp 存在）、fs 侧按「标准 /tmp 优先，失败回退 XDG」解析；xtrans 1.5.2 客户端 `SocketUNIXConnect` 写死 fs 路径（`abstract=0`），补丁 `scripts/patches/xtrans-abstract-client.patch` 让 local 传输客户端走 abstract 名。
+
 ## 6. 交叉构建清单
 
 ```
 必做升级:  thirdparty/wayland 1.22 → ≥1.26（wlroots 0.20.2 要 server/client ≥1.24, xserver 主线要 client ≥1.26, 取高者一并满足）
-钉版待定:  Xwayland 版本（主线 26.x vs 稳定系 24.1.x, 影响 xkb/xwayland-shell 行为面）—— M0 首项裁决
+钉版已裁:  Xwayland = xwayland-24.1.13（xorg/xserver 仓库 xwayland-24.1 分支 tag c5a47fda8, 2026-07-08 发布）
 新增依赖:  libdrm ≥2.4.129（wlroots 无条件依赖, 关不掉——像素格式头; 另 pixman ≥0.43.0 有版本门槛）
 X client:  xorgproto → xcb-proto → libxcb(shm/randr/xfixes/composite/res 分模块) → libX11 → libXext
            可选扩展: Xrender/Xrandr/Xfixes/Xcursor/Xi/Xinerama/Xcomposite/Xxf86vm（soname 逐个降级）
-Xwayland:  pixman, libxau, libxdmcp, xtrans, libxfont2, libxshmfence, libxcvt, xkbcomp + XKB 数据
+Xwayland:  pixman, libxau, libxdmcp, xtrans, libfontenc, libXfont2, libxshmfence, libxcvt, libxkbfile, libsha1 + XKB 数据（xkbcomp 可执行不可得, 见 R-xkb 备注）
 wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm ≥2.4.129
 ```
+
+### 6.1 Xwayland 钉版裁决（M0-T5/T6 实测, 2026-09-27）
+
+**结论：钉 xwayland-24.1.13。** 证据（候选项 24.1.13 vs 主线 master 0da4d248）：
+
+| # | 判据 | xwayland-24.1.13 | master | 裁决 |
+|---|---|---|---|---|
+| 1 | xwayland-shell-v1（rootless toplevel 标记） | ✓ `hw/xwayland/meson.build:50` | ✓ 同 | 平手 |
+| 2 | wlroots 消费的 pc 变量（have_listenfd/terminate_delay/no_touch_pointer_emulation/force_xrandr_emulation 全 true）+ have_initfd（fd 直传, R-SPAWN 关键） | ✓ `:167-177` | ✓ 同 | 平手 |
+| 3 | OHOS 构建面 | 整分支即独立 Xwayland 项目（root meson `project('xwayland')`），无 Xorg DDX 选项面 | 全量 xserver, 需逐项裁剪 | **24.1 胜** |
+| 4 | 维护/安全 | Xwayland 独立发布线（24.1.13 于 2026-07-08 发布），安全修复主线 | 快速演进, API 漂移不利钉版 | **24.1 胜** |
+| 5 | NCP 适配面（executable→shared 补丁） | 同样补丁, 分支面小 | 面大 | **24.1 胜** |
+
+行为面实测补充：`wayland_req >= 1.21.0`（`meson.build:66`，我方 1.26 满足）；`-shm` 选项在（`xwayland.c:214`，M0 shm-only 依据）；xwayland_shell_v1 bind 以 rootless 为门（`xwayland-screen.c:533-535`，与 §2 一致）；`-force-xrandr-emulation` 在（`xwayland.c:247`）。
+
+### 6.2 M0 实测结论（2026-09-28，T7-T9 全链真机）
+
+**出口状态：M0 达成。** 全链 = libX11 client → abstract socket → Xwayland（NCP）→ XWM/xwayland_shell_v1（wlroots）→ pixman/自定义 allocator → NativeWindow 直推 XComponent，真机出图，5 分钟+ 存活 0 喷溃，伴随轮 core 套件 PASS 4/4。
+
+**NativeWindow 首验矩阵（T8，全部实测）**：
+
+| 路径 | 结果 | 结论 |
+|---|---|---|
+| AttachBuffer 后直接 FlushBuffer | 41207000 BUFFER_STATE_INVALID | 不可行 |
+| Request→GetBufferHandleFromNative→virAddr 写 | handle 在但 virAddr=NULL（BufferQueue 不自动 map 给生产者），帧 5 起 Request 报 40601000 | 不可行 |
+| LockBuffer/UnlockAndFlushBuffer（API 23） | 设备无符号（dlsym 守卫落空） | 老设备不可用 |
+| **Request → mmap(handle->fd) → memcpy → FlushBuffer（采纳）** | 稳定出图 | stride 语义 = 字节/行（size=stride*height，误 ×4 曾写越界）；CRC 必须在 wlr_buffer end_data_ptr_access 之前算（Unmap 后指针失效） |
+
+格式：wlr_buffer 背书 OH_NativeBuffer，DRM↔OHOS 映射 ABGR/XBGR8888→RGBA_8888、ARGB/XRGB8888→BGRA_8888；usage = CPU_READ\|CPU_WRITE\|CPU_READ_OFTEN；stride 由 OH_NativeBuffer_GetConfig 回读（800 宽实测 3328）。headless output 首次 enable commit 必须带 custom_mode。帧率实测 ~8fps（每帧完整 Request→mmap→memcpy→munmap→Flush + BufferQueue 节流），零拷贝归 M1。
+
+**合成器最小件实测必备集（缺一即断链）**：`wlr_renderer_init_wl_display`（wl_shm 全局——缺则 Xwayland 首窗 Map 即 NULL proxy SEGV）、`wlr_compositor_create` + headless backend + 自定义 allocator、XWM 的 `request_configure` 应答（`wlr_xwayland_surface_configure`）与每帧 `wlr_surface_send_frame_done`（无 scene 栈须手动，否则 client 内容不提交）；X 窗口像素读 `surface->buffer`（wlr_client_buffer）而非 `current.buffer`（空 commit 后者为 NULL）。
+
+**X11 连接面（T9）**：libX11/XCB 客户端只探标准 abstract 名 `@/tmp/.X11-unix/X<n>` 与 fs 路径 `/tmp/.X11-unix/X<n>`；沙箱 /tmp 不存在 → 服务端 abstract 固定绑标准名 + xtrans 客户端补丁（见 §5 路径策略修正）；Xwayland 无 -auth 也拒本地 client（peercred 豁免沙箱未生效）→ NCP 形态加 `-ac`。
+
+### 6.3 M1 实测结论（2026-09-29，T1-T8 全链真机）
+
+**出口状态：M1 达成。** 出口判据 = notepad 经 winex11→Xwayland→xwm→scene→NativeWindow 端到端输入出字（T5 "hi" 实测截图）；伴随轮 core 4/4 PASS（T5 两轮 + T8 冷启一轮）。
+
+**winex11 接入形态（T4/T5）**：guest X11 栈（libX11 + xkb 数据）随 wine-data 进沙箱；驱动选择 = `DISPLAY` 环境变量分支（`WINEHUA_DISPLAY_ROUTE=x11` + `WAYLAND_DISPLAY` 清空 → winex11，否则 winewayland），不改 win32u bypass 单点。三个 M1 实测必修点（各自独立断链）：
+
+1. **X screen 尺寸 = wl_output 全局镜像**：无 `wlr_output_layout` 时 Xwayland 报 screen 0×0 → wine `xinerama_init` 得 0×0 桌面 → `get_desired_wm_state` 永远 WithdrawnState，**wine 永不 XMapWindow**。修 = 合成器持 layout 并 `add_auto` output。
+2. **MIT-SHM 沙箱双向致命**：Xwayland 侧 shmat → seccomp SIGSYS（"Server aborting"，全体 X client 掉线）；wine 子进程侧 shmget → SIGSYS → box64 信号处理器 siglongjmp 破坏 wine 执行流（SetWindowPos 中途消失）。修 = Xwayland `-extension MIT-SHM` + wine configure `--without-xshm`（winex11 走纯 XImage 路径）。
+3. **重触发管道阻塞读**：libwayland 对新增 fd 不设 O_NONBLOCK，drain 循环第二次 read 永久阻塞 → 合成器+Xwayland 全冻结。修 = pipe 两端 fcntl O_NONBLOCK。
+
+**输入链（T1/T2/T5）**：OHOS 触摸/键盘 → 注入桥 → wlr_seat → xwm → wine。多窗口语义 = surface 列表 + 命中测试 + 焦点随动；模态对话框焦点不依赖几何，`FocusClient(client_xs)` 几何无关寻址（notepad 对话框几何逐轮漂移实测 874×655@4,30 ↔ 562×400@4,23）。**挂起**：最后一键间歇不入编辑控件（注入侧日志逐字节同形，差异在 wine 内部非确定路径），T8 未复现到根因。
+
+**合成帧率（T3）**：scene 化管线贯通，**18.6-18.7fps 持续**（M0 8.5fps 的 2.2 倍），~54ms/帧 = copy+flush 17-19ms + scene render+commit 18-20ms；瓶颈在 NativeWindow BufferQueue copy+flush 段，零拷贝归 M2 present 重构（≥25fps 目标随零拷贝达成）。
+
+**GLX 裁决（T6）**：①GLX-over-EGL 桥 **no-go**（wayland EGL+virpipe 回读 19.2MB/s，800×600 全帧 96.3ms ≈ 10fps，超 30fps 预算 3 倍）；**改判第三路线** = wine 原生 winex11 GLX（mesa drisw + virpipe）800×600 全帧 6.5ms ≈ 150fps 大幅达标，自研桥取消。**M2-T3 收口（2026-09-30，设备 .5）：改判不成立**——winex11 GL 段在本构建未编入（`WINEHUA_ALLOW_X11_NO_GLX=1`），T6 那组「X 路线」数字量的是 win32u 通用 EGL 驱动的 FBO 路径，GLX/drisw 当时就不存在、现在也不存在；Xwayland 无 GLX、guest 无 libGL 同样未变。定位与补栈清单见 R1 行 + known-issues §2.4。
+
+**R-WSI 裁决（T7）**：venus 不暴露 `VK_KHR_xcb_surface`/xlib（`VK_KHR_surface` 在）⇒ winex11 路线无 Vulkan present，X 路线 Vulkan 呈现走 M2 重锚（§4.2）。X 路线能力边界：**GL 有、Vulkan 无（重锚制）**。
+
+**回归与状态残留（T8）**：core + wine-vulkan 在冷启干净态 4/4 + 4/4 PASS。**displayroute 会话状态会残留到后续套件**（T5 t5v、T8 两度复现：displayroute 任务后直接跑 core，帧采集抓到 app UI+虚拟桌面合成帧而非测试全屏窗口；生产者帧率 88fps 正常，仅采集面错位）⇒ **套件回归前 force-stop + 冷启动**为既定流程。
+
+### 6.4 M2 阶段 A 实测结论（2026-09-30，T1-T6 全链真机，设备 .5）
+
+**出口状态：阶段 A 达成**（判据逐条裁定见
+`2026-09-30-display-route-m2-acceptance.md`）。阶段 B（IME）/C（PC 形态）按
+scope ruling 暂缓。
+
+**输出路径清账（T1）**：`HandleOutputCommit` 失败分支全部有日志/计数，
+munmap 与 mmap 同源（`mapped_bytes`），Map 失败归还 buffer；合成器启动链改
+统一 cleanup（`goto fail`）。known-issues §1.1/§1.2 两条据此删除。
+
+**零拷贝（T2 → T4）**：`EGL_NATIVE_BUFFER_OHOS` 导入可用（T2 探针
+`pass:payload=OHNativeWindowBuffer`，r20260930-013431-t2d）；T4 落地 wlroots
+gles2 渲染器 + 通用导入器 + OHOS 队列 buffer 直渲染输出。分段实测：
+`copy+flush 1572us`（拷贝路径 19011us）、`scene render+commit 3202us`
+（19446us）。**帧率按模型推导**：33ms 帧时钟 + ~20ms 工作 ⇒ ~27.7fps ≥ 25
+（判据脚本 `verify-t4.sh` 20/20 ok）；直测需持续内容源，见下条。
+
+**X 路线内容率（2026-09-30 实测结清，替换原「~1.8/s 限制」记录）**：链路逐跳
+速率仪（`display/ncp/xclient_child.cpp` 的 `XCLIENT-STAT` 行 + `ohos_output.c`
+的 `rate` 行，各每秒一行）实测，注入 X 客户端双窗持续重绘：
+
+| 跳 | 读数（r20260930-204700，设备 .5） |
+|---|---|
+| ① 客户端内容源 | `fps=24~28`（drawAvg 2.8~9.3ms，无阻塞） |
+| ③→④ Xwayland → wl_surface | `surfCommits=44~52/s`（两窗） |
+| ⑤→⑥ 合成器渲染 → 上屏 | `needsFrame=23~27/s`、`outCommits=22~27/s` |
+
+（三次独立干净测量一致：r20260930-204700 / r204846 / 210044——末次在最终构建
+上复核）。即：**每一跳都跟得上
+内容源，X 路线持续出图 ≈25fps**。为什么是 25 而不是 30：**客户端自己的节拍**
+——每帧 = `usleep(33ms)` + drawAvg(4~10ms 的填图案 + XPutImage + XFlush) +
+事件处理 ≈ 39ms ⇒ 25.6fps，与实测 23~28fps 吻合，**链路额外开销 ≈0**（速率上限
+本轮由源决定，未测更高源）。
+
+原记录的「Xwayland 侧回压使客户端事件循环掉到 ~1.4 圈/s、内容率 ~1.8/s」不再
+成立，成因两条：（a）旧客户端循环「有事件就不画」，而该合成器下 ConfigureNotify
+持续到达（`xclient_child.cpp` 已改为 mode=2 每拍必画）；（b）测量时内容源被
+完全遮挡（见下）。**判据对照**：被记事本窗（988×741 @0,0）全盖时合成器
+`needsFrame/outCommits=2/s`，可见时 23~27/s（对面 `surfCommits` 两种情形都是
+44~61/s —— 证明 Xwayland 一直按内容速率投递，掉的是我方渲染那一段）。
+
+**X 路线测内容率的硬约束（机制）**：X 面节点的 scene damage 按**可见区域**计算，
+被完全遮挡的窗口不产生 damage ⇒ 拿被盖住的窗口当内容源，测到的是"遮挡后的
+残量"而不是链路能力。测速率必须保证内容源可见（本轮的干净入口：
+`smoke/jobs/displayroute-rate.json`，bring-up + 无窗 guest 程序占位）。
+
+**R1 收口（T3）**：X 路线 GL 呈现链**不存在**——Xwayland 无 GLX（`-Dglx=false`）、
+guest 无 libGL、winex11 GL 段未编入（`WINEHUA_ALLOW_X11_NO_GLX=1`）。M1-T6 的
+311MB/s「X 路线」数字作废（当时走的是 win32u 通用 EGL 的 FBO 路径）。补栈属
+新建栈，超出阶段 A（known-issues §2.4）。
+
+**重锚（T5）**：落地形态与实测见 §4.2 ④ 段（id = X window id；接收侧 window_id
+映射 + 销毁即失效；present 6/6 PASS、133~137 帧/轮、截屏实证上屏）。
+
+**重锚附带修的 guest 侧卡死（wine fork `9f7a73d5`）**：X 路线上 win32u 的 Vulkan
+init（`pthread_once`）里走到 lazy 驱动入口时，`load_driver()` 的显示缓存刷新会
+拿 force 分支（刚加载的 winex11 改写 video 注册表），在本进程自身 Vulkan 初始化
+未完成时驱动宿主 loader/ICD 建第二个实例 —— 重入调用正常返回后卡死在
+`p_vkCreateInstance` 一侧，进程 ~100% CPU 自旋。修法 = `__wine_get_vulkan_driver()`
+在 once 之前**只加载显示驱动**（`load_display_driver()`，不刷缓存；把刷新搬到
+这里会让两条路线都在首个 Vulkan 调用上多一次 GPU 枚举，实测 wayland 路线的
+storage image 回读随即失效）。修后 X 路线 present 从「首帧卡死」变为 6/6 通过。
+
+**dxvk 出口（T6）**：X 路线 `dxvk-cube` PASS（`frames=221`、`angleRegressions=0`、
+`presentHresult=0x0`）⇒ 出图成立；`dxvk-legacy` 为既有失败（known-issues §2.5，
+对照实验证明与重锚无因果）。
+
+**双路线回归**：wayland core 4/4、d3d12 3/3、wine-vulkan offscreen 3/3、
+present 1/1；X 路线 wine-vulkan offscreen 1/1、present 6/6、dxvk-cube PASS。
+既有红项（X 路线 `displayroute` dx-notepad 超时、`dxvk-legacy`）与本阶段改动
+无因果，逐条证据见验收报告与 known-issues。
+
+**设备状态类抖动（新观察，2026-09-30）**：设备被本会话自己的 hilog 落盘占满
+（`/data/local/tmp` 132GB、6 个采集进程常驻、load ~16）期间，wayland 路线的
+`venus_storage_write` 回读失败出现 1/4；清理后同一构建 5/5 PASS。样本不足以
+定论，但方向是「设备侧负载/IO 压力」而非代码（fix2 在该路线无机制作用面）。
+
+**收尾评审修复：guest 帧节点的所有权（2026-09-30，设备 .5）**。帧节点原先只挂
+在窗口记录上，并假定「随 X 面节点一起被 wlroots 回收」——实测不成立：
+`wlr_scene_surface_create` 把 X 面节点**直接**建在 scene 根上（wlroots 侧没有
+中间 tree），帧节点只是它的同父兄弟；surface 销毁时 wlroots 只回收自己那一个。
+于是窗口销毁后帧节点留在 scene 上：**最后一帧成鬼影 + 节点与队列槽位泄漏**，
+且它持有的队列 buffer 指向已销毁的 `OH_NativeImage`（悬垂调用面）。修复 =
+`DestroyFrameNode()` 在 dissociate / destroy 两条路径显式销毁——节点所有权在
+合成器，不在 wlroots。判据（新仪器 `scene_frames=`：递归数 scene 里仍挂着本模块
+队列 buffer 的节点；窗口全部销毁后必须为 0）：
+
+| 构建 | 结果 |
+|---|---|
+| 对照（仅停用销毁路径，r20260930-080324） | 窗销毁后 `bindings=0 destroyed_windows=1 scene_frames=1` —— 节点留在 scene 上 |
+| 修复（r20260930-080927） | 同点 `scene_frames=0` + 日志 `guest frame node destroyed … (dissociate)`，present 用例 PASS（`frames=136`） |
+
+回归（同构建）：X 路线 `dxvk-cube` PASS（r081450）、wayland core 4/4（r081523）。
+
+**`displayroute` 的 `dx-notepad` 红项（2026-09-30 定性并修复）**：此前记为
+「X 路线内容率回压」，证据不支持——实况是该用例**两条路线同形失败**（X 路线
+r20260930-081040、默认 wayland 路线 r20260930-081257，均 90s 超时无结果文件）。
+追到底的根因是**契约错配**：该用例是**载体**（跑真实内置记事本，它既不做
+automation 也永远写不出结果文件），却被当成自报用例驱动——参数被记事本当文件名，
+弹出「错误」框（`notepad/main.c:645-650`），随后轮询等一个永远不会出现的结果文件。
+修法（known-issues §2.8 有完整证据）：新增 `judge: "external"` 载体语义（跑完
+声明时长即落 `SKIP`，设备端不判定），`argvMode=raw` + 空 argv 让记事本干净启动，
+注入脚本删掉应答弹框的步骤。验收 r20260930-190858/191114：用例 SKIP、job PASS
+（bring-up marker 全过）、该轮 guest trace 弹框创建 0 次、截屏文本区 "abchi"。
+**它的结论是 SKIP 而非绿**：X 路线真正的自动化门禁是
+`smoke/jobs/displayroute-vulkan-present.json` 与 `displayroute-dxvk.json`
+（自报结果的用例）；另注：不经 job 编排、不带 `displayroute` 标志与路线 env 的
+`--suite displayroute` 是无效调用（跑在默认路线上），不能进证据链。
 
 ## 7. 里程碑与回退线
 
@@ -124,7 +311,7 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 |---|---|---|
 | M0 | Xwayland 钉版裁决 + wlroots OHOS 交叉编译 + Xwayland NCP 启动适配原型（R-SPAWN）+ NativeWindow 直推真机首验 + headless/pixman 出图进 NativeWindow + Xwayland 跑 xterm | 跑不通 → 回退「现有合成器 + Xwayland」（winex11 收益保留；rootless 回退需先给旧合成器补 xwayland-shell-v1——现零实现，协议面很小；旧合成器 xdg_wm_base 已具备 `xdg_shell.cpp:428-433`，rootful 可跑但 present 重锚不成立，仅保窗口不保 ZC） |
 | M1 | winex11 交叉接入，窗口语义验收；GLX-over-EGL 桥最小原型裁决；R-WSI 探针 | 记事本类输入/窗口正确 |
-| M2 | Venus/ZC 重锚（§4.2/§5 R-ZC）、IME、双窗口形态 | dxvk 套件出图正常 |
+| M2 | Venus/ZC 重锚（§4.2/§5 R-ZC）、IME、双窗口形态 | dxvk 套件出图正常（**阶段 A 实测 2026-09-30，设备 .5**：X 路线 `dxvk-cube` PASS——`frames=221`、`angleRegressions=0`、`presentHresult=0x0`（同名用例 wayland 903 帧，帧数差 = 合成帧时钟 30fps 对呈现节奏的钳制，见 §8.4 观察项；`dxvk-legacy` 为既有失败，与重锚无因果——对照实验见 known-issues §2.5） |
 | M3 | 旧合成器退役 | core / wine-vulkan / dxvk 套件不回退 + 长尾样本验收 |
 
 ## 8. 验收标准
@@ -132,4 +319,17 @@ wlroots:   pixman(共用), xkbcommon ≥1.8, wayland-protocols ≥1.47, libdrm �
 1. 触发重开的那些长尾样本（结构性不兼容类）在 X 路线可启动且行为正确；样本清单与「行为正确」判据在 M1 落定为具体程序列表
 2. 现有 core / wine-vulkan / dxvk 自动化套件不回退
 3. 档位系统（graphics-matrix 四档）在新链路语义不变
-4. 出图/合成性能：M2 起以 dxvk、core 套件运行数据与旧链路对照，作为**观察项**（不设硬线；要设硬线则在 M1 钉基准程序与分辨率）
+4. 出图/合成性能：M2 起以 dxvk、core 套件运行数据与旧链路对照，作为**观察项**（不设硬线；要设硬线则在 M1 钉基准程序与分辨率）。
+   **阶段 A 对照数据（2026-09-30，同构建同设备 .5）**：
+
+   | 用例 | wayland 路线 | X 路线 | 读数口径 |
+   |---|---|---|---|
+   | `dxvk-cube`（8s 固定脚本） | 903 帧（≈113fps） | 221 帧（≈27.6fps） | 两路线 `lastAngle≈8.0` 均跑满时长；X 路线帧数被合成帧时钟 30fps 与 present 节拍（33ms）钳制 |
+   | `winehua_vulkan_smoke --present`（5s） | 150 帧 | 150 帧、`presentFailureFrame=0` | 私有 present 双路线同形态（X 路线 6/6 轮一致） |
+   | 合成器分段（T4，800×600） | — | copy+flush 1.57ms / scene 3.2ms | 零拷贝输出；旧拷贝路径同轮 19.0ms / 19.4ms |
+
+   **持续出图直测（2026-09-30 补上）**：X 路线注入 X 客户端双窗持续重绘，
+   客户端 24~28fps、合成器 `needsFrame/outCommits` 23~27/s（§6.4 速率仪，
+   r20260930-204700）⇒ 该形态在 X 路线**成立**，此前记的「~1.8/s 限制」作废
+   （成因与遮挡约束见 §6.4）。注意读数上限由内容源自身节拍（33ms）与 30fps
+   帧时钟共同决定，本轮未测更高源；要评 GPU 上限需另造更快的源。

@@ -1,6 +1,7 @@
 import { display, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import { FusionWindowManager } from './FusionWindowManager';
 
 const DOMAIN = 0x0000;
 const TAG = 'PopupWM';
@@ -47,6 +48,12 @@ export class PopupWindowManager {
   private pendingDestroy: Set<number> = new Set();
   // 父窗口 windowStage 未就绪时积压的事件: parentToplevel -> [event, data]
   private pendingEvents: Map<number, Array<[string, string]>> = new Map();
+  // parent 是否系统装饰承载 (x11 PC WWA): WineWindowManager popup 分支每次
+  // 事件注入 (判据单点 = systemDecorCarrying, 与 modal 的 ModalDecor 注入
+  // 同源)。满足时 parent 标题栏在系统层 —— wine 的窗口内绝对坐标不含它,
+  // 定位需 +getWindowDecorHeight×scale (#171); wayland 自绘 caption 与 Pad
+  // 页面顶条 (stripPxOf) 天然自洽, 不在本档
+  private parentSystemDecor: boolean = false;
 
   static getInstance(): PopupWindowManager {
     if (!PopupWindowManager.instance) {
@@ -75,6 +82,11 @@ export class PopupWindowManager {
       return;
     }
     this.dispatch(parentToplevel, event, data, stage, parentWin, scale, parentWineDim);
+  }
+
+  // 系统装饰补偿判据注入 (WineWindowManager popup 分支调用)
+  setParentSystemDecor(v: boolean): void {
+    this.parentSystemDecor = v;
   }
 
   // 父窗口就绪后 flush 积压事件 (WineWindowManager.flushPendingEvents 调用)
@@ -321,11 +333,23 @@ export class PopupWindowManager {
   }
 
   // 全局坐标 = 父窗口 windowRect (全局物理 px) + Wine 逻辑 offset × scale
+  // (+ stripPxOf 为顶条补偿位, 任务 #129 路线: off 是 guest 坐标里 popup 相对
+  // owner X 窗的偏移, owner X 窗内容在承载窗里从顶条下方开始, 不补 y 则菜单
+  // popup 错位进顶条区; x11 fusion 子窗非 0, 其余形态恒 0。
+  // + decorPx 为系统标题栏补偿位, 任务 #171: parentSystemDecor 时 owner 内
+  // 容原点低于 frame 原点一个 caption, x11 PC 菜单整体上移错位即缺它)
   private async positionEntry(entry: PopupEntry, parentWin: window.Window, scale: number): Promise<void> {
     if (!entry.subWin) return;
     const rect = parentWin.getWindowProperties().windowRect;
+    let decorPx = 0;
+    if (this.parentSystemDecor) {
+      try {
+        decorPx = Math.round(parentWin.getWindowDecorHeight() * scale);
+      } catch (_) { /* 读回失败按 0 (菜单略上移, 不挡使用) */ }
+    }
     const gx = Math.round(rect.left + entry.offX * scale);
-    const gy = Math.round(rect.top + entry.offY * scale);
+    const gy = Math.round(rect.top + entry.offY * scale +
+      FusionWindowManager.getInstance().stripPxOf(entry.parentToplevel) + decorPx);
     try {
       await entry.subWin.moveWindowToGlobal(gx, gy);
       hilog.info(DOMAIN, TAG, '[POPUP] move ok #%{public}d → (%{public}d,%{public}d)', entry.popupId, gx, gy);

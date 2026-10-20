@@ -4,6 +4,7 @@ import { EVDEV_KEY_ENTER, OH2EVDEV } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { InputDeviceMapper } from '../service/InputDeviceMapper';
+import { FusionWindowManager } from '../service/FusionWindowManager';
 
 const DOMAIN = 0x0000;
 
@@ -63,6 +64,16 @@ struct WineWindow {
   @State toplevelId: number = 0;
   @State surfacePxW: number = 1;
   @State surfacePxH: number = 1;
+  // ── 顶条 (任务 #129 回退路线: 几何补偿式自绘顶条) ──
+  // stripVp = px2vp(stripPxOf(tl)), 判据/换算单点在 FusionWindowManager;
+  // 0 = 不渲染。判据内含 modal 承载 (#167 续: x11 下 modal 对话框也有
+  // 顶条); wayland incumbent / WWA / popup 形态恒 0 零变化。
+  @State stripVp: number = 0;
+  @State title: string = '';
+  private stripMoving: boolean = false;
+  private stripStartPx: number = 0;
+  private stripStartPy: number = 0;
+  private stripMgrListener: (() => void) | null = null;
 
   // ── 触控状态机 (移植自 DesktopWindow.ets 桌面模式, 单窗口简化) ──
   // 单指: 短按→左键点击 / 长按→右键 / 移动超阈值→按住左键拖拽; 双指→滚轮
@@ -70,6 +81,9 @@ struct WineWindow {
   // (若进状态机, 静止点击会被压成 Press+Release 同刻脉冲, dinput 轮询不可见)
   private touchPending: boolean = false;
   private isDragging: boolean = false;
+  // M4d RF#3: 顶条拖动 = 移动承载窗本身 (非 wine 内容拖拽)。系统拖拽接管后
+  // Move/Up 不得再注入 wine (合成事件会打断系统拖拽 / 产生幽灵按钮)。
+  private windowMoveDragging: boolean = false;
   private touchStartTime: number = 0;
   private touchStartPx: number = 0;
   private touchStartPy: number = 0;
@@ -79,6 +93,23 @@ struct WineWindow {
   private motionLogCounter: number = 0;
   private static readonly LONG_PRESS_MS: number = 500;
   private static readonly DRAG_THRESHOLD: number = 10; // 物理像素, 区分点击抖动和拖拽
+  // M4d RF#3: fusion subWindow 承载的"标题栏" = 窗口顶条。x11 下 wine 的
+  // X 窗 = win32 rect 减 WM 装饰区 (D52 created 坐标 = 原点 + caption+border
+  // 偏移, 实测 2026-10-11), caption 属于缺席的 WM —— guest 像素里没有标题栏,
+  // HTCAPTION/_NET_WM_MOVERESIZE 触摸路径结构性不可达; 顶条实为 wine 菜单栏
+  // (高度 ≈ guest 顶部 20 逻辑像素)。短按仍走点击 (菜单可开),
+  // 仅超过拖动阈值的顶条手势转为移动承载窗 (startMoving, 与 wayland Pad
+  // incumbent 同一系统拖拽通道); wine 不感知位置 (managed 模式位置由
+  // ArkTS/系统权威, popup 偏移按父相对量不受影响)。
+  private static readonly DRAG_STRIP_LOGICAL_PX: number = 20; // guest 逻辑像素
+
+  // M4d-review Minor#3: 物理阈值按有效 scale 现算 (原硬编码 40 只对 scale-2
+  // 设备成立; displayScale/scaleBoost 不同的设备上过小会把菜单栏拖动误判为
+  // 内容拖拽, 过大会吞掉客户区)
+  private dragStripPx(): number {
+    return Math.round(WineWindow.DRAG_STRIP_LOGICAL_PX *
+      WineWindowManager.getInstance().getEffectiveScale());
+  }
   // 双击检测
   private lastTapTime: number = 0;
   private lastTapPx: number = 0;
@@ -105,10 +136,265 @@ struct WineWindow {
     this.toplevelId = testNapi.getCurrentToplevelId() as number;
     // 同步设置给 controller: 保证 onSurfaceCreated 拿到正确的 toplevelId
     this.controller.toplevelId = this.toplevelId;
+    // ── 顶条初始化 (任务 #129): stripPxOf > 0 = x11 fusion 子窗或 x11 modal
+    // 承载 (#167 续) ──
+    // wayland / WWA / popup 形态 stripVp 恒 0: 不订阅不渲染, 渲染树
+    // 与交互与改动前一致 (隔离红线; 判据单点在 FusionWindowManager)。
+    const stripPx = FusionWindowManager.getInstance().stripPxOf(this.toplevelId);
+    if (stripPx > 0) {
+      this.stripVp = px2vp(stripPx);
+      const wm = WineWindowManager.getInstance();
+      this.title = wm.getWindowTitle(this.toplevelId);
+      // title 事件 → applyEvent 记 e.title (modal 承载走 onTitle) →
+      // notify (仅顶条存在时发) → 本刷新
+      this.stripMgrListener = () => {
+        this.title = WineWindowManager.getInstance().getWindowTitle(this.toplevelId);
+        this.stripVp = px2vp(FusionWindowManager.getInstance().stripPxOf(this.toplevelId));
+      };
+      wm.subscribe(this.stripMgrListener);
+      hilog.info(DOMAIN, 'WineWindow', 'strip active tl=%{public}d px=%{public}d vp=%{public}d',
+        this.toplevelId, stripPx, Math.round(this.stripVp));
+    }
     hilog.info(DOMAIN, 'WineWindow', 'aboutToAppear tl=%{public}d', this.toplevelId);
   }
 
+  aboutToDisappear(): void {
+    if (this.stripMgrListener !== null) {
+      WineWindowManager.getInstance().unsubscribe(this.stripMgrListener);
+      this.stripMgrListener = null;
+    }
+  }
+
+  // ── 顶条交互 (任务 #129 回退路线) ──
+  // 三键驱动 M4b 既有动作链 (applyEvent fusion 分支同款落点), 不新造链:
+  //   min   → wine 'minimized' 事件同款 → FWM.hide (minimize 近似)
+  //   max   → 'maximized'/'unmaximized' 同款 → FWM.fullscreen ↔ restore
+  //   close → RF#3 统一通道 sendToplevelClose (x11 分支 = WM_DELETE_WINDOW,
+  //           wine 收 WM_CLOSE 走 win32 关窗语义, 保存提示保留, 非强杀)
+  private onStripMin(): void {
+    hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-MIN tl=%{public}d', this.toplevelId);
+    FusionWindowManager.getInstance().hide(this.toplevelId);
+  }
+
+  private onStripMax(): void {
+    const fw = FusionWindowManager.getInstance();
+    const fs = fw.isFullscreen(this.toplevelId);
+    hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-MAX tl=%{public}d → %{public}s',
+      this.toplevelId, fs ? 'restore' : 'fullscreen');
+    if (fs) {
+      fw.restore(this.toplevelId);
+    } else {
+      fw.fullscreen(this.toplevelId);
+    }
+  }
+
+  private onStripClose(): void {
+    hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-CLOSE tl=%{public}d', this.toplevelId);
+    try {
+      testNapi.sendToplevelClose(this.toplevelId);
+    } catch (e) {
+      hilog.error(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-CLOSE fail: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  // 键盘事件共享体 (Stack 与外层 Column 两挂点共用, 见 build 注释):
+  // 首次进入事件即 stopPropagation, 两挂点不会双发 (Stack 在上, Column
+  // 为其祖先 —— 焦点在 Stack 时事件止于 Stack; 焦点在 Column 时 Stack
+  // 不在冒泡链上)。
+  private handleWineKey(event: KeyEvent): void {
+    hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] onKeyEvent keyCode=%{public}d type=%{public}d tl=%{public}d',
+      event.keyCode, event.type, this.toplevelId);
+    if (this.toplevelId <= 0) return;
+    event.stopPropagation();
+    const evdevCode = OH2EVDEV[event.keyCode] ?? 0;
+    if (evdevCode === 0) {
+      hilog.warn(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY unmapped ohosCode=%{public}d', event.keyCode);
+      return;
+    }
+    const pressed = (event.type === KeyType.Down);
+    hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY tl=%{public}d ohos=%{public}d->evdev=%{public}d %{public}s',
+      this.toplevelId, event.keyCode, evdevCode, pressed ? 'DOWN' : 'UP');
+    // 回车补发: 软键盘/IME 场景系统吞掉 KeyDown 只派发 KeyUp (onKeyEvent
+    // 无配对 down) → Wine 收不到按下不触发。收到回车 up 且窗口内无 down
+    // 记录时补发完整 down+up (sendFunctionKey 注入已移除, 统一在此兜底)
+    if (evdevCode === EVDEV_KEY_ENTER) {
+      if (pressed) {
+        this.lastEnterDownTs = Date.now();
+      } else if (Date.now() - this.lastEnterDownTs > WineWindow.ENTER_SYNTH_WINDOW_MS) {
+        hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] ENTER SYNTH down (missing down)');
+        testNapi.sendKeyEvent(this.toplevelId, EVDEV_KEY_ENTER, true);
+      }
+    }
+    testNapi.sendKeyEvent(this.toplevelId, evdevCode, pressed);
+  }
+
+  // 顶条触摸: 轻按交给按钮 onClick; 超过拖动阈值 = 系统拖拽接管
+  // (startMoving, f43c764 同通道 — 顶条即承载窗拖动区, 阈值同款物理 px)。
+  private onStripTouch(ev: TouchEvent): void {
+    if (this.toplevelId <= 0) return;
+    if (ev.type === TouchType.Down) {
+      try {
+        WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
+      } catch (_) { /* ignore */ }
+      const t = ev.changedTouches[0];
+      if (!t) return;
+      this.stripStartPx = Math.round(vp2px(t.x));
+      this.stripStartPy = Math.round(vp2px(t.y));
+      this.stripMoving = false;
+      return;
+    }
+    if (ev.type === TouchType.Move) {
+      if (this.stripMoving) return;
+      const t = ev.changedTouches[0];
+      if (!t) return;
+      const px = Math.round(vp2px(t.x));
+      const py = Math.round(vp2px(t.y));
+      const dist = Math.abs(px - this.stripStartPx) + Math.abs(py - this.stripStartPy);
+      if (dist < WineWindow.DRAG_THRESHOLD) return;
+      const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
+      if (!win) return;
+      this.stripMoving = true;
+      try {
+        win.startMoving();
+        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG startMoving tl=%{public}d', this.toplevelId);
+      } catch (e) {
+        this.stripMoving = false;
+        hilog.warn(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG startMoving failed: %{public}s',
+          JSON.stringify(e));
+      }
+      return;
+    }
+    // Up / Cancel
+    this.stripMoving = false;
+    // 按钮上起手的拖动被系统拖拽接管时, 按钮子节点收不到 Up —— 按压态在此兜底清理
+    this.stripBtnPress = -1;
+  }
+
+  // 自绘顶条 (任务 #129 回退路线, stripVp > 0 = x11 fusion 子窗或 modal
+  // 承载): Win11
+  // caption 观感 —— 46vp 方形按钮 + 10vp 矢量细线图标 (Path, 1vp 描边, 取代
+  // 字符字形 ─□×), 悬停/按压灰底, close 悬停红底白叉; 固定亮色不跟系统深浅色
+  // (Win 风格基线)。交互模型不变: 顶条区 = 拖动区 (onStripTouch 阈值→
+  // startMoving), 三键沿用既有 min/max/close 动作链; 顶条是独立节点, 其上的
+  // 点击不落 guest, 输入零坐标换算 (承载窗增高 + XComponent 下移的几何补偿
+  // 在 FusionWindowManager 侧完成, plan RF#1)。
+  @State stripBtnHover: number = -1;  // 鼠标悬停的按钮 idx (触摸无悬停态)
+  @State stripBtnPress: number = -1;  // 按压中的按钮 idx
+  private static readonly STRIP_BTN_W: number = 35; // caption 按钮宽 (初版 46, 用户先后裁定 40、随顶条 32→28 等比收至 35 = 40×28/32, 保持 1.25 宽高比)
+
+  // 10vp 图标在 35×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1vp 描边)。
+  // 坑: Path.commands 坐标单位是 px (物理像素), 与属性单位 (vp) 不同轨 ——
+  // 几何按 vp 设计, 拼命令串时统一 ×vp2px, 否则高密度屏上字形缩小 density 倍
+  // (实测 2.5x 屏上 10vp 字形只画出 ~10px, 2026-10-17)。
+  private stripIconCmd(idx: number): string {
+    const k = vp2px(1);
+    const cy = this.stripVp / 2 * k;
+    const c = WineWindow.STRIP_BTN_W / 2 * k;
+    const r = 5 * k; // 字形半宽 (10vp 方)
+    const x0 = c - r;
+    const x1 = c + r;
+    if (idx === 0) { // 最小化: 中线横杠
+      return `M${x0} ${cy} L${x1} ${cy}`;
+    }
+    if (idx === 1) { // 最大化: 方框
+      return `M${x0} ${cy - r} L${x1} ${cy - r} L${x1} ${cy + r} L${x0} ${cy + r} Z`;
+    }
+    const i = 0.5 * k; // 关闭: 9vp 叉 (叉角内缩 0.5vp)
+    return `M${x0 + i} ${cy - r + i} L${x1 - i} ${cy + r - i} ` +
+      `M${x1 - i} ${cy - r + i} L${x0 + i} ${cy + r - i}`;
+  }
+
+  // 按钮底色: 悬停 #E5E5E5 / 按压 #CCCCCC; close 悬停 #C42B1C / 按压 #B3271A
+  private stripBtnBg(idx: number): ResourceColor {
+    if (idx === 2) {
+      if (this.stripBtnPress === idx) return '#B3271A';
+      if (this.stripBtnHover === idx) return '#C42B1C';
+      return Color.Transparent;
+    }
+    if (this.stripBtnPress === idx) return '#CCCCCC';
+    if (this.stripBtnHover === idx) return '#E5E5E5';
+    return Color.Transparent;
+  }
+
+  // close 悬停/按压时字形翻白 (Win11 标志性), 其余恒近黑
+  private stripBtnStroke(idx: number): ResourceColor {
+    return (idx === 2 && (this.stripBtnHover === idx || this.stripBtnPress === idx))
+      ? '#FFFFFF' : '#1B1B1B';
+  }
+
+  @Builder
+  stripCaptionBtn(idx: number) {
+    Path()
+      .commands(this.stripIconCmd(idx))
+      .fillOpacity(0)
+      .stroke(this.stripBtnStroke(idx))
+      .strokeWidth(1)
+      .width(WineWindow.STRIP_BTN_W)
+      .height('100%')
+      .backgroundColor(this.stripBtnBg(idx))
+      .onHover((h: boolean) => {
+        this.stripBtnHover = h ? idx : (this.stripBtnHover === idx ? -1 : this.stripBtnHover);
+      })
+      .onTouch((ev: TouchEvent) => {
+        // 按压视觉态; 触摸继续冒泡到父 Row 的 onStripTouch (拖动阈值判定不变)
+        if (ev.type === TouchType.Down) {
+          this.stripBtnPress = idx;
+        } else if (ev.type !== TouchType.Move && this.stripBtnPress === idx) {
+          this.stripBtnPress = -1;
+        }
+      })
+      .onClick(idx === 0 ? () => { this.onStripMin(); }
+        : idx === 1 ? () => { this.onStripMax(); }
+        : () => { this.onStripClose(); })
+  }
+
+  @Builder
+  stripBar() {
+    Row() {
+      Text(this.title.length > 0 ? this.title : 'Wine')
+        .fontSize(12)
+        .fontColor('#1B1B1B')
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+        .padding({ left: 12 })
+      this.stripCaptionBtn(0)
+      this.stripCaptionBtn(1)
+      this.stripCaptionBtn(2)
+    }
+    .width('100%')
+    .height(this.stripVp)
+    .backgroundColor('#F3F3F3')
+    .onTouch((ev: TouchEvent) => { this.onStripTouch(ev); })
+  }
+
   build() {
+    if (this.stripVp > 0) {
+      // x11 fusion 子窗: 顶条 + guest 内容。guest 内容在外层 Column 的
+      // layoutWeight 区里保持原样 (内容树 = 非顶条分支同一 @Builder)。
+      Column() {
+        this.stripBar()
+        Column() {
+          this.wineContent()
+        }
+        .layoutWeight(1)
+        .width('100%')
+      }
+      .width('100%')
+      .height('100%')
+      // 键盘挂点: 带顶条页面 (x11 fusion 子窗/modal 承载) 的根节点是焦点落点 (实测:
+      // WinFocusMove → Column/onFocus; 仅 Stack 有 handler 时键盘全丢) ——
+      // 根 Column 与 Stack 共用 handleWineKey (stopPropagation 防双发)。
+      // wayland/其他形态无此 Column, Stack 即根, 行为与改动前一致。
+      .onKeyEvent((event: KeyEvent) => { this.handleWineKey(event); })
+    } else {
+      // 非顶条形态 (wayland / WWA / modal / popup): 与改动前同一棵树
+      this.wineContent()
+    }
+  }
+
+  @Builder
+  wineContent() {
     Stack() {
       XComponent({
         id: 'wine_sub_xc',
@@ -133,7 +419,7 @@ struct WineWindow {
             // Down 被 SCROLL-END 分支吞掉, 整次点击丢失; changedTouches 为空时
             // 原尾部 Cancel 分支也到不了 (被 `if (!t) return` 提前退出)
             if (ev.type === TouchType.Cancel) {
-              if (this.isDragging) {
+              if (this.isDragging && !this.windowMoveDragging) {
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] CANCEL-DRAG tl=%{public}d px=(%{public}d,%{public}d)',
                   this.toplevelId, this.pendingPx, this.pendingPy);
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Release,
@@ -143,6 +429,7 @@ struct WineWindow {
               }
               this.touchPending = false;
               this.isDragging = false;
+              this.windowMoveDragging = false;
               this.twoFingerActive = false;
               return;
             }
@@ -227,6 +514,7 @@ struct WineWindow {
               // 进入 PENDING 状态: 暂不发送事件, 等判定长按/拖拽/点击
               this.touchPending = true;
               this.isDragging = false;
+              this.windowMoveDragging = false;
               this.touchStartTime = Date.now();
               this.touchStartPx = px;
               this.touchStartPy = py;
@@ -238,6 +526,32 @@ struct WineWindow {
               if (!this.touchPending && !this.isDragging) return;
               const dist = Math.abs(px - this.touchStartPx) + Math.abs(py - this.touchStartPy);
               if (this.touchPending && dist >= WineWindow.DRAG_THRESHOLD) {
+                // M4d RF#3: fusion subWindow 顶条手势 = 移动承载窗 (定案见
+                // DRAG_STRIP_LOGICAL_PX 注释)。短按不进此分支, 菜单点击不受影响;
+                // 系统拖拽接管后 wine 收不到任何合成事件 (窗移动对 guest
+                // 不可见, managed 模式位置由 ArkTS/系统权威)。
+                if (this.touchStartPy <= this.dragStripPx() &&
+                    WineWindowManager.getInstance().fusionUsesSubWindow()) {
+                  const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
+                  if (win) {
+                    this.touchPending = false;
+                    this.isDragging = true;
+                    this.windowMoveDragging = true;
+                    this.lastTapTime = 0;
+                    try {
+                      win.startMoving();
+                      hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG startMoving tl=%{public}d px=(%{public}d,%{public}d)',
+                        this.toplevelId, px, py);
+                    } catch (e) {
+                      hilog.warn(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG startMoving failed tl=%{public}d: %{public}s',
+                        this.toplevelId, JSON.stringify(e));
+                      this.windowMoveDragging = false;
+                      this.isDragging = false;
+                      this.touchPending = true; // 回落普通内容拖拽判定
+                    }
+                    return;
+                  }
+                }
                 // 进入拖拽模式: 补发 Press (Down 时未发)
                 const btnLeft = mapMouseButton(1);
                 this.touchPending = false;
@@ -248,6 +562,10 @@ struct WineWindow {
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Press, this.pendingPx, this.pendingPy, btnLeft);
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Move, px, py, btnLeft);
               } else if (this.isDragging) {
+                if (this.windowMoveDragging) {
+                  // 系统拖拽接管中: 不向 wine 注入 (见 windowMoveDragging 注释)
+                  return;
+                }
                 // Pad 多窗口 (subWindow 承载): 触摸拖动 wine 标题栏 → wine 已发
                 // move 请求 (moveGrabPending), 由 OHOS startMoving 接管系统拖拽。
                 // 必须在触摸路径处理 — 本状态机的合成 mouse Move 被守卫吞掉,
@@ -281,6 +599,14 @@ struct WineWindow {
                 WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
               } catch (_) { /* ignore */ }
               if (this.isDragging) {
+                if (this.windowMoveDragging) {
+                  // 顶条拖动 (系统拖拽接管中): 只收尾, 不向 wine 注入
+                  hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG end tl=%{public}d px=(%{public}d,%{public}d)',
+                    this.toplevelId, px, py);
+                  this.isDragging = false;
+                  this.windowMoveDragging = false;
+                  return;
+                }
                 const btnLeft = mapMouseButton(1);
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-END tl=%{public}d px=(%{public}d,%{public}d)',
                   this.toplevelId, px, py);
@@ -405,6 +731,7 @@ struct WineWindow {
         // 双指模式未注入按钮事件, 直接清无配对问题
         this.touchPending = false;
         this.isDragging = false;
+        this.windowMoveDragging = false;
         this.twoFingerActive = false;
       }
       const px = vp2px(event.x);
@@ -431,33 +758,10 @@ struct WineWindow {
       testNapi.sendPointerEvent(this.toplevelId, event.action, px, py, btn, rawDx, rawDy, true);
     })
 
-    // -- 键盘事件 --
-    .onKeyEvent((event: KeyEvent) => {
-      hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] onKeyEvent keyCode=%{public}d type=%{public}d tl=%{public}d',
-        event.keyCode, event.type, this.toplevelId);
-      if (this.toplevelId <= 0) return;
-      event.stopPropagation();
-      const evdevCode = OH2EVDEV[event.keyCode] ?? 0;
-      if (evdevCode === 0) {
-        hilog.warn(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY unmapped ohosCode=%{public}d', event.keyCode);
-        return;
-      }
-      const pressed = (event.type === KeyType.Down);
-      hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY tl=%{public}d ohos=%{public}d->evdev=%{public}d %{public}s',
-        this.toplevelId, event.keyCode, evdevCode, pressed ? 'DOWN' : 'UP');
-      // 回车补发: 软键盘/IME 场景系统吞掉 KeyDown 只派发 KeyUp (onKeyEvent
-      // 无配对 down) → Wine 收不到按下不触发。收到回车 up 且窗口内无 down
-      // 记录时补发完整 down+up (sendFunctionKey 注入已移除, 统一在此兜底)
-      if (evdevCode === EVDEV_KEY_ENTER) {
-        if (pressed) {
-          this.lastEnterDownTs = Date.now();
-        } else if (Date.now() - this.lastEnterDownTs > WineWindow.ENTER_SYNTH_WINDOW_MS) {
-          hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] ENTER SYNTH down (missing down)');
-          testNapi.sendKeyEvent(this.toplevelId, EVDEV_KEY_ENTER, true);
-        }
-      }
-      testNapi.sendKeyEvent(this.toplevelId, evdevCode, pressed);
-    })
+    // -- 键盘事件 (焦点在 Stack 时; 焦点在 strip 分支的根 Column 时由
+    //    build() 里的同款挂点接住 —— 实测: 带顶条的页面根节点被焦点系统
+    //    选中, 键盘事件不到 Stack) --
+    .onKeyEvent((event: KeyEvent) => { this.handleWineKey(event); })
 
     .onAreaChange((_o: Area, n: Area) => {
       this.surfacePxW = vp2px(n.width as number);

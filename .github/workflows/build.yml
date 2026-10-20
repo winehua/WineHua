@@ -182,6 +182,12 @@ jobs:
           if ! command -v x86_64-w64-mingw32-widl >/dev/null 2>&1; then
             packages+=(mingw-w64-tools)
           fi
+          # assemble.sh 的 xkb 数据步用宿主 xkbcomp 编译 keymap (.xkm, 设备
+          # 端直接可用) —— x11 路线新增的宿主工具依赖; Debian 包 =
+          # x11-xkb-utils。版本敏感 (1.4.7 行为, 见 assemble.sh 同段注释)。
+          if ! command -v xkbcomp >/dev/null 2>&1; then
+            packages+=(x11-xkb-utils)
+          fi
           if [ "${#packages[@]}" -gt 0 ]; then
             echo "Installing missing CI packages: ${packages[*]}"
             apt-get update

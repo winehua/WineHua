@@ -68,6 +68,7 @@ pid_t Spawner::Spawn(const SpawnRequest& req) {
         params += "|explorer";
         break;
     case SpawnKind::WineExe:
+        if (req.desktopSurface) params += "|__winehua_desktop__";
         if (kNeedsWineLoaderToken) params += "|wine";
         break;
     }

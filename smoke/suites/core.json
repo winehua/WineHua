@@ -1,6 +1,11 @@
 {
   "name": "core",
   "title": "入口门禁（OpenGL + DNS）",
+  "desktopMode": "virtual",
+  "_desktopMode_note": "opengl 两项的 displayed 门依赖虚拟桌面画布发布的 display-seq（graphics_smoke main.c 的 compositor display sequence 观察）；fusion 下该发布源不存在 → 必须钉 virtual, 否则设备持久化的 fusion 模式把两用例判成假 FAIL (2026-10-11 r20261011-225150 实测, 详见 known-issues)。",
+  "checks": [
+    "auto-retry"
+  ],
   "tests": [
     {
       "case": "graphics-smoke",

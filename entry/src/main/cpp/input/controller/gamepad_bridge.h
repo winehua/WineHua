@@ -2,6 +2,7 @@
 
 #include "input/controller/controller_types.h"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -32,15 +33,18 @@ private:
     void AcceptLoop();
     void RecvLoop(int fd);
     void WriteState(int fd, uint32_t slot, const LogicalGamepadState& state);
+    void LogThrottled(const char* what, int fd, pid_t pid);
 
     mutable std::mutex mutex_;
     std::string path_;
     int listenFd_ = -1;
     int clientFd_ = -1;
+    pid_t clientPid_ = -1;  // 当前连接对端 pid; 同 pid 才允许接管旧连接
     bool running_ = false;
     std::thread acceptThread_;
     std::thread rumbleThread_;
     RumbleListener rumbleListener_;
+    std::chrono::steady_clock::time_point lastConnectLog_{};  // connected/exited 日志节流
 };
 
 }  // namespace controller

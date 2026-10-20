@@ -1,0 +1,15 @@
+{
+  "displayroute": true,
+  "suite": "core",
+  "tests": ["opengl-x64"],
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "x11",
+      "DISPLAY": ":0",
+      "WAYLAND_DISPLAY": "",
+      "WINEHUA_SMOKE_RESIZE_AFTER_S": "3",
+      "WINEHUA_SMOKE_EXPECT_ROUTE": "x11"
+    },
+    "seconds": 12
+  }
+}

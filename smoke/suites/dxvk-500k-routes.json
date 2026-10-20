@@ -1,5 +1,6 @@
 {
   "name": "dxvk-500k-routes",
+  "desktopMode": "virtual",
   "title": "500k 混合路由的两条 DXVK 支路（1.10.3 / 2.6.2）",
   "checks": [
     "coverage"

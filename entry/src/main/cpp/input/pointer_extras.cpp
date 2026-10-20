@@ -358,6 +358,14 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
     std::function<void(bool, uint32_t)> cb;
     std::vector<int32_t> ids;
     bool doLock = false, doUnlock = false;
+    // isShell 在调用线程算好 (读装配注入的共享引用), 且同时决定冻结与 ets
+    // 通知: shell 锁不回调 ArkTS。原设计假设「ArkTS 门禁会拦 shell」(canHide
+    // 对 shell 为 false), 但 x11 路线 desktopRootId 注册为 0, shell 锁的
+    // toplevel 是 wayland 臂 id (tl=1), ArkTS 判据恒假 → VDA 开窗即
+    // setPointerVisible(false), 系统指针整个消失 (2026-10-20 实测)。shell
+    // 身份只有本处认得全 (root 未就绪 / tl==root 两态), 判据单点收归此处。
+    const bool desktopNotReady = *desktopMode_ && *desktopRootToplevelId_ == 0;
+    const bool isShell = desktopNotReady || toplevelId == *desktopRootToplevelId_;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         cb = lockCallback_;
@@ -368,9 +376,12 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
                 ids = hostWindowIds_;
             }
             // "锁定成功"与"已通知 ets"是两件事: LockCursor 可能全部失败
-            // (无获焦窗口/系统 <API22), 而隐藏照常下发 — 解锁补发靠本标记
-            etsLockNotified_ = true;
-            lockedToplevelId_ = toplevelId;   // 供 ReleaseLockForToplevel 匹配
+            // (无获焦窗口/系统 <API22), 而隐藏照常下发 — 解锁补发靠本标记。
+            // shell 锁不置位 (从未通知就无需解锁补发)
+            if (!isShell) {
+                etsLockNotified_ = true;
+                lockedToplevelId_ = toplevelId;   // 供 ReleaseLockForToplevel 匹配
+            }
         } else {
             // 解锁: 只要曾通知过 ets 就必发 false。旧实现以 lockedWindowId_
             // 为条件, 从未锁定成功时 (该值恒 0) 这里直接 return → cb(false)
@@ -386,17 +397,12 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
         }
     }
     if (!doLock && !doUnlock) return;
-    // isShell 在调用线程 (wl 事件循环) 算好再捕获进工作线程 — 避免工作线程
-    // 与 wl 线程并发读这些共享引用 (数据竞争)。
-    // 6A: 直读装配注入的 id 共享引用 (与 WaylandServer 的 session 字段同源)。
-    //
-    // 桌面模式下 root 尚未确立 = 桌面未就绪: 此刻能发起相对指针的只可能是
-    // 桌面壳自身 (游戏要先有桌面), 不能按游戏冻结 — 否则宿主锁死系统光标,
-    // 表现为"可见但动不了", 且 relative 对象不销毁则永不解锁。
-    // toplevelId==0 (约束 surface 未映射成 toplevel) 与 root==0 同属身份未知,
-    // 一并按不冻结处理。
-    const bool desktopNotReady = *desktopMode_ && *desktopRootToplevelId_ == 0;
-    const bool isShell = desktopNotReady || toplevelId == *desktopRootToplevelId_;
+    // isShell 计算已上移到 mutex 段前 (同时门控冻结与 ets 通知)。此处的
+    // 桌面未就绪语义不变: root 尚未确立时能发起相对指针的只可能是桌面壳
+    // 自身 (游戏要先有桌面), 不能按游戏冻结 — 否则宿主锁死系统光标, 表现
+    // 为"可见但动不了", 且 relative 对象不销毁则永不解锁。toplevelId==0
+    // (约束 surface 未映射成 toplevel) 与 root==0 同属身份未知, 一并按
+    // 不冻结处理。
     // IPC 挪入独立线程执行 (20260822 review #3): OH_WindowManager_LockCursor
     // 是同步 Binder 往返, 在调用点 (wl 事件循环线程) 执行会停摆整个
     // Wayland 循环 — 进游戏瞬间的相对模式切换恰是最高频时刻。工作线程按
@@ -421,9 +427,9 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
         }
         if (doLock) {
             // 桌面 shell 自身的 relative_pointer (启动瞬时藏光标, toplevelId==
-            // desktopRoot): 不冻结 — LockCursor 会把系统光标停在桌面 shell,
-            // 表现为"光标可见但动不了"。隐藏已由 ArkTS 门禁抑制 (canHide 对
-            // shell 为 false)。仅真游戏 (非 shell, 子窗口) 才冻结。
+            // desktopRoot 或 root 未就绪): 不冻结 — LockCursor 会把系统光标
+            // 停在桌面 shell, 表现为"光标可见但动不了"。ets 通知同样抑制
+            // (见 ApplyHostCursorLock 头部 isShell 注)。仅真游戏才冻结。
             int32_t locked = 0;
             if (!isShell) {
                 std::lock_guard<std::mutex> ipc(ipcMutex);
@@ -448,7 +454,12 @@ void PointerExtras::ApplyHostCursorLock(bool lock, uint32_t toplevelId) {
             // 全部失败 (无获焦窗口/系统 <API22) 不阻断: rawDelta 相对位移
             // 通道 (InputManager) 不依赖冻结仍工作; 光标照常隐藏 (相对模式下
             // 游戏自绘光标, 可见的系统光标只剩干扰)
-            cb(true, toplevelId);
+            if (!isShell) {
+                cb(true, toplevelId);
+            } else {
+                OH_LOG_INFO(LOG_APP, "[PtrExt] shell lock suppressed for ets (tl=%{public}u)",
+                            toplevelId);
+            }
         }
     }).detach();
 }

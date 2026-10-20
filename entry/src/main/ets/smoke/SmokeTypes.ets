@@ -39,6 +39,11 @@ export interface SmokeSuiteTest {
   // (等 guest 的 inject-request 文件 → smokeMapPoint 换算 → sendPointerEvent
   // 逐条注入 → 写 inject-done 文件), 见 SmokeRunner.runInjectable
   inject?: boolean;
+  // 'external' = 载体用例: 跑的是真实应用 (notepad 这类), 不认 smoke 结果协议、
+  // 写不出结果文件。runner 只负责跑完声明时长、到点结束进程、落一条
+  // status=SKIP 的"无结论"结果 (设备端不判定); 行为判定归编排与外部证据。
+  // 与"测量仪不是门禁"同口径 (display-route-known-issues §3.3)。
+  judge?: string;
 }
 
 // inject-request-<testId>.json 的内容（guest 声明希望被注入的序列）
@@ -57,6 +62,8 @@ export interface InjectAction {
   dy?: number;
   steps?: number;
   // wheel 的格数（每格 wheel delta 120）
+  // byTitle (M4a-T6 I4): fusion 多窗按窗注入的目标窗标题
+  title?: string;
   notches?: number;
   // sleep 的时长（ms）；key 的 evdev 键码
   ms?: number;
@@ -76,6 +83,18 @@ export interface SmokeJob {
   params?: SmokeJobParams;
   prefix?: string;
   longSeconds?: number;
+  // M0-T7: true = run 开始时触发显示路线 bring-up (displayRouteNapi.startDisplayRouteChain)
+  displayroute?: boolean;
+  // 显示路线测试窗门 (xclient_enabled): true = xclient 测试窗随链拉起
+  // (速率仪 XCLIENT-STAT 一半 + 视觉判定固定图案内容源)。缺省 true =
+  // 既有套件行为不变; 手动验收类 job 设 false = 产品级干净会话, 桌面不
+  // 出现测试窗 (2026-10-05 验收 D4: 条纹测试窗被误认为 wine 窗口)。
+  // 原名 displayrouteScript (含注入脚本半边) 随脚本 2026-10-13 退役改名。
+  displayrouteXclient?: boolean;
+  // 套件级判定器声明（host 侧消费，设备端不读）：无套件运行时承载
+  // bring-up 级 check，如 "marker:displayroute-egl-import-probe"
+  //（M2-T2 能力探针标记）。见 automation/smoke.py judge_run。
+  checks?: string[];
 }
 
 export interface SmokeRequest {

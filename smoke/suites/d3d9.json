@@ -1,5 +1,6 @@
 {
   "name": "d3d9",
+  "desktopMode": "virtual",
   "title": "D3D9 立方体（固定帧）",
   "tests": [
     {

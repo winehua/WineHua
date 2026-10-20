@@ -1,4 +1,5 @@
 #include "geometry.h"
+#include "display/desktop_fit.h" /* C 壳 (x11 臂呈现/输入消费本文件的唯一实现) */
 #include <algorithm>
 #include <cmath>
 
@@ -15,4 +16,38 @@ bool ComputeFitRect(int rootW, int rootH, int winW, int winH, FitRect& out)
     out.offX = (rootW - out.dstW) / 2;
     out.offY = (rootH - out.dstH) / 2;
     return true;
+}
+
+/* ── C 壳 (display/desktop_fit.h) ────────────────────────────────────────
+ * x11 臂 (C 编译的 display/*.c) 复用本文件唯一实现的入口。薄转发, 无公式
+ * 复制; 字段一一对应。 */
+extern "C" int WineHua_ComputeDesktopFit(int canvasW, int canvasH,
+                                         int contentW, int contentH,
+                                         struct DesktopFitRect *out)
+{
+    if (!out) return 0;
+    FitRect f;
+    if (!ComputeFitRect(canvasW, canvasH, contentW, contentH, f)) return 0;
+    out->srcW = f.srcW;
+    out->srcH = f.srcH;
+    out->dstW = f.dstW;
+    out->dstH = f.dstH;
+    out->offX = f.offX;
+    out->offY = f.offY;
+    out->scale = f.scale;
+    return 1;
+}
+
+extern "C" double WineHua_FitUnmapX(const struct DesktopFitRect *t, double px)
+{
+    if (!t) return px;
+    FitRect f{t->srcW, t->srcH, t->dstW, t->dstH, t->offX, t->offY, t->scale};
+    return FitUnmapDisplayX(f, px);
+}
+
+extern "C" double WineHua_FitUnmapY(const struct DesktopFitRect *t, double py)
+{
+    if (!t) return py;
+    FitRect f{t->srcW, t->srcH, t->dstW, t->dstH, t->offX, t->offY, t->scale};
+    return FitUnmapDisplayY(f, py);
 }

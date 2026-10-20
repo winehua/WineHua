@@ -1,5 +1,6 @@
 {
   "name": "opengl",
+  "desktopMode": "virtual",
   "title": "OpenGL 固定帧",
   "tests": [
     {

@@ -1,8 +1,10 @@
 /* smoke NAPI 模块 —— 自动化测试设施的原生侧, 与 ets/smoke/ 的物理隔离对应。
  *
- * 边界约定: 本 so 只提供测试编排需要的查询/注入原语, 不承载产品语义;
- * 产品代码 (bridge/napi_init.cpp 及其余域) 不引用本文件。符号来自 entry.so
- * (运行时由同进程的 entry so 解析), 因此必须与 entry 同包加载。
+ * 边界约定: 本 so 只提供测试编排需要的查询原语, 不承载产品语义;
+ * 产品代码 (pages/entryability 及其余域) 不引用本文件 —— display-route
+ * 控制面已迁往 display_route_napi.so (D21), 此处仅留测试专用换算入口。
+ * 符号来自 entry.so (运行时由同进程的 entry so 解析), 因此必须与 entry
+ * 同包加载。
  *
  * 当前接口:
  *   smokeMapPoint(guestX, guestY) -> {px, py} | null

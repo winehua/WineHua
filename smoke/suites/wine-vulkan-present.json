@@ -1,5 +1,6 @@
 {
   "name": "wine-vulkan-present",
+  "desktopMode": "virtual",
   "title": "Wine Vulkan present 链路（vkd3d 档下发 venus runtime）",
   "tests": [
     {

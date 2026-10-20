@@ -21,7 +21,7 @@ python3 automation/smoke.py run --suite core   # 4. 跑一个套件（自动推�
 | `smoke/suites/<name>.json` | 套件定义：引用用例、按 arch 展开、env / backend / seconds 等参数 |
 | `automation/smoke.py` | host 工具：build / push / run / check / install / devices |
 | `automation/checks/` | 判定器（纯函数）：`result-json`、`visual:<validator>`、`coverage` |
-| `entry/src/main/ets/smoke/` | 设备端编排：SmokeHook（请求消费 + 载荷播种）、SmokeRunner（执行）、SmokeDevPanel（侧边栏入口） |
+| `entry/src/main/ets/smoke/` | 设备端编排：SmokeHook（请求消费 + 载荷播种）、SmokeRunner（执行） |
 
 ## 载荷通道
 
@@ -37,7 +37,7 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
 
 - 载荷有**两个来源**，seed 按优先级取：`files/smoke-payload`（host 推送，开发环境改测试
   只推几 MB、不重装 HAP）＞ `files/wine/smoke`（**随包分发**——assemble 打进 wine-data.zip，
-  发布环境无 host 也能播种，SmokeDevPanel 侧边栏入口可跑 core 自检）。`build/smoke-payload`
+  发布环境无 host 也能播种）。`build/smoke-payload`
   不进版本库。
 - `suites.json` 的 `suiteVersion` 是载荷内容哈希（定义 + 各 exe），任一处变化都会触发重新播种。
 - 冷启动（prefix 未创建）只更新推送源，`C:\smoke` 由设备端 seed 播种；prefix 已存在时
@@ -66,12 +66,18 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
 系统版本组合才用 modern，其余 → legacy），同一套件在不同设备上测的
 就不是同一个东西。
 
-`env` 里的 `WINEDEBUG` 与 `WINEHUA_WINEDEBUG` 都不生效：前者被设备端显式忽略
-（`wine_child.cpp` 的 profile 选择要自己判断 exe 类型），后者的读取早于 `__env` 应用
-（同文件 458 行 vs 479 行，属实现缺陷）。`smoke.py` 装载套件时直接拦下这两类声明。
+`env` 里的 `WINEDEBUG` 不生效：它被设备端显式忽略——`wine_child.cpp` 的
+`select_winedebug_profile` 要自己判断 exe 类型与覆盖来源，通用 `__env` 覆盖会让
+它恒等于 App 侧下发值、profile 选择失效；`smoke.py` 装载套件时直接拦下这类声明。
+显式 Wine 诊断走 `WINEHUA_WINEDEBUG`：M1-T5 起随 `__env`/`--env` 下发生效
+（设备端在 profile 决策点前就从覆盖列表里摘取该键，见 `wine_child.cpp` Main()）。
 Wine 日志看 hilog 的 `WineChild-stderr` tag。
 
 ## 判定
+
+判定机（host）python 依赖见 `automation/requirements.txt`：
+`pip3 install --user --break-system-packages -r automation/requirements.txt`
+（缺了会在视觉校验阶段报 `No module named 'numpy'` 之类的错。）
 
 设备端只产出原始数据（结果 JSON、固定帧），PASS/FAIL 由 `automation/checks/` 解释：
 能力探针的 `UNSUPPORTED` 是合法答案，不会因为设备端 suite 汇总记 FAIL 而误判。
@@ -94,8 +100,37 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 | `gate` | 入口门禁：3×reuse core + 1×clean core（引擎健康与基础渲染的最小回归） |
 
 `run` 的常用参数：`--prefix reuse\|clean`、`--tests ID,ID`（选测）、`--inline FILE`
-（内联临时用例，exe 须已在 `C:\smoke`）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
-`--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`。
+（内联临时用例，exe 须已在 `C:\smoke`。**限制 (D27/#91)**：inline 条目的
+`backend` 在设备端不下发——档位落回设备当前设置，`needs_frame` 判定也不走
+inline 路径；故 inline 仅可承载纯仪器用例（notepad 载体 / rate-hold /
+displayroute 探针）。带档位或带帧判定的用例必须走套件路径——补齐设备端
+spawn 参数与帧采集编排前勿在 inline 里加此类用例）、`--job FILE`（job JSON 文件，先文件后
+CLI 覆盖；里程碑验证编排的入库复现）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
+`--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`、
+`--extra-ps`（附加冷启调试键，k=v 对或裸 KEY VALUE 对，可混用空白分隔多项：
+`--extra-ps winehua.displayRoute=x11` 或 `--extra-ps "winehua.fusionHost
+ability"` 在 Pad 上强制 PC/2in1 的 ability 承载跑 fusion 套件——host 侧翻译成
+aa start 的 `--ps KEY VALUE` 标准语法，显式 want 经 publishLaunchRequest 随
+冷启/二次 want 生效，不持久化）、
+`--retry-failed`（D35 防抖：判定 FAIL 的用例单独重跑一次，终判取重试、首判留档
+于自完备子归档 `retry-R<N>/`——`check` 可独立重判。默认关；套件级 checks 不参与
+重试。背景：成套跑每轮随机 1 项间歇失败是 D30 残留时序窗，单测复跑即绿）。
+
+### displayroute 验证编排（M1 出口判据复现）
+
+`smoke/jobs/displayroute-notepad.json` = M1-T5 notepad 端到端编排：displayroute
+bring-up → X 路线 notepad（载体用例）。注入脚本（双窗口焦点切换 + "hi" 键入的
+定时序列）已于 2026-10-13 退役删除，行为判定改由 wine-trace 判定器承担（见下）。
+
+```bash
+python3 automation/smoke.py run --suite core --job smoke/jobs/displayroute-notepad.json
+```
+
+**判定口径**：载体用例设备端落 SKIP 占位（notepad 不写结果文件），行为判据 =
+`wine-trace` 判定器 —— 归档 `device-evidence/wine_stderr_*.log` 断言
+spawn→winex11(route=x11)→X 连接→建窗→FocusIn 链路（用例 env 开
+WINEHUA_WINEDEBUG 提供 trace）。注入脚本已于 2026-10-13 退役，「逐键核对
+注入路径」的历史口径不再适用。
 
 设备选择：`--device` → `WINEHUA_DEVICE` → `hdc list targets` 唯一设备。hdc 路径：
 `WINEHUA_HDC` → PATH。
@@ -158,6 +193,6 @@ host 必须在这段时间内轮询到 `"fixed-frame"` 结果并截图。轮询�
 
 设备端 smoke 代码集中在 `entry/src/main/ets/smoke/`，产品文件里只有带
 `// [[SMOKE]]` 标记的钩子行（`WineEnvService.attach/onNewWant/enterReady`、
-`EntryAbility.applyWant`、`Index.<SmokeDevPanel/>`）。无 `winehua.mode=smoke`
+`EntryAbility.applyWant`）。无 `winehua.mode=smoke`
 请求时这些钩子是空操作。main-ui 合并时按
 `docs/archive/SMOKE_REBUILD_20260831.md §11` 摘除整个目录与标记行。

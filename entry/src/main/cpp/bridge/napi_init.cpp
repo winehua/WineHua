@@ -17,6 +17,8 @@
 #include "input/text_input.h"
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
+#include "display/x11_toplevel.h" /* M4a-T5: 多窗输入路由分叉 */
+#include "display/xim_bridge.h" /* x11 IME 上行激活 (2026-10-17) */
 
 #include <unistd.h>
 #include <signal.h>
@@ -585,6 +587,20 @@ static napi_value SetImeCallback(napi_env env, napi_callback_info info) {
         }
     });
 
+    /* x11 IME 上行链 (2026-10-17): server 侧 IC 焦点 → 桥读线程 → 本回调 →
+     * tsfn → ArkTS attach/detach (wayland TextInput::SetActivateCallback 的
+     * x11 对位)。 */
+    xim_bridge_set_activation_callback([](int active, int x, int y, int w, int h, void*) {
+        if (!gImeTsfn) {
+            OH_LOG_WARN(LOG_APP, "[IME-X11-UP] cb dropped (tsfn not ready) active=%{public}d", active);
+            return;
+        }
+        OH_LOG_INFO(LOG_APP, "[IME-X11-UP] enqueue active=%{public}d rect=[%{public}d,%{public}d %{public}dx%{public}d]",
+                    active, x, y, w, h);
+        auto* ev = new ImeEvent{active, x, y, w, h};
+        napi_call_threadsafe_function(gImeTsfn, ev, napi_tsfn_blocking);
+    }, nullptr);
+
     return nullptr;
 }
 
@@ -686,6 +702,14 @@ static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u", id);
+    // 任务 #129 RF#3: x11 路线的关闭通道 —— xdg_toplevel resource 在 x11
+    // 路线不存在 (wine 走 X11), SendToplevelClose 恒 "NOT found" no-op;
+    // 补 x11 分支 = WM_DELETE_WINDOW (wlr_xwayland_surface_close), 与
+    // pointer/key/axis 的 x11 分流同款 (SendScrollEvent I1 先例)。
+    if (x11_toplevel_active()) {
+        x11_toplevel_close(id);
+        return nullptr;
+    }
     WaylandServer::GetInstance()->SendToplevelClose(id);
     return nullptr;
 }
@@ -833,6 +857,13 @@ static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
                     "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
                     tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
     }
+    // M4a-T5: x11 多窗模式按窗直达 (px/py 是承载窗局部坐标, 越界即缝隙
+    // 由映射层丢弃), 不进 wayland 的 InputManager seat 面
+    if (x11_toplevel_active()) {
+        x11_toplevel_input_pointer(tl, (int)px, (int)py, action,
+                                   (uint32_t)button);
+        return nullptr;
+    }
     InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
     return nullptr;
 }
@@ -943,6 +974,11 @@ static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
     napi_get_value_bool(env, args[2], &pressed);
     OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
                 tl, evdevCode, pressed ? "true" : "false");
+    // M4a-T5: x11 多窗模式按窗直达 (FocusClient + settle 纪律在映射层)
+    if (x11_toplevel_active()) {
+        x11_toplevel_input_key(tl, (uint32_t)evdevCode, pressed);
+        return nullptr;
+    }
     InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
     return nullptr;
 }
@@ -961,6 +997,22 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
     napi_get_value_double(env, args[5], &py);
     OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
                 tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
+    // M4d-review I1: x11 多窗模式按窗直达 —— scroll 与 pointer/key 同款分流,
+    // 不进 wayland 的 InputManager seat 面 (那是 winewayland.drv 路线的
+    // CoordTransform/seat 语义, x11 多窗下 wine 不在该 seat 上, 事件只会
+    // 静默丢失 —— 2026-10-11 真机实证: [PIPE] scroll 不出现、wine +event
+    // 全程零 Button4/5)。axis 不携带位置: 落点语义由映射层补 (motion 先行,
+    // 8a1e975 同类处理)。steps 归一化为 ±1 格 —— x11 桥的 discrete 是
+    // v120 格语义 (见 display_input_inject_axis 注释), 双指平滑量已在
+    // ArkTS 层按 SCROLL_STEP_PX 折算为单步事件, DesktopWindow.ets
+    // onAxisEvent 的 x11 分支同款归一化。
+    if (x11_toplevel_active()) {
+        const int steps = value > 0 ? 1 : (value < 0 ? -1 : 0);
+        if (steps != 0) {
+            x11_toplevel_input_axis(tl, (int)px, (int)py, axis, steps);
+        }
+        return nullptr;
+    }
     InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
     return nullptr;
 }
@@ -979,6 +1031,27 @@ static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
     OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
                 tl, w, h, resizing ? "yes" : "no");
     WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
+    return nullptr;
+}
+
+// 任务 #135: 承载窗全局位置上报 (host→wine 几何回写的位置半边)。
+// ArkTS 在 windowRectChange 里调 (FWM 子窗 / WWA 主窗两承载路径), 值 =
+// guest 逻辑坐标 (windowRect 原点 / effectiveScale, 与创建摆放同式)。
+// 仅 x11 路线有绝对位置语义 —— wayland toplevel 位置归合成器布局器管,
+// 静默 no-op (native 侧 x11_toplevel_active 是权威门; 序列化/去重都在
+// 映射层: 值未变跳过、拖拽拍频只打应用日志)。
+static napi_value NotifyToplevelMove(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    uint32_t tl; int32_t x, y;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &x);
+    napi_get_value_int32(env, args[2], &y);
+    if (x11_toplevel_active()) {
+        x11_toplevel_geometry_move(tl, (int)x, (int)y);
+    }
     return nullptr;
 }
 
@@ -1161,6 +1234,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyToplevelMove",nullptr,NotifyToplevelMove,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},

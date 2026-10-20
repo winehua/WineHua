@@ -6,6 +6,7 @@
 #include "proc/spawner.h"
 #include "wine_constants.h"
 #include "compositor/wayland_server.h"
+#include "display/ohos_output.h" /* WineHua_DisplayRoute_DesktopShellMapped (x11 桌面就绪) */
 #include "audio_ipc_protocol.h"
 #include "graphics/graphics_broker.h"
 #include "input/controller/controller_runtime.h"
@@ -401,7 +402,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
     if (gStateTsfn)
         napi_call_threadsafe_function(gStateTsfn, strdup("state:starting:wineboot"), napi_tsfn_blocking);
 
-    // -- wineboot --init --
+    // -- boot 触发 (winehua_keep --boot-once, D54 治本) --
     const std::string initMarker = p->prefixDir + "/.winehua-init-in-progress";
     bool prefixReady = IsWinePrefixInitialized(p->prefixDir)
         && access(initMarker.c_str(), F_OK) != 0;
@@ -449,12 +450,18 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // 首启 wineboot 期间抑制窗口创建事件 (PC 窗口模式): 初始化等待窗
         // 不创建独立 OHOS 窗口 — 与 Pad 桌面模式对齐。wineboot 完成后恢复。
         ws->SetToplevelEventSuppressed(true);
-        // 注意: wineboot --init 只需要初始化 prefix, 不传完整环境变量以节省 entryParams 长度
-        // (argv/兼容档位由 Spawner 按 kind 注入; aarch64 归一为不带 wine 加载器
-        // token — Main 的 box64 路径自注 binDir/wine ELF, 与旧 reseed 路径的
-        // "wine|wineboot" 布局等价)
-        winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
+        // D54 治本: 不再显式 spawn「wineboot --init」——它是"无父根进程", 其
+        // ntdll run_wineboot 会自动派发另一个 wineboot --init, 与自身 main 叠加
+        // 成双 boot → 双 services.exe → 双 winebus 宿主抢 WHGP 单槽 (2026-10-16
+        // 风暴根因; 本机上游 wine-10 对照实验同现象, 上游发行版从不这样启动)。
+        // 改为 spawn 自有 winehua_keep.exe --boot-once 作会话首个 PE 进程:
+        // 其 ntdll 自动派发全场唯一的 wineboot --init 并阻塞至完成, WinMain 即
+        // 刻返回 (文件由上方 skeleton 步骤已拷入 system32)。boot#1 继承本进程
+        // env —— 最小集, 显式可控。完成判据不变: 状态通道由本进程 ntdll 写入,
+        // 与首进程是哪个 exe 无关。不传完整 env 以节省 entryParams 长度。
+        winehua::SpawnRequest wbReq{winehua::SpawnKind::WineExe};
         wbReq.desktopSurface = ws->IsDesktopMode();
+        wbReq.argv = {"C:\\windows\\system32\\winehua_keep.exe", "--boot-once"};
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
         // wineboot 阶段也加载 winebus (winedevice 由 wineserver 拉起, 可能先于
@@ -462,12 +469,28 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         winehua::controller::AppendWineGamepadEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot spawn FAILED");
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] boot trigger spawn FAILED");
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
+        OH_LOG_WARN(LOG_APP, "[Launch-Async] boot trigger started, pid=%{public}d", childPid);
+        /* D25 复现辅助 (默认关): 沙箱旗标 files/.wine/.winehua-diag-fail-init
+         * 存在时, wineboot spawn 后立即按 completion 失败同款语义上报
+         * state:failed:wineboot 并返回 —— 抑制态保持置位, 与真实「init 中途
+         * 失败」路径状态一致。旗标命中即自删: 受控复现「失败→会话内重试→
+         * 重试轮成功」恰好一次, 重试轮不再命中。推旗标:
+         * hdc file send -b app.hackeris.winehua <本地任意非空文件> files/.wine/.winehua-diag-fail-init
+         * (设备 SELinux 拒绝 shell 域 kill app 子进程, kill 注入不可行 —
+         * 2026-10-08 实测 Operation not permitted, 故走旗标。) */
+        const std::string diagFailInit = p->prefixDir + "/.winehua-diag-fail-init";
+        if (access(diagFailInit.c_str(), F_OK) == 0) {
+            unlink(diagFailInit.c_str());
+            OH_LOG_WARN(LOG_APP, "[Launch-Async] diag flag fail-init hit, reporting wineboot failure");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
+            return false;
+        }
         /* 首次初始化 (wine.inf 的 PreInstall/DefaultInstall/Wow64Install + 可选 Mono)
          * 耗时与设备性能强相关, 模拟器上可超过 30s。先等 wineboot 进程退出
          * (NCP 退出回调确认 — 沙箱 /proc 对 NCP 不可见, 进程存活轮询不可用),
@@ -511,74 +534,17 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         ws->SetDesktopRootRecognitionEnabled(true);
         ws->SetToplevelEventSuppressed(false);
         ws->PromotePendingDesktopRoot();
-    } else {
-        /* 二启 (prefix 已初始化): 显式播种 wineboot boot 事件。
-         * 每个新 wineserver 会话的内核对象全空, 第一个客户端 (explorer) 会
-         * 在 ntdll run_wineboot 里触发 wineboot --init——该路径继承 appspawn
-         * 环境 (LD_PRELOAD=libappspawn_helper.z.so 等), 实测 wineboot 卡死
-         * (注册表已写但 .update-timestamp 不更新), SetEvent 永不执行, 之后
-         * 所有 Wine 进程都卡在 boot 事件等待, 窗口全部出不来。这里用与首启
-         * 相同的 NCP 干净环境显式跑一次 wineboot: 正常完成后事件 signaled,
-         * explorer 的 run_wineboot 检查事件已存在, 立即放行。
-         * 参数必须用 --init: wineboot.c 的 wWinMain 传 update_wineprefix(update),
-         * 而 update_wineprefix 的参数名就是 force——--update 会让 force=true,
-         * 无条件重装 wine.inf 并弹出 "Setting up Wine" 等待窗; --init 传
-         * force=false, 仅当 wine.inf 时间戳变化 (升级) 才重装。 */
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] prefix ready; seeding wineboot boot event (--init)...");
-        winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
-        wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
-                     "LC_ALL=" + p->wineLang + ".UTF-8"};
-        winehua::controller::AppendWineGamepadEnv(wbReq.env);
-        const pid_t childPid = winehua::Spawner::Spawn(wbReq);
-        if (childPid <= 0) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init spawn FAILED");
-            /* 播种失败必须上报, 不能再只记日志放行: 缺少这次 wineboot,
-             * explorer 的 run_wineboot 永远等不到 boot 事件, 桌面出不来但
-             * 状态机曾照样发 state:ready (静默失败)。注意 NCP 子进程由
-             * appspawn 立即 reap, host 拿不到退出码 — 可判定的终点就是
-             * "spawn 成功 + wineboot 退出后 wineserver 仍存活"。 */
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"),
-                                              napi_tsfn_blocking);
-            return false;
-        }
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init pid=%{public}d", childPid);
-        /* 播种: wineboot 退出即 SetEvent, explorer 即可放行。等待按设备模式
-         * 分流 (IsLaunchChildExited): 手机 fork 走 /proc 判活, NCP 走退出回调。
-         * 3 分钟大超时仅作挂死安全网; 超时未退出必须判失败上报: 缺少这次
-         * wineboot, explorer 的 run_wineboot 永远等不到 boot 事件 (静默失败,
-         * 不能放行)。 */
-        constexpr int kWinebootTimeoutMs = 3 * 60 * 1000;
-        int aliveMs = 0;
-        while (!IsLaunchChildExited(childPid) && aliveMs < kWinebootTimeoutMs) {
-            usleep(500000);
-            aliveMs += 500;
-            if (aliveMs % 10000 == 0)
-                OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init still running (%{public}d s)",
-                            aliveMs / 1000);
-        }
-        if (!IsLaunchChildExited(childPid)) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot --init hung for %{public}d s, abort",
-                         kWinebootTimeoutMs / 1000);
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"),
-                                              napi_tsfn_blocking);
-            return false;
-        }
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init done (waited for exit)");
-        // wineboot 已退出: 若它因 wineserver 死亡而失败, 后续 explorer/ready 全是空转。
-        // 判定用"wineserver socket 就绪"而非 GetWineserverPid() 存活: 热重启时旧
-        // wineserver 可能仍存活 (wine 单实例, 新 spawn 的 wineserver 连接旧实例后
-        // 正常退出), 此时 GetWineserverPid 指向新 pid 已死但 socket 仍在旧实例手里 —
-        // 以 socket 就绪为准 (master 同款判定, 不误报热重启为 failed)。
-        if (!IsWineserverSocketReady(p->prefixDir)) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver socket not ready after wineboot seed, abort");
-            if (gStateTsfn)
-                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineserver"),
-                                              napi_tsfn_blocking);
-            return false;
-        }
     }
+
+    /* 二启无播种: explorer 就是会话首个 PE 进程, 其 ntdll run_wineboot 自动
+     * 派发全场唯一的 wineboot --init 并阻塞至完成 (前缀已初始化时是轻量
+     * 时间戳检查), 完成后 explorer 才继续。曾在此显式 spawn wineboot 播种
+     * boot 事件, 原因是 explorer 触发的派发继承 appspawn 环境导致 wineboot
+     * 卡死——该环境通路已被 broker 统一 spawn 消灭 (2026-10-16 设备实测
+     * explorer 首启触发 boot 正常: 单 boot, 桌面 5.5s 就绪)。显式 spawn 与
+     * 自动派发叠加的双 boot 正是 WHGP 风暴的根因 (D54), 编排上不再产生。
+     * 二启 boot 若挂死, explorer 停在 ntdll, 由既有 desktop-root 等待超时
+     * 链兜底 (ready-degraded 可见)。 */
 
     // -- explorer desktop shell (仅 desktop 模式) --
     PrepareDesktopSessionGraphicsEnv(*p);
@@ -630,14 +596,23 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         /* broker 返回 pid 只表示 appspawn 接受了 Explorer 请求。
          * 暖 prefix 下子进程仍需数秒连接 wineserver 并提交 desktop
          * surface。等待桌面根 toplevel 就绪后再发 state:ready,
-         * 否则自动化游戏可能抢跑而死于 DXGI 初始化。 */
+         * 否则自动化游戏可能抢跑而死于 DXGI 初始化。
+         * x11 路线 (M3a): 桌面根 toplevel 是 wayland 私有协议概念, X 路线
+         * 没有 —— 谓词并上 X 等价信号 (首个 client XMapWindow), 否则 15s
+         * 必超时降级且永无 evt:desktop-ready 补票 (实测 2026-10-04)。 */
         if (!WaitFor("explorer desktop root", [ws]() {
-                return ws->GetDesktopRootToplevelId() != 0;
-            }, 15000, 100)) {
+                if (ws->GetDesktopRootToplevelId() != 0)
+                    return true;
+                return WineHua_DisplayRouteIsX11() &&
+                       WineHua_DisplayRoute_DesktopShellMapped() != 0;
+            }, 60000, 100)) {
             /* 超时不再装死放行: 降级 ready-degraded (UI 显示"桌面准备中…"),
              * root 出现后由 desktop_root 钩子补发 evt:desktop-ready,
-             * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。 */
-            OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready in 15s; "
+             * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。
+             * 60s (2026-10-05 实测, 原 15s): box64 explorer 从 spawn 到 X 映射
+             * 空载 ~2s, 但多代 wineserver 残留/熄屏限流下实测 16s+, 15s 门槛
+             * 差 1s 触发降级 → harness 重启 → 又留一代 wineserver, 恶性循环。 */
+            OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop root not ready in 60s; "
                         "launch will report ready-degraded");
             *desktopDegraded = true;
         }

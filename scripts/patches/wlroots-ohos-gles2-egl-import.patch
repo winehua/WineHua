@@ -1,0 +1,730 @@
+diff --git a/include/render/egl.h b/include/render/egl.h
+index 103ab57d..b5c489e4 100644
+--- a/include/render/egl.h
++++ b/include/render/egl.h
+@@ -7,7 +7,18 @@ struct wlr_egl {
+ 	EGLDisplay display;
+ 	EGLContext context;
+ 	EGLDeviceEXT device; // may be EGL_NO_DEVICE_EXT
++#if WLR_HAS_GBM
+ 	struct gbm_device *gbm_device;
++#endif
++
++	// WineHua (OHOS): 无 DMA-BUF 的 buffer 由外部导入器接管
++	wlr_egl_buffer_image_importer_func buffer_image_importer;
++	void *buffer_image_importer_data;
++	/* 导入器声明的可渲染格式 (它能把哪些 DRM 格式的原生 buffer 导成渲染
++	 * 目标)。没有 DMA-BUF 导入能力的平台上, 这是渲染器可渲染格式的唯一
++	 * 来源 —— 否则 output_pick_format 会以 "Renderer doesn't support
++	 * format" 挡下全部输出 (OHOS 实测)。len == 0 = 未声明。 */
++	struct wlr_drm_format_set buffer_image_importer_formats;
+ 
+ 	struct {
+ 		// Display extensions
+@@ -76,6 +87,19 @@ void wlr_egl_destroy(struct wlr_egl *egl);
+ EGLImageKHR wlr_egl_create_image_from_dmabuf(struct wlr_egl *egl,
+ 	struct wlr_dmabuf_attributes *attributes, bool *external_only);
+ 
++/**
++ * Import a buffer as an EGLImage: DMA-BUF buffers go through
++ * wlr_egl_create_image_from_dmabuf(), the others through the registered
++ * buffer image importer. Returns false when neither handles the buffer.
++ */
++bool wlr_egl_import_buffer_image(struct wlr_egl *egl, struct wlr_buffer *buffer,
++	struct wlr_egl_buffer_image *out);
++
++/**
++ * Whether a buffer may be importable through the buffer image importer.
++ */
++bool wlr_egl_can_import_buffer(struct wlr_egl *egl, struct wlr_buffer *buffer);
++
+ /**
+  * Get DMA-BUF formats suitable for sampling usage.
+  */
+diff --git a/include/render/gles2.h b/include/render/gles2.h
+index 6b852dcb..576158db 100644
+--- a/include/render/gles2.h
++++ b/include/render/gles2.h
+@@ -44,6 +44,8 @@ struct wlr_gles2_renderer {
+ 	int drm_fd;
+ 
+ 	struct wlr_drm_format_set shm_texture_formats;
++	/* 可渲染格式: EGL dmabuf 渲染格式 ∪ 导入器声明格式 (见 renderer.c) */
++	struct wlr_drm_format_set render_formats;
+ 
+ 	const char *exts_str;
+ 	struct {
+@@ -103,6 +105,10 @@ struct wlr_gles2_buffer {
+ 	struct wlr_gles2_renderer *renderer;
+ 	struct wl_list link; // wlr_gles2_renderer.buffers
+ 	bool external_only;
++	// Imported images which can't back a renderbuffer (e.g. OHOS native
++	// buffers) are attached through a texture instead.
++	bool via_texture;
++	uint32_t drm_format;
+ 
+ 	EGLImageKHR image;
+ 	GLuint rbo;
+diff --git a/include/wlr/config.h.in b/include/wlr/config.h.in
+index ef186343..d53cf834 100644
+--- a/include/wlr/config.h.in
++++ b/include/wlr/config.h.in
+@@ -30,6 +30,13 @@
+  * Required for <wlr/render/gles2.h>.
+  */
+ #mesondefine WLR_HAS_GLES2_RENDERER
++/**
++ * Whether the GBM platform backend for EGL is available. Disabling it is
++ * useful on platforms without DRM/GBM (e.g. OHOS): the GLES2 renderer does
++ * not depend on GBM, only the EGL platform selection does. Equivalent to
++ * the pkg-config "have_gbm" variable.
++ */
++#mesondefine WLR_HAS_GBM
+ /**
+  * Whether the Vulkan renderer is compile-time enabled. Equivalent to the
+  * pkg-config "have_vulkan_renderer" variable.
+diff --git a/include/wlr/render/egl.h b/include/wlr/render/egl.h
+index 9bf1b801..48f0ee11 100644
+--- a/include/wlr/render/egl.h
++++ b/include/wlr/render/egl.h
+@@ -27,6 +27,7 @@
+ #include <wlr/render/drm_format_set.h>
+ 
+ struct wlr_egl;
++struct wlr_buffer;
+ 
+ /**
+  * Create a struct wlr_egl with an existing EGL display and context.
+@@ -53,4 +54,49 @@ EGLDisplay wlr_egl_get_display(struct wlr_egl *egl);
+  */
+ EGLContext wlr_egl_get_context(struct wlr_egl *egl);
+ 
++/**
++ * Result of importing a wlr_buffer which doesn't export a DMA-BUF.
++ */
++struct wlr_egl_buffer_image {
++	EGLImageKHR image;
++	/* The image can only be sampled from an external texture. */
++	bool external_only;
++	/* The image must be attached to a framebuffer through a texture
++	 * (glEGLImageTargetTexture2DOES + glFramebufferTexture2D) instead of a
++	 * renderbuffer (glEGLImageTargetRenderbufferStorageOES). */
++	bool via_texture;
++	/* DRM fourcc of the imported buffer, for alpha and format checks. */
++	uint32_t drm_format;
++};
++
++/**
++ * Import a platform-native buffer as an EGLImage.
++ *
++ * Buffers which export DMA-BUFs are handled internally, an importer is only
++ * consulted for the others. Return false to decline the buffer.
++ *
++ * On success the EGLImage ownership is transferred to the caller, which must
++ * release it with wlr_egl_destroy_image().
++ */
++typedef bool (*wlr_egl_buffer_image_importer_func)(struct wlr_egl *egl,
++	struct wlr_buffer *buffer, struct wlr_egl_buffer_image *out,
++	void *user_data);
++
++/**
++ * Set an importer for buffers which don't export DMA-BUFs.
++ */
++void wlr_egl_set_buffer_image_importer(struct wlr_egl *egl,
++	wlr_egl_buffer_image_importer_func importer, void *user_data);
++
++/**
++ * Declare the DRM formats which the buffer image importer can import as
++ * render targets. The renderer's renderable formats are the union of these
++ * with the EGL DMA-BUF render formats: on platforms without DMA-BUF import
++ * this is the only source, and without it no output format can be picked.
++ *
++ * Must be called before creating a renderer.
++ */
++void wlr_egl_set_buffer_image_importer_formats(struct wlr_egl *egl,
++	const struct wlr_drm_format_set *formats);
++
+ #endif
+diff --git a/meson.build b/meson.build
+index 41ce1ea2..04028bff 100644
+--- a/meson.build
++++ b/meson.build
+@@ -72,6 +72,10 @@ features = {
+ 	'libinput-backend': false,
+ 	'xwayland': false,
+ 	'gles2-renderer': false,
++	# WineHua (OHOS): EGL 平台的 GBM 后端是否可用。OHOS 无 DRM/GBM
++	# (无 gbm.pc), gles2 渲染器本身不依赖 GBM —— 只有 render/egl.c 的
++	# EGL_KHR_platform_gbm 平台选择用, 故做成可选特性 (见 render/meson.build)。
++	'gbm': false,
+ 	'vulkan-renderer': false,
+ 	'gbm-allocator': false,
+ 	'udmabuf-allocator': false,
+diff --git a/render/egl.c b/render/egl.c
+index 8673acab..a36c8c20 100644
+--- a/render/egl.c
++++ b/render/egl.c
+@@ -4,7 +4,9 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <unistd.h>
++#if WLR_HAS_GBM
+ #include <gbm.h>
++#endif
+ #include <wlr/render/egl.h>
+ #include <wlr/util/log.h>
+ #include <wlr/util/region.h>
+@@ -191,64 +193,65 @@ static void init_dmabuf_formats(struct wlr_egl *egl) {
+ 	}
+ }
+ 
+-static struct wlr_egl *egl_create(void) {
+-	const char *client_exts_str = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+-	if (client_exts_str == NULL) {
+-		if (eglGetError() == EGL_BAD_DISPLAY) {
+-			wlr_log(WLR_ERROR, "EGL_EXT_client_extensions not supported");
+-		} else {
+-			wlr_log(WLR_ERROR, "Failed to query EGL client extensions");
+-		}
+-		return NULL;
+-	}
+-
+-	wlr_log(WLR_INFO, "Supported EGL client extensions: %s", client_exts_str);
+-
+-	if (!check_egl_ext(client_exts_str, "EGL_EXT_platform_base")) {
+-		wlr_log(WLR_ERROR, "EGL_EXT_platform_base not supported");
+-		return NULL;
+-	}
+-
++/* client_exts_str 为 NULL 表示客户端扩展查询不可用: 移动端 libEGL 常常不实现
++ * EGL_EXT_client_extensions, eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS)
++ * 直接报 EGL_BAD_DISPLAY (OHOS 实测: "EGL_EXT_client_extensions not
++ * supported", 2026-09-30 真机 renderer bring-up 日志)。平台选择类扩展此时
++ * 无从得知, 全部保持关闭——它们只服务 wlr_egl_create_with_drm_fd 的 EGLDevice
++ * / GBM 选择; 调用方自带 display + context 的路径 (wlr_egl_create_with_context)
++ * 不需要, display 侧能力由 egl_init_display() 从 display 扩展串取。 */
++static struct wlr_egl *egl_create_with_client_exts(const char *client_exts_str) {
+ 	struct wlr_egl *egl = calloc(1, sizeof(*egl));
+ 	if (egl == NULL) {
+ 		wlr_log_errno(WLR_ERROR, "Allocation failed");
+ 		return NULL;
+ 	}
+ 
+-	load_egl_proc(&egl->procs.eglGetPlatformDisplayEXT,
+-		"eglGetPlatformDisplayEXT");
++	if (client_exts_str != NULL) {
++		wlr_log(WLR_INFO, "Supported EGL client extensions: %s",
++			client_exts_str);
+ 
+-	egl->exts.KHR_platform_gbm = check_egl_ext(client_exts_str,
+-			"EGL_KHR_platform_gbm");
+-	egl->exts.EXT_platform_device = check_egl_ext(client_exts_str,
+-			"EGL_EXT_platform_device");
+-	egl->exts.KHR_display_reference = check_egl_ext(client_exts_str,
+-			"EGL_KHR_display_reference");
++		if (!check_egl_ext(client_exts_str, "EGL_EXT_platform_base")) {
++			wlr_log(WLR_ERROR, "EGL_EXT_platform_base not supported");
++			free(egl);
++			return NULL;
++		}
+ 
+-	if (check_egl_ext(client_exts_str, "EGL_EXT_device_base") || check_egl_ext(client_exts_str, "EGL_EXT_device_enumeration")) {
+-		load_egl_proc(&egl->procs.eglQueryDevicesEXT, "eglQueryDevicesEXT");
+-	}
++		load_egl_proc(&egl->procs.eglGetPlatformDisplayEXT,
++			"eglGetPlatformDisplayEXT");
+ 
+-	if (check_egl_ext(client_exts_str, "EGL_EXT_device_base") || check_egl_ext(client_exts_str, "EGL_EXT_device_query")) {
+-		egl->exts.EXT_device_query = true;
+-		load_egl_proc(&egl->procs.eglQueryDeviceStringEXT,
+-			"eglQueryDeviceStringEXT");
+-		load_egl_proc(&egl->procs.eglQueryDisplayAttribEXT,
+-			"eglQueryDisplayAttribEXT");
+-	}
++		egl->exts.KHR_platform_gbm = check_egl_ext(client_exts_str,
++				"EGL_KHR_platform_gbm");
++		egl->exts.EXT_platform_device = check_egl_ext(client_exts_str,
++				"EGL_EXT_platform_device");
++		egl->exts.KHR_display_reference = check_egl_ext(client_exts_str,
++				"EGL_KHR_display_reference");
++
++		if (check_egl_ext(client_exts_str, "EGL_EXT_device_base") || check_egl_ext(client_exts_str, "EGL_EXT_device_enumeration")) {
++			load_egl_proc(&egl->procs.eglQueryDevicesEXT, "eglQueryDevicesEXT");
++		}
+ 
+-	if (check_egl_ext(client_exts_str, "EGL_KHR_debug")) {
+-		load_egl_proc(&egl->procs.eglDebugMessageControlKHR,
+-			"eglDebugMessageControlKHR");
++		if (check_egl_ext(client_exts_str, "EGL_EXT_device_base") || check_egl_ext(client_exts_str, "EGL_EXT_device_query")) {
++			egl->exts.EXT_device_query = true;
++			load_egl_proc(&egl->procs.eglQueryDeviceStringEXT,
++				"eglQueryDeviceStringEXT");
++			load_egl_proc(&egl->procs.eglQueryDisplayAttribEXT,
++				"eglQueryDisplayAttribEXT");
++		}
+ 
+-		static const EGLAttrib debug_attribs[] = {
+-			EGL_DEBUG_MSG_CRITICAL_KHR, EGL_TRUE,
+-			EGL_DEBUG_MSG_ERROR_KHR, EGL_TRUE,
+-			EGL_DEBUG_MSG_WARN_KHR, EGL_TRUE,
+-			EGL_DEBUG_MSG_INFO_KHR, EGL_TRUE,
+-			EGL_NONE,
+-		};
+-		egl->procs.eglDebugMessageControlKHR(egl_log, debug_attribs);
++		if (check_egl_ext(client_exts_str, "EGL_KHR_debug")) {
++			load_egl_proc(&egl->procs.eglDebugMessageControlKHR,
++				"eglDebugMessageControlKHR");
++
++			static const EGLAttrib debug_attribs[] = {
++				EGL_DEBUG_MSG_CRITICAL_KHR, EGL_TRUE,
++				EGL_DEBUG_MSG_ERROR_KHR, EGL_TRUE,
++				EGL_DEBUG_MSG_WARN_KHR, EGL_TRUE,
++				EGL_DEBUG_MSG_INFO_KHR, EGL_TRUE,
++				EGL_NONE,
++			};
++			egl->procs.eglDebugMessageControlKHR(egl_log, debug_attribs);
++		}
+ 	}
+ 
+ 	if (eglBindAPI(EGL_OPENGL_ES_API) == EGL_FALSE) {
+@@ -260,6 +263,20 @@ static struct wlr_egl *egl_create(void) {
+ 	return egl;
+ }
+ 
++static struct wlr_egl *egl_create(void) {
++	const char *client_exts_str = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
++	if (client_exts_str == NULL) {
++		if (eglGetError() == EGL_BAD_DISPLAY) {
++			wlr_log(WLR_ERROR, "EGL_EXT_client_extensions not supported");
++		} else {
++			wlr_log(WLR_ERROR, "Failed to query EGL client extensions");
++		}
++		return NULL;
++	}
++
++	return egl_create_with_client_exts(client_exts_str);
++}
++
+ static bool egl_init_display(struct wlr_egl *egl, EGLDisplay display,
+ 		bool allow_software) {
+ 	egl->display = display;
+@@ -582,6 +599,7 @@ struct wlr_egl *wlr_egl_create_with_drm_fd(int drm_fd) {
+ 		wlr_log(WLR_DEBUG, "EXT_platform_device not supported");
+ 	}
+ 
++#if WLR_HAS_GBM
+ 	if (egl->exts.KHR_platform_gbm && drm_fd >= 0) {
+ 		int gbm_fd = open_render_node(drm_fd);
+ 		if (gbm_fd < 0) {
+@@ -602,10 +620,14 @@ struct wlr_egl *wlr_egl_create_with_drm_fd(int drm_fd) {
+ 		}
+ 
+ 		gbm_device_destroy(egl->gbm_device);
++		egl->gbm_device = NULL;
+ 		close(gbm_fd);
+ 	} else {
+ 		wlr_log(WLR_DEBUG, "KHR_platform_gbm not supported");
+ 	}
++#else
++	wlr_log(WLR_DEBUG, "compiled without GBM support (WLR_HAS_GBM=0)");
++#endif
+ 
+ error:
+ 	wlr_log(WLR_ERROR, "Failed to initialize EGL context");
+@@ -630,7 +652,16 @@ struct wlr_egl *wlr_egl_create_with_context(EGLDisplay display,
+ 		return NULL;
+ 	}
+ 
+-	struct wlr_egl *egl = egl_create();
++	/* 客户端扩展查询不可用不阻塞本路径: display + context 由调用方提供,
++	 * 不需要平台选择扩展 (理由见 egl_create_with_client_exts)。 */
++	const char *client_exts_str = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
++	if (client_exts_str == NULL) {
++		wlr_log(WLR_INFO, "EGL client extensions unavailable "
++			"(EGL_EXT_client_extensions unsupported), "
++			"using the caller-provided display as-is");
++	}
++
++	struct wlr_egl *egl = egl_create_with_client_exts(client_exts_str);
+ 	if (egl == NULL) {
+ 		return NULL;
+ 	}
+@@ -652,6 +683,7 @@ void wlr_egl_destroy(struct wlr_egl *egl) {
+ 
+ 	wlr_drm_format_set_finish(&egl->dmabuf_render_formats);
+ 	wlr_drm_format_set_finish(&egl->dmabuf_texture_formats);
++	wlr_drm_format_set_finish(&egl->buffer_image_importer_formats);
+ 
+ 	eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+ 	eglDestroyContext(egl->display, egl->context);
+@@ -662,11 +694,13 @@ void wlr_egl_destroy(struct wlr_egl *egl) {
+ 
+ 	eglReleaseThread();
+ 
++#if WLR_HAS_GBM
+ 	if (egl->gbm_device) {
+ 		int gbm_fd = gbm_device_get_fd(egl->gbm_device);
+ 		gbm_device_destroy(egl->gbm_device);
+ 		close(gbm_fd);
+ 	}
++#endif
+ 
+ 	free(egl);
+ }
+@@ -824,6 +858,56 @@ EGLImageKHR wlr_egl_create_image_from_dmabuf(struct wlr_egl *egl,
+ 	return image;
+ }
+ 
++void wlr_egl_set_buffer_image_importer(struct wlr_egl *egl,
++		wlr_egl_buffer_image_importer_func importer, void *user_data) {
++	egl->buffer_image_importer = importer;
++	egl->buffer_image_importer_data = user_data;
++}
++
++void wlr_egl_set_buffer_image_importer_formats(struct wlr_egl *egl,
++		const struct wlr_drm_format_set *formats) {
++	/* 并集语义当拷贝用 (wlroots 无 copy 入口; 并集会把 dst 重建) */
++	struct wlr_drm_format_set empty = {0};
++	if (!wlr_drm_format_set_union(&egl->buffer_image_importer_formats,
++			&empty, formats != NULL ? formats : &empty)) {
++		wlr_log(WLR_ERROR, "Failed to copy importer buffer image formats");
++	}
++}
++
++bool wlr_egl_can_import_buffer(struct wlr_egl *egl, struct wlr_buffer *buffer) {
++	struct wlr_dmabuf_attributes attribs;
++	if (wlr_buffer_get_dmabuf(buffer, &attribs)) {
++		return false;
++	}
++	return egl->buffer_image_importer != NULL;
++}
++
++bool wlr_egl_import_buffer_image(struct wlr_egl *egl, struct wlr_buffer *buffer,
++		struct wlr_egl_buffer_image *out) {
++	struct wlr_dmabuf_attributes attribs;
++	if (wlr_buffer_get_dmabuf(buffer, &attribs)) {
++		bool external_only = false;
++		EGLImageKHR image = wlr_egl_create_image_from_dmabuf(egl, &attribs,
++			&external_only);
++		if (image == EGL_NO_IMAGE_KHR) {
++			return false;
++		}
++		*out = (struct wlr_egl_buffer_image){
++			.image = image,
++			.external_only = external_only,
++			.via_texture = false,
++			.drm_format = attribs.format,
++		};
++		return true;
++	}
++
++	if (egl->buffer_image_importer == NULL) {
++		return false;
++	}
++	return egl->buffer_image_importer(egl, buffer, out,
++		egl->buffer_image_importer_data);
++}
++
+ static int get_egl_dmabuf_formats(struct wlr_egl *egl, EGLint **formats) {
+ 	if (!egl->exts.EXT_image_dma_buf_import) {
+ 		wlr_log(WLR_DEBUG, "DMA-BUF import extension not present");
+@@ -1043,6 +1127,7 @@ int wlr_egl_dup_drm_fd(struct wlr_egl *egl) {
+ 		return fd;
+ 	}
+ 
++#if WLR_HAS_GBM
+ 	// Fallback to GBM's FD if we can't use EGLDevice
+ 	if (egl->gbm_device == NULL) {
+ 		return -1;
+@@ -1053,6 +1138,9 @@ int wlr_egl_dup_drm_fd(struct wlr_egl *egl) {
+ 		wlr_log_errno(WLR_ERROR, "Failed to dup GBM FD");
+ 	}
+ 	return fd;
++#else
++	return -1;
++#endif
+ }
+ 
+ EGLSyncKHR wlr_egl_create_sync(struct wlr_egl *egl, int fence_fd) {
+diff --git a/render/gles2/renderer.c b/render/gles2/renderer.c
+index e362daee..aaef16e8 100644
+--- a/render/gles2/renderer.c
++++ b/render/gles2/renderer.c
+@@ -84,7 +84,7 @@ static const struct wlr_addon_interface buffer_addon_impl = {
+ };
+ 
+ GLuint gles2_buffer_get_fbo(struct wlr_gles2_buffer *buffer) {
+-	if (buffer->external_only) {
++	if (buffer->external_only && !buffer->via_texture) {
+ 		wlr_log(WLR_ERROR, "DMA-BUF format is external-only");
+ 		return 0;
+ 	}
+@@ -95,6 +95,43 @@ GLuint gles2_buffer_get_fbo(struct wlr_gles2_buffer *buffer) {
+ 
+ 	push_gles2_debug(buffer->renderer);
+ 
++	if (buffer->via_texture) {
++		/* 导入镜像不能做 renderbuffer 存储 (OHOS EGL_NATIVE_BUFFER_OHOS
++		 * 只保证 texture 语义), 走 texture 附着: 与 T2 探针实测同序
++		 * (glEGLImageTargetTexture2DOES + glFramebufferTexture2D, 真机
++		 * FBO complete 且 glReadPixels 逐像素一致)。 */
++		GLenum target = buffer->external_only ? GL_TEXTURE_EXTERNAL_OES
++		                                      : GL_TEXTURE_2D;
++		if (!buffer->tex) {
++			glGenTextures(1, &buffer->tex);
++		}
++		glBindTexture(target, buffer->tex);
++		glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++		glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++		glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++		glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++		buffer->renderer->procs.glEGLImageTargetTexture2DOES(target,
++			buffer->image);
++		glBindTexture(target, 0);
++
++		glGenFramebuffers(1, &buffer->fbo);
++		glBindFramebuffer(GL_FRAMEBUFFER, buffer->fbo);
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target,
++			buffer->tex, 0);
++		GLenum fb_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++		glBindFramebuffer(GL_FRAMEBUFFER, 0);
++
++		if (fb_status != GL_FRAMEBUFFER_COMPLETE) {
++			wlr_log(WLR_ERROR, "Failed to create FBO for imported image "
++				"(status 0x%x)", fb_status);
++			glDeleteFramebuffers(1, &buffer->fbo);
++			buffer->fbo = 0;
++		}
++
++		pop_gles2_debug(buffer->renderer);
++		return buffer->fbo;
++	}
++
+ 	if (!buffer->rbo) {
+ 		glGenRenderbuffers(1, &buffer->rbo);
+ 		glBindRenderbuffer(GL_RENDERBUFFER, buffer->rbo);
+@@ -140,11 +177,21 @@ struct wlr_gles2_buffer *gles2_buffer_get_or_create(struct wlr_gles2_renderer *r
+ 
+ 	struct wlr_dmabuf_attributes dmabuf = {0};
+ 	if (!wlr_buffer_get_dmabuf(wlr_buffer, &dmabuf)) {
+-		goto error_buffer;
++		// 无 DMA-BUF 的 buffer (OHOS native buffer 等): 由注册的导入器接管;
++		// 未注册导入器或导入器谢绝 = 与上游一致地失败
++		struct wlr_egl_buffer_image image = {0};
++		if (!wlr_egl_import_buffer_image(renderer->egl, wlr_buffer, &image)) {
++			goto error_buffer;
++		}
++		buffer->image = image.image;
++		buffer->external_only = image.external_only;
++		buffer->via_texture = image.via_texture;
++		buffer->drm_format = image.drm_format;
++	} else {
++		buffer->image = wlr_egl_create_image_from_dmabuf(renderer->egl,
++			&dmabuf, &buffer->external_only);
++		buffer->drm_format = dmabuf.format;
+ 	}
+-
+-	buffer->image = wlr_egl_create_image_from_dmabuf(renderer->egl,
+-		&dmabuf, &buffer->external_only);
+ 	if (buffer->image == EGL_NO_IMAGE_KHR) {
+ 		goto error_buffer;
+ 	}
+@@ -179,7 +226,11 @@ static const struct wlr_drm_format_set *gles2_get_texture_formats(
+ static const struct wlr_drm_format_set *gles2_get_render_formats(
+ 		struct wlr_renderer *wlr_renderer) {
+ 	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
+-	return wlr_egl_get_dmabuf_render_formats(renderer->egl);
++	/* 可渲染格式 = EGL 的 dmabuf 渲染格式 ∪ 导入器声明的格式 (创建渲染器
++	 * 时算好, 见 wlr_gles2_renderer_create)。没有 DMA-BUF 导入的平台靠后者
++	 * ——否则集合为空, output_pick_format 会以 "Renderer doesn't support
++	 * format" 挡下所有输出 (OHOS 实测)。 */
++	return &renderer->render_formats;
+ }
+ 
+ static int gles2_get_drm_fd(struct wlr_renderer *wlr_renderer) {
+@@ -230,6 +281,7 @@ static void gles2_destroy(struct wlr_renderer *wlr_renderer) {
+ 	wlr_egl_destroy(renderer->egl);
+ 
+ 	wlr_drm_format_set_finish(&renderer->shm_texture_formats);
++	wlr_drm_format_set_finish(&renderer->render_formats);
+ 
+ 	if (renderer->drm_fd >= 0) {
+ 		close(renderer->drm_fd);
+@@ -525,7 +577,29 @@ struct wlr_renderer *wlr_gles2_renderer_create(struct wlr_egl *egl) {
+ 	if (renderer == NULL) {
+ 		return NULL;
+ 	}
+-	wlr_renderer_init(&renderer->wlr_renderer, &renderer_impl, WLR_BUFFER_CAP_DMABUF);
++
++	/* buffer 能力声明随平台实际能导入的 buffer 类型走 (上游写死 DMABUF):
++	 * - 有 DMA-BUF 导入扩展 ⇒ DMABUF;
++	 * - 注册了 buffer image 导入器 ⇒ 无 DMA-BUF 的 buffer 也能当渲染目标
++	 *   (gles2_buffer_get_fbo 走导入镜像), 声明 DATA_PTR。
++	 * 二者都无 = 渲染器一个 buffer 类型都用不了, 直接失败。
++	 * 注意 DATA_PTR 不是虚报: 分配器 (本项目的 OH_NativeBuffer allocator) 是
++	 * DATA_PTR, 能力不相交时 wlr_output_init_render 会拒绝 (output/render.c:23)。*/
++	uint32_t render_buffer_caps = 0;
++	if (egl->exts.EXT_image_dma_buf_import) {
++		render_buffer_caps |= WLR_BUFFER_CAP_DMABUF;
++	}
++	if (egl->buffer_image_importer != NULL) {
++		render_buffer_caps |= WLR_BUFFER_CAP_DATA_PTR;
++	}
++	if (render_buffer_caps == 0) {
++		wlr_log(WLR_ERROR, "Neither DMA-BUF import nor a buffer image "
++			"importer is available, no usable buffer type");
++		free(renderer);
++		return NULL;
++	}
++	wlr_renderer_init(&renderer->wlr_renderer, &renderer_impl,
++		render_buffer_caps);
+ 	renderer->wlr_renderer.features.output_color_transform = false;
+ 
+ 	wl_list_init(&renderer->buffers);
+@@ -541,7 +615,8 @@ struct wlr_renderer *wlr_gles2_renderer_create(struct wlr_egl *egl) {
+ 	wlr_log(WLR_INFO, "GL renderer: %s", glGetString(GL_RENDERER));
+ 	wlr_log(WLR_INFO, "Supported GLES2 extensions: %s", exts_str);
+ 
+-	if (!renderer->egl->exts.EXT_image_dma_buf_import) {
++	if (!renderer->egl->exts.EXT_image_dma_buf_import &&
++			renderer->egl->buffer_image_importer == NULL) {
+ 		wlr_log(WLR_ERROR, "EGL_EXT_image_dma_buf_import not supported");
+ 		free(renderer);
+ 		return NULL;
+@@ -552,9 +627,24 @@ struct wlr_renderer *wlr_gles2_renderer_create(struct wlr_egl *egl) {
+ 		return NULL;
+ 	}
+ 	if (!check_gl_ext(exts_str, "GL_EXT_unpack_subimage")) {
+-		wlr_log(WLR_ERROR, "GL_EXT_unpack_subimage not supported");
+-		free(renderer);
+-		return NULL;
++		/* GL_UNPACK_ROW_LENGTH 是 GLES3 核心能力, 与 GL_UNPACK_ROW_LENGTH_EXT
++		 * 同一枚举 (0x0CF2) —— ES3 驱动完全可能只报核心不报扩展 (OHOS/Maleoon
++		 * 实测: 扩展串里没有, renderer 卡在此处)。以实际能力为准: 试设一次,
++		 * 看是否 GL_INVALID_ENUM, 而不是拿扩展串当唯一判据。 */
++		while (glGetError() != GL_NO_ERROR) {
++			/* 清掉此前遗留错误, 免得误判 */
++		}
++		glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 1);
++		bool core_unpack_row_length = glGetError() == GL_NO_ERROR;
++		glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
++
++		if (!core_unpack_row_length) {
++			wlr_log(WLR_ERROR, "GL_EXT_unpack_subimage not supported");
++			free(renderer);
++			return NULL;
++		}
++		wlr_log(WLR_INFO, "GL_EXT_unpack_subimage absent, "
++			"core GL_UNPACK_ROW_LENGTH usable instead");
+ 	}
+ 
+ 	renderer->exts.EXT_read_format_bgra =
+@@ -683,6 +773,14 @@ struct wlr_renderer *wlr_gles2_renderer_create(struct wlr_egl *egl) {
+ 
+ 	get_gles2_shm_formats(renderer, &renderer->shm_texture_formats);
+ 
++	/* 可渲染格式 (见 gles2_get_render_formats): dmabuf 集 ∪ 导入器声明集 */
++	if (!wlr_drm_format_set_union(&renderer->render_formats,
++			wlr_egl_get_dmabuf_render_formats(egl),
++			&egl->buffer_image_importer_formats)) {
++		wlr_log(WLR_ERROR, "Failed to build render formats");
++		goto error;
++	}
++
+ 	int drm_fd = wlr_renderer_get_drm_fd(&renderer->wlr_renderer);
+ 	uint64_t cap_syncobj_timeline;
+ 	if (drm_fd >= 0 && drmGetCap(drm_fd, DRM_CAP_SYNCOBJ_TIMELINE, &cap_syncobj_timeline) == 0) {
+diff --git a/render/gles2/texture.c b/render/gles2/texture.c
+index 9a967ebd..106894fd 100644
+--- a/render/gles2/texture.c
++++ b/render/gles2/texture.c
+@@ -356,9 +356,11 @@ static struct wlr_texture *gles2_texture_from_pixels(
+ 	return &texture->wlr_texture;
+ }
+ 
+-static struct wlr_texture *gles2_texture_from_dmabuf(
+-		struct wlr_gles2_renderer *renderer, struct wlr_buffer *wlr_buffer,
+-		struct wlr_dmabuf_attributes *attribs) {
++/* 从 gles2 buffer (DMA-BUF 或导入器接管的原生 buffer) 建纹理。两者共用同一
++ * 个 wlr_gles2_buffer: EGLImage/GL 纹理对象只建一次, 渲染目标与采样纹理是
++ * 同一个 GL 对象 (见 gles2_buffer_get_fbo)。 */
++static struct wlr_texture *gles2_texture_from_gles2_buffer(
++		struct wlr_gles2_renderer *renderer, struct wlr_buffer *wlr_buffer) {
+ 	if (!renderer->procs.glEGLImageTargetTexture2DOES) {
+ 		return NULL;
+ 	}
+@@ -369,7 +371,7 @@ static struct wlr_texture *gles2_texture_from_dmabuf(
+ 	}
+ 
+ 	struct wlr_gles2_texture *texture =
+-		gles2_texture_create(renderer, attribs->width, attribs->height);
++		gles2_texture_create(renderer, wlr_buffer->width, wlr_buffer->height);
+ 	if (texture == NULL) {
+ 		return NULL;
+ 	}
+@@ -377,7 +379,7 @@ static struct wlr_texture *gles2_texture_from_dmabuf(
+ 	texture->target = buffer->external_only ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+ 	texture->buffer = buffer;
+ 	texture->drm_format = DRM_FORMAT_INVALID; // texture can't be written anyways
+-	texture->has_alpha = pixel_format_has_alpha(attribs->format);
++	texture->has_alpha = pixel_format_has_alpha(buffer->drm_format);
+ 
+ 	struct wlr_egl_context prev_ctx;
+ 	wlr_egl_make_current(renderer->egl, &prev_ctx);
+@@ -417,16 +419,27 @@ struct wlr_texture *gles2_texture_from_buffer(struct wlr_renderer *wlr_renderer,
+ 	size_t stride;
+ 	struct wlr_dmabuf_attributes dmabuf;
+ 	if (wlr_buffer_get_dmabuf(buffer, &dmabuf)) {
+-		return gles2_texture_from_dmabuf(renderer, buffer, &dmabuf);
+-	} else if (wlr_buffer_begin_data_ptr_access(buffer,
++		return gles2_texture_from_gles2_buffer(renderer, buffer);
++	}
++
++	/* WineHua (OHOS): 平台原生 buffer (无 DMA-BUF 导出) 走导入器零拷贝成
++	 * 纹理; 导入器谢绝时退回下面的 CPU 上传路径。 */
++	if (wlr_egl_can_import_buffer(renderer->egl, buffer)) {
++		struct wlr_texture *imported =
++			gles2_texture_from_gles2_buffer(renderer, buffer);
++		if (imported != NULL) {
++			return imported;
++		}
++	}
++
++	if (wlr_buffer_begin_data_ptr_access(buffer,
+ 			WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
+ 		struct wlr_texture *tex = gles2_texture_from_pixels(wlr_renderer,
+ 			format, stride, buffer->width, buffer->height, data);
+ 		wlr_buffer_end_data_ptr_access(buffer);
+ 		return tex;
+-	} else {
+-		return NULL;
+ 	}
++	return NULL;
+ }
+ 
+ void wlr_gles2_texture_get_attribs(struct wlr_texture *wlr_texture,
+diff --git a/render/meson.build b/render/meson.build
+index 517d76bf..15795c3f 100644
+--- a/render/meson.build
++++ b/render/meson.build
+@@ -47,9 +47,17 @@ if 'gles2' in renderers or 'auto' in renderers
+ 			)
+ 		endif
+ 	endif
+-	gbm = dependency('gbm', required: 'gles2' in renderers)
+-	if egl.found() and gbm.found()
+-		wlr_deps += [egl, gbm]
++	# WineHua (OHOS): GBM 可选 —— OHOS 无 DRM/GBM, 但 gles2 渲染器本体
++	# 不依赖 GBM (只有 render/egl.c 的平台选择用它, 见 WLR_HAS_GBM 守卫)。
++	# 上游语义: required: 'gles2' in renderers; 缺 GBM 时 gles2 整个不可用,
++	# 这在 OHOS 上永远不会满足 (无 gbm.pc), 会把 gles2 一起关掉。
++	gbm = dependency('gbm', required: false)
++	if egl.found()
++		wlr_deps += egl
++		if gbm.found()
++			wlr_deps += gbm
++		endif
++		features += { 'gbm': gbm.found() }
+ 		wlr_files += files('egl.c')
+ 		internal_features += { 'egl': true }
+ 	endif

@@ -132,6 +132,35 @@ class TestEntry:
         return payload
 
 
+def inline_test_entries(job: dict) -> dict:
+    """inline 用例里声明了 checks 的条目 → 判定层 TestEntry。
+
+    判定与执行分离的缺口 (2026-10-05 实测): inline 条目直接下设备跑, 但
+    判定层此前只认套件定义, inline 用例永远落默认 result-json —— external
+    载体 (notepad) 设备端写不出结果协议, 于是永远 SKIP、job 恒 FAIL。
+    条目自带 "checks" 键即按声明判定, 语义与套件定义的 checks 字段一致。
+    """
+    entries = {}
+    for entry in job.get("inline") or []:
+        test_id = entry.get("testId", "")
+        checks = list(entry.get("checks") or [])
+        if not test_id or not checks:
+            continue
+        exe = entry.get("exe", "")
+        arch, _, bare = exe.replace("\\", "/").rpartition("/")
+        case = Case(id=test_id, exe=bare or exe, arch=[], checks=checks)
+        # params 与套件条目同款展开 (load_suite: 除 case/id/testId/arch 外全进
+        # params) —— 此前只带 env, inline 条目的 backend 被静默丢弃, 用例落回
+        # 设备当前档位 (硬约束 3 的失效模式; 实测 dxvk-cube inline 跑落
+        # vkd3d_limited_500k, 设备端按档位不符判 FAIL, r20261007-011201)。
+        params = {k: v for k, v in entry.items()
+                  if k not in ("testId", "exe", "arch", "checks", "env")}
+        params["env"] = entry.get("env") or {}
+        entries[test_id] = TestEntry(test_id=test_id, case=case, arch=arch,
+                                     params=params)
+    return entries
+
+
 def load_cases() -> dict:
     cases = {}
     for path in sorted(TESTS_DIR.glob("*/test.json")):
@@ -159,9 +188,9 @@ def load_cases() -> dict:
 UNREACHABLE_ENV_KEYS = {
     # 设计上忽略: profile 选择要自己判断 exe 类型与覆盖来源, 通用覆盖会让它失效
     "WINEDEBUG": "设备端显式忽略（wine_child.cpp select_winedebug_profile）",
-    # 时序缺陷: 该函数在 458 行读它, __env 覆盖在 479 行才应用 —— 属待修 bug,
-    # 不是设计意图 (同处注释声称这条通道可用)
-    "WINEHUA_WINEDEBUG": "设备端读取早于 __env 应用（wine_child.cpp:458 vs 479）",
+    # WINEHUA_WINEDEBUG 曾在这里（读取早于 __env 应用的时序缺陷）；M1-T5 已修
+    # （wine_child.cpp Main() 先从 __env 摘取该键再选 profile），显式诊断
+    # 通道现可用，不再是 unreachable。
 }
 
 
@@ -379,12 +408,26 @@ ABILITY = "EntryAbility"
 #   hdc file send -b <bundle>：remote 必须写沙箱视角，写真实路径会落到不存在的相对位置
 #   hdc shell：只认真实路径；对沙箱视角路径的 rm -rf 会静默返回 0 而实际不删
 SANDBOX_FILES = "/data/storage/el2/base/files"
+SANDBOX_BASE = "/data/storage/el2/base"
 REAL_FILES = f"/data/app/el2/100/base/{BUNDLE}/files"
 # 载荷推送源（相对 files/）：设备端 SmokeHook.seed 的优先源，按 manifest 版本
 # 比对后导入 C:\smoke（HAP rawfile 树 files/wine/smoke 为兜底，host 不写）。
 PAYLOAD_REL = "smoke-payload"
 # 当前 prefix 的实际载荷：二次 Want 不触发设备端 seed，必须直接更新这里
 DRIVE_C_REL = ".wine/drive_c/smoke"
+# drive_c 根（smoke/ 载荷树所在；displayroute 能力探针标记**不在**这里，
+# 见 DISPLAYROUTE_MARKERS 注释）
+DRIVE_C_ROOT_REL = ".wine/drive_c"
+# displayroute bring-up 阶段的能力探针标记（app 进程内探针写，非 wine 结果
+# 协议）：run 结束逐个尝试归档，marker 判定器据此裁决。
+# 落点 = files 根（D10b, 2026-10-06）：原在 drive_c/ 下，但那是 wine prefix，
+# 全新安装要等 wineboot 初始化才存在，而 D8 早启后探针跑在其之前，写标记
+# 静默失败（r20261006-005354 实测 egl-import-probe 缺失）。files 根 fresh
+# install 即存在。判定器只读归档内容，落点迁移对判定无感。
+DISPLAYROUTE_MARKERS = (
+    "displayroute-egl-import-probe",   # M2-T2 导入链裁决
+    "displayroute-present-probe",      # M2-T4 队列 buffer 直渲染裁决
+)
 # job 文件（host 生成）：debug 参数组合 / 选测 / 内联临时用例走它下发
 JOB_REL = "smoke-job.json"
 
@@ -428,6 +471,33 @@ HDC_POLL_TIMEOUT_S = 20
 APP_START_TIMEOUT_S = 30
 
 
+def format_extra_ps(raw: str) -> str:
+    """--extra-ps 透传翻译成 aa start 的 '--ps <key> <value>' 序列。
+
+    接受两种写法（可混用，空白分隔）：
+      k=v 对（推荐，自然写法）      --extra-ps "winehua.displayRoute=x11"
+      裸 k v 对（旧契约）           --extra-ps "winehua.fusionHost ability"
+    值含空白时只能用裸对形式由调用方自行保证引号到达 aa；k=v 解析在 host 侧
+    完成后一律展开为独立的 --ps 键值对，设备端只见到标准语法。
+    """
+    parts = raw.split()
+    pairs = []
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if "=" in tok and tok.partition("=")[0]:
+            pairs.append((tok.partition("=")[0], tok.partition("=")[2]))
+            i += 1
+            continue
+        if i + 1 < len(parts):
+            pairs.append((tok, parts[i + 1]))
+            i += 2
+        else:
+            log(f"[smoke][WARN] extra-ps 末尾 token '{tok}' 缺值, 已跳过")
+            i += 1
+    return " ".join(f"--ps {k} {v}" for k, v in pairs)
+
+
 def hdc_shell(hdc: str, device: str, script: str,
               timeout: int = HDC_SHELL_TIMEOUT_S) -> tuple:
     """执行设备端 shell 命令；超时按失败返回 (-1, "")，不向上抛。"""
@@ -461,18 +531,30 @@ def ensure_app_running(hdc: str, device: str, extra_start_args: str = "") -> Non
     """
     if app_pid(hdc, device):
         if extra_start_args:
-            die("app 已在运行：--desktop-mode 需要冷启动携带，先 `hdc shell "
+            die("app 已在运行：冷启参数（--desktop-mode/--display-route）需要"
+                "冷启动携带，先 `hdc shell "
                 f"aa force-stop {BUNDLE}` 再重跑")
         return
     log(f"{BUNDLE} 未运行，先启动（-b 通道要求应用已启动）")
-    hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE} {extra_start_args}".rstrip())
+    if extra_start_args:
+        # M4a 终验实锤 (2026-10-10, job-r20261010-173406): 裸启+二次带参的
+        # 旧纪律对**模式参数**失效 —— applyModePolicy 在裸启 init 链早期
+        # 一次性判定 (explicit=none → virtual), 3 秒后的二次 want 只刷新
+        # LaunchRequest 不重跑判定, desktopMode/displayRoute 全部无效
+        # (fusion 套件静默跑成 virtual)。改直启带参: D14 的 failInit 坑
+        # 治本已落地 (44f8575 zHome 就绪门, 在产品代码里, 不依赖此规避)。
+        hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE} {extra_start_args}".rstrip())
+    else:
+        hdc_shell(hdc, device, f"aa start -a {ABILITY} -b {BUNDLE}")
     deadline = time.time() + APP_START_TIMEOUT_S
     while time.time() < deadline:
         if app_pid(hdc, device):
-            return
+            break
         time.sleep(1)
-    die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
-        "设备上装的若是非调试签名包，-b 通道同样不可用")
+    else:
+        die(f"{BUNDLE} 启动后 {APP_START_TIMEOUT_S}s 内未见进程；"
+            "设备上装的若是非调试签名包，-b 通道同样不可用")
+    return
 
 
 def hdc_send(hdc: str, device: str, local: Path, remote: str) -> None:
@@ -496,14 +578,92 @@ def hdc_recv_dir(hdc: str, device: str, rel_path: str, local_dir: Path) -> None:
                    capture_output=True, text=True, errors="replace")
 
 
+def hdc_recv_file_if_present(hdc: str, device: str, rel_path: str, local: Path) -> bool:
+    """把 files/ 下的单个文件拉回本地；不存在返回 False（调用方决定容忍度）。
+
+    沙箱视角路径（不加 -b 会被 SELinux 拒，见文件头沙箱路径约定）。"""
+    local.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                             f"{SANDBOX_FILES}/{rel_path}", str(local)],
+                            capture_output=True, text=True, errors="replace")
+    return result.returncode == 0 and local.is_file()
+
+
+def hdc_recv_abs_if_present(hdc: str, device: str, sandbox_path: str, local: Path) -> bool:
+    """拉回**绝对**沙箱路径的文件（files/ 之外的 el2/base/temp 等，同一 -b 视图）。"""
+    local.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                             sandbox_path, str(local)],
+                            capture_output=True, text=True, errors="replace")
+    return result.returncode == 0 and local.is_file()
+
+
+def archive_evidence(hdc: str, device: str, archive: Path) -> None:
+    """把设备侧证据拉进归档（device-evidence/）。
+
+    为什么必须归档它们（review F8）：§2.10 的教训要求判"谁在呈现"必须同时看
+    `[GUEST-FRAMES]` 日志与显示序列文件本体，但它们此前只存在于设备 —— hilog
+    缓冲只留几分钟、stderr 在沙箱 temp。判定只读归档的原则，前提是归档里得有
+    可判可复盘的东西。文件缺失不致命（老构建/首次跑），但会记一行。
+    """
+    evidence = archive / "device-evidence"
+    found = []
+    if hdc_recv_file_if_present(hdc, device,
+                                f"{DRIVE_C_ROOT_REL}/windows/temp/winehua_display_fps.txt",
+                                evidence / "winehua_display_fps.txt"):
+        found.append("winehua_display_fps.txt")
+    # [GUEST-FRAMES] 帧面事件日志 (attach/detach, 含 key/pid)。display_fps
+    # 单值文件与 suite-summary 的 presentedKey 都是粘性快照、不含历史; x11
+    # 归属判据要的是「上屏那一帧 = 本次窗口面」的同一性事实 (2026-10-11 D49
+    # 破案: 粘性 latest 就是探针自身窗口, 但 x86 承载进程 pid ≠ runner 记录的
+    # 启动器 spawn pid, 只有帧 key 对得上才判得准)。hilog 缓冲只留几分钟 ——
+    # suite 结束立即拉, wine 刷屏可能冲掉早段 (opengl 是 suite 前两项, 风险
+    # 最低); 拉不到不致命, 判定侧回落粘性。
+    code, gf_out = hdc_shell(hdc, device,
+                             "hilog -x 2>/dev/null | grep -a GUEST-FRAMES | tail -300")
+    if code == 0 and gf_out.strip():
+        (evidence / "guest-frames.log").write_text(gf_out, errors="replace")
+        found.append("guest-frames.log")
+    # D47 [AUTO-RETRY]（批次 1 复核 F1）：首启失败自动重试/作废的 app 侧
+    # 日志（WineEnvService hilog warn, domain 'wine'）。判定器 auto-retry
+    # 读它做机制认证（「每进程一次」预算 / 关闭被尊重）。hilog 只留几分钟,
+    # suite 结束立即拉; 拉不到不致命（本轮未触发 / 老运行器），判定侧 SKIP。
+    code, ar_out = hdc_shell(hdc, device,
+                             "hilog -x 2>/dev/null | grep -a AUTO-RETRY | tail -50")
+    if code == 0 and ar_out.strip():
+        (evidence / "auto-retry.log").write_text(ar_out, errors="replace")
+        found.append("auto-retry.log")
+    code, out = hdc_shell(hdc, device, "date +%Y%m%d")
+    day = out.strip().splitlines()[-1].strip() if code == 0 and out.strip() else ""
+    if len(day) == 8 and day.isdigit():
+        if hdc_recv_abs_if_present(hdc, device,
+                                   f"{SANDBOX_BASE}/temp/wine_stderr_{day}.log",
+                                   evidence / f"wine_stderr_{day}.log"):
+            found.append(f"wine_stderr_{day}.log")
+    if hdc_recv_abs_if_present(hdc, device,
+                               f"{SANDBOX_BASE}/temp/winehua_vtest_frontbuffer.log",
+                               evidence / "winehua_vtest_frontbuffer.log"):
+        found.append("winehua_vtest_frontbuffer.log")
+    log(f"evidence → {evidence} ({', '.join(found) if found else '无'})")
+
+
 def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
     """删除 files/ 下的一条路径（相对 files/）。用真实路径 + 事后校验：
-    `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。"""
+    `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。
+
+    2026-10-11 23:51 实测（gate 1/4 中断）：app 冷启被拉起瞬间该路径可能
+    瞬态不可删（同时刻同一 shell 对同树 mkdir 被 SELinux 拒——el2 视图
+    挂载状态相关；稍后手动 rm 同路径即成功、push 重跑即愈）。故删除后
+    验证失败时重试 3 次——瞬态窗口是亚秒级，不得因一次撞上就判死。"""
     real = f"{REAL_FILES}/{rel_path}"
-    hdc_shell(hdc, device, f"rm -rf '{real}'")
-    code, out = hdc_shell(hdc, device, f"ls -d '{real}' 2>/dev/null")
-    if code == 0 and out.strip():
-        die(f"remove verification failed (still exists): {real}")
+    for attempt in range(3):
+        hdc_shell(hdc, device, f"rm -rf '{real}'")
+        code, out = hdc_shell(hdc, device, f"ls -d '{real}' 2>/dev/null")
+        if not (code == 0 and out.strip()):
+            return
+        if attempt < 2:
+            time.sleep(0.5)
+    die(f"remove verification failed (still exists, 3 attempts): {real}")
 
 
 def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
@@ -555,8 +715,13 @@ def cmd_push(args: argparse.Namespace) -> int:
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
     mode = getattr(args, "desktop_mode", None)
-    ensure_app_running(hdc, device,
-                       f"--ps winehua.desktopMode {mode}" if mode else "")
+    route = getattr(args, "display_route", None)
+    extra = " ".join(x for x in (
+        f"--ps winehua.desktopMode {mode}" if mode else "",
+        f"--ps winehua.displayRoute {route}" if route else "",
+        format_extra_ps(args.extra_ps) if getattr(args, "extra_ps", "") else "",
+    ) if x)
+    ensure_app_running(hdc, device, extra)
     log(f"push {payload} → {device}")
     # 推两处（目标都必须先删：file send 对已存在目录会把源目录嵌套为子目录）：
     # 1) 推送源：设备端 seed 的来源（冷启动 / clean 清盘后按版本比对导入）
@@ -580,14 +745,42 @@ def cmd_push(args: argparse.Namespace) -> int:
 
 def build_job(args: argparse.Namespace) -> dict:
     """host 侧的运行描述（设备端 SmokeHook.applyWant 解析）。"""
-    job = {"suite": args.suite, "prefix": args.prefix}
+    job = {"prefix": args.prefix}
+    if args.suite:
+        job["suite"] = args.suite
+    # 无 suite 键 = 只跑 job/inline 自带内容（手动 displayroute 编排同形态,
+    # 实测 t6/t7 手动 run: 设备端无 suite 键时不展开套件用例）
+    if getattr(args, "job", ""):
+        job_path = Path(args.job)
+        if not job_path.is_file():
+            die(f"--job 文件不存在: {job_path}")
+        loaded = json.loads(job_path.read_text())
+        if not isinstance(loaded, dict):
+            die(f"--job 文件必须是 JSON 对象: {job_path}")
+        # job 文件的 env/inline 与套件定义走同一套护栏: 它们同样直通设备, 此前
+        # 只有套件定义与 CLI --env 被校验 ⇒ 手写 job 能把不可达 env / 非契约
+        # 档位静默送下去 (review F10)。inline 条目缺 backend 就是"落设备当前
+        # 档位", 由硬约束禁止 —— 这里只拦非法值, 缺省仍允许 (纯仪器 job)。
+        reject_unreachable_env(f"{job_path.name}: params.env", (loaded.get("params") or {}).get("env"))
+        for entry in loaded.get("inline") or []:
+            label = f"{job_path.name}:{entry.get('testId', 'inline')}"
+            reject_unreachable_env(label, entry.get("env"))
+            if entry.get("backend"):
+                reject_bad_backend(label, entry["backend"])
+        job.update(loaded)
     if args.tests:
         job["tests"] = [item.strip() for item in args.tests.split(",") if item.strip()]
     if args.inline:
         job["inline"] = json.loads(Path(args.inline).read_text())
     if args.long_seconds:
         job["longSeconds"] = args.long_seconds
-    params = {}
+    # 覆盖参数必须**并入** job 文件已有的 params, 不能整体替换: 实测
+    # `--job displayroute-gl-baseline.json --seconds 240` 曾把 job 里的
+    # `params.env`(WINEHUA_DISPLAY_ROUTE=x11/DISPLAY/WAYLAND_DISPLAY) 一起丢掉,
+    # guest 只收到 harness 自己的 2 个变量 ⇒ 静默落到 wayland 路线,
+    # 用例照样 PASS 但测的不是 X 路线 (known-issues §2.10)。
+    params = dict(job.get("params") or {})
+    declared_env = dict(params.get("env") or {})  # 合并 CLI 覆盖之前的 job 文件声明
     if args.env:
         overrides = {}
         for item in args.env:
@@ -596,7 +789,9 @@ def build_job(args: argparse.Namespace) -> dict:
                 die(f"--env 需要 KEY=VALUE 形式: {item}")
             overrides[key] = value
         reject_unreachable_env("--env", overrides)
-        params["env"] = overrides
+        merged_env = dict(params.get("env") or {})
+        merged_env.update(overrides)
+        params["env"] = merged_env
     if args.d3d:
         if args.d3d not in D3D_BACKEND_VALUES:
             die(f"--d3d \"{args.d3d}\" 不是契约值 —— 合法值 {sorted(D3D_BACKEND_VALUES)}")
@@ -609,8 +804,56 @@ def build_job(args: argparse.Namespace) -> dict:
         params["seconds"] = args.seconds
     if args.timeout_ms is not None:
         params["timeoutMs"] = args.timeout_ms
-    if params:
-        job["params"] = params
+    # 期望路线随环境一起下发: 判据侧拿它跟宿主自报的 presentedRoute 对照
+    # (checks.presented_route)。放这里而不是让判据回读 job 文件 —— 归档要自带
+    # 判定所需的输入 (判定只读归档), 且"环境被丢"这个失效模式本身也要能被抓到:
+    # 丢了环境 ⇒ 期望路线也没了 ⇒ 判 FAIL 而不是默认成 wayland。
+    # 无条件注入: 不带 --job 的套件跑 (wayland 默认) 也要有期望值。
+    route_env = dict(params.get("env") or {})
+    # job 文件里声明的路线 (若 CLI --env 又改过它, 上面的合并已经把它覆盖掉了,
+    # 所以要在合并前就抄一份)。期望值与实跑值同源会被同一个开关一起改掉 ——
+    # `--env WINEHUA_DISPLAY_ROUTE=wayland` 曾能把 X 路线 job 变成 expected=
+    # presented=wayland 而完全不自知 (review F7)。声明单独下发, 判定层用它兜底:
+    # CLI 覆盖可以改实跑路线, 但改不掉"这个 job 声明的是什么"。
+    declared_route = declared_env.get("WINEHUA_DISPLAY_ROUTE") if declared_env else None
+    # 兜底期望 = 产品缺省路线 (EntryAbility publishLaunchRequest 的 routeValue
+    # 缺省; 2026-10-10 用户拍板缺省 x11)。套件/条目显式声明时跟随声明; 什么都不
+    # 声明 = 设备按产品缺省跑 —— 期望值必须与产品缺省一致, 否则裸跑必假 FAIL
+    # (core opengl 两项 2026-10-10 04:36 实测: 期望 wayland/实际 x11)。两处
+    # 分属 smoke 与 app, 无单一来源, 改产品缺省必须同步这里 (grep 本注释)。
+    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
+        "WINEHUA_DISPLAY_ROUTE") or "x11"
+    if declared_route:
+        route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
+    # M3a 一致性检查: host 裁决 (app 冷启参数 winehua.displayRoute=x11) 会经
+    # BuildWineEnv stamp 改写所有子进程的 guest env —— 声明里没有 x11 的套件
+    # (如 core) 会被静默拖进 x11 跑, 期望路线判定随之失真。声明可以钉 guest
+    # 档位, 改不了 host 裁决, 两处各说各话 = 排查地狱 (spec 2026-10-03 §5)。
+    # 声明源 = params.env (套件级, 合并 CLI 前的 declared_env) 与 inline 条目
+    # env (rate 类 job 的声明在条目上); 套件用例自身的 x11 约定走 params 层
+    # (displayroute-suite.json 形态), 用例 env 不另查。
+    display_route = getattr(args, "display_route", None)
+    if display_route == "x11":
+        offenders = []
+        inline_entries = job.get("inline") or []
+        if inline_entries:
+            for entry in inline_entries:
+                r = (entry.get("env") or {}).get("WINEHUA_DISPLAY_ROUTE") or declared_route
+                if r != "x11":
+                    offenders.append(entry.get("testId", "inline"))
+        elif declared_route != "x11":
+            offenders.append(f"suite={job.get('suite') or '(none)'}")
+        if offenders:
+            die("--display-route x11 要求所有选中测试显式声明 "
+                "WINEHUA_DISPLAY_ROUTE=x11 (未声明的: "
+                f"{', '.join(offenders)}) —— host 裁决会经 BuildWineEnv 改写 "
+                "guest env, 未声明的套件不许隐式换路线。")
+        # 期望路线跟随 host 裁决: --display-route x11 就是下发给 app 的冷启参数,
+        # 两者同源 (单一裁决点)。inline 声明型 job (rate 类) 的 route 只在条目
+        # env 上, 不修这里期望值会停在 wayland, presented_route 判定失真。
+        route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = "x11"
+    params["env"] = route_env
+    job["params"] = params
     return job
 
 
@@ -618,58 +861,168 @@ def cmd_run(args: argparse.Namespace) -> int:
     payload = ensure_payload(args)
     hdc = resolve_hdc()
     device = resolve_device(hdc, args.device)
+    # job 构建（含 --display-route x11 一致性检查）先于 push：push 会冷启 app
+    # 并带上 host 裁决参数，校验死在 push 之后会把 app 留在 x11 形态，下一轮
+    # 不带参数的 run 撞上运行中的 x11 app 就是静默路线污染。
+    job = build_job(args)
+    # 宿主侧等 summary 时长: 长会话载体 (manual job inline seconds=1800) 的
+    # 设备端 summary 要等会话结束才写, 宿主默认 15 分钟 poll 必然超时
+    # (2026-10-05 r20261005-204806 实测: 设备侧正常, 宿主 15 min 放弃)。
+    # job 文件用 timeoutMinutes 与会话时长钉死; CLI 显式 --timeout-minutes
+    # 优先级最高。pop 掉再下发, 宿主编排参数不进设备契约。
+    timeout_minutes = args.timeout_minutes
+    if timeout_minutes is None:
+        job_timeout = job.pop("timeoutMinutes", None)
+        timeout_minutes = int(job_timeout) if job_timeout else 15
+    else:
+        job.pop("timeoutMinutes", None)
+    # 能力探针标记清理必须在冷启 (cmd_push → bring-up → 探针写标记) 之前:
+    # push 会把 app 拉起并走到链路 bring-up, 探针在那时写"本次"标记; 清理
+    # 若排在 push 后, 刚写的新鲜标记被当"上一轮"清掉, 归档必然缺失
+    # (2026-10-05 vd25 实测: 探针 05:23:24 写, 清理在其后, 归档 absent)。
+    if job.get("displayroute"):
+        for marker_name in DISPLAYROUTE_MARKERS:
+            remove_sandbox_path(hdc, device, marker_name)  # files 根 (D10b)
+    # M10 (M4a deferred 治本): 套件级 desktopMode 钉死 —— CLI 未显式给时
+    # 采纳套件声明, 防「换人跑/改 job 时 mode 漂移」(设备当前设置由机型
+    # 与系统版本决定, 同一套件在不同设备上测的不是一回事)。CLI 显式给
+    # 且与声明不同 → 覆盖生效但打 NOTE 留痕。
+    # 解析在 skip_push 判定**之外**: 钉档要随每次 aa start 携带 (见下方
+    # start 拼装), 不只在 push 的冷启里 —— skip-push 轮次没有 push。
+    suite_mode = ""
+    # suite 名取 CLI > job 声明 —— 只带 --job 跑时同样钉死档位
+    # (2026-10-11 实测: 只带 --job 时 args.suite 为空, suite_mode 漏采,
+    #  冷启缺 winehua.desktopMode, 全新安装按持久化默认落 virtual 桌面,
+    #  fusion 套件 byTitle/按窗点击全败 —— 表现为 D35 间歇假象)
+    suite_name = args.suite or job.get("suite", "")
+    if suite_name:
+        sp = SUITES_DIR / f"{suite_name}.json"
+        if sp.is_file():
+            suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
+    # job 级 desktopMode: 纯 inline job (无 suite 键) 的钉档落点 —— 此前只存在
+    # 于 _note 的运行命令文档里, 换人/漏带 CLI 参数即回退设备当前设置 (与套件级
+    # pin 要治的漂移同类)。优先级 suite > job: suite 的 desktopMode 是其判定
+    # 契约的一部分, job 不覆盖。
+    job_mode = job.get("desktopMode", "")
+    cli_mode = getattr(args, "desktop_mode", None)
+    if suite_mode and cli_mode and cli_mode != suite_mode:
+        log(f"NOTE: CLI --desktop-mode {cli_mode} 覆盖套件声明 {suite_mode}")
+    pin_mode = cli_mode or suite_mode or job_mode or None
     if not args.skip_push:
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
-                                       desktop_mode=getattr(args, "desktop_mode", None))
+                                       desktop_mode=pin_mode,
+                                       display_route=getattr(args, "display_route", None))
         if cmd_push(push_args) != 0:
             return 1
     manifest = json.loads((payload / "manifest.json").read_text())
     run_id = args.run_id or time.strftime("r%Y%m%d-%H%M%S")
-    archive = Path(args.archive_root).resolve() / f"{args.suite}-{run_id}"
+    archive = Path(args.archive_root).resolve() / f"{args.suite or 'job'}-{run_id}"
+    # run-id 复用防护 (review F5): 归档目录复用会把上一轮的 device-results/
+    # frames 混进本次归档, `check` 会拿旧帧、旧结果下判定 —— 证据必须属于本次。
+    if archive.exists() and any(archive.iterdir()):
+        die(f"归档目录已存在且非空: {archive}\n"
+            f"  run-id 复用会让旧结果/旧帧混进本次判定。换一个 --run-id，"
+            f"或先删掉该目录再跑。")
     archive.mkdir(parents=True, exist_ok=True)
 
     # job 文件：选测 / 参数覆盖 / 内联用例走它；5 键仍然带，兼容未升级的设备端
-    job = build_job(args)
     job_path = archive / "job.json"
     job_path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n")
     remove_sandbox_path(hdc, device, JOB_REL)
     hdc_send(hdc, device, job_path, f"{SANDBOX_FILES}/{JOB_REL}")
 
+    # displayroute 运行：标记清理已上移到冷启之前 (见 build_job 后的清理块),
+    # 这里不再清 —— 在 bring-up 之后清理会把本次探针刚写的新鲜标记删掉。
+
     start = (f"aa start -a {ABILITY} -b {BUNDLE} "
              f"--ps winehua.mode smoke "
              f"--ps winehua.job_file {SANDBOX_FILES}/{JOB_REL} "
-             f"--ps winehua.suite {args.suite} "
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
+    if args.suite:
+        start += f" --ps winehua.suite {args.suite}"
+    # 钉档随主 aa start 携带 (不能只靠 push 的冷启携带): run 收尾必 force-stop
+    # (见 finally), 于是 skip-push 轮次的本次 start 就是冷启 —— 不带钉档 ⇒
+    # 读设备持久化 mode ⇒ 2026-10-11 实测: gate 2/4-4/4 全红 "present no
+    # compositor display sequence observed" (fusion 无 display-seq 发布源),
+    # 1/4 带 push 对照组 PASS。二次 want 上 setOverrideMode 同值幂等
+    # (native multiwindow 位只认冷启, display_route_napi 的 g_started 语义)。
+    if pin_mode:
+        start += f" --ps winehua.desktopMode {pin_mode}"
+    if getattr(args, "extra_ps", ""):
+        # 附加调试键 (如 winehua.fusionHost, 或 k=v 写法的
+        # winehua.displayRoute=x11)。publishLaunchRequest 在
+        # onCreate/onNewWant 双入口对显式 want 随时生效; 承载判定
+        # (fusionUsesSubWindow) 在窗口创建时读, 冷启/二次 want 均可靠。
+        start += " " + format_extra_ps(args.extra_ps)
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
-    log(f"run {args.suite} (runId={run_id}, prefix={args.prefix}, "
+    log(f"run {args.suite or 'job'} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
     if code != 0:
         die(f"aa start failed: {out.strip()}")
 
-    # 本地套件定义：给判定器提供用例的 checks 声明（inline 等未定义测试退回默认判定）
+    # 本地套件定义：给判定器提供用例的 checks 声明（inline 等未定义测试退回默认判定）。
+    # 选测来源必须与设备端**同源** = 下发的 job（job 文件 > CLI, 见 build_job）:
+    # 只看 CLI 时 `run --job displayroute-gl-baseline.json`（suite/tests 写在 job
+    # 文件里）会得到空 entries ⇒ 用例声明的判定器一条不加载、frame_targets 空 ⇒
+    # 不抓帧，判定静默退回默认 result-json —— 用例声明整个空转 (review 实测发现)。
     cases = load_cases()
     suites = load_suites(cases)
-    suite_tests = suites[args.suite]["tests"] if args.suite in suites else []
-    if args.tests:
-        wanted = {item.strip() for item in args.tests.split(",") if item.strip()}
+    suite_name = job.get("suite", "")
+    suite_tests = suites[suite_name]["tests"] if suite_name in suites else []
+    wanted = {item for item in (job.get("tests") or []) if item}
+    if wanted:
         suite_tests = [entry for entry in suite_tests if entry.test_id in wanted]
     entries = {entry.test_id: entry for entry in suite_tests}
+    # inline 条目自带 checks 的按声明判定 (套件定义优先, 见 inline_test_entries)
+    entries = {**inline_test_entries(job), **entries}
     frame_targets = {tid: entry for tid, entry in entries.items() if entry.case.needs_frame}
+    # 固定帧只在 duration_ms >= 2500ms 且进入末 2 秒时才渲染 (guest main.c):
+    # seconds < 2.5 的用例声明 visual 永远抓不到帧, 判定只会说"未采集到固定帧",
+    # 与"渲染失败"不可区分 —— 在跑之前拦下 (review F12)。
+    for entry in frame_targets.values():
+        seconds = entry.params.get("seconds",
+                                   (job.get("params") or {}).get("seconds"))
+        if seconds is not None and float(seconds) < 2.5:
+            die(f"{entry.test_id} 声明了视觉判定但 seconds={seconds} < 2.5: "
+                f"固定帧只在时长 >= 2.5s 的用例里渲染, 抓帧必然为空")
 
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
+    # 自愈冷启的钉档章 (poll_run ready-degraded 路径: force-stop →
+    # ensure_app_running(restamp) 冷启 → start_command 二次 want): 冷启那次
+    # 必须带齐钉档 —— 只带 route 的话新代际 mode 落持久化, 与 gate 2/4-4/4
+    # 假 FAIL 同类。
+    restamp = " ".join(x for x in (
+        (f"--ps winehua.displayRoute {args.display_route}"
+         if getattr(args, "display_route", None) else ""),
+        (f"--ps winehua.desktopMode {pin_mode}" if pin_mode else ""),
+    ) if x)
     try:
         summary, frames = poll_run(hdc, device, archive, run_id, frame_targets,
-                                   args.timeout_minutes, args.poll_seconds,
-                                   start_command=start)
+                                   timeout_minutes, args.poll_seconds,
+                                   start_command=start, restamp_extra=restamp)
         if summary is None:
-            die(f"suite summary not found within {args.timeout_minutes} min: "
+            die(f"suite summary not found within {timeout_minutes} min: "
                 f"{REAL_FILES}/{summary_rel} "
                 f"(引擎未就绪? 设备端 ready-degraded 时不会跑测试)")
 
         hdc_recv_dir(hdc, device, f"{DRIVE_C_REL}/results/{run_id}",
                      archive / "device-results")
+        # 能力探针标记 (M2-T2): displayroute bring-up 阶段在 app 进程内跑的
+        # 探针把结论枚举写成标记文件, 不走 wine 结果协议 —— 逐个尝试归档进
+        # device-results/, 由 marker 判定器裁决 (判定只读归档)。不存在即跳过
+        # (非 displayroute 运行没有这些标记; 该跑没跑由 marker 判定器判 FAIL)。
+        # 归档条件与上面的清理条件同款 (job.displayroute): 无条件归档会把上
+        # 一轮 displayroute 留下的旧标记搬进本次归档, 让没跑探针的 run 拿旧
+        # 结论判 PASS (实测: 清理有门控而归档没有)。
+        if job.get("displayroute"):
+            for marker_name in DISPLAYROUTE_MARKERS:
+                hdc_recv_file_if_present(hdc, device, marker_name,  # files 根 (D10b)
+                                         archive / "device-results" / marker_name)
+        # 宿主/设备侧证据落归档 (见 archive_evidence 注释): 显示序列文件本体 +
+        # wine stderr + present 日志。复盘"谁呈现的帧"不再依赖设备现场。
+        archive_evidence(hdc, device, archive)
         (archive / "suite-summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
         long_seconds = args.long_seconds or int(job.get("longSeconds", 0)) or 3600
@@ -678,9 +1031,30 @@ def cmd_run(args: argparse.Namespace) -> int:
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device, "longSeconds": long_seconds,
         }, indent=2, ensure_ascii=False) + "\n")
-        # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）
+        # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）。
+        # 套件级 checks 来源: 套件定义 + job 声明（并集）。二者不是二选一 ——
+        # 套件级管矩阵/覆盖 (coverage)，job 声明的管本次 bring-up 探针
+        # (marker:*)。曾按「套件定义 > job」二选一，于是 README 记录的命令
+        # `run --suite core --job displayroute-notepad.json` 把该 job 唯一的
+        # 两条 marker 判定静默丢掉 (实测 review 发现)。
+        suite_def = suites.get(suite_name)
+        declared_suite_checks = list(suite_def.get("checks", [])) if suite_def else []
+        for check in job.get("checks") or []:
+            if check not in declared_suite_checks:
+                declared_suite_checks.append(check)
+        if declared_suite_checks:
+            suite_def = {"checks": declared_suite_checks}
         host = judge_run(archive, entries, frames, summary.get("tests", []),
-                         suites.get(args.suite), args.suite, long_seconds)
+                         suite_def, suite_name, long_seconds)
+        if getattr(args, "retry_failed", False):
+            # 重试的 start 在 retry_failed_tests 内部自建 (不复用主 start):
+            # 钉档同样要随行 —— 首判后 app 若已死, 重试 start 就是冷启。
+            suite_ps = f" --ps winehua.suite {args.suite}" if args.suite else ""
+            if pin_mode:
+                suite_ps += f" --ps winehua.desktopMode {pin_mode}"
+            host = retry_failed_tests(hdc, device, archive, run_id, job, args,
+                                      manifest, entries, host, frames,
+                                      timeout_minutes, restamp, suite_ps)
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
@@ -708,8 +1082,22 @@ def cmd_check(args: argparse.Namespace) -> int:
     summary = json.loads(summary_path.read_text())
     cases = load_cases()
     suites = load_suites(cases)
-    suite = summary.get("suite", "")
+    # 归档里的 job.json 是首次跑的那份选测/参数描述 —— 判定必须与它同源，
+    # 否则对 `run --job` 的归档重跑判定会丢掉用例声明的判定器与抓帧目标
+    # （summary 的 suite 字段在 job 跑法下可能为空，见 cmd_run 同款修复）。
+    # 有 job.json 就**只信它**（`or summary[...]` 这种回退会重新引入分叉：
+    # 纯 job 跑法下归档 job.json 没有 suite 键，而设备端 suite-summary 里
+    # 写的是默认标签 "core" ⇒ check 会把 core 全套 4 个用例当成 entries，
+    # 判出 run 侧根本没有的 missing-result 假红，实测 job-r20260930-190858）。
+    job_path = archive / "job.json"
+    job = json.loads(job_path.read_text()) if job_path.is_file() else {}
+    suite = job.get("suite", "") if job_path.is_file() else summary.get("suite", "")
     entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
+    wanted = {item for item in (job.get("tests") or []) if item}
+    if wanted:
+        entries = {tid: entry for tid, entry in entries.items() if tid in wanted}
+    # inline 条目自带 checks 的按声明判定 (与 cmd_run 同源, 见 helper 注释)
+    entries = {**inline_test_entries(job), **entries}
     # 帧分组：<test_id>.jpeg 与重试帧 <test_id>-<n>.jpeg（testId 以 -x64/-x86 结尾，
     # 去掉末尾纯数字后缀即归属测试）
     frames = {}
@@ -719,13 +1107,26 @@ def cmd_check(args: argparse.Namespace) -> int:
     long_seconds = 3600
     if artifact_path.is_file():
         long_seconds = int(json.loads(artifact_path.read_text()).get("longSeconds", 3600))
+    # 套件级 checks 来源与 cmd_run 一致: 套件定义 + 归档 job 声明（并集；
+    # 重跑判定必须与首次判定同源，否则 check 会把 job 声明的 bring-up check
+    # 丢掉）
+    suite_def = suites.get(suite)
+    declared_suite_checks = list(suite_def.get("checks", [])) if suite_def else []
+    for check in job.get("checks") or []:
+        if check not in declared_suite_checks:
+            declared_suite_checks.append(check)
+    if declared_suite_checks:
+        suite_def = {"checks": declared_suite_checks}
     host = judge_run(archive, entries, frames, summary.get("tests", []),
-                     suites.get(suite), suite, long_seconds)
+                     suite_def, suite, long_seconds)
     (archive / "host-summary.json").write_text(
         json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     for test in host["tests"]:
         log(f"  {test['testId']:<28} {test['status']:<10} "
             f"{test.get('stage', '')} {test.get('message', '')[:70]}")
+    for verdict in host.get("suiteVerdicts", []):
+        log(f"  [suite:{verdict.get('check', '')}] {verdict.get('status', '')} "
+            f"{verdict.get('message', '')[:70]}")
     log(f"check {host['status']} ({host['passed']}/{host['total']}) → {archive}")
     return 0 if host["status"] == "PASS" else 1
 
@@ -761,7 +1162,7 @@ def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
 def poll_run(hdc: str, device: str, archive: Path, run_id: str,
              frame_targets: dict, timeout_minutes: int, poll_seconds: int,
              frame_attempts: int = 4, start_command: str = "",
-             probe_after_s: int = 90) -> tuple:
+             restamp_extra: str = "", probe_after_s: int = 90) -> tuple:
     """轮询 suite-summary；期间对需要视觉判定的测试采集固定帧。
 
     截图时机沿用旧脚本语义：测试程序完成固定帧渲染后写结果文件（message 含
@@ -812,10 +1213,15 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
         text = texts.get(summary_rel, "")
         if text.strip().startswith("{"):
             try:
-                summary = json.loads(text)
-                break
+                candidate = json.loads(text)
             except json.JSONDecodeError:
                 continue
+            # 设备端结果目录只 mkdir 从不清 ⇒ 同 run-id 重跑时上一轮的 summary
+            # 还在盘上, 顺手就被当成本次结果归档 (review F5)。按 runId 认领。
+            if candidate.get("runId") and candidate["runId"] != run_id:
+                continue
+            summary = candidate
+            break
         # 引擎 ready-degraded 自愈（见 docstring）
         if (not retried and start_command and not frames
                 and time.time() - started > probe_after_s):
@@ -824,10 +1230,115 @@ def poll_run(hdc: str, device: str, archive: Path, run_id: str,
                 log("检测到 ready-degraded（桌面根未起）：重启 App 重试")
                 hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
                 time.sleep(3)
+                # 重启代际必须重新盖章: 裸启 + t0+3s 路线 want 重发 (同
+                # ensure_app_running 纪律) → onNewWant 双盖章。2026-10-05 验收
+                # 实测: 裸重启不带章, 新代际被 runner 代际守卫拦截 (by design),
+                # 自愈重试白白空转。
+                ensure_app_running(hdc, device, restamp_extra)
+                time.sleep(1)
                 hdc_shell(hdc, device, start_command)
                 retried = True
                 started = time.time()
     return summary, frames
+
+
+def retry_failed_tests(hdc, device, archive: Path, run_id: str, job: dict,
+                       args, manifest: dict, entries: dict,
+                       first_host: dict, frames: dict,
+                       timeout_minutes: int, restamp: str, start_suffix: str) -> dict:
+    """D35 防抖 (--retry-failed): 判定 FAIL 的用例单独重跑一次。
+
+    背景 (2026-10-08 实测四连): 全量 x11 交互 job 成套跑每轮随机 1 项间歇
+    失败 (right-up 丢失 / 前导多键 / release 后 +1 过渡事件 / chars 多
+    'l'), 单测复跑即绿 —— 单条事件在成套节奏下偶发丢失, 是 D30 残留时序
+    窗的验收面表现。重试让 21/21 判据不被随机噪声掩盖。
+
+    形态: 重试是自完备子归档 archive/retry-R<N>/ (device-results/frames/
+    suite-summary/job 同构) —— `check` 可对它独立重判, 首判证据不动。
+    终判取重试结果并在 host-summary 标注 retried/firstAttempt 溯源; 套件
+    级 checks 不参与重试 (管矩阵/覆盖, 不属间歇噪声面)。全部重试仍 FAIL
+    的用例, 终判维持 FAIL (重试只消间歇, 不掩盖真回归 —— D33/D34 类
+    一致性失败重跑一次不会变绿)。"""
+    failed = [t["testId"] for t in first_host.get("tests", [])
+              if t.get("status") == "FAIL"]
+    if not failed:
+        return first_host
+    for n in (1, 2, 3):
+        retry_dir = archive / f"retry-R{n}"
+        if not retry_dir.exists():
+            break
+    else:
+        log("retry: 子归档 R1-R3 已存在, 跳过重试")
+        return first_host
+    retry_run_id = f"{run_id}R{n}"
+    retry_dir.mkdir(parents=True, exist_ok=True)
+    retry_job = dict(job)
+    retry_job["tests"] = failed
+    retry_job_path = retry_dir / "job.json"
+    retry_job_path.write_text(json.dumps(retry_job, indent=2,
+                                         ensure_ascii=False) + "\n")
+    remove_sandbox_path(hdc, device, JOB_REL)
+    hdc_send(hdc, device, retry_job_path, f"{SANDBOX_FILES}/{JOB_REL}")
+    retry_entries = {tid: entries[tid] for tid in failed if tid in entries}
+    retry_frames_targets = {tid: entry for tid, entry in retry_entries.items()
+                            if entry.case.needs_frame}
+    start = (f"aa start -a {ABILITY} -b {BUNDLE} "
+             f"--ps winehua.mode smoke "
+             f"--ps winehua.job_file {SANDBOX_FILES}/{JOB_REL} "
+             f"--ps winehua.run_id {retry_run_id} --ps winehua.prefix {args.prefix}"
+             f"{start_suffix}")
+    log(f"retry R{n}: 重跑判定 FAIL 的 {len(failed)} 项: {', '.join(failed)}")
+    code, out = hdc_shell(hdc, device, start)
+    if code != 0:
+        log(f"retry: aa start 失败, 维持首判 ({out.strip()[:70]})")
+        return first_host
+    retry_summary_rel = f"{DRIVE_C_REL}/results/{retry_run_id}/suite-summary.json"
+    try:
+        retry_summary, retry_frames = poll_run(
+            hdc, device, retry_dir, retry_run_id, retry_frames_targets,
+            timeout_minutes, args.poll_seconds,
+            start_command=start, restamp_extra=restamp)
+        if retry_summary is None:
+            log(f"retry: summary 未在 {timeout_minutes} min 内出现, 维持首判")
+            return first_host
+        hdc_recv_dir(hdc, device, f"{DRIVE_C_REL}/results/{retry_run_id}",
+                     retry_dir / "device-results")
+        (retry_dir / "suite-summary.json").write_text(
+            json.dumps(retry_summary, indent=2, ensure_ascii=False) + "\n")
+        (retry_dir / "artifact.json").write_text(json.dumps({
+            "runId": retry_run_id, "suite": args.suite, "prefix": args.prefix,
+            "payloadVersion": manifest.get("suiteVersion"),
+            "device": device, "retryOf": run_id,
+        }, indent=2, ensure_ascii=False) + "\n")
+    finally:
+        hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
+    retry_host = judge_run(retry_dir, retry_entries, retry_frames,
+                           retry_summary.get("tests", []), None, "", 3600)
+    (archive / f"retry-R{n}-summary.json").write_text(
+        json.dumps(retry_host, indent=2, ensure_ascii=False) + "\n")
+    # 合并: 重试结果覆盖终判, 首判留档 (判定只读归档, 两份都在盘上)。
+    retried = {t["testId"]: t for t in retry_host.get("tests", [])}
+    merged = []
+    for t in first_host.get("tests", []):
+        tid = t["testId"]
+        if tid in retried:
+            r = dict(retried[tid])
+            r["retried"] = True
+            r["firstAttempt"] = t
+            if r["status"] != t["status"]:
+                log(f"  retry: {tid} {t['status']} → {r['status']} (R{n})")
+            merged.append(r)
+        else:
+            merged.append(t)
+    first_host["tests"] = merged
+    first_host["passed"] = sum(1 for t in merged if t["status"] == "PASS")
+    first_host["failed"] = sum(1 for t in merged if t["status"] == "FAIL")
+    first_host["skipped"] = sum(1 for t in merged if t["status"] == "SKIP")
+    first_host["total"] = len(merged)
+    first_host["status"] = "FAIL" if first_host["failed"] else (
+        "PASS" if first_host["passed"] else "SKIP")
+    first_host["retriedTests"] = sorted(retried.keys())
+    return first_host
 
 
 def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = None,
@@ -857,20 +1368,25 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
                 result = json.loads(result_path.read_text())
             except json.JSONDecodeError:
                 result = None
+        # 设备端 summary 条目：既做结果文件缺失时的回退，也作为判定输入之一
+        # （含运行器记录的 spawn pid —— presented-route 的归属断言要用它比对
+        # key 的 pid，那是宿主自己记录的事实，不是 guest 自报）。
+        device_entry = next((item for item in device_tests or []
+                             if item.get("testId") == test_id), None)
         if result is None and device_tests:
             # 结果文件缺失：测试超时/崩溃时设备端只把结论写进 suite-summary
             # （SmokeRunner 的 failure() 是内存对象），不落结果文件。回退到
             # summary 条目以保住 stage/message —— 否则判定只剩一句"结果文件
             # 缺失"，超时原因整个丢掉（实测 --timeout-ms 1500 即如此）。
-            result = next((item for item in device_tests
-                           if item.get("testId") == test_id), None)
+            result = device_entry
         if result is not None:
             collected.append(result)
         declared = entry.case.declared_checks if entry else ["result-json"]
         verdict = evaluate_checks(declared, {
             "run_dir": archive, "test_id": test_id,
             "test": entry.to_suite_json() if entry else {},
-            "result": result, "frames": frames.get(test_id, []),
+            "result": result, "device": device_entry,
+            "frames": frames.get(test_id, []),
         })
         results[test_id] = verdict
 
@@ -887,10 +1403,14 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
         })
 
     failed = [v for v in results.values() if v["status"] == "FAIL"]
-    per_test = "PASS" if results and not failed else ("FAIL" if failed else "SKIP")
+    passed = [v for v in results.values() if v["status"] == "PASS"]
+    # 全 SKIP 不是 PASS: 一条断言都没被验过 (displayroute-suite.json 的唯一
+    # 用例是 external 载体 → 全 SKIP) 记 PASS 会让退出码把"没验"当"验过"
+    # (testing-cases.md「SKIP ≠ 验过了」, 而 CI/脚本消费的正是退出码)。
+    per_test = "FAIL" if failed else ("PASS" if passed else "SKIP")
     if per_test == "FAIL" or suite_verdict["status"] == "FAIL":
         status = "FAIL"
-    elif per_test == "PASS":
+    elif per_test == "PASS" or suite_verdict["status"] == "PASS":
         status = "PASS"
     else:
         status = "SKIP"
@@ -1035,19 +1555,36 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--device", default="")
     push.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
                       help="冷启动携带 winehua.desktopMode 覆盖（引擎级模式，仅冷启动生效）")
+    push.add_argument("--display-route", choices=("wayland", "x11"), default=None,
+                      help="冷启动携带 winehua.displayRoute 覆盖（M3a 显示路线，"
+                           "仅冷启动生效；x11 要求选中测试声明 x11）")
     push.set_defaults(func=cmd_push)
 
     run = sub.add_parser("run", help="跑一个套件：推送 + aa start + 轮询 + 归档")
-    run.add_argument("--suite", required=True)
+    run.add_argument("--suite", default="",
+                     help="套件名；空 = 只跑 --job/--inline 的内容（displayroute "
+                          "编排重放等非套件运行）")
+    run.add_argument("--job", default="",
+                     help="job JSON 文件（设备端 job schema: displayroute/inline/"
+                          "tests/params），先加载文件、CLI 显式键再覆盖 —— 里程碑"
+                          "验证编排入库复现用（如 smoke/jobs/displayroute-notepad.json）")
     run.add_argument("--prefix", choices=("reuse", "clean"), default="reuse")
     run.add_argument("--desktop-mode", choices=("virtual", "fusion"), default=None,
                      help="冷启动携带 winehua.desktopMode 覆盖（C 型注入用例需要"
                           "桌面合成模式的输入链；app 已运行时须先 force-stop）")
+    run.add_argument("--display-route", choices=("wayland", "x11"), default=None,
+                     help="冷启动携带 winehua.displayRoute 覆盖（M3a 显示路线，"
+                          "仅冷启动生效；x11 要求选中测试声明 x11）")
     run.add_argument("--payload", default=str(DEFAULT_OUT))
     run.add_argument("--device", default="")
     run.add_argument("--run-id", default="")
     run.add_argument("--long-seconds", type=int, default=0)
     run.add_argument("--skip-push", action="store_true")
+    run.add_argument("--extra-ps", default="",
+                     help="附加 --ps 调试键，随冷启与二次 want 下发。两种写法可混用"
+                          "(空白分隔): k=v 对 'winehua.displayRoute=x11' 或裸对 "
+                          "'winehua.fusionHost ability'。例: 在 Pad 上强制 PC/2in1 "
+                          "的 ability 承载跑 fusion 套件")
     run.add_argument("--tests", default="",
                      help="逗号分隔的 testId 选测（suite 子集）")
     run.add_argument("--inline", default="",
@@ -1060,8 +1597,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-ms", type=int, default=None, dest="timeout_ms")
     run.add_argument("--archive-root",
                      default=str(REPO_ROOT / "build/automation-logs"))
-    run.add_argument("--timeout-minutes", type=int, default=15)
+    run.add_argument("--timeout-minutes", type=int, default=None,
+                     help="等 suite summary 的时长 (分钟); 缺省取 job 的 "
+                          "timeoutMinutes, 都没有则 15")
     run.add_argument("--poll-seconds", type=int, default=5)
+    run.add_argument("--retry-failed", action="store_true",
+                     help="D35 防抖: 判定 FAIL 的用例单独重跑一次 (自完备子归档 "
+                          "retry-R<N>/, check 可独立重判); 终判取重试, 首判留档。"
+                          "默认关 —— 套件级 checks 不重试")
     run.set_defaults(func=cmd_run)
 
     install = sub.add_parser("install", help="安装当前 HAP 到设备")

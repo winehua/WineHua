@@ -1,5 +1,6 @@
 {
   "name": "gpu-diagnostics",
+  "desktopMode": "virtual",
   "title": "GPU 诊断报告",
   "tests": [
     {

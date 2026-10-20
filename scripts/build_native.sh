@@ -158,22 +158,29 @@ build_native_libxml2() {
     cmake --build "$build"
     cmake --install "$build"
 
-    copy_soname_with_linker_alias "$build/libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so"
+    copy_soname_with_linker_alias "$(compgen -G "$build/libxml2.so.2.*" | head -1)" "libxml2.so.2" "libxml2.so"
     log "libxml2 ($NATIVE_ARCH) → $NATIVE_LIBS"
 }
 
 build_native_xkbcommon() {
+    # 版本取自源码; 装好后记 marker, 守卫校验一致 (防升级后被"文件存在"误跳过)
+    local src="$ROOT/thirdparty/libxkbcommon"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "无法从 $src/meson.build 解析 version"; return 1; }
+
     if [ -f "$NATIVE_LIBS/libxkbcommon.so.0" ] \
        && [ -f "$NATIVE_LIBS/libxkbcommon.so" ] \
        && [ -f "$NATIVE_LIBS/libxkbregistry.so.0" ] \
-       && [ -f "$NATIVE_LIBS/libxkbregistry.so" ]; then
-        log "xkbcommon ($NATIVE_ARCH) 已就绪，跳过"
+       && [ -f "$NATIVE_LIBS/libxkbregistry.so" ] \
+       && [ "$(cat "$NATIVE_LIBS/.xkbcommon_version" 2>/dev/null)" = "$ver" ]; then
+        log "xkbcommon ($NATIVE_ARCH, $ver) 已就绪，跳过"
         return 0
     fi
 
-    log "--- xkbcommon ($NATIVE_ARCH) ---"
-    local src="$ROOT/thirdparty/libxkbcommon"
-    local build="$NATIVE_BUILD/xkbcommon"
+    log "--- xkbcommon ($NATIVE_ARCH, $ver) ---"
+    # 构建目录按版本隔离 (升级时旧 meson 缓存不可复用)
+    local build="$NATIVE_BUILD/xkbcommon_$ver"
     local cross
     cross="$(gen_native_cross)"
 
@@ -189,23 +196,33 @@ build_native_xkbcommon() {
         -Denable-bash-completion=false
     ninja -C "$build"
 
-    copy_soname_with_linker_alias "$build/libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so"
-    copy_soname_with_linker_alias "$build/libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so"
-    log "xkbcommon ($NATIVE_ARCH) → $NATIVE_LIBS"
+    # 产物尾缀随版本变 (实测: 1.7.0=so.0.0.0, 1.13.2 不同), glob 取实际产物
+    copy_soname_with_linker_alias "$(compgen -G "$build/libxkbcommon.so.0.*" | head -1)" "libxkbcommon.so.0" "libxkbcommon.so"
+    copy_soname_with_linker_alias "$(compgen -G "$build/libxkbregistry.so.0.*" | head -1)" "libxkbregistry.so.0" "libxkbregistry.so"
+    echo "$ver" > "$NATIVE_LIBS/.xkbcommon_version"
+    log "xkbcommon ($NATIVE_ARCH, $ver) → $NATIVE_LIBS"
 }
 
 # ── 3. wayland (server + client) ──
 build_wayland() {
+    # 版本取自源码; 装好后记版本到 marker, 守卫校验 marker 与源码一致
+    # (防升级 submodule 后被"文件存在"误跳过 — 实测: 1.22→1.26 时旧 .so 原样留存)
+    local src="$ROOT/thirdparty/wayland"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "无法从 $src/meson.build 解析 version"; return 1; }
+
     if [ -f "$NATIVE_LIBS/libwayland-server.so.0" ] \
        && [ -f "$NATIVE_LIBS/libwayland-client.so.0" ] \
-       && [ -f "$NATIVE_LIBS/libwayland-egl.so.1" ]; then
-        log "wayland ($NATIVE_ARCH) 已就绪，跳过"
+       && [ -f "$NATIVE_LIBS/libwayland-egl.so.1" ] \
+       && [ "$(cat "$NATIVE_LIBS/.wayland_version" 2>/dev/null)" = "$ver" ]; then
+        log "wayland ($NATIVE_ARCH, $ver) 已就绪，跳过"
         return 0
     fi
 
-    log "--- wayland ($NATIVE_ARCH) ---"
-    local src="$ROOT/thirdparty/wayland"
-    local build="$NATIVE_BUILD/wayland"
+    log "--- wayland ($NATIVE_ARCH, $ver) ---"
+    # 构建目录按版本隔离: 旧版本 meson 缓存不可复用 (同 build_wayland.sh 教训)
+    local build="$NATIVE_BUILD/wayland_$ver"
     local cross
     cross="$(gen_native_cross)"
 
@@ -217,15 +234,68 @@ build_wayland() {
 
     ninja -C "$build"
 
-    # 安装 .so 到 Native libs
-    cp "$build/src/libwayland-server.so.0.22.0" "$NATIVE_LIBS/libwayland-server.so.0"
-    cp "$build/src/libwayland-client.so.0.22.0" "$NATIVE_LIBS/libwayland-client.so.0"
-    cp "$build/egl/libwayland-egl.so.1.22.0" "$NATIVE_LIBS/libwayland-egl.so.1"
+    # 安装 .so 到 Native libs (版本尾缀随 tag 走, glob 取实际产物, 取不到即失败)
+    local f
+    for f in server client; do
+        local g
+        g=$(ls "$build/src/libwayland-$f.so.0."* 2>/dev/null | head -1)
+        [ -n "$g" ] || { err "未找到产物 libwayland-$f"; return 1; }
+        cp "$g" "$NATIVE_LIBS/libwayland-$f.so.0"
+    done
+    g=$(ls "$build/egl/libwayland-egl.so.1."* 2>/dev/null | head -1)
+    [ -n "$g" ] || { err "未找到产物 libwayland-egl"; return 1; }
+    cp "$g" "$NATIVE_LIBS/libwayland-egl.so.1"
     ln -sf libwayland-server.so.0 "$NATIVE_LIBS/libwayland-server.so"
     ln -sf libwayland-client.so.0 "$NATIVE_LIBS/libwayland-client.so"
-    ln -sf libwayland-egl.so.1 "$NATIVE_LIBS/libwayland-egl.so"
+    ln -sf libwayland-egl.so.1    "$NATIVE_LIBS/libwayland-egl.so"
+    echo "$ver" > "$NATIVE_LIBS/.wayland_version"
 
-    log "wayland ($NATIVE_ARCH) → $NATIVE_LIBS"
+    log "wayland ($NATIVE_ARCH, $ver) → $NATIVE_LIBS"
+}
+
+# host 侧 wayland .pc: NATIVE_LIBS 里的 aarch64 .so 是 host 进程 (Xwayland 子进程、
+# display_compositor) 的链接目标, 但此前只有 .so 没有 pc——host 消费者 (wlroots/
+# meson_host_build) 会静默回退解析到 sysroot-ext 的 GUEST 侧 (x86_64) pc, 侧别错乱。
+# 本函数无条件执行 (自身带版本守卫), 让 pc 与 .so 同源同版本。
+emit_wayland_host_pc() {
+    local src="$ROOT/thirdparty/wayland"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "emit_wayland_host_pc: 无法解析 version"; return 1; }
+
+    [ -f "$NATIVE_LIBS/libwayland-server.so.0" ] \
+        && [ -f "$NATIVE_LIBS/libwayland-client.so.0" ] \
+        || { err "emit_wayland_host_pc: $NATIVE_LIBS 缺 wayland .so, 先跑 build_wayland"; return 1; }
+
+    # HOST_EXT 目录树此前由 display-libs 的首个 meson_host_build 顺带建立;
+    # 毁灭性重建 (rm -rf build/) 里 build_native 与 display 链是并行分支,
+    # 本函数可能先跑到 —— 目录自建, 不依赖别人的副作用 (T7 演练实测断链)。
+    mkdir -p "$HOST_EXT_PC"
+
+    # 版本守卫: pc 已存在且 Version 行一致才跳过 (直接读文件, 不走 pkg-config——
+    # 顶层 PKG_CONFIG_LIBDIR 里 guest 侧同名 pc 同版本, 会混淆判读)
+    if [ -f "$HOST_EXT_PC/wayland-server.pc" ] && [ -f "$HOST_EXT_PC/wayland-client.pc" ] \
+       && [ "$(sed -n 's/^Version: //p' "$HOST_EXT_PC/wayland-server.pc")" = "$ver" ]; then
+        return 0
+    fi
+
+    cat > "$HOST_EXT_PC/wayland-client.pc" << EOF
+Name: Wayland Client
+Description: Wayland client side library (host 侧, $NATIVE_ARCH, 链接目标是 entry/libs)
+Version: $ver
+Requires.private: libffi
+Libs: -L$NATIVE_LIBS -lwayland-client
+Cflags: -I$WINEHUA_INC
+EOF
+    cat > "$HOST_EXT_PC/wayland-server.pc" << EOF
+Name: Wayland Server
+Description: Wayland server side library (host 侧, $NATIVE_ARCH, 链接目标是 entry/libs)
+Version: $ver
+Requires.private: libffi
+Libs: -L$NATIVE_LIBS -lwayland-server
+Cflags: -I$WINEHUA_INC
+EOF
+    log "wayland host pc ($NATIVE_ARCH, $ver) → $HOST_EXT_PC"
 }
 
 # ── 3. xdg-shell + wayland 协议文件 (架构无关, 只生成一次) ──
@@ -260,16 +330,29 @@ build_protocols() {
     log "协议文件 → $WINEHUA_INC"
 }
 
-# ── 4. wayland 头文件 (架构无关, 只安装一次) ──
+# ── 4. wayland 头文件 (架构无关, 按版本守卫安装) ──
 install_headers() {
-    if [ -f "$WINEHUA_INC/wayland-server-core.h" ]; then
-        log "wayland 头文件已就绪，跳过"
+    # 守卫比对已装 wayland-version.h 的 WAYLAND_VERSION 与源码版本, 不一致即重装。
+    # 踩坑: 旧版用"文件存在"守卫, 1.22 时代的遗留头(实为更早的手工截短 stub,
+    # 连 wl_proxy_get_queue 都没有)一直挡住 1.26 重装, 直到 wlroots 编译报
+    # undeclared 才暴露——文件存在守卫在升级场景失明, 本项目第三次踩同款坑。
+    local src="$ROOT/thirdparty/wayland"
+    local ver
+    ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
+    [ -n "$ver" ] || { err "install_headers: 无法从 $src/meson.build 解析 version"; return 1; }
+
+    local inst_ver
+    inst_ver=$(sed -n 's/^#define WAYLAND_VERSION "\(.*\)"/\1/p' "$WINEHUA_INC/wayland-version.h" 2>/dev/null | head -1)
+    if [ -n "$inst_ver" ] && [ "$inst_ver" = "$ver" ]; then
+        log "wayland 头文件 ($ver) 已就绪，跳过"
         return 0
     fi
 
-    log "--- 安装 wayland 头文件 ---"
-    local src="$ROOT/thirdparty/wayland"
-    local build="$NATIVE_BUILD/wayland"
+    log "--- 安装 wayland 头文件 (已装=${inst_ver:-无} → $ver) ---"
+    # 生成头取自版本化构建目录 (T1 起构建目录带版本后缀, 未版本化旧路径已废)
+    local build="$NATIVE_BUILD/wayland_$ver"
+    [ -f "$build/src/wayland-version.h" ] \
+        || { err "install_headers: $build 缺生成头, 先跑本脚本完成 build_wayland"; return 1; }
 
     cp "$src/src/wayland-server-core.h" \
        "$src/src/wayland-server.h" \
@@ -282,7 +365,7 @@ install_headers() {
        "$build/src/wayland-client-protocol.h" \
        "$build/src/wayland-version.h" \
        "$WINEHUA_INC/"
-    log "wayland 头文件 → $WINEHUA_INC"
+    log "wayland 头文件 ($ver) → $WINEHUA_INC"
 }
 
 # ── 5. libepoxy (VirGL host 渲染器依赖, EGL 函数加载) ──
@@ -366,7 +449,15 @@ build_virglrenderer() {
     export PATH="$(dirname "$python_with_yaml"):$PATH"
 
     rm -rf "$build"
-    meson setup "$build" "$src" \
+    # external-egl-without-gbm 的豁免分支只在 libdrm_dep **未找到**时生效
+    # (virglrenderer meson.build:302)。libdrm.pc 在 sysroot-ext (guest 侧
+    # 2.4.134) 与 SDK sysroot (2.4.120) 恒可见, meson 的 found 只看 pc 存在
+    # (guest x86_64 .so 链接试跑失败也照 found), 一旦 found → 强制要求
+    # gbm.pc —— 而 libdrm ≥2.4.121 已无 gbm (拆去 mesa), gbm 永远供不出来。
+    # 本库编出后 NEEDED 只有 epoxy+libc (无 gbm, 2026-10-04 老产物实证),
+    # 所以收窄视野到 epoxy: 豁免分支确定性生效, 不再依赖构建顺序。
+    # 改动若要让 virgl 真用 gbm, 需 host 侧 mesa libgbm 链, 另立项。
+    PKG_CONFIG_LIBDIR="$epoxy_pc" meson setup "$build" "$src" \
         --cross-file "$cross" \
         --prefix "$build/install" \
         --libdir lib \
@@ -412,6 +503,7 @@ build_native_freetype
 build_native_libxml2
 build_native_xkbcommon
 build_wayland
+emit_wayland_host_pc
 build_protocols
 install_headers
 build_libepoxy

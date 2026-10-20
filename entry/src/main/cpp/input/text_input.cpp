@@ -1,7 +1,11 @@
 #include "text_input.h"
 #include "text-input-unstable-v3-server-protocol.h"
+#include "display/display_input.h"
 #include <algorithm>
 #include <cstring>
+
+// 进程内显示路线镜像 (wine_env.cpp 唯一写点) — x11 分叉判据
+extern "C" bool WineHua_DisplayRouteIsX11();
 
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -223,6 +227,13 @@ void TextInput::OnKeyboardLeave(wl_resource* surface) {
 // ========================================================================
 
 void TextInput::SendCommitString(const char* utf8) {
+    // x11 路线: zwp_text_input 无资源绑定, 文本走 display_input 投递队列 →
+    // xim_bridge_send_text (XIM server 以 XIM_COMMIT 投给 wine) —— 两路线
+    // 文本通道在 drain 分支互斥 (display_input.h 注)。
+    if (WineHua_DisplayRouteIsX11()) {
+        wl_ohos_input_post_text(utf8);
+        return;
+    }
     std::lock_guard<std::mutex> lk(mutex_);
     if (!state_.res || !state_.surface || !state_.enabled) {
         OH_LOG_WARN(LOG_APP, "[TextInput] SendCommitString DROP (res=%{public}p enabled=%{public}d)",
@@ -235,6 +246,11 @@ void TextInput::SendCommitString(const char* utf8) {
 }
 
 void TextInput::SendPreeditString(const char* utf8, int32_t cursorBegin, int32_t cursorEnd) {
+    // x11 v1 边界: 桥下行只有 commit 一种帧, 组字预览无处投递 — 丢弃
+    // (预览只见于系统键盘条; 选字后的汉字走 SendCommitString 正常上屏)。
+    if (WineHua_DisplayRouteIsX11()) {
+        return;
+    }
     std::lock_guard<std::mutex> lk(mutex_);
     if (!state_.res || !state_.surface || !state_.enabled) return;
     zwp_text_input_v3_send_preedit_string(state_.res, utf8, cursorBegin, cursorEnd);

@@ -132,11 +132,25 @@ build_ohos_unix() {
             MINGW_CC="gcc"
         fi
 
+        # guest 无桌面 GLX 栈: OpenGL 走 wayland/EGL, winex11 编出但无 GLX
+        # (configure.ac 的 WINEHUA_ALLOW_X11_NO_GLX 豁免, soname 检查空 =
+        # glx.c 编译出)。不设则上游行为 = 缺 libGL 即 configure 失败。
+        # x11 路线 GL 呈现走私有通道 (opengl_winehua.c, 2026-09-30 落地);
+        # GLX 补栈为被否决方案 (known-issues §2.4) —— 豁免维持。
+        export WINEHUA_ALLOW_X11_NO_GLX=1
+        # --without-xshm (M1-T5): OHOS 应用沙箱 seccomp 禁 SysV IPC, MIT-SHM
+        # 两侧都不可用——Xwayland 侧 shmat() SIGSYS 直接 Fatal abort (实测
+        # stderr "Caught signal 31 (Bad system call)", wlroots 补丁同步
+        # -extension MIT-SHM); wine 子进程侧 create_shm_image 的 shmget() 同样
+        # SIGSYS, box64 的信号处理 siglongjmp 把 wine 执行流跳飞 (T5 t5n 实测:
+        # show_window 的 SetWindowPos 中途断流, WindowPosChanged 不再到达)。
+        # HAVE_LIBXXSHM 不定义则 winex11 编译期走普通 XImage 路径, 零运行时
+        # 探测。上游参数 (configure.ac AC_ARG_WITH xshm), 非 fork 定制。
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CFLAGS="${WINE_CFLAGS:-} -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \
         LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET -L$SYSROOT_EXT_LIB" \
         PKG_CONFIG="$pkg_config" \
-        PKG_CONFIG_PATH="$SYSROOT_EXT_PC" \
+        PKG_CONFIG_PATH="$SYSROOT_EXT_PC:$SYSROOT_EXT_LIB/pkgconfig" \
         "$CONFIGURE_BIN" --srcdir="$WINE_SRC" \
             --host=x86_64-linux-ohos \
             --enable-archs=i386,x86_64 \
@@ -145,7 +159,7 @@ build_ohos_unix() {
             --with-wine-tools="$BUILD_DIR/wine-native" \
             --with-mingw="$MINGW_CC" \
             --disable-tests \
-            --without-x --without-alsa \
+            --with-x --without-alsa --without-xshm \
             --with-opengl --with-vulkan
     fi
 

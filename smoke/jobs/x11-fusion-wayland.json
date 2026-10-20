@@ -1,0 +1,12 @@
+{
+  "suite": "fusion",
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "wayland",
+      "DISPLAY": "",
+      "WAYLAND_DISPLAY": "wayland-0",
+      "WINEHUA_SMOKE_PROBE_STATE": "1"
+    }
+  },
+  "_note": "D51 对照实验 (wayland 臂; ledger 「D51 实验轮 175709」段): 与 x11-fusion.json 的唯一差异 = route(wayland), 走 wayland 承载链 (incumbent)。**D51 已破案并入码**: fusion 黑屏根因 = DesktopAbility 全屏画布盖住 per-xs 承载窗, 修法 = fusion 走 headless chain_start —— 实证注释见 SmokeRunner.ets「D51 (真机 175709/181829 实锤)」段。**结构教训 (2026-10-13 实查)**: ① displayroute=true 是 x11 专用编排 (SmokeRunner wasX11 门 + 强制 setDisplayRoute('x11')) —— 带 --display-route wayland 必被拒 (同指纹归档 r20261011-181736); ② 不带 --display-route 裸跑则 host 链被编排强制 x11 (headless) + guest env=wayland = 混合配置 (归档 r20261013-001806), 窗不上屏属配置伪影, **不可读作 wayland fusion 性质**。故本文件已去 displayroute/displayrouteXclient 字段 (wayland 无需链 bring-up)。③ **本设备 (type=tablet) wayland 臂结构性无独立窗承载**: WineWindowManager 策略 type=tablet → MANAGED (separateWindow=no), `explicit=fusion` 与 `--extra-ps winehua.fusionHost ability` 均不翻 (EntryAbility.ets 注释同款结论); x11 侧有 Pad 子窗承载 (startFusionSubWindow) 故正常。三跑实测无窗 (r20261013-002435/002847/003333), 同 build x11 对照 3/3 全 PASS (r20261013-002653, 用户肉眼确认)。**wayland 臂只应在 PC/2in1 设备上跑; 平板上的无窗是设备类型策略, 勿读作路线缺陷**。**判据面限制**: fusion-popup 路线自报校验硬编码 x11 (automation/checks/__init__.py:122-128), 且无独立窗时 visual:* 判定前置不可达 —— 本 job 不作门禁。"
+}

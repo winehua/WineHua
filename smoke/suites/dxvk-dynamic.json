@@ -1,5 +1,6 @@
 {
   "name": "dxvk-dynamic",
+  "desktopMode": "virtual",
   "title": "DXVK dynamic constant buffer 专项",
   "checks": [
     "coverage"

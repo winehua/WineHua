@@ -1,0 +1,20 @@
+{
+  "name": "displayroute-dxvk-fusion",
+  "title": "X 路线 fusion 多窗 dxvk 出图门禁（MW-GPU 守护用例）。与虚拟桌面版 displayroute-dxvk 并列：同 exe，判定语义同源（色域/暗底四谓词），差异 = 承载形态 —— fusion 下立方体是独立 OHOS 窗（无 preview-rect 可裁），判定器 fusion-cube-v1 全屏自定位（彩样密集带）。门禁目的：fusion×GPU 曾为整体缺口（§2.11 guest 帧无消费者），该出图路径（guest 零拷贝帧 → XTL 承载窗）再退化必须被自动判据拦下。",
+  "desktopMode": "fusion",
+  "checks": [],
+  "tests": [
+    {
+      "case": "d3d-switch-cube-fusion",
+      "id": "displayroute-dxvk-fusion-cube",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy"
+      },
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

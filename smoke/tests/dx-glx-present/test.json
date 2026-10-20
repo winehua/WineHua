@@ -1,0 +1,12 @@
+{
+  "id": "dx-glx-present",
+  "title": "X 路线 OpenGL present 链（可见窗 SwapBuffers 出图）—— 历史验收用例：已被 displayroute-gl-baseline.json job 取代、不入任何套件（套件侧注记见 smoke/suites/displayroute.json；同 exe 的现行门禁是 core 套件的 graphics-smoke/opengl 用例）。背景更新（2026-09-30 起）：「补栈」三件套命题被否决，GL 呈现链经私有通道落地（winex11.drv 私有 present 驱动；历史定位见 docs/engineering/display-route-known-issues.md §2.4）——原标题后半「未落地 / 当前跑必有 FAIL / 两处判定器都不适用」一并作废：程序侧 displayed 门读的 WINEHUA_DISPLAY_FPS_FILE 自宿主显示序列（§2.9）起 X 路线亦有值（§2.4 GREEN 实测 displayFps=117.07），visual 判定器已按归档矩形裁剪（D22）。重新启用本用例前先按当前判据面复核",
+  "exe": "winehua_graphics_smoke.exe",
+  "arch": [
+    "x64"
+  ],
+  "from_wine": "winehua_graphics_smoke",
+  "checks": [
+    "result-json"
+  ]
+}

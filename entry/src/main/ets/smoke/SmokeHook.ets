@@ -17,8 +17,11 @@ const TAG = 'SMOKE';
 // master 侧 smoke 自动化枢纽: 全部 smoke 状态与编排收敛在 ets/smoke/ 目录,
 // 公共产品文件只留带 // [[SMOKE]] 标记的一行钩子 (WineEnvService.attach /
 // WineEnvService.onNewWant / WineEnvService.enterReady 内 onEngineReady /
-// EntryAbility.applyWant / Index.<SmokeDevPanel/>)。main-ui 合并摘除动作:
-// 删 ets/smoke/ 整目录 + 删各标记行, 见 docs/SMOKE_REBUILD_20260831.md §11。
+// EntryAbility.applyWant)。main-ui 合并摘除动作: 删 ets/smoke/ 整目录 +
+// 删各标记行, 见 docs/SMOKE_REBUILD_20260831.md §11。
+// (SmokeDevPanel 及其 Index 挂载已于 2026-10-20 退役: 出图链自冷启自动
+// 起链起就绑定桌面画布, 预览窗的渲染前提早已不存在, displayroute-dxvk
+// 视觉判定同步改全屏四象限 —— 见 checks/__init__.py visual。)
 //
 // 触发语义 (与重构前的 consumeSmokeRequest/maybeRunSmoke 逐条对齐):
 //   - 冷启动: init 的 attach 只消费请求 (clean 编排接管则返回 true), 跑测

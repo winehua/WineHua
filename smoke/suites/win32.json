@@ -1,5 +1,6 @@
 {
   "name": "win32",
+  "desktopMode": "virtual",
   "title": "Win32 基础功能回归线",
   "tests": [
     {

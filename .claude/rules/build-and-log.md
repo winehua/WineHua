@@ -18,6 +18,24 @@ make NATIVE_ARCH=x86_64           # 模拟器 / x86_64 设备
 - Wine 构建用 stamp 文件 + `find -newer` 判断源码变更（stamp 在
   `build/.stamps/wine-arm64-v8a`）。
 - 构建目录按架构隔离，不要混用。
+- **构建依赖与产物一律限制在 `build/` 目录内**：下载的 tarball（`build/downloads/`）、
+  DESTDIR/staging、日志、探针源码等中间物不得写 `/tmp`、不得散落仓库根目录。
+  毁灭性重建时 `rm -rf build/` 下对应子目录即可恢复，不污染系统与他人环境。
+
+## 架构侧别纪律（guest vs host）
+
+每个组件**构建前必须先回答：它运行在 guest 还是 host？**两侧架构独立参数，不得互相假设。
+
+- **guest** = Wine 世界（Wine 本体、.drv、guest 依赖库）。目标 `GUEST_TARGET`
+  （`GUEST_ARCH` 参数，现 x86_64——arm64 真机经 box64 翻译）。产物进
+  `build/sysroot-ext/`。
+- **host** = 鸿蒙侧进程（app / 合成器 / 适配层 / NCP 子进程、Xwayland、wlroots）。
+  目标 `NATIVE_TARGET`（`NATIVE_ARCH` 参数）。新增 host 交叉依赖进
+  `build/host-ext/<NATIVE_ARCH>/`（`env.sh` 的 `HOST_EXT_*` + `meson_host_build`）。
+- 组合共三种：x86_64+arm64、x86_64+x86_64、arm64+arm64。任何一侧都可能是任一架构，
+  判断依据是**组件运行在哪个进程**，不是当前构建机或目标设备。
+- 无架构数据（协议 XML、XKB 数据）放 sysroot-ext，两侧共享。
+- host 组件只允许链接 host 架构的 `.so`；跨侧通信只经 socket/fd/IPC，**不跨侧链接**。
 
 ## 部署
 

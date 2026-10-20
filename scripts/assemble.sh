@@ -35,6 +35,31 @@ assemble_pad() {
     # -- 1. 原生 .so → libs/$NATIVE_ARCH/ (由各 build 脚本完成) --
     mkdir -p "$NATIVE_LIBS"
 
+    # -- 1a. 显示路线 host 依赖 (build/host-ext) → libs/: entry/libs 是打包
+    # 视图, host-ext 是唯一构建落点——libxwayland_ohos.so 及其 NEEDED 闭包
+    # (pixman/drm/xcb 栈/X11/Xfont2/xkbfile/xcvt...) 真机加载全靠这份拷贝。
+    # 只拷 SONAME 级文件 (*.so.<纯数字>): 运行时按 DT_NEEDED 名加载, 多级别名
+    # (.so 链接名 / .so.X.Y.Z 实体名) 是同一库的多份拷贝, 徒增包体。
+    # HAP 不支持 symlink, cp -L 取实体; 静态库 (.a) 不进包。
+    # 例外: 无版本号 .so 按文件名直载的 (现仅 libxwayland_ohos.so) 逐个列名。
+    # glob 用 *.so.[0-9]* 再按 case 剔除带点实体名 —— 旧写法 *.so.[0-9] 只认
+    # 一位数 SONAME, libx.so.10 存在时构建成功、打包静默漏掉, 设备端 dlopen
+    # 失败且病灶离现象很远 (known-issues §1.3)。2026-09-30 实测: 放一个
+    # libfake2digit.so.10 进 host-ext, 旧写法日志报 41 files 且该库不在 entry/
+    # libs 里 (被静默漏); 改后 42 files 且拷入 (RED→GREEN 对照留档在本次提交)。
+    if [ -d "$HOST_EXT_LIB" ]; then
+        _n=0
+        for so in "$HOST_EXT_LIB"/*.so.[0-9]* "$HOST_EXT_LIB"/libxwayland_ohos.so; do
+            [ -e "$so" ] || continue
+            case "$so" in
+                *.so.*) case "${so##*.so.}" in *[!0-9]*) continue ;; esac ;;
+            esac
+            cp -L "$so" "$NATIVE_LIBS/"
+            _n=$((_n + 1))
+        done
+        log "  → host-ext .so → libs/$NATIVE_ARCH/: $_n files"
+    fi
+
     if [ "$NATIVE_ARCH" = "x86_64" ]; then
         # x86_64 Pad: Wine .so 是原生架构, 直接放 libs/
         log "  → Wine .so → libs/x86_64/"
@@ -172,6 +197,13 @@ assemble_pad() {
         _pick_lib_pad_rf "libwayland-egl.so.1.22.0"     "libwayland-egl.so.1"    "libwayland-egl.so"
         _pick_lib_pad_rf "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
         _pick_lib_pad_rf "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
+        # X11 客户端栈 (M1-T4: winex11.drv 运行时链, guest 侧构建, DT_NEEDED
+        # 逐级: winex11→X11/Xext→xcb→Xau/Xdmcp)
+        _pick_lib_pad_rf "libX11.so.6.4.0"              "libX11.so.6"
+        _pick_lib_pad_rf "libXext.so.6.4.0"             "libXext.so.6"
+        _pick_lib_pad_rf "libxcb.so.1.1.0"              "libxcb.so.1"
+        _pick_lib_pad_rf "libXau.so.6.0.0"              "libXau.so.6"
+        _pick_lib_pad_rf "libXdmcp.so.6.0.0"            "libXdmcp.so.6"
         _pick_lib_pad_rf "libxml2.so.2.12.0"            "libxml2.so.2"
         _pick_lib_pad_rf "libffi.so.8.1.4"              "libffi.so.8"
         # GnuTLS 链 (schannel TLS 后端, x86_64 guest) → rawfile
@@ -264,12 +296,43 @@ assemble_pad() {
     log "  x86_64-windows → $(ls "$wine_data/bin/x86_64-windows" | wc -l) files"
 
     # strip PE 调试符号 (DWARF .debug_*, 缩减 ~50%)
+    # PE 归一化 (任务 #164): binutils strip 重写 PE 头时把 TimeDateStamp 戳成
+    # strip 当刻、重算 CheckSum —— 每轮 assemble 对已 strip 的文件再 strip
+    # 一遍, 这两处随构建时间漂移, x86_64 (642 个) 与 i386 (1386 个) PE 全部
+    # 内容抖动 (实测每文件仅差这两字段, 2026-10-17)。清零后内容不变则字节
+    # 不变; PE 加载器 (wine/Windows 用户态) 不校验 CheckSum。字段判据与
+    # automation/smoke.py pe_normalized 同源 (COFF 头 +0x08 TimeDateStamp,
+    # Optional 头 +0x40 CheckSum, 均相对 e_lfanew)。
+    normalize_pe_dir() {
+        python3 - "$1" <<'PY'
+import sys, os
+d = sys.argv[1]
+for name in os.listdir(d):
+    p = os.path.join(d, name)
+    with open(p, 'rb') as f:
+        data = bytearray(f.read())
+    if len(data) < 0x40 or data[:2] != b'MZ':
+        continue
+    e = int.from_bytes(data[0x3C:0x40], 'little')
+    if data[e:e+4] != b'PE\0\0':
+        continue
+    changed = False
+    for off in (e + 8, e + 24 + 64):
+        if off + 4 <= len(data) and data[off:off+4] != b'\0\0\0\0':
+            data[off:off+4] = b'\0\0\0\0'
+            changed = True
+    if changed:
+        with open(p, 'wb') as f:
+            f.write(data)
+PY
+    }
     log "  stripping debug symbols..."
     if command -v x86_64-w64-mingw32-strip &>/dev/null; then
         for f in "$wine_data/bin/x86_64-windows/"*.dll "$wine_data/bin/x86_64-windows/"*.drv "$wine_data/bin/x86_64-windows/"*.exe "$wine_data/bin/x86_64-windows/"*.sys; do
             [ -f "$f" ] && x86_64-w64-mingw32-strip "$f" 2>/dev/null
         done
-        log "  64-bit PE stripped"
+        normalize_pe_dir "$wine_data/bin/x86_64-windows"
+        log "  64-bit PE stripped + normalized"
     else
         warn "  x86_64-w64-mingw32-strip not found, skipping strip"
     fi
@@ -305,7 +368,8 @@ assemble_pad() {
         for f in "$wine_data/bin/i386-windows/"*.dll "$wine_data/bin/i386-windows/"*.drv "$wine_data/bin/i386-windows/"*.exe "$wine_data/bin/i386-windows/"*.sys; do
             [ -f "$f" ] && i686-w64-mingw32-strip "$f" 2>/dev/null
         done
-        log "  32-bit PE stripped"
+        normalize_pe_dir "$wine_data/bin/i386-windows"
+        log "  32-bit PE stripped + normalized"
     else
         warn "  i686-w64-mingw32-strip not found, skipping strip"
     fi
@@ -506,6 +570,18 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
         cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
     fi
 
+    # Xlib i18n 数据库: XLOCALEDIR (wine_env_baseline.h) 指向此处, 缺它
+    # XSupportsLocale() 失败 → winex11 xim_init 放弃 → XIM 链不通
+    # (2026-10-07 实测 "X does not support locale")。
+    if [ -d "$SYSROOT_EXT_SHARE/X11/locale" ]; then
+        cp -r "$SYSROOT_EXT_SHARE/X11/locale" "$wine_data/share/X11/"
+    fi
+    # 验收断言: C 基线 + zh_CN.UTF-8 (产品 locale, LANG=zh_CN.UTF-8) 必须在包内
+    for lc in C zh_CN.UTF-8; do
+        [ -f "$wine_data/share/X11/locale/$lc/XLC_LOCALE" ] ||
+            err "X11 locale data missing: $lc/XLC_LOCALE (libX11 构建段未产出? 查 build_x11_client.sh)"
+    done
+
     # guest GPU 库 (Mesa/VirGL, 供 GraphicsBroker 注入到 Wine LD_LIBRARY_PATH)
     if [ -d "$BUILD_DIR/guest_gfx/$guest_arch/lib" ]; then
         mkdir -p "$wine_data/bin/guest_gfx"
@@ -571,13 +647,66 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cp -a "$smoke_payload/." "$wine_data/smoke/"
     log "  smoke payload → wine-data/smoke ($(find "$wine_data/smoke" -name '*.exe' | wc -l) exe)"
 
+    # XKB 键盘布局数据 → wine-data/xkb/ (xkeyboard-config, 架构无关)。
+    # Xwayland 的 XKB_BASE_DIRECTORY 是编译期宿主绝对路径, 设备上不存在 →
+    # 虚拟核心键盘激活失败 FatalError (T7 bring-up 实测); 运行时由 wlroots
+    # spawn 补丁的 -xkbdir 指向 files/wine/xkb (解压自本目录)。
+    local xkb_src="$SYSROOT_EXT/usr/share/X11/xkb"
+    [ -f "$xkb_src/rules/evdev" ] || err "xkb data missing: $xkb_src (run scripts/build_xkbconfig.sh)"
+    mkdir -p "$wine_data/xkb"
+    cp -a "$xkb_src/." "$wine_data/xkb/"
+    log "  xkb data → wine-data/xkb ($(du -sh "$wine_data/xkb" | cut -f1))"
+
+    # 预编译 keymap 缓存 → wine-data/xkm/server-0.xkm。
+    # Xwayland 加载 keymap 的正规路径是 fork/exec xkbcomp (xkb/ddxLoad.c
+    # RunXkbComp)——NCP 内 exec 被拒 (实测 errno 13) → keymap 加载失败 →
+    # "Failed to activate virtual core keyboard" FatalError (T7 实测)。
+    # RunXkbComp 先查 <XDG_RUNTIME_DIR>/server-0.xkm 缓存, 命中则跳过
+    # xkbcomp; .xkm 是架构无关数据, 宿主 xkbcomp 生成的设备端直接可用。
+    # NCP shim 启动时把本文件拷到 XDG_RUNTIME_DIR (setenv 同步补上) 命中缓存。
+    local xkm_tmp="$STAGING_DIR/xkm-build"
+    mkdir -p "$xkm_tmp" "$wine_data/xkm"
+    cat > "$xkm_tmp/keymap.txt" << 'XKB_KEYMAP'
+xkb_keymap {
+  xkb_keycodes { include "evdev" };
+  xkb_types { include "complete" };
+  xkb_compat { include "complete" };
+  xkb_symbols { include "pc+us" };
+};
+XKB_KEYMAP
+    # 注意 -R 会重锚所有相对路径, 源/目标均用绝对路径
+    # (SYSROOT_EXT/STAGING_DIR 定义即绝对, 不再拼 $PWD)
+    # xkbcomp 是宿主工具依赖 (版本敏感, 1.4.7 行为见「X keymap 双编译器
+    # 分叉」记档); 可 XKBCOMP_BIN 覆盖。落位项目内 host-tools 是既定方向
+    # (同 96239cc scanner), 阻塞项 = 宿主缺 libxkbfile 头, 原生构建待补。
+    XKBCOMP="${XKBCOMP_BIN:-/usr/bin/xkbcomp}"
+    [ -x "$XKBCOMP" ] || err "缺 xkbcomp: $XKBCOMP (装宿主包或设 XKBCOMP_BIN)"
+    "$XKBCOMP" -w 1 "-R$xkb_src" "$xkm_tmp/keymap.txt" \
+        "$wine_data/xkm/server-0.xkm" > "$xkm_tmp/xkbcomp.log" 2>&1
+    # xkm 魔数 = 0x0f "mkx" (xkbfile.h XKM file header)
+    if ! head -c 4 "$wine_data/xkm/server-0.xkm" 2>/dev/null | od -An -tx1 | grep -q "0f 6d 6b 78"; then
+        err "xkm 生成失败: $(head -3 "$xkm_tmp/xkbcomp.log") (需要宿主 xkbcomp)"
+    fi
+    log "  xkm cache → wine-data/xkm/server-0.xkm ($(stat -c%s "$wine_data/xkm/server-0.xkm") B)"
+
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
+    # 确定性打包 (任务 #164): 固定全部条目 mtime + 文件名 LC_ALL=C 排序 +
+    # -X 去 extra 字段, 内容不变则 zip 字节不变 → payloadSha256 稳定。
+    # 此前裸 `zip -r .` 的条目 mtime=打包时刻、目录遍历顺序不定, 每轮
+    # host-only 构建重打包都翻转 sha, 设备端据 manifest 比对误判「引擎
+    # 更新」—— 升级卡每次重装必弹, 无人值守自动化被打断 (2026-10-17)。
+    # epoch 取 2000-01-01 (SOURCE_DATE_EPOCH 惯例值); STAGING_DIR 是构建
+    # 产物目录, touch 它不碰 wine 源树, stamp 判定 (find -newer 以源树
+    # 与 build/.stamps 比) 不受影响。zip 版本更换会整体翻一次 sha, 属
+    # 一次性事件 (升级卡弹一次, 应用后恢复稳定)。
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"
     local zip_name="wine-data.zip"
     cd "$wine_data"
     rm -f "$STAGING_DIR/$zip_name"
-    zip -r "$STAGING_DIR/$zip_name" . -x '*.git*'
+    find . -exec touch -h -d @946684800 {} +
+    find . -name '*.git*' -prune -o -type f -printf '%P\n' | LC_ALL=C sort \
+        | zip -q -X -@ "$STAGING_DIR/$zip_name"
     cp "$STAGING_DIR/$zip_name" "$rawfile_dir/"
     local payload_sha
     payload_sha="$(sha256sum "$rawfile_dir/$zip_name" | awk '{print $1}')"
