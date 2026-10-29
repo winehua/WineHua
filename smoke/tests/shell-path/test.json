@@ -1,0 +1,23 @@
+{
+  "id": "shell-path",
+  "title": "系统路径映射与可写性（profile回归哨兵）",
+  "exe": "shell_path.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/shell/shell_path.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lshell32"
+    ]
+  }
+}

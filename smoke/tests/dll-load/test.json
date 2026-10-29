@@ -1,0 +1,20 @@
+{
+  "id": "dll-load",
+  "title": "动态库加载/解析/卸载/错误码",
+  "exe": "dll_load.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/dll_load.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

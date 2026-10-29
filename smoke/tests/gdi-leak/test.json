@@ -1,0 +1,23 @@
+{
+  "id": "gdi-leak",
+  "title": "GDI/USER句柄守恒（64轮创建销毁后计数==基线）",
+  "exe": "gdi_leak.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/gdi/gdi_leak.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

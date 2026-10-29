@@ -1,0 +1,22 @@
+{
+  "id": "msg-thread",
+  "title": "跨线程消息（SendMessage同步+Post 200条）",
+  "exe": "msg_thread.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/msg/msg_thread.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

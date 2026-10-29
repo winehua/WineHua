@@ -1,0 +1,20 @@
+{
+  "id": "fs-watch",
+  "title": "目录变更通知（ReadDirectoryChangesW建删文件）",
+  "exe": "fs_watch.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/fs/fs_watch.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": []
+  }
+}

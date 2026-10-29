@@ -1,5 +1,7 @@
 # Wine + VirGL 显示链路优化与前端兼容性改造指导
 
+> 状态：已被超越（2026-09-22 整理归档）。显示链路优化方案，已被后续的 zero-copy 实现超越。
+
 > 适用场景：当前 OpenGL / VirGL Step 1 已跑通，但最终显示仍走 `wl_shm + cpu_copy + gl_upload`，希望在不推翻现有 Wine / Wayland / XComponent 架构的前提下，减少数据拷贝，并提高 ArkTS 前端兼容性。  
 > 建议用途：可作为 Codex 编码任务说明、技术方案评审文档、后续 Step 2 / Step 3 路线依据。  
 > 更新时间：2026-06-27

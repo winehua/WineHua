@@ -1,0 +1,22 @@
+{
+  "id": "input-wheel",
+  "title": "滚轮注入配对（delta=120/格）",
+  "exe": "input_wheel.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/input/input_wheel.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32"
+    ]
+  }
+}

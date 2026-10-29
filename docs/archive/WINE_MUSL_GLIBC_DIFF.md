@@ -1,5 +1,7 @@
 # Wine glibc → musl 移植兼容性分析
 
+> 状态：已完成（2026-09-22 整理归档）。musl 适配评估，musl 现已是生产方案。
+
 > 目标: 将 Wine 构建在 musl libc (HarmonyOS) 上
 > 核心挑战: libc 兼容性，无 CPU 架构模拟
 

@@ -1,0 +1,22 @@
+{
+  "id": "audio-waveout",
+  "title": "waveOut API语义（open/write/GetPosition前进/unprepare/close）",
+  "exe": "audio_waveout.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/rt/audio_waveout.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-lwinmm"
+    ]
+  }
+}

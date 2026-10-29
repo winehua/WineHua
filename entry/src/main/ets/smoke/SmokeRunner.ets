@@ -1,10 +1,19 @@
 import testNapi from 'libentry.so';
+import smokeNapi from 'libsmoke_napi.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   WineEnvService, DRIVE_C, readTextIfExists,
   ensureDirectory, writeTextFile
 } from '../service/WineEnvService';
-import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest } from './SmokeTypes';
+import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest,
+  InjectSpec, InjectAction } from './SmokeTypes';
+import { mapMouseButton } from '../common/MouseMap';
+
+// smokeMapPoint 返回（XComponent 内物理坐标，与 libsmoke_napi.so 的 d.ts 对应）
+interface PointMap {
+  px: number;
+  py: number;
+}
 
 const DOMAIN = 0x0000;
 const TAG = 'SMOKE';
@@ -293,6 +302,9 @@ export class SmokeRunner {
     let lastText: string = '';
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+      if (test.inject) {
+        await this.runInjectable(test);
+      }
       lastText = readTextIfExists(resultPath);
       let final: SmokeResultFile | null = SmokeRunner.parseFinal(lastText);
       const snapshot = testNapi.queryWineProcess(process.pid) as ProcessSnapshot;
@@ -331,9 +343,194 @@ export class SmokeRunner {
     return this.failure(request, 'timeout', `轮询超时 ${resolvedTimeout}ms (结果文件: ${resultPath})`, process.pid, test.testId);
   }
 
+  // 已处理完注入的 testId（同一轮询循环内只编排一次）
+  private injectHandled: Set<string> = new Set();
+
+  // C 型注入编排: 等 guest 的 inject-request-<testId>.json（guest 声明希望
+  // 被注入的序列）→ 逐条 smokeMapPoint 换算 + findToplevelAt 定位 +
+  // sendPointerEvent 注入（与 ArkTS 触摸同语义: raiseToplevel + Press/Release）
+  // → 写 inject-done-<testId>.json。失败写 error, guest 端按收不到消息断言
+  // 失败上报 — runner 不改写用例结论。
+  private async runInjectable(test: SmokeSuiteTest): Promise<void> {
+    if (this.injectHandled.has(test.testId)) return;
+    const reqPath: string = `${DRIVE_C}/smoke/inject-request-${test.testId}.json`;
+    const raw: string = readTextIfExists(reqPath);
+    if (!raw) return;
+    this.injectHandled.add(test.testId);
+
+    let status: string = 'ok';
+    let message: string = '';
+    let doneCount: number = 0;
+    let spec: InjectSpec | null = null;
+    try {
+      spec = JSON.parse(raw) as InjectSpec;
+    } catch (e) {
+      status = 'error';
+      message = 'inject-request JSON parse failed';
+    }
+    if (spec && spec.actions && spec.actions.length > 0) {
+      const gap: number = spec.actionGapMs && spec.actionGapMs > 0 ? spec.actionGapMs : 250;
+      for (const action of spec.actions) {
+        const err: string = await this.injectAction(action);
+        if (err) {
+          status = 'error';
+          message = `action ${doneCount} (${action.type}@${action.x},${action.y}): ${err}`;
+          break;
+        }
+        doneCount++;
+        await new Promise<void>((r) => setTimeout(r, gap));
+      }
+    } else if (spec && (!spec.actions || spec.actions.length === 0)) {
+      status = 'error';
+      message = 'inject-request has no actions';
+    }
+    writeTextFile(`${DRIVE_C}/smoke/inject-done-${test.testId}.json`,
+      JSON.stringify({ status: status, done: doneCount, message: message }));
+    hilog.info(DOMAIN, TAG, 'inject test=%{public}s status=%{public}s done=%{public}d %{public}s',
+      test.testId, status, doneCount, message);
+  }
+
+  // type/ime 动作复用上一个 mouse 动作解析出的 toplevel（键盘焦点窗口）
+  private lastInjectTl: number = 0;
+
+  private async injectAction(action: InjectAction): Promise<string> {
+    if (action.type === 'sleep') {
+      const ms: number = action.ms && action.ms > 0 ? action.ms : 100;
+      await new Promise<void>((r) => setTimeout(r, ms));
+      return '';
+    }
+    if (action.type === 'type') {
+      return this.injectTyping(action.text ? action.text : '');
+    }
+    if (action.type === 'ime') {
+      if (!this.lastInjectTl) return 'ime action without a prior mouse action (no focus target)';
+      testNapi.sendImeCommit(action.text ? action.text : '');
+      return '';
+    }
+    if (action.type === 'swipe') {
+      return this.injectSwipe(action);
+    }
+    if (action.type === 'wheel') {
+      return this.injectWheel(action);
+    }
+    if (action.type === 'key') {
+      // 裸键动作（evdev 码，如 KEY_ENTER=28），发给焦点 toplevel
+      if (!this.lastInjectTl) return 'key action without a prior mouse action';
+      if (action.code === undefined) return 'key action missing code';
+      testNapi.sendKeyEvent(this.lastInjectTl, action.code, true);
+      await new Promise<void>((r) => setTimeout(r, 30));
+      testNapi.sendKeyEvent(this.lastInjectTl, action.code, false);
+      return '';
+    }
+    return this.injectMouse(action);
+  }
+
+  // swipe: 等距插值 Move 序列；raw 增量走 rawDx/rawDy（相对模式 delta 通道）。
+  // 起点需先有 mouse 动作建立 toplevel，swipe 自带 x/y 也用于首次定位。
+  // 声明 button 时为首段按住拖拽（Press → Move×N → Release，标题栏拖动等）。
+  private async injectSwipe(action: InjectAction): Promise<string> {
+    if (action.x === undefined || action.y === undefined ||
+        action.dx === undefined || action.dy === undefined)
+      return 'swipe action missing x/y/dx/dy';
+    const steps: number = action.steps && action.steps > 0 ? action.steps : 10;
+    const holdBtn: boolean = action.button === 'left' || action.button === 'right';
+    const mapped0 = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
+    if (!mapped0) return 'smokeMapPoint failed (swipe)';
+    const tl = this.lastInjectTl ||
+      (() => {
+        const found = testNapi.findToplevelAt(mapped0.px, mapped0.py) as number;
+        return found > 0 ? found : 0;
+      })();
+    if (!tl) return 'swipe without toplevel';
+    this.lastInjectTl = tl;
+    const stepDx: number = action.dx / steps;
+    const stepDy: number = action.dy / steps;
+    const btn = mapMouseButton(action.button === 'right' ? 2 : 1);
+    if (holdBtn) {
+      testNapi.sendPointerEvent(tl, MouseAction.Press, mapped0.px, mapped0.py, btn);
+      await new Promise<void>((r) => setTimeout(r, 60));
+    }
+    for (let i = 0; i < steps; i++) {
+      testNapi.sendPointerEvent(tl, MouseAction.Move,
+        mapped0.px + stepDx * (i + 1), mapped0.py + stepDy * (i + 1), 0,
+        stepDx, stepDy, true);
+      await new Promise<void>((r) => setTimeout(r, 20));
+    }
+    if (holdBtn) {
+      await new Promise<void>((r) => setTimeout(r, 40));
+      testNapi.sendPointerEvent(tl, MouseAction.Release,
+        mapped0.px + action.dx, mapped0.py + action.dy, btn);
+    }
+    return '';
+  }
+
+  // wheel: 每格一次 sendScrollEvent（VERT），悬停点定位到窗口。
+  // notches 是 Windows 滚轮格语义（正 = 向前滚，WM_MOUSEWHEEL +120/格）；
+  // winewayland 对 VERTICAL axis 取负（wayland 正 = 内容下滚），故注入时取反。
+  private async injectWheel(action: InjectAction): Promise<string> {
+    if (action.x === undefined || action.y === undefined) return 'wheel action missing x/y';
+    const notches: number = action.notches ? action.notches : 3;
+    const absN: number = Math.abs(notches);
+    const sign: number = notches > 0 ? -1 : 1;
+    const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
+    if (!mapped) return 'smokeMapPoint failed (wheel)';
+    const tl = testNapi.findToplevelAt(mapped.px, mapped.py) as number;
+    if (!tl || tl <= 0) return `no toplevel at physical (${mapped.px},${mapped.py})`;
+    this.lastInjectTl = tl;
+    for (let i = 0; i < absN; i++) {
+      testNapi.sendScrollEvent(tl, 0, sign, 40, mapped.px, mapped.py);
+      await new Promise<void>((r) => setTimeout(r, 60));
+    }
+    return '';
+  }
+
+  // ASCII 子集展开为 evdev 键序: a-z / A-Z(shift) / 0-9。
+  // KEY_1=2..KEY_0=11, KEY_A=30..KEY_Z=44 (Linux include/uapi/input-event-codes.h)
+  private async injectTyping(text: string): Promise<string> {
+    if (!this.lastInjectTl) return 'type action without a prior mouse action (no focus target)';
+    for (let i = 0; i < text.length; i++) {
+      const ch: string = text.charAt(i);
+      const code: number = ch >= 'a' && ch <= 'z' ? 30 + (ch.charCodeAt(0) - 97) :
+        ch >= 'A' && ch <= 'Z' ? 30 + (ch.charCodeAt(0) - 65) :
+        ch >= '1' && ch <= '9' ? 2 + (ch.charCodeAt(0) - 49) :
+        ch === '0' ? 11 : ch === '.' ? 52 : ch === '_' ? 12 : -1;
+      if (code < 0) return `unsupported char '${ch}' (ascii subset only)`;
+      const needShift: boolean = ch >= 'A' && ch <= 'Z' || ch === '_';
+      const tl: number = this.lastInjectTl;
+      if (needShift) testNapi.sendKeyEvent(tl, 42, true);  // KEY_LEFTSHIFT
+      testNapi.sendKeyEvent(tl, code, true);
+      await new Promise<void>((r) => setTimeout(r, 30));
+      testNapi.sendKeyEvent(tl, code, false);
+      if (needShift) testNapi.sendKeyEvent(tl, 42, false);
+      await new Promise<void>((r) => setTimeout(r, 30));
+    }
+    return '';
+  }
+
+  private async injectMouse(action: InjectAction): Promise<string> {
+    if (action.x === undefined || action.y === undefined) return 'mouse action missing x/y';
+    const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
+    if (!mapped) return 'smokeMapPoint failed (renderer/letterbox not ready)';
+    const px: number = mapped.px;
+    const py: number = mapped.py;
+    const tl = testNapi.findToplevelAt(px, py) as number;
+    if (!tl || tl <= 0) return `no toplevel at physical (${px},${py})`;
+    testNapi.raiseToplevel(tl);
+    this.lastInjectTl = tl;
+    // ArkUI MouseButton: Left=1, Right=2 → evdev code
+    const btn = mapMouseButton(action.button === 'right' ? 2 : 1);
+    const presses: number = action.type === 'doubleClick' ? 2 : 1;
+    for (let i = 0; i < presses; i++) {
+      if (i > 0) await new Promise<void>((r) => setTimeout(r, 120));
+      testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btn);
+      await new Promise<void>((r) => setTimeout(r, 40));
+      testNapi.sendPointerEvent(tl, MouseAction.Release, px, py, btn);
+    }
+    return '';
+  }
+
   // 结果文件 → 终态对象; 未出现 / 半写 JSON / 非终态一律 null (继续轮询)
-  private static parseFinal(text: string): SmokeResultFile | null {
-    if (!text) return null;
+  private static parseFinal(text: string): SmokeResultFile | null {    if (!text) return null;
     try {
       const obj = JSON.parse(text) as SmokeResultFile;
       const status = obj.status ? `${obj.status}` : '';

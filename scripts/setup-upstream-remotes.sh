@@ -3,7 +3,7 @@
 #
 # 背景：winehua fork 的 submodule（wine/box64/dxvk/libepoxy/mesa/virglrenderer）需要
 # 跟踪上游做重合并。upstream remote 存在于 .git/config，不随仓库分发——
-# 新 clone 环境必须跑一次本脚本。URL 与 docs/SUBMODULE_MAINTAINABILITY.md §1.1 保持一致。
+# 新 clone 环境必须跑一次本脚本。URL 与 docs/assets/submodule-maintainability.md §1.1 保持一致。
 #
 # 用法：仓库根目录执行 ./scripts/setup-upstream-remotes.sh
 # 可选：执行后 git submodule foreach 'git fetch upstream <branch>' 拉取上游历史

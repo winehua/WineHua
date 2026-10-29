@@ -1,0 +1,23 @@
+{
+  "id": "e2e-click",
+  "title": "点击命中（四象限，I+R）",
+  "exe": "e2e_click.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/input/e2e_click.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

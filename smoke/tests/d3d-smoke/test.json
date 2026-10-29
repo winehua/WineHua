@@ -1,0 +1,23 @@
+{
+  "id": "d3d-smoke",
+  "title": "D3D10链守卫（档位env注入+D3D10CreateDevice；box64下d3d10.dll初始化崩溃，定性红哨兵）",
+  "exe": "d3d_smoke.exe",
+  "arch": [
+    "x64",
+    "x86"
+  ],
+  "build": {
+    "sources": [
+      "smoke/programs/graphics/d3d_smoke.c"
+    ],
+    "cflags": [
+      "-O2",
+      "-s",
+      "-Ithirdparty/wine/programs"
+    ],
+    "libs": [
+      "-luser32",
+      "-lgdi32"
+    ]
+  }
+}

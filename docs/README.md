@@ -1,71 +1,135 @@
-# Wine for HarmonyOS — 技术文档
+# 项目文档
 
-## 项目概述
+把 Wine 移植到 HarmonyOS，让 Windows 程序能在鸿蒙设备上运行。技术路线是：box64 把 x86_64 代码转译到 ARM64，Wine 跑在转译层之上，自研的 Wayland 合成器负责把画面送上屏幕。
 
-将 Wine 移植到 HarmonyOS (OpenHarmony)，使 Windows 程序在鸿蒙系统上运行。
+## 这套文档怎么用
 
-当前架构：Wine (x86_64, musl) + Box64 (ARM64) → Wayland compositor → 鸿蒙 XComponent 上屏。
-渲染栈：guest DXVK 1.10.3 (D3D11) → Wine Vulkan → Mesa Venus (vtest) → virglrenderer Venus → host Vulkan；WineD3D/VirGL (OpenGL) 为显式 fallback。
+- **按任务查**：先看下面的「按任务查找」表，找到对应文档；日常命令直接看 [cheatsheet.md](cheatsheet.md)。
+- **按主题查**：不确定看哪篇时，翻「文档地图」按目录找。
+- **文档里的状态说明**：每篇开头标了适用场景和最后核实日期。代码变化快，超过半年没核实的内容，用之前先对一下代码。
+- **历史材料**：已完成的方案、调研、状态快照都在 [archive/](archive/)，只作记录，不代表当前情况。
 
-## 文档索引
+## 按任务查找
 
-### 当前状态
-- **[CURRENT_STATUS.md](CURRENT_STATUS.md)** — 里程碑、已修复问题、已知问题
-- **[PHASE2_DXVK_STATUS_MEMO.md](PHASE2_DXVK_STATUS_MEMO.md)** — DXVK 调查活文档（handoff，改 DXVK/Venus/present 前必读）
+| 我要做的事 | 看这些 |
+|---|---|
+| 第一次接触这个项目 | [architecture/overview.md](architecture/overview.md) → [architecture/wine-internals.md](architecture/wine-internals.md) |
+| 搭开发环境 | [build/env.md](build/env.md) |
+| 构建、打包、查构建参数 | [build/guide.md](build/guide.md)、[cheatsheet.md](cheatsheet.md) |
+| 部署到设备、看日志 | [cheatsheet.md](cheatsheet.md)、[debugging/observability.md](debugging/observability.md)、[debugging/remote-hdc.md](debugging/remote-hdc.md) |
+| 遇到白屏、卡死、无声等问题 | [debugging/troubleshooting.md](debugging/troubleshooting.md) |
+| 抓故障现场（死循环、卡死、崩溃但拿不到栈） | [debugging/fault-forensics.md](debugging/fault-forensics.md) |
+| 查性能问题 | [debugging/performance.md](debugging/performance.md) |
+| 理解图形后端和档位 | [architecture/graphics-matrix.md](architecture/graphics-matrix.md) |
+| 理解画面合成、窗口显示 | [architecture/compositor.md](architecture/compositor.md) |
+| 理解鼠标键盘输入的链路 | [architecture/input.md](architecture/input.md) |
+| 理解进程启动与环境变量 | [architecture/process-model.md](architecture/process-model.md) |
+| 理解音频链路 | [architecture/audio.md](architecture/audio.md) |
+| 理解跨仓库的私有协议 | [architecture/contracts.md](architecture/contracts.md) |
+| 处理鸿蒙平台的限制（权限、沙箱、字体等） | [architecture/platform-ohos.md](architecture/platform-ohos.md) |
+| 改 wine / dxvk / box64 等 submodule | [customization/](customization/)、[assets/submodule-maintainability.md](assets/submodule-maintainability.md) |
+| 查某个开源模块为鸿蒙改了什么、为什么改 | [customization/README.md](customization/README.md) |
+| 写自动化测试用例 | [engineering/testing-cases.md](engineering/testing-cases.md) |
+| 了解自动化测试设施 | [engineering/testing-design.md](engineering/testing-design.md)、[../automation/README.md](../automation/README.md) |
+| 提交代码、走分支流程 | [engineering/workflow.md](engineering/workflow.md) |
+| 查代码规范和日志写法 | [engineering/coding.md](engineering/coding.md) |
+| 发布版本 | [build/release.md](build/release.md)、[engineering/quality.md](engineering/quality.md) |
+| 查设备信息 | [assets/devices.md](assets/devices.md) |
+| 查证书、SDK、构建环境资产 | [assets/environment.md](assets/environment.md) |
+| 查某个设计为什么这么定 | [decisions/](decisions/) |
+| 遇到不认识的词 | [glossary.md](glossary.md) |
 
-### 架构与设计
-- **[ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md)** — 总架构图（四域：wine / compositor / 音频 / 图形 + 进程拓扑 + 模块索引），**首次接触项目从这里读**
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Wine 内部架构、Wayland compositor 设计
-- **[OPENGL_VIRGL_DESIGN.md](OPENGL_VIRGL_DESIGN.md)** — VirGL/OpenGL 设计与 zero-copy/Vulkan 演进
-- **[CROSS_FORK_CONTRACTS.md](CROSS_FORK_CONTRACTS.md)** — 跨仓库私有契约（OpenGL 链路：shm 页 / present 协议 / 环境变量 / ready 标记 / 回调 / IPC；Vulkan 链路：surface tag / vn_winehua_present / VK_PRESENT 协议 / 设备释放回调；各含两端代码索引与失效表现）
-- **[AUDIO_ARCHITECTURE.md](AUDIO_ARCHITECTURE.md)** — 音频架构
-- **[PROCESS_SPAWNING.md](PROCESS_SPAWNING.md)** — 进程启动架构(broker 机制 + 4 条启动路径 + 环境变量机制 + ArkTS/native 入口索引)
-- **[DXVK_MODERN_UPGRADE_READINESS.md](DXVK_MODERN_UPGRADE_READINESS.md)** — DXVK 2.x/VKD3D 升级能力矩阵、迁移清单与准入门禁
-- **[VKD3D_LIMITED_500K_PLAN.md](VKD3D_LIMITED_500K_PLAN.md)** - VKD3D 2.6 limited-500K official D3D12 profile, gates, and device evidence
-- **[VKD3D_DESCRIPTOR_500K_910_20260804.md](VKD3D_DESCRIPTOR_500K_910_20260804.md)** — 910 设备 500K 末槽 GPU descriptor 三次真机证据
-- **[VKD3D_BDA_910_20260805.md](VKD3D_BDA_910_20260805.md)** — 910 设备 BDA/GPUVA 三次真机证据
-- **[VKD3D_GRAPHICS_SMOKE_910_20260805.md](VKD3D_GRAPHICS_SMOKE_910_20260805.md)** — 910 设备 VKD3D 物理显示 1000 帧三次真机证据
-- **[VKD3D_READBACK_REVALIDATION_910_20260806.md](VKD3D_READBACK_REVALIDATION_910_20260806.md)** - persistent-map readback regression root cause and post-fix 910 revalidation checkpoint
-- **[VKD3D_MULTIQUEUE_910_20260805.md](VKD3D_MULTIQUEUE_910_20260805.md)** — 910 设备 D3D12 COPY/DIRECT 跨队列同步三次真机证据
-- **[VKD3D_DXVK_REGRESSION_910_20260805.md](VKD3D_DXVK_REGRESSION_910_20260805.md)** — VKD3D 隔离分支的 DXVK Legacy 全量回归与 Modern 独立失败记录
+## 文档地图
 
-### 构建
-- **[BUILD_GUIDE.md](BUILD_GUIDE.md)** — 构建步骤、产物说明
-- **[BUILD_ENV.md](BUILD_ENV.md)** — 从零搭建构建环境
+### architecture/ — 架构与原理
 
-### 平台限制与已知问题
-- **[NOEXEC_MMAP_ANALYSIS.md](NOEXEC_MMAP_ANALYSIS.md)** — noexec 文件系统上 mmap+PROT_EXEC 修复（已解决，设计依据）
-- **[OHOS_MMAP_ANALYSIS.md](OHOS_MMAP_ANALYSIS.md)** — OHOS mmap 权限调研报告（平台硬约束）
-- **[X86_64_PC_ISSUES.md](X86_64_PC_ISSUES.md)** — x86_64 PC 已知问题
+| 文档 | 讲什么 |
+|---|---|
+| [overview.md](architecture/overview.md) | 总览：四大块（Wine / 合成器 / 音频 / 图形）怎么拼起来，进程之间怎么连 |
+| [wine-internals.md](architecture/wine-internals.md) | Wine 内部的 PE 与 Unix 分层、wineserver 通信、合成器模块结构、日志纪律 |
+| [graphics-matrix.md](architecture/graphics-matrix.md) | Direct3D 版本、渲染后端档位、GPU 通道三者的对应关系；档位怎么定 |
+| [compositor.md](architecture/compositor.md) | 画面怎么拼出来、窗口叠加顺序、显示形态、桌面窗口识别 |
+| [input.md](architecture/input.md) | 鼠标、键盘、滚轮、修饰键四条链路；相对指针模式、输入法 |
+| [audio.md](architecture/audio.md) | 音频的控制面与数据面、多进程混音 |
+| [process-model.md](architecture/process-model.md) | 进程怎么启动、环境变量怎么传（broker 机制） |
+| [contracts.md](architecture/contracts.md) | 跨仓库私有协议一览（共享内存页、present 协议、环境变量约定等） |
+| [platform-ohos.md](architecture/platform-ohos.md) | 鸿蒙平台适配：页面权限、noexec、沙箱路径、中文界面、设备能力差异 |
+| [platform-memory-noexec.md](architecture/platform-memory-noexec.md) | noexec 文件系统上加可执行权限的处理（已解决，记录设计依据） |
+| [platform-memory-ohos.md](architecture/platform-memory-ohos.md) | 鸿蒙内存映射权限的实测矩阵 |
+| [opengl-virgl.md](architecture/opengl-virgl.md) | OpenGL / VirGL 通道的设计与环境变量约定 |
 
-### 工程维护
-- **[SUBMODULE_MAINTAINABILITY.md](SUBMODULE_MAINTAINABILITY.md)** — submodule 合并风险现状与改进路线图（评审依据）
-- **[CODE_IMPROVEMENT_PLAN.md](CODE_IMPROVEMENT_PLAN.md)** — 代码改进实施计划（SUBMODULE_MAINTAINABILITY 的执行篇，阶段 0-4）
-- **[REMOTE_HDC.md](REMOTE_HDC.md)** — hdc 远程共享配置
-- **automation/** — WSL 回归测试套件运行器（`automation/README.md`，纯 WSL，不写死环境路径）
+### build/ — 构建与发布
 
-### 归档（一次性报告/历史记录，不再维护）
-- [virgl_display_optimization_guide.md](archive/virgl_display_optimization_guide.md) — 显示链路优化方案（已被 surface-queue zero-copy 实现超越）
-- [PHASE2_DXVK_MERGE_REPORT.md](archive/PHASE2_DXVK_MERGE_REPORT.md) — Phase2 合并决策报告（合并已完成，PR #47）
-- [DXVK_GUEST_HOST_ARCHITECTURE_AND_PERF.md](archive/DXVK_GUEST_HOST_ARCHITECTURE_AND_PERF.md) — 07-21 性能调查（结论已被 STATUS_MEMO 超越）
-- [PHASE2_DXVK_STATUS_MEMO_sections_01-40.md](archive/PHASE2_DXVK_STATUS_MEMO_sections_01-40.md) — STATUS_MEMO 的历史调查章节
-- [CPP_REFACTOR_PLAN.md](archive/CPP_REFACTOR_PLAN.md) — compositor 重构复盘（重构已 100% 完成）
-- [BOX32_MMAP_PROBE.md](archive/BOX32_MMAP_PROBE.md) — Box32 32-bit mmap 探针（结论已落地）
-- [WINE_MUSL_GLIBC_DIFF.md](archive/WINE_MUSL_GLIBC_DIFF.md) — musl 适配评估（musl 已是生产方案）
+| 文档 | 讲什么 |
+|---|---|
+| [guide.md](build/guide.md) | 构建步骤、Makefile 各阶段、产物说明 |
+| [env.md](build/env.md) | 从零搭构建环境（Docker / WSL2） |
+| [release.md](build/release.md) | 打发布包：配置替换、签名、验证 |
 
-## 关键里程碑
+### debugging/ — 日志、性能与排查
 
-| 日期 | 里程碑 |
-|------|--------|
-| 2026-06-12 | cmd.exe 在设备上运行 |
-| 2026-06-13 | notepad.exe GUI headless 验证 |
-| 2026-06-14 | NAPI 沙箱 + Wayland 渲染上屏 |
-| 2026-06-15 | 多窗口架构 + 输入框架 |
-| 2026-06-21 | ARM64 Pad Box64 .so 方案完成 |
-| 2026-07-06 | 音频 Host Broker 引擎完成 |
-| 2026-07-09 | VirGL / OpenGL guest Mesa 渲染完成 |
-| 2026-07-13 | 渲染管线性能优化 (Native VSync, 合成签名, 缓冲复用) |
-| 2026-07-25 | compositor 状态重构完成（feature/split-wayland-server） |
-| 2026-07-28 | Phase 2 DXVK/Venus 合并门禁通过（profile: shadow-precise-dirty-ring-inline-upload-coverage-sort） |
-| 2026-07-29 | D3D8 虚拟显示兼容合并 (PR #47) |
-| 2026-07-30 | DXVK 1.10.3 stable baseline（910/920 双设备 dxvk suite 全 PASS） |
+| 文档 | 讲什么 |
+|---|---|
+| [observability.md](debugging/observability.md) | 日志通道、日志标签速查、沙箱路径映射、崩溃定位 |
+| [performance.md](debugging/performance.md) | 卡顿和性能问题的分析方法、性能统计开关 |
+| [troubleshooting.md](debugging/troubleshooting.md) | 按问题现象查排查步骤 |
+| [fault-forensics.md](debugging/fault-forensics.md) | 进程内故障取证：自旋判定、信号现场、地址归因、guest 寄存器还原、翻译器开关、最小复现探针 |
+| [remote-hdc.md](debugging/remote-hdc.md) | hdc 跨机共享配置 |
+
+### engineering/ — 工程规范
+
+| 文档 | 讲什么 |
+|---|---|
+| [coding.md](engineering/coding.md) | 代码规范：日志、注释、判据收口、跨仓库协议修改规则 |
+| [quality.md](engineering/quality.md) | 改什么跑什么、验证流程、发布前检查 |
+| [workflow.md](engineering/workflow.md) | 分支模型、提交与审查、submodule 流程、协作约定 |
+| [testing-design.md](engineering/testing-design.md) | 自动化测试设施的设计 |
+| [testing-cases.md](engineering/testing-cases.md) | 怎么写一个测试用例、怎么挂进套件 |
+
+### assets/ — 资产台账
+
+| 文档 | 讲什么 |
+|---|---|
+| [devices.md](assets/devices.md) | 设备清单、形态差异、部署注意点 |
+| [environment.md](assets/environment.md) | SDK、证书签名、构建配置、网络代理 |
+| [submodule-maintainability.md](assets/submodule-maintainability.md) | 各 submodule 的分支现状与维护策略 |
+
+### customization/ — 开源模块定制
+
+各开源模块为在鸿蒙上工作所做的定制：每个定制点讲解决了什么问题、怎么解决的。
+
+| 文档 | 讲什么 |
+|---|---|
+| [customization/README.md](customization/README.md) | 定制总览：平台差异来源、图形链全景、模块一览、按问题域的定制点地图 |
+| [customization/wine.md](customization/wine.md) | wine fork：进程模型、文件系统、私有 swapchain、音频驱动、窗口管理等 |
+| [customization/virglrenderer.md](customization/virglrenderer.md) | 宿主图形服务：shadow 内存桥、present 回调、Venus 缺陷兜底 |
+| [customization/mesa.md](customization/mesa.md) | guest 侧 GL/Vulkan 驱动：vtest present、ring 同步、fence 等待 |
+| [customization/dxvk-legacy.md](customization/dxvk-legacy.md) | DXVK 1.10.3：Venus 缺特性兜底（BC 纹理、双源混合等） |
+| [customization/dxvk-modern.md](customization/dxvk-modern.md) | DXVK 2.6.2：同一套兜底的 2.x 版 + vkd3d 2.6 兼容 |
+| [customization/box64.md](customization/box64.md) | box64：musl 适配、RWX/noexec、共享库模式、BOX32 |
+| [customization/libepoxy.md](customization/libepoxy.md) | libepoxy：OHOS EGL/GLES 库解析 |
+| [customization/build-adaptations.md](customization/build-adaptations.md) | 构建级小适配（glib/gstreamer）与 TLS 链引入 |
+
+### decisions/ — 决策记录与故障复盘
+
+| 文档 | 讲什么 |
+|---|---|
+| [0001-self-built-compositor.md](decisions/0001-self-built-compositor.md) | 为什么继续维护自研合成器，不换成 weston / wlroots |
+| [0002-d3d-backend-profiles.md](decisions/0002-d3d-backend-profiles.md) | Direct3D 后端档位怎么选（哪些设备用哪个） |
+| [0003-three-schemes.md](decisions/0003-three-schemes.md) | 三套运行方案（x86_64 / box64+wine / 纯 arm64）为什么共存 |
+| [0004-default-display-mode.md](decisions/0004-default-display-mode.md) | 各设备形态默认用虚拟桌面还是多窗口 |
+| [0005-proton-trunk-roadmap.md](decisions/0005-proton-trunk-roadmap.md) | 把 Proton 路线（Valve Wine + FEX + ARM64EC）收敛为主干的五个阶段与三个卡点 |
+
+### 其他
+
+| 文档 | 讲什么 |
+|---|---|
+| [cheatsheet.md](cheatsheet.md) | 常用命令与路径速查 |
+| [glossary.md](glossary.md) | 术语表 |
+| [archive/](archive/) | 已完成的方案、调研、状态快照、真机证据（只作记录） |
+
+## 相关位置
+
+- `../.claude/rules/` — 给 AI 助手用的操作约定（构建命令、部署流程、注意事项）
+- `../automation/README.md` — 自动化测试设施的使用说明
+- `../README.md` — 项目门面：功能状态、目录结构、关键适配点
