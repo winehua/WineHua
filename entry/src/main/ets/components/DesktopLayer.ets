@@ -34,6 +34,17 @@ class DesktopController extends XComponentController {
   onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceChanged rootId=%{public}d %{public}dx%{public}d', rootId, rect.surfaceWidth, rect.surfaceHeight);
+    // KaihongOS 等 ROM 的 surface buffer 创建后保持初始几何, 不随组件布局
+    // 重建 (实测 buffer 857x857 vs 组件 857x499); renderFit 默认 RESIZE_FILL
+    // 会把方形 buffer 非等比拉伸进组件, 画面整体错位。文档契约是 surface
+    // 尺寸与组件一致, 这里用回调里的组件尺寸显式钉正 (幂等); 达标设备此
+    // 调用无效果差
+    try {
+      this.setXComponentSurfaceRect({
+        offsetX: 0, offsetY: 0,
+        surfaceWidth: rect.surfaceWidth, surfaceHeight: rect.surfaceHeight
+      });
+    } catch (_) {}
     if (rootId > 0) {
       try {
         testNapi.resizeRenderer(rootId, rect.surfaceWidth, rect.surfaceHeight);

@@ -40,6 +40,12 @@ public:
     // **不写 width_/height_**: 那两个字段是"实测 surface 尺寸", 被声明值污染后
     // 循环里的"实测 == 已画"判定会误判 (2026-09-14 黑边根因)
     void SetSize(int w, int h) {
+        // KaihongOS 等 ROM 的 eglQuerySurface 恒报创建时初始几何, 渲染循环的
+        // "实测 == 已画"跳帧判定探测不到真实 buffer 变化 — 声明尺寸变化在这
+        // 里显式置脏, 强制下一帧按新声明重绘 (geomDirty_)
+        if (w != expectW_ || h != expectH_) {
+            geomDirty_ = true;
+        }
         expectW_ = w; expectH_ = h;
     }
     // 拖拽缩放中: 整帧拉伸填满 surface (见 ComputeFrameDisplayRect)。拖拽时
@@ -95,6 +101,8 @@ private:
     int lastDrawW_ = 0, lastDrawH_ = 0;  // 上次成功上屏的绘制尺寸 (跳过判定的唯一依据)
     // 诊断限频: 只在数值变化时打印, 避免"尺寸长期不匹配"的稳态每帧刷屏
     int lastWarnSurfW_ = 0, lastWarnSurfH_ = 0;
+    // 声明尺寸变化置脏 (SetSize): query 谎报的设备上跳帧判定失效, 靠它强制重绘
+    bool geomDirty_ = false;
     int lastFitLogW_ = 0, lastFitLogH_ = 0, lastFitLogFw_ = 0, lastFitLogFh_ = 0;
     int lastFitLogLbW_ = 0, lastFitLogLbH_ = 0;
     int swapFailStreak_ = 0;             // eglSwapBuffers 连续失败次数 (诊断)

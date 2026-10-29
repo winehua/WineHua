@@ -838,12 +838,20 @@ void EglRenderer::RenderLoop() {
             EGLint curW = 0, curH = 0;
             eglQuerySurface(display_, surface_, EGL_WIDTH, &curW);
             eglQuerySurface(display_, surface_, EGL_HEIGHT, &curH);
-            if (curW == lastDrawW_ && curH == lastDrawH_) {
+            // 与下方绘制目标同一归一化: query 谎报时不归一会导致"实测(假值)
+            // != 上次绘制(真值)"恒成立, 静止桌面每帧强制重绘
+            if (curW > 0 && curH > 0 && expectW_ > 0 && expectH_ > 0 &&
+                (curW != expectW_ || curH != expectH_)) {
+                curW = expectW_;
+                curH = expectH_;
+            }
+            if (!geomDirty_ && curW == lastDrawW_ && curH == lastDrawH_) {
                 loopCount++;
                 ++skipFrames_;   // 诊断: 统计跳过 swap 的帧数
                 if (!waitForFrameTick()) break;
                 continue;
             }
+            geomDirty_ = false;
             OH_LOG_INFO(LOG_APP,
                         "[MW-RNDR] tl=%{public}u surface %{public}dx%{public}d -> %{public}dx%{public}d with no new frame, re-letterbox",
                         useToplevel, lastDrawW_, lastDrawH_, curW, curH);
@@ -863,6 +871,17 @@ void EglRenderer::RenderLoop() {
             OH_LOG_WARN(LOG_APP,
                         "[MW-RNDR] tl=%{public}u DRAW-TIME surface=%{public}dx%{public}d != expect=%{public}dx%{public}d",
                         toplevelId_, surfW, surfH, expectW_, expectH_);
+        }
+        // 部分 ROM 的 eglQuerySurface 恒返回 surface 创建时的初始几何, 不随
+        // 组件布局更新 (KaihongOS API23 实测: query 恒 857x857, buffer 实际
+        // 857x499)。按假 query 算 letterbox/viewport 会把画面压进 buffer 上
+        // 部、下方留黑。绘制目标 = 可见区 = 组件声明尺寸: 实测与声明不一致
+        // 时以声明为准 (renderFit=RESIZE_FILL 下显示层把整个 buffer 拉伸到
+        // 组件, 画满声明区即为正确画面); 健康设备两值恒等, 归一化无效果差
+        if (surfW > 0 && surfH > 0 && expectW_ > 0 && expectH_ > 0 &&
+            (surfW != expectW_ || surfH != expectH_)) {
+            surfW = expectW_;
+            surfH = expectH_;
         }
         if (surfW > 0 && surfH > 0) {
             width_ = surfW;
