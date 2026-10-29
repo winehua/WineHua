@@ -449,11 +449,10 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // 首启 wineboot 期间抑制窗口创建事件 (PC 窗口模式): 初始化等待窗
         // 不创建独立 OHOS 窗口 — 与 Pad 桌面模式对齐。wineboot 完成后恢复。
         ws->SetToplevelEventSuppressed(true);
-        // 注意: wineboot --init 只需要初始化 prefix, 不传完整环境变量以节省 entryParams 长度
-        // (argv/兼容档位由 Spawner 按 kind 注入; aarch64 归一为不带 wine 加载器
-        // token — Main 的 box64 路径自注 binDir/wine ELF, 与旧 reseed 路径的
-        // "wine|wineboot" 布局等价)
-        winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
+        // 注意: boot 触发 (winehua_keep --boot-once, D54 模型) 只需要初始化 prefix,
+        // 不传完整环境变量以节省 entryParams 长度 (argv/兼容档位由 Spawner 按 kind 注入)
+        winehua::SpawnRequest wbReq{winehua::SpawnKind::WineExe};
+        wbReq.argv = {"C:\\windows\\system32\\winehua_keep.exe", "--boot-once"};
         wbReq.desktopSurface = ws->IsDesktopMode();
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
@@ -462,12 +461,12 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         winehua::controller::AppendWineGamepadEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
-            OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineboot spawn FAILED");
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] boot trigger spawn FAILED");
             if (gStateTsfn)
                 napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:wineboot"), napi_tsfn_blocking);
             return false;
         }
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot started, pid=%{public}d", childPid);
+        OH_LOG_WARN(LOG_APP, "[Launch-Async] boot trigger started, pid=%{public}d", childPid);
         /* 首次初始化 (wine.inf 的 PreInstall/DefaultInstall/Wow64Install + 可选 Mono)
          * 耗时与设备性能强相关, 模拟器上可超过 30s。先等 wineboot 进程退出
          * (NCP 退出回调确认 — 沙箱 /proc 对 NCP 不可见, 进程存活轮询不可用),
