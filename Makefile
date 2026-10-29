@@ -100,14 +100,6 @@ $(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
 	python3 $(ROOT)/automation/smoke.py build
 	test -f $@
 
-# 载荷里的 wine 产物 exe 由 wine 构建副产物产出, 没有独立编译步骤。
-# 这条规则把 "先 wine 后 smoke payload" 的顺序钉进依赖图: 从零构建时
-# manifest 会先于 wine 被解析, exe 缺文件会让 make 直接报 No rule;
-# 挂上 wine stamp 前置后 wine 必先完成。wine 完成后 exe 仍缺失属于
-# 异常 (如误删 build/wine-ohos), 在这里给出可操作的报错而不是 No rule
-$(BUILD_DIR)/wine-ohos/programs/winehua_d3d11_smoke/x86_64-windows/winehua_d3d11_smoke.exe: $(STAMPS)/wine-$(NATIVE_ARCH)
-	@test -f $@ || { echo "ERROR: wine 已构建但缺少 smoke 用例 $@"; echo "       删除 build/.stamps/wine-$(NATIVE_ARCH) 后重跑 make 以重建 wine"; exit 1; }
-
 # Guest runtime build scripts can also be invoked directly while iterating on
 # Mesa/Venus. Track their manifests as assemble inputs so a subsequent
 # `make hap` cannot silently reuse an older staged wine-data.zip.
