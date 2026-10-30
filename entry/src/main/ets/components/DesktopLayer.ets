@@ -181,6 +181,12 @@ export struct DesktopLayer {
   @State private cursorVpY: number = -100;
   private vcX: number = 0;   // 虚拟光标 (物理 px)
   private vcY: number = 0;
+  // KaihongOS surface 原地 resize 断裂的兜底: 窗口尺寸变化 (vdRecreateTick,
+  // 由 VDA windowSizeChange 写入) 时短暂卸载再重挂 XComponent —— 走本设备
+  // 已验证可靠的 surface 销毁重建路径, 新 surface 按当前布局尺寸创建
+  @State private xcAlive: boolean = true;
+  @StorageProp('vdRecreateTick') @Watch('onVdRecreateTick') recreateTick: number = 0;
+  private lastRecreateMs: number = 0;
   private vcInit: boolean = false;
   private scrWPx: number = 0;
   private scrHPx: number = 0;
@@ -426,8 +432,22 @@ export struct DesktopLayer {
     }
   }
 
+  onVdRecreateTick(): void {
+    // 防抖: windowSizeChange 会连发多拍, 300ms 内的重复信号只走一轮重建
+    const now = Date.now();
+    if (now - this.lastRecreateMs < 300) {
+      return;
+    }
+    this.lastRecreateMs = now;
+    this.xcAlive = false;
+    setTimeout(() => {
+      this.xcAlive = true;
+    }, 150);
+  }
+
   build() {
     Stack() {
+      if (this.xcAlive) {
       XComponent({
         id: 'wine_desktop_xc',
         type: XComponentType.SURFACE,
@@ -796,6 +816,13 @@ export struct DesktopLayer {
         if (vert !== 0) testNapi.sendScrollEvent(tl, 0, vert, step, wpx, wpy);
         if (horiz !== 0) testNapi.sendScrollEvent(tl, 1, horiz, step, wpx, wpy);
       })
+      } else {
+        // surface 重建过渡占位 (xcAlive 翻转的 ~150ms 间隙)
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#000')
+      }
 
       // ── 触控板虚拟光标指示 (不响应触摸, 纯展示) ──
       if (this.touchpadOn) {

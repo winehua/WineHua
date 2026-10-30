@@ -23,6 +23,9 @@ export default class VirtualDesktopAbility extends UIAbility {
   private cleanedUp: boolean = false;
   // 沉浸最大化进行中 (windowStatusChange 防递归, 见 onWindowStageCreate)
   private immersiveMaximized: boolean = false;
+  // 最近一次 windowSizeChange 的尺寸 (同尺寸重复事件去重: 窗口移动不重建)
+  private lastSigW: number = 0;
+  private lastSigH: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, '[VDA] onCreate launchReason=%{public}d', launchParam.launchReason);
@@ -70,6 +73,27 @@ export default class VirtualDesktopAbility extends UIAbility {
         if (eventType === window.WindowEventType.WINDOW_DESTROYED) {
           this.cleanup();
         }
+      });
+
+      // KaihongOS 等 ROM: XComponent 的 surface 只在销毁重建时跟随布局, 窗口
+      // 驱动的原地 resize 整条链失效 — buffer 不调整、onSurfaceChanged/
+      // onAreaChange 均不派发、显示区不缩放 (内容 stuck 旧几何)。WMS 的
+      // windowSizeChange 是唯一存活信号 (实测正常派发): 收到即写重建 tick,
+      // DesktopLayer 监听后短暂卸载/重挂 XComponent, 走本设备可靠的 surface
+      // 销毁重建路径, 新 surface 按当前布局尺寸创建, 现有生命周期完成 resize
+      mainWindow.on('windowSizeChange', (size: window.Size) => {
+        // 同尺寸重复事件直接忽略 — 重建只跟真实尺寸变化走, 窗口移动
+        // (不改缓冲区) 即使 ROM 误发事件也不触发黑屏重建
+        if (size.width === this.lastSigW && size.height === this.lastSigH) {
+          hilog.info(DOMAIN, TAG, '[VDA] windowSizeChange %{public}dx%{public}d (unchanged, skip)',
+            size.width, size.height);
+          return;
+        }
+        this.lastSigW = size.width;
+        this.lastSigH = size.height;
+        hilog.info(DOMAIN, TAG, '[VDA] windowSizeChange %{public}dx%{public}d',
+          size.width, size.height);
+        AppStorage.setOrCreate('vdRecreateTick', Date.now());
       });
 
       // 最大化 → 沉浸全屏, 与游戏全屏同款路径:
