@@ -124,7 +124,8 @@ FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
     // 层序单一数据源 (阶段 1): 一帧全部内容来源的层列表, 构建一次,
     // fs-pick / 覆盖判定 / 签名 / 合成共用。zIndex: root < toplevel <
     // subsurface — 顺序与旧双循环等价 (见 CompositorLayer 注释)。
-    plan.layers = comp_.BuildLayerListLocked(plan.rootW, plan.rootH);
+    if (plan.layers.empty())
+        plan.layers = comp_.BuildLayerListLocked(plan.rootW, plan.rootH);
 
     // 阶段 2: 全屏 pick/fit
     PlanFullscreenLocked(plan);
@@ -158,7 +159,7 @@ FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
     frame.h = plan.rootH;
     frame.contentW = plan.rootW;
     frame.contentH = plan.rootH;
-    frame.opaque = (rst->ShmFormat() != 0);
+    frame.opaque = !plan.rootHasPixels || (rst->ShmFormat() != 0);
     return FramePlanOutcome::kCompose;
 }
 
@@ -167,9 +168,49 @@ FramePlanOutcome FramePlanner::GateDesktopDirtyLocked(uint32_t id, FramePlan& pl
                                                       PresentedFrame& frame,
                                                       ToplevelManager::ToplevelState*& rst) {
     rst = tmgr_.FindToplevelLocked(id);
-    if (!rst || !rst->HasFrame()) return FramePlanOutcome::kNoFrame;
+    if (!rst) return FramePlanOutcome::kNoFrame;
     if (!rst->IsDirty()) return FramePlanOutcome::kNoFrame;
 
+    plan.rootHasPixels = rst->HasFrame();
+    if (!plan.rootHasPixels) {
+        // Child GDI/GL buffers are independently committed. Waiting for an
+        // Explorer backdrop here would discard a renderable scene forever.
+        // Use the same output bounds as InputResolver's bufferless-root path;
+        // do not invent a guest frame or overwrite the shell's frame state.
+        plan.rootW = comp_.outputW_;
+        plan.rootH = comp_.outputH_;
+        if (plan.rootW <= 0 || plan.rootH <= 0) return FramePlanOutcome::kNoFrame;
+        plan.layers = comp_.BuildLayerListLocked(plan.rootW, plan.rootH);
+        const bool childHasPixels = std::any_of(plan.layers.begin(), plan.layers.end(),
+            [&](const CompositorLayer& layer) {
+                if (layer.ShouldSkipCpu() || layer.w <= 0 || layer.h <= 0) return false;
+                if (layer.type == CompositorLayer::Type::Subsurface)
+                    return layer.sub && !layer.sub->pixels.empty();
+                if (layer.type == CompositorLayer::Type::Toplevel) {
+                    const auto* child = tmgr_.FindToplevelLocked(layer.toplevelId);
+                    return child && child->HasFrame();
+                }
+                return false;
+            });
+        if (childHasPixels || comp_.desktopRootlessSceneId_ == id) {
+            if (comp_.desktopRootlessSceneId_ != id) {
+                OH_LOG_INFO(LOG_APP,
+                            "[MW-TAKE] compose buffered children without root pixels id=%{public}u output=%{public}dx%{public}d",
+                            id, plan.rootW, plan.rootH);
+            }
+            comp_.desktopRootlessSceneId_ = id;
+            return FramePlanOutcome::kCompose;
+        }
+        static thread_local unsigned int missingRootFrameCount = 0;
+        if (++missingRootFrameCount % 300 == 1) {
+            OH_LOG_WARN(LOG_APP,
+                        "[MW-TAKE] awaiting root frame id=%{public}u found=%{public}d size=%{public}dx%{public}d subsurfaces=%{public}zu",
+                        id, rst ? 1 : 0, rst ? rst->Width() : 0, rst ? rst->Height() : 0,
+                        comp_.subsurfaceLayers_.size());
+        }
+        return FramePlanOutcome::kNoFrame;
+    }
+    comp_.desktopRootlessSceneId_ = 0;
     plan.rootW = rst->Width();
     plan.rootH = rst->Height();
 
@@ -441,6 +482,7 @@ uint64_t FramePlanner::ComputeCompositionSignatureLocked(uint32_t id,
     mixSignature(id);
     mixSignature(static_cast<uint32_t>(plan.rootW));
     mixSignature(static_cast<uint32_t>(plan.rootH));
+    mixSignature(plan.rootHasPixels ? 1 : 0);
     // 签名遍历 Layer 列表: 每个可见 toplevel/subsurface 的几何与标记
     // (与旧两个循环 mix 序列等价; 不可见 toplevel 的 (id,0) 不再混入,
     // 仅影响 rebuildBase 触发时机, 不影响输出像素 — 不可见窗口不参与
@@ -582,11 +624,20 @@ void FramePlanner::CopyBaseToOutputLocked(const ToplevelManager::ToplevelState* 
                                           FramePlan& plan,
                                           std::vector<uint8_t>& out) {
     if (plan.rebuildBase) {
-        out = rst->Pixels();
+        if (plan.rootHasPixels) {
+            out = rst->Pixels();
+        } else {
+            out.resize(static_cast<size_t>(plan.rootW) * plan.rootH * 4);
+            FillBlackRect(out, plan.rootW, plan.dmg, 0, 0, plan.rootW, plan.rootH);
+        }
         comp_.desktopOutputInitialized_ = true;
         comp_.desktopOutputRootFrameSerial_ = comp_.desktopRootFrameSerial_;
         comp_.desktopCompositionSignature_ = plan.compositionSignature;
     } else if (!plan.dmg.full) {
+        if (!plan.rootHasPixels) {
+            FillBlackRect(out, plan.rootW, plan.dmg, plan.dmg.x, plan.dmg.y, plan.dmg.w, plan.dmg.h);
+            return;
+        }
         // 局部合成: R∩root 基底落盘到输出 (R 外复用上帧内容)。持锁读
         // root 帧像素; out.size()==rootBytes 已由 rebuildBase 判定保证。
         const auto& base = rst->Pixels();

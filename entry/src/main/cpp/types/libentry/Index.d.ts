@@ -1,5 +1,18 @@
 export const startServer: (sockPath: string) => boolean;
 export const setHostShadowProfile: (profile: string) => boolean;
+export interface PerformanceState {
+  clientFps: number;
+  displayFps: number;
+  cpuPercent: number;
+  memoryMb: number;
+  gpu: string;
+  width: number;
+  height: number;
+}
+export const getPerformanceState: () => PerformanceState;
+export const isDuanwuToplevel: (toplevelId: number) => boolean;
+export const getKeyboardFocusedToplevel: () => number;
+export const getKeyboardTarget: () => number;
 export const launchClient: (exePath: string, argv: string[], sockPath: string, libPath: string,
   homeDir: string, d3dBackend?: string, dxvkBackend?: string, wineLang?: string) => number;
 export const stopClient: () => void;
@@ -26,7 +39,8 @@ export interface WineProgramOptions {
   workingDirectory: string;
   d3dBackend: string;
   dxvkBackend?: string;
-  presentBackend: string;
+  openglRenderer?: string;
+  presentBackend?: string;
 }
 export interface WineProcessHandle {
   found: boolean;
@@ -45,12 +59,12 @@ export const resetWinePrefix: () => boolean;
 export const setOutputSize: (w: number, h: number) => void;
 export const setDisplayScale: (scale: number) => void;
 export const setDesktopMode: (enabled: boolean) => void;
-export const setPhoneMode: (enabled: boolean) => void;
+export const setPhoneMode: (enabled: boolean, mewgenicsGpuQualified?: boolean) => void;
 export const findToplevelAt: (px: number, py: number) => number;
 export const raiseToplevel: (toplevelId: number) => void;
 export const createRenderer: (toplevelId: number, surfaceId: BigInt) => void;
-export const resizeRenderer: (toplevelId: number, width: number, height: number) => void;
-export const destroyRenderer: (toplevelId: number) => void;
+export const resizeRenderer: (toplevelId: number, width: number, height: number, surfaceId?: bigint) => void;
+export const destroyRenderer: (toplevelId: number, surfaceId?: bigint) => void;
 export const sendPointerEvent: (toplevelId: number, action: number, px: number, py: number, button: number, rawDeltaX?: number, rawDeltaY?: number, fromMouse?: boolean) => void;
 export const sendKeyEvent: (toplevelId: number, evdevCode: number, pressed: boolean) => void;
 export const sendScrollEvent: (toplevelId: number, axis: number, value: number, scrollStep: number, px: number, py: number) => void;

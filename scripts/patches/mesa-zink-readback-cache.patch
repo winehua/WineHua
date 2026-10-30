@@ -1,0 +1,49 @@
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1935,6 +1935,7 @@
+    } hud;
+ 
+    struct pipe_resource *dummy_vertex_buffer;
++   struct pipe_resource *winehua_readback_staging;
+    struct pipe_resource *dummy_xfb_buffer;
+    struct pipe_surface *dummy_surface[7];
+    struct zink_buffer_view *dummy_bufferview;
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -149,6 +149,7 @@
+       pipe_surface_release(&ctx->base, &ctx->fb_state.cbufs[i]);
+    pipe_surface_release(&ctx->base, &ctx->fb_state.zsbuf);
+ 
++   pipe_resource_reference(&ctx->winehua_readback_staging, NULL);
+    pipe_resource_reference(&ctx->dummy_vertex_buffer, NULL);
+    pipe_resource_reference(&ctx->dummy_xfb_buffer, NULL);
+ 
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2535,6 +2535,25 @@
+       templ.array_size = 1;
+       templ.flags = 0;
+ 
+-      trans->staging_res = zink_resource_create(pctx->screen, &templ);
++      /* Cache only idle synchronous readback staging. Hold one bounded
++       * allocation per context; concurrent maps retain their own resource.
++       * Keep all existing transfer barriers, fence waits and invalidates. */
++      const bool cache_readback = (usage & PIPE_MAP_READ) &&
++         !(usage & PIPE_MAP_WRITE) && templ.width0 <= 16 * 1024 * 1024 &&
++         debug_get_bool_option("ZINK_WINEHUA_READBACK_CACHE", false);
++      const bool cached_idle = ctx->winehua_readback_staging &&
++         p_atomic_read(&ctx->winehua_readback_staging->reference.count) == 1 &&
++         zink_resource_usage_check_completion(screen,
++            zink_resource(ctx->winehua_readback_staging), ZINK_RESOURCE_ACCESS_RW);
++      if (cache_readback && cached_idle &&
++          ctx->winehua_readback_staging->format == templ.format &&
++          ctx->winehua_readback_staging->width0 >= templ.width0) {
++         pipe_resource_reference(&trans->staging_res, ctx->winehua_readback_staging);
++      } else {
++         trans->staging_res = zink_resource_create(pctx->screen, &templ);
++         if (cache_readback && trans->staging_res &&
++             (!ctx->winehua_readback_staging || cached_idle))
++            pipe_resource_reference(&ctx->winehua_readback_staging, trans->staging_res);
++      }
+       if (!trans->staging_res)
+          goto fail;

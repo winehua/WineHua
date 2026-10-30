@@ -1,0 +1,20 @@
+--- a/dlls/opengl32/wgl.c
++++ b/dlls/opengl32/wgl.c
+@@ -1658,6 +1658,17 @@
+         if (ctx->base.extensions[*ext]) return func->func;
+     }
+ 
++    /* Some applications request the promoted name on a GL 3.2 context
++     * exposing ARB_instanced_arrays. The ARB entry has the same signature
++     * and semantics; use it only when that extension is actually present. */
++    if (!strcmp( name, "glVertexAttribDivisor" ) &&
++        ctx->base.extensions[GL_ARB_instanced_arrays])
++    {
++        const struct registry_entry *alias = get_function_entry( "glVertexAttribDivisorARB" );
++        TRACE( "Using ARB_instanced_arrays alias for %s\n", name );
++        return alias->func;
++    }
++
+     WARN( "Extensions required for %s not supported\n", name );
+     return NULL;
+ }

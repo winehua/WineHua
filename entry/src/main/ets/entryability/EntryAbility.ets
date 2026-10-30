@@ -1,10 +1,15 @@
+import { DEFAULT_D3D_BACKEND } from '../common/GraphicsDefaults';
+import { hasQualifiedMewgenicsGpu } from '../common/MewgenicsGraphics';
+import { PhoneGraphicsSettings } from '../service/PhoneGraphicsSettings';
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
-import { WineEnvService } from '../service/WineEnvService';
+import { WineEnvService, FILES_BASE, readTextIfExists } from '../service/WineEnvService';
+import { ProcessService } from '../service/ProcessService';
 import { DesktopModeService } from '../service/DesktopModeService';
+import { InputSettingsService } from '../service/InputSettingsService';
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
@@ -39,9 +44,9 @@ export default class EntryAbility extends UIAbility {
     };
     const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
       parameters['winehua.d3d_backend'] !== null;
-    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || DEFAULT_D3D_BACKEND;
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
-    const d3dBackend = requestedD3d === 'dxvk_legacy' ||
+    const d3dBackend = requestedD3d === 'dxvk_legacy' || requestedD3d === 'dxvk_legacy_d3d9' ||
       requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
       requestedD3d : 'wined3d';
     const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
@@ -49,12 +54,25 @@ export default class EntryAbility extends UIAbility {
     const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'auto';
     let dxvkBackend = this.resolveDxvkBackend(explicitDxvk ?
       value('winehua.dxvk_backend', 'auto') : persistedDxvk);
-    if (d3dBackend === 'dxvk_legacy') dxvkBackend = 'dxvk_legacy';
+    if (d3dBackend === 'dxvk_legacy' || d3dBackend === 'dxvk_legacy_d3d9') dxvkBackend = 'dxvk_legacy';
     if (d3dBackend === 'dxvk_modern_2_6') dxvkBackend = 'dxvk_modern_2_6';
     AppStorage.setOrCreate<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.set<string>('winehua.d3d.backend', d3dBackend);
     AppStorage.setOrCreate<string>('winehua.dxvk.backend', dxvkBackend);
     AppStorage.set<string>('winehua.dxvk.backend', dxvkBackend);
+    const scale = Number(value('winehua.phoneScale', '0'));
+    AppStorage.setOrCreate<number>('winehua.phone.scale.override', 0);
+    AppStorage.set<number>('winehua.phone.scale.override', scale === 2 || scale === 3 ? scale : 0);
+    if (scale === 2 || scale === 3)
+      PhoneGraphicsSettings.getInstance().setScale(scale);
+    const desktopResolution = value('winehua.desktopResolution', '');
+    if (desktopResolution === 'auto' || desktopResolution === '1024x768')
+      PhoneGraphicsSettings.getInstance().setDesktopResolution(desktopResolution);
+    // Optional, per-session diagnostic A/B for GPU buffer synchronization.
+    const hostProfile = value('winehua.hostShadowProfile', '');
+    AppStorage.setOrCreate<string>('winehua.hostShadowProfile', '');
+    AppStorage.set<string>('winehua.hostShadowProfile',
+      hostProfile === 'shadow-precise-legacy-host-sync' || hostProfile === 'baseline' ? hostProfile : '');
     // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
     // subWindow 承载 (见 WineWindowManager.fusionUsesSubWindow)。仅显式 want
     // 生效, 不持久化。
@@ -80,6 +98,10 @@ export default class EntryAbility extends UIAbility {
     if (parameters && parameters['winehua.program'] !== undefined &&
       parameters['winehua.program'] !== null) {
       WineEnvService.getInstance().setAutoProgram(value('winehua.program', ''));
+      AppStorage.setOrCreate<boolean>('winehua.program.openglDiag', false);
+      AppStorage.set<boolean>('winehua.program.openglDiag', value('winehua.openglDiag', '') === '1');
+      AppStorage.setOrCreate<string>('winehua.program.envFile', '');
+      AppStorage.set<string>('winehua.program.envFile', value('winehua.program_env_file', ''));
     }
     // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
     // 在 SmokeHook, 模式非 smoke 时零行为)
@@ -127,19 +149,51 @@ export default class EntryAbility extends UIAbility {
   private runProgram(windowsPath: string): void {
     const slash = windowsPath.lastIndexOf('/');
     const dir = slash > 0 ? windowsPath.substring(0, slash) : windowsPath;
+    const environment: Record<string, string> = {};
+    const envFile = AppStorage.get<string>('winehua.program.envFile') || '';
+    // Device diagnostics may supply per-launch settings from the app's files.
+    if (envFile.startsWith(`${FILES_BASE}/`) && !envFile.split('/').includes('..')) {
+      try {
+        const overrides = JSON.parse(readTextIfExists(envFile)) as Record<string, string>;
+        for (const key of Object.keys(overrides)) {
+          if (typeof overrides[key] === 'string') environment[key] = overrides[key];
+        }
+      } catch (err) {
+        hilog.error(DOMAIN, 'testTag', 'program environment invalid: %{public}s', JSON.stringify(err));
+        return;
+      }
+    }
+    if (AppStorage.get<boolean>('winehua.program.openglDiag')) {
+      environment['WINEHUA_OPENGL_DIAG'] = '1';
+      environment['WINEHUA_WINEDEBUG'] = '-all,err+all,warn+module,warn+wgl,trace+wgl';
+    }
     testNapi.runWineProgram({
       windowsExePath: windowsPath,
       argv: [],
-      environment: {},
+      environment: environment,
       workingDirectory: dir,
-      d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k',
+      d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? DEFAULT_D3D_BACKEND,
       dxvkBackend: AppStorage.get<string>('winehua.dxvk.backend') ?? 'auto'
     });
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'vkd3d_limited_500k');
+    PhoneGraphicsSettings.getInstance().init(this.context);
+    // 输入设置 (触控板/虚拟键盘/自定义按键) 在首个 Ability 入口初始化一次;
+    // init 幂等, 其他页面/Ability 可安全重复调用。
+    InputSettingsService.getInstance().init(this.context);
+    PersistentStorage.persistProp<string>('winehua.d3d.preference', DEFAULT_D3D_BACKEND);
     PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'auto');
+    // Older phone installs persisted the experimental VKD3D default before
+    // the user selected a backend. Migrate it once; later selections survive.
+    PersistentStorage.persistProp<boolean>('winehua.phone.graphicsBaseline.v1', false);
+    if (deviceInfo.deviceType === 'phone' &&
+      !AppStorage.get<boolean>('winehua.phone.graphicsBaseline.v1')) {
+      if (AppStorage.get<string>('winehua.d3d.preference') === 'vkd3d_limited_500k') {
+        AppStorage.set<string>('winehua.d3d.preference', DEFAULT_D3D_BACKEND);
+      }
+      AppStorage.set<boolean>('winehua.phone.graphicsBaseline.v1', true);
+    }
     // 注: Wine 语言偏好不走 PersistentStorage (冷启动不恢复磁盘值, 实测),
     // 由 WineEnvService.init 用 preferences API 自行加载
     try {
@@ -153,7 +207,7 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     this.publishLaunchRequest(want);
-    WineWindowManager.getInstance().restoreDesktopIfRunning();
+    if (deviceInfo.deviceType !== 'phone') WineWindowManager.getInstance().restoreDesktopIfRunning();
     WineEnvService.getInstance().onNewWant();
     // 自动化通道 (运行中会话): winehua.program → 直启该程序
     this.autoRunIfRequested();
@@ -168,21 +222,19 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
     // 手机走 fork-shim，必须在 WineEnvService.startSession 的首次 NCP 调用前设置。
-    testNapi.setPhoneMode(deviceInfo.deviceType === 'phone');
+    testNapi.setPhoneMode(deviceInfo.deviceType === 'phone', hasQualifiedMewgenicsGpu());
 
-    // Phone desktop is rendered in a full-window XComponent. Let the system
-    // rotate that window with the sensor; its surface callback propagates the
-    // resulting size to Wine before the next frame is composited.
+    // Phone games and the desktop share a fixed landscape coordinate space.
     if (deviceInfo.deviceType === 'phone') {
       try {
         const mainWindow = windowStage.getMainWindowSync();
-        mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION).then(() => {
-          hilog.info(DOMAIN, 'testTag', 'phone auto-rotation enabled');
+        mainWindow.setPreferredOrientation(window.Orientation.LANDSCAPE).then(() => {
+          hilog.info(DOMAIN, 'testTag', 'phone landscape enabled');
         }).catch((err: Error) => {
-          hilog.warn(DOMAIN, 'testTag', 'phone auto-rotation failed: %{public}s', JSON.stringify(err));
+          hilog.warn(DOMAIN, 'testTag', 'phone landscape failed: %{public}s', JSON.stringify(err));
         });
       } catch (err) {
-        hilog.warn(DOMAIN, 'testTag', 'phone auto-rotation setup failed: %{public}s', JSON.stringify(err));
+        hilog.warn(DOMAIN, 'testTag', 'phone landscape setup failed: %{public}s', JSON.stringify(err));
       }
     }
 
@@ -212,8 +264,11 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
-    // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    // Phone users return here to manage or stop a stuck game. Keep this
+    // window foreground until they explicitly choose "enter foreground".
+    if (deviceInfo.deviceType !== 'phone') WineWindowManager.getInstance().restoreDesktopIfRunning();
+    ProcessService.getInstance().refresh();
   }
 
   onBackground(): void {

@@ -1,0 +1,31 @@
+diff --git a/src/d3d10/d3d10_interfaces.h b/src/d3d10/d3d10_interfaces.h
+index 5275d6fc..6df65fbf 100644
+--- a/src/d3d10/d3d10_interfaces.h
++++ b/src/d3d10/d3d10_interfaces.h
+@@ -4,8 +4,8 @@
+ 
+ #ifdef _MSC_VER
+ struct __declspec(uuid("0803425a-57f5-4dd6-9465-a87570834a08")) ID3D10StateBlock;
+-#elif !defined(__MINGW32__)
+-/* Older non-MinGW headers do not declare the UUID.  Modern MinGW's
++#elif !defined(__MINGW32__) || defined(WINEHUA_NEEDS_D3D10_STATE_BLOCK_UUID)
++/* Older headers may not declare the UUID. Modern MinGW's
+  * d3d10effect.h already supplies it, so redeclaring it causes a hard error. */
+ __CRT_UUID_DECL(ID3D10StateBlock, 0x0803425a,0x57f5,0x4dd6,0x94,0x65,0xa8,0x75,0x70,0x83,0x4a,0x08);
+ #endif
+diff --git a/src/dxvk/dxvk_gpu_query.cpp b/src/dxvk/dxvk_gpu_query.cpp
+index 7271e335..0b5e949c 100644
+--- a/src/dxvk/dxvk_gpu_query.cpp
++++ b/src/dxvk/dxvk_gpu_query.cpp
+@@ -241,6 +241,11 @@ namespace dxvk {
+   }
+ 
+   
++  // GCC 13's i686 constant-propagation pass crashes on this dispatch.
++  // Keep the workaround local to the affected compiler and function.
++#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 13 && defined(__i386__)
++  __attribute__((optimize("no-tree-ccp")))
++#endif
+   DxvkGpuQueryHandle DxvkGpuQueryPool::allocQuery(VkQueryType type) {
+     switch (type) {
+       case VK_QUERY_TYPE_OCCLUSION:

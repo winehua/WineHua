@@ -65,7 +65,8 @@ pid_t Spawner::Spawn(const SpawnRequest& req) {
     case SpawnKind::DesktopShell:
         params += "|__winehua_desktop__";
         if (kNeedsWineLoaderToken) params += "|wine";
-        params += "|explorer";
+        // Use the physical Windows path seeded during prefix preparation.
+        params += "|C:\\windows\\explorer.exe";
         break;
     case SpawnKind::WineExe:
         if (kNeedsWineLoaderToken) params += "|wine";

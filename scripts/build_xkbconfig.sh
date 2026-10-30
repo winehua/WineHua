@@ -44,9 +44,9 @@ DESTDIR="$XKBC_INSTALL" meson install -C "$XKBC_BUILD"
 # 改为直接复制实际数据；同时展开为普通目录 (打包不支持 symlink)
 rm -rf "$SYSROOT_EXT_SHARE/X11/xkb" "$SYSROOT_EXT_SHARE/xkeyboard-config-2"
 # cp -r source dest: dest 不存在时创建为 source 的副本
-cp -r "$XKBC_INSTALL/usr/share/xkeyboard-config-2" "$SYSROOT_EXT_SHARE/xkeyboard-config-2"
+cp -rL "$XKBC_INSTALL/usr/share/xkeyboard-config-2" "$SYSROOT_EXT_SHARE/xkeyboard-config-2"
 mkdir -p "$SYSROOT_EXT_SHARE/X11"
-cp -r "$XKBC_INSTALL/usr/share/xkeyboard-config-2" "$SYSROOT_EXT_SHARE/X11/xkb"
+cp -rL "$XKBC_INSTALL/usr/share/xkeyboard-config-2" "$SYSROOT_EXT_SHARE/X11/xkb"
 rm -rf "$XKBC_INSTALL"
 
 log "xkeyboard-config → ${SYSROOT_EXT_SHARE}/X11/xkb/"

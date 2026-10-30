@@ -15,6 +15,7 @@ struct ProgramOptions {
     std::string workingDirectory;
     std::string d3dBackend = "vkd3d_limited_500k";
     std::string dxvkBackend = "dxvk_legacy";
+    std::string openglRenderer = "auto";
     std::string presentBackend;  // 空 = 按 d3dBackend 派生 (DerivePresentBackend)
 };
 

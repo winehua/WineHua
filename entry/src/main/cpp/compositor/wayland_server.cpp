@@ -88,7 +88,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
     // DesktopSessionState POD, 注入形态/时序不变 — 见 input_manager.h 注释)
     InputManager::GetInstance()->BindCompositorDeps(toplevelMgr_, inputResolver_,
                                                     moveGrab_, session_.policy,
-                                                    session_.desktopRootToplevelId);
+                                                    session_.desktopRootToplevelId, session_.taskbarId);
     InputManager::GetInstance()->Initialize(display_);
     OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat+input)");
 

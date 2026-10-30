@@ -68,7 +68,7 @@ assemble_pad() {
         _pick_lib_pad "libwayland-egl.so.1.22.0"     "libwayland-egl.so.1"
         _pick_lib_pad "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
         _pick_lib_pad "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
-        _pick_lib_pad "libxml2.so.2.12.0"            "libxml2.so.2"
+        _pick_lib_pad "libxml2.so.2.12.0"            "libxml2.so.2"       "libxml2.so"
         _pick_lib_pad "libffi.so.8.1.4"              "libffi.so.8"
         # GnuTLS 链 (schannel TLS 后端)
         _pick_lib_pad "libgnutls.so.30.37.1"         "libgnutls.so.30"   "libgnutls.so"
@@ -116,12 +116,13 @@ assemble_pad() {
             local soname="$1" linker="${2:-}"
             if [ -f "$aarch64_lib/$soname" ]; then
                 cp "$aarch64_lib/$soname" "$NATIVE_LIBS/$soname"
+            elif [ -f "$NATIVE_LIBS/$soname" ]; then
+                : # build_native.sh stages ARM64 dependencies directly here.
             else
-                warn "ARM64 原生库 $soname 未找到, 跳过"
-                return 0
+                err "ARM64 原生库 $soname 未找到，请先构建 native 依赖"
             fi
             if [ -n "$linker" ] && [ ! -f "$NATIVE_LIBS/$linker" ]; then
-                cp "$aarch64_lib/$soname" "$NATIVE_LIBS/$linker"  # HAP 不支持 symlink, 实体复制
+                cp "$NATIVE_LIBS/$soname" "$NATIVE_LIBS/$linker"  # HAP 不支持 symlink, 实体复制
             fi
         }
         # Box64 native bridge libs: soname 文件 + linker 名拷贝
@@ -172,7 +173,7 @@ assemble_pad() {
         _pick_lib_pad_rf "libwayland-egl.so.1.22.0"     "libwayland-egl.so.1"    "libwayland-egl.so"
         _pick_lib_pad_rf "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
         _pick_lib_pad_rf "libxkbregistry.so.0.0.0"      "libxkbregistry.so.0"
-        _pick_lib_pad_rf "libxml2.so.2.12.0"            "libxml2.so.2"
+        _pick_lib_pad_rf "libxml2.so.2.12.0"            "libxml2.so.2"       "libxml2.so"
         _pick_lib_pad_rf "libffi.so.8.1.4"              "libffi.so.8"
         # GnuTLS 链 (schannel TLS 后端, x86_64 guest) → rawfile
         _pick_lib_pad_rf "libgnutls.so.30.37.1"         "libgnutls.so.30"   "libgnutls.so"
@@ -261,6 +262,18 @@ assemble_pad() {
             [ -f "$f" ] && cp "$f" "$wine_data/bin/x86_64-windows/"
         done
     done
+    # Builtin executable lookup uses the same architecture directory as DLLs.
+    # Keeping programs only in bin/ makes extensionless explorer fall back to
+    # start.exe, which cannot find a physical C:\\windows\\explorer.exe.
+    for exe in "$BUILD_DIR/wine-ohos/programs/"*/x86_64-windows/*.exe; do
+        case "$(basename "$exe")" in
+            winehua_*_smoke.exe|winehua_dinput_probe.exe) continue ;;
+        esac
+        [ -f "$exe" ] && cp "$exe" "$wine_data/bin/x86_64-windows/"
+    done
+    for name in explorer.exe wineboot.exe services.exe start.exe rundll32.exe; do
+        [ -s "$wine_data/bin/x86_64-windows/$name" ] || err "Required builtin missing: $name"
+    done
     log "  x86_64-windows → $(ls "$wine_data/bin/x86_64-windows" | wc -l) files"
 
     # strip PE 调试符号 (DWARF .debug_*, 缩减 ~50%)
@@ -318,13 +331,17 @@ assemble_pad() {
         cp "$exe" "$wine_data/bin/"
     done
     local dxvk_root="$DXVK_BUILD_ROOT"
+    [ -f "$dxvk_root/x64/bin/d3d9.dll" ] || err "DXVK Legacy x64 d3d9.dll missing: $dxvk_root/x64/bin/d3d9.dll"
     [ -f "$dxvk_root/x64/bin/d3d11.dll" ] || err "DXVK Legacy x64 d3d11.dll missing: $dxvk_root/x64/bin/d3d11.dll"
     [ -f "$dxvk_root/x64/bin/dxgi.dll" ] || err "DXVK Legacy x64 dxgi.dll missing: $dxvk_root/x64/bin/dxgi.dll"
+    [ -f "$dxvk_root/x86/bin/d3d9.dll" ] || err "DXVK Legacy x86 d3d9.dll missing: $dxvk_root/x86/bin/d3d9.dll"
     [ -f "$dxvk_root/x86/bin/d3d11.dll" ] || err "DXVK Legacy x86 d3d11.dll missing: $dxvk_root/x86/bin/d3d11.dll"
     [ -f "$dxvk_root/x86/bin/dxgi.dll" ] || err "DXVK Legacy x86 dxgi.dll missing: $dxvk_root/x86/bin/dxgi.dll"
     mkdir -p "$wine_data/dxvk/legacy/x64" "$wine_data/dxvk/legacy/x86"
+    cp "$dxvk_root/x64/bin/d3d9.dll" "$wine_data/dxvk/legacy/x64/d3d9.dll"
     cp "$dxvk_root/x64/bin/d3d11.dll" "$wine_data/dxvk/legacy/x64/d3d11.dll"
     cp "$dxvk_root/x64/bin/dxgi.dll" "$wine_data/dxvk/legacy/x64/dxgi.dll"
+    cp "$dxvk_root/x86/bin/d3d9.dll" "$wine_data/dxvk/legacy/x86/d3d9.dll"
     cp "$dxvk_root/x86/bin/d3d11.dll" "$wine_data/dxvk/legacy/x86/d3d11.dll"
     cp "$dxvk_root/x86/bin/dxgi.dll" "$wine_data/dxvk/legacy/x86/dxgi.dll"
     # D3D10 链必须整套装齐 (实测 WarThunderLauncher 启动器):
@@ -443,64 +460,93 @@ EOF
     cp "$BUILD_DIR/wine-ohos/loader/wine.inf" "$wine_data/share/wine/"
     sed_i '/^\[MCI\]$/i\
 ;; OHOS font substitutes\
-HKLM,%FontSubStr%,"System",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"MS Sans Serif",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"MS Shell Dlg",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"MS Shell Dlg 2",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Arial",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Arial Black",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Calibri",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"System",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"MS Sans Serif",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"MS Shell Dlg",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"MS Shell Dlg 2",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Arial",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Arial Black",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Calibri",,"Noto Sans CJK SC"\
 HKLM,%FontSubStr%,"Cambria",,"Noto Serif"\
-HKLM,%FontSubStr%,"Candara",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Comic Sans MS",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"Candara",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Comic Sans MS",,"Noto Sans CJK SC"\
 HKLM,%FontSubStr%,"Constantia",,"Noto Serif"\
-HKLM,%FontSubStr%,"Corbel",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Impact",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"Corbel",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Impact",,"Noto Sans CJK SC"\
 HKLM,%FontSubStr%,"Palatino Linotype",,"Noto Serif"\
-HKLM,%FontSubStr%,"Segoe UI",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Tahoma",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Trebuchet MS",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Verdana",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"Segoe UI",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Tahoma",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Trebuchet MS",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Verdana",,"Noto Sans CJK SC"\
 ;; Latin: 衬线 (serif)\
 HKLM,%FontSubStr%,"Georgia",,"Noto Serif"\
 HKLM,%FontSubStr%,"Times New Roman",,"Noto Serif"\
 ;; CJK: 简体中文\
-HKLM,%FontSubStr%,"Microsoft JhengHei",,"HarmonyOS Sans TC"\
-HKLM,%FontSubStr%,"Microsoft JhengHei UI",,"HarmonyOS Sans TC"\
-HKLM,%FontSubStr%,"Microsoft YaHei",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"Microsoft YaHei UI",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"Microsoft JhengHei",,"Noto Sans CJK TC"\
+HKLM,%FontSubStr%,"Microsoft JhengHei UI",,"Noto Sans CJK TC"\
+HKLM,%FontSubStr%,"Microsoft YaHei",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"Microsoft YaHei UI",,"Noto Sans CJK SC"\
 ;; CJK: 宋体/楷体 (serif)\
 HKLM,%FontSubStr%,"SimSun",,"Noto Serif CJK SC"\
 HKLM,%FontSubStr%,"NSimSun",,"Noto Serif CJK SC"\
-HKLM,%FontSubStr%,"SimHei",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"宋体",,"Noto Serif CJK SC"\
+HKLM,%FontSubStr%,"新宋体",,"Noto Serif CJK SC"\
+HKLM,%FontSubStr%,"楷体",,"Noto Serif CJK SC"\
+HKLM,%FontSubStr%,"仿宋",,"Noto Serif CJK SC"\
+HKLM,%FontSubStr%,"黑体",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"微软雅黑",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"微软雅黑 UI",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"等线",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"幼圆",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"隶书",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"SimHei",,"Noto Sans CJK SC"\
 HKLM,%FontSubStr%,"FangSong",,"Noto Serif CJK SC"\
 HKLM,%FontSubStr%,"KaiTi",,"Noto Serif CJK SC"\
-HKLM,%FontSubStr%,"YouYuan",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"LiSu",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"DengXian",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"YouYuan",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"LiSu",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"DengXian",,"Noto Sans CJK SC"\
 HKLM,%FontSubStr%,"STSong",,"Noto Serif CJK SC"\
 HKLM,%FontSubStr%,"STKaiti",,"Noto Serif CJK SC"\
 HKLM,%FontSubStr%,"STFangsong",,"Noto Serif CJK SC"\
-HKLM,%FontSubStr%,"STHeiti",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"STXihei",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"STLiti",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"STXingkai",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"STXinwei",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"STHupo",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"STCaiyun",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"STHeiti",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"STXihei",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"STLiti",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"STXingkai",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"STXinwei",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"STHupo",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"STCaiyun",,"Noto Sans CJK SC"\
 HKLM,%FontSubStr%,"STZhongSong",,"Noto Serif CJK SC"\
 HKLM,%FontSubStr%,"STBaoli",,"Noto Serif CJK SC"\
-HKLM,%FontSubStr%,"FZShuTi",,"HarmonyOS Sans SC"\
-HKLM,%FontSubStr%,"FZYaoti",,"HarmonyOS Sans SC"\
+HKLM,%FontSubStr%,"FZShuTi",,"Noto Sans CJK SC"\
+HKLM,%FontSubStr%,"FZYaoti",,"Noto Sans CJK SC"\
 ;; CJK: 繁体中文\
-HKLM,%FontSubStr%,"MingLiU",,"HarmonyOS Sans TC"\
-HKLM,%FontSubStr%,"PMingLiU",,"HarmonyOS Sans TC"\
+HKLM,%FontSubStr%,"MingLiU",,"Noto Sans CJK TC"\
+HKLM,%FontSubStr%,"PMingLiU",,"Noto Sans CJK TC"\
 HKLM,%FontSubStr%,"DFKai-SB",,"Noto Serif CJK TC"\
-HKLM,%FontSubStr%,"Consolas",,"Noto Sans Mono"\
-HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
-HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"\
-HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
-HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/wine.inf"
+HKLM,%FontSubStr%,"Consolas",,"Noto Sans Mono CJK SC"\
+HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono CJK SC"\
+HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono CJK SC"\
+HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono CJK SC"\
+HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono CJK SC"' "$wine_data/share/wine/wine.inf"
+    # Import this policy once for existing prefixes too. wine.inf is only
+    # applied during prefix updates and cannot repair already seeded fonts.
+    python3 - "$wine_data/share/wine" <<'PY'
+import csv
+import json
+from pathlib import Path
+import sys
+directory = Path(sys.argv[1])
+text = (directory / 'wine.inf').read_text()
+block = text.split(';; OHOS font substitutes', 1)[1].split('[MCI]', 1)[0]
+lines = ['Windows Registry Editor Version 5.00', '',
+         r'[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]']
+for row in csv.reader(block.splitlines()):
+    if len(row) == 5 and row[:2] == ['HKLM', '%FontSubStr%']:
+        lines.append(json.dumps(row[2], ensure_ascii=False) + '=' + json.dumps(row[4], ensure_ascii=False))
+(directory / 'winehua-fonts.reg').write_text('\r\n'.join(lines) + '\r\n', encoding='utf-16')
+# INF defaults to the ANSI code page unless its Unicode encoding is explicit.
+(directory / 'wine.inf').write_text(text, encoding='utf-8-sig')
+PY
     # XKB
     if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
         cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
@@ -571,6 +617,9 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cp -a "$smoke_payload/." "$wine_data/smoke/"
     log "  smoke payload → wine-data/smoke ($(find "$wine_data/smoke" -name '*.exe' | wc -l) exe)"
 
+    # Resolve absolute DT_NEEDED paths without changing the OHOS ELF layout.
+    python3 "$SCRIPT_DIR/relocate_elf.py" --build-root "$ROOT" "$NATIVE_LIBS" "$wine_data/bin"
+
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"
@@ -589,6 +638,13 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
 }
 EOF
     log "  $zip_name → rawfile/ ($(du -h "$rawfile_dir/$zip_name" | cut -f1))"
+
+    # Optional, separately qualified phone runtime. Never replace guest_gfx
+    # globally with a game-specific Zink profile.
+    if [ -d "$BUILD_DIR/mewgenics_gfx/x86_64/lib" ]; then
+        python3 "$SCRIPT_DIR/package_mewgenics_gfx.py" \
+            --input "$BUILD_DIR/mewgenics_gfx/x86_64" --output "$rawfile_dir"
+    fi
 
     log "Pad 布局组装完成 ($NATIVE_ARCH)"
     echo ""

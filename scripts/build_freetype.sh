@@ -40,7 +40,13 @@ ninja
 ninja install
 
 # 安装到 sysroot-ext (文件名 = SONAME)
-cp "$FT_BUILD"/install/lib/libfreetype.so.6.20.2 "$SYSROOT_EXT_LIB/libfreetype.so.6"
+# OHOS' linker may omit the upstream versioned filename during install.
+# Prefer the versioned artifact when present, otherwise use the unversioned
+# shared object produced by CMake and expose the SONAME-compatible name.
+ft_lib="$FT_BUILD/install/lib/libfreetype.so.6.20.2"
+[ -f "$ft_lib" ] || ft_lib="$FT_BUILD/install/lib/libfreetype.so"
+[ -f "$ft_lib" ] || { echo "FreeType shared library not found under $FT_BUILD/install/lib" >&2; exit 1; }
+cp "$ft_lib" "$SYSROOT_EXT_LIB/libfreetype.so.6"
 ln -sf libfreetype.so.6 "$SYSROOT_EXT_LIB/libfreetype.so"
 cp -r "$FT_BUILD"/install/include/freetype2 "$SYSROOT_EXT_INC/"
 cat > "$SYSROOT_EXT_PC/freetype2.pc" << EOF

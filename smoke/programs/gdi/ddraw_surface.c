@@ -45,6 +45,83 @@ static int create_offscreen(LPDIRECTDRAWSURFACE7 *out, int w, int h, int bpp)
     return IDirectDraw7_CreateSurface(g_dd, &desc, out, NULL) == DD_OK && *out;
 }
 
+/* A clipper region may exceed the surface, including when a game window is
+ * larger than the phone desktop. Check both clipping and source offsets. */
+static void test_clipped_blt_bounds(LPDIRECTDRAWSURFACE7 src, LPDIRECTDRAWSURFACE7 dst)
+{
+    static const struct
+    {
+        const char *name;
+        RECT destination;
+        int scale;
+    } cases[] = {
+        {"clip-negative-origin", {-8, -4, 24, 12}, 1},
+        {"clip-right-bottom", {8, 4, 40, 20}, 1},
+        {"clip-scaled-source", {-32, -16, 32, 16}, 2},
+        {"clip-fully-outside", {40, 20, 72, 36}, 1},
+    };
+    struct { RGNDATAHEADER header; RECT rect; } region;
+    LPDIRECTDRAWCLIPPER clipper = NULL;
+    DDSURFACEDESC2 desc;
+    DDBLTFX fx;
+    HRESULT hr;
+    unsigned int i;
+
+    hr = IDirectDraw7_CreateClipper(g_dd, 0, &clipper, NULL);
+    t_check("bounds-create-clipper", hr == DD_OK && clipper, "hr=0x%08lx", (unsigned long)hr);
+    if (!clipper) return;
+    memset(&region, 0, sizeof(region));
+    region.header.dwSize = sizeof(region.header);
+    region.header.iType = RDH_RECTANGLES;
+    region.header.nCount = 1;
+    region.header.nRgnSize = sizeof(region.rect);
+    SetRect(&region.rect, -64, -32, 96, 48);
+    region.header.rcBound = region.rect;
+    TCHECK("bounds-set-clip-list", IDirectDrawClipper_SetClipList(
+            clipper, (RGNDATA *)&region, 0) == DD_OK);
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+    {
+        int x, y, bad = 0;
+        RECT destination = cases[i].destination;
+        IDirectDrawSurface7_SetClipper(dst, NULL);
+        memset(&fx, 0, sizeof(fx));
+        fx.dwSize = sizeof(fx);
+        fx.dwFillColor = 0x00123456;
+        hr = IDirectDrawSurface7_Blt(dst, NULL, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &fx);
+        TCHECK("bounds-clear", hr == DD_OK);
+        TCHECK("bounds-attach-clipper", IDirectDrawSurface7_SetClipper(dst, clipper) == DD_OK);
+        hr = IDirectDrawSurface7_Blt(dst, &destination, src, NULL, DDBLT_WAIT, NULL);
+        t_check(cases[i].name, hr == DD_OK, "hr=0x%08lx", (unsigned long)hr);
+        memset(&desc, 0, sizeof(desc));
+        desc.dwSize = sizeof(desc);
+        hr = IDirectDrawSurface7_Lock(dst, NULL, &desc, DDLOCK_WAIT, NULL);
+        TCHECK("bounds-lock", hr == DD_OK);
+        if (hr != DD_OK) continue;
+        for (y = 0; y < 16 && !bad; ++y)
+        {
+            DWORD *row = (DWORD *)((char *)desc.lpSurface + y * desc.lPitch);
+            for (x = 0; x < 32; ++x)
+            {
+                DWORD expected = 0x00123456;
+                if (x >= destination.left && x < destination.right &&
+                        y >= destination.top && y < destination.bottom)
+                {
+                    int sx = (x - destination.left) / cases[i].scale;
+                    int sy = (y - destination.top) / cases[i].scale;
+                    expected = (sy << 20) | (sx << 2);
+                }
+                if ((row[x] & 0x00ffffff) != expected)
+                { bad = y * 32 + x + 1; break; }
+            }
+        }
+        t_check("bounds-pixels", !bad, "%s first_bad_px=%d", cases[i].name, bad);
+        IDirectDrawSurface7_Unlock(dst, NULL);
+    }
+    IDirectDrawSurface7_SetClipper(dst, NULL);
+    IDirectDrawClipper_Release(clipper);
+}
+
 int main(int argc, char **argv)
 {
     LPDIRECTDRAWSURFACE7 src = NULL, dst = NULL, pal_surf = NULL;
@@ -113,6 +190,7 @@ int main(int argc, char **argv)
                 t_check("blt-roundtrip", bad == 0, "first_bad_px=%d", bad);
                 IDirectDrawSurface7_Unlock(dst, NULL);
             }
+            test_clipped_blt_bounds(src, dst);
         }
     }
 

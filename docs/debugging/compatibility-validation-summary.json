@@ -1,0 +1,246 @@
+{
+  "prepared_date": "2026-10-30",
+  "historical_device_evidence_through": "2026-10-29",
+  "baseline": "3eecbd732d79bf6d306fdb48eee734771eb58147",
+  "windows": {
+    "status": "passed-with-explicit-platform-skips",
+    "passed_outer_checks": 10,
+    "explicit_linux_only_skips": 6,
+    "integrated_host_stages": 24,
+    "checks": [
+      {
+        "name": "desktop-integrated-host",
+        "status": "passed"
+      },
+      {
+        "name": "ime-fields",
+        "status": "passed"
+      },
+      {
+        "name": "dxvk-profile-build",
+        "status": "passed"
+      },
+      {
+        "name": "dxvk-profile",
+        "status": "passed"
+      },
+      {
+        "name": "test_sigchld_reaping",
+        "status": "skipped"
+      },
+      {
+        "name": "test_virgl_cleanup",
+        "status": "skipped"
+      },
+      {
+        "name": "test_virgl_resource_fd",
+        "status": "skipped"
+      },
+      {
+        "name": "test_zink_shader_layer",
+        "status": "skipped"
+      },
+      {
+        "name": "test_zink_readback_cache",
+        "status": "skipped"
+      },
+      {
+        "name": "test_relocate_elf",
+        "status": "skipped"
+      },
+      {
+        "name": "shell-syntax",
+        "status": "passed"
+      },
+      {
+        "name": "python-syntax",
+        "status": "passed"
+      },
+      {
+        "name": "wgl-core-transfer-x86_64-build",
+        "status": "passed"
+      },
+      {
+        "name": "ddraw-surface-x86_64-build",
+        "status": "passed"
+      },
+      {
+        "name": "wgl-core-transfer-i686-build",
+        "status": "passed"
+      },
+      {
+        "name": "ddraw-surface-i686-build",
+        "status": "passed"
+      }
+    ]
+  },
+  "linux": {
+    "status": "passed",
+    "stages": 27,
+    "checks": [
+      {
+        "name": "renderer",
+        "status": "passed"
+      },
+      {
+        "name": "test_desktop_initial_configure",
+        "status": "passed"
+      },
+      {
+        "name": "test_desktop_bufferless_root",
+        "status": "passed"
+      },
+      {
+        "name": "test_venus_sync_notify",
+        "status": "passed"
+      },
+      {
+        "name": "test_direct_shm_readback",
+        "status": "passed"
+      },
+      {
+        "name": "test_font_policy",
+        "status": "passed"
+      },
+      {
+        "name": "test_sigchld_reaping",
+        "status": "passed"
+      },
+      {
+        "name": "test_virgl_cleanup",
+        "status": "passed"
+      },
+      {
+        "name": "test_virgl_resource_fd",
+        "status": "passed"
+      },
+      {
+        "name": "test_zink_shader_layer",
+        "status": "passed"
+      },
+      {
+        "name": "test_zink_readback_cache",
+        "status": "passed"
+      },
+      {
+        "name": "test_relocate_elf",
+        "status": "passed"
+      },
+      {
+        "name": "ime-fields",
+        "status": "passed"
+      },
+      {
+        "name": "mewgenics_graphics-build",
+        "status": "passed"
+      },
+      {
+        "name": "mewgenics_graphics",
+        "status": "passed"
+      },
+      {
+        "name": "host_integration_policy-build",
+        "status": "passed"
+      },
+      {
+        "name": "host_integration_policy",
+        "status": "passed"
+      },
+      {
+        "name": "live_performance-build",
+        "status": "passed"
+      },
+      {
+        "name": "live_performance",
+        "status": "passed"
+      },
+      {
+        "name": "legacy_text_compat-build",
+        "status": "passed"
+      },
+      {
+        "name": "legacy_text_compat",
+        "status": "passed"
+      },
+      {
+        "name": "surface_queue_recovery-build",
+        "status": "passed"
+      },
+      {
+        "name": "surface_queue_recovery",
+        "status": "passed"
+      },
+      {
+        "name": "keyboard_target_policy-build",
+        "status": "passed"
+      },
+      {
+        "name": "keyboard_target_policy",
+        "status": "passed"
+      },
+      {
+        "name": "dxvk_profile-build",
+        "status": "passed"
+      },
+      {
+        "name": "dxvk_profile",
+        "status": "passed"
+      }
+    ],
+    "unittest_case_counts": {
+      "test_zink_shader_layer": 4,
+      "test_font_policy": 1,
+      "test_virgl_resource_fd": 2,
+      "renderer": 9,
+      "test_direct_shm_readback": 2,
+      "test_zink_readback_cache": 1,
+      "test_desktop_initial_configure": 1,
+      "test_virgl_cleanup": 3,
+      "test_venus_sync_notify": 1,
+      "test_sigchld_reaping": 1,
+      "test_relocate_elf": 2,
+      "test_desktop_bufferless_root": 1
+    },
+    "javascript_note": "Node unavailable in the VM; JavaScript checks passed in the Windows suite"
+  },
+  "ime_message_field_cases": 60,
+  "snapshot_note": "Extraction tests use the selected project files and explicit already-patched third-party source snapshots; this is not a clean recursive-submodule build",
+  "device_changed_this_turn": true,
+  "full_clean_native_wine_mesa_hap_build_this_turn": false,
+  "device_core_wine_vulkan_dxvk_d3d12_suites_rerun_this_turn": false,
+  "mouse_mode_followup": {
+    "date": "2026-10-30",
+    "windows_integrated_host_stages": 25,
+    "status": "passed",
+    "device_checks": 8,
+    "device_scope": "one phone, controlled Guest Windows input-audit window",
+    "stationary_hold_ms": {
+      "direct": 1509,
+      "left": 1498,
+      "middle": 1508,
+      "right": 1539,
+      "relative": 1004
+    },
+    "relative_movement": {
+      "requested_delta": [
+        100,
+        20
+      ],
+      "observed_delta": [
+        96,
+        19
+      ],
+      "guest_clicks": 0
+    },
+    "mode_switch_preserves_cursor": true,
+    "follow_finger_verified": true,
+    "install_method": "hdc install -r",
+    "prefix_reset": false,
+    "full_clean_runtime_build": false,
+    "hap_sha256": "514fe53daf79cfc54e3f7c22fdbda631d760da8d6f2d83a68bb3290e9f8b5845",
+    "wine_payload_sha256": "f35c1e15d192fb904832b777b2f101427940ecbf9a4e16fbd3460cbbc7332aa7",
+    "native_sha256": "70d78214b308c99ca59f9f14bd30b7a4d233e09eae326338f68d642c2cb5bd80",
+    "installed_runtime_manifest": "matched",
+    "real_game_acceptance": "not rerun"
+  }
+}

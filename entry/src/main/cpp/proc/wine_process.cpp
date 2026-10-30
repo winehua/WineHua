@@ -30,6 +30,8 @@
 // -- 全局状态 --
 static std::mutex gProcMutex;
 static std::vector<WineProcessEntry> gProcRegistry;
+static std::atomic<bool> gChildExitPending{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "signal notification must be lock-free");
 
 // -- 主 wineserver 会话锚点 --
 // gShutdownRequested: 任何 KillAllProcesses (stopAll/stopClient/resetWinePrefix)
@@ -57,6 +59,7 @@ static uint64_t TimestampMs() {
 
 // 前向声明
 static void EnsureMonitorRunning();
+static void HandleProcessDeath(pid_t pid, int exitCode, const char* source);
 
 // -- 进程后端: fork (手机) vs NCP (Pad/真机) --
 // 两种设备模式的进程操作差异集中在同一处:
@@ -73,15 +76,17 @@ static bool IsForkBackend() {
 // 杀子进程 (按后端分流): fork 后端原生 kill 有效; NCP 后端优先官方终止
 // API (沙箱内 kill(2) 可能受限/pid ns 不可见), 失败 fallback 到 SIGKILL —
 // SELF_FORK 模式子进程官方 API 明确不可终止, 恰由 fallback 覆盖
-void KillChildProcess(pid_t pid) {
+bool KillChildProcess(pid_t pid) {
+    if (pid <= 0) return false;
     if (IsForkBackend()) {
-        kill(pid, SIGKILL);
-        return;
+        if (kill(pid, SIGKILL) == 0) return true;
+        // ESRCH means the target already exited; the caller can refresh its
+        // registry snapshot and let ProcMon/ReaderThread reconcile the row.
+        return false;
     }
     auto rc = OH_Ability_KillChildProcess((int32_t)pid);
-    if (rc != NCP_NO_ERROR) {
-        kill(pid, SIGKILL);
-    }
+    if (rc == NCP_NO_ERROR) return true;
+    return kill(pid, SIGKILL) == 0;
 }
 
 // NCP 退出回调是否已注册 (注册后 ProcMon 轮询降级为纯 zombie 感知 —
@@ -293,6 +298,7 @@ void RemoveProcess(pid_t pid, int exitCode, const std::string& exitCodeSource) {
     std::lock_guard<std::mutex> lock(gProcMutex);
     for (auto& entry : gProcRegistry) {
         if (entry.pid == pid) {
+            if (!entry.running && entry.exitCodeSource != "unknown" && exitCodeSource == "unknown") return;
             OH_LOG_WARN(LOG_APP,
                         "[ProcReg] complete pid=%{public}d name=%{public}s exit=%{public}d source=%{public}s",
                         pid, entry.exeBasename.c_str(), exitCode, exitCodeSource.c_str());
@@ -417,20 +423,20 @@ void CloseInheritedFds(std::initializer_list<int> keepFds) {
     closedir(d);
 }
 
-// -- SIGCHLD handler: reap NCP child processes spawned by broker --
+// Signal handlers can interrupt a thread holding gProcMutex, allocator or NAPI
+// locks. Only notify here; the monitor reaps and publishes exits normally.
 void sigchld_handler(int) {
+    gChildExitPending.store(true, std::memory_order_relaxed);
+}
+
+static void ReapExitedChildren() {
+    gChildExitPending.store(false, std::memory_order_relaxed);
     int status;
     pid_t pid;
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        const char* source = "sigchld";
         LogProcessExit("broker-child", pid, status);
-        RemoveProcess(pid, exitCode, source);
-        if (gStateTsfn) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "evt:proc-exited:%d", pid);
-            napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
-        }
+        HandleProcessDeath(pid, exitCode, "sigchld");
     }
 }
 
@@ -515,8 +521,12 @@ static std::thread gMonitorThread;
 
 static void ProcessMonitorLoop() {
     OH_LOG_WARN(LOG_APP, "[ProcMon] started");
+    unsigned pollTick = 0;
     while (gMonitorRunning.load(std::memory_order_relaxed)) {
-        sleep(1);
+        usleep(100000);
+        if (IsForkBackend() || gChildExitPending.load(std::memory_order_relaxed)) ReapExitedChildren();
+        if (++pollTick < 10) continue;
+        pollTick = 0;
 
         std::vector<pid_t> exitedPids;
         {
@@ -529,8 +539,10 @@ static void ProcessMonitorLoop() {
             }
         }
 
+        if (IsForkBackend()) ReapExitedChildren();
         for (pid_t pid : exitedPids) {
-            HandleProcessDeath(pid);
+            WineProcessEntry current;
+            if (QueryProcessSnapshot(pid, &current) && current.running) HandleProcessDeath(pid);
         }
     }
     OH_LOG_WARN(LOG_APP, "[ProcMon] stopped");
@@ -571,8 +583,12 @@ void ReaderThread(int fd, pid_t pid, std::shared_ptr<std::atomic<bool>> active) 
     }
     close(fd);
 
-    int status;
-    waitpid(pid, &status, 0);
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    // The monitor may already own this exit. Do not publish uninitialized
+    // status or overwrite the real exit code with an ECHILD fallback.
+    if (waited != pid) return;
     LogProcessExit("wine", pid, status);
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     RemoveProcess(pid, exitCode, "process");

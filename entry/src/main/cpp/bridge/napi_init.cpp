@@ -13,6 +13,8 @@
 #include "proc/wine_process.h"
 #include "wine/wine_launch.h"
 #include "wine/wine_exe.h"
+#include "wine/legacy_text_compat.h"
+#include "common/live_performance.h"
 #include "phone_adapter/phone_adapter.h"
 #include "input/text_input.h"
 #include "input/game_controller_bridge.h"
@@ -36,6 +38,7 @@
 #include <atomic>
 #include <algorithm>
 #include <dlfcn.h>
+#include <ctime>
 
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -46,6 +49,70 @@
 // -- 全局状态 (NAPI 层, 被 wine_process / wine_launch 引用) --
 napi_threadsafe_function gStateTsfn = nullptr;
 std::string gSockPath;
+
+static napi_value IsDuanwuToplevel(napi_env env, napi_callback_info info) {
+    napi_value arg; size_t argc = 1; uint32_t id = 0;
+    napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr);
+    if (argc) napi_get_value_uint32(env, arg, &id);
+    const uint32_t pid = WaylandServer::GetInstance()->GetToplevelManager().GetToplevelClientPid(id);
+    WineProcessEntry process;
+    const bool game = pid && QueryProcessSnapshot(pid, &process) &&
+        winehua::UsesDuanwuBitmapText(process.exeFullPath);
+    napi_value result; napi_get_boolean(env, game, &result); return result;
+}
+
+static napi_value GetKeyboardFocusedToplevel(napi_env env, napi_callback_info /*info*/) {
+    napi_value result;
+    napi_create_uint32(env, InputManager::GetInstance()->GetKeyboardFocusedToplevel(), &result);
+    return result;
+}
+
+static napi_value GetKeyboardTarget(napi_env env, napi_callback_info /*info*/) {
+    napi_value result;
+    napi_create_uint32(env, InputManager::GetInstance()->ResolveKeyboardTarget(), &result);
+    return result;
+}
+
+static double ProcessRssMb(pid_t pid) {
+    const std::string path = "/proc/" + std::to_string(pid) + "/status";
+    FILE* file = fopen(path.c_str(), "r");
+    if (!file) return 0;
+    char line[256]; unsigned long kb = 0;
+    while (fgets(line, sizeof(line), file)) if (sscanf(line, "VmRSS: %lu kB", &kb) == 1) break;
+    fclose(file); return kb / 1024.0;
+}
+
+static napi_value GetPerformanceState(napi_env env, napi_callback_info) {
+    const auto sample = winehua::LivePerformance::Instance().Sample();
+    double cpu = -1;
+    static uint64_t lastWallMs = 0, lastCpuNs = 0;
+    static double lastCpu = -1;
+    const auto wall = winehua::LivePerformance::NowMs();
+    timespec processTime{};
+    if (wall - lastWallMs >= 500 && clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &processTime) == 0) {
+        const uint64_t ns = static_cast<uint64_t>(processTime.tv_sec) * 1000000000ull + processTime.tv_nsec;
+        if (lastWallMs && wall > lastWallMs) {
+            const auto cores = std::max(1u, std::thread::hardware_concurrency());
+            lastCpu = std::min(100.0, (ns-lastCpuNs) / 1000000.0 / (wall-lastWallMs) / cores * 100.0);
+        }
+        lastWallMs = wall; lastCpuNs = ns;
+    }
+    cpu = lastCpu;
+    double memory = ProcessRssMb(getpid());
+    for (const auto& process : GetProcessListSnapshot())
+        if (process.running && process.pid != getpid()) memory += ProcessRssMb(process.pid);
+    napi_value result; napi_create_object(env, &result);
+    auto number = [&](const char* key, double value) {
+        napi_value v; napi_create_double(env, value, &v); napi_set_named_property(env, result, key, v);
+    };
+    number("clientFps", sample.clientFps); number("displayFps", sample.displayFps);
+    number("cpuPercent", cpu); number("memoryMb", memory);
+    number("width", WaylandServer::GetInstance()->OutputWidth());
+    number("height", WaylandServer::GetInstance()->OutputHeight());
+    napi_value gpu; napi_create_string_utf8(env, sample.gpu.c_str(), NAPI_AUTO_LENGTH, &gpu);
+    napi_set_named_property(env, result, "gpu", gpu);
+    return result;
+}
 
 // -- State 回调 -> ArkTS --
 static void CallJsState(napi_env env, napi_value cb, void*, void* data) {
@@ -715,8 +782,8 @@ static napi_value CreateRenderer(napi_env env, napi_callback_info info) {
 
 // -- NAPI: resizeRenderer -- (XComponentController.onSurfaceChanged 调用)
 static napi_value ResizeRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc < 3) {
         OH_LOG_ERROR(LOG_APP, "[MW-NAPI] resizeRenderer: need 3 args (toplevelId, w, h)");
@@ -727,22 +794,30 @@ static napi_value ResizeRenderer(napi_env env, napi_callback_info info) {
     int32_t w = 0, h = 0;
     napi_get_value_int32(env, args[1], &w);
     napi_get_value_int32(env, args[2], &h);
+    int64_t surfaceId = 0;
+    bool lossless = false;
+    if (argc >= 4 && (napi_get_value_bigint_int64(env, args[3], &surfaceId, &lossless) != napi_ok ||
+            !lossless || surfaceId <= 0)) return nullptr;
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
-    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
+    PluginManager::GetInstance()->ResizeRenderer(tid, w, h, surfaceId);
     return nullptr;
 }
 
 // -- NAPI: destroyRenderer -- (XComponentController.onSurfaceDestroyed 调用)
 static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 2;
+    napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t tid = 0;
     if (argc >= 1) {
         napi_get_value_uint32(env, args[0], &tid);
     }
+    int64_t surfaceId = 0;
+    bool lossless = false;
+    if (argc >= 2 && (napi_get_value_bigint_int64(env, args[1], &surfaceId, &lossless) != napi_ok ||
+            !lossless || surfaceId <= 0)) return nullptr;
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
-    PluginManager::GetInstance()->DestroyToplevel(tid);
+    PluginManager::GetInstance()->DestroyRendererForSurface(tid, surfaceId);
     return nullptr;
 }
 
@@ -781,13 +856,16 @@ static napi_value SetDesktopMode(napi_env env, napi_callback_info info) {
 }
 
 static napi_value SetPhoneMode(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 2;
+    napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc >= 1) {
         bool on;
         napi_get_value_bool(env, args[0], &on);
         PhoneAdapter_SetPhoneMode(on);
+        bool qualified = false;
+        if (argc >= 2) napi_get_value_bool(env, args[1], &qualified);
+        setenv("WINEHUA_MEWGENICS_GPU_QUALIFIED", on && qualified ? "1" : "0", 1);
         OH_LOG_WARN(LOG_APP, "[MW-NAPI] setPhoneMode = %{public}s", on ? "true" : "false");
     }
     return nullptr;
@@ -1043,6 +1121,7 @@ static napi_value SetToplevelVisible(napi_env env, napi_callback_info info) {
     napi_get_value_uint32(env, args[0], &tl);
     napi_get_value_bool(env, args[1], &visible);
     InputManager::GetInstance()->SetToplevelVisible(tl, visible);
+    PluginManager::GetInstance()->SetRendererVisible(tl, visible);
     if (visible) {
         // 6A: 兼容别名 NotifyWindowRestored 已删, 直调语义方法 (同实现同值)
         WaylandServer::GetInstance()->SetToplevelRestored(tl);
@@ -1097,14 +1176,17 @@ static napi_value KillProcess(napi_env env, napi_callback_info info) {
     if (argc < 1) return nullptr;
 
     int32_t pid = 0;
-    napi_get_value_int32(env, args[0], &pid);
-    OH_LOG_WARN(LOG_APP, "[NAPI] killProcess pid=%{public}d", pid);
-
-    KillChildProcess(pid);
-    RemoveProcess(pid);
+    const bool parsed = napi_get_value_int32(env, args[0], &pid) == napi_ok;
+    WineProcessEntry entry{};
+    const bool managed = parsed && pid > 0 && QueryProcessSnapshot(pid, &entry) &&
+                         entry.running && !entry.desktopShell;
+    const bool accepted = managed && KillChildProcess(pid);
+    OH_LOG_WARN(LOG_APP,
+                "[NAPI] killProcess pid=%{public}d managed=%{public}d accepted=%{public}d",
+                pid, managed ? 1 : 0, accepted ? 1 : 0);
 
     napi_value r;
-    napi_get_boolean(env, true, &r);
+    napi_get_boolean(env, accepted, &r);
     return r;
 }
 
@@ -1121,6 +1203,10 @@ static napi_value Init(napi_env env, napi_value exports) {
     RegisterNcpExitCallback();
 
     napi_property_descriptor desc[] = {
+        {"getPerformanceState", nullptr, GetPerformanceState, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"isDuanwuToplevel", nullptr, IsDuanwuToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getKeyboardFocusedToplevel", nullptr, GetKeyboardFocusedToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getKeyboardTarget", nullptr, GetKeyboardTarget, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startServer",    nullptr, StartServer,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setHostShadowProfile", nullptr, SetHostShadowProfile, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"launchClient",   nullptr, LaunchClient,   nullptr, nullptr, nullptr, napi_default, nullptr},

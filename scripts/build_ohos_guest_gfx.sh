@@ -702,6 +702,27 @@ INSTALL_ROOT="$(normalize_host_path_input "$INSTALL_ROOT")"
 [ -f "$SOURCE_ROOT/meson.build" ] || err "Mesa source root is not valid (meson.build missing): $SOURCE_ROOT"
 ensure_mesa_source_layout "$SOURCE_ROOT"
 
+# Compile reply-specific notifications into the Venus ICD. The feature remains
+# off unless requested by the qualified Mewgenics profile; asynchronous draws
+# retain their existing batching and all completion/coherency waits are kept.
+sync_notify_patch="$SCRIPT_DIR/patches/mesa-venus-sync-notify.patch"
+if ! patch -d "$SOURCE_ROOT" -p1 --reverse --dry-run --batch --force --silent < "$sync_notify_patch" >/dev/null 2>&1; then
+    patch -d "$SOURCE_ROOT" -p1 --forward --batch < "$sync_notify_patch"
+fi
+
+# Keep the Maleoon compiler workaround reproducible for source archives and
+# submodule checkouts alike. A previously applied patch is left untouched.
+if [ "$MODE" = "zink" ]; then
+    for compat_patch in "$SCRIPT_DIR/patches/mesa-maleoon-unused-layer.patch" \
+                        "$SCRIPT_DIR/patches/mesa-zink-shadow-transfers.patch" \
+                        "$SCRIPT_DIR/patches/mesa-zink-bo-cache-budget.patch" \
+                        "$SCRIPT_DIR/patches/mesa-zink-readback-cache.patch"; do
+        if ! patch -d "$SOURCE_ROOT" -p1 --reverse --dry-run --batch --force --silent < "$compat_patch" >/dev/null 2>&1; then
+            patch -d "$SOURCE_ROOT" -p1 --forward --batch < "$compat_patch"
+        fi
+    done
+fi
+
 if [ "$CLEAN" -eq 1 ]; then
     remove_tree "$BUILD_ROOT"
     remove_tree "$INSTALL_ROOT"
@@ -745,6 +766,10 @@ if [ "$VULKAN_ONLY" = "1" ]; then
         "-Dvideo-codecs="
     )
 else
+    GALLIUM_DRIVERS="virgl,softpipe"
+    if [ "$MODE" = "zink" ]; then
+        GALLIUM_DRIVERS="$GALLIUM_DRIVERS,zink"
+    fi
     MESON_ARGS=(
         "--cross-file=$CROSS_FILE"
         "--prefix=$INSTALL_ROOT"
@@ -752,7 +777,7 @@ else
         "-Dbuildtype=release"
         "-Dplatforms=wayland"
         "-Degl-native-platform=wayland"
-        "-Dgallium-drivers=virgl,softpipe"
+        "-Dgallium-drivers=$GALLIUM_DRIVERS"
         "-Dvulkan-drivers="
         "-Degl=enabled"
         "-Dgles1=enabled"
@@ -797,7 +822,7 @@ else
     meson setup "$BUILD_ROOT" "$SOURCE_ROOT" "${MESON_ARGS[@]}"
 fi
 
-meson compile -C "$BUILD_ROOT"
+meson compile -C "$BUILD_ROOT" -j "$JOBS"
 meson install -C "$BUILD_ROOT"
 
 [ -d "$INSTALL_ROOT/lib" ] || err "guest_gfx install is missing lib/: $INSTALL_ROOT"

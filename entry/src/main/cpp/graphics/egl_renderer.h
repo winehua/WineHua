@@ -11,6 +11,7 @@
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/presented_frame.h"
 #include "compositor/frame/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
+#include "renderer_repaint_state.h"
 
 struct OH_NativeImage;
 class DesktopCompositor;
@@ -27,20 +28,29 @@ public:
     // compositor 生命周期长于一切 renderer (WaylandServer 单例成员), 只读
     // 引用共享与 InputResolver/PopupManager 注入同模式, 无新锁。
     explicit EglRenderer(DesktopCompositor& compositor);
+    ~EglRenderer() { Shutdown(); }
 
     // 获取/初始化共享的 EGLDisplay (首次调用时初始化, 线程安全)
     static EGLDisplay GetSharedDisplay();
 
     bool Init(OHNativeWindow* window, int w, int h);
     void Shutdown();
+    // Background UIAbilities can temporarily hide a still-valid native surface.
+    // Park the render loop while hidden and wake it again when the window returns.
+    void SetVisible(bool visible);
 
     uint32_t GetToplevelId() const { return toplevelId_; }
     void SetToplevelId(uint32_t id) { toplevelId_ = id; }
+    int64_t GetSurfaceId() const { return surfaceId_; }
+    void SetSurfaceId(int64_t id) { surfaceId_ = id; }
     // ArkTS onSurfaceChanged 声明的 surface 尺寸 (只作诊断基准, 见成员区注释)。
     // **不写 width_/height_**: 那两个字段是"实测 surface 尺寸", 被声明值污染后
     // 循环里的"实测 == 已画"判定会误判 (2026-09-14 黑边根因)
     void SetSize(int w, int h) {
         expectW_ = w; expectH_ = h;
+        // A replacement native buffer can have the same dimensions. Keep this
+        // request pending until a successful swap, even if no guest commit follows.
+        repaint_.RequestRedraw();
     }
     // 拖拽缩放中: 整帧拉伸填满 surface (见 ComputeFrameDisplayRect)。拖拽时
     // 窗口先变、Wine 新帧未到的空档里, 等比 fit 会按旧帧比例留黑边; 拉伸让
@@ -81,6 +91,7 @@ private:
     FitRect ComputeFrameDisplayRect(int drawW, int drawH) const;
 
     OHNativeWindow* window_ = nullptr;
+    int64_t surfaceId_ = 0;
     // 沉浸式切换的两拍 resize (2800x1683 → 2800x1840) 与渲染循环的竞态
     // (2026-09-14 全屏桌面左右黑边 + 画面纵向拉伸根因, 日志实证):
     // 渲染线程按当时读到的 surface (1683) 算出 letterbox 绘制; 绘制期间 NAPI
@@ -169,6 +180,10 @@ private:
     int lastLoggedW_ = 0, lastLoggedH_ = 0;  // 上次输出 resize 日志时的 surface 尺寸
     std::thread thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> visible_{true};
+    winehua::RendererRepaintState repaint_;
+    std::mutex visibilityMutex_;
+    std::condition_variable visibilityCv_;
     std::mutex vsyncMutex_;
     std::condition_variable vsyncCv_;
     uint64_t vsyncSequence_ = 0;

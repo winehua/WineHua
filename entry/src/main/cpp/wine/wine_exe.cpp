@@ -7,6 +7,7 @@
 #include "compositor/wayland_server.h"
 #include "wine_constants.h"
 #include "wine_env.h"
+#include "mewgenics_graphics.h"
 #include "proc/wine_process.h"
 
 #include <sys/socket.h>
@@ -39,6 +40,23 @@ static bool HasUnsafeProtocolChar(const std::string& value)
 {
     return value.find('|') != std::string::npos || value.find('\n') != std::string::npos ||
            value.find('\r') != std::string::npos;
+}
+
+static bool IsQualifiedOpenGlGpu(const ProgramOptions& options,
+                                   const std::string& binDir)
+{
+    const char* device = getenv("WINEHUA_DEVICE_TYPE");
+    const char* qualified = getenv("WINEHUA_MEWGENICS_GPU_QUALIFIED");
+    const char* overrideRenderer = getenv("WINEHUA_MEWGENICS_RENDERER");
+    const std::string root = WINE_FILES_DIR "/mewgenics-gfx-v6";
+    const bool ready = access((root + "/.manifest").c_str(), R_OK) == 0 &&
+        access((root + "/lib/libEGL.so").c_str(), R_OK) == 0 &&
+        access((root + "/lib/dri/virtio_gpu_dri.so").c_str(), R_OK) == 0 &&
+        access((binDir + "/guest_vulkan/lib/libvulkan.so.1").c_str(), R_OK) == 0 &&
+        access((binDir + "/guest_vulkan/share/vulkan/icd.d/venus_icd.x86_64.json").c_str(), R_OK) == 0;
+    return qualified && !strcmp(qualified, "1") &&
+        winehua::IsManagedZinkCandidate(device, options.windowsExePath.c_str(), "virpipe",
+            options.openglRenderer.c_str(), true, ready, overrideRenderer);
 }
 
 static std::string ReadString(napi_env env, napi_value value)
@@ -195,6 +213,7 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(binDir);
     winehua::GraphicsBroker::GetInstance().SetRequestedBackend(winehua::GraphicsBackend::Virgl);
     if (!winehua::GraphicsBroker::GetInstance().EnsureStarted(prefixDir)) return -1;
+    const bool managedZink = IsQualifiedOpenGlGpu(options, binDir);
     winehua::GraphicsBroker::GetInstance().SetVulkanPresentMode(
         options.presentBackend == "venus_broker_present" ||
         options.presentBackend == "venus_direct_present");
@@ -217,7 +236,19 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     // overlay 内 early-return, extraEnv 最后写入仍可压过产品默认。
     policy.applyStableOverlay = true;
     policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
-    policy.extraEnv = options.environment;
+    if (managedZink)
+    {
+        for (const auto& entry : winehua::MewgenicsGpuEnvironment(
+                 WINE_FILES_DIR "/mewgenics-gfx-v6", binDir))
+            policy.extraEnv.push_back(entry.first + "=" + entry.second);
+        if (winehua::IsDarkestWin64(options.windowsExePath.c_str()))
+            policy.extraEnv.push_back("WINEHUA_OPENGL_PROFILE=darkest-zink-v6");
+        OH_LOG_INFO(LOG_APP,
+                    "[WineProgram] qualified Zink GL environment enabled; host stays on the GL path");
+    }
+    policy.extraEnv.push_back("WINEHUA_OPENGL_RENDERER=" + options.openglRenderer);
+    // Explicit per-program overrides remain above the managed defaults.
+    policy.extraEnv.insert(policy.extraEnv.end(), options.environment.begin(), options.environment.end());
     policy.extraEnv.push_back("WINEHUA_D3D_BACKEND=" + options.d3dBackend);
     policy.extraEnv.push_back("WINEHUA_PRESENT_BACKEND=" + options.presentBackend);
     /* desktop 模式: 将进程接入 explorer 创建的 shell desktop, 使其窗口
@@ -356,6 +387,14 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
         options.dxvkBackend != "dxvk_modern_2_6")
         options.dxvkBackend = impliedDxvkBackend;
     options.presentBackend = GetString(env, args[0], "presentBackend");
+    options.openglRenderer = GetString(env, args[0], "openglRenderer", "auto");
+    if (options.openglRenderer != "auto" && options.openglRenderer != "virpipe" && options.openglRenderer != "zink")
+        options.openglRenderer = "auto";
+    if (options.openglRenderer == "zink" && !IsQualifiedOpenGlGpu(options, WINE_RUNTIME_BIN))
+    {
+        napi_throw_error(env, nullptr, "当前设备或运行时尚未验证 Zink，请选择自动或 VirGL");
+        return nullptr;
+    }
     if (options.presentBackend.empty())
         options.presentBackend = DerivePresentBackend(options.d3dBackend);
     ReadStringArray(env, args[0], "argv", &options.argv);

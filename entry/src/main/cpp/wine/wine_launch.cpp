@@ -127,10 +127,28 @@ static bool EnsureExternalPePrefixSkeleton(const std::string& binDir,
     for (const char* suffix : suffixes)
         ok = EnsureDirRecursive(prefixDir + suffix, 0777) && ok;
 
-    /* Shell explorer resolves programs supplied after /desktop through the
-     * Windows search path, not the external x86_64-windows PE directory.
-     * Keep the one desktop-only helper in the native system32 location so a
-     * missing helper cannot make wineserver close an otherwise valid shell. */
+    // Executables need physical Windows paths after prefix bootstrap. DLLs
+    // still resolve externally, but load_main_exe stops probing builtins once
+    // the prefix exists. Seed system programs for Explorer and child launches.
+    const std::string programsDir = binDir + "/x86_64-windows";
+    DIR* programs = opendir(programsDir.c_str());
+    if (!programs) return false;
+    int programCount = 0;
+    while (dirent* entry = readdir(programs))
+    {
+        const char* dot = strrchr(entry->d_name, '.');
+        if (!dot || strcasecmp(dot, ".exe")) continue;
+        const std::string destination = prefixDir +
+            (!strcasecmp(entry->d_name, "explorer.exe")
+                ? "/drive_c/windows/" : "/drive_c/windows/system32/") + entry->d_name;
+        if (CopyFileIfNeeded(programsDir + "/" + entry->d_name, destination)) programCount++;
+        else ok = false;
+    }
+    closedir(programs);
+    if (!programCount || !FileHasData((prefixDir + "/drive_c/windows/explorer.exe").c_str()))
+        ok = false;
+
+    // The desktop helper is also kept in bin/ for older runtime payloads.
     const std::string keepSrc = binDir + "/winehua_keep.exe";
     const std::string keepDst = prefixDir + "/drive_c/windows/system32/winehua_keep.exe";
     if (!CopyFileIfNeeded(keepSrc, keepDst)) {
@@ -580,6 +598,45 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         }
     }
 
+    // Import the repaired defaults once before Explorer caches UI fonts.
+    const std::string fontMarker = p->prefixDir + "/.winehua-font-policy-noto-v2";
+    if (access(fontMarker.c_str(), F_OK) != 0)
+    {
+        bool fontsReady = CopyFileIfNeeded(p->winehuaBin + "/../share/wine/winehua-fonts.reg",
+            p->prefixDir + "/drive_c/windows/temp/winehua-fonts.reg");
+        if (fontsReady)
+        {
+            winehua::SpawnRequest fontReq{winehua::SpawnKind::WineExe};
+            fontReq.argv = {"C:\\windows\\system32\\reg.exe", "import",
+                            "C:\\windows\\temp\\winehua-fonts.reg"};
+            auto fontPolicy = SessionPolicyFromLaunch(*p, audioBootstrapFd);
+            fontPolicy.d3dBackend = "wined3d";
+            fontPolicy.extraEnv = {"WINEHUA_WORKING_DIRECTORY=C:/windows/temp"};
+            fontReq.env = winehua::BuildSessionEnv(fontPolicy);
+            const pid_t fontPid = winehua::Spawner::Spawn(fontReq);
+            fontsReady = fontPid > 0 && WaitFor("font policy import", [fontPid]() {
+                WineProcessEntry result;
+                return QueryProcessSnapshot(fontPid, &result) && !result.running &&
+                    result.exitCodeSource != "unknown";
+            }, 60000, 100);
+            WineProcessEntry result;
+            fontsReady = fontsReady && QueryProcessSnapshot(fontPid, &result) && result.exitCode == 0;
+        }
+        if (!fontsReady)
+        {
+            OH_LOG_ERROR(LOG_APP, "[Launch-Async] font policy import failed");
+            if (gStateTsfn)
+                napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:fonts"), napi_tsfn_blocking);
+            return false;
+        }
+        if (FILE* marker = fopen(fontMarker.c_str(), "wb"))
+        {
+            fputs("noto-cjk-v2\n", marker);
+            fclose(marker);
+        }
+        OH_LOG_INFO(LOG_APP, "[Launch-Async] Noto CJK font policy imported");
+    }
+
     // -- explorer desktop shell (仅 desktop 模式) --
     PrepareDesktopSessionGraphicsEnv(*p);
 
@@ -634,6 +691,19 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         if (!WaitFor("explorer desktop root", [ws]() {
                 return ws->GetDesktopRootToplevelId() != 0;
             }, 15000, 100)) {
+            bool shellRunning = !IsLaunchChildExited(exPid);
+            for (const WineProcessEntry& process : GetProcessListSnapshot())
+                if (process.running && !strcasecmp(process.exeBasename.c_str(), "explorer.exe") &&
+                    !IsLaunchChildExited(process.pid))
+                    shellRunning = true;
+            if (!shellRunning && ws->GetDesktopRootToplevelId() == 0)
+            {
+                OH_LOG_ERROR(LOG_APP, "[Launch-Async] desktop shell exited before creating a root window");
+                if (gStateTsfn)
+                    napi_call_threadsafe_function(gStateTsfn, strdup("state:failed:desktop"),
+                                                  napi_tsfn_blocking);
+                return false;
+            }
             /* 超时不再装死放行: 降级 ready-degraded (UI 显示"桌面准备中…"),
              * root 出现后由 desktop_root 钩子补发 evt:desktop-ready,
              * ArkTS 据此升级为正式 ready (慢设备自救, 不再谎称已就绪)。 */

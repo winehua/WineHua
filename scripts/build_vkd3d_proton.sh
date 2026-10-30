@@ -87,7 +87,7 @@ elif ! grep -q 'demos/triangle' "$MESON_ROOT/build.ninja"; then
 fi
 
 log "Building VKD3D-Proton x64 limited-500K"
-ninja -C "$MESON_ROOT"
+ninja -j"$JOBS" -C "$MESON_ROOT"
 
 dll="$MESON_ROOT/libs/d3d12/d3d12.dll"
 smoke="$MESON_ROOT/tests/vkd3d-graphics-smoketest.exe"

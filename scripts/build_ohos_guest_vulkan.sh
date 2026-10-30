@@ -86,6 +86,10 @@ cmake --build "$BUILD_ROOT/loader" --parallel "$JOBS"
 cmake --install "$BUILD_ROOT/loader"
 
 loader_binary="$(find "$LOADER_INSTALL/lib" -maxdepth 1 -type f -name 'libvulkan.so.1*' | sort | tail -n 1)"
+if [ -z "$loader_binary" ] && [ -s "$LOADER_INSTALL/lib/libvulkan.so" ]; then
+    # The OHOS CMake platform emits unversioned shared-library filenames.
+    loader_binary="$LOADER_INSTALL/lib/libvulkan.so"
+fi
 [ -n "$loader_binary" ] || err "Vulkan Loader install did not produce libvulkan.so.1"
 
 rm -rf "$OUTPUT_ROOT"

@@ -9,10 +9,7 @@ source "$SCRIPT_DIR/env.sh"
 NATIVE_TARGET="${NATIVE_TARGET:-aarch64-linux-ohos}"
 WINEHUA_INC="$WINEHUA/entry/src/main/cpp/protocols"
 NATIVE_BUILD="$BUILD_DIR/native_${NATIVE_ARCH}"
-if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
-    export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-    export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
-fi
+export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
 
 log "=== 构建 Native 依赖 ($NATIVE_ARCH: $NATIVE_TARGET) ==="
 
@@ -22,19 +19,30 @@ mkdir -p "$NATIVE_LIBS" "$WINEHUA_INC" "$NATIVE_BUILD"
 gen_native_cross() {
     local cross="$NATIVE_BUILD/ohos-${NATIVE_ARCH}-cross.txt"
     local ffi_prefix="$NATIVE_BUILD/libffi/install"
+    local pcwrap="$NATIVE_BUILD/pkg-config-cross.sh"
+    cat > "$pcwrap" << PWEOF
+#!/bin/sh
+export PKG_CONFIG_LIBDIR="$ffi_prefix/lib/pkgconfig:$NATIVE_BUILD/libxml2/install/lib/pkgconfig:$NATIVE_BUILD/libepoxy/install/lib/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
+export PKG_CONFIG_PATH="\$PKG_CONFIG_LIBDIR"
+exec "$PKG_CONFIG_BIN" "\$@"
+PWEOF
+    chmod +x "$pcwrap"
     cat > "$cross" << XEOF
 [binaries]
 c = '$OHOS_SDK/native/llvm/bin/clang'
 cpp = '$OHOS_SDK/native/llvm/bin/clang++'
 ar = '$OHOS_SDK/native/llvm/bin/llvm-ar'
 strip = '$OHOS_SDK/native/llvm/bin/llvm-strip'
-pkg-config = '$PKG_CONFIG_BIN'
+pkg-config = '$pcwrap'
 
 [built-in options]
 c_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-I$ffi_prefix/include']
 c_link_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-fuse-ld=lld', '-L$ffi_prefix/lib']
 # meson 构建机依赖查找 (wayland-scanner 等) 由此选项决定, 环境变量 PKG_CONFIG_PATH 会被它覆盖
 build.pkg_config_path = ['$BUILD_DIR/host-tools/lib/pkgconfig']
+
+[properties]
+needs_exe_wrapper = true
 
 [host_machine]
 system = 'linux'
@@ -86,6 +94,10 @@ copy_soname_with_linker_alias() {
     local soname="$2"
     local linker="${3:-}"
 
+    # The OHOS CMake platform can emit an unversioned shared library.
+    if [ ! -f "$src" ] && [[ "$src" == *.so.* ]]; then
+        src="${src%%.so.*}.so"
+    fi
     [ -f "$src" ] || err "native lib source missing: $src"
     cp "$src" "$NATIVE_LIBS/$soname"
     if [ -n "$linker" ]; then
@@ -213,6 +225,7 @@ build_wayland() {
     export PKG_CONFIG_PATH="$NATIVE_BUILD/libffi/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     meson setup "$build" "$src" \
         --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" \
         -Ddocumentation=false -Dtests=false -Dscanner=false
 
     ninja -C "$build"
@@ -334,6 +347,13 @@ find_python_with_yaml() {
 
 build_virglrenderer() {
     local src="$ROOT/thirdparty/virglrenderer"
+    local cleanup_patch
+    for cleanup_patch in "$SCRIPT_DIR/patches/virgl-device-cleanup.patch" \
+                         "$SCRIPT_DIR/patches/virgl-render-resource-fd-close.patch"; do
+        if ! patch -d "$src" -p1 --reverse --dry-run --batch --force --silent < "$cleanup_patch" >/dev/null 2>&1; then
+            patch -d "$src" -p1 --forward --batch < "$cleanup_patch"
+        fi
+    done
     local build="$NATIVE_BUILD/virglrenderer"
     local cross
     local epoxy_pc="$NATIVE_BUILD/libepoxy/install/lib/pkgconfig"

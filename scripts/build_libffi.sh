@@ -19,7 +19,11 @@ BUILD="$BUILD_DIR/libffi_build"
 mkdir -p "$BUILD" "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC"
 cd "$BUILD"
 
-(cd "$SRC" && ./autogen.sh) || err "libffi autogen.sh 失败"
+# The checked-in/generated configure script is usable when present. Avoid
+# re-running the legacy Automake bootstrap on newer distro Perl/Automake pairs.
+if [ ! -x "$SRC/configure" ]; then
+    (cd "$SRC" && ./autogen.sh) || err "libffi autogen.sh 失败"
+fi
 if [ "$HOST_OS" = "Darwin" ]; then
     CC="$CLANG" CCAS="$CLANG" AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
     RANLIB="$OHOS_SDK/native/llvm/bin/llvm-ranlib" \

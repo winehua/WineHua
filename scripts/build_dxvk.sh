@@ -10,6 +10,22 @@ source "$SCRIPT_DIR/env.sh"
 
 [ -d "$DXVK_SRC" ] || err "DXVK fork missing: $DXVK_SRC"
 
+compat_patch="$SCRIPT_DIR/patches/dxvk-legacy-mingw-compat.patch"
+python3 - "$DXVK_SRC" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for name in ('src/d3d10/d3d10_interfaces.h', 'src/dxvk/dxvk_gpu_query.cpp'):
+    path = root / name
+    data = path.read_bytes()
+    normalized = data.replace(b'\r\n', b'\n')
+    if data != normalized:
+        path.write_bytes(normalized)
+PY
+if ! patch -d "$DXVK_SRC" -p1 --reverse --dry-run --silent < "$compat_patch" >/dev/null 2>&1; then
+    patch -d "$DXVK_SRC" -p1 --forward --batch < "$compat_patch"
+fi
+
 # 读取 meson 缓存里配置的源码绝对路径 (可能为空)
 configured_source_of() {
     local build_dir="$1"
@@ -28,6 +44,27 @@ setup_if_missing() {
     local build_dir="$1"
     local cross_file="$2"
     local prefix="$3"
+    local probe_cxx=x86_64-w64-mingw32-g++
+    [ "$cross_file" != build-win32.txt ] || probe_cxx=i686-w64-mingw32-g++
+    local probe_dir uuid_probe
+    probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/winehua-dxvk-uuid.XXXXXX")"
+    uuid_probe="$probe_dir/probe.exe"
+    local uuid_cpp_args=""
+    # MinGW releases differ in whether d3d10effect.h declares this UUID.
+    # Probe the installed headers rather than redeclaring it unconditionally.
+    if ! printf '%s\n' '#include <d3d10_1.h>' \
+        'int main() { return __uuidof(ID3D10StateBlock).Data1 == 0; }' \
+        | "$probe_cxx" -x c++ - -o "$uuid_probe" >/dev/null 2>&1; then
+        uuid_cpp_args=-DWINEHUA_NEEDS_D3D10_STATE_BLOCK_UUID
+    fi
+    # Older MinGW headers use a different name for the same D3D9 structure.
+    if ! printf '%s\n' '#include <d3d9.h>' \
+        'int main() { return sizeof(D3DDEVINFO_RESOURCEMANAGER) == 0; }' \
+        | "$probe_cxx" -x c++ - -o "$uuid_probe" >/dev/null 2>&1; then
+        uuid_cpp_args+=" -DD3DDEVINFO_RESOURCEMANAGER=D3DDEVINFO_D3DRESOURCEMANAGER"
+    fi
+    rm -f "$uuid_probe"
+    rmdir "$probe_dir"
     # 仓库被移动/换挂载路径时 (例如另一台机器 clone 到别处, 或经 symlink 挂载),
     # 旧 build 目录会把旧绝对路径缓存在 meson-info.json, 直接 ninja 会报 "Neither
     # source directory '<旧路径>' ... contain a build file meson.build"。检测到路径
@@ -47,7 +84,9 @@ setup_if_missing() {
         log "Configuring DXVK $(basename "$build_dir")"
         meson setup "$build_dir" "$DXVK_SRC" \
             --cross-file "$DXVK_SRC/$cross_file" \
-            --prefix "$prefix" -Dbuildtype=release
+            --prefix "$prefix" -Dbuildtype=release "-Dcpp_args=$uuid_cpp_args"
+    else
+        meson configure "$build_dir" "-Dcpp_args=$uuid_cpp_args"
     fi
 }
 
@@ -55,10 +94,10 @@ setup_if_missing "$DXVK_SRC/build.winehua64" build-win64.txt "$DXVK_BUILD_ROOT/x
 setup_if_missing "$DXVK_SRC/build.winehua32" build-win32.txt "$DXVK_BUILD_ROOT/x86"
 
 log "--- DXVK Legacy fork ($DXVK_SRC) ---"
-ninja -C "$DXVK_SRC/build.winehua64" install
-ninja -C "$DXVK_SRC/build.winehua32" install
+ninja -j"$JOBS" -C "$DXVK_SRC/build.winehua64" install
+ninja -j"$JOBS" -C "$DXVK_SRC/build.winehua32" install
 
-for dll in d3d11.dll dxgi.dll; do
+for dll in d3d9.dll d3d11.dll dxgi.dll; do
     [ -f "$DXVK_BUILD_ROOT/x64/bin/$dll" ] || \
         err "DXVK x64 artifact missing: $DXVK_BUILD_ROOT/x64/bin/$dll"
     [ -f "$DXVK_BUILD_ROOT/x86/bin/$dll" ] || \

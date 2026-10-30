@@ -42,14 +42,6 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     OH_LOG_INFO(LOG_APP, "[MW-Create] toplevel=%{public}u surfaceId=%{public}ld existRender=%{public}zu",
                 toplevelId, surfaceId, toplevelRenderers_.size());
 
-    // 防御: 如果已有旧 renderer, 先 shutdown
-    auto old = toplevelRenderers_.find(toplevelId);
-    if (old != toplevelRenderers_.end()) {
-        OH_LOG_WARN(LOG_APP, "[MW-Create] WARN toplevel #%{public}u already has renderer, shutting down old", toplevelId);
-        old->second->Shutdown();
-        toplevelRenderers_.erase(old);
-    }
-
     OHNativeWindow* win = nullptr;
     int ret = OH_NativeWindow_CreateNativeWindowFromSurfaceId((uint64_t)surfaceId, &win);
     if (ret != 0 || !win) {
@@ -58,6 +50,13 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
         return;
     }
     OH_LOG_INFO(LOG_APP, "[MW-Create] native window created %{public}p for toplevel #%{public}u", win, toplevelId);
+
+    // Keep the existing renderer if the replacement surface is not ready yet.
+    auto old = toplevelRenderers_.find(toplevelId);
+    if (old != toplevelRenderers_.end()) {
+        old->second->Shutdown();
+        toplevelRenderers_.erase(old);
+    }
 
     // 构造注入 frame compositor (重构第 6A 步): 渲染器取帧/ZC 状态机经
     // DesktopCompositor 直连 — 替代旧 WaylandServer 门面 26 处转发
@@ -68,14 +67,17 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
         WaylandServer::GetInstance()->GetDesktopCompositor());
     // 初始尺寸 1x1, 真正尺寸由 ResizeRenderer (onSurfaceChanged) 设置
     r->SetToplevelId(toplevelId);
+    r->SetSurfaceId(surfaceId);
     if (r->Init(win, 1, 1)) {
         toplevelRenderers_[toplevelId] = std::move(r);
+        // Another renderer may have consumed the retained desktop frame.
+        // First paint must not depend on a later surface-size callback.
+        WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
         OH_LOG_INFO(LOG_APP, "[MW-Create] OK toplevel #%{public}u renderer created (total=%{public}zu)",
                     toplevelId, toplevelRenderers_.size());
     } else {
         OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u EglRenderer::Init FAILED", toplevelId);
-        // 销毁刚才创建的 native window
-        OH_NativeWindow_DestroyNativeWindow(win);
+        // Init takes ownership even on failure; EglRenderer releases the window.
     }
 }
 
@@ -86,10 +88,40 @@ void PluginManager::SetRendererStretchFill(uint32_t toplevelId, bool on) {
     }
 }
 
-void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
+void PluginManager::SetRendererVisible(uint32_t toplevelId, bool visible) {
+    auto rit = toplevelRenderers_.find(toplevelId);
+    if (rit == toplevelRenderers_.end()) return;
+    if (visible && !rit->second->IsValid()) {
+        const int64_t surfaceId = rit->second->GetSurfaceId();
+        const int w = rit->second->GetWidth(), h = rit->second->GetHeight();
+        OH_LOG_INFO(LOG_APP, "[MW-Life] recover retired renderer tl=%{public}u", toplevelId);
+        CreateRenderer(toplevelId, surfaceId);
+        rit = toplevelRenderers_.find(toplevelId);
+        if (rit == toplevelRenderers_.end()) return;
+        if (w > 0 && h > 0) ResizeRenderer(toplevelId, w, h, surfaceId);
+    }
+    rit->second->SetVisible(visible);
+    if (visible) {
+        WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
+    }
+}
+
+void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h, int64_t surfaceId) {
+    // Transient zero-size callbacks must not recreate/retire a renderer or
+    // publish a bogus surface-ready event during startup/orientation changes.
+    if (w <= 0 || h <= 0) return;
     OH_LOG_INFO(LOG_APP, "[MW-Resize] toplevel=%{public}u size=%{public}dx%{public}d", toplevelId, w, h);
 
     auto rit = toplevelRenderers_.find(toplevelId);
+    if (rit != toplevelRenderers_.end() && surfaceId && rit->second->GetSurfaceId() != surfaceId) {
+        OH_LOG_INFO(LOG_APP, "[MW-Resize] ignore stale surface tl=%{public}u surface=%{public}ld",
+                    toplevelId, surfaceId);
+        return;
+    }
+    if (surfaceId && (rit == toplevelRenderers_.end() || !rit->second->IsValid())) {
+        CreateRenderer(toplevelId, surfaceId);
+        rit = toplevelRenderers_.find(toplevelId);
+    }
     if (rit != toplevelRenderers_.end() && rit->second->IsValid()) {
         rit->second->SetSize(w, h);
         OH_LOG_INFO(LOG_APP, "[MW-Resize] toplevel #%{public}u renderer resized OK", toplevelId);
@@ -122,6 +154,24 @@ void PluginManager::DestroyToplevel(uint32_t toplevelId) {
     }
 }
 
+void PluginManager::DestroyRendererForSurface(uint32_t toplevelId, int64_t surfaceId) {
+    if (!surfaceId) {
+        DestroyToplevel(toplevelId);
+        return;
+    }
+    // XComponent destruction can arrive after a new surface has replaced the
+    // renderer for this toplevel. Release only the surface that sent the event.
+    // Find by surface so a desktop-root migration is handled as well.
+    for (const auto& entry : toplevelRenderers_) {
+        if (entry.second->GetSurfaceId() == surfaceId) {
+            DestroyToplevel(entry.first);
+            return;
+        }
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-Destroy] ignore stale surface tl=%{public}u surface=%{public}ld",
+                toplevelId, surfaceId);
+}
+
 EglRenderer* PluginManager::GetRendererForToplevel(uint32_t tid) {
     auto rit = toplevelRenderers_.find(tid);
     if (rit == toplevelRenderers_.end()) return nullptr;
@@ -142,6 +192,14 @@ void PluginManager::MoveRendererToToplevel(uint32_t oldId, uint32_t newId) {
         return;
     }
     OH_LOG_INFO(LOG_APP, "[MW-Plug] MoveRenderer tl #%{public}u -> #%{public}u", oldId, newId);
-    toplevelRenderers_[newId] = std::move(it->second);
+    auto renderer = std::move(it->second);
     toplevelRenderers_.erase(it);
+    // Retire a destination renderer before replacing it. Remove the old entry
+    // before inserting: unordered_map insertion may invalidate its iterator.
+    auto destination = toplevelRenderers_.find(newId);
+    if (destination != toplevelRenderers_.end()) {
+        destination->second->Shutdown();
+        toplevelRenderers_.erase(destination);
+    }
+    toplevelRenderers_.emplace(newId, std::move(renderer));
 }

@@ -1,3 +1,7 @@
+import { DEFAULT_D3D_BACKEND } from '../common/GraphicsDefaults';
+import { wineProgramOptions } from '../common/WineProgramOptions';
+import { common } from '@kit.AbilityKit';
+import { PhoneGraphicsSettings } from '../service/PhoneGraphicsSettings';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -8,6 +12,7 @@ import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
+import { InputSettingsService } from '../service/InputSettingsService';
 // [[SMOKE]] 合并到 main-ui: 删本行与侧边栏的 <SmokeDevPanel /> 调用
 import { SmokeDevPanel } from '../smoke/SmokeDevPanel';
 
@@ -19,8 +24,10 @@ const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
 @Entry
 @Component
 struct Index {
-  @StorageLink('winehua.d3d.backend') d3dBackendText: string = 'vkd3d_limited_500k';
-  @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = 'vkd3d_limited_500k';
+  @StorageLink('winehua.phone.scale.preference') phoneScalePreference: number = 2;
+  @StorageLink('winehua.phone.desktop.preference') phoneDesktopPreference: string = 'auto';
+  @StorageLink('winehua.d3d.backend') d3dBackendText: string = DEFAULT_D3D_BACKEND;
+  @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = DEFAULT_D3D_BACKEND;
   @StorageLink('winehua.dxvk.backend') dxvkBackendText: string = 'dxvk_legacy';
   @StorageLink('winehua.dxvk.preference') dxvkPreferenceText: string = 'auto';
   private env = WineEnvService.getInstance();
@@ -43,6 +50,7 @@ struct Index {
   @State dirStack: string[] = [];
   // -- 运行中进程 (ProcessService 镜像) --
   @State processList: ProcessInfo[] = [];
+  @State processActionMessage: string = '';
   // -- 桌面模式 (仅 PC): 融合/虚拟桌面设置 (镜像 DesktopModeService) --
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
@@ -54,15 +62,25 @@ struct Index {
   // 图形后端互斥单选状态 (响应式, 高亮判据唯一来源)。区别于 @StorageLink
   // 文本字段: 后者由 AppStorage/PersistentStorage 恢复, 非点击驱动;
   // 直接绑 private 字段做高亮是旧实现"选中无高亮"根因 (非响应式)。
-  @State backendSel: string = 'vkd3d_limited_500k';
+  @State backendSel: string = DEFAULT_D3D_BACKEND;
   // doRun 传参用的后端值: 与 backendSel 同步 (selectBackend 内联更新)
-  private d3dBackend: string = 'vkd3d_limited_500k';
+  private d3dBackend: string = DEFAULT_D3D_BACKEND;
   private dxvkBackend: string = 'dxvk_legacy';
+  private onProcessListChanged = (): void => {
+    const proc = ProcessService.getInstance();
+    this.processList = proc.processList;
+    this.processActionMessage = proc.actionMessage;
+  };
+  private sidebarScroller: Scroller = new Scroller();
   // 升级提示日志只打一次 (master 版无弹卡 UI, 检测到不一致仅留痕 +
   // 快速操作按钮转为"应用更新"语义, 见 quickStart)
   private upgradeLogged: boolean = false;
   // -- IME 桥接 (Wine 文本框聚焦 → attach 弹软键盘 → insertText 注入 Wine) --
   private imeController: inputMethod.InputMethodController | null = null;
+  // -- 输入设置镜像 (触控板 / 虚拟键盘) --
+  private inputSettings: InputSettingsService = InputSettingsService.getInstance();
+  @State touchpadOn: boolean = false;
+  @State keyboardOn: boolean = false;
 
   // 注册 C++ 侧激活回调: active=1 → attach 弹键盘, active=0 → 收起
   private setupIme(): void {
@@ -156,7 +174,7 @@ struct Index {
   }
 
   aboutToAppear(): void {
-    this.d3dBackend = this.d3dBackendText === 'dxvk_legacy' ||
+    this.d3dBackend = this.d3dBackendText === 'dxvk_legacy' || this.d3dBackendText === 'dxvk_legacy_d3d9' ||
       this.d3dBackendText === 'dxvk_modern_2_6' ||
       this.d3dBackendText === 'vkd3d_limited_500k' ? this.d3dBackendText : 'wined3d';
     this.backendSel = this.d3dBackend;
@@ -208,10 +226,20 @@ struct Index {
     env.subscribe(mirror);
     // 进程列表镜像 + 引擎事件驱动刷新 (WineEnvService 内部已绑定时序)
     const proc = ProcessService.getInstance();
-    proc.subscribe(() => {
-      this.processList = proc.processList;
-    });
+    proc.subscribe(this.onProcessListChanged);
     proc.bindEnv(env);
+    // The process events may have arrived while the launcher was backgrounded.
+    // Always take a fresh snapshot when the page is recreated.
+    proc.refresh();
+    // 输入设置镜像 (触控板/虚拟键盘): 开关真实状态在 InputSettingsService 单例,
+    // 这里只是页面显示; 组件层各 Wine 窗口订阅同一份设置。
+    this.inputSettings.init(getContext(this));
+    this.inputSettings.subscribe(() => {
+      this.touchpadOn = this.inputSettings.touchpadEnabled;
+      this.keyboardOn = this.inputSettings.keyboardEnabled;
+    });
+    this.touchpadOn = this.inputSettings.touchpadEnabled;
+    this.keyboardOn = this.inputSettings.keyboardEnabled;
     // PC 虚拟桌面窗口状态镜像 (WineWindowManager notify 驱动): desktopActive
     // / desktopWindowActive → 「打开桌面」按钮显隐 (关窗后台运行, 按钮复现)
     const wm = this.wm;
@@ -235,22 +263,24 @@ struct Index {
   // DXVK 版本由 dxvkBackendText 决定, 见下方混合路由提示)。更新三个来源:
   // @State backendSel (高亮) / @StorageLink 文本 (AppStorage+持久化) / 私有字段 (doRun)。
   private selectBackend = (backend: string): void => {
-    const selected = backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
+    const selected = backend === 'dxvk_legacy' || backend === 'dxvk_legacy_d3d9' || backend === 'dxvk_modern_2_6' ||
       backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
     this.backendSel = selected;
     this.d3dBackend = selected;
     this.d3dBackendText = selected;
     this.d3dPreferenceText = selected;
-    if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
+    if (selected === 'dxvk_legacy' || selected === 'dxvk_legacy_d3d9' || selected === 'dxvk_modern_2_6') {
       // DXVK 档: dxvk 版本与 d3d 档一致 (vkd3d/wined3d 档保留上次 DXVK 版本)
-      this.dxvkBackend = selected;
-      this.dxvkBackendText = selected;
-      this.dxvkPreferenceText = selected;
+      const dxvk = selected === 'dxvk_modern_2_6' ? 'dxvk_modern_2_6' : 'dxvk_legacy';
+      this.dxvkBackend = dxvk;
+      this.dxvkBackendText = dxvk;
+      this.dxvkPreferenceText = dxvk;
     }
     this.env.setD3dPreference(selected);
-    this.statusText = selected === 'dxvk_legacy' ? 'DXVK Legacy' :
-      (selected === 'dxvk_modern_2_6' ? 'DXVK Modern 2.6' :
-        (selected === 'vkd3d_limited_500k' ? 'VKD3D 2.6 Limited 500K' : 'WineD3D'));
+    this.statusText = selected === 'dxvk_legacy_d3d9' ? 'DXVK Legacy (D3D9+11)' :
+      (selected === 'dxvk_legacy' ? 'DXVK Legacy' :
+        (selected === 'dxvk_modern_2_6' ? 'DXVK Modern 2.6' :
+          (selected === 'vkd3d_limited_500k' ? 'VKD3D 2.6 Limited 500K' : 'WineD3D')));
     hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
   }
 
@@ -309,21 +339,14 @@ struct Index {
   private doRun = (name: string): void => {
     this.statusText = '启动中...';
     let exePath = this.curDir + '/' + name;
-    testNapi.runWineProgram({
-      windowsExePath: exePath,
-      argv: [],
-      // DXVK 稳定化 env 默认已收口 native (BuildSessionEnv stableDesktopOverlay,
-      // 与桌面会话链同源), ArkTS 不再平行维护; 无 per-run 覆盖项时传空表
-      environment: {},
-      workingDirectory: this.curDir,
-      d3dBackend: this.d3dBackend,
-      dxvkBackend: this.dxvkBackend
-      // presentBackend 不传: native 按 d3dBackend 派生 (DerivePresentBackend)
-    });
+    testNapi.runWineProgram(wineProgramOptions(exePath, this.curDir,
+      this.d3dBackend, this.dxvkBackend));
   }
 
   private relPath = (): string => {
     if (this.curDir == DRIVE_C) return 'C:\\';
+    if (this.env.zHome && this.curDir.startsWith(this.env.zHome))
+      return 'Z:\\' + this.curDir.substring(this.env.zHome.length).replace(/\//g, '\\');
     return 'C:\\' + this.curDir.substring(DRIVE_C.length + 1).replace(/\//g, '\\');
   }
 
@@ -410,13 +433,38 @@ struct Index {
     return this.env.isBusy();
   }
 
+  private openGameLibrary(): void {
+    (getContext(this) as common.UIAbilityContext).startAbility({
+      bundleName: 'app.hackeris.winehua', abilityName: 'GameLibraryAbility'
+    }).catch((err: Error) => {
+      this.statusText = '无法打开游戏库';
+      hilog.error(DOMAIN, 'GameLibrary', 'Open library: %{public}s', JSON.stringify(err));
+    });
+  }
+
+  private async browseGames(): Promise<void> {
+    try {
+      this.curDir = await this.env.getGamesDirectory(getContext(this));
+      this.dirStack = [];
+      this.listDir(this.curDir);
+    } catch (err) {
+      this.statusText = err instanceof Error ? err.message : '无法打开游戏目录';
+    }
+  }
+
   build() {
     Stack() {
     Row() {
       // ============================================================
       //  侧边栏
       // ============================================================
+      Scroll(this.sidebarScroller) {
       Column() {
+        Button('游戏库 · 浏览 games')
+          .width('100%').height(40).fontSize(15).backgroundColor('#2B609E')
+          .margin({ top: 10, bottom: 6 }).onClick(() => this.openGameLibrary())
+        Button('手动浏览 games').id('manual-browse-games').width('100%').height(34).fontSize(13)
+          .backgroundColor('#304359').onClick(() => this.browseGames())
         // -- Wine 环境状态 --
         Text('Wine 环境')
           .fontWeight(FontWeight.Bold).fontColor('#999')
@@ -428,14 +476,29 @@ struct Index {
             .fontColor(this.statusColor())
             .layoutWeight(1)
             .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Button('后台管理')
+            .height(28)
+            .fontSize(11)
+            .backgroundColor('#333')
+            .onClick(() => this.sidebarScroller.scrollEdge(Edge.Bottom))
+          Button('进入前台')
+            .height(28).fontSize(11).backgroundColor('#285')
+            .margin({ left: 4 })
+            .enabled(this.desktopActive)
+            .onClick(() => this.wm.showDesktopInForeground())
         }
         .width('100%').padding({ bottom: 12 })
         .alignItems(VerticalAlign.Center)
 
+        if (deviceInfo.deviceType === 'phone') {
+          Text('游戏在后台运行；点击“进入前台”后才打开画面。后台管理可结束卡住的进程。')
+            .fontSize(11).fontColor('#999').width('100%').padding({ bottom: 8 })
+        }
+
         Divider().color('#2a2a2a').width('100%')
 
-        // 图形后端互斥单选: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D
-        // 四选一, 高亮 .backgroundColor 判据统一走 @State backendSel (响应式)。
+        // 图形后端互斥单选: DXVK 2.6.2 / DXVK 1.10.3 (D3D10/11) /
+        // DXVK 1.10.3 (D3D9/10/11) / VKD3D / WineD3D。
         Text('图形后端')
           .fontWeight(FontWeight.Bold).fontColor('#999')
           .width('100%').padding({ top: 12, bottom: 8 })
@@ -450,6 +513,11 @@ struct Index {
             .onClick(() => this.selectBackend('dxvk_legacy'))
         }
         .width('100%').margin({ bottom: 4 })
+        Button('DXVK Legacy D3D9 / D3D11 → Vulkan')
+          .width('100%').height(34)
+            .backgroundColor(this.backendSel === 'dxvk_legacy_d3d9' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('dxvk_legacy_d3d9'))
+        .margin({ bottom: 4 })
         Row({ space: 4 }) {
           Button('VKD3D 2.6 (500K)')
             .layoutWeight(1).height(34)
@@ -461,10 +529,48 @@ struct Index {
             .onClick(() => this.selectBackend('wined3d'))
         }
         .width('100%').margin({ bottom: 6 })
+        if (this.backendSel === 'dxvk_legacy_d3d9') {
+          Text('适用于 D3D9/10/11 游戏。唯美端午版使用 DirectDraw，请选 WineD3D。随后启动的程序使用所选档位。')
+            .fontSize(11).fontColor('#9fb0c4').maxLines(2)
+            .width('100%').margin({ bottom: 6 })
+        }
         if (this.backendSel === 'vkd3d_limited_500k') {
           Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackendText === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
             .fontSize(11).fontColor('#d9a').maxLines(3)
             .width('100%').margin({ bottom: 6 })
+        }
+
+        if (deviceInfo.deviceType === 'phone') {
+          Text('游戏画质')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 12, bottom: 8 })
+          Row({ space: 6 }) {
+            Button('清晰')
+              .layoutWeight(1).height(34)
+              .backgroundColor(this.phoneScalePreference === 2 ? '#285' : '#333')
+              .onClick(() => { PhoneGraphicsSettings.getInstance().setScale(2); })
+            Button('流畅')
+              .layoutWeight(1).height(34)
+              .backgroundColor(this.phoneScalePreference === 3 ? '#285' : '#333')
+              .onClick(() => { PhoneGraphicsSettings.getInstance().setScale(3); })
+          }
+          Text('流畅模式降低分辨率。切换后退出久鱼并重新打开生效。')
+            .fontSize(12).fontColor('#999').width('100%').padding({ top: 6 })
+          Text('桌面分辨率')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 12, bottom: 8 })
+          Row({ space: 6 }) {
+            Button('跟随屏幕')
+              .layoutWeight(1).height(34)
+              .backgroundColor(this.phoneDesktopPreference === 'auto' ? '#285' : '#333')
+              .onClick(() => { PhoneGraphicsSettings.getInstance().setDesktopResolution('auto'); })
+            Button('1024×768 (4:3)')
+              .layoutWeight(1).height(34)
+              .backgroundColor(this.phoneDesktopPreference === '1024x768' ? '#285' : '#333')
+              .onClick(() => { PhoneGraphicsSettings.getInstance().setDesktopResolution('1024x768'); })
+          }
+          Text('端午版等 4:3 游戏选择 1024×768，等比显示完整窗口。新会话生效；运行中请先保存再重启引擎。')
+            .fontSize(11).fontColor('#9fb0c4').width('100%').padding({ top: 6 })
         }
 
         // -- 桌面模式 (Pad/PC): 多窗口模式 = 每个程序独立 OHOS 窗口 (可拖动/
@@ -496,6 +602,33 @@ struct Index {
               .width('100%').padding({ top: 4 })
           }
         }
+
+        // -- 输入 (触控板 / 虚拟键盘) --
+        Divider().color('#2a2a2a').width('100%')
+        Text('输入')
+          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .width('100%').padding({ top: 12, bottom: 4 })
+        Row() {
+          Text('触控板模式')
+            .fontColor('#ccc').fontSize(14).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.touchpadOn })
+            .onChange((isOn: boolean) => {
+              this.inputSettings.setTouchpad(isOn);
+            })
+        }
+        .width('100%').height(40)
+        Row() {
+          Text('游戏触控按键')
+            .fontColor('#ccc').fontSize(14).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.keyboardOn })
+            .onChange((isOn: boolean) => {
+              this.inputSettings.setKeyboard(isOn);
+            })
+        }
+        .width('100%').height(40)
+        Text('开启后点游戏窗口右下角键盘按钮；编辑布局可添加圆形单键、全向摇杆和四方向键，并拖动调整位置。')
+          .fontSize(11).fontColor('#777')
+          .width('100%').padding({ bottom: 6 })
 
         // -- 快速操作 --
         Text('快速操作')
@@ -549,7 +682,7 @@ struct Index {
 
         // -- 运行中进程 --
         Row() {
-          Text('运行中进程')
+          Text(`运行中进程 (${this.processList.length})`)
             .fontWeight(FontWeight.Bold).fontColor('#999')
             .layoutWeight(1)
           Button({ type: ButtonType.Circle, stateEffect: true }) {
@@ -561,6 +694,13 @@ struct Index {
         .width('100%').padding({ top: 12, bottom: 8 })
         .alignItems(VerticalAlign.Center)
 
+        if (this.processActionMessage.length > 0) {
+          Text(this.processActionMessage)
+            .fontSize(11).fontColor('#b9c7d8')
+            .width('100%').maxLines(2)
+            .padding({ bottom: 4 })
+        }
+
         if (this.processList.length > 0) {
           List({ space: 1 }) {
             ForEach(this.processList, (proc: ProcessInfo) => {
@@ -570,6 +710,8 @@ struct Index {
                     Text(proc.name)
                       .fontColor('#dfd')
                       .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    Text(`PID ${proc.pid}`)
+                      .fontColor('#777').fontSize(10)
                   }
                   .layoutWeight(1).alignItems(HorizontalAlign.Start)
 
@@ -577,9 +719,9 @@ struct Index {
                     Circle({ width: 6, height: 6 }).fill('#4f4').margin({ right: 10 })
                   }
                   if (ProcessService.getInstance().isKillable(proc)) {
-                    Text('✕')
-                      .fontColor('#f55')
-                      .onClick(() => ProcessService.getInstance().kill(proc.pid))
+                    Text(ProcessService.getInstance().isKillPending(proc.pid) ? '…' : '✕')
+                      .fontColor(ProcessService.getInstance().isKillPending(proc.pid) ? '#aaa' : '#f55')
+                      .onClick(() => ProcessService.getInstance().kill(proc.pid, proc.name))
                   }
                 }
                 .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 10 })
@@ -588,7 +730,7 @@ struct Index {
               .backgroundColor('#1e1e1e')
             })
           }
-          .width('100%').layoutWeight(1)
+          .width('100%').height(180)
           .margin({ left: -14, right: -14 })
           .scrollBar(BarState.Off)
         } else {
@@ -597,9 +739,12 @@ struct Index {
             .width('100%').padding({ top: 8 })
         }
       }
-      .width(300).height('100%')
+      .width(300)
       .backgroundColor('#141414')
       .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+      }
+      .width(300).height('100%')
+      .scrollBar(BarState.Off)
 
       // -- 侧边栏分隔线 --
       Divider().vertical(true).color('#2a2a2a').height('100%')

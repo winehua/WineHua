@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { PopupWindowManager } from '../service/PopupWindowManager';
+import { InputSettingsService } from '../service/InputSettingsService';
 
 const DOMAIN = 0x0000;
 const TAG = 'WWA';
@@ -13,6 +14,8 @@ export default class WineWindowAbility extends UIAbility {
   private cleanedUp: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // 融合模式窗口可能先于 Index 就绪 (自动化直启), 保证虚拟键盘设置可用
+    InputSettingsService.getInstance().init(this.context);
     try {
       const params = want.parameters ?? {};
       this.toplevelId = Number(params.toplevelId) || 0;
@@ -164,10 +167,16 @@ export default class WineWindowAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '[WWA] onForeground tl=%{public}d', this.toplevelId);
+    if (this.toplevelId > 0) {
+      try { testNapi.setToplevelVisible(this.toplevelId, true); } catch (_) {}
+    }
   }
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '[WWA] onBackground tl=%{public}d', this.toplevelId);
+    if (this.toplevelId > 0) {
+      try { testNapi.setToplevelVisible(this.toplevelId, false); } catch (_) {}
+    }
   }
 
   onDestroy(): void {

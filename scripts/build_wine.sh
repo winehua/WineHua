@@ -4,6 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+for compat_patch in "$SCRIPT_DIR/patches/wine-instanced-arrays-alias.patch" \
+                    "$SCRIPT_DIR/patches/wine-ohos-desktop-ready-timeout.patch" \
+                    "$SCRIPT_DIR/patches/wine-ddraw-clip-surface-bounds.patch" \
+                    "$SCRIPT_DIR/patches/wine-legacy-bitmap-text.patch" \
+                    "$SCRIPT_DIR/patches/wine-direct-shm-readback.patch" \
+                    "$SCRIPT_DIR/patches/wine-ime-key-scancode.patch"; do
+    if ! patch -d "$WINE_SRC" -p1 --reverse --dry-run --batch --force --silent < "$compat_patch" >/dev/null 2>&1; then
+        patch -d "$WINE_SRC" -p1 --forward --batch < "$compat_patch"
+    fi
+done
+
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
@@ -71,11 +82,20 @@ build_ohos_unix() {
     mkdir -p "$BUILD_DIR/wine-ohos"
     cd "$BUILD_DIR/wine-ohos"
 
+    local gnutls_mode="${BUILD_GNUTLS:-1}"
+    local gnutls_options=()
+    case "$gnutls_mode" in
+        1) gnutls_options=(--with-gnutls) ;;
+        0) gnutls_options=(--without-gnutls) ;;
+        *) err "BUILD_GNUTLS 必须为 0 或 1" ;;
+    esac
+
     # 检查是否需要重新 configure (FreeType/Wayland/Vulkan/GnuTLS/GStreamer 启用状态变更)
     if [ ! -f "Makefile" ] || ! grep -q '#define SONAME_LIBFREETYPE' include/config.h 2>/dev/null \
        || ! grep -q '#define SONAME_LIBWAYLAND_CLIENT' include/config.h 2>/dev/null \
        || ! grep -q '#define SONAME_LIBVULKAN "libvulkan.so.1"' include/config.h 2>/dev/null \
-       || ! grep -q '#define SONAME_LIBGNUTLS' include/config.h 2>/dev/null \
+       || [ "$(cat .winehua-gnutls-mode 2>/dev/null || true)" != "$gnutls_mode" ] \
+       || { [ "$gnutls_mode" = 1 ] && ! grep -q '#define SONAME_LIBGNUTLS' include/config.h 2>/dev/null; } \
        || ! grep -q '#define SONAME_LIBGSTREAMER_1_0' include/config.h 2>/dev/null; then
         export FREETYPE_CFLAGS="-I$SYSROOT_EXT_INC/freetype2"
         export FREETYPE_LIBS="-L$SYSROOT_EXT_LIB -lfreetype"
@@ -94,11 +114,15 @@ build_ohos_unix() {
         # sysroot. Wine only dlopens it at runtime, so provide the canonical
         # soname explicitly instead of linking the cross build against it.
         export ac_cv_lib_soname_vulkan="libvulkan.so.1"
-        # GnuTLS 交叉编译缓存 (schannel TLS 后端, 由 build_gnutls.sh 编入 sysroot-ext)
-        export GNUTLS_CFLAGS="-I$SYSROOT_EXT_INC"
-        export GNUTLS_LIBS="-L$SYSROOT_EXT_LIB -lgnutls"
-        export ac_cv_header_gnutls_gnutls_h=yes
-        export ac_cv_lib_soname_gnutls="libgnutls.so.30"
+        # GnuTLS is optional for the initial offline/game startup build.
+        if [ "$gnutls_mode" = "1" ]; then
+            export GNUTLS_CFLAGS="-I$SYSROOT_EXT_INC"
+            export GNUTLS_LIBS="-L$SYSROOT_EXT_LIB -lgnutls"
+            export ac_cv_header_gnutls_gnutls_h=yes
+            export ac_cv_lib_soname_gnutls="libgnutls.so.30"
+        else
+            unset GNUTLS_CFLAGS GNUTLS_LIBS ac_cv_header_gnutls_gnutls_h ac_cv_lib_soname_gnutls
+        fi
         # GStreamer 交叉编译缓存 (winegstreamer 后端, 由 build_gstreamer.sh 编入 sysroot-ext)
         # configure 探测 gstreamer-1.0/video/audio/tag 4 个 .pc (PKG_CONFIG_PATH 已含)。
         # 注意: 不设 GSTREAMER_CFLAGS/LIBS env — autoconf 惯例 env 优先于 pkg-config
@@ -146,7 +170,8 @@ build_ohos_unix() {
             --with-mingw="$MINGW_CC" \
             --disable-tests \
             --without-x --without-alsa \
-            --with-opengl --with-vulkan
+            --with-opengl --with-vulkan "${gnutls_options[@]}"
+        printf '%s\n' "$gnutls_mode" > .winehua-gnutls-mode
     fi
 
     make -j$JOBS \
@@ -158,7 +183,7 @@ build_ohos_unix() {
     for pair in "winewayland.drv/winewayland.so" "wineohos.drv/wineohos.so" \
                 "win32u/win32u.so" "ntdll/ntdll.so"; do
         if [ ! -f "dlls/$pair" ]; then
-            warn "关键 .so 缺失: dlls/$pair (链接可能失败，检查 sysroot-ext)"
+            err "关键 .so 缺失: dlls/$pair (链接可能失败，检查 sysroot-ext)"
         fi
     done
 }

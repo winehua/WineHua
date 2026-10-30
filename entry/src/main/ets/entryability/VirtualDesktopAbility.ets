@@ -130,10 +130,18 @@ export default class VirtualDesktopAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '[VDA] onForeground');
+    const rootId = WineWindowManager.getInstance().getDesktopRootId();
+    if (rootId > 0) {
+      try { testNapi.setToplevelVisible(rootId, true); } catch (_) {}
+    }
   }
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '[VDA] onBackground');
+    const rootId = WineWindowManager.getInstance().getDesktopRootId();
+    if (rootId > 0) {
+      try { testNapi.setToplevelVisible(rootId, false); } catch (_) {}
+    }
   }
 
   onDestroy(): void {

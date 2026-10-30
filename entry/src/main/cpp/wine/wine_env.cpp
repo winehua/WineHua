@@ -1,4 +1,5 @@
 #include "wine_env.h"
+#include "dxvk_profile.h"
 #include "wine_constants.h"
 #include "audio/audio_broker.h"
 #include "audio_ipc_protocol.h"
@@ -268,12 +269,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
     }
     if (d3dBackend.rfind("dxvk_", 0) != 0) return;
 
-    std::string profile = d3dBackend.substr(strlen("dxvk_"));
-    if (profile.empty()) profile = "legacy";
-    const bool legacy = profile == "legacy";
-    const bool modern26 = profile == "modern_2_6";
-    if (!legacy && !modern26) return;
-    const std::string runtimeProfile = modern26 ? "modern-2.6" : "legacy";
+    const winehua::DxvkBackendProfile profile = winehua::GetDxvkBackendProfile(d3dBackend);
+    if (!profile.supported) return;
+    const bool legacy = !profile.modern;
+    const bool modern26 = profile.modern;
+    const std::string runtimeProfile = profile.runtimeDirectory;
     const std::string overlayRoot = std::string(WINE_RUNTIME_ROOT) +
         "/dxvk/" + runtimeProfile;
     const std::string overlay64 = overlayRoot + "/x64";
@@ -292,7 +292,7 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
         "WINEHUA_D3D_BACKEND=" + d3dBackend,
         "WINEHUA_DXVK_ROOT=" + overlayRoot,
         "WINEHUA_DXVK_PROFILE=" + runtimeProfile,
-        "WINEHUA_DXVK_VERSION=" + std::string(modern26 ? "2.6.2" : "1.10.3"),
+        "WINEHUA_DXVK_VERSION=" + std::string(profile.version),
         "WINEHUA_VULKAN_RUNTIME=1",
         "WINEHUA_VULKAN_LOADER_ARCH=x86_64",
         "WINEHUA_VENUS_ICD_ARCH=x86_64",
@@ -354,9 +354,7 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
          * dxgi=n 禁止回退 builtin) → import 解析失败直接 abort。两条链不兼容,
          * builtin 兜底等于退回一条必崩的路 (实测 WarThunderLauncher: n,b 卡死,
          * 纯 n 后正常出界面)。modern 2.x 已移除 d3d10, 不设。 */
-        "WINEDLLOVERRIDES=" + std::string(modern26
-            ? "d3d11=n;dxgi=n"
-            : "d3d10=n;d3d10_1=n;d3d10core=n;d3d11=n;dxgi=n"),
+        "WINEDLLOVERRIDES=" + std::string(profile.dllOverrides),
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
         "WINEDLLPATH=" + wineDllPath,
         "WINEDLLDIR0=" + overlay64,

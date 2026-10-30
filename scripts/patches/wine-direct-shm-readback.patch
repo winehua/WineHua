@@ -1,0 +1,153 @@
+--- a/dlls/winewayland.drv/opengl_readback.c
++++ b/dlls/winewayland.drv/opengl_readback.c
+@@ -34,6 +34,7 @@
+ #include <unistd.h>
+ 
+ #include "waylanddrv.h"
++#include "winternl.h"
+ #include "wine/opengl_driver.h"
+ #include "opengl_diag.h"
+ #include "opengl_readback.h"
+@@ -267,6 +268,16 @@
+     return NULL;
+ }
+ 
++static BOOL winehua_readback_pack_invert_supported(void)
++{
++    const struct opengl_context *context = NtCurrentTeb()->glContext;
++
++    /* Use Wine's per-context capability table: GL_EXTENSIONS is not a valid
++     * glGetString query in core contexts, and scanning it per frame is costly. */
++    return context && context->client_context &&
++        opengl_client_context_from_client(context->client_context)->extensions[GL_MESA_pack_invert];
++}
++
+ static BOOL winehua_readback_present(struct opengl_drawable *base)
+ {
+     struct winehua_readback_drawable *gl = winehua_readback_from_drawable(base);
+@@ -276,11 +287,13 @@
+     struct wayland_shm_buffer *buffer = NULL;
+     BYTE *rgba = NULL, *src, *dst;
+     RECT rect = {0};
+-    BOOL submitted = FALSE, ret = FALSE;
++    BOOL submitted = FALSE, ret = FALSE, direct_shm = FALSE;
++    BOOL pack_invert_supported;
+     SIZE_T rgba_size;
+     uint64_t stage_started;
+     uint32_t surface_id;
+     GLint pack_alignment, pack_buffer, pack_row_length, pack_skip_pixels, pack_skip_rows;
++    GLint pack_invert = GL_FALSE;
+     GLint read_fbo;
+     BOOL swap_ok;
+     LONG presents, readbacks;
+@@ -380,7 +393,16 @@
+                                            gl->state->in_flight);
+ 
+     rgba_size = (SIZE_T)gl->width * gl->height * 4;
+-    if (gl->rgba_size < rgba_size)
++    pack_invert_supported = winehua_env_enabled("WINEHUA_GL_DIRECT_SHM_READBACK") &&
++                            winehua_readback_pack_invert_supported();
++    if (pack_invert_supported && (slot = winehua_readback_acquire_slot(gl->state)))
++    {
++        InterlockedIncrement(&gl->state->in_flight);
++        buffer = slot->buffer;
++        rgba = buffer->map_data;
++        direct_shm = TRUE;
++    }
++    if (!direct_shm && gl->rgba_size < rgba_size)
+     {
+         if (!(rgba = realloc(gl->rgba, rgba_size)))
+         {
+@@ -391,7 +413,7 @@
+         gl->rgba = rgba;
+         gl->rgba_size = rgba_size;
+     }
+-    rgba = gl->rgba;
++    if (!direct_shm) rgba = gl->rgba;
+ 
+     funcs->p_glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+     funcs->p_glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
+@@ -399,6 +421,7 @@
+     funcs->p_glGetIntegerv(GL_PACK_SKIP_PIXELS, &pack_skip_pixels);
+     funcs->p_glGetIntegerv(GL_PACK_SKIP_ROWS, &pack_skip_rows);
+     funcs->p_glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
++    if (pack_invert_supported) funcs->p_glGetIntegerv(GL_PACK_INVERT_MESA, &pack_invert);
+ 
+     /* SwapBuffers presents the drawable's default framebuffer. Isolate the
+      * CPU readback from PBO/FBO and pixel-pack state left by the application. */
+@@ -408,6 +431,11 @@
+     if (pack_skip_pixels) funcs->p_glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+     if (pack_skip_rows) funcs->p_glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+     if (read_fbo) funcs->p_glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
++    /* Mesa can pack top-to-bottom directly into an owned, idle SHM slot.
++     * A saturated pool still uses the original synchronous readback: VirGL
++     * needs its completion point even when no display copy can be submitted. */
++    if (pack_invert_supported && pack_invert != direct_shm)
++        funcs->p_glPixelStorei(GL_PACK_INVERT_MESA, direct_shm);
+ 
+     /* Virpipe submits queued guest commands on flush. Ensure the host has
+      * completed this frame before the synchronous readback starts. */
+@@ -450,12 +478,14 @@
+     if (readbacks == 1 || !(readbacks % 120))
+     {
+         fprintf(stderr,
+-                "winehua_gl_present_bridge: readbacks=%d pid=%u surface=%u mapped=%s\n",
++                "winehua_gl_present_bridge: readbacks=%d pid=%u surface=%u mapped=%s direct_shm=%u\n",
+                 (int)readbacks, (uint32_t)getpid(), surface_id,
+-                winehua_present_surface_page ? "yes" : "no");
++                winehua_present_surface_page ? "yes" : "no", (unsigned int)direct_shm);
+         fflush(stderr);
+     }
+ 
++    if (pack_invert_supported && pack_invert != direct_shm)
++        funcs->p_glPixelStorei(GL_PACK_INVERT_MESA, pack_invert);
+     if (read_fbo) funcs->p_glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+     if (pack_skip_rows) funcs->p_glPixelStorei(GL_PACK_SKIP_ROWS, pack_skip_rows);
+     if (pack_skip_pixels) funcs->p_glPixelStorei(GL_PACK_SKIP_PIXELS, pack_skip_pixels);
+@@ -466,7 +496,7 @@
+     /* The readback above is the VirGL completion point. If all display
+      * buffers are busy, drop only this presentation copy; never skip the GL
+      * flush/readback and never wait for Wayland while holding Wine GL state. */
+-    if (!(slot = winehua_readback_acquire_slot(gl->state)))
++    if (!slot && !(slot = winehua_readback_acquire_slot(gl->state)))
+     {
+         if (winehua_env_enabled("WINEHUA_GL_STALL_DIAG"))
+         {
+@@ -478,20 +508,23 @@
+         ret = TRUE;
+         goto done;
+     }
+-    InterlockedIncrement(&gl->state->in_flight);
+-    buffer = slot->buffer;
+-
+-    /* OpenGL readback starts at the lower-left; Wayland SHM starts at the
+-     * upper-left. BGRA readback already matches little-endian ARGB8888. */
+-    stage_started = winehua_gl_stage_begin(WINEHUA_GL_CPU_COPY, base->client->hwnd,
+-                                           gl->state->in_flight);
+-    for (y = 0; y < gl->height; ++y)
+-    {
+-        src = rgba + (gl->height - 1 - y) * gl->width * 4;
+-        dst = (BYTE *)buffer->map_data + y * gl->width * 4;
+-        memcpy(dst, src, gl->width * 4);
+-    }
+-    winehua_gl_stage_end(WINEHUA_GL_CPU_COPY, stage_started);
++    if (!direct_shm)
++    {
++        InterlockedIncrement(&gl->state->in_flight);
++        buffer = slot->buffer;
++
++        /* OpenGL readback starts at the lower-left; Wayland SHM starts at the
++         * upper-left. BGRA already matches little-endian ARGB8888. */
++        stage_started = winehua_gl_stage_begin(WINEHUA_GL_CPU_COPY, base->client->hwnd,
++                                               gl->state->in_flight);
++        for (y = 0; y < gl->height; ++y)
++        {
++            src = rgba + (gl->height - 1 - y) * gl->width * 4;
++            dst = (BYTE *)buffer->map_data + y * gl->width * 4;
++            memcpy(dst, src, gl->width * 4);
++        }
++        winehua_gl_stage_end(WINEHUA_GL_CPU_COPY, stage_started);
++    }
+ 
+     buffer->busy = TRUE;
+     winehua_readback_state_ref(gl->state);

@@ -64,7 +64,7 @@ PY
 set_sdk_versions() {
     local profile="$WINEHUA/build-profile.json5"
     local target_version="${TARGET_SDK_VERSION:-6.1.0(23)}"
-    local compatible_version="${COMPATIBLE_SDK_VERSION:-6.1.0(23)}"
+    local compatible_version="${COMPATIBLE_SDK_VERSION:-6.0.0(20)}"
 
     if [ ! -f "$profile" ]; then
         err "build-profile.json5 未找到: $profile"

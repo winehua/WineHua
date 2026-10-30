@@ -8,6 +8,7 @@
 // virgl IPC relay/dispatch 在 phone_adapter/phone_virgl_relay.cpp, phone_virgl_dispatch.cpp。
 #include <AbilityKit/native_child_process.h>
 #include <dlfcn.h>
+#include <cstdlib>
 
 #include "phone_adapter/phone_process.h"
 
@@ -15,6 +16,7 @@ static bool g_isPhone = false;
 
 extern "C" void PhoneAdapter_SetPhoneMode(bool phone) {
     g_isPhone = phone;
+    setenv("WINEHUA_DEVICE_TYPE", phone ? "phone" : "other", 1);
 }
 
 extern "C" bool PhoneAdapter_IsPhoneMode() {

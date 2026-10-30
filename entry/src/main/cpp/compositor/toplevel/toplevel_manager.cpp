@@ -210,6 +210,13 @@ wl_resource* ToplevelManager::GetSurfaceForToplevel(uint32_t id) {
     return it != toplevelSurfaceMap_.end() ? it->second : nullptr;
 }
 
+uint32_t ToplevelManager::GetToplevelClientPid(uint32_t id) {
+    std::lock_guard<std::mutex> lk(toplevelSurfaceMutex_);
+    auto it = toplevelSurfaceMap_.find(id);
+    return it == toplevelSurfaceMap_.end() ? 0 :
+        GetWaylandClientPid(wl_resource_get_client(it->second));
+}
+
 uint32_t ToplevelManager::FindToplevelBySurface(wl_resource* surf) {
     if (!surf) return 0;
     std::lock_guard<std::mutex> lk(toplevelSurfaceMutex_);

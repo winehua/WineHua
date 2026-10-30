@@ -159,9 +159,6 @@ def load_cases() -> dict:
 UNREACHABLE_ENV_KEYS = {
     # 设计上忽略: profile 选择要自己判断 exe 类型与覆盖来源, 通用覆盖会让它失效
     "WINEDEBUG": "设备端显式忽略（wine_child.cpp select_winedebug_profile）",
-    # 时序缺陷: 该函数在 458 行读它, __env 覆盖在 479 行才应用 —— 属待修 bug,
-    # 不是设计意图 (同处注释声称这条通道可用)
-    "WINEHUA_WINEDEBUG": "设备端读取早于 __env 应用（wine_child.cpp:458 vs 479）",
 }
 
 
@@ -642,6 +639,10 @@ def cmd_run(args: argparse.Namespace) -> int:
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
+    if args.d3d:
+        start += f" --ps winehua.d3d_backend {args.d3d}"
+    if args.dxvk:
+        start += f" --ps winehua.dxvk_backend {args.dxvk}"
     log(f"run {args.suite} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
@@ -684,6 +685,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
+        # Native child diagnostics live outside files/. Capture them before
+        # stopping the app, which closes the debug sandbox access channel.
+        try:
+            subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                            "/data/storage/el2/base/temp", str(archive / "native-logs")],
+                           capture_output=True, text=True, errors="replace", timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log(f"收集原生日志失败: {exc}")
         # 无论成败都停掉测试 App：常驻会让下次启动走 onNewWant 保留自动化
         # 窗口/页面状态，而不是重建正常形态
         hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
@@ -754,7 +763,7 @@ def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
         return result.stdout or ""
     except subprocess.TimeoutExpired as error:
         if error.stdout:
-            return error.stdout.decode("utf-8", errors="replace")
+            return error.stdout if isinstance(error.stdout, str) else error.stdout.decode("utf-8", errors="replace")
         return ""
 
 
