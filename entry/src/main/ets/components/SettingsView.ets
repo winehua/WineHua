@@ -33,6 +33,9 @@ export struct SettingsView {
   // SegmentButton 选中项 (@Link 双向): 0=DXVK1.10 1=DXVK2.6 2=VKD3D 3=WineD3D,
   // 与 d3dBackend 同步
   @State backendSel: number[] = [0];
+  // 设置页不开放渲染策略修改 (用户约定 2026-11-03, 引擎走默认档) —
+  // 置真恢复"渲染策略"设置项的露出
+  private showRenderBackendSetting: boolean = false;
   // Wine 语言分段选中项: 0=中文(zh_CN) 1=English(en_US), 与 wineLang 同步
   @State langSel: number[] = [0];
   @State wineLang: string = 'zh_CN';
@@ -422,35 +425,37 @@ export struct SettingsView {
           }
           .width('100%').alignItems(VerticalAlign.Center)
 
-          Column({ space: 4 }) {
-            Text('渲染策略')
-              .fontColor($r('app.color.text_primary'))
-              .width('100%')
-            SegmentButton({
-              options: SegmentButtonOptions.capsule({
-                buttons: [{ text: 'DXVK 1.10' }, { text: 'DXVK 2.6' }, { text: 'VKD3D' }, { text: 'WineD3D' }],
-                multiply: false
-              }),
-              selectedIndexes: $backendSel,
-              onItemClicked: (index: number) => {
-                this.selectBackend(index == 0 ? 'dxvk_legacy' :
-                  index == 1 ? 'dxvk_modern_2_6' :
-                    index == 2 ? 'vkd3d_limited_500k' : 'wined3d');
-              }
-            })
-            .width('100%')
-            Text('DXVK 性能好 (1.10 稳定 / 2.6 新版); D3D12 程序选 VKD3D; 个别程序异常时可试 WineD3D')
-              .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
-              .width('100%')
-            if (this.restartHint) {
-              Text('渲染策略已更改, 之后启动的程序立即生效; 桌面会话内的程序需重启会话')
-                .fontSize(12)
-                .fontColor($r('app.color.state_warn'))
+          if (this.showRenderBackendSetting) {
+            Column({ space: 4 }) {
+              Text('渲染策略')
+                .fontColor($r('app.color.text_primary'))
                 .width('100%')
+              SegmentButton({
+                options: SegmentButtonOptions.capsule({
+                  buttons: [{ text: 'DXVK 1.10' }, { text: 'DXVK 2.6' }, { text: 'VKD3D' }, { text: 'WineD3D' }],
+                  multiply: false
+                }),
+                selectedIndexes: $backendSel,
+                onItemClicked: (index: number) => {
+                  this.selectBackend(index == 0 ? 'dxvk_legacy' :
+                    index == 1 ? 'dxvk_modern_2_6' :
+                      index == 2 ? 'vkd3d_limited_500k' : 'wined3d');
+                }
+              })
+              .width('100%')
+              Text('DXVK 性能好 (1.10 稳定 / 2.6 新版); D3D12 程序选 VKD3D; 个别程序异常时可试 WineD3D')
+                .fontSize(12)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+              if (this.restartHint) {
+                Text('渲染策略已更改, 之后启动的程序立即生效; 桌面会话内的程序需重启会话')
+                  .fontSize(12)
+                  .fontColor($r('app.color.state_warn'))
+                  .width('100%')
+              }
             }
+            .width('100%')
           }
-          .width('100%')
 
           Column({ space: 4 }) {
             Text('兼容模式')
