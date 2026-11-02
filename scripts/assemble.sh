@@ -231,11 +231,16 @@ assemble_pad() {
 
         # wine + wineserver (x86_64 ELF, 由 box64 加载)
         cp "$BUILD_DIR/wine-ohos/loader/wine" "$wine_data/bin/"
-        if [ -f "$BUILD_DIR/wine_server/wineserver" ]; then
-            cp "$BUILD_DIR/wine_server/wineserver" "$wine_data/bin/"
-        elif [ -f "$BUILD_DIR/wine-ohos/server/wineserver" ]; then
-            cp "$BUILD_DIR/wine-ohos/server/wineserver" "$wine_data/bin/"
-        fi
+        # 只收 build_wine.sh build_wineserver 的产物: 它烧录设备 BINDIR/DATADIR
+        # (files/wine/...)。wine 主构建树的 server/wineserver 烧的是
+        # --prefix=/opt/winehua, 装上设备 wineserver 必挂, 不得作为回退源。
+        cp "$BUILD_DIR/wine_server/wineserver" "$wine_data/bin/"
+        # box64 加载路径硬依赖这两个 ELF; 缺失时打出的 zip 在 arm64 设备上
+        # 要到 wineserver 启动/进程拉起才失败, 必须在组装期拦下
+        [ -f "$wine_data/bin/wineserver" ] || \
+            err "wineserver ELF 缺失 (build/wine_server/wineserver) — 先跑 make wine"
+        [ -f "$wine_data/bin/wine" ] || \
+            err "wine loader ELF 缺失 (build/wine-ohos/loader/wine) — 先跑 make wine"
     fi
 
     # -- 2. PE DLL + 数据文件 → rawfile (两种架构共用) --
@@ -367,7 +372,7 @@ assemble_pad() {
     mesa_commit="$(git -c safe.directory="$ROOT/thirdparty/mesa" -C "$ROOT/thirdparty/mesa" rev-parse HEAD 2>/dev/null || echo unknown)"
     virglrenderer_commit="$(git -c safe.directory="$ROOT/thirdparty/virglrenderer" -C "$ROOT/thirdparty/virglrenderer" rev-parse HEAD 2>/dev/null || echo unknown)"
     guest_venus_icd_sha="$(sha256sum "$BUILD_DIR/guest_vulkan/$guest_arch/lib/libvulkan_virtio.so" | awk '{print $1}')"
-    host_virglrenderer_sha="$(sha256sum "$ROOT/entry/libs/$NATIVE_ARCH/libvirglrenderer.so.1" | awk '{print $1}')"
+    host_virglrenderer_sha="$(sha256sum "$ROOT/entry/libs/$NATIVE_ARCH/libvirglrenderer.so.1" 2>/dev/null | awk '{print $1}' || echo unknown)"
     venus_runtime_id="venus-${guest_venus_icd_sha:0:12}-${host_virglrenderer_sha:0:12}"
     local dxvk64_d3d11_sha dxvk64_dxgi_sha dxvk32_d3d11_sha dxvk32_dxgi_sha
     local dxvkmodern64_d3d11_sha dxvkmodern64_dxgi_sha dxvkmodern32_d3d11_sha dxvkmodern32_dxgi_sha
@@ -549,16 +554,35 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     # Native offscreen replay runs in the App/NCP security domain and links the
     # system Host Vulkan loader. Captured resources remain in guest_vulkan so
     # there is one authoritative exact-replay input set for the Host/Venus A/B.
-    local host_vulkan_root="$BUILD_DIR/host_vulkan/$NATIVE_ARCH"
-    [ -f "$host_vulkan_root/manifest.json" ] || \
-        err "Host Vulkan replay manifest missing: $host_vulkan_root/manifest.json"
-    [ -f "$host_vulkan_root/bin/heaven_exact_host_replay" ] || \
-        err "Host Vulkan replay marker missing: $host_vulkan_root/bin/heaven_exact_host_replay"
-    [ -f "$host_vulkan_root/lib/libwinehua_host_heaven_replay.so" ] || \
-        err "Host Vulkan replay module missing: $host_vulkan_root/lib/libwinehua_host_heaven_replay.so"
-    mkdir -p "$wine_data/bin/host_vulkan"
-    cp -a "$host_vulkan_root/"* "$wine_data/bin/host_vulkan/"
-    log "  host_vulkan ($NATIVE_ARCH): native exact replay"
+    # all 模式 (WINEHUA_ASSEMBLE_ALL 标记, 由 all 分派 wrapper 设置) zip 内按
+    # 架构分目录共存 bin/host_vulkan/<arch>/, 本架构缺失是硬错误, 另一架构缺席
+    # 只跳过 (make 图保证双 stamp 先于 assemble, 实际不会发生); 单架构保持
+    # 历史平铺布局 bin/host_vulkan/, 只打包本架构。
+    if [ "${WINEHUA_ASSEMBLE_ALL:-0}" = "1" ]; then
+        local hv_arch hv_root
+        for hv_arch in arm64-v8a x86_64; do
+            hv_root="$BUILD_DIR/host_vulkan/$hv_arch"
+            if [ -f "$hv_root/manifest.json" ] && [ -f "$hv_root/bin/heaven_exact_host_replay" ] \
+               && [ -f "$hv_root/lib/libwinehua_host_heaven_replay.so" ]; then
+                mkdir -p "$wine_data/bin/host_vulkan/$hv_arch"
+                cp -a "$hv_root/." "$wine_data/bin/host_vulkan/$hv_arch/"
+                log "  host_vulkan ($hv_arch): native exact replay"
+            elif [ "$hv_arch" = "$NATIVE_ARCH" ]; then
+                err "Host Vulkan replay artifacts missing: $hv_root"
+            fi
+        done
+    else
+        local hv_root="$BUILD_DIR/host_vulkan/$NATIVE_ARCH"
+        [ -f "$hv_root/manifest.json" ] || \
+            err "Host Vulkan replay manifest missing: $hv_root/manifest.json"
+        [ -f "$hv_root/bin/heaven_exact_host_replay" ] || \
+            err "Host Vulkan replay marker missing: $hv_root/bin/heaven_exact_host_replay"
+        [ -f "$hv_root/lib/libwinehua_host_heaven_replay.so" ] || \
+            err "Host Vulkan replay module missing: $hv_root/lib/libwinehua_host_heaven_replay.so"
+        mkdir -p "$wine_data/bin/host_vulkan"
+        cp -a "$hv_root/"* "$wine_data/bin/host_vulkan/"
+        log "  host_vulkan ($NATIVE_ARCH): native exact replay"
+    fi
 
     # Smoke 载荷 (v2, automation/smoke.py build 产出) → wine-data/smoke/。
     # 设备端 SmokeHook.seed 的离线源就是 files/wine/smoke (解压自本 zip),
@@ -598,6 +622,17 @@ EOF
 }
 
 log "=== 组装布局 ($NATIVE_ARCH) ==="
+
+if [ "$NATIVE_ARCH" = "all" ]; then
+    # 双架构: 串行复用单架构代码路径各跑一遍, 严禁并行调用本脚本。
+    # zip 以 arm64 布局收尾 = 超集 —— PE/数据段两架构全同源, arm64 布局额外
+    # 打包 wine ELF + ntdll.so + x86_64-unix 树 + 依赖链; x86_64 设备的 wine
+    # 库由 libs/x86_64 (el1 bundle) 承载, zip 里的 unix 树仅 arm64 (Box64)
+    # 加载, 两目录由安装器按设备 ABI 各取所需。
+    NATIVE_ARCH=x86_64 WINEHUA_ASSEMBLE_ALL=1 bash "$SCRIPT_DIR/assemble.sh"
+    NATIVE_ARCH=arm64-v8a WINEHUA_ASSEMBLE_ALL=1 bash "$SCRIPT_DIR/assemble.sh"
+    exit 0
+fi
 
 # 统一使用 rawfile zip 布局
 assemble_pad

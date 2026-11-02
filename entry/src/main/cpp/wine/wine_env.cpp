@@ -91,7 +91,11 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     env.push_back("LD_LIBRARY_PATH=" + libPath);
     env.push_back("BOX64_LD_LIBRARY_PATH=" + runtimeLibPath);
 #else
-    env.push_back("LD_LIBRARY_PATH=" + runtimeLibPath);
+    // x86_64: el1 bundle 优先 —— 此值经 __env 下发, 晚于子进程 setup_wine_env
+    // 应用, 是子进程最终生效的 LD_LIBRARY_PATH; 双架构 HAP 的 zip 超集让 el2
+    // 出现 x86_64-unix/ 副本, 不前置 el1 会被它遮蔽 (WINEHUA_EL1_LIBS_X86_64
+    // 注释详述)
+    env.push_back(std::string("LD_LIBRARY_PATH=" WINEHUA_EL1_LIBS_X86_64 ":") + runtimeLibPath);
 #endif
     // ==== Layer 3: 音频 bootstrap (条件) ====
     if (audioBootstrapFd >= 0) {

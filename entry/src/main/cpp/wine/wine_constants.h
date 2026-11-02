@@ -21,4 +21,11 @@
 // Wine 子进程 stderr 日志目录
 #define WINE_LOG_DIR         "/data/storage/el2/base/temp"
 
+// x86_64 设备 bundle 原生库目录 (el1), wine unix .so 的权威加载源。
+// 双架构 HAP 的 wine-data.zip 是超集布局, el2 解压出 x86_64-unix/ 副本,
+// x86_64 设备的 LD_LIBRARY_PATH 必须以本目录优先防 el2 副本遮蔽 ——
+// el2 数据区系统 dlopen 在 OHOS x86_64 未证实可用 (模拟器 ENOENT 实锤),
+// arm64 设备不经过系统 linker (Box64 自带 ELF loader), 不受此约束。
+#define WINEHUA_EL1_LIBS_X86_64 "/data/storage/el1/bundle/libs/x86_64"
+
 #endif // WINE_CONSTANTS_H

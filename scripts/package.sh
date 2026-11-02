@@ -166,6 +166,26 @@ with open('$module_json', 'w') as f:
         rm -rf "$libs_root/arm64-v8a"
     fi
 
+    # all 模式完整性断言: 单架构打包会删另一架构 libs 并把 rawfile zip 重写为
+    # 单架构布局, 这些动作不触碰 all/assemble stamp 的任何输入 (时间戳未变) —
+    # 直接进 hvigor 会打出声明双 ABI 的残缺 HAP, 缺口要到设备上才暴露。
+    # 三项缺一即失败, 指路重跑 all 构建。
+    if [ "$NATIVE_ARCH" = "all" ]; then
+        [ -f "$libs_root/arm64-v8a/box64.so" ] \
+            || err "libs/arm64-v8a/box64.so 缺失 (被单架构打包清除?) — 重跑 make NATIVE_ARCH=all hap"
+        [ -f "$libs_root/x86_64/libwineserver.so" ] \
+            || err "libs/x86_64/libwineserver.so 缺失 — 重跑 make NATIVE_ARCH=all hap"
+        local zip_path="$WINEHUA/entry/src/main/resources/rawfile/wine-data.zip"
+        [ -f "$zip_path" ] || err "wine-data.zip 不存在 — 重跑 make NATIVE_ARCH=all assemble"
+        # grep -c 吃全量输入 — grep -q 命中即退会触发 unzip SIGPIPE, 在
+        # pipefail 下被误判为断言失败
+        local unix_entries
+        unix_entries="$(unzip -l "$zip_path" | grep -c "bin/x86_64-unix/.*\.so" || true)"
+        [ "${unix_entries:-0}" -gt 0 ] \
+            || err "wine-data.zip 缺 x86_64-unix 树 (单架构布局残留) — 重跑 make NATIVE_ARCH=all assemble"
+        log "  all 模式完整性断言通过 (双 libs + 超集 zip)"
+    fi
+
     cd "$WINEHUA"
     # hvigorw assembleHap 自带 SignHap 任务: 按根 build-profile.json5 的
     # signingConfigs 选材料 (调试 = .ohos/default_*.cer, 发布 =

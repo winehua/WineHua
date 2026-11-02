@@ -92,7 +92,9 @@ SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/nu
 	$(WINE_SMOKE_EXES) \
 	$(VKD3D_PROTON_STAMP)
 
-$(WINE_SMOKE_EXES): $(STAMPS)/wine-$(CONFIG)
+# smoke exe 由共享 wine 构建树产出; 前置取 ARCHES 首个架构的 stamp,
+# 三种 NATIVE_ARCH 模式下该 stamp 都在本依赖图内 (all 模式 = wine-arm64-v8a)
+$(WINE_SMOKE_EXES): $(STAMPS)/wine-$(firstword $(ARCHES))
 	@test -s "$@" || { echo "ERROR: wine smoke exe missing after wine build: $@" >&2; exit 1; }
 
 $(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
@@ -173,8 +175,8 @@ FORCE:
 $(STAMPS):
 	mkdir -p $(STAMPS)
 
-# 确保架构子目录存在
-$(STAMPS)/arm64-v8a $(STAMPS)/x86_64:
+# 确保架构子目录存在 (all = 双架构 assemble 单例 stamp)
+$(STAMPS)/arm64-v8a $(STAMPS)/x86_64 $(STAMPS)/all:
 	mkdir -p $@
 
 # ============================================================
@@ -310,25 +312,35 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 
 # ============================================================
 # wine — Wine 交叉编译 + wineserver
+# wine 构建树 (build/wine-ohos) 架构无关、两 stamp 共享; wineserver 产物
+# 按 NATIVE_ARCH 分形态 (x86_64: libwineserver.so / arm64: wineserver ELF),
+# 双 stamp 都跑一遍 build_wine.sh 才能两形态齐备 (见 build_wine.sh)。
+# 串行化: arm64 stamp 以 x86_64 stamp 为 order-only 前置, 防 -j 下两个
+# build_wine.sh 并发写同一构建树; 后跑的一遍对已齐产物是秒级空转。
 # ============================================================
 .PHONY: wine
-wine: $(STAMPS)/wine-$(CONFIG)
+wine: $(foreach a,$(ARCHES),$(STAMPS)/wine-$(a))
 
-$(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
-	@if [ -f $@ ] && [ -f $(WINE_SENTINEL) ] && \
-	    ! [ "$(SCRIPTS)/build_wine.sh" -nt $@ ] && \
+define wine_rule
+$(STAMPS)/wine-$(1): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
+	@if [ -f $$@ ] && [ -f $(WINE_SENTINEL) ] && \
+	    ! [ "$(SCRIPTS)/build_wine.sh" -nt $$@ ] && \
 	    ! find $(ROOT)/thirdparty/wine \
-	           -newer $@ -type f \
+	           -newer $$@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
 	              -o -name 'meson.build' -o -name 'CMakeLists.txt' \
 	              -o -name 'configure' -o -name '*.ac' -o -name 'Makefile.am' \
 	              -o -name '*.m4' -o -name '*.in' -o -name '*.rc' -o -name '*.spec' \) \
 	           2>/dev/null | grep -q .; then \
-	    echo "  [wine] up to date"; \
+	    echo "  [wine/$(1)] up to date"; \
 	else \
-	    echo "=== wine ($(CONFIG)) ==="; \
-	    bash $(SCRIPTS)/build_wine.sh && touch $@; \
+	    echo "=== wine ($(1)) ==="; \
+	    NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_wine.sh && touch $$@; \
 	fi
+endef
+$(foreach a,arm64-v8a x86_64,$(eval $(call wine_rule,$(a))))
+
+$(STAMPS)/wine-arm64-v8a: | $(STAMPS)/wine-x86_64
 
 # ============================================================
 # box64 — ARM64 翻译器 (始终 arm64-v8a 架构, 编译为 box64.so dlopen 加载)
@@ -394,8 +406,25 @@ $(foreach a,arm64-v8a x86_64,$(eval $(call native_rule,$(a))))
 
 # ============================================================
 # assemble — 组装布局 (架构 + 设备类型相关)
+# 单架构: 每架构一个 stamp 各跑一遍 assemble.sh。
+# all: 单实例 stamp 跑一遍 (assemble.sh 内部完成双 libs + 超集 zip),
+# 两架构各跑一遍会互相 rm -rf staging 覆盖 zip, 且 -j 下竞态。
 # ============================================================
 .PHONY: assemble
+ifeq ($(NATIVE_ARCH),all)
+assemble: $(STAMPS)/all/assemble
+
+$(STAMPS)/all/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
+	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
+	$(STAMPS)/deps $(STAMPS)/wine-arm64-v8a $(STAMPS)/wine-x86_64 \
+	$(STAMPS)/arm64-v8a/native $(STAMPS)/x86_64/native \
+	$(STAMPS)/arm64-v8a/host-vulkan $(STAMPS)/x86_64/host-vulkan \
+	$(STAMPS)/box64-arm64-v8a \
+	$(ASSEMBLE_GUEST_INPUTS) | $(STAMPS)/all
+	@echo "=== assemble (all) ==="
+	NATIVE_ARCH=all GUEST_ARCH=$(GUEST_ARCH) BUILD_GUEST_GFX=$(BUILD_GUEST_GFX) bash $(SCRIPTS)/assemble.sh
+	@touch $@
+else
 assemble: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/assemble)
 
 define assemble_rule
@@ -416,6 +445,7 @@ $(foreach a,arm64-v8a x86_64,$(eval $(call assemble_rule,$(a))))
 
 # arm64 assemble 额外依赖 box64 (32-bit PE DLL 已由 wine 主构建 --enable-archs=i386 提供)
 $(STAMPS)/arm64-v8a/assemble: $(STAMPS)/box64-arm64-v8a
+endif
 
 # ============================================================
 # hap — HAP 构建 + 签名 (统一 rawfile zip)

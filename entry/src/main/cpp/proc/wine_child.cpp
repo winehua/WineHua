@@ -284,9 +284,12 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     setenv("BOX64_LD_LIBRARY_PATH", libDir.c_str(), 1);
 #else
     // x86_64: 系统 linker 直接加载 x86_64 OHOS .so
-    // guest_gfx 库已打包进 bundle libs (el1, 系统 dlopen 允许), 依赖也从该目录解析
+    // guest_gfx 库已打包进 bundle libs (el1, 系统 dlopen 允许), 依赖也从该目录解析。
+    // el1 必须排在 el2 (wine bin 目录) 之前: 双架构 HAP 的 zip 超集让 el2 出现
+    // x86_64-unix/ 副本, 而 el2 数据区系统 dlopen 在 OHOS x86_64 未证实可用
+    // (模拟器 ENOENT 实锤), 顺序颠倒会让 wine 库走 el2 副本
     setenv("LD_LIBRARY_PATH",
-           (libDir + ":/data/storage/el1/bundle/libs/x86_64").c_str(), 1);
+           (std::string(WINEHUA_EL1_LIBS_X86_64) + ":" + libDir).c_str(), 1);
 #endif
 
     // 公共基线: 与主进程 BuildWineEnv 同一张表 (wine_env_baseline.h), 增键只改一处
