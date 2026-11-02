@@ -301,7 +301,8 @@ struct GameLibrary {
           List({ space: 9 }) {
             ForEach(this.visibleGames(), (game: GameEntry) => {
               ListItem() { this.gameCard(game) }
-            }, (game: GameEntry) => game.id)
+            }, (game: GameEntry) => JSON.stringify([
+              game.id, this.library.getProfile(game).name, game.executables.join('\n')]))
           }.layoutWeight(1).width('100%').scrollBar(BarState.Auto).id('game-library-list')
           if (!this.visibleGames().length) {
             Text(this.scanning ? '正在递归发现游戏…' : '暂无匹配游戏\n请将解压后的游戏放入 games，再刷新')
