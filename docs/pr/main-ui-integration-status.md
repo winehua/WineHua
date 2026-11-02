@@ -1,4 +1,7 @@
-# PR #78 产品线拆分
+# PR #79 产品线集成与验收
+
+**最新状态（2026-11-02）：下文首轮失败记录已由本文末尾的恢复验收更新。
+真实游戏主菜单/动画已恢复；整体发布验收仍保留未验证范围。**
 
 产品分支为 `integration/pr78-main-ui`，以官方 `main-ui` 的 `bd54b8b` 为基础，通过 merge 引入 `integration/pr78-upstream` 的公共技术变更。技术分支已移除独立游戏库页面、Ability、数据模型及对应 UI 测试；这些产品文件保留在本分支。
 
@@ -56,3 +59,64 @@
 `build/pr79-wine-stderr-latest.log` 和
 `build/automation-logs/core-pr79-product-core-20261102/`。原始日志/设备路径保留本地，
 不随源码发布。测试临时配置已回填，屏幕自动关闭超时已恢复。
+
+## 2026-11-02：显式读回修复后的产品复验
+
+公共修复 `001eff4` 已通过 merge `4bb63d3` 引入产品分支；产品专属修复
+`993bc95` 修正了保存名称后 ForEach 缓存卡片标题不刷新的问题。
+Native/ArkTS 候选从这些提交构建，版本仍为 `1.0.31`。
+源修复、失败负对照和 GL 探针范围见
+[Vulkan 显式映射读回诊断](../debugging/venus-explicit-shadow-readback.md)。
+
+| 产物 | SHA-256 |
+|---|---|
+| 产品 HAP（v15） | `4db33c6d44ff79eeea13f2e143b163ec84971fd1640eb90efe992bad3fdc4b8d` |
+| libentry | `835f3f647899c657126e7d9f207005155526df504bbb0f24e021744ed1938d98` |
+| Host VirGL | `70b7880f700cdfceebae0c84d3ffd908fc1e92481f4ee0bcfe515c6627f6c1e0` |
+| vtest server | `d736d396c4f0da630bc4da4b7faf5f7a012fa5c3a692c8e01e2cc8ac64bf5fdb` |
+| 完整重建 Wine payload | `48c0ec3b476948359adedf51359a76216426d1ac48424253c0b74ed55935c497` |
+
+当前产品分支 **38/38 主机阶段通过**，包括实际 renderer 分支/dispatcher 的
+显式读回回归及两个必须失败的旧逻辑负对照。Native/ArkTS 编译、签名、CRC、
+运行库/DXVK 清单及哈希校验通过，v15 覆盖安装由设备接受。
+
+真实游戏恢复证据来自 v14（相同 libentry、Host VirGL、vtest、Wine payload；
+v15 另包含卡片名称刷新修正），均为 baseline/wined3d 的托管 Zink 路径：
+
+- MewGenics 已越过爪印/三个星环，显示 Play、Settings、Meow、Quit 主菜单。
+  相隔三秒截图的游戏中心区域有 249,147 个变化像素，用户也确认动画恢复。
+- Darkest Dungeon 已显示 logo、城堡及“战役”主菜单。正常开头的黑屏、
+  黑红触手、logo 顺序不能误判为卡住；故障是此前有声音却没有游戏画面。
+- 在冷会话中从独立游戏库选中 MewGenics，点击“保存并启动”，再次进入主菜单。
+  此记录独立于 EntryAbility 程序参数启动证据。
+- 两个游戏均执行 Home→重新打开应用，返回后主菜单画面仍在更新。
+  地牢运行时打开再关闭游戏库，游戏画面仍正常，未因关闭配置窗口而结束。
+- v15 实机在同一页面保存临时名称后，左侧卡片立即刷新；没有关闭/重建页面。
+  测试名称已恢复为 `DarkestDungeon`，编辑字段和卡片均回读核实。
+- v15 使用受控 Win32 EDIT fixture 记录实际 Guest 消息：完整键盘 A/Tab、
+  游戏按键 Esc/Enter 均收到成对 WM_KEYDOWN/WM_KEYUP，对应 scan code
+  为 30/15/1/28；A 产生 U+0061 并写入 EDIT。此检查不替代中文 IME 组合、
+  模态焦点、多指释放或所有键位的完整验收。
+
+v15 同一产品 HAP、Wayland、`prefix=reuse`，每套运行一次，结果如下。
+没有为得到绿色结果而自动重跑、放宽阈值或重置 prefix。
+
+| 套件 | 结果 | 本轮边界 |
+|---|---|---|
+| core | PASS 4/4 | 两架构四象限截图与 DNS |
+| dxvk | PASS 3/3 | 两架构 D3D11 及 cube 截图 |
+| d3d12 | FAIL 2/3 | 1000 帧用例在第 242 帧 `fence_wait` 失败；gears/triangle 各 600 帧通过 |
+| dxvk-d3d9 | FAIL 3/4 | x64 D3D9 呈现 50 帧，但没有固定帧截图，设备/主机均判失败；其余三项通过 |
+| wine-vulkan | FAIL 3/4 | x86 sampled-only 保留 `0xdeadbeef`，期望 `0xff332211`；此前多客户端边界尚未解决 |
+
+上述 D3D12/D3D9 失败尚未证明与本次读回修复存在因果关系，也不能因游戏已恢复
+而忽略。D3D9 的“rendered and presented”消息不等于通过：设备 JSON 的 status
+为 FAIL，固定帧及主机视觉断言缺失。发布验收仍不通过。
+
+原始截图、fixture 输出与日志位于本地
+`build/pr79-acceptance-20261102/`，设备套件按独立 run-id 保留在
+`build/automation-logs/`。不公开原始设备路径或完整日志。
+
+**仍保持 Draft。** 主菜单/动画恢复不等同于游戏长跑、存档读写、完整输入/IME、
+布局持久化、多指所有权、其他设备全部通过。此前首轮失败为真实历史证据，
+没有删除或用重试结果覆盖。未卸载应用、重置 prefix 或清除游戏/存档。
