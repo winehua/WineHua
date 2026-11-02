@@ -9,8 +9,8 @@
 | 分支同步 | 集成候选已同步 | `integration/pr78-upstream` 已合入最新 `master` / `a001e6d` 并解决冲突；PR #78 头仍待候选完整验收后替换 |
 | 变更分层 | 已拆分候选 | 技术分支已移除独立游戏库产品文件；`integration/pr78-main-ui` 通过 merge 继承公共修复，产品配套 [PR #79](https://github.com/winehua/WineHua/pull/79) 为 Draft |
 | 主机回归 | 分层通过 | 技术版 7 组 JS、9 个 renderer 用例及新增 EGL/loader/特性/覆盖/打包回归通过；产品版 9 组 JS 通过；原 Linux 27 阶段属于旧基线证据 |
-| 完整构建 | HAP/原生依赖通过，Guest 重建中 | ARM64 X11/wlroots/Xwayland/Wayland/VirGL 独立编译、两分支 Native/ArkTS HAP 通过；Wine/guest Mesa 完整重建及后续重新验收待完成 |
-| 设备验收 | 集成技术版主套件通过 | 同一手机同一技术 HAP 下 core 4/4、wine-vulkan 4/4、dxvk 3/3、d3d12 3/3；专用 D3D9 2/4，产品交互、完整 IME 和真实游戏长跑待验；用户确认只有当前手机 |
+| 完整构建 | 完整 Guest/Native/HAP 重建通过 | 隔离 Linux 构建完成 Guest 依赖、Wine 与 canonical assemble；重复组装哈希一致，导入 4,591 个输出并通过架构/哈希核验 |
+| 设备验收 | 主套件大部分通过，Wine Vulkan 聚合仍阻塞 | core 两轮 4/4、DXVK 3/3、D3D12 3/3、D3D9 4/4、X11 GL/DXVK 各 1/1；Wine Vulkan 前两轮 4/4，第三轮及后续诊断仍会在同一 Host 会话的短生命周期客户端切换中间歇保留 `0xdeadbeef`；单项 x86 新会话 5/5 |
 | PR 状态 | Draft | #78 仍为旧基线 Draft 且与 master 冲突；#79 为产品候选 Draft。补齐重建、设备验收与 CI/review 后再改 Ready |
 
 ## 集成技术候选实机证据
@@ -59,6 +59,8 @@ OpenGL 随后失败于 `no compositor display sequence observed`，原因是 smo
 `6bf3abe` HAP SHA-256：`98227b4b76a080594604576ef701fba09f9e06c082c3609585129cea7d741746`。Wine payload SHA-256：`d6eef4ffaecf84e45fc431d878aeaf108471b9fddb2df061b9e6fa0e4c1cf58a`。
 
 当前候选仍需要与最新主线完成集成并完整重建。已有旧基线通过记录不能代替集成后的验收，也不能据此标记整个 PR 完工。
+
+2026-11-02 已完成集成分支的完整 Guest/Native/HAP 重建和重复组装核验；当前不再缺构建证据。剩余技术阻塞是 Wine Vulkan 聚合套件的快速多客户端切换：shader、descriptor、dispatch 和 Host 提交均到达，但某个新客户端的首个 compute 偶发不写回。多种等待、barrier、读回和上传策略均已证伪，失败记录保留在 `build/automation-logs/`。产品路径已取消强制实验性 inline-upload coverage 档位，恢复持久化配置并默认 `baseline`，但这不等于该 Host 驱动边界已经修复。
 
 本轮公开证据边界与哈希见 [November 1 validation follow-up](../debugging/pr78-validation-20261101.md)。
 
