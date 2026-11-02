@@ -162,6 +162,7 @@ def main():
         run('smoke-foreground', [args.node, 'scripts/test_smoke_foreground.cjs', args.typescript])
         run('virtual-keyboard-panel', [args.node, 'scripts/test_virtual_keyboard_panel.cjs', args.typescript])
         run('venus-sync-notify', [sys.executable, 'scripts/test_venus_sync_notify.py'])
+        run('virgl-explicit-readback', [sys.executable, 'scripts/test_virgl_shadow_readback.py'])
         run('direct-shm-readback', [sys.executable, 'scripts/test_direct_shm_readback.py'])
         run('font-policy', [sys.executable, 'scripts/test_font_policy.py'])
         for name in ('game_library', 'desktop_pointer', 'touch_controls', 'virtual_key_pulse', 'game_touch'):

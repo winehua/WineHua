@@ -73,7 +73,8 @@ export default class EntryAbility extends UIAbility {
     const hostProfile = value('winehua.hostShadowProfile', '');
     AppStorage.setOrCreate<string>('winehua.hostShadowProfile', '');
     AppStorage.set<string>('winehua.hostShadowProfile',
-      hostProfile === 'shadow-precise-legacy-host-sync' || hostProfile === 'baseline' ? hostProfile : '');
+      hostProfile === 'shadow-precise-legacy-host-sync' || hostProfile === 'shadow-precise' ||
+      hostProfile === 'baseline' ? hostProfile : '');
     // Pad 多窗口承载调试键: winehua.fusionHost (subwindow|ability) 跨设备强制
     // subWindow 承载 (2in1 真机验证 subWindow 路线用, 见 WineWindowManager.
     // fusionUsesSubWindow)。仅显式 want 生效, 不持久化。
