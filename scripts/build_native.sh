@@ -446,7 +446,8 @@ build_virglrenderer() {
     local src="$ROOT/thirdparty/virglrenderer"
     local cleanup_patch
     for cleanup_patch in "$SCRIPT_DIR/patches/virgl-device-cleanup.patch" \
-                         "$SCRIPT_DIR/patches/virgl-render-resource-fd-close.patch"; do
+                         "$SCRIPT_DIR/patches/virgl-render-resource-fd-close.patch" \
+                         "$SCRIPT_DIR/patches/virgl-shadow-explicit-readback.patch"; do
         if ! patch -d "$src" -p1 --reverse --dry-run --batch --force --silent < "$cleanup_patch" >/dev/null 2>&1; then
             patch -d "$src" -p1 --forward --batch < "$cleanup_patch"
         fi

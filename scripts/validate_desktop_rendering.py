@@ -161,6 +161,7 @@ def main():
         run('mouse-modes', [args.node, 'scripts/test_mouse_modes.cjs', args.typescript])
         run('smoke-foreground', [args.node, 'scripts/test_smoke_foreground.cjs', args.typescript])
         run('venus-sync-notify', [sys.executable, 'scripts/test_venus_sync_notify.py'])
+        run('virgl-explicit-readback', [sys.executable, 'scripts/test_virgl_shadow_readback.py'])
         run('direct-shm-readback', [sys.executable, 'scripts/test_direct_shm_readback.py'])
         run('font-policy', [sys.executable, 'scripts/test_font_policy.py'])
         for name in ('desktop_pointer', 'touch_controls', 'virtual_key_pulse', 'game_touch'):

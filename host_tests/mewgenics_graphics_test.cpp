@@ -33,6 +33,7 @@ int main()
     assert(env.at("VN_WINEHUA_SYNC_NOTIFY_RING") == "1");
     assert(env.at("VN_WINEHUA_DIRECT_FENCE_WAIT") == "0");
     assert(env.at("BOX64_DYNACACHE") == "0");
+    assert(env.at("BOX64_DYNAREC_WEAKBARRIER") == "0");
     assert(!env.count("BOX64_DYNAREC"));
     assert(!env.count("WINEHUA_GL_READBACK_BATCH"));
     assert(!env.count("WINEHUA_GL_READBACK_PBO"));

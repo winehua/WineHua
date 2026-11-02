@@ -73,6 +73,9 @@ inline std::vector<std::pair<std::string, std::string>> MewgenicsGpuEnvironment(
         // Avoid the disk-cache hash fault in RecordEnvMappings/ReadDynaCache.
         // This does not disable the runtime dynarec or change its tuning.
         {"BOX64_DYNACACHE", "0"},
+        // Zink uses Venus command rings even when the Wine API backend is
+        // wined3d. Preserve the same publication ordering as DXVK/VKD3D.
+        {"BOX64_DYNAREC_WEAKBARRIER", "0"},
         {"VK_DRIVER_FILES", icd}, {"VK_ICD_FILENAMES", icd},
         {"VN_DEBUG", "vtest"},
         {"VN_PERF", "no_fence_feedback,no_query_feedback,no_semaphore_feedback,no_multi_ring"},

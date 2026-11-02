@@ -350,7 +350,12 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
+    // EntryAbility accepts these non-persistent diagnostic overrides. Keep
+    // their selection ahead of the product preference for controlled A/Bs.
+    const hostProfile = AppStorage.get<string>('winehua.hostShadowProfile');
+    this.perfProfile = hostProfile === 'baseline' || hostProfile === 'shadow-precise' ||
+      hostProfile === 'shadow-precise-legacy-host-sync' ?
+      hostProfile : (AppStorage.get<string>('winehua.perf.profile') ?? 'baseline');
   }
 
   // zHome 获取 + 退避重试 (startSession 与 ensureZHomeReady 共用同一判据,
