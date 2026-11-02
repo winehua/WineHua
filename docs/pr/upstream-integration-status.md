@@ -1,5 +1,29 @@
 # PR #78 集成状态
 
+## 最新状态：2026-11-02 显式读回复验
+
+PR #78 已更新到技术修复 `001eff4`，为 Ready for review，尚未合并。
+PR #79 通过 merge 引入该公共修复，仍为 Draft。下文较早的 Draft、待重建和
+待迁移表述属于历史阶段，不代表当前状态。
+
+完整重建运行时 `48c0ec3b476948359adedf51359a76216426d1ac48424253c0b74ed55935c497`
+已导入并在保留 prefix 的情况下部署。当前技术主机回归 36/36，通过产品分支
+补测的主机回归为 38/38。默认 Vulkan invalidate 与 remote 映射读回修复后，
+MewGenics、Darkest Dungeon 在产品候选中均进入主菜单，用户确认动画恢复。
+参见[根因与负对照回归](../debugging/venus-explicit-shadow-readback.md)。
+
+同一 v15 产品包单轮设备回归：core 4/4、DXVK 3/3、D3D12 2/3、
+DXVK D3D9 3/4、Wine Vulkan 3/4。D3D12 第 242 帧等待 fence 失败；
+x64 D3D9 虽呈现 50 帧但没有固定帧截图；x86 sampled-only 仍保留
+`0xdeadbeef`。这不是全绿发布结论，也尚未证明 D3D12/D3D9 失败与本次
+读回修复有因果关系。历史失败记录保留，不自动重跑掩盖。
+
+设备包与界面证据属于产品候选，不能写成已经重建/重测技术 HAP。
+CI 的 fork workflow 仍为 `action_required`，只能由上游维护者批准；
+当前提交者没有批准权限。完整输入/IME、长跑和其他设备仍有未验证范围。
+
+## 早期集成记录
+
 核实日期：2026-11-01。技术分支 `integration/pr78-upstream` 已合入官方 `master` 的 `a001e6d`，处理 21 个冲突，保留 X11 路线、CreatedAt/Restored/Modal 契约和 DesktopInputSink。PR #78 仍为旧基线 Draft，候选尚未替换 PR head。
 
 独立游戏库页面、Ability 和配置模型已迁往 `integration/pr78-main-ui`，产品配套 [PR #79](https://github.com/winehua/WineHua/pull/79) 的目标为 `main-ui`。产品分支通过 merge 继承公共修复，保留应用库、主题、悬浮桌面、PC 缩放和完整键盘；其完整主机回归及 Native/ArkTS HAP 构建通过，产品实机交互待验。
