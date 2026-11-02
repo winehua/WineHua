@@ -6,12 +6,15 @@
 
 | 门槛 | 状态 | 完成条件 |
 |---|---|---|
-| 分支同步 | 集成候选已同步 | `integration/pr78-upstream` 已合入最新 `master` / `a001e6d` 并解决冲突；PR #78 头仍待候选完整验收后替换 |
+| 分支同步 | PR head 已更新 | `integration/pr78-upstream` 已合入 `master` / `a001e6d` 并解决冲突；PR #78 已推送当前技术修复 |
 | 变更分层 | 已拆分候选 | 技术分支已移除独立游戏库产品文件；`integration/pr78-main-ui` 通过 merge 继承公共修复，产品配套 [PR #79](https://github.com/winehua/WineHua/pull/79) 为 Draft |
-| 主机回归 | 分层通过 | 技术版 7 组 JS、9 个 renderer 用例及新增 EGL/loader/特性/覆盖/打包回归通过；产品版 9 组 JS 通过；原 Linux 27 阶段属于旧基线证据 |
+| 主机回归 | 分层通过 | 当前技术 36/36、产品 38/38 阶段通过，含显式读回实际代码及旧逻辑负对照；原 Linux 27 阶段属于旧基线证据 |
 | 完整构建 | 完整 Guest/Native/HAP 重建通过 | 隔离 Linux 构建完成 Guest 依赖、Wine 与 canonical assemble；重复组装哈希一致，导入 4,591 个输出并通过架构/哈希核验 |
 | 设备验收 | 主套件大部分通过，Wine Vulkan 聚合仍阻塞 | core 两轮 4/4、DXVK 3/3、D3D12 3/3、D3D9 4/4、X11 GL/DXVK 各 1/1；Wine Vulkan 前两轮 4/4，第三轮及后续诊断仍会在同一 Host 会话的短生命周期客户端切换中间歇保留 `0xdeadbeef`；单项 x86 新会话 5/5 |
-| PR 状态 | Draft | #78 仍为旧基线 Draft 且与 master 冲突；#79 为产品候选 Draft。补齐重建、设备验收与 CI/review 后再改 Ready |
+| PR 状态 | #78 Ready；#79 Draft | 两者尚未合并；最新产品单轮 core 4/4、DXVK 3/3、D3D12 2/3、D3D9 3/4、Wine Vulkan 3/4；发布验收未通过，fork CI 等待上游维护者批准 |
+
+最新产品动画恢复、负对照与设备失败范围见[当前集成状态](upstream-integration-status.md)。
+以下保留早期技术候选的历史包身份与结果，不能替代当前产品候选验收。
 
 ## 集成技术候选实机证据
 
