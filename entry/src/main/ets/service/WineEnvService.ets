@@ -350,16 +350,7 @@ export class WineEnvService {
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
-    // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
-    // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏
-    // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
-    // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
-    // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
-    const diagnosticHostProfile = AppStorage.get<string>('winehua.hostShadowProfile') || '';
-    this.perfProfile = diagnosticHostProfile === 'shadow-precise-legacy-host-sync' ||
-      diagnosticHostProfile === 'baseline' ? diagnosticHostProfile :
-      'shadow-precise-dirty-ring-inline-upload-coverage-sort';
+    this.perfProfile = AppStorage.get<string>('winehua.perf.profile') ?? 'baseline';
   }
 
   // zHome 获取 + 退避重试 (startSession 与 ensureZHomeReady 共用同一判据,

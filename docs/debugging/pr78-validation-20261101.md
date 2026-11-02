@@ -105,3 +105,41 @@ The same profile's x64 D3D11 case passes with 607 frames and host screenshots.
 An info-level x64 repeat also fails at device creation. These are unresolved
 runtime failures, not a passing D3D9 qualification. The earlier core, DXVK,
 Wine Vulkan and D3D12 results used the old payload and do not validate this one.
+
+## November 2 integration rebuild and Vulkan boundary
+
+The integrated technical branch completed an isolated full Guest rebuild and a
+canonical assembly. Repeating assembly produced the same runtime payload hash:
+`48c0ec3b476948359adedf51359a76216426d1ac48424253c0b74ed55935c497`.
+The imported runtime contains 4,591 verified outputs. The phone received all
+2,981 staged files through an app-owned two-directory swap; the prior managed
+runtime remains backed up and the existing prefix, games and saves were not
+reset.
+
+Host regression completed 35 technical stages. The integrated device candidate
+passed core twice (4/4 each), DXVK (3/3), D3D12 (3/3), D3D9 (4/4), X11 GL
+(1/1) and X11 DXVK (1/1). The Wine Vulkan suite passed two complete repetitions,
+then failed its third repetition in the x86 full and sampled-only cases. Later
+diagnostic repetitions reproduced the same `0xdeadbeef` first-compute sentinel
+on either architecture.
+
+The failure was retained and narrowed rather than retried away:
+
+- Guest shader bytes, descriptor identities, command-buffer identity and
+  `vkCmdDispatch(1,1,1)` reached the Host in matching pass/fail runs.
+- The Host mapping and shared shadow both retained the sentinel on failure, so
+  the final Host-to-Guest copy was not the corrupting step.
+- Direct waits, status polling, disabled command batching, fence feedback
+  changes, descriptor serialization, queue/device idle, an explicit
+  compute-to-Host barrier, a Host-write barrier, pipeline delay and device-local
+  output/readback did not eliminate the failure.
+- Running the x86 full case alone passed five consecutive fresh sessions. The
+  intermittent failure appears only when several short-lived Vulkan clients are
+  exercised in one Host-server session. A one-second inter-test delay and an
+  unconditional teardown `DeviceWaitIdle` did not make the aggregate stable.
+
+The forced experimental host profile was removed from the product path. Session
+startup again reads `winehua.perf.profile` and falls back to `baseline`; the
+unqualified inline-upload coverage profile is no longer silently enabled for
+every program. The rapid multi-client compute failure remains an explicit merge
+boundary for the Wine Vulkan aggregate and must not be reported as resolved.
