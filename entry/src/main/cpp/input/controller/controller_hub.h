@@ -2,15 +2,14 @@
 
 #include "input/controller/controller_types.h"
 
-#include <atomic>
 #include <functional>
 #include <mutex>
 
 namespace winehua {
 namespace controller {
 
-// Slot merge + logical state. Thread-safe; Physical kit callbacks and NAPI
-// (Touch) may call from different threads.
+// Slot merge + logical canonical state. Thread-safe; Physical kit callbacks
+// and NAPI (Touch) may call from different threads.
 class ControllerHub {
 public:
     using StateListener = std::function<void(uint32_t slot, const LogicalGamepadState&)>;
@@ -21,34 +20,42 @@ public:
     bool IsEnabled() const;
 
     void SetButton(ControllerSourceId source, uint32_t slot, LogicalButton button, bool pressed);
-    // value in [-1,1] for sticks, [0,1] for triggers. +Y = Up.
-    void SetAxis(ControllerSourceId source, uint32_t slot, LogicalAxis axis, float value);
+    void SetStick(ControllerSourceId source, uint32_t slot, LogicalStick stick, float x, float y);
+    void SetTrigger(ControllerSourceId source, uint32_t slot, LogicalTrigger trigger, float value);
     void SetHat(ControllerSourceId source, uint32_t slot, int8_t x, int8_t y);
     void ResetSource(ControllerSourceId source);
 
     LogicalGamepadState GetState(uint32_t slot) const;
     void SetStateListener(StateListener listener);
 
-    // Deadzone applied to physical/touch stick axes before merge (radial).
+    // Deadzone applied to stick vectors before merge (radial).
     void SetInnerDeadzone(float inner);
 
 private:
     ControllerHub() = default;
 
+    struct SourceStickState {
+        float x = 0.0f;
+        float y = 0.0f;
+        bool active = false;
+        uint64_t activitySequence = 0;
+    };
+
     struct SlotState {
         uint32_t buttonOwners[kButtonCount] = {};
-        float axisValues[kSourceCount][kAxisCount] = {};
-        bool axisActive[kSourceCount][kAxisCount] = {};
-        ControllerSourceId axisOwner[kAxisCount] = {
-            ControllerSourceId::Touch, ControllerSourceId::Touch, ControllerSourceId::Touch,
-            ControllerSourceId::Touch, ControllerSourceId::Touch, ControllerSourceId::Touch};
+        SourceStickState sticks[kSourceCount][kStickCount] = {};
+        ControllerSourceId stickOwner[kStickCount] = {
+            ControllerSourceId::Touch, ControllerSourceId::Touch};
+        uint64_t nextActivitySequence = 1;
+        float triggers[kSourceCount][kTriggerCount] = {};
         int8_t hatXBySource[kSourceCount] = {};
         int8_t hatYBySource[kSourceCount] = {};
         LogicalGamepadState logical;
     };
 
-    void RecomputeLocked(uint32_t slot);
+    bool RecomputeLocked(uint32_t slot);
     static float ApplyRadialDeadzone(float x, float y, float inner, float* outX, float* outY);
+    static ControllerSourceId PickStickOwner(const SlotState& st, uint32_t stickIndex);
 
     mutable std::mutex mutex_;
     bool enabled_ = false;

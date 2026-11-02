@@ -553,6 +553,7 @@ test:
 	    -o $(HOST_TEST_DIR)/display_policy_test \
 	    $(ROOT)/host_tests/display_policy_test.cpp
 	$(HOST_TEST_DIR)/display_policy_test
+	python3 $(ROOT)/scripts/verify_whgp_protocol.py
 
 
 # ============================================================

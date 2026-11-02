@@ -65,6 +65,7 @@ void ControllerHub::SetButton(ControllerSourceId source, uint32_t slot, LogicalB
 
     StateListener cb;
     LogicalGamepadState snap;
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!enabled_) return;
@@ -72,63 +73,69 @@ void ControllerHub::SetButton(ControllerSourceId source, uint32_t slot, LogicalB
         const uint32_t bit = 1u << src;
         if (pressed) owners |= bit;
         else owners &= ~bit;
-        RecomputeLocked(slot);
+        changed = RecomputeLocked(slot);
         cb = listener_;
         snap = slots_[slot].logical;
     }
-    if (cb) cb(slot, snap);
+    if (changed && cb) cb(slot, snap);
 }
 
-void ControllerHub::SetAxis(ControllerSourceId source, uint32_t slot, LogicalAxis axis, float value)
+void ControllerHub::SetStick(ControllerSourceId source, uint32_t slot, LogicalStick stick, float x, float y)
 {
     const uint32_t src = static_cast<uint32_t>(source);
-    const uint32_t ax = static_cast<uint32_t>(axis);
-    if (src >= kSourceCount || ax >= kAxisCount || slot >= kMaxControllerSlots) return;
+    const uint32_t stIdx = static_cast<uint32_t>(stick);
+    if (src >= kSourceCount || stIdx >= kStickCount || slot >= kMaxControllerSlots) return;
+    if (!std::isfinite(x)) x = 0.f;
+    if (!std::isfinite(y)) y = 0.f;
+    x = std::clamp(x, -1.f, 1.f);
+    y = std::clamp(y, -1.f, 1.f);
 
     StateListener cb;
     LogicalGamepadState snap;
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!enabled_) return;
-
-        float v = value;
-        if (axis == LogicalAxis::LT || axis == LogicalAxis::RT) {
-            v = std::clamp(v, 0.f, 1.f);
-            slots_[slot].axisValues[src][ax] = v;
-            slots_[slot].axisActive[src][ax] = v > 0.02f;
-        } else {
-            v = std::clamp(v, -1.f, 1.f);
-            slots_[slot].axisValues[src][ax] = v;
-            const bool isLeft = (axis == LogicalAxis::LX || axis == LogicalAxis::LY);
-            const uint32_t axX = static_cast<uint32_t>(isLeft ? LogicalAxis::LX : LogicalAxis::RX);
-            const uint32_t axY = static_cast<uint32_t>(isLeft ? LogicalAxis::LY : LogicalAxis::RY);
-            const float dx = slots_[slot].axisValues[src][axX];
-            const float dy = slots_[slot].axisValues[src][axY];
-            const float mag = std::sqrt(dx * dx + dy * dy);
-            const bool active = mag > innerDeadzone_;
-            slots_[slot].axisActive[src][axX] = active;
-            slots_[slot].axisActive[src][axY] = active;
-            if (active) {
-                slots_[slot].axisOwner[axX] = source;
-                slots_[slot].axisOwner[axY] = source;
-            } else if (slots_[slot].axisOwner[axX] == source) {
-                slots_[slot].axisOwner[axX] = ControllerSourceId::Touch;
-                slots_[slot].axisOwner[axY] = ControllerSourceId::Touch;
-                for (uint32_t s = 0; s < kSourceCount; ++s) {
-                    if (slots_[slot].axisActive[s][axX] || slots_[slot].axisActive[s][axY]) {
-                        slots_[slot].axisOwner[axX] = static_cast<ControllerSourceId>(s);
-                        slots_[slot].axisOwner[axY] = static_cast<ControllerSourceId>(s);
-                        break;
-                    }
-                }
-            }
+        auto& st = slots_[slot];
+        auto& srcStick = st.sticks[src][stIdx];
+        srcStick.x = x;
+        srcStick.y = y;
+        const float mag = std::sqrt(x * x + y * y);
+        const bool active = mag > innerDeadzone_;
+        srcStick.active = active;
+        if (active) {
+            srcStick.activitySequence = st.nextActivitySequence++;
+            st.stickOwner[stIdx] = source;
+        } else if (st.stickOwner[stIdx] == source) {
+            st.stickOwner[stIdx] = PickStickOwner(st, stIdx);
         }
+        changed = RecomputeLocked(slot);
+        cb = listener_;
+        snap = st.logical;
+    }
+    if (changed && cb) cb(slot, snap);
+}
 
-        RecomputeLocked(slot);
+void ControllerHub::SetTrigger(ControllerSourceId source, uint32_t slot, LogicalTrigger trigger, float value)
+{
+    const uint32_t src = static_cast<uint32_t>(source);
+    const uint32_t tr = static_cast<uint32_t>(trigger);
+    if (src >= kSourceCount || tr >= kTriggerCount || slot >= kMaxControllerSlots) return;
+    if (!std::isfinite(value)) value = 0.f;
+    value = std::clamp(value, 0.f, 1.f);
+
+    StateListener cb;
+    LogicalGamepadState snap;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!enabled_) return;
+        slots_[slot].triggers[src][tr] = value;
+        changed = RecomputeLocked(slot);
         cb = listener_;
         snap = slots_[slot].logical;
     }
-    if (cb) cb(slot, snap);
+    if (changed && cb) cb(slot, snap);
 }
 
 void ControllerHub::SetHat(ControllerSourceId source, uint32_t slot, int8_t x, int8_t y)
@@ -140,16 +147,17 @@ void ControllerHub::SetHat(ControllerSourceId source, uint32_t slot, int8_t x, i
 
     StateListener cb;
     LogicalGamepadState snap;
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!enabled_) return;
         slots_[slot].hatXBySource[src] = x;
         slots_[slot].hatYBySource[src] = y;
-        RecomputeLocked(slot);
+        changed = RecomputeLocked(slot);
         cb = listener_;
         snap = slots_[slot].logical;
     }
-    if (cb) cb(slot, snap);
+    if (changed && cb) cb(slot, snap);
 }
 
 void ControllerHub::ResetSource(ControllerSourceId source)
@@ -160,34 +168,50 @@ void ControllerHub::ResetSource(ControllerSourceId source)
 
     StateListener cb;
     LogicalGamepadState snaps[kMaxControllerSlots];
+    bool anyChanged = false;
+    bool slotChanged[kMaxControllerSlots] = {};
     {
         std::lock_guard<std::mutex> lock(mutex_);
         cb = listener_;
         for (uint32_t slot = 0; slot < kMaxControllerSlots; ++slot) {
             auto& st = slots_[slot];
             for (uint32_t b = 0; b < kButtonCount; ++b) st.buttonOwners[b] &= ~bit;
-            for (uint32_t a = 0; a < kAxisCount; ++a) {
-                st.axisValues[src][a] = 0.f;
-                st.axisActive[src][a] = false;
-                if (st.axisOwner[a] == source) {
-                    st.axisOwner[a] = ControllerSourceId::Touch;
-                    for (uint32_t s = 0; s < kSourceCount; ++s) {
-                        if (st.axisActive[s][a]) {
-                            st.axisOwner[a] = static_cast<ControllerSourceId>(s);
-                            break;
-                        }
-                    }
+            for (uint32_t stick = 0; stick < kStickCount; ++stick) {
+                st.sticks[src][stick] = SourceStickState{};
+                if (st.stickOwner[stick] == source) {
+                    st.stickOwner[stick] = PickStickOwner(st, stick);
                 }
             }
+            for (uint32_t t = 0; t < kTriggerCount; ++t) st.triggers[src][t] = 0.f;
             st.hatXBySource[src] = 0;
             st.hatYBySource[src] = 0;
-            RecomputeLocked(slot);
+            slotChanged[slot] = RecomputeLocked(slot);
+            anyChanged = anyChanged || slotChanged[slot];
             snaps[slot] = st.logical;
         }
     }
-    if (cb) {
-        for (uint32_t slot = 0; slot < kMaxControllerSlots; ++slot) cb(slot, snaps[slot]);
+    if (cb && anyChanged) {
+        for (uint32_t slot = 0; slot < kMaxControllerSlots; ++slot) {
+            if (slotChanged[slot]) cb(slot, snaps[slot]);
+        }
     }
+}
+
+ControllerSourceId ControllerHub::PickStickOwner(const SlotState& st, uint32_t stickIndex)
+{
+    ControllerSourceId owner = ControllerSourceId::Touch;
+    uint64_t bestSeq = 0;
+    bool found = false;
+    for (uint32_t s = 0; s < kSourceCount; ++s) {
+        const auto& srcStick = st.sticks[s][stickIndex];
+        if (!srcStick.active) continue;
+        if (!found || srcStick.activitySequence >= bestSeq) {
+            found = true;
+            bestSeq = srcStick.activitySequence;
+            owner = static_cast<ControllerSourceId>(s);
+        }
+    }
+    return owner;
 }
 
 float ControllerHub::ApplyRadialDeadzone(float x, float y, float inner, float* outX, float* outY)
@@ -207,7 +231,7 @@ float ControllerHub::ApplyRadialDeadzone(float x, float y, float inner, float* o
     return t;
 }
 
-void ControllerHub::RecomputeLocked(uint32_t slot)
+bool ControllerHub::RecomputeLocked(uint32_t slot)
 {
     auto& st = slots_[slot];
     LogicalGamepadState next = st.logical;
@@ -219,28 +243,26 @@ void ControllerHub::RecomputeLocked(uint32_t slot)
         next.buttons |= (1u << 10);
     }
 
-    auto emitStick = [&](LogicalAxis axX, LogicalAxis axY, int16_t* outX, int16_t* outY) {
-        const uint32_t aX = static_cast<uint32_t>(axX);
-        const uint32_t owner = static_cast<uint32_t>(st.axisOwner[aX]);
+    auto emitStick = [&](LogicalStick stick, int16_t* outX, int16_t* outY) {
+        const uint32_t idx = static_cast<uint32_t>(stick);
+        const uint32_t owner = static_cast<uint32_t>(st.stickOwner[idx]);
         float ox = 0.f, oy = 0.f;
-        ApplyRadialDeadzone(st.axisValues[owner][aX],
-                            st.axisValues[owner][static_cast<uint32_t>(axY)],
+        ApplyRadialDeadzone(st.sticks[owner][idx].x, st.sticks[owner][idx].y,
                             innerDeadzone_, &ox, &oy);
         *outX = FloatToStick(ox);
         *outY = FloatToStick(oy);
     };
-    emitStick(LogicalAxis::LX, LogicalAxis::LY, &next.lx, &next.ly);
-    emitStick(LogicalAxis::RX, LogicalAxis::RY, &next.rx, &next.ry);
+    emitStick(LogicalStick::Left, &next.lx, &next.ly);
+    emitStick(LogicalStick::Right, &next.rx, &next.ry);
 
     float lt = 0.f, rt = 0.f;
     for (uint32_t s = 0; s < kSourceCount; ++s) {
-        lt = std::max(lt, st.axisValues[s][static_cast<uint32_t>(LogicalAxis::LT)]);
-        rt = std::max(rt, st.axisValues[s][static_cast<uint32_t>(LogicalAxis::RT)]);
+        lt = std::max(lt, st.triggers[s][static_cast<uint32_t>(LogicalTrigger::Left)]);
+        rt = std::max(rt, st.triggers[s][static_cast<uint32_t>(LogicalTrigger::Right)]);
     }
     next.lt = FloatToTrigger(lt);
     next.rt = FloatToTrigger(rt);
 
-    // DPad: merge hat sources OR button dpad ownership into hat.
     int hx = 0, hy = 0;
     for (uint32_t s = 0; s < kSourceCount; ++s) {
         if (st.hatXBySource[s] != 0) hx = st.hatXBySource[s];
@@ -250,7 +272,6 @@ void ControllerHub::RecomputeLocked(uint32_t slot)
     if (st.buttonOwners[static_cast<uint32_t>(LogicalButton::DpadRight)]) hx = 1;
     if (st.buttonOwners[static_cast<uint32_t>(LogicalButton::DpadUp)]) hy = 1;
     if (st.buttonOwners[static_cast<uint32_t>(LogicalButton::DpadDown)]) hy = -1;
-    // If both left+right, prefer last non-zero from hats already; clamp conflict to 0.
     if (st.buttonOwners[static_cast<uint32_t>(LogicalButton::DpadLeft)] &&
         st.buttonOwners[static_cast<uint32_t>(LogicalButton::DpadRight)]) {
         hx = 0;
@@ -267,7 +288,9 @@ void ControllerHub::RecomputeLocked(uint32_t slot)
         next.rt != st.logical.rt || next.hatX != st.logical.hatX || next.hatY != st.logical.hatY) {
         next.sequence = st.logical.sequence + 1;
         st.logical = next;
+        return true;
     }
+    return false;
 }
 
 }  // namespace controller

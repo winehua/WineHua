@@ -2,17 +2,24 @@
 
 #include "input/controller/controller_hub.h"
 #include "input/controller/controller_runtime.h"
+#include "input/controller/controller_types.h"
 #include "input/controller/gamepad_bridge.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
 using winehua::controller::ControllerHub;
 using winehua::controller::ControllerSourceId;
 using winehua::controller::GamepadBridge;
-using winehua::controller::LogicalAxis;
+using winehua::controller::kMaxControllerSlots;
+using winehua::controller::kSourceCount;
+using winehua::controller::kStickCount;
+using winehua::controller::kTriggerCount;
 using winehua::controller::LogicalButton;
 using winehua::controller::LogicalGamepadState;
+using winehua::controller::LogicalStick;
+using winehua::controller::LogicalTrigger;
 
 namespace {
 
@@ -37,6 +44,18 @@ bool ReadUtf8(napi_env env, napi_value v, std::string* out)
     if (napi_get_value_string_utf8(env, v, nullptr, 0, &len) != napi_ok) return false;
     out->resize(len);
     return napi_get_value_string_utf8(env, v, out->data(), len + 1, &len) == napi_ok;
+}
+
+bool ValidSourceSlot(int32_t source, int32_t slot)
+{
+    return source >= 0 && source < static_cast<int32_t>(kSourceCount) &&
+           slot >= 0 && slot < static_cast<int32_t>(kMaxControllerSlots);
+}
+
+float FiniteOrZero(double value)
+{
+    if (!std::isfinite(value)) return 0.f;
+    return static_cast<float>(value);
 }
 
 }  // namespace
@@ -65,28 +84,53 @@ napi_value ControllerSetButton(napi_env env, napi_callback_info info)
     ReadInt32(env, args[1], &slot);
     ReadInt32(env, args[2], &button);
     ReadBool(env, args[3], &pressed);
+    if (!ValidSourceSlot(source, slot)) return nullptr;
     ControllerHub::Instance().SetButton(static_cast<ControllerSourceId>(source),
                                         static_cast<uint32_t>(slot),
                                         static_cast<LogicalButton>(button), pressed);
     return nullptr;
 }
 
-napi_value ControllerSetAxis(napi_env env, napi_callback_info info)
+napi_value ControllerSetStick(napi_env env, napi_callback_info info)
+{
+    size_t argc = 5;
+    napi_value args[5] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t source = 0, slot = 0, stick = 0;
+    double x = 0, y = 0;
+    if (argc < 5) return nullptr;
+    ReadInt32(env, args[0], &source);
+    ReadInt32(env, args[1], &slot);
+    ReadInt32(env, args[2], &stick);
+    ReadDouble(env, args[3], &x);
+    ReadDouble(env, args[4], &y);
+    if (!ValidSourceSlot(source, slot)) return nullptr;
+    if (stick < 0 || stick >= static_cast<int32_t>(kStickCount)) return nullptr;
+    ControllerHub::Instance().SetStick(static_cast<ControllerSourceId>(source),
+                                       static_cast<uint32_t>(slot),
+                                       static_cast<LogicalStick>(stick),
+                                       FiniteOrZero(x), FiniteOrZero(y));
+    return nullptr;
+}
+
+napi_value ControllerSetTrigger(napi_env env, napi_callback_info info)
 {
     size_t argc = 4;
     napi_value args[4] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    int32_t source = 0, slot = 0, axis = 0;
+    int32_t source = 0, slot = 0, trigger = 0;
     double value = 0;
     if (argc < 4) return nullptr;
     ReadInt32(env, args[0], &source);
     ReadInt32(env, args[1], &slot);
-    ReadInt32(env, args[2], &axis);
+    ReadInt32(env, args[2], &trigger);
     ReadDouble(env, args[3], &value);
-    ControllerHub::Instance().SetAxis(static_cast<ControllerSourceId>(source),
-                                      static_cast<uint32_t>(slot),
-                                      static_cast<LogicalAxis>(axis),
-                                      static_cast<float>(value));
+    if (!ValidSourceSlot(source, slot)) return nullptr;
+    if (trigger < 0 || trigger >= static_cast<int32_t>(kTriggerCount)) return nullptr;
+    ControllerHub::Instance().SetTrigger(static_cast<ControllerSourceId>(source),
+                                         static_cast<uint32_t>(slot),
+                                         static_cast<LogicalTrigger>(trigger),
+                                         FiniteOrZero(value));
     return nullptr;
 }
 
@@ -101,6 +145,7 @@ napi_value ControllerSetHat(napi_env env, napi_callback_info info)
     ReadInt32(env, args[1], &slot);
     ReadInt32(env, args[2], &x);
     ReadInt32(env, args[3], &y);
+    if (!ValidSourceSlot(source, slot)) return nullptr;
     ControllerHub::Instance().SetHat(static_cast<ControllerSourceId>(source),
                                      static_cast<uint32_t>(slot),
                                      static_cast<int8_t>(x), static_cast<int8_t>(y));
@@ -114,6 +159,7 @@ napi_value ControllerResetSource(napi_env env, napi_callback_info info)
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int32_t source = 0;
     if (argc >= 1) ReadInt32(env, args[0], &source);
+    if (source < 0 || source >= static_cast<int32_t>(kSourceCount)) return nullptr;
     ControllerHub::Instance().ResetSource(static_cast<ControllerSourceId>(source));
     return nullptr;
 }

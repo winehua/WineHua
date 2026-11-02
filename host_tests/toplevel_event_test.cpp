@@ -1,11 +1,12 @@
 // ============================================================================
-// toplevel_event_test — ToplevelEventBus 纯函数对账 (重构第 5D 步, 行为平价)
+// toplevel_event_test — ToplevelEventBus 纯函数对账 (行为了契约化)
 //
 // 测试对象: compositor/toplevel/toplevel_event_bus.h 的事件名映射与 JSON 构造单点。
-// 黄金值 = 重构前各调用点 (wl_core.cpp / xdg_shell.cpp / wayland_server.cpp /
-// plugin_manager.cpp) 的 snprintf 模板逐字 — 事件名/键名/值/顺序不变是
-// 红线 (ArkTS 侧 WineWindowManager.ets / PopupWindowManager.ets 按事件名与
-// 字段消费)。本测试把"旧值"固化为黄金值, 任何模板漂移即红。
+// 黄金值 = 当前头内模板逐字 (2026-10-31 与现行实现对账: display-route 重构
+// 移除 ArgbCreated/ArgbMove — created 带坐标改走 JsonCreatedAt (键序 w,h,x,y),
+// 新增 Restored/Modal 与 JsonModal)。事件名/键名/值/顺序是 ArkTS 消费红线
+// (WineWindowManager.ets / PopupWindowManager.ets 按事件名与字段消费),
+// 任何模板漂移即红。
 //
 // 构建: make test (host g++ 直连编译, 零 wayland/hilog 依赖 — 纯函数在头)。
 // ============================================================================
@@ -25,18 +26,17 @@ static void eq_str(const char* what, const std::string& got, const std::string& 
     }
 }
 
-// ---- ToplevelEventName: 22 种事件名与旧字符串逐字 ----
+// ---- ToplevelEventName: 21 种事件名与 ArkTS 消费字符串逐字 ----
+// (display-route 重构移除 ArgbCreated/ArgbMove — created 带坐标走
+//  JsonCreatedAt, 移动并入 position 更新; 新增 Restored/Modal)
 static void test_event_names() {
     eq_str("name(Created)", ToplevelEventName(ToplevelEventType::Created), "created");
-    eq_str("name(ArgbCreated)", ToplevelEventName(ToplevelEventType::ArgbCreated), "argb_created");
     eq_str("name(Destroyed)", ToplevelEventName(ToplevelEventType::Destroyed), "destroyed");
     eq_str("name(PopupHide)", ToplevelEventName(ToplevelEventType::PopupHide), "popup_hide");
     eq_str("name(PopupMove)", ToplevelEventName(ToplevelEventType::PopupMove), "popup_move");
     eq_str("name(PopupShow)", ToplevelEventName(ToplevelEventType::PopupShow), "popup_show");
     eq_str("name(PopupResize)", ToplevelEventName(ToplevelEventType::PopupResize), "popup_resize");
-    eq_str("name(ArgbMove)", ToplevelEventName(ToplevelEventType::ArgbMove), "argb_move");
     eq_str("name(Argb)", ToplevelEventName(ToplevelEventType::Argb), "argb");
-    eq_str("name(MaskDirty)", ToplevelEventName(ToplevelEventType::MaskDirty), "mask_dirty");
     eq_str("name(Resize)", ToplevelEventName(ToplevelEventType::Resize), "resize");
     eq_str("name(Surface)", ToplevelEventName(ToplevelEventType::Surface), "surface");
     eq_str("name(Title)", ToplevelEventName(ToplevelEventType::Title), "title");
@@ -46,8 +46,10 @@ static void test_event_names() {
     eq_str("name(Fullscreen)", ToplevelEventName(ToplevelEventType::Fullscreen), "fullscreen");
     eq_str("name(Unfullscreen)", ToplevelEventName(ToplevelEventType::Unfullscreen), "unfullscreen");
     eq_str("name(Minimized)", ToplevelEventName(ToplevelEventType::Minimized), "minimized");
+    eq_str("name(Restored)", ToplevelEventName(ToplevelEventType::Restored), "restored");
     eq_str("name(MoveStart)", ToplevelEventName(ToplevelEventType::MoveStart), "move_start");
     eq_str("name(MoveEnd)", ToplevelEventName(ToplevelEventType::MoveEnd), "move_end");
+    eq_str("name(Modal)", ToplevelEventName(ToplevelEventType::Modal), "modal");
     eq_str("name(DesktopRoot)", ToplevelEventName(ToplevelEventType::DesktopRoot), "desktop_root");
 }
 
@@ -58,11 +60,14 @@ static void test_json_templates() {
     eq_str("JsonCreated edge-neg", ToplevelEventBus::JsonCreated(-1, 0), "{\"w\":-1,\"h\":0}");
     // created: 桌面 xdg_get_toplevel (xdg_shell.cpp, 硬编码 640x480)
     eq_str("JsonCreatedDefault", ToplevelEventBus::JsonCreatedDefault(), "{\"w\":640,\"h\":480}");
-    // argb_created (wl_core.cpp: {"x","y","w","h"} 顺序与 created 不同)
-    eq_str("JsonArgbCreated", ToplevelEventBus::JsonArgbCreated(10, 20, 800, 600),
-           "{\"x\":10,\"y\":20,\"w\":800,\"h\":600}");
-    eq_str("JsonArgbCreated neg", ToplevelEventBus::JsonArgbCreated(-5, -6, 0, 1),
-           "{\"x\":-5,\"y\":-6,\"w\":0,\"h\":1}");
+    // created 带坐标 (D52: x11 多窗按 guest 位置摆放; 键序 w,h,x,y —
+    // x/y=0 表示不定位, 与 wayland JsonCreated 消费语义相容)
+    eq_str("JsonCreatedAt", ToplevelEventBus::JsonCreatedAt(800, 600, 10, 20),
+           "{\"w\":800,\"h\":600,\"x\":10,\"y\":20}");
+    eq_str("JsonCreatedAt at-origin", ToplevelEventBus::JsonCreatedAt(0, 1, 0, 0),
+           "{\"w\":0,\"h\":1,\"x\":0,\"y\":0}");
+    eq_str("JsonCreatedAt neg", ToplevelEventBus::JsonCreatedAt(0, 1, -5, -6),
+           "{\"w\":0,\"h\":1,\"x\":-5,\"y\":-6}");
     // popup_hide (5 处调用点同模板)
     eq_str("JsonPopupHide", ToplevelEventBus::JsonPopupHide(7), "{\"popupId\":7}");
     eq_str("JsonPopupHide max", ToplevelEventBus::JsonPopupHide(4294967295u),
@@ -70,8 +75,6 @@ static void test_json_templates() {
     // popup_move
     eq_str("JsonPopupMove", ToplevelEventBus::JsonPopupMove(7, 100, -200),
            "{\"popupId\":7,\"x\":100,\"y\":-200}");
-    // argb_move
-    eq_str("JsonArgbMove", ToplevelEventBus::JsonArgbMove(30, 40), "{\"x\":30,\"y\":40}");
     // argb (0/1)
     eq_str("JsonArgb 1", ToplevelEventBus::JsonArgb(1), "{\"argb\":1}");
     eq_str("JsonArgb 0", ToplevelEventBus::JsonArgb(0), "{\"argb\":0}");
@@ -92,6 +95,11 @@ static void test_json_templates() {
            "{\"minW\":320,\"minH\":200,\"maxW\":1400,\"maxH\":920}");
     // surface
     eq_str("JsonSurface", ToplevelEventBus::JsonSurface(1280, 800), "{\"w\":1280,\"h\":800}");
+    // modal (键序 modal,owner,tl,dx,dy,w,h)
+    eq_str("JsonModal set", ToplevelEventBus::JsonModal(7, 3, 1, 10, 20, 640, 480),
+           "{\"modal\":1,\"owner\":3,\"tl\":7,\"dx\":10,\"dy\":20,\"w\":640,\"h\":480}");
+    eq_str("JsonModal clear", ToplevelEventBus::JsonModal(7, 0, 0, 0, 0, 0, 0),
+           "{\"modal\":0,\"owner\":0,\"tl\":7,\"dx\":0,\"dy\":0,\"w\":0,\"h\":0}");
 }
 
 // 无 payload 事件的 "{}" 语义: 旧调用点传字面量 "{}" 或省略 jsonData 参数
@@ -100,10 +108,10 @@ static void test_json_templates() {
 // 不属 host 可编译面; 默认参数值在此声明为契约)。
 
 static void test_full_coverage() {
-    // 22 种枚举全在 EventName 映射内 (编译器已保证 switch 完整性; 此处
-    // 再逐一遍历确认 22 个名字均为非空且长度>0)
+    // 21 种枚举全在 EventName 映射内 (编译器已保证 switch 完整性; 此处
+    // 再逐一遍历确认 21 个名字均为非空且长度>0)
     int n = 0;
-    for (uint32_t i = 0; i < 22; i++) {
+    for (uint32_t i = 0; i < 21; i++) {
         const char* name = ToplevelEventName(static_cast<ToplevelEventType>(i));
         checks++;
         if (name == nullptr || name[0] == '\0' || strcmp(name, "unknown") == 0) {
