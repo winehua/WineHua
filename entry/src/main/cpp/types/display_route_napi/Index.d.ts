@@ -47,6 +47,9 @@ export const injectDisplayRouteKey: (keycode: number, press: boolean) => boolean
  *  顶层窗后由 wine 自行路由子窗)。phase: 0=enter 1=motion 2=leave。 */
 export const injectDisplayRouteMotion: (nx: number, ny: number, phase: number) => boolean;
 
+/** 最近一次已处理的 motion 命中的 X window id；未命中时为 0。 */
+export const getLastPtrWindowId: () => number;
+
 /** 按钮注入 (BTN_LEFT 0x110 / BTN_RIGHT 0x111 / BTN_MIDDLE 0x112)。 */
 export const injectDisplayRouteButton: (button: number, press: boolean) => boolean;
 

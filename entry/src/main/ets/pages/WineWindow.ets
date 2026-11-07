@@ -5,6 +5,7 @@ import { mapMouseButton } from '../common/MouseMap';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { InputDeviceMapper } from '../service/InputDeviceMapper';
 import { FusionWindowManager } from '../service/FusionWindowManager';
+import { KeyboardOverlay } from '../components/KeyboardOverlay';
 
 const DOMAIN = 0x0000;
 
@@ -27,7 +28,7 @@ class WineXComponentController extends XComponentController {
     hilog.info(DOMAIN, 'WineWindow', '[Ctrl] onSurfaceChanged tl=%{public}d surfaceId=%{public}s rect=%{public}s',
       this.toplevelId, surfaceId, JSON.stringify(rect));
     try {
-      testNapi.resizeRenderer(this.toplevelId, rect.surfaceWidth, rect.surfaceHeight);
+      testNapi.resizeRenderer(this.toplevelId, rect.surfaceWidth, rect.surfaceHeight, BigInt(surfaceId));
       const mgr = WineWindowManager.getInstance();
       // surface 是物理像素, Wine 需要逻辑坐标 (统一经 getEffectiveScale, 不再硬编码 2.0)
       const s = mgr.getEffectiveScale();
@@ -47,7 +48,7 @@ class WineXComponentController extends XComponentController {
     hilog.info(DOMAIN, 'WineWindow', '[Ctrl] onSurfaceDestroyed tl=%{public}d surfaceId=%{public}s',
       this.toplevelId, surfaceId);
     try {
-      testNapi.destroyRenderer(this.toplevelId);
+      testNapi.destroyRenderer(this.toplevelId, BigInt(surfaceId));
     } catch (e) {
       hilog.error(DOMAIN, 'WineWindow', 'ERR onSurfaceDestroyed destroyRenderer: %{public}s', JSON.stringify(e));
     }
@@ -674,6 +675,9 @@ struct WineWindow {
             testNapi.sendScrollEvent(this.toplevelId, 1, horiz, step, px, py);
           }
         })
+
+      // 自定义虚拟键盘 (InputSettingsService.keyboardEnabled 打开时生效)
+      KeyboardOverlay({ targetId: this.toplevelId })
     }
     .width('100%')
     .height('100%')

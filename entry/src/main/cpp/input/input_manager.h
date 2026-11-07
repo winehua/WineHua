@@ -54,7 +54,7 @@ public:
     // Start 时依赖存在), 装配前不可调用任何依赖方法。
     void BindCompositorDeps(ToplevelManager& tmgr, InputResolver& resolver,
                             MoveGrabHandler& moveGrab, const DisplayPolicy& policy,
-                            const uint32_t& desktopRootToplevelId);
+                            const uint32_t& desktopRootToplevelId, const uint32_t& taskbarToplevelId);
 
     // -- NAPI 入口 (JS 线程调用) --
     // action: ArkTS MouseAction (Press=1, Release=2, Move=3)
@@ -115,6 +115,7 @@ public:
 
     bool HasKeyboardFocus() const { return tracker_.KeyboardEntered(); }
     uint32_t GetKeyboardFocusedToplevel() const { return tracker_.KeyboardFocusedToplevel(); }
+    uint32_t ResolveKeyboardTarget();
 
     // -- 辅助: 物理像素 → Wine 逻辑坐标映射 (供 FindToplevelAt 等使用) --
     // outLb 非空时回传本次映射使用的 letterbox 几何 (调用方做内容区钳制用)
@@ -176,4 +177,5 @@ private:
     MoveGrabHandler* moveGrab_ = nullptr;
     const DisplayPolicy* policy_ = nullptr;
     const uint32_t* desktopRootToplevelId_ = nullptr;
+    const uint32_t* taskbarToplevelId_ = nullptr;
 };

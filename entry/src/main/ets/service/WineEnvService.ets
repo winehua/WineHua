@@ -1,5 +1,8 @@
+import { DEFAULT_D3D_BACKEND } from '../common/GraphicsDefaults';
+import { hasQualifiedMewgenicsGpu } from '../common/MewgenicsGraphics';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
+import { resourceManager } from '@kit.LocalizationKit';
 import { preferences } from '@kit.ArkData';
 import testNapi from 'libentry.so';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
@@ -188,7 +191,7 @@ export class WineEnvService {
   private stopWaiters: Array<() => void> = [];
 
   // -- 启动参数 (EntryAbility 发布的 AppStorage 生效值, init 时读取) --
-  private d3dBackend: string = 'dxvk_modern_2_6';
+  private d3dBackend: string = DEFAULT_D3D_BACKEND;
   private dxvkBackend: string = 'dxvk_legacy';
   // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效。
   // 持久化走 preferences API (同 DisplaySettingsService) — 不用 PersistentStorage:
@@ -272,7 +275,7 @@ export class WineEnvService {
   getDxvkBackend(): string { return this.dxvkBackend; }
 
   private normalizeD3dBackend(backend: string): string {
-    return backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
+    return backend === 'dxvk_legacy' || backend === 'dxvk_legacy_d3d9' || backend === 'dxvk_modern_2_6' ||
       backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
   }
 
@@ -305,6 +308,15 @@ export class WineEnvService {
     PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.backend', selected);
+    if (selected === 'dxvk_legacy_d3d9') {
+      PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'dxvk_legacy');
+      AppStorage.set<string>('winehua.dxvk.preference', 'dxvk_legacy');
+      AppStorage.set<string>('winehua.dxvk.backend', 'dxvk_legacy');
+      this.updateLaunchRequest();
+      hilog.info(DOMAIN, 'GameTest', 'D3D9 DXVK compatibility selected');
+      this.notify();
+      return;
+    }
     if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
       this.setDxvkPreference(selected);
       return;
@@ -334,17 +346,16 @@ export class WineEnvService {
 
   // 读取 EntryAbility 发布到 AppStorage 的生效值 (D3D/DXVK 后端)
   private updateLaunchRequest(): void {
-    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_modern_2_6';
+    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? DEFAULT_D3D_BACKEND;
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
-    // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
-    // dxvk(D3D11) 契约=dirty-ring 为已验证档; vkd3d(D3D12) 无 explicit 发布路径
-    // (上传堆常驻 map 无 flush), host=explicit 依赖 dirty 致黑屏 (c2f0f7a 白屏
-    // 同因); precise-dirty 的 to-host=full 无条件全量拷保正确性, from-host=precise
-    // 跳过省掉 baseline 全量刷新大头 (vkd3d 帧率不足, 后续任务: 补提交前发布)。
-    // 恢复: 改回 AppStorage.get<string>('winehua.perf.profile') ?? 'baseline' 即达产品语义。
-    this.perfProfile = 'shadow-precise-dirty-ring-inline-upload-coverage-sort';
+    // EntryAbility accepts these non-persistent diagnostic overrides. Keep
+    // their selection ahead of the product preference for controlled A/Bs.
+    const hostProfile = AppStorage.get<string>('winehua.hostShadowProfile');
+    this.perfProfile = hostProfile === 'baseline' || hostProfile === 'shadow-precise' ||
+      hostProfile === 'shadow-precise-legacy-host-sync' ?
+      hostProfile : (AppStorage.get<string>('winehua.perf.profile') ?? 'baseline');
   }
 
   // zHome 获取 + 退避重试 (startSession 与 ensureZHomeReady 共用同一判据,
@@ -833,6 +844,57 @@ export class WineEnvService {
     }
   }
 
+  // Optional graphics add-on, independent of the Wine runtime and prefix.
+  private async prepareMewgenicsGraphics(): Promise<void> {
+    if (!hasQualifiedMewgenicsGpu()) return;
+    const root = `${FILES_BASE}/mewgenics-gfx-v6`;
+    const manifest = this.readRawfileText('mewgenics-gfx-manifest.json');
+    if (!manifest) return;
+    if (readTextIfExists(`${root}/.manifest`) === manifest &&
+      pathExists(`${root}/lib/libEGL.so`) && pathExists(`${root}/lib/dri/virtio_gpu_dri.so`)) return;
+    const tmpZip = `${FILES_BASE}/mewgenics-gfx.tmp.zip`;
+    let rawFd: resourceManager.RawFileDescriptor | undefined = undefined;
+    let output: fs.File | undefined = undefined;
+    try {
+      this.setInitStatus('准备游戏图形组件...', !this.bgStart);
+      rawFd = this.ctx!.resourceManager.getRawFdSync('mewgenics-gfx.zip');
+      output = fs.openSync(tmpZip, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      const buffer = new ArrayBuffer(1024 * 1024);
+      let offset = rawFd.offset;
+      const end = rawFd.offset + rawFd.length;
+      while (offset < end) {
+        const count = fs.readSync(rawFd.fd, buffer, { offset: offset, length: Math.min(buffer.byteLength, end - offset) });
+        if (count <= 0) throw new Error('游戏图形组件读取不完整');
+        let written = 0;
+        while (written < count) {
+          const data = written === 0 ? buffer : buffer.slice(written, count);
+          const size = fs.writeSync(output.fd, data, { length: count - written });
+          if (size <= 0) throw new Error('游戏图形组件写入不完整');
+          written += size;
+        }
+        offset += count;
+      }
+      fs.closeSync(output);
+      output = undefined;
+      // An absent marker prevents native launch from using a partial install.
+      if (pathExists(`${root}/.manifest`)) fs.unlinkSync(`${root}/.manifest`);
+      ensureDirectory(root);
+      await zlib.decompressFile(tmpZip, root, {});
+      if (!pathExists(`${root}/lib/libEGL.so`) || !pathExists(`${root}/lib/dri/virtio_gpu_dri.so`))
+        throw new Error('游戏图形组件缺少驱动');
+      writeTextFile(`${root}/.manifest`, manifest);
+      hilog.info(DOMAIN, 'wine', 'Mewgenics graphics v6 prepared');
+    } catch (e) {
+      // Keep the working Wine environment available; native uses softpipe
+      // when this optional payload is absent or incomplete.
+      hilog.error(DOMAIN, 'wine', 'Mewgenics graphics preparation failed: %{public}s', JSON.stringify(e));
+    } finally {
+      try { if (output) fs.closeSync(output); } catch (_) {}
+      try { if (rawFd) this.ctx!.resourceManager.closeRawFdSync('mewgenics-gfx.zip'); } catch (_) {}
+      try { if (pathExists(tmpZip)) fs.unlinkSync(tmpZip); } catch (_) {}
+    }
+  }
+
   private refreshPrefix = (): void => {
     try {
       this.prefixReady = testNapi.checkWinePrefix();
@@ -1003,6 +1065,14 @@ export class WineEnvService {
     return true;
   }
 
+  // The library can enumerate authorized game files without starting Wine.
+  async getGamesDirectory(context: common.Context): Promise<string> {
+    if (!await this.acquireZHome(context)) throw new Error('尚未授权游戏目录，请先选择下载目录');
+    const directory = `${this.zHome}games`;
+    if (!ensureDirectory(directory)) throw new Error('无法访问 games 目录');
+    return directory;
+  }
+
   // 启动会话原语 (幂等): 确保引擎就绪。内部按磁盘状态分流 — 运行时缺失则解压、
   // prefix 未初始化则完整 wineboot --init (首启), 否则只播种 boot 事件 (二启);
   // 分支判据是磁盘状态而非调用方意图, 半初始化中间态经同一入口自愈。
@@ -1070,12 +1140,14 @@ export class WineEnvService {
       this.notify();
       return;
     }
+    await this.prepareMewgenicsGraphics();
     hilog.warn(DOMAIN, 'wine', 'auto-init: starting Wine...');
     this.setInitStatus('启动服务...', !this.bgStart);
     // 桌面模式按最新设置重新判定 + 同步 C++ (explorer 是否启动由 IsDesktopMode
     // 决定): 设置页切融合/虚拟桌面后"重启引擎"立即生效 — 若只在 app 启动时
     // 判定, 重启引擎会沿用旧模式 (改融合后桌面窗口依旧出现)
     WineWindowManager.getInstance().applyModePolicy();
+    WineWindowManager.getInstance().prepareSessionOutputPolicy();
     testNapi.setHostShadowProfile(this.perfProfile);
     const ok: boolean = testNapi.startServer(SOCK);
     if (!ok) {
@@ -1231,13 +1303,16 @@ export class WineEnvService {
     if (!this.desktopMode) {
       return true;
     }
-    if (this.sessionAlive && this.desktopSurfaceReady) {
+    const manualForeground = WineWindowManager.getInstance().manualDesktopForeground();
+    if (this.sessionAlive && (this.desktopSurfaceReady || manualForeground)) {
       return true;
     }
     if (this.engineState != 'ready') {
       return false;
     }
-    await this.startSession(true);
+    if (!this.sessionAlive) await this.startSession(true);
+    // Phone foreground is manual: a live backend is sufficient while the
+    // manager stays visible. Other modes still wait for renderer calibration.
     // 就绪判据 = root 出现（desktopActive → sessionAlive）&& renderer surface
     // 校准完成（desktopSurfaceReady）。只等 root 不够: desktop_root 是 toplevel
     // 出现, renderer 就绪晚数秒 — 立即放行程序会抢占桌面渲染初始化导致程序
@@ -1247,14 +1322,14 @@ export class WineEnvService {
     // engineState 在 startSession 早期失败时可能仍是 ready，不能作失败判据）
     const timeoutMs = 25000;
     const deadline = Date.now() + timeoutMs;
-    while ((!this.sessionAlive || !this.desktopSurfaceReady) && Date.now() < deadline) {
+    while ((!this.sessionAlive || (!manualForeground && !this.desktopSurfaceReady)) && Date.now() < deadline) {
       if (this.initFailed) {
         hilog.warn(DOMAIN, 'wine', 'ensureDesktop: initFailed during wait');
         return false;
       }
       await new Promise<void>((r) => setTimeout(r, 150));
     }
-    const desktopOk = this.sessionAlive && this.desktopSurfaceReady;
+    const desktopOk = this.sessionAlive && (manualForeground || this.desktopSurfaceReady);
     if (!desktopOk) {
       hilog.warn(DOMAIN, 'wine', 'ensureDesktop: timeout sessionAlive=%{public}s desktopSurfaceReady=%{public}s',
         this.sessionAlive, this.desktopSurfaceReady);

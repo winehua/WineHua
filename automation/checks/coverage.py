@@ -154,3 +154,35 @@ def coverage(ctx: dict) -> dict:
         "message": message,
         "metrics": report,
     }
+
+
+def d3d9_profiles(ctx: dict) -> dict:
+    """D3D9 opt-in smoke: both APIs must present on both PE architectures.
+
+    This suite uses cube probes, whose results have no D3D11 feature matrix.
+    The ordinary DXVK suites retain their separate full matrix check above.
+    """
+    required = {(api, arch) for api in ('D3D9', 'D3D11') for arch in ('x64', 'x86')}
+    seen = set()
+    errors = []
+    for test in (ctx.get('summary') or {}).get('tests', []):
+        pair = (test.get('renderer'), test.get('peArchitecture'))
+        if pair not in required:
+            errors.append('unexpected API/architecture')
+            continue
+        if pair in seen:
+            errors.append('duplicate ' + '/'.join(pair))
+        seen.add(pair)
+        if (test.get('status') != 'PASS' or test.get('stage') != 'present'
+                or test.get('d3dBackend') != 'dxvk_legacy_d3d9'
+                or type(test.get('frames')) is not int or test['frames'] <= 0
+                or test.get('initHresult') != '0x00000000'
+                or test.get('presentHresult') != '0x00000000'):
+            errors.append('failed presentation/profile ' + '/'.join(pair))
+    missing = sorted('/'.join(pair) for pair in required - seen)
+    passed = not errors and not missing
+    return {'status': 'PASS' if passed else 'FAIL', 'stage': 'd3d9-profile-coverage',
+            'message': ('D3D9/D3D11 x64/x86 dedicated-profile presentations complete' if passed
+                        else '; '.join(errors + ['missing ' + item for item in missing])),
+            'metrics': {'required': sorted('/'.join(pair) for pair in required),
+                        'missing': missing, 'errors': errors}}

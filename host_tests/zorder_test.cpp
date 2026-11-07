@@ -6,6 +6,7 @@
 #include "compositor/toplevel/zorder_policy.h"
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -130,7 +131,7 @@ static int TestLayerOrder()
     for (size_t i = 0; i < n; ++i) {
         const ZOrderSeq& s = items[i].seq;
         const ZOrderSeq& e = expected[i].second;
-        CHECK(items[i].name == expected[i].first, "layer order name");
+        CHECK(std::strcmp(items[i].name, expected[i].first) == 0, "layer order name");
         CHECK(s.group == e.group && s.laneSeq == e.laneSeq && s.itemSeq == e.itemSeq,
               "layer order key");
     }

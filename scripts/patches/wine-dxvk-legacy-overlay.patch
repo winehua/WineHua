@@ -1,0 +1,41 @@
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3309,6 +3309,10 @@
+     static const WCHAR d3d11W[] = L"d3d11.dll";
+     static const WCHAR dxgiW[] = L"dxgi.dll";
+     static const WCHAR d3d12W[] = L"d3d12.dll";
++    static const WCHAR d3d9W[] = L"d3d9.dll";
++    static const WCHAR d3d10W[] = L"d3d10.dll";
++    static const WCHAR d3d10_1W[] = L"d3d10_1.dll";
++    static const WCHAR d3d10coreW[] = L"d3d10core.dll";
+     static const WCHAR prefixW[] = L"\\??\\unix";
+     static const WCHAR *const archW[] = {L"x64", L"x86"};
+     UNICODE_STRING backend, root;
+@@ -3316,16 +3320,24 @@
+     NTSTATUS status = STATUS_DLL_NOT_FOUND;
+     unsigned int i;
+-    BOOL is_d3d12, is_mixed_vkd3d;
++    BOOL is_d3d9, is_d3d10, is_d3d12, is_mixed_vkd3d, is_legacy;
+     const WCHAR *root_name;
+ 
++    is_d3d9 = !wcscmp( libname, d3d9W );
++    is_d3d10 = !wcscmp( libname, d3d10W ) || !wcscmp( libname, d3d10_1W ) ||
++               !wcscmp( libname, d3d10coreW );
+     is_d3d12 = !wcscmp( libname, d3d12W );
+-    if (wcscmp( libname, d3d11W ) && wcscmp( libname, dxgiW ) && !is_d3d12)
++    if (wcscmp( libname, d3d11W ) && wcscmp( libname, dxgiW ) &&
++        !is_d3d9 && !is_d3d10 && !is_d3d12)
+         return status;
+     if (get_env_var( backend_nameW, 0, &backend )) return status;
+     is_mixed_vkd3d = !wcscmp( backend.Buffer, L"vkd3d_limited_500k" );
++    is_legacy = !wcscmp( backend.Buffer, L"dxvk_legacy" ) ||
++                !wcscmp( backend.Buffer, L"dxvk_legacy_d3d9" );
+     if (backend.Length < 5 * sizeof(WCHAR) ||
+         (!is_mixed_vkd3d && wcsncmp( backend.Buffer, L"dxvk_", 5 )) ||
+-        (is_d3d12 && !is_mixed_vkd3d)) {
++        (is_d3d12 && !is_mixed_vkd3d) ||
++        (is_d3d9 && wcscmp( backend.Buffer, L"dxvk_legacy_d3d9" )) ||
++        (is_d3d10 && !is_legacy)) {
+         RtlFreeUnicodeString( &backend );
+         return status;
+     }

@@ -1,0 +1,17 @@
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -951,7 +951,14 @@
+ 
+     asciiz_to_unicode( driver_load_error, "The explorer process failed to start." );  /* default error */
+     /* wait for graphics driver to be ready */
++#ifdef __OHOS__
++    /* A desktop whose explorer stopped responding must not indefinitely block
++     * every newly launched GUI process. Fall through to the existing driver
++     * lookup / direct Wayland fallback after a bounded readiness handshake. */
++    send_message_timeout( hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 5000, FALSE );
++#else
+     send_message( hwnd, WM_NULL, 0, 0 );
++#endif
+ 
+     guid_atom = HandleToULong( NtUserGetProp( hwnd, prop_nameW ));
+     memcpy( key, guid_key_prefixW, sizeof(guid_key_prefixW) );

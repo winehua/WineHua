@@ -1,13 +1,10 @@
 diff --git a/meson.build b/meson.build
-index 25ae10f..339af52 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -527,6 +527,8 @@ if cc.get_id() == 'gcc' or cc.get_id() == 'clang'
+@@ -527,4 +527,6 @@ if cc.get_id() == 'gcc' or cc.get_id() == 'clang'
      '-Werror=missing-include-dirs',
      '-Werror=pointer-arith',
      '-Werror=unused-result',
 +    '-Wno-error=format-security',
 +    '-Wno-error=format-nonliteral',
    ]
-
-   warning_c_args = warning_common_args + [

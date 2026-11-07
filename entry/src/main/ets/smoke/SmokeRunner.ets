@@ -1,6 +1,8 @@
 import testNapi from 'libentry.so';
 import smokeNapi from 'libsmoke_napi.so';
 import displayRouteNapi from 'libdisplay_route_napi.so';
+import { common } from '@kit.AbilityKit';
+import { WineWindowManager } from '../service/WineWindowManager';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   WineEnvService, DRIVE_C, readTextIfExists, removeFileIfExists,
@@ -10,7 +12,6 @@ import { SmokeJob, SmokeJobParams, SmokeRequest, SmokeSuiteTest,
   InjectSpec, InjectAction } from './SmokeTypes';
 import { mapMouseButton } from '../common/MouseMap';
 import { DisplayRouteService } from '../service/DisplayRouteService';
-import { WineWindowManager } from '../service/WineWindowManager';
 
 // smokeMapPoint 返回（XComponent 内物理坐标，与 libsmoke_napi.so 的 d.ts 对应）
 interface PointMap {
@@ -136,7 +137,7 @@ export class SmokeRunner {
   }
 
   // 单入口: want/ui 双通道共用。忙时直接拒绝 (调用方已做 enabled 拦截)。
-  start(request: SmokeRequest): void {
+  start(request: SmokeRequest, caller?: common.UIAbilityContext, startupError?: string): void {
     if (this.busy) {
       hilog.warn(DOMAIN, TAG, 'start blocked (busy) suite=%{public}s', request.suite);
       return;
@@ -146,13 +147,14 @@ export class SmokeRunner {
     this.currentStatus = `Smoke ${request.suite} 启动 (${request.runId})`;
     this.currentResult = '';
     this.notify();
-    void this.run(request);
+    void this.run(request, caller, startupError);
   }
 
-  private async run(request: SmokeRequest): Promise<void> {
+  private async run(request: SmokeRequest, caller?: common.UIAbilityContext, startupError?: string): Promise<void> {
     hilog.info(DOMAIN, TAG, 'run begin suite=%{public}s runId=%{public}s prefixReady=%{public}d',
       request.suite, request.runId, WineEnvService.getInstance().prefixReady);
     try {
+      if (startupError) throw new Error(startupError);
       const envSvc = WineEnvService.getInstance();
       if (!envSvc.prefixReady) {
         await this.finishSuite(request, [
@@ -279,6 +281,7 @@ export class SmokeRunner {
       }
       const resultsDir: string = `${DRIVE_C}/smoke/results/${request.runId}`;
       ensureDirectory(resultsDir);
+      await this.prepareDesktop(caller);
       const results: SmokeTestResult[] = [];
       for (let i = 0; i < tests.length; i++) {
         const test: SmokeSuiteTest = tests[i];
@@ -304,13 +307,45 @@ export class SmokeRunner {
       hilog.info(DOMAIN, TAG, 'run done suite=%{public}s status=%{public}s %{public}d/%{public}d',
         request.suite, summary.status, passed, results.length);
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'run ERROR: %{public}s', JSON.stringify(e));
-      this.currentResult = 'ERROR';
-      this.currentStatus = `Smoke ${request.suite} ERROR`;
+      const detail: string = e instanceof Error ? `${e.message}\\n${e.stack || ''}` : JSON.stringify(e);
+      hilog.error(DOMAIN, TAG, 'run ERROR: %{public}s', detail);
+      await this.finishSuite(request, [this.failure(request, 'startup', detail, -1)]);
     } finally {
       this.busy = false;
       this.notify();
     }
+  }
+
+  // Both cold wants and onNewWant foreground the management Ability. Present
+  // tests must explicitly enter the desktop using that foreground caller;
+  // engine readiness by itself does not imply a visible XComponent.
+  private async prepareDesktop(caller?: common.UIAbilityContext): Promise<void> {
+    const wm = WineWindowManager.getInstance();
+    if (!wm.isDesktopMode) return;
+    const deadline = Date.now() + 15000;
+    // X11's canvas uses root=0 and has its own surface/chain readiness.
+    // Keep that upstream contract instead of waiting for a Wayland root.
+    if (DisplayRouteService.getInstance().isX11()) {
+      if (!caller) throw new Error('smoke foreground caller context unavailable');
+      await wm.showDesktopForCaller(caller);
+      while (Date.now() < deadline) {
+        const canvas = wm.getDesktopCanvas();
+        if (canvas && canvas.w > 0 && canvas.h > 0) return;
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error('smoke X11 desktop canvas not ready');
+    }
+    while (wm.getDesktopRootId() <= 0 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+    if (wm.getDesktopRootId() <= 0) throw new Error('smoke desktop root not ready');
+    if (!caller) throw new Error('smoke foreground caller context unavailable');
+    await wm.showDesktopForCaller(caller);
+    while (!wm.desktopSurfaceReady && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+    if (!wm.desktopSurfaceReady) throw new Error('smoke desktop surface not ready');
+    hilog.info(DOMAIN, TAG, 'smoke desktop ready root=%{public}d', wm.getDesktopRootId());
   }
 
   private async runTest(request: SmokeRequest, test: SmokeSuiteTest, resultsDir: string): Promise<SmokeTestResult> {

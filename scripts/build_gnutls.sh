@@ -96,14 +96,29 @@ stage_pc() {
 build_one() {
     local name="$1" src="$2"; shift 2
     local build="$BUILD_DIR/${name}_build"
+    local libbase="$name"
+    [[ "$libbase" == lib* ]] || libbase="lib$libbase"
+    if compgen -G "$STAGING/lib/${libbase}.so.*" >/dev/null; then
+        log "$name 已有暂存产物，跳过重复配置和编译"
+        return 0
+    fi
     log "--- 构建 $name ---"
     rm -rf "$build"
     mkdir -p "$build"
     cd "$build"
-    CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
+    # GMP's configure probe includes the generated gmp.h before that header
+    # exists, so it reports sizeof(mp_limb_t)=0 when cross compiling. The OHOS
+    # x86_64 ABI uses 64-bit unsigned long, matching mp_limb_t's selected type.
+    if [ "$name" = "gmp" ]; then
+        ac_cv_sizeof_mp_limb_t=8 CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
+        "$src/configure" --host=x86_64-linux-gnu --prefix="$STAGING" \
+            --libdir="$STAGING/lib" --disable-static "$@"
+    else
+        CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
     "$src/configure" --host=x86_64-linux-gnu --prefix="$STAGING" \
         --libdir="$STAGING/lib" --disable-static \
         "$@"
+    fi
     # tests/fuzz 是无条件 SUBDIRS: libtasn1 的 all 目标会运行交叉 asn1Parser
     # 生成头文件 (宿主无法执行 x86_64-ohos 二进制), libunistring 的 tests 编译
     # glibc 扩展宏 (musl 无 PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
@@ -164,7 +179,7 @@ stage_pc libtasn1.pc
 
 # ── 3. libunistring (gnutls 的字符串/IDN 依赖) ──
 build_one libunistring "$TARBALL_DIR/libunistring" \
-    --disable-dependency-tracking --without-libiconv-prefix
+    --disable-dependency-tracking --without-libiconv-prefix --disable-namespacing
 stage_libs libunistring
 stage_headers unistring
 stage_pc libunistring.pc

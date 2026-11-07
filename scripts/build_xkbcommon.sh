@@ -87,7 +87,13 @@ build_libxml2() {
         -DCMAKE_INSTALL_PREFIX="$build/install"
     cmake --build "$build"
     cmake --install "$build"
-    cp "$build/libxml2.so.2.12.0" "$SYSROOT_EXT_LIB/libxml2.so.2"
+    xml_lib="$build/libxml2.so.2.12.0"
+    [ -f "$xml_lib" ] || xml_lib="$build/install/lib/libxml2.so.2.12.0"
+    [ -f "$xml_lib" ] || xml_lib="$build/install/lib/libxml2.so"
+    [ -f "$xml_lib" ] || xml_lib="$build/libxml2.so"
+    [ -f "$xml_lib" ] || xml_lib="$(find "$build" -type f -name 'libxml2.so.2.12.0' -print -quit)"
+    [ -n "$xml_lib" ] && [ -f "$xml_lib" ] || { echo "libxml2 shared library not found under $build" >&2; exit 1; }
+    cp "$xml_lib" "$SYSROOT_EXT_LIB/libxml2.so.2"
     ln -sf libxml2.so.2 "$SYSROOT_EXT_LIB/libxml2.so"
     cp -r "$build/install/include/libxml2/libxml" "$SYSROOT_EXT_INC/"
     cat > "$SYSROOT_EXT_PC/libxml-2.0.pc" << EOF

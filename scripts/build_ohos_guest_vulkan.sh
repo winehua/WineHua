@@ -14,8 +14,8 @@ LOADER_COMMIT="f8616928ee19f6c7fd648c1cf1f456cba3771855"
 HEADERS_TAG="v1.3.290"
 HEADERS_COMMIT="b379292b2ab6df5771ba9870d53cf8b2c9295daf"
 
-LOADER_SOURCE="$ROOT/tmp/Vulkan-Loader-$LOADER_TAG"
-HEADERS_SOURCE="$ROOT/tmp/Vulkan-Headers-$HEADERS_TAG"
+LOADER_SOURCE="$BUILD_DIR/guest_vulkan_sources/Vulkan-Loader-$LOADER_TAG"
+HEADERS_SOURCE="$BUILD_DIR/guest_vulkan_sources/Vulkan-Headers-$HEADERS_TAG"
 BUILD_ROOT="$ROOT/build/guest_vulkan_build/$GUEST_ARCH"
 HEADERS_INSTALL="$BUILD_ROOT/headers-install"
 LOADER_INSTALL="$BUILD_ROOT/loader-install"
@@ -86,6 +86,10 @@ cmake --build "$BUILD_ROOT/loader" --parallel "$JOBS"
 cmake --install "$BUILD_ROOT/loader"
 
 loader_binary="$(find "$LOADER_INSTALL/lib" -maxdepth 1 -type f -name 'libvulkan.so.1*' | sort | tail -n 1)"
+if [ -z "$loader_binary" ] && [ -s "$LOADER_INSTALL/lib/libvulkan.so" ]; then
+    # The OHOS CMake platform emits unversioned shared-library filenames.
+    loader_binary="$LOADER_INSTALL/lib/libvulkan.so"
+fi
 [ -n "$loader_binary" ] || err "Vulkan Loader install did not produce libvulkan.so.1"
 
 rm -rf "$OUTPUT_ROOT"

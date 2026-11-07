@@ -360,7 +360,7 @@ def to_windows_path(value: str) -> str:
     cmd = ["wslpath", "-w", resolved] if host_adapter == "wsl" else ["cygpath", "-w", resolved]
     return subprocess.check_output(cmd, text=True).strip()
 
-pattern = re.compile(r"/[^;\s\r\n\"']+")
+pattern = re.compile(r"/[^;\s\n\"']+")
 text = open(src, "r", encoding="utf-8").read()
 
 def replace(match: re.Match[str]) -> str:
@@ -497,6 +497,14 @@ fi
 if [ "$HOST_ADAPTER" = "msys2" ] && [[ "$tool" == *.exe ]]; then
     export MSYS2_ARG_CONV_EXCL='*'
     export MSYS2_ENV_CONV_EXCL='*'
+fi
+
+if [ "$HOST_ADAPTER" = "posix" ] && [[ "$tool" == *.exe ]]; then
+    # Linux guests may use the Windows-only DevEco LLVM binaries through Wine.
+    # Keep arguments in POSIX form; Wine maps /mnt and /tmp paths automatically.
+    if command -v wine >/dev/null 2>&1; then
+        exec wine "$tool" "${converted[@]}"
+    fi
 fi
 
 "$tool" "${converted[@]}"

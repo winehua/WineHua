@@ -1,0 +1,121 @@
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -765,6 +765,10 @@
+    struct pipe_caps *caps = (struct pipe_caps *)&screen->base.caps;
+ 
+    u_init_pipe_screen_caps(&screen->base, screen->is_cpu ? 0 : 1);
++   /* A remote shadow mapping cannot provide Vulkan's implicit host
++    * coherence. Use the uploader's explicit flush path in this mode. */
++   if (debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false))
++      caps->buffer_map_persistent_coherent = false;
+ 
+    caps->null_textures = screen->info.rb_image_feats.robustImageAccess;
+    /* support OVR_multiview and OVR_multiview2 */
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1114,6 +1114,11 @@
+    }
+ 
+    obj->coherent = screen->info.mem_props.memoryTypes[obj->bo->base.base.placement].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++   /* WineHua's vtest transport can expose a separate shadow mapping even
++    * for HOST_COHERENT memory. Opt into precise flush/invalidate operations
++    * at Zink's known transfer boundaries instead of refreshing every map. */
++   if (debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false))
++      obj->coherent = false;
+    if (!(templ->flags & PIPE_RESOURCE_FLAG_SPARSE)) {
+       obj->host_visible = screen->info.mem_props.memoryTypes[obj->bo->base.base.placement].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    }
+@@ -2433,7 +2438,8 @@
+       ptr = ((uint8_t *)ptr) + map_offset;
+    }
+ 
+-   if (!res->obj->coherent
++   if ((!debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false) ||
++        (usage & PIPE_MAP_READ)) && (!res->obj->coherent
+ #if defined(MVK_VERSION)
+       // Work around for MoltenVk limitation specifically on coherent memory
+       // MoltenVk returns blank memory ranges when there should be data present
+@@ -2442,9 +2448,10 @@
+ 
+        || screen->instance_info->have_MVK_moltenvk
+ #endif
+-      ) {
++      )) {
+       VkDeviceSize size = box->width;
+-      VkDeviceSize offset = res->obj->offset + trans->offset;
++      VkDeviceSize offset = res->obj->offset +
++         (debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false) ? map_offset : trans->offset);
+       VkMappedMemoryRange range = zink_resource_init_mem_range(screen, res->obj, offset, size);
+       if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+          mesa_loge("ZINK: vkInvalidateMappedMemoryRanges failed");
+@@ -2545,7 +2552,15 @@
+       }
+ 
+       ptr = map_resource(screen, staging_res);
+-
++      if (ptr && (usage & PIPE_MAP_READ) &&
++          debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false)) {
++         VkMappedMemoryRange range = zink_resource_init_mem_range(screen,
++            staging_res->obj, staging_res->obj->offset, templ.width0);
++         if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++            zink_bo_unmap(screen, staging_res->obj->bo);
++            goto fail;
++         }
++      }
+    } else {
+       assert(res->linear);
+       ptr = map_resource(screen, res);
+@@ -2577,10 +2592,16 @@
+                         box->z * srl.depthPitch +
+                         (box->y / desc->block.height) * srl.rowPitch +
+                         (box->x / desc->block.width) * (desc->block.bits / 8);
+-      if (!res->obj->coherent) {
++      if (!res->obj->coherent &&
++          (!debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false) ||
++           (usage & PIPE_MAP_READ))) {
+          VkDeviceSize size = (VkDeviceSize)box->width * box->height * desc->block.bits / 8;
+          VkMappedMemoryRange range = zink_resource_init_mem_range(screen, res->obj, res->obj->offset + offset, size);
+-         if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++         VkResult result = debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false) &&
++                           (usage & PIPE_MAP_READ) ?
++            VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) :
++            VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range);
++         if (result != VK_SUCCESS) {
+             mesa_loge("ZINK: vkFlushMappedMemoryRanges failed");
+          }
+       }
+@@ -2725,7 +2746,9 @@
+       struct zink_resource *m = trans->staging_res ? zink_resource(trans->staging_res) :
+                                                      res;
+       ASSERTED VkDeviceSize size, src_offset, dst_offset = 0;
+-      if (m->obj->is_buffer) {
++      const bool shadow = debug_get_bool_option("ZINK_WINEHUA_SHADOW_TRANSFERS", false);
++      if (m->obj->is_buffer &&
++          (!shadow || ptrans->resource->target == PIPE_BUFFER)) {
+          size = box->width;
+          src_offset = box->x + (trans->staging_res ? trans->offset : ptrans->box.x);
+          dst_offset = box->x + ptrans->box.x;
+@@ -2736,10 +2759,21 @@
+                   util_format_get_2d_size(m->base.b.format, trans->base.b.stride, box->y) +
+                   util_format_get_stride(m->base.b.format, box->x);
+          assert(src_offset + size <= res->obj->size);
+-
++         if (shadow) {
++            const enum pipe_format format = m->base.b.format;
++            const VkDeviceSize layer_stride = trans->staging_res ?
++               trans->base.b.layer_stride : trans->depthPitch;
++            src_offset = trans->offset + box->z * layer_stride +
++               util_format_get_nblocksy(format, box->y) * trans->base.b.stride +
++               util_format_get_stride(format, box->x);
++            size = (box->depth - 1) * layer_stride +
++               (util_format_get_nblocksy(format, box->height) - 1) * trans->base.b.stride +
++               util_format_get_stride(format, box->width);
++         }
+       }
+       if (!m->obj->coherent) {
+-         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, m->obj, m->obj->offset, m->obj->size);
++         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, m->obj,
++            m->obj->offset + (shadow ? src_offset : 0), shadow ? size : m->obj->size);
+          if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+             mesa_loge("ZINK: vkFlushMappedMemoryRanges failed");
+          }

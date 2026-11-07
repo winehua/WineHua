@@ -47,9 +47,7 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "launchType": "singleton",
-        // Probe UI: allow phone portrait/landscape. Master still forces
-        // landscape for dedicated game windows via compositor/window policy.
-        "orientation": "auto_rotation",
+        "orientation": "landscape",
         "skills": [
           {
             "entities": [
@@ -71,7 +69,7 @@
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
         "launchType": "singleton",
-        "orientation": "auto_rotation",
+        "orientation": "landscape",
         "removeMissionAfterTerminate": true
       },
       {

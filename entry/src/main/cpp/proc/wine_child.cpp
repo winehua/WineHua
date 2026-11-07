@@ -30,7 +30,10 @@
 #include <sys/syscall.h>
 #include <sys/prctl.h>
 #include "wine/wine_constants.h"
+#include "wine/legacy_text_compat.h"
 #include "wine/wine_env.h"
+#include "wine/mewgenics_graphics.h"
+#include "wine/host_integration_policy.h"
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
@@ -64,7 +67,7 @@ static void* stderr_reader_thread(void* arg) {
 
 static const char *default_winedebug_profile(void)
 {
-    return "-all";
+    return "-all,err+all,warn+module";
 }
 
 static const char *midi_diag_winedebug_profile(void)
@@ -338,6 +341,68 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
     }
 }
 
+static void apply_box64_diagnostic_config()
+{
+#ifdef __aarch64__
+    // Optional, app-private configuration for device diagnostics. Removing the
+    // file restores normal settings on the next process launch.
+    const char *path = WINE_FILES_DIR "/winehua-diagnostic.box64rc";
+    struct stat configStat;
+    if (stat(path, &configStat) == 0 && S_ISREG(configStat.st_mode) && configStat.st_size == 0)
+    {
+        unlink(path);
+        return;
+    }
+    if (access(path, R_OK) == 0)
+    {
+        setenv("BOX64_RCFILE", path, 1);
+        setenv("BOX64_TRACE_FILE", "stderr", 1);
+        OH_LOG_WARN(LOG_APP, "[WineChild] Box64 diagnostic config: %{public}s", path);
+    }
+#endif
+}
+
+static bool apply_program_opengl_compatibility(int argc, char *argv[], const char *binDir)
+{
+    const char *device = getenv("WINEHUA_DEVICE_TYPE");
+    const char *driver = getenv("GALLIUM_DRIVER");
+    const char *override = getenv("WINEHUA_MEWGENICS_RENDERER");
+    if (!device || strcmp(device, "phone") || argc <= 0 || !argv[0]) return false;
+    const bool mewgenics = !strcasecmp(basename_of_path(argv[0]), "Mewgenics.exe");
+    const bool darkest = winehua::IsDarkestWin64(argv[0]);
+    if (!mewgenics && !darkest) return false;
+    const char *renderer = getenv("WINEHUA_OPENGL_RENDERER");
+    if (renderer && !strcmp(renderer, "virpipe")) return false;
+    // Preserve explicitly selected renderers and allow opting back into VirGL.
+    if (mewgenics && override && !strcmp(override, "virpipe")) return false;
+    if (!driver || strcmp(driver, "virpipe")) return false;
+
+    const char *qualified = getenv("WINEHUA_MEWGENICS_GPU_QUALIFIED");
+    const std::string root = WINE_FILES_DIR "/mewgenics-gfx-v6";
+    const bool ready = access((root + "/.manifest").c_str(), R_OK) == 0 &&
+        access((root + "/lib/libEGL.so").c_str(), R_OK) == 0 &&
+        access((root + "/lib/dri/virtio_gpu_dri.so").c_str(), R_OK) == 0 &&
+        access((std::string(binDir) + "/guest_vulkan/lib/libvulkan.so.1").c_str(), R_OK) == 0;
+    if (winehua::IsManagedZinkCandidate(device, argv[0], driver, renderer ? renderer : "auto",
+        qualified && !strcmp(qualified, "1"), ready, override)) {
+        for (const auto& entry : winehua::MewgenicsGpuEnvironment(root, binDir))
+            setenv(entry.first.c_str(), entry.second.c_str(), 1);
+        if (darkest) setenv("WINEHUA_OPENGL_PROFILE", "darkest-zink-v6", 1);
+        OH_LOG_INFO(LOG_APP, "[WineChild] OpenGL compatibility: qualified Zink v6");
+        return false;
+    }
+
+    if (!mewgenics) return false;
+
+    // This phone's GLES-backed VirGL exposes GL 2.1; Mewgenics requires a
+    // GL 3.2 core context (EGL_BAD_MATCH otherwise). Use the bundled software
+    // implementation without advertising unsupported GPU capabilities.
+    setenv("GALLIUM_DRIVER", "softpipe", 1);
+    setenv("WINEHUA_OPENGL_PROFILE", "mewgenics-softpipe", 1);
+    OH_LOG_WARN(LOG_APP, "[WineChild] Mewgenics compatibility: software OpenGL (slow)");
+    return true;
+}
+
 static void log_d3d_environment_summary()
 {
     const char* backend = getenv("WINEHUA_D3D_BACKEND");
@@ -507,12 +572,42 @@ extern "C" void Main(NativeChildProcess_Args args)
                          "[WineChild] route=x11 但 DISPLAY 未设: win32u 将无驱动可选 "
                          "(预期 null driver, 窗口不会出现) — 检查 __env/DISPLAY 注入");
     }
+    const std::string hostDllOverrides = winehua::WineHostDllOverrides(
+        getenv("WINEHUA_DEVICE_TYPE"), getenv("WINEDLLOVERRIDES"));
+    if (!hostDllOverrides.empty()) setenv("WINEDLLOVERRIDES", hostDllOverrides.c_str(), 1);
+    if (argc > 0 && winehua::UsesDuanwuBitmapText(argv[0],
+            getenv("WINEHUA_WORKING_DIRECTORY") ? getenv("WINEHUA_WORKING_DIRECTORY") : ""))
+    {
+        setenv("WINEHUA_MONO_TEXT", "1", 0);
+        // Keep the same WineD3D default as an Explorer-launched game. The
+        // former unconditional csmt=0 leaked through the Unix launcher into
+        // the game's Windows environment, while Explorer's Windows child
+        // environment did not contain it. That made the native quick-launch
+        // path substantially slower. Keep synchronous GDI as an explicit
+        // diagnostic fallback, with an explicit WINE_D3D_CONFIG taking priority.
+        const char *d3dOverride = winehua::DuanwuD3dOverride(getenv("WINEHUA_DUANWU_SYNC_GDI"));
+        if (d3dOverride) setenv("WINE_D3D_CONFIG", d3dOverride, 0);
+        OH_LOG_INFO(LOG_APP, "[WineChild] Duanwu 16-bit bitmap text compatibility enabled");
+    }
+    const bool mewgenicsSoftwareGl = apply_program_opengl_compatibility(argc, argv, binDir);
+    apply_box64_diagnostic_config();
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.
     refresh_wine_session_paths();
 
     log_d3d_environment_summary();
+    OH_LOG_INFO(LOG_APP,
+                "[WineChild] launch profile exe=%{public}s cwd=%{public}s csmt=%{public}s mono=%{public}s "
+                "gallium=%{public}s readback=%{public}s safeFlags=%{public}s bigBlock=%{public}s forward=%{public}s",
+                argc > 0 ? argv[0] : "", getenv("WINEHUA_WORKING_DIRECTORY") ? getenv("WINEHUA_WORKING_DIRECTORY") : "",
+                getenv("WINE_D3D_CONFIG") ? getenv("WINE_D3D_CONFIG") : "default",
+                getenv("WINEHUA_MONO_TEXT") ? getenv("WINEHUA_MONO_TEXT") : "default",
+                getenv("GALLIUM_DRIVER") ? getenv("GALLIUM_DRIVER") : "default",
+                getenv("WINEHUA_WAYLAND_READBACK") ? getenv("WINEHUA_WAYLAND_READBACK") : "default",
+                getenv("BOX64_DYNAREC_SAFEFLAGS") ? getenv("BOX64_DYNAREC_SAFEFLAGS") : "default",
+                getenv("BOX64_DYNAREC_BIGBLOCK") ? getenv("BOX64_DYNAREC_BIGBLOCK") : "default",
+                getenv("BOX64_DYNAREC_FORWARD") ? getenv("BOX64_DYNAREC_FORWARD") : "default");
 
     // 覆盖 per-process fd 变量 (__env__ 中的是父进程 fd 号, 本进程无效)
     if (wsSockFd >= 0) {
@@ -550,6 +645,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     int errPipe[2];
     pipe(errPipe);
     dup2(errPipe[1], STDERR_FILENO);
+    dup2(errPipe[1], STDOUT_FILENO);
     close(errPipe[1]);
     mkdir(WINE_LOG_DIR, 0755);
     time_t now = time(nullptr);
@@ -564,6 +660,18 @@ extern "C" void Main(NativeChildProcess_Args args)
     if (errFile >= 0) {
         dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
                 args.entryParams ? args.entryParams : "(null)");
+        // Keep the effective policy with the durable per-process log. The
+        // system-wide hilog ring may wrap before a game finishes loading.
+        dprintf(errFile, "winehua_launch_profile: exe=%s csmt=%s mono=%s driver=%s readback=%s\n",
+                argc > 0 ? argv[0] : "",
+                getenv("WINE_D3D_CONFIG") ? getenv("WINE_D3D_CONFIG") : "default",
+                getenv("WINEHUA_MONO_TEXT") ? getenv("WINEHUA_MONO_TEXT") : "default",
+                getenv("GALLIUM_DRIVER") ? getenv("GALLIUM_DRIVER") : "default",
+                getenv("WINEHUA_WAYLAND_READBACK") ? getenv("WINEHUA_WAYLAND_READBACK") : "default");
+        if (mewgenicsSoftwareGl)
+            dprintf(errFile, "winehua_compat: Mewgenics uses softpipe for OpenGL 3.2 core (slow)\n");
+        else if (const char *profile = getenv("WINEHUA_OPENGL_PROFILE"))
+            dprintf(errFile, "winehua_compat: OpenGL profile=%s\n", profile);
     }
     auto* ctx = new stderr_ctx{errPipe[0], errFile};
     pthread_t tid;

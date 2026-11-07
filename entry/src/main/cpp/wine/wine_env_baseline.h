@@ -25,6 +25,14 @@
 
 namespace winehua {
 
+inline void SetEnvOverwrite(const char* key, const char* value) {
+#ifdef _WIN32
+    _putenv_s(key, value);
+#else
+    setenv(key, value, 1);
+#endif
+}
+
 // -- Box64 性能调优表 (单源, 仅 ARM64 有内容) --
 // 历史: 曾是 SetBox64PerfEnv (setenv 版) 与 AppendBox64PerfStrings (字符串版)
 // 两份手写拷贝, 增删键时容易只改一侧。现在键值只在这张表出现一次。
@@ -75,7 +83,7 @@ inline const std::vector<std::pair<std::string, std::string>>& Box64PerfTable() 
 inline void SetBox64PerfEnv() {
 #ifdef __aarch64__
     for (const auto& kv : Box64PerfTable())
-        setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        SetEnvOverwrite(kv.first.c_str(), kv.second.c_str());
 #endif
 }
 
@@ -139,7 +147,7 @@ inline void ApplyEnvLinesToEnviron(const std::vector<std::string>& lines) {
     for (const std::string& line : lines) {
         const size_t sep = line.find('=');
         if (sep == std::string::npos || sep == 0) continue;
-        setenv(line.substr(0, sep).c_str(), line.substr(sep + 1).c_str(), 1);
+        SetEnvOverwrite(line.substr(0, sep).c_str(), line.substr(sep + 1).c_str());
     }
 }
 

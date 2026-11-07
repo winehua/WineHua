@@ -19,8 +19,12 @@ bash "$SCRIPT_DIR/build_xkbcommon.sh"
 # keysymdef 是 libX11 configure 的输入)。
 SIDE=guest bash "$SCRIPT_DIR/build_xcb_stack.sh"
 SIDE=guest bash "$SCRIPT_DIR/build_x11_client.sh"
-# GnuTLS 链 (Wine schannel TLS 后端: gmp/nettle/libtasn1/libunistring/gnutls)
-bash "$SCRIPT_DIR/build_gnutls.sh"
+# GnuTLS 链 (Wine schannel TLS 后端)，默认启用；离线调试可显式关闭。
+if [ "${BUILD_GNUTLS:-1}" = "1" ]; then
+    bash "$SCRIPT_DIR/build_gnutls.sh"
+else
+    log "GnuTLS: SKIP (设置 BUILD_GNUTLS=1 启用 schannel TLS 支持)"
+fi
 # GStreamer 链 (Wine winegstreamer 后端: pcre2/glib/gstreamer/gst-plugins-base)
 bash "$SCRIPT_DIR/build_gstreamer.sh"
 # XKB 键盘布局数据 (xkeyboard-config, Wine 键盘驱动依赖, 架构无关)

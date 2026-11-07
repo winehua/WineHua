@@ -18,13 +18,15 @@ GUEST_ARCH ?= x86_64
 BUILD_GUEST_GFX ?= 1
 BUILD_GUEST_VULKAN ?= 1
 BUILD_WINE_MONO ?= 1
+BUILD_GNUTLS ?= 1
 TARGET_SDK_VERSION ?= 6.1.0(23)
-COMPATIBLE_SDK_VERSION ?= 6.1.0(23)
+COMPATIBLE_SDK_VERSION ?= 6.0.0(20)
 export NATIVE_ARCH
 export GUEST_ARCH
 export BUILD_GUEST_GFX
 export BUILD_GUEST_VULKAN
 export BUILD_WINE_MONO
+export BUILD_GNUTLS
 export TARGET_SDK_VERSION
 export COMPATIBLE_SDK_VERSION
 
@@ -32,11 +34,8 @@ CONFIG    := $(NATIVE_ARCH)
 BUILD_DIR := $(ROOT)/build
 STAMPS    := $(BUILD_DIR)/.stamps
 SCRIPTS   := $(ROOT)/scripts
-DXVK_ARTIFACTS := \
-	$(BUILD_DIR)/dxvk/legacy/x64/bin/d3d11.dll \
-	$(BUILD_DIR)/dxvk/legacy/x64/bin/dxgi.dll \
-	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
-	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll
+DXVK_LEGACY_DLLS := d3d9.dll d3d10.dll d3d10_1.dll d3d10core.dll d3d11.dll dxgi.dll
+DXVK_ARTIFACTS := $(foreach a,x64 x86,$(foreach dll,$(DXVK_LEGACY_DLLS),$(BUILD_DIR)/dxvk/legacy/$(a)/bin/$(dll)))
 DXVK_STAMP := $(STAMPS)/dxvk-legacy
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
 DXVK_MODERN_ARTIFACTS := \
@@ -65,7 +64,7 @@ endif
 
 # ── 关键产物 (用于验证构建是否完成) ──
 DEPS_SENTINEL   := $(BUILD_DIR)/sysroot-ext/usr/lib/x86_64-linux-ohos/libfreetype.so.6
-WINE_SENTINEL   := $(BUILD_DIR)/wine-native/tools/winegcc/winegcc
+WINE_SENTINEL   := $(BUILD_DIR)/wine-ohos/dlls/ntdll/ntdll.so
 GUEST_GFX_SENTINEL := $(BUILD_DIR)/guest_gfx/$(GUEST_ARCH)/winehua-guest-gfx.env
 GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
 WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-ohos/share/wine/mono/wine-mono-11.1.0-x86.msi
@@ -121,12 +120,12 @@ endif
 .PHONY: dxvk
 dxvk: $(DXVK_STAMP)
 
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(wildcard $(SCRIPTS)/patches/dxvk-legacy-*.patch) $(DXVK_SOURCE_INPUTS) | $(STAMPS)
 	@echo "=== dxvk legacy ==="
 	bash $(SCRIPTS)/build_dxvk.sh
 	touch $@
 
-# DXVK is produced as a four-file side effect of the stamp recipe.  Give each
+# DXVK is produced as a twelve-file side effect of the stamp recipe. Give each
 # packaged DLL an explicit rule so a clean checkout can resolve the assemble
 # dependency before the stamp exists (the previous bare sentinel made CI stop
 # with "No rule to make target .../d3d11.dll").  The size check also prevents
@@ -260,8 +259,12 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	if [ "$(BUILD_WINE_MONO)" = "1" ] && [ ! -s "$(WINE_MONO_SENTINEL)" ]; then \
 	    mono_ready=0; \
 	fi; \
+	gnutls_ready=1; \
+	if [ "$(BUILD_GNUTLS)" = "1" ] && [ ! -s "$(BUILD_DIR)/sysroot-ext/usr/lib/x86_64-linux-ohos/libgnutls.so.30" ]; then \
+	    gnutls_ready=0; \
+	fi; \
 	if [ -f $@ ] && [ -f $(DEPS_SENTINEL) ] && [ "$$guest_gfx_ready" = "1" ] && \
-	    [ "$$guest_vulkan_ready" = "1" ] && [ "$$mono_ready" = "1" ] && \
+	    [ "$$guest_vulkan_ready" = "1" ] && [ "$$mono_ready" = "1" ] && [ "$$gnutls_ready" = "1" ] && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_gfx.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_vulkan.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_gnutls.sh" -nt $@ ] && \
@@ -270,6 +273,7 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	    ! [ "$(SCRIPTS)/build_libffi.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_freetype.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_wayland.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/build_wayland_scanner.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbcommon.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbconfig.sh" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/guest_vulkan_smoke.c" -nt $@ ] && \
@@ -324,9 +328,14 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 .PHONY: wine
 wine: $(STAMPS)/wine-$(CONFIG)
 
-$(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
+$(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(wildcard $(SCRIPTS)/patches/wine-*.patch) $(STAMPS)/deps FORCE | $(STAMPS)
 	@if [ -f $@ ] && [ -f $(WINE_SENTINEL) ] && \
+	    [ -s "$(BUILD_DIR)/wine-ohos/dlls/win32u/win32u.so" ] && \
+	    [ -s "$(BUILD_DIR)/wine-ohos/dlls/winewayland.drv/winewayland.so" ] && \
+	    [ -s "$(BUILD_DIR)/wine-ohos/dlls/wineohos.drv/wineohos.so" ] && \
+	    [ "$$(cat $(BUILD_DIR)/wine-ohos/.winehua-gnutls-mode 2>/dev/null)" = "$(BUILD_GNUTLS)" ] && \
 	    ! [ "$(SCRIPTS)/build_wine.sh" -nt $@ ] && \
+	    ! find $(SCRIPTS)/patches -name 'wine-*.patch' -newer $@ -type f 2>/dev/null | grep -q . && \
 	    ! find $(ROOT)/thirdparty/wine \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
@@ -375,7 +384,7 @@ define native_rule
 .PHONY: native-$(1)
 native-$(1): $$(STAMPS)/$(1)/native
 
-$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wayland_scanner.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
 # virgl (native) 与 libdrm (display-libs) 的关系见 build_native.sh virgl 段
 # 注释: virgl 的 meson 视野收窄到 epoxy, 豁免分支确定性生效, 与构建顺序无关
 # (2026-10-04 毁灭性重建实证并修复)。
@@ -388,6 +397,7 @@ $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(
 		    [ -f "$$$$libs_dir/libffi.so.8" ] && \
 		    [ -f "$$$$libs_dir/libwinehua_vtest_server.so" ] && \
 	    ! [ "$(SCRIPTS)/build_native.sh" -nt $$@ ] && \
+	    ! [ "$(SCRIPTS)/build_wayland_scanner.sh" -nt $$@ ] && \
 	    ! find $(ROOT)/thirdparty/wayland \
 	           $(ROOT)/thirdparty/libffi \
 	           $(ROOT)/thirdparty/libepoxy \
@@ -439,7 +449,7 @@ define display_route_rule
 .PHONY: display-route-$(1)
 display-route-$(1): $$(STAMPS)/$(1)/display-route
 
-$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
+$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wayland_scanner.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
 	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xcb_stack.sh && \
 	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_x11_client.sh && \
 	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_native.sh && \
@@ -464,7 +474,7 @@ define assemble_rule
 
 assemble-$(1): $$(STAMPS)/$(1)/assemble
 
-$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
+$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/relocate_elf.py $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
 	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
 	$$(STAMPS)/deps $$(STAMPS)/wine-$(1) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \
@@ -489,6 +499,11 @@ hap: assemble
 	@echo ""
 	@echo "HAP: $(ROOT)/entry/build/default/outputs/default/entry-default-signed.hap"
 	@ls -lh $(ROOT)/entry/build/default/outputs/default/entry-default-signed.hap 2>/dev/null || true
+
+# Windows reuses the assembled Linux runtime and the local DevEco SDK/signing.
+.PHONY: hap-windows
+hap-windows:
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(SCRIPTS)/package_windows.ps1"
 
 # ============================================================
 # test: 宿主机单元测试 (纯函数, 不依赖 OHOS SDK, 用宿主 g++ 编译)
@@ -531,6 +546,21 @@ test:
 	    -o $(HOST_TEST_DIR)/env_baseline_test \
 	    $(ROOT)/host_tests/env_baseline_test.cpp
 	$(HOST_TEST_DIR)/env_baseline_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/host_integration_policy_test \
+	    $(ROOT)/host_tests/host_integration_policy_test.cpp
+	$(HOST_TEST_DIR)/host_integration_policy_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp/wine \
+	    -o $(HOST_TEST_DIR)/dxvk_profile_test \
+	    $(ROOT)/host_tests/dxvk_profile_test.cpp
+	$(HOST_TEST_DIR)/dxvk_profile_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp/wine \
+	    -o $(HOST_TEST_DIR)/legacy_text_compat_test \
+	    $(ROOT)/host_tests/legacy_text_compat_test.cpp
+	$(HOST_TEST_DIR)/legacy_text_compat_test
+	g++ -std=c++17 -Wall -Wextra -pthread -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/live_performance_test $(ROOT)/host_tests/live_performance_test.cpp
+	$(HOST_TEST_DIR)/live_performance_test
 	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/input_state_test \
 	    $(ROOT)/host_tests/input_state_test.cpp \

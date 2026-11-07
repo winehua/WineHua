@@ -328,6 +328,7 @@ public:
     void MapToplevelSurface(uint32_t id, wl_resource* surf);
     void UnmapToplevelSurface(uint32_t id);
     wl_resource* GetSurfaceForToplevel(uint32_t id);
+    uint32_t GetToplevelClientPid(uint32_t id);
     // 反查 (warp 门控/锚点换算: wine 侧请求只带 wl_surface)。
     // 线性扫描, 表很小且只在低频路径用 (warp 请求/约束析构)
     uint32_t FindToplevelBySurface(wl_resource* surf);

@@ -164,10 +164,12 @@ diff --git a/render/egl.c b/render/egl.c
 index 8673acab..a36c8c20 100644
 --- a/render/egl.c
 +++ b/render/egl.c
-@@ -4,7 +4,9 @@
+@@ -4,7 +4,11 @@
  #include <stdio.h>
  #include <stdlib.h>
  #include <unistd.h>
++#include <wlr/config.h>
++#include <wlr/types/wlr_buffer.h>
 +#if WLR_HAS_GBM
  #include <gbm.h>
 +#endif

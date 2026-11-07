@@ -468,6 +468,7 @@ REGISTRY = {
     "fusion-popup-selection": fusion_popup_selection,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
+    "d3d9-profile-coverage": _coverage.d3d9_profiles,
 }
 
 

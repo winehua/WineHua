@@ -4,6 +4,7 @@ import displayRouteNapi from 'libdisplay_route_napi.so';
 import { DisplayRouteService } from '../service/DisplayRouteService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { InputDeviceMapper } from '../service/InputDeviceMapper';
+import { DesktopPointerService, desktopKeyboardTarget } from '../service/DesktopPointerService';
 
 // 桌面输入 seam (PC 虚拟桌面承载统一, 2026-10-17): 按功能语义把「桌面输入」
 // 拆成 共性判定 + 路线差异注入 两层, 消灭 DesktopLayer/DesktopWindow 双承载
@@ -45,7 +46,7 @@ export interface DesktopInputSink {
     pw: number, ph: number): void;
   /** XComponent destroyed 拍: wayland 停 renderer (rootId 缓存配对);
    *  x11 只解绑呈现面 — 链归 applyRoute 单点, 关窗后台运行语义不停链 */
-  surfaceDestroyed(): void;
+  surfaceDestroyed(surfaceId?: string): void;
   /** 键盘/滚轮注入门 (wayland = root 已映射; x11 = 链已绑定) */
   inputReady(): boolean;
 
@@ -75,7 +76,7 @@ export interface DesktopInputSink {
   scrollAt(handle: number, which: number, steps: number, stepPx: number,
     px: number, py: number): void;
   /** 键盘 (evdev 键码) */
-  keyEvent(code: number, pressed: boolean): void;
+  keyEvent(code: number, pressed: boolean, target?: number): void;
 }
 
 // ── wayland: 合成器 toplevel API (DesktopLayer 原内联调用, 逐字等价) ──
@@ -85,25 +86,28 @@ class WaylandSink implements DesktopInputSink {
   // 组件), 用缓存值才能配对销毁 renderer — 否则旧 root 的 renderer 泄漏,
   // 热重启后新旧 renderer 抢同一 root 的合成帧 (画面「滞后一拍」)
   private lastRootId: number = 0;
+  private surfaceId: bigint = 0n;
 
   surfaceCreated(surfaceId: string): void {
+    this.surfaceId = BigInt(surfaceId);
     this.lastRootId = WineWindowManager.getInstance().getDesktopRootId();
     if (this.lastRootId > 0) {
       try { testNapi.createRenderer(this.lastRootId, BigInt(surfaceId)); } catch (_) {}
     }
   }
 
-  surfaceChanged(_surfaceId: string, lw: number, lh: number,
+  surfaceChanged(surfaceId: string, lw: number, lh: number,
     pw: number, ph: number): void {
     // wayland 无首拍/后续之分: 每拍 resize renderer (原 onSurfaceChanged 语义)
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     if (rootId <= 0) return;
     try {
-      testNapi.resizeRenderer(rootId, pw, ph);
+      testNapi.resizeRenderer(rootId, pw, ph, BigInt(surfaceId));
       // 启动器可见 (窗口退出全屏) 时 surface 高度随系统栏波动 (1840→1683):
       // 跳过 root resize 通知, 否则中间态高度会缩小 Wine 桌面, 且退出后残留
       // 进 output, 热重启桌面高度出错 (上下被裁)
-      if (WineWindowManager.getInstance().desktopLauncherVisible) {
+      if (WineWindowManager.getInstance().desktopLauncherVisible ||
+          WineWindowManager.getInstance().hasFixedDesktopResolution()) {
         return;
       }
       // 逻辑尺寸 = 物理 / 呈现倍率 (getEffectiveScale)
@@ -111,11 +115,12 @@ class WaylandSink implements DesktopInputSink {
     } catch (_) {}
   }
 
-  surfaceDestroyed(): void {
+  surfaceDestroyed(surfaceId?: string): void {
     const cached = this.lastRootId;
-    this.lastRootId = 0;
+    const surface = surfaceId ? BigInt(surfaceId) : this.surfaceId;
+    if (surface === this.surfaceId) { this.lastRootId = 0; this.surfaceId = 0n; }
     if (cached > 0) {
-      try { testNapi.destroyRenderer(cached); } catch (_) {}
+      try { testNapi.destroyRenderer(cached, surface); } catch (_) {}
     }
   }
 
@@ -189,10 +194,10 @@ class WaylandSink implements DesktopInputSink {
     testNapi.sendScrollEvent(handle, which, steps, stepPx, px, py);
   }
 
-  keyEvent(code: number, pressed: boolean): void {
+  keyEvent(code: number, pressed: boolean, target?: number): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     if (rootId <= 0) return;
-    testNapi.sendKeyEvent(rootId, code, pressed);
+    testNapi.sendKeyEvent(target && target > 0 ? target : desktopKeyboardTarget(rootId), code, pressed);
   }
 }
 

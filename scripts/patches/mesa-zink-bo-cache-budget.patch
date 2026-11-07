@@ -1,0 +1,23 @@
+--- a/src/gallium/drivers/zink/zink_bo.c
++++ b/src/gallium/drivers/zink/zink_bo.c
+@@ -1340,10 +1340,19 @@
+    uint64_t total_mem = 0;
+    for (uint32_t i = 0; i < screen->info.mem_props.memoryHeapCount; ++i)
+       total_mem += screen->info.mem_props.memoryHeaps[i].size;
++   /* The remote shadow backend retains a Host allocation, SHM mapping and
++    * sometimes an upload snapshot for each cached BO. Budget this optional
++    * cache independently from the device's (potentially overlapping) heaps. */
++   uint64_t cache_bytes = total_mem / 8;
++   const int cache_mb = debug_get_num_option("ZINK_WINEHUA_BO_CACHE_MB", -1);
++   if (cache_mb >= 0) {
++      cache_bytes = MIN2(cache_bytes, (uint64_t)cache_mb * 1024 * 1024);
++      mesa_logi("WineHua Zink unused BO cache budget=%" PRIu64 " bytes", cache_bytes);
++   }
+    /* Create managers. */
+    pb_cache_init(&screen->pb.bo_cache, screen->info.mem_props.memoryTypeCount,
+                  500000, 2.0f, 0,
+-                 total_mem / 8, offsetof(struct zink_bo, cache_entry), screen,
++                 cache_bytes, offsetof(struct zink_bo, cache_entry), screen,
+                  (void*)bo_destroy, (void*)bo_can_reclaim);
+ 
+    unsigned min_slab_order = MIN_SLAB_ORDER;  /* 256 bytes */

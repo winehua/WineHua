@@ -14,30 +14,6 @@ WL_VERSION=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.
 [ -n "$WL_VERSION" ] || err "无法从 $WL_SRC/meson.build 解析 version"
 WL_BUILD="$BUILD_DIR/wayland_build_$WL_VERSION"
 
-# 确保 native wayland-scanner 可用且与源码同版本（1.26 源码要求 scanner ≥1.26）
-SCANNER="$WAYLAND_SCANNER"
-build_scanner() {
-    if [ -x "$SCANNER" ] && "$SCANNER" --version 2>/dev/null | grep -q "$WL_VERSION"; then return 0; fi
-    log "--- 编译 wayland-scanner (native, $WL_VERSION) ---"
-    # 装到项目内 build/host-tools，与 env.sh 的 WAYLAND_SCANNER 默认值一致；不写 /usr/local，无需 root
-    local host_build="$BUILD_DIR/wayland_native_$WL_VERSION"
-    local host_prefix="$BUILD_DIR/host-tools"
-    mkdir -p "$host_build" "$host_prefix"
-    meson setup "$host_build" "$WL_SRC" \
-        --prefix "$host_prefix" \
-        --libdir lib \
-        -Dlibraries=false -Dscanner=true -Ddtd_validation=false \
-        -Ddocumentation=false -Dtests=false --buildtype=release
-    ninja -C "$host_build"
-    ninja -C "$host_build" install
-
-    # 安装时的 strip 操作破坏了 OHOS SDK clang 的自动签名，所以在 HarmonyOS 上需要重新签名才能运行
-    if [ "$HOST_OS" = "HarmonyOS" ]; then
-        "$SCRIPT_DIR/ohos-sign-elf.py" "$host_prefix"
-    fi
-    log "wayland-scanner: $SCANNER"
-}
-
 log "=== 构建 Wayland (x86_64, $WL_VERSION) ==="
 
 # wayland-protocols 版本同样取自源码（卫语句校验已装版本与源码一致, 防 bump 后被跳过;
@@ -61,7 +37,7 @@ if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
     exit 0
 fi
 
-build_scanner
+bash "$SCRIPT_DIR/build_wayland_scanner.sh"
 
 # 项目内 host-tools 前缀加入构建期 pkg-config 搜索路径（wayland-scanner 的 native 依赖经此解析）
 export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -79,8 +55,12 @@ ninja -C "$WL_BUILD/x86_64"
 
 # 安装 .so (文件名 = SONAME; 版本尾缀随 tag 变, glob 取实际产物, 取不到即失败)
 install_soname() {  # $1=产物 glob  $2=目标 SONAME 名
-    local src
-    src=$(compgen -G "$1" | head -1 || true)
+    local src="" candidate
+    # Meson object directories also match *.so.0.* (for example .so.0.26.0.p).
+    # Select a library file rather than relying on glob enumeration order.
+    while IFS= read -r candidate; do
+        if [ -f "$candidate" ]; then src="$candidate"; break; fi
+    done < <(compgen -G "$1" || true)
     [ -n "$src" ] || err "未找到产物: $1"
     cp "$src" "$SYSROOT_EXT_LIB/$2"
     log "installed $2 ← $(basename "$src")"

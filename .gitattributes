@@ -1,0 +1,4 @@
+# Keep POSIX build scripts on LF line endings on every checkout platform.
+*.sh text eol=lf
+# Empty context lines in unified patches intentionally contain one space.
+*.patch text eol=lf whitespace=-blank-at-eol

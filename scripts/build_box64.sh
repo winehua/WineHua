@@ -39,6 +39,7 @@ cmake "$BOX64_SRC" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_C_FLAGS="$BOX64_WARN_FLAGS" \
     -DCMAKE_CXX_FLAGS="$BOX64_WARN_FLAGS"
-ninja box64_hmos_core
+ninja -j"$JOBS" box64_hmos_core
+mkdir -p "$NATIVE_LIBS"
 cp "$BUILD_DIR/box64_build/box64.so" "$NATIVE_LIBS/"
 log "Box64 → $NATIVE_LIBS/box64.so"
