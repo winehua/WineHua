@@ -8,12 +8,12 @@
 //
 // 出处: docs/COMPOSITOR_REFACTOR_PLAN.md §三 "ToplevelEventBus 事件 enum 化 +
 // JSON 构造单点, NAPI 通道移到订阅者侧" 与 §四阶段5 第 4 条; 对应 §2.3
-// "事件名 **22 种 stringly-typed 字符串** ... 散布 5 文件 ~30 处 snprintf
+// "事件名 **21 种 stringly-typed 字符串** ... 散布 5 文件 ~30 处 snprintf
 // 手拼 JSON, 无 schema 收口" 与 §2.2 "wayland_server.cpp 的 FireToplevelEvent
 // 直接 napi_call_threadsafe_function — NAPI 通道长在 compositor 核心里"。
 //
 // 本模块收编三件事:
-//   1. 事件名 enum 化 — 22 种事件的唯一字符串经 ToplevelEventName 映射,
+//   1. 事件名 enum 化 — 21 种事件的唯一字符串经 ToplevelEventName 映射,
 //      映射表与 ArkTS 消费字符串逐字 (红线: 事件名对外不变; JS 消费见
 //      WineWindowManager.ets / PopupWindowManager.ets)。
 //   2. JSON 构造单点 — 原散布 5 文件 (wl_core/xdg_shell/wayland_server/

@@ -1,0 +1,36 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -1601,6 +1601,6 @@ vkr_dispatch_vkInvalidateMappedMemoryRanges(
+ #ifdef __OHOS__
+    const char *mode = os_get_option("VKR_WINEHUA_SHADOW_FROM_HOST");
+-   const bool precise = mode && !strcmp(mode, "precise");
++   const bool precise = !mode || strcmp(mode, "legacy-write-begin");
+ #endif
+ 
+    mtx_lock(&ctx->object_mutex);
+@@ -1634,9 +1634,8 @@ vkr_dispatch_vkInvalidateMappedMemoryRanges(
+       } else {
+-         /* Legacy WineHua DXVK builds used invalidate as a write-begin
+-          * marker.  Keep that contract outside the precise profile so old
+-          * runtime overlays remain bisectable. */
++         /* The historical write-begin overload is diagnostic-only. Normal
++          * profiles retain Vulkan's actual CPU readback semantics. */
+          mem->shadow_guest_write_depth++;
+          mem->shadow_remote_active = true;
+          const uint32_t count = mem->shadow_remote_invalidate_count++;
+          if (vkr_ohos_shadow_trace_enabled() &&
+              (count < 8 || !(count % 60)))
+@@ -2254,8 +2254,11 @@ vkr_device_memory_sync_shadow(struct vkr_device_memory *mem, bool to_host,
+       stats.cache_ops = 1;
+       mem->shadow_initial_sync_done = true;
+       mem->shadow_sync_count++;
+    } else {
+-      if (mem->shadow_guest_write_depth)
++      /* Remote mappings publish/invalidate exact ranges through the memory
++       * protocol. A fence for unrelated work must not copy the whole Host
++       * allocation back over pending Guest writes or retire their dirtiness. */
++      if (mem->shadow_guest_write_depth || mem->shadow_remote_active)
+          return stats;
+       vkr_ohos_gate_c_trace_memory("invalidate-entry", mem, 0, copy_size,
+                                    false, VK_SUCCESS);

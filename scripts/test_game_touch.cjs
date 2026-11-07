@@ -1,0 +1,30 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const ts = require(process.argv[2] || 'typescript');
+const file = path.resolve(__dirname, '../entry/src/main/ets/common/GameTouchRouter.ts');
+const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
+}).outputText;
+const moduleResult = { exports: {} };
+vm.runInNewContext(code, { exports: moduleResult.exports, module: moduleResult });
+const { GameTouchRouter } = moduleResult.exports;
+const events = [];
+const router = new GameTouchRouter((...args) => events.push(args), 1, 2, 3, 0x110);
+router.begin(7, 10, 20);
+assert.equal(router.active, true);
+assert.deepEqual(events, [[7, 1, 10, 20, 0x110]], 'down is sent immediately, with no right-click timer');
+router.move(30, 40);
+router.end(50, 60);
+assert.deepEqual(events.at(-1), [7, 3, 50, 60, 0x110]);
+assert.equal(router.active, false);
+const released = events.length;
+router.cancel(); router.move(70, 80);
+assert.equal(events.length, released, 'duplicate cancel and later move emit nothing');
+router.begin(7, 1, 2); router.begin(9, 3, 4);
+assert.deepEqual(events.slice(-3), [[7, 1, 1, 2, 0x110], [7, 3, 1, 2, 0x110], [9, 1, 3, 4, 0x110]]);
+router.cancel();
+assert.deepEqual(events.at(-1), [9, 3, 3, 4, 0x110], 'cancel/window disappearance releases the captured owner');
+assert.ok(events.every(event => event[4] === 0 || event[4] === 0x110), 'long touch never invents a right button');
+console.log('PASS: game touch down/move/up, replacement, cancellation, original-target release and no synthetic right-click');

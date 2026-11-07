@@ -11,6 +11,7 @@ import { WineEnvService } from './WineEnvService';
 import { DisplayRouteService } from './DisplayRouteService';
 import { FusionWindowManager } from './FusionWindowManager';
 import { DesktopModeService, isSubWindowFormFactor } from './DesktopModeService';
+import { PHONE_DESKTOP_BOTTOM_VP } from '../common/PhoneDesktopLayout';
 
 const DOMAIN = 0x0000;
 const TAG = 'WineWM';
@@ -60,6 +61,9 @@ export class WineWindowManager {
   // getEffectiveScale() 算出物理分辨率, 元素缩小一半)。运行期缩放不走本值:
   // init 的 scaleBoost 按 DisplaySettingsService (用户可调, main-ui 语义)。
   static readonly DESKTOP_PRESENT_SCALE: number = 2.0;
+  private fixedDesktopResolution: boolean = false;
+  private nextDesktopResolution: string = '';
+  private activeDesktopResolution: string = '';
   // 标题栏 + 边框总高度 (VP), 用于窗口 resize
   // = getWindowDecorHeight() + decorBorderOffset
   private measuredTitleBarH: number = 56;
@@ -401,6 +405,15 @@ export class WineWindowManager {
     DesktopModeService.getInstance().init(this.uiAbilityContext);
     this.applyModePolicy();
 
+    this.applyOutputPolicy();
+
+    this.registerCallbacks();
+  }
+
+  // Snapshot preferences together with the native output before each session.
+  // Changes during launch stay pending until the next session; XComponent
+  // callbacks use fixedDesktopResolution from this snapshot, not live settings.
+  applyOutputPolicy(): void {
     // 获取设备显示密度 + 主窗口可用区域
     // 目标 effectiveScale 取自用户设置 (DisplaySettingsService, 默认 2.0),
     // 仅此处 (启动) 读取一次 — 运行中改设置不影响当前会话, 设置页已注明"重启生效"。
@@ -412,15 +425,26 @@ export class WineWindowManager {
     try {
       const d = display.getDefaultDisplaySync();
       this.displayScale = d.densityPixels;
-      this.scaleBoost = targetScale / this.displayScale;
-      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=%{public}s',
-        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2), targetScale.toFixed(2));
+      const requestedScale = AppStorage.get<number>('winehua.phone.scale.override') ||
+        AppStorage.get<number>('winehua.phone.scale.preference') || 2;
+      const effectiveScale = deviceInfo.deviceType === 'phone' ?
+        (requestedScale === 3 ? 3 : WineWindowManager.DESKTOP_PRESENT_SCALE) : targetScale;
+      this.scaleBoost = effectiveScale / this.displayScale;
+      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d effectiveScale=%{public}d',
+        d.width, d.height, effectiveScale);
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
 
       // Wine 输出尺寸: 沉浸模式下 avoid area 为 0, 直接用显示尺寸
       const s = this.displayScale * this.scaleBoost;
-      const outW = Math.round(d.width / s);
-      const outH = Math.round(d.height / s);
+      // The orientation request may still be pending during cold startup.
+      const phone = deviceInfo.deviceType === 'phone';
+      this.fixedDesktopResolution = phone &&
+        (this.activeDesktopResolution || AppStorage.get<string>('winehua.phone.desktop.preference')) === '1024x768';
+      const outW = this.fixedDesktopResolution ? 1024 :
+        Math.round((phone ? Math.max(d.width, d.height) : d.width) / s);
+      const heightPx = phone ? Math.min(d.width, d.height) : d.height;
+      const outH = this.fixedDesktopResolution ? 768 :
+        Math.round((heightPx - PHONE_DESKTOP_BOTTOM_VP * d.densityPixels) / s);
       hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d → output %{public}dx%{public}d',
         d.width, d.height, outW, outH);
       testNapi.setOutputSize(outW, outH);
@@ -431,7 +455,9 @@ export class WineWindowManager {
         this.scaleBoost.toFixed(2));
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
     }
+  }
 
+  private registerCallbacks(): void {
     hilog.info(DOMAIN, TAG, '[MW] registering toplevel callback...');
     testNapi.setToplevelCallback((id: number, event: string, data: string) => {
       hilog.info(DOMAIN, TAG, '[MW]  cb toplevel #%{public}d event=%{public}s data=%{public}s',
@@ -471,12 +497,23 @@ export class WineWindowManager {
     // (engine-ready, 先会话后开窗, 与 wayland desktop_root 对齐);
     // 链早启不受影响 —— 链在 EntryAbility 参数落地时 windowless 启动
     // (startDisplayRouteChain(0n,false)), 不依赖桌面窗。
-    // main-ui 世界 (悬浮窗内嵌承载, DWA 从不启动) 该门恒 false = no-op。
-    if (this.isDesktopMode && this.desktopAbilityRunning) {
+    if (this.isDesktopMode && this.desktopAbilityRunning && !this.manualDesktopForeground()) {
       hilog.info(DOMAIN, TAG, '[MW] restoring existing DesktopAbility root=%{public}d',
         this.desktopRootId);
       this.startDesktopAbility(this.desktopRootId);
     }
+  }
+
+  // One-shot game override. It never changes the persisted global preference.
+  setNextDesktopResolution(resolution: string): void {
+    this.nextDesktopResolution = resolution === 'auto' || resolution === '1024x768' ? resolution : '';
+  }
+
+  prepareSessionOutputPolicy(): void {
+    this.activeDesktopResolution = this.nextDesktopResolution ||
+      AppStorage.get<string>('winehua.phone.desktop.preference') || 'auto';
+    this.nextDesktopResolution = '';
+    this.applyOutputPolicy();
   }
 
   // -- WineWindowAbility 调用: 注册 / 注销 --
@@ -539,6 +576,10 @@ export class WineWindowManager {
     } catch (_) {
       return [0, 0];
     }
+  }
+
+  hasFixedDesktopResolution(): boolean {
+    return this.fixedDesktopResolution;
   }
 
   // 拖拽缩放标记 (见 WineWindowEntry.resizeDragging 注释): windowRectChange
@@ -1590,6 +1631,31 @@ export class WineWindowManager {
     this.desktopActive = false;
     this.desktopRootId = -1;
     this.notify();
+  }
+
+  manualDesktopForeground(): boolean {
+    return deviceInfo.deviceType === 'phone';
+  }
+
+  showDesktopInForeground(): void {
+    if (!this.isDesktopMode || this.desktopRootId <= 0) return;
+    if (this.desktopSeparateWindow) this.openDesktopWindow();
+    else this.startDesktopAbility(this.desktopRootId);
+  }
+
+  // Use the foreground caller's context. EntryAbility may be backgrounded
+  // while a separate library window is active, and cannot start UI then.
+  async showDesktopForCaller(context: common.UIAbilityContext): Promise<void> {
+    if (!this.isDesktopMode) return;
+    if (this.desktopRootId < 0 ||
+        (!DisplayRouteService.getInstance().isX11() && this.desktopRootId === 0)) {
+      throw new Error('Wine 桌面尚未创建');
+    }
+    await context.startAbility({
+      bundleName: 'app.hackeris.winehua',
+      abilityName: this.desktopSeparateWindow ? 'VirtualDesktopAbility' : 'DesktopAbility',
+      parameters: { toplevelId: this.desktopRootId }
+    });
   }
 
   getDesktopRootId(): number { return this.desktopRootId; }

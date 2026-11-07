@@ -15,7 +15,7 @@ on:
       - '.gitignore'
       - 'LICENSE*'
   pull_request:
-    branches: [master]
+    branches: [master, main-ui]
   workflow_dispatch:
     inputs:
       release_tag:

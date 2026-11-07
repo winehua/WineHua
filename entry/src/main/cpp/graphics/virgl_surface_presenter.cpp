@@ -4,6 +4,7 @@
 #include "present_target.h"
 #include "presenter_common.h"
 #include "shader_utils.h"
+#include "surface_queue_recovery.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -149,6 +150,11 @@ public:
         if (!windowLease_) return kPresentNoTarget;
         if (!sourceVisible) return kPresentSourceInvisible;
         const uint64_t nowNs = NowNs();
+        if (sourceDisplay == display_ && sourceContext == sourceContext_ && recovery_.Deferred(nowNs))
+        {
+            if (nextPresentDeadlineNs) *nextPresentDeadlineNs = recovery_.RetryAfterNs();
+            return kPresentThrottled;
+        }
         if (width_ == width && height_ == height && lastPresentNs_ &&
             nowNs - lastPresentNs_ < framePeriodNs_)
         {
@@ -170,9 +176,12 @@ public:
         }
         if (eglMakeCurrent(display_, surface_, surface_, context_) != EGL_TRUE)
         {
-            eglMakeCurrent(sourceDisplay, sourceDraw, sourceRead, sourceContext);
+            const EGLint error = eglGetError();
+            const EGLBoolean restored = eglMakeCurrent(sourceDisplay, sourceDraw, sourceRead, sourceContext);
             glDeleteSync(sourceReady);
             ++failures_;
+            if (restored == EGL_TRUE && (error == EGL_BAD_SURFACE || error == EGL_BAD_ALLOC))
+                recovery_.Request(NowNs());
             return kPresentMakeCurrentFailed;
         }
         glWaitSync(sourceReady, 0, GL_TIMEOUT_IGNORED);
@@ -212,6 +221,15 @@ public:
         if (swapped != EGL_TRUE || restored != EGL_TRUE)
         {
             ++failures_;
+            // A nonblocking dequeue used to leave Maleoon's EGL window with
+            // no backbuffer after hide/resize. Repeating glDrawArrays on that
+            // surface keeps returning GL_OUT_OF_MEMORY forever. Retain the
+            // consumer and shared GL objects, but rebuild the failed producer
+            // EGL surface on a bounded retry. Do not publish a failed frame.
+            if (restored == EGL_TRUE &&
+                (glError == GL_OUT_OF_MEMORY || glError == GL_INVALID_FRAMEBUFFER_OPERATION ||
+                 eglError == EGL_BAD_SURFACE))
+                recovery_.Request(NowNs());
             if (failures_ == 1 || failures_ % 120 == 0)
                 OH_LOG_WARN(LOG_APP,
                             "[VIRGL-ZC][NCP] blit dropped serial=%{public}u gl=0x%{public}x "
@@ -270,6 +288,31 @@ private:
     bool EnsureGlLocked(EGLDisplay sourceDisplay, EGLContext sourceContext,
                         uint32_t width, uint32_t height)
     {
+        if (recovery_.Pending() && display_ == sourceDisplay && sourceContext_ == sourceContext &&
+            context_ != EGL_NO_CONTEXT && config_)
+        {
+            // Present restored the source context before scheduling this
+            // retry, so the producer surface is not current on this thread.
+            if (surface_ != EGL_NO_SURFACE) eglDestroySurface(display_, surface_);
+            surface_ = EGL_NO_SURFACE;
+            if (OH_NativeWindow_NativeWindowHandleOpt(windowLease_.Get(), SET_BUFFER_GEOMETRY,
+                    static_cast<int32_t>(width), static_cast<int32_t>(height)) != 0)
+            {
+                recovery_.Request(NowNs());
+                return false;
+            }
+            surface_ = eglCreateWindowSurface(display_, config_,
+                reinterpret_cast<EGLNativeWindowType>(windowLease_.Get()), nullptr);
+            if (surface_ == EGL_NO_SURFACE)
+            {
+                recovery_.Request(NowNs());
+                return false;
+            }
+            width_ = width; height_ = height;
+            recovery_.Reset();
+            OH_LOG_WARN(LOG_APP, "[VIRGL-ZC][NCP] producer surface recovered key=%{public}llu size=%{public}ux%{public}u",
+                static_cast<unsigned long long>(surfaceKey_), width, height);
+        }
         if (display_ == sourceDisplay && sourceContext_ == sourceContext &&
             context_ != EGL_NO_CONTEXT && surface_ != EGL_NO_SURFACE &&
             (width_ != width || height_ != height)) {
@@ -304,14 +347,14 @@ private:
             windowLease_.Get(), SET_USAGE,
             static_cast<uint64_t>(NATIVEBUFFER_USAGE_HW_RENDER | NATIVEBUFFER_USAGE_HW_TEXTURE));
         const int32_t timeoutResult = OH_NativeWindow_NativeWindowHandleOpt(
-            windowLease_.Get(), SET_TIMEOUT, static_cast<int32_t>(0));
+            windowLease_.Get(), SET_TIMEOUT, winehua::kSurfaceBufferTimeoutMs);
         int32_t queueSize = 0;
         OH_NativeWindow_NativeWindowHandleOpt(
             windowLease_.Get(), GET_BUFFERQUEUE_SIZE, &queueSize);
         OH_LOG_INFO(LOG_APP,
                     "[VIRGL-ZC][NCP] window configured size=%{public}ux%{public}u "
-                    "queue=%{public}d timeout_ms=0 timeout_ret=%{public}d",
-                    width, height, queueSize, timeoutResult);
+                    "queue=%{public}d timeout_ms=%{public}d timeout_ret=%{public}d",
+                    width, height, queueSize, winehua::kSurfaceBufferTimeoutMs, timeoutResult);
 
         const EGLint configAttributes[] = {
             EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -390,6 +433,7 @@ private:
         eglSwapInterval(sourceDisplay, 0);
 
         display_ = sourceDisplay;
+        config_ = config;
         sourceContext_ = sourceContext;
         context_ = context;
         surface_ = surface;
@@ -425,6 +469,8 @@ private:
             if (context_ != EGL_NO_CONTEXT) eglDestroyContext(display_, context_);
         }
         display_ = EGL_NO_DISPLAY;
+        config_ = nullptr;
+        recovery_.Reset();
         sourceContext_ = EGL_NO_CONTEXT;
         context_ = EGL_NO_CONTEXT;
         surface_ = EGL_NO_SURFACE;
@@ -451,6 +497,8 @@ private:
     winehua::NativeWindowLease windowLease_;
     uint64_t surfaceKey_ = 0;
     EGLDisplay display_ = EGL_NO_DISPLAY;
+    EGLConfig config_ = nullptr;
+    winehua::SurfaceQueueRecovery recovery_;
     EGLContext sourceContext_ = EGL_NO_CONTEXT;
     EGLContext context_ = EGL_NO_CONTEXT;
     EGLSurface surface_ = EGL_NO_SURFACE;
@@ -608,8 +656,20 @@ public:
         auto& entry = surfaces_[surfaceKey];
         // 防御: GL 帧送达 venus (vulkan) target — 错误通道。原按 info.flags
         // 判断, 现改按 target 类型 (kind 一致)。无 target 时无法判断, 先
-        // 走 no-target 判定。
-        if (entry.target && entry.target->IsVulkan()) return kPresentInvalid;
+        // 走 no-target 判定。GL 程序只应走 virgl target；若宿主被全局
+        // Vulkan 模式误切换，明确记录而不是静默丢弃（黑屏来源）。
+        if (entry.target && entry.target->IsVulkan())
+        {
+            if (!entry.missingTargetLogged)
+            {
+                entry.missingTargetLogged = true;
+                OH_LOG_WARN(LOG_APP,
+                            "[VIRGL-PRESENT][NCP] GL frame on Vulkan target key=%{public}llu "
+                            "pid=%{public}u surface=%{public}u; keeping the GL/readback path",
+                            static_cast<unsigned long long>(surfaceKey), clientPid, surfaceId);
+            }
+            return kPresentInvalid;
+        }
         entry.info.surfaceKey = surfaceKey;
         entry.info.clientPid = clientPid;
         entry.info.surfaceId = surfaceId;

@@ -1,0 +1,41 @@
+{
+  "name": "dxvk-d3d9",
+  "title": "DXVK Legacy D3D9 → Vulkan",
+  "checks": [
+    "d3d9-profile-coverage"
+  ],
+  "tests": [
+    {
+      "case": "d3d-switch-cube",
+      "id": "dxvk-d3d9-cube",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy_d3d9"
+      },
+      "extraArgs": [
+        "--d3d9"
+      ],
+      "seconds": 8,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "d3d-switch-cube",
+      "id": "dxvk-d3d9-profile-d3d11-cube",
+      "arch": [
+        "x64",
+        "x86"
+      ],
+      "backend": {
+        "d3d": "dxvk_legacy_d3d9"
+      },
+      "extraArgs": [
+        "--d3d11"
+      ],
+      "seconds": 8,
+      "timeoutMs": 180000
+    }
+  ]
+}

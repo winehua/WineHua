@@ -17,10 +17,12 @@ import { GamepadOverlay } from '../components/GamepadOverlay';
 import { GamepadLayoutEditor } from '../components/GamepadLayoutEditor';
 import { KeyboardOverlay } from '../components/KeyboardOverlay';
 import { InputSettingsService } from '../service/InputSettingsService';
+import { DesktopInputSink, createDesktopInputSink } from '../components/DesktopInputSink';
+import { common } from '@kit.AbilityKit';
 import { Breakpoint, BreakpointSystem } from '../common/Breakpoint';
 import { window, display, promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 
 const DOMAIN = 0x0000;
 const TAG = 'Index';
@@ -28,6 +30,16 @@ const TAG = 'Index';
 @Entry
 @Component
 struct Index {
+  private keyboardInputSink: DesktopInputSink = createDesktopInputSink();
+
+  private openGameLibrary(): void {
+    (getContext(this) as common.UIAbilityContext).startAbility({
+      bundleName: 'app.hackeris.winehua', abilityName: 'GameLibraryAbility'
+    }).catch((err: Error) => {
+      promptAction.showToast({ message: '无法打开游戏配置' });
+      hilog.error(DOMAIN, TAG, 'Game library: %{public}s', JSON.stringify(err));
+    });
+  }
   // -- 镜像自 service 的状态 (订阅驱动, 见 aboutToAppear) --
   @State state: string = 'idle';
   @State sessionAlive: boolean = false;
@@ -452,6 +464,10 @@ struct Index {
   // 应用库页 (sm/md/lg 两壳共用一份定义, 保证联动行为一致)
   @Builder
   appLibraryContent() {
+    Column() {
+    if (deviceInfo.deviceType === 'phone') {
+      Button('游戏配置').onClick(() => this.openGameLibrary()).margin({ bottom: 8 })
+    }
     AppLibraryView({
       onNavigateToFiles: (): void => {
         this.switchTab(2);
@@ -459,7 +475,9 @@ struct Index {
       onOpenDir: (dirPath: string): void => {
         this.openDirInFiles(dirPath);
       }
-    })
+    }).layoutWeight(1)
+    }
+    .width('100%').height('100%')
   }
 
   // 运行中页 (两壳共用一份定义, 保证行为一致)
@@ -690,7 +708,7 @@ struct Index {
     if (this.desktopActive && this.desktopRootId > 0 &&
       (!this.wm.isSeparateDesktopWindow() || !this.desktopWindowActive)) {
       Stack() {
-        DesktopLayer({ floating: this.launcherVisible })
+        DesktopLayer({ floating: this.launcherVisible, showKeyboardOverlay: false })
         // 悬浮态交互层: 全尺寸透明, Block 拦截不穿透到桌面 XComponent —
         // 轻点 onClick 进桌面 (Pad 内嵌全屏 / PC 打开独立窗口), 按住 PanGesture 拖动
         if (this.launcherVisible) {
@@ -764,7 +782,7 @@ struct Index {
       // 覆盖层自门控 (InputSettingsService.gamepadEnabled), 未开时不渲染
       GamepadOverlay()
       // 模拟键盘覆盖层, 同款自门控 (keyboardEnabled); 置于手柄之上
-      KeyboardOverlay()
+      KeyboardOverlay({ inputSink: this.keyboardInputSink })
     }
     // Layer 3: 全屏手柄布局编辑页 (模态, 盖住悬浮条与游戏画面防误触)。
     // 仅桌面激活时挂载; 组件内部按 editingLayout 自门控, 桌面退出时随卸载

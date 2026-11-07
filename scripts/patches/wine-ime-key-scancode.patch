@@ -1,0 +1,25 @@
+--- a/dlls/imm32/ime.c
++++ b/dlls/imm32/ime.c
+@@ -598,7 +598,11 @@
+ 
+     if (status == STATUS_NOT_IMPLEMENTED)
+     {
+-        TRANSMSG msg = {.message = vsc & KF_UP ? WM_KEYUP : WM_KEYDOWN, .wParam = vkey, .lParam = vsc};
++        /* ImmTranslateMessage passes the high word of the original key lParam.
++         * Applications such as SDL read its scan code from bits 16-23, so a
++         * raw vsc here loses both that code and the key-up / repeat flags. */
++        TRANSMSG msg = {.message = vsc & KF_UP ? WM_KEYUP : WM_KEYDOWN, .wParam = vkey,
++                       .lParam = MAKELPARAM(1, vsc)};
+         msgs->TransMsg[count++] = msg;
+     }
+     else if (status) WARN( "WINE_IME_TO_ASCII_EX returned unexpected status %#lx\n", status );
+@@ -636,7 +640,8 @@
+ 
+         if (!key_consumed)
+         {
+-            TRANSMSG msg = {.message = WM_IME_KEYDOWN, .wParam = vkey, .lParam = vsc};
++            TRANSMSG msg = {.message = vsc & KF_UP ? WM_IME_KEYUP : WM_IME_KEYDOWN, .wParam = vkey,
++                           .lParam = MAKELPARAM(1, vsc)};
+             msgs->TransMsg[count++] = msg;
+         }
+     }

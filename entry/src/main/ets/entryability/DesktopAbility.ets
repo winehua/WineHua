@@ -29,13 +29,13 @@ export default class DesktopAbility extends UIAbility {
     if (deviceInfo.deviceType === 'phone') {
       try {
         const mainWindow = windowStage.getMainWindowSync();
-        mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION).then(() => {
-          hilog.info(DOMAIN, TAG, '[DWA] phone auto-rotation enabled');
+        mainWindow.setPreferredOrientation(window.Orientation.LANDSCAPE).then(() => {
+          hilog.info(DOMAIN, TAG, '[DWA] phone landscape enabled');
         }).catch((e: BusinessError) => {
-          hilog.warn(DOMAIN, TAG, '[DWA] phone auto-rotation failed: %{public}s', JSON.stringify(e));
+          hilog.warn(DOMAIN, TAG, '[DWA] phone landscape failed: %{public}s', JSON.stringify(e));
         });
       } catch (e) {
-        hilog.warn(DOMAIN, TAG, '[DWA] phone auto-rotation setup failed: %{public}s', JSON.stringify(e));
+        hilog.warn(DOMAIN, TAG, '[DWA] phone landscape setup failed: %{public}s', JSON.stringify(e));
       }
     }
     windowStage.loadContent('pages/DesktopWindow', (err) => {
@@ -60,6 +60,18 @@ export default class DesktopAbility extends UIAbility {
           mw.setSpecificSystemBarEnabled('navigationIndicator', false).catch((e: BusinessError) => {
             hilog.error(DOMAIN, TAG, '[DWA] navBar failed: %{public}s', JSON.stringify(e));
           });
+          mw.on('windowEvent', (eventType: number) => {
+            if (this.toplevelId <= 0) return;
+            try {
+              if (eventType === window.WindowEventType.WINDOW_SHOWN) {
+                testNapi.setToplevelVisible(this.toplevelId, true);
+              } else if (eventType === window.WindowEventType.WINDOW_HIDDEN) {
+                testNapi.setToplevelVisible(this.toplevelId, false);
+              }
+            } catch (e) {
+              hilog.warn(DOMAIN, TAG, '[DWA] visibility update failed: %{public}s', JSON.stringify(e));
+            }
+          });
         }
       } catch (e) {
         hilog.error(DOMAIN, TAG, '[DWA] immersive ERR: %{public}s', JSON.stringify(e));
@@ -72,6 +84,9 @@ export default class DesktopAbility extends UIAbility {
     // 注: raiseToAppTop 抬升画布窗实测无效 (1300009, 主窗口不适用该 API,
     // 2026-10-05 移除)。同应用双窗 z-order 的实际修复 = moveToForeground/
     // 延迟 refocus (WineWindowManager #68 路径), 不在此处。
+    if (this.toplevelId > 0) {
+      try { testNapi.setToplevelVisible(this.toplevelId, true); } catch (_) {}
+    }
   }
 
   onNewWant(want: Want): void {
@@ -82,6 +97,9 @@ export default class DesktopAbility extends UIAbility {
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '[DWA] onBackground tl=%{public}d', this.toplevelId);
+    if (this.toplevelId > 0) {
+      try { testNapi.setToplevelVisible(this.toplevelId, false); } catch (_) {}
+    }
   }
 
   onDestroy(): void {

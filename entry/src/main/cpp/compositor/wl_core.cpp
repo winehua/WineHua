@@ -18,6 +18,7 @@
 #include "compositor/frame/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
 #include "protocols/viewporter-server-protocol.h"
 #include "common/perf_utils.h"
+#include "common/live_performance.h"
 #include <algorithm>
 #include <cstring>
 #include <ctime>
@@ -684,8 +685,10 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
             toplevelMgr_.EnsureInZOrder(sd->toplevelId);
         }
     }
-    OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
-                sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
+    if (winehua::FrameTraceEnabled()) {
+        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
+                    sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
+    }
 
     // 检测尺寸变化 -> 通知 ArkTS 调整子窗口: 尺寸变化判定 + 全屏尺寸漂移
     // 补丁 (war3 D3D 模式切换画面缩左上, PLAN §2.5; 补丁注释完整平移, 见
@@ -728,9 +731,14 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOp
         }
     }
     DesktopRootManager::CheckRootResult cr;
+    bool needsInitialFrame = false;
     {
         auto lk = toplevelMgr_.Lock();
         cr = desktopRootMgr_.CheckRootLocked(sd, recognitionOpportunity);
+        if (cr.fireDesktopRoot) {
+            const auto* root = toplevelMgr_.FindToplevelLocked(sd->toplevelId);
+            needsInitialFrame = !root || !root->HasFrame();
+        }
         MarkDesktopRootDirtyLocked();
     }
     if (cr.moveRendererTo)
@@ -744,6 +752,16 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOp
         // 首帧不注入 enter, 桌面不激活 (症状: 桌面
         // 只在点击时才刷新, regedit 打开内容不完整, 菜单弹出后释放即关)
         ResetFirstFrame();
+        // A title can identify the shell before it has committed a buffer.
+        // Fixed-resolution views intentionally ignore native surface sizes,
+        // so request the session's logical size without waiting for that UI
+        // callback. NotifyToplevelResize takes the manager lock itself.
+        if (needsInitialFrame && session_.outputW > 0 && session_.outputH > 0) {
+            OH_LOG_INFO(LOG_APP,
+                        "[MW] request initial desktop frame root=%{public}u size=%{public}dx%{public}d",
+                        sd->toplevelId, session_.outputW, session_.outputH);
+            NotifyToplevelResize(sd->toplevelId, session_.outputW, session_.outputH);
+        }
         PostToplevelEvent(sd->toplevelId, ToplevelEventType::DesktopRoot);
     }
 }
@@ -862,8 +880,10 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     sd->pixels = desktopCompositor_.UpsertSubsurfaceLayer(
         std::move(layer), std::move(sd->pixels));
     MarkDesktopRootDirtyLocked();
-    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] stored layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
-                layer.w, layer.h, layer.x, layer.y, parentId);
+    if (winehua::FrameTraceEnabled()) {
+        OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] stored layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
+                    layer.w, layer.h, layer.x, layer.y, parentId);
+    }
 }
 
 // 多窗口模式 — 内嵌客户区 (wine client surface) 合入父窗口帧。
@@ -912,8 +932,10 @@ void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource*
     sd->pixels = desktopCompositor_.UpsertSubsurfaceLayer(
         std::move(layer), std::move(sd->pixels));
     toplevelMgr_.MarkToplevelDirtyLocked(parentId);
-    OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] inline client layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
-                sd->w, sd->h, sx, sy, parentId);
+    if (winehua::FrameTraceEnabled()) {
+        OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] inline client layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
+                    sd->w, sd->h, sx, sy, parentId);
+    }
 }
 
 // PC 多窗口模式 popup 状态段已迁至 PopupManager (compositor/popup_manager.cpp
@@ -959,6 +981,7 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
 
     ShmCommitInfo fi;
     if (self->BeginShmAccess(sd, fi)) {
+        winehua::LivePerformance::Instance().Commit(reinterpret_cast<uintptr_t>(sd));
         self->ComputeContentArea(sd, fi);
         // sd->pixels 的消费方全部是 subsurface 路径 (desktop layer 合成 / PC popup /
         // ARGB 检测); toplevel 的帧走 UpdateToplevelFrameOnCommit 的内容裁剪拷贝,
@@ -969,9 +992,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         sd->w = fi.contentW;
         sd->h = fi.contentH;
         fi.shmCommitSerial = sd->shmCommitSerial.fetch_add(1, std::memory_order_release) + 1;
-        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
-                    fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
-                    sd->committed.hasWindowGeometry ? "yes" : "no");
+        if (winehua::FrameTraceEnabled()) {
+            OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
+                        fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
+                        sd->committed.hasWindowGeometry ? "yes" : "no");
+        }
 
         // CommittedSurface 快照产出 (重构第 5A2 步): 填入 commit 时点可观察值
         // (screenPos/parentOffset/frame; role 与几何已随协议设置点直写)。

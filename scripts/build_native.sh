@@ -9,10 +9,7 @@ source "$SCRIPT_DIR/env.sh"
 NATIVE_TARGET="${NATIVE_TARGET:-aarch64-linux-ohos}"
 WINEHUA_INC="$WINEHUA/entry/src/main/cpp/protocols"
 NATIVE_BUILD="$BUILD_DIR/native_${NATIVE_ARCH}"
-if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
-    export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-    export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
-fi
+export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
 
 log "=== 构建 Native 依赖 ($NATIVE_ARCH: $NATIVE_TARGET) ==="
 
@@ -22,19 +19,30 @@ mkdir -p "$NATIVE_LIBS" "$WINEHUA_INC" "$NATIVE_BUILD"
 gen_native_cross() {
     local cross="$NATIVE_BUILD/ohos-${NATIVE_ARCH}-cross.txt"
     local ffi_prefix="$NATIVE_BUILD/libffi/install"
+    local pcwrap="$NATIVE_BUILD/pkg-config-cross.sh"
+    cat > "$pcwrap" << PWEOF
+#!/bin/sh
+export PKG_CONFIG_LIBDIR="$ffi_prefix/lib/pkgconfig:$NATIVE_BUILD/libxml2/install/lib/pkgconfig:$NATIVE_BUILD/libepoxy/install/lib/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
+export PKG_CONFIG_PATH="\$PKG_CONFIG_LIBDIR"
+exec "$PKG_CONFIG_BIN" "\$@"
+PWEOF
+    chmod +x "$pcwrap"
     cat > "$cross" << XEOF
 [binaries]
 c = '$OHOS_SDK/native/llvm/bin/clang'
 cpp = '$OHOS_SDK/native/llvm/bin/clang++'
 ar = '$OHOS_SDK/native/llvm/bin/llvm-ar'
 strip = '$OHOS_SDK/native/llvm/bin/llvm-strip'
-pkg-config = '$PKG_CONFIG_BIN'
+pkg-config = '$pcwrap'
 
 [built-in options]
 c_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-I$ffi_prefix/include']
 c_link_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-fuse-ld=lld', '-L$ffi_prefix/lib']
 # meson 构建机依赖查找 (wayland-scanner 等) 由此选项决定, 环境变量 PKG_CONFIG_PATH 会被它覆盖
 build.pkg_config_path = ['$BUILD_DIR/host-tools/lib/pkgconfig']
+
+[properties]
+needs_exe_wrapper = true
 
 [host_machine]
 system = 'linux'
@@ -58,7 +66,9 @@ build_libffi() {
     mkdir -p "$build"
     cd "$build"
 
-    "$src/autogen.sh" 2>/dev/null || true
+    if [ ! -f "$src/configure" ]; then
+        (cd "$src" && ./autogen.sh)
+    fi
     if [ "$HOST_OS" = "Darwin" ]; then
         CC="$OHOS_SDK/native/llvm/bin/clang" CCAS="$OHOS_SDK/native/llvm/bin/clang" \
         AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
@@ -86,6 +96,10 @@ copy_soname_with_linker_alias() {
     local soname="$2"
     local linker="${3:-}"
 
+    # The OHOS CMake platform can emit an unversioned shared library.
+    if [ ! -f "$src" ] && [[ "$src" == *.so.* ]]; then
+        src="${src%%.so.*}.so"
+    fi
     [ -f "$src" ] || err "native lib source missing: $src"
     cp "$src" "$NATIVE_LIBS/$soname"
     if [ -n "$linker" ]; then
@@ -101,7 +115,8 @@ remove_native_egl_linker_stubs() {
 }
 
 build_native_freetype() {
-    if [ -f "$NATIVE_LIBS/libfreetype.so.6" ] && [ -f "$NATIVE_LIBS/libfreetype.so" ]; then
+    if [ -f "$NATIVE_LIBS/libfreetype.so.6" ] && [ -f "$NATIVE_LIBS/libfreetype.so" ] \
+       && [ -f "$HOST_EXT_PC/freetype2.pc" ]; then
         log "freetype ($NATIVE_ARCH) 已就绪，跳过"
         return 0
     fi
@@ -121,6 +136,7 @@ build_native_freetype() {
         -DCMAKE_SHARED_LINKER_FLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -fuse-ld=lld" \
         -DCMAKE_EXE_LINKER_FLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -fuse-ld=lld" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$build/install" -DCMAKE_INSTALL_LIBDIR=lib \
         -DFT_DISABLE_ZLIB=ON \
         -DFT_DISABLE_BROTLI=ON \
         -DFT_DISABLE_HARFBUZZ=ON \
@@ -128,6 +144,9 @@ build_native_freetype() {
         -DFT_DISABLE_BZIP2=ON \
         -DBUILD_SHARED_LIBS=ON
     ninja -C "$build"
+    cmake --install "$build"
+    mkdir -p "$HOST_EXT_PC"
+    cp "$build/install/lib/pkgconfig/freetype2.pc" "$HOST_EXT_PC/"
 
     copy_soname_with_linker_alias "$build/libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so"
     log "freetype ($NATIVE_ARCH) → $NATIVE_LIBS"
@@ -158,7 +177,7 @@ build_native_libxml2() {
     cmake --build "$build"
     cmake --install "$build"
 
-    copy_soname_with_linker_alias "$(compgen -G "$build/libxml2.so.2.*" | head -1)" "libxml2.so.2" "libxml2.so"
+    copy_soname_with_linker_alias "$build/libxml2.so.2" "libxml2.so.2" "libxml2.so"
     log "libxml2 ($NATIVE_ARCH) → $NATIVE_LIBS"
 }
 
@@ -230,6 +249,7 @@ build_wayland() {
     export PKG_CONFIG_PATH="$NATIVE_BUILD/libffi/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     meson setup "$build" "$src" \
         --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" \
         -Ddocumentation=false -Dtests=false -Dscanner=false
 
     ninja -C "$build"
@@ -271,6 +291,13 @@ emit_wayland_host_pc() {
     # 毁灭性重建 (rm -rf build/) 里 build_native 与 display 链是并行分支,
     # 本函数可能先跑到 —— 目录自建, 不依赖别人的副作用 (T7 演练实测断链)。
     mkdir -p "$HOST_EXT_PC"
+
+    # wayland's Requires.private is resolved even for dynamic consumers.
+    # Export the host libffi metadata beside the host Wayland metadata, so
+    # wlroots never depends on a prior guest sysroot build to find it.
+    local ffi_pc="$NATIVE_BUILD/libffi/install/lib/pkgconfig/libffi.pc"
+    [ -f "$ffi_pc" ] || { err "host libffi 元数据缺失: $ffi_pc"; return 1; }
+    cp "$ffi_pc" "$HOST_EXT_PC/libffi.pc"
 
     # 版本守卫: pc 已存在且 Version 行一致才跳过 (直接读文件, 不走 pkg-config——
     # 顶层 PKG_CONFIG_LIBDIR 里 guest 侧同名 pc 同版本, 会混淆判读)
@@ -417,6 +444,14 @@ find_python_with_yaml() {
 
 build_virglrenderer() {
     local src="$ROOT/thirdparty/virglrenderer"
+    local cleanup_patch
+    for cleanup_patch in "$SCRIPT_DIR/patches/virgl-device-cleanup.patch" \
+                         "$SCRIPT_DIR/patches/virgl-render-resource-fd-close.patch" \
+                         "$SCRIPT_DIR/patches/virgl-shadow-explicit-readback.patch"; do
+        if ! patch -d "$src" -p1 --reverse --dry-run --batch --force --silent < "$cleanup_patch" >/dev/null 2>&1; then
+            patch -d "$src" -p1 --forward --batch < "$cleanup_patch"
+        fi
+    done
     local build="$NATIVE_BUILD/virglrenderer"
     local cross
     local epoxy_pc="$NATIVE_BUILD/libepoxy/install/lib/pkgconfig"
@@ -502,6 +537,7 @@ build_libffi
 build_native_freetype
 build_native_libxml2
 build_native_xkbcommon
+bash "$SCRIPT_DIR/build_wayland_scanner.sh"
 build_wayland
 emit_wayland_host_pc
 build_protocols

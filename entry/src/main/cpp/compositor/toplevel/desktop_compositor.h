@@ -230,6 +230,9 @@ private:
     uint64_t desktopCompositionSignature_ = 0;
     uint64_t desktopOutputRootFrameSerial_ = 0;
     bool desktopOutputInitialized_ = false;
+    // Tracks a scene already produced from child buffers, including a direct
+    // pass. Removing its last child must still clear the old image once.
+    uint32_t desktopRootlessSceneId_ = 0;
     /* desktopRootFrameSerial_ — desktop root 全局帧序号 (重构第 6B 步原子化)。
      * 语义: wl 线程在 root commit 时 ++ (IncrementDesktopRootFrameSerial,
      * wl_core.cpp UpdateToplevelFrameOnCommit, tmgr 锁内), 渲染线程在

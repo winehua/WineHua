@@ -1,0 +1,20 @@
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -4533,6 +4533,17 @@
+         BOOL can_use_bitmap = !!(NtGdiGetDeviceCaps( dc->hSelf, TEXTCAPS ) & TC_RA_ABLE);
+ 
+         NtGdiExtGetObjectW( hfont, sizeof(lf), &lf );
++        /* Legacy 16-bit text masks may discard every antialiased pixel.
++         * This opt-in is selected by the launcher compatibility profile. */
++        if (lf.lfQuality == DEFAULT_QUALITY)
++        {
++            const char *mono = getenv( "WINEHUA_MONO_TEXT" );
++            if (mono && !strcmp( mono, "1" ))
++            {
++                lf.lfQuality = NONANTIALIASED_QUALITY;
++                *aa_flags = GGO_BITMAP;
++            }
++        }
+         switch (lf.lfQuality)
+         {
+         case NONANTIALIASED_QUALITY:

@@ -1,10 +1,16 @@
-import { display } from '@kit.ArkUI';
+import { DesktopPointerService } from '../service/DesktopPointerService';
+import { DesktopPointerOverlay } from './DesktopPointerOverlay';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { InputSettingsService } from '../service/InputSettingsService';
-import { EVDEV_KEY_ENTER, OH2EVDEV } from '../common/KeyMap';
-import { mapMouseButton } from '../common/MouseMap';
 import { DesktopInputSink, createDesktopInputSink } from './DesktopInputSink';
+import { EVDEV_KEY_ENTER, OH2EVDEV } from '../common/KeyMap';
+import { KeyboardOverlay } from './KeyboardOverlay';
+import { mapMouseButton } from '../common/MouseMap';
+import { PHONE_DESKTOP_BOTTOM_VP } from '../common/PhoneDesktopLayout';
+import { PerformanceOverlay } from './PerformanceOverlay';
+import { DesktopTouchpad } from '../common/DesktopTouchpad';
+import { GameTouchRouter } from '../common/GameTouchRouter';
 
 const DOMAIN = 0x0000;
 
@@ -36,7 +42,7 @@ class DesktopController extends XComponentController {
 
   onSurfaceDestroyed(_s: string): void {
     hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed');
-    this.sink.surfaceDestroyed();
+    this.sink.surfaceDestroyed(_s);
   }
 }
 
@@ -52,35 +58,17 @@ export struct DesktopLayer {
   // 本组件实例不重建) floating 停留在旧值 true, 全屏态输入被持续旁路 —
   // 表现为"桌面在更新但点不动"。
   @Prop floating: boolean = false;
-  // 路线注入 seam (构造期定线, 会话内不换): wayland/x11 差异见
-  // DesktopInputSink.ets 头注释; 手势状态机 (共性) 保留在本组件
+  @Prop showKeyboardOverlay: boolean = true;
   private sink: DesktopInputSink = createDesktopInputSink();
   controller: DesktopController = new DesktopController(this.sink);
-  // 触控状态机: IDLE → PENDING → (DRAGGING | 长按 | 点击)
-  // 双指进入 SCROLLING 模式, 覆盖单指状态
-  private touchPending: boolean = false;
-  private isDragging: boolean = false;
-  private touchStartTime: number = 0;
-  private touchStartPx: number = 0;
-  private touchStartPy: number = 0;
-  private pendingTl: number = 0;
-  private pendingPx: number = 0;
-  private pendingPy: number = 0;
-  private motionLogCounter: number = 0;
-  private static readonly LONG_PRESS_MS: number = 500;
-  // 回车 down 时间戳 + 补发窗口: 与 WineWindow.ets 同款兜底 (软键盘/IME
-  // 系统吞 KeyDown 只派 KeyUp → 无配对 up 时补发 down+up)
+  // Direct touch holds the left button from Down to Up, even without motion.
+  private directFinger: number = -1;
+  private gameTouch = new GameTouchRouter((target: number, action: number, x: number, y: number, button: number) => {
+    if (action !== MouseAction.Move) hilog.info(DOMAIN, 'TouchControls', 'paired touch tl=%{public}d action=%{public}d', target, action);
+    this.sendPointer(target, action, x, y, button);
+  }, MouseAction.Press, MouseAction.Move, MouseAction.Release, mapMouseButton(1));
   private lastEnterDownTs: number = 0;
   private static readonly ENTER_SYNTH_WINDOW_MS: number = 1000;
-  private static readonly DRAG_THRESHOLD: number = 10; // 物理像素, 区分点击抖动和拖拽
-  // 双击检测
-  private lastTapTime: number = 0;
-  private lastTapPx: number = 0;
-  private lastTapPy: number = 0;
-  private lastTapTl: number = 0;
-  private lastTapTargetId: number = 0; // 决策时点目标身份 (#139 双击同一性)
-  private static readonly DOUBLE_TAP_MS: number = 400;
-  private static readonly DOUBLE_TAP_DIST: number = 30;
   // 双指滚动
   private twoFingerActive: boolean = false;
   private twoFingerLastMidX: number = 0;
@@ -106,292 +94,90 @@ export struct DesktopLayer {
   // hover 移动抽样日志计数
   private hoverLogCounter: number = 0;
 
-  // ── 触摸模拟鼠标 (触控板模式, 悬浮条开关; InputSettingsService 镜像) ──
-  // 开启后单指手势状态机整体旁路: 滑动=相对位移移虚拟光标, 点按=左键,
-  // 长按=右键, 双击后按住拖动=拖拽, 双指拖动=滚动(作用于光标处)。
-  // 两套语义不能混用 — 直接触控"指哪点哪", 触控板"光标在哪点哪"。
   @State private touchpadOn: boolean = false;
-  // 虚拟光标指示点位置 (vp, position 左上角语义); 屏外负值=不显示
-  @State private cursorVpX: number = -100;
-  @State private cursorVpY: number = -100;
-  private vcX: number = 0;   // 虚拟光标 (物理 px)
-  private vcY: number = 0;
-  private vcInit: boolean = false;
-  private scrWPx: number = 0;
-  private scrHPx: number = 0;
-  private cursorSpeed: number = 1.0;
   private input: InputSettingsService = InputSettingsService.getInstance();
-  // 触控板手势状态 (与直接触控状态机字段互不共用)
-  private tpDown: boolean = false;
-  private tpDownX: number = 0;   // Down 时触摸点 (vp)
-  private tpDownY: number = 0;
-  private tpLastX: number = 0;
-  private tpLastY: number = 0;
-  private tpDownTime: number = 0;
-  private tpMoved: boolean = false;
-  private tpDragArmed: boolean = false;  // 双击后按住: 拖拽预备
-  private tpDragging: boolean = false;
-  private tpDragTl: number = 0;
-  private tpLastTapTime: number = 0;
-  private tpLastTapVcX: number = 0;
-  private tpLastTapVcY: number = 0;
-  private tpTwoFinger: boolean = false;
-  private tpTwoFingerLastMidX: number = 0;
-  private tpTwoFingerLastMidY: number = 0;
-  private tpScrollAccumX: number = 0;
-  private tpScrollAccumY: number = 0;
-  private tpTwoFingerDownTime: number = 0; // 进入双指模式时刻 (TP-TWO-TAP 日志打点用)
-  private tpScrollFired: boolean = false;  // 本次双指已发过滚动事件 (抬指不再判右键 — 累积会被消费, 残量可能 < 点击阈值)
+  private touchpad: DesktopTouchpad = new DesktopTouchpad(this.sink);
+  private awaitFreshTouch: boolean = false;
 
   aboutToAppear(): void {
     this.input.subscribe(this.mirrorInput);
     this.mirrorInput();
   }
 
+  aboutToDisappear(): void {
+    this.input.unsubscribe(this.mirrorInput);
+    this.cancelTouchInput();
+  }
+
+  private sendPointer(target: number, action: number, x: number, y: number,
+    button: number, dx: number = 0, dy: number = 0, hardware: boolean = false): void {
+    DesktopPointerService.getInstance().move(x, y);
+    if (action === MouseAction.Press) this.sink.pressAt(target, x, y, button, hardware);
+    else if (action === MouseAction.Release) this.sink.releaseAt(target, x, y, button);
+    else this.sink.strokeMove(target, x, y);
+  }
+
+  private cancelTouchInput(): void {
+    this.touchpad.reset();
+    this.gameTouch.cancel();
+    this.directFinger = -1;
+    this.twoFingerActive = false;
+    this.twoFingerTl = 0;
+    this.twoFingerAccumX = 0;
+    this.twoFingerAccumY = 0;
+    this.awaitFreshTouch = true;
+  }
+
   private mirrorInput = (): void => {
-    this.touchpadOn = this.input.touchpadEnabled;
-    this.cursorSpeed = this.input.cursorSpeed;
-    if (this.touchpadOn && !this.vcInit) {
-      // 虚拟光标初始位置: 屏幕中心
-      this.ensureScreenPx();
-      this.vcX = this.scrWPx / 2;
-      this.vcY = this.scrHPx / 2;
-      this.vcInit = true;
-      this.syncCursorIndicator();
+    const enabled = this.input.touchpadEnabled;
+    if (enabled !== this.touchpadOn) {
+      this.cancelTouchInput();
+      this.touchpadOn = enabled;
+      if (enabled) this.touchpad.activate();
     }
-  }
-
-  private ensureScreenPx(): void {
-    if (this.scrWPx > 0) return;
-    try {
-      const d = display.getDefaultDisplaySync();
-      this.scrWPx = d.width;
-      this.scrHPx = d.height;
-    } catch (_) {
-      this.scrWPx = 1280;
-      this.scrHPx = 800;
-    }
-  }
-
-  private syncCursorIndicator(): void {
-    // 指示点为 14vp 圆, position 是左上角坐标 → 减半径使圆心对正光标
-    this.cursorVpX = px2vp(this.vcX) - 7;
-    this.cursorVpY = px2vp(this.vcY) - 7;
-  }
-
-  private tlAtCursor(): number {
-    return this.sink.hitTest(Math.round(this.vcX), Math.round(this.vcY));
-  }
-
-  private clickAtCursor(btn: number): void {
-    // beginStroke = 命中 + 激活 (wayland raise / x11 motion 锚定)
-    const tl = this.sink.beginStroke(Math.round(this.vcX), Math.round(this.vcY));
-    if (tl <= 0) return;
-    const x = Math.round(this.vcX);
-    const y = Math.round(this.vcY);
-    this.sink.pressAt(tl, x, y, btn, false);
-    this.sink.releaseAt(tl, x, y, btn);
-  }
-
-  private resetTouchpadState(): void {
-    if (this.tpDragging && this.tpDragTl > 0) {
-      this.sink.releaseAt(this.tpDragTl,
-        Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
-    }
-    this.tpDown = false;
-    this.tpMoved = false;
-    this.tpDragArmed = false;
-    this.tpDragging = false;
-    this.tpDragTl = 0;
-    this.tpTwoFinger = false;
-    this.tpTwoFingerDownTime = 0;
-    this.tpScrollFired = false;
-    this.tpLastTapTime = 0;
-  }
-
-  // 触控板模式 onTouch 总入口 (touchpadOn 时替代单/双指手势状态机)
-  private handleTouchpad(ev: TouchEvent): void {
-    // 物理鼠标合成 touch 旁路 (与直接触控同一守卫; onMouse Press 里负责清态)
-    if (this.mouseLeftActive) return;
-    this.ensureScreenPx();
-
-    // 双指: 滚动作用于光标处 (触控板语义), 并打断单指/拖拽
-    if (ev.touches.length >= 2) {
-      let midX = 0, midY = 0;
-      for (let i = 0; i < ev.touches.length; i++) {
-        midX += vp2px(ev.touches[i].x);
-        midY += vp2px(ev.touches[i].y);
-      }
-      midX /= ev.touches.length;
-      midY /= ev.touches.length;
-      if (!this.tpTwoFinger) {
-        if (this.tpDragging && this.tpDragTl > 0) {
-          this.sink.releaseAt(this.tpDragTl,
-            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
-        }
-        this.tpDown = false;
-        this.tpDragging = false;
-        this.tpDragTl = 0;
-        this.tpDragArmed = false;
-        this.tpTwoFinger = true;
-        this.tpTwoFingerLastMidX = midX;
-        this.tpTwoFingerLastMidY = midY;
-        this.tpScrollAccumX = 0;
-        this.tpScrollAccumY = 0;
-        this.tpScrollFired = false;
-        this.tpTwoFingerDownTime = Date.now();
-      } else {
-        this.tpScrollAccumY += this.tpTwoFingerLastMidY - midY;
-        this.tpScrollAccumX += midX - this.tpTwoFingerLastMidX;
-        this.tpTwoFingerLastMidX = midX;
-        this.tpTwoFingerLastMidY = midY;
-        // 累积触及滚动步立即锁定"滚动手势": 后续抬指不判右键
-        if (Math.abs(this.tpScrollAccumY) >= DesktopLayer.SCROLL_STEP_PX
-          || Math.abs(this.tpScrollAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
-          this.tpScrollFired = true;
-        }
-        const tl = this.tlAtCursor();
-        if (tl > 0) {
-          while (Math.abs(this.tpScrollAccumY) >= DesktopLayer.SCROLL_STEP_PX) {
-            const sign = this.tpScrollAccumY > 0 ? 1 : -1;
-            this.sink.scrollAt(tl, 0, sign, DesktopLayer.SCROLL_STEP_PX,
-              Math.round(this.vcX), Math.round(this.vcY));
-            this.tpScrollAccumY -= sign * DesktopLayer.SCROLL_STEP_PX;
-          }
-          while (Math.abs(this.tpScrollAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
-            const sign = this.tpScrollAccumX > 0 ? 1 : -1;
-            this.sink.scrollAt(tl, 1, sign, DesktopLayer.SCROLL_STEP_PX,
-              Math.round(this.vcX), Math.round(this.vcY));
-            this.tpScrollAccumX -= sign * DesktopLayer.SCROLL_STEP_PX;
-          }
-        }
-      }
-      return;
-    }
-    if (this.tpTwoFinger) {
-      this.tpTwoFinger = false;
-      // 双指抬起判定: 中点净位移 < TWO_FINGER_TAP_PX → 模拟右键 (与单指长按同效果);
-      // 净位移 >= 阈值 → 滚动手势, 不起右键 (累积满 40px 的已在滚动分支发过)
-      const dist = Math.abs(this.tpScrollAccumX) + Math.abs(this.tpScrollAccumY);
-      if (!this.tpScrollFired && dist < DesktopLayer.TWO_FINGER_TAP_PX) {
-        const tl = this.tlAtCursor();
-        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TP-TWO-TAP→RCLICK tl=%{public}d moved=%{public}d hold=%{public}dms',
-          tl, dist, Date.now() - this.tpTwoFingerDownTime);
-        this.clickAtCursor(mapMouseButton(2));
-      }
-      return;
-    }
-
-    const t = ev.changedTouches[0];
-    if (!t) return;
-
-    if (ev.type === TouchType.Down) {
-      this.tpDown = true;
-      this.tpMoved = false;
-      this.tpDownX = t.x;
-      this.tpDownY = t.y;
-      this.tpLastX = t.x;
-      this.tpLastY = t.y;
-      this.tpDownTime = Date.now();
-      // 双击后按住 → 拖拽预备 (标准触控板 drag 手势: 第二次 Down 且光标没怎么挪)
-      const dvc = Math.abs(this.vcX - this.tpLastTapVcX) + Math.abs(this.vcY - this.tpLastTapVcY);
-      this.tpDragArmed = this.tpLastTapTime > 0
-        && (Date.now() - this.tpLastTapTime) < DesktopLayer.DOUBLE_TAP_MS
-        && dvc < DesktopLayer.DOUBLE_TAP_DIST * 2;
-    } else if (ev.type === TouchType.Move) {
-      if (!this.tpDown) return;
-      const dxPx = vp2px(t.x - this.tpLastX) * this.cursorSpeed;
-      const dyPx = vp2px(t.y - this.tpLastY) * this.cursorSpeed;
-      this.tpLastX = t.x;
-      this.tpLastY = t.y;
-      if (dxPx == 0 && dyPx == 0) return;
-      if (!this.tpMoved) {
-        const moved = Math.abs(vp2px(t.x - this.tpDownX)) + Math.abs(vp2px(t.y - this.tpDownY));
-        if (moved >= DesktopLayer.DRAG_THRESHOLD) {
-          this.tpMoved = true;
-        }
-      }
-      this.vcX = Math.min(Math.max(this.vcX + dxPx, 0), this.scrWPx);
-      this.vcY = Math.min(Math.max(this.vcY + dyPx, 0), this.scrHPx);
-      this.syncCursorIndicator();
-      if (this.tpDragArmed && !this.tpDragging && this.tpMoved) {
-        // 拖拽开始: 在光标处按下左键 (beginStroke = 命中 + 激活)
-        this.tpDragging = true;
-        this.tpDragTl = this.sink.beginStroke(
-          Math.round(this.vcX), Math.round(this.vcY));
-        if (this.tpDragTl > 0) {
-          this.sink.pressAt(this.tpDragTl,
-            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1), false);
-        }
-      }
-      const moveTl = this.tpDragging ? this.tpDragTl : this.tlAtCursor();
-      if (moveTl > 0) {
-        this.sink.strokeMove(moveTl,
-          Math.round(this.vcX), Math.round(this.vcY));
-      }
-    } else if (ev.type === TouchType.Up) {
-      if (!this.tpDown) return;
-      this.tpDown = false;
-      if (this.tpDragging) {
-        if (this.tpDragTl > 0) {
-          this.sink.releaseAt(this.tpDragTl,
-            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
-        }
-        this.tpDragging = false;
-        this.tpDragTl = 0;
-        this.tpDragArmed = false;
-        this.tpLastTapTime = 0;
-        return;
-      }
-      this.tpDragArmed = false;
-      if (!this.tpMoved) {
-        const elapsed = Date.now() - this.tpDownTime;
-        if (elapsed >= DesktopLayer.LONG_PRESS_MS) {
-          this.clickAtCursor(mapMouseButton(2));
-          this.tpLastTapTime = 0;
-        } else {
-          this.clickAtCursor(mapMouseButton(1));
-          this.tpLastTapTime = Date.now();
-          this.tpLastTapVcX = this.vcX;
-          this.tpLastTapVcY = this.vcY;
-        }
-      }
-    } else if (ev.type === TouchType.Cancel) {
-      this.resetTouchpadState();
-    }
+    this.touchpad.cursorSpeed = this.input.cursorSpeed;
   }
 
   build() {
     Stack() {
+      // Keep the black backdrop on the parent. On phone, a background on
+      // the SURFACE XComponent can hide successfully presented EGL frames.
       XComponent({
         id: 'wine_desktop_xc',
         type: XComponentType.SURFACE,
         controller: this.controller
-      }).width('100%').height('100%').backgroundColor('#000').focusable(true).focusOnTouch(true)
+      }).width('100%').height('100%').focusable(true).focusOnTouch(true)
+      .onAreaChange((_old: Area, area: Area) => {
+        this.touchpad.setBounds(vp2px(Number(area.width)), vp2px(Number(area.height)));
+        if (this.touchpadOn) this.touchpad.activate();
+      })
+      .onVisibleAreaChange([0], (visible: boolean) => { if (!visible) this.cancelTouchInput(); })
 
       // ── 触控处理: 单指→左键/右键/拖拽, 双指→滚轮 ──
       .onTouch((ev: TouchEvent) => {
         try {
+          if (ev.type === TouchType.Cancel) {
+            this.cancelTouchInput();
+            return;
+          }
           // 悬浮窗态: 输入旁路 (点击/拖动由 Index 悬浮交互层接管)
           if (this.floating) {
             return;
           }
+          if (this.mouseLeftActive) return;
+          if (this.awaitFreshTouch) {
+            if (ev.type !== TouchType.Down) return;
+            this.awaitFreshTouch = false;
+          }
           // 触控板模式: 走独立相对位移语义, 旁路下方直接触控状态机
           if (this.touchpadOn) {
-            this.handleTouchpad(ev);
+            this.touchpad.handle(ev);
             return;
           }
           // ── 双指滚动 ──
           if (ev.touches.length >= 2) {
-            // 取消单指状态
-            if (this.touchPending || this.isDragging) {
-              if (this.isDragging) {
-                const btnLeft = mapMouseButton(1);
-                this.sink.releaseAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft);
-              }
-              this.touchPending = false;
-              this.isDragging = false;
-            }
+            this.gameTouch.cancel();
+            this.directFinger = -1;
 
             // 计算双指中点
             let midX = 0, midY = 0;
@@ -409,7 +195,7 @@ export struct DesktopLayer {
               this.twoFingerLastMidY = midY;
               this.twoFingerAccumY = 0;
               this.twoFingerAccumX = 0;
-              this.twoFingerTl = this.sink.beginScroll(midX, midY);
+              this.twoFingerTl = this.sink.hitTest(midX, midY) as number ?? 0;
               this.scrollLogCounter = 0;
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] SCROLL-START tl=%{public}d fingers=%{public}d',
                 this.twoFingerTl, ev.touches.length);
@@ -449,147 +235,34 @@ export struct DesktopLayer {
             return;
           }
 
-          const t = ev.changedTouches[0];
+          const t = ev.changedTouches.find((touch: TouchObject) =>
+            this.directFinger < 0 || touch.id === this.directFinger);
           if (!t) return;
-          // 物理鼠标左键的合成 touch: 已由 .onMouse 以真实时序直通, 此处忽略。
-          // 若让它进手势状态机, 静止点击会被压成 Press+Release 同刻脉冲
-          // (dinput 轮询不可见), 长按还会被误判成右键 — 鼠标有自己的右键。
-          if (this.mouseLeftActive) return;
           const px = Math.round(vp2px(t.x));
           const py = Math.round(vp2px(t.y));
-
           if (ev.type === TouchType.Down) {
-            // 命中 + 激活经 sink (px,py 为物理坐标; wayland 命中失败 = 桌外丢弃,
-            // x11 恒命中 — 无「桌外」概念, motion 锚定即悬停激活)
-            const tl: number = this.sink.beginStroke(px, py);
-            if (tl <= 0) {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH skipped (no toplevel at %{public}d,%{public}d)', px, py);
-              return;
+            if (this.directFinger >= 0) return;
+            const tl = this.sink.hitTest(px, py) as number;
+            if (tl <= 0) return;
+            this.directFinger = t.id;
+            this.sink.beginStroke(px, py);
+            this.gameTouch.begin(tl, px, py);
+          } else if (this.directFinger >= 0) {
+            if (ev.type === TouchType.Move) this.gameTouch.move(px, py);
+            else if (ev.type === TouchType.Up) {
+              this.gameTouch.end(px, py);
+              this.directFinger = -1;
             }
-            hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-            // 进入 PENDING 状态: 暂不发送事件, 等判定长按/拖拽/点击
-            this.touchPending = true;
-            this.isDragging = false;
-            this.touchStartTime = Date.now();
-            this.touchStartPx = px;
-            this.touchStartPy = py;
-            this.pendingTl = tl;
-            this.pendingPx = px;
-            this.pendingPy = py;
-            this.motionLogCounter = 0;
-
-          } else if (ev.type === TouchType.Move) {
-            if (!this.touchPending && !this.isDragging) return;
-
-            const dist = Math.abs(px - this.touchStartPx) + Math.abs(py - this.touchStartPy);
-
-            if (this.touchPending && dist >= DesktopLayer.DRAG_THRESHOLD) {
-              // 进入拖拽模式: 补发 Press (Down 时未发)
-              const btnLeft = mapMouseButton(1);
-              this.touchPending = false;
-              this.isDragging = true;
-              // 打断双击序列 (拖拽不是点击)
-              this.lastTapTime = 0;
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-START tl=%{public}d px=(%{public}d,%{public}d) dist=%{public}d',
-                this.pendingTl, px, py, dist);
-              this.sink.pressAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft, false);
-              this.sink.strokeMove(this.pendingTl, px, py);
-            } else if (this.isDragging) {
-              // 拖拽移动: 持续发送 Motion
-              this.sink.strokeMove(this.pendingTl, px, py);
-              if (++this.motionLogCounter % 10 === 0) {
-                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-MOVE tl=%{public}d px=(%{public}d,%{public}d) frame=%{public}d',
-                  this.pendingTl, px, py, this.motionLogCounter);
-              }
-            } else if (this.touchPending) {
-              // PENDING 未过阈值: wayland 不发 (等 Up 判定); x11 motion 直通
-              // (hover 菜单/高亮) — 差异在 sink 实现内
-              this.sink.strokeHover(px, py);
-            }
-
-          } else if (ev.type === TouchType.Up) {
-            if (this.isDragging) {
-              // 拖拽结束
-              const btnLeft = mapMouseButton(1);
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-END tl=%{public}d px=(%{public}d,%{public}d)',
-                this.pendingTl, px, py);
-              this.sink.releaseAt(this.pendingTl, px, py, btnLeft);
-              this.isDragging = false;
-
-            } else if (this.touchPending) {
-              // PENDING 状态: 按按下时长判定长按 vs 点击
-              this.touchPending = false;
-              const elapsed = Date.now() - this.touchStartTime;
-
-              if (elapsed >= DesktopLayer.LONG_PRESS_MS) {
-                // 长按 → 右键
-                const btnRight = mapMouseButton(2);
-                this.lastTapTime = 0; // 长按打断双击序列
-                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] LONGPRESS->RIGHTCLICK tl=%{public}d elapsed=%{public}dms px=(%{public}d,%{public}d)',
-                  this.pendingTl, elapsed, this.pendingPx, this.pendingPy);
-                this.sink.pressAt(this.pendingTl, this.pendingPx, this.pendingPy, btnRight, false);
-                this.sink.releaseAt(this.pendingTl, this.pendingPx, this.pendingPy, btnRight);
-              } else {
-                // 短按 → 左键 或 双击
-                const btnLeft = mapMouseButton(1);
-                const now = Date.now();
-                const dist = Math.abs(this.pendingPx - this.lastTapPx) + Math.abs(this.pendingPy - this.lastTapPy);
-                // 双击同一性 (#139): 决策时点的目标身份 —— pendingTl 在 x11
-                // 恒 1 (sink 无桌面句柄概念), 旧判据被架空; 两 tap 落不同
-                // 窗时按两次单击处置 (与真 X 桌面语义一致)
-                const targetId = this.sink.targetIdentityAt(this.pendingPx, this.pendingPy);
-                const isDoubleTap = (this.lastTapTime > 0 && (now - this.lastTapTime) < DesktopLayer.DOUBLE_TAP_MS
-                                    && dist < DesktopLayer.DOUBLE_TAP_DIST && targetId === this.lastTapTargetId);
-
-                if (isDoubleTap) {
-                  // 双击: 第一次点击已由上一个单击路径发出, 这里只补发
-                  // 第二次点击 (按首击坐标重放 — wine 双击判据 ±1px, #137;
-                  // x11 侧由 sink 前置 motion 锚定首击坐标)
-                  this.lastTapTime = 0;
-                  this.sink.pressAt(this.pendingTl, this.lastTapPx, this.lastTapPy, btnLeft, false);
-                  this.sink.releaseAt(this.pendingTl, this.lastTapPx, this.lastTapPy, btnLeft);
-                  hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DOUBLE-TAP tl=%{public}d px=(%{public}d,%{public}d)',
-                    this.pendingTl, this.lastTapPx, this.lastTapPy);
-                } else {
-                  // 单击
-                  this.sink.pressAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft, false);
-                  this.sink.releaseAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft);
-                  this.lastTapTime = now;
-                  this.lastTapPx = this.pendingPx;
-                  this.lastTapPy = this.pendingPy;
-                  this.lastTapTl = this.pendingTl;
-                  this.lastTapTargetId = targetId;
-                  hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TAP->LEFTCLICK tl=%{public}d px=(%{public}d,%{public}d)',
-                    this.pendingTl, this.pendingPx, this.pendingPy);
-                }
-              }
-            }
-          } else if (ev.type === TouchType.Cancel) {
-            // 系统取消触摸 (手势/通知等): 如果正在拖拽则补发 Release
-            if (this.isDragging) {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] CANCEL-DRAG tl=%{public}d px=(%{public}d,%{public}d)',
-                this.pendingTl, px, py);
-              const btnLeft = mapMouseButton(1);
-              this.sink.releaseAt(this.pendingTl, px, py, btnLeft);
-            } else {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] CANCEL tl=%{public}d (no event sent)', this.pendingTl);
-            }
-            this.touchPending = false;
-            this.isDragging = false;
           }
         } catch (e) {
           hilog.error(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH handler exception: %{public}s', JSON.stringify(e));
         }
       })
 
-      // ── 物理鼠标: hover 移动 + 左右键真实时序直通 ──
-      // 左键: OHOS 会同时派发 mouse 事件和合成 touch 事件 — 本处理器直通
-      // mouse 事件, 合成 touch 由 onTouch 里的 mouseLeftActive 守卫丢弃
-      // (手势状态机的"等 Up 再补发"只服务于手指, 作用于鼠标会把静止点击
-      // 压成 0ms 脉冲)。右键不合成 touch 事件, 没有本处理器则完全丢失
-      // (触屏长按合成右键不受影响)。
+      // Physical pointer buttons keep their own capture and timing.
       .onMouse((ev: MouseEvent) => {
         try {
+          if (!this.floating) DesktopPointerService.getInstance().move(vp2px(ev.x), vp2px(ev.y));
           // 诊断 (临时): 非 Move 事件在处理器入口记录硬件时间戳 (排查 explorer
           // 单击变双击, 见 DesktopWindow.ets 同注释)
           if (ev.action !== MouseAction.Move) {
@@ -604,54 +277,54 @@ export struct DesktopLayer {
           if (ev.action === MouseAction.Move) {
             // touch 手势进行中: 左键按住移动等由 onTouch 状态机发 motion
             // (OHOS 对左键同时派发合成 touch 和 mouse 事件, 此处再发会双发)
-            if (this.touchPending || this.isDragging || this.twoFingerActive) return;
+            if (this.gameTouch.active || this.twoFingerActive) return;
             const px = Math.round(vp2px(ev.x));
             const py = Math.round(vp2px(ev.y));
-            if (++this.hoverLogCounter % 120 === 0) {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-MOVE px=(%{public}d,%{public}d) n=%{public}d',
-                px, py, this.hoverLogCounter);
+            // 按键按住拖动: 发给按下捕获的 tl; 否则按当前位置找目标
+            // (跨窗口 enter/leave 由注入层 ACT_MOVE 的焦点判定处理)
+            let tl = this.leftBtnTl || this.rightBtnTl || this.midBtnTl;
+            if (tl <= 0) {
+              tl = this.sink.hitTest(px, py) as number;
+              if (tl <= 0) return;
             }
-            // 按键按住拖动: 发给按下捕获的句柄; 否则按当前位置找目标
-            // (跨窗口 enter/leave 由注入层焦点判定处理; rawDelta 设备校准
-            // 在 sink 内 — wayland 才有 rawDelta 概念)
-            this.sink.hoverMove(this.leftBtnTl || this.rightBtnTl || this.midBtnTl,
-              px, py, ev.rawDeltaX ?? 0, ev.rawDeltaY ?? 0, ev.deviceId ?? 0);
+            if (++this.hoverLogCounter % 120 === 0) {
+              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-MOVE tl=%{public}d px=(%{public}d,%{public}d) n=%{public}d',
+                tl, px, py, this.hoverLogCounter);
+            }
+            this.sink.hoverMove(tl, px, py, ev.rawDeltaX ?? 0,
+              ev.rawDeltaY ?? 0, ev.deviceId ?? 0);
             return;
           }
           if (ev.action !== MouseAction.Press && ev.action !== MouseAction.Release) return;
           const px = Math.round(vp2px(ev.x));
           const py = Math.round(vp2px(ev.y));
           // ── 物理鼠标左键: 真实时序直通 (按下即转发, 不等手势判定) ──
-          // OHOS 对左键同时派发 mouse 事件和合成 touch 事件; 合成 touch 走
-          // onTouch 手势状态机会把静止点击压成 Press+Release 同刻脉冲
-          // (dinput 轮询类游戏 PAL2 因此看不见静止点击), 长按还会被误判为
-          // 右键。这里直通真实时序, 并用 mouseLeftActive 抑制合成 touch。
+          // Suppress the platform's synthesized touch while left mouse is held.
           if (ev.button === MouseButton.Left) {
             const btnLeft = mapMouseButton(1);
             if (ev.action === MouseAction.Press) {
               this.mouseLeftActive = true;
-              // 竞态: 合成 touch 可能先一步进入 PENDING/DRAG, 静默清除
-              // (其后续 Move/Up 会被 mouseLeftActive 拦截, 不会双发);
-              // 触控板模式同理清态 (合成 touch 可能先一步 Down)
-              this.touchPending = false;
-              this.isDragging = false;
-              this.resetTouchpadState();
-              const tl: number = this.sink.beginStroke(px, py);
+              // A synthesized touch can arrive before the physical mouse.
+              this.gameTouch.cancel();
+              this.directFinger = -1;
+              this.touchpad.reset();
+              const tl: number = this.sink.hitTest(px, py) as number;
               if (tl <= 0) {
                 this.leftBtnTl = 0;
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT skipped (no toplevel at %{public}d,%{public}d)', px, py);
                 return;
               }
               this.leftBtnTl = tl;
+              this.sink.beginStroke(px, py);
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT press tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-              this.sink.pressAt(tl, px, py, btnLeft, true);
+              this.sendPointer(tl, MouseAction.Press, px, py, btnLeft, 0, 0, true);
             } else {
               if (this.leftBtnTl <= 0) {
                 this.mouseLeftActive = false;
                 return;
               }
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT release tl=%{public}d px=(%{public}d,%{public}d)', this.leftBtnTl, px, py);
-              this.sink.releaseAt(this.leftBtnTl, px, py, btnLeft);
+              this.sendPointer(this.leftBtnTl, MouseAction.Release, px, py, btnLeft);
               this.leftBtnTl = 0;
               this.mouseLeftActive = false;
             }
@@ -659,26 +332,27 @@ export struct DesktopLayer {
           }
           // ── 右键 / 中键: 共用按下捕获-释放配对 ──
           // OHOS 只对左键合成 touch, 右/中键在 onTouch 无对应事件, 不会双发;
-          // 两键各自独立捕获句柄, 同按 (罕见) 也互不串扰
+          // 两键各自独立捕获 tl, 同按 (罕见) 也互不串扰
           if (ev.button !== MouseButton.Right && ev.button !== MouseButton.Middle) return;
           const isRight = ev.button === MouseButton.Right;
           const btnCode = mapMouseButton(isRight ? 2 : 4);
           const btnName = isRight ? 'RIGHT' : 'MIDDLE';
           if (ev.action === MouseAction.Press) {
-            const tl: number = this.sink.beginStroke(px, py);
+            const tl: number = this.sink.hitTest(px, py) as number;
             if (tl <= 0) {
               if (isRight) this.rightBtnTl = 0; else this.midBtnTl = 0;
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-%{public}s skipped (no toplevel at %{public}d,%{public}d)', btnName, px, py);
               return;
             }
             if (isRight) this.rightBtnTl = tl; else this.midBtnTl = tl;
+            this.sink.beginStroke(px, py);
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-%{public}s press tl=%{public}d px=(%{public}d,%{public}d)', btnName, tl, px, py);
-            this.sink.pressAt(tl, px, py, btnCode, true);
+            this.sendPointer(tl, MouseAction.Press, px, py, btnCode, 0, 0, true);
           } else {
             const btnTl = isRight ? this.rightBtnTl : this.midBtnTl;
             if (btnTl <= 0) return;
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-%{public}s release tl=%{public}d px=(%{public}d,%{public}d)', btnName, btnTl, px, py);
-            this.sink.releaseAt(btnTl, px, py, btnCode);
+            this.sendPointer(btnTl, MouseAction.Release, px, py, btnCode);
             if (isRight) this.rightBtnTl = 0; else this.midBtnTl = 0;
           }
         } catch (e) {
@@ -689,7 +363,7 @@ export struct DesktopLayer {
       // ── 键盘事件 ──
       .onKeyEvent((ev: KeyEvent) => {
         if (this.floating) return;  // 悬浮窗态: 输入旁路
-        // 门经 sink (wayland = root 已映射; x11 = 链已绑定)
+        const rootId = WineWindowManager.getInstance().getDesktopRootId();
         if (!this.sink.inputReady()) return;
         ev.stopPropagation();
         const code = OH2EVDEV[ev.keyCode] ?? 0;
@@ -711,28 +385,26 @@ export struct DesktopLayer {
       // ── 滚轮事件 ──
       .onAxisEvent((ev?: AxisEvent) => {
         if (this.floating) return;  // 悬浮窗态: 输入旁路
-        if (!ev || !this.sink.inputReady()) return;
+        const rootId = WineWindowManager.getInstance().getDesktopRootId();
+        if (!this.sink.inputReady() || !ev) return;
         const wpx = Math.round(vp2px(ev.x));
         const wpy = Math.round(vp2px(ev.y));
         const vert = ev.getVerticalAxisValue();
         const horiz = ev.getHorizontalAxisValue();
         const step = ev.scrollStep ?? 0;
-        const tl: number = this.sink.beginScroll(wpx, wpy);
+        const tl: number = this.sink.hitTest(wpx, wpy) as number;
         if (vert !== 0) this.sink.scrollAt(tl, 0, vert, step, wpx, wpy);
         if (horiz !== 0) this.sink.scrollAt(tl, 1, horiz, step, wpx, wpy);
       })
 
-      // ── 触控板虚拟光标指示 (不响应触摸, 纯展示) ──
-      if (this.touchpadOn) {
-        // 描边不用纯白: 白色背景 (记事本等) 下光标会整个消失, 用浅灰保证可辨
-        Circle({ width: 14, height: 14 })
-          .fill('#66FFFFFF')
-          .stroke('#FFB3B3B3')
-          .strokeWidth(1.5)
-          .position({ x: this.cursorVpX, y: this.cursorVpY })
-          .hitTestBehavior(HitTestMode.None)
+      // 自定义虚拟键盘: 虚拟桌面热区 = 桌面 root (targetId 0 时组件自行解析)
+      DesktopPointerOverlay()
+      if (this.showKeyboardOverlay && !this.floating) {
+        KeyboardOverlay({ targetId: 0, inputSink: this.sink })
       }
+      if (!this.floating) { PerformanceOverlay() }
     }
     .width('100%').height('100%').backgroundColor('#000')
+    .padding({ bottom: this.floating ? 0 : PHONE_DESKTOP_BOTTOM_VP })
   }
 }

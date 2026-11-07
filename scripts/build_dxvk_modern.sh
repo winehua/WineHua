@@ -28,8 +28,8 @@ setup_if_missing "$DXVK_MODERN_BUILD_ROOT/build.winehua32" build-win32.txt \
     "$DXVK_MODERN_BUILD_ROOT/x86"
 
 log "--- DXVK Modern profile ($DXVK_MODERN_SRC) ---"
-ninja -C "$DXVK_MODERN_BUILD_ROOT/build.winehua64" install
-ninja -C "$DXVK_MODERN_BUILD_ROOT/build.winehua32" install
+ninja -j"$JOBS" -C "$DXVK_MODERN_BUILD_ROOT/build.winehua64" install
+ninja -j"$JOBS" -C "$DXVK_MODERN_BUILD_ROOT/build.winehua32" install
 
 for dll in d3d11.dll dxgi.dll; do
     [ -f "$DXVK_MODERN_BUILD_ROOT/x64/bin/$dll" ] || \

@@ -5,7 +5,6 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import testNapi from 'libentry.so';
 import { WineEnvService } from './WineEnvService';
 import { BOX64_DYNAREC_PRESETS } from './Box64Dynarec';
-import { ProcessInfo } from './ProcessService';
 import { IconExtractor } from './IconExtractor';
 import { LnkScanner, LnkTarget } from './LnkScanner';
 import { displayNameOf, isProgramFile } from '../common/LaunchableFile';
@@ -626,7 +625,7 @@ export class AppLibraryService {
       d3dBackend: d3dBackend,
       dxvkBackend: env.getDxvkBackend()
       // presentBackend 不传: native 按 d3dBackend 派生 (DerivePresentBackend)
-    }) as ProcessInfo;
+    });
     if (result && result.pid > 0) {
       this.markLaunched(path);
       return result.pid;
@@ -658,7 +657,7 @@ export class AppLibraryService {
       d3dBackend: d3dBackend,
       dxvkBackend: env.getDxvkBackend()
       // presentBackend 不传: native 按 d3dBackend 派生 (DerivePresentBackend)
-    }) as ProcessInfo;
+    });
     return (result && result.pid > 0) ? result.pid : -1;
   }
 

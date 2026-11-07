@@ -14,13 +14,14 @@
 
 本文讲第一套。第二套在渲染链路文档里。
 
-## 四个档位
+## D3D 档位
 
 | 档位 | 实际是什么 | 处理哪些 D3D 版本 |
 |---|---|---|
 | `wined3d` | Wine 自带的 wined3d（D3D 调用转成 OpenGL） | 全部，但性能最差 |
-| `dxvk_legacy` | 项目定制的 DXVK 1.10.3 | D3D9/10/11 |
-| `dxvk_modern_2_6` | 项目定制的 DXVK 2.6.2 | D3D9/11（2.x 移除了 D3D10 链） |
+| `dxvk_legacy` | 项目定制的 DXVK 1.10.3 | D3D10/11；D3D9 保留 WineD3D |
+| `dxvk_legacy_d3d9` | 显式启用 Legacy D3D9 overlay | D3D9/10/11；须单独验收两架构 |
+| `dxvk_modern_2_6` | 项目定制的 DXVK 2.6.2 | D3D11（包内只有 D3D11/DXGI；2.x 移除了 D3D10 链） |
 | `vkd3d_limited_500k` | VKD3D-Proton 2.6（D3D12），配一个独立的 DXVK 轴处理 D3D11 | D3D12 + D3D11 |
 
 **D3D12 只有一个档位能用**（`vkd3d_limited_500k`）。"limited 500k" 指的是 descriptor 堆上限设为 50 万条（上游要求 100 万），这是为设备能力做的妥协。

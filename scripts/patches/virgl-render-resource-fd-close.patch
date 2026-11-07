@@ -1,0 +1,25 @@
+--- a/server/render_context.c
++++ b/server/render_context.c
+@@ -118,18 +118,11 @@
+    ok =
+       render_socket_send_reply_with_fds(&ctx->socket, &reply, sizeof(reply), &res_fd, 1);
+ 
+-#if defined(__OHOS__) && defined(ENABLE_SAME_PROCESS_RENDER_SERVER) && \
+-   defined(ENABLE_RENDER_SERVER_WORKER_THREAD)
+-   /* HarmonyOS keeps the descriptor number shared when SCM_RIGHTS is used
+-    * between threads of this process.  Closing it here races the receiving
+-    * proxy: F_ADD_SEALS can succeed and the following fstat then observes
+-    * EBADF.  On a successful send ownership is transferred to the proxy and
+-    * ultimately to virgl_resource; that lifecycle performs the close. */
+-   if (!ok)
+-      close(res_fd);
+-#else
++   /* SCM_RIGHTS gives the receiver its own descriptor, including between
++    * threads sharing one descriptor table. Release the sender's reference
++    * after sendmsg; the queued message keeps the backing object alive until
++    * recvmsg installs the receiver's descriptor. */
+    close(res_fd);
+-#endif
+ 
+    return ok;
+ }

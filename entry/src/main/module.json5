@@ -38,6 +38,19 @@
     "pages": "$profile:main_pages",
     "abilities": [
       {
+        "name": "GameLibraryAbility",
+        "srcEntry": "./ets/entryability/GameLibraryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": false,
+        "launchType": "singleton",
+        "orientation": "landscape",
+        "removeMissionAfterTerminate": true
+      },
+      {
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",

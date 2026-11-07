@@ -1,0 +1,41 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -21,6 +21,7 @@
+ 
+ #include "../util/util_bit.h"
+ #include "../util/util_math.h"
++#include "../util/util_env.h"
+ 
+ #include "d3d9_initializer.h"
+ 
+@@ -3889,6 +3890,7 @@
+   DxvkDeviceFeatures D3D9DeviceEx::GetDeviceFeatures(const Rc<DxvkAdapter>& adapter) {
+     DxvkDeviceFeatures supported = adapter->features();
+     DxvkDeviceFeatures enabled = {};
++    const bool relaxed = env::getEnvVar("WINEHUA_DXVK_RELAXED_FEATURES") == "1";
+ 
+     // Geometry shaders are used for some meta ops
+     enabled.core.features.geometryShader = VK_TRUE;
+@@ -3924,7 +3926,11 @@
+     enabled.core.features.shaderCullDistance = VK_TRUE;
+ 
+     // Ensure we support real BC formats and unofficial vendor ones.
+-    enabled.core.features.textureCompressionBC = VK_TRUE;
++    // In the explicit WineHua compatibility mode, unsupported BC formats
++    // remain rejected by the adapter's format checks. Do not request a
++    // missing Vulkan feature merely to create an uncompressed D3D9 device.
++    enabled.core.features.textureCompressionBC = relaxed
++      ? supported.core.features.textureCompressionBC : VK_TRUE;
+ 
+     enabled.extDepthClipEnable.depthClipEnable = supported.extDepthClipEnable.depthClipEnable;
+     enabled.extHostQueryReset.hostQueryReset = VK_TRUE;
+@@ -3933,7 +3939,8 @@
+     enabled.core.features.occlusionQueryPrecise = VK_TRUE;
+ 
+     // SM3 level hardware
+-    enabled.core.features.multiViewport = VK_TRUE;
++    enabled.core.features.multiViewport = relaxed
++      ? supported.core.features.multiViewport : VK_TRUE;
+     enabled.core.features.independentBlend = VK_TRUE;
+ 
+     // D3D10 level hardware supports this in D3D9 native.

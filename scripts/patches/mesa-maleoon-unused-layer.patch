@@ -1,0 +1,54 @@
+--- a/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
++++ b/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
+@@ -31,6 +31,41 @@
+ #include "util/hash_table.h"
+ 
+ #define SLOT_UNSET ((unsigned char) -1)
++
++/* Maleoon rejects some modules declaring ShaderLayer after the layer output
++ * has been eliminated. Remove only the unused capability, preserving shaders
++ * that still decorate a variable or a structure member with BuiltIn Layer. */
++static void
++remove_unused_shader_layer(struct spirv_shader *spirv)
++{
++   size_t capability = 0;
++   for (size_t i = 5; i < spirv->num_words;) {
++      const uint32_t instruction = spirv->words[i];
++      const unsigned count = instruction >> 16;
++      const unsigned opcode = instruction & 0xffff;
++      if (!count || count > spirv->num_words - i)
++         return;
++      if (opcode == SpvOpDecorate && count >= 4 &&
++          spirv->words[i + 2] == SpvDecorationBuiltIn &&
++          spirv->words[i + 3] == SpvBuiltInLayer)
++         return;
++      if (opcode == SpvOpMemberDecorate && count >= 5 &&
++          spirv->words[i + 3] == SpvDecorationBuiltIn &&
++          spirv->words[i + 4] == SpvBuiltInLayer)
++         return;
++      if (opcode == SpvOpCapability && count == 2 &&
++          spirv->words[i + 1] == SpvCapabilityShaderLayer)
++         capability = i;
++      i += count;
++   }
++   if (!capability)
++      return;
++   memmove(spirv->words + capability, spirv->words + capability + 2,
++           (spirv->num_words - capability - 2) * sizeof(uint32_t));
++   spirv->num_words -= 2;
++   if (spirv->tcs_vertices_out_word > capability)
++      spirv->tcs_vertices_out_word -= 2;
++}
+ 
+ struct ntv_context {
+    void *mem_ctx;
+@@ -4904,6 +4939,9 @@
+    ret->tcs_vertices_out_word = tcs_vertices_out_word;
+    assert(ret->num_words == num_words);
+ 
++   if (strstr(screen->info.props.deviceName, "Maleoon"))
++      remove_unused_shader_layer(ret);
++
+    ralloc_free(ctx.mem_ctx);
+ 
+    return ret;

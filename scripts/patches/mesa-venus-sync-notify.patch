@@ -1,0 +1,44 @@
+diff --git a/src/virtio/vulkan/vn_ring.c b/src/virtio/vulkan/vn_ring.c
+index 7d0ba5c..a19961f 100644
+--- a/src/virtio/vulkan/vn_ring.c
++++ b/src/virtio/vulkan/vn_ring.c
+@@ -42,6 +42,7 @@ struct vn_ring {
+    bool winehua_strong_publish_barrier;
+    bool winehua_force_notify;
+    bool winehua_always_notify;
++   bool winehua_sync_notify;
+    bool winehua_force_notify_trace;
+    uint64_t winehua_force_notify_trace_count;
+    bool winehua_perf_summary;
+@@ -509,6 +510,9 @@ vn_ring_create(struct vn_instance *instance,
+       force_notify && force_notify[0] == '1' && !force_notify[1];
+    ring->winehua_force_notify = ring->winehua_always_notify ||
+       (remote_sync && remote_sync[0] == '1');
++   const char *sync_notify = os_get_option("VN_WINEHUA_SYNC_NOTIFY_RING");
++   ring->winehua_sync_notify =
++      sync_notify && sync_notify[0] == '1' && !sync_notify[1];
+    const char *force_notify_trace =
+       os_get_option("VN_WINEHUA_RING_NOTIFY_TRACE");
+    ring->winehua_force_notify_trace =
+@@ -519,6 +523,8 @@ vn_ring_create(struct vn_instance *instance,
+       vn_log(instance, "WineHua shadow ring notification enabled");
+    if (ring->winehua_always_notify)
+       vn_log(instance, "WineHua uncoalesced ring notification enabled");
++   if (ring->winehua_sync_notify)
++      vn_log(instance, "WineHua synchronous reply notification enabled");
+    if (ring->winehua_force_notify_trace)
+       vn_log(instance, "WineHua shadow ring notification tracing enabled");
+    const char *perf_summary = os_get_option("VN_WINEHUA_PERF_SUMMARY");
+@@ -989,7 +995,11 @@ vn_ring_submit_locked(struct vn_ring *ring,
+ 
+    uint32_t seqno;
+    const bool notify =
+-      vn_ring_submit_internal(ring, submit.submit, submit.cs, &seqno);
++      vn_ring_submit_internal(ring, submit.submit, submit.cs, &seqno) ||
++      /* A reply-bearing command is followed immediately by a seqno wait.
++       * Notify after publishing it even inside the coalescing window. Keep
++       * asynchronous draws batched and retain every original completion wait. */
++      (ring->winehua_sync_notify && extra_shmem);
+    if (notify) {
+       if (ring->winehua_force_notify_trace) {
+          const uint64_t count = ++ring->winehua_force_notify_trace_count;

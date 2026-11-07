@@ -1,256 +1,252 @@
-import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import { InputSettingsService, KeyOp, KeyDef, PadZone, KEY_CATALOG,
+  MOD_SHIFT, MOD_CTRL, MOD_ALT, MOD_META, keyOpLabel } from '../service/InputSettingsService';
 import { WineWindowManager } from '../service/WineWindowManager';
-import { InputSettingsService } from '../service/InputSettingsService';
+import { TouchKeyRouter } from '../common/TouchKeyRouter';
+import { TouchMouseRouter } from '../common/TouchMouseRouter';
+import { DesktopPointerService, sendDesktopPointerEvent, desktopKeyboardTarget } from '../service/DesktopPointerService';
+import { TouchControlView } from './TouchControlView';
+import { DesktopInputSink } from './DesktopInputSink';
+import { VirtualKeyboardPanel } from './VirtualKeyboardPanel';
 
-const DOMAIN = 0x0000;
-const TAG = 'KeyboardOverlay';
-
-// 注入与物理键盘/手柄同通道 (sendKeyEvent 直达桌面 root)
-function sendKbKey(code: number, down: boolean): void {
-  const rootId = WineWindowManager.getInstance().getDesktopRootId();
-  if (rootId <= 0 || code <= 0) {
-    return;
-  }
-  testNapi.sendKeyEvent(rootId, code, down);
-}
-
-interface KbKey {
-  label: string;
-  code: number;  // evdev key code
-  w: number;     // 行内 layoutWeight
-  mod: number;   // 0 = 普通键; 非 0 = 修饰键锁存位 (1 Shift / 2 Ctrl / 4 Alt)
-  shiftLabel: string; // Shift 锁存时键帽切换显示的副符号 ('' = 无副符号键)
-}
-
-// keyView 入参。必须整体作为单个对象字面量传给 @Builder (按引用传递),
-// pressed/latched 变化才会刷新键帽配色 — 拆成基本类型参数会被快照冻结
-// (同 FloatingBar barButton 踩过的坑)
-interface KeySpec {
-  k: KbKey;
-  pressed: boolean;   // 正被按住
-  latched: boolean;   // 修饰键锁存中
-  shiftActive: boolean; // Shift 锁存中 → 键帽显示副符号 (shiftLabel)
-}
-
-function key(label: string, code: number, w: number = 1, mod: number = 0, shiftLabel: string = ''): KbKey {
-  return { label: label, code: code, w: w, mod: mod, shiftLabel: shiftLabel };
-}
-
-function letters(start: number, labels: string): KbKey[] {
-  const out: KbKey[] = [];
-  for (let i = 0; i < labels.length; i++) {
-    out.push(key(labels[i], start + i));
-  }
-  return out;
-}
-
-// 标准 104 键紧凑布局 (evdev code): F 行 (Esc 同行) + 符号数字行 + 三行字母 +
-// 编辑/方向行。覆盖桌面高频键 (Esc/F1-F12 / Tab / Enter / Backspace /
-// Home-End-PgUp-PgDn / Del / 全方向); 带 Shift 组合符号的键 (数字行/标点)
-// 键帽平时只显示主字符, Shift 锁存时切换显示副符号 (1→!, ;→:), 按下即打出
-// 副符号 (由 wine keymap 解析, 与真实键盘同语义)。
-const KB_ROWS: KbKey[][] = [
-  [key('Esc', 1, 1.3),
-   key('F1', 59), key('F2', 60), key('F3', 61), key('F4', 62),
-   key('F5', 63), key('F6', 64), key('F7', 65), key('F8', 66),
-   key('F9', 67), key('F10', 68), key('F11', 69), key('F12', 70),
-   key('Del', 111, 1.1)],
-  // 数字行: 主字符 + shiftLabel 组合符号 (shift 后 = !@#$%^&*()_-+)
-  [key('`', 41, 0.9, 0, '~'),
-   key('1', 2, 1, 0, '!'), key('2', 3, 1, 0, '@'), key('3', 4, 1, 0, '#'),
-   key('4', 5, 1, 0, '$'), key('5', 6, 1, 0, '%'), key('6', 7, 1, 0, '^'),
-   key('7', 8, 1, 0, '&'), key('8', 9, 1, 0, '*'), key('9', 10, 1, 0, '('),
-   key('0', 11, 1, 0, ')'),
-   key('-', 12, 1, 0, '_'), key('=', 13, 1, 0, '+'), key('⌫', 14, 1.4)],
-  [key('Tab', 15, 1.5)].concat(letters(16, 'QWERTYUIOP'))
-    .concat([key('[', 26, 1, 0, '{'), key(']', 27, 1, 0, '}'), key('\\', 43, 1.05, 0, '|')]),
-  [key('Ctrl', 29, 1.7, 2)].concat(letters(30, 'ASDFGHJKL'))
-    .concat([key(';', 39, 1.05, 0, ':'), key("'", 40, 1.05, 0, '"'), key('Enter', 28, 1.8)]),
-  [key('Shift', 42, 1.9, 1)].concat(letters(44, 'ZXCVBNM'))
-    .concat([key(',', 51, 1, 0, '<'), key('.', 52, 1, 0, '>'), key('/', 53, 1, 0, '?'),
-      key('↑', 103, 1.1), key('Shift', 54, 1.5)]),
-  [key('Alt', 56, 1.5, 4), key('空格', 57, 3.2),
-   key('Home', 102, 1.1), key('End', 107, 1.1),
-   key('PgUp', 104, 1.1), key('PgDn', 109, 1.1),
-   key('←', 105, 1.1), key('↓', 108, 1.1), key('→', 106, 1.1)]
-];
-
-// 模拟键盘覆盖层: 悬浮条"键盘"开关控制显隐, 面板可拖动 (拖顶部把手),
-// 位置持久化在 InputSettingsService。点按/长按键帽即注入 key down/up;
-// Shift/Ctrl/Alt 为一次性锁存 — 点按点亮, 下一个普通键按下时先行注入
-// 修饰键 down, 该键抬起后再补 up 并解除锁存 (与手机输入法 Shift 同款
-// 语义, 避免忘松修饰键导致后续输入全带修饰)。容器 Transparent 穿透:
-// 空白处触摸直达桌面层, 只有键帽/把手消费触摸。
 @Component
 export struct KeyboardOverlay {
-  @State private kbEnabled: boolean = false;
-  @State private relX: number = 0.5;
-  @State private relY: number = 0.9;
-  @State private pressedCodes: number[] = [];
-  @State private modMask: number = 0;    // 锁存中的修饰键位掩码 (1/2/4)
-  private scrW: number = 0;
-  private scrH: number = 0;
-  // 面板实测尺寸 — 必须是 @State: onAreaChange 量得后驱动 position 重算,
-  // 普通字段不触发刷新, 首帧会按 0 宽渲染 (面板甩到屏幕中心右侧出界)
-  @State private panelW: number = 0;
-  @State private panelH: number = 0;
-  // 普通键按下瞬间捕获的锁存掩码: 抬起时按此补 up (锁存视觉态按下时已清,
-  // 若抬起再读 modMask 会漏发修饰键 up → 卡修饰键)
-  private modsAtDown: Map<number, number> = new Map();
-  // 拖动起手时的面板中心 (onActionUpdate 以此为基准累加位移)
-  private panRelX: number = 0.5;
-  private panRelY: number = 0.9;
-  private input: InputSettingsService = InputSettingsService.getInstance();
-
-  private mirrorInput = (): void => {
-    this.kbEnabled = this.input.keyboardEnabled;
-    this.relX = this.input.kbRelX;
-    this.relY = this.input.kbRelY;
-  }
-
-  aboutToAppear(): void {
+  @Prop targetId: number = 0;
+  inputSink: DesktopInputSink | undefined = undefined;
+  @State private controlsEnabled: boolean = false;
+  @State private touchpadOn: boolean = false;
+  @State private open: boolean = false;
+  @State private fullKeyboard: boolean = true;
+  @State private editing: boolean = false;
+  @State private catalog: boolean = false;
+  @State private ops: KeyOp[] = [];
+  @State private zones: PadZone[] = [];
+  @State private widthVp: number = 640;
+  @State private heightVp: number = 360;
+  @State private inputEpoch: number = 0;
+  @State private modifiers: number = 0;
+  private settings: InputSettingsService = InputSettingsService.getInstance();
+  private keys: TouchKeyRouter = new TouchKeyRouter((target: number, code: number, down: boolean) => {
     try {
-      const d = display.getDefaultDisplaySync();
-      this.scrW = px2vp(d.width);
-      this.scrH = px2vp(d.height);
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'display query failed: %{public}s', JSON.stringify(e));
-      this.scrW = 1280;
-      this.scrH = 800;
+      if (this.inputSink) this.inputSink.keyEvent(code, down, target);
+      else testNapi.sendKeyEvent(target, code, down);
     }
-    this.input.subscribe(this.mirrorInput);
-    this.mirrorInput();
-  }
-
-  private sendMods(mask: number, down: boolean): void {
-    if ((mask & 1) != 0) sendKbKey(42, down);  // Shift
-    if ((mask & 2) != 0) sendKbKey(29, down);  // Ctrl
-    if ((mask & 4) != 0) sendKbKey(56, down);  // Alt
-  }
-
-  private onKeyTouch(k: KbKey, ev: TouchEvent): void {
-    if (k.mod != 0) {
-      // 修饰键: 仅翻转锁存态, 不发事件 (单独按 Shift 对 wine 无意义,
-      // 且锁存语义保证不会出现"按下没抬起"的卡键)
-      if (ev.type === TouchType.Down) {
-        this.modMask = this.modMask ^ k.mod;
+    catch (e) { hilog.warn(0, 'TouchControls', 'key dispatch failed: %{public}s', JSON.stringify(e)); }
+  });
+  private mouse: TouchMouseRouter = new TouchMouseRouter((target: number, button: number, down: boolean) => {
+    const point = DesktopPointerService.getInstance();
+    try {
+      if (this.inputSink) {
+        if (down) this.inputSink.pressAt(target, Math.round(point.x), Math.round(point.y), button, false);
+        else this.inputSink.releaseAt(target, Math.round(point.x), Math.round(point.y), button);
+      } else {
+        if (down) testNapi.raiseToplevel(target);
+        sendDesktopPointerEvent(target, down ? MouseAction.Press : MouseAction.Release,
+          Math.round(point.x), Math.round(point.y), button);
       }
-      return;
     }
-    if (ev.type === TouchType.Down) {
-      const m = this.modMask;
-      this.modsAtDown.set(k.code, m);
-      this.sendMods(m, true);
-      sendKbKey(k.code, true);
-      this.modMask = 0;
-      this.pressedCodes = this.pressedCodes.concat([k.code]);
-    } else if (ev.type === TouchType.Up || ev.type === TouchType.Cancel) {
-      if (this.pressedCodes.indexOf(k.code) < 0) {
-        return;
-      }
-      sendKbKey(k.code, false);
-      this.sendMods(this.modsAtDown.get(k.code) ?? 0, false);
-      this.modsAtDown.delete(k.code);
-      this.pressedCodes = this.pressedCodes.filter((c: number) => c != k.code);
-    }
-  }
+    catch (e) { hilog.warn(0, 'TouchControls', 'mouse dispatch failed: %{public}s', JSON.stringify(e)); }
+  });
 
-  private keyLabel(k: KbKey, shiftActive: boolean): string {
-    return shiftActive && k.shiftLabel ? k.shiftLabel : k.label;
+  aboutToAppear(): void { this.settings.subscribe(this.syncSettings); this.syncSettings(); }
+  aboutToDisappear(): void { this.settings.unsubscribe(this.syncSettings); this.releaseInput(); }
+
+  private syncSettings = (): void => {
+    if (this.touchpadOn !== this.settings.touchpadEnabled) this.releaseInput();
+    this.touchpadOn = this.settings.touchpadEnabled;
+    if (!this.settings.keyboardEnabled) this.releaseInput();
+    this.controlsEnabled = this.settings.keyboardEnabled;
+    this.ops = this.settings.keyOps.map((op: KeyOp, index: number): KeyOp => ({
+      id: op.id, label: op.label, key: op.key, mods: op.mods,
+      mouseButton: op.mouseButton,
+      relX: op.relX ?? (0.5 + Math.floor(index / 4) % 4 * 0.14),
+      relY: op.relY ?? (0.26 + index % 4 * 0.18)
+    }));
+    this.zones = this.settings.zones.map((zone: PadZone): PadZone => ({
+      id: zone.id, relX: zone.relX, relY: zone.relY, keyMode: zone.keyMode
+    }));
+  };
+
+  private releaseInput(): void { this.keys.releaseAll(); this.mouse.releaseAll(); this.inputEpoch++; }
+  private target(): number {
+    if (this.inputSink && WineWindowManager.getInstance().getDesktopRootId() <= 0) {
+      const point = DesktopPointerService.getInstance();
+      return this.inputSink.inputReady() ? this.inputSink.hitTest(point.x, point.y) : 0;
+    }
+    return this.targetId > 0 ? this.targetId : desktopKeyboardTarget(WineWindowManager.getInstance().getDesktopRootId());
+  }
+  private routeKeys = (source: string, codes: number[]): void => {
+    this.keys.set(source, this.target(), this.editing ? [] : codes);
+  };
+  private routeMouse = (source: string, button: number, down: boolean): void => {
+    const point = DesktopPointerService.getInstance();
+    const target = this.targetId > 0 ? this.targetId :
+      (this.inputSink ? this.inputSink.hitTest(Math.round(point.x), Math.round(point.y)) :
+        testNapi.findToplevelAt(Math.round(point.x), Math.round(point.y)) as number);
+    this.mouse.set(source, target, button, down && !this.editing);
+  };
+  private savePosition = (id: string, x: number, y: number): void => {
+    if (id.startsWith('key:')) this.settings.updateKeyOpPos(id.substring(4), x, y);
+    else this.settings.updateZonePos(id, x, y);
+  };
+  private removeControl = (id: string): void => {
+    this.keys.releasePrefix(id);
+    this.mouse.releasePrefix(id);
+    if (id.startsWith('key:')) this.settings.removeKeyOp(id.substring(4));
+    else this.settings.removeZone(id);
+  };
+  private toggleMapping = (id: string): void => {
+    this.releaseInput();
+    const zone = this.zones.find((item: PadZone) => item.id === id);
+    if (zone) this.settings.updateZoneKeyMode(id, this.usesArrows(zone) ? 'wasd' : 'arrows');
+  };
+  private usesArrows(zone: PadZone): boolean {
+    return (zone.keyMode ?? (zone.id === 'dpad' ? 'arrows' : 'wasd')) === 'arrows';
+  }
+  private setEditing(value: boolean): void {
+    this.releaseInput(); this.editing = value; this.catalog = false;
+  }
+  private close(): void { this.setEditing(false); this.open = false; }
+  private addKey(def: KeyDef): void {
+    this.settings.addKeyOp(keyOpLabel(def.label, this.modifiers), def.code, this.modifiers, 0.65, 0.5);
+    this.modifiers = 0;
   }
 
   @Builder
-  keyView($$: KeySpec) {
-    Text(this.keyLabel($$.k, $$.shiftActive))
-      .fontSize(this.keyLabel($$.k, $$.shiftActive).length > 1 ? 12 : 15)
-      .fontColor(Color.White)
-      .textAlign(TextAlign.Center)
-      .width('100%')
-      .height(38)
-      .backgroundColor($$.pressed || $$.latched ? $r('app.color.accent') : '#1A000000')
-      .borderRadius(8)
-      .border({ width: 1, color: '#66FFFFFF' })
-      .layoutWeight($$.k.w)
-      .onTouch((ev: TouchEvent) => {
-        this.onKeyTouch($$.k, ev);
-      })
+  modifier(label: string, bit: number) {
+    Text(label).fontSize(11).fontColor('#ffffff')
+      .backgroundColor(this.modifiers & bit ? '#42668d' : '#343b46')
+      .padding(5).borderRadius(5)
+      .onClick(() => { this.modifiers ^= bit; })
   }
 
   build() {
-    Stack() {
-      if (this.kbEnabled) {
-        Column({ space: 4 }) {
-          // 顶部把手: 拖动挪位。手势只挂把手 — 挂整个面板会和键帽 onTouch 抢事件
-          // (按键微动即拖走面板)。拖动中直接改 relX/relY (position 的数据源),
-          // 面板逐帧跟手; 不要绕 .offset 暂存位移 (实测拖动中不刷新, 抬起才跳变)。
-          // 落盘仍在 onActionEnd — 拖动中 persist 是磁盘写风暴
-          Row() {
-            Row()
-              .width(36)
-              .height(4)
-              .borderRadius(2)
-              .backgroundColor('#88FFFFFF')
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.controlsEnabled && this.fullKeyboard) {
+        VirtualKeyboardPanel({ targetId: this.targetId, inputSink: this.inputSink })
+      }
+      if (this.controlsEnabled && !this.fullKeyboard && this.open) {
+        ForEach(this.ops, (op: KeyOp) => {
+          TouchControlView({
+            controlId: `key:${op.id}`, kind: 'key', label: op.label, code: op.key, mods: op.mods,
+            mouseButton: op.mouseButton ?? 0,
+            relX: op.relX ?? 0.8, relY: op.relY ?? 0.7,
+            viewportWidth: this.widthVp, viewportHeight: this.heightVp,
+            editing: this.editing, inputEpoch: this.inputEpoch,
+            onKeys: this.routeKeys, onMouseButton: this.routeMouse,
+            onPosition: this.savePosition, onRemove: this.removeControl
+          })
+        // ArkUI ForEach keeps the old item closure when only the array object
+        // changes under the same key. Position is committed only on touch-up:
+        // include persisted values so the view immediately receives that commit.
+        // Live MOVE geometry stays in TouchControlView and never changes this key.
+        }, (op: KeyOp) => `${op.id}:${op.relX}:${op.relY}:${op.key}:${op.mods}:${op.mouseButton}:${op.label}`)
+        ForEach(this.zones, (zone: PadZone) => {
+          TouchControlView({
+            controlId: zone.id, kind: zone.id, arrows: this.usesArrows(zone),
+            relX: zone.relX, relY: zone.relY,
+            viewportWidth: this.widthVp, viewportHeight: this.heightVp,
+            editing: this.editing, inputEpoch: this.inputEpoch,
+            onKeys: this.routeKeys, onPosition: this.savePosition, onRemove: this.removeControl,
+            onMapping: this.toggleMapping
+          })
+        }, (zone: PadZone) => `${zone.id}:${zone.relX}:${zone.relY}:${zone.keyMode}`)
+
+        Column({ space: 5 }) {
+          Flex({ wrap: FlexWrap.Wrap }) {
+            Text(this.editing ? '完成编辑' : '布局编辑').id('touch-layout-edit')
+              .fontSize(12).fontColor(this.editing ? '#102019' : '#ffffff')
+              .padding(7).borderRadius(5).margin(2)
+              .backgroundColor(this.editing ? '#8fe3b0' : '#343b46')
+              .onClick(() => this.setEditing(!this.editing))
+            if (this.targetId === 0) {
+              Text(this.touchpadOn ? '鼠标：相对手指' : '鼠标：紧贴手指').id('touch-mouse-mode')
+                .fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                .backgroundColor(this.touchpadOn ? '#42668d' : '#343b46')
+                .onClick(() => this.settings.setTouchpad(!this.touchpadOn))
+            }
+            if (this.editing) {
+              Text('＋左键').id('touch-layout-add-left').fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                .backgroundColor('#343b46').onClick(() => this.settings.addMouseOp('左键', 0x110, 0.60, 0.88))
+              Text('＋中键').id('touch-layout-add-middle').fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                .backgroundColor('#343b46').onClick(() => this.settings.addMouseOp('中键', 0x112, 0.68, 0.88))
+              Text('＋右键').id('touch-layout-add-right').fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                .backgroundColor('#343b46').onClick(() => this.settings.addMouseOp('右键', 0x111, 0.76, 0.88))
+              Text('＋单键').fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                .backgroundColor('#343b46').onClick(() => { this.catalog = !this.catalog; })
+              if (!this.settings.hasZone('stick')) {
+                Text('＋摇杆').fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                  .backgroundColor('#343b46').onClick(() => this.settings.addZone('stick', 0.17, 0.65))
+              }
+              if (!this.settings.hasZone('dpad')) {
+                Text('＋方向键').fontSize(12).fontColor('#ffffff').padding(7).borderRadius(5).margin(2)
+                  .backgroundColor('#343b46').onClick(() => this.settings.addZone('dpad', 0.4, 0.65))
+              }
+              Text('恢复默认').fontSize(12).fontColor('#f4c27a').padding(7).borderRadius(5).margin(2)
+                .backgroundColor('#343b46')
+                .onClick(() => { this.releaseInput(); this.settings.resetGameControls(); })
+            }
+            Text('收起').id('touch-layout-close').fontSize(12).fontColor('#ffffff')
+              .padding(7).borderRadius(5).margin(2).backgroundColor('#343b46')
+              .onClick(() => this.close())
           }
           .width('100%')
-          .height(18)
-          .justifyContent(FlexAlign.Center)
-          .gesture(
-            PanGesture()
-              .onActionStart(() => {
-                this.panRelX = this.relX;
-                this.panRelY = this.relY;
-              })
-              .onActionUpdate((ev: GestureEvent) => {
-                this.relX = Math.min(0.96, Math.max(0.04,
-                  (this.panRelX * this.scrW + ev.offsetX) / this.scrW));
-                this.relY = Math.min(0.94, Math.max(0.06,
-                  (this.panRelY * this.scrH + ev.offsetY) / this.scrH));
-              })
-              .onActionEnd(() => {
-                this.input.updateKeyboardPos(this.relX, this.relY);
-              })
-          )
-          ForEach(KB_ROWS, (row: KbKey[]) => {
+          if (this.editing && this.catalog) {
             Row({ space: 4 }) {
-              ForEach(row, (k: KbKey) => {
-                this.keyView({
-                  k: k,
-                  pressed: this.pressedCodes.indexOf(k.code) >= 0,
-                  latched: k.mod != 0 && (this.modMask & k.mod) != 0,
-                  shiftActive: (this.modMask & 1) != 0
-                })
-              }, (k: KbKey) => k.code.toString())
+              this.modifier('Shift', MOD_SHIFT)
+              this.modifier('Ctrl', MOD_CTRL)
+              this.modifier('Alt', MOD_ALT)
+              this.modifier('Meta', MOD_META)
             }
-            .width('100%')
-          }, (row: KbKey[], idx: number) => idx.toString())
+            Scroll() {
+              Flex({ wrap: FlexWrap.Wrap }) {
+                ForEach(KEY_CATALOG, (def: KeyDef) => {
+                  Text(def.label).fontSize(11).fontColor('#ffffff').width(48).height(32)
+                    .textAlign(TextAlign.Center).backgroundColor('#cc303844')
+                    .borderRadius(5).margin(2).onClick(() => this.addKey(def))
+                }, (def: KeyDef) => `${def.code}`)
+              }
+            }
+            .width('100%').height(Math.min(112, this.heightVp * 0.35))
+          }
         }
-        .width(Math.min(this.scrW * 0.9, 810))
-        .padding({ left: 8, right: 8, top: 2, bottom: 8 })
-        // 半透明面板: 压低不透明度让桌面/游戏画面透出来 (键帽同理)
-        .backgroundColor('#4D000000')
-        .borderRadius(12)
-        // 面板区域必须阻断下层: 容器是 Transparent (自身和子节点均响应, 且不阻塞
-        // 下层 — 实测键帽 onTouch 触发的同时, 同一击仍穿透成桌面左键点击
-        // [ArkTS] TAP->LEFTCLICK)。注意不能用 Block (它会阻塞子节点触摸测试,
-        // 键帽全哑); BLOCK_HIERARCHY = 自身+子节点响应, 阻止下层兄弟/父节点参与
-        .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-        .position({
-          // 中心坐标钳制在屏幕内: 持久化位置 + 不同屏尺寸时仍保证整面板可见
-          x: Math.min(Math.max(this.relX, this.panelW / 2 / this.scrW),
-            1 - this.panelW / 2 / this.scrW) * this.scrW - this.panelW / 2,
-          y: Math.min(Math.max(this.relY, this.panelH / 2 / this.scrH),
-            1 - this.panelH / 2 / this.scrH) * this.scrH - this.panelH / 2
-        })
-        .onAreaChange((_oldValue: Area, newValue: Area) => {
-          this.panelW = newValue.width as number;
-          this.panelH = newValue.height as number;
-        })
+        .width(Math.min(this.editing ? 420 : 310, this.widthVp - 12))
+        .padding(4).backgroundColor('#d91b2028').borderRadius(9)
+        .position({ x: 6, y: 6 })
+        .onTouch((event: TouchEvent) => event.stopPropagation())
+      }
+      if (this.controlsEnabled && !this.fullKeyboard && !this.open) {
+        Text('⌨').id('touch-layout-open').fontSize(20).fontColor('#ffffff')
+          .width(48).height(48).textAlign(TextAlign.Center).backgroundColor('#bb202936')
+          .borderRadius(24).border({ width: 1, color: '#bbffffff' })
+          .position({ x: Math.max(4, this.widthVp - 56), y: Math.max(4, this.heightVp - 56) })
+          .hitTestBehavior(HitTestMode.Block)
+          .onTouch((event: TouchEvent) => event.stopPropagation())
+          .onClick(() => { this.open = true; })
+      }
+      if (this.controlsEnabled) {
+        Text(this.fullKeyboard ? '游戏按键' : '完整键盘').id('keyboard-panel-mode')
+          .fontSize(13).fontColor('#ffffff').padding(9).borderRadius(7)
+          .backgroundColor('#cc202936')
+          .position({ x: Math.max(4, this.widthVp - 100), y: 8 })
+          .hitTestBehavior(HitTestMode.Block)
+          .onTouch((event: TouchEvent) => event.stopPropagation())
+          .onClick(() => {
+            this.releaseInput(); this.setEditing(false);
+            this.fullKeyboard = !this.fullKeyboard; this.open = !this.fullKeyboard;
+          })
       }
     }
-    .width('100%')
-    .height('100%')
-    .hitTestBehavior(HitTestMode.Transparent)
+    // Only actual controls block the XComponent; empty overlay space is pass-through.
+    .width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent)
+    .onAreaChange((_old: Area, area: Area) => {
+      const width = Number(area.width);
+      const height = Number(area.height);
+      if (width > 0 && height > 0 && (width !== this.widthVp || height !== this.heightVp)) {
+        this.releaseInput(); this.widthVp = width; this.heightVp = height;
+      }
+    })
+    .onVisibleAreaChange([0], (visible: boolean) => { if (!visible) this.releaseInput(); })
   }
 }

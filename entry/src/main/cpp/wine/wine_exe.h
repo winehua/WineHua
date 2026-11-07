@@ -15,6 +15,7 @@ struct ProgramOptions {
     std::string workingDirectory;
     std::string d3dBackend = "dxvk_modern_2_6"; /* 产品默认档 (2026-10-11 拍板) */
     std::string dxvkBackend = "dxvk_legacy";
+    std::string openglRenderer = "auto";
     std::string presentBackend;  // 空 = 按 d3dBackend 派生 (DerivePresentBackend)
 };
 

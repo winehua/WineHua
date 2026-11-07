@@ -9,6 +9,7 @@
 #include "compositor/input/input_resolver.h"   // FindInputTargetAt/SurfaceLocalToDesktop/IsSurfaceAlive(经 injector)
 #include "compositor/toplevel/toplevel_manager.h" // GetSurfaceForToplevel/GetToplevelGeometrySnapshot
 #include "compositor/toplevel/move_grab.h"        // IsActive/GetToplevelId
+#include "compositor/input/keyboard_target_policy.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -71,7 +72,7 @@ void InputManager::Initialize(wl_display* display) {
 
 void InputManager::BindCompositorDeps(ToplevelManager& tmgr, InputResolver& resolver,
                                       MoveGrabHandler& moveGrab, const DisplayPolicy& policy,
-                                      const uint32_t& desktopRootToplevelId) {
+                                      const uint32_t& desktopRootToplevelId, const uint32_t& taskbarToplevelId) {
     // 6A 装配: 见头注释 (生命周期/无锁论证)。injector 的 surface 存活防御
     // (IsSurfaceAlive) 与 surface→toplevel 查询同样走 Subscriber 注入的引用。
     tmgr_ = &tmgr;
@@ -79,6 +80,7 @@ void InputManager::BindCompositorDeps(ToplevelManager& tmgr, InputResolver& reso
     moveGrab_ = &moveGrab;
     policy_ = &policy;
     desktopRootToplevelId_ = &desktopRootToplevelId;
+    taskbarToplevelId_ = &taskbarToplevelId;
     injector_.BindResolvers(&resolver, &tmgr);
 }
 
@@ -550,9 +552,20 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     }
 }
 
+uint32_t InputManager::ResolveKeyboardTarget() {
+    if (!tmgr_ || !policy_ || !desktopRootToplevelId_) return 0;
+    if (!policy_->CompositorRoutesInput()) return tracker_.KeyboardFocusedToplevel();
+    const uint32_t root = *desktopRootToplevelId_;
+    auto lock = tmgr_->Lock();
+    return winehua::ChooseDesktopKeyboardTarget(tracker_.KeyboardFocusedToplevel(), root,
+        taskbarToplevelId_ ? *taskbarToplevelId_ : 0, tmgr_->toplevelZOrder(),
+        [this, root](uint32_t id) { return tmgr_->IsToplevelVisibleLocked(id, root); },
+        [this, root](uint32_t id) { return tmgr_->FirstVisibleModalLocked(id, root); });
+}
+
 void InputManager::SendKeyEvent(uint32_t tl, int evdevCode, bool pressed) {
     // 窗口不可见时抑制输入
-    if (tracker_.IsInputSuppressed(tl)) {
+    if (pressed && tracker_.IsInputSuppressed(tl)) {
         // 抽样 120:1 (密钥重复按压/自动重复会出现高频, 与指针同一策略)
         static uint32_t sSuppressN = 0;
         if (++sSuppressN % 120 == 1)
@@ -562,16 +575,29 @@ void InputManager::SendKeyEvent(uint32_t tl, int evdevCode, bool pressed) {
 
     auto* seat = Seat::GetInstance();
 
+    const bool restoreReleaseFocus = !pressed && !tracker_.KeyboardEntered() && policy_->CompositorRoutesInput();
+    if (restoreReleaseFocus) tl = ResolveKeyboardTarget();
+
+    // A visible modal owns keyboard input just as it owns pointer input.
+    // Virtual controls must not keep sending to its disabled owner.
+    if (pressed && policy_->CompositorRoutesInput() && tl != *desktopRootToplevelId_) {
+        auto lock = tmgr_->Lock();
+        const uint32_t modal = tmgr_->FirstVisibleModalLocked(tl, *desktopRootToplevelId_);
+        if (modal) tl = modal;
+    }
+
     OH_LOG_INFO(LOG_APP, "[Input] KEY tl=%{public}u evdev=%{public}d pressed=%{public}d"
-                " kbdRes=%{public}d kbdEntered=%{public}d",
+                " kbdRes=%{public}d kbdEntered=%{public}d focus=%{public}u",
                 tl, evdevCode, pressed,
                 seat->GetKeyboardResource() ? 1 : 0,
-                tracker_.KeyboardEntered());
+                tracker_.KeyboardEntered(), tracker_.KeyboardFocusedToplevel());
 
     // 键盘 enter 管理: 立即设置状态防止重复 enter (参考旧代码)
-    // 桌面模式: 键盘事件永远发到 root, 不应覆盖点击建立的子窗口焦点
+    // Root callers preserve established child focus. An explicit child target
+    // from virtual/physical controls must establish focus when the desktop is
+    // still focused or a dialog's surface was destroyed.
     // 6A: 策略/surface 查询经装配注入引用直调 (同值)
-    if (pressed && !policy_->CompositorRoutesInput()
+    if ((pressed || restoreReleaseFocus) && (!policy_->CompositorRoutesInput() || tl != *desktopRootToplevelId_ || !tracker_.KeyboardEntered())
         && (!tracker_.KeyboardEntered() || tracker_.KeyboardFocusedToplevel() != tl)) {
         wl_resource* surf = tmgr_->GetSurfaceForToplevel(tl);
         if (surf) {

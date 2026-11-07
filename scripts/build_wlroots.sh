@@ -155,6 +155,14 @@ else
     [ "$(grep -c 'scene-damage-diag' "$WLR_SRC/types/scene/wlr_scene.c")" -ge 1 ] \
         && [ "$(grep -c 'scene-damage-diag' "$WLR_SRC/types/scene/surface.c")" -ge 1 ] \
         || err "scene damage diag 插桩缺失 (D25-B 补丁未生效)"
+    # wayland-protocols 1.49 installs generated enum headers but its data-only
+    # .pc has no Cflags. Stage only those architecture-independent headers in
+    # the host include tree; never add the guest library include tree wholesale.
+    protocol_inc=$("$PKG_CONFIG_BIN" --variable=includedir wayland-protocols)
+    [ -f "$protocol_inc/wayland-protocols/ext-image-copy-capture-v1-enum.h" ] \
+        || err "wayland-protocols 枚举头缺失，需用匹配的 wayland-scanner 安装协议包"
+    mkdir -p "$HOST_EXT_INC/wayland-protocols"
+    cp "$protocol_inc/wayland-protocols/"*-enum.h "$HOST_EXT_INC/wayland-protocols/"
     meson_host_build "$BUILD_DIR/wlroots_build_${WLR_VER}" "$WLR_SRC" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dauto_features=disabled \

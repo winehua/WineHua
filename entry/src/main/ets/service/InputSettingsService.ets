@@ -14,6 +14,7 @@ const KEY_BUTTONS = 'padButtons';
 const KEY_ZONES = 'padZones';
 const KEY_KB_POS = 'keyboardPos';
 const KEY_INTRO = 'layoutEditIntroShown';
+const KEY_OPS = 'keyboardOps';
 
 // 手柄可改键按钮 (方向键区/摇杆键位固定在 GamepadOverlay: 方向键/WASD,
 // v1 不开放重映射 — "逐键配置"覆盖 8 个动作键已满足主流 RPG/RTS)
@@ -30,6 +31,7 @@ export interface PadZone {
   id: string;    // 'dpad' | 'stick'
   relX: number;
   relY: number;
+  keyMode?: string;
 }
 
 // 布局快照 (进入编辑页时深拷贝, 取消编辑时恢复); 显式类型规避
@@ -37,6 +39,7 @@ export interface PadZone {
 export interface LayoutSnapshot {
   buttons: PadButton[];
   zones: PadZone[];
+  keyOps: KeyOp[];
 }
 
 // 重映射候选键 (evdev code): 覆盖常用确认/取消/技能/方向键
@@ -48,13 +51,67 @@ export interface KeyDef {
 export const KEY_CATALOG: KeyDef[] = [
   { label: 'Enter', code: 28 }, { label: 'Esc', code: 1 },
   { label: 'Space', code: 57 }, { label: 'Tab', code: 15 },
-  { label: 'Shift', code: 42 }, { label: 'Ctrl', code: 29 }, { label: 'Alt', code: 56 },
+  { label: 'Backspace', code: 14 }, { label: 'Shift', code: 42 },
+  { label: 'Ctrl', code: 29 }, { label: 'Alt', code: 56 }, { label: 'Meta', code: 125 },
   { label: 'W', code: 17 }, { label: 'A', code: 30 }, { label: 'S', code: 31 }, { label: 'D', code: 32 },
-  { label: 'Q', code: 16 }, { label: 'E', code: 18 }, { label: 'R', code: 19 }, { label: 'F', code: 33 },
-  { label: 'Z', code: 44 }, { label: 'X', code: 45 }, { label: 'C', code: 46 }, { label: 'V', code: 47 },
+  { label: 'Q', code: 16 }, { label: 'E', code: 18 }, { label: 'R', code: 19 },
+  { label: 'T', code: 20 }, { label: 'Y', code: 21 }, { label: 'U', code: 22 },
+  { label: 'I', code: 23 }, { label: 'O', code: 24 }, { label: 'P', code: 25 },
+  { label: 'F', code: 33 }, { label: 'G', code: 34 }, { label: 'H', code: 35 },
+  { label: 'J', code: 36 }, { label: 'K', code: 37 }, { label: 'L', code: 38 },
+  { label: 'Z', code: 44 }, { label: 'X', code: 45 }, { label: 'C', code: 46 },
+  { label: 'V', code: 47 }, { label: 'B', code: 48 }, { label: 'N', code: 49 }, { label: 'M', code: 50 },
   { label: '↑', code: 103 }, { label: '↓', code: 108 }, { label: '←', code: 105 }, { label: '→', code: 106 },
-  { label: '1', code: 2 }, { label: '2', code: 3 }, { label: '3', code: 4 }, { label: '4', code: 5 }
+  { label: '1', code: 2 }, { label: '2', code: 3 }, { label: '3', code: 4 }, { label: '4', code: 5 },
+  { label: '5', code: 6 }, { label: '6', code: 7 }, { label: '7', code: 8 },
+  { label: '8', code: 9 }, { label: '9', code: 10 }, { label: '0', code: 11 },
+  { label: 'F1', code: 59 }, { label: 'F2', code: 60 }, { label: 'F3', code: 61 },
+  { label: 'F4', code: 62 }, { label: 'F5', code: 63 }, { label: 'F6', code: 64 },
+  { label: 'F7', code: 65 }, { label: 'F8', code: 66 }, { label: 'F9', code: 67 },
+  { label: 'F10', code: 68 }, { label: 'F11', code: 87 }, { label: 'F12', code: 88 }
 ];
+
+// 虚拟键盘的单个"操作": 一次按下/抬起注入 key, 并可选附带修饰键 (组合键)。
+// 修饰键位掩码与顺序固定 (Shift → Ctrl → Alt → Meta), 与 Wine 的 modifier
+// 状态机无耦合 — sendKeyEvent 注入的是普通 evdev 按键序列。
+export const MOD_SHIFT: number = 1;
+export const MOD_CTRL: number = 2;
+export const MOD_ALT: number = 4;
+export const MOD_META: number = 8;
+
+export interface KeyOp {
+  id: string;
+  label: string;
+  key: number;   // evdev key code
+  mods: number;  // MOD_* 位掩码
+  mouseButton?: number; // Optional evdev BTN_*; key/mods stay zero for mouse operations.
+  relX?: number;  // 屏幕相对位置 0-1, 供游戏内圆形按键覆盖层使用
+  relY?: number;
+}
+
+// 虚拟键盘默认操作 (常用游戏/输入键)。只读模板, 增删由 service 持久化覆盖。
+function defaultKeyOps(): KeyOp[] {
+  return [
+    { id: 'k-esc', label: 'Esc', key: 1, mods: 0, relX: 0.86, relY: 0.18 },
+    { id: 'k-enter', label: 'Enter', key: 28, mods: 0, relX: 0.91, relY: 0.70 },
+    { id: 'k-space', label: 'Space', key: 57, mods: 0, relX: 0.82, relY: 0.82 },
+    { id: 'k-e', label: 'E', key: 18, mods: 0, relX: 0.93, relY: 0.52 },
+    { id: 'k-q', label: 'Q', key: 16, mods: 0, relX: 0.72, relY: 0.52 },
+    { id: 'k-f', label: 'F', key: 33, mods: 0, relX: 0.96, relY: 0.36 },
+    { id: 'k-1', label: '1', key: 2, mods: 0, relX: 0.72, relY: 0.70 },
+    { id: 'k-2', label: '2', key: 3, mods: 0, relX: 0.82, relY: 0.70 }
+  ];
+}
+
+// 组合键显示名: Ctrl+Shift+S
+export function keyOpLabel(label: string, mods: number): string {
+  let prefix = '';
+  if (mods & MOD_CTRL) prefix += 'Ctrl+';
+  if (mods & MOD_ALT) prefix += 'Alt+';
+  if (mods & MOD_SHIFT) prefix += 'Shift+';
+  if (mods & MOD_META) prefix += 'Meta+';
+  return prefix + label;
+}
 
 // 默认布局 (横屏相对坐标): 十字键/摇杆在左下, XYAB 菱形在右下, 肩键顶角
 function defaultButtons(): PadButton[] {
@@ -72,8 +129,8 @@ function defaultButtons(): PadButton[] {
 
 function defaultZones(): PadZone[] {
   return [
-    { id: 'dpad', relX: 0.10, relY: 0.66 },
-    { id: 'stick', relX: 0.25, relY: 0.80 }
+    { id: 'stick', relX: 0.17, relY: 0.72 },
+    { id: 'dpad', relX: 0.43, relY: 0.72 }
   ];
 }
 
@@ -99,6 +156,8 @@ export class InputSettingsService {
   keyboardEnabled: boolean = false;
   kbRelX: number = 0.5;
   kbRelY: number = 0.9;
+  // 虚拟键盘操作列表 (自定义增删, 持久化)
+  keyOps: KeyOp[] = defaultKeyOps();
   cursorSpeed: number = 1.0;
   // 全屏游戏 (dinput 相对模式) 鼠标倍率: 叠加在 InputDeviceMapper 设备校准
   // (鼠标 2.5 / 触控板 0.75) 之上, 只乘 rawDelta — 绝对模式有差分自标定,
@@ -124,6 +183,14 @@ export class InputSettingsService {
       return;
     }
     this.listeners.push(listener);
+  }
+
+  // 组件销毁时解除订阅 (窗口关闭后不再回写已销毁组件状态)
+  unsubscribe(listener: () => void): void {
+    const i = this.listeners.indexOf(listener);
+    if (i >= 0) {
+      this.listeners.splice(i, 1);
+    }
   }
 
   private notify(): void {
@@ -163,8 +230,15 @@ export class InputSettingsService {
       const zonesJson = this.store.getSync(KEY_ZONES, '') as string;
       if (zonesJson) {
         const list = JSON.parse(zonesJson) as PadZone[];
-        if (Array.isArray(list) && list.length > 0) {
+        if (Array.isArray(list)) {
           this.zones = list;
+        }
+      }
+      const opsJson = this.store.getSync(KEY_OPS, '') as string;
+      if (opsJson) {
+        const list = JSON.parse(opsJson) as KeyOp[];
+        if (Array.isArray(list)) {
+          this.keyOps = list;
         }
       }
     } catch (e) {
@@ -185,6 +259,7 @@ export class InputSettingsService {
       this.store.putSync(KEY_BUTTONS, JSON.stringify(this.buttons));
       this.store.putSync(KEY_ZONES, JSON.stringify(this.zones));
       this.store.putSync(KEY_KB_POS, JSON.stringify({ relX: this.kbRelX, relY: this.kbRelY }));
+      this.store.putSync(KEY_OPS, JSON.stringify(this.keyOps));
       this.store.flush();
     } catch (e) {
       hilog.error(DOMAIN, 'wine', 'input settings persist fail: %{public}s', JSON.stringify(e));
@@ -192,6 +267,7 @@ export class InputSettingsService {
   }
 
   setTouchpad(enabled: boolean): void {
+    if (this.touchpadEnabled === enabled) return;
     this.touchpadEnabled = enabled;
     this.persist();
     this.notify();
@@ -241,7 +317,8 @@ export class InputSettingsService {
   beginLayoutEdit(): void {
     this.layoutSnapshot = {
       buttons: JSON.parse(JSON.stringify(this.buttons)) as PadButton[],
-      zones: JSON.parse(JSON.stringify(this.zones)) as PadZone[]
+      zones: JSON.parse(JSON.stringify(this.zones)) as PadZone[],
+      keyOps: JSON.parse(JSON.stringify(this.keyOps)) as KeyOp[]
     };
     this.layoutDirty = false;
     this.editingLayout = true;
@@ -260,6 +337,7 @@ export class InputSettingsService {
     if (this.layoutSnapshot) {
       this.buttons = this.layoutSnapshot.buttons;
       this.zones = this.layoutSnapshot.zones;
+      this.keyOps = this.layoutSnapshot.keyOps;
       this.persist();
     }
     this.editingLayout = false;
@@ -301,10 +379,36 @@ export class InputSettingsService {
     this.notify();
   }
 
-  updateZonePos(id: string, relX: number, relY: number): void {
+  updateZonePos(id: string, relX: number, relY: number, persist: boolean = true): void {
     this.layoutDirty = true;
     this.zones = this.zones.map((z: PadZone): PadZone =>
-      z.id == id ? { id: z.id, relX: relX, relY: relY } : z);
+      z.id == id ? { id: z.id, relX: relX, relY: relY, keyMode: z.keyMode } : z);
+    if (persist) this.persist();
+    this.notify();
+  }
+
+  addZone(id: string, relX: number, relY: number): void {
+    if (this.zones.some((z: PadZone) => z.id == id)) return;
+    this.layoutDirty = true;
+    this.zones = this.zones.concat([{ id: id, relX: relX, relY: relY }]);
+    this.persist();
+    this.notify();
+  }
+
+  updateZoneKeyMode(id: string, keyMode: string): void {
+    if (keyMode !== 'wasd' && keyMode !== 'arrows') return;
+    this.zones = this.zones.map((zone: PadZone): PadZone => zone.id === id ? {
+      id: zone.id, relX: zone.relX, relY: zone.relY, keyMode: keyMode
+    } : zone);
+    this.persist();
+    this.notify();
+  }
+
+  removeZone(id: string): void {
+    const next = this.zones.filter((z: PadZone) => z.id != id);
+    if (next.length == this.zones.length) return;
+    this.layoutDirty = true;
+    this.zones = next;
     this.persist();
     this.notify();
   }
@@ -317,8 +421,63 @@ export class InputSettingsService {
     this.notify();
   }
 
+  resetGameControls(): void {
+    this.layoutDirty = true;
+    this.keyOps = defaultKeyOps();
+    this.zones = defaultZones();
+    this.persist();
+    this.notify();
+  }
+
   keyLabelOf(code: number): string {
     const hit = KEY_CATALOG.find((k: KeyDef) => k.code == code);
     return hit ? hit.label : `键${code}`;
+  }
+
+  // ── 虚拟键盘操作: 增删与恢复默认 (全部持久化并通知覆盖层) ──
+  addKeyOp(label: string, key: number, mods: number, relX: number, relY: number): void {
+    // id 带序号: 同一毫秒内连续添加也不会撞 key
+    const id = `k-${Date.now()}-${this.keyOps.length}`;
+    this.keyOps = this.keyOps.concat([{ id: id, label: label, key: key, mods: mods,
+      relX: relX, relY: relY }]);
+    this.persist();
+    this.notify();
+  }
+
+  addMouseOp(label: string, button: number, relX: number, relY: number): void {
+    if (button !== 0x110 && button !== 0x111 && button !== 0x112) return;
+    const id = `m-${Date.now()}-${this.keyOps.length}`;
+    this.keyOps = this.keyOps.concat([{ id, label, key: 0, mods: 0, mouseButton: button, relX, relY }]);
+    this.persist(); this.notify();
+  }
+
+  hasZone(id: string): boolean {
+    return this.zones.some((z: PadZone) => z.id == id);
+  }
+
+  updateKeyOpPos(id: string, relX: number, relY: number, persist: boolean = true): void {
+    this.keyOps = this.keyOps.map((op: KeyOp): KeyOp => op.id == id ? {
+      id: op.id, label: op.label, key: op.key, mods: op.mods,
+      mouseButton: op.mouseButton,
+      relX: relX, relY: relY
+    } : op);
+    if (persist) this.persist();
+    this.notify();
+  }
+
+  removeKeyOp(id: string): void {
+    const next = this.keyOps.filter((op: KeyOp) => op.id != id);
+    if (next.length == this.keyOps.length) {
+      return;
+    }
+    this.keyOps = next;
+    this.persist();
+    this.notify();
+  }
+
+  resetKeyOps(): void {
+    this.keyOps = defaultKeyOps();
+    this.persist();
+    this.notify();
   }
 }

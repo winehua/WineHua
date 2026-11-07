@@ -27,7 +27,7 @@ class PopupXComponentController extends XComponentController {
     hilog.info(DOMAIN, 'WinePopup', '[PopupCtrl] onSurfaceChanged popup=%{public}d rect=%{public}s',
       this.popupId, JSON.stringify(rect));
     try {
-      testNapi.resizeRenderer(this.popupId, rect.surfaceWidth, rect.surfaceHeight);
+      testNapi.resizeRenderer(this.popupId, rect.surfaceWidth, rect.surfaceHeight, BigInt(surfaceId));
     } catch (e) {
       hilog.error(DOMAIN, 'WinePopup', 'ERR onSurfaceChanged resizeRenderer: %{public}s', JSON.stringify(e));
     }
@@ -36,7 +36,7 @@ class PopupXComponentController extends XComponentController {
   onSurfaceDestroyed(surfaceId: string): void {
     hilog.info(DOMAIN, 'WinePopup', '[PopupCtrl] onSurfaceDestroyed popup=%{public}d', this.popupId);
     try {
-      testNapi.destroyRenderer(this.popupId);
+      testNapi.destroyRenderer(this.popupId, BigInt(surfaceId));
     } catch (e) {
       hilog.error(DOMAIN, 'WinePopup', 'ERR onSurfaceDestroyed destroyRenderer: %{public}s', JSON.stringify(e));
     }

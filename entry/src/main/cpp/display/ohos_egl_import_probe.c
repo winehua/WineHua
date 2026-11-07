@@ -15,10 +15,9 @@
  * 几 ms, 结论落盘后不再重跑; 重跑 = 删标记)。设备端只跑不判: 结论枚举
  * 写标记文件 + hilog, 判定在主机 (smoke check 读归档)。
  *
- * 假设声明 (本探针的裁决对象之一): EGL_NATIVE_BUFFER_OHOS 的
- * EGLClientBuffer 载荷 = OH_NativeBuffer*。现行代码零 OH_NativeBuffer
- * 导入命中 (spec §5 R-ZC: 旧合成器全程 OH_NativeImage 纹理模式), 此
- * 假设无在库先例 —— 探针失败时先核这条。
+ * EGL_NATIVE_BUFFER_OHOS 的 EGLClientBuffer 必须是 OHNativeWindowBuffer*，
+ * 与 ohos_egl_import.c 的生产导入器一致。裸 OH_NativeBuffer* 类型不同，
+ * 驱动可能直接解引用而崩溃，不能把错误类型当成可安全失败的能力探测。
  */
 #include "ohos_egl_import_probe.h"
 
@@ -93,8 +92,10 @@ static void WriteMarker(const char *verdict)
 void ohos_egl_import_probe_run(void)
 {
     /* 自缓存: 标记已存在 = 已裁决, 不重跑 */
-    if (fopen(kMarkerPath, "r"))
+    FILE *marker = fopen(kMarkerPath, "r");
+    if (marker)
     {
+        fclose(marker);
         PROBE_LOG("marker exists, skip (delete %{public}s to re-run)", kMarkerPath);
         return;
     }
@@ -178,33 +179,17 @@ void ohos_egl_import_probe_run(void)
     if (!p_create_img || !p_img_tex)
         FAIL("eglGetProcAddress(import entry points)");
 
-    /* 载荷类型二选一 (探针第一轮实测: OH_NativeBuffer* 直传被 EGL 实现
-     * 按 native_window 对象校验拒绝 —— hilog "NativeObject Invalid magic
-     * illegal"; 备选 = 经 CreateNativeWindowBufferFromNativeBuffer 包成
-     * OHNativeWindowBuffer* 再传)。两个都试, 哪个通走哪个, 结论枚举区分。 */
-    EGLImageKHR img = EGL_NO_IMAGE_KHR;
-    OHNativeWindowBuffer *wb = NULL; /* 4b 路径的包装层, 清理需配对销毁 */
-    const char *payload_kind = NULL;
-    img = p_create_img(dpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_OHOS,
-                       (EGLClientBuffer)nb, NULL);
-    if (img != EGL_NO_IMAGE_KHR)
-    {
-        payload_kind = "pass:payload=OH_NativeBuffer";
-    }
-    else
-    {
-        PROBE_LOG("payload=OH_NativeBuffer rejected (eglErr=0x%{public}x), "
-                  "trying OHNativeWindowBuffer wrapper",
-                  eglGetError());
-        wb = OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer(nb);
-        if (!wb)
-            FAIL("CreateNativeWindowBufferFromNativeBuffer");
-        img = p_create_img(dpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_OHOS,
-                           (EGLClientBuffer)wb, NULL);
-        if (img == EGL_NO_IMAGE_KHR)
-            FAIL("eglCreateImageKHR(EGL_NATIVE_BUFFER_OHOS, both payloads)");
-        payload_kind = "pass:payload=OHNativeWindowBuffer";
-    }
+    /* Only pass the documented window-buffer wrapper to EGL. Some drivers
+     * reject a raw native buffer; Maleoon can dereference it and SIGSEGV. */
+    OHNativeWindowBuffer *wb =
+        OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer(nb);
+    if (!wb)
+        FAIL("CreateNativeWindowBufferFromNativeBuffer");
+    EGLImageKHR img = p_create_img(dpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_OHOS,
+                                  (EGLClientBuffer)wb, NULL);
+    if (img == EGL_NO_IMAGE_KHR)
+        FAIL("eglCreateImageKHR(EGL_NATIVE_BUFFER_OHOS, OHNativeWindowBuffer)");
+    const char *payload_kind = "pass:payload=OHNativeWindowBuffer";
 
     /* ── 5. 纹理 + FBO + 回读比对 ── */
     GLuint tex = 0, fbo = 0;

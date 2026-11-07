@@ -54,7 +54,7 @@ void KillAllProcesses();
 // 杀单个子进程 (按设备模式分流): fork 后端原生 kill; NCP 后端优先官方
 // 终止 API (沙箱内 kill(2) 可能受限), 失败 fallback SIGKILL。任务列表
 // 「结束进程」与 KillAllProcesses 共用
-void KillChildProcess(pid_t pid);
+bool KillChildProcess(pid_t pid);
 
 // -- 主 wineserver 会话锚点 --
 // LaunchPadMode spawn wineserver 成功后登记: 加入进程注册表 (ProcMon 监视,

@@ -5,6 +5,7 @@
     "pages/DesktopWindow",
     "pages/WinePopup",
     "pages/VirtualDesktop",
-    "pages/DecorTestPage"
+    "pages/DecorTestPage",
+    "pages/GameLibrary"
   ]
 }

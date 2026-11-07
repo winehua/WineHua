@@ -146,8 +146,18 @@ if [ ! -f "$SYSROOT_EXT_LIB/libglib-2.0.so.0" ]; then
     # 触发 (gdebugcontrollerdbus.c) → 以 patch 方式追加 -Wno-error 豁免。
     # 改动仅 2 行, 不值得提交 submodule (开分支/push/指针更新), patch 随构建走。
     PATCH="$SCRIPT_DIR/patches/glib-format-security.patch"
-    if ! git -C "$GLIB_SRC" apply --reverse --check "$PATCH" 2>/dev/null; then
-        git -C "$GLIB_SRC" apply "$PATCH"
+    # Windows source archives can contain CRLF; patch context must use LF.
+    python3 - "$GLIB_SRC/meson.build" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = path.read_bytes()
+normalized = data.replace(b'\r\n', b'\n')
+if data != normalized:
+    path.write_bytes(normalized)
+PY
+    if ! patch -d "$GLIB_SRC" -p1 --reverse --dry-run --silent < "$PATCH" >/dev/null 2>&1; then
+        patch -d "$GLIB_SRC" -p1 --forward --batch < "$PATCH"
         log "  已应用 patch: $(basename "$PATCH")"
     fi
     build="$BUILD_DIR/glib_build"
@@ -241,14 +251,18 @@ if [ ! -d "$GST_LIBDIR/gstreamer-1.0" ] || \
     build="$BUILD_DIR/gst_good_build"
     rm -rf "$build"
     # zlib 来自 OHOS sysroot; vpx 插件已由 libvpx 提供。禁用外部音频/图像依赖。
+    # The OHOS runtime build cannot execute gst-check binaries on the Linux
+    # build host. Match the base/bad/ugly cross builds by disabling test targets.
     meson setup "$build" "$GOOD_SRC" --cross-file "$(gen_cross_file)" \
         --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos --wrap-mode=nofallback \
+        -Dtests=disabled \
         -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \
         -Dcairo=disabled -Ddv=disabled -Dflac=disabled -Djack=disabled \
         -Djpeg=disabled -Dlame=disabled -Dlibcaca=disabled -Dmpg123=disabled \
         -Dpulse=disabled -Dshout2=disabled -Dspeex=disabled -Dtaglib=disabled \
         -Dtwolame=disabled -Dvpx=disabled -Dwavpack=disabled -Daalib=disabled \
         -Damrnb=disabled -Damrwbdec=disabled -Ddv1394=disabled -Dgtk3=disabled \
+        -Dadaptivedemux2=disabled \
         -Doss=disabled -Doss4=disabled -Dosxaudio=disabled -Dosxvideo=disabled \
         -Dqt5=disabled -Dqt6=disabled -Drpicamsrc=disabled -Dsoup=disabled \
         -Dv4l2=disabled -Dximagesrc=disabled -Ddirectsound=disabled
@@ -330,8 +344,10 @@ if [ ! -f "$SYSROOT_EXT_LIB/libavcodec.so" ] || \
     fi
     if [ -n "${FFMPEG_SRC:-}" ] && [ -f "$FFMPEG_SRC/meson.build" ]; then
         build="$BUILD_DIR/ffmpeg_build"
-        rm -rf "$build"
-        meson setup "$build" "$FFMPEG_SRC" --cross-file "$(gen_cross_file)" \
+        ffmpeg_setup_flags=()
+        if [ -f "$build/build.ninja" ]; then ffmpeg_setup_flags+=(--reconfigure); fi
+        # Apply current options while retaining valid compiled objects on retry.
+        meson setup "${ffmpeg_setup_flags[@]}" "$build" "$FFMPEG_SRC" --cross-file "$(gen_cross_file)" \
             --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos \
             -Ddefault_library=shared \
             -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \

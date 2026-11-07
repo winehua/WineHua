@@ -4,6 +4,7 @@
 #include "shader_utils.h"
 #include "compositor/toplevel/desktop_compositor.h"  // DesktopCompositor (6A 构造注入: 取帧/ZC 直连)
 #include "common/fps_counter.h"
+#include "common/live_performance.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -507,10 +508,18 @@ bool EglRenderer::Init(OHNativeWindow* window, int w, int h) {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_NONE
     };
-    eglChooseConfig(display_, attrs, &cfg, 1, &nCfg);
+    if (!eglChooseConfig(display_, attrs, &cfg, 1, &nCfg) || !nCfg) {
+        OH_LOG_ERROR(LOG_APP, "[EGL] no usable config tl=%{public}u", toplevelId_);
+        return false;
+    }
 
     EGLint ctxAttrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
     context_ = eglCreateContext(display_, cfg, EGL_NO_CONTEXT, ctxAttrs);
+    if (context_ == EGL_NO_CONTEXT) {
+        OH_LOG_ERROR(LOG_APP, "[EGL] context creation failed tl=%{public}u error=0x%{public}x",
+                     toplevelId_, eglGetError());
+        return false;
+    }
 
     // 异型窗口 (layered/shaped): 确保 native window buffer 带 alpha 通道,
     // 否则 per-pixel alpha 在 buffer 层就被丢弃 (默认可能是 RGBX)
@@ -585,8 +594,10 @@ uint32_t EglRenderer::DirectPassCapabilities() const
 void EglRenderer::RenderLoop() {
     if (!eglMakeCurrent(display_, surface_, surface_, context_)) {
         OH_LOG_ERROR(LOG_APP, "[EGL] eglMakeCurrent failed: 0x%{public}x", eglGetError());
+        running_ = false;
         return;
     }
+    winehua::LivePerformance::Instance().SetGpu(reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
 
     // NativeVSync owns frame scheduling. Disable EGL's independent swap pacing
     // so a frame does not wait once for VSync and again inside eglSwapBuffers.
@@ -630,6 +641,7 @@ void EglRenderer::RenderLoop() {
     int loopCount = 0;
     bool firstFrameLogged = false;
     bool rendered = false;  // 首帧已渲染后, 无新帧时跳过 GPU 绘制
+    unsigned int awaitingFrameCount = 0;
     RendererPerfWindow perf;
     uint32_t pixSampleN = 0;  // [PIX-SAMPLE] 帧内容白度采样计数 (诊断)
 
@@ -726,6 +738,19 @@ void EglRenderer::RenderLoop() {
                 toplevelId_, nativeVsync ? "NativeVSync" : "deadline-60Hz");
 
     while (running_) {
+        if (!visible_.load(std::memory_order_acquire)) {
+            std::unique_lock<std::mutex> lock(visibilityMutex_);
+            visibilityCv_.wait_for(lock, std::chrono::milliseconds(250), [this]() {
+                return !running_ || visible_.load(std::memory_order_acquire);
+            });
+            if (!running_) break;
+            if (!visible_.load(std::memory_order_acquire)) continue;
+            // A renderer may have accumulated transient swap failures while the
+            // window was being hidden. Start the visible period with a clean streak.
+            swapFailStreak_ = 0;
+            OH_LOG_INFO(LOG_APP, "[MW-RNDR] tl=%{public}u resumed after hidden window", toplevelId_);
+        }
+        const uint64_t repaintRequest = repaint_.CaptureRequest();
         const uint64_t frameStartedUs = PerfNowUs();
         const uint64_t takeStartedUs = frameStartedUs;
         uint64_t uploadUs = 0;
@@ -743,6 +768,7 @@ void EglRenderer::RenderLoop() {
         const bool zeroCopyGeometryFrame = zeroCopyGeometryDirty_;
         zeroCopyGeometryDirty_ = false;
         zeroCopyFrame = UpdateZeroCopyFrame(zeroCopyWidth, zeroCopyHeight);
+        if (zeroCopyFrame) winehua::LivePerformance::Instance().Commit(zeroCopySurfaceKey_);
         if (useToplevel != 0) {
             // 帧交付契约 (presented_frame.h): TakeToplevelFrame 返回 PresentedFrame。
             // fw/fh 从帧 buffer 尺寸 (frame.w/h) 取 — 直传帧是游戏内容尺寸
@@ -762,6 +788,22 @@ void EglRenderer::RenderLoop() {
         }
         haveFrame = cpuFrame || zeroCopyFrame || zeroCopyGeometryFrame;
         const uint64_t takeUs = PerfNowUs() - takeStartedUs;
+
+        // Until a CPU texture or external image is available there is nothing
+        // to draw. Submitting the unallocated texture every VSync wastes GPU
+        // work, floods the driver with incomplete-descriptor diagnostics and
+        // incorrectly counts a black buffer as a displayed game frame.
+        const bool haveCachedFrame = rendered || zeroCopyHasFrame_;
+        if (!haveFrame && !haveCachedFrame) {
+            if (++awaitingFrameCount % 300 == 1) {
+                OH_LOG_WARN(LOG_APP,
+                            "[MW-RNDR] awaiting first frame renderer=%{public}u root=%{public}u desktop=%{public}d",
+                            toplevelId_, useToplevel, compositor_.Policy().RootCompositing() ? 1 : 0);
+            }
+            if (!waitForFrameTick()) break;
+            continue;
+        }
+        awaitingFrameCount = 0;
 
         if (cpuFrame && fw > 0 && fh > 0) {
             const uint64_t uploadStartedUs = PerfNowUs();
@@ -803,7 +845,7 @@ void EglRenderer::RenderLoop() {
             // [PIX-SAMPLE] 帧内容白度采样: 区分"帧本身是白的" (guest/wine
             // 侧渲染或回读) vs "帧有内容但显示白" (宿主 EGL/WMS 侧)。
             // 每 30 帧对 px 采样 (中心像素 RGB + 全宽白像素占比)。
-            if (++pixSampleN % 30 == 1) {
+            if (FrameTraceEnabled() && ++pixSampleN % 30 == 1) {
                 size_t whitePixels = 0, totalPx = px.size() / 4;
                 // 采样: 每 16 像素取 1 个像素
                 if (totalPx > 0) {
@@ -835,19 +877,21 @@ void EglRenderer::RenderLoop() {
         // 判据必须是 lastDrawW_/lastDrawH_ (= 上次实际上屏的矩形): 用
         // width_/height_ 会被 SetSize 写成 ArkTS 的"声明尺寸"而误判 — 系统把
         // buffer 切到 1840 后, "实测 1840 == 声明的 1840" 成立就永不重绘了。
-        if (!haveFrame && rendered) {
+        if (!haveFrame && haveCachedFrame) {
             EGLint curW = 0, curH = 0;
             eglQuerySurface(display_, surface_, EGL_WIDTH, &curW);
             eglQuerySurface(display_, surface_, EGL_HEIGHT, &curH);
-            if (curW == lastDrawW_ && curH == lastDrawH_) {
+            if (curW == lastDrawW_ && curH == lastDrawH_ &&
+                !repaint_.NeedsRedraw(repaintRequest)) {
                 loopCount++;
                 ++skipFrames_;   // 诊断: 统计跳过 swap 的帧数
                 if (!waitForFrameTick()) break;
                 continue;
             }
             OH_LOG_INFO(LOG_APP,
-                        "[MW-RNDR] tl=%{public}u surface %{public}dx%{public}d -> %{public}dx%{public}d with no new frame, re-letterbox",
-                        useToplevel, lastDrawW_, lastDrawH_, curW, curH);
+                        "[MW-RNDR] tl=%{public}u repaint cached frame %{public}dx%{public}d -> %{public}dx%{public}d request=%{public}llu",
+                        useToplevel, lastDrawW_, lastDrawH_, curW, curH,
+                        static_cast<unsigned long long>(repaintRequest));
         }
 
         // 获取 EGL surface 实际大小 (本次绘制的目标 buffer 尺寸)
@@ -1041,19 +1085,43 @@ void EglRenderer::RenderLoop() {
         }
 
         const uint64_t swapStartedUs = PerfNowUs();
+        if (!visible_.load(std::memory_order_acquire)) {
+            // The window can be backgrounded while a frame is being composed.
+            // Do not submit to a surface that the window manager is hiding.
+            continue;
+        }
         const bool swapOk = eglSwapBuffers(display_, surface_) == EGL_TRUE;
+        const EGLint swapError = swapOk ? EGL_SUCCESS : eglGetError();
         // 记录"这次真正上屏的绘制尺寸" — 无帧循环据此判断当前 surface 是否已经
         // 与画面不一致 (不一致就重绘)。swap 失败时不记录, 下一轮会再试。
         if (swapOk) {
+            repaint_.DidPresent(repaintRequest);
+            winehua::LivePerformance::Instance().Present();
             lastDrawW_ = drawW;
             lastDrawH_ = drawH;
             swapFailStreak_ = 0;
-        } else if (++swapFailStreak_ == 1 || swapFailStreak_ % 120 == 0) {
-            // swap 失败: 画面没上屏, 循环会持续重试绘制 — 首次 + 每 120 次低频
-            // 告警, 便于发现 surface 失效/buffer 饥饿这类持续失败
-            OH_LOG_WARN(LOG_APP,
-                        "[MW-RNDR] tl=%{public}u eglSwapBuffers failed x%{public}d (draw=%{public}dx%{public}d)",
-                        toplevelId_, swapFailStreak_, drawW, drawH);
+        } else {
+            // A fresh guest frame can fail after an earlier successful swap at
+            // the same size. It has already been consumed from the compositor;
+            // keep its cached texture pending even if no more commits arrive.
+            repaint_.RequestRedraw();
+            if (++swapFailStreak_ == 1 || swapFailStreak_ % 120 == 0) {
+                // 首次 + 每 120 次低频告警，避免持续失败时逐帧刷日志。
+                OH_LOG_WARN(LOG_APP,
+                            "[MW-RNDR] tl=%{public}u eglSwapBuffers failed x%{public}d error=0x%{public}x (draw=%{public}dx%{public}d)",
+                            toplevelId_, swapFailStreak_, swapError, drawW, drawH);
+            }
+        }
+        // A destroyed XComponent can leave an old renderer registered while
+        // its replacement already displays the same desktop. Stop uploading
+        // and consuming frames once this surface is persistently unusable.
+        if (!swapOk && visible_.load(std::memory_order_acquire) && swapFailStreak_ >= 3 &&
+            (swapError == EGL_BAD_SURFACE || swapError == EGL_BAD_NATIVE_WINDOW ||
+             swapError == EGL_CONTEXT_LOST)) {
+            OH_LOG_WARN(LOG_APP, "[MW-RNDR] retire invalid surface tl=%{public}u error=0x%{public}x",
+                        toplevelId_, swapError);
+            running_ = false;
+            break;
         }
         const uint64_t frameEndedUs = PerfNowUs();
         if (haveFrame) {
@@ -1084,6 +1152,7 @@ void EglRenderer::RenderLoop() {
 
 void EglRenderer::Shutdown() {
     running_ = false;
+    visibilityCv_.notify_all();
     vsyncCv_.notify_all();
     if (thread_.joinable()) thread_.join();
     if (display_ != EGL_NO_DISPLAY) {
@@ -1107,4 +1176,15 @@ void EglRenderer::Shutdown() {
         window_ = nullptr;
         OH_LOG_INFO(LOG_APP, "[EGL] tl=%{public}u native window destroyed", toplevelId_);
     }
+}
+
+void EglRenderer::SetVisible(bool visible) {
+    // WINDOW_SHOWN can follow onForeground without changing visible_. Its
+    // native buffer still needs one presentation even for a static desktop.
+    if (visible) repaint_.RequestRedraw();
+    const bool previous = visible_.exchange(visible, std::memory_order_acq_rel);
+    if (previous == visible) return;
+    visibilityCv_.notify_all();
+    OH_LOG_INFO(LOG_APP, "[MW-RNDR] tl=%{public}u visible=%{public}s",
+                toplevelId_, visible ? "true" : "false");
 }
