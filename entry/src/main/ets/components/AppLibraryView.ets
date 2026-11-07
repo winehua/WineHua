@@ -66,6 +66,9 @@ struct RenameDialog {
       }
       .width('100%')
     }
+    // 固定宽: TextInput 与按钮行默认撑满弹窗可用宽, Pad 上 customStyle 弹窗
+    // 会拉到近全屏宽
+    .width(320)
     .padding(18)
     .backgroundColor($r('app.color.overlay_bg'))
     .borderRadius(12)

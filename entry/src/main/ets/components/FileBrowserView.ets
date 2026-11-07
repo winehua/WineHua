@@ -14,7 +14,10 @@ const DOMAIN = 0x0000;
 const TAG = 'Files';
 
 // 文件页 (设计 4.4 / P3): 双根节点 C:\(prefix drive_c) 与 Z:\(zHome 下载目录)。
-// 顶层为根选择视图, 进入某根后 "← 上级目录" 可一路退回根选择。
+// 顶栏 = 返回 + 面包屑 (此设备 ▸ 根 ▸ 各级目录, 逐段可点直达) + 刷新 / 新建
+// 文件夹 / 导入 / 更多图标按钮; 粘贴(有剪贴板时)、系统文件管理(Z:)、在 Wine
+// 中打开收进"更多"菜单。目录直达统一走 navigateTo (按目标重建父链栈, "返回"
+// 沿栈逐级退回根选择视图)。
 // 可启动文件 (exe/bat/cmd/lnk) 行尾留"启动"小按钮, 其余操作(加入应用库/
 // 重命名/复制/剪切/删除)收进长按(PC 右键)菜单; 剪切跨盘(C: 沙箱 ↔ Z: 共享
 // 存储)renameSync 会失败, 回退为递归复制+删除。导入 = 系统文件选择器把文件
@@ -37,6 +40,12 @@ interface DriveRoot {
   path: string;     // native 根路径 (无结尾斜杠)
 }
 
+// 面包屑节点: label 显示文本; path = 点击跳转目标, '' = 此设备 (根选择视图)
+interface CrumbItem {
+  label: string;
+  path: string;
+}
+
 // 页内剪贴板 (单条目): cut=true 粘贴后清空, copy 可反复粘贴
 interface ClipItem {
   path: string;     // 完整 native 路径
@@ -54,6 +63,7 @@ interface ImportItem {
 @CustomDialog
 struct FileRenameDialog {
   controller?: CustomDialogController;
+  title: string = '重命名';
   initial: string = '';
   onDone: (name: string) => void = () => {};
   @State text: string = '';
@@ -64,7 +74,7 @@ struct FileRenameDialog {
 
   build() {
     Column({ space: 14 }) {
-      Text('重命名')
+      Text(this.title)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
       TextInput({ text: this.initial })
@@ -86,6 +96,9 @@ struct FileRenameDialog {
       }
       .width('100%')
     }
+    // 固定宽: TextInput 与按钮行默认撑满弹窗可用宽, Pad 上 customStyle 弹窗
+    // 会拉到近全屏宽
+    .width(320)
     .padding(18)
     .backgroundColor($r('app.color.overlay_bg'))
     .borderRadius(12)
@@ -118,6 +131,8 @@ export struct FileBrowserView {
   private prevPrefixReady: boolean = false;
   private renameController: CustomDialogController | null = null;
   private customLaunchController: CustomDialogController | null = null;
+  // 面包屑横向滚动控制器 (内容变化后吸附到末端, 见 breadcrumbRow)
+  private crumbScroller: Scroller = new Scroller();
 
   private mirrorEnv = (): void => {
     this.state = this.env.engineState;
@@ -283,14 +298,9 @@ export struct FileBrowserView {
     try { return fs.accessSync(path); } catch (_) { return false; }
   }
 
-  // 外部定位: 接受 C: / Z: 任一根内的目录; 存在且为目录则重建 dirStack 并
-  // listDir, 保证"← 上级目录"可一路退回根选择视图
-  private onFilesDirRequest(): void {
-    const target: string = this.filesDirRequest;
-    if (target.length == 0) {
-      return;
-    }
-    this.filesDirRequest = '';
+  // 目录直达 (面包屑点击 / 外部定位共用): 校验后按目标重建父链栈再进入,
+  // 保证"返回"按钮可沿栈逐级退回根选择视图
+  private navigateTo(target: string): void {
     const root = this.rootOf(target);
     if (!root || !this.pathExists(target) || !this.isDir(target)) {
       return;
@@ -310,6 +320,49 @@ export struct FileBrowserView {
     this.listDir(target);
   }
 
+  // 外部定位: 接受 C: / Z: 任一根内的目录 (Index 注入, 应用库"打开所在目录"联动)
+  private onFilesDirRequest(): void {
+    const target: string = this.filesDirRequest;
+    if (target.length == 0) {
+      return;
+    }
+    this.filesDirRequest = '';
+    this.navigateTo(target);
+  }
+
+  // 面包屑节点序列: 此设备 ▸ 根 ▸ 各级目录; path = '' 的节点回根选择视图
+  private crumbSegments(): CrumbItem[] {
+    if (this.atRootList) {
+      return [{ label: '此设备', path: '' }];
+    }
+    const root = this.rootOf(this.curDir);
+    if (!root) {
+      // 理论上不应发生 (目录都在双根内), 退化为完整路径展示
+      return [{ label: '此设备', path: '' }, { label: this.curDir, path: this.curDir }];
+    }
+    const items: CrumbItem[] = [
+      { label: '此设备', path: '' },
+      { label: root.label, path: root.path }
+    ];
+    if (this.curDir != root.path) {
+      let p: string = root.path;
+      const segs: string[] = this.curDir.substring(root.path.length + 1).split('/');
+      for (const seg of segs) {
+        p = p + '/' + seg;
+        items.push({ label: seg, path: p });
+      }
+    }
+    return items;
+  }
+
+  private jumpToCrumb(path: string): void {
+    if (path.length == 0) {
+      this.backToRootList();
+    } else {
+      this.navigateTo(path);
+    }
+  }
+
   private enterDir = (name: string): void => {
     let newPath = this.curDir + '/' + name;
     this.dirStack.push(this.curDir);
@@ -321,16 +374,13 @@ export struct FileBrowserView {
     // 路径在点击时重新解析, 不用渲染期快照 root.path: 桌面会话已存活时
     // prefixReady 经 waitForPrefix 秒置真, 而 zHome 要等 doInit 的 picker
     // 异步返回才赋值 — 窗口期内快照的 Z: path 是 '', 进入即空目录且
-    // rootOf 失配 (路径栏空白、无"系统文件管理"按钮), 只能返回重进
+    // rootOf 失配 (路径栏空白、无"系统文件管理"入口), 只能返回重进
     const path = root.key == 'Z' ? this.zRoot() : root.path;
     if (!path) {
       this.toast('Z: 目录尚未就绪，请稍候重试');
       return;
     }
-    this.dirStack = [];
-    this.curDir = path;
-    this.atRootList = false;
-    this.listDir(path);
+    this.navigateTo(path);
   }
 
   private backToRootList(): void {
@@ -348,20 +398,6 @@ export struct FileBrowserView {
       // 已在某根的顶层: 再上一级 = 根选择视图
       this.backToRootList();
     }
-  }
-
-  private displayPath = (): string => {
-    if (this.atRootList) {
-      return '此设备';
-    }
-    const root = this.rootOf(this.curDir);
-    if (!root) {
-      return this.curDir;
-    }
-    if (this.curDir == root.path) {
-      return root.label;
-    }
-    return root.label + this.curDir.substring(root.path.length + 1).replace(/\//g, '\\');
   }
 
   private inLibrary = (path: string): boolean => {
@@ -450,6 +486,44 @@ export struct FileBrowserView {
     }
   }
 
+  // 新建文件夹: 复用重命名弹窗 (换标题), 默认名"新建文件夹"
+  private createFolder(): void {
+    this.renameController = new CustomDialogController({
+      builder: FileRenameDialog({
+        title: '新建文件夹',
+        initial: '新建文件夹',
+        onDone: (name: string) => {
+          this.doCreateFolder(name);
+        }
+      }),
+      customStyle: true
+    });
+    this.renameController.open();
+  }
+
+  private doCreateFolder(name: string): void {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (trimmed.indexOf('/') >= 0) {
+      this.toast('名称不能包含 /');
+      return;
+    }
+    const dst = this.fullPath(trimmed);
+    if (this.pathExists(dst)) {
+      this.toast('同名文件已存在');
+      return;
+    }
+    try {
+      fs.mkdirSync(dst);
+      this.listDir(this.curDir);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'mkdir fail: %{public}s', JSON.stringify(e));
+      this.toast('新建文件夹失败');
+    }
+  }
+
   private confirmDelete(entry: FileEntry): void {
     const kind = this.rowKindOf(entry);
     AlertDialog.show({
@@ -477,7 +551,7 @@ export struct FileBrowserView {
 
   private setClip(name: string, cut: boolean): void {
     this.clipItem = { path: this.fullPath(name), cut: cut };
-    this.toast(cut ? '已剪切，到目标目录点粘贴' : '已复制，到目标目录点粘贴');
+    this.toast(cut ? '已剪切，可在目标目录的更多菜单中粘贴' : '已复制，可在目标目录的更多菜单中粘贴');
   }
 
   // 粘贴到当前目录: 复制直接递归拷; 剪切先试 renameSync (同盘零拷贝),
@@ -552,6 +626,32 @@ export struct FileBrowserView {
         .onChange(() => {
           this.importFolder();
         })
+    }
+  }
+
+  // 顶栏"更多"菜单: 低频操作从顶栏收进来 — 粘贴 (有剪贴板内容时)、
+  // 系统文件管理 (仅 Z:, 沙箱目录不给系统管理器看)、在 Wine 中打开
+  @Builder
+  moreMenu() {
+    Menu() {
+      if (this.clipItem && !this.atRootList) {
+        MenuItem({ content: '粘贴' })
+          .onChange(() => {
+            this.pasteClip();
+          })
+      }
+      if (!this.atRootList && this.rootOf(this.curDir)?.key == 'Z') {
+        MenuItem({ content: '系统文件管理' })
+          .onChange(() => {
+            this.openInFileManager(this.curDir);
+          })
+      }
+      if (!this.atRootList) {
+        MenuItem({ content: '在 Wine 中打开' })
+          .onChange(() => {
+            this.openInWine();
+          })
+      }
     }
   }
 
@@ -875,14 +975,21 @@ export struct FileBrowserView {
         .width(126).fontSize(11)
         .fontColor($r('app.color.text_tertiary'))
         .textAlign(TextAlign.End).maxLines(1)
-      // 行尾操作槽: 固定宽度 + 右对齐, 无"启动"按钮的行也保留同样宽度 —
-      // 否则大小/时间列相对可启动行整体右移错位
+      // 行尾操作槽: 固定宽度 + 右对齐, 无按钮的行也保留同样宽度 —
+      // 否则大小/时间列相对可启动行整体右移错位。32 与顶栏图标按钮同款
       Row() {
         if (this.rowKindOf(entry) == 'app') {
-          Button('启动')
-            .height(32)
-            .enabled(this.state == 'ready')
-            .onClick(() => this.launchFile(this.fullPath(entry.name)))
+          // 启动 = 行内主动作: 实心 play 图标 accent 色, 无底色 — 热区 32×32
+          // ≈5mm 仍达标, 图标宽约 11vp (同顶栏审核口径)
+          Button() {
+            SymbolGlyph($r('sys.symbol.play_fill'))
+              .fontSize(22)
+              .fontColor([$r('app.color.accent')])
+          }
+          .width(32).height(32)
+          .backgroundColor(Color.Transparent)
+          .enabled(this.state == 'ready')
+          .onClick(() => this.launchFile(this.fullPath(entry.name)))
         } else if (this.rowKindOf(entry) == 'dir') {
           // fontSize 22: chevron 类是窄图标 (宽≈0.5×字号), 16 时实测仅 8x15vp,
           // 触发 PC 市场审核"图标宽或高 < 10vp"; 22 → 约 11x20.6vp 达标
@@ -891,7 +998,7 @@ export struct FileBrowserView {
             .fontColor([$r('app.color.text_tertiary')])
         }
       }
-      .width(88)
+      .width(32)
       .margin({ left: 14 })
       .justifyContent(FlexAlign.End)
       .alignItems(VerticalAlign.Center)
@@ -931,64 +1038,107 @@ export struct FileBrowserView {
     })
   }
 
+  // 顶栏图标按钮: 32×32 热区 ≈5mm, SymbolGlyph fontSize 22 图标宽约 11vp —
+  // 满足 PC 市场审核"图标 ≥10vp / 热区 ≥5mm"硬指标 (同 fileRow chevron 口径)
+  @Builder
+  iconButton(sym: Resource, action: () => void) {
+    Button() {
+      SymbolGlyph(sym)
+        .fontSize(22)
+        .fontColor([$r('app.color.text_primary')])
+    }
+    .width(32).height(32)
+    .backgroundColor($r('app.color.control_bg'))
+    .margin({ left: 8 })
+    .onClick(action)
+  }
+
+  // 面包屑路径: 逐段可点直达 (navigateTo 重建父链栈, 返回按钮语义不变),
+  // 最后一段 = 当前位置 (高亮); 横向 Scroll 容器 + 内容变化吸附到末端 —
+  // 深路径超宽时左侧自然截断, 最深层级始终完整可见
+  @Builder
+  breadcrumbRow() {
+    Scroll(this.crumbScroller) {
+      Row({ space: 2 }) {
+        ForEach(this.crumbSegments(), (c: CrumbItem, idx: number) => {
+          if (idx > 0) {
+            Text('›')
+              .fontSize(16)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          Text(c.label)
+            .fontSize(14)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 6, right: 6, top: 4, bottom: 4 })
+            .borderRadius(6)
+            .fontColor(c.path == this.curDir || (this.atRootList && c.path.length == 0) ?
+              $r('app.color.text_primary') : $r('app.color.text_secondary'))
+            .fontWeight(c.path == this.curDir || (this.atRootList && c.path.length == 0) ?
+              FontWeight.Medium : FontWeight.Normal)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => {
+              this.jumpToCrumb(c.path);
+            })
+        }, (c: CrumbItem) => `${c.path}|${c.label}`)
+      }
+      .alignItems(VerticalAlign.Center)
+      .flexShrink(0)
+      .onAreaChange((_oldArea: Area, _newArea: Area) => {
+        this.crumbScroller.scrollEdge(Edge.End);
+      })
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .align(Alignment.Start)
+    .height(32)
+    .margin({ left: 8 })
+    .layoutWeight(1)
+  }
+
   build() {
     Column() {
       if (this.prefixReady) {
         Row() {
           if (!this.atRootList) {
-            // 与右侧"粘贴/系统文件管理/导入"统一 32 高度, 避免默认 40 显得突兀
-            Button('← 上级目录')
-              .height(32)
-              .backgroundColor($r('app.color.control_bg'))
-              .fontColor($r('app.color.text_primary'))
-              .onClick(this.goUp)
+            // 返回上级 (深层跳转用面包屑, 单级返回仍是最高频动作所以保留按钮);
+            // 32×32 与右侧图标按钮统一, 两种视图行高一致切换不跳变
+            Button() {
+              SymbolGlyph($r('sys.symbol.chevron_left'))
+                .fontSize(22)
+                .fontColor([$r('app.color.text_primary')])
+            }
+            .width(32).height(32)
+            .backgroundColor($r('app.color.control_bg'))
+            .onClick(this.goUp)
           }
-          Text(this.displayPath())
-            .fontColor($r('app.color.text_tertiary'))
-            // 与按钮统一 32 高: 根列表("此设备" 无按钮)与目录内(一排按钮)
-            // 两种状态行高一致, 切换不跳变
-            .height(32)
-            .margin({ left: 10 }).layoutWeight(1)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (this.clipItem && !this.atRootList) {
-            Button('粘贴')
-              .height(32)
-              .backgroundColor($r('app.color.control_bg'))
-              .fontColor($r('app.color.text_primary'))
-              .onClick(() => {
-                this.pasteClip();
-              })
-          }
-          // 浏览 Z: 内部时: 标题栏给"系统文件管理"入口 (打开当前目录)
-          if (!this.atRootList && this.rootOf(this.curDir)?.key == 'Z') {
-            // 字号与顶栏其它按钮一致 (默认), 曾单独设 12 显得大小不一
-            Button('系统文件管理')
-              .height(32)
-              .margin({ left: 8 })
-              .backgroundColor($r('app.color.control_bg'))
-              .fontColor($r('app.color.text_primary'))
-              .onClick(() => {
-                this.openInFileManager(this.curDir);
-              })
-          }
-          // 在 Wine 中打开: 拉起 Wine 侧 explorer 浏览当前目录 (C:/Z: 皆可)
+          this.breadcrumbRow()
+          // 以下操作只在进入目录后出现 — 首页(根选择)顶行保持干净, 仅留面包屑
           if (!this.atRootList) {
-            Button('在Wine中打开')
-              .height(32)
-              .margin({ left: 8 })
-              .backgroundColor($r('app.color.control_bg'))
-              .fontColor($r('app.color.text_primary'))
-              .onClick(() => {
-                this.openInWine();
-              })
-          }
-          // "导入"只在进入目录后出现 — 首页(根选择)顶行保持干净, 仅留路径文本
-          if (!this.atRootList) {
-            Button('导入')
-              .height(32)
-              .margin({ left: 8 })
-              // 与应用库"扫描"同款弹出菜单 (bindMenu + Builder), 文件/文件夹二选一
-              .bindMenu(this.importMenu(), { modalMode: ModalMode.TARGET_WINDOW })
+            this.iconButton($r('sys.symbol.arrow_clockwise'), () => {
+              this.listDir(this.curDir);
+            })
+            this.iconButton($r('sys.symbol.folder_badge_plus'), () => {
+              this.createFolder();
+            })
+            // 导入: 弹出菜单 (bindMenu + Builder), 文件/文件夹二选一
+            Button() {
+              SymbolGlyph($r('sys.symbol.square_and_arrow_down'))
+                .fontSize(22)
+                .fontColor([$r('app.color.text_primary')])
+            }
+            .width(32).height(32)
+            .backgroundColor($r('app.color.control_bg'))
+            .margin({ left: 8 })
+            .bindMenu(this.importMenu(), { modalMode: ModalMode.TARGET_WINDOW })
+            Button() {
+              SymbolGlyph($r('sys.symbol.more'))
+                .fontSize(22)
+                .fontColor([$r('app.color.text_primary')])
+            }
+            .width(32).height(32)
+            .backgroundColor($r('app.color.control_bg'))
+            .margin({ left: 8 })
+            .bindMenu(this.moreMenu(), { modalMode: ModalMode.TARGET_WINDOW })
           }
         }
         .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 6 })
