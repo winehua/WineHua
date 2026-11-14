@@ -1,0 +1,23 @@
+phase	source_at_a001e6d0c	target	source_sha256
+P1/P2	entry/src/main/cpp/display/desktop_fit.h	core/geometry	c4f1c947e8948fe90daf8bedacb7283a3524f5475ef511087adf3cd79b829232
+P2	entry/src/main/cpp/display/display_compositor.cpp	backends/xwayland/runtime	0ed165d35a0c203377c17ebcf3ddde686df9762f2dc5d2a3dd7517cfb404cccd
+P2/P3	entry/src/main/cpp/display/display_guest_frames.cpp	presentation + WineHua external frame provider	c52fc9558e4c1e70108503ce0352344dc9993a1f0d0195163121fcb9e417f90a
+P2/P3	entry/src/main/cpp/display/display_guest_frames.h	presentation + WineHua external frame provider	bc8a5b663ef58ce652601a347bbda26ab185c618cc3c2144c136b52fa22172ba
+P2	entry/src/main/cpp/display/display_input.c	backends/xwayland/input	18bf363025e80cb9852a53f4927f5c20950d4139e6c7e3955e72512955ec57a8
+P2	entry/src/main/cpp/display/display_input.h	backends/xwayland/input	34fb86a486947ff9bcbea70b186df771259b4cd7aeafc491fce369db603641b9
+P2	entry/src/main/cpp/display/ncp/xclient_child.cpp	tests/smoke	e4a07b73fda14058be9c45a64bc6cc5d4b957c5bc81182a6e4c9ebe7c5ac3cab
+P2	entry/src/main/cpp/display/ncp/xim_server_child.cpp	backends/xwayland/input	a696c041b5d7d2a7800f0bd3e01e8e7a4f03889f1689c506486cd9488be21b0e
+P2	entry/src/main/cpp/display/ncp/xwayland_child.cpp	platform/ohos/process	07b18c5960f53dd6d0047de25972ede221337f928497dc5f7097799cbedb6a74
+P2	entry/src/main/cpp/display/ohos_buffer.cpp	backends/xwayland/ohos (extract shared primitives later)	58570e5e335e005b47736e6ea00319c01df9f897f703f1c693a622b36fc7f325
+P2	entry/src/main/cpp/display/ohos_buffer.h	backends/xwayland/ohos (extract shared primitives later)	ef5d68a67412eedcc43805d7de8600a077c5aeb19adc6380e2c4e824af4ac8e5
+P2	entry/src/main/cpp/display/ohos_egl_import.c	backends/xwayland/ohos (extract shared primitives later)	6b91657661335218800f42728ca93c010513d204a2e2737bae1d7249eef34126
+P2	entry/src/main/cpp/display/ohos_egl_import.h	backends/xwayland/ohos (extract shared primitives later)	600f9b7e7af7e6292fe8a66a2fdfcf3ce481eba2ccaac08f8dbaafe6ea1b6a5a
+P2	entry/src/main/cpp/display/ohos_egl_import_probe.c	backends/xwayland/ohos (extract shared primitives later)	0bb030c6b57de881883f1bd5beb43c9ae69bb5439ab3de3ee208298b424f611e
+P2	entry/src/main/cpp/display/ohos_egl_import_probe.h	backends/xwayland/ohos (extract shared primitives later)	f95652cabbeb1bd44b8fabbf3b3d56f0dd1fa67ec50f0a57d88562d3e7f12a02
+P2	entry/src/main/cpp/display/ohos_output.c	backends/xwayland/render	3a4531f3572b2c024bbeff60d52586d93ce552ff1f57d7036a65a26cf1455368
+P2	entry/src/main/cpp/display/ohos_output.h	backends/xwayland/render	5aec0a1e2d45758b3f91392cb9fdca86e0e1f32e80c8f2fcd1c868116c81f7b2
+P2	entry/src/main/cpp/display/x11_toplevel.c	backends/xwayland/xwm	185180ad9fdc5dc3d7f8cb8cb43e621ce878e45268d30d3b01278766cdb15af6
+P2	entry/src/main/cpp/display/x11_toplevel.h	backends/xwayland/xwm	af0ff11349eaddf228dc7e407d23c6813e0d4cd286d59f267bfb306ae45ca099
+P2	entry/src/main/cpp/display/x11_toplevel_bridge.cpp	backends/xwayland/xwm	b140a5970555cbbeb1cd883036983da852fa4835538d7ccc2112437b05d3247a
+P2	entry/src/main/cpp/display/xim_bridge.c	backends/xwayland/input	56880e435d011249198b3388753972d14a1726ee94792331bc40bffe4e738e54
+P2	entry/src/main/cpp/display/xim_bridge.h	backends/xwayland/input	acb6606cdf68d9c0b9356ded54f419dd765feb0cd99517f7e4423a894eb5e9ef

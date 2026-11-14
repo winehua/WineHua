@@ -81,7 +81,7 @@ done
 
 echo "== 3. display-fps 路径: graphics_broker (Windows 字面量) ↔ perf_utils (Unix 字面量) =="
 BROKER="entry/src/main/cpp/graphics/graphics_broker.cpp"
-PERF="entry/src/main/cpp/common/perf_utils.cpp"
+PERF="hgs/src/main/cpp/common/perf_utils.cpp"
 win_path="$(grep -oE 'C:\\\\windows\\\\temp\\\\[A-Za-z0-9_.]+' "$ROOT/$BROKER" | head -1 || true)"
 unix_path="$(grep -oE '/data/storage/el2/base/files/\.wine/drive_c/windows/temp/[A-Za-z0-9_.]+' "$ROOT/$PERF" | head -1 || true)"
 name_win="${win_path##*\\\\}"

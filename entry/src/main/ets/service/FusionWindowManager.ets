@@ -1,7 +1,7 @@
 import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
-import { DisplayRouteService } from './DisplayRouteService';
+import hgsNapi from 'libhgs.so';
 
 const DOMAIN = 0x0000;
 const TAG = 'FusionWM';
@@ -98,12 +98,8 @@ export class FusionWindowManager {
   // 判据 = fusion 子窗 (entries.has) ∨ modal 承载 (provider); WWA ability /
   // popup 不建 entry 也不经 modal 链, 恒 0。wayland 路线在 isX11 门恒 0 =
   // incumbent 不变。
-  stripPxOf(tl: number): number {
-    if (!DisplayRouteService.getInstance().isX11()) return 0;
-    if (!this.entries.has(tl) && !(this.modalStripProvider?.(tl) ?? false)) {
-      return 0;
-    }
-    return Math.round(FusionWindowManager.STRIP_LOGICAL_PX * this.getScale());
+  stripPxOf(_tl: number): number {
+    return 0;
   }
 
   has(tl: number): boolean {
@@ -153,7 +149,7 @@ export class FusionWindowManager {
 
     // 与 WineWindow/ModalWindow 相同: aboutToAppear 同步读 pending toplevelId
     // (与 PC 同款 FIFO, PC 实测 OK)
-    testNapi.setPendingToplevel(tl);
+    hgsNapi.setPendingToplevel(tl);
 
     // decorEnabled:false = 无系统装饰, 装饰全由 Wine 自绘/ArkTS 顶条提供
     // (任务 #129: 系统装饰路线 2026-10-11 两轮真机实验不渲染装饰 UI, 按
@@ -205,7 +201,7 @@ export class FusionWindowManager {
         hilog.info(DOMAIN, TAG, '[FWM] #%{public}d destroy requested while creating', tl);
         // destroy-while-creating: 页面可能未执行 aboutToAppear → 清 pending 残坑
         // (不删会使后续页面出队拿到死 id, 渲染器挂错 toplevel 黑屏)
-        testNapi.cancelPendingToplevel(tl);
+        hgsNapi.cancelPendingToplevel(tl);
         this.destroy(tl);
         return;
       }
@@ -233,7 +229,7 @@ export class FusionWindowManager {
       this.updateImmersive();  // ≥1 窗口可见 → 沉浸窗口模式 (隐藏任务栏)
     }).catch((e: Error) => {
       hilog.error(DOMAIN, TAG, '[FWM] #%{public}d createSubWindow FAILED: %{public}s', tl, JSON.stringify(e));
-      testNapi.cancelPendingToplevel(tl);  // 创建失败 → 同样清残坑
+      hgsNapi.cancelPendingToplevel(tl);  // 创建失败 → 同样清残坑
       this.finishFailed(tl);
       onFail?.();
     });

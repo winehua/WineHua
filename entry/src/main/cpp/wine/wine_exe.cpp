@@ -1,10 +1,10 @@
 #include "wine_exe.h"
+#include "seam/registry.h"
 
 #include "proc/broker.h"
 #include "env_profiles.h"
 #include "proc/spawner.h"
 #include "graphics/graphics_broker.h"
-#include "compositor/wayland_server.h"
 #include "wine_constants.h"
 #include "wine_env.h"
 #include "proc/wine_process.h"
@@ -216,7 +216,7 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK/VKD3D 后端
     // overlay 内 early-return, extraEnv 最后写入仍可压过产品默认。
     policy.applyStableOverlay = true;
-    policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
+    policy.desktopShellFlag = hgs::seam::HostSessionControl().IsDesktopMode();
     policy.extraEnv = options.environment;
     policy.extraEnv.push_back("WINEHUA_D3D_BACKEND=" + options.d3dBackend);
     policy.extraEnv.push_back("WINEHUA_PRESENT_BACKEND=" + options.presentBackend);
@@ -467,7 +467,7 @@ napi_value RunWineExe(napi_env env, napi_callback_info info)
     policy.homeDir = homeDir;
     // desktop 模式: 将进程接入 explorer 创建的 shell desktop,
     // 使其窗口出现在任务栏, 且能与其他 shell 进程互相访问
-    policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
+    policy.desktopShellFlag = hgs::seam::HostSessionControl().IsDesktopMode();
     std::vector<std::string> wineEnv = winehua::BuildSessionEnv(policy);
 
     {

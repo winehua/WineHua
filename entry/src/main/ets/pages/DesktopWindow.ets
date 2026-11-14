@@ -1,18 +1,39 @@
-import { DesktopLayer } from '../components/DesktopLayer';
+import hgsNapi from 'libhgs.so';
+import { HgsSurface } from 'hgs';
+import { WineWindowManager } from '../service/WineWindowManager';
 
-// Pad x11 虚拟桌面承载页 (DesktopAbility loadContent)。
-// 出图/输入全部走 DesktopLayer 承载统一 seam (#173): 起链/画布登记/
-// 手势判定/键鼠轴注入都在组件内, 语义与 PC VDA (VirtualDesktop.ets)
-// 同源 —— 本页此前是 pre-seam 旧实现 (内联起链 + 双手势状态机副本),
-// 退役后 Pad 承载几何语义随之升级为 present 层单点 fit (letterbox) +
-// displayRouteCanvasResized 强帧 (桌面承载统一, #174/#175 同族)。
+// Pad/手机的全屏桌面页 (DesktopAbility 承载, singleton)。
+// surface 生命周期与输入状态机由 WineSurface/WinePointerMachine 公共实现;
+// 本页差异配置: 桌面命中模式 (hitTest = findToplevelAt, 触摸/滚轮先裁决
+// 目标窗口)、鼠标捕获-配对型 (跨窗口按下抬起)、键盘发 rootId、反写桌面尺寸。
+// (演进说明: 本页为 master 形态; main-ui 的组件化重写版见 DesktopLayer,
+//  由 VirtualDesktop 复用 — 后续合并时两者统一)
 @Entry
 @Component
 struct DesktopPage {
   build() {
-    Stack() {
-      DesktopLayer({ floating: false })
+    Column() {
+      HgsSurface({
+        xcId: 'wine_desktop_xc',
+        resolveId: () => WineWindowManager.getInstance().getDesktopRootId(),
+        mouseMode: 'desktop',
+        onSurfaceCreatedCallback: (sid: string, id: number) => {
+          try { hgsNapi.createRenderer(id, BigInt(sid)); } catch (_) {}
+        },
+        onSurfaceChangedCallback: (_sid: string, id: number, w: number, h: number) => {
+          try {
+            hgsNapi.resizeRenderer(id, w, h);
+            const s = WineWindowManager.getInstance().getEffectiveScale();
+            hgsNapi.notifyToplevelResize(id, Math.round(w / s), Math.round(h / s), false);
+          } catch (_) {}
+        },
+        onSurfaceDestroyedCallback: (id: number) => {
+          try { hgsNapi.destroyRenderer(id); } catch (_) {}
+        }
+      })
     }
-    .width('100%').height('100%').backgroundColor('#000')
+    .width('100%')
+    .height('100%')
+    .backgroundColor('#000')
   }
 }

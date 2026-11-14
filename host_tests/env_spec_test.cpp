@@ -2,6 +2,7 @@
 // 不依赖 OHOS SDK, 用宿主 g++ 编译。序列化规则收口前, "|'/'\n' 过滤、
 // fd 变量禁入"曾散在 wine_env.cpp / ohos_broker.c 多处各自实现。
 #include "env_spec.h"
+#include "display_environment.h"
 
 #include <cstdio>
 #include <string>
@@ -22,6 +23,34 @@ using winehua::EnvSpec;
 
 int main()
 {
+    // Endpoint lines are appended by the broker after all per-process overrides.
+    {
+        winehua::WineDisplayEnvironment display;
+        CHECK(winehua::BuildWineDisplayEnvironment(
+            {"DISPLAY=:4", "XAUTHORITY=/sandbox/xauth", "WAYLAND_DISPLAY="}, display) && display.x11,
+            "X11 uses the endpoint's display and authority");
+        CHECK(display.brokerSuffix.find("|__env=DISPLAY=:4|__env=WAYLAND_DISPLAY=|") != std::string::npos,
+            "broker clears the Wayland display for X11");
+        CHECK(winehua::BuildWineDisplayEnvironment(
+            {"WAYLAND_DISPLAY=custom", "XDG_RUNTIME_DIR=/sandbox/runtime", "DISPLAY="}, display) && !display.x11,
+            "Wayland uses HGS runtime and socket names");
+        CHECK(display.brokerSuffix.find("|__env=XAUTHORITY=|") != std::string::npos,
+            "Wayland clears stale X11 authorization");
+        CHECK(winehua::BuildWineDisplayEnvironment(
+            {"DISPLAY=:4", "XAUTHORITY=/x", "XMODIFIERS=@im=hgs", "XLOCALEDIR=/x11/locale"}, display) &&
+            display.brokerSuffix.find("|__env=XMODIFIERS=@im=hgs") != std::string::npos,
+            "X11 broker forwards the XIM server and Wine locale directory");
+        CHECK(!winehua::BuildWineDisplayEnvironment(
+            {"DISPLAY=:4", "XAUTHORITY=/x", "XMODIFIERS=@im=hgs"}, display), "XIM requires a locale directory");
+        CHECK(!winehua::BuildWineDisplayEnvironment({"DISPLAY=:4"}, display), "reject missing authority");
+        CHECK(!winehua::BuildWineDisplayEnvironment(
+            {"DISPLAY=:4", "XAUTHORITY=/x|__env=HOME=/other"}, display), "reject broker delimiter");
+        CHECK(!winehua::BuildWineDisplayEnvironment(
+            {"DISPLAY=:4", "XAUTHORITY=/x", "WAYLAND_DISPLAY=other"}, display), "reject mixed routes");
+        CHECK(!winehua::BuildWineDisplayEnvironment(
+            {"DISPLAY=:4", "DISPLAY=:7", "XAUTHORITY=/x"}, display), "reject conflicting duplicates");
+    }
+
     // 1. set: upsert, 保首次插入位置, 后写值生效
     {
         EnvSpec e;

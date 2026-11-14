@@ -1,0 +1,60 @@
+{
+  "scope": "P0 observed failures, no product runtime fixes applied",
+  "failures": [
+    {
+      "id": "P0-WL-VK-01",
+      "scope": "HGS/Wayland",
+      "test": "wine-vulkan-offscreen-x64",
+      "failure": "venus_storage_write.spv sampled output mismatch",
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/wine-vulkan-p0-wayland-wine-vulkan-20261106",
+      "followup": "保留原始输出，后续对应版本和配置下重跑；不能根据 X11 另一项失败直接推断根因相同",
+      "status": "OPEN"
+    },
+    {
+      "id": "P0-WL-ZORDER-01",
+      "scope": "HGS/Wayland",
+      "test": "win-zorder-x64",
+      "failure": "send-a-bottom; bring-b-top failed",
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/win32-p0-wayland-window-input-20261106",
+      "followup": "窗口管理迁移时必须覆盖置底和置顶语义",
+      "status": "OPEN"
+    },
+    {
+      "id": "P0-X11-INIT-01",
+      "scope": "X11 full Mono profile",
+      "test": "first initialization",
+      "failure": "suite summary absent after 5 minutes; wineboot-dispatch remains; Mono support subprocesses observed",
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-core-20261106",
+      "followup": "完整配置初始化仍需单独定位；无 Mono 图形包成功不是对完整配置的豁免",
+      "status": "OPEN"
+    },
+    {
+      "id": "P0-X11-VK-01",
+      "scope": "X11 no-Mono graphics profile",
+      "test": "wine-vulkan-sampled-only-x86",
+      "failure": "venus_image_fetch.spv value=0xdeadbeef",
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-wine-vulkan-no-mono-20261106",
+      "followup": "Vulkan transport 基线保留该失败，不放宽 shader 采样判据",
+      "status": "OPEN"
+    },
+    {
+      "id": "P0-X11-RELEASE-01",
+      "scope": "X11 no-Mono graphics profile",
+      "test": "frame release synchronization invariant",
+      "failure": "core app PID 57389: rel_unsynced_presented max=1262, required=0",
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-core-no-mono-20261106",
+      "followup": "迁移后显式按本轮应用 PID 检查计数为零；功能/视觉通过不能替代 GPU 同步完成后归还的要求",
+      "status": "OPEN",
+      "other_runs": {
+        "dxvk": {
+          "application_pid": 57650,
+          "max_rel_unsynced_presented": 541
+        },
+        "vulkan-present": {
+          "application_pid": 61404,
+          "max_rel_unsynced_presented": 150
+        }
+      }
+    }
+  ]
+}

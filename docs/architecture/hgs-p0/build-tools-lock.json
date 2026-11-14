@@ -1,0 +1,200 @@
+{
+  "scope": "Isolated build-only packages; no signing files",
+  "files": [
+    {
+      "name": "autoconf_2.71-3_all.deb",
+      "sha256": "cc3f9f7a1e576173fb59c36652c0a67c6426feae752b352404ba92dfcb1b26c9",
+      "size": 338946
+    },
+    {
+      "name": "binutils-mingw-w64-i686_2.41.90.20240122-1ubuntu1+11.4_amd64.deb",
+      "sha256": "5236ef254532c1f4ebddbce898e884fe9cc1ac4803092211ec615cbdeba7aafb",
+      "size": 2974884
+    },
+    {
+      "name": "binutils-mingw-w64-x86-64_2.41.90.20240122-1ubuntu1+11.4_amd64.deb",
+      "sha256": "28bfabbf64a68813a56360bca056072af9ff71ef4090a4b8a8a085afcda3e4dd",
+      "size": 6053282
+    },
+    {
+      "name": "bison_2%3a3.8.2+dfsg-1ubuntu0.24.04.1_amd64.deb",
+      "sha256": "9d75084d1293f68f3c1a2ee677dea5baa4e010bac2d4c455d8e23177e97aa353",
+      "size": 748794
+    },
+    {
+      "name": "flex_2.6.4-8.2build1_amd64.deb",
+      "sha256": "c5604f55827b50e3f568b4731b7799f86b147454c867be02bc141d9d8ce561ff",
+      "size": 300754
+    },
+    {
+      "name": "gcc-mingw-w64-base_13.2.0-6ubuntu1+26.1_amd64.deb",
+      "sha256": "a30c07e807e9874ea93909448c5d6d37f9569ebe60ad32de8e490aad198538a3",
+      "size": 188046
+    },
+    {
+      "name": "gcc-mingw-w64-i686-posix-runtime_13.2.0-6ubuntu1+26.1_amd64.deb",
+      "sha256": "650bcd76e0c56c713428950aec8823fd517f911eaad80406907379a69d36ad0a",
+      "size": 13146552
+    },
+    {
+      "name": "gcc-mingw-w64-i686-posix_13.2.0-6ubuntu1+26.1_amd64.deb",
+      "sha256": "8c63daeb59c96044c2a5c26b5a3a2b793237f3e10d3428bb659401122b8e501c",
+      "size": 35221632
+    },
+    {
+      "name": "gcc-mingw-w64-x86-64-posix-runtime_13.2.0-6ubuntu1+26.1_amd64.deb",
+      "sha256": "aca6b438e0b55b11cedcf1170a1ee26e7979e34192e34f6e6389e560908a5bfc",
+      "size": 14036962
+    },
+    {
+      "name": "gcc-mingw-w64-x86-64-posix_13.2.0-6ubuntu1+26.1_amd64.deb",
+      "sha256": "0855fa1d4a618550faac3a3e4352aa3226833b28184ad3c3b496a68a22c4eda2",
+      "size": 35401298
+    },
+    {
+      "name": "gettext-base_0.21-14ubuntu2_amd64.deb",
+      "sha256": "3e2806e94aba780cac11961ede06bffd14d4b840c4085be33d597ec93773fba5",
+      "size": 38400
+    },
+    {
+      "name": "gettext_0.21-14ubuntu2_amd64.deb",
+      "sha256": "5338a17b0c7da20280097d5730ab640c8fcc2b4547acdda29361b27675b937c6",
+      "size": 864338
+    },
+    {
+      "name": "libblas3_3.12.0-3build1.1_amd64.deb",
+      "sha256": "1b0ef0ad0893ff77bf7d5ab75723771788e16137ea1efde557dbac7b7b83a758",
+      "size": 237978
+    },
+    {
+      "name": "libexpat1-dev_2.6.1-2ubuntu0.6_amd64.deb",
+      "sha256": "87281ce46d74f261caff4ac404fe5af7b07f185d305246fef81797ddc20fa9f8",
+      "size": 146542
+    },
+    {
+      "name": "libfl2_2.6.4-8.2build1_amd64.deb",
+      "sha256": "098db71e672ded6e8194eec7132a2ca31dee49022848c7b0f77ce912d99cb445",
+      "size": 9768
+    },
+    {
+      "name": "libfreetype-dev_2.13.2+dfsg-1ubuntu0.2_amd64.deb",
+      "sha256": "dd512109d33b182387be40cfe2b68b912b14f0753ba2a0769ca1950de0713a28",
+      "size": 574070
+    },
+    {
+      "name": "libgettextpo0_0.21-14ubuntu2_amd64.deb",
+      "sha256": "9a921d6422596feb1b54b1046ac88487a4f63654427e46e343befa080f4eabce",
+      "size": 143064
+    },
+    {
+      "name": "libgfortran5_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "sha256": "2b05896c477275ad3473bb63a5ac5a5b8a7e4a6ad6ed7cb23c442ccd1abc28f5",
+      "size": 916316
+    },
+    {
+      "name": "libimagequant0_2.18.0-1build1_amd64.deb",
+      "sha256": "94bfa8908323a469292bd68ccae984414e8f5f1dc28cacbe952b7cbce36c6865",
+      "size": 36290
+    },
+    {
+      "name": "libjpeg-turbo8_2.1.5-2ubuntu2_amd64.deb",
+      "sha256": "f68b5b23bc8a1688fb787d2aed7e2cdf895a73022f6a5025e183162dac4500b2",
+      "size": 149982
+    },
+    {
+      "name": "liblapack3_3.12.0-3build1.1_amd64.deb",
+      "sha256": "05ced5049d4fd393e0ae6dc71211e7c07ed0c85e8099649d679cf4b5a1aed59b",
+      "size": 2646422
+    },
+    {
+      "name": "liblcms2-2_2.14-2ubuntu0.1_amd64.deb",
+      "sha256": "f48368ce55ac35c4723a158c74f2c48f4398570d6f3207874e3a14e1cdada71d",
+      "size": 160898
+    },
+    {
+      "name": "libopenjp2-7_2.5.0-2ubuntu0.5_amd64.deb",
+      "sha256": "24b92ce9c4b306f5370e768024d35ec565792001678b510f0d40b6395b43524f",
+      "size": 173572
+    },
+    {
+      "name": "libraqm0_0.10.1-1build1_amd64.deb",
+      "sha256": "6817de16981bbc8bf5346cf55516fc53d8f1ac851ab76b2bfd84b4a2190c3302",
+      "size": 15012
+    },
+    {
+      "name": "libtiff6_4.5.1+git230720-4ubuntu2.5_amd64.deb",
+      "sha256": "564cdf59dda5e1a826c51b5868ee2785fffa26ee5a7bad95bc5e8c8224c931b8",
+      "size": 199612
+    },
+    {
+      "name": "libwebp7_1.3.2-0.4build3_amd64.deb",
+      "sha256": "c86f6439f0bbc531f7199794654231f3b29327d6585958511b958795d51c2484",
+      "size": 230220
+    },
+    {
+      "name": "libxkbfile1_1%3a1.1.0-1build4_amd64.deb",
+      "sha256": "22ac5b7dca740e606261cebdfaf1a07738e92ad3d123570694374ddb4d5afea2",
+      "size": 70010
+    },
+    {
+      "name": "m4_1.4.19-4build1_amd64.deb",
+      "sha256": "30ea715845a1863abd55d11e47ab91513130bf347852d4cdeae69e9d98fa795c",
+      "size": 243640
+    },
+    {
+      "name": "meson-1.4.2.tar.gz",
+      "sha256": "ea2546a26f4a171a741c1fd036f22c9c804d6198e3259f1df588e01f842dd69f",
+      "size": 2227701
+    },
+    {
+      "name": "mingw-w64-common_11.0.1-3build1_all.deb",
+      "sha256": "4a42fd30fbc3838c58c929d8a4882682fc12408bb7a0e6cafa913c0f0a57c187",
+      "size": 5580230
+    },
+    {
+      "name": "mingw-w64-i686-dev_11.0.1-3build1_all.deb",
+      "sha256": "903e09f47c0e441f9476a32efc745430a0cc39b1c33a13ea1f1d0414a24b7970",
+      "size": 3153084
+    },
+    {
+      "name": "mingw-w64-x86-64-dev_11.0.1-3build1_all.deb",
+      "sha256": "018480a62907fcca19c6bf2975ae01f5c92c23dee8c3cf7a8355c10bf7d42c6f",
+      "size": 3786378
+    },
+    {
+      "name": "python3-mako_1.3.2-1ubuntu0.1_all.deb",
+      "sha256": "5af35e59b20583fa49c5f3ce3fbc15ab52f61bc3b5884396f1f04818160c2cdb",
+      "size": 63416
+    },
+    {
+      "name": "python3-markupsafe_2.1.5-1build2_amd64.deb",
+      "sha256": "5fd479735e81694be2881d4bd77b0b72e83adb1cb9fbfb1895274ac70ab230f4",
+      "size": 12666
+    },
+    {
+      "name": "python3-numpy_1%3a1.26.4+ds-6ubuntu1_amd64.deb",
+      "sha256": "480e35b664e381dc6bb9627b728e138ae13acd3ebb9dffd220fb8806709e69f1",
+      "size": 4436924
+    },
+    {
+      "name": "python3-packaging_24.0-1_all.deb",
+      "sha256": "decc936e9512c2de78fcf9e8d8459ce58952c40bf8bd1f06e62556d7fe887db6",
+      "size": 41094
+    },
+    {
+      "name": "python3-pil_10.2.0-1ubuntu1.4_amd64.deb",
+      "sha256": "0141bebeb02bb02eec433f6c12ec0d7278fdea69e94f3ed27e94bd7dd192fc0e",
+      "size": 453224
+    },
+    {
+      "name": "python3-yaml_6.0.1-2build2_amd64.deb",
+      "sha256": "315e59500af855f23ee4e95525b99009bd798c4d2658af8eb4b2d66a8a91ec23",
+      "size": 122568
+    },
+    {
+      "name": "x11-xkb-utils_7.7+8build2_amd64.deb",
+      "sha256": "69df4191e165f8b89d067f6234fcce89a4923d27d1e66dd92e6d63d6da93cdb0",
+      "size": 170314
+    }
+  ]
+}

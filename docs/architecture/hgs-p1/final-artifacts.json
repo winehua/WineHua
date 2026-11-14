@@ -1,0 +1,32 @@
+{
+  "api_version": "1.1 (0x10001)",
+  "exports_checked": [
+    "serviceStart",
+    "serviceStop",
+    "serviceInspect",
+    "serviceWindows",
+    "serviceClientEnvironment",
+    "serviceSendInput",
+    "setServiceEventCallback"
+  ],
+  "artifacts": [
+    {
+      "path": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/winehua-p1-final-signed.hap",
+      "sha256": "039104e84ed9e02410a5fabf5f579d8c5a0274dc0ba813fe0a60a137db57506e",
+      "size": 399185833,
+      "libhgs_sha256": "996e7b3f03089445aa5b46facecd2d6ae65d62a37cd3184c9c38a2717961d1c3"
+    },
+    {
+      "path": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/winehua-p1-final-unsigned.hap",
+      "sha256": "183a0a127aa48e261bd9677082dacf449dd6f65b524a59177a381146ad153734",
+      "size": 398573983,
+      "libhgs_sha256": "996e7b3f03089445aa5b46facecd2d6ae65d62a37cd3184c9c38a2717961d1c3"
+    },
+    {
+      "path": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/bettersh-p1-final-release-debug-jit.hap",
+      "sha256": "cd8f00ab6b39ee39c14c655f82004bd7a52ec059697c157a961c2286b27e319f",
+      "size": 211616979,
+      "libhgs_sha256": "f45cdedef2c368ed6fb1e5a9bd5cc3a9766a2c3d6ad9cae5dd146dec3971edfc"
+    }
+  ]
+}

@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -583,9 +584,13 @@ def hdc_recv_file_if_present(hdc: str, device: str, rel_path: str, local: Path) 
 
     沙箱视角路径（不加 -b 会被 SELinux 拒，见文件头沙箱路径约定）。"""
     local.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
-                             f"{SANDBOX_FILES}/{rel_path}", str(local)],
-                            capture_output=True, text=True, errors="replace")
+    try:
+        result = subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                                 f"{SANDBOX_FILES}/{rel_path}", str(local)],
+                                capture_output=True, text=True, errors="replace",
+                                timeout=HDC_POLL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0 and local.is_file()
 
 
@@ -666,15 +671,8 @@ def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
     die(f"remove verification failed (still exists, 3 attempts): {real}")
 
 
-def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
-    """读 files/ 下的文本文件（真实路径，空/不存在返回空串）。"""
-    code, out = hdc_shell(hdc, device, f"cat '{REAL_FILES}/{rel_path}' 2>/dev/null")
-    return out if code == 0 else ""
-
-
 def sandbox_texts(hdc: str, device: str, rel_paths: list) -> dict:
-    """一次 hdc 调用读多个文件（分隔符切分）：固定帧窗口只有 2 秒，逐文件
-    cat 的往返开销会把轮询周期撑到窗口之外。返回 {rel_path: 内容}。
+    """批量读取结果，私有 prefix 下用 HDC 调试沙箱回读。返回 {rel_path: 内容}。
 
     整个 hdc 调用失败（含超时）时返回**空 dict** —— 与"文件不存在"返回
     {path: ""} 区分开，调用方据此判断设备端是否还在响应。"""
@@ -683,12 +681,22 @@ def sandbox_texts(hdc: str, device: str, rel_paths: list) -> dict:
     marker = "@@@SMOKE@@@"
     script = f"; echo '{marker}'; ".join(
         f"cat '{REAL_FILES}/{path}' 2>/dev/null" for path in rel_paths)
+    # 新建前缀可以是 0700，设备 shell 无法穿过它，但 HDC 调试沙箱可读取。
+    script += f"; echo '{marker}'; test -x '{REAL_FILES}/.wine' || echo private"
     code, out = hdc_shell(hdc, device, script, timeout=HDC_POLL_TIMEOUT_S)
     if code == -1:
         return {}
     if code != 0:
         return {path: "" for path in rel_paths}
     chunks = out.split(marker)
+    if len(chunks) == len(rel_paths) + 1 and chunks[-1].strip() == "private":
+        with tempfile.TemporaryDirectory(prefix="winehua-smoke-") as directory:
+            result = {}
+            for index, path in enumerate(rel_paths):
+                local = Path(directory) / f"{index}.json"
+                result[path] = (local.read_text(errors="replace")
+                                if hdc_recv_file_if_present(hdc, device, path, local) else "")
+            return result
     return {path: (chunks[index].strip() if index < len(chunks) else "")
             for index, path in enumerate(rel_paths)}
 
@@ -734,8 +742,14 @@ def cmd_push(args: argparse.Namespace) -> int:
         remove_sandbox_path(hdc, device, DRIVE_C_REL)
         hdc_send(hdc, device, payload, f"{SANDBOX_FILES}/{DRIVE_C_REL}")
     else:
-        log("prefix 未创建：仅更新推送源，C:\\smoke 由设备端 seed 播种")
-    for probe in ("suites.json", "x64/winehua_graphics_smoke.exe", "x86/winehua_graphics_smoke.exe"):
+        log("设备 shell 无法访问当前 prefix：C:\\smoke 由设备端 seed 更新")
+    manifest = json.loads((payload / "manifest.json").read_text())
+    probes = ["suites.json", "manifest.json"]
+    for arch in ("x64", "x86"):
+        first = next((name for name in sorted(manifest["files"]) if name.startswith(f"{arch}/")), None)
+        if first is not None:
+            probes.append(first)
+    for probe in probes:
         code, out = hdc_shell(hdc, device, f"ls '{REAL_FILES}/{PAYLOAD_REL}/{probe}' 2>/dev/null")
         if code != 0 or not out.strip():
             die(f"push verification failed: missing {probe}")
@@ -808,7 +822,7 @@ def build_job(args: argparse.Namespace) -> dict:
     # (checks.presented_route)。放这里而不是让判据回读 job 文件 —— 归档要自带
     # 判定所需的输入 (判定只读归档), 且"环境被丢"这个失效模式本身也要能被抓到:
     # 丢了环境 ⇒ 期望路线也没了 ⇒ 判 FAIL 而不是默认成 wayland。
-    # 无条件注入: 不带 --job 的套件跑 (wayland 默认) 也要有期望值。
+    # 不带 --job 的套件跑也要有期望值。
     route_env = dict(params.get("env") or {})
     # job 文件里声明的路线 (若 CLI --env 又改过它, 上面的合并已经把它覆盖掉了,
     # 所以要在合并前就抄一份)。期望值与实跑值同源会被同一个开关一起改掉 ——
@@ -816,13 +830,11 @@ def build_job(args: argparse.Namespace) -> dict:
     # presented=wayland 而完全不自知 (review F7)。声明单独下发, 判定层用它兜底:
     # CLI 覆盖可以改实跑路线, 但改不掉"这个 job 声明的是什么"。
     declared_route = declared_env.get("WINEHUA_DISPLAY_ROUTE") if declared_env else None
-    # 兜底期望 = 产品缺省路线 (EntryAbility publishLaunchRequest 的 routeValue
-    # 缺省; 2026-10-10 用户拍板缺省 x11)。套件/条目显式声明时跟随声明; 什么都不
-    # 声明 = 设备按产品缺省跑 —— 期望值必须与产品缺省一致, 否则裸跑必假 FAIL
-    # (core opengl 两项 2026-10-10 04:36 实测: 期望 wayland/实际 x11)。两处
-    # 分属 smoke 与 app, 无单一来源, 改产品缺省必须同步这里 (grep 本注释)。
-    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
-        "WINEHUA_DISPLAY_ROUTE") or "x11"
+    # 显式选择的宿主路线优先。未指定时保留 job 路线或默认的 X11 期望。
+    display_route = getattr(args, "display_route", None)
+    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = (
+        display_route or route_env.get("WINEHUA_DISPLAY_ROUTE") or "x11"
+    )
     if declared_route:
         route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
     # M3a 一致性检查: host 裁决 (app 冷启参数 winehua.displayRoute=x11) 会经
@@ -832,7 +844,6 @@ def build_job(args: argparse.Namespace) -> dict:
     # 声明源 = params.env (套件级, 合并 CLI 前的 declared_env) 与 inline 条目
     # env (rate 类 job 的声明在条目上); 套件用例自身的 x11 约定走 params 层
     # (displayroute-suite.json 形态), 用例 env 不另查。
-    display_route = getattr(args, "display_route", None)
     if display_route == "x11":
         offenders = []
         inline_entries = job.get("inline") or []
@@ -848,10 +859,6 @@ def build_job(args: argparse.Namespace) -> dict:
                 "WINEHUA_DISPLAY_ROUTE=x11 (未声明的: "
                 f"{', '.join(offenders)}) —— host 裁决会经 BuildWineEnv 改写 "
                 "guest env, 未声明的套件不许隐式换路线。")
-        # 期望路线跟随 host 裁决: --display-route x11 就是下发给 app 的冷启参数,
-        # 两者同源 (单一裁决点)。inline 声明型 job (rate 类) 的 route 只在条目
-        # env 上, 不修这里期望值会停在 wayland, presented_route 判定失真。
-        route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = "x11"
     params["env"] = route_env
     job["params"] = params
     return job
@@ -948,6 +955,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     # (native multiwindow 位只认冷启, display_route_napi 的 g_started 语义)。
     if pin_mode:
         start += f" --ps winehua.desktopMode {pin_mode}"
+    if args.display_route:
+        start += f" --ps winehua.displayRoute {args.display_route}"
     if getattr(args, "extra_ps", ""):
         # 附加调试键 (如 winehua.fusionHost, 或 k=v 写法的
         # winehua.displayRoute=x11)。publishLaunchRequest 在

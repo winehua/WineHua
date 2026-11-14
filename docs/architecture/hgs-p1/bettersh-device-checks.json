@@ -1,0 +1,24 @@
+{
+  "checks": {
+    "frame": true,
+    "pointer_pair": true,
+    "key_pair": true,
+    "maximize_restore": true,
+    "client_exit": true,
+    "destroy_event": true,
+    "service_survives_no_windows": true,
+    "unsupported_protocol": true,
+    "conflict_preserves_ready": true
+  },
+  "reconnect": {
+    "same_epoch": true,
+    "new_public_id": true,
+    "new_connection": true,
+    "new_generation": true,
+    "reused_native_id": true,
+    "frame": true,
+    "second_exit_and_service_ready": true
+  },
+  "client_log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/bettersh-client-1.log",
+  "contract_report": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/bettersh-contract-after-close.json"
+}

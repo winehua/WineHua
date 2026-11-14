@@ -137,12 +137,22 @@ fi
 
 set -x
 mkdir -p "$TMPDIR"
-make NATIVE_ARCH=arm64-v8a "$@"
+# ── hgs 迭代期: 外层全量构建链 (deps → wine → box64 → native → assemble → hap)
+#    暂停, 入口改为 scripts/build_hgs.sh (hgs 预编译依赖 libffi/libwayland)。
+#    恢复全量构建时: 注释掉 build_hgs.sh 调用, 取消下面注释。
+# make NATIVE_ARCH=arm64-v8a "$@"
+# rc=$?
+# { set +x; } 2>/dev/null
+#
+# if [ "$rc" -ne 0 ]; then
+#     echo "[ERROR] make 失败 (exit=$rc), 跳过 ELF 完整性检查"
+#     exit "$rc"
+# fi
+
+bash scripts/build_hgs.sh "$@"
 rc=$?
 { set +x; } 2>/dev/null
-
 if [ "$rc" -ne 0 ]; then
-    echo "[ERROR] make 失败 (exit=$rc), 跳过 ELF 完整性检查"
     exit "$rc"
 fi
 
@@ -199,5 +209,7 @@ sys.exit(0)
 PYEOF
 }
 
-check_elf_integrity
-exit $?
+# ELF 完整性检查随外层 make 构建一并停用 (依赖 make 产出的 unsigned HAP):
+# check_elf_integrity
+# exit $?
+exit "$rc"

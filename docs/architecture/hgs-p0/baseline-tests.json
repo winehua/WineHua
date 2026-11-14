@@ -1,0 +1,186 @@
+{
+  "wayland": {
+    "status": "PASS",
+    "command": "make test",
+    "exit_code": 0,
+    "test_program_count": 16,
+    "programs": [
+      "geometry_test",
+      "blit_scaled_test",
+      "blit_clip_test",
+      "shm_frame_source_test",
+      "zorder_test",
+      "env_spec_test",
+      "env_baseline_test",
+      "input_state_test",
+      "toplevel_event_test",
+      "hgs_event_map_test",
+      "hgs_endpoint_test",
+      "native_keymap_test",
+      "hgs_window_manager_test",
+      "presenter_common_test",
+      "controller_merge_test",
+      "display_policy_test"
+    ],
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/wayland-host-tests.log",
+    "sha256": "88304aaa421bf135e5e9b9eaec43d7eb016acfcf29985fe8ef98ac7c898c63d5",
+    "whgp_verifier": "not in target"
+  },
+  "upstream": {
+    "status": "PASS",
+    "command": "make test",
+    "exit_code": 0,
+    "test_program_count": 12,
+    "programs": [
+      "geometry_test",
+      "blit_scaled_test",
+      "blit_clip_test",
+      "shm_frame_source_test",
+      "zorder_test",
+      "env_spec_test",
+      "env_baseline_test",
+      "input_state_test",
+      "toplevel_event_test",
+      "presenter_common_test",
+      "controller_merge_test",
+      "display_policy_test"
+    ],
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/upstream-host-tests.log",
+    "sha256": "b9722ca7cf4e61d95c91b0e742f0248c2cc2110b5d0bfd77981898228494d553",
+    "whgp_verifier": "PASS",
+    "wine_test_inputs": {
+      "commit": "025656dfd3920ea11aaab9e8ac6d905ec35963fe",
+      "paths": [
+        "dlls/winebus.sys/winehua_gamepad_protocol.h",
+        "dlls/winebus.sys/bus_ohos.c"
+      ],
+      "materialization": "exact git show blobs; not a full Wine checkout"
+    }
+  },
+  "device": {
+    "status": "PARTIAL_PASS",
+    "target": "192.168.3.9:46071",
+    "winehua_installed": true,
+    "wayland_core": "PASS 4/4",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/core-p0-wayland-core-20261106",
+    "opengl_capture": "4 frames per architecture",
+    "limitations": "Full Wine X11 runtime rebuilding; X11 device and IME/multiwindow regression pending",
+    "wayland_dxvk": "PASS 3/3",
+    "wayland_wine_vulkan": "FAIL 3/4; offscreen x64 sampled shader output mismatch",
+    "archives": {
+      "core": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/core-p0-wayland-core-20261106",
+      "wine-vulkan": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/wine-vulkan-p0-wayland-wine-vulkan-20261106",
+      "dxvk": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/dxvk-p0-wayland-dxvk-20261106"
+    }
+  },
+  "native_hap": {
+    "status": "PARTIAL_PASS",
+    "hgs_arm64_native": "PASS",
+    "winehua_wayland_unsigned_hap": "PASS",
+    "signed_hap": "PASS",
+    "x11_native_hap": "NATIVE_PASS_HAP_PENDING",
+    "manifest": "build-artifacts.json",
+    "note": "New host native/ArkTS compilation; existing Wine runtime and dependency binaries reused and hashed"
+  },
+  "harness": {
+    "patch": "wayland-smoke-harness.patch",
+    "regression_tests": "smoke_sandbox_texts_test.py: 3 PASS",
+    "changes": [
+      "Keep partial per-test JSON while final summary is absent",
+      "Preserve --tests selection when rechecking archived results"
+    ]
+  },
+  "wayland_window_input": {
+    "status": "FAIL",
+    "passed": 7,
+    "total": 8,
+    "mode": "virtual",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/win32-p0-wayland-window-input-20261106",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/wayland-window-input.log",
+    "failure": "win-zorder-x64: send-a-bottom and bring-b-top",
+    "note": "Initial all-win32 invocation interrupted before job launch; selected 8 graphics/input cases instead."
+  },
+  "x11_full_profile_first_boot": {
+    "status": "TIMEOUT_BEFORE_TEST_EXECUTION",
+    "exit_code": 1,
+    "limit_minutes": 5,
+    "wineboot_status": "wineboot-dispatch",
+    "wineboot_init_marker": "wineboot",
+    "egl_import_probe": "pass:payload=OHNativeWindowBuffer",
+    "present_probe": "absent",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-core.log",
+    "startup_log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-startup-native.log",
+    "markers": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-init-markers.log",
+    "signed_hap": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-full-mono-signed.hap",
+    "note": "Mono installer support subprocesses observed; test bodies did not execute; testing a separate existing no-Mono packaging profile next"
+  },
+  "x11_core_no_mono": {
+    "status": "PASS",
+    "passed": 4,
+    "total": 4,
+    "profile": "no-Mono graphics variant",
+    "display_route": "x11",
+    "desktop_mode": "virtual",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-core-no-mono-20261106",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-core-no-mono.log",
+    "note": "OpenGL x64/x86 result protocol and four captured frames per architecture passed; DNS x64/x86 passed"
+  },
+  "x11_dxvk_no_mono": {
+    "status": "PASS",
+    "passed": 1,
+    "total": 1,
+    "profile": "no-Mono graphics variant",
+    "display_route": "x11",
+    "desktop_mode": "virtual",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-dxvk-no-mono-20261106",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-dxvk-no-mono.log",
+    "failures": []
+  },
+  "x11_wine_vulkan_no_mono": {
+    "status": "FAIL",
+    "passed": 3,
+    "total": 4,
+    "profile": "no-Mono graphics variant",
+    "display_route": "x11",
+    "desktop_mode": "virtual",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-wine-vulkan-no-mono-20261106",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-wine-vulkan-no-mono.log",
+    "failures": [
+      {
+        "testId": "wine-vulkan-sampled-only-x86",
+        "message": "sampled output mismatch shader=venus_image_fetch.spv value=0xdeadbeef expected=0xff332211"
+      }
+    ]
+  },
+  "x11_vulkan_present_no_mono": {
+    "status": "PASS",
+    "passed": 1,
+    "total": 1,
+    "profile": "no-Mono graphics variant",
+    "display_route": "x11",
+    "desktop_mode": "virtual",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-vulkan-present-no-mono-20261106",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-vulkan-present-no-mono.log",
+    "failures": []
+  },
+  "x11_window_input_no_mono": {
+    "status": "PASS",
+    "passed": 8,
+    "total": 8,
+    "profile": "no-Mono graphics variant",
+    "display_route": "x11",
+    "desktop_mode": "virtual",
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-window-input-no-mono-20261106",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-window-input-no-mono.log",
+    "failures": []
+  },
+  "x11_frame_release_invariant": {
+    "status": "FAIL",
+    "required": 0,
+    "observed_core_max": 1262,
+    "application_pid": 57389,
+    "audit": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/frame-release-audit.json",
+    "note": "Separate from functional/visual core 4/4. Not waived by PASS from existing test checkers."
+  },
+  "p0_scope_status": "BASELINE_CAPTURE_COMPLETE_WITH_KNOWN_FAILURES"
+}

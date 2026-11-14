@@ -1,0 +1,48 @@
+--- a/feature/bsh_main/src/main/ets/entryability/EntryAbility.ets
++++ b/feature/bsh_main/src/main/ets/entryability/EntryAbility.ets
+@@ -7 +7 @@
+-import { HgsWindowHostService } from 'hgs';
++import { HgsWindowHostService, HgsService, HgsSession, HgsStartError, HgsServiceEvent } from 'hgs';
+@@ -79,0 +80,2 @@
++  // P1 独立协议客户端，仅隔离测试包包含此启动器。
++  add('hgs-p1-client', 'libhgs_p1_client.so', 'main');
+@@ -331,0 +334,21 @@
++    // P1 隔离测试探针：使用公共接口检查不支持协议和持久监听状态。
++    const report: Record<string, string> = {};
++    const saveProbe = (name: string, value: string): void => {
++      report[name] = value;
++      writeTxtFile(this.context.filesDir + '/hgs-p1-contract.json', JSON.stringify(report));
++    };
++    const service = HgsService.create();
++    service.onEvent((event: HgsServiceEvent): void => {
++      if (event.kind === 'created' || event.kind === 'destroyed') {
++        saveProbe(event.kind, JSON.stringify(event.window));
++        saveProbe('stateAfterEvent', service.inspect().state);
++        hilog.warn(DOMAIN, 'HGS-P1', '%{public}s epoch=%{public}s window=%{public}s client=%{public}s generation=%{public}s',
++          event.kind, event.epoch, event.window.id, event.window.clientId, event.window.objectGeneration);
++      }
++    });
++    service.start({ protocols: 'both', runtimeDir: this.context.filesDir }).then((): void => {
++      hilog.error(DOMAIN, 'HGS-P1', 'unexpected both start success');
++    }).catch((error: HgsStartError): void => {
++      saveProbe('unsupported', error.code);
++      hilog.warn(DOMAIN, 'HGS-P1', 'unsupported=%{public}s stage=%{public}s', error.code, error.stage);
++    });
+@@ -340,0 +364,17 @@
++    const snapshot = service.inspect();
++    const session = new HgsSession(snapshot);
++    const environment = session.clientEnvironment('wayland');
++    saveProbe('ready', snapshot.state);
++    saveProbe('epoch', snapshot.epoch);
++    saveProbe('environment', JSON.stringify(environment));
++    hilog.warn(DOMAIN, 'HGS-P1', 'ready=%{public}s epoch=%{public}s display=%{public}s unset=%{public}s',
++      snapshot.state, snapshot.epoch, environment.set['WAYLAND_DISPLAY'], environment.unset.join(','));
++    service.start({ protocols: 'wayland', runtimeDir: this.context.filesDir,
++      wayland: { socketName: 'wl.sock' }, composition: 'desktop-root' }).then((): void => {
++      hilog.error(DOMAIN, 'HGS-P1', 'unexpected conflicting start success');
++    }).catch((error: HgsStartError): void => {
++      saveProbe('conflict', error.code);
++      saveProbe('afterConflict', service.inspect().state);
++      hilog.warn(DOMAIN, 'HGS-P1', 'conflict=%{public}s kept=%{public}s', error.code, service.inspect().state);
++    });
++

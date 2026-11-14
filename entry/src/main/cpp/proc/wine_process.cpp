@@ -251,14 +251,18 @@ static std::vector<pid_t> SnapshotProcessDescendants(pid_t root)
 }
 
 // -- 注册表辅助函数 --
-WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd) {
+WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd, pid_t requesterPid) {
     std::lock_guard<std::mutex> lock(gProcMutex);
     std::string basename = exeFullPath;
     // 兼容 Windows 反斜杠路径 (C:\game\game.exe), 否则完整路径会显示为进程名
     auto slash = basename.find_last_of("/\\");
     if (slash != std::string::npos) basename = basename.substr(slash + 1);
-    gProcRegistry.erase(std::remove_if(gProcRegistry.begin(), gProcRegistry.end(),
-        [pid](const WineProcessEntry& entry) { return entry.pid == pid; }), gProcRegistry.end());
+    auto existing = std::find_if(gProcRegistry.begin(), gProcRegistry.end(),
+        [pid](const WineProcessEntry& entry) { return entry.pid == pid; });
+    if (existing != gProcRegistry.end()) {
+        if (requesterPid == 0 && existing->running) requesterPid = existing->requesterPid;
+        gProcRegistry.erase(existing);
+    }
     while (gProcRegistry.size() >= 128) {
         auto ended = std::find_if(gProcRegistry.begin(), gProcRegistry.end(),
             [](const WineProcessEntry& entry) { return !entry.running; });
@@ -267,6 +271,7 @@ WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdo
     }
     gProcRegistry.push_back({
         .pid = pid,
+        .requesterPid = requesterPid,
         .exeBasename = basename,
         .exeFullPath = exeFullPath,
         .running = true,

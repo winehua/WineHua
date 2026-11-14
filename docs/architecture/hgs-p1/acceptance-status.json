@@ -1,0 +1,34 @@
+{
+  "status": "implementation-and-device-validation-complete; vulkan-stability-open",
+  "real_backends": [
+    "wayland"
+  ],
+  "unsupported": [
+    "x11",
+    "both"
+  ],
+  "known_issues": [
+    {
+      "id": "wayland-win-zorder-x64",
+      "status": "existing-p0-failure",
+      "final_result": "7/8"
+    },
+    {
+      "id": "vulkan-sampling-stability",
+      "status": "open; no complete non-regression claim",
+      "p0_control_passed": 7,
+      "p0_control_total": 12,
+      "p1_final_passed": 7,
+      "p1_final_total": 12,
+      "evidence": "vulkan-ab-results.json"
+    },
+    {
+      "id": "x11-full-mono-first-boot",
+      "status": "inherited-p0; outside-p1"
+    },
+    {
+      "id": "x11-buffer-release-sync",
+      "status": "inherited-p0; outside-p1"
+    }
+  ]
+}

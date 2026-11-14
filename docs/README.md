@@ -14,6 +14,7 @@
 | 我要做的事 | 看这些 |
 |---|---|
 | 第一次接触这个项目 | [architecture/overview.md](architecture/overview.md) → [architecture/wine-internals.md](architecture/wine-internals.md) |
+| 接手项目 / 交接 | [HANDOVER.md](HANDOVER.md)（WineHua + HGS + 上游新增 + 双宿主） |
 | 搭开发环境 | [build/env.md](build/env.md) |
 | 构建、打包、查构建参数 | [build/guide.md](build/guide.md)、[cheatsheet.md](cheatsheet.md) |
 | 部署到设备、看日志 | [cheatsheet.md](cheatsheet.md)、[debugging/observability.md](debugging/observability.md)、[debugging/remote-hdc.md](debugging/remote-hdc.md) |
@@ -45,6 +46,10 @@
 
 | 文档 | 讲什么 |
 |---|---|
+| [hgs-dual-protocol-service-plan.md](architecture/hgs-dual-protocol-service-plan.md) | HGS 双协议服务迁移规划 |
+| [hgs-p0/README.md](architecture/hgs-p0/README.md) | P0 源码、依赖、冲突与功能失败基线 |
+| [hgs-p1/README.md](architecture/hgs-p1/README.md) | P1 公共服务边界、两宿主验证与 Vulkan 对照 |
+| [hgs-p2/README.md](architecture/hgs-p2/README.md) | P2 X11 后端接入与最小宿主验证 |
 | [overview.md](architecture/overview.md) | 总览：四大块（Wine / 合成器 / 音频 / 图形）怎么拼起来，进程之间怎么连 |
 | [wine-internals.md](architecture/wine-internals.md) | Wine 内部的 PE 与 Unix 分层、wineserver 通信、合成器模块结构、日志纪律 |
 | [graphics-matrix.md](architecture/graphics-matrix.md) | Direct3D 版本、渲染后端档位、GPU 通道三者的对应关系；档位怎么定 |

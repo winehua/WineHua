@@ -4,7 +4,6 @@
 #include "common/process_utils.h"
 #include "common/string_utils.h"
 #include "common/wait_utils.h"
-#include "compositor/wayland_server.h"
 
 #include <AbilityKit/native_child_process.h>
 #include "phone_adapter/phone_adapter.h"

@@ -1,0 +1,78 @@
+[
+  {
+    "round": 1,
+    "variant": "p0",
+    "exit_code": 1,
+    "passed": 2,
+    "total": 4,
+    "failed": [
+      "wine-vulkan-offscreen-x86",
+      "wine-vulkan-sampled-only-x86"
+    ],
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/device-runs/wine-vulkan-p1-ab-1-p0-20261107",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/vulkan-ab-1-p0.log"
+  },
+  {
+    "round": 2,
+    "variant": "p1",
+    "exit_code": 1,
+    "passed": 3,
+    "total": 4,
+    "failed": [
+      "wine-vulkan-sampled-only-x86"
+    ],
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/device-runs/wine-vulkan-p1-ab-2-p1-20261107",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/vulkan-ab-2-p1.log"
+  },
+  {
+    "round": 3,
+    "variant": "p0",
+    "exit_code": 1,
+    "passed": 3,
+    "total": 4,
+    "failed": [
+      "wine-vulkan-sampled-only-x64"
+    ],
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/device-runs/wine-vulkan-p1-ab-3-p0-20261107",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/vulkan-ab-3-p0.log"
+  },
+  {
+    "round": 4,
+    "variant": "p1",
+    "exit_code": 1,
+    "passed": 1,
+    "total": 4,
+    "failed": [
+      "wine-vulkan-offscreen-x86",
+      "wine-vulkan-sampled-only-x64",
+      "wine-vulkan-sampled-only-x86"
+    ],
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/device-runs/wine-vulkan-p1-ab-4-p1-20261107",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/vulkan-ab-4-p1.log"
+  },
+  {
+    "round": 5,
+    "variant": "p0",
+    "exit_code": 1,
+    "passed": 2,
+    "total": 4,
+    "failed": [
+      "wine-vulkan-offscreen-x86",
+      "wine-vulkan-sampled-only-x86"
+    ],
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/device-runs/wine-vulkan-p1-ab-5-p0-20261107",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/vulkan-ab-5-p0.log"
+  },
+  {
+    "round": 6,
+    "variant": "p1",
+    "exit_code": 1,
+    "passed": 3,
+    "total": 4,
+    "failed": [
+      "wine-vulkan-offscreen-x86"
+    ],
+    "archive": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/device-runs/wine-vulkan-p1-ab-6-p1-20261107",
+    "log": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/vulkan-ab-6-p1.log"
+  }
+]

@@ -1,0 +1,40 @@
+{
+  "required_invariant": "rel_unsynced_presented == 0",
+  "source": "entry/src/main/cpp/display/display_guest_frames.cpp:250",
+  "note": "Each hilog snapshot may include prior sessions; counters below are grouped by application PID, never summed across cold starts. Core archive contains PID 57389 for the actual core run.",
+  "archives": [
+    {
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-core-no-mono-20261106",
+      "by_application_pid": {
+        "57389": {
+          "max_rel": 1262,
+          "max_rel_synced": 0,
+          "max_rel_unsynced_presented": 1262,
+          "max_rel_unrendered": 0
+        }
+      }
+    },
+    {
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-dxvk-no-mono-20261106",
+      "by_application_pid": {
+        "57650": {
+          "max_rel": 541,
+          "max_rel_synced": 0,
+          "max_rel_unsynced_presented": 541,
+          "max_rel_unrendered": 0
+        }
+      }
+    },
+    {
+      "archive": "/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/device-runs/job-p0-x11-vulkan-present-no-mono-20261106",
+      "by_application_pid": {
+        "61404": {
+          "max_rel": 150,
+          "max_rel_synced": 0,
+          "max_rel_unsynced_presented": 150,
+          "max_rel_unrendered": 0
+        }
+      }
+    }
+  ]
+}

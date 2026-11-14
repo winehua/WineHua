@@ -63,7 +63,7 @@ pid_t Spawner::Spawn(const SpawnRequest& req) {
         params += "|wineboot|--init";
         break;
     case SpawnKind::DesktopShell:
-        params += "|__winehua_desktop__";
+        if (req.desktopSurface) params += "|__winehua_desktop__";
         if (kNeedsWineLoaderToken) params += "|wine";
         params += "|explorer";
         break;

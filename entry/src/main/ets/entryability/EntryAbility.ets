@@ -5,7 +5,6 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
 import { DesktopModeService } from '../service/DesktopModeService';
-import { DisplayRouteService } from '../service/DisplayRouteService';
 
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
@@ -16,7 +15,6 @@ const DOMAIN = 0x0000;
 export default class EntryAbility extends UIAbility {
   // 显示路线首施标记: onCreate 应用缺省/显式值后置位, onNewWant 无参重拉
   // 不再重复应用 (见 publishLaunchRequest 的 route 段注释)
-  private displayRouteApplied: boolean = false;
   private defaultDxvkBackend(): string {
     /* This is an evidence allowlist, not a Host-to-Guest capability inference.
      * The bundled Guest Mesa/DXVK payload is fixed by the HAP manifest, while
@@ -90,50 +88,18 @@ export default class EntryAbility extends UIAbility {
     if (explicitDesktopMode) {
       DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
     }
-    // 显示路线 (wayland|x11): 优先级 = 显式 want 覆盖 > 设置页持久化选择
-    // > 缺省 x11 (2026-10-10 拍板 x11 为主线; 2026-10-11 起设置页「显示路线
-    // （实验）」可选并持久化, UI 可见故无僵尸态; --ps winehua.displayRoute
-    // 仍为自动化最高优先)。消费点白名单见 DisplayRouteService 头注释。
-    // native 镜像同步写一次 (guest env stamp 的唯一读点, 见 wine_env.cpp)。
-    DisplayRouteService.getInstance().init(this.context);
-    // 桌面模式持久化值必须在下方 shouldUseMultiwindow() 查询前就绪：x11 链
-    // 早启用它的返回值决定 native multiwindow 位，而 WineWindowManager
-    // .init 里的 init 在此之后才跑（2026-10-11 实测时序：displayRoute applied
-    // 40.756 早于 mode policy 40.782，26ms）。不提前的后果：查询读到
-    // DEFAULT_MODE（tablet='virtual'）→ chain_start multiwindow=false → 会话
-    // 落虚拟桌面链，而 ArkTS 实时查询（此时持久化已加载='fusion'）判 fusion
-    // 不开画布 → 程序窗走 g_clients 画布路径却无宿主，窗口不可见（用户实测：
-    // 文件管理启动 explorer 窗口不出；smoke 冷启带显式 winehua.desktopMode
-    // 的 setOverrideMode 在查询前执行，故绕开了此时序——两条路径差异即此）。
     DesktopModeService.getInstance().init(this.context);
-    const explicitDisplayRoute = !!parameters && parameters['winehua.displayRoute'] !== undefined &&
-      parameters['winehua.displayRoute'] !== null;
-    const routeValue = explicitDisplayRoute ? value('winehua.displayRoute', '')
-      : DisplayRouteService.getInstance().preferredRoute();
-    // 本函数 onCreate/onNewWant 双入口: 缺省 x11 只在首施时应用 (无参重拉
-    // 不得把显式切到 wayland 的运行中会话拉回缺省); 带显式参数时随时应用
-    // (切换/测试通道)。应用动作全部收口 DisplayRouteService.applyRoute
-    // (#172 单点: 盖 env 章 + 拆旧 x11 链 + 起 x11 链), 本处只做解析与首施门。
-    if (explicitDisplayRoute || !this.displayRouteApplied) {
-      this.displayRouteApplied = true;
-      try {
-        // x11 链起尺寸 = 桌面分辨率 (屏幕/scale, 与 wayland setOutputSize
-        // 同判据 — WineWindowManager.desktopOutputSize 唯一定义处)
-        const outSize = WineWindowManager.getInstance().desktopOutputSize();
-        DisplayRouteService.getInstance().applyRoute(routeValue, 'entry',
-          WineWindowManager.getInstance().shouldUseMultiwindow(routeValue),
-          outSize[0], outSize[1]);
-      } catch (e) {
-        // 不得吞异常: 印章/起链失败 = 后续 wine 进程全部走错路线且零痕迹
-        // (2026-10-04 xwedge3 实测: 排查多耗一轮构建)
-        hilog.error(DOMAIN, 'testTag', 'displayRoute apply FAILED: %{public}s %{public}s',
-          routeValue, JSON.stringify(e));
-      }
-    }
     // 自动化通道 (UI 点击/输入不可注入设备的全自动验证):
     // winehua.autoStart=1 → 主页面就绪后自动拉起引擎 (一次消费)
     if (parameters && parameters['winehua.autoStart'] === '1') {
       WineEnvService.getInstance().autoStartPending = true;
+    }
+    const protocol = value('winehua.displayProtocol', value('winehua.displayRoute', ''));
+    if (protocol === 'x11' || protocol === 'wayland') {
+      WineEnvService.getInstance().setDisplayOverride(protocol);
+    } else if (parameters && parameters['winehua.hgsX11Probe'] !== undefined) {
+      // 旧自动化入口仍可复用同一显示协议设置。
+      WineEnvService.getInstance().setDisplayOverride(parameters['winehua.hgsX11Probe'] === '1' ? 'x11' : 'wayland');
     }
     // winehua.program=<wine 路径> → 引擎就绪后自动启动该程序
     if (parameters && parameters['winehua.program'] !== undefined &&
@@ -266,6 +232,7 @@ export default class EntryAbility extends UIAbility {
 
     // 初始化多窗口管理器
     WineWindowManager.getInstance().init(windowStage, this.context);
+    WineEnvService.getInstance().x11ProbeWindowHost.setStage(windowStage);
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
@@ -322,6 +289,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    WineEnvService.getInstance().x11ProbeWindowHost.setStage(null);
     // Main window is destroyed, release UI related resources
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }

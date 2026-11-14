@@ -127,6 +127,55 @@ with open('$profile', 'w') as f:
     log "abiFilters: [$abi_value]"
 }
 
+# Hvigor reads native CMake arguments from the source HAR profile.
+# Restore the source HAR profile when packaging completes.
+assemble_hgs_hap() (
+    local profile="$ROOT/hgs/build-profile.json5"
+    local backup
+    backup="$(mktemp)"
+    cp "$profile" "$backup"
+    trap 'cp "$backup" "$profile"; rm -f "$backup"' EXIT
+    local abi lib_root prefix abis=("$NATIVE_ARCH")
+    if [ "$NATIVE_ARCH" = all ]; then
+        abis=(arm64-v8a x86_64)
+    fi
+    for abi in "${abis[@]}"; do
+        prefix="$BUILD_DIR/host-ext/$abi/usr"
+        lib_root="$ROOT/entry/libs/$abi"
+        for soname in libwayland-server.so.0 libwayland-client.so.0 libxkbcommon.so.0; do
+            test -f "$lib_root/$soname" || err "Missing native dependency: $lib_root/$soname"
+            if [ ! -e "$prefix/lib/$soname" ]; then
+                ln -sfn "$lib_root/$soname" "$prefix/lib/$soname"
+            fi
+        done
+    done
+    local args="-DHGS_BUILD_X11=ON -DHGS_X11_DEPS_BY_ABI=$BUILD_DIR/host-ext"
+    if [ -n "${WINEHUA_HGS_XIM_SDK:-}" ]; then
+        [ "$NATIVE_ARCH" != all ] || err "Select a single ABI when using WINEHUA_HGS_XIM_SDK"
+        args+=" -DHGS_BUILD_XIM=ON -DHGS_XIM_DEPS_ROOT=$WINEHUA_HGS_XIM_SDK"
+        cp -L "$WINEHUA_HGS_XIM_SDK/lib/libxcb-imdkit.so.1" "$NATIVE_LIBS/"
+        if [ -f "$WINEHUA_HGS_XIM_SDK/lib/libxcb-util.so.1" ]; then
+            cp -L "$WINEHUA_HGS_XIM_SDK/lib/libxcb-util.so.1" "$NATIVE_LIBS/"
+        fi
+    fi
+    python3 - "$profile" "$NATIVE_ARCH" "$args" <<'HGS_PROFILE'
+import json
+import re
+import sys
+from pathlib import Path
+
+profile, abi, args = sys.argv[1:]
+path = Path(profile)
+text = path.read_text()
+text = re.sub(r'"abiFilters"\s*:\s*\[[^\]]*\]', lambda _: '"abiFilters": ' + json.dumps(["arm64-v8a", "x86_64"] if abi == "all" else [abi]), text, count=1)
+text = re.sub(r'"arguments"\s*:\s*"[^"]*"', lambda _: '"arguments": ' + json.dumps(args), text, count=1)
+path.write_text(text)
+HGS_PROFILE
+    cd "$ROOT"
+    ohpm install
+    hvigorw assembleHap
+)
+
 # ============================================================
 package_hap() {
     log "=== 打包 HAP ($NATIVE_ARCH) ==="
@@ -158,7 +207,7 @@ with open('$module_json', 'w') as f:
     fi
 
     cd "$WINEHUA"
-    hvigorw assembleHap || { err "hvigorw assembleHap 失败"; return 1; }
+    assemble_hgs_hap || { err "hvigorw assembleHap 失败"; return 1; }
 
     cd "$WINEHUA"
     python3 sign.py "$unsigned_hap" "$signed_hap"

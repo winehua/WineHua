@@ -60,9 +60,18 @@ entry/src/main/resources/rawfile/wine-runtime-manifest.json
 tmp/
 prebuilt/
 
+# Wayland 协议桩: scripts/build_native.sh 用 wayland-scanner 生成到该目录, 不入库
+# (合成器域的协议源已随 B1b 迁入 hgs; 手动维护的 audio_ipc_protocol.h 与
+#  历史入库的 viewporter-server-protocol.h 保留跟踪)
+entry/src/main/cpp/protocols/wayland-*.h
+entry/src/main/cpp/protocols/xdg-shell-*
+entry/src/main/cpp/protocols/winehua-toplevel-*
+
 # Local signing material (never commit)
 /sign/
 
 # Python caches
 __pycache__/
 *.pyc
+
+/harmony-sdk/

@@ -1,29 +1,19 @@
 #include <napi/native_api.h>
 #include "common/fs_utils.h"
-#include "compositor/wayland_server.h"
-#include "bridge/plugin_manager.h"
-#include "input/input_manager.h"
-#include "input/pointer_extras.h"
-#include "graphics/egl_renderer.h"
+#include "seam/registry.h"
 #include "audio/audio_broker.h"
 #include "audio_ipc_protocol.h"
 #include "graphics/graphics_broker.h"
 #include "wine/wine_constants.h"
 #include "wine/wine_env.h"
+#include "proc/broker.h"
 #include "proc/wine_process.h"
 #include "wine/wine_launch.h"
 #include "wine/wine_exe.h"
 #include "phone_adapter/phone_adapter.h"
-#include "input/text_input.h"
-#include "input/game_controller_bridge.h"
-#include "input/controller/controller_napi.h"
-#include "display/x11_toplevel.h" /* M4a-T5: 多窗输入路由分叉 */
-#include "display/xim_bridge.h" /* x11 IME 上行激活 (2026-10-17) */
-#include "display/display_input.h" /* x11 IME 退格: wl_ohos_input_post_key */
 
 #include <unistd.h>
 #include <signal.h>
-#include <window_manager/oh_window.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -38,6 +28,7 @@
 #include <thread>
 #include <atomic>
 #include <algorithm>
+#include <cmath>
 #include <dlfcn.h>
 
 #undef LOG_TAG
@@ -48,6 +39,10 @@
 
 // -- 全局状态 (NAPI 层, 被 wine_process / wine_launch 引用) --
 napi_threadsafe_function gStateTsfn = nullptr;
+
+namespace winehua {
+bool ConfigureX11FrameProvider(bool enabled);
+}
 std::string gSockPath;
 
 // -- State 回调 -> ArkTS --
@@ -78,48 +73,9 @@ static napi_value SetStateCallback(napi_env env, napi_callback_info info) {
     napi_create_threadsafe_function(env, args[0], nullptr, name,
                                      0, 1, nullptr, nullptr, nullptr, CallJsState, &gStateTsfn);
 
-    WaylandServer::GetInstance()->SetStateCallback([](const char* s) {
-        if (gStateTsfn) {
-            napi_call_threadsafe_function(gStateTsfn, strdup(s), napi_tsfn_blocking);
-        }
-    });
     return nullptr;
 }
 
-// -- NAPI: startServer --
-static napi_value StartServer(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    char path[512] = {};
-    napi_get_value_string_utf8(env, args[0], path, sizeof(path), nullptr);
-
-    OH_LOG_WARN(LOG_APP, "[NAPI] startServer: %{public}s", path);
-    // 确保 socket 父目录存在 (WINEPREFIX=.wine/)
-    {
-        std::string sockDir = path;
-        auto pos = sockDir.find_last_of('/');
-        if (pos != std::string::npos) {
-            sockDir = sockDir.substr(0, pos);
-            mkdir(sockDir.c_str(), 0755);
-        }
-    }
-    gSockPath = path;
-    bool ok = WaylandServer::GetInstance()->Start(path);
-    OH_LOG_WARN(LOG_APP, "[NAPI] startServer result: %{public}s", ok ? "OK" : "FAIL");
-    // 确认 socket 文件存在
-    if (ok) {
-        struct stat st;
-        int sr = stat(path, &st);
-        OH_LOG_WARN(LOG_APP, "[NAPI] wayland socket stat=%{public}d (errno=%{public}d)",
-                    sr, sr == 0 ? 0 : errno);
-    }
-
-    napi_value r;
-    napi_get_boolean(env, ok, &r);
-    return r;
-}
 
 static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -320,8 +276,8 @@ static napi_value SetHostShadowProfile(napi_env env, napi_callback_info info) {
 }
 
 static napi_value LaunchClient(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8] = {};
+    size_t argc = 10;
+    napi_value args[10] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     auto* p = new LaunchParams();
@@ -360,6 +316,46 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         napi_get_value_string_utf8(env, args[7], wineLang, sizeof(wineLang), nullptr);
         if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "en_US"))
             p->wineLang = wineLang;
+    }
+    if (argc >= 9) {
+        uint32_t count = 0;
+        bool valid = napi_get_array_length(env, args[8], &count) == napi_ok && count <= 6;
+        std::vector<std::string> lines;
+        for (uint32_t i = 0; valid && i < count; ++i) {
+            napi_value item;
+            size_t length = 0;
+            valid = napi_get_element(env, args[8], i, &item) == napi_ok &&
+                    napi_get_value_string_utf8(env, item, buf, sizeof(buf), &length) == napi_ok &&
+                    length < sizeof(buf) - 1;
+            if (valid) lines.emplace_back(buf, length);
+        }
+        if (!valid || !winehua::BuildWineDisplayEnvironment(lines, p->display)) {
+            delete p;
+            napi_throw_type_error(env, nullptr, "invalid HGS display environment");
+            return nullptr;
+        }
+    }
+    if (argc >= 10) {
+        napi_valuetype type = napi_undefined;
+        napi_typeof(env, args[9], &type);
+        if (type != napi_undefined) {
+            const auto dimension = [&](const char* name, int32_t& value) {
+                napi_value field;
+                double number;
+                if (napi_get_named_property(env, args[9], name, &field) != napi_ok ||
+                    napi_get_value_double(env, field, &number) != napi_ok ||
+                    !std::isfinite(number) || number < 1 || number > 32767 || number != std::floor(number))
+                    return false;
+                value = static_cast<int32_t>(number);
+                return true;
+            };
+            if (!p->display.x11 || type != napi_object ||
+                !dimension("width", p->x11DesktopWidth) || !dimension("height", p->x11DesktopHeight)) {
+                delete p;
+                napi_throw_type_error(env, nullptr, "invalid X11 desktop size");
+                return nullptr;
+            }
+        }
     }
     // 向后兼容: 旧调用未传 homeDir 时使用默认路径
     if (p->homeDir.empty()) {
@@ -469,363 +465,55 @@ static napi_value StopClient(napi_env, napi_callback_info) {
     // 会话终结统一收口 (与桌面退出同路径): 杀进程后进程级一次性状态全部
     // 复位, 下次引擎启动从冷启动基线开始 (StopAll 走 WaylandServer::Stop
     // 全量重建, 无需这里处理)
-    WaylandServer::GetInstance()->ResetSessionState();
-    WaylandServer::GetInstance()->ResetFirstFrame();
+    hgs::seam::HostSessionControl().ResetSessionState();
+    hgs::seam::HostSessionControl().ResetFirstFrame();
     return nullptr;
 }
 
-// -- NAPI: stopAll — 杀掉所有 Wine 进程 (含主 wineserver) + 停 Wayland server --
-static napi_value StopAll(napi_env, napi_callback_info) {
+// -- NAPI: stopAll — 结束 Wine 会话，旧调用方可继续同时停止图形服务 --
+static napi_value StopAll(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value arg;
+    bool stopGraphics = true;
+    napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr);
+    if (argc && napi_get_value_bool(env, arg, &stopGraphics) != napi_ok) {
+        napi_throw_type_error(env, nullptr, "stopGraphics must be a boolean");
+        return nullptr;
+    }
     winehua::GraphicsBroker::GetInstance().Stop();
     KillAllProcesses();
-    WaylandServer::GetInstance()->Stop();
-    // 会话终结信号: zombie 感知等待全部死亡后发一次 state:stopped —
-    // ArkTS 重启/重置/停止编排以它为继续条件 (取代阶段1 的进程表轮询)。
-    // 放在 Wayland Stop (同步 join) 之后, 保证"完全退出"判据三项齐备才发声
+    SetBrokerDisplayEnvironment({});
+    if (stopGraphics) hgs::seam::HostSessionControl().Stop();
+    // 注册表进程退出后发 state:stopped，宿主继续自己的停止编排。
     NotifyWhenSessionDrained();
     return nullptr;
 }
 
-// -- Toplevel 回调 -> ArkTS --
-static napi_threadsafe_function gToplevelTsfn = nullptr;
 
-struct ToplevelEvent {
-    uint32_t id;
-    std::string event;
-    std::string data;
-};
 
-static void CallJsToplevel(napi_env env, napi_value cb, void*, void* raw) {
-    auto* ev = static_cast<ToplevelEvent*>(raw);
-    if (env && cb && ev) {
-        OH_LOG_INFO(LOG_APP, "[MW-TSCB] calling JS toplevel cb: id=%{public}u event=%{public}s data=%{public}s",
-                    ev->id, ev->event.c_str(), ev->data.c_str());
-        napi_value undef, args[3];
-        napi_get_undefined(env, &undef);
-        napi_create_uint32(env, ev->id, &args[0]);
-        napi_create_string_utf8(env, ev->event.c_str(), NAPI_AUTO_LENGTH, &args[1]);
-        napi_create_string_utf8(env, ev->data.c_str(), NAPI_AUTO_LENGTH, &args[2]);
-        napi_call_function(env, undef, cb, 3, args, nullptr);
-    }
-    delete ev;
-}
 
-// -- NAPI: setToplevelCallback --
-static napi_value SetToplevelCallback(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    if (gToplevelTsfn) {
-        napi_release_threadsafe_function(gToplevelTsfn, napi_tsfn_release);
-        gToplevelTsfn = nullptr;
-    }
-
-    napi_value name;
-    napi_create_string_utf8(env, "WLToplevel", NAPI_AUTO_LENGTH, &name);
-    napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                     0, 1, nullptr, nullptr, nullptr, CallJsToplevel, &gToplevelTsfn);
-
-    WaylandServer::GetInstance()->SetToplevelCallback([](uint32_t id, const char* event, const char* data) {
-        if (gToplevelTsfn) {
-            OH_LOG_INFO(LOG_APP, "[MW-TSCB] enqueue toplevel cb: id=%{public}u event=%{public}s", id, event);
-            auto* ev = new ToplevelEvent{id, event ? event : "", data ? data : "{}"};
-            napi_call_threadsafe_function(gToplevelTsfn, ev, napi_tsfn_blocking);
-        } else {
-            OH_LOG_WARN(LOG_APP, "[MW-TSCB] toplevel cb dropped (tsfn not ready): id=%{public}u event=%{public}s",
-                        id, event);
-        }
-    });
-
-    return nullptr;
-}
-
-// -- IME 激活回调 -> ArkTS (Wine 文本框聚焦 → 通知 ArkTS attach 弹软键盘) --
-static napi_threadsafe_function gImeTsfn = nullptr;
 
 struct ImeEvent {
     int active;
     int x, y, w, h;
 };
 
-static void CallJsIme(napi_env env, napi_value cb, void*, void* raw) {
-    auto* ev = static_cast<ImeEvent*>(raw);
-    if (env && cb && ev) {
-        napi_value undef, args[5];
-        napi_get_undefined(env, &undef);
-        napi_create_int32(env, ev->active, &args[0]);
-        napi_create_int32(env, ev->x, &args[1]);
-        napi_create_int32(env, ev->y, &args[2]);
-        napi_create_int32(env, ev->w, &args[3]);
-        napi_create_int32(env, ev->h, &args[4]);
-        napi_call_function(env, undef, cb, 5, args, nullptr);
-    }
-    delete ev;
-}
 
-// -- NAPI: setImeCallback -- (激活/失活回调注册, 同 setToplevelCallback 模式)
-static napi_value SetImeCallback(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    if (gImeTsfn) {
-        napi_release_threadsafe_function(gImeTsfn, napi_tsfn_release);
-        gImeTsfn = nullptr;
-    }
 
-    napi_value name;
-    napi_create_string_utf8(env, "WL_Ime", NAPI_AUTO_LENGTH, &name);
-    napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                    0, 1, nullptr, nullptr, nullptr, CallJsIme, &gImeTsfn);
 
-    TextInput::GetInstance()->SetActivateCallback([](bool active, int x, int y, int w, int h) {
-        if (gImeTsfn) {
-            auto* ev = new ImeEvent{active ? 1 : 0, x, y, w, h};
-            napi_call_threadsafe_function(gImeTsfn, ev, napi_tsfn_blocking);
-        } else {
-            OH_LOG_WARN(LOG_APP, "[WL_NAPI] ime cb dropped (tsfn not ready) active=%{public}d", active);
-        }
-    });
 
-    /* x11 IME 上行链 (2026-10-17): server 侧 IC 焦点 → 桥读线程 → 本回调 →
-     * tsfn → ArkTS attach/detach (wayland TextInput::SetActivateCallback 的
-     * x11 对位)。 */
-    xim_bridge_set_activation_callback([](int active, int x, int y, int w, int h, void*) {
-        if (!gImeTsfn) {
-            OH_LOG_WARN(LOG_APP, "[IME-X11-UP] cb dropped (tsfn not ready) active=%{public}d", active);
-            return;
-        }
-        OH_LOG_INFO(LOG_APP, "[IME-X11-UP] enqueue active=%{public}d rect=[%{public}d,%{public}d %{public}dx%{public}d]",
-                    active, x, y, w, h);
-        auto* ev = new ImeEvent{active, x, y, w, h};
-        napi_call_threadsafe_function(gImeTsfn, ev, napi_tsfn_blocking);
-    }, nullptr);
 
-    return nullptr;
-}
 
-// -- NAPI: sendImeCommit -- (ArkTS inputMethod insertText → Wine commit_string)
-static napi_value SendImeCommit(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    size_t len = 0;
-    napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
-    std::string text(len, '\0');
-    napi_get_value_string_utf8(env, args[0], &text[0], len + 1, &len);
-    TextInput::GetInstance()->SendCommitString(text.c_str());
-    return nullptr;
-}
 
-// -- NAPI: sendImePreedit -- (ArkTS setPreviewText 预上屏 → Wine preedit_string)
-static napi_value SendImePreedit(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    size_t len = 0;
-    napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
-    std::string text(len, '\0');
-    napi_get_value_string_utf8(env, args[0], &text[0], len + 1, &len);
-    int32_t b = 0, e = 0;
-    napi_get_value_int32(env, args[1], &b);
-    napi_get_value_int32(env, args[2], &e);
-    TextInput::GetInstance()->SendPreeditString(text.c_str(), b, e);
-    return nullptr;
-}
 
-// -- NAPI: imeRearm -- (软键盘被用户手动收起后重新武装激活边沿。同窗内
-//    文本框重聚焦不产生 seat 级 text-input 事件, 合成器 activated 恒真则
-//    永不重新 ACTIVATE; ArkTS 在 sendKeyboardStatus HIDE 时调本口重新武装,
-//    此后 wine 的下一条矩形+commit 即重弹。见 text_input.cpp commit 注释)
-static napi_value ImeRearm(napi_env env, napi_callback_info info) {
-    (void)env;
-    (void)info;
-    TextInput::GetInstance()->RearmActivation();
-    return nullptr;
-}
 
-// -- NAPI: imeBackspace -- (软键盘退格 → Wine KEY_BACKSPACE 按键注入;
-//    Wine 的 delete_surrounding_text 是空实现, 退格走现有 key 注入链路)
-static napi_value ImeBackspace(napi_env env, napi_callback_info info) {
-    (void)env;
-    (void)info;
-    constexpr uint32_t KEY_BACKSPACE = 14;
-    // x11 路线: 按键面在 Xwayland, wayland seat 注入对 wine 不可达 (事件
-    // 静默丢失 —— SendScrollEvent 处 2026-10-11 同款真机实证; 本处 2026-10-31
-    // 真机症状 = x11 桌面软键盘退格删不掉字, 文字上屏走 SendCommitString
-    // 的 x11 分支所以无恙)。退格目标 = XIM IC 焦点窗 = X 键盘焦点窗, 走
-    // display_input 投递队列按 X 焦点分发 (injectDisplayRouteKey 同路径,
-    // VD/多窗通用 —— 多窗点选已经 FocusClient 把 seat 键盘焦点建好)。
-    if (WineHua_DisplayRouteIsX11()) {
-        wl_ohos_input_post_key(KEY_BACKSPACE, true);
-        wl_ohos_input_post_key(KEY_BACKSPACE, false);
-        return nullptr;
-    }
-    auto* im = InputManager::GetInstance();
-    im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_PRESSED);
-    im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_RELEASED);
-    return nullptr;
-}
 
-// -- NAPI: getCurrentToplevelId -- (WineWindow.aboutToAppear 同步读取, 无竞态)
-static napi_value GetCurrentToplevelId(napi_env env, napi_callback_info info) {
-    uint32_t id = PluginManager::GetInstance()->DequeuePendingToplevel();
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] getCurrentToplevelId = %{public}u", id);
-    napi_value r;
-    napi_create_uint32(env, id, &r);
-    return r;
-}
 
-// -- NAPI: cancelPendingToplevel -- (窗口在 loadContent 前被销毁时清除队列残坑,
-//   防止后续页面出队拿到死 id → 渲染器挂错 toplevel 黑屏; 未在队列时 no-op)
-static napi_value CancelPendingToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->CancelPendingToplevel(id);
-    return nullptr;
-}
 
-// -- NAPI: setPendingToplevel -- (WineWindowAbility 在 loadContent 前调用)
-static napi_value SetPendingToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->SetPendingToplevel(id);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] setPendingToplevel id=%{public}u", id);
-    return nullptr;
-}
 
-// -- NAPI: destroyToplevel -- (ArkTS 关闭子窗口后调用)
-static napi_value DestroyToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->DestroyToplevel(id);
-    // 相对模式锁定兜底: 宿主主动销毁 toplevel (WWA 关窗) 时释放 host 锁定 —
-    // 游戏卡死时 wine 不响应 sendToplevelClose, relative_pointer 永不销毁,
-    // 正常解锁回调不来 (见 PointerExtras::ReleaseLockForToplevel)
-    PointerExtras::GetInstance()->ReleaseLockForToplevel(id);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyToplevel id=%{public}u", id);
-    return nullptr;
-}
 
-// -- NAPI: sendToplevelClose -- (通知 Wine 关闭窗口)
-static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u", id);
-    // 任务 #129 RF#3: x11 路线的关闭通道 —— xdg_toplevel resource 在 x11
-    // 路线不存在 (wine 走 X11), SendToplevelClose 恒 "NOT found" no-op;
-    // 补 x11 分支 = WM_DELETE_WINDOW (wlr_xwayland_surface_close), 与
-    // pointer/key/axis 的 x11 分流同款 (SendScrollEvent I1 先例)。
-    if (x11_toplevel_active()) {
-        x11_toplevel_close(id);
-        return nullptr;
-    }
-    WaylandServer::GetInstance()->SendToplevelClose(id);
-    return nullptr;
-}
-
-// -- NAPI: createRenderer -- (XComponentController.onSurfaceCreated 调用)
-static napi_value CreateRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) {
-        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: need 2 args (toplevelId, surfaceId)");
-        return nullptr;
-    }
-    uint32_t tid = 0;
-    napi_get_value_uint32(env, args[0], &tid);
-    int64_t surfaceId = 0;
-    bool lossless = true;
-    napi_status s = napi_get_value_bigint_int64(env, args[1], &surfaceId, &lossless);
-    if (s != napi_ok) {
-        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: BIGINT parse failed status=%{public}d", s);
-        return nullptr;
-    }
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] createRenderer tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
-    PluginManager::GetInstance()->CreateRenderer(tid, surfaceId);
-    return nullptr;
-}
-
-// -- NAPI: resizeRenderer -- (XComponentController.onSurfaceChanged 调用)
-static napi_value ResizeRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) {
-        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] resizeRenderer: need 3 args (toplevelId, w, h)");
-        return nullptr;
-    }
-    uint32_t tid = 0;
-    napi_get_value_uint32(env, args[0], &tid);
-    int32_t w = 0, h = 0;
-    napi_get_value_int32(env, args[1], &w);
-    napi_get_value_int32(env, args[2], &h);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
-    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
-    return nullptr;
-}
-
-// -- NAPI: destroyRenderer -- (XComponentController.onSurfaceDestroyed 调用)
-static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t tid = 0;
-    if (argc >= 1) {
-        napi_get_value_uint32(env, args[0], &tid);
-    }
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
-    PluginManager::GetInstance()->DestroyToplevel(tid);
-    return nullptr;
-}
-
-// -- NAPI: setOutputSize --
-static napi_value SetOutputSize(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) return nullptr;
-    int32_t w, h;
-    napi_get_value_int32(env, args[0], &w);
-    napi_get_value_int32(env, args[1], &h);
-    WaylandServer::GetInstance()->SetOutputSize(w, h);
-    return nullptr;
-}
-
-// 已无效: C++ 坐标换算不使用 display scale (letterbox 由 renderer viewport 推导,
-// globalDisplayScale_ 只写不读已删除)。保留导出仅为兼容 ArkTS 侧调用, 收到直接忽略。
-static napi_value SetDisplayScale(napi_env env, napi_callback_info info) {
-    (void)env;
-    (void)info;
-    return nullptr;
-}
-
-static napi_value SetDesktopMode(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc >= 1) {
-        bool on;
-        napi_get_value_bool(env, args[0], &on);
-        WaylandServer::GetInstance()->SetDesktopMode(on);
-        OH_LOG_INFO(LOG_APP, "[MW-NAPI] setDesktopMode = %{public}s", on ? "true" : "false");
-    }
-    return nullptr;
-}
 
 static napi_value SetPhoneMode(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -840,104 +528,10 @@ static napi_value SetPhoneMode(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-static napi_value GetDesktopRootId(napi_env env, napi_callback_info) {
-    uint32_t id = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
-    napi_value r;
-    napi_create_uint32(env, id, &r);
-    return r;
-}
 
-// -- Input forwarding NAPI (unified InputManager path) --
-static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 5) return nullptr;
-    uint32_t tl; int32_t action; double px, py; int32_t button;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &action);
-    napi_get_value_double(env, args[2], &px);
-    napi_get_value_double(env, args[3], &py);
-    napi_get_value_int32(env, args[4], &button);
-    // 可选: MouseEvent.rawDeltaX/Y (API15+, 仅 Move 传; 缺省 0 = 无 raw 数据,
-    // InputManager 回退绝对差分); args[7] fromMouse: onMouse 物理鼠标通道
-    // 传 true (触屏 onTouch 路径不传) — 相对模式 PRESS 是否跳过 enter 重定位
-    double rawDx = 0, rawDy = 0;
-    if (argc >= 7) {
-        napi_get_value_double(env, args[5], &rawDx);
-        napi_get_value_double(env, args[6], &rawDy);
-    }
-    bool fromMouse = false;
-    if (argc >= 8) {
-        napi_get_value_bool(env, args[7], &fromMouse);
-    }
-    // 跳过 MOVE (=3, 高频), 只记录 button/enter/leave。
-    // 曾误写 action!=1: 跳过的是 PRESS (日志只见 Release 不见 Press),
-    // 且 MOVE 全量刷屏 — ArkTS MouseAction: Press=1 Release=2 Move=3
-    // (与 input_manager.cpp ACT_* 注释一致)
-    if (action != 3) {
-        OH_LOG_INFO(LOG_APP, "[PIPE] ptr tl=%{public}u a=%{public}d btn=0x%{public}x "
-                    "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
-                    tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
-    }
-    // M4a-T5: x11 多窗模式按窗直达 (px/py 是承载窗局部坐标, 越界即缝隙
-    // 由映射层丢弃), 不进 wayland 的 InputManager seat 面
-    if (x11_toplevel_active()) {
-        x11_toplevel_input_pointer(tl, (int)px, (int)py, action,
-                                   (uint32_t)button);
-        return nullptr;
-    }
-    InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
-    return nullptr;
-}
 
-// -- NAPI: dumpWindowLayout -- (WMS 全窗口布局列表, 层级排序 index 0 = 最高)
-// 白屏 z 序判定: Fusion 主窗 (335 类) 与画面 popup (336 类) 的 rect 在列表中
-// 的先后; 与 ArkTS 侧 subWinId 打点对照归属。
-static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    int64_t displayId = 0;
-    if (argc >= 1) napi_get_value_int64(env, args[0], &displayId);
-    WindowManager_Rect* list = nullptr;
-    size_t count = 0;
-    const int32_t ret = OH_WindowManager_GetAllWindowLayoutInfoList(displayId, &list, &count);
-    if (ret != 0 || !list) {
-        OH_LOG_WARN(LOG_APP, "[WinLayout] Get table failed ret=%{public}d", ret);
-        if (list) OH_WindowManager_ReleaseAllWindowLayoutInfoList(list);
-        return nullptr;
-    }
-    for (size_t i = 0; i < count; i++) {
-        OH_LOG_INFO(LOG_APP,
-                    "[WinLayout] idx=%{public}zu/%{public}zu rect=(%{public}d,%{public}d %{public}ux%{public}u)",
-                    i, count, list[i].posX, list[i].posY, list[i].width, list[i].height);
-    }
-    OH_WindowManager_ReleaseAllWindowLayoutInfoList(list);
-    return nullptr;
-}
 
-// -- NAPI: registerHostWindow -- (ets 各 Ability 注册主窗口 id, 供
-// OH_WindowManager_LockCursor 锁定光标用 — 仅获焦窗口能锁, 逐个尝试)
-static napi_value RegisterHostWindow(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    int32_t windowId = 0;
-    napi_get_value_int32(env, args[0], &windowId);
-    PointerExtras::RegisterHostWindow(windowId);
-    return nullptr;
-}
 
-// -- NAPI: setPointerLockCallback -- (锁定状态 → ets 隐藏/恢复系统光标)
-// gPointerLockTsfn 在主线程注册/替换、wl 线程回调读取 (20260822 review:
-// 裸指针跨线程读写 + 先 release 后 create 是 data race — 窗口重建 (launcher
-// resume 再次 init) 恰逢相对模式切换时, wl 线程可能读到已关闭/被交换的
-// 句柄 → UAF 或锁状态通知丢失)。修复: atomic 化; 替换时先原子摘除旧句柄
-// 再 release(释放后 wl 线程不可能再读到旧值); 读到 closing 中旧句柄时
-// napi_call_threadsafe_function 返回错误 — 忽略, 新句柄接管后续事件。
-static std::atomic<napi_threadsafe_function> gPointerLockTsfn{nullptr};
 static void CallJsPointerLock(napi_env env, napi_value cb, void*, void* data) {
     if (env && cb) {
         // data 打包: bit0 = locked, 高位 = 触发相对模式的约束 surface 的 toplevelId
@@ -954,196 +548,30 @@ static void CallJsPointerLock(napi_env env, napi_value cb, void*, void* data) {
         napi_call_function(env, undef, cb, 2, args, nullptr);
     }
 }
-static napi_value SetPointerLockCallback(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    if (napi_threadsafe_function old = gPointerLockTsfn.exchange(nullptr)) {
-        napi_release_threadsafe_function(old, napi_tsfn_release);
-    }
-    napi_value name;
-    napi_create_string_utf8(env, "WLPointerLock", NAPI_AUTO_LENGTH, &name);
-    napi_threadsafe_function newTsfn = nullptr;
-    if (napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                         0, 1, nullptr, nullptr, nullptr, CallJsPointerLock,
-                                         &newTsfn) != napi_ok) {
-        OH_LOG_ERROR(LOG_APP, "[NAPI] setPointerLockCallback: create tsfn failed");
-        return nullptr;
-    }
-    gPointerLockTsfn.store(newTsfn);
-    PointerExtras::GetInstance()->SetPointerLockCallback([](bool locked, uint32_t toplevelId) {
-        if (napi_threadsafe_function tsfn = gPointerLockTsfn.load()) {
-            // bit0 = locked, 高位 = toplevelId (见 CallJsPointerLock 解包)
-            uintptr_t packed = static_cast<uintptr_t>(locked ? 1u : 0u) |
-                               (static_cast<uintptr_t>(toplevelId) << 1);
-            if (napi_call_threadsafe_function(tsfn, reinterpret_cast<void*>(packed),
-                    napi_tsfn_blocking) != napi_ok) {
-                // tsfn 正在关闭 (窗口重建竞态): 忽略, 新句柄接管后续事件
-            }
-        }
-    });
-    return nullptr;
-}
 
-static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) return nullptr;
-    uint32_t tl; int32_t evdevCode; bool pressed;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &evdevCode);
-    napi_get_value_bool(env, args[2], &pressed);
-    OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
-                tl, evdevCode, pressed ? "true" : "false");
-    // M4a-T5: x11 多窗模式按窗直达 (FocusClient + settle 纪律在映射层)
-    if (x11_toplevel_active()) {
-        x11_toplevel_input_key(tl, (uint32_t)evdevCode, pressed);
-        return nullptr;
-    }
-    InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
-    return nullptr;
-}
 
-static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
-    size_t argc = 6;
-    napi_value args[6];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 6) return nullptr;
-    uint32_t tl; int32_t axis; double value; int32_t scrollStep; double px; double py;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &axis);
-    napi_get_value_double(env, args[2], &value);
-    napi_get_value_int32(env, args[3], &scrollStep);
-    napi_get_value_double(env, args[4], &px);
-    napi_get_value_double(env, args[5], &py);
-    OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
-                tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
-    // M4d-review I1: x11 多窗模式按窗直达 —— scroll 与 pointer/key 同款分流,
-    // 不进 wayland 的 InputManager seat 面 (那是 winewayland.drv 路线的
-    // CoordTransform/seat 语义, x11 多窗下 wine 不在该 seat 上, 事件只会
-    // 静默丢失 —— 2026-10-11 真机实证: [PIPE] scroll 不出现、wine +event
-    // 全程零 Button4/5)。axis 不携带位置: 落点语义由映射层补 (motion 先行,
-    // 8a1e975 同类处理)。steps 归一化为 ±1 格 —— x11 桥的 discrete 是
-    // v120 格语义 (见 display_input_inject_axis 注释), 双指平滑量已在
-    // ArkTS 层按 SCROLL_STEP_PX 折算为单步事件, DesktopWindow.ets
-    // onAxisEvent 的 x11 分支同款归一化。
-    if (x11_toplevel_active()) {
-        const int steps = value > 0 ? 1 : (value < 0 ? -1 : 0);
-        if (steps != 0) {
-            x11_toplevel_input_axis(tl, (int)px, (int)py, axis, steps);
-        }
-        return nullptr;
-    }
-    InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
-    return nullptr;
-}
 
-static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) return nullptr;
-    uint32_t tl; int32_t w, h;
-    bool resizing = false;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &w);
-    napi_get_value_int32(env, args[2], &h);
-    if (argc >= 4) napi_get_value_bool(env, args[3], &resizing);
-    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
-                tl, w, h, resizing ? "yes" : "no");
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
-    return nullptr;
-}
 
-// 任务 #135: 承载窗全局位置上报 (host→wine 几何回写的位置半边)。
-// ArkTS 在 windowRectChange 里调 (FWM 子窗 / WWA 主窗两承载路径), 值 =
-// guest 逻辑坐标 (windowRect 原点 / effectiveScale, 与创建摆放同式)。
-// 仅 x11 路线有绝对位置语义 —— wayland toplevel 位置归合成器布局器管,
-// 静默 no-op (native 侧 x11_toplevel_active 是权威门; 序列化/去重都在
-// 映射层: 值未变跳过、拖拽拍频只打应用日志)。
-static napi_value NotifyToplevelMove(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) return nullptr;
-    uint32_t tl; int32_t x, y;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &x);
-    napi_get_value_int32(env, args[2], &y);
-    if (x11_toplevel_active()) {
-        x11_toplevel_geometry_move(tl, (int)x, (int)y);
-    }
-    return nullptr;
-}
 
-// 拖拽缩放结束 (ArkTS windowRectChange DRAG_END): 发 configure(0,0) 清 RESIZING
-// 状态, Wine 保持当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
-static napi_value NotifyToplevelResizeEnd(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    uint32_t tl;
-    napi_get_value_uint32(env, args[0], &tl);
-    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResizeEnd tl=%{public}u", tl);
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, 0, 0, false);
-    return nullptr;
-}
 
-// Desktop 模式: 将 toplevel 提到 Z-order 最顶层
-static napi_value RaiseToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    uint32_t tl;
-    napi_get_value_uint32(env, args[0], &tl);
-    // 用户显式操作 (任务栏/窗口点击) 路径: 已 fullscreen 的目标会重新取
-    // 全屏优先级号, 支撑两个全屏窗口间的主动切换
-    WaylandServer::GetInstance()->RaiseToplevel(tl, true);
-    return nullptr;
-}
 
-// Desktop 模式: 接收物理像素坐标 (px, py), 通过 viewport 映射为 Wine 逻辑坐标后查找
-// resize 后 surface 和逻辑尺寸比例变化, 由 renderer viewport 保证映射正确
-static napi_value FindToplevelAt(napi_env env, napi_callback_info info) {
+
+// The Wine loader may ask the broker to create the real explorer.exe in another NCP.
+static napi_value MatchX11DesktopProcess(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
+    int32_t launcher = 0, client = 0;
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) return nullptr;
-    int32_t px, py;  // 物理像素坐标
-    napi_get_value_int32(env, args[0], &px);
-    napi_get_value_int32(env, args[1], &py);
-
-    auto* ws = WaylandServer::GetInstance();
-    uint32_t rootId = ws->GetDesktopRootToplevelId();
-    wl_fixed_t wx, wy;
-    InputManager::GetInstance()->CoordTransform(px, py, rootId > 0 ? rootId : 1, &wx, &wy);
-    int32_t lx = wl_fixed_to_int(wx);
-    int32_t ly = wl_fixed_to_int(wy);
-
-    uint32_t id = ws->FindToplevelAt(lx, ly);
+    WineProcessEntry process{};
+    const bool match = argc == 2 &&
+        napi_get_value_int32(env, args[0], &launcher) == napi_ok && launcher > 0 &&
+        napi_get_value_int32(env, args[1], &client) == napi_ok && client > 0 &&
+        QueryProcessSnapshot(client, &process) && process.running &&
+        (client == launcher || (process.requesterPid == launcher && process.exeBasename == "explorer.exe"));
+    if (match) MarkDesktopShellProcesses();
     napi_value result;
-    napi_create_uint32(env, id, &result);
+    napi_get_boolean(env, match, &result);
     return result;
-}
-
-static napi_value SetToplevelVisible(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) return nullptr;
-    uint32_t tl; bool visible;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_bool(env, args[1], &visible);
-    InputManager::GetInstance()->SetToplevelVisible(tl, visible);
-    if (visible) {
-        // 6A: 兼容别名 NotifyWindowRestored 已删, 直调语义方法 (同实现同值)
-        WaylandServer::GetInstance()->SetToplevelRestored(tl);
-    }
-    return nullptr;
 }
 
 // -- NAPI: getProcessList — 返回运行中进程列表 --
@@ -1204,6 +632,18 @@ static napi_value KillProcess(napi_env env, napi_callback_info info) {
     return r;
 }
 
+static napi_value ConfigureX11FrameProvider(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool enabled = false;
+    const bool ok = argc == 1 && napi_get_value_bool(env, args[0], &enabled) == napi_ok &&
+        winehua::ConfigureX11FrameProvider(enabled);
+    napi_value result;
+    napi_get_boolean(env, ok, &result);
+    return result;
+}
+
 // -- 模块注册 --
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
@@ -1217,23 +657,13 @@ static napi_value Init(napi_env env, napi_value exports) {
     RegisterNcpExitCallback();
 
     napi_property_descriptor desc[] = {
-        {"startServer",    nullptr, StartServer,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setHostShadowProfile", nullptr, SetHostShadowProfile, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"configureX11FrameProvider", nullptr, ConfigureX11FrameProvider, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"matchX11DesktopProcess", nullptr, MatchX11DesktopProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"launchClient",   nullptr, LaunchClient,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopClient",     nullptr, StopClient,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopAll",        nullptr, StopAll,        nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setStateCallback", nullptr, SetStateCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setToplevelCallback", nullptr, SetToplevelCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setImeCallback", nullptr, SetImeCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"sendImeCommit", nullptr, SendImeCommit, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"sendImePreedit", nullptr, SendImePreedit, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"imeBackspace", nullptr, ImeBackspace, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"imeRearm", nullptr, ImeRearm, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"getCurrentToplevelId", nullptr, GetCurrentToplevelId, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"cancelPendingToplevel", nullptr, CancelPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"destroyToplevel", nullptr, DestroyToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"sendToplevelClose", nullptr, SendToplevelClose, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runWineExe",     nullptr, RunWineExe,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runWineProgram", nullptr, RunWineProgram, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"queryWineProcess", nullptr, QueryWineProcess, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1241,50 +671,10 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"checkWinePrefix",nullptr, CheckWinePrefix,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resetWinePrefix",nullptr, ResetWinePrefix,nullptr, nullptr, nullptr, napi_default, nullptr},
         // surfaceId 驱动的渲染器管理 (XComponentController 回调)
-        {"createRenderer",  nullptr, CreateRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"resizeRenderer",  nullptr, ResizeRenderer,  nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"destroyRenderer", nullptr, DestroyRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setOutputSize",   nullptr, SetOutputSize,   nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setDisplayScale",  nullptr, SetDisplayScale,  nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setDesktopMode",   nullptr, SetDesktopMode,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPhoneMode",     nullptr, SetPhoneMode,     nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"getDesktopRootId", nullptr, GetDesktopRootId, nullptr, nullptr, nullptr, napi_default, nullptr},
         // ArkTS input forwarding (unified InputManager path)
-        {"sendPointerEvent", nullptr, SendPointerEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"sendKeyEvent",     nullptr, SendKeyEvent,     nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"sendScrollEvent",   nullptr, SendScrollEvent,   nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"registerHostWindow", nullptr, RegisterHostWindow, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"dumpWindowLayout", nullptr, DumpWindowLayout, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"notifyToplevelMove",nullptr,NotifyToplevelMove,nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getProcessList",   nullptr, GetProcessList,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"killProcess",     nullptr, KillProcess,     nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"initGameController", nullptr, InitGameController, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"cleanupGameController", nullptr, CleanupGameController, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"isGamepadConnected", nullptr, IsGamepadConnected, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"getGamepadCount", nullptr, GetGamepadCount, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setGamepadButtonCallback", nullptr, SetGamepadButtonCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setGamepadAxisCallback", nullptr, SetGamepadAxisCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setGamepadDeviceCallback", nullptr, SetGamepadDeviceCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setGamepadRumbleCallback", nullptr, SetGamepadRumbleCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerSetEnabled", nullptr, ControllerSetEnabled, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerSetButton", nullptr, ControllerSetButton, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerSetStick", nullptr, ControllerSetStick, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerSetTrigger", nullptr, ControllerSetTrigger, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerSetHat", nullptr, ControllerSetHat, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerResetSource", nullptr, ControllerResetSource, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerGetState", nullptr, ControllerGetState, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerGetStateText", nullptr, ControllerGetStateText, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerStartBridge", nullptr, ControllerStartBridge, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerStopBridge", nullptr, ControllerStopBridge, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerGetSocketPath", nullptr, ControllerGetSocketPath, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerSetOutputMode", nullptr, ControllerSetOutputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"controllerGetOutputMode", nullptr, ControllerGetOutputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

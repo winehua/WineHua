@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = ROOT / "entry/src/main/cpp/input/controller/gamepad_ipc_protocol.h"
+HOST = ROOT / "hgs/src/main/cpp/input/controller/gamepad_ipc_protocol.h"
 WINE = ROOT / "thirdparty/wine/dlls/winebus.sys/winehua_gamepad_protocol.h"
 BUS = ROOT / "thirdparty/wine/dlls/winebus.sys/bus_ohos.c"
-BRIDGE = ROOT / "entry/src/main/cpp/input/controller/gamepad_bridge.cpp"
+BRIDGE = ROOT / "hgs/src/main/cpp/input/controller/gamepad_bridge.cpp"
 BEGIN = "/* >>> WHGP_PROTOCOL_BEGIN */"
 END = "/* <<< WHGP_PROTOCOL_END */"
 

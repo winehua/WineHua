@@ -1,14 +1,15 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import hgsNapi from 'libhgs.so';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
 import { SegmentButton, SegmentButtonOptions, promptAction } from '@kit.ArkUI';
-import { WineEnvService } from '../service/WineEnvService';
+import { WineDisplayProtocol, WineEnvService } from '../service/WineEnvService';
+import { X11ImeTarget } from '../service/X11ProbeWindowHost';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
-import { DisplayRouteService, ROUTE_WAYLAND, ROUTE_X11 } from '../service/DisplayRouteService';
 
 const DOMAIN = 0x0000;
 
@@ -46,10 +47,7 @@ struct Index {
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
   @State desktopModeRestartHint: boolean = false;
-
-  // -- 显示路线 (实验, Pad/PC): x11 主线 / wayland 对照 (镜像 DisplayRouteService) --
-  @State routeSel: number[] = [0];   // 0=X11, 1=Wayland
-  @State routeRestartHint: boolean = false;
+  @State displayProtocol: WineDisplayProtocol = 'wayland';
   // -- PC 虚拟桌面窗口状态 (镜像 WineWindowManager) --
   @State desktopActive: boolean = false;
   @State desktopWindowActive: boolean = false;
@@ -66,12 +64,21 @@ struct Index {
   private upgradeLogged: boolean = false;
   // -- IME 桥接 (Wine 文本框聚焦 → attach 弹软键盘 → insertText 注入 Wine) --
   private imeController: inputMethod.InputMethodController | null = null;
+  private x11ImeTarget: X11ImeTarget | null = null;
+  private imeSequence: number = 0;
 
   // 注册 C++ 侧激活回调: active=1 → attach 弹键盘, active=0 → 收起
   private setupIme(): void {
-    testNapi.setImeCallback((active: number, x: number, y: number, w: number, h: number) => {
+    this.env.x11ProbeWindowHost.setImeListener((target: X11ImeTarget | null): void => {
+      const previous = this.x11ImeTarget;
+      this.x11ImeTarget = target;
+      if (target && !this.imeController) this.imeAttach();
+      else if (!target && previous) this.imeDetach();
+    });
+    hgsNapi.setImeCallback((active: number, x: number, y: number, w: number, h: number) => {
       hilog.info(DOMAIN, 'IME-TEST', '[cb] active=%{public}d rect=[%{public}d,%{public}d %{public}dx%{public}d]',
         active, x, y, w, h);
+      if (this.x11ImeTarget) return;
       if (active === 1) {
         this.imeAttach();
       } else {
@@ -81,6 +88,7 @@ struct Index {
   }
 
   private imeAttach(): void {
+    const sequence = ++this.imeSequence;
     hilog.info(DOMAIN, 'IME-TEST', '[step] imeAttach begin');
     try {
       const controller = inputMethod.getController();
@@ -103,19 +111,23 @@ struct Index {
       };
       const cfg: inputMethod.TextConfig = { inputAttribute: attr };
       controller.attach(true, cfg).then(() => {
+        if (sequence !== this.imeSequence || this.imeController !== controller) return;
         hilog.info(DOMAIN, 'IME-TEST', '[attach] OK, registering on() callbacks');
         // attach 成功后注册事件 (12800009 detached 说明 on() 须在绑定后注册)
         controller.on('insertText', (text: string) => {
-          hilog.info(DOMAIN, 'IME-TEST', '[insertText] "%{public}s"', text);
-          testNapi.sendImeCommit(text);   // 提交文本 → Wine commit_string
+          const target = this.x11ImeTarget;
+          if (target) target.session.commitText(target.windowId, text);
+          else hgsNapi.sendImeCommit(text);
         });
         controller.on('deleteLeft', (len: number) => {
           hilog.info(DOMAIN, 'IME-TEST', '[deleteLeft] len=%{public}d', len);
-          testNapi.imeBackspace();        // 退格 → Wine KEY_BACKSPACE
+          if (this.x11ImeTarget) this.sendX11ImeKey(14, len);
+          else hgsNapi.imeBackspace();
         });
         controller.on('deleteRight', (len: number) => {
           hilog.info(DOMAIN, 'IME-TEST', '[deleteRight] len=%{public}d', len);
-          testNapi.imeBackspace();
+          if (this.x11ImeTarget) this.sendX11ImeKey(111, len);
+          else hgsNapi.imeBackspace();
         });
         controller.on('sendKeyboardStatus', (status: inputMethod.KeyboardStatus) => {
           hilog.info(DOMAIN, 'IME-TEST', '[keyboardStatus] %{public}d (NONE=0 HIDE=1 SHOW=2)', status);
@@ -123,28 +135,31 @@ struct Index {
           // 无 seat 级 text-input 事件, 不重新武装则合成器 activated 恒真,
           // 此后的矩形+commit 永不重弹 (见 text_input.cpp commit 注释)
           if (status === inputMethod.KeyboardStatus.HIDE) {
-            testNapi.imeRearm();
+            hgsNapi.imeRearm();
           }
         });
         controller.on('setPreviewText', (text: string, range: inputMethod.Range) => {
-          hilog.info(DOMAIN, 'IME-TEST', '[previewText] "%{public}s" range=[%{public}d,%{public}d]', text, range.start, range.end);
-          testNapi.sendImePreedit(text, range.start, range.end);  // 预上屏 → Wine preedit_string
+          if (!this.x11ImeTarget) hgsNapi.sendImePreedit(text, range.start, range.end);
         });
         // 回车补齐在 WineWindow.ets onKeyEvent 统一兜底 (系统吞 KeyDown 只派
         // KeyUp 时补发 down+up, 覆盖 IME 激活/非激活所有场景), 此处只留日志
         controller.on('sendFunctionKey', (fk: inputMethod.FunctionKey) => {
+          if (this.x11ImeTarget) this.sendX11ImeKey(28, 1);
           hilog.info(DOMAIN, 'IME-TEST', '[sendFunctionKey] enterKeyType=%{public}d (0 UNSPEC 6 DONE 8 NEWLINE)',
             fk.enterKeyType);
         });
       }).catch((err: BusinessError) => {
+        if (sequence === this.imeSequence) this.imeController = null;
         hilog.error(DOMAIN, 'IME-TEST', '[attach] FAILED code=%{public}d msg=%{public}s', err.code, err.message);
       });
     } catch (e) {
+      if (sequence === this.imeSequence) this.imeController = null;
       hilog.error(DOMAIN, 'IME-TEST', '[step] EXCEPTION: %{public}s', JSON.stringify(e));
     }
   }
 
   private imeDetach(): void {
+    ++this.imeSequence;
     hilog.info(DOMAIN, 'IME-TEST', '[step] imeDetach');
     const c = this.imeController;
     if (c) {
@@ -157,11 +172,20 @@ struct Index {
         c.off('sendFunctionKey');
         c.hideTextInput();
         c.detach();
-        testNapi.imeRearm();  // 面板随 detach 收起 → 重新武装激活边沿 (同 HIDE 分支)
+        hgsNapi.imeRearm();  // 面板随 detach 收起 → 重新武装激活边沿 (同 HIDE 分支)
       } catch (e) {
         hilog.error(DOMAIN, 'IME-TEST', '[detach] EXCEPTION: %{public}s', JSON.stringify(e));
       }
       this.imeController = null;
+    }
+  }
+
+  private sendX11ImeKey(evdevCode: number, count: number): void {
+    const target = this.x11ImeTarget;
+    if (!target) return;
+    for (let i = 0; i < Math.min(32, count); ++i) {
+      if (!target.session.sendInput(target.windowId, { kind: 'key', evdevCode: evdevCode, pressed: true })) break;
+      target.session.sendInput(target.windowId, { kind: 'key', evdevCode: evdevCode, pressed: false });
     }
   }
 
@@ -176,6 +200,7 @@ struct Index {
     const env = this.env;
     const mirror = (): void => {
       this.state = env.engineState;
+      this.displayProtocol = env.getDisplayProtocol();
       this.sessionAlive = env.sessionAlive;
       // prefixReady 跳变驱动文件区: 1.0.5 靠 refreshPrefix/waitForPrefix 在
       // 就绪时 listDir, engine service 化后该联动丢失 (回归) — 就绪瞬间
@@ -213,14 +238,6 @@ struct Index {
         if (this.desktopModeSel[0] != modeSel) {
           this.desktopModeSel = [modeSel];
         }
-      }
-      // 显示路线镜像: 以持久化选择值 (preferredRoute) 为准 — 本会话已应用值
-      // (routeName) 在「已选待重启」窗口内落后于选择, 用它回翻高亮会把刚选
-      // 的项跳回旧值 (选 Wayland 后高亮弹回 X11, 复核 #136); 运行中/待生效
-      // 的差异由 routeRestartHint 表达, 与 selectRoute 的选中语义同源
-      const routeIdx = DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1;
-      if (this.routeSel[0] != routeIdx) {
-        this.routeSel = [routeIdx];
       }
     };
     env.subscribe(mirror);
@@ -283,32 +300,13 @@ struct Index {
     this.desktopModeRestartHint = true;
   }
 
-  // 显示路线切换 (实验对照): 即改即生效 (#172) —— 单点应用 (盖 env 章 +
-  // 拆/起 x11 链) 后重启引擎会话, 新 wine 进程 spawn 现读新章; 不再要求
-  // 完全退出应用。引擎忙时显式拒绝 (quickReset 的 F2 同款: 忙态是瞬态,
-  // 是否重来由用户决定) —— 先应用后拒绝会出现旧会话 display 已被拆而
-  // 重启未发生的破窗态
-  private selectRoute(route: string): void {
-    // 早退判据必须是持久化选择值 (preferredRoute) 而非已应用值 (routeName):
-    // x11 会话里选 Wayland 后 routeName 仍是 x11, 用 routeName 判「已选中」
-    // 会把「选回 X11」的一击吞掉 (复核 #136)
-    if (route == DisplayRouteService.getInstance().preferredRoute()) {
-      return;
-    }
+  private selectDisplayProtocol(protocol: WineDisplayProtocol): void {
+    if (this.displayProtocol === protocol) return;
     if (this.env.isBusy()) {
       promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
-      this.routeSel = [DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1];
       return;
     }
-    DisplayRouteService.getInstance().setPreferred(route);
-    // x11 链起尺寸 = 桌面分辨率 (屏幕/scale, 同 entry 路径判据)
-    const outSize = this.wm.desktopOutputSize();
-    DisplayRouteService.getInstance().applyRoute(route, 'settings',
-      this.wm.shouldUseMultiwindow(route), outSize[0], outSize[1]);
-    this.routeSel = [route == ROUTE_X11 ? 0 : 1];
-    // 提示只在应用值落后于选择时成立 (重启被打断时可见, 正常路径重启完成
-    // 即随镜像刷新消失)
-    this.routeRestartHint = (route != DisplayRouteService.getInstance().routeName());
+    this.env.setDisplayPreference(protocol);
     this.env.restartEngine();
   }
 
@@ -522,6 +520,25 @@ struct Index {
             .width('100%').margin({ bottom: 6 })
         }
 
+        if (this.env.supportsX11() || this.displayProtocol === 'x11') {
+          Divider().color('#2a2a2a').width('100%')
+          Text('Wine 显示协议')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 12, bottom: 8 })
+          Row({ space: 4 }) {
+            Button('Wayland')
+              .layoutWeight(1).height(34)
+              .backgroundColor(this.displayProtocol === 'wayland' ? '#285' : '#333')
+              .onClick(() => this.selectDisplayProtocol('wayland'))
+            Button('X11')
+              .layoutWeight(1).height(34)
+              .backgroundColor(this.displayProtocol === 'x11' ? '#285' : '#333')
+              .enabled(this.env.supportsX11())
+              .onClick(() => this.selectDisplayProtocol('x11'))
+          }.width('100%')
+
+        }
+
         // -- 桌面模式 (Pad/PC): 多窗口模式 = 每个程序独立 OHOS 窗口 (可拖动/
         // 缩放/置顶); 虚拟桌面 = Wine 桌面合成为单一窗口。phone 不显示。
         if (this.isPcDevice()) {
@@ -547,36 +564,6 @@ struct Index {
             .width('100%').padding({ top: 4 })
           if (this.desktopModeRestartHint) {
             Text('桌面模式已更改, 重启 Wine 引擎后生效')
-              .fontSize(12).fontColor('#f84')
-              .width('100%').padding({ top: 4 })
-          }
-        }
-
-        // -- 显示路线 (实验, Pad/PC): x11 = winex11 + Xwayland (当前主线,
-        // 多窗/顶条/几何回写等能力只在 x11 生效); wayland = 原生路线 (对照)。
-        // 切换即改即生效 (#172: applyRoute 单点 + 引擎会话重启); 命令行
-        // --ps winehua.displayRoute 优先级更高 (自动化钉档位)。
-        if (this.isPcDevice()) {
-          Divider().color('#2a2a2a').width('100%')
-          Text('显示路线（实验）')
-            .fontWeight(FontWeight.Bold).fontColor('#999')
-            .width('100%').padding({ top: 12, bottom: 8 })
-          SegmentButton({
-            options: SegmentButtonOptions.capsule({
-              buttons: [{ text: 'X11' }, { text: 'Wayland' }],
-              multiply: false
-            }),
-            selectedIndexes: $routeSel,
-            onItemClicked: (index: number) => {
-              this.selectRoute(index == 0 ? ROUTE_X11 : ROUTE_WAYLAND);
-            }
-          })
-          .width('100%')
-          Text('X11: winex11 + Xwayland（主线）; Wayland: 原生路线（对照）')
-            .fontSize(12).fontColor('#777')
-            .width('100%').padding({ top: 4 })
-          if (this.routeRestartHint) {
-            Text('显示路线已更改, 重启 Wine 引擎后生效')
               .fontSize(12).fontColor('#f84')
               .width('100%').padding({ top: 4 })
           }

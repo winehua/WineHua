@@ -29,6 +29,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
+#include "wine/display_environment.h"
 #include "wine/wine_constants.h"
 #include "wine/wine_env.h"
 #include <fcntl.h>
@@ -180,13 +181,13 @@ static const char *active_wine_prefix()
     return prefix && prefix[0] ? prefix : WINE_PREFIX;
 }
 
-static void refresh_wine_session_paths()
+static void refresh_wine_session_paths(bool preserveRuntimeDir = false)
 {
     const char *prefix = active_wine_prefix();
     std::string brokerPath(prefix);
     const size_t slash = brokerPath.find_last_of('/');
 
-    setenv("XDG_RUNTIME_DIR", prefix, 1);
+    if (!preserveRuntimeDir) setenv("XDG_RUNTIME_DIR", prefix, 1);
     if (slash == std::string::npos)
         brokerPath = ".wine_broker";
     else
@@ -331,7 +332,10 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
                         value.c_str());
             continue;
         }
-        setenv(key.c_str(), value.c_str(), 1);
+        if (value.empty() && winehua::IsDisplayEnvironmentKey(key))
+            unsetenv(key.c_str());
+        else
+            setenv(key.c_str(), value.c_str(), 1);
         if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0)
             OH_LOG_INFO(LOG_APP, "[WineChild] env override %{public}s=%{public}s",
                         key.c_str(), value.c_str());
@@ -487,30 +491,11 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
-    // M1-T4 X 档位: 路由键 (per-app env 显式传入) 声明时撤掉 wayland socket
-    // 键 —— win32u driver.c 的驱动选择按键存在性判路, X 路线要求
-    // DISPLAY 设而 WAYLAND_DISPLAY 不设 (基线在上面的 setup_wine_env 无条件
-    // 设置, 且本处覆盖晚于基线, 只有删除能表达互斥)。DISPLAY 本体随 __env
-    // 注入。
-    const char *displayRoute = getenv("WINEHUA_DISPLAY_ROUTE");
-    if (displayRoute && strcmp(displayRoute, "x11") == 0)
-    {
-        unsetenv("WAYLAND_DISPLAY");
-        OH_LOG_INFO(LOG_APP, "[WineChild] display route=x11 (WAYLAND_DISPLAY removed)");
-        /* 路线唯一真相源就是这个 env (review P3): 它丢了不报错、静默落 wayland,
-         * 而两个消费者都在跑 ⇒ displayFps>0 不构成路线证据 (§2.10 实例)。这里
-         * 至少把"要求 x11 却没给 DISPLAY"这种自相矛盾的组合喊出来 —— 那种情况
-         * 下 win32u 的驱动选择会落到 null driver, 窗口全无。 */
-        const char *display = getenv("DISPLAY");
-        if (!display || !display[0])
-            OH_LOG_ERROR(LOG_APP,
-                         "[WineChild] route=x11 但 DISPLAY 未设: win32u 将无驱动可选 "
-                         "(预期 null driver, 窗口不会出现) — 检查 __env/DISPLAY 注入");
-    }
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.
-    refresh_wine_session_paths();
+    const char* displayRoute = getenv("WINEHUA_DISPLAY_ROUTE");
+    refresh_wine_session_paths(displayRoute && strcmp(displayRoute, "wayland") == 0);
 
     log_d3d_environment_summary();
 

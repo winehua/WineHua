@@ -28,6 +28,7 @@ std::string gBrokerPrefixDir;
 #include <thread>
 #include <atomic>
 #include <utility>
+#include <mutex>
 #include <vector>
 #include <AbilityKit/native_child_process.h>
 
@@ -40,6 +41,14 @@ std::string gBrokerPrefixDir;
 static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
 
 static std::atomic<bool> gBrokerRunning{false};
+static std::mutex gDisplayEnvironmentMutex;
+static std::string gDisplayEnvironment;
+
+void SetBrokerDisplayEnvironment(std::string suffix)
+{
+    std::lock_guard<std::mutex> lock(gDisplayEnvironmentMutex);
+    gDisplayEnvironment = std::move(suffix);
+}
 
 // -- 从 entryParams 解析进程 exe 路径 (登记到任务列表用) --
 // broker 加了 homeDir 前缀后 entryParams 形如
@@ -177,6 +186,10 @@ static void HandleRequest(int conn_fd)
                             : (gBrokerHomeDir + "|" + entryParamsRaw);
     if (!gBrokerPrefixDir.empty())
         fullParams += "|__env=WINEPREFIX=" + gBrokerPrefixDir;
+    {
+        std::lock_guard<std::mutex> lock(gDisplayEnvironmentMutex);
+        fullParams += gDisplayEnvironment;
+    }
     OH_LOG_INFO(LOG_APP, "[Broker] dispatch prefix=%{public}s",
                 gBrokerPrefixDir.empty() ? "(inherited)" : gBrokerPrefixDir.c_str());
     char* entryParamsCopy = strdup(fullParams.c_str());
@@ -236,7 +249,11 @@ static void HandleRequest(int conn_fd)
         // (ohos_broker_spawn_child / loader.c 自启 wineserver) 都汇到 broker。
         // 统一登记使 explorer 里双击的 exe 出现在任务列表; App 侧调用者随后
         // 会用更准确的路径 AddProcess 覆盖 (AddProcess 同 pid 幂等)。
-        AddProcess(childPid, ParseProcessPath(fullParams.c_str()), -1);
+        struct ucred peer{};
+        socklen_t peerSize = sizeof(peer);
+        const pid_t requester = getsockopt(conn_fd, SOL_SOCKET, SO_PEERCRED, &peer, &peerSize) == 0
+            ? peer.pid : 0;
+        AddProcess(childPid, ParseProcessPath(fullParams.c_str()), -1, requester);
     }
 
     free(entryParamsCopy);

@@ -218,6 +218,6 @@ export class ProcessService {
     if (shellAlive) {
       return;
     }
-    wm.closeX11Canvas();
+    wm.closeDesktopCarrier();
   }
 }

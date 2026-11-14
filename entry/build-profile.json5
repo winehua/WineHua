@@ -1,6 +1,31 @@
 {
   "apiType": "stageMode",
   "buildOption": {
+    // hgs/libs 与 entry/libs 存在同名预编译依赖 (wayland/ffi/freetype/xkb/xml):
+    // hgs 是这些依赖的属主 (hgs/scripts/build_all.sh 构建), entry 侧为外层
+    // deps 链的旧副本 — 冲突时保留先到的一份 (字节级功能等价)。
+    "napiLibFilterOption": {
+      "pickFirsts": [
+        "**/libfreetype.so",
+        "**/libfreetype.so.6",
+        "**/libwayland-client.so",
+        "**/libwayland-client.so.0",
+        "**/libwayland-cursor.so",
+        "**/libwayland-cursor.so.0",
+        "**/libwayland-egl.so",
+        "**/libwayland-egl.so.1",
+        "**/libwayland-server.so",
+        "**/libwayland-server.so.0",
+        "**/libxkbcommon.so",
+        "**/libxkbcommon.so.0",
+        "**/libxkbregistry.so",
+        "**/libxkbregistry.so.0",
+        "**/libxml2.so",
+        "**/libxml2.so.2",
+        "**/libffi.so",
+        "**/libffi.so.8"
+      ]
+    },
     "resOptions": {
       "copyCodeResource": {
         "enable": false

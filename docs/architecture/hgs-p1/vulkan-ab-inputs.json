@@ -1,0 +1,21 @@
+{
+  "source": {
+    "winehua": "3355dab96b968cd7e6d3da1e01e1a9c7c0b831fc",
+    "hgs": "bad402da1a8bdb56c87c2010a2727c09fc58251b"
+  },
+  "same_guest_assets": true,
+  "artifacts": [
+    {
+      "path": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/wayland-p0-control-signed.hap",
+      "size": 398707725,
+      "sha256": "085398429420816162cac10794d2eab8d708ffa98e3ba2589bd9b5267f1cde56"
+    },
+    {
+      "path": "/workspace/WineHua-root/WineHua/build/hgs-p1/2026-11-06/winehua-p1-final-signed.hap",
+      "size": 399185833,
+      "sha256": "039104e84ed9e02410a5fabf5f579d8c5a0274dc0ba813fe0a60a137db57506e"
+    }
+  ],
+  "guest_engine_sha256": "2313f3c9e3e99e4b49759d8c5dd5b7059e2b0aa3934b71b518458d319fc282ed",
+  "note": "Control reconstructed from frozen source and P1-identical guest assets. Not byte-identical to original P0 transient HAP."
+}

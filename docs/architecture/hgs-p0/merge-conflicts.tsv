@@ -1,0 +1,43 @@
+kind	path	target	action
+content	.gitmodules	.gitmodules	merge by domain; keep graphics service in hgs
+content	entry/oh-package.json5	entry/oh-package.json5	merge by domain; keep graphics service in hgs
+content	entry/src/main/cpp/CMakeLists.txt	entry/src/main/cpp/CMakeLists.txt	merge by domain; keep graphics service in hgs
+content	entry/src/main/cpp/bridge/napi_init.cpp	entry/src/main/cpp/bridge/napi_init.cpp	merge by domain; keep graphics service in hgs
+modify/delete	entry/src/main/cpp/bridge/plugin_manager.cpp	hgs/src/main/cpp/bridge/plugin_manager.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/common/perf_utils.cpp	hgs/src/main/cpp/common/perf_utils.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/common/perf_utils.h	hgs/src/main/cpp/common/perf_utils.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/compositor/frame/geometry.cpp	hgs/src/main/cpp/compositor/frame/geometry.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/compositor/toplevel/toplevel_event_bus.h	hgs/src/main/cpp/compositor/toplevel/toplevel_event_bus.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/compositor/wayland_server.cpp	hgs/src/main/cpp/compositor/wayland_server.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/compositor/wl_core.cpp	hgs/src/main/cpp/compositor/wl_core.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/graphics/egl_renderer.cpp	hgs/src/main/cpp/graphics/egl_renderer.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/controller_hub.cpp	hgs/src/main/cpp/input/controller/controller_hub.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/controller_hub.h	hgs/src/main/cpp/input/controller/controller_hub.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/controller_napi.cpp	hgs/src/main/cpp/input/controller/controller_napi.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/controller_napi.h	hgs/src/main/cpp/input/controller/controller_napi.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/controller_types.h	hgs/src/main/cpp/input/controller/controller_types.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/gamepad_bridge.cpp	hgs/src/main/cpp/input/controller/gamepad_bridge.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/gamepad_bridge.h	hgs/src/main/cpp/input/controller/gamepad_bridge.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/gamepad_ipc_protocol.h	hgs/src/main/cpp/input/controller/gamepad_ipc_protocol.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/controller/physical_gamepad.cpp	hgs/src/main/cpp/input/controller/physical_gamepad.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/pointer_extras.cpp	hgs/src/main/cpp/input/pointer_extras.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/text_input.cpp	hgs/src/main/cpp/input/text_input.cpp	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/input/text_input.h	hgs/src/main/cpp/input/text_input.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-client-core.h	hgs/src/main/cpp/protocols/wayland-client-core.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-client-protocol.h	hgs/src/main/cpp/protocols/wayland-client-protocol.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-server-core.h	hgs/src/main/cpp/protocols/wayland-server-core.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-server-protocol.h	hgs/src/main/cpp/protocols/wayland-server-protocol.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-server.h	hgs/src/main/cpp/protocols/wayland-server.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-util.h	hgs/src/main/cpp/protocols/wayland-util.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/protocols/wayland-version.h	hgs/src/main/cpp/protocols/wayland-version.h	port upstream delta; keep entry deletion
+modify/delete	entry/src/main/cpp/smoke/smoke_napi.cpp	hgs/src/main/cpp/smoke/smoke_napi.cpp	port upstream delta; keep entry deletion
+content	entry/src/main/cpp/types/libentry/Index.d.ts	entry/src/main/cpp/types/libentry/Index.d.ts	merge by domain; keep graphics service in hgs
+content	entry/src/main/cpp/wine/wine_launch.cpp	entry/src/main/cpp/wine/wine_launch.cpp	merge by domain; keep graphics service in hgs
+content	entry/src/main/ets/components/DesktopLayer.ets	entry/src/main/ets/components/DesktopLayer.ets	retain HgsSurface; prepare per-window backend routing
+content	entry/src/main/ets/pages/DesktopWindow.ets	entry/src/main/ets/pages/DesktopWindow.ets	retain HgsSurface; prepare per-window backend routing
+content	entry/src/main/ets/pages/WineWindow.ets	entry/src/main/ets/pages/WineWindow.ets	retain HgsSurface; prepare per-window backend routing
+content	entry/src/main/ets/service/FusionWindowManager.ets	entry/src/main/ets/service/FusionWindowManager.ets	retain HgsSurface; prepare per-window backend routing
+content	entry/src/main/ets/service/PopupWindowManager.ets	entry/src/main/ets/service/PopupWindowManager.ets	retain HgsSurface; prepare per-window backend routing
+content	entry/src/main/ets/service/WineWindowManager.ets	entry/src/main/ets/service/WineWindowManager.ets	retain HgsSurface; prepare per-window backend routing
+content	entry/src/main/ets/smoke/SmokeRunner.ets	entry/src/main/ets/smoke/SmokeRunner.ets	retain HgsSurface; prepare per-window backend routing
+content	host_tests/toplevel_event_test.cpp	hgs event contract + host_tests	preserve numeric event ABI; align payload helpers

@@ -1,0 +1,13 @@
+diff --git a/automation/smoke.py b/automation/smoke.py
+index 041f4bb08..a3c4ac0bd 100644
+--- a/automation/smoke.py
++++ b/automation/smoke.py
+@@ -683,6 +683,8 @@ def sandbox_texts(hdc: str, device: str, rel_paths: list) -> dict:
+     marker = "@@@SMOKE@@@"
+     script = f"; echo '{marker}'; ".join(
+         f"cat '{REAL_FILES}/{path}' 2>/dev/null" for path in rel_paths)
++    # Preserve prior reads when a final summary is still missing.
++    script += "; true"
+     code, out = hdc_shell(hdc, device, script, timeout=HDC_POLL_TIMEOUT_S)
+     if code == -1:
+         return {}

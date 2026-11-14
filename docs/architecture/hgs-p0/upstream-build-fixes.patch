@@ -1,0 +1,123 @@
+diff --git a/entry/build-profile.json5 b/entry/build-profile.json5
+index a76093505..17c434400 100644
+--- a/entry/build-profile.json5
++++ b/entry/build-profile.json5
+@@ -8,7 +8,7 @@
+     },
+     "externalNativeOptions": {
+       "path": "./src/main/cpp/CMakeLists.txt",
+-      "arguments": "",
++      "arguments": "-DHGS_P0_HOST_EXT_ROOT=/workspace/WineHua-root/WineHua/build/hgs-p0/2026-11-06/x11-host-ext",
+       "cppFlags": "",
+       "abiFilters": ["arm64-v8a"]
+     }
+diff --git a/entry/src/main/cpp/CMakeLists.txt b/entry/src/main/cpp/CMakeLists.txt
+index 432c37896..39835dadc 100644
+--- a/entry/src/main/cpp/CMakeLists.txt
++++ b/entry/src/main/cpp/CMakeLists.txt
+@@ -30,6 +30,10 @@ set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
+ # 其 NEEDED 闭包 .so 由 assemble.sh 装配进 libs/ (打包视图)
+ # 注: NATIVERENDER_ROOT_PATH = entry/src/main/cpp, 仓库根在四级上
+ set(WLR_DIR ${NATIVERENDER_ROOT_PATH}/../../../../build/host-ext/${OHOS_ARCH})
++# P0 isolated evidence can live outside Hvigor-cleaned application build/.
++if(DEFINED HGS_P0_HOST_EXT_ROOT)
++    set(WLR_DIR ${HGS_P0_HOST_EXT_ROOT})
++endif()
+ set(WLR_STATIC ${WLR_DIR}/usr/lib/libwlroots-0.20.a)
+ set(WLR_INC ${WLR_DIR}/usr/include/wlroots-0.20)
+ set(WLR_PIXMAN_INC ${WLR_DIR}/usr/include/pixman-1)
+diff --git a/scripts/build_native.sh b/scripts/build_native.sh
+index b23899334..9649d5fb2 100644
+--- a/scripts/build_native.sh
++++ b/scripts/build_native.sh
+@@ -81,6 +81,17 @@ build_libffi() {
+     log "libffi ($NATIVE_ARCH) → $NATIVE_LIBS"
+ }
+ 
++first_native_lib() {
++    local candidate
++    while IFS= read -r candidate; do
++        if [ -f "$candidate" ]; then
++            printf '%s\n' "$candidate"
++            return 0
++        fi
++    done < <(compgen -G "$1")
++    return 1
++}
++
+ copy_soname_with_linker_alias() {
+     local src="$1"
+     local soname="$2"
+@@ -158,7 +169,7 @@ build_native_libxml2() {
+     cmake --build "$build"
+     cmake --install "$build"
+ 
+-    copy_soname_with_linker_alias "$(compgen -G "$build/libxml2.so.2.*" | head -1)" "libxml2.so.2" "libxml2.so"
++    copy_soname_with_linker_alias "$(first_native_lib "$build/libxml2.so.2.*")" "libxml2.so.2" "libxml2.so"
+     log "libxml2 ($NATIVE_ARCH) → $NATIVE_LIBS"
+ }
+ 
+@@ -197,8 +208,8 @@ build_native_xkbcommon() {
+     ninja -C "$build"
+ 
+     # 产物尾缀随版本变 (实测: 1.7.0=so.0.0.0, 1.13.2 不同), glob 取实际产物
+-    copy_soname_with_linker_alias "$(compgen -G "$build/libxkbcommon.so.0.*" | head -1)" "libxkbcommon.so.0" "libxkbcommon.so"
+-    copy_soname_with_linker_alias "$(compgen -G "$build/libxkbregistry.so.0.*" | head -1)" "libxkbregistry.so.0" "libxkbregistry.so"
++    copy_soname_with_linker_alias "$(first_native_lib "$build/libxkbcommon.so.0.*")" "libxkbcommon.so.0" "libxkbcommon.so"
++    copy_soname_with_linker_alias "$(first_native_lib "$build/libxkbregistry.so.0.*")" "libxkbregistry.so.0" "libxkbregistry.so"
+     echo "$ver" > "$NATIVE_LIBS/.xkbcommon_version"
+     log "xkbcommon ($NATIVE_ARCH, $ver) → $NATIVE_LIBS"
+ }
+@@ -222,7 +233,7 @@ build_wayland() {
+ 
+     log "--- wayland ($NATIVE_ARCH, $ver) ---"
+     # 构建目录按版本隔离: 旧版本 meson 缓存不可复用 (同 build_wayland.sh 教训)
+-    local build="$NATIVE_BUILD/wayland_$ver"
++    local build="$NATIVE_BUILD/wayland_${ver}_p0_host"
+     local cross
+     cross="$(gen_native_cross)"
+ 
+@@ -350,7 +361,7 @@ install_headers() {
+ 
+     log "--- 安装 wayland 头文件 (已装=${inst_ver:-无} → $ver) ---"
+     # 生成头取自版本化构建目录 (T1 起构建目录带版本后缀, 未版本化旧路径已废)
+-    local build="$NATIVE_BUILD/wayland_$ver"
++    local build="$NATIVE_BUILD/wayland_${ver}_p0_host"
+     [ -f "$build/src/wayland-version.h" ] \
+         || { err "install_headers: $build 缺生成头, 先跑本脚本完成 build_wayland"; return 1; }
+ 
+diff --git a/scripts/build_wayland.sh b/scripts/build_wayland.sh
+index 51548e536..c6019ec61 100644
+--- a/scripts/build_wayland.sh
++++ b/scripts/build_wayland.sh
+@@ -80,7 +80,14 @@ ninja -C "$WL_BUILD/x86_64"
+ # 安装 .so (文件名 = SONAME; 版本尾缀随 tag 变, glob 取实际产物, 取不到即失败)
+ install_soname() {  # $1=产物 glob  $2=目标 SONAME 名
+     local src
+-    src=$(compgen -G "$1" | head -1 || true)
++    src=""
++    local candidate
++    while IFS= read -r candidate; do
++        if [ -f "$candidate" ]; then
++            src="$candidate"
++            break
++        fi
++    done < <(compgen -G "$1")
+     [ -n "$src" ] || err "未找到产物: $1"
+     cp "$src" "$SYSROOT_EXT_LIB/$2"
+     log "installed $2 ← $(basename "$src")"
+diff --git a/scripts/build_wine.sh b/scripts/build_wine.sh
+index 69463acb9..f4dcae88f 100644
+--- a/scripts/build_wine.sh
++++ b/scripts/build_wine.sh
+@@ -31,8 +31,8 @@ build_native_tools() {
+             "$CONFIGURE_BIN" --srcdir="$WINE_SRC" --enable-archs=x86_64 --disable-tests \
+                 --without-x --without-alsa --without-opengl --without-vulkan
+         else
+-            export FREETYPE_CFLAGS="-I/usr/include/freetype2"
+-            export FREETYPE_LIBS="-lfreetype"
++            export FREETYPE_CFLAGS="${HGS_P0_HOST_FREETYPE_CFLAGS:--I/usr/include/freetype2}"
++            export FREETYPE_LIBS="${HGS_P0_HOST_FREETYPE_LIBS:--lfreetype}"
+             "$CONFIGURE_BIN" --srcdir="$WINE_SRC" --enable-win64 --disable-tests \
+                 --without-x --without-alsa --without-opengl --without-vulkan
+         fi

@@ -1,7 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
-  WineEnvService, WINE_ROOT, FILES_BASE, pathExists, readTextIfExists
+  WineEnvService, WINE_ROOT, FILES_BASE, ensureDirectory, pathExists, readTextIfExists
 } from '../service/WineEnvService';
 import { SmokeRunner } from './SmokeRunner';
 import { SmokeJob, SmokeRequest } from './SmokeTypes';
@@ -231,7 +231,9 @@ export class SmokeHook {
   private copyTree(src: string, dst: string): void {
     const st = fs.statSync(src);
     if (st.isDirectory()) {
-      fs.mkdirSync(dst, true);
+      if (!ensureDirectory(dst)) {
+        throw new Error(`Cannot create smoke payload directory: ${dst}`);
+      }
       for (const name of fs.listFileSync(src)) {
         this.copyTree(`${src}/${name}`, `${dst}/${name}`);
       }

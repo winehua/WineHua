@@ -12,6 +12,7 @@
 // -- 进程注册表入口 --
 struct WineProcessEntry {
     pid_t pid;
+    pid_t requesterPid;
     std::string exeBasename;
     std::string exeFullPath;
     bool running;
@@ -47,7 +48,7 @@ extern napi_threadsafe_function gStateTsfn;
 extern std::string gSockPath;
 
 // -- 进程注册表 --
-WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd);
+WineProcessEntry* AddProcess(pid_t pid, const std::string& exeFullPath, int stdoutFd, pid_t requesterPid = 0);
 void RemoveProcess(pid_t pid, int exitCode = -1,
                    const std::string& exitCodeSource = "unknown");
 void KillAllProcesses();

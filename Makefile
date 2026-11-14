@@ -464,7 +464,7 @@ define assemble_rule
 
 assemble-$(1): $$(STAMPS)/$(1)/assemble
 
-$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
+$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(ROOT)/hgs/scripts/x11/pack_resources.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
 	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
 	$$(STAMPS)/deps $$(STAMPS)/wine-$(1) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \
@@ -492,64 +492,90 @@ hap: assemble
 
 # ============================================================
 # test: 宿主机单元测试 (纯函数, 不依赖 OHOS SDK, 用宿主 g++ 编译)
+# 合成器/输入域已迁入 hgs submodule (entry 侧仅剩 wine 域与
+# presenter_common) — include 与源文件路径按域分流。
 # ============================================================
 HOST_TEST_DIR := $(BUILD_DIR)/host_tests
+HGS_CPP   := $(ROOT)/hgs/src/main/cpp
+ENTRY_CPP := $(ROOT)/entry/src/main/cpp
+# api/ 单独 -I: 公共契约头 (hgs_events.h 等) 用裸名 include, 与 hgs CMake 同款约定
+HOST_TEST_INC := -I $(HGS_CPP) -I $(HGS_CPP)/api -I $(ENTRY_CPP) -I $(ENTRY_CPP)/wine
 
 .PHONY: test
 test:
 	@mkdir -p $(HOST_TEST_DIR)
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/geometry_test \
 	    $(ROOT)/host_tests/geometry_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/compositor/frame/geometry.cpp
+	    $(HGS_CPP)/compositor/frame/geometry.cpp
 	$(HOST_TEST_DIR)/geometry_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/blit_scaled_test \
 	    $(ROOT)/host_tests/blit_scaled_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/compositor/frame/compositor_blit.cpp
+	    $(HGS_CPP)/compositor/frame/compositor_blit.cpp
 	$(HOST_TEST_DIR)/blit_scaled_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/blit_clip_test \
 	    $(ROOT)/host_tests/blit_clip_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/compositor/frame/compositor_blit.cpp
+	    $(HGS_CPP)/compositor/frame/compositor_blit.cpp
 	$(HOST_TEST_DIR)/blit_clip_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/shm_frame_source_test \
 	    $(ROOT)/host_tests/shm_frame_source_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/compositor/frame/shm_frame_source.cpp
+	    $(HGS_CPP)/compositor/frame/shm_frame_source.cpp
 	$(HOST_TEST_DIR)/shm_frame_source_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/zorder_test \
 	    $(ROOT)/host_tests/zorder_test.cpp
 	$(HOST_TEST_DIR)/zorder_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/env_spec_test \
 	    $(ROOT)/host_tests/env_spec_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/wine/env_spec.cpp
+	    $(ENTRY_CPP)/wine/env_spec.cpp
 	$(HOST_TEST_DIR)/env_spec_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/env_baseline_test \
 	    $(ROOT)/host_tests/env_baseline_test.cpp
 	$(HOST_TEST_DIR)/env_baseline_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/input_state_test \
 	    $(ROOT)/host_tests/input_state_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/compositor/input/input_state_tracker.cpp
+	    $(HGS_CPP)/compositor/input/input_state_tracker.cpp
 	$(HOST_TEST_DIR)/input_state_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/toplevel_event_test \
 	    $(ROOT)/host_tests/toplevel_event_test.cpp
 	$(HOST_TEST_DIR)/toplevel_event_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
+	    -o $(HOST_TEST_DIR)/hgs_event_map_test \
+	    $(ROOT)/host_tests/hgs_event_map_test.cpp
+	$(HOST_TEST_DIR)/hgs_event_map_test
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
+	    -o $(HOST_TEST_DIR)/hgs_endpoint_test \
+	    $(ROOT)/host_tests/hgs_endpoint_test.cpp \
+	    $(HGS_CPP)/api/hgs_endpoint.cpp
+	$(HOST_TEST_DIR)/hgs_endpoint_test
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
+	    -o $(HOST_TEST_DIR)/native_keymap_test \
+	    $(ROOT)/host_tests/native_keymap_test.cpp \
+	    $(HGS_CPP)/input/native_keymap.cpp
+	$(HOST_TEST_DIR)/native_keymap_test
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
+	    -o $(HOST_TEST_DIR)/hgs_window_manager_test \
+	    $(ROOT)/host_tests/hgs_window_manager_test.cpp \
+	    $(HGS_CPP)/api/hgs_window_policy.cpp \
+	    $(HGS_CPP)/api/hgs_window_manager.cpp
+	$(HOST_TEST_DIR)/hgs_window_manager_test
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/presenter_common_test \
 	    $(ROOT)/host_tests/presenter_common_test.cpp
 	$(HOST_TEST_DIR)/presenter_common_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/controller_merge_test \
 	    $(ROOT)/host_tests/controller_merge_test.cpp \
-	    $(ROOT)/entry/src/main/cpp/input/controller/controller_hub.cpp
+	    $(HGS_CPP)/input/controller/controller_hub.cpp
 	$(HOST_TEST_DIR)/controller_merge_test
-	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	g++ -std=c++17 -Wall -Wextra $(HOST_TEST_INC) \
 	    -o $(HOST_TEST_DIR)/display_policy_test \
 	    $(ROOT)/host_tests/display_policy_test.cpp
 	$(HOST_TEST_DIR)/display_policy_test

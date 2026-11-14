@@ -1,0 +1,165 @@
+{
+  "winehua": {
+    "path": "/workspace/WineHua-root/WineHua",
+    "head": "3355dab96b968cd7e6d3da1e01e1a9c7c0b831fc",
+    "status": " M .gitignore\n M docs/README.md\n M hgs\n ? thirdparty/dxvk-modern\n m thirdparty/glib\n m thirdparty/gstreamer\n m thirdparty/pcre2\n?? docs/HANDOVER.md\n?? docs/architecture/hgs-dual-protocol-service-plan.md\n",
+    "untracked": [
+      {
+        "path": "docs/HANDOVER.md",
+        "size": 50638
+      },
+      {
+        "path": "docs/architecture/hgs-dual-protocol-service-plan.md",
+        "size": 39628
+      }
+    ]
+  },
+  "hgs": {
+    "path": "/workspace/WineHua-root/WineHua/hgs",
+    "head": "bad402da1a8bdb56c87c2010a2727c09fc58251b",
+    "status": "",
+    "untracked": []
+  },
+  "glib": {
+    "path": "/workspace/WineHua-root/WineHua/thirdparty/glib",
+    "head": "3c543ef69ffab7c78e29eaf383e7fe2c7df6cd49",
+    "status": " M meson.build\n?? subprojects/.wraplock\n",
+    "untracked": [
+      {
+        "path": "subprojects/.wraplock",
+        "size": 0
+      }
+    ]
+  },
+  "gstreamer": {
+    "path": "/workspace/WineHua-root/WineHua/thirdparty/gstreamer",
+    "head": "9137f539a022ec3f5f7c5ee704198dbf35a41940",
+    "status": " m subprojects/gst-integration-testsuites/medias\n M subprojects/gst-plugins-bad/gst-libs/gst/meson.build\n?? subprojects/.wraplock\n",
+    "untracked": [
+      {
+        "path": "subprojects/.wraplock",
+        "size": 0
+      }
+    ]
+  },
+  "pcre2": {
+    "path": "/workspace/WineHua-root/WineHua/thirdparty/pcre2",
+    "head": "52c08847921a324c804cabf2814549f50bce1265",
+    "status": " M src/config.h.in\n",
+    "untracked": []
+  },
+  "dxvk-modern": {
+    "path": "/workspace/WineHua-root/WineHua/thirdparty/dxvk-modern",
+    "head": "bf22f73f786e18a8a2df5410649c2fa3899a7257",
+    "status": "?? subprojects/.wraplock\n",
+    "untracked": [
+      {
+        "path": "subprojects/.wraplock",
+        "size": 0
+      }
+    ]
+  },
+  "bettersh": {
+    "path": "/workspace/BetterSH",
+    "head": "7392c3dba391151b69810d80d03b805af05ab879",
+    "status": " M feature/bsh_main/src/main/ets/entryability/EntryAbility.ets\n",
+    "untracked": []
+  },
+  "bettersh-hgs": {
+    "path": "/workspace/BetterSH/hgs",
+    "head": "bad402da1a8bdb56c87c2010a2727c09fc58251b",
+    "status": "",
+    "untracked": []
+  },
+  "refs": {
+    "HEAD": "3355dab96b968cd7e6d3da1e01e1a9c7c0b831fc",
+    "upstream/master": "a001e6d0ca277d5a5fb2b4bd6a030ac52e5e132e",
+    "merge_base": "3eecbd732d79bf6d306fdb48eee734771eb58147"
+  },
+  "hgs_remote_tracking": {
+    "origin/main": "bad4d5f911d986a3159f28efd705d9e79304eb29",
+    "local_commits_ahead": 11,
+    "remote_verified": false
+  },
+  "worktrees": {
+    "integration": "/workspace/WineHua-root/hgs-integration",
+    "upstream": "/workspace/WineHua-root/hgs-upstream-baseline",
+    "branch": "feature/hgs-dual-protocol"
+  },
+  "bettersh_remote_tracking": {
+    "origin/main": "b316deb9d75023afc3a287f9680f1fa6c0585159",
+    "local_commits_ahead": 7,
+    "remote_verified": false
+  },
+  "gitlinks": {
+    "HEAD": {
+      "hgs": "bad4d5f911d986a3159f28efd705d9e79304eb29",
+      "thirdparty/box64": "0411b38569d3b70a0a8eb64ffd80e7ef72f9cb67",
+      "thirdparty/dxvk": "5058927a741132fd643d20800f23e62dda432760",
+      "thirdparty/dxvk-modern": "bf22f73f786e18a8a2df5410649c2fa3899a7257",
+      "thirdparty/freetype": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+      "thirdparty/glib": "3c543ef69ffab7c78e29eaf383e7fe2c7df6cd49",
+      "thirdparty/gmp": "2bbd52703e5af82509773264bfbd20ff8464804f",
+      "thirdparty/gnutls": "2f04c14daa086889b4e85f7056c39d23766ddaa1",
+      "thirdparty/gstreamer": "9137f539a022ec3f5f7c5ee704198dbf35a41940",
+      "thirdparty/libdrm": "bdd6856d4a488121c120237c2b7c33b17f6a1df1",
+      "thirdparty/libepoxy": "2597254fd42e021225db02734340857cae9a2596",
+      "thirdparty/libffi": "3d0ce1e6fcf19f853894862abcbac0ae78a7be60",
+      "thirdparty/libtasn1": "6b45b25e94ea538192cc0f97e9ad57171d1c6374",
+      "thirdparty/libunistring": "7bb729676e71600792d75626e873f6c98a6e5633",
+      "thirdparty/libxkbcommon": "7a31e3585edf78be281559377e26d15f8c4bc655",
+      "thirdparty/libxml2": "5e9b167dce73bd6a804ab107ae4c4b95e6849597",
+      "thirdparty/mesa": "2939cbb816d3a3c5fcf3147fb8436e105d0a0ee8",
+      "thirdparty/nettle": "d9e983c664772f8cbacba9fa084bc079978e3c98",
+      "thirdparty/pcre2": "52c08847921a324c804cabf2814549f50bce1265",
+      "thirdparty/virglrenderer": "6627c0314f390ac1eab4295c9d7c3ff784502fa1",
+      "thirdparty/vkd3d-proton": "3e5aab6fb3e18f81a71b339be4cb5cdf55140980",
+      "thirdparty/wayland": "b2649cb3ee6bd70828a17e50beb16591e6066288",
+      "thirdparty/wayland-protocols": "6bcf87d9c17a36bb56943efeb4cbb851bd3734b8",
+      "thirdparty/wine": "f6492f848273ae3f4220151c8049e1202669cd49",
+      "thirdparty/xkeyboard-config": "4225e14a2d0fca5a4f9cb8517cf12d96ea290d84"
+    },
+    "upstream/master": {
+      "thirdparty/box64": "0411b38569d3b70a0a8eb64ffd80e7ef72f9cb67",
+      "thirdparty/dxvk": "5058927a741132fd643d20800f23e62dda432760",
+      "thirdparty/dxvk-modern": "bf22f73f786e18a8a2df5410649c2fa3899a7257",
+      "thirdparty/freetype": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+      "thirdparty/glib": "3c543ef69ffab7c78e29eaf383e7fe2c7df6cd49",
+      "thirdparty/gmp": "2bbd52703e5af82509773264bfbd20ff8464804f",
+      "thirdparty/gnutls": "2f04c14daa086889b4e85f7056c39d23766ddaa1",
+      "thirdparty/gstreamer": "9137f539a022ec3f5f7c5ee704198dbf35a41940",
+      "thirdparty/libdrm": "bdd6856d4a488121c120237c2b7c33b17f6a1df1",
+      "thirdparty/libepoxy": "2597254fd42e021225db02734340857cae9a2596",
+      "thirdparty/libffi": "3d0ce1e6fcf19f853894862abcbac0ae78a7be60",
+      "thirdparty/libtasn1": "6b45b25e94ea538192cc0f97e9ad57171d1c6374",
+      "thirdparty/libunistring": "7bb729676e71600792d75626e873f6c98a6e5633",
+      "thirdparty/libxkbcommon": "d1442aaa6b635551182e83c3b55037f4c118c962",
+      "thirdparty/libxml2": "5e9b167dce73bd6a804ab107ae4c4b95e6849597",
+      "thirdparty/mesa": "e975a707302d57423d5a1ccc3ab3dad473a4dc46",
+      "thirdparty/nettle": "d9e983c664772f8cbacba9fa084bc079978e3c98",
+      "thirdparty/pcre2": "52c08847921a324c804cabf2814549f50bce1265",
+      "thirdparty/virglrenderer": "6627c0314f390ac1eab4295c9d7c3ff784502fa1",
+      "thirdparty/vkd3d-proton": "3e5aab6fb3e18f81a71b339be4cb5cdf55140980",
+      "thirdparty/wayland": "87cc8a8728a923fc57938faa81ba0e74f34ecdc7",
+      "thirdparty/wayland-protocols": "ee78491a237eaff9389a0ccf8680521d074407d3",
+      "thirdparty/wine": "025656dfd3920ea11aaab9e8ac6d905ec35963fe",
+      "thirdparty/wlroots": "d783533489e1f75d6886c2ab5c5960090ef268f8",
+      "thirdparty/xkeyboard-config": "4225e14a2d0fca5a4f9cb8517cf12d96ea290d84",
+      "thirdparty/xserver": "c5a47fda896aeefbf1d06a73e392a294344f9e1a"
+    }
+  },
+  "public_contract_sha256": {
+    "src/main/cpp/api/hgs.h": "910bc92a5b7105de5dc7b7b111957ae2d997e3309a07f855e51bf6bf28fe78fb",
+    "src/main/cpp/api/hgs_endpoint.h": "4fc8bee16d52fbfa6bdcc7a8c1c47f0e6a6a7459c5c2d105fff2a23a7c6c2c4e",
+    "src/main/cpp/api/hgs_events.h": "ad11c3b75e06a3852b97fecc60e00d464ac7387770989c490b7bdec2a0150e6f",
+    "src/main/cpp/api/hgs_export.h": "2f4bf3ff572f15d91fc7bd142fac2951b6926c72c0603a83b2c8e28e681189bb",
+    "src/main/cpp/api/hgs_host.h": "4715aeb355502d053e0752093011677d7bc54c54e187a0b5a59dbd6ec4bc1648",
+    "src/main/cpp/api/hgs_instance.h": "5364062de4ab847bdd7f86eb8f628ff34b968db7f33d6760b00a0d53cae816c2",
+    "src/main/cpp/api/hgs_types.h": "0b7dbdb46ff39118ca985c4855027cfe7a2579f09d5d578663295a20068a4789",
+    "src/main/cpp/api/hgs_window_host.h": "12518e2063289b3d4faacd50ff6c4fb60da30c977237f67b956b3ccdfb4d06eb",
+    "src/main/cpp/api/hgs_window_manager.h": "c4f0169ffc17074f152f65f68495ecad05f8d80fc4f7d3a89e2505eba73a4b89",
+    "src/main/cpp/api/hgs_window_policy.h": "23cbc8952ad52910399275c1e0437457da70b0b6939935ec7a5d57758ea757e4",
+    "src/main/cpp/api/hgs_window_types.h": "04974693c8c993b4eeb23a220f752a8f435b76124bd54e66a6496fc1191d29c2",
+    "src/main/cpp/types/libhgs/Index.d.ts": "48a33daf3f34b0b3373daf8e7819494bb591d502dabd7e90a1e582a4de5c08ca"
+  }
+}

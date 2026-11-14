@@ -169,6 +169,10 @@ jobs:
                     "applyToProducts": ["default"]
                   }
                 ]
+              },
+              {
+                "name": "hgs",
+                "srcPath": "./hgs"
               }
             ]
           }

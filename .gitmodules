@@ -78,6 +78,9 @@
 [submodule "thirdparty/gstreamer"]
 	path = thirdparty/gstreamer
 	url = https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+[submodule "hgs"]
+	path = hgs
+	url = https://github.com/panedioic/hgs.git
 [submodule "thirdparty/wlroots"]
 	path = thirdparty/wlroots
 	url = https://gitlab.freedesktop.org/wlroots/wlroots.git

@@ -3,6 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import testNapi from 'libentry.so';
+import hgsNapi from 'libhgs.so';
 import { WineWindowManager } from '../service/WineWindowManager';
 
 const DOMAIN = 0x0000;
@@ -50,7 +51,7 @@ export default class DesktopAbility extends UIAbility {
         const mw = windowStage.getMainWindowSync();
         if (mw) {
           // 注册主窗口 id: 游戏相对模式锁光标 (LockCursor) 用
-          testNapi.registerHostWindow(mw.getWindowProperties().id);
+          hgsNapi.registerHostWindow(mw.getWindowProperties().id);
           mw.setWindowLayoutFullScreen(true).catch((e: BusinessError) => {
             hilog.error(DOMAIN, TAG, '[DWA] fullScreen failed: %{public}s', JSON.stringify(e));
           });
@@ -87,7 +88,7 @@ export default class DesktopAbility extends UIAbility {
   onDestroy(): void {
     hilog.info(DOMAIN, TAG, '[DWA] onDestroy tl=%{public}d', this.toplevelId);
     try {
-      testNapi.destroyToplevel(this.toplevelId);
+      hgsNapi.destroyToplevel(this.toplevelId);
       WineWindowManager.getInstance().unregisterDesktopAbility();
     } catch (e) {
       hilog.error(DOMAIN, TAG, '[DWA] ERR onDestroy: %{public}s', JSON.stringify(e));

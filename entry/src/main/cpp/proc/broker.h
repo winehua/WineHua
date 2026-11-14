@@ -13,4 +13,7 @@ extern std::string gBrokerPrefixDir;
 // 返回 0 表示成功，非 0 表示失败
 int StartBrokerServer();
 
+// Configure the validated HGS display parameters for every NCP request.
+void SetBrokerDisplayEnvironment(std::string suffix);
+
 #endif // WINE_BROKER_H

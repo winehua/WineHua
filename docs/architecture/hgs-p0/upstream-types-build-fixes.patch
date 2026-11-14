@@ -1,0 +1,24 @@
+diff --git a/entry/src/main/cpp/types/display_route_napi/Index.d.ts b/entry/src/main/cpp/types/display_route_napi/Index.d.ts
+index def5d268c..eae32a977 100644
+--- a/entry/src/main/cpp/types/display_route_napi/Index.d.ts
++++ b/entry/src/main/cpp/types/display_route_napi/Index.d.ts
+@@ -61,3 +61,6 @@ export const injectDisplayRouteText: (text: string) => boolean;
+ /** D19 CJK 剪贴板桥: UTF-8 串设为 seat selection (xwm 桥接 Xwayland CLIPBOARD),
+  *  配合 Ctrl+V 注入粘贴。 */
+ export const setDisplayRouteClipboard: (text: string) => boolean;
++
++/** Native export already present: last drained motion target X window. */
++export const getLastPtrWindowId: () => number;
+diff --git a/entry/src/main/cpp/types/libentry/Index.d.ts b/entry/src/main/cpp/types/libentry/Index.d.ts
+index cf5b73015..3ebdaae43 100644
+--- a/entry/src/main/cpp/types/libentry/Index.d.ts
++++ b/entry/src/main/cpp/types/libentry/Index.d.ts
+@@ -27,7 +27,7 @@ export interface WineProgramOptions {
+   workingDirectory: string;
+   d3dBackend: string;
+   dxvkBackend?: string;
+-  presentBackend: string;
++  presentBackend?: string;
+ }
+ export interface WineProcessHandle {
+   found: boolean;

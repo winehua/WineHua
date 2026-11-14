@@ -1,0 +1,313 @@
+10a7e13e4e9ac3661f5165060cd30a49abb323f9	2026-09-04	fix(controller): restore canonical stick coordinates for all sources
+769ea640f7ff24f476b8480cde13c7468df24259	2026-09-04	docs(controller): note Wine restart after winebus HAP updates
+3158385fbc5e5fa648913ba09f6980eceffbe14e	2026-09-04	fix(audio): mix Wine endpoints in HarmonyOS instead of host S16 clamp
+aca0d56e2d96b3e7cb1c5bd6fb2f5e9b280c6485	2026-09-04	submodule(wine): WHGP v2 axes and IEEE float32 WASAPI mix format
+75a34573bb48cb6ed95ae9eda2619a08cd531e1a	2026-09-04	docs(audio): describe per-endpoint mix and float32 WASAPI advertisement
+e594e7887aa45e53ef68900e9e0a56ffbc9d2f35	2026-09-27	build(env): 架构侧别纪律入规则——GUEST_ARCH 参数化 + host-ext 隔离 sysroot + meson_host_build
+7347fcf3eb84b884343bdcd296bb8068576c491e	2026-09-27	build(deps): 升级传播修复——构建目录版本隔离, 守卫版本一致性, 产物名 glob 化
+a0aeac3cf72efa10a540fb0679a96f11a5b9dc35	2026-09-27	rules(build): 增两条构建纪律——构建依赖产物限 build/ 目录内; guest/host 侧别判据
+26002f4733b8f150dc59a94c6b6cc1104f10eaea	2026-09-27	docs(automation): 判定机 python 依赖显式化——requirements.txt + README 安装说明
+95ec7079ca5e197cc418a6b20c279f6d19b032c2	2026-09-27	build(deps): host-ext 基础库 pixman/drm/xkbcommon + 全链 pc 搜索路径修正 (M0-T2)
+e866687ba0ed66bc05ebcdaa174ba4d8abb75f4c	2026-09-27	build(deps): xcb 栈按侧参数化构建 (M0-T3, host 侧)
+0ada87934a15a1889b887a62fcb1388eb3b8ddfe	2026-09-27	build(deps): libX11 1.8.10/libXext 1.3.6 按侧参数化构建 (M0-T4, host 侧)
+bda56b030797f5b412b3245f91d2ff760cc11c18	2026-09-27	build(deps): wlroots 0.20.2 host 侧最小集合静态构建 (M0-T5)
+8e60d9d4ed680cb72f50580e3ec0349d8b270251	2026-09-27	build(deps): Xwayland 钉版 24.1.13 + NCP 共享库构建 (M0-T6)
+1af4e1dfc378b6086b7e6de26fef7bf1e8eb388b	2026-09-28	feat(display): M0-T7 NCP shim + wlroots/Xwayland 启动链真机打通
+d4d6eb3bdea800de52a9317dda77d4012de1ccb8	2026-09-28	feat(display): M0-T8 出图链——OH_NativeBuffer wlr_buffer/allocator + 帧直推 NativeWindow
+8a7f8f5e1eeee66746b2eeb93ed2122e70184302	2026-09-28	feat(display): M0 出口——X client 端到端出图
+7273594b3b59be2bc6363e13b36217426f222acd	2026-09-28	docs(spec): M0 实测结论回填——NativeWindow 矩阵/最小件必备集/X11 连接面/R-SPAWN 与 R-xkb 落地
+c36a88ccedcc8df9af69bdcdf93b0cab094876d8	2026-09-29	docs(plan): M1 实现计划——winex11 接入/输入/scene 化/GLX 裁决/R-WSI
+5041b8cdf7a35d38e2a770b7061f6f60f8f9c76c	2026-09-29	docs(plan): M1-T4 驱动分支注释修正——else-if 摆位 = wayland 优先
+09bf72573a8cdc8d999f41d278b67399dd7d6b57	2026-09-29	docs(plan): M1 wine 改动改为 submodule 直接提交——wine 是自己 fork
+46c4f71513a61a1effdb4a6632946cdba26a6e98	2026-09-29	feat(display): M1-T1 displayroute 输入链——wlr_seat + OHOS 注入桥
+2c2fec5a7ba38be2801137cf4c705a3131c8bc52	2026-09-29	feat(display): M1-T2 多窗口语义——surface 列表 + 命中测试 + 焦点随动
+7c7681e718922ec20f502fcd9a40f33f6da5f9bd	2026-09-29	feat(display): M1-T3 scene 化合成——管线贯通 + 分段帧率实测
+756f2e2e37b7b6f9cdfc737596a6c431f0bc21f0	2026-09-29	feat(wine): M1-T4 winex11 交叉接入——guest X11 栈 + 驱动选择 DISPLAY 分支
+82f5a3574da8947c45f751ed7b7650211d27b7b4	2026-09-29	feat(display): M1-T5 notepad 端到端——winex11 出口判据达成
+899cf533596c2ec00cdeab613b67584e6a6568bb	2026-09-29	feat(smoke): M1-T6 GLX-over-EGL 探针——R1 裁决数据
+142a0523fabea5d5cfbb61c6d684e722c33dbefd	2026-09-29	feat(smoke): M1-T7 R-WSI 探针——venus 不暴露 VK_KHR_xcb_surface
+6ae3cdd87fe6d65a8b4152181bb22b3173b14529	2026-09-29	feat(display): M1-T8 收尾——回归通过 + spec §6.3 回填 + M1 验收报告
+160a741880f5442e741686f607ab76aeec2ebeba	2026-09-29	fix(display): M1 评审修复——焦点 UAF / 注入跨线程 / 编排门控与入库
+09e86878d5cbc475082028ebac1835c26b58499e	2026-09-29	docs(engineering): 显示路线已知问题与后续处置清单
+401fef0b2a7562d062b9833c166ca9508e578228	2026-09-30	docs(plan): M2 实现计划——呈现链零拷贝/重锚/IME/PC 形态
+468c746da5eb474ba80fef4a75a5aee9debce058	2026-09-30	docs(plan): M2 范围裁定——先阶段 A + A 收尾, B/C 暂缓
+446022fd57bcd8824d7851f688ecb09f9fe3c442	2026-09-30	fix(display): M2-T1 输出路径清账——munmap 配对/丢帧可见性/失败归还/启动收尾
+a8e5740d4ccec7ae2dbf94008912ad4d506930d4	2026-09-30	feat(display): M2-T2 host EGL OHOS 导入探针——零拷贝路线裁决
+6778372b3061f008c3c708def89721abf1a8f1ff	2026-09-30	feat(smoke): M2-T3 GL 策略收口——X 路线 present 链不成立（三处构建层缺件定位）
+54790a87eff422730990fcdfba0c0421bfcacf98	2026-09-30	feat(display): M2-T4 gles2 零拷贝——OHOS 导入分支 + GPU 直通输出
+be8092c53ac3b66cf2447aa721c9a520b26dbcfd	2026-09-30	feat(display): M2-T5 重锚接收侧——window_id 映射与销毁失效 + wine 侧私有面
+b5e916b593f5033b6d342a7d50a989cc594ba8d0	2026-09-30	feat(smoke): M2-T6 dxvk X 路线套件——出口判据达成
+389dcb63f737747c44f279bd7c0b9722c29aab8c	2026-09-30	feat(display): M2-T9 收尾——阶段 A 回归 + spec 回填 + 验收报告
+d7728f78598479e7284180f5f0f9d198562941bf	2026-09-30	docs(plan): M2 计划标注执行状态——阶段 A 完成, 阶段 B/C 暂缓
+6cf400f14bb42f81abbd7f579939c798d5b865e8	2026-09-30	fix(display): M2 收尾 fix pass——帧节点所有权归合成器 + dx-notepad 裁定更正
+63b5515d5ca7b8165dd4ccba37af56685669be0f	2026-09-30	docs(display): 终审焦点复核——§2.7 同 id 复用竞态入档 + 验收报告挂起项对齐
+c67197a0c05aac15558d0384b8e6ebc53e56cd56	2026-09-30	docs(display): notepad 用例「错误」对话框根因入档（§2.8）+ 红项行对齐
+0edf1eb681b614418c8544f0bd1062ddd5b40418	2026-09-30	feat(smoke): notepad 载体用例——judge=external 语义 + 无参数启动 + 脚本去弹框步骤
+2229d29bf5ac4bf20933726a34d387cf2b717f8a	2026-09-30	feat(display): X 路线逐跳速率仪表 + 内容率结清（M2-B）
+a0ede6f2916aa4ebf1b8cccf12c605f042e2c7d8	2026-09-30	docs(display): 视觉判定整屏截图的相位风险入档（§3.5）
+22144f5fba97c9ad32019bc252a32b1d0e94f44d	2026-09-30	docs(display): 内容率证据行补最终构建复核（r20260930-210044）
+c9485ea03e698051b950efc91e17eff8a60abcdf	2026-09-30	docs(display): dxvk-legacy 性质修正——非「天生如此」，两步入口留档
+e451b62f13a85006a620551b503f8d6d097e328e	2026-09-30	fix(build): host-ext 打包 glob 收两位数 SONAME（known-issues §1.3）
+624d525f8fea8cce243146d89308f0e7c65a6d61	2026-09-30	feat(display): guest 帧归还不变量检查器——§2.6 定性更正（非「缺同步」）
+a7710306cf068edbb19689ac1fbcca90bda2dee9	2026-09-30	docs(display): X 路线 GL 呈现桥 + 帧时钟 VSync 驱动设计（spec）
+1551e39861e7d02f4877b27fe62ead0cf27e2fbc	2026-09-30	feat(display): 帧时钟改 VSync 驱动 + guest 节奏跟随显示周期 + GL 面接入
+39e35d7feb8c53d77cd8e5de6848f7349c63fdf7	2026-09-30	chore(submodule): wine 指针 → X 路线 OpenGL 私有呈现桥（27f6a5eafa4）
+3be2e7a5ab5588bc708764c76dd95da7559138a6	2026-10-01	docs(display): GL 私有呈现桥落地 + 帧率上限根因（§2.4/§2.6/§2.9/§2.10）
+8ece8795dbe9fc3205f9127c385773ef28ed4964	2026-10-01	fix(automation): CLI 覆盖参数改为并入 job params，不再整体替换
+8b97e408d168a598edf945afbd0b8fc91cde2d19	2026-10-01	docs(display): §2.10 根因定案（CLI 覆盖丢 job params）+ 判据层教训
+4627c71c36a2bd7ff7bfffdb660be08e3caad8b4	2026-10-01	docs(display): §1.4 800×600 参数化补现状清单与触发条件（按符号记，附今日实测代价面）
+73ed7d6753d7d923a2170638748cb14b53013246	2026-10-01	feat(display): 显示序列行带 route 与 surface key，作为呈现归属证据
+1ca4b73856729fda53008bb45461a8b91009ce42	2026-10-01	fix(automation): 判定器与选测同源，x11 归属改用宿主事实
+49b461f53d00f489b9cbb62f11aa0c9030fbeb33	2026-10-01	docs(display): 全景 review 发现入 known-issues §2.11–§2.14
+071bc564a275babb9c857647921479e21b2c29e6	2026-10-01	docs(display): §3.6 push 前应用在跑会删不掉 drive_c/smoke（实测一轮直接没跑）
+9aa72cd31dee368fadec1a947a9a8b5f74e179b1	2026-10-01	fix(display): review 抓到的宿主侧缺陷（真仪器 / 归属 / 超时 / 上界）
+56faa942f887eb83eac2cf5fbb9580f2e926919f	2026-10-01	fix(automation): 门禁加固 F5–F12 + 证据归档 + 契约检查脚本
+15467e57d3a88dfa0bbcd23d3a9179a453935ab2	2026-10-01	docs(display): review 结果按现状重写（已修/残留）+ §2.6 新观察
+562fa3278b7242127721ae89f294ffaa9eb87bc0	2026-10-03	fix(display): 零拷贝 present 背景黑帧——借来的队列 buffer 每帧全幅重绘
+e9e8464f8f42e9f7cf53fc94f50044bca613c748	2026-10-03	docs(display): M3a 设计——winehua.displayRoute 参数化开关 + 可交互台架
+66a3e00490324171a6bab571510a81b56ec2b0ad	2026-10-03	docs(display): M3a 实现计划——T1 参数解析 ~ T7 毁灭性重建
+2d68e05799c5553849ab381c488218ecd5a3fed2	2026-10-04	feat(display): winehua.displayRoute 参数解析——DisplayRouteService 单点裁决
+5149544ec67834c739b94f70696254454a901a89	2026-10-04	feat(display): 输出尺寸参数化——chain_start(w,h) 收敛六处 800x600
+e13a744c3f5d510a2ab5b0d2ec114704d030f98e	2026-10-04	feat(display): x11 台架绑桌面 surface——一处分发 + stop 基础设施
+a0f1ccc35e409b34da63f1cd0c65a0a82ae4cfb4	2026-10-04	feat(display): guest 路由 env 汇集点——BuildWineEnv stamp + native 镜像
+cc42763073a16e016ba8242a6fea2a49ac538add	2026-10-04	fix(display): present slot 持久化——治 2800x1840 桌面 ~230s OOM 击杀
+6182156753831555fecdc522fe438cda753689cf	2026-10-04	fix(scripts): deploy 补产物验收断言——hdc 假成功不再报「部署完成」
+b8d2773bc134cd282119e673e453568f3550b7ce	2026-10-04	feat(display): x11 桌面输入直连——按钮注入桥 + 触摸/鼠标/键三分支
+f2b19df6a9a88902920bedfe59fe61e642685e31	2026-10-04	fix(display): x11 桌面就绪信号接入引擎状态机 + slot 表去常驻锁
+3ffba1d1b834ae0d8f329871a466421c59487498	2026-10-04	feat(smoke): --display-route CLI + x11 一致性门——host 裁决与声明对表
+f286acb2fbc0cfdb76771e782783458097df3aff	2026-10-04	fix(build): 毁灭性重建暴露的四处断链 + virgl libdrm 视野收窄
+ab3c5a4970b947ba904892f1ff25bb2cbd83d6ec	2026-10-04	fix(ets): zHome 持久化——x11 冷启后台拉起不再依赖前台 picker
+2ca46da3335307cebfecfa8c2e5e22d11a5fcfe3	2026-10-04	fix(display): xclient 测试客户端门控到 script_enabled——产品桌面不再出测试窗
+6a863944bc63b702ff5dae4e6a89781ec1682014	2026-10-04	feat(smoke): wine-trace 判定器——载体用例从无结论 SKIP 升级为行为门禁
+ba8d23a1309f7eea216804bc81a32027a646f2ce	2026-10-04	fix(display): 重触发刷新 script 门 + xclient 迟到补拉 + 路线镜像可观测
+8cb8215a2a258943f67d4233a8dc352a130777e7	2026-10-04	feat(display): 客户端面状态仪表 + buffer 像素 dump 接入点
+c32035ac05be7b2014da47409dfc56c66f1c654a	2026-10-04	docs(display): 虚拟桌面×X 路线不可用实锤 + fusion 全链路通判定入册
+fb34ec2fbe4fc8d73664d8ecc024b85292e5f5eb	2026-10-04	feat(display): 注入脚本 notepad 段扩为 HELLO 终证序列
+62e990d73042fa86676b7e4ae6fe4e322ff22859	2026-10-04	fix(ets): fusion+x11 会话拉起 X 画布页——补 StartWithSurface 调用方
+4ad4b6c97445db9841ebead170c51ecf493f37b2	2026-10-05	fix(ets): x11 虚拟桌面被外部 Want 压后台后无法自行夺回前台
+9dd7bbf36e5e4b6857461eefe9346add3ae5ec74	2026-10-05	fix(display): x11 画布 present 冻结修复 — GPU-GPU EGLImage 呈现 + 队列纪律
+9cc5a8896d9c96f8895a066b91f2c129e97d8a62	2026-10-05	fix(display): 画布 blit Y 翻转 + 注入脚本定时器补建
+aeeb4be6f060c0007ed162b3170741c525af0d4a	2026-10-05	fix(smoke): 判定门禁收尾 — inline checks 接线 + marker 时序 + 探针读回通道
+c006f21e0772e03ba217e37a42226045029ea78e	2026-10-05	feat(smoke): 手动验收用 notepad 载体 job — 30 分钟长会话档位
+5c7fd1e0ee9472f836af35ba9f1e802e2ee84c4b	2026-10-05	feat(smoke)+wine: DPI 192 门控修复指针 + 验收会话注入开关
+a424704b2048ce7ff084385ef7ba3c54f4ba0938	2026-10-05	feat(display)+smoke: x11 路线桌面全链路打通 — 画布优先链启动 + onNewWant 路线盖章 + Plan B 逻辑尺寸
+05c982f04404d03ebb9683bd635c06023315c370	2026-10-05	fix(display)+smoke: 关 direct scan-out 修画布冻结 + 桌面等待 60s + manual job 钉 poll 时长
+7c5e82fe37c8845ff19a81890336fdeb42228cf9	2026-10-05	feat(display): output 存在性与画布 present 解耦 — 产品路径 x11 链早启
+059e80b89ff5123cac8b90ab2f13480de1821339	2026-10-05	fix(display): x11 拖拽补发 wl_pointer.frame + 引擎包就绪门 + motion 观测点
+b15301f8025c8dbf0c719481b48d9f430df8bf49	2026-10-06	feat(display): D10 画布 resize 动态响应 — 旋转/折叠几何随动
+8e4e11a8a586c7c04deb5787387a69c7bb73cf8b	2026-10-06	fix(display): present 探针武装点随画布挂载 — 解耦后产品路径 windowless 起链探针永不跑
+bbc8270bd8cd3fa3ee98ed34af6ed4d2a8266e16	2026-10-06	fix(smoke)+display: 能力探针标记落点迁出 wine prefix — fresh install 下 egl-import-probe 静默丢
+f027660ef00af94347eaac5eb9856bed18cc56ae	2026-10-06	fix(ets): zHome DOWNLOAD picker 重试扩预算 — 全新安装带参冷启 failInit 治本
+3d8cb4029e97b7f32eb97df6a0b8a41c0d4fd865	2026-10-06	docs(ets)+smoke: 纠正 zHome failInit 机制注释 — 焦点被 DWA 抢占 (状态性), 非前台授权时序
+92914e0fea40981874e5a3cf9cca84c4375de96c	2026-10-06	fix(ets): zHome picker 空结果逐次取证日志 + failInit 排查史定论 — 真因设备存储耗尽
+9655259fdd1d2ba15956e84eac8a6095c463dfe7	2026-10-06	fix(display): button 注入补发 wl_pointer.frame — 治双击变两次单击
+c1a80cecac255655bbb98cf4b120873466771d9a	2026-10-06	fix(ets): zHome 就绪门 — DWA 启动前消带参冷启 picker 竞态 (D16)
+75ad9be9f8c076cb0e500fe7b2bbda61bd4ae79e	2026-10-06	docs(smoke): 裸启+补参纪律注释更新为两触发模型 — D16 治本后纪律保留理由
+d7af606845118ff3f08269ccfc43726a61f1dbb9	2026-10-06	fix(ets): 恢复 master 时序——桌面窗改回引擎就绪后开 (D18)
+8f1b3f170b4b5637ebbbb87f3f9fbc3668f1e75e	2026-10-06	feat(ets): x11 软键盘桥——IME insertText 折 evdev 键事件过注入桥 (D13)
+9f6e0f05ab9c356c6f2eb3a085797ca123a4803c	2026-10-06	feat(display)+ets: CJK 剪贴板桥——中文上屏串经 X selection 进 Wine (D19)
+a09ff9bf3e5e58e89d24aa8c6c15a7ac3e6a330c	2026-10-06	fix(ets)+feat(display): D19 零延迟收口——剪贴板与粘贴键背靠背入队成立
+923318d48d29f723294023955b0c39ebd6548390	2026-10-06	refactor(display)+ets: D21 控制面迁出 smokeNapi——正名 libdisplay_route_napi.so
+f2752a475f1a528ada6c73d255f4daf756b09d05	2026-10-06	feat(display)+ets: D15 重定界——x11 手势状态机 + 轴注入 + 脉冲拉伸
+88feaf39837d4c124ae5542ab5bfbbdd6804f4c5	2026-10-06	feat(checks)+ets: D22 按区域裁剪的 rgba-quadrants 判定器
+d0b0f2bac2ec78af556c100bbb966807a4e273b1	2026-10-06	feat(display)+fix(graphics): D23 子窗几何跟踪 + 零拷贝挂接面类型声明化
+bc19a54bf6e3c8ed0728ed9f048e264ff528219e	2026-10-07	fix(ets): D24 autoRun 就绪轮询上限 60s→300s——首启 74s 时直启被跳过
+f1ffc0f1115cf5f6c877a57612c3a89490ed9f7d	2026-10-07	docs(smoke): displayroute 门禁文档与 D23 现状对齐
+53541e9ce3de7db4b3a27724149e311fc32e121d	2026-10-07	fix(smoke)+feat(smoke): X 路线 dxvk 门禁改专用套件 + inline backend 丢弃修复
+9f54b83f8fc3dd8a10ae18a1b9c4e292329f408c	2026-10-07	feat(smoke): X 路线交互核心子集编排 job——日常使用验收面初跑
+b9518e6018d599cb2ac8227f18750bb116526347	2026-10-07	feat(smoke)+feat(display): D28 C 型注入编排的 x11 分支——交互子集 7/21→15/21
+8d270cd4a28ce5a4b952a02c403e0112fd1195a3	2026-10-07	fix(smoke): input-wheel 用例协议补点击前置 + 记录滚轮路由悬案
+69c1daaea4fba7b5f11bb45f691d6f36a5f6c5de	2026-10-07	fix(display): x11 滚轮注入格数误作 v120 —— discrete×120 对齐 wl_pointer v8 语义 (#93/D29)
+147a7bc45773b6415e99de634c2e01f368c27897	2026-10-07	fix(smoke)+fix(display): D30 注入间歇失败两层根因——runner 残留清理 + 台架窗挪离工作区
+721dc3cd982cf983130109d26990301d5203a04b	2026-10-07	docs(spec): D26 三形态对账盘点——x11 PC/Pad 多窗口差距矩阵与方案对比 (决策输入)
+77c0337e9ceada658bd9b35f3a1f3d6e2360995c	2026-10-07	docs(spec): D26 §5 更新——X 键盘链 Unicode 注入实测否证记录 (keymap 扩展实验)
+5b574928a14721420221c7e67bc90602545d8157	2026-10-07	docs(spec): M4 多窗口 + XIM server 设计提案 (拍板后成稿)
+0d995f632e88ac363043d311e5911e8ce649a40a	2026-10-07	docs(spec): M4 渲染假设源码验证通过 + API 名按 0.20 render pass 模型修正
+1302eb7132d0a4d5df673e56779d8734929bc96c	2026-10-07	docs(plans): XIM server 实施计划——X1 探针→X2 smoke 闭环五任务, X3 定向
+676c4ef411a1d8bd7b6d93bc278899a41a227d84	2026-10-07	feat(display): X1 探针——主进程 X 连接实测挂起, 结论否定, 调用撤除 (XIM spec Task 1)
+1318cf29bc426bddbac3e5986af8ed983eaf41ca	2026-10-07	docs(spec+plans): XIM 承载层改 NCP 子进程 (X1 否定性结论落档)
+07d078f908b41653cba18830dcc42639677e0f0c	2026-10-07	feat(display): XIM server NCP 子进程骨架 + socketpair 通道 + XMODIFIERS 下发 (XIM spec Task 2)
+ade6ea59d7a3eb3a91ce038a9484824794c1248f	2026-10-08	feat(display): XIM Task 3 协议状态机 + 发现面/字节序/多流三项实测修复
+bdec9c2f378290a4f502bdea4c0ca27bff507740	2026-10-08	fix(display): x11 GL 程序退出双现场崩溃——face 先死归还 + xim BadWindow (D32)
+0529babbe9ca0568841ad612290eed76c8a8d2b6	2026-10-08	feat(display): x11 GL face 锚定客户区——wine 声明装饰内缩, wlroots 子窗表消费 (D31)
+bc610b5225d513b72b39ff26424670c96c2b7397	2026-10-08	feat(display): XIM COMMIT 通道收口——XICATTR 全集声明 + 协议栈九处修复 (XIM Task 4)
+d0210a20dd7896b81d30651a66727e03b7c28e73	2026-10-08	chore(submodule): wine 指针跟进 D33/D34——HWND_BOTTOM 生效 + SetCapture X grab
+85553cd5ab187763e46a6c1e799aa8835984cf1d	2026-10-08	feat(display): x11 路线窗口置前——request_activate 监听 + 点击置前 (D36)
+5e8155062c3037b378abf69d3420fbe71cae9675	2026-10-08	docs(spec): XIM 里程碑对账——X2 完成 (a9c53a7)；X3 平台现实修订 (text-input-v3 无客户端, D13+D19 桥覆盖)
+783f37857ee37052cd1f0a244012fc6822eeedbc	2026-10-08	feat(automation): D35 防抖——判定 FAIL 用例的编排层单测重试 (--retry-failed)
+8f90a6b2a7fd1ce33884ab27923d373caa54f12d	2026-10-08	feat(display): x11 stack-only restack 通道——xwm 补丁 + 合成器 scene 序跟随 (D37)
+2feabf3d04a4ccf356157e8de248c2db620a43e3	2026-10-08	feat(wine): wineboot init 失败注入旗标 (.winehua-diag-fail-init, D25 复现辅助)
+4a68b13f080a202330ffdb62c89c62f83e8522f3	2026-10-08	feat(display): scene damage 插桩 (scene-damage-diag 旗标, D25 机制测量)
+2f0a3eb7d5eb373580d4e871a72b8be66c02b5f5	2026-10-08	fix(display): present 探针呈现前把测试图案清回背景色 (D25-A)
+41d117182d886aca84f23e632cec8d039b31524e	2026-10-09	fix(display): scene_surf 悬垂防御——监听 scene buffer 节点自毁立即清引用 (D25-B 前置)
+1c4ef2eef4c0d435279753c6980ecc4fb79ed5af	2026-10-09	fix(display): 探针后强制整幅重绘交还显示权——借 queue buffer flush 过的画布停在调用方内容上 (D25-A2)
+bc7d3e3fed7d48cb2e43fb53409b86ab51462dff	2026-10-09	fix(display): toplevel restack 收尾重排 child face 置顶——raise_to_top 遮挡 GL 子窗白窗 (D38)
+e383b1956c2ea45cf8ef6d4def8efbbbe70d1811	2026-10-09	feat(wlroots): scene damage 台账插桩——画布冻结坏变体三记账点抓捕仪器 (D25-B 备战)
+e35947a04b23793417a3c5c5ca8b9fefaa46b1fe	2026-10-09	Revert "feat(wlroots): scene damage 台账插桩——画布冻结坏变体三记账点抓捕仪器 (D25-B 备战)"
+f8f1a6e946c1407560f423e07a5b16a6d0911341	2026-10-09	Reapply "feat(wlroots): scene damage 台账插桩——画布冻结坏变体三记账点抓捕仪器 (D25-B 备战)"
+4c7856ab79301f7617dbf550ef87fa631ed7eb8b	2026-10-09	wine: bump winebus WHGP 断连退避修复 (D42)
+d5a7403b4ae56e56d233e23745724297e07697cc	2026-10-09	docs(display): rate 行补两条防误读判读——D25-B「坏变体」误判根源 (D43)
+6b24244a42cbd173ea12bd8b0de9a2661fd3ead4	2026-10-10	fix(ets): x11 退出桌面后关画布窗回主页——桌面 shell 全灭检测 (D45)
+9191d5e18d31e58ef38249d9d449ffda18f36785	2026-10-10	Revert "fix(ets): x11 退出桌面后关画布窗回主页——桌面 shell 全灭检测 (D45)"
+28b65b91587e4d13fa1b298371460cb77ac842f5	2026-10-10	fix(ets): D45 重实施——桌面 shell 全灭检测改全异步寄生节流刷新
+ecb69f6d729b2c60387dfda652a60dd2a54076c3	2026-10-10	fix(ets): 补回 ProcessService 的 WineWindowManager import——revert 重实施漏带
+92f7f98ee8fa6fa021e198555c996394db63ef9b	2026-10-10	fix(ets): D45 判据补 desktopShellSeen 门——init 窗口期误杀根因 (2bceef7 三连崩)
+a9a3b5feeaffe2f25efd6595643c1365ba24671b	2026-10-10	fix(ets): D45 seen 门补 engineState==ready 充分条件——静默期退出关窗被拦
+69732fab635fc578252e014762817343e8d96b32	2026-10-10	fix(ets): D45 seen 改由 evt:desktop-ready 权威置位——接管残留会话误关窗根因
+32bdca1aa618ba9c28b65497ac0d9f038e1ec09a	2026-10-10	fix(display): D45 第四层——xwayland teardown 摘除 new_surface listener
+ae8cff17a731160a46d93e83fc2b334204700cde	2026-10-10	fix(display): teardown 摘 output commit listener + scene_output——D45 第二断言
+a5bf3c8ae3716421c425580ae1620ae1cf9c59ba	2026-10-10	fix(ets): D48——桌面全灭判据 AND shell 本体判据, 免疫 DesktopRoot 误触发
+d08aa761081a5bbf6677ae326d623be729b1945d	2026-10-10	fix(smoke): 期望路线兜底跟随产品缺省 x11——裸跑 core 假 FAIL 修复
+e1f3952b7b13bb973103cde8db703bfe0f686ffd	2026-10-10	feat(smoke): 归档补收 [GUEST-FRAMES] 帧面事件日志——D49 采集增强
+d760552041cf5e0cd2e41ecf3ce9face06d5b9b0	2026-10-10	feat(smoke): presented-route 归属段加 selfPid guest 事实自洽断言骨架
+b0a26316680469c0c7c87611eb6e181bb2a32a39	2026-10-10	fix(smoke): selfPid 断言加通道声明门——三通道实验后的判定状态收束
+2fa588d42df4ab1a389d55338e62cbc7ca8b347f	2026-10-10	docs: M4a 实施计划——x11 多窗口 PC 最小闭环 (7 tasks)
+113eaabdcd8fe43012780f518dc9add89ca8fdce	2026-10-10	feat(display): M4a-T1 模式位贯通——chain_start multiwindow 参数 + ArkTS 联合决策
+2ead46e063d33318988728bd1661feb87efd62de	2026-10-10	feat(display): M4a-T2 x11 toplevel 映射层骨架——xs 事件分叉 + created/destroyed 事件 + 会话重置
+537bd4492c02db8628fc4abd43568941932701a4	2026-10-10	feat(display): M4a-T3 per-xs 呈现循环——render pass 手动渲染 + 帧钟分叉
+803cd91b263ceda94f72775c52976f92396f8ba4	2026-10-10	wine: 收编 D49 selfPid 三通道探针指针 (c394f25, 分支已推远程)
+7d8ed37b92e15513c1f4ee26077482f0f7ae021d	2026-10-10	feat(display+ets): M4a-T4 ArkTS 承载接线——created→createRenderer x11 分支回绑
+3209e3495f81a1d37bfb0438b46322ba83a365b8	2026-10-10	feat(display+bridge): M4a-T5 按窗输入路由——pointer/key 按 toplevelId 直达 + 缝隙不投递
+ed200c2f555058fa2c1000e269c5c0ca69950c49	2026-10-10	feat(smoke+ets): M4a-T6 fusion_probe 双窗探针 + x11-fusion 套件 + 按窗判定
+05329e4f2212d69b933162ffcecd3a0b90803779	2026-10-10	docs: known-issues §2.11 D50——fusion 多窗模式 wine 不绘制 (证据链+判因指纹)
+1539ffa50b8b15f1c7ea59016bfa4b204bdc38eb	2026-10-10	fix(display+smoke): M4a 终审修复——输入线程边界 C1 + 判定器污染 I2 + 坐标换算 I3 + 窗泄漏 I5
+d3c1038ec81eb4d5cc4d279ff96071f6546dfa98	2026-10-10	fix(display+smoke): M4a 终审 minor 修复——M7 slot 容量 / M8 dirty 保留 / M9 probe 循环
+44ffbcff3381906fa0dfc2e943bc1baa5af6f226	2026-10-10	feat(ets+smoke): M4a I4——fusion byTitle 按窗点击注入桥
+154313331343384f1713b1968e12af2cfd713735	2026-10-10	fix(display): D50 破案——multiwindow 呈现泵 frame done, 解冻 Xwayland damage 提交
+35447c16c87c8e5c06813b23b8d6f453e4f78b69	2026-10-10	fix(smoke): M4a-T6 byTitle 等待 title 事件收敛 (重试 5s)
+04e65f5bd39fcf3122570bbbd9cb9878be215461	2026-10-10	docs(plan): M4b x11 多窗口状态面实施计划
+4e9843cdc9502f33cff084274bf0b9abf3c3d81e	2026-10-10	docs(plan): M4c x11 弹出层实施计划
+d3c877655c711383e7241504a5d881c512a0514d	2026-10-10	docs(plan): M4d x11 Pad 承载实施计划
+83757757323d0ad7818c5a3582ceba99e196c977	2026-10-10	docs(plan): M4a 计划 checkbox 勾选——T1-T4 全部 + T5/T6 已完成步骤
+b6d62936b050f30156db1d036415abf1db7a7848	2026-10-10	docs(plan): M4a checkbox 补漏——T3S5/T4S3/T4S4
+6bbc7c7c58fba09d029016ed90b5bc56e881c9b5	2026-10-10	fix(smoke+checks): M4a 终验预发现的 T6 判定链两处结构性缺陷
+dd5b65caefc660837106f7fd96290a1d55b9e59b	2026-10-10	feat(smoke): M10 治本——套件级 desktopMode 钉死 + fusion 套件误挂 coverage 清除
+3f726d3e1a4f5bde008706f375d84aa336c654f3	2026-10-10	docs(display): I5 剩余评估收口——window 生命周期假设固化为注释
+398cb73a95f3a8179d1e089d643ed29f18eb95e8	2026-10-10	fix(smoke): T6 真机联调四连修——直启带参/fixed-frame 协议/inject 透传/锚定拓扑
+da40ec670cc2f485bb6f1c6c81d5fb4cd0fb51bf	2026-10-10	fix(smoke): x11-fusion job 钉 displayrouteScript=false (D4 教训)
+0cebd0cdd9575a13bed6b115377b618f7df57df3	2026-10-10	feat(smoke): D51 对照实验 job 预置——wayland 路线 fusion 双窗
+7af006d2747b3281dafd078f68098c1c18b1a4aa	2026-10-10	fix(display): D51 根因——resize 后强制重渲染, 治静态内容黑屏
+dd103911ca270d2c41bc8428d039acf58ec488a5	2026-10-10	fix(display): 创建期 title 丢失兜底——new_surface 后补发当前 title
+f844d2ed968728854f419d4ca28de389a60d3eaa	2026-10-10	feat(display+ets): D52 承载窗按 guest 坐标布局——created 带 x/y 全链
+90e0ce62d3e27e968627225956c6536c537b1a1e	2026-10-10	fix(display): D52b fusion 子窗按 guest 坐标定位——承载层修正
+4a76c8f5cb9712ae2614c6abcea07af1686129f4	2026-10-10	fix(display): x11 title 补发兜底 2/2——created 落地补发当前 title
+656db9d1eca36a59fc4225d050dcf2ca67768522	2026-10-10	fix(smoke): byTitle 按钮码对齐 evdev 契约 + fusion 画布门/判定器锚定
+1de15a6fefa7a1fad46027dce6976fe11507439a	2026-10-10	docs: M4a 收口——验收结果与已知边界
+dfa6e6d708831694e6203d5cabeb1ef780d9a9db	2026-10-10	fix(display): final review C1+I1——render_entry surface 判空 + entry 表 mutex
+4dccb66cb4c627ab742d27ed21bd3cdb938f5041	2026-10-10	docs: M4b-T0 explorer 桌面窗处置——决策=接受 (三选一)
+77bcd813bc21ffbc93f1fae472f7aa147b5e531b	2026-10-10	feat(display): M4b-T1 映射层状态面——minimize/fullscreen/activate/parent 四事件直译
+e6f33c04308ea5acf6c02011133f70d6d6c12928	2026-10-10	docs: M4b plan T1 勾选
+41edc84c5b477f3dfee05921e8f33afefb8c2a03	2026-10-10	feat(ets): M4b-T2 承载层状态动作——复用 wayland 分发链 + show 补 raise
+293c69ba59722120e43baa3d11f58cb311d6d7ac	2026-10-10	feat(smoke): M4b-T3 fusion_probe 状态序列——minimize/restore/fullscreen/owned 自驱动
+a708e326937606bf531c771a8866e6b9e0c210e5	2026-10-11	fix(display): M4b-T4 x11 最小化/还原协议闭环——restore 不再是无操作
+a9e715c5883cf9e0e07b8f44e480e20aa0a05531	2026-10-11	feat(smoke+checks): M4b-T4 fusion_state 判定器 + x11-fusion 套件接入
+91ccb49b494f4a8d99701c2db72df94527464720	2026-10-11	docs: M4b-T4 plan 勾选——S3 手工对照留 T5 (限时前台让位跑批)
+5cb380638528dd25d18f1168bde0fbf005efd0f2	2026-10-11	docs: M4b 收口——回归结果与已知限制
+1948782b99e9987238c8d77172396c6a759702e9	2026-10-11	fix(smoke): M4b final review C1——fusion_probe 状态序列入口延迟死代码
+0b42ce522937c2e9fd438d4247843f692bc27c2f	2026-10-11	docs(display+smoke): M4b final review I1/I2/I3——模态措辞修正、SW_HIDE 幽灵窗记档、判定器 docstring 如实化
+8df092cfc7ed4459c65ec23d34c0a2aa0c3133ff	2026-10-11	feat(display): M4c-T1 映射层 popup 识别——OR 分叉 + popup_show/move/resize/hide 直译
+5d8a7648341655b59513245c29b3d9803e60dc25	2026-10-11	docs: M4c-T1/T2 plan 勾选——T2 分发接线零改动核实 + 焦点让渡随 T1 落点裁定
+6658c22514c730e855a29f8128d45c4a8d77473f	2026-10-11	feat(smoke)+docs: M4c-T3 notepad 菜单链真机全绿 + 越界探针资产与悬案记档
+56733845b5b4bd7f380d08c192536c43f3d0316a	2026-10-11	fix(display): entry_remove 改墓碑槽——memmove 错位 wl_listener 致 fusion 收尾必炸
+90e114dd0987dd96f0e5b41334e19ad5b54b49e7	2026-10-11	feat(smoke+checks): M4c-T4 popup 判定 + fusion 套件扩展
+49407c664ba1f49a6a53c887fddb458d2e68b31e	2026-10-11	docs: M4c-T4/T5 收口——known-issues §2.14 + plan 勾选
+e5ecb762460beacd365c1b807b862529456cbdce	2026-10-11	chore(checks)+docs: pre-M4d 收尾——popup 自测资产入库 + M4d 进入承诺
+f29e09009d5de849af8d08de1112657863a2c59e	2026-10-11	fix(display): multimode 按钮注入前补 motion——Xwayland 光标坐标陈旧致菜单 grab 命中全错
+16a26c9c932234ea03058c37f328c9285b3dbfc1	2026-10-11	feat(display): fusion subWindow 顶条拖动——ArkTS 手势面本地移动承载窗 (M4d RF#3)
+b86d3200002c44a657cd699a8a4b5b04212ec09e	2026-10-11	docs(display): M4d 收口——§2.14 悬案闭合 + 三形态对账达成 + Pad 承载限制清单
+6badc4b2a21af82ee05a205bf14dbddf3b3b7ad9	2026-10-11	fix(display): x11 multimode 滚轮注入 —— sendScrollEvent 补 x11 分支 + 按窗轴口
+7b7ab28d8dad5dcd1212fb06c16487b184b61705	2026-10-11	fix(display): winehua.fusionHost 调试键 setOrCreate —— AppStorage.set 对不存在键是静默 no-op
+ea9815cb40209b6cd334aae0f322a0abc766e499	2026-10-11	fix(display): 顶条拖动阈值按有效 scale 现算 —— 去除 scale-2 设备硬编码
+386f7df46f47be1be0859d3e53bb8def7b235847	2026-10-11	chore(smoke): run 新增 --extra-ps 透传 + 套件档位钉死补 --job 路径
+974cf85eb843c6f3ed471fa69c8d946d414b89db	2026-10-11	docs(display): M4d review gate 收尾 —— §2.14 悬案闭合注记 + ownerClicked 处置 + §2.15 滚轮接线与三形态对账刷新
+700b4a3a7285e7fd2adfb154e1a0d70af831b87e	2026-10-11	docs: x11 多窗窗口装饰实施计划——顶条 UI 化（几何补偿式）+ PC 系统装饰 + 关闭出路
+d54023b9d85b9554a97e2346e54034e3d672300d	2026-10-11	feat(display): x11 按窗关闭通道 —— sendToplevelClose 补 x11 分支（WM_DELETE_WINDOW）
+6597cdb64623b8b95bb98a23cdee29c64bbc165c	2026-10-11	feat(fusion): x11 Pad 子窗自绘顶条 —— 几何补偿 + 标题三键 + 拖动（任务 #129）
+d1fcd4935202da01bbeda964d4c1760f52ce6b09	2026-10-11	test(decor): decorEnabled A/B 可见性测试窗（winehua.testDecor, 收口后删）
+dd0150a4908fe65f3107ec0b5d43c0b7c694b3af	2026-10-11	feat(window): PC/2in1 形态系统装饰分叉 —— pending-hardware（任务 #129 T2）
+db986241f62ee746cc4b376c18a8589c452c2deb	2026-10-11	docs(display): #129 装饰落地记档 —— 顶条行/关闭出路盘点/键盘链 + plan 双路线改稿
+6e01edff13b46989676a0045cb1ca8a233a6f575	2026-10-11	fix(display): x11 多 app 重叠按窗输入错投治本 —— 注入前 X restack + X 输入焦点同步（任务 #131）
+1700edc47d4b6c5b2348f5e55c87092130983f6e	2026-10-11	docs(display): #131 GAP2 重叠输入错投闭合记档 —— §2.15 破案闭环 + §2.14 几何解耦 + mini-plan
+dac3ae95cd8fc8dea355795327e60af03de5ff89	2026-10-11	docs(display): #132 GAP3 物理滚轮平台定界 —— §2.15 断点行闭环 + 通道全排 + incumbent 对照
+7a86914107a13b151313172443ecadaf40b526d2	2026-10-11	test(smoke): #135 融合探针 geomA 几何自证 —— GetWindowRect + WM_SIZE/WM_MOVE 计数 + 重排帧 invalidate
+c870de69636879fd8e1c3e21d540d83919cf7526	2026-10-11	fix(display): #135 host→wine 几何回写治本 —— x11 configure 回写两半 + echo 抑制（任务 #135）
+9f147ed42c5b823c4e32a961a2c4b8a11b250243	2026-10-11	docs(display): #135 几何回写闭合记档 —— §2.14 条改写 + §2.15 表行同步 + mini-plan
+fedd50a29eb9f141d9c53a4b102164d0993e1f8e	2026-10-11	feat(window): 设置页显示路线选择 —— x11/wayland 持久化（冷启动生效）
+8b81fc67e9a03358d9ebca5a6711b89fc2a1a56f	2026-10-11	fix(ets): #137 x11 虚拟桌面双击治本 —— 第二击按首击坐标重放（对齐 wayland）
+f7a31e6cf414e15ffc2add353f976b0b574aca82	2026-10-11	feat(window): 设置区侧栏滚动 —— 内容超出屏高可上下滑动（进程列表限高内滚）
+90cce81f99e5c035fee0369202e7604ed18f5078	2026-10-11	fix(ets): D47 首启引擎失败自动重试一次 —— wineboot 偶发崩溃止血（重试按钮同款编排）
+9e76ca4a2dfb21bbee69891894b10221f6c0e7d9	2026-10-11	docs(display): §2.15 退役条件判定块 —— 三形态替代证据分级 + 两处未决门（#133 硬件 / 用户手测判词）
+f1df7444e2cdb7ffff8768b43b134501c81e2bba	2026-10-11	docs(display): 复核记录更正 —— 102439 假阳性实锤 / ownerClicked 归档 / oob 引用 / maximize 与双击行 / 退役块补 B1/B2；decorations plan 记账同步
+80040cd057e56078db80dced1f6218337cbf79d3	2026-10-11	docs(display): §2.3 补 R3 复核——D47 止血验证判据（认 [AUTO-RETRY] 行）+ F1/F2/F3B 收敛项记档
+01f2e50c487b5df99936969ae374956db9446512	2026-10-11	fix(ets): #136 路线回切治本 + F2 重置忙时反馈 —— 复核批次设置页收口
+6bb3f400cfcddc7ba64a5bf60f27a53eb01ec96d	2026-10-11	fix(ets): D47 F1 止血补漏 —— 关闭卡片/显式重试作废待定自动重试
+4212adb44f585bfd2ce0d50006d87dda5730dbb6	2026-10-11	fix(ets): R2-02 —— x11 系统取消触摸不注入点击（对齐 wayland）
+405951054a3055283d1c31675dc41a3040310b5b	2026-10-11	docs(display): 复核批次 1 执行状态入账 —— §2.3 F1/F2 已修 + §2.15 批次记录（R2-01 延期立项）
+657b59a7aaecc88df7d1338b145724015ccf6557	2026-10-11	test(automation): D47 [AUTO-RETRY] 归档判定器 + 合成自测 —— core 套件挂载
+8411237f0eb4b4b29623cd803f86b44d2715c519	2026-10-11	docs(display): 批次 1 部署验证结果入账（自动化）—— #136 自动判定过（含严格版）/ D47 彩票×2 未中 / core×2=3/4
+3014a4f7ccf70e5c55870c983b49ab0de99a2401	2026-10-11	fix(automation): D49 破案 —— x86 归属改帧 key 同一性（spawn pid 是启动器非承载进程）
+5b89a87682c63692e027d4429e4f027e0995e4af	2026-10-11	test(automation): D47 故障注入编排工具入库 + 4 轮尝试记录（未触发，按指示暂缓）
+11af036e5b6ebe0a1321fac8addc296e6f749866	2026-10-11	docs(display): §2.5 状态刷新 —— dxvk-legacy「路线无关」定性作废（wayland 已绿 10-06 三轮），失败面收敛 x11 专属；d3d12 无归档证据登记待补跑
+0cb131d3edc7e0554932cf577ef8973bf42daaf2	2026-10-11	fix(display): MW-GPU — fusion 多窗模式接回 guest 帧路由（dxvk/GL 窗不出图）
+c2be9598458db7ac18b486bb705029a291ada5ee	2026-10-11	feat(env): 默认渲染档 vkd3d_limited_500k → dxvk_modern_2_6（用户拍板）
+08880092b9e27f5be5652f9647e9efba6b4f0cb2	2026-10-11	fix(display): MW-GPU 纹理生命周期 — guest 帧纹理建/毁配对（治 60fps GL FBO 泄漏）
+73faefbe42bcb2dd75379ad12f7c01c50d4be79c	2026-10-11	docs(display): §2.11 附带缺口条更新 —— MW-GPU guest 帧消费已修（含纹理泄漏修复与设备证据）
+48a2a6ec6854afdce0e787c84dcf05771265b393	2026-10-11	test(automation): fusion×GPU 出图门禁 + desktopMode 钉档（MW-GPU 守门）
+2228742003cce0bac19475a798e9538a509579af	2026-10-11	feat(ui): 摘除侧栏「Smoke 回归 (core)」「DisplayRoute 启动」两按钮（用户拍板）
+a52cf3ace6e43c3e2deef757b0c436919877ff81	2026-10-11	test(automation): 19 套件统一钉 desktopMode=virtual（#144 审计收口）
+37e4bcb6646028418a50a317614890cefbf2cc58	2026-10-11	chore(git): hvigor 缓存忽略规则覆盖子目录（entry/.hvigor 残留）
+418c1a50ff1c2e87348a99de1c7edcadb95cf574	2026-10-11	docs(display): §2.12 判据缺口补记收口 —— 23 套件 desktopMode 全钉死（#144）
+52f71f1b7d5b4f8191891ab2319ca1360cf9e9e8	2026-10-11	fix(ui): 冷启 multiwindow 位时序——chain_start 前加载 DesktopModeService
+a4b8c5dc2b54218f26979b61428ee80959cb7bba	2026-10-11	docs(display): 冷启 multiwindow 位时序收口记录（4b83f93 修复）
+34cfe68d443381b81cffe863686a5d05591b0616	2026-10-11	docs(display): multiwindow 时序修复的同类面审计结论（desktopMode 为唯一一例）
+45d6dfee2b0967602a85f7dbe0048443e0dc0294	2026-10-11	docs(automation): inline 用例限制标注——backend 不下发/帧采集不走 inline（D27 先决）
+f2c11f07c72b26b52aa5a3434eab7df5f58f8804	2026-10-11	docs(display): 退役评估 Pad 多窗口补注——产品路径此前未取证且带病，4b83f93 修复并补测
+2a1b45cc56549ace680e507e082614380984516b	2026-10-12	fix(automation): gate 阻断二修——删除瞬态重试 + 钉档随每次 aa start 携带
+d8a0fc77d4186a1c479c8a09b61eeaa4093445bb	2026-10-12	docs(display): §1.6 核账收口——虚拟桌面 X 路线可用（判据作废，连带产品缺口 D8 已闭）
+e351b43090cfaf0d389487a111b68674abca5bfb	2026-10-12	docs(display): R2-01 设计冻结固化进库——.temp/review 易失区收编
+ec0ea1305eff97b0b4a0ca8af8c6d97d20bca80b	2026-10-12	fix(smoke): x11-fusion-wayland 补 PROBE_STATE、popup-overflow 判定口径勘误、档位规则文字对齐
+154232d1ae9f3995cf647d336349451b362edf9b	2026-10-12	fix(patches): 摘 -nolock 无效参数与 OHOS-damage 诊断残留
+838a4be0a346bd3cddee3901aab27fbf1d53f947	2026-10-12	fix(scripts): 构建守卫与注释勘误——wayland 版本守卫、libsha1 钉 commit、check-contracts 双向
+8960658947accaf33ba669fd35b544604884e0af	2026-10-12	fix(automation): job 级 desktopMode 钉档支持 + d47 判据锚定重拉进程
+62e341234d57854dbd252f5d85214347f7736db3	2026-10-12	fix(display): 审计注释勘误——恒0 注释×3、napi 契约面第6参、ohos_output 诊断注释、测试资产注记
+583af9a81f381bd4db1cba36837b276f2e434a39	2026-10-13	fix(docs): 批次 D 文档勘误——README WINEDEBUG 段、dx-glx-present 死标题、XIM spawn 边界记档、xtrans 注释勘误
+52f994fc8982829c29aeb6da75719f686072fce1	2026-10-13	fix(smoke): x11-fusion-wayland 结构性勘误——去 x11 专用编排依赖 + wayland 臂设备门槛记档
+369980124c60bbce892f5446422a7e498ee10e76	2026-10-13	fix(display): XIM 健壮性×3——MSG_NOSIGNAL、通道坏头重同步、xkm 全量写
+69e3958ed4527a97b13e79a4a4f7fb6626915e7c	2026-10-13	fix(display): ScriptTick 注入双基准修正——case 2/4 分母对齐实际帧 1400x920
+8769c6517858d539143fa72ff1b281aaae92535a	2026-10-13	fix(smoke): preview-rect 落点修正——绝对 files 根 + 零矩形守卫 + 变化日志
+d33de4f4a691e5b10db0642b822d9b0b56c88449	2026-10-13	fix(smoke): popup 越界门禁判定重连——job 去 raw + 探针实测谓词 + 载荷 --case
+ca7e7dfd8e0e00dd8a3e43df9cc5a23f8ec3c24c	2026-10-13	chore(display): 退役 ScriptTick 真机门注入脚本——删编排 + 开关解耦改名 + 文档/载荷同步
+06c21b86db4eca4b5c40dbc387dbbe78e845a654	2026-10-15	feat(display): 游戏全屏 letterbox 适配——桌面内容 fit + letterbox 输入吞掉
+ffa3928ae8d794838036cedcc8def6abb3465dcf	2026-10-15	docs(display): 游戏全屏适配收口——known-issues §2.16 补回归跑批（六路全绿 + D48 重跑注记）
+e4f73230fcf7b432b27f188200a6d6aedb17b7af	2026-10-16	fix(input): WHGP 单槽仲裁——异 pid 拒新保护在位者 + 日志节流 (D52)
+8dd0103985d3ea05d9d92c102a03f7bbe4edc4bc	2026-10-16	chore(submodule): wine 指针跟进 D53——WHGP 退避死代码修复 (bus_ohos.c)
+6219570d30cefc1a492feaaa515a303fe632394d	2026-10-17	fix(launch): boot 编排去重——触发器首启 + explorer 二启首进程 (D54 治本)
+913686077f3b50651f2247dca34a34db7bc6887a	2026-10-17	chore(submodule): wine 指针跟进——boot 触发模式 (D54 治本)
+9a3647810b3532cfbeac3b8a2fb9ec4cf5e50435	2026-10-17	feat(ime): x11 路线 IME 全双工——上行激活链 + commit 路线分叉 + 退役旧文本桥
+6e6d570c65cd5b128ecaa0249df614c54770a1b9	2026-10-17	feat(ui): Pad 自绘顶条观感升级——Win11 caption 风格
+da5679c59b0be3d51587699f05d8453d223e92a7	2026-10-17	fix(ui): 顶条矢量图标缩小 density 倍——Path.commands 坐标单位是 px 不是 vp
+8cbdab9ebf42742afb383a90e40f1afb752880d7	2026-10-17	fix(build): 源码未改时 assemble 输出确定——根除升级卡误报 (#164)
+c79879016e423e1b8e75e2bdcf7b46e0b9dddc0f	2026-10-17	style(ui): Pad 顶条按钮 46→40vp——用户裁定收窄观感
+579e4bf32719b8a986eb277b0986ee2bd7d27824	2026-10-17	feat(x11): 多窗 modal 对话框端到端——事件时序重排 + owner 禁用判据 + 模态承载顶条
+a9bb74363b05504ce80b9e22cd25af69c64b9a18	2026-10-17	feat(window): PC modal 系统装饰——ModalDecor 制度收口 + decor 高度读回补偿 + 系统 close 回发
+72e1f0186f1326b1bbac9beb8828185df627cd6d	2026-10-17	fix(window): PC popup/modal 定位补系统标题栏——内容相对坐标补偿族
+a448720508c0c4fca59e6369df41e3d04634831c	2026-10-17	feat(window): 路线应用单点 applyRoute——设置页切换即改即生效
+9eba2d43cc44b4a0f9a9887e91f251758d33d5b4	2026-10-17	fix(display): x11 链停机清多窗激活位——路线切换后 wayland 窗口黑屏
+fa16e623ec6d21690054615d7a4d27cc84b7522e	2026-10-18	feat(display): PC 虚拟桌面承载统一——x11 切 VDA 承载 + 桌面输入 seam
+eef40b6a72944df7a41bdcc47a57e6e70ff4b767	2026-10-18	fix(smoke): --extra-ps 支持 k=v 写法并翻译为 aa start 键值对
+bd1e789a1bb98596ebf0aee9c62e4cadd440e692	2026-10-19	fix(display): x11 egl 在册时退位 CPU 拷贝兜底——动态刷新率探针 SEGV
+6cab7c97d6b8bd35a60b300daaf4433766c74f7a	2026-10-19	fix(ime): x11 软键盘文本意图门控——焦点不再即弹键盘 (#166)
+cd817c0aff89b38eff502f6a77591a1486757647	2026-10-19	fix(window): modal 对话框自身 popup 路由 PopupWindowManager (#168)
+41b56bc9b05fbf29c98906124c769db780c412da	2026-10-19	refactor(window): Pad x11 VD 承载页接回 DesktopLayer 承载 seam
+a61788e7152e3f1413710a71cf04002a9723cf6b	2026-10-19	feat(input): x11 注入通道对齐 wayland 臂——相对增量 + 双击活身份 (#177 #139)
+83d2a150dd58d739b427ef72de599442dd259b25	2026-10-20	refactor(smoke): 退役 SmokeDevPanel 与 preview-rect 判定机制
+ade087740c64d6a661635f861bc5b6693bebc0db	2026-10-20	fix(input): 桌面 shell 锁不通知 ArkTS——x11 虚拟桌面开窗即藏系统指针
+0852686481d2e70271b6523645c75420704d1bb0	2026-10-20	fix(ui): 主界面侧栏内容矮于视口被 Scroll 垂直居中
+a9733f14b149b4e5cc1a4a34268f0251b8339216	2026-10-20	ci: deps 预装 x11-xkb-utils (xkbcomp)——x11 分支 assemble 新增宿主依赖
+8fca96bbcb699cf4f799896c47851d456e940887	2026-10-31	fix(input): x11 软键盘退格失效——ImeBackspace 补路线 seam
+fc21897e0ab87e397a3e0edced37bd3df67ed248	2026-10-31	fix(input): wayland 软键盘重聚焦不弹——矩形记忆回退激活门 + HIDE 后 rearm 边沿
+1159d92300ccaced9b64785fe348146e8ebc145d	2026-10-31	Merge remote-tracking branch 'origin/master' into feature/display-route-m0
+6f0deec2fccf2df1b84e5edcdcd0ccc02e9f5851	2026-10-31	fix(display): 路线来回切二次起链 SEGV——egl renderer 单例缓存销毁后作废
+f436bf376d994cc59fe5101278ec549eedb75e11	2026-10-31	ci: submodule 拉取自管 + 退避重试——savannah 间歇不可用致 checkout 连挂
+1702b979cc157c7459512d8422b7f3b719b9caef	2026-10-31	Merge PR#73: per-endpoint audio mix + WHGP v2 canonical controller axes
+a001e6d0ca277d5a5fb2b4bd6a030ac52e5e132e	2026-10-31	test: toplevel_event 对账现行契约——ArgbCreated/ArgbMove → CreatedAt, 补 Restored/Modal

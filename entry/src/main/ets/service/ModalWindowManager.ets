@@ -1,6 +1,7 @@
 import { window, display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import hgsNapi from 'libhgs.so';
 import { FusionWindowManager } from './FusionWindowManager';
 
 const DOMAIN = 0x0000;
@@ -295,7 +296,7 @@ export class ModalWindowManager {
     this.creating.add(modalId);
 
     // 与 WineWindow 同模式: aboutToAppear 读 pending toplevelId (与 PC 同款 FIFO)
-    testNapi.setPendingToplevel(modalId);
+    hgsNapi.setPendingToplevel(modalId);
 
     hilog.info(DOMAIN, TAG,
       '[MODAL] show #%{public}d owner=#%{public}d wine=%{public}dx%{public}d rel=(%{public}d,%{public}d) scale=%{public}s',
@@ -367,7 +368,7 @@ export class ModalWindowManager {
     }).catch((e: Error) => {
       this.creating.delete(modalId);
       this.pendingDestroy.delete(modalId);  // 失败路径同样清理
-      testNapi.cancelPendingToplevel(modalId);  // 创建失败 → 清 pending 残坑
+      hgsNapi.cancelPendingToplevel(modalId);  // 创建失败 → 清 pending 残坑
       hilog.error(DOMAIN, TAG, '[MODAL] #%{public}d createSubWindow FAILED: %{public}s',
         modalId, JSON.stringify(e));
     });
@@ -484,7 +485,7 @@ export class ModalWindowManager {
     }
     hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d system close → sendToplevelClose + destroy', modalId);
     try {
-      testNapi.sendToplevelClose(modalId);
+      hgsNapi.sendToplevelClose(modalId);
     } catch (_) { /* 队列不可用则跳过回发, 本地仍要清理 */ }
     const entry = this.modals.get(modalId);
     if (entry) {
@@ -509,7 +510,7 @@ export class ModalWindowManager {
       this.pendingDestroy.add(modalId);
       // destroy-while-creating: 页面可能未执行 aboutToAppear → 清 pending 残坑
       // (不删会使后续页面出队拿到死 id, 渲染器挂错 toplevel 黑屏)
-      testNapi.cancelPendingToplevel(modalId);
+      hgsNapi.cancelPendingToplevel(modalId);
       return;
     }
     const entry = this.modals.get(modalId);
