@@ -82,10 +82,18 @@ for key, value in (
     ("targetSdkVersion", target_version),
     ("compatibleSdkVersion", compatible_version),
 ):
-    pattern = rf'("{key}"\s*:\s*)"[^"]*"'
-    content, count = re.subn(
-        pattern,
-        lambda match, version=value: f'{match.group(1)}"{version}"',
+    # build-profile.json5 是 JSON5: DevEco 生成双引号, devecocli 生成
+    # 无引号键 + 单引号值。两种写法都要能同步版本号。
+    pattern = re.compile(
+        r'(?P<key>["\']?' + re.escape(key) + r'["\']?\s*:\s*)'
+        r'(?P<quote>["\'])'
+        r'(?P<value>[^"\']*)'
+        r'(?P=quote)'
+    )
+    content, count = pattern.subn(
+        lambda match, version=value: (
+            f'{match.group("key")}{match.group("quote")}{version}{match.group("quote")}'
+        ),
         content,
         count=1,
     )
