@@ -163,6 +163,21 @@ build_ohos_unix() {
             --with-opengl --with-vulkan
     fi
 
+    # 构建参数 stamp: make 只比较源码时间戳, 编译参数 (configure.ac / CFLAGS /
+    # EXTRACFLAGS) 变化不会触发重编 —— "改了构建配置但产物没变" (2026-11-14:
+    # PE EXTRACFLAGS 加 -D__OHOS__ 后全量未重编, 打出旧对象)。签名变化时使
+    # 全部对象失效, 保证参数变更后的产物等于从零构建。
+    local flags_sig
+    flags_sig=$( {
+        grep -E '^(CC|CFLAGS|i386_EXTRACFLAGS|x86_64_EXTRACFLAGS) =' Makefile 2>/dev/null
+        printf 'AC=%s\n' "$(sha1sum "$WINE_SRC/configure.ac" | cut -d' ' -f1)"
+    } | sha1sum | cut -d' ' -f1 )
+    if [ -f .flags.stamp ] && [ "$(cat .flags.stamp)" != "$flags_sig" ]; then
+        log "构建参数变化 -> 使 wine-ohos 对象失效 (全量重编)"
+        find . -name '*.o' -delete
+    fi
+    printf '%s\n' "$flags_sig" > .flags.stamp
+
     make -j$JOBS \
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CFLAGS="$WINE_CFLAGS -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \

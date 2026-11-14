@@ -161,24 +161,31 @@ int main(int argc, char **argv)
             "events %d (0x%X)", g_raw_events & 0x3FFF, g_raw_events);
     t_check("raw-no-absolute", !(g_raw_events & 0x4000),
             "absolute-flagged events present (dual channel)");
-    /* 判定收在"连续步进段"上：宿主注入是 10 条等步长 (15,4)，找到连续
-     * >=8 条步进匹配的样本段，段和即注入位移。enter 定位校准（root/
-     * MOVE-ENTER 的 SetCursorPos）合法产生一条相对差分并计入全局累计，
-     * 段判定天然排除；全局累计仍作为 raw-total metric 留档 */
+    /* 判定收在"注入位移总量"上：宿主注入 10 条等步长 (15,4)。x11 路线注入
+     * 连续绝对位置，Xwayland 会取整（15/16 交替）并合并相邻 motion（实测
+     * 出现 31,9 双步长），逐条等步长不成立。取最长连续正向增量段求和，
+     * 段和即注入位移；enter 定位校准（SetCursorPos）是一条负向/大跳差分，
+     * 由方向与步长上界排除。全局累计仍作为 raw-total metric 留档。 */
     {
         const int step_dx = SWIPE_DX / 10, step_dy = SWIPE_DY / 10;
-        const int need = 8;
-        int best_start = -1, best_len = 0, i = 0;
-        while (i < g_raw_trace_n)
+        const int need = 5;
+        int best_start = -1, best_len = 0, seg_start = -1, i;
+        for (i = 0; i <= g_raw_trace_n; i++)
         {
-            int len = 0;
-            while (i + len < g_raw_trace_n &&
-                   g_raw_trace_flags[i + len] == 0 &&
-                   g_raw_trace_dx[i + len] == step_dx &&
-                   g_raw_trace_dy[i + len] == step_dy)
-                len++;
-            if (len > best_len) { best_len = len; best_start = i; }
-            i += (len > 0) ? len : 1;
+            int ok = i < g_raw_trace_n &&
+                     g_raw_trace_flags[i] == 0 &&
+                     g_raw_trace_dx[i] > 0 && g_raw_trace_dy[i] >= 0 &&
+                     g_raw_trace_dx[i] <= step_dx * 2 + 2 &&
+                     g_raw_trace_dy[i] <= step_dy * 2 + 2;
+            if (ok)
+            {
+                if (seg_start < 0) seg_start = i;
+            }
+            else if (seg_start >= 0)
+            {
+                if (i - seg_start > best_len) { best_len = i - seg_start; best_start = seg_start; }
+                seg_start = -1;
+            }
         }
         long run_dx = 0, run_dy = 0;
         int k;

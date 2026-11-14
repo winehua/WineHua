@@ -1,0 +1,77 @@
+{
+  "name": "dpi",
+  "desktopMode": "virtual",
+  "title": "DPI 一致性门禁：进程/监视器 DPI + 消息坐标域 + 注入映射（wayland/x11 × virtual/fusion 矩阵，见 scripts/verify-dpi-matrix.sh）",
+  "checks": [
+    "dpi-consistency"
+  ],
+  "tests": [
+    {
+      "case": "screen-enum",
+      "id": "screen-enum",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "win-basic",
+      "id": "win-basic",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "win-fullscreen",
+      "id": "win-fullscreen",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "seconds": 15,
+      "timeoutMs": 120000
+    },
+    {
+      "case": "input-mouse",
+      "id": "input-mouse",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    },
+    {
+      "case": "input-relative",
+      "id": "input-relative",
+      "arch": [
+        "x64"
+      ],
+      "backend": {
+        "d3d": "wined3d"
+      },
+      "env": {},
+      "inject": true,
+      "seconds": 45,
+      "timeoutMs": 180000
+    }
+  ]
+}

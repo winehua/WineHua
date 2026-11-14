@@ -150,6 +150,16 @@ WINEHUA_WINEDEBUG 提供 trace）。注入脚本已于 2026-10-13 退役，「�
 - **gpu-diagnostics**：报告 Guest Vulkan、DXVK DLL 实际加载路径与 D3D11 device 状态
 - **dxvk26-requirements**：DXVK 2.6.2 所需的 Guest/Wine Vulkan 1.3 transport 资格探针
 - **d3d12**：VKD3D-Proton limited-500k 1000 帧图形 smoke（含 checkpoint 进度）+ gears/triangle demo 各 600 帧（`from_vkd3d` 用例，demo 侧 `--frames/--result` 由 patch 0019 提供）
+- **dpi**：DPI 口径一致性门禁（screen-enum / win-basic / win-fullscreen /
+  input-mouse / input-relative）。suite 级判定 `dpi-consistency` 读归档 wine stderr
+  的 `DPIDIAG`/`MSGDIAG` 打点，断言：全进程 `override=system_dpi=192`、本路线
+  监视器 dpi=192（若有注册打点）、所有窗口消息 `raw==win` 且 `win_dpi=192`、
+  至少一次建窗为 aware。范围限定在最后一次 wineserver 启动之后。
+  矩阵一键跑：`scripts/verify-dpi-matrix.sh [设备地址]`（wayland/x11 ×
+  virtual/fusion，job 定义在 `smoke/jobs/dpi-{wayland,x11}.json`）。
+  fusion 没有 guest 坐标注入通道（按窗注入走 byTitle），矩阵在 fusion 格
+  只选三个基本用例；此时 `dpi-consistency` 允许没有消息样本，仍校验出现
+  的每条消息。打点由 job 环境 `WINEHUA_DPI_DIAG=1` 开启，平时不输出。
 - **all / long**：组合套件
 
 ## 结果归档

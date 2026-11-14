@@ -19,6 +19,18 @@
 std::string gBrokerHomeDir;
 std::string gBrokerPrefixDir;
 
+// NAPI 层注册的 ArkTS 回调 (bridge/napi_init.cpp)
+extern "C" int winehua_host_open_target(const char* target);
+
+// 系统打开开关 (设置页推送, 见 SystemOpenService.ets)。默认关 = OPEN 拒答,
+// winebrowser 回退上游 unix 兜底路径; 开 = 转发 ArkTS startAbility。
+// 即时生效 (每次 OPEN 现读), 不需要重启引擎。
+static std::atomic<bool> gSystemOpenEnabled{false};
+extern "C" void winehua_set_system_open_enabled(int enabled)
+{
+    gSystemOpenEnabled.store(enabled != 0);
+}
+
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -110,6 +122,24 @@ static void HandleRequest(int conn_fd)
         return;
     }
     buf[n] = '\0';
+
+    // 1b) OPEN 请求: "OPEN\n{target}\n" -> ArkTS startAbility
+    //     target 是 winebrowser 传出的 URL (http/https/mailto 或 file://)。
+    if (strncmp(buf, "OPEN\n", 5) == 0) {
+        char* target = buf + 5;
+        char* nl = strchr(target, '\n');
+        if (nl) *nl = '\0';
+        int status = gSystemOpenEnabled.load() ? winehua_host_open_target(target) : -1;
+        int32_t response[2] = {status, 0};
+        ssize_t sent = send(conn_fd, response, sizeof(response), MSG_NOSIGNAL);
+        if (sent != sizeof(response)) {
+            OH_LOG_ERROR(LOG_APP, "[Broker] OPEN response failed: %{public}s", strerror(errno));
+        }
+        OH_LOG_INFO(LOG_APP, "[Broker] OPEN target=%{public}s status=%{public}d",
+                    target, status);
+        close(conn_fd);
+        return;
+    }
 
     // 2) 解析 "SPAWN\n{entryParams}\n[FDS:name0,name1,...\n]"
     //    entryParams 到第一个 '\n' 为止; 其后是可选段: FDS: (逗号分隔 fd 名)。

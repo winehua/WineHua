@@ -82,12 +82,20 @@ class SystemDecor implements ModalDecor {
       return 0;
     }
     try {
+      // getWindowDecorHeight 返回 vp, 换物理 px 用设备密度, 不得 ×scale
+      // (scale 是 wine px↔物理 px 呈现倍率, 与 vp→px 是两种换算, 审计 A2)
       const vp = subWin.getWindowDecorHeight();  // [37,112] vp, d.ts 判据
       if (vp >= 37 && vp <= 112) {
-        return Math.round(vp * scale);
+        const density = display.getDefaultDisplaySync().densityPixels;
+        return Math.round(vp * density);
       }
     } catch (_) { /* 读回失败走兜底 */ }
-    return Math.round(SystemDecor.DECOR_HEIGHT_VP * scale);
+    try {
+      const density = display.getDefaultDisplaySync().densityPixels;
+      return Math.round(SystemDecor.DECOR_HEIGHT_VP * density);
+    } catch (_) {
+      return SystemDecor.DECOR_HEIGHT_VP;
+    }
   }
 
   configureWindow(subWin: window.Window, modalId: number,

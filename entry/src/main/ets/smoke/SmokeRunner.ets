@@ -18,6 +18,12 @@ interface PointMap {
   py: number;
 }
 
+// smokeMapPointX11 返回（画布归一化坐标 0..1，libsmoke_napi.so d.ts 对应）
+interface CanvasPoint {
+  nx: number;
+  ny: number;
+}
+
 // displayRouteFrameSize 返回（X 屏幕逻辑尺寸 = guest 桌面坐标系，
 // 与 libdisplay_route_napi.so 的 d.ts 对应）
 interface FrameSize {
@@ -636,7 +642,7 @@ export class SmokeRunner {
         action.dx === undefined || action.dy === undefined)
       return 'swipe action missing x/y/dx/dy';
     const x11f = this.x11Frame();
-    if (x11f) return this.x11Swipe(action, x11f);
+    if (x11f) return this.x11Swipe(action);
     const steps: number = action.steps && action.steps > 0 ? action.steps : 10;
     const holdBtn: boolean = action.button === 'left' || action.button === 'right';
     const mapped0 = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
@@ -675,7 +681,7 @@ export class SmokeRunner {
   private async injectWheel(action: InjectAction): Promise<string> {
     if (action.x === undefined || action.y === undefined) return 'wheel action missing x/y';
     const x11f = this.x11Frame();
-    if (x11f) return this.x11Wheel(action, x11f);
+    if (x11f) return this.x11Wheel(action);
     const notches: number = action.notches ? action.notches : 3;
     const absN: number = Math.abs(notches);
     const sign: number = notches > 0 ? -1 : 1;
@@ -711,13 +717,15 @@ export class SmokeRunner {
     return size;
   }
 
-  private async x11Mouse(action: InjectAction, f: FrameSize): Promise<string> {
-    const nx: number = action.x! / f.w;
-    const ny: number = action.y! / f.h;
+  private async x11Mouse(action: InjectAction): Promise<string> {
+    // action 坐标是 guest 桌面(X 帧)坐标; injectDisplayRouteMotion 收画布
+    // 归一化坐标, 必须过 present 的 fit 正变换 (smokeMapPointX11)。
+    const mapped = smokeNapi.smokeMapPointX11(action.x!, action.y!) as CanvasPoint | null;
+    if (!mapped) return 'smokeMapPointX11 failed (canvas not ready)';
     const btn: number = mapMouseButton(action.button === 'right' ? 2 : 1);
     // enter 建立指针/键盘焦点 (悬停即激活), motion 定位到注入点
-    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 0);
-    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
+    displayRouteNapi.injectDisplayRouteMotion(mapped.nx, mapped.ny, 0);
+    displayRouteNapi.injectDisplayRouteMotion(mapped.nx, mapped.ny, 1);
     const presses: number = action.type === 'doubleClick' ? 2 : 1;
     for (let i = 0; i < presses; i++) {
       if (i > 0) await new Promise<void>((r) => setTimeout(r, 120));
@@ -728,21 +736,25 @@ export class SmokeRunner {
     return '';
   }
 
-  private async x11Swipe(action: InjectAction, f: FrameSize): Promise<string> {
+  private async x11Swipe(action: InjectAction): Promise<string> {
     const steps: number = action.steps && action.steps > 0 ? action.steps : 10;
     const holdBtn: boolean = action.button === 'left' || action.button === 'right';
     const btn: number = mapMouseButton(action.button === 'right' ? 2 : 1);
     const stepDx: number = action.dx! / steps;
     const stepDy: number = action.dy! / steps;
-    displayRouteNapi.injectDisplayRouteMotion(action.x! / f.w, action.y! / f.h, 0);
-    displayRouteNapi.injectDisplayRouteMotion(action.x! / f.w, action.y! / f.h, 1);
+    const mapped0 = smokeNapi.smokeMapPointX11(action.x!, action.y!) as CanvasPoint | null;
+    if (!mapped0) return 'smokeMapPointX11 failed (canvas not ready)';
+    displayRouteNapi.injectDisplayRouteMotion(mapped0.nx, mapped0.ny, 0);
+    displayRouteNapi.injectDisplayRouteMotion(mapped0.nx, mapped0.ny, 1);
     if (holdBtn) {
       displayRouteNapi.injectDisplayRouteButton(btn, true);
       await new Promise<void>((r) => setTimeout(r, 60));
     }
     for (let i = 0; i < steps; i++) {
-      displayRouteNapi.injectDisplayRouteMotion(
-        (action.x! + stepDx * (i + 1)) / f.w, (action.y! + stepDy * (i + 1)) / f.h, 1);
+      const mappedStep = smokeNapi.smokeMapPointX11(
+        action.x! + stepDx * (i + 1), action.y! + stepDy * (i + 1)) as CanvasPoint | null;
+      if (!mappedStep) return 'smokeMapPointX11 failed (swipe step)';
+      displayRouteNapi.injectDisplayRouteMotion(mappedStep.nx, mappedStep.ny, 1);
       await new Promise<void>((r) => setTimeout(r, 20));
     }
     if (holdBtn) {
@@ -752,7 +764,7 @@ export class SmokeRunner {
     return '';
   }
 
-  private async x11Wheel(action: InjectAction, f: FrameSize): Promise<string> {
+  private async x11Wheel(action: InjectAction): Promise<string> {
     // wheel 按 win32 焦点窗分发 (wine server/queue.c:1827 input_shm->focus):
     // 前置 click 激活后焦点在程序窗。#93 根因 (D29, 2026-10-07) = 桥把格数
     // 当 v120 直传 (1 格被折成 1/120, DIX 凑不满增量不出 Button4/5), 已修
@@ -762,10 +774,10 @@ export class SmokeRunner {
     // 与 wayland 分支同号公式: guest 正 notches (向前滚) → 负 discrete
     // (display_input.c discrete>0 = 滚轮向下)
     const sign: number = notches > 0 ? -1 : 1;
-    const nx: number = action.x! / f.w;
-    const ny: number = action.y! / f.h;
-    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 0);
-    displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
+    const mapped = smokeNapi.smokeMapPointX11(action.x!, action.y!) as CanvasPoint | null;
+    if (!mapped) return 'smokeMapPointX11 failed (canvas not ready)';
+    displayRouteNapi.injectDisplayRouteMotion(mapped.nx, mapped.ny, 0);
+    displayRouteNapi.injectDisplayRouteMotion(mapped.nx, mapped.ny, 1);
     for (let i = 0; i < absN; i++) {
       displayRouteNapi.injectDisplayRouteAxis(0, sign);
       await new Promise<void>((r) => setTimeout(r, 60));
@@ -820,7 +832,7 @@ export class SmokeRunner {
   private async injectMouse(action: InjectAction): Promise<string> {
     if (action.x === undefined || action.y === undefined) return 'mouse action missing x/y';
     const x11f = this.x11Frame();
-    if (x11f) return this.x11Mouse(action, x11f);
+    if (x11f) return this.x11Mouse(action);
     const mapped = smokeNapi.smokeMapPoint(action.x, action.y) as PointMap | null;
     if (!mapped) return 'smokeMapPoint failed (renderer/letterbox not ready)';
     const px: number = mapped.px;

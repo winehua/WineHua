@@ -26,6 +26,11 @@
 #include "x11_toplevel.h" /* M4a-T5: mm 注入 drain 分派 (C1: loop 线程) */
 #include <wlr/types/wlr_data_device.h>
 
+/* wlroots xwayland/selection.h 的判据 (安装头不含 xwayland/ 子树, 这里按
+ * 同签名 extern)。xwm 来源的 send 把 fd 记进 transfer 同进程异步写并自行
+ * close, 宿主不得 close 写端; 区分 wl_data_device 协议来源用。 */
+extern bool data_source_is_xwayland(struct wlr_data_source *wlr_source);
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,12 +63,19 @@ static const struct wlr_keyboard_impl k_kb_impl = {
 };
 
 static struct wlr_seat *g_seat;
+
+/* guest 剪贴板文本 -> ArkTS (napi_init.cpp 的 threadsafe function) */
+extern int winehua_host_clipboard_text(const char *utf8);
 /* zwp_relative_pointer_manager_v1 (#177): Xwayland 绑定后把相对增量译成
  * XI2 raw motion (POINTER_RAWONLY + unaccelerated valuators) —— wine
  * dinput 相对模式吃的正是这条流。此前无此 global, 绝对派发不带 NORAW,
  * wine 的「相对」退化为帧空间坐标差 (letterbox 缩放错 + 边缘钳位跳变)
  * = 鼠标飘。增量喂点在 inject_motion。 */
 static struct wlr_relative_pointer_manager_v1 *g_rel_manager;
+/* wl_data_device_manager global: 剪贴板协议面。xwm 的 X↔seat 桥走服务端
+ * 内部调用不经它, winewayland.drv 这类普通 wayland 客户端必须 bind 它才能
+ * set_selection/收 selection —— 缺它则 wayland 路线剪贴板整个不存在。 */
+static struct wlr_data_device_manager *g_data_device_manager;
 /* 相对增量状态: 仅同 surface 连续 motion 喂 (锚点跳变/跨面不喂 —— 触点
  * 落屏是传送不是移动, 巨幅 raw delta 会让游戏镜头乱转); 幅度超 surface
  * 短边 1/8 视为跳变重置。 */
@@ -869,11 +881,283 @@ static const struct wlr_data_source_impl CLIP_SOURCE_IMPL = {
      * accept 无需应答; dnd_* 仅拖放用 */
 };
 
+/* ── 系统剪贴板双向桥 (guest <-> host) ──────────────────────────────
+ * guest -> host: X11 客户端取得 CLIPBOARD 时 xwm 发
+ * request_set_selection; 本层接受后从 xwm source 读 UTF-8 文本, 经
+ * winehua_host_clipboard_text 交给 ArkTS 写系统 pasteboard。
+ * host -> guest: ArkTS 在系统 pasteboard update 时调
+ * wl_ohos_input_post_clipboard, 本层设 seat selection, xwm 桥成
+ * Xwayland CLIPBOARD 所有权。
+ *
+ * 读侧 fd 不提前 close: xwm 向管道写数据, 提前关读端会在宿主进程触发
+ * SIGPIPE (本进程未忽略该信号)。取消只置 discard, 读到 EOF 自行回收;
+ * seat 销毁时 xwayland 已先销毁 (write 端已关), 才可以 close。 */
+#define CLIP_MAX_BYTES (8u * 1024u * 1024u)
+
+struct clip_read {
+    struct wl_list link;
+    struct wl_event_source *event;
+    int fd;
+    char *buf;
+    size_t len;
+    size_t cap;
+    bool discard;
+};
+
+static struct wl_list g_clip_reads;
+static bool g_clip_reads_ready;
+static bool g_clip_attached;
+static char *g_pending_clip_text;
+static struct wl_listener g_clip_request_set_selection;
+static struct wl_listener g_clip_set_selection;
+static struct wl_listener g_clip_seat_destroy;
+
+static void ClipReadDestroy(struct clip_read *r)
+{
+    if (!r)
+        return;
+    if (r->event)
+        wl_event_source_remove(r->event);
+    if (r->fd >= 0)
+        close(r->fd);
+    wl_list_remove(&r->link);
+    free(r->buf);
+    free(r);
+}
+
+static void ClipboardCancelReads(void)
+{
+    struct clip_read *r;
+    if (!g_clip_reads_ready)
+        return;
+    wl_list_for_each(r, &g_clip_reads, link)
+    {
+        /* 不 close: 见上方 SIGPIPE 说明; 读端继续排空到 EOF */
+        r->discard = true;
+        r->len = 0;
+    }
+}
+
+static int ClipReadEvent(int fd, uint32_t mask, void *data)
+{
+    struct clip_read *r = data;
+    char tmp[4096];
+    (void)mask;
+    for (;;)
+    {
+        ssize_t n = read(fd, tmp, sizeof(tmp));
+        if (n > 0)
+        {
+            if (r->discard)
+                continue;
+            if (r->len + (size_t)n > CLIP_MAX_BYTES)
+            {
+                OH_LOG_WARN(LOG_APP,
+                            "clipboard: guest text exceeds %{public}u bytes, dropped",
+                            CLIP_MAX_BYTES);
+                r->discard = true;
+                r->len = 0;
+                continue;
+            }
+            if (r->len + (size_t)n + 1 > r->cap)
+            {
+                size_t cap = r->cap ? r->cap : 1024;
+                while (cap < r->len + (size_t)n + 1)
+                    cap *= 2;
+                char *buf = realloc(r->buf, cap);
+                if (!buf)
+                {
+                    r->discard = true;
+                    r->len = 0;
+                    continue;
+                }
+                r->buf = buf;
+                r->cap = cap;
+            }
+            memcpy(r->buf + r->len, tmp, (size_t)n);
+            r->len += (size_t)n;
+        }
+        else if (n == 0)
+        {
+            OHLOG("clipboard: read done len=%{public}u discard=%{public}d",
+                  (unsigned)r->len, r->discard ? 1 : 0);
+            if (!r->discard && r->len)
+            {
+                r->buf[r->len] = '\0';
+                winehua_host_clipboard_text(r->buf);
+            }
+            ClipReadDestroy(r);
+            return 0;
+        }
+        else
+        {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return 0;
+            OH_LOG_WARN(LOG_APP, "clipboard: read failed errno=%{public}d", errno);
+            ClipReadDestroy(r);
+            return 0;
+        }
+    }
+}
+
+static const char *ClipPickMime(struct wlr_data_source *source)
+{
+    const char *fallback = NULL;
+    char **mime;
+    wl_array_for_each(mime, &source->mime_types)
+    {
+        if (strcmp(*mime, "text/plain;charset=utf-8") == 0)
+            return *mime;
+        if (!fallback && strcmp(*mime, "text/plain") == 0)
+            fallback = *mime;
+    }
+    return fallback;
+}
+
+static void ClipReadStart(struct wlr_data_source *source)
+{
+    if (!g_loop || !source)
+        return;
+    const char *mime = ClipPickMime(source);
+    if (!mime)
+    {
+        OHLOG("clipboard: guest selection has no text mime");
+        return;
+    }
+
+    int fds[2];
+    if (pipe(fds) != 0)
+    {
+        OH_LOG_WARN(LOG_APP, "clipboard: pipe failed errno=%{public}d", errno);
+        return;
+    }
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+
+    struct clip_read *r = calloc(1, sizeof(*r));
+    if (!r)
+    {
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    if (!g_clip_reads_ready)
+    {
+        wl_list_init(&g_clip_reads);
+        g_clip_reads_ready = true;
+    }
+    r->fd = fds[0];
+    wl_list_insert(&g_clip_reads, &r->link);
+    r->event = wl_event_loop_add_fd(g_loop, fds[0], WL_EVENT_READABLE,
+                                    ClipReadEvent, r);
+    if (!r->event)
+    {
+        OH_LOG_WARN(LOG_APP, "clipboard: add fd failed");
+        close(fds[0]);
+        close(fds[1]);
+        wl_list_remove(&r->link);
+        free(r);
+        return;
+    }
+    OHLOG("clipboard: read guest selection mime=%{public}s", mime);
+    wlr_data_source_send(source, mime, fds[1]);
+    if (!data_source_is_xwayland(source))
+    {
+        /* wl_data_device 协议来源: fd 已 dup 进客户端 socket, 宿主写端必须
+         * close — 客户端写完关它那份后引用归零, 读端才见 EOF; 不关则读端
+         * 永不 EOF, clip_read (fd+buf+event) 逐次泄漏。
+         * xwm 来源 (data_source_is_xwayland) 的 send 把 fd 号直接记进
+         * xwm transfer 同进程异步写, 写完 xwm 自行 close, 这里不能关。 */
+        close(fds[1]);
+    }
+}
+
+static void ClipboardOnRequestSetSelection(struct wl_listener *listener, void *data)
+{
+    (void)listener;
+    struct wlr_seat_request_set_selection_event *event = data;
+    if (!g_seat)
+        return;
+    OHLOG("clipboard: X request source=%{public}p serial=%{public}u",
+          (void *)event->source, event->serial);
+    /* xwm 的请求 serial 由 wl_display_next_serial 生成; Wayland 客户端请求
+     * 已在 wlr_seat_request_set_selection 内部校验过 serial。 */
+    wlr_seat_set_selection(g_seat, event->source, event->serial);
+}
+
+static void ClipboardOnSetSelection(struct wl_listener *listener, void *data)
+{
+    (void)listener;
+    struct wlr_seat *seat = data;
+    if (!seat || !seat->selection_source)
+    {
+        OHLOG("clipboard: set selection (empty)");
+        return;
+    }
+    OHLOG("clipboard: set selection source=%{public}p ours=%{public}d",
+          (void *)seat->selection_source,
+          seat->selection_source->impl == &CLIP_SOURCE_IMPL ? 1 : 0);
+    if (seat->selection_source->impl == &CLIP_SOURCE_IMPL)
+        return;
+    ClipReadStart(seat->selection_source);
+}
+
+static void ClipboardOnSeatDestroy(struct wl_listener *listener, void *data)
+{
+    struct clip_read *r, *tmp;
+    (void)listener;
+    (void)data;
+    if (g_clip_reads_ready)
+    {
+        wl_list_for_each_safe(r, tmp, &g_clip_reads, link)
+            ClipReadDestroy(r);
+    }
+    wl_list_remove(&g_clip_request_set_selection.link);
+    wl_list_remove(&g_clip_set_selection.link);
+    wl_list_remove(&g_clip_seat_destroy.link);
+    g_clip_attached = false;
+    if (g_seat && g_seat->selection_source &&
+        g_seat->selection_source->impl == &CLIP_SOURCE_IMPL)
+    {
+        free(g_pending_clip_text);
+        g_pending_clip_text = g_clip_text;
+        g_clip_text = NULL;
+    }
+    else
+    {
+        free(g_clip_text);
+        g_clip_text = NULL;
+    }
+    g_seat = NULL;
+}
+
+static void ClipboardAttach(struct wlr_seat *seat)
+{
+    if (!seat || g_clip_attached)
+        return;
+    g_clip_request_set_selection.notify = ClipboardOnRequestSetSelection;
+    wl_signal_add(&seat->events.request_set_selection,
+                  &g_clip_request_set_selection);
+    g_clip_set_selection.notify = ClipboardOnSetSelection;
+    wl_signal_add(&seat->events.set_selection, &g_clip_set_selection);
+    g_clip_seat_destroy.notify = ClipboardOnSeatDestroy;
+    wl_signal_add(&seat->events.destroy, &g_clip_seat_destroy);
+    g_clip_attached = true;
+    OHLOG("clipboard: attached seat=%{public}p", (void *)seat);
+}
+
 static void ApplySetClipboard(char *text) /* loop 线程, 接管 text 所有权 */
 {
+    if (!text)
+        return;
+    ClipboardCancelReads();
     if (!g_seat)
     {
-        free(text);
+        free(g_pending_clip_text);
+        g_pending_clip_text = text;
+        OHLOG("clipboard: seat not ready, pending %{public}u bytes",
+              (unsigned)strlen(text));
         return;
     }
     struct wlr_data_source *src = calloc(1, sizeof(*src));
@@ -897,7 +1181,7 @@ static void ApplySetClipboard(char *text) /* loop 线程, 接管 text 所有权 
     g_clip_text = text; /* send 回调读, 同 loop 线程 */
     g_clip_serial++;
     wlr_seat_set_selection(g_seat, src, g_clip_serial);
-    OHLOG("clipboard set (%zu bytes)", strlen(g_clip_text));
+    OHLOG("clipboard set (%{public}u bytes)", (unsigned)strlen(g_clip_text));
 }
 
 void wl_ohos_input_post_clipboard(const char *utf8)
@@ -950,6 +1234,18 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
     wlr_seat_set_capabilities(g_seat,
                               WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_seat_set_keyboard(g_seat, &g_kb);
+
+    g_data_device_manager = wlr_data_device_manager_create(wl);
+    if (!g_data_device_manager)
+        OH_LOG_ERROR(LOG_APP, "data device manager create failed");
+
+    ClipboardAttach(g_seat);
+    if (g_pending_clip_text)
+    {
+        char *pending = g_pending_clip_text;
+        g_pending_clip_text = NULL;
+        ApplySetClipboard(pending);
+    }
 
     /* #177: Xwayland 检测到该 global 才 get_relative_pointer 并把增量译成
      * XI2 raw motion (init_relative_pointer); 无绑定调用是 no-op, 创建失败

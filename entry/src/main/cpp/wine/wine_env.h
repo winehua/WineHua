@@ -28,6 +28,11 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& prefixDir = WINE_PREFIX,
                                       const std::string& wineLang = "zh_CN");
 
+// HiDPI: 向 env 追加 WINEHUA_LOGPIXELS。单一发射点 —— 会话 env (BuildWineEnv)
+// 与 wineserver/wineboot 引导链 (wine_launch) 共用, 保证 wineboot 自动拉起的
+// shell 与服务继承同一 DPI, 不回落 prefix 注册表值。未设置时不下发。
+void AppendWineLogPixelsEnv(std::vector<std::string>& env);
+
 // M3a 显示路线 native 镜像 (唯一写点 = ArkTS 启动解析后经 NAPI 调一次;
 // 唯一读点 = BuildWineEnv 的 env stamp)。空串/其它值 = wayland 默认。
 // extern "C": smoke_napi.so 跨 DSO 直呼 (与 DisplayRoute 入口同款)。

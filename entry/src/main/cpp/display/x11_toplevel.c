@@ -596,7 +596,7 @@ static void handle_request_configure(struct wl_listener *listener, void *data)
     if (!e->createdPosted || echo) {
         pthread_mutex_unlock(&g_lock);
         if (echo && e->createdPosted)
-            XTL_LOG("XTL geom-echo suppressed id=%{public}u %dx%d",
+            XTL_LOG("XTL geom-echo suppressed id=%{public}u %{public}dx%{public}d",
                     e->toplevelId, ev->width, ev->height);
         return;
     }
@@ -1011,9 +1011,9 @@ void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h)
 /* ── Task 5: 按窗输入路由 ── */
 
 /* napi 线程入口 (C1 review 修复): 只入队, loop 线程 dispatch 执行。
- * px/py 是 OHOS 承载窗局部物理像素 (SendPointerEvent 契约), 坐标空间
- * 换算 (物理 → X 逻辑) 在 dispatch 里做 —— 比例取决于承载窗尺寸, 而
- * win_w/win_h 只在 loop 线程稳定。 */
+ * px/py 是 OHOS 承载窗局部物理像素 (SendPointerEvent 契约), 到 X 坐标的
+ * 换算在 dispatch 里做 —— 比例取决于承载窗尺寸, 而 win_w/win_h 只在
+ * loop 线程稳定。HiDPI 1:1 后比例恒 1 (换算保留: 兼容非 1:1 呈现)。 */
 void x11_toplevel_input_pointer(uint32_t toplevelId, int px, int py,
                                 int action, uint32_t button)
 {
@@ -1052,10 +1052,10 @@ void x11_toplevel_close_dispatch(uint32_t toplevelId)
 
 /* pointer/axis dispatch 共用的落点解算 (M4d-review I1 抽出, 判据只留一处):
  * 查表与字段读取持锁 (win_w/win_h 会被 napi 线程 resize_window 写), seat
- * 操作由调用方在锁外做 (seat 不属 entry 表, 持锁调没必要)。物理像素 →
- * X 逻辑坐标; 未校准 (attach 初值 1x1) 时比例未知, 丢弃并采样留痕 ——
- * 比乱投好 (scale≠1 设备上乱投 = 命中点偏 2 倍); 换算后越界 = 点在窗间
- * 空隙/标题条外, 同样不投递 (spec §4)。返回 true = xs 有效且点在窗内。 */
+ * 操作由调用方在锁外做 (seat 不属 entry 表, 持锁调没必要)。承载窗物理 px →
+ * X 坐标按两端尺寸比例换算 (HiDPI 1:1 时恒等); 未校准 (attach 初值 1x1) 时
+ * 比例未知, 丢弃并采样留痕 —— 比乱投好; 换算后越界 = 点在窗间空隙/标题条
+ * 外, 同样不投递 (spec §4)。返回 true = xs 有效且点在窗内。 */
 static bool mm_resolve_local(uint32_t toplevelId, int px, int py,
                              struct wlr_xwayland_surface **xs_out,
                              double *lx_out, double *ly_out)
@@ -1297,7 +1297,7 @@ static bool render_entry(struct x11_xs_entry *e)
         }
         src = cb->texture;
     }
-    XTL_LOG("XTL render id=%{public}u tex=%{public}p %dx%d -> dst",
+    XTL_LOG("XTL render id=%{public}u tex=%{public}p %{public}dx%{public}d -> dst",
             e->toplevelId, (void *)src,
             src->width, src->height);
     /* 逐帧 render 日志: commit 驱动 (静止窗零日志), 频率安全。D50 排查期
@@ -1309,7 +1309,7 @@ static bool render_entry(struct x11_xs_entry *e)
         XTL_LOG("XTL slot-fail id=%{public}u", e->toplevelId);
         return false;
     }
-    XTL_LOG("XTL render id=%{public}u dst=%{public}p %dx%d",
+    XTL_LOG("XTL render id=%{public}u dst=%{public}p %{public}dx%{public}d",
             e->toplevelId, (void *)dst, dst->width, dst->height);
 
     struct wlr_render_pass *pass =

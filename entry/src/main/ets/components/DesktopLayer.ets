@@ -72,6 +72,9 @@ export struct DesktopLayer {
   // 系统吞 KeyDown 只派 KeyUp → 无配对 up 时补发 down+up)
   private lastEnterDownTs: number = 0;
   private static readonly ENTER_SYNTH_WINDOW_MS: number = 1000;
+  // 已 Inject 按下、尚未收到抬起的键。失焦时补发释放, 防止 Alt+Tab
+  // 等切换把抬起事件送给新窗口后 Wine 侧修饰键永久卡住。
+  private pressedKeys: Set<number> = new Set<number>();
   private static readonly DRAG_THRESHOLD: number = 10; // 物理像素, 区分点击抖动和拖拽
   // 双击检测
   private lastTapTime: number = 0;
@@ -142,6 +145,17 @@ export struct DesktopLayer {
   private tpScrollAccumY: number = 0;
   private tpTwoFingerDownTime: number = 0; // 进入双指模式时刻 (TP-TWO-TAP 日志打点用)
   private tpScrollFired: boolean = false;  // 本次双指已发过滚动事件 (抬指不再判右键 — 累积会被消费, 残量可能 < 点击阈值)
+
+  private releasePressedKeys(): void {
+    if (this.pressedKeys.size === 0) {
+      return;
+    }
+    hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] BLUR release %{public}d keys', this.pressedKeys.size);
+    this.pressedKeys.forEach((code: number) => {
+      this.sink.keyEvent(code, false);
+    });
+    this.pressedKeys.clear();
+  }
 
   aboutToAppear(): void {
     this.input.subscribe(this.mirrorInput);
@@ -695,6 +709,11 @@ export struct DesktopLayer {
         const code = OH2EVDEV[ev.keyCode] ?? 0;
         if (code <= 0) return;
         const pressed = ev.type === KeyType.Down;
+        if (pressed) {
+          this.pressedKeys.add(code);
+        } else {
+          this.pressedKeys.delete(code);
+        }
         // 回车补发 (同 WineWindow.ets): 系统吞 KeyDown 只派 KeyUp 时,
         // 无配对 up 补发 down+up, 保证桌面模式 Wine 收到完整按键
         if (code === EVDEV_KEY_ENTER) {
@@ -707,6 +726,7 @@ export struct DesktopLayer {
         }
         this.sink.keyEvent(code, pressed);
       })
+      .onBlur(() => { this.releasePressedKeys(); })
 
       // ── 滚轮事件 ──
       .onAxisEvent((ev?: AxisEvent) => {

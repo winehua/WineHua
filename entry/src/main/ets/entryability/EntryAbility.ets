@@ -1,7 +1,7 @@
-import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DEFAULT_D3D_BACKEND, WineEnvService } from '../service/WineEnvService';
 import { DisplaySettingsService } from '../service/DisplaySettingsService';
@@ -9,6 +9,8 @@ import { DesktopModeService } from '../service/DesktopModeService';
 import { ThemeService } from '../service/ThemeService';
 import { AppLibraryService } from '../service/AppLibraryService';
 import { DisplayRouteService } from '../service/DisplayRouteService';
+import { ClipboardBridge } from '../service/ClipboardBridge';
+import { SystemOpenService } from '../service/SystemOpenService';
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
 
@@ -153,7 +155,29 @@ export default class EntryAbility extends UIAbility {
     // 窗口已创建且页面 loadContent 完成 (API 文档), 实际下发见 onWindowStageCreate
     ThemeService.getInstance().init(this.context);
     this.publishLaunchRequest(want);
+    // Wine 侧 winebrowser 的 URL/文件打开请求经 broker 转到 ArkTS。
+    testNapi.setOpenTargetCallback((target: string) => {
+      this.openHostTarget(target);
+    });
+    // 系统剪贴板 <-> Wine X11 CLIPBOARD 双向文本桥
+    ClipboardBridge.getInstance().init(this.context);
+    // 系统打开开关: 读持久化值并推给 broker 门禁
+    SystemOpenService.getInstance().init(this.context);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+  }
+
+  private openHostTarget(target: string): void {
+    const want: Want = {
+      action: 'ohos.want.action.viewData',
+      uri: target,
+      flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION,
+    };
+    this.context.startAbility(want).then(() => {
+      hilog.info(DOMAIN, 'testTag', '[HostOpen] OK %{public}s', target);
+    }).catch((err: BusinessError) => {
+      hilog.error(DOMAIN, 'testTag', '[HostOpen] failed %{public}s: %{public}s',
+        target, JSON.stringify(err));
+    });
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -335,6 +359,8 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    // 后台期间系统剪贴板可能已变化，回前台补一次同步
+    ClipboardBridge.getInstance().syncHostClipboard();
   }
 
   onBackground(): void {

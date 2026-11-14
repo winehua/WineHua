@@ -381,6 +381,9 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // (BuildSessionEnv) 时 winebus 读不到这些键, 门禁/模式全吃缺省 —
         // keyboard_legacy 兜底完全失效 (bus_ohos/bus_sdl 的 env 唯一来源)。
         winehua::controller::AppendWineGamepadEnv(wsReq.env);
+        // HiDPI: 与 gamepad 同理, wineserver 是 wineboot/services 及 wineboot
+        // 自动拉起的 shell 的 env 来源; 漏发会让这些进程回落到注册表 DPI。
+        AppendWineLogPixelsEnv(wsReq.env);
         const pid_t wsChildPid = winehua::Spawner::Spawn(wsReq);
         if (wsChildPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] wineserver spawn FAILED");
@@ -467,6 +470,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // wineboot 阶段也加载 winebus (winedevice 由 wineserver 拉起, 可能先于
         // 本 spawn 或后于它), 键注入与 wineserver 保持一致, 模式不靠缺省。
         winehua::controller::AppendWineGamepadEnv(wbReq.env);
+        AppendWineLogPixelsEnv(wbReq.env);
         const pid_t childPid = winehua::Spawner::Spawn(wbReq);
         if (childPid <= 0) {
             OH_LOG_ERROR(LOG_APP, "[Launch-Async] boot trigger spawn FAILED");

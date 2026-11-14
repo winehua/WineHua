@@ -9,6 +9,7 @@ import { ThemeService, THEME_SYSTEM, THEME_LIGHT, THEME_DARK } from '../service/
 import { InputSettingsService } from '../service/InputSettingsService';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION, isSubWindowFormFactor } from '../service/DesktopModeService';
 import { DisplayRouteService, ROUTE_WAYLAND, ROUTE_X11 } from '../service/DisplayRouteService';
+import { SystemOpenService } from '../service/SystemOpenService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { compatIndexOfMode, compatModeFromIndex } from '../service/Box64Dynarec';
 
@@ -54,6 +55,8 @@ export struct SettingsView {
   @State routeSel: number[] = [0];   // 0=Wayland, 1=X11 (main-ui: Wayland 在前)
   @State route: string = ROUTE_WAYLAND;
   @State routeRestartHint: boolean = false;
+  // -- 系统打开 (实验): 0=关(上游行为), 1=开 --
+  @State systemOpenSel: number[] = [0];
   // 字体导入进行中 (镜像 WineEnvService.fontImporting): 按钮使能 + 文案
   @State fontImporting: boolean = false;
   // -- 显示 --
@@ -132,6 +135,8 @@ export struct SettingsView {
     this.themeMode = ThemeService.getInstance().mode;
     this.themeSel = [this.themeIndexOf(this.themeMode)];
     this.relSpeedText = `${Math.round(this.inputSettings.relMouseSpeed * 100)}%`;
+    // 系统打开开关初值 (EntryAbility.onCreate 已 init 并推送 broker)
+    this.systemOpenSel = [SystemOpenService.getInstance().enabled ? 1 : 0];
   }
 
   // 保持屏幕常亮: 持久化后统一走 env 策略 — wine 初始化中强制常亮,
@@ -178,6 +183,12 @@ export struct SettingsView {
     }
     this.env.setCompatModePreference(mode);
     this.compatRestartHint = true;
+  }
+
+  // 系统打开开关: broker 门禁即改即生效, 不需重启引擎
+  private selectSystemOpen(index: number): void {
+    this.systemOpenSel = [index];
+    SystemOpenService.getInstance().setEnabled(index == 1);
   }
 
   // Wine 语言切换: 同渲染策略, 仅写配置, 重启 Wine 引擎后生效
@@ -612,6 +623,30 @@ export struct SettingsView {
                 .fontColor($r('app.color.state_warn'))
                 .width('100%')
             }
+          }
+          .width('100%')
+
+          // 系统打开 (实验): Wine 内打开 URL/无关联文件时交宿主系统应用。
+          // 默认关 = 上游行为; broker 门禁即改即生效, 不需重启引擎
+          Column({ space: 4 }) {
+            Text('系统打开（实验）')
+              .fontColor($r('app.color.text_primary'))
+              .width('100%')
+            SegmentButton({
+              options: SegmentButtonOptions.capsule({
+                buttons: [{ text: '关' }, { text: '开' }],
+                multiply: false
+              }),
+              selectedIndexes: $systemOpenSel,
+              onItemClicked: (index: number) => {
+                this.selectSystemOpen(index);
+              }
+            })
+            .width('100%')
+            Text('开: Wine 程序打开网址或无关联文件时调用系统应用打开; 关: 保持 Wine 默认行为')
+              .fontSize(12)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
           }
           .width('100%')
         }

@@ -344,7 +344,11 @@ export class PopupWindowManager {
     let decorPx = 0;
     if (this.parentSystemDecor) {
       try {
-        decorPx = Math.round(parentWin.getWindowDecorHeight() * scale);
+        // getWindowDecorHeight 返回 vp; 换物理 px 用设备密度。不得 ×scale:
+        // scale 是 wine px↔物理 px 呈现倍率 (现恒 1), 与 vp→px (×density)
+        // 是两种换算, 旧模型二者数值巧合相等掩盖了口径差异 (审计 A1)。
+        const density = display.getDefaultDisplaySync().densityPixels;
+        decorPx = Math.round(parentWin.getWindowDecorHeight() * density);
       } catch (_) { /* 读回失败按 0 (菜单略上移, 不挡使用) */ }
     }
     const gx = Math.round(rect.left + entry.offX * scale);
