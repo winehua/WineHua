@@ -1617,7 +1617,10 @@ export class WineWindowManager {
     if (!this.desktopSeparateWindow) {
       return;
     }
-    const ctx = this.desktopAbilityCtx;
+    // 本方法只服务 PC 虚拟桌面 (desktopSeparateWindow 门在上方), 对应窗口
+    // ctx 是 VDA 注册的 desktopWinCtx; desktopAbilityCtx 属 tablet
+    // DesktopAbility 路径, PC 场景恒 null。
+    const ctx = this.desktopWinCtx;
     if (!ctx) {
       return;
     }
