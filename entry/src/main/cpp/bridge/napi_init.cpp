@@ -86,6 +86,28 @@ static napi_value SetStateCallback(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- Wine DPI (HiDPI 呈现 1:1) --
+// ArkTS 按 96 × WINE_CONTENT_SCALE(2.0) 传入 (内容缩放基准, 非设备密度);
+// wine_env.cpp 组会话 env 时下发 WINEHUA_LOGPIXELS,
+// win32u 用它覆盖注册表 LogPixels。呈现层无缩放, wine 按物理分辨率原生渲染。
+static int gWineLogPixels = 0;
+void winehua_set_wine_logpixels_impl(int dpi) { gWineLogPixels = dpi; }
+extern "C" int winehua_get_wine_logpixels(void) { return gWineLogPixels; }
+
+static napi_value SetWineLogPixels(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    double dpi = 0;
+    if (napi_get_value_double(env, args[0], &dpi) != napi_ok) return nullptr;
+    if (dpi >= 96 && dpi <= 480) {
+        winehua_set_wine_logpixels_impl(static_cast<int>(dpi));
+        OH_LOG_INFO(LOG_APP, "[MW-NAPI] setWineLogPixels = %{public}d", static_cast<int>(dpi));
+    }
+    return nullptr;
+}
+
 // -- NAPI: startServer --
 static napi_value StartServer(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -1223,6 +1245,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"stopClient",     nullptr, StopClient,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopAll",        nullptr, StopAll,        nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setStateCallback", nullptr, SetStateCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setWineLogPixels", nullptr, SetWineLogPixels, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelCallback", nullptr, SetToplevelCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setImeCallback", nullptr, SetImeCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendImeCommit", nullptr, SendImeCommit, nullptr, nullptr, nullptr, napi_default, nullptr},

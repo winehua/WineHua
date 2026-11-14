@@ -45,6 +45,8 @@ export const checkWinePrefix: () => boolean;
 export const resetWinePrefix: () => boolean;
 export const setOutputSize: (w: number, h: number) => void;
 export const setDisplayScale: (scale: number) => void;
+/** Wine DPI (96 × WINE_CONTENT_SCALE=2.0 = 192): 呈现 1:1 时按物理分辨率渲染字形。非设备密度。 */
+export const setWineLogPixels: (dpi: number) => void;
 export const setDesktopMode: (enabled: boolean) => void;
 export const setPhoneMode: (enabled: boolean) => void;
 export const findToplevelAt: (px: number, py: number) => number;

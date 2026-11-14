@@ -19,6 +19,9 @@
 #define LOG_TAG "WL_NAPI"
 #include <hilog/log.h>
 
+// Wine DPI (HiDPI 1:1 呈现), 定义在 bridge/napi_init.cpp
+extern "C" int winehua_get_wine_logpixels(void);
+
 // M3a 显示路线 native 镜像 (契约见 wine_env.h)。进程内单写点 (NAPI set,
 // ArkTS 冷启解析后调一次), 读点仅 BuildWineEnv 的 stamp。
 static char g_display_route[8] = {0};
@@ -52,6 +55,18 @@ int CreateAudioBootstrapFd(const std::string& runtimeDir) {
     }
     OH_LOG_INFO(LOG_APP, "[AudioBroker] bootstrap ready runtimeDir=%{public}s", runtimeDir.c_str());
     return fd;
+}
+
+// Wine DPI 唯一发射点: 会话 env 与 wineserver/wineboot 引导链共用。
+// 引导链进程 (wineboot 自动拉起的 shell、services 等) 继承的是 wineserver
+// 的 env, 不经过 BuildWineEnv —— 漏发会让它们回落到 prefix 注册表
+// LogPixels, 同一会话出现两套 DPI (2026-11-14 真机实锤: 融合模式 shell
+// explorer 的 entryParams 无此键, 而 init 已下发 192)。
+void AppendWineLogPixelsEnv(std::vector<std::string>& env)
+{
+    const int logPixels = winehua_get_wine_logpixels();
+    if (logPixels >= 96 && logPixels <= 480)
+        env.push_back("WINEHUA_LOGPIXELS=" + std::to_string(logPixels));
 }
 
 std::vector<std::string> BuildWineEnv(const std::string& sockDir,
@@ -147,6 +162,10 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
     // 默认注入 "1" (静默校准 = 默认行为, 三游戏验证通过); 排查问题时改 "0"
     // (或删除本行 = 未设置) 回退硬件绝对移动路径。
     env.push_back("WINEWAYLAND_ENTER_SILENT=1");
+    // HiDPI: 呈现层 1:1, wine DPI = 96 × WINE_CONTENT_SCALE (2.0 → 192,
+    // 基数常量, 非设备 densityPixels; ArkTS init 时经 setWineLogPixels 传入);
+    // win32u 用它覆盖注册表 LogPixels, 字形按物理分辨率原生渲染。
+    AppendWineLogPixelsEnv(env);
     // ==== Layer 5: 图形状态 ====
     // NOTE: BOX64_EMULATED_LIBS (ARM64) 在 DXVK 路径下会被 AppendD3dBackendEnv 覆盖
     winehua::GraphicsBroker::GetInstance().AppendWineEnv(env);

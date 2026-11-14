@@ -101,14 +101,12 @@ struct WineWindow {
   // 仅超过拖动阈值的顶条手势转为移动承载窗 (startMoving, 与 wayland Pad
   // incumbent 同一系统拖拽通道); wine 不感知位置 (managed 模式位置由
   // ArkTS/系统权威, popup 偏移按父相对量不受影响)。
-  private static readonly DRAG_STRIP_LOGICAL_PX: number = 20; // guest 逻辑像素
+  private static readonly DRAG_STRIP_PX: number = 40; // 物理 px (旧 20 逻辑 × 呈现 2;
+  // HiDPI 1:1 后 wine 菜单栏 ~37 物理 px, 40 恰覆盖; 20 会只盖一半)
 
-  // M4d-review Minor#3: 物理阈值按有效 scale 现算 (原硬编码 40 只对 scale-2
-  // 设备成立; displayScale/scaleBoost 不同的设备上过小会把菜单栏拖动误判为
-  // 内容拖拽, 过大会吞掉客户区)
+  // 物理阈值直取常数 (呈现 1:1, 无乘数; 旧按 scale 现算的写法随乘数恒 1 退役)
   private dragStripPx(): number {
-    return Math.round(WineWindow.DRAG_STRIP_LOGICAL_PX *
-      WineWindowManager.getInstance().getEffectiveScale());
+    return WineWindow.DRAG_STRIP_PX;
   }
   // 双击检测
   private lastTapTime: number = 0;

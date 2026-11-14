@@ -1,0 +1,10 @@
+{
+  "suite": "dpi",
+  "desktopMode": "virtual",
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "wayland",
+      "WINEHUA_DPI_DIAG": "1"
+    }
+  }
+}

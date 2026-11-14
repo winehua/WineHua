@@ -332,7 +332,8 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
             continue;
         }
         setenv(key.c_str(), value.c_str(), 1);
-        if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0)
+        if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0 ||
+            key == "WINEHUA_LOGPIXELS")
             OH_LOG_INFO(LOG_APP, "[WineChild] env override %{public}s=%{public}s",
                         key.c_str(), value.c_str());
     }

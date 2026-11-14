@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import auto_retry as _auto_retry
 from . import coverage as _coverage
+from . import dpi_consistency as _dpi_consistency
 from . import frame
 from . import wine_trace as _wine_trace
 
@@ -468,6 +469,8 @@ REGISTRY = {
     "fusion-popup-selection": fusion_popup_selection,
     # suite 级判定：读 ctx["summary"]（整份设备端结果）
     "coverage": _coverage.coverage,
+    # suite 级判定：读归档 wine stderr 的 DPIDIAG/MSGDIAG 打点（DPI 口径一致性）
+    "dpi-consistency": _dpi_consistency.dpi_consistency,
 }
 
 

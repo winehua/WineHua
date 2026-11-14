@@ -58,7 +58,14 @@ export class WineWindowManager {
   // (applyRoute) 调用, 早于 init (onWindowStageCreate), 实例字段彼时未定值
   // (实测 2026-10-18: 用 getEffectiveScale() 算出物理分辨率, 元素缩小一半)。
   // 未来开放用户调整缩放: 本常量改为从设置服务读的静态取值 — 消费方不动。
-  static readonly DESKTOP_PRESENT_SCALE: number = 2.0;
+  // 2026-11-08 起 = 1.0 (HiDPI 化): 呈现层不再放大, 内容缩放改经 wine DPI
+  // 实现 (WINE_CONTENT_SCALE, WINEHUA_LOGPIXELS = 96 × 该值, win32u 覆盖
+  // 注册表 LogPixels), wine 在物理分辨率上原生渲染 — 此前的 2x 上采样设计
+  // 会把 96 DPI 小字形双线性放大成糊字。注意基数不是设备 densityPixels
+  // (本机 1.61), 是旧呈现倍率 2.0 (观感尺寸的延续基准)。
+  static readonly DESKTOP_PRESENT_SCALE: number = 1.0;
+  // Wine 内容缩放 (经 DPI 实现): 192 = 96 × 2, 沿用旧 2x 呈现的观感尺寸。
+  static readonly WINE_CONTENT_SCALE: number = 2.0;
   // 标题栏 + 边框总高度 (VP), 用于窗口 resize
   // = getWindowDecorHeight() + decorBorderOffset
   private measuredTitleBarH: number = 56;
@@ -309,6 +316,9 @@ export class WineWindowManager {
         d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2),
         WineWindowManager.DESKTOP_PRESENT_SCALE);
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
+      // HiDPI: wine DPI = 96 × 内容缩放 (2.0), 下发 WINEHUA_LOGPIXELS (win32u
+      // 覆盖注册表 LogPixels)。呈现 1:1, 字形按物理分辨率原生渲染。
+      testNapi.setWineLogPixels(Math.round(96 * WineWindowManager.WINE_CONTENT_SCALE));
 
       // Wine 输出尺寸: 沉浸模式下 avoid area 为 0, 直接用显示尺寸
       const s = this.displayScale * this.scaleBoost;
@@ -319,9 +329,10 @@ export class WineWindowManager {
       testNapi.setOutputSize(outW, outH);
     } catch (_) {
       this.displayScale = 1.61;
-      this.scaleBoost = 2.0 / 1.61;
-      hilog.warn(DOMAIN, TAG, '[MW] display query failed, using displayScale=1.61 boost=1.24');
+      this.scaleBoost = WineWindowManager.DESKTOP_PRESENT_SCALE / this.displayScale;
+      hilog.warn(DOMAIN, TAG, '[MW] display query failed, using displayScale=1.61');
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
+      testNapi.setWineLogPixels(Math.round(96 * WineWindowManager.WINE_CONTENT_SCALE));
     }
 
     hilog.info(DOMAIN, TAG, '[MW] registering toplevel callback...');
@@ -959,7 +970,7 @@ export class WineWindowManager {
             // 换算单点在承载 resize 前完成 (plan RF#1): surface 保持 wine
             // 尺寸, 无差值进 onSurfaceChanged 反馈。
             const barH = FusionWindowManager.getInstance().stripPxOf(toplevelId);
-            const s = this.displayScale * this.scaleBoost;  // effective scale = 2.0
+            const s = this.displayScale * this.scaleBoost;  // effective scale = DESKTOP_PRESENT_SCALE (HiDPI 化后 1.0)
             const winW = Math.round(w * s);
             const winH = Math.round(h * s + barH);
             //  保存目标尺寸, 供 surface 事件校准 titleBarH + 重新 resize

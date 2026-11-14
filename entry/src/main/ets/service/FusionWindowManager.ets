@@ -79,10 +79,10 @@ export class FusionWindowManager {
   // barH + PopupWindowManager.positionEntry) 共用。判据必须能区分「x11
   // fusion 子窗」与「wayland fusion 子窗」(fusionUsesSubWindow 是 route
   // 无关的, 不能用作装饰判据) —— wayland 恒 0 = incumbent 逐字节不变。
-  // 28 = 用户裁定收窄 (2026-10-17 真机过 32 偏大; Win11 caption 基线 32,
-  // 初版 20vp 观感/触控热区均不达标, 观感升级为 Win11 caption 风格随改;
-  // 消费方全部经 stripPxOf 单点)。
-  private static readonly STRIP_LOGICAL_PX: number = 28;
+  // 56 = 用户裁定观感的物理高度 (2026-10-17 以 Win11 caption 风格裁定, 当时
+  // 28 逻辑px × 旧呈现倍率 2 = 56 物理 px; HiDPI 1:1 后乘数消失, 常数改按
+  // 物理 px 直书, 观感不变; 消费方全部经 stripPxOf 单点)。
+  private static readonly STRIP_PX: number = 56;
 
   // modal 承载顶条判据注入点 (#167 续: x11 路线 modal 对话框承载也吃自绘
   // 顶条 —— modal 承载链不建 FWM entry, 判据经 provider 问
@@ -103,7 +103,7 @@ export class FusionWindowManager {
     if (!this.entries.has(tl) && !(this.modalStripProvider?.(tl) ?? false)) {
       return 0;
     }
-    return Math.round(FusionWindowManager.STRIP_LOGICAL_PX * this.getScale());
+    return Math.round(FusionWindowManager.STRIP_PX * this.getScale());
   }
 
   has(tl: number): boolean {
