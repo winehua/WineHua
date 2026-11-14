@@ -5,6 +5,9 @@ export const launchClient: (exePath: string, argv: string[], sockPath: string, l
 export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;
+export const setOpenTargetCallback: (cb: (target: string) => void) => void;
+/** 系统打开开关 (broker OPEN 门禁, 即时生效; 默认关 = 上游行为)。 */
+export const setSystemOpenEnabled: (enabled: boolean) => void;
 export const setToplevelCallback: (cb: (id: number, event: string, data: string) => void) => void;
 export const setImeCallback: (cb: (active: number, x: number, y: number, w: number, h: number) => void) => void;
 export const registerHostWindow: (windowId: number) => void;

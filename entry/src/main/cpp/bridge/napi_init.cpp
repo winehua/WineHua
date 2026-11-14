@@ -86,6 +86,52 @@ static napi_value SetStateCallback(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- NAPI: setOpenTargetCallback (broker -> ArkTS 系统打开) --
+// broker 收到 Wine 的 OPEN 请求后调用 winehua_host_open_target()，
+// 经 threadsafe function 转给 ArkTS 的 startAbility。
+static napi_threadsafe_function gOpenTargetTsfn = nullptr;
+
+static void CallJsOpenTarget(napi_env env, napi_value cb, void*, void* data) {
+    char* target = static_cast<char*>(data);
+    if (env && cb && target) {
+        napi_value undef, arg;
+        napi_get_undefined(env, &undef);
+        napi_create_string_utf8(env, target, NAPI_AUTO_LENGTH, &arg);
+        napi_call_function(env, undef, cb, 1, &arg, nullptr);
+    }
+    free(target);
+}
+
+static napi_value SetOpenTargetCallback(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+
+    if (gOpenTargetTsfn) {
+        napi_release_threadsafe_function(gOpenTargetTsfn, napi_tsfn_release);
+        gOpenTargetTsfn = nullptr;
+    }
+
+    napi_value name;
+    napi_create_string_utf8(env, "WLOpenTarget", NAPI_AUTO_LENGTH, &name);
+    napi_create_threadsafe_function(env, args[0], nullptr, name,
+                                    0, 1, nullptr, nullptr, nullptr,
+                                    CallJsOpenTarget, &gOpenTargetTsfn);
+    return nullptr;
+}
+
+extern "C" int winehua_host_open_target(const char* target) {
+    if (!gOpenTargetTsfn || !target || !*target) return -1;
+    char* copy = strdup(target);
+    if (!copy) return -1;
+    if (napi_call_threadsafe_function(gOpenTargetTsfn, copy, napi_tsfn_nonblocking) != napi_ok) {
+        free(copy);
+        return -1;
+    }
+    return 0;
+}
+
 // -- Wine DPI (HiDPI 呈现 1:1) --
 // ArkTS 按 96 × WINE_CONTENT_SCALE(2.0) 传入 (内容缩放基准, 非设备密度);
 // wine_env.cpp 组会话 env 时下发 WINEHUA_LOGPIXELS,
@@ -105,6 +151,21 @@ static napi_value SetWineLogPixels(napi_env env, napi_callback_info info) {
         winehua_set_wine_logpixels_impl(static_cast<int>(dpi));
         OH_LOG_INFO(LOG_APP, "[MW-NAPI] setWineLogPixels = %{public}d", static_cast<int>(dpi));
     }
+    return nullptr;
+}
+
+// -- NAPI: setSystemOpenEnabled (系统打开开关 -> broker 门禁) --
+// proc/broker.cpp 定义状态; OPEN 请求按此现读, 即时生效。
+extern "C" void winehua_set_system_open_enabled(int enabled);
+
+static napi_value SetSystemOpenEnabled(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    bool on = false;
+    if (napi_get_value_bool(env, args[0], &on) != napi_ok) return nullptr;
+    winehua_set_system_open_enabled(on ? 1 : 0);
     return nullptr;
 }
 
@@ -1245,6 +1306,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"stopClient",     nullptr, StopClient,     nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopAll",        nullptr, StopAll,        nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setStateCallback", nullptr, SetStateCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setOpenTargetCallback", nullptr, SetOpenTargetCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setSystemOpenEnabled", nullptr, SetSystemOpenEnabled, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setWineLogPixels", nullptr, SetWineLogPixels, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelCallback", nullptr, SetToplevelCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setImeCallback", nullptr, SetImeCallback, nullptr, nullptr, nullptr, napi_default, nullptr},

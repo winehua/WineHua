@@ -1,11 +1,12 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
 import { DesktopModeService } from '../service/DesktopModeService';
 import { DisplayRouteService } from '../service/DisplayRouteService';
+import { SystemOpenService } from '../service/SystemOpenService';
 
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
@@ -226,7 +227,27 @@ export default class EntryAbility extends UIAbility {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
     this.publishLaunchRequest(want);
+    // Wine 侧 winebrowser 的 URL/文件打开请求经 broker 转到 ArkTS。
+    testNapi.setOpenTargetCallback((target: string) => {
+      this.openHostTarget(target);
+    });
+    // 系统打开开关: 读持久化值并推给 broker 门禁
+    SystemOpenService.getInstance().init(this.context);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+  }
+
+  private openHostTarget(target: string): void {
+    const want: Want = {
+      action: 'ohos.want.action.viewData',
+      uri: target,
+      flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION,
+    };
+    this.context.startAbility(want).then(() => {
+      hilog.info(DOMAIN, 'testTag', '[HostOpen] OK %{public}s', target);
+    }).catch((err: BusinessError) => {
+      hilog.error(DOMAIN, 'testTag', '[HostOpen] failed %{public}s: %{public}s',
+        target, JSON.stringify(err));
+    });
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {

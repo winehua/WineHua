@@ -9,6 +9,7 @@ import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
 import { DisplayRouteService, ROUTE_WAYLAND, ROUTE_X11 } from '../service/DisplayRouteService';
+import { SystemOpenService } from '../service/SystemOpenService';
 
 const DOMAIN = 0x0000;
 
@@ -50,6 +51,7 @@ struct Index {
   // -- 显示路线 (实验, Pad/PC): x11 主线 / wayland 对照 (镜像 DisplayRouteService) --
   @State routeSel: number[] = [0];   // 0=X11, 1=Wayland
   @State routeRestartHint: boolean = false;
+  @State systemOpenSel: number[] = [0]; // 系统打开开关: 0=关(上游行为), 1=开
   // -- PC 虚拟桌面窗口状态 (镜像 WineWindowManager) --
   @State desktopActive: boolean = false;
   @State desktopWindowActive: boolean = false;
@@ -172,6 +174,8 @@ struct Index {
     this.backendSel = this.d3dBackend;
     this.dxvkBackend = this.dxvkBackendText === 'dxvk_modern_2_6' ?
       'dxvk_modern_2_6' : 'dxvk_legacy';
+    // 系统打开开关初值 (EntryAbility.onCreate 已 init 并推送 broker)
+    this.systemOpenSel = [SystemOpenService.getInstance().enabled ? 1 : 0];
     this.setupIme();
     const env = this.env;
     const mirror = (): void => {
@@ -581,6 +585,27 @@ struct Index {
               .width('100%').padding({ top: 4 })
           }
         }
+
+        // -- 系统打开 (实验): Wine 内打开 URL/无关联文件时交宿主系统应用。
+        // 默认关 = 上游行为; broker 门禁即改即生效, 不需重启引擎。 --
+        Divider().color('#2a2a2a').width('100%')
+        Text('系统打开（实验）')
+          .fontWeight(FontWeight.Bold).fontColor('#999')
+          .width('100%').padding({ top: 12, bottom: 8 })
+        SegmentButton({
+          options: SegmentButtonOptions.capsule({
+            buttons: [{ text: '关' }, { text: '开' }],
+            multiply: false
+          }),
+          selectedIndexes: $systemOpenSel,
+          onItemClicked: (index: number) => {
+            SystemOpenService.getInstance().setEnabled(index == 1);
+          }
+        })
+        .width('100%')
+        Text('开: Wine 程序打开网址或无关联文件时调用系统应用打开; 关: 保持 Wine 默认行为')
+          .fontSize(12).fontColor('#777')
+          .width('100%').padding({ top: 4 })
 
         // -- 快速操作 --
         Text('快速操作')
