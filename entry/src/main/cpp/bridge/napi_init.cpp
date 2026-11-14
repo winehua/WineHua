@@ -1254,6 +1254,13 @@ static napi_value RaiseToplevel(napi_env env, napi_callback_info info) {
 // Desktop 模式: 接收物理像素坐标 (px, py), 通过 viewport 映射为 Wine 逻辑坐标后查找
 // resize 后 surface 和逻辑尺寸比例变化, 由 renderer viewport 保证映射正确
 static napi_value FindToplevelAt(napi_env env, napi_callback_info info) {
+    // x11 路线无此语义 (查 wayland toplevel 空间表, x11 会话调用只会得到
+    // 垃圾 id) —— ArkTS 侧按路线分叉, 此处防御误调。
+    if (x11_toplevel_active()) {
+        napi_value result;
+        napi_create_uint32(env, 0, &result);
+        return result;
+    }
     size_t argc = 2;
     napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
