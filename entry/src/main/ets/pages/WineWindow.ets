@@ -124,6 +124,9 @@ struct WineWindow {
   private lastEnterDownTs: number = 0;
   // 无配对 up 的判定窗口: 窗口内收到 up 视为正常配对的抬起, 不补发
   private static readonly ENTER_SYNTH_WINDOW_MS: number = 1000;
+  // 已 Inject 按下、尚未收到抬起的键。Alt+Tab 等操作切走时抬起事件
+  // 会派给新窗口, 本窗口收到 blur 时补发释放, 否则 Wine 侧修饰键永久卡住。
+  private pressedKeys: Set<number> = new Set<number>();
   private twoFingerAccumX: number = 0;
   private static readonly SCROLL_STEP_PX: number = 40; // 物理像素/滚动步, winewayland.drv 只处理 discrete
   private scrollLogCounter: number = 0;
@@ -210,6 +213,11 @@ struct WineWindow {
       return;
     }
     const pressed = (event.type === KeyType.Down);
+    if (pressed) {
+      this.pressedKeys.add(evdevCode);
+    } else {
+      this.pressedKeys.delete(evdevCode);
+    }
     hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] KEY tl=%{public}d ohos=%{public}d->evdev=%{public}d %{public}s',
       this.toplevelId, event.keyCode, evdevCode, pressed ? 'DOWN' : 'UP');
     // 回车补发: 软键盘/IME 场景系统吞掉 KeyDown 只派发 KeyUp (onKeyEvent
@@ -224,6 +232,22 @@ struct WineWindow {
       }
     }
     testNapi.sendKeyEvent(this.toplevelId, evdevCode, pressed);
+  }
+
+  // 窗口失焦: 补发所有未抬起的键。Alt+Tab/点击其他应用时抬起事件
+  // 不会回到本窗口, 不补发会让 Wine 的修饰键状态永久按下 (卡键)。
+  private releasePressedKeys(): void {
+    if (this.pressedKeys.size === 0) {
+      return;
+    }
+    hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] BLUR release %{public}d keys tl=%{public}d',
+      this.pressedKeys.size, this.toplevelId);
+    this.pressedKeys.forEach((code: number) => {
+      if (this.toplevelId > 0) {
+        testNapi.sendKeyEvent(this.toplevelId, code, false);
+      }
+    });
+    this.pressedKeys.clear();
   }
 
   // 顶条触摸: 轻按交给按钮 onClick; 超过拖动阈值 = 系统拖拽接管
@@ -385,6 +409,7 @@ struct WineWindow {
       // 根 Column 与 Stack 共用 handleWineKey (stopPropagation 防双发)。
       // wayland/其他形态无此 Column, Stack 即根, 行为与改动前一致。
       .onKeyEvent((event: KeyEvent) => { this.handleWineKey(event); })
+      .onBlur(() => { this.releasePressedKeys(); })
     } else {
       // 非顶条形态 (wayland / WWA / modal / popup): 与改动前同一棵树
       this.wineContent()
@@ -760,6 +785,7 @@ struct WineWindow {
     //    build() 里的同款挂点接住 —— 实测: 带顶条的页面根节点被焦点系统
     //    选中, 键盘事件不到 Stack) --
     .onKeyEvent((event: KeyEvent) => { this.handleWineKey(event); })
+    .onBlur(() => { this.releasePressedKeys(); })
 
     .onAreaChange((_o: Area, n: Area) => {
       this.surfacePxW = vp2px(n.width as number);
