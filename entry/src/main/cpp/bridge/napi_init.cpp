@@ -132,6 +132,50 @@ extern "C" int winehua_host_open_target(const char* target) {
     return 0;
 }
 
+// -- NAPI: setClipboardUpdateCallback (guest 剪贴板 -> ArkTS) --
+static napi_threadsafe_function gClipboardTsfn = nullptr;
+
+static void CallJsClipboardText(napi_env env, napi_value cb, void*, void* data) {
+    char* text = static_cast<char*>(data);
+    if (env && cb && text) {
+        napi_value undef, arg;
+        napi_get_undefined(env, &undef);
+        napi_create_string_utf8(env, text, NAPI_AUTO_LENGTH, &arg);
+        napi_call_function(env, undef, cb, 1, &arg, nullptr);
+    }
+    free(text);
+}
+
+static napi_value SetClipboardUpdateCallback(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+
+    if (gClipboardTsfn) {
+        napi_release_threadsafe_function(gClipboardTsfn, napi_tsfn_release);
+        gClipboardTsfn = nullptr;
+    }
+
+    napi_value name;
+    napi_create_string_utf8(env, "WLClipboardText", NAPI_AUTO_LENGTH, &name);
+    napi_create_threadsafe_function(env, args[0], nullptr, name,
+                                    0, 1, nullptr, nullptr, nullptr,
+                                    CallJsClipboardText, &gClipboardTsfn);
+    return nullptr;
+}
+
+extern "C" int winehua_host_clipboard_text(const char* utf8) {
+    if (!gClipboardTsfn || !utf8 || !*utf8) return -1;
+    char* copy = strdup(utf8);
+    if (!copy) return -1;
+    if (napi_call_threadsafe_function(gClipboardTsfn, copy, napi_tsfn_nonblocking) != napi_ok) {
+        free(copy);
+        return -1;
+    }
+    return 0;
+}
+
 // -- Wine DPI (HiDPI 呈现 1:1) --
 // ArkTS 按 96 × WINE_CONTENT_SCALE(2.0) 传入 (内容缩放基准, 非设备密度);
 // wine_env.cpp 组会话 env 时下发 WINEHUA_LOGPIXELS,
@@ -166,6 +210,24 @@ static napi_value SetSystemOpenEnabled(napi_env env, napi_callback_info info) {
     bool on = false;
     if (napi_get_value_bool(env, args[0], &on) != napi_ok) return nullptr;
     winehua_set_system_open_enabled(on ? 1 : 0);
+    return nullptr;
+}
+
+// -- NAPI: setClipboardText (ArkTS 系统剪贴板 -> guest) --
+static napi_value SetClipboardText(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+
+    size_t len = 0;
+    napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+    char* text = static_cast<char*>(malloc(len + 1));
+    if (text) {
+        napi_get_value_string_utf8(env, args[0], text, len + 1, &len);
+        wl_ohos_input_post_clipboard(text);
+        free(text);
+    }
     return nullptr;
 }
 
@@ -1307,6 +1369,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"stopAll",        nullptr, StopAll,        nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setStateCallback", nullptr, SetStateCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setOpenTargetCallback", nullptr, SetOpenTargetCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setClipboardUpdateCallback", nullptr, SetClipboardUpdateCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setSystemOpenEnabled", nullptr, SetSystemOpenEnabled, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setWineLogPixels", nullptr, SetWineLogPixels, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelCallback", nullptr, SetToplevelCallback, nullptr, nullptr, nullptr, napi_default, nullptr},

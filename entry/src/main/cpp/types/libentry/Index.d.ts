@@ -6,6 +6,10 @@ export const stopClient: () => void;
 export const stopAll: () => void;
 export const setStateCallback: (cb: (state: string) => void) => void;
 export const setOpenTargetCallback: (cb: (target: string) => void) => void;
+/** guest 复制文本 -> ArkTS (写系统剪贴板)。 */
+export const setClipboardUpdateCallback: (cb: (text: string) => void) => void;
+/** ArkTS 系统剪贴板文本 -> guest (设 X CLIPBOARD selection)。 */
+export const setClipboardText: (text: string) => void;
 /** 系统打开开关 (broker OPEN 门禁, 即时生效; 默认关 = 上游行为)。 */
 export const setSystemOpenEnabled: (enabled: boolean) => void;
 export const setToplevelCallback: (cb: (id: number, event: string, data: string) => void) => void;

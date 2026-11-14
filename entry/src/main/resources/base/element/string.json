@@ -23,6 +23,10 @@
     {
       "name": "microphone_permission",
       "value": "Capture microphone audio for Windows apps"
+    },
+    {
+      "name": "pasteboard_permission",
+      "value": "读取系统剪贴板，用于 Windows 应用内粘贴"
     }
   ]
 }

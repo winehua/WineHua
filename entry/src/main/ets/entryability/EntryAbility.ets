@@ -6,6 +6,7 @@ import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
 import { DesktopModeService } from '../service/DesktopModeService';
 import { DisplayRouteService } from '../service/DisplayRouteService';
+import { ClipboardBridge } from '../service/ClipboardBridge';
 import { SystemOpenService } from '../service/SystemOpenService';
 
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
@@ -231,6 +232,8 @@ export default class EntryAbility extends UIAbility {
     testNapi.setOpenTargetCallback((target: string) => {
       this.openHostTarget(target);
     });
+    // 系统剪贴板 <-> Wine X11 CLIPBOARD 双向文本桥
+    ClipboardBridge.getInstance().init(this.context);
     // 系统打开开关: 读持久化值并推给 broker 门禁
     SystemOpenService.getInstance().init(this.context);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
@@ -350,6 +353,8 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    // 后台期间系统剪贴板可能已变化，回前台补一次同步
+    ClipboardBridge.getInstance().syncHostClipboard();
   }
 
   onBackground(): void {
