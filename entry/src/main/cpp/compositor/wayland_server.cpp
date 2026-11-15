@@ -1,5 +1,6 @@
 #include "wayland_server.h"
 #include "input/seat.h"
+#include "data_device.h"
 #include "input/text_input.h"
 #include "input/input_manager.h"
 #include "xdg_shell.h"
@@ -81,6 +82,10 @@ bool WaylandServer::Start(const std::string& socketPath) {
     RegisterXdgShell(display_);
     RegisterWinehuaToplevel(display_);
     Seat::GetInstance()->Register(display_);
+    // wayland 路线剪贴板: wl_data_device_manager global (缺它 wine 剪贴板
+    // 整链不初始化, 双向都是死链 — x11 路线走 display_input.c 的 wlroots
+    // seat + xwm 桥, 与本模块无关)
+    ClipboardDevice::GetInstance()->Register(display_);
     // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
     // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
     // 装配在 wl 事件循环启动前 (与 4C1 warpSink 同模式: 之后回调仅在
@@ -111,6 +116,7 @@ void WaylandServer::Stop() {
     // destroyed 通知给 ArkTS (让 Wine 子窗口正确关闭)
     DestroyAllToplevels();
     InputManager::GetInstance()->Shutdown();
+    ClipboardDevice::GetInstance()->Unregister();
     Seat::GetInstance()->Unregister();
     TextInput::GetInstance()->Unregister();
     if (display_) wl_display_terminate(display_);
