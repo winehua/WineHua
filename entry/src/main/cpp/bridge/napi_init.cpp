@@ -1,6 +1,7 @@
 #include <napi/native_api.h>
 #include "common/fs_utils.h"
 #include "compositor/wayland_server.h"
+#include "compositor/data_device.h" /* 剪贴板路线分发: wayland -> ClipboardDevice */
 #include "bridge/plugin_manager.h"
 #include "input/input_manager.h"
 #include "input/pointer_extras.h"
@@ -214,6 +215,8 @@ static napi_value SetSystemOpenEnabled(napi_env env, napi_callback_info info) {
 }
 
 // -- NAPI: setClipboardText (ArkTS 系统剪贴板 -> guest) --
+// 路线门同 SendKeyEvent (双隔离红线): x11 走 display_input.c 的 wlroots seat
+// 桥, wayland 走合成器 data device (x11 合成器不跑, 反之亦然)
 static napi_value SetClipboardText(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -225,7 +228,11 @@ static napi_value SetClipboardText(napi_env env, napi_callback_info info) {
     char* text = static_cast<char*>(malloc(len + 1));
     if (text) {
         napi_get_value_string_utf8(env, args[0], text, len + 1, &len);
-        wl_ohos_input_post_clipboard(text);
+        if (x11_toplevel_active()) {
+            wl_ohos_input_post_clipboard(text);
+        } else {
+            ClipboardDevice::GetInstance()->PostHostClipboard(text);
+        }
         free(text);
     }
     return nullptr;

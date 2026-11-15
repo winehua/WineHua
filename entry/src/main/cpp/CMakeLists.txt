@@ -63,6 +63,7 @@ add_library(entry SHARED
     phone_adapter/phone_virgl_relay.cpp
     compositor/wayland_server.cpp
     compositor/wl_core.cpp
+    compositor/data_device.cpp
     compositor/frame/compositor_blit.cpp
     compositor/toplevel/toplevel_manager.cpp
     compositor/toplevel/popup_manager.cpp
