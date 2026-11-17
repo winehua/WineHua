@@ -29,7 +29,7 @@
       "nativeLib": {
         "debugSymbol": {
           "strip": true,
-          "exclude": []
+          "exclude": ["**/libgst*.so"]
         }
       }
     },
