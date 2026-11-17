@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-17",
+  "sourceCommit": "fafc122d20c4a53f08531938993faec372bfca23",
+  "branch": "feature/vpp-runtime",
+  "checks": {
+    "productionArktsPolicy": "passed-six-backend-persistence-launch-cases",
+    "arktsCompile": "passed",
+    "finalHapRuntimeClosure": "passed",
+    "sourceAndNativePairing": "passed",
+    "newBackendOptionsInBytecode": "passed",
+    "protectedProductBoundary": "passed",
+    "physicalDeviceUi": "not-run",
+    "gamePerformance": "not-run"
+  },
+  "package": {
+    "path": "workspace_temp/runtime-check/winehua-mini-runtime-only-signed.hap",
+    "bytes": 587805241,
+    "sha256": "7bb37fad4ffa9e759a4cb714d5f1ddddba3b4db052e0507d631cbd6440295249"
+  },
+  "previousPackage": {
+    "path": "workspace_temp/runtime-check/winehua-mini-runtime-only-previous-signed.hap",
+    "bytes": 587801244,
+    "sha256": "d54f9ceaec0125747f13808ba2321a934ef6b912d767599f7d075e0ab520c773"
+  },
+  "runtimeRecipes": {
+    "wine": {
+      "commit": "527cd6255d4f26c21ff0a7111fc0c37e35eac9ba",
+      "tree": "bd2d6662a1d32f4347829428b6c7c055afde0797"
+    },
+    "fex": {
+      "commit": "c3b2b2306347e16da04e512a52432cb9c921d221",
+      "tree": "fe8e476f8828d261dfa7f4f338a85144177b8058"
+    }
+  },
+  "restrictions": [
+    "Debug-only Mini package omits READ_PASTEBOARD; production declaration is unchanged.",
+    "No new game performance or physical UI acceptance."
+  ],
+  "cleanup": {
+    "removedPreviousPackageBytes": 587802173,
+    "removedUnsignedBytes": 584855315,
+    "retainedSignedPackages": 2
+  }
+}
