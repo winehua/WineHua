@@ -16,7 +16,8 @@ ROOTS = ('libxwayland_ohos.so', 'winex11.so', 'libXrender.so.1', 'libXfixes.so.3
     'libXi.so.6', 'libXrandr.so.2', 'libXinerama.so.1', 'libXcursor.so.1', 'libXcomposite.so.1', 'libXxf86vm.so.1')
 CMAKE_ROOTS = ('libentry.so', 'libxwayland_child.so', 'libxim_server_child.so', 'libdisplay_route_napi.so')
 # SDK platform APIs. All project-built dependencies must resolve from HAP libs.
-SYSTEM = frozenset(('libc.so', 'libm.so', 'libdl.so', 'libEGL.so', 'libGLESv2.so',
+# libuv is the SDK NAPI event-loop API, resolved from platformsdk on devices.
+SYSTEM = frozenset(('libuv.so', 'libc.so', 'libm.so', 'libdl.so', 'libEGL.so', 'libGLESv2.so',
     'libGLESv3.so', 'libvulkan.so', 'libace_napi.z.so', 'libace_ndk.z.so',
     'libhilog_ndk.z.so', 'libchild_process.so', 'libipc_capi.so', 'libohaudio.so',
     'libnative_window.so', 'libnative_image.so', 'libnative_buffer.so',
