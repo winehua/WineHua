@@ -56,7 +56,7 @@ def die(message: str) -> "None":
 # 构建环境（路径知识的唯一来源是 scripts/env.sh，不在此重复）
 # ---------------------------------------------------------------------------
 
-_ENV_KEYS = ("BUILD_DIR", "WINE_BUILD_ROOT", "WINE_ARCH", "LLVM_MINGW", "DXVK_SRC", "VKD3D_PROTON_BUILD_ROOT")
+_ENV_KEYS = ("BUILD_DIR", "WINE_BUILD_ROOT", "WINE_ARCH", "WINE_SRC", "LLVM_MINGW", "DXVK_SRC", "VKD3D_PROTON_BUILD_ROOT")
 
 
 def load_build_env() -> dict:
@@ -305,7 +305,11 @@ def build_case(env: dict, case: Case, arch: str, dest: Path) -> None:
             die(f"case {case.id}: source missing: {src}")
     cc = (str(Path(env["LLVM_MINGW"]) / "bin/aarch64-w64-mingw32-clang")
           if arch == "x64" and env["WINE_ARCH"] == "aarch64" else MINGW[arch])
-    command = [cc, *spec.get("cflags", ["-O2", "-s"]), "-o", str(dest), *sources]
+    # Smoke headers follow the selected, locked Wine source, not the retired gitlink.
+    cflags = [flag.replace("-Ithirdparty/wine/", f"-I{env['WINE_SRC']}/", 1)
+              if flag.startswith("-Ithirdparty/wine/") else flag
+              for flag in spec.get("cflags", ["-O2", "-s"])]
+    command = [cc, *cflags, "-o", str(dest), *sources]
     if spec.get("dxvk_include"):
         command.append(f"-I{env['DXVK_SRC']}/include")
     if spec.get("vulkan_import"):
