@@ -5,6 +5,7 @@ import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
 import { SegmentButton, SegmentButtonOptions, promptAction } from '@kit.ArkUI';
 import { WineEnvService } from '../service/WineEnvService';
+import { normalizeD3dBackend, isDxvkProfile, graphicsBackendHelp } from '../service/GraphicsBackendPolicy';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
@@ -168,9 +169,7 @@ struct Index {
   }
 
   aboutToAppear(): void {
-    this.d3dBackend = this.d3dBackendText === 'dxvk_legacy' ||
-      this.d3dBackendText === 'dxvk_modern_2_6' ||
-      this.d3dBackendText === 'vkd3d_limited_500k' ? this.d3dBackendText : 'wined3d';
+    this.d3dBackend = normalizeD3dBackend(this.d3dBackendText);
     this.backendSel = this.d3dBackend;
     this.dxvkBackend = this.dxvkBackendText === 'dxvk_modern_2_6' ?
       'dxvk_modern_2_6' : 'dxvk_legacy';
@@ -180,6 +179,9 @@ struct Index {
     const env = this.env;
     const mirror = (): void => {
       this.state = env.engineState;
+      this.d3dBackend = env.getD3dBackend();
+      this.backendSel = this.d3dBackend;
+      this.dxvkBackend = env.getDxvkBackend();
       this.sessionAlive = env.sessionAlive;
       // prefixReady 跳变驱动文件区: 1.0.5 靠 refreshPrefix/waitForPrefix 在
       // 就绪时 listDir, engine service 化后该联动丢失 (回归) — 就绪瞬间
@@ -252,27 +254,23 @@ struct Index {
     }
   }
 
-  // 图形后端互斥单选收口: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D 四选一。
+  // 图形后端互斥单选，保存偏好并在重启 Wine 后应用。
   // 选中值 = d3d 后端权威档 (vkd3d 档 = D3D12→VKD3D + D3D11/DXGI→DXVK 混合路由,
   // DXVK 版本由 dxvkBackendText 决定, 见下方混合路由提示)。更新三个来源:
   // @State backendSel (高亮) / @StorageLink 文本 (AppStorage+持久化) / 私有字段 (doRun)。
   private selectBackend = (backend: string): void => {
-    const selected = backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
-      backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
+    const selected = normalizeD3dBackend(backend);
     this.backendSel = selected;
     this.d3dBackend = selected;
     this.d3dBackendText = selected;
     this.d3dPreferenceText = selected;
-    if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
+    if (isDxvkProfile(selected)) {
       // DXVK 档: dxvk 版本与 d3d 档一致 (vkd3d/wined3d 档保留上次 DXVK 版本)
       this.dxvkBackend = selected;
       this.dxvkBackendText = selected;
       this.dxvkPreferenceText = selected;
     }
     this.env.setD3dPreference(selected);
-    this.statusText = selected === 'dxvk_legacy' ? 'DXVK Legacy' :
-      (selected === 'dxvk_modern_2_6' ? 'DXVK Modern 2.6' :
-        (selected === 'vkd3d_limited_500k' ? 'VKD3D 2.6 Limited 500K' : 'WineD3D'));
     hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
   }
 
@@ -493,8 +491,7 @@ struct Index {
 
         Divider().color('#2a2a2a').width('100%')
 
-        // 图形后端互斥单选: DXVK 2.6.2 / DXVK 1.10.3 / VKD3D 2.6 / WineD3D
-        // 四选一, 高亮 .backgroundColor 判据统一走 @State backendSel (响应式)。
+        // 原有后端与 DXVK9、Zink 平等可选；高亮使用同一份规范化选择。
         Text('图形后端')
           .fontWeight(FontWeight.Bold).fontColor('#999')
           .width('100%').padding({ top: 12, bottom: 8 })
@@ -510,16 +507,31 @@ struct Index {
         }
         .width('100%').margin({ bottom: 4 })
         Row({ space: 4 }) {
+          Button('DXVK9（32 位）')
+            .layoutWeight(1).height(34)
+            .backgroundColor(this.backendSel === 'dxvk_legacy_d3d9' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('dxvk_legacy_d3d9'))
+          Button('Zink')
+            .layoutWeight(1).height(34)
+            .backgroundColor(this.backendSel === 'wined3d_zink' ? '#285' : '#333')
+            .onClick(() => this.selectBackend('wined3d_zink'))
+        }
+        .width('100%').margin({ bottom: 4 })
+        Row({ space: 4 }) {
           Button('VKD3D 2.6 (500K)')
             .layoutWeight(1).height(34)
             .backgroundColor(this.backendSel === 'vkd3d_limited_500k' ? '#285' : '#333')
             .onClick(() => this.selectBackend('vkd3d_limited_500k'))
-          Button('WineD3D')
+          Button('VirGL / WineD3D')
             .layoutWeight(1).height(34)
             .backgroundColor(this.backendSel === 'wined3d' ? '#285' : '#333')
             .onClick(() => this.selectBackend('wined3d'))
         }
         .width('100%').margin({ bottom: 6 })
+        Text(graphicsBackendHelp(this.backendSel))
+          .fontSize(12).fontColor('#bbb').width('100%').margin({ bottom: 4 })
+        Text('后端选择会保存，重启 Wine 后生效。')
+          .fontSize(12).fontColor('#d9a').width('100%').margin({ bottom: 8 })
         if (this.backendSel === 'vkd3d_limited_500k') {
           Text(`混合路由: D3D12 → VKD3D; D3D11/DXGI → ${this.dxvkBackendText === 'dxvk_modern_2_6' ? 'DXVK 2.6.2' : 'DXVK 1.10.3'}; x64 D3D12, 500K descriptor。`)
             .fontSize(11).fontColor('#d9a').maxLines(3)

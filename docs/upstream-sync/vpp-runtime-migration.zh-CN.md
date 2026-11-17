@@ -1,5 +1,7 @@
 # VPP 非 UI 运行时迁入 WineHua
 
+后续范围更新：用户已授权为新增后端补充界面。DXVK9/Zink 的选择、保存及启动链路见 [graphics-backend-ui.zh-CN.md](graphics-backend-ui.zh-CN.md)；产品身份、资源及其他页面保持原样。下文“UI 不变”描述初次运行时迁移范围。
+
 ## 范围与来源
 
 本分支 `feature/vpp-runtime` 从 WineHua `master@40b747714c109a7cb13e38b3af93ec77e1d38594` 建立，按功能迁入 VPP `release/2.0.4@043a1cc0cab8e52b011faf2c611d3c16562ecb0a` 的运行时源码、补丁和构建配方。2026-11-17 再次查询 GitHub，WineHua master 仍为该基线。

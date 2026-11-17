@@ -6,6 +6,7 @@ import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { ProcessService, ProcessInfo } from './ProcessService';
 import { WineWindowManager } from './WineWindowManager';
+import { normalizeD3dBackend, isDxvkProfile } from './GraphicsBackendPolicy';
 // [[SMOKE]] 合并到 main-ui: 删本行与 init 内的 attach 调用 (均为此标记)
 import { SmokeHook } from '../smoke/SmokeHook';
 
@@ -271,15 +272,47 @@ export class WineEnvService {
   getD3dBackend(): string { return this.d3dBackend; }
   getDxvkBackend(): string { return this.dxvkBackend; }
 
-  private normalizeD3dBackend(backend: string): string {
-    return backend === 'dxvk_legacy' || backend === 'dxvk_modern_2_6' ||
-      backend === 'vkd3d_limited_500k' ? backend : 'wined3d';
-  }
-
   private normalizeDxvkBackend(backend: string): string {
     return backend === 'dxvk_modern_2_6' ? 'dxvk_modern_2_6' : 'dxvk_legacy';
   }
   getWineLang(): string { return this.wineLang; }
+
+  // Load saved backend choices before EntryAbility applies temporary Want overrides.
+  initPreferences(ctx: common.Context): void {
+    if (this.settingsStore) return;
+    // 语言偏好: preferences API 直读 (同 DisplaySettingsService 模式), 缺省中文
+    try {
+      this.settingsStore = preferences.getPreferencesSync(ctx, { name: 'wine_settings' });
+      const savedD3d = this.settingsStore.getSync('d3d_backend', '') as string;
+      const savedDxvk = this.settingsStore.getSync('dxvk_backend', '') as string;
+      if (savedD3d) AppStorage.setOrCreate<string>('winehua.d3d.preference', normalizeD3dBackend(savedD3d));
+      if (savedDxvk) AppStorage.setOrCreate<string>('winehua.dxvk.preference', savedDxvk);
+      const savedLang = this.settingsStore.getSync('lang', 'zh_CN') as string;
+      this.wineLang = savedLang === 'en_US' ? 'en_US' : 'zh_CN';
+      this.skippedUpgradeSha = this.settingsStore.getSync('skipped_upgrade_sha', '') as string;
+      // zHome 持久化 (M3a 实测): picker 需要前台, 而 x11 路线的桌面窗会在
+      // 冷启后 ~150ms 抢走前台 —— 每次冷启都 re-pick 的旧形态让后台自动
+      // 拉起必然失败 (failInit: 获取下载目录失败, bgStart=true)。路径稳定
+      // (Download/<bundle>/), 首次 picker 成功后落盘, 后续进程直读。
+      const savedZHome = this.settingsStore.getSync('z_home', '') as string;
+      if (savedZHome && savedZHome.startsWith('/')) {
+        this.zHome = savedZHome;
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'Wine settings load fail: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  private persistGraphicsPreferences(): void {
+    if (!this.settingsStore) return;
+    try {
+      this.settingsStore.putSync('d3d_backend', AppStorage.get<string>('winehua.d3d.preference') ?? 'dxvk_modern_2_6');
+      this.settingsStore.putSync('dxvk_backend', AppStorage.get<string>('winehua.dxvk.preference') ?? 'auto');
+      this.settingsStore.flush();
+    } catch (e) {
+      hilog.error(DOMAIN, 'wine', 'graphics settings persist fail: %{public}s', JSON.stringify(e));
+    }
+  }
 
   // 设置页"Wine 语言"切换: 持久化 (preferences API, putSync+flush 直写磁盘)。
   // 仅写入配置 — 已在运行的 Wine 进程不受影响, 重启引擎后生效 (UI 负责提示)
@@ -301,14 +334,15 @@ export class WineEnvService {
   // 环境页"渲染策略"切换: 持久化偏好 + 同步 AppStorage 生效值 + 重读启动参数。
   // 仅写入配置 — 已在运行的 Wine 不受影响, 重启引擎后生效 (UI 负责提示)
   setD3dPreference(backend: string): void {
-    const selected = this.normalizeD3dBackend(backend);
+    const selected = normalizeD3dBackend(backend);
     PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.preference', selected);
     AppStorage.set<string>('winehua.d3d.backend', selected);
-    if (selected === 'dxvk_legacy' || selected === 'dxvk_modern_2_6') {
+    if (isDxvkProfile(selected)) {
       this.setDxvkPreference(selected);
       return;
     }
+    this.persistGraphicsPreferences();
     this.updateLaunchRequest();
     hilog.info(DOMAIN, 'GameTest', 'D3D backend selected=%{public}s', selected);
     this.notify();
@@ -319,13 +353,14 @@ export class WineEnvService {
     PersistentStorage.persistProp<string>('winehua.dxvk.preference', selected);
     AppStorage.set<string>('winehua.dxvk.preference', selected);
     AppStorage.set<string>('winehua.dxvk.backend', selected);
-    const d3d = this.normalizeD3dBackend(
+    const d3d = normalizeD3dBackend(
       AppStorage.get<string>('winehua.d3d.backend') ?? selected);
-    if (d3d === 'wined3d' || d3d.indexOf('dxvk_') === 0) {
+    if (d3d === 'wined3d' || isDxvkProfile(d3d)) {
       PersistentStorage.persistProp<string>('winehua.d3d.preference', selected);
       AppStorage.set<string>('winehua.d3d.preference', selected);
       AppStorage.set<string>('winehua.d3d.backend', selected);
     }
+    this.persistGraphicsPreferences();
     this.updateLaunchRequest();
     hilog.info(DOMAIN, 'GameTest', 'DXVK backend selected=%{public}s d3d12=%{public}s',
       selected, this.d3dBackend);
@@ -335,7 +370,7 @@ export class WineEnvService {
   // 读取 EntryAbility 发布到 AppStorage 的生效值 (D3D/DXVK 后端)
   private updateLaunchRequest(): void {
     const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_modern_2_6';
-    this.d3dBackend = this.normalizeD3dBackend(backend);
+    this.d3dBackend = normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');
     // [实验-设备验证] perf profile 统一写死 dirty-ring 档, 忽略上次持久化值:
@@ -395,23 +430,7 @@ export class WineEnvService {
     }
     this.initialized = true;
     this.ctx = ctx;
-    // 语言偏好: preferences API 直读 (同 DisplaySettingsService 模式), 缺省中文
-    try {
-      this.settingsStore = preferences.getPreferencesSync(ctx, { name: 'wine_settings' });
-      const savedLang = this.settingsStore.getSync('lang', 'zh_CN') as string;
-      this.wineLang = savedLang === 'en_US' ? 'en_US' : 'zh_CN';
-      this.skippedUpgradeSha = this.settingsStore.getSync('skipped_upgrade_sha', '') as string;
-      // zHome 持久化 (M3a 实测): picker 需要前台, 而 x11 路线的桌面窗会在
-      // 冷启后 ~150ms 抢走前台 —— 每次冷启都 re-pick 的旧形态让后台自动
-      // 拉起必然失败 (failInit: 获取下载目录失败, bgStart=true)。路径稳定
-      // (Download/<bundle>/), 首次 picker 成功后落盘, 后续进程直读。
-      const savedZHome = this.settingsStore.getSync('z_home', '') as string;
-      if (savedZHome && savedZHome.startsWith('/')) {
-        this.zHome = savedZHome;
-      }
-    } catch (e) {
-      hilog.error(DOMAIN, 'wine', 'lang settings load fail: %{public}s', JSON.stringify(e));
-    }
+    this.initPreferences(ctx);
     this.updateLaunchRequest();
 
     this.hasRawfileWineData = this.detectRawfileWineData();

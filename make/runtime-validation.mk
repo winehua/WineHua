@@ -45,3 +45,9 @@ RUNTIME_MESA_REPOSITORY ?= $(ROOT)/thirdparty/mesa
 runtime-zink-check:
 	python3 $(ROOT)/host_tests/zink_shadow_buffer_test.py --mesa-git $(RUNTIME_MESA_REPOSITORY)
 	python3 $(ROOT)/host_tests/zink_shadow_image_test.py --mesa-git $(RUNTIME_MESA_REPOSITORY)
+
+# Execute production backend persistence and EntryAbility launch policy in a
+# small Harmony adapter, without bringing up a device or a graphics session.
+.PHONY: runtime-ui-check
+runtime-ui-check:
+	bash -c 'source "$(ROOT)/scripts/env.sh"; node "$(ROOT)/host_tests/graphics_settings_test.cjs"'

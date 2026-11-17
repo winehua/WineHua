@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
+import { normalizeD3dBackend } from '../service/GraphicsBackendPolicy';
 import { DesktopModeService } from '../service/DesktopModeService';
 import { DisplayRouteService } from '../service/DisplayRouteService';
 import { ClipboardBridge } from '../service/ClipboardBridge';
@@ -51,9 +52,7 @@ export default class EntryAbility extends UIAbility {
      * dxvk 轴的 auto 白名单仅在 vkd3d 组合档下参与解析。 */
     const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'dxvk_modern_2_6';
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
-    const d3dBackend = requestedD3d === 'dxvk_legacy' ||
-      requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
-      requestedD3d : 'wined3d';
+    const d3dBackend = normalizeD3dBackend(requestedD3d);
     const explicitDxvk = !!parameters && parameters['winehua.dxvk_backend'] !== undefined &&
       parameters['winehua.dxvk_backend'] !== null;
     const persistedDxvk = AppStorage.get<string>('winehua.dxvk.preference') || 'auto';
@@ -227,6 +226,7 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
+    WineEnvService.getInstance().initPreferences(this.context);
     this.publishLaunchRequest(want);
     // Wine 侧 winebrowser 的 URL/文件打开请求经 broker 转到 ArkTS。
     testNapi.setOpenTargetCallback((target: string) => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard the WineHua master UI/product boundary and its runtime API surface."""
+"""Guard product identity and permit only the authorized backend settings UI."""
 from pathlib import Path
 import argparse,json,re,subprocess
 from prepare_runtime_sources import load
@@ -10,12 +10,21 @@ PROTECTED=('AppScope','entry/src/main/ets','entry/src/main/resources',
            'entry/src/main/module.json5','build-profile.json5.example',
            'oh-package.json5','entry/oh-package.json5')
 
+# User-authorized UI wiring; branding, resources, permissions and other pages stay protected.
+GRAPHICS_UI={
+    'entry/src/main/ets/pages/Index.ets',
+    'entry/src/main/ets/service/WineEnvService.ets',
+    'entry/src/main/ets/service/GraphicsBackendPolicy.ets',
+    'entry/src/main/ets/entryability/EntryAbility.ets',
+}
+
 def git(*args):
     return subprocess.check_output(['git','-c','gc.auto=0','-C',str(ROOT),*args]).decode()
 
 def check(require_clean=False):
     changed=git('diff','--name-only',BASE,'--',*PROTECTED).splitlines()
-    if changed: raise ValueError('Runtime migration changed the upstream UI/product boundary: '+', '.join(changed))
+    unexpected=[name for name in changed if name not in GRAPHICS_UI]
+    if unexpected: raise ValueError('Runtime migration changed the upstream UI/product boundary: '+', '.join(unexpected))
     if require_clean:
         if git('diff', '--name-only', 'HEAD', '--ignore-submodules=all').strip():
             raise ValueError('Commit runtime source changes before building a source candidate')
@@ -46,7 +55,7 @@ def check(require_clean=False):
     for component in ('wine','fex'):
         lock,_=load(component)
         result[component]=dict(commit=lock['adaptedCommit'],patches=len(lock['patches']))
-    result.update(upstream=BASE,productAndUiUnchanged=True,upstreamNapiExportsPreserved=len(exports(old)))
+    result.update(upstream=BASE,productAndUiUnchanged=not changed,authorizedUiChanges=changed,upstreamNapiExportsPreserved=len(exports(old)))
     print(json.dumps(result))
     return result
 
