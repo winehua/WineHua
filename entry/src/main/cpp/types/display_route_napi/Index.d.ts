@@ -66,3 +66,6 @@ export const displayRoutePhase: () => number;
 
 export interface DisplayClipboardSnapshot { version: number; text: string; }
 export const getDisplayRouteClipboard: () => DisplayClipboardSnapshot;
+
+/** X11 window under the most recently routed pointer motion; 0 when absent. */
+export const getLastPtrWindowId: () => number;

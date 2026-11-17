@@ -34,7 +34,7 @@ export interface WineProgramOptions {
   workingDirectory: string;
   d3dBackend: string;
   dxvkBackend?: string;
-  presentBackend: string;
+  presentBackend?: string;
 }
 export interface WineProcessHandle {
   found: boolean;
