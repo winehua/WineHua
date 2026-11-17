@@ -180,17 +180,44 @@ int ClipboardDevice::OnPostPipeReadable(int fd, uint32_t mask, void* data) {
     if (!batch.empty()) {
         OH_LOG_INFO(LOG_APP, "[Clip] host -> guest %{public}zu bytes, devices=%{public}zu",
                     self->hostText_.size(), self->devices_.size());
-        // host 接管 selection: wine 旧 source 失效, 通知其回收
+        // host 接管 selection: wine 旧 source 失效, 通知其回收; 在途的 guest
+        // 读全部作废 (迟到 EOF 不得翻转所有权)
         if (self->guestSource_) {
             wl_data_source_send_cancelled(self->guestSource_);
             self->guestSource_ = nullptr;
         }
+        for (GuestRead* r : self->guestReads_) r->discard = true;
         self->selectionIsHost_ = true;
-        for (DeviceData* dd : self->devices_) {
-            self->SendHostSelectionTo(dd);
+        // 协议投递: 发给持键盘焦点的客户端 (wayland.xml wl_data_device.selection);
+        // 暂无焦点 (引擎刚起) 则挂起, 键盘聚焦时补发 (OnKeyboardFocus)
+        if (self->focusClient_) {
+            wl_resource* dev = self->FindDeviceForClient(self->focusClient_);
+            if (dev) self->SendHostSelectionTo(static_cast<DeviceData*>(
+                                                 wl_resource_get_user_data(dev)));
         }
     }
     return 0;
+}
+
+void ClipboardDevice::OnKeyboardFocus(wl_client* client) {
+    focusClient_ = client;
+    // 协议: 焦点切换时向新聚焦客户端补发当前 selection。仅宿主 selection
+    // 需要 wayland 投递 —— wine 进程间的剪贴板走 wineserver 全局通道, 与
+    // 本协议面无关; wine 自身的 selection 不回投 (其 offer 带 winewayland
+    // tag, wine 侧本来就会忽略)。
+    if (selectionIsHost_ && !hostText_.empty()) {
+        wl_resource* dev = FindDeviceForClient(client);
+        if (dev) {
+            SendHostSelectionTo(static_cast<DeviceData*>(wl_resource_get_user_data(dev)));
+        }
+    }
+}
+
+wl_resource* ClipboardDevice::FindDeviceForClient(wl_client* client) {
+    for (DeviceData* dd : devices_) {
+        if (wl_resource_get_client(dd->device) == client) return dd->device;
+    }
+    return nullptr;
 }
 
 void ClipboardDevice::SendHostSelectionTo(DeviceData* dd) {
@@ -224,29 +251,28 @@ void ClipboardDevice::device_set_selection(wl_client*, wl_resource*, wl_resource
                                            uint32_t serial) {
     auto* self = GetInstance();
     (void)serial;
+    // 读侧失配保护: 上一轮未读完的 read 全部 discard (迟到 EOF 不得翻转所有权)
+    for (GuestRead* r : self->guestReads_) r->discard = true;
+    if (self->guestSource_ && self->guestSource_ != source) {
+        wl_data_source_send_cancelled(self->guestSource_);
+    }
+
     if (!source) {
-        // wine 清空剪贴板: 只记状态, 不动宿主文本 (宿主剪贴板独立)
+        // wine 清空剪贴板: 撤宿主 offer (选择权交还), 不动宿主文本
         self->guestSource_ = nullptr;
-        self->selectionIsHost_ = false;
+        if (self->selectionIsHost_) {
+            self->selectionIsHost_ = false;
+            for (DeviceData* dd : self->devices_) {
+                if (dd->offer) {
+                    wl_resource* old = dd->offer;
+                    dd->offer = nullptr;
+                    wl_resource_destroy(old);
+                }
+            }
+        }
         OH_LOG_INFO(LOG_APP, "[Clip] guest selection cleared");
         return;
     }
-    // host 侧正在挂 offer 时被 wine 接管: 先撤全部 offer
-    if (self->selectionIsHost_) {
-        self->selectionIsHost_ = false;
-        for (DeviceData* dd : self->devices_) {
-            if (dd->offer) {
-                wl_resource* old = dd->offer;
-                dd->offer = nullptr;
-                wl_resource_destroy(old);
-            }
-        }
-    } else if (self->guestSource_ && self->guestSource_ != source) {
-        wl_data_source_send_cancelled(self->guestSource_);
-    }
-    // 读侧失配保护: 上一轮未读完的 read 全部 discard (读到 EOF 自行回收)
-    for (GuestRead* r : self->guestReads_) r->discard = true;
-
     self->guestSource_ = source;
     // 选 mime: utf-8 优先, plain 兜底; 都没有则 guest 无文本
     auto it = self->sourceMimes_.find(source);
@@ -262,6 +288,8 @@ void ClipboardDevice::device_set_selection(wl_client*, wl_resource*, wl_resource
         }
     }
     if (!mime) {
+        // 无文本 mime (如 wine 启动期的空剪贴板导出): 读不到内容, 不撤宿主
+        // offer 也不翻所有权 —— 所有权裁决统一推迟到读完成 (OnGuestReadReadable)
         OH_LOG_INFO(LOG_APP, "[Clip] guest selection has no text mime");
         return;
     }
@@ -271,7 +299,7 @@ void ClipboardDevice::device_set_selection(wl_client*, wl_resource*, wl_resource
         return;
     }
     fcntl(fds[0], F_SETFL, O_NONBLOCK);
-    GuestRead* r = new GuestRead{fds[0], nullptr, {}, false};
+    GuestRead* r = new GuestRead{fds[0], nullptr, {}, false, source};
     r->ev = wl_event_loop_add_fd(wl_display_get_event_loop(self->display_), fds[0],
                                  WL_EVENT_READABLE, OnGuestReadReadable, r);
     if (!r->ev) {
@@ -290,6 +318,7 @@ void ClipboardDevice::device_set_selection(wl_client*, wl_resource*, wl_resource
 
 int ClipboardDevice::OnGuestReadReadable(int fd, uint32_t mask, void* data) {
     auto* r = static_cast<GuestRead*>(data);
+    auto* self = GetInstance();
     (void)mask;
     char tmp[4096];
     for (;;) {
@@ -305,11 +334,35 @@ int ClipboardDevice::OnGuestReadReadable(int fd, uint32_t mask, void* data) {
             }
             r->buf.insert(r->buf.end(), tmp, tmp + n);
         } else if (n == 0) {
-            // EOF: 客户端写完关写端
+            // EOF: 客户端写完关写端。所有权裁决在此 (内容读到才判):
+            // 与宿主文本相同 = wine 进程间导入回声 (一个进程导入触发其它
+            // 进程的 WM_CLIPBOARDUPDATE 反向导出), 桥做镜像 no-op, 不翻
+            // 所有权不撤宿主 offer; 不同 = 真实 guest 复制, 中继宿主并接管。
             if (!r->discard && !r->buf.empty()) {
                 r->buf.push_back('\0');
-                OH_LOG_INFO(LOG_APP, "[Clip] guest -> host %{public}zu bytes", r->buf.size() - 1);
-                winehua_host_clipboard_text(r->buf.data());
+                bool echo = !self->hostText_.empty() &&
+                            self->hostText_.compare(r->buf.data()) == 0;
+                if (echo) {
+                    OH_LOG_INFO(LOG_APP, "[Clip] guest echo suppressed (%{public}zu bytes)",
+                                r->buf.size() - 1);
+                } else {
+                    OH_LOG_INFO(LOG_APP, "[Clip] guest -> host %{public}zu bytes",
+                                r->buf.size() - 1);
+                    winehua_host_clipboard_text(r->buf.data());
+                    if (self->selectionIsHost_) {
+                        self->selectionIsHost_ = false;
+                        for (DeviceData* dd : self->devices_) {
+                            if (dd->offer) {
+                                wl_resource* old = dd->offer;
+                                dd->offer = nullptr;
+                                wl_resource_destroy(old);
+                            }
+                        }
+                    }
+                    if (self->sourceMimes_.count(r->source)) {
+                        self->guestSource_ = r->source;
+                    }
+                }
             }
             GetInstance()->GuestReadDestroy(r, true);
             return 0;
@@ -366,10 +419,10 @@ void ClipboardDevice::manager_get_data_device(wl_client*, wl_resource* resource,
     auto* dd = new DeviceData{self, res, nullptr};
     wl_resource_set_implementation(res, &kDeviceImpl, dd, device_destroy);
     self->devices_.push_back(dd);
-    // 冷启动补发: wine 晚于 ArkTS 剪贴板同步连接, 按当前宿主文本发 selection
-    if (!self->hostText_.empty()) {
-        self->SendHostSelectionTo(dd);
-    }
+    // selection 不在 bind 时投递: 协议规定 selection 跟随键盘焦点
+    // (聚焦时补发, 见 OnKeyboardFocus / InputInjector::InjectKeyboardEnter
+    // 钩子)。bind 即推会让多个 wine 进程各自导入全局剪贴板, 触发导入级联
+    // 与反向回声 (2026-11-16 真机实锤的粘贴失效根因)。
     OH_LOG_INFO(LOG_APP, "[Clip] data_device created (total=%{public}zu)", self->devices_.size());
 }
 

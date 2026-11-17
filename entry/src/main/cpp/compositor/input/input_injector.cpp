@@ -5,6 +5,7 @@
 #include "input/seat.h"
 #include "input/pointer_extras.h"
 #include "input/text_input.h"
+#include "compositor/data_device.h" /* 键盘聚焦投递点: selection 跟随焦点 */
 // 6A 装配注入直呼 (BindResolvers 注入; wl 事件循环启动前装配, 见头注释):
 #include "compositor/input/input_resolver.h"   // IsSurfaceAlive (注入前 surface 存活防御)
 #include "compositor/toplevel/toplevel_manager.h" // GetSurfaceForToplevel (surface 存在检查)
@@ -229,6 +230,9 @@ void InputInjector::InjectKeyboardEnter(uint32_t tl, wl_resource* surface) {
     // IME: keyboard enter → text-input enter (Wine 收到后 enable, 等待文本框
     // SetIMECompositionRect → 非零光标矩形 → TextInput 判定激活)
     TextInput::GetInstance()->OnKeyboardEnter(surface);
+    // 剪贴板 selection 投递点: 协议规定 selection 跟随键盘焦点 —— 焦点切换时
+    // 向新聚焦客户端补发当前 selection (wayland.xml wl_data_device.selection)
+    ClipboardDevice::GetInstance()->OnKeyboardFocus(surfClient);
 }
 
 void InputInjector::InjectKeyboardKey(uint32_t key, uint32_t state) {
