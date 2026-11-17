@@ -289,7 +289,15 @@ build_ohos_unix() {
     # A server-only build still configures and validates the same Wine source,
     # but must not turn an empty target list into a full default make.
     if [ -n "$WINE_UNIX_MODULES" ] && [ ${#targets[@]} -eq 0 ]; then return; fi
+    # The locked Wine tree includes a historical generated inventory. Override
+    # its guard with a build-local header for the actual dependency bytes.
+    local gst_flags="$($PKG_CONFIG_BIN --cflags gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0)"
+    local gst_header="$WINE_BUILD_ROOT/generated/winehua_gst_inventory.h"
+    mkdir -p "$(dirname "$gst_header")"
+    python3 "$SCRIPT_DIR/gstreamer_inventory.py" --plugins-dir "$SYSROOT_EXT_LIB/gstreamer-1.0" \
+        --wine-arch "$WINE_ARCH" --native-arch "$NATIVE_ARCH" --header "$gst_header"
     make -j$JOBS "${targets[@]}" \
+        GSTREAMER_CFLAGS="$gst_flags -include $gst_header" \
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CXX="$OHOS_SDK/native/llvm/bin/clang++ --target=$TARGET --sysroot=$SYSROOT" \
         CFLAGS="$WINE_CFLAGS -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \

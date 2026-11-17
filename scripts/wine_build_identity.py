@@ -138,9 +138,19 @@ def request_identity(args, source):
                 if (repo / 'scripts/verify_wine_overlay_stack.py').is_file() else None,
             'x11_config_check_sha256': file_hash(repo / 'scripts/verify_x11_wine_config.py')
                 if (repo / 'scripts/verify_x11_wine_config.py').is_file() else None,
+            'gstreamer_dependency_inventory': gstreamer_dependency_inventory(repo, args.config),
             'gstreamer_inputs': {name: file_hash(repo / 'scripts' / name) for name in
                                   ('gstreamer_plugins.json', 'gstreamer_inventory.py', 'wine_gstreamer_loader.h')},
             'ordered_overlays': overlays, 'configuration': sorted(args.config), 'tools': tools}
+
+
+def gstreamer_dependency_inventory(repo, config):
+    from gstreamer_inventory import describe
+    values = dict(item.split('=', 1) for item in config)
+    build = Path(os.environ.get('BUILD_DIR', repo / 'build'))
+    plugins = build / 'sysroot-ext/usr/lib' / values.get('TARGET', '') / 'gstreamer-1.0'
+    if not plugins.is_dir(): return None
+    return describe(plugins, values['WINE_ARCH'], values['NATIVE_ARCH'])['inventorySha256']
 
 
 def cached_srcdirs(path):
