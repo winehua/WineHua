@@ -18,6 +18,7 @@ runtime-host-check: test
 	python3 $(ROOT)/host_tests/wine_build_identity_test.py
 	python3 $(ROOT)/scripts/verify_runtime_graphics.py
 	python3 $(ROOT)/host_tests/runtime_pipeline_test.py
+	python3 $(ROOT)/host_tests/signing_contract_test.py
 
 runtime-native-check:
 	cmake -S $(ROOT)/entry/src/main/cpp -B $(RUNTIME_CHECK_DIR)/native \
