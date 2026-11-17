@@ -1,6 +1,7 @@
 #include "plugin_manager.h"
 #include "compositor/wayland_server.h"
 #include "display/x11_toplevel.h"
+#include "display/display_session.h"
 #include <native_window/external_window.h>
 #include <algorithm>
 
@@ -38,10 +39,15 @@ void PluginManager::CancelPendingToplevel(uint32_t id) {
 }
 
 void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
+    if (winehua_x11_is_desktop(toplevelId)) {
+        x11Surfaces_[toplevelId] = surfaceId;
+        WineHua_DisplayRoute_StartWithSurface(surfaceId, false, 0, 0, true, false);
+        return;
+    }
     /* x11 多窗模式: per-xs 呈现归 x11_toplevel 映射层 (render pass 直画),
      * 不建 EglRenderer 不进 toplevelRenderers_ —— 只把 surfaceId 的
      * NativeWindow 回绑给映射层。spec §4。 */
-    if (x11_toplevel_active()) {
+    if (x11_toplevel_owns(toplevelId)) {
         OHNativeWindow* win = nullptr;
         int ret = OH_NativeWindow_CreateNativeWindowFromSurfaceId((uint64_t)surfaceId, &win);
         if (ret != 0 || !win) {
@@ -56,6 +62,7 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
             OH_NativeWindow_DestroyNativeWindow(win);
             return;
         }
+        x11Surfaces_[toplevelId] = surfaceId;
         OH_LOG_INFO(LOG_APP, "[MW-Create] x11 tl #%{public}u window attached (no EglRenderer)", toplevelId);
         return;
     }
@@ -64,14 +71,6 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
                 toplevelId, toplevelRenderers_.size(), toplevelRenderers_.size() + 1);
     OH_LOG_INFO(LOG_APP, "[MW-Create] toplevel=%{public}u surfaceId=%{public}ld existRender=%{public}zu",
                 toplevelId, surfaceId, toplevelRenderers_.size());
-
-    // 防御: 如果已有旧 renderer, 先 shutdown
-    auto old = toplevelRenderers_.find(toplevelId);
-    if (old != toplevelRenderers_.end()) {
-        OH_LOG_WARN(LOG_APP, "[MW-Create] WARN toplevel #%{public}u already has renderer, shutting down old", toplevelId);
-        old->second->Shutdown();
-        toplevelRenderers_.erase(old);
-    }
 
     OHNativeWindow* win = nullptr;
     int ret = OH_NativeWindow_CreateNativeWindowFromSurfaceId((uint64_t)surfaceId, &win);
@@ -82,6 +81,13 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     }
     OH_LOG_INFO(LOG_APP, "[MW-Create] native window created %{public}p for toplevel #%{public}u", win, toplevelId);
 
+    // A failed replacement must not retire a healthy previous surface.
+    auto old = toplevelRenderers_.find(toplevelId);
+    if (old != toplevelRenderers_.end()) {
+        old->second->Shutdown();
+        toplevelRenderers_.erase(old);
+    }
+
     // 构造注入 frame compositor (重构第 6A 步): 渲染器取帧/ZC 状态机经
     // DesktopCompositor 直连 — 替代旧 WaylandServer 门面 26 处转发
     // (TakeToplevelFrame/GetZeroCopyLayerInfo/ActivateZcSurface 等)。
@@ -91,14 +97,18 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
         WaylandServer::GetInstance()->GetDesktopCompositor());
     // 初始尺寸 1x1, 真正尺寸由 ResizeRenderer (onSurfaceChanged) 设置
     r->SetToplevelId(toplevelId);
+    r->SetIsolatedToplevel(isolatedToplevels_.count(toplevelId) != 0);
+    r->SetSurfaceId(surfaceId);
+    const auto visibility = rendererPaused_.find(toplevelId);
+    if (visibility != rendererPaused_.end()) r->SetPaused(visibility->second);
     if (r->Init(win, 1, 1)) {
         toplevelRenderers_[toplevelId] = std::move(r);
+        WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
         OH_LOG_INFO(LOG_APP, "[MW-Create] OK toplevel #%{public}u renderer created (total=%{public}zu)",
                     toplevelId, toplevelRenderers_.size());
     } else {
         OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u EglRenderer::Init FAILED", toplevelId);
-        // 销毁刚才创建的 native window
-        OH_NativeWindow_DestroyNativeWindow(win);
+        // Init owns win on all paths; the renderer destructor cleans it up.
     }
 }
 
@@ -109,10 +119,18 @@ void PluginManager::SetRendererStretchFill(uint32_t toplevelId, bool on) {
     }
 }
 
-void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
+void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h, int64_t surfaceId) {
+    const auto x = x11Surfaces_.find(toplevelId);
+    if (x != x11Surfaces_.end() && surfaceId && x->second != surfaceId) return;
+    if (winehua_x11_is_desktop(toplevelId)) {
+        winehua_x11_canvas_size(w, h);
+        WineHua_DisplayRoute_CanvasResized();
+        return;
+    }
+    if (w <= 0 || h <= 0) return;
     /* x11 多窗模式: 无 EglRenderer, 尺寸同步给映射层 (per-xs 呈现按队列
      * buffer 本体拉伸, 此处只记账)。 */
-    if (x11_toplevel_active()) {
+    if (x11_toplevel_owns(toplevelId)) {
         x11_toplevel_resize_window(toplevelId, w, h);
         return;
     }
@@ -120,6 +138,11 @@ void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
     OH_LOG_INFO(LOG_APP, "[MW-Resize] toplevel=%{public}u size=%{public}dx%{public}d", toplevelId, w, h);
 
     auto rit = toplevelRenderers_.find(toplevelId);
+    if (rit != toplevelRenderers_.end() && surfaceId && rit->second->GetSurfaceId() != surfaceId) return;
+    if (surfaceId && (rit == toplevelRenderers_.end() || !rit->second->IsValid())) {
+        CreateRenderer(toplevelId, surfaceId);
+        rit = toplevelRenderers_.find(toplevelId);
+    }
     if (rit != toplevelRenderers_.end() && rit->second->IsValid()) {
         rit->second->SetSize(w, h);
         OH_LOG_INFO(LOG_APP, "[MW-Resize] toplevel #%{public}u renderer resized OK", toplevelId);
@@ -138,9 +161,15 @@ void PluginManager::ResizeRenderer(uint32_t toplevelId, int w, int h) {
 }
 
 void PluginManager::DestroyToplevel(uint32_t toplevelId) {
+    x11Surfaces_.erase(toplevelId);
+    if (winehua_x11_is_desktop(toplevelId)) {
+        WineHua_DisplayRoute_DetachCanvas();
+        return;
+    }
+    rendererPaused_.erase(toplevelId);
     /* x11 多窗模式: 解绑回绑窗口后照走既有 ArkTS 关窗清理 (destroyed 事件
      * 由映射层发, 这里是 surface 销毁侧的对称操作)。 */
-    if (x11_toplevel_active()) {
+    if (x11_toplevel_owns(toplevelId)) {
         x11_toplevel_detach_window(toplevelId);
         return;
     }
@@ -165,6 +194,22 @@ EglRenderer* PluginManager::GetRendererForToplevel(uint32_t tid) {
     return rit->second.get();
 }
 
+void PluginManager::DestroyRendererForSurface(uint32_t toplevelId, int64_t surfaceId) {
+    if (!surfaceId) { DestroyToplevel(toplevelId); return; }
+    const auto x = x11Surfaces_.find(toplevelId);
+    if (x != x11Surfaces_.end()) {
+        if (x->second == surfaceId) DestroyToplevel(toplevelId);
+        return;
+    }
+    // Root promotion may change the owning toplevel between callbacks.
+    for (const auto& entry : toplevelRenderers_) {
+        if (entry.second->GetSurfaceId() == surfaceId) {
+            DestroyToplevel(entry.first);
+            return;
+        }
+    }
+}
+
 EglRenderer* PluginManager::GetAnyRenderer() {
     if (toplevelRenderers_.empty()) return nullptr;
     return toplevelRenderers_.begin()->second.get();
@@ -179,6 +224,53 @@ void PluginManager::MoveRendererToToplevel(uint32_t oldId, uint32_t newId) {
         return;
     }
     OH_LOG_INFO(LOG_APP, "[MW-Plug] MoveRenderer tl #%{public}u -> #%{public}u", oldId, newId);
-    toplevelRenderers_[newId] = std::move(it->second);
+    auto existing = toplevelRenderers_.find(newId);
+    if (existing != toplevelRenderers_.end()) existing->second->Shutdown();
+    // Erase before insertion: operator[] may rehash and invalidate it.
+    auto renderer = std::move(it->second);
     toplevelRenderers_.erase(it);
+    const auto visibility = rendererPaused_.find(newId);
+    if (visibility != rendererPaused_.end()) renderer->SetPaused(visibility->second);
+    else {
+        const auto oldVisibility = rendererPaused_.find(oldId);
+        if (oldVisibility != rendererPaused_.end()) rendererPaused_[newId] = oldVisibility->second;
+    }
+    rendererPaused_.erase(oldId);
+    renderer->SetToplevelId(newId);
+    toplevelRenderers_[newId] = std::move(renderer);
+}
+
+// ---- VPP additions ----
+void PluginManager::RefreshRenderer(uint32_t toplevelId) {
+    auto it = toplevelRenderers_.find(toplevelId);
+    if (it != toplevelRenderers_.end() && !it->second->IsValid()) {
+        const auto surfaceId = it->second->GetSurfaceId();
+        CreateRenderer(toplevelId, surfaceId);
+        it = toplevelRenderers_.find(toplevelId);
+    }
+    if (it == toplevelRenderers_.end() || !it->second->IsValid()) {
+        OH_LOG_WARN(LOG_APP, "[MW-Refresh] toplevel #%{public}u renderer NOT found or invalid", toplevelId);
+        return;
+    }
+
+    // 压测路径绝不能模拟 onSurfaceDestroyed/onSurfaceCreated：频繁释放 EGL
+    // Surface 会与 ArkUI 的真实生命周期竞争。请求 Wayland 将当前帧重新提交，
+    // 能覆盖 compositor/renderer 刷新，同时保留同一个 NativeWindow 与 EGLContext。
+    it->second->RequestRedraw();
+    WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
+}
+
+void PluginManager::SetRendererPaused(uint32_t toplevelId, bool paused) {
+    rendererPaused_[toplevelId] = paused;
+    if (!paused) RefreshRenderer(toplevelId);
+    auto it = toplevelRenderers_.find(toplevelId);
+    if (it != toplevelRenderers_.end()) it->second->SetPaused(paused);
+}
+
+void PluginManager::SetToplevelIsolated(uint32_t id, bool isolated) {
+    WaylandServer::GetInstance()->GetDesktopCompositor().SetToplevelIsolated(id, isolated);
+    if (isolated) isolatedToplevels_[id] = true;
+    else isolatedToplevels_.erase(id);
+    auto it = toplevelRenderers_.find(id);
+    if (it != toplevelRenderers_.end()) it->second->SetIsolatedToplevel(isolated);
 }

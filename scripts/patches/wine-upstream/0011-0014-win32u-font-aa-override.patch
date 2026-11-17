@@ -1,0 +1,71 @@
+From f0a6a1097f7323e61c85c9e0c05ed5d10c2c7c1d Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0014-win32u-font-aa-override
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 6e9dbbfa811a782cf4aa1154381f74b4103a7e2287124dcff18e5481603c425a
+
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index 3f29e0d85126797f3546fba68202d62d06e14796..eeda0c7cd37b78cc92f9e8f2c7de3d57d6ab7d6b 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -4537,6 +4537,44 @@ static struct gdi_font *select_font( LOGFONTW *lf, FMAT2 dcmat, BOOL can_use_bit
+     return font;
+ }
+ 
++/*************************************************************
++ *           ohos_font_aa_override
++ *
++ * Per-process override for GDI text antialiasing.
++ *
++ * A large family of legacy CJK (and western) titles renders text with GDI into
++ * an offscreen bitmap and then thresholds that bitmap into a 1-bit glyph mask -
++ * e.g. the popular GGE/XYQ private-server clients keep only pixels above
++ * 0x7ffe as ink. Grayscale antialiasing turns most of a 12px CJK stroke grey,
++ * so the mask keeps only stroke cores and the rendered text falls apart into
++ * scattered fragments.
++ *
++ * Game processes can therefore ask for bilevel glyphs without changing the
++ * desktop appearance:
++ *
++ *     WINEHUA_FONT_AA=bitmap -> GGO_BITMAP      (no antialiasing)
++ *     WINEHUA_FONT_AA=gray   -> GGO_GRAY4_BITMAP
++ */
++static UINT ohos_font_aa_override(void)
++{
++#ifdef __OHOS__
++    static int cached = -1;
++
++    if (cached < 0)
++    {
++        const char *value = getenv( "WINEHUA_FONT_AA" );
++
++        cached = 0;
++        if (value && !strcmp( value, "bitmap" )) cached = GGO_BITMAP;
++        else if (value && !strcmp( value, "gray" )) cached = GGO_GRAY4_BITMAP;
++        TRACE( "OHOS font AA override env=%s -> %#x\n", value ? value : "(unset)", cached );
++    }
++    return cached;
++#else
++    return 0;
++#endif
++}
++
+ /*************************************************************
+  * font_SelectFont
+  */
+@@ -4563,6 +4601,12 @@ static HFONT font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+             break;
+         }
+ 
++        {
++            UINT forced_aa = ohos_font_aa_override();
++
++            if (forced_aa) *aa_flags = forced_aa;
++        }
++
+         if (lf.lfOutPrecision == OUT_TT_ONLY_PRECIS)
+             can_use_bitmap = FALSE;
+ 

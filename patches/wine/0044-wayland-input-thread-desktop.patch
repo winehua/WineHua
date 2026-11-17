@@ -1,0 +1,81 @@
+--- a/dlls/winewayland.drv/wayland.c
++++ b/dlls/winewayland.drv/wayland.c
+@@ -252,6 +252,29 @@
+  *  Initialise the per process wayland objects.
+  *
+  */
++BOOL wayland_sync_input_desktop(HWND hwnd)
++{
++    DWORD pid, tid = NtUserGetWindowThread(hwnd, &pid);
++    HDESK desktop, current;
++
++    /* Explorer loads the driver before moving its shell thread to the virtual
++     * desktop. The already running event thread still belongs to the original
++     * desktop. HWND-routed hardware input selects the right desktop in the
++     * server, but implicit input APIs such as SetCursorPos use this thread's
++     * desktop instead. Follow the focused window before calling those APIs. */
++    if (!tid || pid != GetCurrentProcessId()) return FALSE;
++    if (!(desktop = NtUserGetThreadDesktop(tid))) return FALSE;
++    current = NtUserGetThreadDesktop(GetCurrentThreadId());
++    if (desktop == current) return TRUE;
++    if (!NtUserSetThreadDesktop(desktop))
++    {
++        WARN("input desktop switch failed hwnd=%p thread=%lu desktop=%p\n", hwnd, tid, desktop);
++        return FALSE;
++    }
++    TRACE("input desktop sync hwnd=%p thread=%lu old=%p new=%p\n", hwnd, tid, current, desktop);
++    return TRUE;
++}
++
+ BOOL wayland_process_init(void)
+ {
+     struct wl_display *wl_display_wrapper;
+--- a/dlls/winewayland.drv/wayland_pointer.c
++++ b/dlls/winewayland.drv/wayland_pointer.c
+@@ -199,6 +199,7 @@
+     struct wayland_pointer *pointer = &process_wayland.pointer;
+     struct wayland_surface *surface;
+     HWND hwnd;
++    BOOL input_desktop_ready;
+ 
+     InterlockedExchange(&process_wayland.input_serial, serial);
+ 
+@@ -209,6 +210,8 @@
+ 
+     TRACE("hwnd=%p\n", hwnd);
+ 
++    input_desktop_ready = wayland_sync_input_desktop(hwnd);
++
+     pthread_mutex_lock(&pointer->mutex);
+     pointer->focused_hwnd = hwnd;
+     pointer->enter_serial = serial;
+@@ -221,7 +224,7 @@
+     /* Handle the enter as a motion, to account for cases where the
+      * window first appears beneath the pointer and won't get a separate
+      * motion event. */
+-    if (pointer->zwp_relative_pointer_v1 && enter_silent())
++    if (pointer->zwp_relative_pointer_v1 && enter_silent() && input_desktop_ready)
+     {
+         /* 方向 A: 相对模式下 enter 只静默校准光标位置, 不发硬件输入。
+          * 相对模式丢弃绝对 motion (光标位置 = 基线 + 增量累积), 读
+--- a/dlls/winewayland.drv/wayland_keyboard.c
++++ b/dlls/winewayland.drv/wayland_keyboard.c
+@@ -755,6 +755,8 @@
+     hwnd = wl_surface_get_user_data(wl_surface);
+     TRACE("serial=%u hwnd=%p\n", serial, hwnd);
+ 
++    wayland_sync_input_desktop(hwnd);
++
+     pthread_mutex_lock(&keyboard->mutex);
+     keyboard->focused_hwnd = hwnd;
+     pthread_mutex_unlock(&keyboard->mutex);
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -330,6 +330,7 @@
+  */
+ 
+ BOOL wayland_process_init(void);
++BOOL wayland_sync_input_desktop(HWND hwnd);
+ 
+ /**********************************************************************
+  *          Wayland output

@@ -1,0 +1,14 @@
+tree da4b1eb3b7f209eb4a971d4b5929fcda08ff6b4e
+parent 4bd44d0a41787445843ae27a5e1b7dc948ea2987
+author Arkadiusz Hiler <ahiler@codeweavers.com> 1785399166 +0300
+committer Arkadiusz Hiler <ahiler@codeweavers.com> 1785744509 +0300
+
+winebus: Fix initial axis values for evdev gamepads.
+
+Set abs_info values also when dealing with gamepads and don't guard it
+behind what is effectively !impl->is_gamepad.
+
+It was causing issues on ARM64 LLVM builds where the uninitialized
+abs_info ended up with random values.
+
+(cherry picked from commit fe9533f93a709e3af9ccb0a8e269337ba3dfd1e6)

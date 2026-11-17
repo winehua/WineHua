@@ -9,7 +9,7 @@
  * 各自只保留真分歧键:
  *   - XDG_RUNTIME_DIR / WAYLAND_DISPLAY (主: 合成器 socket 参数; 子: prefix/固定名)
  *   - LD_LIBRARY_PATH 系 (主: 按图形后端拼 runtimeLibPath; 子: 系统原生路径)
- *   - 仅主进程: LANG/LC_ALL, GST_PLUGIN_PATH
+ *   - 仅主进程: LANG/LC_ALL
  *   - 仅子进程: WINEBINDIR/WINEUNIXDIR (dladdr 路径修正), WINEDEBUG profile 选择
  *
  * header-only 的原因: wine_child 是独立 lib (libwine_child.so, 不链 entry
@@ -24,6 +24,15 @@
 #include "wine_constants.h"
 
 namespace winehua {
+
+// Native libraries are executable in the application linker namespace.
+inline std::string BundleNativeLibsDir() {
+#ifdef __aarch64__
+    return "/data/storage/el1/bundle/libs/arm64";
+#else
+    return "/data/storage/el1/bundle/libs/x86_64";
+#endif
+}
 
 // -- Box64 性能调优表 (单源, 仅 ARM64 有内容) --
 // 历史: 曾是 SetBox64PerfEnv (setenv 版) 与 AppendBox64PerfStrings (字符串版)
@@ -103,17 +112,26 @@ inline std::vector<std::string> BuildWineBaselineLines(const WineBaselinePaths& 
     const std::string& binDir = p.binDir;
     const std::string shareDir = binDir + "/../share";
     const std::string prefix = p.prefixDir.empty() ? std::string(WINE_PREFIX) : p.prefixDir;
-    std::string dllPath = binDir + "/x86_64-windows:" + binDir + "/i386-windows:" + binDir;
-#ifndef __aarch64__
-    // x86_64: bundled libs 加入 WINEDLLPATH, load_unixlib_by_name() 从此搜索 .so
+    // Match BuiltinWineDllPath / 29778f7: PE dirs, then unixlib dir, then HAP
+    // native libs so load_unixlib_by_name() can find wineohos.so even before
+    // AppendD3dBackendEnv / reassert_arch_wine_runtime_env overlays run.
+    std::string dllPath = binDir + "/" WINE_PE_SUBDIR ":" + binDir + "/i386-windows:" + binDir;
+#if !defined(__aarch64__) || !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    // 方案①③: unixlib + bundled libs。方案② (box64 转译) 不加 el1 arm64
+    // 原生库 (与 wine_env.cpp BuildWineEnv 的 Layer 2 一致)。
+    dllPath += ":" + binDir + "/" WINE_UNIX_SUBDIR;
+#ifdef __aarch64__
+    dllPath += ":/data/storage/el1/bundle/libs/arm64";
+#else
     dllPath += ":/data/storage/el1/bundle/libs/x86_64";
+#endif
 #endif
 
     std::vector<std::string> lines = {
         "WINEPREFIX=" + prefix,
         "WINEDATADIR=" + shareDir + "/wine",
-        "WINEDLLDIR=" + binDir + "/x86_64-unix",
-        "WINEDLLDIR0=" + binDir + "/x86_64-windows",
+        "WINEDLLDIR=" + binDir + "/" WINE_UNIX_SUBDIR,
+        "WINEDLLDIR0=" + binDir + "/" WINE_PE_SUBDIR,
         "WINEDLLDIR1=" + binDir + "/i386-windows",
         "WINEDLLDIR2=" + binDir,
         "WINEDLLPATH=" + dllPath,
@@ -125,10 +143,31 @@ inline std::vector<std::string> BuildWineBaselineLines(const WineBaselinePaths& 
         // locale.dir 条目为相对形态, 搬移后按本目录拼接即生效。
         "XLOCALEDIR=" + shareDir + "/X11/locale",
         "PATH=/usr/local/bin:/data/app/bin:/usr/bin:/vendor/bin:" + binDir +
-            "/x86_64-windows:" + binDir + "/i386-windows:" + binDir,
+            "/" WINE_PE_SUBDIR ":" + binDir + "/i386-windows:" + binDir,
         "TMPDIR=" WINE_TMPDIR,
         "MIDI_SOUNDFONT_PATH=" + binDir + "/../audio/winehua-gm.sf2",
     };
+#if defined(__aarch64__) && defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    const std::string pluginDir = binDir + "/" WINE_UNIX_SUBDIR "/gstreamer-1.0";
+    lines.push_back("WINEHUA_GST_PLUGIN_DIR=");
+    lines.push_back("GST_PLUGIN_PATH=" + pluginDir);
+    lines.push_back("GST_PLUGIN_PATH_1_0=" + pluginDir);
+    lines.push_back("GST_PLUGIN_SYSTEM_PATH=" + pluginDir);
+    lines.push_back("GST_PLUGIN_SYSTEM_PATH_1_0=" + pluginDir);
+#else
+    lines.push_back("WINEHUA_GST_PLUGIN_DIR=" + BundleNativeLibsDir());
+    // Wine explicitly loads only the packaged inventory after gst_init_check().
+    lines.push_back("GST_PLUGIN_PATH=");
+    lines.push_back("GST_PLUGIN_PATH_1_0=");
+    lines.push_back("GST_PLUGIN_SYSTEM_PATH=");
+    lines.push_back("GST_PLUGIN_SYSTEM_PATH_1_0=");
+#endif
+    lines.push_back("WINE_GST_REGISTRY_DIR=" WINE_RUNTIME_ROOT "/.cache/gstreamer-1.0");
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    // ARM Proton uses the FEX native-F64 x87 policy by default, matching
+    // Valve's ARM configuration. Entry overrides may select strict F80 (0).
+    lines.push_back("FEX_X87REDUCEDPRECISION=1");
+#endif
     if (!p.homeDir.empty())
         lines.insert(lines.begin(), "HOME=" + p.homeDir);
     return lines;

@@ -1,0 +1,139 @@
+From: VintagePomeloPro
+Subject: [PATCH] ntdll: honor selected OHOS locale when musl reports C.UTF-8
+
+Valve overlay; preserve upstream behavior outside __OHOS__.
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -29,6 +29,7 @@
+ #include <errno.h>
+ #include <locale.h>
+ #include <langinfo.h>
++#include <string.h>
+ #include <fcntl.h>
+ #include <stdarg.h>
+ #include <sys/types.h>
+@@ -634,6 +635,30 @@
+ }
+ 
+ 
++#ifdef __OHOS__
++/* musl/OHOS often reports C.UTF-8 instead of C. Wine only treated "C" as
++ * "read LC_ALL", so Chinese launches kept LCID 0409 / ACP 1252 and GDI then
++ * realized DEFAULT_CHARSET faces as SHIFTJIS. */
++static BOOL is_c_unix_locale( const char *name )
++{
++    return !name || !name[0]
++        || !strcmp( name, "C" )
++        || !strcmp( name, "POSIX" )
++        || !strncmp( name, "C.", 2 )
++        || !strncmp( name, "POSIX.", 6 );
++}
++
++static const char *unix_locale_from_env(void)
++{
++    const char *name = getenv( "LC_ALL" );
++    if (is_c_unix_locale( name )) name = getenv( "LC_MESSAGES" );
++    if (is_c_unix_locale( name )) name = getenv( "LC_CTYPE" );
++    if (is_c_unix_locale( name )) name = getenv( "LANG" );
++    if (is_c_unix_locale( name )) return NULL;
++    return name;
++}
++#endif
++
+ /* Unix format is: lang[_country][.charset][@modifier]
+  * Windows format is: lang[-script][-country][_modifier] */
+ static BOOL unix_to_win_locale( const char *unix_name, char *win_name )
+@@ -643,11 +668,19 @@
+     char buffer[LOCALE_NAME_MAX_LENGTH];
+     char *p, *country = NULL, *modifier = NULL;
+ 
++#ifdef __OHOS__
++    if (is_c_unix_locale( unix_name ))
++    {
++        unix_name = unix_locale_from_env();
++        if (!unix_name) return FALSE;
++    }
++#else
+     if (!unix_name || !unix_name[0] || !strcmp( unix_name, "C" ))
+     {
+         unix_name = getenv( "LC_ALL" );
+         if (!unix_name || !unix_name[0]) return FALSE;
+     }
++#endif
+ 
+     if (strlen( unix_name ) >= LOCALE_NAME_MAX_LENGTH) return FALSE;
+     strcpy( buffer, unix_name );
+@@ -721,6 +754,46 @@
+     if (!(entry = find_lcname_entry( header, name ))) return NULL;
+     return get_locale_data( header, entry->idx );
+ }
++
++
++#ifdef __OHOS__
++static BOOL ohos_env_locale_is( const char *env, const char *locale )
++{
++    size_t len = strlen( locale );
++    return !strncmp( env, locale, len ) &&
++           (!env[len] || env[len] == '.' || env[len] == '@');
++}
++
++/* OHOS musl may accept C.UTF-8 while the selected Wine locale exists only in
++ * LC_ALL/LANG. Keep the NTDLL system/user LCIDs aligned with that selection;
++ * the first Wine process then updates the prefix locale and ACP registry. */
++static LCID ohos_requested_locale( char *win_name )
++{
++    const char *env = unix_locale_from_env();
++    if (!env) return 0;
++    if (ohos_env_locale_is( env, "zh_TW" ) || ohos_env_locale_is( env, "zh-TW" ))
++    {
++        strcpy( win_name, "zh-TW" );
++        return 0x0404;
++    }
++    if (ohos_env_locale_is( env, "zh_CN" ) || ohos_env_locale_is( env, "zh-CN" ))
++    {
++        strcpy( win_name, "zh-CN" );
++        return 0x0804;
++    }
++    if (ohos_env_locale_is( env, "ja_JP" ) || ohos_env_locale_is( env, "ja-JP" ))
++    {
++        strcpy( win_name, "ja-JP" );
++        return 0x0411;
++    }
++    if (ohos_env_locale_is( env, "en_US" ) || ohos_env_locale_is( env, "en-US" ))
++    {
++        strcpy( win_name, "en-US" );
++        return 0x0409;
++    }
++    return 0;
++}
++#endif
+ 
+ 
+ /******************************************************************
+@@ -834,6 +907,24 @@
+         free( header );
+     }
+     if (!system_lcid) system_lcid = MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT );
++#ifdef __OHOS__
++    {
++        char selected_locale[LOCALE_NAME_MAX_LENGTH];
++        LCID selected_lcid = ohos_requested_locale( selected_locale );
++        if (selected_lcid)
++        {
++            system_lcid = user_lcid = selected_lcid;
++            strcpy( system_locale, selected_locale );
++            strcpy( user_locale, selected_locale );
++        }
++        else if (system_lcid == MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ) &&
++                 !unix_locale_from_env())
++        {
++            system_lcid = MAKELANGID( LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED );
++            if (!user_lcid) user_lcid = system_lcid;
++        }
++    }
++#endif
+     if (!user_lcid) user_lcid = system_lcid;
+     user_ui_language = user_lcid;
+ 

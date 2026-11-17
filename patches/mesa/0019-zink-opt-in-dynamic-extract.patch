@@ -1,0 +1,16 @@
+diff --git a/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c b/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
+--- a/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
++++ b/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
+@@ -1455,6 +1455,12 @@
+    SpvId raw_type = get_alu_type(ctx, *atype, 1, bit_size);
+ 
+    if (used_channels == 1) {
++      /* Equivalent constant-index dynamic extraction avoids a scalar
++       * CompositeExtract miscompile in affected host Vulkan drivers. */
++      const char *dynamic_extract = os_get_option("WINEHUA_ZINK_DYNAMIC_EXTRACT");
++      if (dynamic_extract && !strcmp(dynamic_extract, "1") && bit_size == 32)
++         return spirv_builder_emit_vector_extract(&ctx->builder, raw_type, def,
++                   alu->src[src].swizzle[0]);
+       uint32_t indices[] =  { alu->src[src].swizzle[0] };
+       return spirv_builder_emit_composite_extract(&ctx->builder, raw_type,
+                                                   def, indices,

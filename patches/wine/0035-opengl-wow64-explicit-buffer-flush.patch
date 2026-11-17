@@ -1,0 +1,53 @@
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -180,6 +180,7 @@
+     void *host_ptr;
+     void *map_ptr;
+     size_t copy_length;
++    GLbitfield map_access;
+     void *vm_ptr;
+     SIZE_T vm_size;
+     BOOL pinned;
+@@ -2940,6 +2941,14 @@
+     };
+     VkResult vr;
+ 
++    /* A WOW64 shadow is not the driver's mapping. Publish the requested
++     * bytes before the caller flushes that mapping, not at unmap time. The
++     * flush offset is relative to the mapped range. Invalid ranges must
++     * reach the driver without touching memory. */
++    if (buffer->copy_length && (buffer->map_access & GL_MAP_FLUSH_EXPLICIT_BIT)
++            && offset <= buffer->copy_length && length <= buffer->copy_length - offset)
++        memcpy( (char *)buffer->host_ptr + offset, (char *)buffer->map_ptr + offset, length );
++
+     if (!buffer->vk_memory) return;
+ 
+     vr = buffer->vk_device->p_vkFlushMappedMemoryRanges( buffer->vk_device->vk_device, 1, &memory_range );
+@@ -3140,6 +3149,7 @@
+     }
+ 
+     buffer->host_ptr = ptr;
++    buffer->map_access = access;
+     if (!offset && !length) length = buffer->size;
+     if (ULongToPtr(PtrToUlong(ptr)) == ptr) /* we're lucky */
+     {
+@@ -3399,14 +3409,15 @@
+         unmap_vk_buffer( buffer );
+     }
+ 
+-    if (buffer->copy_length)
++    if (buffer->copy_length && !(buffer->map_access & GL_MAP_FLUSH_EXPLICIT_BIT))
+     {
+         TRACE( "Copying %#zx from wow64 buffer %p to buffer %p\n", buffer->copy_length,
+                buffer->map_ptr, buffer->host_ptr );
+         memcpy( buffer->host_ptr, buffer->map_ptr, buffer->copy_length );
+-        buffer->copy_length = 0;
+-    }
+-
++    }
++
++    buffer->copy_length = 0;
++    buffer->map_access = 0;
+     buffer->host_ptr = buffer->map_ptr = NULL;
+     return TRUE;
+ }

@@ -124,7 +124,8 @@ FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
     // 层序单一数据源 (阶段 1): 一帧全部内容来源的层列表, 构建一次,
     // fs-pick / 覆盖判定 / 签名 / 合成共用。zIndex: root < toplevel <
     // subsurface — 顺序与旧双循环等价 (见 CompositorLayer 注释)。
-    plan.layers = comp_.BuildLayerListLocked(plan.rootW, plan.rootH);
+    if (plan.layers.empty())
+        plan.layers = comp_.BuildLayerListLocked(plan.rootW, plan.rootH);
 
     // 阶段 2: 全屏 pick/fit
     PlanFullscreenLocked(plan);
@@ -158,7 +159,7 @@ FramePlanOutcome FramePlanner::PlanDesktopLocked(uint32_t id,
     frame.h = plan.rootH;
     frame.contentW = plan.rootW;
     frame.contentH = plan.rootH;
-    frame.opaque = (rst->ShmFormat() != 0);
+    frame.opaque = !plan.rootHasPixels || (rst->ShmFormat() != 0);
     return FramePlanOutcome::kCompose;
 }
 
@@ -167,9 +168,49 @@ FramePlanOutcome FramePlanner::GateDesktopDirtyLocked(uint32_t id, FramePlan& pl
                                                       PresentedFrame& frame,
                                                       ToplevelManager::ToplevelState*& rst) {
     rst = tmgr_.FindToplevelLocked(id);
-    if (!rst || !rst->HasFrame()) return FramePlanOutcome::kNoFrame;
+    if (!rst) return FramePlanOutcome::kNoFrame;
     if (!rst->IsDirty()) return FramePlanOutcome::kNoFrame;
 
+    plan.rootHasPixels = rst->HasFrame();
+    if (!plan.rootHasPixels) {
+        // Child GDI/GL buffers are independently committed. Waiting for an
+        // Explorer backdrop here would discard a renderable scene forever.
+        // Use the same output bounds as InputResolver's bufferless-root path;
+        // do not invent a guest frame or overwrite the shell's frame state.
+        plan.rootW = comp_.outputW_;
+        plan.rootH = comp_.outputH_;
+        if (plan.rootW <= 0 || plan.rootH <= 0) return FramePlanOutcome::kNoFrame;
+        plan.layers = comp_.BuildLayerListLocked(plan.rootW, plan.rootH);
+        const bool childHasPixels = std::any_of(plan.layers.begin(), plan.layers.end(),
+            [&](const CompositorLayer& layer) {
+                if (layer.ShouldSkipCpu() || layer.w <= 0 || layer.h <= 0) return false;
+                if (layer.type == CompositorLayer::Type::Subsurface)
+                    return layer.sub && !layer.sub->pixels.empty();
+                if (layer.type == CompositorLayer::Type::Toplevel) {
+                    const auto* child = tmgr_.FindToplevelLocked(layer.toplevelId);
+                    return child && child->HasFrame();
+                }
+                return false;
+            });
+        if (childHasPixels || comp_.desktopRootlessSceneId_ == id) {
+            if (comp_.desktopRootlessSceneId_ != id) {
+                OH_LOG_INFO(LOG_APP,
+                            "[MW-TAKE] compose buffered children without root pixels id=%{public}u output=%{public}dx%{public}d",
+                            id, plan.rootW, plan.rootH);
+            }
+            comp_.desktopRootlessSceneId_ = id;
+            return FramePlanOutcome::kCompose;
+        }
+        static thread_local unsigned int missingRootFrameCount = 0;
+        if (++missingRootFrameCount % 300 == 1) {
+            OH_LOG_WARN(LOG_APP,
+                        "[MW-TAKE] awaiting root frame id=%{public}u found=%{public}d size=%{public}dx%{public}d subsurfaces=%{public}zu",
+                        id, rst ? 1 : 0, rst ? rst->Width() : 0, rst ? rst->Height() : 0,
+                        comp_.subsurfaceLayers_.size());
+        }
+        return FramePlanOutcome::kNoFrame;
+    }
+    comp_.desktopRootlessSceneId_ = 0;
     plan.rootW = rst->Width();
     plan.rootH = rst->Height();
 
@@ -184,6 +225,7 @@ FramePlanOutcome FramePlanner::GateDesktopDirtyLocked(uint32_t id, FramePlan& pl
     }
     if (!hasChildren && comp_.subsurfaceLayers_.empty()) {
         out = rst->Pixels();
+        comp_.desktopOutputInitialized_ = false; // fast output is not the composition cache
         // 帧交付契约 (kFastPath): 无子窗口快进 = root 帧直通, 语义同合成帧
         frame.kind = PresentedFrame::Kind::Composed;
         frame.baseSpace = PresentedFrame::BaseSpace::Desktop;
@@ -211,8 +253,7 @@ void FramePlanner::PlanFullscreenLocked(FramePlan& plan) {
         plan.fullscreenX = fsWin->X();
         plan.fullscreenY = fsWin->Y();
         plan.hasFullscreen = comp_.ComputeFullscreenFitLocked(plan.fullscreenId, plan.rootW,
-                                                              plan.rootH, plan.transform);
-        plan.isZcGame = comp_.HasZeroCopyLayerForToplevelLocked(plan.fullscreenId);
+                                                              plan.rootH, plan.transform, &plan.isZcGame);
     }
 }
 
@@ -294,7 +335,8 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
             return false;
         }
     }
-    if (plan.hasFullscreen && !plan.isZcGame && rst->ShmFormat() != 0 &&
+    if (plan.hasFullscreen && !comp_.HasZeroCopyLayerForToplevelLocked(plan.fullscreenId) &&
+        rst->ShmFormat() != 0 &&
         plan.transform.srcW > 0 && plan.transform.srcH > 0) {
         const ToplevelManager::ToplevelState* fsTop =
             tmgr_.FindToplevelLocked(plan.fullscreenId);
@@ -324,6 +366,7 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
             }
             if (fsLayerFound) {
                 const SubsurfaceLayer* contentSub = nullptr;
+                size_t contentSubsurfaceCount = 0;
                 bool topOccluded = false;
                 for (const auto& layer : plan.layers) {
                     if (layer.zIndex <= fsZ) continue;  // 全屏窗口及其下: 被盖住
@@ -333,6 +376,7 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                         continue;
                     if (layer.type == CompositorLayer::Type::Subsurface &&
                         layer.toplevelId == plan.fullscreenId) {
+                        ++contentSubsurfaceCount;
                         // 本窗口的 sub 分两类 (判据见 SubsurfaceCoversContentRect):
                         // 覆盖窗口内容区 = 内容层 (游戏画面, 候选直传源); 不覆盖
                         // = 叠加其上的浮层 (菜单/提示) — 像素不在窗口帧里, 须判
@@ -345,17 +389,24 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                         }
                         if (!contentSub) {
                             const auto& sl = *layer.sub;
-                            // 注: 不再要求 (shmFormat!=0 || opaque) — GL
-                            // readback 类画面 (opengl_readback, ARGB 800x600)
-                            // 的 alpha 通道是 GL 帧缓冲残留 (未清区 0/绘制区
-                            // 255), opaque 全帧扫描被非 255 像素拦下, 害直传
-                            // 落到窗口黑帧 (20260822 黑屏实锤: 窗口帧 95%
-                            // black/alpha0)。ARGB sub 由渲染器 uForceOpaque
-                            // 强制不透明: alpha=255 区域与 CPU 混合分支逐
-                            // 像素一致, alpha=0 区域 CPU 保留黑底 (RGB 残留
-                            // 值通常亦黑) — 视觉等价。
-                            if ((sl.vpDstW <= 0 || sl.vpDstW >= sl.w) &&
-                                (sl.vpDstH <= 0 || sl.vpDstH >= sl.h))
+                            // An ARGB child without proven opacity still contributes
+                            // pixels. It needs composition; rejecting it as the direct
+                            // source must never allow the parent to bypass it.
+                            // Classification belongs to this commit. A whole-frame
+                            // alpha check is far cheaper than scaling an opaque
+                            // 720p child on the CPU, and keeps transparent children
+                            // on the normal blend path.
+                            if (sl.shmFormat == 0 &&
+                                sl.pixels.size() == static_cast<size_t>(sl.w) * sl.h * 4 &&
+                                sl.opaqueCheckedSerial != sl.shmCommitSerial) {
+                                auto* classified = const_cast<SubsurfaceLayer*>(&sl);
+                                classified->opaque = IsFullyOpaqueArgb(sl.pixels.data(), sl.w, sl.w, sl.h);
+                                classified->opaqueCheckedSerial = sl.shmCommitSerial;
+                            }
+                            if ((sl.shmFormat != 0 || sl.opaque) &&
+                                layer.x == plan.fullscreenX && layer.y == plan.fullscreenY &&
+                                (sl.vpDstW <= 0 || sl.vpDstW == sl.w) &&
+                                (sl.vpDstH <= 0 || sl.vpDstH == sl.h))
                                 contentSub = &sl;
                         }
                         continue;
@@ -367,7 +418,7 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                 int directW = 0, directH = 0;
                 if (!topOccluded) {
                     // 直传源几何必须与全屏 fit 一致 (src = fsTop 内容尺寸)
-                    if (contentSub &&
+                    if (contentSubsurfaceCount == 1 && contentSub &&
                         contentSub->w == plan.transform.srcW &&
                         contentSub->h == plan.transform.srcH &&
                         contentSub->pixels.size() ==
@@ -375,15 +426,11 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                         directPixels = &contentSub->pixels;
                         directW = contentSub->w;
                         directH = contentSub->h;
-                    // 不再要求 shmFormat!=0 (XRGB): 20260822 实测红警2 类
-                    // 全屏游戏窗口帧是 ARGB (shmFormat=0) 但内容 alpha 全
-                    // 255 (游戏自绘不透明画面), 原 XRGB 条件把直传全部
-                    // 摁死 → 每帧 CPU BlitScaled 70-85ms。渲染器 context
-                    // 无 GL_BLEND + uForceOpaque 强制不透明: alpha=255 时
-                    // 与 CPU 合成输出逐像素一致 (黑边 glClear 同效
-                    // fillBlackRect); 半透明全屏内容 (预期无, 游戏用
-                    // XRGB/全不透明) 会丢失混合 — 容忍并看验收。
-                    } else if (fsTop->Width() == plan.transform.srcW &&
+                    // A parent-only direct pass is valid only when no visible
+                    // CPU child needs to be included above that parent.
+                    } else if (!contentSubsurfaceCount && fsTop->ShmFormat() != 0 &&
+                               !plan.fullscreenContentCovered &&
+                               fsTop->Width() == plan.transform.srcW &&
                                fsTop->Height() == plan.transform.srcH &&
                                fsTop->Pixels().size() ==
                                    static_cast<size_t>(fsTop->Width()) * fsTop->Height() * 4) {
@@ -395,6 +442,7 @@ bool FramePlanner::TryShmFullscreenDirectLocked(uint32_t id,
                 if (directPixels) {
                     // assign 而非 swap: 源缓冲属 wl 线程的层状态, 必须拷出
                     out.assign(directPixels->begin(), directPixels->end());
+                    comp_.desktopOutputInitialized_ = false;
                     // 帧交付契约 (kDirectPass): 直传帧 buffer 是游戏内容尺寸
                     // (如 800x600), 但帧作为整屏桌面输出交付 — 输入逆映射锚
                     // 仍是桌面逻辑尺寸 (contentW/H = root), 与 buffer 尺寸
@@ -441,6 +489,17 @@ uint64_t FramePlanner::ComputeCompositionSignatureLocked(uint32_t id,
     mixSignature(id);
     mixSignature(static_cast<uint32_t>(plan.rootW));
     mixSignature(static_cast<uint32_t>(plan.rootH));
+    mixSignature(plan.rootHasPixels ? 1 : 0);
+    mixSignature(plan.fullscreenId);
+    mixSignature(plan.hasFullscreen);
+    mixSignature(plan.isZcGame);
+    mixSignature(plan.fullscreenContentCovered);
+    mixSignature(static_cast<uint32_t>(plan.transform.srcW));
+    mixSignature(static_cast<uint32_t>(plan.transform.srcH));
+    mixSignature(static_cast<uint32_t>(plan.transform.offX));
+    mixSignature(static_cast<uint32_t>(plan.transform.offY));
+    mixSignature(static_cast<uint32_t>(plan.transform.dstW));
+    mixSignature(static_cast<uint32_t>(plan.transform.dstH));
     // 签名遍历 Layer 列表: 每个可见 toplevel/subsurface 的几何与标记
     // (与旧两个循环 mix 序列等价; 不可见 toplevel 的 (id,0) 不再混入,
     // 仅影响 rebuildBase 触发时机, 不影响输出像素 — 不可见窗口不参与
@@ -448,6 +507,7 @@ uint64_t FramePlanner::ComputeCompositionSignatureLocked(uint32_t id,
     for (const auto& layer : plan.layers) {
         if (layer.type == CompositorLayer::Type::Toplevel) {
             mixSignature(layer.toplevelId);
+            mixSignature(layer.externalHostId);
             mixSignature(layer.visible ? 1 : 0);
             if (!layer.visible) continue;
             mixSignature(static_cast<uint32_t>(layer.x));
@@ -561,7 +621,7 @@ bool FramePlanner::ComputeDamageRectLocked(ToplevelManager::ToplevelState* rst,
                                     cst->Width(), cst->Height(),
                                     ux, uy, uw, uh);
                 } else {
-                    ux = cst->X(); uy = cst->Y(); uw = cst->Width(); uh = cst->Height();
+                    ux = layer.x; uy = layer.y; uw = layer.w; uh = layer.h;
                 }
             }
             if (uw <= 0 || uh <= 0) continue;
@@ -582,11 +642,20 @@ void FramePlanner::CopyBaseToOutputLocked(const ToplevelManager::ToplevelState* 
                                           FramePlan& plan,
                                           std::vector<uint8_t>& out) {
     if (plan.rebuildBase) {
-        out = rst->Pixels();
+        if (plan.rootHasPixels) {
+            out = rst->Pixels();
+        } else {
+            out.resize(static_cast<size_t>(plan.rootW) * plan.rootH * 4);
+            FillBlackRect(out, plan.rootW, plan.dmg, 0, 0, plan.rootW, plan.rootH);
+        }
         comp_.desktopOutputInitialized_ = true;
         comp_.desktopOutputRootFrameSerial_ = comp_.desktopRootFrameSerial_;
         comp_.desktopCompositionSignature_ = plan.compositionSignature;
     } else if (!plan.dmg.full) {
+        if (!plan.rootHasPixels) {
+            FillBlackRect(out, plan.rootW, plan.dmg, plan.dmg.x, plan.dmg.y, plan.dmg.w, plan.dmg.h);
+            return;
+        }
         // 局部合成: R∩root 基底落盘到输出 (R 外复用上帧内容)。持锁读
         // root 帧像素; out.size()==rootBytes 已由 rebuildBase 判定保证。
         const auto& base = rst->Pixels();
@@ -618,10 +687,19 @@ void FramePlanner::SnapshotBlitSourcesLocked(ToplevelManager::ToplevelState* rst
         // 局部合成: 与 R 不相交的层不会画到 R 内 (blit 有 R 裁剪早退),
         // 其像素本帧保持上帧内容 — 跳过快照拷贝。相交但未变化的层仍
         // 快照+重画 (半透明层以本次重建的底混合, 见 R 注释)。
-        if (!plan.dmg.full && (plan.dmg.x >= layer.x + layer.w ||
-                          plan.dmg.y >= layer.y + layer.h ||
-                          plan.dmg.x + plan.dmg.w <= layer.x ||
-                          plan.dmg.y + plan.dmg.h <= layer.y)) {
+        int x = layer.x, y = layer.y, w = layer.w, h = layer.h;
+        if (plan.hasFullscreen && layer.toplevelId == plan.fullscreenId) {
+            if (layer.type == CompositorLayer::Type::Subsurface) {
+                w = DisplaySizeAfterViewportClamped(layer.sub->vpDstW, w);
+                h = DisplaySizeAfterViewportClamped(layer.sub->vpDstH, h);
+            }
+            FitMapLayerRect(plan.transform, x - plan.fullscreenX, y - plan.fullscreenY,
+                            w, h, x, y, w, h);
+        }
+        if (!plan.dmg.full && (plan.dmg.x >= x + w ||
+                          plan.dmg.y >= y + h ||
+                          plan.dmg.x + plan.dmg.w <= x ||
+                          plan.dmg.y + plan.dmg.h <= y)) {
             bs.skip = true;
             continue;
         }
@@ -629,7 +707,7 @@ void FramePlanner::SnapshotBlitSourcesLocked(ToplevelManager::ToplevelState* rst
             auto* cst = tmgr_.FindToplevelLocked(layer.toplevelId);
             if (!cst) { bs.skip = true; continue; }
             bs.w = cst->Width(); bs.h = cst->Height();
-            bs.x = cst->X(); bs.y = cst->Y();
+            bs.x = layer.x; bs.y = layer.y;
             bs.shmFormat = cst->ShmFormat();
             comp_.lastTopSerial_[layer.toplevelId] = cst->FrameSerial();  // 局部合成基准
             // ZC 游戏整幅填黑不读像素, 省下全屏拷贝 (pixels 留空)
@@ -722,6 +800,14 @@ void FrameBlitter::Composite(uint32_t id,
 void FrameBlitter::BlitToplevel(const FramePlan& plan, const CompositorLayer& layer,
                                 const BlitSource& bs, std::vector<uint8_t>& composited) {
     if (bs.skip) return;
+    if (layer.externalHostId) {
+        BlitScaled(composited.data(), plan.rootW, plan.rootH,
+                   bs.pixels->data(), bs.w, bs.w, bs.h,
+                   layer.x, layer.y, layer.w, layer.h, bs.shmFormat == 0,
+                   plan.dmg.full ? 0 : plan.dmg.x, plan.dmg.full ? 0 : plan.dmg.y,
+                   plan.dmg.full ? 0 : plan.dmg.w, plan.dmg.full ? 0 : plan.dmg.h);
+        return;
+    }
     if (layer.toplevelId == plan.fullscreenId && plan.hasFullscreen && plan.isZcGame) {
         // ZC 游戏: 整幅填黑, 跳过 SHM BlitScaled — 其 SHM 内容是
         // explorer 桌面而非游戏画面, 实际画面由 GL ZC 层渲染
@@ -834,10 +920,8 @@ void FrameBlitter::BlitSubsurface(const FramePlan& plan, const CompositorLayer& 
     int renderDstX = dstX, renderDstY = dstY;
     if (bs.vpDstW > 0 && bs.vpDstW < copyW) renderW = bs.vpDstW;
     if (bs.vpDstH > 0 && bs.vpDstH < copyH) renderH = bs.vpDstH;
-    if (bs.dmgW > 0 && bs.dmgH > 0 &&
-        !ClipBlitSourceToRect(renderSrcX, renderSrcY, renderDstX, renderDstY,
-                              renderW, renderH, bs.dmgX, bs.dmgY, bs.dmgW, bs.dmgH))
-        return;
+    // Damage chooses the destination rebuild region, not which retained source
+    // pixels exist. Replay every source pixel intersecting this frame's region.
     // 局部合成: 再裁剪到本帧重绘矩形 (R 外复用上帧内容, 不重画)
     if (!plan.dmg.full &&
         !IntersectBlitWithDamage(renderSrcX, renderSrcY, renderDstX, renderDstY,

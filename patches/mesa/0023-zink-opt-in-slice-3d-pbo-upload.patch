@@ -1,0 +1,37 @@
+--- a/src/mesa/state_tracker/st_cb_texture.c
++++ b/src/mesa/state_tracker/st_cb_texture.c
+@@ -72,6 +72,7 @@
+ #include "pipe/p_context.h"
+ #include "pipe/p_defines.h"
+ #include "util/log.h"
++#include "util/u_debug.h"
+ #include "util/u_inlines.h"
+ #include "util/u_upload_mgr.h"
+ #include "pipe/p_shader_tokens.h"
+@@ -2140,6 +2141,26 @@
+    bool is_ms;
+    bool throttled = false;
+ 
++   /* Some remote Vulkan stacks update only the first slice of a layered
++    * PBO upload. Keep the normal transfer path for each individual slice,
++    * including pixel-store strides and destination subimage offsets.
++    * The caller already validated the complete PBO range. */
++   if (gl_target == GL_TEXTURE_3D && unpack->BufferObj && depth > 1 &&
++       debug_get_bool_option("WINEHUA_ZINK_SLICE_3D_UPLOAD", false)) {
++      const GLintptr slice_stride =
++         _mesa_image_image_stride(unpack, width, height, format, type);
++      if (slice_stride > 0) {
++         for (GLint slice = 0; slice < depth; ++slice) {
++            const void *slice_pixels = (const void *)
++               ((uintptr_t)pixels + (uintptr_t)slice * slice_stride);
++            st_TexSubImage(ctx, dims, texImage, xoffset, yoffset,
++                           zoffset + slice, width, height, 1,
++                           format, type, slice_pixels, unpack);
++         }
++         return;
++      }
++   }
++
+    st_flush_bitmap_cache(st);
+    st_invalidate_readpix_cache(st);
+ 

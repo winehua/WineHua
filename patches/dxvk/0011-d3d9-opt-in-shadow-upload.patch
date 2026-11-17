@@ -1,0 +1,60 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -32,6 +32,16 @@
+ #endif
+ 
+ namespace dxvk {
++
++  // Match the D3D11 shadow-memory publication contract. The buffer has
++  // already been written; the CS owns its physical slice at this point.
++  static void PublishD3D9ShadowUpload(DxvkContext* ctx,
++      const Rc<DxvkBuffer>& buffer, const DxvkBufferSliceHandle& slice) {
++    static const bool enabled = env::getEnvVar("WINEHUA_DXVK9_SHADOW_UPLOAD") == "1";
++    if (enabled && ctx->flushMappedBuffer(buffer, slice) != VK_SUCCESS)
++      throw DxvkError("D3D9: shadow upload publication failed");
++  }
++
+ 
+   D3D9DeviceEx::D3D9DeviceEx(
+           D3D9InterfaceEx*       pParent,
+@@ -2503,6 +2513,7 @@
+ 
+       ApplyPrimitiveType(ctx, cPrimType);
+ 
++      PublishD3D9ShadowUpload(ctx, cBufferSlice.buffer(), cBufferSlice.getSliceHandle());
+       ctx->bindVertexBuffer(0, cBufferSlice, cStride);
+       ctx->draw(
+         drawInfo.vertexCount, drawInfo.instanceCount,
+@@ -2566,6 +2577,7 @@
+ 
+       ApplyPrimitiveType(ctx, cPrimType);
+ 
++      PublishD3D9ShadowUpload(ctx, cBufferSlice.buffer(), cBufferSlice.getSliceHandle());
+       ctx->bindVertexBuffer(0, cBufferSlice.subSlice(0, cVertexSize), cStride);
+       ctx->bindIndexBuffer(cBufferSlice.subSlice(cVertexSize, cBufferSlice.length() - cVertexSize), cIndexType);
+       ctx->drawIndexed(
+@@ -4534,6 +4546,7 @@
+       }
+       EmitCs([cImage = image, cLayers = dstLayers, cOffset = dstOffset,
+               cExtent = extent, cSlice = std::move(staging.slice)] (DxvkContext* ctx) {
++        PublishD3D9ShadowUpload(ctx, cSlice.buffer(), cSlice.getSliceHandle());
+         ctx->copyBufferToImage(cImage, cLayers, cOffset, cExtent,
+                               cSlice.buffer(), cSlice.offset(), 1, 1);
+       });
+@@ -4582,7 +4595,7 @@
+           slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
+           pitch, pitch * srcTexLevelExtentBlockCount.height);
+       } else {
+-        copySrcSlice = DxvkBufferSlice(pSrcTexture->GetBuffer(SrcSubresource), copySrcOffset, srcSlice.length);
++        copySrcSlice = DxvkBufferSlice(pSrcTexture->GetBuffer(SrcSubresource), copySrcOffset, srcSlice.length - copySrcOffset);
+         // row/slice alignment can act as the pitch parameter
+         rowAlignment = pitch;
+         sliceAlignment = srcTexLevelExtentBlockCount.height * pitch;
+@@ -4597,6 +4610,7 @@
+         cRowAlignment   = rowAlignment,
+         cSliceAlignment = sliceAlignment
+       ] (DxvkContext* ctx) {
++        PublishD3D9ShadowUpload(ctx, cSrcSlice.buffer(), cSrcSlice.getSliceHandle());
+         ctx->copyBufferToImage(
+           cDstImage,  cDstLayers,
+           cOffset, cDstLevelExtent,

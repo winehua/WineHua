@@ -1,0 +1,76 @@
+From 2e7516daac19df68862684182b206d63aeb65c09 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation:
+ 0055-layered-child-screen-coordinates-and-root
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 3a3bb1795895c73dd973af378b61527ef21e990f1e5d1f8f65771ee1da162aab
+
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 9306ab82458d6a344db6d32806f34956e4fba4bf..a45bb2d79a142d1f78ac43fefd2765e8f04239cd 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2657,8 +2657,17 @@ BOOL WINAPI NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_
+ 
+     if (pts_dst)
+     {
+-        offset.cx = pts_dst->x - new_rects.window.left;
+-        offset.cy = pts_dst->y - new_rects.window.top;
++        POINT position = *pts_dst;
++        HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
++
++        /* UpdateLayeredWindow takes screen coordinates, including for layered
++         * children. apply_window_pos stores parent-client coordinates. Without
++         * this conversion a GetWindowRect/update loop adds the parent origin
++         * again on every frame. Map one point to preserve RTL/DPI semantics. */
++        if (parent && parent != NtUserGetDesktopWindow())
++            NtUserMapWindowPoints( 0, parent, &position, 1, get_thread_dpi() );
++        offset.cx = position.x - new_rects.window.left;
++        offset.cy = position.y - new_rects.window.top;
+         OffsetRect( &new_rects.client, offset.cx, offset.cy );
+         OffsetRect( &new_rects.window, offset.cx, offset.cy );
+         OffsetRect( &new_rects.visible, offset.cx, offset.cy );
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 854bd03d77cd518e2793491402d2dbb641298683..bad0c478b64b8edb432321d57af4974d4d628480 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -475,6 +475,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+                               const struct window_rects *new_rects, struct window_surface *surface)
+ {
+     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    HWND root = toplevel;
+     struct wayland_surface *toplevel_surface;
+     struct wayland_client_surface *client;
+     struct wayland_win_data *data, *toplevel_data;
+@@ -485,13 +486,28 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     /* Get the managed state with win_data unlocked, as is_window_managed
+      * may need to query win_data information about other HWNDs and thus
+      * acquire the lock itself internally. */
+-    if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) toplevel = owner_hint;
++    managed = is_window_managed(hwnd, swp_flags, fullscreen);
++    /* owner_hint is a placement hint for unmanaged top-level windows. A real
++     * child must retain its GA_ROOT even when its parent is hidden or the hint
++     * is absent. Otherwise a layered child escapes its parent as xdg_toplevel. */
++    if (!managed && surface && toplevel == hwnd) toplevel = owner_hint;
+ 
+     if (!(data = wayland_win_data_get(hwnd))) return;
+     toplevel_data = toplevel && toplevel != hwnd ? wayland_win_data_get_nolock(toplevel) : NULL;
+     toplevel_surface = toplevel_data ? toplevel_data->wayland_surface : NULL;
+ 
+     data->rects = *new_rects;
++    /* win32u passes child rectangles in parent-client coordinates at RAW DPI;
++     * surface geometry and subsurface positioning below use screen coordinates.
++     * Owned popups are already absolute and must not receive this conversion. */
++    if (root && root != hwnd)
++    {
++        HWND parent = NtUserGetAncestor(hwnd, GA_PARENT);
++        UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
++        NtUserMapWindowPoints(parent, 0, (POINT *)&data->rects.window, 2, dpi);
++        NtUserMapWindowPoints(parent, 0, (POINT *)&data->rects.client, 2, dpi);
++        NtUserMapWindowPoints(parent, 0, (POINT *)&data->rects.visible, 2, dpi);
++    }
+     data->is_fullscreen = fullscreen;
+     data->managed = managed;
+ 

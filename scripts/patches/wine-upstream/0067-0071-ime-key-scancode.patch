@@ -1,0 +1,24 @@
+From 1d9695e3d738b4e87711e8e9aecb5a6893d87fdf Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0071-ime-key-scancode
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: c077d47c6a4035da3961d021bea1d00e029657aed76339f4785a097aaefe53f9
+
+diff --git a/dlls/imm32/ime.c b/dlls/imm32/ime.c
+index 766e144eb3e3f7d44af9ecfd96f263130da5ede3..d7cead779093ec365986fd37c65d9c793f610089 100644
+--- a/dlls/imm32/ime.c
++++ b/dlls/imm32/ime.c
+@@ -603,7 +603,9 @@ UINT WINAPI ImeToAsciiEx( UINT vkey, UINT vsc, BYTE *state, TRANSMSGLIST *msgs,
+ 
+         if (!key_consumed)
+         {
+-            TRANSMSG msg = {.message = WM_IME_KEYDOWN, .wParam = vkey, .lParam = vsc};
++            /* Keep the original scan code, extended key, repeat and release flags. */
++            TRANSMSG msg = {.message = vsc & KF_UP ? WM_IME_KEYUP : WM_IME_KEYDOWN, .wParam = vkey,
++                           .lParam = MAKELPARAM(1, vsc)};
+             msgs->TransMsg[count++] = msg;
+         }
+     }

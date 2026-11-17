@@ -55,6 +55,7 @@ public:
     // 引用与成员同生命周期 (单例启动前即构造), 装配在 wl 事件循环启动前
     // (与 4C1 warpSink / 5D bus 装配同模式, 无新锁)。
     ToplevelManager& GetToplevelManager() { return toplevelMgr_; }
+    InputResolver& GetInputResolver() { return inputResolver_; }
     DesktopCompositor& GetDesktopCompositor() { return desktopCompositor_; }
     // root 身份的共享引用装配出口 (与 DesktopCompositor/InputResolver 注入的
     // 引用同源, 重构第 6B 步起指向 session_.desktopRootToplevelId 的 POD 字段)
@@ -65,6 +66,9 @@ public:
 
     bool Start(const std::string& socketPath);
     void Stop();
+    bool RetainExternalUser();
+    void ReleaseExternalUser();
+    bool HasExternalUsers() const { return externalUsers_.load() != 0; }
 
     // 状态回调 (首帧到达 -> 通知 ArkTS)
     void SetStateCallback(StateCb cb) { stateCb_ = std::move(cb); }
@@ -99,6 +103,8 @@ public:
     // 清理 toplevel 像素数据 + 标记 root dirty (desktop mode)
     void OnToplevelDestroyed(uint32_t toplevelId);
     void SendToplevelClose(uint32_t toplevelId);
+    // Wayland event thread only; a close request does not destroy its resource.
+    void DispatchToplevelClose(uint32_t toplevelId, wl_resource* expected);
     // 统一状态转换 (确保 minimize/maximize/restore 涉及的 map 操作原子化)
     void SetToplevelMinimized(uint32_t id);
     void SetToplevelRestored(uint32_t id);
@@ -146,7 +152,11 @@ public:
     // 模式上报类调用 (给 wine 传环境/标记进程/日志)。
     // 模式存储位 = session_.policy (重构第 6B 步: 会话共享状态 POD — 旧为
     // private 字段, SetDesktopMode 经 NAPI 写 / 各处策略查询只读, 行为不变)
-    void SetDesktopMode(bool on) { session_.policy = DisplayPolicy::FromDesktopMode(on); }
+    void SetDesktopMode(bool on) {
+        // A retained GNU session owns this compositor policy until it ends.
+        if (HasExternalUsers()) return;
+        session_.policy = DisplayPolicy::FromDesktopMode(on);
+    }
     bool IsDesktopMode() const { return session_.policy.desktop; }
     const DisplayPolicy& Policy() const { return session_.policy; }
     uint32_t GetDesktopRootToplevelId() const { return session_.desktopRootToplevelId; }
@@ -179,8 +189,8 @@ public:
     static void surface_commit(wl_client*, wl_resource*);
     static void surface_set_opaque_region(wl_client*, wl_resource*, wl_resource*) {}
     static void surface_set_input_region(wl_client*, wl_resource*, wl_resource*);
-    static void surface_set_buffer_transform(wl_client*, wl_resource*, int32_t) {}
-    static void surface_set_buffer_scale(wl_client*, wl_resource*, int32_t) {}
+    static void surface_set_buffer_transform(wl_client*, wl_resource*, int32_t);
+    static void surface_set_buffer_scale(wl_client*, wl_resource*, int32_t);
     static void surface_damage_buffer(wl_client*, wl_resource*, int32_t, int32_t, int32_t, int32_t) {}
     static void surface_offset(wl_client*, wl_resource*, int32_t, int32_t) {}
 
@@ -200,6 +210,8 @@ public:
     static void subcompositor_get_subsurface(wl_client*, wl_resource*, uint32_t, wl_resource*, wl_resource*);
     /* wl_subsurface */
     static void subsurface_destroy(wl_client*, wl_resource* r);
+    static void subsurface_resource_destroyed(wl_resource* r);
+    void RemoveSubsurfaceRole(wl_resource* childSurface);
     static void subsurface_set_position(wl_client*, wl_resource*, int32_t, int32_t);
     static void subsurface_place_above(wl_client*, wl_resource*, wl_resource*);
     static void subsurface_place_below(wl_client*, wl_resource*, wl_resource*);
@@ -210,7 +222,7 @@ public:
     static void viewporter_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
     static void viewporter_get_viewport(wl_client*, wl_resource*, uint32_t, wl_resource*);
     /* wp_viewport */
-    static void viewport_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+    static void viewport_destroy(wl_client*, wl_resource*);
     static void viewport_set_source(wl_client*, wl_resource*, wl_fixed_t, wl_fixed_t, wl_fixed_t, wl_fixed_t);
     static void viewport_set_destination(wl_client*, wl_resource*, int32_t, int32_t);
 
@@ -227,6 +239,9 @@ public:
     // 动作方法保留 (EndMoveGrab/ProcessMoveGrabMotion 含会话侧 dirty 标记
     // 与事件补发, 属会话状态职责)。
     void StartMoveGrab(uint32_t toplevelId, uint32_t serial);
+    void StartMoveGrabAt(uint32_t toplevelId, uint32_t serial, wl_fixed_t globalX, wl_fixed_t globalY);
+    void StartResizeGrab(uint32_t id, uint32_t serial, uint32_t edges);
+    void StartExternalResizeGrabAt(uint32_t id, uint32_t serial, wl_fixed_t x, wl_fixed_t y, uint32_t edges);
     void EndMoveGrab();
     bool ProcessMoveGrabMotion(int32_t gx, int32_t gy);
 
@@ -272,6 +287,9 @@ private:
                                         SurfaceData* parentSd, ShmCommitInfo& fi);
     void FinishCommit(SurfaceData* sd, wl_resource* surfRes);
 
+    mutable std::recursive_mutex lifetimeMutex_;
+    std::atomic<unsigned> externalUsers_{0};
+    bool wineUser_ = false;
     wl_display* display_ = nullptr;
     std::thread thread_;
     std::atomic<bool> running_{false};

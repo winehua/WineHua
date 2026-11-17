@@ -1,0 +1,1115 @@
+diff --git a/configure.ac b/configure.ac
+index 57228466c0f..5cb1d633dd4 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1410,7 +1410,12 @@ This probably prevents linking to OpenGL. Try deleting the file and restarting c
+ 			    $X_LIBS -lm -dylib_file /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib)],
+ 		     $X_LIBS -lm)
+     fi
+-    WINE_WARNING_WITH(opengl,[test -n "$opengl_msg"],[$opengl_msg
++    dnl WineHua (OHOS): no desktop GLX stack on the guest; OpenGL is served
++    dnl through EGL on the wayland driver. With WINEHUA_ALLOW_X11_NO_GLX=1
++    dnl the missing libGL is not fatal: OPENGL_LIBS stays empty and winex11's
++    dnl glx.c compiles out via the SONAME_LIBGL guard, while the wayland
++    dnl driver keeps its EGL OpenGL path. Unset = upstream behavior.
++    WINE_WARNING_WITH(opengl,[test -n "$opengl_msg" -a "$WINEHUA_ALLOW_X11_NO_GLX" != "1"],[$opengl_msg
+ OpenGL and Direct3D won't be supported.])
+ 
+     CPPFLAGS="$ac_save_CPPFLAGS"
+diff --git a/dlls/win32u/Makefile.in b/dlls/win32u/Makefile.in
+index 36da1e814a2..a7892e44b85 100644
+--- a/dlls/win32u/Makefile.in
++++ b/dlls/win32u/Makefile.in
+@@ -57,4 +57,5 @@ SOURCES = \
+ 	vertical.c \
+ 	vulkan.c \
+ 	window.c \
++	winehua_present.c \
+ 	winstation.c
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index a33aa48ca1d..91088ef0d73 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -1014,6 +1014,34 @@ static void load_display_driver(void)
+     USEROBJECTFLAGS flags;
+     HWINSTA winstation;
+ 
++#ifdef __OHOS__
++    /* X route (displayroute): WINEHUA_DISPLAY_ROUTE=x11 is a per-process
++     * override that takes precedence over the desktop registry's
++     * GraphicsDriver (which holds the session bootstrap's choice, e.g.
++     * winewayland). Descendant processes load the driver from the registry
++     * long before the env-based bypass below can fire (that branch only
++     * runs when the registry load FAILS), so the route key must be honored
++     * here. Unset = upstream behavior. DISPLAY itself is injected via the
++     * per-process environment; failure falls through to the normal path. */
++    {
++        const char *route = getenv( "WINEHUA_DISPLAY_ROUTE" );
++        if (route && !strcmp( route, "x11" ))
++        {
++            static const WCHAR winex11W[] = {'w','i','n','e','x','1','1','.','d','r','v',0};
++            void *ret_ptr;
++            ULONG ret_len;
++            ERR("OHOS: display route=x11, loading winex11 (per-process override)\n");
++            if (!KeUserModeCallback( NtUserLoadDriver, winex11W, sizeof(winex11W),
++                                     &ret_ptr, &ret_len ))
++            {
++                ERR("OHOS: X11 driver loaded successfully via route override\n");
++                return;
++            }
++            ERR("OHOS: X11 driver route override FAILED, falling back to registry path\n");
++        }
++    }
++#endif
++
+     if (is_service_process() || !load_desktop_driver( get_desktop_window() ) || user_driver == &lazy_load_driver)
+     {
+ #ifdef __OHOS__
+@@ -1034,6 +1062,26 @@ static void load_display_driver(void)
+             }
+             ERR("OHOS: Wayland driver bypass FAILED, falling back to null driver\n");
+         }
++        else if (getenv("DISPLAY"))
++        {
++            /* X route (displayroute): DISPLAY set means winex11. Placed
++             * after WAYLAND_DISPLAY so a doubly-set environment picks
++             * wayland (conservative default); route selection relies on
++             * mutually exclusive env injection (the X profile sets DISPLAY
++             * only), not on branch order. Same KeUserModeCallback contract
++             * as the wayland branch above: 0 return = driver loaded. */
++            static const WCHAR winex11W[] = {'w','i','n','e','x','1','1','.','d','r','v',0};
++            void *ret_ptr;
++            ULONG ret_len;
++            ERR("OHOS: attempting direct X11 driver load (bypass PnP)\n");
++            if (!KeUserModeCallback( NtUserLoadDriver, winex11W, sizeof(winex11W),
++                                     &ret_ptr, &ret_len ))
++            {
++                ERR("OHOS: X11 driver loaded successfully via bypass\n");
++                return;
++            }
++            ERR("OHOS: X11 driver bypass FAILED, falling back to null driver\n");
++        }
+ #endif
+         winstation = NtUserGetProcessWindowStation();
+         if (!NtUserGetObjectInformation( winstation, UOI_FLAGS, &flags, sizeof(flags), NULL )
+@@ -1060,6 +1108,29 @@ void init_display_driver(void)
+     if (user_driver == &lazy_load_driver) load_display_driver();
+ }
+ 
++/* WineHua (OHOS display routes): load the user driver before the Vulkan driver
++ * init runs -- driver load only, deliberately without load_driver()'s display
++ * cache refresh.
++ *
++ * Rationale (measured, m0 wine tree M2-T5): on the X route the per-process
++ * route override can leave the display driver unloaded until the first Vulkan
++ * call, so win32u's Vulkan init used to reach the lazy driver entry
++ * (loaderdrv_VulkanInit -> load_driver) from inside its own pthread_once.
++ * That load refreshed the display cache, whose force branch enumerates GPUs
++ * through vulkan_instance_create() and therefore drives the host Vulkan
++ * loader / Venus ICD (a second host instance) from inside the guest's own
++ * Vulkan init; the process spun at ~100% CPU.  Refreshing the cache here
++ * instead is not an option either: it forces the same GPU enumeration at
++ * first Vulkan call on *both* routes and measurably destabilised the guest's
++ * storage-image submission on the Wayland route.  The Vulkan entry only needs
++ * the driver; the cache keeps being refreshed where it always was - on
++ * display paths, after this init has completed.  Callers:
++ * __wine_get_vulkan_driver(). */
++void preload_display_driver(void)
++{
++    if (user_driver == &lazy_load_driver) load_display_driver();
++}
++
+ /**********************************************************************
+  *           get_display_driver
+  */
+@@ -1499,7 +1570,7 @@ static const struct client_surface_funcs nulldrv_surface_funcs =
+     .present = nulldrv_surface_present,
+ };
+ 
+-struct client_surface *nulldrv_client_surface_create( HWND hwnd )
++W32KAPI struct client_surface *nulldrv_client_surface_create( HWND hwnd )
+ {
+     return client_surface_create( sizeof(struct client_surface), &nulldrv_surface_funcs, hwnd );
+ }
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 1c85deda9b0..b5afbaaef6d 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -5315,6 +5315,9 @@ const struct vulkan_funcs *__wine_get_vulkan_driver( UINT version )
+         return NULL;
+     }
+ 
++    /* Only X11 needs early driver load; retain Wayland/Direct initialization. */
++    const char *route = getenv( "WINEHUA_DISPLAY_ROUTE" );
++    if (route && !strcmp( route, "x11" )) preload_display_driver();
+     pthread_once( &init_once, vulkan_init_once );
+     if (!vulkan_handle) return NULL;
+     return &vulkan_funcs;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index dbc2d332c7e..43a24ad115a 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -194,6 +194,7 @@ extern MONITORINFO monitor_info_from_rect( RECT rect, UINT dpi );
+ extern MONITORINFO monitor_info_from_window( HWND hwnd, UINT flags );
+ extern UINT monitor_dpi_from_rect( RECT rect, UINT dpi, UINT *raw_dpi );
+ extern BOOL update_display_cache( BOOL force );
++extern void preload_display_driver(void);
+ extern void reset_monitor_update_serial(void);
+ extern void user_lock(void);
+ extern void user_unlock(void);
+diff --git a/dlls/win32u/winehua_present.c b/dlls/win32u/winehua_present.c
+new file mode 100644
+index 00000000000..797069e484b
+--- /dev/null
++++ b/dlls/win32u/winehua_present.c
+@@ -0,0 +1,153 @@
++/*
++ * WineHua private present surface channel — id page + readiness probe.
++ *
++ * Mechanism only; the per-driver present policy (which id, when to publish,
++ * how to report degradation) stays in the drivers.  See
++ * include/wine/winehua_present.h for the contract with guest Mesa.
++ *
++ * Copyright 2025-2026 WineHua contributors
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdarg.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++#include "ntstatus.h"
++#include "windef.h"
++#include "winbase.h"
++
++#include "wine/winehua_present.h"
++
++/* 契约: 与 guest mesa 的 vtest winsys 逐字节一致 (magic/version/字段序)。
++ * 改这里就必须同步 thirdparty/mesa/src/gallium/winsys/virgl/vtest/
++ * virgl_vtest_socket.c 的 winehua_present_surface_page。 */
++struct winehua_present_surface_page
++{
++    uint32_t magic;
++    uint32_t version;
++    uint32_t surface_id;
++    uint32_t reserved;
++};
++
++static pthread_once_t winehua_present_surface_once = PTHREAD_ONCE_INIT;
++static pthread_mutex_t winehua_present_surface_mutex = PTHREAD_MUTEX_INITIALIZER;
++static struct winehua_present_surface_page *winehua_present_surface_page;
++static char winehua_present_page_path[256];   /* 进程退出时删除 (见下) */
++static char winehua_present_ready_dir[192];   /* 读一次的缓存, 见 ready() */
++
++/* 页文件是每进程一个 (名字带 pid), 不删就在沙箱 temp 里逐次累积; 退出时清掉。
++ * SIGKILL 下不会执行 —— 残留页由下一次启动的同 pid/新 pid 覆盖或忽略, 无害。 */
++static void winehua_present_page_cleanup(void)
++{
++    if (winehua_present_page_path[0])
++        unlink(winehua_present_page_path);
++}
++
++static void winehua_init_present_surface_page(void)
++{
++    const char *tmp_dir = getenv("TMPDIR");
++    struct winehua_present_surface_page *page;
++    char path[256];
++    int fd;
++
++    if (!tmp_dir || !tmp_dir[0] ||
++        snprintf(path, sizeof(path), "%s/winehua_present_surface_%u.shm",
++                 tmp_dir, (uint32_t)getpid()) >= sizeof(path))
++        return;
++    if ((fd = open(path, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600)) < 0)
++        return;
++    if (ftruncate(fd, sizeof(*page)) ||
++        (page = mmap(NULL, sizeof(*page), PROT_READ | PROT_WRITE,
++                     MAP_SHARED, fd, 0)) == MAP_FAILED)
++    {
++        close(fd);
++        return;
++    }
++    close(fd);
++
++    page->version = WINEHUA_PRESENT_SURFACE_VERSION;
++    page->reserved = 0;
++    __atomic_store_n(&page->surface_id, 0, __ATOMIC_RELAXED);
++    /* magic last: 写它之前 consumer 读到的是无效页, 不会当半初始化页用 */
++    __atomic_store_n(&page->magic, WINEHUA_PRESENT_SURFACE_MAGIC, __ATOMIC_RELEASE);
++    winehua_present_surface_page = page;
++    snprintf(winehua_present_page_path, sizeof(winehua_present_page_path), "%s", path);
++    atexit(winehua_present_page_cleanup);
++}
++
++W32KAPI void winehua_present_surface_init(void)
++{
++    pthread_once(&winehua_present_surface_once, winehua_init_present_surface_page);
++}
++
++/* 呈现期发布: begin 与 end 之间的 swap 会被 mesa 认成"这一帧的目标是 surface_id"。
++ * 互斥保护的是页面指针生命周期与多线程 swap (同一进程内多个 GL 线程)。 */
++W32KAPI void winehua_present_surface_begin(uint32_t surface_id)
++{
++    winehua_present_surface_init();
++    pthread_mutex_lock(&winehua_present_surface_mutex);
++    if (winehua_present_surface_page)
++        __atomic_store_n(&winehua_present_surface_page->surface_id,
++                         surface_id, __ATOMIC_RELEASE);
++}
++
++W32KAPI void winehua_present_surface_end(void)
++{
++    if (winehua_present_surface_page)
++        __atomic_store_n(&winehua_present_surface_page->surface_id,
++                         0, __ATOMIC_RELEASE);
++    pthread_mutex_unlock(&winehua_present_surface_mutex);
++}
++
++static pthread_once_t winehua_present_ready_once = PTHREAD_ONCE_INIT;
++
++static void winehua_init_ready_dir(void)
++{
++    const char *dir = getenv("WINEHUA_ZERO_COPY_READY_DIR");
++
++    if (dir && dir[0])
++        snprintf(winehua_present_ready_dir, sizeof(winehua_present_ready_dir), "%s", dir);
++}
++
++/* 宿主挂接握手: 宿主给这个 (pid, surface_id) 挂好目标后会写 ready 标记
++ * (宿主侧 graphics_broker.cpp SetZeroCopySurfaceReady)。未挂接时 present 会被
++ * 宿主丢弃 (kPresentNoTarget) —— 驱动据此报降级, 不静默。 */
++W32KAPI BOOL winehua_present_surface_ready(uint32_t surface_id)
++{
++    char path[256];
++    uint64_t surface_key;
++
++    /* 目录读一次就够 (它在进程生命周期内不变): 本函数每次 swap 都被调用
++     * (117fps ⇒ 每秒百余次), 原来每次都 getenv —— 既有开销, 又在并发 setenv
++     * 下不线程安全 (调用点在渲染线程上)。getenv 结果缓存到 pthread_once。 */
++    pthread_once(&winehua_present_ready_once, winehua_init_ready_dir);
++    if (!surface_id || !winehua_present_ready_dir[0]) return FALSE;
++    surface_key = ((uint64_t)(uint32_t)getpid() << 32) | surface_id;
++    if (snprintf(path, sizeof(path), "%s/winehua_zc_surface_%llu.ready",
++                 winehua_present_ready_dir, (unsigned long long)surface_key) >= sizeof(path))
++        return FALSE;
++    return access(path, F_OK) == 0;
++}
++
++W32KAPI BOOL winehua_present_surface_mapped(void)
++{
++    winehua_present_surface_init();
++    return winehua_present_surface_page != NULL;
++}
+diff --git a/dlls/winex11.drv/Makefile.in b/dlls/winex11.drv/Makefile.in
+index 53ea4c794d7..81a3a287458 100644
+--- a/dlls/winex11.drv/Makefile.in
++++ b/dlls/winex11.drv/Makefile.in
+@@ -16,6 +16,7 @@ SOURCES = \
+ 	keyboard.c \
+ 	mouse.c \
+ 	opengl.c \
++	opengl_winehua.c \
+ 	palette.c \
+ 	pen.c \
+ 	version.rc \
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index e1a5e70a6fe..e4c2057d1ab 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -1484,10 +1484,16 @@ BOOL X11DRV_SetCursorPos( INT x, INT y )
+         return FALSE;
+     }
+ 
++#ifdef SONAME_LIBXFIXES
++    /* warp 瞬间藏硬件光标 (xfixes), 库缺失时跳过 —— Xwayland/wlroots 侧的
++     * 光标由合成器管理, 跳过只影响 warp 瞬间的可见性, 不影响定位。 */
+     pXFixesHideCursor( data->display, root_window );
++#endif
+     XWarpPointer( data->display, root_window, root_window, 0, 0, 0, 0, pos.x, pos.y );
+     data->warp_serial = NextRequest( data->display );
++#ifdef SONAME_LIBXFIXES
+     pXFixesShowCursor( data->display, root_window );
++#endif
+     XFlush( data->display ); /* avoids bad mouse lag in games that do their own mouse warping */
+     TRACE( "warped to %d,%d serial %lu\n", x, y, data->warp_serial );
+     return TRUE;
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index 8d9dc24adcc..fdbebc76f08 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -1572,10 +1572,18 @@ static const struct opengl_drawable_funcs x11drv_egl_surface_funcs =
+ 
+ /**********************************************************************
+  *           X11DRV_OpenglInit
++ *
++ * No GLX on this platform (SONAME_LIBGL absent), so upstream has nothing to
++ * offer here and win32u's generic EGL driver takes over — whose swap is a
++ * no-op, i.e. GL renders but never presents.  The WineHua private present
++ * driver (opengl_winehua.c) covers that: it keeps the surfaceless EGL render
++ * and hands the frame to the host over the route's present channel.  It
++ * returns STATUS_NOT_IMPLEMENTED when the channel is not armed, which keeps
++ * the upstream fallback behavior unchanged.
+  */
+ UINT X11DRV_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs )
+ {
+-    return STATUS_NOT_IMPLEMENTED;
++    return winehua_x11_gl_init( version, opengl_funcs, driver_funcs );
+ }
+ 
+ void sync_gl_drawable( HWND hwnd )
+diff --git a/dlls/winex11.drv/opengl_winehua.c b/dlls/winex11.drv/opengl_winehua.c
+new file mode 100644
+index 00000000000..4aba1b27234
+--- /dev/null
++++ b/dlls/winex11.drv/opengl_winehua.c
+@@ -0,0 +1,344 @@
++/*
++ * WineHua private OpenGL present for the X route.
++ *
++ * Copyright 2025-2026 WineHua contributors
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * Why this exists
++ * ---------------
++ * The X route has no GLX: DRI3/GLX need a DRM render node and a guest Mesa of
++ * the host's architecture, neither of which exists for an emulated x86_64
++ * guest.  Without a driver here winex11 falls back to win32u's generic EGL
++ * driver (surfaceless platform, FBO drawable) whose swap is a no-op —
++ * rendering works, nothing ever reaches the host (T3: frames=3028 at 447fps
++ * with displayFps=-1).
++ *
++ * What this driver does
++ * ---------------------
++ * Keep the working render half (surfaceless EGL, inherited from the base
++ * driver funcs) and give the drawable a *pbuffer* EGL surface so the swap has
++ * a real front resource: the guest Mesa VirGL/vtest winsys then emits a
++ * present command carrying the id published in the present page, and the host
++ * presenter blits that texture into the window's scene node — the same channel
++ * the route already uses for Vulkan/venus frames, keyed by the same id:
++ * the X window id of the HWND's managed toplevel.
++ *
++ * The id is published on *every* swap, not only when the host has attached a
++ * target: the host discovers surfaces from their presents (see
++ * include/wine/winehua_present.h).  Frames presented before the host attaches
++ * are dropped by the presenter (kPresentNoTarget) — the driver reports that as
++ * rate-limited degradation rather than silently presenting into nothing.
++ *
++ * Mirrors dlls/winewayland.drv/opengl_readback.c (zero-copy branch); the
++ * readback pool there is a Wayland-route fallback and has no X-route analog —
++ * on this route a window that never gets a target stays unpresented, which the
++ * degradation counter surfaces.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "ntstatus.h"
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++
++#include "wine/debug.h"
++#include "wine/opengl_driver.h"
++#include "wine/winehua_present.h"
++
++#include "x11drv.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(wgl);
++
++/* 降级可见性: 未挂接时每 300 帧打一行 (约 1s@300fps), 不静默也不刷屏 */
++#define WINEHUA_X11_GL_DEGRADE_INTERVAL 300
++
++static const struct opengl_funcs *funcs;
++static struct egl_platform *egl_platform;
++static const struct opengl_driver_funcs *winehua_base_driver_funcs;
++static struct opengl_driver_funcs winehua_x11_driver_funcs;
++
++struct winehua_x11_gl_drawable
++{
++    struct opengl_drawable base;
++    int width;
++    int height;
++    uint64_t presents;      /* 已 present 帧数 */
++    uint64_t unpresented;   /* 无目标/无窗口而丢弃的帧数 */
++    uint64_t lastReported;  /* 上次降级日志所在的 presents 位置 */
++    BOOL warned_child;      /* 子窗落位限制只提示一次 (见 swap) */
++};
++
++static struct winehua_x11_gl_drawable *impl_from_drawable(struct opengl_drawable *base)
++{
++    return CONTAINING_RECORD(base, struct winehua_x11_gl_drawable, base);
++}
++
++static EGLConfig wx11_config_for_format(int format)
++{
++    if (!egl_platform || !egl_platform->config_count) return NULL;
++    return egl_platform->configs[(format - 1) % egl_platform->config_count];
++}
++
++static void winehua_x11_drawable_destroy(struct opengl_drawable *base)
++{
++    struct winehua_x11_gl_drawable *gl = impl_from_drawable(base);
++
++    TRACE("%s: presents=%llu unpresented=%llu\n", debugstr_opengl_drawable(base),
++          (unsigned long long)gl->presents, (unsigned long long)gl->unpresented);
++    /* EGLSurface 不在这里销毁: 上游约定由 win32u 的 opengl_drawable_release 统一
++     * 销毁 (egldrv / winewayland 的 destroy 回调都只做自己的事)。这里再销毁一次
++     * 就是二次销毁 —— 第二次传入已释放的句柄: 释放后读 + EGL 显示表 last error
++     * 被污染 (驱动失败路径打出的错误码会是上一次 destroy 的残留)。 */
++}
++
++/* 窗口几何变化 (GL_FLUSH_UPDATED) ⇒ pbuffer 必须跟随 client rect: 尺寸若在
++ * drawable 创建时冻结、之后永不更新, 应用改窗/最大化/DPI 变化后就会一直渲染
++ * 到旧尺寸 —— 超出部分被裁、剩下的被主机按窗几何拉伸, 而 guest 侧零错误
++ * (review 2026-10-01)。win32u 在窗口几何变化时给 client surface 置 updated,
++ * 下一次 swap 会带 GL_FLUSH_UPDATED 调到这里; 做法与 winewayland.drv/
++ * opengl_readback.c 的重建路径一致 (新建 pbuffer + 重绑当前 context, 保留
++ * buffer 映射表 —— 映射与 EGLSurface 无关)。 */
++static void winehua_x11_drawable_flush(struct opengl_drawable *base, UINT flags)
++{
++    struct winehua_x11_gl_drawable *gl = impl_from_drawable(base);
++    EGLint attribs[5];
++    EGLSurface new_surface;
++    EGLContext ctx;
++    RECT rect;
++    int width, height;
++
++    TRACE("%s, flags %#x\n", debugstr_opengl_drawable(base), flags);
++    if (!(flags & GL_FLUSH_UPDATED) || !base->surface || !base->client) return;
++
++    NtUserGetClientRect(base->client->hwnd, &rect, NtUserGetDpiForWindow(base->client->hwnd));
++    width = max(1, rect.right - rect.left);
++    height = max(1, rect.bottom - rect.top);
++    if (width == gl->width && height == gl->height) return;
++
++    attribs[0] = EGL_WIDTH;
++    attribs[1] = width;
++    attribs[2] = EGL_HEIGHT;
++    attribs[3] = height;
++    attribs[4] = EGL_NONE;
++    new_surface = funcs->p_eglCreatePbufferSurface(egl_platform->display,
++                                                   wx11_config_for_format(base->format), attribs);
++    if (!new_surface)
++    {
++        WARN("pbuffer resize alloc failed hwnd=%p size=%dx%d error=%#x\n",
++             base->client->hwnd, width, height, funcs->p_eglGetError());
++        return;
++    }
++    ctx = funcs->p_eglGetCurrentContext();
++    if (ctx == EGL_NO_CONTEXT ||
++        !funcs->p_eglMakeCurrent(egl_platform->display, new_surface, new_surface, ctx))
++    {
++        WARN("pbuffer rebind failed hwnd=%p error=%#x\n",
++             base->client->hwnd, funcs->p_eglGetError());
++        funcs->p_eglDestroySurface(egl_platform->display, new_surface);
++        return;
++    }
++    funcs->p_eglDestroySurface(egl_platform->display, base->surface);
++    base->surface = new_surface;
++    WARN("pbuffer resized %dx%d -> %dx%d hwnd=%p\n", gl->width, gl->height, width, height,
++         base->client->hwnd);
++    gl->width = width;
++    gl->height = height;
++}
++
++/* 呈现: 发布 id → flush → swap → 摘 id。三步顺序不可换 —— mesa 在 swap 内部
++ * 读页面 (virgl_vtest_flush_frontbuffer), id 必须在 swap 期间可见; 之后立刻
++ * 清掉, 迟到的 flush_frontbuffer 不会误挂到本窗。 */
++static BOOL winehua_x11_drawable_swap(struct opengl_drawable *base)
++{
++    struct winehua_x11_gl_drawable *gl = impl_from_drawable(base);
++    HWND hwnd = base->client->hwnd;
++    HWND toplevel;
++    Window xwindow;
++    BOOL ok;
++
++    /* id 取**受管顶层窗**的: 子窗 (WS_CHILD) 自己没有 whole_window ——
++     * is_window_managed 只对 managed toplevel 建窗 —— 直接用子窗 hwnd 会永远
++     * 拿不到 id ⇒ 整条通道静默不呈现 (review 2026-10-01)。GA_ROOT 沿 parent
++     * 上溯到顶层。**已知限制**: 子窗内容按顶层窗矩形落位 (子矩形偏移当前不经
++     * present 通道传递, 见 known-issues §2.11), 首次出现时提示一次。 */
++    toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    if (toplevel && toplevel != hwnd && !gl->warned_child)
++    {
++        gl->warned_child = TRUE;
++        WARN("hwnd %p is a child window, presenting through its toplevel %p; "
++             "sub-rect offset is not carried by the present channel\n", hwnd, toplevel);
++    }
++    xwindow = X11DRV_get_whole_window(toplevel ? toplevel : hwnd);
++
++    if (!xwindow || xwindow == root_window)
++    {
++        /* 窗口还没有 managed toplevel (未 map / 桌面窗): 帧无处可去。 */
++        if (!gl->unpresented++)
++            WARN("hwnd %p has no managed toplevel, private present unavailable\n",
++                 base->client->hwnd);
++        return TRUE; /* 与上游 framebuffer_surface_swap 同语义: 换缓冲本身成功 */
++    }
++
++    winehua_present_surface_begin((uint32_t)xwindow);
++    /* Pbuffer swap alone does not reliably flush the front resource (与
++     * winewayland.drv/opengl_readback.c:353 同因)。 */
++    funcs->p_glFlush();
++    ok = funcs->p_eglSwapBuffers(egl_platform->display, base->surface);
++    winehua_present_surface_end();
++
++    if (!ok)
++    {
++        WARN("eglSwapBuffers failed hwnd=%p xwindow=%lx error=%#x\n",
++             base->client->hwnd, xwindow, funcs->p_eglGetError());
++        return FALSE;
++    }
++
++    gl->presents++;
++    if (!winehua_present_surface_ready((uint32_t)xwindow))
++    {
++        gl->unpresented++;
++        if (gl->presents - gl->lastReported >= WINEHUA_X11_GL_DEGRADE_INTERVAL)
++        {
++            gl->lastReported = gl->presents;
++            WARN("hwnd %p xwindow %lx: host has no present target after %llu frames "
++                 "(%llu dropped), check display route / window registration\n",
++                 base->client->hwnd, xwindow, (unsigned long long)gl->presents,
++                 (unsigned long long)gl->unpresented);
++        }
++    }
++    return TRUE;
++}
++
++static const struct opengl_drawable_funcs winehua_x11_drawable_funcs =
++{
++    .destroy = winehua_x11_drawable_destroy,
++    .flush = winehua_x11_drawable_flush,
++    .swap = winehua_x11_drawable_swap,
++};
++
++/* 与 egldrv_surface_create 同形, 差别只在 pbuffer (有 front resource 才有
++ * 真正的 present 语义) 与自带的 swap。 */
++static BOOL winehua_x11_surface_create(HWND hwnd, BOOL raw, int format, struct opengl_drawable **drawable)
++{
++    struct winehua_x11_gl_drawable *gl;
++    struct client_surface *client;
++    struct opengl_drawable *previous;
++    EGLint attribs[5];
++    RECT rect;
++
++    if ((previous = *drawable) && previous->format == format) return TRUE;
++    if (!x11drv_client_surface_create(hwnd, raw, format, &client)) return FALSE;
++    /* 页面尽早绑定: mesa 侧第一次 flush_frontbuffer 就该读到有效页 */
++    winehua_present_surface_init();
++    /* 页建不起来 (无 TMPDIR / open/mmap 失败) 时整条通道只会"什么都不发生"
++     * (id 恒 0 ⇒ 一帧都不会 present), 而降级告警说的是"宿主没挂接" —— 方向
++     * 相反。这里是唯一能区分"通道断了"与"宿主没挂接"的探针 (header 的约定),
++     * 所以显式探一次并留痕 (review 2026-10-01: 该函数此前无人调用)。 */
++    if (!winehua_present_surface_mapped())
++        ERR("present page not mapped (TMPDIR/mmap failed): frames will never reach the host\n");
++    if (!(gl = opengl_drawable_create(sizeof(*gl), &winehua_x11_drawable_funcs,
++                                      format, client)))
++    {
++        client_surface_release(client);
++        return FALSE;
++    }
++
++    NtUserGetClientRect(hwnd, &rect, NtUserGetDpiForWindow(hwnd));
++    gl->width = max(1, rect.right - rect.left);
++    gl->height = max(1, rect.bottom - rect.top);
++
++    attribs[0] = EGL_WIDTH;
++    attribs[1] = gl->width;
++    attribs[2] = EGL_HEIGHT;
++    attribs[3] = gl->height;
++    attribs[4] = EGL_NONE;
++    gl->base.surface = funcs->p_eglCreatePbufferSurface(egl_platform->display,
++                                                       wx11_config_for_format(format), attribs);
++    if (!gl->base.surface)
++    {
++        WARN("pbuffer creation failed hwnd=%p format=%d size=%dx%d error=%#x\n",
++             hwnd, format, gl->width, gl->height, funcs->p_eglGetError());
++        opengl_drawable_release(&gl->base);
++        client_surface_release(client);
++        return FALSE;
++    }
++
++    /* 单缓冲 pbuffer: front 映射到 back, 应用画的那一份就是 present 的源
++     * (与 winewayland.drv/opengl_readback.c 同一映射)。 */
++    opengl_drawable_map_buffer(&gl->base, GL_FRONT_LEFT, GL_BACK_LEFT);
++    opengl_drawable_map_buffer(&gl->base, GL_FRONT, GL_BACK);
++    opengl_drawable_map_buffer(&gl->base, GL_FRONT_AND_BACK, GL_BACK);
++    if (gl->base.stereo) opengl_drawable_map_buffer(&gl->base, GL_FRONT_RIGHT, GL_BACK_RIGHT);
++
++    client_surface_release(client);
++    if (previous) opengl_drawable_release(previous);
++    *drawable = &gl->base;
++    TRACE("created %s (pbuffer %dx%d)\n", debugstr_opengl_drawable(&gl->base),
++          gl->width, gl->height);
++    return TRUE;
++}
++
++static void winehua_x11_init_egl_platform(struct egl_platform *platform)
++{
++    /* 渲染半场原样继承 (surfaceless EGL: T3 已证可渲染) —— 本驱动只换呈现出口 */
++    winehua_base_driver_funcs->p_init_egl_platform(platform);
++    egl_platform = platform;
++}
++
++/* X 路线私有 present 是否可用: 宿主已武装 vtest present 通道
++ * (WINEHUA_VTEST_PRESENT, 由 graphics_broker 随 guest 环境下发)。
++ * WINEHUA_X11_GL_PRESENT=0 可显式关掉 (对照实验用), 关掉即回到上游行为
++ * (egldrv, 不出图)。 */
++static BOOL winehua_x11_gl_enabled(void)
++{
++    const char *opt_out = getenv("WINEHUA_X11_GL_PRESENT");
++    const char *present;
++
++    if (opt_out && opt_out[0] && !strcmp(opt_out, "0")) return FALSE;
++    present = getenv("WINEHUA_VTEST_PRESENT");
++    return present && present[0] && strcmp(present, "0");
++}
++
++UINT winehua_x11_gl_init(UINT version, const struct opengl_funcs *opengl_funcs,
++                         const struct opengl_driver_funcs **driver_funcs)
++{
++    if (version != WINE_OPENGL_DRIVER_VERSION)
++    {
++        ERR("Version mismatch, opengl32 wants %u but driver has %u\n",
++            version, WINE_OPENGL_DRIVER_VERSION);
++        return STATUS_INVALID_PARAMETER;
++    }
++    if (!opengl_funcs->egl_handle)
++    {
++        /* STATUS_NOT_SUPPORTED 的上游含义是"运行期缺 libGL"; 通道已武装但本进程
++         * 没有 egl_handle 时也走这里 —— 按旧含义会被误读 (known-issues §2.11
++         * 小项)。真实原因显式打出来。 */
++        ERR("no EGL handle in this process: private present unavailable "
++            "(channel armed, but no EGL to create the pbuffer with)\n");
++        return STATUS_NOT_SUPPORTED;
++    }
++    if (!winehua_x11_gl_enabled()) return STATUS_NOT_IMPLEMENTED;
++
++    funcs = opengl_funcs;
++    winehua_base_driver_funcs = *driver_funcs;
++    winehua_x11_driver_funcs = *winehua_base_driver_funcs; /* 先全量继承 */
++    winehua_x11_driver_funcs.p_init_egl_platform = winehua_x11_init_egl_platform;
++    winehua_x11_driver_funcs.p_surface_create = winehua_x11_surface_create;
++    *driver_funcs = &winehua_x11_driver_funcs;
++
++    TRACE("WineHua X-route GL present enabled (pbuffer drawable + X window id)\n");
++    return STATUS_SUCCESS;
++}
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index 05c9ca4b18c..ad921e0549e 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -42,6 +42,7 @@
+ #define WINE_VULKAN_NO_X11_TYPES
+ #include "wine/vulkan.h"
+ #include "wine/vulkan_driver.h"
++#include "wine/winehua_vulkan.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
+ 
+@@ -58,6 +59,30 @@ static VkResult X11DRV_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
+ 
+     TRACE( "%p %p %p %p\n", hwnd, instance, handle, client );
+ 
++    if (winehua_vulkan_present_enabled())
++    {
++        /* Private present on the X route: no native Xlib surface is created.
++         * The guest renders into Venus images and presents them to the host
++         * tagged with the window's managed toplevel X window id; the host maps
++         * that id back to its xwayland surface.  The client surface is still
++         * created: win32u calls client_surface_update()/present() around every
++         * private present, exactly as on the Wayland route. */
++        Window xwindow = X11DRV_get_whole_window( hwnd );
++
++        if (!xwindow || xwindow == root_window)
++        {
++            ERR("No managed toplevel for hwnd %p (xwindow %lx), private present surface unavailable\n",
++                hwnd, xwindow);
++            return VK_ERROR_OUT_OF_HOST_MEMORY;
++        }
++        if (!x11drv_client_surface_create( hwnd, raw, 0, client )) return VK_ERROR_OUT_OF_HOST_MEMORY;
++        *handle = (VkSurfaceKHR)(uintptr_t)(WINEHUA_VULKAN_SURFACE_TAG | (uint64_t)xwindow);
++
++        TRACE( "Created private WineHua surface=0x%s (xwindow %lx), client %s\n",
++               wine_dbgstr_longlong( *handle ), xwindow, debugstr_client_surface( *client ) );
++        return VK_SUCCESS;
++    }
++
+     if (!(info.window = x11drv_client_surface_create( hwnd, raw, 0, client ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+     if (instance->p_vkCreateXlibSurfaceKHR( instance->host.instance, &info, NULL /* allocator */, handle ))
+     {
+@@ -74,18 +99,40 @@ static VkBool32 X11DRV_get_physical_device_presentation_support( struct vulkan_p
+ {
+     struct vulkan_instance *instance = physical_device->instance;
+     TRACE( "%p %u\n", physical_device, index );
++
++    /* 私有 present 下宿主 WSI 一栏不成立: 呈现由 Venus/Broker 私有链路完成,
++     * DXVK 接受的每条 graphics 队列从 Win32 应用看来都可 present。查宿主
++     * Xlib 表达会命中宿主侧没有的入口 (X 路线宿主是 OHOS 合成器, 不是 X)。 */
++    if (winehua_vulkan_present_enabled()) return VK_TRUE;
++
+     return instance->p_vkGetPhysicalDeviceXlibPresentationSupportKHR( physical_device->host.physical_device, index, gdi_display,
+                                                                       default_visual.visual->visualid );
+ }
+ 
+ static void X11DRV_map_instance_extensions( struct vulkan_instance_extensions *extensions )
+ {
++    /* 私有 present: 只对外声明 win32 surface —— guest 拿到的不是原生 WSI 面
++     * (低 32 位是 X 顶层窗 id), 声明 xlib 会让应用去创建宿主不存在的面。 */
++    if (winehua_vulkan_present_enabled())
++    {
++        if (extensions->has_VK_KHR_surface) extensions->has_VK_KHR_win32_surface = 1;
++        return;
++    }
++
+     if (extensions->has_VK_KHR_win32_surface) extensions->has_VK_KHR_xlib_surface = 1;
+     if (extensions->has_VK_KHR_xlib_surface) extensions->has_VK_KHR_win32_surface = 1;
+ }
+ 
+ static void X11DRV_map_device_extensions( struct vulkan_device_extensions *extensions )
+ {
++    /* 私有 present: swapchain 由 win32u 的 Venus 镜像路径兑现, 不向宿主
++     * vkCreateDevice 传任何 WSI 扩展 (镜像 winewayland 实现)。 */
++    if (winehua_vulkan_present_enabled())
++    {
++        extensions->has_VK_KHR_swapchain = 1;
++        return;
++    }
++
+     if (extensions->has_VK_KHR_external_memory_win32) extensions->has_VK_KHR_external_memory_fd = 1;
+     if (extensions->has_VK_KHR_external_memory_fd) extensions->has_VK_KHR_external_memory_win32 = 1;
+     if (extensions->has_VK_KHR_external_semaphore_win32) extensions->has_VK_KHR_external_semaphore_fd = 1;
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index d4f4f6fb664..385b5626230 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -495,6 +495,48 @@ static BOOL is_window_managed( HWND hwnd, UINT swp_flags, BOOL fullscreen )
+ }
+ 
+ 
++/***********************************************************************
++ *		sync_frame_extents
++ *
++ * WineHua (D31): declare the client-area insets of self-drawn decorations.
++ * In desktop mode wine draws the non-client area itself (managed_mode is
++ * forced FALSE in desktop.c), so only wine knows where the client area
++ * sits inside whole_window.  The host compositor anchors zero-copy
++ * GL/Vulkan faces at the client rect and would otherwise stretch them
++ * over the decorations, hiding the title bar.  _NET_WM_FRAME_EXTENTS is
++ * the standard EWMH property for this (Chromium sets it for the same
++ * client-side-decorations reason); written only for unmanaged windows —
++ * a managed window's decorations belong to the WM and overwriting would
++ * clobber the WM's own value.
++ */
++static void sync_frame_extents( struct x11drv_win_data *data )
++{
++    /* Xlib format=32 契约: 数据按 long[] 提供 (LP64 下每单元 8 字节, 同款
++     * 写法见 sync_window_opacity)。传 CARD32[] 时 Xlib 按 long 步进读输入,
++     * 线上值变成 [v0, v2, 栈垃圾, 栈垃圾] —— D31 实测 wlroots 恰读到
++     * (4,23,垃圾,垃圾), 面被锚成 1px 条带。 */
++    long extents[4];
++    unsigned int i;
++
++    if (!data->whole_window || data->managed) return;
++    /* client/visible live in the same coordinate space.  A client edge can
++     * stick out of the visible rect when the window hangs off-screen —
++     * clamp, the host only needs the on-window client placement. */
++    extents[0] = max( 0, data->rects.client.left - data->rects.visible.left );
++    extents[1] = max( 0, data->rects.visible.right - data->rects.client.right );
++    extents[2] = max( 0, data->rects.client.top - data->rects.visible.top );
++    extents[3] = max( 0, data->rects.visible.bottom - data->rects.client.bottom );
++    for (i = 0; i < 4; i++)
++        if (extents[i] != (long)data->frame_extents_written[i]) break;
++    if (i == 4) return;  /* unchanged — don't spam PropertyNotify */
++    for (i = 0; i < 4; i++)
++        data->frame_extents_written[i] = (CARD32)extents[i];
++    XChangeProperty( data->display, data->whole_window,
++                     x11drv_atom(_NET_WM_FRAME_EXTENTS), XA_CARDINAL, 32,
++                     PropModeReplace, (unsigned char *)extents, 4 );
++}
++
++
+ /***********************************************************************
+  *		is_window_resizable
+  *
+@@ -2826,6 +2868,7 @@ static void create_whole_window( struct x11drv_win_data *data )
+     x11drv_xinput2_enable( data->display, data->whole_window );
+     set_initial_wm_hints( data->display, data->whole_window );
+     set_wm_hints( data );
++    sync_frame_extents( data );  /* WineHua D31: before map, so the host reads it on CreateNotify */
+ 
+     XSaveContext( data->display, data->whole_window, winContext, (char *)data->hwnd );
+     NtUserSetProp( data->hwnd, whole_window_prop, (HANDLE)data->whole_window );
+@@ -3146,22 +3189,14 @@ BOOL X11DRV_CreateWindow( HWND hwnd )
+ {
+     if (hwnd == NtUserGetDesktopWindow())
+     {
+-        static const WCHAR winsta0[] = {'W','i','n','S','t','a','0',0};
+         struct x11drv_thread_data *data = x11drv_init_thread_data();
+-        WCHAR winstation_name[64];
+         XSetWindowAttributes attr;
+ 
+-        if (NtUserGetObjectInformation( NtUserGetProcessWindowStation(), UOI_NAME, winstation_name,
+-                                        sizeof(winstation_name), NULL ))
+-        {
+-            TRACE( "winstation name %s.\n", debugstr_w(winstation_name) );
+-            if (!wcscmp( winstation_name, winsta0 ))
+-            {
+-                /* listen to raw xinput event in the desktop window thread */
+-                data->xinput2_rawinput = TRUE;
+-                x11drv_xinput2_enable( data->display, DefaultRootWindow( data->display ) );
+-            }
+-        }
++        /* WineHua: 上游 (Valve 11.0) 在 WinSta0 会话里给桌面窗线程开
++         * XInput2 raw input; OHOS 无该 winstation 语义, 且 HAVE_X11_EXTENSIONS_
++         * XINPUT2_H 在本 sysroot 未定义 (XInput2.h 属 libXi, x11 栈未装),
++         * x11drv_thread_data 无 xinput2_rawinput 字段 —— 整段撤除。 */
++        (void)data;
+         /* create the cursor clipping window */
+         attr.override_redirect = TRUE;
+         attr.event_mask = StructureNotifyMask | FocusChangeMask;
+@@ -3513,7 +3548,18 @@ void X11DRV_SetCapture( HWND hwnd, UINT flags )
+     struct x11drv_thread_data *thread_data = x11drv_thread_data();
+     struct x11drv_win_data *data;
+ 
+-    if (!(flags & (GUI_INMOVESIZE | GUI_INMENUMODE))) return;
++    /* WineHua (D34): app-level SetCapture also grabs the X pointer — the
++     * upstream early-return `if (!(flags & (GUI_INMOVESIZE | GUI_INMENUMODE)))
++     * return;` is removed. Upstream only grabs during modal loops and routes
++     * plain capture at the win32 dispatch level, which only works while the
++     * pointer stays over windows of the SAME process: cross-process moves
++     * (desktop / another app) never reach the capturing process, so
++     * WM_MOUSEMOVE stops. The X grab is the only mechanism-level redirect on
++     * X11 — Xwayland runs pointer events through dix with the grab active and
++     * delivers to whole_window regardless of position. Grab semantics match
++     * Windows capture; the X server releases grabs automatically when the
++     * client or its windows die, so a crashed capturer cannot wedge the
++     * pointer. The release path below tolerates a NULL grab_hwnd. */
+ 
+     if (hwnd)
+     {
+@@ -3782,6 +3828,7 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     /* if window was fullscreen and is being hidden, release cursor clipping */
+     was_fullscreen &= data->desired_state.wm_state != NormalState;
+ 
++    sync_frame_extents( data );  /* WineHua D31: client insets follow the rects */
+     XFlush( data->display );  /* make sure changes are done before we start painting again */
+     release_win_data( data );
+ 
+@@ -4219,9 +4266,9 @@ BOOL X11DRV_HasWindowManager( const char *name )
+     int opcode, event, error;
+ 
+     if (!strcmp( name, "xwayland" )) return XQueryExtension( gdi_display, "XWAYLAND", &opcode, &event, &error );
+-    if (!strcmp( name, "xwayland_glx_nvidia" ))
+-        return XQueryExtension( gdi_display, "XWAYLAND", &opcode, &event, &error ) && glx_renderer
+-               && strstr( glx_renderer, "NVIDIA" );
++    /* WineHua: "xwayland_glx_nvidia" (上游 11.0) 依赖 glx_renderer —— 该符号
++     * 定义在 GLX 编译区, 无 GLX (SONAME_LIBGL 空) 时不存在; 11.10 上游已整体
++     * 移除该 NVIDIA 专用启发式, 此处同撤, 落回 window_manager 判断。 */
+     return data->window_manager && !strcmp( data->window_manager, name );
+ }
+ 
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 41fc515357a..81a396fb194 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -527,6 +527,7 @@ enum x11drv_atoms
+     XATOM__NET_SYSTEM_TRAY_S0,
+     XATOM__NET_SYSTEM_TRAY_VISUAL,
+     XATOM__NET_WM_BYPASS_COMPOSITOR,
++    XATOM__NET_WM_FRAME_EXTENTS,
+     XATOM__NET_WM_FULLSCREEN_MONITORS,
+     XATOM__NET_WM_ICON,
+     XATOM__NET_WM_MOVERESIZE,
+@@ -716,6 +717,9 @@ struct x11drv_win_data
+     unsigned long wm_normal_hints_serial;/* serial of last pending WM_NORMAL_HINTS request */
+     unsigned long configure_serial;    /* serial of last pending configure request */
+     unsigned long net_wm_icon_serial;  /* serial of last pending _NET_WM_ICON request */
++    CARD32 frame_extents_written[4];   /* WineHua D31: last values synced to _NET_WM_FRAME_EXTENTS
++                                        * (all-zero means nothing written yet — an all-zero result
++                                        * is exactly the borderless case where skipping is fine) */
+ };
+ 
+ extern struct x11drv_win_data *get_win_data( HWND hwnd );
+@@ -947,6 +951,11 @@ extern void xim_set_result_string( HWND hwnd, const char *str, UINT count );
+ extern XIC X11DRV_get_ic( HWND hwnd );
+ extern void xim_set_focus( HWND hwnd, BOOL focus );
+ 
++/* WineHua private GL present for the X route (opengl_winehua.c): installed by
++ * X11DRV_OpenGLInit when no GLX is compiled in. */
++extern UINT winehua_x11_gl_init( UINT version, const struct opengl_funcs *opengl_funcs,
++                                 const struct opengl_driver_funcs **driver_funcs );
++
+ #define XEMBED_MAPPED  (1 << 0)
+ 
+ static inline BOOL is_window_rect_mapped( const RECT *rect )
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 0ddf6cf1147..1a154b59efc 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -144,6 +144,7 @@ const char * const X11DRV_atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_NET_SYSTEM_TRAY_S0",
+     "_NET_SYSTEM_TRAY_VISUAL",
+     "_NET_WM_BYPASS_COMPOSITOR",
++    "_NET_WM_FRAME_EXTENTS",
+     "_NET_WM_FULLSCREEN_MONITORS",
+     "_NET_WM_ICON",
+     "_NET_WM_MOVERESIZE",
+diff --git a/include/Makefile.in b/include/Makefile.in
+index 435158167fc..285035a575a 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1004,6 +1004,8 @@ SOURCES = \
+ 	wine/wined3d.h \
+ 	wine/winedmo.h \
+ 	wine/winedxgi.idl \
++	wine/winehua_present.h \
++	wine/winehua_vulkan.h \
+ 	wine/wingdi16.h \
+ 	wine/winnet16.h \
+ 	wine/winuser16.h \
+diff --git a/include/wine/winehua_present.h b/include/wine/winehua_present.h
+new file mode 100644
+index 00000000000..374ccc8fe5d
+--- /dev/null
++++ b/include/wine/winehua_present.h
+@@ -0,0 +1,52 @@
++/*
++ * WineHua private present surface channel — id publication + readiness probe
++ * (shared by the user drivers that present frames to the host presenter).
++ *
++ * The guest driver publishes, for the duration of one swap, the id of the
++ * surface it is presenting.  The guest Mesa VirGL/vtest winsys reads that id
++ * while emitting the present command (virgl_vtest_winsys.c
++ * virgl_vtest_flush_frontbuffer -> winehua_vtest_get_present_surface_id) and
++ * ships it to the host, which resolves it to one of its own present targets.
++ * The id is route specific:
++ *
++ *   Wayland route: Wayland proxy id of the window's wl_surface
++ *                  (dlls/winewayland.drv/opengl_readback.c)
++ *   X route:       X window id of the window's managed toplevel
++ *                  (dlls/winex11.drv/opengl_winehua.c)
++ *
++ * Publication is unconditional (not gated on readiness): the host learns about
++ * a surface *from* its presents — a driver that only published once the host
++ * had attached a target would never be discovered.  Readiness is therefore a
++ * separate probe, used by drivers to report "host never attached" degradation
++ * instead of dropping frames silently.
++ *
++ * The page format is a wire contract with Mesa (the consumer): magic/version
++ * must match thirdparty/mesa virgl vtest.  Header here, implementation in
++ * dlls/win32u/winehua_present.c, so both drivers share one copy.
++ */
++
++#ifndef __WINE_WINEHUA_PRESENT_H
++#define __WINE_WINEHUA_PRESENT_H
++
++#include <stdint.h>
++
++#include "ntuser.h" /* W32KAPI + BOOL (实现只在 win32u, 驱动侧是导入声明) */
++
++#define WINEHUA_PRESENT_SURFACE_MAGIC 0x57535053u
++#define WINEHUA_PRESENT_SURFACE_VERSION 1u
++
++/* Binds the per-process page (idempotent).  Drivers that know a swap is coming
++ * can call this early; begin() does it too. */
++W32KAPI void winehua_present_surface_init(void);
++/* Publish / retract the id around the swap that presents that surface. */
++W32KAPI void winehua_present_surface_begin(uint32_t surface_id);
++W32KAPI void winehua_present_surface_end(void);
++/* Host side handshake for this process' surface: ready marker (see
++ * WINEHUA_ZERO_COPY_READY_DIR) present ⇒ the host has a target attached. */
++W32KAPI BOOL winehua_present_surface_ready(uint32_t surface_id);
++/* Whether this process' page is mapped at all (TMPDIR missing / mmap failed =
++ * ids never reach the host).  Diagnostics only: it distinguishes "channel
++ * broken" from "host has not attached yet". */
++W32KAPI BOOL winehua_present_surface_mapped(void);
++
++#endif /* __WINE_WINEHUA_PRESENT_H */
+diff --git a/include/wine/winehua_vulkan.h b/include/wine/winehua_vulkan.h
+new file mode 100644
+index 00000000000..6262d6b6eca
+--- /dev/null
++++ b/include/wine/winehua_vulkan.h
+@@ -0,0 +1,53 @@
++/*
++ * WineHua private Vulkan present — capability probe (shared by all drivers).
++ *
++ * WineHua never hands the guest a native host VkSurfaceKHR: the guest gets a
++ * tagged handle whose low 32 bits carry a surface id that the host presenter
++ * resolves to one of its own surfaces.  The id is route specific:
++ *
++ *   Wayland route: Wayland proxy id of the window's wl_surface
++ *                  (dlls/winewayland.drv/vulkan.c)
++ *   X route:       X window id of the window's managed toplevel
++ *                  (dlls/winex11.drv/vulkan.c)
++ *
++ * The predicate lives here, in one place, because it is a capability answer
++ * that three callers must agree on (dlls/win32u/vulkan.c, winex11, winewayland
++ * all branch on it); three private copies is exactly the setup where one of
++ * them silently drifts and the others keep presenting into nothing.
++ */
++
++#ifndef __WINE_WINEHUA_VULKAN_H
++#define __WINE_WINEHUA_VULKAN_H
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define WINEHUA_VULKAN_SURFACE_TAG UINT64_C(0x5748530000000000)
++
++static inline BOOL winehua_vulkan_present_enabled(void)
++{
++    const char *value = getenv( "WINEHUA_VULKAN_BACKEND" );
++
++    /* Direct OHOS WSI owns presentation on the existing backend. */
++    if (value && !strcmp( value, "direct" )) return FALSE;
++    value = getenv( "WINEHUA_VULKAN_PRESENT" );
++
++    if (value && value[0] && strcmp( value, "0" )) return TRUE;
++
++    value = getenv( "WINEHUA_PRESENT_BACKEND" );
++    if (value && (!strcmp( value, "venus_broker_present" ) ||
++                  !strcmp( value, "venus_direct_present" ))) return TRUE;
++
++    /* Children launched through the NCP/Box64 boundary can retain the stable
++     * VirGL marker even when the per-launch present variables are not
++     * serialized by Wine's Windows environment.  On this product path a VirGL
++     * guest is necessarily paired with the private Venus presenter, so the
++     * marker is used as a final capability fallback. */
++    value = getenv( "WINEHUA_GRAPHICS_BACKEND" );
++    if (value && !strcmp( value, "virgl" )) return TRUE;
++
++    return FALSE;
++}
++
++#endif /* __WINE_WINEHUA_VULKAN_H */

@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-17",
+  "branch": "feature/vpp-runtime",
+  "upstream": "40b747714c109a7cb13e38b3af93ec77e1d38594",
+  "vppSource": "043a1cc0cab8e52b011faf2c611d3c16562ecb0a",
+  "sourceReplay": {
+    "wine": {
+      "patches": 86,
+      "commit": "527cd6255d4f26c21ff0a7111fc0c37e35eac9ba",
+      "tree": "bd2d6662a1d32f4347829428b6c7c055afde0797",
+      "completeReplay": true
+    },
+    "fex": {
+      "patches": 21,
+      "commit": "c3b2b2306347e16da04e512a52432cb9c921d221",
+      "tree": "fe8e476f8828d261dfa7f4f338a85144177b8058",
+      "completeReplay": true
+    }
+  },
+  "publicPins": [
+    {
+      "repository": "winehua/box64",
+      "expected": "e970ee6f21799724697fc7c5f275f5442e7d035a",
+      "actual": "e970ee6f21799724697fc7c5f275f5442e7d035a",
+      "public": true
+    },
+    {
+      "repository": "winehua/dxvk",
+      "expected": "5dff1d7b3dc3c2cd7f51356b99213bcc427b1af9",
+      "actual": "5dff1d7b3dc3c2cd7f51356b99213bcc427b1af9",
+      "public": true
+    },
+    {
+      "repository": "winehua/dxvk",
+      "expected": "01febe2d48fdce76b581369a1d526d2d33b75c7a",
+      "actual": "01febe2d48fdce76b581369a1d526d2d33b75c7a",
+      "public": true
+    },
+    {
+      "repository": "winehua/mesa-ohos",
+      "expected": "557fa3e781ea6e78fcff3ee759c25f60c3055064",
+      "actual": "557fa3e781ea6e78fcff3ee759c25f60c3055064",
+      "public": true
+    },
+    {
+      "repository": "winehua/virglrenderer",
+      "expected": "bb33e52aa03199926f662e50ff22bd00d19d7e0a",
+      "actual": "bb33e52aa03199926f662e50ff22bd00d19d7e0a",
+      "public": true
+    },
+    {
+      "repository": "ValveSoftware/wine",
+      "expected": "e8ca5806eec488f5916e83d655ffc5349b6b1702",
+      "actual": "e8ca5806eec488f5916e83d655ffc5349b6b1702",
+      "public": true
+    },
+    {
+      "repository": "FEX-Emu/FEX",
+      "expected": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+      "actual": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+      "public": true
+    }
+  ],
+  "checks": {
+    "runtime-host-check": "passed",
+    "runtime-native-check": "passed-arm64-seven-default-modules",
+    "runtime-protocol-check": "passed",
+    "runtime-zink-check": "passed-with-sanitizers-and-negative-controls",
+    "runtime-fog-check": "passed-96-cases-old-control-rejected",
+    "uiProductBoundary": "unchanged-from-upstream",
+    "upstreamNapiExportsPreserved": 76,
+    "fullProtonFexBuild": "not-run",
+    "fullHvigorPackage": "not-run",
+    "deviceValidation": "not-run",
+    "x86NativeBuild": "not-run",
+    "performanceMeasurement": "not-run"
+  },
+  "nativeDependencyPolicy": "Existing read-only dependency outputs reused; only seven default native modules rebuilt.",
+  "callbackCompatibility": "Master void callback confirms dispatch only; final asynchronous system-open outcome is not confirmed.",
+  "logs": {
+    "runtime-host-check.log": {
+      "bytes": 7328,
+      "sha256": "6fd772baecbde677b8ae8ce96611c78687bf1a6d885080834065803dcf9cb959"
+    },
+    "runtime-native-check.log": {
+      "bytes": 2270,
+      "sha256": "44659582f612b4d609f36fb1ff7e942fff80542f80e292f20467e6e3e949aabb"
+    },
+    "runtime-protocol-check.log": {
+      "bytes": 1657,
+      "sha256": "42434b71b7c81c113f0261571e5d8523b4936a2f873647ffe30eaea605d74567"
+    },
+    "runtime-zink-check.log": {
+      "bytes": 1548,
+      "sha256": "0414af41bb066722051acf525e6d114fc7a27f111bad35f155d6bdbe35e15ab1"
+    },
+    "runtime-fog-check.log": {
+      "bytes": 91,
+      "sha256": "d372e9d7dd56db6173485779b98374f5d21af16556452100b86e4e329c14b806"
+    }
+  }
+}

@@ -37,7 +37,7 @@
 #define WAYLAND_SERVER_H
 
 #include <stdint.h>
-#include "wayland-server-core.h"
+#include "protocols/wayland-server-core.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -70,35 +70,30 @@ struct wl_resource {
 	void *data;
 };
 
-WL_DEPRECATED
 uint32_t
 wl_client_add_resource(struct wl_client *client,
-		       struct wl_resource *resource);
+		       struct wl_resource *resource) WL_DEPRECATED;
 
-WL_DEPRECATED
 struct wl_resource *
 wl_client_add_object(struct wl_client *client,
 		     const struct wl_interface *interface,
 		     const void *implementation,
-		     uint32_t id, void *data);
+		     uint32_t id, void *data) WL_DEPRECATED;
 
-WL_DEPRECATED
 struct wl_resource *
 wl_client_new_object(struct wl_client *client,
 		     const struct wl_interface *interface,
-		     const void *implementation, void *data);
+		     const void *implementation, void *data) WL_DEPRECATED;
 
-WL_DEPRECATED
 struct wl_global *
 wl_display_add_global(struct wl_display *display,
 		      const struct wl_interface *interface,
 		      void *data,
-		      wl_global_bind_func_t bind);
+		      wl_global_bind_func_t bind) WL_DEPRECATED;
 
-WL_DEPRECATED
 void
 wl_display_remove_global(struct wl_display *display,
-			 struct wl_global *global);
+			 struct wl_global *global) WL_DEPRECATED;
 
 #endif
 
@@ -106,6 +101,6 @@ wl_display_remove_global(struct wl_display *display,
 }
 #endif
 
-#include "wayland-server-protocol.h"
+#include "protocols/wayland-server-protocol.h"
 
 #endif

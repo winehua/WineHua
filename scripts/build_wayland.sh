@@ -17,7 +17,7 @@ WL_BUILD="$BUILD_DIR/wayland_build_$WL_VERSION"
 # 确保 native wayland-scanner 可用且与源码同版本（1.26 源码要求 scanner ≥1.26）
 SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
-    if [ -x "$SCANNER" ] && "$SCANNER" --version 2>/dev/null | grep -q "$WL_VERSION"; then return 0; fi
+    if [ -x "$SCANNER" ] && [ -f "$BUILD_DIR/host-tools/lib/pkgconfig/wayland-scanner.pc" ] && "$SCANNER" --version 2>/dev/null | grep -q "$WL_VERSION"; then return 0; fi
     log "--- 编译 wayland-scanner (native, $WL_VERSION) ---"
     # 装到项目内 build/host-tools，与 env.sh 的 WAYLAND_SCANNER 默认值一致；不写 /usr/local，无需 root
     local host_build="$BUILD_DIR/wayland_native_$WL_VERSION"
@@ -38,7 +38,11 @@ build_scanner() {
     log "wayland-scanner: $SCANNER"
 }
 
-log "=== 构建 Wayland (x86_64, $WL_VERSION) ==="
+# Scanner is required by both OHOS architectures, even when guest libraries are cached.
+build_scanner
+if [ "${1:-}" = "--scanner-only" ]; then exit 0; fi
+
+log "=== 构建 Wayland ($WINE_ARCH, $WL_VERSION) ==="
 
 # wayland-protocols 版本同样取自源码（卫语句校验已装版本与源码一致, 防 bump 后被跳过;
 # 版本查询用 env.sh 顶层 PKG_CONFIG_LIBDIR——share/pkgconfig 下的数据包 pc 不在 SYSROOT_EXT_PC）
@@ -71,9 +75,9 @@ mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$SYSROOT_EXT_S
 mkdir -p "$WL_BUILD"
 
 # 1. 交叉编译 wayland (client + egl)
-meson_build "$WL_BUILD/x86_64" "$WL_SRC" \
+meson_build "$WL_BUILD/$WINE_ARCH" "$WL_SRC" \
     -Ddocumentation=false -Dtests=false -Dscanner=false
-ninja -C "$WL_BUILD/x86_64"
+ninja -C "$WL_BUILD/$WINE_ARCH"
 
 # 版本已在上文从源码解析（.pc 的 Version 与产物尾缀随 tag 走，不写死）
 
@@ -85,9 +89,9 @@ install_soname() {  # $1=产物 glob  $2=目标 SONAME 名
     cp "$src" "$SYSROOT_EXT_LIB/$2"
     log "installed $2 ← $(basename "$src")"
 }
-install_soname "$WL_BUILD/x86_64/src/libwayland-client.so.0.*" "libwayland-client.so.0"
-install_soname "$WL_BUILD/x86_64/src/libwayland-server.so.0.*" "libwayland-server.so.0"
-install_soname "$WL_BUILD/x86_64/egl/libwayland-egl.so.1.*"    "libwayland-egl.so.1"
+install_soname "$WL_BUILD/$WINE_ARCH/src/libwayland-client.so.0.*" "libwayland-client.so.0"
+install_soname "$WL_BUILD/$WINE_ARCH/src/libwayland-server.so.0.*" "libwayland-server.so.0"
+install_soname "$WL_BUILD/$WINE_ARCH/egl/libwayland-egl.so.1.*"    "libwayland-egl.so.1"
 ln -sf libwayland-client.so.0 "$SYSROOT_EXT_LIB/libwayland-client.so"
 ln -sf libwayland-server.so.0 "$SYSROOT_EXT_LIB/libwayland-server.so"
 ln -sf libwayland-egl.so.1    "$SYSROOT_EXT_LIB/libwayland-egl.so"
@@ -96,13 +100,13 @@ ln -sf libwayland-egl.so.1    "$SYSROOT_EXT_LIB/libwayland-egl.so"
 cp "$WL_SRC/src/wayland-client.h" \
    "$WL_SRC/src/wayland-client-core.h" \
    "$WL_SRC/src/wayland-util.h" \
-   "$WL_BUILD/x86_64/src/wayland-client-protocol.h" \
-   "$WL_BUILD/x86_64/src/wayland-version.h" \
+   "$WL_BUILD/$WINE_ARCH/src/wayland-client-protocol.h" \
+   "$WL_BUILD/$WINE_ARCH/src/wayland-version.h" \
    "$SYSROOT_EXT_INC/"
 # server 头 (wlroots 消费; R-REPRO: 固化于此, 不再依赖 guest-gfx 伪造路径)
 cp "$WL_SRC/src/wayland-server.h" \
    "$WL_SRC/src/wayland-server-core.h" \
-   "$WL_BUILD/x86_64/src/wayland-server-protocol.h" \
+   "$WL_BUILD/$WINE_ARCH/src/wayland-server-protocol.h" \
    "$SYSROOT_EXT_INC/"
 cp "$WL_SRC/egl/wayland-egl.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
 cp "$WL_SRC/egl/wayland-egl-core.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
@@ -110,7 +114,7 @@ cp "$WL_SRC/egl/wayland-egl-core.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
 # 2. wayland-protocols（整树 XML 安装: wlroots 经 wl_protocol_dir 引用
 #    staging/xwayland-shell 等任意协议, 单拷 xdg-shell 不够; .pc 由安装自带, 不手写）
 meson_build "$WL_BUILD/protocols_$WP_VERSION" "$WP_SRC" \
-    --prefix="$SYSROOT_EXT/usr" --libdir=lib/x86_64-linux-ohos \
+    --prefix="$SYSROOT_EXT/usr" --libdir=lib/$TARGET \
     -Dtests=false
 ninja -C "$WL_BUILD/protocols_$WP_VERSION" install
 # 清除历史手写 pc 残留 (旧位置 usr/lib/pkgconfig 会在搜索序里遮蔽新装的 1.49, 实测踩坑)
@@ -120,7 +124,7 @@ rm -f "$SYSROOT_EXT_PC/wayland-protocols.pc"
 cat > "$SYSROOT_EXT_PC/wayland-client.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 
 Name: Wayland Client
 Description: Wayland client side library
@@ -133,7 +137,7 @@ EOF
 cat > "$SYSROOT_EXT_PC/wayland-server.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 
 Name: Wayland Server
 Description: Wayland server side library
@@ -146,7 +150,7 @@ EOF
 cat > "$SYSROOT_EXT_PC/wayland-egl.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 
 Name: Wayland EGL
 Description: Wayland EGL platform library

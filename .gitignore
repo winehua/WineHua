@@ -66,3 +66,9 @@ prebuilt/
 # Python caches
 __pycache__/
 *.pyc
+
+# Bounded local runtime validation and architecture markers
+/workspace_temp/
+/entry/.wine_arch
+/entry/src/main/resources/rawfile/.wine-data-arch
+/entry/src/main/resources/rawfile/wine_runtime.version

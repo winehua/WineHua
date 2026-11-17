@@ -1,0 +1,185 @@
+--- a/src/gallium/drivers/softpipe/sp_tex_tile_cache.c
++++ b/src/gallium/drivers/softpipe/sp_tex_tile_cache.c
+@@ -40,6 +40,9 @@
+ #include "sp_context.h"
+ #include "sp_texture.h"
+ #include "sp_tex_tile_cache.h"
++#ifdef __linux__
++#include <sys/mman.h>
++#endif
+ 
+    
+ 
+@@ -47,32 +50,33 @@
+ sp_create_tex_tile_cache( struct pipe_context *pipe )
+ {
+    struct softpipe_tex_tile_cache *tc;
+-   uint pos;
+ 
+    /* make sure max texture size works */
+    assert((TEX_TILE_SIZE << TEX_Y_BITS) >= (1 << (SP_MAX_TEXTURE_2D_LEVELS-1)));
+ 
+-   tc = CALLOC_STRUCT( softpipe_tex_tile_cache );
++   /* A context creates a cache for every stage/sampler slot. Most slots
++    * are never used. Keep the full cache capacity, but leave its pixel pages
++    * demand-zero until sampling instead of calloc/memsetting all of them.
++    * The compact validity mask also avoids touching every tile to invalidate.
++    */
++#ifdef __linux__
++   tc = mmap(NULL, sizeof(*tc), PROT_READ | PROT_WRITE,
++             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++   if (tc == MAP_FAILED)
++      tc = NULL;
++#else
++   tc = CALLOC_STRUCT(softpipe_tex_tile_cache);
++#endif
++   if (tc)
++      tc->pipe = pipe;
++   return tc;
++}
++
++
++void
++sp_destroy_tex_tile_cache(struct softpipe_tex_tile_cache *tc)
++{
+    if (tc) {
+-      tc->pipe = pipe;
+-      for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {
+-         tc->entries[pos].addr.bits.invalid = 1;
+-      }
+-      tc->last_tile = &tc->entries[0]; /* any tile */
+-   }
+-   return tc;
+-}
+-
+-
+-void
+-sp_destroy_tex_tile_cache(struct softpipe_tex_tile_cache *tc)
+-{
+-   if (tc) {
+-      uint pos;
+-
+-      for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {
+-         /*assert(tc->entries[pos].x < 0);*/
+-      }
+       if (tc->transfer) {
+          tc->pipe->texture_unmap(tc->pipe, tc->transfer);
+       }
+@@ -80,7 +84,11 @@
+          tc->pipe->texture_unmap(tc->pipe, tc->tex_trans);
+       }
+ 
+-      FREE( tc );
++#ifdef __linux__
++      munmap(tc, sizeof(*tc));
++#else
++      FREE(tc);
++#endif
+    }
+ }
+ 
+@@ -92,14 +100,11 @@
+ void
+ sp_tex_tile_cache_validate_texture(struct softpipe_tex_tile_cache *tc)
+ {
+-   unsigned i;
+-
+    assert(tc);
+    assert(tc->texture);
+ 
+-   for (i = 0; i < ARRAY_SIZE(tc->entries); i++) {
+-      tc->entries[i].addr.bits.invalid = 1;
+-   }
++   tc->valid_tiles = 0;
++   tc->last_tile = NULL;
+ }
+ 
+ static bool
+@@ -124,7 +129,6 @@
+                                    struct pipe_sampler_view *view)
+ {
+    struct pipe_resource *texture = view ? view->texture : NULL;
+-   uint i;
+ 
+    assert(!tc->transfer);
+ 
+@@ -147,9 +151,8 @@
+ 
+       /* mark as entries as invalid/empty */
+       /* XXX we should try to avoid this when the teximage hasn't changed */
+-      for (i = 0; i < ARRAY_SIZE(tc->entries); i++) {
+-         tc->entries[i].addr.bits.invalid = 1;
+-      }
++      tc->valid_tiles = 0;
++      tc->last_tile = NULL;
+ 
+       tc->tex_z = -1; /* any invalid value here */
+    }
+@@ -165,13 +168,10 @@
+ void
+ sp_flush_tex_tile_cache(struct softpipe_tex_tile_cache *tc)
+ {
+-   int pos;
+-
+    if (tc->texture) {
+       /* caching a texture, mark all entries as empty */
+-      for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {
+-         tc->entries[pos].addr.bits.invalid = 1;
+-      }
++      tc->valid_tiles = 0;
++      tc->last_tile = NULL;
+       tc->tex_z = -1;
+    }
+ 
+@@ -206,9 +206,10 @@
+ {
+    struct softpipe_tex_cached_tile *tile;
+ 
+-   tile = tc->entries + tex_cache_pos( addr );
+-
+-   if (addr.value != tile->addr.value) {
++   const unsigned pos = tex_cache_pos(addr);
++   tile = tc->entries + pos;
++
++   if (!(tc->valid_tiles & (1u << pos)) || addr.value != tile->addr.value) {
+ 
+       /* cache miss.  Most misses are because we've invalidated the
+        * texture cache previously -- most commonly on binding a new
+@@ -267,6 +268,7 @@
+                          tc->format,
+                          (float *) tile->data.color);
+       tile->addr = addr;
++      tc->valid_tiles |= 1u << pos;
+    }
+ 
+    tc->last_tile = tile;
+--- a/src/gallium/drivers/softpipe/sp_tex_tile_cache.h
++++ b/src/gallium/drivers/softpipe/sp_tex_tile_cache.h
+@@ -88,7 +88,7 @@
+    struct pipe_resource *texture;  /**< if caching a texture */
+    unsigned timestamp;
+ 
+-   struct softpipe_tex_cached_tile entries[NUM_TEX_TILE_ENTRIES];
++   unsigned valid_tiles;
+ 
+    struct pipe_transfer *tex_trans;
+    void *tex_trans_map;
+@@ -101,6 +101,9 @@
+    enum pipe_format format;
+ 
+    struct softpipe_tex_cached_tile *last_tile;  /**< most recently retrieved tile */
++
++   /* Keep metadata in the first page; unused pixel pages stay demand-zero. */
++   struct softpipe_tex_cached_tile entries[NUM_TEX_TILE_ENTRIES];
+ };
+ 
+ 
+@@ -150,7 +153,7 @@
+ sp_get_cached_tile_tex(struct softpipe_tex_tile_cache *tc, 
+                        union tex_tile_address addr )
+ {
+-   if (tc->last_tile->addr.value == addr.value)
++   if (tc->last_tile && tc->last_tile->addr.value == addr.value)
+       return tc->last_tile;
+ 
+    return sp_find_cached_tile_tex( tc, addr );

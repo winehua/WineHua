@@ -1,0 +1,153 @@
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1195,6 +1195,25 @@
+ }
+ 
+ 
++#if defined(__OHOS__) && defined(__aarch64__)
++static DECLSPEC_NORETURN void pthread_exit_on_unix_stack( int status )
++{
++    stack_t ss = {0};
++
++    /* Wine owns the TEB signal stack. OHOS pthread_exit also cleans up the
++     * active alternate stack, and uses an unwritten old stack after EPERM
++     * if called on it. Disable it from the Unix stack before libc cleanup. */
++    ss.ss_flags = SS_DISABLE;
++    if (sigaltstack( &ss, NULL ) == -1)
++    {
++        ERR( "failed to disable signal stack at thread exit: %s\n", strerror(errno) );
++        abort_process( 1 );
++    }
++    pthread_exit( UIntToPtr(status) );
++}
++#endif
++
++
+ /***********************************************************************
+  *           pthread_exit_wrapper
+  */
+@@ -1206,7 +1225,13 @@
+     close( ntdll_get_thread_data()->wait_fd[1] );
+     close( ntdll_get_thread_data()->reply_fd );
+     close( ntdll_get_thread_data()->request_fd );
++#if defined(__OHOS__) && defined(__aarch64__)
++    if (is_inside_signal_stack( &status ))
++        signal_exit_thread( status, pthread_exit_on_unix_stack );
++    pthread_exit_on_unix_stack( status );
++#else
+     pthread_exit( UIntToPtr(status) );
++#endif
+ }
+ 
+ 
+@@ -1722,8 +1747,9 @@
+ 
+         if (thread_data->pthread_id)
+         {
+-            pthread_join( thread_data->pthread_id, NULL );
+-            virtual_free_teb( teb );
++            int ret = pthread_join( thread_data->pthread_id, NULL );
++            if (!ret) virtual_free_teb( teb );
++            else ERR( "failed to join previous thread before freeing its TEB: %s\n", strerror(ret) );
+         }
+     }
+     pthread_exit_wrapper( status );
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -71,6 +71,10 @@
+ struct arm64_thread_data
+ {
+     BOOL suspend_pending;
++#ifdef __OHOS__
++    void *pthread_stack;
++    SIZE_T pthread_stack_size;
++#endif
+ };
+ 
+ C_ASSERT( sizeof(struct arm64_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
+@@ -1022,6 +1026,45 @@
+                    "bl " __ASM_NAME("abort_thread") )
+ 
+ 
++#ifdef __OHOS__
++extern void DECLSPEC_NORETURN call_exit_on_kernel_stack( int status, void *stack, void (*exit_func)(int) );
++__ASM_GLOBAL_FUNC( call_exit_on_kernel_stack,
++                   "sub x29, x1, #0xc0\n\t"
++                   "mov sp, x29\n\t"
++                   __ASM_CFI(".cfi_def_cfa 29,0xc0\n\t")
++                   __ASM_CFI(".cfi_offset 29,-0xc0\n\t")
++                   __ASM_CFI(".cfi_offset 30,-0xb8\n\t")
++                   "blr x2\n\t"
++                   "brk #0" )
++
++static BOOL is_valid_thread_exit_stack( ULONG_PTR stack, ULONG_PTR base, SIZE_T size )
++{
++    return base && !(stack & 15) && stack >= base &&
++           stack - base >= min_kernel_stack && stack - base <= size;
++}
++
++void DECLSPEC_NORETURN signal_exit_thread( int status, void (*exit_func)(int) )
++{
++    struct ntdll_thread_data *data = ntdll_get_thread_data();
++    struct arm64_thread_data *cpu = (struct arm64_thread_data *)data->cpu_data;
++    struct syscall_frame *frame = data->syscall_frame;
++    ULONG_PTR stack = frame ? (ULONG_PTR)frame->syscall_cfa : 0;
++    ULONG_PTR base = (ULONG_PTR)data->kernel_stack;
++
++    /* A worker starts on its Wine kernel stack, but the main thread starts
++     * on the host pthread stack. Nested callbacks can use the kernel stack.
++     * Validate both owners without querying libc from a signal handler. */
++    if (!is_valid_thread_exit_stack( stack, base, kernel_stack_size ) &&
++        !is_valid_thread_exit_stack( stack, (ULONG_PTR)cpu->pthread_stack, cpu->pthread_stack_size ))
++    {
++        ERR( "invalid Unix stack at thread exit: base=%p cfa=%p\n", data->kernel_stack, (void *)stack );
++        abort_process( 1 );
++    }
++    call_exit_on_kernel_stack( status, (void *)stack, exit_func );
++}
++#endif
++
++
+ /***********************************************************************
+  *           KeUserModeCallback
+  */
+@@ -1487,6 +1530,27 @@
+     struct sigaction sig_act;
+     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
+     void *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
++
++#ifdef __OHOS__
++    pthread_attr_t attr;
++    void *stack;
++    size_t size;
++    int ret;
++
++    /* This runs on the main native thread before installing Wine handlers.
++     * Other threads already use the kernel stack passed to pthread_create. */
++    if (!(ret = pthread_getattr_np( pthread_self(), &attr )))
++    {
++        ret = pthread_attr_getstack( &attr, &stack, &size );
++        pthread_attr_destroy( &attr );
++        if (!ret)
++        {
++            arm64_thread_data()->pthread_stack = stack;
++            arm64_thread_data()->pthread_stack_size = size;
++        }
++    }
++    if (ret) ERR( "failed to query native pthread stack at startup: %s\n", strerror(ret) );
++#endif
+ 
+     thread_data->syscall_frame = (struct syscall_frame *)kernel_stack - 1;
+ 
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -379,6 +379,9 @@
+ extern BOOL get_thread_times( int unix_pid, int unix_tid, LARGE_INTEGER *kernel_time,
+                               LARGE_INTEGER *user_time );
+ extern void signal_init_threading(void);
++#if defined(__OHOS__) && defined(__aarch64__)
++extern void DECLSPEC_NORETURN signal_exit_thread( int status, void (*exit_func)(int) );
++#endif
+ extern NTSTATUS signal_alloc_thread( TEB *teb );
+ extern void set_thread_teb( TEB *teb );
+ extern void signal_free_thread( TEB *teb );

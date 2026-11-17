@@ -1,0 +1,39 @@
+diff --git a/src/virtio/vulkan/vn_renderer_vtest.c b/src/virtio/vulkan/vn_renderer_vtest.c
+index ee3f32d5f9c..eaf7e21d646 100644
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -1357,7 +1357,11 @@ vn_winehua_present(VkQueue queue_handle,
+     * queue mutex ahead of the producer QueueSubmit.  This waits for renderer
+     * decode and the Host driver's QueueSubmit call, not GPU completion.
+     *
+-    * Treat -EAGAIN as a bounded object-publication race and retry here.  Never
++    * EAGAIN also means the compositor has not attached the exact window yet.
++    * Drain once for this frame, then retry only the same present request.
++    * Re-entering the ring while waiting for window attachment can block on
++    * unrelated later submissions, despite this frame's objects being ready.
++    * Never
+     * expose that transient errno to Wine: the Vulkan thunk maps a negative
+     * result to DEVICE_LOST, poisoning an otherwise valid x86 process. */
+    uint64_t present_drain_us = 0;
+@@ -1369,8 +1373,10 @@ vn_winehua_present(VkQueue queue_handle,
+       const int64_t drain_start_ns =
+          (drain_perf || vtest_winehua_present_trace_enabled())
+             ? os_time_get_nano() : 0;
+-      vn_ring_roundtrip(dev->primary_ring);
+-      vn_ring_wait_all(dev->primary_ring);
++      if (!attempt) {
++         vn_ring_roundtrip(dev->primary_ring);
++         vn_ring_wait_all(dev->primary_ring);
++      }
+       if (drain_start_ns) {
+          const int64_t drain_end_ns = os_time_get_nano();
+          const uint64_t drain_us = drain_end_ns > drain_start_ns
+@@ -1391,7 +1397,7 @@ vn_winehua_present(VkQueue queue_handle,
+       }
+       if (result == -EAGAIN) {
+          vn_log(dev->instance,
+-                "winehua vk present: object publication pending serial=%u attempt=%u",
++                "winehua vk present: target or object not ready serial=%u attempt=%u",
+                 serial, attempt + 1);
+          usleep(1000u << attempt);
+       }

@@ -1,0 +1,39 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 01d903b7d5d003bb1b5e14d02b02cfd7dae53570..19ce878019c135ba51f105f54ac9c2f170c0ed37 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -791,6 +791,8 @@ NTSTATUS ProcessInit() {
+ 
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
+ 
++  __wine_dbg_output("starting FEX based libarm64ecfex.dll\n");
++
+   FEXCore::Profiler::Init("", "");
+ 
+   SignalDelegator = fextl::make_unique<FEX::DummyHandlers::DummySignalDelegator>();
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index e7aaa7de6fdf1c39c30ca0305a8ba4033a1e4047..3213b7ead3cf36c825c9be38783c70798a74911b 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -598,6 +598,8 @@ void BTCpuProcessInit() {
+ 
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, "0");
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "0");
++
++  __wine_dbg_output("starting FEX based libwow64fex.dll\n");
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, ExecutableName);
+ 
+diff --git a/Source/Windows/include/winnt.h b/Source/Windows/include/winnt.h
+index 33bee6fe0e29abbf359b625fcec396a2736b66e5..ae70a4652d3497fa641fd26f9c33d0516e79b1a9 100644
+--- a/Source/Windows/include/winnt.h
++++ b/Source/Windows/include/winnt.h
+@@ -94,7 +94,7 @@ typedef struct __IMAGE_LOAD_CONFIG_DIRECTORY32 {
+   DWORD GuardCFFunctionTable; /* 050 */
+   DWORD GuardCFFunctionCount;
+   DWORD GuardFlags;
+-  IMAGE_LOAD_CONFIG_CODE_INTEGRITY CodeIntegrity;
++  __IMAGE_LOAD_CONFIG_CODE_INTEGRITY CodeIntegrity;
+   DWORD GuardAddressTakenIatEntryTable;
+   DWORD GuardAddressTakenIatEntryCount;
+   DWORD GuardLongJumpTargetTable; /* 070 */

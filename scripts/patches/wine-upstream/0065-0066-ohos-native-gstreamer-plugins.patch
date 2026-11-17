@@ -1,0 +1,55 @@
+From f4b28cf9055743cfaeca7eccce4bbbd87eebe815 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0066-ohos-native-gstreamer-plugins
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 3077d1a1a2a796a1cfb2e708bd24af9e2e815cc4621dd7092ae108db91c2bf0e
+
+diff --git a/dlls/winegstreamer/unixlib.c b/dlls/winegstreamer/unixlib.c
+index de1fe41f4e054f3970b34b3d96869bbcaa86af19..d8d2a88e52449bf30c7a23d95356fe6ea7033c0f 100644
+--- a/dlls/winegstreamer/unixlib.c
++++ b/dlls/winegstreamer/unixlib.c
+@@ -265,6 +265,10 @@ static ULONG popcount(ULONG val)
+ #endif
+ }
+ 
++#ifdef __OHOS__
++#include "winehua_gstreamer_loader.h"
++#endif
++
+ NTSTATUS wg_init_gstreamer(void *arg)
+ {
+     struct wg_init_gstreamer_params *params = arg;
+@@ -310,6 +314,9 @@ NTSTATUS wg_init_gstreamer(void *arg)
+         setenv("GST_REGISTRY_1_0", gst_reg, 1);
+     }
+ 
++#ifdef __OHOS__
++    if (!winehua_gst_prepare()) return STATUS_UNSUCCESSFUL;
++#endif
+     if (!gst_init_check(&argc, &argv, &err))
+     {
+         fprintf(stderr, "winegstreamer: failed to initialize GStreamer: %s\n", err->message);
+@@ -317,6 +324,10 @@ NTSTATUS wg_init_gstreamer(void *arg)
+         return STATUS_UNSUCCESSFUL;
+     }
+ 
++#ifdef __OHOS__
++    if (!winehua_gst_load_plugins()) return STATUS_UNSUCCESSFUL;
++#endif
++
+     if (!NtQueryInformationProcess(GetCurrentProcess(),
+             ProcessAffinityMask, &process_mask, sizeof(process_mask), NULL))
+         thread_count = popcount(process_mask);
+@@ -336,6 +347,9 @@ NTSTATUS wg_init_gstreamer(void *arg)
+         GST_ERROR("Failed to create OpenGL display");
+ #endif
+ 
++#ifdef __OHOS__
++    if (winehua_gst_use_media_converter())
++#endif
+     if (!media_converter_init())
+     {
+         GST_ERROR("Failed to init media converter.");

@@ -1,0 +1,61 @@
+--- a/dlls/winebus.sys/bus_ohos.c
++++ b/dlls/winebus.sys/bus_ohos.c
+@@ -488,7 +488,7 @@
+     struct unix_device *dev;
+     const char *path;
+     struct pollfd pfd;
+-    int fd;
++    int fd, ret;
+ 
+     bus_event_cleanup(result);
+     path = resolve_socket_path();
+@@ -504,23 +504,41 @@
+             pthread_mutex_unlock(&ohos_cs);
+             break;
+         }
+-        if (sock_fd < 0 && path)
++        dev = NULL;
++        if (!list_empty(&device_list))
++        {
++            impl = LIST_ENTRY(list_head(&device_list), struct ohos_device, unix_device.entry);
++            dev = &impl->unix_device;
++        }
++        /* No consumer: a readable socket would otherwise stay readable forever.
++         * Reconnect when a virtual device is available, without replaying stale input. */
++        if (!dev)
++            close_socket();
++        else if (sock_fd < 0 && path)
+             connect_socket(path);
+         fd = sock_fd;
+-        dev = NULL;
+-        if (!list_empty(&device_list))
+-        {
+-            impl = LIST_ENTRY(list_head(&device_list), struct ohos_device, unix_device.entry);
+-            dev = &impl->unix_device;
+-        }
+         pthread_mutex_unlock(&ohos_cs);
+ 
+         if (fd >= 0)
+         {
+             pfd.fd = fd;
+             pfd.events = POLLIN;
+-            if (poll(&pfd, 1, 20) > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) && dev)
++            ret = poll(&pfd, 1, 20);
++            if ((ret < 0 && errno != EINTR) ||
++                (ret > 0 && (pfd.revents & (POLLNVAL | POLLERR))))
++            {
++                drop_socket_if(fd);
++                apply_neutral(dev);
++                usleep(50000);
++            }
++            else if (ret > 0 && (pfd.revents & POLLIN))
+                 process_one_message(dev, fd);
++            else if (ret > 0 && (pfd.revents & POLLHUP))
++            {
++                drop_socket_if(fd);
++                apply_neutral(dev);
++                usleep(50000);
++            }
+         }
+         else
+             usleep(50000);

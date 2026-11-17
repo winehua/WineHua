@@ -1,0 +1,48 @@
+--- a/include/wlr/xwayland/xwayland.h
++++ b/include/wlr/xwayland/xwayland.h
+@@ -164,6 +164,8 @@
+ 	size_t protocols_len;
+ 
+ 	uint32_t decorations;
++	/* Client-drawn frame, cached on property events; never queried per frame. */
++	uint32_t winehua_frame_extents[4];
+ 	xcb_icccm_wm_hints_t *hints;
+ 	xcb_size_hints_t *size_hints;
+ 	/*
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -1229,6 +1229,17 @@
+ 	return name;
+ }
+ 
++static void read_surface_frame_extents(struct wlr_xwayland_surface *surface,
++        xcb_get_property_reply_t *reply) {
++    memset(surface->winehua_frame_extents, 0, sizeof(surface->winehua_frame_extents));
++    if (reply->type != XCB_ATOM_CARDINAL || reply->format != 32 || reply->bytes_after ||
++            xcb_get_property_value_length(reply) != 16) return;
++    const uint32_t *v = xcb_get_property_value(reply);
++    for (unsigned i = 0; i < 4; ++i) if (v[i] > 32767) return;
++    memcpy(surface->winehua_frame_extents, v, sizeof(surface->winehua_frame_extents));
++    wl_signal_emit_mutable(&surface->events.set_geometry, NULL);
++}
++
+ static void read_surface_property(struct wlr_xwm *xwm,
+ 		struct wlr_xwayland_surface *xsurface, xcb_atom_t property,
+ 		xcb_get_property_reply_t *reply) {
+@@ -1241,6 +1252,8 @@
+ 		read_surface_parent(xwm, xsurface, reply);
+ 	} else if (property == xwm->atoms[NET_WM_PID]) {
+ 		// intentionally ignored
++	} else if (property == xwm->atoms[NET_WM_FRAME_EXTENTS]) {
++        read_surface_frame_extents(xsurface, reply);
+ 	} else if (property == xwm->atoms[NET_WM_WINDOW_TYPE]) {
+ 		read_surface_window_type(xwm, xsurface, reply);
+ 	} else if (property == xwm->atoms[NET_WM_ICON]) {
+@@ -1363,6 +1376,7 @@
+ 		xwm->atoms[NET_WM_STATE],
+ 		xwm->atoms[NET_WM_STRUT_PARTIAL],
+ 		xwm->atoms[NET_WM_WINDOW_TYPE],
++		xwm->atoms[NET_WM_FRAME_EXTENTS],
+ 		xwm->atoms[NET_WM_NAME],
+ 		xwm->atoms[NET_WM_ICON],
+ 	};

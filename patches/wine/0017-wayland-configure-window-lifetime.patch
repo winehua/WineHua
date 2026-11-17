@@ -1,0 +1,24 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] winewayland: snapshot configure coordinates before releasing window data
+
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -622,6 +622,9 @@
+     wayland_surface_coords_to_window(surface, width, height,
+                                      &window_width, &window_height);
+ 
++    /* DestroyWindow can free data as soon as its lock is released. */
++    SetRect(&rect, 0, 0, window_width, window_height);
++    OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
+     wayland_win_data_release(data);
+ 
+     TRACE("processing=%dx%d,%#x\n", width, height, state);
+@@ -647,8 +650,6 @@
+         flags |= SWP_NOSENDCHANGING;
+     }
+ 
+-    SetRect(&rect, 0, 0, window_width, window_height);
+-    OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
+     NtUserSetRawWindowPos(hwnd, rect, flags, FALSE);
+ }
+ 

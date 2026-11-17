@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "display_policy.h"
+#include "direct_viewport.h"
 
 // 合成层数据契约: 一帧桌面的内容来源统一为 CompositorLayer 列表 — 渲染
 // (FramePlanner/FrameBlitter) 与输入 (InputResolver) 遍历同一按 zIndex 升序
@@ -28,6 +29,7 @@ struct SubsurfaceLayer {
     uint64_t opaqueCheckedSerial = 0;
     int32_t dmgX = 0, dmgY = 0, dmgW = 0, dmgH = 0;  // damage 包围盒
     int32_t vpDstW = -1, vpDstH = -1;                // viewport destination
+    DirectViewportState viewport;                  // committed source/scale/transform
     bool isExternal = false;  // 外部菜单 (任务栏等), 输入坐标需用 Wine 基底
 
     // 承载路由 (DisplayPolicy::SubsurfaceRoute 的落库副本, 见该枚举注释):
@@ -38,6 +40,18 @@ struct SubsurfaceLayer {
     DisplayPolicy::SubsurfaceRoute route =
         DisplayPolicy::SubsurfaceRoute::DesktopLayer;
 };
+
+// SHM storage can be padded beyond the logical surface (Wine menus commonly
+// use power-of-two buffers). Preserve the source rectangle for GPU sampling;
+// display and input both use the protocol's logical destination dimensions.
+inline bool ComputeSubsurfaceViewport(const SubsurfaceLayer& layer, int& w, int& h,
+                                      DirectImageSampling& sampling)
+{
+    auto viewport = layer.viewport;
+    viewport.destinationW = layer.vpDstW;
+    viewport.destinationH = layer.vpDstH;
+    return ComputeDirectViewport(viewport, layer.w, layer.h, w, h, sampling);
+}
 
 // -- 层序单一数据源 (阶段 1: 行为等价重构) --
 // 一帧桌面的所有内容来源统一为 Layer; 合成与输入遍历同一按 zIndex 升序
@@ -57,6 +71,9 @@ struct CompositorLayer {
     // 只是它的执行投影, 不参与合成判定。
     bool zcActive = false;
     uint32_t toplevelId = 0; // 归属窗口 (Root 为 0; Subsurface 为 parentToplevel)
+    // Explicit foreign content hosted by a real Wine HWND. Its frame/input
+    // comes from toplevelId; placement, z-order and lifetime belong to this HWND.
+    uint32_t externalHostId = 0;
     int x = 0, y = 0, w = 0, h = 0;  // 坐标 (桌面合成: 桌面坐标; 窗口内: 窗口局部坐标)
     bool fullscreen = false; // Toplevel: 全屏标记
     const SubsurfaceLayer* sub = nullptr;  // Type==Subsurface 时引用原层

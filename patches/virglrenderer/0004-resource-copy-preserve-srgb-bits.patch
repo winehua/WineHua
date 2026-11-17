@@ -1,0 +1,24 @@
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -10908,8 +10908,19 @@
+    if (dst_res->egl_image)
+       comp_flags ^= VREND_COPY_COMPAT_FLAG_ONE_IS_EGL_IMAGE;
+ 
++   /* resource_copy_region preserves stored bits, unlike a typed blit.
++    * Gallium's ordinary format compatibility excludes differing colorspaces,
++    * but RGBA8/SRGB8_ALPHA8 have the same GL copy-image compatibility class.
++    * This also synchronizes guest sRGB surface emulation without gamma twice.
++    * Do not broaden the blit fast path, which still needs color conversion. */
++   bool raw_srgb_pair = util_format_is_srgb(src_res->base.format) !=
++                          util_format_is_srgb(dst_res->base.format) &&
++      util_format_is_plain(src_res->base.format) &&
++      util_format_linear(src_res->base.format) == util_format_linear(dst_res->base.format) &&
++      !(comp_flags & VREND_COPY_COMPAT_FLAG_ONE_IS_EGL_IMAGE);
+    if (has_feature(feat_copy_image) &&
+-       format_is_copy_compatible(src_res->base.format,dst_res->base.format, comp_flags) &&
++       (raw_srgb_pair ||
++        format_is_copy_compatible(src_res->base.format,dst_res->base.format, comp_flags)) &&
+        src_res->base.nr_samples == dst_res->base.nr_samples) {
+       VREND_DEBUG(dbg_copy_resource, ctx, "COPY_REGION: use glCopyImageSubData\n");
+       vrend_copy_sub_image(src_res, dst_res, src_level, src_box,

@@ -1,0 +1,19 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -5193,6 +5193,16 @@
+         if (constant.uboIdx < constSet.meta.maxConstIndexF)
+           data[constant.uboIdx] = *reinterpret_cast<const Vector4*>(constant.float32);
+       }
++    }
++
++    // Publish only after all CPU writes, including shader-defined constant
++    // overrides. The earlier invalidate command may run before those writes.
++    static const bool publishShadow = env::getEnvVar("WINEHUA_DXVK9_SHADOW_CONSTANTS") == "1";
++    if (publishShadow) {
++      EmitCs([cBuffer = constSet.buffer, cSlice = slice] (DxvkContext* ctx) {
++        if (ctx->flushMappedBuffer(cBuffer, cSlice) != VK_SUCCESS)
++          throw DxvkError("D3D9: shader constant publication failed");
++      });
+     }
+   }
+ 

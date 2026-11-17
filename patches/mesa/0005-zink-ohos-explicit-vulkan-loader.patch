@@ -1,0 +1,41 @@
+diff --git a/src/gallium/drivers/zink/zink_instance.py b/src/gallium/drivers/zink/zink_instance.py
+index 12c1bba8cfe..5c8d72bf1ff 100644
+--- a/src/gallium/drivers/zink/zink_instance.py
++++ b/src/gallium/drivers/zink/zink_instance.py
+@@ -265,11 +265,12 @@ zink_create_instance(struct zink_screen *screen, struct zink_instance_info *inst
+    GET_PROC_ADDR_INSTANCE_LOCAL(screen, NULL, CreateInstance);
+    assert(vk_CreateInstance);
+ 
+-   VkInstance instance;
++   VkInstance instance = VK_NULL_HANDLE;
+    VkResult err = vk_CreateInstance(&ici, NULL, &instance);
+    if (err != VK_SUCCESS) {
+       if (!screen->driver_name_is_inferred)
+           mesa_loge("ZINK: vkCreateInstance failed (%s)", vk_Result_to_str(err));
++      return VK_NULL_HANDLE;
+    }
+ 
+    return instance;
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 274908d5528..55babc5b88b 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -3305,10 +3305,16 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+ 
+    u_trace_state_init();
+ 
+-   screen->loader_lib = util_dl_open(VK_LIBNAME);
++   /* OHOS packages a separate Venus loader. An opt-in native Zink experiment
++    * must select the system loader explicitly, as Wine Direct already does.
++    * Keep the normal Mesa loader and transport selection unchanged. */
++   const char *vk_libname = getenv("WINEHUA_ZINK_VULKAN_LIBRARY");
++   if (!vk_libname || !vk_libname[0])
++      vk_libname = VK_LIBNAME;
++   screen->loader_lib = util_dl_open(vk_libname);
+    if (!screen->loader_lib) {
+       if (!screen->driver_name_is_inferred)
+-         mesa_loge("ZINK: failed to load "VK_LIBNAME);
++         mesa_loge("ZINK: failed to load %s", vk_libname);
+       goto fail;
+    }
+ 

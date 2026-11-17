@@ -1,3 +1,4 @@
+#include "proc/ncp_dispatch.h"
 /*
  * display_compositor.cpp — 显示路线 M0 bring-up (spec: x11-wlroots 设计)
  *
@@ -7,7 +8,7 @@
  *
  * Xwayland 启动链 (R-SPAWN):
  *   wlroots server.c (补丁) → wlr_ohos_spawn_xwayland (本文件实现)
- *   → OH_Ability_StartNativeChildProcess("libxwayland_child.so:Main")
+ *   → WineHua_StartNativeChildProcess("libxwayland_child.so:Main")
  *   → 命名 fd 五连 (x_fd0/x_fd1/wl_fd/wm_fd/displayfd) 随 args.fdList 下发
  *   → shim 在子进程内 dlopen libxwayland_ohos.so 调 main()
  *
@@ -16,6 +17,8 @@
  */
 #include <hilog/log.h>
 
+#include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
@@ -74,9 +77,14 @@ bool wlr_xwayland_server_ohos_build_argv(struct wlr_xwayland_server *server,
 #include <AbilityKit/native_child_process.h>
 
 #include "ohos_output.h"
+#include "display_session.h"
 #include "ohos_buffer.h" /* wl_ohos_present_slots_shutdown (停机回收 present slot) */
 #include "display_input.h"
 #include "display_guest_frames.h"
+#include "x11_external_host.h"
+#include "spawn_fds.h"
+#include "proc/wine_process.h"
+extern "C" bool PhoneAdapter_IsPhoneMode();
 #include "x11_toplevel.h" /* M4a: 多窗映射层 (active 位/session_reset) */
 #include "compositor/wayland_server.h" /* WaylandServer session (无画布早启的输出尺寸源) */
 #include "ohos_egl_import_probe.h"
@@ -122,7 +130,15 @@ namespace {
 
 std::mutex g_mutex;
 bool g_started = false;
-bool g_stop = false;
+std::atomic<bool> g_stop{false};
+std::atomic<bool> g_failed{false};
+std::atomic<int> g_phase{0}; // 0 idle, 1 starting, 2 ready, 3 stopping, 4 failed
+std::atomic<bool> g_output_ready{false};
+std::chrono::steady_clock::time_point g_start_deadline;
+std::mutex g_display_name_mutex;
+std::string g_display_name;
+static bool g_xim_spawned;
+static void PublishReady();
 
 std::string BoolStr(bool b) { return b ? "1" : "0"; }
 
@@ -152,8 +168,8 @@ void WlServerLogBridge(const char *fmt, va_list args)
 // (xclient_enabled=true) 拉起。无条件 spawn 让产品桌面里常驻一个 320x240
 // 测试窗在桌面上晃 —— 真实桌面 shell (explorer, 引擎会话拉起) 的输入命中
 // 也被它搅局 (2026-10-04 实测: 点击命中测试只能看到测试窗)。原则 #23。
-static bool g_xclient_test_client_enabled;
-static bool g_xwayland_ready_seen;
+static std::atomic<bool> g_xclient_test_client_enabled{false};
+static std::atomic<bool> g_xwayland_ready_seen{false};
 static bool g_xclient_spawned;
 
 /* 拉起条件三合一: 门开 (最新 xclient 意图) + Xwayland 就绪 + 未拉过。
@@ -164,10 +180,34 @@ static bool g_xclient_spawned;
 static void TrySpawnXclientTestClient();
 static void TrySpawnXimServer();
 
+static int32_t SpawnDisplayChild(const char* entry, NativeChildProcess_Args args,
+    NativeChildProcess_Options options, int32_t* pid)
+{
+    DisplaySpawnFds fds(args.fdList.head);
+    if (!fds.Valid()) return NCP_ERR_INTERNAL;
+    args.fdList.head = fds.Head();
+    const bool phone = PhoneAdapter_IsPhoneMode();
+    const auto code = WineHua_StartNativeChildProcess(entry, args, options, pid);
+    // Legacy phone adapter closes its private copies after both successful and
+    // failed handshakes. Earlier setup failures retain them for this RAII scope.
+    if (phone && (code == NCP_NO_ERROR || code == NCP_ERR_LIB_LOADING_FAILED)) fds.Consumed();
+    if (code == NCP_NO_ERROR && *pid > 0 && !phone)
+        AddProcess(*pid, std::string("@runtime/") + entry, -1, ProcessRegistration::NativeChild);
+    return code;
+}
+
+
 void HandleXwaylandReady(struct wl_listener *listener, void *data)
 {
     OH_LOG_INFO(LOG_APP, "Xwayland ready signal received (displayfd handshake OK)");
     g_xwayland_ready_seen = true;
+    {
+        auto *event = static_cast<struct wlr_xwayland_server_ready_event *>(data);
+        auto *server = event ? event->server : nullptr;
+        std::lock_guard<std::mutex> lock(g_display_name_mutex);
+        g_display_name = server && server->display_name ? server->display_name : "";
+    }
+    PublishReady();
     if (!g_xclient_test_client_enabled)
         OH_LOG_INFO(LOG_APP, "xclient test client skipped (test client disabled, product desktop)");
     TrySpawnXclientTestClient();
@@ -178,17 +218,15 @@ void HandleXwaylandReady(struct wl_listener *listener, void *data)
  * ready 后), socketpair 子端经命名 fd "xim_fd" 传入。 */
 static void TrySpawnXimServer()
 {
-    static bool spawned = false;
-    if (spawned)
-        return;
-    spawned = true;
+    if (g_xim_spawned) return;
+    g_xim_spawned = true;
 
     int child_fd = xim_bridge_channel_init();
     if (child_fd < 0)
         return;
 
     std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
-    std::string params = (xdg.empty() ? "" : xdg + "/xim_server_stderr.log") + "|" + xdg;
+    std::string params = (xdg.empty() ? "" : xdg + "/xim_server_stderr.log") + "|" + xdg + "|" + g_display_name;
 
     NativeChildProcess_Fd node = {};
     node.fdName = const_cast<char *>("xim_fd");
@@ -196,19 +234,19 @@ static void TrySpawnXimServer()
     NativeChildProcess_FdList fdList = {};
     fdList.head = &node;
     NativeChildProcess_Args args = {};
-    args.entryParams = strdup(params.c_str());
+    args.entryParams = const_cast<char*>(params.c_str());
     args.fdList = fdList;
     NativeChildProcess_Options options = {};
     options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
 
     int32_t pid = -1;
-    int32_t ret = OH_Ability_StartNativeChildProcess(
+    int32_t ret = SpawnDisplayChild(
         const_cast<char *>("libxim_server_child.so:Main"), args, options, &pid);
     if (ret != 0)
         OH_LOG_ERROR(LOG_APP, "xim StartNativeChildProcess ret=%{public}d", ret);
     else
         OH_LOG_INFO(LOG_APP, "xim NCP spawned pid=%{public}d", pid);
-    /* 成功后子端 fd 所有权转移给 NCP 框架, 不得 close (对齐 xwayland 段注释) */
+    close(child_fd); // SpawnDisplayChild passed a private copy to either backend.
 }
 
 static void TrySpawnXclientTestClient()
@@ -225,11 +263,11 @@ static void TrySpawnXclientTestClient()
     std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
     std::string params = (xdg.empty() ? "" : xdg + "/xclient_stderr.log") + "|" + xdg + "|2";
     NativeChildProcess_Args args = {};
-    args.entryParams = strdup(params.c_str());
+    args.entryParams = const_cast<char*>(params.c_str());
     NativeChildProcess_Options options = {};
     options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
     int32_t pid = -1;
-    int32_t ret = OH_Ability_StartNativeChildProcess(
+    int32_t ret = SpawnDisplayChild(
         const_cast<char*>("libxclient_child.so:Main"), args, options, &pid);
     if (ret != 0)
         OH_LOG_ERROR(LOG_APP, "xclient StartNativeChildProcess ret=%{public}d", ret);
@@ -285,6 +323,12 @@ struct DeferredOutputChainStart {
 };
 static struct DeferredOutputChainStart g_deferred_chain;
 
+static void PublishReady()
+{
+    if (g_xwayland_ready_seen && g_output_ready.load() && !g_stop.load())
+        g_phase.store(2);
+}
+
 static void WriteDisplayRouteReady(void)
 {
     FILE *f = fopen("/data/storage/el2/base/files/.wine/drive_c/displayroute-ready", "w");
@@ -305,6 +349,14 @@ static int StartOutputChainTimer(void *data)
                                         c->canvas_egl_present,
                                         c->multiwindow);
     OH_LOG_INFO(LOG_APP, "output chain start rc=%{public}d (deferred)", rc);
+    if (rc != 0) {
+        g_failed.store(true);
+                g_phase.store(3);
+        g_stop.store(true);
+        return 0;
+    }
+    g_output_ready.store(true);
+    PublishReady();
     WriteDisplayRouteReady();
 
     /* XIM 桥探针 (XIM spec Task 1) 已完成使命并撤调用: 主进程 XOpenDisplay
@@ -316,7 +368,7 @@ static int StartOutputChainTimer(void *data)
     // present 零拷贝前置探针: 再往后 1s (同样只为避开子进程 fork 窗口)
     const char *probe_env = getenv("WINEHUA_COMPOSITOR_PROBE");
     if (rc == 0 && g_gles2_active && c->window &&
-        (probe_env == nullptr || strcmp(probe_env, "0") != 0))
+        (probe_env != nullptr && strcmp(probe_env, "1") == 0))
     {
         struct wl_event_source *probe_timer =
             wl_event_loop_add_timer(c->loop, PresentProbeTimer, nullptr);
@@ -351,11 +403,8 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
     // 启动时解包尚未发生 → XKB rules 缺失 → Xwayland "Failed to activate
     // virtual core keyboard" SIGABRT (xwayland_stderr.log 实证), 桌面黑屏
     // + root 恒超时。
-    // 等待无超时 (23:33 实测教训: 引擎初始化可由用户交互/重试触发 ——
-    // 带参冷启 failInit 后用户手动初始化, 包在任意时刻就绪; 30s 有界等待
-    // 会把「晚到」误判成「不到」)。Xwayland 只能在包就绪后出生, 门等到位
-    // 为止, 5s 心跳留证。阻塞发生在 compositor 线程 loop 启动前, 无并发
-    // 消费者, 安全。
+    // Payload preparation precedes product start. Still bound late/missing files
+    // and honour stop even before the event loop exists.
     for (size_t i = 0; argv[i]; ++i)
     {
         if (strcmp(argv[i], "-xkbdir") != 0 || !argv[i + 1])
@@ -367,10 +416,17 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
         bool announced = false;
         while (stat(rules, &st) != 0)
         {
+            if (g_stop.load() || std::chrono::steady_clock::now() >= g_start_deadline) {
+                OH_LOG_ERROR(LOG_APP, "XKB stage cancelled/timed out: %{public}s", rules);
+                g_failed.store(true);
+                g_phase.store(3);
+                g_stop.store(true);
+                return false;
+            }
             if (!announced)
             {
                 OH_LOG_WARN(LOG_APP,
-                            "engine payload not unpacked yet (%{public}s missing), waiting indefinitely",
+                            "engine payload not unpacked yet (%{public}s missing), waiting up to session deadline",
                             rules);
                 announced = true;
             }
@@ -395,19 +451,29 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
     // 的 argc=16, T7 实测)。fd 哨兵 (@XFD0@ 等) 由 shim 按名替换为实际 fd。
     // xdgRuntimeDir: NCP 子进程不继承 app 环境, 显式下发——Xwayland 的
     // OutputDirectory (xkb/ddxLoad.c:65) 依赖它定位 xkm 缓存目录。
-    // stderrPath: Xwayland stdout/stderr 落盘文件 (沙箱内, 供排障)
+    // stderrPath: Xwayland stdout/stderr 落盘文件 (沙箱内, 供排障)。
+    // 钉到 prefix 区 (.wine/) 而非 xdg: x11 会话的 xdg (.x11-rt) 落 Xwayland
+    // NCP 的私有 mount 视图, 宿主 hdc file recv 读不到 (D29 已知坑);
+    // .wine/ 在宿主视角可见 (files/.wine/xwayland_stderr.log, 实测可 cat)。
     std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
+    std::string stderrPath;
+    if (!xdg.empty())
+    {
+        size_t slash = xdg.rfind('/');
+        stderrPath = (slash != std::string::npos ? xdg.substr(0, slash) : xdg)
+                     + "/.wine/xwayland_stderr.log";
+    }
     std::string params = std::string(server->display_name) + "|" +
         std::to_string(server->options.terminate_delay) + "|" +
         BoolStr(server->options.no_touch_pointer_emulation) + "|" +
         BoolStr(server->options.force_xrandr_emulation) + "|" +
         BoolStr(server->options.enable_wm) + "|" +
-        (xdg.empty() ? "" : xdg + "/xwayland_stderr.log") + "|" +
+        stderrPath + "|" +
         std::to_string(getpid()) + "|" + xdg;
     for (size_t i = 0; argv[i]; ++i)
         params += std::string("|") + argv[i];
 
-    // 命名 fd 五连; 成功后所有权转移给 NCP 框架, 不得再 close
+    // wlroots keeps ownership of the originals; SpawnDisplayChild duplicates them.
     NativeChildProcess_Fd nodes[5] = {};
     int n = 0;
     nodes[n].fdName = const_cast<char*>("x_fd0");
@@ -428,13 +494,13 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
     NativeChildProcess_FdList fdList = {};
     fdList.head = &nodes[0];
     NativeChildProcess_Args args = {};
-    args.entryParams = strdup(params.c_str());
+    args.entryParams = const_cast<char*>(params.c_str());
     args.fdList = fdList;
     NativeChildProcess_Options options = {};
     options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
 
     int32_t pid = -1;
-    int32_t ret = OH_Ability_StartNativeChildProcess(
+    int32_t ret = SpawnDisplayChild(
         const_cast<char*>("libxwayland_child.so:Main"), args, options, &pid);
     if (ret != 0)
     {
@@ -457,6 +523,18 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
 // 重挂, 编排整体落空)。loop 线程建 pipe 事件源, 触发侧只 write 一个字节
 // (write 线程安全), loop 线程收到后执行刷新。
 static int g_retrigger_pipe[2] = {-1, -1};
+static std::mutex g_pipe_mutex;
+static void WakeDisplayLoop(char command)
+{
+    // Serialize publication, write and close: a recycled fd must never receive
+    // a wake intended for the previous display session.
+    std::lock_guard<std::mutex> lock(g_pipe_mutex);
+    if (g_retrigger_pipe[1] < 0) return;
+    const ssize_t rc = write(g_retrigger_pipe[1], &command, 1);
+    if (rc < 0 && errno != EAGAIN)
+        OH_LOG_ERROR(LOG_APP, "display loop wake failed errno=%{public}d", errno);
+}
+static std::atomic<bool> g_detach_canvas{false};
 
 // 画布晚到交接槽 (D8, 2026-10-05): 链先建 (无画布, output 仍在场) 后,
 // 画布 surface 才到达 —— 产品路径 want 时起链, DWA 画布页 engine-ready 才
@@ -485,13 +563,7 @@ extern "C" void WineHua_DisplayRoute_CanvasResized()
         std::lock_guard<std::mutex> lk(g_canvas_damage_mutex);
         g_canvas_damage = true;
     }
-    if (g_retrigger_pipe[1] >= 0)
-    {
-        char b = 'r';
-        ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
-        if (rc < 0 && errno != EAGAIN)
-            OH_LOG_ERROR(LOG_APP, "canvas resize wake write failed errno=%{public}d", errno);
-    }
+    WakeDisplayLoop('r');
 }
 
 // 画布 resize 交接槽 (D10): 折叠/旋转使画布尺寸变化 (实测 2800x1840 ↔
@@ -530,6 +602,11 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
      * 而 output 无窗时挂上即开始 present; output 已有窗 (smoke 画布先行)
      * 时拒绝并销毁新窗 —— surface 重建走 stop/start 全链 (见 StartWithSurface
      * 重触发注释), 不存在运行中换窗的合法场景。 */
+    if (g_detach_canvas.exchange(false)) {
+        wl_ohos_output_attach_window(nullptr, false);
+        if (g_present_window) OH_NativeWindow_DestroyNativeWindow(g_present_window);
+        g_present_window = nullptr;
+    }
     OHNativeWindow *late = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_late_window_mutex);
@@ -571,7 +648,7 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
                 OH_NativeWindow_DestroyNativeWindow(stale);
             const char *probe_env = getenv("WINEHUA_COMPOSITOR_PROBE");
             if (g_gles2_active &&
-                (probe_env == nullptr || strcmp(probe_env, "0") != 0))
+                (probe_env != nullptr && strcmp(probe_env, "1") == 0))
             {
                 struct wl_event_source *probe_timer =
                     wl_event_loop_add_timer(loop, PresentProbeTimer, nullptr);
@@ -629,12 +706,10 @@ extern "C" void WineHua_DisplayRoute_Start()
 extern "C" void WineHua_DisplayRoute_Stop()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_started || g_retrigger_pipe[1] < 0)
-        return;
-    ssize_t rc = write(g_retrigger_pipe[1], "s", 1);
-    /* EAGAIN = 已有待处理字节 (含一次 stop), 无害; 其余失败记日志 */
-    if (rc < 0 && errno != EAGAIN)
-        OH_LOG_ERROR(LOG_APP, "displayroute stop write failed errno=%{public}d", errno);
+    if (!g_started) return;
+    g_stop.store(true);
+    if (g_phase.load() != 4) g_phase.store(3);
+    WakeDisplayLoop('s');
 }
 
 // 画布 resize 入口 (D10): 折叠/旋转后 onSurfaceChanged 的逻辑尺寸。
@@ -654,13 +729,7 @@ extern "C" void WineHua_DisplayRoute_Resize(int w, int h)
         g_resize_w = w;
         g_resize_h = h;
     }
-    if (g_retrigger_pipe[1] >= 0)
-    {
-        char b = 'r';
-        ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
-        if (rc < 0 && errno != EAGAIN)
-            OH_LOG_ERROR(LOG_APP, "resize retrigger write failed errno=%{public}d", errno);
-    }
+    WakeDisplayLoop('r');
 }
 
 // surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;
@@ -678,6 +747,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started)
     {
+        if (g_stop.load() || g_phase.load() == 3) return;
         OH_LOG_INFO(LOG_APP, "already started, refresh for retrigger");
         // 重触发携带本次调用方的 xclient 意图 (最新意图优先): 冷启时产品桌面
         // 页与 smoke 编排都会调 StartWithSurface, 谁先到谁建链; 若重触发不
@@ -701,23 +771,24 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             if (rc == 0 && late)
             {
                 std::lock_guard<std::mutex> lk(g_late_window_mutex);
+                if (g_late_window) OH_NativeWindow_DestroyNativeWindow(g_late_window);
                 g_late_window = late;
                 g_late_canvas_egl = canvas_egl_present;
             }
         }
-        if (g_retrigger_pipe[1] >= 0)
-        {
-            char b = 'r';
-            ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
-            /* EAGAIN = 唤醒字节已在途 (管道满), 无害; 其余失败记日志
-             * (M2-T1: 静默丢触发排查代价过高) */
-            if (rc < 0 && errno != EAGAIN)
-                OH_LOG_ERROR(LOG_APP, "retrigger write failed errno=%{public}d", errno);
-        }
+        WakeDisplayLoop('r');
         return;
     }
     g_started = true;
     g_stop = false;
+    g_failed.store(false);
+    g_detach_canvas.store(false);
+    g_phase.store(1);
+    g_output_ready.store(false);
+    g_xwayland_ready_seen = false;
+    g_xclient_spawned = false;
+    g_xim_spawned = false;
+    g_start_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
     // xclient 测试窗门 (每轮显示路线触发都在子线程拉起前定值; 2026-10-13
     // 起只控测试窗拉起 —— 注入脚本退役后不再有定时器武装半边)。
     g_xclient_test_client_enabled = xclient_enabled;
@@ -777,6 +848,8 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // (pipe() 默认阻塞语义, libwayland 不改 added fd 的标志), loop
         // 线程卡死 = 整个合成器冻结 (T5 t5k 实测: 触发后帧时钟/Xwayland
         // 全停, 后续 X client 连接握手挂死)。
+        {
+        std::lock_guard<std::mutex> pipeLock(g_pipe_mutex);
         if (pipe(g_retrigger_pipe) == 0)
         {
             for (int i = 0; i < 2; ++i)
@@ -789,6 +862,8 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         else
         {
             OH_LOG_ERROR(LOG_APP, "retrigger pipe create failed errno=%{public}d", errno);
+            goto fail;
+        }
         }
 
         // M2-T2: R-ZC ② 探针 —— 标记文件不存在时真跑一次 host EGL OHOS
@@ -921,17 +996,28 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             // roundtrip 回包永远滞留 out 缓冲, 子进程卡死在首次同步
             // (T7 bring-up 实测: 20s 内回包 0 到达)。
             wl_display_flush_clients(wl);
-            wl_event_loop_dispatch(loop, -1);
+            wl_event_loop_dispatch(loop, 100);
+            if (g_phase.load() == 1 && std::chrono::steady_clock::now() >= g_start_deadline) {
+                OH_LOG_ERROR(LOG_APP, "X11 startup deadline expired (Xwayland/output stage)");
+                g_failed.store(true);
+                g_phase.store(3);
+                g_stop.store(true);
+            }
             wl_display_flush_clients(wl);
         }
         OH_LOG_INFO(LOG_APP, "event loop exit");
 
     fail:
+        if (g_phase.load() == 1) g_failed.store(true);
+        g_phase.store(3);
+        g_stop.store(true);
         // 统一收尾 (M2-T1, known-issues §1.2): 正常退出与启动失败共用。
         // 逆序销毁; with_server 形态的 server 不归 wlr_xwayland_destroy 管
         // (own_server=false, xwayland.c:91), 须显式销毁。
         // M2-T5: guest 帧接收侧先收 (摘帧 → 解绑 → 销毁消费者面), 早了会漏
         // 归还借来的队列帧, 晚了会在 scene 销毁后动悬垂节点。
+        xim_bridge_shutdown();
+        winehua_x11_hosts_shutdown();
         display_guest_frames_shutdown();
         if (xwayland)
             wlr_xwayland_destroy(xwayland);
@@ -940,6 +1026,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // events.* 全空, 早摘会 UAF ClientDestroy 正在动的 scene 帧节点
         // (故在 xwayland destroy 之后), 晚摘/不摘则 assert 炸。
         wl_ohos_output_shutdown();
+        wl_ohos_input_shutdown();
         // M4a: 多窗映射层会话重置 (补发 destroyed + 清 id 表; 幂等, 单窗
         // 模式下空表 no-op)。xwayland destroy 之后 (xs 已全灭, 补发的是
         // ArkTS 清理语义)。多窗激活位随链清零 (#172): 该位是 createRenderer
@@ -948,6 +1035,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         // 分支: renderer 不建、输入被空表吞, 黑屏且输入死 (2026-10-17
         // MOR-M1 实测; 旧注释「位在此不翻, 链重启时重置」的前提——切换后
         // 仍有链重启——不成立)。
+        winehua_x11_desktop_reset();
         x11_toplevel_session_reset();
         x11_toplevel_set_active(false);
         if (server)
@@ -961,11 +1049,14 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
          * wl_display_destroy 撤销, 无需也无法单独销毁 */
         if (renderer)
             wlr_renderer_destroy(renderer);
+        {
+        std::lock_guard<std::mutex> pipeLock(g_pipe_mutex);
         if (g_retrigger_pipe[0] >= 0)
         {
             close(g_retrigger_pipe[0]);
             close(g_retrigger_pipe[1]);
             g_retrigger_pipe[0] = g_retrigger_pipe[1] = -1;
+        }
         }
         if (wl)
             wl_display_destroy(wl);
@@ -982,13 +1073,39 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                 OH_NativeWindow_DestroyNativeWindow(g_present_window);
                 g_present_window = nullptr;
             }
+            // No next start until the last EGL user and singleton are gone.
+            wl_ohos_egl_renderer_shutdown();
+            {
+                std::lock_guard<std::mutex> nameLock(g_display_name_mutex);
+                g_display_name.clear();
+            }
             g_started = false;
             g_stop = false;
+            {
+                std::lock_guard<std::mutex> pendingLock(g_late_window_mutex);
+                if (g_late_window) OH_NativeWindow_DestroyNativeWindow(g_late_window);
+                g_late_window = nullptr;
+            }
+            g_phase.store(g_failed.load() ? 4 : 0);
         }
         // renderer 销毁后作废 ohos_egl_import 单例缓存 (详见
         // wl_ohos_egl_renderer_shutdown 注释)。必须在本链最后一个 EGL
         // 使用者 (上方 wl_ohos_egl_window_surface_destroy) 之后。
-        wl_ohos_egl_renderer_shutdown();
         OH_LOG_INFO(LOG_APP, "displayroute stopped or failed; cleaned up (retry possible)");
     }).detach();
+}
+
+extern "C" int WineHua_DisplayRoute_Phase() { return g_phase.load(); }
+extern "C" size_t WineHua_DisplayRoute_DisplayName(char *name, size_t capacity)
+{
+    std::lock_guard<std::mutex> lock(g_display_name_mutex);
+    if (name && capacity) snprintf(name, capacity, "%s", g_display_name.c_str());
+    return g_display_name.size();
+}
+
+extern "C" void WineHua_DisplayRoute_DetachCanvas()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_detach_canvas.store(true);
+    WakeDisplayLoop('r');
 }

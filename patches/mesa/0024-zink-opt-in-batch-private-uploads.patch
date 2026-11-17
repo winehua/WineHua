@@ -1,0 +1,225 @@
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -582,6 +582,13 @@
+    struct zink_resource_object **objs;
+ };
+ 
++/* Owned mapped upload slices, published before handing a batch to the
++ * submission thread. The object and its Vulkan mapping stay alive meanwhile. */
++struct zink_winehua_mapped_flush {
++   struct zink_resource_object *obj;
++   VkMappedMemoryRange range;
++};
++
+ struct zink_batch_state {
+    struct zink_fence fence;
+    struct zink_batch_state *next;
+@@ -636,6 +643,7 @@
+    struct util_dynarray swapchain_obj; //this doesn't have a zink_bo and must be handled differently
+ 
+    struct util_dynarray unref_resources;
++   struct util_dynarray winehua_mapped_flushes;
+    struct util_dynarray bindless_releases[2];
+ 
+    struct util_dynarray zombie_samplers;
+--- a/src/gallium/drivers/zink/zink_batch.h
++++ b/src/gallium/drivers/zink/zink_batch.h
+@@ -60,6 +60,15 @@
+ 
+ void
+ zink_end_batch(struct zink_context *ctx);
++
++bool
++zink_winehua_queue_mapped_flush(struct zink_context *ctx,
++                               struct zink_resource_object *obj,
++                               const VkMappedMemoryRange *range);
++
++VkResult
++zink_winehua_flush_mapped_uploads(struct zink_screen *screen,
++                                 struct zink_batch_state *bs);
+ 
+ void
+ zink_batch_reference_resource_rw(struct zink_context *ctx,
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -19,6 +19,109 @@
+ debug_describe_zink_batch_state(char *buf, const struct zink_batch_state *ptr)
+ {
+    sprintf(buf, "zink_batch_state");
++}
++
++/* Enabled by the qualified Zink product route; retain a runtime opt-out.
++ * Only driver-private, non-persistent uploader buffers enter this queue. */
++bool
++zink_winehua_queue_mapped_flush(struct zink_context *ctx,
++                               struct zink_resource_object *obj,
++                               const VkMappedMemoryRange *range)
++{
++   if (!ctx || !ctx->bs || ctx->bs->is_device_lost || !range->size || range->size == VK_WHOLE_SIZE ||
++       !debug_get_bool_option("WINEHUA_ZINK_BATCH_UPLOAD", false))
++      return false;
++
++   struct zink_screen *screen = zink_screen(ctx->base.screen);
++   struct zink_batch_state *bs = ctx->bs;
++   unsigned count = util_dynarray_num_elements(&bs->winehua_mapped_flushes,
++                                               struct zink_winehua_mapped_flush);
++   if (count) {
++      struct zink_winehua_mapped_flush *last = util_dynarray_top_ptr(
++         &bs->winehua_mapped_flushes, struct zink_winehua_mapped_flush);
++      /* Do not include unwritten gaps or a replacement backing object. */
++      if (last->obj == obj && range->offset >= last->range.offset &&
++          range->offset <= last->range.offset + last->range.size) {
++         VkDeviceSize end = MAX2(last->range.offset + last->range.size,
++                                range->offset + range->size);
++         last->range.size = end - last->range.offset;
++         return true;
++      }
++   }
++   /* Bound pending metadata. Publish on the recording thread, never after
++    * the next batch may have reused or renamed an upload buffer. */
++   if (count >= 4096 && zink_winehua_flush_mapped_uploads(screen, bs) != VK_SUCCESS)
++      return false;
++   if (!zink_bo_map(screen, obj->bo))
++      return false;
++   struct zink_winehua_mapped_flush *pending = util_dynarray_grow(
++      &bs->winehua_mapped_flushes, struct zink_winehua_mapped_flush, 1);
++   if (!pending) {
++      zink_bo_unmap(screen, obj->bo);
++      return false;
++   }
++   pending->obj = NULL;
++   zink_resource_object_reference(screen, &pending->obj, obj);
++   pending->range = *range;
++   return true;
++}
++
++static int
++winehua_compare_mapped_flush(const void *a, const void *b)
++{
++   const struct zink_winehua_mapped_flush *x = a, *y = b;
++   uint64_t xm = (uint64_t)(uintptr_t)x->range.memory;
++   uint64_t ym = (uint64_t)(uintptr_t)y->range.memory;
++   if (xm != ym)
++      return xm < ym ? -1 : 1;
++   if (x->range.offset != y->range.offset)
++      return x->range.offset < y->range.offset ? -1 : 1;
++   return 0;
++}
++
++VkResult
++zink_winehua_flush_mapped_uploads(struct zink_screen *screen,
++                                 struct zink_batch_state *bs)
++{
++   unsigned count = util_dynarray_num_elements(&bs->winehua_mapped_flushes,
++                                               struct zink_winehua_mapped_flush);
++   if (!count)
++      return bs->is_device_lost ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
++   struct zink_winehua_mapped_flush *pending = bs->winehua_mapped_flushes.data;
++   qsort(pending, count, sizeof(*pending), winehua_compare_mapped_flush);
++   VkMappedMemoryRange ranges[256];
++   unsigned n = 0;
++   VkResult result = bs->is_device_lost ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
++   for (unsigned i = 0; i < count && result == VK_SUCCESS; i++) {
++      const VkMappedMemoryRange *range = &pending[i].range;
++      if (n && ranges[n-1].memory == range->memory &&
++          range->offset <= ranges[n-1].offset + ranges[n-1].size) {
++         VkDeviceSize end = MAX2(ranges[n-1].offset + ranges[n-1].size,
++                                range->offset + range->size);
++         ranges[n-1].size = end - ranges[n-1].offset;
++         continue;
++      }
++      if (n == ARRAY_SIZE(ranges)) {
++         result = VKSCR(FlushMappedMemoryRanges)(screen->dev, n, ranges);
++         n = 0;
++         if (result != VK_SUCCESS)
++            break;
++      }
++      ranges[n++] = *range;
++   }
++   if (result == VK_SUCCESS && n) {
++      result = VKSCR(FlushMappedMemoryRanges)(screen->dev, n, ranges);
++   }
++   for (unsigned i = 0; i < count; i++) {
++      zink_bo_unmap(screen, pending[i].obj->bo);
++      zink_resource_object_reference(screen, &pending[i].obj, NULL);
++   }
++   util_dynarray_clear(&bs->winehua_mapped_flushes);
++   if (result != VK_SUCCESS) {
++      bs->is_device_lost = true;
++      mesa_loge("ZINK: batched shadow upload failed (%s)", vk_Result_to_str(result));
++   }
++   return result;
+ }
+ 
+ /* this resets the batch usage and tracking for a resource object */
+@@ -92,6 +195,9 @@
+    result = VKSCR(ResetCommandPool)(screen->dev, bs->unsynchronized_cmdpool, 0);
+    if (result != VK_SUCCESS)
+       mesa_loge("ZINK: vkResetCommandPool failed (%s)", vk_Result_to_str(result));
++
++   /* An unused/no-work batch can still own CPU upload slices. */
++   zink_winehua_flush_mapped_uploads(screen, bs);
+ 
+    /* unref/reset all used resources */
+    reset_obj_list(screen, bs, &bs->real_objs);
+@@ -278,6 +384,8 @@
+    if (!bs)
+       return;
+ 
++   zink_winehua_flush_mapped_uploads(screen, bs);
++   util_dynarray_fini(&bs->winehua_mapped_flushes);
+    util_queue_fence_destroy(&bs->flush_completed);
+ 
+    cnd_destroy(&bs->usage.flush);
+@@ -398,6 +506,7 @@
+    util_dynarray_init(&bs->zombie_samplers, NULL);
+    util_dynarray_init(&bs->freed_sparse_backing_bos, NULL);
+    util_dynarray_init(&bs->unref_resources, NULL);
++   util_dynarray_init(&bs->winehua_mapped_flushes, NULL);
+    util_dynarray_init(&bs->acquires, NULL);
+    util_dynarray_init(&bs->acquire_flags, NULL);
+    util_dynarray_init(&bs->bindless_releases[0], NULL);
+@@ -884,6 +993,13 @@
+    util_dynarray_foreach(&bs->fences, struct zink_tc_fence*, mfence)
+       (*mfence)->deferred_ctx = NULL;
+ 
++   /* Publish while the recording context still owns the upload generation.
++    * Doing this in submit_queue would race the next batch's CPU writes. */
++   if (zink_winehua_flush_mapped_uploads(screen, bs) != VK_SUCCESS) {
++      screen->device_lost = true;
++      return;
++   }
++
+    if (screen->threaded_submit) {
+       util_queue_add_job(&screen->flush_queue, bs, &bs->flush_completed,
+                          submit_queue, post_submit, 0);
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2287,6 +2287,9 @@
+    struct zink_context *ctx = zink_context(pctx);
+    struct zink_screen *screen = zink_screen(pctx->screen);
+    struct zink_resource *res = zink_resource(pres);
++   if ((usage & PIPE_MAP_READ) && !(usage & PIPE_MAP_THREAD_SAFE) && ctx && ctx->bs &&
++       zink_winehua_flush_mapped_uploads(screen, ctx->bs) != VK_SUCCESS)
++      return NULL;
+    struct zink_transfer *trans = create_transfer(ctx, pres, usage, box);
+    if (!trans)
+       return NULL;
+@@ -2778,7 +2781,16 @@
+          }
+          VkMappedMemoryRange range = zink_resource_init_mem_range(screen, m->obj,
+             upload_offset, upload_size);
+-         if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++         const unsigned map_flags = trans->base.b.usage;
++         const bool private_upload = remote_upload && m->obj->is_buffer &&
++            ptrans->resource->target == PIPE_BUFFER && !m->obj->exportable &&
++            (m->base.b.flags & PIPE_RESOURCE_FLAG_SINGLE_THREAD_USE) &&
++            (map_flags & (PIPE_MAP_WRITE | PIPE_MAP_UNSYNCHRONIZED | PIPE_MAP_FLUSH_EXPLICIT)) ==
++               (PIPE_MAP_WRITE | PIPE_MAP_UNSYNCHRONIZED | PIPE_MAP_FLUSH_EXPLICIT) &&
++            !(map_flags & (PIPE_MAP_READ | PIPE_MAP_PERSISTENT | PIPE_MAP_ONCE | PIPE_MAP_THREAD_SAFE |
++                           TC_TRANSFER_MAP_THREADED_UNSYNC));
++         if (!(private_upload && zink_winehua_queue_mapped_flush(ctx, m->obj, &range)) &&
++             VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+             mesa_loge("ZINK: vkFlushMappedMemoryRanges failed");
+          }
+       }

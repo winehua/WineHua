@@ -155,7 +155,8 @@ int OnVirglIpcRequest(uint32_t code, const OHIPCParcel* data,
             !libraryPath || libraryPath[0] != '/' || !syncMode || !logPath || logPath[0] != '/' ||
             !shadowMode || !shadowTrace || !presentMode || !shadowMergeRanges ||
             !descriptorUpdateSerialize || !gpuUploadWait ||
-            (strcmp(presentMode, "fifo") && strcmp(presentMode, "mailbox") &&
+            (strcmp(presentMode, "native-buffer") &&
+             strcmp(presentMode, "fifo") && strcmp(presentMode, "mailbox") &&
              strcmp(presentMode, "fifo-async") &&
              strcmp(presentMode, "fifo-poll")))
         {
@@ -209,10 +210,13 @@ int OnVirglIpcRequest(uint32_t code, const OHIPCParcel* data,
         int64_t framePeriodNs = 0;
         int32_t flags = 0;
         OHNativeWindow* window = nullptr;
+        int retirementFd = -1;
         if (OH_IPCParcel_ReadInt64(data, &surfaceKey) != OH_IPC_SUCCESS || surfaceKey <= 0 ||
             OH_IPCParcel_ReadInt64(data, &framePeriodNs) != OH_IPC_SUCCESS || framePeriodNs <= 0 ||
             OH_IPCParcel_ReadInt32(data, &flags) != OH_IPC_SUCCESS || flags < 0 ||
-            OH_NativeWindow_ReadFromParcel(const_cast<OHIPCParcel*>(data), &window) != 0 || !window)
+            OH_NativeWindow_ReadFromParcel(const_cast<OHIPCParcel*>(data), &window) != 0 || !window ||
+            ((flags & winehua::virgl_ipc::kSurfaceRetirementChannel) &&
+             (OH_IPCParcel_ReadFileDescriptor(data, &retirementFd) != OH_IPC_SUCCESS || retirementFd < 0)))
         {
             if (window) OH_NativeWindow_DestroyNativeWindow(window);
             result = -4;
@@ -222,9 +226,10 @@ int OnVirglIpcRequest(uint32_t code, const OHIPCParcel* data,
             result = winehua::AttachVirglSurfaceTarget(
                 static_cast<uint64_t>(surfaceKey),
                 static_cast<uint64_t>(framePeriodNs),
-                static_cast<uint32_t>(flags), window);
+                static_cast<uint32_t>(flags), window, retirementFd);
             if (result != 0) OH_NativeWindow_DestroyNativeWindow(window);
         }
+        if (retirementFd >= 0) close(retirementFd);
     }
     else if (result == 0 && code == winehua::virgl_ipc::kDetachSurfaceRequest)
     {
@@ -764,13 +769,13 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
 // Phone mode runs this library in the application process so NativeWindow can
 // remain on the existing SurfaceQueue instead of crossing the fork relay.
 extern "C" __attribute__((visibility("default"))) int WinehuaVirgl_AttachSurfaceTarget(
-    uint64_t surfaceKey, uint64_t framePeriodNs, uint32_t flags, OHNativeWindow* window)
+    uint64_t surfaceKey, uint64_t framePeriodNs, uint32_t flags, OHNativeWindow* window, int retirementFd)
 {
     // GraphicsBroker transfers one dedicated NativeWindow reference on a
     // successful in-process attach. g_presenters owns and releases it when
     // the target is detached; the renderer retains the NativeImage reference.
     if (!window) return -1;
-    return winehua::AttachVirglSurfaceTarget(surfaceKey, framePeriodNs, flags, window);
+    return winehua::AttachVirglSurfaceTarget(surfaceKey, framePeriodNs, flags, window, retirementFd);
 }
 
 extern "C" __attribute__((visibility("default"))) int WinehuaVirgl_DetachSurfaceTarget(

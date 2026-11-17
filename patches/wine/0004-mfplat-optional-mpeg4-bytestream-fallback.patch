@@ -1,0 +1,54 @@
+diff --git a/dlls/mfplat/main.c b/dlls/mfplat/main.c
+--- a/dlls/mfplat/main.c
++++ b/dlls/mfplat/main.c
+@@ -6305,6 +6305,32 @@ static HRESULT resolver_create_gstreamer_handler(IMFByteStreamHandler **handler)
+     return CoCreateInstance(&CLSID_GStreamerByteStreamHandler, NULL, CLSCTX_INPROC_SERVER, &IID_IMFByteStreamHandler, (void **)handler);
+ }
+ 
++static HRESULT resolver_create_mpeg4_handler(IMFByteStreamHandler **handler)
++{
++    static const GUID CLSID_MPEG4ByteStreamHandlerPlugin =
++            {0x271c3902, 0x6095, 0x4c45, {0xa2, 0x2f, 0x20, 0x09, 0x18, 0x16, 0xee, 0x9e}};
++    return CoCreateInstance(&CLSID_MPEG4ByteStreamHandlerPlugin, NULL, CLSCTX_INPROC_SERVER,
++            &IID_IMFByteStreamHandler, (void **)handler);
++}
++
++static HRESULT resolver_create_fallback_handler(IMFByteStreamHandler **handler)
++{
++    const char *prefer_mpeg4 = getenv("WINE_MF_PREFER_MPEG4_HANDLER");
++
++    if (prefer_mpeg4 && prefer_mpeg4[0] != '\0')
++    {
++        HRESULT hr;
++
++        TRACE("[WineHua-MF] prefer MPEG4 byte stream handler\n");
++        hr = resolver_create_mpeg4_handler(handler);
++        if (SUCCEEDED(hr))
++            return hr;
++        WARN("[WineHua-MF] MPEG4 byte stream handler failed, falling back to GStreamer.\n");
++    }
++
++    return resolver_create_gstreamer_handler(handler);
++}
++
+ static HRESULT resolver_get_bytestream_handler(IMFByteStream *stream, const WCHAR *url, DWORD flags,
+         IMFByteStreamHandler **handler)
+ {
+@@ -6345,7 +6371,7 @@ static HRESULT resolver_get_bytestream_handler(IMFByteStream *stream, const WCHA
+         hr = resolver_create_bytestream_handler(stream, flags, mimeW, url_ext, handler);
+ 
+         if (FAILED(hr))
+-            hr = resolver_create_gstreamer_handler(handler);
++            hr = resolver_create_fallback_handler(handler);
+     }
+ 
+     CoTaskMemFree(mimeW);
+@@ -6363,7 +6389,7 @@ static HRESULT resolver_get_bytestream_handler(IMFByteStream *stream, const WCHA
+     hr = resolver_create_bytestream_handler(stream, flags, NULL, url_ext, handler);
+ 
+     if (FAILED(hr))
+-        hr = resolver_create_gstreamer_handler(handler);
++        hr = resolver_create_fallback_handler(handler);
+ 
+     return hr;
+ }

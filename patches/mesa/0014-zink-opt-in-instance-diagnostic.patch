@@ -1,0 +1,61 @@
+diff --git a/src/gallium/drivers/zink/zink_instance.py b/src/gallium/drivers/zink/zink_instance.py
+--- a/src/gallium/drivers/zink/zink_instance.py
++++ b/src/gallium/drivers/zink/zink_instance.py
+@@ -128,6 +128,9 @@
+ #include "vk_enum_to_str.h"
+ #include "zink_instance.h"
+ #include "zink_screen.h"
++#ifndef _WIN32
++#include <dlfcn.h>
++#endif
+ 
+ VkInstance
+ zink_create_instance(struct zink_screen *screen, struct zink_instance_info *instance_info)
+@@ -265,11 +268,47 @@
+    GET_PROC_ADDR_INSTANCE_LOCAL(screen, NULL, CreateInstance);
+    assert(vk_CreateInstance);
+ 
++   const char *diagnostic = getenv("WINEHUA_ZINK_DIAGNOSTIC");
++   const bool diagnose = diagnostic && !strcmp(diagnostic, "1");
++   if (diagnose) {
++#ifndef _WIN32
++      Dl_info loader = {0}, create = {0};
++      dladdr((void *)screen->vk_GetInstanceProcAddr, &loader);
++      dladdr((void *)vk_CreateInstance, &create);
++      mesa_loge("ZINK-DIAG: loader=%s create=%s api=%u extensions=%u layers=%u ICD=%s DRIVER=%s",
++                loader.dli_fname ? loader.dli_fname : "?", create.dli_fname ? create.dli_fname : "?",
++                ai.apiVersion, num_extensions, num_layers,
++                getenv("VK_ICD_FILENAMES") ? getenv("VK_ICD_FILENAMES") : "",
++                getenv("VK_DRIVER_FILES") ? getenv("VK_DRIVER_FILES") : "");
++#endif
++      for (unsigned i = 0; i < num_extensions; ++i)
++         mesa_loge("ZINK-DIAG: extension=%s", extensions[i]);
++   }
++
+    VkInstance instance = VK_NULL_HANDLE;
+    VkResult err = vk_CreateInstance(&ici, NULL, &instance);
+    if (err != VK_SUCCESS) {
+       if (!screen->driver_name_is_inferred)
+           mesa_loge("ZINK: vkCreateInstance failed (%s)", vk_Result_to_str(err));
++      if (diagnose) {
++         /* Disposable instances isolate version from extension negotiation.
++          * They never become a Zink screen or change normal fallback. */
++         const uint32_t versions[] = { ai.apiVersion, VK_API_VERSION_1_3, VK_API_VERSION_1_2, VK_API_VERSION_1_1 };
++         ici.enabledExtensionCount = 0;
++         ici.enabledLayerCount = 0;
++         for (unsigned i = 0; i < ARRAY_SIZE(versions); ++i) {
++            if (versions[i] > instance_info->loader_version) continue;
++            ai.apiVersion = versions[i];
++            VkInstance probe = VK_NULL_HANDLE;
++            VkResult result = vk_CreateInstance(&ici, NULL, &probe);
++            mesa_loge("ZINK-DIAG: no-extension api=%u result=%d", ai.apiVersion, result);
++            if (result == VK_SUCCESS) {
++               PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)
++                  screen->vk_GetInstanceProcAddr(probe, "vkDestroyInstance");
++               if (destroy) destroy(probe, NULL);
++            }
++         }
++      }
+       return VK_NULL_HANDLE;
+    }
+ 

@@ -2,6 +2,8 @@
 #include <wayland-server-core.h>
 #include <cstdint>
 #include <mutex>
+#include <atomic>
+#include "external_resize.h"
 
 class ToplevelManager;
 
@@ -15,6 +17,10 @@ public:
     // InputManager 获取 — 立即算固定 grab 偏移, 后续 motion 绝对定位
     void StartMoveGrab(ToplevelManager& tmgr, uint32_t toplevelId, uint32_t serial,
                        int32_t grabGlobalX, int32_t grabGlobalY);
+    void StartExternalResizeGrab(ToplevelManager& tmgr, uint32_t toplevelId, uint32_t serial,
+                                int32_t x, int32_t y, uint32_t edges);
+    uint32_t ResizeTarget() const { return resizeTarget_.load(); }
+    const ExternalResizeGeometry& ResizeBounds() const { return resizeBounds_; }
 
     // 结束抓取, 清空 grab 状态 (未在抓取时调用安全, 仅清零)。
     void EndMoveGrab(ToplevelManager& tmgr);
@@ -35,4 +41,8 @@ private:
     uint32_t serial_ = 0;
     int32_t grabOffX_ = 0;
     int32_t grabOffY_ = 0;
+    std::atomic<uint32_t> resizeTarget_{0};
+    uint32_t resizeEdges_ = 0;
+    int32_t resizePointerX_ = 0, resizePointerY_ = 0;
+    ExternalResizeGeometry resizeStart_, resizeBounds_;
 };

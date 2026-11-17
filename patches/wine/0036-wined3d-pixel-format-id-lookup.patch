@@ -1,0 +1,35 @@
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -610,6 +610,19 @@
+     return false;
+ }
+ 
++/* WGL IDs are not slots: adapter initialization compacts successful queries. */
++static const struct wined3d_pixel_format *swapchain_gl_find_pixel_format(
++        const struct wined3d_adapter_gl *adapter_gl, int format_id)
++{
++    unsigned int i;
++
++    if (format_id <= 0) return NULL;
++    for (i = 0; i < adapter_gl->pixel_format_count; ++i)
++        if (adapter_gl->pixel_formats[i].iPixelFormat == format_id)
++            return &adapter_gl->pixel_formats[i];
++    return NULL;
++}
++
+ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
+         const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, uint32_t flags)
+ {
+@@ -630,9 +643,10 @@
+ 
+     TRACE("Presenting DC %p.\n", context_gl->dc);
+ 
+-    pixel_format = &wined3d_adapter_gl(swapchain->device->adapter)->pixel_formats[context_gl->pixel_format];
++    pixel_format = swapchain_gl_find_pixel_format(wined3d_adapter_gl(swapchain->device->adapter),
++            context_gl->pixel_format);
+     if (context_gl->dc == wined3d_device_gl(swapchain->device)->backup_dc
+-            || (pixel_format->swap_method != WGL_SWAP_COPY_ARB
++            || ((!pixel_format || pixel_format->swap_method != WGL_SWAP_COPY_ARB)
+             && swapchain_present_is_partial_copy(swapchain, dst_rect)))
+     {
+         swapchain_blit_gdi(swapchain, context, src_rect, dst_rect);

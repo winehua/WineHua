@@ -1,0 +1,109 @@
+--- a/include/wlr/xwayland/xwayland.h
++++ b/include/wlr/xwayland/xwayland.h
+@@ -458,4 +458,15 @@
+ 	xcb_window_t window_id, int32_t *x, int32_t *y,
+ 	uint32_t *width, uint32_t *height, uint64_t *generation);
+ 
++struct wlr_xwayland_child_info {
++    uint32_t window_id, pid;
++    uint64_t generation;
++    int32_t x, y;
++    uint32_t width, height;
++    bool mapped;
++};
++// Bounded cached snapshot; no X round-trip in the frame/render path.
++size_t wlr_xwayland_snapshot_children(struct wlr_xwayland *xwayland,
++    struct wlr_xwayland_child_info *items, size_t capacity);
++
+ #endif
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -145,6 +145,8 @@
+ // on-root geometry. We deliberately do NOT create wlr_xwayland_surface for
+ // children (xwm must not manage/restack them) — this table is geometry only.
+ struct xwm_child_window {
++    uint32_t pid;
++    bool product_toplevel, mapped;
+ 	xcb_window_t window_id;
+ 	struct wlr_xwayland_surface *parent; // managed toplevel
+ 	int16_t x, y; // parent-relative (absolute = parent->x/y + rel, computed
+@@ -203,6 +205,22 @@
+ 	free(reply);
+ }
+ 
++static void xwm_child_read_identity(struct wlr_xwm *xwm, struct xwm_child_window *child) {
++    xcb_get_property_cookie_t pc = xcb_get_property(xwm->xcb_conn, 0,
++        child->window_id, xwm->atoms[NET_WM_PID], XCB_ATOM_CARDINAL, 0, 1);
++    xcb_get_property_cookie_t rc = xcb_get_property(xwm->xcb_conn, 0,
++        child->window_id, xwm->atoms[WM_WINDOW_ROLE], XCB_ATOM_STRING, 0, 32);
++    xcb_get_property_reply_t *p = xcb_get_property_reply(xwm->xcb_conn, pc, NULL);
++    xcb_get_property_reply_t *r = xcb_get_property_reply(xwm->xcb_conn, rc, NULL);
++    child->pid = p && p->format == 32 && xcb_get_property_value_length(p) == 4
++        ? *(uint32_t *)xcb_get_property_value(p) : 0;
++    const char role[] = "winehua-toplevel";
++    child->product_toplevel = r && r->format == 8 &&
++        xcb_get_property_value_length(r) == sizeof(role)-1 &&
++        memcmp(xcb_get_property_value(r), role, sizeof(role)-1) == 0;
++    free(p); free(r);
++}
++
+ static void xwm_child_window_add(struct wlr_xwm *xwm,
+ 		struct wlr_xwayland_surface *parent, xcb_create_notify_event_t *ev) {
+ 	struct xwm_child_window *child = calloc(1, sizeof(*child));
+@@ -228,6 +246,7 @@
+ 	xcb_change_window_attributes(xwm->xcb_conn, child->window_id,
+ 		XCB_CW_EVENT_MASK, mask_values);
+ 	xwm_child_window_read_frame_extents(xwm, child);
++    xwm_child_read_identity(xwm, child);
+ }
+ 
+ static void xwm_child_window_remove(struct wlr_xwm *xwm,
+@@ -1599,6 +1618,8 @@
+ 		xcb_map_notify_event_t *ev) {
+ 	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
+ 	if (!xsurface) {
++        struct xwm_child_window *child = xwm_child_window_find(xwm, ev->window);
++        if (child) child->mapped = true;
+ 		return;
+ 	}
+ 
+@@ -1614,6 +1635,8 @@
+ 		xcb_unmap_notify_event_t *ev) {
+ 	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
+ 	if (xsurface == NULL) {
++        struct xwm_child_window *child = xwm_child_window_find(xwm, ev->window);
++        if (child) child->mapped = false;
+ 		return;
+ 	}
+ 
+@@ -1632,6 +1655,8 @@
+ 		// _NET_WM_FRAME_EXTENTS updates land here (PropertyChangeMask is
+ 		// selected on them at tracking time)
+ 		struct xwm_child_window *child = xwm_child_window_find(xwm, ev->window);
++        if (child && (ev->atom == xwm->atoms[NET_WM_PID] || ev->atom == xwm->atoms[WM_WINDOW_ROLE]))
++            xwm_child_read_identity(xwm, child);
+ 		if (child != NULL && ev->atom == xwm->atoms[NET_WM_FRAME_EXTENTS]) {
+ 			xwm_child_window_read_frame_extents(xwm, child);
+ 		}
+@@ -3180,3 +3205,21 @@
+ 	}
+ 	return true;
+ }
++
++size_t wlr_xwayland_snapshot_children(struct wlr_xwayland *xwayland,
++        struct wlr_xwayland_child_info *items, size_t capacity) {
++    if (!xwayland || !xwayland->xwm || !items) return 0;
++    size_t count = 0;
++    struct xwm_child_window *child;
++    wl_list_for_each(child, &xwayland->xwm->child_windows, link) {
++        if (!child->product_toplevel || !child->pid) continue;
++        if (count == capacity) break;
++        items[count++] = (struct wlr_xwayland_child_info){
++            .window_id = child->window_id, .pid = child->pid,
++            .generation = child->generation,
++            .x = child->parent->x + child->x, .y = child->parent->y + child->y,
++            .width = child->width, .height = child->height, .mapped = child->mapped,
++        };
++    }
++    return count;
++}

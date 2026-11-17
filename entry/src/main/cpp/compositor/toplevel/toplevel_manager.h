@@ -26,6 +26,8 @@
 // - fullscreen toplevel 锚定 (0,0): SetToplevelFullscreen 维护,
 //   合成按保比例缩放铺满, 不使用浮动位置。
 
+struct SurfaceData;
+
 class ToplevelManager {
 public:
     // -- 公共类型 --
@@ -71,10 +73,15 @@ public:
         int Height() const { return h_; }
         uint32_t ShmFormat() const { return shmFormat_; }  // 0=ARGB8888, 1=XRGB8888
 
-        // 帧数据写 (wl_core commit 路径)。FrameData 仅两处写点使用:
-        // CopyShmContentTight / popup 像素双缓冲轮换
+        // 帧数据写 (wl_core commit 路径)。FrameData 写点: CopyShmContentTight /
+        // popup 像素双缓冲轮换 / EnsureFrameBaseLocked 补建基底
         std::vector<uint8_t>& FrameData() { return pixels_; }
         void SetContentSize(int w, int h) { w_ = w; h_ = h; }
+        // 客户区内容尺寸 (0 = 未记录)。见类内 clientW_ 字段与
+        // ToplevelManager::SyncFullscreenContentSizeLocked 的语义说明。
+        void SetClientContentSize(int w, int h) { clientW_ = w; clientH_ = h; }
+        int ClientContentW() const { return clientW_; }
+        int ClientContentH() const { return clientH_; }
         void SetShmFormat(uint32_t fmt) { shmFormat_ = fmt; }
         void MarkDirty() { dirty_ = true; }
         void ClearDirty() { dirty_ = false; }
@@ -138,6 +145,10 @@ public:
     private:
         std::vector<uint8_t> pixels_;   // empty() = 尚无帧
         int w_ = 0, h_ = 0;             // content 尺寸 (popup 为显示尺寸)
+        // 客户区内容尺寸 (client subsurface 承载画面时由 commit 写入; 见
+        // SyncClientContentSizeLocked)。仅全屏窗口的帧合成用它当帧尺寸 —
+        // w_/h_ 保持窗口尺寸, 输入映射/窗口列表等消费方不受影响。
+        int clientW_ = 0, clientH_ = 0;
         bool dirty_ = false;
         uint64_t frameSerial_ = 0;      // 帧内容序列号 (见 FrameSerial 注释)
         uint32_t shmFormat_ = 1;        // wl_shm format (0=ARGB8888, 1=XRGB8888)
@@ -345,7 +356,15 @@ public:
         return it != surfaceResources_.end() ? it->second : nullptr;
     }
     void RegisterSurfaceResource(uint64_t key, wl_resource* res) { surfaceResources_[key] = res; }
-    void UnregisterSurfaceResource(uint64_t key) { surfaceResources_.erase(key); }
+    // Caller holds Lock(). Unlink surviving children before freeing a parent.
+    void UnregisterSurfaceResource(uint64_t key);
+    // Test registry membership before touching a possibly retired resource.
+    SurfaceData* FindRegisteredSurfaceDataLocked(wl_resource* resource);
+    size_t SurfaceResourceCount() const { return surfaceResources_.size(); }
+    // 诊断 (2026-09-16): 只读遍历 (present surface → owner 窗口解析取证用)
+    const std::unordered_map<uint64_t, wl_resource*>& SurfaceResources() const {
+        return surfaceResources_;
+    }
     bool ContainsSurfaceResource(wl_resource* res) {
         for (auto& [k, r] : surfaceResources_) if (r == res) return true;
         return false;
@@ -394,6 +413,14 @@ public:
     SizeCommitEffect HandleCommittedSizeLocked(uint32_t id, uint32_t rootId,
                                                int32_t contentW, int32_t contentH,
                                                int32_t outputW, int32_t outputH);
+
+    // 全屏窗口的帧尺寸跟随客户区内容尺寸。client subsurface 路径下 (游戏
+    // 画面全部提交在 client surface 上) 父表面只有建窗时的一次占位提交,
+    // 帧尺寸若停在那里, 客户区内容会贴在帧左上角。锁内调用, 无锁外动作。
+    // 语义与实测依据见 cpp 定义处。
+    void SyncFullscreenContentSizeLocked(uint32_t id, int32_t w, int32_t h);
+    // client subsurface 承载画面时补建帧基底 (语义见实现)。锁内调用。
+    void EnsureFrameBaseLocked(uint32_t id, int32_t w, int32_t h);
 
     // 坐标/尺寸查询
     int GetToplevelX(uint32_t id);

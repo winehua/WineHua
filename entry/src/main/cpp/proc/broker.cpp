@@ -1,350 +1,272 @@
-/**
- * broker.cpp — Process Broker: Unix socket server
- *
- * 在主进程中运行，接收来自 spawn_process (ntdll.so) 的子进程创建请求。
- * 每个请求包含 entryParams 字符串 + N 个命名 fd (SCM_RIGHTS, 可选 FDS 命名行)。
- * Broker 在主进程上下文调用 OH_Ability_StartNativeChildProcess，
- * 从而绕过 appspawn 子进程中无法嵌套调用 NCP API 的限制。
- *
- * 协议 (简单二进制):
- *   请求: "SPAWN\n{entryParams}\n[FDS:name0,name1,...\n]" + SCM_RIGHTS{N fd, N<=16}
- *   响应: [childPid: int32_le] [status: int32_le]   (8 字节)
- */
+#include "proc/open_protocol.h"
+#include "proc/ncp_dispatch.h"
+/* Broker v2: bounded readers feed one serialized NCP dispatcher. */
 #include "broker.h"
+#include "bridge/system_open.h"
+#include "wine/wine_env.h"
+#include "spawn_codec.h"
+#include "wine_image_policy.h"
+#include "wine_spawn_compatibility.h"
 #include "common/wait_utils.h"
 #include "wine/wine_constants.h"
 #include "audio/audio_broker.h"
 #include "wine_process.h"
-// 由 LaunchPadMode 在启动 Broker 前设置
-std::string gBrokerHomeDir;
-std::string gBrokerPrefixDir;
-
-// NAPI 层注册的 ArkTS 回调 (bridge/napi_init.cpp)
-extern "C" int winehua_host_open_target(const char* target);
-
-// 系统打开开关 (设置页推送, 见 SystemOpenService.ets)。默认关 = OPEN 拒答,
-// winebrowser 回退上游 unix 兜底路径; 开 = 转发 ArkTS startAbility。
-// 即时生效 (每次 OPEN 现读), 不需要重启引擎。
-static std::atomic<bool> gSystemOpenEnabled{false};
-extern "C" void winehua_set_system_open_enabled(int enabled)
-{
-    gSystemOpenEnabled.store(enabled != 0);
-}
-
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#include <cstdio>
-#include <cstring>
-#include <cstdlib>
-#include <thread>
-#include <atomic>
-#include <utility>
-#include <vector>
+#include "wine_child_ipc_launcher.h"
+#include "phone_adapter/phone_adapter.h"
+#include "phone_adapter/phone_process.h"
+#include "cef_utility_probe.h"
 #include <AbilityKit/native_child_process.h>
+#include <hilog/log.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x2330
 #define LOG_TAG "WL_Broker"
-#include <hilog/log.h>
 
+std::string gBrokerHomeDir;
+std::string gBrokerPrefixDir;
 static const char* kBrokerSocketPath = WINE_BROKER_SOCKET;
-
 static std::atomic<bool> gBrokerRunning{false};
+static std::atomic<bool> gDirectNcpSessionDefault{false};
 
-// -- 从 entryParams 解析进程 exe 路径 (登记到任务列表用) --
-// broker 加了 homeDir 前缀后 entryParams 形如
-//   "homeDir|binDir|[wine]|argv0|argv1|...|__env=K=V|..."
-// 或 desktop 标记路径。跳过 homeDir/binDir (前两个 '/' 段) 与
-// wine/__winehua_desktop__ 标记段, 取第一个可执行段的完整形式 (Windows 路径
-// C:\... / native 绝对路径; AddProcess 自取 basename 作显示名)。早期版本只存
-// basename, 任务列表拿不到真实路径, 无法按路径匹配应用库图标或按需提取图标。
-// 取不到时回退 "wine"。
-static std::string ParseProcessPath(const char* entryParams) {
-    std::string path = "wine";
-    const std::string params = entryParams ? entryParams : "";
-    size_t pos = 0;
-    int slashSegsLeft = 2;  // homeDir + binDir, 均以 '/' 开头
-    while (pos < params.size()) {
-        size_t end = params.find('|', pos);
-        std::string seg = params.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-        if (!seg.empty()) {
-            if (seg.rfind("__env=", 0) == 0) break;  // env 段结束 argv
-            if (seg[0] == '/' && slashSegsLeft > 0) { --slashSegsLeft; }
-            else if (seg == "wine" || seg == "__winehua_desktop__") { /* 标记段 */ }
-            else {
-                path = seg;
-                break;
-            }
-        }
-        if (end == std::string::npos) break;
-        pos = end + 1;
-    }
-    return path;
+void SetBrokerDirectNcpSessionDefault(bool enabled) {
+    if (PhoneAdapter_IsPhoneMode()) enabled = false;
+    gDirectNcpSessionDefault.store(enabled, std::memory_order_release);
+    OH_LOG_WARN(LOG_APP, "[Broker] Create NCP session default=%{public}d", enabled ? 1 : 0);
 }
 
-// 处理单个请求: recvmsg(entryParams + fd) → StartNativeChildProcess → sendmsg(childPid, status)
-static void HandleRequest(int conn_fd)
-{
-    OH_LOG_INFO(LOG_APP, "[Broker] handling request on fd=%{public}d", conn_fd);
+static int32_t QueryPeerPid(int fd) {
+    struct { pid_t pid; uid_t uid; gid_t gid; } cred{};
+    socklen_t size = sizeof(cred);
+    return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &size) == 0 ? cred.pid : -1;
+}
+static void CloseOwnedFdIfRetained(int fd, const struct stat& original, bool haveOriginal) {
+    struct stat current{};
+    if (haveOriginal && fstat(fd, &current) == 0 &&
+        current.st_dev == original.st_dev && current.st_ino == original.st_ino) close(fd);
+}
+static void Reply(int fd, int32_t pid, int32_t status, int timeoutMs = 1000) {
+    unsigned char bytes[8]; vp_store32(bytes, static_cast<uint32_t>(pid));
+    vp_store32(bytes + 4, static_cast<uint32_t>(status));
+    if (vp_send_bytes(fd, bytes, sizeof(bytes), nullptr, 0, vp_now_ms() + timeoutMs))
+        OH_LOG_WARN(LOG_APP, "[Broker] response failed errno=%{public}d", errno);
+}
+struct BrokerJob {
+    explicit BrokerJob(int fd) : conn(fd), acceptedMs(vp_now_ms()), peerPid(QueryPeerPid(fd)) {}
+    ~BrokerJob() { vp_close_fds(&fds); close(conn); }
+    int conn;
+    int64_t acceptedMs;
+    int32_t peerPid;
+    vp_received_fds fds{};
+    winehua::spawn::Request request;
+};
+struct BrokerQueues {
+    std::mutex mutex;
+    std::condition_variable readable, launchable;
+    bool running = true;
+    std::deque<std::unique_ptr<BrokerJob>> incoming, ready;
+};
+static constexpr size_t kQueueCapacity = 16;
+static constexpr size_t kReaderCount = 4;
 
-    // 1) 接收请求头 + entryParams
-    char buf[16384];
-    memset(buf, 0, sizeof(buf));
+static bool ReceiveJob(BrokerJob& job) {
+    unsigned char prefix[4];
+    if (vp_recv_bytes(job.conn, prefix, 4, &job.fds, job.acceptedMs + 1000)) return false;
+    if (!memcmp(prefix, "OPEN", 4)) {
+        std::string target;
+        bool accepted = ReceiveOpenTarget(job.conn, job.fds, job.acceptedMs + 1000, target) &&
+            DispatchSystemOpen(target);
+        Reply(job.conn, accepted ? 0 : -1, 0);
+        return false;
+    }
+    vp_spawn_spec spec{};
+    const int result = vp_recv_request_prefix(job.conn, &spec, &job.fds, job.acceptedMs + 3000, prefix);
+    const int error = errno;
+    if (!result) winehua::spawn::Copy(spec, job.request);
+    vp_free_spec(&spec);
+    if (result) {
+        // Readiness probes close without submitting a request.
+        if (error != ECONNRESET) Reply(job.conn, -1, -error);
+        return false;
+    }
+    for (const auto& name : job.request.names) {
+        if (name == "wine_audio_bootstrap") {
+            Reply(job.conn, -1, NCP_ERR_INVALID_PARAM);
+            return false;
+        }
+    }
+    OH_LOG_INFO(LOG_APP, "[Broker] request peerPid=%{public}d argc=%{public}zu envCount=%{public}zu fdCount=%{public}zu",
+                job.peerPid, job.request.argv.size(), job.request.env.size(), job.fds.count);
+    return true;
+}
 
-    struct msghdr msg = {};
-    struct iovec iov;
-    iov.iov_base = buf;
-    iov.iov_len = sizeof(buf) - 1;
-
-    // SCM_RIGHTS 控制消息缓冲区 (最多接收 kMaxFds 个 fd)
-    static const int kMaxFds = 16;  // OHOS NativeChildProcess_FdList 上限
-    union {
-        char buf[CMSG_SPACE(sizeof(int) * 16)];
-        struct cmsghdr align;
-    } ctrl;
-
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = ctrl.buf;
-    msg.msg_controllen = sizeof(ctrl.buf);
-
-    ssize_t n = recvmsg(conn_fd, &msg, 0);
-    if (n <= 0) {
-        // n==0: 对端 connect 后立即 close (StartBrokerServer 的就绪探测),
-        // 属正常探测流量, 非错误; n<0 才是真的 recvmsg 失败
-        if (n == 0)
-            OH_LOG_INFO(LOG_APP, "[Broker] probe connection (readiness check), ignoring");
-        else
-            OH_LOG_ERROR(LOG_APP, "[Broker] recvmsg failed: %{public}s", strerror(errno));
-        close(conn_fd);
+static void LaunchJob(BrokerJob& job) {
+    auto& request = job.request;
+    if (vp_now_ms() - job.acceptedMs > 20000 || gBrokerHomeDir.empty()) {
+        Reply(job.conn, -1, gBrokerHomeDir.empty() ? NCP_ERR_INVALID_PARAM : NCP_ERR_TIMEOUT);
         return;
     }
-    buf[n] = '\0';
-
-    // 1b) OPEN 请求: "OPEN\n{target}\n" -> ArkTS startAbility
-    //     target 是 winebrowser 传出的 URL (http/https/mailto 或 file://)。
-    if (strncmp(buf, "OPEN\n", 5) == 0) {
-        char* target = buf + 5;
-        char* nl = strchr(target, '\n');
-        if (nl) *nl = '\0';
-        int status = gSystemOpenEnabled.load() ? winehua_host_open_target(target) : -1;
-        int32_t response[2] = {status, 0};
-        ssize_t sent = send(conn_fd, response, sizeof(response), MSG_NOSIGNAL);
-        if (sent != sizeof(response)) {
-            OH_LOG_ERROR(LOG_APP, "[Broker] OPEN response failed: %{public}s", strerror(errno));
-        }
-        OH_LOG_INFO(LOG_APP, "[Broker] OPEN target=%{public}s status=%{public}d",
-                    target, status);
-        close(conn_fd);
-        return;
+    request.home = gBrokerHomeDir;
+    AppendWineDpiEnv(request.env);
+    if (!gBrokerPrefixDir.empty()) request.env.emplace_back("WINEPREFIX=" + gBrokerPrefixDir);
+    const bool freshImage = winehua::spawn::RequiresFreshWineProcess(request);
+    const auto freshGraphics = winehua::spawn::ConfigureFreshWineGraphics(request, freshImage, request.bin);
+    if (freshGraphics == winehua::spawn::FreshWineGraphics::MissingRuntime) {
+        OH_LOG_ERROR(LOG_APP, "[PROC-IMAGE] clean process requires packaged Venus runtime");
+        Reply(job.conn, -1, -ENOENT); return;
     }
-
-    // 2) 解析 "SPAWN\n{entryParams}\n[FDS:name0,name1,...\n]"
-    //    entryParams 到第一个 '\n' 为止; 其后是可选段: FDS: (逗号分隔 fd 名)。
-    //    环境变量已序列化为 |__env=K=V| 段嵌入 entryParams, 无需额外解析。
-    if (strncmp(buf, "SPAWN\n", 6) != 0) {
-        OH_LOG_ERROR(LOG_APP, "[Broker] bad protocol: %{public}s", buf);
-        close(conn_fd);
-        return;
+    if (freshGraphics == winehua::spawn::FreshWineGraphics::Venus)
+        OH_LOG_INFO(LOG_APP, "[PROC-IMAGE] clean PE32 process uses Venus with the active desktop preciseMaps=%{public}s mappedFlush=%{public}s ringPerf=%{public}s",
+            winehua::spawn::ImageEnvironment(request, "WINEHUA_VK_PRECISE_MAP").c_str(),
+            winehua::spawn::ImageEnvironment(request, "DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED").c_str(),
+            winehua::spawn::ImageEnvironment(request, "VN_WINEHUA_PERF_SUMMARY").c_str());
+    // Verify the final parameter budget before creating audio resources or a child.
+    std::string entry;
+    if (!winehua::spawn::EncodeEntry(request, entry)) {
+        Reply(job.conn, -1, -E2BIG); return;
     }
-    char* entryParamsRaw = buf + 6;
-    char* fdsLine = nullptr;
-    {
-        char* nl = strchr(entryParamsRaw, '\n');
-        if (nl) {
-            *nl = '\0';  // 截断 entryParams
-            char* rest = nl + 1;
-            if (strncmp(rest, "FDS:", 4) == 0) {
-                fdsLine = rest + 4;
-                char* nl2 = strchr(fdsLine, '\n');
-                if (nl2) {
-                    *nl2 = '\0';
-                }
-            }
-        }
+    int audioFd = winehua::AudioBroker::GetInstance().CreateBootstrapHandle();
+    if (audioFd >= 0) request.names.emplace_back("wine_audio_bootstrap");
+    if (!winehua::spawn::EncodeEntry(request, entry)) {
+        if (audioFd >= 0) close(audioFd);
+        Reply(job.conn, -1, -E2BIG); return;
     }
-
-    OH_LOG_INFO(LOG_APP, "[Broker] request entryParams=%{public}s fds=%{public}s",
-                entryParamsRaw, fdsLine ? fdsLine : "(none)");
-
-    // 3) 提取 fd (SCM_RIGHTS, 可能多个)
-    int recvFds[kMaxFds];
-    int nFds = 0;
-    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
-    if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-        int cnt = (int)((cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int));
-        if (cnt < 0) cnt = 0;
-        if (cnt > kMaxFds) {
-            OH_LOG_WARN(LOG_APP, "[Broker] received %{public}d fds > max %{public}d, truncating", cnt, kMaxFds);
-            cnt = kMaxFds;
-        }
-        memcpy(recvFds, CMSG_DATA(cmsg), cnt * sizeof(int));
-        nFds = cnt;
-        OH_LOG_INFO(LOG_APP, "[Broker] received %{public}d fd(s) via SCM_RIGHTS", nFds);
+    NativeChildProcess_Fd nodes[VP_FDS_CAP]{};
+    struct stat identities[VP_FDS_CAP]{};
+    bool haveIdentity[VP_FDS_CAP]{};
+    for (size_t i = 0; i < request.names.size(); ++i) {
+        nodes[i].fdName = request.names[i].data();
+        nodes[i].fd = i < job.fds.count ? job.fds.items[i] : audioFd;
+        nodes[i].next = i + 1 < request.names.size() ? &nodes[i + 1] : nullptr;
+        haveIdentity[i] = fstat(nodes[i].fd, &identities[i]) == 0;
     }
-
-    // 4) 解析 fd 名字列表 (逗号分隔)
-    char* fdNames[kMaxFds] = {};
-    int nNames = 0;
-    if (fdsLine) {
-        char* saveptr = nullptr;
-        for (char* tok = strtok_r(fdsLine, ",", &saveptr); tok && nNames < kMaxFds;
-             tok = strtok_r(nullptr, ",", &saveptr)) {
-            fdNames[nNames++] = tok;
-        }
-        if (nNames != nFds) {
-            OH_LOG_WARN(LOG_APP, "[Broker] FDS name count %{public}d != fd count %{public}d", nNames, nFds);
-        }
-    }
-
-    // 5) 构造 NativeChildProcess 参数。
-    // Wine 服务进程会把创建者的环境重新序列化给 broker，但 NCP 不会继承
-    // LaunchPad 的环境。把会话 prefix 放在最后 (后写胜出), 覆盖 entryParams
-    // 里可能残留的默认 .wine 值。
-    std::string fullParams = gBrokerHomeDir.empty() ? entryParamsRaw
-                            : (gBrokerHomeDir + "|" + entryParamsRaw);
-    if (!gBrokerPrefixDir.empty())
-        fullParams += "|__env=WINEPREFIX=" + gBrokerPrefixDir;
-    OH_LOG_INFO(LOG_APP, "[Broker] dispatch prefix=%{public}s",
-                gBrokerPrefixDir.empty() ? "(inherited)" : gBrokerPrefixDir.c_str());
-    char* entryParamsCopy = strdup(fullParams.c_str());
-
-    // 建 fd 链表: 名字取自 FDS 行; 无 FDS 行且恰好 1 个 fd 时回退旧命名 wineserver_sock
-    NativeChildProcess_Fd nodes[kMaxFds];
-    memset(nodes, 0, sizeof(nodes));
-    int nNodes = 0;
-    for (int i = 0; i < nFds; i++) {
-        const char* name = nullptr;
-        if (fdsLine && i < nNames) {
-            name = fdNames[i];
-        } else if (!fdsLine && nFds == 1) {
-            name = "wineserver_sock";  // 向后兼容旧协议
-        } else {
-            OH_LOG_WARN(LOG_APP, "[Broker] fd[%{public}d]=%{public}d has no name, skipping", i, recvFds[i]);
-            continue;
-        }
-        if (strlen(name) > 20) {
-            OH_LOG_WARN(LOG_APP, "[Broker] fdName '%{public}s' exceeds 20 chars (OHOS limit)", name);
-        }
-        nodes[nNodes].fdName = const_cast<char*>(name);
-        nodes[nNodes].fd = recvFds[i];
-        nodes[nNodes].next = nullptr;
-        if (nNodes > 0) nodes[nNodes - 1].next = &nodes[nNodes];
-        OH_LOG_INFO(LOG_APP, "[Broker] fd[%{public}d] name=%{public}s fd=%{public}d", nNodes, name, recvFds[i]);
-        nNodes++;
-    }
-
-    int audioBootstrapFd = winehua::AudioBroker::GetInstance().CreateBootstrapHandle();
-    if (audioBootstrapFd >= 0 && nNodes < kMaxFds) {
-        nodes[nNodes].fdName = const_cast<char*>("wine_audio_bootstrap");
-        nodes[nNodes].fd = audioBootstrapFd;
-        if (nNodes > 0) nodes[nNodes - 1].next = &nodes[nNodes];
-        nNodes++;
-    }
-
-    NativeChildProcess_FdList fdList = {};
-    fdList.head = (nNodes > 0) ? &nodes[0] : nullptr;
-    NativeChildProcess_Args args = {};
-    args.entryParams = entryParamsCopy;
-    args.fdList = fdList;
-
-    NativeChildProcess_Options options = {};
-    options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
-
-    // 5) 调用 StartNativeChildProcess (在主进程上下文，可以调用多次)
+    NativeChildProcess_Args args{};
+    args.entryParams = entry.data(); args.fdList.head = request.names.empty() ? nullptr : nodes;
+    NativeChildProcess_Options options{}; options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
+    const bool direct = !freshImage && winehua::spawn::EnvFlag(request, "WINEHUA_DIRECT_NCP",
+        gDirectNcpSessionDefault.load(std::memory_order_acquire));
+    if (freshImage)
+        OH_LOG_INFO(LOG_APP, "[PROC-IMAGE] preferred PE32 range occupied; fresh native process exe=%{public}s",
+                    winehua::spawn::ProcessPath(request).c_str());
+    const bool phoneFork = !direct && PhoneAdapter_IsPhoneMode() &&
+        winehua::spawn::EnvFlag(request, "WINEHUA_PHONE_DIRECT_FORK");
     int32_t childPid = -1;
-    int32_t ret = OH_Ability_StartNativeChildProcess(
-        const_cast<char*>("libwine_child.so:Main"), args, options, &childPid);
-
-    OH_LOG_INFO(LOG_APP, "[Broker] StartNativeChildProcess ret=%{public}d childPid=%{public}d",
-                ret, childPid);
-
-    if (ret == 0 && childPid > 0) {
-        // 全量登记: App 侧主动启动 (SpawnViaBroker) 与 wine 内部自启
-        // (ohos_broker_spawn_child / loader.c 自启 wineserver) 都汇到 broker。
-        // 统一登记使 explorer 里双击的 exe 出现在任务列表; App 侧调用者随后
-        // 会用更准确的路径 AddProcess 覆盖 (AddProcess 同 pid 幂等)。
-        AddProcess(childPid, ParseProcessPath(fullParams.c_str()), -1);
+    const uint64_t spawnTicket = BeginNativeProcessSpawn();
+    const int32_t status = direct ? (PhoneAdapter_IsPhoneMode() ? NCP_ERR_NOT_SUPPORTED :
+        StartWineChildViaIpc(args, &childPid)) : phoneFork ?
+        Phone_StartViaDirectForkServer("libwine_child.so:Main", args, &childPid) :
+        WineHua_StartNativeChildProcess(const_cast<char*>("libwine_child.so:Main"), args, options, &childPid);
+    OH_LOG_INFO(LOG_APP, "[PROC-SPAWN] brokerHostPid=%{public}d creatorHostPid=%{public}d childHostPid=%{public}d createStatus=%{public}d mode=%{public}s",
+                getpid(), job.peerPid, childPid, status, direct ? "create-ipc" : phoneFork ? "phone-fork-server" :
+                PhoneAdapter_IsPhoneMode() ? "phone-fork" : "system-start");
+    if (!status && childPid > 0) {
+        AddProcess(childPid, winehua::spawn::ProcessPath(request), -1,
+            !direct && !phoneFork && PhoneAdapter_IsPhoneMode()
+                ? ProcessRegistration::Relabel : ProcessRegistration::NativeChild, spawnTicket);
+        if (phoneFork) Phone_MarkDirectForkChildRegistered(childPid);
+        WineHuaCefUtilityProbeNoteSpawn(childPid, job.peerPid, entry.c_str());
+        if (direct) MarkWineIpcChildRegistered(childPid);
     }
-
-    free(entryParamsCopy);
-    // 注意: 所有 fd 的所有权已转移给 StartNativeChildProcess，不要在这里 close
-
-    // 6) 发送响应: childPid + status (8 字节，小端序)
-    int32_t response[2];
-    response[0] = childPid;  // pid (低 32 位)
-    response[1] = ret;       // NCP_ReturnCode
-
-    ssize_t sent = send(conn_fd, response, sizeof(response), MSG_NOSIGNAL);
-    if (sent != sizeof(response)) {
-        OH_LOG_ERROR(LOG_APP, "[Broker] send response failed: %{public}s", strerror(errno));
-    }
-
-    close(conn_fd);
+    for (size_t i = 0; i < request.names.size(); ++i)
+        CloseOwnedFdIfRetained(nodes[i].fd, identities[i], haveIdentity[i]);
+    job.fds.count = 0; // NCP may close originals; the identity check above owns cleanup.
+    Reply(job.conn, childPid, status);
 }
 
-// Broker 线程主循环
-static void BrokerThreadFunc()
-{
-    OH_LOG_INFO(LOG_APP, "[Broker] thread starting");
-
-    // 1) 创建 Unix socket
-    int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        OH_LOG_ERROR(LOG_APP, "[Broker] socket() failed: %{public}s", strerror(errno));
-        return;
+static void Reader(const std::shared_ptr<BrokerQueues>& queues) {
+    for (;;) {
+        std::unique_ptr<BrokerJob> job;
+        {
+            std::unique_lock<std::mutex> lock(queues->mutex);
+            queues->readable.wait(lock, [&] { return !queues->running || !queues->incoming.empty(); });
+            if (!queues->running) return;
+            job = std::move(queues->incoming.front()); queues->incoming.pop_front();
+        }
+        if (!ReceiveJob(*job)) continue;
+        bool queued = false;
+        {
+            std::lock_guard<std::mutex> lock(queues->mutex);
+            if (queues->running && queues->ready.size() < kQueueCapacity) {
+                queues->ready.push_back(std::move(job)); queued = true;
+            }
+        }
+        if (queued) queues->launchable.notify_one();
+        else Reply(job->conn, -1, NCP_ERR_BUSY);
     }
-
-    // 2) 绑定到已知路径
-    unlink(kBrokerSocketPath);  // 清理残留
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, kBrokerSocketPath);
-
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        OH_LOG_ERROR(LOG_APP, "[Broker] bind(%{public}s) failed: %{public}s",
-                     kBrokerSocketPath, strerror(errno));
-        close(server_fd);
-        return;
+}
+static void Dispatcher(const std::shared_ptr<BrokerQueues>& queues) {
+    for (;;) {
+        std::unique_ptr<BrokerJob> job;
+        {
+            std::unique_lock<std::mutex> lock(queues->mutex);
+            queues->launchable.wait(lock, [&] { return !queues->running || !queues->ready.empty(); });
+            if (!queues->running) return;
+            job = std::move(queues->ready.front()); queues->ready.pop_front();
+        }
+        // Create callback state is process-global; serialize all NCP API calls.
+        LaunchJob(*job);
     }
-
-    // 3) Listen
-    if (listen(server_fd, 8) < 0) {
-        OH_LOG_ERROR(LOG_APP, "[Broker] listen() failed: %{public}s", strerror(errno));
-        close(server_fd);
-        return;
+}
+static void BrokerThreadFunc() {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_un address{}; address.sun_family = AF_UNIX;
+    if (strlen(kBrokerSocketPath) >= sizeof(address.sun_path)) {
+        OH_LOG_ERROR(LOG_APP, "[Broker] socket path exceeds Unix socket limit");
+        if (fd >= 0) close(fd);
+        gBrokerRunning.store(false); return;
     }
-
-    OH_LOG_INFO(LOG_APP, "[Broker] listening on %{public}s", kBrokerSocketPath);
-
-    // 4) Accept 循环
-    while (gBrokerRunning.load(std::memory_order_relaxed)) {
-        int conn_fd = accept(server_fd, nullptr, nullptr);
-        if (conn_fd < 0) {
+    strcpy(address.sun_path, kBrokerSocketPath);
+    unlink(kBrokerSocketPath);
+    if (fd < 0 || bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) || listen(fd, 32)) {
+        OH_LOG_ERROR(LOG_APP, "[Broker] socket setup failed errno=%{public}d", errno);
+        if (fd >= 0) close(fd);
+        gBrokerRunning.store(false); return;
+    }
+    auto queues = std::make_shared<BrokerQueues>();
+    for (size_t i = 0; i < kReaderCount; ++i) std::thread(Reader, queues).detach();
+    std::thread(Dispatcher, queues).detach();
+    while (gBrokerRunning.load(std::memory_order_acquire)) {
+        int conn = accept4(fd, nullptr, nullptr, SOCK_CLOEXEC);
+        if (conn < 0) {
             if (errno == EINTR) continue;
-            OH_LOG_ERROR(LOG_APP, "[Broker] accept() failed: %{public}s", strerror(errno));
+            OH_LOG_ERROR(LOG_APP, "[Broker] accept failed errno=%{public}d", errno);
             break;
         }
-        // 处理请求（同步：每个请求一个接一个处理）
-        HandleRequest(conn_fd);
+        auto job = std::make_unique<BrokerJob>(conn);
+        bool queued = false;
+        {
+            std::lock_guard<std::mutex> lock(queues->mutex);
+            if (queues->incoming.size() < kQueueCapacity) {
+                queues->incoming.push_back(std::move(job)); queued = true;
+            }
+        }
+        if (queued) queues->readable.notify_one();
+        else Reply(job->conn, -1, NCP_ERR_BUSY, 10);
     }
-
-    close(server_fd);
-    unlink(kBrokerSocketPath);
-    OH_LOG_INFO(LOG_APP, "[Broker] thread exiting");
+    {
+        std::lock_guard<std::mutex> lock(queues->mutex);
+        queues->running = false; queues->incoming.clear(); queues->ready.clear();
+    }
+    queues->readable.notify_all(); queues->launchable.notify_all();
+    close(fd); unlink(kBrokerSocketPath); gBrokerRunning.store(false);
 }
 
 int StartBrokerServer()
 {
-    if (gBrokerRunning.load(std::memory_order_acquire)) {
+    bool expected = false;
+    if (!gBrokerRunning.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         OH_LOG_WARN(LOG_APP, "[Broker] already running");
         return 0;
     }
 
-    gBrokerRunning.store(true, std::memory_order_release);
     std::thread(BrokerThreadFunc).detach();
 
     // 就绪判定必须真实 connect: bind() 一成功 socket 文件就存在, 但 listen()
@@ -363,6 +285,7 @@ int StartBrokerServer()
             return ok;
         }, 2000, 50)) {
         OH_LOG_WARN(LOG_APP, "[Broker] socket creation slow, continuing anyway");
+        if (!gBrokerRunning.load(std::memory_order_acquire)) return -1;
     }
     return 0;
 }

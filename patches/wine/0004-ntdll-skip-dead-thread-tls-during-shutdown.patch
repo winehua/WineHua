@@ -1,0 +1,19 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4620,6 +4620,16 @@
+     struct ntdll_thread_data *thread_data;
+     sigset_t sigset;
+ 
++    if (index >= TLS_MINIMUM_AVAILABLE + 8 * sizeof(peb->TlsExpansionBitmapBits))
++        return STATUS_INVALID_PARAMETER;
++
++    /* NtTerminateProcess(NULL) has stopped the other threads before process
++     * detach callbacks run. Their native thread resources may already be
++     * unmapped, while abort_thread() leaves their entries in teb_list.
++     * A detach-time TlsFree must not walk those dead threads. TlsAlloc clears
++     * the caller's slot if a subsequent detach callback reuses the index. */
++    if (process_exiting) return STATUS_SUCCESS;
++
+     if (index < TLS_MINIMUM_AVAILABLE)
+     {
+         server_enter_uninterrupted_section( &virtual_mutex, &sigset );

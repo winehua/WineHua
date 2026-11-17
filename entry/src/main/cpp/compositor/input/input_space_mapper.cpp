@@ -2,6 +2,7 @@
 
 #include "bridge/plugin_manager.h"
 #include "compositor/wayland_server.h"
+#include "compositor/toplevel/desktop_compositor.h"
 #include "graphics/egl_renderer.h"  // GetWidth/GetHeight/GetInputLetterbox
 
 #undef LOG_DOMAIN
@@ -26,7 +27,8 @@ InputSpaceMapper* InputSpaceMapper::GetInstance() {
 EglRenderer* InputSpaceMapper::ResolveRendererFor(uint32_t tl) {
     auto* r = PluginManager::GetInstance()->GetRendererForToplevel(tl);
     // Desktop 模式 fallback: root 切换后可能用旧 ID 查 renderer
-    if (!r && WaylandServer::GetInstance()->Policy().RootCompositing()) {
+    if (!r && WaylandServer::GetInstance()->Policy().RootCompositing() &&
+        !WaylandServer::GetInstance()->GetDesktopCompositor().IsToplevelIsolated(tl)) {
         uint32_t rootId = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
         if (rootId != tl) r = PluginManager::GetInstance()->GetRendererForToplevel(rootId);
         // 兜底: RootCompositing 下 renderer 永远渲染桌面根，letterbox 映射与

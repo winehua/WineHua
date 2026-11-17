@@ -1,0 +1,28 @@
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -11713,6 +11713,10 @@
+    return false;
+ }
+ 
++#ifndef WINEHUA_VIRGL_POLL_KEEP_CONTEXT
++#define WINEHUA_VIRGL_POLL_KEEP_CONTEXT 0
++#endif
++
+ void vrend_renderer_check_fences(void)
+ {
+    struct list_head retired_fences;
+@@ -11742,7 +11746,13 @@
+       }
+       mtx_unlock(&vrend_state.fence_mutex);
+    } else {
+-      vrend_renderer_force_ctx_0();
++      /* All renderer contexts share ctx0's objects, including GLsyncs.
++       * A non-blocking client wait and sync deletion do not require ctx0.
++       * Keep a valid current context to avoid two eglMakeCurrent calls per
++       * vtest command. Query polling below still selects its owning context.
++       * Fall back when no renderer context is known current. */
++      if (!WINEHUA_VIRGL_POLL_KEEP_CONTEXT || !vrend_state.current_hw_ctx)
++         vrend_renderer_force_ctx_0();
+ 
+       list_for_each_entry_safe(struct vrend_fence, fence, &vrend_state.fence_list, fences) {
+          if (do_wait(fence, /* can_block */ false)) {

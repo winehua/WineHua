@@ -1,0 +1,28 @@
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 3213b7ead3cf36c825c9be38783c70798a74911b..efc585d825ba719d25fdd2916d697a818945e119 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -1023,11 +1023,6 @@ void BTCpuNotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After,
+   }
+ }
+ 
+-void BTCpuNotifyProcessExecuteFlagsChange(ULONG Flags) {
+-  std::scoped_lock Lock(ThreadCreationMutex);
+-  InvalidationTracker->HandleProcessExecuteFlagsChange(Flags);
+-}
+-
+ BOOLEAN WINAPI BTCpuIsProcessorFeaturePresent(UINT Feature) {
+   return CPUFeatures->IsFeaturePresent(Feature) ? TRUE : FALSE;
+ }
+diff --git a/Source/Windows/WOW64/libwow64fex.def b/Source/Windows/WOW64/libwow64fex.def
+index 5c3e488703503ff1d3041b7de6e0085feb52ec8d..5fff39032763d01c937fdd05dfd710ad55cd3fcc 100644
+--- a/Source/Windows/WOW64/libwow64fex.def
++++ b/Source/Windows/WOW64/libwow64fex.def
+@@ -9,7 +9,6 @@ EXPORTS
+   BTCpuNotifyMemoryAlloc
+   BTCpuNotifyMemoryProtect
+   BTCpuNotifyMemoryDirty
+-  BTCpuNotifyProcessExecuteFlagsChange
+   BTCpuNotifyMemoryFree
+   BTCpuNotifyMapViewOfSection
+   BTCpuNotifyUnmapViewOfSection

@@ -8,8 +8,9 @@
  *   - 路由: 全部 kind 统一走 broker SPAWN (第 5 步起; broker 在主进程内
  *     以线程运行, 启动不依赖 wineserver, 无先后环)。broker 服务端补
  *     homeDir 前缀、WINEPREFIX 会话权威、audio bootstrap fd、进程登记。
- *   - token 布局: __winehua_desktop__ / x86_64 的 wine 加载器前缀
- *     (aarch64 由 wine_child Main 自注 box64+wine ELF)
+ *   - token 布局: __winehua_desktop__ / wine 加载器前缀按方案判定
+ *     (方案② aarch64+box64 不带 — wine_child Main 自注 box64+wine ELF;
+ *      方案①③ 原生 __wine_main 带 "wine" argv[0], 见 spawner.cpp)
  *   - wineserver 由 wine_child Main 截获 argv[0]=="wineserver" 转入本体
  *     (纯 Unix ELF 不能走 wine loader 的 PE 解析)
  *
@@ -34,8 +35,8 @@ struct SpawnRequest {
     // DesktopShell: explorer 的参数; WineExe: [exePath, args...];
     // Wineserver/Wineboot: 忽略 (argv 由 kind 固定)
     std::vector<std::string> argv;
-    // K=V 增量行 (BuildSessionEnv 成品或极简集); 经 SpawnViaBroker 序列化
-    // 为 __env= 段 (fd 变量/不可编码条目由 EnvSpec 契约过滤)
+    // K=V 增量行 (BuildSessionEnv 成品或极简集); Broker v2 独立编码，
+    // 保留分隔符/换行，过滤 per-process fd 变量；非法/超限请求报错。
     std::vector<std::string> env;
     // __winehua_desktop__ token (explorer 桌面 / wineboot 首启的桌面 surface 路由)
     bool desktopSurface = false;

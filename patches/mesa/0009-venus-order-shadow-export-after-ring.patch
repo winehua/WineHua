@@ -1,0 +1,19 @@
+--- a/src/virtio/vulkan/vn_device_memory.c
++++ b/src/virtio/vulkan/vn_device_memory.c
+@@ -192,6 +192,16 @@
+    VkResult result = vn_device_memory_wait_alloc(dev, mem);
+    if (result != VK_SUCCESS)
+       return result;
++
++   /* WineHua's shadow export maps the native allocation on the vtest
++    * thread. Allocation completion alone does not order that map after
++    * asynchronous resource binds on the primary ring. Drain CPU commands
++    * before exporting; do not stall the GPU or change native memory types.
++    * vn_ring_roundtrip orders the opposite direction (virtqueue -> ring).
++    */
++   const char *remote_sync = os_get_option("VN_WINEHUA_REMOTE_MEMORY_SYNC");
++   if (remote_sync && remote_sync[0] == '1')
++      vn_ring_wait_all(dev->primary_ring);
+ 
+    const struct vk_device_memory *mem_vk = &mem->base.base;
+    const VkMemoryType *mem_type = &dev->physical_device->memory_properties

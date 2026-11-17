@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@ struct ButtonEvent;
 struct AxisEvent;
 struct DeviceEvent;
 struct DeviceInfos;
+struct DeviceInfo;
 using ButtonCallback = void (*)(const ButtonEvent*);
 using AxisCallback = void (*)(const AxisEvent*);
 using DeviceCallback = void (*)(const DeviceEvent*);
@@ -41,6 +43,8 @@ napi_threadsafe_function gRumbleTsfn = nullptr;
 
 ErrorCode (*gGetButtonAction)(const ButtonEvent*, ButtonAction*) = nullptr;
 ErrorCode (*gGetButtonCode)(const ButtonEvent*, int*) = nullptr;
+ErrorCode (*gGetButtonDeviceId)(const ButtonEvent*, char**) = nullptr;
+ErrorCode (*gGetAxisDeviceId)(const AxisEvent*, char**) = nullptr;
 ErrorCode (*gGetX)(const AxisEvent*, double*) = nullptr;
 ErrorCode (*gGetY)(const AxisEvent*, double*) = nullptr;
 ErrorCode (*gGetZ)(const AxisEvent*, double*) = nullptr;
@@ -53,11 +57,16 @@ ErrorCode (*gGetDeviceChangedType)(const DeviceEvent*, int*) = nullptr;
 ErrorCode (*gGetAllDeviceInfos)(DeviceInfos**) = nullptr;
 ErrorCode (*gGetDeviceCount)(const DeviceInfos*, int32_t*) = nullptr;
 ErrorCode (*gDestroyDeviceInfos)(DeviceInfos**) = nullptr;
+ErrorCode (*gGetDeviceInfo)(const DeviceInfos*, int32_t, DeviceInfo**) = nullptr;
+ErrorCode (*gGetEventDeviceInfo)(const DeviceEvent*, DeviceInfo**) = nullptr;
+ErrorCode (*gGetInfoDeviceId)(const DeviceInfo*, char**) = nullptr;
+ErrorCode (*gGetInfoDeviceType)(const DeviceInfo*, int*) = nullptr;
+ErrorCode (*gDestroyDeviceInfo)(DeviceInfo**) = nullptr;
 
 struct ButtonData { int code; bool pressed; };
 struct AxisData { int type; double x; double y; };
 struct DeviceData { bool connected; };
-struct RumbleData { uint32_t low; uint32_t high; uint32_t durationMs; };
+struct RumbleData { uint32_t low; uint32_t high; uint32_t durationMs; std::string deviceId; };
 
 template<typename T>
 T Resolve(const char* name) {
@@ -100,18 +109,21 @@ void DeviceJs(napi_env env, napi_value callback, void*, void* raw) {
 void RumbleJs(napi_env env, napi_value callback, void*, void* raw) {
     auto* data = static_cast<RumbleData*>(raw);
     if (env && callback && data) {
-        napi_value values[3], result;
+        napi_value values[4], result;
         napi_create_uint32(env, data->low, &values[0]);
         napi_create_uint32(env, data->high, &values[1]);
         napi_create_uint32(env, data->durationMs, &values[2]);
-        napi_call_function(env, nullptr, callback, 3, values, &result);
+        napi_create_string_utf8(env, data->deviceId.c_str(), NAPI_AUTO_LENGTH, &values[3]);
+        napi_call_function(env, nullptr, callback, 4, values, &result);
     }
     delete data;
 }
 
-void ForwardRumble(uint16_t low, uint16_t high, uint32_t durationMs) {
+void ForwardRumble(uint32_t slot, uint16_t low, uint16_t high, uint32_t durationMs) {
     if (!gRumbleTsfn) return;
-    auto* data = new RumbleData{low, high, durationMs};
+    const std::string deviceId = winehua::controller::PhysicalDeviceForSlot(slot);
+    if (deviceId.empty()) return;
+    auto* data = new RumbleData{low, high, durationMs, deviceId};
     if (napi_call_threadsafe_function(gRumbleTsfn, data, napi_tsfn_nonblocking) != napi_ok) delete data;
 }
 
@@ -122,6 +134,27 @@ void RefreshDeviceCount() {
     if (gGetAllDeviceInfos(&infos) == 0 && infos) {
         if (gGetDeviceCount(infos, &count) == 0) {
             gDeviceCount.store(count, std::memory_order_relaxed);
+            if (gGetDeviceInfo && gGetInfoDeviceId && gGetInfoDeviceType && gDestroyDeviceInfo) {
+                std::vector<std::string> ids;
+                bool complete = true;
+                for (int32_t i = 0; i < count; ++i) {
+                    DeviceInfo* info = nullptr;
+                    char* id = nullptr;
+                    int type = 0;
+                    if (gGetDeviceInfo(infos, i, &info) != 0 || !info) {
+                        complete = false;
+                        continue;
+                    }
+                    if (gGetInfoDeviceType(info, &type) != 0) complete = false;
+                    else if (type == 1) {
+                        if (gGetInfoDeviceId(info, &id) == 0 && id && *id) ids.emplace_back(id);
+                        else complete = false;
+                    }
+                    std::free(id);
+                    gDestroyDeviceInfo(&info);
+                }
+                if (complete) winehua::controller::PhysicalSyncDevices(ids);
+            }
         }
         gDestroyDeviceInfos(&infos);
     }
@@ -131,9 +164,19 @@ void DeviceChanged(const DeviceEvent* event) {
     if (!event || !gGetDeviceChangedType) return;
     int type = 0;
     gGetDeviceChangedType(event, &type);
+    if (gGetEventDeviceInfo && gGetInfoDeviceId && gDestroyDeviceInfo) {
+        DeviceInfo* info = nullptr;
+        char* id = nullptr;
+        if (gGetEventDeviceInfo(event, &info) == 0 && info) {
+            if (gGetInfoDeviceId(info, &id) == 0 && id)
+                winehua::controller::PhysicalFeedDevice(id, type == 1);
+            std::free(id);
+            gDestroyDeviceInfo(&info);
+        }
+    }
     RefreshDeviceCount();
-    const bool connected = (type == 1);
-    winehua::controller::PhysicalFeedDevice(connected);
+    // UI connection means any pad is present, not just the last plug event.
+    const bool connected = gDeviceCount.load(std::memory_order_relaxed) > 0;
     if (!gDeviceTsfn) return;
     auto* data = new DeviceData{connected};
     if (napi_call_threadsafe_function(gDeviceTsfn, data, napi_tsfn_nonblocking) != napi_ok) delete data;
@@ -146,7 +189,10 @@ void EmitButton(const ButtonEvent* event) {
     gGetButtonAction(event, &action);
     gGetButtonCode(event, &code);
     const bool pressed = (action == 0);
-    winehua::controller::PhysicalFeedButton(code, pressed);
+    char* deviceId = nullptr;
+    if (gGetButtonDeviceId && gGetButtonDeviceId(event, &deviceId) == 0 && deviceId)
+        winehua::controller::PhysicalFeedButton(deviceId, code, pressed);
+    std::free(deviceId);
     if (!gButtonTsfn) return;
     auto* data = new ButtonData{code, pressed};
     if (napi_call_threadsafe_function(gButtonTsfn, data, napi_tsfn_nonblocking) != napi_ok) delete data;
@@ -169,8 +215,11 @@ void ButtonDown(const ButtonEvent* event) { EmitButton(event); }
 void ButtonLeft(const ButtonEvent* event) { EmitButton(event); }
 void ButtonRight(const ButtonEvent* event) { EmitButton(event); }
 
-void EmitAxis(int type, double x, double y) {
-    winehua::controller::PhysicalFeedAxis(type, x, y);
+void EmitAxis(const AxisEvent* event, int type, double x, double y) {
+    char* deviceId = nullptr;
+    if (event && gGetAxisDeviceId && gGetAxisDeviceId(event, &deviceId) == 0 && deviceId)
+        winehua::controller::PhysicalFeedAxis(deviceId, type, x, y);
+    std::free(deviceId);
     if (!gAxisTsfn) return;
     auto* data = new AxisData{type, x, y};
     if (napi_call_threadsafe_function(gAxisTsfn, data, napi_tsfn_nonblocking) != napi_ok) delete data;
@@ -180,33 +229,33 @@ void LeftStick(const AxisEvent* event) {
     double x = 0, y = 0;
     if (gGetX) gGetX(event, &x);
     if (gGetY) gGetY(event, &y);
-    EmitAxis(0, x, y);
+    EmitAxis(event, 0, x, y);
 }
 
 void RightStick(const AxisEvent* event) {
     double x = 0, y = 0;
     if (gGetZ) gGetZ(event, &x);
     if (gGetRz) gGetRz(event, &y);
-    EmitAxis(1, x, y);
+    EmitAxis(event, 1, x, y);
 }
 
 void DpadAxis(const AxisEvent* event) {
     double x = 0, y = 0;
     if (gGetHatX) gGetHatX(event, &x);
     if (gGetHatY) gGetHatY(event, &y);
-    EmitAxis(2, x, y);
+    EmitAxis(event, 2, x, y);
 }
 
 void LeftTrigger(const AxisEvent* event) {
     double value = 0;
     if (gGetBrake) gGetBrake(event, &value);
-    EmitAxis(3, value, 0);
+    EmitAxis(event, 3, value, 0);
 }
 
 void RightTrigger(const AxisEvent* event) {
     double value = 0;
     if (gGetGas) gGetGas(event, &value);
-    EmitAxis(4, value, 0);
+    EmitAxis(event, 4, value, 0);
 }
 
 bool RegisterButtonMonitor(const char* registerName, const char* unregisterName, ButtonCallback callback) {
@@ -235,6 +284,8 @@ int InitializeNative() {
     }
     gGetButtonAction = Resolve<decltype(gGetButtonAction)>("OH_GamePad_ButtonEvent_GetButtonAction");
     gGetButtonCode = Resolve<decltype(gGetButtonCode)>("OH_GamePad_ButtonEvent_GetButtonCode");
+    gGetButtonDeviceId = Resolve<decltype(gGetButtonDeviceId)>("OH_GamePad_ButtonEvent_GetDeviceId");
+    gGetAxisDeviceId = Resolve<decltype(gGetAxisDeviceId)>("OH_GamePad_AxisEvent_GetDeviceId");
     gGetX = Resolve<decltype(gGetX)>("OH_GamePad_AxisEvent_GetXAxisValue");
     gGetY = Resolve<decltype(gGetY)>("OH_GamePad_AxisEvent_GetYAxisValue");
     gGetZ = Resolve<decltype(gGetZ)>("OH_GamePad_AxisEvent_GetZAxisValue");
@@ -247,6 +298,11 @@ int InitializeNative() {
     gGetAllDeviceInfos = Resolve<decltype(gGetAllDeviceInfos)>("OH_GameDevice_GetAllDeviceInfos");
     gGetDeviceCount = Resolve<decltype(gGetDeviceCount)>("OH_GameDevice_AllDeviceInfos_GetCount");
     gDestroyDeviceInfos = Resolve<decltype(gDestroyDeviceInfos)>("OH_GameDevice_DestroyAllDeviceInfos");
+    gGetDeviceInfo = Resolve<decltype(gGetDeviceInfo)>("OH_GameDevice_AllDeviceInfos_GetDeviceInfo");
+    gGetEventDeviceInfo = Resolve<decltype(gGetEventDeviceInfo)>("OH_GameDevice_DeviceEvent_GetDeviceInfo");
+    gGetInfoDeviceId = Resolve<decltype(gGetInfoDeviceId)>("OH_GameDevice_DeviceInfo_GetDeviceId");
+    gGetInfoDeviceType = Resolve<decltype(gGetInfoDeviceType)>("OH_GameDevice_DeviceInfo_GetDeviceType");
+    gDestroyDeviceInfo = Resolve<decltype(gDestroyDeviceInfo)>("OH_GameDevice_DestroyDeviceInfo");
     if (!gGetButtonAction || !gGetButtonCode) {
         dlclose(gLibrary);
         gLibrary = nullptr;
@@ -293,6 +349,7 @@ void CleanupNative() {
     gLibrary = nullptr;
     gInitialized = false;
     gDeviceCount.store(0, std::memory_order_relaxed);
+    winehua::controller::PhysicalResetDevices();
 }
 
 void ReleaseTsfn(napi_threadsafe_function& value) {

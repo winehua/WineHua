@@ -1,0 +1,27 @@
+From 04b9e34585124bc9fd3b9d2327c160bf6438687d Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0065-wow64-self-context-no-suspend
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 74e47ec9210a01b3a4767e8f7411b719bce95bdacbaa19e1e07907273316623e
+
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index 3eeccfbe021be4c5bf6a9ffee0e364dbfa1f41f5..e7ed91925e5a02c1d155529f944e1307ba9c5d21 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -567,6 +567,13 @@ NTSTATUS WINAPI wow64_NtGetContextThread( UINT *args )
+     HANDLE handle = get_handle( &args );
+     WOW64_CONTEXT *context = get_ptr( &args );
+ 
++    /* The caller cannot resume itself after being suspended.  Use the CPU
++     * backend to flush the current guest state without stopping this thread.
++     * Compare objects so duplicated/opened handles to this thread work too. */
++    if ((wow64info->CpuFlags & WOW64_CPUFLAGS_SOFTWARE) &&
++        !NtCompareObjects( handle, GetCurrentThread() ))
++        return pBTCpuGetContext( handle, GetCurrentProcess(), NULL, context );
++
+     return RtlWow64GetThreadContext( handle, context );
+ }
+ 

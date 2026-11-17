@@ -1,0 +1,38 @@
+From 5b44db5d3db3a66e2f2c9b9a9661ff18a2bf8efe Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0067-wineboot-single-managed-initialization
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 8efa0d33adcaee6c65403d9914909b3be708c8720c509dd3d8bb07f1edb9dc91
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 6d53b18c1c3f4e15684282e048f2b45e9fca831b..8b54440da628d81a4bb714a2f3f44e3e90fc26e1 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -1872,6 +1872,7 @@ int __cdecl main( int argc, char *argv[] )
+     HANDLE process = 0;
+     BOOL is_wow64;
+     BOOL prefix_flushed = TRUE;
++    BOOL managed_init = FALSE;
+ 
+     end_session = force = init = kill = restart = shutdown = update = FALSE;
+     GetWindowsDirectoryW( windowsdir, MAX_PATH );
+@@ -1912,6 +1913,7 @@ int __cdecl main( int argc, char *argv[] )
+             else if (!strcmp( argv[i], "--end-session" )) end_session = TRUE;
+             else if (!strcmp( argv[i], "--force" )) force = TRUE;
+             else if (!strcmp( argv[i], "--init" )) init = TRUE;
++            else if (!strcmp( argv[i], "--winehua-managed-init" )) managed_init = init = TRUE;
+             else if (!strcmp( argv[i], "--kill" )) kill = TRUE;
+             else if (!strcmp( argv[i], "--restart" )) restart = TRUE;
+             else if (!strcmp( argv[i], "--shutdown" )) shutdown = TRUE;
+@@ -2013,7 +2015,7 @@ int __cdecl main( int argc, char *argv[] )
+     /* The native coordinator requests this handshake in the prefix itself.
+      * Publish it only after registration and durable registry flushes, using
+      * WINECONFIGDIR just as .update-timestamp does. */
+-    if (init && update && prefix_flushed)
++    if (((init && update) || managed_init) && prefix_flushed)
+     {
+         const WCHAR *config_dir = _wgetenv( L"WINECONFIGDIR" );
+         static const WCHAR suffix[] = L"\\.winehua-wineboot-init-status";

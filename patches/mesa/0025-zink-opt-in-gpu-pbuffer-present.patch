@@ -1,0 +1,217 @@
+--- a/src/gallium/include/pipe/p_screen.h
++++ b/src/gallium/include/pipe/p_screen.h
+@@ -87,7 +87,12 @@
+  * hardware-specific that doesn't actually require a rendering
+  * context.
+  */
++struct pipe_context;
++
+ struct pipe_screen {
++   /* WineHua private pbuffer bridge; NULL preserves ordinary DRI semantics. */
++   bool (*winehua_present_frontbuffer)(struct pipe_screen *, struct pipe_context *,
++                                      struct pipe_resource *, unsigned, unsigned);
+    int refcnt;
+    void *winsys_priv;
+ 
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1400,6 +1400,9 @@
+    const char *device_name;
+ 
+    struct util_dl_library *loader_lib;
++   const void *winehua_present_surface_page;
++   PFN_vkVoidFunction winehua_present_image;
++   struct util_dl_library *winehua_present_lib;
+    PFN_vkGetInstanceProcAddr vk_GetInstanceProcAddr;
+    PFN_vkGetDeviceProcAddr vk_GetDeviceProcAddr;
+ 
+@@ -1892,6 +1895,7 @@
+    uint16_t fbfetch_outputs;
+    uint16_t feedback_loops;
+    struct zink_resource *needs_present;
++   unsigned winehua_present_serial;
+ 
+    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
+    bool vertex_buffers_dirty;
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -24,6 +24,7 @@
+ #include "zink_screen.h"
+ 
+ #include "zink_kopper.h"
++#include "zink_batch.h"
+ #include "zink_compiler.h"
+ #include "zink_context.h"
+ #include "zink_descriptors.h"
+@@ -61,6 +62,13 @@
+ #ifdef MAJOR_IN_SYSMACROS
+ #include <sys/sysmacros.h>
+ #endif
++#endif
++
++#if !DETECT_OS_WINDOWS
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ #endif
+ 
+ static int num_screens = 0;
+@@ -1600,6 +1608,12 @@
+ 
+    util_idalloc_mt_fini(&screen->buffer_ids);
+ 
++#if !DETECT_OS_WINDOWS
++   if (screen->winehua_present_surface_page)
++      munmap((void *)screen->winehua_present_surface_page, 16);
++#endif
++   if (screen->winehua_present_lib)
++      util_dl_close(screen->winehua_present_lib);
+    if (screen->loader_lib)
+       util_dl_close(screen->loader_lib);
+ 
+@@ -1805,6 +1819,96 @@
+       screen->queue_sparse = screen->queue;
+ }
+ 
++/* The page is scoped by Wine around the exact window's pbuffer present.
++ * A missing page, unsupported resource or failed Host ack keeps CPU fallback. */
++static bool
++zink_winehua_present_frontbuffer(struct pipe_screen *pscreen,
++                                 struct pipe_context *pctx,
++                                 struct pipe_resource *pres,
++                                 unsigned level, unsigned layer)
++{
++#if !DETECT_OS_WINDOWS
++   struct zink_screen *screen = zink_screen(pscreen);
++   if (!pctx || !pres)
++      return false;
++   struct zink_context *ctx = zink_tc_context_unwrap(pctx);
++   if (!ctx || level || layer || pres->target != PIPE_TEXTURE_2D ||
++       pres->nr_samples > 1 || !pres->width0 || !pres->height0 ||
++       util_format_is_depth_or_stencil(pres->format) ||
++       !debug_get_bool_option("WINEHUA_ZINK_PRESENT", false))
++      return false;
++   struct surface_page { uint32_t magic, version, surface_id, reserved; };
++   simple_mtx_lock(&screen->queue_lock);
++   if (!screen->winehua_present_surface_page) {
++      const char *tmp = getenv("TMPDIR");
++      char path[512];
++      if (tmp && snprintf(path, sizeof(path), "%s/winehua_present_surface_%u.shm",
++                          tmp, (uint32_t)getpid()) < sizeof(path)) {
++         int fd = open(path, O_RDONLY | O_CLOEXEC);
++         if (fd >= 0) {
++            struct stat st;
++            struct surface_page *page = MAP_FAILED;
++            if (!fstat(fd, &st) && st.st_size >= sizeof(*page))
++               page = mmap(NULL, sizeof(*page), PROT_READ, MAP_SHARED, fd, 0);
++            close(fd);
++            if (page != MAP_FAILED) {
++               if (__atomic_load_n(&page->magic, __ATOMIC_ACQUIRE) == 0x57535053u && page->version == 1)
++                  screen->winehua_present_surface_page = page;
++               else
++                  munmap(page, sizeof(*page));
++            }
++         }
++      }
++   }
++   const struct surface_page *page = screen->winehua_present_surface_page;
++   const uint32_t surface = page ? __atomic_load_n(&page->surface_id, __ATOMIC_ACQUIRE) : 0;
++   if (!screen->winehua_present_image) {
++      screen->winehua_present_image = screen->vk_GetDeviceProcAddr(screen->dev, "vn_winehua_present");
++      /* Vulkan loaders may filter private names. Only Venus dispatchable
++       * handles can be passed to this ICD-specific entry, as Wine does. */
++      if (!screen->winehua_present_image &&
++          screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS) {
++         if (!screen->winehua_present_lib)
++            screen->winehua_present_lib = util_dl_open("libvulkan_virtio.so");
++         if (screen->winehua_present_lib)
++            screen->winehua_present_image = (PFN_vkVoidFunction)
++               util_dl_get_proc_address(screen->winehua_present_lib, "vn_winehua_present");
++      }
++   }
++   simple_mtx_unlock(&screen->queue_lock);
++   if (!surface || !screen->winehua_present_image)
++      return false;
++
++   /* Zink's DRI pbuffer image already uses the Host's top-down orientation.
++    * glReadPixels applies GL's coordinate convention, but exporting the raw
++    * Vulkan image must not repeat the CPU fallback's vertical flip. */
++   struct zink_resource *res = zink_resource(pres);
++   screen->image_barrier(ctx, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                         VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
++   ctx->base.flush(&ctx->base, NULL, 0); /* submit worker done, not GPU idle */
++   if (screen->device_lost)
++      return false;
++   typedef int (*present_fn)(VkQueue, VkImage, uint32_t, uint32_t, VkFormat,
++                            VkImageLayout, uint32_t, uint32_t, uint32_t, uint64_t *);
++   uint64_t deadline = 0;
++   const unsigned serial = ++ctx->winehua_present_serial;
++   simple_mtx_lock(&screen->queue_lock);
++   int result = ((present_fn)screen->winehua_present_image)(screen->queue, res->obj->image,
++      pres->width0, pres->height0, zink_get_format(screen, pres->format), res->layout,
++      (uint32_t)getpid(), surface, serial, &deadline);
++   simple_mtx_unlock(&screen->queue_lock);
++
++   /* The Host's copy was enqueued after the rendering batch's fence. Retain
++    * the object in a new ordered batch so resize/reset cannot free it early. */
++   zink_batch_reference_resource_rw(ctx, res, false);
++   ctx->bs->has_work = true;
++   ctx->base.flush(&ctx->base, NULL, 0);
++   return result >= 0;
++#else
++   return false;
++#endif
++}
++
+ static void
+ zink_flush_frontbuffer(struct pipe_screen *pscreen,
+                        struct pipe_context *pctx,
+@@ -1819,8 +1923,11 @@
+    struct zink_context *ctx = zink_context(pctx);
+ 
+    /* if the surface is no longer a swapchain, this is a no-op */
+-   if (!zink_is_swapchain(res))
++   if (!zink_is_swapchain(res)) {
++      if (pscreen->winehua_present_frontbuffer)
++         pscreen->winehua_present_frontbuffer(pscreen, pctx, pres, level, layer);
+       return;
++   }
+ 
+    ctx = zink_tc_context_unwrap(pctx);
+ 
+@@ -3559,6 +3666,8 @@
+ #endif
+    screen->base.context_create = zink_context_create;
+    screen->base.flush_frontbuffer = zink_flush_frontbuffer;
++   if (debug_get_bool_option("WINEHUA_ZINK_PRESENT", false))
++      screen->base.winehua_present_frontbuffer = zink_winehua_present_frontbuffer;
+    screen->base.destroy = zink_destroy_screen;
+    screen->base.finalize_nir = zink_shader_finalize;
+    screen->base.get_disk_shader_cache = zink_get_disk_shader_cache;
+--- a/src/gallium/frontends/dri/dri_drawable.c
++++ b/src/gallium/frontends/dri/dri_drawable.c
+@@ -583,9 +583,10 @@
+ 
+    struct pipe_screen *screen = drawable->screen->base.screen;
+    const char *name = screen->get_name(screen);
+-   if (!name || !strstr(name, "virgl") ||
+-       (drawable->screen->type != DRI_SCREEN_SWRAST &&
+-        drawable->screen->type != DRI_SCREEN_KMS_SWRAST))
++   if (!screen->winehua_present_frontbuffer &&
++       ((!name || !strstr(name, "virgl")) ||
++        (drawable->screen->type != DRI_SCREEN_SWRAST &&
++         drawable->screen->type != DRI_SCREEN_KMS_SWRAST)))
+       return true; /* Keep ordinary pbuffer semantics on other drivers. */
+ 
+    /* Drain CPU work and vertex/bitmap caches without the automatic front
+@@ -596,6 +597,9 @@
+        !drawable->flush_frontbuffer)
+       return false;
+ 
++   if (screen->winehua_present_frontbuffer)
++      return screen->winehua_present_frontbuffer(screen, ctx->st->pipe,
++         drawable->textures[ST_ATTACHMENT_FRONT_LEFT], 0, 0);
+    return drawable->flush_frontbuffer(ctx, drawable,
+                                      ST_ATTACHMENT_FRONT_LEFT);
+ }

@@ -1,0 +1,12 @@
+diff --git a/dlls/mfplat/main.c b/dlls/mfplat/main.c
+--- a/dlls/mfplat/main.c
++++ b/dlls/mfplat/main.c
+@@ -6331,6 +6331,8 @@ static HRESULT resolver_get_bytestream_handler(IMFByteStream *stream, const WCHA
+     /* Extension */
+     url_ext = url ? wcsrchr(url, '.') : NULL;
+ 
++    TRACE("[WineHua-MF] ext=%s mime=%s\n", debugstr_w(url_ext), debugstr_w(mimeW));
++
+     /* If content type was provided by the caller, it's tried first. Otherwise an attempt to deduce
+        content type from the content itself is made.
+ 

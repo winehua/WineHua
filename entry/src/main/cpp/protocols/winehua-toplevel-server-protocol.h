@@ -66,6 +66,23 @@ struct winehua_toplevel_interface {
 			  struct wl_resource *surface,
 			  struct wl_resource *owner_surface,
 			  uint32_t modal);
+	/**
+	 * Bind one native Vulkan producer to its exact drawable
+	 *
+	 * The drawable must be a real subsurface of owner_surface in the
+	 * same Wayland client. Width and height describe its native queue,
+	 * not the parent window. Visibility does not show or activate a
+	 * Win32 window. A NULL owner suppresses composition while
+	 * retaining a live WSI queue.
+	 * @since 2
+	 */
+	void (*set_direct_drawable)(struct wl_client *client,
+				    struct wl_resource *resource,
+				    struct wl_resource *surface,
+				    struct wl_resource *owner_surface,
+				    int32_t width,
+				    int32_t height,
+				    uint32_t visible);
 };
 
 
@@ -73,6 +90,10 @@ struct winehua_toplevel_interface {
  * @ingroup iface_winehua_toplevel
  */
 #define WINEHUA_TOPLEVEL_SET_MODAL_SINCE_VERSION 1
+/**
+ * @ingroup iface_winehua_toplevel
+ */
+#define WINEHUA_TOPLEVEL_SET_DIRECT_DRAWABLE_SINCE_VERSION 2
 
 #ifdef  __cplusplus
 }

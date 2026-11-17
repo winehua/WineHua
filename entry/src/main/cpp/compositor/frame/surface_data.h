@@ -1,4 +1,5 @@
 #pragma once
+#include "compositor/resource_watch.h"
 #include <wayland-server-core.h>
 #include <atomic>
 #include <cstdint>
@@ -7,6 +8,7 @@
 
 #include "shm_frame_source.h"     // ShmCommitInfo (SHM 帧上下文随 ShmFrameSource 纯函数迁出)
 #include "committed_surface.h"    // CommittedSurface 快照 (重构第 5A2 步: commit 产物命名快照)
+#include "direct_viewport.h"
 
 // wl_surface 的每个实例携带的数据。
 // 提取为独立头文件: compositor 子模块和 WaylandServer 各自 include, 无需互相依赖。
@@ -20,12 +22,19 @@ struct SurfaceData {
     uint32_t clientPid = 0;
     uint32_t protocolId = 0;
     wl_resource* pendingBuffer = nullptr;
+    // attach(NULL) unmaps; a commit without attach preserves current content.
+    bool pendingBufferAttached = false;
     std::vector<wl_resource*> frameCallbacks;
 
     // per-surface pixel buffer
     std::vector<uint8_t> pixels;
     int w = 0, h = 0;
     std::atomic<uint64_t> shmCommitSerial{0};
+
+    // Explicit Direct drawable binding, validated against its actual protocol
+    // parent at every snapshot. No cross-process numeric-ID routing.
+    uint64_t directOwnerKey = 0, directGeneration = 0;
+    bool directVisible = false;
 
     // toplevel identity
     uint32_t toplevelId = 0;
@@ -54,6 +63,7 @@ struct SurfaceData {
 
     // subsurface 父子追踪 (用于 popup 菜单合成到父 toplevel)
     wl_resource* parentSurface = nullptr;     // 父 wl_surface (仅 subsurface)
+    ResourceWatch parentSurfaceWatch{parentSurface};
     int32_t subsurfaceX = 0, subsurfaceY = 0; // wl_subsurface.set_position
     bool isSubsurface = false;
 
@@ -65,6 +75,10 @@ struct SurfaceData {
     // wp_viewport source rectangle (buffer 内的真实内容区域, -1=未设置/全 buffer)
     // Wine popup 的 shm buffer 常按 2 的幂次对齐填充, 真实尺寸经 set_source 给出
     int32_t vpSrcX = 0, vpSrcY = 0, vpSrcW = -1, vpSrcH = -1;
+
+    // Preserve fixed-point source precision for GPU images. Protocol setters
+    // write pending on the Wayland thread; commit publishes under tmgr's lock.
+    DirectViewportState directViewportPending, directViewport;
 
     // window states
     // 状态边界: 窗口状态三元组 (minimized/fullscreen/maximized) 的"生效状态"

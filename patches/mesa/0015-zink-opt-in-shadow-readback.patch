@@ -1,0 +1,39 @@
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2433,7 +2433,14 @@
+       ptr = ((uint8_t *)ptr) + map_offset;
+    }
+ 
+-   if (!res->obj->coherent
++   /* WineHua Venus uses separate Host and Guest mappings. An explicit
++    * invalidate after the resource wait is needed for CPU reads even when
++    * the physical heap is coherent. Keep this transport workaround opt-in,
++    * and never invalidate a write-only mapping with pending CPU writes. */
++   const char *shadow_readback = os_get_option("WINEHUA_ZINK_SHADOW_READBACK");
++   if (!res->obj->coherent ||
++       ((usage & PIPE_MAP_READ) && shadow_readback &&
++        shadow_readback[0] == '1' && !shadow_readback[1])
+ #if defined(MVK_VERSION)
+       // Work around for MoltenVk limitation specifically on coherent memory
+       // MoltenVk returns blank memory ranges when there should be data present
+@@ -2545,6 +2552,19 @@
+       }
+ 
+       ptr = map_resource(screen, staging_res);
++      const char *shadow_readback = os_get_option("WINEHUA_ZINK_SHADOW_READBACK");
++      if (ptr && (usage & PIPE_MAP_READ) && shadow_readback &&
++          shadow_readback[0] == '1' && !shadow_readback[1]) {
++         /* Image readback maps its staging BO directly, bypassing buffer_map.
++          * The fence above has completed; publish exactly this staging slice. */
++         VkMappedMemoryRange range = zink_resource_init_mem_range(screen,
++            staging_res->obj, staging_res->obj->offset, templ.width0);
++         if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++            mesa_loge("ZINK: shadow image readback invalidate failed");
++            zink_bo_unmap(screen, staging_res->obj->bo);
++            goto fail;
++         }
++      }
+    } else {
+       assert(res->linear);
+       ptr = map_resource(screen, res);

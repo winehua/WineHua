@@ -68,6 +68,7 @@ enum class ToplevelEventType : uint32_t {
     // WineHua modal 关系 (winehua_toplevel.set_modal 上报)
     Modal,         // "modal"          1=置为模态 (modal/owner 报关系), 0=解除
     // 会话
+    Geometry,      // "geometry"       X11 CSD interactive resize (host coordinates)
     DesktopRoot,   // "desktop_root"   桌面 root 出现 (识别/PromotePending 两路径)
 };
 
@@ -94,6 +95,7 @@ inline const char* ToplevelEventName(ToplevelEventType evt) {
         case ToplevelEventType::MoveStart:     return "move_start";
         case ToplevelEventType::MoveEnd:       return "move_end";
         case ToplevelEventType::Modal:         return "modal";
+        case ToplevelEventType::Geometry:      return "geometry";
         case ToplevelEventType::DesktopRoot:   return "desktop_root";
     }
     return "unknown";  // 防御: 枚举越界永不发生 (仅编译器告警消噪)
@@ -129,20 +131,22 @@ public:
     //   JsonCreated:      PC 模式首帧 (wl_core.cpp surface_commit, 值 = 内容尺寸)
     //   JsonCreatedDefault: 桌面模式 xdg_get_toplevel (xdg_shell.cpp, 硬编码 640x480,
     //                    ArkTS 据此预留首窗尺寸 — 首帧后走 resize 修正)
-    static std::string JsonCreated(int32_t w, int32_t h) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d}", w, h);
+    static std::string JsonCreated(int32_t w, int32_t h, uint32_t clientPid = 0) {
+        char buf[128];
+        if (clientPid) snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d,\"clientPid\":%u}", w, h, clientPid);
+        else snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d}", w, h);
         return buf;
     }
     // D52: 带 guest 坐标的 created (x11 多窗) —— OHOS 承载窗按 guest 位置
     // 摆放 (双窗并排用例的承载窗重叠根因)。x/y 缺省 0 = 不定位 (wayland
     // created 走 JsonCreated 无此键, ArkTS 侧 0,0 不定位, incumbent 不变)。
-    static std::string JsonCreatedAt(int32_t w, int32_t h, int32_t x, int32_t y) {
-        char buf[96];
-        snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d,\"x\":%d,\"y\":%d}", w, h, x, y);
+    static std::string JsonCreatedAt(int32_t w, int32_t h, int32_t x, int32_t y, uint32_t pid = 0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "{\"w\":%d,\"h\":%d,\"x\":%d,\"y\":%d,\"clientPid\":%u}", w, h, x, y, pid);
         return buf;
     }
-    static std::string JsonCreatedDefault() { return "{\"w\":640,\"h\":480}"; }
+    static std::string JsonCreatedDefault(uint32_t clientPid = 0) { return JsonCreated(640, 480, clientPid); }
+
 
     static std::string JsonPopupHide(uint32_t popupId) {
         char buf[64];
@@ -160,6 +164,12 @@ public:
     static std::string JsonArgb(int32_t argb01) {
         char buf[32];
         snprintf(buf, sizeof(buf), "{\"argb\":%d}", argb01);
+        return buf;
+    }
+
+    static std::string JsonGeometry(int32_t x, int32_t y, int32_t w, int32_t h) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}", x, y, w, h);
         return buf;
     }
 

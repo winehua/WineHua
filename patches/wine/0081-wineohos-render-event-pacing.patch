@@ -1,0 +1,34 @@
+--- a/dlls/wineohos.drv/ohos.c
++++ b/dlls/wineohos.drv/ohos.c
+@@ -544,6 +544,12 @@
+ static void signal_period_event_locked(struct ohos_stream *stream)
+ {
+     if (!stream->event || !stream->started) return;
++    /* Render events report writable periods, not completion of a client write.
++     * Space is read from the shared ring without another broker RPC. */
++    if (!is_capture_stream(stream) &&
++        ohos_audio_client_get_free_frames(&stream->broker_stream) <
++            client_frames_to_mix_frames_ceil(stream, stream->client_period_frames))
++        return;
+ 
+     NtSetEvent(stream->event, NULL);
+ }
+@@ -1211,7 +1217,7 @@
+         ohos_lock(stream);
+ 
+         if (stream->please_quit) break;
+-        if (stream->event && stream->started) NtSetEvent(stream->event, NULL);
++        signal_period_event_locked(stream);
+     }
+     ohos_unlock(stream);
+     return STATUS_SUCCESS;
+@@ -1285,7 +1291,8 @@
+ 
+     stream->client_frames_submitted += params->written_frames;
+     stream->locked_frames = 0;
+-    signal_period_event_locked(stream);
++    /* The device timer signals the next writable period. Signaling here causes
++     * event-driven spatial clients to fill the ring without waiting for playback. */
+     return ohos_unlock_result(stream, &params->result, S_OK);
+ }
+ 

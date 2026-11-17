@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="winehua_toplevel">
-  <interface name="winehua_toplevel" version="1">
+  <interface name="winehua_toplevel" version="2">
     <description summary="WineHua toplevel mobile attributes">
       Vendor protocol between Wine's wayland driver and the WineHua compositor.
 
@@ -18,6 +18,19 @@
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="owner_surface" type="object" interface="wl_surface" allow-null="true"/>
       <arg name="modal" type="uint"/>
+    </request>
+    <request name="set_direct_drawable" since="2">
+      <description summary="Bind one native Vulkan producer to its exact drawable">
+        The drawable must be a real subsurface of owner_surface in the same
+        Wayland client. Width and height describe its native queue, not the
+        parent window. Visibility does not show or activate a Win32 window.
+        A NULL owner suppresses composition while retaining a live WSI queue.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="owner_surface" type="object" interface="wl_surface" allow-null="true"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="visible" type="uint"/>
     </request>
   </interface>
 </protocol>

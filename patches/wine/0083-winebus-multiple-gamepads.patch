@@ -1,0 +1,281 @@
+--- a/dlls/winebus.sys/bus_ohos.c
++++ b/dlls/winebus.sys/bus_ohos.c
+@@ -46,6 +46,8 @@
+     struct unix_device unix_device;
+     BOOL started;
+     UINT slot;
++    BOOL removing;
++    struct whgp_state_v2 state;
+ };
+ 
+ static struct list event_queue = LIST_INIT(event_queue);
+@@ -195,6 +197,7 @@
+     struct ohos_device *impl = impl_from_unix_device(iface);
+     pthread_mutex_lock(&ohos_cs);
+     impl->started = TRUE;
++    if (!impl->removing) apply_state(iface, &impl->state);
+     pthread_mutex_unlock(&ohos_cs);
+     return STATUS_SUCCESS;
+ }
+@@ -213,7 +216,7 @@
+     return a > b ? a : b;
+ }
+ 
+-static BOOL send_whgp_rumble(USHORT low, USHORT high, UINT duration_ms)
++static BOOL send_whgp_rumble(UINT slot, USHORT low, USHORT high, UINT duration_ms)
+ {
+     struct whgp_header hdr;
+     struct whgp_rumble_v1 body;
+@@ -225,7 +228,7 @@
+     hdr.magic = WHGP_MAGIC;
+     hdr.version = WHGP_VERSION;
+     hdr.msg_type = WHGP_MSG_RUMBLE;
+-    hdr.slot = 0;
++    hdr.slot = slot;
+     hdr.payload_size = sizeof(body);
+     body.low = low;
+     body.high = high;
+@@ -266,14 +269,14 @@
+           iface, duration_ms, rumble_intensity, buzz_intensity, left_intensity, right_intensity);
+ 
+     if (!duration_ms) duration_ms = 250;
+-    send_whgp_rumble(low, high, duration_ms);
++    send_whgp_rumble(impl_from_unix_device(iface)->slot, low, high, duration_ms);
+     return STATUS_SUCCESS;
+ }
+ 
+ static NTSTATUS ohos_device_haptics_stop(struct unix_device *iface)
+ {
+     TRACE("iface %p\n", iface);
+-    send_whgp_rumble(0, 0, 0);
++    send_whgp_rumble(impl_from_unix_device(iface)->slot, 0, 0, 0);
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -338,7 +341,11 @@
+     if (!(impl = hid_device_create(&ohos_device_vtbl, sizeof(*impl))))
+         return FALSE;
+ 
++    desc.uid += slot;
++    desc.serialnumber[3] = '1' + slot;
+     impl->slot = slot;
++    impl->removing = FALSE;
++    memset(&impl->state, 0, sizeof(impl->state));
+     impl->started = FALSE;
+     list_add_tail(&device_list, &impl->unix_device.entry);
+ 
+@@ -357,6 +364,57 @@
+     return TRUE;
+ }
+ 
++static struct ohos_device *find_gamepad(UINT slot)
++{
++    struct ohos_device *impl;
++    LIST_FOR_EACH_ENTRY(impl, &device_list, struct ohos_device, unix_device.entry)
++        if (impl->slot == slot && !impl->removing) return impl;
++    return NULL;
++}
++
++static void neutral_all_gamepads(void)
++{
++    struct ohos_device *impl;
++    pthread_mutex_lock(&ohos_cs);
++    LIST_FOR_EACH_ENTRY(impl, &device_list, struct ohos_device, unix_device.entry)
++    {
++        memset(&impl->state, 0, sizeof(impl->state));
++        if (impl->started && !impl->removing) apply_neutral(&impl->unix_device);
++    }
++    pthread_mutex_unlock(&ohos_cs);
++}
++
++static void apply_slot_state(UINT slot, const struct whgp_state_v2 *state)
++{
++    struct ohos_device *impl;
++    BOOL connected;
++
++    if (slot >= WHGP_MAX_SLOTS) return;
++    connected = !(state->reserved[0] & WHGP_STATE_TOPOLOGY_VALID) ||
++                (state->reserved[0] & WHGP_STATE_CONNECTED);
++    pthread_mutex_lock(&ohos_cs);
++    impl = find_gamepad(slot);
++    if (!connected && slot != 0)
++    {
++        if (impl && bus_event_queue_device_removed(&event_queue, &impl->unix_device))
++        {
++            memset(&impl->state, 0, sizeof(impl->state));
++            impl->removing = TRUE;
++        }
++    }
++    else
++    {
++        if (!impl && connected && create_virtual_gamepad(slot)) impl = find_gamepad(slot);
++        if (impl)
++        {
++            impl->state = *state;
++            if (!connected) memset(&impl->state, 0, sizeof(impl->state));
++            if (impl->started) apply_state(&impl->unix_device, &impl->state);
++        }
++    }
++    pthread_mutex_unlock(&ohos_cs);
++}
++
+ NTSTATUS ohos_bus_init(void *args)
+ {
+     const char *enable, *mode, *path;
+@@ -424,7 +482,7 @@
+     pthread_mutex_unlock(&ohos_cs);
+ }
+ 
+-static void process_one_message(struct unix_device *iface, int fd)
++static void process_one_message(int fd)
+ {
+     struct whgp_header hdr;
+     struct whgp_state_v2 body;
+@@ -437,33 +495,41 @@
+     {
+         WARN("WHGP socket disconnected\n");
+         drop_socket_if(fd);
+-        apply_neutral(iface);
++        neutral_all_gamepads();
+         return;
+     }
+     if (hdr.magic != WHGP_MAGIC)
+     {
+         ERR("WHGP bad magic %08x\n", hdr.magic);
+         drop_socket_if(fd);
+-        apply_neutral(iface);
++        neutral_all_gamepads();
+         return;
+     }
+     if (!whgp_version_matches(hdr.version))
+     {
+         ERR("WHGP protocol mismatch: peer=%u expected=2\n", hdr.version);
+         drop_socket_if(fd);
+-        apply_neutral(iface);
++        neutral_all_gamepads();
+         return;
+     }
+ 
+-    if (hdr.msg_type == WHGP_MSG_STATE && hdr.payload_size == sizeof(body) && hdr.slot == 0)
++    if (hdr.payload_size > 4096 || hdr.slot >= WHGP_MAX_SLOTS)
++    {
++        WARN("WHGP invalid slot or payload size\n");
++        drop_socket_if(fd);
++        neutral_all_gamepads();
++        return;
++    }
++
++    if (hdr.msg_type == WHGP_MSG_STATE && hdr.payload_size == sizeof(body))
+     {
+         if (!read_exact(fd, &body, sizeof(body)))
+         {
+             drop_socket_if(fd);
+-            apply_neutral(iface);
++            neutral_all_gamepads();
+             return;
+         }
+-        apply_state(iface, &body);
++        apply_slot_state(hdr.slot, &body);
+         return;
+     }
+ 
+@@ -474,20 +540,28 @@
+         if (!read_exact(fd, discard, chunk))
+         {
+             drop_socket_if(fd);
+-            apply_neutral(iface);
++            neutral_all_gamepads();
+             return;
+         }
+         left -= chunk;
+     }
+     if (hdr.msg_type == WHGP_MSG_RESET)
+-        apply_neutral(iface);
++    {
++        struct ohos_device *impl;
++        pthread_mutex_lock(&ohos_cs);
++        impl = find_gamepad(hdr.slot);
++        if (impl)
++        {
++            memset(&impl->state, 0, sizeof(impl->state));
++            if (impl->started) apply_neutral(&impl->unix_device);
++        }
++        pthread_mutex_unlock(&ohos_cs);
++    }
+ }
+ 
+ NTSTATUS ohos_bus_wait(void *args)
+ {
+     struct bus_event *result = args;
+-    struct ohos_device *impl;
+-    struct unix_device *dev;
+     const char *path;
+     struct pollfd pfd;
+     int fd, ret;
+@@ -497,27 +571,19 @@
+ 
+     do
+     {
++        pthread_mutex_lock(&ohos_cs);
+         if (bus_event_queue_pop(&event_queue, result))
++        {
++            pthread_mutex_unlock(&ohos_cs);
+             return STATUS_PENDING;
+-
+-        pthread_mutex_lock(&ohos_cs);
++        }
+         if (quit_requested)
+         {
+             pthread_mutex_unlock(&ohos_cs);
+             break;
+         }
+-        dev = NULL;
+-        if (!list_empty(&device_list))
+-        {
+-            impl = LIST_ENTRY(list_head(&device_list), struct ohos_device, unix_device.entry);
+-            dev = &impl->unix_device;
+-        }
+-        /* No consumer: a readable socket would otherwise stay readable forever.
+-         * Reconnect when a virtual device is available, without replaying stale input. */
+-        if (!dev)
+-            close_socket();
+-        else if (sock_fd < 0 && path)
+-            connect_socket(path);
++        /* Topology arrives through this socket, even before a new pad starts. */
++        if (sock_fd < 0 && path) connect_socket(path);
+         fd = sock_fd;
+         pthread_mutex_unlock(&ohos_cs);
+ 
+@@ -530,15 +596,15 @@
+                 (ret > 0 && (pfd.revents & (POLLNVAL | POLLERR))))
+             {
+                 drop_socket_if(fd);
+-                apply_neutral(dev);
++                neutral_all_gamepads();
+                 usleep(50000);
+             }
+             else if (ret > 0 && (pfd.revents & POLLIN))
+-                process_one_message(dev, fd);
++                process_one_message(fd);
+             else if (ret > 0 && (pfd.revents & POLLHUP))
+             {
+                 drop_socket_if(fd);
+-                apply_neutral(dev);
++                neutral_all_gamepads();
+                 usleep(50000);
+             }
+         }
+--- a/dlls/winebus.sys/winehua_gamepad_protocol.h
++++ b/dlls/winebus.sys/winehua_gamepad_protocol.h
+@@ -24,6 +24,11 @@
+ #define WHGP_MSG_STATE 1
+ #define WHGP_MSG_RESET 2
+ #define WHGP_MSG_RUMBLE 3
++#define WHGP_MAX_SLOTS 4
++/* Backward-compatible topology in state.reserved[0]. Old hosts leave it zero;
++ * old clients continue to consume slot zero and ignore the extension. */
++#define WHGP_STATE_TOPOLOGY_VALID 0x01
++#define WHGP_STATE_CONNECTED 0x02
+ 
+ #pragma pack(push, 1)
+ struct whgp_header {

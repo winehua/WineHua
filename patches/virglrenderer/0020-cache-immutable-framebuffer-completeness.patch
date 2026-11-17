@@ -1,0 +1,148 @@
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -706,6 +706,22 @@
+    VREND_UNORM_SRGB_WRITE_PRESERVE,
+ };
+ 
++/* Begin immutable framebuffer completeness cache types. */
++#ifndef WINEHUA_VIRGL_FBO_STATUS_CACHE
++#define WINEHUA_VIRGL_FBO_STATUS_CACHE 0
++#endif
++#define WINEHUA_FBO_STATUS_ENTRIES 32
++struct winehua_fbo_status_key {
++   uint32_t nr_cbufs;
++   const struct vrend_surface *color[PIPE_MAX_COLOR_BUFS];
++   const struct vrend_surface *depth;
++};
++struct winehua_fbo_status_cache {
++   struct winehua_fbo_status_key keys[WINEHUA_FBO_STATUS_ENTRIES];
++   unsigned count, next;
++};
++/* End immutable framebuffer completeness cache types. */
++
+ struct vrend_sub_context {
+    struct list_head head;
+ 
+@@ -752,6 +768,9 @@
+    uint32_t const_bufs_used_mask[PIPE_SHADER_TYPES];
+    uint32_t const_bufs_dirty[PIPE_SHADER_TYPES];
+ 
++#if WINEHUA_VIRGL_FBO_STATUS_CACHE
++   struct winehua_fbo_status_cache fbo_status_cache;
++#endif
+    uint32_t fb_id;
+    uint32_t nr_cbufs;
+    struct vrend_surface *zsurf;
+@@ -3260,6 +3279,82 @@
+    glDrawBuffers(sub_ctx->nr_cbufs, buffers);
+ }
+ 
++/* Begin immutable framebuffer completeness cache helpers. */
++static inline void winehua_fbo_status_reset(struct vrend_sub_context *sub_ctx)
++{
++#if WINEHUA_VIRGL_FBO_STATUS_CACHE
++   sub_ctx->fbo_status_cache.count = 0;
++   sub_ctx->fbo_status_cache.next = 0;
++#else
++   (void)sub_ctx;
++#endif
++}
++
++#if WINEHUA_VIRGL_FBO_STATUS_CACHE
++static bool winehua_fbo_status_key(struct vrend_sub_context *sub_ctx,
++                                  struct winehua_fbo_status_key *key)
++{
++   memset(key, 0, sizeof(*key));
++   key->nr_cbufs = sub_ctx->nr_cbufs;
++   key->depth = sub_ctx->zsurf;
++   bool attached = false;
++   for (unsigned i = 0; i <= sub_ctx->nr_cbufs; i++) {
++      const struct vrend_surface *surf = i == sub_ctx->nr_cbufs ?
++                                       sub_ctx->zsurf : sub_ctx->surf[i];
++      if (i < sub_ctx->nr_cbufs)
++         key->color[i] = surf;
++      if (!surf)
++         continue;
++      const struct vrend_resource *res = surf->texture;
++      /* Import/storage changes and mip selection need fresh driver validation.
++       * Cache only internally allocated, immutable, single-level textures.
++       * No resource references are retained by this cache. */
++      const uint32_t external = VREND_STORAGE_EGL_IMAGE | VREND_STORAGE_GBM_BUFFER |
++                                VREND_STORAGE_GL_MEMOBJ | VREND_STORAGE_D3D_TEXTURE;
++      if (!has_bit(res->storage_bits, VREND_STORAGE_GL_IMMUTABLE) ||
++          has_bit(res->storage_bits, external) || res->egl_image || res->gbm_bo ||
++          res->base.last_level || surf->level)
++         return false;
++      attached = true;
++   }
++   return attached;
++}
++
++#endif
++
++static bool winehua_fbo_status_cached(struct vrend_sub_context *sub_ctx)
++{
++#if WINEHUA_VIRGL_FBO_STATUS_CACHE
++   struct winehua_fbo_status_key key;
++   if (!winehua_fbo_status_key(sub_ctx, &key))
++      return false;
++   for (unsigned i = 0; i < sub_ctx->fbo_status_cache.count; i++) {
++      if (!memcmp(&key, &sub_ctx->fbo_status_cache.keys[i], sizeof(key)))
++         return true;
++   }
++#else
++   (void)sub_ctx;
++#endif
++   return false;
++}
++
++static void winehua_fbo_status_remember(struct vrend_sub_context *sub_ctx)
++{
++#if WINEHUA_VIRGL_FBO_STATUS_CACHE
++   struct winehua_fbo_status_key key;
++   if (!winehua_fbo_status_key(sub_ctx, &key))
++      return;
++   struct winehua_fbo_status_cache *cache = &sub_ctx->fbo_status_cache;
++   cache->keys[cache->next] = key;
++   cache->next = (cache->next + 1) % WINEHUA_FBO_STATUS_ENTRIES;
++   if (cache->count < WINEHUA_FBO_STATUS_ENTRIES)
++      cache->count++;
++#else
++   (void)sub_ctx;
++#endif
++}
++/* End immutable framebuffer completeness cache helpers. */
++
+ void vrend_set_framebuffer_state(struct vrend_context *ctx,
+                                  uint32_t nr_cbufs, uint32_t surf_handle[PIPE_MAX_COLOR_BUFS],
+                                  uint32_t zsurf_handle)
+@@ -3350,7 +3445,11 @@
+    vrend_hw_emit_framebuffer_state(sub_ctx);
+ 
+    if (sub_ctx->nr_cbufs > 0 || sub_ctx->zsurf) {
+-      status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++      const bool cached = winehua_fbo_status_cached(sub_ctx);
++      status = cached ? GL_FRAMEBUFFER_COMPLETE :
++               glCheckFramebufferStatus(GL_FRAMEBUFFER);
++      if (status == GL_FRAMEBUFFER_COMPLETE && !cached)
++         winehua_fbo_status_remember(sub_ctx);
+       if (status != GL_FRAMEBUFFER_COMPLETE) {
+          virgl_error("Failed to complete framebuffer 0x%x %s\n", status, ctx->debug_name);
+          for (uint32_t i = 0; i < sub_ctx->nr_cbufs; i++) {
+@@ -11951,12 +12050,16 @@
+ void
+ vrend_renderer_object_destroy(struct vrend_context *ctx, uint32_t handle)
+ {
++   /* Invalidate before pointers or GL names can be released/reused. */
++   winehua_fbo_status_reset(ctx->sub);
+    vrend_object_remove(ctx->sub->object_hash, handle, 0);
+ }
+ 
+ uint32_t vrend_renderer_object_insert(struct vrend_context *ctx, void *data,
+                                       uint32_t handle, enum virgl_object_type type)
+ {
++   /* Insert may replace an existing handle, including a surface. */
++   winehua_fbo_status_reset(ctx->sub);
+    return vrend_object_insert(ctx->sub->object_hash, data, handle, type);
+ }
+ 

@@ -1,0 +1,29 @@
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -518,7 +518,12 @@
+     long extents[4];
+     unsigned int i;
+ 
+-    if (!data->whole_window || data->managed) return;
++    if (!data->whole_window) return;
++#ifndef __OHOS__
++    if (data->managed) return;
++#endif
++    /* OHOS keeps X11 managed top-level identity but Wine draws the frame.
++     * Publish its actual client inset for zero-copy GPU face placement. */
+     /* client/visible live in the same coordinate space.  A client edge can
+      * stick out of the visible rect when the window hangs off-screen —
+      * clamp, the host only needs the on-window client placement. */
+@@ -576,6 +581,12 @@
+ {
+     unsigned long ret = 0;
+ 
++#ifdef __OHOS__
++    /* The OHOS host embeds the whole Wine surface without server-side
++     * decorations. Keep managed identity (menus stay override-redirect),
++     * but let Wine draw/hit-test its non-client area in every host mode. */
++    return 0;
++#endif
+     if (X11DRV_HasWindowManager( "Mutter" )) return 0;
+ 
+     if (ex_style & WS_EX_TOOLWINDOW) return 0;

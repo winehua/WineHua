@@ -1,0 +1,21 @@
+--- a/dlls/wineohos.drv/ohos.c
++++ b/dlls/wineohos.drv/ohos.c
+@@ -1360,13 +1360,13 @@
+     fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+     fmt->Format.nChannels = 2;
+     fmt->Format.nSamplesPerSec = 48000;
+-    fmt->Format.wBitsPerSample = 16;
+-    fmt->Format.nBlockAlign = 4;
+-    fmt->Format.nAvgBytesPerSec = 192000;
++    fmt->Format.wBitsPerSample = 32;
++    fmt->Format.nBlockAlign = 8;
++    fmt->Format.nAvgBytesPerSec = 384000;
+     fmt->Format.cbSize = sizeof(*fmt) - sizeof(fmt->Format);
+-    fmt->Samples.wValidBitsPerSample = 16;
++    fmt->Samples.wValidBitsPerSample = 32;
+     fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+-    fmt->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
++    fmt->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+     params->result = S_OK;
+     return STATUS_SUCCESS;
+ }

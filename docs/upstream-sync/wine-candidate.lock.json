@@ -1,0 +1,553 @@
+{
+  "schemaVersion": 1,
+  "status": "2.0.4-integrated-test-release",
+  "upstream": {
+    "repository": "ValveSoftware/wine",
+    "commit": "e8ca5806eec488f5916e83d655ffc5349b6b1702",
+    "tree": "8ef394afdf44f3d55c8ed79ecfc26dbf32a454df",
+    "protonCommit": "0764d2920a128cee74555afcab0819919ddf416d"
+  },
+  "baseline": {
+    "commit": "a02acbd358e3f2d82eb4d6e0375dfbff0e5e0131",
+    "tree": "19a4f09e7eee85b4ab2c144270250ea6bd346603",
+    "valveBase": "dc26e61847081a1b5cb0733dc30feba6ee575482"
+  },
+  "productionPinUnchanged": "cd547f7a0ee9d3d59b3ec47317a7852dedf0443b",
+  "productionPromoted": false,
+  "deviceValidated": false,
+  "adaptedCommit": "527cd6255d4f26c21ff0a7111fc0c37e35eac9ba",
+  "adaptedTree": "bd2d6662a1d32f4347829428b6c7c055afde0797",
+  "regeneration": {
+    "vulkanVersion": "1.4.357",
+    "vulkanXmlCommit": "e3b1eec08173d6b825cd3ac88c885a63b621504a",
+    "protocolAndConfigureUpdated": true
+  },
+  "patches": [
+    {
+      "path": "scripts/patches/wine-upstream/0001-audio-and-media.patch",
+      "sha256": "86de46dd1453747c6cb1ab69a7b27114df4fc7a8c3101b86ee296060e7783961",
+      "commit": "c32ceb59d4a2a8c17ba9b9a6c3bd527f1fecf31d",
+      "subject": "OHOS adaptation: audio-and-media"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0002-build-abi-and-platform-integration.patch",
+      "sha256": "c811a167fcc7f6aa8d32c6c306cce56bb958424386ecfca55754669c12881afe",
+      "commit": "4b0b5aa0369dfd77648e506c41e4f8c069f5a3b8",
+      "subject": "OHOS adaptation: build-abi-and-platform-integration"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0003-graphics-input-and-presentation.patch",
+      "sha256": "a68ee5c64267b024fabc389cf943413f4b3b7c5b08f0d0b30fd3ebb7b47b4fc0",
+      "commit": "5d5d380f227bcd26906784790bd648abf981203d",
+      "subject": "OHOS adaptation: graphics-input-and-presentation"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0004-launcher-and-prefix.patch",
+      "sha256": "8546a4abec1d3d5ff3e9d04a213c95428f38529e92277aef6e0b691745737703",
+      "commit": "575d6f5ef6908cf0fca0075110613f46bf3163da",
+      "subject": "OHOS adaptation: launcher-and-prefix"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0005-network-and-platform-services.patch",
+      "sha256": "8fb591c9b5d940117e1dad0279659179879ea7dbbddee20bb59d64e43da192e7",
+      "commit": "b61016ffb6db40625971ca87887ff660218b0a69",
+      "subject": "OHOS adaptation: network-and-platform-services"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0006-process-memory-and-broker.patch",
+      "sha256": "64c25c08b12afb10384da7fc71989c971ebe19b697bbac83c93a14244b9fb2a9",
+      "commit": "851d58d010415b48ad3cff270640d745656d0a3c",
+      "subject": "OHOS adaptation: process-memory-and-broker"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0007-0011-wineboot-durable-prefix-completion.patch",
+      "sha256": "50ac238e63c1907a4a7faa20ae77a59e70e66f6f0cff153f10d4d6ec5278be17",
+      "commit": "f6fb689cacd1288e5c149c57796581d602ded50c",
+      "subject": "OHOS adaptation: 0011-wineboot-durable-prefix-completion"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0008-0067-wineboot-single-managed-initialization.patch",
+      "sha256": "59e7cdeec691d6cba95302085b71be64232a5aa2a561fd636fd9830f0767388a",
+      "commit": "5b44db5d3db3a66e2f2c9b9a9661ff18a2bf8efe",
+      "subject": "OHOS adaptation: 0067-wineboot-single-managed-initialization"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0009-0012-wineserver-locked-registry-migration.patch",
+      "sha256": "fc269eab1194725407406d0be87cbbe692783b0c6d1506a2dcb9c6e6cc93a5a7",
+      "commit": "12fe843ec3dc7dfe89c97eabf68aa61d01883c77",
+      "subject": "OHOS adaptation: 0012-wineserver-locked-registry-migration"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0010-0013a-ntdll-ohos-rpgxp-diagnostics.patch",
+      "sha256": "a51dfd3fe28dd6056d3132c435479290cf000f24d5b941900f5dd8ec07595a97",
+      "commit": "34c7780eb869f62f12c543042dc49a7f807a1096",
+      "subject": "OHOS adaptation: 0013a-ntdll-ohos-rpgxp-diagnostics"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0011-0014-win32u-font-aa-override.patch",
+      "sha256": "cc516f9849c4704cdb42dcbf6d5c71a881ecbae39a602c534c6b16c31eda8a42",
+      "commit": "f0a6a1097f7323e61c85c9e0c05ed5d10c2c7c1d",
+      "subject": "OHOS adaptation: 0014-win32u-font-aa-override"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0012-0015-ohos-exec-section-eof-pread.patch",
+      "sha256": "f85c7961d06bec73ae26e480eb6266ed2a32a59f59fc6bb490acd5e2f17f4248",
+      "commit": "8c77eab4b7dca7afc0a73081d2ae5677e9583870",
+      "subject": "OHOS adaptation: 0015-ohos-exec-section-eof-pread"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0013-0016-ntdll-honor-pe-large-address-aware-default.patch",
+      "sha256": "aeca6360f0e460cbee817f05db655c8c51bbbeb1151595da0e1439b7db082010",
+      "commit": "9508075a720198993a674363f5bc77a4539bca0d",
+      "subject": "OHOS adaptation: 0016-ntdll-honor-pe-large-address-aware-default"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0014-0017-wayland-configure-window-lifetime.patch",
+      "sha256": "98d4c1e7aa3cf145089b9c84d7f11c463c6717925c85d80b437aa32d5855cad8",
+      "commit": "badd1a593cb06f5aab96c4bb92c9cb63ac1d1f36",
+      "subject": "OHOS adaptation: 0017-wayland-configure-window-lifetime"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0015-0018-private-vulkan-present-validation.patch",
+      "sha256": "a4d03a7e596c24bb723119e423cd160120c0a2670b86af86364bfd55439b4f3d",
+      "commit": "d6aa91c5225bb5a3d45eda6e12c88f31b384073f",
+      "subject": "OHOS adaptation: 0018-private-vulkan-present-validation"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0016-0019-ntdll-broker-log-metadata.patch",
+      "sha256": "9285a217ba75a07ae0568dbd7921484090d64931be7639a16eba695fb7d203ed",
+      "commit": "5ac1ef23c5ad7788da3158fa618e2881b6e26579",
+      "subject": "OHOS adaptation: 0019-ntdll-broker-log-metadata"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0017-0020-broker-v2-startup-contract.patch",
+      "sha256": "54f7787027a2e869d932e581a9d150740efda054bccf8b1df7c18b0caca8fd6c",
+      "commit": "ee2b4804fc97d2a4d8a53325f0a2ca51cda369b9",
+      "subject": "OHOS adaptation: 0020-broker-v2-startup-contract"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0018-0021-wayland-shm-state-cache.patch",
+      "sha256": "a5347d919cd55b0e4b578df768987184ccc832075b72540690ac2c355b31f186",
+      "commit": "b20e8b82bd28f5db2dfb347e556016b0f3aa9f21",
+      "subject": "OHOS adaptation: 0021-wayland-shm-state-cache"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0019-0022-private-vulkan-signal-only-acquire.patch",
+      "sha256": "5876e6b32125a8968689600b0a8d37f86730a795518bb99d79c739ef545048bd",
+      "commit": "e769f995b317c812576121748256e4a0f2475f70",
+      "subject": "OHOS adaptation: 0022-private-vulkan-signal-only-acquire"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0020-0023-ohos-default-grayscale-font-aa.patch",
+      "sha256": "97e2ab09b2ae892838fc9c2bf21224dbd02378f5518c1ab695d45c318677f14a",
+      "commit": "3a903514c9b1c85c9eb2406e93b399eec21e91b0",
+      "subject": "OHOS adaptation: 0023-ohos-default-grayscale-font-aa"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0021-0024-ohos-scan-prefix-fonts.patch",
+      "sha256": "240a0fd67aee5486928cf91f9591cdfa3344831bb0f9034b6d5ba98a40edc714",
+      "commit": "e2c782a8251e32dd71fa2bc996256e0f0fda960c",
+      "subject": "OHOS adaptation: 0024-ohos-scan-prefix-fonts"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0022-0025-ohos-locale-font-fallback.patch",
+      "sha256": "d69677463fc6513cf48c5dfc6a1dcaaaef102acf4c261f0d11cb1d6ae57f45cb",
+      "commit": "5909acce873c00ab0556e71ab4f6f112ea039149",
+      "subject": "OHOS adaptation: 0025-ohos-locale-font-fallback"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0023-0026-ohos-musl-selected-locale.patch",
+      "sha256": "b6bebca580d6ecf85d9feb99a39f1007d21b5986541a8eee68e6653896f559ea",
+      "commit": "b6872839d44e047298f1ceb688629aa3e7a003c6",
+      "subject": "OHOS adaptation: 0026-ohos-musl-selected-locale"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0024-0027-arm64ec-seh-exit-thunk.patch",
+      "sha256": "0d67e923b003f0d6971d84b43d0e29e820060ce86fb595cd9c31e77e0f51d860",
+      "commit": "04318503acbec7de6c8082a44cba8ca1f074b45b",
+      "subject": "OHOS adaptation: 0027-arm64ec-seh-exit-thunk"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0025-0028-ohos-child-winedebug-environment.patch",
+      "sha256": "ed322cbbbf20d04e74413f544542ec24b011fbd4fcec58c6c7136c6681d76678",
+      "commit": "e7fc9eee546627d236a89d60c3698bc5e8a83cbc",
+      "subject": "OHOS adaptation: 0028-ohos-child-winedebug-environment"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0026-0029-wayland-minimize-restore-handshake.patch",
+      "sha256": "23269477cf3f38c43a778551d2829ca807f8dbd728b90267993af17d44079d18",
+      "commit": "f41a5c8cad81fbf5d047f9657ddd957818986995",
+      "subject": "OHOS adaptation: 0029-wayland-minimize-restore-handshake"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0027-0030-ohos-transient-activation-return.patch",
+      "sha256": "739928df9c486dbf3e0a6f98e75e8764621c794c1589e8e30e5b45685126e287",
+      "commit": "33df1134bc4f8c5e6842044dc060cfef468df2f8",
+      "subject": "OHOS adaptation: 0030-ohos-transient-activation-return"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0028-0031-wayland-client-only-remap.patch",
+      "sha256": "ded6e3d59ed7bcd2b5b0cb378845738b133c51c74ea810cc73788fa9408d7c79",
+      "commit": "d69932787ac5db8fe9760901a577126243af1bdf",
+      "subject": "OHOS adaptation: 0031-wayland-client-only-remap"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0029-0032-wayland-readback-content-diagnostics.patch",
+      "sha256": "e60470dc753d9cc78780a823f68175a4e0b4249799d628e06ccedda4cd632203",
+      "commit": "3ffebdcd369fedc87643b00a7616799f36db63c3",
+      "subject": "OHOS adaptation: 0032-wayland-readback-content-diagnostics"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0030-0033-ohos-fshack-context-capability.patch",
+      "sha256": "b8af842886e781aad0be4f35625268791e1158071d5c9195632654eb9496de68",
+      "commit": "76b945351f574d47589c2abe648aaea5e850e403",
+      "subject": "OHOS adaptation: 0033-ohos-fshack-context-capability"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0031-0034-opengl-zero-texture-not-reserved.patch",
+      "sha256": "f8062b2a545b8b539c775c358a804c1180c34392cac2cd41232db4011ab4a490",
+      "commit": "5fbf3c04d5d62f95640c7ad7e9f2a8c2c12efaff",
+      "subject": "OHOS adaptation: 0034-opengl-zero-texture-not-reserved"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0032-0035-opengl-wow64-explicit-buffer-flush.patch",
+      "sha256": "fdf9f9881142da171e1f045eb75c677cb9c3a4ba6a23261e59347557007f68af",
+      "commit": "87cc7f9ca3ad5cf5679d88576bac3f25fb2e731e",
+      "subject": "OHOS adaptation: 0035-opengl-wow64-explicit-buffer-flush"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0033-0036-wined3d-pixel-format-id-lookup.patch",
+      "sha256": "40765ae88820b145b8a3a9862bea66128503d3b4cec2d59524ee4dafc868faac",
+      "commit": "7a30e3aa8b16ac3fb75353c49e88d6b80be6a265",
+      "subject": "OHOS adaptation: 0036-wined3d-pixel-format-id-lookup"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0034-0037-wine-opengl-performance-summary.patch",
+      "sha256": "7a041692a1a9930bc454735f04344411b4977fe1e55feca9b0573204be5cebae",
+      "commit": "8b9345e09990619bfd28842e5ca7bff79cdf822d",
+      "subject": "OHOS adaptation: 0037-wine-opengl-performance-summary"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0035-0038-wined3d-discard-map-invalidation.patch",
+      "sha256": "62cf643f0511512420f6c2c508e3371685fd7238b8df327f16475e6535c9948f",
+      "commit": "3207db21c46c4c11df0708b5b1fcd75575c8b790",
+      "subject": "OHOS adaptation: 0038-wined3d-discard-map-invalidation"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0036-0039-wined3d-opt-in-dynamic-buffer-sysmem.patch",
+      "sha256": "23bc2bb14892da0165f556e219421ea2f3dfcf7946aebc9db2249e4ac194dff1",
+      "commit": "234e5bf1ec2188060726b1cb0e4182a1dcf1a0e9",
+      "subject": "OHOS adaptation: 0039-wined3d-opt-in-dynamic-buffer-sysmem"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0037-0068-wined3d-ohos-command-event-wake.patch",
+      "sha256": "3677629eeb54b02b9055b581c81d99b69118b68ea7aafd38eb7cf81b8681cbe6",
+      "commit": "b417fb253bc1947a0c96cbb6b1fae9e8c35b26b4",
+      "subject": "OHOS adaptation: 0068-wined3d-ohos-command-event-wake"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0038-0040-ntdll-owned-virgl-shared-low-map.patch",
+      "sha256": "97f29845c4b7d3aed65c9af0ad6425a587fe22d10a3199ca85c294dce06e39fe",
+      "commit": "4cc1a85b22adec92693c92026033291b655a8b26",
+      "subject": "OHOS adaptation: 0040-ntdll-owned-virgl-shared-low-map"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0039-0041-winebus-ohos-poll-progress.patch",
+      "sha256": "1910549461ee1ac18182d2e411fe0683e155db18d0bf7932f42f60fe0a2b618c",
+      "commit": "49a4ea2dc1fc39214110730cad2260df53d78505",
+      "subject": "OHOS adaptation: 0041-winebus-ohos-poll-progress"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0040-0042-opengl-opt-in-wgl-lock-wait.patch",
+      "sha256": "c82d4d20a178bafe3e60ef04164cffe807cceff9d4a375378d9e00789b9649cc",
+      "commit": "67e922fc97c4ffa980f286b24a53353289bb18d5",
+      "subject": "OHOS adaptation: 0042-opengl-opt-in-wgl-lock-wait"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0041-0043-winebus-canonical-whgp-v2.patch",
+      "sha256": "6fb6c2155f7a9c5fd872e2b2cc003b263b003b16429be366cf90652551352806",
+      "commit": "615bed77f7828daa032b165e32edcbc6a208fb53",
+      "subject": "OHOS adaptation: 0043-winebus-canonical-whgp-v2"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0042-0044-wayland-input-thread-desktop.patch",
+      "sha256": "b2bbbfaf52355d3fac447543bbed5001b919d0872c488b46de97134b8022cf0e",
+      "commit": "04e45a8ca091aa3209a36517ea5bd7d6d876adf9",
+      "subject": "OHOS adaptation: 0044-wayland-input-thread-desktop"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0043-0045-ntdll-arm64-invalid-leaf-unwind.patch",
+      "sha256": "3260a3ad1ee3f646972154d6a0279caa7a91d8436d81d161dbc01b40314c0e4a",
+      "commit": "c0218b2dcc5f9adc825ae15a9fc0859059a9f8be",
+      "subject": "OHOS adaptation: 0045-ntdll-arm64-invalid-leaf-unwind"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0044-0046-ntdll-ohos-process-exit.patch",
+      "sha256": "c1c9a46ab59e60570b55241e84df2eff4a27dc9a211dc3f4f587a66406200663",
+      "commit": "0e2fc1b3710314d03a1e4213c94bb57106e56027",
+      "subject": "OHOS adaptation: 0046-ntdll-ohos-process-exit"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0045-0047-win32u-wow64-vulkan-map-safety.patch",
+      "sha256": "a7ef7dcd2c3956ee1f2dfa73a2950e724c62abb4f2192ca7c81fe3dd02849cb5",
+      "commit": "02968b1fa898c61975bec817338501fd22f20e2c",
+      "subject": "OHOS adaptation: 0047-win32u-wow64-vulkan-map-safety"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0046-0048-ntdll-opt-in-server-request-timing.patch",
+      "sha256": "e3c135230408c47a9ff7e2d4e022fe2e7473fefafdf0239abca1881d47952e8c",
+      "commit": "ff5b24dc4ac8e1f6c620dca76e297567cefbb716",
+      "subject": "OHOS adaptation: 0048-ntdll-opt-in-server-request-timing"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0047-0049-wined3d-require-srgb-write-control-for-shared-storage.patch",
+      "sha256": "8e991280895f47404c301f142a241905e98dba869a455712ad760c3d164ee2d6",
+      "commit": "44d2488f067ef31fee62a9eac5cd11db53219996",
+      "subject": "OHOS adaptation: 0049-wined3d-require-srgb-write-control-for-shared-storage"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0048-0050-wayland-explicit-gpu-front-present.patch",
+      "sha256": "ba0bf03c9abcd77391c19333db0f2d6ff1bb71a8fd467a1bc47cb1b71be73474",
+      "commit": "7c3dbdcb1a2c51e4ac8eb6589409853f503512f2",
+      "subject": "OHOS adaptation: 0050-wayland-explicit-gpu-front-present"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0049-0051-opengl-preserve-pbuffer-front-storage.patch",
+      "sha256": "01ca056c85c14da66e3acddd80b1b3548e9cf918112bd5884ae80a20ab16524a",
+      "commit": "03a87758a70db0fef1225f48eabda0935d92f92c",
+      "subject": "OHOS adaptation: 0051-opengl-preserve-pbuffer-front-storage"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0050-0052-ntdll-default-virgl-shared-low-map.patch",
+      "sha256": "32d65b386730275bfb936d9e98225b7deb4bcc06f5b3b1a2395238a696f4fb4a",
+      "commit": "a910e2f364536dec16fa87af54c96459234f6a82",
+      "subject": "OHOS adaptation: 0052-ntdll-default-virgl-shared-low-map"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0051-0053-wined3d-restore-legacy-alpha-test-state.patch",
+      "sha256": "94a0ef10a4c101f2e4cf19703013a1867a6fd8cf203746280da9eed6bd5d5612",
+      "commit": "2f0c1a841a37d4a4b1be6904dcaaf4e7c0156698",
+      "subject": "OHOS adaptation: 0053-wined3d-restore-legacy-alpha-test-state"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0052-0054-ntdll-broker-preserve-resolved-image-path.patch",
+      "sha256": "dc325a15626674e45f60e8f6d1359989e6286e5cb11e335f57b3a1c337c75c70",
+      "commit": "0bef4e2244ea0f6249ca256cac6e4e1cbb47328c",
+      "subject": "OHOS adaptation: 0054-ntdll-broker-preserve-resolved-image-path"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0053-0055-layered-child-screen-coordinates-and-root.patch",
+      "sha256": "334565f63eb38ff81a400d2b8b3212c3bfb7e76a2b364f60974c5c4e1b54f362",
+      "commit": "2e7516daac19df68862684182b206d63aeb65c09",
+      "subject": "OHOS adaptation: 0055-layered-child-screen-coordinates-and-root"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0054-0056-wayland-direct-wsi-before-show.patch",
+      "sha256": "e0b1b6e304eaa20e4d922c52fdbf6a197ecc325232b86fea77b988ee736e654d",
+      "commit": "be3c45a9a75fcca51551ce8138f7ecc923c9fc5a",
+      "subject": "OHOS adaptation: 0056-wayland-direct-wsi-before-show"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0055-0057-wayland-direct-drawable-identity.patch",
+      "sha256": "71d41e1d670a867ab3b0af38bd12ed1868e6177c7cfde928a8c751fbfcd48c51",
+      "commit": "e4444593499c2c7097217652e4b467e00b2294bb",
+      "subject": "OHOS adaptation: 0057-wayland-direct-drawable-identity"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0056-0058-ohos-shared-wasapi-float32.patch",
+      "sha256": "b4ed79d35c42ca43f45626ef34dc5fa3ec496e304dc83cb6a9a1098ab1697586",
+      "commit": "c5fc8b0f48a9a9ea01f38ab0af3cc6c577d709cb",
+      "subject": "OHOS adaptation: 0058-ohos-shared-wasapi-float32"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0057-0062-wineohos-shared-audio-format-contract.patch",
+      "sha256": "281d80d38f9586332de404801f4efdd56f67ddf9112a787ee714a7bf4f488c0e",
+      "commit": "c91846fc897eab310532e6624e4c65193df2daf6",
+      "subject": "OHOS adaptation: 0062-wineohos-shared-audio-format-contract"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0058-0064-mfplat-opt-in-nonshared-texture-retry.patch",
+      "sha256": "d3fcd12e869cee3be2cdb55cb7e819ce6dd9567e9df0832047c291f409c8d925",
+      "commit": "589dabca642e7daa094136cca5811b218eec70e7",
+      "subject": "OHOS adaptation: 0064-mfplat-opt-in-nonshared-texture-retry"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0059-0063-ntdll-ohos-thread-exit-signal-stack.patch",
+      "sha256": "b10351883d28ae90ac44da5295bc94d5cdf5d82fe0c890e648e58d0932d885ff",
+      "commit": "5d21b28f5e1dfc76127775a7a1302a1cdecf547c",
+      "subject": "OHOS adaptation: 0063-ntdll-ohos-thread-exit-signal-stack"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0060-0065-wow64-self-context-no-suspend.patch",
+      "sha256": "cc544d77091356f7d377cd08dcf37cd065e7d018f1dd09218e12d0a94df8b350",
+      "commit": "04b9e34585124bc9fd3b9d2327c160bf6438687d",
+      "subject": "OHOS adaptation: 0065-wow64-self-context-no-suspend"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0061-0060-ntdll-vm-protect-diagnostics.patch",
+      "sha256": "e2d88dac36c7cccb35073559599ff006951f66083f78aa11f4ac88397304e791",
+      "commit": "2abfd08fd365deac5ddeb2d6fa24cb36fc3ccad8",
+      "subject": "OHOS adaptation: 0060-ntdll-vm-protect-diagnostics"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0062-0061-iphlpapi-native-network-contract.patch",
+      "sha256": "a03b49aa16b0cbe4ace1fd1b62947ade0c3bd00f2061d43d0026ce6e825c8659",
+      "commit": "eaa5be566d7726648bf638a0335dce4040903a2a",
+      "subject": "OHOS adaptation: 0061-iphlpapi-native-network-contract"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0063-0066-winhttp-wininet-bounded-connect.patch",
+      "sha256": "43f7252135e2f9b26a2ad1543caebaf27f8b3dc33b974f2279135679c6ea1d96",
+      "commit": "92903aab752714d2784ad28793ed55160fc71de2",
+      "subject": "OHOS adaptation: 0066-winhttp-wininet-bounded-connect"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0064-0067-dnsapi-musl-transport-safety.patch",
+      "sha256": "e86a558faa807cdf9bd37ec4373ebf87fbdb6131f3b9d763f23776df811b68bd",
+      "commit": "99c05ca5b0ceb5780fc0d07742b3b2efe3f8e2b2",
+      "subject": "OHOS adaptation: 0067-dnsapi-musl-transport-safety"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0065-0066-ohos-native-gstreamer-plugins.patch",
+      "sha256": "e246b8e0030672ab730c7c51c78f792d9af3f6b4848b1a39c56c31839438728f",
+      "commit": "f4b28cf9055743cfaeca7eccce4bbbd87eebe815",
+      "subject": "OHOS adaptation: 0066-ohos-native-gstreamer-plugins"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0066-0070-ddraw-clip-surface-bounds.patch",
+      "sha256": "bf7b06ec8592559d954e1eeb59117c641d59eaa48884bc077afe3ff73fd76a34",
+      "commit": "9956c8fea361e0a19c195791d7850b1a2dc51499",
+      "subject": "OHOS adaptation: 0070-ddraw-clip-surface-bounds"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0067-0071-ime-key-scancode.patch",
+      "sha256": "ecd583f462abe1fb2728b5d33a08cf84cb2da85f9bff9b653efbf81dd9e33955",
+      "commit": "1d9695e3d738b4e87711e8e9aecb5a6893d87fdf",
+      "subject": "OHOS adaptation: 0071-ime-key-scancode"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0068-0072-ohos-x11-nativebuffer-display.patch",
+      "sha256": "9bd0b302525b35b08f27e99d370e706fd7bfe2ffa395f4f54886cadeaf0558dc",
+      "commit": "912cee0d6a5a7dc3a23c90819f0b065e8e6e956d",
+      "subject": "OHOS adaptation: 0072-ohos-x11-nativebuffer-display"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0069-0073-x11-desktop-role.patch",
+      "sha256": "797dabb3bccca7de8a500f1fa1f0f20d9ee90155f925bb622bba01c9d957306e",
+      "commit": "a6209572a35c38ecdd383ce81cada89906d57256",
+      "subject": "OHOS adaptation: 0073-x11-desktop-role"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0070-0074-x11-child-window-identity.patch",
+      "sha256": "191c00a66ca333622dd170ba5152dc2c7aaedef7b183a1569591714a61ef89d6",
+      "commit": "b3af43ea660fba3d21b0a162c3f6de4a41df9844",
+      "subject": "OHOS adaptation: 0074-x11-child-window-identity"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0071-0075-x11-thread-cleanup-diagnostics.patch",
+      "sha256": "0f7afee2a65c3a56642466c62c50d61d8674357ea76ff35cce71a8ae172322aa",
+      "commit": "80386c465b8d4be683ada2d56277cfe91ef50def",
+      "subject": "OHOS adaptation: 0075-x11-thread-cleanup-diagnostics"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0072-0076-x11-egl-default-visual.patch",
+      "sha256": "95ec335ad4326a451817c2cc0423954134c280c1729db6664e807751c08dd4c3",
+      "commit": "714dc51eaf4679cba1cdd2e6b34bc5b4053ef0e6",
+      "subject": "OHOS adaptation: 0076-x11-egl-default-visual"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0073-0077-x11-ohos-client-decorations.patch",
+      "sha256": "4fc6857b34d581bcad1daaf40bf27f925a402fe98c7161192dd715c7c60ca6cf",
+      "commit": "6377a3b82cfa33105d91c47d29f08d5f602c37b5",
+      "subject": "OHOS adaptation: 0077-x11-ohos-client-decorations"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0074-0078-ohos-single-blit-caption.patch",
+      "sha256": "4e36d0c7a8cb9acc7ad0d4e8b018b5491e093b05de1a88be0861c8ddc704fce9",
+      "commit": "1988f76024f02b1d08a82790c007d603c1e10f71",
+      "subject": "OHOS adaptation: 0078-ohos-single-blit-caption"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0075-0079-x11-ohos-text-only-caption-refresh.patch",
+      "sha256": "81a793b1ed8497eef04239b6cc0f56c2ca05904d6e55d3d7e46c79dfa330d4a6",
+      "commit": "923648ea775989ecd664c965afda475c6bf26420",
+      "subject": "OHOS adaptation: 0079-x11-ohos-text-only-caption-refresh"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0076-0080-wineohos-shared-multichannel-downmix.patch",
+      "sha256": "cb4a868d951e9f1cbe6bc9dfc01f19f39f14863767dccb4ac4365236739dc7e3",
+      "commit": "8c0895a0c031bf5c6a73363943b2e2a9d3af9f08",
+      "subject": "OHOS adaptation: 0080-wineohos-shared-multichannel-downmix"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0077-0081-wineohos-render-event-pacing.patch",
+      "sha256": "8ee7981682fa680717b1d6c1836f571580675999ba0caee2ed69a47b61b17629",
+      "commit": "d3f2100f5e8d56853f51b2e9616b2c9deb4c7dd5",
+      "subject": "OHOS adaptation: 0081-wineohos-render-event-pacing"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0078-production-diagnostics-policy.patch",
+      "sha256": "af92569d078437340721c5a4864e1041b1d6ec8393a897f9384ca74ee42d44e6",
+      "commit": "23b675654fba18c855938be700ff79e3b9c13fad",
+      "subject": "OHOS adaptation: production-diagnostics-policy"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0079-build-generated-and-shared-platform-inputs.patch",
+      "sha256": "735106534fe43ebb14e1268fc392ad802181e505ee7204185ceb6c51005c979e",
+      "commit": "422966fd2f821221b31d706467445bd435b58da6",
+      "subject": "OHOS adaptation: build-generated-and-shared-platform-inputs"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0080-regenerate-protocol-vulkan-1-4-357-and-configure-for-new-wine.patch",
+      "sha256": "9348a13d6983300086f33cb70b73c9c3e508f60ea623b4ed379c21ab5f039504",
+      "commit": "7b6992973806668c16aed78c51138cd03d8eff92",
+      "subject": "OHOS: regenerate protocol, Vulkan 1.4.357 and configure for new Wine"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0081-make-vulkan-smoke-header-self-contained-for-standalone-builds.patch",
+      "sha256": "030d95c8c769888bef4fd80ca7503ae0ee6d9a1a6fe6ca530fc6c368fa08eca4",
+      "commit": "098ece0eedff40bea426d2d57b215bb81411e239",
+      "subject": "OHOS: make Vulkan smoke header self-contained for standalone builds"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0082-retain-explicit-dxvk9-overlay.patch",
+      "sha256": "642ff081fd223047d48cb33f90b0ffabaa45078f2bf6a68754431add48dad01a",
+      "commit": "4e85dd0d6e127c0633c82a3d32b32c38002c0079",
+      "subject": "OHOS: retain-explicit-dxvk9-overlay"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0083-retain-multiple-gamepads.patch",
+      "sha256": "ac91d88857af9f1f4438b4d80cc253f20772c461774c267991913a6f787257d8",
+      "commit": "bba2ec5b4c157d996e2601ad53540d1321494703",
+      "subject": "OHOS: retain-multiple-gamepads"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0084-winehua-hidpi-and-host-open.patch",
+      "sha256": "a013221122f591d09fcb348c68dd676a570e08f8161fe79893319387d0959413",
+      "commit": "8a65f6c15ca4426370a56226153ef6a0b5e7be1d",
+      "subject": "OHOS: port WineHua HiDPI and bounded host-open support to current Proton"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0085-wayland-clipboard-window-class-termination.patch",
+      "sha256": "74406def139a15fe174f23804a99200abb407a899a073df5e250281d8579ee1c",
+      "commit": "9e5e178c08e2cb3f43cc90b7b1cf21af95012301",
+      "subject": "winewayland: terminate the per-process clipboard window class name"
+    },
+    {
+      "path": "scripts/patches/wine-upstream/0086-wined3d-legacy-specular-fog.patch",
+      "sha256": "de3c847b3ed2bbe62297b87da0ec15403523239039e0106969cddc034d777fa7",
+      "commit": "527cd6255d4f26c21ff0a7111fc0c37e35eac9ba",
+      "subject": "wined3d: use the legacy secondary color for implicit specular-alpha fog"
+    }
+  ],
+  "history": {
+    "path": "docs/upstream-sync/wine-adapted-history.json",
+    "sha256": "3eecd90de31c64a07fd20c058615f439e2d746671b918ad15c8aff056c2edfd4"
+  },
+  "originalAdaptations": 79,
+  "migrationLedger": "docs/upstream-sync/wine-migration-ledger.json",
+  "baseRuntimeInventory": {
+    "path": "docs/upstream-sync/wine-base-output-inventory.json",
+    "sha256": "fa3a8918597a03fa28ba7822e96d2f6a24a68f25e8cfe785ec9ec706cb6f0280"
+  }
+}

@@ -1,0 +1,64 @@
+Subject: [PATCH] wined3d: use paired server events for OHOS command queues
+
+Thread-ID alert wakeups can strand pending CSMT commands under the OHOS
+FEX/WOW64 runtime. An explicit extra alert resumes the worker; queued work
+then stalls again. Keep multithreaded command processing and use Wine
+server auto-reset events, which retain a signal sent before the wait.
+This overlay is applied by the OHOS runtime build only.
+
+--- a/dlls/wined3d/cs.c
++++ b/dlls/wined3d/cs.c
+@@ -25,8 +25,6 @@
+ WINE_DECLARE_DEBUG_CHANNEL(fps);
+ WINE_DECLARE_DEBUG_CHANNEL(frametime);
+ 
+-static NTSTATUS (WINAPI *pNtAlertThreadByThreadId)(HANDLE tid);
+-static NTSTATUS (WINAPI *pNtWaitForAlertByThreadId)(void *addr, const LARGE_INTEGER *timeout);
+ 
+ #define WINED3D_INITIAL_CS_SIZE 4096
+ 
+@@ -3316,10 +3314,7 @@
+ 
+     if (InterlockedCompareExchange(&cs->waiting_for_event, FALSE, TRUE))
+     {
+-        if (pNtAlertThreadByThreadId)
+-            pNtAlertThreadByThreadId((HANDLE)(ULONG_PTR)cs->thread_id);
+-        else
+-            SetEvent(cs->event);
++        SetEvent(cs->event);
+     }
+ }
+ 
+@@ -3469,10 +3464,7 @@
+             && InterlockedCompareExchange(&cs->waiting_for_event, FALSE, TRUE))
+         return;
+ 
+-    if (pNtWaitForAlertByThreadId)
+-        pNtWaitForAlertByThreadId(NULL, timeout);
+-    else
+-        NtWaitForSingleObject(cs->event, FALSE, timeout);
++    NtWaitForSingleObject(cs->event, FALSE, timeout);
+ }
+ 
+ static void wined3d_cs_command_lock(const struct wined3d_cs *cs)
+@@ -3673,15 +3665,11 @@
+     {
+         cs->c.ops = &wined3d_cs_mt_ops;
+ 
+-        if (!pNtAlertThreadByThreadId)
+-        {
+-            HANDLE ntdll = GetModuleHandleW(L"ntdll.dll");
+-
+-            pNtAlertThreadByThreadId = (void *)GetProcAddress(ntdll, "NtAlertThreadByThreadId");
+-            pNtWaitForAlertByThreadId = (void *)GetProcAddress(ntdll, "NtWaitForAlertByThreadId");
+-        }
+-
+-        if (!pNtAlertThreadByThreadId && !(cs->event = CreateEventW(NULL, FALSE, FALSE, NULL)))
++        /* WineHua OHOS: the thread-ID alert backend can leave a pending
++         * command queue with its worker asleep (also reproduced without a
++         * renderer). Use Wine's auto-reset server event for both sides.
++         * CSMT, the queues and graphics presentation remain unchanged. */
++        if (!(cs->event = CreateEventW(NULL, FALSE, FALSE, NULL)))
+         {
+             ERR("Failed to create command stream event.\n");
+             free(cs->data);

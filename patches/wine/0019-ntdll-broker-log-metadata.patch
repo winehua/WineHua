@@ -1,0 +1,62 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] ntdll: log broker argument metadata without command-line contents
+
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -166,27 +166,10 @@
+     if (!image_wlen || !(image = malloc( image_wlen * 3 + 1 ))) return argv;
+     len = ntdll_wcstoumbs( params->ImagePathName.Buffer, image_wlen, image, image_wlen * 3, FALSE );
+     image[len] = 0;
+-    /* TEMP-DIAG(BROKER-ARGV): dump raw params while debugging Steam self-relaunch. */
+-    {
+-        int cmd_wlen = params->CommandLine.Length / sizeof(WCHAR);
+-        char *cmd = NULL;
+-        int diag_i;
+-
+-        fprintf( stderr, "[broker-argv-diag] pid=%d image_wlen=%d image='%s'\n",
+-                 getpid(), image_wlen, image );
+-        if (cmd_wlen > 0 && (cmd = malloc( cmd_wlen * 3 + 1 )))
+-        {
+-            int cmd_len = ntdll_wcstoumbs( params->CommandLine.Buffer, cmd_wlen, cmd,
+-                                           cmd_wlen * 3, FALSE );
+-            cmd[cmd_len] = 0;
+-            fprintf( stderr, "[broker-argv-diag] pid=%d cmd_wlen=%d cmdline='%s'\n",
+-                     getpid(), cmd_wlen, cmd );
+-            free( cmd );
+-        }
+-        for (diag_i = 0; argv[diag_i] && diag_i < 8; diag_i++)
+-            fprintf( stderr, "[broker-argv-diag] pid=%d argv[%d]='%s'\n",
+-                     getpid(), diag_i, argv[diag_i] );
+-    }
++    /* Preserve startup correlation without logging credentials in argv. */
++    for (argc = 0; argv[argc]; ++argc);
++    TRACE("broker pid=%d image_wlen=%d cmd_wlen=%u argc=%d\n", getpid(),
++          image_wlen, (unsigned int)(params->CommandLine.Length / sizeof(WCHAR)), argc);
+     image_path = image;
+     /* ImagePathName may use the native DOS namespace even though the
+      * command line uses a Win32 drive path.  Normalize it before matching
+@@ -213,8 +196,7 @@
+             break;
+         }
+     }
+-    fprintf( stderr, "[broker-argv-diag] pid=%d consumed=%d image_len=%d image_path='%s'\n",
+-             getpid(), consumed, (int)image_len, image_path );
++    TRACE("broker pid=%d consumed=%d image_bytes=%zu\n", getpid(), consumed, image_len);
+ 
+     /* Truncated command line: Steam's crash path passes a CommandLine that is
+      * only a prefix of ImagePathName (e.g. "...\Steam\steam" while the image is
+@@ -901,8 +883,14 @@
+     }
+     if (!process_attr) process_attr = &empty_attr;
+ 
++#ifdef __OHOS__
++    TRACE("image_chars=%u cmd_chars=%u parent %p machine %x\n",
++          (unsigned int)(params->ImagePathName.Length / sizeof(WCHAR)),
++          (unsigned int)(params->CommandLine.Length / sizeof(WCHAR)), parent, machine);
++#else
+     TRACE( "%s image %s cmdline %s parent %p machine %x\n", debugstr_us( &path ),
+            debugstr_us( &params->ImagePathName ), debugstr_us( &params->CommandLine ), parent, machine );
++#endif
+ 
+     unixdir = get_unix_curdir( params );
+ 

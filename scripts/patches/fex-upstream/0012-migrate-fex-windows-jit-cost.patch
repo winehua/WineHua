@@ -1,0 +1,419 @@
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index f85b8ff64fa9a07c43e9a56618e8c2a68a33c9c2..c1678d3474f3999e3311c79cf76da85e31cae1a1 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -394,6 +394,7 @@ public:
+ #endif
+   fextl::unique_ptr<FEXCore::CPU::Dispatcher> Dispatcher;
+   DiskCache::DiskCache DiskCache;
++  bool WindowsJITDiagnosticsEnabled {};
+   CodeCache CodeCache;
+   fextl::unique_ptr<CodeMapWriter> CodeMapWriter;
+ 
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 4b537469ff3bf2b65e5a1cf9f235f86a551da6b5..ac62bad9865f45b2ff5ed6c11c751973f75de085 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -9,6 +9,8 @@ $end_info$
+ */
+ 
+ #include <cstdint>
++#include <cstdlib>
++#include <cstring>
+ #ifdef ZYDIS_DISASSEMBLER
+ #include <Zydis/Zydis.h>
+ #endif
+@@ -80,11 +82,41 @@ $end_info$
+ #include <utility>
+ #include <xxhash.h>
+ 
++
++namespace {
++struct JITDiagnosticClock {
++  static uint64_t Now() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++  }
++};
++struct JITDiagnosticReporter {
++  static void Report(const FEXCore::JITDiagnosticWindow& W) {
++    LogMan::Msg::IFmt(
++      "[FEX-JIT-PERF] schema=1 pid={} tid={} begin_ns={} end_ns={} window_us={} "
++      "entry={}/{}/{} frontend={}/{}/{} backend={}/{}/{} "
++      "compiled={} lookup_hit={} raced={} failed={} single_step={} cache_clear={} cache_rollover={}",
++      getpid(), FHU::Syscalls::gettid(), W.BeginNS, W.EndNS, (W.EndNS - W.BeginNS) / 1000,
++      W.Calls[0], W.TotalNS[0] / 1000, W.MaxNS[0] / 1000,
++      W.Calls[1], W.TotalNS[1] / 1000, W.MaxNS[1] / 1000,
++      W.Calls[2], W.TotalNS[2] / 1000, W.MaxNS[2] / 1000,
++      W.Outcomes[0], W.Outcomes[1], W.Outcomes[2], W.Outcomes[3], W.Outcomes[4], W.CacheClears, W.CacheRollovers);
++  }
++};
++using CompileDiagnosticScope = FEXCore::JITDiagnosticScope<JITDiagnosticClock, JITDiagnosticReporter>;
++} // namespace
++
+ namespace FEXCore::Context {
+ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
+   : HostFeatures {Features}
+   , CPUID {this}
+   , CodeCache {*this} {
++#ifdef _WIN32
++  const char* JITPerf = std::getenv("FEX_JITPERF");
++  WindowsJITDiagnosticsEnabled = JITPerf && std::strcmp(JITPerf, "1") == 0;
++  if (WindowsJITDiagnosticsEnabled) {
++    LogMan::Msg::IFmt("[FEX-JIT-PERF-INIT] schema=1 pid={} enabled=1 clock=steady_ns", getpid());
++  }
++#endif
+   if (!Config.Is64BitMode()) {
+     // When operating in 32-bit mode, the virtual memory we care about is only the lower 32-bits.
+     Config.VirtualMemSize = 1ULL << 32;
+@@ -439,6 +471,9 @@ FEXCore::Core::InternalThreadState* ContextImpl::CreateThread(const FEXCore::Cor
+   // Set up the thread manager state
+   Thread->CurrentFrame->Thread = Thread;
+ 
++  if (WindowsJITDiagnosticsEnabled) {
++    Thread->CompileDiagnostics = fextl::make_unique<FEXCore::JITCompileDiagnostics>();
++  }
+   InitializeCompiler(Thread);
+ 
+   Thread->CurrentFrame->State.DeferredSignalRefCount.Store(0);
+@@ -501,6 +536,10 @@ void ContextImpl::OnCodeBufferAllocated(const fextl::shared_ptr<CPU::CodeBuffer>
+ 
+ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer) {
+   FEXCORE_PROFILE_INSTANT("ClearCodeCache");
++  if (auto* Diagnostic = Thread->CompileDiagnostics.get()) {
++    ++Diagnostic->Window.CacheClears;
++    Diagnostic->Window.CacheRollovers += NewCodeBuffer;
++  }
+ 
+   if (NewCodeBuffer) {
+     // Allocate new CodeBuffer + L3 LookupCache and clear L1+L2 caches
+@@ -812,8 +851,11 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
+   }
+ 
+   // Generate IR + Meta Info
+-  auto [IRView, TotalInstructions, TotalInstructionsLength, StartAddr, Length, NeedsAddGuestCodeRanges] =
+-    GenerateIR(Thread, GuestRIP, Config.GDBSymbols(), MaxInst);
++  auto Generated = [&]() {
++    CompileDiagnosticScope Diagnostic(Thread->CompileDiagnostics.get(), FEXCore::JITDiagnosticPhase::Frontend);
++    return GenerateIR(Thread, GuestRIP, Config.GDBSymbols(), MaxInst);
++  }();
++  auto [IRView, TotalInstructions, TotalInstructionsLength, StartAddr, Length, NeedsAddGuestCodeRanges] = std::move(Generated);
+   if (!IRView) {
+     Thread->FrontendDecoder->ValidateDisownedOrFree();
+     Thread->OpDispatcher->ValidateDisownedOrFree();
+@@ -845,7 +887,10 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
+   // If the trap flag is set we generate single instruction blocks that each check to generate a single step exception.
+   bool TFSet = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
+ 
+-  auto CompiledCode = Thread->CPUBackend->EmitJITCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
++  auto CompiledCode = [&]() {
++    CompileDiagnosticScope Diagnostic(Thread->CompileDiagnostics.get(), FEXCore::JITDiagnosticPhase::Backend);
++    return Thread->CPUBackend->EmitJITCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
++  }();
+ 
+   // Release the IR
+   Thread->OpDispatcher->DelayedDisownBuffer();
+@@ -874,6 +919,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
+   }
+ 
+   auto Thread = Frame->Thread;
++  CompileDiagnosticScope Diagnostic(Thread->CompileDiagnostics.get(), FEXCore::JITDiagnosticPhase::Entry);
+   FEXCORE_PROFILE_SCOPED("CompileBlock");
+   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedJITTime);
+ 
+@@ -885,6 +931,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
+   // Is the code in the cache?
+   // The backends only check L1 and L2, not L3
+   if (auto HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP)) {
++    Diagnostic.SetOutcome(FEXCore::JITDiagnosticOutcome::CacheHit);
+     return HostCode;
+   }
+ 
+@@ -938,6 +985,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
+     return 0;
+   } else if (!DebugData) {
+     // DebugData wasn't populated, indicating another thread raced us for compiling this block
++    Diagnostic.SetOutcome(FEXCore::JITDiagnosticOutcome::Raced);
+     return reinterpret_cast<uintptr_t>(CodePtr);
+   }
+ 
+@@ -1033,12 +1081,14 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
+   Thread->FrontendDecoder->ValidateDisownedOrFree();
+   Thread->OpDispatcher->ValidateDisownedOrFree();
+ 
++  Diagnostic.SetOutcome(FEXCore::JITDiagnosticOutcome::Compiled);
+   return (uintptr_t)CodePtr;
+ }
+ 
+ uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
+   FEXCORE_PROFILE_SCOPED("CompileSingleStep");
+   auto Thread = Frame->Thread;
++  CompileDiagnosticScope Diagnostic(Thread->CompileDiagnostics.get(), FEXCore::JITDiagnosticPhase::Entry);
+ 
+   static_cast<ContextImpl*>(Thread->CTX)->SyscallHandler->PreCompile();
+ 
+@@ -1055,6 +1105,7 @@ uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, ui
+   // Clear any relocations that might have been generated
+   Thread->CPUBackend->ClearRelocations();
+ 
++  Diagnostic.SetOutcome(FEXCore::JITDiagnosticOutcome::SingleStep);
+   return (uintptr_t)CodePtr;
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index 227c211f6ceb102ddf6f805fef4902c4908ddcea..01f31a46e7edbe394620fcd3ce4b2eb3bbbc1ede 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -28,6 +28,8 @@
+ #include <array>
+ #include <bit>
+ #include <cstring>
++#include <string_view>
++#include <utility>
+ 
+ namespace FEXCore::CPU {
+ 
+@@ -538,6 +540,14 @@ void Dispatcher::EmitDispatcher() {
+     (void)b(&LoopTop);
+   }
+ 
++  // Specific, non-overlapping helper ranges under existing opt-in naming.
++  auto NameHelper = [&](uint64_t Begin, std::string_view Name) {
++    if (CTX->Config.GlobalJITNaming() || CTX->Config.BlockJITNaming()) {
++      CTX->Symbols.RegisterNamedRegion(reinterpret_cast<void*>(Begin), GetCursorAddress<uint64_t>() - Begin, Name);
++    }
++  };
++  NameHelper(reinterpret_cast<uint64_t>(DispatchPtr), "FEX_dispatcher_control");
++
+   auto EmitL1Lookup = [&](int rip_offset = 0) {
+     // L1 lookup after syscall. Mirrors the implementation in `ExitFunction`.
+     // Most syscall instructions just return to the following RIP, so it is highly likely to be in the L1 in tight loops.
+@@ -707,44 +717,86 @@ void Dispatcher::EmitDispatcher() {
+     (void)b(&LoopTop);
+   }
+ 
+-  EmitF64Sin();
+-  EmitF64Cos();
+-  EmitF64Tan();
+-  EmitF64F2XM1();
+-  EmitF64Scale();
+-  EmitF64Atan();
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64Sin();
++    NameHelper(Begin, "FEX_F64Sin");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64Cos();
++    NameHelper(Begin, "FEX_F64Cos");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64Tan();
++    NameHelper(Begin, "FEX_F64Tan");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64F2XM1();
++    NameHelper(Begin, "FEX_F64F2XM1");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64Scale();
++    NameHelper(Begin, "FEX_F64Scale");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64Atan();
++    NameHelper(Begin, "FEX_F64Atan");
++  }
+   F64Log2Constants Log2C;
+-  EmitF64FYL2X(Log2C);
+-  EmitF64FYL2XP1(Log2C);
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64FYL2X(Log2C);
++    NameHelper(Begin, "FEX_F64FYL2X");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64FYL2XP1(Log2C);
++    NameHelper(Begin, "FEX_F64FYL2XP1");
++  }
+   EmitF64Log2Constants(Log2C);
+-  EmitF64FPREM();
+-  EmitF64FPREM1();
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64FPREM();
++    NameHelper(Begin, "FEX_F64FPREM");
++  }
++  {
++    auto Begin = GetCursorAddress<uint64_t>();
++    EmitF64FPREM1();
++    NameHelper(Begin, "FEX_F64FPREM1");
++  }
+ 
+   // Interpreter fallbacks
+   {
+-    constexpr static std::array<FallbackABI, FABI_UNKNOWN> ABIS {{
+-      FABI_F80_I16_F32_PTR,
+-      FABI_F80_I16_F64_PTR,
+-      FABI_F80_I16_I16_PTR,
+-      FABI_F80_I16_I32_PTR,
+-      FABI_F32_I16_F80_PTR,
+-      FABI_F64_I16_F80_PTR,
+-      FABI_F64_F64_PTR,
+-      FABI_F64_F64_F64_PTR,
+-      FABI_I16_I16_F80_PTR,
+-      FABI_I32_I16_F80_PTR,
+-      FABI_I64_I16_F80_PTR,
+-      FABI_I64_I16_F80_F80_PTR,
+-      FABI_F80_I16_F80_PTR,
+-      FABI_F80_I16_F80_F80_PTR,
+-      FABI_F80x2_I16_F80_PTR,
+-      FABI_F64x2_F64_PTR,
+-      FABI_I32_I64_I64_V128_V128_I16,
+-      FABI_I32_V128_V128_I16,
++    constexpr static std::array<std::pair<FallbackABI, std::string_view>, FABI_UNKNOWN> ABIS {{
++      {FABI_F80_I16_F32_PTR, "FEX_ABI_F80_I16_F32_PTR"},
++      {FABI_F80_I16_F64_PTR, "FEX_ABI_F80_I16_F64_PTR"},
++      {FABI_F80_I16_I16_PTR, "FEX_ABI_F80_I16_I16_PTR"},
++      {FABI_F80_I16_I32_PTR, "FEX_ABI_F80_I16_I32_PTR"},
++      {FABI_F32_I16_F80_PTR, "FEX_ABI_F32_I16_F80_PTR"},
++      {FABI_F64_I16_F80_PTR, "FEX_ABI_F64_I16_F80_PTR"},
++      {FABI_F64_F64_PTR, "FEX_ABI_F64_F64_PTR"},
++      {FABI_F64_F64_F64_PTR, "FEX_ABI_F64_F64_F64_PTR"},
++      {FABI_I16_I16_F80_PTR, "FEX_ABI_I16_I16_F80_PTR"},
++      {FABI_I32_I16_F80_PTR, "FEX_ABI_I32_I16_F80_PTR"},
++      {FABI_I64_I16_F80_PTR, "FEX_ABI_I64_I16_F80_PTR"},
++      {FABI_I64_I16_F80_F80_PTR, "FEX_ABI_I64_I16_F80_F80_PTR"},
++      {FABI_F80_I16_F80_PTR, "FEX_ABI_F80_I16_F80_PTR"},
++      {FABI_F80_I16_F80_F80_PTR, "FEX_ABI_F80_I16_F80_F80_PTR"},
++      {FABI_F80x2_I16_F80_PTR, "FEX_ABI_F80x2_I16_F80_PTR"},
++      {FABI_F64x2_F64_PTR, "FEX_ABI_F64x2_F64_PTR"},
++      {FABI_I32_I64_I64_V128_V128_I16, "FEX_ABI_I32_I64_I64_V128_V128_I16"},
++      {FABI_I32_V128_V128_I16, "FEX_ABI_I32_V128_V128_I16"},
+     }};
+ 
+-    for (auto ABI : ABIS) {
++    for (auto [ABI, Name] : ABIS) {
++      auto Begin = GetCursorAddress<uint64_t>();
+       ABIPointers[ABI] = GenerateABICall(ABI);
++      NameHelper(Begin, Name);
+     }
+   }
+ 
+@@ -764,10 +816,6 @@ void Dispatcher::EmitDispatcher() {
+   End = GetCursorAddress<uint64_t>();
+   ClearICache(reinterpret_cast<void*>(DispatchPtr), End - reinterpret_cast<uint64_t>(DispatchPtr));
+ 
+-  if (CTX->Config.BlockJITNaming()) {
+-    fextl::string Name = fextl::fmt::format("Dispatch_{}", FHU::Syscalls::gettid());
+-    CTX->Symbols.RegisterNamedRegion(reinterpret_cast<void*>(DispatchPtr), End - reinterpret_cast<uint64_t>(DispatchPtr), Name);
+-  }
+   if (CTX->Config.GlobalJITNaming()) {
+     CTX->Symbols.RegisterJITSpace(reinterpret_cast<void*>(DispatchPtr), End - reinterpret_cast<uint64_t>(DispatchPtr));
+   }
+diff --git a/FEXCore/include/FEXCore/Debug/InternalThreadState.h b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+index 42feabb1cdd15c45eb2fe0980ef5ae7007961715..d15a4166d9ebde51de7ed5d735f5e9c08abbf56f 100644
+--- a/FEXCore/include/FEXCore/Debug/InternalThreadState.h
++++ b/FEXCore/include/FEXCore/Debug/InternalThreadState.h
+@@ -5,6 +5,7 @@
+ #include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/TypeDefines.h>
+ #include <FEXCore/Utils/LongJump.h>
++#include <FEXCore/Utils/JITCompileDiagnostics.h>
+ #include <FEXCore/fextl/memory.h>
+ #include <FEXCore/fextl/vector.h>
+ 
+@@ -104,6 +105,8 @@ struct alignas(FEXCore::Utils::FEX_PAGE_SIZE) InternalThreadState : public FEXCo
+   // This pointer is owned by the frontend.
+   FEXCore::SHMStats::ThreadStats* ThreadStats {};
+ 
++  NonMovableUniquePtr<FEXCore::JITCompileDiagnostics> CompileDiagnostics;
++
+   UnalignedExclusiveStore ExclusiveStore;
+ 
+   ///< Data pointer for exclusive use by the frontend
+diff --git a/FEXCore/include/FEXCore/Utils/JITCompileDiagnostics.h b/FEXCore/include/FEXCore/Utils/JITCompileDiagnostics.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2b9cf96632568a01ede83e179cdc227f7c216edf
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/JITCompileDiagnostics.h
+@@ -0,0 +1,75 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++namespace FEXCore {
++enum class JITDiagnosticPhase : size_t { Entry, Frontend, Backend, Count };
++enum class JITDiagnosticOutcome : size_t { Compiled, CacheHit, Raced, Failed, SingleStep, Count };
++
++struct JITDiagnosticWindow {
++  uint64_t BeginNS {}, EndNS {};
++  std::array<uint64_t, static_cast<size_t>(JITDiagnosticPhase::Count)> Calls {}, TotalNS {}, MaxNS {};
++  std::array<uint64_t, static_cast<size_t>(JITDiagnosticOutcome::Count)> Outcomes {};
++  uint64_t CacheClears {}, CacheRollovers {};
++};
++
++// Owned by one emulated thread. No global lock or cross-thread totals.
++struct JITCompileDiagnostics {
++  JITDiagnosticWindow Window {};
++  unsigned ActiveEntries {};
++  bool Begun {};
++
++  void Begin(uint64_t Now) {
++    if (!Begun) { Window.BeginNS = Now; Begun = true; }
++  }
++  void Record(JITDiagnosticPhase Phase, uint64_t Duration) {
++    auto Index = static_cast<size_t>(Phase);
++    ++Window.Calls[Index];
++    Window.TotalNS[Index] += Duration;
++    if (Duration > Window.MaxNS[Index]) Window.MaxNS[Index] = Duration;
++  }
++  bool TakeWindow(uint64_t Now, JITDiagnosticWindow& Out) {
++    // Report at an outer entry return, after its invalidation lock is released.
++    // No periodic timer, signal logging or per-block output.
++    if (!Begun || ActiveEntries || Now < Window.BeginNS || Now - Window.BeginNS < 1'000'000'000) return false;
++    Window.EndNS = Now;
++    Out = Window;
++    Window = {};
++    Window.BeginNS = Now;
++    return true;
++  }
++};
++
++template<class Clock, class Reporter>
++class JITDiagnosticScope {
++public:
++  JITDiagnosticScope(JITCompileDiagnostics* Stats, JITDiagnosticPhase Phase)
++    : Stats {Stats}, Phase {Phase}, BeginNS {Stats ? Clock::Now() : 0} {
++    if (Stats) {
++      Stats->Begin(BeginNS);
++      if (Phase == JITDiagnosticPhase::Entry) ++Stats->ActiveEntries;
++    }
++  }
++  JITDiagnosticScope(const JITDiagnosticScope&) = delete;
++  JITDiagnosticScope& operator=(const JITDiagnosticScope&) = delete;
++  void SetOutcome(JITDiagnosticOutcome Value) { Outcome = Value; }
++  ~JITDiagnosticScope() {
++    if (!Stats) return;
++    const auto Now = Clock::Now();
++    Stats->Record(Phase, Now >= BeginNS ? Now - BeginNS : 0);
++    if (Phase == JITDiagnosticPhase::Entry) {
++      ++Stats->Window.Outcomes[static_cast<size_t>(Outcome)];
++      --Stats->ActiveEntries;
++      JITDiagnosticWindow Window;
++      if (Stats->TakeWindow(Now, Window)) Reporter::Report(Window);
++    }
++  }
++private:
++  JITCompileDiagnostics* Stats;
++  JITDiagnosticPhase Phase;
++  uint64_t BeginNS;
++  JITDiagnosticOutcome Outcome {JITDiagnosticOutcome::Failed};
++};
++} // namespace FEXCore

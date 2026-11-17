@@ -9,11 +9,29 @@
 extern "C" {
 
 void x11_toplevel_bridge_post_created(uint32_t id, int32_t w, int32_t h,
-                                      int32_t x, int32_t y)
+                                      int32_t x, int32_t y, uint32_t pid)
 {
     WaylandServer::GetInstance()->PostToplevelEvent(
         id, ToplevelEventType::Created,
-        ToplevelEventBus::JsonCreatedAt(w, h, x, y));
+        ToplevelEventBus::JsonCreatedAt(w, h, x, y, pid));
+}
+
+void x11_toplevel_bridge_post_move(uint32_t id, bool moving)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(id,
+        moving ? ToplevelEventType::MoveStart : ToplevelEventType::MoveEnd);
+}
+
+void x11_toplevel_bridge_post_maximized(uint32_t id, bool maximized)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(id,
+        maximized ? ToplevelEventType::Maximized : ToplevelEventType::Unmaximized);
+}
+
+void x11_toplevel_bridge_post_geometry(uint32_t id, int x, int y, int w, int h)
+{
+    WaylandServer::GetInstance()->PostToplevelEvent(id, ToplevelEventType::Geometry,
+        ToplevelEventBus::JsonGeometry(x, y, w, h));
 }
 
 void x11_toplevel_bridge_post_title(uint32_t id, const char *title)

@@ -1,0 +1,125 @@
+From 23b675654fba18c855938be700ff79e3b9c13fad Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: production-diagnostics-policy
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+scripts/wine_runtime_diagnostics.py
+
+diff --git a/dlls/ntdll/unix/ohos_virtual.c b/dlls/ntdll/unix/ohos_virtual.c
+index 05311c427c500cfbb8af1bf6f94e63110a86acb5..7ce7ffec206af7fbfbb2d19da2d46febd3b84036 100644
+--- a/dlls/ntdll/unix/ohos_virtual.c
++++ b/dlls/ntdll/unix/ohos_virtual.c
+@@ -45,6 +45,7 @@
+ #include "winnt.h"
+ #include "winternl.h"
+ #include "unix_private.h"
++#include "ohos_runtime_diagnostics.h"
+ 
+ #include "ohos_virtual.h"
+ #include "wine/debug.h"
+@@ -57,7 +58,8 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+ 
+ #ifdef __OHOS__
+-static int ohos_diag_quiet;
++volatile sig_atomic_t ohos_runtime_diagnostics_enabled;
++static int ohos_diag_quiet = 1;
+ static int ohos_rpgxp_diagnostics;
+ #ifdef __aarch64__
+ int ohos_call_pe_fault( void *fn, void *teb, int sig, int si_code, void *addr,
+@@ -1548,7 +1550,7 @@ static int ohos_route_host_fault( int sig, siginfo_t *info, void *uctx )
+          * its quota.  Skip the single zero value if the counter wraps. */
+         do fault_seq = __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED );
+         while (!fault_seq);
+-        if (fault_seq <= 65536)
++        if (ohos_runtime_diagnostics_enabled && fault_seq <= 65536)
+         {
+             struct ohos_signal_log log = {{0}, 0};
+             const int saved_errno = errno;
+@@ -1688,7 +1690,12 @@ void ohos_install_sigchain_fault_handlers( void (*segv_handler)(int, siginfo_t *
+         }
+     }
+ 
+-    ohos_diag_quiet = quiet && quiet[0] == '1';
++    /* Read the environment once, before registering signal handlers. */
++    ohos_runtime_diagnostics_enabled =
++        !(quiet && quiet[0] == '1') &&
++        ohos_diagnostics_flag( getenv( "WINEHUA_RUNTIME_DIAGNOSTICS" ) );
++    ohos_diag_quiet = (quiet && quiet[0] == '1') ||
++        (!ohos_runtime_diagnostics_enabled && !ohos_diagnostics_flag( rpgxp_diagnostics ));
+     ohos_rpgxp_diagnostics = !ohos_diag_quiet && rpgxp_diagnostics &&
+                              rpgxp_diagnostics[0] == '1' && !rpgxp_diagnostics[1];
+ 
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index a29f4180b73bed06247661b0fc6e357609a79318..f20c137c63724b024c9f8095dd5072e23d6346ac 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -58,6 +58,7 @@
+ #include "winternl.h"
+ #include "wine/asm.h"
+ #include "unix_private.h"
++#include "ohos_runtime_diagnostics.h"
+ #include "wine/debug.h"
+ #ifdef __OHOS__
+ #include "ohos_virtual.h"
+@@ -1422,7 +1423,7 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+     ucontext_t *context = sigcontext;
+ 
+-    write( 2, "[QUIT-PROBE] signal-enter\n", sizeof("[QUIT-PROBE] signal-enter\n") - 1 );
++    ohos_runtime_diagnostics_write( 2, "[QUIT-PROBE] signal-enter\n", sizeof("[QUIT-PROBE] signal-enter\n") - 1 );
+     if (!is_inside_syscall( SP_sig(context) )) user_mode_abort_thread( 0, get_syscall_frame() );
+     abort_thread(0);
+ }
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 107cf7344c4e388e2fc0eb0f7e684ab1ab0f2afc..8a412da1de16975809f3a0f0aba0fe8e64ca1cc4 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -76,6 +76,7 @@
+ #include "wine/server.h"
+ #include "wine/debug.h"
+ #include "unix_private.h"
++#include "ohos_runtime_diagnostics.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(thread);
+ WINE_DECLARE_DEBUG_CHANNEL(seh);
+@@ -1232,7 +1233,7 @@ static DECLSPEC_NORETURN void pthread_exit_on_unix_stack( int status )
+  */
+ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ {
+-    write( 2, "[QUIT-PROBE] pthread-exit-wrapper\n", sizeof("[QUIT-PROBE] pthread-exit-wrapper\n") - 1 );
++    ohos_runtime_diagnostics_write( 2, "[QUIT-PROBE] pthread-exit-wrapper\n", sizeof("[QUIT-PROBE] pthread-exit-wrapper\n") - 1 );
+     close( ntdll_get_thread_data()->alert_fd );
+     close( ntdll_get_thread_data()->wait_fd[0] );
+     close( ntdll_get_thread_data()->wait_fd[1] );
+@@ -1718,7 +1719,7 @@ done:
+ void abort_thread( int status )
+ {
+     const void *caller = __builtin_extract_return_addr( __builtin_return_address(0) );
+-    write( 2, "[QUIT-PROBE] abort-thread\n", sizeof("[QUIT-PROBE] abort-thread\n") - 1 );
++    ohos_runtime_diagnostics_write( 2, "[QUIT-PROBE] abort-thread\n", sizeof("[QUIT-PROBE] abort-thread\n") - 1 );
+     /* WineHua (2026-10-01 r4, 专家): 退出链路补证据 —— status/caller/tid +
+      * 最后一次故障序号, 不受 WINEHUA_STEAM_BOUNDARY_TRACE 门控。 */
+ #ifdef __OHOS__
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 39fbebf595db1b54bff7200f7e2d1f08ef936b57..3d96f71dc3e9d318e6e0845b0e8fb13bb7d47eee 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -103,6 +103,7 @@
+ #include "wine/list.h"
+ #include "wine/rbtree.h"
+ #include "unix_private.h"
++#include "ohos_runtime_diagnostics.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+@@ -4352,6 +4353,7 @@ static void ohos_teb_probe( const char *event, void *ptr, SIZE_T size, ULONG val
+     static unsigned int count;
+     char buf[240];
+     int n, saved_errno = errno;
++    if (!ohos_runtime_diagnostics_enabled) return;
+     if (++count > 8192) return;
+     n = snprintf( buf, sizeof(buf),
+                   "[TEB-PROBE] pid=%d tid=%ld event=%s ptr=%p size=%lx value=%x current=%p\n",

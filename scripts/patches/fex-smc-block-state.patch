@@ -1,0 +1,26 @@
+Backport: FEX-Emu/FEX b21c49352ea56f23ececbe3c87f0fc681be8024b
+Upstream: https://github.com/FEX-Emu/FEX/pull/5618
+Subject: Core: Start a new block for the next op in full SMC check
+
+Full SMC validation creates IR blocks within one guest basic block. Reset
+block-local SSA caches at both successors so vector constants and flags do
+not outlive their register-allocation scope. Applies to WOW64 and ARM64EC.
+
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -684,6 +684,7 @@
+           Thread->OpDispatcher->SetTrueJumpTarget(InvalidateCodeCond, CodeWasChangedBlock);
+ 
+           Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
++          Thread->OpDispatcher->StartNewBlock();
+           Thread->OpDispatcher->_ThreadRemoveCodeEntry();
+           Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, InstAddress - GuestRIP));
+ 
+@@ -691,6 +692,7 @@
+ 
+           Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
+           Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
++          Thread->OpDispatcher->StartNewBlock();
+         }
+ 
+         if (TableInfo && TableInfo->OpcodeDispatcher.OpDispatch) {

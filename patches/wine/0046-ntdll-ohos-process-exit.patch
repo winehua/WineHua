@@ -1,0 +1,12 @@
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1615,2 +1615,9 @@
++#ifdef __OHOS__
++    /* NativeChildProcess inherits appspawn's exit() interposer, which aborts
++     * even for exit(0). Windows DLL shutdown has already run at this point;
++     * terminate this Wine process without entering the appspawn host CRT. */
++    _exit( status );
++#else
+     exit( status );
++#endif
+ }

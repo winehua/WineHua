@@ -1,0 +1,102 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5977,6 +5977,64 @@
+ }
+ 
+ 
++
++#if defined(__OHOS__) && defined(__aarch64__) && defined(_WIN64)
++/* Private native ABI, discovered by the VirGL vtest client in an already
++ * loaded ntdll.so. A v1 mapping owns a complete Wine virtual allocation;
++ * it must be released through the paired v1 callback, never plain munmap.
++ * This does not interpose libc allocation or change the PE address contract. */
++DECLSPEC_EXPORT void *winehua_map_shared_buffer_v1( int fd, size_t size );
++DECLSPEC_EXPORT void winehua_unmap_shared_buffer_v1( void *ptr );
++
++void winehua_unmap_shared_buffer_v1( void *ptr )
++{
++    SIZE_T size = 0;
++    NTSTATUS status;
++
++    if (!ptr) return;
++    status = NtFreeVirtualMemory( NtCurrentProcess(), &ptr, &size, MEM_RELEASE );
++    if (status) ERR( "shared buffer release failed: %08x\n", status );
++}
++
++void *winehua_map_shared_buffer_v1( int fd, size_t size )
++{
++    const char *enabled = getenv( "WINEHUA_VIRGL_LOW_MAP" );
++    SIZE_T allocation_size;
++    void *ptr = NULL, *mapped;
++
++    if (!is_wow64() || !enabled || strcmp( enabled, "1" ) || fd < 0 || !size)
++        return NULL;
++    if (size > (SIZE_T)0x7fff0000 - host_page_mask) return NULL;
++    allocation_size = ROUND_SIZE( 0, size, host_page_mask );
++
++    /* ZeroBits=1 bounds the WHOLE allocation below 2 GiB, including non-LAA
++     * callers. NtAllocateVirtualMemory claims and records the range under
++     * Wine's virtual lock. MAP_FIXED replaces only this owned allocation,
++     * not a hole inferred from a racy /proc maps scan or a kernel hint. */
++    if (NtAllocateVirtualMemory( NtCurrentProcess(), &ptr, 1, &allocation_size,
++                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ))
++        return NULL;
++    if ((ULONG_PTR)ptr >= 0x80000000 || allocation_size > 0x80000000 - (ULONG_PTR)ptr
++            || ((ULONG_PTR)ptr & host_page_mask))
++    {
++        winehua_unmap_shared_buffer_v1( ptr );
++        return NULL;
++    }
++
++    mapped = mmap( ptr, allocation_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0 );
++    if (mapped == MAP_FAILED)
++    {
++        winehua_unmap_shared_buffer_v1( ptr );
++        return NULL;
++    }
++    assert( mapped == ptr );
++    /* The kernel mapping retains the backing store; the caller may close fd.
++     * There is one physical backing, so no map-in / flush-out shadow copy. */
++    return ptr;
++}
++#endif
++
++
+ /***********************************************************************
+  *             NtProtectVirtualMemory   (NTDLL.@)
+  *             ZwProtectVirtualMemory   (NTDLL.@)
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1919,8 +1919,32 @@
+ /*************************************************************************
+  *		init_peb
+  */
++
++/* Only this opt-in is imported from the child's Windows environment. A BAT
++ * changes that environment, not Unix environ forwarded by the NCP broker.
++ * Run before any DLL initialization/Mesa resource creation, once per process. */
++static void winehua_init_shared_map_environment( const WCHAR *env )
++{
++#if defined(__OHOS__) && defined(__aarch64__) && defined(_WIN64)
++    static const WCHAR name[] = {'W','I','N','E','H','U','A','_','V','I','R','G','L','_','L','O','W','_','M','A','P','=',0};
++    const size_t length = ARRAY_SIZE(name) - 1;
++
++    while (env && *env)
++    {
++        if (!wcsnicmp( env, name, length ))
++        {
++            setenv( "WINEHUA_VIRGL_LOW_MAP", env[length] == '1' && !env[length + 1] ? "1" : "0", 1 );
++            return;
++        }
++        env += wcslen( env ) + 1;
++    }
++    unsetenv( "WINEHUA_VIRGL_LOW_MAP" );
++#endif
++}
++
+ static void init_peb( RTL_USER_PROCESS_PARAMETERS *params, void *module )
+ {
++    winehua_init_shared_map_environment( params->Environment );
+     peb->ImageBaseAddress           = module;
+     peb->ProcessParameters          = params;
+     peb->OSMajorVersion             = 10;

@@ -1,19 +1,28 @@
 #pragma once
+#include "renderer_repaint_state.h"
+#include "common/texture_upload_stats.h"
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <native_window/external_window.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <thread>
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
+#include <memory>
 #include "compositor/frame/geometry.h"
+#include "compositor/frame/gpu_desktop_scene.h"
+#include "compositor/frame/zc_bridge.h"
 #include "compositor/frame/presented_frame.h"
 #include "compositor/frame/direct_pass_policy.h"  // DirectPassPolicy (直传能力位接口, 任务 3)
 
 struct OH_NativeImage;
 class DesktopCompositor;
+uint64_t GetEglAcceptedPresents();
+uint64_t GetEglAcceptedGpuPresents();
+namespace winehua::direct { class DirectVulkanDesktopCompositor; }
 
 // 最小 EGL 渲染器: 从 DesktopCompositor 取帧 -> GL 纹理 -> XComponent 上屏
 // 所有实例共享同一个 EGLDisplay (避免反复 init/terminate 导致 GPU 驱动竞争)
@@ -27,20 +36,32 @@ public:
     // compositor 生命周期长于一切 renderer (WaylandServer 单例成员), 只读
     // 引用共享与 InputResolver/PopupManager 注入同模式, 无新锁。
     explicit EglRenderer(DesktopCompositor& compositor);
+    ~EglRenderer();
 
     // 获取/初始化共享的 EGLDisplay (首次调用时初始化, 线程安全)
     static EGLDisplay GetSharedDisplay();
 
+    // Broker ownership may arrive after Init for independent Linux carriers.
+    void SetIsolatedToplevel(bool isolated) { isolatedToplevel_ = isolated; }
     bool Init(OHNativeWindow* window, int w, int h);
     void Shutdown();
 
-    uint32_t GetToplevelId() const { return toplevelId_; }
-    void SetToplevelId(uint32_t id) { toplevelId_ = id; }
+    uint32_t GetToplevelId() const { return toplevelId_.load(std::memory_order_relaxed); }
+    void SetToplevelId(uint32_t id) { toplevelId_.store(id, std::memory_order_relaxed); }
+    int64_t GetSurfaceId() const { return surfaceId_; }
+    void SetSurfaceId(int64_t id) { surfaceId_ = id; }
+    void RequestRedraw() { repaint_.RequestRedraw(); vsyncCv_.notify_all(); }
+    void SetPaused(bool paused) {
+        if (!paused) RequestRedraw();
+        renderPaused_.store(paused, std::memory_order_release);
+        vsyncCv_.notify_all();
+    }
     // ArkTS onSurfaceChanged 声明的 surface 尺寸 (只作诊断基准, 见成员区注释)。
     // **不写 width_/height_**: 那两个字段是"实测 surface 尺寸", 被声明值污染后
     // 循环里的"实测 == 已画"判定会误判 (2026-09-14 黑边根因)
     void SetSize(int w, int h) {
         expectW_ = w; expectH_ = h;
+        RequestRedraw();
     }
     // 拖拽缩放中: 整帧拉伸填满 surface (见 ComputeFrameDisplayRect)。拖拽时
     // 窗口先变、Wine 新帧未到的空档里, 等比 fit 会按旧帧比例留黑边; 拉伸让
@@ -66,13 +87,24 @@ public:
     uint32_t DirectPassCapabilities() const override;
 
 private:
+    bool RootCompositing() const;
+    std::atomic<bool> isolatedToplevel_ = false;
+    struct ZeroCopyConsumer;
     void RenderLoop();
+    void VulkanRenderLoop();
+    std::unique_ptr<winehua::direct::DirectVulkanDesktopCompositor> vulkanDesktop_;
     static void OnVSync(long long timestamp, void* data);
     static void OnZeroCopyFrameAvailable(void* data);
     bool InitZeroCopyConsumer();
     bool TryAttachZeroCopySurface(uint32_t rendererToplevelId);
-    bool UpdateZeroCopyFrame(int& width, int& height);
-    void ReleaseZeroCopyBinding();
+    bool UpdateZeroCopyFrame(ZeroCopyConsumer& consumer, int& width, int& height);
+    // 诊断 (2026-09-20, 默认关): WINEHUA_ZC_PIXEL_DUMP=<path> 时把 ZC 层绘制后
+    // 画布上该区域的像素采样落盘, 用于区分"纹理是黑的"与"合成后才是黑的"。
+    void DumpZeroCopyLayerPixels(ZeroCopyConsumer& consumer, int x, int y, int w, int h);
+    void ReleaseZeroCopyBinding(ZeroCopyConsumer& consumer);
+    bool SnapshotZeroCopyScene();
+    void DrawZeroCopyScene(winehua::TextureUploadStats* uploads = nullptr);
+    void ClearZeroCopyShmTextures();
     void ShutdownZeroCopyConsumer();
 
     // 整帧的显示矩形 (surface 坐标): 常态 = letterbox_ (等比 fit); 拖拽缩放中
@@ -105,53 +137,76 @@ private:
     GLuint texture_ = 0;
     GLuint program_ = 0;
     GLuint vbo_ = 0;
-    GLuint occluderVbo_ = 0;  // desktop 模式 zero-copy 遮挡区域重绘 (动态 UV quad)
-    OH_NativeImage* zeroCopyImage_ = nullptr;
-    OHNativeWindow* zeroCopyProducerWindow_ = nullptr;
-    GLuint zeroCopyTexture_ = 0;
+    struct ZeroCopyConsumer {
+        EglRenderer* renderer = nullptr;
+        // Identity is set before listener registration and stays immutable.
+        OH_NativeImage* image = nullptr;
+        OHNativeWindow* producerWindow = nullptr;
+        GLuint texture = 0;
+        std::atomic<bool> frameAvailable{false};
+        std::atomic<uint64_t> frameSignals{0};
+        // 2026-09-20: 真实 present 活性 (回调写入) + 消费者自愈簿记
+        std::atomic<uint64_t> lastSignalUs{0};
+        uint64_t attachUs = 0;        // 本代消费者 attach 时刻
+        uint64_t lastReattachUs = 0;  // 最近一次"陈旧消费者重建"
+        uint64_t reattachCount = 0;
+        uint64_t dumpCount = 0;       // WINEHUA_ZC_PIXEL_DUMP 诊断计数
+        uint64_t dumpMax = 400;       // 诊断落盘行数上限 (有界)
+        FILE* dumpFile = nullptr;     // 诊断输出 (默认 nullptr = 关)
+        bool dumpOpenFailed = false; // 无效诊断路径只告警一次
+        uint64_t frames = 0;
+        uint64_t updates = 0;
+        uint64_t lastConsumedSignal = 0;
+        uint64_t coalescedSignals = 0;
+        uint64_t duplicateTimestamps = 0;
+        uint64_t failures = 0;
+        uint64_t timestampRegressions = 0;
+        int64_t lastTimestamp = 0;
+        uint64_t surfaceKey = 0;
+        uint32_t clientPid = 0;
+        uint32_t surfaceId = 0;
+        int sourceW = 0;
+        int sourceH = 0;
+        int layerX = 0;
+        int layerY = 0;
+        int layerW = 0;
+        int layerH = 0;
+        bool registered = false;
+        bool listenerSet = false;
+        bool hasFrame = false;
+        bool vulkanSource = false;
+        bool geometryDirty = false;
+        bool fullscreen = false;  // 所属 toplevel 全屏: ZC 层保比例铺满显示区
+        uint32_t consecutiveFailures = 0;
+        float transform[16] = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        };
+        float samplingTransform[16] = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        };
+        ZeroCopyLayerInfo layer;
+    };
+    std::vector<std::unique_ptr<ZeroCopyConsumer>> zeroCopyConsumers_;
     GLuint zeroCopyProgram_ = 0;
     GLint zeroCopyTransformLocation_ = -1;
-    std::atomic<bool> zeroCopyFrameAvailable_{false};
-    std::atomic<uint64_t> zeroCopyFrameSignals_{0};
-    uint64_t zeroCopyFrames_ = 0;
-    uint64_t zeroCopyUpdates_ = 0;
-    uint64_t zeroCopyLastConsumedSignal_ = 0;
-    uint64_t zeroCopyCoalescedSignals_ = 0;
-    uint64_t zeroCopyDuplicateTimestamps_ = 0;
-    uint64_t zeroCopyFailures_ = 0;
-    uint64_t zeroCopyTimestampRegressions_ = 0;
-    int64_t zeroCopyLastTimestamp_ = 0;
-    uint64_t zeroCopySurfaceKey_ = 0;
     uint64_t zeroCopyLastQueryUs_ = 0;
-    uint32_t zeroCopyClientPid_ = 0;
-    uint32_t zeroCopySurfaceId_ = 0;
-    int zeroCopySourceW_ = 0;
-    int zeroCopySourceH_ = 0;
-    int zeroCopyLayerX_ = 0;
-    int zeroCopyLayerY_ = 0;
-    int zeroCopyLayerW_ = 0;
-    int zeroCopyLayerH_ = 0;
-    bool zeroCopyRegistered_ = false;
-    // 无新帧跳过 swap 的累计次数 (诊断: 帧合成后多久没上屏)
+    uint64_t zeroCopyDiagLastUs_ = 0;
     uint64_t skipFrames_ = 0;
-    bool zeroCopyListenerSet_ = false;
-    bool zeroCopyHasFrame_ = false;
-    bool zeroCopyVulkanSource_ = false;
-    bool zeroCopyGeometryDirty_ = false;
-    bool zeroCopyFullscreen_ = false;  // 所属 toplevel 全屏: ZC 层保比例铺满显示区
-    uint32_t zeroCopyConsecutiveFailures_ = 0;
-    float zeroCopyTransform_[16] = {
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1,
+    bool zeroCopySceneDirty_ = false;
+    GpuDesktopSnapshotCache zeroCopySnapshots_;
+    GpuDesktopScene zeroCopyScene_;
+    struct ShmLayerTexture {
+        GLuint texture = 0;
+        std::shared_ptr<const std::vector<uint8_t>> pixels;
+        int width = 0, height = 0;
     };
-    float zeroCopySamplingTransform_[16] = {
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1,
-    };
+    std::unordered_map<uint64_t, ShmLayerTexture> zeroCopyShmTextures_;
 
     int width_ = 0, height_ = 0;   // 实测 surface 尺寸 (每轮 eglQuerySurface 刷新, 只此一处语义)
     int frameW_ = 0, frameH_ = 0;  // Wine 帧内容尺寸 (坐标转换)
@@ -174,7 +229,10 @@ private:
     uint64_t vsyncSequence_ = 0;
     std::atomic<long long> vsyncPeriodNs_{16666667};
 
-    uint32_t toplevelId_ = 0;
+    std::atomic<uint32_t> toplevelId_{0};
+    std::atomic<bool> renderPaused_{false};
+    int64_t surfaceId_ = 0;
+    winehua::RendererRepaintState repaint_;
 
     // frame compositor 引用 (构造注入, 见构造函数注释): 取帧/层几何/ZC
     // 状态机直连目标 — 渲染线程唯一需要的外部 compositor 入口。

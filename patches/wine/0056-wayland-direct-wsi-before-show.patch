@@ -1,0 +1,176 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] wayland: lease hidden Direct WSI owners before ShowWindow
+
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -252,6 +252,8 @@
+     struct wl_subsurface *wl_subsurface;
+     struct wp_viewport *wp_viewport;
+ #ifdef __OHOS__
++    HWND winehua_direct_owner;
++    uint64_t winehua_direct_owner_generation;
+     void *winehua_direct_window;
+     void (*winehua_direct_window_release)(void *);
+ #endif
+@@ -416,6 +418,11 @@
+     BOOL is_fullscreen;
+     BOOL managed;
+     BOOL layered_attribs_set;
++#ifdef __OHOS__
++    unsigned int winehua_direct_early_refs;
++    uint64_t winehua_direct_early_generation;
++    BOOL winehua_direct_early_wsi;
++#endif
+ };
+ 
+ struct wayland_win_data *wayland_win_data_get(HWND hwnd);
+@@ -424,6 +431,10 @@
+ 
+ struct wayland_client_surface *get_client_surface(HWND hwnd);
+ void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
++#ifdef __OHOS__
++BOOL winehua_prepare_direct_surface(HWND hwnd, HWND *owner, uint64_t *generation);
++void winehua_release_direct_surface(HWND owner, uint64_t generation);
++#endif
+ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region);
+ struct wayland_shm_buffer *get_window_surface_contents(HWND hwnd);
+ void ensure_window_surface_contents(HWND hwnd);
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -207,7 +207,15 @@
+     visible = ((NtUserGetWindowLongW(data->hwnd, GWL_STYLE) & WS_VISIBLE) == WS_VISIBLE) &&
+                (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
+ 
+-    if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
++    if (!visible)
++    {
++        role = WAYLAND_SURFACE_ROLE_NONE;
++#ifdef __OHOS__
++        /* A Direct swapchain may precede ShowWindow. Allocate its WSI
++         * owner without mapping any buffer or changing Win32 visibility. */
++        if (data->winehua_direct_early_wsi) role = WAYLAND_SURFACE_ROLE_TOPLEVEL;
++#endif
++    }
+     else if (toplevel_surface) role = WAYLAND_SURFACE_ROLE_SUBSURFACE;
+     else role = WAYLAND_SURFACE_ROLE_TOPLEVEL;
+ 
+@@ -258,6 +266,71 @@
+ 
+     return TRUE;
+ }
++
++#ifdef __OHOS__
++/* Reserve only the real GA_ROOT. Native WSI needs a producer before the first
++ * ShowWindow, whereas xdg mapping remains driven by the normal visible window
++ * buffer. The lease prevents a configure callback from deleting that producer
++ * while vkCreateWin32SurfaceKHR is waiting for the native IPC attachment. */
++static uint64_t winehua_direct_lease_generation; /* protected by win_data_mutex */
++
++BOOL winehua_prepare_direct_surface(HWND hwnd, HWND *owner, uint64_t *generation)
++{
++    HWND root = NtUserGetAncestor(hwnd, GA_ROOT);
++    struct wayland_win_data *data;
++    BOOL prepared;
++
++    *owner = 0;
++    *generation = 0;
++    if (!root || !(data = wayland_win_data_get(root))) return FALSE;
++    /* An owned popup already attached to a different root must not be promoted
++     * to an independent toplevel merely to obtain a native producer. */
++    if (data->wayland_surface && data->wayland_surface->role == WAYLAND_SURFACE_ROLE_SUBSURFACE)
++    {
++        wayland_win_data_release(data);
++        return FALSE;
++    }
++    if (!data->winehua_direct_early_generation)
++        data->winehua_direct_early_generation = ++winehua_direct_lease_generation;
++    *generation = data->winehua_direct_early_generation;
++    ++data->winehua_direct_early_refs;
++    if (!NtUserIsWindowVisible(root)) data->winehua_direct_early_wsi = TRUE;
++    prepared = (data->wayland_surface && wayland_surface_is_toplevel(data->wayland_surface)) ||
++               (wayland_win_data_create_wayland_surface(data, NULL) &&
++                wayland_surface_is_toplevel(data->wayland_surface));
++    wayland_win_data_release(data);
++    if (!prepared)
++    {
++        winehua_release_direct_surface(root, *generation);
++        *generation = 0;
++        return FALSE;
++    }
++    *owner = root;
++    return TRUE;
++}
++
++void winehua_release_direct_surface(HWND owner, uint64_t generation)
++{
++    struct wayland_win_data *data;
++
++    if (!(data = wayland_win_data_get(owner))) return;
++    /* HWND reuse must not let an old client retire a new window's producer. */
++    if (data->winehua_direct_early_generation != generation)
++    {
++        wayland_win_data_release(data);
++        return;
++    }
++    if (data->winehua_direct_early_refs) --data->winehua_direct_early_refs;
++    /* Failure/never-shown destruction releases an unused reservation. A
++     * visible window and ordinary hide/minimize continue their old lifecycle. */
++    if (!data->winehua_direct_early_refs && data->winehua_direct_early_wsi)
++    {
++        data->winehua_direct_early_wsi = FALSE;
++        if (data->wayland_surface) wayland_win_data_create_wayland_surface(data, NULL);
++    }
++    wayland_win_data_release(data);
++}
++#endif
+ 
+ static void wayland_surface_update_state_toplevel(struct wayland_surface *surface)
+ {
+@@ -510,6 +583,9 @@
+     }
+     data->is_fullscreen = fullscreen;
+     data->managed = managed;
++#ifdef __OHOS__
++    if (NtUserIsWindowVisible(hwnd)) data->winehua_direct_early_wsi = FALSE;
++#endif
+ 
+     if (!surface)
+     {
+@@ -530,6 +606,10 @@
+             else
+                 wayland_client_surface_attach(client, NULL);
+         }
++
++#ifdef __OHOS__
++        if (data->winehua_direct_early_wsi) keep_toplevel = TRUE;
++#endif
+ 
+         /* A hidden/recreated GPU-only parent may be absent or role-less.
+          * Restore the normal visibility/role lifecycle before refreshing its
+--- a/dlls/winewayland.drv/vulkan.c
++++ b/dlls/winewayland.drv/vulkan.c
+@@ -123,6 +123,12 @@
+         instance->host.instance, "vkCreateSurfaceOHOS");
+     if (!create_surface) return VK_ERROR_EXTENSION_NOT_PRESENT;
+     if (!(surface = wayland_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    if (!winehua_prepare_direct_surface(hwnd, &surface->winehua_direct_owner,
++                                        &surface->winehua_direct_owner_generation))
++    {
++        client_surface_release(&surface->client);
++        return VK_ERROR_SURFACE_LOST_KHR;
++    }
+     owner_id = winehua_window_surface_id(hwnd);
+     wl_display_flush(process_wayland.wl_display);
+     if (!owner_id)
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -1260,6 +1260,9 @@
+ #ifdef __OHOS__
+     if (surface->winehua_direct_window && surface->winehua_direct_window_release)
+         surface->winehua_direct_window_release(surface->winehua_direct_window);
++    if (surface->winehua_direct_owner)
++        winehua_release_direct_surface(surface->winehua_direct_owner,
++                                       surface->winehua_direct_owner_generation);
+ #endif
+ 
+     if (surface->wp_viewport)

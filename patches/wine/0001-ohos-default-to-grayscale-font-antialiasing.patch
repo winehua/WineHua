@@ -1,0 +1,23 @@
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index af6cc2e44ba..859d37eedb7 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -1549,10 +1549,16 @@ static void freetype_load_fonts(void)
+ #ifdef SONAME_LIBFONTCONFIG
+     load_fontconfig_fonts();
+ #ifdef __OHOS__
+-    /* OHOS: libfontconfig.so 不在设备上, fontconfig 加载会静默失败.
+-     * 此时需要额外扫描 /system/fonts/ 来使用系统的 HarmonyOS 字体. */
++    /* OHOS devices do not provide fontconfig. Besides scanning the system font
++     * directory, choose grayscale antialiasing explicitly: fontconfig normally
++     * initializes this default, while zero leaves scalable fonts in monochrome
++     * mode. Avoid LCD subpixel rendering because the compositor orientation and
++     * physical pixel layout are not guaranteed here. */
+     if (!fontconfig_enabled)
++    {
++        default_aa_flags = GGO_GRAY4_BITMAP;
+         ReadFontDir("/system/fonts", TRUE);
++    }
+ #endif
+ #elif defined(__APPLE__)
+     load_mac_fonts();

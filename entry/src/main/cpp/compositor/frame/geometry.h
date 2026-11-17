@@ -19,6 +19,13 @@ struct FitRect {
     double scale = 1.0;      // dst/src 的未取整缩放系数
 };
 
+inline bool SameFitRect(const FitRect& a, const FitRect& b)
+{
+    return a.srcW == b.srcW && a.srcH == b.srcH &&
+           a.dstW == b.dstW && a.dstH == b.dstH &&
+           a.offX == b.offX && a.offY == b.offY && a.scale == b.scale;
+}
+
 // 计算保比例缩放 + 居中的适配矩形。任一尺寸 <= 0 返回 false (out 不动)。
 bool ComputeFitRect(int rootW, int rootH, int winW, int winH, FitRect& out);
 

@@ -1,0 +1,161 @@
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1048,6 +1048,10 @@
+       assert(zink_mem_type_idx_from_types(screen, heap, reqs->memoryTypeBits) != UINT32_MAX);
+    }
+ 
++   /* Remote image staging owns the entire VkDeviceMemory allocation. Atom
++    * rounding (and Venus unmap publication) must never touch a sibling BO. */
++   const unsigned bo_flags = (mai.pNext || (templ->flags & ZINK_RESOURCE_FLAG_SHADOW_STAGING)) ?
++      ZINK_ALLOC_NO_SUBALLOC : 0;
+    while (1) {
+       /* iterate over all available memory types to reduce chance of oom */
+       for (unsigned i = 0; !obj->bo && i < screen->heap_count[heap]; i++) {
+@@ -1055,7 +1059,7 @@
+             continue;
+ 
+          mai.memoryTypeIndex = screen->heap_map[heap][i];
+-         obj->bo = zink_bo(zink_bo_create(screen, reqs->size, alignment, heap, mai.pNext ? ZINK_ALLOC_NO_SUBALLOC : 0, mai.memoryTypeIndex, mai.pNext));
++         obj->bo = zink_bo(zink_bo_create(screen, reqs->size, alignment, heap, bo_flags, mai.memoryTypeIndex, mai.pNext));
+       }
+ 
+       if (obj->bo || heap != ZINK_HEAP_DEVICE_LOCAL_VISIBLE)
+@@ -2518,7 +2522,15 @@
+          /* if the map region intersects with any clears then we have to apply them */
+          zink_fb_clears_apply_region(ctx, pres, zink_rect_from_box(box));
+    }
+-   if (!res->linear || !res->obj->host_visible) {
++   const char *shadow_readback = os_get_option("WINEHUA_ZINK_SHADOW_READBACK");
++   const char *shadow_upload = os_get_option("WINEHUA_ZINK_SHADOW_UPLOAD");
++   const bool remote_image =
++      (shadow_readback && shadow_readback[0] == '1' && !shadow_readback[1]) ||
++      (shadow_upload && shadow_upload[0] == '1' && !shadow_upload[1]);
++   /* A direct linear image map cannot safely publish a partial shadow: the
++    * atom-aligned flush includes unwritten rows and potentially other BOs.
++    * Reuse the packed staging copy for both linear and optimal images. */
++   if (remote_image || !res->linear || !res->obj->host_visible) {
+       enum pipe_format format = pres->format;
+       if (usage & PIPE_MAP_DEPTH_ONLY)
+          format = util_format_get_depth_only(pres->format);
+@@ -2539,7 +2551,7 @@
+       templ.height0 = templ.depth0 = 0;
+       templ.last_level = 0;
+       templ.array_size = 1;
+-      templ.flags = 0;
++      templ.flags = remote_image ? ZINK_RESOURCE_FLAG_SHADOW_STAGING : 0;
+ 
+       trans->staging_res = zink_resource_create(pctx->screen, &templ);
+       if (!trans->staging_res)
+@@ -2559,8 +2571,9 @@
+ 
+       ptr = map_resource(screen, staging_res);
+       const char *shadow_readback = os_get_option("WINEHUA_ZINK_SHADOW_READBACK");
+-      if (ptr && (usage & PIPE_MAP_READ) && shadow_readback &&
+-          shadow_readback[0] == '1' && !shadow_readback[1]) {
++      if (ptr && (usage & PIPE_MAP_READ) &&
++          (!staging_res->obj->coherent || (shadow_readback &&
++           shadow_readback[0] == '1' && !shadow_readback[1]))) {
+          /* Image readback maps its staging BO directly, bypassing buffer_map.
+           * The fence above has completed; publish exactly this staging slice. */
+          VkMappedMemoryRange range = zink_resource_init_mem_range(screen,
+@@ -2628,6 +2641,8 @@
+    return ptr;
+ 
+ fail:
++   pipe_resource_reference(&trans->staging_res, NULL);
++   pipe_resource_reference(&trans->base.b.resource, NULL);
+    destroy_transfer(ctx, trans);
+    return NULL;
+ }
+@@ -2736,6 +2751,56 @@
+    u_default_texture_subdata(pctx, pres, level, usage, box, data, stride, layer_stride);
+ }
+ 
++/* Only the requested image rectangle reaches the destination. The packed
++ * staging allocation may be flushed in full because it has no sibling users. */
++static void
++zink_winehua_flush_image_staging(struct zink_context *ctx, struct zink_transfer *trans,
++                               const struct pipe_box *box, bool remote_upload)
++{
++   struct pipe_transfer *ptrans = &trans->base.b;
++   struct zink_screen *screen = zink_screen(ctx->base.screen);
++   struct zink_resource *staging = zink_resource(trans->staging_res);
++   struct zink_resource *res = zink_resource(ptrans->resource);
++   if (!staging->obj->coherent || remote_upload) {
++      VkMappedMemoryRange range = zink_resource_init_mem_range(screen, staging->obj,
++         staging->obj->offset, staging->base.b.width0);
++      if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++         mesa_loge("ZINK: shadow image upload flush failed");
++         screen->device_lost = true;
++         return;
++      }
++   }
++
++   if (!box->x && !box->y && !box->z &&
++       box->width == ptrans->box.width && box->height == ptrans->box.height &&
++       box->depth == ptrans->box.depth) {
++      zink_transfer_copy_bufimage(ctx, res, staging, trans);
++      return;
++   }
++
++   /* zink_copy_image_buffer uses tightly packed rows. A partial flush keeps
++    * the original staging pitch, so emit one block row/layer at a time. */
++   enum pipe_format format = staging->base.b.format;
++   unsigned block_height = util_format_get_blockheight(format);
++   unsigned rows = util_format_get_nblocksy(format, box->height);
++   for (unsigned layer = 0; layer < box->depth; layer++) {
++      for (unsigned row = 0; row < rows; row++) {
++         unsigned y = row * block_height;
++         struct pipe_box copy = {
++            .x = trans->offset + (box->z + layer) * (VkDeviceSize)ptrans->layer_stride +
++                 (box->y / block_height + row) * (VkDeviceSize)ptrans->stride +
++                 util_format_get_stride(format, box->x),
++            .width = box->width,
++            .height = MIN2(block_height, box->height - y),
++            .depth = 1,
++         };
++         zink_copy_image_buffer(ctx, res, staging, ptrans->level,
++            ptrans->box.x + box->x, ptrans->box.y + box->y + y,
++            ptrans->box.z + box->z + layer, ptrans->level, &copy, ptrans->usage);
++      }
++   }
++}
++
+ static void
+ zink_transfer_flush_region(struct pipe_context *pctx,
+                            struct pipe_transfer *ptrans,
+@@ -2749,6 +2814,12 @@
+       struct zink_screen *screen = zink_screen(pctx->screen);
+       struct zink_resource *m = trans->staging_res ? zink_resource(trans->staging_res) :
+                                                      res;
++      const char *shadow_upload = os_get_option("WINEHUA_ZINK_SHADOW_UPLOAD");
++      const bool remote_upload = shadow_upload && shadow_upload[0] == '1' && !shadow_upload[1];
++      if (trans->staging_res && (m->base.b.flags & ZINK_RESOURCE_FLAG_SHADOW_STAGING)) {
++         zink_winehua_flush_image_staging(ctx, trans, box, remote_upload);
++         return;
++      }
+       ASSERTED VkDeviceSize size, src_offset, dst_offset = 0;
+       if (m->obj->is_buffer) {
+          size = box->width;
+@@ -2762,8 +2833,6 @@
+                   util_format_get_stride(m->base.b.format, box->x);
+          assert(src_offset + size <= res->obj->size);
+       }
+-      const char *shadow_upload = os_get_option("WINEHUA_ZINK_SHADOW_UPLOAD");
+-      const bool remote_upload = shadow_upload && shadow_upload[0] == '1' && !shadow_upload[1];
+       if (!m->obj->coherent || remote_upload) {
+          /* Publish only the CPU-written buffer slice. Other slices may still
+           * contain GPU results and must not be overwritten by stale shadow. */
+diff --git a/src/gallium/drivers/zink/zink_resource.h b/src/gallium/drivers/zink/zink_resource.h
+--- a/src/gallium/drivers/zink/zink_resource.h
++++ b/src/gallium/drivers/zink/zink_resource.h
+@@ -26,6 +26,8 @@
+ 
+ #include "zink_types.h"
+ 
++#define ZINK_RESOURCE_FLAG_SHADOW_STAGING PIPE_RESOURCE_FLAG_DRV_PRIV
++
+ #define ZINK_MAP_TEMPORARY (PIPE_MAP_DRV_PRV << 0)
+ #define ZINK_MAP_QBO (PIPE_MAP_DRV_PRV << 1)
+ #define ZINK_BIND_DESCRIPTOR (1u << 27)

@@ -1,0 +1,914 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index ac62bad9865f45b2ff5ed6c11c751973f75de085..620dea21d82ce645c18183e9cd82c66057113d3d 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -687,15 +687,19 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+           Thread->OpDispatcher->_GuestOpcode(InstAddress - GuestRIP);
+         }
+ 
+-        if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) {
+-          auto ExistingCodePtr = reinterpret_cast<uint8_t*>(Block.Entry + BlockInstructionsLength);
++        if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection || DecodedInfo->NeedsCodeValidation) {
+           auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
++          IR::Ref CodeChanged;
++          if (DecodedInfo->NeedsCodeValidation) {
++            CodeChanged = Thread->OpDispatcher->_ValidateCodeBytes(DecodedInfo->CodeBytes, InstAddressReg, DecodedInfo->InstSize);
++          } else {
+ 
+-          auto Value = FEXCore::Utils::crc32(ExistingCodePtr, DecodedInfo->InstSize);
++          auto Value = FEXCore::Utils::crc32(DecodedInfo->CodeBytes.data(), DecodedInfo->InstSize);
+           auto CRC = WantsDiskCachePatching ?
+-                       Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)ExistingCodePtr, DecodedInfo->InstSize) :
++                       Thread->OpDispatcher->_PatchableGuestCRC(IR::OpSize::i64Bit, Value, (int64_t)InstAddress, DecodedInfo->InstSize) :
+                        Thread->OpDispatcher->Constant(Value);
+-          auto CodeChanged = Thread->OpDispatcher->_ValidateCode(CRC, InstAddressReg, DecodedInfo->InstSize);
++          CodeChanged = Thread->OpDispatcher->_ValidateCode(CRC, InstAddressReg, DecodedInfo->InstSize);
++          }
+ 
+           auto InvalidateCodeCond = Thread->OpDispatcher->CondJump(CodeChanged);
+ 
+@@ -943,6 +947,25 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
+   {
+     FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedDiskCacheLookupTime);
+     Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
++    if (Hit) {
++      bool MutableOrUnavailable = false;
++      for (const auto Page : Hit->GuestPages) {
++        uint64_t Cursor = Page;
++        const uint64_t End = Page + FEXCore::Utils::FEX_PAGE_SIZE;
++        while (Cursor < End) {
++          const auto Range = SyscallHandler->QueryGuestExecutableRange(Thread, Cursor);
++          if (!Range.Size || Range.Base > Cursor || Cursor - Range.Base >= Range.Size || Range.NeedsCodeValidation) {
++            MutableOrUnavailable = true;
++            break;
++          }
++          const auto Available = Range.Size - (Cursor - Range.Base);
++          if (!Available) { MutableOrUnavailable = true; break; }
++          Cursor += std::min(Available, End - Cursor);
++        }
++        if (MutableOrUnavailable) break;
++      }
++      if (MutableOrUnavailable) Hit.reset();
++    }
+     if (Hit && !DiskCache.IsValidating()) {
+       auto LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
+       if (LoadedCode.BlockBegin) {
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+index 3c78b22dadd10a36fa72d2ae20b5d321f92237e5..f0a4da0784c8732374174c99b5d40983cfab7b08 100644
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -981,6 +981,11 @@ namespace DiskCache {
+   bool DiskCache::Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+                         uint64_t GuestCodeKey, std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                         std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo) {
++    for (const auto& Block : Thread->FrontendDecoder->GetDecodedBlockInfo()->Blocks) {
++      for (uint64_t I = 0; I < Block.NumInstructions; ++I) {
++        if (Block.DecodedInstructions[I].NeedsCodeValidation) return false;
++      }
++    }
+     if (!IsWritingDiskCache()) {
+       return false;
+     }
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index 94e4ac522637ca2bf36d204221d20f9ff9fb82e1..8b47fe06a7753ca09c98063cf305dc015e5f47f0 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -108,12 +108,16 @@ int32_t Decoder::CheckRangeExecutable(uint64_t Address, uint64_t Size) {
+     }
+   }
+ 
++  if (Address >= ExecutableRangeBase && Address < ExecutableRangeEnd)
++    InstructionNeedsValidation |= ExecutableRangeNeedsValidation;
+   uint64_t RemainingSize = Size;
+   while (Address < ExecutableRangeBase || Address + RemainingSize > ExecutableRangeEnd) {
+     auto RangeInfo = CTX->SyscallHandler->QueryGuestExecutableRange(Thread, Address);
+     ExecutableRangeBase = RangeInfo.Base;
+     ExecutableRangeEnd = RangeInfo.Base + RangeInfo.Size;
+     ExecutableRangeWritable = RangeInfo.Writable;
++    ExecutableRangeNeedsValidation = RangeInfo.NeedsCodeValidation;
++    InstructionNeedsValidation |= ExecutableRangeNeedsValidation;
+ 
+     if (RangeInfo.Size == 0) {
+       // Return the number of bytes that couldn't be decoded.
+@@ -132,6 +136,10 @@ int32_t Decoder::CheckRangeExecutable(uint64_t Address, uint64_t Size) {
+ }
+ 
+ uint8_t Decoder::ReadByte() {
++  if (InstructionSize >= MAX_INST_SIZE) {
++    HitInstructionTooLong = true;
++    return 0;
++  }
+   std::optional<uint8_t> Byte = PeekByte(0);
+   if (!Byte || InstructionSize == MAX_INST_SIZE) {
+     HitNonExecutableRange = true;
+@@ -156,6 +164,12 @@ std::optional<uint8_t> Decoder::PeekByte(uint8_t Offset) {
+ std::pair<uint64_t, bool> Decoder::ReadData(uint8_t Size) {
+   LOGMAN_THROW_A_FMT(Size != 0 && Size <= sizeof(uint64_t), "Unknown data size to read");
+ 
++  // Reject overlong encodings before reading or copying their literals.
++  // x86 limits the whole instruction to 15 bytes, including prefixes.
++  if (Size > MAX_INST_SIZE - InstructionSize) {
++    HitInstructionTooLong = true;
++    return {0, false};
++  }
+   uint64_t Res = 0;
+   uint64_t Address = reinterpret_cast<uint64_t>(InstStream.InstStream + InstructionSize);
+   LastFieldReadOffset = (uint8_t)InstructionSize;
+@@ -163,21 +177,16 @@ std::pair<uint64_t, bool> Decoder::ReadData(uint8_t Size) {
+   auto ReadableSize = CheckRangeExecutable(Address, Size);
+   if (ReadableSize == Size) {
+     std::memcpy(&Res, &InstStream.AdjustedInstStream[InstructionSize], Size);
++    std::memcpy(Instruction.data() + InstructionSize, &Res, Size);
+   } else {
+     HitNonExecutableRange = true;
+     // See PeekByte, this specific case may cause some executable memory to read as 0 but it doesn't matter as the entire instruction will be rolled back anyway.
+     Res = 0;
+   }
+ 
+-  // Skip the number of decoded bytes regardless to get instruction size.
+-  // Even partially decoded instruction.
+-#if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+-  for (size_t i = 0; i < std::abs(ReadableSize); ++i) {
+-    ReadByte();
+-  }
+-#else
++  // Preserve the literal snapshot, including in assertion builds. Keep
++  // upstream's partial-fetch length so its precise instruction fault survives.
+   SkipBytes(std::abs(ReadableSize));
+-#endif
+ 
+   if (Relocations) {
+     uint32_t SectionOffset = static_cast<uint32_t>(Address - SectionMinAddress);
+@@ -1109,10 +1118,12 @@ Decoder::DecodedBlockStatus Decoder::DecodeInstruction(uint64_t PC) {
+   // Will be set if DecodeInstructionImpl tries to read non-executable memory
+   HitNonExecutableRange = false;
+   HitBadRelocation = false;
++  HitInstructionTooLong = false;
++  InstructionNeedsValidation = false;
+   HitBreakpoint = ~0U;
+   auto ErrorDuringDecoding = DecodeInstructionImpl(PC);
+ 
+-  if (ErrorDuringDecoding != DecodedBlockStatus::SUCCESS || HitNonExecutableRange || HitBadRelocation) [[unlikely]] {
++  if (ErrorDuringDecoding != DecodedBlockStatus::SUCCESS || HitNonExecutableRange || HitBadRelocation || HitInstructionTooLong) [[unlikely]] {
+     // Put an invalid instruction in the stream so the core can raise SIGILL if hit
+     // Error while decoding instruction. We don't know the table or instruction size
+     DecodeInst->TableInfo = nullptr;
+@@ -1134,7 +1145,7 @@ Decoder::DecodedBlockStatus Decoder::DecodeInstruction(uint64_t PC) {
+       return DecodedBlockStatus::BAD_RELOCATION;
+     }
+ 
+-    return ErrorDuringDecoding;
++    return HitInstructionTooLong ? DecodedBlockStatus::INVALID_INST : ErrorDuringDecoding;
+   } else if (!DecodeInst->TableInfo || (DecodeInst->TableInfo->Type == TYPE_INST && !DecodeInst->TableInfo->OpcodeDispatcher.OpDispatch)) {
+     // If there wasn't an error during decoding but we have no dispatcher for the instruction then claim invalid instruction.
+     return DecodedBlockStatus::INVALID_INST;
+@@ -1156,6 +1167,9 @@ Decoder::DecodedBlockStatus Decoder::DecodeInstruction(uint64_t PC) {
+     }
+   }
+ 
++  DecodeInst->CodeBytes.fill(0);
++  std::copy_n(Instruction.begin(), DecodeInst->InstSize, DecodeInst->CodeBytes.begin());
++  DecodeInst->NeedsCodeValidation = InstructionNeedsValidation;
+   return DecodedBlockStatus::SUCCESS;
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+index ade14bc445a99e9ed566b02747c41ba2eb40e551..162477f8667963e9cbd9d21412c06aef99ea0b8b 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -158,6 +158,8 @@ private:
+   uint64_t ExecutableRangeBase {};
+   uint64_t ExecutableRangeEnd {};
+   bool ExecutableRangeWritable {};
++  bool ExecutableRangeNeedsValidation {};
++  bool InstructionNeedsValidation {};
+   bool HitNonExecutableRange {};
+   bool HitBadRelocation {};
+   uint32_t HitBreakpoint {~0U};
+@@ -181,6 +183,7 @@ private:
+       return *this;
+     }
+   };
++  bool HitInstructionTooLong {};
+ 
+   DecodeStream InstStream;
+   IR::OpSize GetGPROpSize() const {
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+index ae3ed51e4f430c5c482ce4cf595717616cd70c21..f85858e72ea0ec0da8d161ec20998f6468353d28 100644
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -323,6 +323,54 @@ DEF_OP(Thunk) {
+   });
+ }
+ 
++DEF_OP(ValidateCodeBytes) {
++  auto Op = IROp->C<IR::IROp_ValidateCodeBytes>();
++  auto OldCode = Op->CodeOriginal.data();
++  auto Base = GetReg(Op->Address).X();
++  int len = Op->CodeLength;
++  int Offset = 0;
++  ARMEmitter::ForwardLabel Fail;
++
++  const auto Dst = GetReg(Node);
++
++  auto EmitCheck = [&](size_t Size, auto&& LoadData) {
++    while (len >= Size) {
++      LoadData();
++      sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2);
++      cbnz_OrRestart(ARMEmitter::Size::i64Bit, TMP1, &Fail);
++      len -= Size;
++      Offset += Size;
++    }
++  };
++
++  EmitCheck(8, [&]() {
++    ldr(TMP1, Base, Offset);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP2, *(const uint64_t*)(OldCode + Offset));
++  });
++
++  EmitCheck(4, [&]() {
++    ldr(TMP1.W(), Base, Offset);
++    LoadConstant(ARMEmitter::Size::i32Bit, TMP2, *(const uint32_t*)(OldCode + Offset));
++  });
++
++  EmitCheck(2, [&]() {
++    ldrh(TMP1.W(), Base, Offset);
++    LoadConstant(ARMEmitter::Size::i32Bit, TMP2, *(const uint16_t*)(OldCode + Offset));
++  });
++
++  EmitCheck(1, [&]() {
++    ldrb(TMP1.W(), Base, Offset);
++    LoadConstant(ARMEmitter::Size::i32Bit, TMP2, *(const uint8_t*)(OldCode + Offset));
++  });
++
++  ARMEmitter::ForwardLabel End;
++  LoadConstant(ARMEmitter::Size::i32Bit, Dst, 0);
++  b_OrRestart(&End);
++  BindOrRestart(&Fail);
++  LoadConstant(ARMEmitter::Size::i32Bit, Dst, 1);
++  BindOrRestart(&End);
++}
++
+ DEF_OP(ValidateCode) {
+   auto Op = IROp->C<IR::IROp_ValidateCode>();
+   auto Base = GetReg(Op->Address).X();
+diff --git a/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h b/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h
+index 8a06c846326e13bf92a2ede9dfd7ced716810d40..5d2af0b054695f81b22407b91ee7d78f04d92254 100644
+--- a/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h
++++ b/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h
+@@ -225,6 +225,10 @@ struct DecodedOperand {
+ };
+ 
+ struct DecodedInst {
++  // The validation baseline must be the bytes that produced this decode,
++  // never a later read during IR generation (a native writer may race it).
++  std::array<uint8_t, 16> CodeBytes {};
++  bool NeedsCodeValidation {};
+   uint64_t PC;
+ 
+   DecodedOperand Dest;
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+index 6c1a345fe68c9fd99b192dab5761f39905d37109..2598e1facfd982b284b8da7ab19fb876915bb952 100644
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -195,6 +195,12 @@
+         "HasSideEffects": true
+       },
+ 
++      "GPR = ValidateCodeBytes Array16:$CodeOriginal, GPR:$Address, u8:$CodeLength": {
++        "HasSideEffects": true,
++        "HasDest": true,
++        "DestSize": "OpSize::i64Bit"
++      },
++
+       "GPR = ValidateCode GPR:$crc, GPR:$Address, u8:$CodeLength": {
+         "HasSideEffects": true,
+         "HasDest": true,
+diff --git a/FEXCore/include/FEXCore/HLE/SyscallHandler.h b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+index 0ba0218e31cc6e95cc13174fd334d0a1f8de7570..e41088e462a95fd2f3c1a2c1381c424444dffa2f 100644
+--- a/FEXCore/include/FEXCore/HLE/SyscallHandler.h
++++ b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+@@ -21,6 +21,9 @@ struct ExecutableRangeInfo {
+   uint64_t Base;
+   uint64_t Size;
+   bool Writable;
++  // Windows writable executable mappings use byte validation so first and
++  // native writes cannot escape tracking, and guest permissions stay visible.
++  bool NeedsCodeValidation {};
+ };
+ 
+ class SyscallHandler;
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index d48d8b648b74db5c8da0db6c31c51675ae1f2d14..01d903b7d5d003bb1b5e14d02b02cfd7dae53570 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -64,6 +64,8 @@ $end_info$
+ #include <winnt.h>
+ #include <wine/debug.h>
+ 
++
++
+ namespace Exception {
+ class ECSyscallHandler;
+ }
+@@ -360,6 +362,22 @@ void HandleImageUnmap(uint64_t Address, uint64_t Size) {
+ }
+ } // namespace
+ 
++class ScopedCallbackDisable {
++private:
++  bool Prev;
++
++public:
++  ScopedCallbackDisable() {
++    const auto CPUArea = GetCPUArea();
++    Prev = CPUArea.Area->InSyscallCallback;
++    CPUArea.Area->InSyscallCallback = true;
++  }
++
++  ~ScopedCallbackDisable() {
++    GetCPUArea().Area->InSyscallCallback = Prev;
++  }
++};
++
+ namespace Exception {
+ static std::optional<FEX::Windows::TSOHandlerConfig> HandlerConfig;
+ static std::atomic<uint32_t> UnalignedEventCount {};
+@@ -712,10 +730,15 @@ public:
+   }
+ 
+   void MarkGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override {
++    // Internal arm is not a successful guest permission change.
++    ScopedCallbackDisable Guard;
+     InvalidationTracker->ReprotectRWXIntervals(Start, Length);
+   }
+ 
+   void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override {
++    // Cache reclamation may issue native VM calls while holding the code
++    // invalidation lock. They are internal operations, not guest callbacks.
++    ScopedCallbackDisable Guard;
+     InvalidationTracker->InvalidateAlignedInterval(Start, Length, false);
+   }
+ 
+@@ -831,21 +854,7 @@ NTSTATUS ProcessInit() {
+ 
+ void ProcessTerm(HANDLE Handle, BOOL After, NTSTATUS Status) {}
+ 
+-class ScopedCallbackDisable {
+-private:
+-  bool Prev;
+-
+-public:
+-  ScopedCallbackDisable() {
+-    const auto CPUArea = GetCPUArea();
+-    Prev = CPUArea.Area->InSyscallCallback;
+-    CPUArea.Area->InSyscallCallback = true;
+-  }
+ 
+-  ~ScopedCallbackDisable() {
+-    GetCPUArea().Area->InSyscallCallback = Prev;
+-  }
+-};
+ 
+ // Returns true if exception dispatch should be halted and the execution context restored to NativeContext
+ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* Exception, CONTEXT* GuestContext, ARM64_NT_CONTEXT* NativeContext) {
+@@ -862,7 +871,7 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+     return true;
+   }
+ 
+-  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
++  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && Exception->NumberParameters >= 2) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+     if (FEX::Windows::CallRetStack::HandleAccessViolation(
+@@ -879,7 +888,7 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+     }
+ 
+     std::scoped_lock Lock(ThreadCreationMutex);
+-    if (InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
++    if (InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress, Exception->ExceptionInformation[0])) {
+       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
+       if (CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) && !CTX->IsCurrentBlockSingleInst(CPUArea.ThreadState()) &&
+           CTX->IsAddressInCurrentBlock(Thread, FaultAddress & FEXCore::Utils::FEX_PAGE_MASK, FEXCore::Utils::FEX_PAGE_SIZE)) {
+@@ -959,7 +968,7 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+ 
+ NTSTATUS ResetToConsistentState(EXCEPTION_RECORD* Exception, CONTEXT* GuestContext, ARM64_NT_CONTEXT* NativeContext) {
+   bool Cont {};
+-  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
++  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && Exception->NumberParameters >= 2) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+     if (OvercommitTracker) {
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 155403d35bd689d0cc4fc8c028e5fcc8d56d3407..37f64a7ca3246547cc02b62c2cd383dd7d5f6ede 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -30,52 +30,58 @@ InvalidationTracker::InvalidationTracker(FEXCore::Context::Context& CTX, const s
+   }
+ }
+ 
+-static bool ProtHasExec(ULONG Prot) {
+-  return (Prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+-}
+-
+-static bool ProtIsReadable(ULONG Prot) {
+-  return (Prot & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+-                  PAGE_EXECUTE_WRITECOPY)) != 0;
+-}
+-
+-static bool ProtIsWritable(ULONG Prot) {
+-  return (Prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+-}
+-
+ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot) {
++  // Notifications are facts only for a non-empty, representable range.
++  constexpr auto Max = std::numeric_limits<uint64_t>::max();
++  constexpr auto PageTail = FEXCore::Utils::FEX_PAGE_SIZE - 1;
++  if (!Size || Address > Max - PageTail || Size > Max - PageTail - Address) return;
+   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+-  const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
++  const auto AlignedEnd = (Address + Size + PageTail) & FEXCore::Utils::FEX_PAGE_MASK;
++  const auto AlignedSize = AlignedEnd - AlignedBase;
+ 
+   const bool NeedsInvalidate = [&]() {
+     std::unique_lock Lock(IntervalsLock);
+ 
+     FEXCore::IntervalList<uint64_t>::Interval ProtInterval {AlignedBase, AlignedBase + AlignedSize};
+-
+-    const bool HasExec = ProtHasExec(Prot);
+-    const bool EffectiveExec = HasExec || (DEPDisabled && ProtIsReadable(Prot));
+-    const bool EffectiveRWX = EffectiveExec && ProtIsWritable(Prot);
+-
+-    if (EffectiveExec) {
++    const bool WasReadable = ReadableIntervals.Intersect(ProtInterval);
++    const bool Readable = !(Prot & PAGE_GUARD) &&
++      (Prot & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
++               PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
++    const bool Writable = Readable &&
++      (Prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
++    ReadableIntervals.Remove(ProtInterval);
++    WritableIntervals.Remove(ProtInterval);
++    if (Readable) ReadableIntervals.Insert(ProtInterval);
++    if (Writable) WritableIntervals.Insert(ProtInterval);
++    // Only successful guest/loader notifications reach this path. Internal
++    // tracker NtProtect calls bypass the guest callback (WOW64 native syscall;
++    // ARM64EC InSyscallCallback). Replace, rather than accumulate, write state.
++    if (!(Prot & PAGE_GUARD) &&
++        ((Prot & (PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ||
++         ((Prot & (PAGE_READWRITE | PAGE_WRITECOPY)) &&
++          (XIntervals.Intersect(ProtInterval) || (ReadImpliesExecute && Readable))))) {
++      CodeValidationIntervals.Insert(ProtInterval);
++    }
++    ArmedIntervals.Remove(ProtInterval);
++    WriteCopyIntervals.Remove(ProtInterval);
++    RWXIntervals.Remove(ProtInterval);
++    if (Prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) {
+       XIntervals.Insert(ProtInterval);
+-      if (EffectiveRWX) {
++      if (!(Prot & PAGE_GUARD) && (Prot & (PAGE_EXECUTE_WRITECOPY | PAGE_EXECUTE_READWRITE))) {
+         LogMan::Msg::DFmt("Add SMC interval: {:X} - {:X}", AlignedBase, AlignedBase + AlignedSize);
+         RWXIntervals.Insert(ProtInterval);
+-      }
+-      if (DEPDisabled && !HasExec) {
+-        DEPPromotedIntervals.Insert(ProtInterval);
++        if (Prot & PAGE_EXECUTE_WRITECOPY) WriteCopyIntervals.Insert(ProtInterval);
+       }
+       return true;
+     } else if (XIntervals.Intersect(ProtInterval)) {
+       XIntervals.Remove(ProtInterval);
+       RWXIntervals.Remove(ProtInterval);
+-      if (DEPDisabled) {
+-        DEPPromotedIntervals.Remove(ProtInterval);
+-      }
+       return true;
+     }
+ 
+-    return false;
++    // A readable legacy page may already have translated code even though
++    // the guest never granted PAGE_EXECUTE. Protect/free must invalidate it.
++    return ReadImpliesExecute && (WasReadable || Readable);
+   }();
+ 
+   if (NeedsInvalidate) {
+@@ -84,71 +90,28 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
+   }
+ }
+ 
+-void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
+-  const bool DisableDEP = (Flags & MEM_EXECUTE_OPTION_ENABLE) != 0;
+-
+-  std::scoped_lock CodeLock(CTX.GetCodeInvalidationMutex());
+-  std::unique_lock Lock(IntervalsLock);
+-
+-  if (DisableDEP == DEPDisabled) {
+-    return;
+-  }
+-
+-  DEPDisabled = DisableDEP;
+-
+-  if (DisableDEP) {
+-    DEPPromotedIntervals.Clear();
+-
+-    MEMORY_BASIC_INFORMATION Info;
+-    uint64_t Address = 0;
+-
+-    while (VirtualQuery(reinterpret_cast<LPCVOID>(Address), &Info, sizeof(Info))) {
+-      uint64_t BaseAddress = reinterpret_cast<uint64_t>(Info.BaseAddress);
+-      if (Info.State == MEM_COMMIT && ProtIsReadable(Info.Protect) && !ProtHasExec(Info.Protect)) {
+-        const auto AlignedBase = BaseAddress & FEXCore::Utils::FEX_PAGE_MASK;
+-        const auto AlignedSize = (BaseAddress - AlignedBase + Info.RegionSize + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+-        FEXCore::IntervalList<uint64_t>::Interval ProtInterval {AlignedBase, AlignedBase + AlignedSize};
+-
+-        XIntervals.Insert(ProtInterval);
+-        if (ProtIsWritable(Info.Protect)) {
+-          RWXIntervals.Insert(ProtInterval);
+-        }
+-        DEPPromotedIntervals.Insert(ProtInterval);
+-      }
+-
+-      Address = BaseAddress + Info.RegionSize;
+-    }
+-  } else {
+-    for (const auto& Interval : DEPPromotedIntervals) {
+-      XIntervals.Remove(Interval);
+-      RWXIntervals.Remove(Interval);
+-    }
+-    DEPPromotedIntervals.Clear();
+-  }
+-
+-  // Invalidate all cached code: previously-compiled blocks may contain NoExec stubs for addresses
+-  // that are now executable (or reference regions whose executability just changed).
+-  InvalidateIntervalInternalLocked(0, std::numeric_limits<uint64_t>::max());
+-}
+-
+ void InvalidationTracker::HandleImageMap(std::string_view Name, uint64_t Address) {
+   auto* Nt = RtlImageNtHeader(reinterpret_cast<HMODULE>(Address));
+   auto* SectionsBegin = IMAGE_FIRST_SECTION(Nt);
+   auto* SectionsEnd = SectionsBegin + Nt->FileHeader.NumberOfSections;
+   uint64_t LastExecutableSectionEnd = 0;
+ 
++  uint64_t Cursor = Address;
++  MEMORY_BASIC_INFORMATION Info {};
++  while (!NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(Cursor), MemoryBasicInformation,
++                               &Info, sizeof(Info), nullptr) && reinterpret_cast<uint64_t>(Info.AllocationBase) == Address) {
++    const auto Base = reinterpret_cast<uint64_t>(Info.BaseAddress);
++    if (!Info.RegionSize || Info.RegionSize > std::numeric_limits<uint64_t>::max() - Base) break;
++    const auto End = Base + Info.RegionSize;
++    if (End <= Cursor) break;
++    HandleMemoryProtectionNotification(Base, Info.RegionSize, Info.State == MEM_COMMIT ? Info.Protect : PAGE_NOACCESS);
++    Cursor = End;
++  }
++
++  // Section metadata remains only an existing Mono diagnostic hint.
+   for (auto* Section = SectionsBegin; Section != SectionsEnd; Section++) {
+     if (Section->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+-      std::unique_lock Lock(IntervalsLock);
+-
+-      uint64_t SectionBase = Address + Section->VirtualAddress;
+-      uint64_t SectionEnd = SectionBase + Section->Misc.VirtualSize;
+-      XIntervals.Insert({SectionBase, SectionEnd});
+-      LastExecutableSectionEnd = std::max(LastExecutableSectionEnd, SectionEnd);
+-      if (Section->Characteristics & IMAGE_SCN_MEM_WRITE) {
+-        LogMan::Msg::DFmt("Add image SMC interval: {:X} - {:X}", SectionBase, SectionBase + Section->Misc.VirtualSize);
+-        RWXIntervals.Insert({SectionBase, SectionBase + Section->Misc.VirtualSize});
+-      }
++      LastExecutableSectionEnd = std::max(LastExecutableSectionEnd, Address + Section->VirtualAddress + Section->Misc.VirtualSize);
+     }
+   }
+ 
+@@ -189,6 +152,11 @@ InvalidationTracker::InvalidateContainingSectionResult InvalidationTracker::Inva
+     std::unique_lock Lock(IntervalsLock);
+     XIntervals.Remove({SectionBase, SectionBase + SectionSize});
+     RWXIntervals.Remove({SectionBase, SectionBase + SectionSize});
++    ReadableIntervals.Remove({SectionBase, SectionBase + SectionSize});
++    WritableIntervals.Remove({SectionBase, SectionBase + SectionSize});
++    CodeValidationIntervals.Remove({SectionBase, SectionBase + SectionSize});
++    ArmedIntervals.Remove({SectionBase, SectionBase + SectionSize});
++    WriteCopyIntervals.Remove({SectionBase, SectionBase + SectionSize});
+   }
+ 
+   return {SectionBase, SectionSize};
+@@ -209,20 +177,26 @@ void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t S
+     std::unique_lock Lock(IntervalsLock);
+     XIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+     RWXIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    ReadableIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    WritableIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    CodeValidationIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    ArmedIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    WriteCopyIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+   }
+ }
+ 
+ void InvalidationTracker::ReprotectRWXIntervals(uint64_t Address, uint64_t Size) {
+-  ProtectRWXIntervalsInternal(Address, Size, false);
++  // Writable code has per-instruction byte validation. Do not change its
++  // guest protection merely to catch writes: that hides WRITE from queries,
++  // and leaves an untracked window after a first inline/native write.
+ }
+ 
+-bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc, uint64_t FaultAddress) {
+-  const auto [NeedsInvalidate, UntrapProt] = [&](uint64_t Address) -> std::pair<bool, ULONG> {
++bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc, uint64_t FaultAddress,
++                                                  uint64_t AccessType) {
++  if (AccessType != 1) return false; // read/execute AVs are never SMC writes
++  const bool NeedsInvalidate = [&](uint64_t Address) {
+     std::shared_lock Lock(IntervalsLock);
+-    if (!RWXIntervals.Query(Address).Enclosed) {
+-      return {false, 0};
+-    }
+-    return {true, GetUntrapProt(Address)};
++    return !SMCDetectionDisabled && RWXIntervals.Query(Address).Enclosed && ArmedIntervals.Query(Address).Enclosed;
+   }(FaultAddress);
+ 
+   if (NeedsInvalidate) {
+@@ -232,11 +206,20 @@ bool InvalidationTracker::HandleRWXAccessViolation(FEXCore::Core::InternalThread
+ 
+       InvalidateIntervalInternalLocked(FaultAddress & FEXCore::Utils::FEX_PAGE_MASK, FEXCore::Utils::FEX_PAGE_SIZE);
+ 
+-      // Invalidate, then unprotect the faulting page with the compilation lock held to ensure that any racing invalidations are not dropped.
++      // Serialize with compilation. A stale range or failed unprotect must
++      // never be reported as a handled fault. Preserve guest COW semantics.
++      std::unique_lock RangeLock(IntervalsLock);
++      if (!RWXIntervals.Query(FaultAddress).Enclosed || !ArmedIntervals.Query(FaultAddress).Enclosed) return false;
++      MEMORY_BASIC_INFORMATION Info {};
++      if (NtQueryVirtualMemory(NtCurrentProcess(), reinterpret_cast<void*>(FaultAddress), MemoryBasicInformation,
++                               &Info, sizeof(Info), nullptr) || Info.State != MEM_COMMIT || Info.Protect != PAGE_EXECUTE_READ) return false;
+       ULONG TmpProt;
+       void* TmpAddress = reinterpret_cast<void*>(FaultAddress);
+       SIZE_T TmpSize = 1;
+-      NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, UntrapProt, &TmpProt);
++      const ULONG WritableProt = WriteCopyIntervals.Query(FaultAddress).Enclosed ? PAGE_EXECUTE_WRITECOPY : PAGE_EXECUTE_READWRITE;
++      const auto Status = NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, WritableProt, &TmpProt);
++      if (Status) return false;
++      ArmedIntervals.Remove({reinterpret_cast<uint64_t>(TmpAddress), reinterpret_cast<uint64_t>(TmpAddress) + TmpSize});
+     }
+     DetectMonoBackpatcherBlock(Thread, HostPc);
+     return true;
+@@ -248,19 +231,40 @@ bool InvalidationTracker::BeginUntrackedWriteLocked(uint64_t Address, uint64_t S
+   return ProtectRWXIntervalsInternal(Address, Size, true);
+ }
+ 
++void InvalidationTracker::HandleProcessExecuteFlagsChange(ULONG Flags) {
++  // MEM_EXECUTE_OPTION_ENABLE disables DEP for a WOW64 process. No filename
++  // or PE section exception is needed; ARM64EC never enables this policy.
++  const bool Enabled = (Flags & 3) == 2;
++  {
++    std::unique_lock Lock(IntervalsLock);
++    if (ReadImpliesExecute == Enabled) return;
++    ReadImpliesExecute = Enabled;
++  }
++  // Invalidate successful and faulting translations on both transitions.
++  // Page permissions and native mappings remain exactly as Wine owns them.
++  InvalidateIntervalInternal(0, uint64_t {1} << 32);
++}
++
+ FEXCore::HLE::ExecutableRangeInfo InvalidationTracker::QueryExecutableRange(uint64_t Address) {
+   std::shared_lock Lock(IntervalsLock);
+   const auto XResult = XIntervals.Query(Address);
+-  if (!XResult.Enclosed) {
+-    return {};
+-  }
++  const auto Readable = ReadableIntervals.Query(Address);
++  const bool ImplicitExecute = ReadImpliesExecute && Address < (uint64_t {1} << 32) && Readable.Enclosed;
++  if (!XResult.Enclosed && !ImplicitExecute) return {};
+   const auto RWXResult = RWXIntervals.Query(Address);
+-  if (RWXResult.Enclosed) {
+-    return {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
+-  } else if (RWXResult.Size && RWXResult.Size < XResult.Size) {
+-    return {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
+-  }
+-  return {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
++  const auto Writable = WritableIntervals.Query(Address);
++  // QueryResult.Size starts at Address, unlike Interval.Offset. Returning
++  // the containing X interval would incorrectly span an earlier RWX island
++  // when a decoder caches this answer and later branches backwards.
++  const auto Validation = CodeValidationIntervals.Query(Address);
++  uint64_t Size = XResult.Enclosed ? XResult.Size : Readable.Size;
++  if (RWXResult.Size) Size = std::min(Size, RWXResult.Size);
++  if (Readable.Size) Size = std::min(Size, Readable.Size);
++  if (Writable.Size) Size = std::min(Size, Writable.Size);
++  if (Validation.Size) Size = std::min(Size, Validation.Size);
++  if (ImplicitExecute) Size = std::min(Size, (uint64_t {1} << 32) - Address);
++  const bool CanWrite = RWXResult.Enclosed || (ImplicitExecute && Writable.Enclosed);
++  return {Address, Size, CanWrite, (Validation.Enclosed || CanWrite) && !SMCDetectionDisabled};
+ }
+ 
+ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc) {
+@@ -294,35 +298,35 @@ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThre
+ 
+ void InvalidationTracker::DisableSMCDetection() {
+   std::unique_lock Lock(IntervalsLock);
+-  SMCDetectionDisabled = true;
+   uint64_t Address = 0;
+-
+-  // Reprotect all RWX intervals as writable
+-  FEXCore::IntervalList<uint64_t>::QueryResult Query;
+-  do {
+-    Query = RWXIntervals.Query(Address);
+-    if (Query.Enclosed) {
+-      void* TmpAddress = reinterpret_cast<void*>(Address);
+-      SIZE_T TmpSize = static_cast<SIZE_T>(Query.Size);
+-      ULONG TmpProt;
+-      NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, GetUntrapProt(Address), &TmpProt);
++  bool Failed = false;
++
++  // Restore only our armed pages. Adjacent RWX and COW pages may have been
++  // merged in ArmedIntervals, so split at the logical COW boundary too.
++  while (true) {
++    const auto Query = ArmedIntervals.Query(Address);
++    if (!Query.Size) break;
++    if (!Query.Enclosed) {
++      Address += Query.Size;
++      continue;
+     }
+-    Address += Query.Size;
+-  } while (Query.Size);
+-}
+-
+-ULONG InvalidationTracker::GetTrapProt(uint64_t Address) const {
+-  if (DEPDisabled && DEPPromotedIntervals.Query(Address).Enclosed) {
+-    return PAGE_READONLY;
+-  }
+-  return PAGE_EXECUTE_READ;
+-}
+-
+-ULONG InvalidationTracker::GetUntrapProt(uint64_t Address) const {
+-  if (DEPDisabled && DEPPromotedIntervals.Query(Address).Enclosed) {
+-    return PAGE_READWRITE;
++    const auto CopyQuery = WriteCopyIntervals.Query(Address);
++    const auto Size = CopyQuery.Size ? std::min(Query.Size, CopyQuery.Size) : Query.Size;
++    void* TmpAddress = reinterpret_cast<void*>(Address);
++    SIZE_T TmpSize = static_cast<SIZE_T>(Size);
++    ULONG TmpProt;
++    const ULONG Prot = CopyQuery.Enclosed ? PAGE_EXECUTE_WRITECOPY : PAGE_EXECUTE_READWRITE;
++    const auto Status = NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, Prot, &TmpProt);
++    if (!Status) {
++      ArmedIntervals.Remove({reinterpret_cast<uint64_t>(TmpAddress), reinterpret_cast<uint64_t>(TmpAddress) + TmpSize});
++    } else {
++      Failed = true;
++      LogMan::Msg::EFmt("SMC tracking restore failed: address {:X}, size {:X}, status {:X}", Address, Size, Status);
++    }
++    Address += Size;
+   }
+-  return PAGE_EXECUTE_READWRITE;
++  // A failed restore still owns an RX page: keep fault handling available.
++  SMCDetectionDisabled = !Failed;
+ }
+ 
+ void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size) {
+@@ -339,8 +343,9 @@ void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uin
+ }
+ 
+ bool InvalidationTracker::ProtectRWXIntervalsInternal(uint64_t Address, uint64_t Size, bool ForWriteLocked) {
++  if (!Size || Size > std::numeric_limits<uint64_t>::max() - Address) return false;
+   const auto End = Address + Size;
+-  std::shared_lock Lock(IntervalsLock);
++  std::unique_lock Lock(IntervalsLock);
+ 
+   if (SMCDetectionDisabled) {
+     return false;
+@@ -361,9 +366,23 @@ bool InvalidationTracker::ProtectRWXIntervalsInternal(uint64_t Address, uint64_t
+         HitRWXInterval = true;
+       }
+       void* TmpAddress = reinterpret_cast<void*>(Address);
+-      SIZE_T TmpSize = static_cast<SIZE_T>(std::min(End, Address + Query.Size) - Address);
++      const auto CopyQuery = WriteCopyIntervals.Query(Address);
++      const auto ProtectionSize = CopyQuery.Size ? std::min(Query.Size, CopyQuery.Size) : Query.Size;
++      SIZE_T TmpSize = static_cast<SIZE_T>(std::min(End, Address + ProtectionSize) - Address);
+       ULONG TmpProt;
+-      NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize, ForWriteLocked ? GetUntrapProt(Address) : GetTrapProt(Address), &TmpProt);
++      const ULONG WritableProt = CopyQuery.Enclosed ? PAGE_EXECUTE_WRITECOPY : PAGE_EXECUTE_READWRITE;
++      const auto Status = NtProtectVirtualMemory(NtCurrentProcess(), &TmpAddress, &TmpSize,
++                                                ForWriteLocked ? WritableProt : PAGE_EXECUTE_READ, &TmpProt);
++      const auto Base = reinterpret_cast<uint64_t>(TmpAddress);
++      if (!Status) {
++        if (ForWriteLocked) ArmedIntervals.Remove({Base, Base + TmpSize});
++        else ArmedIntervals.Insert({Base, Base + TmpSize});
++      } else {
++        LogMan::Msg::EFmt("SMC tracking protection failed: address {:X}, size {:X}, status {:X}", Address, TmpSize, Status);
++      }
++      // Visit the next COW/protection boundary rather than skipping an island.
++      Address += ProtectionSize;
++      continue;
+     } else if (!Query.Size) {
+       // No more regions past `Address` in the interval list
+       break;
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+index d2a80bcaaab8d52b5d736ca48d9744af14621746..9b3b2abf5a45601a95f40ac2dcbe5ad46ed186c3 100644
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -24,8 +24,10 @@ class InvalidationTracker {
+ public:
+   InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads);
+   void HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot);
+-  void HandleProcessExecuteFlagsChange(ULONG Flags);
+   void HandleImageMap(std::string_view Name, uint64_t Address);
++  // WOW64 process policy affects effective x86 fetch permission, not the
++  // page protection exposed by VirtualQuery or native ARM64 mappings.
++  void HandleProcessExecuteFlagsChange(ULONG Flags);
+   struct InvalidateContainingSectionResult {
+     uint64_t SectionStart;
+     uint64_t SectionSize;
+@@ -33,7 +35,7 @@ public:
+   InvalidateContainingSectionResult InvalidateContainingSection(uint64_t Address, bool Free);
+   void InvalidateAlignedInterval(uint64_t Address, uint64_t Size, bool Free);
+   void ReprotectRWXIntervals(uint64_t Address, uint64_t Size);
+-  bool HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t FaultAddress);
++  bool HandleRWXAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC, uint64_t FaultAddress, uint64_t AccessType);
+ 
+   // Unprotects any RWX intervals in the input interval and invalidates code
+   // NOTE: CodeInvalidationMutex must be locked when calling this, and if true is returned, kept locked until the write ends.
+@@ -52,20 +54,21 @@ private:
+   // and any code in the range will be invalidated before protection as RWX, otherwise protects as RX if false.
+   bool ProtectRWXIntervalsInternal(uint64_t Address, uint64_t Size, bool ForWriteLocked);
+ 
+-  // Returns the correct protection for trapping (removing write) or untrapping (restoring write) an RWX interval.
+-  // For DEP-promoted regions (originally non-exec), uses PAGE_READONLY/PAGE_READWRITE instead of PAGE_EXECUTE_READ/PAGE_EXECUTE_READWRITE.
+-  // NOTE: Must be called with IntervalsLock held.
+-  ULONG GetTrapProt(uint64_t Address) const;
+-  ULONG GetUntrapProt(uint64_t Address) const;
+-
+   FEXCore::IntervalList<uint64_t> XIntervals;
+   FEXCore::IntervalList<uint64_t> RWXIntervals;
++  FEXCore::IntervalList<uint64_t> ReadableIntervals;
++  FEXCore::IntervalList<uint64_t> WritableIntervals;
++  bool ReadImpliesExecute {false}; // Protected by IntervalsLock; WOW64 only.
++  // Code that can change within this mapping lifetime stays validated even
++  // after a writer restores RX. This is not a permission grant.
++  FEXCore::IntervalList<uint64_t> CodeValidationIntervals;
++  // Logical writable code is separate from successfully armed tracker pages.
++  FEXCore::IntervalList<uint64_t> ArmedIntervals;
++  FEXCore::IntervalList<uint64_t> WriteCopyIntervals;
+   std::shared_mutex IntervalsLock;
+   FEXCore::Context::Context& CTX;
+   const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads;
+   bool SMCDetectionDisabled {false};                    // Protected by IntervalsLock
+-  bool DEPDisabled {false};                             // Protected by IntervalsLock
+-  FEXCore::IntervalList<uint64_t> DEPPromotedIntervals; // Protected by IntervalsLock
+ 
+   bool MonoBackpatcherDetectionPending {false};
+   uint64_t MonoBase {0};
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 234574582daf0a75f3b3d864f58401901294bbd8..e7aaa7de6fdf1c39c30ca0305a8ba4033a1e4047 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -626,6 +626,10 @@ void BTCpuProcessInit() {
+   CTX->InitCore();
+   Context::HandlerConfig.emplace(*CTX);
+   InvalidationTracker.emplace(*CTX, Threads);
++  ULONG ExecuteFlags {};
++  if (!NtQueryInformationProcess(NtCurrentProcess(), static_cast<PROCESSINFOCLASS>(34),
++                                 &ExecuteFlags, sizeof(ExecuteFlags), nullptr))
++    InvalidationTracker->HandleProcessExecuteFlagsChange(ExecuteFlags);
+   ImageTracker.emplace(*CTX, false);
+ 
+   auto MainModule = reinterpret_cast<__TEB*>(NtCurrentTeb())->Peb->ImageBaseAddress;
+@@ -830,7 +834,7 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
+   if (!Thread) return false;
+   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedSignalTime);
+ 
+-  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
++  if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && Exception->NumberParameters >= 2) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+     if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25, IsAddressInJit(Context->Pc))) {
+@@ -849,7 +853,7 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
+     if (Thread) {
+       std::scoped_lock Lock(ThreadCreationMutex);
+       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
+-      if (InvalidationTracker->HandleRWXAccessViolation(Thread, Context->Pc, FaultAddress)) {
++      if (InvalidationTracker->HandleRWXAccessViolation(Thread, Context->Pc, FaultAddress, Exception->ExceptionInformation[0])) {
+         if (CTX->IsAddressInCodeBuffer(Thread, Context->Pc) && !CTX->IsCurrentBlockSingleInst(Thread) &&
+             CTX->IsAddressInCurrentBlock(Thread, FaultAddress & FEXCore::Utils::FEX_PAGE_MASK, FEXCore::Utils::FEX_PAGE_SIZE)) {
+           Context::ReconstructThreadState(Context);
+@@ -936,6 +940,17 @@ void BTCpuFlushInstructionCacheHeavy(const void* Address, SIZE_T Size) {
+   InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
+ }
+ 
++extern "C" void BTCpuNotifyProcessExecuteFlagsChange(ULONG) {
++  std::scoped_lock Lock(ThreadCreationMutex);
++  if (!InvalidationTracker) return;
++  // Wine also calls this after requests about another handle. Always query
++  // the current process, and never adopt an unsuccessful/foreign policy.
++  ULONG ExecuteFlags {};
++  if (!NtQueryInformationProcess(NtCurrentProcess(), static_cast<PROCESSINFOCLASS>(34),
++                                 &ExecuteFlags, sizeof(ExecuteFlags), nullptr))
++    InvalidationTracker->HandleProcessExecuteFlagsChange(ExecuteFlags);
++}
++
+ void BTCpuNotifyMemoryDirty(void* Address, SIZE_T Size) {
+   std::scoped_lock Lock(ThreadCreationMutex);
+   InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
+diff --git a/Source/Windows/WOW64/libwow64fex.def b/Source/Windows/WOW64/libwow64fex.def
+index 5fff39032763d01c937fdd05dfd710ad55cd3fcc..5c3e488703503ff1d3041b7de6e0085feb52ec8d 100644
+--- a/Source/Windows/WOW64/libwow64fex.def
++++ b/Source/Windows/WOW64/libwow64fex.def
+@@ -9,6 +9,7 @@ EXPORTS
+   BTCpuNotifyMemoryAlloc
+   BTCpuNotifyMemoryProtect
+   BTCpuNotifyMemoryDirty
++  BTCpuNotifyProcessExecuteFlagsChange
+   BTCpuNotifyMemoryFree
+   BTCpuNotifyMapViewOfSection
+   BTCpuNotifyUnmapViewOfSection

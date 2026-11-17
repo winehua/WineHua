@@ -106,3 +106,205 @@ export const termRun: (cols: number, rows: number, cb: (data: ArrayBuffer) => vo
 export const termSend: (data: ArrayBuffer) => void;
 export const termResize: (cols: number, rows: number) => void;
 export const termClose: () => void;
+
+// Runtime APIs added on feature/vpp-runtime; upstream declarations above are preserved.
+export const setFrameLoopDiagnostics: (enabled: boolean) => void;
+export interface PhoneSharedBufferProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  lastChildStage: string;
+  loaderPath: string;
+  deviceName: string;
+  childStderr: string;
+  parentPid: number;
+  pid: number;
+  forkServerPid: number;
+  launchCode: number;
+  childExitCode: number;
+  childWaitStatus: number;
+  childSignal: number;
+  childReaped: boolean;
+  childExitObserved: boolean;
+  localParcelRoundtrip: boolean;
+  preserveLowMappings: boolean;
+  standardFork: boolean;
+  systemStart: boolean;
+  guestExport: boolean;
+  childImageAllocations: number;
+  childNativeBufferExports: number;
+  childRealReleaseFenceImports: number;
+  childRealRenderFenceExports: number;
+  hostRealRenderFenceImports: number;
+  hostRealReleaseFenceExports: number;
+  childKilledByProbe: boolean;
+  childDeviceCreated: boolean;
+  vkResult: number;
+  systemError: number;
+  parentFdBefore: number;
+  parentFdAfter: number;
+  backingFds: number;
+  originalFieldCount: number;
+  framesVerified: number;
+  childImageImports: number;
+  childReleaseFenceImports: number;
+  childRenderFenceExports: number;
+  hostImageImports: number;
+  hostImageReuses: number;
+  hostRenderFenceImports: number;
+  hostReleaseFenceExports: number;
+  diagnosticCpuReadBytes: number;
+  imageCpuReadBytes: number;
+  imageCpuUploadBytes: number;
+  imageGpuCopyCount: number;
+}
+export const runPhoneSharedBufferProbe: (preserveLowMappings?: boolean, standardFork?: boolean,
+  systemStart?: boolean, guestExport?: boolean) => Promise<PhoneSharedBufferProbeResult>;
+export interface ProductDirectProbeResult {
+  supported: boolean;
+  status: string;
+  stage: string;
+  deviceName: string;
+  framesVerified: number;
+}
+export const probeProductDirectSupport: () => Promise<ProductDirectProbeResult>;
+export interface ExternalImageProbeResult {
+  handleType: number;
+  format: number;
+  tiling: number;
+  usage: number;
+  result: number;
+  features: number;
+  compatibleHandleTypes: number;
+  exportFromImportedHandleTypes: number;
+}
+export interface DirectVulkanProbeResult {
+  nativeBufferMemory?: string;
+  gate: string;
+  status: string;
+  launchMode: string;
+  stage: string;
+  pid: number;
+  callbackStatus: number;
+  parentFdCount: number;
+  parentRssKiB: number;
+  ncpStatus: number;
+  vkResult: number;
+  loaderVersion: number;
+  requestedApiVersion: number;
+  instanceExtensionCount: number;
+  deviceExtensionCount: number;
+  nativeCapabilities: number;
+  externalImages: ExternalImageProbeResult[];
+  opaqueFdBufferQueried: boolean;
+  opaqueFdBufferFeatures: number;
+  apiVersion: number;
+  icdEnvironment: string;
+  pixelCheck: boolean;
+  elapsedMs: number;
+  loaderPath: string;
+  deviceName: string;
+}
+export const runDirectVulkanProbe: (earlyPhoneFork?: boolean) => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanInlineProbe: () => Promise<DirectVulkanProbeResult>;
+export const preparePhoneDirectForkServer: () => number;
+export const runDirectVulkanForkServerProbe: () => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanCreateProbe: (nativeMemory?: boolean) => Promise<DirectVulkanProbeResult>;
+export const runDirectVulkanSystemCreateProbe: () => Promise<DirectVulkanProbeResult>;
+export interface DirectWineIpcProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  replyPid: number;
+  fdCount: number;
+  launchCode: number;
+  callbackCode: number;
+  ipcCode: number;
+  parentFdsOpen: number;
+  deathReceived: number;
+  registryExited: number;
+}
+export const runDirectWineIpcProbe: () => Promise<DirectWineIpcProbeResult>;
+export const runDirectWineBrokerIpcProbe: () => Promise<DirectWineIpcProbeResult>;
+export interface DirectWineSurfaceIpcProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  launchCode: number;
+  firstAttach: number;
+  directRoute: number;
+  firstQuery: number;
+  staleRejected: number;
+  staleAttachAccepted: number;
+  firstQueryAfterStale: number;
+  resized: number;
+  oldGenerationRejected: number;
+  detach: number;
+  detachedQueryRejected: number;
+  deathReceived: number;
+}
+export const runDirectWineSurfaceIpcProbe: () => Promise<DirectWineSurfaceIpcProbeResult>;
+export interface DirectSurfaceProbeResult {
+  gate: string;
+  status: string;
+  stage: string;
+  pid: number;
+  framesPassed: number;
+  width: number;
+  height: number;
+  queueSize: number;
+  lastBufferSeq: number;
+  launchCode: number;
+  callbackCode: number;
+  killCode: number;
+  abortMode: boolean;
+  parentFdCount: number;
+  parentRssKiB: number;
+  pixelCheck: boolean;
+  importCheck: boolean;
+  importCount: number;
+  reuseCount: number;
+  importVkResult: number;
+}
+export const runDirectSurfaceProbe: () => Promise<DirectSurfaceProbeResult>;
+export const runDirectSurfaceAbortProbe: () => Promise<DirectSurfaceProbeResult>;
+export const runDirectGpuSurfaceProbe: () => Promise<DirectSurfaceProbeResult>;
+export const runDirectGpuImportProbe: () => Promise<DirectSurfaceProbeResult>;
+export interface WineLaunchResult {
+  pid: number;
+  sessionId: string;
+  reused: boolean;
+}
+export const activateToplevel: (toplevelId: number) => void;
+export const moveExternalHost: (source: number, host: number, resizeEdges?: number) => boolean;
+export const isExternalHostResizing: (host: number) => boolean;
+export const bindExternalToplevel: (source: number, host: number, sourcePid: number,
+  hostPid: number, x: number, y: number, width: number, height: number) => boolean;
+export const unbindExternalToplevel: (host: number) => void;
+export const getKeyboardFocusedToplevel: () => number;
+export const getWineStartupState: () => string;
+export const initAppLog: (path: string) => void;
+export const clearNativeLog: () => void;
+export const setHostGraphicsBackend: (backend: string) => boolean;
+export const getHostGpuName: () => string;
+export const getDesktopRootId: () => number;
+export interface NativeWineSessionInfo {
+  pid: number; sessionId: string; path: string; state: string; toplevelId: number;
+}
+export const getWineSession: (sessionId: string) => NativeWineSessionInfo | null;
+export const activateWineSession: (sessionId: string) => boolean;
+export const stopWineSession: (sessionId: string) => boolean;
+export const refreshRenderer: (toplevelId: number) => void;
+export const setRendererPaused: (toplevelId: number, paused: boolean) => void;
+export const getDisplayFps: (toplevelId?: number) => number;
+export const wineTextInputCommit: (text: string) => boolean;
+export const wineTextInputPreedit: (text: string) => boolean;
+export const wineTextInputEnabled: () => boolean;
+export const wineTextInputActive: () => boolean;
+export const wineTextInputFocusedToplevel: () => number;
+export const wineTextInputSetArmed: (armed: boolean) => void;
+export const runHostVulkanProbe: (surfaceId: BigInt, runId: string) => boolean;
+export const stopHostVulkanProbe: () => boolean;
+export const setToplevelIsolated: (id: number, isolated: boolean) => void;

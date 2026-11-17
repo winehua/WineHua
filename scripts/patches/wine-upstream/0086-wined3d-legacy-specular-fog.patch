@@ -1,0 +1,14 @@
+--- a/dlls/wined3d/glsl_shader.c
++++ b/dlls/wined3d/glsl_shader.c
+@@ -8113,8 +8113,9 @@
+         else if (!reg_maps->fog)
+         {
+             if (reg_maps->output_registers & (1u << (8 + 1)))
+-                shader_addline(buffer, "%s = ffp_varying_specular.w;\n",
+-                        legacy_syntax ? "gl_FogFragCoord" : "ffp_varying_fogcoord");
++                shader_addline(buffer, "%s = %s.w;\n",
++                        legacy_syntax ? "gl_FogFragCoord" : "ffp_varying_fogcoord",
++                        legacy_syntax ? "gl_FrontSecondaryColor" : "ffp_varying_specular");
+             else
+                 shader_addline(buffer, "%s = 0.0;\n",
+                         legacy_syntax ? "gl_FogFragCoord" : "ffp_varying_fogcoord");

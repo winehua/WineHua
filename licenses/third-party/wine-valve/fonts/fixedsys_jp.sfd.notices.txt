@@ -1,0 +1,2 @@
+Copyright: Copyright (C) 2013 Huw D M Davies, Dmitry Timoshkov, et al.
+LangName: 1033

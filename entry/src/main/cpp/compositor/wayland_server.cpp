@@ -1,15 +1,19 @@
 #include "wayland_server.h"
+#include "display/x11_toplevel.h"
+#include "display/display_session.h"
+#include "graphics/graphics_broker.h"
 #include "input/seat.h"
-#include "data_device.h"
 #include "input/text_input.h"
 #include "input/input_manager.h"
 #include "xdg_shell.h"
 #include "xdg_configure.h"
-#include "display/x11_toplevel.h" /* 任务 #135: NotifyToplevelResize 的 x11 分支
-                                   * (几何回写走 X 协议, 无 xdg resource) */
 #include "common/fps_counter.h"
+#include "common/perf_utils.h"
+#include "common/frame_loop_diagnostics.h"
 #include "proc/wine_process.h"
 #include "compositor/frame/debug_assert.h"
+#include "direct/direct_wine_surface_controller.h"
+#include "frame/surface_data.h"   // window registry probe (P0-1, 2026-09-17)
 #include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
 #include <cstring>
@@ -30,6 +34,8 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display);
 #define LOG_TAG "WL_Server"
 #include <hilog/log.h>
 #include "bridge/plugin_manager.h"
+#include "input/data_device.h"
+#include "bridge/system_open.h"
 
 // 核心协议接口表与实现已剥离到 wl_core.cpp (Phase 3 纯搬移)
 
@@ -40,7 +46,9 @@ WaylandServer* WaylandServer::GetInstance() {
 }
 
 bool WaylandServer::Start(const std::string& socketPath) {
+    std::lock_guard<std::recursive_mutex> guard(lifetimeMutex_);
     if (running_) {
+        wineUser_ = true;
         OH_LOG_WARN(LOG_APP, "[WL] already running");
         return true;
     }
@@ -70,6 +78,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
     if (wl_display_add_socket(display_, name.c_str()) != 0) {
         OH_LOG_ERROR(LOG_APP, "[WL] wl_display_add_socket(%{public}s) failed, errno=%{public}d",
                      name.c_str(), errno);
+        wl_display_destroy(display_); display_ = nullptr;
         return false;
     }
     OH_LOG_INFO(LOG_APP, "[WL] socket added: %{public}s", name.c_str());
@@ -82,10 +91,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
     RegisterXdgShell(display_);
     RegisterWinehuaToplevel(display_);
     Seat::GetInstance()->Register(display_);
-    // wayland 路线剪贴板: wl_data_device_manager global (缺它 wine 剪贴板
-    // 整链不初始化, 双向都是死链 — x11 路线走 display_input.c 的 wlroots
-    // seat + xwm 桥, 与本模块无关)
-    ClipboardDevice::GetInstance()->Register(display_);
+    WineClipboardRegister(display_);
     // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
     // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
     // 装配在 wl 事件循环启动前 (与 4C1 warpSink 同模式: 之后回调仅在
@@ -99,6 +105,7 @@ bool WaylandServer::Start(const std::string& socketPath) {
     InputManager::GetInstance()->Initialize(display_);
     OH_LOG_INFO(LOG_APP, "[WL] globals registered (compositor+shm+xdg+subcompositor+viewporter+output+seat+input)");
 
+    wineUser_ = true;
     running_ = true;
     session_.firstFrame = false;   // 存储 = 会话共享 POD (重构第 6B 步)
     thread_ = std::thread(&WaylandServer::EventLoop, this);
@@ -106,21 +113,40 @@ bool WaylandServer::Start(const std::string& socketPath) {
     return true;
 }
 
+bool WaylandServer::RetainExternalUser() {
+    std::lock_guard<std::recursive_mutex> guard(lifetimeMutex_);
+    if (!running_) return false;
+    ++externalUsers_;
+    return true;
+}
+void WaylandServer::ReleaseExternalUser() {
+    std::lock_guard<std::recursive_mutex> guard(lifetimeMutex_);
+    if (!externalUsers_) return;
+    --externalUsers_;
+    if (!wineUser_ && !externalUsers_) {
+        winehua::GraphicsBroker::GetInstance().Stop();
+        Stop();
+    }
+}
 void WaylandServer::Stop() {
+    std::lock_guard<std::recursive_mutex> guard(lifetimeMutex_);
+    wineUser_ = false;
+    if (externalUsers_) return;
     if (!running_) return;
     running_ = false;
+    if (display_) wl_display_terminate(display_);
+    if (thread_.joinable()) thread_.join();
     // 主动清空全部 toplevel: stopAll 强杀 Wine 进程时, wl_display_terminate
     // 在 client 断开事件被 dispatch 之前终止事件循环, 依赖断开事件触发的
     // OnToplevelDestroyed 不会执行 → ToplevelManager 残留旧 toplevel (重启后
     // 旧窗口画面共存、占 zOrder、不响应事件)。此处显式遍历逐个收口并补发
     // destroyed 通知给 ArkTS (让 Wine 子窗口正确关闭)
     DestroyAllToplevels();
+    DirectWineSurfaceReset();
     InputManager::GetInstance()->Shutdown();
-    ClipboardDevice::GetInstance()->Unregister();
+    WineClipboardUnregister();
     Seat::GetInstance()->Unregister();
     TextInput::GetInstance()->Unregister();
-    if (display_) wl_display_terminate(display_);
-    if (thread_.joinable()) thread_.join();
     if (display_) {
         wl_display_destroy(display_);
         display_ = nullptr;
@@ -129,7 +155,9 @@ void WaylandServer::Stop() {
 }
 
 void WaylandServer::EventLoop() {
-    int tick = 0;
+    using Clock = std::chrono::steady_clock;
+    auto nextStats = Clock::now() + std::chrono::seconds(30);
+    auto nextRegistry = Clock::now();
     while (running_) {
         wl_event_loop* loop = wl_display_get_event_loop(display_);
         int ret = wl_event_loop_dispatch(loop, 50); // 50ms timeout
@@ -139,11 +167,58 @@ void WaylandServer::EventLoop() {
         }
         wl_display_flush_clients(display_);  // dispatch 可能写数据, 之后 flush
 
-        // 每 30 秒输出一次资源快照 (50ms * 600 = 30s)
-        if (++tick % 600 == 0) {
+        // Dispatch's timeout is an upper bound: busy clients can wake it
+        // thousands of times per second. Diagnostics follow elapsed time.
+        const auto now = Clock::now();
+        if (now >= nextStats) {
+            nextStats = now + std::chrono::seconds(30);
             size_t renderers = PluginManager::GetInstance()->GetRendererCount();
             OH_LOG_INFO(LOG_APP, "[WL-STAT] toplevels=%{public}zu surfaces=%{public}zu renderers=%{public}zu",
                         toplevelMgr_.ToplevelResourceCount(), toplevelMgr_.ToplevelSurfaceCount(), renderers);
+        }
+        // The detailed registry walk and logging hold the compositor lock.
+        // Keep them opt-in, using the existing host diagnostics control.
+        if ((winehua::FrameTraceEnabled() || (winehua::FrameLoopDiagnosticState() & 1)) &&
+            now >= nextRegistry) {
+            nextRegistry = now + std::chrono::milliseconds(7500);
+            auto lk = toplevelMgr_.Lock();
+            const uint32_t rootId = desktopCompositor_.DesktopRootToplevelId();
+            for (const auto& [key, res] : toplevelMgr_.SurfaceResources())
+            {
+                if (!res) continue;
+                auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(res));
+                if (!sd) continue;
+                const char* role = sd->hasToplevel ? "toplevel"
+                                 : (sd->isSubsurface ? "subsurface" : "none");
+                int w = sd->w, h = sd->h, x = 0, y = 0;
+                bool visible = false, fullscreen = false;
+                if (sd->hasToplevel)
+                {
+                    if (const auto* st = toplevelMgr_.FindToplevelLocked(sd->toplevelId))
+                    {
+                        x = st->X();
+                        y = st->Y();
+                        w = st->Width();
+                        h = st->Height();
+                        visible = toplevelMgr_.IsToplevelVisibleLocked(sd->toplevelId, rootId);
+                        fullscreen = st->IsFullscreen();
+                    }
+                }
+                OH_LOG_INFO(LOG_APP,
+                            "WINDOW-REG: event=snapshot ownerHostPid=%{public}u wlSurfaceId=%{public}u "
+                            "toplevelId=%{public}u role=%{public}s geometry=%{public}dx%{public}d+%{public}d,%{public}d "
+                            "visible=%{public}d desktopRoot=%{public}d fullscreen=%{public}d "
+                            "serial=%{public}llu key=%{public}llu",
+                            sd->clientPid, sd->protocolId, sd->toplevelId, role, w, h, x, y,
+                            visible ? 1 : 0,
+                            (sd->hasToplevel && sd->toplevelId == rootId) ? 1 : 0,
+                            fullscreen ? 1 : 0,
+                            static_cast<unsigned long long>(
+                                sd->shmCommitSerial.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(key));
+            }
+            // P0-1 Task A: per-window 黑窗归因快照 (NoBinding/ProducerStall/CompositeStall/OK)
+            desktopCompositor_.zc().DumpWindowBindingDiag();
         }
     }
 }
@@ -173,6 +248,7 @@ void WaylandServer::DestroyAllToplevels() {
 
 
 void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
+    if (x11_toplevel_owns(id)) { x11_toplevel_control(id, 0, true); return; }
     auto lk = toplevelMgr_.Lock();
     toplevelMgr_.RaiseToplevel(id);
     // 全屏优先级: 仅"用户显式 raise (任务栏/窗口点击经 ArkTS 发起) 且目标
@@ -195,29 +271,53 @@ void WaylandServer::RaiseToplevel(uint32_t id, bool userInitiated) {
 
 // -- 交互式窗口移动 (xdg_toplevel.move) --
 void WaylandServer::StartMoveGrab(uint32_t toplevelId, uint32_t serial) {
-    // 用最近一次注入的全局指针位置立即算固定 grab 偏移:
-    // 绝对定位后窗口每帧由 全局坐标−偏移 决定, 不依赖消费时刻的 st->x
+    StartMoveGrabAt(toplevelId, serial, InputManager::GetInstance()->GetLastGlobalPointerX(),
+                    InputManager::GetInstance()->GetLastGlobalPointerY());
+}
+
+void WaylandServer::StartMoveGrabAt(uint32_t toplevelId, uint32_t serial, wl_fixed_t globalX, wl_fixed_t globalY) {
     moveGrab_.StartMoveGrab(toplevelMgr_, toplevelId, serial,
-                            wl_fixed_to_int(InputManager::GetInstance()->GetLastGlobalPointerX()),
-                            wl_fixed_to_int(InputManager::GetInstance()->GetLastGlobalPointerY()));
+                            wl_fixed_to_int(globalX), wl_fixed_to_int(globalY));
     if (Policy().OhosWindowPerToplevel()) {
         PostToplevelEvent(toplevelId, ToplevelEventType::MoveStart);
     }
 }
 
 void WaylandServer::EndMoveGrab() {
+    const auto resize = moveGrab_.ResizeTarget();
+    const auto bounds = moveGrab_.ResizeBounds();
     uint32_t tl = moveGrab_.GetToplevelId();
     moveGrab_.EndMoveGrab(toplevelMgr_);
+    if (resize) NotifyToplevelResize(resize, bounds.width, bounds.height, false);
     if (Policy().OhosWindowPerToplevel() && tl != 0) {
         PostToplevelEvent(tl, ToplevelEventType::MoveEnd);
     }
 }
 
+void WaylandServer::StartResizeGrab(uint32_t id, uint32_t serial, uint32_t edges) {
+    // Standard xdg-shell clients use the same geometry/grab path as XWayland.
+    StartExternalResizeGrabAt(id, serial, InputManager::GetInstance()->GetLastGlobalPointerX(),
+        InputManager::GetInstance()->GetLastGlobalPointerY(), edges);
+}
+
+void WaylandServer::StartExternalResizeGrabAt(uint32_t id, uint32_t serial, wl_fixed_t x, wl_fixed_t y, uint32_t edges) {
+    moveGrab_.StartExternalResizeGrab(toplevelMgr_, id, serial, wl_fixed_to_int(x), wl_fixed_to_int(y), edges);
+}
+
 bool WaylandServer::ProcessMoveGrabMotion(wl_fixed_t wx, wl_fixed_t wy) {
+    // WMS moves managed outputs. Until startMoving takes over, local input
+    // still uses the unchanged host origin; mutating the virtual origin here
+    // feeds each motion back into the next and makes coordinates run away.
+    if (Policy().OhosWindowPerToplevel() && moveGrab_.IsActive() && !moveGrab_.ResizeTarget())
+        return true;
     // 注意: InputManager 在 grab 激活时注入的是桌面全局坐标 (wl_fixed_t),
     // 这里截断为整数全局坐标交 MoveGrabHandler 绝对定位
     if (!moveGrab_.ProcessMoveGrabMotion(toplevelMgr_, wl_fixed_to_int(wx),
                                          wl_fixed_to_int(wy))) return false;
+    if (const auto id = moveGrab_.ResizeTarget()) {
+        const auto bounds = moveGrab_.ResizeBounds();
+        NotifyToplevelResize(id, bounds.width, bounds.height, true);
+    }
     MarkDesktopRootDirtyLocked();
     return true;
 }
@@ -228,7 +328,19 @@ void WaylandServer::PostToplevelEvent(uint32_t id, ToplevelEventType evt,
     // (ArkTS toplevel 回调) 全部在 ToplevelEventBus::Post 内 — 事件名经
     // ToplevelEventName 映射为旧字符串 (逐字), 日志文本/顺序/抑制条件逐字;
     // NAPI 通道移出 compositor 核心 (旧本函数直调 gStateTsfn, 见下方旁路)。
-    toplevelEventBus_.Post(id, evt, json);
+    std::string payload = json;
+    if (evt == ToplevelEventType::Created) {
+        const auto key = payload.find("\"clientPid\":");
+        if (key != std::string::npos) {
+            const pid_t pid = static_cast<pid_t>(strtoul(payload.c_str() + key + 12, nullptr, 10));
+            const auto session = AssociateWineSessionWindow(pid, id);
+            if (!session.empty() && !payload.empty() && payload.back() == '}') {
+                payload.pop_back();
+                payload += ",\"sessionId\":\"" + session + "\"}";
+            }
+        }
+    } else if (evt == ToplevelEventType::Destroyed) ForgetWineSessionWindow(id);
+    toplevelEventBus_.Post(id, evt, payload);
     /* 桌面根出现 = 引擎消息通道的 evt:desktop-ready: LaunchPadMode 的 15s
      * root 等待超时后状态机停在 ready-degraded, 靠这个补票升级为正式 ready。
      * 挂在统一的 toplevel 事件收口点而非 LaunchPadMode 等待循环 — root 在任意
@@ -263,6 +375,8 @@ void WaylandServer::UnregisterToplevelResource(uint32_t toplevelId) {
 }
 
 void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
+    DirectWineSurfaceDestroyed(toplevelId);
+    desktopCompositor_.SetToplevelIsolated(toplevelId, false);
     std::vector<uint32_t> cascadePopups;
     bool wasDesktopRoot = false;
     {
@@ -276,6 +390,16 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
         toplevelMgr_.EraseModalLocked(toplevelId);
         for (uint32_t m : toplevelMgr_.ModalListLocked(toplevelId))
             toplevelMgr_.EraseModalLocked(m);
+
+        // A hidden Wine window can drop its xdg role while retaining wl_surface.
+        // Release its native producer now, before the role loses its identity.
+        for (const auto& [key, resource] : toplevelMgr_.SurfaceResources()) {
+            static_cast<void>(key);
+            if (!resource) continue;
+            auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(resource));
+            if (sd && sd->hasToplevel && sd->toplevelId == toplevelId)
+                desktopCompositor_.zc().InvalidateBindingsForSurface(sd->clientPid, sd->protocolId);
+        }
         toplevelMgr_.EraseToplevelLocked(toplevelId);
         // 会话状态读写经 DesktopSessionState (重构第 6B 步: 旧为宿主私有字段,
         // 清空点/时机/锁域逐字不变)
@@ -323,7 +447,8 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
     // 同步 join 会永久阻塞 Wayland 事件循环, 热重启 explorer 连接无人
     // 处理, 桌面永远起不来)。root renderer 的销毁由 ArkTS DesktopLayer
     // onSurfaceDestroyed 负责 (缓存 rootId 配对销毁, 与创建对称)
-    if (wasDesktopRoot) ResetSessionState();
+    // A Wine root can disappear while GNU clients still own this seat.
+    if (wasDesktopRoot && !HasExternalUsers()) ResetSessionState();
     // 通知 ArkTS 销毁 popup 子窗口 (锁外触发)
     for (uint32_t pid : cascadePopups) {
         PostToplevelEvent(toplevelId, ToplevelEventType::PopupHide,
@@ -358,6 +483,8 @@ void WaylandServer::ResetSessionState() {
     // 不在这里重复, 避免锁外写非 atomic 字段与锁内读的竞态。
     session_.firstFrame = false;   // 热重启不重走 Start, 不重置则新会话首帧不注入 focus
     moveGrab_.EndMoveGrab(toplevelMgr_);  // 幂等兜底 (grab 窗口非 root 时已随销毁复位)
+    ResetSystemOpenRequests();
+    WineClipboardReset();
     InputManager::GetInstance()->ResetSessionState();
     OH_LOG_INFO(LOG_APP, "[MW] session state reset (firstFrame/grab/input focus+keys)");
 }
@@ -366,14 +493,19 @@ void WaylandServer::ResetSessionState() {
 // (compositor/popup_manager.{h,cpp}, 重构第 5B2 步)
 
 void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
+    if (x11_toplevel_owns(toplevelId)) { x11_toplevel_close(toplevelId); return; }
+    InputManager::GetInstance()->RequestToplevelClose(toplevelId, toplevelMgr_.FindToplevelResource(toplevelId));
+}
+
+void WaylandServer::DispatchToplevelClose(uint32_t toplevelId, wl_resource* expected) {
+    // Runs with protocol destruction/configure on the event thread. Closing is
+    // advisory: keep the mapping while a client saves, shows a dialog or ignores
+    // it. tl_resource_destroy alone unregisters the resource. The queue flushes
+    // clients even when a background game produces no further input/frames.
     wl_resource* tl = toplevelMgr_.FindToplevelResource(toplevelId);
-    if (tl) {
-        toplevelMgr_.UnregisterToplevelResource(toplevelId);
-        OH_LOG_INFO(LOG_APP, "[MW] SendToplevelClose id=%{public}u -> xdg_toplevel_send_close", toplevelId);
-        xdg_toplevel_send_close(tl);
-    } else {
-        OH_LOG_WARN(LOG_APP, "[MW] SendToplevelClose id=%{public}u NOT found", toplevelId);
-    }
+    if (!tl || tl != expected) return;
+    OH_LOG_INFO(LOG_APP, "[MW] SendToplevelClose id=%{public}u -> xdg_toplevel_send_close", toplevelId);
+    xdg_toplevel_send_close(tl);
 }
 
 // IsToplevelVisibleLocked 已移至 ToplevelManager (compositor/toplevel_manager.cpp)
@@ -387,6 +519,7 @@ int32_t WaylandServer::GetWorkAreaHeight() {
 }
 
 void WaylandServer::SetToplevelMinimized(uint32_t id) {
+    if (x11_toplevel_owns(id)) { x11_toplevel_control(id, 1, true); return; }
     auto lk = toplevelMgr_.Lock();
     // 保留 operator[] 建档语义: pre-commit 最小化同样记录状态
     toplevelMgr_.EnsureToplevelLocked(id).SetMinimized(true);
@@ -394,6 +527,7 @@ void WaylandServer::SetToplevelMinimized(uint32_t id) {
 }
 
 void WaylandServer::SetToplevelRestored(uint32_t id) {
+    if (x11_toplevel_owns(id)) { x11_toplevel_control(id, 0, true); return; }
     // 清除 minimized 状态
     {
         auto lk = toplevelMgr_.Lock();
@@ -439,20 +573,27 @@ void WaylandServer::SetToplevelMaximized(uint32_t id) {
 // 裸状态赋值: 无 dirty/无日志 — 与旧 sd->maximized = x 直接赋值逐字等价,
 // dirty 由调用点随后的 SetToplevelMaximized (锚定) / configure 路径负责。
 void WaylandServer::SetToplevelMaximizedState(uint32_t id, bool on) {
+    if (x11_toplevel_owns(id)) { x11_toplevel_control(id, 2, on); return; }
     auto lk = toplevelMgr_.Lock();
     toplevelMgr_.EnsureToplevelLocked(id).SetMaximized(on);
 }
 
 void WaylandServer::SetToplevelFullscreen(uint32_t id, bool on) {
+    if (x11_toplevel_owns(id)) { x11_toplevel_control(id, 3, on); return; }
     OH_LOG_INFO(LOG_APP, "[MW] SetToplevelFullscreen id=%{public}u on=%{public}s",
                 id, on ? "yes" : "no");
-    auto lk = toplevelMgr_.Lock();
-    // Ensure 建档语义同 SetToplevelMinimized: pre-commit 全屏同样记录状态。
-    // 状态转换 (置位 + 锚定 + preFs 快照 + 不变式断言) 收在
-    // ToplevelState::ApplyFullscreen
-    auto& st = toplevelMgr_.EnsureToplevelLocked(id);
-    st.ApplyFullscreen(on);
-    MarkDesktopRootDirtyLocked();
+    {
+        auto lk = toplevelMgr_.Lock();
+        // Ensure 建档语义同 SetToplevelMinimized: pre-commit 全屏同样记录状态。
+        // 状态转换 (置位 + 锚定 + preFs 快照 + 不变式断言) 收在
+        // ToplevelState::ApplyFullscreen
+        auto& st = toplevelMgr_.EnsureToplevelLocked(id);
+        desktopCompositor_.TrackExternalHostFullscreenLocked(id, on);
+        st.ApplyFullscreen(on);
+        MarkDesktopRootDirtyLocked();
+    }
+    InputManager::GetInstance()->InvalidateRelativePointerBaseline(
+        on ? "fullscreen-enter" : "fullscreen-exit");
 }
 
 void WaylandServer::ForceToplevelRedraw(uint32_t id) {
@@ -461,17 +602,6 @@ void WaylandServer::ForceToplevelRedraw(uint32_t id) {
 }
 
 void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t h, bool resizing) {
-    // 任务 #135 (M4a 模型缺口 §2.14): x11 路线无 xdg resource —— host→wine
-    // 几何回写改走 X 协议 (映射层 x11_toplevel.c 的 wlr_xwayland_surface_configure,
-    // napi 线程只入队; 最小化门禁/无变化跳过/echo 抑制都在那边, 语义与下方
-    // xdg 侧对位)。门 = 路线旗标 ∧ id 在 x11 登记表: 后者防「旗标与具体 id
-    // 空间错配」时误劫 wayland toplevel (双隔离红线; 其他输入口同款旗标门,
-    // napi_init.cpp SendKeyEvent)。wayland 侧取值清单: 本分支不满足时不执行,
-    // 下方原路径逐字节不变 (对照轮判据: wayland 会话回写日志 0 行)。
-    if (x11_toplevel_active() && x11_toplevel_owns(toplevelId)) {
-        x11_toplevel_geometry_size(toplevelId, w, h);
-        return;
-    }
     // 最小化门禁: 窗口最小化期间不向 Wine 发任何 configure。
     // winewayland 的「最小化→还原」握手 (window.c restoring_from_minimize)
     // 依赖窗口 rect 停在 -32000 哨兵位; 此时收到 configure, wine 走普通
@@ -491,6 +621,7 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
     if (!td || !td->xdgSurface) return;
     auto* xdg = static_cast<XdgSurface*>(wl_resource_get_user_data(td->xdgSurface));
     if (!xdg) return;
+    if (w > 0 && h > 0) DirectWineSurfaceResized(toplevelId, w, h);
 
     // maximized 状态位权威在 ToplevelState (重构第 5C 步: 旧读 sd->maximized
     // 迁移为读 ToplevelState; 未建档/sd 缺失同值 false)。一次读取供本函数

@@ -1,0 +1,109 @@
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -295,6 +295,82 @@
+ }
+ 
+ 
++
++/* WINEHUA_SERVER_PERF_BEGIN: diagnostic only; no synchronization semantics change. */
++static int winehua_server_perf_enabled = -1;
++struct winehua_server_perf_entry
++{
++    const char *name;
++    unsigned long long calls, total_ns, max_ns;
++};
++static __thread struct winehua_server_perf_window
++{
++    unsigned long long start_ns, calls;
++    struct winehua_server_perf_entry entries[REQ_NB_REQUESTS];
++} winehua_server_perf;
++
++static int winehua_server_perf_is_enabled(void)
++{
++    int enabled = __atomic_load_n( &winehua_server_perf_enabled, __ATOMIC_RELAXED );
++    if (enabled < 0)
++    {
++        const char *value = getenv( "WINEHUA_SERVER_PERF" );
++        enabled = value && !strcmp( value, "1" );
++        __atomic_store_n( &winehua_server_perf_enabled, enabled, __ATOMIC_RELAXED );
++    }
++    return enabled;
++}
++
++static unsigned long long winehua_server_perf_now(void)
++{
++    struct timespec now;
++    if (clock_gettime( CLOCK_MONOTONIC, &now )) return 0;
++    return (unsigned long long)now.tv_sec * 1000000000ULL + now.tv_nsec;
++}
++
++static void winehua_server_perf_add( unsigned int id, const char *name,
++                                    unsigned long long begin, unsigned long long end )
++{
++    struct winehua_server_perf_window *window = &winehua_server_perf;
++    struct winehua_server_perf_entry *entry;
++    unsigned int rank, i;
++    unsigned long long total_ns = 0;
++    unsigned char printed[REQ_NB_REQUESTS] = {0};
++    if (id >= REQ_NB_REQUESTS || !begin || end < begin) return;
++    if (!window->start_ns) window->start_ns = begin;
++    entry = &window->entries[id];
++    entry->name = name;
++    ++entry->calls;
++    entry->total_ns += end - begin;
++    if (end - begin > entry->max_ns) entry->max_ns = end - begin;
++    ++window->calls;
++    /* No log for every request. Only active threads report, at most once per
++     * second, and only eight request classes. A stalled/idle thread does not
++     * require a logging thread or any additional server request. */
++    if ((window->calls & 63) || end - window->start_ns < 1000000000ULL) return;
++    for (i = 0; i < REQ_NB_REQUESTS; ++i) total_ns += window->entries[i].total_ns;
++    fprintf( stderr, "[WINE-SERVER-PERF] pid=%ld tid=%ld window_us=%llu calls=%llu request_us=%llu\n",
++             (long)getpid(), (long)syscall( __NR_gettid ),
++             (end - window->start_ns) / 1000, window->calls, total_ns / 1000 );
++    for (rank = 0; rank < 8; ++rank)
++    {
++        unsigned int best = REQ_NB_REQUESTS;
++        for (i = 0; i < REQ_NB_REQUESTS; ++i)
++            if (!printed[i] && window->entries[i].calls &&
++                (best == REQ_NB_REQUESTS || window->entries[i].total_ns > window->entries[best].total_ns)) best = i;
++        if (best == REQ_NB_REQUESTS) break;
++        printed[best] = 1;
++        entry = &window->entries[best];
++        fprintf( stderr, "[WINE-SERVER-PERF] pid=%ld tid=%ld req=%s count=%llu total_us=%llu max_us=%llu\n",
++                 (long)getpid(), (long)syscall( __NR_gettid ), entry->name,
++                 entry->calls, entry->total_ns / 1000, entry->max_ns / 1000 );
++    }
++    memset( window->entries, 0, sizeof(window->entries) );
++    window->start_ns = end;
++    window->calls = 0;
++}
++/* WINEHUA_SERVER_PERF_END */
++
+ /***********************************************************************
+  *           server_call_unlocked
+  */
+@@ -302,12 +378,23 @@
+ {
+     struct __server_request_info * const req = req_ptr;
+     unsigned int ret;
++    const int measure = winehua_server_perf_is_enabled();
++    /* The reply overwrites the request union. Save identity before send. */
++    const unsigned int perf_id = measure ? req->u.req.request_header.req : 0;
++    const char *perf_name = measure ? req->name : NULL;
++    const unsigned long long perf_begin = measure ? winehua_server_perf_now() : 0;
+ 
+     FTRACE_BLOCK_START("req %s", req->name)
+     TRACE_(client)("%s start\n", req->name); \
+     if (!(ret = send_request( req )))
+         ret = wait_reply( req );
+     TRACE_(client)("%s end\n", req->name);
++    if (measure)
++    {
++        int saved_errno = errno;
++        winehua_server_perf_add( perf_id, perf_name, perf_begin, winehua_server_perf_now() );
++        errno = saved_errno;
++    }
+     FTRACE_BLOCK_END()
+     return ret;
+ }

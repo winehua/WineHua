@@ -1,0 +1,124 @@
+From: WineHua contributors <dev@winehua.invalid>
+Subject: [PATCH] ntdll: pair opt-in OHOS protection input and results
+
+Diagnostics only; no permission or loader behavior changes.
+Enable with WINEHUA_VM_DIAGNOSTICS=1, bounded to 4096 calls/process.
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4240,6 +4240,50 @@
+ }
+ 
+ 
++/* Opt-in, bounded native VM diagnostics. Wine permissions here are its
++ * current vprot view, not a claim that FEX's guest/host views are transparent.
++ * Failed calls never expose OldProtect as a valid output. */
++static unsigned int ohos_vm_protect_begin( HANDLE process, void *addr, SIZE_T size, ULONG protect )
++{
++#ifdef __OHOS__
++    static unsigned int sequence;
++    const char *enabled = getenv( "WINEHUA_VM_DIAGNOSTICS" );
++    unsigned int id;
++    char buf[320];
++    int n, saved_errno = errno;
++
++    if (!enabled || strcmp( enabled, "1" )) return 0;
++    id = __atomic_add_fetch( &sequence, 1, __ATOMIC_RELAXED );
++    if (id > 4096) return 0;
++    n = snprintf( buf, sizeof(buf),
++                  "[VM-PROTECT-BEGIN] pid=%d tid=%ld id=%u origin=native-ntdll process=%p base=%p size=%lx requested=%x\n",
++                  getpid(), syscall( SYS_gettid ), id, process, addr, size, protect );
++    if (n > 0) write( 2, buf, n < sizeof(buf) ? n : sizeof(buf) - 1 );
++    errno = saved_errno;
++    return id;
++#else
++    return 0;
++#endif
++}
++
++static void ohos_vm_protect_end( unsigned int id, NTSTATUS status, void *addr, SIZE_T size,
++                                ULONG old, BOOL view_valid, ULONG before, ULONG after )
++{
++#ifdef __OHOS__
++    char buf[320];
++    int n, saved_errno = errno;
++
++    if (!id) return;
++    n = snprintf( buf, sizeof(buf),
++                  "[VM-PROTECT-END] pid=%d tid=%ld id=%u status=%x output_valid=%u base=%p size=%lx old_valid=%u old=%x "
++                  "view_valid=%u wine_before=%x wine_after=%x\n",
++                  getpid(), syscall( SYS_gettid ), id, status, status == STATUS_SUCCESS, addr, size,
++                  status == STATUS_SUCCESS, status == STATUS_SUCCESS ? old : 0, view_valid, before, after );
++    if (n > 0) write( 2, buf, n < sizeof(buf) ? n : sizeof(buf) - 1 );
++    errno = saved_errno;
++#endif
++}
++
+ /***********************************************************************
+  *           virtual_relocate_module
+  */
+@@ -5994,12 +6038,17 @@
+     BYTE vprot;
+     SIZE_T size = *size_ptr;
+     LPVOID addr = *addr_ptr;
+-    DWORD old;
++    DWORD old = 0, trace_before = 0, trace_after = 0;
++    BOOL trace_view_valid = FALSE;
++    unsigned int trace_id = ohos_vm_protect_begin( process, addr, size, new_prot );
+ 
+     TRACE("%p %p %08lx %08x\n", process, addr, size, new_prot );
+ 
+     if (!old_prot)
++    {
++        ohos_vm_protect_end( trace_id, STATUS_ACCESS_VIOLATION, addr, size, 0, FALSE, 0, 0 );
+         return STATUS_ACCESS_VIOLATION;
++    }
+ 
+     if (process != NtCurrentProcess())
+     {
+@@ -6013,7 +6062,11 @@
+         call.virtual_protect.size = size;
+         call.virtual_protect.prot = new_prot;
+         status = server_queue_process_apc( process, &call, &result );
+-        if (status != STATUS_SUCCESS) return status;
++        if (status != STATUS_SUCCESS)
++        {
++            ohos_vm_protect_end( trace_id, status, addr, size, 0, FALSE, 0, 0 );
++            return status;
++        }
+ 
+         if (result.virtual_protect.status == STATUS_SUCCESS)
+         {
+@@ -6022,6 +6075,8 @@
+             *old_prot = result.virtual_protect.prot;
+         }
+         else *old_prot = PAGE_NOACCESS;
++        ohos_vm_protect_end( trace_id, result.virtual_protect.status, *addr_ptr, *size_ptr,
++                             result.virtual_protect.status == STATUS_SUCCESS ? *old_prot : 0, FALSE, 0, 0 );
+         return result.virtual_protect.status;
+     }
+ 
+@@ -6038,6 +6093,8 @@
+         if (get_committed_size( view, base, size, &vprot, VPROT_COMMITTED ) >= size && (vprot & VPROT_COMMITTED))
+         {
+             old = get_win32_prot( vprot, view->protect );
++            trace_view_valid = !!trace_id;
++            trace_before = old;
+             status = set_protection( view, base, size, new_prot );
+ 
+             if (simulate_writecopy && status == STATUS_SUCCESS
+@@ -6068,6 +6125,7 @@
+             }
+         }
+         else status = STATUS_NOT_COMMITTED;
++        if (trace_view_valid) trace_after = get_win32_prot( get_page_vprot( base ), view->protect );
+     }
+     else status = STATUS_INVALID_PARAMETER;
+ 
+@@ -6082,6 +6140,7 @@
+         *old_prot = old;
+     }
+     else *old_prot = PAGE_NOACCESS;
++    ohos_vm_protect_end( trace_id, status, *addr_ptr, *size_ptr, old, trace_view_valid, trace_before, trace_after );
+     return status;
+ }
+ 

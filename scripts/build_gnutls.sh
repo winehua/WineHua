@@ -6,14 +6,90 @@
 #   libtasn1 ──────────────┘
 #   libunistring ──────────┘
 #
-# 交叉目标 x86_64-linux-ohos (Wine unix 层), 仿 build_libffi.sh 模式:
-#   CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" + --host=x86_64-linux-gnu
+# 交叉目标由 WINE_ARCH 决定 (Wine unix 层), 仿 build_libffi.sh 模式:
+#   CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" + --host=$GNU_HOST
 #   (configure 只看 host 判平台特性, 实际编译 target 由 --target= 控制)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Validate before env.sh can perform any toolchain setup.
+VP_NETTLE_ASM="${VP_NETTLE_ASM:-auto}"
+case "$VP_NETTLE_ASM" in auto|off) ;; *) echo "invalid VP_NETTLE_ASM: use auto or off" >&2; exit 1 ;; esac
+if [ "${1:-}" = --check-identity ]; then export WINE_IDENTITY_CHECK_ONLY=1; fi
 source "$SCRIPT_DIR/env.sh"
 
-STAGING="$BUILD_DIR/gnutls_staging"
+NETTLE_VERSION=3.10.2
+NETTLE_PATCH="$SCRIPT_DIR/../patches/nettle/0001-ohos-arm64-fat-dispatch.patch"
+NETTLE_PATCH_SHA="$(sha256sum "$NETTLE_PATCH" | cut -d ' ' -f1)"
+NETTLE_STAMP="$SYSROOT_EXT_LIB/.vp-nettle-build-identity"
+
+# Extracted by the host contract test, so selection and invalidation are tested
+# from the same shell code used by the build, including failed link probes.
+nettle_asm_select() {
+    case "$VP_NETTLE_ASM" in auto|off) ;; *) return 1 ;; esac
+    NETTLE_ASM_EFFECTIVE=off
+    NETTLE_ASM_FLAGS=(--disable-assembler --disable-fat)
+    NETTLE_ASM_CFLAGS=""
+    if [ "$WINE_ARCH" = aarch64 ] && [ "$VP_NETTLE_ASM" = auto ]; then
+        local probe
+        probe="$(mktemp -d)" || return 1
+        printf '#include <sys/auxv.h>\n#if !defined(__OHOS__) || !defined(__aarch64__)\n#error OHOS AArch64 compiler required\n#endif\nint main(void) { return (int)getauxval(AT_HWCAP); }\n' > "$probe/probe.c"
+        if "$CLANG" --target="$TARGET" --sysroot="$SYSROOT" "$probe/probe.c" -o "$probe/probe" > "$probe/log" 2>&1; then
+            NETTLE_ASM_EFFECTIVE=arm64-fat
+            NETTLE_ASM_FLAGS=(--enable-assembler --enable-fat)
+            NETTLE_ASM_CFLAGS="-DVP_NETTLE_HAVE_GETAUXVAL=1"
+        else
+            echo "Nettle: getauxval/AT_HWCAP compile+link probe failed; using C-only" >&2
+        fi
+        rm -rf -- "$probe"
+    fi
+}
+
+nettle_build_identity() {
+    printf 'schema=1\narch=%s\nnettle=%s\nrequested=%s\neffective=%s\npatch=%s\ntarget=%s\n' \
+        "$WINE_ARCH" "$NETTLE_VERSION" "$VP_NETTLE_ASM" "$NETTLE_ASM_EFFECTIVE" "$NETTLE_PATCH_SHA" "$TARGET"
+}
+
+nettle_identity_matches() {
+    [ -f "$NETTLE_STAMP" ] && [ "$(cat "$NETTLE_STAMP")" = "$(nettle_build_identity)" ]
+}
+
+nettle_validate_configuration() {
+    [ "$NETTLE_ASM_EFFECTIVE" = arm64-fat ] || return 0
+    python3 - "$1" "$NETTLE_SOURCE" <<'PY'
+import pathlib
+import re
+import sys
+build, source = map(pathlib.Path, sys.argv[1:])
+text = (build / 'Makefile').read_text().replace('\\\n', ' ')
+def words(name):
+    match = re.search(r'^' + name + r'\s*=\s*(.*)$', text, re.M)
+    return match.group(1).split() if match else []
+required = ['aes128-encrypt-2', 'aes128-decrypt-2', 'aes192-encrypt-2', 'aes192-decrypt-2',
+            'aes256-encrypt-2', 'aes256-decrypt-2', 'ghash-set-key-2', 'ghash-update-2',
+            'sha1-compress-2', 'sha256-compress-n-2']
+if 'fat-arm64.c' not in words('OPT_NETTLE_SOURCES'):
+    sys.exit('Nettle: requested arm64-fat but configure omitted fat-arm64.c')
+objects = words('OPT_NETTLE_OBJS')
+for name in required:
+    if name + '.$(OBJEXT)' not in objects:
+        sys.exit('Nettle: requested arm64-fat but configure omitted ' + name)
+    selected = build / (name + '.asm')
+    expected = source / 'arm64/fat' / (name + '.asm')
+    if not selected.is_file() or selected.read_bytes() != expected.read_bytes():
+        sys.exit('Nettle: configure did not select upstream arm64/fat/' + name + '.asm')
+PY
+}
+
+nettle_asm_select
+if [ "${1:-}" = --check-identity ]; then
+    nettle_identity_matches
+    exit $?
+fi
+
+# STAGING 按 wine 架构隔离: 跨架构切换 (aarch64↔x86_64) 复用共享目录会残留旧架构库
+# (build_one 每次 rm -rf 重建但 STAGING 不清空) → gnutls configure 链接到旧架构 nettle
+# 报 "Nettle lacks rsa_sec_decrypt"。master 仅 x86_64 无此问题; feature/arm64 引入 aarch64 后必现。
+STAGING="$BUILD_DIR/gnutls_staging-$WINE_ARCH"
 TARBALL_DIR="$BUILD_DIR/gnutls_tarballs"
 
 # release tarball 源: 自带 configure/Makefile.in, 免 gnulib bootstrap。
@@ -57,7 +133,8 @@ fetch_tarball gnutls "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.3.
 
 # 幂等跳过: 5 个库的关键产物全部就位
 idempotent_done() {
-    [ -f "$SYSROOT_EXT_LIB/libgnutls.so.30" ] \
+    nettle_identity_matches \
+        && [ -f "$SYSROOT_EXT_LIB/libgnutls.so.30" ] \
         && [ -f "$SYSROOT_EXT_LIB/libnettle.so.8" ] \
         && [ -f "$SYSROOT_EXT_LIB/libhogweed.so.6" ] \
         && [ -f "$SYSROOT_EXT_LIB/libgmp.so.10" ] \
@@ -68,10 +145,33 @@ idempotent_done() {
 
 if idempotent_done; then
     log "GnuTLS 链已就绪，跳过"
+    # 幂等跳过时补复制 .pc 到架构 pkgconfig 目录: SYSROOT_EXT_PC 按架构隔离后,
+    # 跨架构切换 (或共享目录 .pc 被清) 时 stage_pc 不会重跑, 而 gstreamer/wine
+    # configure 依赖这些 .pc → 缺 nettle.pc 报 "HLS crypto library not found"。
+    if [ -d "$STAGING/lib/pkgconfig" ]; then
+        cp "$STAGING"/lib/pkgconfig/*.pc "$SYSROOT_EXT_PC/" 2>/dev/null || true
+    fi
     exit 0
 fi
 
-log "=== 构建 GnuTLS 链 (gmp/nettle/libtasn1/libunistring/gnutls, x86_64) → sysroot-ext ==="
+log "=== 构建 GnuTLS 链 ($WINE_ARCH, Nettle $VP_NETTLE_ASM -> $NETTLE_ASM_EFFECTIVE) → sysroot-ext ==="
+rm -f -- "$NETTLE_STAMP"
+
+# Never patch the shared release extraction or a submodule. Each patch digest
+# has a private source copy; publish it only after a complete verified apply.
+grep -Fq "AC_INIT([nettle], [$NETTLE_VERSION]," "$TARBALL_DIR/nettle/configure.ac" || \
+    err "Nettle source is not the pinned $NETTLE_VERSION release"
+NETTLE_SOURCE="$BUILD_DIR/nettle-source-$NETTLE_VERSION-$WINE_ARCH-$NETTLE_PATCH_SHA"
+if [ ! -f "$NETTLE_SOURCE/.vp-overlay-ready" ]; then
+    nettle_tmp="$(mktemp -d "$BUILD_DIR/nettle-source.XXXXXXXX")"
+    cp -a "$TARBALL_DIR/nettle/." "$nettle_tmp/"
+    patch -d "$nettle_tmp" -p1 --batch --force --dry-run < "$NETTLE_PATCH"
+    patch -d "$nettle_tmp" -p1 --batch --force < "$NETTLE_PATCH"
+    patch -d "$nettle_tmp" -p1 --batch --force --dry-run -R < "$NETTLE_PATCH"
+    touch "$nettle_tmp/.vp-overlay-ready"
+    mv "$nettle_tmp" "$NETTLE_SOURCE"
+fi
+patch -d "$NETTLE_SOURCE" -p1 --batch --force --dry-run -R < "$NETTLE_PATCH" >/dev/null
 
 mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC" "$STAGING/include" "$STAGING/lib" "$STAGING/lib/pkgconfig"
 
@@ -101,9 +201,14 @@ build_one() {
     mkdir -p "$build"
     cd "$build"
     CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
-    "$src/configure" --host=x86_64-linux-gnu --prefix="$STAGING" \
+    "$src/configure" --host=$GNU_HOST --prefix="$STAGING" \
         --libdir="$STAGING/lib" --disable-static \
         "$@"
+    if [ "$name" = nettle ]; then nettle_validate_configuration "$build"; fi
+    # 阻止 automake 因 NFS clock skew (Makefile.in 比 Makefile.am 旧) 重新生成
+    # → 缺 build-aux/mdate-sh 等辅助文件 → 构建失败
+    find "$src" -name 'Makefile.in' -exec touch {} + 2>/dev/null || true
+    touch "$src/Makefile.in" 2>/dev/null || true
     # tests/fuzz 是无条件 SUBDIRS: libtasn1 的 all 目标会运行交叉 asn1Parser
     # 生成头文件 (宿主无法执行 x86_64-ohos 二进制), libunistring 的 tests 编译
     # glibc 扩展宏 (musl 无 PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
@@ -170,8 +275,8 @@ stage_headers unistring
 stage_pc libunistring.pc
 
 # ── 4. nettle (+hogweed, gnutls 的 crypto 后端) ──
-build_one nettle "$TARBALL_DIR/nettle" \
-    --disable-documentation --disable-openssl --disable-assembler \
+CFLAGS="$CFLAGS $NETTLE_ASM_CFLAGS" build_one nettle "$NETTLE_SOURCE" \
+    --disable-documentation --disable-openssl "${NETTLE_ASM_FLAGS[@]}" \
     --disable-dependency-tracking
 stage_libs libnettle
 stage_libs libhogweed
@@ -190,4 +295,6 @@ stage_libs libgnutls
 stage_headers gnutls
 stage_pc gnutls.pc
 
-log "GnuTLS 链就绪: $SYSROOT_EXT"
+nettle_build_identity > "$NETTLE_STAMP.tmp"
+mv "$NETTLE_STAMP.tmp" "$NETTLE_STAMP"
+log "GnuTLS 链就绪: $SYSROOT_EXT (Nettle $NETTLE_ASM_EFFECTIVE)"

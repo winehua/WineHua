@@ -1,4 +1,4 @@
-#include "audio_ipc_server.h"
+#include "audio/audio_ipc_server.h"
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -16,8 +16,8 @@
 #define LOG_TAG "WL_AUDIO"
 #include <hilog/log.h>
 
-#include "audio_broker.h"
-#include "audio_ipc_protocol.h"
+#include "audio/audio_broker.h"
+#include "protocols/audio_ipc_protocol.h"
 
 namespace winehua {
 

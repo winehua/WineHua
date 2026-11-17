@@ -7,6 +7,9 @@
 #include "geometry.h"
 #include "compositor/frame/surface_data.h"
 #include "common/perf_utils.h"
+#include "common/frame_loop_diagnostics.h"
+#include "compositor/input/input_resolver.h"
+#include "compositor/frame/input_target_probe.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -36,6 +39,22 @@ DesktopCompositor::DesktopCompositor(ToplevelManager& tmgr,
 void DesktopCompositor::MarkDesktopRootDirtyLocked()
 {
     tmgr_.MarkToplevelDirtyLocked(desktopRootToplevelId_);
+}
+
+bool DesktopCompositor::IsToplevelIsolated(uint32_t id) const
+{
+    auto lock = tmgr_.Lock();
+    return isolatedToplevels_.count(id) != 0;
+}
+
+void DesktopCompositor::SetToplevelIsolated(uint32_t id, bool isolated)
+{
+    if (!id) return;
+    auto lock = tmgr_.Lock();
+    if (isolated) isolatedToplevels_.insert(id);
+    else isolatedToplevels_.erase(id);
+    MarkDesktopRootDirtyLocked();
+    desktopCompositionSignature_ = 0;
 }
 
 bool DesktopCompositor::UpdateSubsurfaceLayerLocalPosition(wl_resource* surface, int32_t x, int32_t y,
@@ -136,17 +155,127 @@ DesktopCompositor::FindZeroCopyLayerForToplevelLocked(uint32_t id) const
 
 bool DesktopCompositor::HasZeroCopyLayerForToplevelLocked(uint32_t id) const
 {
-    return zc_.HasLayerForToplevel(id);
+    return directDesktopVisibleToplevels_.count(id) || zc_.HasLayerForToplevel(id);
 }
 
 bool DesktopCompositor::GetZeroCopyContentSizeLocked(uint32_t toplevelId,
                                                      int& outW, int& outH) const
 {
+    auto direct = directDesktopContentSizes_.find(toplevelId);
+    if (direct != directDesktopContentSizes_.end()) {
+        outW = direct->second.first; outH = direct->second.second;
+        return true;
+    }
     return zc_.GetContentSize(toplevelId, outW, outH);
+}
+
+bool DesktopCompositor::ExternalWindowLiveLocked(const ExternalWindow& b) const
+{
+    auto* source = tmgr_.FindSurfaceResource(b.sourceKey);
+    auto* host = tmgr_.FindSurfaceResource(b.hostKey);
+    auto* sd = source ? tmgr_.FindRegisteredSurfaceDataLocked(source) : nullptr;
+    auto* hd = host ? tmgr_.FindRegisteredSurfaceDataLocked(host) : nullptr;
+    return sd && hd && sd->hasToplevel && hd->hasToplevel &&
+        sd->toplevelId == b.source && hd->toplevelId == b.host;
+}
+
+bool DesktopCompositor::BindExternalToplevel(uint32_t source, uint32_t host,
+                                             uint32_t sourcePid, uint32_t hostPid,
+                                             int x, int y, int w, int h)
+{
+    auto lock = tmgr_.Lock();
+    if (!policy_.RootCompositing() || !source || !host || source == host ||
+        source == desktopRootToplevelId_ || host == desktopRootToplevelId_ ||
+        !sourcePid || !hostPid || x < 0 || y < 0 || w < 1 || h < 1 ||
+        x > 4096 || y > 4096 || w > 4096 || h > 4096) return false;
+    ExternalWindow binding; binding.source = source; binding.host = host;
+    binding.x = x; binding.y = y; binding.w = w; binding.h = h;
+    for (const auto& [key, resource] : tmgr_.SurfaceResources()) {
+        auto* sd = tmgr_.FindRegisteredSurfaceDataLocked(resource);
+        if (!sd || !sd->hasToplevel) continue;
+        if (sd->toplevelId == source && sd->clientPid == sourcePid) binding.sourceKey = key;
+        if (sd->toplevelId == host && sd->clientPid == hostPid) binding.hostKey = key;
+    }
+    if (!binding.sourceKey || !binding.hostKey || !ExternalWindowLiveLocked(binding)) return false;
+    for (const auto& [id, other] : externalWindows_)
+        if (id != source && (other.host == host || other.source == host || other.host == source)) return false;
+    const auto previous = externalWindows_.find(source);
+    if (previous != externalWindows_.end() && previous->second.sourceKey == binding.sourceKey &&
+        previous->second.hostKey == binding.hostKey) {
+        const auto& saved = previous->second;
+        binding.hasWindowedPosition = saved.hasWindowedPosition;
+        binding.windowedX = saved.windowedX; binding.windowedY = saved.windowedY;
+        binding.windowedWineX = saved.windowedWineX; binding.windowedWineY = saved.windowedWineY;
+    }
+    externalWindows_[source] = binding;
+    MarkDesktopRootDirtyLocked();
+    return true;
+}
+
+void DesktopCompositor::UnbindExternalToplevel(uint32_t host)
+{
+    auto lock = tmgr_.Lock();
+    for (auto it = externalWindows_.begin(); it != externalWindows_.end();)
+        if (it->second.host == host) it = externalWindows_.erase(it); else ++it;
+    MarkDesktopRootDirtyLocked();
+}
+
+uint32_t DesktopCompositor::ExternalHostLocked(uint32_t source) const
+{
+    const auto it = externalWindows_.find(source);
+    return it != externalWindows_.end() && ExternalWindowLiveLocked(it->second) ? it->second.host : 0;
+}
+
+uint32_t DesktopCompositor::ExternalSourceLocked(uint32_t host) const
+{
+    for (const auto& [id, binding] : externalWindows_)
+        if (binding.host == host && ExternalWindowLiveLocked(binding)) return id;
+    return 0;
+}
+
+void DesktopCompositor::TrackExternalHostFullscreenLocked(uint32_t host, bool on)
+{
+    const auto source = ExternalSourceLocked(host);
+    const auto* current = tmgr_.FindToplevelLocked(host);
+    if (!source || !current || current->IsFullscreen() == on) return;
+    auto& binding = externalWindows_.at(source);
+    auto* state = tmgr_.FindToplevelLocked(host);
+    if (on && state->HasPosition()) {
+        binding.hasWindowedPosition = true;
+        binding.windowedX = state->X(); binding.windowedY = state->Y();
+        binding.windowedWineX = state->WineX(); binding.windowedWineY = state->WineY();
+    } else if (!on && binding.hasWindowedPosition) {
+        state->SetPosition(binding.windowedX, binding.windowedY);
+        // A compositor drag is intentionally unknown to Wine. Its old window
+        // coordinates on restore must not overwrite the saved dragged position.
+        state->SetWinePosition(binding.windowedWineX, binding.windowedWineY);
+        binding.hasWindowedPosition = false;
+    }
+}
+
+bool DesktopCompositor::IsContentVisibleLocked(uint32_t id) const
+{
+    if (id == desktopRootToplevelId_) return false;
+    const auto* state = tmgr_.FindToplevelLocked(id);
+    return state && !state->IsBackground() && !state->IsMinimized() &&
+        (state->HasFrame() || zc_.HasActiveContent(id) || directDesktopVisibleToplevels_.count(id));
+}
+
+uint32_t DesktopCompositor::FirstVisibleContentModalLocked(uint32_t id) const
+{
+    if (!tmgr_.FindToplevelLocked(id)) return 0;
+    const auto& modals = tmgr_.ModalListLocked(id);
+    for (auto it = modals.rbegin(); it != modals.rend(); ++it) {
+        if (IsContentVisibleLocked(*it)) return *it;
+        if (const auto nested = FirstVisibleContentModalLocked(*it)) return nested;
+    }
+    return 0;
 }
 
 std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, int rootH)
 {
+    for (auto it = externalWindows_.begin(); it != externalWindows_.end();)
+        if (!ExternalWindowLiveLocked(it->second)) it = externalWindows_.erase(it); else ++it;
     std::vector<CompositorLayer> layers;
     const uint32_t rootId = desktopRootToplevelId_;
     size_t zIndex = 0;
@@ -177,15 +306,16 @@ std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, 
         CompositorLayer subLayer;
         subLayer.type = CompositorLayer::Type::Subsurface;
         subLayer.visible = (sl.parentToplevel == rootId) ||
-                           tmgr_.IsToplevelVisibleLocked(sl.parentToplevel, rootId);
+                           IsContentVisibleLocked(sl.parentToplevel);
         subLayer.zcActive = zc_.IsActive(sl.surfaceKey);
         subLayer.toplevelId = sl.parentToplevel;
         int lx = 0, ly = 0;
         ResolveSubsurfaceLayerPositionLocked(sl, lx, ly);
         subLayer.x = lx;
         subLayer.y = ly;
-        subLayer.w = sl.w;
-        subLayer.h = sl.h;
+        DirectImageSampling sampling;
+        if (!ComputeSubsurfaceViewport(sl, subLayer.w, subLayer.h, sampling))
+            subLayer.visible = false;
         subLayer.sub = &sl;
         return subLayer;
     };
@@ -225,7 +355,7 @@ std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, 
             mp.seq.itemSeq = item++;
             CompositorLayer& mlayer = mp.layer;
             mlayer.type = CompositorLayer::Type::Toplevel;
-            mlayer.visible = tmgr_.IsToplevelVisibleLocked(modalId, rootId);
+            mlayer.visible = IsContentVisibleLocked(modalId);
             mlayer.toplevelId = modalId;
             mlayer.x = mst->X();
             mlayer.y = mst->Y();
@@ -244,6 +374,7 @@ std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, 
     int64_t zi = 0;
     for (uint32_t childId : tmgr_.toplevelZOrder()) {
         if (childId == rootId) continue;
+        if (ExternalHostLocked(childId)) continue; // Draw only inside its Wine host.
         const auto* cst = tmgr_.FindToplevelLocked(childId);
         if (!cst) continue;
         PendingLayer p;
@@ -252,7 +383,7 @@ std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, 
         p.seq.itemSeq = 0;  // 父层恒在同 lane 首位, 子层 (itemSeq=li+1) 其后
         CompositorLayer& layer = p.layer;
         layer.type = CompositorLayer::Type::Toplevel;
-        layer.visible = tmgr_.IsToplevelVisibleLocked(childId, rootId);
+        layer.visible = IsContentVisibleLocked(childId);
         layer.toplevelId = childId;
         layer.x = cst->X();
         layer.y = cst->Y();
@@ -261,6 +392,26 @@ std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, 
         layer.fullscreen = cst->IsFullscreen();
         laneOf.emplace(childId, zi);
         pending.push_back(std::move(p));
+        const auto source = ExternalSourceLocked(childId);
+        if (source) {
+            const auto& binding = externalWindows_.at(source);
+            const auto* content = tmgr_.FindToplevelLocked(source);
+            if (content && content->HasFrame() && content->Width() > 0 && content->Height() > 0) {
+                FitRect fit;
+                ComputeFitRect(binding.w, binding.h, content->Width(), content->Height(), fit);
+                PendingLayer embedded;
+                embedded.seq.group = winehua::ZOrderGroup::InZOrder;
+                embedded.seq.laneSeq = zi; embedded.seq.itemSeq = 50000;
+                auto& image = embedded.layer;
+                image.type = CompositorLayer::Type::Toplevel;
+                image.toplevelId = source; image.externalHostId = childId;
+                image.visible = IsContentVisibleLocked(childId);
+                image.x = cst->X() + binding.x + fit.offX;
+                image.y = cst->Y() + binding.y + fit.offY;
+                image.w = fit.dstW; image.h = fit.dstH;
+                pending.push_back(std::move(embedded));
+            }
+        }
         appendModals(childId, zi);  // WineHua: modal 组展开 (成员不入 z-order)
         ++zi;
     }
@@ -313,10 +464,395 @@ std::vector<CompositorLayer> DesktopCompositor::BuildLayerListLocked(int rootW, 
     // --- 输出: zIndex 按输出顺序递增 (Root=0 → 后续 1..N) — 与旧行为一致
     // (旧 zIndex 分配顺序 = 最终输出顺序) ---
     for (auto& p : pending) {
+        // A separate Ability owns these pixels and input; the Wine desktop
+        // must not composite or hit-test a second copy of the same window.
+        if (isolatedToplevels_.count(p.layer.toplevelId)) continue;
         p.layer.zIndex = zIndex++;
         layers.push_back(std::move(p.layer));
     }
     return layers;
+}
+
+void DesktopCompositor::ClearDirectDesktopContentSizes()
+{
+    auto lock = tmgr_.Lock();
+    directDesktopContentSizes_.clear();
+    directDesktopVisibleToplevels_.clear();
+}
+
+bool DesktopCompositor::SnapshotGpuDesktopScene(const std::vector<GpuDesktopDirectSource>& direct,
+                                               GpuDesktopSnapshotCache& cache, GpuDesktopScene& out,
+                                               const std::vector<GpuDesktopLayer>& zeroCopy)
+{
+    auto lock = tmgr_.Lock();
+    out = {};
+    const auto* root = tmgr_.FindToplevelLocked(desktopRootToplevelId_);
+    if (!policy_.RootCompositing() || !root) return false;
+    out.rootId = desktopRootToplevelId_;
+    out.width = root->Width() > 0 ? root->Width() : outputW_;
+    out.height = root->Height() > 0 ? root->Height() : outputH_;
+    if (out.width <= 0 || out.height <= 0) return false;
+    // A GPU child may arrive before its parent's first SHM frame. Validate the
+    // actual protocol edge; a snapshot key alone never establishes ownership.
+    const auto protocolChild = [&](const GpuDesktopLayer& source) {
+        if (!source.subsurface || !source.ownerSurfaceKey) return false;
+        auto* resource = tmgr_.FindSurfaceResource(source.ownerSurfaceKey);
+        auto* child = resource ? static_cast<SurfaceData*>(wl_resource_get_user_data(resource)) : nullptr;
+        auto* parent = child && child->isSubsurface && child->parentSurface
+            ? tmgr_.FindRegisteredSurfaceDataLocked(child->parentSurface) : nullptr;
+        if (!parent || !parent->hasToplevel || parent->toplevelId != source.parentToplevel ||
+            tmgr_.FindSurfaceResource(parent->surfaceKey) != child->parentSurface) return false;
+        const auto* state = tmgr_.FindToplevelLocked(source.parentToplevel);
+        return !state || (!state->IsBackground() && !state->IsMinimized());
+    };
+    std::unordered_map<uint32_t, std::vector<std::pair<SurfaceData*, GpuDesktopLayer>>> clients;
+    directDesktopContentSizes_.clear();
+    directDesktopVisibleToplevels_.clear();
+    for (const auto& source : direct) {
+        const uint64_t key = (uint64_t(source.pid) << 32) | source.wlSurface;
+        auto* resource = tmgr_.FindSurfaceResource(key);
+        auto* client = resource ? static_cast<SurfaceData*>(wl_resource_get_user_data(resource)) : nullptr;
+        auto* parent = client && client->isSubsurface && client->parentSurface
+            ? tmgr_.FindRegisteredSurfaceDataLocked(client->parentSurface) : nullptr;
+        if (!client || !parent || !parent->hasToplevel || parent->toplevelId != source.toplevel ||
+            client->directOwnerKey != parent->surfaceKey || !client->directVisible ||
+            client->directGeneration != source.generation || !source.generation ||
+            tmgr_.FindSurfaceResource(parent->surfaceKey) != client->parentSurface) continue;
+        GpuDesktopLayer image;
+        image.directSurfaceKey = key;
+        image.ownerSurfaceKey = key; image.parentToplevel = source.toplevel;
+        image.subsurface = true;
+        image.x = client->subsurfaceX; image.y = client->subsurfaceY;
+        if (!ComputeDirectViewport(client->directViewport, source.width, source.height,
+                                   image.w, image.h, image.sampling)) continue;
+        image.sourceW = source.width; image.sourceH = source.height;
+        // The full client, rather than an auxiliary tiny CEF child, determines
+        // fullscreen/input scaling. All actual drawables remain composited.
+        directDesktopVisibleToplevels_.insert(source.toplevel);
+        const auto* state = tmgr_.FindToplevelLocked(source.toplevel);
+        const bool mainCanvas = image.x == 0 && image.y == 0 &&
+            (!state || !state->HasFrame() ||
+             (image.w >= state->Width() && image.h >= state->Height()));
+        if (mainCanvas) {
+            auto& size = directDesktopContentSizes_[source.toplevel];
+            if (int64_t(image.w) * image.h > int64_t(size.first) * size.second)
+                size = {image.w, image.h};
+        }
+        clients[source.toplevel].emplace_back(client, image);
+    }
+    for (auto& [top, children] : clients)
+        std::sort(children.begin(), children.end(), [](const auto& a, const auto& b) {
+            return a.first->directGeneration < b.first->directGeneration;
+        });
+    auto layers = BuildLayerListLocked(out.width, out.height);
+    const auto fullscreenId = PickFullscreenLayerLocked(layers);
+    std::unordered_set<uint64_t> orderedDrawables;
+    for (const auto& layer : layers) if (layer.type == CompositorLayer::Type::Subsurface)
+        orderedDrawables.insert(layer.sub->surfaceKey);
+    // Bounded, opt-in observation of this exact decision. No pointer escapes
+    // the lock and no input event, raise, focus or resolver log cache is changed.
+    if (winehua::FrameTraceEnabled() || (winehua::FrameLoopDiagnosticState() & 1)) {
+        const uint64_t now = winehua::PerfNowUs();
+        if (now >= nextSceneDiagnosticUs_) {
+            nextSceneDiagnosticUs_ = now + 2000000;
+            out.diagnosticSerial = ++sceneDiagnosticSerial_;
+            out.diagnosticUs = now;
+            InputResolver probe(tmgr_, *this, desktopRootToplevelId_, outputW_, outputH_);
+            InputTarget hit;
+            const double cx = out.width / 2.0, cy = out.height / 2.0;
+            const bool hitOk = probe.FindInputTargetInLayersLocked(cx, cy, hit, layers,
+                out.width, out.height, fullscreenId, false);
+            const auto last = winehua::LastInputTarget();
+            OH_LOG_INFO(LOG_APP, "[SCENE-DECISION] sample=%{public}llu at_us=%{public}llu "
+                "fullscreen=%{public}u center=(%{public}.1f,%{public}.1f) currentHit=%{public}u "
+                "hit_ok=%{public}d modal=%{public}u swallow=%{public}d layers=%{public}zu "
+                "lastInputTarget=%{public}u last_event_us=%{public}llu last_xy=(%{public}.1f,%{public}.1f)",
+                static_cast<unsigned long long>(out.diagnosticSerial), static_cast<unsigned long long>(now),
+                fullscreenId, cx, cy, hit.toplevelId, hitOk, hit.blockedModalId, hit.swallow, layers.size(),
+                last.toplevelId, static_cast<unsigned long long>(last.eventUs), last.desktopX, last.desktopY);
+            size_t count = 0;
+            for (const auto& layer : layers) {
+                if (layer.type != CompositorLayer::Type::Toplevel) continue;
+                if (count++ >= 16) continue;
+                const auto* state = tmgr_.FindToplevelLocked(layer.toplevelId);
+                if (!state) continue;
+                const char* reason = !layer.visible ? "not-visible" :
+                    ShouldSkipFullscreenCascade(layer, fullscreenId, fullscreenId != 0, tmgr_)
+                        ? "fullscreen-cascade" : "included";
+                OH_LOG_INFO(LOG_APP, "[SCENE-CANDIDATE] sample=%{public}llu top=%{public}u z=%{public}zu "
+                    "priority=%{public}llu shm=%{public}d gpu=%{public}d fs=%{public}d "
+                    "background=%{public}d minimized=%{public}d modalOwner=%{public}u reason=%{public}s",
+                    static_cast<unsigned long long>(out.diagnosticSerial), layer.toplevelId, layer.zIndex,
+                    static_cast<unsigned long long>(state->FsPriority()), state->HasFrame(),
+                    zc_.HasActiveContent(layer.toplevelId), layer.fullscreen, state->IsBackground(),
+                    state->IsMinimized(), state->ModalOwnerId(), reason);
+            }
+            OH_LOG_INFO(LOG_APP, "[SCENE-CANDIDATES-END] sample=%{public}llu total=%{public}zu truncated=%{public}zu",
+                static_cast<unsigned long long>(out.diagnosticSerial), count, count > 16 ? count - 16 : 0);
+        }
+    }
+    FitRect fullscreenFit;
+    bool fullscreenUsesGpuContent = false;
+    if (fullscreenId) ComputeFullscreenFitLocked(fullscreenId, out.width, out.height,
+                                                fullscreenFit, &fullscreenUsesGpuContent);
+    std::unordered_set<uint64_t> used;
+    auto snapshot = [&](GpuDesktopLayer& layer, const std::vector<uint8_t>& pixels) {
+        if (layer.sourceW <= 0 || layer.sourceH <= 0 ||
+            pixels.size() < static_cast<size_t>(layer.sourceW) * layer.sourceH * 4) return false;
+        auto& saved = cache[layer.key];
+        if (!saved.pixels || saved.serial != layer.serial || saved.sourceW != layer.sourceW ||
+            saved.sourceH != layer.sourceH) {
+            saved = layer;
+            saved.pixels = std::make_shared<const std::vector<uint8_t>>(pixels);
+        }
+        layer.pixels = saved.pixels;
+        used.insert(layer.key);
+        return true;
+    };
+    for (const auto& layer : layers) {
+        if (!layer.visible || ShouldSkipFullscreenCascade(layer, fullscreenId, fullscreenId != 0, tmgr_)) continue;
+        GpuDesktopLayer item;
+        item.parentToplevel = layer.type == CompositorLayer::Type::Root ? out.rootId : layer.toplevelId;
+        item.x = layer.x; item.y = layer.y; item.w = layer.w; item.h = layer.h;
+        const std::vector<uint8_t>* pixels = nullptr;
+        if (layer.type == CompositorLayer::Type::Subsurface) {
+            auto client = clients.find(layer.toplevelId);
+            if (client != clients.end()) {
+                auto drawable = std::find_if(client->second.begin(), client->second.end(),
+                    [&](const auto& entry) { return layer.sub->surface == entry.first->surface; });
+                if (drawable != client->second.end()) {
+                    auto image = drawable->second;
+                    image.x = layer.x; image.y = layer.y;
+                    const auto* state = fullscreenId && layer.toplevelId == fullscreenId
+                        ? tmgr_.FindToplevelLocked(fullscreenId) : nullptr;
+                    if (state) FitMapLayerRect(fullscreenFit, image.x - state->X(), image.y - state->Y(),
+                        image.w, image.h, image.x, image.y, image.w, image.h);
+                    out.layers.push_back(std::move(image));
+                    continue;
+                }
+            }
+            if (layer.zcActive && zeroCopy.empty()) continue;
+            const auto& sub = *layer.sub;
+            item.subsurface = true;
+            item.external = sub.isExternal;
+            item.ownerSurfaceKey = sub.surfaceKey;
+            item.key = sub.surfaceKey;
+            item.serial = sub.shmCommitSerial;
+            item.sourceW = sub.w; item.sourceH = sub.h;
+            if (!ComputeSubsurfaceViewport(sub, item.w, item.h, item.sampling)) continue;
+            item.opaque = sub.shmFormat != 0;
+            pixels = &sub.pixels;
+        } else {
+            const auto* state = layer.type == CompositorLayer::Type::Root ? root : tmgr_.FindToplevelLocked(layer.toplevelId);
+            if (!state) continue;
+            item.key = (1ULL << 63) | (layer.type == CompositorLayer::Type::Root ? out.rootId : layer.toplevelId);
+            item.serial = state->FrameSerial();
+            item.sourceW = state->Width(); item.sourceH = state->Height();
+            item.opaque = state->ShmFormat() != 0;
+            pixels = &state->Pixels();
+        }
+        const auto* fsState = fullscreenId ? tmgr_.FindToplevelLocked(fullscreenId) : nullptr;
+        if (fsState && layer.toplevelId == fullscreenId)
+            FitMapLayerRect(fullscreenFit, item.x - fsState->X(), item.y - fsState->Y(),
+                            item.w, item.h, item.x, item.y, item.w, item.h);
+        const bool fullscreenWindow = layer.type == CompositorLayer::Type::Toplevel &&
+                                      layer.toplevelId == fullscreenId &&
+                                      fullscreenFit.dstW > 0 && fullscreenFit.dstH > 0;
+        if (fullscreenWindow) {
+            // The fitted content covers only its aspect-preserving rectangle.
+            // Put an opaque backing in this window's lane for SHM, Direct and
+            // zero-copy alike; later menus/popups retain their normal order.
+            GpuDesktopLayer black;
+            black.key = (1ULL << 62) | fullscreenId;
+            black.solidBlack = true; black.w = out.width; black.h = out.height;
+            out.layers.push_back(std::move(black));
+        }
+        const bool fullscreenDirect = fullscreenWindow && fullscreenUsesGpuContent && clients.count(fullscreenId);
+        if (!fullscreenDirect && !(layer.zcActive && !zeroCopy.empty()) && snapshot(item, *pixels))
+            out.layers.push_back(std::move(item));
+        else if (!fullscreenDirect && !zeroCopy.empty()) out.layers.push_back(std::move(item));
+        if (layer.type == CompositorLayer::Type::Toplevel) {
+            auto client = clients.find(layer.toplevelId);
+            if (client == clients.end()) continue;
+            for (const auto& drawable : client->second) {
+                if (orderedDrawables.count(drawable.first->surfaceKey)) continue;
+                auto image = drawable.second;
+                if (layer.toplevelId == fullscreenId) {
+                    FitMapLayerRect(fullscreenFit, image.x, image.y, image.w, image.h,
+                                    image.x, image.y, image.w, image.h);
+                } else { image.x += layer.x; image.y += layer.y; }
+                out.layers.push_back(std::move(image));
+            }
+        }
+    }
+    if (!zeroCopy.empty()) {
+        std::vector<GpuDesktopLayer> native;
+        for (auto source : zeroCopy) {
+            if (isolatedToplevels_.count(source.parentToplevel)) continue;
+            uint64_t liveOwner = 0;
+            uint32_t liveTop = 0;
+            int liveW = 0, liveH = 0;
+            if (!zc_.ActiveOwner(source.zeroCopyKey, liveOwner, liveTop, liveW, liveH) ||
+                liveOwner != source.ownerSurfaceKey || liveTop != source.parentToplevel) continue;
+            const auto owner = std::find_if(layers.begin(), layers.end(), [&](const auto& layer) {
+                return (layer.type == CompositorLayer::Type::Toplevel &&
+                        layer.toplevelId == source.parentToplevel) ||
+                       (layer.type == CompositorLayer::Type::Root && source.parentToplevel == out.rootId);
+            });
+            if (owner == layers.end()) {
+                // Match BuildLayerListLocked's existing TopAnchored child rule.
+                // Without a parent lane only a real protocol child can enter;
+                // never synthesize an owner or choose an arbitrary z-order.
+                if (!protocolChild(source) || fullscreenId ||
+                    winehua::ZOrderGroupFor(source.parentToplevel == out.rootId, source.external,
+                                           tmgr_.IsInZOrder(source.parentToplevel)) !=
+                        winehua::ZOrderGroup::TopAnchored) continue;
+                source.external = true;
+            } else if (!owner->visible ||
+                       ShouldSkipFullscreenCascade(*owner, fullscreenId, fullscreenId != 0, tmgr_)) continue;
+            const auto* state = fullscreenId && source.parentToplevel == fullscreenId
+                ? tmgr_.FindToplevelLocked(fullscreenId) : nullptr;
+            if (state) FitMapLayerRect(fullscreenFit, source.x - state->X(), source.y - state->Y(),
+                                      source.w, source.h, source.x, source.y, source.w, source.h);
+            native.push_back(std::move(source));
+        }
+        MergeZeroCopySceneLayers(out, native);
+    }
+    for (auto it = cache.begin(); it != cache.end();)
+        if (!used.count(it->first)) it = cache.erase(it); else ++it;
+    return true;
+}
+
+bool DesktopCompositor::GetDirectDesktopLayout(uint32_t pid, uint32_t id,
+                                               uint32_t wlSurfaceId, int imageW, int imageH, uint64_t generation,
+                                               DirectDesktopLayout& out, uint32_t scope, const char** rejectionReason)
+{
+    auto lk = tmgr_.Lock();
+    if (rejectionReason) *rejectionReason = nullptr;
+    auto reject = [&](const char* reason) {
+        if (rejectionReason) *rejectionReason = reason;
+        return false;
+    };
+    const auto* state = tmgr_.FindToplevelLocked(id);
+    if (!tmgr_.IsToplevelVisibleLocked(id, desktopRootToplevelId_))
+        return reject(id == desktopRootToplevelId_ ? "desktop_root" :
+            !state ? "missing_toplevel" : state->IsMinimized() ? "minimized" :
+            state->IsBackground() ? "background" : "no_shm_frame");
+    if (scope ? (scope != id || !policy_.OhosWindowPerToplevel()) : !policy_.RootCompositing())
+        return reject("scope_mismatch");
+    const auto* root = tmgr_.FindToplevelLocked(desktopRootToplevelId_);
+    auto* resource = tmgr_.FindSurfaceResource((static_cast<uint64_t>(pid) << 32) | wlSurfaceId);
+    auto* client = resource ? static_cast<SurfaceData*>(wl_resource_get_user_data(resource)) : nullptr;
+    auto* parent = client && client->isSubsurface && client->parentSurface
+        ? tmgr_.FindRegisteredSurfaceDataLocked(client->parentSurface) : nullptr;
+    if (scope && state && client && imageW > 0 && imageH > 0 && generation) {
+        // Legacy managed Wine WSI binds the queue to its exact toplevel;
+        // desktop WSI uses the independently declared client subsurface.
+        const bool ownToplevel = client->hasToplevel && client->toplevelId == id;
+        const bool ownChild = parent && parent->hasToplevel && parent->toplevelId == id &&
+            client->directOwnerKey == parent->surfaceKey && client->directVisible &&
+            client->directGeneration == generation &&
+            tmgr_.FindSurfaceResource(parent->surfaceKey) == client->parentSurface;
+        if (!ownToplevel && !ownChild) return reject("surface_owner_mismatch");
+        out = {};
+        DirectImageSampling sampling;
+        if (ownChild) {
+            if (!ComputeDirectViewport(client->directViewport, imageW, imageH, out.w, out.h, sampling))
+                return reject("invalid_viewport");
+            const auto offset = ComputePopupOffset(client->subsurfaceX, client->subsurfaceY,
+                parent->committed.contentRect.x, parent->committed.contentRect.y);
+            out.x = offset.first; out.y = offset.second;
+        } else {
+            // Legacy managed WSI identifies the queue by its parent toplevel,
+            // but that parent's viewport belongs to the decorated SHM buffer.
+            // Resolve the unique inline client by Wine's protocol role instead
+            // of applying that crop to a smaller native swapchain image.
+            const SurfaceData* drawable = nullptr;
+            for (const auto& [key, resource] : tmgr_.SurfaceResources()) {
+                const auto* child = static_cast<SurfaceData*>(wl_resource_get_user_data(resource));
+                if (!child || !child->isSubsurface || child->parentSurface != client->surface ||
+                    !DisplayPolicy::IsInlineClientSurface(child->inputRegionEmpty, child->vpSrcW)) continue;
+                if (drawable && drawable != child) return reject("ambiguous_managed_client");
+                drawable = child;
+            }
+            if (drawable) {
+                if (!ComputeDirectViewport(drawable->directViewport, imageW, imageH, out.w, out.h, sampling))
+                    return reject("invalid_client_viewport");
+                const auto offset = ComputePopupOffset(drawable->subsurfaceX, drawable->subsurfaceY,
+                    client->committed.contentRect.x, client->committed.contentRect.y);
+                out.x = offset.first; out.y = offset.second;
+            } else {
+                // A whole-window producer without a separate client is valid
+                // only when its image covers that exact window. Wait for the
+                // real client role if its decorated parent is larger.
+                if (imageW != state->Width() || imageH != state->Height())
+                    return reject("managed_client_pending");
+                out.w = imageW; out.h = imageH;
+            }
+            // Managed Wine WSI binds its entire-window GPU producer to the
+            // toplevel. Inline SHM clients are below that producer, exactly as
+            // for the whole-window ZC layer in BuildWindowLayerListLocked.
+            // Treating their retained white/GDI frames as later occluders
+            // clips away all Direct pixels. Menus/popups have separate OHOS
+            // outputs; only explicitly declared child drawables below need
+            // sibling occlusion within this output.
+            return true;
+        }
+        // Other OHOS windows have their own output. Only this window's later
+        // inline children can occlude its Direct layer.
+        const auto layers = BuildWindowLayerListLocked(id, state->Width(), state->Height());
+        if (ownChild) for (const auto& layer : layers)
+            if (layer.type == CompositorLayer::Type::Subsurface && layer.sub->surface == client->surface)
+                out.z = layer.zIndex;
+        for (const auto& layer : layers) {
+            if (layer.type != CompositorLayer::Type::Subsurface || !layer.visible || layer.zcActive ||
+                layer.sub->surface == client->surface || layer.zIndex <= out.z) continue;
+            out.occluders.push_back({layer.x, layer.y,
+                DisplaySizeAfterViewport(layer.sub->vpDstW, layer.w),
+                DisplaySizeAfterViewport(layer.sub->vpDstH, layer.h)});
+        }
+        return true;
+    }
+    if (scope || !root || !state || !client || !parent || !parent->hasToplevel || parent->toplevelId != id ||
+        client->directOwnerKey != parent->surfaceKey || !client->directVisible ||
+        client->directGeneration != generation || !generation ||
+        tmgr_.FindSurfaceResource(parent->surfaceKey) != client->parentSurface)
+        return reject(!client ? "missing_surface" : !parent ? "missing_parent" : "drawable_identity");
+    out = {};
+    out.x = state->X() + client->subsurfaceX;
+    out.y = state->Y() + client->subsurfaceY;
+    DirectImageSampling sampling;
+    if (!ComputeDirectViewport(client->directViewport, imageW, imageH, out.w, out.h, sampling)) return reject("invalid_viewport");
+    out.fullscreen = state->IsFullscreen();
+    if (imageW <= 0 || imageH <= 0) return false;
+    const auto layers = BuildLayerListLocked(root->Width(), root->Height());
+    const uint32_t fullscreenId = PickFullscreenLayerLocked(layers);
+    bool found = false;
+    for (const auto& layer : layers) {
+        if (layer.type == CompositorLayer::Type::Toplevel && layer.toplevelId == id) {
+            if (ShouldSkipFullscreenCascade(layer, fullscreenId, fullscreenId != 0, tmgr_))
+                return false;
+            out.z = layer.zIndex;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return false;
+    for (const auto& layer : layers) {
+        if (!layer.visible || layer.zcActive || layer.zIndex <= out.z ||
+            ShouldSkipFullscreenCascade(layer, fullscreenId, fullscreenId != 0, tmgr_)) continue;
+        if (layer.type == CompositorLayer::Type::Subsurface && layer.sub->surface == client->surface)
+            continue;
+        if (layer.type == CompositorLayer::Type::Toplevel && layer.fullscreen)
+            out.occluders.push_back({0, 0, root->Width(), root->Height()});
+        else if (layer.type == CompositorLayer::Type::Subsurface)
+            out.occluders.push_back({layer.x, layer.y,
+                DisplaySizeAfterViewport(layer.sub->vpDstW, layer.w),
+                DisplaySizeAfterViewport(layer.sub->vpDstH, layer.h)});
+        else if (layer.type == CompositorLayer::Type::Toplevel)
+            out.occluders.push_back({layer.x, layer.y, layer.w, layer.h});
+    }
+    return out.w > 0 && out.h > 0;
 }
 
 std::vector<CompositorLayer>
@@ -378,7 +914,7 @@ DesktopCompositor::BuildWindowLayerListLocked(uint32_t toplevelId, int winW, int
             zcLayer.w = winW;
             zcLayer.h = winH;
         } else if (sd->isSubsurface && sd->parentSurface) {
-            auto* parent = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
+            auto* parent = tmgr_.FindRegisteredSurfaceDataLocked(sd->parentSurface);
             if (!parent || parent->toplevelId != toplevelId) continue;
             zcLayer.type = CompositorLayer::Type::Subsurface;
             // 父几何读点 (重构第 5A2 步): 旧读 parent->geoX/geoY (即时窗口
@@ -429,7 +965,7 @@ uint32_t DesktopCompositor::PickFullscreenLayerLocked(
 }
 
 bool DesktopCompositor::ComputeFullscreenFitLocked(uint32_t toplevelId, int rootW, int rootH,
-                                                   FitRect& out) const
+                                                   FitRect& out, bool* gpuContent) const
 {
     // 全屏内容尺寸选择 (ZC 游戏用 zero-copy 层实际内容几何, SHM 用 buffer
     // 尺寸) + 保比例 fit 的唯一实现 — 替换渲染 (TakeToplevelFrame) 与输入
@@ -444,6 +980,7 @@ bool DesktopCompositor::ComputeFullscreenFitLocked(uint32_t toplevelId, int root
     if (!st) return false;
     int layerW = 0, layerH = 0;
     const bool hasZC = GetZeroCopyContentSizeLocked(toplevelId, layerW, layerH);
+    if (gpuContent) *gpuContent = hasZC;
     int contentW = 0, contentH = 0;
     SelectFullscreenContentSize(layerW, layerH, st->Width(), st->Height(), hasZC,
                                 contentW, contentH);
@@ -518,4 +1055,9 @@ bool DesktopCompositor::TakeToplevelFrame(uint32_t id, std::vector<uint8_t>& out
     return false;  // 不可达 (FrameRoute 枚举穷尽)
 }
 
-
+void DesktopCompositor::RequestFullRedraw(uint32_t id) {
+    auto lock = tmgr_.Lock();
+    desktopOutputInitialized_ = false;
+    if (auto* state = tmgr_.FindToplevelLocked(id)) state->MarkDirty();
+    MarkDesktopRootDirtyLocked();
+}

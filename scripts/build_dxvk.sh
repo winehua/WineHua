@@ -5,8 +5,15 @@
 # can be rebuilt incrementally without touching the Wine tree.
 set -euo pipefail
 
+case "${1:-}" in
+    '') d3d9_only=0 ;;
+    --d3d9-only) d3d9_only=1 ;;
+    *) echo "Usage: $0 [--d3d9-only]" >&2; exit 2 ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
+python3 "$SCRIPT_DIR/apply_dxvk_compat_patches.py" --source "$DXVK_SRC"
 
 [ -d "$DXVK_SRC" ] || err "DXVK fork missing: $DXVK_SRC"
 
@@ -51,18 +58,38 @@ setup_if_missing() {
     fi
 }
 
-setup_if_missing "$DXVK_SRC/build.winehua64" build-win64.txt "$DXVK_BUILD_ROOT/x64"
 setup_if_missing "$DXVK_SRC/build.winehua32" build-win32.txt "$DXVK_BUILD_ROOT/x86"
+if [ "$d3d9_only" = 1 ]; then
+    # PE32 D3D9 uses the MinGW import libraries, without a Wine/ARM64X rebuild.
+    # Keep the canonical Meson cache so a later full build remains incremental.
+    ninja -C "$DXVK_SRC/build.winehua32" -j "$JOBS" src/d3d9/d3d9.dll
+    install -D -m 755 "$DXVK_SRC/build.winehua32/src/d3d9/d3d9.dll" \
+        "$DXVK_BUILD_ROOT/x86/bin/d3d9.dll"
+    log "DXVK Legacy PE32 D3D9 ready (other architectures unchanged)"
+    exit 0
+fi
+if [ "$WINE_ARCH" != "aarch64" ]; then
+    setup_if_missing "$DXVK_SRC/build.winehua64" build-win64.txt "$DXVK_BUILD_ROOT/x64"
+fi
 
 log "--- DXVK Legacy fork ($DXVK_SRC) ---"
-ninja -C "$DXVK_SRC/build.winehua64" install
 ninja -C "$DXVK_SRC/build.winehua32" install
+if [ "$WINE_ARCH" = "aarch64" ]; then
+    log "scheme ③: skip meson x64 (ARM64X overlay replaces it in wine-data x64/)"
+else
+    ninja -C "$DXVK_SRC/build.winehua64" install
+fi
 
 for dll in d3d11.dll dxgi.dll; do
-    [ -f "$DXVK_BUILD_ROOT/x64/bin/$dll" ] || \
-        err "DXVK x64 artifact missing: $DXVK_BUILD_ROOT/x64/bin/$dll"
     [ -f "$DXVK_BUILD_ROOT/x86/bin/$dll" ] || \
         err "DXVK x86 artifact missing: $DXVK_BUILD_ROOT/x86/bin/$dll"
+    if [ "$WINE_ARCH" != "aarch64" ]; then
+        [ -f "$DXVK_BUILD_ROOT/x64/bin/$dll" ] || \
+            err "DXVK x64 artifact missing: $DXVK_BUILD_ROOT/x64/bin/$dll"
+    fi
 done
+
+[ -f "$DXVK_BUILD_ROOT/x86/bin/d3d9.dll" ] || \
+    err "DXVK x86 D3D9 artifact missing: $DXVK_BUILD_ROOT/x86/bin/d3d9.dll"
 
 log "DXVK Legacy ready: $(git -c safe.directory="$DXVK_SRC" -C "$DXVK_SRC" rev-parse --short HEAD)"

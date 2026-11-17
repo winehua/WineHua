@@ -1,0 +1,59 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -32,6 +32,19 @@
+ #endif
+ 
+ namespace dxvk {
++
++  static bool D3D9ShadowBufferUploadEnabled() {
++    static const bool enabled = env::getEnvVar("WINEHUA_DXVK9_SHADOW_BUFFERS") == "1";
++    return enabled;
++  }
++
++  static void PublishD3D9BufferUpload(DxvkContext* ctx,
++      const Rc<DxvkBuffer>& buffer, const DxvkBufferSliceHandle& slice) {
++    if (D3D9ShadowBufferUploadEnabled()
++     && ctx->flushMappedBuffer(buffer, slice) != VK_SUCCESS)
++      throw DxvkError("D3D9: vertex/index buffer publication failed");
++  }
++
+ 
+   // Match the D3D11 shadow-memory publication contract. The buffer has
+   // already been written; the CS owns its physical slice at this point.
+@@ -4813,6 +4826,8 @@
+       cDstOffset = range.min,
+       cLength    = range.max - range.min
+     ] (DxvkContext* ctx) {
++      // Resolve after any earlier DISCARD rename, just as copyBuffer does.
++      PublishD3D9BufferUpload(ctx, cSrcSlice.buffer(), cSrcSlice.getSliceHandle());
+       ctx->copyBuffer(
+         cDstSlice.buffer(),
+         cDstSlice.offset() + cDstOffset,
+@@ -4836,8 +4851,26 @@
+     if (pResource->DecrementLockCount() != 0)
+       return D3D_OK;
+ 
+-    if (pResource->GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_BUFFER)
++    if (pResource->GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_BUFFER) {
++      if (D3D9ShadowBufferUploadEnabled() && !pResource->DirtyRange().IsDegenerate()) {
++        // The final Unlock marks completion of the CPU writes. Capture the
++        // mapped physical slice now; later DISCARD may select another one.
++        const auto range = pResource->DirtyRange();
++        auto slice = pResource->GetMappedSlice();
++        if (range.min > range.max || range.max > slice.length)
++          return D3DERR_INVALIDCALL;
++        slice.offset += range.min;
++        slice.length = range.max - range.min;
++        slice.mapPtr = reinterpret_cast<char*>(slice.mapPtr) + range.min;
++        EmitCs([cBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>(),
++                cSlice = slice] (DxvkContext* ctx) {
++          PublishD3D9BufferUpload(ctx, cBuffer, cSlice);
++        });
++        pResource->DirtyRange().Clear();
++        pResource->SetMapFlags(0);
++      }
+       return D3D_OK;
++    }
+ 
+     if (pResource->DirtyRange().IsDegenerate())
+       return D3D_OK;

@@ -8,6 +8,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/download_verified_source.sh"
 
 SIDE="${SIDE:-host}"
 case "$SIDE" in
@@ -36,20 +37,17 @@ CC_BIN="$OHOS_SDK/native/llvm/bin/clang"
 DL="$BUILD_DIR/downloads"
 mkdir -p "$DL" "$PRE" "$INC" "$LIB" "$PC" "$SPC"
 
-# 解包按目标隔离 ($BUILD_DIR/$T/<pkg>): host 与 guest pass 严禁共享
+# 解包按目标隔离 ($BUILD_DIR/x11/$SIDE/$T/<pkg>): host 与 guest pass 严禁共享
 # configure/build 树 —— M1-T4 实测踩坑: 共享目录下 guest 重跑 configure
 # 不会作废 host 的 arm64 对象缓存, make 直接重链 arm64 .so 并装进 guest
 # 树 (libXau/libXdmcp 中招), 下游按 .la 链到 host-ext 库报
 # "incompatible with elf_x86_64"。
 fetch_and_unpack() {  # $1=url  $2=sha256  $3=解压后目录名
     local tgz="$DL/$(basename "$1")"
-    if [ ! -f "$tgz" ]; then
-        log "--- 下载 $(basename "$1") ---"
-        curl -fsSL -o "$tgz" "$1"
-    fi
+    download_verified_source "$1" "$2" "$tgz"
     echo "$2  $tgz" | sha256sum -c - || { err "sha256 不匹配: $tgz"; }
-    mkdir -p "$BUILD_DIR/$T"
-    [ -d "$BUILD_DIR/$T/$3" ] || tar -C "$BUILD_DIR/$T" -xf "$tgz"
+    mkdir -p "$BUILD_DIR/x11/$SIDE/$T"
+    [ -d "$BUILD_DIR/x11/$SIDE/$T/$3" ] || tar -C "$BUILD_DIR/x11/$SIDE/$T" -xf "$tgz"
 }
 
 assert_min_ver() {  # $1=当前  $2=下限  $3=名称
@@ -91,7 +89,7 @@ build_autotools() {  # $1=源码目录
 if [ ! -f "$INC/X11/X.h" ]; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2024.1.tar.xz" \
         "372225fd40815b8423547f5d890c5debc72e88b91088fbfb13158c20495ccb59" "xorgproto-2024.1"
-    build_autotools "$BUILD_DIR/$T/xorgproto-2024.1"
+    build_autotools "$BUILD_DIR/x11/$SIDE/$T/xorgproto-2024.1"
 fi
 [ -f "$INC/X11/X.h" ] || err "xorgproto 未就绪 (缺 $INC/X11/X.h)"
 
@@ -99,7 +97,7 @@ fi
 if [ ! -f "$SPC/xcb-proto.pc" ]; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/xcb/xcb-proto-1.17.0.tar.xz" \
         "2c1bacd2110f4799f74de6ebb714b94cf6f80fb112316b1219480fd22562148c" "xcb-proto-1.17.0"
-    build_autotools "$BUILD_DIR/$T/xcb-proto-1.17.0"
+    build_autotools "$BUILD_DIR/x11/$SIDE/$T/xcb-proto-1.17.0"
 fi
 [ -f "$SPC/xcb-proto.pc" ] || err "xcb-proto 未就绪"
 
@@ -107,14 +105,14 @@ fi
 if ! have_pc xau; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/libXau-1.0.12.tar.xz" \
         "74d0e4dfa3d39ad8939e99bda37f5967aba528211076828464d2777d477fc0fb" "libXau-1.0.12"
-    build_autotools "$BUILD_DIR/$T/libXau-1.0.12"
+    build_autotools "$BUILD_DIR/x11/$SIDE/$T/libXau-1.0.12"
 fi
 have_pc xau || err "libXau 未就绪"
 
 if ! have_pc xdmcp; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/libXdmcp-1.1.5.tar.gz" \
         "31a7abc4f129dcf6f27ae912c3eedcb94d25ad2e8f317f69df6eda0bc4e4f2f3" "libXdmcp-1.1.5"
-    build_autotools "$BUILD_DIR/$T/libXdmcp-1.1.5"
+    build_autotools "$BUILD_DIR/x11/$SIDE/$T/libXdmcp-1.1.5"
 fi
 have_pc xdmcp || err "libXdmcp 未就绪"
 
@@ -122,7 +120,7 @@ have_pc xdmcp || err "libXdmcp 未就绪"
 if ! have_pc xcb; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/xcb/libxcb-1.17.0.tar.xz" \
         "599ebf9996710fea71622e6e184f3a8ad5b43d0e5fa8c4e407123c88a59a6d55" "libxcb-1.17.0"
-    build_autotools "$BUILD_DIR/$T/libxcb-1.17.0"
+    build_autotools "$BUILD_DIR/x11/$SIDE/$T/libxcb-1.17.0"
 fi
 assert_min_ver "$(PKG_CONFIG_LIBDIR="$PC:$SPC" pkg-config --modversion xcb 2>/dev/null)" "1.15.0" "$SIDE xcb"
 
@@ -130,7 +128,7 @@ assert_min_ver "$(PKG_CONFIG_LIBDIR="$PC:$SPC" pkg-config --modversion xcb 2>/de
 if ! have_pc xcb-icccm; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/xcb/xcb-util-wm-0.4.2.tar.xz" \
         "62c34e21d06264687faea7edbf63632c9f04d55e72114aa4a57bb95e4f888a0b" "xcb-util-wm-0.4.2"
-    build_autotools "$BUILD_DIR/$T/xcb-util-wm-0.4.2"
+    build_autotools "$BUILD_DIR/x11/$SIDE/$T/xcb-util-wm-0.4.2"
 fi
 { have_pc xcb-ewmh && have_pc xcb-icccm; } || err "xcb-util-wm 未就绪"
 

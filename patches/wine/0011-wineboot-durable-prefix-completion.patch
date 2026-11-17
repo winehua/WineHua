@@ -1,0 +1,133 @@
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 1a2166f31a8..d617ec4b326 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1586,17 +1586,25 @@ static WCHAR *build_command_line( WCHAR **wargv )
+  */
+ static void write_winehua_wineboot_status( const char *format, ... )
+ {
+-    static const char status_name[] = "/.winehua-wineboot-init-status";
++    static const char status_name[] = "/.winehua-wineboot-dispatch-status";
+     char record[96];
+     char *path;
+     va_list args;
+     int fd, length;
+ 
+-    if (!config_dir || asprintf( &path, "%s%s", config_dir, status_name ) == -1) return;
++    if (!config_dir || asprintf( &path, "%s/.winehua-wineboot-init-status", config_dir ) == -1) return;
++    if (access( path, F_OK ) == -1)
++    {
++        free( path );
++        return;
++    }
++    free( path );
++    if (asprintf( &path, "%s%s", config_dir, status_name ) == -1) return;
+ 
+-    /* Only a launcher-created request enables this private completion channel.
+-     * Ordinary Wine processes must not create or mutate the marker. */
+-    if ((fd = open( path, O_WRONLY | O_TRUNC | O_CLOEXEC )) == -1)
++    /* The boot event can signal before the explicitly requested --update
++     * completes. Keep event diagnostics separate from wineboot's durable
++     * completion marker, which only wineboot itself may publish. */
++    if ((fd = open( path, O_WRONLY | O_TRUNC | O_CREAT | O_CLOEXEC, 0600 )) == -1)
+     {
+         free( path );
+         return;
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 97b6f300148..6d53b18c1c3 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -1871,6 +1871,7 @@ int __cdecl main( int argc, char *argv[] )
+     UNICODE_STRING nameW = RTL_CONSTANT_STRING( L"\\KernelObjects\\__wineboot_event" );
+     HANDLE process = 0;
+     BOOL is_wow64;
++    BOOL prefix_flushed = TRUE;
+ 
+     end_session = force = init = kill = restart = shutdown = update = FALSE;
+     GetWindowsDirectoryW( windowsdir, MAX_PATH );
+@@ -1990,21 +1991,81 @@ int __cdecl main( int argc, char *argv[] )
+ 
+     WINE_TRACE("Operation done\n");
+ 
+-#if defined(__aarch64__) && defined(__WINE_PE_BUILD)
+     /* WineHua keeps wineserver alive across the session.  Its normal exit
+      * path therefore cannot persist a new prefix's registry before the app
+      * checks that wineboot completed.  Flush both required branches while the
+      * Wine client can still serialize them through NtFlushKey. */
+-    if (init)
++    if (init || update)
+     {
+         LONG status;
+         if ((status = RegFlushKey( HKEY_LOCAL_MACHINE )) != ERROR_SUCCESS)
++        {
+             WINE_ERR( "failed to flush system registry: %ld\n", status );
++            prefix_flushed = FALSE;
++        }
+         if ((status = RegFlushKey( HKEY_CURRENT_USER )) != ERROR_SUCCESS)
++        {
+             WINE_ERR( "failed to flush user registry: %ld\n", status );
++            prefix_flushed = FALSE;
++        }
++    }
++
++    /* The native coordinator requests this handshake in the prefix itself.
++     * Publish it only after registration and durable registry flushes, using
++     * WINECONFIGDIR just as .update-timestamp does. */
++    if (init && update && prefix_flushed)
++    {
++        const WCHAR *config_dir = _wgetenv( L"WINECONFIGDIR" );
++        static const WCHAR suffix[] = L"\\.winehua-wineboot-init-status";
++        static const char request[] = "wineboot-init-request";
++        static const char success[] = "wineboot-init-ok";
++        WCHAR *path = config_dir ? malloc( wcslen(config_dir) * sizeof(WCHAR) + sizeof(suffix) ) : NULL;
++        if (path)
++        {
++            HANDLE file;
++            char record[64];
++            DWORD count = 0;
++            BOOL requested = FALSE;
++            lstrcpyW( path, config_dir );
++            lstrcatW( path, suffix );
++            path[1] = '\\'; /* change \\??\\ to \\\\?\\ for CreateFileW */
++            file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
++            if (file != INVALID_HANDLE_VALUE)
++            {
++                requested = ReadFile( file, record, sizeof(record), &count, NULL ) &&
++                            count == sizeof(request) - 1 && !memcmp( record, request, count );
++                CloseHandle( file );
++            }
++            if (requested)
++            {
++                WCHAR *temporary = malloc( wcslen(path) * sizeof(WCHAR) + sizeof(L".tmp") );
++                if (temporary)
++                {
++                    lstrcpyW( temporary, path );
++                    lstrcatW( temporary, L".tmp" );
++                }
++                file = temporary ? CreateFileW( temporary, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL )
++                                 : INVALID_HANDLE_VALUE;
++                if (file == INVALID_HANDLE_VALUE) prefix_flushed = FALSE;
++                else
++                {
++                    prefix_flushed = WriteFile( file, success, sizeof(success) - 1, &count, NULL ) &&
++                                     count == sizeof(success) - 1 && FlushFileBuffers( file );
++                    CloseHandle( file );
++                }
++                if (prefix_flushed)
++                    prefix_flushed = MoveFileExW( temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH );
++                if (temporary)
++                {
++                    if (!prefix_flushed) DeleteFileW( temporary );
++                    free( temporary );
++                }
++                if (!prefix_flushed) WINE_ERR( "failed to publish prefix completion\n" );
++            }
++            free( path );
++        }
+     }
+-#endif
+ 
+     SetEvent( event );
+-    return 0;
++    return prefix_flushed ? 0 : 1;
+ }

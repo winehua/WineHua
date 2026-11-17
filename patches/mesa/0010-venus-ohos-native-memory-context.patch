@@ -1,0 +1,41 @@
+--- a/src/virtio/vtest/vtest_protocol.h
++++ b/src/virtio/vtest/vtest_protocol.h
+@@ -206,6 +206,7 @@
+ 
+ enum vcmd_param  {
+    VCMD_PARAM_MAX_TIMELINE_COUNT = 1,
++   VCMD_PARAM_OHOS_NATIVE_MEMORY_V1 = 0x57480101,
+ };
+ #define VCMD_GET_PARAM_SIZE 1
+ #define VCMD_GET_PARAM_PARAM 0
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -365,7 +365,15 @@
+    uint32_t vcmd_context_init[VCMD_CONTEXT_INIT_SIZE];
+    vtest_hdr[VTEST_CMD_LEN] = VCMD_CONTEXT_INIT_SIZE;
+    vtest_hdr[VTEST_CMD_ID] = VCMD_CONTEXT_INIT;
+-   vcmd_context_init[VCMD_CONTEXT_INIT_CAPSET_ID] = capset_id;
++   uint32_t flags = 0;
++   if (debug_get_bool_option("VN_OHOS_NATIVE_MEMORY", false)) {
++      if (vtest_vcmd_get_param(vtest, VCMD_PARAM_OHOS_NATIVE_MEMORY_V1) != 1) {
++         fprintf(stderr, "Venus: OHOS native-memory-v1 negotiation failed\n");
++         abort();
++      }
++      flags = 1u << 16;
++   }
++   vcmd_context_init[VCMD_CONTEXT_INIT_CAPSET_ID] = capset_id | flags;
+ 
+    vtest_write(vtest, vtest_hdr, sizeof(vtest_hdr));
+    vtest_write(vtest, vcmd_context_init, sizeof(vcmd_context_init));
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -721,6 +721,9 @@
+       ring, vn_physical_device_to_handle(physical_dev), &props2);
+ 
+    physical_dev->memory_properties = props2.memoryProperties;
++
++   if (debug_get_bool_option("VN_OHOS_NATIVE_MEMORY", false))
++      return; /* Negotiated fd mappings retain the actual driver cache semantics. */
+ 
+    /* Kernel makes every mapping coherent. If a memory type is truly
+     * incoherent, it's better to remove the host-visible flag than silently

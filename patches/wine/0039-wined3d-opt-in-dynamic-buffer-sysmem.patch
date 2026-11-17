@@ -1,0 +1,61 @@
+--- a/dlls/wined3d/buffer.c
++++ b/dlls/wined3d/buffer.c
+@@ -27,6 +27,7 @@
+ #include "wined3d_vk.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d);
++WINE_DECLARE_DEBUG_CHANNEL(winehua_perf);
+ 
+ #define WINED3D_BUFFER_HASDESC      0x01    /* A vertex description has been found. */
+ #define WINED3D_BUFFER_USE_BO       0x02    /* Use a buffer object for this buffer. */
+@@ -934,6 +935,33 @@
+     buffer_resource_sub_resource_unmap,
+ };
+ 
++static const struct wined3d_buffer_ops wined3d_buffer_gl_ops;
++
++/* Opt-in experiment for WOW64 drivers without persistent maps. Keep the
++ * existing CPU copy and dirty-range upload machinery instead of repeatedly
++ * constructing a full low-address GL shadow for small NOOVERWRITE updates. */
++static bool winehua_dynamic_buffer_sysmem(const struct wined3d_device *device,
++        const struct wined3d_buffer_desc *desc)
++{
++#ifdef _WIN64
++    return false;
++#else
++    const uint32_t binds = WINED3D_BIND_VERTEX_BUFFER | WINED3D_BIND_INDEX_BUFFER;
++    char enabled[2];
++    BOOL wow64;
++
++    if (!(desc->usage & WINED3DUSAGE_DYNAMIC)
++            || !(desc->access & WINED3D_RESOURCE_ACCESS_MAP_W)
++            || !(desc->access & WINED3D_RESOURCE_ACCESS_GPU)
++            || !desc->bind_flags || (desc->bind_flags & ~binds)
++            || device->adapter->d3d_info.persistent_map)
++        return false;
++
++    return GetEnvironmentVariableA("WINEHUA_DYNAMIC_BUFFER_SYSMEM", enabled, sizeof(enabled)) == 1
++            && enabled[0] == '1' && IsWow64Process(GetCurrentProcess(), &wow64) && wow64;
++#endif
++}
++
+ static HRESULT wined3d_buffer_init(struct wined3d_buffer *buffer, struct wined3d_device *device,
+         const struct wined3d_buffer_desc *desc, const struct wined3d_sub_resource_data *data,
+         void *parent, const struct wined3d_parent_ops *parent_ops, const struct wined3d_buffer_ops *buffer_ops)
+@@ -980,6 +1008,16 @@
+     buffer->buffer_ops = buffer_ops;
+     buffer->structure_byte_stride = desc->structure_byte_stride;
+     buffer->locations = WINED3D_LOCATION_CLEARED;
++
++    if (buffer_ops == &wined3d_buffer_gl_ops && winehua_dynamic_buffer_sysmem(device, desc))
++    {
++        /* Set this policy before initial data is queued to the CS thread.
++         * Keep location tracking and lazy preparation / loading of sysmem;
++         * draws continue uploading the existing dirty ranges to GL BOs. */
++        resource->pin_sysmem = 1;
++        TRACE_(winehua_perf)("dynamic_buffer_sysmem buffer=%p size=%u bind=%#x enabled=1\n",
++                buffer, desc->byte_width, desc->bind_flags);
++    }
+ 
+     TRACE("buffer %p, size %#x, usage %#x, memory @ %p.\n",
+             buffer, buffer->resource.size, buffer->resource.usage, buffer->resource.heap_memory);

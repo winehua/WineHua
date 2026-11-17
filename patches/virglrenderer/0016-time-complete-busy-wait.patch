@@ -1,0 +1,210 @@
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -266,6 +266,98 @@
+    funlockfile(winehua_diag_file);
+ }
+ 
++
++/* Timings cover the complete handler, including context_finish. The vtest
++ * server dispatches these requests serially. Keep counters on that thread and
++ * emit at most two aggregate lines per five seconds, never one per request.
++ * Diagnostic-only: the existing explicit summary opt-in gates every clock. */
++#ifndef WINEHUA_VTEST_BUSY_DIAGNOSTIC
++#define WINEHUA_VTEST_BUSY_DIAGNOSTIC 0
++#endif
++enum winehua_busy_stage {
++   WINEHUA_BUSY_READ, WINEHUA_BUSY_FINISH, WINEHUA_BUSY_POLL,
++   WINEHUA_BUSY_REPLY, WINEHUA_BUSY_STAGE_COUNT
++};
++struct winehua_busy_sample {
++   bool enabled, wait, finish;
++   uint64_t started, stamp, ns[WINEHUA_BUSY_STAGE_COUNT];
++   uint64_t poll_loops, fd_waits;
++};
++struct winehua_busy_totals {
++   uint64_t calls, finishes, errors, total_ns, max_ns;
++   uint64_t ns[WINEHUA_BUSY_STAGE_COUNT], poll_loops, fd_waits;
++};
++static struct winehua_busy_totals winehua_busy_totals[2];
++static uint64_t winehua_busy_window_ns;
++
++static uint64_t winehua_busy_now_ns(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
++}
++
++static struct winehua_busy_sample winehua_busy_begin(bool enabled)
++{
++   struct winehua_busy_sample sample = { .enabled = enabled };
++   if (enabled) {
++      sample.started = sample.stamp = winehua_busy_now_ns();
++      if (!winehua_busy_window_ns)
++         winehua_busy_window_ns = sample.started;
++   }
++   return sample;
++}
++
++static void winehua_busy_mark(struct winehua_busy_sample *sample,
++                             enum winehua_busy_stage stage)
++{
++   if (sample->enabled) {
++      const uint64_t now = winehua_busy_now_ns();
++      sample->ns[stage] += now - sample->stamp;
++      sample->stamp = now;
++   }
++}
++
++static int winehua_busy_end(struct winehua_busy_sample *sample, int result)
++{
++   if (!sample->enabled)
++      return result;
++   const uint64_t now = winehua_busy_now_ns();
++   const uint64_t elapsed = now - sample->started;
++   struct winehua_busy_totals *t = &winehua_busy_totals[sample->wait];
++   t->calls++;
++   t->finishes += sample->finish;
++   t->errors += result != 0;
++   t->total_ns += elapsed;
++   if (elapsed > t->max_ns)
++      t->max_ns = elapsed;
++   for (unsigned i = 0; i < WINEHUA_BUSY_STAGE_COUNT; i++)
++      t->ns[i] += sample->ns[i];
++   t->poll_loops += sample->poll_loops;
++   t->fd_waits += sample->fd_waits;
++   if (now - winehua_busy_window_ns >= 5000000000ull) {
++      for (unsigned wait = 0; wait < 2; wait++) {
++         t = &winehua_busy_totals[wait];
++         if (!t->calls)
++            continue;
++         winehua_diag("busy summary wait=%u window_ns=%llu calls=%llu finishes=%llu errors=%llu total_ns=%llu max_ns=%llu read_ns=%llu finish_ns=%llu poll_ns=%llu reply_ns=%llu poll_loops=%llu fd_waits=%llu",
++            wait, (unsigned long long)(now - winehua_busy_window_ns),
++            (unsigned long long)t->calls, (unsigned long long)t->finishes,
++            (unsigned long long)t->errors, (unsigned long long)t->total_ns,
++            (unsigned long long)t->max_ns,
++            (unsigned long long)t->ns[WINEHUA_BUSY_READ],
++            (unsigned long long)t->ns[WINEHUA_BUSY_FINISH],
++            (unsigned long long)t->ns[WINEHUA_BUSY_POLL],
++            (unsigned long long)t->ns[WINEHUA_BUSY_REPLY],
++            (unsigned long long)t->poll_loops, (unsigned long long)t->fd_waits);
++      }
++      memset(winehua_busy_totals, 0, sizeof(winehua_busy_totals));
++      winehua_busy_window_ns = now;
++   }
++   return result;
++}
++/* End complete busy-wait diagnostics. */
++
+ static void winehua_virgl_log(enum virgl_log_level_flags level,
+                               const char *message,
+                               UNUSED void *user_data)
+@@ -756,6 +848,8 @@
+       }
+    }
+    virgl_set_log_callback(winehua_virgl_log, NULL, NULL);
++   memset(winehua_busy_totals, 0, sizeof(winehua_busy_totals));
++   winehua_busy_window_ns = 0;
+    winehua_submit_count = 0;
+    winehua_submit2_count = 0;
+    winehua_complete_count = 0;
+@@ -2257,13 +2351,15 @@
+    int flags;
+    uint32_t hdr_buf[VTEST_HDR_SIZE];
+    uint32_t reply_buf[1];
+-   uint64_t wait_started_ms = 0;
+-   const bool log_waits = winehua_vtest_perf_summary_enabled();
++   const bool log_waits = winehua_vtest_perf_summary_enabled() ||
++                          WINEHUA_VTEST_BUSY_DIAGNOSTIC;
+    bool busy = false;
++   struct winehua_busy_sample timing = winehua_busy_begin(log_waits);
+ 
+    ret = ctx->input->read(ctx->input, &bw_buf, sizeof(bw_buf));
++   winehua_busy_mark(&timing, WINEHUA_BUSY_READ);
+    if (ret != sizeof(bw_buf)) {
+-      return -1;
++      return winehua_busy_end(&timing, -1);
+    }
+ 
+    /* clients often send VCMD_PING_PROTOCOL_VERSION followed by
+@@ -2272,18 +2368,21 @@
+     * for that.
+     */
+    if (!ctx->context_initialized && bw_buf[VCMD_BUSY_WAIT_HANDLE])
+-      return -1;
++      return winehua_busy_end(&timing, -1);
+ 
+    /*  handle = bw_buf[VCMD_BUSY_WAIT_HANDLE]; unused as of now */
+    flags = bw_buf[VCMD_BUSY_WAIT_FLAGS];
++   timing.wait = (flags & VCMD_BUSY_WAIT_FLAG_WAIT) != 0;
+ 
+    if ((flags & VCMD_BUSY_WAIT_FLAG_WAIT) && getenv("VTEST_SYNC_GL_FINISH")) {
++      timing.finish = true;
+       ret = virgl_renderer_context_finish(ctx->ctx_id);
++      winehua_busy_mark(&timing, WINEHUA_BUSY_FINISH);
+       if (ret) {
+          winehua_diag("busy wait context finish failed ctx=%d ret=%d submitted=%u completed=%u",
+                       ctx->ctx_id, ret, ctx->implicit_fence_submitted,
+                       (uint32_t)renderer.implicit_fence_completed);
+-         return ret;
++         return winehua_busy_end(&timing, ret);
+       }
+    }
+ 
+@@ -2293,27 +2392,19 @@
+       if (!busy || !(flags & VCMD_BUSY_WAIT_FLAG_WAIT))
+          break;
+ 
+-      if (log_waits && !wait_started_ms) {
+-         wait_started_ms = winehua_diag_now_ms();
+-         winehua_diag("busy wait begin ctx=%d submitted=%u completed=%u poll_fd=%d",
+-                      ctx->ctx_id, ctx->implicit_fence_submitted,
+-                      (uint32_t)renderer.implicit_fence_completed,
+-                      virgl_renderer_get_poll_fd());
+-      }
++      if (timing.enabled)
++         timing.poll_loops++;
+ 
+       fd = virgl_renderer_get_poll_fd();
+       if (fd != -1) {
++         if (timing.enabled)
++            timing.fd_waits++;
+          vtest_wait_for_fd_read(fd);
+       }
+       virgl_renderer_poll();
+    } while (true);
+ 
+-   if (log_waits && wait_started_ms)
+-      winehua_diag("busy wait end ctx=%d duration_ms=%llu submitted=%u completed=%u",
+-                   ctx->ctx_id,
+-                   (unsigned long long)(winehua_diag_now_ms() - wait_started_ms),
+-                   ctx->implicit_fence_submitted,
+-                   (uint32_t)renderer.implicit_fence_completed);
++   winehua_busy_mark(&timing, WINEHUA_BUSY_POLL);
+ 
+    hdr_buf[VTEST_CMD_LEN] = 1;
+    hdr_buf[VTEST_CMD_ID] = VCMD_RESOURCE_BUSY_WAIT;
+@@ -2321,15 +2412,18 @@
+ 
+    ret = vtest_block_write(ctx->out_fd, hdr_buf, sizeof(hdr_buf));
+    if (ret < 0) {
+-      return ret;
++      winehua_busy_mark(&timing, WINEHUA_BUSY_REPLY);
++      return winehua_busy_end(&timing, ret);
+    }
+ 
+    ret = vtest_block_write(ctx->out_fd, reply_buf, sizeof(reply_buf));
+    if (ret < 0) {
+-      return ret;
+-   }
+-
+-   return 0;
++      winehua_busy_mark(&timing, WINEHUA_BUSY_REPLY);
++      return winehua_busy_end(&timing, ret);
++   }
++
++   winehua_busy_mark(&timing, WINEHUA_BUSY_REPLY);
++   return winehua_busy_end(&timing, 0);
+ }
+ 
+ int vtest_resource_busy_wait_nop(UNUSED uint32_t length_dw)

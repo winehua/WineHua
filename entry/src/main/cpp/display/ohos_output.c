@@ -18,8 +18,10 @@
  */
 #define WLR_USE_UNSTABLE
 #include "ohos_output.h"
+#include "x11_external_host.h"
 #include "ohos_buffer.h"
-#include "x11_toplevel.h" /* M4a: 多窗模式分叉 (HandleNewSurface) */
+#include "x11_toplevel.h"
+#include "display_session.h" /* M4a: 多窗模式分叉 (HandleNewSurface) */
 #include "ohos_egl_import.h"
 
 #include <dlfcn.h>
@@ -98,6 +100,8 @@ struct ohos_child_face {
     uint32_t xwindow;
     uint64_t generation;
     struct wlr_scene_buffer *frame_node;
+    int region_x, region_y, region_w, region_h;
+    uint32_t diag_state, diag_count;
     struct wl_list link;
 };
 static struct wl_list g_child_faces;
@@ -115,6 +119,7 @@ struct ohos_client_surface {
     struct wl_list link; /* g_clients */
     struct wlr_scene_surface *scene_surf; /* M1-T3: scene 节点 */
     struct wlr_scene_buffer *frame_node;  /* M2-T5: guest Vulkan 帧节点 (X 面之上) */
+    int region_x, region_y, region_w, region_h;
     uint32_t lastSeq; /* lastSeq: 速率仪表的提交序号基线 (见 FrameTick 的 rate 行) */
     int dbgLastX;     /* 诊断: 上次记录过的 xs->x (XPOS 时间线) */
     struct wl_listener destroy;
@@ -128,6 +133,8 @@ struct ohos_client_surface {
      * 触碰它的代码 (FrameTick 的 client-state/scenediag/位置更新) SEGV
      * (faultlogger 20261008235329 实测, 栈顶 wlr_scene_node_coords)。 */
     struct wl_listener scene_node_destroy;
+    struct wl_listener set_role;
+    bool map_requested;
     struct wl_listener map_request; /* 生命周期仪器 (M1-T5, 见 ClientMapRequest) */
 };
 
@@ -184,9 +191,11 @@ static void ClientAssociate(struct wl_listener *listener, void *data)
     c->scene_surf = wlr_scene_surface_create(&g_out.scene->tree, xs->surface);
     if (!c->scene_surf)
         OH_LOG_ERROR(LOG_APP, "scene_surface create failed (associate)");
-    else
+    else {
+        c->scene_node_destroy.notify = ClientSceneNodeDestroy;
         wl_signal_add(&c->scene_surf->buffer->node.events.destroy,
                       &c->scene_node_destroy);
+    }
     c->lastSeq = xs->surface->current.seq;
     OHLOG("client associated surf=%{public}p (scene attached)",
           (void *)xs->surface);
@@ -260,7 +269,7 @@ static int g_last_draw_h = -1;
 
 int WineHua_DisplayRoute_DesktopShellMapped(void)
 {
-    return g_desktop_shell_mapped;
+    return __atomic_load_n(&g_desktop_shell_mapped, __ATOMIC_ACQUIRE);
 }
 
 /* 桌面内容矩形取数口 (游戏全屏适配): 桌面窗在 X 坐标系的活几何。
@@ -288,6 +297,23 @@ extern void WineHua_DisplayRoute_FireDesktopReady(void);
  * present/input 每拍现算 fit, 不依赖本事件)。 */
 extern void WineHua_DisplayRoute_FireDesktopContentResize(int w, int h);
 
+static void ClientCheckDesktop(struct ohos_client_surface *c)
+{
+    struct wlr_xwayland_surface *xs = c->xs;
+    if (c->map_requested && !g_desktop_shell_mapped && xs && xs->role && strcmp(xs->role, "winehua-desktop") == 0) {
+        __atomic_store_n(&g_desktop_shell_mapped, 1, __ATOMIC_RELEASE);
+        g_desktop_client = c;
+        winehua_x11_desktop_mapped(xs->width, xs->height, xs->pid);
+        WineHua_DisplayRoute_FireDesktopReady();
+    }
+}
+static void ClientSetRole(struct wl_listener *listener, void *data)
+{
+    struct ohos_client_surface *c = wl_container_of(listener, c, set_role);
+    (void)data;
+    ClientCheckDesktop(c);
+}
+
 static void ClientMapRequest(struct wl_listener *listener, void *data)
 {
     struct ohos_client_surface *c =
@@ -298,11 +324,8 @@ static void ClientMapRequest(struct wl_listener *listener, void *data)
         return;
     OHLOG("client map request %{public}dx%{public}d@%{public}d,%{public}d",
           xs->width, xs->height, xs->x, xs->y);
-    if (!g_desktop_shell_mapped) {
-        g_desktop_shell_mapped = 1;
-        g_desktop_client = c;
-        WineHua_DisplayRoute_FireDesktopReady();
-    }
+    c->map_requested = true;
+    ClientCheckDesktop(c);
 }
 
 // commit 帧 → 推 NativeWindow。
@@ -348,7 +371,7 @@ static int DiagFlagFile(const char *name);
 
 /* 诊断开关:
  *   drive_c/diag-present-timeline  XPOS/PRES 呈现时间线日志 (默认关, marker 打开)
- *   WINEHUA_PRESENT_DUMP: 异常帧落盘预算 (张; 缺省 40, 0=关), 背景像素校验常驻 (门禁) */
+ *   WINEHUA_PRESENT_DUMP: 异常帧落盘预算 (张; 默认关闭, 最多 2 张), 仅显式开启时访问像素 */
 static int DiagTimelineOn(void)
 {
     static int on = -1;
@@ -367,7 +390,8 @@ static int DiagDumpBudget(void)
     static int budget = -2;
     if (budget == -2) {
         const char *v = getenv("WINEHUA_PRESENT_DUMP");
-        budget = (v && *v) ? atoi(v) : 40; /* 诊断期默认 40 张 */
+        budget = (v && *v) ? atoi(v) : 0; /* explicit diagnostics only */
+        if (budget > 2) budget = 2;
         if (budget > 0) {
             mkdir("/data/storage/el2/base/files/.wine/drive_c/framedump", 0755);
             OHLOG("diag: 背景异常落盘已开, budget=%{public}d", budget);
@@ -384,7 +408,8 @@ static int DiagFlagFile(const char *name)
 {
     static const char *const names[] = {
         "force-copy-present", "force-timer-clock",
-        "diag-present-timeline", "scene-damage-diag",
+        "diag-present-timeline", "scene-damage-diag", "diag-full-scene-redraw",
+        "diag-gpu-face-state", "diag-scene-no-occlusion", "diag-gpu-stage-pixels",
     };
     static int val[sizeof(names) / sizeof(names[0])] = {0};
     static int64_t lastNs[sizeof(names) / sizeof(names[0])] = {0};
@@ -410,6 +435,11 @@ static int DiagFlagFile(const char *name)
     return val[idx];
 }
 
+bool wl_ohos_output_diagnostic_enabled(const char *name)
+{
+    return DiagFlagFile(name) != 0;
+}
+
 /* 背景采样点 (避开两窗几何: win1 x60..404 y80..320, win2 x380..660 y300..500) */
 static const int kBgPts[][2] = {{700, 560}, {30, 560}, {760, 40}, {350, 560}, {700, 120}};
 
@@ -418,14 +448,14 @@ static const int kBgPts[][2] = {{700, 560}, {30, 560}, {760, 40}, {350, 560}, {7
 static void DiagPresentFrame(struct wlr_buffer *buffer, uint32_t seq)
 {
     static int dumped, refd;
-    if (DiagDumpBudget() <= 0)
+    if (DiagDumpBudget() <= 0 || dumped >= DiagDumpBudget())
         return;
     struct NativeWindowBuffer *nwb = wl_ohos_present_buffer_window_buffer(buffer);
     BufferHandle *h = nwb ? OH_NativeWindow_GetBufferHandleFromNative(nwb) : NULL;
     if (!h || h->fd < 0)
         return;
     size_t bytes = (h->size > 0) ? (size_t)h->size : (size_t)h->stride * h->height;
-    if (bytes < (size_t)h->stride * (size_t)buffer->height)
+    if (bytes > 16 * 1024 * 1024 || bytes < (size_t)h->stride * (size_t)buffer->height)
         return;
     const uint8_t *base = mmap(NULL, bytes, PROT_READ, MAP_SHARED, h->fd, 0);
     if (base == MAP_FAILED)
@@ -433,6 +463,7 @@ static void DiagPresentFrame(struct wlr_buffer *buffer, uint32_t seq)
     int bad = 0, bi = -1;
     uint8_t br = 0, bg = 0, bb = 0;
     for (size_t i = 0; i < sizeof(kBgPts) / sizeof(kBgPts[0]); ++i) {
+        if (kBgPts[i][0] >= buffer->width || kBgPts[i][1] >= buffer->height) continue;
         const uint8_t *px = base + (size_t)kBgPts[i][1] * h->stride +
                             (size_t)kBgPts[i][0] * 4;
         if (!(px[0] >= 8 && px[0] <= 56 && px[1] >= 8 && px[1] <= 56 &&
@@ -487,9 +518,9 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
         return;
     ++g_out.frame_seq;
 
-    /* M3a-T7 画布 EGL swap 呈现: 提交的 buffer 是默认 swapchain 的
+    /* 画布 EGL swap 呈现: 提交的 buffer 是默认 swapchain 的
      * allocator buffer (OH_NativeBuffer 背书, gles2 渲染器本就经 EGLImage
-     * 画入), 导入为纹理 → blit 到窗口 EGLSurface → swap。全程 GPU-GPU,
+     * 画入), 直接采样其 FBO 纹理 → blit 到窗口 EGLSurface → swap。全程 GPU-GPU,
      * 不碰队列槽位、不 FlushBuffer、无 CPU 视图 —— 手工 FlushBuffer 对
      * 画布 surface 消费侧冻结 (vd12), CPU mmap 又与 GPU 写入不可靠一致
      * (vd21/22c: probe fail:pixel-compare + framedump 垃圾)。判据 = buffer
@@ -877,6 +908,7 @@ static void FrameStep(bool via_vsync)
     /* M4a 多窗模式: 无 scene/output 提交路径 (surface 全部走 x11_toplevel
      * per-xs 呈现), 帧钟只驱动 per-xs 渲染循环。所有驱动源 (vsync 直推 /
      * timer 兜底) 都经本函数, 分叉在此单点。 */
+    winehua_x11_hosts_tick();
     if (g_out.multiwindow) {
         /* MW-GPU: 「无 output 提交」不等于「guest 帧路由可跳过」——
          * display_guest_frames 还负责挂零拷贝 present target (venus/virgl),
@@ -929,14 +961,22 @@ static void FrameStep(bool via_vsync)
         }
         /* M2-T5: 帧节点跟窗走 (位置/尺寸以窗为准, 帧尺寸不合时按窗缩放) */
         if (c->frame_node && c->xs) {
-            wlr_scene_node_set_position(&c->frame_node->node, c->xs->x, c->xs->y);
-            wlr_scene_buffer_set_dest_size(c->frame_node, c->xs->width,
-                                           c->xs->height);
+            wlr_scene_node_set_position(&c->frame_node->node, c->xs->x + c->region_x, c->xs->y + c->region_y);
+            wlr_scene_buffer_set_dest_size(c->frame_node, c->region_w > 0 ? c->region_w : c->xs->width,
+                                           c->region_h > 0 ? c->region_h : c->xs->height);
         }
     }
     if (g_out.scene_output) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
+        const bool calculate_visibility = !DiagFlagFile("diag-scene-no-occlusion");
+        if (g_out.scene->WLR_PRIVATE.calculate_visibility != calculate_visibility) {
+            g_out.scene->WLR_PRIVATE.calculate_visibility = calculate_visibility;
+            // Recompute cached visibility on transition, not on every frame.
+            wlr_scene_node_set_position(&g_out.scene->tree.node, 1, 0);
+            wlr_scene_node_set_position(&g_out.scene->tree.node, 0, 0);
+            OHLOG("scene occlusion calculation=%{public}d", calculate_visibility);
+        }
         /* frame_done 直发 client surface: scene 级泵 (wlr_scene_output_
          * send_frame_done) 按 node.visible 过滤, 而 visible 只在渲染遍历
          * 时填充 —— headless 无 frame 事件 + commit 按 damage 门控时,
@@ -952,6 +992,16 @@ static void FrameStep(bool via_vsync)
          * 直接跳过, 混入会稀释均值)。分段基线 ~18-20ms/帧 (T3 ledger),
          * 零拷贝重构属 M2 present 重构, 本遥测作其前后对照。 */
         bool render = wlr_scene_output_needs_frame(g_out.scene_output);
+        /* Bounded developer control: isolate damage/occlusion from guest GPU
+         * contents. No pixel readback and no effect without the local flag. */
+        if (render && DiagFlagFile("diag-full-scene-redraw")) {
+            pixman_region32_t whole;
+            pixman_region32_init_rect(&whole, 0, 0, g_out.out_w, g_out.out_h);
+            pixman_region32_union(&g_out.scene_output->WLR_PRIVATE.pending_commit_damage,
+                &g_out.scene_output->WLR_PRIVATE.pending_commit_damage, &whole);
+            wlr_damage_ring_add(&g_out.scene_output->damage_ring, &whole);
+            pixman_region32_fini(&whole);
+        }
         /* surface 尺寸收敛判定 (wayland egl_renderer.h:92/156 同构): 每拍
          * 实测 buffer 尺寸 (eglQuerySurface = 当帧 renderbuffer), 与上次
          * 成功提交的尺寸比对 —— 变了就渲染这一帧。窗口 resize 时系统异步
@@ -1288,6 +1338,7 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     wl_list_remove(&c->associate.link);
     wl_list_remove(&c->dissociate.link);
     wl_list_remove(&c->map_request.link);
+    wl_list_remove(&c->set_role.link);
     wl_list_remove(&c->link);
     free(c);
 }
@@ -1519,6 +1570,8 @@ static void HandleNewSurface(struct wl_listener *listener, void *data)
     wl_signal_add(&xs->events.associate, &c->associate);
     c->dissociate.notify = ClientDissociate;
     wl_signal_add(&xs->events.dissociate, &c->dissociate);
+    c->set_role.notify = ClientSetRole;
+    wl_signal_add(&xs->events.set_role, &c->set_role);
     c->map_request.notify = ClientMapRequest;
     wl_signal_add(&xs->events.map_request, &c->map_request);
     wl_list_insert(g_clients.prev, &c->link); /* 链尾 = 最上层 */
@@ -1623,6 +1676,49 @@ static int ChildClientAreaQuery(uint32_t xwindow, int *x, int *y, int *w, int *h
     return 1;
 }
 
+static void ChildFaceSyncClip(struct ohos_child_face *f, int client_x, int client_y)
+{
+    if (!f->frame_node) return;
+    pixman_region32_t clip;
+    pixman_region32_init(&clip);
+    int window_x, window_y;
+    bool known = ChildQuery(f->xwindow, &window_x, &window_y, NULL, NULL, NULL) &&
+        wlr_xwayland_query_child_visible_region(g_out.xwayland, f->xwindow,
+                                                f->generation, &clip);
+    if (known) {
+        pixman_region32_translate(&clip, window_x - client_x - f->region_x,
+                                 window_y - client_y - f->region_y);
+    }
+    // Unknown and unmapped regions stay empty, never paint across dialogs.
+    wlr_scene_buffer_set_clip_region(f->frame_node, &clip);
+    if (DiagFlagFile("diag-gpu-face-state")) {
+        struct wlr_scene_node *node = &f->frame_node->node;
+        pixman_box32_t full = {node->x, node->y,
+            node->x + f->frame_node->dst_width,
+            node->y + f->frame_node->dst_height};
+        uint32_t state = 1u | (known ? 2u : 0u) |
+            (pixman_region32_not_empty(&clip) ? 4u : 0u) |
+            (pixman_region32_not_empty(&node->WLR_PRIVATE.visible) ? 8u : 0u) |
+            (node->enabled ? 16u : 0u) |
+            (node->link.next == &g_out.scene->tree.children ? 32u : 0u) |
+            (f->frame_node->buffer ? 64u : 0u) |
+            (pixman_region32_contains_rectangle(&node->WLR_PRIVATE.visible, &full)
+                == PIXMAN_REGION_IN ? 128u : 0u);
+        if (state != f->diag_state && f->diag_count++ < 256) {
+            const pixman_box32_t *ext = pixman_region32_extents(&clip);
+            const pixman_box32_t *vis = pixman_region32_extents(&node->WLR_PRIVATE.visible);
+            OH_LOG_WARN(LOG_APP, "[GPU-FACE] xwin=%{public}u state=%{public}u "
+                "previous=%{public}u rects=%{public}d box=%{public}d,%{public}d,%{public}d,%{public}d "
+                "visible=%{public}d,%{public}d,%{public}d,%{public}d frame_seq=%{public}u",
+                f->xwindow, state, f->diag_state, pixman_region32_n_rects(&clip),
+                ext->x1, ext->y1, ext->x2, ext->y2,
+                vis->x1, vis->y1, vis->x2, vis->y2, g_out.frame_seq);
+        }
+        f->diag_state = state;
+    }
+    pixman_region32_fini(&clip);
+}
+
 static struct ohos_child_face *ChildFaceFind(uint32_t xwindow)
 {
     struct ohos_child_face *f;
@@ -1643,17 +1739,36 @@ static void ChildFaceDestroy(struct ohos_child_face *f, const char *why)
     free(f);
 }
 
+/* Geometry is independent of guest presentation. Wine can stop drawing
+ * during its modal move/resize loop, but the last GPU frame must follow the
+ * X child and its parent on every compositor tick. Queries use XWM's cache. */
+static bool ChildFaceSyncGeometry(struct ohos_child_face *f)
+{
+    int x, y, w, h;
+    uint64_t generation = 0;
+    if (!ChildClientAreaQuery(f->xwindow, &x, &y, &w, &h, &generation) ||
+        generation != f->generation)
+        return false;
+    if (f->frame_node) {
+        wlr_scene_node_set_position(&f->frame_node->node,
+                                   x + f->region_x, y + f->region_y);
+        wlr_scene_buffer_set_dest_size(f->frame_node,
+            f->region_w > 0 ? f->region_w : w,
+            f->region_h > 0 ? f->region_h : h);
+        ChildFaceSyncClip(f, x, y);
+    }
+    return true;
+}
+
 void wl_ohos_output_child_faces_sweep(void)
 {
     struct ohos_child_face *f, *tmp;
     wl_list_for_each_safe(f, tmp, &g_child_faces, link) {
-        uint64_t gen = 0;
-        if (ChildQuery(f->xwindow, NULL, NULL, NULL, NULL, &gen) &&
-            gen == f->generation)
+        if (ChildFaceSyncGeometry(f))
             continue;
         /* 窗口没了, 或同 id 重建 (generation 变了) ⇒ 节点必须销毁:
          * 重建场景下一帧 frame_set 会以新 generation 重挂。 */
-        ChildFaceDestroy(f, gen != f->generation ? "regenerated" : "window gone");
+        ChildFaceDestroy(f, "window gone or regenerated");
     }
 }
 
@@ -1743,8 +1858,8 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
         /* D23: 虚拟桌面子窗口 —— 帧节点挂 scene 根, 按 guest 绝对坐标定位。
          * D31: 锚矩形用客户区 (帧内容 = GL drawable = 客户区), 装饰区让给
          * 桌面缓冲里 wine 自绘的标题栏/边框。
-         * 已知限制 (首版): 节点在 scene 根 = 对全部兄弟子窗置顶, 被其他
-         * 窗口遮挡的 GL 窗会穿帮; 遮挡正确性待 X stacking 查询补。 */
+         * 可见区域由 X server borderClip 缓存裁剪, 即使位于 scene 根
+         * 也不会覆盖兄弟窗口/菜单; 缓冲引用和 EGLImage 保持原路径。 */
         int x, y, w, h;
         uint64_t gen = 0;
         if (!buffer || !ChildClientAreaQuery(xwindow, &x, &y, &w, &h, &gen))
@@ -1789,8 +1904,10 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
         wlr_scene_buffer_set_buffer(f->frame_node, buffer);
         wl_ohos_consumer_buffer_note_handoff(buffer, g_out.frame_seq,
                                              wl_ohos_egl_sync_count());
-        wlr_scene_buffer_set_dest_size(f->frame_node, (uint32_t)w, (uint32_t)h);
-        wlr_scene_node_set_position(&f->frame_node->node, x, y);
+        wlr_scene_buffer_set_dest_size(f->frame_node, f->region_w > 0 ? f->region_w : w,
+                                      f->region_h > 0 ? f->region_h : h);
+        wlr_scene_node_set_position(&f->frame_node->node, x + f->region_x, y + f->region_y);
+        ChildFaceSyncClip(f, x, y);
         wlr_scene_node_set_enabled(&f->frame_node->node, true);
         g_out.last_frame_key = surface_key;
         __atomic_store_n(&g_out.last_frame_ns, (uint64_t)NowNs(),
@@ -1810,7 +1927,7 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
          * 的窗口 (后建窗口仍在子表更后)。节点归本文件所有, 窗口消失时必须
          * 显式销毁 (DestroyFrameNode) —— wlroots 不连带回收它。 */
         struct wlr_scene_tree *parent =
-            wlr_scene_tree_from_node(c->scene_surf->buffer->node.parent);
+            c->scene_surf->buffer->node.parent;
         c->frame_node = wlr_scene_buffer_create(parent, NULL);
         if (!c->frame_node) {
             OH_LOG_ERROR(LOG_APP, "guest frame node create failed xwin=%{public}u",
@@ -1834,8 +1951,9 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
      * 是上一拍打的标记。 */
     wl_ohos_consumer_buffer_note_handoff(buffer, g_out.frame_seq,
                                          wl_ohos_egl_sync_count());
-    wlr_scene_buffer_set_dest_size(c->frame_node, xs->width, xs->height);
-    wlr_scene_node_set_position(&c->frame_node->node, xs->x, xs->y);
+    wlr_scene_buffer_set_dest_size(c->frame_node, c->region_w > 0 ? c->region_w : xs->width,
+                                   c->region_h > 0 ? c->region_h : xs->height);
+    wlr_scene_node_set_position(&c->frame_node->node, xs->x + c->region_x, xs->y + c->region_y);
     wlr_scene_node_set_enabled(&c->frame_node->node, true);
     /* 归属证据: 本秒内交给 scene 的是谁家的帧 (随显示序列发布给 guest,
      * 见 common/display_fps.h)。新帧即 damage ⇒ 本拍就会提交。 */
@@ -1858,25 +1976,28 @@ uint64_t wl_ohos_output_frame_period_ns(void)
     return (uint64_t)FRAME_FALLBACK_MS * 1000000ull;
 }
 
-void wl_ohos_output_client_frame_clear(uint32_t xwindow)
+/* Retirement must not depend on the X window still being alive. A destroyed
+ * child can retain its scene frame until the next sweep; release that frame
+ * before its OH_NativeImage queue dies, while protecting a reused XID. */
+void wl_ohos_output_client_frame_retire(uint32_t xwindow, uint64_t generation)
 {
-    struct ohos_client_surface *c = FindClientByWindow(xwindow);
-    if (!c)
-    {
-        /* D23: 子窗 face。与顶层同口径, 必须在调用方 (DropBinding) 销毁
-         * OH_NativeImage **之前**摘掉帧节点: 节点上挂着借自该 image 的
-         * 队列 buffer, image 先死后归还 = 悬垂间接调用 → CFI 陷阱
-         * (2026-10-08 实测, GL 程序退出致 app 崩溃, D32 主进程死因;
-         * 旧注释「清理走 sweep」的次序不成立 —— sweep 发生在 image 死后)。 */
-        struct ohos_child_face *f = ChildFaceFind(xwindow);
-        if (f)
-            ChildFaceDestroy(f, "binding dropped");
+    if (g_out.multiwindow) {
+        x11_toplevel_clear_guest_frame(xwindow, generation);
         return;
     }
-    if (!c->frame_node)
-        return;
-    wlr_scene_buffer_set_buffer(c->frame_node, NULL);
-    wlr_scene_node_set_enabled(&c->frame_node->node, false);
+    struct ohos_client_surface *c = FindClientByWindow(xwindow);
+    if (c && (!generation || c->generation == generation) && c->frame_node) {
+        wlr_scene_buffer_set_buffer(c->frame_node, NULL);
+        wlr_scene_node_set_enabled(&c->frame_node->node, false);
+    }
+    struct ohos_child_face *f = ChildFaceFind(xwindow);
+    if (f && (!generation || f->generation == generation))
+        ChildFaceDestroy(f, "binding retired");
+}
+
+void wl_ohos_output_client_frame_clear(uint32_t xwindow)
+{
+    wl_ohos_output_client_frame_retire(xwindow, 0);
 }
 
 /* 递归数 scene 里还挂着本模块借来的队列 buffer 的节点 (即活着的 guest 帧).
@@ -1977,8 +2098,13 @@ static int WindowPresentSetup(OHNativeWindow *window, bool canvas_egl_present)
  * 全链, 不存在运行中换窗的合法场景; 调用方负责销毁被拒窗口)。 */
 int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present)
 {
-    if (!window || !g_out.output)
-        return -1;
+    if (!g_out.output) return -1;
+    if (!window) {
+        g_out.window = NULL;
+        wl_ohos_present_slots_shutdown();
+        wl_ohos_egl_window_surface_destroy();
+        return 0;
+    }
     if (g_out.window == window)
         return 0;
     if (g_out.window) {
@@ -2110,7 +2236,7 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     wl_list_init(&g_clients);
     wl_list_init(&g_child_faces);
     g_out.xwayland = xwayland; /* D23: 子窗几何查询句柄 */
-    g_desktop_shell_mapped = 0; /* 每轮链路独立判定 (x11 桌面就绪, 见定义处) */
+    __atomic_store_n(&g_desktop_shell_mapped, 0, __ATOMIC_RELEASE); /* 每轮链路独立判定 (x11 桌面就绪, 见定义处) */
     g_desktop_client = NULL;    /* 桌面窗引用与变化检测逐链复位 (见定义处) */
     g_deskrect_have = 0;
 
@@ -2249,4 +2375,37 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
           g_out.out_w, g_out.out_h,
           g_out.vsync ? "VSync(期望 60-120Hz)" : "33ms 兜底");
     return 0;
+}
+
+size_t wl_ohos_output_snapshot_windows(struct winehua_x11_window *out, size_t cap)
+{
+    if (g_out.multiwindow) return x11_toplevel_snapshot_windows(out, cap);
+    if (!g_out.xwayland) return 0;
+    struct wlr_xwayland_child_info children[256];
+    size_t n = wlr_xwayland_snapshot_children(g_out.xwayland, children, 256);
+    size_t count = 0;
+    for (size_t i = 0; i < n && count < cap; ++i) {
+        struct wlr_xwayland_child_info *c = &children[i];
+        int x, y, w, h;
+        if (!ChildClientAreaQuery(c->window_id, &x, &y, &w, &h, NULL)) continue;
+        out[count++] = (struct winehua_x11_window){0, c->window_id, c->pid,
+            c->generation, x, y, w, h, c->mapped};
+    }
+    return count;
+}
+int wl_ohos_output_client_frame_region(uint32_t xid, int x, int y, int w, int h)
+{
+    if (g_out.multiwindow) return x11_toplevel_guest_region(xid, x, y, w, h);
+    struct ohos_client_surface *c = FindClientByWindow(xid);
+    struct ohos_child_face *f = c ? NULL : ChildFaceFind(xid);
+    if (c) { c->region_x = x; c->region_y = y; c->region_w = w; c->region_h = h; }
+    if (f) { f->region_x = x; f->region_y = y; f->region_w = w; f->region_h = h; }
+    if (f && f->frame_node) {
+        int ax, ay, aw, ah;
+        if (ChildClientAreaQuery(xid, &ax, &ay, &aw, &ah, NULL)) {
+            wlr_scene_node_set_position(&f->frame_node->node, ax + x, ay + y);
+            wlr_scene_buffer_set_dest_size(f->frame_node, w > 0 ? w : aw, h > 0 ? h : ah);
+        }
+    }
+    return c != NULL || f != NULL;
 }

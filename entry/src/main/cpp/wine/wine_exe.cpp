@@ -1,3 +1,4 @@
+#include "proc/spawn_codec.h"
 #include "wine_exe.h"
 
 #include "proc/broker.h"
@@ -6,6 +7,9 @@
 #include "graphics/graphics_broker.h"
 #include "compositor/wayland_server.h"
 #include "wine_constants.h"
+#include "container_session.h"
+#include "graphics/graphics_profile.h"
+#include "direct/direct_vulkan_desktop_compositor.h"
 #include "wine_env.h"
 #include "proc/wine_process.h"
 
@@ -35,10 +39,9 @@ extern napi_threadsafe_function gStateTsfn;
 
 namespace {
 
-static bool HasUnsafeProtocolChar(const std::string& value)
+static bool HasEmbeddedNul(const std::string& value)
 {
-    return value.find('|') != std::string::npos || value.find('\n') != std::string::npos ||
-           value.find('\r') != std::string::npos;
+    return value.find('\0') != std::string::npos;
 }
 
 static std::string ReadString(napi_env env, napi_value value)
@@ -119,7 +122,7 @@ static void ReadEnvironment(napi_env env, napi_value object, std::vector<std::st
             napi_typeof(env, value, &valueType) != napi_ok || valueType != napi_string)
             continue;
         std::string line = key + "=" + ReadString(env, value);
-        if (!HasUnsafeProtocolChar(line)) out->push_back(std::move(line));
+        if (!HasEmbeddedNul(line)) out->push_back(std::move(line));
     }
 }
 
@@ -165,6 +168,7 @@ static napi_value MakeProcessObject(napi_env env, const WineProcessEntry* entry,
     }
 
     setInt("pid", entry->pid);
+    setString("sessionId", WineSessionId(*entry));
     setString("status", entry->running ? "running" : "exited");
     setDouble("startTimestamp", static_cast<double>(entry->startTimestampMs));
     setDouble("endTimestamp", static_cast<double>(entry->endTimestampMs));
@@ -180,24 +184,47 @@ static napi_value MakeProcessObject(napi_env env, const WineProcessEntry* entry,
 
 static int SpawnWineProgramImpl(const ProgramOptions& options)
 {
-    if (options.windowsExePath.empty() || HasUnsafeProtocolChar(options.windowsExePath)) return -1;
-    for (const std::string& arg : options.argv) if (HasUnsafeProtocolChar(arg)) return -1;
+    if (options.windowsExePath.empty() || HasEmbeddedNul(options.windowsExePath)) return -1;
+    for (const std::string& arg : options.argv) if (HasEmbeddedNul(arg)) return -1;
+
+    const winehua::ContainerSession session = options.containerId.empty()
+        ? winehua::GetActiveContainerSession()
+        : [&options]() {
+            winehua::ContainerSession resolved;
+            if (!winehua::ResolveContainerSession(options.containerId, &resolved)) return winehua::ContainerSession{};
+            return resolved;
+        }();
+    if (session.id.empty() ||
+        (!options.containerId.empty() && !winehua::IsActiveContainerSession(session.id))) {
+        OH_LOG_ERROR(LOG_APP, "[WineProgram] rejected inactive or invalid container=%{public}s",
+                     options.containerId.c_str());
+        return -1;
+    }
 
     const std::string binDir = WINE_RUNTIME_BIN;
-    const std::string prefixDir = WINE_PREFIX;
+    const std::string prefixDir = session.prefixDir;
     const std::string homeDir = gBrokerHomeDir.empty() ?
         "/storage/Users/currentUser/Download" : gBrokerHomeDir;
     const std::string sockDir = prefixDir;
     const std::string sockName = "wine-wayland";
-    const std::string libPath = binDir + ":" + binDir + "/x86_64-unix";
+    const std::string libPath = binDir + ":" + binDir + "/" WINE_UNIX_SUBDIR;
     const std::string exePath = NativePathToWindows(options.windowsExePath, prefixDir);
 
     winehua::GraphicsBroker::GetInstance().SetWineRuntimeBinaryDir(binDir);
     winehua::GraphicsBroker::GetInstance().SetRequestedBackend(winehua::GraphicsBackend::Virgl);
     if (!winehua::GraphicsBroker::GetInstance().EnsureStarted(prefixDir)) return -1;
+    // Child programs cannot select a different consumer for the active
+    // desktop. Old callers still pass Venus here even in a Direct session.
+    const bool vulkanD3d = winehua::UsesVenusPresent(
+        winehua::ParseD3dBackend(options.d3dBackend));
+    const std::string presentBackend = vulkanD3d
+        ? (winehua::direct::DirectDesktopVulkanEnabled()
+            ? "direct_vulkan_present" : "venus_broker_present")
+        : options.presentBackend;
     winehua::GraphicsBroker::GetInstance().SetVulkanPresentMode(
-        options.presentBackend == "venus_broker_present" ||
-        options.presentBackend == "venus_direct_present");
+        !winehua::direct::DirectDesktopVulkanEnabled() &&
+        (presentBackend == "venus_broker_present" ||
+         presentBackend == "venus_direct_present"));
 
     // 声明式 env 管线 (env_profiles.cpp): 基线+D3D overlay+稳定化 overlay 由
     // policy 字段声明, per-run 覆盖 (options.environment) 与进程标记经 extraEnv
@@ -209,25 +236,35 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     policy.binDir = binDir;
     policy.homeDir = homeDir;
     policy.prefixDir = prefixDir;
+    // Managed child programs inherit the active desktop/container locale.
+    // Per-launch LC_ALL/LANG overrides still take precedence in extraEnv.
+    policy.wineLang = winehua::GetActiveContainerSession().wineLang;
     policy.d3dBackend = options.d3dBackend;
     policy.dxvkBackend = options.dxvkBackend;
     // DXVK 稳定化默认值 (DXVK_LOG/perf profile/WEAKBARRIER clamp 等) 与桌面
     // 会话链同一来源 (AppendStableDxvkEnv) — 历史上由 ArkTS
-    // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK/VKD3D 后端
+    // d3dLaunchEnvironment 平行维护一份拷贝, 已收口; 非 DXVK 后端
     // overlay 内 early-return, extraEnv 最后写入仍可压过产品默认。
     policy.applyStableOverlay = true;
     policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
     policy.extraEnv = options.environment;
     policy.extraEnv.push_back("WINEHUA_D3D_BACKEND=" + options.d3dBackend);
-    policy.extraEnv.push_back("WINEHUA_PRESENT_BACKEND=" + options.presentBackend);
+    policy.extraEnv.push_back("WINEHUA_PRESENT_BACKEND=" + presentBackend);
     /* desktop 模式: 将进程接入 explorer 创建的 shell desktop, 使其窗口
      * 出现在任务栏 (与 RunWineExe 路径对称, 重构 runWineProgram 时遗漏). */
     /* DXVK is a managed WineHua runtime overlay, never a game-provided DLL. */
-    if (options.d3dBackend.rfind("dxvk_", 0) == 0 ||
-        options.d3dBackend == "vkd3d_limited_500k")
+    if (options.d3dBackend == "dxvk_legacy" ||
+        options.d3dBackend == "dxvk_modern_2_6")
         OH_LOG_INFO(LOG_APP, "[WineProgram] managed D3D backend=%{public}s",
                     options.d3dBackend.c_str());
+    // WINEHUA_WINE_UNIX_ARCH 描述 wine unix 侧架构 (= WINE_ARCH), 方案①② 为
+    // x86_64, 方案③ 为 aarch64 — 按 .wine_arch 编译宏判定 (不能用 __aarch64__:
+    // 方案② 宿主机是 arm64 但 wine 是 x86_64)。
+#ifdef WINEHUA_WINE_ARCH_IS_X86_64
     policy.extraEnv.push_back("WINEHUA_WINE_UNIX_ARCH=x86_64");
+#else
+    policy.extraEnv.push_back("WINEHUA_WINE_UNIX_ARCH=aarch64");
+#endif
     policy.extraEnv.push_back("WINEHUA_HOST_ARCH=" + std::string(
 #ifdef __aarch64__
         "aarch64"
@@ -247,10 +284,11 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
     const pid_t pid = winehua::Spawner::Spawn(req);
     if (pid <= 0) return -1;
     AddProcess(pid, options.windowsExePath, -1);
+    BeginRegisteredWineSession(pid);
     OH_LOG_INFO(LOG_APP,
                 "[WineProgram] pid=%{public}d exe=%{public}s prefix=%{public}s d3d=%{public}s present=%{public}s",
                 pid, exePath.c_str(), prefixDir.c_str(), options.d3dBackend.c_str(),
-                options.presentBackend.c_str());
+                presentBackend.c_str());
     if (gStateTsfn)
     {
         char state[64];
@@ -267,55 +305,35 @@ static int SpawnWineProgramImpl(const ProgramOptions& options)
 // 经 broker Unix socket 发送 SPAWN 请求, 返回子进程 pid, <= 0 表示失败。
 // 调用方收口在 spawner.cpp (SpawnKind::DesktopShell/WineExe 等);
 // 保留全局函数只因 broker 协议实现不应复制第二份。
-pid_t SpawnViaBroker(const std::string& entryParams,
+pid_t SpawnViaBroker(const std::string& binDir, const std::vector<std::string>& argv,
                      const std::vector<std::string>& environment)
 {
-    const char* brokerPath = getenv("PROCESSBROKER");
-    if (!brokerPath || !brokerPath[0]) brokerPath = WINE_BROKER_SOCKET;
-    int brokerFd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (brokerFd < 0) return -1;
-
-    sockaddr_un address = {};
-    address.sun_family = AF_UNIX;
-    if (strlen(brokerPath) >= sizeof(address.sun_path))
-    {
-        close(brokerFd);
+    winehua::spawn::Request request{"", binDir, argv, {}, {}};
+    for (const auto& line : environment)
+        if (!vp_is_process_env(line.c_str())) request.env.push_back(line);
+    std::vector<unsigned char> bytes;
+    if (!winehua::spawn::Encode(request, bytes)) {
+        OH_LOG_ERROR(LOG_APP, "[Program] invalid or oversized startup request");
         return -1;
     }
-    strcpy(address.sun_path, brokerPath);
-    if (connect(brokerFd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
-    {
-        OH_LOG_ERROR(LOG_APP, "[Program] broker connect failed: %{public}s", strerror(errno));
-        close(brokerFd);
+    const char* path = getenv("PROCESSBROKER");
+    if (!path || !path[0]) path = WINE_BROKER_SOCKET;
+    const int64_t deadline = vp_now_ms() + 45000;
+    int fd = vp_connect_path(path, deadline);
+    if (fd < 0) return -1;
+    vp_spawn_spec spec{};
+    int pid = -1, status = -1;
+    bool ok = vp_decode(bytes.data(), bytes.size(), &spec) == 0 &&
+        vp_send_request(fd, &spec, nullptr, deadline) == 0 &&
+        vp_recv_reply(fd, &pid, &status, deadline) == 0;
+    vp_free_spec(&spec);
+    const int error = errno;
+    close(fd);
+    if (!ok || status || pid <= 0) {
+        OH_LOG_ERROR(LOG_APP, "[Program] broker request failed errno=%{public}d status=%{public}d", error, status);
         return -1;
     }
-
-    /* The broker protocol has one authoritative environment channel:
-     * |__env=KEY=VALUE segments embedded in entryParams.  The old ENV blob
-     * trailer was removed with the broker-global session environment; leaving
-     * it here makes children silently inherit only Wine's baseline and causes
-     * DXVK/Venus 程序错误地解析到内置 d3d11.dll。 */
-    const std::string requestParams = entryParams + SerializeEnvToEntryParams(environment);
-    static constexpr char header[] = "SPAWN\n";
-    std::string requestTail = requestParams + "\n";
-    iovec iov[2] = {
-        {const_cast<char*>(header), sizeof(header) - 1},
-        {const_cast<char*>(requestTail.data()), requestTail.size()},
-    };
-    msghdr message = {};
-    message.msg_iov = iov;
-    message.msg_iovlen = 2;
-    if (sendmsg(brokerFd, &message, MSG_NOSIGNAL) < 0)
-    {
-        close(brokerFd);
-        return -1;
-    }
-
-    int32_t response[2] = {-1, -1};
-    ssize_t received = recv(brokerFd, response, sizeof(response), MSG_WAITALL);
-    close(brokerFd);
-    if (received != sizeof(response) || response[1] != 0 || response[0] <= 0) return -1;
-    return response[0];
+    return pid;
 }
 
 
@@ -324,13 +342,11 @@ int SpawnWineProgram(const ProgramOptions& options)
     return SpawnWineProgramImpl(options);
 }
 
-// 呈现后端按 d3d 后端派生 (单一策略点): DXVK/VKD3D (走 GPU 图集) → venus
-// 呈现 (zero-copy), WineD3D → virgl 呈现。调用方不传 presentBackend 时由
-// 此兜底, 避免各调用方手写一份换算 (dev UI 曾各自实现一份)。
+// Default for old callers; SpawnWineProgram pairs Vulkan presentation with
+// the consumer already selected by the session owner.
 static std::string DerivePresentBackend(const std::string& d3dBackend)
 {
-    const bool gpuBackend = d3dBackend.rfind("dxvk_", 0) == 0 ||
-                            d3dBackend == "vkd3d_limited_500k";
+    const bool gpuBackend = winehua::UsesVenusPresent(winehua::ParseD3dBackend(d3dBackend));
     return gpuBackend ? "venus_broker_present" : "virgl_compositor";
 }
 
@@ -348,33 +364,25 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     ProgramOptions options;
     options.windowsExePath = GetString(env, args[0], "windowsExePath");
     options.workingDirectory = GetString(env, args[0], "workingDirectory");
-    options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_modern_2_6");
-    const std::string impliedDxvkBackend = options.d3dBackend == "dxvk_modern_2_6"
-        ? "dxvk_modern_2_6" : "dxvk_legacy";
-    options.dxvkBackend = GetString(env, args[0], "dxvkBackend", impliedDxvkBackend.c_str());
-    if (options.dxvkBackend != "dxvk_legacy" &&
-        options.dxvkBackend != "dxvk_modern_2_6")
-        options.dxvkBackend = impliedDxvkBackend;
+    options.containerId = GetString(env, args[0], "containerId");
+    options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_legacy");
+    if (options.d3dBackend != "dxvk_legacy" && options.d3dBackend != "dxvk_modern_2_6" &&
+        options.d3dBackend != "wined3d" && options.d3dBackend != "wined3d_zink" &&
+        options.d3dBackend != "dxvk_legacy_d3d9")
+        options.d3dBackend = "dxvk_legacy";
+    options.dxvkBackend = options.d3dBackend == "dxvk_modern_2_6" ?
+        "dxvk_modern_2_6" : "dxvk_legacy";
     options.presentBackend = GetString(env, args[0], "presentBackend");
     if (options.presentBackend.empty())
         options.presentBackend = DerivePresentBackend(options.d3dBackend);
+
     ReadStringArray(env, args[0], "argv", &options.argv);
     ReadEnvironment(env, args[0], &options.environment);
-    // ArkTS 原样传入的 per-app environment (未经管线改写, 与 main-ui 启动链
-    // 对比的判别点): 拼成 K=V;K=V 行串打出, 空 = 调用方未注入
-    const std::string envFallback = [&options]() {
-        std::string joined;
-        for (const std::string& line : options.environment) {
-            if (!joined.empty()) joined += ";";
-            joined += line;
-        }
-        return joined;
-    }();
     OH_LOG_INFO(LOG_APP,
-                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu [%{public}s] "
+                "[WineProgram] parsed options exeBytes=%{public}zu argc=%{public}zu envCount=%{public}zu "
                 "d3d=%{public}s dxvk=%{public}s",
-                options.windowsExePath.c_str(), options.argv.size(), options.environment.size(),
-                envFallback.c_str(), options.d3dBackend.c_str(), options.dxvkBackend.c_str());
+                options.windowsExePath.size(), options.argv.size(), options.environment.size(),
+                options.d3dBackend.c_str(), options.dxvkBackend.c_str());
 
     const pid_t pid = SpawnWineProgram(options);
     WineProcessEntry entry;
@@ -403,29 +411,39 @@ napi_value TerminateWineProcess(napi_env env, napi_callback_info info)
     int32_t pid = -1;
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc >= 1) napi_get_value_int32(env, args[0], &pid);
-    OH_LOG_WARN(LOG_APP,
-                "[WineProgram] terminateWineProcess requested pid=%{public}d signal=SIGKILL",
-                pid);
-    const bool ok = pid > 0 && kill(pid, SIGKILL) == 0;
-    if (!ok) {
-        OH_LOG_WARN(LOG_APP,
-                    "[WineProgram] terminateWineProcess failed pid=%{public}d errno=%{public}d(%{public}s)",
-                    pid, errno, strerror(errno));
-    }
-    if (ok) RemoveProcess(pid, -1, "unknown");
+    WineProcessEntry entry;
+    const bool ok = pid > 0 && QueryProcessSnapshot(pid, &entry) &&
+        StopRegisteredWineSession(WineSessionId(entry));
     napi_value result;
     napi_get_boolean(env, ok, &result);
     return result;
 }
 
+static napi_value MakeLaunchResult(napi_env env, int32_t pid,
+                                   const std::string& sessionId, bool reused)
+{
+    napi_value result, pidValue, sessionValue, reusedValue;
+    napi_create_object(env, &result);
+    napi_create_int32(env, pid, &pidValue);
+    napi_create_string_utf8(env, sessionId.c_str(), NAPI_AUTO_LENGTH, &sessionValue);
+    napi_get_boolean(env, reused, &reusedValue);
+    napi_set_named_property(env, result, "pid", pidValue);
+    napi_set_named_property(env, result, "sessionId", sessionValue);
+    napi_set_named_property(env, result, "reused", reusedValue);
+    return result;
+}
+
+
+// ================= VPP 10-arg RunWineExe (ours parsing x theirs proton pipeline) =================
 napi_value RunWineExe(napi_env env, napi_callback_info info)
 {
-    size_t argc = 5;
-    napi_value args[5] = {};
+    size_t argc = 10;
+    napi_value args[10] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 4) return MakeProcessObject(env, nullptr, false);
+    if (argc < 4) return MakeLaunchResult(env, -1, "", false);
 
-    char binDir[512] = {}, sockPath[512] = {}, libPath[2048] = {}, wineExe[1024] = {}, homePath[1024] = {};
+    char binDir[512] = {}, sockPath[512] = {}, libPath[2048] = {}, wineExe[1024] = {},
+         homePath[1024] = {}, workingDirectoryPath[1024] = {}, d3dBackend[64] = "dxvk_legacy";
     napi_get_value_string_utf8(env, args[0], binDir, sizeof(binDir), nullptr);
     napi_get_value_string_utf8(env, args[1], sockPath, sizeof(sockPath), nullptr);
     napi_get_value_string_utf8(env, args[2], libPath, sizeof(libPath), nullptr);
@@ -433,20 +451,76 @@ napi_value RunWineExe(napi_env env, napi_callback_info info)
     if (argc >= 5) {
         napi_get_value_string_utf8(env, args[4], homePath, sizeof(homePath), nullptr);
     }
+    std::vector<std::string> launchArguments;
+    bool argumentArray = false;
+    if (argc >= 6) napi_is_array(env, args[5], &argumentArray);
+    if (argumentArray) {
+        uint32_t length = 0;
+        napi_get_array_length(env, args[5], &length);
+        for (uint32_t index = 0; index < length; index++) {
+            napi_value item;
+            napi_get_element(env, args[5], index, &item);
+            size_t size = 0;
+            napi_get_value_string_utf8(env, item, nullptr, 0, &size);
+            std::string value(size + 1, '\0');
+            napi_get_value_string_utf8(env, item, value.data(), value.size(), &size);
+            value.resize(size);
+            launchArguments.push_back(value);
+        }
+    }
+    if (argc >= 7) {
+        napi_get_value_string_utf8(env, args[6], workingDirectoryPath,
+                                   sizeof(workingDirectoryPath), nullptr);
+    }
+    if (argc >= 8) {
+        char requestedBackend[64] = {};
+        napi_get_value_string_utf8(env, args[7], requestedBackend,
+                                   sizeof(requestedBackend), nullptr);
+        const winehua::D3dBackendKind backend =
+            winehua::ParseD3dBackend(requestedBackend);
+        if (backend == winehua::D3dBackendKind::WineD3d ||
+            backend == winehua::D3dBackendKind::WineD3dZink ||
+            winehua::IsDxvkBackend(backend)) {
+            strncpy(d3dBackend, requestedBackend, sizeof(d3dBackend) - 1);
+        } else {
+            OH_LOG_ERROR(LOG_APP,
+                         "[Wine] rejected unsupported d3d backend=%{public}s",
+                         requestedBackend);
+            return MakeLaunchResult(env, -1, "", false);
+        }
+    }
+    std::vector<std::string> envOverrides;
+    bool envArray = false;
+    if (argc >= 9) napi_is_array(env, args[8], &envArray);
+    if (envArray) {
+        uint32_t length = 0;
+        napi_get_array_length(env, args[8], &length);
+        for (uint32_t index = 0; index < length; index++) {
+            napi_value item;
+            napi_get_element(env, args[8], index, &item);
+            size_t size = 0;
+            napi_get_value_string_utf8(env, item, nullptr, 0, &size);
+            std::string value(size + 1, '\0');
+            napi_get_value_string_utf8(env, item, value.data(), value.size(), &size);
+            value.resize(size);
+            if (!value.empty()) envOverrides.push_back(value);
+        }
+    }
+
+    std::string wineLang = "zh_CN";
+    if (argc >= 10) {
+        const std::string requested = ReadString(env, args[9]);
+        if (requested == "zh_CN" || requested == "zh_TW" ||
+            requested == "ja_JP" || requested == "en_US")
+            wineLang = requested;
+    }
 
     std::string homeDir(homePath);
     if (homeDir.empty()) homeDir = gBrokerHomeDir;
     if (homeDir.empty()) homeDir = "/storage/Users/currentUser/Download";
 
-    std::string exePath(wineExe);
-    {
-        std::string lower = exePath;
-        for (auto& c : lower) c = tolower(c);
-        if (lower.find("/drive_c/") != std::string::npos) {
-            auto slash = exePath.find_last_of('/');
-            if (slash != std::string::npos) exePath = exePath.substr(slash + 1);
-        }
-    }
+    const winehua::ContainerSession session = winehua::GetActiveContainerSession();
+    const std::string exePath = NativePathToWindows(wineExe, session.prefixDir);
 
     OH_LOG_INFO(LOG_APP, "[Wine] runWineExe bin=%{public}s exe=%{public}s (final=%{public}s) home=%{public}s",
                 binDir, wineExe, exePath.c_str(), homeDir.c_str());
@@ -456,43 +530,42 @@ napi_value RunWineExe(napi_env env, napi_callback_info info)
     std::string sockDir = (pos == std::string::npos) ? "/tmp" : sockStr.substr(0, pos);
     std::string sockName = (pos == std::string::npos) ? sockStr : sockStr.substr(pos + 1);
 
-    // 声明式 env 管线 (env_profiles.cpp)。d3dBackend 留空 = 不注入 D3D
-    // overlay: 此路径从 ArkTS 手动启动 Wine 系统组件（如 explorer 文件管理器），
-    // explorer 本身不需要 DXVK overlay。
+    // proton 声明式 env 管线 + VPP 10 参映射 (backend/lang/extraEnv)
     winehua::SessionEnvPolicy policy;
     policy.sockDir = sockDir;
     policy.sockName = sockName;
     policy.libPath = libPath;
     policy.binDir = binDir;
     policy.homeDir = homeDir;
-    // desktop 模式: 将进程接入 explorer 创建的 shell desktop,
-    // 使其窗口出现在任务栏, 且能与其他 shell 进程互相访问
+    policy.prefixDir = session.prefixDir;
     policy.desktopShellFlag = WaylandServer::GetInstance()->IsDesktopMode();
+    policy.d3dBackend = d3dBackend;
+    policy.dxvkBackend = d3dBackend;
+    policy.applyStableOverlay = true;
+    policy.wineLang = wineLang;
+    policy.extraEnv = envOverrides;
+    if (workingDirectoryPath[0])
+        policy.extraEnv.push_back("WINEHUA_WORKING_DIRECTORY=" + std::string(workingDirectoryPath));
     std::vector<std::string> wineEnv = winehua::BuildSessionEnv(policy);
 
-    {
-        // ArkTS 显式传的 binDir 经 SpawnRequest.binDir 透传 (不依赖会话默认);
-        // env 序列化由 broker 通道内部完成。
-        winehua::SpawnRequest req{winehua::SpawnKind::WineExe};
-        req.binDir = binDir;
-        req.argv.push_back(exePath);
-        req.env = std::move(wineEnv);
-        OH_LOG_INFO(LOG_APP, "[Wine] runWineExe via broker: %{public}s|...", exePath.c_str());
+    winehua::SpawnRequest req{winehua::SpawnKind::WineExe};
+    req.binDir = binDir;
+    req.argv.push_back(exePath);
+    for (const auto& a : launchArguments) req.argv.push_back(a);
+    req.env = std::move(wineEnv);
 
-        pid_t pid = winehua::Spawner::Spawn(req);
-        if (pid <= 0) {
-            OH_LOG_ERROR(LOG_APP, "[Wine] broker spawn failed");
-            if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("evt:launch-failed"), napi_tsfn_blocking);
-            return nullptr;
-        }
-
-        AddProcess(pid, wineExe, -1);
-        OH_LOG_INFO(LOG_APP, "[Wine] wine pid=%{public}d exe=%{public}s (via broker)", pid, wineExe);
-        if (gStateTsfn) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "evt:launch-accepted:%d", pid);
-            napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
-        }
+    pid_t pid = winehua::Spawner::Spawn(req);
+    if (pid <= 0) {
+        OH_LOG_ERROR(LOG_APP, "[Wine] broker spawn failed");
+        if (gStateTsfn) napi_call_threadsafe_function(gStateTsfn, strdup("evt:launch-failed"), napi_tsfn_blocking);
+        return MakeLaunchResult(env, -1, "", false);
     }
-    return nullptr;
+
+    AddProcess(pid, wineExe, -1);
+    if (gStateTsfn) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "evt:launch-accepted:%d", pid);
+        napi_call_threadsafe_function(gStateTsfn, strdup(msg), napi_tsfn_blocking);
+    }
+    return MakeLaunchResult(env, pid, BeginRegisteredWineSession(pid), false);
 }

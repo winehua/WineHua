@@ -1,0 +1,15 @@
+--- a/dlls/ntdll/unwind.c
++++ b/dlls/ntdll/unwind.c
+@@ -887,7 +887,11 @@
+     TRACE( "type %lx base %I64x pc %I64x rva %I64x sp %I64x\n", type, base, pc, pc - base, context->Sp );
+     if (limit_low || limit_high) FIXME( "limits not supported\n" );
+ 
+-    if (!func && pc == context->Lr) return STATUS_BAD_FUNCTION_TABLE;  /* invalid leaf function */
++    /* The caller may subtract 4 from an already unwound return PC to
++     * locate the call instruction. Use the unadjusted context PC as well,
++     * otherwise a metadata-free PC == LR frame unwinds to itself forever. */
++    if (!func && (pc == context->Lr || context->Pc == context->Lr))
++        return STATUS_BAD_FUNCTION_TABLE;  /* invalid leaf function */
+ 
+     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+ 

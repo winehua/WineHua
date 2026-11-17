@@ -1,0 +1,26 @@
+From 9508075a720198993a674363f5bc77a4539bca0d Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation:
+ 0016-ntdll-honor-pe-large-address-aware-default
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 4af10fcfccf6187b08c4a7d1650f19a91bdaf0e0838bf83728a343006f661d39
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 3551f3892b084cd9eb6be7f5e4604238378a1416..00a62850dd0b43e6389458809df9bb206fb62a68 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5502,7 +5502,10 @@ static int need_override_large_address_aware(void)
+     {
+         const char *str = getenv( "WINE_LARGE_ADDRESS_AWARE" );
+ 
+-        needs_override = !str /* on by default */ || atoi(str) == 1;
++        /* Honor the PE address-space contract unless the caller explicitly
++         * opts into the larger address space. This also covers renamed
++         * launchers and children created by Windows applications. */
++        needs_override = str && atoi(str) == 1;
+     }
+     return needs_override;
+ }

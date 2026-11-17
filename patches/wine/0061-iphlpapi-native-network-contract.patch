@@ -1,0 +1,330 @@
+--- a/dlls/nsiproxy.sys/ndis.c
++++ b/dlls/nsiproxy.sys/ndis.c
+@@ -29,6 +29,10 @@
+ #include <sys/socket.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
++#ifdef __linux__
++#include <ifaddrs.h>
++#include <netpacket/packet.h>
++#endif
+ 
+ #ifdef HAVE_NET_IF_H
+ #include <net/if.h>
+@@ -163,6 +167,39 @@
+     if (ioctl( fd, SIOCGIFHWADDR, &ifr ))
+     {
+         ret = STATUS_DEVICE_DATA_ERROR;
++#ifdef __linux__
++        /* Sandboxes may deny the hardware-address ioctl while permitting
++         * RTM_GETLINK, which getifaddrs uses. Use that same real link record. */
++        {
++            struct ifaddrs *addrs, *entry;
++            if (!getifaddrs( &addrs ))
++            {
++                for (entry = addrs; entry; entry = entry->ifa_next)
++                {
++                    const struct sockaddr_ll *link;
++                    if (strcmp( entry->ifa_name, name ) || !entry->ifa_addr ||
++                        entry->ifa_addr->sa_family != AF_PACKET) continue;
++                    link = (const struct sockaddr_ll *)entry->ifa_addr;
++                    for (i = 0; i < ARRAY_SIZE(types); i++)
++                        if (link->sll_hatype == types[i].ifi_type)
++                        {
++                            *type = types[i].mib_type;
++                            break;
++                        }
++                    if (entry->ifa_flags & IFF_LOOPBACK) *type = MIB_IF_TYPE_LOOPBACK;
++                    if (link->sll_halen <= sizeof(phys_addr->Address) &&
++                        link->sll_halen <= sizeof(link->sll_addr))
++                    {
++                        phys_addr->Length = link->sll_halen;
++                        memcpy( phys_addr->Address, link->sll_addr, link->sll_halen );
++                    }
++                    ret = STATUS_SUCCESS;
++                    break;
++                }
++                freeifaddrs( addrs );
++            }
++        }
++#endif
+         goto err;
+     }
+ 
+--- a/dlls/nsiproxy.sys/ip.c
++++ b/dlls/nsiproxy.sys/ip.c
+@@ -23,6 +23,10 @@
+ #endif
+ 
+ #include "config.h"
++#ifdef __linux__
++#include <errno.h>
++#include "network-route-linux.h"
++#endif
+ #include <stdarg.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
+@@ -1543,7 +1547,38 @@
+         }
+         freeifaddrs( addrs );
+ 
+-        if (!(fp = fopen( "/proc/net/route", "r" ))) return STATUS_NOT_SUPPORTED;
++        if (!(fp = fopen( "/proc/net/route", "r" )))
++        {
++            struct network_ipv4_route *routes;
++            size_t route_count, route;
++            int error = network_ipv4_routes( &routes, &route_count );
++            if (error) return error == ENOMEM ? STATUS_NO_MEMORY : STATUS_NOT_SUPPORTED;
++            for (route = 0; route < route_count; route++)
++            {
++                const struct network_ipv4_route *r = routes + route;
++                char name[IF_NAMESIZE];
++                if (!if_indextoname( r->ifindex, name )) continue;
++                if (!convert_unix_name_to_luid( name, &entry.luid )) continue;
++                entry.if_index = r->ifindex;
++                entry.prefix.s_addr = r->prefix;
++                entry.prefix_len = r->prefix_len;
++                entry.next_hop.s_addr = r->gateway;
++                entry.metric = r->metric;
++                entry.protocol = r->gateway ? MIB_IPPROTO_NETMGMT : MIB_IPPROTO_LOCAL;
++                entry.loopback = entry.protocol == MIB_IPPROTO_LOCAL && entry.prefix_len == 32;
++                if (num < *count)
++                {
++                    ipv4_forward_fill_entry( &entry, key_data, rw_data, dynamic_data, static_data );
++                    key_data = (BYTE *)key_data + key_size;
++                    rw_data = (BYTE *)rw_data + rw_size;
++                    dynamic_data = (BYTE *)dynamic_data + dynamic_size;
++                    static_data = (BYTE *)static_data + static_size;
++                }
++                num++;
++            }
++            free( routes );
++            goto linux_routes_done;
++        }
+ 
+         /* skip header line */
+         fgets( buf, sizeof(buf), fp );
+@@ -1577,6 +1612,7 @@
+             num++;
+         }
+         fclose( fp );
++linux_routes_done:;
+     }
+ #elif defined(HAVE_SYS_SYSCTL_H) && defined(NET_RT_DUMP)
+     {
+--- a/dlls/nsiproxy.sys/Makefile.in
++++ b/dlls/nsiproxy.sys/Makefile.in
+@@ -10,6 +10,7 @@
+ 	icmp_echo.c \
+ 	ip.c \
+ 	ndis.c \
++	network-route-linux.c \
+ 	nsi.c \
+ 	tcp.c \
+ 	udp.c
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -595,10 +595,18 @@
+  *  info [Out] buffer for adapter infos
+  *  size [In]  length of output buffer
+  */
++static BOOL adapter_has_ipv4( const NET_LUID *luid, const struct nsi_ip_interface_key *keys, DWORD count )
++{
++    DWORD i;
++    for (i = 0; i < count; i++) if (keys[i].luid.Value == luid->Value) return TRUE;
++    return FALSE;
++}
++
+ DWORD WINAPI GetAdaptersInfo( IP_ADAPTER_INFO *info, ULONG *size )
+ {
+     DWORD err, if_count, if_num = 0, uni_count, fwd_count, needed, wins_server_count;
+-    DWORD len, i, uni, fwd;
++    DWORD len, i, uni, fwd, ipv4_count;
++    struct nsi_ip_interface_key *ipv4_keys = NULL;
+     NET_LUID *if_keys = NULL;
+     struct nsi_ndis_ifinfo_rw *if_rw = NULL;
+     struct nsi_ndis_ifinfo_static *if_stat = NULL;
+@@ -617,9 +625,17 @@
+                                   NULL, 0, (void **)&if_stat, sizeof(*if_stat), &if_count, 0 );
+ 
+     if (err) return err;
++    /* GetAdaptersInfo is the legacy IPv4 API. Link-only and IPv6-only
++     * interfaces belong to GetIfTable/GetAdaptersAddresses instead. Do not
++     * filter by link state; disconnected IPv4-bound adapters remain visible. */
++    err = NsiAllocateAndGetTable( 1, &NPI_MS_IPV4_MODULEID, NSI_IP_INTERFACE_TABLE,
++                                  (void **)&ipv4_keys, sizeof(*ipv4_keys), NULL, 0,
++                                  NULL, 0, NULL, 0, &ipv4_count, 0 );
++    if (err) goto err;
+     for (i = 0; i < if_count; i++)
+     {
+         if (if_stat[i].type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
++        if (!adapter_has_ipv4( if_keys + i, ipv4_keys, ipv4_count )) continue;
+         if_num++;
+     }
+ 
+@@ -656,6 +672,7 @@
+     for (i = 0; i < if_count; i++)
+     {
+         if (if_stat[i].type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
++        if (!adapter_has_ipv4( if_keys + i, ipv4_keys, ipv4_count )) continue;
+ 
+         info->Next = info + 1;
+         info->ComboIndex = 0;
+@@ -726,6 +743,7 @@
+     info[-1].Next = NULL;
+ 
+ err:
++    NsiFreeTable( ipv4_keys, NULL, NULL, NULL );
+     free( wins_servers );
+     NsiFreeTable( fwd_keys, NULL, NULL, NULL );
+     NsiFreeTable( uni_keys, uni_rw, NULL, NULL );
+--- /dev/null
++++ b/dlls/nsiproxy.sys/network-route-linux.c
+@@ -0,0 +1,132 @@
++/* IPv4 route snapshots for Linux sandboxes which deny /proc/net/route. */
++#if 0
++#pragma makedep unix
++#endif
++#ifdef __linux__
++#include <errno.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#include "network-route-linux.h"
++
++static int append_route(struct network_ipv4_route **routes, size_t *count,
++                        const struct network_ipv4_route *entry)
++{
++    struct network_ipv4_route *next;
++    size_t i;
++    for (i=0;i<*count;i++) {
++        const struct network_ipv4_route *p=*routes+i;
++        /* Windows has no Linux policy table ID. Preserve unique route fields. */
++        if (p->prefix==entry->prefix && p->gateway==entry->gateway &&
++            p->ifindex==entry->ifindex && p->prefix_len==entry->prefix_len &&
++            p->metric==entry->metric && p->protocol==entry->protocol && p->type==entry->type) return 0;
++    }
++    if (*count >= SIZE_MAX/sizeof(**routes)-1) return ENOMEM;
++    next=realloc(*routes,(*count+1)*sizeof(**routes));
++    if (!next) return ENOMEM;
++    *routes=next;next[(*count)++]=*entry;
++    return 0;
++}
++
++int network_ipv4_parse_routes(const void *data,size_t size,uint32_t sequence,
++                             struct network_ipv4_route **routes,size_t *count,int *done)
++{
++    const struct nlmsghdr *hdr;
++    const struct rtmsg *msg;
++    const struct rtattr *attr;
++    struct network_ipv4_route entry;
++    int remain, attrs, err;
++    if (size>INT32_MAX) return EMSGSIZE;
++    remain=size;
++    for (hdr=data;NLMSG_OK(hdr,remain);hdr=NLMSG_NEXT(hdr,remain)) {
++        if (hdr->nlmsg_seq!=sequence) return EBADMSG;
++        if (hdr->nlmsg_flags & NLM_F_DUMP_INTR) return EAGAIN;
++        if (hdr->nlmsg_type==NLMSG_ERROR) {
++            const struct nlmsgerr *error;
++            if (NLMSG_PAYLOAD(hdr,0)<sizeof(*error)) return EBADMSG;
++            error=NLMSG_DATA(hdr);
++            if (error->error) return error->error<0?-error->error:EBADMSG;
++            continue;
++        }
++        if (hdr->nlmsg_type==NLMSG_DONE) {
++            if (NLMSG_PAYLOAD(hdr,0)>=sizeof(int)) {
++                int result;memcpy(&result,NLMSG_DATA(hdr),sizeof(result));
++                if (result) return result<0?-result:EBADMSG;
++            }
++            *done=1;
++            continue;
++        }
++        if (hdr->nlmsg_type!=RTM_NEWROUTE) continue;
++        if (NLMSG_PAYLOAD(hdr,0)<sizeof(*msg)) return EBADMSG;
++        msg=NLMSG_DATA(hdr);
++        if (msg->rtm_family!=AF_INET || msg->rtm_type!=RTN_UNICAST || msg->rtm_src_len || msg->rtm_tos) continue;
++        if (msg->rtm_dst_len>32) return EBADMSG;
++        memset(&entry,0,sizeof(entry));
++        entry.prefix_len=msg->rtm_dst_len;entry.table=msg->rtm_table;
++        entry.protocol=msg->rtm_protocol;entry.type=msg->rtm_type;
++        attrs=RTM_PAYLOAD(hdr);
++        for (attr=RTM_RTA(msg);RTA_OK(attr,attrs);attr=RTA_NEXT(attr,attrs)) {
++            uint32_t *value=NULL;
++            switch (attr->rta_type) {
++            case RTA_DST:value=&entry.prefix;break;
++            case RTA_GATEWAY:value=&entry.gateway;break;
++            case RTA_OIF:value=&entry.ifindex;break;
++            case RTA_PRIORITY:value=&entry.metric;break;
++            case RTA_TABLE:value=&entry.table;break;
++            case RTA_MULTIPATH:case RTA_VIA:return ENOTSUP;
++            }
++            if (value) {
++                if (RTA_PAYLOAD(attr)!=sizeof(*value)) return EBADMSG;
++                memcpy(value,RTA_DATA(attr),sizeof(*value));
++            }
++        }
++        if (attrs) return EBADMSG;
++        if (!entry.ifindex || entry.table==RT_TABLE_UNSPEC || entry.table==RT_TABLE_LOCAL) continue;
++#ifndef __OHOS__
++        /* Conventional Wine uses the main routing table. OHOS networks use
++         * real per-network policy tables instead of a populated main table. */
++        if (entry.table!=RT_TABLE_MAIN) continue;
++#endif
++        if ((err=append_route(routes,count,&entry))) return err;
++    }
++    return remain ? EBADMSG : 0;
++}
++
++int network_ipv4_routes(struct network_ipv4_route **routes,size_t *count)
++{
++    struct sockaddr_nl kernel={.nl_family=AF_NETLINK},sender;
++    struct timeval timeout={2,0};
++    struct {struct nlmsghdr hdr;struct rtmsg msg;} request={
++        .hdr={.nlmsg_len=NLMSG_LENGTH(sizeof(struct rtmsg)),.nlmsg_type=RTM_GETROUTE,
++              .nlmsg_flags=NLM_F_REQUEST|NLM_F_DUMP,.nlmsg_seq=0x77696e65},
++        .msg={.rtm_family=AF_INET}};
++    union {struct nlmsghdr alignment;char bytes[65536];} buffer;
++    int fd,err=0,done=0;
++    ssize_t length;
++    *routes=NULL;*count=0;
++    fd=socket(AF_NETLINK,SOCK_RAW|SOCK_CLOEXEC,NETLINK_ROUTE);
++    if (fd<0) return errno;
++    if (setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout))) {err=errno;goto end;}
++    do length=sendto(fd,&request,sizeof(request),0,(struct sockaddr *)&kernel,sizeof(kernel));
++    while (length<0 && errno==EINTR);
++    if (length!=sizeof(request)) {err=length<0?errno:EIO;goto end;}
++    while (!done) {
++        struct iovec iov={buffer.bytes,sizeof(buffer.bytes)};
++        struct msghdr msg={.msg_name=&sender,.msg_namelen=sizeof(sender),.msg_iov=&iov,.msg_iovlen=1};
++        do length=recvmsg(fd,&msg,0);while (length<0 && errno==EINTR);
++        if (length<0) {err=errno;break;}
++        if (!length || msg.msg_flags & MSG_TRUNC) {err=EMSGSIZE;break;}
++        if (msg.msg_namelen!=sizeof(sender) || sender.nl_family!=AF_NETLINK || sender.nl_pid) {err=EBADMSG;break;}
++        err=network_ipv4_parse_routes(buffer.bytes,length,request.hdr.nlmsg_seq,routes,count,&done);
++        if (err) break;
++    }
++end:
++    close(fd);
++    if (err) {free(*routes);*routes=NULL;*count=0;}
++    return err;
++}
++#endif
+--- /dev/null
++++ b/dlls/nsiproxy.sys/network-route-linux.h
+@@ -0,0 +1,12 @@
++#ifndef WINE_NETWORK_ROUTE_LINUX_H
++#define WINE_NETWORK_ROUTE_LINUX_H
++#include <stddef.h>
++#include <stdint.h>
++struct network_ipv4_route {
++    uint32_t prefix, gateway, ifindex, metric, table;
++    unsigned char prefix_len, protocol, type;
++};
++int network_ipv4_routes(struct network_ipv4_route **routes, size_t *count);
++int network_ipv4_parse_routes(const void *data, size_t size, uint32_t sequence,
++                             struct network_ipv4_route **routes, size_t *count, int *done);
++#endif

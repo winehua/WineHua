@@ -35,6 +35,8 @@ enum class LogicalButton : uint8_t {
     Count
 };
 
+enum class LogicalAxis : uint8_t { LX = 0, LY, RX, RY, LT, RT, Count };
+
 enum class LogicalStick : uint8_t {
     Left = 0,
     Right,
@@ -73,6 +75,7 @@ static constexpr uint32_t kTriggerCount = static_cast<uint32_t>(LogicalTrigger::
 static constexpr uint32_t kSourceCount = static_cast<uint32_t>(ControllerSourceId::Count);
 
 struct LogicalGamepadState {
+    bool connected = false;
     uint32_t buttons = 0;  // bit i = LogicalButton(i) for i < 10 (A..R3); dpad via hat
     int16_t lx = 0;
     int16_t ly = 0;

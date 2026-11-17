@@ -1,0 +1,18 @@
+Subject: [PATCH] wow64: do not suspend the caller when reading its context
+
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -570,6 +570,13 @@
+     NTSTATUS status;
+     ULONG count;
+ 
++    /* The caller cannot resume itself after being suspended.  Use the CPU
++     * backend to flush the current guest state without stopping this thread.
++     * Compare objects so duplicated/opened handles to this thread work too. */
++    if ((wow64info->CpuFlags & WOW64_CPUFLAGS_SOFTWARE) &&
++        !NtCompareObjects( handle, GetCurrentThread() ))
++        return pBTCpuGetContext( handle, GetCurrentProcess(), NULL, context );
++
+     if (wow64info->CpuFlags & WOW64_CPUFLAGS_SOFTWARE) RtlWow64SuspendThread( handle, &count );
+     status = RtlWow64GetThreadContext( handle, context );
+     if (wow64info->CpuFlags & WOW64_CPUFLAGS_SOFTWARE) NtResumeThread( handle, &count );

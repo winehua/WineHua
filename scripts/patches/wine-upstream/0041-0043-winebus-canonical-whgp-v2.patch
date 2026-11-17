@@ -1,0 +1,181 @@
+From 615bed77f7828daa032b165e32edcbc6a208fb53 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0043-winebus-canonical-whgp-v2
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: f883f96449550e8b61f7901fd1e2a9772572cc69c0e00ba8e2ba05228d8c4657
+
+diff --git a/dlls/winebus.sys/bus_ohos.c b/dlls/winebus.sys/bus_ohos.c
+index b8b461b0e9f8417a2d78979a47a24b97d8ac092b..24bef592e1c9264b1c6f9996f73d446544857966 100644
+--- a/dlls/winebus.sys/bus_ohos.c
++++ b/dlls/winebus.sys/bus_ohos.c
+@@ -103,33 +103,28 @@ static void apply_neutral(struct unix_device *iface)
+     bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
+ }
+ 
+-static void apply_state(struct unix_device *iface, const struct whgp_state_v1 *body)
++static void apply_state(struct unix_device *iface, const struct whgp_state_v2 *body)
+ {
+     struct hid_device_state *state = &iface->hid_device_state;
+     ULONG i;
+-    LONG ly, ry;
+ 
+     for (i = 0; i < 11; ++i)
+         hid_device_set_button(iface, i, (body->buttons & (1u << i)) != 0);
+ 
+-    /* Invert Y to match XUSB / GIP (same as bus_sdl). Hub uses +Y=Up. */
+-    ly = -(LONG)body->ly;
+-    ry = -(LONG)body->ry;
+-    if (ly > 32767) ly = 32767;
+-    if (ly < -32768) ly = -32768;
+-    if (ry > 32767) ry = 32767;
+-    if (ry < -32768) ry = -32768;
+-
++    /* WHGP v2 is Canonical Controller Space (+Y = Up), which matches XInput /
++     * GIP stick polarity. Pass analog axes through. bus_sdl inverts SDL raw
++     * thumbs (up is negative); that adapter rule does not apply to this
++     * WHGP canonical sink. */
+     hid_device_set_abs_axis(iface, 0, body->lx);
+-    hid_device_set_abs_axis(iface, 1, ly);
++    hid_device_set_abs_axis(iface, 1, whgp_stick_y_to_hid(body->ly));
+     hid_device_set_abs_axis(iface, 2, body->rx);
+-    hid_device_set_abs_axis(iface, 3, ry);
++    hid_device_set_abs_axis(iface, 3, whgp_stick_y_to_hid(body->ry));
+     hid_device_set_abs_axis(iface, 4, body->lt);
+     hid_device_set_abs_axis(iface, 5, body->rt);
+ 
+-    /* HID hat +Y = Down; Hub +Y = Up. */
++    /* HID hatswitch helper is +Y = Down; WHGP hat_y is canonical +Y = Up. */
+     hid_device_set_hatswitch_x(iface, 0, body->hat_x);
+-    hid_device_set_hatswitch_y(iface, 0, -(LONG)body->hat_y);
++    hid_device_set_hatswitch_y(iface, 0, whgp_hat_y_to_hid(body->hat_y));
+ 
+     bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
+ }
+@@ -432,7 +427,7 @@ static void drop_socket_if(int fd)
+ static void process_one_message(struct unix_device *iface, int fd)
+ {
+     struct whgp_header hdr;
+-    struct whgp_state_v1 body;
++    struct whgp_state_v2 body;
+     BYTE discard[256];
+     UINT left;
+ 
+@@ -445,9 +440,16 @@ static void process_one_message(struct unix_device *iface, int fd)
+         apply_neutral(iface);
+         return;
+     }
+-    if (hdr.magic != WHGP_MAGIC || hdr.version != WHGP_VERSION)
++    if (hdr.magic != WHGP_MAGIC)
++    {
++        ERR("WHGP bad magic %08x\n", hdr.magic);
++        drop_socket_if(fd);
++        apply_neutral(iface);
++        return;
++    }
++    if (!whgp_version_matches(hdr.version))
+     {
+-        WARN("WHGP bad header magic=%08x ver=%u\n", hdr.magic, hdr.version);
++        ERR("WHGP protocol mismatch: peer=%u expected=2\n", hdr.version);
+         drop_socket_if(fd);
+         apply_neutral(iface);
+         return;
+diff --git a/dlls/winebus.sys/winehua_gamepad_protocol.h b/dlls/winebus.sys/winehua_gamepad_protocol.h
+index f1c1a995c99835018007bb5f6429c486a9b25262..c7332c8dfe635175b792a2d0034295f3f538a56f 100644
+--- a/dlls/winebus.sys/winehua_gamepad_protocol.h
++++ b/dlls/winebus.sys/winehua_gamepad_protocol.h
+@@ -1,21 +1,32 @@
+ /*
+- * WineHua Gamepad Protocol (WHGP) v1 — shared with host Controller Hub.
+- * Must stay in sync with entry/src/main/cpp/controller/gamepad_ipc_protocol.h
++ * WineHua Gamepad Protocol (WHGP) v2 — shared with host Controller Hub.
+  */
+ #ifndef WINEHUA_GAMEPAD_PROTOCOL_H
+ #define WINEHUA_GAMEPAD_PROTOCOL_H
+ 
+ #include <stdint.h>
+ 
++/* >>> WHGP_PROTOCOL_BEGIN */
++/* WineHua Gamepad Protocol (WHGP) v2 — host <-> winebus bus_ohos.
++ * Canonical Controller Space on the wire (source-independent):
++ *   lx/rx: left negative, right positive
++ *   ly/ry: down negative, up positive
++ *   hat_x: left negative, right positive
++ *   hat_y: down negative, up positive
++ *   lt/rt: 0..32767
++ * Host: entry/src/main/cpp/input/controller/gamepad_ipc_protocol.h
++ * Wine: thirdparty/wine/dlls/winebus.sys/winehua_gamepad_protocol.h
++ * Keep this marked protocol block byte-identical in both files.
++ */
++
+ #define WHGP_MAGIC 0x50474857u /* 'WHGP' LE */
+-#define WHGP_VERSION 1
++#define WHGP_VERSION 2
+ #define WHGP_MSG_STATE 1
+ #define WHGP_MSG_RESET 2
+ #define WHGP_MSG_RUMBLE 3
+ 
+ #pragma pack(push, 1)
+-struct whgp_header
+-{
++struct whgp_header {
+     uint32_t magic;
+     uint16_t version;
+     uint16_t msg_type;
+@@ -23,27 +34,43 @@ struct whgp_header
+     uint32_t payload_size;
+ };
+ 
+-struct whgp_state_v1
+-{
+-    uint32_t buttons; /* bit0=A ... bit9=R3 */
+-    int16_t lx;
+-    int16_t ly;
++struct whgp_state_v2 {
++    uint32_t buttons; /* bit0=A ... bit9=R3, bit10=Guide */
++    int16_t lx; /* right + */
++    int16_t ly; /* up + */
+     int16_t rx;
+     int16_t ry;
+     uint16_t lt; /* 0..32767 */
+     uint16_t rt;
+-    int8_t hat_x; /* -1/0/+1 */
+-    int8_t hat_y;
++    int8_t hat_x; /* -1/0/+1, right + */
++    int8_t hat_y; /* -1/0/+1, up + */
+     uint8_t reserved[2];
+ };
+ 
+ /* Wine → host. duration_ms 0 means "until next update". */
+-struct whgp_rumble_v1
+-{
+-    uint16_t low;
+-    uint16_t high;
++struct whgp_rumble_v1 {
++    uint16_t low;  /* left / rumble motor, 0..65535 */
++    uint16_t high; /* right / buzz motor, 0..65535 */
+     uint32_t duration_ms;
+ };
+ #pragma pack(pop)
+ 
++static inline int whgp_version_matches(uint16_t version)
++{
++    return version == (uint16_t)WHGP_VERSION;
++}
++
++/* Stick Y is already canonical (+Y=Up), matching XInput/GIP. Do not invert. */
++static inline int32_t whgp_stick_y_to_hid(int16_t y)
++{
++    return (int32_t)y;
++}
++
++/* HID hatswitch helper is +Y=Down; WHGP hat_y is canonical +Y=Up. */
++static inline int32_t whgp_hat_y_to_hid(int8_t y)
++{
++    return -(int32_t)y;
++}
++/* <<< WHGP_PROTOCOL_END */
++
+ #endif /* WINEHUA_GAMEPAD_PROTOCOL_H */

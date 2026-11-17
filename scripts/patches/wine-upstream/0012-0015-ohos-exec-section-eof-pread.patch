@@ -1,0 +1,44 @@
+From 8c77eab4b7dca7afc0a73081d2ae5677e9583870 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0015-ohos-exec-section-eof-pread
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: b9bfb7af698c54a4637e7735950b707b7b53c9b3f2e38a69d684c01673b05a42
+
+diff --git a/dlls/ntdll/unix/ohos_virtual.c b/dlls/ntdll/unix/ohos_virtual.c
+index 1ebc6bf469abf47b75df52b4cf60b17d43e58aa2..05311c427c500cfbb8af1bf6f94e63110a86acb5 100644
+--- a/dlls/ntdll/unix/ohos_virtual.c
++++ b/dlls/ntdll/unix/ohos_virtual.c
+@@ -279,10 +279,27 @@ int ohos_map_exec_section( void *view_base, int fd,
+     }
+     ohos_jit_disable();
+ 
+-    if (pread( fd, sec_addr, file_size, file_start ) != (ssize_t)file_size)
++    /* Section on-disk sizes are sector-rounded (0x200) but packagers like
++     * SteamStub append the final section unpadded, so the rounded request
++     * can overrun EOF by up to a sector.  The mmap path this replaces
++     * zero-fills that tail; keep the same semantics by treating EOF as
++     * success instead of failing the whole image load. */
+     {
+-        ERR( "Could not read %s section\n", section_name );
+-        return 0;
++        size_t done = 0;
++
++        while (done < file_size)
++        {
++            ssize_t ret = pread( fd, sec_addr + done, file_size - done, file_start + done );
++
++            if (ret < 0)
++            {
++                if (errno == EINTR) continue;
++                ERR( "Could not read %s section\n", section_name );
++                return 0;
++            }
++            if (!ret) break;  /* EOF: the anon mapping above is zero-filled */
++            done += ret;
++        }
+     }
+     return 1;
+ }

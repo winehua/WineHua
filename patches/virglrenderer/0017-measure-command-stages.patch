@@ -1,0 +1,126 @@
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -358,6 +358,53 @@
+ }
+ /* End complete busy-wait diagnostics. */
+ 
++/* Compile-time-only stage diagnostics; ordinary builds execute no clocks. */
++#ifndef WINEHUA_VTEST_COMMAND_DIAGNOSTIC
++#define WINEHUA_VTEST_COMMAND_DIAGNOSTIC 0
++#endif
++enum winehua_command_stage {
++   WINEHUA_COMMAND_READ, WINEHUA_COMMAND_EXECUTE, WINEHUA_COMMAND_FENCE,
++   WINEHUA_COMMAND_GET, WINEHUA_COMMAND_PUT, WINEHUA_COMMAND_COUNT
++};
++struct winehua_command_total { uint64_t calls, ns, max_ns, bytes; };
++static struct winehua_command_total winehua_command_totals[WINEHUA_COMMAND_COUNT];
++static uint64_t winehua_command_window;
++static uint64_t winehua_command_begin(void)
++{
++   return WINEHUA_VTEST_COMMAND_DIAGNOSTIC ? winehua_busy_now_ns() : 0;
++}
++static void winehua_command_end(enum winehua_command_stage stage,
++                                uint64_t started, uint64_t bytes)
++{
++   if (!WINEHUA_VTEST_COMMAND_DIAGNOSTIC)
++      return;
++   const uint64_t now = winehua_busy_now_ns();
++   const uint64_t elapsed = now - started;
++   struct winehua_command_total *t = &winehua_command_totals[stage];
++   if (!winehua_command_window)
++      winehua_command_window = started;
++   t->calls++;
++   t->ns += elapsed;
++   t->bytes += bytes;
++   if (elapsed > t->max_ns)
++      t->max_ns = elapsed;
++   if (now - winehua_command_window >= 5000000000ull) {
++      static const char *names[] = { "submit-read", "submit-execute", "submit-fence", "transfer-get", "transfer-put" };
++      for (unsigned i = 0; i < WINEHUA_COMMAND_COUNT; i++) {
++         t = &winehua_command_totals[i];
++         if (t->calls)
++            winehua_diag("command summary stage=%s window_ns=%llu calls=%llu total_ns=%llu max_ns=%llu bytes=%llu",
++               names[i], (unsigned long long)(now - winehua_command_window),
++               (unsigned long long)t->calls, (unsigned long long)t->ns,
++               (unsigned long long)t->max_ns, (unsigned long long)t->bytes);
++      }
++      memset(winehua_command_totals, 0, sizeof(winehua_command_totals));
++      winehua_command_window = now;
++   }
++}
++
++
++
+ static void winehua_virgl_log(enum virgl_log_level_flags level,
+                               const char *message,
+                               UNUSED void *user_data)
+@@ -850,6 +897,8 @@
+    virgl_set_log_callback(winehua_virgl_log, NULL, NULL);
+    memset(winehua_busy_totals, 0, sizeof(winehua_busy_totals));
+    winehua_busy_window_ns = 0;
++   memset(winehua_command_totals, 0, sizeof(winehua_command_totals));
++   winehua_command_window = 0;
+    winehua_submit_count = 0;
+    winehua_submit2_count = 0;
+    winehua_complete_count = 0;
+@@ -2025,6 +2074,7 @@
+    struct vtest_context *ctx = vtest_get_current_context();
+    uint32_t *cbuf;
+    int ret;
++   uint64_t stage_started = winehua_command_begin();
+ 
+    if (length_dw > renderer.max_length / 4) {
+       return -1;
+@@ -2041,7 +2091,10 @@
+       return -1;
+    }
+ 
++   winehua_command_end(WINEHUA_COMMAND_READ, stage_started, (uint64_t)length_dw * 4);
++   stage_started = winehua_command_begin();
+    ret = virgl_renderer_submit_cmd(cbuf, ctx->ctx_id, length_dw);
++   winehua_command_end(WINEHUA_COMMAND_EXECUTE, stage_started, (uint64_t)length_dw * 4);
+ 
+    if (ret)
+       winehua_dump_submit_failure(ctx->ctx_id, cbuf, length_dw, ret);
+@@ -2050,7 +2103,9 @@
+    if (ret)
+       return -1;
+ 
++   stage_started = winehua_command_begin();
+    vtest_create_implicit_fence(&renderer, ctx);
++   winehua_command_end(WINEHUA_COMMAND_FENCE, stage_started, 0);
+    return 0;
+ }
+ 
+@@ -2150,6 +2205,7 @@
+    }
+ 
+    if (do_transfer) {
++      const uint64_t stage_started = winehua_command_begin();
+       ret = virgl_renderer_transfer_read_iov(res->res_id,
+                                              ctx->ctx_id,
+                                              args->level,
+@@ -2159,6 +2215,7 @@
+                                              args->offset,
+                                              data_size ? &data_iov : NULL,
+                                              data_size ? 1 : 0);
++      winehua_command_end(WINEHUA_COMMAND_GET, stage_started, data_size);
+       if (ret) {
+          report_failed_call("virgl_renderer_transfer_read_iov", ret);
+       }
+@@ -2206,6 +2263,7 @@
+    }
+ 
+    if (do_transfer) {
++      const uint64_t stage_started = winehua_command_begin();
+       ret = virgl_renderer_transfer_write_iov(res->res_id,
+                                               ctx->ctx_id,
+                                               args->level,
+@@ -2215,6 +2273,7 @@
+                                               args->offset,
+                                               data_size ? &data_iov : NULL,
+                                               data_size ? 1 : 0);
++      winehua_command_end(WINEHUA_COMMAND_PUT, stage_started, data_size);
+       if (ret) {
+          report_failed_call("virgl_renderer_transfer_write_iov", ret);
+       }

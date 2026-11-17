@@ -1,0 +1,156 @@
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
+@@ -40,6 +40,7 @@
+ 
+ #include "virgl_vtest_winsys.h"
+ #include "virgl_vtest_public.h"
++#include "virgl_vtest_write_pair.h"
+ 
+ #define WINEHUA_PRESENT_SURFACE_MAGIC 0x57535053u
+ #define WINEHUA_PRESENT_SURFACE_VERSION 1u
+@@ -99,6 +100,50 @@
+    return size;
+ }
+ 
++
++/* Opt-in experiment: coalesce only the header/body of the SAME command.
++ * Callers retain socket_mutex through request/reply; no commands are batched.
++ */
++static pthread_once_t winehua_vtest_write_once = PTHREAD_ONCE_INIT;
++static pthread_once_t winehua_vtest_receipt_once = PTHREAD_ONCE_INIT;
++static bool winehua_vtest_packed_write;
++
++static void
++winehua_vtest_init_write(void)
++{
++   const char *value = getenv("VIRGL_WINEHUA_PACKED_WRITE");
++   winehua_vtest_packed_write = value && !strcmp(value, "1");
++}
++
++static void
++winehua_vtest_log_write(void)
++{
++   const char *path = getenv("VIRGL_WINEHUA_TRANSPORT_LOG");
++   FILE *log = path && path[0] ? fopen(path, "a") : NULL;
++   FILE *out = log ? log : stderr;
++   fprintf(out, "WineHuaVirglWrite: packed=%u transport=%s sameCommand=1\n",
++           winehua_vtest_packed_write,
++           winehua_vtest_packed_write ? "writev" : "two-writes");
++   if (log)
++      fclose(log);
++}
++
++static int
++winehua_vtest_write_command(int fd, const void *header, size_t header_size,
++                            const void *body, size_t body_size)
++{
++   int ret;
++   pthread_once(&winehua_vtest_write_once, winehua_vtest_init_write);
++   pthread_once(&winehua_vtest_receipt_once, winehua_vtest_log_write);
++   if (winehua_vtest_packed_write)
++      return virgl_vtest_write_pair(fd, header, header_size, body, body_size);
++   ret = virgl_block_write(fd, (void *)header, header_size);
++   if (ret < 0)
++      return ret;
++   ret = virgl_block_write(fd, (void *)body, body_size);
++   return ret < 0 ? ret : 0;
++}
++
+ static int virgl_block_read(int fd, void *buf, int size)
+ {
+    void *ptr = buf;
+@@ -497,9 +542,8 @@
+    vtest_hdr[VTEST_CMD_LEN] = buf_len;
+    vtest_hdr[VTEST_CMD_ID] = VCMD_SUBMIT_CMD;
+ 
+-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
+-   virgl_block_write(vws->sock_fd, buf, 4 * buf_len);
+-   return 0;
++   return winehua_vtest_write_command(vws->sock_fd, vtest_hdr, sizeof(vtest_hdr),
++                                      buf, (size_t)4 * buf_len);
+ }
+ 
+ static int
+@@ -509,9 +553,8 @@
+ {
+    int ret;
+    mtx_lock(&vws->socket_mutex);
+-   ret = virgl_block_write(vws->sock_fd, header, VTEST_HDR_SIZE * sizeof(uint32_t));
+-   if (ret >= 0)
+-      ret = virgl_block_write(vws->sock_fd, command, VCMD_WINEHUA_PRESENT_SIZE * sizeof(uint32_t));
++   ret = winehua_vtest_write_command(vws->sock_fd, header, VTEST_HDR_SIZE * sizeof(uint32_t),
++                                      command, VCMD_WINEHUA_PRESENT_SIZE * sizeof(uint32_t));
+    if (ret >= 0)
+       ret = virgl_block_read(vws->sock_fd, reply_header, VTEST_HDR_SIZE * sizeof(uint32_t));
+    if (ret >= 0)
+@@ -756,8 +799,13 @@
+    cmd[VCMD_BUSY_WAIT_HANDLE] = handle;
+    cmd[VCMD_BUSY_WAIT_FLAGS] = flags;
+ 
+-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
+-   virgl_block_write(vws->sock_fd, &cmd, sizeof(cmd));
++   ret = winehua_vtest_write_command(vws->sock_fd, vtest_hdr, sizeof(vtest_hdr),
++                                      cmd, sizeof(cmd));
++   if (ret < 0) {
++      /* A partial request cannot be retried as a new command or read as a reply. */
++      fprintf(stderr, "lost connection to rendering server on write: %d\n", ret);
++      abort();
++   }
+ 
+    ret = virgl_block_read(vws->sock_fd, vtest_hdr, sizeof(vtest_hdr));
+    assert(ret);
+--- /dev/null
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_write_pair.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: MIT
++ * Send one vtest command without changing the byte stream or reply boundaries.
++ */
++#ifndef VIRGL_VTEST_WRITE_PAIR_H
++#define VIRGL_VTEST_WRITE_PAIR_H
++#include <errno.h>
++#include <limits.h>
++#include <stdint.h>
++#include <sys/uio.h>
++
++static inline int
++virgl_vtest_write_pair(int fd, const void *header, size_t header_size,
++                       const void *body, size_t body_size)
++{
++   struct iovec parts[2] = {
++      { .iov_base = (void *)header, .iov_len = header_size },
++      { .iov_base = (void *)body, .iov_len = body_size },
++   };
++   struct iovec *next = parts;
++   int count = 2;
++
++   if (header_size > SSIZE_MAX || body_size > SSIZE_MAX - header_size)
++      return -EOVERFLOW;
++   while (count) {
++      while (count && !next->iov_len) {
++         next++;
++         count--;
++      }
++      if (!count)
++         break;
++      ssize_t written = writev(fd, next, count);
++      if (written < 0) {
++         if (errno == EINTR)
++            continue;
++         return -errno;
++      }
++      if (!written)
++         return -EIO;
++      size_t consumed = (size_t)written;
++      while (count && consumed >= next->iov_len) {
++         consumed -= next->iov_len;
++         next++;
++         count--;
++      }
++      if (count && consumed) {
++         next->iov_base = (char *)next->iov_base + consumed;
++         next->iov_len -= consumed;
++      }
++   }
++   return 0;
++}
++#endif

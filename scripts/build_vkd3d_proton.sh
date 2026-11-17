@@ -62,11 +62,37 @@ if [ ! -f "$SOURCE_STAMP" ] || [ "$(cat "$SOURCE_STAMP")" != "$source_id" ]; the
     if find "$SOURCE_ROOT" -name .git -print -quit | grep -q .; then
         err "Isolated VKD3D-Proton source unexpectedly contains Git metadata"
     fi
+    # pinned tree ships CRLF in parts of the tree; normalize all CRLF text
+    # files before patching (submodule itself stays untouched/clean)
+    grep -rlI $'\r' "$SOURCE_ROOT" --exclude-dir=.git | xargs -r sed -i 's/\r$//'
     for patch_file in "${patches[@]}"; do
         log "Applying $(basename "$patch_file")"
-        patch -d "$SOURCE_ROOT" -p1 --forward --batch < "$patch_file"
+        patch -d "$SOURCE_ROOT" -p1 --forward --batch --ignore-whitespace < "$patch_file"
     done
     printf '%s\n' "$source_id" > "$SOURCE_STAMP"
+
+    # force replace vcs_tag: isolated tree has no .git so meson falls back to
+    # PACKAGE_VERSION "2.6" -> invalid C literal 0x2.6
+    SOURCE_ROOT="$SOURCE_ROOT" python3 - <<'PY'
+from pathlib import Path
+import re, os
+root = Path(os.environ["SOURCE_ROOT"])
+mb = root / "meson.build"
+text = mb.read_text()
+newt, n = re.subn(
+    r"vkd3d_build\s*=\s*vcs_tag\([\s\S]*?\)",
+    "vkd3d_build = configure_file(input: 'vkd3d_build.h.in', output: 'vkd3d_build.h', copy: true)",
+    text,
+    count=1,
+)
+if n != 1:
+    raise SystemExit(f"failed to rewrite vcs_tag, n={n}")
+(root / "vkd3d_build.h.in").write_text(
+    "#include <stdint.h>\n\nstatic const uint64_t vkd3d_build = 0x3e5aab6fb3e18f81ull;\n"
+)
+mb.write_text(newt)
+print("rewrote isolated meson.build vcs_tag")
+PY
 fi
 
 meson_args=(
@@ -123,7 +149,7 @@ cat > "$OUTPUT_ROOT/manifest.json" <<EOF
 {
   "schemaVersion": 1,
   "profile": "limited-500k",
-  "defaultEnabled": true,
+  "defaultEnabled": false,
   "architecture": "x86_64-windows",
   "version": "2.6",
   "upstreamCommit": "$base_commit",

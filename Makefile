@@ -4,9 +4,8 @@
 #   make                                          # 默认: x86_64 全量构建
 #   make NATIVE_ARCH=x86_64
 #   make NATIVE_ARCH=arm64-v8a
-#   make NATIVE_ARCH=all                          # 双架构 HAP
 #
-#   单个模块: make deps | wine | box64 | native | assemble | hap
+#   单个模块: make deps | wine | fex | box64 | box64-wow64 | native | assemble | hap
 #   清理:     make clean
 
 ROOT := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -14,7 +13,11 @@ ROOT := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # ── 配置 ──
 NATIVE_ARCH ?= x86_64
-GUEST_ARCH ?= x86_64
+# guest 栈架构与 Wine 对齐: arm64 原生 wine → aarch64 venus/virgl guest (同架构 dlopen);
+# x86_64 → x86_64 guest。(NATIVE_ARCH=all 已移除, 见下方 ARCHES 注释)
+GUEST_ARCH ?= $(WINE_ARCH)
+# guest gfx/vulkan 按架构构建 (mesa venus/virgl 交叉编译 aarch64|x86_64-linux-ohos);
+# 需要 dlopen 的关键 guest 库由 assemble 复制到 entry/libs/<NATIVE_ARCH> (el1 bundle)
 BUILD_GUEST_GFX ?= 1
 BUILD_GUEST_VULKAN ?= 1
 BUILD_WINE_MONO ?= 1
@@ -28,23 +31,63 @@ export BUILD_WINE_MONO
 export TARGET_SDK_VERSION
 export COMPATIBLE_SDK_VERSION
 
+# Wine 模拟层架构 (arm64 真机 → aarch64 原生 wine + FEX; x86_64 → x86_64 同目标)
+WINE_ARCH ?= $(if $(filter arm64-v8a,$(NATIVE_ARCH)),aarch64,x86_64)
+export WINE_ARCH
+VP_NETTLE_ASM ?= auto
+export VP_NETTLE_ASM
+FEX_EXACTSTORE_DIAGNOSTICS ?= 0
+export FEX_EXACTSTORE_DIAGNOSTICS
+
 CONFIG    := $(NATIVE_ARCH)
 BUILD_DIR := $(ROOT)/build
+WINE_BUILD_ROOT ?= $(BUILD_DIR)
+export WINE_BUILD_ROOT
+WINE_STAMPS := $(WINE_BUILD_ROOT)/.stamps
 STAMPS    := $(BUILD_DIR)/.stamps
 SCRIPTS   := $(ROOT)/scripts
+# Keep the Wine source selector visible to make as well as the shell scripts.
+# The Proton/Valve migration uses WINE_SRC=thirdparty/wine-valve; dependency
+# checks must follow that selector or an old stamp can silently reuse the
+# previous wine-proton build after the selected source changes.
+WINE_SRC ?= $(ROOT)/build/runtime-sources/wine
+export WINE_SRC
+# 方案③ (aarch64): x86 meson + ARM64X 双图 (FEX native view)。meson x64 不打包,
+# assemble 把 arm64x 镜像进 wine-data 的 x64/ 目录名。方案①/② 仍要 meson x64+x86。
+ifeq ($(WINE_ARCH),aarch64)
+DXVK_ARTIFACTS := \
+	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll \
+	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/legacy/arm64x/bin/dxgi.dll
+else
 DXVK_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/legacy/x64/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/legacy/x64/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll
-DXVK_STAMP := $(STAMPS)/dxvk-legacy
+endif
+DXVK_STAMP := $(STAMPS)/dxvk-legacy-$(WINE_ARCH)
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
+# dxvk-modern 产物按 WINE_ARCH 分支:
+#   方案③ (arm64 原生 wine + FEX): x86 (32 位 i386 应用必需, arm64x 只能顶替
+#     x64 不能顶替 x86) + ARM64X 双图 (x64 overlay → arm64x, FEX native view);
+#   方案①/②: 经典 x64/x86 转译版本 (meson cross)。
+#   stamp 按 WINE_ARCH 隔离, 避免两方案互相吞 stamp。
+ifeq ($(WINE_ARCH),aarch64)
+DXVK_MODERN_ARTIFACTS := \
+	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/dxgi.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
+	$(BUILD_DIR)/dxvk/modern-2.6/arm64x/bin/dxgi.dll
+else
 DXVK_MODERN_ARTIFACTS := \
 	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x64/bin/dxgi.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/d3d11.dll \
 	$(BUILD_DIR)/dxvk/modern-2.6/x86/bin/dxgi.dll
-DXVK_MODERN_STAMP := $(STAMPS)/dxvk-modern-2.6
+endif
+DXVK_MODERN_STAMP := $(STAMPS)/dxvk-modern-2.6-$(WINE_ARCH)
 DXVK_MODERN_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk-modern/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk-modern -maxdepth 1 -type f 2>/dev/null)
 VKD3D_PROTON_ARTIFACTS := \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/d3d12.dll \
@@ -52,23 +95,29 @@ VKD3D_PROTON_ARTIFACTS := \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/triangle.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/x64/gears.exe \
 	$(BUILD_DIR)/vkd3d-proton/limited-500k/manifest.json
-VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k
+# 方案③ (aarch64): d3d12 固定 x64 单图 + FEX 转译执行 (与 09-01 可跑基线同机制)。
+# vkd3d arm64x 已放弃 (2026-09-05 最终决策): 手搓 -marm64x 被 clang 静默忽略
+# → 产物是 "空 ARM64X (仅 AA64 单子图)" 假双图, 加载后数据回读全 0; 改用真
+# ARM64EC (-target=arm64ec-w64-mingw32, meson cross 已验证可产出) 后在
+# libarm64ecfex 桥上 D3D12CreateDevice 阶段崩溃。见 scripts/assemble.sh 注释。
+VKD3D_PROTON_STAMP := $(STAMPS)/vkd3d-proton-limited-500k-$(WINE_ARCH)
 VKD3D_PROTON_SOURCE_INPUTS := $(shell find $(ROOT)/patches/vkd3d-proton -type f 2>/dev/null; \
 	find $(ROOT)/thirdparty/vkd3d-proton -maxdepth 2 -type f 2>/dev/null)
 
-# 架构列表 (NATIVE_ARCH=all 时展开为两个)
-ifeq ($(NATIVE_ARCH),all)
-ARCHES := arm64-v8a x86_64
-else
+# 架构列表 (NATIVE_ARCH=all 已移除: 单一 WINE_ARCH 无法同时满足 arm64 原生与
+# box64+wine 两个 arm64 assemble, 双架构请分别 make NATIVE_ARCH=x86_64 / arm64-v8a)
 ARCHES := $(NATIVE_ARCH)
-endif
 
 # ── 关键产物 (用于验证构建是否完成) ──
-DEPS_SENTINEL   := $(BUILD_DIR)/sysroot-ext/usr/lib/x86_64-linux-ohos/libfreetype.so.6
-WINE_SENTINEL   := $(BUILD_DIR)/wine-native/tools/winegcc/winegcc
+DEPS_SENTINEL   := $(BUILD_DIR)/sysroot-ext/usr/lib/$(WINE_ARCH)-linux-ohos/libfreetype.so.6
+ZLIB_RUNTIME_SENTINEL := $(BUILD_DIR)/zlib-runtime/$(WINE_ARCH)/lib/libz.so
+WINE_SENTINEL   := $(WINE_BUILD_ROOT)/wine-native/tools/winegcc/winegcc
 GUEST_GFX_SENTINEL := $(BUILD_DIR)/guest_gfx/$(GUEST_ARCH)/winehua-guest-gfx.env
+MESA_OHOS_PATCH_INPUTS := $(SCRIPTS)/apply_mesa_ohos_patches.sh $(wildcard $(ROOT)/patches/mesa/*.patch)
 GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
-WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-ohos/share/wine/mono/wine-mono-11.1.0-x86.msi
+WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-mono/wine-mono-10.4.1-x86.msi
+WINE_GECKO_MANIFEST := $(BUILD_DIR)/wine-gecko/manifest.json
+WINE_GECKO_INPUTS := $(SCRIPTS)/wine_gecko.py $(SCRIPTS)/wine_gecko.lock.json
 HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
 
 # ============================================================
@@ -83,28 +132,31 @@ SMOKE_PAYLOAD_MANIFEST := $(BUILD_DIR)/smoke-payload/manifest.json
 # DXVK_ARTIFACTS 同坑, 修法同: 规则链到 wine stamp + 存在性断言)。
 WINE_SMOKE_PROGRAMS := winehua_audio_smoke winehua_vulkan_smoke \
 	winehua_d3d11_smoke winehua_graphics_smoke
+# 方案③ (WINE_ARCH=aarch64) 用 --enable-archs=arm64ec,aarch64,i386, 不产
+# x86_64-windows PE; 64 位槽取 aarch64-windows (原生 ARM64, 与 ARM64X overlay 匹配)。
+ifeq ($(WINE_ARCH),aarch64)
+SMOKE_PE_DIR_X64 := aarch64-windows
+else
+SMOKE_PE_DIR_X64 := x86_64-windows
+endif
 WINE_SMOKE_EXES := $(foreach p,$(WINE_SMOKE_PROGRAMS), \
-	$(BUILD_DIR)/wine-ohos/programs/$(p)/x86_64-windows/$(p).exe \
-	$(BUILD_DIR)/wine-ohos/programs/$(p)/i386-windows/$(p).exe)
+	$(WINE_BUILD_ROOT)/wine-ohos-$(WINE_ARCH)/programs/$(p)/$(SMOKE_PE_DIR_X64)/$(p).exe \
+	$(WINE_BUILD_ROOT)/wine-ohos-$(WINE_ARCH)/programs/$(p)/i386-windows/$(p).exe)
 # 源码型用例跟踪 smoke/ 全树; 产物型用例 (from_wine/from_vkd3d) 跟踪
 # 代表产物与 stamp, 重编后触发载荷重建, 防止 assemble 拷到陈旧 exe
-SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
+SMOKE_PAYLOAD_INPUTS := $(ROOT)/automation/smoke.py \
+	$(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
 	$(WINE_SMOKE_EXES) \
 	$(VKD3D_PROTON_STAMP)
 
-$(WINE_SMOKE_EXES): $(STAMPS)/wine-$(CONFIG)
+$(WINE_SMOKE_EXES): $(WINE_STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)
 	@test -s "$@" || { echo "ERROR: wine smoke exe missing after wine build: $@" >&2; exit 1; }
-	@# 存在性断言通过必须 touch: 否则目标 mtime 不变 (比 wine stamp 旧),
-	@# make 视为「每轮重做」→ 永久脏 → 依赖它的 manifest/assemble 每轮重跑
-	@# (#164: assemble 永不跳过的第三环, 2026-10-17)
-	@touch -c "$@"
 
 $(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
 	@echo "=== smoke payload ==="
-	# popup-overflow 是 job 级人工门禁 (smoke/jobs/popup-overflow-x11.json),
-	# 不接入任何套件 —— 按 testing-cases.md §1 不会自动进载荷; 但它是门禁
-	# 不是手动工具: 缺 exe = 新环境跑门禁必炸, 故显式随标准载荷构建。
-	python3 $(ROOT)/automation/smoke.py build --case popup-overflow
+	@# win32-driver: 窗口标题匹配自动点击驱动 (无人值守过启动对话框), 无套件
+	@# 引用但要在设备上随时可用 —— 与 v1 的"全量编译进载荷"行为一致
+	python3 $(ROOT)/automation/smoke.py build --case win32-driver
 	test -f $@
 
 # Guest runtime build scripts can also be invoked directly while iterating on
@@ -121,9 +173,19 @@ endif
 .PHONY: dxvk
 dxvk: $(DXVK_STAMP)
 
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
-	@echo "=== dxvk legacy ==="
+# Focused PE32 D3D9 rebuild; deliberately does not satisfy the full DXVK stamp.
+.PHONY: dxvk-d3d9
+dxvk-d3d9:
+	bash $(SCRIPTS)/build_dxvk.sh --d3d9-only
+
+# arm64x 链接引用 wine 构建的 import lib (dlls/vulkan-1/aarch64-windows/libvulkan-1.a):
+# 必须显式前置 wine stamp, 否则干净环境 (无残留 build/) 中 dxvk 先于 wine 构建
+# → 链接失败 (CI 实测 2026-09-04: "no such file ... libvulkan-1.a")。
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(SCRIPTS)/apply_dxvk_compat_patches.py $(wildcard $(ROOT)/patches/dxvk/*.patch) $(ROOT)/docs/graphics/texture-compat-runtime.lock.json $(DXVK_SOURCE_INPUTS) $(SCRIPTS)/arm64x_build_cache.sh \
+	$(WINE_STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
+	@echo "=== dxvk legacy ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk.sh
+	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_dxvk_arm64x.sh; fi
 	touch $@
 
 # DXVK is produced as a four-file side effect of the stamp recipe.  Give each
@@ -133,7 +195,6 @@ $(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(DXVK_SOURCE_INPUTS) | $(STAMPS)
 # packaging a partial or truncated DXVK install.
 $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 	@test -s "$@" || { echo "ERROR: DXVK artifact missing after build: $@" >&2; exit 1; }
-	@touch -c "$@"  # 同 WINE_SMOKE_EXES: 断言不 touch = 永久脏 → assemble 每轮重跑 (#164)
 
 # ============================================================
 # dxvk-modern — WineHua DXVK 2.6.2 compatibility profile (x64 + x86)
@@ -141,32 +202,34 @@ $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 .PHONY: dxvk-modern
 dxvk-modern: $(DXVK_MODERN_STAMP)
 
-$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(DXVK_MODERN_SOURCE_INPUTS) | $(STAMPS)
-	@echo "=== dxvk modern 2.6 ==="
+$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(SCRIPTS)/build_dxvk_modern_arm64x.sh $(DXVK_MODERN_SOURCE_INPUTS) $(SCRIPTS)/arm64x_build_cache.sh \
+	$(WINE_STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
+	@echo "=== dxvk modern 2.6 ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk_modern.sh
+	@if [ "$(WINE_ARCH)" = "aarch64" ]; then bash $(SCRIPTS)/build_dxvk_modern_arm64x.sh; fi
 	touch $@
 
 $(DXVK_MODERN_ARTIFACTS): $(DXVK_MODERN_STAMP)
 	@test -s "$@" || { echo "ERROR: DXVK Modern artifact missing after build: $@" >&2; exit 1; }
-	@touch -c "$@"  # 同 WINE_SMOKE_EXES (#164)
 ifeq ($(BUILD_GUEST_VULKAN),1)
 ASSEMBLE_GUEST_INPUTS += $(wildcard $(GUEST_VULKAN_SENTINEL))
 endif
 
 # ============================================================
-# vkd3d-proton — x64-only, explicit, default-off 2.6 limited-500K profile
+# vkd3d-proton — x64 单图产物 (所有架构一致; arm64x 已放弃, 见上注释);
+# explicit, default-off 2.6 limited-500K profile
 # ============================================================
 .PHONY: vkd3d-proton
 vkd3d-proton: $(VKD3D_PROTON_STAMP)
 
-$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_INPUTS) | $(STAMPS)
-	@echo "=== vkd3d-proton 2.6 limited-500K ==="
+$(VKD3D_PROTON_STAMP): $(SCRIPTS)/build_vkd3d_proton.sh $(VKD3D_PROTON_SOURCE_INPUTS) \
+	$(WINE_STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
+	@echo "=== vkd3d-proton 2.6 limited-500K ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_vkd3d_proton.sh
 	touch $@
 
 $(VKD3D_PROTON_ARTIFACTS): $(VKD3D_PROTON_STAMP)
 	@test -s "$@" || { echo "ERROR: VKD3D-Proton artifact missing after build: $@" >&2; exit 1; }
-	@touch -c "$@"  # 同 WINE_SMOKE_EXES (#164)
 
 # ============================================================
 # 默认目标
@@ -217,7 +280,16 @@ $(foreach a,arm64-v8a x86_64,$(eval $(call host_vulkan_rule,$(a))))
 .PHONY: deps
 deps: $(STAMPS)/deps
 
-$(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/build_gstreamer.sh \
+# Always verify both Gecko directories before accepting dependency caches. The
+# manifest mtime changes only when its pinned inputs change.
+.PHONY: wine-gecko
+wine-gecko: $(WINE_GECKO_MANIFEST)
+$(WINE_GECKO_MANIFEST): $(WINE_GECKO_INPUTS) FORCE
+	python3 $(SCRIPTS)/wine_gecko.py --cache $(BUILD_DIR)/wine-gecko --wine-source $(WINE_SRC)
+
+$(STAMPS)/deps: $(WINE_GECKO_MANIFEST) $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/build_gstreamer.sh \
+	$(SCRIPTS)/build_zlib_runtime.sh \
+	$(MESA_OHOS_PATCH_INPUTS) \
 	$(SCRIPTS)/build_ohos_guest_gfx.sh \
 	$(SCRIPTS)/build_ohos_guest_vulkan.sh $(ROOT)/smoke/guest_vulkan_smoke.c \
 	$(ROOT)/smoke/venus_sampled_image_probe.c \
@@ -260,19 +332,22 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	if [ "$(BUILD_WINE_MONO)" = "1" ] && [ ! -s "$(WINE_MONO_SENTINEL)" ]; then \
 	    mono_ready=0; \
 	fi; \
-	if [ -f $@ ] && [ -f $(DEPS_SENTINEL) ] && [ "$$guest_gfx_ready" = "1" ] && \
+	if [ -f $@ ] && [ -f $(DEPS_SENTINEL) ] && [ -s $(ZLIB_RUNTIME_SENTINEL) ] && [ "$$guest_gfx_ready" = "1" ] && \
 	    [ "$$guest_vulkan_ready" = "1" ] && [ "$$mono_ready" = "1" ] && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_gfx.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/apply_mesa_ohos_patches.sh" -nt $@ ] && \
+	    ! find $(ROOT)/patches/mesa -type f -name '*.patch' -newer $@ 2>/dev/null | grep -q . && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_vulkan.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_gnutls.sh" -nt $@ ] && \
+	    BUILD_DIR="$(BUILD_DIR)" bash "$(SCRIPTS)/build_gnutls.sh" --check-identity && \
 	    ! [ "$(SCRIPTS)/build_gstreamer.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_deps.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/build_zlib_runtime.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_libffi.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_freetype.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_wayland.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbcommon.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbconfig.sh" -nt $@ ] && \
-	    ! [ "$(ROOT)/smoke/guest_vulkan_smoke.c" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/guest_vulkan_smoke.c" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/venus_sampled_image_probe.c" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/venus_depth_cube_probe.inc" -nt $@ ] && \
@@ -306,6 +381,9 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	           $(ROOT)/thirdparty/xkeyboard-config \
 	           $(ROOT)/thirdparty/mesa \
 	           $(ROOT)/thirdparty/libdrm \
+	           $(ROOT)/thirdparty/glib \
+	           $(ROOT)/thirdparty/pcre2 \
+	           $(ROOT)/thirdparty/gstreamer \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
 	              -o -name 'meson.build' -o -name 'CMakeLists.txt' \
@@ -322,12 +400,25 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 # wine — Wine 交叉编译 + wineserver
 # ============================================================
 .PHONY: wine
-wine: $(STAMPS)/wine-$(CONFIG)
+# wine stamp 按 WINE_ARCH 区分: 方案② (arm64 设备 + x86_64 wine) 与方案③ (aarch64)
+# 的 NATIVE_ARCH 相同 (arm64-v8a), 共用 stamp 会让方案② 误用方案③ 的 stamp 跳过构建
+# → assemble 找不到 wine-ohos-x86_64。方案① (NATIVE_ARCH=x86_64) 无冲突但同样带后缀。
+wine: $(WINE_STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
+WINE_DIAGNOSTIC_INPUTS := $(SCRIPTS)/wine_runtime_diagnostics.py $(SCRIPTS)/wine_runtime_diagnostics.h $(SCRIPTS)/verify_x11_wine_config.py
+
+# Focused Unix build uses the same ordered overlays and source identity checks.
+.PHONY: wine-ntdll
+wine-ntdll: $(WINE_DIAGNOSTIC_INPUTS)
+	BUILD_DIR="$(BUILD_DIR)" bash $(SCRIPTS)/build_wine.sh --unix-modules ntdll
+
+$(WINE_STAMPS)/wine-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/wine_build_identity.py $(WINE_DIAGNOSTIC_INPUTS) $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
+	@mkdir -p "$(WINE_STAMPS)"
+	@if [ -f "$@" ]; then mode=--check-cached-identity; else mode=--check-identity; fi; \
+	    BUILD_DIR="$(BUILD_DIR)" bash "$(SCRIPTS)/build_wine.sh" "$$mode"
 	@if [ -f $@ ] && [ -f $(WINE_SENTINEL) ] && \
 	    ! [ "$(SCRIPTS)/build_wine.sh" -nt $@ ] && \
-	    ! find $(ROOT)/thirdparty/wine \
+        ! find "$(WINE_SRC)" \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
 	              -o -name 'meson.build' -o -name 'CMakeLists.txt' \
@@ -341,25 +432,91 @@ $(STAMPS)/wine-$(CONFIG): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/d
 	fi
 
 # ============================================================
-# box64 — ARM64 翻译器 (始终 arm64-v8a 架构, 编译为 box64.so dlopen 加载)
+# fex — FEX arm64ec 模拟器 (arm64 原生 wine 转译 x86_64 应用, libarm64ecfex.dll)
 # ============================================================
-.PHONY: box64
-box64: $(STAMPS)/box64-arm64-v8a
+.PHONY: fex
+# fex stamp 按 WINE_ARCH 隔离 (同 wine): 方案② (WINE_ARCH=x86_64, 不需要 fex)
+# 会 skip-touch 该 stamp; 若与方案③ 共享, 方案③ 将复用方案② 的 stamp 永不构建
+# fex → assemble 缺 libarm64ecfex.dll。skip-touch 分支同样不落共享 stamp。
+fex: $(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/box64-arm64-v8a: $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
-	@if [ "$(NATIVE_ARCH)" = "x86_64" ]; then \
-	    echo "  [box64] skip (x86_64)"; \
+FEX_BUILD_INPUTS := $(SCRIPTS)/build_locked_fex.sh $(SCRIPTS)/prepare_runtime_sources.py $(SCRIPTS)/env.sh $(SCRIPTS)/check_fex_build_identity.sh $(SCRIPTS)/fex_simd_runtime.py $(wildcard $(SCRIPTS)/patches/fex-upstream/*.patch) $(ROOT)/docs/upstream-sync/fex-candidate.lock.json $(ROOT)/docs/upstream-sync/fex-adapted-history.json
+$(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH): $(FEX_BUILD_INPUTS) FORCE | $(STAMPS)
+	@if [ "$(WINE_ARCH)" = "x86_64" ]; then \
+	    echo "  [fex] skip (x86_64)"; \
 	    mkdir -p $(dir $@) && touch $@; \
 	elif [ -f $@ ] && \
+	    [ -f $(BUILD_DIR)/fex-ec/Bin/libarm64ecfex.dll ] && \
+	    [ -f $(BUILD_DIR)/fex-pe/Bin/libwow64fex.dll ] && \
+	    [ -s $(BUILD_DIR)/fex-simd-zero.json ] && \
+	    BUILD_DIR="$(BUILD_DIR)" FEX_SRC="$(FEX_SRC)" bash "$(SCRIPTS)/check_fex_build_identity.sh" check "$@" && \
+	    ! [ "$(SCRIPTS)/build_locked_fex.sh" -nt $@ ] && \
+	    ! find $(FEX_SRC) \
+	           -newer $@ -type f \
+	           \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.S' \
+	              -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
+	           2>/dev/null | grep -q .; then \
+	    echo "  [fex] up to date"; \
+	else \
+	    echo "=== fex ==="; \
+	    BUILD_DIR="$(BUILD_DIR)" FEX_SRC="$(FEX_SRC)" bash $(SCRIPTS)/build_locked_fex.sh && \
+	    BUILD_DIR="$(BUILD_DIR)" FEX_SRC="$(FEX_SRC)" bash $(SCRIPTS)/check_fex_build_identity.sh write "$@" && touch $@; \
+	fi
+
+# ============================================================
+# box64 — Box64 in-process 转译器 box64.so (box64+wine 方案②)
+#         (arm64 设备 + x86_64 wine 全转译; NATIVE_ARCH=arm64-v8a + WINE_ARCH=x86_64)
+# ============================================================
+.PHONY: box64
+# stamp 按 WINE_ARCH 隔离: 方案③ (WINE_ARCH=aarch64) skip-touch, 方案② 真构建;
+# 共享 stamp 会让方案③ 的 skip-touch 掩盖方案② 的源码变更 (见 fex 注释)。
+box64: $(STAMPS)/box64-$(CONFIG)-$(WINE_ARCH)
+
+$(STAMPS)/box64-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_box64.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
+	@if [ "$(WINE_ARCH)" = "aarch64" ] || [ "$(NATIVE_ARCH)" = "x86_64" ]; then \
+	    echo "  [box64] skip (非 box64+wine 方案, WINE_ARCH=$(WINE_ARCH))"; \
+	    mkdir -p $(dir $@) && touch $@; \
+	elif [ -f $@ ] && \
+	    [ -f $(ROOT)/entry/libs/arm64-v8a/box64.so ] && \
+	    ! [ "$(SCRIPTS)/build_box64.sh" -nt $@ ] && \
 	    ! find $(ROOT)/thirdparty/box64 \
 	           -newer $@ -type f \
-	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.S' \
+	           \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.py' \
 	              -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
 	           2>/dev/null | grep -q .; then \
 	    echo "  [box64] up to date"; \
 	else \
-	    echo "=== box64 ==="; \
-	    NATIVE_ARCH=arm64-v8a bash $(SCRIPTS)/build_box64.sh && touch $@; \
+	    echo "=== box64 (box64+wine) ==="; \
+	    bash $(SCRIPTS)/build_box64.sh && touch $@; \
+	fi
+
+# ============================================================
+# box64-wow64 — Box64 WoW64 DLL (arm64 原生 wine 方案③, wowbox64.dll)
+#         (转译 32 位 x86 应用, HODLL 默认引擎; fex 的 libwow64fex.dll 同级备选)
+# ============================================================
+.PHONY: box64-wow64
+# stamp 按 WINE_ARCH 隔离 (同 box64): 方案② skip-touch, 方案③ 真构建。
+box64-wow64: $(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH)
+
+BOX64_WOW64_BUILD_INPUTS := $(SCRIPTS)/build_box64_wow64.sh $(SCRIPTS)/apply_box64_wow64_patches.py $(SCRIPTS)/env.sh $(ROOT)/docs/architecture/box64-wow64.lock.json $(wildcard $(ROOT)/patches/box64/*.patch)
+$(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH): $(BOX64_WOW64_BUILD_INPUTS) FORCE | $(STAMPS)
+	@if [ "$(WINE_ARCH)" = "x86_64" ]; then \
+	    echo "  [box64-wow64] skip (非 arm64 原生 wine, WINE_ARCH=x86_64)"; \
+	    mkdir -p $(dir $@) && touch $@; \
+	elif [ -f $@ ] && \
+	    [ -f $(BUILD_DIR)/box64-pe/wowbox64-prefix/src/wowbox64-build/wowbox64.dll ] && \
+	    ! [ "$(SCRIPTS)/build_box64_wow64.sh" -nt $@ ] && \
+	    python3 $(SCRIPTS)/apply_box64_wow64_patches.py --verify-only \
+	      --module $(BUILD_DIR)/box64-pe/wowbox64-prefix/src/wowbox64-build/wowbox64.dll >/dev/null 2>&1 && \
+	    ! find $(ROOT)/thirdparty/box64 \
+	           -newer $@ -type f \
+	           \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.py' \
+	              -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
+	           2>/dev/null | grep -q .; then \
+	    echo "  [box64-wow64] up to date"; \
+	else \
+	    echo "=== box64-wow64 (wowbox64.dll) ==="; \
+	    bash $(SCRIPTS)/build_box64_wow64.sh && touch $@; \
 	fi
 
 # ============================================================
@@ -376,18 +533,18 @@ define native_rule
 native-$(1): $$(STAMPS)/$(1)/native
 
 $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
-# virgl (native) 与 libdrm (display-libs) 的关系见 build_native.sh virgl 段
-# 注释: virgl 的 meson 视野收窄到 epoxy, 豁免分支确定性生效, 与构建顺序无关
-# (2026-10-04 毁灭性重建实证并修复)。
 	@sentinel="$(NATIVE_SENTINEL_$(subst -,_,$(1)))"; \
 	libs_dir="$(ROOT)/entry/libs/$(1)"; \
 		if [ -f $$@ ] && [ -f "$$$$sentinel" ] && \
 		    [ -f "$$$$libs_dir/libfreetype.so.6" ] && \
 		    [ -f "$$$$libs_dir/libxkbcommon.so.0" ] && \
 		    [ -f "$$$$libs_dir/libxml2.so.2" ] && \
+		    [ -f "$$$$libs_dir/libwayland-server.so.0" ] && \
 		    [ -f "$$$$libs_dir/libffi.so.8" ] && \
 		    [ -f "$$$$libs_dir/libwinehua_vtest_server.so" ] && \
 	    ! [ "$(SCRIPTS)/build_native.sh" -nt $$@ ] && \
+	    ! [ "$(SCRIPTS)/apply_virglrenderer_ohos_patches.sh" -nt $$@ ] && \
+	    ! find $(ROOT)/patches/virglrenderer -newer $$@ -type f -name '*.patch' 2>/dev/null | grep -q . && \
 	    ! find $(ROOT)/thirdparty/wayland \
 	           $(ROOT)/thirdparty/libffi \
 	           $(ROOT)/thirdparty/libepoxy \
@@ -406,82 +563,52 @@ endef
 $(foreach a,arm64-v8a x86_64,$(eval $(call native_rule,$(a))))
 
 # ============================================================
-# display-libs — 显示路线 host 侧基础库 (wlroots/Xwayland 消费)
-#   架构相关 → build/host-ext/<NATIVE_ARCH> (侧别纪律见 .claude/rules/build-and-log.md)
-# ============================================================
-.PHONY: display-libs
-display-libs: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/display-libs)
-
-define display_libs_rule
-.PHONY: display-libs-$(1)
-display-libs-$(1): $$(STAMPS)/$(1)/display-libs
-
-$$(STAMPS)/$(1)/display-libs: $(SCRIPTS)/build_display_libs.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
-	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_display_libs.sh && touch $$@
-endef
-$(foreach a,arm64-v8a x86_64,$(eval $(call display_libs_rule,$(a))))
-
-# ============================================================
-# display-route — M0 显示路线构建链 (全部 host 侧, 依赖顺序执行)
-#   xcb 栈 → libX11/libXext → native (wayland .so + host pc + 头) → wlroots
-#   → Xwayland (libxwayland_ohos.so, NCP 形态)
-#   各脚本自带就绪守卫。曾经的 FORCE (每次重跑做增量校验) 与 assemble 前置
-#   组合后 = assemble 永不跳过 → 每轮 make hap 重打包 wine-data.zip, sha 随
-#   strip/smoke 载荷时间戳漂移, 设备端升级卡每次重装必弹 (任务 #164,
-#   2026-10-17 拔除)。改脚本/stamp 触发; xcb/xserver 源码级变更需显式
-#   `make display-route` (脚本内部哨兵随后接管增量)。
-#   (M1 时在此追加 SIDE=guest 变体, 供 winex11.drv 消费)
-# ============================================================
-.PHONY: display-route
-display-route: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/display-route)
-
-define display_route_rule
-.PHONY: display-route-$(1)
-display-route-$(1): $$(STAMPS)/$(1)/display-route
-
-$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
-	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xcb_stack.sh && \
-	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_x11_client.sh && \
-	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_native.sh && \
-	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_wlroots.sh && \
-	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xwayland.sh && touch $$@
-endef
-$(foreach a,arm64-v8a x86_64,$(eval $(call display_route_rule,$(a))))
-
-# stamp 文件不作为中间文件删除 (默认行为会把链条中的 stamp 判定为
-# intermediate 并在 make 结束时删掉, 下一轮重跑其规则 → vkd3d stamp 被删 →
-# smoke 载荷重生 (mingw PE 时间戳翻新) → wine-data.zip 内容漂移, #164 第二环)
-.SECONDARY:
-
-# ============================================================
 # assemble — 组装布局 (架构 + 设备类型相关)
 # ============================================================
 .PHONY: assemble
 assemble: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/assemble)
+
+.PHONY: test-ci-release
+test-ci-release:
+	python3 $(ROOT)/host_tests/ci_release_test.py
 
 define assemble_rule
 .PHONY: assemble-$(1)
 
 assemble-$(1): $$(STAMPS)/$(1)/assemble
 
-$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh $(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
+$$(STAMPS)/$(1)/assemble: $(SCRIPTS)/assemble.sh $(SCRIPTS)/env.sh \
+	$(WINE_GECKO_INPUTS) $(WINE_GECKO_MANIFEST) \
+	$(SCRIPTS)/stamp_wine_builtin_identity.py \
+	$(SCRIPTS)/source_build_contract.py $(SCRIPTS)/normalize_runtime_identity.py \
+	$(ROOT)/docs/graphics/runtime-core.lock.json $(ROOT)/docs/graphics/texture-compat-runtime.lock.json \
+	$(DXVK_ARTIFACTS) $(DXVK_MODERN_ARTIFACTS) \
 	$(VKD3D_PROTON_ARTIFACTS) $(SMOKE_PAYLOAD_MANIFEST) \
-	$$(STAMPS)/deps $$(STAMPS)/wine-$(1) $$(STAMPS)/$(1)/native \
+	$$(STAMPS)/deps $$(STAMPS)/wine-$(1)-$(WINE_ARCH) $$(STAMPS)/$(1)/native \
 	$$(STAMPS)/$(1)/host-vulkan \
-	$$(STAMPS)/$(1)/display-route \
 	$$(ASSEMBLE_GUEST_INPUTS) | $$(STAMPS)/$(1)
 	@echo "=== assemble ($(1)) ==="
+	$$(if $$(SOURCE_BUILD_MANIFEST),python3 $$(SCRIPTS)/local_source_receipt.py --output "$$(SOURCE_BUILD_MANIFEST)",@true)
 	NATIVE_ARCH=$(1) GUEST_ARCH=$(GUEST_ARCH) BUILD_GUEST_GFX=$(BUILD_GUEST_GFX) bash $(SCRIPTS)/assemble.sh
 	@touch $$@
 endef
 $(foreach a,arm64-v8a x86_64,$(eval $(call assemble_rule,$(a))))
 
-# arm64 assemble 额外依赖 box64 (32-bit PE DLL 已由 wine 主构建 --enable-archs=i386 提供)
-$(STAMPS)/arm64-v8a/assemble: $(STAMPS)/box64-arm64-v8a
+# arm64 assemble 额外依赖: 方案③ fex (libarm64ecfex.dll) + box64-wow64 (wowbox64.dll);
+# 方案② box64 (box64.so)。各 target 内部按 WINE_ARCH skip。
+# 32-bit PE DLL (i386-windows) 已由 wine 主构建 --enable-archs=i386 提供
+$(STAMPS)/arm64-v8a/assemble: $(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH) $(STAMPS)/box64-$(CONFIG)-$(WINE_ARCH) $(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH)
 
 # ============================================================
 # hap — HAP 构建 + 签名 (统一 rawfile zip)
 # ============================================================
+.PHONY: app app-unsigned
+app: assemble
+	bash $(SCRIPTS)/package.sh app
+
+app-unsigned: assemble
+	bash $(SCRIPTS)/package.sh app-unsigned
+
 .PHONY: hap
 hap: assemble
 	@echo "=== hap ($(CONFIG)) ==="
@@ -489,6 +616,13 @@ hap: assemble
 	@echo ""
 	@echo "HAP: $(ROOT)/entry/build/default/outputs/default/entry-default-signed.hap"
 	@ls -lh $(ROOT)/entry/build/default/outputs/default/entry-default-signed.hap 2>/dev/null || true
+
+# ============================================================
+# arm64ec-release-gate — 拒绝 ARM64X/ARM64EC 生产构建静默退回 O0/Debug
+# ============================================================
+.PHONY: arm64ec-release-gate
+arm64ec-release-gate:
+	bash $(SCRIPTS)/check_arm64ec_release_gate.sh
 
 # ============================================================
 # test: 宿主机单元测试 (纯函数, 不依赖 OHOS SDK, 用宿主 g++ 编译)
@@ -602,3 +736,33 @@ help:
 	@echo "  make clean     # 删除所有中间产物"
 	@echo ""
 	@echo "产物统一在 build/ 下"
+
+# ARM64 candidates bind rebuilt bytes to effective sources, not VPP binary locks.
+ifeq ($(WINE_ARCH),aarch64)
+SOURCE_BUILD_MANIFEST ?= $(BUILD_DIR)/runtime-source-manifest.json
+export SOURCE_BUILD_MANIFEST
+endif
+
+FEX_SRC ?= $(ROOT)/build/runtime-sources/fex
+export FEX_SRC
+
+# Locked Proton/FEX recipes, independent of the product's ArkUI and bundle.
+.PHONY: prepare-runtime-sources
+prepare-runtime-sources:
+	python3 $(SCRIPTS)/verify_runtime_boundary.py --require-clean
+	python3 $(SCRIPTS)/prepare_runtime_sources.py --component wine --source "$(WINE_SRC)"
+	@if [ "$(WINE_ARCH)" = aarch64 ]; then python3 $(SCRIPTS)/prepare_runtime_sources.py --component fex --source "$(FEX_SRC)"; fi
+	@if [ "$(WINE_ARCH)" = aarch64 ]; then git -C "$(FEX_SRC)" submodule update --init --recursive; fi
+$(STAMPS)/deps: prepare-runtime-sources
+$(WINE_GECKO_MANIFEST): | prepare-runtime-sources
+$(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH): | prepare-runtime-sources
+
+# ICU compatibility is a real producer, not a pre-existing local artifact.
+.PHONY: icu-compat
+icu-compat: prepare-runtime-sources
+	bash $(SCRIPTS)/build_icu_compat.sh
+ifeq ($(WINE_ARCH),aarch64)
+$(STAMPS)/arm64-v8a/assemble: icu-compat
+endif
+
+include $(ROOT)/make/runtime-validation.mk

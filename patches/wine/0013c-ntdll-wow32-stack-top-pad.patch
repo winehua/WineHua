@@ -1,0 +1,163 @@
+From: WineHua port
+Subject: [PATCH] ntdll: wow32 stack top pad (EXPERIMENTAL, benefit unproven)
+
+QUARANTINED MANUAL EXPERIMENT. This patch is not registered by build_wine.sh.
+It intentionally changes committed layout above the reported StackBase, has
+no established RPGXP benefit, and previously regressed Steam startup. Apply
+only to a clean isolated source for a separately reviewed experiment.
+
+Reserve one extra 64K committed granule above the reported wow StackBase,
+gated by WINEHUA_WOW_STACK_TOP_PAD (exe-name matched). Observed to shift stack
+layout and absorb the StackBase+0x14 first push, but the storm at seq905 is
+unaffected; unconditional use broke Steam startup. Includes the top_pad
+parameter on virtual_alloc_thread_stack and all call-site updates so the whole
+experiment remains mechanically isolated from the normal chain.
+---
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index bf5582b8de8..5a18d88bf30 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1410,7 +1410,7 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
+     }
+
+     /* kernel stack */
+-    if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, kernel_stack_size, kernel_stack_size, FALSE )))
++    if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, kernel_stack_size, kernel_stack_size, FALSE, 0 )))
+         return status;
+     thread_data->kernel_stack = stack.DeallocationStack;
+
+@@ -1421,7 +1421,7 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
+             ((get_machine_context_size( main_image_info.Machine ) + 7) & ~7) + sizeof(ULONG64);
+
+         /* 64-bit stack */
+-        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x40000, 0x40000, TRUE ))) return status;
++        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x40000, 0x40000, TRUE, 0 ))) return status;
+         cpu = (WOW64_CPURESERVED *)(((ULONG_PTR)stack.StackBase - cpusize) & ~15);
+         cpu->Machine = main_image_info.Machine;
+
+@@ -1432,9 +1432,66 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
+
+         /* 32-bit stack */
+         if (!limit || limit > user_space_wow_limit) limit = user_space_wow_limit;
+-        if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE )))
+-            return status;
+-        wow_teb->Tib.StackBase = PtrToUlong( stack.StackBase );
++        /* WineHua (2026-10-01): FEX wow64 下 32 位线程可能带着略高于栈顶的
++         * Esp 执行首个压栈 (RPGXP/SteamStub 现场判读 esp=StackBase+0x14, 首发写
++         * 落在 StackBase+0)。多保留一个 64K 粒度并整体已提交, 报告给 guest 的
++         * StackBase/初始 Esp 维持原值。
++         * 门控: 地址空间布局变化对 Steam 全家进程有破坏性 (实测 Steam 无法完成
++         * 启动/处理 -applaunch), 因此默认关闭; WINEHUA_WOW_STACK_TOP_PAD 取 "1"
++         * 时对本进程无条件生效, 取其他非空非"0"串时按主程序参数子串匹配
++         * (大小写不敏感)。注意 (专家复核): 主线程栈分配前 Wine 已重建 argv
++         * 去掉 loader 自身, 目标 EXE 在 main_argv[0], main_argv[1] 是游戏参数
++         * 或空 —— 此前只匹配 [1] 导致 proton.16 门控从未命中。
++         * 首次分配时打印 argv[0]/argv[1] 与 pad 决策, 便于核验。 */
++        {
++            static int pad_logged;
++            const char *pad_env = getenv( "WINEHUA_WOW_STACK_TOP_PAD" );
++            SIZE_T wow_top_pad = 0;
++
++            if (pad_env && pad_env[0] && pad_env[0] != '0')
++            {
++                int match = (pad_env[0] == '1' && !pad_env[1]);
++                int argi;
++                if (!match)
++                {
++                    for (argi = 0; argi < 2 && !match; argi++)
++                    {
++                        const char *exe = (main_argv && main_argv[argi]) ? main_argv[argi] : NULL;
++                        const char *needle = pad_env;
++                        size_t nlen = strlen( needle );
++                        if (!exe) continue;
++                        for (; *exe; exe++)
++                        {
++                            size_t i;
++                            for (i = 0; i < nlen; i++)
++                            {
++                                char a = exe[i], b = needle[i];
++                                if (!a) break;
++                                if (a >= 'A' && a <= 'Z') a += 32;
++                                if (b >= 'A' && b <= 'Z') b += 32;
++                                if (a != b) break;
++                            }
++                            if (i == nlen) { match = 1; break; }
++                        }
++                    }
++                }
++                if (match) wow_top_pad = 0x10000;
++            }
++            if (!pad_logged)
++            {
++                pad_logged = 1;
++                fprintf( stderr, "[thread] WineHua wow stack pad: env=%s argv0=%s argv1=%s pad=%#lx\n",
++                         pad_env && pad_env[0] ? pad_env : "(unset)",
++                         (main_argv && main_argv[0]) ? main_argv[0] : "(null)",
++                         (main_argv && main_argv[1]) ? main_argv[1] : "(null)",
++                         (unsigned long)wow_top_pad );
++            }
++
++            if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE,
++                                                      wow_top_pad )))
++                return status;
++            wow_teb->Tib.StackBase = PtrToUlong( (char *)stack.StackBase - wow_top_pad );
++        }
+         wow_teb->Tib.StackLimit = PtrToUlong( stack.StackLimit );
+         wow_teb->DeallocationStack = PtrToUlong( stack.DeallocationStack );
+         return STATUS_SUCCESS;
+@@ -1455,7 +1512,7 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
+         const SIZE_T chpev2_stack_size = emu_stack_size ? emu_stack_size : 0x40000;
+
+         /* emulator stack */
+-        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, chpev2_stack_size, chpev2_stack_size, FALSE )))
++        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, chpev2_stack_size, chpev2_stack_size, FALSE, 0 )))
+             return status;
+
+         cpu_area = (CHPE_V2_CPU_AREA_INFO *)((char*)stack.DeallocationStack + kernel_stack_guard_size);
+@@ -1467,7 +1524,7 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
+ #endif
+
+     /* native stack */
+-    if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE )))
++    if ((status = virtual_alloc_thread_stack( &stack, 0, limit, reserve_size, commit_size, TRUE, 0 )))
+         return status;
+     teb->Tib.StackBase = stack.StackBase;
+     teb->Tib.StackLimit = stack.StackLimit;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index f2d46f36b2c..b5c6b38e8a2 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4801,7 +4801,8 @@ NTSTATUS virtual_set_tls_information( PROCESS_TLS_INFORMATION *t )
+  *           virtual_alloc_thread_stack
+  */
+ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, ULONG_PTR limit_high,
+-                                     SIZE_T reserve_size, SIZE_T commit_size, BOOL guard_page )
++                                     SIZE_T reserve_size, SIZE_T commit_size, BOOL guard_page,
++                                     SIZE_T top_pad )
+ {
+     struct file_view *view;
+     NTSTATUS status;
+@@ -4814,6 +4815,9 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
+     size = max( reserve_size, commit_size );
+     if (size < 1024 * 1024) size = 1024 * 1024;  /* Xlib needs a large stack */
+     size = ROUND_SIZE( 0, size, granularity_mask );
++    /* WineHua (2026-10-01): 顶端容忍页 —— 在常规尺寸之外追加, 供调用方把
++     * 报告的 StackBase 回调到未追加的位置 (见 thread.c 的 32 位栈说明)。 */
++    if (top_pad) size += top_pad;
+
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 398be4da03b..542f3ccad05 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -318,7 +320,8 @@ extern void virtual_free_teb( TEB *teb );
+ extern NTSTATUS virtual_clear_tls_index( ULONG index );
+ extern NTSTATUS virtual_set_tls_information( PROCESS_TLS_INFORMATION *t );
+ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, ULONG_PTR limit_high,
+-                                            SIZE_T reserve_size, SIZE_T commit_size, BOOL guard_page );
++                                            SIZE_T reserve_size, SIZE_T commit_size, BOOL guard_page,
++                                            SIZE_T top_pad );
+ extern void virtual_map_user_shared_data(void);
+ extern void virtual_init_user_shared_data(void);
+ extern NTSTATUS virtual_handle_fault( EXCEPTION_RECORD *rec, void *stack );

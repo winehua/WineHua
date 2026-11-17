@@ -1,0 +1,132 @@
+From e4444593499c2c7097217652e4b467e00b2294bb Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0057-wayland-direct-drawable-identity
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: dcb2792c46e8e193f59233404f0527a5258090d74a89e65ab0b51bcf8f4f9ec1
+
+diff --git a/dlls/winewayland.drv/vulkan.c b/dlls/winewayland.drv/vulkan.c
+index aab790775eed2dec7fa83f7b144bc081b625e20f..4d3bc4ffab98168602e2f1f9ec1845f309e22bdc 100644
+--- a/dlls/winewayland.drv/vulkan.c
++++ b/dlls/winewayland.drv/vulkan.c
+@@ -129,7 +129,31 @@ static VkResult winehua_direct_surface_create(HWND hwnd, const struct vulkan_ins
+         client_surface_release(&surface->client);
+         return VK_ERROR_SURFACE_LOST_KHR;
+     }
+-    owner_id = winehua_window_surface_id(hwnd);
++    if (getenv("WINEHUA_DESKTOP_MODE") && atoi(getenv("WINEHUA_DESKTOP_MODE")))
++    {
++        struct wayland_win_data *data;
++        /* Desktop Direct requires a separate queue for each actual drawable.
++         * An older host cannot implement that contract; fail explicitly rather
++         * than connecting two VkSurfaceKHRs to its shared root producer. */
++        if (!process_wayland.winehua_toplevel ||
++            wl_proxy_get_version((struct wl_proxy *)process_wayland.winehua_toplevel) < 2)
++        {
++            WARN("WineHua Direct drawable protocol v2 unavailable\n");
++            client_surface_release(&surface->client);
++            return VK_ERROR_EXTENSION_NOT_PRESENT;
++        }
++        surface->winehua_direct_drawable = TRUE;
++        if ((data = wayland_win_data_get(surface->winehua_direct_owner)))
++        {
++            /* Attach the real client subsurface before native WSI acquisition,
++             * including hidden HWNDs. This does not attach pixels or show it. */
++            wayland_client_surface_attach(surface, surface->winehua_direct_owner);
++            wayland_win_data_release(data);
++        }
++        owner_id = surface->wl_subsurface
++            ? wl_proxy_get_id((struct wl_proxy *)surface->wl_surface) : 0;
++    }
++    else owner_id = winehua_window_surface_id(hwnd);
+     wl_display_flush(process_wayland.wl_display);
+     if (!owner_id)
+     {
+diff --git a/dlls/winewayland.drv/wayland.c b/dlls/winewayland.drv/wayland.c
+index a05e9bde85a35cec962c2a5483e2bf2087c4fde5..7b16b556cf77466fd7c84776eb1d6a8868cfc1c1 100644
+--- a/dlls/winewayland.drv/wayland.c
++++ b/dlls/winewayland.drv/wayland.c
+@@ -204,7 +204,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
+     else if (strcmp(interface, "winehua_toplevel") == 0)
+     {
+         process_wayland.winehua_toplevel =
+-            wl_registry_bind(registry, id, &winehua_toplevel_interface, 1);
++            wl_registry_bind(registry, id, &winehua_toplevel_interface, version < 2 ? version : 2);
+     }
+ #endif
+ }
+diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
+index 34fb471e888b3a34ccfce63ea441176884fd44a1..b33586c76b7146417864a356eeecce52739e36ed 100644
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -1369,6 +1369,11 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+ 
+     if (!toplevel)
+     {
++#ifdef __OHOS__
++        if (client->winehua_direct_drawable && process_wayland.winehua_toplevel)
++            winehua_toplevel_set_direct_drawable(process_wayland.winehua_toplevel,
++                                                  client->wl_surface, NULL, 0, 0, 0);
++#endif
+         if (client->wl_subsurface)
+         {
+             wl_subsurface_destroy(client->wl_subsurface);
+@@ -1408,6 +1413,13 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+     NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&client_rect, 2, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+ 
+     wayland_surface_reconfigure_client(surface, client, &client_rect);
++#ifdef __OHOS__
++    if (client->winehua_direct_drawable && process_wayland.winehua_toplevel)
++        winehua_toplevel_set_direct_drawable(process_wayland.winehua_toplevel,
++            client->wl_surface, surface->wl_surface,
++            max(1, client_rect.right - client_rect.left),
++            max(1, client_rect.bottom - client_rect.top), NtUserIsWindowVisible(hwnd));
++#endif
+     /* Commit to apply subsurface positioning. */
+     wl_surface_commit(surface->wl_surface);
+ }
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index c22655419a221e6f7b463c37f718bb77a472e2ee..68a0e84008e7763910a055140060cf34d7fc8902 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -252,6 +252,7 @@ struct wayland_client_surface
+     struct wl_subsurface *wl_subsurface;
+     struct wp_viewport *wp_viewport;
+ #ifdef __OHOS__
++    BOOL winehua_direct_drawable;
+     HWND winehua_direct_owner;
+     uint64_t winehua_direct_owner_generation;
+     void *winehua_direct_window;
+diff --git a/dlls/winewayland.drv/winehua-toplevel.xml b/dlls/winewayland.drv/winehua-toplevel.xml
+index 0f8a2d64e0b6bf728c88971d0a3f6d44e883631c..da332a84f14ee0bfd249ae438cb119c35fb6c60a 100644
+--- a/dlls/winewayland.drv/winehua-toplevel.xml
++++ b/dlls/winewayland.drv/winehua-toplevel.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <protocol name="winehua_toplevel">
+-  <interface name="winehua_toplevel" version="1">
++  <interface name="winehua_toplevel" version="2">
+     <description summary="WineHua toplevel mobile attributes">
+       Vendor protocol between Wine's wayland driver and the WineHua compositor.
+ 
+@@ -19,5 +19,18 @@
+       <arg name="owner_surface" type="object" interface="wl_surface" allow-null="true"/>
+       <arg name="modal" type="uint"/>
+     </request>
++    <request name="set_direct_drawable" since="2">
++      <description summary="Bind one native Vulkan producer to its exact drawable">
++        The drawable must be a real subsurface of owner_surface in the same
++        Wayland client. Width and height describe its native queue, not the
++        parent window. Visibility does not show or activate a Win32 window.
++        A NULL owner suppresses composition while retaining a live WSI queue.
++      </description>
++      <arg name="surface" type="object" interface="wl_surface"/>
++      <arg name="owner_surface" type="object" interface="wl_surface" allow-null="true"/>
++      <arg name="width" type="int"/>
++      <arg name="height" type="int"/>
++      <arg name="visible" type="uint"/>
++    </request>
+   </interface>
+ </protocol>

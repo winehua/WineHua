@@ -1,0 +1,86 @@
+--- a/src/venus/vkr_buffer.h
++++ b/src/venus/vkr_buffer.h
+@@ -53,6 +53,11 @@
+ void
+ vkr_context_init_buffer_dispatch(struct vkr_context *ctx);
+ 
++/* Release renderer bookkeeping before either explicit destruction or
++ * implicit device teardown frees the buffer wrapper. */
++void
++vkr_buffer_release(struct vkr_context *ctx, struct vkr_buffer *buffer);
++
+ #ifdef __OHOS__
+ bool
+ vkr_winehua_buffer_add_ubo_watch_locked(struct vkr_buffer *buffer,
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -165,20 +165,28 @@
+ #endif
+ }
+ 
+-static void
+-vkr_dispatch_vkDestroyBuffer(struct vn_dispatch_context *dispatch,
+-                             struct vn_command_vkDestroyBuffer *args)
+-{
+-#ifdef __OHOS__
+-   struct vkr_buffer *buffer = vkr_buffer_from_handle(args->buffer);
+-   vkr_winehua_set_buffer_memory(dispatch->data, buffer, NULL, 0);
++void
++vkr_buffer_release(struct vkr_context *ctx, struct vkr_buffer *buffer)
++{
++#ifdef __OHOS__
++   vkr_winehua_set_buffer_memory(ctx, buffer, NULL, 0);
+    if (buffer) {
+       free(buffer->winehua_ubo_watches);
+       buffer->winehua_ubo_watches = NULL;
+       atomic_store_explicit(&buffer->winehua_ubo_watch_count, 0,
+                             memory_order_release);
+    }
+-#endif
++#else
++   (void)ctx;
++   (void)buffer;
++#endif
++}
++
++static void
++vkr_dispatch_vkDestroyBuffer(struct vn_dispatch_context *dispatch,
++                             struct vn_command_vkDestroyBuffer *args)
++{
++   vkr_buffer_release(dispatch->data, vkr_buffer_from_handle(args->buffer));
+    vkr_buffer_destroy_and_remove(dispatch->data, args);
+ }
+ 
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -8,6 +8,7 @@
+ #include "venus-protocol/vn_protocol_renderer_device.h"
+ 
+ #include "vkr_command_buffer.h"
++#include "vkr_buffer.h"
+ #include "vkr_context.h"
+ #include "vkr_descriptor_set.h"
+ #include "vkr_device_memory.h"
+@@ -235,6 +236,14 @@
+ 
+    assert(vkr_device_should_track_object(obj));
+ 
++   /* Device teardown bypasses individual vkDestroyBuffer/vkFreeMemory
++    * dispatchers. Detach intrusive memory links before a buffer wrapper is
++    * freed, and unmap memory before calling the driver's FreeMemory. */
++   if (obj->type == VK_OBJECT_TYPE_BUFFER)
++      vkr_buffer_release(ctx, (struct vkr_buffer *)obj);
++   else if (obj->type == VK_OBJECT_TYPE_DEVICE_MEMORY)
++      vkr_device_memory_release((struct vkr_device_memory *)obj);
++
+    if (ctx->on_worker_thread) {
+       switch (obj->type) {
+       case VK_OBJECT_TYPE_SEMAPHORE:
+@@ -317,7 +326,6 @@
+    /* always cleanup vkr allocs */
+    switch (obj->type) {
+    case VK_OBJECT_TYPE_DEVICE_MEMORY:
+-      vkr_device_memory_release((struct vkr_device_memory *)obj);
+       break;
+    case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
+       /* Destroying VkDescriptorPool frees all VkDescriptorSet allocated inside. */

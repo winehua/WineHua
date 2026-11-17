@@ -1,0 +1,167 @@
+diff --git a/src/dxgi/dxgi_format.cpp b/src/dxgi/dxgi_format.cpp
+index bd73fd1e..cbc54196 100644
+--- a/src/dxgi/dxgi_format.cpp
++++ b/src/dxgi/dxgi_format.cpp
+@@ -863,94 +863,81 @@ namespace dxvk {
+       RemapDepthFormat(DXGI_FORMAT_D24_UNORM_S8_UINT,     VK_FORMAT_D32_SFLOAT_S8_UINT);
+     }
+ 
+-    /* Mobile Vulkan implementations generally expose ASTC/ETC2 rather than
+-     * desktop BC formats.  DXGI content cannot be reinterpreted as either of
+-     * those encodings, so WineHua expands BC resources once, when data is
+-     * uploaded, and stores them in equivalent uncompressed images. */
+-    if (!adapter->features().core.features.textureCompressionBC
+-     && env::getEnvVar("WINEHUA_DXVK_BC_EMULATION") != "0") {
++    // The aggregate feature bit is not sufficient on partial BC drivers.
++    // Validate each view format once, before constructing the immutable table.
++    // Preserve working native BC families; expand only unsupported families at
++    // upload time using the existing decoder. Packed formats remain unchanged.
++    if (env::getEnvVar("WINEHUA_DXVK_BC_EMULATION") != "0") {
+       const VkComponentMapping identity = {
+         VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+         VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
++      const bool nativeBc = adapter->features().core.features.textureCompressionBC;
++      const VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
++        | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
++        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
++      const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT
++        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+ 
+-      auto remap = [this, identity](DXGI_FORMAT format, VkFormat target) {
+-        RemapColorFormat(format, target, identity);
++      auto nativeFamilySupported = [&](DXGI_FORMAT typeless) {
++        if (!nativeBc)
++          return false;
++        const auto& family = g_dxgiFamilies[uint32_t(typeless)];
++        for (uint32_t i = 0; i < family.FormatCount; ++i) {
++          const VkFormat format = family.Formats[i];
++          const auto caps = adapter->formatProperties(format);
++          if ((caps.optimalTilingFeatures & required) != required)
++            return false;
++          // Typeless resources require mutable views; concrete resources must
++          // also succeed independently. Check both contracts, never raise caps.
++          for (VkImageType type : { VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_3D }) {
++            for (VkImageCreateFlags flags : { VkImageCreateFlags(0),
++                    VkImageCreateFlags(VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) }) {
++              VkImageFormatProperties props = { };
++              if (adapter->imageFormatProperties(format, type,
++                    VK_IMAGE_TILING_OPTIMAL, usage, flags, props) != VK_SUCCESS
++               || !(props.sampleCounts & VK_SAMPLE_COUNT_1_BIT)
++               || !props.maxMipLevels || !props.maxArrayLayers
++               || props.maxExtent.width < 4 || props.maxExtent.height < 4
++               || (type == VK_IMAGE_TYPE_3D && props.maxExtent.depth < 4))
++                return false;
++            }
++          }
++        }
++        return family.FormatCount != 0;
+       };
+ 
+-      remap(DXGI_FORMAT_BC1_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC1_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC1_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+-      remap(DXGI_FORMAT_BC2_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC2_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC2_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+-      remap(DXGI_FORMAT_BC3_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC3_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC3_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+-      remap(DXGI_FORMAT_BC4_TYPELESS,   VK_FORMAT_R8_UNORM);
+-      remap(DXGI_FORMAT_BC4_UNORM,      VK_FORMAT_R8_UNORM);
+-      remap(DXGI_FORMAT_BC4_SNORM,      VK_FORMAT_R8_SNORM);
+-      remap(DXGI_FORMAT_BC5_TYPELESS,   VK_FORMAT_R8G8_UNORM);
+-      remap(DXGI_FORMAT_BC5_UNORM,      VK_FORMAT_R8G8_UNORM);
+-      remap(DXGI_FORMAT_BC5_SNORM,      VK_FORMAT_R8G8_SNORM);
+-      remap(DXGI_FORMAT_BC6H_TYPELESS,  VK_FORMAT_R16G16B16A16_SFLOAT);
+-      remap(DXGI_FORMAT_BC6H_UF16,      VK_FORMAT_R16G16B16A16_SFLOAT);
+-      remap(DXGI_FORMAT_BC6H_SF16,      VK_FORMAT_R16G16B16A16_SFLOAT);
+-      remap(DXGI_FORMAT_BC7_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC7_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+-      remap(DXGI_FORMAT_BC7_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+-
+-      const DXGI_VK_FORMAT_FAMILY rgba8Family = {
+-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB };
+-      const DXGI_VK_FORMAT_FAMILY rgba8UnormFamily = {
+-        VK_FORMAT_R8G8B8A8_UNORM };
+-      const DXGI_VK_FORMAT_FAMILY rgba8SrgbFamily = {
+-        VK_FORMAT_R8G8B8A8_SRGB };
+-      const DXGI_VK_FORMAT_FAMILY r8Family = {
+-        VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM };
+-      const DXGI_VK_FORMAT_FAMILY rg8Family = {
+-        VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM };
+-      const DXGI_VK_FORMAT_FAMILY r8UnormFamily = {
+-        VK_FORMAT_R8_UNORM };
+-      const DXGI_VK_FORMAT_FAMILY r8SnormFamily = {
+-        VK_FORMAT_R8_SNORM };
+-      const DXGI_VK_FORMAT_FAMILY rg8UnormFamily = {
+-        VK_FORMAT_R8G8_UNORM };
+-      const DXGI_VK_FORMAT_FAMILY rg8SnormFamily = {
+-        VK_FORMAT_R8G8_SNORM };
+-      const DXGI_VK_FORMAT_FAMILY rgba16fFamily = {
+-        VK_FORMAT_R16G16B16A16_SFLOAT };
+-
+-      for (DXGI_FORMAT format : {
+-             DXGI_FORMAT_BC1_TYPELESS, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB,
+-             DXGI_FORMAT_BC2_TYPELESS, DXGI_FORMAT_BC2_UNORM, DXGI_FORMAT_BC2_UNORM_SRGB,
+-             DXGI_FORMAT_BC3_TYPELESS, DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB,
+-             DXGI_FORMAT_BC7_TYPELESS, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB })
+-        m_dxgiFamilies[uint32_t(format)] = rgba8Family;
+-
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_TYPELESS)] = r8Family;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_UNORM)] = r8UnormFamily;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_SNORM)] = r8SnormFamily;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_TYPELESS)] = rg8Family;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_UNORM)] = rg8UnormFamily;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_SNORM)] = rg8SnormFamily;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_TYPELESS)] = rgba16fFamily;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_UF16)] = rgba16fFamily;
+-      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_SF16)] = rgba16fFamily;
+-
+-      // Concrete formats do not need mutable images. Keeping a one-format
+-      // family avoids an unnecessary Venus mutable-image capability query,
+-      // while typeless resources retain the unorm/snorm or sRGB family above.
+-      for (DXGI_FORMAT format : {
+-             DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC2_UNORM,
+-             DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC7_UNORM })
+-        m_dxgiFamilies[uint32_t(format)] = rgba8UnormFamily;
+-
+-      for (DXGI_FORMAT format : {
+-             DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC2_UNORM_SRGB,
+-             DXGI_FORMAT_BC3_UNORM_SRGB, DXGI_FORMAT_BC7_UNORM_SRGB })
+-        m_dxgiFamilies[uint32_t(format)] = rgba8SrgbFamily;
++      auto remapFamily = [&](const char* name, DXGI_FORMAT typeless,
++                             DXGI_FORMAT first, DXGI_FORMAT second,
++                             VkFormat firstTarget, VkFormat secondTarget) {
++        if (nativeFamilySupported(typeless))
++          return;
++        RemapColorFormat(typeless, firstTarget, identity);
++        RemapColorFormat(first, firstTarget, identity);
++        RemapColorFormat(second, secondTarget, identity);
++        if (firstTarget == secondTarget)
++          m_dxgiFamilies[uint32_t(typeless)] = { firstTarget };
++        else
++          m_dxgiFamilies[uint32_t(typeless)] = { firstTarget, secondTarget };
++        m_dxgiFamilies[uint32_t(first)] = { firstTarget };
++        m_dxgiFamilies[uint32_t(second)] = { secondTarget };
++        Logger::info(str::format("WineHua: ", name,
++          " upload-time decompression enabled (aggregate BC=", nativeBc, ")"));
++      };
+ 
+-      Logger::info("WineHua: BC1-BC7 upload-time decompression enabled");
++      remapFamily("BC1", DXGI_FORMAT_BC1_TYPELESS, DXGI_FORMAT_BC1_UNORM,
++        DXGI_FORMAT_BC1_UNORM_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB);
++      remapFamily("BC2", DXGI_FORMAT_BC2_TYPELESS, DXGI_FORMAT_BC2_UNORM,
++        DXGI_FORMAT_BC2_UNORM_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB);
++      remapFamily("BC3", DXGI_FORMAT_BC3_TYPELESS, DXGI_FORMAT_BC3_UNORM,
++        DXGI_FORMAT_BC3_UNORM_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB);
++      remapFamily("BC4", DXGI_FORMAT_BC4_TYPELESS, DXGI_FORMAT_BC4_UNORM,
++        DXGI_FORMAT_BC4_SNORM, VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM);
++      remapFamily("BC5", DXGI_FORMAT_BC5_TYPELESS, DXGI_FORMAT_BC5_UNORM,
++        DXGI_FORMAT_BC5_SNORM, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM);
++      remapFamily("BC6H", DXGI_FORMAT_BC6H_TYPELESS, DXGI_FORMAT_BC6H_UF16,
++        DXGI_FORMAT_BC6H_SF16, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT);
++      remapFamily("BC7", DXGI_FORMAT_BC7_TYPELESS, DXGI_FORMAT_BC7_UNORM,
++        DXGI_FORMAT_BC7_UNORM_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB);
+     }
+ 
+     if (!adapter->features().ext4444Formats.formatA4R4G4B4) {

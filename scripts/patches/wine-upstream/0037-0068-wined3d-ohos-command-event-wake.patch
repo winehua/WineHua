@@ -1,0 +1,67 @@
+From b417fb253bc1947a0c96cbb6b1fae9e8c35b26b4 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0068-wined3d-ohos-command-event-wake
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 86912fe809cf2d1b8edb4ba25cca7c8aeae157d19514a156989f82b88503d5e5
+
+diff --git a/dlls/wined3d/cs.c b/dlls/wined3d/cs.c
+index add8f8f174eb8f75c1252f036e653781a4a9b8b2..d829aec4a2c1ad123c1a2a2f32a2569b9bdce559 100644
+--- a/dlls/wined3d/cs.c
++++ b/dlls/wined3d/cs.c
+@@ -25,8 +25,6 @@ WINE_DECLARE_DEBUG_CHANNEL(d3d_sync);
+ WINE_DECLARE_DEBUG_CHANNEL(fps);
+ WINE_DECLARE_DEBUG_CHANNEL(frametime);
+ 
+-static NTSTATUS (WINAPI *pNtAlertThreadByThreadId)(HANDLE tid);
+-static NTSTATUS (WINAPI *pNtWaitForAlertByThreadId)(void *addr, const LARGE_INTEGER *timeout);
+ 
+ #define WINED3D_INITIAL_CS_SIZE 4096
+ 
+@@ -3316,10 +3314,7 @@ static void wined3d_cs_queue_submit(struct wined3d_cs_queue *queue, struct wined
+ 
+     if (InterlockedCompareExchange(&cs->waiting_for_event, FALSE, TRUE))
+     {
+-        if (pNtAlertThreadByThreadId)
+-            pNtAlertThreadByThreadId((HANDLE)(ULONG_PTR)cs->thread_id);
+-        else
+-            SetEvent(cs->event);
++        SetEvent(cs->event);
+     }
+ }
+ 
+@@ -3469,10 +3464,7 @@ static void wined3d_cs_wait_event(struct wined3d_cs *cs)
+             && InterlockedCompareExchange(&cs->waiting_for_event, FALSE, TRUE))
+         return;
+ 
+-    if (pNtWaitForAlertByThreadId)
+-        pNtWaitForAlertByThreadId(NULL, timeout);
+-    else
+-        NtWaitForSingleObject(cs->event, FALSE, timeout);
++    NtWaitForSingleObject(cs->event, FALSE, timeout);
+ }
+ 
+ static void wined3d_cs_command_lock(const struct wined3d_cs *cs)
+@@ -3673,15 +3665,11 @@ struct wined3d_cs *wined3d_cs_create(struct wined3d_device *device,
+     {
+         cs->c.ops = &wined3d_cs_mt_ops;
+ 
+-        if (!pNtAlertThreadByThreadId)
+-        {
+-            HANDLE ntdll = GetModuleHandleW(L"ntdll.dll");
+-
+-            pNtAlertThreadByThreadId = (void *)GetProcAddress(ntdll, "NtAlertThreadByThreadId");
+-            pNtWaitForAlertByThreadId = (void *)GetProcAddress(ntdll, "NtWaitForAlertByThreadId");
+-        }
+-
+-        if (!pNtAlertThreadByThreadId && !(cs->event = CreateEventW(NULL, FALSE, FALSE, NULL)))
++        /* WineHua OHOS: the thread-ID alert backend can leave a pending
++         * command queue with its worker asleep (also reproduced without a
++         * renderer). Use Wine's auto-reset server event for both sides.
++         * CSMT, the queues and graphics presentation remain unchanged. */
++        if (!(cs->event = CreateEventW(NULL, FALSE, FALSE, NULL)))
+         {
+             ERR("Failed to create command stream event.\n");
+             free(cs->data);

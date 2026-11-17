@@ -1,0 +1,126 @@
+From: WineHua port
+Subject: [PATCH] wow64: validate 32-bit exception dispatch frame target (UNVERIFIED)
+
+QUARANTINED REVIEW ARTIFACT. This patch is not registered by build_wine.sh
+and must not be treated as production behavior or an RPGXP fix. Any future
+normal-chain proposal needs a separate accepted contract and proof of all of:
+overflow-safe bounds before pointer formation; initialized variables and
+checked context-length/frame-size arithmetic; the original SegSs-selected
+candidate first; valid guard-page growth; and a guaranteed non-return failure
+policy with defined exit status and debugger/client behavior.
+
+call_user_exception_dispatcher: candidate esp (ctx.Esp, then
+SystemReserved1[0]) whose whole frame lies inside [StackLimit, StackBase) is
+used; otherwise "immediate terminate" via GetCurrentProcess+STATUS_STACK_OVERFLOW.
+The terminate path is a deliberate behavioural policy, NOT a no-impact change
+(NULL handle would fail-and-continue); it has never been exercised in any run
+so far and must be designed/tested separately. Splitting this out so the group
+can be dropped or reworked independently.
+---
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index 2f5d80738fd..eb43649cb50 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -193,6 +193,24 @@ static NTSTATUS get_context_return_value( void *wow_context )
+ }
+
+
++/* WineHua (2026-10-02): WINEDEBUG=-all 实测会吞掉 ERR 通道 (游戏私日志 0 条
++ * err:), 本文件的分发诊断必须直写 —— __wine_dbg_output 与 FEX 启动横幅同机制,
++ * 不受 WINEDEBUG 门控; _vsnprintf 来自 ntdll 导出 (本 dll 只 import ntdll,
++ * 旧式 _vsnprintf 截断时不保证终止符, 用显式端点置零兜底)。 */
++static void ohos_raw_output( const char *fmt, ... )
++{
++    char buf[512];
++    va_list ap;
++
++    buf[0] = 0;
++    va_start( ap, fmt );
++    _vsnprintf( buf, sizeof(buf), fmt, ap );
++    va_end( ap );
++    buf[sizeof(buf) - 1] = 0;
++    __wine_dbg_output( buf );
++}
++
++
+ /**********************************************************************
+  *           call_user_exception_dispatcher
+  */
+@@ -241,8 +259,75 @@ static void __attribute__((used)) call_user_exception_dispatcher( EXCEPTION_RECO
+
+             RtlGetExtendedContextLength( flags, &context_length );
+
+-            esp = LOWORD(ctx.SegSs) != ss32_sel ? NtCurrentTeb32()->SystemReserved1[0] : ctx.Esp;
+-            stack = (struct exc_stack_layout32 *)ULongToPtr( (esp - offsetof(struct exc_stack_layout32, context) - context_length) & ~3 );
++            /* WineHua (2026-10-01 r3, 专家复核后收敛): SegSs 甄别在 FEX 下
++             * 不可靠, 原实现落到 SystemReserved1[0] (=0) 时帧目标直接回绕
++             * (0xfffffb44), 写帧反复 fault 且 Esp 不变 → 分发无限嵌套。
++             * 候选目标验证: 依次试 ctx.Esp、SystemReserved1[0], 凡**整个帧**
++             * [stack, esp) 落在已提交可写区 [StackLimit, StackBase) 内即接受。
++             * 说明:
++             * - 不以 DeallocationStack 做下界, 也不加固定偏移 —— 底部不可访问
++             *   页与 guard 页全部位于 StackLimit 之下, 该判据与 host 页大小无关
++             *   (专家指出硬编码 0x1000 在 16KB 页设备上仍会落入坏页)。
++             * - 不再调用 NtProtectVirtualMemory: 它是保护属性修改而非内存提交,
++             *   且在信号上下文中的成败不可控; 低于 StackLimit 一律按不可恢复
++             *   栈溢出干净终止, 绝不向不可写页写帧 (否则将以不变的 Esp 无限
++             *   嵌套, RPGXP 现场即此形态)。
++             * - 每进程前 8 次分发打印同一次异常的完整布局 (最终选用 esp 及其
++             *   来源、context_length、frame/record/context 地址、seh_head),
++             *   用于坐实"首个异常帧的哪个字段覆盖了栈上 SEH 节点"——不同时点
++             *   的 ESP 不可混用。 */
++            {
++                TEB32 *teb32 = NtCurrentTeb32();
++                ULONG deal = teb32->DeallocationStack;
++                ULONG limit = teb32->Tib.StackLimit;
++                ULONG base = teb32->Tib.StackBase;
++                ULONG frame_size = offsetof( struct exc_stack_layout32, context ) + context_length;
++                ULONG cand[2];
++                const char *cand_name = "?";
++                int i, ok = 0;
++                static LONG layout_logs;
++
++                cand[0] = ctx.Esp;
++                cand[1] = (ULONG)(ULONG_PTR)teb32->SystemReserved1[0];
++                for (i = 0; i < 2 && !ok; i++)
++                {
++                    if (!cand[i]) continue;
++                    cand_name = i ? "SystemReserved1[0]" : "ctx.Esp";
++                    esp = cand[i];
++                    stack = (struct exc_stack_layout32 *)ULongToPtr( (esp - frame_size) & ~3 );
++                    if (!deal || !limit) { ok = 1; break; }  /* 无栈视图信息: 保持旧行为 */
++                    if ((ULONG)(ULONG_PTR)stack >= limit && esp <= base)
++                        ok = 1;
++                }
++                if (InterlockedIncrement( &layout_logs ) <= 8)
++                {
++                    ohos_raw_output( "dispatch32 layout: chosen_esp=%08lx(from %s ok=%d) ctx.Esp=%08lx sresv=%08x "
++                                     "deal=%08x limit=%08x base=%08x frame=%p rec=%p context=%p frame_size=%08x "
++                                     "ctx_len=%08lx seh_head=%08x code=%08lx eip=%08lx\n",
++                                     esp, ok ? cand_name : "(rejected)", ok, ctx.Esp,
++                                     (ULONG)(ULONG_PTR)teb32->SystemReserved1[0], deal, limit, base, stack,
++                                     stack ? (void *)((ULONG *)stack + 2) : NULL,
++                                     stack ? (char *)stack + offsetof(struct exc_stack_layout32, context) : NULL,
++                                     frame_size, context_length, teb32->Tib.ExceptionList,
++                                     rec->ExceptionCode, ctx.Eip );
++                }
++                if (!ok)
++                {
++                    ohos_raw_output( "unrecoverable 32-bit stack overflow: dispatch frame not inside "
++                                     "[StackLimit,StackBase) (esp %08lx eip %08lx deal %08x limit %08x base %08x)\n",
++                                     ctx.Esp, ctx.Eip, deal, limit, base );
++                    /* WineHua (2026-10-02, 专家复核): 这里是**有意的"立即终止"策略**,
++                     * 不是无影响的代码卫生改动 —— 语义差异必须明确:
++                     *   - (HANDLE)0 (NULL): NtTerminateProcess 失败返回, 代码继续
++                     *     向下写异常帧 → 又落到不可写页 → 旧行为(无限嵌套);
++                     *   - GetCurrentProcess() 伪句柄: 立即终止整个进程。
++                     * 该分支至今未被任何运行触发; 在把它作为"修复"提交前, 必须
++                     * 按"异常帧不可写 ⇒ 立即终止进程"单独设计语义并测试 (何时
++                     * 允许直接杀进程、退出码、与 debugger/客户端的交互), 或者
++                     * 从补丁中整体移除。 */
++                    NtTerminateProcess( GetCurrentProcess(), STATUS_STACK_OVERFLOW );
++                }
++            }
+             stack->rec_ptr     = PtrToUlong( &stack->rec );
+             stack->context_ptr = PtrToUlong( &stack->context );
+             stack->rec         = *rec;

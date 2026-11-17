@@ -1,0 +1,69 @@
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -1,4 +1,5 @@
+ #include "../util/util_time.h"
++#include "../util/util_env.h"
+ 
+ #include "dxvk_device.h"
+ #include "dxvk_graphics.h"
+@@ -278,9 +279,20 @@
+       viBindingMap[state.ilBindings[i].binding()] = i;
+     }
+ 
++    // D3D9 fixed-function signatures include inactive placeholder locations.
++    // Retain binding order for command-list compatibility, but omit attributes
++    // which the vertex shader does not consume before calling the driver.
++    static const bool pruneVertexInput =
++      env::getEnvVar("WINEHUA_DXVK_PRUNE_VERTEX_INPUT") == "1";
++    uint32_t viAttribCount = 0;
+     for (uint32_t i = 0; i < state.il.attributeCount(); i++) {
+-      viAttribs[i] = state.ilAttributes[i].description();
+-      viAttribs[i].binding = viBindingMap[state.ilAttributes[i].binding()];
++      const auto attribute = state.ilAttributes[i].description();
++      if (pruneVertexInput
++       && (attribute.location >= 32 || !(m_vsIn & (1u << attribute.location))))
++        continue;
++      viAttribs[viAttribCount] = attribute;
++      viAttribs[viAttribCount].binding = viBindingMap[attribute.binding];
++      viAttribCount++;
+     }
+ 
+     VkPipelineVertexInputDivisorStateCreateInfoEXT viDivisorInfo;
+@@ -295,7 +307,7 @@
+     viInfo.flags                            = 0;
+     viInfo.vertexBindingDescriptionCount    = state.il.bindingCount();
+     viInfo.pVertexBindingDescriptions       = viBindings.data();
+-    viInfo.vertexAttributeDescriptionCount  = state.il.attributeCount();
++    viInfo.vertexAttributeDescriptionCount  = viAttribCount;
+     viInfo.pVertexAttributeDescriptions     = viAttribs.data();
+     
+     if (viDivisorCount == 0)
+@@ -471,6 +483,28 @@
+     winehuaFlowTrace(str::format(
+       "graphics-pipeline vkCreate begin stages=", stages.size()));
+ 
++    if (Logger::logLevel() <= LogLevel::Debug) {
++      const auto& limits = m_pipeMgr->m_device->properties().core.properties.limits;
++      Logger::debug(str::format("WineHuaVertexInput: prune=", pruneVertexInput,
++        " inputMask=0x", std::hex, m_vsIn, std::dec,
++        " attributes=", viAttribCount, " original=", state.il.attributeCount(),
++        " maxAttributes=", limits.maxVertexInputAttributes,
++        " bindings=", viInfo.vertexBindingDescriptionCount,
++        " maxBindings=", limits.maxVertexInputBindings,
++        " maxOffset=", limits.maxVertexInputAttributeOffset,
++        " maxStride=", limits.maxVertexInputBindingStride,
++        " maxVSOutputComponents=", limits.maxVertexOutputComponents,
++        " maxFSInputComponents=", limits.maxFragmentInputComponents,
++        " topology=", uint32_t(iaInfo.topology),
++        " viewportCount=", vpInfo.viewportCount,
++        " pushStages=0x", std::hex, m_slotMapping.pushConstRange().stageFlags,
++        std::dec, " pushSize=", m_slotMapping.pushConstRange().size));
++      for (uint32_t i = 0; i < viAttribCount; i++)
++        Logger::debug(str::format("WineHuaVertexInput: submitted[", i,
++          "] location=", viAttribs[i].location, " binding=", viAttribs[i].binding,
++          " format=", uint32_t(viAttribs[i].format), " offset=", viAttribs[i].offset));
++    }
++
+     VkPipeline pipeline = VK_NULL_HANDLE;
+     if (m_vkd->vkCreateGraphicsPipelines(m_vkd->device(),
+           m_pipeMgr->m_cache->handle(), 1, &info, nullptr, &pipeline) != VK_SUCCESS) {

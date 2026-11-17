@@ -1,0 +1,12 @@
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -258,7 +258,8 @@
+    uint32_t allowed_flags = VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
+ #ifdef __OHOS__
+    if (capset_id == VIRTGPU_DRM_CAPSET_VENUS)
+-      allowed_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++      allowed_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY |
++                       VIRGL_RENDERER_CONTEXT_FLAG_OHOS_PRECISE_SHADOW;
+ #endif
+    if (ctx_flags & ~allowed_flags)
+       return EINVAL;

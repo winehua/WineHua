@@ -1,0 +1,35 @@
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -245,6 +245,10 @@
+         break;
+     }
+ 
++    /* Client attachment looks the parent up through win_data. Publish a newly
++     * created/replaced parent before attaching, including on a GPU-only remap. */
++    TRACE("hwnd=%p surface=%p=>%p\n", data->hwnd, data->wayland_surface, surface);
++    data->wayland_surface = surface;
+     if (visible && client) wayland_client_surface_attach(client, data->hwnd);
+     wayland_win_data_get_config(data, &surface->window);
+ 
+@@ -252,8 +256,6 @@
+      * it as needed. */
+     if (data->hwnd == NtUserGetForegroundWindow()) reapply_cursor_clipping();
+ 
+-    TRACE("hwnd=%p surface=%p=>%p\n", data->hwnd, data->wayland_surface, surface);
+-    data->wayland_surface = surface;
+     return TRUE;
+ }
+ 
+@@ -513,6 +515,11 @@
+                 wayland_client_surface_attach(client, NULL);
+         }
+ 
++        /* A hidden/recreated GPU-only parent may be absent or role-less.
++         * Restore the normal visibility/role lifecycle before refreshing its
++         * state, even when win32u no longer supplies a GDI window surface. */
++        if (keep_toplevel) wayland_win_data_create_wayland_surface(data, NULL);
++
+         if (data->wayland_surface && keep_toplevel)
+         {
+             /* A client-only window still changes position, style and state.

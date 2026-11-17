@@ -1,0 +1,67 @@
+diff --git a/Source/Windows/Common/CallRetStack.h b/Source/Windows/Common/CallRetStack.h
+index 215591b39fdd11fd3a25b69d9241d16a745a38fc..882d8a39b9f398b3edebdd6d3057275d6cc73d38 100644
+--- a/Source/Windows/Common/CallRetStack.h
++++ b/Source/Windows/Common/CallRetStack.h
+@@ -41,6 +41,26 @@ void DestroyThread(FEXCore::Core::InternalThreadState* Thread) {
+   ::VirtualFree(reinterpret_cast<void*>(CallRetStackInfo.AllocationBase), 0, MEM_RELEASE);
+ }
+ 
++// The WOW64 bridge returns by setting guest RIP/RSP rather than executing a
++// guest RET. Consume its prediction entry only when it is still the same entry
++// and names the actual guest return address. Context replacement, callbacks
++// that move the prediction stack, and unmatched/tail-call entries retain the
++// normal lookup/guard-page fallback. Never branch to a cached host PC here.
++bool CompleteSyntheticReturn(FEXCore::Core::InternalThreadState* Thread, uint64_t EntrySP, uint64_t ReturnRIP) {
++  auto& SP = Thread->CurrentFrame->State.callret_sp;
++  const auto Base = reinterpret_cast<uint64_t>(Thread->CallRetStackBase);
++  constexpr auto Size = FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE;
++  if (!ReturnRIP || SP != EntrySP || SP < Base || SP - Base > Size - 2 * sizeof(uint64_t) || ((SP - Base) & 15)) {
++    return false;
++  }
++  const auto* Entry = reinterpret_cast<const uint64_t*>(SP);
++  if (Entry[0] != ReturnRIP) {
++    return false;
++  }
++  SP += 2 * sizeof(uint64_t);
++  return true;
++}
++
+ bool HandleAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t Address, uint64_t& CallRetSPReg) {
+   auto CallRetStackInfo = GetInfoThread(Thread);
+   if (Address >= CallRetStackInfo.AllocationBase && Address < CallRetStackInfo.AllocationEnd) {
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 6e4279a5b28133099438d9791c4e8c930b18f11b..3ca4fa56a82022f5ce7c45e95eb7632f9204d8ff 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -493,6 +493,7 @@ public:
+     const uint64_t ReturnRIP = *(uint32_t*)(Frame->State.gregs[FEXCore::X86State::REG_RSP]); // Return address from the stack
+     uint64_t ReturnRSP = Frame->State.gregs[FEXCore::X86State::REG_RSP] + 4;                 // Stack pointer after popping return address
+     uint64_t ReturnRAX = 0;
++    const uint64_t EntryCallRetSP = Frame->State.callret_sp;
+ 
+     if (Frame->State.rip == (uint64_t)BridgeInstrs::UnixCall) {
+       struct StackLayout {
+@@ -508,6 +509,11 @@ public:
+       Context::UnlockJITContext();
+       ReturnRAX = static_cast<uint64_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, ULongToPtr(StackArgs->Args)));
+       Context::LockJITContext();
++      // Native calls may replace the WOW64 context. Consume only an unchanged
++      // bridge return; the helper also checks prediction-stack identity.
++      if (Frame->State.rip == ReturnRIP && Frame->State.gregs[FEXCore::X86State::REG_RSP] == ReturnRSP + sizeof(StackLayout)) {
++        FEX::Windows::CallRetStack::CompleteSyntheticReturn(Frame->Thread, EntryCallRetSP, ReturnRIP);
++      }
+       Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
+     } else if (Frame->State.rip == (uint64_t)BridgeInstrs::Syscall) {
+       const uint64_t EntryRAX = Frame->State.gregs[FEXCore::X86State::REG_RAX];
+@@ -520,6 +526,11 @@ public:
+       Wow64ProcessPendingCrossProcessItems();
+       ReturnRAX = static_cast<uint64_t>(Wow64SystemServiceEx(static_cast<UINT>(EntryRAX), reinterpret_cast<UINT*>(ReturnRSP + 4)));
+       Context::LockJITContext();
++      // Native calls may replace the WOW64 context. Consume only an unchanged
++      // bridge return; the helper also checks prediction-stack identity.
++      if (Frame->State.rip == ReturnRIP && Frame->State.gregs[FEXCore::X86State::REG_RSP] == ReturnRSP) {
++        FEX::Windows::CallRetStack::CompleteSyntheticReturn(Frame->Thread, EntryCallRetSP, ReturnRIP);
++      }
+       Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
+     }
+   }

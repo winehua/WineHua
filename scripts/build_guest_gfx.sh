@@ -17,7 +17,7 @@ MODE="${GUEST_GFX_MODE:-virpipe}"
 INSTALL_ROOT="${WINEHUA_GUEST_GFX_INSTALL_ROOT:-${GUEST_GFX_INSTALL_ROOT:-}}"
 MESA_SOURCE_ROOT="${WINEHUA_OHOS_MESA_SOURCE_ROOT:-${GUEST_GFX_MESA_SOURCE_ROOT:-}}"
 LIBDRM_SOURCE_ROOT="${WINEHUA_OHOS_LIBDRM_SOURCE_ROOT:-${GUEST_GFX_LIBDRM_SOURCE_ROOT:-}}"
-OUTPUT_ROOT="${WINEHUA_GUEST_GFX_OUTPUT_ROOT:-$ROOT/build/guest_gfx/$NATIVE_ARCH}"
+OUTPUT_ROOT="${WINEHUA_GUEST_GFX_OUTPUT_ROOT:-}"
 CLEAN=0
 
 usage() {
@@ -67,6 +67,16 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+case "$MODE" in
+    virpipe) OUTPUT_ROOT="${OUTPUT_ROOT:-$BUILD_DIR/guest_gfx/${GUEST_ARCH:-$WINE_ARCH}}" ;;
+    zink) OUTPUT_ROOT="${OUTPUT_ROOT:-$BUILD_DIR/guest_gfx_zink/${GUEST_ARCH:-$WINE_ARCH}}" ;;
+    *) err "unsupported guest_gfx mode: $MODE" ;;
+esac
+
+if [ -n "${GUEST_ARCH:-}" ] && [ "$GUEST_ARCH" != "$WINE_ARCH" ]; then
+    err "GUEST_ARCH=$GUEST_ARCH differs from WINE_ARCH=$WINE_ARCH; Mesa and support libraries must use the same architecture"
+fi
 
 if [ "$NATIVE_ARCH" = "all" ]; then
     err "build_guest_gfx.sh requires a concrete NATIVE_ARCH (x86_64 or arm64-v8a)"
@@ -155,6 +165,17 @@ copy_guest_runtime_lib_if_present() {
     shift
     local candidate=""
 
+    if [ "$dest_name" = libz.so ]; then
+        local zlib_arch="${GUEST_ARCH:-$WINE_ARCH}"
+        local zlib_ext="$SYSROOT_EXT_LIB"
+        if [ -f "$BUILD_DIR/zlib-runtime/$zlib_arch/lib/libz.so" ]; then
+            zlib_ext="$BUILD_DIR/zlib-runtime/$zlib_arch/lib"
+        fi
+        python3 "$SCRIPT_DIR/copy_runtime_library.py" \
+            --ext "$zlib_ext" --sdk "$SYSROOT/usr/lib/$zlib_arch-linux-ohos" \
+            --dest "$OUTPUT_ROOT/lib" libz.so libz.so
+        return
+    fi
     [ -f "$OUTPUT_ROOT/lib/$dest_name" ] && return 0
 
     candidate="$(find_first_existing_file "$@" || true)"
@@ -263,6 +284,14 @@ INSTALL_ROOT="${INSTALL_ROOT:-$(find_first_existing_dir \
 RUNTIME_LIB_DIR="$(find_runtime_lib_dir "$INSTALL_ROOT" || true)"
 [ -n "$RUNTIME_LIB_DIR" ] || err "unable to locate lib/ under guest_gfx install root: $INSTALL_ROOT"
 
+# Mesa 25 uses one Gallium library and may not install per-driver aliases.
+# Verify build options AND the installed library hash before creating aliases;
+# a VirGL-only Gallium library cannot become Zink merely by renaming it.
+if [ "$MODE" = "zink" ]; then
+    python3 "$SCRIPT_DIR/guest_gfx_build_identity.py" verify-zink \
+        --install-root "$INSTALL_ROOT" --arch "$WINE_ARCH"
+fi
+
 log "=== Package guest_gfx bundle ($NATIVE_ARCH) ==="
 log "install root: $INSTALL_ROOT"
 log "runtime lib dir: $RUNTIME_LIB_DIR"
@@ -285,7 +314,7 @@ copy_tree_if_present "$RUNTIME_LIB_DIR/egl_vendor.d" "$OUTPUT_ROOT/lib/egl_vendo
 copy_tree_if_present "$RUNTIME_LIB_DIR/gallium" "$OUTPUT_ROOT/lib/gallium"
 
 # 所有支撑库由 build_ohos_guest_gfx.sh provision 到 sysroot-ext, 单一来源
-SYSROOT_EXT_LIB="$ROOT/build/sysroot-ext/usr/lib/x86_64-linux-ohos"
+SYSROOT_EXT_LIB="$BUILD_DIR/sysroot-ext/usr/lib/$TARGET"
 copy_support_lib_if_present "libdrm.so.2" \
     "$SYSROOT_EXT_LIB/libdrm.so.2" \
     "$SYSROOT_EXT_LIB/libdrm.so.2.4.0"
@@ -315,18 +344,18 @@ copy_support_lib_if_present "libffi.so" \
     "$SYSROOT_EXT_LIB/libffi.so.8"
 copy_guest_runtime_lib_if_present "libz.so" \
     "$SYSROOT_EXT_LIB/libz.so" \
-    "$SYSROOT/usr/lib/x86_64-linux-ohos/libz.so" \
-    "$ROOT/build/staging/wine-data/bin/x86_64-unix/libz.so" \
-    "$ROOT/build/merged_wine_data/bin/x86_64-unix/libz.so" \
+    "$SYSROOT/usr/lib/$TARGET/libz.so" \
+    "$ROOT/build/staging/wine-data/bin/${WINE_ARCH}-unix/libz.so" \
+    "$ROOT/build/merged_wine_data/bin/${WINE_ARCH}-unix/libz.so" \
     "$ROOT/build/merged_wine_data/bin/guest_gfx/lib/libz.so"
 copy_guest_runtime_lib_if_present "libc++_shared.so" \
     "$SYSROOT_EXT_LIB/libc++_shared.so" \
-    "$SYSROOT/usr/lib/x86_64-linux-ohos/libc++_shared.so" \
-    "$OHOS_SDK/native/llvm/lib/x86_64-linux-ohos/libc++_shared.so" \
-    "$TOOL_HOME/sdk/default/openharmony/native/llvm/lib/x86_64-linux-ohos/libc++_shared.so" \
-    "$TOOL_HOME/sdk/default/hms/native/BiSheng/lib/x86_64-linux-ohos/libc++_shared.so" \
-    "$ROOT/build/staging/wine-data/bin/x86_64-unix/libc++_shared.so" \
-    "$ROOT/build/merged_wine_data/bin/x86_64-unix/libc++_shared.so" \
+    "$SYSROOT/usr/lib/$TARGET/libc++_shared.so" \
+    "$OHOS_SDK/native/llvm/lib/$TARGET/libc++_shared.so" \
+    "$TOOL_HOME/sdk/default/openharmony/native/llvm/lib/$TARGET/libc++_shared.so" \
+    "$TOOL_HOME/sdk/default/hms/native/BiSheng/lib/$TARGET/libc++_shared.so" \
+    "$ROOT/build/staging/wine-data/bin/${WINE_ARCH}-unix/libc++_shared.so" \
+    "$ROOT/build/merged_wine_data/bin/${WINE_ARCH}-unix/libc++_shared.so" \
     "$ROOT/build/merged_wine_data/bin/guest_gfx/lib/libc++_shared.so"
 if [ -d "$INSTALL_ROOT/share/glvnd/egl_vendor.d" ]; then
     copy_tree_if_present "$INSTALL_ROOT/share/glvnd/egl_vendor.d" "$OUTPUT_ROOT/lib/egl_vendor.d"
@@ -341,6 +370,10 @@ materialize_bundle_alias "libGLESv2.so" "libGLESv2.so" "libGLESv2_mesa.so"
 materialize_dri_driver_alias "virtio_gpu_dri.so"
 materialize_dri_driver_alias "swrast_dri.so"
 materialize_dri_driver_alias "kms_swrast_dri.so"
+if [ "$MODE" = "zink" ]; then
+    materialize_dri_driver_alias "zink_dri.so"
+    cp "$INSTALL_ROOT/share/winehua/guest-gfx-build.json" "$OUTPUT_ROOT/guest-gfx-build.json"
+fi
 
 emit_env_file "$OUTPUT_ROOT/winehua-guest-gfx.env" "$OUTPUT_ROOT"
 
@@ -359,5 +392,8 @@ append_git_source_info "libdrm" "$LIBDRM_SOURCE_ROOT"
 [ -f "$OUTPUT_ROOT/winehua-guest-gfx.env" ] || err "failed to generate guest_gfx env file"
 [ -d "$OUTPUT_ROOT/lib" ] || err "guest_gfx bundle is missing lib/"
 [ -f "$OUTPUT_ROOT/lib/dri/virtio_gpu_dri.so" ] || err "guest_gfx bundle is missing lib/dri/virtio_gpu_dri.so"
+if [ "$MODE" = "zink" ]; then
+    [ -f "$OUTPUT_ROOT/lib/dri/zink_dri.so" ] || err "guest_gfx bundle is missing lib/dri/zink_dri.so"
+fi
 
 log "guest_gfx bundle ready: $OUTPUT_ROOT"

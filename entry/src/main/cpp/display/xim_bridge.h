@@ -13,6 +13,7 @@ extern "C" {
 /* 创建通道对, 返回子端 fd (调用方随 NCP spawn 以 fdName "xim_fd" 传递,
  * 所有权转移); 失败返回 -1。 */
 int xim_bridge_channel_init(void);
+void xim_bridge_shutdown(void);
 
 /* 转投 UTF-8 文本 (smoke ime / 产品 text-input), 子进程未就绪时 -1。 */
 int xim_bridge_send_text(const char *utf8);
@@ -28,6 +29,11 @@ typedef void (*xim_bridge_activation_cb)(int active, int x, int y,
  * server 侧无通知 (旧构建 / 未聚焦) 时不触发。 */
 void xim_bridge_set_activation_callback(xim_bridge_activation_cb cb,
                                         void *user);
+
+/* Query authoritative XIM focus, gated by the foreground host's IME policy.
+ * A Wayland text-input object is not created by an X11 Wine client. */
+void xim_bridge_set_armed(int armed);
+int xim_bridge_is_active(void);
 
 #ifdef __cplusplus
 }

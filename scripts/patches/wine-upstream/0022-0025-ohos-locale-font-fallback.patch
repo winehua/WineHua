@@ -1,0 +1,185 @@
+From 5909acce873c00ab0556e71ab4f6f112ea039149 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0025-ohos-locale-font-fallback
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 168e678c8c1ff2e5345cf8a4c21f686a1e903ebc88056f771a9d1f5b2328ca78
+
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index eeda0c7cd37b78cc92f9e8f2c7de3d57d6ab7d6b..8703fd31cfd789eecb00baaa1abdd88b1faafe8d 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -1208,6 +1208,54 @@ static struct gdi_font_face *create_face( struct gdi_font_family *family, const
+     return NULL;
+ }
+ 
++#ifdef __OHOS__
++static BOOL ohos_is_c_unix_locale( const char *name )
++{
++    return !name || !name[0] || !strcmp( name, "C" ) || !strcmp( name, "POSIX" )
++        || !strncmp( name, "C.", 2 ) || !strncmp( name, "POSIX.", 6 );
++}
++
++/* HarmonyOS musl often leaves Wine ACP at 1252 (C.UTF-8). The process is still
++ * launched with LANG=zh_CN.UTF-8; honor that so DEFAULT_CHARSET faces do not
++ * realize SHIFTJIS and decode GBK TextOutA as Japanese. */
++static UINT ohos_effective_ansi_cp(void)
++{
++    const char *lang;
++    UINT acp = ansi_cp.CodePage;
++
++    /* A prefix created in another language can retain its old ACP. An
++     * explicit launch locale must win for TextOutA and fallback matching. */
++    lang = getenv( "LC_ALL" );
++    if (ohos_is_c_unix_locale( lang )) lang = getenv( "LANG" );
++    if (lang)
++    {
++        if (!strncmp( lang, "en_US", 5 ) || !strncmp( lang, "en-US", 5 ))
++            return 1252;
++        if (!strncmp( lang, "zh_CN", 5 ) || !strncmp( lang, "zh_Hans", 7 ) ||
++            !strncmp( lang, "zh-CN", 5 ) || !strncmp( lang, "zh-Hans", 7 ))
++            return 936;
++        if (!strncmp( lang, "zh_TW", 5 ) || !strncmp( lang, "zh_HK", 5 ) ||
++            !strncmp( lang, "zh_MO", 5 ) || !strncmp( lang, "zh_Hant", 7 ) ||
++            !strncmp( lang, "zh-TW", 5 ) || !strncmp( lang, "zh-HK", 5 ) ||
++            !strncmp( lang, "zh-MO", 5 ) || !strncmp( lang, "zh-Hant", 7 ))
++            return 950;
++        if (!strncmp( lang, "ja", 2 ))
++            return 932;
++        if (!strncmp( lang, "ko", 2 ))
++            return 949;
++    }
++    if (lang && !ohos_is_c_unix_locale( lang )) return acp;
++    if (acp == 932 || acp == 936 || acp == 949 || acp == 950) return acp;
++    /* Product default is Simplified Chinese when no locale was selected. */
++    return 936;
++}
++#else
++static UINT ohos_effective_ansi_cp(void)
++{
++    return ansi_cp.CodePage;
++}
++#endif
++
+ int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
+                   const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
+                   void *data_ptr, SIZE_T data_size, UINT index, FONTSIGNATURE fs,
+@@ -2273,6 +2321,57 @@ static struct gdi_font_face *find_any_face( const LOGFONTW *lf, FONTSIGNATURE fs
+     return NULL;
+ }
+ 
++#ifdef __OHOS__
++static struct gdi_font_face *find_locale_fallback_face( const LOGFONTW *lf, BOOL can_use_bitmap )
++{
++    /* 鸿蒙黑体 — HarmonyOS_Sans_SC.ttf's registered localized family. */
++    static const WCHAR sc_harmonyW[] = { 0x9e3f, 0x8499, 0x9ed1, 0x4f53, 0 };
++    static const WCHAR sc_harmony_enW[] =
++        {'H','a','r','m','o','n','y','O','S',' ','S','a','n','s',' ','S','C',0};
++    static const WCHAR sc_notoW[] =
++        {'N','o','t','o',' ','S','a','n','s',' ','C','J','K',' ','S','C',0};
++    /* HarmonyOS_Sans_TC.ttf registers as 鴻蒙黑體 on this device. */
++    static const WCHAR tc_harmonyW[] = { 0x9d3b, 0x8499, 0x9ed1, 0x9ad4, 0 };
++    static const WCHAR tc_harmony_enW[] =
++        {'H','a','r','m','o','n','y','O','S',' ','S','a','n','s',' ','T','C',0};
++    static const WCHAR tc_notoW[] =
++        {'N','o','t','o',' ','S','a','n','s',' ','C','J','K',' ','T','C',0};
++    const WCHAR *names[4];
++    CHARSETINFO csi;
++    unsigned int i, n = 0;
++    struct gdi_font_face *face;
++
++    /* Never replace explicit charset or vertical-family selection. */
++    if (lf->lfCharSet != DEFAULT_CHARSET || lf->lfFaceName[0] == '@') return NULL;
++    if (!translate_charset_info( (DWORD *)(INT_PTR)ohos_effective_ansi_cp(), &csi, TCI_SRCCODEPAGE ))
++        return NULL;
++
++    switch (ohos_effective_ansi_cp())
++    {
++    case 936:
++        names[n++] = sc_harmonyW;
++        names[n++] = sc_harmony_enW;
++        names[n++] = sc_notoW;
++        break;
++    case 950:
++        names[n++] = tc_harmonyW;
++        names[n++] = tc_harmony_enW;
++        names[n++] = tc_notoW;
++        names[n++] = sc_harmonyW;
++        break;
++    default:
++        return NULL;
++    }
++
++    for (i = 0; i < n; i++)
++    {
++        if ((face = find_matching_face_by_name( names[i], NULL, lf, csi.fs, can_use_bitmap, NULL )))
++            return face;
++    }
++    return NULL;
++}
++#endif
++
+ static struct gdi_font_face *find_matching_face( const LOGFONTW *lf, CHARSETINFO *csi, BOOL can_use_bitmap,
+                                                  BOOL *substituted, const WCHAR **orig_name )
+ {
+@@ -2308,13 +2407,18 @@ static struct gdi_font_face *find_matching_face( const LOGFONTW *lf, CHARSETINFO
+        corresponding to the current ansi codepage */
+     if (!csi->fs.fsCsb[0])
+     {
+-        if (!translate_charset_info( (DWORD *)(INT_PTR)ansi_cp.CodePage, csi, TCI_SRCCODEPAGE ))
++        if (!translate_charset_info( (DWORD *)(INT_PTR)ohos_effective_ansi_cp(), csi, TCI_SRCCODEPAGE ))
+         {
+-            FIXME( "TCI failed on codepage %d\n", ansi_cp.CodePage );
++            FIXME( "TCI failed on codepage %d\n", ohos_effective_ansi_cp() );
+             csi->fs.fsCsb[0] = 0;
+         }
+     }
+ 
++#ifdef __OHOS__
++    /* Missing default-charset names prefer the matching locale UI face. */
++    if ((face = find_locale_fallback_face( lf, can_use_bitmap ))) return face;
++#endif
++
+     if ((face = find_any_face( lf, csi->fs, can_use_bitmap, want_vertical ))) return face;
+     if (csi->fs.fsCsb[0])
+     {
+@@ -4416,13 +4520,27 @@ static void get_nearest_charset( const WCHAR *family_name, struct gdi_font_face
+ 
+     int i;
+ 
+-    if (translate_charset_info( (DWORD*)(INT_PTR)ansi_cp.CodePage, csi, TCI_SRCCODEPAGE ))
++    if (translate_charset_info( (DWORD*)(INT_PTR)ohos_effective_ansi_cp(), csi, TCI_SRCCODEPAGE ))
+     {
+         const struct gdi_font_link *font_link;
+ 
+         if (csi->fs.fsCsb[0] & face->fs.fsCsb[0]) return;
+         font_link = find_gdi_font_link(family_name);
+         if (font_link && (csi->fs.fsCsb[0] & font_link->fs.fsCsb[0])) return;
++
++#ifdef __OHOS__
++        /* Keep A-API conversion on the process ANSI codepage. Noto CJK JP's
++         * OS/2 bits make the first-fsCsb walk below pick SHIFTJIS, which turns
++         * GBK TextOutA into mojibake even when the glyphs exist. */
++        switch (csi->ciACP)
++        {
++        case 932:
++        case 936:
++        case 949:
++        case 950:
++            return;
++        }
++#endif
+     }
+     for (i = 0; i < 32; i++)
+     {
+@@ -4436,7 +4554,7 @@ static void get_nearest_charset( const WCHAR *family_name, struct gdi_font_face
+ 
+     FIXME("returning DEFAULT_CHARSET face->fs.fsCsb[0] = %08x file = %s\n",
+ 	  face->fs.fsCsb[0], debugstr_w(face->file));
+-    csi->ciACP = ansi_cp.CodePage;
++    csi->ciACP = ohos_effective_ansi_cp();
+     csi->ciCharset = DEFAULT_CHARSET;
+ }
+ 

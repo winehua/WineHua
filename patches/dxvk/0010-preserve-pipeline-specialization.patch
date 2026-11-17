@@ -1,0 +1,50 @@
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -95,7 +95,8 @@
+   static bool freezeBoolSpecConstants(
+           SpirvCodeBuffer&       codeBuffer,
+           const DxvkBindingMask* bindingMask,
+-          uint32_t               bindingCount) {
++          uint32_t               bindingCount,
++          const uint32_t*        pipelineValues) {
+     const uint32_t* code = codeBuffer.data();
+     uint32_t wordCount = codeBuffer.dwords();
+ 
+@@ -147,10 +148,9 @@
+ 
+       if (opcode == spv::OpSpecConstantTrue || opcode == spv::OpSpecConstantFalse) {
+         uint32_t value = boolSpecValues[code[offset + 2]];
+-        if (bindingMask && value != uint32_t(-1)) {
+-          /* Binding bools use SpecId 0..bindingCount-1.  Other bool
+-           * specialization constants (for example legacy fixed-function
+-           * state) retain their SPIR-V default value. */
++        if ((bindingMask || pipelineValues) && value != uint32_t(-1)) {
++          // Binding and D3D9 fixed-function bools must use this pipeline's
++          // state. Freezing fog to its SPIR-V default silently disables it.
+           uint32_t specId = uint32_t(-1);
+           uint32_t scan = 5;
+           while (scan < wordCount) {
+@@ -166,8 +166,12 @@
+             if (!scanWords || scan + scanWords > wordCount) break;
+             scan += scanWords;
+           }
+-          if (specId < bindingCount)
++          if (bindingMask && specId < bindingCount)
+             value = bindingMask->test(specId) ? 1u : 0u;
++          else if (pipelineValues
++                && specId >= uint32_t(DxvkSpecConstantId::FirstPipelineConstant)
++                && specId - uint32_t(DxvkSpecConstantId::FirstPipelineConstant) < MaxNumSpecConstants)
++            value = pipelineValues[specId - uint32_t(DxvkSpecConstantId::FirstPipelineConstant)] != 0;
+         }
+         frozen[start] = (uint32_t(words) << 16) |
+           uint32_t(value ? spv::OpConstantTrue : spv::OpConstantFalse);
+@@ -469,7 +473,8 @@
+       freezeBgraUavSpecConstants(spirvCode, info.pipelineSpecConstants);
+ 
+     if (info.freezeBoolSpec)
+-      freezeBoolSpecConstants(spirvCode, info.boolSpecMask, info.boolSpecCount);
++      freezeBoolSpecConstants(spirvCode, info.boolSpecMask, info.boolSpecCount,
++        info.pipelineSpecConstants);
+ 
+     /* Dump the final module consumed by vkCreate*Pipelines.  The bool
+      * binding specialization workaround above can rewrite OpSpecConstantTrue

@@ -1,0 +1,17 @@
+From: HSL developers; ported from HSL 11c14d95
+Subject: [PATCH] dxvk/0006-publish-single-use-deferred-buffer-maps.patch
+
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -296,6 +296,10 @@
+         cDstBuffer = pBuffer->GetBuffer(),
+         cPhysSlice = bufferSlice
+       ] (DxvkContext* ctx) {
++        // Deferred Unmap does not publish single-use CPU writes. Publish the
++        // recorded slice before first use, through the existing precise path.
++        if (winehuaFlushDynamicMapped())
++          ctx->flushMappedBuffer(cDstBuffer, cPhysSlice);
+         ctx->invalidateBuffer(cDstBuffer, cPhysSlice);
+       });
+     } else {

@@ -1,0 +1,564 @@
+{
+  "schemaVersion": 1,
+  "status": "candidate-built-mini-ui-tested-not-promoted",
+  "upstream": {
+    "commit": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+    "tree": "54c4a5a48a3cc260c9d8765e11c2fab87d5d825a",
+    "files": 3660,
+    "bytes": 23492954,
+    "verifiedAllGitBlobs": true,
+    "completeTree": true
+  },
+  "adaptedCommit": "c3b2b2306347e16da04e512a52432cb9c921d221",
+  "adaptedTree": "fe8e476f8828d261dfa7f4f338a85144177b8058",
+  "productionPinUnchanged": "86ff33bbe299cd8959a6610198c169b67ec419db",
+  "patches": [
+    {
+      "path": "scripts/patches/fex-upstream/0001-migrate-fex-wow64-lookup-cache-commit.patch",
+      "sha256": "41003432c45254eae1ec0929154a44475422bde107400318eb7edc21930c35fa",
+      "commit": "6879348a2b7366c7f70aa66f87b252f85a74c74c",
+      "subject": "OHOS: migrate fex-wow64-lookup-cache-commit"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0002-migrate-fex-wow64-dynamic-l1-recommit.patch",
+      "sha256": "ec3f45d7002abad797d12f7ed197de5cbab3118160091168d22f510b3229fc33",
+      "commit": "cf360a505875755cfd5b52efa10d361f5d4077ba",
+      "subject": "OHOS: migrate fex-wow64-dynamic-l1-recommit"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0003-migrate-fex-arm64ec-lookup-cache-commit.patch",
+      "sha256": "9c7a3b21904b18365f4a6f50ea307ed2d25a793cb1e47810884299ee2c59fca7",
+      "commit": "ccb49800c860289f369929b2d11d6b7ae0bd3375",
+      "subject": "OHOS: migrate fex-arm64ec-lookup-cache-commit"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0004-migrate-fex-arm64ec-unaligned-diagnostics.patch",
+      "sha256": "838c219d7aba3a97d34315cd3c58c2a22ee67f610885cf259a20693618a91506",
+      "commit": "fa6a9b204e5b93912252dcaa4de7cb8d0f444546",
+      "subject": "OHOS: migrate fex-arm64ec-unaligned-diagnostics"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0005-migrate-fex-windows-unaligned-stderr.patch",
+      "sha256": "f50af92052ffb9fb3c224535af429e35acffdf925f7c7486a32ebd5b120d02cd",
+      "commit": "597d95884dbafede4e48c5a74078990f49e5230f",
+      "subject": "OHOS: migrate fex-windows-unaligned-stderr"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0006-migrate-fex-wow64-exact-store.patch",
+      "sha256": "612e4dcfe1c2dfadffceb2415cab3ddcc0cbb533ebd0ebe1db5efd19f010fb1b",
+      "commit": "677c849e08c2f4426594bb869c792c7413f9ff7c",
+      "subject": "OHOS: migrate fex-wow64-exact-store"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0007-migrate-fex-simd-zero.patch",
+      "sha256": "73a98c8069773f0d3858279bae0025acca72ee9990f94d040d77701cc044571c",
+      "commit": "aa9ea561242a3fb2cac5442de7d0fc945ae227f1",
+      "subject": "OHOS: migrate fex-simd-zero"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0008-migrate-fex-wow64-synthetic-return.patch",
+      "sha256": "e61baf420860c9a75b8a3c98eecdfceed7fedd873ff635570b50d5156f60c0da",
+      "commit": "3147606f360acf0cbaa0ea3443ea6f9285c78fe6",
+      "subject": "OHOS: migrate fex-wow64-synthetic-return"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0009-migrate-fex-windows-native-callret-fault.patch",
+      "sha256": "aff8ff7eb8f11d1aa177758915cca2e4a1e0af8ffbe7dfef50a325697a92ebcd",
+      "commit": "1faa7ebc38c9ecc6b29975d45b30f9d714997bd9",
+      "subject": "OHOS: migrate fex-windows-native-callret-fault"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0010-migrate-fex-windows-crt-file-open.patch",
+      "sha256": "9e24796b365d26c5aff5c01396e2ee6310309412ccb5294399800f9f2b6ef24a",
+      "commit": "c5401e4e73fc0182e6abcb56586de3e9980c7bd5",
+      "subject": "OHOS: migrate fex-windows-crt-file-open"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0011-migrate-fex-windows-jit-symbols.patch",
+      "sha256": "72ef551b45141f034dbb810612ddad277fe723a91ef9ba02df18d63fc839ddd6",
+      "commit": "a1ef0682c809605313f21f34f95f41cfc4ad6918",
+      "subject": "OHOS: migrate fex-windows-jit-symbols"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0012-migrate-fex-windows-jit-cost.patch",
+      "sha256": "bea2beac768b418bb189c2c269bc296b547eba110e2e2bdc826e22a406cf19e2",
+      "commit": "8b75336bf3cd74e00621f0b74df2fee3a13eb528",
+      "subject": "OHOS: migrate fex-windows-jit-cost"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0013-migrate-fex-windows-file-loading.patch",
+      "sha256": "a7886c5cd73c5550f43b940d7064541b1210d9c426ab04dad22649ec7f1715db",
+      "commit": "217ae886cac799b559f980039814c117b5f73c73",
+      "subject": "OHOS: migrate fex-windows-file-loading"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0014-migrate-fex-wow64-strict-mul24.patch",
+      "sha256": "8c65f91867780e1d8f260140d80e70ea1f1c0f54f8716d5ee57977d4cce88324",
+      "commit": "c9a1bb8d5758a094b2f234037cdf39733d533b0b",
+      "subject": "OHOS: migrate fex-wow64-strict-mul24"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0015-migrate-fex-pop-memory-precise-stack.patch",
+      "sha256": "40ed8500df2551dabc0ede923b03871c3a13946884b517e6cc34350dd6609ea4",
+      "commit": "858933f7c8c95b5c6a62831087ef7786b64283dc",
+      "subject": "OHOS: migrate fex-pop-memory-precise-stack"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0016-migrate-fex-memory-offset-fault-boundary.patch",
+      "sha256": "c5aebcea248c7cc43375d303019f57c18dd3b4d089bfc6ba85a3a5b95c6251a7",
+      "commit": "3138b4a49c0074614a1dc2b22a90c297cc6e95f7",
+      "subject": "OHOS: migrate fex-memory-offset-fault-boundary"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0017-migrate-fex-windows-vm-contract.patch",
+      "sha256": "49e36e0cd86014644c61738e017a12eba7a21d4d69430197a4500369a1adb21e",
+      "commit": "ab5312ca78b5705e07ad4397ba6389dedbbaabce",
+      "subject": "OHOS: migrate fex-windows-vm-contract"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0018-retain-production-emulator-identity-and-load-config-abi.patch",
+      "sha256": "a713676ca31c975fb420a4df0c38b94641a4a7bceec5a96e8186d707cef1862d",
+      "commit": "f14cde4bf48de5458e8dc008315980d2c3730e3b",
+      "subject": "OHOS: retain production emulator identity and load config ABI"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0019-retain-ir-dump-support-for-exact-smc-byte-snapshots.patch",
+      "sha256": "4c98f3744fbfb39077f6aaafe6b93e6ea50dd5c5f2df2063437114a4765bc947",
+      "commit": "cd76ac10f1b793558015917cfc782aaad89533ae",
+      "subject": "OHOS: retain IR dump support for exact SMC byte snapshots"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0020-unify-dep-notification-under-verified-current-process-policy.patch",
+      "sha256": "3e7036477a46de8054f0417c0333c91177d9563686119a66b3e5af436eba3205",
+      "commit": "f529f983e84f69698ddd417a6e84260cbc186bd2",
+      "subject": "OHOS: unify DEP notification under verified current-process policy"
+    },
+    {
+      "path": "scripts/patches/fex-upstream/0021-avoid-snapshot-scan-when-persistent-code-cache-is-disabled.patch",
+      "sha256": "2c8ad64ad8eb679533556682416957ebd822f98c4806cada0fc5ffc92990378a",
+      "commit": "c3b2b2306347e16da04e512a52432cb9c921d221",
+      "subject": "OHOS: avoid snapshot scan when persistent code cache is disabled"
+    }
+  ],
+  "productionAdaptations": [
+    {
+      "path": "scripts/patches/fex-missing-includes.patch",
+      "sha256": "c1eebabd4eb05c8ae5c5df52bdb23f21865809817b94d2a83a694f43576e1771",
+      "bytes": 1065,
+      "paths": [
+        "FEXCore/Source/Common/StringConv.h",
+        "Source/Windows/Common/CRT/Alloc.cpp",
+        "Source/Windows/Common/CRT/IO.cpp"
+      ],
+      "commit": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+      "conflicts": [],
+      "state": "upstream-equivalent",
+      "evidence": {
+        "commit": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+        "files": [
+          "FEXCore/Source/Common/StringConv.h",
+          "Source/Windows/Common/CRT/Alloc.cpp",
+          "Source/Windows/Common/CRT/IO.cpp"
+        ],
+        "contract": "Required includes and Windows locale entry points are already present"
+      }
+    },
+    {
+      "path": "scripts/patches/fex-winapi-locale-stubs.patch",
+      "sha256": "c6d15f50e97075c93c6fc60de576cd6b93b664eaea2f6046d635a914dd7f786b",
+      "bytes": 565,
+      "paths": [
+        "Source/Windows/Common/WinAPI/Misc.cpp"
+      ],
+      "commit": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+      "conflicts": [],
+      "state": "upstream-equivalent",
+      "evidence": {
+        "commit": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d",
+        "files": [
+          "Source/Windows/Common/WinAPI/Misc.cpp"
+        ],
+        "contract": "Required includes and Windows locale entry points are already present"
+      }
+    },
+    {
+      "path": "scripts/patches/fex-wow64-lookup-cache-commit.patch",
+      "sha256": "4b86fc2eaeee92d008a5895ceb4c7cc4d1be9fcb5c4e9df024c435be5230a210",
+      "bytes": 2597,
+      "paths": [
+        "FEXCore/Source/Interface/Core/LookupCache.cpp"
+      ],
+      "commit": "6879348a2b7366c7f70aa66f87b252f85a74c74c",
+      "conflicts": [
+        "FEXCore/Source/Interface/Core/LookupCache.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-wow64-dynamic-l1-recommit.patch",
+      "sha256": "1746da57573b77b91cdbb3f66abf7c677679bd48c758dd8a0df0c9211a411872",
+      "bytes": 1205,
+      "paths": [
+        "FEXCore/Source/Interface/Core/LookupCache.h"
+      ],
+      "commit": "cf360a505875755cfd5b52efa10d361f5d4077ba",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-arm64ec-lookup-cache-commit.patch",
+      "sha256": "43a33e8417cacdefd5ee90964a888fc1bbdb98448f58aed10ee37eebefea83aa",
+      "bytes": 5165,
+      "paths": [
+        "FEXCore/Source/Interface/Core/LookupCache.cpp",
+        "FEXCore/Source/Interface/Core/LookupCache.h"
+      ],
+      "commit": "ccb49800c860289f369929b2d11d6b7ae0bd3375",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-arm64ec-unaligned-diagnostics.patch",
+      "sha256": "2a9ae7c10cf362790a31bba5096f36dc9f40ac4ee0782646dd41e095a12a4809",
+      "bytes": 3515,
+      "paths": [
+        "Source/Windows/ARM64EC/Module.cpp"
+      ],
+      "commit": "fa6a9b204e5b93912252dcaa4de7cb8d0f444546",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-unaligned-stderr.patch",
+      "sha256": "06c068f1eb75798c53db824a256b27f68b54a46a368d3894c1b14b9b909bd50a",
+      "bytes": 3866,
+      "paths": [
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "commit": "597d95884dbafede4e48c5a74078990f49e5230f",
+      "conflicts": [
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-wow64-exact-store.patch",
+      "sha256": "78157572a389bfdd63a40f559b2d8c45b7308209e54ee7f91b5bd11c5e3bf371",
+      "bytes": 6861,
+      "paths": [
+        "FEXCore/Source/Interface/Context/Context.h",
+        "FEXCore/Source/Interface/Core/Core.cpp",
+        "FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp"
+      ],
+      "commit": "677c849e08c2f4426594bb869c792c7413f9ff7c",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-simd-zero.patch",
+      "sha256": "778fd618c516295ea2443001a3f1d3d0502cb82017f01bfe7418303e932b7145",
+      "bytes": 1606,
+      "paths": [
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp",
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp"
+      ],
+      "commit": "aa9ea561242a3fb2cac5442de7d0fc945ae227f1",
+      "conflicts": [
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-smc-block-state.patch",
+      "sha256": "86602d07e8cb4eab602a333a8653c2c50ed9d3198bbe30904f75188daba7bc87",
+      "bytes": 1231,
+      "paths": [
+        "FEXCore/Source/Interface/Core/Core.cpp"
+      ],
+      "commit": "aa9ea561242a3fb2cac5442de7d0fc945ae227f1",
+      "conflicts": [
+        "FEXCore/Source/Interface/Core/Core.cpp"
+      ],
+      "state": "upstream-equivalent",
+      "evidence": {
+        "commit": "b21c49352ea56f23ececbe3c87f0fc681be8024b",
+        "file": "FEXCore/Source/Interface/Core/Core.cpp",
+        "contract": "StartNewBlock after both full-SMC successors; retained relocatable invalidation"
+      }
+    },
+    {
+      "path": "scripts/patches/fex-wow64-synthetic-return.patch",
+      "sha256": "aba3b803fb25ae5d1e971792a9539cd60f48a1391a9e79cc0845737b16fde401",
+      "bytes": 2556,
+      "paths": [
+        "Source/Windows/Common/CallRetStack.h",
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "commit": "3147606f360acf0cbaa0ea3443ea6f9285c78fe6",
+      "conflicts": [
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-native-callret-fault.patch",
+      "sha256": "6cafc52b00f7b67c3f94e0089a193cdacc7522a8bcedf81fd7baf8dd9687a4bb",
+      "bytes": 2729,
+      "paths": [
+        "Source/Windows/ARM64EC/Module.cpp",
+        "Source/Windows/Common/CallRetStack.h",
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "commit": "1faa7ebc38c9ecc6b29975d45b30f9d714997bd9",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-crt-file-open.patch",
+      "sha256": "d8a4bb640d8cf534e8c3213f96ab87ca367573d678103e5c7a66e7ab78c7a63c",
+      "bytes": 929,
+      "paths": [
+        "Source/Windows/Common/CRT/IO.cpp"
+      ],
+      "commit": "c5401e4e73fc0182e6abcb56586de3e9980c7bd5",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-jit-symbols.patch",
+      "sha256": "1769aa1547880535e8659be52db3b149fe4b37cc0a13bffafc9a834369336119",
+      "bytes": 2600,
+      "paths": [
+        "FEXCore/Source/Common/JitSymbols.cpp",
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "commit": "a1ef0682c809605313f21f34f95f41cfc4ad6918",
+      "conflicts": [
+        "FEXCore/Source/Common/JitSymbols.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-jit-cost.patch",
+      "sha256": "e0e589966d395e534f0d6880d3f8b4eff2065ba30e16baa9cc89e1756391818e",
+      "bytes": 14487,
+      "paths": [
+        "FEXCore/Source/Interface/Context/Context.h",
+        "FEXCore/Source/Interface/Core/Core.cpp",
+        "FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp",
+        "FEXCore/include/FEXCore/Debug/InternalThreadState.h",
+        "FEXCore/include/FEXCore/Utils/JITCompileDiagnostics.h"
+      ],
+      "commit": "8b75336bf3cd74e00621f0b74df2fee3a13eb528",
+      "conflicts": [
+        "FEXCore/Source/Interface/Context/Context.h",
+        "FEXCore/Source/Interface/Core/Core.cpp",
+        "FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-file-loading.patch",
+      "sha256": "32b6c09eb8ae342d7d072ff14f349d8b3402b3a0868e60e280376eeee80a608b",
+      "bytes": 8042,
+      "paths": [
+        "FEXCore/Source/Interface/Config/Config.cpp",
+        "FEXCore/Source/Utils/FileLoading.cpp",
+        "Source/Common/Config.cpp",
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "commit": "217ae886cac799b559f980039814c117b5f73c73",
+      "conflicts": [
+        "Source/Windows/WOW64/Module.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-wow64-strict-mul24.patch",
+      "sha256": "02489f11b5c49261d49d6225bd4df39879373cd4f25090df54ab9b444647f2b4",
+      "bytes": 2777,
+      "paths": [
+        "FEXCore/Source/Common/SoftFloat.h",
+        "FEXCore/Source/Common/StrictMul24.h"
+      ],
+      "commit": "c9a1bb8d5758a094b2f234037cdf39733d533b0b",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-pop-memory-precise-stack.patch",
+      "sha256": "1a1000e9bd80590880ec3c86cd089939f6005693338bdfbd7aead829d72ea7cd",
+      "bytes": 4443,
+      "paths": [
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp",
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher.h"
+      ],
+      "commit": "858933f7c8c95b5c6a62831087ef7786b64283dc",
+      "conflicts": [
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher.h"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-memory-offset-fault-boundary.patch",
+      "sha256": "3862b70c808b67a627ccab51ea8e0c056bb94f31af9834c173919b74cd5515b8",
+      "bytes": 636,
+      "paths": [
+        "FEXCore/Source/Interface/Core/OpcodeDispatcher.h"
+      ],
+      "commit": "3138b4a49c0074614a1dc2b22a90c297cc6e95f7",
+      "conflicts": [],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    },
+    {
+      "path": "scripts/patches/fex-windows-vm-contract.patch",
+      "sha256": "e3b6d9ca3e7a5639d61e49e54a7ddd1d208f0246bbc60edb7e8071a168ef4634",
+      "bytes": 31109,
+      "paths": [
+        "FEXCore/Source/Interface/Core/Core.cpp",
+        "FEXCore/Source/Interface/Core/Frontend.cpp",
+        "FEXCore/Source/Interface/Core/Frontend.h",
+        "FEXCore/Source/Interface/Core/X86Tables/X86Tables.h",
+        "FEXCore/include/FEXCore/HLE/SyscallHandler.h",
+        "Source/Windows/ARM64EC/Module.cpp",
+        "Source/Windows/Common/InvalidationTracker.cpp",
+        "Source/Windows/Common/InvalidationTracker.h",
+        "Source/Windows/WOW64/Module.cpp",
+        "Source/Windows/WOW64/libwow64fex.def"
+      ],
+      "commit": "ab5312ca78b5705e07ad4397ba6389dedbbaabce",
+      "conflicts": [
+        "FEXCore/Source/Interface/Core/Core.cpp",
+        "FEXCore/Source/Interface/Core/Frontend.cpp",
+        "FEXCore/Source/Interface/Core/Frontend.h",
+        "Source/Windows/Common/InvalidationTracker.cpp"
+      ],
+      "state": "migrated-needs-semantic-and-runtime-regression"
+    }
+  ],
+  "retainedForkCommits": [
+    "58483310a7a18e9a99eb252ab97aaac485c5f86f",
+    "86ff33bbe299cd8959a6610198c169b67ec419db"
+  ],
+  "dependencies": [
+    {
+      "path": "External/Catch2",
+      "commit": "b3fb4b9feafcd8d91c5cb510a4775143fdbef02f",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/Vulkan-Headers",
+      "commit": "ee2ec5fd83dafce291024683b50dc89219333076",
+      "tree": "086b8a8db05a51b9424e4d80d480787461351c71",
+      "files": 89,
+      "bytes": 42419064,
+      "allBlobsVerified": true,
+      "apiQuerySha": "ee2ec5fd83dafce291024683b50dc89219333076",
+      "treeReconstructed": true
+    },
+    {
+      "path": "External/drm-headers",
+      "commit": "3e49836995c1dcb3df709440ad2f270b569c6a5f",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/fex-gcc-target-tests-bins",
+      "commit": "442678a134e2d25e759c430cca32e06e9e142f1f",
+      "state": "not-used-BUILD_TESTING-off"
+    },
+    {
+      "path": "External/fex-gvisor-tests-bins",
+      "commit": "71349ae6d14ac2e3e792730e240aecd8076cee6c",
+      "state": "not-used-BUILD_TESTING-off"
+    },
+    {
+      "path": "External/fex-posixtest-bins",
+      "commit": "9ae29638f8000c1603f16385ed1cf6c4c23ee414",
+      "state": "not-used-BUILD_TESTING-off"
+    },
+    {
+      "path": "External/fmt",
+      "commit": "c07e2aa4b130b4fd359a1c6455a5201b17af01fa",
+      "tree": "f7d6122a22a4b5a2241e9d14570817633b55ddc4",
+      "files": 145,
+      "bytes": 3140256,
+      "allBlobsVerified": true,
+      "apiQuerySha": "c07e2aa4b130b4fd359a1c6455a5201b17af01fa",
+      "treeReconstructed": true
+    },
+    {
+      "path": "External/jemalloc_glibc",
+      "commit": "8436195ad5e1bc347d9b39743af3d29abee59f06",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/range-v3",
+      "commit": "ca1388fb9da8e69314dda222dc7b139ca84e092f",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/rpmalloc",
+      "commit": "ed227446afce6ff505b312bae1e10a3daaeeea39",
+      "tree": "798e63cc44794bb5d8c21bcd5eae0c4f491f124c",
+      "files": 39,
+      "bytes": 375861,
+      "allBlobsVerified": true,
+      "apiQuerySha": "ed227446afce6ff505b312bae1e10a3daaeeea39",
+      "treeReconstructed": true
+    },
+    {
+      "path": "External/tracy",
+      "commit": "650c98ece70da9e155e7ba1c2b3ee16004aae118",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/unordered_dense",
+      "commit": "3234af2c03549bc85656bfd3a86993bf1cd8aef1",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/vixl",
+      "commit": "6561d40650885ad24fbd0aa0cdb20ccb4808d444",
+      "tree": "884242f7e5dc5bcd53eaf44aef69c87bd2808afa",
+      "files": 3157,
+      "bytes": 424811628,
+      "allBlobsVerified": true,
+      "apiQuerySha": "6561d40650885ad24fbd0aa0cdb20ccb4808d444",
+      "treeReconstructed": true
+    },
+    {
+      "path": "External/xxhash",
+      "commit": "e626a72bc2321cd320e953a0ccf1584cad60f363",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "External/zydis",
+      "commit": "9bfadd6a55fc92dbd37fa3ba089bf8b36622df4f",
+      "state": "reused-verified-source-relative-links"
+    },
+    {
+      "path": "Source/Common/cpp-optparse",
+      "commit": "9f94388a339fcbb0bc95c17768eb786c85988f6e",
+      "state": "reused-verified-source-relative-links"
+    }
+  ],
+  "build": {
+    "configuration": "RelWithDebInfo",
+    "lto": false,
+    "testing": false,
+    "strictMul24": false,
+    "exactStoreDiagnostics": false,
+    "wow64ExactStoreCompiled": true,
+    "arm64ecExactStoreCompiled": false,
+    "toolchain": "llvm-mingw-20260826-ucrt; clang 23.1.0"
+  },
+  "semanticChanges": [
+    "Preserve optional unaligned result including nullopt and handled zero offset",
+    "Synthetic bridge return uses upstream pre-call RIP/RSP publication; consumes prediction only if RIP/RSP and entry identity still match",
+    "Retain decoder snapshots and exact mutable-code validation; retain upstream precise fetch faults and readonly relocatable CRC checks",
+    "Exclude mutable snapshot blocks from persistent disk code cache; reject hits crossing mutable or unavailable pages",
+    "Retain query-only WOW64 DEP policy and validate current-process notifications before accepting facts"
+  ],
+  "deviceValidated": false,
+  "deviceEvidence": "docs/upstream-sync/validation/fex-mini.json"
+}

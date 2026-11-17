@@ -1,0 +1,52 @@
+From e2c782a8251e32dd71fa2bc996256e0f0fda960c Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0024-ohos-scan-prefix-fonts
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 3d1e1d06662fdcec9519d44dc6df7fee08bffb94249ba443ca1b3c2366df71f2
+
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index c17e7d97edcbc8495464b2280da293bccca05248..905af13354d834fa42ebafbd68765c6ad13103b0 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -1560,6 +1560,28 @@ sym_not_found:
+     return FALSE;
+ }
+ 
++#ifdef __OHOS__
++static void load_ohos_windows_fonts(void)
++{
++    const char *prefix = getenv( "WINEPREFIX" );
++    char font_dir[PATH_MAX];
++    int len;
++
++    /* C:\windows\fonts is reached through the DOS drive map. That scan does
++     * not yield user-imported TTFs in the NAPI sandbox, while POSIX opendir
++     * of the same directory (as used for /system/fonts) does. */
++    if (!prefix || !prefix[0])
++        prefix = "/data/storage/el2/base/files/.wine";
++
++    len = snprintf( font_dir, sizeof(font_dir), "%s/drive_c/windows/fonts", prefix );
++    if (len > 0 && (size_t)len < sizeof(font_dir))
++        ReadFontDir( font_dir, FALSE );
++    len = snprintf( font_dir, sizeof(font_dir), "%s/drive_c/windows/Fonts", prefix );
++    if (len > 0 && (size_t)len < sizeof(font_dir))
++        ReadFontDir( font_dir, FALSE );
++}
++#endif
++
+ /*************************************************************
+  * freetype_load_fonts
+  */
+@@ -1587,6 +1609,9 @@ static void freetype_load_fonts(void)
+ #elif defined(__ANDROID__)
+     ReadFontDir("/system/fonts", TRUE);
+ #endif
++#ifdef __OHOS__
++    load_ohos_windows_fonts();
++#endif
+ }
+ 
+ /* Some fonts have large usWinDescent values, as a result of storing signed short

@@ -84,3 +84,11 @@
 [submodule "thirdparty/xserver"]
 	path = thirdparty/xserver
 	url = https://gitlab.freedesktop.org/xorg/xserver.git
+
+[submodule "thirdparty/wine-valve"]
+	path = thirdparty/wine-valve
+	url = https://github.com/ValveSoftware/wine.git
+
+[submodule "thirdparty/fex"]
+	path = thirdparty/fex
+	url = https://github.com/FEX-Emu/FEX.git

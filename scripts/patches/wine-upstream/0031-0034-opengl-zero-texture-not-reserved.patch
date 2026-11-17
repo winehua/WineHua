@@ -1,0 +1,23 @@
+From 5fbf3c04d5d62f95640c7ad7e9f2a8c2c12efaff Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0034-opengl-zero-texture-not-reserved
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 4b7cfae2be182f6ed48237573849750642391a7b990045da3625308a9eb79730
+
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+index b91e3db7cab3d939f22b6a6177832dbf25faf630..095e26cee9b223823b79c515a56e48971ac71ee1 100644
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -333,6 +333,9 @@ BOOL is_wine_reserved_texture( TEB *teb, GLuint tex )
+     struct context *ctx;
+     unsigned int i;
+ 
++    /* Zero denotes the default texture / an empty framebuffer attachment,
++     * never an allocated texture. Unused internal slots are also zero. */
++    if (!tex) return FALSE;
+     if (!(ctx = get_current_context( teb, NULL, NULL ))) return FALSE;
+ 
+     assert( ctx->base.share );

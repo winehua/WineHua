@@ -1,0 +1,29 @@
+From 0bef4e2244ea0f6249ca256cac6e4e1cbb47328c Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation:
+ 0054-ntdll-broker-preserve-resolved-image-path
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 8f632a08d23c27bcc532f6514bc3b82349590ad846f3789d8c2357401f95aff9
+
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index f0fa273e674dfc1f557045f970be7671dccdc041..4bf1f3b05c0c095fe7eac3c39cfc75983182c424 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -210,8 +210,12 @@ static char **build_broker_argv( const RTL_USER_PROCESS_PARAMETERS *params )
+ 
+     if (!consumed)
+     {
+-        free( image );
+-        return argv;
++        /* lpApplicationName may resolve a relative executable while argv[0]
++         * remains a basename or an unrelated display name. The broker needs
++         * ImagePathName to inspect the PE and preserve its preferred base;
++         * it cannot resolve argv[0] against the Windows current directory.
++         * Replace only argv[0], retaining the command-line arguments. */
++        consumed = argc ? 1 : 0;
+     }
+ 
+     for (argc = 0; argv[argc]; argc++);

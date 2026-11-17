@@ -48,6 +48,14 @@ bool wl_ohos_egl_active(void);
  */
 void wl_ohos_egl_finish(void);
 
+// Borrow fd; enqueue producer completion before sampling in the compositor.
+// On failure the caller must discard the frame and return fd to its queue.
+bool wl_ohos_egl_wait_acquire_fence(int fd);
+
+// Queue owns the exported fd. -1 means the synchronous glFinish fallback.
+// Runs on the compositor thread; preserves its previous EGL binding.
+int wl_ohos_egl_export_release_fence(void);
+
 /*
  * GPU 同步点计数: 每次 glFinish 成功自增。guest 帧归还侧用它做不变量检查
  * (known-issues §2.6): 「buffer 交给合成器之后有没有发生过一次 GPU 同步」

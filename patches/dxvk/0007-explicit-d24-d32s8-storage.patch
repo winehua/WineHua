@@ -1,0 +1,37 @@
+From: HSL developers; ported from HSL 11c14d95
+Subject: [PATCH] dxvk/0007-explicit-d24-d32s8-storage.patch
+
+diff --git a/src/dxgi/dxgi_format.cpp b/src/dxgi/dxgi_format.cpp
+--- a/src/dxgi/dxgi_format.cpp
++++ b/src/dxgi/dxgi_format.cpp
+@@ -3,6 +3,7 @@
+ #include <array>
+ 
+ #include "../util/util_env.h"
++#include "../util/util_error.h"
+ 
+ namespace dxvk {
+   
+@@ -853,9 +854,19 @@
+   : m_dxgiFormats (g_dxgiFormats), m_dxgiFamilies(g_dxgiFamilies) {
+     // AMD do not support 24-bit depth buffers on Vulkan,
+     // so we have to fall back to a 32-bit depth format.
+-    if (!CheckImageFormatSupport(adapter, VK_FORMAT_D24_UNORM_S8_UINT,
+-          VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+-          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
++    // Explicit storage workaround. Keep the whole D24 family and its existing
++    // pack/unpack conversion together; never spoof physical capabilities.
++    const bool preferD32 = env::getEnvVar("WINEHUA_DXVK_D24_STORAGE_D32") == "1";
++    const VkFormatFeatureFlags depthFeatures =
++      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
++      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
++    if (preferD32 && !CheckImageFormatSupport(adapter,
++          VK_FORMAT_D32_SFLOAT_S8_UINT, depthFeatures))
++      throw DxvkError("D24 storage workaround requires actual D32S8 attachment and sampling support");
++    if (preferD32)
++      Logger::info("DXGI: explicit D32S8 depth storage enabled; physical capabilities unchanged");
++    if (preferD32 || !CheckImageFormatSupport(adapter,
++          VK_FORMAT_D24_UNORM_S8_UINT, depthFeatures)) {
+       Logger::info("DXGI: VK_FORMAT_D24_UNORM_S8_UINT -> VK_FORMAT_D32_SFLOAT_S8_UINT");
+       RemapDepthFormat(DXGI_FORMAT_R24G8_TYPELESS,        VK_FORMAT_D32_SFLOAT_S8_UINT);
+       RemapDepthFormat(DXGI_FORMAT_R24_UNORM_X8_TYPELESS, VK_FORMAT_D32_SFLOAT_S8_UINT);

@@ -1,0 +1,79 @@
+From: VintagePomeloPro (migrated from main branch ad7bdd7f092)
+Subject: [PATCH] win32u: allow disabling GDI text antialiasing per process
+
+Legacy titles render text with GDI into an offscreen bitmap and then threshold
+that bitmap into a 1-bit glyph mask (the GGE/XYQ private-server clients keep
+only pixels above 0x7ffe as ink). Grayscale antialiasing turns most of a 12px
+CJK stroke grey, so the mask keeps only stroke cores and every in-game string
+falls apart into scattered fragments that read like mojibake.
+
+Add WINEHUA_FONT_AA=bitmap|gray, read once per process, so game processes can
+request bilevel glyphs while the Wine desktop keeps the grayscale default.
+The app side (WineEngineService) already pushes WINEHUA_FONT_AA=bitmap for
+game launches on this branch; this patch adds the wine-side reader so the
+override takes effect. Migrated from main-branch wine commit ad7bdd7f092
+(24bbc2b3 "fix(compat): render legacy GDI game text without antialiasing");
+context offsets adapted to the wine-valve baseline.
+---
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index dcc75e8096b..9c29f498e42 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -4517,6 +4517,44 @@ static struct gdi_font *select_font( LOGFONTW *lf, FMAT2 dcmat, BOOL can_use_bit
+     return font;
+ }
+ 
++/*************************************************************
++ *           ohos_font_aa_override
++ *
++ * Per-process override for GDI text antialiasing.
++ *
++ * A large family of legacy CJK (and western) titles renders text with GDI into
++ * an offscreen bitmap and then thresholds that bitmap into a 1-bit glyph mask -
++ * e.g. the popular GGE/XYQ private-server clients keep only pixels above
++ * 0x7ffe as ink. Grayscale antialiasing turns most of a 12px CJK stroke grey,
++ * so the mask keeps only stroke cores and the rendered text falls apart into
++ * scattered fragments.
++ *
++ * Game processes can therefore ask for bilevel glyphs without changing the
++ * desktop appearance:
++ *
++ *     WINEHUA_FONT_AA=bitmap -> GGO_BITMAP      (no antialiasing)
++ *     WINEHUA_FONT_AA=gray   -> GGO_GRAY4_BITMAP
++ */
++static UINT ohos_font_aa_override(void)
++{
++#ifdef __OHOS__
++    static int cached = -1;
++
++    if (cached < 0)
++    {
++        const char *value = getenv( "WINEHUA_FONT_AA" );
++
++        cached = 0;
++        if (value && !strcmp( value, "bitmap" )) cached = GGO_BITMAP;
++        else if (value && !strcmp( value, "gray" )) cached = GGO_GRAY4_BITMAP;
++        TRACE( "OHOS font AA override env=%s -> %#x\n", value ? value : "(unset)", cached );
++    }
++    return cached;
++#else
++    return 0;
++#endif
++}
++
+ /*************************************************************
+  * font_SelectFont
+  */
+@@ -4543,6 +4581,12 @@ static HFONT font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+             break;
+         }
+ 
++        {
++            UINT forced_aa = ohos_font_aa_override();
++
++            if (forced_aa) *aa_flags = forced_aa;
++        }
++
+         if (lf.lfOutPrecision == OUT_TT_ONLY_PRECIS)
+             can_use_bitmap = FALSE;
+ 

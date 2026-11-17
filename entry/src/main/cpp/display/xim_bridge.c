@@ -15,6 +15,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <hilog/log.h>
@@ -34,19 +35,41 @@ static pthread_mutex_t g_chan_mutex = PTHREAD_MUTEX_INITIALIZER;
 static xim_bridge_activation_cb g_act_cb = 0;
 static void *g_act_user = 0;
 static int g_reader_started = 0;
+static pthread_t g_reader;
+static int g_active = 0;
+static int g_armed = 0;
+
+void xim_bridge_set_armed(int armed)
+{
+    pthread_mutex_lock(&g_chan_mutex);
+    g_armed = !!armed;
+    pthread_mutex_unlock(&g_chan_mutex);
+}
+
+int xim_bridge_is_active(void)
+{
+    pthread_mutex_lock(&g_chan_mutex);
+    int active = g_chan_fd >= 0 && g_armed && g_active;
+    pthread_mutex_unlock(&g_chan_mutex);
+    return active;
+}
 
 int xim_bridge_channel_init(void)
 {
+    xim_bridge_shutdown();
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
     {
         OHERR("socketpair failed errno=%{public}d", errno);
         return -1;
     }
+    struct timeval timeout = {.tv_sec = 0, .tv_usec = 200000};
+    setsockopt(sv[0], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    pthread_mutex_lock(&g_chan_mutex);
     g_chan_fd = sv[0];
+    pthread_mutex_unlock(&g_chan_mutex);
     OHLOG("channel paired main_fd=%{public}d child_fd=%{public}d", sv[0], sv[1]);
-    if (g_act_cb)
-        StartActivationReader();
+    StartActivationReader();
     return sv[1]; /* 调用方 (spawn) 持有并转移所有权 */
 }
 
@@ -67,6 +90,7 @@ static int write_all(int fd, const void *buf, size_t len)
                 continue;
             return -1;
         }
+        if (n == 0) return -1;
         p += n;
         len -= (size_t)n;
     }
@@ -75,7 +99,7 @@ static int write_all(int fd, const void *buf, size_t len)
 
 int xim_bridge_send_text(const char *utf8)
 {
-    if (!utf8 || g_chan_fd < 0)
+    if (!utf8)
         return -1;
     size_t len = strlen(utf8);
     if (len == 0 || len > 64 * 1024)
@@ -83,8 +107,10 @@ int xim_bridge_send_text(const char *utf8)
 
     uint32_t hdr[2] = {XIM_CHAN_MAGIC, (uint32_t)len};
     pthread_mutex_lock(&g_chan_mutex);
-    int ok = write_all(g_chan_fd, hdr, sizeof(hdr)) == 0 &&
+    int ok = g_chan_fd >= 0 && write_all(g_chan_fd, hdr, sizeof(hdr)) == 0 &&
              write_all(g_chan_fd, utf8, len) == 0;
+    // A partial record cannot be resumed as a new message. Invalidate it.
+    if (!ok && g_chan_fd >= 0) shutdown(g_chan_fd, SHUT_RDWR);
     pthread_mutex_unlock(&g_chan_mutex);
     if (!ok)
     {
@@ -145,12 +171,20 @@ static void *ActivationReaderMain(void *arg)
         }
         if (read_full(fd, payload, sizeof(payload)) != 0)
             break;
+        pthread_mutex_lock(&g_chan_mutex);
+        if (fd == g_chan_fd) g_active = payload[0] == 1;
+        cb = g_act_cb;
+        user = g_act_user;
+        pthread_mutex_unlock(&g_chan_mutex);
         if (cb)
             cb(payload[0] == 1 ? 1 : 0,
                (int)payload[1], (int)payload[2],
                (int)payload[3], (int)payload[4], user);
     }
 
+    pthread_mutex_lock(&g_chan_mutex);
+    if (fd == g_chan_fd) g_active = 0;
+    pthread_mutex_unlock(&g_chan_mutex);
     OHERR("upstream reader exit (server gone?) — notify deactivate");
     if (cb)
         cb(0, 0, 0, 0, 0, user);
@@ -159,22 +193,31 @@ static void *ActivationReaderMain(void *arg)
 
 static void StartActivationReader(void)
 {
-    int ready;
     pthread_mutex_lock(&g_chan_mutex);
-    ready = g_chan_fd >= 0 && g_act_cb && !g_reader_started;
-    if (ready)
-        g_reader_started = 1;
-    pthread_mutex_unlock(&g_chan_mutex);
-    if (!ready)
-        return;
-    pthread_t t;
-    if (pthread_create(&t, NULL, ActivationReaderMain, NULL) != 0)
-    {
-        pthread_mutex_lock(&g_chan_mutex);
-        g_reader_started = 0;
-        pthread_mutex_unlock(&g_chan_mutex);
-        OHERR("activation reader thread create failed");
+    if (g_chan_fd >= 0 && g_act_cb && !g_reader_started) {
+        if (pthread_create(&g_reader, NULL, ActivationReaderMain, NULL) == 0)
+            g_reader_started = 1;
+        else OHERR("activation reader thread create failed");
     }
+    pthread_mutex_unlock(&g_chan_mutex);
+}
+
+// Called on compositor teardown before a replacement channel can be created.
+// shutdown wakes recv; join prevents stale activation from entering a new session.
+void xim_bridge_shutdown(void)
+{
+    pthread_mutex_lock(&g_chan_mutex);
+    int fd = g_chan_fd;
+    int join = g_reader_started;
+    g_chan_fd = -1;
+    g_active = 0;
+    if (fd >= 0) shutdown(fd, SHUT_RDWR);
+    pthread_mutex_unlock(&g_chan_mutex);
+    if (join) pthread_join(g_reader, NULL);
+    if (fd >= 0) close(fd);
+    pthread_mutex_lock(&g_chan_mutex);
+    g_reader_started = 0;
+    pthread_mutex_unlock(&g_chan_mutex);
 }
 
 void xim_bridge_set_activation_callback(xim_bridge_activation_cb cb, void *user)

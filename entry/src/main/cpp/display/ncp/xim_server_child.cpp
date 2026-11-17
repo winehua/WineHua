@@ -1,3 +1,4 @@
+#include "bounded_log.h"
 /* xim_server_child.cpp — XIM server NCP 子进程 (XIM spec §3 NCP 承载)。
  *
  * 为什么在子进程: X1 探针实测 app 主进程 XOpenDisplay 挂起不返回 (X socket
@@ -402,8 +403,10 @@ static void RxFeed(XimClient &c, const char *data, size_t n)
             words = c.lsb ? le : be;
         }
         size_t total = 4 + (size_t)words * 4;
-        if (total <= 4)
-            break; /* 防御: 0 字长声明避免死循环 */
+        /* Zero payload is valid for XIM_DISCONNECT. XCloseIM waits for its
+         * reply while Wine holds the loader lock. Always consume the 4-byte
+         * header, even when words==0, so an empty packet cannot stall the
+         * connection (and every other thread exiting behind that lock). */
         if (c.rx.size() < total)
             break;
         HandlePacket(c, c.rx.substr(0, total));
@@ -732,11 +735,7 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         break;
     default:
     {
-        fprintf(stderr, "[xim-server] unhandled major=%u pkt=%zu hex:",
-                major, pkt.size());
-        for (size_t i = 0; i < pkt.size() && i < 24; ++i)
-            fprintf(stderr, " %02x", (unsigned char)pkt[i]);
-        fprintf(stderr, "\n");
+        fprintf(stderr, "[xim-server] unhandled major=%u pkt=%zu\n", major, pkt.size());
         break;
     }
     }
@@ -819,18 +818,6 @@ static void DrainPendingCommit(void)
         fprintf(stderr, "[xim-server] UTF8->CT failed (locale?), raw utf8\n");
     }
     uint16_t ic = target->ic_id;
-    {
-        /* CT 载荷留证: client 解码失败时先看 server 究竟发了什么字节 */
-        std::string hex;
-        char tmp[8];
-        for (size_t i = 0; i < text.size() && i < 16; ++i)
-        {
-            snprintf(tmp, sizeof(tmp), "%02x ", (unsigned char)text[i]);
-            hex += tmp;
-        }
-        fprintf(stderr, "[xim-server] commit payload (%zu): %s\n",
-                text.size(), hex.c_str());
-    }
     std::string b;
     Put16(b, *target, target->im_id);
     Put16(b, *target, ic);
@@ -960,9 +947,9 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
 
     /* entryParams: "<stderrPath>|<xdgDir>" (同 xclient_child 解析) */
     std::string entryParams(params);
-    std::string parts[2];
+    std::string parts[3];
     size_t start = 0;
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < 3; ++i)
     {
         size_t bar = entryParams.find('|', start);
         parts[i] = bar == std::string::npos ? entryParams.substr(start)
@@ -970,16 +957,8 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
         if (bar == std::string::npos) break;
         start = bar + 1;
     }
-    if (!parts[0].empty())
-    {
-        int logFd = open(parts[0].c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (logFd >= 0)
-        {
-            dup2(logFd, STDOUT_FILENO);
-            dup2(logFd, STDERR_FILENO);
-            if (logFd > STDERR_FILENO) close(logFd);
-        }
-    }
+    DisplayChildLog childLog;
+    if (!parts[0].empty()) childLog.Start(parts[0].c_str());
     if (!parts[1].empty())
         setenv("XDG_RUNTIME_DIR", parts[1].c_str(), 1);
 
@@ -998,12 +977,12 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
      * LOCALES 应答同值; NCP env 无 LANG, setlocale("") 会落 C)。 */
     if (!parts[1].empty())
     {
-        std::string localeDir = parts[1] + "/../wine/share/X11/locale";
+        std::string localeDir = "/data/storage/el2/base/files/wine/share/X11/locale";
         setenv("XLOCALEDIR", localeDir.c_str(), 1);
     }
     setlocale(LC_CTYPE, "zh_CN.UTF-8");
 
-    g_dpy = XOpenDisplay(":0");
+    g_dpy = XOpenDisplay(parts[2].empty() ? nullptr : parts[2].c_str());
     if (!g_dpy)
     {
         fprintf(stderr, "[xim-server] XOpenDisplay FAILED\n");

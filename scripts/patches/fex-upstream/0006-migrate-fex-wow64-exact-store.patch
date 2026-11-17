@@ -1,0 +1,146 @@
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index 9b91055bd084b0b15137eca8a2414faf1894afa7..f85b8ff64fa9a07c43e9a56618e8c2a68a33c9c2 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -389,6 +389,9 @@ public:
+   FEXCore::HLE::SyscallHandler* SyscallHandler {};
+   FEXCore::HLE::SourcecodeResolver* SourcecodeResolver {};
+   FEXCore::ThunkHandler* ThunkHandler {};
++#if defined(_WIN32) && defined(FEX_WOW64_EXACT_STORE)
++  bool WindowsExactFloatStoreEnabled {};
++#endif
+   fextl::unique_ptr<FEXCore::CPU::Dispatcher> Dispatcher;
+   DiskCache::DiskCache DiskCache;
+   CodeCache CodeCache;
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 1946dc946ff56f49fec9403f55fa0f326763d437..4b537469ff3bf2b65e5a1cf9f235f86a551da6b5 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -63,6 +63,8 @@ $end_info$
+ #include <atomic>
+ #include <chrono>
+ #include <condition_variable>
++#include <cstdlib>
++#include <cstring>
+ #include <fcntl.h>
+ #include <functional>
+ #include <mutex>
+@@ -102,6 +104,11 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
+     }
+   }
+ 
++#if defined(_WIN32) && defined(FEX_WOW64_EXACT_STORE)
++  const char* ExactStore = std::getenv("FEX_EXACTSTORE");
++  WindowsExactFloatStoreEnabled = ExactStore && std::strcmp(ExactStore, "1") == 0;
++#endif
++
+   // Track atomic TSO emulation configuration.
+   UpdateAtomicTSOEmulationConfig();
+ 
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index c903d3ba4552c3386b19ddf411d2dd3d5ff2d56e..227c211f6ceb102ddf6f805fef4902c4908ddcea 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -2448,6 +2448,41 @@ uint64_t Dispatcher::GenerateABICall(FallbackABI ABI) {
+     // tmp4 (x4/x13): FallbackHandler
+     // x30: return
+     // vtmp1 (v0/v16): source
++#if defined(_WIN32) && defined(FEX_WOW64_EXACT_STORE)
++    ARMEmitter::ForwardLabel ExactDone;
++    if (CTX->WindowsExactFloatStoreEnabled) {
++      ARMEmitter::ForwardLabel Fallback;
++      // Exact normal values only: no discarded bits, rounding, exception,
++      // or dependence on FCW/FPCR. All other encodings use the old helper.
++      // TMP4 is the fallback function pointer and must remain untouched.
++      mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++      str(TMP1.W(), STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.flags[24]));
++      fmov(ARMEmitter::Size::i64Bit, TMP1, VTMP1.D());
++      (void)tbz(TMP1, 63, &Fallback);
++      and_(ARMEmitter::Size::i64Bit, TMP3, TMP1, 0xffffffffffULL);
++      (void)cbnz(ARMEmitter::Size::i64Bit, TMP3, &Fallback);
++      umov<ARMEmitter::SubRegSize::i64Bit>(TMP2, VTMP1, 1);
++      and_(ARMEmitter::Size::i32Bit, TMP2, TMP2, 0x7fff);
++      LoadConstant(ARMEmitter::Size::i32Bit, TMP3, 0x3f81);
++      sub(ARMEmitter::Size::i32Bit, TMP2, TMP2, TMP3);
++      cmp(ARMEmitter::Size::i32Bit, TMP2, 253);
++      (void)b(ARMEmitter::Condition::CC_HI, &Fallback);
++      add(ARMEmitter::Size::i32Bit, TMP2, TMP2, 1);
++      lsr(ARMEmitter::Size::i64Bit, TMP1, TMP1, 40);
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP1, 0x7fffff);
++      orr(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2, ARMEmitter::ShiftType::LSL, 23);
++      umov<ARMEmitter::SubRegSize::i64Bit>(TMP3, VTMP1, 1);
++      and_(ARMEmitter::Size::i64Bit, TMP3, TMP3, 0x8000);
++      orr(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP3, ARMEmitter::ShiftType::LSL, 16);
++      fmov(ARMEmitter::Size::i32Bit, VTMP1.S(), TMP1);
++      ldr(TMP1.W(), STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.flags[24]));
++      msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++      (void)b(&ExactDone);
++      (void)Bind(&Fallback);
++      ldr(TMP1.W(), STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.flags[24]));
++      msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++    }
++#endif
+     SpillForABICall(CTX->HostFeatures.SupportsPreserveAllABI, TMP3, true);
+ 
+     ldrh(ARMEmitter::WReg::w0, STATE, offsetof(FEXCore::Core::CPUState, FCW));
+@@ -2463,12 +2498,50 @@ uint64_t Dispatcher::GenerateABICall(FallbackABI ABI) {
+     }
+ 
+     FillF32Result();
++#if defined(_WIN32) && defined(FEX_WOW64_EXACT_STORE)
++    (void)Bind(&ExactDone);
++#endif
+   } break;
+   case FABI_F64_I16_F80_PTR: {
+     // Linux Reg/Win32 Reg:
+     // tmp4 (x4/x13): FallbackHandler
+     // x30: return
+     // vtmp1 (v0/v16): source
++#if defined(_WIN32) && defined(FEX_WOW64_EXACT_STORE)
++    ARMEmitter::ForwardLabel ExactDone;
++    if (CTX->WindowsExactFloatStoreEnabled) {
++      ARMEmitter::ForwardLabel Fallback;
++      // Exact normal values only: no discarded bits, rounding, exception,
++      // or dependence on FCW/FPCR. All other encodings use the old helper.
++      // TMP4 is the fallback function pointer and must remain untouched.
++      mrs(TMP1, ARMEmitter::SystemRegister::NZCV);
++      str(TMP1.W(), STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.flags[24]));
++      fmov(ARMEmitter::Size::i64Bit, TMP1, VTMP1.D());
++      (void)tbz(TMP1, 63, &Fallback);
++      and_(ARMEmitter::Size::i64Bit, TMP3, TMP1, 0x7ff);
++      (void)cbnz(ARMEmitter::Size::i64Bit, TMP3, &Fallback);
++      umov<ARMEmitter::SubRegSize::i64Bit>(TMP2, VTMP1, 1);
++      and_(ARMEmitter::Size::i32Bit, TMP2, TMP2, 0x7fff);
++      LoadConstant(ARMEmitter::Size::i32Bit, TMP3, 0x3c01);
++      sub(ARMEmitter::Size::i32Bit, TMP2, TMP2, TMP3);
++      cmp(ARMEmitter::Size::i32Bit, TMP2, 2045);
++      (void)b(ARMEmitter::Condition::CC_HI, &Fallback);
++      add(ARMEmitter::Size::i32Bit, TMP2, TMP2, 1);
++      lsr(ARMEmitter::Size::i64Bit, TMP1, TMP1, 11);
++      and_(ARMEmitter::Size::i64Bit, TMP1, TMP1, 0xfffffffffffffULL);
++      orr(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP2, ARMEmitter::ShiftType::LSL, 52);
++      umov<ARMEmitter::SubRegSize::i64Bit>(TMP3, VTMP1, 1);
++      and_(ARMEmitter::Size::i64Bit, TMP3, TMP3, 0x8000);
++      orr(ARMEmitter::Size::i64Bit, TMP1, TMP1, TMP3, ARMEmitter::ShiftType::LSL, 48);
++      fmov(ARMEmitter::Size::i64Bit, VTMP1.D(), TMP1);
++      ldr(TMP1.W(), STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.flags[24]));
++      msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++      (void)b(&ExactDone);
++      (void)Bind(&Fallback);
++      ldr(TMP1.W(), STATE.R(), offsetof(FEXCore::Core::CpuStateFrame, State.flags[24]));
++      msr(ARMEmitter::SystemRegister::NZCV, TMP1);
++    }
++#endif
+     SpillForABICall(CTX->HostFeatures.SupportsPreserveAllABI, TMP3, true);
+ 
+     ldrh(ARMEmitter::WReg::w0, STATE, offsetof(FEXCore::Core::CPUState, FCW));
+@@ -2484,6 +2557,9 @@ uint64_t Dispatcher::GenerateABICall(FallbackABI ABI) {
+     }
+ 
+     FillF64Result();
++#if defined(_WIN32) && defined(FEX_WOW64_EXACT_STORE)
++    (void)Bind(&ExactDone);
++#endif
+   } break;
+   case FABI_F64_F64_PTR: {
+     // Linux Reg/Win32 Reg:

@@ -1,0 +1,25 @@
+From: HSL developers; ported from HSL 11c14d95
+Subject: [PATCH] mesa/0010-venus-check-after-final-present-backoff.patch
+
+diff --git a/src/virtio/vulkan/vn_renderer_vtest.c b/src/virtio/vulkan/vn_renderer_vtest.c
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -1368,7 +1368,7 @@
+    uint64_t present_renderer_us = 0;
+    unsigned present_drain_attempts = 0;
+    int result = -EAGAIN;
+-   for (unsigned attempt = 0; attempt < 8 && result == -EAGAIN; attempt++) {
++   for (unsigned attempt = 0; attempt <= 8 && result == -EAGAIN; attempt++) {
+       present_drain_attempts = attempt + 1;
+       const int64_t drain_start_ns =
+          (drain_perf || vtest_winehua_present_trace_enabled())
+@@ -1399,7 +1399,8 @@
+          vn_log(dev->instance,
+                 "winehua vk present: target or object not ready serial=%u attempt=%u",
+                 serial, attempt + 1);
+-         usleep(1000u << attempt);
++         if (attempt < 8)
++            usleep(1000u << attempt);
+       }
+    }
+ 

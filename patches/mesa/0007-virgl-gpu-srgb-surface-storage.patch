@@ -1,0 +1,572 @@
+diff --git a/src/gallium/drivers/virgl/virgl_context.c b/src/gallium/drivers/virgl/virgl_context.c
+--- a/src/gallium/drivers/virgl/virgl_context.c
++++ b/src/gallium/drivers/virgl/virgl_context.c
+@@ -49,6 +49,7 @@
+ 
+ #include "virgl_encode.h"
+ #include "virgl_context.h"
++#include "virgl_srgb.h"
+ #include "virtio-gpu/virgl_protocol.h"
+ #include "virgl_resource.h"
+ #include "virgl_screen.h"
+@@ -189,7 +190,11 @@
+          res = virgl_resource(surf->texture);
+          if (res) {
+             vws->emit_res(vws, vctx->cbuf, res->hw_res, false);
+-            virgl_resource_dirty(res, surf->u.tex.level);
++            if (virgl_surface(surf)->srgb_shadow)
++               vws->emit_res(vws, vctx->cbuf, virgl_resource(res->srgb_shadow)->hw_res, false);
++            /* Binding alone is not a canonical write. Actual draw/clear paths
++             * invalidate the corresponding colorspace after synchronization. */
++            res->clean_mask &= ~(1u << surf->u.tex.level);
+          }
+       }
+    }
+@@ -358,6 +363,8 @@
+    if (resource->target == PIPE_BUFFER)
+       return NULL;
+ 
++   struct pipe_resource *render_resource = virgl_srgb_view_resource(vctx, resource, templ->format);
++   if (!render_resource) return NULL;
+    surf = CALLOC_STRUCT(virgl_surface);
+    if (!surf)
+       return NULL;
+@@ -380,7 +387,8 @@
+    surf->base.u.tex.last_layer = templ->u.tex.last_layer;
+    surf->base.nr_samples = templ->nr_samples;
+ 
+-   virgl_encoder_create_surface(vctx, handle, res, &surf->base);
++   surf->srgb_shadow = render_resource != resource;
++   virgl_encoder_create_surface(vctx, handle, virgl_resource(render_resource), &surf->base);
+    surf->handle = handle;
+    return &surf->base;
+ }
+@@ -391,6 +399,7 @@
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_surface *surf = virgl_surface(psurf);
+ 
++   virgl_srgb_sync_resource(vctx, virgl_resource(surf->base.texture));
+    pipe_resource_reference(&surf->base.texture, NULL);
+    virgl_encode_delete_object(vctx, surf->handle, VIRGL_OBJECT_SURFACE);
+    FREE(surf);
+@@ -907,7 +916,9 @@
+       virgl_reemit_draw_resources(vctx);
+    vctx->num_draws++;
+ 
++   virgl_srgb_prepare_framebuffer(vctx, buffers);
+    virgl_encode_clear(vctx, buffers, color, depth, stencil);
++   virgl_srgb_written_framebuffer(vctx, buffers);
+ }
+ 
+ static void virgl_clear_render_target(struct pipe_context *ctx,
+@@ -919,6 +930,7 @@
+ {
+    struct virgl_context *vctx = virgl_context(ctx);
+ 
++   virgl_srgb_prepare_surface(vctx, dst);
+    virgl_encode_clear_surface(vctx, dst, PIPE_CLEAR_COLOR0, color,
+                              dstx, dsty, width, height, render_condition_enabled);
+ 
+@@ -926,7 +938,7 @@
+     * without going through the corresponding guest side resource, and
+     * hence the two will diverge.
+     */
+-   virgl_resource_dirty(virgl_resource(dst->texture), dst->u.tex.level);
++   virgl_srgb_written_surface(vctx, dst);
+ }
+ 
+ static void virgl_clear_depth_stencil(struct pipe_context *ctx,
+@@ -975,6 +987,7 @@
+    struct virgl_screen *rs = virgl_screen(ctx->screen);
+    struct virgl_resource *vres = virgl_resource(res);
+ 
++   virgl_srgb_sync_resource(virgl_context(ctx), vres);
+    if (rs->caps.caps.v2.capability_bits & VIRGL_CAP_CLEAR_TEXTURE) {
+       struct virgl_context *vctx = virgl_context(ctx);
+       virgl_encode_clear_texture(vctx, vres, level, box, data);
+@@ -1041,7 +1054,11 @@
+ 
+    virgl_hw_set_vertex_buffers(vctx);
+ 
++   virgl_srgb_prepare_bindings(vctx, false);
++   virgl_srgb_prepare_framebuffer(vctx, PIPE_CLEAR_COLOR);
+    virgl_encoder_draw_vbo(vctx, &info, drawid_offset, indirect, &draws[0]);
++   virgl_srgb_written_framebuffer(vctx, PIPE_CLEAR_COLOR);
++   virgl_srgb_written_images(vctx, false);
+ 
+    pipe_resource_reference(&ib.buffer, NULL);
+ 
+@@ -1067,6 +1084,8 @@
+                     struct pipe_fence_handle **fence)
+ {
+    struct virgl_screen *rs = virgl_screen(ctx->base.screen);
++
++   virgl_srgb_flush_pending(ctx);
+ 
+    /* skip empty cbuf */
+    if (ctx->cbuf->cdw == ctx->cbuf_initial_cdw &&
+@@ -1307,6 +1326,8 @@
+    struct virgl_resource *dres = virgl_resource(dst);
+    struct virgl_resource *sres = virgl_resource(src);
+ 
++   virgl_srgb_sync_resource(vctx, sres);
++   virgl_srgb_sync_resource(vctx, dres);
+    if (dres->b.target == PIPE_BUFFER)
+       util_range_add(&dres->b, &dres->valid_buffer_range, dstx, dstx + src_box->width);
+    virgl_resource_dirty(dres, dst_level);
+@@ -1321,6 +1342,7 @@
+ virgl_flush_resource(struct pipe_context *pipe,
+                     struct pipe_resource *resource)
+ {
++   virgl_srgb_sync_resource(virgl_context(pipe), virgl_resource(resource));
+ }
+ 
+ static void virgl_blit(struct pipe_context *ctx,
+@@ -1334,9 +1356,17 @@
+           (util_format_is_srgb(blit->dst.resource->format) ==
+             util_format_is_srgb(blit->dst.format)));
+ 
+-   virgl_resource_dirty(dres, blit->dst.level);
+-   virgl_encode_blit(vctx, dres, sres,
+-                    blit);
++   struct pipe_blit_info typed = *blit;
++   typed.src.resource = virgl_srgb_prepare_blit(vctx, blit->src.resource,
++                                               blit->src.format, blit->src.level);
++   typed.dst.resource = virgl_srgb_prepare_blit(vctx, blit->dst.resource,
++                                               blit->dst.format, blit->dst.level);
++   if (!typed.src.resource || !typed.dst.resource) return;
++   dres = virgl_resource(typed.dst.resource);
++   sres = virgl_resource(typed.src.resource);
++   virgl_resource_dirty(dres, typed.dst.level);
++   virgl_encode_blit(vctx, dres, sres, &typed);
++   virgl_srgb_written_blit(vctx, blit->dst.resource, typed.dst.resource, typed.dst.level);
+ }
+ 
+ static void virgl_set_hw_atomic_buffers(struct pipe_context *ctx,
+@@ -1538,7 +1568,9 @@
+       virgl_reemit_compute_resources(vctx);
+    vctx->num_compute++;
+ 
++   virgl_srgb_prepare_bindings(vctx, true);
+    virgl_encode_launch_grid(vctx, info);
++   virgl_srgb_written_images(vctx, true);
+ }
+ 
+ static void
+@@ -1585,6 +1617,7 @@
+    struct virgl_screen *rs = virgl_screen(ctx->screen);
+    enum pipe_shader_type shader_type;
+ 
++   virgl_srgb_flush_pending(vctx);
+    vctx->framebuffer.zsbuf = NULL;
+    vctx->framebuffer.nr_cbufs = 0;
+    virgl_encoder_destroy_sub_ctx(vctx, vctx->hw_sub_ctx_id);
+@@ -1688,6 +1721,8 @@
+    struct virgl_context *vctx;
+    struct virgl_screen *rs = virgl_screen(pscreen);
+    vctx = CALLOC_STRUCT(virgl_context);
++   if (!vctx) return NULL;
++   list_inithead(&vctx->srgb_pending_resources);
+    const char *host_debug_flagstring;
+ 
+    vctx->cbuf = rs->vws->cmd_buf_create(rs->vws, VIRGL_MAX_CMDBUF_DWORDS);
+diff --git a/src/gallium/drivers/virgl/virgl_context.h b/src/gallium/drivers/virgl/virgl_context.h
+--- a/src/gallium/drivers/virgl/virgl_context.h
++++ b/src/gallium/drivers/virgl/virgl_context.h
+@@ -77,6 +77,7 @@
+    struct virgl_vertex_elements_state *vertex_elements;
+ 
+    struct pipe_framebuffer_state framebuffer;
++   struct list_head srgb_pending_resources;
+ 
+    struct slab_child_pool transfer_pool;
+    struct virgl_transfer_queue queue;
+diff --git a/src/gallium/drivers/virgl/virgl_resource.c b/src/gallium/drivers/virgl/virgl_resource.c
+--- a/src/gallium/drivers/virgl/virgl_resource.c
++++ b/src/gallium/drivers/virgl/virgl_resource.c
+@@ -25,6 +25,7 @@
+ #include "util/u_memory.h"
+ #include "util/u_upload_mgr.h"
+ #include "virgl_context.h"
++#include "virgl_srgb.h"
+ #include "virgl_resource.h"
+ #include "virgl_screen.h"
+ #include "virgl_staging_mgr.h"
+@@ -497,6 +498,7 @@
+    enum virgl_transfer_map_type map_type;
+    void *map_addr;
+ 
++   virgl_srgb_sync_resource(vctx, vres);
+    /* Multisampled resources require resolve before mapping. */
+    assert(resource->nr_samples <= 1);
+ 
+@@ -588,6 +590,12 @@
+           util_range_add(&vres->b, &vres->valid_buffer_range, box->x, box->x + box->width);
+    }
+ 
++   /* CPU uploads update canonical storage even when no staging copy is used.
++    * Keep a previously rendered opposite-colorspace view from reading old data.
++    * Do not change clean_mask: the ordinary transfer owns guest/host coherence. */
++   if (usage & PIPE_MAP_WRITE)
++      vres->srgb_valid &= ~(1u << level);
++
+    *transfer = &trans->base;
+    return map_addr;
+ }
+@@ -958,6 +966,8 @@
+ {
+    struct virgl_screen *vs = virgl_screen(screen);
+    struct virgl_resource *res = virgl_resource(resource);
++   assert(!res->srgb_pending && !res->srgb_owner);
++   pipe_resource_reference(&res->srgb_shadow, NULL);
+ 
+    if (res->b.target == PIPE_BUFFER)
+       util_range_destroy(&res->valid_buffer_range);
+@@ -977,6 +987,8 @@
+ 
+    if (res->b.target == PIPE_BUFFER)
+       return false;
++   if (context) virgl_srgb_sync_resource(virgl_context(context), res);
++   else if (res->srgb_owner) res->srgb_owner->base.flush(&res->srgb_owner->base, NULL, 0);
+ 
+    return vs->vws->resource_get_handle(vs->vws, res->hw_res,
+                                        res->metadata.stride[0],
+@@ -988,7 +1000,11 @@
+    if (res) {
+       if (res->b.target == PIPE_BUFFER)
+          res->clean_mask &= ~1;
+-      else
++      else {
+          res->clean_mask &= ~(1 << level);
+-   }
+-}
++         /* Binding a pending shadow is not a canonical write. Actual writers
++          * synchronize first, then invalidate its previous typed contents. */
++         if (!(res->srgb_pending & (1u << level))) res->srgb_valid &= ~(1u << level);
++      }
++   }
++}
+diff --git a/src/gallium/drivers/virgl/virgl_resource.h b/src/gallium/drivers/virgl/virgl_resource.h
+--- a/src/gallium/drivers/virgl/virgl_resource.h
++++ b/src/gallium/drivers/virgl/virgl_resource.h
+@@ -68,6 +68,12 @@
+    unsigned bind_history;
+    uint32_t blob_mem;
+ 
++   /* Canonical identity plus lazily synchronized opposite-colorspace storage. */
++   struct pipe_resource *srgb_shadow;
++   struct pipe_resource *srgb_hold;
++   struct virgl_context *srgb_owner;
++   struct list_head srgb_link;
++   uint16_t srgb_valid, srgb_pending;
+    uint16_t clean_mask;
+    uint16_t use_staging : 1;
+    uint16_t reserved : 15;
+diff --git a/src/gallium/drivers/virgl/virgl_screen.c b/src/gallium/drivers/virgl/virgl_screen.c
+--- a/src/gallium/drivers/virgl/virgl_screen.c
++++ b/src/gallium/drivers/virgl/virgl_screen.c
+@@ -515,9 +515,13 @@
+    caps->texture_shadow_lod =
+       vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_TEXTURE_SHADOW_LOD;
+    caps->native_fence_fd = vscreen->vws->supports_fences;
+-   caps->dest_surface_srgb_control =
++   bool native_srgb_control =
+       (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_SRGB_WRITE_CONTROL) ||
+       (vscreen->caps.caps.v2.host_feature_check_version < 1);
++   vscreen->emulate_srgb_surfaces = !native_srgb_control &&
++      (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_COPY_IMAGE) &&
++      debug_get_bool_option("VIRGL_SRGB_SURFACE_EMULATION", true);
++   caps->dest_surface_srgb_control = native_srgb_control || vscreen->emulate_srgb_surfaces;
+    /* Shader creation emits the shader through the context's command buffer
+     * in virgl_encode_shader_state().
+     */
+diff --git a/src/gallium/drivers/virgl/virgl_screen.h b/src/gallium/drivers/virgl/virgl_screen.h
+--- a/src/gallium/drivers/virgl/virgl_screen.h
++++ b/src/gallium/drivers/virgl/virgl_screen.h
+@@ -66,6 +66,7 @@
+    bool tweak_l8_srgb_readback;
+    bool no_coherent;
+    bool shader_sync;
++   bool emulate_srgb_surfaces;
+    int32_t tweak_gles_tf3_value;
+ 
+    nir_shader_compiler_options compiler_options;
+diff --git a/src/gallium/drivers/virgl/virgl_encode.h b/src/gallium/drivers/virgl/virgl_encode.h
+--- a/src/gallium/drivers/virgl/virgl_encode.h
++++ b/src/gallium/drivers/virgl/virgl_encode.h
+@@ -43,6 +43,7 @@
+ struct virgl_surface {
+    struct pipe_surface base;
+    uint32_t handle;
++   bool srgb_shadow;
+ };
+ 
+ struct virgl_indexbuf {
+diff --git a/src/gallium/drivers/virgl/virgl_texture.c b/src/gallium/drivers/virgl/virgl_texture.c
+--- a/src/gallium/drivers/virgl/virgl_texture.c
++++ b/src/gallium/drivers/virgl/virgl_texture.c
+@@ -25,6 +25,7 @@
+ #include "util/u_memory.h"
+ 
+ #include "virgl_context.h"
++#include "virgl_srgb.h"
+ #include "virgl_encode.h"
+ #include "virgl_resource.h"
+ #include "virgl_screen.h"
+@@ -241,6 +242,7 @@
+                                  const struct pipe_box *box,
+                                  struct pipe_transfer **transfer)
+ {
++   virgl_srgb_sync_resource(virgl_context(ctx), virgl_resource(resource));
+    if (needs_resolve(ctx->screen, resource, usage))
+       return texture_transfer_map_resolve(ctx, resource, level, usage, box,
+                                           transfer);
+diff --git a/src/gallium/drivers/virgl/meson.build b/src/gallium/drivers/virgl/meson.build
+--- a/src/gallium/drivers/virgl/meson.build
++++ b/src/gallium/drivers/virgl/meson.build
+@@ -8,6 +8,7 @@
+   'virgl_query.c',
+   'virgl_resource.c',
+   'virgl_screen.c',
++  'virgl_srgb.c',
+   'virgl_staging_mgr.c',
+   'virgl_streamout.c',
+   'virgl_transfer_queue.c',
+diff --git a/src/gallium/drivers/virgl/virgl_srgb.c b/src/gallium/drivers/virgl/virgl_srgb.c
+new file mode 100644
+--- /dev/null
++++ b/src/gallium/drivers/virgl/virgl_srgb.c
+@@ -0,0 +1,207 @@
++/* SPDX-License-Identifier: MIT
++ * GLES hosts without destination sRGB control can render through a second,
++ * correctly typed GPU texture. The guest's original resource remains the
++ * public identity. Raw image copies synchronize dirty mip levels when that
++ * identity is consumed or submitted. No framebuffer readback or CPU copies.
++ */
++#include "virgl_srgb.h"
++#include "virgl_context.h"
++#include "virgl_resource.h"
++#include "virgl_encode.h"
++#include "util/format/u_format.h"
++#include "util/u_inlines.h"
++#include "util/u_memory.h"
++
++static void
++srgb_copy_level(struct virgl_context *ctx, struct virgl_resource *dst,
++                struct virgl_resource *src, unsigned level)
++{
++   struct pipe_box box = {0};
++   box.width = u_minify(src->b.width0, level);
++   box.height = u_minify(src->b.height0, level);
++   box.depth = src->b.target == PIPE_TEXTURE_3D ?
++      u_minify(src->b.depth0, level) : src->b.array_size;
++   virgl_encode_resource_copy_region(ctx, dst, level, 0, 0, 0, src, level, &box);
++}
++
++void
++virgl_srgb_sync_resource(struct virgl_context *ctx, struct virgl_resource *res)
++{
++   if (!res || !res->srgb_pending) return;
++   if (res->srgb_owner != ctx) {
++      /* Shared-context users still require their normal API synchronization.
++       * Submit pending copies on the writer before accessing its identity. */
++      struct virgl_context *writer = res->srgb_owner;
++      writer->base.flush(&writer->base, NULL, 0);
++      return;
++   }
++   unsigned levels = res->srgb_pending;
++   struct pipe_resource *hold = res->srgb_hold;
++   res->srgb_pending = 0;
++   res->srgb_owner = NULL;
++   res->srgb_hold = NULL;
++   list_del(&res->srgb_link);
++   /* Clear ownership before encoding: an almost full command buffer may
++    * recursively flush. The local reference protects both GPU storages. */
++   while (levels) {
++      unsigned level = u_bit_scan(&levels);
++      srgb_copy_level(ctx, res, virgl_resource(res->srgb_shadow), level);
++      res->clean_mask &= ~(1u << level);
++   }
++   pipe_resource_reference(&hold, NULL);
++}
++
++void
++virgl_srgb_flush_pending(struct virgl_context *ctx)
++{
++   while (!list_is_empty(&ctx->srgb_pending_resources)) {
++      struct virgl_resource *res = list_first_entry(&ctx->srgb_pending_resources,
++                                                   struct virgl_resource, srgb_link);
++      virgl_srgb_sync_resource(ctx, res);
++   }
++}
++
++struct pipe_resource *
++virgl_srgb_view_resource(struct virgl_context *ctx, struct pipe_resource *resource,
++                         enum pipe_format format)
++{
++   struct virgl_resource *res = virgl_resource(resource);
++   struct virgl_screen *screen = virgl_screen(ctx->base.screen);
++   if (!screen->emulate_srgb_surfaces ||
++       util_format_is_srgb(format) == util_format_is_srgb(resource->format))
++      return resource;
++   if (resource->target == PIPE_BUFFER ||
++       util_format_linear(format) != util_format_linear(resource->format))
++      return NULL;
++   if (!res->srgb_shadow) {
++      struct pipe_resource templ = *resource;
++      templ.format = util_format_is_srgb(resource->format) ?
++         util_format_linear(resource->format) : util_format_srgb(resource->format);
++      templ.bind &= ~(PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
++                      PIPE_BIND_CURSOR);
++      templ.bind |= PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
++      templ.flags = 0;
++      res->srgb_shadow = ctx->base.screen->resource_create(ctx->base.screen, &templ);
++      if (!res->srgb_shadow) return NULL;
++   }
++   return res->srgb_shadow;
++}
++
++static void
++srgb_prepare_level(struct virgl_context *ctx, struct virgl_resource *res, unsigned level)
++{
++   unsigned bit = 1u << level;
++   if (res->srgb_pending && res->srgb_owner != ctx)
++      virgl_srgb_sync_resource(ctx, res);
++   if (!(res->srgb_valid & bit)) {
++      /* A canonical upload/copy/render invalidates only the touched level. */
++      srgb_copy_level(ctx, virgl_resource(res->srgb_shadow), res, level);
++      res->srgb_valid |= bit;
++   }
++}
++
++static void
++srgb_written_level(struct virgl_context *ctx, struct virgl_resource *res, unsigned level)
++{
++   if (!res->srgb_pending) {
++      pipe_resource_reference(&res->srgb_hold, &res->b);
++      res->srgb_owner = ctx;
++      list_addtail(&res->srgb_link, &ctx->srgb_pending_resources);
++   }
++   assert(res->srgb_owner == ctx);
++   res->srgb_pending |= 1u << level;
++   res->srgb_valid |= 1u << level;
++   res->clean_mask &= ~(1u << level);
++}
++
++void
++virgl_srgb_prepare_surface(struct virgl_context *ctx, struct pipe_surface *surf)
++{
++   if (!surf) return;
++   struct virgl_resource *res = virgl_resource(surf->texture);
++   if (virgl_surface(surf)->srgb_shadow)
++      srgb_prepare_level(ctx, res, surf->u.tex.level);
++   else
++      virgl_srgb_sync_resource(ctx, res);
++}
++
++void
++virgl_srgb_written_surface(struct virgl_context *ctx, struct pipe_surface *surf)
++{
++   if (!surf) return;
++   struct virgl_resource *res = virgl_resource(surf->texture);
++   if (virgl_surface(surf)->srgb_shadow)
++      srgb_written_level(ctx, res, surf->u.tex.level);
++   else
++      virgl_resource_dirty(res, surf->u.tex.level);
++}
++
++void
++virgl_srgb_prepare_framebuffer(struct virgl_context *ctx, unsigned buffers)
++{
++   for (unsigned i = 0; i < ctx->framebuffer.nr_cbufs; i++)
++      if (buffers & (PIPE_CLEAR_COLOR0 << i))
++         virgl_srgb_prepare_surface(ctx, ctx->framebuffer.cbufs[i]);
++}
++
++void
++virgl_srgb_written_framebuffer(struct virgl_context *ctx, unsigned buffers)
++{
++   for (unsigned i = 0; i < ctx->framebuffer.nr_cbufs; i++)
++      if (buffers & (PIPE_CLEAR_COLOR0 << i))
++         virgl_srgb_written_surface(ctx, ctx->framebuffer.cbufs[i]);
++}
++
++void
++virgl_srgb_prepare_bindings(struct virgl_context *ctx, bool compute)
++{
++   if (!virgl_screen(ctx->base.screen)->emulate_srgb_surfaces) return;
++   for (unsigned s = 0; s < PIPE_SHADER_TYPES; s++) {
++      if ((s == PIPE_SHADER_COMPUTE) != compute) continue;
++      struct virgl_shader_binding_state *binding = &ctx->shader_bindings[s];
++      for (unsigned i = 0; i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++)
++         if (binding->views[i])
++            virgl_srgb_sync_resource(ctx, virgl_resource(binding->views[i]->texture));
++      unsigned images = binding->image_enabled_mask;
++      while (images) {
++         unsigned i = u_bit_scan(&images);
++         virgl_srgb_sync_resource(ctx, virgl_resource(binding->images[i].resource));
++      }
++   }
++}
++
++void
++virgl_srgb_written_images(struct virgl_context *ctx, bool compute)
++{
++   if (!virgl_screen(ctx->base.screen)->emulate_srgb_surfaces) return;
++   for (unsigned s = 0; s < PIPE_SHADER_TYPES; s++) {
++      if ((s == PIPE_SHADER_COMPUTE) != compute) continue;
++      struct virgl_shader_binding_state *binding = &ctx->shader_bindings[s];
++      unsigned images = binding->image_enabled_mask;
++      while (images) {
++         unsigned i = u_bit_scan(&images);
++         if (binding->images[i].access & PIPE_IMAGE_ACCESS_WRITE)
++            virgl_resource_dirty(virgl_resource(binding->images[i].resource),
++                                  binding->images[i].u.tex.level);
++      }
++   }
++}
++
++/* Blits also use typed storage for source interpretation, not just the FBO. */
++struct pipe_resource *
++virgl_srgb_prepare_blit(struct virgl_context *ctx, struct pipe_resource *resource,
++                        enum pipe_format format, unsigned level)
++{
++   struct pipe_resource *view = virgl_srgb_view_resource(ctx, resource, format);
++   if (view == resource) virgl_srgb_sync_resource(ctx, virgl_resource(resource));
++   else if (view) srgb_prepare_level(ctx, virgl_resource(resource), level);
++   return view;
++}
++
++void
++virgl_srgb_written_blit(struct virgl_context *ctx, struct pipe_resource *original,
++                        struct pipe_resource *target, unsigned level)
++{
++   if (original != target) srgb_written_level(ctx, virgl_resource(original), level);
++   else virgl_resource_dirty(virgl_resource(original), level);
++}
+diff --git a/src/gallium/drivers/virgl/virgl_srgb.h b/src/gallium/drivers/virgl/virgl_srgb.h
+new file mode 100644
+--- /dev/null
++++ b/src/gallium/drivers/virgl/virgl_srgb.h
+@@ -0,0 +1,21 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef VIRGL_SRGB_H
++#define VIRGL_SRGB_H
++#include "pipe/p_state.h"
++struct virgl_context;
++struct virgl_resource;
++struct pipe_resource *virgl_srgb_view_resource(struct virgl_context *ctx,
++   struct pipe_resource *resource, enum pipe_format format);
++void virgl_srgb_sync_resource(struct virgl_context *ctx, struct virgl_resource *res);
++void virgl_srgb_flush_pending(struct virgl_context *ctx);
++void virgl_srgb_prepare_surface(struct virgl_context *ctx, struct pipe_surface *surf);
++void virgl_srgb_written_surface(struct virgl_context *ctx, struct pipe_surface *surf);
++void virgl_srgb_prepare_framebuffer(struct virgl_context *ctx, unsigned buffers);
++void virgl_srgb_written_framebuffer(struct virgl_context *ctx, unsigned buffers);
++void virgl_srgb_prepare_bindings(struct virgl_context *ctx, bool compute);
++void virgl_srgb_written_images(struct virgl_context *ctx, bool compute);
++struct pipe_resource *virgl_srgb_prepare_blit(struct virgl_context *ctx,
++   struct pipe_resource *resource, enum pipe_format format, unsigned level);
++void virgl_srgb_written_blit(struct virgl_context *ctx, struct pipe_resource *original,
++   struct pipe_resource *target, unsigned level);
++#endif

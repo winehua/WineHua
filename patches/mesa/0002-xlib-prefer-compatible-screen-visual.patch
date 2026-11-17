@@ -1,0 +1,27 @@
+--- a/src/gallium/frontends/glx/xlib/glx_api.c
++++ b/src/gallium/frontends/glx/xlib/glx_api.c
+@@ -498,6 +498,24 @@
+    vis = get_env_visual( dpy, screen, "MESA_RGB_VISUAL" );
+    if (vis) {
+       return vis;
++   }
++   /* Prefer the screen visual when it satisfies the requested color depth
++    * and class. Legacy X11 clients can use DefaultDepth when creating their
++    * window, so an arbitrary deeper visual makes the visual/depth invalid.
++    * Honor explicit MESA_RGB_VISUAL above and retain the full search below
++    * for requests the root visual cannot satisfy. */
++   const int root_depth = DefaultDepth(dpy, screen);
++   const int root_class = DefaultVisual(dpy, screen)->CLASS;
++   const int root_glx_class = root_class == TrueColor ? GLX_TRUE_COLOR_EXT :
++      root_class == DirectColor ? GLX_DIRECT_COLOR_EXT :
++      root_class == PseudoColor ? GLX_PSEUDO_COLOR_EXT :
++      root_class == StaticColor ? GLX_STATIC_COLOR_EXT :
++      root_class == GrayScale ? GLX_GRAY_SCALE_EXT : GLX_STATIC_GRAY_EXT;
++   if (root_depth >= min_depth &&
++       (preferred_class == DONT_CARE || preferred_class == root_glx_class)) {
++      vis = get_visual(dpy, screen, root_depth, root_class);
++      if (vis)
++         return vis;
+    }
+    /* Otherwise, search for a suitable visual */
+    if (preferred_class==DONT_CARE) {

@@ -1,0 +1,43 @@
+--- a/dlls/winegstreamer/unixlib.c
++++ b/dlls/winegstreamer/unixlib.c
+@@ -265,6 +265,10 @@
+ #endif
+ }
+ 
++#ifdef __OHOS__
++#include "winehua_gstreamer_loader.h"
++#endif
++
+ NTSTATUS wg_init_gstreamer(void *arg)
+ {
+     struct wg_init_gstreamer_params *params = arg;
+@@ -310,12 +314,19 @@
+         setenv("GST_REGISTRY_1_0", gst_reg, 1);
+     }
+ 
++#ifdef __OHOS__
++    if (!winehua_gst_prepare()) return STATUS_UNSUCCESSFUL;
++#endif
+     if (!gst_init_check(&argc, &argv, &err))
+     {
+         fprintf(stderr, "winegstreamer: failed to initialize GStreamer: %s\n", err->message);
+         g_error_free(err);
+         return STATUS_UNSUCCESSFUL;
+     }
++
++#ifdef __OHOS__
++    if (!winehua_gst_load_plugins()) return STATUS_UNSUCCESSFUL;
++#endif
+ 
+     if (!NtQueryInformationProcess(GetCurrentProcess(),
+             ProcessAffinityMask, &process_mask, sizeof(process_mask), NULL))
+@@ -336,6 +347,9 @@
+         GST_ERROR("Failed to create OpenGL display");
+ #endif
+ 
++#ifdef __OHOS__
++    if (winehua_gst_use_media_converter())
++#endif
+     if (!media_converter_init())
+     {
+         GST_ERROR("Failed to init media converter.");

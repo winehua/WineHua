@@ -1,0 +1,13 @@
+--- a/dlls/imm32/ime.c
++++ b/dlls/imm32/ime.c
+@@ -603,7 +603,9 @@
+ 
+         if (!key_consumed)
+         {
+-            TRANSMSG msg = {.message = WM_IME_KEYDOWN, .wParam = vkey, .lParam = vsc};
++            /* Keep the original scan code, extended key, repeat and release flags. */
++            TRANSMSG msg = {.message = vsc & KF_UP ? WM_IME_KEYUP : WM_IME_KEYDOWN, .wParam = vkey,
++                           .lParam = MAKELPARAM(1, vsc)};
+             msgs->TransMsg[count++] = msg;
+         }
+     }

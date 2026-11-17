@@ -1,0 +1,255 @@
+--- a/include/wlr/types/wlr_scene.h
++++ b/include/wlr/types/wlr_scene.h
+@@ -193,6 +193,8 @@
+ 	int dst_width, dst_height;
+ 	enum wl_output_transform transform;
+ 	pixman_region32_t opaque_region;
++	bool clip_enabled;
++	pixman_region32_t clip_region; // destination-local, NULL API disables
+ 	enum wlr_color_transfer_function transfer_function;
+ 	enum wlr_color_named_primaries primaries;
+ 	enum wlr_color_encoding color_encoding;
+@@ -539,6 +541,9 @@
+  * If zero, the destination size will be the buffer size. By default, the
+  * destination size is zero.
+  */
++void wlr_scene_buffer_set_clip_region(struct wlr_scene_buffer *scene_buffer,
++    const pixman_region32_t *region);
++
+ void wlr_scene_buffer_set_dest_size(struct wlr_scene_buffer *scene_buffer,
+ 	int width, int height);
+ 
+--- a/include/wlr/xwayland/xwayland.h
++++ b/include/wlr/xwayland/xwayland.h
+@@ -10,6 +10,7 @@
+ #define WLR_XWAYLAND_XWAYLAND_H
+ 
+ #include <stdbool.h>
++#include <pixman.h>
+ #include <wayland-server-core.h>
+ #include <xcb/xcb.h>
+ #include <xcb/xcb_ewmh.h>
+@@ -454,6 +455,11 @@
+  * Falls back to the full window rect when the client declares no insets.
+  * Same liveness/generation contract as query_child_geometry().
+  */
++/* Cached server-visible border region, in full-window coordinates.
++ * False = unknown/unmapped/stale incarnation; caller must hide its GPU face. */
++bool wlr_xwayland_query_child_visible_region(struct wlr_xwayland *xwayland,
++    xcb_window_t id, uint64_t generation, pixman_region32_t *region);
++
+ bool wlr_xwayland_query_child_client_area(struct wlr_xwayland *wlr_xwayland,
+ 	xcb_window_t window_id, int32_t *x, int32_t *y,
+ 	uint32_t *width, uint32_t *height, uint64_t *generation);
+--- a/include/xwayland/xwm.h
++++ b/include/xwayland/xwm.h
+@@ -104,6 +104,8 @@
+ 	NET_CLIENT_LIST_STACKING,
+ 	NET_WORKAREA,
+ 	NET_WM_FRAME_EXTENTS,
++	WINEHUA_GPU_CLIP_REQUEST,
++	WINEHUA_GPU_VISIBLE_REGION,
+ 	ATOM_LAST // keep last
+ };
+ 
+--- a/types/scene/wlr_scene.c
++++ b/types/scene/wlr_scene.c
+@@ -128,6 +128,7 @@
+ 		scene_buffer_set_buffer(scene_buffer, NULL);
+ 		scene_buffer_set_texture(scene_buffer, NULL);
+ 		pixman_region32_fini(&scene_buffer->opaque_region);
++		pixman_region32_fini(&scene_buffer->clip_region);
+ 		wlr_drm_syncobj_timeline_unref(scene_buffer->wait_timeline);
+ 
+ 		assert(wl_list_empty(&scene_buffer->events.output_leave.listener_list));
+@@ -635,10 +636,23 @@
+ 	pixman_region32_intersect_rect(&node->visible, &node->visible,
+ 		lx, ly, box.width, box.height);
+ 
++    if (node->type == WLR_SCENE_NODE_BUFFER) {
++        struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
++        if (buffer->clip_enabled) {
++            pixman_region32_t clip;
++            pixman_region32_init(&clip);
++            pixman_region32_copy(&clip, &buffer->clip_region);
++            pixman_region32_translate(&clip, lx, ly);
++            pixman_region32_intersect(&node->visible, &node->visible, &clip);
++            pixman_region32_fini(&clip);
++        }
++    }
++
+ 	if (data->calculate_visibility) {
+ 		pixman_region32_t opaque;
+ 		pixman_region32_init(&opaque);
+ 		scene_node_opaque_region(node, lx, ly, &opaque);
++		pixman_region32_intersect(&opaque, &opaque, &node->visible);
+ 		pixman_region32_subtract(data->visible, data->visible, &opaque);
+ 		pixman_region32_fini(&opaque);
+ 	}
+@@ -927,6 +941,7 @@
+ 	wl_signal_init(&scene_buffer->events.frame_done);
+ 
+ 	pixman_region32_init(&scene_buffer->opaque_region);
++	pixman_region32_init(&scene_buffer->clip_region);
+ 	wl_list_init(&scene_buffer->buffer_release.link);
+ 	wl_list_init(&scene_buffer->renderer_destroy.link);
+ 	scene_buffer->opacity = 1;
+@@ -1139,6 +1154,17 @@
+ 	scene_node_update(&scene_buffer->node, NULL);
+ }
+ 
++void wlr_scene_buffer_set_clip_region(struct wlr_scene_buffer *buffer,
++        const pixman_region32_t *region) {
++    if (buffer->clip_enabled == (region != NULL) &&
++            (!region || pixman_region32_equal(&buffer->clip_region, region))) return;
++    buffer->clip_enabled = region != NULL;
++    if (region) pixman_region32_copy(&buffer->clip_region, region);
++    else pixman_region32_clear(&buffer->clip_region);
++    // Update both old and new visibility, exposing the desktop underneath.
++    scene_node_update(&buffer->node, NULL);
++}
++
+ void wlr_scene_buffer_set_dest_size(struct wlr_scene_buffer *scene_buffer,
+ 		int width, int height) {
+ 	if (scene_buffer->dst_width == width && scene_buffer->dst_height == height) {
+@@ -1442,6 +1468,8 @@
+ 	if (node->type == WLR_SCENE_NODE_BUFFER) {
+ 		struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+ 
++		if (scene_buffer->clip_enabled && !pixman_region32_contains_point(
++            &scene_buffer->clip_region, floor(rx), floor(ry), NULL)) return false;
+ 		if (scene_buffer->point_accepts_input &&
+ 				!scene_buffer->point_accepts_input(scene_buffer, &rx, &ry)) {
+ 			return false;
+@@ -2135,6 +2163,7 @@
+ 	}
+ 
+ 	struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
++	if (buffer->clip_enabled) return SCANOUT_INELIGIBLE;
+ 	if (buffer->buffer == NULL) {
+ 		return SCANOUT_INELIGIBLE;
+ 	}
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -105,6 +105,8 @@
+ 	[NET_CLIENT_LIST_STACKING] = "_NET_CLIENT_LIST_STACKING",
+ 	[NET_WORKAREA] = "_NET_WORKAREA",
+ 	[NET_WM_FRAME_EXTENTS] = "_NET_WM_FRAME_EXTENTS",
++	[WINEHUA_GPU_CLIP_REQUEST] = "_WINEHUA_GPU_CLIP_REQUEST",
++	[WINEHUA_GPU_VISIBLE_REGION] = "_WINEHUA_GPU_VISIBLE_REGION",
+ };
+ 
+ #define STARTUP_INFO_REMOVE_PREFIX "remove: ID="
+@@ -161,6 +163,9 @@
+ 	// which is exact for borderless children.
+ 	int16_t frame_l, frame_r, frame_t, frame_b;
+ 	bool frame_known;
++	bool clip_requested, clip_valid;
++	uint32_t clip_width, clip_height;
++	pixman_region32_t visible_region;
+ 	struct wl_list link;
+ };
+ 
+@@ -227,6 +232,7 @@
+ 	if (!child) {
+ 		return;
+ 	}
++	pixman_region32_init(&child->visible_region);
+ 	child->window_id = ev->window;
+ 	child->parent = parent;
+ 	child->x = ev->x;
+@@ -254,6 +260,7 @@
+ 	struct xwm_child_window *child = xwm_child_window_find(xwm, window_id);
+ 	if (child) {
+ 		wl_list_remove(&child->link);
++		pixman_region32_fini(&child->visible_region);
+ 		free(child);
+ 	}
+ }
+@@ -264,6 +271,7 @@
+ 	wl_list_for_each_safe(child, tmp, &xwm->child_windows, link) {
+ 		if (child->parent == parent) {
+ 			wl_list_remove(&child->link);
++			pixman_region32_fini(&child->visible_region);
+ 			free(child);
+ 		}
+ 	}
+@@ -1647,6 +1655,42 @@
+ 	}
+ }
+ 
++static void xwm_child_read_visible_region(struct wlr_xwm *xwm,
++        struct xwm_child_window *child) {
++    xcb_get_property_cookie_t cookie = xcb_get_property(xwm->xcb_conn, 0,
++        child->window_id, xwm->atoms[WINEHUA_GPU_VISIBLE_REGION],
++        XCB_ATOM_CARDINAL, 0, 4 + 4 * 1024);
++    xcb_get_property_reply_t *reply = xcb_get_property_reply(xwm->xcb_conn, cookie, NULL);
++    child->clip_valid = false;
++    pixman_region32_clear(&child->visible_region);
++    if (reply && reply->type == XCB_ATOM_CARDINAL && reply->format == 32 &&
++            !reply->bytes_after && xcb_get_property_value_length(reply) >= 16) {
++        const uint32_t *v = xcb_get_property_value(reply);
++        uint32_t n = v[3];
++        if (v[0] == 1 && v[1] <= 32767 && v[2] <= 32767 && n <= 1024 &&
++                xcb_get_property_value_length(reply) == (int)(16 + n * 16)) {
++            bool valid = true;
++            for (uint32_t i = 0; i < n; i++) {
++                const int32_t *r = (const int32_t *)(v + 4 + i * 4);
++                if (r[0] < -32768 || r[1] < -32768 || r[2] > 32767 ||
++                        r[3] > 32767 || r[2] <= r[0] || r[3] <= r[1]) {
++                    valid = false;
++                    break;
++                }
++                if (!pixman_region32_union_rect(&child->visible_region,
++                        &child->visible_region, r[0], r[1], r[2]-r[0], r[3]-r[1])) {
++                    valid = false;
++                    break;
++                }
++            }
++            child->clip_valid = valid;
++            child->clip_width = v[1];
++            child->clip_height = v[2];
++        }
++    }
++    free(reply);
++}
++
+ static void xwm_handle_property_notify(struct wlr_xwm *xwm,
+ 		xcb_property_notify_event_t *ev) {
+ 	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
+@@ -1657,6 +1701,8 @@
+ 		struct xwm_child_window *child = xwm_child_window_find(xwm, ev->window);
+         if (child && (ev->atom == xwm->atoms[NET_WM_PID] || ev->atom == xwm->atoms[WM_WINDOW_ROLE]))
+             xwm_child_read_identity(xwm, child);
++		if (child && child->clip_requested && ev->atom == xwm->atoms[WINEHUA_GPU_VISIBLE_REGION])
++            xwm_child_read_visible_region(xwm, child);
+ 		if (child != NULL && ev->atom == xwm->atoms[NET_WM_FRAME_EXTENTS]) {
+ 			xwm_child_window_read_frame_extents(xwm, child);
+ 		}
+@@ -3206,6 +3252,26 @@
+ 	return true;
+ }
+ 
++bool wlr_xwayland_query_child_visible_region(struct wlr_xwayland *xwayland,
++        xcb_window_t id, uint64_t generation, pixman_region32_t *region) {
++    if (!xwayland || !xwayland->xwm) return false;
++    struct wlr_xwm *xwm = xwayland->xwm;
++    struct xwm_child_window *c = xwm_child_window_find(xwm, id);
++    if (!c || c->generation != generation) return false;
++    if (!c->clip_requested) {
++        c->clip_requested = true;
++        uint32_t version = 1;
++        xcb_change_property(xwm->xcb_conn, XCB_PROP_MODE_REPLACE, id,
++            xwm->atoms[WINEHUA_GPU_CLIP_REQUEST], XCB_ATOM_CARDINAL, 32, 1, &version);
++        // Initial read is one ordered round trip at binding, not a frame poll.
++        xwm_child_read_visible_region(xwm, c);
++    }
++    if (!c->mapped || !c->clip_valid || c->clip_width != c->width ||
++            c->clip_height != c->height) return false;
++    pixman_region32_copy(region, &c->visible_region);
++    return true;
++}
++
+ size_t wlr_xwayland_snapshot_children(struct wlr_xwayland *xwayland,
+         struct wlr_xwayland_child_info *items, size_t capacity) {
+     if (!xwayland || !xwayland->xwm || !items) return 0;

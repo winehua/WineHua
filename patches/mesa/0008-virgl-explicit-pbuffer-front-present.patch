@@ -1,0 +1,151 @@
+--- a/src/egl/drivers/dri2/egl_dri2.c
++++ b/src/egl/drivers/dri2/egl_dri2.c
+@@ -3378,6 +3378,13 @@
+    return EGL_TRUE;
+ }
+ 
++static EGLBoolean
++dri2_winehua_present_pbuffer(_EGLDisplay *disp, _EGLSurface *surf)
++{
++   (void)disp;
++   return driWineHuaPresentFrontBuffer(dri2_egl_surface(surf)->dri_drawable);
++}
++
+ const _EGLDriver _eglDriver = {
+    .Initialize = dri2_initialize,
+    .Terminate = dri2_terminate,
+@@ -3394,6 +3401,7 @@
+    .ReleaseTexImage = dri2_release_tex_image,
+    .SwapInterval = dri2_swap_interval,
+    .SwapBuffers = dri2_swap_buffers,
++   .WineHuaPresentPbuffer = dri2_winehua_present_pbuffer,
+    .SwapBuffersWithDamageEXT = dri2_swap_buffers_with_damage,
+    .SwapBuffersRegionNOK = dri2_swap_buffers_region,
+    .SetDamageRegion = dri2_set_damage_region,
+--- a/src/egl/main/eglapi.c
++++ b/src/egl/main/eglapi.c
+@@ -2855,6 +2855,31 @@
+    RETURN_EGL_EVAL(disp, ret);
+ }
+ 
++/* Private bridge entry, discovered by Wine through eglGetProcAddress.
++ * Ordinary EGL pbuffer swap semantics stay unchanged. The caller must hold
++ * Wine's exact surface identity scope; no pixel readback or GPU wait occurs. */
++static EGLBoolean EGLAPIENTRY
++eglWineHuaPresentPbuffer(EGLDisplay dpy, EGLSurface surface)
++{
++   _EGLContext *ctx = _eglGetCurrentContext();
++   _EGLDisplay *disp = _eglLockDisplay(dpy);
++   _EGLSurface *surf = _eglLookupSurface(surface, disp);
++   EGLBoolean ret = EGL_FALSE;
++   const char *present = getenv("WINEHUA_VTEST_PRESENT");
++
++   _EGL_FUNC_START(disp, EGL_OBJECT_SURFACE_KHR, surf);
++   _EGL_CHECK_SURFACE(disp, surf, EGL_FALSE);
++   if (!ctx || surf != ctx->DrawSurface || surf->Type != EGL_PBUFFER_BIT ||
++       !present || !present[0] || !strcmp(present, "0") ||
++       !disp->Driver->WineHuaPresentPbuffer)
++      RETURN_EGL_ERROR(disp, EGL_BAD_MATCH, EGL_FALSE);
++
++   egl_relax (disp, &surf->Resource) {
++      ret = disp->Driver->WineHuaPresentPbuffer(disp, surf);
++   }
++   RETURN_EGL_EVAL(disp, ret);
++}
++
+ PUBLIC __eglMustCastToProperFunctionPointerType EGLAPIENTRY
+ eglGetProcAddress(const char *procname)
+ {
+@@ -2872,6 +2897,9 @@
+ 
+    _EGL_FUNC_START(NULL, EGL_NONE, NULL);
+ 
++   if (!strcmp(procname, "eglWineHuaPresentPbuffer"))
++      RETURN_EGL_SUCCESS(NULL, (_EGLProc)eglWineHuaPresentPbuffer);
++
+    if (strncmp(procname, "egl", 3) == 0) {
+       const struct _egl_entrypoint *entrypoint =
+          bsearch(procname, egl_functions, ARRAY_SIZE(egl_functions),
+--- a/src/egl/main/egldriver.h
++++ b/src/egl/main/egldriver.h
+@@ -114,6 +114,10 @@
+    EGLBoolean (*SwapInterval)(_EGLDisplay *disp, _EGLSurface *surf,
+                               EGLint interval);
+    EGLBoolean (*SwapBuffers)(_EGLDisplay *disp, _EGLSurface *draw);
++
++   /* WineHua exports a surfaceless VirGL front resource to a host window.
++    * This is not an EGL back/front swap and never performs pixel readback. */
++   EGLBoolean (*WineHuaPresentPbuffer)(_EGLDisplay *disp, _EGLSurface *draw);
+    EGLBoolean (*CopyBuffers)(_EGLDisplay *disp, _EGLSurface *surface,
+                              void *native_pixmap_target);
+ 
+--- a/src/gallium/frontends/dri/dri_drawable.c
++++ b/src/gallium/frontends/dri/dri_drawable.c
+@@ -39,6 +39,7 @@
+ #include "util/u_inlines.h"
+ 
+ #include "state_tracker/st_context.h"
++#include "state_tracker/st_manager.h"
+ 
+ static uint32_t drifb_ID = 0;
+ 
+@@ -567,6 +568,38 @@
+    st_context_invalidate_state(st, ST_INVALIDATE_FB_STATE);
+ }
+ 
++/* Explicit export is necessary after an application already glFlush'ed
++ * outside Wine's surface identity scope. A second GL flush need not consider
++ * the front buffer dirty, and EGL pbuffer SwapBuffers normally does nothing.
++ * Use only the current drawable and its existing front resource. */
++bool
++driWineHuaPresentFrontBuffer(struct dri_drawable *drawable)
++{
++   struct dri_context *ctx = dri_get_current();
++
++   if (!ctx || ctx->draw != drawable || !drawable ||
++       ctx->screen != drawable->screen)
++      return false;
++
++   struct pipe_screen *screen = drawable->screen->base.screen;
++   const char *name = screen->get_name(screen);
++   if (!name || !strstr(name, "virgl") ||
++       (drawable->screen->type != DRI_SCREEN_SWRAST &&
++        drawable->screen->type != DRI_SCREEN_KMS_SWRAST))
++      return true; /* Keep ordinary pbuffer semantics on other drivers. */
++
++   /* Drain CPU work and vertex/bitmap caches without the automatic front
++    * flush. Export exactly once, even after an earlier application glFlush. */
++   _mesa_glthread_finish(ctx->st->ctx);
++   st_context_flush(ctx->st, ST_FLUSH_END_OF_FRAME, NULL, NULL, NULL);
++   if (!drawable->textures[ST_ATTACHMENT_FRONT_LEFT] ||
++       !drawable->flush_frontbuffer)
++      return false;
++
++   return drawable->flush_frontbuffer(ctx, drawable,
++                                     ST_ATTACHMENT_FRONT_LEFT);
++}
++
+ /**
+  * DRI2 flush extension.
+  */
+--- a/src/gallium/frontends/dri/dri_util.h
++++ b/src/gallium/frontends/dri/dri_util.h
+@@ -138,6 +138,8 @@
+ driDestroyDrawable(struct dri_drawable *drawable);
+ PUBLIC void
+ driSwapBuffers(struct dri_drawable *drawable);
++PUBLIC bool
++driWineHuaPresentFrontBuffer(struct dri_drawable *drawable);
+ PUBLIC void
+ driSwapBuffersWithDamage(struct dri_drawable *drawable, int nrects, const int *rects);
+ PUBLIC struct dri_context *
+--- a/src/gallium/targets/dri/dri.sym.in
++++ b/src/gallium/targets/dri/dri.sym.in
+@@ -19,6 +19,7 @@
+ 		driCreate*;
+ 		driCopy*;
+ 		driSwap*;
++		driWineHuaPresentFrontBuffer;
+ 		driDestroy*;
+ 		driGet*;
+ 		driIndexConfigAttrib;

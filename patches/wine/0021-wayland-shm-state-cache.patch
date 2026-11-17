@@ -1,0 +1,210 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] winewayland: suppress unchanged SHM geometry and viewport requests
+
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -301,6 +301,18 @@
+     BOOL has_contents;
+     HCURSOR hcursor;
+ 
++    /* Last marshalled persistent protocol state, never a frame/commit cache. */
++    struct
++    {
++        BOOL geometry_valid, source_valid, destination_valid, context_valid;
++        int geometry_x, geometry_y, geometry_width, geometry_height;
++        wl_fixed_t source_x, source_y, source_width, source_height;
++        int destination_width, destination_height;
++        int window_width, window_height;
++        double scale;
++        enum wayland_surface_config_state state;
++    } state_cache;
++
+     /* xdg_toplevel min/max size 约束 (surface-local 坐标, 0 = 无限制) */
+     int32_t min_width, min_height;
+     int32_t max_width, max_height;
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -36,6 +36,47 @@
+ #endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
++
++static void wayland_surface_invalidate_state_cache(struct wayland_surface *surface)
++{
++    surface->state_cache.geometry_valid = FALSE;
++    surface->state_cache.source_valid = FALSE;
++    surface->state_cache.destination_valid = FALSE;
++}
++
++static void wayland_surface_refresh_state_cache(struct wayland_surface *surface)
++{
++    int width = surface->window.rect.right - surface->window.rect.left;
++    int height = surface->window.rect.bottom - surface->window.rect.top;
++
++    /* Output/DPI and window-state transitions may retain identical protocol
++     * values. Resend once across those boundaries as well as on resize. */
++    if (!surface->state_cache.context_valid ||
++        surface->state_cache.window_width != width ||
++        surface->state_cache.window_height != height ||
++        surface->state_cache.scale != surface->window.scale ||
++        surface->state_cache.state != surface->window.state)
++    {
++        wayland_surface_invalidate_state_cache(surface);
++        surface->state_cache.window_width = width;
++        surface->state_cache.window_height = height;
++        surface->state_cache.scale = surface->window.scale;
++        surface->state_cache.state = surface->window.state;
++        surface->state_cache.context_valid = TRUE;
++    }
++}
++
++static void wayland_surface_destroy_viewport(struct wayland_surface *surface)
++{
++    /* Validity belongs to this protocol object, including address reuse. */
++    surface->state_cache.source_valid = FALSE;
++    surface->state_cache.destination_valid = FALSE;
++    if (surface->wp_viewport)
++    {
++        wp_viewport_destroy(surface->wp_viewport);
++        surface->wp_viewport = NULL;
++    }
++}
+ 
+ /* WineHua window binding (2026-09-17)
+  *
+@@ -328,11 +369,7 @@
+     winehua_modal_release(surface);
+ #endif
+ 
+-    if (surface->wp_viewport)
+-    {
+-        wp_viewport_destroy(surface->wp_viewport);
+-        surface->wp_viewport = NULL;
+-    }
++    wayland_surface_destroy_viewport(surface);
+ 
+     if (surface->wl_surface)
+     {
+@@ -486,6 +523,9 @@
+ {
+     TRACE("surface=%p\n", surface);
+ 
++    /* Unmap/remap and recreation of xdg_surface reset its persistent state. */
++    wayland_surface_invalidate_state_cache(surface);
++
+     switch (surface->role)
+     {
+     case WAYLAND_SURFACE_ROLE_NONE:
+@@ -556,6 +596,7 @@
+ {
+     RGNDATA *surface_damage;
+     int win_width, win_height, source_width, source_height;
++    wl_fixed_t fixed_width, fixed_height;
+ 
+     TRACE("surface=%p shm_buffer=%p (%dx%d)\n",
+           surface, shm_buffer, shm_buffer->width, shm_buffer->height);
+@@ -594,9 +635,25 @@
+     source_width = max(1, min(win_width, shm_buffer->width));
+     source_height = max(1, min(win_height, shm_buffer->height));
+ 
+-    wp_viewport_set_source(surface->wp_viewport, 0, 0,
+-                           wl_fixed_from_int(source_width),
+-                           wl_fixed_from_int(source_height));
++    fixed_width = wl_fixed_from_int(source_width);
++    fixed_height = wl_fixed_from_int(source_height);
++    wayland_surface_refresh_state_cache(surface);
++    if (!surface->wp_viewport)
++    {
++        surface->state_cache.source_valid = FALSE;
++        surface->state_cache.destination_valid = FALSE;
++    }
++    else if (!surface->state_cache.source_valid ||
++             surface->state_cache.source_x != 0 || surface->state_cache.source_y != 0 ||
++             surface->state_cache.source_width != fixed_width ||
++             surface->state_cache.source_height != fixed_height)
++    {
++        wp_viewport_set_source(surface->wp_viewport, 0, 0, fixed_width, fixed_height);
++        surface->state_cache.source_x = surface->state_cache.source_y = 0;
++        surface->state_cache.source_width = fixed_width;
++        surface->state_cache.source_height = fixed_height;
++        surface->state_cache.source_valid = TRUE;
++    }
+ 
+     /* content_width/height describe the logical destination configured by
+      * wayland_surface_reconfigure_size(), not the clamped buffer source.
+@@ -724,10 +781,19 @@
+                 geo_y = surface->window.rect.top;
+         }
+ #endif
+-        xdg_surface_set_window_geometry(surface->xdg_surface,
+-                                        geo_x, geo_y,
+-                                        rect.right - rect.left,
+-                                        rect.bottom - rect.top);
++        if (!surface->state_cache.geometry_valid ||
++            surface->state_cache.geometry_x != geo_x || surface->state_cache.geometry_y != geo_y ||
++            surface->state_cache.geometry_width != rect.right - rect.left ||
++            surface->state_cache.geometry_height != rect.bottom - rect.top)
++        {
++            xdg_surface_set_window_geometry(surface->xdg_surface, geo_x, geo_y,
++                                            rect.right - rect.left, rect.bottom - rect.top);
++            surface->state_cache.geometry_x = geo_x;
++            surface->state_cache.geometry_y = geo_y;
++            surface->state_cache.geometry_width = rect.right - rect.left;
++            surface->state_cache.geometry_height = rect.bottom - rect.top;
++            surface->state_cache.geometry_valid = TRUE;
++        }
+     }
+ }
+ 
+@@ -741,10 +807,23 @@
+ {
+     TRACE("hwnd=%p size=%dx%d\n", surface->hwnd, width, height);
+ 
+-    if (width != 0 && height != 0)
++    if (!surface->wp_viewport)
++    {
++        surface->state_cache.source_valid = FALSE;
++        surface->state_cache.destination_valid = FALSE;
++        return;
++    }
++
++    if (!width || !height) width = height = -1;
++    if (!surface->state_cache.destination_valid ||
++        surface->state_cache.destination_width != width ||
++        surface->state_cache.destination_height != height)
++    {
+         wp_viewport_set_destination(surface->wp_viewport, width, height);
+-    else
+-        wp_viewport_set_destination(surface->wp_viewport, -1, -1);
++        surface->state_cache.destination_width = width;
++        surface->state_cache.destination_height = height;
++        surface->state_cache.destination_valid = TRUE;
++    }
+ }
+ 
+ /**********************************************************************
+@@ -805,6 +884,7 @@
+         surface->current = surface->processing;
+         memset(&surface->processing, 0, sizeof(surface->processing));
+         xdg_surface_ack_configure(surface->xdg_surface, surface->current.serial);
++        wayland_surface_invalidate_state_cache(surface);
+     }
+     /* If this is the initial configure, and we have a compatible requested
+      * config, use that, in order to draw windows that don't go through the
+@@ -817,6 +897,7 @@
+         surface->current = surface->requested;
+         memset(&surface->requested, 0, sizeof(surface->requested));
+         xdg_surface_ack_configure(surface->xdg_surface, surface->current.serial);
++        wayland_surface_invalidate_state_cache(surface);
+     }
+     else if (!surface->current.serial ||
+              !wayland_surface_config_is_compatible(&surface->current,
+@@ -875,6 +956,8 @@
+ {
+     struct wayland_window_config *window = &surface->window;
+     int win_width, win_height, width, height;
++
++    wayland_surface_refresh_state_cache(surface);
+ 
+     win_width = surface->window.rect.right - surface->window.rect.left;
+     win_height = surface->window.rect.bottom - surface->window.rect.top;

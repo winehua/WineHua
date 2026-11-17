@@ -24,6 +24,11 @@ extern "C" {
 #define WHGP_MSG_STATE 1
 #define WHGP_MSG_RESET 2
 #define WHGP_MSG_RUMBLE 3
+#define WHGP_MAX_SLOTS 4
+/* Backward-compatible topology in state.reserved[0]. Old hosts leave it zero;
+ * old clients continue to consume slot zero and ignore the extension. */
+#define WHGP_STATE_TOPOLOGY_VALID 0x01
+#define WHGP_STATE_CONNECTED 0x02
 
 #pragma pack(push, 1)
 struct whgp_header {

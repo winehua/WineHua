@@ -31,10 +31,16 @@ public:
 
     // surfaceId 驱动的渲染器生命周期
     void CreateRenderer(uint32_t toplevelId, int64_t surfaceId);
-    void ResizeRenderer(uint32_t toplevelId, int w, int h);
+    void ResizeRenderer(uint32_t toplevelId, int w, int h, int64_t surfaceId = 0);
+    void DestroyRendererForSurface(uint32_t toplevelId, int64_t surfaceId);
     // 拖拽缩放中: 目标渲染器整帧拉伸填满 (EglRenderer::SetStretchFill)
     void SetRendererStretchFill(uint32_t toplevelId, bool on);
     void DestroyToplevel(uint32_t toplevelId);
+    // ---- VPP additions ----
+    void RefreshRenderer(uint32_t toplevelId);
+    void SetToplevelIsolated(uint32_t id, bool isolated);
+    void SetRendererPaused(uint32_t toplevelId, bool paused);
+
 
     // pending toplevelId 队列: Ability 在 loadContent 前入队
     // WineWindow.aboutToAppear 同步出队 (FIFO); 出队方窗口被销毁时
@@ -61,6 +67,14 @@ private:
 
     // 每个 toplevel 一个独立 EGLContext 渲染器
     std::unordered_map<uint32_t, std::unique_ptr<EglRenderer>> toplevelRenderers_;
+
+    // X11 renderer ownership follows the XComponent surface incarnation too.
+    std::unordered_map<uint32_t, int64_t> x11Surfaces_;
+
+    // Visibility can arrive before XComponent creates its renderer.
+    std::unordered_map<uint32_t, bool> rendererPaused_;
+
+    std::unordered_map<uint32_t, bool> isolatedToplevels_;
 
     // pending queue: Ability 入队, WineWindow.aboutToAppear 出队 (FIFO);
     // deque 支持 CancelPendingToplevel 的定点删除 (queue 底层不可迭代)

@@ -1,0 +1,44 @@
+From 3ffebdcd369fedc87643b00a7616799f36db63c3 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0032-wayland-readback-content-diagnostics
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 60c368e950a55bd232ffc64792ceb25594245d78cc72921083ae109c63534c0b
+
+diff --git a/dlls/winewayland.drv/opengl_readback.c b/dlls/winewayland.drv/opengl_readback.c
+index 51047dc05daa22d52eb8d1c7bf36a0abed45a047..fb10e74c47e826d2aebccaf1a29f9c60076cb90e 100644
+--- a/dlls/winewayland.drv/opengl_readback.c
++++ b/dlls/winewayland.drv/opengl_readback.c
+@@ -439,6 +439,30 @@ static BOOL winehua_readback_present(struct opengl_drawable *base)
+     }
+     funcs->p_glReadPixels(0, 0, gl->width, gl->height, GL_BGRA, GL_UNSIGNED_BYTE, rgba);
+     winehua_gl_stage_end(WINEHUA_GL_READBACK, stage_started);
++    /* Sample the readback before SHM/composition. A submitted black frame must
++     * be distinguishable from a lost window without a full pixel dump or any
++     * glGetError call that would consume the application's error state. */
++    if (readbacks == 1 || !(readbacks % 300))
++    {
++        SIZE_T pixels = (SIZE_T)gl->width * gl->height, i, samples = 0, rgb_nonzero = 0, alpha_nonzero = 0;
++        SIZE_T step = max(1, pixels / 1024);
++        GLint read_buffer = 0, draw_fbo = 0;
++        EGLSurface current_draw = funcs->p_eglGetCurrentSurface(EGL_DRAW);
++        EGLSurface current_read = funcs->p_eglGetCurrentSurface(EGL_READ);
++        funcs->p_glGetIntegerv(GL_READ_BUFFER, &read_buffer);
++        funcs->p_glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo);
++        for (i = 0; i < pixels; i += step)
++        {
++            samples++;
++            if (rgba[4*i] || rgba[4*i+1] || rgba[4*i+2]) rgb_nonzero++;
++            if (rgba[4*i+3]) alpha_nonzero++;
++        }
++        fprintf(stderr, "winehua_readback_pixels: pid=%u hwnd=%p surface=%u frame=%d rgb_nonzero=%zu alpha_nonzero=%zu samples=%zu read_buffer=%#x saved_read_fbo=%d draw_fbo=%d target=%p current_draw=%p current_read=%p renderer=%s\n",
++                (unsigned int)getpid(), base->client->hwnd, surface_id, (int)readbacks,
++                rgb_nonzero, alpha_nonzero, samples, read_buffer, read_fbo, draw_fbo,
++                base->surface, current_draw, current_read, (const char *)funcs->p_glGetString(GL_RENDERER));
++        fflush(stderr);
++    }
+ 
+     /* Keep the pbuffer's WSI present semantics active so the virpipe winsys
+      * receives the exact front resource while readback remains the fallback. */

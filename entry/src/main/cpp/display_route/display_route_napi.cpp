@@ -1,3 +1,4 @@
+#include "input/data_device.h"
 /* display_route NAPI 模块 —— x11 显示路线控制面的产品入口 (ArkTS → 原生)。
  *
  * 边界约定 (D21): 本模块承载全部产品调用面 (桌面窗 / 启动链 / IME 桥);
@@ -33,10 +34,13 @@
  */
 #include <napi/native_api.h>
 #include <cstdlib>
+#include <cstdint>
+extern "C" int WineHua_DisplayRoute_Phase();
+extern "C" size_t WineHua_DisplayRoute_DisplayName(char*, size_t);
 
 extern "C" void WineHua_DisplayRoute_Start();
 extern "C" void WineHua_DisplayRoute_Stop();
-extern "C" void WineHua_SetDisplayRoute(const char* route);
+extern "C" bool WineHua_SetDisplayRoute(const char* route);
 extern "C" bool WineHua_DisplayRouteIsX11();
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool xclient_enabled,
@@ -52,7 +56,12 @@ extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
 extern "C" void wl_ohos_input_post_axis(int which, int steps);
 extern "C" void wl_ohos_input_post_text(const char* utf8);
 extern "C" void wl_ohos_input_post_clipboard(const char *utf8);
+extern "C" char *wl_ohos_input_clipboard_snapshot(uint64_t *version);
 extern "C" uint32_t wl_ohos_input_last_ptr_window_id(void);
+
+static napi_value DisplayRoutePhase(napi_env env, napi_callback_info) {
+    napi_value phase; napi_create_int32(env, WineHua_DisplayRoute_Phase(), &phase); return phase;
+}
 
 static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) {
     size_t argc = 6;
@@ -124,14 +133,15 @@ static napi_value SetDisplayRoute(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool accepted = false;
     if (argc >= 1) {
         char route[16] = {0};
         size_t len = 0;
         napi_get_value_string_utf8(env, args[0], route, sizeof(route), &len);
-        WineHua_SetDisplayRoute(route);
+        accepted = WineHua_SetDisplayRoute(route);
     }
     napi_value ok;
-    napi_get_boolean(env, true, &ok);
+    napi_get_boolean(env, accepted, &ok);
     return ok;
 }
 
@@ -260,6 +270,7 @@ static napi_value InjectDisplayRouteText(napi_env env, napi_callback_info info) 
     if (argc >= 1) {
         size_t len = 0;
         napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+        if (len > 1024 * 1024) return nullptr;
         char *text = static_cast<char *>(malloc(len + 1));
         if (text) {
             napi_get_value_string_utf8(env, args[0], text, len + 1, &len);
@@ -276,6 +287,17 @@ static napi_value InjectDisplayRouteText(napi_env env, napi_callback_info info) 
  * setDisplayRouteClipboard(中文串) → injectDisplayRouteKey(29,true)
  * injectDisplayRouteKey(47,true) injectDisplayRouteKey(47,false)
  * injectDisplayRouteKey(29,false)。 */
+static napi_value GetDisplayRouteClipboard(napi_env env, napi_callback_info) {
+    uint64_t version = 0;
+    char *text = WineHua_DisplayRouteIsX11() ? wl_ohos_input_clipboard_snapshot(&version) : WineClipboardSnapshot(&version);
+    napi_value object, value;
+    napi_create_object(env, &object);
+    napi_create_double(env, static_cast<double>(version), &value);
+    napi_set_named_property(env, object, "version", value);
+    napi_create_string_utf8(env, text ? text : "", NAPI_AUTO_LENGTH, &value);
+    napi_set_named_property(env, object, "text", value);
+    free(text); return object;
+}
 static napi_value SetDisplayRouteClipboard(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -283,10 +305,12 @@ static napi_value SetDisplayRouteClipboard(napi_env env, napi_callback_info info
     if (argc >= 1) {
         size_t len = 0;
         napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+        if (len > 1024 * 1024) return nullptr;
         char *text = static_cast<char *>(malloc(len + 1));
         if (text) {
             napi_get_value_string_utf8(env, args[0], text, len + 1, &len);
-            wl_ohos_input_post_clipboard(text);
+            if (WineHua_DisplayRouteIsX11()) wl_ohos_input_post_clipboard(text);
+            else WineClipboardPost(text);
             free(text);
         }
     }
@@ -298,6 +322,7 @@ static napi_value SetDisplayRouteClipboard(napi_env env, napi_callback_info info
 EXTERN_C_START
 static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
     napi_property_descriptor props[] = {
+        {"displayRoutePhase", nullptr, DisplayRoutePhase, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startDisplayRouteChain", nullptr, StartDisplayRouteChain, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopDisplayRouteChain", nullptr, StopDisplayRouteChain, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRoute", nullptr, SetDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -311,6 +336,7 @@ static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
         {"injectDisplayRouteButton", nullptr, InjectDisplayRouteButton, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteAxis", nullptr, InjectDisplayRouteAxis, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteText", nullptr, InjectDisplayRouteText, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getDisplayRouteClipboard", nullptr, GetDisplayRouteClipboard, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setDisplayRouteClipboard", nullptr, SetDisplayRouteClipboard, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);

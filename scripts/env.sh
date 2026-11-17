@@ -49,22 +49,85 @@ fi
 CLANG="$OHOS_SDK/native/llvm/bin/clang"
 SYSROOT="$OHOS_SDK/native/sysroot"
 
+# llvm-mingw (arm64ec/aarch64 PE 编译 + FEX 构建, 需 LLVM ≥ 18)
+# 版本常量只在此一处 (CI workflow / ci/Dockerfile.buildenv 的 version= 与其
+# 同步维护)。20260616 的 libc++ 无 ARM64EC C++ 库, 编不出 arm64x 双图 DLL。
+# 发现链 (位置完全参数化, 不要求任何固定目录名):
+#   1. $LLVM_MINGW 环境变量 — 用户自选位置, 任意目录名;
+#   2. $ROOT/.temp/llvm-mingw-<版本>-… — 脚本缺失时自动下载解压的落点
+#      (标准布局 = CI 同款, 不是"约定用户手工放这里");
+#   3. 无网络 → 显式报错 + 设置指引。
+# 均需通过双图库校验 (libc++.a 含 obj.arm64ec/ 成员, 旧版会失败)。
+LLVM_MINGW_VERSION="${LLVM_MINGW_VERSION:-20260826}"
+LLVM_MINGW_DIRNAME="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
+LLVM_MINGW="${LLVM_MINGW:-}"
+# 注意: arm64ec-w64-mingw32-clang 是二进制文件, 校验用 -x; 用 -d 永远为假 → 一旦
+# 某脚本 export LLVM_MINGW 后, 后续所有 source env.sh 的脚本全部误报 (2026-09-05 实测)。
+if [ -n "${LLVM_MINGW}" ] && [ ! -x "$LLVM_MINGW/bin/arm64ec-w64-mingw32-clang" ]; then
+    echo "ERROR: LLVM_MINGW 指向的工具链不完整: $LLVM_MINGW (缺 bin/arm64ec-w64-mingw32-clang)" >&2
+    exit 1
+fi
+if [ -z "${LLVM_MINGW}" ] && [ -d "$ROOT/.temp/$LLVM_MINGW_DIRNAME" ]; then
+    LLVM_MINGW="$ROOT/.temp/$LLVM_MINGW_DIRNAME"
+fi
+if [ -z "${LLVM_MINGW}" ] && [ "${WINE_IDENTITY_CHECK_ONLY:-0}" = 1 ]; then
+    echo "ERROR: identity check requires the configured llvm-mingw toolchain; no download was attempted" >&2
+    exit 1
+fi
+if [ -z "${LLVM_MINGW}" ]; then
+    echo "llvm-mingw 缺失, 自动下载 $LLVM_MINGW_VERSION (CI 同款 release) 到 $ROOT/.temp/  ..." >&2
+    mkdir -p "$ROOT/.temp"
+    tarball="$ROOT/.temp/$LLVM_MINGW_DIRNAME.tar.xz"
+    download_failed=0
+    if [ "$LLVM_MINGW_VERSION" = 20260826 ]; then
+        python3 "$ROOT/scripts/download_llvm_mingw.py" "$tarball" || download_failed=1
+    else
+        curl -fL --retry 3 --connect-timeout 30 -o "$tarball" \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$LLVM_MINGW_DIRNAME.tar.xz" || download_failed=1
+    fi
+    if [ "$download_failed" = 1 ]; then
+        echo "ERROR: 自动下载失败。请用以下任一方式准备工具链再构建:" >&2
+        echo "  方式 A (推荐): http_proxy/https_proxy 正常后重试本命令;" >&2
+        echo "  方式 B: 自行下载解压, 然后 export LLVM_MINGW=/path/to/$LLVM_MINGW_DIRNAME" >&2
+        echo "  方式 C: 离线拷入 $ROOT/.temp/$LLVM_MINGW_DIRNAME (与 CI 同布局)" >&2
+        exit 1
+    fi
+    tar -xJf "$tarball" -C "$ROOT/.temp" || { echo "ERROR: 解压失败: $tarball" >&2; exit 1; }
+    if [ "${VP_KEEP_TOOLCHAIN_ARCHIVE:-0}" != 1 ]; then rm -f "$tarball"; fi
+    LLVM_MINGW="$ROOT/.temp/$LLVM_MINGW_DIRNAME"
+fi
+# 双图库校验: 版本合格才放行 (20260616 无 obj.arm64ec/ 成员)
+if ! "$LLVM_MINGW/bin/llvm-ar" t "$LLVM_MINGW/aarch64-w64-mingw32/lib/libc++.a" 2>/dev/null \
+     | grep -q 'obj\.arm64ec/'; then
+    echo "ERROR: $LLVM_MINGW 的 libc++.a 缺 ARM64EC 双图成员 (需 >= $LLVM_MINGW_VERSION)" >&2
+    exit 1
+fi
+export LLVM_MINGW
+
 # ── Native 层架构 (鸿蒙设备 CPU, HAP .so 的目标) ──
 # arm64-v8a: 真机 (AArch64)
 # x86_64:    模拟器 / x86_64 设备
 NATIVE_ARCH="${NATIVE_ARCH:-arm64-v8a}"
 
-# ── Guest 层架构 (Wine 及其依赖的运行侧) ──
-# x86_64:   现状 (Wine 是 x86_64 ELF, arm64 真机经 box64 翻译) → x86_64+arm64 / x86_64+x86_64 组合
-# arm64-v8a: 预留 (arm64 原生 Wine) → arm64+arm64 组合
-# 任何组件构建前先问: 它跑在 guest 还是 host? 两侧架构独立参数, 不得互相假设。
-GUEST_ARCH="${GUEST_ARCH:-x86_64}"
-case "$GUEST_ARCH" in
-    x86_64)    GUEST_TARGET="x86_64-linux-ohos" ;;
-    arm64-v8a) GUEST_TARGET="aarch64-linux-ohos" ;;
-    *) echo "ERROR: 不支持的 GUEST_ARCH: $GUEST_ARCH (可选: x86_64, arm64-v8a)" >&2; return 1 2>/dev/null || exit 1 ;;
-esac
-TARGET="$GUEST_TARGET"   # 既有脚本以 TARGET 指代 guest 目标, 保持兼容
+# ── Wine 模拟层架构 (guest 侧) ──
+# arm64 真机 → aarch64 原生 wine + FEX 转译应用 (libarm64ecfex.dll, Steam win64 链)
+# x86_64 模拟器 → x86_64 同目标 wine
+# 任何组件构建前先问: 它跑在 guest (Wine 世界) 还是 host (鸿蒙侧)? 两侧架构
+# 独立参数, 不得互相假设; host 侧产物进 HOST_EXT, guest 侧进 sysroot-ext。
+if [ -z "${WINE_ARCH:-}" ]; then
+    [ "$NATIVE_ARCH" = "arm64-v8a" ] && WINE_ARCH=aarch64 || WINE_ARCH=x86_64
+fi
+export WINE_ARCH
+TARGET="${WINE_ARCH}-linux-ohos"                            # aarch64-linux-ohos | x86_64-linux-ohos
+HOST_TRIPLE="${HOST_TRIPLE:-${WINE_ARCH}-unknown-linux-ohos}"  # wine configure --host
+GNU_HOST="${GNU_HOST:-${WINE_ARCH}-linux-gnu}"              # autoconf 系 deps --host
+OHOS_ARCH="${OHOS_ARCH:-$( [ "$WINE_ARCH" = aarch64 ] && echo arm64-v8a || echo x86_64 )}"
+export TARGET HOST_TRIPLE GNU_HOST OHOS_ARCH
+# x11 链脚本的 guest 侧别名 (build_xcb_stack.sh / build_x11_client.sh):
+# guest = Wine 世界 = WINE_ARCH 侧; 保留本地 aarch64/x86_64 值域。
+GUEST_TARGET="$TARGET"
+GUEST_ARCH="${GUEST_ARCH:-$WINE_ARCH}"
+export GUEST_TARGET GUEST_ARCH
 
 # 根据 NATIVE_ARCH 推导 Native 层 LLVM target / meson cpu
 case "$NATIVE_ARCH" in
@@ -79,14 +142,11 @@ case "$NATIVE_ARCH" in
         NATIVE_CPU="x86_64"
         ;;
     all)
-        # 双架构模式: 仅在 package.sh 构建 HAP 时使用
-        # NATIVE_TARGET/NATIVE_CPU_FAMILY 不适用
-        NATIVE_TARGET=""
-        NATIVE_CPU_FAMILY=""
-        NATIVE_CPU=""
+        echo "ERROR: NATIVE_ARCH=all 不再支持 (单一 WINE_ARCH 无法同时满足 arm64 原生与 box64+wine 的 assemble)。请分别构建 NATIVE_ARCH=x86_64 / arm64-v8a。" >&2
+        exit 1
         ;;
     *)
-        echo "ERROR: 不支持的 NATIVE_ARCH: $NATIVE_ARCH (可选: arm64-v8a, x86_64, all)"
+        echo "ERROR: 不支持的 NATIVE_ARCH: $NATIVE_ARCH (可选: arm64-v8a, x86_64)"
         exit 1
         ;;
 esac
@@ -95,14 +155,21 @@ esac
 WINE_DEVICE_ROOT="/data/storage/el2/base/files/wine"
 
 # 源码路径
-WINE_SRC="$ROOT/thirdparty/wine"
-BOX64_SRC="$ROOT/thirdparty/box64"
+# Proton-OHOS 的受支持基线是 Valve Proton Wine。显式 WINE_SRC 仍可用于
+# 对照构建，但所有常规入口必须选择同一源码树，避免 make 静默打入旧 Wine。
+WINE_SRC="${WINE_SRC:-$ROOT/build/runtime-sources/wine}"
 DXVK_SRC="$ROOT/thirdparty/dxvk"
+# box64+wine 方案 (方案②, arm64 设备 + x86_64 wine) 的 in-process 转译器源码
+BOX64_SRC="$ROOT/thirdparty/box64"
 DXVK_MODERN_SRC="$ROOT/thirdparty/dxvk-modern"
 VKD3D_PROTON_SRC="$ROOT/thirdparty/vkd3d-proton"
 
 # 产物路径
-BUILD_DIR="$ROOT/build"          # 源码构建中间产物
+BUILD_DIR="${BUILD_DIR:-$ROOT/build}"   # 源码构建中间产物（同样允许覆盖，避免污染产品构建目录）
+# Isolate Wine provenance without duplicating shared dependency build trees.
+# Assembly must explicitly select the same root; never fall back to older Wine.
+WINE_BUILD_ROOT="${WINE_BUILD_ROOT:-$BUILD_DIR}"
+export WINE_BUILD_ROOT
 
 # ── Host 侧扩展 sysroot (host 组件的交叉构建产物: wlroots/Xwayland/pixman 等) ──
 # 与 guest 的 sysroot-ext 物理隔离, 随 NATIVE_ARCH 分目录。
@@ -123,13 +190,15 @@ VKD3D_PROTON_BUILD_ROOT="$BUILD_DIR/vkd3d-proton"
 
 # sysroot-ext 目录结构
 SYSROOT_EXT_INC="$SYSROOT_EXT/usr/include"
-SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/x86_64-linux-ohos"
-SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/pkgconfig"
+SYSROOT_EXT_LIB="$SYSROOT_EXT/usr/lib/$TARGET"
+# pkgconfig 按架构隔离: 共享目录跨架构切换会残留旧架构 .pc (libdir 指向旧架构)
+# → x86_64 构建解析到 aarch64 .pc → 链接旧架构 .so (gstreamer 链实测必现)
+SYSROOT_EXT_PC="$SYSROOT_EXT/usr/lib/$TARGET/pkgconfig"
 SYSROOT_EXT_SHARE="$SYSROOT_EXT/usr/share"
 
 # 顶层默认 pc 搜索路径 (gen_cross_file/gen_host_cross 各有隔离版 wrapper, 此处是默认值)。
 # usr/share/pkgconfig 不可省: 纯数据包 (如 wayland-protocols) 的 pc 装在 share 下。
-export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig:$SYSROOT_EXT/usr/share/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
 
 # Linux/WSL 使用系统 pkg-config；macOS/HarmonyOS 使用当前工具链的 pkg-config。
 # wayland-scanner 各平台统一放项目内 build/host-tools（build_wayland.sh 现场编译），不写系统目录。
@@ -165,15 +234,16 @@ export JOBS
 
 # 生成 meson cross file (路径依赖 ROOT, 不能硬编码)
 gen_cross_file() {
-    local cross="$BUILD_DIR/ohos-x86_64-cross.txt"
+    local cross="$BUILD_DIR/ohos-${WINE_ARCH}-cross.txt"
     # pkg-config wrapper: --with-path 替换默认搜索路径 (宿主系统 /usr/lib/pkgconfig
     # 会混入 x11.pc 等 → 交叉构建误用宿主库探测)
     local pcwrap="$BUILD_DIR/pkg-config-cross.sh"
     cat > "$pcwrap" << PWEOF
 #!/bin/sh
 # PKG_CONFIG_LIBDIR 替换默认搜索路径 (--with-path 只是追加, 宿主 /usr/lib 仍混入)
+# SYSROOT_EXT_PC 已按架构隔离 (usr/lib/$TARGET/pkgconfig);
 # usr/share/pkgconfig 不可省: 纯数据包 (如 wayland-protocols) 的 pc 装在 share 下
-export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig:$SYSROOT_EXT/usr/share/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
 exec "$PKG_CONFIG_BIN" "\$@"
 PWEOF
     chmod +x "$pcwrap"
@@ -192,8 +262,9 @@ gdbus-codegen = '$SYSROOT_EXT/usr/bin/gdbus-codegen'
 [built-in options]
 c_args = ['--target=$TARGET', '--sysroot=$SYSROOT', '-I$SYSROOT_EXT_INC']
 c_link_args = ['--target=$TARGET', '--sysroot=$SYSROOT', '-fuse-ld=lld', '-L$SYSROOT_EXT_LIB']
-# pkgconfigdir = libdir/pkgconfig (x86_64-linux-ohos 子目录), 与 /usr/lib/pkgconfig 都要
-pkg_config_path = ['$SYSROOT_EXT/usr/lib/pkgconfig', '$SYSROOT_EXT/usr/lib/x86_64-linux-ohos/pkgconfig', '$SYSROOT/usr/lib/pkgconfig']
+# pkgconfig 只走架构隔离的 SYSROOT_EXT_PC (usr/lib/$TARGET/pkgconfig) + OHOS SDK;
+# 共享 usr/lib/pkgconfig 已废弃 (跨架构残留 aarch64 .pc → x86_64 链接错架构)
+pkg_config_path = ['$SYSROOT_EXT_PC', '$SYSROOT/usr/lib/pkgconfig']
 
 [properties]
 # 不设 sys_root: 编译器 --sysroot 已在 c_args/c_link_args 中，
@@ -205,8 +276,8 @@ needs_exe_wrapper = true
 
 [host_machine]
 system = 'linux'
-cpu_family = 'x86_64'
-cpu = 'x86_64'
+cpu_family = '$WINE_ARCH'
+cpu = '$WINE_ARCH'
 endian = 'little'
 XEOF
     echo "$cross"
@@ -240,7 +311,7 @@ gen_host_cross() {
     # 同 build_wayland.sh wayland-protocols 教训, host 侧同款)
     cat > "$pcwrap" << PWEOF
 #!/bin/sh
-export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$HOST_EXT_SHARE/pkgconfig:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig"
+export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$HOST_EXT_SHARE/pkgconfig:$BUILD_DIR/native_${NATIVE_ARCH}/libffi/install/lib/pkgconfig:$BUILD_DIR/native_${NATIVE_ARCH}/freetype/install/lib/pkgconfig:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT/usr/share/pkgconfig"
 exec "$PKG_CONFIG_BIN" "\$@"
 PWEOF
     chmod +x "$pcwrap"
@@ -283,6 +354,62 @@ meson_host_build() {
 log()  { echo -e "\033[32m[BUILD]\033[0m $*" >&2; }
 warn() { echo -e "\033[33m[WARN]\033[0m $*" >&2; }
 err()  { echo -e "\033[31m[ERROR]\033[0m $*" >&2; exit 1; }
+
+# ARM64X 手搓 clang（绕过 meson -Dbuildtype=release）默认必须带优化。
+# 可被环境覆盖，但 require_optimization_flags 仍拒绝无 -O* 的生产构建。
+ARM64X_OPT_FLAGS="${ARM64X_OPT_FLAGS:--O2 -DNDEBUG}"
+
+# 断言参数串含 -O1/-O2/-O3/-Os/-Oz。用于手搓 ARM64X、Wine PE Makefile、CMake cache。
+require_optimization_flags() {
+    local label="$1"
+    shift
+    local blob=" $* "
+    case "$blob" in
+        *" -O1 "*|*" -O2 "*|*" -O3 "*|*" -Os "*|*" -Oz "*) ;;
+        *) err "$label: production build has no optimization flag (-O1/-O2/-O3/-Os/-Oz)" ;;
+    esac
+}
+
+require_ndebug() {
+    local label="$1"
+    shift
+    local blob=" $* "
+    case "$blob" in
+        *" -DNDEBUG "*|*" -DNDEBUG="*) ;;
+        *) err "$label: production build missing -DNDEBUG" ;;
+    esac
+}
+
+require_cmake_not_debug() {
+    local cache="$1"
+    local label="$2"
+    local t=""
+    [ -f "$cache" ] || err "$label: missing $cache"
+    t="$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' "$cache" | head -1)"
+    case "$t" in
+        Release|RelWithDebInfo|MinSizeRel) ;;
+        *) err "$label: CMAKE_BUILD_TYPE='$t' (need Release / RelWithDebInfo / MinSizeRel)" ;;
+    esac
+}
+
+require_cmake_flag_var() {
+    local cache="$1"
+    local var="$2"
+    local label="$3"
+    local val=""
+    [ -f "$cache" ] || err "$label: missing $cache"
+    val="$(sed -n "s/^${var}:STRING=//p" "$cache" | head -1)"
+    require_optimization_flags "$label" "$val"
+}
+
+require_makefile_opt_var() {
+    local mk="$1"
+    local var="$2"
+    local val=""
+    [ -f "$mk" ] || err "$var: missing $mk"
+    val="$(sed -n "s/^${var} = //p" "$mk" | head -1)"
+    require_optimization_flags "$var" "$val"
+}
 
 # ── 共享工具函数 ──
 find_first_existing_dir() {

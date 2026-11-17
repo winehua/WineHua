@@ -1,14 +1,20 @@
 #!/bin/bash
 # build_native.sh — Native compositor (Wayland compositor) 依赖
-# 产物: entry/libs/$NATIVE_ARCH/ (.so) + entry/src/main/cpp/protocols/ (协议头文件)
+# 产物: entry/libs/$NATIVE_ARCH/ (.so) + build/native_$NATIVE_ARCH/protocols/ (协议头文件)
 # 注意: 协议文件 (xdg-shell-protocol.c 等) 架构无关, 只生成一次
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
+python3 "$SCRIPT_DIR/detach_build_hardlinks.py" "$NATIVE_LIBS"
 
-NATIVE_TARGET="${NATIVE_TARGET:-aarch64-linux-ohos}"
-WINEHUA_INC="$WINEHUA/entry/src/main/cpp/protocols"
+# NATIVE_TARGET 由 env.sh 按 NATIVE_ARCH 推导 (arm64-v8a→aarch64-linux-ohos,
+# x86_64→x86_64-linux-ohos); 这里显式断言, 防止环境残留/空值静默错配。
+: "${NATIVE_TARGET:?env.sh 未按 NATIVE_ARCH=$NATIVE_ARCH 推导出 NATIVE_TARGET}"
 NATIVE_BUILD="$BUILD_DIR/native_${NATIVE_ARCH}"
+WINEHUA_PROTOCOL_SOURCE="$WINEHUA/entry/src/main/cpp/protocols"
+# Generated protocol C/headers belong to the architecture's build tree. Never
+# overwrite tracked protocol snapshots while compiling a clean source checkout.
+WINEHUA_INC="$NATIVE_BUILD/protocols"
 if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_PATH="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
@@ -47,7 +53,7 @@ XEOF
 
 # ── 1. libffi ──
 build_libffi() {
-    if [ -f "$NATIVE_LIBS/libffi.so.8" ]; then
+    if [ -f "$NATIVE_LIBS/libffi.so.8" ] && [ -f "$NATIVE_BUILD/libffi/install/lib/pkgconfig/libffi.pc" ]; then
         log "libffi ($NATIVE_ARCH) 已就绪，跳过"
         return 0
     fi
@@ -58,7 +64,7 @@ build_libffi() {
     mkdir -p "$build"
     cd "$build"
 
-    "$src/autogen.sh" 2>/dev/null || true
+    if [ ! -x "$src/configure" ]; then (cd "$src" && ./autogen.sh); fi
     if [ "$HOST_OS" = "Darwin" ]; then
         CC="$OHOS_SDK/native/llvm/bin/clang" CCAS="$OHOS_SDK/native/llvm/bin/clang" \
         AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
@@ -97,11 +103,23 @@ copy_soname_with_linker_alias() {
 remove_native_egl_linker_stubs() {
     # The Native SDK files are link-time stubs. OHOS host processes must load
     # the public runtime implementations from /system/lib64 instead.
-    rm -f "$NATIVE_LIBS/libEGL.so" "$NATIVE_LIBS/libEGL.so.1"
+    # assemble.sh also places the real guest Mesa EGL here for el1 dlopen.
+    # Keep that runtime; deleting every EGL file breaks WineD3D on tablets.
+    local reader="$OHOS_SDK/native/llvm/bin/llvm-readelf"
+    local egl
+    [ -x "$reader" ] || err "llvm-readelf required to distinguish guest EGL from SDK stubs"
+    for egl in "$NATIVE_LIBS/libEGL.so" "$NATIVE_LIBS/libEGL.so.1"; do
+        [ -e "$egl" ] || continue
+        if "$reader" -d "$egl" | grep -q 'Shared library: \[libgallium-'; then
+            log "Preserving guest Mesa EGL: $egl"
+        else
+            rm -f "$egl"
+        fi
+    done
 }
 
 build_native_freetype() {
-    if [ -f "$NATIVE_LIBS/libfreetype.so.6" ] && [ -f "$NATIVE_LIBS/libfreetype.so" ]; then
+    if [ -f "$NATIVE_LIBS/libfreetype.so.6" ] && [ -f "$NATIVE_LIBS/libfreetype.so" ] && [ -f "$NATIVE_BUILD/freetype/install/lib/pkgconfig/freetype2.pc" ]; then
         log "freetype ($NATIVE_ARCH) 已就绪，跳过"
         return 0
     fi
@@ -121,13 +139,14 @@ build_native_freetype() {
         -DCMAKE_SHARED_LINKER_FLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -fuse-ld=lld" \
         -DCMAKE_EXE_LINKER_FLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -fuse-ld=lld" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$build/install" \
         -DFT_DISABLE_ZLIB=ON \
         -DFT_DISABLE_BROTLI=ON \
         -DFT_DISABLE_HARFBUZZ=ON \
         -DFT_DISABLE_PNG=ON \
         -DFT_DISABLE_BZIP2=ON \
         -DBUILD_SHARED_LIBS=ON
-    ninja -C "$build"
+    ninja -C "$build" install
 
     copy_soname_with_linker_alias "$build/libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so"
     log "freetype ($NATIVE_ARCH) → $NATIVE_LIBS"
@@ -300,12 +319,8 @@ EOF
 
 # ── 3. xdg-shell + wayland 协议文件 (架构无关, 只生成一次) ──
 build_protocols() {
-    if [ -f "$WINEHUA_INC/xdg-shell-protocol.c" ] \
-       && [ -f "$WINEHUA_INC/winehua-toplevel-protocol.c" ]; then
-        log "协议文件已就绪，跳过"
-        return 0
-    fi
-
+    # Scanner output is small; regenerate it rather than trust checkout mtimes
+    # or leave a partial previous invocation looking complete.
     log "--- 生成 Wayland 协议文件 ---"
     local scanner="$WAYLAND_SCANNER"
 
@@ -323,10 +338,22 @@ build_protocols() {
 
     # WineHua 私有协议 (权威源在 winewayland.drv/Makefile.in 同文件, 双端
     # 同一 XML; server 侧只需 server-header + private-code)
-    local wh_xml="$ROOT/thirdparty/wine/dlls/winewayland.drv/winehua-toplevel.xml"
+    local wh_xml="$WINEHUA_PROTOCOL_SOURCE/winehua-toplevel.xml"
     "$scanner" server-header "$wh_xml" "$WINEHUA_INC/winehua-toplevel-server-protocol.h"
     "$scanner" private-code "$wh_xml" "$WINEHUA_INC/winehua-toplevel-protocol.c"
 
+    local entry name xml
+    for entry in \
+        "unstable/relative-pointer/relative-pointer-unstable-v1.xml:relative-pointer-unstable-v1" \
+        "unstable/pointer-constraints/pointer-constraints-unstable-v1.xml:pointer-constraints-unstable-v1" \
+        "unstable/text-input/text-input-unstable-v3.xml:text-input-unstable-v3" \
+        "staging/pointer-warp/pointer-warp-v1.xml:pointer-warp-v1" \
+        "stable/viewporter/viewporter.xml:viewporter"; do
+        xml="$ROOT/thirdparty/wayland-protocols/${entry%%:*}"
+        name="${entry#*:}"
+        "$scanner" server-header "$xml" "$WINEHUA_INC/$name-server-protocol.h"
+        "$scanner" private-code "$xml" "$WINEHUA_INC/$name-server-protocol.c"
+    done
     log "协议文件 → $WINEHUA_INC"
 }
 
@@ -342,7 +369,7 @@ install_headers() {
     [ -n "$ver" ] || { err "install_headers: 无法从 $src/meson.build 解析 version"; return 1; }
 
     local inst_ver
-    inst_ver=$(sed -n 's/^#define WAYLAND_VERSION "\(.*\)"/\1/p' "$WINEHUA_INC/wayland-version.h" 2>/dev/null | head -1)
+    inst_ver=$(sed -n 's/^#define WAYLAND_VERSION "\(.*\)"/\1/p' "$WINEHUA_INC/wayland-version.h" 2>/dev/null | head -1 || true)
     if [ -n "$inst_ver" ] && [ "$inst_ver" = "$ver" ]; then
         log "wayland 头文件 ($ver) 已就绪，跳过"
         return 0
@@ -423,12 +450,17 @@ build_virglrenderer() {
     local python_with_yaml
     local config_stamp="$build/.winehua-config"
     local expected_config="venus=1;render-server-mode=thread;render-server-worker=thread;vulkan-dload=1"
+    local overlay_sha
+    overlay_sha="$(cat "$ROOT/scripts/apply_virglrenderer_ohos_patches.sh" "$ROOT"/patches/virglrenderer/*.patch | sha256sum | cut -d' ' -f1)"
+    expected_config="$expected_config;overlays=$overlay_sha"
+
+    [ -d "$src" ] || err "thirdparty/virglrenderer is missing"
+    bash "$ROOT/scripts/apply_virglrenderer_ohos_patches.sh" "$src"
 
     rm -f "$NATIVE_LIBS/libvirgl_test_server.so"
 
     if [ -f "$NATIVE_LIBS/libvirglrenderer.so.1" ] && \
        [ -f "$NATIVE_LIBS/libwinehua_vtest_server.so" ] && \
-       [ -x "$NATIVE_LIBS/virgl_test_server" ] && \
        [ "$(cat "$config_stamp" 2>/dev/null || true)" = "$expected_config" ] && \
        [ -z "$(find "$src" -newer "$NATIVE_LIBS/libwinehua_vtest_server.so" -type f \
            \( -name '*.c' -o -name '*.h' -o -name 'meson.build' \) -print -quit 2>/dev/null)" ]; then
@@ -481,16 +513,11 @@ build_virglrenderer() {
         find "$build/install/lib" -maxdepth 1 -name 'libvirglrenderer.so.1*' ! -name '*.so.1.*' -exec cp {} "$NATIVE_LIBS/libvirglrenderer.so.1" \;
     ln -sf libvirglrenderer.so.1 "$NATIVE_LIBS/libvirglrenderer.so"
 
-    # virgl_test_server
-    [ -f "$build/install/bin/virgl_test_server" ] || \
-        find "$build" -name 'virgl_test_server' -type f -exec cp {} "$NATIVE_LIBS/virgl_test_server" \;
-    cp "$build/install/bin/virgl_test_server" "$NATIVE_LIBS/" 2>/dev/null || true
-    chmod +x "$NATIVE_LIBS/virgl_test_server" 2>/dev/null || true
+    # virgl host 启动走 NCP libvirgl_child.so / 进程内 dlopen libwinehua_vtest_server.so;
+    # 鸿蒙沙箱不支持 exec, virgl_test_server / virgl_render_server 可执行 ELF 从不被
+    # exec, 仅打包 .so 产物。
     cp "$build/install/lib/libwinehua_vtest_server.so" "$NATIVE_LIBS/" 2>/dev/null || \
         find "$build" -name 'libwinehua_vtest_server.so' -type f -exec cp {} "$NATIVE_LIBS/libwinehua_vtest_server.so" \;
-    if [ -x "$build/install/libexec/virgl_render_server" ]; then
-        cp "$build/install/libexec/virgl_render_server" "$NATIVE_LIBS/"
-    fi
     printf '%s\n' "$expected_config" > "$config_stamp"
     rm -f "$NATIVE_LIBS/libvirgl_test_server.so"
 
@@ -502,6 +529,7 @@ build_libffi
 build_native_freetype
 build_native_libxml2
 build_native_xkbcommon
+bash "$SCRIPT_DIR/build_wayland.sh" --scanner-only
 build_wayland
 emit_wayland_host_pc
 build_protocols
@@ -513,4 +541,4 @@ remove_native_egl_linker_stubs
 log "Native compositor 依赖就绪 ($NATIVE_ARCH)"
 log "  libs:  $NATIVE_LIBS"
 log "  inc:   $WINEHUA_INC"
-log "  proto: $WINEHUA/entry/src/main/cpp/xdg-shell-protocol.c"
+log "  proto: $WINEHUA_INC/xdg-shell-protocol.c"

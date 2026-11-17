@@ -1,0 +1,17 @@
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3093,6 +3093,13 @@
+     window_set_managed( data, TRUE );
+     NtUserSetProp( data->hwnd, whole_window_prop, (HANDLE)win );
+     set_initial_wm_hints( display, win );
++#ifdef __OHOS__
++    {
++        const char role[] = "winehua-desktop";
++        XChangeProperty( display, win, XInternAtom( display, "WM_WINDOW_ROLE", False ),
++                         XA_STRING, 8, PropModeReplace, (const unsigned char *)role, sizeof(role) - 1 );
++    }
++#endif
+     if (is_desktop_fullscreen()) window_set_net_wm_state( data, (1 << NET_WM_STATE_FULLSCREEN) );
+     release_win_data( data );
+     if (thread_data->clip_window) XReparentWindow( display, thread_data->clip_window, win, 0, 0 );

@@ -98,8 +98,13 @@ int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
 
 // 摘掉该窗的帧 (解绑/收尾): 清 buffer + 停用节点。节点本身留到窗口记录
 // 销毁时回收 (DestroyFrameNode), 届时一并归还它持有的队列 buffer。
-// 窗口已销毁时是 no-op (那种情况节点已经没了)。
+// 即使 X 窗口已销毁也回收保留帧；复用 XID 时请用带 generation 的 retire。
 void wl_ohos_output_client_frame_clear(uint32_t xwindow);
+
+// Retire only the matching retained frame, even after the X record is gone.
+// Call before destroying its consumer queue. generation=0 means any identity.
+void wl_ohos_output_client_frame_retire(uint32_t xwindow, uint64_t generation);
+
 
 // D23: 子窗 face 注册表巡检 —— 查询失败的窗口 (已销毁) 或同 id 重建
 // (generation 变化) 的帧节点在此销毁归还。周期调用 (帧 tick 侧), 必须
@@ -174,6 +179,9 @@ int wl_ohos_output_resize(int w, int h);
  * output commit 断流, 窗口 resize 后系统重写 buffer 而无新帧。multiwindow
  * 模式无 output 提交路径, 本调用为 no-op。 */
 void wl_ohos_output_damage_whole(void);
+
+/* Registered, local developer flags only; cached and disabled by default. */
+bool wl_ohos_output_diagnostic_enabled(const char *name);
 
 #ifdef __cplusplus
 }

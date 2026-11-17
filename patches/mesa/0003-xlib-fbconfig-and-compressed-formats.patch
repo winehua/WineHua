@@ -1,0 +1,89 @@
+--- a/src/gallium/frontends/glx/xlib/xm_api.c
++++ b/src/gallium/frontends/glx/xlib/xm_api.c
+@@ -954,6 +954,10 @@
+    attribs.visual = v->stvis;
+    attribs.major = major;
+    attribs.minor = minor;
++   /* Match DRI's real compressed-format fallback. GLES hosts can lack RGTC;
++    * the state tracker decodes unsupported blocks into supported R/RG storage.
++    * Without this, Xlib alone loses GL 3.0 despite using the same pipe screen. */
++   attribs.options.allow_compressed_fallback = true;
+    if (contextFlags & GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)
+       attribs.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
+    if (contextFlags & GLX_CONTEXT_DEBUG_BIT_ARB)
+--- a/src/gallium/frontends/glx/xlib/glx_api.c
++++ b/src/gallium/frontends/glx/xlib/glx_api.c
+@@ -1846,31 +1846,51 @@
+ glXChooseFBConfig(Display *dpy, int screen,
+                   const int *attribList, int *nitems)
+ {
+-   XMesaVisual xmvis;
+-
+-   /* register ourselves as an extension on this display */
++   /* Enumerate the same real configurations used by glXGetFBConfigs. The
++    * old single choose_visual result changed depth/stencil/accum defaults
++    * between queries; ANGLE then rejected every config as incompatible with
++    * its already-created context. Keep every matching native visual too. */
+    register_with_display(dpy);
+-
+-   if (!attribList || !attribList[0]) {
+-      /* return list of all configs (per GLX_SGIX_fbconfig spec) */
+-      return glXGetFBConfigs(dpy, screen, nitems);
+-   }
+-
+-   xmvis = choose_visual(dpy, screen, attribList, GL_TRUE);
+-   if (xmvis) {
+-      GLXFBConfig *config = malloc(sizeof(XMesaVisual));
+-      if (!config) {
+-         *nitems = 0;
+-         return NULL;
+-      }
+-      *nitems = 1;
+-      config[0] = (GLXFBConfig) xmvis;
+-      return (GLXFBConfig *) config;
+-   }
+-   else {
+-      *nitems = 0;
++   int count = 0;
++   GLXFBConfig *configs = glXGetFBConfigs(dpy, screen, &count);
++   *nitems = 0;
++   for (int i = 0; i < count; ++i) {
++      bool matches = true;
++      for (const int *a = attribList; a && a[0]; a += 2) {
++         int actual = 0;
++         if (a[1] == GLX_DONT_CARE && a[0] != GLX_LEVEL)
++            continue;
++         if (get_config((XMesaVisual)configs[i], a[0], &actual, GL_TRUE)) {
++            matches = false;
++            break;
++         }
++         switch (a[0]) {
++         case GLX_BUFFER_SIZE:
++         case GLX_RED_SIZE: case GLX_GREEN_SIZE: case GLX_BLUE_SIZE:
++         case GLX_ALPHA_SIZE: case GLX_DEPTH_SIZE: case GLX_STENCIL_SIZE:
++         case GLX_ACCUM_RED_SIZE: case GLX_ACCUM_GREEN_SIZE:
++         case GLX_ACCUM_BLUE_SIZE: case GLX_ACCUM_ALPHA_SIZE:
++         case GLX_AUX_BUFFERS: case GLX_SAMPLE_BUFFERS_ARB: case GLX_SAMPLES_ARB:
++            matches = actual >= a[1];
++            break;
++         case GLX_RENDER_TYPE: case GLX_DRAWABLE_TYPE:
++            matches = (actual & a[1]) == a[1];
++            break;
++         default:
++            matches = actual == a[1];
++            break;
++         }
++         if (!matches)
++            break;
++      }
++      if (matches)
++         configs[(*nitems)++] = configs[i];
++   }
++   if (!*nitems) {
++      free(configs);
+       return NULL;
+    }
++   return configs;
+ }
+ 
+ 

@@ -26,11 +26,6 @@
 #include "x11_toplevel.h" /* M4a-T5: mm 注入 drain 分派 (C1: loop 线程) */
 #include <wlr/types/wlr_data_device.h>
 
-/* wlroots xwayland/selection.h 的判据 (安装头不含 xwayland/ 子树, 这里按
- * 同签名 extern)。xwm 来源的 send 把 fd 记进 transfer 同进程异步写并自行
- * close, 宿主不得 close 写端; 区分 wl_data_device 协议来源用。 */
-extern bool data_source_is_xwayland(struct wlr_data_source *wlr_source);
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +33,8 @@ extern bool data_source_is_xwayland(struct wlr_data_source *wlr_source);
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#include <poll.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 #include <unistd.h>
@@ -63,19 +60,13 @@ static const struct wlr_keyboard_impl k_kb_impl = {
 };
 
 static struct wlr_seat *g_seat;
-
-/* guest 剪贴板文本 -> ArkTS (napi_init.cpp 的 threadsafe function) */
-extern int winehua_host_clipboard_text(const char *utf8);
 /* zwp_relative_pointer_manager_v1 (#177): Xwayland 绑定后把相对增量译成
  * XI2 raw motion (POINTER_RAWONLY + unaccelerated valuators) —— wine
  * dinput 相对模式吃的正是这条流。此前无此 global, 绝对派发不带 NORAW,
  * wine 的「相对」退化为帧空间坐标差 (letterbox 缩放错 + 边缘钳位跳变)
  * = 鼠标飘。增量喂点在 inject_motion。 */
 static struct wlr_relative_pointer_manager_v1 *g_rel_manager;
-/* wl_data_device_manager global: 剪贴板协议面。xwm 的 X↔seat 桥走服务端
- * 内部调用不经它, winewayland.drv 这类普通 wayland 客户端必须 bind 它才能
- * set_selection/收 selection —— 缺它则 wayland 路线剪贴板整个不存在。 */
-static struct wlr_data_device_manager *g_data_device_manager;
+static bool g_raw_motion_override;
 /* 相对增量状态: 仅同 surface 连续 motion 喂 (锚点跳变/跨面不喂 —— 触点
  * 落屏是传送不是移动, 巨幅 raw delta 会让游戏镜头乱转); 幅度超 surface
  * 短边 1/8 视为跳变重置。 */
@@ -86,6 +77,7 @@ static bool g_rel_valid;
  * 读取线程读 u32 快照 (良性竞争, 见 display_input.h 声明处判据) */
 static uint32_t g_last_motion_win;
 static struct wlr_keyboard g_kb;
+static bool g_keyboard_initialized;
 static struct wl_event_loop *g_loop;
 static struct wlr_xwayland *g_xwayland; /* GAP2 (#131): X 硬件焦点同步口
                                          * (xwm 连接 + window_id), set_seat 时注入 */
@@ -286,9 +278,7 @@ static void FocusClient(struct wlr_xwayland_surface *xs)
      * X client 无回显)。M1 激活模型 = 指针命中即切换 (T2); leave 时
      * activate(false) 随焦点转移隐式完成 (新窗 activate 覆盖旧窗)。 */
     wlr_xwayland_surface_activate(xs, true);
-    uint32_t keycodes[1] = {0};
-    struct wlr_keyboard_modifiers mods = {0};
-    wlr_seat_keyboard_notify_enter(g_seat, xs->surface, keycodes, 0, &mods);
+    wlr_seat_keyboard_notify_enter(g_seat, xs->surface, g_kb.keycodes, g_kb.num_keycodes, &g_kb.modifiers);
     TrackKbdFocus(xs->surface);
     g_focus_switched_ms = NowMsec();
     OHLOG("keyboard enter xs=%{public}p surf=%{public}p (activated)",
@@ -315,51 +305,54 @@ struct PendingKey
     uint32_t keycode;
     bool press;
 };
-static struct PendingKey g_pending_key;
+static struct PendingKey g_pending_keys[256];
+static size_t g_pending_key_count;
+static struct wlr_surface *g_pending_key_focus;
 static struct wl_event_source *g_key_timer;
 
+static void DeliverKey(uint32_t keycode, bool press)
+{
+    // notify_key on the seat forwards events, but does not update XKB state.
+    // Update the virtual device as well so Shift/Caps/AltGr survive refocus.
+    struct wlr_keyboard_key_event event = {
+        .time_msec = NowMsec(), .keycode = keycode, .update_state = true,
+        .state = press ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED,
+    };
+    wlr_keyboard_notify_key(&g_kb, &event);
+    wlr_seat_keyboard_notify_key(g_seat, event.time_msec, event.keycode, event.state);
+    wlr_seat_keyboard_notify_modifiers(g_seat, &g_kb.modifiers);
+}
 static int DeliverPendingKey(void *data)
 {
-    struct PendingKey *k = data;
-    if (!g_seat || !g_kbd_focus)
-        return 0;
-    wlr_seat_keyboard_notify_key(g_seat, NowMsec(), k->keycode,
-                                 k->press ? WL_KEYBOARD_KEY_STATE_PRESSED
-                                          : WL_KEYBOARD_KEY_STATE_RELEASED);
-    if (g_display)
-        wl_display_flush_clients(g_display);
-    return 0; /* one-shot */
+    (void)data;
+    if (g_seat && g_kbd_focus && g_kbd_focus == g_pending_key_focus) {
+        for (size_t i = 0; i < g_pending_key_count; ++i)
+            DeliverKey(g_pending_keys[i].keycode, g_pending_keys[i].press);
+        if (g_display) wl_display_flush_clients(g_display);
+    }
+    g_pending_key_count = 0;
+    return 0;
 }
 
 void display_input_inject_key(uint32_t keycode, bool press)
 {
-    if (!g_seat)
-        return;
+    if (!g_seat) return;
     EnsureKeyboardFocus();
-    if (!g_kbd_focus)
-    {
-        static int said;
-        if (++said == 1)
-            OH_LOG_ERROR(LOG_APP, "inject_key: 无 keyboard 焦点 (client 未 map?)");
-        return;
-    }
-    OHLOG("inject key evdev=%{public}u %{public}s", keycode,
-          press ? "press" : "release");
-
+    if (!g_kbd_focus) return;
     if (g_loop && g_key_timer &&
-        (uint32_t)(NowMsec() - g_focus_switched_ms) < FOCUS_SETTLE_MS)
-    {
-        /* 焦点刚切: 延后一拍发送 (settle) */
-        g_pending_key.keycode = keycode;
-        g_pending_key.press = press;
-        wl_event_source_timer_update(g_key_timer, FOCUS_SETTLE_MS);
+        (g_pending_key_count || (uint32_t)(NowMsec() - g_focus_switched_ms) < FOCUS_SETTLE_MS)) {
+        if (g_pending_key_count == sizeof(g_pending_keys) / sizeof(g_pending_keys[0]))
+            DeliverPendingKey(NULL);
+        if (g_pending_key_focus != g_kbd_focus) g_pending_key_count = 0;
+        g_pending_key_focus = g_kbd_focus;
+        g_pending_keys[g_pending_key_count++] = (struct PendingKey){keycode, press};
+        // Do not renew the deadline on every key; a down/up pair stays ordered.
+        const int remaining = FOCUS_SETTLE_MS - (int)(NowMsec() - g_focus_switched_ms);
+        wl_event_source_timer_update(g_key_timer, remaining > 0 ? remaining : 1);
         return;
     }
-    wlr_seat_keyboard_notify_key(g_seat, NowMsec(), keycode,
-                                 press ? WL_KEYBOARD_KEY_STATE_PRESSED
-                                       : WL_KEYBOARD_KEY_STATE_RELEASED);
-    if (g_display)
-        wl_display_flush_clients(g_display);
+    DeliverKey(keycode, press);
+    if (g_display) wl_display_flush_clients(g_display);
 }
 
 void display_input_inject_motion(float nx, float ny, int phase)
@@ -429,13 +422,13 @@ void display_input_inject_motion(float nx, float ny, int phase)
     bool sampled = (++hit_seq % 100 == 1);
     if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
     {
-        g_last_motion_win = 0; /* 命中失效: 身份槽归零 (#139 读数不悬挂旧窗) */
+        __atomic_store_n(&g_last_motion_win, 0, __ATOMIC_RELEASE); /* 命中失效: 身份槽归零 (#139 读数不悬挂旧窗) */
         if (sampled)
             OHLOG("motion DROP at (%{public}d,%{public}d) canvas=%{public}dx%{public}d xs=%{public}p frame=%{public}dx%{public}d",
                   fx, fy, cw, ch, (void *)xs, fw, fh);
         return;
     }
-    g_last_motion_win = (uint32_t)xs->window_id;
+    __atomic_store_n(&g_last_motion_win, (uint32_t)xs->window_id, __ATOMIC_RELEASE);
     double sx = (double)(fx - xs->x);
     double sy = (double)(fy - xs->y);
     if (xs->surface != g_ptr_focus)
@@ -452,7 +445,7 @@ void display_input_inject_motion(float nx, float ny, int phase)
      * 传送锚 (pressAt 重放/悬停激活) 一律断链重锚, 不产 delta。增量口径 =
      * surface-local px, Xwayland 侧自行乘 global_surface_scale/viewport
      * (xwayland-input.c dispatch_relative_motion)。 */
-    if (g_rel_manager && g_rel_valid && xs->surface == g_rel_surf &&
+    if (!g_raw_motion_override && g_rel_manager && g_rel_valid && xs->surface == g_rel_surf &&
         fabs(sx - g_rel_lsx) <= (double)(xs->width > 0 ? xs->width : 1) / 8.0 &&
         fabs(sy - g_rel_lsy) <= (double)(xs->height > 0 ? xs->height : 1) / 8.0)
     {
@@ -603,7 +596,7 @@ void display_input_inject_button(uint32_t button, bool press)
  * WHEEL。discrete>0 → Button5 (滚轮向下, winex11 → WM_MOUSEWHEEL 负
  * 值)。与 wayland 分支「向上=正=向下滚」同号。value 只喂平滑滚动路
  * 径 (winex11 不消费), 取 libinput 滚轮惯例 10/格。frame 必发 (D9)。 */
-void display_input_inject_axis(int which, int steps)
+static void InjectAxisValue(int which, double value, bool continuous)
 {
     if (!g_seat)
         return;
@@ -623,14 +616,12 @@ void display_input_inject_axis(int which, int steps)
             OH_LOG_ERROR(LOG_APP, "inject_axis: 无 pointer 焦点 (motion 未先行?)");
         return;
     }
-    if (steps == 0)
-        return;
-    OHLOG("inject axis which=%{public}d steps=%{public}d", which, steps);
+    if ((which != 0 && which != 1) || !isfinite(value) || value == 0 || fabs(value) > 32768) return;
     wlr_seat_pointer_notify_axis(g_seat, NowMsec(),
                                  which == 1 ? WL_POINTER_AXIS_HORIZONTAL_SCROLL
                                             : WL_POINTER_AXIS_VERTICAL_SCROLL,
-                                 (double)steps * 10.0, steps * 120,
-                                 WL_POINTER_AXIS_SOURCE_WHEEL,
+                                 continuous ? value : value * 10.0, continuous ? 0 : (int32_t)lround(value * 120.0),
+                                 continuous ? WL_POINTER_AXIS_SOURCE_FINGER : WL_POINTER_AXIS_SOURCE_WHEEL,
                                  WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     wlr_seat_pointer_notify_frame(g_seat);
     if (g_display)
@@ -644,6 +635,8 @@ void display_input_inject_axis(int which, int steps)
  * 给新增 fd 设非阻塞, 阻塞读会冻死循环线程 (T5 t5k 实测)。唤醒字节写
  * 失败 (EAGAIN=管道满) 无害: 说明已有未消费的唤醒字节, drain 一定会跑。
  * 队列上限 64, 超限丢最旧并记日志 (注入不保证不丢, 但不阻塞 UI 线程)。 */
+void display_input_inject_axis(int which, int steps) { InjectAxisValue(which, steps, false); }
+
 #define INJECT_QUEUE_CAP 64
 
 struct inject_item
@@ -659,14 +652,19 @@ struct inject_item
     bool is_mm_key;    /* 同上, 按窗键盘 */
     bool is_mm_axis;   /* M4d-review I1: 同上, 按窗轴 (滚轮), 复用
                         * axis_which/axis_steps + mm_* 字段 */
+    bool is_mm_control;
     bool is_mm_close;  /* 任务 #129 RF#3: 按窗关闭请求, 复用 mm_toplevel_id */
     bool is_mm_geom_size; /* 任务 #135: host→wine 几何回写 —— 尺寸半边
                            * (mm_lx/mm_ly = w/h) */
     bool is_mm_geom_move; /* 任务 #135: 位置半边 (mm_lx/mm_ly = x/y) */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
+    bool has_raw;
+    double raw_dx, raw_dy;
     float nx, ny;
     int phase;
+    double axis_value;
+    bool axis_continuous, axis_precise;
     int axis_which, axis_steps; /* is_axis: 0=纵向 1=横向, ±N 步 */
     char *text; /* is_clipboard/is_text: UTF-8 串 (heap) */
     /* is_mm_*: 按窗注入参数 (mm_lx/mm_ly 是 OHOS 承载窗局部物理像素,
@@ -682,37 +680,56 @@ static struct inject_item g_inject_queue[INJECT_QUEUE_CAP];
 static size_t g_inject_head, g_inject_tail;
 static pthread_mutex_t g_inject_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_inject_wake[2] = {-1, -1};
+static struct wl_event_source *g_inject_source;
+static bool g_inject_overflow;
 
 static void InjectQueuePush(const struct inject_item *item)
 {
     char b = 1;
     pthread_mutex_lock(&g_inject_mutex);
+    if (g_inject_wake[1] < 0) {
+        free(item->text);
+        pthread_mutex_unlock(&g_inject_mutex);
+        return;
+    }
+    if (item->is_clipboard) {
+        for (size_t i = g_inject_head; i != g_inject_tail; i = (i + 1) % INJECT_QUEUE_CAP) {
+            if (g_inject_queue[i].is_clipboard) {
+                free(g_inject_queue[i].text); g_inject_queue[i].text = item->text;
+                pthread_mutex_unlock(&g_inject_mutex); return;
+            }
+        }
+    }
     {
         size_t next = (g_inject_tail + 1) % INJECT_QUEUE_CAP;
         if (next == g_inject_head)
         {
-            g_inject_head = (g_inject_head + 1) % INJECT_QUEUE_CAP;
-            OHLOG("inject queue full, dropped oldest");
+            while (g_inject_head != g_inject_tail) {
+                free(g_inject_queue[g_inject_head].text);
+                g_inject_head = (g_inject_head + 1) % INJECT_QUEUE_CAP;
+            }
+            g_inject_overflow = true;
+            OHLOG("inject queue overflow; resetting held input");
         }
         g_inject_queue[g_inject_tail] = *item;
         g_inject_tail = next;
     }
-    pthread_mutex_unlock(&g_inject_mutex);
     if (g_inject_wake[1] >= 0)
     {
         ssize_t rc = write(g_inject_wake[1], &b, 1);
         (void)rc; /* EAGAIN = 唤醒已在途 */
     }
+    pthread_mutex_unlock(&g_inject_mutex);
 }
 
 static void ApplySetClipboard(char *text); /* D19 剪贴板桥, 定义在 post 段 */
 
-static int InjectQueueDrain(void *data)
+static int InjectQueueDrain(int fd, uint32_t mask, void *data)
 {
-    (void)data;
+    (void)data; (void)mask;
     char buf[64];
     ssize_t n;
-    while ((n = read(g_inject_wake[0], buf, sizeof buf)) > 0 || errno == EINTR)
+    while ((n = read(fd, buf, sizeof buf)) > 0 || errno == EINTR)
         ;
     for (;;)
     {
@@ -723,9 +740,20 @@ static int InjectQueueDrain(void *data)
             pthread_mutex_unlock(&g_inject_mutex);
             break;
         }
+        const bool reset = g_inject_overflow;
+        g_inject_overflow = false;
         item = g_inject_queue[g_inject_head];
         g_inject_head = (g_inject_head + 1) % INJECT_QUEUE_CAP;
         pthread_mutex_unlock(&g_inject_mutex);
+        if (reset && g_seat) {
+            g_pending_key_count = 0;
+            while (g_kb.num_keycodes) DeliverKey(g_kb.keycodes[0], false);
+            while (g_seat->pointer_state.button_count)
+                wlr_seat_pointer_notify_button(g_seat, NowMsec(),
+                    g_seat->pointer_state.buttons[0].button, WL_POINTER_BUTTON_STATE_RELEASED);
+            wlr_seat_pointer_notify_frame(g_seat);
+        }
+        g_raw_motion_override = item.has_raw;
         if (item.is_key)
             display_input_inject_key(item.keycode, item.press);
         else if (item.is_button)
@@ -741,6 +769,8 @@ static int InjectQueueDrain(void *data)
             x11_toplevel_input_axis_dispatch(
                 item.mm_toplevel_id, item.mm_lx, item.mm_ly,
                 item.axis_which, item.axis_steps);
+        else if (item.is_mm_control)
+            x11_toplevel_control_dispatch(item.mm_toplevel_id, item.mm_action, item.press);
         else if (item.is_mm_close)
             x11_toplevel_close_dispatch(item.mm_toplevel_id);
         else if (item.is_mm_geom_size)
@@ -750,7 +780,7 @@ static int InjectQueueDrain(void *data)
             x11_toplevel_geometry_move_dispatch(item.mm_toplevel_id,
                                                 item.mm_lx, item.mm_ly);
         else if (item.is_axis)
-            display_input_inject_axis(item.axis_which, item.axis_steps);
+            InjectAxisValue(item.axis_which, item.axis_precise ? item.axis_value : item.axis_steps, item.axis_continuous);
         else if (item.is_text)
         {
             /* Task 4: x11 路线 IME commit —— 转 xim bridge (NCP 子进程以
@@ -773,6 +803,15 @@ static int InjectQueueDrain(void *data)
                 OHLOG("inject motion #%{public}u (%.3f,%.3f phase=%{public}d)",
                       motion_drained, item.nx, item.ny, item.phase);
         }
+        const bool raw_target_valid = item.is_mm_ptr
+            ? x11_toplevel_id_of_xs(g_ptr_focus_xs) == item.mm_toplevel_id
+            : item.phase != 2 && !g_ptr_in_letterbox &&
+              __atomic_load_n(&g_last_motion_win, __ATOMIC_ACQUIRE) != 0;
+        if (item.has_raw && raw_target_valid && g_rel_manager && g_ptr_focus && g_seat) {
+            wlr_relative_pointer_manager_v1_send_relative_motion(g_rel_manager, g_seat,
+                NowUsec(), item.raw_dx, item.raw_dy, item.raw_dx, item.raw_dy);
+        }
+        g_raw_motion_override = false;
     }
     if (g_display)
         wl_display_flush_clients(g_display);
@@ -802,7 +841,7 @@ void wl_ohos_input_post_motion(float nx, float ny, int phase)
 
 uint32_t wl_ohos_input_last_ptr_window_id(void)
 {
-    return g_last_motion_win;
+    return __atomic_load_n(&g_last_motion_win, __ATOMIC_ACQUIRE);
 }
 
 void wl_ohos_input_post_button(uint32_t button, bool press)
@@ -832,7 +871,7 @@ void wl_ohos_input_post_text(const char *utf8)
     struct inject_item item;
     memset(&item, 0, sizeof(item));
     item.is_text = true;
-    item.text = strdup(utf8);
+    item.text = strndup(utf8, 1024 * 1024);
     if (!item.text)
         return;
     InjectQueuePush(&item);
@@ -848,30 +887,175 @@ void wl_ohos_input_post_text(const char *utf8)
  * g_clip_text 无竞争。 */
 static char *g_clip_text;
 static uint32_t g_clip_serial;
+static pthread_mutex_t g_clip_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char *g_clip_cache;
+static uint64_t g_clip_version;
+static struct wl_listener g_selection_request, g_selection_changed;
+static bool g_selection_listening;
+/* Xwayland owns its write endpoint in this process; cancelled reads must
+ * drain to EOF. Ordinary wl_data_source.send only passes an fd copy. */
+extern bool data_source_is_xwayland(struct wlr_data_source *source);
+static const struct wlr_data_source_impl CLIP_SOURCE_IMPL;
+static unsigned g_clip_transfers;
+static bool g_clip_pending, g_clip_stopping;
+static struct wl_event_source *g_clip_retry;
+static struct ClipRead {
+    int fd; char *text; size_t used;
+    bool active, discard, same_process;
+    struct wl_event_source *reader, *timer;
+} g_clip_reads[4];
+static void ClipReadStartLatest(void);
+static void ClipReadFinish(struct ClipRead *read) {
+    if (read->reader) wl_event_source_remove(read->reader);
+    if (read->timer) wl_event_source_remove(read->timer);
+    close(read->fd); free(read->text); memset(read, 0, sizeof(*read));
+    __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED);
+    if (!g_clip_stopping) ClipReadStartLatest();
+}
+static void ClipReadDiscard(struct ClipRead *read) {
+    read->discard = true; free(read->text); read->text = NULL;
+    if (read->same_process) {
+        if (read->timer) wl_event_source_remove(read->timer);
+        read->timer = NULL; /* The drain still owns one transfer slot. */
+    } else ClipReadFinish(read);
+}
+static void ClipReadCancel(void) {
+    g_clip_pending = false;
+    for (size_t i = 0; i < 4; ++i)
+        if (g_clip_reads[i].active && !g_clip_reads[i].discard) ClipReadDiscard(&g_clip_reads[i]);
+}
+static int ClipReadTimeout(void *data) { ClipReadDiscard(data); return 0; }
+static int ClipReadReady(int fd, uint32_t mask, void *data) {
+    (void)mask; struct ClipRead *job = data; char bytes[16384];
+    for (unsigned i = 0; i < 64; ++i) {
+        ssize_t n = read(fd, bytes, sizeof(bytes));
+        if (n > 0) {
+            if (!job->discard) {
+                if (job->used + (size_t)n > 1024 * 1024) {
+                    bool drain = job->same_process;
+                    ClipReadDiscard(job); if (!drain) return 0;
+                } else { memcpy(job->text + job->used, bytes, n); job->used += n; }
+            }
+        } else if (!n) {
+            if (!job->discard) {
+                job->text[job->used] = 0;
+                pthread_mutex_lock(&g_clip_cache_mutex);
+                free(g_clip_cache); g_clip_cache = job->text; job->text = NULL; ++g_clip_version;
+                pthread_mutex_unlock(&g_clip_cache_mutex);
+            }
+            ClipReadFinish(job); return 0;
+        } else if (errno == EINTR) continue;
+        else if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        else { ClipReadFinish(job); return 0; }
+    }
+    return 0;
+}
+static void ClipReadStartLatest(void) {
+    if (!g_clip_pending || !g_seat || !g_loop || g_clip_stopping) return;
+    struct wlr_data_source *source = g_seat->selection_source;
+    if (!source || source->impl == &CLIP_SOURCE_IMPL) { g_clip_pending = false; return; }
+    if (__atomic_add_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED) > 4) {
+        __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED); return;
+    }
+    struct ClipRead *job = NULL;
+    for (size_t i = 0; i < 4; ++i) if (!g_clip_reads[i].active) { job = &g_clip_reads[i]; break; }
+    if (!job) { __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED); return; }
+    g_clip_pending = false;
+    const char *mime = NULL; char **candidate;
+    wl_array_for_each(candidate, &source->mime_types) {
+        if (!strcmp(*candidate, "text/plain;charset=utf-8")) { mime = *candidate; break; }
+        if (!strcmp(*candidate, "text/plain")) mime = *candidate;
+    }
+    int pipes[2];
+    if (!mime || pipe2(pipes, O_CLOEXEC | O_NONBLOCK)) {
+        __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED); return;
+    }
+    job->fd = pipes[0]; job->active = true; job->text = malloc(1024 * 1024 + 1);
+    job->same_process = data_source_is_xwayland(source);
+    job->reader = wl_event_loop_add_fd(g_loop, pipes[0], WL_EVENT_READABLE, ClipReadReady, job);
+    job->timer = wl_event_loop_add_timer(g_loop, ClipReadTimeout, job);
+    if (!job->text || !job->reader || !job->timer) { close(pipes[1]); ClipReadFinish(job); return; }
+    wl_event_source_timer_update(job->timer, 1000);
+    wlr_data_source_send(source, mime, pipes[1]);
+    if (!job->same_process) close(pipes[1]);
+}
+static void ClipSelectionChanged(struct wl_listener *listener, void *data) {
+    (void)listener; (void)data; ClipReadCancel();
+    if (!g_seat || !g_seat->selection_source) {
+        pthread_mutex_lock(&g_clip_cache_mutex);
+        free(g_clip_cache); g_clip_cache = NULL; ++g_clip_version;
+        pthread_mutex_unlock(&g_clip_cache_mutex); return;
+    }
+    g_clip_pending = true; ClipReadStartLatest();
+}
+static int ClipReadRetry(void *unused) {
+    (void)unused;
+    ClipReadStartLatest();
+    if (g_clip_retry) wl_event_source_timer_update(g_clip_retry, 100);
+    return 0;
+}
+static void ClipSelectionRequest(struct wl_listener *listener, void *data) {
+    (void)listener;
+    struct wlr_seat_request_set_selection_event *event = data;
+    wlr_seat_set_selection(g_seat, event->source, event->serial);
+}
+// Snapshot only: JS never waits for a foreign X client/pipe.
+char *wl_ohos_input_clipboard_snapshot(uint64_t *version) {
+    pthread_mutex_lock(&g_clip_cache_mutex);
+    char *text = strdup(g_clip_cache ? g_clip_cache : "");
+    if (version) *version = g_clip_version;
+    pthread_mutex_unlock(&g_clip_cache_mutex); return text;
+}
 
+
+struct ClipWrite { int fd; char *text; };
+
+static void *ClipWriteWorker(void *arg)
+{
+    struct ClipWrite *job = arg;
+    sigset_t blocked; sigemptyset(&blocked); sigaddset(&blocked, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &blocked, NULL);
+    size_t off = 0, len = strlen(job->text);
+    int flags = fcntl(job->fd, F_GETFL);
+    if (flags < 0 || fcntl(job->fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(job->fd); free(job->text); free(job);
+        __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED); return NULL;
+    }
+    const uint64_t deadline = NowUsec() + 1000000;
+    while (off < len && NowUsec() < deadline) {
+        ssize_t n = write(job->fd, job->text + off, len - off);
+        if (n > 0) off += n;
+        else if (n < 0 && errno == EINTR) continue;
+        else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct pollfd p = {.fd = job->fd, .events = POLLOUT};
+            if (poll(&p, 1, 100) < 0 && errno != EINTR) break;
+        } else break;
+    }
+    close(job->fd); free(job->text); free(job);
+    __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED);
+    return NULL;
+}
 static void ClipSourceSend(struct wlr_data_source *source,
                            const char *mime_type, int32_t fd)
 {
     (void)source;
     OHLOG("clip send: mime=%{public}s fd=%{public}d", mime_type ? mime_type : "(null)", fd);
-    if (!g_clip_text || !mime_type || strstr(mime_type, "utf-8") == NULL)
+    if (!g_clip_text || !mime_type || (strcmp(mime_type, "text/plain") && strcmp(mime_type, "text/plain;charset=utf-8")))
     {
         close(fd);
         return;
     }
-    size_t len = strlen(g_clip_text), off = 0;
-    while (off < len)
-    {
-        ssize_t n = write(fd, g_clip_text + off, len - off);
-        if (n <= 0)
-        {
-            if (n < 0 && errno == EINTR)
-                continue;
-            break;
-        }
-        off += (size_t)n;
+    if (__atomic_add_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED) > 4) {
+        __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED); close(fd); return;
     }
-    close(fd);
+    struct ClipWrite *job = calloc(1, sizeof(*job));
+    pthread_t worker;
+    if (job) { job->fd = fd; job->text = strndup(g_clip_text, 1024 * 1024); }
+    if (!job || !job->text || pthread_create(&worker, NULL, ClipWriteWorker, job) != 0) {
+        if (job) { free(job->text); free(job); } close(fd);
+        __atomic_sub_fetch(&g_clip_transfers, 1, __ATOMIC_RELAXED); return;
+    }
+    pthread_detach(worker);
 }
 
 static const struct wlr_data_source_impl CLIP_SOURCE_IMPL = {
@@ -881,283 +1065,11 @@ static const struct wlr_data_source_impl CLIP_SOURCE_IMPL = {
      * accept 无需应答; dnd_* 仅拖放用 */
 };
 
-/* ── 系统剪贴板双向桥 (guest <-> host) ──────────────────────────────
- * guest -> host: X11 客户端取得 CLIPBOARD 时 xwm 发
- * request_set_selection; 本层接受后从 xwm source 读 UTF-8 文本, 经
- * winehua_host_clipboard_text 交给 ArkTS 写系统 pasteboard。
- * host -> guest: ArkTS 在系统 pasteboard update 时调
- * wl_ohos_input_post_clipboard, 本层设 seat selection, xwm 桥成
- * Xwayland CLIPBOARD 所有权。
- *
- * 读侧 fd 不提前 close: xwm 向管道写数据, 提前关读端会在宿主进程触发
- * SIGPIPE (本进程未忽略该信号)。取消只置 discard, 读到 EOF 自行回收;
- * seat 销毁时 xwayland 已先销毁 (write 端已关), 才可以 close。 */
-#define CLIP_MAX_BYTES (8u * 1024u * 1024u)
-
-struct clip_read {
-    struct wl_list link;
-    struct wl_event_source *event;
-    int fd;
-    char *buf;
-    size_t len;
-    size_t cap;
-    bool discard;
-};
-
-static struct wl_list g_clip_reads;
-static bool g_clip_reads_ready;
-static bool g_clip_attached;
-static char *g_pending_clip_text;
-static struct wl_listener g_clip_request_set_selection;
-static struct wl_listener g_clip_set_selection;
-static struct wl_listener g_clip_seat_destroy;
-
-static void ClipReadDestroy(struct clip_read *r)
-{
-    if (!r)
-        return;
-    if (r->event)
-        wl_event_source_remove(r->event);
-    if (r->fd >= 0)
-        close(r->fd);
-    wl_list_remove(&r->link);
-    free(r->buf);
-    free(r);
-}
-
-static void ClipboardCancelReads(void)
-{
-    struct clip_read *r;
-    if (!g_clip_reads_ready)
-        return;
-    wl_list_for_each(r, &g_clip_reads, link)
-    {
-        /* 不 close: 见上方 SIGPIPE 说明; 读端继续排空到 EOF */
-        r->discard = true;
-        r->len = 0;
-    }
-}
-
-static int ClipReadEvent(int fd, uint32_t mask, void *data)
-{
-    struct clip_read *r = data;
-    char tmp[4096];
-    (void)mask;
-    for (;;)
-    {
-        ssize_t n = read(fd, tmp, sizeof(tmp));
-        if (n > 0)
-        {
-            if (r->discard)
-                continue;
-            if (r->len + (size_t)n > CLIP_MAX_BYTES)
-            {
-                OH_LOG_WARN(LOG_APP,
-                            "clipboard: guest text exceeds %{public}u bytes, dropped",
-                            CLIP_MAX_BYTES);
-                r->discard = true;
-                r->len = 0;
-                continue;
-            }
-            if (r->len + (size_t)n + 1 > r->cap)
-            {
-                size_t cap = r->cap ? r->cap : 1024;
-                while (cap < r->len + (size_t)n + 1)
-                    cap *= 2;
-                char *buf = realloc(r->buf, cap);
-                if (!buf)
-                {
-                    r->discard = true;
-                    r->len = 0;
-                    continue;
-                }
-                r->buf = buf;
-                r->cap = cap;
-            }
-            memcpy(r->buf + r->len, tmp, (size_t)n);
-            r->len += (size_t)n;
-        }
-        else if (n == 0)
-        {
-            OHLOG("clipboard: read done len=%{public}u discard=%{public}d",
-                  (unsigned)r->len, r->discard ? 1 : 0);
-            if (!r->discard && r->len)
-            {
-                r->buf[r->len] = '\0';
-                winehua_host_clipboard_text(r->buf);
-            }
-            ClipReadDestroy(r);
-            return 0;
-        }
-        else
-        {
-            if (errno == EINTR)
-                continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return 0;
-            OH_LOG_WARN(LOG_APP, "clipboard: read failed errno=%{public}d", errno);
-            ClipReadDestroy(r);
-            return 0;
-        }
-    }
-}
-
-static const char *ClipPickMime(struct wlr_data_source *source)
-{
-    const char *fallback = NULL;
-    char **mime;
-    wl_array_for_each(mime, &source->mime_types)
-    {
-        if (strcmp(*mime, "text/plain;charset=utf-8") == 0)
-            return *mime;
-        if (!fallback && strcmp(*mime, "text/plain") == 0)
-            fallback = *mime;
-    }
-    return fallback;
-}
-
-static void ClipReadStart(struct wlr_data_source *source)
-{
-    if (!g_loop || !source)
-        return;
-    const char *mime = ClipPickMime(source);
-    if (!mime)
-    {
-        OHLOG("clipboard: guest selection has no text mime");
-        return;
-    }
-
-    int fds[2];
-    if (pipe(fds) != 0)
-    {
-        OH_LOG_WARN(LOG_APP, "clipboard: pipe failed errno=%{public}d", errno);
-        return;
-    }
-    fcntl(fds[0], F_SETFL, O_NONBLOCK);
-
-    struct clip_read *r = calloc(1, sizeof(*r));
-    if (!r)
-    {
-        close(fds[0]);
-        close(fds[1]);
-        return;
-    }
-    if (!g_clip_reads_ready)
-    {
-        wl_list_init(&g_clip_reads);
-        g_clip_reads_ready = true;
-    }
-    r->fd = fds[0];
-    wl_list_insert(&g_clip_reads, &r->link);
-    r->event = wl_event_loop_add_fd(g_loop, fds[0], WL_EVENT_READABLE,
-                                    ClipReadEvent, r);
-    if (!r->event)
-    {
-        OH_LOG_WARN(LOG_APP, "clipboard: add fd failed");
-        close(fds[0]);
-        close(fds[1]);
-        wl_list_remove(&r->link);
-        free(r);
-        return;
-    }
-    OHLOG("clipboard: read guest selection mime=%{public}s", mime);
-    wlr_data_source_send(source, mime, fds[1]);
-    if (!data_source_is_xwayland(source))
-    {
-        /* wl_data_device 协议来源: fd 已 dup 进客户端 socket, 宿主写端必须
-         * close — 客户端写完关它那份后引用归零, 读端才见 EOF; 不关则读端
-         * 永不 EOF, clip_read (fd+buf+event) 逐次泄漏。
-         * xwm 来源 (data_source_is_xwayland) 的 send 把 fd 号直接记进
-         * xwm transfer 同进程异步写, 写完 xwm 自行 close, 这里不能关。 */
-        close(fds[1]);
-    }
-}
-
-static void ClipboardOnRequestSetSelection(struct wl_listener *listener, void *data)
-{
-    (void)listener;
-    struct wlr_seat_request_set_selection_event *event = data;
-    if (!g_seat)
-        return;
-    OHLOG("clipboard: X request source=%{public}p serial=%{public}u",
-          (void *)event->source, event->serial);
-    /* xwm 的请求 serial 由 wl_display_next_serial 生成; Wayland 客户端请求
-     * 已在 wlr_seat_request_set_selection 内部校验过 serial。 */
-    wlr_seat_set_selection(g_seat, event->source, event->serial);
-}
-
-static void ClipboardOnSetSelection(struct wl_listener *listener, void *data)
-{
-    (void)listener;
-    struct wlr_seat *seat = data;
-    if (!seat || !seat->selection_source)
-    {
-        OHLOG("clipboard: set selection (empty)");
-        return;
-    }
-    OHLOG("clipboard: set selection source=%{public}p ours=%{public}d",
-          (void *)seat->selection_source,
-          seat->selection_source->impl == &CLIP_SOURCE_IMPL ? 1 : 0);
-    if (seat->selection_source->impl == &CLIP_SOURCE_IMPL)
-        return;
-    ClipReadStart(seat->selection_source);
-}
-
-static void ClipboardOnSeatDestroy(struct wl_listener *listener, void *data)
-{
-    struct clip_read *r, *tmp;
-    (void)listener;
-    (void)data;
-    if (g_clip_reads_ready)
-    {
-        wl_list_for_each_safe(r, tmp, &g_clip_reads, link)
-            ClipReadDestroy(r);
-    }
-    wl_list_remove(&g_clip_request_set_selection.link);
-    wl_list_remove(&g_clip_set_selection.link);
-    wl_list_remove(&g_clip_seat_destroy.link);
-    g_clip_attached = false;
-    if (g_seat && g_seat->selection_source &&
-        g_seat->selection_source->impl == &CLIP_SOURCE_IMPL)
-    {
-        free(g_pending_clip_text);
-        g_pending_clip_text = g_clip_text;
-        g_clip_text = NULL;
-    }
-    else
-    {
-        free(g_clip_text);
-        g_clip_text = NULL;
-    }
-    g_seat = NULL;
-}
-
-static void ClipboardAttach(struct wlr_seat *seat)
-{
-    if (!seat || g_clip_attached)
-        return;
-    g_clip_request_set_selection.notify = ClipboardOnRequestSetSelection;
-    wl_signal_add(&seat->events.request_set_selection,
-                  &g_clip_request_set_selection);
-    g_clip_set_selection.notify = ClipboardOnSetSelection;
-    wl_signal_add(&seat->events.set_selection, &g_clip_set_selection);
-    g_clip_seat_destroy.notify = ClipboardOnSeatDestroy;
-    wl_signal_add(&seat->events.destroy, &g_clip_seat_destroy);
-    g_clip_attached = true;
-    OHLOG("clipboard: attached seat=%{public}p", (void *)seat);
-}
-
 static void ApplySetClipboard(char *text) /* loop 线程, 接管 text 所有权 */
 {
-    if (!text)
-        return;
-    ClipboardCancelReads();
     if (!g_seat)
     {
-        free(g_pending_clip_text);
-        g_pending_clip_text = text;
-        OHLOG("clipboard: seat not ready, pending %{public}u bytes",
-              (unsigned)strlen(text));
+        free(text);
         return;
     }
     struct wlr_data_source *src = calloc(1, sizeof(*src));
@@ -1181,7 +1093,10 @@ static void ApplySetClipboard(char *text) /* loop 线程, 接管 text 所有权 
     g_clip_text = text; /* send 回调读, 同 loop 线程 */
     g_clip_serial++;
     wlr_seat_set_selection(g_seat, src, g_clip_serial);
-    OHLOG("clipboard set (%{public}u bytes)", (unsigned)strlen(g_clip_text));
+    pthread_mutex_lock(&g_clip_cache_mutex);
+    free(g_clip_cache); g_clip_cache = strdup(g_clip_text); ++g_clip_version;
+    pthread_mutex_unlock(&g_clip_cache_mutex);
+    OHLOG("clipboard set (%zu bytes)", strlen(g_clip_text));
 }
 
 void wl_ohos_input_post_clipboard(const char *utf8)
@@ -1191,7 +1106,7 @@ void wl_ohos_input_post_clipboard(const char *utf8)
     struct inject_item item;
     memset(&item, 0, sizeof(item));
     item.is_clipboard = true;
-    item.text = strdup(utf8);
+    item.text = strndup(utf8, 1024 * 1024);
     if (!item.text)
         return;
     InjectQueuePush(&item);
@@ -1200,16 +1115,18 @@ void wl_ohos_input_post_clipboard(const char *utf8)
 int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
 {
     g_loop = loop;
+    g_clip_stopping = false;
     g_display = wl;
 
     /* 跨线程注入的唤醒通道: 建在 loop 线程上 (fd 源必须挂在同一 loop)。
      * 两端 O_NONBLOCK, 理由见 InjectQueueDrain 注释。 */
+    pthread_mutex_lock(&g_inject_mutex);
     if (g_loop && pipe(g_inject_wake) == 0)
     {
         int i;
         for (i = 0; i < 2; ++i)
             fcntl(g_inject_wake[i], F_SETFL, O_NONBLOCK);
-        wl_event_loop_add_fd(g_loop, g_inject_wake[0], WL_EVENT_READABLE,
+        g_inject_source = wl_event_loop_add_fd(g_loop, g_inject_wake[0], WL_EVENT_READABLE,
                              InjectQueueDrain, NULL);
     }
     else
@@ -1218,11 +1135,14 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
                      errno);
     }
 
+    pthread_mutex_unlock(&g_inject_mutex);
     struct xkb_keymap *km = BuildKeymap();
     wlr_keyboard_init(&g_kb, &k_kb_impl, "displayroute-vkbd");
+    g_keyboard_initialized = true;
     if (km && !wlr_keyboard_set_keymap(&g_kb, km))
         OH_LOG_ERROR(LOG_APP, "wlr_keyboard_set_keymap failed");
 
+    if (km) xkb_keymap_unref(km);
     g_seat = wlr_seat_create(wl, "default");
     if (!g_seat)
     {
@@ -1234,18 +1154,12 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
     wlr_seat_set_capabilities(g_seat,
                               WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_seat_set_keyboard(g_seat, &g_kb);
+    g_selection_request.notify = ClipSelectionRequest;
+    g_selection_changed.notify = ClipSelectionChanged;
+    wl_signal_add(&g_seat->events.request_set_selection, &g_selection_request);
+    wl_signal_add(&g_seat->events.set_selection, &g_selection_changed);
+    g_selection_listening = true;
 
-    g_data_device_manager = wlr_data_device_manager_create(wl);
-    if (!g_data_device_manager)
-        OH_LOG_ERROR(LOG_APP, "data device manager create failed");
-
-    ClipboardAttach(g_seat);
-    if (g_pending_clip_text)
-    {
-        char *pending = g_pending_clip_text;
-        g_pending_clip_text = NULL;
-        ApplySetClipboard(pending);
-    }
 
     /* #177: Xwayland 检测到该 global 才 get_relative_pointer 并把增量译成
      * XI2 raw motion (init_relative_pointer); 无绑定调用是 no-op, 创建失败
@@ -1260,7 +1174,7 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
     if (g_loop)
     {
         g_key_timer = wl_event_loop_add_timer(g_loop, DeliverPendingKey,
-                                              &g_pending_key);
+                                              NULL);
         g_pulse_release_timer = wl_event_loop_add_timer(g_loop,
                                                         DeliverPulseRelease,
                                                         NULL);
@@ -1456,5 +1370,86 @@ void wl_ohos_input_post_mm_geom_move(uint32_t toplevelId, int x, int y)
     item.mm_toplevel_id = toplevelId;
     item.mm_lx = x;
     item.mm_ly = y;
+    InjectQueuePush(&item);
+}
+
+// Runs after Xwayland surfaces have been destroyed, before the display/loop.
+// No queued input or pipe descriptor survives into the next Wine session.
+void wl_ohos_input_shutdown(void)
+{
+    pthread_mutex_lock(&g_inject_mutex);
+    if (g_inject_source) wl_event_source_remove(g_inject_source);
+    g_inject_source = NULL;
+    for (int i = 0; i < 2; ++i) {
+        if (g_inject_wake[i] >= 0) close(g_inject_wake[i]);
+        g_inject_wake[i] = -1;
+    }
+    while (g_inject_head != g_inject_tail) {
+        free(g_inject_queue[g_inject_head].text);
+        g_inject_head = (g_inject_head + 1) % INJECT_QUEUE_CAP;
+    }
+    g_inject_head = g_inject_tail = 0;
+    g_inject_overflow = false;
+    pthread_mutex_unlock(&g_inject_mutex);
+    if (g_key_timer) wl_event_source_remove(g_key_timer);
+    if (g_pulse_release_timer) wl_event_source_remove(g_pulse_release_timer);
+    g_key_timer = g_pulse_release_timer = NULL;
+    g_pending_key_count = 0;
+    TrackKbdFocus(NULL);
+    TrackPtrFocus(NULL);
+    g_clip_stopping = true;
+    ClipReadCancel();
+    // display_compositor has destroyed Xwayland before seat teardown.
+    for (size_t i = 0; i < 4; ++i)
+        if (g_clip_reads[i].active) ClipReadFinish(&g_clip_reads[i]);
+    pthread_mutex_lock(&g_clip_cache_mutex);
+    free(g_clip_cache); g_clip_cache = NULL; ++g_clip_version;
+    pthread_mutex_unlock(&g_clip_cache_mutex);
+    if (g_selection_listening) {
+        wl_list_remove(&g_selection_request.link); wl_list_remove(&g_selection_changed.link);
+        g_selection_listening = false;
+    }
+    if (g_seat) wlr_seat_destroy(g_seat);
+    g_seat = NULL;
+    if (g_keyboard_initialized) wlr_keyboard_finish(&g_kb);
+    g_keyboard_initialized = false;
+    g_display = NULL; g_loop = NULL; g_xwayland = NULL;
+    g_kbd_focus = g_ptr_focus = g_rel_surf = NULL;
+    g_ptr_focus_xs = NULL; g_rel_manager = NULL; g_rel_valid = false;
+    __atomic_store_n(&g_last_motion_win, 0, __ATOMIC_RELEASE);
+    free(g_clip_text); g_clip_text = NULL;
+    g_ptr_in_letterbox = 0; g_swallowed_btn_mask = 0;
+}
+
+void wl_ohos_input_post_axis_value(int which, double value, bool continuous)
+{
+    struct inject_item item = {0};
+    item.is_axis = true; item.axis_precise = true;
+    item.axis_which = which; item.axis_value = value; item.axis_continuous = continuous;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_mm_control(uint32_t id, int command, bool enabled)
+{
+    struct inject_item item = {0};
+    item.is_mm_control = true; item.mm_toplevel_id = id;
+    item.mm_action = command; item.press = enabled; InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_motion_raw(float nx, float ny, int phase, double dx, double dy)
+{
+    struct inject_item item = {0};
+    item.nx = nx; item.ny = ny; item.phase = phase;
+    item.has_raw = isfinite(dx) && isfinite(dy) && (dx != 0 || dy != 0);
+    item.raw_dx = fmax(-512, fmin(512, dx)); item.raw_dy = fmax(-512, fmin(512, dy));
+    InjectQueuePush(&item);
+}
+void wl_ohos_input_post_mm_pointer_raw(uint32_t id, int x, int y, int action, uint32_t button, double dx, double dy)
+{
+    struct inject_item item = {0};
+    item.is_mm_ptr = true; item.mm_toplevel_id = id; item.mm_lx = x; item.mm_ly = y;
+    item.mm_action = action; item.mm_button = button;
+    item.has_raw = action == 3 && isfinite(dx) && isfinite(dy) && (dx != 0 || dy != 0);
+    item.raw_dx = fmax(-512, fmin(512, dx)); item.raw_dy = fmax(-512, fmin(512, dy));
     InjectQueuePush(&item);
 }

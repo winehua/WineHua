@@ -1,0 +1,118 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] win32u: bound acquire waits and validate private presentation arrays
+
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -2906,6 +2906,16 @@
+     struct timespec deadline;
+     VkResult result = VK_SUCCESS;
+ 
++    /* The condition variable uses CLOCK_REALTIME. Compute its deadline
++     * once so unrelated image releases cannot restart the timeout. */
++    if (timeout && timeout != UINT64_MAX)
++    {
++        clock_gettime(CLOCK_REALTIME, &deadline);
++        deadline.tv_sec += timeout / 1000000000ull;
++        deadline.tv_nsec += timeout % 1000000000ull;
++        if (deadline.tv_nsec >= 1000000000l) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000l; }
++    }
++
+     pthread_mutex_lock(&swapchain->mutex);
+     for (;;)
+     {
+@@ -2927,10 +2937,6 @@
+         }
+         if (timeout != UINT64_MAX)
+         {
+-            clock_gettime(CLOCK_REALTIME, &deadline);
+-            deadline.tv_sec += timeout / 1000000000ull;
+-            deadline.tv_nsec += timeout % 1000000000ull;
+-            if (deadline.tv_nsec >= 1000000000l) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000l; }
+             if (pthread_cond_timedwait(&swapchain->cond, &swapchain->mutex, &deadline) == ETIMEDOUT)
+             {
+                 pthread_mutex_unlock(&swapchain->mutex);
+@@ -3744,11 +3750,38 @@
+     return res;
+ }
+ 
++/* Private and host WSI handles cannot be interpreted by the other route.
++ * Reject the complete request before consuming semaphores or changing images.
++ * Keep the existing private-path error for this unsupported combination. */
++static VkResult winehua_validate_present_swapchains(const VkPresentInfoKHR *info, BOOL *private_route)
++{
++    struct swapchain *swapchain;
++
++    *private_route = FALSE;
++    if (!info->swapchainCount) return VK_SUCCESS;
++    if (!(swapchain = swapchain_from_handle(info->pSwapchains[0]))) goto unsupported;
++    *private_route = swapchain->winehua_private;
++    for (uint32_t i = 1; i < info->swapchainCount; ++i)
++    {
++        swapchain = swapchain_from_handle(info->pSwapchains[i]);
++        if (!swapchain || !!swapchain->winehua_private != !!*private_route) goto unsupported;
++    }
++    return VK_SUCCESS;
++
++unsupported:
++    ERR("Unsupported mixed or invalid swapchain request, count=%u\n", info->swapchainCount);
++    if (info->pResults)
++        for (uint32_t i = 0; i < info->swapchainCount; ++i)
++            info->pResults[i] = VK_ERROR_INITIALIZATION_FAILED;
++    return VK_ERROR_INITIALIZATION_FAILED;
++}
++
+ static VkResult winehua_queue_present(struct vulkan_queue *queue, VkPresentInfoKHR *present_info)
+ {
+     struct vulkan_device *device = queue->device;
+     VkSemaphore stack_semaphores[16];
+     VkSemaphore *host_semaphores = stack_semaphores;
++    VkPipelineStageFlags stack_stages[16], *wait_stages = stack_stages;
+     VkResult result = VK_SUCCESS;
+ 
+     for (uint32_t i = 0; i < present_info->swapchainCount; ++i)
+@@ -3757,22 +3790,25 @@
+         if (!swapchain || !swapchain->winehua_private) return VK_ERROR_INITIALIZATION_FAILED;
+     }
+     if (present_info->waitSemaphoreCount > ARRAY_SIZE(stack_semaphores) &&
+-        !(host_semaphores = malloc(present_info->waitSemaphoreCount * sizeof(*host_semaphores))))
++        !(host_semaphores = malloc(present_info->waitSemaphoreCount *
++                                   (sizeof(*host_semaphores) + sizeof(*wait_stages)))))
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
++    if (host_semaphores != stack_semaphores)
++        wait_stages = (VkPipelineStageFlags *)(host_semaphores + present_info->waitSemaphoreCount);
+ 
+     for (uint32_t i = 0; i < present_info->waitSemaphoreCount; ++i)
+     {
+         struct semaphore *semaphore = semaphore_from_handle(present_info->pWaitSemaphores[i]);
+         host_semaphores[i] = semaphore->obj.host.semaphore;
++        wait_stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+     }
+     if (present_info->waitSemaphoreCount)
+     {
+-        VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+         VkSubmitInfo wait_submit = {
+             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+             .waitSemaphoreCount = present_info->waitSemaphoreCount,
+             .pWaitSemaphores = host_semaphores,
+-            .pWaitDstStageMask = &wait_stage,
++            .pWaitDstStageMask = wait_stages,
+         };
+         result = device->p_vkQueueSubmit(queue->host.queue, 1, &wait_submit, VK_NULL_HANDLE);
+         if (result != VK_SUCCESS) goto done;
+@@ -4024,12 +4060,13 @@
+     struct mempool pool = {0};
+     uint32_t blit_count = 0;
+     VkSemaphore blit_sema;
++    BOOL private_route;
+ 
+     TRACE( "queue %p, present_info %p\n", queue, present_info );
+ 
+-    if (present_info->swapchainCount &&
+-        swapchain_from_handle(present_info->pSwapchains[0])->winehua_private)
+-        return winehua_queue_present(queue, present_info);
++    if ((res = winehua_validate_present_swapchains(present_info, &private_route))) return res;
++    if (private_route) return winehua_queue_present(queue, present_info);
++    res = VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+     if (!(swapchains = mem_alloc( &pool, present_info->swapchainCount * sizeof(*swapchains) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+     if (!(blit_cmds = mem_alloc( &pool, present_info->swapchainCount * sizeof(blit_cmds) ))) goto failed;

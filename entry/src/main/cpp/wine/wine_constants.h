@@ -18,7 +18,29 @@
 // Wine 临时文件目录 (TMPDIR)
 #define WINE_TMPDIR          "/data/storage/el2/base/cache"
 
-// Wine 子进程 stderr 日志目录
+// Legacy/opt-in CEF diagnostic output (may be cleared by the OS).
 #define WINE_LOG_DIR         "/data/storage/el2/base/temp"
+// Wine/wineserver stderr survives cache cleanup and app restarts.
+#define WINE_STDERR_DIR      WINE_FILES_DIR "/wine-logs"
+
+// -- Wine 产物架构子目录 (由 wine 架构 WINE_ARCH 决定, 非设备架构) --
+// 方案① (x86_64 设备) / 方案② (arm64 设备 + x86_64 wine) → x86_64-*;
+// 方案③ (arm64 设备 + arm64 原生 wine) → aarch64-*。
+// 判定: 方案②由 CMakeLists.txt 按 entry/.wine_arch 注入 WINEHUA_WINE_ARCH_IS_X86_64;
+// 方案① (x86_64 设备) 由 __x86_64__ 编译期兜底 — 不依赖 .wine_arch 文件存在
+// (DevEco Studio 直编 / 绕过 package.sh 跑 hvigor 时该文件可能缺失)。
+#if defined(__x86_64__) || defined(WINEHUA_WINE_ARCH_IS_X86_64)
+#define WINE_UNIX_SUBDIR     "x86_64-unix"
+#define WINE_PE_SUBDIR       "x86_64-windows"
+#define WINE_WINE_ARCH       "x86_64"
+#else
+#define WINE_UNIX_SUBDIR     "aarch64-unix"
+#define WINE_PE_SUBDIR       "aarch64-windows"
+#define WINE_WINE_ARCH       "aarch64"
+#endif
 
 #endif // WINE_CONSTANTS_H
+
+// VPP: isolated prefix used by milestone smoke runs. It is never removed as
+// part of the normal user's prefix lifecycle.
+#define WINE_SMOKE_PREFIX    "/data/storage/el2/base/files/.wine-smoke"

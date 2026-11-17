@@ -6,6 +6,11 @@
 namespace winehua {
 namespace controller {
 
+ControllerHub::ControllerHub()
+{
+    slots_[0].logical.connected = true;
+}
+
 ControllerHub& ControllerHub::Instance()
 {
     static ControllerHub hub;
@@ -22,7 +27,11 @@ void ControllerHub::SetEnabled(bool enabled)
         cb = listener_;
         if (!enabled) {
             for (uint32_t s = 0; s < kMaxControllerSlots; ++s) {
+                const bool connected = slots_[s].logical.connected;
+                const uint64_t sequence = slots_[s].logical.sequence + 1;
                 slots_[s] = SlotState{};
+                slots_[s].logical.connected = connected;
+                slots_[s].logical.sequence = sequence;
                 snaps[s] = slots_[s].logical;
             }
         }
@@ -76,6 +85,43 @@ void ControllerHub::SetButton(ControllerSourceId source, uint32_t slot, LogicalB
         changed = RecomputeLocked(slot);
         cb = listener_;
         snap = slots_[slot].logical;
+    }
+    if (changed && cb) cb(slot, snap);
+}
+
+// Compatibility for the legacy single-axis NAPI. Paired callers use SetStick.
+void ControllerHub::SetAxis(ControllerSourceId source, uint32_t slot, LogicalAxis axis, float value)
+{
+    const uint32_t src = static_cast<uint32_t>(source);
+    const uint32_t ax = static_cast<uint32_t>(axis);
+    if (src >= kSourceCount || ax >= static_cast<uint32_t>(LogicalAxis::Count) || slot >= kMaxControllerSlots) return;
+    if (axis == LogicalAxis::LT || axis == LogicalAxis::RT) {
+        SetTrigger(source, slot, axis == LogicalAxis::LT ? LogicalTrigger::Left : LogicalTrigger::Right, value);
+        return;
+    }
+    if (!std::isfinite(value)) value = 0.f;
+    value = std::clamp(value, -1.f, 1.f);
+    const uint32_t stIdx = ax / 2;
+    StateListener cb;
+    LogicalGamepadState snap;
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!enabled_) return;
+        auto& st = slots_[slot];
+        auto& stick = st.sticks[src][stIdx];
+        if (ax % 2) stick.y = value;
+        else stick.x = value;
+        stick.active = std::sqrt(stick.x * stick.x + stick.y * stick.y) > innerDeadzone_;
+        if (stick.active) {
+            stick.activitySequence = st.nextActivitySequence++;
+            st.stickOwner[stIdx] = source;
+        } else if (st.stickOwner[stIdx] == source) {
+            st.stickOwner[stIdx] = PickStickOwner(st, stIdx);
+        }
+        changed = RecomputeLocked(slot);
+        cb = listener_;
+        snap = st.logical;
     }
     if (changed && cb) cb(slot, snap);
 }
@@ -160,10 +206,28 @@ void ControllerHub::SetHat(ControllerSourceId source, uint32_t slot, int8_t x, i
     if (changed && cb) cb(slot, snap);
 }
 
-void ControllerHub::ResetSource(ControllerSourceId source)
+void ControllerHub::SetSlotConnected(uint32_t slot, bool connected)
+{
+    if (slot >= kMaxControllerSlots) return;
+    StateListener cb;
+    LogicalGamepadState snap;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& state = slots_[slot].logical;
+        connected = slot == 0 || connected;
+        if (state.connected == connected) return;
+        state.connected = connected;
+        ++state.sequence;
+        snap = state;
+        cb = listener_;
+    }
+    if (cb) cb(slot, snap);
+}
+
+void ControllerHub::ResetSource(ControllerSourceId source, uint32_t onlySlot)
 {
     const uint32_t src = static_cast<uint32_t>(source);
-    if (src >= kSourceCount) return;
+    if (src >= kSourceCount || onlySlot > kMaxControllerSlots) return;
     const uint32_t bit = 1u << src;
 
     StateListener cb;
@@ -174,6 +238,7 @@ void ControllerHub::ResetSource(ControllerSourceId source)
         std::lock_guard<std::mutex> lock(mutex_);
         cb = listener_;
         for (uint32_t slot = 0; slot < kMaxControllerSlots; ++slot) {
+            if (onlySlot != kMaxControllerSlots && slot != onlySlot) continue;
             auto& st = slots_[slot];
             for (uint32_t b = 0; b < kButtonCount; ++b) st.buttonOwners[b] &= ~bit;
             for (uint32_t stick = 0; stick < kStickCount; ++stick) {

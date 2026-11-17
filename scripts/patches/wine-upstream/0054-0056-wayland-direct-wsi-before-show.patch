@@ -1,0 +1,190 @@
+From be3c45a9a75fcca51551ce8138f7ecc923c9fc5a Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0056-wayland-direct-wsi-before-show
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 748a156cedeedb0b87990167e787992e1ee090501a0019810b2b1d1d2ff773c2
+
+diff --git a/dlls/winewayland.drv/vulkan.c b/dlls/winewayland.drv/vulkan.c
+index bf5ee785224ca39ce59afd42179cbb18875f11fc..aab790775eed2dec7fa83f7b144bc081b625e20f 100644
+--- a/dlls/winewayland.drv/vulkan.c
++++ b/dlls/winewayland.drv/vulkan.c
+@@ -123,6 +123,12 @@ static VkResult winehua_direct_surface_create(HWND hwnd, const struct vulkan_ins
+         instance->host.instance, "vkCreateSurfaceOHOS");
+     if (!create_surface) return VK_ERROR_EXTENSION_NOT_PRESENT;
+     if (!(surface = wayland_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    if (!winehua_prepare_direct_surface(hwnd, &surface->winehua_direct_owner,
++                                        &surface->winehua_direct_owner_generation))
++    {
++        client_surface_release(&surface->client);
++        return VK_ERROR_SURFACE_LOST_KHR;
++    }
+     owner_id = winehua_window_surface_id(hwnd);
+     wl_display_flush(process_wayland.wl_display);
+     if (!owner_id)
+diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
+index 38950f78181a912124e29ed4955d18990f9769af..34fb471e888b3a34ccfce63ea441176884fd44a1 100644
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -1260,6 +1260,9 @@ static void wayland_client_surface_destroy(struct client_surface *client)
+ #ifdef __OHOS__
+     if (surface->winehua_direct_window && surface->winehua_direct_window_release)
+         surface->winehua_direct_window_release(surface->winehua_direct_window);
++    if (surface->winehua_direct_owner)
++        winehua_release_direct_surface(surface->winehua_direct_owner,
++                                       surface->winehua_direct_owner_generation);
+ #endif
+ 
+     if (surface->wp_viewport)
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index cce8ef30e53056313296a6b3f210200476038212..c22655419a221e6f7b463c37f718bb77a472e2ee 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -252,6 +252,8 @@ struct wayland_client_surface
+     struct wl_subsurface *wl_subsurface;
+     struct wp_viewport *wp_viewport;
+ #ifdef __OHOS__
++    HWND winehua_direct_owner;
++    uint64_t winehua_direct_owner_generation;
+     void *winehua_direct_window;
+     void (*winehua_direct_window_release)(void *);
+ #endif
+@@ -416,6 +418,11 @@ struct wayland_win_data
+     BOOL is_fullscreen;
+     BOOL managed;
+     BOOL layered_attribs_set;
++#ifdef __OHOS__
++    unsigned int winehua_direct_early_refs;
++    uint64_t winehua_direct_early_generation;
++    BOOL winehua_direct_early_wsi;
++#endif
+ };
+ 
+ struct wayland_win_data *wayland_win_data_get(HWND hwnd);
+@@ -424,6 +431,10 @@ void wayland_win_data_release(struct wayland_win_data *data);
+ 
+ struct wayland_client_surface *get_client_surface(HWND hwnd);
+ void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
++#ifdef __OHOS__
++BOOL winehua_prepare_direct_surface(HWND hwnd, HWND *owner, uint64_t *generation);
++void winehua_release_direct_surface(HWND owner, uint64_t generation);
++#endif
+ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region);
+ struct wayland_shm_buffer *get_window_surface_contents(HWND hwnd);
+ void ensure_window_surface_contents(HWND hwnd);
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index bad0c478b64b8edb432321d57af4974d4d628480..2d733d08b92da1fa4b962509b1a8eebb5473498a 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -207,7 +207,15 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+     visible = ((NtUserGetWindowLongW(data->hwnd, GWL_STYLE) & WS_VISIBLE) == WS_VISIBLE) &&
+                (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
+ 
+-    if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
++    if (!visible)
++    {
++        role = WAYLAND_SURFACE_ROLE_NONE;
++#ifdef __OHOS__
++        /* A Direct swapchain may precede ShowWindow. Allocate its WSI
++         * owner without mapping any buffer or changing Win32 visibility. */
++        if (data->winehua_direct_early_wsi) role = WAYLAND_SURFACE_ROLE_TOPLEVEL;
++#endif
++    }
+     else if (toplevel_surface) role = WAYLAND_SURFACE_ROLE_SUBSURFACE;
+     else role = WAYLAND_SURFACE_ROLE_TOPLEVEL;
+ 
+@@ -259,6 +267,71 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+     return TRUE;
+ }
+ 
++#ifdef __OHOS__
++/* Reserve only the real GA_ROOT. Native WSI needs a producer before the first
++ * ShowWindow, whereas xdg mapping remains driven by the normal visible window
++ * buffer. The lease prevents a configure callback from deleting that producer
++ * while vkCreateWin32SurfaceKHR is waiting for the native IPC attachment. */
++static uint64_t winehua_direct_lease_generation; /* protected by win_data_mutex */
++
++BOOL winehua_prepare_direct_surface(HWND hwnd, HWND *owner, uint64_t *generation)
++{
++    HWND root = NtUserGetAncestor(hwnd, GA_ROOT);
++    struct wayland_win_data *data;
++    BOOL prepared;
++
++    *owner = 0;
++    *generation = 0;
++    if (!root || !(data = wayland_win_data_get(root))) return FALSE;
++    /* An owned popup already attached to a different root must not be promoted
++     * to an independent toplevel merely to obtain a native producer. */
++    if (data->wayland_surface && data->wayland_surface->role == WAYLAND_SURFACE_ROLE_SUBSURFACE)
++    {
++        wayland_win_data_release(data);
++        return FALSE;
++    }
++    if (!data->winehua_direct_early_generation)
++        data->winehua_direct_early_generation = ++winehua_direct_lease_generation;
++    *generation = data->winehua_direct_early_generation;
++    ++data->winehua_direct_early_refs;
++    if (!NtUserIsWindowVisible(root)) data->winehua_direct_early_wsi = TRUE;
++    prepared = (data->wayland_surface && wayland_surface_is_toplevel(data->wayland_surface)) ||
++               (wayland_win_data_create_wayland_surface(data, NULL) &&
++                wayland_surface_is_toplevel(data->wayland_surface));
++    wayland_win_data_release(data);
++    if (!prepared)
++    {
++        winehua_release_direct_surface(root, *generation);
++        *generation = 0;
++        return FALSE;
++    }
++    *owner = root;
++    return TRUE;
++}
++
++void winehua_release_direct_surface(HWND owner, uint64_t generation)
++{
++    struct wayland_win_data *data;
++
++    if (!(data = wayland_win_data_get(owner))) return;
++    /* HWND reuse must not let an old client retire a new window's producer. */
++    if (data->winehua_direct_early_generation != generation)
++    {
++        wayland_win_data_release(data);
++        return;
++    }
++    if (data->winehua_direct_early_refs) --data->winehua_direct_early_refs;
++    /* Failure/never-shown destruction releases an unused reservation. A
++     * visible window and ordinary hide/minimize continue their old lifecycle. */
++    if (!data->winehua_direct_early_refs && data->winehua_direct_early_wsi)
++    {
++        data->winehua_direct_early_wsi = FALSE;
++        if (data->wayland_surface) wayland_win_data_create_wayland_surface(data, NULL);
++    }
++    wayland_win_data_release(data);
++}
++#endif
++
+ static void wayland_surface_update_state_toplevel(struct wayland_surface *surface)
+ {
+     BOOL processing_config = surface->processing.serial &&
+@@ -510,6 +583,9 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     }
+     data->is_fullscreen = fullscreen;
+     data->managed = managed;
++#ifdef __OHOS__
++    if (NtUserIsWindowVisible(hwnd)) data->winehua_direct_early_wsi = FALSE;
++#endif
+ 
+     if (!surface)
+     {
+@@ -531,6 +607,10 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+                 wayland_client_surface_attach(client, NULL);
+         }
+ 
++#ifdef __OHOS__
++        if (data->winehua_direct_early_wsi) keep_toplevel = TRUE;
++#endif
++
+         /* A hidden/recreated GPU-only parent may be absent or role-less.
+          * Restore the normal visibility/role lifecycle before refreshing its
+          * state, even when win32u no longer supplies a GDI window surface. */

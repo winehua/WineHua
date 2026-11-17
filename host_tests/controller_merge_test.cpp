@@ -205,6 +205,18 @@ int main()
     CHECK(!whgp_version_matches(1), "reject WHGP v1");
     CHECK(!whgp_version_matches(3), "reject unknown WHGP");
 
+    // The retained single-axis API deduplicates and preserves the other axis.
+    hub.ResetSource(ControllerSourceId::Touch);
+    const int beforeLegacy = publishes;
+    hub.SetAxis(ControllerSourceId::Touch, 0, winehua::controller::LogicalAxis::LX, 0.6f);
+    hub.SetAxis(ControllerSourceId::Touch, 0, winehua::controller::LogicalAxis::LY, 0.8f);
+    CHECK(publishes == beforeLegacy + 2, "legacy axis updates publish changed states");
+    CHECK(hub.GetState(0).lx != 0 && hub.GetState(0).ly > 0, "legacy axis preserves its pair");
+    hub.SetAxis(ControllerSourceId::Touch, 0, winehua::controller::LogicalAxis::LY, 0.8f);
+    CHECK(publishes == beforeLegacy + 2, "unchanged legacy axis does not republish");
+    hub.SetAxis(ControllerSourceId::Touch, 0, winehua::controller::LogicalAxis::LT, 0.5f);
+    CHECK(hub.GetState(0).lt > 0, "legacy trigger API remains available");
+
     hub.SetStateListener(nullptr);
     hub.SetEnabled(false);
     std::printf("controller_merge_test: %d checks, %d failures\n", g_checks, g_failures);

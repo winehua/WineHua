@@ -1,0 +1,32 @@
+From c5fc8b0f48a9a9ea01f38ab0af3cc6c577d709cb Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0058-ohos-shared-wasapi-float32
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 627228b4338bf10d721e52b9df4d2bef6ad62c043bc3dee8ac3c9a0557d927a7
+
+diff --git a/dlls/wineohos.drv/ohos.c b/dlls/wineohos.drv/ohos.c
+index 47b08ce3ddc64b757bed4c7af1d82f18c5ba58b2..925e1bb05b927faeabec4c404f92a59499f989cb 100644
+--- a/dlls/wineohos.drv/ohos.c
++++ b/dlls/wineohos.drv/ohos.c
+@@ -1360,13 +1360,13 @@ static NTSTATUS ohos_get_mix_format(void *args)
+     fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+     fmt->Format.nChannels = 2;
+     fmt->Format.nSamplesPerSec = 48000;
+-    fmt->Format.wBitsPerSample = 16;
+-    fmt->Format.nBlockAlign = 4;
+-    fmt->Format.nAvgBytesPerSec = 192000;
++    fmt->Format.wBitsPerSample = 32;
++    fmt->Format.nBlockAlign = 8;
++    fmt->Format.nAvgBytesPerSec = 384000;
+     fmt->Format.cbSize = sizeof(*fmt) - sizeof(fmt->Format);
+-    fmt->Samples.wValidBitsPerSample = 16;
++    fmt->Samples.wValidBitsPerSample = 32;
+     fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+-    fmt->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
++    fmt->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+     params->result = S_OK;
+     return STATUS_SUCCESS;
+ }

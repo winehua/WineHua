@@ -1,4 +1,4 @@
-#include "ring_buffer.h"
+#include "common/ring_buffer.h"
 
 #include <algorithm>
 #include <limits>

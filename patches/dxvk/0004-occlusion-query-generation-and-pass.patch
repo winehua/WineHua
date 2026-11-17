@@ -1,0 +1,128 @@
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -42,6 +42,12 @@
+       m_features.set(DxvkContextFeature::NullDescriptors);
+     if (m_device->features().extExtendedDynamicState.extendedDynamicState)
+       m_features.set(DxvkContextFeature::ExtendedDynamicState);
++
++    // Maleoon can report occlusion counts from later geometry in the same tile
++    // pass. Resolve query boundaries as separate passes; keep genuine counts.
++    const std::string split = env::getEnvVar("DXVK_WINEHUA_SPLIT_OCCLUSION_PASS");
++    m_winehuaSplitOcclusionPass = split == "1" || (split != "0" &&
++      std::strstr(m_device->adapter()->deviceProperties().deviceName, "Maleoon"));
+ 
+     // Init framebuffer info with default render pass in case
+     // the app does not explicitly bind any render targets
+@@ -1076,6 +1082,8 @@
+ 
+   void DxvkContext::endQuery(const Rc<DxvkGpuQuery>& query) {
+     m_queryManager.disableQuery(m_cmd, query);
++    if (m_winehuaSplitOcclusionPass && query->type() == VK_QUERY_TYPE_OCCLUSION)
++      this->spillRenderPass(true);
+   }
+   
+   
+diff --git a/src/dxvk/dxvk_context.h b/src/dxvk/dxvk_context.h
+--- a/src/dxvk/dxvk_context.h
++++ b/src/dxvk/dxvk_context.h
+@@ -1183,6 +1183,7 @@
+     DxvkBarrierControlFlags m_barrierControl;
+     
+     DxvkGpuQueryManager     m_queryManager;
++    bool                    m_winehuaSplitOcclusionPass = false;
+     DxvkStagingBuffer       m_staging;
+     
+     DxvkRenderTargetLayouts m_rtLayouts = { };
+diff --git a/src/dxvk/dxvk_gpu_query.cpp b/src/dxvk/dxvk_gpu_query.cpp
+--- a/src/dxvk/dxvk_gpu_query.cpp
++++ b/src/dxvk/dxvk_gpu_query.cpp
+@@ -14,6 +14,8 @@
+           uint32_t            index)
+   : m_vkd(vkd), m_type(type), m_flags(flags),
+     m_index(index), m_ended(false) {
++    if (winehuaCommandQueryReset())
++      m_gpuCompletion = new sync::Fence(0);
+     
+   }
+   
+@@ -42,6 +44,12 @@
+     if (!m_handle.queryPool)
+       return DxvkGpuQueryStatus::Available;
+     
++    // A queued GPU reset has not cleared availability on the CPU yet.
++    // Recycled slots may still expose a previous generation as VK_SUCCESS.
++    // Poll the submission completion without blocking or fabricating visibility.
++    if (m_gpuCompletion != nullptr && m_gpuCompletion->value() < m_generation)
++      return DxvkGpuQueryStatus::Pending;
++
+     // Get query data from all associated handles
+     DxvkGpuQueryStatus status = getDataForHandle(queryData, m_handle);
+ 
+@@ -63,6 +71,7 @@
+ 
+   void DxvkGpuQuery::begin(const Rc<DxvkCommandList>& cmd) {
+     m_ended = false;
++    ++m_generation;
+ 
+     cmd->trackGpuQuery(m_handle);
+     m_handle = DxvkGpuQueryHandle();
+@@ -73,7 +82,9 @@
+   }
+ 
+   
+-  void DxvkGpuQuery::end() {
++  void DxvkGpuQuery::end(const Rc<DxvkCommandList>& cmd) {
++    if (m_gpuCompletion != nullptr && m_handle.queryPool)
++      cmd->queueSignal(m_gpuCompletion, m_generation);
+     m_ended = true;
+   }
+ 
+@@ -296,7 +307,7 @@
+         endSingleQuery(cmd, query);
+       m_activeQueries.erase(iter);
+       
+-      query->end();
++      query->end(cmd);
+     }
+   }
+ 
+@@ -308,7 +319,7 @@
+     
+     query->begin(cmd);
+     query->addQueryHandle(handle);
+-    query->end();
++    query->end(cmd);
+ 
+     cmd->resetQuery(
+       handle.queryPool,
+diff --git a/src/dxvk/dxvk_gpu_query.h b/src/dxvk/dxvk_gpu_query.h
+--- a/src/dxvk/dxvk_gpu_query.h
++++ b/src/dxvk/dxvk_gpu_query.h
+@@ -4,6 +4,7 @@
+ #include <vector>
+ 
+ #include "dxvk_resource.h"
++#include "../util/sync/sync_signal.h"
+ 
+ namespace dxvk {
+ 
+@@ -202,7 +203,7 @@
+      * Sets query into pending state. Calling
+      * \c getData is legal after calling this.
+      */
+-    void end();
++    void end(const Rc<DxvkCommandList>& cmd);
+ 
+     /**
+      * \brief Adds a query handle to the query
+@@ -224,6 +225,9 @@
+     uint32_t            m_index;
+     bool                m_ended;
+ 
++    Rc<sync::Fence>     m_gpuCompletion;
++    uint64_t           m_generation = 0;
++
+     DxvkGpuQueryHandle  m_handle;
+     
+     std::vector<DxvkGpuQueryHandle> m_handles;

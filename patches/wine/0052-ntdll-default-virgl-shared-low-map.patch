@@ -1,0 +1,29 @@
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -2015,6 +2015,16 @@
+ }
+ 
+ 
++/* The paired vtest winsys falls back on absent callbacks or address pressure.
++ * Keep 0040's import intact so explicit child/BAT opt-outs retain precedence. */
++static void winehua_default_shared_map_environment(void)
++{
++#if defined(__OHOS__) && defined(__aarch64__) && defined(_WIN64)
++    if (!getenv("WINEHUA_VIRGL_LOW_MAP"))
++        setenv("WINEHUA_VIRGL_LOW_MAP", "1", 1);
++#endif
++}
++
+ /*************************************************************************
+  *		init_peb
+  */
+@@ -2053,6 +2063,9 @@
+     peb->ImageSubSystem             = main_image_info.SubSystemType;
+     peb->ImageSubSystemMajorVersion = main_image_info.MajorSubsystemVersion;
+     peb->ImageSubSystemMinorVersion = main_image_info.MinorSubsystemVersion;
++
++    /* Before any DLL initialization or Mesa resource creation. */
++    winehua_default_shared_map_environment();
+ 
+ #ifdef _WIN64
+     if (!is_machine_64bit( main_image_info.Machine ))

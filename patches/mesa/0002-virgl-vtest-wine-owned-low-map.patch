@@ -1,0 +1,108 @@
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
+@@ -21,6 +21,9 @@
+  * USE OR OTHER DEALINGS IN THE SOFTWARE.
+  */
+ #include <stdio.h>
++#if defined(__OHOS__) && defined(__aarch64__)
++#include <dlfcn.h>
++#endif
+ #include "util/macros.h"
+ #include "util/u_surface.h"
+ #include "util/u_atomic.h"
+@@ -44,6 +47,55 @@
+ static void virgl_vtest_resource_unmap(struct virgl_winsys *vws,
+                                        struct virgl_hw_res *res);
+ 
++
++#if defined(__OHOS__) && defined(__aarch64__)
++static once_flag winehua_low_map_once = ONCE_FLAG_INIT;
++static void *(*winehua_low_map)(int fd, size_t size);
++static void (*winehua_low_map_release)(void *ptr);
++
++static void winehua_vtest_init_low_map(void)
++{
++   const char *enabled = getenv("WINEHUA_VIRGL_LOW_MAP");
++   void *library;
++
++   if (!enabled || strcmp(enabled, "1"))
++      return;
++   /* The app loads ntdll with RTLD_LOCAL. Look up only that existing module;
++    * never bootstrap Wine or interpose mmap in a non-Wine Mesa client. */
++   library = dlopen("ntdll.so", RTLD_NOW | RTLD_NOLOAD);
++   if (!library)
++      return;
++   winehua_low_map = dlsym(library, "winehua_map_shared_buffer_v1");
++   winehua_low_map_release = dlsym(library, "winehua_unmap_shared_buffer_v1");
++   if (!winehua_low_map || !winehua_low_map_release) {
++      winehua_low_map = NULL;
++      winehua_low_map_release = NULL;
++   }
++   /* Wine owns the resident ntdll for the whole process. Resources store
++    * the paired release callback so cache/destroy never rereads the setting. */
++   dlclose(library);
++}
++#endif
++
++static bool winehua_vtest_try_low_map(struct virgl_hw_res *res,
++                                    enum pipe_texture_target target, int fd)
++{
++#if defined(__OHOS__) && defined(__aarch64__)
++   if (target != PIPE_BUFFER || fd < 0 || !res->size)
++      return false;
++   call_once(&winehua_low_map_once, winehua_vtest_init_low_map);
++   if (!winehua_low_map)
++      return false;
++   res->ptr = winehua_low_map(fd, res->size);
++   if (!res->ptr)
++      return false;
++   res->winehua_map_release = winehua_low_map_release;
++   return true;
++#else
++   return false;
++#endif
++}
++
+ static inline bool can_cache_resource_with_bind(uint32_t bind)
+ {
+    return bind == VIRGL_BIND_CONSTANT_BUFFER ||
+@@ -181,8 +233,12 @@
+    if (res->dt)
+       vtws->sws->displaytarget_destroy(vtws->sws, res->dt);
+    if (vtws->protocol_version >= 2) {
+-      if (res->ptr)
+-         os_munmap(res->ptr, res->size);
++      if (res->ptr) {
++         if (res->winehua_map_release)
++            res->winehua_map_release(res->ptr);
++         else
++            os_munmap(res->ptr, res->size);
++      }
+    } else {
+       align_free(res->ptr);
+    }
+@@ -348,8 +404,11 @@
+          return NULL;
+       }
+ 
+-      res->ptr = os_mmap(NULL, res->size, PROT_WRITE | PROT_READ, MAP_SHARED,
+-                         fd, 0);
++      /* A Wine-owned shared mapping makes the driver pointer directly
++       * representable by PE32. Keep ordinary mmap/shadow as the fallback. */
++      if (!winehua_vtest_try_low_map(res, target, fd))
++         res->ptr = os_mmap(NULL, res->size, PROT_WRITE | PROT_READ, MAP_SHARED,
++                            fd, 0);
+ 
+       if (res->ptr == MAP_FAILED) {
+          fprintf(stderr, "Client failed to map shared memory region\n");
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.h
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.h
+@@ -70,6 +70,8 @@
+    int num_cs_references;
+ 
+    void *ptr;
++   /* NULL for ordinary mmap; paired Wine allocator for low shared maps. */
++   void (*winehua_map_release)(void *ptr);
+    int size;
+ 
+    uint32_t format;

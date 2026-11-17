@@ -12,12 +12,15 @@
  */
 
 #include "display_guest_frames.h"
+#include "proc/wine_process.h"
 
 #include "ohos_buffer.h"  /* wl_ohos_consumer_buffer_* (WLR_USE_UNSTABLE 在其内部定义) */
 #include "ohos_egl_import.h" /* wl_ohos_egl_active: 只有走 OHOS 导入的 gles2 路径才吃队列 buffer */
 #include "ohos_output.h"  /* X 窗落点: frame_anchor / xwindow_alive / frame_set / frame_clear */
 
 #include "graphics/graphics_broker.h"
+#include "graphics/queue_retirement.h"
+#include <memory>
 
 #include <native_buffer/native_buffer.h> /* NATIVEBUFFER_USAGE_* */
 #include <native_image/native_image.h>
@@ -61,6 +64,7 @@ struct Binding {
     uint64_t generation = 0;    /* 挂接那一刻该窗**记录**的身份 (见 ohos_output.h);
                                  * 只比 id 的判据会被同 id 新窗骗过 (§2.7) */
     OH_NativeImage *image = nullptr;
+    std::shared_ptr<winehua::QueueRetirementConsumer> retirement;
     /* 引用归 OH_NativeImage (AcquireNativeWindow 的引用), 本模块不另持;
      * 宿主侧的引用由 broker 按 kSurfaceNativeObjectReference 自理。 */
     OHNativeWindow *producerWindow = nullptr;
@@ -91,9 +95,24 @@ uint64_t NowNs()
 /* 解绑一个窗: 摘帧 → 退订宿主目标 → 销毁消费者面。
  * 顺序不可换: 帧节点上还挂着借来的队列 buffer, 面一销毁再归还就是悬垂调用;
  * 退订要在面销毁前完成 (宿主拿到的是这个面的生产窗)。 */
+bool RetireFrames(Binding &b)
+{
+    wl_ohos_output_client_frame_retire(b.surfaceId, b.generation);
+    // Producer is quiescent. Drain only this queue; never acquire a replacement
+    // window's frames, and never acknowledge until every queued slot is returned.
+    for (unsigned i = 0; b.image && i < 16; ++i) {
+        auto* frame = wl_ohos_consumer_buffer_acquire(b.image);
+        if (!frame) return true;
+        wl_ohos_consumer_buffer_drop(frame);
+    }
+    return !b.image;
+}
+
 void DropBinding(Binding &b, const char *reason)
 {
-    wl_ohos_output_client_frame_clear(b.surfaceId);
+    RetireFrames(b);
+    // EOF is also a final retirement receipt, after scene references are gone.
+    if (b.retirement) b.retirement->Close();
     if (b.surfaceKey)
     {
         /* ready 先撤再退订 (与 wayland 侧 zc_bridge 的次序一致): guest 下一拍
@@ -157,6 +176,8 @@ void PullFrame(Binding &b)
 
 void TryAttach(const ZeroCopySurfaceInfo &s)
 {
+    if (!IsWineOwnedProcess(static_cast<pid_t>(s.clientPid))) return;
+
     Binding b;
     int x = 0, y = 0, w = 0, h = 0;
 
@@ -184,6 +205,13 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
                     static_cast<unsigned long long>(b.surfaceKey), b.surfaceId);
         return;
     }
+    // Frames are drained on VSync. Register a no-op notification rather than
+    // leaving SurfaceImage to log a missing listener for every producer frame.
+    OH_OnFrameAvailableListener listener{nullptr, [](void *) {}};
+    if (OH_NativeImage_SetOnFrameAvailableListener(b.image, listener) != 0) {
+        OH_NativeImage_Destroy(&b.image);
+        return;
+    }
     /* 尺寸/用途以宿主报的源尺寸为准, 缺失时退窗几何 (0 会被拒) */
     OH_ConsumerSurface_SetDefaultSize(b.image,
                                       static_cast<int32_t>(s.width ? s.width : static_cast<uint32_t>(w)),
@@ -193,11 +221,16 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
     /* 不开 drop 模式: 它只在 UpdateSurfaceImage (纹理消费) 路径生效, 本模块
      * 是 buffer 消费 (Acquire/ReleaseNativeWindowBuffer), 队列由本模块显式
      * 管理 (native_image.h SetDropBufferMode 注释)。 */
+    if (s.vulkan) {
+        b.retirement = std::make_shared<winehua::QueueRetirementConsumer>();
+        if (!b.retirement->Create()) { OH_NativeImage_Destroy(&b.image); return; }
+    }
     b.producerWindow = OH_NativeImage_AcquireNativeWindow(b.image);
     if (!b.producerWindow ||
         !GraphicsBroker::GetInstance().AttachZeroCopyTarget(b.surfaceKey, b.producerWindow,
                                                            CurrentFramePeriodNs(),
-                                                           s.vulkan != 0))
+                                                           s.vulkan != 0,
+                                                           b.retirement ? b.retirement->OfferedFd() : -1))
     {
         OH_LOG_WARN(LOG_APP,
                     "[GUEST-FRAMES] attach failed key=%{public}llu xwin=%{public}u "
@@ -208,6 +241,7 @@ void TryAttach(const ZeroCopySurfaceInfo &s)
         return;
     }
 
+    if (b.retirement) b.retirement->CloseOffer();
     OH_LOG_INFO(LOG_APP,
                 "[GUEST-FRAMES] attach key=%{public}llu xwin=%{public}u pid=%{public}u "
                 "src=%{public}ux%{public}u win=%{public}dx%{public}d@%{public}d,%{public}d "
@@ -318,8 +352,17 @@ extern "C" void display_guest_frames_tick(void)
     }
 
     /* 2) 逐窗取帧 (队列无新帧是常态) */
-    for (auto &kv : g_bindings)
-        PullFrame(kv.second);
+    for (auto &kv : g_bindings) {
+        auto& b = kv.second;
+        if (b.retirement && b.retirement->Service([&b] {
+            const bool drained = RetireFrames(b);
+            if (drained) OH_LOG_INFO(LOG_APP, "[GUEST-FRAMES] producer retirement drained key=%{public}llu",
+                                    static_cast<unsigned long long>(b.surfaceKey));
+            return drained;
+        }))
+            continue;
+        PullFrame(b);
+    }
 
     /* 2b) 显示周期变化 (VSync 接入/停摆、刷新率切换) ⇒ 逐面重发 guest pacing。
      * 不发的话 guest 一直按挂接那一刻的周期生产, 而 presenter 正是按 framePeriodNs
@@ -374,15 +417,9 @@ extern "C" void display_guest_frames_tick(void)
     }
 
     LogStats(nowNs);
-    /* D23: 子窗 face 生命周期巡检 (2s 档与 LogStats 同门) —— 虚拟桌面的
-     * GL/dxvk 窗口销毁后, 节点没有 DestroyFrameNode 那样的显式销毁路径,
-     * 只能靠这里按查询失败回收 (鬼影 + 队列槽位泄漏的同一防线)。 */
-    static uint64_t lastSweepNs = 0;
-    if (nowNs - lastSweepNs >= 2000ull * 1000 * 1000)
-    {
-        lastSweepNs = nowNs;
-        wl_ohos_output_child_faces_sweep();
-    }
+    // Cached X geometry must advance even when a game pauses presentation in
+    // Wine's modal move/resize loop. Also retires destroyed/reused identities.
+    wl_ohos_output_child_faces_sweep();
 }
 
 extern "C" void display_guest_frames_shutdown(void)

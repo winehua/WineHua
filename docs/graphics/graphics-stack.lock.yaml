@@ -1,0 +1,993 @@
+{
+  "schema_version": 3,
+  "audit": {
+    "main_commit": "5383b7849190c563c0e79007fb9c33da64b326e4",
+    "integration_commit": "09ca128c1fd738a32b2303c50c4f7bff82305c1a",
+    "audited_on": "2026-10-16",
+    "runtime_validation": "pending-device",
+    "hsl_pr78_sync": {
+      "date": "2026-11-14",
+      "vppBase": "e58cb6e51539f9762e5227bee3c6a42316c11fdf",
+      "winehuaPr78Head": "56c6a472140921d874f4e7a4993377ceacba6a19",
+      "hslHead": "5543074a51a795ea51d87199eabd91d961801cca",
+      "hslPublicFixes": "11c14d95bede922b6b60217eb01a62056e0bdb6e",
+      "qualification": "host-validated-device-pending"
+    },
+    "mainline_consolidation": {
+      "date": "2026-11-16",
+      "note": "Register existing repository overlay inventory and multi-gamepad Winebus identities; no additional rendering overlay enabled. Mesa 0014 remains a diagnostic-only patch absent from the production apply recipe."
+    },
+    "shadow_transfer_sync": {
+      "date": "2026-11-16",
+      "qualification": "host-validation-only",
+      "note": "0026 corrects remote buffer read offset and failed-map references; 0027 uses isolated staging and exact image copy regions. Existing shadow switches only. No Maleoon ShaderLayer workaround enabled."
+    },
+    "d3d9_backbuffer_preservation": {
+      "date": "2026-11-16",
+      "upstream": "feebec959d3d23c3503964e89732c9d7dc28dde5",
+      "qualification": "mini-pal4-bounded-device-validated; other games/fullscreen pending",
+      "note": "Preserve COPY and single-backbuffer windowed DISCARD contents; retain fullscreen/FLIP rotation and existing explicit opt-out. No global noExplicitFrontBuffer override."
+    },
+    "winehua_runtime_migration": {
+      "base": "40b747714c109a7cb13e38b3af93ec77e1d38594",
+      "source": "043a1cc0cab8e52b011faf2c611d3c16562ecb0a",
+      "deviceValidated": false,
+      "note": "Historical VPP device evidence is not acceptance of this WineHua branch."
+    }
+  },
+  "architecture": {
+    "native": "arm64-v8a",
+    "wine": "aarch64",
+    "translator": "FEX",
+    "api": 23
+  },
+  "protocol": {
+    "whip_version": 10,
+    "host_config_strings": 11
+  },
+  "submodules": {
+    "virglrenderer": "bb33e52aa03199926f662e50ff22bd00d19d7e0a",
+    "mesa": "557fa3e781ea6e78fcff3ee759c25f60c3055064",
+    "dxvk": "5dff1d7b3dc3c2cd7f51356b99213bcc427b1af9",
+    "dxvk-modern": "01febe2d48fdce76b581369a1d526d2d33b75c7a",
+    "vkd3d-proton": "3e5aab6fb3e18f81a71b339be4cb5cdf55140980",
+    "wine-valve": "e8ca5806eec488f5916e83d655ffc5349b6b1702",
+    "wayland": "87cc8a8728a923fc57938faa81ba0e74f34ecdc7",
+    "wayland-protocols": "ee78491a237eaff9389a0ccf8680521d074407d3",
+    "libxkbcommon": "d1442aaa6b635551182e83c3b55037f4c118c962",
+    "wlroots": "d783533489e1f75d6886c2ab5c5960090ef268f8",
+    "xserver": "c5a47fda896aeefbf1d06a73e392a294344f9e1a",
+    "fex": "ab135df091d005cc98dfddc56c3dc9c9e4bd501d"
+  },
+  "managed_patches": {
+    "wine-valve": [
+      {
+        "path": "patches/wine/0001-win32u-repair-external-font-registration.patch",
+        "sha256": "156df4179268f661af52ec08fac39747a614d6a977a00bfd1905b51bae876101"
+      },
+      {
+        "path": "patches/wine/0002-ntdll-ohos-signal-safe-stack-read.patch",
+        "sha256": "91be7161f5746c9dea58bc8ad304cebccd59e672ea684a519633b084779345e1"
+      },
+      {
+        "path": "patches/wine/0006-app-managed-desktop-lifetime.patch",
+        "sha256": "0486883bc1eb4ffb1965db5c3a0d279dd712867eee2326cad71a22a854fe87b3"
+      },
+      {
+        "path": "patches/wine/0007-client-only-window-state.patch",
+        "sha256": "dad2636aaf0095c3c4e1d84cbcc1b529f8bed1969572d3f7b14e1a855fb021f1"
+      },
+      {
+        "path": "patches/wine/0008-win32u-surface-region-lock-order.patch",
+        "sha256": "eb3258cd8c50d1c074ce5e1294ae76a7735b88f9ded2aa2ecb6feef34dda784d"
+      },
+      {
+        "path": "patches/wine/0009-direct-ohos-wsi-and-resize-smoke.patch",
+        "sha256": "d0c75baa4ee98dcca30f47f0a76e05e4a696cea1c0c4ece8fa1317b04db10cdc"
+      },
+      {
+        "path": "patches/wine/0010-winewayland-decoration-owner-floating.patch",
+        "sha256": "3670c294dad4dd9dae34f66d230e46da69b370a7e083721a3e55652c67a41144"
+      },
+      {
+        "path": "patches/wine/0011-wineboot-durable-prefix-completion.patch",
+        "sha256": "57a6fb2799b64f6ff62389bce5a98d0a7e1c9c49553feb3deba4953e118a3585"
+      },
+      {
+        "path": "patches/wine/0067-wineboot-single-managed-initialization.patch",
+        "sha256": "8efa0d33adcaee6c65403d9914909b3be708c8720c509dd3d8bb07f1edb9dc91"
+      },
+      {
+        "path": "patches/wine/0012-wineserver-locked-registry-migration.patch",
+        "sha256": "a1ad8075c7e7442e93e2097d1fef03b8b13258a67993bcd895db18f20bc1f403"
+      },
+      {
+        "path": "patches/wine/0013a-ntdll-ohos-rpgxp-diagnostics.patch",
+        "sha256": "0073927d692c6562524c1b04561f97337b750bdb57fae314d0d42305ad6e7b04"
+      },
+      {
+        "path": "patches/wine/0014-win32u-font-aa-override.patch",
+        "sha256": "6e9dbbfa811a782cf4aa1154381f74b4103a7e2287124dcff18e5481603c425a"
+      },
+      {
+        "path": "patches/wine/0015-ohos-exec-section-eof-pread.patch",
+        "sha256": "b9bfb7af698c54a4637e7735950b707b7b53c9b3f2e38a69d684c01673b05a42"
+      },
+      {
+        "path": "patches/wine/0016-ntdll-honor-pe-large-address-aware-default.patch",
+        "sha256": "4af10fcfccf6187b08c4a7d1650f19a91bdaf0e0838bf83728a343006f661d39"
+      },
+      {
+        "path": "patches/wine/0017-wayland-configure-window-lifetime.patch",
+        "sha256": "b1de0d78400e54f209001d76629a106f9b26d76db24a9c66881287d0ca6b6934"
+      },
+      {
+        "path": "patches/wine/0018-private-vulkan-present-validation.patch",
+        "sha256": "60ec5ff8980feb7b7c278f3cb2f33afeb49ad092af0b38bce39e1af41e4d9513"
+      },
+      {
+        "path": "patches/wine/0019-ntdll-broker-log-metadata.patch",
+        "sha256": "2b73fc3c26af1a41f25c76d75bc051beafdc2a0971b0d812eb43ea8478b85bc2"
+      },
+      {
+        "path": "patches/wine/0020-broker-v2-startup-contract.patch",
+        "sha256": "25382039baff19633325b1493a2b6d2a513f0a2fb3dc75fccf12e0cb50987545"
+      },
+      {
+        "path": "patches/wine/0021-wayland-shm-state-cache.patch",
+        "sha256": "819591439c6f7da98819276622ea128354488bcdb945c867039b3a7d556ccb3a"
+      },
+      {
+        "path": "patches/wine/0022-private-vulkan-signal-only-acquire.patch",
+        "sha256": "5da0e67fb007d70049231df8519cb18cc81c78eec77cbe6432a35978de91a3c8"
+      },
+      {
+        "path": "patches/wine/0023-ohos-default-grayscale-font-aa.patch",
+        "sha256": "714c12a82be80c6044f29615deda769b2601b78908e7f85cead864448d3622f0"
+      },
+      {
+        "path": "patches/wine/0024-ohos-scan-prefix-fonts.patch",
+        "sha256": "3d1e1d06662fdcec9519d44dc6df7fee08bffb94249ba443ca1b3c2366df71f2"
+      },
+      {
+        "path": "patches/wine/0025-ohos-locale-font-fallback.patch",
+        "sha256": "168e678c8c1ff2e5345cf8a4c21f686a1e903ebc88056f771a9d1f5b2328ca78"
+      },
+      {
+        "path": "patches/wine/0026-ohos-musl-selected-locale.patch",
+        "sha256": "b16edde1cc7e4df9b4277a25a19f7fb515ddcc479285f2dccffad58e68bf7bce"
+      },
+      {
+        "path": "patches/wine/0027-arm64ec-seh-exit-thunk.patch",
+        "sha256": "f37e26b4a5210259adf1378e549158e56d0d5c9738fbb0773238a1fa6fa201a9"
+      },
+      {
+        "path": "patches/wine/0028-ohos-child-winedebug-environment.patch",
+        "sha256": "a98b2d68581a2885758ae9847fb9ab91dbca256a24f917aded570d5ce880b442"
+      },
+      {
+        "path": "patches/wine/0029-wayland-minimize-restore-handshake.patch",
+        "sha256": "391b4a9192791e79e7eeb7c7ea61fe5b499c29654030b35ab24c0973f604ae5e"
+      },
+      {
+        "path": "patches/wine/0030-ohos-transient-activation-return.patch",
+        "sha256": "2973fa9a5d368629fcb3c7cd3659e9f702f0af765c8e2b22534ba95a64fd984f"
+      },
+      {
+        "path": "patches/wine/0031-wayland-client-only-remap.patch",
+        "sha256": "50df8ec1f1d39aacfcdfbd85e9c6d727e80e1cd3c2ff3edd675e677756269061"
+      },
+      {
+        "path": "patches/wine/0032-wayland-readback-content-diagnostics.patch",
+        "sha256": "60c368e950a55bd232ffc64792ceb25594245d78cc72921083ae109c63534c0b"
+      },
+      {
+        "path": "patches/wine/0033-ohos-fshack-context-capability.patch",
+        "sha256": "74c5266540312f1a58c431bea98f3fb57cd011e163e096030ffb80619236631c"
+      },
+      {
+        "path": "patches/wine/0034-opengl-zero-texture-not-reserved.patch",
+        "sha256": "4b7cfae2be182f6ed48237573849750642391a7b990045da3625308a9eb79730"
+      },
+      {
+        "path": "patches/wine/0035-opengl-wow64-explicit-buffer-flush.patch",
+        "sha256": "7777bf55e87a0d2a351dd440678815a6b7ea505b81d51f628ead1c86465e3520"
+      },
+      {
+        "path": "patches/wine/0036-wined3d-pixel-format-id-lookup.patch",
+        "sha256": "da66983ac6e652034abf40f8c8a88f5906ec6344876a540ce980904c2d8d9e04"
+      },
+      {
+        "path": "patches/wine/0037-wine-opengl-performance-summary.patch",
+        "sha256": "f24331031b68edbcb8b9a98a8efef47c74e397b790b5ea89eaae3dadc0bc3933"
+      },
+      {
+        "path": "patches/wine/0038-wined3d-discard-map-invalidation.patch",
+        "sha256": "9ddda1ab4e282bc01a63e19476b0f027fb832700af44193e517b15f258550dec"
+      },
+      {
+        "path": "patches/wine/0039-wined3d-opt-in-dynamic-buffer-sysmem.patch",
+        "sha256": "434ba19629951d5d61242aa33f44ef83592ae086ab729beb44690402e209d829"
+      },
+      {
+        "path": "patches/wine/0068-wined3d-ohos-command-event-wake.patch",
+        "sha256": "86912fe809cf2d1b8edb4ba25cca7c8aeae157d19514a156989f82b88503d5e5"
+      },
+      {
+        "path": "patches/wine/0040-ntdll-owned-virgl-shared-low-map.patch",
+        "sha256": "18a22c06ae3030bd99d3f3fb549fd259add0753122b1baeb255b7805963fd70e"
+      },
+      {
+        "path": "patches/wine/0041-winebus-ohos-poll-progress.patch",
+        "sha256": "01979647c7024baa0727ffdf51579d3d4134b56bf8a19e7606161e08eafc57ac"
+      },
+      {
+        "path": "patches/wine/0042-opengl-opt-in-wgl-lock-wait.patch",
+        "sha256": "a864277b2f2f872903bb1e0e0219b984eaf578cafb885fc01413e87b2b052d1b"
+      },
+      {
+        "path": "patches/wine/0043-winebus-canonical-whgp-v2.patch",
+        "sha256": "f883f96449550e8b61f7901fd1e2a9772572cc69c0e00ba8e2ba05228d8c4657"
+      },
+      {
+        "path": "patches/wine/0044-wayland-input-thread-desktop.patch",
+        "sha256": "d9ea72cdf327b702a0ff3d6b2db712c159508e31a253b5bae982df0e7f1ee249"
+      },
+      {
+        "path": "patches/wine/0045-ntdll-arm64-invalid-leaf-unwind.patch",
+        "sha256": "00316f0058759d5efaa05d88962436f857635fa4817f73467cf232f109248dd0"
+      },
+      {
+        "path": "patches/wine/0046-ntdll-ohos-process-exit.patch",
+        "sha256": "36a4958e4b978cf3d556d86451da8420936ff90f50bd46cfd8e1cc1724bd4c7b"
+      },
+      {
+        "path": "patches/wine/0047-win32u-wow64-vulkan-map-safety.patch",
+        "sha256": "8c8c181cc258c78711c2360f83d140c8b2085a0fb8069bf085261e4a71db1c06"
+      },
+      {
+        "path": "patches/wine/0048-ntdll-opt-in-server-request-timing.patch",
+        "sha256": "f74e3b5942ee50447b8e98a2146a28b0d48604d42cccbf256e09ff22b39b5e8d"
+      },
+      {
+        "path": "patches/wine/0049-wined3d-require-srgb-write-control-for-shared-storage.patch",
+        "sha256": "a8b20b06c7c667ef114f943d6fdbdcdfc0caa83a1e1996f82fe7b029db4355e3"
+      },
+      {
+        "path": "patches/wine/0050-wayland-explicit-gpu-front-present.patch",
+        "sha256": "675741fee77fc9ba871481c8f0f92e7483f7c84063d5287f61bca426b07c3589"
+      },
+      {
+        "path": "patches/wine/0051-opengl-preserve-pbuffer-front-storage.patch",
+        "sha256": "65173fe3315d691283a7525f06ab114acc99815476b358b50806f6aa15cc1470"
+      },
+      {
+        "path": "patches/wine/0052-ntdll-default-virgl-shared-low-map.patch",
+        "sha256": "44b9e6699c7c250812e02db388e28fffbdb845cbf94b3d0d559177dc16506d74"
+      },
+      {
+        "path": "patches/wine/0053-wined3d-restore-legacy-alpha-test-state.patch",
+        "sha256": "3ff4ad1d4cfb6fe0b9eae9111ed80382475319c8984f91cf8ea8dc89665aaa04"
+      },
+      {
+        "path": "patches/wine/0084-wined3d-legacy-specular-fog.patch",
+        "sha256": "de3c847b3ed2bbe62297b87da0ec15403523239039e0106969cddc034d777fa7"
+      },
+      {
+        "path": "patches/wine/0054-ntdll-broker-preserve-resolved-image-path.patch",
+        "sha256": "8f632a08d23c27bcc532f6514bc3b82349590ad846f3789d8c2357401f95aff9"
+      },
+      {
+        "path": "patches/wine/0055-layered-child-screen-coordinates-and-root.patch",
+        "sha256": "3a3bb1795895c73dd973af378b61527ef21e990f1e5d1f8f65771ee1da162aab"
+      },
+      {
+        "path": "patches/wine/0056-wayland-direct-wsi-before-show.patch",
+        "sha256": "748a156cedeedb0b87990167e787992e1ee090501a0019810b2b1d1d2ff773c2"
+      },
+      {
+        "path": "patches/wine/0057-wayland-direct-drawable-identity.patch",
+        "sha256": "dcb2792c46e8e193f59233404f0527a5258090d74a89e65ab0b51bcf8f4f9ec1"
+      },
+      {
+        "path": "patches/wine/0058-ohos-shared-wasapi-float32.patch",
+        "sha256": "627228b4338bf10d721e52b9df4d2bef6ad62c043bc3dee8ac3c9a0557d927a7"
+      },
+      {
+        "path": "patches/wine/0062-wineohos-shared-audio-format-contract.patch",
+        "sha256": "21cc2cddbf8aad24aef8c5c51436abd7f39cdb435e527cf690c4cf87ac392b26"
+      },
+      {
+        "path": "patches/wine/0064-mfplat-opt-in-nonshared-texture-retry.patch",
+        "sha256": "0465ebe4c88ba6747cb2fd30c4623dce7942e701d226451d1c9b70d2b1abfe58"
+      },
+      {
+        "path": "patches/wine/0063-ntdll-ohos-thread-exit-signal-stack.patch",
+        "sha256": "b8791c8f40ad906de21503619122a83aae71f7ac50ed9873ac339af057ba5acb"
+      },
+      {
+        "path": "patches/wine/0065-wow64-self-context-no-suspend.patch",
+        "sha256": "74e47ec9210a01b3a4767e8f7411b719bce95bdacbaa19e1e07907273316623e"
+      },
+      {
+        "path": "patches/wine/0060-ntdll-vm-protect-diagnostics.patch",
+        "sha256": "2677e16ef33ab12b2de41d60505cfe74f859bb050a784c730d6f0cbb1eb326a9"
+      },
+      {
+        "path": "patches/wine/0061-iphlpapi-native-network-contract.patch",
+        "sha256": "e4884a64923e67864904425d20eb52ad0808cfce10629f352bbeeb19897f1803"
+      },
+      {
+        "path": "patches/wine/0066-winhttp-wininet-bounded-connect.patch",
+        "sha256": "25ab30597eaa02b1243ef19d7f48671f9489fe168c12d53ae7b88adcf4c0abd8"
+      },
+      {
+        "path": "patches/wine/0067-dnsapi-musl-transport-safety.patch",
+        "sha256": "102fbb2d39ab5ff1e3c61fc581cef8c3a680002cf4789bc3b7b557463c35b76a"
+      },
+      {
+        "path": "patches/wine/0066-ohos-native-gstreamer-plugins.patch",
+        "sha256": "3077d1a1a2a796a1cfb2e708bd24af9e2e815cc4621dd7092ae108db91c2bf0e"
+      },
+      {
+        "path": "patches/wine/0070-ddraw-clip-surface-bounds.patch",
+        "sha256": "14632b06cee1944db1b7ea9134e43a6469a8c161c828d0c660ab48e94d1367c3"
+      },
+      {
+        "path": "patches/wine/0071-ime-key-scancode.patch",
+        "sha256": "c077d47c6a4035da3961d021bea1d00e029657aed76339f4785a097aaefe53f9"
+      },
+      {
+        "path": "patches/wine/0072-ohos-x11-nativebuffer-display.patch",
+        "sha256": "406712534168a527026c1fd630eee801e0c6d70fe77d58c45c3aaf56a656fe55"
+      },
+      {
+        "path": "patches/wine/0073-x11-desktop-role.patch",
+        "sha256": "1776ac42494b92d3da578e653d9bed859e47fb2134e4faa019306b3365fb0795"
+      },
+      {
+        "path": "patches/wine/0074-x11-child-window-identity.patch",
+        "sha256": "2b44588189dbc45e89795c569ce6a6bdcde95580cfd212530db8bbbad403bfb2"
+      },
+      {
+        "path": "patches/wine/0075-x11-thread-cleanup-diagnostics.patch",
+        "sha256": "57b4cb7eb59fb97a83432a6bc76fed4827cd6e7e852af6e57d808d385cf58815"
+      },
+      {
+        "path": "patches/wine/0076-x11-egl-default-visual.patch",
+        "sha256": "94fb38c3c6d7e74259a7940db05f54a7497c095fbc24181ccc7d2674575db093"
+      },
+      {
+        "path": "patches/wine/0077-x11-ohos-client-decorations.patch",
+        "sha256": "71a41de6527749cb547a92e40ff313a89b405cab1ade01aa0617f9ac33416762"
+      },
+      {
+        "path": "patches/wine/0078-ohos-single-blit-caption.patch",
+        "sha256": "4317a1e00931438248f579293e919205cb404b41040902a833b9df2ba5bb5952"
+      },
+      {
+        "path": "patches/wine/0079-x11-ohos-text-only-caption-refresh.patch",
+        "sha256": "844c4086b7a6e78e1c2e5519d931b9193d2181839232fdfc35cb3dc4bd2b43f5"
+      },
+      {
+        "path": "patches/wine/0080-wineohos-shared-multichannel-downmix.patch",
+        "sha256": "e03426fb91d393d9abb06d2e26494723cd7b31473460ef8d30fde4ac5fe2472f"
+      },
+      {
+        "path": "patches/wine/0081-wineohos-render-event-pacing.patch",
+        "sha256": "35668bf7592859a42084795242b302148d68bbcd8c3876816977f4ae2a2de9eb"
+      },
+      {
+        "path": "patches/wine/0082-ntdll-explicit-dxvk9-overlay.patch",
+        "sha256": "3e551346d3cba87c2656f053cf3bad01baff2184f3b68c032fab430b52051283"
+      },
+      {
+        "path": "patches/wine/0083-winebus-multiple-gamepads.patch",
+        "sha256": "c828169b7551d402f1fb748025fc992be92ae5edb54b0be3dbc8aae260c39c37"
+      }
+    ],
+    "virglrenderer": [
+      {
+        "path": "patches/virglrenderer/0001-fix-blit-srgb-capability-routing.patch",
+        "sha256": "04f8262ef76d5af8a1e986e09033597900023755717f35d7f734f8977b2c429e"
+      },
+      {
+        "path": "patches/virglrenderer/0002-gles-minimum-ubo-plain-sysvals.patch",
+        "sha256": "92c49f0a482269545dbff6d861e54ee316560ffdb4f8a4c756ae0748d8119776"
+      },
+      {
+        "path": "patches/virglrenderer/0003-gles-query-conditional-render.patch",
+        "sha256": "4e976519a8098065c8a80e50c5b562588a6a6e1fe0b12b568014c990a71a236b"
+      },
+      {
+        "path": "patches/virglrenderer/0004-resource-copy-preserve-srgb-bits.patch",
+        "sha256": "6ba3d92010ed7511fd1c677df4091fe61f22596bfffbfcc2c8c2d6d1e0922b77"
+      },
+      {
+        "path": "patches/virglrenderer/0005-gles-attachment-srgb-write-policy.patch",
+        "sha256": "b682194bf598690e9f45a62395c534ac481bb73ffaf85315f71fc2699403eeef"
+      },
+      {
+        "path": "patches/virglrenderer/0006-gl-present-producer-context.patch",
+        "sha256": "490f6ce45c9612da55a55cca2d02662ad4ceed982b2d977e0942e2a1badaac5d"
+      },
+      {
+        "path": "patches/virglrenderer/0007-ohos-native-memory-context.patch",
+        "sha256": "c638af6bd348dd636820e667ac2c992250011037758d71fe43b6d943996cf8bc"
+      },
+      {
+        "path": "patches/virglrenderer/0008-ohos-native-resource-contract.patch",
+        "sha256": "d76273608a059f790baba0850f633a77627d99a08aefafe7137c5f320b521c7d"
+      },
+      {
+        "path": "patches/virglrenderer/0009-device-object-cleanup.patch",
+        "sha256": "36e784abe02d2e16ef0f208521c906c352aa1dc5fd0e4b07d20605836787640c"
+      },
+      {
+        "path": "patches/virglrenderer/0010-render-resource-fd-close.patch",
+        "sha256": "c3e6561762ee5d4ab024acf350446def91159eaa6e1943c8b4d9d40f49a486e0"
+      },
+      {
+        "path": "patches/virglrenderer/0011-negotiate-precise-shadow-per-context.patch",
+        "sha256": "b1637acc773f220236f8cfb7a2f79c491c606582c067e5b44b0a1424588d4d4c"
+      },
+      {
+        "path": "patches/virglrenderer/0012-validate-precise-context-at-renderer-entry.patch",
+        "sha256": "5eb000c1eecb40af3919745b52cf76047e0fab7e83b5713eb9b4664d5372a330"
+      },
+      {
+        "path": "patches/virglrenderer/0013-shadow-upload-retirement-and-failure.patch",
+        "sha256": "0a62a33826b425a1e00a328ef5edbfe3e5fb55cfd612748df77f2c2da18ff5dd"
+      },
+      {
+        "path": "patches/virglrenderer/0014-proxy-fence-notifications.patch",
+        "sha256": "06c3bc4073aebb73541c45b39f93fcde9f36127a1d1be9d16abed6c0776f58cc"
+      },
+      {
+        "path": "patches/virglrenderer/0015-explicit-invalidate-readback.patch",
+        "sha256": "c50d0125d74571969cfcf2a41975dfb11f885535a0e74c319fd6b54ac987551f"
+      },
+      {
+        "path": "patches/virglrenderer/0016-time-complete-busy-wait.patch",
+        "sha256": "56278bccb7b8b0a66803b4f5b3cfc1af60ce9376c00b8f2b0d274409b352e479"
+      },
+      {
+        "path": "patches/virglrenderer/0017-measure-command-stages.patch",
+        "sha256": "4bf297a62a88b06f05447be3d085c6a3f1cfcdab4775a21c9d4641d46275dedd"
+      },
+      {
+        "path": "patches/virglrenderer/0018-preserve-shared-context-during-fence-poll.patch",
+        "sha256": "ef191bfc2f8cf8290e1557c131ab11c06719f17656486f9f948f20bf96c35ced"
+      },
+      {
+        "path": "patches/virglrenderer/0019-measure-decoder-opcodes.patch",
+        "sha256": "717b755fe219f6ab28d3d7edceb51faef65ab006efdf5693efb3029692515478"
+      },
+      {
+        "path": "patches/virglrenderer/0020-cache-immutable-framebuffer-completeness.patch",
+        "sha256": "57aca6e0b16df0f0fef20a7df96c558b90408dee5f3a7fa033048cb8fef0bcf9"
+      }
+    ],
+    "mesa": [
+      {
+        "path": "patches/mesa/0001-ohos-arm64-keep-vtest-map-fd.patch",
+        "sha256": "1461b42bc5cd34a57e1ba662855060671741065ba0f3543233500d752fed76b9"
+      },
+      {
+        "path": "patches/mesa/0001-xlib-present-with-a-valid-pipe-context.patch",
+        "sha256": "4e82272383f4e7bce1644a0c162e1f9779e47654f74b24aa575e5f0be2dacb83"
+      },
+      {
+        "path": "patches/mesa/0002-virgl-vtest-wine-owned-low-map.patch",
+        "sha256": "6f3f3d53c821b5b5917cde979b7e84a9b88ac3200fdbfd372d510b97d718a380"
+      },
+      {
+        "path": "patches/mesa/0002-xlib-prefer-compatible-screen-visual.patch",
+        "sha256": "b5b2a394e2e569eefb80b03ef33ac138e870d864d65ae0f76fcf6c2020e0774c"
+      },
+      {
+        "path": "patches/mesa/0003-venus-present-retry-single-ring-drain.patch",
+        "sha256": "eee95c0edfb7f0c2c362f269e1598f268417f3f50914e3d122fdb5cc83c68681"
+      },
+      {
+        "path": "patches/mesa/0003-xlib-fbconfig-and-compressed-formats.patch",
+        "sha256": "c3286d93c4513076daa6444619cfb0f1c4ae73d0a02832101d7364d7a3b2ff2d"
+      },
+      {
+        "path": "patches/mesa/0004-venus-wine-owned-low-map.patch",
+        "sha256": "1ab2b08f8ba685e6bc9d47c9c8d45ac0196971c706424f5cc05917943674f2cf"
+      },
+      {
+        "path": "patches/mesa/0005-zink-ohos-explicit-vulkan-loader.patch",
+        "sha256": "0a1bdf1b59ddce0a999b2780d006899a5ec50d22304006fa9a2acdfbd49ca6ad"
+      },
+      {
+        "path": "patches/mesa/0006-virgl-vtest-serialize-socket-transactions.patch",
+        "sha256": "d3b2d7f9516758570a227d181ffd78ec171700b0183115895e9e2e7497e52835"
+      },
+      {
+        "path": "patches/mesa/0007-virgl-gpu-srgb-surface-storage.patch",
+        "sha256": "297d7aefd18c9b73c573e20b21346758f775293a5b2ea9c144380d7c1fabf308"
+      },
+      {
+        "path": "patches/mesa/0008-virgl-explicit-pbuffer-front-present.patch",
+        "sha256": "e3f064fddff218d0c551e4581e86843c8f3de0175cf72ba4de2552e9e4292cf1"
+      },
+      {
+        "path": "patches/mesa/0009-venus-order-shadow-export-after-ring.patch",
+        "sha256": "2338ac0f63422de0d26b706d4dd6bcd263cbf61b23a2fdfd9189dcc3dd712eb4"
+      },
+      {
+        "path": "patches/mesa/0010-venus-check-after-final-present-backoff.patch",
+        "sha256": "660c480f7e08046e06c6e8806aaaa1fc9f1f9f73c6b32fc806641e89f4b1c345"
+      },
+      {
+        "path": "patches/mesa/0010-venus-ohos-native-memory-context.patch",
+        "sha256": "d14f394ca3b00a2b2353988a4b366f3d100858a15ec0d0c2b3d93ea6f0c92dc6"
+      },
+      {
+        "path": "patches/mesa/0011-softpipe-demand-zero-texture-cache.patch",
+        "sha256": "05e0ed9df5a9ecbd4f75e06c07de1b5e95956803e614bc152e2913619127bc7f"
+      },
+      {
+        "path": "patches/mesa/0012-venus-pack-small-vtest-submits.patch",
+        "sha256": "38daab1e0bd425ac906604ac35cfed820987808ff2aac1e71c591edc4202e501"
+      },
+      {
+        "path": "patches/mesa/0013-virgl-vtest-write-command-pair.patch",
+        "sha256": "b04dbde3a7c84f90052c5170447066d1ac0a49cac7309799fc00aaab2a782683"
+      },
+      {
+        "path": "patches/mesa/0014-zink-opt-in-instance-diagnostic.patch",
+        "sha256": "19f40d282a5d6e25b9ff994d0ff562681af76d6abdc0e0140143bbdf84deae88"
+      },
+      {
+        "path": "patches/mesa/0015-zink-opt-in-shadow-readback.patch",
+        "sha256": "4b8940be945c9197b96c69fd5d823b91342d5bc5dbc027d846a722c2e229b98f"
+      },
+      {
+        "path": "patches/mesa/0016-zink-opt-in-shadow-uploader.patch",
+        "sha256": "4aeb274f93de3f3d7150e36f6ebfae85a6d78843db2d227f2f79b8ef1bba00ea"
+      },
+      {
+        "path": "patches/mesa/0017-zink-shadow-image-staging-byte-range.patch",
+        "sha256": "e1a3f0e69fc9e4e0955e6f8695e4bddf77bb4252500f7841020b67e66b1ae9d6"
+      },
+      {
+        "path": "patches/mesa/0018-zink-opt-in-full-texcoord.patch",
+        "sha256": "5b748eba810737547ae9cedb07e96ad023aa3e73b7bf5187e39627eb1bd8ff09"
+      },
+      {
+        "path": "patches/mesa/0019-zink-opt-in-dynamic-extract.patch",
+        "sha256": "65296886126b2c18201e42c477052e57d67e0eb9f91a7255808d93685090fe17"
+      },
+      {
+        "path": "patches/mesa/0020-zink-opt-in-full-vertex-inputs.patch",
+        "sha256": "1e75db91b3932871ed1c0ec36d2b227873f3e89f420dac252ab28690992d4c33"
+      },
+      {
+        "path": "patches/mesa/0021-zink-opt-in-strip-debug-names.patch",
+        "sha256": "aae1a6efbf8ed0c2aa1cf22b7192339c3687585d38149c02e60cf702742cb4fc"
+      },
+      {
+        "path": "patches/mesa/0022-zink-opt-in-full-generic-varyings.patch",
+        "sha256": "e3f572a5f56192e9dcd3a1e4754466d7fddbb4c31c58fd0bb4b6d41056df3996"
+      },
+      {
+        "path": "patches/mesa/0023-zink-opt-in-slice-3d-pbo-upload.patch",
+        "sha256": "a4e3f9b2dabdea733f2b8ba924de26ca9a18350c5d35ecb9b04e65e6d6846e17"
+      },
+      {
+        "path": "patches/mesa/0024-zink-opt-in-batch-private-uploads.patch",
+        "sha256": "e31c26cee504c4189e28931cd4d62bdbbe9b6236dc00b2233f456e6d1ba7245d"
+      },
+      {
+        "path": "patches/mesa/0025-zink-opt-in-gpu-pbuffer-present.patch",
+        "sha256": "c010b4c2b9de52531935d48535e064f04addfd9d11ebeec2cdfb500f419ecffe"
+      },
+      {
+        "path": "patches/mesa/0026-zink-shadow-buffer-map-offset.patch",
+        "sha256": "6c806c6ee5b3171b2c114ea91c2c902e7232bcd79d5735dd64dcb96fd9d35a53"
+      },
+      {
+        "path": "patches/mesa/0027-zink-isolate-shadow-image-staging.patch",
+        "sha256": "57b4f8575fb552a8977b7fc076363674fd5e0991912cba5951fb0111fea872bc"
+      }
+    ],
+    "vkd3d-proton": [
+      {
+        "path": "patches/vkd3d-proton/0001-probe-recover-validated-VKD3D-2.6-500K-profile.patch",
+        "sha256": "93666dbf5c56cee0acddd6c8423c1de1f0ceaeda2b7c6fea7801944211605a6c"
+      },
+      {
+        "path": "patches/vkd3d-proton/0002-test-exercise-500K-descriptor-heap-on-GPU.patch",
+        "sha256": "d827d7dbdbd3d880026cb9be4257c0ee397bfac610879aa9729fe725403eb44d"
+      },
+      {
+        "path": "patches/vkd3d-proton/0003-test-validate-BDA-with-500K-descriptors.patch",
+        "sha256": "b97636616afbef10f5f6913e18bf9edac0ec39cffa5b080a1ec76d51a19856dd"
+      },
+      {
+        "path": "patches/vkd3d-proton/0004-test-add-cross-queue-D3D12-microtest.patch",
+        "sha256": "cf112d8495ea6c2ea701e3bb163c88a26e364da3c9b0b4dbda4edafb6491effa"
+      },
+      {
+        "path": "patches/vkd3d-proton/0005-test-add-deterministic-D3D12-graphics-smoke.patch",
+        "sha256": "39bfa34d1e1c46d08e35e406595af55d3c694755829a77d0fa0cc894bd4f0789"
+      },
+      {
+        "path": "patches/vkd3d-proton/0006-test-verify-visible-animated-D3D12-smoke.patch",
+        "sha256": "fb2fad5f2d37cf92fbb483a293a572da4c110ccb586afeb91640594b54dbe0d1"
+      },
+      {
+        "path": "patches/vkd3d-proton/0007-diagnostic-force-final-swapchain-attachment.patch",
+        "sha256": "d3789148ad7ce41e2598b5ef07599b15a9ebac88a376bb3e4c953da053b93d13"
+      },
+      {
+        "path": "patches/vkd3d-proton/0008-compat-present-with-transfer-blit.patch",
+        "sha256": "dd965d928149fb1e80e84c8fac5c785cd6a0906ed9b2186c6f55c9bbbf52ba17"
+      },
+      {
+        "path": "patches/vkd3d-proton/0009-test-show-live-D3D12-smoke-status.patch",
+        "sha256": "d32cb2a63c0a1492bbaad3db3947a0a7791d01ee116b357de36003de75cbeb7f"
+      },
+      {
+        "path": "patches/vkd3d-proton/0010-test-skip-logic-op-pso-when-unsupported.patch",
+        "sha256": "3fde2abefdd970d41da840ca7507c584a8cf5ab05c92bd026d026c23c3282ffc"
+      },
+      {
+        "path": "patches/vkd3d-proton/0011-vkd3d-query-no-int64.patch",
+        "sha256": "e1f59a2096af4a343d11c042ca1745db076de568540b368282be157926d6b3b8"
+      },
+      {
+        "path": "patches/vkd3d-proton/0012-vkd3d-add-storage-buffer-descriptor-pool.patch",
+        "sha256": "2f2e6d3f92a3ff1af877a61e0417a0535246dc6208ef74b8e9d4c3abdccfd150"
+      },
+      {
+        "path": "patches/vkd3d-proton/0013-vkd3d-add-agility-options12-16-checks.patch",
+        "sha256": "da56e245917e5a65b3231b49d6d25ecffb894d5cc8f4622d66865d2ca7ee0648"
+      },
+      {
+        "path": "patches/vkd3d-proton/0014-vkd3d-add-device10.patch",
+        "sha256": "4dbf10af2eba70949f4f1a2ed79791f7836dc776018115a1ad33eafd646cd1d1"
+      },
+      {
+        "path": "patches/vkd3d-proton/0015-vkd3d-accept-nonnull-empty-pipeline-library.patch",
+        "sha256": "d6a8d4eadfc54c1e1d8eea4c8d5d4a4c64547428f156d26c24fe859cb64464f3"
+      },
+      {
+        "path": "patches/vkd3d-proton/0016-vkd3d-reject-unsupported-indirect-root-state.patch",
+        "sha256": "6e92a5f77fcab8e90356c145466e524b472f82a8522633bec188ae7c3abcabcd"
+      },
+      {
+        "path": "patches/vkd3d-proton/0017-dxil-spirv-report-failed-opcode.patch",
+        "sha256": "7d41df1589d4bcad5115f2fc1bb5dd8b04482b94f6d9b5ae280ab0dc56da22c6"
+      },
+      {
+        "path": "patches/vkd3d-proton/0018-vkd3d-shader-respect-root-constant-visibility.patch",
+        "sha256": "a15f1449f21117fa0e5e305e3b8d40ff9d78c8dc132c963e9c4e94d05f071fc7"
+      },
+      {
+        "path": "patches/vkd3d-proton/0019-test-add-smoke-protocol-to-d3d12-demos.patch",
+        "sha256": "c942cac204b68b342af2b69821bf2b246f51130ba53c2bf42a2c849ba7297992"
+      },
+      {
+        "path": "patches/vkd3d-proton/0019-vkd3d-flush-mapped-upload-width-on-execute.patch",
+        "sha256": "05df7063e506822da27c8fa05c698eeb9c8af77b0b58296d6a2b96cb1db5763f"
+      }
+    ],
+    "wlroots": [
+      {
+        "path": "scripts/patches/wlroots-ohos-ncp-spawn.patch",
+        "sha256": "575523c3d5fe8bdd130bf26c8b7caec95a525303d45a084d2e3541a0dd464115"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-shm-fchmod-tolerant.patch",
+        "sha256": "5c132e5bd9f289acbb7762b775dd90604142ba7e5da4967a30ab6a3e38bbbd0f"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-gles2-egl-import.patch",
+        "sha256": "8ea429ea5902f86f68d59c64fd531a27f477cbb47f0c4bd29ba0b1f625ceb6e8"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-xwm-child-geometry.patch",
+        "sha256": "c1f5dc22401a1fbcd05746b19b4ff931d8708e2bea17ec7382ac6735ad043784"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-xwm-restack-event.patch",
+        "sha256": "b7e18042aa1057b7c95b6624134aed1158de5da355eeebdba3581a81bd958e6f"
+      },
+      {
+        "path": "scripts/patches/wlroots-scene-damage-diag.patch",
+        "sha256": "16cb2c9fec56dd5c1cc94cf102d27eb2f7cd4b2e4e357824aa862ccf949a45e9"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-child-identity.patch",
+        "sha256": "62fe30a6aa4a29b235ec639bc09f7639033f79cae055aa8162a6ee8f736e91ba"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-gpu-visible-region.patch",
+        "sha256": "1cb6c1d1611265e11fac0077e9de876f0d4e52d344fd6e0e8753aec39f197ea9"
+      },
+      {
+        "path": "scripts/patches/wlroots-ohos-client-decorations.patch",
+        "sha256": "d15515e2cc33ff83164b5f2203ca9a0e41597ee3674a14cf2f9b9e7ac777e350"
+      }
+    ],
+    "xserver": [
+      {
+        "path": "scripts/patches/xserver-xwayland-ohos-ncp.patch",
+        "sha256": "a4694b2d671710a9615f475bbba567d9eef48ed9052edc78dba670072334299f"
+      },
+      {
+        "path": "scripts/patches/xserver-ohos-gpu-visible-region.patch",
+        "sha256": "9415483d21e434f7b933861e36ea7baaff6389df8ce3b00d13b3ab0272d18c6a"
+      }
+    ],
+    "dxvk": [
+      {
+        "path": "patches/dxvk/0001-bgra-uav-storage-view.patch",
+        "sha256": "e9fb7117abff5a6127b7e1a946a00c8153382cc96600974c2b0de9eaee9c4c8e"
+      },
+      {
+        "path": "patches/dxvk/0002-bc-family-capability-fallback.patch",
+        "sha256": "5f131d88f032642f8bccb5760c9099313aac3fefa9fd3e7145fe3892bed51b1b"
+      },
+      {
+        "path": "patches/dxvk/0003-sampler-stage-specialization.patch",
+        "sha256": "214962c829b7df882cb7e368eff00f02f24c38136ff3248551a9438a02e4c661"
+      },
+      {
+        "path": "patches/dxvk/0004-occlusion-query-generation-and-pass.patch",
+        "sha256": "75040831ab7c00ce863357ef8396c7b18aca2ac02c526ab59aee97d1a2a145da"
+      },
+      {
+        "path": "patches/dxvk/0005-share-instance-between-factories.patch",
+        "sha256": "8f5dd58a4a673773e066fc0f5f55bf75d9b4f47f47e06fcd804a865606e32ffa"
+      },
+      {
+        "path": "patches/dxvk/0006-publish-single-use-deferred-buffer-maps.patch",
+        "sha256": "86f61fa3a984970c01f0be961239e8e0380f6774d00422ff44d5e9429862140e"
+      },
+      {
+        "path": "patches/dxvk/0007-explicit-d24-d32s8-storage.patch",
+        "sha256": "05a11800b0b6c87878fffc3d988def036a1d2b7d4a23936fa206fb13d7ee9055"
+      },
+      {
+        "path": "patches/dxvk/0008-d3d9-opt-in-bc-upload-fallback.patch",
+        "sha256": "ff0ac0fc4173358c45ec9938cf556ef7d473c2ef6df4ff82a729f67a7081aba9"
+      },
+      {
+        "path": "patches/dxvk/0009-d3d9-opt-in-shadow-readback.patch",
+        "sha256": "13e1996386a4c42e2af39b6bb1238b64cdbbd53e422ca832cf4bbaef463200c7"
+      },
+      {
+        "path": "patches/dxvk/0010-preserve-pipeline-specialization.patch",
+        "sha256": "9e031ebc5b2eb10b1c76631b9a70d8b17bffd168e0441d5174ef84669f78cdfa"
+      },
+      {
+        "path": "patches/dxvk/0011-d3d9-opt-in-shadow-upload.patch",
+        "sha256": "e8db747fec3595b04772f988b9ddfbdc463cea79f24b140cddfbd88df5cb25db"
+      },
+      {
+        "path": "patches/dxvk/0012-d3d9-push-constant-range.patch",
+        "sha256": "29149f5e20fcb22bd8282f6dbc2cf1cf94c920e4ff39cc554e14a5ceb65174a9"
+      },
+      {
+        "path": "patches/dxvk/0013-d3d9-opt-in-hardware-constant-upload.patch",
+        "sha256": "b07813c4b20e8d1a180973cc849e3e816cf13efc310efd9d5e05aaadbdea4e7e"
+      },
+      {
+        "path": "patches/dxvk/0014-d3d9-opt-in-buffer-upload.patch",
+        "sha256": "a80eeb43dd754a1559778016d14355ceb1017bd247f4df8dd50f4bb28a2f4c87"
+      },
+      {
+        "path": "patches/dxvk/0015-opt-in-prune-unused-vertex-attributes.patch",
+        "sha256": "fe809cb77f18a4d887cd284a27e5c655651398ab9495181ecaddc175cb282cad"
+      },
+      {
+        "path": "patches/dxvk/0016-d3d9-opt-in-fixed-function-constant-upload.patch",
+        "sha256": "9f6ebfc92776329806db247b9ebc0eccd290ff5e54368107b87c94f5d05d116a"
+      },
+      {
+        "path": "patches/dxvk/0017-d3d9-opt-in-event-completion-fence.patch",
+        "sha256": "704c77b6a7819fb2a2007b36885537b28affcb3f520cb7ee7c7309189be41a10"
+      },
+      {
+        "path": "patches/dxvk/0018-d3d9-opt-in-match-top-texture-mips.patch",
+        "sha256": "a6f3d27e8476985a1cb5cccc6e09c479b5467f0ec2f6d79f5c47b37f9946034c"
+      },
+      {
+        "path": "patches/dxvk/0019-synchronize-mapped-buffer-backing-lookup.patch",
+        "sha256": "cea6e40acc2fd9719e120661ae8b61c19ebb2ced5e78e457ac610b806b277499"
+      },
+      {
+        "path": "patches/dxvk/0020-d3d9-preserve-copy-and-windowed-backbuffers.patch",
+        "sha256": "13568cd5c4853e71454d007856603e46b85057eaedba09d68b81b6034f11033c"
+      }
+    ]
+  },
+  "effective_files": {
+    "wine-valve": {
+      "dlls/iphlpapi/iphlpapi_main.c": "26a8e749f4cf1e27fdd0aa1ae086e81dd812b0ea6c09fb1856a12944db05dd27",
+      "dlls/mfplat/main.c": "b0983ec3c9eba51d74b0a6e120929c5702060851bd35c94b7865b76e596333f0",
+      "dlls/mfplat/sample.c": "e14961096c9b0270656ae4ca68997240bf26cab3f02b193ad84f85d61f1a8ec0",
+      "dlls/nsiproxy.sys/Makefile.in": "1d30305b0f1b8a63a8e207ee28647c29031928a6f5bc65c50c59f7c530dadde4",
+      "dlls/nsiproxy.sys/ip.c": "f998132421746fb5764560d11741b749466df5fb9d8590ea5dfb4e8c7ef0a84c",
+      "dlls/nsiproxy.sys/ndis.c": "3c692b48140b94393dfd44f88c117573fb69d03da5f8fd1d3e262e080c04735c",
+      "dlls/nsiproxy.sys/network-route-linux.c": "5528bc538f66257793fd7f2f9aabfeba2e9f0b290ac38c395aa9aba1e8691772",
+      "dlls/nsiproxy.sys/network-route-linux.h": "d5d16aa6df3f038ae921a29b41583e71d3bf0981dedbcdce939d0e02aab24a18",
+      "dlls/ntdll/unix/env.c": "e035a3aac0012a0b119714b9264e0a3d44c1c8b84f52d24d58e81f849627668c",
+      "dlls/ntdll/unix/ohos_broker.c": "b20348ce9375a021b51d558e06e43ffadfa57a96b809fbac5b615f99612f1d6c",
+      "dlls/ntdll/unix/ohos_broker.h": "94243c1d35127d60d0233c9270e914115f4d076e172e2e162c437dfa15902427",
+      "dlls/ntdll/unix/ohos_spawn_protocol.h": "c837256f596f5639dbb35213a7295f9b9315865754bb5f7899b6d2c09c8573f0",
+      "dlls/ntdll/unix/ohos_virtual.c": "3ca31b195bacc79fccad453edb78f50ada724695903e80ee6cef175664146ed8",
+      "dlls/ntdll/unix/process.c": "dc5cd683a4446463adbdcab01d85ac26f042605c8c9b844bdcb7313113468d42",
+      "dlls/ntdll/unix/server.c": "929f5defd4b516e6b061d8d95c961db07cbe37768dcf474e061a16c56fe1e677",
+      "dlls/ntdll/unix/signal_arm64.c": "388de3d12f7ed0c4b74966957970f0d51373b5de39068f699f292a09af2fe389",
+      "dlls/ntdll/unix/thread.c": "8e3cd4744ab46a4788901bdb99657828114e6ae051d2b8691b202a13f8b57c47",
+      "dlls/ntdll/unix/unix_private.h": "93a101c5b039e3ae8dd63f7ac6b1f1256b64ce9658e64525d98ccc4039e6b837",
+      "dlls/ntdll/unix/virtual.c": "deb49bf5fc2ebd49e1cc0661d1a0bd9c3c7ad912bc02c4c53a10bbc2d3b50af1",
+      "dlls/ntdll/unwind.c": "e980df9a65771cd0e72d32cdf1a9154d798779e373fd6af02a05ebecf1f6a6e7",
+      "dlls/opengl32/make_opengl": "1059daadc14c6f6f5545580eab797585b42fd25c344675115ad4f54b5851acba",
+      "dlls/opengl32/unix_thunks.c": "fe60d897bc74156a9b762f1761e2e8e05f86f03be5173b1ffbb24055a23d82a0",
+      "dlls/opengl32/unix_thunks.h": "d65e3fbdff2293c6fe8aa63e086faa0199d3f9fa83cdefd2e562f4aca476d7c6",
+      "dlls/opengl32/unix_wgl.c": "ca86d199be7aba6cd095e9b222b07521d4ad37a1b59698149598057cb1091ba2",
+      "dlls/opengl32/winehua_wgl_lock_perf.h": "0bde316ae365bb54315bc72b89261fbdfb76eb2122b1ae0899ff151bc0cd18ad",
+      "dlls/win32u/font.c": "3e162e6fa8a5f1a6290ef2510e7f872fc6fe0fe6df47713b0d572b4edf92ca8f",
+      "dlls/win32u/freetype.c": "faf960798127fbb25692c592cbd2bd5fc2b807efca347c14719f6b0f25b62e09",
+      "dlls/win32u/input.c": "d582f388ce2474cb2f9198b9f01c563bef8285f5a249cc7fce22fa98b39a1364",
+      "dlls/win32u/opengl.c": "1787688407d96c8cbee48cfe0327b0be32f7ce46050e220c83cade298e7d28ec",
+      "dlls/win32u/vulkan.c": "91f53506a3b581f53ffde7672b5f6ae1d1db71189a3be62d916af9c47184d611",
+      "dlls/win32u/win32u_private.h": "49ceaca0721fc28a9ea98242209a92d4c42dd8a496d40aba3ceffc09be765797",
+      "dlls/win32u/window.c": "b5bb628f3837a8db7507637ee477de15bc592a023f5a99df8be60f8c6771449e",
+      "dlls/win32u/winstation.c": "5e188f7244499c155891f9054b1b2736606d4d541c1470861f84f864bdc76d13",
+      "dlls/winebus.sys/bus_ohos.c": "f86fdb380a31b4eb917d652cb510b79989775cc37d5739e0dea957cba4f63abd",
+      "dlls/winebus.sys/winehua_gamepad_protocol.h": "0ca4750c41c05bc54f0d8584c490d9bb75cf9aa566f4137446a6ba58cc80667c",
+      "dlls/winecrt0/arm64ec.c": "09dea127d5f1288a4fa1c50db026715886f610a48c828bb1602a19d1268c4bde",
+      "dlls/wined3d/adapter_gl.c": "4b70af1e7bd6b17dc6fc9c848041877379cfd69c99e6bcc539e3feb440c359ca",
+      "dlls/wined3d/buffer.c": "3816921068b67552a85564fed54aaba4da4bdd132c606055b3abec69fae0c90f",
+      "dlls/wined3d/glsl_shader.c": "4758a0d4c6337ce6962e81b855bb72cacab49e0ea257cf0fda7699100854dde7",
+      "dlls/wined3d/resource.c": "743b54b92e67bd2d4626eb89d50b7a04e6d85904de4878041caff6c12cba9c03",
+      "dlls/wined3d/swapchain.c": "076cbafe8283c764acbd4d34af84a627f6babac7a6fe4ee5e60f54acdf554316",
+      "dlls/wineohos.drv/ohos.c": "40e1ea02728db0e9dbdfbee1dd364f4b4816d7862a47db450e5f1475737f32c8",
+      "dlls/winevulkan/make_vulkan": "30638559e8f7fa40032425c2291234c43a9e3e476dc3956beb723fcd9c43dbcf",
+      "dlls/winewayland.drv/opengl_readback.c": "6e3e1afd37e7901c5774449bcf21da25371f968cba59fd2f57a65be2ef1bc829",
+      "dlls/winewayland.drv/vulkan.c": "6d6c0da7036c65030245f2bc2c7c8ca1a653cf5d27bf3eb736b20c53070af791",
+      "dlls/winewayland.drv/wayland.c": "77ca29788d343dbe924b7fa0a21ef2166041bd1f86a42a691de6cf10d9d8fa72",
+      "dlls/winewayland.drv/wayland_keyboard.c": "b3f66989c6beb5b024781fd75a7cff10e0f2f77b90e07b8f22b7475df4ebc6f6",
+      "dlls/winewayland.drv/wayland_pointer.c": "053ca7125a1b517f5e354abdd094a9a0165c6738f630ae983606b7abfb199903",
+      "dlls/winewayland.drv/wayland_surface.c": "fa50cce7cfe5b0d6507e208ab0a6eabac7c28dec0efeaf8336b58c1daa2be6c4",
+      "dlls/winewayland.drv/waylanddrv.h": "75335fc354778bae5b44763aa56220d3870ee4dfe7e17f47570fb5af1371953e",
+      "dlls/winewayland.drv/window.c": "a26b268e03b4828136eca6824af486d6e353f8a6b5d732ff397b392b27a32e59",
+      "dlls/winewayland.drv/winehua-toplevel.xml": "1d70ec851cdd41e44634f496ac51a2ce962710fa29e9364504ab51f0ad31e960",
+      "include/wine/opengl_driver.h": "bf6a92fa15824710a1eae75e4f13109d6558ae8286e5e1acc5589e2483b9d8e5",
+      "include/wine/vulkan_driver.h": "8ac37604b1313dee4161e9604e5fb78abb57b6b717bb3f8bdb6b9360906e4fe8",
+      "programs/explorer/desktop.c": "f779a4a05a3712f2ed4ebbcff6804d1f9228ef15568cf50d2f5e8bee70a5c9f5",
+      "programs/wineboot/wineboot.c": "4541261b269aea13977232435f39fa1fb8c7c0a28cb5b8c89b883af851d5ead0",
+      "programs/winehua_d3d11_smoke/main.c": "357550ad06820cacf194d2255592b106439ff0adc94b966c9d7493834ff2350b",
+      "programs/winehua_vulkan_smoke/main.c": "fd9bc74de61b313fe1ee00e775f77532650645b48306466f78c0104d466ada86",
+      "server/main.c": "fcf119c94cdaa519ba9857c52bebfed94975bda44b80cf6f9a9c756608585844",
+      "server/winstation.c": "edac439813c2fbb8725139d4c7cbd7324e7ec8bc3a3a917a1cf79ced707b6be5",
+      "dlls/ddraw/surface.c": "0d415fe981406d663fe71c8d6f4cf9bea90329fc1bb7fb7f94d746edbfdf292c",
+      "dlls/imm32/ime.c": "4497d463666387c5093204630369a1bf4c2079462ca0f90ac5a5e8ea756abf74",
+      "configure.ac": "ddf5d25d4c047a82e90ea2538a57bf5d17f6a48571a55fdb16e612510439b0b6",
+      "dlls/win32u/Makefile.in": "e2a5532c9608dd53dee55595888ca98ba6c896512cf7905a4f9fda81ae0a68e5",
+      "dlls/win32u/driver.c": "ce7bbfdb7a80f3f91ca3c8c39c958a70fbcdbddf0d3de1cebb98b92c278e7bf3",
+      "dlls/win32u/winehua_present.c": "a47bd9e506b6942276a2f8eb58b318542f0b4a27a2324d1030f828e047897f76",
+      "dlls/winex11.drv/Makefile.in": "bc88815812285be06d61706288ccb5174332ff4a2f2fcfb636620b7e3b0bd70c",
+      "dlls/winex11.drv/mouse.c": "88f2cfb578626a2689e09db88025d7558495b66b28efab52f12b4726758148e8",
+      "dlls/winex11.drv/opengl.c": "3cdb5d04d693a348f2960c4ca6f922a59dd2b8c678f770241405cad0985dfd3f",
+      "dlls/winex11.drv/opengl_winehua.c": "7b6db8d8a2592a69a8d97cfe30a5bada8179aef625052a4fc94dab73ce04c4c7",
+      "dlls/winex11.drv/vulkan.c": "328af6f05f3d2a7d2e496635c7f11adca7f150a063e859ded16a285241637c37",
+      "dlls/winex11.drv/window.c": "b540fdc09206b4f5ed7dc0b1a4bf88ce81491a6248483476a5fa2f232039ff1b",
+      "dlls/winex11.drv/x11drv.h": "2235ba387fb9a2732c7c8e897678eada910a003c134bb844e1726714b33a4955",
+      "dlls/winex11.drv/x11drv_main.c": "b8771b96bf199758870d1738cf90d64885477e57342b7b45d783f6e7d72b5591",
+      "include/Makefile.in": "9a83adcb193b2468741682355b9e5916bf8c760dd7b6330edd0f22440505f969",
+      "include/wine/winehua_present.h": "5d793ac345bfb7a2b00010525c90166b9e0079322c9084f67042b148dd78d862",
+      "include/wine/winehua_vulkan.h": "dbd825300c13664db7f26e8e4f39e0702e5449160ff15d2e814c61f8c62135a1",
+      "dlls/win32u/defwnd.c": "01907307b6d196c3f2d607512086c11f148298b9633f25ea6fdfe6178ba10941",
+      "dlls/wineohos.drv/ohos_audio_mix.h": "9c127f769482afd53df47bdde58c1be3477161acedb46a896677d392a9c8ba6c",
+      "dlls/ntdll/loader.c": "100f2f514fa20cbccdeeb20fa86eb797b71bdc01ea8214a73d5acb5dbf02ed2d"
+    },
+    "virglrenderer": {
+      "src/vrend/vrend_renderer.c": "35bcf434d1882f83c42fcd79e086e2b6c307835287d3652f6e8ac92309702ee1",
+      "src/vrend/vrend_shader.c": "ab200053b589e5381a58a5687c5cf38c8ceaf5a3fb587d3ab396ae8b9ea329aa",
+      "src/vrend/vrend_shader.h": "f5122579e8a5d7c22f01da334a986e5571977990135cf74498bc4b65133b58b6",
+      "vtest/vtest_renderer.c": "9bdb6045807a9369415b225ab714d9ff851428f5d6266640e0f44d9fb75d3e2a",
+      "server/render_context.c": "95696c32b639ba4f16aef9c648f1aaa0d80f1342558aa285ffd3703754977527",
+      "src/venus/vkr_buffer.c": "32ba505a7b4c0e3fb67c050da4346e094a9d97e19d3c3efc68081b3396de4b3a",
+      "src/venus/vkr_device_memory.c": "5cefdbdff40fd75d9c94ac6c8c4314fe45b533bf3dfd36ef6facc4e9140286b7",
+      "src/venus/vkr_device.c": "8fb694ad2ed01259e0cb35ddff25f6abef07e340a8a624cd295a5cb0df4dcf8c",
+      "src/virglrenderer.h": "6ec183c8de6d7c5ffc5105385373d26eb0e651a39a7d02e6345a2e5a93b026fa",
+      "vtest/vtest_protocol.h": "37c0eb24269e0203e4f981533927f66dcc8576c892ee49e505db09b7ab026c10",
+      "src/venus/vkr_context.h": "1c86db045b7f8e3ecef6ad363a561a2c77a78213f45315e013a414cf668e1bf0",
+      "src/venus/vkr_renderer.c": "055414e0b2dd5d59c2ffe5054e6c1c8dfcbf8653735efdc92e3355efe8d54b25",
+      "src/meson.build": "1384bcf4ad54cd1c15fe71115efdee8b0bf1590412c5440bcdeb76f0dc1ad0d9",
+      "src/proxy/proxy_context.c": "4972526a0524bd5ee9ca3e2edda8d858450e2b28b9c2d3fe2b54b10c22582b00",
+      "src/proxy/proxy_context.h": "c11eadcd59b82bcd3741fb4149e97ce0da8188a6847f1b4a9964ec92fbcd3be6",
+      "src/venus/vkr_buffer.h": "ab4d196115f435db1da8302140a0110b4b67073622cfb01ec3256e1562046fe7",
+      "src/venus/vkr_context.c": "a1e480acf4396f2fc2a2e5e1690547debcc28c9865d702e2c751a61bb7630f78",
+      "src/venus/vkr_device.h": "cb3650c0878fe3bf821585afe6768255f4b17c15b55077b0294adcc6fa6f282a",
+      "src/venus/vkr_device_memory.h": "edd72e54955e2a8e6afb1e5912643fd9393e3adab2f07c29657cdd5231fa1b2c",
+      "src/venus/vkr_image.c": "9665bcdc96200c2ca12d36bc357bffa330f38a2d2dff3ea5270529aba63908f9",
+      "src/venus/vkr_image.h": "c61e4a5383ed6800b26d5a255dba4c7bb6595a65feb39f9847426f10348a4d14",
+      "src/venus/vkr_ohos_native_memory.h": "6a496a243a97fa93a758b55570bd0e85eeeb23e0cdc18f33dc2b8dfabad1b905",
+      "src/venus/vkr_ohos_native_resource.h": "ce3824d2b3735374129c192fc57f26a85a5b45119eaf00d1ec98dadf274eddf8",
+      "src/venus/vkr_physical_device.c": "bdb83f4492b09912d3f35d1ddcb09b338bedae138cef408d103682a8e7256e35",
+      "src/venus/vkr_physical_device.h": "5888201316c046a2edbe0592251a5f13191627a2d239505124416cf38ebc43c6",
+      "src/virgl_resource.h": "a3d31be53cadaa6836713a3a38da8964e30cdd35fe77f4f03db8ea3cffe948ab",
+      "src/virglrenderer.c": "3302226f94c97adf470e33ee26f673eed00ba7ced5535596bc7bf4e7b82bcc8d",
+      "src/venus/vkr_queue.c": "dc00fd5d0f6c9eed125f435dea060e2f5dac06dd4eabdec882f5a14a229beafa",
+      "src/proxy/proxy_renderer.c": "50b71794c943914426331c565275f3544ff32dac28def04caf198b142f5ff00f",
+      "src/vrend/vrend_decode.c": "d9b134d63bf516d6c1ca156b2bfb11dcd39bc59f99e7fa4f54babd052ef79872"
+    },
+    "mesa": {
+      "src/gallium/drivers/zink/zink_resource.c": "d1d963a9df6e75ed09680f8f64539ccc1527eedff94542f440c295935de4147d",
+      "src/gallium/drivers/zink/zink_resource.h": "302c7c60b93064f6d77f1af70db0025ab55c40fbb8753330c35fe5b55eea79ae"
+    }
+  },
+  "capability_decisions": {
+    "legacy_fake_shared": "unsupported-unsafe-pointer-handle",
+    "mf_nonshared_retry": "explicit-1-only",
+    "mpeg4_preference": "removed-redundant-valve-default"
+  },
+  "x11_integration": {
+    "baseline": "79bfb6cfc6685f1aeb3cb7ee1bfea941be90708c",
+    "upstream_x11": "22c46eb1255e7fdacc1f2a1a342b81f727b5ef18",
+    "upstream_master": "a001e6d0ca277d5a5fb2b4bd6a030ac52e5e132e",
+    "default_route": "wayland",
+    "validation": "host-build-only; device acceptance pending",
+    "build_inputs": {
+      "scripts/build_display_libs.sh": "556666b417c390bcfd4c462ad2dfe5066f26da11f093e9a8531778826fa0b1ea",
+      "scripts/build_xcb_stack.sh": "447583e93b3945bc5f226883757fda0f40b379245764d020a0f541ccd1ab0385",
+      "scripts/build_x11_client.sh": "e38b78804646c031c74a98997ae2eaffad21f597953c65503f512fa3e2e889c7",
+      "scripts/build_wlroots.sh": "c0571c8a96456d641cd47ebf8b7b11a74004f22aaf636ccd21021cc188c84158",
+      "scripts/build_xwayland.sh": "966b47239037202c72c875f2efbb0cfc026311f06035c770f32aacaf51993e37",
+      "scripts/build_wayland.sh": "6ef50c813b9322282fa2930d292f228e430e536126783a44531ad5d5d42caa8b",
+      "scripts/build_xkbcommon.sh": "52ecf41aec2a39843fe48c50032387a74e0d46d072553d7f9d2009bbec8a3d8d",
+      "scripts/build_wine.sh": "734d207fca90ccaed831a9f7dd94918963b828c43947ba5508e5c989e641633e",
+      "scripts/env.sh": "7114cabf2d9d65d1fe3c64a954a97ab2ad6d56fe266f5a3318e345cf9437e7e8",
+      "scripts/verify_x11_wine_config.py": "89c0a5513aa258ef68b86a2f9812d8decaf8da75ea23b4599b01ff68c70bd2a4"
+    }
+  },
+  "mesa_production_overlays": [
+    "patches/mesa/0001-ohos-arm64-keep-vtest-map-fd.patch",
+    "patches/mesa/0002-virgl-vtest-wine-owned-low-map.patch",
+    "patches/mesa/0003-venus-present-retry-single-ring-drain.patch",
+    "patches/mesa/0004-venus-wine-owned-low-map.patch",
+    "patches/mesa/0005-zink-ohos-explicit-vulkan-loader.patch",
+    "patches/mesa/0006-virgl-vtest-serialize-socket-transactions.patch",
+    "patches/mesa/0007-virgl-gpu-srgb-surface-storage.patch",
+    "patches/mesa/0008-virgl-explicit-pbuffer-front-present.patch",
+    "patches/mesa/0009-venus-order-shadow-export-after-ring.patch",
+    "patches/mesa/0010-venus-check-after-final-present-backoff.patch",
+    "patches/mesa/0012-venus-pack-small-vtest-submits.patch",
+    "patches/mesa/0013-virgl-vtest-write-command-pair.patch",
+    "patches/mesa/0015-zink-opt-in-shadow-readback.patch",
+    "patches/mesa/0016-zink-opt-in-shadow-uploader.patch",
+    "patches/mesa/0017-zink-shadow-image-staging-byte-range.patch",
+    "patches/mesa/0018-zink-opt-in-full-texcoord.patch",
+    "patches/mesa/0019-zink-opt-in-dynamic-extract.patch",
+    "patches/mesa/0020-zink-opt-in-full-vertex-inputs.patch",
+    "patches/mesa/0021-zink-opt-in-strip-debug-names.patch",
+    "patches/mesa/0022-zink-opt-in-full-generic-varyings.patch",
+    "patches/mesa/0023-zink-opt-in-slice-3d-pbo-upload.patch",
+    "patches/mesa/0024-zink-opt-in-batch-private-uploads.patch",
+    "patches/mesa/0025-zink-opt-in-gpu-pbuffer-present.patch",
+    "patches/mesa/0026-zink-shadow-buffer-map-offset.patch",
+    "patches/mesa/0027-zink-isolate-shadow-image-staging.patch"
+  ],
+  "runtime_recipes": {
+    "wine": {
+      "commit": "527cd6255d4f26c21ff0a7111fc0c37e35eac9ba",
+      "tree": "bd2d6662a1d32f4347829428b6c7c055afde0797",
+      "lock": "docs/upstream-sync/wine-candidate.lock.json"
+    },
+    "fex": {
+      "commit": "c3b2b2306347e16da04e512a52432cb9c921d221",
+      "tree": "fe8e476f8828d261dfa7f4f338a85144177b8058",
+      "lock": "docs/upstream-sync/fex-candidate.lock.json"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+From 0e2fc1b3710314d03a1e4213c94bb57106e56027 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0046-ntdll-ohos-process-exit
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 36a4958e4b978cf3d556d86451da8420936ff90f50bd46cfd8e1cc1724bd4c7b
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index b4a7304d9b17c1807f799815ee95c71e95624577..cd3403d3d2622a3f3757e6fbaead4a236c8a1117 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1612,7 +1612,14 @@ void process_exit_wrapper( int status )
+ {
+     close( fd_socket );
+     fprintf( stderr, "[EXIT-PROBE] pid=%d phase=libc-exit status=%d\n", getpid(), status );
++#ifdef __OHOS__
++    /* NativeChildProcess inherits appspawn's exit() interposer, which aborts
++     * even for exit(0). Windows DLL shutdown has already run at this point;
++     * terminate this Wine process without entering the appspawn host CRT. */
++    _exit( status );
++#else
+     exit( status );
++#endif
+ }
+ 
+ 

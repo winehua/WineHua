@@ -1,0 +1,15 @@
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -488,6 +488,11 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT sw
+ 
+         if (data->wayland_surface && keep_toplevel)
+         {
++            /* A client-only window still changes position, style and state.
++             * Refresh the retained parent's config just as the GDI-surface
++             * branch does, before comparing its state with xdg configure.
++             * Otherwise fullscreen remains set after a windowed resize. */
++            wayland_win_data_get_config(data, &data->wayland_surface->window);
+             /* The retained parent still has to consume the configure that was
+              * posted before the Vulkan/OpenGL client surface took over. */
+             wayland_win_data_update_wayland_state(data);

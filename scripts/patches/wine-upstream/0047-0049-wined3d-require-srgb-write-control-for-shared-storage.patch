@@ -1,0 +1,30 @@
+From 44d2488f067ef31fee62a9eac5cd11db53219996 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation:
+ 0049-wined3d-require-srgb-write-control-for-shared-storage
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: a8b20b06c7c667ef114f943d6fdbdcdfc0caa83a1e1996f82fe7b029db4355e3
+
+diff --git a/dlls/wined3d/adapter_gl.c b/dlls/wined3d/adapter_gl.c
+index e33e27b4cc37052c35d067082034348641577cd8..9114701d608ec3eac517fbd0477ec6c215f03f9b 100644
+--- a/dlls/wined3d/adapter_gl.c
++++ b/dlls/wined3d/adapter_gl.c
+@@ -3561,6 +3561,15 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter_gl *adapter_gl,
+         /* GL_ARB_half_float_vertex is a subset of GL_NV_half_float. */
+         gl_info->supported[ARB_HALF_FLOAT_VERTEX] = TRUE;
+     }
++    if (gl_info->supported[EXT_TEXTURE_SRGB_DECODE] && !gl_info->supported[ARB_FRAMEBUFFER_SRGB])
++    {
++        /* The decode optimization makes format->internal sRGB even for linear
++         * render targets. Without framebuffer sRGB write control those targets
++         * are encoded on every pass. Keep separate linear / sRGB textures;
++         * sRGB sampling remains available through the normal texture path. */
++        TRACE("Framebuffer sRGB write control is unavailable, disabling shared sRGB texture storage.\n");
++        gl_info->supported[EXT_TEXTURE_SRGB_DECODE] = FALSE;
++    }
+     if (gl_info->supported[ARB_FRAMEBUFFER_SRGB] && !gl_info->supported[EXT_TEXTURE_SRGB_DECODE])
+     {
+         /* Current wined3d sRGB infrastructure requires EXT_texture_sRGB_decode

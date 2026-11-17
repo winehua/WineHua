@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "version": "2.47.4",
+  "format": "shared-directory",
+  "source": "https://dl.winehq.org/wine/wine-gecko/2.47.4/",
+  "archives": {
+    "x86": {
+      "file": "wine-gecko-2.47.4-x86.tar.xz",
+      "bytes": 43025064,
+      "sha256": "2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6",
+      "files": {
+        "AccessibleMarshal.dll": {
+          "bytes": 98304,
+          "sha256": "821ded27d0d246192d75b04ef095ae065a66ce8958532d96c3cf4b62c96987c9"
+        },
+        "VERSION": {
+          "bytes": 17,
+          "sha256": "b98378ae2cf0abaced726ef8b45e108ae6569e22d853ef2f7c6fa1375a7203f1"
+        },
+        "browser/blocklist.xml": {
+          "bytes": 232312,
+          "sha256": "0c76d9e5a28761bd9ccfc7fab3c87296bc58525e8d0dfaa1dc5d8a07ad8c8031"
+        },
+        "browser/chrome.manifest": {
+          "bytes": 40,
+          "sha256": "29058fa9a14b0d4b2b9a90da000fb5fcca5a20ee38e18b9af7eece7f79a45432"
+        },
+        "browser/components/browsercomps.dll": {
+          "bytes": 573440,
+          "sha256": "579c33117e2aefb3c5ea007d2c4e25418002c8ac3637f5c9485ef41e768a3982"
+        },
+        "browser/components/components.manifest": {
+          "bytes": 34,
+          "sha256": "bd640c499611185b722bc733b20bbcd3f8d54c8fe9e5bba0017a8d702c1f6a79"
+        },
+        "browser/extensions/{972ce4c6-7e08-4474-a285-3208198ce6fd}.xpi": {
+          "bytes": 4867,
+          "sha256": "8869f893a0d4b0929e482a1f1f7b33ae8106c674f729566a2e3689c4b66d80c8"
+        },
+        "browser/features/e10srollout@mozilla.org.xpi": {
+          "bytes": 2217,
+          "sha256": "4abbbc1a9028090050c1a35bce006860f2c0aa23cd95e73c521d786a24bdd6cc"
+        },
+        "browser/features/firefox@getpocket.com.xpi": {
+          "bytes": 671042,
+          "sha256": "800b4c6cbb2d3b6a63b70b13eb8b237a5cd9bc859561098d643be0c2891377ef"
+        },
+        "browser/features/loop@mozilla.org.xpi": {
+          "bytes": 1651318,
+          "sha256": "f20ff7336d052d1720736a9caa384d1701a803e7d8a67319048d15156bf2634a"
+        },
+        "browser/omni.ja": {
+          "bytes": 11997889,
+          "sha256": "85fe0c6e35538526d1f7a5f8c3c3c5a2bf45a2f49116749325c4e63b5c54de31"
+        },
+        "defaults/pref/channel-prefs.js": {
+          "bytes": 245,
+          "sha256": "f89cdb0e43dc6a79021b99f6faf623c768ade1418a7647fe83e4320ed21e9a30"
+        },
+        "dependentlibs.list": {
+          "bytes": 42,
+          "sha256": "5c5026bfbbdb4535eb7103ac5b8a259771aa27332c1767892b53ef32629d117f"
+        },
+        "dictionaries/en-US.aff": {
+          "bytes": 3074,
+          "sha256": "3e13de9b20b1a2e7c21b73979d748fe255d789031793857d750bda9966d9d6b6"
+        },
+        "dictionaries/en-US.dic": {
+          "bytes": 576051,
+          "sha256": "3f14dd30cbe2e140c8417d2ad5c2c1de263aba276949fb189446f8a5c144f49d"
+        },
+        "freebl3.dll": {
+          "bytes": 482304,
+          "sha256": "dbddb4161c23b1073312acf841f56536cef76bc34bfbeb3f5be4e077311bf020"
+        },
+        "gmp-clearkey/0.1/clearkey.dll": {
+          "bytes": 987136,
+          "sha256": "b042cf21f3d83d73c8666407465289db07ba89ac7d88b41daf9503f79fc70858"
+        },
+        "gmp-clearkey/0.1/clearkey.info": {
+          "bytes": 310,
+          "sha256": "fcfbcf4d32822ac1cd8e21663573c3f265cf8170252b880fa89626d78d8b4b0e"
+        },
+        "lgpllibs.dll": {
+          "bytes": 466944,
+          "sha256": "c3158786a955bb9d0f64abe6a79a46022ebd0f5cb642bf6edebd0b16c34ade84"
+        },
+        "libEGL.dll": {
+          "bytes": 3436544,
+          "sha256": "4a15ed072c4d1ab1eab7cb12906e09a0ca03153325484a2193c2c51d668f2b45"
+        },
+        "libGLESv2.dll": {
+          "bytes": 3665920,
+          "sha256": "a040fed64413c20481f690582cb4a50d0252fdfc34ad19c03939cce65315c444"
+        },
+        "mozavcodec.dll": {
+          "bytes": 2002944,
+          "sha256": "41c263deb3958d21ff804dbe4ab76fb600d1c0d6d465aed01913fc5d6f9cb789"
+        },
+        "mozavutil.dll": {
+          "bytes": 421888,
+          "sha256": "bacab325af1a8fe7e74cfa48fe7812e8eeb1252a49eb0ba6ef6b0416b9625963"
+        },
+        "mozglue.dll": {
+          "bytes": 978944,
+          "sha256": "ea28b476739c8df1f5fcf788ce940d680b87e1af8f079399e2369689a8204622"
+        },
+        "nss3.dll": {
+          "bytes": 2412544,
+          "sha256": "0aee17685476d061dda708f7f1ffb21d66b0756c56fd3773e8dd1ca85cc979db"
+        },
+        "nssckbi.dll": {
+          "bytes": 519680,
+          "sha256": "871e1a53186ac4a67ef15b477a42ceb477fad4ccd002b84ae4ccc86abed65f08"
+        },
+        "nssdbm3.dll": {
+          "bytes": 194048,
+          "sha256": "67bfb2cf33ea0f8e91436db51a1f6289f00f0224324e449ef30bea64bc066959"
+        },
+        "omni.ja": {
+          "bytes": 5854335,
+          "sha256": "92f9578f41aae6785cd36cf118a5619ba636826a35e4dec5936f3da75d79aea9"
+        },
+        "softokn3.dll": {
+          "bytes": 271360,
+          "sha256": "b7603c1f3816392406b29739252f5a2ee5da8f36ea405525ef5298c34fab4185"
+        },
+        "xul.dll": {
+          "bytes": 71766016,
+          "sha256": "db2542df83e44540f44ef219e45fe463cd2621911cff5e1bd6ac453cabd600b0"
+        }
+      }
+    },
+    "x86_64": {
+      "file": "wine-gecko-2.47.4-x86_64.tar.xz",
+      "bytes": 41935496,
+      "sha256": "fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814",
+      "files": {
+        "AccessibleMarshal.dll": {
+          "bytes": 106496,
+          "sha256": "7731e5bdc23c971e80dda687321f5a2c20b8c19ae43a4fdd1d8173f8fad623d8"
+        },
+        "VERSION": {
+          "bytes": 17,
+          "sha256": "b98378ae2cf0abaced726ef8b45e108ae6569e22d853ef2f7c6fa1375a7203f1"
+        },
+        "browser/blocklist.xml": {
+          "bytes": 232312,
+          "sha256": "0c76d9e5a28761bd9ccfc7fab3c87296bc58525e8d0dfaa1dc5d8a07ad8c8031"
+        },
+        "browser/chrome.manifest": {
+          "bytes": 40,
+          "sha256": "29058fa9a14b0d4b2b9a90da000fb5fcca5a20ee38e18b9af7eece7f79a45432"
+        },
+        "browser/components/browsercomps.dll": {
+          "bytes": 552960,
+          "sha256": "a72553bf011af2c32173a9dff04446e59a74a6270a4147fce3659fa1ccc16e24"
+        },
+        "browser/components/components.manifest": {
+          "bytes": 34,
+          "sha256": "bd640c499611185b722bc733b20bbcd3f8d54c8fe9e5bba0017a8d702c1f6a79"
+        },
+        "browser/extensions/{972ce4c6-7e08-4474-a285-3208198ce6fd}.xpi": {
+          "bytes": 4867,
+          "sha256": "8869f893a0d4b0929e482a1f1f7b33ae8106c674f729566a2e3689c4b66d80c8"
+        },
+        "browser/features/e10srollout@mozilla.org.xpi": {
+          "bytes": 2217,
+          "sha256": "4abbbc1a9028090050c1a35bce006860f2c0aa23cd95e73c521d786a24bdd6cc"
+        },
+        "browser/features/firefox@getpocket.com.xpi": {
+          "bytes": 671042,
+          "sha256": "800b4c6cbb2d3b6a63b70b13eb8b237a5cd9bc859561098d643be0c2891377ef"
+        },
+        "browser/features/loop@mozilla.org.xpi": {
+          "bytes": 1651318,
+          "sha256": "f20ff7336d052d1720736a9caa384d1701a803e7d8a67319048d15156bf2634a"
+        },
+        "browser/omni.ja": {
+          "bytes": 11997889,
+          "sha256": "8276a73d4f58cbdec2ae7fd915bdb3eff553bd40143287a63a1f676afd1b2a95"
+        },
+        "defaults/pref/channel-prefs.js": {
+          "bytes": 245,
+          "sha256": "f89cdb0e43dc6a79021b99f6faf623c768ade1418a7647fe83e4320ed21e9a30"
+        },
+        "dependentlibs.list": {
+          "bytes": 42,
+          "sha256": "5c5026bfbbdb4535eb7103ac5b8a259771aa27332c1767892b53ef32629d117f"
+        },
+        "dictionaries/en-US.aff": {
+          "bytes": 3074,
+          "sha256": "3e13de9b20b1a2e7c21b73979d748fe255d789031793857d750bda9966d9d6b6"
+        },
+        "dictionaries/en-US.dic": {
+          "bytes": 576051,
+          "sha256": "3f14dd30cbe2e140c8417d2ad5c2c1de263aba276949fb189446f8a5c144f49d"
+        },
+        "freebl3.dll": {
+          "bytes": 523264,
+          "sha256": "57db78a4959c66e540365d5f775656404aa7a459f59f4b5c8f29423c1c6781a1"
+        },
+        "gmp-clearkey/0.1/clearkey.dll": {
+          "bytes": 978944,
+          "sha256": "e43771db1a623cef64f48d51fbaf4e2c80f76dcf85371a565e684bf078348092"
+        },
+        "gmp-clearkey/0.1/clearkey.info": {
+          "bytes": 310,
+          "sha256": "fcfbcf4d32822ac1cd8e21663573c3f265cf8170252b880fa89626d78d8b4b0e"
+        },
+        "lgpllibs.dll": {
+          "bytes": 430080,
+          "sha256": "860a4ca8fbc0f37c1d440503973433c37be812b570480e33507e12e36fb0a054"
+        },
+        "libEGL.dll": {
+          "bytes": 3305472,
+          "sha256": "1a2e240ddcd478378545bac41083f6c47be7840a5bdf11c8bbf131880060cf6f"
+        },
+        "libGLESv2.dll": {
+          "bytes": 3510272,
+          "sha256": "352ea73a11486ba84a8be74c3b6377f2c7d591b579725451a8f7ef5d6ef61076"
+        },
+        "mozavcodec.dll": {
+          "bytes": 1929216,
+          "sha256": "67a6bb05c5bce922669c9140ab71daaae32a2c0dd5b475996c8fe3537c3c3769"
+        },
+        "mozavutil.dll": {
+          "bytes": 454656,
+          "sha256": "2b666c3d992304100f849365c502dd9e472e86e6c9c7330973a02c12c43a0b3d"
+        },
+        "mozglue.dll": {
+          "bytes": 958464,
+          "sha256": "56f04dde261708c0d1f94d3b2558135ff63ecda9ae27ba79aaadddb27942199f"
+        },
+        "nss3.dll": {
+          "bytes": 2576384,
+          "sha256": "5799dd85c687b595e487c526f2e23fc5840ac2d740cd69e29b7f90023559281b"
+        },
+        "nssckbi.dll": {
+          "bytes": 599552,
+          "sha256": "a00a3cd09cbd415210240503f8dd07c8fe906e9940beffdeac29053f37bf21d0"
+        },
+        "nssdbm3.dll": {
+          "bytes": 223744,
+          "sha256": "a3b40162f0fd7019ebef1cabb32b06c5e9362bcff79a8966a42355313236231a"
+        },
+        "omni.ja": {
+          "bytes": 5854321,
+          "sha256": "7a658589ca785ec22284a7a780f0f6e7493f9c7b8f548d382552a19c3cf38211"
+        },
+        "softokn3.dll": {
+          "bytes": 313856,
+          "sha256": "d62ea610184545e0e2db027832cdf3342f310c59d7969c9fb14943f56eadd492"
+        },
+        "xul.dll": {
+          "bytes": 70500352,
+          "sha256": "9889c1643acf4cc915eba9ed7be8ae6f98f36d9702285e6b557c3e3dc0a7c251"
+        }
+      }
+    }
+  }
+}

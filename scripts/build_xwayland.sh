@@ -18,6 +18,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/download_verified_source.sh"
 
 XSERVE_SRC="$ROOT/thirdparty/xserver"
 XS_VER=$(sed -n "s/^[[:space:]]*version:[[:space:]]*'\([^']*\)'.*/\1/p" "$XSERVE_SRC/meson.build" | head -1)
@@ -29,7 +30,7 @@ DL="$BUILD_DIR/downloads"
 mkdir -p "$DL" "$HOST_EXT_USR" "$HOST_EXT_INC" "$HOST_EXT_LIB" "$HOST_EXT_PC" "$HOST_EXT_SHARE/pkgconfig"
 
 # host 侧 pc 搜索链, 与 gen_host_cross wrapper 一致 (share 目录不可省: fontsproto 等)
-export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$HOST_EXT_SHARE/pkgconfig:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC:$SYSROOT_EXT/usr/share/pkgconfig"
+export PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$HOST_EXT_SHARE/pkgconfig:$BUILD_DIR/native_${NATIVE_ARCH}/freetype/install/lib/pkgconfig:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT/usr/share/pkgconfig"
 export PKG_CONFIG_PATH="$HOST_EXT_PC:$HOST_EXT_SHARE/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 CCWRAP="$BUILD_DIR/ccwrap-$T.sh"
@@ -42,10 +43,7 @@ chmod +x "$CCWRAP"
 DL="$BUILD_DIR/downloads"
 fetch_and_unpack() {  # $1=url  $2=sha256  $3=解压后目录名
     local tgz="$DL/$(basename "$1")"
-    if [ ! -f "$tgz" ]; then
-        log "--- 下载 $(basename "$1") ---"
-        curl -fsSL -o "$tgz" "$1"
-    fi
+    download_verified_source "$1" "$2" "$tgz"
     echo "$2  $tgz" | sha256sum -c - || err "sha256 不匹配: $tgz"
     [ -d "$BUILD_DIR/$3" ] || tar -C "$BUILD_DIR" -xf "$tgz"
 }
@@ -150,22 +148,12 @@ XS_BUILD="$BUILD_DIR/xwayland_build_$XS_VER"
 XS_PATCH="$SCRIPT_DIR/patches/xserver-xwayland-ohos-ncp.patch"
 # 守卫 = 产物存在 + 补丁签名一致 (补丁任一变更即重建; 只看文件存在会吃掉
 # 补丁改动 — 与 wayland 头文件守卫同款教训)
-XS_PATCH_SIG=$(sha256sum "$XS_PATCH" | cut -d' ' -f1)
+XS_VISIBLE_PATCH="$SCRIPT_DIR/patches/xserver-ohos-gpu-visible-region.patch"
+XS_PATCH_SIG=$(cat "$XS_PATCH" "$XS_VISIBLE_PATCH" | sha256sum | cut -d' ' -f1)
 if [ ! -f "$HOST_EXT_LIB/libxwayland_ohos.so" ] \
    || [ "$(cat "$HOST_EXT_LIB/.xwayland_ohos_sig" 2>/dev/null)" != "$XS_PATCH_SIG" ]; then
     [ -f "$XSERVE_SRC/hw/xwayland/meson.build" ] || err "thirdparty/xserver 缺源码"
-    # 幂等 + 补丁演进安全: 本分支入口 = 补丁签名与守卫不符 (即补丁已变更或
-    # 首次构建)。先复位子模块工作区到基线 (checkout 只动已跟踪文件, 再删补丁
-    # 新增的未跟踪文件), 保证 apply 永远从干净基线出发——否则 sentinel 命中
-    # 会把「树里是旧补丁」误判为「已应用」, 新补丁 hunks 静默丢失 (实测踩坑)。
-    # 复位清单必须覆盖补丁触碰的全部已跟踪文件 (漏列则二次构建 apply 撞上
-    # 已应用 hunk 直接失败; dix/getevents.c 的 #93 诊断探针已从补丁移出,
-    # 复位清单随之收窄)
-    git -C "$XSERVE_SRC" checkout -- hw/xwayland xkb/ddxLoad.c
-    rm -f "$XSERVE_SRC/hw/xwayland/xwayland_ohos_main.c"
-    git -C "$XSERVE_SRC" apply --check "$XS_PATCH" \
-        || err "xserver 补丁无法应用 (submodule 工作区与补丁基线不符)"
-    git -C "$XSERVE_SRC" apply "$XS_PATCH"
+    python3 "$SCRIPT_DIR/apply_managed_display_overlays.py" --source "$XSERVE_SRC" --scratch "$BUILD_DIR" "$XS_PATCH" "$XS_VISIBLE_PATCH"
     # 24.1 独立分支无 xorg/xephyr/xnest 选项 (Xwayland-only 项目, 结构性裁剪);
     # xvfb/docs*/glamor 逐项关闭至依赖闭包最小 (sha1/libdecor/ei 走 auto 探测);
     # glx=false 同时让 include/meson.build:9 的 dri_dep 转 optional

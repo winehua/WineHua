@@ -1,0 +1,50 @@
+From 9e5e178c08e2cb3f43cc90b7b1cf21af95012301 Mon Sep 17 00:00:00 2001
+From: yifengling0 <liufengpmp@outlook.com>
+Date: Mon, 16 Nov 2026 15:46:32 +0800
+Subject: [PATCH] winewayland: terminate the per-process clipboard window class
+ name
+
+---
+ dlls/winewayland.drv/wayland_data_device.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/dlls/winewayland.drv/wayland_data_device.c b/dlls/winewayland.drv/wayland_data_device.c
+index 1a2cd27f..4683025c 100644
+--- a/dlls/winewayland.drv/wayland_data_device.c
++++ b/dlls/winewayland.drv/wayland_data_device.c
+@@ -888,31 +888,31 @@ static void render_format(UINT clipboard_format)
+ static void destroy_clipboard(void)
+ {
+     struct wayland_data_device *data_device = &process_wayland.data_device;
+ 
+     TRACE("\n");
+ 
+     pthread_mutex_lock(&data_device->mutex);
+     wayland_data_device_destroy_clipboard_data_offer(data_device);
+     pthread_mutex_unlock(&data_device->mutex);
+ }
+ 
+ static BOOL is_winewayland_clipboard_hwnd(HWND hwnd)
+ {
+     static const WCHAR clipboard_classnameW[] = {
+         '_','_','w','i','n','e','w','a','y','l','a','n','d','_',
+-        'c','l','i','p','b','o','a','r','d','_','m','a','n','a','g','e','r'};
++        'c','l','i','p','b','o','a','r','d','_','m','a','n','a','g','e','r',0};
+     WCHAR buffer[64];
+     UNICODE_STRING name = {.Buffer = buffer, .MaximumLength = sizeof(buffer)};
+ 
+     if (!NtUserGetClassName(hwnd, FALSE, &name)) return FALSE;
+     return !wcscmp(buffer, clipboard_classnameW);
+ }
+ 
+ LRESULT WAYLAND_ClipboardWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+ {
+     switch (msg)
+     {
+     case WM_NCCREATE:
+         /* Disable the default clipboard window in the desktop process if we are
+          * using the core wl_data_device protocol. */
+         if (!process_wayland.zwlr_data_control_manager_v1 &&
+-- 
+2.34.1
+

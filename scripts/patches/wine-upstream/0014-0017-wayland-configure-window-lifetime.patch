@@ -1,0 +1,32 @@
+From badd1a593cb06f5aab96c4bb92c9cb63ac1d1f36 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0017-wayland-configure-window-lifetime
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: b1de0d78400e54f209001d76629a106f9b26d76db24a9c66881287d0ca6b6934
+
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 2a7710dd764f4b28d40338b0256589d1aaac2290..17473391556dad0ed7871cc551b32c6a0c63b4f3 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -622,6 +622,9 @@ static void wayland_configure_window(HWND hwnd)
+     wayland_surface_coords_to_window(surface, width, height,
+                                      &window_width, &window_height);
+ 
++    /* DestroyWindow can free data as soon as its lock is released. */
++    SetRect(&rect, 0, 0, window_width, window_height);
++    OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
+     wayland_win_data_release(data);
+ 
+     TRACE("processing=%dx%d,%#x\n", width, height, state);
+@@ -647,8 +650,6 @@ static void wayland_configure_window(HWND hwnd)
+         flags |= SWP_NOSENDCHANGING;
+     }
+ 
+-    SetRect(&rect, 0, 0, window_width, window_height);
+-    OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
+     NtUserSetRawWindowPos(hwnd, rect, flags, FALSE);
+ }
+ 

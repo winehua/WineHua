@@ -1,0 +1,15 @@
+diff --git a/src/gallium/drivers/zink/zink_compiler.c b/src/gallium/drivers/zink/zink_compiler.c
+--- a/src/gallium/drivers/zink/zink_compiler.c
++++ b/src/gallium/drivers/zink/zink_compiler.c
+@@ -5404,6 +5404,11 @@
+        ris->location >= VARYING_SLOT_TEX0 && ris->location <= VARYING_SLOT_TEX7 &&
+        ris->bit_size == 32 && ris->type == nir_type_float32 && !ris->array_size)
+       ris->component_mask = 0xf;
++   const char *full_vertex = os_get_option("WINEHUA_ZINK_FULL_VERTEX_INPUTS");
++   if (full_vertex && !strcmp(full_vertex, "1") &&
++       nir->info.stage == MESA_SHADER_VERTEX && ris->mode == nir_var_shader_in &&
++       ris->bit_size == 32 && ris->type == nir_type_float32 && !ris->array_size)
++      ris->component_mask = 0xf;
+    /* calculate vec/array type */
+    int frac = ffs(ris->component_mask) - 1;
+    int num_components = util_last_bit(ris->component_mask) - frac;

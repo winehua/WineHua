@@ -1,0 +1,31 @@
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+@@ -258,7 +258,7 @@
+ 
+   // Special case for vector xor with itself being the optimal way for x86 to zero vector registers.
+   if (Op->Dest.IsGPR() && Op->Src[0].IsGPR() && Op->Dest.Data.GPR.GPR == Op->Src[0].Data.GPR.GPR) {
+-    const auto ZeroRegister = LoadZeroVector(Size);
++    const auto ZeroRegister = LoadUncachedZeroVector(Size);
+     StoreResultFPR(Op, ZeroRegister);
+     return;
+   }
+@@ -282,7 +282,7 @@
+   // Special case for vector xor with itself being the optimal way for x86 to zero vector registers.
+   if (Op->Src[0].IsGPR() && Op->Src[1].IsGPR() && Op->Src[0].Data.GPR.GPR == Op->Src[1].Data.GPR.GPR) {
+     const auto DstSize = OpSizeFromDst(Op);
+-    const auto ZeroRegister = LoadZeroVector(DstSize);
++    const auto ZeroRegister = LoadUncachedZeroVector(DstSize);
+     StoreResultFPR(Op, ZeroRegister);
+     return;
+   }
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+@@ -316,7 +316,7 @@
+ void OpDispatchBuilder::AVX128_VectorXOR(OpcodeArgs) {
+   // Special case for vector xor with itself being the optimal way for x86 to zero vector registers.
+   if (Op->Src[0].IsGPR() && Op->Src[1].IsGPR() && Op->Src[0].Data.GPR.GPR == Op->Src[1].Data.GPR.GPR) {
+-    AVX128_StoreResult_WithOpSize(Op, Op->Dest, AVX128_Zext(LoadZeroVector(OpSize::i128Bit)));
++    AVX128_StoreResult_WithOpSize(Op, Op->Dest, AVX128_Zext(LoadUncachedZeroVector(OpSize::i128Bit)));
+     return;
+   }
+ 

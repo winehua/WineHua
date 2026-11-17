@@ -61,6 +61,14 @@ EOF
     log "xwayland.pc ($XWLR_PIN 暂存复刻) → $HOST_EXT_PC"
 fi
 
+# wayland-protocols 1.49 installs enum headers under the guest data
+# prefix, but its data-only .pc exports no Cflags. Generate only the required
+# architecture-independent headers in the host include tree; do not add the
+# entire guest sysroot to host compiler include paths.
+python3 "$SCRIPT_DIR/prepare_wlroots_protocol_headers.py" \
+    --wlroots "$WLR_SRC" --protocols "$ROOT/thirdparty/wayland-protocols" \
+    --scanner "$WAYLAND_SCANNER" --output "$HOST_EXT_INC/wayland-protocols"
+
 # ── host 侧 EGL / GLESv2 pc (M2-T4: wlroots gles2 渲染器) ──
 # OHOS SDK sysroot 只装 .so 不装 .pc, 而 wlroots gles2 依赖 egl/glesv2 两个
 # pkg-config 依赖项。这里按 SDK sysroot 实测路径生成(与 xwayland.pc 同款
@@ -115,6 +123,7 @@ WLR_XWM_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-child-geometry.patch"
 # (TopIf/BottomIf/Opposite 沿 restack() 的 abort 语义跳过, wine 不发),
 # 并发新事件 request_restack{surface,sibling,mode} 供 ohos_output 把
 # g_clients 链表序 + scene 节点序跟着改 (事件在 X 侧 restack 之后发, 两侧一致)。
+WLR_CHILD_IDENTITY_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-child-identity.patch"
 WLR_RESTACK_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-restack-event.patch"
 # scene damage 台账插桩补丁 (D25-B): 画布冻结坏变体「seq 推进而
 # needsFrame=0」的抓捕仪器 —— 三个记账点 (surface commit 到达 /
@@ -122,7 +131,9 @@ WLR_RESTACK_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-xwm-restack-event.patch"
 # 与宿主 DiagFlagFile 同一个 (.wine/drive_c/scene-damage-diag, 1s 缓存),
 # 关闭近零开销, 可常驻。
 WLR_DIAG_PATCH="$SCRIPT_DIR/patches/wlroots-scene-damage-diag.patch"
-WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH" | sha256sum | cut -d' ' -f1)
+WLR_VISIBLE_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-gpu-visible-region.patch"
+WLR_CSD_PATCH="$SCRIPT_DIR/patches/wlroots-ohos-client-decorations.patch"
+WLR_PATCH_SIG=$(cat "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH" "$WLR_CHILD_IDENTITY_PATCH" "$WLR_VISIBLE_PATCH" "$WLR_CSD_PATCH" | sha256sum | cut -d' ' -f1)
 
 if [ -f "$OUT_LIB" ] && [ -f "$OUT_INC/wlr/backend.h" ] \
    && [ "$(cat "$HOST_EXT_LIB/.wlroots_patch_sig" 2>/dev/null)" = "$WLR_PATCH_SIG" ]; then
@@ -136,19 +147,11 @@ else
     # werror=false。实测依据: OHOS bionic sysroot 的 __assert_fail 不带 noreturn
     # 属性 (glibc 带), xwm.c:306 的 assert 终止路径被 clang 判为缺 return,
     # -Werror 下直接失败; 关掉 -Werror 后该警告仍留在日志里可见。
-    # 补丁应用: 本分支入口 = 补丁签名与守卫不符 (补丁变更或首次构建)。
-    # 先复位子模块工作区到基线再 apply——sentinel 命中会把「树里是旧补丁」
-    # 误判为「已应用」, 新 hunks 静默丢失 (与 build_xwayland.sh 同款教训)。
-    git -C "$WLR_SRC" checkout -- xwayland include/xwayland/xwm.h include/wlr/xwayland/server.h \
-        include/wlr/xwayland/xwayland.h util/shm.c \
-        meson.build render/meson.build include/wlr/config.h.in \
-        include/wlr/render/egl.h include/render/egl.h include/render/gles2.h \
-        render/egl.c render/gles2/renderer.c render/gles2/texture.c \
-        types/scene/wlr_scene.c types/scene/surface.c
-    rm -f "$WLR_SRC/xwayland/ohos_spawn.c"
-    git -C "$WLR_SRC" apply --check "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH" \
-        || err "wlroots 补丁无法应用 (submodule 工作区与补丁基线不符)"
-    git -C "$WLR_SRC" apply "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH"
+    # Prove clean HEAD + the ordered overlays on a small temporary tree.
+    # Unknown local edits are rejected before mutation; never reset shared source.
+    python3 "$SCRIPT_DIR/apply_managed_display_overlays.py" --source "$WLR_SRC" --scratch "$BUILD_DIR" \
+        "$WLR_PATCH" "$WLR_SHM_PATCH" "$WLR_GLES2_PATCH" "$WLR_XWM_PATCH" \
+        "$WLR_RESTACK_PATCH" "$WLR_DIAG_PATCH" "$WLR_CHILD_IDENTITY_PATCH" "$WLR_VISIBLE_PATCH" "$WLR_CSD_PATCH"
     # 源级断言 (D25-B): sentinel 命中会把「树里是旧补丁」误判为已应用,
     # 新 hunks 静默丢失 —— apply 后核对插桩代码里的旗标路径串 (存在性,
     # 非精确计数: 注释+代码可多处命中, 实测 wlr_scene.c=2 surface.c=1)

@@ -1,0 +1,422 @@
+--- a/dlls/winhttp/net.c
++++ b/dlls/winhttp/net.c
+@@ -199,10 +199,10 @@
+     InitOnceExecuteOnce( &once, winsock_startup, NULL, NULL );
+ }
+ 
+-static void set_blocking( struct netconn *conn, BOOL blocking )
++static int set_blocking( struct netconn *conn, BOOL blocking )
+ {
+     ULONG state = !blocking;
+-    ioctlsocket( conn->socket, FIONBIO, &state );
++    return ioctlsocket( conn->socket, FIONBIO, &state );
+ }
+ 
+ DWORD netconn_create( struct hostdata *host, const struct sockaddr_storage *sockaddr, int timeout,
+@@ -238,11 +238,16 @@
+         break;
+     default:
+         ERR( "unhandled family %u\n", conn->sockaddr.ss_family );
++        closesocket( conn->socket );
+         free( conn );
+         return ERROR_INVALID_PARAMETER;
+     }
+ 
+-    if (timeout > 0) set_blocking( conn, FALSE );
++    if (timeout > 0 && set_blocking( conn, FALSE ))
++    {
++        ret = WSAGetLastError();
++        goto failed;
++    }
+ 
+     if (!connect( conn->socket, (const struct sockaddr *)&conn->sockaddr, addr_len )) ret = ERROR_SUCCESS;
+     else
+@@ -252,7 +257,7 @@
+         {
+             TIMEVAL timeval = { timeout / 1000, (timeout % 1000) * 1000 };
+             FD_SET set_read, set_error;
+-            int res;
++            int res, error, error_len = sizeof(error);
+ 
+             FD_ZERO( &set_read );
+             FD_SET( conn->socket, &set_read );
+@@ -260,15 +265,18 @@
+             FD_SET( conn->socket, &set_error );
+             if ((res = select( conn->socket + 1, NULL, &set_read, &set_error, &timeval )) > 0)
+             {
+-                if (FD_ISSET(conn->socket, &set_read)) ret = ERROR_SUCCESS;
+-                else                                   assert( FD_ISSET(conn->socket, &set_error) );
++                if (getsockopt( conn->socket, SOL_SOCKET, SO_ERROR, (char *)&error, &error_len ))
++                    ret = WSAGetLastError();
++                else ret = error;
+             }
+             else if (!res) ret = ERROR_WINHTTP_TIMEOUT;
+-        }
+-    }
+-
+-    if (timeout > 0) set_blocking( conn, TRUE );
+-
++            else ret = WSAGetLastError();
++        }
++    }
++
++    if (timeout > 0 && set_blocking( conn, TRUE ) && !ret) ret = WSAGetLastError();
++
++failed:
+     if (ret)
+     {
+         WARN( "unable to connect to host (%lu)\n", ret );
+@@ -745,42 +753,83 @@
+     return len == 1 || (len == -1 && err == WSAEWOULDBLOCK);
+ }
+ 
+-static DWORD resolve_hostname( const WCHAR *name, INTERNET_PORT port, struct sockaddr_storage *sa )
++void netconn_free_addresses( struct netconn_address *addresses )
++{
++    while (addresses)
++    {
++        struct netconn_address *next = addresses->next;
++        free( addresses );
++        addresses = next;
++    }
++}
++
++static BOOL same_address( const struct sockaddr_storage *a, const struct sockaddr_storage *b )
++{
++    if (a->ss_family != b->ss_family) return FALSE;
++    if (a->ss_family == AF_INET)
++    {
++        const struct sockaddr_in *x = (const struct sockaddr_in *)a, *y = (const struct sockaddr_in *)b;
++        return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
++    }
++    if (a->ss_family == AF_INET6)
++    {
++        const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)a, *y = (const struct sockaddr_in6 *)b;
++        return x->sin6_port == y->sin6_port && x->sin6_scope_id == y->sin6_scope_id &&
++               !memcmp( &x->sin6_addr, &y->sin6_addr, sizeof(x->sin6_addr) );
++    }
++    return FALSE;
++}
++
++static DWORD collect_addresses( const ADDRINFOW *res, INTERNET_PORT port, struct netconn_address **addresses )
++{
++    const ADDRINFOW *ai;
++    struct netconn_address *head = NULL, **tail = &head, *entry;
++    struct sockaddr_storage addr;
++    unsigned int pass, len;
++    int family;
++
++    /* Stable IPv4-first partition. Resolver order within a family is retained. */
++    for (pass = 0; pass < 2; pass++)
++    {
++        family = pass ? AF_INET6 : AF_INET;
++        len = pass ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
++        for (ai = res; ai; ai = ai->ai_next)
++        {
++            if (ai->ai_family != family || !ai->ai_addr || ai->ai_addrlen < len) continue;
++            memset( &addr, 0, sizeof(addr) );
++            memcpy( &addr, ai->ai_addr, len );
++            if (family == AF_INET) ((struct sockaddr_in *)&addr)->sin_port = htons( port );
++            else ((struct sockaddr_in6 *)&addr)->sin6_port = htons( port );
++            for (entry = head; entry; entry = entry->next)
++                if (same_address( &entry->addr, &addr )) break;
++            if (entry) continue;
++            if (!(entry = malloc( sizeof(*entry) )))
++            {
++                netconn_free_addresses( head );
++                return ERROR_OUTOFMEMORY;
++            }
++            entry->addr = addr;
++            entry->next = NULL;
++            *tail = entry;
++            tail = &entry->next;
++        }
++    }
++    *addresses = head;
++    return head ? ERROR_SUCCESS : ERROR_WINHTTP_NAME_NOT_RESOLVED;
++}
++
++static DWORD resolve_hostname( const WCHAR *name, INTERNET_PORT port, struct netconn_address **addresses )
+ {
+     ADDRINFOW *res, hints;
+-    int ret;
++    DWORD ret;
+ 
+     memset( &hints, 0, sizeof(hints) );
+-    /* Prefer IPv4 to IPv6 addresses, since some web servers do not listen on
+-     * their IPv6 addresses even though they have IPv6 addresses in the DNS.
+-     */
+-    hints.ai_family = AF_INET;
+-
+-    ret = GetAddrInfoW( name, NULL, &hints, &res );
+-    if (ret != 0)
+-    {
+-        TRACE("failed to get IPv4 address of %s, retrying with IPv6\n", debugstr_w(name));
+-        hints.ai_family = AF_INET6;
+-        ret = GetAddrInfoW( name, NULL, &hints, &res );
+-        if (ret != 0)
+-        {
+-            TRACE("failed to get address of %s\n", debugstr_w(name));
+-            return ERROR_WINHTTP_NAME_NOT_RESOLVED;
+-        }
+-    }
+-    memcpy( sa, res->ai_addr, res->ai_addrlen );
+-    switch (res->ai_family)
+-    {
+-    case AF_INET:
+-        ((struct sockaddr_in *)sa)->sin_port = htons( port );
+-        break;
+-    case AF_INET6:
+-        ((struct sockaddr_in6 *)sa)->sin6_port = htons( port );
+-        break;
+-    }
+-
++    hints.ai_family = AF_UNSPEC;
++    hints.ai_socktype = SOCK_STREAM;
++    if (GetAddrInfoW( name, NULL, &hints, &res )) return ERROR_WINHTTP_NAME_NOT_RESOLVED;
++    ret = collect_addresses( res, port, addresses );
+     FreeAddrInfoW( res );
+-    return ERROR_SUCCESS;
++    return ret;
+ }
+ 
+ struct async_resolve
+@@ -788,7 +837,7 @@
+     LONG                     ref;
+     WCHAR                   *hostname;
+     INTERNET_PORT            port;
+-    struct sockaddr_storage  addr;
++    struct netconn_address  *addresses;
+     DWORD                    result;
+     HANDLE                   done;
+ };
+@@ -797,13 +846,17 @@
+ {
+     struct async_resolve *ret;
+ 
+-    if (!(ret = malloc(sizeof(*ret))))
++    if (!(ret = calloc(1, sizeof(*ret))))
+     {
+         ERR( "No memory.\n" );
+         return NULL;
+     }
+     ret->ref = 1;
+-    ret->hostname = wcsdup( hostname );
++    if (!(ret->hostname = wcsdup( hostname )))
++    {
++        free( ret );
++        return NULL;
++    }
+     ret->port     = port;
+     if (!(ret->done = CreateEventW( NULL, FALSE, FALSE, NULL )))
+     {
+@@ -818,6 +871,7 @@
+ {
+     if (InterlockedDecrement( &async->ref )) return;
+ 
++    netconn_free_addresses( async->addresses );
+     free( async->hostname );
+     CloseHandle( async->done );
+     free( async );
+@@ -826,17 +880,19 @@
+ static void CALLBACK resolve_proc( TP_CALLBACK_INSTANCE *instance, void *ctx )
+ {
+     struct async_resolve *async = ctx;
+-
+-    async->result = resolve_hostname( async->hostname, async->port, &async->addr );
++    (void)instance;
++
++    async->result = resolve_hostname( async->hostname, async->port, &async->addresses );
+     SetEvent( async->done );
+     async_resolve_release( async );
+ }
+ 
+-DWORD netconn_resolve( WCHAR *hostname, INTERNET_PORT port, struct sockaddr_storage *addr, int timeout )
++DWORD netconn_resolve( WCHAR *hostname, INTERNET_PORT port, struct netconn_address **addresses, int timeout )
+ {
+     DWORD ret;
+ 
+-    if (!timeout) ret = resolve_hostname( hostname, port, addr );
++    *addresses = NULL;
++    if (!timeout) ret = resolve_hostname( hostname, port, addresses );
+     else
+     {
+         struct async_resolve *async;
+@@ -854,12 +910,67 @@
+         if (WaitForSingleObject( async->done, timeout ) != WAIT_OBJECT_0) ret = ERROR_WINHTTP_TIMEOUT;
+         else
+         {
+-            *addr = async->addr;
+             ret = async->result;
++            if (!ret)
++            {
++                *addresses = async->addresses;
++                async->addresses = NULL;
++            }
+         }
+         async_resolve_release( async );
+     }
+ 
++    return ret;
++}
++
++/* Called only before the request owns a socket or sends any HTTP bytes.
++ * This function consumes the candidate list, including on failure. */
++DWORD netconn_create_multi( struct hostdata *host, const struct sockaddr_storage *cached,
++                            struct netconn_address *addresses, INTERNET_PORT port,
++                            int resolve_timeout, int timeout, struct netconn **ret_conn )
++{
++    struct netconn_address *entry;
++    ULONGLONG start = GetTickCount64(), deadline = timeout > 0 ? start + timeout : 0, now;
++    DWORD ret = ERROR_WINHTTP_CANNOT_CONNECT;
++    unsigned int candidate = 0;
++    int remaining = timeout;
++
++    *ret_conn = NULL;
++    if (!addresses)
++    {
++        /* A cached endpoint is only attempted once. A TCP failure permits a
++         * fresh lookup, never a TLS/HTTP failure or a replay of sent data. */
++        ret = netconn_create( host, cached, remaining, ret_conn );
++        TRACE( "candidate=%u family=%u elapsed=%I64u error=%lu cached=1\n",
++               candidate++, cached->ss_family, GetTickCount64() - start, ret );
++        if (!ret || (ret != ERROR_WINHTTP_CANNOT_CONNECT && ret != ERROR_WINHTTP_TIMEOUT)) return ret;
++        if (timeout > 0)
++        {
++            now = GetTickCount64();
++            if (now >= deadline) return ERROR_WINHTTP_TIMEOUT;
++            remaining = deadline - now;
++            if (resolve_timeout <= 0 || resolve_timeout > remaining) resolve_timeout = remaining;
++        }
++        if ((ret = netconn_resolve( host->hostname, port, &addresses, resolve_timeout ))) return ret;
++        ret = ERROR_WINHTTP_CANNOT_CONNECT;
++    }
++    else cached = NULL;
++
++    for (entry = addresses; entry; entry = entry->next)
++    {
++        if (cached && same_address( cached, &entry->addr )) continue;
++        if (timeout > 0)
++        {
++            now = GetTickCount64();
++            if (now >= deadline) { ret = ERROR_WINHTTP_TIMEOUT; break; }
++            remaining = deadline - now;
++        }
++        ret = netconn_create( host, &entry->addr, remaining, ret_conn );
++        TRACE( "candidate=%u family=%u elapsed=%I64u error=%lu cached=0\n",
++               candidate++, entry->addr.ss_family, GetTickCount64() - start, ret );
++        if (!ret) break;
++    }
++    netconn_free_addresses( addresses );
+     return ret;
+ }
+ 
+--- a/dlls/winhttp/winhttp_private.h
++++ b/dlls/winhttp/winhttp_private.h
+@@ -101,6 +101,12 @@
+     INTERNET_PORT serverport;
+     struct sockaddr_storage sockaddr;
+     BOOL resolved;
++};
++
++struct netconn_address
++{
++    struct netconn_address *next;
++    struct sockaddr_storage addr;
+ };
+ 
+ struct netconn
+@@ -408,7 +414,10 @@
+ void netconn_unload( void );
+ ULONG netconn_query_data_available( struct netconn * );
+ DWORD netconn_recv( struct netconn *, void *, size_t, int, int * );
+-DWORD netconn_resolve( WCHAR *, INTERNET_PORT, struct sockaddr_storage *, int );
++DWORD netconn_resolve( WCHAR *, INTERNET_PORT, struct netconn_address **, int );
++void netconn_free_addresses( struct netconn_address * );
++DWORD netconn_create_multi( struct hostdata *, const struct sockaddr_storage *, struct netconn_address *,
++                            INTERNET_PORT, int, int, struct netconn ** );
+ DWORD netconn_secure_connect( struct netconn *, WCHAR *, DWORD, CredHandle *, BOOL );
+ DWORD netconn_send( struct netconn *, const void *, size_t, int *, WSAOVERLAPPED * );
+ BOOL netconn_wait_overlapped_result( struct netconn *conn, WSAOVERLAPPED *ovr, DWORD *len );
+--- a/dlls/winhttp/request.c
++++ b/dlls/winhttp/request.c
+@@ -1565,6 +1565,7 @@
+     BOOL is_secure = request->hdr.flags & WINHTTP_FLAG_SECURE;
+     struct hostdata *host = NULL, *iter;
+     struct netconn *netconn = NULL;
++    struct netconn_address *addresses = NULL;
+     struct connect *connect;
+     WCHAR *addressW = NULL;
+     INTERNET_PORT port;
+@@ -1639,15 +1640,17 @@
+         len = lstrlenW( host->hostname ) + 1;
+         send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_RESOLVING_NAME, host->hostname, len );
+ 
+-        if ((ret = netconn_resolve( host->hostname, port, &connect->sockaddr, request->resolve_timeout )))
++        if ((ret = netconn_resolve( host->hostname, port, &addresses, request->resolve_timeout )))
+         {
+             release_host( host );
+             return ret;
+         }
++        connect->sockaddr = addresses->addr;
+         connect->resolved = TRUE;
+ 
+         if (!(addressW = addr_to_str( &connect->sockaddr )))
+         {
++            netconn_free_addresses( addresses );
+             release_host( host );
+             return ERROR_OUTOFMEMORY;
+         }
+@@ -1659,6 +1662,7 @@
+     {
+         if (!addressW && !(addressW = addr_to_str( &connect->sockaddr )))
+         {
++            netconn_free_addresses( addresses );
+             release_host( host );
+             return ERROR_OUTOFMEMORY;
+         }
+@@ -1668,11 +1672,22 @@
+         len = lstrlenW( addressW ) + 1;
+         send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER, addressW, len );
+ 
+-        if ((ret = netconn_create( host, &connect->sockaddr, request->connect_timeout, &netconn )))
+-        {
++        if ((ret = netconn_create_multi( host, &connect->sockaddr, addresses, port,
++                                         request->resolve_timeout, request->connect_timeout, &netconn )))
++        {
++            connect->resolved = FALSE;
+             free( addressW );
+             release_host( host );
+             return ret;
++        }
++        addresses = NULL; /* consumed by netconn_create_multi */
++        connect->sockaddr = netconn->sockaddr;
++        connect->resolved = TRUE;
++        free( addressW );
++        if (!(addressW = addr_to_str( &connect->sockaddr )))
++        {
++            netconn_release( netconn );
++            return ERROR_OUTOFMEMORY;
+         }
+         netconn_set_timeout( netconn, TRUE, request->send_timeout );
+         netconn_set_timeout( netconn, FALSE, request_receive_response_timeout( request ));
+@@ -1710,7 +1725,7 @@
+     }
+     else
+     {
+-        TRACE("using connection %p\n", netconn);
++        TRACE("reuse=1 family=%u\n", netconn->sockaddr.ss_family);
+ 
+         netconn_set_timeout( netconn, TRUE, request->send_timeout );
+         netconn_set_timeout( netconn, FALSE, request_receive_response_timeout( request ));
+--- a/dlls/wininet/utility.c
++++ b/dlls/wininet/utility.c
+@@ -97,7 +97,7 @@
+ static int try_create_connect_socket(server_addr_t *addr, int af, DWORD timeout, object_header_t *hdr,
+                                      DWORD_PTR callback_context)
+ {
+-    TIMEVAL timeout_timeval = {0, timeout * 1000};
++    TIMEVAL timeout_timeval = {timeout / 1000, (timeout % 1000) * 1000};
+     ULONG blocking;
+     socklen_t len;
+     FD_SET set;

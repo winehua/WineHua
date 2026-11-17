@@ -1,0 +1,38 @@
+From: WineHua contributors; PR78 001eff421aaf, adapted to VPP per-context negotiation
+Subject: [PATCH] preserve explicit invalidate and remote publication semantics
+
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -1649,7 +1649,7 @@
+ #ifdef __OHOS__
+    const char *mode = os_get_option("VKR_WINEHUA_SHADOW_FROM_HOST");
+    const bool precise = ctx->ohos_precise_shadow ||
+-      (mode && !strcmp(mode, "precise"));
++      !mode || strcmp(mode, "legacy-write-begin");
+ #endif
+ 
+    mtx_lock(&ctx->object_mutex);
+@@ -1668,9 +1668,8 @@
+          if (args->ret != VK_SUCCESS)
+             break;
+       } else {
+-         /* Legacy WineHua DXVK builds used invalidate as a write-begin
+-          * marker.  Keep that contract outside the precise profile so old
+-          * runtime overlays remain bisectable. */
++         /* Historical write-begin overloading is explicit diagnostic-only.
++          * Normal contexts retain Vulkan CPU readback semantics. */
+          mem->shadow_guest_write_depth++;
+          mem->shadow_remote_active = true;
+          const uint32_t count = mem->shadow_remote_invalidate_count++;
+@@ -2350,7 +2349,9 @@
+       mem->shadow_initial_sync_done = true;
+       mem->shadow_sync_count++;
+    } else {
+-      if (mem->shadow_guest_write_depth)
++      /* Exact remote ranges own publication. Unrelated fence completion must
++       * not overwrite pending Guest writes or retire their dirty intervals. */
++      if (mem->shadow_guest_write_depth || mem->shadow_remote_active)
+          return stats;
+       vkr_ohos_gate_c_trace_memory("invalidate-entry", mem, 0, copy_size,
+                                    false, VK_SUCCESS);

@@ -11,6 +11,7 @@
 void MoveGrabHandler::StartMoveGrab(ToplevelManager& tmgr, uint32_t toplevelId, uint32_t serial,
                                     int32_t grabGlobalX, int32_t grabGlobalY) {
     auto lk = tmgr.Lock();
+    resizeTarget_ = 0;
     toplevelId_ = toplevelId;
     serial_ = serial;
     // 固定 grab 偏移 = 按下时指针全局位置 − 窗口位置, 后续 motion 绝对定位
@@ -29,11 +30,24 @@ void MoveGrabHandler::StartMoveGrab(ToplevelManager& tmgr, uint32_t toplevelId, 
                 toplevelId, serial, grabOffX_, grabOffY_);
 }
 
+void MoveGrabHandler::StartExternalResizeGrab(ToplevelManager& tmgr, uint32_t id, uint32_t serial,
+                                             int32_t x, int32_t y, uint32_t edges) {
+    if (!ExternalResizeGeometry::Valid(edges)) return;
+    auto lock = tmgr.Lock();
+    auto* window = tmgr.FindToplevelLocked(id);
+    if (!window || !window->HasPosition() || window->IsMinimized() || window->IsFullscreen()) return;
+    toplevelId_ = id; serial_ = serial; resizeEdges_ = edges;
+    resizePointerX_ = x; resizePointerY_ = y;
+    resizeStart_ = resizeBounds_ = {window->X(), window->Y(), window->Width(), window->Height()};
+    resizeTarget_ = id;
+}
+
 void MoveGrabHandler::EndMoveGrab(ToplevelManager& tmgr) {
     OH_LOG_INFO(LOG_APP, "[MW-MOVE] end interactive move tl=%{public}u", toplevelId_);
     {
         auto lk = tmgr.Lock();
         toplevelId_ = 0;
+        resizeTarget_ = 0;
         serial_ = 0;
         grabOffX_ = 0;
         grabOffY_ = 0;
@@ -44,7 +58,18 @@ bool MoveGrabHandler::ProcessMoveGrabMotion(ToplevelManager& tmgr, int32_t gx, i
     auto lk = tmgr.Lock();
     if (toplevelId_ == 0) return false;
     auto* st = tmgr.FindToplevelLocked(toplevelId_);
-    if (!st || !st->HasPosition()) return false;
+    if (!st || !st->HasPosition() || (resizeTarget_ && (st->IsMinimized() || st->IsFullscreen()))) {
+        toplevelId_ = 0; serial_ = 0; resizeTarget_ = 0;
+        return false;
+    }
+
+    if (resizeTarget_ != 0) {
+        resizeBounds_ = resizeStart_.Drag(resizeEdges_, int64_t(gx)-resizePointerX_, int64_t(gy)-resizePointerY_);
+        const int dx = resizeBounds_.x-st->X(), dy = resizeBounds_.y-st->Y();
+        st->SetPosition(resizeBounds_.x, resizeBounds_.y);
+        tmgr.ApplyModalDeltaLocked(toplevelId_, dx, dy);
+        return true;
+    }
 
     // 绝对定位, 无累积。增量式 (每帧 st->x += 指针增量) 在双线程下会把
     // 上帧自身位移叠进下一帧位移 — InputManager 注入局部坐标与消费侧

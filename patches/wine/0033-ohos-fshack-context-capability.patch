@@ -1,0 +1,243 @@
+diff --git a/include/wine/opengl_driver.h b/include/wine/opengl_driver.h
+--- a/include/wine/opengl_driver.h
++++ b/include/wine/opengl_driver.h
+@@ -103,6 +103,8 @@
+     unsigned                has_GL_ARB_fragment_program : 1;
+     unsigned                has_GL_ARB_vertex_program : 1;
+     unsigned                integer_scaling : 1;
++    unsigned                fshack_capable : 1; /* actual context supports FBO and gamma operations */
++    unsigned                fshack_caps_checked : 1;
+     GLuint                  gamma_program;
+     GLuint                  gamma_ramp;
+     struct wgl_framebuffer_surface_state last_framebuffer;
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -966,13 +966,19 @@
+     return &surface->base;
+ }
+ 
+-static BOOL needs_framebuffer_surface( HWND hwnd )
++static BOOL needs_framebuffer_surface( HWND hwnd, struct wgl_context *context )
+ {
+     static int xwayland_nv_cached = -1;
+     float gamma_ramp[GAMMA_RAMP_SIZE * 4];
+     LONG gamma_serial;
+ 
+     if (!fshack_enabled) return FALSE;
++#ifdef __OHOS__
++    /* A proc address may be a Mesa unsupported-function stub. Bootstrap on
++     * the normal drawable until opengl32 has checked the actual context.
++     * Always use the destination context, not the previously current one. */
++    if (!context || !context->fshack_capable) return FALSE;
++#endif
+ 
+     if (xwayland_nv_cached == -1) xwayland_nv_cached = !!user_driver->pHasWindowManager( "xwayland_glx_nvidia" );
+     if (xwayland_nv_cached)
+@@ -2098,9 +2104,9 @@
+     return drawable;
+ }
+ 
+-static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format )
+-{
+-    BOOL raw = needs_framebuffer_surface( hwnd );
++static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format, struct wgl_context *context )
++{
++    BOOL raw = needs_framebuffer_surface( hwnd, context );
+     struct opengl_drawable *drawable = NULL;
+     WND *win;
+ 
+@@ -2274,7 +2280,7 @@
+ 
+         if ((old_format = get_window_pixel_format( hwnd ))) return old_format == new_format;
+ 
+-        if (!(drawable = get_window_unused_drawable( hwnd, new_format ))) return FALSE;
++        if (!(drawable = get_window_unused_drawable( hwnd, new_format, NtCurrentTeb()->glContext ))) return FALSE;
+         set_window_opengl_drawable( hwnd, drawable, TRUE );
+         set_window_opengl_drawable( hwnd, drawable, FALSE );
+         opengl_drawable_release( drawable );
+@@ -2336,12 +2342,12 @@
+         opengl_drawable_release( drawable );
+         drawable = NULL;
+     }
+-    if (drawable && (drawable->funcs == &framebuffer_surface_funcs) != needs_framebuffer_surface( hwnd ))
++    if (drawable && (drawable->funcs == &framebuffer_surface_funcs) != needs_framebuffer_surface( hwnd, NtCurrentTeb()->glContext ))
+     {
+         opengl_drawable_release( drawable );
+         drawable = NULL;
+     }
+-    if (format && (drawable || (drawable = get_window_unused_drawable( hwnd, format ))))
++    if (format && (drawable || (drawable = get_window_unused_drawable( hwnd, format, NtCurrentTeb()->glContext ))))
+     {
+         set_window_opengl_drawable( hwnd, drawable, TRUE );
+         set_dc_opengl_drawable( hdc, drawable );
+@@ -2394,13 +2400,13 @@
+     return FALSE;
+ }
+ 
+-static BOOL needs_framebuffer_update( HWND hwnd, struct opengl_drawable *drawable )
+-{
+-    return drawable && (drawable->funcs == &framebuffer_surface_funcs) != needs_framebuffer_surface( hwnd );
++static BOOL needs_framebuffer_update( HWND hwnd, struct opengl_drawable *drawable, struct wgl_context *context )
++{
++    return drawable && (drawable->funcs == &framebuffer_surface_funcs) != needs_framebuffer_surface( hwnd, context );
+ }
+ 
+ /* return an updated drawable, recreating one if the window drawables have been invalidated (mostly wineandroid) */
+-static struct opengl_drawable *get_updated_drawable( HDC hdc, int format, struct opengl_drawable *drawable,
++static struct opengl_drawable *get_updated_drawable( HDC hdc, struct wgl_context *context, struct opengl_drawable *drawable,
+                                                      BOOL *updated )
+ {
+     HWND hwnd = NULL;
+@@ -2414,7 +2420,7 @@
+ 
+     /* if the drawable we were using is for the same window, keep using it */
+     if (drawable && is_client_surface_window( drawable->client, hwnd ) &&
+-        !(*updated = needs_framebuffer_update( hwnd, drawable )))
++        !(*updated = needs_framebuffer_update( hwnd, drawable, context )))
+     {
+         opengl_drawable_add_ref( drawable );
+         return drawable;
+@@ -2424,17 +2430,17 @@
+     if (!hdc && drawable) hdc = drawable->owner_hdc;
+     if (hdc && (drawable = get_dc_opengl_drawable( hdc )))
+     {
+-        if ((*updated = needs_framebuffer_update( hwnd, drawable )))
++        if ((*updated = needs_framebuffer_update( hwnd, drawable, context )))
+         {
+             opengl_drawable_release( drawable );
+-            drawable = get_window_unused_drawable( hwnd, format );
++            drawable = get_window_unused_drawable( hwnd, context->format, context );
+             set_dc_opengl_drawable( hdc, drawable );
+         }
+         return drawable;
+     }
+ 
+     /* get an updated drawable with the desired format */
+-    return get_window_unused_drawable( hwnd, format );
++    return get_window_unused_drawable( hwnd, context->format, context );
+ }
+ 
+ static BOOL context_sync_drawables( struct wgl_context *context, HDC draw_hdc, HDC read_hdc )
+@@ -2444,11 +2450,11 @@
+     struct wgl_context *previous = NtCurrentTeb()->glContext;
+     BOOL ret = FALSE, draw_updated, read_updated;
+ 
+-    if (!(new_draw = get_updated_drawable( draw_hdc, context->format, context->draw, &draw_updated ))) return FALSE;
++    if (!(new_draw = get_updated_drawable( draw_hdc, context, context->draw, &draw_updated ))) return FALSE;
+     read_updated = draw_updated;
+     if (!draw_hdc && context->draw == context->read) opengl_drawable_add_ref( (new_read = new_draw) );
+     else if (draw_hdc && draw_hdc == read_hdc) opengl_drawable_add_ref( (new_read = new_draw) );
+-    else new_read = get_updated_drawable( read_hdc, context->format, context->read, &read_updated );
++    else new_read = get_updated_drawable( read_hdc, context, context->read, &read_updated );
+ 
+     TRACE( "context %p, new_draw %s, new_read %s\n", context, debugstr_opengl_drawable( new_draw ), debugstr_opengl_drawable( new_read ) );
+ 
+@@ -2485,7 +2491,11 @@
+ 
+         pthread_mutex_lock(&reserved_tx_mutex);
+ 
+-        if (!context->share->reserved_textures)
++        if (!context->share->reserved_textures
++#ifdef __OHOS__
++            && context->fshack_capable
++#endif
++           )
+         {
+             int profile, i, prev_texture;
+ 
+@@ -2502,7 +2512,7 @@
+                 /* On compat profile the app may use texture names without allocation. Yet it is more common to allocate
+                  * the textures. So use high indexes to make it less likely that an app will want to use those directly
+                  * and allocate those so these names won't be generated for app. */
+-                funcs->p_glGetIntegerv( GL_TEXTURE_2D, &prev_texture );
++                funcs->p_glGetIntegerv( GL_TEXTURE_BINDING_2D, &prev_texture );
+                 for (i = 0; i < ARRAY_SIZE(context->share->framebuffer_textures); ++i)
+                 {
+                     context->share->framebuffer_textures[i] = 0x10000 + i;
+@@ -3081,6 +3091,8 @@
+     memset( &context->last_framebuffer, 0, sizeof(context->last_framebuffer) );
+     context->gamma_program = 0;
+     context->gamma_ramp = 0;
++    context->fshack_capable = FALSE;
++    context->fshack_caps_checked = FALSE;
+     if (!hdc) return TRUE;
+ 
+     if ((format = get_dc_pixel_format( hdc )) <= 0 &&
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -1560,6 +1560,33 @@
+     funcs->p_glUseProgram( prev_program );
+ }
+ 
++#ifdef __OHOS__
++static BOOL fs_hack_context_supported( struct context *ctx )
++{
++    /* The gamma shader uses GLSL 330 / UBOs / samplers. FBO allocation and
++     * swapping additionally require ARB DSA (EXT DSA is not equivalent).
++     * Function pointer presence alone does not establish either capability. */
++    if (ctx->major_version < 3 || (ctx->major_version == 3 && ctx->minor_version < 3)) return FALSE;
++    return ctx->major_version > 4 || (ctx->major_version == 4 && ctx->minor_version >= 5) ||
++           is_extension_supported( ctx, "GL_ARB_direct_state_access" );
++}
++
++static void fs_hack_init_context( struct context *ctx, const struct opengl_funcs *funcs )
++{
++    if (ctx->base.fshack_caps_checked) return;
++    ctx->base.fshack_caps_checked = TRUE;
++    if ((ctx->base.fshack_capable = fs_hack_context_supported( ctx )))
++    {
++        if (!ctx->base.gamma_program) fs_hack_setup_gamma_shader( &ctx->base, funcs );
++        /* Compilation/link failure must not route frames through program 0. */
++        ctx->base.fshack_capable = !!(ctx->base.gamma_program && ctx->base.gamma_ramp);
++    }
++    fprintf( stderr, "winehua_fshack_caps: context=%p gl=%d.%d enabled=%u gamma=%u/%u\n",
++             ctx, ctx->major_version, ctx->minor_version, ctx->base.fshack_capable,
++             ctx->base.gamma_program, ctx->base.gamma_ramp );
++}
++#endif
++
+ static void make_context_current( TEB *teb, const struct opengl_funcs *funcs, HDC draw_hdc, HDC read_hdc,
+                                   HGLRC hglrc, struct context *ctx )
+ {
+@@ -1588,7 +1615,15 @@
+     pop_default_fbo( teb );
+     pop_default_fbo_buffers( teb );
+ 
+-    if (ctx->major_version) return; /* already synced */
++    if (ctx->major_version)
++    {
++#ifdef __OHOS__
++        /* wglShareLists may recreate the driver context after the extension
++         * list was cached. Reinitialize only the new context's GL objects. */
++        fs_hack_init_context( ctx, funcs );
++#endif
++        return; /* already synced */
++    }
+ 
+     version = (const char *)funcs->p_glGetString( GL_VERSION );
+     if (version) rest = parse_gl_version( version, &ctx->major_version, &ctx->minor_version );
+@@ -1686,7 +1721,9 @@
+ 
+     if (TRACE_ON(opengl)) for (i = 0; i < count; i++) TRACE( "++ %s\n", extensions[i] );
+ 
+-    funcs->p_glGetIntegerv( GL_CONTEXT_PROFILE_MASK, &profile );
++    profile = 0;
++    if (ctx->major_version > 3 || (ctx->major_version == 3 && ctx->minor_version >= 2))
++        funcs->p_glGetIntegerv( GL_CONTEXT_PROFILE_MASK, &profile );
+     ctx->base.is_core = !!(profile & GL_CONTEXT_CORE_PROFILE_BIT);
+     ctx->base.has_GL_ARB_viewport_array = is_extension_supported( ctx, "GL_ARB_viewport_array" );
+     ctx->base.has_GL_ARB_clip_control = is_extension_supported( ctx, "GL_ARB_clip_control" );
+@@ -1694,7 +1731,11 @@
+     ctx->base.has_GL_ARB_fragment_program = !ctx->base.is_core && is_extension_supported( ctx, "GL_ARB_fragment_program" );
+     ctx->base.has_GL_ARB_vertex_program = !ctx->base.is_core && is_extension_supported( ctx, "GL_ARB_vertex_program" );
+     ctx->base.integer_scaling = fs_hack_is_integer();
++#ifdef __OHOS__
++    fs_hack_init_context( ctx, funcs );
++#else
+     if (!ctx->base.gamma_program) fs_hack_setup_gamma_shader( &ctx->base, funcs );
++#endif
+     /* Drawable's FBO could've changed in driver. */
+     pop_default_fbo( teb );
+ }

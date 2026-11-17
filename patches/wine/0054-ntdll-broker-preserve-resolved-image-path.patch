@@ -1,0 +1,17 @@
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -211,7 +211,11 @@ static char **build_broker_argv( const RTL_USER_PROCESS_PARAMETERS *params )
+     if (!consumed)
+     {
+-        free( image );
+-        return argv;
++        /* lpApplicationName may resolve a relative executable while argv[0]
++         * remains a basename or an unrelated display name. The broker needs
++         * ImagePathName to inspect the PE and preserve its preferred base;
++         * it cannot resolve argv[0] against the Windows current directory.
++         * Replace only argv[0], retaining the command-line arguments. */
++        consumed = argc ? 1 : 0;
+     }
+ 
+     for (argc = 0; argv[argc]; argc++);

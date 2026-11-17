@@ -50,7 +50,8 @@ bool ValidateVirglHostConfig(const VirglHostConfig& config, std::string* error)
     if (config.syncMode != "egl-thread" && config.syncMode != "egl-main" &&
         config.syncMode != "native-fd")
         return fail("invalid VirGL synchronization mode");
-    if (config.presentMode != "fifo" && config.presentMode != "mailbox" &&
+    if (config.presentMode != "native-buffer" &&
+        config.presentMode != "fifo" && config.presentMode != "mailbox" &&
         config.presentMode != "fifo-async" && config.presentMode != "fifo-poll")
         return fail("invalid Venus present mode");
     if (!IsBinaryFlag(config.shadowMergeRanges) ||
@@ -117,9 +118,10 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
     const bool serializedGpuUpload =
         config.shadowTrace == "inline-gpu-upload-serialized";
     const bool aliasCover = config.shadowTrace == "inline-gpu-upload-alias-cover";
+    const bool boundBuffers = config.shadowTrace == "inline-gpu-upload-bound-buffers";
     const bool coverageSort =
         config.shadowTrace == "inline-gpu-upload-coverage-sort" || aliasCover ||
-        gpuFrameProfile || frameTimeline || sampledPerf;
+        gpuFrameProfile || frameTimeline || sampledPerf || boundBuffers;
     const bool descriptorSerialized = config.descriptorUpdateSerialize == "1" ||
         config.shadowTrace == "inline-gpu-upload-descriptor-serialized";
     const bool inlineGpuUpload = config.shadowTrace == "inline-gpu-upload" ||
@@ -132,7 +134,7 @@ bool BuildVirglHostLaunchConfig(const VirglHostConfig& config,
         config.shadowTrace == "no-gpu-upload" || descriptorSerialized;
     const bool presentPerfSummary = perfSummary || gpuFrameProfile ||
         frameTimeline || sampledPerf || captureTrace;
-    const bool boundBufferList = config.shadowTrace == "perf";
+    const bool boundBufferList = config.shadowTrace == "perf" || boundBuffers;
     const bool cpuShadowUpload = config.shadowTrace == "cpu-upload";
     const bool legacyHostSync = config.shadowTrace == "legacy-host-sync";
     const bool gateCTrace = config.shadowTrace == "vkd3d-gate-c";

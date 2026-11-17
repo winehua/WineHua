@@ -1,3 +1,4 @@
+#include "compositor/subsurface_resource.h"
 // wl_core.cpp — Wayland 核心协议实现。
 // wl_compositor / wl_surface / wl_region / wl_subcompositor / wl_subsurface /
 // wp_viewporter / wp_viewport / wl_output 的接口表与回调, 以及 global 注册。
@@ -16,8 +17,10 @@
 #include "compositor/frame/compositor_constants.h"
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/shm_frame_source.h"  // SHM 拷贝/缩放纯函数 (重构第 5A1 步迁出)
+#include "direct/direct_wine_surface_controller.h"
 #include "protocols/viewporter-server-protocol.h"
 #include "common/perf_utils.h"
+#include "common/frame_loop_diagnostics.h"
 #include <algorithm>
 #include <cstring>
 #include <ctime>
@@ -108,6 +111,8 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
     wl_resource_set_implementation(surfRes, &kSurfaceImpl, sd, [](wl_resource* r) {
         auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
         auto* self = GetInstance();
+        if (sd) DirectWineDrawableDestroyed(sd->clientPid, sd->protocolId);
+        if (sd && sd->hasToplevel) DirectWineSurfaceDestroyed(sd->toplevelId);
         uint32_t removedPopup = 0, popupParent = 0;
         {
             auto lk = self->toplevelMgr_.Lock();
@@ -119,6 +124,10 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             if (self->desktopCompositor_.RemoveSubsurfaceLayer(r, removedParent, removedRoute)) {
                 self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
             }
+            // Invalidate both the window and private producer sides of a binding.
+            if (sd)
+                self->desktopCompositor_.zc().InvalidateBindingsForSurface(
+                    sd->clientPid, sd->protocolId);
             // PC popup 记录一并清除 (client 断开时 libwayland 走此路径)
             // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域/清理顺序不变)
             if (sd) {
@@ -131,9 +140,9 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
         // 内部按指针比较, 非焦点 surface 是 no-op
         InputManager::GetInstance()->OnSurfaceDestroyed(r);
         if (sd && sd->hasToplevel) {
-            {
-                self->toplevelMgr_.UnmapToplevelSurface(sd->toplevelId);
-            }
+            // A disconnect may destroy wl_surface before its xdg role. Finish
+            // the window here; the role's weak reference will already be null.
+            self->OnToplevelDestroyed(sd->toplevelId);
             self->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Destroyed);
         }
         if (removedPopup) {
@@ -171,9 +180,11 @@ void WaylandServer::subcompositor_get_subsurface(wl_client* client, wl_resource*
     // 追踪 subsurface 父子关系:
     // 子 surface → 记录父 surface 指针, 标记 isSubsurface
     // wl_subsurface 的 user_data 存子 surface, 供 set_position 查找
-    auto* childSd = static_cast<SurfaceData*>(wl_resource_get_user_data(surface));
+    auto* self = GetInstance();
+    auto lock = self->toplevelMgr_.Lock();
+    auto* childSd = self->toplevelMgr_.FindRegisteredSurfaceDataLocked(surface);
     if (childSd) {
-        childSd->parentSurface = parent;
+        childSd->parentSurfaceWatch.Set(parent);
         childSd->isSubsurface = true;
         // CommittedSurface.role 即时同步 (重构第 5A2 步): role 随协议角色
         // 设置点更新, 不再由 commit 时从布尔分流; 判定单点 = RoleFor
@@ -182,23 +193,29 @@ void WaylandServer::subcompositor_get_subsurface(wl_client* client, wl_resource*
                     surface, parent);
     }
 
-    // wl_subsurface resource 的 user_data = 子 surface (供 set_position 查找 SurfaceData)
     wl_resource* ss = wl_resource_create(client, &wl_subsurface_interface, 1, id);
-    wl_resource_set_implementation(ss, &kSubsurfaceImpl, surface, nullptr);
+    if (!ss) { wl_client_post_no_memory(client); return; }
+    auto* data = new SubsurfaceResource(surface);
+    wl_resource_set_implementation(ss, &kSubsurfaceImpl, data, [](wl_resource* resource) {
+        WaylandServer::subsurface_resource_destroyed(resource);
+        auto* data = static_cast<SubsurfaceResource*>(wl_resource_get_user_data(resource));
+        delete data;
+    });
 }
 
 void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
                                              int32_t x, int32_t y) {
-    auto* childSurf = static_cast<wl_resource*>(wl_resource_get_user_data(ssRes));
+    auto* childSurf = SubsurfaceChild(ssRes);
     if (!childSurf) return;
-    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(childSurf));
-    if (!sd) return;
-    if (sd->subsurfaceX == x && sd->subsurfaceY == y) return;
-    sd->subsurfaceX = x;
-    sd->subsurfaceY = y;
     auto* self = GetInstance();
+    SurfaceData* sd = nullptr;
     {
         auto lk = self->toplevelMgr_.Lock();
+        sd = self->toplevelMgr_.FindRegisteredSurfaceDataLocked(childSurf);
+        if (!sd) return;
+        if (sd->subsurfaceX == x && sd->subsurfaceY == y) return;
+        sd->subsurfaceX = x;
+        sd->subsurfaceY = y;
         uint32_t layerParent = 0;
         DisplayPolicy::SubsurfaceRoute layerRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
         if (self->desktopCompositor_.UpdateSubsurfaceLayerLocalPosition(
@@ -219,7 +236,7 @@ void WaylandServer::subsurface_set_position(wl_client*, wl_resource* ssRes,
         auto lk = self->toplevelMgr_.Lock();
         int32_t parentContentX = 0, parentContentY = 0;
         if (sd->parentSurface) {
-            auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
+            auto* parentSd = self->toplevelMgr_.FindRegisteredSurfaceDataLocked(sd->parentSurface);
             if (parentSd) {
                 parentContentX = parentSd->committed.contentRect.x;
                 parentContentY = parentSd->committed.contentRect.y;
@@ -244,7 +261,7 @@ void WaylandServer::subsurface_place_above(wl_client*, wl_resource* ssRes, wl_re
      * 桌面语义上 popup 恒在父窗口之上 (OHOS 子窗口天然满足),
      * 多 popup (子菜单链) 交叠顺序极端情况下可能与客户端预期不符。
      */
-    auto* childSurf = static_cast<wl_resource*>(wl_resource_get_user_data(ssRes));
+    auto* childSurf = SubsurfaceChild(ssRes);
     if (!childSurf || !sibling) return;
     auto* self = GetInstance();
     auto lk = self->toplevelMgr_.Lock();
@@ -257,7 +274,7 @@ void WaylandServer::subsurface_place_above(wl_client*, wl_resource* ssRes, wl_re
 }
 
 void WaylandServer::subsurface_place_below(wl_client*, wl_resource* ssRes, wl_resource* sibling) {
-    auto* childSurf = static_cast<wl_resource*>(wl_resource_get_user_data(ssRes));
+    auto* childSurf = SubsurfaceChild(ssRes);
     if (!childSurf || !sibling) return;
     auto* self = GetInstance();
     auto lk = self->toplevelMgr_.Lock();
@@ -270,39 +287,52 @@ void WaylandServer::subsurface_place_below(wl_client*, wl_resource* ssRes, wl_re
 }
 
 void WaylandServer::subsurface_destroy(wl_client*, wl_resource* r) {
-    // role 移除: surface 变回普通 surface。按 unmap 处理:
-    // 清 desktop layer / PC popup 记录, 通知 ArkTS 销毁 popup 子窗口。
-    auto* childSurf = static_cast<wl_resource*>(wl_resource_get_user_data(r));
-    if (childSurf) {
-        auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(childSurf));
-        if (sd) {
-            sd->isSubsurface = false;
-            sd->parentSurface = nullptr;
-            // CommittedSurface.role 即时同步 (重构第 5A2 步): role 移除后
-            // surface 变回普通面 (旧代码只清 isSubsurface, 语义对等)
-            sd->committed.role = RoleFor(sd->hasToplevel, sd->isSubsurface);
-            auto* self = GetInstance();
-            uint32_t removedPopup = 0, popupParent = 0;
-            {
-                auto lk = self->toplevelMgr_.Lock();
-                uint32_t removedParent = 0;
-                DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
-                if (self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf, removedParent, removedRoute)) {
-                    self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
-                }
-                // popup 表已迁至 PopupManager (重构第 5B2 步, 锁域/清理顺序不变)
-                popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
-            }
-            if (removedPopup) {
-                self->PostToplevelEvent(popupParent, ToplevelEventType::PopupHide,
-                                        ToplevelEventBus::JsonPopupHide(removedPopup));
-            }
-        }
-    }
     wl_resource_destroy(r);
 }
 
+void WaylandServer::subsurface_resource_destroyed(wl_resource* r) {
+    GetInstance()->RemoveSubsurfaceRole(SubsurfaceChild(r));
+}
+
+void WaylandServer::RemoveSubsurfaceRole(wl_resource* childSurf) {
+    if (!childSurf) return;
+    auto* self = GetInstance();
+    uint32_t removedPopup = 0, popupParent = 0;
+    {
+        auto lk = self->toplevelMgr_.Lock();
+        auto* sd = self->toplevelMgr_.FindRegisteredSurfaceDataLocked(childSurf);
+        if (!sd) return;
+        sd->isSubsurface = false;
+        sd->parentSurfaceWatch.Set(nullptr);
+        sd->committed.role = RoleFor(sd->hasToplevel, sd->isSubsurface);
+        uint32_t removedParent = 0;
+        DisplayPolicy::SubsurfaceRoute removedRoute = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+        if (self->desktopCompositor_.RemoveSubsurfaceLayer(childSurf, removedParent, removedRoute))
+            self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
+        popupParent = self->popupMgr_.RemovePopupBySurfaceKeyLocked(sd->surfaceKey, removedPopup);
+    }
+    if (removedPopup)
+        self->PostToplevelEvent(popupParent, ToplevelEventType::PopupHide,
+                                ToplevelEventBus::JsonPopupHide(removedPopup));
+}
+
 // -- viewporter 实现 --
+namespace {
+struct ViewportResource {
+    wl_listener surfaceDestroyed{};
+    wl_resource* surface = nullptr;
+};
+
+wl_resource* ViewportSurface(wl_resource* viewport) {
+    auto* data = static_cast<ViewportResource*>(wl_resource_get_user_data(viewport));
+    if (!data || !data->surface) {
+        wl_resource_post_error(viewport, WP_VIEWPORT_ERROR_NO_SURFACE, "viewport surface destroyed");
+        return nullptr;
+    }
+    return data->surface;
+}
+}
+
 void WaylandServer::viewporter_bind(wl_client* client, void* data, uint32_t version, uint32_t id) {
     OH_LOG_INFO(LOG_APP, "[WL] wp_viewporter bound v=%{public}u", version);
     wl_resource* res = wl_resource_create(client, &wp_viewporter_interface, version, id);
@@ -312,40 +342,104 @@ void WaylandServer::viewporter_bind(wl_client* client, void* data, uint32_t vers
 void WaylandServer::viewporter_get_viewport(wl_client* client, wl_resource*,
                                              uint32_t id, wl_resource* surface) {
     wl_resource* vp = wl_resource_create(client, &wp_viewport_interface, 1, id);
-    // 把 surface resource 存为 viewport 的 user_data,
-    // 这样 viewport_set_destination 就能通过 surface 找到 SurfaceData
-    wl_resource_set_implementation(vp, &kViewportImpl, surface, nullptr);
+    if (!vp) { wl_client_post_no_memory(client); return; }
+    auto* data = new ViewportResource;
+    data->surface = surface;
+    data->surfaceDestroyed.notify = [](wl_listener* listener, void*) {
+        auto* data = reinterpret_cast<ViewportResource*>(listener); // first member
+        data->surface = nullptr;
+        wl_list_remove(&listener->link);
+        wl_list_init(&listener->link);
+    };
+    wl_resource_add_destroy_listener(surface, &data->surfaceDestroyed);
+    wl_resource_set_implementation(vp, &kViewportImpl, data, [](wl_resource* resource) {
+        auto* data = static_cast<ViewportResource*>(wl_resource_get_user_data(resource));
+        wl_list_remove(&data->surfaceDestroyed.link);
+        delete data;
+    });
 }
 
 void WaylandServer::viewport_set_source(wl_client*, wl_resource* vpRes,
                                         wl_fixed_t fx, wl_fixed_t fy, wl_fixed_t fw, wl_fixed_t fh) {
-    auto* surf = static_cast<wl_resource*>(wl_resource_get_user_data(vpRes));
+    auto* surf = ViewportSurface(vpRes);
     if (!surf) return;
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
     if (!sd) return;
-    if (wl_fixed_to_int(fw) == -1 && wl_fixed_to_int(fh) == -1) {
+    if (fx == wl_fixed_from_int(-1) && fy == fx && fw == fx && fh == fx) {
         // unset: 恢复全 buffer (注意参数是 wl_fixed_t, unset 编码为 wl_fixed_from_int(-1))
         sd->vpSrcX = 0;
         sd->vpSrcY = 0;
         sd->vpSrcW = -1;
         sd->vpSrcH = -1;
+        sd->directViewportPending.x = sd->directViewportPending.y = 0;
+        sd->directViewportPending.width = sd->directViewportPending.height = -1;
         return;
     }
+    if (fx < 0 || fy < 0 || fw <= 0 || fh <= 0) {
+        wl_resource_post_error(vpRes, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid viewport source");
+        return;
+    }
+    const bool changed = sd->directViewportPending.x != wl_fixed_to_double(fx) ||
+                         sd->directViewportPending.y != wl_fixed_to_double(fy) ||
+                         sd->directViewportPending.width != wl_fixed_to_double(fw) ||
+                         sd->directViewportPending.height != wl_fixed_to_double(fh);
+    sd->directViewportPending.x = wl_fixed_to_double(fx);
+    sd->directViewportPending.y = wl_fixed_to_double(fy);
+    sd->directViewportPending.width = wl_fixed_to_double(fw);
+    sd->directViewportPending.height = wl_fixed_to_double(fh);
     sd->vpSrcX = wl_fixed_to_int(fx);
     sd->vpSrcY = wl_fixed_to_int(fy);
     sd->vpSrcW = wl_fixed_to_int(fw);
     sd->vpSrcH = wl_fixed_to_int(fh);
-    OH_LOG_INFO(LOG_APP, "[MW-VP] set_source surf=%{public}p tl=%{public}u src=(%{public}d,%{public}d %{public}dx%{public}d)",
-                surf, sd->toplevelId, sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH);
+    if (changed) {
+        OH_LOG_INFO(LOG_APP, "[MW-VP] set_source surf=%{public}p tl=%{public}u src=(%{public}d,%{public}d %{public}dx%{public}d)",
+                    surf, sd->toplevelId, sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH);
+    }
 }
 
 void WaylandServer::viewport_set_destination(wl_client*, wl_resource* vpRes, int32_t w, int32_t h) {
-    auto* surf = static_cast<wl_resource*>(wl_resource_get_user_data(vpRes));
+    auto* surf = ViewportSurface(vpRes);
     if (!surf) return;
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
     if (!sd) return;
+    if (!((w == -1 && h == -1) || (w > 0 && h > 0))) {
+        wl_resource_post_error(vpRes, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid viewport destination");
+        return;
+    }
+    sd->directViewportPending.destinationW = w;
+    sd->directViewportPending.destinationH = h;
     sd->vpDstW = w;
     sd->vpDstH = h;
+}
+
+void WaylandServer::viewport_destroy(wl_client*, wl_resource* resource) {
+    auto* data = static_cast<ViewportResource*>(wl_resource_get_user_data(resource));
+    auto* surface = data ? data->surface : nullptr;
+    auto* sd = surface ? static_cast<SurfaceData*>(wl_resource_get_user_data(surface)) : nullptr;
+    if (sd) {
+        sd->directViewportPending.x = sd->directViewportPending.y = 0;
+        sd->directViewportPending.width = sd->directViewportPending.height = -1;
+        sd->directViewportPending.destinationW = sd->directViewportPending.destinationH = -1;
+    }
+    wl_resource_destroy(resource);
+}
+
+void WaylandServer::surface_set_buffer_transform(wl_client*, wl_resource* surface, int32_t transform) {
+    if (transform < 0 || transform > 7) {
+        wl_resource_post_error(surface, WL_SURFACE_ERROR_INVALID_TRANSFORM, "invalid buffer transform");
+        return;
+    }
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surface));
+    if (sd) sd->directViewportPending.transform = transform;
+}
+
+void WaylandServer::surface_set_buffer_scale(wl_client*, wl_resource* surface, int32_t scale) {
+    if (scale <= 0) {
+        wl_resource_post_error(surface, WL_SURFACE_ERROR_INVALID_SCALE, "invalid buffer scale");
+        return;
+    }
+    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surface));
+    if (sd) sd->directViewportPending.scale = scale;
 }
 
 // -- output 实现 --
@@ -376,7 +470,7 @@ void WaylandServer::output_bind(wl_client* client, void* data, uint32_t version,
         wl_output_send_name(res, "Wine-Virtual-0");
         wl_output_send_description(res, "Virtual output for Wine Wayland driver");
     }
-    wl_output_send_done(res);
+    if (version >= 2) wl_output_send_done(res);
 }
 
 // -- surface 实现 --
@@ -384,8 +478,6 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
     OH_LOG_INFO(LOG_APP, "[MW-Life] surface_destroy surf=%{public}p hasToplevel=%{public}d toplevelId=%{public}u isSubsurface=%{public}d",
                 r, sd ? sd->hasToplevel : 0, sd ? sd->toplevelId : 0, sd ? sd->isSubsurface : 0);
-    // IME per-surface 矩形记忆随 surface 生命周期清除 (悬指针键防护)
-    TextInput::GetInstance()->ForgetSurface(r);
     if (sd && sd->hasToplevel) {
         // 清理 surface 映射
         auto* self = GetInstance();
@@ -425,6 +517,7 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
 void WaylandServer::surface_attach(wl_client*, wl_resource* surfRes, wl_resource* buffer, int32_t, int32_t) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surfRes));
     sd->pendingBuffer = buffer;
+    sd->pendingBufferAttached = true;
     // 新 buffer → 重置 damage
     sd->damageX = 0; sd->damageY = 0;
     sd->damageW = 0; sd->damageH = 0;
@@ -483,6 +576,13 @@ void WaylandServer::surface_frame(wl_client* client, wl_resource* surfRes, uint3
 // 返回 true = 本次 commit 已处理完 (无 buffer, 无后续流程)。
 bool WaylandServer::HandleNullBufferCommit(SurfaceData* sd, wl_resource* surfRes) {
     if (sd->pendingBuffer) return false;
+    if (!sd->pendingBufferAttached) {
+        // A GPU-backed client commits callbacks/state without uploading a new
+        // SHM buffer. Keep its existing layer and acknowledge the commit.
+        FinishCommit(sd, surfRes);
+        return true;
+    }
+    sd->pendingBufferAttached = false;
     if (sd->isSubsurface) {
         uint32_t removedPopup = 0, popupParent = 0;
         {
@@ -528,7 +628,7 @@ bool WaylandServer::BeginShmAccess(SurfaceData* sd, ShmCommitInfo& fi) {
 // 模式另有含义 (虚拟桌面屏幕位置), subsurface 则是相对父 surface 的偏移。
 // 几何计算段已收口到 ShmFrameSource::ComputeContentAreaGeometry (重构第
 // 5A1 步, SurfaceData 字段值语义参数化, 逻辑逐字搬移, 行为平价); 本函数
-// 保留 hilog 日志 (MW-GEO/MW-STRIDE), 条件/文本/顺序与旧实现逐字一致。
+// MW-GEO 逐帧日志只在 frame trace 开启时输出; MW-STRIDE 告警保留。
 // 三义分流显式化 (重构第 5A2 步): 旧代码把 sd->geoX/geoY (三义字段, PLAN
 // §2.4) 原样喂给纯函数, 由函数内 hasToplevel 猜义; 现按命名字段取义 —
 // 角色 = committed.role (显式枚举), 几何值 = contentRect.x/y (写点直写的
@@ -539,7 +639,7 @@ void WaylandServer::ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi) {
     ComputeContentAreaGeometry(fi, c.hasWindowGeometry, c.contentRect.w, c.contentRect.h,
                                c.role == CommittedSurface::Role::Toplevel,
                                c.contentRect.x, c.contentRect.y);
-    if (c.hasWindowGeometry && c.contentRect.w > 0 && c.contentRect.h > 0) {
+    if (winehua::FrameTraceEnabled() && c.hasWindowGeometry && c.contentRect.w > 0 && c.contentRect.h > 0) {
         OH_LOG_INFO(LOG_APP, "[MW-GEO] using window_geometry: src=%{public}dx%{public}d geo=(%{public}d,%{public}d %{public}dx%{public}d) screen=(%{public}d,%{public}d) vpSrc=(%{public}d,%{public}d %{public}dx%{public}d) vpDst=%{public}dx%{public}d",
                     fi.bufW, fi.bufH, fi.contentOffX, fi.contentOffY, fi.contentW, fi.contentH,
                     fi.screenX, fi.screenY,
@@ -640,7 +740,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
      */
     if (outFirstCommit && Policy().OhosWindowPerToplevel()) {
         PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
-                          ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
+                          ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH, sd->clientPid));
     }
     // ARGB 窗口位置同步 (argb_move) 随 "ARGB 也走普通窗口" 决定停用: ARGB
     // 窗口位置与 XRGB 窗口同规则 — OHOS 窗口管理器为权威, Wine 后续 commit
@@ -684,8 +784,10 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
             toplevelMgr_.EnsureInZOrder(sd->toplevelId);
         }
     }
-    OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
-                sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
+    if (winehua::FrameTraceEnabled()) {
+        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
+                    sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
+    }
 
     // 检测尺寸变化 -> 通知 ArkTS 调整子窗口: 尺寸变化判定 + 全屏尺寸漂移
     // 补丁 (war3 D3D 模式切换画面缩左上, PLAN §2.5; 补丁注释完整平移, 见
@@ -728,9 +830,14 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOp
         }
     }
     DesktopRootManager::CheckRootResult cr;
+    bool needsInitialFrame = false;
     {
         auto lk = toplevelMgr_.Lock();
         cr = desktopRootMgr_.CheckRootLocked(sd, recognitionOpportunity);
+        if (cr.fireDesktopRoot) {
+            const auto* root = toplevelMgr_.FindToplevelLocked(sd->toplevelId);
+            needsInitialFrame = !root || !root->HasFrame();
+        }
         MarkDesktopRootDirtyLocked();
     }
     if (cr.moveRendererTo)
@@ -744,6 +851,8 @@ void WaylandServer::CheckDesktopRootOnCommit(SurfaceData* sd, bool recognitionOp
         // 首帧不注入 enter, 桌面不激活 (症状: 桌面
         // 只在点击时才刷新, regedit 打开内容不完整, 菜单弹出后释放即关)
         ResetFirstFrame();
+        if (needsInitialFrame && session_.outputW > 0 && session_.outputH > 0)
+            NotifyToplevelResize(sd->toplevelId, session_.outputW, session_.outputH);
         PostToplevelEvent(sd->toplevelId, ToplevelEventType::DesktopRoot);
     }
 }
@@ -765,8 +874,24 @@ void WaylandServer::RecheckDesktopRootOnTitle(SurfaceData* sd) {
 //                  独立子窗口渲染 (可越界/输入自持, 不能进窗口帧)
 void WaylandServer::UpdateSubsurfaceOnCommit(SurfaceData* sd, wl_resource* surfRes, ShmCommitInfo& fi) {
     if (!sd->isSubsurface || !sd->parentSurface || sd->pixels.empty()) return;
-    auto* parentSd = static_cast<SurfaceData*>(wl_resource_get_user_data(sd->parentSurface));
-    if (!parentSd || !parentSd->hasToplevel) return;
+    /* 子面的直接父级不一定带 xdg 角色: Wine 的 GL drawable 会挂在窗口自己的
+     * wl_surface 下, 而中间层可能只是普通 surface (实测 PAL2: 1280x800
+     * toplevel 的 serial 停在 2, 真正的游戏帧全部提交在 640x480 subsurface 上,
+     * 序号随 GL present 桥的 readbacks 增长)。只看直接父级会把这类帧整段丢掉,
+     * 表现就是"游戏在跑但窗口黑屏/空白"。
+     * 沿父链向上找到最近的 toplevel 归属, 帧仍按该 toplevel 合成。 */
+    SurfaceData* parentSd = nullptr;
+    wl_resource* ancestor = sd->parentSurface;
+    for (int depth = 0; ancestor && depth < 8; ++depth) {
+        auto* ancestorSd = static_cast<SurfaceData*>(wl_resource_get_user_data(ancestor));
+        if (!ancestorSd) break;
+        if (ancestorSd->hasToplevel) {
+            parentSd = ancestorSd;
+            break;
+        }
+        ancestor = ancestorSd->parentSurface;
+    }
+    if (!parentSd) return;
     const auto route = Policy().RouteForSubsurface(sd->inputRegionEmpty, sd->vpSrcW);
     if (route == DisplayPolicy::SubsurfaceRoute::DesktopLayer) {
         UpdateSubsurfaceLayerOnCommit(sd, surfRes, parentSd->toplevelId, fi);
@@ -855,6 +980,7 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     layer.shmFormat = fi.shmFormat;
     layer.opaque = opaque;
     layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
+    layer.viewport = sd->directViewport;
     layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
     layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
     layer.route = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
@@ -906,6 +1032,7 @@ void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource*
     layer.shmFormat = fi.shmFormat;
     layer.opaque = opaque;
     layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
+    layer.viewport = sd->directViewport;
     layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
     layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
     layer.route = DisplayPolicy::SubsurfaceRoute::InlineClient;
@@ -927,26 +1054,35 @@ void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource*
 // 首帧通知 ArkTS + 预设 pointer/keyboard focus。
 void WaylandServer::FinishCommit(SurfaceData* sd, wl_resource* surfRes) {
     // release buffer + frame done
-    wl_buffer_send_release(sd->pendingBuffer);
+    const bool hadBuffer = sd->pendingBuffer != nullptr;
+    if (hadBuffer) wl_buffer_send_release(sd->pendingBuffer);
 
-    uint32_t now = static_cast<uint32_t>(time(nullptr) * 1000);
+    const uint32_t now = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     for (auto* cb : sd->frameCallbacks) {
         wl_callback_send_done(cb, now);
         wl_resource_destroy(cb);
     }
     sd->frameCallbacks.clear();
     sd->pendingBuffer = nullptr;
+    sd->pendingBufferAttached = false;
 
     // 首帧通知 + 预设 pointer/keyboard focus: 会话焦点策略 (session_.firstFrame
     // CAS 判定 + active 事件 + enter 预注入, 条件/顺序逐字) 收口于
     // WaylandServer::TryBeginSessionFirstFrame — 协议壳只陈述"首帧 commit
     // 发生", 不亲自做焦点决策 (参考 HarmonyBox, 完整说明见 wayland_server.cpp)
-    TryBeginSessionFirstFrame(sd->toplevelId, surfRes);
+    if (hadBuffer) TryBeginSessionFirstFrame(sd->toplevelId, surfRes);
 }
 
 void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surfRes));
     auto* self = GetInstance();  // static 回调无 this, 分段均为实例方法
+    const bool loopDiagnostics = (winehua::FrameLoopDiagnosticState() & 1) != 0;
+    const uint64_t diagnosticStartedUs = loopDiagnostics ? winehua::PerfNowUs() : 0;
+    {
+        auto lock = self->toplevelMgr_.Lock();
+        sd->directViewport = sd->directViewportPending;
+    }
     // WL-T 临时诊断: commit 在 wl 事件循环线程上的占用 — >2ms 打单行,
     // 另按 5s 窗口汇总, 与 LAT-NAPI→LAT-INJ 的 8ms/86ms 对时。
     // 默认关闭 (WINEHUA_FRAME_TRACE=1 开启, 见 perf_utils.h FrameTraceEnabled);
@@ -955,10 +1091,15 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     const auto wt0 = frameTrace ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point();
     // NULL buffer → surface 无内容 (unmap)
-    if (self->HandleNullBufferCommit(sd, surfRes)) return;
+    if (self->HandleNullBufferCommit(sd, surfRes)) {
+        if (loopDiagnostics) winehua::NoteProducerCommit(false, sd->isSubsurface, true, 0,
+            winehua::PerfNowUs()-diagnosticStartedUs, 0);
+        return;
+    }
 
     ShmCommitInfo fi;
-    if (self->BeginShmAccess(sd, fi)) {
+    const bool shmCommit = self->BeginShmAccess(sd, fi);
+    if (shmCommit) {
         self->ComputeContentArea(sd, fi);
         // sd->pixels 的消费方全部是 subsurface 路径 (desktop layer 合成 / PC popup /
         // ARGB 检测); toplevel 的帧走 UpdateToplevelFrameOnCommit 的内容裁剪拷贝,
@@ -969,9 +1110,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         sd->w = fi.contentW;
         sd->h = fi.contentH;
         fi.shmCommitSerial = sd->shmCommitSerial.fetch_add(1, std::memory_order_release) + 1;
-        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
-                    fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
-                    sd->committed.hasWindowGeometry ? "yes" : "no");
+        if (frameTrace) {
+            OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
+                        fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
+                        sd->committed.hasWindowGeometry ? "yes" : "no");
+        }
 
         // CommittedSurface 快照产出 (重构第 5A2 步): 填入 commit 时点可观察值
         // (screenPos/parentOffset/frame; role 与几何已随协议设置点直写)。
@@ -985,7 +1128,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         wl_shm_buffer_end_access(fi.shm);
     }
 
+    const size_t diagnosticCallbacks = loopDiagnostics ? sd->frameCallbacks.size() : 0;
     self->FinishCommit(sd, surfRes);
+    if (loopDiagnostics) winehua::NoteProducerCommit(shmCommit, sd->isSubsurface, false,
+        shmCommit && fi.stride > 0 && fi.bufH > 0 ? static_cast<uint64_t>(fi.stride)*fi.bufH : 0,
+        winehua::PerfNowUs()-diagnosticStartedUs, diagnosticCallbacks);
 
     // WL-T 临时诊断 (接函数头): commit 占用统计; frameTrace 关闭时整体跳过
     if (frameTrace) {
@@ -1013,7 +1160,9 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
     wl_global_create(display, &wl_compositor_interface, 4, self, WaylandServer::compositor_bind);
     wl_global_create(display, &wl_subcompositor_interface, 1, self, WaylandServer::subcompositor_bind);
     wl_global_create(display, &wp_viewporter_interface, 1, self, WaylandServer::viewporter_bind);
-    wl_global_create(display, &wl_output_interface, 3, self, WaylandServer::output_bind);
+    // v4 adds output name/description; output_bind already sends both.
+    // New Wine Wayland clients require v4 to enumerate a monitor.
+    wl_global_create(display, &wl_output_interface, 4, self, WaylandServer::output_bind);
     // dinput 老游戏的指针扩展 (warp 回中/指针约束/relative pointer,
     // 三者均在 PointerExtras::Register 注册, 见 pointer_extras.h 头注释)
     PointerExtras::GetInstance()->Register(display);
@@ -1025,6 +1174,9 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
         [](wl_resource* surface, double x, double y) {
             InputManager::GetInstance()->OnPointerWarp(surface, x, y);
         });
+    PointerExtras::GetInstance()->SetRelativeBaselineSink([](const char* reason) {
+        InputManager::GetInstance()->InvalidateRelativePointerBaseline(reason);
+    });
     // 会话引用装配 (重构第 6A 步): surface→toplevel 反查 (FindToplevelBySurface)
     // 与 isShell 判定直呼 ToplevelManager / root id / 桌面模式标志的共享引用 —
     // 替代 WaylandServer::FindToplevelIdBySurface/GetDesktopRootToplevelId 转发
@@ -1032,7 +1184,7 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
     // (与 warpSink 同模式; 装配出口见 wayland_server.h)。
     PointerExtras::GetInstance()->BindWaylandRefs(
         &WaylandServer::GetInstance()->GetToplevelManager(),
-        &self->DesktopRootToplevelIdRef(),
+        &self->DesktopRootToplevelIdRef(), &self->GetInputResolver(),
         &self->DesktopModeRef());
     // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
     TextInput::GetInstance()->Register(display);

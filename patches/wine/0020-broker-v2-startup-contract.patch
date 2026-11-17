@@ -1,0 +1,614 @@
+diff --git a/dlls/ntdll/unix/ohos_broker.c b/dlls/ntdll/unix/ohos_broker.c
+--- a/dlls/ntdll/unix/ohos_broker.c
++++ b/dlls/ntdll/unix/ohos_broker.c
+@@ -35,6 +35,7 @@
+ #include <unistd.h>
+
+ #include "wine/debug.h"
++#include "ohos_spawn_protocol.h"
+
+ WINE_DEFAULT_DEBUG_CHANNEL(process);
+
+@@ -45,105 +46,59 @@
+     return path ? path : "/data/storage/el2/base/files/.wine_broker";
+ }
+
+-/* Send a SPAWN request over an already-connected broker socket.
+- * entry_params may be NULL (treated as empty).
+- * Returns 0 on success (sets *child_pid), -1 on failure. */
+-static int broker_send_spawn(int broker_fd, const char *entry_params,
+-                             const char **fd_names, const int *fds, int n_fds,
+-                             int *child_pid)
+-{
+-    char req_hdr[] = "SPAWN\n";
+-    size_t ep_len = entry_params ? strlen(entry_params) : 0;
+-    char fds_line[512];
+-    int fl_len, i;
+-    struct iovec iov_parts[3];
+-    struct msghdr msg;
+-    union { char buf[CMSG_SPACE(sizeof(int) * 16)]; struct cmsghdr align; } ctrl;
+-    ssize_t received;
+-    int32_t response[2];
+-
+-    if (n_fds > 16) n_fds = 16;  /* ctrl buffer limit, aligned with broker side */
+-
+-    /* Build "\nFDS:name0,name1,...\n" (just "\n" when no fds) */
+-    if (n_fds > 0)
+-    {
+-        fl_len = snprintf(fds_line, sizeof(fds_line), "\nFDS:");
+-        for (i = 0; i < n_fds; i++)
+-            fl_len += snprintf(fds_line + fl_len, sizeof(fds_line) - fl_len,
+-                               "%s%s", i ? "," : "", fd_names[i]);
+-        fl_len += snprintf(fds_line + fl_len, sizeof(fds_line) - fl_len, "\n");
+-    }
+-    else fl_len = snprintf(fds_line, sizeof(fds_line), "\n");
+-
+-    iov_parts[0].iov_base = req_hdr;
+-    iov_parts[0].iov_len  = sizeof(req_hdr) - 1;
+-    iov_parts[1].iov_base = (void *)(entry_params ? entry_params : "");
+-    iov_parts[1].iov_len  = ep_len;
+-    iov_parts[2].iov_base = fds_line;
+-    iov_parts[2].iov_len  = fl_len;
+-
+-    memset(&msg, 0, sizeof(msg));
+-    msg.msg_iov = iov_parts;
+-    msg.msg_iovlen = 3;
+-    if (n_fds > 0)
+-    {
+-        struct cmsghdr *cmsg;
+-        msg.msg_control = ctrl.buf;
+-        msg.msg_controllen = CMSG_SPACE(sizeof(int) * n_fds);
+-        cmsg = CMSG_FIRSTHDR(&msg);
+-        cmsg->cmsg_level = SOL_SOCKET;
+-        cmsg->cmsg_type  = SCM_RIGHTS;
+-        cmsg->cmsg_len   = CMSG_LEN(sizeof(int) * n_fds);
+-        memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * n_fds);
+-        msg.msg_controllen = cmsg->cmsg_len;
+-    }
+-
+-    if (sendmsg(broker_fd, &msg, MSG_NOSIGNAL) < 0) return -1;
+-
+-    received = recv(broker_fd, response, sizeof(response), MSG_WAITALL);
+-    if (received != sizeof(response)) return -1;
+-    if (response[1] != 0 || response[0] <= 0) return -1;
+-    *child_pid = response[0];
++/* Every sender uses the same v2 framing and bounded I/O as the app. */
++static int broker_spawn_spec(const vp_spawn_spec *spec, const int *fds, int *child_pid)
++{
++    int fd, result, pid = -1, status = -1, error;
++    int64_t deadline = vp_now_ms() + 45000;
++    if (!child_pid || spec->fdc > VP_CLIENT_FDS_CAP || (spec->fdc && !fds)) return vp_bad(EINVAL);
++    *child_pid = -1;
++    if (vp_validate_spec(spec)) return -1;
++    fd = vp_connect_path(broker_socket_path(), deadline);
++    if (fd < 0) return -1;
++    result = vp_send_request(fd, spec, fds, deadline);
++    if (!result) result = vp_recv_reply(fd, &pid, &status, deadline);
++    error = errno;
++    close(fd);
++    if (result) return vp_bad(error);
++    if (status || pid <= 0) {
++        WARN("broker startup failed status=%d pid=%d\n", status, pid);
++        return vp_bad(status < 0 ? -status : EIO);
++    }
++    *child_pid = pid;
+     return 0;
+ }
+
+-/***********************************************************************
+- *           ohos_broker_spawn
+- *
+- * Connect to the Process Broker and send a SPAWN request.
+- *
+- * The broker manages child process creation on OHOS (where fork/exec
+- * are unavailable).  Callers construct entry_params with the target
+- * binary and arguments, and optionally pass file descriptors to be
+- * inherited by the child via SCM_RIGHTS.
+- *
+- * Protocol (over Unix socket):
+- *   send:  "SPAWN\n{entry_params}\n[FDS:name0,...]\n" [+ cmsg{fds}]
+- *   recv:  int32_t[2] = {child_pid, error_status}
+- */
+-int ohos_broker_spawn(const char *entry_params,
+-                      const char **fd_names, const int *fds, int n_fds,
+-                      int *child_pid)
+-{
+-    const char *path = broker_socket_path();
+-    struct sockaddr_un addr;
+-    int broker_fd;
+-    int ret = -1;
+-
+-    broker_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+-    if (broker_fd < 0) return -1;
+-
+-    memset(&addr, 0, sizeof(addr));
+-    addr.sun_family = AF_UNIX;
+-    strcpy(addr.sun_path, path);
+-
+-    if (connect(broker_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0)
+-        ret = broker_send_spawn(broker_fd, entry_params, fd_names, fds, n_fds, child_pid);
+-
+-    close(broker_fd);
+-    return ret;
+-}
+-
++/* Compatibility for internal callers of the old string API. Product child
++ * and wineserver startup below never serialize argv through delimiters. */
++int ohos_broker_spawn(const char *entry_params, const char **fd_names,
++                      const int *fds, int n_fds, int *child_pid)
++{
++    vp_spawn_spec spec = {0};
++    char *copy, *next, *token;
++    const char **argv, **env;
++    int result;
++    if (!entry_params || strnlen(entry_params, VP_PAYLOAD_CAP + 1) > VP_PAYLOAD_CAP ||
++        n_fds < 0 || n_fds > (int)VP_CLIENT_FDS_CAP) return vp_bad(EINVAL);
++    copy = strdup(entry_params);
++    argv = calloc(VP_ITEMS_CAP, sizeof(*argv)); env = calloc(VP_ITEMS_CAP, sizeof(*env));
++    if (!copy || !argv || !env) { free(copy); free(argv); free(env); return vp_bad(ENOMEM); }
++    next = copy; spec.home = ""; spec.bin = strsep(&next, "|");
++    spec.argv = argv; spec.env = env; spec.names = fd_names; spec.fdc = n_fds;
++    while ((token = strsep(&next, "|"))) {
++        if (!strncmp(token, "__env=", 6)) {
++            if (spec.envc >= VP_ITEMS_CAP) goto too_big;
++            env[spec.envc++] = token + 6;
++        } else {
++            if (spec.argc >= VP_ITEMS_CAP) goto too_big;
++            argv[spec.argc++] = token;
++        }
++    }
++    result = broker_spawn_spec(&spec, fds, child_pid);
++    free(copy); free(argv); free(env); return result;
++too_big:
++    free(copy); free(argv); free(env); return vp_bad(E2BIG);
++}
+
+ /* Resolve binDir from WINEBINDIR env or fallback. */
+ static const char *resolve_bindir(void)
+@@ -157,13 +112,7 @@
+  * Blacklist: per-process fd/handle vars that the child gets via fdList. */
+ static int env_forwardable(const char *env)
+ {
+-    if (strchr(env, '|') || strchr(env, '\n')) return 0;
+-    if (!strncmp(env, "WINESERVERSOCKET=", 17) ||
+-        !strncmp(env, "WINE_OHOS_AUDIO_ENABLE=", 23) ||
+-        !strncmp(env, "WINE_OHOS_AUDIO_BOOTSTRAP_FD=", 29) ||
+-        !strncmp(env, "WINE_OHOS_AUDIO_PROTOCOL_VERSION=", 33))
+-        return 0;
+-    return 1;
++    return !vp_is_process_env(env);
+ }
+
+ 
+@@ -173,73 +122,53 @@
+  * Convenience wrapper to spawn wineserver via the Process Broker.
+  * Resolves binDir and sends entry_params "binDir|wineserver|-f|-p".
+  */
+-int ohos_broker_spawn_wineserver( int *child_pid )
+-{
+-    const char *binDir = resolve_bindir();
+-    char entryParams[1024];
+-    snprintf(entryParams, sizeof(entryParams), "%s|wineserver|-f|-p", binDir);
+-    return ohos_broker_spawn(entryParams, NULL, NULL, 0, child_pid);
+-}
+-
+-
+-/***********************************************************************
+- *           ohos_broker_spawn_child
+- *
+- * Spawn a Wine child process via the Process Broker.
+- * Builds entryParams from argv array + filtered environ, and passes
+- * socketfd as "wineserver_sock" via SCM_RIGHTS.
+- */
+-int ohos_broker_spawn_child( char **argv, int socketfd, int *child_pid )
+-{
+-    const char *binDir = resolve_bindir();
++int ohos_broker_spawn_wineserver(int *child_pid)
++{
++    const char *argv[] = {"wineserver", "-f", "-p"};
++    vp_spawn_spec spec = {"", resolve_bindir(), argv, NULL, NULL, 3, 0, 0};
++    return broker_spawn_spec(&spec, NULL, child_pid);
++}
++
++int ohos_broker_spawn_child(char **argv, int socketfd, const char *winedebug, int *child_pid)
++{
+     extern char **environ;
+-    char *entryParams = NULL;
+-    const char *fd_names[4];
+-    int fds[4];
+-    int n_send_fds = 0;
+-    int i, j, len;
+-    int ret;
+-
+-    /* Compute entryParams buffer size */
+-    len = strlen(binDir) + 1;
+-    if (!getenv("USE_LIBBOX64"))
+-        len += 5; /* + "|wine" */
+-    for (i = 0; argv[i]; i++) len += strlen(argv[i]) + 1;
+-    if (environ) {
+-        for (j = 0; environ[j]; j++) {
+-            if (!env_forwardable(environ[j])) continue;
+-            len += strlen(environ[j]) + 7; /* "|__env=" prefix */
+-        }
+-    }
+-
+-    entryParams = malloc(len + 1);
+-    if (!entryParams) return -1;
+-
+-    /* Build entryParams: "binDir[|wine]|arg0|arg1|...|__env=K=V|..." */
+-    {
+-        char *p = entryParams;
+-        if (getenv("USE_LIBBOX64"))
+-            p += snprintf(p, len + 1, "%s", binDir);
+-        else
+-            p += snprintf(p, len + 1, "%s|wine", binDir);
+-        for (i = 0; argv[i]; i++)
+-            p += snprintf(p, len + 1 - (p - entryParams), "|%s", argv[i]);
+-        if (environ) {
+-            for (j = 0; environ[j]; j++) {
+-                if (!env_forwardable(environ[j])) continue;
+-                p += snprintf(p, len + 1 - (p - entryParams), "|__env=%s", environ[j]);
+-            }
+-        }
+-    }
+-
+-    /* Collect fds */
+-    fd_names[n_send_fds] = "wineserver_sock";
+-    fds[n_send_fds] = socketfd;
+-    n_send_fds++;
+-
+-    ret = ohos_broker_spawn(entryParams, fd_names, fds, n_send_fds, child_pid);
+-    free(entryParams);
+-    return ret;
++    const char *fd_names[] = {"wineserver_sock"};
++    const char **args = NULL, **env = NULL;
++    vp_spawn_spec spec = {0};
++    uint32_t argc = 0, envc = 0, i, offset = getenv("USE_LIBBOX64") ? 0 : 1;
++    int result;
++    char *debug_override = NULL;
++    const char *parent_debug = getenv("WINEDEBUG");
++    if (!argv || socketfd < 0) return vp_bad(EINVAL);
++    while (argv[argc]) { if (++argc > VP_ITEMS_CAP - offset) return vp_bad(E2BIG); }
++    /* A Windows launcher can change WINEDEBUG in its child environment without
++     * changing Unix environ. The fork/exec path already honors this parameter.
++     * Forward only a changed debug selection to the NCP profile selector; do
++     * not mutate the parent's environment or import arbitrary Windows paths. */
++    if (winedebug && strncmp(winedebug, "WINEDEBUG=", 10)) return vp_bad(EINVAL);
++    if (winedebug && (!parent_debug || strcmp(winedebug + 10, parent_debug))) {
++        if (asprintf(&debug_override, "WINEHUA_WINEDEBUG=%s", winedebug[10] ? winedebug + 10 : "-all") < 0)
++            return vp_bad(ENOMEM);
++    }
++    if (environ) for (i = 0; environ[i]; ++i)
++        if (env_forwardable(environ[i]) &&
++            !(debug_override && !strncmp(environ[i], "WINEHUA_WINEDEBUG=", 18)) &&
++            ++envc > VP_ITEMS_CAP) { free(debug_override); return vp_bad(E2BIG); }
++    if (debug_override && ++envc > VP_ITEMS_CAP) { free(debug_override); return vp_bad(E2BIG); }
++    args = calloc(argc + offset + 1, sizeof(*args));
++    env = calloc(envc + 1, sizeof(*env));
++    if (!args || !env) { free(args); free(env); free(debug_override); return vp_bad(ENOMEM); }
++    if (offset) args[0] = "wine";
++    for (i = 0; i < argc; ++i) args[i + offset] = argv[i];
++    envc = 0;
++    if (environ) for (i = 0; environ[i]; ++i)
++        if (env_forwardable(environ[i]) &&
++            !(debug_override && !strncmp(environ[i], "WINEHUA_WINEDEBUG=", 18))) env[envc++] = environ[i];
++    if (debug_override) env[envc++] = debug_override;
++    spec.home = ""; spec.bin = resolve_bindir(); spec.argv = args; spec.env = env;
++    spec.argc = argc + offset; spec.envc = envc; spec.names = fd_names; spec.fdc = 1;
++    result = broker_spawn_spec(&spec, &socketfd, child_pid);
++    free(args); free(env); free(debug_override); return result;
+ }
+
+ 
+diff --git a/dlls/ntdll/unix/ohos_broker.h b/dlls/ntdll/unix/ohos_broker.h
+--- a/dlls/ntdll/unix/ohos_broker.h
++++ b/dlls/ntdll/unix/ohos_broker.h
+@@ -25,14 +25,14 @@
+
+ /* Send a SPAWN request to the Process Broker via Unix socket.
+  *
+- * The broker protocol:
+- *   "SPAWN\n{entry_params}\n[FDS:name0,name1,...]\n" + cmsg{fds}
++ * The Broker v2 protocol (app and runtime must be updated together):
++ *   VPBR + version 2 + payload length + length-prefixed fields + SCM_RIGHTS
+  * Response: int32_t[2] = {child_pid, status} (status 0 = success)
+  *
+  * entry_params: "binDir|arg0|arg1|..." may contain |__env=K=V segments
+  * fd_names: named file descriptors to pass (NULL if n_fds == 0)
+  * fds: file descriptors to send via SCM_RIGHTS (NULL if n_fds == 0)
+- * n_fds: number of fds (clamped to 16 max)
++ * n_fds: at most 15; one NCP descriptor is reserved for audio; excess is an error
+  * child_pid: output, receives child process PID
+  *
+  * Returns 0 on success, -1 on failure.
+@@ -42,15 +42,15 @@
+                       int *child_pid);
+
+ /* Convenience: spawn wineserver via broker.
+- * Resolves binDir from WINEBINDIR env, sends "binDir|wineserver|-f|-p".
++ * Resolves binDir from WINEBINDIR env, sends distinct binDir/argv fields.
+  * Returns 0 on success (sets *child_pid), -1 on failure. */
+ int ohos_broker_spawn_wineserver( int *child_pid );
+
+ /* Convenience: spawn a Wine child process via broker.
+- * Builds entryParams from argv + environ (blacklist-filtered),
++ * Sends argv + environ as separate arrays (process-local fd variables filtered),
+  * and passes socketfd as "wineserver_sock" via SCM_RIGHTS.
+  * Returns 0 on success (sets *child_pid), -1 on failure. */
+-int ohos_broker_spawn_child( char **argv, int socketfd, int *child_pid );
++int ohos_broker_spawn_child( char **argv, int socketfd, const char *winedebug, int *child_pid );
+
+ /* Scan for wineserver socket in WINEPREFIX/.wineserver/<host>/socket.
+  * poll_sec: 0=single check; >0=poll N seconds (200ms intervals)
+--- /dev/null
++++ b/dlls/ntdll/unix/ohos_spawn_protocol.h
+@@ -0,0 +1,269 @@
++/* Versioned Wine/OHOS startup transport. Keep the Wine patch copy identical.
++ * Copyright 2026 VintagePomelo contributors. SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef VP_SPAWN_PROTOCOL_H
++#define VP_SPAWN_PROTOCOL_H
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#include <time.h>
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++/* The SDK documents 150 KB. Use a conservative byte budget including NUL. */
++#define VP_ENTRY_CAP 150000u
++#define VP_PAYLOAD_CAP (112u * 1024u)
++#define VP_ITEMS_CAP 4096u
++#define VP_FDS_CAP 16u
++#define VP_CLIENT_FDS_CAP 15u
++#define VP_FRAME_HEADER 12u
++#define VP_ENTRY_PREFIX "VPP2:"
++typedef struct vp_spawn_spec {
++    const char *home, *bin;
++    const char **argv, **env, **names;
++    uint32_t argc, envc, fdc;
++} vp_spawn_spec;
++typedef struct vp_received_fds { int items[VP_FDS_CAP]; size_t count; } vp_received_fds;
++static inline int vp_is_process_env(const char *env)
++{
++    return !strncmp(env, "WINESERVERSOCKET=", sizeof("WINESERVERSOCKET=") - 1) ||
++        !strncmp(env, "WINE_OHOS_AUDIO_ENABLE=", sizeof("WINE_OHOS_AUDIO_ENABLE=") - 1) ||
++        !strncmp(env, "WINE_OHOS_AUDIO_BOOTSTRAP_FD=", sizeof("WINE_OHOS_AUDIO_BOOTSTRAP_FD=") - 1) ||
++        !strncmp(env, "WINE_OHOS_AUDIO_PROTOCOL_VERSION=", sizeof("WINE_OHOS_AUDIO_PROTOCOL_VERSION=") - 1);
++}
++
++static inline void vp_store32(unsigned char *p, uint32_t v)
++{ p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
++static inline uint32_t vp_load32(const unsigned char *p)
++{ return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
++static inline int vp_bad(int error) { errno = error; return -1; }
++static inline void vp_free_spec(vp_spawn_spec *s)
++{
++    uint32_t i;
++    free((void *)s->home); free((void *)s->bin);
++    if (s->argv) for (i = 0; i < s->argc; ++i) free((void *)s->argv[i]);
++    if (s->env) for (i = 0; i < s->envc; ++i) free((void *)s->env[i]);
++    if (s->names) for (i = 0; i < s->fdc; ++i) free((void *)s->names[i]);
++    free(s->argv); free(s->env); free(s->names); memset(s, 0, sizeof(*s));
++}
++static inline int vp_validate_spec(const vp_spawn_spec *s)
++{
++    uint32_t i, j;
++    if (!s->home || !s->bin || !s->bin[0] || !s->argc || s->argc > VP_ITEMS_CAP ||
++        s->envc > VP_ITEMS_CAP || s->fdc > VP_FDS_CAP || !s->argv ||
++        (s->envc && !s->env) || (s->fdc && !s->names)) return vp_bad(EINVAL);
++    for (i = 0; i < s->argc; ++i) if (!s->argv[i]) return vp_bad(EINVAL);
++    if (!s->argv[0][0]) return vp_bad(EINVAL);
++    for (i = 0; i < s->envc; ++i) {
++        const char *eq = s->env[i] ? strchr(s->env[i], '=') : NULL;
++        if (!eq || eq == s->env[i]) return vp_bad(EINVAL);
++    }
++    for (i = 0; i < s->fdc; ++i) {
++        if (!s->names[i] || !s->names[i][0] || strlen(s->names[i]) > 20) return vp_bad(EINVAL);
++        for (j = 0; j < i; ++j) if (!strcmp(s->names[i], s->names[j])) return vp_bad(EINVAL);
++    }
++    return 0;
++}
++static inline int vp_measure_string(const char *value, size_t *size)
++{
++    size_t length = strnlen(value, VP_PAYLOAD_CAP + 1u);
++    if (length > VP_PAYLOAD_CAP || *size > VP_PAYLOAD_CAP - 4u ||
++        length > VP_PAYLOAD_CAP - *size - 4u) return vp_bad(E2BIG);
++    *size += length + 4u; return 0;
++}
++static inline void vp_put_string(unsigned char **p, const char *value)
++{
++    size_t n = strlen(value); vp_store32(*p, (uint32_t)n); *p += 4;
++    memcpy(*p, value, n); *p += n;
++}
++static inline int vp_encode(const vp_spawn_spec *s, unsigned char **output, size_t *length)
++{
++    size_t size = 12; uint32_t i; unsigned char *p;
++    *output = NULL; *length = 0;
++    if (vp_validate_spec(s) || vp_measure_string(s->home, &size) || vp_measure_string(s->bin, &size)) return -1;
++    for (i = 0; i < s->argc; ++i) if (vp_measure_string(s->argv[i], &size)) return -1;
++    for (i = 0; i < s->envc; ++i) if (vp_measure_string(s->env[i], &size)) return -1;
++    for (i = 0; i < s->fdc; ++i) if (vp_measure_string(s->names[i], &size)) return -1;
++    if (!(*output = (unsigned char *)malloc(size))) return vp_bad(ENOMEM);
++    p = *output; vp_store32(p, s->argc); vp_store32(p + 4, s->envc); vp_store32(p + 8, s->fdc); p += 12;
++    vp_put_string(&p, s->home); vp_put_string(&p, s->bin);
++    for (i = 0; i < s->argc; ++i) vp_put_string(&p, s->argv[i]);
++    for (i = 0; i < s->envc; ++i) vp_put_string(&p, s->env[i]);
++    for (i = 0; i < s->fdc; ++i) vp_put_string(&p, s->names[i]);
++    *length = size; return 0;
++}
++static inline int vp_get_string(const unsigned char **p, const unsigned char *end, const char **value)
++{
++    uint32_t size; char *copy;
++    if ((size_t)(end - *p) < 4) return vp_bad(EPROTO);
++    size = vp_load32(*p); *p += 4;
++    if (size > (size_t)(end - *p) || memchr(*p, 0, size)) return vp_bad(EPROTO);
++    if (!(copy = (char *)malloc((size_t)size + 1))) return vp_bad(ENOMEM);
++    memcpy(copy, *p, size); copy[size] = 0; *p += size; *value = copy; return 0;
++}
++static inline int vp_decode(const unsigned char *data, size_t length, vp_spawn_spec *s)
++{
++    const unsigned char *p, *end; uint32_t i;
++    memset(s, 0, sizeof(*s));
++    if (length < 20 || length > VP_PAYLOAD_CAP) return vp_bad(EPROTO);
++    p = data + 12; end = data + length;
++    s->argc = vp_load32(data); s->envc = vp_load32(data + 4); s->fdc = vp_load32(data + 8);
++    if (!s->argc || s->argc > VP_ITEMS_CAP || s->envc > VP_ITEMS_CAP || s->fdc > VP_FDS_CAP ||
++        ((size_t)s->argc + s->envc + s->fdc) * 4u > length - 20) return vp_bad(EPROTO);
++    s->argv = (const char **)calloc(s->argc, sizeof(char *));
++    if (s->envc) s->env = (const char **)calloc(s->envc, sizeof(char *));
++    if (s->fdc) s->names = (const char **)calloc(s->fdc, sizeof(char *));
++    if (!s->argv || (s->envc && !s->env) || (s->fdc && !s->names)) { errno = ENOMEM; goto failed; }
++    if (vp_get_string(&p, end, &s->home) || vp_get_string(&p, end, &s->bin)) goto failed;
++    for (i = 0; i < s->argc; ++i) if (vp_get_string(&p, end, &s->argv[i])) goto failed;
++    for (i = 0; i < s->envc; ++i) if (vp_get_string(&p, end, &s->env[i])) goto failed;
++    for (i = 0; i < s->fdc; ++i) if (vp_get_string(&p, end, &s->names[i])) goto failed;
++    if (p != end) { errno = EPROTO; goto failed; }
++    if (vp_validate_spec(s)) goto failed;
++    return 0;
++failed:
++    { int error = errno; vp_free_spec(s); return vp_bad(error); }
++}
++static inline int64_t vp_now_ms(void)
++{
++    struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
++    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
++}
++static inline int vp_wait(int fd, short events, int64_t deadline)
++{
++    for (;;) {
++        int64_t left = deadline - vp_now_ms(); struct pollfd p; int result;
++        if (left <= 0) return vp_bad(ETIMEDOUT);
++        p.fd = fd; p.events = events; p.revents = 0;
++        result = poll(&p, 1, left > 2147483647 ? 2147483647 : (int)left);
++        if (result < 0 && errno == EINTR) continue;
++        if (result < 0) return -1;
++        if (!result) return vp_bad(ETIMEDOUT);
++        if (p.revents & events) return 0;
++        if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) return vp_bad(ECONNRESET);
++    }
++}
++static inline void vp_close_fds(vp_received_fds *fds)
++{ size_t i; for (i = 0; i < fds->count; ++i) close(fds->items[i]); fds->count = 0; }
++static inline int vp_connect_path(const char *path, int64_t deadline)
++{
++    struct sockaddr_un addr; int fd, result;
++    if (!path || strlen(path) >= sizeof(addr.sun_path)) return vp_bad(ENAMETOOLONG);
++    memset(&addr, 0, sizeof(addr)); addr.sun_family = AF_UNIX; strcpy(addr.sun_path, path);
++    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
++    if (fd < 0) return -1;
++    for (;;) {
++        if (vp_now_ms() >= deadline) { close(fd); return vp_bad(ETIMEDOUT); }
++        result = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
++        if (!result || errno == EISCONN) return fd;
++        if (errno == EINTR) continue;
++        if (errno == EAGAIN) { if (!vp_wait(fd, POLLOUT, deadline)) continue; }
++        else if (errno == EINPROGRESS) {
++            int error = 0; socklen_t size = sizeof(error);
++            if (!vp_wait(fd, POLLOUT, deadline) && !getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size)) {
++                if (!error) return fd;
++                errno = error;
++            }
++        }
++        { int error = errno; close(fd); return vp_bad(error); }
++    }
++}
++/* SCM_RIGHTS belongs to the first successful byte, including after EINTR/EAGAIN. */
++static inline int vp_send_bytes(int fd, const void *bytes, size_t length,
++                                const int *fds, size_t count, int64_t deadline)
++{
++    size_t offset = 0; int rights_sent = 0;
++    if (count > VP_FDS_CAP) return vp_bad(E2BIG);
++    if (count && (!fds || !length)) return vp_bad(EINVAL);
++    while (offset < length) {
++        struct msghdr msg; struct iovec iov; ssize_t sent;
++        union { unsigned char bytes[CMSG_SPACE(sizeof(int) * VP_FDS_CAP)]; struct cmsghdr align; } control;
++        if (vp_wait(fd, POLLOUT, deadline)) return -1;
++        memset(&msg, 0, sizeof(msg)); memset(&control, 0, sizeof(control));
++        iov.iov_base = (void *)((const unsigned char *)bytes + offset); iov.iov_len = length - offset;
++        msg.msg_iov = &iov; msg.msg_iovlen = 1;
++        if (count && !rights_sent) {
++            struct cmsghdr *cmsg; msg.msg_control = control.bytes;
++            msg.msg_controllen = CMSG_SPACE(sizeof(int) * count); cmsg = CMSG_FIRSTHDR(&msg);
++            cmsg->cmsg_level = SOL_SOCKET; cmsg->cmsg_type = SCM_RIGHTS;
++            cmsg->cmsg_len = CMSG_LEN(sizeof(int) * count); memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * count);
++        }
++        sent = sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
++        if (sent < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
++        if (sent <= 0) return sent ? -1 : vp_bad(EPIPE);
++        rights_sent = 1; offset += (size_t)sent;
++    }
++    return 0;
++}
++/* Use recvmsg for every fragment, so late ancillary data is never discarded. */
++static inline int vp_recv_bytes(int fd, void *bytes, size_t length, vp_received_fds *fds, int64_t deadline)
++{
++    size_t offset = 0;
++    while (offset < length) {
++        struct msghdr msg; struct iovec iov; struct cmsghdr *cmsg; ssize_t received; int bad = 0;
++        union { unsigned char bytes[CMSG_SPACE(sizeof(int) * VP_FDS_CAP)]; struct cmsghdr align; } control;
++        if (vp_wait(fd, POLLIN, deadline)) return -1;
++        memset(&msg, 0, sizeof(msg)); memset(&control, 0, sizeof(control));
++        iov.iov_base = (unsigned char *)bytes + offset; iov.iov_len = length - offset;
++        msg.msg_iov = &iov; msg.msg_iovlen = 1; msg.msg_control = control.bytes; msg.msg_controllen = sizeof(control.bytes);
++        received = recvmsg(fd, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
++        if (received < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
++        if (received <= 0) return received ? -1 : vp_bad(ECONNRESET);
++        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
++            size_t count, i; const int *items;
++            if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS || cmsg->cmsg_len < CMSG_LEN(0)) {
++                bad = 1; continue;
++            }
++            count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int); items = (const int *)CMSG_DATA(cmsg);
++            for (i = 0; i < count; ++i) {
++                if (fds->count < VP_FDS_CAP) fds->items[fds->count++] = items[i];
++                else { close(items[i]); bad = 1; }
++            }
++        }
++        if (bad || (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))) return vp_bad(EPROTO);
++        offset += (size_t)received;
++    }
++    return 0;
++}
++static inline int vp_send_request(int fd, const vp_spawn_spec *s, const int *fds, int64_t deadline)
++{
++    unsigned char *payload, *frame; size_t length; int result;
++    if (s->fdc > VP_CLIENT_FDS_CAP) return vp_bad(E2BIG);
++    if (vp_encode(s, &payload, &length)) return -1;
++    frame = (unsigned char *)malloc(length + VP_FRAME_HEADER);
++    if (!frame) { free(payload); return vp_bad(ENOMEM); }
++    memcpy(frame, "VPBR", 4); vp_store32(frame + 4, 2); vp_store32(frame + 8, (uint32_t)length);
++    memcpy(frame + VP_FRAME_HEADER, payload, length); free(payload);
++    result = vp_send_bytes(fd, frame, length + VP_FRAME_HEADER, fds, s->fdc, deadline);
++    free(frame); return result;
++}
++static inline int vp_recv_request(int fd, vp_spawn_spec *s, vp_received_fds *fds, int64_t deadline)
++{
++    unsigned char header[VP_FRAME_HEADER], *payload; uint32_t length; int result;
++    memset(s, 0, sizeof(*s));
++    if (vp_recv_bytes(fd, header, 4, fds, deadline)) return -1;
++    if (memcmp(header, "VPBR", 4)) return vp_bad(EPROTONOSUPPORT);
++    if (vp_recv_bytes(fd, header + 4, VP_FRAME_HEADER - 4, fds, deadline)) return -1;
++    if (vp_load32(header + 4) != 2) return vp_bad(EPROTONOSUPPORT);
++    length = vp_load32(header + 8);
++    if (length < 20 || length > VP_PAYLOAD_CAP) return vp_bad(E2BIG);
++    if (!(payload = (unsigned char *)malloc(length))) return vp_bad(ENOMEM);
++    result = vp_recv_bytes(fd, payload, length, fds, deadline);
++    if (!result) result = vp_decode(payload, length, s);
++    free(payload);
++    if (!result && (s->fdc != fds->count || s->fdc > VP_CLIENT_FDS_CAP)) {
++        vp_free_spec(s); return vp_bad(EPROTO);
++    }
++    return result;
++}
++static inline int vp_recv_reply(int fd, int *pid, int *status, int64_t deadline)
++{
++    unsigned char reply[8]; vp_received_fds fds = {{0}, 0}; int result;
++    result = vp_recv_bytes(fd, reply, sizeof(reply), &fds, deadline);
++    if (fds.count) { vp_close_fds(&fds); return vp_bad(EPROTO); }
++    if (result) return -1;
++    *pid = (int32_t)vp_load32(reply); *status = (int32_t)vp_load32(reply + 4); return 0;
++}
++#endif

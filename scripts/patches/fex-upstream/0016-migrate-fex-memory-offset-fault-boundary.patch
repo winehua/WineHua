@@ -1,0 +1,13 @@
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index dabd5d7b68c8667d0fb198e3c92750c1d9817676..0343d5c4a447f3b17d6b5651db1abdb4d3d6927a 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -253,7 +253,7 @@ public:
+ 
+   static bool CanHaveSideEffects(const FEXCore::X86Tables::X86InstInfo* TableInfo, FEXCore::X86Tables::DecodedOp Op) {
+     if (TableInfo) {
+-      if (TableInfo->Flags & X86Tables::InstFlags::FLAGS_DEBUG_MEM_ACCESS) {
++      if (TableInfo->Flags & (X86Tables::InstFlags::FLAGS_DEBUG_MEM_ACCESS | X86Tables::InstFlags::FLAGS_MEM_OFFSET)) {
+         // If it is marked as having memory access then always say it has a side-effect.
+         // Not always true but better to be safe.
+         return true;

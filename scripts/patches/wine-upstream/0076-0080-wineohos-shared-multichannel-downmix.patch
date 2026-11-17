@@ -1,0 +1,263 @@
+From 8c0895a0c031bf5c6a73363943b2e2a9d3af9f08 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0080-wineohos-shared-multichannel-downmix
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: e03426fb91d393d9abb06d2e26494723cd7b31473460ef8d30fde4ac5fe2472f
+
+diff --git a/dlls/wineohos.drv/ohos.c b/dlls/wineohos.drv/ohos.c
+index d1f541488a034c766a324c5b6084aaa934b5ff83..4d8f4035029db47cf740bcbd4511b163cfae2116 100644
+--- a/dlls/wineohos.drv/ohos.c
++++ b/dlls/wineohos.drv/ohos.c
+@@ -47,6 +47,7 @@
+ #include "../mmdevapi/unixlib.h"
+ #include "ohos_audio_client.h"
+ #include "ohos_midi.h"
++#include "ohos_audio_mix.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ohosaudio);
+ 
+@@ -90,7 +91,8 @@ struct ohos_stream
+     UINT64 last_position;
+     UINT64 client_input_frames;
+     UINT64 mix_output_frames;
+-    float channel_volume[2];
++    float channel_volume[OHOS_AUDIO_MAX_CHANNELS];
++    float downmix[OHOS_AUDIO_MAX_CHANNELS][2];
+     float prev_frame[2];
+     BOOL have_prev_frame;
+     UINT32 capture_read_offset_frames;
+@@ -173,15 +175,14 @@ static UINT64 query_qpc_100ns(void)
+ 
+ static UINT32 get_channel_mask(UINT32 channels)
+ {
+-    switch (channels)
+-    {
+-    case 1:
+-        return KSAUDIO_SPEAKER_MONO;
+-    case 2:
+-        return KSAUDIO_SPEAKER_STEREO;
+-    default:
+-        return 0;
+-    }
++    return ohos_audio_default_mask(channels);
++}
++
++static UINT32 get_format_channel_mask(const WAVEFORMATEX *fmt)
++{
++    if (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
++        return ((const WAVEFORMATEXTENSIBLE *)fmt)->dwChannelMask;
++    return 0;
+ }
+ 
+ static BOOL is_float_format(const WAVEFORMATEX *fmt)
+@@ -217,7 +218,7 @@ static BOOL is_supported_sample_rate(UINT32 rate)
+     return rate >= 8000 && rate <= 192000;
+ }
+ 
+-static HRESULT validate_format(const WAVEFORMATEX *fmt)
++static HRESULT validate_format(const WAVEFORMATEX *fmt, EDataFlow flow)
+ {
+     UINT16 valid_bits;
+ 
+@@ -225,7 +226,10 @@ static HRESULT validate_format(const WAVEFORMATEX *fmt)
+     if (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+         fmt->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+         return AUDCLNT_E_UNSUPPORTED_FORMAT;
+-    if (fmt->nChannels != 1 && fmt->nChannels != 2)
++    if (!fmt->nChannels || fmt->nChannels > OHOS_AUDIO_MAX_CHANNELS ||
++        (flow == eCapture && fmt->nChannels > 2))
++        return AUDCLNT_E_UNSUPPORTED_FORMAT;
++    if (fmt->nChannels > 2 && !ohos_audio_resolve_mask(fmt->nChannels, get_format_channel_mask(fmt)))
+         return AUDCLNT_E_UNSUPPORTED_FORMAT;
+     if (!is_supported_sample_rate(fmt->nSamplesPerSec))
+         return AUDCLNT_E_UNSUPPORTED_FORMAT;
+@@ -597,6 +601,31 @@ static void decode_input_frame(const struct ohos_stream *stream, const BYTE *buf
+     const BYTE *src = buffer + frame * stream->client_bytes_per_frame;
+     float sample0 = 0.0f, sample1 = 0.0f;
+ 
++    if (channels > 2)
++    {
++        UINT32 channel;
++        *left = *right = 0.0f;
++        for (channel = 0; channel < channels; ++channel)
++        {
++            const BYTE *sample = src + channel * bytes_per_sample;
++            float value;
++            if (is_float_format(&stream->fmt->Format))
++                value = bytes_per_sample == 4 ? read_ieee_float32(sample) : read_ieee_float64(sample);
++            else switch (bytes_per_sample)
++            {
++            case 1: value = read_pcm_u8(sample); break;
++            case 2: value = read_pcm_s16(sample); break;
++            case 3: value = read_pcm_s24(sample); break;
++            default: value = read_pcm_s32(sample); break;
++            }
++            value *= stream->channel_volume[channel];
++            *left += value * stream->downmix[channel][0];
++            *right += value * stream->downmix[channel][1];
++        }
++        ohos_audio_limit_stereo(left, right);
++        return;
++    }
++
+     if (is_float_format(&stream->fmt->Format))
+     {
+         if (bytes_per_sample == 4)
+@@ -639,6 +668,8 @@ static void decode_input_frame(const struct ohos_stream *stream, const BYTE *buf
+ 
+ static void apply_client_volume(const struct ohos_stream *stream, float *left, float *right)
+ {
++    /* Multichannel gains are applied per source channel before downmix. */
++    if (stream->fmt->Format.nChannels > 2) return;
+     if (stream->fmt->Format.nChannels == 1)
+     {
+         float volume = stream->channel_volume[0];
+@@ -982,7 +1013,7 @@ static NTSTATUS ohos_create_stream(void *args)
+     struct create_stream_params *params = args;
+     struct ohos_stream *stream = NULL;
+     HRESULT hr;
+-    UINT32 requested_client_buffer_frames;
++    UINT32 requested_client_buffer_frames, channel;
+ 
+     TRACE("ohos_create_stream flow=%u share=%u rate=%u channels=%u bits=%u duration=%s period=%s flags=%#x\n",
+           params->flow, params->share, params->fmt ? params->fmt->nSamplesPerSec : 0,
+@@ -1003,7 +1034,7 @@ static NTSTATUS ohos_create_stream(void *args)
+         params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
+         return STATUS_SUCCESS;
+     }
+-    if (FAILED(hr = validate_format(params->fmt)))
++    if (FAILED(hr = validate_format(params->fmt, params->flow)))
+     {
+         params->result = hr;
+         return STATUS_SUCCESS;
+@@ -1023,8 +1054,8 @@ static NTSTATUS ohos_create_stream(void *args)
+     requested_client_buffer_frames = max(stream->client_period_frames * 2,
+                                          (UINT32)((params->duration * params->fmt->nSamplesPerSec + 9999999) / 10000000));
+     stream->client_bytes_per_frame = params->fmt->nBlockAlign;
+-    stream->channel_volume[0] = 1.0f;
+-    stream->channel_volume[1] = 1.0f;
++    for (channel = 0; channel < OHOS_AUDIO_MAX_CHANNELS; ++channel)
++        stream->channel_volume[channel] = 1.0f;
+ 
+     if (!(stream->fmt = clone_wave_format(params->fmt)))
+     {
+@@ -1032,6 +1063,13 @@ static NTSTATUS ohos_create_stream(void *args)
+         goto fail;
+     }
+ 
++    if (stream->fmt->Format.nChannels > 2 &&
++        !ohos_audio_build_matrix(stream->fmt->Format.nChannels, stream->fmt->dwChannelMask, stream->downmix))
++    {
++        params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
++        goto fail;
++    }
++
+     if (FAILED(hr = create_broker_stream(stream, requested_client_buffer_frames)))
+     {
+         params->result = hr;
+@@ -1341,7 +1379,7 @@ static NTSTATUS ohos_is_format_supported(void *args)
+     if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
+         params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
+     else
+-        params->result = validate_format(params->fmt_in);
++        params->result = validate_format(params->fmt_in, params->flow);
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1479,7 +1517,7 @@ static NTSTATUS ohos_set_volumes(void *args)
+     UINT32 i;
+ 
+     ohos_lock(stream);
+-    for (i = 0; i < stream->fmt->Format.nChannels && i < 2; ++i)
++    for (i = 0; i < stream->fmt->Format.nChannels && i < OHOS_AUDIO_MAX_CHANNELS; ++i)
+         stream->channel_volume[i] = params->master_volume * params->volumes[i] * params->session_volumes[i];
+     if (stream->fmt->Format.nChannels == 1)
+         stream->channel_volume[1] = stream->channel_volume[0];
+diff --git a/dlls/wineohos.drv/ohos_audio_mix.h b/dlls/wineohos.drv/ohos_audio_mix.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1caa535bac093d12af8a685d4684cef47826c23d
+--- /dev/null
++++ b/dlls/wineohos.drv/ohos_audio_mix.h
+@@ -0,0 +1,79 @@
++/* Shared-mode speaker downmix. Kept independent of Wine for native contract tests.
++ * SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef OHOS_AUDIO_MIX_H
++#define OHOS_AUDIO_MIX_H
++
++#define OHOS_AUDIO_MAX_CHANNELS 18
++#define OHOS_AUDIO_SPEAKER_MASK 0x3ffffu
++
++static unsigned int ohos_audio_default_mask(unsigned int channels)
++{
++    switch (channels)
++    {
++    case 1: return 0x4;     /* mono */
++    case 2: return 0x3;     /* stereo */
++    case 3: return 0xb;     /* stereo + LFE, as in winepulse */
++    case 4: return 0x33;    /* quad */
++    case 5: return 0x3b;    /* quad + LFE */
++    case 6: return 0x3f;    /* 5.1 */
++    case 7: return 0x13f;   /* 5.1 + back center */
++    case 8: return 0x63f;   /* 7.1 surround */
++    case 12: return 0x2d63f; /* 7.1.4 */
++    case 18: return OHOS_AUDIO_SPEAKER_MASK;
++    default: return 0;
++    }
++}
++
++static unsigned int ohos_audio_resolve_mask(unsigned int channels, unsigned int mask)
++{
++    unsigned int bits, count = 0;
++    if (!channels || channels > OHOS_AUDIO_MAX_CHANNELS) return 0;
++    if (!mask) mask = ohos_audio_default_mask(channels);
++    if (!mask || (mask & ~OHOS_AUDIO_SPEAKER_MASK)) return 0;
++    for (bits = mask; bits; bits &= bits - 1) ++count;
++    return count == channels ? mask : 0;
++}
++
++static int ohos_audio_build_matrix(unsigned int channels, unsigned int mask,
++                                  float matrix[OHOS_AUDIO_MAX_CHANNELS][2])
++{
++    unsigned int speaker, channel = 0, i;
++    mask = ohos_audio_resolve_mask(channels, mask);
++    if (!mask) return 0;
++    for (i = 0; i < OHOS_AUDIO_MAX_CHANNELS; ++i) matrix[i][0] = matrix[i][1] = 0.0f;
++    for (speaker = 0; speaker < OHOS_AUDIO_MAX_CHANNELS; ++speaker)
++    {
++        float left = 0.0f, right = 0.0f;
++        if (!(mask & (1u << speaker))) continue;
++        switch (speaker)
++        {
++        case 0: left = 1.0f; break;  /* front left */
++        case 1: right = 1.0f; break; /* front right */
++        case 2: left = right = channels == 1 ? 1.0f : 0.70710678f; break;
++        case 3: left = right = 0.5f; break; /* LFE */
++        case 4: case 6: case 9: case 12: case 15: left = 0.70710678f; break;
++        case 5: case 7: case 10: case 14: case 17: right = 0.70710678f; break;
++        default: left = right = 0.5f; break; /* back/top centers */
++        }
++        matrix[channel][0] = left;
++        matrix[channel][1] = right;
++        ++channel;
++    }
++    /* Preserve unity gain on front L/R even when the endpoint exposes unused
++     * surround channels. Limit only actual over-range sums at output. */
++    return 1;
++}
++/* Linked peak limiting preserves stereo balance. Unlike a fixed channel-count
++ * divisor, in-range stereo content in a surround stream stays unchanged. */
++static void ohos_audio_limit_stereo(float *left, float *right)
++{
++    float peak = *left < 0.0f ? -*left : *left;
++    float right_peak = *right < 0.0f ? -*right : *right;
++    if (right_peak > peak) peak = right_peak;
++    if (peak > 1.0f)
++    {
++        *left /= peak;
++        *right /= peak;
++    }
++}
++#endif

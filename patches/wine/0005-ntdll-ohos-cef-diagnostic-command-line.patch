@@ -1,0 +1,70 @@
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -2142,6 +2142,10 @@
+     struct startup_info_data *info;
+     UNICODE_STRING nt_name;
+     USHORT machine;
++#ifdef __OHOS__
++    const char *cef_diag_flags = "";
++    SIZE_T cef_diag_len = 0;
++#endif
+ 
+     if (!startup_info_size)
+     {
+@@ -2162,6 +2166,27 @@
+     }
+     SERVER_END_REQ;
+     assert( !status );
++
++#ifdef __OHOS__
++    /* Child processes restore the Windows command line from wineserver;
++     * changing the native spawn argv does not change GetCommandLineW(). */
++    {
++        static const WCHAR cef_name[] = {'s','t','e','a','m','w','e','b','h','e','l','p','e','r','.','e','x','e'};
++        const WCHAR *image = (const WCHAR *)((char *)(info + 1) + info->curdir_len + info->dllpath_len);
++        const SIZE_T image_len = info->imagepath_len / sizeof(WCHAR);
++        const char *enabled = getenv( "WINEHUA_CEF_NO_CRASH_HANDLER" );
++        if (enabled && enabled[0] == '1' && image_len >= ARRAY_SIZE(cef_name) &&
++            (image_len == ARRAY_SIZE(cef_name) || image[image_len - ARRAY_SIZE(cef_name) - 1] == '\\' ||
++             image[image_len - ARRAY_SIZE(cef_name) - 1] == '/') &&
++            !wcsnicmp( image + image_len - ARRAY_SIZE(cef_name), cef_name, ARRAY_SIZE(cef_name) ))
++        {
++            cef_diag_flags = " --disable-breakpad --disable-crash-reporter --noerrdialogs";
++            cef_diag_len = strlen( cef_diag_flags );
++            if (info->cmdline_len + (cef_diag_len + 1) * sizeof(WCHAR) > 0xfffe)
++                cef_diag_len = 0;
++        }
++    }
++#endif
+ 
+     env = malloc( env_size * sizeof(WCHAR) );
+     memcpy( env, (char *)info + info_size, env_size * sizeof(WCHAR) );
+@@ -2179,6 +2204,9 @@
+             + info->desktop_len + sizeof(WCHAR)
+             + info->shellinfo_len + sizeof(WCHAR)
+             + info->runtime_len + sizeof(WCHAR)
++#ifdef __OHOS__
++            + cef_diag_len * sizeof(WCHAR)
++#endif
+             + env_pos * sizeof(WCHAR));
+ 
+     status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&params, 0, &size,
+@@ -2216,6 +2244,18 @@
+     if (info->dllpath_len) copy_unicode_string( &src, &dst, &params->DllPath, info->dllpath_len );
+     copy_dos_path_string( &src, &dst, &params->ImagePathName, &nt_name, info->imagepath_len );
+     copy_unicode_string( &src, &dst, &params->CommandLine, info->cmdline_len );
++#ifdef __OHOS__
++    if (cef_diag_len)
++    {
++        SIZE_T i;
++        --dst; /* replace the copied terminator with the diagnostic suffix */
++        for (i = 0; i < cef_diag_len; ++i) *dst++ = (unsigned char)cef_diag_flags[i];
++        *dst++ = 0;
++        params->CommandLine.Length += cef_diag_len * sizeof(WCHAR);
++        params->CommandLine.MaximumLength += cef_diag_len * sizeof(WCHAR);
++        fprintf( stderr, "[CEF-CMDLINE] pid=%d startup_info=1 crash_handler_disabled=1\n", getpid() );
++    }
++#endif
+     copy_unicode_string( &src, &dst, &params->WindowTitle, info->title_len );
+     copy_unicode_string( &src, &dst, &params->Desktop, info->desktop_len );
+     copy_unicode_string( &src, &dst, &params->ShellInfo, info->shellinfo_len );

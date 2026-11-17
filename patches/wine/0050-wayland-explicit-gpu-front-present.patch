@@ -1,0 +1,49 @@
+--- a/dlls/winewayland.drv/opengl_readback.c
++++ b/dlls/winewayland.drv/opengl_readback.c
+@@ -65,6 +65,7 @@
+ static pthread_once_t winehua_present_surface_once = PTHREAD_ONCE_INIT;
+ static pthread_mutex_t winehua_present_surface_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static struct winehua_present_surface_page *winehua_present_surface_page;
++static EGLBoolean (*winehua_present_pbuffer)(EGLDisplay, EGLSurface);
+ 
+ static uint32_t winehua_prepare_present_surface(struct wayland_client_surface *client)
+ {
+@@ -349,9 +350,14 @@
+     if (surface_id && winehua_surface_zero_copy_ready(surface_id))
+     {
+         winehua_begin_present_surface(surface_id);
+-        /* Pbuffer swap alone does not reliably flush the front resource. */
+-        funcs->p_glFlush();
+-        swap_ok = funcs->p_eglSwapBuffers(egl->display, base->surface);
++        if (winehua_present_pbuffer)
++            swap_ok = winehua_present_pbuffer(egl->display, base->surface);
++        else
++        {
++            /* Older receivers retain their existing fallback. */
++            funcs->p_glFlush();
++            swap_ok = funcs->p_eglSwapBuffers(egl->display, base->surface);
++        }
+         presents = InterlockedIncrement(&winehua_gl_zero_copy_presents);
+         winehua_finish_present_surface();
+         if (presents == 1 || !(presents % 120))
+@@ -467,7 +473,9 @@
+     /* Keep the pbuffer's WSI present semantics active so the virpipe winsys
+      * receives the exact front resource while readback remains the fallback. */
+     winehua_begin_present_surface(surface_id);
+-    if (!funcs->p_eglSwapBuffers(egl->display, base->surface))
++    if (!(winehua_present_pbuffer
++          ? winehua_present_pbuffer(egl->display, base->surface)
++          : funcs->p_eglSwapBuffers(egl->display, base->surface)))
+         winehua_wayland_diag("readback pbuffer swap failed hwnd=%p error=%#x",
+                              base->client->hwnd, funcs->p_eglGetError());
+     winehua_finish_present_surface();
+@@ -632,6 +640,9 @@
+ {
+     winehua_base_driver_funcs->p_init_egl_platform(platform);
+     egl = platform;
++    winehua_present_pbuffer = (void *)funcs->p_eglGetProcAddress("eglWineHuaPresentPbuffer");
++    fprintf(stderr, "winehua_readback: explicit GPU front present=%s\n",
++            winehua_present_pbuffer ? "yes" : "no");
+ }
+ 
+ BOOL winehua_readback_make_current(struct opengl_drawable *draw,

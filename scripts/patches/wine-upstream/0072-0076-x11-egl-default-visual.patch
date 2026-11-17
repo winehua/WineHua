@@ -1,0 +1,28 @@
+From 714dc51eaf4679cba1cdd2e6b34bc5b4053ef0e6 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0076-x11-egl-default-visual
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 94fb38c3c6d7e74259a7940db05f54a7497c095fbc24181ccc7d2674575db093
+
+diff --git a/dlls/winex11.drv/opengl_winehua.c b/dlls/winex11.drv/opengl_winehua.c
+index 74618dae6ecee8818f660c7e89420d4917285e66..e7d0ab74771eb44a3c6982c8a6e1c4a22e4c88a2 100644
+--- a/dlls/winex11.drv/opengl_winehua.c
++++ b/dlls/winex11.drv/opengl_winehua.c
+@@ -240,7 +240,13 @@ static BOOL winehua_x11_surface_create(HWND hwnd, BOOL raw, int format, struct o
+     RECT rect;
+ 
+     if ((previous = *drawable) && previous->format == format) return TRUE;
+-    if (!x11drv_client_surface_create(hwnd, raw, format, &client)) return FALSE;
++    /* EGL pbuffer formats are not GLX formats. The X window is only an
++     * identity/input carrier; its pixels arrive through the private present
++     * channel. Use the default X visual, like the private Vulkan path,
++     * and retain the requested EGL format for the drawable and pbuffer.
++     * A GLX lookup rejects every format in no-GLX builds, including
++     * WineD3D's hidden adapter-probe window. */
++    if (!x11drv_client_surface_create(hwnd, raw, 0, &client)) return FALSE;
+     /* 页面尽早绑定: mesa 侧第一次 flush_frontbuffer 就该读到有效页 */
+     winehua_present_surface_init();
+     /* 页建不起来 (无 TMPDIR / open/mmap 失败) 时整条通道只会"什么都不发生"

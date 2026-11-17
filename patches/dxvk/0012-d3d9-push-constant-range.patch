@@ -1,0 +1,22 @@
+--- a/src/d3d9/d3d9_fixed_function.cpp
++++ b/src/d3d9/d3d9_fixed_function.cpp
+@@ -718,7 +718,7 @@
+     info.inputMask = m_inputMask;
+     info.outputMask = m_outputMask;
+     info.pushConstOffset = m_pushConstOffset;
+-    info.pushConstSize = m_pushConstOffset;
++    info.pushConstSize = m_pushConstSize;
+ 
+     return new DxvkShader(info, m_module.compile());
+   }
+--- a/src/dxso/dxso_compiler.cpp
++++ b/src/dxso/dxso_compiler.cpp
+@@ -253,7 +253,7 @@
+     info.inputMask = m_inputMask;
+     info.outputMask = m_outputMask;
+     info.pushConstOffset = m_pushConstOffset;
+-    info.pushConstSize = m_pushConstOffset;
++    info.pushConstSize = m_pushConstSize;
+ 
+     return new DxvkShader(info, m_module.compile());
+   }

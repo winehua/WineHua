@@ -1,0 +1,18 @@
+--- a/dlls/wined3d/resource.c
++++ b/dlls/wined3d/resource.c
+@@ -398,7 +398,15 @@
+     if (d3d_flags & WINED3D_MAP_READ)
+         ret |= GL_MAP_READ_BIT;
+     else
++    {
+         ret |= GL_MAP_UNSYNCHRONIZED_BIT;
++        /* DISCARD makes all old contents undefined. Carry that promise to
++         * OpenGL so WOW64 need not initialize a shadow with discarded bytes.
++         * NOOVERWRITE still preserves every byte outside the written range. */
++        if ((d3d_flags & (WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD))
++                == (WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD))
++            ret |= GL_MAP_INVALIDATE_BUFFER_BIT;
++    }
+ 
+     return ret;
+ }

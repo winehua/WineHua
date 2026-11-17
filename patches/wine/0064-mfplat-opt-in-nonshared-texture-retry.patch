@@ -1,0 +1,22 @@
+--- a/dlls/mfplat/sample.c
++++ b/dlls/mfplat/sample.c
+@@ -1447,7 +1447,18 @@
+                 desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ;
+             desc.MiscFlags = allocator->frame_desc.miscflags;
+ 
+-            if (SUCCEEDED(hr = ID3D11Device_CreateTexture2D(service->d3d11_device, &desc, NULL, &texture)))
++            hr = ID3D11Device_CreateTexture2D(service->d3d11_device, &desc, NULL, &texture);
++            if (FAILED(hr) && (desc.MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)))
++            {
++                const char *fallback = getenv("WINEHUA_MF_FALLBACK_NONSHARED");
++                if (fallback && !strcmp(fallback, "1"))
++                {
++                    TRACE("Opt-in retry of shared D3D11 texture without shared flags, hr %#lx.\n", hr);
++                    desc.MiscFlags &= ~(D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX);
++                    hr = ID3D11Device_CreateTexture2D(service->d3d11_device, &desc, NULL, &texture);
++                }
++            }
++            if (SUCCEEDED(hr))
+             {
+                 hr = MFCreateDXGISurfaceBuffer(&IID_ID3D11Texture2D, (IUnknown *)texture, 0, FALSE, &buffer);
+                 ID3D11Texture2D_Release(texture);

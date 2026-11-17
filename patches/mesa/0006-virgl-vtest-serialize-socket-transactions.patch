@@ -1,0 +1,310 @@
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
+@@ -327,7 +327,7 @@
+    return 0;
+ }
+ 
+-int virgl_vtest_send_get_caps(struct virgl_vtest_winsys *vws,
++static int virgl_vtest_send_get_caps_unlocked(struct virgl_vtest_winsys *vws,
+                               struct virgl_drm_caps *caps)
+ {
+    uint32_t get_caps_buf[VTEST_HDR_SIZE * 2];
+@@ -448,7 +448,7 @@
+    return handle;
+ }
+ 
+-int virgl_vtest_send_resource_create(struct virgl_vtest_winsys *vws,
++static int virgl_vtest_send_resource_create_unlocked(struct virgl_vtest_winsys *vws,
+                                      uint32_t handle,
+                                      enum pipe_texture_target target,
+                                      uint32_t format,
+@@ -490,7 +490,7 @@
+    return handle;
+ }
+ 
+-int virgl_vtest_submit_cmd(struct virgl_vtest_winsys *vws,
++static int virgl_vtest_submit_cmd_unlocked(struct virgl_vtest_winsys *vws,
+                            uint32_t *buf, uint32_t buf_len)
+ {
+    uint32_t vtest_hdr[VTEST_HDR_SIZE];
+@@ -502,7 +502,25 @@
+    return 0;
+ }
+ 
+-int virgl_vtest_send_winehua_present(struct virgl_vtest_winsys *vws,
++static int
++winehua_present_exchange(struct virgl_vtest_winsys *vws,
++                         uint32_t *header, uint32_t *command,
++                         uint32_t *reply_header, uint32_t *reply)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_block_write(vws->sock_fd, header, VTEST_HDR_SIZE * sizeof(uint32_t));
++   if (ret >= 0)
++      ret = virgl_block_write(vws->sock_fd, command, VCMD_WINEHUA_PRESENT_SIZE * sizeof(uint32_t));
++   if (ret >= 0)
++      ret = virgl_block_read(vws->sock_fd, reply_header, VTEST_HDR_SIZE * sizeof(uint32_t));
++   if (ret >= 0)
++      ret = virgl_block_read(vws->sock_fd, reply, VCMD_WINEHUA_PRESENT_REPLY_SIZE * sizeof(uint32_t));
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++static int virgl_vtest_send_winehua_present_paced(struct virgl_vtest_winsys *vws,
+                                      uint32_t handle,
+                                      uint32_t level,
+                                      uint32_t layer,
+@@ -550,17 +568,7 @@
+       }
+       pacer->next_present_ns = 0;
+ 
+-      int ret = virgl_block_write(vws->sock_fd, header, sizeof(header));
+-      if (ret < 0)
+-         return ret;
+-      ret = virgl_block_write(vws->sock_fd, command, sizeof(command));
+-      if (ret < 0)
+-         return ret;
+-
+-      ret = virgl_block_read(vws->sock_fd, reply_header, sizeof(reply_header));
+-      if (ret < 0)
+-         return ret;
+-      ret = virgl_block_read(vws->sock_fd, reply, sizeof(reply));
++      int ret = winehua_present_exchange(vws, header, command, reply_header, reply);
+       if (ret < 0)
+          return ret;
+       if (reply_header[VTEST_CMD_LEN] != VCMD_WINEHUA_PRESENT_REPLY_SIZE ||
+@@ -590,7 +598,7 @@
+    return -EAGAIN;
+ }
+ 
+-int virgl_vtest_send_resource_unref(struct virgl_vtest_winsys *vws,
++static int virgl_vtest_send_resource_unref_unlocked(struct virgl_vtest_winsys *vws,
+                                     uint32_t handle)
+ {
+    uint32_t vtest_hdr[VTEST_HDR_SIZE];
+@@ -736,7 +744,7 @@
+    return 0;
+ }
+ 
+-int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
++static int virgl_vtest_busy_wait_unlocked(struct virgl_vtest_winsys *vws, int handle,
+                           int flags)
+ {
+    uint32_t vtest_hdr[VTEST_HDR_SIZE];
+@@ -758,8 +766,8 @@
+    return result[0];
+ }
+ 
+-int
+-virgl_vtest_send_create_blob(struct virgl_vtest_winsys *vws,
++static int
++virgl_vtest_send_create_blob_unlocked(struct virgl_vtest_winsys *vws,
+                                  uint32_t size, uint32_t blob_id,
+                                  int *out_fd)
+ {
+@@ -808,3 +816,96 @@
+    }
+    return page ? __atomic_load_n(&page->surface_id, __ATOMIC_ACQUIRE) : 0;
+ }
++
++/* Full socket transactions; split transfer helpers are locked by the winsys caller. */
++int virgl_vtest_send_get_caps(struct virgl_vtest_winsys *vws,
++                              struct virgl_drm_caps *caps)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_vtest_send_get_caps_unlocked(vws, caps);
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++int virgl_vtest_send_resource_create(struct virgl_vtest_winsys *vws,
++                                     uint32_t handle,
++                                     enum pipe_texture_target target,
++                                     uint32_t format,
++                                     uint32_t bind,
++                                     uint32_t width,
++                                     uint32_t height,
++                                     uint32_t depth,
++                                     uint32_t array_size,
++                                     uint32_t last_level,
++                                     uint32_t nr_samples,
++                                     uint32_t size,
++                                     int *out_fd)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_vtest_send_resource_create_unlocked(vws, handle, target, format, bind, width, height, depth, array_size, last_level, nr_samples, size, out_fd);
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++int virgl_vtest_submit_cmd(struct virgl_vtest_winsys *vws,
++                           uint32_t *buf, uint32_t buf_len)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_vtest_submit_cmd_unlocked(vws, buf, buf_len);
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++int virgl_vtest_send_resource_unref(struct virgl_vtest_winsys *vws,
++                                    uint32_t handle)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_vtest_send_resource_unref_unlocked(vws, handle);
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
++                          int flags)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_vtest_busy_wait_unlocked(vws, handle, flags);
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++int
++virgl_vtest_send_create_blob(struct virgl_vtest_winsys *vws,
++                                 uint32_t size, uint32_t blob_id,
++                                 int *out_fd)
++{
++   int ret;
++   mtx_lock(&vws->socket_mutex);
++   ret = virgl_vtest_send_create_blob_unlocked(vws, size, blob_id, out_fd);
++   mtx_unlock(&vws->socket_mutex);
++   return ret;
++}
++
++int virgl_vtest_send_winehua_present(struct virgl_vtest_winsys *vws,
++                                     uint32_t handle,
++                                     uint32_t level,
++                                     uint32_t layer,
++                                     uint32_t format,
++                                     uint32_t bind,
++                                     uint32_t width,
++                                     uint32_t height,
++                                     uintptr_t drawable,
++                                     uint32_t serial,
++                                     uint32_t surface_id)
++{
++   int ret;
++   mtx_lock(&vws->present_mutex);
++   ret = virgl_vtest_send_winehua_present_paced(vws, handle, level, layer, format, bind, width, height, drawable, serial, surface_id);
++   mtx_unlock(&vws->present_mutex);
++   return ret;
++}
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
+@@ -144,16 +144,20 @@
+    size = vtest_get_transfer_size(res, box, stride, layer_stride, level,
+                                   &valid_stride);
+ 
++   mtx_lock(&vtws->socket_mutex);
+    virgl_vtest_send_transfer_put(vtws, res->res_handle,
+                                  level, stride, layer_stride,
+                                  box, size, buf_offset);
+ 
+-   if (vtws->protocol_version >= 2)
++   if (vtws->protocol_version >= 2) {
++      mtx_unlock(&vtws->socket_mutex);
+       return 0;
++   }
+ 
+    ptr = virgl_vtest_resource_map(vws, res);
+    virgl_vtest_send_transfer_put_data(vtws, ptr + buf_offset, size);
+    virgl_vtest_resource_unmap(vws, res);
++   mtx_unlock(&vtws->socket_mutex);
+    return 0;
+ }
+ 
+@@ -172,6 +176,7 @@
+ 
+    size = vtest_get_transfer_size(res, box, stride, layer_stride, level,
+                                   &valid_stride);
++   mtx_lock(&vtws->socket_mutex);
+    virgl_vtest_send_transfer_get(vtws, res->res_handle,
+                                  level, stride, layer_stride,
+                                  box, size, buf_offset);
+@@ -183,6 +188,7 @@
+       if (flush_front_buffer) {
+          if (box->depth > 1 || box->z > 1) {
+             fprintf(stderr, "Expected a 2D resource, received a 3D resource\n");
++            mtx_unlock(&vtws->socket_mutex);
+             return -1;
+          }
+ 
+@@ -211,6 +217,7 @@
+       virgl_vtest_resource_unmap(vws, res);
+    }
+ 
++   mtx_unlock(&vtws->socket_mutex);
+    return 0;
+ }
+ 
+@@ -312,8 +319,11 @@
+    cmd[VIRGL_PIPE_RES_CREATE_FLAGS] = flags;
+    cmd[VIRGL_PIPE_RES_CREATE_BLOB_ID] = blob_id;
+ 
++   mtx_lock(&vvws->socket_mutex);
+    virgl_vtest_submit_cmd(vvws, cmd, VIRGL_PIPE_RES_CREATE_SIZE + 1);
+-   return virgl_vtest_send_create_blob(vvws, size, blob_id, fd);
++   int ret = virgl_vtest_send_create_blob(vvws, size, blob_id, fd);
++   mtx_unlock(&vvws->socket_mutex);
++   return ret;
+ }
+ 
+ 
+@@ -835,6 +845,8 @@
+    virgl_resource_cache_flush(&vtws->cache);
+ 
+    mtx_destroy(&vtws->mutex);
++   mtx_destroy(&vtws->present_mutex);
++   mtx_destroy(&vtws->socket_mutex);
+    FREE(vtws);
+ }
+ 
+@@ -868,6 +880,15 @@
+    if (!vtws)
+       return NULL;
+ 
++   if (mtx_init(&vtws->socket_mutex, mtx_plain | mtx_recursive) != thrd_success) {
++      FREE(vtws);
++      return NULL;
++   }
++   if (mtx_init(&vtws->present_mutex, mtx_plain) != thrd_success) {
++      mtx_destroy(&vtws->socket_mutex);
++      FREE(vtws);
++      return NULL;
++   }
+    virgl_vtest_connect(vtws);
+    vtws->sws = sws;
+ 
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.h
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.h
+@@ -55,6 +55,12 @@
+ 
+    struct virgl_resource_cache cache;
+    mtx_t mutex;
++   /* Cache -> socket is allowed, never socket -> cache. Recursive only for
++    * enclosing transfer/blob transactions calling a request helper. */
++   mtx_t socket_mutex;
++   /* Protect pacer slots and serialize presents, but never sleep with the
++    * socket locked: other threads must be able to submit GPU work. */
++   mtx_t present_mutex;
+ 
+    int32_t blob_id;
+    unsigned protocol_version;
+@@ -152,6 +158,7 @@
+ 
+ uint32_t winehua_vtest_get_present_surface_id(void);
+ 
++/* Caller holds socket_mutex across the header and transfer data/reply. */
+ int virgl_vtest_send_transfer_get(struct virgl_vtest_winsys *vws,
+                                   uint32_t handle,
+                                   uint32_t level, uint32_t stride,

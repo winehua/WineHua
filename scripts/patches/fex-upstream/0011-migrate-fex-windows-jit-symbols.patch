@@ -1,0 +1,64 @@
+diff --git a/FEXCore/Source/Common/JitSymbols.cpp b/FEXCore/Source/Common/JitSymbols.cpp
+index e10a1cec05cf285126d9026d0c2401b126f09a4a..f7ec916e1de37c3e6cc1d5b135bc3747e0a20a46 100644
+--- a/FEXCore/Source/Common/JitSymbols.cpp
++++ b/FEXCore/Source/Common/JitSymbols.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "Common/JitSymbols.h"
+ 
++#include <cstdlib>
+ #include <fcntl.h>
+ #include <unistd.h>
+ 
+@@ -17,7 +18,20 @@ JITSymbols::~JITSymbols() {
+ 
+ void JITSymbols::InitFile(uint32_t ProcessPID) {
+   // We can't use FILE here since we must be robust against forking processes closing our FD from under us.
++#if defined(_WIN32)
++  // Windows CRT opens DOS paths. Keep profiling output independent of the
++  // game's drive and working directory; naming remains opt-in in ContextImpl.
++  const char* Directory = std::getenv("FEX_JITMAPDIR");
++  if (!Directory || !Directory[0]) {
++    Directory = std::getenv("TEMP");
++  }
++  if (!Directory || !Directory[0]) {
++    Directory = ".";
++  }
++  const auto PerfMap = fextl::fmt::format("{}\\perf-{}.map", Directory, ProcessPID);
++#else
+   const auto PerfMap = fextl::fmt::format("/tmp/perf-{}.map", ProcessPID);
++#endif
+   fd = open(PerfMap.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_APPEND, 0644);
+ }
+ 
+@@ -126,7 +140,7 @@ void JITSymbols::RegisterNamedRegion(FEXCore::JITSymbolBuffer* Buffer, const voi
+ void JITSymbols::WriteBuffer(FEXCore::JITSymbolBuffer* Buffer, bool ForceWrite) {
+   auto Now = std::chrono::steady_clock::now();
+   if (!ForceWrite) {
+-    if (((Buffer->LastWrite - Now) < Buffer->MAXIMUM_THRESHOLD) && Buffer->Offset < Buffer->NEEDS_WRITE_DISTANCE) {
++    if (((Now - Buffer->LastWrite) < Buffer->MAXIMUM_THRESHOLD) && Buffer->Offset < Buffer->NEEDS_WRITE_DISTANCE) {
+       // Still buffering, no need to write.
+       return;
+     }
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index e2e241dd3bb3c6e7f714ac3d572eb8ff1da710f4..274bf62cf3e1b6aa373e6717754585d13ac381a9 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -580,6 +580,17 @@ void BTCpuProcessInit() {
+   const auto ExecutableName = FEX::Windows::BaseName(ExecutablePath);
+   FEX::Config::LoadConfig(fextl::string {ExecutableName}, _environ, FEX::ReadPortabilityInformation());
+   FEXCore::Config::ReloadMetaLayer();
++
++  // One line for a manually requested symbol trace; no per-frame logging.
++  if (const char* Directory = std::getenv("FEX_JITMAPDIR"); Directory && Directory[0]) {
++    FEX_CONFIG_OPT(DiagnosticLibraryNaming, LIBRARYJITNAMING);
++    FEX_CONFIG_OPT(DiagnosticGlobalNaming, GLOBALJITNAMING);
++    FEX_CONFIG_OPT(DiagnosticBlockNaming, BLOCKJITNAMING);
++    const auto Output = fextl::fmt::format(
++      "[FEX-JIT-DIAG] wine_pid={} library={} global={} block={} directory={}\n",
++      GetCurrentProcessId(), DiagnosticLibraryNaming(), DiagnosticGlobalNaming(), DiagnosticBlockNaming(), Directory);
++    __wine_dbg_output(Output.c_str());
++  }
+   FEX::Windows::Logging::Init();
+ 
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, "0");

@@ -1,0 +1,69 @@
+diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
+index a1ed0af8..27e706c4 100644
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -41,6 +41,10 @@
+ 
+ // Missed definitions in Wine/MinGW.
+ 
++#ifndef D3DSWAPEFFECT_COPY_VSYNC
++#define D3DSWAPEFFECT_COPY_VSYNC 4
++#endif
++
+ #ifndef D3DPRESENT_BACK_BUFFERS_MAX_EX
+ #define D3DPRESENT_BACK_BUFFERS_MAX_EX 30
+ #endif
+diff --git a/src/d3d9/d3d9_swapchain.cpp b/src/d3d9/d3d9_swapchain.cpp
+index 306a79b7..6d4574d2 100644
+--- a/src/d3d9/d3d9_swapchain.cpp
++++ b/src/d3d9/d3d9_swapchain.cpp
+@@ -1010,12 +1010,33 @@ namespace dxvk {
+   }
+ 
+ 
++  bool D3D9SwapChainEx::HasFrontBuffer() const {
++    if (m_parent->GetOptions()->noExplicitFrontBuffer)
++      return false;
++
++    // Backport the buffer-preservation part of upstream feebec959d3d.
++    // COPY keeps the backbuffer, and native windowed DISCARD with one
++    // backbuffer behaves the same way. Rotating an extra black frontbuffer
++    // here breaks games which retain their previous frame contents.
++    if (m_presentParams.SwapEffect == D3DSWAPEFFECT_COPY
++     || m_presentParams.SwapEffect == D3DSWAPEFFECT_COPY_VSYNC)
++      return false;
++
++    return !(m_presentParams.SwapEffect == D3DSWAPEFFECT_DISCARD
++          && m_presentParams.BackBufferCount == 1
++          && m_presentParams.Windowed);
++  }
++
++
+   void D3D9SwapChainEx::CreateBackBuffers(uint32_t NumBackBuffers) {
+     // Explicitly destroy current swap image before
+     // creating a new one to free up resources
+     DestroyBackBuffers();
+ 
+-    int NumFrontBuffer = m_parent->GetOptions()->noExplicitFrontBuffer ? 0 : 1;
++    int NumFrontBuffer = HasFrontBuffer() ? 1 : 0;
++    Logger::debug(str::format("D3D9: Backbuffer policy: effect=", uint32_t(m_presentParams.SwapEffect),
++      ", windowed=", bool(m_presentParams.Windowed), ", backbuffers=", NumBackBuffers,
++      ", explicitFrontBuffer=", NumFrontBuffer));
+     m_backBuffers.resize(NumBackBuffers + NumFrontBuffer);
+ 
+     // Create new back buffer
+diff --git a/src/d3d9/d3d9_swapchain.h b/src/d3d9/d3d9_swapchain.h
+index 150578ca..5999fcd0 100644
+--- a/src/d3d9/d3d9_swapchain.h
++++ b/src/d3d9/d3d9_swapchain.h
+@@ -192,6 +192,8 @@ namespace dxvk {
+ 
+     std::string GetApiName();
+ 
++    bool HasFrontBuffer() const;
++
+   };
+ 
+-}
+\ No newline at end of file
++}

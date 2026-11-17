@@ -1,0 +1,19 @@
+diff --git a/src/gallium/drivers/zink/zink_compiler.c b/src/gallium/drivers/zink/zink_compiler.c
+--- a/src/gallium/drivers/zink/zink_compiler.c
++++ b/src/gallium/drivers/zink/zink_compiler.c
+@@ -5395,6 +5395,15 @@
+       else
+          snprintf(name, sizeof(name), "slot_%u", ris->location);
+    }
++   /* Preserve the legacy vec4 texture-coordinate interface on hosts which
++    * misread component-decorated fragment inputs (notably TEXn.w). */
++   const char *full_texcoord = os_get_option("WINEHUA_ZINK_FULL_TEXCOORD");
++   if (full_texcoord && !strcmp(full_texcoord, "1") &&
++       ((nir->info.stage == MESA_SHADER_FRAGMENT && ris->mode == nir_var_shader_in) ||
++        (nir->info.stage < MESA_SHADER_FRAGMENT && ris->mode == nir_var_shader_out)) &&
++       ris->location >= VARYING_SLOT_TEX0 && ris->location <= VARYING_SLOT_TEX7 &&
++       ris->bit_size == 32 && ris->type == nir_type_float32 && !ris->array_size)
++      ris->component_mask = 0xf;
+    /* calculate vec/array type */
+    int frac = ffs(ris->component_mask) - 1;
+    int num_components = util_last_bit(ris->component_mask) - frac;

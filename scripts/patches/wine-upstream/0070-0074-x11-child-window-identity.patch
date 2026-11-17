@@ -1,0 +1,30 @@
+From b3af43ea660fba3d21b0a162c3f6de4a41df9844 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0074-x11-child-window-identity
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 2b44588189dbc45e89795c569ce6a6bdcde95580cfd212530db8bbbad403bfb2
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 4b7bf548176f6c58067df5248669fb6f4496dd11..919b9bcb0e88eda39f75e6ead60e62b5e272fb67 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2868,6 +2868,16 @@ static void create_whole_window( struct x11drv_win_data *data )
+                                         data->vis.visual, mask, &attr );
+     if (!data->whole_window) goto done;
+     set_wine_allow_flip( data->whole_window, 0 );
++#ifdef __OHOS__
++    if (NtUserGetAncestor(data->hwnd, GA_PARENT) == NtUserGetDesktopWindow())
++    {
++        static const char role[] = "winehua-toplevel";
++        XChangeProperty(data->display, data->whole_window,
++            XInternAtom(data->display, "WM_WINDOW_ROLE", False), XA_STRING,
++            8, PropModeReplace, (const unsigned char *)role, sizeof(role)-1);
++    }
++#endif
++
+ 
+     SetRect( &data->current_state.rect, pos.x, pos.y, pos.x + cx, pos.y + cy );
+     data->pending_state.rect = data->current_state.rect;

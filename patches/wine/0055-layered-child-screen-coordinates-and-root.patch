@@ -1,0 +1,65 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] win32u/wayland: preserve layered child coordinates and ancestry
+
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2657,8 +2657,17 @@
+ 
+     if (pts_dst)
+     {
+-        offset.cx = pts_dst->x - new_rects.window.left;
+-        offset.cy = pts_dst->y - new_rects.window.top;
++        POINT position = *pts_dst;
++        HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
++
++        /* UpdateLayeredWindow takes screen coordinates, including for layered
++         * children. apply_window_pos stores parent-client coordinates. Without
++         * this conversion a GetWindowRect/update loop adds the parent origin
++         * again on every frame. Map one point to preserve RTL/DPI semantics. */
++        if (parent && parent != NtUserGetDesktopWindow())
++            NtUserMapWindowPoints( 0, parent, &position, 1, get_thread_dpi() );
++        offset.cx = position.x - new_rects.window.left;
++        offset.cy = position.y - new_rects.window.top;
+         OffsetRect( &new_rects.client, offset.cx, offset.cy );
+         OffsetRect( &new_rects.window, offset.cx, offset.cy );
+         OffsetRect( &new_rects.visible, offset.cx, offset.cy );
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -475,6 +475,7 @@
+                               const struct window_rects *new_rects, struct window_surface *surface)
+ {
+     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    HWND root = toplevel;
+     struct wayland_surface *toplevel_surface;
+     struct wayland_client_surface *client;
+     struct wayland_win_data *data, *toplevel_data;
+@@ -485,13 +486,28 @@
+     /* Get the managed state with win_data unlocked, as is_window_managed
+      * may need to query win_data information about other HWNDs and thus
+      * acquire the lock itself internally. */
+-    if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) toplevel = owner_hint;
++    managed = is_window_managed(hwnd, swp_flags, fullscreen);
++    /* owner_hint is a placement hint for unmanaged top-level windows. A real
++     * child must retain its GA_ROOT even when its parent is hidden or the hint
++     * is absent. Otherwise a layered child escapes its parent as xdg_toplevel. */
++    if (!managed && surface && toplevel == hwnd) toplevel = owner_hint;
+ 
+     if (!(data = wayland_win_data_get(hwnd))) return;
+     toplevel_data = toplevel && toplevel != hwnd ? wayland_win_data_get_nolock(toplevel) : NULL;
+     toplevel_surface = toplevel_data ? toplevel_data->wayland_surface : NULL;
+ 
+     data->rects = *new_rects;
++    /* win32u passes child rectangles in parent-client coordinates at RAW DPI;
++     * surface geometry and subsurface positioning below use screen coordinates.
++     * Owned popups are already absolute and must not receive this conversion. */
++    if (root && root != hwnd)
++    {
++        HWND parent = NtUserGetAncestor(hwnd, GA_PARENT);
++        UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
++        NtUserMapWindowPoints(parent, 0, (POINT *)&data->rects.window, 2, dpi);
++        NtUserMapWindowPoints(parent, 0, (POINT *)&data->rects.client, 2, dpi);
++        NtUserMapWindowPoints(parent, 0, (POINT *)&data->rects.visible, 2, dpi);
++    }
+     data->is_fullscreen = fullscreen;
+     data->managed = managed;
+ 

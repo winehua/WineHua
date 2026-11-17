@@ -3,6 +3,7 @@
 #include <wayland-server-protocol.h>  // wl_pointer_send_*/wl_keyboard_send_* 系列
 
 #include "input/seat.h"
+#include "input/data_device.h"
 #include "input/pointer_extras.h"
 #include "input/text_input.h"
 // 6A 装配注入直呼 (BindResolvers 注入; wl 事件循环启动前装配, 见头注释):
@@ -94,70 +95,100 @@ void InputInjector::InjectPointerEnter(uint32_t tl, wl_resource* surface, wl_fix
             nSent++;
         }
     }
+    if (nSent) { positionedSurface_ = surface; positionedX_ = sx; positionedY_ = sy; }
     OH_LOG_INFO(LOG_APP, "[Input] InjectEnter OK sent=%{public}d", nSent);
 }
 
-void InputInjector::InjectRelativeMotion(wl_fixed_t dx, wl_fixed_t dy) {
+void InputInjector::InjectRelativeMotion(wl_resource* surface, wl_fixed_t dx, wl_fixed_t dy) {
     // 相对模式增量转发 (zwp_relative_pointer_v1)。wine 侧收到后累积进
     // wineserver 光标位置 (wayland_pointer.c relative_pointer_v1_relative_motion)。
     // 无 relative 对象 (绝对模式) 时 PointerExtras 内部空转。
+    if (!surface || !resolver_->IsSurfaceAlive(surface)) return;
     PointerExtras::GetInstance()->SendRelativeMotion(
-        wl_fixed_to_double(dx), wl_fixed_to_double(dy));
+        surface, wl_fixed_to_double(dx), wl_fixed_to_double(dy));
+}
+
+void InputInjector::SyncPointerPosition(wl_fixed_t sx, wl_fixed_t sy) {
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    // Xwayland emits absolute-only motion through one XI device and wheel
+    // through its relative device. Repeating an unchanged absolute motion
+    // before every wheel switches XI devices and resets Chromium's scroll
+    // baseline. Synchronize a changed position, not a synthetic mouse move.
+    if (focus && focus == positionedSurface_ && sx == positionedX_ && sy == positionedY_ &&
+        resolver_->IsExternallyHostedSurface(focus)) return;
+    InjectPointerMotion(sx, sy);
 }
 
 void InputInjector::InjectPointerMotion(wl_fixed_t sx, wl_fixed_t sy) {
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) { gDropMotion.fetch_add(1); return; }
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    if (ptrs.empty() || !focus) { gDropMotion.fetch_add(1); return; }
+    struct wl_client* focusClient = wl_resource_get_client(focus);
+    int nSent = 0;
+    uint32_t t = NowMs();
     for (auto* ptr : ptrs) {
-        if (ptr) {
-            wl_pointer_send_motion(ptr, NowMs(), sx, sy);
+        if (ptr && wl_resource_get_client(ptr) == focusClient) {
+            wl_pointer_send_motion(ptr, t, sx, sy);
             wl_pointer_send_frame(ptr);
+            nSent++;
         }
     }
+    if (nSent) { positionedSurface_ = focus; positionedX_ = sx; positionedY_ = sy; }
     // 高频路径 (hover ~125Hz) 抽样 120:1, 防止刷爆 hilog
     static uint32_t sInjMotionLogN = 0;
     if (++sInjMotionLogN % 120 == 0)
-        OH_LOG_INFO(LOG_APP, "[Input] InjectMotion sx=%{public}.1f sy=%{public}.1f OK n=%{public}u ptrs=%{public}zu",
-                    wl_fixed_to_double(sx), wl_fixed_to_double(sy), sInjMotionLogN, ptrs.size());
+        OH_LOG_INFO(LOG_APP, "[Input] InjectMotion sx=%{public}.1f sy=%{public}.1f OK n=%{public}u sent=%{public}d total=%{public}zu",
+                    wl_fixed_to_double(sx), wl_fixed_to_double(sy), sInjMotionLogN, nSent, ptrs.size());
 }
 
 void InputInjector::InjectPointerButton(uint32_t button, uint32_t state) {
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectButton DROP btn=0x%{public}x: no ptr", button);
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    if (ptrs.empty() || !focus) {
+        OH_LOG_WARN(LOG_APP, "[Input] InjectButton DROP btn=0x%{public}x: no pointer focus (nTotal=%{public}zu)",
+                    button, ptrs.size());
         gDropButton.fetch_add(1); MaybeReportDrops();
         return;
     }
-    // 使用最近一次 enter 的 serial (Wayland 协议要求 button 序列号与 enter 一致)
-    uint32_t enterSerial = tracker_->PointerEnterSerial();
-    uint32_t s = enterSerial ? enterSerial : tracker_->NextSerial();
-    OH_LOG_INFO(LOG_APP, "[Input] InjectButton btn=0x%{public}x state=%{public}u serial=%{public}u (enterSerial=%{public}u) n=%{public}zu t=%{public}u",
-                button, state, s, enterSerial, ptrs.size(), NowMs());
+    struct wl_client* focusClient = wl_resource_get_client(focus);
+    uint32_t s = tracker_->NextSerial();
+    uint32_t t = NowMs();
+    int nSent = 0;
     for (auto* ptr : ptrs) {
-        if (ptr) {
-            wl_pointer_send_button(ptr, s, NowMs(), button, state);
+        if (ptr && wl_resource_get_client(ptr) == focusClient) {
+            wl_pointer_send_button(ptr, s, t, button, state);
             wl_pointer_send_frame(ptr);
+            nSent++;
         }
     }
+    OH_LOG_INFO(LOG_APP, "[Input] InjectButton btn=0x%{public}x state=%{public}u serial=%{public}u sent=%{public}d total=%{public}zu t=%{public}u",
+                button, state, s, nSent, ptrs.size(), t);
 }
 
-void InputInjector::InjectPointerAxis(int axis, wl_fixed_t value) {
+void InputInjector::InjectPointerAxis(int axis, wl_fixed_t value, bool continuous) {
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
-    if (ptrs.empty()) { return; }
+    wl_resource* focus = tracker_->PointerFocusedSurface();
+    if (ptrs.empty() || !focus || !value || !resolver_->IsSurfaceAlive(focus)) { return; }
+    const bool native = resolver_->IsExternallyHostedSurface(focus);
+    // Xwayland consumes continuous axis values (10 units per wheel detent).
+    // A discrete +/-1 on every fractional event overrides that value in
+    // Xwayland and turns a smooth gesture into many full wheel clicks.
+    const auto nativeValue = continuous ? value : wl_fixed_from_double(wl_fixed_to_double(value) * 10.0);
+    struct wl_client* focusClient = wl_resource_get_client(focus);
     uint32_t axisEnum = (axis == 0) ? WL_POINTER_AXIS_VERTICAL_SCROLL
                                     : WL_POINTER_AXIS_HORIZONTAL_SCROLL;
     int nSent = 0;
     uint32_t t = NowMs();
     for (auto* ptr : ptrs) {
-        if (ptr) {
+        if (ptr && wl_resource_get_client(ptr) == focusClient) {
             // winewayland.drv 只处理 axis_discrete/axis_value120, axis 是空函数。
             // 协议规定 discrete 在配对 axis 之前; steps 直接比较 wl_fixed 原值,
             // 避免 wl_fixed_to_int 截断把 |值|<1 的正向滚动 (触控板细步) 误判成反向
-            if (wl_resource_get_version(ptr) >= WL_POINTER_AXIS_DISCRETE_SINCE_VERSION) {
+            if (!native && wl_resource_get_version(ptr) >= WL_POINTER_AXIS_DISCRETE_SINCE_VERSION) {
                 int32_t steps = (value > 0) ? 1 : -1;
                 wl_pointer_send_axis_discrete(ptr, axisEnum, steps);
             }
-            wl_pointer_send_axis(ptr, t, axisEnum, value);
+            wl_pointer_send_axis(ptr, t, axisEnum, native ? nativeValue : value);
             wl_pointer_send_frame(ptr);
             nSent++;
         }
@@ -167,6 +198,7 @@ void InputInjector::InjectPointerAxis(int axis, wl_fixed_t value) {
 }
 
 void InputInjector::InjectPointerLeave() {
+    positionedSurface_ = nullptr;
     auto ptrs = Seat::GetInstance()->GetAllPointerResources();
     wl_resource* surf = tracker_->PointerFocusedSurface();
     if (ptrs.empty() || !surf) return;
@@ -195,18 +227,40 @@ void InputInjector::InjectKeyboardEnter(uint32_t tl, wl_resource* surface) {
         return;
     }
 
-    // 防御: surface 可能在入队后到 flush 前被 Wine 销毁
-    // 6A: 直呼注入的 ToplevelManager (原 WaylandServer::GetSurfaceForToplevel 转发)
-    if (!tmgr_->GetSurfaceForToplevel(tl)) {
-        OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP tl=%{public}u: surface no longer in map (destroyed before flush?)", tl);
+    // A GL/client subsurface can name a different HWND from its owning
+    // window. Wine uses keyboard enter to activate that HWND. Keep pointer
+    // coordinates on the hit child, but send keyboard/IME enter to its live
+    // mapped owner; validating only the toplevel map leaves stale queued
+    // child pointers unchecked.
+    auto* keyboardSurface = resolver_->ResolveKeyboardFocusSurface(tl, surface);
+    if (!keyboardSurface) {
+        OH_LOG_WARN(LOG_APP, "[Input] InjectKbdEnter DROP tl=%{public}u: stale or unrelated focus surface", tl);
         gDropEnter.fetch_add(1); MaybeReportDrops();
         return;
     }
+    if (keyboardSurface != surface)
+        OH_LOG_INFO(LOG_APP, "[Input] InjectKbdEnter owner tl=%{public}u child=%{public}p owner=%{public}p",
+                    tl, surface, keyboardSurface);
+    surface = keyboardSurface;
 
-    tracker_->SetKeyboardFocus(tl, surface);
+    // Validate the destination before releasing the actual previous focus.
+    // A stale queued target must not deactivate a still-live game window.
+    struct wl_client* surfClient = wl_resource_get_client(surface);
+    bool hasKeyboard = false;
+    for (auto* kbd : kbds)
+        if (kbd && wl_resource_get_client(kbd) == surfClient) hasKeyboard = true;
+    if (!hasKeyboard) {
+        gDropEnter.fetch_add(1); MaybeReportDrops();
+        return;
+    }
+    if (tracker_->KeyboardEntered() && tracker_->KeyboardFocusedSurface() == surface &&
+        tracker_->KeyboardFocusedToplevel() == tl) return;
+    const auto previousTl = tracker_->KeyboardFocusedToplevel();
+    InjectKeyboardLeave();
+    OH_LOG_INFO(LOG_APP, "[Input] KbdFocus oldTl=%{public}u newTl=%{public}u owner=%{public}p",
+                previousTl, tl, surface);
     uint32_t s = tracker_->NextSerial();
     int nSent = 0;
-    struct wl_client* surfClient = wl_resource_get_client(surface);
     OH_LOG_INFO(LOG_APP, "[Input] InjectKbdEnter tl=%{public}u serial=%{public}u mods=0x%{public}x nKbds=%{public}zu t=%{public}u",
                 tl, s, tracker_->ModifiersDepressed(), kbds.size(), NowMs());
 
@@ -225,10 +279,12 @@ void InputInjector::InjectKeyboardEnter(uint32_t tl, wl_resource* surface) {
                                    tracker_->ModifiersGroup());
         nSent++;
     }
+    tracker_->SetKeyboardFocus(tl, surface);
+    WineClipboardFocus(surface);
     OH_LOG_INFO(LOG_APP, "[Input] InjectKbdEnter OK sent=%{public}d", nSent);
     // IME: keyboard enter → text-input enter (Wine 收到后 enable, 等待文本框
     // SetIMECompositionRect → 非零光标矩形 → TextInput 判定激活)
-    TextInput::GetInstance()->OnKeyboardEnter(surface);
+    TextInput::GetInstance()->OnKeyboardEnter(tl, surface);
 }
 
 void InputInjector::InjectKeyboardKey(uint32_t key, uint32_t state) {
@@ -240,8 +296,13 @@ void InputInjector::InjectKeyboardKey(uint32_t key, uint32_t state) {
     }
     uint32_t s = tracker_->NextSerial();
     int nSent = 0;
-    struct wl_client* focusClient = tracker_->KeyboardFocusedSurface()
-        ? wl_resource_get_client(tracker_->KeyboardFocusedSurface()) : nullptr;
+    auto* focusSurface = tracker_->KeyboardFocusedSurface();
+    if (!tracker_->KeyboardEntered() || !resolver_->IsSurfaceAlive(focusSurface)) {
+        tracker_->ClearKeyboardFocus();
+        gDropKey.fetch_add(1); MaybeReportDrops();
+        return;
+    }
+    struct wl_client* focusClient = wl_resource_get_client(focusSurface);
     for (auto* kbd : kbds) {
         if (kbd) {
             // 只发给已 enter 的 client (与 InjectKbdEnter 一致), 避免无 focused_hwnd 的 client 收到无效 key
@@ -261,9 +322,10 @@ void InputInjector::InjectKeyboardKey(uint32_t key, uint32_t state) {
 }
 
 void InputInjector::InjectKeyboardLeave() {
+    WineClipboardFocus(nullptr);
     auto kbds = Seat::GetInstance()->GetAllKeyboardResources();
     wl_resource* surf = tracker_->KeyboardFocusedSurface();
-    if (kbds.empty() || !tracker_->KeyboardEntered() || !surf) return;
+    if (!tracker_->KeyboardEntered() || !surf) return;
     // 防御: 同 InjectPointerLeave — 对已销毁/复用的对象 id 发 leave 会断开 client
     if (!resolver_->IsSurfaceAlive(surf)) {
         OH_LOG_WARN(LOG_APP, "[Input] InjectKbdLeave SKIP surf=%{public}p: destroyed before flush", surf);

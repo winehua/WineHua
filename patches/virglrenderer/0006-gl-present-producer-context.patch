@@ -1,0 +1,18 @@
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -1106,7 +1106,14 @@
+       info.height == command[VCMD_WINEHUA_PRESENT_HEIGHT] &&
+       info.tex_id != 0;
+    if (payload_matches && winehua_present_callback) {
+-      callback_ret = winehua_present_callback(
++      /* Fence polling before dispatch may have selected ctx0. Select this
++       * producer again so the callback's ready/consumed fences order the
++       * actual writer, including its next frame. A zero-length submission
++       * only selects the context; it issues no draw, fence, or CPU wait. */
++      ret = virgl_renderer_submit_cmd(NULL, ctx->ctx_id, 0);
++      callback_ret = ret > 0 ? -ret : ret;
++      if (!ret)
++         callback_ret = winehua_present_callback(
+          info.tex_id, info.width, info.height, info.virgl_format, info.flags,
+          drawable, command[VCMD_WINEHUA_PRESENT_SERIAL],
+          command[VCMD_WINEHUA_PRESENT_CLIENT_PID],

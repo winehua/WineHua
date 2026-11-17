@@ -1,0 +1,477 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 9a44ae48c9a..1c85deda9b0 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -55,6 +55,7 @@ static PFN_vkEnumerateInstanceExtensionProperties p_vkEnumerateInstanceExtension
+ 
+ static void *vulkan_handle;
+ static struct vulkan_funcs vulkan_funcs;
++static BOOL winehua_host_ohos_surface_supported;
+ 
+ WINE_DECLARE_DEBUG_CHANNEL(fps);
+ 
+@@ -682,6 +683,7 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
+     const VkDebugReportCallbackCreateInfoEXT *debug_report_callback;
+     const char **extensions;
+     uint32_t count = 0;
++    BOOL requested_win32_surface = instance->obj.extensions.has_VK_KHR_win32_surface;
+ 
+     while ((header = find_next_struct( header->pNext, VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT )))
+     {
+@@ -709,7 +711,12 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
+     }
+ 
+     driver_funcs->p_map_instance_extensions( &instance->obj.extensions );
+-    instance->obj.extensions.has_VK_KHR_win32_surface = 0;
++    /* Keep the default/private route unchanged. The Direct route maps the
++     * client Win32 surface request to the system loader's OHOS WSI extension. */
++    instance->obj.extensions.has_VK_KHR_win32_surface =
++        requested_win32_surface && winehua_direct_vulkan_enabled() &&
++        winehua_host_ohos_surface_supported &&
++        instance->obj.extensions.has_VK_KHR_surface;
+ 
+     if (instance->obj.extensions.has_VK_EXT_debug_utils || instance->obj.extensions.has_VK_EXT_debug_report)
+     {
+@@ -729,9 +736,11 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
+     instance->obj.extensions.has_VK_KHR_external_semaphore_capabilities = 1;
+ 
+     if (!(extensions = mem_alloc( pool, sizeof(instance->obj.extensions) * 8 * sizeof(*extensions) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+-#define USE_VK_EXT(x) if (instance->obj.extensions.has_ ## x) extensions[count++] = #x;
++#define USE_VK_EXT(x) if (instance->obj.extensions.has_ ## x && strcmp( #x, "VK_KHR_win32_surface" )) extensions[count++] = #x;
+     ALL_VK_INSTANCE_EXTS
+ #undef USE_VK_EXT
++    if (instance->obj.extensions.has_VK_KHR_win32_surface)
++        extensions[count++] = "VK_OHOS_surface";
+ 
+     TRACE( "Enabling %u host instance extensions\n", count );
+     for (const char **extension = extensions, **end = extension + count; extension < end; extension++)
+@@ -5259,6 +5268,12 @@ static void vulkan_init_once(void)
+     for (uint32_t i = 0; i < count; i++)
+     {
+         const char *extension = properties[i].extensionName;
++        if (winehua_direct_vulkan_enabled() && !strcmp( extension, "VK_OHOS_surface" ))
++        {
++            winehua_host_ohos_surface_supported = TRUE;
++            TRACE( "  - %s (mapped to VK_KHR_win32_surface)\n", extension );
++            continue;
++        }
+ #define USE_VK_EXT(x)                           \
+         if (!strcmp( extension, #x ))           \
+         {                                       \
+@@ -5273,6 +5288,9 @@ static void vulkan_init_once(void)
+ 
+     /* map host instance extensions for VK_KHR_win32_surface */
+     driver_funcs->p_map_instance_extensions( &extensions );
++    if (winehua_direct_vulkan_enabled() && winehua_host_ohos_surface_supported &&
++        extensions.has_VK_KHR_surface)
++        extensions.has_VK_KHR_win32_surface = 1;
+ 
+     /* filter out unsupported client instance extensions */
+ #define USE_VK_EXT(x) vulkan_funcs.client_extensions.has_ ## x = extensions.has_ ## x;
+diff --git a/dlls/winewayland.drv/vulkan.c b/dlls/winewayland.drv/vulkan.c
+index 1a4b4de2a98..bf5ee785224 100644
+--- a/dlls/winewayland.drv/vulkan.c
++++ b/dlls/winewayland.drv/vulkan.c
+@@ -26,6 +26,7 @@
+ 
+ #include <dlfcn.h>
+ #include <stdlib.h>
++#include <unistd.h>
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -50,6 +51,116 @@ static BOOL winehua_direct_vulkan_enabled(void)
+     return value && !strcmp(value, "direct");
+ }
+ 
++#ifdef __OHOS__
++typedef void *(*winehua_direct_acquire_fn)(uint32_t, uint32_t *, uint64_t *, int32_t *, int32_t *);
++typedef void (*winehua_direct_release_fn)(void *);
++typedef VkResult (VKAPI_PTR *winehua_create_surface_ohos_fn)(VkInstance, const void *,
++                                                              const VkAllocationCallbacks *, VkSurfaceKHR *);
++static pthread_once_t winehua_direct_wsi_once = PTHREAD_ONCE_INIT;
++static winehua_direct_acquire_fn winehua_direct_acquire;
++static winehua_direct_release_fn winehua_direct_release;
++static PFN_vkGetInstanceProcAddr winehua_system_get_instance_proc_addr;
++
++static void winehua_direct_wsi_init(void)
++{
++    void *child = dlopen("libwine_child.so", RTLD_NOW | RTLD_NOLOAD);
++    void *vulkan = dlopen("/system/lib64/libvulkan.so", RTLD_NOW | RTLD_NOLOAD);
++    if (!child) child = dlopen("libwine_child.so", RTLD_NOW);
++    if (!vulkan) vulkan = dlopen("/system/lib64/libvulkan.so", RTLD_NOW);
++    if (child)
++    {
++        winehua_direct_acquire = (winehua_direct_acquire_fn)
++            dlsym(child, "WineHua_DirectSurfaceAcquireByWlSurface");
++        winehua_direct_release = (winehua_direct_release_fn)
++            dlsym(child, "WineHua_DirectSurfaceRelease");
++    }
++    if (vulkan)
++        winehua_system_get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)
++            dlsym(vulkan, "vkGetInstanceProcAddr");
++    if (!winehua_direct_acquire || !winehua_direct_release ||
++        !winehua_system_get_instance_proc_addr)
++        ERR("WineHua Direct WSI symbols unavailable child=%p acquire=%p release=%p vulkan=%p\n",
++            child, winehua_direct_acquire, winehua_direct_release,
++            winehua_system_get_instance_proc_addr);
++}
++
++static uint32_t winehua_window_surface_id(HWND hwnd)
++{
++    struct wayland_win_data *data;
++    uint32_t id = 0;
++    HWND root = NtUserGetAncestor(hwnd, GA_ROOT);
++    if ((data = wayland_win_data_get(root ? root : hwnd)))
++    {
++        if (data->wayland_surface && data->wayland_surface->wl_surface)
++            id = wl_proxy_get_id((struct wl_proxy *)data->wayland_surface->wl_surface);
++        wayland_win_data_release(data);
++    }
++    return id;
++}
++
++static VkResult winehua_direct_surface_create(HWND hwnd, const struct vulkan_instance *instance,
++                                               VkSurfaceKHR *handle, struct client_surface **client)
++{
++    struct wayland_client_surface *surface;
++    winehua_create_surface_ohos_fn create_surface;
++    uint32_t owner_id, toplevel_id = 0;
++    uint64_t generation = 0;
++    int32_t width = 0, height = 0;
++    void *window = NULL;
++    VkResult res;
++    struct {
++        VkStructureType sType;
++        const void *pNext;
++        VkFlags flags;
++        void *window;
++    } create_info = {(VkStructureType)1000685000, NULL, 0, NULL};
++
++    pthread_once(&winehua_direct_wsi_once, winehua_direct_wsi_init);
++    if (!winehua_direct_acquire || !winehua_direct_release ||
++        !winehua_system_get_instance_proc_addr)
++        return VK_ERROR_INITIALIZATION_FAILED;
++    create_surface = (winehua_create_surface_ohos_fn)winehua_system_get_instance_proc_addr(
++        instance->host.instance, "vkCreateSurfaceOHOS");
++    if (!create_surface) return VK_ERROR_EXTENSION_NOT_PRESENT;
++    if (!(surface = wayland_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    owner_id = winehua_window_surface_id(hwnd);
++    wl_display_flush(process_wayland.wl_display);
++    if (!owner_id)
++    {
++        client_surface_release(&surface->client);
++        return VK_ERROR_SURFACE_LOST_KHR;
++    }
++    for (unsigned i = 0; i < 200 && !window; ++i)
++    {
++        window = winehua_direct_acquire(owner_id, &toplevel_id, &generation, &width, &height);
++        if (!window) usleep(10000);
++    }
++    if (!window)
++    {
++        WARN("WineHua Direct producer unavailable owner_wl=%u pid=%u\n", owner_id, getpid());
++        client_surface_release(&surface->client);
++        return VK_ERROR_SURFACE_LOST_KHR;
++    }
++    create_info.window = window;
++    res = create_surface(instance->host.instance, &create_info, NULL, handle);
++    if (res != VK_SUCCESS)
++    {
++        ERR("WineHua Direct vkCreateSurfaceOHOS failed res=%d owner_wl=%u\n", res, owner_id);
++        winehua_direct_release(window);
++        client_surface_release(&surface->client);
++        return res;
++    }
++    surface->winehua_direct_window = window;
++    surface->winehua_direct_window_release = winehua_direct_release;
++    set_client_surface(hwnd, surface);
++    *client = &surface->client;
++    TRACE("WineHua Direct OHOS surface=0x%s owner_wl=%u top=%u gen=%llu size=%dx%d\n",
++          wine_dbgstr_longlong(*handle), owner_id, toplevel_id,
++          (unsigned long long)generation, width, height);
++    return VK_SUCCESS;
++}
++#endif
++
+ static BOOL winehua_vulkan_present_enabled(void)
+ {
+     const char *value = getenv("WINEHUA_VULKAN_PRESENT");
+@@ -87,10 +198,14 @@ static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct
+ 
+     TRACE("%p %p %p %p\n", hwnd, instance, handle, client);
+ 
+-    /* The Direct loader is usable for offscreen Wine Vulkan now.  Win32 WSI
+-     * remains unavailable until the App passes this window's producer via IPC.
+-     * Never hand a WineHua private tag to the system Vulkan loader. */
+-    if (winehua_direct_vulkan_enabled()) return VK_ERROR_EXTENSION_NOT_PRESENT;
++    if (winehua_direct_vulkan_enabled())
++    {
++#ifdef __OHOS__
++        return winehua_direct_surface_create(hwnd, instance, handle, client);
++#else
++        return VK_ERROR_EXTENSION_NOT_PRESENT;
++#endif
++    }
+ 
+     if (winehua_vulkan_present_enabled())
+     {
+@@ -139,7 +254,22 @@ static VkBool32 wayland_get_physical_device_presentation_support(struct vulkan_p
+ 
+     TRACE("%p %u\n", physical_device, index);
+ 
+-    if (winehua_direct_vulkan_enabled()) return VK_FALSE;
++    if (winehua_direct_vulkan_enabled())
++    {
++        uint32_t count = 0;
++        VkQueueFamilyProperties *properties;
++        VkBool32 supported = VK_FALSE;
++        instance->p_vkGetPhysicalDeviceQueueFamilyProperties(
++            physical_device->host.physical_device, &count, NULL);
++        if (!count || index >= count || !(properties = calloc(count, sizeof(*properties))))
++            return VK_FALSE;
++        instance->p_vkGetPhysicalDeviceQueueFamilyProperties(
++            physical_device->host.physical_device, &count, properties);
++        if (index < count && (properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT))
++            supported = VK_TRUE;
++        free(properties);
++        return supported;
++    }
+ 
+     /* The WineHua surface is not a Host Wayland WSI object.  Presentation is
+      * performed by the private Venus/Broker path, and every graphics queue
+@@ -156,7 +286,8 @@ static void wayland_map_instance_extensions(struct vulkan_instance_extensions *e
+ {
+     if (winehua_direct_vulkan_enabled())
+     {
+-        extensions->has_VK_KHR_win32_surface = 0;
++        /* win32u maps the requested Win32 extension to VK_OHOS_surface after
++         * confirming that the system loader advertises it. */
+         return;
+     }
+     if (winehua_vulkan_present_enabled())
+diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
+index ced5264188e..f2855da09f6 100644
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -1173,6 +1173,11 @@ static void wayland_client_surface_destroy(struct client_surface *client)
+ 
+     TRACE("%s\n", debugstr_client_surface(client));
+ 
++#ifdef __OHOS__
++    if (surface->winehua_direct_window && surface->winehua_direct_window_release)
++        surface->winehua_direct_window_release(surface->winehua_direct_window);
++#endif
++
+     if (surface->wp_viewport)
+         wp_viewport_destroy(surface->wp_viewport);
+     if (surface->wl_subsurface)
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 87ca912ebc2..70c157de62d 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -250,6 +250,10 @@ struct wayland_client_surface
+     struct wl_surface *wl_surface;
+     struct wl_subsurface *wl_subsurface;
+     struct wp_viewport *wp_viewport;
++#ifdef __OHOS__
++    void *winehua_direct_window;
++    void (*winehua_direct_window_release)(void *);
++#endif
+ };
+ 
+ struct wayland_shm_buffer
+diff --git a/programs/winehua_d3d11_smoke/main.c b/programs/winehua_d3d11_smoke/main.c
+index 3bdf393914a..42a95d3cacd 100644
+--- a/programs/winehua_d3d11_smoke/main.c
++++ b/programs/winehua_d3d11_smoke/main.c
+@@ -479,7 +479,7 @@ static void write_state(struct smoke_state *state, const char *status,
+              "{\"d3dBackend\":\"%s\",\"dxvkVersion\":\"%s\","
+              "\"d3d11Module\":\"%s\",\"dxgiModule\":\"%s\","
+              "\"featureLevel\":\"%u.%u\",\"adapter\":\"DXVK Vulkan\","
+-             "\"vulkanDevice\":\"via winevulkan/Venus\",\"cpuReadBytes\":0,"
++             "\"vulkanDevice\":\"via winevulkan\",\"cpuReadBytes\":0,"
+              "\"cpuUploadBytes\":0,\"gpuCopyCount\":1,\"queueSubmitCount\":%u,"
+              "\"presentFrames\":%u,\"presentFailureFrame\":%u,"
+              "\"presentResult\":%ld,\"fallbackDetected\":%s,"
+diff --git a/programs/winehua_vulkan_smoke/main.c b/programs/winehua_vulkan_smoke/main.c
+index 3f1a94f59c0..398418c07c5 100644
+--- a/programs/winehua_vulkan_smoke/main.c
++++ b/programs/winehua_vulkan_smoke/main.c
+@@ -1,9 +1,8 @@
+ /*
+- * WineHua Win32 Vulkan offscreen smoke.
++ * WineHua Win32 Vulkan offscreen and WSI smoke.
+  *
+- * This intentionally avoids WSI.  It proves the Windows Vulkan ->
+- * winevulkan -> x86_64 Vulkan Loader -> Mesa Venus chain before presentation
+- * is introduced.
++ * The optional present path checks Wine's Vulkan swapchain, including an
++ * explicit running-window resize when WINEHUA_VULKAN_RESIZE=1.
+  */
+ 
+ #include <stdint.h>
+@@ -50,6 +49,11 @@ struct probe_state
+     uint32_t expected_sampled_value;
+     BOOL present_ok;
+     uint32_t present_frames;
++    BOOL resize_requested;
++    BOOL resize_completed;
++    uint32_t swapchain_rebuilds;
++    VkExtent2D initial_extent;
++    VkExtent2D resized_extent;
+     BOOL fallback_detected;
+     unsigned int queue_submits;
+     char vulkan_module[MAX_PATH];
+@@ -216,6 +220,9 @@ static void write_state(const struct probe_state *state, const char *status,
+              "\"cpuReadBytes\":%u,\"cpuUploadBytes\":%u,"
+              "\"gpuCopyCount\":%u,\"queueSubmitCount\":%u,"
+              "\"presentFrames\":%u,"
++             "\"resizeRequested\":%s,\"resizeCompleted\":%s,"
++             "\"swapchainRebuilds\":%u,"
++             "\"initialExtent\":[%u,%u],\"resizedExtent\":[%u,%u],"
+              "\"presentFailureFrame\":%u,"
+              "\"presentAcquireResult\":%d,"
+              "\"presentAcquireWaitResult\":%d,"
+@@ -256,6 +263,11 @@ static void write_state(const struct probe_state *state, const char *status,
+              state->smoke.present ? 0u : 4096u,
+              state->smoke.present ? 1u : 2u, state->queue_submits,
+              state->present_frames,
++             state->resize_requested ? "true" : "false",
++             state->resize_completed ? "true" : "false",
++             state->swapchain_rebuilds,
++             state->initial_extent.width, state->initial_extent.height,
++             state->resized_extent.width, state->resized_extent.height,
+              state->present_fail_frame,
+              state->present_acquire_result,
+              state->present_acquire_wait_result,
+@@ -687,13 +699,16 @@ static BOOL run_present(struct probe_state *state, VkInstance instance,
+     VkImage *images = NULL;
+     uint32_t image_count = 0;
+     VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
+-    VkResult result;
++    VkResult result = VK_ERROR_INITIALIZATION_FAILED;
+     VkSurfaceCapabilitiesKHR capabilities;
+     VkSurfaceFormatKHR surface_format;
+     VkExtent2D extent;
+     uint32_t frame_count = state->smoke.seconds ? state->smoke.seconds * 30 : 30;
+     BOOL initialized[8] = {0};
+     BOOL ok = FALSE;
++    const char *resize = getenv("WINEHUA_VULKAN_RESIZE");
++
++    state->resize_requested = resize && !strcmp(resize, "1");
+ 
+     memset(&window_class, 0, sizeof(window_class));
+     window_class.lpfnWndProc = winehua_vulkan_smoke_wndproc;
+@@ -726,12 +741,13 @@ static BOOL run_present(struct probe_state *state, VkInstance instance,
+     {
+         uint32_t count = 1;
+         result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &count, &surface_format);
+-        if (result != VK_SUCCESS && result != VK_INCOMPLETE || !count) goto cleanup;
++        if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || !count) goto cleanup;
+     }
+     extent = capabilities.currentExtent;
+     if (extent.width == UINT32_MAX || extent.height == UINT32_MAX)
+         extent = (VkExtent2D){640, 480};
+     if (!extent.width || !extent.height) extent = (VkExtent2D){1, 1};
++    state->initial_extent = extent;
+ 
+     {
+         VkSwapchainCreateInfoKHR info = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+@@ -783,6 +799,83 @@ static BOOL run_present(struct probe_state *state, VkInstance instance,
+             TranslateMessage(&message);
+             DispatchMessageA(&message);
+         }
++        if (state->resize_requested && frame == frame_count / 2)
++        {
++            VkSwapchainKHR replacement = VK_NULL_HANDLE;
++            VkImage *replacement_images = NULL;
++            uint32_t replacement_count = 0;
++            VkSwapchainCreateInfoKHR info = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
++
++            if (!SetWindowPos(hwnd, NULL, 0, 0, 800, 600,
++                              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
++            {
++                snprintf(state->present_error, sizeof(state->present_error),
++                         "resize SetWindowPos failed error=%lu", GetLastError());
++                goto cleanup;
++            }
++            while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE))
++            {
++                TranslateMessage(&message);
++                DispatchMessageA(&message);
++            }
++            result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &capabilities);
++            if (result != VK_SUCCESS) goto cleanup;
++            extent = capabilities.currentExtent;
++            if (extent.width == UINT32_MAX || extent.height == UINT32_MAX ||
++                !extent.width || !extent.height ||
++                (extent.width == state->initial_extent.width &&
++                 extent.height == state->initial_extent.height))
++            {
++                snprintf(state->present_error, sizeof(state->present_error),
++                         "resize extent unchanged or invalid: %ux%u", extent.width, extent.height);
++                goto cleanup;
++            }
++            state->resized_extent = extent;
++            result = vkQueueWaitIdle(queue);
++            if (result != VK_SUCCESS) goto cleanup;
++            info.surface = surface;
++            info.minImageCount = capabilities.minImageCount < 3 ? 3 : capabilities.minImageCount;
++            if (capabilities.maxImageCount && info.minImageCount > capabilities.maxImageCount)
++                info.minImageCount = capabilities.maxImageCount;
++            info.imageFormat = surface_format.format;
++            info.imageColorSpace = surface_format.colorSpace;
++            info.imageExtent = extent;
++            info.imageArrayLayers = 1;
++            info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++            info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
++            info.preTransform = capabilities.currentTransform;
++            info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++            info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
++            info.clipped = VK_TRUE;
++            info.oldSwapchain = swapchain;
++            result = vkCreateSwapchainKHR(device, &info, NULL, &replacement);
++            if (result != VK_SUCCESS) goto cleanup;
++            result = vkGetSwapchainImagesKHR(device, replacement, &replacement_count, NULL);
++            if (result == VK_SUCCESS && replacement_count &&
++                replacement_count <= sizeof(initialized) / sizeof(initialized[0]))
++            {
++                replacement_images = calloc(replacement_count, sizeof(*replacement_images));
++                if (replacement_images)
++                    result = vkGetSwapchainImagesKHR(device, replacement,
++                                                     &replacement_count, replacement_images);
++                else result = VK_ERROR_OUT_OF_HOST_MEMORY;
++            }
++            else if (result == VK_SUCCESS) result = VK_ERROR_INITIALIZATION_FAILED;
++            if (result != VK_SUCCESS)
++            {
++                free(replacement_images);
++                vkDestroySwapchainKHR(device, replacement, NULL);
++                goto cleanup;
++            }
++            free(images);
++            vkDestroySwapchainKHR(device, swapchain, NULL);
++            swapchain = replacement;
++            images = replacement_images;
++            image_count = replacement_count;
++            memset(initialized, 0, sizeof(initialized));
++            state->swapchain_rebuilds++;
++            state->resize_completed = TRUE;
++        }
+         result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
+                                        acquire_semaphore, VK_NULL_HANDLE, &image_index);
+         state->present_acquire_result = result;
+@@ -1053,10 +1146,10 @@ int main(int argc, char **argv)
+         if (!run_present(&state, instance, physical, device, queue, pool, command, fence))
+         {
+             failure = state.present_error[0] ? state.present_error :
+-                                               "Wine Vulkan private present failed";
++                                               "Wine Vulkan swapchain present failed";
+             goto cleanup;
+         }
+-        write_state(&state, "PASS", "present", "Wine Vulkan private BrokerPresent fixed-frame check passed");
++        write_state(&state, "PASS", "present", "Wine Vulkan swapchain present check passed");
+         exit_code = 0;
+         /* The Harmony Venus private swapchain may block in vkDestroyDevice
+          * after a successful present sequence while the NCP drains its

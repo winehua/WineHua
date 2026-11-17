@@ -1,0 +1,81 @@
+From e769f995b317c812576121748256e4a0f2475f70 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0022-private-vulkan-signal-only-acquire
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 5da0e67fb007d70049231df8519cb18cc81c78eec77cbe6432a35978de91a3c8
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 523da0e8b43125476ca72aeea2265fb9f2182db2..9d48a307da7b6a40b95c8312d5bbacbfdfdc6d77 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -332,8 +332,6 @@ struct swapchain
+     BOOL *acquired;
+     uint32_t next_image;
+     uint32_t serial;
+-    VkCommandPool acquire_pool;
+-    VkCommandBuffer acquire_command;
+     pthread_mutex_t mutex;
+     pthread_cond_t cond;
+ 
+@@ -3300,10 +3298,6 @@ static void winehua_swapchain_release_images(struct swapchain *swapchain)
+ {
+     struct vulkan_device *device = swapchain->device;
+     if (!device) return;
+-    /* Keep this small pool for device teardown.  Explicit destruction can
+-     * block in the Harmony Venus driver after repeated acquire feedback. */
+-    swapchain->acquire_pool = VK_NULL_HANDLE;
+-    swapchain->acquire_command = VK_NULL_HANDLE;
+     for (uint32_t i = 0; i < swapchain->image_count; ++i)
+     {
+         if (swapchain->images && swapchain->images[i])
+@@ -3377,33 +3371,6 @@ static VkResult winehua_swapchain_create(struct vulkan_device *device,
+         if (result != VK_SUCCESS) return result;
+     }
+ 
+-    {
+-        VkCommandPoolCreateInfo pool_info = {
+-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+-            .queueFamilyIndex = device->queues[0].info.queueFamilyIndex,
+-        };
+-        VkCommandBufferAllocateInfo allocation = {
+-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+-            .commandPool = VK_NULL_HANDLE,
+-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+-            .commandBufferCount = 1,
+-        };
+-        VkCommandBufferBeginInfo begin = {
+-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+-        };
+-        VkResult result = device->p_vkCreateCommandPool(device->host.device, &pool_info, NULL,
+-                                                        &swapchain->acquire_pool);
+-        if (result != VK_SUCCESS) return result;
+-        allocation.commandPool = swapchain->acquire_pool;
+-        result = device->p_vkAllocateCommandBuffers(device->host.device, &allocation,
+-                                                     &swapchain->acquire_command);
+-        if (result != VK_SUCCESS) return result;
+-        result = device->p_vkBeginCommandBuffer(swapchain->acquire_command, &begin);
+-        if (result != VK_SUCCESS) return result;
+-        result = device->p_vkEndCommandBuffer(swapchain->acquire_command);
+-        if (result != VK_SUCCESS) return result;
+-    }
+-
+     swapchain->surface = surface;
+     swapchain->device = device;
+     swapchain->format = create_info->imageFormat;
+@@ -3485,8 +3452,11 @@ acquired:
+         VkFence host_fence = f ? f->obj.host.fence : VK_NULL_HANDLE;
+         VkSubmitInfo submit = {
+             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+-            .commandBufferCount = 1,
+-            .pCommandBuffers = &swapchain->acquire_command,
++            /* Signal-only submission: no shared command buffer can be pending
++             * across consecutive acquisitions. Keep one batch for semaphore
++             * and fence feedback, including fence-only acquisition. */
++            .commandBufferCount = 0,
++            .pCommandBuffers = NULL,
+             .signalSemaphoreCount = host_sem ? 1u : 0u,
+             .pSignalSemaphores = host_sem ? &host_sem : NULL,
+         };

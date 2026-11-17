@@ -1,0 +1,417 @@
+diff --git a/src/d3d11/d3d11_context.cpp b/src/d3d11/d3d11_context.cpp
+index b7748234..b28c6824 100644
+--- a/src/d3d11/d3d11_context.cpp
++++ b/src/d3d11/d3d11_context.cpp
+@@ -622,6 +622,10 @@ namespace dxvk {
+     
+     VkFormat uavFormat = m_parent->LookupFormat(uavDesc.Format, DXGI_VK_FORMAT_MODE_ANY).Format;
+     VkFormat rawFormat = m_parent->LookupFormat(uavDesc.Format, DXGI_VK_FORMAT_MODE_RAW).Format;
++    if (uav->GetImageView() != nullptr && uav->GetImageView()->info().bgraStorage) {
++      uavFormat = VK_FORMAT_R8G8B8A8_UNORM;
++      rawFormat = VK_FORMAT_R8G8B8A8_UINT;
++    }
+     
+     if (uavFormat != rawFormat && rawFormat == VK_FORMAT_UNDEFINED) {
+       Logger::err(str::format("D3D11: ClearUnorderedAccessViewUint: No raw format found for ", uavFormat));
+@@ -4626,8 +4630,8 @@ namespace dxvk {
+           auto ctrSlotId = computeUavCounterBinding(programType, 0);
+ 
+           for (uint32_t j = 0; j < D3D11_1_UAV_SLOT_COUNT; j++) {
+-            ctx->bindResourceView   (uavSlotId, nullptr, nullptr);
+-            ctx->bindResourceBuffer (ctrSlotId, DxvkBufferSlice());
++            ctx->bindResourceView   (uavSlotId + j, nullptr, nullptr);
++            ctx->bindResourceBuffer (ctrSlotId + j, DxvkBufferSlice());
+           }
+         }
+       }
+diff --git a/src/d3d11/d3d11_texture.cpp b/src/d3d11/d3d11_texture.cpp
+index e5aface7..feb09f2c 100644
+--- a/src/d3d11/d3d11_texture.cpp
++++ b/src/d3d11/d3d11_texture.cpp
+@@ -156,6 +156,38 @@ namespace dxvk {
+       formatFamily.Add(VK_FORMAT_R32_SINT);
+     }
+ 
++    // Keep BGRA bytes for uploads, copies, sampling, sRGB and render targets.
++    // Vulkan's 32-bit compatibility class permits an RGBA storage-only view.
++    // EXTENDED_USAGE allows that view to supply the missing storage capability
++    // without claiming that native BGRA storage images are supported.
++    static const bool bgraUavEnabled = [] {
++      const char* value = std::getenv("DXVK_WINEHUA_BGRA_UAV");
++      return !value || std::strcmp(value, "0");
++    }();
++    if (bgraUavEnabled
++     && (m_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS
++      || m_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
++      || m_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
++     && (m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
++     && m_desc.SampleDesc.Count == 1
++     && !(m_desc.MiscFlags & (D3D11_RESOURCE_MISC_SHARED
++                            | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX
++                            | D3D11_RESOURCE_MISC_SHARED_NTHANDLE
++                            | D3D11_RESOURCE_MISC_GDI_COMPATIBLE))
++     && vkImage == VK_NULL_HANDLE && !imageInfo.shared) {
++      const auto adapter = pDevice->GetDXVKDevice()->adapter();
++      const auto bgraFeatures = adapter->formatProperties(VK_FORMAT_B8G8R8A8_UNORM).optimalTilingFeatures;
++      const auto rgbaFeatures = adapter->formatProperties(VK_FORMAT_R8G8B8A8_UNORM).optimalTilingFeatures;
++      if (!(bgraFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)
++       && (rgbaFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
++        m_bgraUavEmulated = true;
++        formatFamily.Add(VK_FORMAT_R8G8B8A8_UNORM);
++        // Used only by the internal bit-preserving ClearUAVUint view.
++        formatFamily.Add(VK_FORMAT_R8G8B8A8_UINT);
++        imageInfo.flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
++      }
++    }
++
+     // The image must be marked as mutable if it can be reinterpreted
+     // by a view with a different format. Depth-stencil formats cannot
+     // be reinterpreted in Vulkan, so we'll ignore those.
+@@ -312,6 +344,27 @@ namespace dxvk {
+     // that preserves negative values. This is deliberately resource-local;
+     // format capability queries remain truthful and buffers are unaffected.
+     bool imageSupported = CheckImageSupport(&imageInfo, imageInfo.tiling);
++    if (m_bgraUavEmulated) {
++      // Check each real view's usage and limits; EXTENDED_USAGE is not a
++      // substitute for validating the alternate format's capabilities.
++      DxvkImageCreateInfo baseInfo = imageInfo;
++      baseInfo.flags &= ~VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
++      baseInfo.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
++      DxvkImageCreateInfo storageInfo = baseInfo;
++      storageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
++      storageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT
++                        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
++                        | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++      imageSupported = imageSupported
++        && imageInfo.tiling == VK_IMAGE_TILING_OPTIMAL
++        && CheckImageSupport(&baseInfo, imageInfo.tiling)
++        && CheckImageSupport(&storageInfo, imageInfo.tiling);
++      if (imageSupported) {
++        static std::atomic<bool> reported { false };
++        if (!reported.exchange(true, std::memory_order_relaxed))
++          Logger::info("WineHuaFormat: BGRA UAV uses RGBA storage view with shader R/B mapping; BGRA backing preserved");
++      }
++    }
+ 
+     const bool canEmulateRgba8SnormRt =
+          winehuaRgba8SnormRtEmulationEnabled()
+@@ -530,6 +583,17 @@ namespace dxvk {
+     if (m_rgba8SnormRtEmulated)
+       return Format == DXGI_FORMAT_R8G8B8A8_SNORM && Plane == 0;
+ 
++    if (m_bgraUavEmulated) {
++      // Do not expose the internal RGBA/UINT Vulkan aliases as new D3D casts.
++      if (Plane || (Format != DXGI_FORMAT_B8G8R8A8_UNORM
++                 && Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB))
++        return false;
++      if (BindFlags & D3D11_BIND_UNORDERED_ACCESS)
++        return Format == DXGI_FORMAT_B8G8R8A8_UNORM
++          && CheckFormatFeatureSupport(VK_FORMAT_R8G8B8A8_UNORM,
++                                       GetImageFormatFeatures(BindFlags));
++    }
++
+     // Check whether the view format is compatible
+     DXGI_VK_FORMAT_MODE formatMode = GetFormatMode();
+     DXGI_VK_FORMAT_INFO viewFormat = m_device->LookupFormat(Format,        formatMode);
+diff --git a/src/d3d11/d3d11_texture.h b/src/d3d11/d3d11_texture.h
+index 5430d80c..2282debb 100644
+--- a/src/d3d11/d3d11_texture.h
++++ b/src/d3d11/d3d11_texture.h
+@@ -254,6 +254,10 @@ namespace dxvk {
+      * WineHua can keep the D3D-visible R8G8B8A8_SNORM contract while using
+      * an RGBA16F Vulkan image on devices that cannot render to SNORM images.
+      */
++    bool IsBgraUavEmulated() const {
++      return m_bgraUavEmulated;
++    }
++
+     bool IsRgba8SnormRtEmulated() const {
+       return m_rgba8SnormRtEmulated;
+     }
+@@ -415,6 +419,7 @@ namespace dxvk {
+     DXGI_USAGE                    m_dxgiUsage;
+     VkFormat                      m_packedFormat;
+     bool                          m_rgba8SnormRtEmulated = false;
++    bool                          m_bgraUavEmulated = false;
+     
+     Rc<DxvkImage>                 m_image;
+     std::vector<MappedBuffer>     m_buffers;
+diff --git a/src/d3d11/d3d11_view_uav.cpp b/src/d3d11/d3d11_view_uav.cpp
+index 54f826e7..f2388509 100644
+--- a/src/d3d11/d3d11_view_uav.cpp
++++ b/src/d3d11/d3d11_view_uav.cpp
+@@ -61,6 +61,12 @@ namespace dxvk {
+       viewInfo.aspect  = formatInfo.Aspect;
+       viewInfo.swizzle = formatInfo.Swizzle;
+       viewInfo.usage   = VK_IMAGE_USAGE_STORAGE_BIT;
++      if (texture->IsBgraUavEmulated() && pDesc->Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
++        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
++        viewInfo.swizzle = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
++                             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
++        viewInfo.bgraStorage = true;
++      }
+       
+       switch (pDesc->ViewDimension) {
+         case D3D11_UAV_DIMENSION_TEXTURE1D:
+diff --git a/src/dxbc/dxbc_compiler.cpp b/src/dxbc/dxbc_compiler.cpp
+index 0314e78f..8890ff84 100644
+--- a/src/dxbc/dxbc_compiler.cpp
++++ b/src/dxbc/dxbc_compiler.cpp
+@@ -254,6 +254,7 @@ namespace dxvk {
+     // Create the shader object
+     DxvkShaderCreateInfo info;
+     info.stage = m_programInfo.shaderStage();
++    info.usesBgraUavMapping = m_bgraUavSpecIds[0] || m_bgraUavSpecIds[1];
+     info.resourceSlotCount = m_resourceSlots.size();
+     info.resourceSlots = m_resourceSlots.data();
+     info.inputMask = m_inputMask;
+@@ -3890,6 +3891,29 @@ namespace dxvk {
+   }
+   
+   
++  DxbcRegisterValue DxbcCompiler::emitBgraUavSwizzle(DxbcRegisterValue value, uint32_t registerId) {
++    const auto& uav = m_uavs.at(registerId);
++    if (uav.imageInfo.dim == spv::DimBuffer || uav.sampledType != DxbcScalarType::Float32)
++      return value;
++
++    const uint32_t word = registerId / 32;
++    if (!m_bgraUavSpecIds.at(word)) {
++      m_bgraUavSpecIds[word] = emitNewSpecConstant(
++        DxvkSpecConstantId(uint32_t(DxvkSpecConstantId::FirstPipelineConstant)
++                         + DxbcBgraUavSpecIndex + word), DxbcScalarType::Uint32, 0, "bgra_uav_mask");
++    }
++    const uint32_t uintType = getScalarTypeId(DxbcScalarType::Uint32);
++    const uint32_t masked = m_module.opBitwiseAnd(uintType,
++      m_bgraUavSpecIds[word], m_module.constu32(1u << (registerId % 32)));
++    DxbcRegisterValue test;
++    test.type = { DxbcScalarType::Bool, 1 };
++    test.id = m_module.opINotEqual(getScalarTypeId(DxbcScalarType::Bool), masked, m_module.constu32(0));
++    auto swapped = emitRegisterSwizzle(value, DxbcRegSwizzle(2, 1, 0, 3), DxbcRegMask(true, true, true, true));
++    value.id = m_module.opSelect(getVectorTypeId(value.type),
++      emitRegisterExtend(test, 4).id, swapped.id, value.id);
++    return value;
++  }
++
+   void DxbcCompiler::emitTypedUavLoad(const DxbcShaderInstruction& ins) {
+     // load_uav_typed has three operands:
+     //    (dst0) The destination register
+@@ -3911,6 +3935,8 @@ namespace dxvk {
+       m_module.opLoad(uavInfo.imageTypeId, uavInfo.varId),
+       texCoord.id, SpirvImageOperands());
+     
++    uavValue = emitBgraUavSwizzle(uavValue, registerId);
++
+     // Apply component swizzle and mask
+     uavValue = emitRegisterSwizzle(uavValue,
+       ins.src[1].swizzle, ins.dst[0].mask);
+@@ -3943,9 +3969,10 @@ namespace dxvk {
+     
+     // Load the value that will be written to the image. We'll
+     // have to cast it to the component type of the image.
+-    const DxbcRegisterValue texValue = emitRegisterBitcast(
++    DxbcRegisterValue texValue = emitRegisterBitcast(
+       emitRegisterLoad(ins.src[1], DxbcRegMask(true, true, true, true)),
+       uavInfo.stype);
++    texValue = emitBgraUavSwizzle(texValue, ins.dst[0].idx[0].offset);
+     
+     // Write the given value to the image
+     m_module.opImageWrite(
+diff --git a/src/dxbc/dxbc_compiler.h b/src/dxbc/dxbc_compiler.h
+index ec2689c2..a9d348e4 100644
+--- a/src/dxbc/dxbc_compiler.h
++++ b/src/dxbc/dxbc_compiler.h
+@@ -467,6 +467,7 @@ namespace dxvk {
+     std::array<DxbcSampler,         16> m_samplers;
+     std::array<DxbcShaderResource, 128> m_textures;
+     std::array<DxbcUav,             64> m_uavs;
++    std::array<uint32_t, DxbcBgraUavSpecWords> m_bgraUavSpecIds = { };
+     
+     ///////////////////////////////////////////////
+     // Control flow information. Stores labels for
+@@ -755,6 +756,8 @@ namespace dxvk {
+     void emitTextureSample(
+       const DxbcShaderInstruction&  ins);
+     
++    DxbcRegisterValue emitBgraUavSwizzle(DxbcRegisterValue value, uint32_t registerId);
++
+     void emitTypedUavLoad(
+       const DxbcShaderInstruction&  ins);
+     
+diff --git a/src/dxbc/dxbc_util.h b/src/dxbc/dxbc_util.h
+index 4bc49620..b28ebf57 100644
+--- a/src/dxbc/dxbc_util.h
++++ b/src/dxbc/dxbc_util.h
+@@ -22,6 +22,11 @@ namespace dxvk {
+                               + DxbcResourceBindingCount,
+     DxbcUavBindingIndex       = DxbcStageBindingCount * 6,
+     DxbcUavBindingCount       = 64,
++    // D3D11 does not otherwise use the user pipeline specialization slots.
++    // Reserve two words for its 64 image-UAV channel mappings. D3D9 and the
++    // built-in present/HUD pipelines keep their existing slot assignments.
++    DxbcBgraUavSpecIndex      = 0,
++    DxbcBgraUavSpecWords      = 2,
+   };
+ 
+   
+diff --git a/src/dxvk/dxvk_compute.cpp b/src/dxvk/dxvk_compute.cpp
+index ef3b1362..c5710126 100644
+--- a/src/dxvk/dxvk_compute.cpp
++++ b/src/dxvk/dxvk_compute.cpp
+@@ -105,6 +105,7 @@ namespace dxvk {
+     moduleInfo.freezeBoolSpec = dxvkWineHuaFreezeBoolSpec(m_pipeMgr->m_device);
+     moduleInfo.boolSpecMask = &state.bsBindingMask;
+     moduleInfo.boolSpecCount = m_layout->bindingCount();
++    moduleInfo.pipelineSpecConstants = state.sc.specConstants;
+ 
+     auto csm = m_shaders.cs->createShaderModule(m_vkd, m_slotMapping, moduleInfo);
+ 
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index e3cf54da..f543cb9a 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -1163,6 +1163,24 @@ namespace dxvk {
+           uint32_t              slot,
+     const Rc<DxvkImageView>&    imageView,
+     const Rc<DxvkBufferView>&   bufferView) {
++    // D3D11 pixel and compute UAVs each have 64 slots. Updating the existing
++    // specialization state also covers unbinds, deferred command lists and
++    // restores; normal RGBA/integer/buffer UAVs clear the corresponding bit.
++    for (auto stage : { DxbcProgramType::PixelShader, DxbcProgramType::ComputeShader }) {
++      const uint32_t first = computeUavBinding(stage, 0);
++      if (slot < first || slot >= first + DxbcUavBindingCount)
++        continue;
++      const auto bindPoint = stage == DxbcProgramType::ComputeShader
++        ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
++      auto& state = bindPoint == VK_PIPELINE_BIND_POINT_COMPUTE
++        ? m_state.cp.state.sc : m_state.gp.state.sc;
++      const uint32_t index = DxbcBgraUavSpecIndex + (slot - first) / 32;
++      const uint32_t bit = 1u << ((slot - first) % 32);
++      const bool bgra = imageView != nullptr && imageView->info().bgraStorage;
++      setSpecConstant(bindPoint, index,
++        (state.specConstants[index] & ~bit) | (bgra ? bit : 0u));
++      break;
++    }
+     m_rc[slot].imageView   = imageView;
+     m_rc[slot].bufferView  = bufferView;
+     m_rc[slot].bufferSlice = bufferView != nullptr
+@@ -1513,6 +1531,8 @@ namespace dxvk {
+           VkImageAspectFlags    aspect,
+           VkClearValue          value) {
+     const VkImageUsageFlags viewUsage = imageView->info().usage;
++    if (imageView->info().bgraStorage)
++      std::swap(value.color.uint32[0], value.color.uint32[2]);
+ 
+     if (aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
+       value.color = util::swizzleClearColor(value.color,
+diff --git a/src/dxvk/dxvk_graphics.cpp b/src/dxvk/dxvk_graphics.cpp
+index b8436e11..9a3cbe0a 100644
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -518,6 +518,7 @@ namespace dxvk {
+     info.freezeBoolSpec = dxvkWineHuaFreezeBoolSpec(m_pipeMgr->m_device);
+     info.boolSpecMask = &state.bsBindingMask;
+     info.boolSpecCount = m_layout->bindingCount();
++    info.pipelineSpecConstants = state.sc.specConstants;
+ 
+     // Fix up fragment shader outputs for dual-source blending
+     if (shaderInfo.stage == VK_SHADER_STAGE_FRAGMENT_BIT) {
+diff --git a/src/dxvk/dxvk_image.h b/src/dxvk/dxvk_image.h
+index 3895e6a6..7345caee 100644
+--- a/src/dxvk/dxvk_image.h
++++ b/src/dxvk/dxvk_image.h
+@@ -97,6 +97,10 @@ namespace dxvk {
+     uint32_t minLayer  = 0;
+     uint32_t numLayers = 0;
+     
++    // Storage image views require identity Vulkan component mappings.
++    // D3D BGRA UAV reads/writes and meta clears apply this mapping explicitly.
++    bool bgraStorage = false;
++
+     /// Component mapping. Defaults to identity.
+     VkComponentMapping swizzle = {
+       VK_COMPONENT_SWIZZLE_IDENTITY,
+diff --git a/src/dxvk/dxvk_shader.cpp b/src/dxvk/dxvk_shader.cpp
+index ebaa5a21..9c7baee4 100644
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -12,6 +12,7 @@
+ #include <unordered_set>
+ 
+ #include "../util/util_env.h"
++#include "../dxbc/dxbc_util.h"
+ 
+ namespace dxvk {
+ 
+@@ -182,6 +183,42 @@ namespace dxvk {
+     return changed;
+   }
+   
++  // Bake the two per-pipeline BGRA view masks before driver compilation.
++  // Only DXBC shaders using this mapping participate; D3D9/HUD/present
++  // specialization constants retain their original behavior.
++  static void freezeBgraUavSpecConstants(SpirvCodeBuffer& buffer, const uint32_t* values) {
++    if (!values)
++      return;
++    std::unordered_map<uint32_t, uint32_t> replacements;
++    for (auto ins : buffer) {
++      if (ins.opCode() == spv::OpDecorate && ins.length() == 4
++       && ins.arg(2) == spv::DecorationSpecId) {
++        const uint32_t first = uint32_t(DxvkSpecConstantId::FirstPipelineConstant) + DxbcBgraUavSpecIndex;
++        if (ins.arg(3) >= first && ins.arg(3) < first + DxbcBgraUavSpecWords)
++          replacements.emplace(ins.arg(1), values[DxbcBgraUavSpecIndex + ins.arg(3) - first]);
++      }
++    }
++    if (replacements.empty())
++      return;
++    const uint32_t* data = buffer.data();
++    std::vector<uint32_t> frozen(data, data + 5);
++    for (auto ins : buffer) {
++      if (ins.opCode() == spv::OpDecorate && ins.length() == 4
++       && ins.arg(2) == spv::DecorationSpecId && replacements.count(ins.arg(1)))
++        continue;
++      const size_t start = frozen.size();
++      frozen.insert(frozen.end(), data + ins.offset(), data + ins.offset() + ins.length());
++      if (ins.opCode() == spv::OpSpecConstant && ins.length() == 4) {
++        auto value = replacements.find(ins.arg(2));
++        if (value != replacements.end()) {
++          frozen[start] = (4u << 16) | uint32_t(spv::OpConstant);
++          frozen[start + 3] = value->second;
++        }
++      }
++    }
++    buffer = SpirvCodeBuffer(frozen.size(), frozen.data());
++  }
++
+   DxvkShaderModule::DxvkShaderModule()
+   : m_vkd(nullptr), m_stage() {
+ 
+@@ -395,6 +432,9 @@ namespace dxvk {
+     for (uint32_t u : bit::BitMask(info.undefinedInputs))
+       eliminateInput(spirvCode, u);
+ 
++    if (m_info.usesBgraUavMapping)
++      freezeBgraUavSpecConstants(spirvCode, info.pipelineSpecConstants);
++
+     if (info.freezeBoolSpec)
+       freezeBoolSpecConstants(spirvCode, info.boolSpecMask, info.boolSpecCount);
+ 
+diff --git a/src/dxvk/dxvk_shader.h b/src/dxvk/dxvk_shader.h
+index 662d0bf1..441f728f 100644
+--- a/src/dxvk/dxvk_shader.h
++++ b/src/dxvk/dxvk_shader.h
+@@ -105,6 +105,7 @@ namespace dxvk {
+     uint32_t pushConstOffset = 0;
+     uint32_t pushConstSize = 0;
+     /// Uniform buffer data
++    bool usesBgraUavMapping = false;
+     uint32_t uniformSize = 0;
+     const char* uniformData = nullptr;
+     /// Rasterized stream, or -1
+@@ -123,6 +124,7 @@ namespace dxvk {
+     bool      freezeBoolSpec  = false;
+     const DxvkBindingMask* boolSpecMask = nullptr;
+     uint32_t  boolSpecCount   = 0;
++    const uint32_t* pipelineSpecConstants = nullptr;
+     uint32_t  undefinedInputs = 0;
+   };
+   

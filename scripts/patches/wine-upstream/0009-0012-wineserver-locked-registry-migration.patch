@@ -1,0 +1,43 @@
+From 12fe843ec3dc7dfe89c97eabf68aa61d01883c77 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0012-wineserver-locked-registry-migration
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: a1ad8075c7e7442e93e2097d1fef03b8b13258a67993bcd895db18f20bc1f403
+
+diff --git a/server/main.c b/server/main.c
+index dcbc1b99dcbb7120c4e3168cc2ad06272e50f460..98954007153970b0ccda951eb98e3018e502e1bc 100644
+--- a/server/main.c
++++ b/server/main.c
+@@ -50,6 +50,18 @@ int foreground = 0;
+ timeout_t master_socket_timeout = 0; /* master socket timeout, default is 3 seconds */
+ const char *server_argv0;
+ 
++#ifdef __OHOS__
++static void (*registry_startup_hook)(void);
++
++/* The embedded host migrates fonts/codepages only after this server has
++ * acquired the prefix lock, before any registry file is loaded. */
++__attribute__((visibility("default")))
++void winehua_set_registry_startup_hook( void (*hook)(void) )
++{
++    registry_startup_hook = hook;
++}
++#endif
++
+ /* parse-line args */
+ 
+ static void usage( FILE *fh )
+@@ -305,6 +317,10 @@ int main( int argc, char *argv[] )
+     sock_init();
+     open_master_socket();
+ 
++#ifdef __OHOS__
++    if (registry_startup_hook) registry_startup_hook();
++#endif
++
+     if (do_fsync())
+         fsync_init();
+ 

@@ -1,3 +1,4 @@
+#include "bounded_log.h"
 /*
  * xwayland_child.cpp — Xwayland NCP shim (libxwayland_child.so)
  *
@@ -110,27 +111,9 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
     // f[6] = appPid: shim 侧无消费方 (父进程存活由 NCP 框架管理), 仅按位保留
     std::string xdgDir = f.size() > 7 ? f[7] : "";
 
-    // Xwayland stdout/stderr 落盘 (父侧下发的沙箱路径); Xwayland 自身日志走
-    // stderr, NCP 子进程默认不可见, 必须重定向才能排障。
-    // 已知坑 (D29 实测 r20261007): 本文件可能落子进程私有 mount 视图, 宿主
-    // 侧 hdc file recv 读不到 (同型 xclient 日志可见而本文件不可见, 分裂原
-    // 因未查)。需要看 Xwayland stderr 时: 临时在 dup2 之后加 pipe→hilog 转
-    // 发线程 (D29 诊断用过, 已撤), 或扩 docs/debugging 观测面。
-    if (f.size() > 5 && !f[5].empty())
-    {
-        int logFd = open(f[5].c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (logFd >= 0)
-        {
-            dup2(logFd, STDOUT_FILENO);
-            dup2(logFd, STDERR_FILENO);
-            if (logFd > STDERR_FILENO) close(logFd);
-        }
-        else
-        {
-            OH_LOG_WARN(LOG_APP, "stderr redirect open failed errno=%{public}d path=%{public}s",
-                        errno, f[5].c_str());
-        }
-    }
+    DisplayChildLog childLog;
+    if (f.size() > 5 && !f[5].empty() && !childLog.Start(f[5].c_str()))
+        OH_LOG_WARN(LOG_APP, "bounded Xwayland log unavailable errno=%{public}d", errno);
 
     // -- 2.5 XDG_RUNTIME_DIR + xkm 缓存 --
     // NCP 子进程不继承 app 环境: Xwayland 的 OutputDirectory (xkb/ddxLoad.c:65)
@@ -145,8 +128,19 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
         size_t slash = xdgDir.rfind('/');
         if (slash != std::string::npos)
         {
+            // Xwayland may reserve :1 or higher when another app owns :0.
+            // The XKM payload is display-independent, but ddxLoad looks it up
+            // as server-<selected display>.xkm. Always stage that exact name.
+            const std::string displayNumber = !f[0].empty() && f[0][0] == ':'
+                ? f[0].substr(1) : std::string();
+            if (displayNumber.empty() || displayNumber.size() > 10 ||
+                displayNumber.find_first_not_of("0123456789") != std::string::npos)
+            {
+                OH_LOG_ERROR(LOG_APP, "invalid Xwayland display name %{public}s", f[0].c_str());
+                return;
+            }
             std::string src = xdgDir.substr(0, slash) + "/wine/xkm/server-0.xkm";
-            std::string dst = xdgDir + "/server-0.xkm";
+            std::string dst = xdgDir + "/server-" + displayNumber + ".xkm";
             int in = open(src.c_str(), O_RDONLY);
             if (in >= 0)
             {
@@ -172,9 +166,9 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                         while (ok && off < r)
                         {
                             ssize_t w = write(out, buf + off, (size_t)(r - off));
-                            if (w < 0)
+                            if (w <= 0)
                             {
-                                if (errno == EINTR)
+                                if (w < 0 && errno == EINTR)
                                     continue;
                                 ok = false;
                                 break;

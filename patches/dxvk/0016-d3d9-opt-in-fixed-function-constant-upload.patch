@@ -1,0 +1,63 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -6372,6 +6372,8 @@
+         data->Stages[i].BumpEnvLScale    = bit::cast<float>(m_state.textureStages[i][DXVK_TSS_BUMPENVLSCALE]);
+         data->Stages[i].BumpEnvLOffset   = bit::cast<float>(m_state.textureStages[i][DXVK_TSS_BUMPENVLOFFSET]);
+       }
++
++      PublishFixedFunctionConstants(m_psShared, slice);
+     }
+ 
+     if (m_flags.test(D3D9DeviceFlag::DirtyDepthBounds)) {
+@@ -6679,6 +6681,20 @@
+   }
+ 
+ 
++  void D3D9DeviceEx::PublishFixedFunctionConstants(
++    const Rc<DxvkBuffer>&        buffer,
++    const DxvkBufferSliceHandle& slice) {
++    static const bool enabled =
++      env::getEnvVar("WINEHUA_DXVK9_SHADOW_FIXED_FUNCTION") == "1";
++    if (enabled) {
++      EmitCs([cBuffer = buffer, cSlice = slice] (DxvkContext* ctx) {
++        if (ctx->flushMappedBuffer(cBuffer, cSlice) != VK_SUCCESS)
++          throw DxvkError("D3D9: fixed-function constant publication failed");
++      });
++    }
++  }
++
++
+   void D3D9DeviceEx::UpdateFixedFunctionVS() {
+     // Shader...
+     bool hasPositionT = m_state.vertexDecl != nullptr ? m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT) : false;
+@@ -6851,6 +6867,8 @@
+ 
+       data->Material = m_state.material;
+       data->TweenFactor = bit::cast<float>(m_state.renderStates[D3DRS_TWEENFACTOR]);
++
++      PublishFixedFunctionConstants(m_vsFixedFunction, slice);
+     }
+ 
+     if (m_flags.test(D3D9DeviceFlag::DirtyFFVertexBlend) && vertexBlendMode == D3D9FF_VertexBlendMode_Normal) {
+@@ -6987,6 +7005,8 @@
+ 
+       D3D9FixedFunctionPS* data = reinterpret_cast<D3D9FixedFunctionPS*>(slice.mapPtr);
+       DecodeD3DCOLOR((D3DCOLOR)rs[D3DRS_TEXTUREFACTOR], data->textureFactor.data);
++
++      PublishFixedFunctionConstants(m_psFixedFunction, slice);
+     }
+   }
+ 
+--- a/src/d3d9/d3d9_device.h
++++ b/src/d3d9/d3d9_device.h
+@@ -1108,6 +1108,10 @@
+         : GetHelper(m_state.psConsts);
+     }
+ 
++    void PublishFixedFunctionConstants(
++      const Rc<DxvkBuffer>&        buffer,
++      const DxvkBufferSliceHandle& slice);
++
+     void UpdateFixedFunctionVS();
+ 
+     void UpdateFixedFunctionPS();

@@ -22,6 +22,8 @@ extern "C" {
 // create 之前调 (seat global 要先于 Xwayland 客户端连接存在; ready 事件
 // 异步于事件循环 dispatch, 本函数在 setup 线程同段执行)。
 // loop 供真机门自动注入定时器使用。返回 0 = 成功。
+void wl_ohos_input_shutdown(void);
+
 int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop);
 
 // xwm 建立后把 seat 接给 Xwayland (wlr_xwayland_set_seat)。调用时机 =
@@ -42,6 +44,8 @@ void wl_ohos_input_post_key(uint32_t keycode, bool press);
 
 // 指针注入的任意线程安全版 (语义同 display_input_inject_motion)。
 void wl_ohos_input_post_motion(float nx, float ny, int phase);
+void wl_ohos_input_post_motion_raw(float nx, float ny, int phase, double dx, double dy);
+void wl_ohos_input_post_mm_pointer_raw(uint32_t id, int x, int y, int action, uint32_t button, double dx, double dy);
 
 // 最近一次已 drain 的 motion 命中的 X window id (0 = 未命中/链路空)。
 // 双击目标同一性判据 (#139) 的活身份源: 值在 loop 线程随 motion 更新,
@@ -63,6 +67,7 @@ void wl_ohos_input_post_button(uint32_t button, bool press);
 // accum 为正 → discrete +1 → 滚轮向下, 两条路线手感一致。投递前提 = pointer
 // enter 已建立 (motion 先行), 无焦点时丢弃并记日志。
 void wl_ohos_input_post_axis(int which, int steps);
+void wl_ohos_input_post_axis_value(int which, double value, bool continuous);
 
 // 文本上屏注入的任意线程安全版 (XIM spec Task 4: x11 路线 IME commit)。
 // utf8 经投递队列到 loop 线程后转 xim_bridge_send_text (NCP xim server 以
@@ -124,6 +129,7 @@ void wl_ohos_input_post_mm_axis(uint32_t toplevelId, int lx, int ly,
 // x11_toplevel_close_dispatch (查表 + wlr_xwayland_surface_close =
 // WM_DELETE_WINDOW, 与 wayland 路线的 xdg_toplevel_send_close 同语义)。
 void wl_ohos_input_post_mm_close(uint32_t toplevelId);
+void wl_ohos_input_post_mm_control(uint32_t id, int command, bool enabled);
 
 // 任务 #135: host→wine 几何回写 (尺寸/位置两半)。napi 线程只入队, loop
 // 线程 drain 分派到 x11_toplevel_geometry_*_dispatch (查表 + 无变化跳过 +

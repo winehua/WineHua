@@ -1,0 +1,74 @@
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index be13899b400..f28195cb585 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -777,7 +777,8 @@ BOOL WINAPI NtUserSetObjectInformation( HANDLE handle, INT index, void *info, DW
+             RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+             return FALSE;
+         }
+-        close_timeout = -(*(DWORD *)info * (ULONG64)TICKSPERSEC / 1000);
++        close_timeout = *(DWORD *)info == INFINITE ? TIMEOUT_INFINITE :
++                        -(*(DWORD *)info * (ULONG64)TICKSPERSEC / 1000);
+     }
+     else if (index != UOI_FLAGS || !info || len < sizeof(*obj_flags))
+     {
+diff --git a/programs/explorer/desktop.c b/programs/explorer/desktop.c
+index 1a2b1e2f575..75be86afa68 100644
+--- a/programs/explorer/desktop.c
++++ b/programs/explorer/desktop.c
+@@ -1342,6 +1342,24 @@ void manage_desktop( WCHAR *arg )
+             ERR( "failed to create desktop %s error %ld\n", debugstr_w(name), GetLastError() );
+             ExitProcess( 1 );
+         }
++        /* App-managed desktops end on an explicit close/session shutdown.
++         * A fresh OHOS NCP may take longer to join than Wine's idle timeout;
++         * a keep-alive child alone cannot anchor the startup interval. */
++        if (!wcsicmp( name, L"shell" ))
++        {
++            char persistent[2];
++            DWORD timeout = INFINITE;
++            if (!__wine_get_unix_env( "WINEHUA_DESKTOP_PERSISTENT", persistent, sizeof(persistent) ) &&
++                persistent[0] == '1')
++            {
++                if (!SetUserObjectInformationW( desktop, 1000, &timeout, sizeof(timeout) ))
++                {
++                    ERR( "failed to set persistent desktop lifetime error %lu\n", GetLastError() );
++                    ExitProcess( 1 );
++                }
++                WARN( "App-managed shell desktop: idle close disabled\n" );
++            }
++        }
+         SetThreadDesktop( desktop );
+     }
+ 
+diff --git a/server/winstation.c b/server/winstation.c
+index 8eaf15ec635..f7b4d51169b 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -453,7 +453,8 @@ static void remove_desktop_user( struct desktop *desktop, struct thread *thread
+     desktop->users--;
+ 
+     /* if we have one remaining user, it has to be the manager of the desktop window */
+-    if ((process = get_top_window_owner( desktop )) && desktop->users == process->running_threads && !desktop->close_timeout)
++    if (desktop->close_timeout_val != TIMEOUT_INFINITE &&
++        (process = get_top_window_owner( desktop )) && desktop->users == process->running_threads && !desktop->close_timeout)
+         desktop->close_timeout = add_timeout_user( desktop->close_timeout_val, close_desktop_timeout, desktop );
+ }
+ 
+@@ -902,7 +903,15 @@ DECL_HANDLER(set_user_object_info)
+             }
+             SHARED_WRITE_END;
+         }
+-        if (req->flags & SET_USER_OBJECT_SET_CLOSE_TIMEOUT) desktop->close_timeout_val = req->close_timeout;
++        if (req->flags & SET_USER_OBJECT_SET_CLOSE_TIMEOUT)
++        {
++            desktop->close_timeout_val = req->close_timeout;
++            if (req->close_timeout == TIMEOUT_INFINITE && desktop->close_timeout)
++            {
++                remove_timeout_user( desktop->close_timeout );
++                desktop->close_timeout = NULL;
++            }
++        }
+     }
+     else if (obj->ops == &winstation_ops)
+     {

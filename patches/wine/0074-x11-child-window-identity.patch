@@ -1,0 +1,19 @@
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2860,6 +2860,16 @@
+                                         data->vis.visual, mask, &attr );
+     if (!data->whole_window) goto done;
+     set_wine_allow_flip( data->whole_window, 0 );
++#ifdef __OHOS__
++    if (NtUserGetAncestor(data->hwnd, GA_PARENT) == NtUserGetDesktopWindow())
++    {
++        static const char role[] = "winehua-toplevel";
++        XChangeProperty(data->display, data->whole_window,
++            XInternAtom(data->display, "WM_WINDOW_ROLE", False), XA_STRING,
++            8, PropModeReplace, (const unsigned char *)role, sizeof(role)-1);
++    }
++#endif
++
+ 
+     SetRect( &data->current_state.rect, pos.x, pos.y, pos.x + cx, pos.y + cy );
+     data->pending_state.rect = data->current_state.rect;

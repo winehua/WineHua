@@ -20,15 +20,21 @@ static const struct wl_interface *winehua_toplevel_types[] = {
 	&wl_surface_interface,
 	&wl_surface_interface,
 	NULL,
+	&wl_surface_interface,
+	&wl_surface_interface,
+	NULL,
+	NULL,
+	NULL,
 };
 
 static const struct wl_message winehua_toplevel_requests[] = {
 	{ "set_modal", "o?ou", winehua_toplevel_types + 0 },
+	{ "set_direct_drawable", "2o?oiiu", winehua_toplevel_types + 3 },
 };
 
 WL_PRIVATE const struct wl_interface winehua_toplevel_interface = {
-	"winehua_toplevel", 1,
-	1, winehua_toplevel_requests,
+	"winehua_toplevel", 2,
+	2, winehua_toplevel_requests,
 	0, NULL,
 };
 

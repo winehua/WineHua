@@ -1,0 +1,12 @@
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -532,7 +532,7 @@
+         argv = build_broker_argv( params );
+         {
+             int child_pid = -1;
+-            if (ohos_broker_spawn_child( argv, socketfd, &child_pid ) == 0)
++            if (ohos_broker_spawn_child( argv, socketfd, winedebug, &child_pid ) == 0)
+                 pid = child_pid;
+             else
+                 status = STATUS_UNSUCCESSFUL;

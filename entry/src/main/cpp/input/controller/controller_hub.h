@@ -20,10 +20,13 @@ public:
     bool IsEnabled() const;
 
     void SetButton(ControllerSourceId source, uint32_t slot, LogicalButton button, bool pressed);
+    void SetAxis(ControllerSourceId source, uint32_t slot, LogicalAxis axis, float value);
     void SetStick(ControllerSourceId source, uint32_t slot, LogicalStick stick, float x, float y);
     void SetTrigger(ControllerSourceId source, uint32_t slot, LogicalTrigger trigger, float value);
     void SetHat(ControllerSourceId source, uint32_t slot, int8_t x, int8_t y);
-    void ResetSource(ControllerSourceId source);
+    void ResetSource(ControllerSourceId source, uint32_t slot = kMaxControllerSlots);
+    // Slot zero remains available for touch; additional slots follow physical pads.
+    void SetSlotConnected(uint32_t slot, bool connected);
 
     LogicalGamepadState GetState(uint32_t slot) const;
     void SetStateListener(StateListener listener);
@@ -32,7 +35,7 @@ public:
     void SetInnerDeadzone(float inner);
 
 private:
-    ControllerHub() = default;
+    ControllerHub();
 
     struct SourceStickState {
         float x = 0.0f;

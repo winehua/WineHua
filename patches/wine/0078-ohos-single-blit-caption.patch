@@ -1,0 +1,71 @@
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1474,7 +1474,7 @@
+                       down, grayed );
+ }
+ 
+-static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
++static void draw_nc_caption_contents( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
+                              DWORD  ex_style, BOOL active )
+ {
+     RECT  r = *rect;
+@@ -1548,6 +1548,59 @@
+                      DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_LEFT );
+         NtGdiDeleteObjectApp( NtGdiSelectFont( hdc, hOldFont ));
+     }
++}
++
++/* Publish caption background, controls and text with one destination write.
++ * A message-pump/surface flush between their separate GDI draws otherwise
++ * exposes an erased caption, especially when a game updates its FPS title.
++ * Do not hold a surface/USER lock across font, icon or menu callbacks. */
++static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD style,
++                             DWORD ex_style, BOOL active )
++{
++#ifdef __OHOS__
++    int width = rect->right - rect->left, height = rect->bottom - rect->top;
++    const char *single_blit = getenv( "WINEHUA_CSD_SINGLE_BLIT" );
++    HDC memory;
++    HBITMAP bitmap, previous;
++    DWORD layout = ~0u, previous_mode;
++    static unsigned diag_calls;
++    BOOL diag = getenv( "WINEHUA_CSD_DIAG" ) && diag_calls++ < 16;
++    XFORM transform = {1, 0, 0, 1, -rect->left, -rect->top};
++
++    /* Leave complex/mirrored DCs and allocation failure on the original path.
++     * Only the small caption is buffered, never the GPU client area. */
++    if ((!single_blit || strcmp( single_blit, "0" )) &&
++        width > 0 && height > 0 && height <= 512 && width <= 16384 &&
++        NtGdiGetDCDword( hdc, NtGdiGetLayout, &layout ) && !layout &&
++        (memory = NtGdiCreateCompatibleDC( hdc )))
++    {
++        if ((bitmap = NtGdiCreateCompatibleBitmap( hdc, width, height )))
++        {
++            previous = NtGdiSelectBitmap( memory, bitmap );
++            if (previous &&
++                NtGdiGetAndSetDCDword( memory, NtGdiSetGraphicsMode, GM_ADVANCED, &previous_mode ) &&
++                NtGdiModifyWorldTransform( memory, &transform, MWT_SET ))
++            {
++                draw_nc_caption_contents( memory, rect, hwnd, style, ex_style, active );
++                BOOL copied = NtGdiBitBlt( hdc, rect->left, rect->top, width, height, memory,
++                                          rect->left, rect->top, SRCCOPY, 0, 0 );
++                NtGdiSelectBitmap( memory, previous );
++                NtGdiDeleteObjectApp( bitmap );
++                NtGdiDeleteObjectApp( memory );
++                if (diag) ERR( "[CSD] single blit hwnd=%p size=%dx%d copied=%d\n", hwnd, width, height, copied );
++                if (copied) return;
++                draw_nc_caption_contents( hdc, rect, hwnd, style, ex_style, active );
++                return;
++            }
++            if (previous) NtGdiSelectBitmap( memory, previous );
++            NtGdiDeleteObjectApp( bitmap );
++        }
++        NtGdiDeleteObjectApp( memory );
++    }
++    if (diag) ERR( "[CSD] fallback hwnd=%p size=%dx%d layout=%lu disabled=%d\n",
++                   hwnd, width, height, (unsigned long)layout, single_blit && !strcmp( single_blit, "0" ));
++#endif
++    draw_nc_caption_contents( hdc, rect, hwnd, style, ex_style, active );
+ }
+ 
+ /***********************************************************************

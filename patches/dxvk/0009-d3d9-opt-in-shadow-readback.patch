@@ -1,0 +1,24 @@
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -4316,6 +4316,20 @@
+ 
+         if (!WaitForResource(mappedBuffer, pResource->GetMappingBufferSequenceNumber(Subresource), Flags))
+           return D3DERR_WASSTILLDRAWING;
++      }
++    }
++
++    // Venus remote shadows need an explicit Host-to-Guest transfer even
++    // when the physical memory type advertises HOST_COHERENT. Do this only
++    // after the GPU wait, only for a GPU-written subresource, and never for
++    // the authoritative compressed CPU shadow of an emulated BC texture.
++    static const bool shadowReadback =
++      env::getEnvVar("WINEHUA_DXVK9_SHADOW_READBACK") == "1";
++    if (shadowReadback && needsReadback && !(Flags & D3DLOCK_DISCARD)
++     && !pResource->IsEmulatedBc()) {
++      if (mappedBuffer->invalidateMappedSlice(physSlice) != VK_SUCCESS) {
++        pResource->SetNeedsReadback(Subresource, true);
++        return D3DERR_INVALIDCALL;
+       }
+     }
+ 

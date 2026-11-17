@@ -2,7 +2,9 @@
 #include "protocols/xdg-shell-server-protocol.h"
 #include "wayland_server.h"
 #include "xdg_shell.h"
+#include "xdg_positioner.h"
 #include "xdg_configure.h"
+#include "direct/direct_wine_surface_controller.h"
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -76,9 +78,14 @@ static void tl_move(wl_client*, wl_resource* tlRes, wl_resource* /*seat*/, uint3
     if (!td || td->toplevelId == 0) return;
     WaylandServer::GetInstance()->StartMoveGrab(td->toplevelId, serial);
 }
-static void tl_resize(wl_client*, wl_resource*, wl_resource*, uint32_t, uint32_t) {}
-static void fire_limits_event(SurfaceData* sd) {
-    if (!sd || sd->toplevelId == 0) return;
+static void tl_resize(wl_client*, wl_resource* tlRes, wl_resource*, uint32_t serial, uint32_t edges) {
+    auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
+    if (!td || !td->toplevelId || !ExternalResizeGeometry::Valid(edges)) return;
+    WaylandServer::GetInstance()->StartResizeGrab(td->toplevelId, serial, edges);
+}
+static void fire_limits_event(ToplevelData* td, SurfaceData* sd) {
+    if (!td || !sd || !td->limitsEvents.ShouldPublish(
+            sd->toplevelId, sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight)) return;
     std::string json =
         ToplevelEventBus::JsonLimits(sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
     OH_LOG_INFO(LOG_APP, "[XDG] fire_limits tl=%{public}u %{public}s maxState=%{public}s",
@@ -99,9 +106,7 @@ static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h
     sd->minWidth = w;
     sd->minHeight = h;
     sd->hasSizeLimits = true;
-    OH_LOG_INFO(LOG_APP, "[XDG] tl_set_min_size toplevel=%{public}u %{public}dx%{public}d",
-                sd->toplevelId, w, h);
-    fire_limits_event(sd);
+    fire_limits_event(td, sd);
 }
 
 // Wine 最大化时不调 xdg_toplevel.set_maximized, 只把 max_size 设为
@@ -140,11 +145,8 @@ static void tl_set_max_size(wl_client* client, wl_resource* tlRes, int32_t w, in
                          {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
         OH_LOG_INFO(LOG_APP, "[XDG] max_size→maximize tl=%{public}u → configure(%{public}d,%{public}d)",
                     sd->toplevelId, w, workH);
-    } else {
-        OH_LOG_INFO(LOG_APP, "[XDG] tl_set_max_size toplevel=%{public}u %{public}dx%{public}d",
-                    sd->toplevelId, w, h);
     }
-    fire_limits_event(sd);
+    fire_limits_event(td, sd);
 }
 static void tl_set_maximized(wl_client* client, wl_resource* tlRes) {
     auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
@@ -301,18 +303,7 @@ static const struct xdg_toplevel_interface kToplevelImpl = {
 
 // -- xdg_surface 实现 --
 static void xs_destroy(wl_client*, wl_resource* r) {
-    auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(r));
-    OH_LOG_INFO(LOG_APP, "[MW-Life] xs_destroy xdg=%{public}p wlSurf=%{public}p",
-                r, d ? d->wlSurface : nullptr);
-    if (d && d->wlSurface) {
-        auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
-        if (sd && sd->hasToplevel) {
-            OH_LOG_INFO(LOG_APP, "[MW-Life] xs_destroy → OnToplevelDestroyed tl=%{public}u", sd->toplevelId);
-            WaylandServer::GetInstance()->OnToplevelDestroyed(sd->toplevelId);
-            WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId,
-                                                            ToplevelEventType::Destroyed);
-        }
-    }
+    // Explicit destruction and client disconnect share one cleanup callback.
     wl_resource_destroy(r);
 }
 
@@ -321,12 +312,12 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
 
     wl_resource* tl = wl_resource_create(client, &xdg_toplevel_interface,
                                           wl_resource_get_version(xsRes), id);
-    d->xdgToplevel = tl;
+    d->xdgToplevelWatch.Set(tl);
 
     // 为 toplevel 创建独立的 user_data（ToplevelData），不再共享 XdgSurface*
     // 避免 wl_client_destroy 时 xs_resource_destroy 先释放 XdgSurface 导致 use-after-free
     auto* td = new ToplevelData();
-    td->xdgSurface = xsRes;
+    td->xdgSurfaceWatch.Set(xsRes);
     wl_resource_set_implementation(tl, &kToplevelImpl, td, tl_resource_destroy);
 
     // 关联 SurfaceData: 分配 toplevelId, 发送 created 事件到 ArkTS
@@ -341,6 +332,10 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             d->toplevelId = sd->toplevelId;
             td->toplevelId = sd->toplevelId;
             WaylandServer::GetInstance()->RegisterToplevelResource(sd->toplevelId, tl);
+            // Managed OHOS windows retain their single-output WSI. Desktop
+            // Direct queues are declared per drawable by winehua_toplevel v2.
+            if (!WaylandServer::GetInstance()->IsDesktopMode())
+                DirectWineSurfaceCreated(sd->clientPid, sd->toplevelId, sd->protocolId);
             // WineHua: 应用暂存的 modal 关系 (set_modal 早于 get_toplevel 到达)。
             // 在 created 事件之前执行 — PC 模式 ArkTS 据此把 modal 窗口接入
             // owner 的子窗口路径而非启动独立 Ability (事件顺序红线)
@@ -350,7 +345,7 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             if (!WaylandServer::GetInstance()->Policy().OhosWindowPerToplevel()) {
                 WaylandServer::GetInstance()->PostToplevelEvent(
                     sd->toplevelId, ToplevelEventType::Created,
-                    ToplevelEventBus::JsonCreatedDefault());
+                    ToplevelEventBus::JsonCreatedDefault(sd->clientPid));
             }
         }
     }
@@ -359,7 +354,112 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
     XdgConfigureSend(tl, xsRes, 0, 0, {XDG_TOPLEVEL_STATE_ACTIVATED});
 }
 
-static void xs_get_popup(wl_client*, wl_resource*, uint32_t, wl_resource*, wl_resource*) {}
+// Every advertised positioner request needs a dispatch table. A null table
+// crashes libwayland before any compositor callback can run.
+static XdgPositionerState* positioner(wl_resource* r) {
+    return static_cast<XdgPositionerState*>(wl_resource_get_user_data(r));
+}
+static void xp_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+static void xp_size(wl_client*, wl_resource* r, int32_t w, int32_t h) {
+    if (w <= 0 || h <= 0) { wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid popup size"); return; }
+    positioner(r)->width = w; positioner(r)->height = h;
+}
+static void xp_rect(wl_client*, wl_resource* r, int32_t x, int32_t y, int32_t w, int32_t h) {
+    if (w <= 0 || h <= 0) { wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid anchor rectangle"); return; }
+    auto* p = positioner(r); p->x = x; p->y = y; p->rectWidth = w; p->rectHeight = h;
+}
+static void xp_anchor(wl_client*, wl_resource* r, uint32_t value) {
+    if (value > 8) { wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid anchor"); return; }
+    positioner(r)->anchor = value;
+}
+static void xp_gravity(wl_client*, wl_resource* r, uint32_t value) {
+    if (value > 8) { wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid gravity"); return; }
+    positioner(r)->gravity = value;
+}
+static void xp_adjustment(wl_client*, wl_resource* r, uint32_t value) {
+    if (value & ~63u) { wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid constraint adjustment"); return; }
+    positioner(r)->adjustment = value;
+}
+static void xp_offset(wl_client*, wl_resource* r, int32_t x, int32_t y) {
+    positioner(r)->offsetX = x; positioner(r)->offsetY = y;
+}
+static void xp_reactive(wl_client*, wl_resource* r) { positioner(r)->reactive = true; }
+static void xp_parent_size(wl_client*, wl_resource* r, int32_t w, int32_t h) {
+    if (w <= 0 || h <= 0) { wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid parent size"); return; }
+    positioner(r)->parentWidth = w; positioner(r)->parentHeight = h;
+}
+static void xp_parent_configure(wl_client*, wl_resource* r, uint32_t serial) { positioner(r)->parentConfigure = serial; }
+static const struct xdg_positioner_interface kPositionerImpl = {
+    .destroy = xp_destroy, .set_size = xp_size, .set_anchor_rect = xp_rect,
+    .set_anchor = xp_anchor, .set_gravity = xp_gravity,
+    .set_constraint_adjustment = xp_adjustment, .set_offset = xp_offset,
+    .set_reactive = xp_reactive, .set_parent_size = xp_parent_size,
+    .set_parent_configure = xp_parent_configure,
+};
+
+struct XdgPopupData {
+    wl_resource* child = nullptr;
+    wl_resource* parent = nullptr;
+    wl_resource* xdg = nullptr;
+    ResourceWatch childWatch{child}, parentWatch{parent}, xdgWatch{xdg};
+    XdgPositionerState placement;
+};
+static void popup_configure(wl_resource* r) {
+    auto* d = static_cast<XdgPopupData*>(wl_resource_get_user_data(r));
+    if (!d || !d->child || !d->parent || !d->xdg) { xdg_popup_send_popup_done(r); return; }
+    const int32_t x = d->placement.X(), y = d->placement.Y();
+    {
+        auto lk = gTmgr->Lock();
+        auto* sd = gTmgr->FindRegisteredSurfaceDataLocked(d->child);
+        auto* parent = gTmgr->FindRegisteredSurfaceDataLocked(d->parent);
+        if (!sd || !parent) return;
+        sd->parentSurfaceWatch.Set(d->parent);
+        sd->isSubsurface = true;
+        // XDG coordinates use parent window geometry. Existing subsurface
+        // rendering and hit-testing use the parent's wl_surface coordinates.
+        sd->subsurfaceX = XdgPositionerState::Coordinate(x, 0, 0, -1, 1, parent->committed.contentRect.x);
+        sd->subsurfaceY = XdgPositionerState::Coordinate(y, 0, 0, -1, 1, parent->committed.contentRect.y);
+        sd->committed.role = RoleFor(sd->hasToplevel, sd->isSubsurface);
+    }
+    xdg_popup_send_configure(r, x, y, d->placement.width, d->placement.height);
+    xdg_surface_send_configure(d->xdg, wl_display_next_serial(WaylandServer::GetInstance()->GetDisplay()));
+}
+static void popup_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
+static void popup_resource_destroy(wl_resource* r) {
+    auto* d = static_cast<XdgPopupData*>(wl_resource_get_user_data(r));
+    if (d && d->child) WaylandServer::GetInstance()->RemoveSubsurfaceRole(d->child);
+    delete d;
+}
+// Wine owns pointer capture/dismissal for its Windows popup windows. Menus
+// reuse the native hit-test and parent composition path used by subsurfaces.
+static void popup_grab(wl_client*, wl_resource*, wl_resource*, uint32_t) {}
+static void popup_reposition(wl_client*, wl_resource* r, wl_resource* p, uint32_t token) {
+    auto* d = static_cast<XdgPopupData*>(wl_resource_get_user_data(r));
+    if (!positioner(p)->Complete()) {
+        wl_resource_post_error(r, XDG_WM_BASE_ERROR_INVALID_POSITIONER, "incomplete positioner"); return;
+    }
+    d->placement = *positioner(p);
+    xdg_popup_send_repositioned(r, token);
+    popup_configure(r);
+}
+static const struct xdg_popup_interface kPopupImpl = {
+    .destroy = popup_destroy, .grab = popup_grab, .reposition = popup_reposition,
+};
+static void xs_get_popup(wl_client* client, wl_resource* xsRes, uint32_t id,
+                         wl_resource* parentRes, wl_resource* p) {
+    auto* surface = static_cast<XdgSurface*>(wl_resource_get_user_data(xsRes));
+    auto* parent = parentRes ? static_cast<XdgSurface*>(wl_resource_get_user_data(parentRes)) : nullptr;
+    if (!surface || !surface->wlSurface || !parent || !parent->wlSurface || !positioner(p)->Complete()) {
+        wl_resource_post_error(xsRes, XDG_WM_BASE_ERROR_INVALID_POSITIONER, "popup requires a live parent and complete positioner"); return;
+    }
+    wl_resource* popup = wl_resource_create(client, &xdg_popup_interface, wl_resource_get_version(xsRes), id);
+    if (!popup) { wl_client_post_no_memory(client); return; }
+    auto* d = new XdgPopupData();
+    d->childWatch.Set(surface->wlSurface); d->parentWatch.Set(parent->wlSurface); d->xdgWatch.Set(xsRes);
+    d->placement = *positioner(p);
+    wl_resource_set_implementation(popup, &kPopupImpl, d, popup_resource_destroy);
+    popup_configure(popup);
+}
 static void xs_set_window_geometry(wl_client*, wl_resource* xsRes, int32_t x, int32_t y, int32_t w, int32_t h) {
     auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(xsRes));
     if (!d || !d->wlSurface) return;
@@ -370,13 +470,18 @@ static void xs_set_window_geometry(wl_client*, wl_resource* xsRes, int32_t x, in
     // 语义 (contentRect=buffer 内内容偏移, toplevel 的"桌面屏幕位置"义另经
     // compute 派生存入 screenPos) 与取值时机与旧"写 geo 字段→commit 时读"
     // 逐点等价, 含"写后未 commit 即被读"窗口期。
+    const bool changed = !sd->committed.hasWindowGeometry ||
+                         sd->committed.contentRect.x != x || sd->committed.contentRect.y != y ||
+                         sd->committed.contentRect.w != w || sd->committed.contentRect.h != h;
     sd->committed.hasWindowGeometry = true;
     sd->committed.contentRect.x = x;
     sd->committed.contentRect.y = y;
     sd->committed.contentRect.w = w;
     sd->committed.contentRect.h = h;
-    OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
-                sd->toplevelId, x, y, w, h);
+    if (changed) {
+        OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
+                    sd->toplevelId, x, y, w, h);
+    }
 }
 static void xs_ack_configure(wl_client*, wl_resource*, uint32_t) {}
 
@@ -389,16 +494,20 @@ static const struct xdg_surface_interface kSurfaceImpl = {
 };
 
 static void xs_resource_destroy(wl_resource* r) {
-    // client 断开时 libwayland-server 走此路径, 不会触发 xs_destroy。
-    // 必须在此处也做 compositor 清理 (等价于 xs_destroy 的逻辑),
-    // 否则已断开进程的窗口像素永久滞留。
+    // wl_surface can already be gone on client disconnect. The weak link is
+    // cleared before its storage is freed; wl_surface cleanup owns that order.
     auto* d = static_cast<XdgSurface*>(wl_resource_get_user_data(r));
     if (d && d->wlSurface) {
         auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(d->wlSurface));
         if (sd && sd->hasToplevel) {
-            OH_LOG_INFO(LOG_APP, "[MW-Life] xs_resource_destroy → OnToplevelDestroyed tl=%{public}u (client disconnect)", sd->toplevelId);
-            WaylandServer::GetInstance()->OnToplevelDestroyed(sd->toplevelId);
-            WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId,
+            const uint32_t toplevelId = sd->toplevelId;
+            OH_LOG_INFO(LOG_APP, "[MW-Life] xs_resource_destroy → OnToplevelDestroyed tl=%{public}u (client disconnect)", toplevelId);
+            WaylandServer::GetInstance()->OnToplevelDestroyed(toplevelId);
+            sd->hasToplevel = false;
+            sd->toplevelId = 0;
+            sd->committed.role = RoleFor(sd->hasToplevel, sd->isSubsurface);
+            sd->committed.hasWindowGeometry = false;
+            WaylandServer::GetInstance()->PostToplevelEvent(toplevelId,
                                                             ToplevelEventType::Destroyed);
         }
     }
@@ -408,9 +517,12 @@ static void xs_resource_destroy(wl_resource* r) {
 // -- xdg_wm_base 实现 --
 static void wm_destroy(wl_client*, wl_resource* r) { wl_resource_destroy(r); }
 
-static void wm_create_positioner(wl_client* c, wl_resource*, uint32_t id) {
-    wl_resource* p = wl_resource_create(c, &xdg_positioner_interface, 3, id);
-    wl_resource_set_implementation(p, nullptr, nullptr, nullptr);
+static void wm_create_positioner(wl_client* c, wl_resource* wm, uint32_t id) {
+    wl_resource* p = wl_resource_create(c, &xdg_positioner_interface, wl_resource_get_version(wm), id);
+    if (!p) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(p, &kPositionerImpl, new XdgPositionerState(), [](wl_resource* r) {
+        delete positioner(r);
+    });
 }
 
 static void wm_get_xdg_surface(wl_client* client, wl_resource* wmRes,
@@ -418,7 +530,7 @@ static void wm_get_xdg_surface(wl_client* client, wl_resource* wmRes,
     wl_resource* xs = wl_resource_create(client, &xdg_surface_interface,
                                           wl_resource_get_version(wmRes), id);
     auto* d = new XdgSurface();
-    d->wlSurface = surfaceRes;
+    d->wlSurfaceWatch.Set(surfaceRes);
     d->xdgSurface = xs;
     wl_resource_set_implementation(xs, &kSurfaceImpl, d, xs_resource_destroy);
 }

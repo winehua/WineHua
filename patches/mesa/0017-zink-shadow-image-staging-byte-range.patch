@@ -1,0 +1,29 @@
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2761,9 +2761,23 @@
+       if (!m->obj->coherent || remote_upload) {
+          /* Publish only the CPU-written buffer slice. Other slices may still
+           * contain GPU results and must not be overwritten by stale shadow. */
+-         const bool slice = remote_upload && m->obj->is_buffer;
++         VkDeviceSize upload_offset = m->obj->offset;
++         VkDeviceSize upload_size = m->obj->size;
++         if (remote_upload && m->obj->is_buffer) {
++            if (ptrans->resource->target == PIPE_BUFFER) {
++               upload_offset += src_offset;
++               upload_size = size;
++            } else {
++               /* Image staging is a buffer too, but box->width is texels,
++                * not bytes. Publish the complete tightly packed staging
++                * slice, including rows/layers and compressed block padding.
++                * width0 excludes unrelated sibling BO suballocations. */
++               assert(trans->staging_res);
++               upload_size = m->base.b.width0;
++            }
++         }
+          VkMappedMemoryRange range = zink_resource_init_mem_range(screen, m->obj,
+-            m->obj->offset + (slice ? src_offset : 0), slice ? size : m->obj->size);
++            upload_offset, upload_size);
+          if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+             mesa_loge("ZINK: vkFlushMappedMemoryRanges failed");
+          }

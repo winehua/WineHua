@@ -1,0 +1,58 @@
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 39e4a5820d8a975e2075d5dbbb8d3f93616bb4c5..d48d8b648b74db5c8da0db6c31c51675ae1f2d14 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -865,7 +865,11 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+-    if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, NativeContext->X17)) {
++    if (FEX::Windows::CallRetStack::HandleAccessViolation(
++          Thread, FaultAddress, NativeContext->X17,
++          CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) ||
++          (NativeContext->Pc >= SignalDelegator->GetConfig().DispatcherBegin &&
++           NativeContext->Pc < SignalDelegator->GetConfig().DispatcherEnd))) {
+       return true;
+     }
+ 
+diff --git a/Source/Windows/Common/CallRetStack.h b/Source/Windows/Common/CallRetStack.h
+index 882d8a39b9f398b3edebdd6d3057275d6cc73d38..a437218ece7cc425800ae1ffcd4b443e7dc03eb7 100644
+--- a/Source/Windows/Common/CallRetStack.h
++++ b/Source/Windows/Common/CallRetStack.h
+@@ -61,9 +61,22 @@ bool CompleteSyntheticReturn(FEXCore::Core::InternalThreadState* Thread, uint64_
+   return true;
+ }
+ 
+-bool HandleAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t Address, uint64_t& CallRetSPReg) {
++bool HandleAccessViolation(FEXCore::Core::InternalThreadState* Thread, uint64_t Address, uint64_t& CallRetSPReg, bool IsJIT) {
+   auto CallRetStackInfo = GetInfoThread(Thread);
+   if (Address >= CallRetStackInfo.AllocationBase && Address < CallRetStackInfo.AllocationEnd) {
++    if (!IsJIT) {
++      // Native helpers use normal ABI registers, not the JIT's cached SP
++      // convention. Invalidation decommits/recommits this owned payload and
++      // can race a native prediction-entry read. Retry that read without
++      // corrupting an unrelated native register (WOW64's X25 can be guest RSP).
++      const auto Base = reinterpret_cast<uint64_t>(Thread->CallRetStackBase);
++      if (Address < Base || Address - Base >= FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE) {
++        return false; // Never commit either guard page for a native access.
++      }
++      const auto Page = Address & FEXCore::Utils::FEX_PAGE_MASK;
++      return ::VirtualAlloc(reinterpret_cast<void*>(Page), FEXCore::Utils::FEX_PAGE_SIZE,
++                            MEM_COMMIT, PAGE_READWRITE) != nullptr;
++    }
+     LogMan::Msg::DFmt("Call-ret stack inbalance: {:X}", Address);
+     CallRetSPReg = CallRetStackInfo.DefaultLocation;
+     return true;
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 3ca4fa56a82022f5ce7c45e95eb7632f9204d8ff..e2e241dd3bb3c6e7f714ac3d572eb8ff1da710f4 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -812,7 +812,7 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
+   if (Exception->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+     const auto FaultAddress = static_cast<uint64_t>(Exception->ExceptionInformation[1]);
+ 
+-    if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25)) {
++    if (FEX::Windows::CallRetStack::HandleAccessViolation(Thread, FaultAddress, Context->X25, IsAddressInJit(Context->Pc))) {
+       return true;
+     }
+ 

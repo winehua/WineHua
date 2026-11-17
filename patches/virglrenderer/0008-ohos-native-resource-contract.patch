@@ -1,0 +1,422 @@
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -9,6 +9,9 @@
+ #include "vkr_context.h"
+ #include "vkr_device_memory.h"
+ #include "vkr_physical_device.h"
++#ifdef __OHOS__
++#include "vkr_ohos_native_resource.h"
++#endif
+ 
+ #ifdef __OHOS__
+ struct vkr_winehua_buffer_binding {
+@@ -142,11 +145,21 @@
+    const VkBufferCreateInfo *guest_info = args->pCreateInfo;
+    VkBufferCreateInfo host_info = *guest_info;
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+-   if (vkr_device_memory_gpu_upload_enabled(dev))
++   if (vkr_device_memory_gpu_upload_enabled(dev) &&
++       !((struct vkr_context *)dispatch->data)->ohos_native_memory)
+       host_info.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
++   VkExternalMemoryBufferCreateInfo native_external;
++   struct vkr_context *ctx = dispatch->data;
++   if (ctx->ohos_native_memory) {
++      args->ret = vkr_ohos_native_buffer_info(dev->physical_device->base.handle.physical_device,
++         dev->physical_device->proc_table.GetPhysicalDeviceExternalBufferProperties,
++         dev->ohos_native_export_handle, &host_info, &host_info, &native_external);
++      if (args->ret != VK_SUCCESS) return;
++   }
+    args->pCreateInfo = &host_info;
+ 
+    struct vkr_buffer *buffer = vkr_buffer_create_and_add(dispatch->data, args);
++   args->pCreateInfo = guest_info;
+    if (buffer) {
+       buffer->winehua_ubo_watches = NULL;
+       atomic_init(&buffer->winehua_ubo_watch_count, 0);
+@@ -182,6 +195,15 @@
+    vkr_buffer_destroy_and_remove(dispatch->data, args);
+ }
+ 
++#ifdef __OHOS__
++static void
++vkr_ohos_native_buffer_requirements(struct vkr_device *dev, VkMemoryRequirements *req)
++{
++   req->memoryTypeBits = vkr_ohos_memory_type_bits(
++      &dev->physical_device->ohos_memory_types, req->memoryTypeBits);
++}
++#endif
++
+ static void
+ vkr_dispatch_vkGetBufferMemoryRequirements(
+    UNUSED struct vn_dispatch_context *dispatch,
+@@ -192,6 +214,9 @@
+ 
+    vn_replace_vkGetBufferMemoryRequirements_args_handle(args);
+    vk->GetBufferMemoryRequirements(args->device, args->buffer, args->pMemoryRequirements);
++#ifdef __OHOS__
++   vkr_ohos_native_buffer_requirements(dev, args->pMemoryRequirements);
++#endif
+ }
+ 
+ static void
+@@ -204,6 +229,9 @@
+ 
+    vn_replace_vkGetBufferMemoryRequirements2_args_handle(args);
+    vk->GetBufferMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef __OHOS__
++   vkr_ohos_native_buffer_requirements(dev, &args->pMemoryRequirements->memoryRequirements);
++#endif
+ }
+ 
+ static void
+@@ -308,9 +336,33 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef __OHOS__
++   struct vkr_context *context = ctx->data;
++   const VkDeviceBufferMemoryRequirements *guest_info = args->pInfo;
++   VkDeviceBufferMemoryRequirements host_info = *guest_info;
++   VkBufferCreateInfo host_create;
++   VkExternalMemoryBufferCreateInfo external;
++   if (context->ohos_native_memory) {
++      VkResult result = vkr_ohos_native_buffer_info(dev->physical_device->base.handle.physical_device,
++         dev->physical_device->proc_table.GetPhysicalDeviceExternalBufferProperties,
++         dev->ohos_native_export_handle, guest_info->pCreateInfo, &host_create, &external);
++      if (result != VK_SUCCESS) {
++         args->pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){0};
++         return;
++      }
++      host_info.pCreateInfo = &host_create;
++      args->pInfo = &host_info;
++   }
++#endif
+    vn_replace_vkGetDeviceBufferMemoryRequirements_args_handle(args);
+    vk->GetDeviceBufferMemoryRequirements(args->device, args->pInfo,
+                                          args->pMemoryRequirements);
++#ifdef __OHOS__
++   vkr_ohos_native_buffer_requirements(dev, &args->pMemoryRequirements->memoryRequirements);
++#endif
++#ifdef __OHOS__
++   args->pInfo = guest_info;
++#endif
+ }
+ 
+ void
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -8,6 +8,9 @@
+ #include "vkr_device.h"
+ #include "vkr_image_gen.h"
+ #include "vkr_physical_device.h"
++#ifdef __OHOS__
++#include "vkr_ohos_native_resource.h"
++#endif
+ 
+ #include <string.h>
+ 
+@@ -74,6 +77,16 @@
+       host_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+       args->pCreateInfo = &host_info;
+    }
++   VkExternalMemoryImageCreateInfo native_external;
++   struct vkr_context *ctx = dispatch->data;
++   const bool gpu_only = ctx->ohos_native_memory && vkr_ohos_native_gpu_image(&host_info);
++   if (ctx->ohos_native_memory && !gpu_only) {
++      args->ret = vkr_ohos_native_image_info(dev->physical_device->base.handle.physical_device,
++         dev->physical_device->proc_table.GetPhysicalDeviceImageFormatProperties2,
++         dev->ohos_native_export_handle, &host_info, &host_info, &native_external);
++      if (args->ret != VK_SUCCESS) { args->pCreateInfo = guest_info; return; }
++   }
++   if (ctx->ohos_native_memory) args->pCreateInfo = &host_info;
+ #endif
+    struct vkr_image *image = vkr_image_create_and_add(dispatch->data, args);
+    args->pCreateInfo = guest_info;
+@@ -89,6 +102,9 @@
+    image->array_layers = create_info.arrayLayers;
+    image->samples = create_info.samples;
+    image->tiling = create_info.tiling;
++#ifdef __OHOS__
++   image->ohos_gpu_only = gpu_only;
++#endif
+    if (vkr_winehua_option_enabled("WINEHUA_VKR_TRACE_SAMPLED")) {
+       vkr_log("WineHuaSampled: host-image guestImage=%" PRIu64
+               " hostImage=0x%" PRIxPTR " format=%u hostFormat=%u"
+@@ -109,16 +125,33 @@
+    vkr_image_destroy_and_remove(dispatch->data, args);
+ }
+ 
++#ifdef __OHOS__
++static void
++vkr_ohos_native_image_requirements(struct vkr_device *dev, bool gpu_only, VkMemoryRequirements *req)
++{
++   struct vkr_physical_device *pd = dev->physical_device;
++   req->memoryTypeBits = gpu_only ?
++      vkr_ohos_gpu_image_memory_bits(&pd->memory_properties, &pd->ohos_memory_types, req->memoryTypeBits) :
++      vkr_ohos_memory_type_bits(&pd->ohos_memory_types, req->memoryTypeBits);
++}
++#endif
++
+ static void
+ vkr_dispatch_vkGetImageMemoryRequirements(
+    UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetImageMemoryRequirements *args)
+ {
++#ifdef __OHOS__
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++#endif
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkGetImageMemoryRequirements_args_handle(args);
+    vk->GetImageMemoryRequirements(args->device, args->image, args->pMemoryRequirements);
++#ifdef __OHOS__
++   vkr_ohos_native_image_requirements(dev, image->ohos_gpu_only, args->pMemoryRequirements);
++#endif
+ }
+ 
+ static void
+@@ -126,11 +159,17 @@
+    UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetImageMemoryRequirements2 *args)
+ {
++#ifdef __OHOS__
++   struct vkr_image *image = vkr_image_from_handle(args->pInfo->image);
++#endif
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
+    vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef __OHOS__
++   vkr_ohos_native_image_requirements(dev, image->ohos_gpu_only, &args->pMemoryRequirements->memoryRequirements);
++#endif
+ }
+ 
+ static void
+@@ -343,9 +382,34 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef __OHOS__
++   struct vkr_context *context = ctx->data;
++   const VkDeviceImageMemoryRequirements *guest_info = args->pInfo;
++   VkDeviceImageMemoryRequirements host_info = *guest_info;
++   VkImageCreateInfo host_create;
++   VkExternalMemoryImageCreateInfo external;
++   const bool gpu_only = context->ohos_native_memory && vkr_ohos_native_gpu_image(guest_info->pCreateInfo);
++   if (context->ohos_native_memory && !gpu_only) {
++      VkResult result = vkr_ohos_native_image_info(dev->physical_device->base.handle.physical_device,
++         dev->physical_device->proc_table.GetPhysicalDeviceImageFormatProperties2,
++         dev->ohos_native_export_handle, guest_info->pCreateInfo, &host_create, &external);
++      if (result != VK_SUCCESS) {
++         args->pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){0};
++         return;
++      }
++      host_info.pCreateInfo = &host_create;
++      args->pInfo = &host_info;
++   }
++#endif
+    vn_replace_vkGetDeviceImageMemoryRequirements_args_handle(args);
+    vk->GetDeviceImageMemoryRequirements(args->device, args->pInfo,
+                                         args->pMemoryRequirements);
++#ifdef __OHOS__
++   vkr_ohos_native_image_requirements(dev, gpu_only, &args->pMemoryRequirements->memoryRequirements);
++#endif
++#ifdef __OHOS__
++   args->pInfo = guest_info;
++#endif
+ }
+ 
+ static void
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -20,6 +20,9 @@
+    uint32_t array_layers;
+    VkSampleCountFlagBits samples;
+    VkImageTiling tiling;
++#ifdef __OHOS__
++   bool ohos_gpu_only;
++#endif
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+ 
+--- /dev/null
++++ b/src/venus/vkr_ohos_native_resource.h
+@@ -0,0 +1,123 @@
++/* SPDX-License-Identifier: MIT
++ * Internal resource contract for negotiated OHOS native-memory contexts.
++ * Platform-private handles are never advertised as guest OHOS extensions.
++ */
++#ifndef VKR_OHOS_NATIVE_RESOURCE_H
++#define VKR_OHOS_NATIVE_RESOURCE_H
++#include <vulkan/vulkan.h>
++#include <stdbool.h>
++#include "vkr_ohos_native_memory.h"
++
++static inline const void *
++vkr_ohos_resource_find(const void *chain, VkStructureType type)
++{
++   for (const VkBaseInStructure *p = chain; p; p = p->pNext)
++      if (p->sType == type) return p;
++   return NULL;
++}
++
++/* Ordinary optimal images are device-local resources, not NativeBuffer
++ * export surfaces. Linear/explicit external images keep their own contract. */
++static inline bool
++vkr_ohos_native_gpu_image(const VkImageCreateInfo *info)
++{
++   const VkExternalMemoryImageCreateInfo *external = vkr_ohos_resource_find(
++      info->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   return info->tiling == VK_IMAGE_TILING_OPTIMAL && (!external || !external->handleTypes);
++}
++
++static inline bool
++vkr_ohos_resource_exportable(const VkExternalMemoryProperties *props, uint32_t handle)
++{
++   return (props->externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) &&
++          (props->compatibleHandleTypes & handle) == handle;
++}
++
++static inline VkResult
++vkr_ohos_native_buffer_info(VkPhysicalDevice physical,
++   PFN_vkGetPhysicalDeviceExternalBufferProperties query, uint32_t handle,
++   const VkBufferCreateInfo *guest, VkBufferCreateInfo *host,
++   VkExternalMemoryBufferCreateInfo *external)
++{
++   *host = *guest;
++   if (!handle) return VK_SUCCESS;
++   const VkExternalMemoryBufferCreateInfo *existing = vkr_ohos_resource_find(
++      guest->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
++   /* Never replace or merge an application's different external contract. */
++   if (existing && existing->handleTypes != handle) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   if (!query) return VK_ERROR_FEATURE_NOT_PRESENT;
++   VkPhysicalDeviceExternalBufferInfo info = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
++      .flags = guest->flags, .usage = guest->usage, .handleType = handle,
++   };
++   VkExternalBufferProperties props = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
++   query(physical, &info, &props);
++   if (!vkr_ohos_resource_exportable(&props.externalMemoryProperties, handle))
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++   if (existing) return VK_SUCCESS;
++   *external = (VkExternalMemoryBufferCreateInfo){
++      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
++      .pNext = guest->pNext, .handleTypes = handle,
++   };
++   if (!existing) host->pNext = external;
++   return VK_SUCCESS;
++}
++
++static inline VkResult
++vkr_ohos_native_image_info(VkPhysicalDevice physical,
++   PFN_vkGetPhysicalDeviceImageFormatProperties2 query, uint32_t handle,
++   const VkImageCreateInfo *guest, VkImageCreateInfo *host,
++   VkExternalMemoryImageCreateInfo *external)
++{
++   *host = *guest;
++   if (!handle) return VK_SUCCESS;
++   const VkExternalMemoryImageCreateInfo *existing = vkr_ohos_resource_find(
++      guest->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   if (existing && existing->handleTypes != handle) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   if (!query) return VK_ERROR_FEATURE_NOT_PRESENT;
++   VkPhysicalDeviceExternalImageFormatInfo external_query = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
++      .handleType = handle,
++   };
++   /* Copy the create structures that participate in format queries. Never
++    * pass unrelated create-only structures to the physical-device query. */
++   VkImageFormatListCreateInfo formats;
++   VkImageStencilUsageCreateInfo stencil;
++   const VkImageFormatListCreateInfo *guest_formats = vkr_ohos_resource_find(
++      guest->pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO);
++   const VkImageStencilUsageCreateInfo *guest_stencil = vkr_ohos_resource_find(
++      guest->pNext, VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO);
++   if (guest_formats) {
++      formats = *guest_formats; formats.pNext = external_query.pNext;
++      external_query.pNext = &formats;
++   }
++   if (guest_stencil) {
++      stencil = *guest_stencil; stencil.pNext = external_query.pNext;
++      external_query.pNext = &stencil;
++   }
++   const VkPhysicalDeviceImageFormatInfo2 info = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
++      .pNext = &external_query, .format = guest->format, .type = guest->imageType,
++      .tiling = guest->tiling, .usage = guest->usage, .flags = guest->flags,
++   };
++   VkExternalImageFormatProperties external_props = {
++      .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
++   };
++   VkImageFormatProperties2 props = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &external_props,
++   };
++   VkResult result = query(physical, &info, &props);
++   if (result != VK_SUCCESS) return result;
++   if (!vkr_ohos_resource_exportable(&external_props.externalMemoryProperties, handle))
++      return VK_ERROR_FORMAT_NOT_SUPPORTED;
++   if (existing) return VK_SUCCESS;
++   *external = (VkExternalMemoryImageCreateInfo){
++      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
++      .pNext = guest->pNext, .handleTypes = handle,
++   };
++   if (!existing) host->pNext = external;
++   /* Query requirements on this exact external resource: preserve the real
++    * size, alignment, memoryTypeBits and dedicated-allocation requirements. */
++   return VK_SUCCESS;
++}
++#endif
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -476,6 +476,17 @@
+          MIN2(physical_dev->properties.apiVersion, instance->api_version);
+       vkr_physical_device_init_extensions(physical_dev);
+       vkr_physical_device_init_memory_properties(physical_dev);
++#ifdef __OHOS__
++      if (ctx->ohos_native_memory) {
++         if (!vkr_ohos_memory_types_init(&physical_dev->memory_properties,
++                                       &physical_dev->ohos_memory_types))
++            vkr_log("OHOS native-memory-v1: no room for a GPU-only memory type");
++         else
++            vkr_log("OHOS native-memory-v1: GPU type=0 hostType=%u hostCount=%u",
++                    physical_dev->ohos_memory_types.gpu_host_type,
++                    physical_dev->ohos_memory_types.host_count);
++      }
++#endif
+       vkr_physical_device_init_id_properties(physical_dev);
+       vkr_physical_device_init_queue_family_properties(physical_dev);
+ 
+@@ -756,6 +767,10 @@
+       vn_replace_vkGetPhysicalDeviceMemoryProperties2_args_handle(args);
+       vk->GetPhysicalDeviceMemoryProperties2(args->physicalDevice,
+                                              args->pMemoryProperties);
++#ifdef __OHOS__
++      if (physical_dev->ohos_memory_types.enabled)
++         args->pMemoryProperties->memoryProperties = physical_dev->memory_properties;
++#endif
+    }
+ }
+ 
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -7,6 +7,9 @@
+ #define VKR_PHYSICAL_DEVICE_H
+ 
+ #include "vkr_common.h"
++#ifdef __OHOS__
++#include "vkr_ohos_native_memory.h"
++#endif
+ 
+ #include "venus-protocol/vn_protocol_renderer_util.h"
+ 
+@@ -47,6 +50,9 @@
+    uint32_t queue_family_property_count;
+ 
+    struct list_head devices;
++#ifdef __OHOS__
++   struct vkr_ohos_memory_types ohos_memory_types;
++#endif
+ };
+ VKR_DEFINE_OBJECT_CAST(physical_device, VK_OBJECT_TYPE_PHYSICAL_DEVICE, VkPhysicalDevice)
+ 

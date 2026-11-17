@@ -1,0 +1,35 @@
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+index f97811500955cdfeb433de99b3474b57bb45de7e..0d352943f8971880d7aec73c0227b972a54d243a 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/AVX_128.cpp
+@@ -316,7 +316,7 @@ void OpDispatchBuilder::AVX128_VectorShiftImmImpl(OpcodeArgs, IR::OpSize Element
+ void OpDispatchBuilder::AVX128_VectorXOR(OpcodeArgs) {
+   // Special case for vector xor with itself being the optimal way for x86 to zero vector registers.
+   if (Op->Src[0].IsGPR() && Op->Src[1].IsGPR() && Op->Src[0].Data.GPR.GPR == Op->Src[1].Data.GPR.GPR) {
+-    AVX128_StoreResult_WithOpSize(Op, Op->Dest, AVX128_Zext(LoadZeroVector(OpSize::i128Bit)));
++    AVX128_StoreResult_WithOpSize(Op, Op->Dest, AVX128_Zext(LoadUncachedZeroVector(OpSize::i128Bit)));
+     return;
+   }
+ 
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+index 08b53ef5d975556bc6a26301079c0ed1ac0f52cf..af006ce4ece0de37e276de74a65ca8d24c0c9c60 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+@@ -284,7 +284,7 @@ void OpDispatchBuilder::VectorXOROp(OpcodeArgs) {
+ 
+   // Special case for vector xor with itself being the optimal way for x86 to zero vector registers.
+   if (Op->Dest.IsGPR() && Op->Src[0].IsGPR() && Op->Dest.Data.GPR.GPR == Op->Src[0].Data.GPR.GPR) {
+-    const auto ZeroRegister = LoadZeroVector(Size);
++    const auto ZeroRegister = LoadUncachedZeroVector(Size);
+     StoreResult_WithAVXInsert(VectorOpType::SSE, RegClass::FPR, Op, ZeroRegister);
+     return;
+   }
+@@ -308,7 +308,7 @@ void OpDispatchBuilder::AVXVectorXOROp(OpcodeArgs) {
+   // Special case for vector xor with itself being the optimal way for x86 to zero vector registers.
+   if (Op->Src[0].IsGPR() && Op->Src[1].IsGPR() && Op->Src[0].Data.GPR.GPR == Op->Src[1].Data.GPR.GPR) {
+     const auto DstSize = OpSizeFromDst(Op);
+-    const auto ZeroRegister = LoadZeroVector(DstSize);
++    const auto ZeroRegister = LoadUncachedZeroVector(DstSize);
+     StoreResultFPR(Op, ZeroRegister);
+     return;
+   }

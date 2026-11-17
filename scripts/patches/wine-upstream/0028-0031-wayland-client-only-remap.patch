@@ -1,0 +1,45 @@
+From d69932787ac5db8fe9760901a577126243af1bdf Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0031-wayland-client-only-remap
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 50df8ec1f1d39aacfcdfbd85e9c6d727e80e1cd3c2ff3edd675e677756269061
+
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 638b572a438a00df0f58bd38c096e3cf1ff18a8c..854bd03d77cd518e2793491402d2dbb641298683 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -245,6 +245,10 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+         break;
+     }
+ 
++    /* Client attachment looks the parent up through win_data. Publish a newly
++     * created/replaced parent before attaching, including on a GPU-only remap. */
++    TRACE("hwnd=%p surface=%p=>%p\n", data->hwnd, data->wayland_surface, surface);
++    data->wayland_surface = surface;
+     if (visible && client) wayland_client_surface_attach(client, data->hwnd);
+     wayland_win_data_get_config(data, &surface->window);
+ 
+@@ -252,8 +256,6 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+      * it as needed. */
+     if (data->hwnd == NtUserGetForegroundWindow()) reapply_cursor_clipping();
+ 
+-    TRACE("hwnd=%p surface=%p=>%p\n", data->hwnd, data->wayland_surface, surface);
+-    data->wayland_surface = surface;
+     return TRUE;
+ }
+ 
+@@ -513,6 +515,11 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+                 wayland_client_surface_attach(client, NULL);
+         }
+ 
++        /* A hidden/recreated GPU-only parent may be absent or role-less.
++         * Restore the normal visibility/role lifecycle before refreshing its
++         * state, even when win32u no longer supplies a GDI window surface. */
++        if (keep_toplevel) wayland_win_data_create_wayland_surface(data, NULL);
++
+         if (data->wayland_surface && keep_toplevel)
+         {
+             /* A client-only window still changes position, style and state.

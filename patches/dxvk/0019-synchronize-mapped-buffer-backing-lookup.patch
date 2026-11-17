@@ -1,0 +1,140 @@
+--- a/src/dxvk/dxvk_buffer.cpp
++++ b/src/dxvk/dxvk_buffer.cpp
+@@ -177,9 +177,14 @@
+   }
+ 
+ 
+-  VkResult DxvkBuffer::flushMappedSlice(
++  bool DxvkBuffer::getMappedRange(
+     const DxvkBufferSliceHandle& slice,
+-          DxvkCommandList*       commandList) const {
++          VkMappedMemoryRange&  range) const {
++    // allocSlice appends to m_buffers under m_freeMutex on the API thread.
++    // The CS thread must use the same lock while finding and dereferencing
++    // the physical backing. Copy only Vulkan values; no vector pointer may
++    // escape this scope or be kept across a Vulkan call.
++    std::unique_lock<sync::Spinlock> freeLock(m_freeMutex);
+     const DxvkBufferHandle* backing = nullptr;
+ 
+     if (m_buffer.buffer == slice.handle) {
+@@ -194,9 +199,8 @@
+     }
+ 
+     if (!backing || !backing->memory)
+-      return VK_ERROR_MEMORY_MAP_FAILED;
+-
+-    VkMappedMemoryRange range;
++      return false;
++
+     range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+     range.pNext  = nullptr;
+     const VkDeviceSize atom =
+@@ -206,6 +210,16 @@
+     range.memory = backing->memory.memory();
+     range.offset = (sliceBegin / atom) * atom;
+     range.size   = sliceEnd - range.offset;
++    return true;
++  }
++
++
++  VkResult DxvkBuffer::flushMappedSlice(
++    const DxvkBufferSliceHandle& slice,
++          DxvkCommandList*       commandList) const {
++    VkMappedMemoryRange range;
++    if (!getMappedRange(slice, range))
++      return VK_ERROR_MEMORY_MAP_FAILED;
+ 
+     VkResult result = winehuaBatchMappedFlush() && commandList
+       ? commandList->queueWineHuaMappedFlush(
+@@ -233,32 +247,9 @@
+     if (winehuaPreciseShadowEnabled())
+       return VK_SUCCESS;
+ 
+-    const DxvkBufferHandle* backing = nullptr;
+-
+-    if (m_buffer.buffer == slice.handle) {
+-      backing = &m_buffer;
+-    } else {
+-      for (const auto& candidate : m_buffers) {
+-        if (candidate.buffer == slice.handle) {
+-          backing = &candidate;
+-          break;
+-        }
+-      }
+-    }
+-
+-    if (!backing || !backing->memory)
++    VkMappedMemoryRange range;
++    if (!getMappedRange(slice, range))
+       return VK_ERROR_MEMORY_MAP_FAILED;
+-
+-    VkMappedMemoryRange range;
+-    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+-    range.pNext  = nullptr;
+-    const VkDeviceSize atom =
+-      m_device->properties().core.properties.limits.nonCoherentAtomSize;
+-    const VkDeviceSize sliceBegin = backing->memory.offset() + slice.offset;
+-    const VkDeviceSize sliceEnd = align(sliceBegin + slice.length, atom);
+-    range.memory = backing->memory.memory();
+-    range.offset = (sliceBegin / atom) * atom;
+-    range.size   = sliceEnd - range.offset;
+ 
+     VkResult result = m_device->vkd()->vkInvalidateMappedMemoryRanges(
+       m_device->vkd()->device(), 1, &range);
+@@ -276,32 +267,9 @@
+ 
+   VkResult DxvkBuffer::invalidateMappedSlice(
+     const DxvkBufferSliceHandle& slice) const {
+-    const DxvkBufferHandle* backing = nullptr;
+-
+-    if (m_buffer.buffer == slice.handle) {
+-      backing = &m_buffer;
+-    } else {
+-      for (const auto& candidate : m_buffers) {
+-        if (candidate.buffer == slice.handle) {
+-          backing = &candidate;
+-          break;
+-        }
+-      }
+-    }
+-
+-    if (!backing || !backing->memory)
++    VkMappedMemoryRange range;
++    if (!getMappedRange(slice, range))
+       return VK_ERROR_MEMORY_MAP_FAILED;
+-
+-    const VkDeviceSize atom =
+-      m_device->properties().core.properties.limits.nonCoherentAtomSize;
+-    const VkDeviceSize sliceBegin = backing->memory.offset() + slice.offset;
+-    const VkDeviceSize sliceEnd = align(sliceBegin + slice.length, atom);
+-    VkMappedMemoryRange range;
+-    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+-    range.pNext  = nullptr;
+-    range.memory = backing->memory.memory();
+-    range.offset = (sliceBegin / atom) * atom;
+-    range.size   = sliceEnd - range.offset;
+ 
+     VkResult result = m_device->vkd()->vkInvalidateMappedMemoryRanges(
+       m_device->vkd()->device(), 1, &range);
+--- a/src/dxvk/dxvk_buffer.h
++++ b/src/dxvk/dxvk_buffer.h
+@@ -312,7 +312,7 @@
+     uint32_t                m_vertexStride = 0;
+ 
+     alignas(CACHE_LINE_SIZE)
+-    sync::Spinlock          m_freeMutex;
++    mutable sync::Spinlock  m_freeMutex;
+ 
+     uint32_t                m_lazyAlloc = false;
+     bool                    m_fifoSlices = false;
+@@ -336,6 +336,10 @@
+       slice.mapPtr = handle.memory.mapPtr(slice.offset);
+       m_freeSlices.push_back(slice);
+     }
++
++    bool getMappedRange(
++      const DxvkBufferSliceHandle& slice,
++            VkMappedMemoryRange&  range) const;
+ 
+     DxvkBufferHandle allocBuffer(
+             VkDeviceSize          sliceCount,

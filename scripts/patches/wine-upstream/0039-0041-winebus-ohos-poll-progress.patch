@@ -1,0 +1,68 @@
+From 49a4ea2dc1fc39214110730cad2260df53d78505 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0041-winebus-ohos-poll-progress
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 01979647c7024baa0727ffdf51579d3d4134b56bf8a19e7606161e08eafc57ac
+
+diff --git a/dlls/winebus.sys/bus_ohos.c b/dlls/winebus.sys/bus_ohos.c
+index 7bd79abf1d87dff9658a95b7d30f5d682733d692..b8b461b0e9f8417a2d78979a47a24b97d8ac092b 100644
+--- a/dlls/winebus.sys/bus_ohos.c
++++ b/dlls/winebus.sys/bus_ohos.c
+@@ -488,7 +488,7 @@ NTSTATUS ohos_bus_wait(void *args)
+     struct unix_device *dev;
+     const char *path;
+     struct pollfd pfd;
+-    int fd;
++    int fd, ret;
+ 
+     bus_event_cleanup(result);
+     path = resolve_socket_path();
+@@ -504,23 +504,41 @@ NTSTATUS ohos_bus_wait(void *args)
+             pthread_mutex_unlock(&ohos_cs);
+             break;
+         }
+-        if (sock_fd < 0 && path)
+-            connect_socket(path);
+-        fd = sock_fd;
+         dev = NULL;
+         if (!list_empty(&device_list))
+         {
+             impl = LIST_ENTRY(list_head(&device_list), struct ohos_device, unix_device.entry);
+             dev = &impl->unix_device;
+         }
++        /* No consumer: a readable socket would otherwise stay readable forever.
++         * Reconnect when a virtual device is available, without replaying stale input. */
++        if (!dev)
++            close_socket();
++        else if (sock_fd < 0 && path)
++            connect_socket(path);
++        fd = sock_fd;
+         pthread_mutex_unlock(&ohos_cs);
+ 
+         if (fd >= 0)
+         {
+             pfd.fd = fd;
+             pfd.events = POLLIN;
+-            if (poll(&pfd, 1, 20) > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) && dev)
++            ret = poll(&pfd, 1, 20);
++            if ((ret < 0 && errno != EINTR) ||
++                (ret > 0 && (pfd.revents & (POLLNVAL | POLLERR))))
++            {
++                drop_socket_if(fd);
++                apply_neutral(dev);
++                usleep(50000);
++            }
++            else if (ret > 0 && (pfd.revents & POLLIN))
+                 process_one_message(dev, fd);
++            else if (ret > 0 && (pfd.revents & POLLHUP))
++            {
++                drop_socket_if(fd);
++                apply_neutral(dev);
++                usleep(50000);
++            }
+         }
+         else
+             usleep(50000);

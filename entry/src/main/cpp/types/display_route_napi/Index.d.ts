@@ -61,3 +61,8 @@ export const injectDisplayRouteText: (text: string) => boolean;
 /** D19 CJK 剪贴板桥: UTF-8 串设为 seat selection (xwm 桥接 Xwayland CLIPBOARD),
  *  配合 Ctrl+V 注入粘贴。 */
 export const setDisplayRouteClipboard: (text: string) => boolean;
+
+export const displayRoutePhase: () => number;
+
+export interface DisplayClipboardSnapshot { version: number; text: string; }
+export const getDisplayRouteClipboard: () => DisplayClipboardSnapshot;

@@ -1,0 +1,40 @@
+From a910e2f364536dec16fa87af54c96459234f6a82 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0052-ntdll-default-virgl-shared-low-map
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 44b9e6699c7c250812e02db388e28fffbdb845cbf94b3d0d559177dc16506d74
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 290d07f5f02555fee5b5f7f9db968d48bd49ecde..bfb5d9f7be248d65116cc00da7eac58256540a71 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -2005,6 +2005,16 @@ static void *build_wow64_parameters( const RTL_USER_PROCESS_PARAMETERS *params )
+ }
+ 
+ 
++/* The paired vtest winsys falls back on absent callbacks or address pressure.
++ * Keep 0040's import intact so explicit child/BAT opt-outs retain precedence. */
++static void winehua_default_shared_map_environment(void)
++{
++#if defined(__OHOS__) && defined(__aarch64__) && defined(_WIN64)
++    if (!getenv("WINEHUA_VIRGL_LOW_MAP"))
++        setenv("WINEHUA_VIRGL_LOW_MAP", "1", 1);
++#endif
++}
++
+ /*************************************************************************
+  *		init_peb
+  */
+@@ -2044,6 +2054,9 @@ static void init_peb( RTL_USER_PROCESS_PARAMETERS *params, void *module )
+     peb->ImageSubSystemMajorVersion = main_image_info.MajorSubsystemVersion;
+     peb->ImageSubSystemMinorVersion = main_image_info.MinorSubsystemVersion;
+ 
++    /* Before any DLL initialization or Mesa resource creation. */
++    winehua_default_shared_map_environment();
++
+ #ifdef _WIN64
+     if (!is_machine_64bit( main_image_info.Machine ))
+     {

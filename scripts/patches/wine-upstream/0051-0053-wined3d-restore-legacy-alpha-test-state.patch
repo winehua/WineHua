@@ -1,0 +1,32 @@
+From 2f0c1a841a37d4a4b1be6904dcaaf4e7c0156698 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0053-wined3d-restore-legacy-alpha-test-state
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 3ff4ad1d4cfb6fe0b9eae9111ed80382475319c8984f91cf8ea8dc89665aaa04
+
+diff --git a/dlls/wined3d/glsl_shader.c b/dlls/wined3d/glsl_shader.c
+index d7715b2642f250ef1a4f73dc7ebd5c1793d23d31..2103ba54496a6c1ea458a71df215f1c7e2c5ec5d 100644
+--- a/dlls/wined3d/glsl_shader.c
++++ b/dlls/wined3d/glsl_shader.c
+@@ -12015,6 +12015,18 @@ static void glsl_fragment_pipe_alpha_test_func(struct wined3d_context_gl *contex
+     GLfloat ref;
+     GLint func;
+ 
++    /* On a compatibility context the generated shader delegates alpha tests
++     * to GL. Updating the comparison alone leaves that test disabled after
++     * context setup or a blit. ALWAYS also represents D3DRS_ALPHATESTENABLE=0. */
++    if (state->extra_ps_args.alpha_func == WINED3D_CMP_ALWAYS)
++    {
++        gl_info->gl_ops.gl.p_glDisable(GL_ALPHA_TEST);
++        checkGLcall("glDisable(GL_ALPHA_TEST)");
++        return;
++    }
++    gl_info->gl_ops.gl.p_glEnable(GL_ALPHA_TEST);
++    checkGLcall("glEnable(GL_ALPHA_TEST)");
++
+     if ((func = wined3d_gl_compare_func(state->extra_ps_args.alpha_func)))
+     {
+         if ((buffer = context_gl->c.device->push_constants[WINED3D_PUSH_CONSTANTS_PS_FFP]))

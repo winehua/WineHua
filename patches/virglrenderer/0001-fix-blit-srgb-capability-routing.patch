@@ -1,0 +1,28 @@
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index 3e25a6c4..732f5b61 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -11268,8 +11268,8 @@ static void vrend_renderer_blit_int(struct vrend_context *ctx,
+       VREND_DEBUG(dbg_blit, ctx, "BLIT_INT: use FBO blit\n");
+       vrend_renderer_blit_fbo(ctx, src_res, dst_res, &blit_info);
+    } else {
+-      blit_info.has_srgb_write_control = has_feature(feat_texture_srgb_decode);
+-      blit_info.has_texture_srgb_decode = has_feature(feat_srgb_write_control);
++      blit_info.has_srgb_write_control = has_feature(feat_srgb_write_control);
++      blit_info.has_texture_srgb_decode = has_feature(feat_texture_srgb_decode);
+ 
+       VREND_DEBUG(dbg_blit, ctx, "BLIT_INT: use GL fallback\n");
+       vrend_renderer_blit_gl(ctx, src_res, dst_res, &blit_info);
+@@ -13019,6 +13019,12 @@ void vrend_renderer_fill_caps(uint32_t set, uint32_t version,
+                        set, version, caps->max_version, gl_ver, gles_ver,
+                        caps->v1.glsl_level, vrend_state.use_gles ? 1 : 0, fill_capset2 ? 1 : 0);
+    vrend_renderer_fill_caps_v1(gl_ver, gles_ver, caps);
++   winehua_gl_caps_log("GL-CAP virgl layer=capset-color texture_srgb_decode=%d "
++                       "srgb_write_control=%d egl_image_srgb_import=%d conditional_render=%d",
++                       has_feature(feat_texture_srgb_decode),
++                       has_feature(feat_srgb_write_control),
++                       vrend_state.egl_image_srgb_import,
++                       caps->v1.bset.conditional_render);
+ 
+    if (!fill_capset2)
+       return;

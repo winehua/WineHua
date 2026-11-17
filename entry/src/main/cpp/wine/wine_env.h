@@ -15,6 +15,10 @@
 // (BuildWineBaselineLines / ApplyEnvLinesToEnviron) 已收口到
 // wine_env_baseline.h 单表, 此处 via include 透出, 调用点用 winehua:: 前缀。
 
+// Immutable for one Wine session; font DPI is independent of output scaling.
+bool SetWineLogPixels(int pixels);
+void AppendWineDpiEnv(std::vector<std::string>& env);
+
 // -- Wine 环境变量构建 --
 // wineLang: Wine locale 语言 ("zh_CN"/"en_US"), 决定基线 LANG=<wineLang>.UTF-8;
 // 桌面会话经 launchClient 由用户设置传入, 程序直启路径由 ArkTS 经 environment
@@ -28,18 +32,13 @@ std::vector<std::string> BuildWineEnv(const std::string& sockDir,
                                       const std::string& prefixDir = WINE_PREFIX,
                                       const std::string& wineLang = "zh_CN");
 
-// HiDPI: 向 env 追加 WINEHUA_LOGPIXELS。单一发射点 —— 会话 env (BuildWineEnv)
-// 与 wineserver/wineboot 引导链 (wine_launch) 共用, 保证 wineboot 自动拉起的
-// shell 与服务继承同一 DPI, 不回落 prefix 注册表值。未设置时不下发。
-void AppendWineLogPixelsEnv(std::vector<std::string>& env);
-
 // M3a 显示路线 native 镜像 (唯一写点 = ArkTS 启动解析后经 NAPI 调一次;
 // 唯一读点 = BuildWineEnv 的 env stamp)。空串/其它值 = wayland 默认。
 // extern "C": smoke_napi.so 跨 DSO 直呼 (与 DisplayRoute 入口同款)。
 #ifdef __cplusplus
 extern "C" {
 #endif
-void WineHua_SetDisplayRoute(const char* route);
+bool WineHua_SetDisplayRoute(const char* route);
 bool WineHua_DisplayRouteIsX11();
 #ifdef __cplusplus
 }
@@ -52,6 +51,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
                          const std::string& d3dBackend,
                          const std::string& dxvkBackend,
                          const std::string& binDir);
+
+// Add the Guest Vulkan loader/Venus ICD environment without selecting a D3D
+// overlay. Direct Vulkan programs use this with the wined3d backend.
+void AppendVulkanRuntimeEnv(std::vector<std::string>& env,
+                            const std::string& binDir);
 
 // -- 环境变量辅助 --
 void UpsertEnvLine(std::vector<std::string>& env, const std::string& line);

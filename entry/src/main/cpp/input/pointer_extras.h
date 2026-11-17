@@ -2,6 +2,7 @@
 
 #include <wayland-server-core.h>
 #include <functional>
+#include <cstdint>
 #include <mutex>
 #include <vector>
 
@@ -29,6 +30,7 @@
  * 参照 weston pointer-constraints.c。
  */
 class ToplevelManager;  // 前向声明 (6A 装配注入引用, 见 BindWaylandRefs)
+class InputResolver;
 
 class PointerExtras {
 public:
@@ -38,6 +40,13 @@ public:
     void Register(wl_display* display);
 
     enum class ConstraintType { None, Lock, Confine };
+
+    // 只查询/发送给当前输入 surface 所属 Wayland client。多个 Wine 窗口可
+    // 短暂并存 relative_pointer 对象，按全局“是否存在”判断会把旧窗口的
+    // 相对模式误套到新窗口，造成光标漂移。
+    void SendRelativeMotion(wl_resource* surface, double dx, double dy);
+    bool HasRelativePointerForSurface(wl_resource* surface) const;
+    bool HasRelativePointer() const;
 
     // -- Host 光标锁定 (dinput 相对模式的系统侧配套) --
     // wine 创建 relative_pointer 对象 = 游戏进入"隐藏光标无限移动"的相对
@@ -52,16 +61,10 @@ public:
     // ClampToContent 承担, 且 wineserver 内 ClipCursor 同样生效。
     // LockCursor 仅支持获焦窗口 (失焦系统自动解锁), 故逐个尝试已注册窗口。
     static void RegisterHostWindow(int32_t windowId);
-    // 锁定状态变化回调 (NAPI 层注册 → tsfn → ets setPointerVisible)。
-    // 注意在 Wayland 线程触发。第二个参数 = 触发相对模式的约束 surface 的
-    // toplevelId (解锁时传 0; ArkTS 用它区分"桌面 shell 自身"与"游戏窗口")。
     void SetPointerLockCallback(std::function<void(bool, uint32_t)> cb);
-
-    // 锁定窗口所属 toplevel 被宿主销毁 (用户关窗: WWA cleanup → destroyToplevel)
-    // → 立即释放 host 锁定并通知 ets, 不等 relative_pointer 销毁。游戏卡死时
-    // wine 不响应 sendToplevelClose, 相对对象永不销毁、正常解锁回调不来 —
-    // 不主动释放则: ①系统光标保持隐藏 ②lockedWindowId_ 残留使下一个游戏
-    // 锁不上 (lock 重入守卫以它判断)。toplevelId 与当前锁定不匹配则空转
+    // 锁定窗口所属 toplevel 被宿主销毁时立即释放 host 锁定并通知 ets,
+    // 不等 relative_pointer 销毁。游戏卡死时 wine 不响应 sendToplevelClose,
+    // 相对对象永不销毁、正常解锁回调不来。toplevelId 与当前锁定不匹配则空转。
     void ReleaseLockForToplevel(uint32_t toplevelId);
 
     // -- warp 回调装配 (重构第 4C1 步: PointerExtras↔InputManager 单向化) --
@@ -77,23 +80,19 @@ public:
     // 无锁 (与 wayland_server.h SetStateCallback 同一模式)。
     using PointerWarpSink = std::function<void(wl_resource* surface, double x, double y)>;
     void SetPointerWarpSink(PointerWarpSink sink);
+    // 装配和线程规则与 warp sink 相同；保留产品相对输入 epoch 失效通知。
+    using RelativeBaselineSink = std::function<void(const char* reason)>;
+    void SetRelativeBaselineSink(RelativeBaselineSink sink);
 
     // -- 会话引用装配 (重构第 6A 步) --
-    // 注入 ToplevelManager (surface→toplevelId 反查)、desktop root id 与桌面
-    // 模式标志的共享引用 — 替代 WaselyServer::FindToplevelIdBySurface /
-    // GetDesktopRootToplevelId 两处转发。装配点 = wl_core.cpp
-    // RegisterWlCoreGlobals (Start 阶段, 事件循环启动前, 与 warpSink 同模式:
-    // 之后只读, 无锁); 引用与 WaylandServer 单例成员同生命周期。
+    // 注入 ToplevelManager (surface→toplevelId 反查)、desktop root id、
+    // 产品 InputResolver (相对指针按 surface 存活) 与桌面模式标志的共享引用。
+    // 装配点 = wl_core.cpp RegisterWlCoreGlobals (Start 阶段, 事件循环启动前,
+    // 与 warpSink 同模式: 之后只读, 无锁); 引用与 WaylandServer 单例成员同生命周期。
     // desktopMode 供 isShell 判"桌面未就绪不锁定" (见 ApplyHostCursorLock)。
-    void BindWaylandRefs(ToplevelManager* tmgr,
-                         const uint32_t* desktopRootToplevelId,
-                         const bool* desktopMode);
+    void BindWaylandRefs(ToplevelManager* tmgr, const uint32_t* desktopRootToplevelId,
+                         InputResolver* resolver, const bool* desktopMode);
 
-    // 相对指针增量广播: wine 有 relative_pointer 对象时把输入增量发过去。
-    // 对象存在 ⇔ wine 判定当前为相对模式 (隐藏光标 + 约束); 无对象 = 绝对
-    // 模式, 此函数空转。Wayland 线程调用 (事件发送必须在该线程)。
-    void SendRelativeMotion(double dx, double dy);
-    bool HasRelativePointer() const;
 
     // -- 协议接口实现 (public: wl 接口表在类外初始化, 与 wayland_server.h 同例) --
     // zwp_pointer_constraints_v1
@@ -131,12 +130,18 @@ private:
                                           // 是否桌面 root 自身, 见 relmgr)
     };
 
-    // mutable: const 查询接口 (HasRelativePointer) 也要锁
+    struct RelativePointer {
+        wl_resource* resource = nullptr;
+        wl_resource* pointer = nullptr;
+        wl_client* client = nullptr;
+    };
+
+    // mutable: const 查询接口也要锁
     mutable std::mutex mutex_;
     std::vector<Constraint> constraints_;
-    // 已创建的 zwp_relative_pointer_v1 对象 (wine 相对模式时存在, 至多一个:
-    // wine 用 process_wayland.pointer.wl_pointer 固定绑定; 多对象时全部广播)
-    std::vector<wl_resource*> relativePointers_;
+    // 同一 client 可短暂存在多个对象；只向当前输入 surface 的 client 广播。
+    std::vector<RelativePointer> relativePointers_;
+    wl_client* cursorLockClient_ = nullptr;   // current relative owner, independent of other clients
 
     // 约束资源析构共通处理: 摘掉条目, 如有 hint 则把逻辑指针移到 hint
     static void OnConstraintResourceDestroyed(wl_resource* r);
@@ -146,26 +151,24 @@ private:
     static void relmgr_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
 
     // Host 光标锁定实施 (见上方 public 注释); 失败只记日志不阻断 — A 方案
-    // (rawDelta 相对位移) 不依赖锁定, 老系统 (API<22) 上相对模式仍工作。
-    // toplevelId = 触发相对模式的约束 surface 所属 toplevel (解锁传 0)
+    // (rawDelta 相对位移) 不依赖锁定, 老系统 (API<22) 上相对模式仍工作
     void ApplyHostCursorLock(bool lock, uint32_t toplevelId);
     std::vector<int32_t> hostWindowIds_;       // mutex_ 保护; 各 Ability 主窗口
     int32_t lockedWindowId_ = 0;               // 实际锁定成功的窗口 (0=未锁)
-    // mutex_ 保护; 已向 ets 通知过 locked=true。与 lockedWindowId_ 分离:
-    // 锁定 IPC 可能全部失败 (无获焦窗口/系统不支持) 而隐藏照常下发, 解锁
-    // 时由本标记保证补发 false — 否则 ets 的 pointerLocked 永真, 系统光标
-    // 不恢复 (2026-09-13)
-    bool etsLockNotified_ = false;
-    // mutex_ 保护; 当前锁定对应的 toplevel (0=无)。ReleaseLockForToplevel
-    // 按它匹配"被销毁的窗口是否正是锁定来源"
-    uint32_t lockedToplevelId_ = 0;
+    bool etsLockNotified_ = false;             // requested relative state; actual IPC lock tracked separately
+    uint32_t lockedToplevelId_ = 0;            // ReleaseLockForToplevel 按它匹配
+    uint64_t cursorLockGeneration_ = 0;       // latest desired state; mutex_ protected
+    bool cursorLockWorkerRunning_ = false;   // exactly one worker owns window-service IPC
+    bool cursorLockIsShell_ = true;          // identity captured on the Wayland thread
     std::function<void(bool, uint32_t)> lockCallback_;   // mutex_ 保护
     // warp 回调装配 (4C1 解环): SetPointerWarpSink 在事件循环启动前一次性注入,
     // 之后只在 Wayland 线程读 → 无锁 (见头文件 Top 注释"warp 回调装配")。
     PointerWarpSink warpSink_;
+    RelativeBaselineSink relativeBaselineSink_;
     // 6A 会话引用装配 (BindWaylandRefs): 约束 surface→toplevel 反查与 root
     // 身份判定 — 装配于事件循环启动前, 之后只在 Wayland 线程读 (无锁)。
     ToplevelManager* tmgr_ = nullptr;           // FindToplevelBySurface
+    InputResolver* resolver_ = nullptr;        // product per-surface liveness guard
     const uint32_t* desktopRootToplevelId_ = nullptr;  // isShell 判定 (共享 root 引用)
     const bool* desktopMode_ = nullptr;   // isShell: 桌面模式 && root 未识别 = 桌面启动中
 };

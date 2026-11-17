@@ -1,0 +1,8 @@
+tree 8ef394afdf44f3d55c8ed79ecfc26dbf32a454df
+parent 5177bb3c648bf8e7c8441eb0af421a773fd6c63e
+author Paul Gofman <pgofman@codeweavers.com> 1793899916 -0600
+committer Paul Gofman <pgofman@codeweavers.com> 1793899972 -0600
+
+winegstreamer/h264_decoder: HACK: Disable MF_SA_D3D11_AWARE for Phantom Blade Zero.
+
+CW-Bug-Id: #27953

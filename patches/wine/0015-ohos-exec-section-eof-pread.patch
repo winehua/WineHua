@@ -1,0 +1,50 @@
+From: WineHua contributors <dev@winehua.invalid>
+Subject: [PATCH] ntdll: tolerate EOF short read in ohos_map_exec_section
+
+PE section on-disk extents are sector-rounded (0x200) by the loader, but
+packagers such as SteamStub append the final .bind section unpadded, so the
+rounded request can overrun end-of-file by up to one sector.  The plain
+mmap path zero-fills that tail transparently; the OHOS noexec workaround
+(anon mmap + exact-size pread) rejected it and failed the whole image load
+with STATUS_INVALID_IMAGE_FORMAT (c000007b), e.g. PAL4 launch.exe.
+
+Read in a loop and treat EOF as success: the fresh anonymous mapping is
+already zero-filled, which restores mmap semantics for every image.
+---
+ dlls/ntdll/unix/ohos_virtual.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/ohos_virtual.c b/dlls/ntdll/unix/ohos_virtual.c
+--- a/dlls/ntdll/unix/ohos_virtual.c
++++ b/dlls/ntdll/unix/ohos_virtual.c
+@@ -279,10 +279,27 @@
+     }
+     ohos_jit_disable();
+
+-    if (pread( fd, sec_addr, file_size, file_start ) != (ssize_t)file_size)
++    /* Section on-disk sizes are sector-rounded (0x200) but packagers like
++     * SteamStub append the final section unpadded, so the rounded request
++     * can overrun EOF by up to a sector.  The mmap path this replaces
++     * zero-fills that tail; keep the same semantics by treating EOF as
++     * success instead of failing the whole image load. */
+     {
+-        ERR( "Could not read %s section\n", section_name );
+-        return 0;
++        size_t done = 0;
++
++        while (done < file_size)
++        {
++            ssize_t ret = pread( fd, sec_addr + done, file_size - done, file_start + done );
++
++            if (ret < 0)
++            {
++                if (errno == EINTR) continue;
++                ERR( "Could not read %s section\n", section_name );
++                return 0;
++            }
++            if (!ret) break;  /* EOF: the anon mapping above is zero-filled */
++            done += ret;
++        }
+     }
+     return 1;
+ }

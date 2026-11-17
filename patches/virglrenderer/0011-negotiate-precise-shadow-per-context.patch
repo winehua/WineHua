@@ -1,0 +1,111 @@
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -393,6 +393,8 @@
+ #define VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK 0xff
+ /* Opt-in OHOS native-memory protocol v1; Venus only. */
+ #define VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY (1u << 16)
++/* Explicit flush/invalidate ownership, negotiated per Venus connection. */
++#define VIRGL_RENDERER_CONTEXT_FLAG_OHOS_PRECISE_SHADOW (1u << 17)
+ 
+ VIRGL_EXPORT int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
+                                                           uint32_t ctx_flags,
+--- a/vtest/vtest_protocol.h
++++ b/vtest/vtest_protocol.h
+@@ -216,6 +216,7 @@
+    VCMD_PARAM_MAX_TIMELINE_COUNT = 1,
+    VCMD_PARAM_HAS_TIMELINE_SYNCOBJ = 2,
+    VCMD_PARAM_OHOS_NATIVE_MEMORY_V1 = 0x57480101,
++   VCMD_PARAM_OHOS_PRECISE_SHADOW_V1 = 0x57480102,
+ };
+ #define VCMD_GET_PARAM_SIZE 1
+ #define VCMD_GET_PARAM_PARAM 0
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -1370,8 +1370,17 @@
+    switch (param) {
+ #ifdef __OHOS__
+    case VCMD_PARAM_OHOS_NATIVE_MEMORY_V1:
+-      if (!ctx->context_initialized || ctx->native_memory_flags) {
+-         ctx->native_memory_flags = VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++      if (!ctx->context_initialized ||
++          (ctx->native_memory_flags & VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY)) {
++         ctx->native_memory_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++         resp[0] = true;
++         resp[1] = 1;
++      }
++      break;
++   case VCMD_PARAM_OHOS_PRECISE_SHADOW_V1:
++      if (!ctx->context_initialized ||
++          (ctx->native_memory_flags & VIRGL_RENDERER_CONTEXT_FLAG_OHOS_PRECISE_SHADOW)) {
++         ctx->native_memory_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_PRECISE_SHADOW;
+          resp[0] = true;
+          resp[1] = 1;
+       }
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -121,6 +121,7 @@
+    struct vulkan_library vulkan_library;
+ #ifdef __OHOS__
+    bool ohos_native_memory;
++   bool ohos_precise_shadow;
+ #endif
+ };
+ 
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -258,7 +258,8 @@
+    assert(ctx_id);
+    uint32_t allowed_flags = VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
+ #ifdef __OHOS__
+-   allowed_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++   allowed_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY |
++                    VIRGL_RENDERER_CONTEXT_FLAG_OHOS_PRECISE_SHADOW;
+ #endif
+    if (ctx_flags & ~allowed_flags)
+       return false;
+@@ -283,6 +284,9 @@
+ 
+ #ifdef __OHOS__
+    ctx->ohos_native_memory = !!(ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY);
++   ctx->ohos_precise_shadow = !!(ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_OHOS_PRECISE_SHADOW);
++   vkr_log("HSL_VENUS_MEMORY_CONTEXT native=%u precise=%u",
++           ctx->ohos_native_memory, ctx->ohos_precise_shadow);
+ #endif
+    list_addtail(&ctx->head, &vkr_state.contexts);
+    for (unsigned i = 0; i < 64; i++) {
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -1648,7 +1648,8 @@
+    args->ret = VK_SUCCESS;
+ #ifdef __OHOS__
+    const char *mode = os_get_option("VKR_WINEHUA_SHADOW_FROM_HOST");
+-   const bool precise = mode && !strcmp(mode, "precise");
++   const bool precise = ctx->ohos_precise_shadow ||
++      (mode && !strcmp(mode, "precise"));
+ #endif
+ 
+    mtx_lock(&ctx->object_mutex);
+@@ -3232,8 +3233,12 @@
+ {
+ #ifdef __OHOS__
+    const char *mode = os_get_option("VKR_WINEHUA_SHADOW_FROM_HOST");
+-   if (mode && (!strcmp(mode, "none") || !strcmp(mode, "disabled") ||
+-                !strcmp(mode, "precise"))) {
++   /* A precise client owns its unpublished CPU writes. Never overwrite the
++    * entire shared mapping at a fence: only its explicit invalidate may
++    * import GPU-written ranges. Other connections keep their own contract. */
++   if (ctx->ohos_precise_shadow ||
++       (mode && (!strcmp(mode, "none") || !strcmp(mode, "disabled") ||
++                 !strcmp(mode, "precise")))) {
+       const uint64_t call_id =
+          atomic_fetch_add_explicit(&vkr_ohos_shadow_from_host_sync_count, 1,
+                                    memory_order_relaxed) + 1;
+@@ -3241,7 +3246,7 @@
+           (call_id <= 8 || !(call_id % 120)))
+          vkr_log("OHOS shadow sync direction=from-host call=%" PRIu64
+                  " skipped=1 mode=%s",
+-                 call_id, mode);
++                 call_id, ctx->ohos_precise_shadow ? "context-precise" : mode);
+       return;
+    }
+ #endif

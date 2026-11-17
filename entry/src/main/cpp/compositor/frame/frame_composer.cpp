@@ -3,6 +3,7 @@
 #include "desktop_compositor.h"
 #include "frame_pipeline.h"
 #include "common/perf_utils.h"
+#include "common/frame_loop_diagnostics.h"
 #include "toplevel_manager.h"
 
 #include <hilog/log.h>
@@ -25,7 +26,9 @@
 bool DesktopRootFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
                                        PresentedFrame& frame, bool frameTrace) {
     const auto takeStarted = TakeClock::now();
+    winehua::TakeLockTimer lockTimer;
     auto lk = comp_.tmgr_.Lock();
+    lockTimer.Acquired();
     const auto lockAcquired = TakeClock::now();
 
     FramePlan plan;
@@ -68,7 +71,9 @@ bool WindowFrameComposer::Compose(uint32_t id, std::vector<uint8_t>& out,
     // 窗口内层列表恒空 (PC 模式 subsurface 全转 popup), 该缺陷未暴露。
     // 注: desktop 路径的"锁内规划/锁外绘制"之所以安全, 是因为 FramePlan 已
     // 快照像素; 本路径无快照阶段, 故 blit 必须留在锁内 (窗口内层数据量小)。
+    winehua::TakeLockTimer lockTimer;
     auto lk = comp_.tmgr_.Lock();
+    lockTimer.Acquired();
     auto* st = comp_.tmgr_.FindToplevelLocked(id);
     if (!st || !st->IsDirty()) return false;
     const int winW = st->Width();

@@ -74,6 +74,18 @@ int main()
               "MIDI_SOUNDFONT_PATH");
     }
 
+    {
+        const auto lines = winehua::BuildWineBaselineLines({binDir, "/home/u", "/pfx"});
+        CHECK(findValue(lines, "WINE_GST_REGISTRY_DIR") != nullptr, "GStreamer registry root shared by parent/child");
+#if defined(__aarch64__) && defined(WINEHUA_WINE_ARCH_IS_X86_64)
+        CHECK(*findValue(lines, "WINEHUA_GST_PLUGIN_DIR") == "WINEHUA_GST_PLUGIN_DIR=", "Box64 keeps guest scanner route");
+        CHECK(*findValue(lines, "GST_PLUGIN_PATH_1_0") == "GST_PLUGIN_PATH_1_0=" + binDir + "/" WINE_UNIX_SUBDIR "/gstreamer-1.0", "Box64 scans guest architecture plugins");
+#else
+        CHECK(*findValue(lines, "WINEHUA_GST_PLUGIN_DIR") == "WINEHUA_GST_PLUGIN_DIR=" + winehua::BundleNativeLibsDir(), "native plugins use bundle namespace");
+        CHECK(*findValue(lines, "GST_PLUGIN_PATH_1_0") == "GST_PLUGIN_PATH_1_0=", "native route disables directory scanning");
+#endif
+    }
+
     // 2. 空 homeDir → 无 HOME 行 (子进程允许不传); 空 prefixDir → 回落 WINE_PREFIX
     {
         std::vector<std::string> lines = winehua::BuildWineBaselineLines({binDir, "", ""});

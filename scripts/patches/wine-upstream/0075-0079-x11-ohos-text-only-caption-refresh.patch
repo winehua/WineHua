@@ -1,0 +1,212 @@
+From 923648ea775989ecd664c965afda475c6bf26420 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0079-x11-ohos-text-only-caption-refresh
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 844c4086b7a6e78e1c2e5519d931b9193d2181839232fdfc35cb3dc4bd2b43f5
+
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index 60dceab14b91ee0323fa2d5fba5ac445c4f331e0..86a9747289e43a02e5dd56c1ad6628a51a949611 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1475,15 +1475,46 @@ static void draw_min_button( HWND hwnd, HDC hdc, BOOL down, BOOL grayed )
+                       down, grayed );
+ }
+ 
++/* Shared title glyph rendering; buttons and icon are independent of text. */
++static void draw_nc_caption_text( HDC hdc, RECT *rect, HWND hwnd, DWORD style,
++                                  DWORD ex_style, BOOL active )
++{
++    RECT r = *rect;
++    WCHAR buffer[256];
++    int len;
++
++    draw_caption_bar( hdc, &r, style, active, FALSE );
++    len = get_window_text( hwnd, buffer, ARRAY_SIZE( buffer ));
++    if (len)
++    {
++        NONCLIENTMETRICSW nclm;
++        HFONT hFont, hOldFont;
++        nclm.cbSize = sizeof(nclm);
++        NtUserSystemParametersInfo( SPI_GETNONCLIENTMETRICS, 0, &nclm, 0 );
++        if (ex_style & WS_EX_TOOLWINDOW)
++            hFont = NtGdiHfontCreate( &nclm.lfSmCaptionFont, sizeof(nclm.lfSmCaptionFont), 0, 0, NULL );
++        else
++            hFont = NtGdiHfontCreate( &nclm.lfCaptionFont, sizeof(nclm.lfCaptionFont), 0, 0, NULL );
++        hOldFont = NtGdiSelectFont( hdc, hFont );
++        if (active)
++            NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, get_sys_color( COLOR_CAPTIONTEXT ), NULL );
++        else
++            NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, get_sys_color( COLOR_INACTIVECAPTIONTEXT ), NULL );
++        NtGdiGetAndSetDCDword( hdc, NtGdiSetBkMode, TRANSPARENT, NULL );
++        r.left += 2;
++        DrawTextW( hdc, buffer, -1, &r,
++                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_LEFT );
++        NtGdiDeleteObjectApp( NtGdiSelectFont( hdc, hOldFont ));
++    }
++}
++
+ static void draw_nc_caption_contents( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
+                              DWORD  ex_style, BOOL active )
+ {
+     RECT  r = *rect;
+-    WCHAR buffer[256];
+     HPEN prev_pen;
+     HMENU sys_menu;
+     UINT pen_color = COLOR_3DFACE;
+-    int len;
+ 
+     if ((ex_style & (WS_EX_STATICEDGE|WS_EX_CLIENTEDGE|WS_EX_DLGMODALFRAME)) == WS_EX_STATICEDGE)
+         pen_color = COLOR_WINDOWFRAME;
+@@ -1527,28 +1558,7 @@ static void draw_nc_caption_contents( HDC hdc, RECT *rect, HWND hwnd, DWORD  sty
+         }
+     }
+ 
+-    len = get_window_text( hwnd, buffer, ARRAY_SIZE( buffer ));
+-    if (len)
+-    {
+-        NONCLIENTMETRICSW nclm;
+-        HFONT hFont, hOldFont;
+-        nclm.cbSize = sizeof(nclm);
+-        NtUserSystemParametersInfo( SPI_GETNONCLIENTMETRICS, 0, &nclm, 0 );
+-        if (ex_style & WS_EX_TOOLWINDOW)
+-            hFont = NtGdiHfontCreate( &nclm.lfSmCaptionFont, sizeof(nclm.lfSmCaptionFont), 0, 0, NULL );
+-        else
+-            hFont = NtGdiHfontCreate( &nclm.lfCaptionFont, sizeof(nclm.lfCaptionFont), 0, 0, NULL );
+-        hOldFont = NtGdiSelectFont( hdc, hFont );
+-        if (active)
+-            NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, get_sys_color( COLOR_CAPTIONTEXT ), NULL );
+-        else
+-            NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, get_sys_color( COLOR_INACTIVECAPTIONTEXT ), NULL );
+-        NtGdiGetAndSetDCDword( hdc, NtGdiSetBkMode, TRANSPARENT, NULL );
+-        r.left += 2;
+-        DrawTextW( hdc, buffer, -1, &r,
+-                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_LEFT );
+-        NtGdiDeleteObjectApp( NtGdiSelectFont( hdc, hOldFont ));
+-    }
++    draw_nc_caption_text( hdc, &r, hwnd, style, ex_style, active );
+ }
+ 
+ /* Publish caption background, controls and text with one destination write.
+@@ -1556,7 +1566,7 @@ static void draw_nc_caption_contents( HDC hdc, RECT *rect, HWND hwnd, DWORD  sty
+  * exposes an erased caption, especially when a game updates its FPS title.
+  * Do not hold a surface/USER lock across font, icon or menu callbacks. */
+ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD style,
+-                             DWORD ex_style, BOOL active )
++                             DWORD ex_style, BOOL active, BOOL text_only )
+ {
+ #ifdef __OHOS__
+     int width = rect->right - rect->left, height = rect->bottom - rect->top;
+@@ -1582,7 +1592,8 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD style,
+                 NtGdiGetAndSetDCDword( memory, NtGdiSetGraphicsMode, GM_ADVANCED, &previous_mode ) &&
+                 NtGdiModifyWorldTransform( memory, &transform, MWT_SET ))
+             {
+-                draw_nc_caption_contents( memory, rect, hwnd, style, ex_style, active );
++                if (text_only) draw_nc_caption_text( memory, rect, hwnd, style, ex_style, active );
++                else draw_nc_caption_contents( memory, rect, hwnd, style, ex_style, active );
+                 BOOL copied = NtGdiBitBlt( hdc, rect->left, rect->top, width, height, memory,
+                                           rect->left, rect->top, SRCCOPY, 0, 0 );
+                 NtGdiSelectBitmap( memory, previous );
+@@ -1590,7 +1601,8 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD style,
+                 NtGdiDeleteObjectApp( memory );
+                 if (diag) ERR( "[CSD] single blit hwnd=%p size=%dx%d copied=%d\n", hwnd, width, height, copied );
+                 if (copied) return;
+-                draw_nc_caption_contents( hdc, rect, hwnd, style, ex_style, active );
++                if (text_only) draw_nc_caption_text( hdc, rect, hwnd, style, ex_style, active );
++                else draw_nc_caption_contents( hdc, rect, hwnd, style, ex_style, active );
+                 return;
+             }
+             if (previous) NtGdiSelectBitmap( memory, previous );
+@@ -1601,7 +1613,8 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD style,
+     if (diag) ERR( "[CSD] fallback hwnd=%p size=%dx%d layout=%lu disabled=%d\n",
+                    hwnd, width, height, (unsigned long)layout, single_blit && !strcmp( single_blit, "0" ));
+ #endif
+-    draw_nc_caption_contents( hdc, rect, hwnd, style, ex_style, active );
++    if (text_only) draw_nc_caption_text( hdc, rect, hwnd, style, ex_style, active );
++    else draw_nc_caption_contents( hdc, rect, hwnd, style, ex_style, active );
+ }
+ 
+ /***********************************************************************
+@@ -1778,7 +1791,7 @@ static void nc_paint( HWND hwnd, HRGN clip )
+         }
+ 
+         if (intersect_rect( &rfuzz, &r, &clip_rect ))
+-            draw_nc_caption( hdc, &r, hwnd, style, ex_style, active );
++            draw_nc_caption( hdc, &r, hwnd, style, ex_style, active, FALSE );
+     }
+ 
+     if (has_menu( hwnd, style ))
+@@ -1833,6 +1846,59 @@ static LRESULT handle_nc_paint( HWND hwnd , HRGN clip )
+     return 0;
+ }
+ 
++/* WM_SETTEXT changes only glyphs, not system buttons, icon, frame or menus.
++ * Repainting their themed user callbacks synchronously costs > one refresh on
++ * OHOS/X11 and stalls the game's render thread. Other NC paint messages still
++ * repaint everything, so activation, theme/style and menu changes stay live.
++ * No persistent bitmap cache or per-window lifetime state is introduced. */
++static BOOL repaint_nc_caption_text( HWND hwnd )
++{
++#ifdef __OHOS__
++    const char *route = getenv( "WINEHUA_DISPLAY_ROUTE" );
++    const char *enabled = getenv( "WINEHUA_CSD_TEXT_ONLY" );
++    DWORD style, ex_style;
++    WORD flags;
++    RECT rect, screen;
++    HRGN region;
++    HDC hdc;
++    WND *win;
++
++    if (!route || strcmp( route, "x11" ) || (enabled && !strcmp( enabled, "0" ))) return FALSE;
++    if (!(win = get_win_ptr( hwnd )) || win == WND_OTHER_PROCESS) return FALSE;
++    style = win->dwStyle; ex_style = win->dwExStyle; flags = win->flags;
++    release_win_ptr( win );
++    if (!(style & WS_VISIBLE) || (style & WS_CAPTION) != WS_CAPTION ||
++        (style & WS_MINIMIZE) || (ex_style & WS_EX_LAYOUTRTL)) return FALSE;
++
++    get_inside_rect( hwnd, COORDS_WINDOW, &rect, style, ex_style );
++    rect.bottom = rect.top + get_system_metrics( (ex_style & WS_EX_TOOLWINDOW) ?
++                                                 SM_CYSMCAPTION : SM_CYCAPTION ) - 1;
++    if ((style & WS_SYSMENU) && !(ex_style & WS_EX_TOOLWINDOW) && get_nc_icon_for_window( hwnd ))
++        rect.left += get_system_metrics( SM_CXSMICON ) + 2;
++    if (style & WS_SYSMENU) {
++        const int size = caption_button_size() + 2;
++        rect.right -= size;
++        if (style & (WS_MAXIMIZEBOX | WS_MINIMIZEBOX)) rect.right -= 2 * size;
++    }
++    if (rect.right <= rect.left || rect.bottom <= rect.top) return FALSE;
++
++    get_window_rect_rel( hwnd, COORDS_SCREEN, &screen, get_thread_dpi() );
++    region = NtGdiCreateRectRgn( screen.left + rect.left, screen.top + rect.top,
++                                screen.left + rect.right, screen.top + rect.bottom );
++    if (!region) return FALSE;
++    hdc = NtUserGetDCEx( hwnd, region, DCX_USESTYLE | DCX_WINDOW | DCX_INTERSECTRGN );
++    if (!hdc) { NtGdiDeleteObjectApp( region ); return FALSE; }
++    draw_nc_caption( hdc, &rect, hwnd, style, ex_style, flags & WIN_NCACTIVATED, TRUE );
++    NtUserReleaseDC( hwnd, hdc ); /* The DC owns and releases region. */
++    HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
++    if (parent == get_desktop_window())
++        NtUserPostMessage( parent, WM_PARENTNOTIFY, WM_NCPAINT, (LPARAM)hwnd );
++    return TRUE;
++#else
++    return FALSE;
++#endif
++}
++
+ static LRESULT handle_nc_activate( HWND hwnd, WPARAM wparam, LPARAM lparam )
+ {
+     /* Lotus Notes draws menu descriptions in the caption of its main
+@@ -2646,8 +2712,9 @@ LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+         result = set_window_text( hwnd, (void *)lparam, ansi );
+         if (result)
+             NtUserNotifyWinEvent( EVENT_OBJECT_NAMECHANGE, hwnd, OBJID_WINDOW, CHILDID_SELF );
+-        if (result && (get_window_long( hwnd, GWL_STYLE ) & WS_CAPTION) == WS_CAPTION)
+-            handle_nc_paint( hwnd , (HRGN)1 );  /* repaint caption */
++        if (result && (get_window_long( hwnd, GWL_STYLE ) & WS_CAPTION) == WS_CAPTION &&
++            !repaint_nc_caption_text( hwnd ))
++            handle_nc_paint( hwnd , (HRGN)1 );  /* full repaint fallback */
+         break;
+ 
+     case WM_GETTEXTLENGTH:

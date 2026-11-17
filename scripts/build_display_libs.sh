@@ -11,15 +11,46 @@ source "$SCRIPT_DIR/env.sh"
 DL="$BUILD_DIR/downloads"
 mkdir -p "$DL"
 
-fetch_and_unpack() {  # $1=url  $2=sha256  $3=解压后目录名
+fetch_and_unpack() {  # $1=url  $2=sha256  $3=解压后目录名  $4=备用镜像（可选）
     local tgz="$DL/$(basename "$1")"
-    if [ ! -f "$tgz" ]; then
+    if [ ! -f "$tgz" ] || ! echo "$2  $tgz" | sha256sum -c - >/dev/null 2>&1; then
         log "--- 下载 $(basename "$1") ---"
-        curl -fsSL -o "$tgz" "$1"
+        local pending url downloaded=0
+        pending=$(mktemp "${tgz}.part.XXXXXX")
+        for url in "$1" "${4:-}"; do
+            [ -n "$url" ] || continue
+            if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 -o "$pending" "$url" && \
+               echo "$2  $pending" | sha256sum -c - >/dev/null 2>&1; then
+                mv -f "$pending" "$tgz"
+                downloaded=1
+                break
+            fi
+        done
+        rm -f "$pending"
+        [ "$downloaded" = 1 ] || err "下载失败或 sha256 不匹配: $tgz"
     fi
     echo "$2  $tgz" | sha256sum -c - || { err "sha256 不匹配: $tgz"; }
     [ -d "$BUILD_DIR/$3" ] || tar -C "$BUILD_DIR" -xf "$tgz"
 }
+
+PIXMAN_VER=0.46.4
+PIXMAN_SHA=d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c
+DRM_VER=2.4.134
+DRM_SHA=ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95
+fetch_pixman() {
+    fetch_and_unpack "https://www.cairographics.org/releases/pixman-${PIXMAN_VER}.tar.gz" \
+        "$PIXMAN_SHA" "pixman-${PIXMAN_VER}" \
+        "https://www.x.org/archive/individual/lib/pixman-${PIXMAN_VER}.tar.gz"
+}
+fetch_libdrm() {
+    fetch_and_unpack "https://dri.freedesktop.org/libdrm/libdrm-${DRM_VER}.tar.xz" \
+        "$DRM_SHA" "libdrm-${DRM_VER}"
+}
+if [ "${1:-}" = --fetch-only ]; then
+    fetch_pixman
+    fetch_libdrm
+    exit 0
+fi
 
 # host 侧 pc 查询: HOST_EXT 优先, SDK sysroot 次之, guest 数据类兜底
 host_pc() { PKG_CONFIG_LIBDIR="$HOST_EXT_PC:$SYSROOT/usr/lib/pkgconfig:$SYSROOT_EXT_PC" pkg-config "$@"; }
@@ -32,11 +63,8 @@ assert_min_ver() {  # $1=当前  $2=下限  $3=名称
 }
 
 # ── pixman (host, wlroots pixman 渲染器 + Xwayland, 门槛 ≥0.43.0) ──
-PIXMAN_VER=0.46.4
-PIXMAN_SHA=d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c
 if [ ! -f "$HOST_EXT_PC/pixman-1.pc" ]; then
-    fetch_and_unpack "https://www.cairographics.org/releases/pixman-${PIXMAN_VER}.tar.gz" \
-        "$PIXMAN_SHA" "pixman-${PIXMAN_VER}"
+    fetch_pixman
     # 构建目录带版本后缀: 升级时旧 meson 缓存不可复用 (同 build_wayland.sh 教训)
     meson_host_build "$BUILD_DIR/host_pixman_build_${PIXMAN_VER}" "$BUILD_DIR/pixman-${PIXMAN_VER}" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
@@ -46,8 +74,6 @@ fi
 assert_min_ver "$(host_pc --modversion pixman-1 2>/dev/null)" "0.43.0" "host pixman"
 
 # ── libdrm (host, wlroots 无条件依赖——像素格式头, 门槛 ≥2.4.129; 芯片后端全关) ──
-DRM_VER=2.4.134
-DRM_SHA=ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95
 # 守卫用 host-ext 文件存在性而非 pkg-config 查询: SDK sysroot 自带 libdrm.pc(2.4.120)
 # 会短路 --exists → 误跳过 2.4.129 门槛的自建 (实测踩坑)
 # 注意: 此处**不得**试图给 virglrenderer 供 gbm (libdrm ≥2.4.121 已无 gbm
@@ -55,8 +81,7 @@ DRM_SHA=ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95
 # epoxy —— 豁免分支确定性生效, 与本目录是否装 libdrm 无关 (2026-10-04
 # 毁灭性重建实证)。
 if [ ! -f "$HOST_EXT_PC/libdrm.pc" ]; then
-    fetch_and_unpack "https://dri.freedesktop.org/libdrm/libdrm-${DRM_VER}.tar.xz" \
-        "$DRM_SHA" "libdrm-${DRM_VER}"
+    fetch_libdrm
     meson_host_build "$BUILD_DIR/host_drm_build_${DRM_VER}" "$BUILD_DIR/libdrm-${DRM_VER}" \
         --prefix="$HOST_EXT_USR" --libdir=lib \
         -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled \

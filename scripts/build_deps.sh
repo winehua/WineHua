@@ -5,9 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
-log "=== 构建模拟层交叉编译依赖 (Wine用, x86_64-linux-ohos) → sysroot-ext ==="
+log "=== 构建模拟层交叉编译依赖 (Wine用, $TARGET) → sysroot-ext ==="
 
-# 按依赖链顺序执行 (模拟层依赖, 始终 x86_64-linux-ohos)
+# 按依赖链顺序执行 (模拟层依赖, 架构 = WINE_ARCH 推导的 $TARGET)
+GUEST_ARCH="$WINE_ARCH" bash "$SCRIPT_DIR/build_zlib_runtime.sh"
 bash "$SCRIPT_DIR/build_freetype.sh"
 bash "$SCRIPT_DIR/build_libffi.sh"
 bash "$SCRIPT_DIR/build_wayland.sh"
@@ -56,7 +57,9 @@ static inline int HiLogPrint(unsigned int d, unsigned int l, unsigned int t, con
 #endif
 #endif
 HILEOF
-    NATIVE_ARCH="${GUEST_ARCH:-x86_64}" bash "$SCRIPT_DIR/build_ohos_guest_gfx.sh"
+    # NATIVE_ARCH 是 Native 层架构 (arm64-v8a/x86_64), 决定 TARGET/WINE_ARCH;
+    # GUEST_ARCH (aarch64/x86_64) 只决定输出目录, 由 make export 或脚本推导.
+    NATIVE_ARCH="$NATIVE_ARCH" bash "$SCRIPT_DIR/build_ohos_guest_gfx.sh"
 else
     log "guest_gfx: SKIP (设置 BUILD_GUEST_GFX=1 启用 Mesa/VirGL 图形测试 bundle)"
 fi
@@ -67,8 +70,8 @@ fi
 if [ "${BUILD_GUEST_VULKAN:-0}" = "1" ]; then
     [ "${BUILD_GUEST_GFX:-0}" = "1" ] || \
         err "BUILD_GUEST_VULKAN=1 requires BUILD_GUEST_GFX=1 (Mesa Venus ICD)"
-    log "=== 构建 guest_vulkan (x86_64 Loader + Venus ICD + smoke) ==="
-    NATIVE_ARCH="${GUEST_ARCH:-x86_64}" bash "$SCRIPT_DIR/build_ohos_guest_vulkan.sh"
+    log "=== 构建 guest_vulkan (Loader + Venus ICD + smoke) ==="
+    NATIVE_ARCH="$NATIVE_ARCH" GUEST_ARCH="$GUEST_ARCH" bash "$SCRIPT_DIR/build_ohos_guest_vulkan.sh"
 else
     log "guest_vulkan: SKIP (设置 BUILD_GUEST_VULKAN=1 启用 Venus Vulkan runtime)"
 fi
@@ -76,17 +79,22 @@ fi
 # Native compositor 依赖 (wayland-server for HAP) 在 build.sh 中按架构单独调用:
 #   bash scripts/build_native.sh
 
-# Wine Mono (.NET 运行时) — 预编译 MSI, 默认启用 (增加 ~80MB)
-# 设置 BUILD_WINE_MONO=0 跳过
-if [ "${BUILD_WINE_MONO:-1}" = "1" ]; then
+# Gecko is shared by all prefixes and ships in both guest architectures. This
+# also covers direct script invocations outside Make's dependency graph.
+python3 "$SCRIPT_DIR/wine_gecko.py" --cache "$BUILD_DIR/wine-gecko" --wine-source "$WINE_SRC"
+
+# Wine Mono (.NET runtime) is opt-in. Its first-launch installer requires a
+# device-side interaction flow, so the direct-game package leaves it out.
+if [ "${BUILD_WINE_MONO:-0}" = "1" ]; then
     # 必须与 mscoree 侧期望一致: appwiz.cpl addons.c MONO_VERSION /
-    # mscoree_private.h WINE_MONO_VERSION 均为 11.1.0. install_addon
+    # mscoree_private.h WINE_MONO_VERSION 均为 10.4.1. install_addon
     # 按 addon->file_name 精确匹配, 版本不一致 → 找不到 msi → 弹框卡死
-    WINE_MONO_VER="11.1.0"
+    WINE_MONO_VER="10.4.1"
     WINE_MONO_MSI="wine-mono-${WINE_MONO_VER}-x86.msi"
     WINE_MONO_URL="https://dl.winehq.org/wine/wine-mono/${WINE_MONO_VER}/${WINE_MONO_MSI}"
-    WINE_MONO_SHA256="deb0341431f8260b209fff6bc79ddcc5414b97f8e9236ab9fbdca4ce59e0a9b9"
-    WINE_MONO_DIR="$BUILD_DIR/wine-ohos/share/wine/mono"
+    WINE_MONO_SHA256="071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23"
+    # mono msi 架构无关, 放架构无关路径 (不依赖 WINE_ARCH, 跨方案/跨架构共享)
+    WINE_MONO_DIR="$BUILD_DIR/wine-mono"
     WINE_MONO_PATH="$WINE_MONO_DIR/$WINE_MONO_MSI"
     if [ ! -s "$WINE_MONO_PATH" ] || ! echo "$WINE_MONO_SHA256  $WINE_MONO_PATH" | sha256sum -c --status; then
         log "=== 下载 Wine Mono ${WINE_MONO_VER} ==="

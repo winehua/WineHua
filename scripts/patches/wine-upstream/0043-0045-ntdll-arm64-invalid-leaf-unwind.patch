@@ -1,0 +1,26 @@
+From c0218b2dcc5f9adc825ae15a9fc0859059a9f8be Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0045-ntdll-arm64-invalid-leaf-unwind
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 00316f0058759d5efaa05d88962436f857635fa4817f73467cf232f109248dd0
+
+diff --git a/dlls/ntdll/unwind.c b/dlls/ntdll/unwind.c
+index bfffb1ab0576048c9271b1bd36a110ff09f663a4..ba6b332b3c9bbdacc921d9a83e3397ef4db0be9a 100644
+--- a/dlls/ntdll/unwind.c
++++ b/dlls/ntdll/unwind.c
+@@ -887,7 +887,11 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+     TRACE( "type %lx base %I64x pc %I64x rva %I64x sp %I64x\n", type, base, pc, pc - base, context->Sp );
+     if (limit_low || limit_high) FIXME( "limits not supported\n" );
+ 
+-    if (!func && pc == context->Lr) return STATUS_BAD_FUNCTION_TABLE;  /* invalid leaf function */
++    /* The caller may subtract 4 from an already unwound return PC to
++     * locate the call instruction. Use the unadjusted context PC as well,
++     * otherwise a metadata-free PC == LR frame unwinds to itself forever. */
++    if (!func && (pc == context->Lr || context->Pc == context->Lr))
++        return STATUS_BAD_FUNCTION_TABLE;  /* invalid leaf function */
+ 
+     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+ 

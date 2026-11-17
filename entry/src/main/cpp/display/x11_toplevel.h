@@ -89,6 +89,9 @@ void x11_toplevel_input_axis(uint32_t toplevelId, int px, int py,
  * 与 wayland 路线的 xdg_toplevel_send_close 同语义同层。 */
 void x11_toplevel_close(uint32_t toplevelId);
 void x11_toplevel_close_dispatch(uint32_t toplevelId);
+// 0=activate, 1=minimize, 2=maximize, 3=fullscreen. Identity is resolved on the compositor thread.
+void x11_toplevel_control(uint32_t id, int command, bool enabled);
+void x11_toplevel_control_dispatch(uint32_t id, int command, bool enabled);
 /* loop 线程执行端 (InjectQueueDrain 分派, display_input.c 调): 查表 +
  * 物理像素→X 逻辑坐标换算 + 缝隙丢弃 + 纪律投递。勿在其他线程调。 */
 void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
@@ -128,6 +131,7 @@ int x11_toplevel_set_guest_frame(uint32_t xwindow, struct wlr_buffer *buffer,
  * 该 X 窗不在册。合成器 loop 线程调用 (与帧路由同拍)。 */
 int x11_toplevel_guest_anchor(uint32_t xwindow, int *x, int *y, int *w, int *h);
 int x11_toplevel_guest_generation(uint32_t xwindow, uint64_t *generation);
+void x11_toplevel_clear_guest_frame(uint32_t xwindow, uint64_t generation);
 
 #ifdef __cplusplus
 }

@@ -4,7 +4,12 @@
 /**
  * env_spec.h — 结构化环境变量 (EnvSpec)
  *
- * 背景: OHOS NCP 子进程不继承主进程 environ, wine 子进程环境唯一权威通道是
+ * Broker v2 启动已改为独立 env 数组与 VPP2 编码（见
+ * docs/PROTON_OHOS_RUNTIME_NOTES.md §11），保留 '|' 和换行。
+ * EnvSpec 的合并/toLines 仍用于当前管线；serializeEntryParams 仅保留为旧接口。
+ * 以下文本编码限制只适用于该旧序列化方法，fd 变量过滤仍适用于两种接口。
+ *
+ * 历史格式: OHOS NCP 子进程不继承主进程 environ, wine 子进程环境唯一权威通道是
  * entryParams 尾部内嵌的 "|__env=K=V" 段 (NCP 直启与 broker SPAWN 同一格式,
  * 见 docs/PROCESS_SPAWNING.md)。该文本通道有两条硬规则, 此前散落在多个
  * 序列化点各自实现, 此处收口为全项目唯一实现:

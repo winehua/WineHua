@@ -1,0 +1,210 @@
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -4354,6 +4354,71 @@
+     return !(style & WS_DISABLED);
+ }
+ 
++#ifdef __OHOS__
++/* This is an activation history edge, not a guessed owner relationship. The
++ * full HWND carries Wine's handle generation and is scoped to the popup's
++ * property lifetime. A subsequent unrelated activation cancels the edge. */
++static const WCHAR winehua_activation_return_prop[] =
++    {'_','_','w','i','n','e','_','o','h','o','s','_','a','c','t','i','v','a','t','i','o','n','_','r','e','t','u','r','n',0};
++
++static BOOL winehua_is_activation_return_window( HWND hwnd, DWORD thread )
++{
++    MONITORINFO monitor;
++    RECT rect;
++
++    if (!thread || get_window_thread( hwnd, NULL ) != thread || !can_activate_window( hwnd )) return FALSE;
++    monitor = monitor_info_from_window( hwnd, MONITOR_DEFAULTTOPRIMARY );
++    return NtUserGetWindowRect( hwnd, &rect, get_thread_dpi() ) && is_fullscreen( &monitor, &rect );
++}
++
++void winehua_track_foreground_transition( HWND hwnd, HWND previous, BOOL mouse, BOOL internal )
++{
++    DWORD thread, style;
++
++    /* Returning along the edge must preserve any outer transient history. */
++    if (!mouse && !internal && hwnd &&
++        (HWND)NtUserGetProp( previous, winehua_activation_return_prop ) == hwnd)
++    {
++        NtUserRemoveProp( previous, winehua_activation_return_prop );
++        return;
++    }
++
++    NtUserRemoveProp( hwnd, winehua_activation_return_prop );
++    if (!mouse && !internal && previous && hwnd && NtUserGetForegroundWindow() == hwnd)
++    {
++        thread = get_window_thread( hwnd, NULL );
++        style = get_window_long( hwnd, GWL_STYLE );
++        if (thread == GetCurrentThreadId() &&
++            (style & (WS_POPUP | WS_CHILD | WS_VISIBLE | WS_DISABLED)) == (WS_POPUP | WS_VISIBLE) &&
++            !get_window_relative( hwnd, GW_OWNER ) &&
++            winehua_is_activation_return_window( previous, thread ))
++        {
++            if (NtUserSetProp( hwnd, winehua_activation_return_prop, (HANDLE)previous ))
++            {
++                TRACE( "OHOS activation-return record popup=%p previous=%p thread=%04x\n", hwnd, previous, thread );
++                return;
++            }
++        }
++    }
++    NtUserRemoveProp( previous, winehua_activation_return_prop );
++}
++
++static HWND winehua_activation_return_window( HWND hwnd )
++{
++    HWND previous = (HWND)NtUserGetProp( hwnd, winehua_activation_return_prop );
++    DWORD thread = get_window_thread( hwnd, NULL );
++
++    if (NtUserGetForegroundWindow() == hwnd && thread == GetCurrentThreadId() &&
++        get_window_thread( previous, NULL ) == thread && can_activate_window( previous ))
++    {
++        TRACE( "OHOS activation-return select popup=%p previous=%p\n", hwnd, previous );
++        return previous;
++    }
++    NtUserRemoveProp( hwnd, winehua_activation_return_prop );
++    return 0;
++}
++#endif
++
+ /*******************************************************************
+  *         activate_other_window
+  *
+@@ -4369,6 +4434,14 @@
+         hwnd_to = NtUserGetAncestor( hwnd_to, GA_ROOT );
+         if (can_activate_window( hwnd_to )) goto done;
+     }
++
++#ifdef __OHOS__
++    /* An unowned transient can interrupt a fullscreen game's mode switch.
++     * Prefer its recorded activation predecessor only while it still owns
++     * the foreground. Normal owner and Z-order selection remain fallbacks. */
++    if (!get_window_relative( hwnd, GW_OWNER ) &&
++        (hwnd_to = winehua_activation_return_window( hwnd ))) goto done;
++#endif
+ 
+     hwnd_to = hwnd;
+     for (;;)
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1993,7 +1993,8 @@
+ /*******************************************************************
+  *		set_active_window
+  */
+-BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new_active_thread_id )
++static BOOL set_active_window_with_history( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus,
++                                            DWORD new_active_thread_id, BOOL track_foreground, BOOL internal )
+ {
+     HWND previous = get_active_window();
+     BOOL ret;
+@@ -2031,6 +2032,15 @@
+     if (!ret) return FALSE;
+     if (prev) *prev = previous;
+     if (previous == hwnd) goto done;
++
++#ifdef __OHOS__
++    /* The foreground request selects an input queue. Its active HWND has only
++     * now been committed by the server, even for a same-thread transition.
++     * Record before palette/activation callbacks can close the transient or
++     * activate another window. A vetoed/failed activation records nothing. */
++    if (track_foreground)
++        winehua_track_foreground_transition( hwnd, previous, mouse, internal );
++#endif
+ 
+     if (hwnd)
+     {
+@@ -2107,6 +2117,11 @@
+     return TRUE;
+ }
+ 
++BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new_active_thread_id )
++{
++    return set_active_window_with_history( hwnd, prev, mouse, focus, new_active_thread_id, FALSE, FALSE );
++}
++
+ /**********************************************************************
+  *           NtUserSetActiveWindow    (win32u.@)
+  */
+@@ -2233,11 +2248,17 @@
+ 
+     if (ret && previous != hwnd)
+     {
++#ifdef __OHOS__
++        /* Cross-thread requests cannot create a same-thread return edge. They
++         * still cancel an old edge before the asynchronous activation. */
++        if (send_msg_old || send_msg_new)
++            winehua_track_foreground_transition( hwnd, previous, mouse, internal );
++#endif
+         if (send_msg_old)  /* old window belongs to other thread */
+             NtUserMessageCall( previous, WM_WINE_SETACTIVEWINDOW, 0, new_thread_id,
+                                0, NtUserSendNotifyMessage, FALSE );
+         else if (send_msg_new)  /* old window belongs to us but new one to other thread */
+-            ret = set_active_window( 0, NULL, mouse, TRUE, new_thread_id );
++            ret = set_active_window_with_history( 0, NULL, mouse, TRUE, new_thread_id, TRUE, internal );
+ 
+         if (send_msg_new)  /* new window belongs to other thread */
+             NtUserMessageCall( hwnd, WM_WINE_SETACTIVEWINDOW, (WPARAM)hwnd, 0,
+@@ -2246,7 +2267,7 @@
+         {
+             BOOL already_active = (hwnd == get_active_window());
+ 
+-            ret = set_active_window( hwnd, NULL, mouse, TRUE, 0 );
++            ret = set_active_window_with_history( hwnd, NULL, mouse, TRUE, 0, TRUE, internal );
+ 
+             if (already_active)
+                 /* set_active_window will do no nothing */
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -106,6 +106,9 @@
+ extern void update_current_mouse_window( HWND hwnd, INT hittest, POINT pos );
+ extern BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset );
+ extern BOOL clip_fullscreen_window( HWND hwnd, BOOL reset );
++#ifdef __OHOS__
++extern void winehua_track_foreground_transition( HWND hwnd, HWND previous, BOOL mouse, BOOL internal );
++#endif
+ extern USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout );
+ void update_mouse_state_from_pointer( HWND hwnd, UINT msg, unsigned int pointer_id );
+ extern BOOL register_touch_window( HWND hwnd, UINT flags );
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -685,6 +685,25 @@
+     NtUserSetRawWindowPos(hwnd, rect, flags, FALSE);
+ }
+ 
++static void wayland_set_foreground_window(HWND hwnd)
++{
++    DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
++
++    if (!(style & WS_VISIBLE) || (style & WS_DISABLED)) return;
++    /* A compositor activation is an explicit request, unlike an outstanding
++     * resize configure. Run the full Win32 restore before assigning focus.
++     * ShowWindow can reenter the driver or destroy the HWND; hold no win_data
++     * lock and recheck its style afterwards. */
++    if (style & WS_MINIMIZE)
++    {
++        TRACE("OHOS explicit activation restore hwnd=%p\n", hwnd);
++        NtUserShowWindow(hwnd, SW_RESTORE);
++    }
++    style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
++    if ((style & (WS_VISIBLE | WS_DISABLED | WS_MINIMIZE)) == WS_VISIBLE)
++        NtUserSetForegroundWindowInternal(hwnd);
++}
++
+ /**********************************************************************
+  *           WAYLAND_WindowMessage
+  */
+@@ -699,7 +718,7 @@
+         wayland_configure_window(hwnd);
+         return 0;
+     case WM_WAYLAND_SET_FOREGROUND:
+-        NtUserSetForegroundWindowInternal(hwnd);
++        wayland_set_foreground_window(hwnd);
+         return 0;
+     default:
+         FIXME("got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp);

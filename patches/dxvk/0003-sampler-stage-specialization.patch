@@ -1,0 +1,219 @@
+diff --git a/src/d3d11/d3d11_context.cpp b/src/d3d11/d3d11_context.cpp
+--- a/src/d3d11/d3d11_context.cpp
++++ b/src/d3d11/d3d11_context.cpp
+@@ -3394,6 +3394,17 @@
+     constexpr uint32_t stageId = uint32_t(ShaderStage);
+     winehuaFlowTrace(str::format(
+       "d3d11-sampler-buffer begin stage=", stageId));
++    uint32_t atlasActive = 0;
++    for (const auto& texture : m_samplerEmulationData[stageId].textures)
++      atlasActive |= texture[0][0];
++    atlasActive = atlasActive != 0;
++    for (const auto& sampler : m_samplerEmulationData[stageId].samplers)
++      if (sampler.metadata[0] != 0.0f) atlasActive |= 2;
++    EmitCs([atlasActive] (DxvkContext* ctx) {
++      ctx->setSpecConstant(ShaderStage == DxbcProgramType::ComputeShader
++        ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
++        2 + uint32_t(ShaderStage), atlasActive);
++    });
+     const Rc<DxvkBuffer> buffer = m_samplerEmulationBuffers[stageId];
+     const DxvkBufferSliceHandle slice = buffer->allocSlice();
+     winehuaFlowTrace(str::format(
+@@ -4720,8 +4731,14 @@
+           D3D11SamplerBindings&             Bindings) {
+     uint32_t slotId = computeSamplerBinding(Stage, 0);
+     
+-    for (uint32_t i = 0; i < Bindings.size(); i++)
++    for (uint32_t i = 0; i < Bindings.size(); i++) {
+       BindSampler(slotId + i, Bindings[i]);
++      if (m_samplerEmulationEnabled)
++        m_samplerEmulationData[uint32_t(Stage)].samplers[i]
++          = Bindings[i] != nullptr
++          ? Bindings[i]->GetEmulationData()
++          : D3D11SamplerEmulationData();
++    }
+ 
+     UpdateSamplerEmulationBuffer<Stage>();
+   }
+diff --git a/src/dxbc/dxbc_compiler.cpp b/src/dxbc/dxbc_compiler.cpp
+--- a/src/dxbc/dxbc_compiler.cpp
++++ b/src/dxbc/dxbc_compiler.cpp
+@@ -3210,7 +3210,7 @@
+     auto image = m_moduleInfo.options.useCombinedImageSampler
+       ? m_module.opImage(texture.imageTypeId, emitLoadCombinedImage(texture, false))
+       : m_module.opLoad(texture.imageTypeId, texture.varId);
+-    return DxbcVirtualBc(m_module, m_constantBuffers.at(SamplerEmulationBindingSlotId).varId, image, slot);
++    return DxbcVirtualBc(m_module, m_constantBuffers.at(SamplerEmulationBindingSlotId).varId, image, slot | (uint32_t(m_programInfo.type()) << 7));
+   }
+ 
+   void DxbcCompiler::emitTextureQuery(const DxbcShaderInstruction& ins) {
+@@ -5128,14 +5128,44 @@
+     const uint32_t half      = m_module.constf32(0.5f);
+     const uint32_t one       = m_module.constf32(1.0f);
+ 
++    // The sample has already executed. Keep texture-size queries and border
++    // arithmetic out of the common (standard sampler / nonzero LOD) path.
++    // The branch contains no implicit-derivative sampling instructions.
++    DxbcRegisterValue metadata = emitLoadSamplerEmulationData(samplerId, 1);
++    const uint32_t modeIndex = 0;
++    const uint32_t mode = m_module.opCompositeExtract(
++      floatType, metadata.id, 1, &modeIndex);
++    const uint32_t pointMode = m_module.opFOrdEqual(
++      boolType, mode, m_module.constf32(1.0f));
++    const uint32_t linearMode = m_module.opFOrdEqual(
++      boolType, mode, m_module.constf32(2.0f));
++    const uint32_t lodIsZero = m_module.opFOrdEqual(boolType, lod.id, zero);
++    const uint32_t uintType = m_module.defIntType(32, 0);
++    const uint32_t flags = m_module.specConst32(uintType, 0);
++    m_module.decorateSpecId(flags, uint32_t(DxvkSpecConstantId::FirstPipelineConstant)
++      + 2 + uint32_t(m_programInfo.type()));
++    m_module.setDebugName(flags, "winehua_virtual_bc_stage_active");
++    const uint32_t stageNeedsBorder = m_module.opINotEqual(boolType,
++      m_module.opBitwiseAnd(uintType, flags, m_module.constu32(2)), m_module.constu32(0));
++    const uint32_t needsBorder = m_module.opLogicalAnd(boolType, stageNeedsBorder,
++      m_module.opLogicalAnd(boolType, lodIsZero,
++        m_module.opLogicalOr(boolType, pointMode, linearMode)));
++    const uint32_t originalValue = value.id;
++    DxbcConditional skipBorder;
++    skipBorder.labelIf = m_module.allocateId();
++    skipBorder.labelElse = m_module.allocateId();
++    skipBorder.labelEnd = m_module.allocateId();
++    const uint32_t borderResultLabel = m_module.allocateId();
++    m_module.opSelectionMerge(skipBorder.labelEnd, spv::SelectionControlDontFlattenMask);
++    m_module.opBranchConditional(needsBorder, skipBorder.labelIf, skipBorder.labelElse);
++    m_module.opLabel(skipBorder.labelIf);
++
+     DxbcRegisterValue mipLevel;
+     mipLevel.type = { DxbcScalarType::Uint32, 1 };
+     mipLevel.id = m_module.constu32(0);
+ 
+     DxbcRegisterValue size = emitQueryTextureSize(textureReg, mipLevel);
+     DxbcRegisterValue border = emitLoadSamplerEmulationData(samplerId, 0);
+-    DxbcRegisterValue metadata = emitLoadSamplerEmulationData(samplerId, 1);
+-
+     uint32_t pointInsideWeight = one;
+     uint32_t linearInsideWeight = one;
+ 
+@@ -5197,14 +5227,6 @@
+         floatType, linearInsideWeight, maskedLinearWeight);
+     }
+ 
+-    const uint32_t modeIndex = 0;
+-    const uint32_t mode = m_module.opCompositeExtract(
+-      floatType, metadata.id, 1, &modeIndex);
+-    const uint32_t pointMode = m_module.opFOrdEqual(
+-      boolType, mode, m_module.constf32(1.0f));
+-    const uint32_t linearMode = m_module.opFOrdEqual(
+-      boolType, mode, m_module.constf32(2.0f));
+-
+     const uint32_t outsidePoint = m_module.opFSub(
+       floatType, one, pointInsideWeight);
+     const uint32_t outsideLinear = m_module.opFSub(
+@@ -5213,14 +5235,22 @@
+       outsidePoint,
+       m_module.opSelect(floatType, linearMode, outsideLinear, zero));
+ 
+-    const uint32_t lodIsZero = m_module.opFOrdEqual(boolType, lod.id, zero);
+-    outsideWeight = m_module.opSelect(
+-      floatType, lodIsZero, outsideWeight, zero);
+-
+     value.id = m_module.opFAdd(
+       getVectorTypeId(value.type), value.id,
+       m_module.opVectorTimesScalar(
+         getVectorTypeId(value.type), border.id, outsideWeight));
++    // Texture-size emulation can emit nested blocks. Give the phi an explicit
++    // predecessor after those blocks, rather than assuming labelIf is current.
++    m_module.opBranch(borderResultLabel);
++    m_module.opLabel(borderResultLabel);
++    m_module.opBranch(skipBorder.labelEnd);
++    m_module.opLabel(skipBorder.labelElse);
++    m_module.opBranch(skipBorder.labelEnd);
++    m_module.opLabel(skipBorder.labelEnd);
++    std::array<SpirvPhiLabel, 2> phiLabels = {{{
++      value.id, borderResultLabel }, { originalValue, skipBorder.labelElse }}};
++    value.id = m_module.opPhi(getVectorTypeId(value.type),
++      phiLabels.size(), phiLabels.data());
+     return value;
+   }
+   
+diff --git a/src/dxbc/dxbc_virtual_bc.cpp b/src/dxbc/dxbc_virtual_bc.cpp
+--- a/src/dxbc/dxbc_virtual_bc.cpp
++++ b/src/dxbc/dxbc_virtual_bc.cpp
+@@ -1,5 +1,6 @@
+ #include <functional>
+ #include "dxbc_virtual_bc.h"
++#include "../dxvk/dxvk_shader.h"
+ 
+ namespace dxvk {
+   DxbcVirtualBc::DxbcVirtualBc(SpirvModule& module, uint32_t buffer, uint32_t img, uint32_t texture)
+@@ -21,9 +22,17 @@
+     return m.opLoad(F4, m.opAccessChain(m.defPointerType(F4, spv::StorageClassUniform), cb, 2, indices));
+   }
+   uint32_t DxbcVirtualBc::meta(uint32_t index) {
+-    return m.opBitcast(m.defVectorType(U, 4), data(add(u(VirtualBcTextureBase + slot * 16), index)));
+-  }
+-  uint32_t DxbcVirtualBc::active() { return m.opINotEqual(B, comp(U, meta(u(0)), 0), u(0)); }
++    return m.opBitcast(m.defVectorType(U, 4), data(add(u(VirtualBcTextureBase + (slot & 127u) * 16), index)));
++  }
++  uint32_t DxbcVirtualBc::active() {
++    // No atlas bound in this stage: let the driver eliminate all software BC
++    // decoding before register allocation. Active atlases keep the original path.
++    auto stage = m.specConst32(U, 0);
++    m.decorateSpecId(stage, uint32_t(DxvkSpecConstantId::FirstPipelineConstant) + 2 + (slot >> 7));
++    m.setDebugName(stage, "winehua_virtual_bc_stage_active");
++    return m.opLogicalAnd(B, m.opINotEqual(B, bit(stage, u(1)), u(0)),
++      m.opINotEqual(B, comp(U, meta(u(0)), 0), u(0)));
++  }
+   uint32_t DxbcVirtualBc::levels() { return comp(U, meta(u(0)), 3); }
+   uint32_t DxbcVirtualBc::dimensions(uint32_t lod) {
+     auto info = meta(add(u(1), m.opUMin(U, lod, u(14))));
+diff --git a/src/dxvk/dxvk_shader.cpp b/src/dxvk/dxvk_shader.cpp
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -219,6 +219,38 @@
+     buffer = SpirvCodeBuffer(frozen.size(), frozen.data());
+   }
+ 
++  static void freezeVirtualBcStage(SpirvCodeBuffer& buffer, const uint32_t* values) {
++    if (!values) return;
++    std::unordered_map<uint32_t, uint32_t> named;
++    const uint32_t* data = buffer.data();
++    for (auto ins : buffer) {
++      if (ins.opCode() == spv::OpName && ins.length() > 2
++       && !std::strcmp(reinterpret_cast<const char*>(data + ins.offset() + 2),
++                      "winehua_virtual_bc_stage_active"))
++        named.emplace(ins.arg(1), 0);
++    }
++    if (named.empty()) return;
++    for (auto ins : buffer) {
++      if (ins.opCode() == spv::OpDecorate && ins.length() == 4
++       && ins.arg(2) == spv::DecorationSpecId && named.count(ins.arg(1))) {
++        const uint32_t index = ins.arg(3) - uint32_t(DxvkSpecConstantId::FirstPipelineConstant);
++        if (index >= 2 && index < 8) named[ins.arg(1)] = values[index];
++      }
++    }
++    std::vector<uint32_t> frozen(data, data + 5);
++    for (auto ins : buffer) {
++      if (ins.opCode() == spv::OpDecorate && ins.length() == 4
++       && ins.arg(2) == spv::DecorationSpecId && named.count(ins.arg(1))) continue;
++      const size_t start = frozen.size();
++      frozen.insert(frozen.end(), data + ins.offset(), data + ins.offset() + ins.length());
++      if (ins.opCode() == spv::OpSpecConstant && ins.length() == 4 && named.count(ins.arg(2))) {
++        frozen[start] = (4u << 16) | uint32_t(spv::OpConstant);
++        frozen[start + 3] = named[ins.arg(2)];
++      }
++    }
++    buffer = SpirvCodeBuffer(frozen.size(), frozen.data());
++  }
++
+   DxvkShaderModule::DxvkShaderModule()
+   : m_vkd(nullptr), m_stage() {
+ 
+@@ -432,6 +464,7 @@
+     for (uint32_t u : bit::BitMask(info.undefinedInputs))
+       eliminateInput(spirvCode, u);
+ 
++    freezeVirtualBcStage(spirvCode, info.pipelineSpecConstants);
+     if (m_info.usesBgraUavMapping)
+       freezeBgraUavSpecConstants(spirvCode, info.pipelineSpecConstants);
+ 

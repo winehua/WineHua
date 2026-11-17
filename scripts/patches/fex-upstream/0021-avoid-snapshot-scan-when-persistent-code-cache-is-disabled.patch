@@ -1,0 +1,23 @@
+diff --git a/FEXCore/Source/Interface/Core/DiskCache.cpp b/FEXCore/Source/Interface/Core/DiskCache.cpp
+index f0a4da0784c8732374174c99b5d40983cfab7b08..360ba0d8364e45decf6ab313c183cb065b927177 100644
+--- a/FEXCore/Source/Interface/Core/DiskCache.cpp
++++ b/FEXCore/Source/Interface/Core/DiskCache.cpp
+@@ -981,14 +981,15 @@ namespace DiskCache {
+   bool DiskCache::Store(Core::InternalThreadState* Thread, std::optional<ExecutableFileSectionInfo> Region, uint64_t GuestRIP,
+                         uint64_t GuestCodeKey, std::span<const uint8_t> GuestCode, const CPU::CPUBackend::CompiledCode& CompiledCode,
+                         std::span<const FEXCore::CPU::Relocation> Relocations, const Frontend::Decoder::DecodedBlockInformation* DecodedBlockInfo) {
++    if (!IsWritingDiskCache()) {
++      return false;
++    }
++
+     for (const auto& Block : Thread->FrontendDecoder->GetDecodedBlockInfo()->Blocks) {
+       for (uint64_t I = 0; I < Block.NumInstructions; ++I) {
+         if (Block.DecodedInstructions[I].NeedsCodeValidation) return false;
+       }
+     }
+-    if (!IsWritingDiskCache()) {
+-      return false;
+-    }
+     if (!DecodedBlockInfo) {
+       return false;
+     }

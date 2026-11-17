@@ -1,0 +1,27 @@
+diff --git a/src/gallium/drivers/zink/zink_compiler.c b/src/gallium/drivers/zink/zink_compiler.c
+--- a/src/gallium/drivers/zink/zink_compiler.c
++++ b/src/gallium/drivers/zink/zink_compiler.c
+@@ -3337,6 +3337,23 @@
+    if (!spirv)
+       spirv = zs->spirv;
+ 
++   const char *strip_names = os_get_option("WINEHUA_ZINK_STRIP_NAMES");
++   if (strip_names && !strcmp(strip_names, "1") &&
++       (zs->info.stage == MESA_SHADER_VERTEX || zs->info.stage == MESA_SHADER_FRAGMENT)) {
++      unsigned dst = 5;
++      for (unsigned src = 5; src < spirv->num_words;) {
++         unsigned count = spirv->words[src] >> 16;
++         unsigned op = spirv->words[src] & 0xffff;
++         assert(count && src + count <= spirv->num_words);
++         if (op != SpvOpName && op != SpvOpMemberName) {
++            memmove(spirv->words + dst, spirv->words + src, count * sizeof(uint32_t));
++            dst += count;
++         }
++         src += count;
++      }
++      spirv->num_words = dst;
++   }
++
+    if (zink_debug & ZINK_DEBUG_SPIRV) {
+       char buf[256];
+       static int i;

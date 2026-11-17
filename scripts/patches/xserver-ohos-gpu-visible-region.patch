@@ -1,0 +1,110 @@
+--- a/hw/xwayland/xwayland-screen.c
++++ b/hw/xwayland/xwayland-screen.c
+@@ -171,6 +171,14 @@
+     if (rec->win->drawable.pScreen != screen)
+         return;
+ 
++    xwl_screen = xwl_screen_get(screen);
++    if (rec->prop->propertyName == xwl_screen->gpu_clip_request_prop) {
++        /* DeleteAllWindowProperties still links earlier freed properties.
++         * Never traverse the property chain from a destruction notification. */
++        if (rec->state == PropertyNewValue)
++            xwl_window_publish_gpu_visible_region(rec->win);
++        return;
++    }
+     xwl_window = xwl_window_get(rec->win);
+     if (!xwl_window)
+         return;
+@@ -1170,6 +1178,8 @@
+     if (xwl_screen->allow_commits_prop == BAD_RESOURCE)
+         return FALSE;
+ 
++    xwl_screen->gpu_clip_request_prop = MakeAtom("_WINEHUA_GPU_CLIP_REQUEST", sizeof("_WINEHUA_GPU_CLIP_REQUEST")-1, TRUE);
++    xwl_screen->gpu_visible_region_prop = MakeAtom("_WINEHUA_GPU_VISIBLE_REGION", sizeof("_WINEHUA_GPU_VISIBLE_REGION")-1, TRUE);
+     AddCallback(&PropertyStateCallback, xwl_property_callback, pScreen);
+     AddCallback(&RootWindowFinalizeCallback, xwl_root_window_finalized_callback, pScreen);
+ #ifdef XACE
+--- a/hw/xwayland/xwayland-screen.h
++++ b/hw/xwayland/xwayland-screen.h
+@@ -140,6 +140,7 @@
+     struct glamor_context *glamor_ctx;
+ 
+     Atom allow_commits_prop;
++    Atom gpu_clip_request_prop, gpu_visible_region_prop;
+ 
+     /* The preferred GLVND vendor. If NULL, "mesa" is assumed. */
+     const char *glvnd_vendor;
+--- a/hw/xwayland/xwayland-window.c
++++ b/hw/xwayland/xwayland-window.c
+@@ -1829,6 +1829,52 @@
+     return ret;
+ }
+ 
++/* Private host/server contract v1. Coordinates are window-local and the
++ * region is server-validated borderClip, NOT the XFixes ClipShape. Publishing
++ * only on opt-in and clip changes keeps all X round trips off the frame path.
++ * Oversized regions fail closed; no truncated region can expose another app. */
++void
++xwl_window_publish_gpu_visible_region(WindowPtr window)
++{
++    struct xwl_screen *xs = xwl_screen_get(window->drawable.pScreen);
++    PropertyPtr request, previous;
++    BoxPtr boxes;
++    CARD32 *data;
++    int n, i;
++    size_t words;
++
++    if (!xs->gpu_clip_request_prop ||
++        dixLookupProperty(&request, window, xs->gpu_clip_request_prop,
++                          serverClient, DixReadAccess) != Success ||
++        request->type != XA_CARDINAL || request->format != 32 ||
++        request->size != 1 || *(CARD32 *)request->data != 1)
++        return;
++
++    n = window->viewable ? RegionNumRects(&window->borderClip) : 0;
++    if (n > 1024) n = 0;
++    words = 4 + 4 * n;
++    data = calloc(words, sizeof(*data));
++    if (!data) return;
++    data[0] = 1;
++    data[1] = window->drawable.width;
++    data[2] = window->drawable.height;
++    data[3] = n;
++    boxes = RegionRects(&window->borderClip);
++    for (i = 0; i < n; i++) {
++        data[4+4*i] = (INT32)boxes[i].x1 - window->drawable.x;
++        data[5+4*i] = (INT32)boxes[i].y1 - window->drawable.y;
++        data[6+4*i] = (INT32)boxes[i].x2 - window->drawable.x;
++        data[7+4*i] = (INT32)boxes[i].y2 - window->drawable.y;
++    }
++    if (dixLookupProperty(&previous, window, xs->gpu_visible_region_prop,
++                          serverClient, DixReadAccess) != Success ||
++        previous->type != XA_CARDINAL || previous->format != 32 ||
++        previous->size != words || memcmp(previous->data, data, words * 4))
++        dixChangeWindowProperty(serverClient, window, xs->gpu_visible_region_prop,
++                                XA_CARDINAL, 32, PropModeReplace, words, data, TRUE);
++    free(data);
++}
++
+ void
+ xwl_clip_notify(WindowPtr window, int dx, int dy)
+ {
+@@ -1841,6 +1887,7 @@
+     xwl_screen->ClipNotify = screen->ClipNotify;
+     screen->ClipNotify = xwl_clip_notify;
+ 
++    xwl_window_publish_gpu_visible_region(window);
+     if (xwl_window)
+         xwl_window_update_surface_window(xwl_window);
+ }
+--- a/hw/xwayland/xwayland-window.h
++++ b/hw/xwayland/xwayland-window.h
+@@ -130,6 +130,8 @@
+ Bool xwl_realize_window(WindowPtr window);
+ Bool xwl_unrealize_window(WindowPtr window);
+ Bool xwl_change_window_attributes(WindowPtr window, unsigned long mask);
++void xwl_window_publish_gpu_visible_region(WindowPtr window);
++
+ void xwl_clip_notify(WindowPtr window, int dx, int dy);
+ int xwl_config_notify(WindowPtr window,
+                       int x, int y,

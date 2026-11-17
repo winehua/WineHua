@@ -1,0 +1,45 @@
+From d3f2100f5e8d56853f51b2e9616b2c9deb4c7dd5 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0081-wineohos-render-event-pacing
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 35668bf7592859a42084795242b302148d68bbcd8c3876816977f4ae2a2de9eb
+
+diff --git a/dlls/wineohos.drv/ohos.c b/dlls/wineohos.drv/ohos.c
+index 4d8f4035029db47cf740bcbd4511b163cfae2116..d386fb541494689ff7d746f48c4b09b39f550026 100644
+--- a/dlls/wineohos.drv/ohos.c
++++ b/dlls/wineohos.drv/ohos.c
+@@ -544,6 +544,12 @@ static UINT32 query_client_padding_frames_locked(struct ohos_stream *stream)
+ static void signal_period_event_locked(struct ohos_stream *stream)
+ {
+     if (!stream->event || !stream->started) return;
++    /* Render events report writable periods, not completion of a client write.
++     * Space is read from the shared ring without another broker RPC. */
++    if (!is_capture_stream(stream) &&
++        ohos_audio_client_get_free_frames(&stream->broker_stream) <
++            client_frames_to_mix_frames_ceil(stream, stream->client_period_frames))
++        return;
+ 
+     NtSetEvent(stream->event, NULL);
+ }
+@@ -1212,7 +1218,7 @@ static NTSTATUS ohos_timer_loop(void *args)
+         ohos_lock(stream);
+ 
+         if (stream->please_quit) break;
+-        if (stream->event && stream->started) NtSetEvent(stream->event, NULL);
++        signal_period_event_locked(stream);
+     }
+     ohos_unlock(stream);
+     return STATUS_SUCCESS;
+@@ -1286,7 +1292,8 @@ static NTSTATUS ohos_release_render_buffer(void *args)
+ 
+     stream->client_frames_submitted += params->written_frames;
+     stream->locked_frames = 0;
+-    signal_period_event_locked(stream);
++    /* The device timer signals the next writable period. Signaling here causes
++     * event-driven spatial clients to fill the ring without waiting for playback. */
+     return ohos_unlock_result(stream, &params->result, S_OK);
+ }
+ 

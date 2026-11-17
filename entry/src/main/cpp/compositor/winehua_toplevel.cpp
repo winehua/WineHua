@@ -18,6 +18,7 @@
 
 #include "protocols/winehua-toplevel-server-protocol.h"
 #include "wayland_server.h"
+#include "direct/direct_wine_surface_controller.h"
 #include "compositor/frame/surface_data.h"
 #include "compositor/toplevel/toplevel_manager.h"
 #include "compositor/toplevel/toplevel_event_bus.h"
@@ -115,13 +116,47 @@ static void wh_set_modal(wl_client*, wl_resource*, wl_resource* surfRes,
     }
 }
 
+static void wh_set_direct_drawable(wl_client* client, wl_resource*, wl_resource* resource,
+                                   wl_resource* owner, int32_t width, int32_t height,
+                                   uint32_t visible)
+{
+    auto* sd = sd_from_surface(resource);
+    if (!sd || wl_resource_get_client(resource) != client || !gServer->IsDesktopMode()) return;
+    if (!owner) { sd->directVisible = false; return; }
+    auto* parent = sd_from_surface(owner);
+    if (!parent || wl_resource_get_client(owner) != client ||
+        parent->clientPid != sd->clientPid || !parent->hasToplevel ||
+        !sd->isSubsurface || sd->parentSurface != owner || width <= 0 || height <= 0) return;
+    sd->directOwnerKey = parent->surfaceKey;
+    sd->directGeneration = DirectWineDrawableDeclared(sd->clientPid, parent->toplevelId,
+                                                     sd->protocolId, width, height);
+    sd->directVisible = visible && sd->directGeneration;
+    // Register even GPU-only children in the existing protocol stacking list.
+    // place_above/place_below and software menus then retain their exact order.
+    auto lock = gTmgr->Lock();
+    auto& compositor = gServer->GetDesktopCompositor();
+    uint32_t existingTop = 0;
+    DisplayPolicy::SubsurfaceRoute route = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
+    if (!compositor.UpdateSubsurfaceLayerLocalPosition(resource, sd->subsurfaceX, sd->subsurfaceY,
+                                                       existingTop, route)) {
+        SubsurfaceLayer layer;
+        layer.surface = resource; layer.surfaceKey = sd->surfaceKey;
+        layer.parentToplevel = parent->toplevelId;
+        layer.localX = sd->subsurfaceX; layer.localY = sd->subsurfaceY;
+        layer.w = width; layer.h = height;
+        compositor.UpsertSubsurfaceLayer(std::move(layer), {});
+    }
+    compositor.MarkDesktopRootDirtyLocked();
+}
+
 static const struct winehua_toplevel_interface kInterface = {
     .set_modal = wh_set_modal,
+    .set_direct_drawable = wh_set_direct_drawable,
 };
 
 static void bind_handler(wl_client* client, void*, uint32_t version, uint32_t id) {
     wl_resource* r = wl_resource_create(client, &winehua_toplevel_interface,
-                                        std::min(version, 1u), id);
+                                        std::min(version, 2u), id);
     wl_resource_set_implementation(r, &kInterface, nullptr, nullptr);
 }
 
@@ -145,6 +180,6 @@ extern "C" void WinehuaToplevelApplyPending(wl_resource* surfaceRes) {
 extern "C" void RegisterWinehuaToplevel(wl_display* display) {
     gTmgr = &WaylandServer::GetInstance()->GetToplevelManager();
     gServer = WaylandServer::GetInstance();
-    wl_global_create(display, &winehua_toplevel_interface, 1, nullptr, bind_handler);
+    wl_global_create(display, &winehua_toplevel_interface, 2, nullptr, bind_handler);
     OH_LOG_INFO(LOG_APP, "[XDG] winehua_toplevel global registered");
 }

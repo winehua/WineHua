@@ -1,7 +1,7 @@
 // phone_adapter.h — 手机适配层总头文件
 // 手机适配层按功能拆分为子模块：进程创建（phone_process）、virgl relay（phone_virgl_relay）、
 // virgl dispatch（phone_virgl_dispatch）、socket 工具（phone_socket，header-only inline）。
-// 路由层（g_isPhone + OH_Ability_* wrapper）在 ncp_dispatch.cpp。
+// 显式进程路由入口在 proc/ncp_dispatch.h / ncp_dispatch.cpp。
 #pragma once
 #include "phone_socket.h"
 #include "phone_process.h"

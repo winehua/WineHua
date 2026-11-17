@@ -1,0 +1,29 @@
+From 3207db21c46c4c11df0708b5b1fcd75575c8b790 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0038-wined3d-discard-map-invalidation
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 9ddda1ab4e282bc01a63e19476b0f027fb832700af44193e517b15f258550dec
+
+diff --git a/dlls/wined3d/resource.c b/dlls/wined3d/resource.c
+index edc8b9ca79decd9185dbb3d1cec92efb57876c60..c5a5a7cdb401ada5ba878d66af08b4f720ed853a 100644
+--- a/dlls/wined3d/resource.c
++++ b/dlls/wined3d/resource.c
+@@ -398,7 +398,15 @@ GLbitfield wined3d_resource_gl_map_flags(const struct wined3d_bo_gl *bo, DWORD d
+     if (d3d_flags & WINED3D_MAP_READ)
+         ret |= GL_MAP_READ_BIT;
+     else
++    {
+         ret |= GL_MAP_UNSYNCHRONIZED_BIT;
++        /* DISCARD makes all old contents undefined. Carry that promise to
++         * OpenGL so WOW64 need not initialize a shadow with discarded bytes.
++         * NOOVERWRITE still preserves every byte outside the written range. */
++        if ((d3d_flags & (WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD))
++                == (WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD))
++            ret |= GL_MAP_INVALIDATE_BUFFER_BIT;
++    }
+ 
+     return ret;
+ }

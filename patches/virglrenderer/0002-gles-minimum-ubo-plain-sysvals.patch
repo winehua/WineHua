@@ -1,0 +1,313 @@
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -381,6 +381,8 @@
+    uint32_t max_shader_patch_varyings;
+    uint32_t max_vertex_attributes;
+    uint32_t max_texture_units;
++   uint32_t uniform_block_limit;
++   bool use_plain_sysval_uniforms;
+ 
+    /* inferred GL caching type */
+    uint32_t inferred_gl_caching_type;
+@@ -477,6 +479,7 @@
+    GLuint virgl_block_bind;
+    uint32_t sysvalue_data_cookie;
+    GLuint ubo_sysval_buffer_id;
++   GLint plain_sysval_locs[PIPE_SHADER_TYPES][6];
+ 
+    uint32_t images_used_mask[PIPE_SHADER_TYPES];
+    GLint *img_locs[PIPE_SHADER_TYPES];
+@@ -1613,7 +1616,7 @@
+ 
+ static inline int
+ vrend_get_uniform_location(struct vrend_linked_shader_program *sprog,
+-                           char *name, int shader_type)
++                           const char *name, int shader_type)
+ {
+     assert(!sprog->is_pipeline || sprog->ss[shader_type]->sel->sinfo.separable_program);
+ 
+@@ -1698,7 +1701,7 @@
+ 
+ static inline GLuint
+ vrend_get_uniform_block_index(struct vrend_linked_shader_program *sprog,
+-                              char *name, int shader_type)
++                              const char *name, int shader_type)
+ {
+     assert(!sprog->is_pipeline || sprog->ss[shader_type]->sel->sinfo.separable_program);
+ 
+@@ -1752,6 +1755,17 @@
+                                  enum pipe_shader_type shader_type,
+                                  GLuint virgl_block_ubo_id)
+ {
++   if (vrend_state.use_plain_sysval_uniforms) {
++      static const char *names[] = {
++         "clipp[0]", "stipple_pattern[0]", "winsys_adjust_y",
++         "alpha_ref_val", "clip_plane_enabled", "drawid_base",
++      };
++      for (unsigned i = 0; i < ARRAY_SIZE(names); ++i)
++         sprog->plain_sysval_locs[shader_type][i] =
++            vrend_get_uniform_location(sprog, names[i], shader_type);
++      return;
++   }
++
+    sprog->separate_virgl_block_id[shader_type] =
+       vrend_get_uniform_block_index(sprog, "VirglBlock", shader_type);
+ 
+@@ -1979,6 +1993,12 @@
+    bind_ssbo_locs(sprog, PIPE_SHADER_COMPUTE);
+    bind_const_locs(sprog, PIPE_SHADER_COMPUTE);
+    bind_image_locs(sprog, PIPE_SHADER_COMPUTE);
++   if (vrend_state.use_plain_sysval_uniforms) {
++      sprog->virgl_block_bind = GL_INVALID_INDEX;
++      sprog->ubo_sysval_buffer_id = GL_INVALID_INDEX;
++      sprog->sysvalue_data_cookie = UINT32_MAX;
++      bind_virgl_block_loc(sprog, PIPE_SHADER_COMPUTE, 0);
++   }
+    return sprog;
+ }
+ 
+@@ -5596,6 +5616,34 @@
+ static void
+ vrend_fill_sysval_uniform_block (struct vrend_sub_context *sub_ctx)
+ {
++   if (vrend_state.use_plain_sysval_uniforms) {
++      struct vrend_linked_shader_program *prog = sub_ctx->prog;
++      if (sub_ctx->sysvalue_data_cookie == prog->sysvalue_data_cookie)
++         return;
++      for (unsigned stage = 0; stage < PIPE_SHADER_TYPES; ++stage) {
++         if (!prog->ss[stage])
++            continue;
++         vrend_set_active_pipeline_stage(prog, stage);
++         const GLint *loc = prog->plain_sysval_locs[stage];
++         if (loc[0] != -1)
++            glUniform4fv(loc[0], VIRGL_NUM_CLIP_PLANES, &sub_ctx->sysvalue_data.clipp[0][0]);
++         if (loc[1] != -1) {
++            GLuint pattern[VREND_POLYGON_STIPPLE_SIZE];
++            for (unsigned i = 0; i < ARRAY_SIZE(pattern); ++i)
++               pattern[i] = sub_ctx->sysvalue_data.stipple_pattern[i][0];
++            glUniform1uiv(loc[1], ARRAY_SIZE(pattern), pattern);
++         }
++         if (loc[2] != -1) glUniform1f(loc[2], sub_ctx->sysvalue_data.winsys_adjust_y);
++         if (loc[3] != -1) glUniform1f(loc[3], sub_ctx->sysvalue_data.alpha_ref_val);
++         if (loc[4] != -1) glUniform1i(loc[4], sub_ctx->sysvalue_data.clip_plane_enabled != 0);
++         if (loc[5] != -1) glUniform1i(loc[5], sub_ctx->sysvalue_data.drawid_base);
++      }
++      prog->sysvalue_data_cookie = sub_ctx->sysvalue_data_cookie;
++      vrend_set_active_pipeline_stage(prog, prog->ss[PIPE_SHADER_COMPUTE] ?
++                                     PIPE_SHADER_COMPUTE : PIPE_SHADER_FRAGMENT);
++      return;
++   }
++
+    if (sub_ctx->prog->virgl_block_bind == GL_INVALID_INDEX)
+       return;
+ 
+@@ -6288,6 +6336,8 @@
+    vrend_set_active_pipeline_stage(sub_ctx->prog, PIPE_SHADER_COMPUTE);
+    vrend_draw_bind_ubo_shader(sub_ctx, PIPE_SHADER_COMPUTE, 0);
+    vrend_draw_bind_const_shader(sub_ctx, PIPE_SHADER_COMPUTE, new_program);
++   if (vrend_state.use_plain_sysval_uniforms)
++      vrend_fill_sysval_uniform_block(sub_ctx);
+    vrend_draw_bind_samplers_shader(sub_ctx, PIPE_SHADER_COMPUTE, 0);
+    vrend_draw_bind_images_shader(sub_ctx, PIPE_SHADER_COMPUTE);
+    vrend_draw_bind_ssbo_shader(sub_ctx, PIPE_SHADER_COMPUTE);
+@@ -7716,6 +7766,50 @@
+    init_features(gles ? 0 : gl_ver,
+                  gles ? gl_ver : 0);
+ 
++   /* VirglBlock consumes one real block per stage. On GLES implementations
++    * with exactly the ES3 minimum (12), use ordinary GPU uniforms for helper
++    * data instead. Never advertise the extra slot while keeping VirglBlock.
++    * Cap all stages and combined binding points, not only the vertex stage. */
++   if (has_feature(feat_ubo)) {
++      GLint limit, stage_limit, bindings, combined;
++      unsigned stages = 2;
++      glGetIntegerv(GL_MAX_VERTEX_UNIFORM_BLOCKS, &limit);
++      glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_BLOCKS, &stage_limit);
++      limit = MIN2(limit, stage_limit);
++      if (has_feature(feat_geometry_shader)) {
++         glGetIntegerv(GL_MAX_GEOMETRY_UNIFORM_BLOCKS, &stage_limit);
++         limit = MIN2(limit, stage_limit);
++         stages++;
++      }
++      if (has_feature(feat_tessellation)) {
++         glGetIntegerv(GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS, &stage_limit);
++         limit = MIN2(limit, stage_limit);
++         glGetIntegerv(GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS, &stage_limit);
++         limit = MIN2(limit, stage_limit);
++         stages += 2;
++      }
++      if (has_feature(feat_compute_shader)) {
++         glGetIntegerv(GL_MAX_COMPUTE_UNIFORM_BLOCKS, &stage_limit);
++         limit = MIN2(limit, stage_limit);
++         stages++;
++      }
++      glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &bindings);
++      glGetIntegerv(GL_MAX_COMBINED_UNIFORM_BLOCKS, &combined);
++      const char *fix = getenv("WINEHUA_VIRGL_UBO_FIX");
++      vrend_state.use_plain_sysval_uniforms = vrend_state.use_gles &&
++         limit >= 12 && (limit == 12 || (fix && !strcmp(fix, "1"))) &&
++         !(fix && !strcmp(fix, "0"));
++      unsigned reserved = vrend_state.use_plain_sysval_uniforms ? 0 : 1;
++      limit = MAX2(0, limit - (int)reserved);
++      limit = MIN2(limit, MAX2(0, bindings - (int)reserved) / (int)stages);
++      limit = MIN2(limit, MAX2(0, combined - (int)(reserved * stages)) / (int)stages);
++      vrend_state.uniform_block_limit = limit;
++      winehua_gl_caps_log("GL-CAP virgl layer=ubo-policy plain_sysvals=%d "
++                          "guest_blocks=%u stages=%u host_bindings=%d host_combined=%d",
++                          vrend_state.use_plain_sysval_uniforms,
++                          vrend_state.uniform_block_limit, stages, bindings, combined);
++   }
++
+    vrend_state.egl_image_srgb_import =
+       vrend_winsys_has_egl_image_gl_colorspace();
+    if (!vrend_state.egl_image_srgb_import)
+@@ -8074,6 +8168,7 @@
+ 
+    grctx->shader_cfg.max_shader_patch_varyings = vrend_state.max_shader_patch_varyings;
+    grctx->shader_cfg.use_gles = vrend_state.use_gles;
++   grctx->shader_cfg.use_plain_sysval_uniforms = vrend_state.use_plain_sysval_uniforms;
+    grctx->shader_cfg.use_core_profile = vrend_state.use_core_profile;
+    grctx->shader_cfg.use_explicit_locations = vrend_state.use_explicit_locations;
+    grctx->shader_cfg.max_draw_buffers = vrend_state.max_draw_buffers;
+@@ -12300,26 +12395,9 @@
+    if (has_feature(feat_draw_instance))
+       caps->v1.bset.instanceid = 1;
+ 
+-   if (has_feature(feat_ubo)) {
+-      glGetIntegerv(GL_MAX_VERTEX_UNIFORM_BLOCKS, &max);
+-      /* GL_MAX_VERTEX_UNIFORM_BLOCKS omits the ordinary (default) uniform block,
+-       * and the guest state tracker subtracts one block for it
+-       * (st_extensions.c: "The first one is for ordinary uniforms").  Advertise
+-       * the total, otherwise the guest sees max-1 and trips Mesa's ES3 gate
+-       * `pc->MaxUniformBlocks < 12 -> no ARB_uniform_buffer_object`, which drops
+-       * the whole guest GL down to ES 2.0 / GL 2.1 (measured 2026-09-18:
+-       * host 12 -> guest 11 -> ES3 disabled -> CEF/ANGLE "max supported 2.0").
+-       * WineHua: keep the +1 that upstream cancels out. */
+-      /* 默认关闭 (回到上游行为 max+1-1), 用 WINEHUA_VIRGL_UBO_FIX=1 显式打开。
+-       *
+-       * 为什么默认关: 打开后 guest GLES3 能力链是正确的 (实测 es3.0/3.1 context 可建),
+-       * 但它同时让 CEF 走进 GL/GPU 初始化路径 —— 那条路径当前还有问题
+-       * (2026-09-18 实测: 打开后在 "CreateBrowser → AfterCreated" 之后停在原地,
+-       *  renderer 不再派生; 关闭时 browser 能继续推进到 SetName/renderer)。
+-       * 能力修复保留在代码里, 等 CEF 侧那条路径修好后再默认打开。 */
+-      const char *ubo_fix = getenv("WINEHUA_VIRGL_UBO_FIX");
+-      caps->v1.max_uniform_blocks = (ubo_fix && ubo_fix[0] == '1') ? (max + 1) : (max + 1 - 1);
+-   }
++   if (has_feature(feat_ubo))
++      /* Slot zero contains ordinary uniforms and consumes no host UBO. */
++      caps->v1.max_uniform_blocks = vrend_state.uniform_block_limit + 1;
+ 
+    if (has_feature(feat_depth_clamp))
+       caps->v1.bset.depth_clip_disable = 1;
+@@ -12909,28 +12987,35 @@
+       caps->v2.max_uniform_block_size = max;
+    }
+ 
++   const unsigned sysval_components = vrend_state.use_plain_sysval_uniforms ?
++      (VIRGL_NUM_CLIP_PLANES + 4) * 4 : 0;
++   /* Polygon stipple is fragment-only; do not consume those 32 vec4
++    * slots from vertex/geometry/tessellation/compute default uniforms. */
++   const unsigned fragment_sysval_components = sysval_components +
++      (vrend_state.use_plain_sysval_uniforms ? VREND_POLYGON_STIPPLE_SIZE * 4 : 0);
++
+    /* Propagate the max of Uniform Components */
+    glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS, &max);
+-   caps->v2.max_const_buffer_size[PIPE_SHADER_VERTEX] = max * 4;
++   caps->v2.max_const_buffer_size[PIPE_SHADER_VERTEX] = MAX2(0, max - (int)sysval_components) * 4;
+ 
+    glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS, &max);
+-   caps->v2.max_const_buffer_size[PIPE_SHADER_FRAGMENT] = max * 4;
++   caps->v2.max_const_buffer_size[PIPE_SHADER_FRAGMENT] = MAX2(0, max - (int)fragment_sysval_components) * 4;
+ 
+    if (has_feature(feat_geometry_shader)) {
+       glGetIntegerv(GL_MAX_GEOMETRY_UNIFORM_COMPONENTS, &max);
+-      caps->v2.max_const_buffer_size[PIPE_SHADER_GEOMETRY] = max * 4;
++      caps->v2.max_const_buffer_size[PIPE_SHADER_GEOMETRY] = MAX2(0, max - (int)sysval_components) * 4;
+    }
+ 
+    if (has_feature(feat_tessellation)) {
+       glGetIntegerv(GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS, &max);
+-      caps->v2.max_const_buffer_size[PIPE_SHADER_TESS_CTRL] = max * 4;
++      caps->v2.max_const_buffer_size[PIPE_SHADER_TESS_CTRL] = MAX2(0, max - (int)sysval_components) * 4;
+       glGetIntegerv(GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS, &max);
+-      caps->v2.max_const_buffer_size[PIPE_SHADER_TESS_EVAL] = max * 4;
++      caps->v2.max_const_buffer_size[PIPE_SHADER_TESS_EVAL] = MAX2(0, max - (int)sysval_components) * 4;
+    }
+ 
+    if (has_feature(feat_compute_shader)) {
+       glGetIntegerv(GL_MAX_COMPUTE_UNIFORM_COMPONENTS, &max);
+-      caps->v2.max_const_buffer_size[PIPE_SHADER_COMPUTE] = max * 4;
++      caps->v2.max_const_buffer_size[PIPE_SHADER_COMPUTE] = MAX2(0, max - (int)sysval_components) * 4;
+    }
+ 
+    if (has_feature(feat_separate_shader_objects))
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -8001,10 +8001,27 @@
+    strarray_addstrbuf(shader, &glsl_strbufs->glsl_main);
+ }
+ 
+-static void emit_required_sysval_uniforms(struct vrend_strbuf *block, uint32_t mask)
++static void emit_required_sysval_uniforms(struct vrend_strbuf *block, uint32_t mask,
++                                           bool plain)
+ {
+    if (!mask)
+       return;
++
++   if (plain) {
++      if (mask & BIT(UNIFORM_CLIP_PLANE)) {
++         strbuf_append(block, "uniform vec4 clipp[8];\n");
++         strbuf_append(block, "uniform bool clip_plane_enabled;\n");
++      }
++      if (mask & BIT(UNIFORM_PSTIPPLE_SAMPLER))
++         strbuf_appendf(block, "uniform uint stipple_pattern[%d];\n", VREND_POLYGON_STIPPLE_SIZE);
++      if (mask & BIT(UNIFORM_WINSYS_ADJUST_Y))
++         strbuf_append(block, "uniform float winsys_adjust_y;\n");
++      if (mask & BIT(UNIFORM_ALPHA_REF_VAL))
++         strbuf_append(block, "uniform float alpha_ref_val;\n");
++      if (mask & BIT(UNIFORM_DRAWID_BASE))
++         strbuf_append(block, "uniform int drawid_base;\n");
++      return;
++   }
+ 
+    strbuf_append(block, "layout (std140) uniform VirglBlock {\n");
+    strbuf_append(block, "\tvec4 clipp[8];\n");
+@@ -8227,7 +8244,7 @@
+       ctx.glsl_ver_required = require_glsl_ver(&ctx, 150);
+ 
+    /* If we need a sysvalue UBO then we require GLSL 1.40 */
+-   if (ctx.glsl_strbufs.required_sysval_uniform_decls)
++   if (ctx.glsl_strbufs.required_sysval_uniform_decls && !ctx.cfg->use_plain_sysval_uniforms)
+       ctx.glsl_ver_required = require_glsl_ver(&ctx, 140);
+ 
+    if (!ctx.cfg->use_gles &&
+@@ -8281,7 +8298,8 @@
+    fill_var_sinfo(&ctx, var_sinfo);
+ 
+    emit_required_sysval_uniforms (&ctx.glsl_strbufs.glsl_hdr,
+-                                  ctx.glsl_strbufs.required_sysval_uniform_decls);
++                                  ctx.glsl_strbufs.required_sysval_uniform_decls,
++                                  ctx.cfg->use_plain_sysval_uniforms);
+    set_strbuffers(&ctx.glsl_strbufs, shader);
+ 
+    VREND_DEBUG(dbg_shader_glsl, rctx, "GLSL:");
+@@ -8484,7 +8502,8 @@
+ 
+    fill_sinfo(&ctx, sinfo);
+    emit_required_sysval_uniforms (&ctx.glsl_strbufs.glsl_hdr,
+-                                  ctx.glsl_strbufs.required_sysval_uniform_decls);
++                                  ctx.glsl_strbufs.required_sysval_uniform_decls,
++                                  ctx.cfg->use_plain_sysval_uniforms);
+    set_strbuffers(&ctx.glsl_strbufs, shader);
+ 
+    VREND_DEBUG(dbg_shader_glsl, rctx, "GLSL:");
+--- a/src/vrend/vrend_shader.h
++++ b/src/vrend/vrend_shader.h
+@@ -245,6 +245,7 @@
+    uint32_t max_draw_buffers : 4;
+    uint32_t max_shader_patch_varyings : 6;
+    uint32_t use_gles : 1;
++   uint32_t use_plain_sysval_uniforms : 1;
+    uint32_t use_core_profile : 1;
+    uint32_t use_explicit_locations : 1;
+    uint32_t has_arrays_of_arrays : 1;

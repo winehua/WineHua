@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "commit": "01febe2d48fdce76b581369a1d526d2d33b75c7a",
+  "sourceSha256": "6047450311643f2b992fd2154d2563327ffffda7fa587d1713232025917c0c59",
+  "files": {
+    "arm64x/d3d11.dll": "8f2c14e2c1adc370f252f39cf7cbdd508bfc8937abf77ebc0eb8bea22cb06361",
+    "arm64x/dxgi.dll": "89bd194bedc4ba0cc85c04c00a120e35f01f24c3345a68c563b194c10f27a302",
+    "x64/d3d11.dll": "8f2c14e2c1adc370f252f39cf7cbdd508bfc8937abf77ebc0eb8bea22cb06361",
+    "x64/dxgi.dll": "89bd194bedc4ba0cc85c04c00a120e35f01f24c3345a68c563b194c10f27a302",
+    "x86/d3d11.dll": "74c287e2662b18ca9f3f90b8d113eb7cf99f77a81ce8615f913753d8438c16ca",
+    "x86/dxgi.dll": "9f94ff4d213aa9d340e19d6986e1353230cbf7fbc9f109d56c2ddcb5bd857f61"
+  },
+  "selectedBaseline": {
+    "payloadSha256": "2bbaa641415d9f51271b5a94031928ed2bb0507d572ada92b42d6ca402000b48",
+    "scope": "Unchanged Modern DLLs from the selected Wine/FEX baseline; no Modern source change"
+  }
+}

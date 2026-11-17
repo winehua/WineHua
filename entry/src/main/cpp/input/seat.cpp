@@ -157,17 +157,21 @@ void Seat::seat_get_keyboard(wl_client* client, wl_resource* seatRes, uint32_t i
 
     // XKB_V1 keymap: 通过匿名 fd 传递 xkb keymap 给 Wine
     // memfd_create 创建匿名共享内存, 无全局命名空间, 多客户端天然隔离
+    // wl_keyboard.keymap requires a NUL-terminated string, including the NUL
+    // in its advertised size. The embedded xxd blob ends with a newline.
+    const uint32_t keymapSize = _tmp_keymap_xkb_len + 1;
     int fd = memfd_create("winehua_keymap", MFD_CLOEXEC);
     if (fd >= 0) {
-        if (ftruncate(fd, _tmp_keymap_xkb_len) == 0) {
-            void* map = mmap(nullptr, _tmp_keymap_xkb_len, PROT_WRITE, MAP_SHARED, fd, 0);
+        if (ftruncate(fd, keymapSize) == 0) {
+            void* map = mmap(nullptr, keymapSize, PROT_WRITE, MAP_SHARED, fd, 0);
             if (map != MAP_FAILED) {
                 memcpy(map, _tmp_keymap_xkb, _tmp_keymap_xkb_len);
-                munmap(map, _tmp_keymap_xkb_len);
-                wl_keyboard_send_keymap(kbd, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, _tmp_keymap_xkb_len);
+                static_cast<char*>(map)[_tmp_keymap_xkb_len] = '\0';
+                munmap(map, keymapSize);
+                wl_keyboard_send_keymap(kbd, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, keymapSize);
                 close(fd);
                 OH_LOG_INFO(LOG_APP, "[Seat] wl_keyboard OK (keymap=XKB_V1 len=%{public}u, total=%{public}d)",
-                            _tmp_keymap_xkb_len, self->kbdCount_.load());
+                            keymapSize, self->kbdCount_.load());
             } else {
                 OH_LOG_ERROR(LOG_APP, "[Seat] wl_keyboard mmap failed, fallback to NO_KEYMAP");
                 close(fd);

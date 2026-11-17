@@ -1,0 +1,25 @@
+From: VintagePomelo <liufengpm@live.cn>
+Subject: [PATCH] glx/xlib: provide a context when presenting through virpipe
+
+Swap/copy paths do not have an st_context. Reuse the drawable's existing
+lazy helper context, as the copy path already does. Virpipe must submit
+and synchronize transfers before the Xlib winsys presents them.
+This patch is applied only to the isolated GNU Mesa build.
+
+--- a/src/gallium/frontends/glx/xlib/xm_st.c
++++ b/src/gallium/frontends/glx/xlib/xm_st.c
+@@ -71,10 +71,13 @@
+    struct xmesa_st_framebuffer *xstfb = xmesa_st_framebuffer(drawable);
+    struct pipe_resource *ptex = xstfb->textures[statt];
+    struct pipe_resource *pres;
+-   struct pipe_context *pctx = st ? st->pipe : NULL;
++   struct pipe_context *pctx = st ? st->pipe : xmesa_get_context(drawable);
+ 
+    if (!ptex)
+       return true;
++
++   if (!pctx)
++      return false;
+ 
+    pres = xstfb->display_resource;
+    /* (re)allocate the surface for the texture to be displayed */

@@ -1,0 +1,22 @@
+From e7fc9eee546627d236a89d60c3698bc5e8a83cbc Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0028-ohos-child-winedebug-environment
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: a98b2d68581a2885758ae9847fb9ab91dbca256a24f917aded570d5ce880b442
+
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index 28a380da9f2575118e20c409e2b622f6c4bab39d..f0fa273e674dfc1f557045f970be7671dccdc041 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -532,7 +532,7 @@ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int so
+         argv = build_broker_argv( params );
+         {
+             int child_pid = -1;
+-            if (ohos_broker_spawn_child( argv, socketfd, &child_pid ) == 0)
++            if (ohos_broker_spawn_child( argv, socketfd, winedebug, &child_pid ) == 0)
+                 pid = child_pid;
+             else
+                 status = STATUS_UNSUCCESSFUL;

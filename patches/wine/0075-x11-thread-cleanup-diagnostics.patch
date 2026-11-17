@@ -1,0 +1,68 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] Trace window thread cleanup stages without per-frame logging
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -7769,12 +7769,17 @@
+ {
+     struct user_thread_info *thread_info = get_user_thread_info();
+ 
++    TRACE( "thread cleanup: windows begin\n" );
+     destroy_thread_windows();
++    TRACE( "thread cleanup: driver begin\n" );
+     user_driver->pThreadDetach();
++    TRACE( "thread cleanup: driver end\n" );
+ 
+     free( thread_info->rawinput );
+ 
++    TRACE( "thread cleanup: imm begin\n" );
+     cleanup_imm_thread();
++    TRACE( "thread cleanup: imm end\n" );
+     NtClose( thread_info->server_queue );
+     if (thread_info->idle_event) NtClose( thread_info->idle_event );
+     free( thread_info->session_data );
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -5604,7 +5604,9 @@
+     /* recycle WND structs as destroy_entry structs */
+     C_ASSERT( sizeof(struct destroy_entry) <= sizeof(WND) );
+ 
++    TRACE( "thread cleanup: user lock begin\n" );
+     user_lock();
++    TRACE( "thread cleanup: user lock acquired\n" );
+     while ((win = next_thread_user_object( GetCurrentThreadId(), &handle, NTUSER_OBJ_WINDOW )))
+     {
+         BOOL is_child = (win->dwStyle & (WS_CHILD | WS_POPUP)) == WS_CHILD;
+@@ -5639,7 +5641,9 @@
+     }
+     user_unlock();
+ 
++    TRACE( "thread cleanup: drawables begin\n" );
+     release_opengl_drawables( &drawables );
++    TRACE( "thread cleanup: drawables end\n" );
+ 
+     while ((entry = free_list))
+     {
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -816,14 +816,20 @@
+ {
+     struct x11drv_thread_data *data = x11drv_thread_data();
+ 
++    TRACE( "thread cleanup: data=%p xim=%p\n", data, data ? data->xim : NULL );
+     if (data)
+     {
++        TRACE( "thread cleanup: XCloseIM begin\n" );
+         if (data->xim) XCloseIM( data->xim );
++        TRACE( "thread cleanup: XCloseIM end\n" );
+         if (data->font_set) XFreeFontSet( data->display, data->font_set );
+         if (data->net_supported) XFree( data->net_supported );
+         if (data->window_manager) XFree( data->window_manager );
++        TRACE( "thread cleanup: XSync begin\n" );
+         XSync( gdi_display, False ); /* make sure XReparentWindow requests have completed before closing the thread display */
++        TRACE( "thread cleanup: XCloseDisplay begin\n" );
+         XCloseDisplay( data->display );
++        TRACE( "thread cleanup: XCloseDisplay end\n" );
+         free( data );
+         /* clear data in case we get re-entered from user32 before the thread is truly dead */
+         NtUserGetThreadInfo()->driver_data = 0;

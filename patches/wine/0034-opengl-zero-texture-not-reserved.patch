@@ -1,0 +1,12 @@
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -333,6 +333,9 @@
+     struct context *ctx;
+     unsigned int i;
+ 
++    /* Zero denotes the default texture / an empty framebuffer attachment,
++     * never an allocated texture. Unused internal slots are also zero. */
++    if (!tex) return FALSE;
+     if (!(ctx = get_current_context( teb, NULL, NULL ))) return FALSE;
+ 
+     assert( ctx->base.share );

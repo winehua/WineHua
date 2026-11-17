@@ -1,0 +1,38 @@
+--- a/dlls/ddraw/surface.c
++++ b/dlls/ddraw/surface.c
+@@ -1635,7 +1635,7 @@
+         struct ddraw_surface *src_surface, const RECT *src_rect_in, DWORD flags, DWORD fill_colour,
+         const struct wined3d_blt_fx *fx, enum wined3d_texture_filter_type filter)
+ {
+-    RECT src_rect, dst_rect;
++    RECT src_rect, dst_rect, dst_bounds, dst_rect_clipped;
+     float scale_x, scale_y;
+     const RECT *clip_rect;
+     DWORD clip_list_size;
+@@ -1689,8 +1689,16 @@
+     scale_x = (float)(src_rect.right - src_rect.left) / (float)(dst_rect.right - dst_rect.left);
+     scale_y = (float)(src_rect.bottom - src_rect.top) / (float)(dst_rect.bottom - dst_rect.top);
+ 
++    /* A window clipper can extend beyond the primary surface when a virtual
++     * desktop is smaller than the window. Keep the original destination for
++     * source scaling, but never submit an out-of-bounds blit to WineD3D. */
++    SetRect(&dst_bounds, 0, 0, dst_surface->surface_desc.dwWidth,
++            dst_surface->surface_desc.dwHeight);
++    if (!IntersectRect(&dst_rect_clipped, &dst_rect, &dst_bounds))
++        return DD_OK;
++
+     if (FAILED(hr = IDirectDrawClipper_GetClipList(&dst_surface->clipper->IDirectDrawClipper_iface,
+-            &dst_rect, NULL, &clip_list_size)))
++            &dst_rect_clipped, NULL, &clip_list_size)))
+     {
+         WARN("Failed to get clip list size, hr %#lx.\n", hr);
+         return hr;
+@@ -1703,7 +1711,7 @@
+     }
+ 
+     if (FAILED(hr = IDirectDrawClipper_GetClipList(&dst_surface->clipper->IDirectDrawClipper_iface,
+-            &dst_rect, clip_list, &clip_list_size)))
++            &dst_rect_clipped, clip_list, &clip_list_size)))
+     {
+         WARN("Failed to get clip list, hr %#lx.\n", hr);
+         free(clip_list);

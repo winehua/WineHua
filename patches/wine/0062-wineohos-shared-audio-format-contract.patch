@@ -1,0 +1,41 @@
+--- a/dlls/wineohos.drv/ohos.c
++++ b/dlls/wineohos.drv/ohos.c
+@@ -1345,6 +1345,19 @@
+     return STATUS_SUCCESS;
+ }
+ 
++/* GetMixFormat and the final-package checker use this same exported record.
++ * Keep it in .dynsym so strip/debug removal cannot hide a stale audio driver. */
++__attribute__((visibility("default")))
++const WAVEFORMATEXTENSIBLE winehua_shared_audio_format_v1 =
++{
++    .Format = { WAVE_FORMAT_EXTENSIBLE, 2, 48000, 384000, 8, 32,
++                sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) },
++    .Samples = { .wValidBitsPerSample = 32 },
++    .dwChannelMask = KSAUDIO_SPEAKER_STEREO,
++    .SubFormat = { WAVE_FORMAT_IEEE_FLOAT, 0, 0x0010,
++                   { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } },
++};
++
+ static NTSTATUS ohos_get_mix_format(void *args)
+ {
+     struct get_mix_format_params *params = args;
+@@ -1356,17 +1369,7 @@
+         return STATUS_SUCCESS;
+     }
+ 
+-    memset(fmt, 0, sizeof(*fmt));
+-    fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+-    fmt->Format.nChannels = 2;
+-    fmt->Format.nSamplesPerSec = 48000;
+-    fmt->Format.wBitsPerSample = 32;
+-    fmt->Format.nBlockAlign = 8;
+-    fmt->Format.nAvgBytesPerSec = 384000;
+-    fmt->Format.cbSize = sizeof(*fmt) - sizeof(fmt->Format);
+-    fmt->Samples.wValidBitsPerSample = 32;
+-    fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+-    fmt->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
++    *fmt = winehua_shared_audio_format_v1;
+     params->result = S_OK;
+     return STATUS_SUCCESS;
+ }

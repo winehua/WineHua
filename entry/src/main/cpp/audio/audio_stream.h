@@ -7,7 +7,7 @@
 
 #include <string>
 
-#include "audio_ipc_protocol.h"
+#include "protocols/audio_ipc_protocol.h"
 
 namespace winehua {
 

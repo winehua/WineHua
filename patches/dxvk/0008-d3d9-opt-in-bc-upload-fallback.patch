@@ -1,0 +1,257 @@
+diff --git a/src/d3d9/d3d9_format.h b/src/d3d9/d3d9_format.h
+--- a/src/d3d9/d3d9_format.h
++++ b/src/d3d9/d3d9_format.h
+@@ -165,6 +165,8 @@
+       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+     D3D9_CONVERSION_FORMAT_INFO ConversionFormatInfo = { };
+ 
++    bool EmulatedBc = false;
++
+     bool IsValid() const { return FormatColor != VK_FORMAT_UNDEFINED; }
+   };
+ 
+@@ -211,6 +213,7 @@
+       VkFormat              Format,
+       VkFormatFeatureFlags  Features) const;
+ 
++    bool m_emulateBc = false;
+     bool m_a4r4g4b4Support;
+     bool m_d24s8Support;
+     bool m_d16s8Support;
+diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
+--- a/src/d3d9/d3d9_format.cpp
++++ b/src/d3d9/d3d9_format.cpp
+@@ -1,4 +1,5 @@
+ #include "d3d9_format.h"
++#include "../util/util_env.h"
+ 
+ namespace dxvk {
+ 
+@@ -428,6 +429,8 @@
+   D3D9VkFormatTable::D3D9VkFormatTable(
+     const Rc<DxvkAdapter>& adapter,
+     const D3D9Options&     options) {
++    m_emulateBc = env::getEnvVar("WINEHUA_DXVK9_BC_EMULATION") == "1"
++      && !adapter->features().core.features.textureCompressionBC;
+     m_dfSupport = options.supportDFFormats;
+     m_x4r4g4b4Support = options.supportX4R4G4B4;
+     m_d32supportFinal = options.supportD32;
+@@ -495,6 +498,23 @@
+         VK_COMPONENT_SWIZZLE_A, alphaSwizzle };
+     }
+ 
++    if (m_emulateBc) {
++      VkFormat gpu = VK_FORMAT_UNDEFINED, srgb = VK_FORMAT_UNDEFINED;
++      switch (Format) {
++        case D3D9Format::DXT1: case D3D9Format::DXT2: case D3D9Format::DXT3:
++        case D3D9Format::DXT4: case D3D9Format::DXT5:
++          gpu = VK_FORMAT_R8G8B8A8_UNORM; srgb = VK_FORMAT_R8G8B8A8_SRGB; break;
++        case D3D9Format::ATI1: gpu = VK_FORMAT_R8_UNORM; break;
++        case D3D9Format::ATI2: gpu = VK_FORMAT_R8G8_UNORM; break;
++        default: break;
++      }
++      if (gpu != VK_FORMAT_UNDEFINED) {
++        // Keep FormatColor compressed for every D3D-visible pitch and shadow.
++        mapping.ConversionFormatInfo.FormatColor = gpu;
++        mapping.ConversionFormatInfo.FormatSrgb = srgb;
++        mapping.EmulatedBc = true;
++      }
++    }
+     return mapping;
+   }
+ 
+diff --git a/src/d3d9/d3d9_adapter.cpp b/src/d3d9/d3d9_adapter.cpp
+--- a/src/d3d9/d3d9_adapter.cpp
++++ b/src/d3d9/d3d9_adapter.cpp
+@@ -163,6 +163,11 @@
+       return D3D_OK;
+ 
+     // Let's actually ask Vulkan now that we got some quirks out the way!
++    if (mapping.EmulatedBc) {
++      if (Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_AUTOGENMIPMAP))
++        return D3DERR_NOTAVAILABLE;
++      return CheckDeviceVkFormat(mapping.ConversionFormatInfo.FormatColor, Usage, RType);
++    }
+     return CheckDeviceVkFormat(mapping.FormatColor, Usage, RType);
+   }
+ 
+diff --git a/src/d3d9/d3d9_common_texture.h b/src/d3d9/d3d9_common_texture.h
+--- a/src/d3d9/d3d9_common_texture.h
++++ b/src/d3d9/d3d9_common_texture.h
+@@ -107,6 +107,8 @@
+      * \brief Counts number of subresources
+      * \returns Number of subresources
+      */
++    bool IsEmulatedBc() const { return m_mapping.EmulatedBc; }
++
+     UINT CountSubresources() const {
+       return m_desc.ArraySize * m_desc.MipLevels;
+     }
+@@ -239,6 +241,7 @@
+      * Destroys mapping and staging buffers for a given subresource
+      */
+     void DestroyBufferSubresource(UINT Subresource) {
++      if (IsEmulatedBc()) return; // compressed shadow is authoritative
+       m_buffers[Subresource] = nullptr;
+       SetNeedsReadback(Subresource, true);
+     }
+@@ -327,11 +330,11 @@
+ 
+     bool IsAnySubresourceLocked() const { return m_locked.any(); }
+ 
+-    void SetNeedsReadback(UINT Subresource, bool value) { m_needsReadback.set(Subresource, value); }
++    void SetNeedsReadback(UINT Subresource, bool value) { m_needsReadback.set(Subresource, value && !IsEmulatedBc()); }
+ 
+     bool NeedsReachback(UINT Subresource) const { return m_needsReadback.get(Subresource); }
+ 
+-    void MarkAllNeedReadback() { m_needsReadback.setAll(); }
++    void MarkAllNeedReadback() { if (!IsEmulatedBc()) m_needsReadback.setAll(); }
+ 
+     void SetReadOnlyLocked(UINT Subresource, bool readOnly) { return m_readOnly.set(Subresource, readOnly); }
+ 
+diff --git a/src/d3d9/d3d9_common_texture.cpp b/src/d3d9/d3d9_common_texture.cpp
+--- a/src/d3d9/d3d9_common_texture.cpp
++++ b/src/d3d9/d3d9_common_texture.cpp
+@@ -108,6 +108,10 @@
+     //////////////////////
+     // Mapping Validation
+     auto mapping = pDevice->LookupFormat(pDesc->Format);
++
++    if (mapping.EmulatedBc && (pDesc->Usage &
++        (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_AUTOGENMIPMAP)))
++      return D3DERR_INVALIDCALL;
+ 
+     // Handle DisableA8RT hack for The Sims 2
+     if (pDesc->Format == D3D9Format::A8       &&
+@@ -265,14 +269,18 @@
+     // be reinterpreted in Vulkan, so we'll ignore those.
+     auto formatProperties = imageFormatInfo(m_mapping.FormatColor);
+ 
+-    bool isMutable     = m_mapping.FormatSrgb != VK_FORMAT_UNDEFINED;
++    const VkFormat emulatedViewFormats[2] = { m_mapping.ConversionFormatInfo.FormatColor,
++      m_mapping.ConversionFormatInfo.FormatSrgb };
++    bool isMutable     = (m_mapping.EmulatedBc
++      ? m_mapping.ConversionFormatInfo.FormatSrgb : m_mapping.FormatSrgb) != VK_FORMAT_UNDEFINED;
+     bool isColorFormat = (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
+ 
+     if (isMutable && isColorFormat) {
+       imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+ 
+       imageInfo.viewFormatCount = 2;
+-      imageInfo.viewFormats     = m_mapping.Formats;
++      imageInfo.viewFormats     = m_mapping.EmulatedBc
++        ? emulatedViewFormats : m_mapping.Formats;
+     }
+ 
+     // Are we an RT, need to gen mips or an offscreen plain surface?
+diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
+--- a/src/d3d9/meson.build
++++ b/src/d3d9/meson.build
+@@ -11,6 +11,7 @@
+ 
+ d3d9_src = [
+   'd3d9_main.cpp',
++  '../d3d11/d3d11_bc.cpp',
+   'd3d9_interface.cpp',
+   'd3d9_adapter.cpp',
+   'd3d9_monitor.cpp',
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -1,4 +1,5 @@
+ #include "d3d9_device.h"
++#include "../d3d11/d3d11_bc.h"
+ 
+ #include "d3d9_annotation.h"
+ #include "d3d9_interface.h"
+@@ -939,6 +940,10 @@
+ 
+     if (unlikely(dstTextureInfo->Desc()->Pool != D3DPOOL_DEFAULT ||
+                  srcTextureInfo->Desc()->Pool != D3DPOOL_DEFAULT))
++      return D3DERR_INVALIDCALL;
++
++    // This experimental upload fallback does not recompress GPU blits.
++    if (dstTextureInfo->IsEmulatedBc() || srcTextureInfo->IsEmulatedBc())
+       return D3DERR_INVALIDCALL;
+ 
+     Rc<DxvkImage> dstImage = dstTextureInfo->GetImage();
+@@ -3924,7 +3929,8 @@
+     enabled.core.features.shaderCullDistance = VK_TRUE;
+ 
+     // Ensure we support real BC formats and unofficial vendor ones.
+-    enabled.core.features.textureCompressionBC = VK_TRUE;
++    enabled.core.features.textureCompressionBC = supported.core.features.textureCompressionBC
++      || env::getEnvVar("WINEHUA_DXVK9_BC_EMULATION") != "1";
+ 
+     enabled.extDepthClipEnable.depthClipEnable = supported.extDepthClipEnable.depthClipEnable;
+     enabled.extHostQueryReset.hostQueryReset = VK_TRUE;
+@@ -3933,7 +3939,8 @@
+     enabled.core.features.occlusionQueryPrecise = VK_TRUE;
+ 
+     // SM3 level hardware
+-    enabled.core.features.multiViewport = VK_TRUE;
++    // D3D9 binds one viewport; DXSO and meta shaders never export ViewportIndex.
++    enabled.core.features.multiViewport = supported.core.features.multiViewport;
+     enabled.core.features.independentBlend = VK_TRUE;
+ 
+     // D3D10 level hardware supports this in D3D9 native.
+@@ -4468,6 +4475,59 @@
+     VkExtent3D srcTexLevelExtentBlockCount = util::computeBlockCount(srcTexLevelExtent, formatInfo->blockSize);
+ 
+     auto convertFormat = pDestTexture->GetFormatMapping().ConversionFormatInfo;
++
++    if (pDestTexture->IsEmulatedBc()) {
++      const auto* packed = imageFormatInfo(pSrcTexture->GetFormatMapping().FormatColor);
++      VkOffset3D srcOffset = { int32_t(alignDown(SrcOffset.x, 4u)), int32_t(alignDown(SrcOffset.y, 4u)), SrcOffset.z };
++      VkOffset3D dstOffset = { int32_t(alignDown(DestOffset.x, 4u)), int32_t(alignDown(DestOffset.y, 4u)), DestOffset.z };
++      VkExtent3D extent = { align(SrcExtent.width + SrcOffset.x - srcOffset.x, 4u),
++                            align(SrcExtent.height + SrcOffset.y - srcOffset.y, 4u), SrcExtent.depth };
++      extent = util::snapExtent3D(srcOffset, extent, srcTexLevelExtent);
++      extent = util::snapExtent3D(dstOffset, extent, dstTexLevelExtent);
++      const auto srcBlocks = util::computeBlockCount(srcTexLevelExtent, packed->blockSize);
++      const VkDeviceSize packedPitch = align(srcBlocks.width * packed->elementSize, 4);
++      const VkDeviceSize packedSlicePitch = packedPitch * srcBlocks.height;
++      D3D11CpuImage decoded;
++      if (!DecodeD3D11BcImage(pSrcTexture->GetFormatMapping().FormatColor,
++            srcTexLevelExtent, srcSlice.mapPtr, packedPitch, packedSlicePitch, decoded))
++        throw DxvkError("D3D9: BC upload decode failed");
++      const uint32_t pixelBytes = formatInfo->elementSize;
++      const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * extent.depth * pixelBytes;
++      auto staging = AllocTempBuffer<false>(bytes);
++      const auto* pixels = decoded.data.data() + srcOffset.z * decoded.slicePitch
++        + srcOffset.y * decoded.rowPitch + srcOffset.x * pixelBytes;
++      util::packImageData(staging.mapPtr, pixels, extent, pixelBytes,
++                          decoded.rowPitch, decoded.slicePitch);
++
++      // Preserve the original blocks across UpdateSurface/UpdateTexture and
++      // future locks. GPU images contain RGBA; reading them into BC would corrupt memory.
++      if (pDestTexture != pSrcTexture || DestSubresource != SrcSubresource) {
++        bool allocated = pDestTexture->CreateBufferSubresource(DestSubresource);
++        auto shadow = pDestTexture->GetMappedSlice(DestSubresource);
++        if (allocated) std::memset(shadow.mapPtr, 0, shadow.length);
++        const auto dstBlocks = util::computeBlockCount(dstTexLevelExtent, packed->blockSize);
++        const VkDeviceSize dstPitch = align(dstBlocks.width * packed->elementSize, 4);
++        const auto copyBlocks = util::computeBlockCount(extent, packed->blockSize);
++        for (uint32_t z = 0; z < extent.depth; ++z)
++          for (uint32_t y = 0; y < copyBlocks.height; ++y)
++            std::memcpy(static_cast<uint8_t*>(shadow.mapPtr)
++                + (dstOffset.z + z) * dstPitch * dstBlocks.height
++                + (dstOffset.y / 4 + y) * dstPitch + dstOffset.x / 4 * packed->elementSize,
++              static_cast<const uint8_t*>(srcSlice.mapPtr)
++                + (srcOffset.z + z) * packedSlicePitch
++                + (srcOffset.y / 4 + y) * packedPitch + srcOffset.x / 4 * packed->elementSize,
++              copyBlocks.width * packed->elementSize);
++      }
++      EmitCs([cImage = image, cLayers = dstLayers, cOffset = dstOffset,
++              cExtent = extent, cSlice = std::move(staging.slice)] (DxvkContext* ctx) {
++        ctx->copyBufferToImage(cImage, cLayers, cOffset, cExtent,
++                              cSlice.buffer(), cSlice.offset(), 1, 1);
++      });
++      pDestTexture->SetNeedsReadback(DestSubresource, false);
++      return;
++    }
++
++
+ 
+     if (likely(convertFormat.FormatType == D3D9ConversionFormat_None)) {
+       VkOffset3D alignedDestOffset = {

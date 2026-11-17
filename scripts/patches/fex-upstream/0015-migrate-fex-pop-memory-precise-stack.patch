@@ -1,0 +1,94 @@
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 901a922872ca3e8ca0912f5ec91ce6da78797da9..f9913c252a83297bf2925005bf3f51276daed6a9 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -401,8 +401,29 @@ void OpDispatchBuilder::PUSHSegmentOp(OpcodeArgs, uint32_t SegmentReg) {
+ }
+ 
+ void OpDispatchBuilder::POPOp(OpcodeArgs) {
+-  Ref Value = Pop(OpSizeFromSrc(Op));
+-  StoreResultGPR(Op, Value);
++  if (Op->Dest.IsGPR()) {
++    Ref Value = Pop(OpSizeFromSrc(Op));
++    StoreResultGPR(Op, Value);
++    return;
++  }
++
++  // A memory POP has two faulting accesses. Keep the architectural stack
++  // pointer unchanged until the destination store succeeds, so exception/SMC
++  // replay does not pop a second value. ESP-based destinations nevertheless
++  // use the post-pop address, as required by x86.
++  const auto GPRSize = GetGPROpSize();
++  const auto Size = OpSizeFromSrc(Op);
++  Ref SP = LoadGPRRegister(X86State::REG_RSP);
++  Ref Value = _LoadMemGPRAutoTSO(Size, SP, Size);
++  Ref NextSP = Add(GPRSize, SP, IR::OpSizeToSize(Size));
++  AddressMode A = DecodeAddress(Op, Op->Dest, MemoryAccessType::DEFAULT, false, NextSP);
++  _StoreMemAutoTSO(RegClass::GPR, Size, A, Value, Size);
++  // An SRA store can be coalesced into the earlier Add by register allocation.
++  // Keep the old SP live in its fixed register through the faulting store;
++  // this intervening write prevents NextSP from taking that register early.
++  Ref PreserveSP = _StoreRegister(SP, GPRSize);
++  PreserveSP->Reg = PhysicalRegister(RegClass::GPRFixed, X86State::REG_RSP).Raw;
++  StoreGPRRegister(X86State::REG_RSP, NextSP);
+ }
+ 
+ void OpDispatchBuilder::POPAOp(OpcodeArgs) {
+@@ -4431,8 +4452,11 @@ uint64_t OpDispatchBuilder::CalcAddress(const X86Tables::DecodedOp& Op, const X8
+ };
+ 
+ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand,
+-                                             MemoryAccessType AccessType, bool IsLoad) {
++                                             MemoryAccessType AccessType, bool IsLoad, Ref StackPointerOverride) {
+   const auto GPRSize = GetGPROpSize();
++  auto LoadAddressRegister = [&](uint32_t GPR) {
++    return StackPointerOverride && GPR == X86State::REG_RSP ? StackPointerOverride : LoadGPRRegister(GPR, GPRSize);
++  };
+ 
+   AddressMode A {};
+   A.Segment = GetSegment(Op->Flags);
+@@ -4451,10 +4475,10 @@ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, con
+     // Not an address, let the caller deal with it
+     A.AddrSize = GPRSize;
+   } else if (Operand.IsGPRDirect()) {
+-    A.Base = LoadGPRRegister(Operand.Data.GPR.GPR, GPRSize);
++    A.Base = LoadAddressRegister(Operand.Data.GPR.GPR);
+     A.NonTSO |= IsNonTSOReg(AccessType, Operand.Data.GPR.GPR);
+   } else if (Operand.IsGPRIndirect() || Operand.IsGPRIndirectRelocation()) {
+-    A.Base = LoadGPRRegister(Operand.Data.GPRIndirect.GPR, GPRSize);
++    A.Base = LoadAddressRegister(Operand.Data.GPRIndirect.GPR);
+     if (Operand.IsGPRIndirectRelocation()) {
+       A.Base = Add(GPRSize, _EntrypointOffset(GPRSize, Operand.Data.GPRIndirect.Displacement), A.Base);
+     } else {
+@@ -4487,7 +4511,7 @@ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, con
+     const bool IsVSIB = IsLoad && ((Op->Flags & X86Tables::DecodeFlags::FLAG_VSIB_BYTE) != 0);
+ 
+     if (Operand.Data.SIB.Base != FEXCore::X86State::REG_INVALID) {
+-      A.Base = LoadGPRRegister(Operand.Data.SIB.Base, GPRSize);
++      A.Base = LoadAddressRegister(Operand.Data.SIB.Base);
+     }
+ 
+     // NOTE: VSIB cannot have the index * scale portion calculated ahead of time,
+@@ -4500,7 +4524,7 @@ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, con
+     //       the base register (if a base register is provided), since this is a
+     //       part of the address calculation that can be done ahead of time.
+     if (!IsVSIB && Operand.Data.SIB.Index != FEXCore::X86State::REG_INVALID) {
+-      A.Index = LoadGPRRegister(Operand.Data.SIB.Index, GPRSize);
++      A.Index = LoadAddressRegister(Operand.Data.SIB.Index);
+       A.IndexScale = Operand.Data.SIB.Scale;
+     }
+ 
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 4477c7266c85e92cd7377b374b0fcbb7f8a44bfa..dabd5d7b68c8667d0fb198e3c92750c1d9817676 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -1604,7 +1604,8 @@ private:
+     return Access == MemoryAccessType::DEFAULT && Reg == X86State::REG_RSP;
+   }
+ 
+-  AddressMode DecodeAddress(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand, MemoryAccessType AccessType, bool IsLoad);
++  AddressMode DecodeAddress(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand, MemoryAccessType AccessType, bool IsLoad,
++                            Ref StackPointerOverride = {});
+   uint64_t CalcAddress(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand, bool IsLoad);
+ 
+   Ref LoadSource(RegClass Class, const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand, uint32_t Flags,

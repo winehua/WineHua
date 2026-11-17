@@ -1,0 +1,15 @@
+diff --git a/FEXCore/Source/Interface/IR/IRDumper.cpp b/FEXCore/Source/Interface/IR/IRDumper.cpp
+index 31ecddc9e08e315ddd03a6e77964864ca5948986..4e90ab0626ddf6b27b97f76e970cb344fb568a34 100644
+--- a/FEXCore/Source/Interface/IR/IRDumper.cpp
++++ b/FEXCore/Source/Interface/IR/IRDumper.cpp
+@@ -350,6 +350,10 @@ static void PrintArg(fextl::ostringstream* out, const IRListView*, BranchHint Ar
+   }();
+ }
+ 
++static void PrintArg(fextl::ostringstream* out, const IRListView*, const std::array<uint8_t, 16>& Arg) {
++  for (auto Byte : Arg) *out << fextl::fmt::format("{:02x}", Byte);
++}
++
+ void Dump(fextl::ostringstream* out, const IRListView* IR) {
+   auto HeaderOp = IR->GetHeader();
+ 

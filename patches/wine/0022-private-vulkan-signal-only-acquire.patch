@@ -1,0 +1,73 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] win32u: signal private acquire without a shared pending command
+
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -331,8 +331,6 @@
+     BOOL *acquired;
+     uint32_t next_image;
+     uint32_t serial;
+-    VkCommandPool acquire_pool;
+-    VkCommandBuffer acquire_command;
+     pthread_mutex_t mutex;
+     pthread_cond_t cond;
+ 
+@@ -2769,10 +2767,6 @@
+ {
+     struct vulkan_device *device = swapchain->device;
+     if (!device) return;
+-    /* Keep this small pool for device teardown.  Explicit destruction can
+-     * block in the Harmony Venus driver after repeated acquire feedback. */
+-    swapchain->acquire_pool = VK_NULL_HANDLE;
+-    swapchain->acquire_command = VK_NULL_HANDLE;
+     for (uint32_t i = 0; i < swapchain->image_count; ++i)
+     {
+         if (swapchain->images && swapchain->images[i])
+@@ -2846,33 +2840,6 @@
+         if (result != VK_SUCCESS) return result;
+     }
+ 
+-    {
+-        VkCommandPoolCreateInfo pool_info = {
+-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+-            .queueFamilyIndex = device->queues[0].info.queueFamilyIndex,
+-        };
+-        VkCommandBufferAllocateInfo allocation = {
+-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+-            .commandPool = VK_NULL_HANDLE,
+-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+-            .commandBufferCount = 1,
+-        };
+-        VkCommandBufferBeginInfo begin = {
+-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+-        };
+-        VkResult result = device->p_vkCreateCommandPool(device->host.device, &pool_info, NULL,
+-                                                        &swapchain->acquire_pool);
+-        if (result != VK_SUCCESS) return result;
+-        allocation.commandPool = swapchain->acquire_pool;
+-        result = device->p_vkAllocateCommandBuffers(device->host.device, &allocation,
+-                                                     &swapchain->acquire_command);
+-        if (result != VK_SUCCESS) return result;
+-        result = device->p_vkBeginCommandBuffer(swapchain->acquire_command, &begin);
+-        if (result != VK_SUCCESS) return result;
+-        result = device->p_vkEndCommandBuffer(swapchain->acquire_command);
+-        if (result != VK_SUCCESS) return result;
+-    }
+-
+     swapchain->surface = surface;
+     swapchain->device = device;
+     swapchain->format = create_info->imageFormat;
+@@ -2954,8 +2921,11 @@
+         VkFence host_fence = f ? f->obj.host.fence : VK_NULL_HANDLE;
+         VkSubmitInfo submit = {
+             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+-            .commandBufferCount = 1,
+-            .pCommandBuffers = &swapchain->acquire_command,
++            /* Signal-only submission: no shared command buffer can be pending
++             * across consecutive acquisitions. Keep one batch for semaphore
++             * and fence feedback, including fence-only acquisition. */
++            .commandBufferCount = 0,
++            .pCommandBuffers = NULL,
+             .signalSemaphoreCount = host_sem ? 1u : 0u,
+             .pSignalSemaphores = host_sem ? &host_sem : NULL,
+         };

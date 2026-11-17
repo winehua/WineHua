@@ -1,0 +1,234 @@
+Subject: [PATCH] venus: retire upload pools before guest waits and stop on upload failure
+
+Retire only the private command, preserving every guest wait/signal and fence.
+An internal upload failure cannot safely fall back after dirty bytes have been
+consumed. Stop the affected context and report the first error instead of
+submitting stale guest work or overwriting memory that is still in flight.
+
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -819,6 +819,25 @@
+ #ifdef __OHOS__
+ #define VKR_WINEHUA_INLINE_MAX_GUEST_SUBMITS 64u
+ 
++/* Once shadow bytes have been retired in favor of an upload command, a CPU
++ * retry cannot reconstruct that generation. Never run guest work after a
++ * failed upload, or write mapped memory while its slot may still be in use.
++ * Internal waits can return VK_TIMEOUT, which is not a QueueSubmit result. */
++static VkResult
++vkr_ohos_abort_shadow_submission(struct vkr_context *ctx,
++                                  struct vkr_queue *queue,
++                                  VkResult result,
++                                  const char *phase)
++{
++   queue->shadow_upload_prepared = false;
++   vkr_log("OHOS shadow submission aborted phase=%s queueId=%" PRIu64
++           " result=%d", phase, queue->base.id, result);
++   vkr_context_set_fatal(ctx);
++   return result == VK_ERROR_OUT_OF_HOST_MEMORY ||
++          result == VK_ERROR_OUT_OF_DEVICE_MEMORY
++      ? result : VK_ERROR_DEVICE_LOST;
++}
++
+ static VkResult
+ vkr_ohos_queue_submit_inline_upload(struct vkr_queue *queue,
+                                     struct vn_device_proc_table *vk,
+@@ -836,26 +855,25 @@
+       .signalSemaphoreValueCount = 1,
+       .pSignalSemaphoreValues = &retire_value,
+    };
++   /* Signal retirement with the upload itself. A trailing signal would
++    * make pool reuse depend on guest timeline waits and stall the decoder
++    * before it can publish the corresponding future signal. */
+    const VkSubmitInfo upload_submit = {
+       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
++      .pNext = &timeline_info,
+       .commandBufferCount = 1,
+       .pCommandBuffers = &slot->command,
+-   };
+-   const VkSubmitInfo retire_submit = {
+-      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+-      .pNext = &timeline_info,
+       .signalSemaphoreCount = 1,
+       .pSignalSemaphores = &queue->shadow_upload_timeline,
+    };
+-   VkSubmitInfo submits[VKR_WINEHUA_INLINE_MAX_GUEST_SUBMITS + 2];
++   VkSubmitInfo submits[VKR_WINEHUA_INLINE_MAX_GUEST_SUBMITS + 1];
+    submits[0] = upload_submit;
+    if (args->submitCount)
+       memcpy(&submits[1], args->pSubmits,
+              sizeof(*args->pSubmits) * args->submitCount);
+-   submits[args->submitCount + 1] = retire_submit;
+ 
+    const VkResult result = vk->QueueSubmit(
+-      args->queue, args->submitCount + 2, submits, args->fence);
++      args->queue, args->submitCount + 1, submits, args->fence);
+    queue->shadow_upload_prepared = false;
+    if (result == VK_SUCCESS) {
+       slot->in_flight = true;
+@@ -894,21 +912,17 @@
+       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+       .commandBufferInfoCount = 1,
+       .pCommandBufferInfos = &upload_command,
+-   };
+-   const VkSubmitInfo2 retire_submit = {
+-      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+       .signalSemaphoreInfoCount = 1,
+       .pSignalSemaphoreInfos = &retire_signal,
+    };
+-   VkSubmitInfo2 submits[VKR_WINEHUA_INLINE_MAX_GUEST_SUBMITS + 2];
++   VkSubmitInfo2 submits[VKR_WINEHUA_INLINE_MAX_GUEST_SUBMITS + 1];
+    submits[0] = upload_submit;
+    if (args->submitCount)
+       memcpy(&submits[1], args->pSubmits,
+              sizeof(*args->pSubmits) * args->submitCount);
+-   submits[args->submitCount + 1] = retire_submit;
+ 
+    const VkResult result = vk->QueueSubmit2(
+-      args->queue, args->submitCount + 2, submits, args->fence);
++      args->queue, args->submitCount + 1, submits, args->fence);
+    queue->shadow_upload_prepared = false;
+    if (result == VK_SUCCESS) {
+       slot->in_flight = true;
+@@ -1017,8 +1031,15 @@
+          vkr_ohos_perf_record_prepare_phases(queue);
+    }
+    const uint64_t prepare_end_ns = perf_account ? vkr_ohos_queue_now_ns() : 0;
+-   if (upload_prepare_result != VK_SUCCESS)
+-      vkr_device_memory_disable_shadow_upload_coverage(dispatch->data);
++   if (upload_prepare_result != VK_SUCCESS) {
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, upload_prepare_result, "prepare");
++      if (gpu_upload) {
++         vkr_device_memory_shadow_generation_end(dispatch->data);
++         mtx_unlock(&queue->shadow_upload_mutex);
++      }
++      return;
++   }
+    const VkResult deferred_host_wait_result =
+       vkr_ohos_wait_deferred_shadow_host_copy(
+          dispatch->data, queue, vk);
+@@ -1027,7 +1048,8 @@
+          vkr_device_memory_shadow_generation_end(dispatch->data);
+          mtx_unlock(&queue->shadow_upload_mutex);
+       }
+-      args->ret = deferred_host_wait_result;
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, deferred_host_wait_result, "host-wait");
+       return;
+    }
+ #endif
+@@ -1067,18 +1089,6 @@
+    VkResult upload_submit_result = upload_prepare_result;
+    if (upload_submit_result == VK_SUCCESS && !inline_upload)
+       upload_submit_result = vkr_device_memory_submit_shadow_upload(queue);
+-   if (upload_submit_result != VK_SUCCESS && gpu_upload && !inline_upload) {
+-      /* A failed private upload must fall back to the original mapped-memory
+-       * path before the guest submission is allowed to execute. */
+-      vkr_device_memory_disable_shadow_upload_coverage(dispatch->data);
+-      const struct vkr_shadow_sync_stats retry_stats =
+-         vkr_device_memory_sync_shadows_to_host(dispatch->data);
+-      shadow_stats.bytes += retry_stats.bytes;
+-      shadow_stats.copies += retry_stats.copies;
+-      shadow_stats.cache_ops += retry_stats.cache_ops;
+-      shadow_stats.scanned += retry_stats.scanned;
+-      shadow_stats.elapsed_us += retry_stats.elapsed_us;
+-   }
+    const uint64_t upload_end_ns = perf_account ? vkr_ohos_queue_now_ns() : 0;
+ #endif
+ #ifdef __OHOS__
+@@ -1087,10 +1097,18 @@
+       upload_submit_result = args->ret;
+    } else {
+ #endif
+-      args->ret = vk->QueueSubmit(
+-         args->queue, args->submitCount, args->pSubmits, args->fence);
+-#ifdef __OHOS__
+-   }
++#ifdef __OHOS__
++      if (upload_submit_result != VK_SUCCESS)
++         args->ret = upload_submit_result;
++      else
++#endif
++         args->ret = vk->QueueSubmit(
++            args->queue, args->submitCount, args->pSubmits, args->fence);
++#ifdef __OHOS__
++   }
++   if (args->ret != VK_SUCCESS && gpu_upload)
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, args->ret, "submit");
+    if (args->ret == VK_SUCCESS && vkr_ohos_submit_postwait_enabled()) {
+       const VkResult wait_result =
+          vk->QueueWaitIdle(queue->base.handle.queue);
+@@ -1366,7 +1384,8 @@
+       vkr_ohos_wait_deferred_shadow_host_copy(
+          dispatch->data, queue, vk);
+    if (deferred_host_wait_result != VK_SUCCESS) {
+-      args->ret = deferred_host_wait_result;
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, deferred_host_wait_result, "host-wait");
+       return;
+    }
+ #endif
+@@ -1436,8 +1455,15 @@
+       if (perf_summary)
+          vkr_ohos_perf_record_prepare_phases(queue);
+    }
+-   if (upload_prepare_result != VK_SUCCESS)
+-      vkr_device_memory_disable_shadow_upload_coverage(dispatch->data);
++   if (upload_prepare_result != VK_SUCCESS) {
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, upload_prepare_result, "prepare");
++      if (gpu_upload) {
++         vkr_device_memory_shadow_generation_end(dispatch->data);
++         mtx_unlock(&queue->shadow_upload_mutex);
++      }
++      return;
++   }
+    const VkResult deferred_host_wait_result =
+       vkr_ohos_wait_deferred_shadow_host_copy(
+          dispatch->data, queue, vk);
+@@ -1446,7 +1472,8 @@
+          vkr_device_memory_shadow_generation_end(dispatch->data);
+          mtx_unlock(&queue->shadow_upload_mutex);
+       }
+-      args->ret = deferred_host_wait_result;
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, deferred_host_wait_result, "host-wait");
+       return;
+    }
+ #endif
+@@ -1464,10 +1491,6 @@
+    VkResult upload_submit_result = upload_prepare_result;
+    if (upload_submit_result == VK_SUCCESS && !inline_upload)
+       upload_submit_result = vkr_device_memory_submit_shadow_upload(queue);
+-   if (upload_submit_result != VK_SUCCESS && gpu_upload && !inline_upload) {
+-      vkr_device_memory_disable_shadow_upload_coverage(dispatch->data);
+-      vkr_device_memory_sync_shadows_to_host(dispatch->data);
+-   }
+ #endif
+ #ifdef __OHOS__
+    if (inline_upload) {
+@@ -1475,10 +1498,18 @@
+       upload_submit_result = args->ret;
+    } else {
+ #endif
+-      args->ret = vk->QueueSubmit2(
+-         args->queue, args->submitCount, args->pSubmits, args->fence);
+-#ifdef __OHOS__
+-   }
++#ifdef __OHOS__
++      if (upload_submit_result != VK_SUCCESS)
++         args->ret = upload_submit_result;
++      else
++#endif
++         args->ret = vk->QueueSubmit2(
++            args->queue, args->submitCount, args->pSubmits, args->fence);
++#ifdef __OHOS__
++   }
++   if (args->ret != VK_SUCCESS && gpu_upload)
++      args->ret = vkr_ohos_abort_shadow_submission(
++         dispatch->data, queue, args->ret, "submit2");
+    if (args->ret == VK_SUCCESS && vkr_ohos_submit_postwait_enabled()) {
+       const VkResult wait_result =
+          vk->QueueWaitIdle(queue->base.handle.queue);

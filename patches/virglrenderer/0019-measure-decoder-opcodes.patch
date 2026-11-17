@@ -1,0 +1,134 @@
+--- a/src/vrend/vrend_decode.c
++++ b/src/vrend/vrend_decode.c
+@@ -2057,6 +2057,75 @@
+    }
+ }
+ 
++
++/* Begin bounded decoder diagnostics. No clocks in ordinary builds. */
++#ifndef WINEHUA_VIRGL_OPCODE_DIAGNOSTIC
++#define WINEHUA_VIRGL_OPCODE_DIAGNOSTIC 0
++#endif
++#define WINEHUA_OPCODE_SWITCH VIRGL_MAX_COMMANDS
++#define WINEHUA_OPCODE_CHECK (VIRGL_MAX_COMMANDS + 1)
++#define WINEHUA_OPCODE_COUNT (VIRGL_MAX_COMMANDS + 2)
++#if WINEHUA_VIRGL_OPCODE_DIAGNOSTIC
++#include <time.h>
++struct winehua_opcode_stat { uint64_t calls, ns, max_ns, bytes; };
++static struct winehua_opcode_stat winehua_opcode_stats[WINEHUA_OPCODE_COUNT];
++static struct winehua_opcode_stat winehua_opcode_batches;
++static uint64_t winehua_opcode_window;
++static uint64_t winehua_opcode_begin(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
++}
++static void winehua_opcode_add(struct winehua_opcode_stat *s, uint64_t elapsed, uint64_t bytes)
++{
++   s->calls++;
++   s->ns += elapsed;
++   s->bytes += bytes;
++   if (elapsed > s->max_ns)
++      s->max_ns = elapsed;
++}
++static void winehua_opcode_end(unsigned op, uint64_t started, uint64_t bytes)
++{
++   winehua_opcode_add(&winehua_opcode_stats[op], winehua_opcode_begin() - started, bytes);
++}
++static void winehua_opcode_finish(uint64_t started, size_t bytes)
++{
++   const uint64_t now = winehua_opcode_begin();
++   winehua_opcode_add(&winehua_opcode_batches, now - started, bytes);
++   if (!winehua_opcode_window)
++      winehua_opcode_window = started;
++   if (now - winehua_opcode_window < 5000000000ull)
++      return;
++   const uint64_t window = now - winehua_opcode_window;
++   /* At most VIRGL_MAX_COMMANDS + 3 lines per five-second window. */
++   virgl_warn("opcode batch window_ns=%llu calls=%llu total_ns=%llu max_ns=%llu bytes=%llu\n",
++      (unsigned long long)window, (unsigned long long)winehua_opcode_batches.calls,
++      (unsigned long long)winehua_opcode_batches.ns, (unsigned long long)winehua_opcode_batches.max_ns,
++      (unsigned long long)winehua_opcode_batches.bytes);
++   for (unsigned op = 0; op < WINEHUA_OPCODE_COUNT; op++) {
++      struct winehua_opcode_stat *s = &winehua_opcode_stats[op];
++      if (!s->calls)
++         continue;
++      const char *name = op == WINEHUA_OPCODE_SWITCH ? "context-switch" :
++                         op == WINEHUA_OPCODE_CHECK ? "gl-error-check" : vrend_get_comand_name(op);
++      virgl_warn("opcode summary op=%u name=%s window_ns=%llu calls=%llu total_ns=%llu max_ns=%llu bytes=%llu\n",
++         op, name, (unsigned long long)window, (unsigned long long)s->calls,
++         (unsigned long long)s->ns, (unsigned long long)s->max_ns, (unsigned long long)s->bytes);
++   }
++   memset(winehua_opcode_stats, 0, sizeof(winehua_opcode_stats));
++   memset(&winehua_opcode_batches, 0, sizeof(winehua_opcode_batches));
++   winehua_opcode_window = now;
++}
++#else
++static inline uint64_t winehua_opcode_begin(void) { return 0; }
++static inline void winehua_opcode_end(unsigned op, uint64_t started, uint64_t bytes)
++{ (void)op; (void)started; (void)bytes; }
++static inline void winehua_opcode_finish(uint64_t started, size_t bytes)
++{ (void)started; (void)bytes; }
++#endif
++/* End bounded decoder diagnostics. */
++
+ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
+                                        const void *buffer,
+                                        size_t size)
+@@ -2065,12 +2134,17 @@
+    struct vrend_decode_ctx *gdctx = (struct vrend_decode_ctx *)ctx;
+    bool bret;
+    int ret;
++   const uint64_t batch_started = winehua_opcode_begin();
++   uint64_t stage_started = batch_started;
+ 
+ #define TRANSFER_HEADER_SIZE 4096
+ 
+    bret = vrend_hw_switch_context(gdctx->grctx, true);
+-   if (bret == false)
+-      return EINVAL;
++   winehua_opcode_end(WINEHUA_OPCODE_SWITCH, stage_started, 0);
++   if (bret == false) {
++      winehua_opcode_finish(batch_started, size);
++      return EINVAL;
++   }
+ 
+    if (VREND_DEBUG_ENABLED &&
+        vrend_debug(gdctx->grctx, dbg_dump_cmd_streams) &&
+@@ -2089,8 +2163,10 @@
+       uint32_t len = *buf >> 16;
+       uint32_t cmd = *buf & 0xff;
+ 
+-      if (cmd >= VIRGL_MAX_COMMANDS)
++      if (cmd >= VIRGL_MAX_COMMANDS) {
++         winehua_opcode_finish(batch_started, size);
+          return EINVAL;
++      }
+ 
+       buf_offset += len + 1;
+ 
+@@ -2106,17 +2182,23 @@
+ 
+       TRACE_SCOPE_SLOW(vrend_get_comand_name(cmd));
+ 
++      stage_started = winehua_opcode_begin();
+       ret = decode_table[cmd](gdctx->grctx, buf, len);
++      winehua_opcode_end(cmd, stage_started, (uint64_t)(len + 1) * 4);
++      stage_started = winehua_opcode_begin();
+       if (!vrend_check_no_error(gdctx->grctx) && !ret)
+          ret = EINVAL;
++      winehua_opcode_end(WINEHUA_OPCODE_CHECK, stage_started, 0);
+       if (ret) {
+          virgl_error("context %d failed to dispatch %s: %d\n",
+                gdctx->base.ctx_id, vrend_get_comand_name(cmd), ret);
+          if (ret == EINVAL)
+             vrend_report_buffer_error(gdctx->grctx, *buf);
++         winehua_opcode_finish(batch_started, size);
+          return ret;
+       }
+    }
++   winehua_opcode_finish(batch_started, size);
+    return 0;
+ }
+ 

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "sourceCommit": "e970ee6f21799724697fc7c5f275f5442e7d035a",
+  "runtimeMarker": "vpp-wow64-seh-x87-20261105-v2",
+  "patches": [
+    {
+      "path": "patches/box64/0001-wow64-preserve-seh-x87-and-guest-protection.patch",
+      "sha256": "ac880813d59fabdb6940803297c2be8f7f742b608f3671b8941557151ad67000"
+    }
+  ],
+  "files": {
+    "src/custommem.c": {
+      "original": "55e573b28a503d943b79232b9ef22dfc8e45cc693bc524f102da1c2ac3d235dc",
+      "patched": "c19382a54aa5af5f6c7942953fa9c495dd424c85498e52168fd74359c034c9d2"
+    },
+    "src/dynarec/arm64/dynarec_arm64_arch.c": {
+      "original": "5de7824dc38c9e2e43ddf08eab27f957cd91c909fc402905b23a05fa23b935be",
+      "patched": "d6fd51fe27dffc6e29dbd178f3c675baf01d2b1841616ad053348387583a170f"
+    },
+    "src/dynarec/arm64/dynarec_arm64_arch.h": {
+      "original": "ab7d233e2dfb7ade5ec0c338728651a2271cbbc30cc73b6bf759c0619f145568",
+      "patched": "0387c511e858c2d70ee1fc1eedfaeef72bdcb6a29fc783e8e64358ab686542d3"
+    },
+    "wine/wow64/wowbox64.c": {
+      "original": "9339035f7712a15e31943c30ca06337e24bbce7948146b0557bf041eb7f4d585",
+      "patched": "c1c1cb923f69ba533580b92b5b0644efe6f73b1884830e200f96c67d61cf5f37"
+    },
+    "CMakeLists.txt": {
+      "original": "1981d8f76297cfcc8cdcaa04b86538e4b5630c8175d347c35cb0587330604bc8",
+      "patched": "1981d8f76297cfcc8cdcaa04b86538e4b5630c8175d347c35cb0587330604bc8"
+    },
+    "wine/wow64/CMakeLists.txt": {
+      "original": "0f83776271c1d86c1fceae66d13629d969392464ebebb42d7bc6fdcccf147291",
+      "patched": "0f83776271c1d86c1fceae66d13629d969392464ebebb42d7bc6fdcccf147291"
+    },
+    "wine/wow64/wowbox64.def": {
+      "original": "e50b0b4494bea2ad668757c399c5b3f1daf8917804d6ed965c65368cdf808c8b",
+      "patched": "af12a9a7ac4cae52f5a70a7afe32f06f842258584c65a5e4434dc60168a0f234"
+    }
+  }
+}

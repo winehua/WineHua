@@ -1,0 +1,23 @@
+From upstream bfd47ec8767e7589f86ce4b54372669da2963907
+Subject: [d3d9] Try to match either top or bottom mips in UpdateTexture
+Adapted as a default-off Mini qualification experiment.
+
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -830,9 +830,14 @@
+     uint32_t mipLevels = dstTexInfo->IsAutomaticMip() ? 1 : dstTexInfo->Desc()->MipLevels;
+     uint32_t arraySlices = std::min(srcTexInfo->Desc()->ArraySize, dstTexInfo->Desc()->ArraySize);
+ 
+-    uint32_t srcMipOffset = srcTexInfo->Desc()->MipLevels - mipLevels;
++    // Opt-in backport of upstream bfd47ec8767e: games also update textures
++    // with matching top levels and a truncated destination mip tail.
++    static const bool matchTopMips =
++      env::getEnvVar("WINEHUA_DXVK9_MATCH_TOP_MIPS") == "1";
++    VkExtent3D dstFirstMipExtent = dstTexInfo->GetExtent();
++    uint32_t srcMipOffset = matchTopMips && srcTexInfo->GetExtent() == dstFirstMipExtent
++      ? 0u : srcTexInfo->Desc()->MipLevels - mipLevels;
+     VkExtent3D srcFirstMipExtent = util::computeMipLevelExtent(srcTexInfo->GetExtent(), srcMipOffset);
+-    VkExtent3D dstFirstMipExtent = dstTexInfo->GetExtent();
+     if (srcFirstMipExtent != dstFirstMipExtent)
+       return D3DERR_INVALIDCALL;
+ 

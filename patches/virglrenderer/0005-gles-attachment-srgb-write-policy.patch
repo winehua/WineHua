@@ -1,0 +1,337 @@
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -700,6 +700,12 @@
+ #define VREND_PROGRAM_NQUEUES (1 << 8)
+ #define VREND_PROGRAM_NQUEUE_MASK (VREND_PROGRAM_NQUEUES - 1)
+ 
++enum vrend_unorm_srgb_write_policy {
++   VREND_UNORM_SRGB_WRITE_UNDECIDED = 0,
++   VREND_UNORM_SRGB_WRITE_ENCODE_XRGB,
++   VREND_UNORM_SRGB_WRITE_PRESERVE,
++};
++
+ struct vrend_sub_context {
+    struct list_head head;
+ 
+@@ -808,6 +814,7 @@
+    struct vrend_context_tweaks tweaks;
+    uint8_t swizzle_output_rgb_to_bgr;
+    uint8_t needs_manual_srgb_encode_bitmask;
++   enum vrend_unorm_srgb_write_policy unorm_srgb_write_policy;
+    int fake_occlusion_query_samples_passed_multiplier;
+ 
+    int prim_mode;
+@@ -2372,14 +2379,6 @@
+       if (needs_view && vrend_resource_supports_view(res, surf->format)) {
+          GLenum target = res->target;
+          GLenum internalformat = tex_conv_table[format].internalformat;
+-
+-         /* Mesa's dest_surface_srgb_control intentionally permits a UNORM
+-          * surface view over an SRGB resource. Keep the attachment SRGB so
+-          * GL_FRAMEBUFFER_SRGB performs the required linear->sRGB encoding. */
+-         if (has_feature(feat_srgb_write_control) &&
+-             !util_format_is_srgb(surf->format) &&
+-             util_format_is_srgb(res->base.format))
+-            internalformat = tex_conv_table[res->base.format].internalformat;
+ 
+          if (target == GL_TEXTURE_CUBE_MAP && first_layer == last_layer) {
+             first_layer = 0;
+@@ -3111,6 +3110,93 @@
+    }
+ }
+ 
++static bool
++vrend_is_unorm_surface_of_srgb_resource(const struct vrend_surface *surf,
++                                        bool alpha_surface)
++{
++   if (!surf)
++      return false;
++
++   switch (surf->format) {
++   case VIRGL_FORMAT_R8G8B8A8_UNORM:
++      return alpha_surface &&
++         (surf->texture->base.format == VIRGL_FORMAT_R8G8B8A8_SRGB ||
++          surf->texture->base.format == VIRGL_FORMAT_R8G8B8X8_SRGB);
++   case VIRGL_FORMAT_R8G8B8X8_UNORM:
++      return !alpha_surface &&
++         (surf->texture->base.format == VIRGL_FORMAT_R8G8B8A8_SRGB ||
++          surf->texture->base.format == VIRGL_FORMAT_R8G8B8X8_SRGB);
++   case VIRGL_FORMAT_B8G8R8A8_UNORM:
++      return alpha_surface &&
++         (surf->texture->base.format == VIRGL_FORMAT_B8G8R8A8_SRGB ||
++          surf->texture->base.format == VIRGL_FORMAT_B8G8R8X8_SRGB);
++   case VIRGL_FORMAT_B8G8R8X8_UNORM:
++      return !alpha_surface &&
++         (surf->texture->base.format == VIRGL_FORMAT_B8G8R8A8_SRGB ||
++          surf->texture->base.format == VIRGL_FORMAT_B8G8R8X8_SRGB);
++   default:
++      return false;
++   }
++}
++
++static void
++vrend_classify_unorm_srgb_write_policy(struct vrend_sub_context *sub_ctx)
++{
++   if (sub_ctx->unorm_srgb_write_policy != VREND_UNORM_SRGB_WRITE_UNDECIDED ||
++       !vrend_state.use_gles || !has_feature(feat_srgb_write_control))
++      return;
++
++   bool saw_xrgb = false;
++   for (uint32_t i = 0; i < sub_ctx->nr_cbufs; i++) {
++      struct vrend_surface *surf = sub_ctx->surf[i];
++
++      if (vrend_is_unorm_surface_of_srgb_resource(surf, true)) {
++         sub_ctx->unorm_srgb_write_policy = VREND_UNORM_SRGB_WRITE_PRESERVE;
++         virgl_info("vrend: subctx=%d unorm-srgb policy=PRESERVE (alpha-bearing first)\n",
++                    sub_ctx->sub_ctx_id);
++         return;
++      }
++      saw_xrgb |= vrend_is_unorm_surface_of_srgb_resource(surf, false);
++   }
++
++   if (saw_xrgb)
++      sub_ctx->unorm_srgb_write_policy = VREND_UNORM_SRGB_WRITE_ENCODE_XRGB;
++   if (saw_xrgb)
++      virgl_info("vrend: subctx=%d unorm-srgb policy=ENCODE_XRGB (XRGB-only first)\n",
++                 sub_ctx->sub_ctx_id);
++}
++
++/* Surface semantics, attachment storage, and driver write control are distinct.
++ * EGL images cannot acquire a texture view. Keep the Mesa shadow-storage path
++ * intact and never infer encoding solely from a backing resource's format. */
++static bool
++vrend_surface_wants_srgb_encode(struct vrend_sub_context *sub_ctx,
++                                const struct vrend_surface *surf)
++{
++   return surf && (util_format_is_srgb(surf->format) ||
++      (sub_ctx->unorm_srgb_write_policy == VREND_UNORM_SRGB_WRITE_ENCODE_XRGB &&
++       vrend_is_unorm_surface_of_srgb_resource(surf, false)));
++}
++
++static bool
++vrend_surface_has_srgb_storage(const struct vrend_surface *surf)
++{
++   if (!surf) return false;
++   if (vrend_resource_supports_view(surf->texture, surf->format))
++      return util_format_is_srgb(surf->format);
++   return vrend_state.egl_image_srgb_import &&
++          util_format_is_srgb(surf->texture->base.format);
++}
++
++static bool
++vrend_surface_needs_manual_srgb(struct vrend_sub_context *sub_ctx,
++                                 const struct vrend_surface *surf)
++{
++   return vrend_surface_wants_srgb_encode(sub_ctx, surf) &&
++      !(vrend_surface_has_srgb_storage(surf) &&
++        (!has_feature(feat_srgb_write_control) || sub_ctx->framebuffer_srgb_enabled));
++}
++
+ static void vrend_hw_emit_framebuffer_state(struct vrend_sub_context *sub_ctx)
+ {
+    static const GLenum buffers[8] = {
+@@ -3124,31 +3210,21 @@
+       GL_COLOR_ATTACHMENT7,
+    };
+ 
+-   if (sub_ctx->nr_cbufs == 0) {
+-      glReadBuffer(GL_NONE);
+-      if (has_feature(feat_srgb_write_control)) {
+-         glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+-         sub_ctx->framebuffer_srgb_enabled = false;
+-      }
+-   } else if (has_feature(feat_srgb_write_control)) {
+-      struct vrend_surface *surf = NULL;
+-      bool use_srgb = false;
+-      for (uint32_t i = 0; i < sub_ctx->nr_cbufs; i++) {
+-         if (sub_ctx->surf[i]) {
+-            surf = sub_ctx->surf[i];
+-            if (util_format_is_srgb(surf->format) ||
+-                (!util_format_is_srgb(surf->format) &&
+-                 util_format_is_srgb(surf->texture->base.format))) {
+-               use_srgb = true;
+-               break;
+-            }
+-         }
+-      }
+-      if (use_srgb) {
+-         glEnable(GL_FRAMEBUFFER_SRGB_EXT);
+-      } else {
+-         glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+-      }
++   vrend_classify_unorm_srgb_write_policy(sub_ctx);
++   if (sub_ctx->nr_cbufs == 0) glReadBuffer(GL_NONE);
++   if (has_feature(feat_srgb_write_control)) {
++      bool use_srgb = false, preserve_srgb = false;
++      for (uint32_t i = 0; i < sub_ctx->nr_cbufs; ++i) {
++         const struct vrend_surface *surf = sub_ctx->surf[i];
++         if (!vrend_surface_has_srgb_storage(surf)) continue;
++         if (vrend_surface_wants_srgb_encode(sub_ctx, surf)) use_srgb = true;
++         else preserve_srgb = true;
++      }
++      // Write-control is global, including mixed MRT. Preserve raw UNORM
++      // attachments and encode other targets individually if necessary.
++      use_srgb &= !preserve_srgb;
++      if (use_srgb) glEnable(GL_FRAMEBUFFER_SRGB_EXT);
++      else glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+       sub_ctx->framebuffer_srgb_enabled = use_srgb;
+    }
+ 
+@@ -3172,10 +3248,7 @@
+        * To work around this for colorspace conversion, views are avoided
+        * manual colorspace conversion is instead injected in the fragment
+        * shader writing to such surfaces and during glClearColor(). */
+-      if (!(vrend_state.egl_image_srgb_import &&
+-            has_feature(feat_srgb_write_control)) &&
+-          util_format_is_srgb(surf->format) &&
+-          !vrend_resource_supports_view(surf->texture, surf->format)) {
++      if (vrend_surface_needs_manual_srgb(sub_ctx, surf)) {
+          VREND_DEBUG(dbg_tex, sub_ctx->parent,
+                      "manually converting linear->srgb for EGL-backed framebuffer color attachment 0x%x"
+                      " (surface format is %s; resource format is %s)\n",
+@@ -4750,13 +4823,10 @@
+       : 1.055f * powf(color, (1.f / 2.4f)) - 0.055f;
+ }
+ 
+-static void vrend_clear_prepare(struct vrend_sub_context *sub_ctx,
+-                                struct vrend_surface *surf, unsigned buffers,
+-                                float *colorf, double depth, unsigned stencil) {
+-   if (!(vrend_state.egl_image_srgb_import &&
+-         has_feature(feat_srgb_write_control)) &&
+-       surf && util_format_is_srgb(surf->format) &&
+-       !vrend_resource_supports_view(surf->texture, surf->format)) {
++static void vrend_clear_color(struct vrend_sub_context *sub_ctx,
++                               struct vrend_surface *surf, float *colorf)
++{
++   if (vrend_surface_needs_manual_srgb(sub_ctx, surf)) {
+       VREND_DEBUG(dbg_tex, sub_ctx->parent,
+                   "manually converting glClearColor from linear->srgb colorspace for EGL-backed framebuffer color attachment"
+                   " (surface format is %s; resource format is %s)\n",
+@@ -4766,17 +4836,23 @@
+          colorf[i] = vrend_color_encode_as_srgb(colorf[i]);
+    }
+ 
++   {
++      if (surf && vrend_format_is_emulated_alpha(surf->format)) {
++         colorf[0] = colorf[3];
++         colorf[1] = colorf[2] = colorf[3] = 0.0f;
++      } else if (surf && !vrend_resource_supports_view(surf->texture, surf->format) &&
++                 vrend_format_is_bgra(surf->format)) {
++         float red = colorf[0]; colorf[0] = colorf[2]; colorf[2] = red;
++      }
++   }
++}
++
++static void vrend_clear_prepare(struct vrend_sub_context *sub_ctx,
++                                struct vrend_surface *surf, unsigned buffers,
++                                float *colorf, double depth, unsigned stencil) {
+    if (buffers & PIPE_CLEAR_COLOR) {
+-      if (surf && vrend_format_is_emulated_alpha(surf->format)) {
+-         glClearColor(colorf[3], 0.0, 0.0, 0.0);
+-      } else if (surf && 
+-                 (!vrend_resource_supports_view(surf->texture, surf->format) &&
+-                  vrend_format_is_bgra(surf->format))) {
+-         VREND_DEBUG(dbg_bgra, sub_ctx->parent, "swizzling glClearColor() since rendering surface is an externally-stored BGR* resource\n");
+-         glClearColor(colorf[2], colorf[1], colorf[0], colorf[3]);
+-      } else {
+-         glClearColor(colorf[0], colorf[1], colorf[2], colorf[3]);
+-      }
++      vrend_clear_color(sub_ctx, surf, colorf);
++      glClearColor(colorf[0], colorf[1], colorf[2], colorf[3]);
+ 
+       /* This function implements Gallium's full clear callback (st->pipe->clear) on the host. This
+          callback requires no color component be masked. We must unmask all components before
+@@ -4887,32 +4963,29 @@
+    float colorf[4];
+    memcpy(colorf, color->f, sizeof(colorf));
+ 
+-   vrend_clear_prepare(sub_ctx, sub_ctx->nr_cbufs ? sub_ctx->surf[0] : NULL,
+-                       buffers, colorf, depth, stencil);
+-
+-   if (buffers & PIPE_CLEAR_COLOR) {
+-      uint32_t mask = 0;
+-      for (uint32_t i = 0; i < sub_ctx->nr_cbufs; i++) {
+-         if (sub_ctx->surf[i])
+-            mask |= (1 << i);
+-      }
+-      if (mask != (buffers >> 2)) {
+-         mask = buffers >> 2;
+-         while (mask) {
+-            int i = u_bit_scan(&mask);
+-            if (i < PIPE_MAX_COLOR_BUFS && sub_ctx->surf[i] &&
+-                util_format_is_pure_uint(sub_ctx->surf[i] &&
+-                                         sub_ctx->surf[i]->format))
+-                glClearBufferuiv(GL_COLOR, i, (GLuint *)colorf);
+-            else if (i < PIPE_MAX_COLOR_BUFS && sub_ctx->surf[i] &&
+-                     util_format_is_pure_sint(sub_ctx->surf[i] &&
+-                                              sub_ctx->surf[i]->format))
+-                glClearBufferiv(GL_COLOR, i, (GLint *)colorf);
+-            else
+-                glClearBufferfv(GL_COLOR, i, (GLfloat *)colorf);
++   // Preserve the common single-target glClear fast path. MRT/subset clears
++   // need a fresh color per selected attachment (including integer formats).
++   if ((buffers & PIPE_CLEAR_COLOR) == PIPE_CLEAR_COLOR0 && sub_ctx->nr_cbufs == 1 &&
++       sub_ctx->surf[0] && !util_format_is_pure_integer(sub_ctx->surf[0]->format)) {
++      vrend_clear_prepare(sub_ctx, sub_ctx->surf[0], buffers, colorf, depth, stencil);
++      bits |= GL_COLOR_BUFFER_BIT;
++   } else {
++      vrend_clear_prepare(sub_ctx, NULL, buffers, colorf, depth, stencil);
++      uint32_t mask = buffers >> 2;
++      while (mask) {
++         const uint32_t i = u_bit_scan(&mask);
++         if (i >= sub_ctx->nr_cbufs || !sub_ctx->surf[i]) continue;
++         struct vrend_surface *surf = sub_ctx->surf[i];
++         if (util_format_is_pure_uint(surf->format))
++            glClearBufferuiv(GL_COLOR, i, color->ui);
++         else if (util_format_is_pure_sint(surf->format))
++            glClearBufferiv(GL_COLOR, i, color->i);
++         else {
++            memcpy(colorf, color->f, sizeof(colorf));
++            vrend_clear_prepare(sub_ctx, surf, PIPE_CLEAR_COLOR0, colorf, depth, stencil);
++            glClearBufferfv(GL_COLOR, i, colorf);
+          }
+-      } else
+-         bits |= GL_COLOR_BUFFER_BIT;
++      }
+    }
+    if (buffers & PIPE_CLEAR_DEPTH)
+       bits |= GL_DEPTH_BUFFER_BIT;
+@@ -5010,10 +5083,24 @@
+    memcpy(&depth, color->ui, sizeof(double));
+    unsigned int stencil = color->ui[3];
+ 
++   const bool saved_srgb = sub_ctx->framebuffer_srgb_enabled;
++   if (has_feature(feat_srgb_write_control)) {
++      sub_ctx->framebuffer_srgb_enabled = vrend_surface_has_srgb_storage(surf) &&
++         vrend_surface_wants_srgb_encode(sub_ctx, surf);
++      if (sub_ctx->framebuffer_srgb_enabled) glEnable(GL_FRAMEBUFFER_SRGB_EXT);
++      else glDisable(GL_FRAMEBUFFER_SRGB_EXT);
++   }
++
+    vrend_clear_prepare(sub_ctx, surf, buffers, colorf, depth, stencil);
+ 
+-   if (buffers & PIPE_CLEAR_COLOR0)
+-      bits |= GL_COLOR_BUFFER_BIT;
++   if (buffers & PIPE_CLEAR_COLOR0) {
++      if (util_format_is_pure_uint(surf->format))
++         glClearBufferuiv(GL_COLOR, 0, color->ui);
++      else if (util_format_is_pure_sint(surf->format))
++         glClearBufferiv(GL_COLOR, 0, color->i);
++      else
++         bits |= GL_COLOR_BUFFER_BIT;
++   }
+    if (buffers & PIPE_CLEAR_DEPTH)
+       bits |= GL_DEPTH_BUFFER_BIT;
+    if (buffers & PIPE_CLEAR_STENCIL)
+@@ -5027,6 +5114,11 @@
+                           0, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                           GL_TEXTURE_2D, 0, 0);
++   if (has_feature(feat_srgb_write_control)) {
++      sub_ctx->framebuffer_srgb_enabled = saved_srgb;
++      if (saved_srgb) glEnable(GL_FRAMEBUFFER_SRGB_EXT);
++      else glDisable(GL_FRAMEBUFFER_SRGB_EXT);
++   }
+    glBindFramebuffer(GL_FRAMEBUFFER, ctx->sub->fb_id);
+ 
+    if (render_condition_enabled == false)

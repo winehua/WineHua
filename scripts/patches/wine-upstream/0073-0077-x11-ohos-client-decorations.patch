@@ -1,0 +1,40 @@
+From 6377a3b82cfa33105d91c47d29f08d5f602c37b5 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0077-x11-ohos-client-decorations
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 71a41de6527749cb547a92e40ff313a89b405cab1ade01aa0617f9ac33416762
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 919b9bcb0e88eda39f75e6ead60e62b5e272fb67..307710a9574f38bce918a39358f087a8397228e2 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -518,7 +518,12 @@ static void sync_frame_extents( struct x11drv_win_data *data )
+     long extents[4];
+     unsigned int i;
+ 
+-    if (!data->whole_window || data->managed) return;
++    if (!data->whole_window) return;
++#ifndef __OHOS__
++    if (data->managed) return;
++#endif
++    /* OHOS keeps X11 managed top-level identity but Wine draws the frame.
++     * Publish its actual client inset for zero-copy GPU face placement. */
+     /* client/visible live in the same coordinate space.  A client edge can
+      * stick out of the visible rect when the window hangs off-screen —
+      * clamp, the host only needs the on-window client placement. */
+@@ -576,6 +581,12 @@ static unsigned long get_mwm_decorations_for_style( DWORD style, DWORD ex_style
+ {
+     unsigned long ret = 0;
+ 
++#ifdef __OHOS__
++    /* The OHOS host embeds the whole Wine surface without server-side
++     * decorations. Keep managed identity (menus stay override-redirect),
++     * but let Wine draw/hit-test its non-client area in every host mode. */
++    return 0;
++#endif
+     if (X11DRV_HasWindowManager( "Mutter" )) return 0;
+ 
+     if (ex_style & WS_EX_TOOLWINDOW) return 0;

@@ -1,0 +1,225 @@
+From 103ad1207ad7a0300d21b243480ba266504c75b7 Mon Sep 17 00:00:00 2001
+From: WineHua <winehua@local>
+Subject: [PATCH] vkd3d: flush mapped UPLOAD Width at ExecuteCommandLists.
+
+vkd3d suballocates many D3D12 UPLOAD buffers into 8-16 MiB slabs.
+Track persistently mapped UPLOAD buffers and flush desc.Width (cap
+4 MiB) on ExecuteCommandLists so Venus does not republish the parent
+chunk. Apply after 0001 Map Width flush.
+
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -1518,6 +1518,68 @@
+     return value && value[0] == '1' && !value[1];
+ }
+
++static void vkd3d_winehua_note_upload_mapped(struct d3d12_resource *resource)
++{
++    struct d3d12_device *device = resource->device;
++    LONG count;
++
++    if (!vkd3d_winehua_force_coherent_map_sync()
++            || resource->heap_properties.Type != D3D12_HEAP_TYPE_UPLOAD
++            || !d3d12_resource_is_buffer(resource))
++        return;
++
++    count = InterlockedIncrement(&resource->winehua_map_count);
++    if (count != 1)
++        return;
++
++    pthread_mutex_lock(&device->mutex);
++    if (list_empty(&resource->winehua_mapped_entry))
++        list_add_tail(&device->winehua_mapped_uploads, &resource->winehua_mapped_entry);
++    pthread_mutex_unlock(&device->mutex);
++}
++
++static void vkd3d_winehua_note_upload_unmapped(struct d3d12_resource *resource)
++{
++    struct d3d12_device *device = resource->device;
++    LONG count;
++
++    if (!vkd3d_winehua_force_coherent_map_sync()
++            || resource->heap_properties.Type != D3D12_HEAP_TYPE_UPLOAD
++            || !d3d12_resource_is_buffer(resource))
++        return;
++
++    count = InterlockedDecrement(&resource->winehua_map_count);
++    if (count > 0)
++        return;
++    if (count < 0)
++        InterlockedExchange(&resource->winehua_map_count, 0);
++
++    pthread_mutex_lock(&device->mutex);
++    if (!list_empty(&resource->winehua_mapped_entry))
++    {
++        list_remove(&resource->winehua_mapped_entry);
++        list_init(&resource->winehua_mapped_entry);
++    }
++    pthread_mutex_unlock(&device->mutex);
++}
++
++static void vkd3d_winehua_unlink_mapped_upload(struct d3d12_resource *resource)
++{
++    struct d3d12_device *device = resource->device;
++
++    if (!device)
++        return;
++
++    pthread_mutex_lock(&device->mutex);
++    if (!list_empty(&resource->winehua_mapped_entry))
++    {
++        list_remove(&resource->winehua_mapped_entry);
++        list_init(&resource->winehua_mapped_entry);
++    }
++    pthread_mutex_unlock(&device->mutex);
++    InterlockedExchange(&resource->winehua_map_count, 0);
++}
++
+ static bool d3d12_resource_get_mapped_memory_range(struct d3d12_resource *resource,
+         UINT subresource, const D3D12_RANGE *range, VkMappedMemoryRange *vk_mapped_range)
+ {
+@@ -1594,6 +1656,56 @@
+     VK_CALL(vkFlushMappedMemoryRanges(resource->device->vk_device, 1, &mapped_range));
+ }
+
++void vkd3d_winehua_flush_mapped_upload_buffers(struct d3d12_device *device)
++{
++    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
++    /* Persistent CBs stay mapped. Flush D3D12 Width, never the parent
++     * 8–16 MiB slab. 4 MiB covers gears (~100 B) and SingleGpu (2.5 MiB). */
++    const UINT64 max_upload_width = 4ull * 1024ull * 1024ull;
++    VkMappedMemoryRange stack_ranges[64];
++    VkMappedMemoryRange *ranges = stack_ranges;
++    struct d3d12_resource *resource;
++    unsigned int count = 0, n = 0;
++
++    if (!vkd3d_winehua_force_coherent_map_sync())
++        return;
++
++    pthread_mutex_lock(&device->mutex);
++    LIST_FOR_EACH_ENTRY(resource, &device->winehua_mapped_uploads,
++            struct d3d12_resource, winehua_mapped_entry)
++    {
++        if (d3d12_resource_is_buffer(resource) && resource->desc.Width
++                && resource->desc.Width <= max_upload_width)
++            n++;
++    }
++    if (n > ARRAY_SIZE(stack_ranges))
++        ranges = vkd3d_malloc(n * sizeof(*ranges));
++    if (ranges)
++    {
++        LIST_FOR_EACH_ENTRY(resource, &device->winehua_mapped_uploads,
++                struct d3d12_resource, winehua_mapped_entry)
++        {
++            D3D12_RANGE write_intent_range = {0, 1};
++            VkMappedMemoryRange mapped_range;
++
++            if (!d3d12_resource_is_buffer(resource) || !resource->desc.Width
++                    || resource->desc.Width > max_upload_width)
++                continue;
++            write_intent_range.End = (SIZE_T)resource->desc.Width;
++            if (!d3d12_resource_get_mapped_memory_range(resource, 0,
++                    &write_intent_range, &mapped_range))
++                continue;
++            ranges[count++] = mapped_range;
++        }
++    }
++
++    if (count)
++        VK_CALL(vkFlushMappedMemoryRanges(device->vk_device, count, ranges));
++    pthread_mutex_unlock(&device->mutex);
++    if (ranges != stack_ranges)
++        vkd3d_free(ranges);
++}
++
+ static void d3d12_resource_get_map_ptr(struct d3d12_resource *resource, void **data)
+ {
+     assert(resource->mem.cpu_address);
+@@ -1668,6 +1780,7 @@
+         if (d3d12_resource_is_buffer(resource) && resource->desc.Width)
+             write_intent_range.End = (SIZE_T)resource->desc.Width;
+         d3d12_resource_flush_range(resource, sub_resource, &write_intent_range);
++        vkd3d_winehua_note_upload_mapped(resource);
+     }
+
+     d3d12_resource_invalidate_range(resource, sub_resource, read_range);
+@@ -1690,6 +1803,7 @@
+         return;
+     }
+
++    vkd3d_winehua_note_upload_unmapped(resource);
+     d3d12_resource_flush_range(resource, sub_resource, written_range);
+ }
+
+@@ -2553,6 +2667,7 @@
+ {
+     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+
++    vkd3d_winehua_unlink_mapped_upload(resource);
+     vkd3d_view_map_destroy(&resource->view_map, resource->device);
+
+     vkd3d_descriptor_debug_unregister_cookie(device->descriptor_qa_global_info, resource->res.cookie);
+@@ -2636,6 +2751,7 @@
+         return E_OUTOFMEMORY;
+
+     memset(object, 0, sizeof(*object));
++    list_init(&object->winehua_mapped_entry);
+     object->ID3D12Resource_iface.lpVtbl = &d3d12_resource_vtbl;
+
+     if (FAILED(hr = vkd3d_view_map_init(&object->view_map)))
+@@ -2987,6 +3103,7 @@
+         return E_OUTOFMEMORY;
+
+     memset(object, 0, sizeof(*object));
++    list_init(&object->winehua_mapped_entry);
+
+     object->ID3D12Resource_iface.lpVtbl = &d3d12_resource_vtbl;
+     object->refcount = 1;
+--- a/libs/vkd3d/command.c
++++ b/libs/vkd3d/command.c
+@@ -10521,6 +10521,7 @@
+                 "Failed to execute pending memory clears.\n");
+         return;
+     }
++    vkd3d_winehua_flush_mapped_upload_buffers(command_queue->device);
+
+     num_command_buffers = command_list_count + 1;
+
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -6175,6 +6175,7 @@
+     }
+
++    list_init(&device->winehua_mapped_uploads);
+     vkd3d_render_pass_cache_init(&device->render_pass_cache);
+
+     if ((device->parent = create_info->parent))
+         IUnknown_AddRef(device->parent);
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -896,5 +896,9 @@
+
+     struct vkd3d_private_store private_store;
++    /* WineHua: D3D12 Map/Unmap refcount for persistently mapped UPLOAD
++     * buffers. ExecuteCommandLists flushes desc.Width, not the parent slab. */
++    LONG winehua_map_count;
++    struct list winehua_mapped_entry;
+ };
+
+ static inline bool d3d12_resource_is_buffer(const struct d3d12_resource *resource)
+@@ -922,6 +926,7 @@
+ LONG64 vkd3d_allocate_cookie();
+
+ bool d3d12_resource_is_cpu_accessible(const struct d3d12_resource *resource);
++void vkd3d_winehua_flush_mapped_upload_buffers(struct d3d12_device *device);
+ void d3d12_resource_promote_desc(const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_DESC1 *desc1);
+ HRESULT d3d12_resource_validate_desc(const D3D12_RESOURCE_DESC1 *desc, struct d3d12_device *device);
+ VkImageSubresource d3d12_resource_get_vk_subresource(const struct d3d12_resource *resource,
+@@ -2944,6 +2949,7 @@
+     PFN_vkd3d_signal_event signal_event;
+
+     pthread_mutex_t mutex;
++    struct list winehua_mapped_uploads;
+     struct vkd3d_render_pass_cache render_pass_cache;
+
+     VkPhysicalDeviceMemoryProperties memory_properties;

@@ -1,0 +1,512 @@
+From: WineHua port
+Subject: [PATCH] ntdll/ohos: opt-in RPGXP forensic diagnostics
+
+Default-off diagnostics enabled only by exact WINEHUA_RPGXP_DIAGNOSTICS=1.
+All signal-path formatting uses the fixed-size ohos_signal_log builder and
+write(2). Guest reads use an exact-length raw process_vm_readv syscall while
+preserving errno; unreadable and partial reads never expose buffer contents.
+
+The probe keeps its guard, quotas, decrypt-family counters, and coherent
+last-fault snapshot in the current ntdll_thread_data. It reuses the existing
+process-wide FAULT-MIN event sequence and tags continuation lines with tid/seq.
+The snapshot uses a seqlock-style generation protocol for EXIT-FAULT reporting
+by the same thread. No additional maps-cache reload or lookup is performed.
+---
+diff --git a/dlls/ntdll/unix/ohos_virtual.c b/dlls/ntdll/unix/ohos_virtual.c
+--- a/dlls/ntdll/unix/ohos_virtual.c
++++ b/dlls/ntdll/unix/ohos_virtual.c
+@@ -58,6 +58,7 @@
+
+ #ifdef __OHOS__
+ static int ohos_diag_quiet;
++static int ohos_rpgxp_diagnostics;
+ #ifdef __aarch64__
+ int ohos_call_pe_fault( void *fn, void *teb, int sig, int si_code, void *addr,
+                         uint64_t *pc, uint64_t *xrip, uint32_t *prot, int *kind );
+@@ -387,6 +388,29 @@
+     while (len) ohos_signal_log_char( log, tmp[--len] );
+ }
+
++static void ohos_signal_log_hex_width( struct ohos_signal_log *log, uint64_t value,
++                                        unsigned int width )
++{
++    static const char digits[] = "0123456789abcdef";
++    unsigned int shift;
++
++    if (width > 16) width = 16;
++    while (width)
++    {
++        shift = --width * 4;
++        ohos_signal_log_char( log, digits[(value >> shift) & 15] );
++    }
++}
++
++static void ohos_signal_log_field_hex_width( struct ohos_signal_log *log, const char *name,
++                                              uint64_t value, unsigned int width )
++{
++    ohos_signal_log_char( log, ' ' );
++    ohos_signal_log_str( log, name );
++    ohos_signal_log_str( log, "=0x" );
++    ohos_signal_log_hex_width( log, value, width );
++}
++
+ static void ohos_signal_log_field_dec( struct ohos_signal_log *log, const char *name, int64_t value )
+ {
+     ohos_signal_log_char( log, ' ' );
+@@ -446,6 +470,27 @@
+     }
+ }
+
++/* WineHua (2026-10-02, 专家): 精确地址读取 —— ohos_smc_read_stack 会把地址
++ * 向下 8 字节对齐 (适合栈字转储), 但用于读取**指令字节/4 字节结构**时会把
++ * 结果整体偏移且不报警。新诊断一律走本函数: 地址原样传递，只有完整读取
++ * 才返回成功，坏页或短读都不暴露部分结果。
++ * 说明: 本函数放在此处是为了避开 0002 补丁 (signal-safe stack read) 的
++ * hunk 上下文区 —— 插在 ohos_smc_read_stack 之后会破坏其反向校验。 */
++static int ohos_smc_read_exact( uint64_t addr, void *dst, size_t len )
++{
++    const int saved_errno = errno;
++    ssize_t bytes = -1;
++
++#ifdef SYS_process_vm_readv
++    struct iovec local = { dst, len };
++    struct iovec remote = { (void *)(uintptr_t)addr, len };
++    if (addr && dst && len)
++        bytes = syscall( SYS_process_vm_readv, getpid(), &local, 1UL, &remote, 1UL, 0UL );
++#endif
++    errno = saved_errno;
++    return bytes == (ssize_t)len;
++}
++
+ /* TEMP-DIAG(FAULT-MAP): 故障地址归属查询 (2026-09-18)
+  * CEF renderer 在 win64 下每 7~8 秒吃一颗 SIGSEGV(SEGV_ACCERR) 之后被 NS 回调
+  * 报 signal=11 退出, 但 [SMC] 行只有裸地址 —— 是 guest PE、FEX 代码缓存还是
+@@ -997,6 +1042,293 @@
+     }
+ }
+
++/* Opt-in RPGXP forensics.  Every handler-path line uses the bounded
++ * ohos_signal_log builder and write(2); guest memory is copied only by the
++ * exact-length raw syscall helper above. */
++static void ohos_rpgxp_dump_wow_teb( TEB *teb, long tid, unsigned int seq )
++{
++    struct ohos_signal_log log = {{0}, 0};
++    WOW_TEB *wow_teb;
++    I386_CONTEXT *context;
++    unsigned char bytes[16] = {0};
++    uint32_t list;
++    unsigned int i;
++
++    if (!teb) return;
++
++    ohos_signal_log_str( &log, "[WOW-TEB]" );
++    ohos_signal_log_field_dec( &log, "pid", getpid() );
++    ohos_signal_log_field_dec( &log, "tid", tid );
++    ohos_signal_log_field_dec( &log, "seq", seq );
++    ohos_signal_log_field_hex( &log, "teb", (uintptr_t)teb );
++    ohos_signal_log_field_hex( &log, "stack64_dealloc", (uintptr_t)teb->DeallocationStack );
++    ohos_signal_log_field_hex( &log, "stack64_limit", (uintptr_t)teb->Tib.StackLimit );
++    ohos_signal_log_field_hex( &log, "stack64_base", (uintptr_t)teb->Tib.StackBase );
++    ohos_signal_log_emit( &log );
++
++    wow_teb = get_wow_teb( teb );
++    if (!wow_teb)
++    {
++        struct ohos_signal_log none = {{0}, 0};
++        ohos_signal_log_str( &none, "[WOW-TEB] wow=none" );
++        ohos_signal_log_field_dec( &none, "tid", tid );
++        ohos_signal_log_field_dec( &none, "seq", seq );
++        ohos_signal_log_emit( &none );
++        return;
++    }
++
++    {
++        struct ohos_signal_log wow = {{0}, 0};
++        ohos_signal_log_str( &wow, "[WOW-TEB] wow" );
++        ohos_signal_log_field_dec( &wow, "tid", tid );
++        ohos_signal_log_field_dec( &wow, "seq", seq );
++        ohos_signal_log_field_hex( &wow, "teb", (uintptr_t)wow_teb );
++        ohos_signal_log_field_hex_width( &wow, "dealloc", wow_teb->DeallocationStack, 8 );
++        ohos_signal_log_field_hex_width( &wow, "limit", wow_teb->Tib.StackLimit, 8 );
++        ohos_signal_log_field_hex_width( &wow, "base", wow_teb->Tib.StackBase, 8 );
++        ohos_signal_log_field_hex_width( &wow, "seh_head", wow_teb->Tib.ExceptionList, 8 );
++        ohos_signal_log_emit( &wow );
++    }
++
++    context = get_cpu_area( IMAGE_FILE_MACHINE_I386 );
++    if (context)
++    {
++        struct ohos_signal_log cpu = {{0}, 0};
++        ohos_signal_log_str( &cpu, "[WOW-TEB-CPU]" );
++        ohos_signal_log_field_dec( &cpu, "tid", tid );
++        ohos_signal_log_field_dec( &cpu, "seq", seq );
++        ohos_signal_log_field_hex_width( &cpu, "eip", context->Eip, 8 );
++        ohos_signal_log_field_hex_width( &cpu, "esp", context->Esp, 8 );
++        ohos_signal_log_field_hex_width( &cpu, "ebp", context->Ebp, 8 );
++        ohos_signal_log_str( &cpu, " bytes=" );
++        if (context->Eip >= 0x10000 && context->Eip < 0x7fff0000 &&
++            ohos_smc_read_exact( context->Eip, bytes, sizeof(bytes) ))
++        {
++            for (i = 0; i < ARRAY_SIZE(bytes); i++)
++                ohos_signal_log_hex_width( &cpu, bytes[i], 2 );
++        }
++        else ohos_signal_log_str( &cpu, "(unreadable)" );
++        ohos_signal_log_emit( &cpu );
++    }
++
++    list = wow_teb->Tib.ExceptionList;
++    for (i = 0; i < 16 && list >= 0x10000 && list < 0x7fff0000; i++)
++    {
++        uint32_t node[2] = {0, 0};
++        struct ohos_signal_log seh = {{0}, 0};
++
++        ohos_signal_log_str( &seh, "[WOW-TEB-SEH]" );
++        ohos_signal_log_field_dec( &seh, "tid", tid );
++        ohos_signal_log_field_dec( &seh, "seq", seq );
++        ohos_signal_log_field_dec( &seh, "index", i );
++        ohos_signal_log_field_hex_width( &seh, "record", list, 8 );
++        if (!ohos_smc_read_exact( list, node, sizeof(node) ))
++        {
++            ohos_signal_log_str( &seh, " (unreadable)" );
++            ohos_signal_log_emit( &seh );
++            break;
++        }
++        ohos_signal_log_field_hex_width( &seh, "next", node[0], 8 );
++        ohos_signal_log_field_hex_width( &seh, "handler", node[1], 8 );
++        ohos_signal_log_emit( &seh );
++        if (node[0] == UINT32_MAX) break;
++        if (node[0] <= list || node[0] < 0x10000 || node[0] >= 0x7fff0000) break;
++        list = node[0];
++    }
++}
++
++static void ohos_rpgxp_dump_anomaly( unsigned int seq, long tid, int sig,
++                                      const siginfo_t *info, const ucontext_t *uc,
++                                      uint64_t pc, uint64_t lr, uint64_t sp )
++{
++    struct ohos_signal_log log = {{0}, 0};
++    uint32_t code[2] = {0, 0};
++
++    ohos_signal_log_str( &log, "[SMC-ANOMALY]" );
++    ohos_signal_log_field_dec( &log, "pid", getpid() );
++    ohos_signal_log_field_dec( &log, "tid", tid );
++    ohos_signal_log_field_dec( &log, "seq", seq );
++    ohos_signal_log_field_dec( &log, "sig", sig );
++    ohos_signal_log_field_dec( &log, "code", info ? info->si_code : 0 );
++    ohos_signal_log_field_hex( &log, "addr", (uintptr_t)(info ? info->si_addr : NULL) );
++    ohos_signal_log_field_hex( &log, "pc", pc );
++    ohos_signal_log_field_hex( &log, "lr", lr );
++    ohos_signal_log_field_hex( &log, "sp", sp );
++    ohos_signal_log_emit( &log );
++
++    {
++        struct ohos_signal_log instructions = {{0}, 0};
++        ohos_signal_log_str( &instructions, "[SMC-ANOMALY-CODE]" );
++        ohos_signal_log_field_dec( &instructions, "tid", tid );
++        ohos_signal_log_field_dec( &instructions, "seq", seq );
++        ohos_signal_log_field_hex( &instructions, "address", pc );
++        if (ohos_smc_read_exact( pc, code, sizeof(code) ))
++        {
++            ohos_signal_log_str( &instructions, " pc=" );
++            ohos_signal_log_hex_width( &instructions, code[0], 8 );
++            ohos_signal_log_str( &instructions, " pc+4=" );
++            ohos_signal_log_hex_width( &instructions, code[1], 8 );
++        }
++        else ohos_signal_log_str( &instructions, " (unreadable)" );
++        ohos_signal_log_emit( &instructions );
++    }
++
++#ifdef __aarch64__
++    if (uc)
++    {
++        struct ohos_signal_log regs0 = {{0}, 0};
++        struct ohos_signal_log regs1 = {{0}, 0};
++        unsigned int i;
++        ohos_signal_log_str( &regs0, "[SMC-ANOMALY-REGS] x0..x15:" );
++        ohos_signal_log_field_dec( &regs0, "tid", tid );
++        ohos_signal_log_field_dec( &regs0, "seq", seq );
++        for (i = 0; i < 16; i++)
++        {
++            ohos_signal_log_char( &regs0, ' ' );
++            ohos_signal_log_hex_width( &regs0, uc->uc_mcontext.regs[i], 16 );
++        }
++        ohos_signal_log_emit( &regs0 );
++        ohos_signal_log_str( &regs1, "[SMC-ANOMALY-REGS2] x16..x30:" );
++        ohos_signal_log_field_dec( &regs1, "tid", tid );
++        ohos_signal_log_field_dec( &regs1, "seq", seq );
++        for (i = 16; i <= 30; i++)
++        {
++            ohos_signal_log_char( &regs1, ' ' );
++            ohos_signal_log_hex_width( &regs1, uc->uc_mcontext.regs[i], 16 );
++        }
++        ohos_signal_log_emit( &regs1 );
++    }
++#else
++    (void)uc;
++#endif
++
++    {
++        I386_CONTEXT *context = get_cpu_area( IMAGE_FILE_MACHINE_I386 );
++        struct ohos_signal_log guest = {{0}, 0};
++        ohos_signal_log_str( &guest, "[SMC-ANOMALY-GUEST]" );
++        ohos_signal_log_field_dec( &guest, "tid", tid );
++        ohos_signal_log_field_dec( &guest, "seq", seq );
++        if (context)
++        {
++            ohos_signal_log_field_hex_width( &guest, "eip", context->Eip, 8 );
++            ohos_signal_log_field_hex_width( &guest, "esp", context->Esp, 8 );
++            ohos_signal_log_field_hex_width( &guest, "ebp", context->Ebp, 8 );
++        }
++        else ohos_signal_log_str( &guest, " cpu_area=none" );
++        ohos_signal_log_emit( &guest );
++    }
++}
++
++static void ohos_rpgxp_probe( int sig, const siginfo_t *info, const ucontext_t *uc,
++                              uint64_t pc, uint64_t lr, uint64_t sp, TEB *teb,
++                              unsigned int event_seq )
++{
++    const int saved_errno = errno;
++    struct ohos_rpgxp_diag_state *state;
++    uint64_t addr = (uint64_t)(uintptr_t)(info ? info->si_addr : NULL);
++    uint32_t generation;
++    long tid;
++    int dump_wow = 0, dump_anomaly = 0;
++
++    if (!ohos_rpgxp_diagnostics || !teb || !event_seq) return;
++    state = &((struct ntdll_thread_data *)&teb->GdiTebBatch)->ohos_rpgxp_diag;
++    if (__atomic_test_and_set( &state->probe_busy, __ATOMIC_ACQUIRE ))
++    {
++        errno = saved_errno;
++        return;
++    }
++
++    tid = syscall( SYS_gettid );
++    generation = __atomic_load_n( &state->generation, __ATOMIC_RELAXED );
++    if (generation & 1) generation++;
++    __atomic_store_n( &state->generation, generation + 1, __ATOMIC_RELEASE );
++    state->last_seq = event_seq;
++    state->last_addr = addr;
++    state->last_pc = pc;
++#ifdef __aarch64__
++    state->last_x9 = uc ? uc->uc_mcontext.regs[9] : 0;
++#else
++    state->last_x9 = 0;
++#endif
++    __atomic_store_n( &state->generation, generation + 2, __ATOMIC_RELEASE );
++
++    if (state->wow_teb_count < 16)
++    {
++        state->wow_teb_count++;
++        dump_wow = 1;
++    }
++    if (info)
++    {
++        WOW_TEB *wow_teb = get_wow_teb( teb );
++        int spin_hit = addr == 0;
++        if (wow_teb)
++        {
++            uint64_t base = wow_teb->Tib.StackBase;
++            uint64_t limit = wow_teb->Tib.StackLimit;
++            uint64_t dealloc = wow_teb->DeallocationStack;
++            if (addr >= base && addr - base < 0x2000) spin_hit = 1;
++            else if (limit && addr >= dealloc && addr < limit) spin_hit = 1;
++        }
++        if (spin_hit && state->spin_count < 8)
++        {
++            state->spin_count++;
++            dump_wow = 1;
++        }
++    }
++    if (addr >= 0x10000000 && addr < 0x11000000)
++    {
++        if (state->decrypt_family < 64) state->decrypt_family++;
++    }
++    else if (state->decrypt_family >= 64 && state->anomaly_count < 4)
++    {
++        state->anomaly_count++;
++        dump_anomaly = 1;
++    }
++
++    if (dump_wow) ohos_rpgxp_dump_wow_teb( teb, tid, event_seq );
++    if (dump_anomaly) ohos_rpgxp_dump_anomaly( event_seq, tid, sig, info, uc, pc, lr, sp );
++
++    __atomic_clear( &state->probe_busy, __ATOMIC_RELEASE );
++    errno = saved_errno;
++}
++
++void ohos_report_last_fault( const char *who, int status, const void *caller )
++{
++    struct ntdll_thread_data *thread_data;
++    struct ohos_rpgxp_diag_state *state;
++    struct ohos_signal_log log = {{0}, 0};
++    uint32_t before, after, seq = 0;
++    uint64_t addr = 0, pc = 0, x9 = 0;
++    unsigned int attempt;
++
++    if (!ohos_rpgxp_diagnostics || ohos_diag_quiet) return;
++    thread_data = (struct ntdll_thread_data *)&NtCurrentTeb()->GdiTebBatch;
++    state = &thread_data->ohos_rpgxp_diag;
++    for (attempt = 0; attempt < 4; attempt++)
++    {
++        before = __atomic_load_n( &state->generation, __ATOMIC_ACQUIRE );
++        if (before & 1) continue;
++        seq = state->last_seq;
++        addr = state->last_addr;
++        pc = state->last_pc;
++        x9 = state->last_x9;
++        after = __atomic_load_n( &state->generation, __ATOMIC_ACQUIRE );
++        if (before == after && !(after & 1)) break;
++    }
++    if (attempt == 4 || !seq) return;
++
++    ohos_signal_log_str( &log, "[EXIT-FAULT] who=" );
++    ohos_signal_log_str( &log, who );
++    ohos_signal_log_field_hex_width( &log, "status", (uint32_t)status, 8 );
++    ohos_signal_log_field_dec( &log, "tid", syscall( SYS_gettid ) );
++    ohos_signal_log_field_dec( &log, "last_seq", seq );
++    ohos_signal_log_field_hex( &log, "last_addr", addr );
++    ohos_signal_log_field_hex( &log, "last_pc", pc );
++    ohos_signal_log_field_hex( &log, "last_x9", x9 );
++    ohos_signal_log_field_hex( &log, "caller", (uintptr_t)caller );
++    ohos_signal_log_emit( &log );
++}
++
+ static void ohos_smc_log_enter( int sig, const siginfo_t *info, uint64_t pc_in,
+                                 uint64_t xrip_in, uint64_t emu, uint64_t lr, uint64_t sp,
+                                 uint64_t x16, uint64_t x17, void *teb, void *fn )
+@@ -1167,6 +1499,7 @@
+     uint64_t pc_in = 0, pc = 0, xrip_in = 0, xrip = 0, emu = 0;
+     uint64_t lr = 0, sp = 0, x16 = 0, x17 = 0;
+     uint32_t prot = 0;
++    unsigned int fault_seq = 0;
+     int kind = 0, handled = 0, dynarec = 0;
+     ohos_wowbox64_fault_fn fn;
+     const char *result = "not_mine";
+@@ -1194,15 +1527,18 @@
+     if (sig == SIGSEGV)
+     {
+         static unsigned int count;
+-        unsigned int seq = __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED );
+-        if (seq <= 65536)
++        /* Keep one process-wide event key even after FAULT-MIN output reaches
++         * its quota.  Skip the single zero value if the counter wraps. */
++        do fault_seq = __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED );
++        while (!fault_seq);
++        if (fault_seq <= 65536)
+         {
+             struct ohos_signal_log log = {{0}, 0};
+             const int saved_errno = errno;
+             ohos_signal_log_str( &log, "[FAULT-MIN]" );
+             ohos_signal_log_field_dec( &log, "pid", getpid() );
+             ohos_signal_log_field_dec( &log, "tid", syscall( SYS_gettid ) );
+-            ohos_signal_log_field_dec( &log, "seq", seq );
++            ohos_signal_log_field_dec( &log, "seq", fault_seq );
+             ohos_signal_log_field_dec( &log, "code", info ? info->si_code : 0 );
+             ohos_signal_log_field_hex( &log, "addr", (uintptr_t)(info ? info->si_addr : NULL) );
+             ohos_signal_log_field_hex( &log, "pc", pc_in );
+@@ -1216,6 +1552,8 @@
+             errno = saved_errno;
+         }
+     }
++    if (ohos_rpgxp_diagnostics && sig == SIGSEGV)
++        ohos_rpgxp_probe( sig, info, uc, pc_in, lr, sp, teb, fault_seq );
+     ohos_smc_log_enter( sig, info, pc_in, xrip_in, emu, lr, sp, x16, x17, teb, fn );
+
+ #ifdef __aarch64__
+@@ -1312,6 +1650,7 @@
+     void (*add_special)(int, struct ohos_sigchain_action *);
+     struct ohos_sigchain_action sca;
+     const char *quiet = getenv( "WINEHUA_DIAG_QUIET" );
++    const char *rpgxp_diagnostics = getenv( "WINEHUA_RPGXP_DIAGNOSTICS" );
+
+     /* Temporary candidate-only direct stderr: the in-process pipe reader can
+      * die before it copies the final fault. Enabled by the explicit CEF probe. */
+@@ -1333,6 +1672,8 @@
+     }
+
+     ohos_diag_quiet = quiet && quiet[0] == '1';
++    ohos_rpgxp_diagnostics = !ohos_diag_quiet && rpgxp_diagnostics &&
++                             rpgxp_diagnostics[0] == '1' && !rpgxp_diagnostics[1];
+
+     wine_segv_handler = segv_handler;
+     wine_bus_handler = bus_handler;
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1679,8 +1679,14 @@
+  */
+ void abort_thread( int status )
+ {
++    const void *caller = __builtin_extract_return_addr( __builtin_return_address(0) );
+     write( 2, "[QUIT-PROBE] abort-thread\n", sizeof("[QUIT-PROBE] abort-thread\n") - 1 );
+-    steam_trace_thread( "abort", status, __builtin_extract_return_addr( __builtin_return_address(0) ) );
++    /* WineHua (2026-10-01 r4, 专家): 退出链路补证据 —— status/caller/tid +
++     * 最后一次故障序号, 不受 WINEHUA_STEAM_BOUNDARY_TRACE 门控。 */
++#ifdef __OHOS__
++    ohos_report_last_fault( "abort_thread", status, caller );
++#endif
++    steam_trace_thread( "abort", status, caller );
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+     pthread_exit_wrapper( status );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -98,6 +98,27 @@
+             main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64);
+ }
+
++#ifdef __OHOS__
++/* Handler-owned, per-thread state for the default-off RPGXP forensic probe.
++ * Keep this at the tail of ntdll_thread_data so established ABI offsets do
++ * not move. */
++struct ohos_rpgxp_diag_state
++{
++    volatile unsigned char probe_busy;
++    unsigned char reserved[3];
++    volatile ULONG generation;
++    ULONG wow_teb_count;
++    ULONG spin_count;
++    ULONG decrypt_family;
++    ULONG anomaly_count;
++    ULONG last_seq;
++    ULONGLONG last_addr;
++    ULONGLONG last_pc;
++    ULONGLONG last_x9;
++};
++C_ASSERT( sizeof(struct ohos_rpgxp_diag_state) == 56 );
++#endif
++
+ /* thread private data, stored in NtCurrentTeb()->GdiTebBatch */
+ struct ntdll_thread_data
+ {
+@@ -117,9 +138,17 @@
+     void                     *param;         /* thread entry point parameter */
+     void                     *jmp_buf;       /* setjmp buffer for exception handling */
+     int                      *fsync_apc_futex;
++#ifdef __OHOS__
++    struct ohos_rpgxp_diag_state ohos_rpgxp_diag;
++#endif
+ };
+
+ C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
++#ifdef __OHOS__
++C_ASSERT( offsetof( struct ntdll_thread_data, ohos_rpgxp_diag ) >=
++          offsetof( struct ntdll_thread_data, fsync_apc_futex ) +
++          sizeof(((struct ntdll_thread_data *)0)->fsync_apc_futex) );
++#endif
+ #ifdef _WIN64
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_table ) == 0x370 );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_frame ) == 0x378 );
+@@ -287,6 +316,10 @@
+                                         size_t frame_size, size_t page_size, unsigned int code, int is_wow );
+ extern void steam_trace_fault_sample( const void *pc, const void *sp, const void *fault,
+                                       const void *lr, int signal_code );
++#ifdef __OHOS__
++/* Default-off, per-thread RPGXP forensic snapshot (ohos_virtual.c). */
++extern void ohos_report_last_fault( const char *who, int status, const void *caller );
++#endif
+ extern void DECLSPEC_NORETURN abort_process( int status );
+ extern void DECLSPEC_NORETURN exit_process( int status );
+ extern void wait_suspend( CONTEXT *context );

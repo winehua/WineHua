@@ -1,0 +1,20 @@
+From: HSL developers; ported from HSL 11c14d95
+Subject: [PATCH] virglrenderer/0014-proxy-fence-notifications.patch
+
+diff --git a/src/proxy/proxy_renderer.c b/src/proxy/proxy_renderer.c
+--- a/src/proxy/proxy_renderer.c
++++ b/src/proxy/proxy_renderer.c
+@@ -16,6 +16,13 @@
+ proxy_renderer_init(const struct proxy_renderer_cbs *cbs, uint32_t flags)
+ {
+    assert(flags & VIRGL_RENDERER_NO_VIRGL);
++
++#ifdef __OHOS__
++   /* Vulkan proxy completion needs its own eventfd even when GL deliberately
++    * retires on the EGL owner thread. An idle sync waiter sends no commands
++    * with which to drive polling. Keep the GL thread policy unchanged. */
++   flags |= VIRGL_RENDERER_THREAD_SYNC;
++#endif
+ 
+    proxy_renderer.cbs = cbs;
+    proxy_renderer.flags = flags;

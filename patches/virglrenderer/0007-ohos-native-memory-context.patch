@@ -1,0 +1,685 @@
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -212,6 +212,9 @@
+    virgl_sources += venus_sources
+    virgl_sources += venus_codegen
+    virgl_depends += [venus_dep]
++   if cc.get_define('__OHOS__') != ''
++      virgl_depends += [cc.find_library('native_buffer'), cc.find_library('native_window')]
++   endif
+    if with_host_darwin
+       virgl_sources += ['venus/vkr_metal_helpers.m']
+    endif
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -400,6 +400,14 @@
+       /* this will be validated when imported by the client */
+       reply_fd_valid = true;
+       break;
++   case VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER:
++#if defined(__OHOS__) && defined(ENABLE_SAME_PROCESS_RENDER_SERVER) && \
++   defined(ENABLE_RENDER_SERVER_WORKER_THREAD)
++      /* Produced and size-checked by this process's Vulkan worker. DMA fds
++       * have no memfd seals. Never apply this exemption to ordinary SHM. */
++      reply_fd_valid = ctx->ohos_native_memory;
++#endif
++      break;
+    case VIRGL_RESOURCE_FD_SHM:
+       /* validate the seals and size here */
+       reply_fd_valid = !add_required_seals_to_fd(reply_fd) &&
+@@ -414,7 +422,8 @@
+       return -1;
+    }
+ 
+-   blob->type = reply.fd_type;
++   blob->type = reply.fd_type == VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER
++                   ? VIRGL_RESOURCE_FD_SHM : reply.fd_type;
+    blob->u.fd = reply_fd;
+    blob->map_info = reply.map_info;
+ 
+@@ -714,6 +723,7 @@
+    }
+ 
+    proxy_context_init_base(ctx);
++   ctx->ohos_native_memory = !!(ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY);
+    ctx->client = client;
+    proxy_socket_init(&ctx->socket, ctx_fd);
+    ctx->shmem.fd = -1;
+--- a/src/proxy/proxy_context.h
++++ b/src/proxy/proxy_context.h
+@@ -59,6 +59,8 @@
+       bool created;
+       bool stop;
+    } sync_thread;
++
++   bool ohos_native_memory;
+ };
+ 
+ #endif /* PROXY_CONTEXT_H */
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -373,7 +373,8 @@
+    if (!vkr_device_memory_export_blob(mem, blob_size, blob_flags, &blob))
+       return false;
+ 
+-   if (blob.type == VIRGL_RESOURCE_FD_SHM) {
++   if (blob.type == VIRGL_RESOURCE_FD_SHM ||
++       blob.type == VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER) {
+       int map_fd = os_dupfd_cloexec(blob.u.fd);
+       if (map_fd < 0 ||
+           !vkr_context_import_resource_from_shm(ctx, res_id, blob_size, map_fd)) {
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -119,6 +119,9 @@
+ 
+    struct list_head head;
+    struct vulkan_library vulkan_library;
++#ifdef __OHOS__
++   bool ohos_native_memory;
++#endif
+ };
+ 
+ struct vkr_context *
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -129,6 +129,57 @@
+          return;
+    }
+ 
++#ifdef __OHOS__
++   uint32_t native_export_handle = 0;
++   bool has_native_extension = false;
++   if (ctx->ohos_native_memory) {
++      if (!physical_dev->ohos_memory_types.enabled) {
++         args->ret = VK_ERROR_FEATURE_NOT_PRESENT;
++         return;
++      }
++      /* Guest-advertised extensions omit platform-private OHOS entries. */
++      uint32_t host_count = 0;
++      VkResult result = vk->EnumerateDeviceExtensionProperties(
++         physical_dev->base.handle.physical_device, NULL, &host_count, NULL);
++      if (result != VK_SUCCESS || host_count > 4096) {
++         args->ret = VK_ERROR_INITIALIZATION_FAILED;
++         return;
++      }
++      VkExtensionProperties *host_extensions = calloc(MAX2(host_count, 1), sizeof(*host_extensions));
++      if (!host_extensions) {
++         args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++         return;
++      }
++      result = vk->EnumerateDeviceExtensionProperties(
++         physical_dev->base.handle.physical_device, NULL, &host_count, host_extensions);
++      if (result == VK_SUCCESS)
++         for (uint32_t i = 0; i < host_count; i++)
++            has_native_extension |= !strcmp(host_extensions[i].extensionName, "VK_OHOS_external_memory");
++      free(host_extensions);
++      const uint32_t handles[] = {0x2000, 0x8000};
++      for (unsigned i = 0; has_native_extension && i < ARRAY_SIZE(handles); i++) {
++         VkPhysicalDeviceExternalBufferInfo info = {
++            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
++            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++            .handleType = handles[i],
++         };
++         VkExternalBufferProperties props = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
++         vk->GetPhysicalDeviceExternalBufferProperties(physical_dev->base.handle.physical_device,
++                                                       &info, &props);
++         const uint32_t features = props.externalMemoryProperties.externalMemoryFeatures;
++         if ((features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) &&
++             !(features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT)) {
++            native_export_handle = handles[i];
++            break;
++         }
++      }
++      if (!native_export_handle) {
++         /* Negotiated contexts never silently return to a shadow heap. */
++         args->ret = VK_ERROR_FEATURE_NOT_PRESENT;
++         return;
++      }
++   }
++#endif
+    /* append extensions for our own use */
+    const char **exts = NULL;
+    uint32_t ext_count = args->pCreateInfo->enabledExtensionCount;
+@@ -140,7 +191,7 @@
+    ext_count += physical_dev->KHR_external_fence_fd;
+ #ifdef __OHOS__
+    /* Internal WineHua SurfaceQueue presenter; never exposed as guest WSI. */
+-   ext_count += 1;
++   ext_count += 1 + !!native_export_handle;
+ #endif
+    if (ext_count > args->pCreateInfo->enabledExtensionCount) {
+       exts = malloc(sizeof(*exts) * ext_count);
+@@ -167,6 +218,8 @@
+          exts[ext_count++] = "VK_KHR_external_fence_fd";
+ #ifdef __OHOS__
+       exts[ext_count++] = "VK_KHR_swapchain";
++      if (native_export_handle)
++         exts[ext_count++] = "VK_OHOS_external_memory";
+ #endif
+ 
+       ((VkDeviceCreateInfo *)args->pCreateInfo)->ppEnabledExtensionNames = exts;
+@@ -193,6 +246,7 @@
+    dev->physical_device = physical_dev;
+ #ifdef __OHOS__
+    atomic_init(&dev->winehua_descriptor_wait_submit_generation, 0);
++   dev->ohos_native_export_handle = native_export_handle;
+ #endif
+ 
+    vkr_device_init_proc_table(dev, physical_dev->api_version,
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -36,6 +36,9 @@
+ #endif
+ 
+    void *mtl_device;
++#ifdef __OHOS__
++   uint32_t ohos_native_export_handle;
++#endif
+ };
+ VKR_DEFINE_OBJECT_CAST(device, VK_OBJECT_TYPE_DEVICE, VkDevice)
+ 
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -12,6 +12,9 @@
+ 
+ #ifdef __OHOS__
+ #include <sys/mman.h>
++#include <vulkan/vulkan_ohos.h>
++#include "vkr_ohos_native_memory.h"
++#include <native_buffer/native_buffer.h>
+ #include <time.h>
+ #include <unistd.h>
+ #include "util/anon_file.h"
+@@ -1371,6 +1374,33 @@
+    VkExportMemoryAllocateInfo local_export_info;
+    VkImportMemoryMetalHandleInfoEXT local_metal_import;
+ 
++#ifdef __OHOS__
++   const uint32_t native_export_handle =
++      ctx->ohos_native_memory && !res_info &&
++      (property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++         ? dev->ohos_native_export_handle : 0;
++   if (native_export_handle) {
++      args->ret = vkr_ohos_native_allocation_size(alloc_info, (uint64_t)getpagesize());
++      if (args->ret != VK_SUCCESS) return;
++      if (export_info && export_info->handleTypes &&
++          export_info->handleTypes != native_export_handle) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++      if (export_info) {
++         /* Reuse an existing (possibly zero-handle) export structure. Two
++          * VkExportMemoryAllocateInfo nodes in one chain are invalid. */
++         export_info->handleTypes = native_export_handle;
++      } else {
++         local_export_info = (VkExportMemoryAllocateInfo){
++            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
++            .pNext = alloc_info->pNext,
++            .handleTypes = native_export_handle,
++         };
++         alloc_info->pNext = &local_export_info;
++      }
++   } else
++#endif
+    if ((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !res_info) {
+       /* An implementation can support dma_buf import along with opaque fd export/import.
+        * If the client driver is using external memory and requesting dma_buf, without
+@@ -1473,7 +1503,16 @@
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
+    }
+ 
++#ifdef __OHOS__
++   /* Guest cache properties select exportability; the driver only receives
++    * its original memory type index. The GPU-only alias never gets exported. */
++   alloc_info->memoryTypeIndex = vkr_ohos_memory_type_to_host(
++      &physical_dev->ohos_memory_types, mem_type_index);
++#endif
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
++#ifdef __OHOS__
++   alloc_info->memoryTypeIndex = mem_type_index;
++#endif
+    if (!mem) {
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+@@ -1491,9 +1530,17 @@
+    mem->gbm_bo = gbm_bo;
+    mem->mtl_shm = mtl_shm;
+    mem->allocation_size = alloc_info->allocationSize;
++#ifdef __OHOS__
++   /* Export metadata is consumed by a separate host Vulkan allocator. */
++   mem->memory_type_index = vkr_ohos_memory_type_to_host(
++      &physical_dev->ohos_memory_types, mem_type_index);
++#else
+    mem->memory_type_index = mem_type_index;
++#endif
+ #ifdef __OHOS__
+    mem->context = ctx;
++   mem->ohos_native_export_handle = native_export_handle;
++   mem->ohos_native_buffer = NULL;
+    mem->shadow_fd = -1;
+    mem->shadow_map = NULL;
+    mem->host_map = NULL;
+@@ -1613,7 +1660,7 @@
+          break;
+       }
+ #ifdef __OHOS__
+-      if (precise) {
++      if (ctx->ohos_native_memory || precise) {
+          args->ret = vkr_device_memory_invalidate_shadow_range(
+             mem, args->pMemoryRanges[i].offset,
+             args->pMemoryRanges[i].size);
+@@ -1671,6 +1718,10 @@
+       return;
+ 
+    args->pMemoryResourceProperties->memoryTypeBits = mem_fd_props.memoryTypeBits;
++#ifdef __OHOS__
++   args->pMemoryResourceProperties->memoryTypeBits = vkr_ohos_memory_type_bits(
++      &dev->physical_device->ohos_memory_types, mem_fd_props.memoryTypeBits);
++#endif
+ 
+    VkMemoryResourceAllocationSizePropertiesMESA *alloc_size_props =
+       vkr_find_struct(args->pMemoryResourceProperties->pNext,
+@@ -1719,6 +1770,10 @@
+       mtx_unlock(&mem->context->object_mutex);
+    }
+ 
++   if (mem->ohos_native_buffer) {
++      OH_NativeBuffer_Unreference(mem->ohos_native_buffer);
++      mem->ohos_native_buffer = NULL;
++   }
+    if (mem->host_map) {
+       struct vn_device_proc_table *vk = &mem->device->proc_table;
+       vk->UnmapMemory(mem->device->base.handle.device,
+@@ -1784,6 +1839,52 @@
+                                       : VIRGL_RENDERER_MAP_CACHE_WC;
+    }
+ 
++#ifdef __OHOS__
++   if (mem->ohos_native_export_handle) {
++      if ((blob_flags & VIRGL_RENDERER_BLOB_FLAG_USE_CROSS_DEVICE) ||
++          blob_size > mem->allocation_size)
++         return false;
++      struct vkr_device *dev = mem->device;
++      PFN_vkGetMemoryNativeBufferOHOS get_native = (PFN_vkGetMemoryNativeBufferOHOS)
++         dev->physical_device->proc_table.GetDeviceProcAddr(dev->base.handle.device,
++                                                          "vkGetMemoryNativeBufferOHOS");
++      const VkMemoryGetNativeBufferInfoOHOS info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_GET_NATIVE_BUFFER_INFO_OHOS,
++         .memory = mem->base.handle.device_memory,
++      };
++      struct OH_NativeBuffer *native = NULL;
++      if (!get_native || get_native(dev->base.handle.device, &info, &native) != VK_SUCCESS)
++         return false;
++      OHNativeWindowBuffer *wrapper = OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer(native);
++      const BufferHandle *handle = wrapper ? OH_NativeWindow_GetBufferHandleFromNative(wrapper) : NULL;
++      int fd = handle && handle->fd >= 0 && handle->size >= 0 &&
++               (uint64_t)handle->size >= blob_size ? os_dupfd_cloexec(handle->fd) : -1;
++      if (wrapper)
++         OH_NativeWindow_DestroyNativeWindowBuffer(wrapper);
++      if (fd < 0) {
++         OH_NativeBuffer_Unreference(native);
++         return false;
++      }
++      VkResult ret = dev->proc_table.MapMemory(dev->base.handle.device,
++                                               mem->base.handle.device_memory,
++                                               0, VK_WHOLE_SIZE, 0, &mem->host_map);
++      if (ret != VK_SUCCESS) {
++         close(fd);
++         OH_NativeBuffer_Unreference(native);
++         return false;
++      }
++      mem->ohos_native_buffer = native;
++      mem->exported = true;
++      *out_blob = (struct virgl_context_blob){
++         .type = VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER,
++         .u.fd = fd,
++         .map_info = map_info,
++      };
++      vkr_log("OHOS native-memory-v1 export bytes=%" PRIu64 " type=%u flags=0x%x shadow=0",
++              mem->allocation_size, mem->memory_type_index, mem->property_flags);
++      return true;
++   }
++#endif
+    if (mem->mtl_shm && mem->mtl_shm->shm_fd >= 0) {
+       mem->exported = true;
+       *out_blob = (struct virgl_context_blob){
+@@ -2285,6 +2386,21 @@
+                                      VkDeviceSize size)
+ {
+ #ifdef __OHOS__
++   if (mem->ohos_native_export_handle) {
++      if (!mem->host_map || offset >= mem->allocation_size ||
++          (size != VK_WHOLE_SIZE && size > mem->allocation_size - offset))
++         return VK_ERROR_MEMORY_MAP_FAILED;
++      const VkMappedMemoryRange range = {
++         .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
++         .memory = mem->base.handle.device_memory,
++         .offset = offset,
++         .size = size,
++      };
++      return mem->device->proc_table.FlushMappedMemoryRanges(mem->device->base.handle.device, 1, &range);
++   }
++#endif
++
++#ifdef __OHOS__
+    if (!mem->host_map || !mem->shadow_map || !mem->shadow_size) {
+       if (mem->shadow_guest_write_depth)
+          mem->shadow_guest_write_depth--;
+@@ -2424,6 +2540,21 @@
+                                            VkDeviceSize offset,
+                                            VkDeviceSize size)
+ {
++#ifdef __OHOS__
++   if (mem->ohos_native_export_handle) {
++      if (!mem->host_map || offset >= mem->allocation_size ||
++          (size != VK_WHOLE_SIZE && size > mem->allocation_size - offset))
++         return VK_ERROR_MEMORY_MAP_FAILED;
++      const VkMappedMemoryRange range = {
++         .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
++         .memory = mem->base.handle.device_memory,
++         .offset = offset,
++         .size = size,
++      };
++      return mem->device->proc_table.InvalidateMappedMemoryRanges(mem->device->base.handle.device, 1, &range);
++   }
++#endif
++
+ #ifdef __OHOS__
+    if (!mem->host_map || !mem->shadow_map || !mem->shadow_size)
+       return VK_SUCCESS;
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -11,6 +11,9 @@
+ struct gbm_bo;
+ struct vkr_mtl_shm;
+ struct vkr_context;
++#ifdef __OHOS__
++struct OH_NativeBuffer;
++#endif
+ 
+ #ifdef __OHOS__
+ struct vkr_ohos_shadow_dirty_range {
+@@ -83,6 +86,8 @@
+    bool shadow_gpu_upload_full_coverage;
+    uint64_t shadow_pending_copy_bytes;
+    uint32_t shadow_pending_copy_count;
++   uint32_t ohos_native_export_handle;
++   struct OH_NativeBuffer *ohos_native_buffer;
+ #endif
+ };
+ VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)
+--- /dev/null
++++ b/src/venus/vkr_ohos_native_memory.h
+@@ -0,0 +1,91 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef VKR_OHOS_NATIVE_MEMORY_H
++#define VKR_OHOS_NATIVE_MEMORY_H
++#include <vulkan/vulkan.h>
++#include <stdint.h>
++#include <stdbool.h>
++
++/* Preserve dedicated sizes for older 1.3 drivers. Vulkan 1.3.204 VUIDs
++ * image-02964 / buffer-02965 require exact equality; newer specifications
++ * permit larger allocations. Do not silently alter the guest's dedicated
++ * request. Ordinary heaps may be enlarged for a page mapping; the exported
++ * fd is separately checked against the guest blob size. */
++static inline VkResult
++vkr_ohos_native_allocation_size(VkMemoryAllocateInfo *info, uint64_t page_size)
++{
++   const VkMemoryDedicatedAllocateInfo *dedicated = NULL;
++   for (const VkBaseInStructure *p = info->pNext; p; p = p->pNext)
++      if (p->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
++         dedicated = (const VkMemoryDedicatedAllocateInfo *)p;
++         break;
++      }
++   if (dedicated && (dedicated->image || dedicated->buffer)) return VK_SUCCESS;
++   if (!page_size || (page_size & (page_size - 1)) ||
++       info->allocationSize > UINT64_MAX - (page_size - 1))
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   info->allocationSize = (info->allocationSize + page_size - 1) & ~(page_size - 1);
++   return VK_SUCCESS;
++}
++
++
++/* One GPU-only alias precedes the original types, preserving Vulkan's
++ * subset ordering. It references an existing heap; no extra VRAM is claimed.
++ * HOST_VISIBLE buffers retain the original cache/coherency properties. */
++struct vkr_ohos_memory_types {
++   bool enabled;
++   uint32_t host_count;
++   uint32_t gpu_host_type;
++};
++
++static inline bool
++vkr_ohos_memory_types_init(VkPhysicalDeviceMemoryProperties *props,
++                          struct vkr_ohos_memory_types *types)
++{
++   *types = (struct vkr_ohos_memory_types){0};
++   if (!props->memoryTypeCount || props->memoryTypeCount >= VK_MAX_MEMORY_TYPES)
++      return false;
++   uint32_t gpu = props->memoryTypeCount;
++   for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
++      const uint32_t flags = props->memoryTypes[i].propertyFlags;
++      if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
++          !(flags & (VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT))) {
++         gpu = i;
++         break;
++      }
++   }
++   if (gpu == props->memoryTypeCount) return false;
++   const uint32_t heap = props->memoryTypes[gpu].heapIndex;
++   *types = (struct vkr_ohos_memory_types){true, props->memoryTypeCount, gpu};
++   for (uint32_t i = props->memoryTypeCount; i; i--)
++      props->memoryTypes[i] = props->memoryTypes[i - 1];
++   props->memoryTypes[0] = (VkMemoryType){VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, heap};
++   props->memoryTypeCount++;
++   return true;
++}
++
++static inline uint32_t
++vkr_ohos_memory_type_to_host(const struct vkr_ohos_memory_types *types, uint32_t guest)
++{
++   return !types->enabled ? guest : (guest ? guest - 1 : types->gpu_host_type);
++}
++
++static inline uint32_t
++vkr_ohos_memory_type_bits(const struct vkr_ohos_memory_types *types, uint32_t host_bits)
++{
++   if (!types->enabled) return host_bits;
++   return (host_bits << 1) | !!(host_bits & (1u << types->gpu_host_type));
++}
++
++static inline uint32_t
++vkr_ohos_gpu_image_memory_bits(const VkPhysicalDeviceMemoryProperties *props,
++   const struct vkr_ohos_memory_types *types, uint32_t host_bits)
++{
++   uint32_t bits = vkr_ohos_memory_type_bits(types, host_bits);
++   if (types->enabled)
++      for (uint32_t i = 0; i < props->memoryTypeCount; i++)
++         if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++            bits &= ~(1u << i);
++   return bits;
++}
++
++#endif
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -256,7 +256,12 @@
+    TRACE_FUNC();
+ 
+    assert(ctx_id);
+-   assert(!(ctx_flags & ~VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK));
++   uint32_t allowed_flags = VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
++#ifdef __OHOS__
++   allowed_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++#endif
++   if (ctx_flags & ~allowed_flags)
++      return false;
+ 
+    if ((ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK) !=
+        VIRTGPU_DRM_CAPSET_VENUS)
+@@ -276,6 +281,9 @@
+       return false;
+    }
+ 
++#ifdef __OHOS__
++   ctx->ohos_native_memory = !!(ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY);
++#endif
+    list_addtail(&ctx->head, &vkr_state.contexts);
+    for (unsigned i = 0; i < 64; i++) {
+       if (!vkr_context_cache[i]) {
+@@ -535,8 +543,15 @@
+    if (!vkr_context_create_resource(ctx, res_id, blob_id, blob_size, blob_flags, &blob))
+       return false;
+ 
+-   assert(blob.type == VIRGL_RESOURCE_FD_SHM || blob.type == VIRGL_RESOURCE_FD_DMABUF ||
+-          blob.type == VIRGL_RESOURCE_FD_OPAQUE);
++   bool valid_blob_type = blob.type == VIRGL_RESOURCE_FD_SHM ||
++                          blob.type == VIRGL_RESOURCE_FD_DMABUF ||
++                          blob.type == VIRGL_RESOURCE_FD_OPAQUE;
++#ifdef __OHOS__
++   valid_blob_type |= ctx->ohos_native_memory &&
++                      blob.type == VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER;
++#endif
++   assert(valid_blob_type);
++   (void)valid_blob_type;
+ 
+    *out_fd_type = blob.type;
+    *out_res_fd = blob.u.fd;
+--- a/src/virgl_resource.h
++++ b/src/virgl_resource.h
+@@ -49,6 +49,9 @@
+     * original context.
+     */
+    VIRGL_RESOURCE_OPAQUE_HANDLE,
++
++   /* Private OHOS worker reply: mmap-able GPU backing, not a sealable memfd. */
++   VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER = 4,
+ 
+    VIRGL_RESOURCE_FD_INVALID = -1,
+ };
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -255,7 +255,12 @@
+       return EINVAL;
+ 
+    /* unsupported flags */
+-   if (ctx_flags & ~VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK)
++   uint32_t allowed_flags = VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
++#ifdef __OHOS__
++   if (capset_id == VIRTGPU_DRM_CAPSET_VENUS)
++      allowed_flags |= VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++#endif
++   if (ctx_flags & ~allowed_flags)
+       return EINVAL;
+ 
+    ctx = virgl_context_lookup(ctx_id);
+@@ -1316,6 +1321,7 @@
+          map = ctx->resource_map(ctx, res, NULL, PROT_WRITE | PROT_READ, MAP_SHARED);
+          map_size = res->map_size;
+          break;
++      case VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER:
+       case VIRGL_RESOURCE_FD_INVALID:
+          /* Avoid a default case so that -Wswitch will tell us at compile time
+           * if a new virgl resource type is added without being handled here.
+@@ -1371,6 +1377,7 @@
+                                  MAP_FIXED | MAP_SHARED);
+          break;
+       case VIRGL_RESOURCE_FD_OPAQUE:
++      case VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER:
+       case VIRGL_RESOURCE_FD_INVALID:
+          /* Avoid a default case so that -Wswitch will tell us at compile time
+           * if a new virgl resource type is added without being handled here.
+@@ -1411,6 +1418,7 @@
+       case VIRGL_RESOURCE_FD_OPAQUE:
+          ret = vkr_allocator_resource_unmap(res);
+          break;
++      case VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER:
+       case VIRGL_RESOURCE_FD_INVALID:
+          /* Avoid a default case so that -Wswitch will tell us at compile time
+           * if a new virgl resource type is added without being handled here.
+@@ -1459,6 +1467,7 @@
+       *fd_type = VIRGL_RENDERER_BLOB_FD_TYPE_SHM;
+       break;
+    case VIRGL_RESOURCE_OPAQUE_HANDLE:
++   case VIRGL_RESOURCE_FD_OHOS_NATIVE_BUFFER:
+    case VIRGL_RESOURCE_FD_INVALID:
+       /* Avoid a default case so that -Wswitch will tell us at compile time if a
+        * new virgl resource type is added without being handled here.
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -391,6 +391,8 @@
+ VIRGL_EXPORT int virgl_renderer_execute(void *execute_args, uint32_t execute_size);
+ 
+ #define VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK 0xff
++/* Opt-in OHOS native-memory protocol v1; Venus only. */
++#define VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY (1u << 16)
+ 
+ VIRGL_EXPORT int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
+                                                           uint32_t ctx_flags,
+--- a/vtest/vtest_protocol.h
++++ b/vtest/vtest_protocol.h
+@@ -215,6 +215,7 @@
+ enum vcmd_param  {
+    VCMD_PARAM_MAX_TIMELINE_COUNT = 1,
+    VCMD_PARAM_HAS_TIMELINE_SYNCOBJ = 2,
++   VCMD_PARAM_OHOS_NATIVE_MEMORY_V1 = 0x57480101,
+ };
+ #define VCMD_GET_PARAM_SIZE 1
+ #define VCMD_GET_PARAM_PARAM 0
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -168,6 +168,7 @@
+    unsigned protocol_version;
+    unsigned capset_id;
+    bool context_initialized;
++   uint32_t native_memory_flags;
+ 
+    uint32_t implicit_fence_submitted;
+ 
+@@ -903,6 +904,7 @@
+    /* By default we support version 0 unless VCMD_PROTOCOL_VERSION is sent */
+    ctx->protocol_version = 0;
+    ctx->capset_id = 0;
++   ctx->native_memory_flags = 0;
+    ctx->context_initialized = false;
+    ctx->implicit_fence_submitted = renderer.implicit_fence_completed;
+    winehua_diag("client context allocated ctx=%d baseline=%u out_fd=%d",
+@@ -978,7 +980,7 @@
+ 
+    if (ctx->capset_id) {
+       ret = virgl_renderer_context_create_with_flags(ctx->ctx_id,
+-                                                     ctx->capset_id,
++                                                     ctx->capset_id | ctx->native_memory_flags,
+                                                      strlen(ctx->debug_name),
+                                                      ctx->debug_name);
+    } else {
+@@ -1359,6 +1361,15 @@
+    resp[1] = 0;
+ 
+    switch (param) {
++#ifdef __OHOS__
++   case VCMD_PARAM_OHOS_NATIVE_MEMORY_V1:
++      if (!ctx->context_initialized || ctx->native_memory_flags) {
++         ctx->native_memory_flags = VIRGL_RENDERER_CONTEXT_FLAG_OHOS_NATIVE_MEMORY;
++         resp[0] = true;
++         resp[1] = 1;
++      }
++      break;
++#endif
+    case VCMD_PARAM_MAX_TIMELINE_COUNT:
+       resp[0] = true;
+       /* TODO until we have a timerfd */
+@@ -1480,7 +1491,11 @@
+    if (ret != sizeof(context_init_buf))
+       return -1;
+ 
+-   capset_id = context_init_buf[VCMD_CONTEXT_INIT_CAPSET_ID];
++   const uint32_t flags = context_init_buf[VCMD_CONTEXT_INIT_CAPSET_ID];
++   capset_id = flags & VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
++   if ((flags & ~VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK) != ctx->native_memory_flags ||
++       (ctx->native_memory_flags && capset_id != 4 /* Venus */))
++      return -EINVAL;
+    if (!capset_id)
+       return -EINVAL;
+ 

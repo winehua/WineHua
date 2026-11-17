@@ -1,0 +1,35 @@
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2756,8 +2756,14 @@
+                   util_format_get_stride(m->base.b.format, box->x);
+          assert(src_offset + size <= res->obj->size);
+       }
+-      if (!m->obj->coherent) {
+-         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, m->obj, m->obj->offset, m->obj->size);
++      const char *shadow_upload = os_get_option("WINEHUA_ZINK_SHADOW_UPLOAD");
++      const bool remote_upload = shadow_upload && shadow_upload[0] == '1' && !shadow_upload[1];
++      if (!m->obj->coherent || remote_upload) {
++         /* Publish only the CPU-written buffer slice. Other slices may still
++          * contain GPU results and must not be overwritten by stale shadow. */
++         const bool slice = remote_upload && m->obj->is_buffer;
++         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, m->obj,
++            m->obj->offset + (slice ? src_offset : 0), slice ? size : m->obj->size);
+          if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+             mesa_loge("ZINK: vkFlushMappedMemoryRanges failed");
+          }
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -765,6 +765,11 @@
+    struct pipe_caps *caps = (struct pipe_caps *)&screen->base.caps;
+ 
+    u_init_pipe_screen_caps(&screen->base, screen->is_cpu ? 0 : 1);
++   /* The remote shadow transport cannot honor implicit persistent coherent
++    * CPU writes. Use the normal explicit uploader flush path in this mode. */
++   const char *shadow_upload = os_get_option("WINEHUA_ZINK_SHADOW_UPLOAD");
++   if (shadow_upload && shadow_upload[0] == '1' && !shadow_upload[1])
++      caps->buffer_map_persistent_coherent = false;
+ 
+    caps->null_textures = screen->info.rb_image_feats.robustImageAccess;
+    /* support OVR_multiview and OVR_multiview2 */

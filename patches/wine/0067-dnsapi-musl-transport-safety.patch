@@ -1,0 +1,311 @@
+--- a/dlls/dnsapi/libresolv_musl.c
++++ b/dlls/dnsapi/libresolv_musl.c
+@@ -45,6 +45,7 @@
+ #include <fcntl.h>
+ #include <poll.h>
+ #include <stdint.h>
++#include <limits.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
+ #include <sys/stat.h>
+@@ -322,7 +323,7 @@
+     {
+         const char *dot = strchr( p, '.' );
+         size_t l = dot ? (size_t)(dot - p) : strlen( p );
+-        if (!l || l > 63) return -1;
++        if (!l || l > 63 || total + l + 1 > 255) return -1;
+         *out++ = (unsigned char)l;
+         memcpy( out, p, l );
+         out += l;
+@@ -330,6 +331,7 @@
+         p += l;
+         if (*p == '.') p++;
+     }
++    if (total > 255) return -1;
+     *out++ = 0;
+     return total;
+ }
+@@ -394,109 +396,154 @@
+     return -1;
+ }
+ 
+-/* DNS over TCP: some carrier/campus networks intercept UDP:53 and answer
+- * FORMERR for every query; TCP:53 passes through untouched. */
++/* One monotonic budget covers connect, the query and the complete reply. */
++static int64_t dns_now_ms( void )
++{
++    struct timespec ts;
++    if (clock_gettime( CLOCK_MONOTONIC, &ts )) return -1;
++    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
++}
++
++static int dns_wait( int fd, short events, int64_t deadline )
++{
++    struct pollfd pfd = { fd, events, 0 };
++    int ret;
++    int64_t now, remaining;
++
++    for (;;)
++    {
++        if ((now = dns_now_ms()) < 0 || (remaining = deadline - now) <= 0) return -1;
++        pfd.revents = 0;
++        ret = poll( &pfd, 1, remaining > INT_MAX ? INT_MAX : (int)remaining );
++        if (ret < 0 && errno == EINTR) continue;
++        if (ret <= 0 || (pfd.revents & POLLNVAL)) return -1;
++        /* Let getsockopt/recv report pending errors or consume data at EOF. */
++        if (pfd.revents & (events | POLLERR | POLLHUP)) return 0;
++    }
++}
++
++static int dns_transfer( int fd, unsigned char *buf, int len, int writing, int64_t deadline )
++{
++    int done = 0;
++    ssize_t n;
++
++    while (done < len)
++    {
++        if (dns_wait( fd, writing ? POLLOUT : POLLIN, deadline )) return -1;
++        n = writing ? send( fd, buf + done, len - done, MSG_NOSIGNAL ) :
++                      recv( fd, buf + done, len - done, 0 );
++        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
++        if (n <= 0) return -1;
++        done += n;
++    }
++    return 0;
++}
++
++/* DNS over TCP also serves truncated UDP replies, on the same server. */
+ static int tcp_query_one( struct sockaddr *sa, socklen_t salen,
+                           const unsigned char *qbuf, int qlen,
+                           unsigned char *rbuf, int rbufsize, unsigned short id,
+                           int timeout_ms )
+ {
+-    int fd = socket( sa->sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0 );
+-    struct pollfd pfd;
++    int fd, flags, error, msglen, ret = -1;
++    socklen_t error_len = sizeof(error);
+     unsigned char lenbuf[2];
+-    int got, n, msglen;
+-
+-    if (fd < 0) return -1;
+-    fcntl( fd, F_SETFL, fcntl( fd, F_GETFL, 0 ) | O_NONBLOCK );
+-    if (connect( fd, sa, salen ) < 0 && errno != EINPROGRESS)
+-    {
+-        close( fd );
+-        return -1;
+-    }
+-    pfd.fd = fd;
+-    pfd.events = POLLOUT;
+-    if (poll( &pfd, 1, timeout_ms ) <= 0) { close( fd ); return -1; }
++    int64_t now = dns_now_ms(), deadline;
++
++    if (now < 0 || timeout_ms <= 0) return -1;
++    deadline = now + timeout_ms;
++    if ((fd = socket( sa->sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0 )) < 0) return -1;
++    if ((flags = fcntl( fd, F_GETFL, 0 )) < 0 || fcntl( fd, F_SETFL, flags | O_NONBLOCK ) < 0) goto done;
++    if (connect( fd, sa, salen ) < 0 && errno != EINPROGRESS && errno != EINTR) goto done;
++    if (dns_wait( fd, POLLOUT, deadline ) ||
++        getsockopt( fd, SOL_SOCKET, SO_ERROR, &error, &error_len ) || error) goto done;
+ 
+     lenbuf[0] = qlen >> 8; lenbuf[1] = qlen & 0xff;
+-    if (send( fd, lenbuf, 2, MSG_NOSIGNAL ) != 2 ||
+-        send( fd, qbuf, qlen, MSG_NOSIGNAL ) != qlen)
+-    {
+-        close( fd );
+-        return -1;
+-    }
+-
+-    /* 2-byte length prefix */
+-    got = 0;
+-    while (got < 2)
+-    {
+-        pfd.fd = fd;
+-        pfd.events = POLLIN;
+-        if (poll( &pfd, 1, timeout_ms ) <= 0) { close( fd ); return -1; }
+-        n = recv( fd, lenbuf + got, 2 - got, 0 );
+-        if (n <= 0) { close( fd ); return -1; }
+-        got += n;
+-    }
++    if (dns_transfer( fd, lenbuf, 2, 1, deadline ) ||
++        dns_transfer( fd, (unsigned char *)qbuf, qlen, 1, deadline ) ||
++        dns_transfer( fd, lenbuf, 2, 0, deadline )) goto done;
+     msglen = (lenbuf[0] << 8) | lenbuf[1];
+-    if (msglen < 12 || msglen > rbufsize) { close( fd ); return -1; }
+-
+-    /* message body */
+-    got = 0;
+-    while (got < msglen)
+-    {
+-        pfd.fd = fd;
+-        pfd.events = POLLIN;
+-        if (poll( &pfd, 1, timeout_ms ) <= 0) { close( fd ); return -1; }
+-        n = recv( fd, rbuf + got, msglen - got, 0 );
+-        if (n <= 0) { close( fd ); return -1; }
+-        got += n;
+-    }
++    if (msglen < 12 || msglen > rbufsize) goto done;
++    if (dns_transfer( fd, rbuf, msglen, 0, deadline )) goto done;
++    if (((rbuf[0] << 8) | rbuf[1]) == id && (rbuf[2] & 0x80)) ret = msglen;
++done:
+     close( fd );
+-
+-    if (((rbuf[0] << 8) | rbuf[1]) == id && (rbuf[2] & 0x80))
+-        return msglen;
+-    return -1;
++    return ret;
++}
++
++static socklen_t dns_sockaddr_len( const struct sockaddr *sa )
++{
++    return sa->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
++}
++
++static int query_server( struct sockaddr *sa, const unsigned char *qbuf, int qlen,
++                         unsigned char *rbuf, int rbufsize, unsigned short id, int timeout, int force_tcp )
++{
++    socklen_t salen = dns_sockaddr_len( sa );
++    int n = -1;
++
++    if (!force_tcp)
++        n = udp_query_one( (struct sockaddr *)sa, salen, qbuf, qlen, rbuf, rbufsize, id, timeout );
++    if (n < 0 || (n >= 12 && (rbuf[2] & 0x02)))
++        n = tcp_query_one( (struct sockaddr *)sa, salen, qbuf, qlen, rbuf, rbufsize, id, timeout );
++    return n;
+ }
+ 
+ /* synthesize a wire response from getaddrinfo (A/AAAA fallback) */
+ static int synthesize_from_getaddrinfo( const char *name, WORD type,
+                                         unsigned char *buf, int bufsize,
+-                                        const unsigned char *query, int qlen )
++                                        const unsigned char *query, int qlen, DWORD *required )
+ {
+     struct addrinfo hints, *res = NULL, *ai;
+     unsigned char *p;
+-    int ancount = 0, rdlen = (type == 1) ? 4 : 16;
++    size_t count = 0, size;
++    int family = type == 1 ? AF_INET : AF_INET6, rdlen = type == 1 ? 4 : 16;
++    socklen_t addrlen = type == 1 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+ 
+     if (type != 1 && type != 28) return -1;
+-    if (qlen + 16 + 16 + rdlen > bufsize) return -1;
+-
+     memset( &hints, 0, sizeof(hints) );
+-    hints.ai_family = (type == 1) ? AF_INET : AF_INET6;
++    hints.ai_family = family;
+     if (getaddrinfo( name, NULL, &hints, &res ) != 0 || !res) return -1;
+ 
+-    for (ai = res; ai; ai = ai->ai_next) ancount++;
+-
+-    /* echo the question, then answers */
++    for (ai = res; ai; ai = ai->ai_next)
++    {
++        if (ai->ai_family != family || !ai->ai_addr || ai->ai_addrlen < addrlen) continue;
++        if (++count > 65535) { freeaddrinfo( res ); return -1; }
++    }
++    if (!count || qlen < 12 || (size_t)qlen > UINT32_MAX - count * (12 + rdlen))
++    {
++        freeaddrinfo( res );
++        return -1;
++    }
++    size = qlen + count * (12 + rdlen);
++    *required = size;
++    if (bufsize < 0 || size > (size_t)bufsize)
++    {
++        freeaddrinfo( res );
++        return -2; /* The caller propagates the exact required length. */
++    }
++
+     memcpy( buf, query, qlen );
+     p = buf + qlen;
+     buf[2] = 0x81; /* QR + RD */
+     buf[3] = 0x80; /* RA */
+-    buf[6] = 0; buf[7] = (unsigned char)ancount;
+-
++    buf[6] = count >> 8; buf[7] = count & 0xff;
+     for (ai = res; ai; ai = ai->ai_next)
+     {
+-        *p++ = 0xc0; *p++ = 0x0c;              /* name pointer */
+-        *p++ = 0; *p++ = (unsigned char)type;  /* type */
+-        *p++ = 0; *p++ = 1;                    /* class IN */
+-        *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 60; /* ttl 60s */
++        if (ai->ai_family != family || !ai->ai_addr || ai->ai_addrlen < addrlen) continue;
++        *p++ = 0xc0; *p++ = 0x0c;
++        *p++ = 0; *p++ = (unsigned char)type;
++        *p++ = 0; *p++ = 1;
++        *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 60;
+         *p++ = 0; *p++ = (unsigned char)rdlen;
+         if (type == 1)
+-            memcpy( p, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, 4 );
++            memcpy( p, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, rdlen );
+         else
+-            memcpy( p, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, 16 );
++            memcpy( p, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, rdlen );
+         p += rdlen;
+     }
+     freeaddrinfo( res );
+-    return (int)(p - buf);
++    return (int)size;
+ }
+ 
+ static NTSTATUS resolv_query( void *args )
+@@ -505,19 +552,19 @@
+     unsigned char qbuf[512 + 4], *rbuf = (unsigned char *)params->buf;
+     unsigned short id = next_id();
+     int qlen, n = -1, i, attempt, rcode;
+-    DWORD bufsize = *params->len;
++    DWORD bufsize = *params->len, required;
+     /* DNS_QUERY_USE_TCP_ONLY: wine's libresolv.c maps this to RES_USEVC; here
+      * it skips the UDP attempt entirely.  The remaining option bits are
+      * accepted but not acted upon (see libresolv.c map_options). */
+     int force_tcp = !!(params->options & DNS_QUERY_USE_TCP_ONLY);
+ 
+-    if (!params->name || !params->buf || bufsize < 12) return ERROR_INVALID_NAME;
++    if (!params->name || !params->buf || bufsize < 12 || bufsize > INT_MAX) return ERROR_INVALID_NAME;
+ 
+     /* header */
+     qbuf[0] = id >> 8; qbuf[1] = id & 0xff;
+     qbuf[2] = 0x01; qbuf[3] = 0x00; /* RD */
+     qbuf[4] = 0; qbuf[5] = 1;       /* one question */
+-    qbuf[6] = qbuf[7] = qbuf[8] = qbuf[9] = 0;
++    qbuf[6] = qbuf[7] = qbuf[8] = qbuf[9] = qbuf[10] = qbuf[11] = 0;
+     qlen = encode_qname( qbuf + 12, params->name );
+     if (qlen < 0) return ERROR_INVALID_NAME;
+     qlen += 12;
+@@ -532,25 +579,9 @@
+     {
+         int timeout = attempt ? 3000 : 2000;
+         for (i = 0; i < g_override_count && n < 0; i++)
+-        {
+-            if (!force_tcp)
+-                n = udp_query_one( (struct sockaddr *)&g_override[i], sizeof(g_override[i]),
+-                                   qbuf, qlen, rbuf, (int)bufsize, id, timeout );
+-            if (n < 0)
+-                n = tcp_query_one( (struct sockaddr *)&g_override[i], sizeof(g_override[i]),
+-                                   qbuf, qlen, rbuf, (int)bufsize, id, timeout );
+-        }
++            n = query_server( (struct sockaddr *)&g_override[i], qbuf, qlen, rbuf, (int)bufsize, id, timeout, force_tcp );
+         for (i = 0; n < 0 && i < g_config.server_count; i++)
+-        {
+-            socklen_t salen = g_config.servers[i].ss_family == AF_INET6 ?
+-                              sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+-            if (!force_tcp)
+-                n = udp_query_one( (struct sockaddr *)&g_config.servers[i], salen,
+-                                   qbuf, qlen, rbuf, (int)bufsize, id, timeout );
+-            if (n < 0)
+-                n = tcp_query_one( (struct sockaddr *)&g_config.servers[i], salen,
+-                                   qbuf, qlen, rbuf, (int)bufsize, id, timeout );
+-        }
++            n = query_server( (struct sockaddr *)&g_config.servers[i], qbuf, qlen, rbuf, (int)bufsize, id, timeout, force_tcp );
+     }
+ 
+     /* Some carrier/campus networks intercept UDP:53 and answer FORMERR for
+@@ -561,7 +592,8 @@
+     {
+         int wire_rcode = (n >= 12) ? (rbuf[3] & 0x0f) : 2;
+         int m = synthesize_from_getaddrinfo( params->name, params->type,
+-                                            rbuf, (int)bufsize, qbuf, qlen );
++                                            rbuf, (int)bufsize, qbuf, qlen, &required );
++        if (m == -2) { *params->len = required; return ERROR_MORE_DATA; }
+         if (m < 0)
+         {
+             if (wire_rcode != 2 && wire_rcode != 0) return map_rcode( wire_rcode );

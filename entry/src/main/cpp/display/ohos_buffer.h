@@ -123,7 +123,7 @@ struct wlr_buffer *wl_ohos_consumer_buffer_acquire(struct OH_NativeImage *image)
 int wl_ohos_consumer_buffer_owns(struct wlr_buffer *buffer);
 
 // 归还队列: ReleaseNativeWindowBuffer (dequeued→free, 生产者可再写)。
-// 与 present 侧同样传 -1 (不做 GPU 侧同步), 依据: T4 输出路径实测口径。
+// 已交给合成器的帧在归还时导出 GPU 完成 fence；失败才同步等待。
 int32_t wl_ohos_consumer_buffer_release(struct wlr_buffer *buffer, int fence_fd);
 
 // 丢弃未上屏的一帧 (释放 buffer 对象并归还队列槽位)。未挂上 scene 的帧必须
@@ -131,18 +131,10 @@ int32_t wl_ohos_consumer_buffer_release(struct wlr_buffer *buffer, int fence_fd)
 void wl_ohos_consumer_buffer_drop(struct wlr_buffer *buffer);
 
 /*
- * ── 不使用 GPU fence 的依据 + 不变量检查器 (known-issues §2.6) ──
- *
- * 归还时传 fence -1 (无同步), 安全性**不**来自 fence, 而来自这条不变量:
- *
- *   present 路径每帧 glFinish (零拷贝分支 ohos_output.c HandleOutputCommit
- *   在 FlushBuffer 前、拷贝分支在读像素前) ⇒ 被本帧采样的 guest 纹理在该帧
- *   交给显示栈之前 GPU 已画完 ⇒ guest 槽位的归还发生在下一帧 set 时, 此时
- *   采样早已完成, 生产者覆写安全。
- *
- * 风险不是「今天不安全」, 是「这条保证藏在远处, 被删掉没人知道」。检查器
- * 把两半都记在 buffer 上 (交出去那一刻的 present 序号 + GPU 同步点计数),
- * 归还时比对并计数; 破损 (上屏过却没有同步点) 立刻打 ERROR。
+ * GPU 归还同步：已交给合成器的帧导出 EGL native completion fence，
+ * 由 SurfaceQueue 在复用前等待；无 fence 能力时退回 glFinish。
+ * 未交给合成器的帧可直接丢弃。计数检查覆盖 fence 或实际 GPU 同步，
+ * EGL swap 本身不算完成证明。
  */
 // 记下 buffer 交给 scene 的时刻 (在 wlr_scene_buffer_set_buffer 之后调用)
 void wl_ohos_consumer_buffer_note_handoff(struct wlr_buffer *buffer,

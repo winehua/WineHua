@@ -1,0 +1,35 @@
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2441,9 +2441,9 @@
+     * the physical heap is coherent. Keep this transport workaround opt-in,
+     * and never invalidate a write-only mapping with pending CPU writes. */
+    const char *shadow_readback = os_get_option("WINEHUA_ZINK_SHADOW_READBACK");
+-   if (!res->obj->coherent ||
+-       ((usage & PIPE_MAP_READ) && shadow_readback &&
+-        shadow_readback[0] == '1' && !shadow_readback[1])
++   const bool remote_readback = (usage & PIPE_MAP_READ) && shadow_readback &&
++      shadow_readback[0] == '1' && !shadow_readback[1];
++   if (!res->obj->coherent || remote_readback
+ #if defined(MVK_VERSION)
+       // Work around for MoltenVk limitation specifically on coherent memory
+       // MoltenVk returns blank memory ranges when there should be data present
+@@ -2454,7 +2454,8 @@
+ #endif
+       ) {
+       VkDeviceSize size = box->width;
+-      VkDeviceSize offset = res->obj->offset + trans->offset;
++      /* Direct maps use box->x; staging maps use trans->offset. */
++      VkDeviceSize offset = res->obj->offset + (remote_readback ? map_offset : trans->offset);
+       VkMappedMemoryRange range = zink_resource_init_mem_range(screen, res->obj, offset, size);
+       if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+          mesa_loge("ZINK: vkInvalidateMappedMemoryRanges failed");
+@@ -2482,6 +2483,8 @@
+ fail:
+    if (ctx == screen->copy_context)
+       zink_screen_unlock_context(screen);
++   pipe_resource_reference(&trans->staging_res, NULL);
++   pipe_resource_reference(&trans->base.b.resource, NULL);
+    destroy_transfer(ctx, trans);
+    return NULL;
+ }

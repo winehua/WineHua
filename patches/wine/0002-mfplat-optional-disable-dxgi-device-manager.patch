@@ -1,0 +1,28 @@
+diff --git a/dlls/mfplat/main.c b/dlls/mfplat/main.c
+--- a/dlls/mfplat/main.c
++++ b/dlls/mfplat/main.c
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include <stdarg.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <math.h>
+ #include <limits.h>
+@@ -9684,9 +9685,16 @@ static const IMFDXGIDeviceManagerVtbl dxgi_device_manager_vtbl =
+ HRESULT WINAPI MFCreateDXGIDeviceManager(UINT *token, IMFDXGIDeviceManager **manager)
+ {
+     struct dxgi_device_manager *object;
++    const char *disable = getenv("WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER");
+ 
+     TRACE("%p, %p.\n", token, manager);
+ 
++    if (disable && disable[0] != '\0')
++    {
++        WARN("[WineHua-MF] disable DXGI device manager\n");
++        return E_NOTIMPL;
++    }
++
+     if (!token || !manager)
+         return E_POINTER;
+ 

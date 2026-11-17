@@ -1,0 +1,82 @@
+From 4e85dd0d6e127c0633c82a3d32b32c38002c0079 Mon Sep 17 00:00:00 2001
+From: yifengling0 <liufengpmp@outlook.com>
+Date: Mon, 16 Nov 2026 13:15:26 +0800
+Subject: [PATCH] OHOS: retain-explicit-dxvk9-overlay
+
+---
+ dlls/ntdll/loader.c | 38 +++++++++++++++++++++++++++++++-------
+ 1 file changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 5f4e9468..5fae7b3b 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3462,21 +3462,45 @@ static NTSTATUS search_winehua_dxvk_overlay( LPCWSTR libname, UNICODE_STRING *nt
+     static const WCHAR backend_nameW[] = L"WINEHUA_D3D_BACKEND";
+     static const WCHAR dxvk_root_nameW[] = L"WINEHUA_DXVK_ROOT";
+     static const WCHAR vkd3d_root_nameW[] = L"WINEHUA_VKD3D_ROOT";
++    static const WCHAR d3d9W[] = L"d3d9.dll";
+     static const WCHAR d3d11W[] = L"d3d11.dll";
+     static const WCHAR dxgiW[] = L"dxgi.dll";
+     static const WCHAR d3d12W[] = L"d3d12.dll";
+     static const WCHAR prefixW[] = L"\\??\\unix";
+     static const WCHAR *const archW[] = { L"arm64x", L"x64", L"x86" };
+-    UNICODE_STRING backend, root;
++    UNICODE_STRING backend, root, overlay;
+     NTSTATUS status = STATUS_DLL_NOT_FOUND;
+     unsigned int i;
+-    BOOL is_d3d12, is_mixed_vkd3d;
+-    const WCHAR *root_name;
++    BOOL is_d3d9, is_d3d12, is_mixed_vkd3d;
++    const WCHAR *root_name, *canonical_name;
+ 
+-    is_d3d12 = !wcscmp( libname, d3d12W );
+-    if (wcscmp( libname, d3d11W ) && wcscmp( libname, dxgiW ) && !is_d3d12)
++    is_d3d9 = !_wcsicmp( libname, d3d9W );
++    is_d3d12 = !_wcsicmp( libname, d3d12W );
++    if (_wcsicmp( libname, d3d11W ) && _wcsicmp( libname, dxgiW ) && !is_d3d12 && !is_d3d9)
+         return status;
++    /* Windows imports are case-insensitive; the unix overlay path is not. */
++    canonical_name = is_d3d9 ? d3d9W : is_d3d12 ? d3d12W :
++                     !_wcsicmp( libname, d3d11W ) ? d3d11W : dxgiW;
+     if (get_env_var( backend_nameW, 0, &backend )) return status;
++    /* D3D9 overlay is explicit. Existing profiles retain WineD3D and local DLL search. */
++    if (is_d3d9 && wcscmp( backend.Buffer, L"dxvk_legacy_d3d9" )) {
++        RtlFreeUnicodeString( &backend );
++        return status;
++    }
++    if (is_d3d9)
++    {
++        BOOL enabled = FALSE;
++        if (!get_env_var( L"WINEHUA_DXVK9_OVERLAY", 0, &overlay ))
++        {
++            enabled = !wcscmp( overlay.Buffer, L"1" );
++            RtlFreeUnicodeString( &overlay );
++        }
++        if (!enabled)
++        {
++            RtlFreeUnicodeString( &backend );
++            return status;
++        }
++    }
+     is_mixed_vkd3d = !wcscmp( backend.Buffer, L"vkd3d_limited_500k" );
+     if (backend.Length < 5 * sizeof(WCHAR) ||
+         (!is_mixed_vkd3d && wcsncmp( backend.Buffer, L"dxvk_", 5 )) ||
+@@ -3491,7 +3515,7 @@ static NTSTATUS search_winehua_dxvk_overlay( LPCWSTR libname, UNICODE_STRING *nt
+     for (i = is_d3d12 ? 1 : 0; i < ARRAY_SIZE(archW); ++i)
+     {
+         SIZE_T length = ARRAY_SIZE(prefixW) - 1 + root.Length / sizeof(WCHAR) +
+-                        1 + wcslen( archW[i] ) + 1 + wcslen( libname ) + 1;
++                        1 + wcslen( archW[i] ) + 1 + wcslen( canonical_name ) + 1;
+         WCHAR *path = RtlAllocateHeap( GetProcessHeap(), 0, length * sizeof(WCHAR) );
+         WCHAR *ptr;
+         if (!path) {
+@@ -3507,7 +3531,7 @@ static NTSTATUS search_winehua_dxvk_overlay( LPCWSTR libname, UNICODE_STRING *nt
+         wcscpy( ptr, archW[i] );
+         ptr += wcslen( ptr );
+         *ptr++ = '\\';
+-        wcscpy( ptr, libname );
++        wcscpy( ptr, canonical_name );
+ 
+         nt_name->Buffer = NULL;
+         status = open_dll_file( (UNICODE_STRING *)&(UNICODE_STRING){

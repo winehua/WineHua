@@ -1,0 +1,198 @@
+From: VintagePomelo developers
+Subject: [PATCH] Venus: pack one small sync-free vtest submit per write
+
+diff --git a/src/virtio/vulkan/vn_renderer_vtest.c b/src/virtio/vulkan/vn_renderer_vtest.c
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <errno.h>
++#include <stdio.h>
+ #if defined(__OHOS__) && defined(__aarch64__)
+ #include <dlfcn.h>
+ #include <sys/stat.h>
+@@ -33,6 +34,7 @@
+ #include "vn_image.h"
+ #include "vn_queue.h"
+ #include "vn_ring.h"
++#include "vn_vtest_submit.h"
+ 
+ #define VTEST_PCI_VENDOR_ID 0x1af4
+ #define VTEST_PCI_DEVICE_ID 0x1050
+@@ -99,6 +101,8 @@
+ 
+    mtx_t sock_mutex;
+    int sock_fd;
++   bool winehua_packed_submit;
++   bool winehua_submit_path_logged;
+ 
+    uint32_t protocol_version;
+    uint32_t max_timeline_count;
+@@ -212,18 +216,12 @@
+ static void
+ vtest_write(struct vtest *vtest, const void *buf, size_t size)
+ {
+-   do {
+-      const ssize_t ret = write(vtest->sock_fd, buf, size);
+-      if (unlikely(ret < 0)) {
+-         vn_log(vtest->instance,
+-                "lost connection to rendering server on %zu write %zi %d",
+-                size, ret, errno);
+-         abort();
+-      }
+-
+-      buf += ret;
+-      size -= ret;
+-   } while (size);
++   if (vn_vtest_write_full(vtest->sock_fd, buf, size) < 0) {
++      vn_log(vtest->instance,
++             "lost connection to rendering server on %zu write: %d",
++             size, errno);
++      abort();
++   }
+ }
+ 
+ static void
+@@ -576,6 +574,30 @@
+    assert(*sync_size % sizeof(uint32_t) == 0);
+ }
+ 
++/* Record the first eligible command only. This also proves the actual
++ * native transport path when regular debug logging is disabled. */
++static void
++vtest_winehua_log_submit_path(struct vtest *vtest, size_t cs_size)
++{
++   if (vtest->winehua_submit_path_logged)
++      return;
++   vtest->winehua_submit_path_logged = true;
++   char message[160];
++   snprintf(message, sizeof(message),
++            "WineHuaVtestSubmit: packed=%u cs_bytes=%zu wire_bytes=%zu",
++            vtest->winehua_packed_submit, cs_size,
++            VN_VTEST_PACKED_HEADER_BYTES + cs_size);
++   vn_log(vtest->instance, "%s", message);
++   const char *path = os_get_option("VN_WINEHUA_PERF_LOG");
++   if (path && path[0]) {
++      FILE *file = fopen(path, "a");
++      if (file) {
++         fprintf(file, "%s\n", message);
++         fclose(file);
++      }
++   }
++}
++
+ static void
+ vtest_vcmd_submit_cmd2(struct vtest *vtest,
+                        const struct vn_renderer_submit *submit)
+@@ -587,6 +609,25 @@
+    const size_t total_size = header_size + cs_size + sync_size;
+    if (!total_size)
+       return;
++
++   /* Preserve each command and its notification. Only combine the writes
++    * belonging to one small, sync-free batch while sock_mutex is held. */
++   if (submit->batch_count == 1 && !submit->batches[0].sync_count &&
++       cs_size && cs_size <= VN_VTEST_PACKED_CS_BYTES &&
++       !(cs_size % sizeof(uint32_t))) {
++      if (vtest->winehua_packed_submit) {
++         uint32_t packet[VN_VTEST_PACKED_MAX_BYTES / sizeof(uint32_t)];
++         const struct vn_renderer_submit_batch *batch = &submit->batches[0];
++         const size_t bytes = vn_vtest_pack_single_submit(
++            packet, sizeof(packet), batch->cs_data, batch->cs_size,
++            batch->ring_idx);
++         assert(bytes);
++         vtest_write(vtest, packet, bytes);
++         vtest_winehua_log_submit_path(vtest, cs_size);
++         return;
++      }
++      vtest_winehua_log_submit_path(vtest, cs_size);
++   }
+ 
+    uint32_t vtest_hdr[VTEST_HDR_SIZE];
+    vtest_hdr[VTEST_CMD_LEN] = total_size / sizeof(uint32_t);
+@@ -1282,6 +1323,8 @@
+ vtest_init(struct vtest *vtest)
+ {
+    const char *socket_name = os_get_option("VTEST_SOCKET_NAME");
++   const char *packed = os_get_option("VN_WINEHUA_PACKED_SUBMIT");
++   vtest->winehua_packed_submit = packed && !strcmp(packed, "1");
+ 
+    util_sparse_array_init(&vtest->shmem_array, sizeof(struct vtest_shmem),
+                           1024);
+diff --git a/src/virtio/vulkan/vn_vtest_submit.h b/src/virtio/vulkan/vn_vtest_submit.h
+new file mode 100644
+--- /dev/null
++++ b/src/virtio/vulkan/vn_vtest_submit.h
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef VN_VTEST_SUBMIT_H
++#define VN_VTEST_SUBMIT_H
++
++#include <errno.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++#include <unistd.h>
++#include "vtest/vtest_protocol.h"
++
++#define VN_VTEST_PACKED_CS_BYTES 128u
++#define VN_VTEST_PACKED_HEADER_BYTES \
++   (3 * sizeof(uint32_t) + sizeof(struct vcmd_submit_cmd2_batch))
++#define VN_VTEST_PACKED_MAX_BYTES \
++   (VN_VTEST_PACKED_HEADER_BYTES + VN_VTEST_PACKED_CS_BYTES)
++
++/* Same byte stream as VCMD_SUBMIT_CMD2's separate header/count/batch/CS
++ * writes. This never combines distinct submissions or sync operations. */
++static inline size_t
++vn_vtest_pack_single_submit(void *packet, size_t capacity,
++                            const void *cs, size_t size, uint32_t ring_idx)
++{
++   if (!packet || !cs || !size || size > VN_VTEST_PACKED_CS_BYTES ||
++       size % sizeof(uint32_t) || capacity < VN_VTEST_PACKED_HEADER_BYTES + size)
++      return 0;
++
++   const size_t payload_header = sizeof(uint32_t) +
++                                 sizeof(struct vcmd_submit_cmd2_batch);
++   const uint32_t header[3] = {
++      (payload_header + size) / sizeof(uint32_t), VCMD_SUBMIT_CMD2, 1,
++   };
++   const struct vcmd_submit_cmd2_batch batch = {
++      .flags = VCMD_SUBMIT_CMD2_FLAG_RING_IDX,
++      .cmd_offset = payload_header / sizeof(uint32_t),
++      .cmd_size = size / sizeof(uint32_t),
++      .sync_offset = (payload_header + size) / sizeof(uint32_t),
++      .sync_count = 0,
++      .ring_idx = ring_idx,
++   };
++   uint8_t *dst = packet;
++   memcpy(dst, header, sizeof(header));
++   memcpy(dst + sizeof(header), &batch, sizeof(batch));
++   memcpy(dst + VN_VTEST_PACKED_HEADER_BYTES, cs, size);
++   return VN_VTEST_PACKED_HEADER_BYTES + size;
++}
++
++/* Stream sockets may interrupt or complete only part of a write. A zero
++ * write cannot make progress and must reach the caller's disconnect path. */
++static inline int
++vn_vtest_write_full(int fd, const void *bytes, size_t size)
++{
++   const uint8_t *cursor = bytes;
++   while (size) {
++      const ssize_t count = write(fd, cursor, size);
++      if (count < 0) {
++         if (errno == EINTR)
++            continue;
++         return -1;
++      }
++      if (!count) {
++         errno = EPIPE;
++         return -1;
++      }
++      cursor += count;
++      size -= count;
++   }
++   return 0;
++}
++
++#endif

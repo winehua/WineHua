@@ -1,0 +1,71 @@
+diff --git a/FEXCore/Source/Common/SoftFloat.h b/FEXCore/Source/Common/SoftFloat.h
+index 0613b47a6bea8787125f84edbd9a990eb3e417b7..6a83430fc3a5ca76bd4933dbca685144d378c4ed 100644
+--- a/FEXCore/Source/Common/SoftFloat.h
++++ b/FEXCore/Source/Common/SoftFloat.h
+@@ -16,6 +16,9 @@
+ extern "C" {
+ #include "SoftFloat-3e/platform.h"
+ #include "SoftFloat-3e/softfloat.h"
++#if defined(FEX_WOW64_STRICT_MUL24) && !defined(ARCHITECTURE_arm64ec)
++#include "StrictMul24.h"
++#endif
+ }
+ 
+ struct FEX_PACKED X80SoftFloat {
+@@ -119,6 +122,14 @@ struct FEX_PACKED X80SoftFloat {
+ 
+     return Result;
+ #else
++#if defined(FEX_WOW64_STRICT_MUL24) && !defined(ARCHITECTURE_arm64ec)
++    uint64_t Significand;
++    uint16_t SignExp;
++    if (FEXTryStrictMul24(state, lhs.Significand, lhs.Top.Raw,
++          rhs.Significand, rhs.Top.Raw, &Significand, &SignExp)) {
++      return X80SoftFloat(SignExp >> 15, SignExp & 0x7fff, Significand);
++    }
++#endif
+     return extF80_mul(state, lhs, rhs);
+ #endif
+   }
+diff --git a/FEXCore/Source/Common/StrictMul24.h b/FEXCore/Source/Common/StrictMul24.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f66fd95eb74fd374bd52f4a73bed66fb6e0c692b
+--- /dev/null
++++ b/FEXCore/Source/Common/StrictMul24.h
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: MIT
++// Strict, guarded x87 PC=24 / round-nearest-even multiplication. This keeps
++// the extended exponent range; it does not convert either operand to float.
++#pragma once
++#include <stdint.h>
++#include <SoftFloat-3e/platform.h>
++#include <SoftFloat-3e/softfloat.h>
++
++static inline int FEXTryStrictMul24(struct softfloat_state* state,
++  uint64_t aSig,uint16_t aExp,uint64_t bSig,uint16_t bExp,
++  uint64_t* resultSig,uint16_t* resultExp) {
++  if (state->roundingPrecision!=32 || state->roundingMode!=softfloat_round_near_even) return 0;
++  const unsigned ae=aExp&0x7fffU,be=bExp&0x7fffU;
++  if (!ae || ae==0x7fff || !be || be==0x7fff) return 0;
++  if (!(aSig>>63) || !(bSig>>63) || ((aSig|bSig)&UINT64_C(0xffffffffff))) return 0;
++  // Both operands have exactly 24 significant bits. Their full product has
++  // at most 48 bits and fits in uint64_t without dropping a guard/sticky bit.
++  const uint64_t product=(aSig>>40)*(bSig>>40);
++  const unsigned high=(unsigned)(product>>47),shift=23+high;
++  int exponent=(int)ae+(int)be-0x3fff+(int)high;
++  // Exclude tininess before rounding as well as after it; this also preserves
++  // semantics if a caller selects before-rounding tininess detection.
++  if (exponent<=0 || exponent>=0x7fff) return 0;
++  const uint64_t remainder=product&((UINT64_C(1)<<shift)-1);
++  const uint64_t half=UINT64_C(1)<<(shift-1);
++  uint64_t rounded=product>>shift;
++  rounded+=(remainder>half || (remainder==half && (rounded&1)));
++  if (rounded==(UINT64_C(1)<<24)) { rounded>>=1; ++exponent; }
++  // No state or output is changed until every guard, including the rounded
++  // result's exponent, has passed. Special and boundary cases use SoftFloat.
++  if (exponent<=0 || exponent>=0x7fff) return 0;
++  *resultSig=rounded<<40;
++  *resultExp=(uint16_t)(exponent|((aExp^bExp)&0x8000));
++  if (remainder) state->exceptionFlags|=softfloat_flag_inexact;
++  return 1;
++}

@@ -1,0 +1,25 @@
+From: VintagePomelo maintainers
+Subject: [PATCH] ntdll: honor the image's large-address-aware flag by default
+
+Proton forces large-address-aware operation when WINE_LARGE_ADDRESS_AWARE
+is unset. This changes the address-space contract for every non-LAA PE32
+image, including legacy games whose pointer arithmetic assumes addresses
+below 2 GiB. An executable-name exception cannot cover renamed launchers
+or games started by another Windows process.
+
+Default to the PE header's IMAGE_FILE_LARGE_ADDRESS_AWARE flag. Keep the
+existing WINE_LARGE_ADDRESS_AWARE=1 override for callers that explicitly
+request the larger address space. An override of 0 still honors an image
+that declares LAA; it does not strip the image's flag.
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5508,4 +5508,7 @@ static int need_override_large_address_aware(void)
+-        needs_override = !str /* on by default */ || atoi(str) == 1;
++        /* Honor the PE address-space contract unless the caller explicitly
++         * opts into the larger address space. This also covers renamed
++         * launchers and children created by Windows applications. */
++        needs_override = str && atoi(str) == 1;
+     }
+     return needs_override;
+ }

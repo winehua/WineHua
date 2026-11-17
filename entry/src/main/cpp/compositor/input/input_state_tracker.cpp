@@ -83,31 +83,26 @@ bool InputStateTracker::IsModifierKey(int evdevCode) const {
 }
 
 void InputStateTracker::UpdateModifiers(int evdevCode, bool pressed) {
-    uint32_t bit = 0;
+    unsigned index;
     switch (evdevCode) {
-        case 42: case 54:   bit = (1u << 0); break;  // Shift
-        case 58:            bit = (1u << 1); break;  // Caps Lock (toggle)
-        case 29: case 97:   bit = (1u << 2); break;  // Ctrl
-        case 56: case 100:  bit = (1u << 3); break;  // Alt
-        case 69:            bit = (1u << 4); break;  // Num Lock (toggle)
-        case 125: case 126: bit = (1u << 6); break;  // Super
+        case 42: index = 0; break; case 54: index = 1; break;
+        case 29: index = 2; break; case 97: index = 3; break;
+        case 56: index = 4; break; case 100: index = 5; break;
+        case 125: index = 6; break; case 126: index = 7; break;
+        case 58: index = 8; break; case 69: index = 9; break;
         default: return;
     }
-
-    if (evdevCode == 58 || evdevCode == 69) {
-        // CapsLock / NumLock: toggle on each press
-        if (pressed) {
-            if (modifiersLocked_ & bit)
-                modifiersLocked_ &= ~bit;
-            else
-                modifiersLocked_ |= bit;
-        }
-    } else {
-        if (pressed)
-            modifiersDepressed_ |= bit;
-        else
-            modifiersDepressed_ &= ~bit;
-    }
+    const uint32_t key = 1u << index;
+    const bool wasPressed = (modifierKeys_ & key) != 0;
+    if (pressed) modifierKeys_ |= key;
+    else modifierKeys_ &= ~key;
+    if (pressed && !wasPressed && index >= 8)
+        modifiersLocked_ ^= 1u << (index == 8 ? 1 : 4);
+    modifiersDepressed_ = 0;
+    if (modifierKeys_ & 0x03) modifiersDepressed_ |= 1u << 0;
+    if (modifierKeys_ & 0x0c) modifiersDepressed_ |= 1u << 2;
+    if (modifierKeys_ & 0x30) modifiersDepressed_ |= 1u << 3;
+    if (modifierKeys_ & 0xc0) modifiersDepressed_ |= 1u << 6;
 }
 
 // ============================================================================
@@ -129,16 +124,16 @@ void InputStateTracker::ClearPointerFocus() {
 }
 
 void InputStateTracker::SetKeyboardFocus(uint32_t tl, wl_resource* surface) {
-    // 旧代码两处写入此三元组 (PRESS 立即 / SendKeyEvent 立即) — 逐字搬移
+    // Record a successfully delivered enter, on the dispatch thread.
     keyboardFocusedToplevel_.store(tl);
-    keyboardFocusedSurface_ = surface;
+    keyboardFocusedSurface_.store(surface);
     keyboardEntered_.store(true);
 }
 
 void InputStateTracker::ClearKeyboardFocus() {
     keyboardEntered_.store(false);
     keyboardFocusedToplevel_.store(0);
-    keyboardFocusedSurface_ = nullptr;
+    keyboardFocusedSurface_.store(nullptr);
 }
 
 // ============================================================================

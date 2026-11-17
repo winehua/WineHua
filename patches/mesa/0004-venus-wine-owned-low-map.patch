@@ -1,0 +1,140 @@
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -7,6 +7,10 @@
+  */
+ 
+ #include <errno.h>
++#if defined(__OHOS__) && defined(__aarch64__)
++#include <dlfcn.h>
++#include <sys/stat.h>
++#endif
+ #include <netinet/in.h>
+ #include <poll.h>
+ #include <sys/mman.h>
+@@ -80,6 +84,8 @@
+    uint32_t blob_flags;
+    /* Retained on OHOS ARM64 for Wine's WoW64 shared-map alias. */
+    int res_fd;
++   /* Wine owns the whole low virtual allocation; never plain munmap it. */
++   void (*winehua_map_release)(void *ptr);
+ };
+ 
+ struct vtest_sync {
+@@ -792,6 +798,81 @@
+    /* nop */
+ }
+ 
++
++#if defined(__OHOS__) && defined(__aarch64__)
++static once_flag winehua_venus_low_map_once = ONCE_FLAG_INIT;
++static void *(*winehua_venus_low_map)(int fd, size_t size);
++static void (*winehua_venus_low_map_release)(void *ptr);
++
++static void
++vtest_winehua_init_low_map(void)
++{
++   const char *enabled = os_get_option("WINEHUA_VENUS_LOW_MAP");
++   void *library;
++
++   if (!enabled || strcmp(enabled, "1"))
++      return;
++   /* ntdll is RTLD_LOCAL. Discover only the already resident Wine module.
++    * Its v1 allocator also requires WINEHUA_VIRGL_LOW_MAP=1 and WOW64. */
++   library = dlopen("ntdll.so", RTLD_NOW | RTLD_NOLOAD);
++   if (!library)
++      return;
++   winehua_venus_low_map = dlsym(library, "winehua_map_shared_buffer_v1");
++   winehua_venus_low_map_release =
++      dlsym(library, "winehua_unmap_shared_buffer_v1");
++   if (!winehua_venus_low_map || !winehua_venus_low_map_release) {
++      winehua_venus_low_map = NULL;
++      winehua_venus_low_map_release = NULL;
++   }
++   dlclose(library);
++}
++#endif
++
++static void *
++vtest_winehua_try_low_map(struct vtest_bo *bo)
++{
++#if defined(__OHOS__) && defined(__aarch64__)
++   if (bo->res_fd < 0 || !bo->base.mmap_size)
++      return NULL;
++   call_once(&winehua_venus_low_map_once, vtest_winehua_init_low_map);
++   if (!winehua_venus_low_map)
++      return NULL;
++   void *ptr = winehua_venus_low_map(bo->res_fd, bo->base.mmap_size);
++   if (ptr)
++      bo->winehua_map_release = winehua_venus_low_map_release;
++   return ptr;
++#else
++   return NULL;
++#endif
++}
++
++static void
++vtest_winehua_map_diagnostic(struct vtest *vtest, struct vtest_bo *bo,
++                            void *ptr, int map_error)
++{
++#if defined(__OHOS__) && defined(__aarch64__)
++   static atomic_uint count;
++   const char *enabled = os_get_option("WINEHUA_VENUS_MAP_DIAG");
++   if (!enabled || strcmp(enabled, "1"))
++      return;
++   const unsigned sample = atomic_fetch_add_explicit(&count, 1,
++                                                    memory_order_relaxed);
++   if (sample >= 24)
++      return;
++   struct stat st;
++   errno = 0;
++   const int result = fstat(bo->res_fd, &st);
++   const int stat_error = result ? errno : 0;
++   vn_log(vtest->instance,
++          "winehua venus map: sample=%u fd=%d size=%zu ptr=%p wine_owned=%u "
++          "map_errno=%d fstat_result=%d fstat_errno=%d inode=%llu dev=%llu",
++          sample, bo->res_fd, bo->base.mmap_size, ptr,
++          bo->winehua_map_release != NULL, map_error, result, stat_error,
++          result ? 0ull : (unsigned long long)st.st_ino,
++          result ? 0ull : (unsigned long long)st.st_dev);
++#endif
++}
++
+ static void *
+ vtest_bo_map(struct vn_renderer *renderer, struct vn_renderer_bo *_bo)
+ {
+@@ -807,11 +888,15 @@
+        * check for VCMD_PARAM_HOST_COHERENT_DMABUF_BLOB, we know vtest can
+        * lie.
+        */
+-      void *ptr = mmap(NULL, bo->base.mmap_size, PROT_READ | PROT_WRITE,
+-                       MAP_SHARED, bo->res_fd, 0);
++      void *ptr = vtest_winehua_try_low_map(bo);
++      if (!ptr)
++         ptr = mmap(NULL, bo->base.mmap_size, PROT_READ | PROT_WRITE,
++                    MAP_SHARED, bo->res_fd, 0);
++      const int map_error = ptr == MAP_FAILED ? errno : 0;
++      vtest_winehua_map_diagnostic(vtest, bo, ptr, map_error);
+       if (ptr == MAP_FAILED) {
+          vn_log(vtest->instance, "failed to mmap %d of size %zu rw: %s",
+-                bo->res_fd, bo->base.mmap_size, strerror(errno));
++                bo->res_fd, bo->base.mmap_size, strerror(map_error));
+       } else {
+          bo->base.mmap_ptr = ptr;
+          /* Native ARM64 Wine may need a second, low-address MAP_SHARED
+@@ -849,8 +934,14 @@
+    struct vtest *vtest = (struct vtest *)renderer;
+    struct vtest_bo *bo = (struct vtest_bo *)_bo;
+ 
+-   if (bo->base.mmap_ptr)
+-      munmap(bo->base.mmap_ptr, bo->base.mmap_size);
++   if (bo->base.mmap_ptr) {
++      if (bo->winehua_map_release)
++         bo->winehua_map_release(bo->base.mmap_ptr);
++      else
++         munmap(bo->base.mmap_ptr, bo->base.mmap_size);
++      bo->base.mmap_ptr = NULL;
++      bo->winehua_map_release = NULL;
++   }
+    if (bo->res_fd >= 0)
+       close(bo->res_fd);
+ 

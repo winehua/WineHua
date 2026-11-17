@@ -4,6 +4,7 @@
 #include "input/controller/gamepad_ipc_protocol.h"
 
 #include <cerrno>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
@@ -40,6 +41,24 @@ bool ReadExact(int fd, void* buf, size_t len)
 
 }  // namespace
 
+struct GamepadBridge::Client {
+    explicit Client(int socketFd) : fd(socketFd) {}
+    const int fd;
+    // Serialize whole packets with shutdown/close, including stale publisher
+    // snapshots. A recycled descriptor must never receive another peer's state.
+    std::mutex sendMutex;
+    bool active = true;
+    bool seen[kMaxControllerSlots] = {};
+    uint64_t sequence[kMaxControllerSlots] = {};
+    std::atomic<bool> finished{false};
+    std::thread receiver;
+};
+
+GamepadBridge::~GamepadBridge()
+{
+    Stop();
+}
+
 GamepadBridge& GamepadBridge::Instance()
 {
     static GamepadBridge bridge;
@@ -66,6 +85,7 @@ void GamepadBridge::SetRumbleListener(RumbleListener cb)
 
 bool GamepadBridge::Start(const std::string& socketPath)
 {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     std::string path = socketPath;
     if (path.empty()) {
         path = "/data/storage/el2/base/files/.wine/whgp.sock";
@@ -77,7 +97,7 @@ bool GamepadBridge::Start(const std::string& socketPath)
             return true;
         }
     }
-    Stop();
+    StopLocked();
 
     unlink(path.c_str());
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -100,7 +120,7 @@ bool GamepadBridge::Start(const std::string& socketPath)
         return false;
     }
     chmod(path.c_str(), 0666);
-    if (listen(fd, 1) != 0) {
+    if (listen(fd, 8) != 0) {
         close(fd);
         unlink(path.c_str());
         return false;
@@ -119,38 +139,40 @@ bool GamepadBridge::Start(const std::string& socketPath)
 
 void GamepadBridge::Stop()
 {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    StopLocked();
+}
+
+void GamepadBridge::StopLocked()
+{
+    int listenFd;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         running_ = false;
-        if (listenFd_ >= 0) {
-            shutdown(listenFd_, SHUT_RDWR);
-            close(listenFd_);
-            listenFd_ = -1;
-        }
-        if (clientFd_ >= 0) {
-            shutdown(clientFd_, SHUT_RDWR);
-            clientFd_ = -1;
-        }
-        if (!path_.empty()) unlink(path_.c_str());
+        listenFd = listenFd_;
+        if (listenFd >= 0) shutdown(listenFd, SHUT_RDWR);
     }
+    // Do not close/reuse the listening descriptor until accept has returned.
+    // Joining also finishes all client registration before taking the list.
     if (acceptThread_.joinable()) acceptThread_.join();
-    if (rumbleThread_.joinable()) rumbleThread_.join();
-}
-
-void GamepadBridge::LogThrottled(const char* what, int fd, pid_t pid)
-{
-    // 连接风暴时 accept/退出每秒数千次, 全量日志实测 9 小时刷出 750 万条把
-    // hilog 冲爆; 统一节流到每秒最多一条。
-    auto now = std::chrono::steady_clock::now();
+    std::vector<std::shared_ptr<Client>> clients;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (now - lastConnectLog_ < std::chrono::seconds(1)) return;
-        lastConnectLog_ = now;
+        clients.swap(clients_);
+        if (listenFd >= 0) close(listenFd);
+        listenFd_ = -1;
+        if (!path_.empty()) unlink(path_.c_str());
     }
-    if (pid >= 0)
-        OH_LOG_INFO(LOG_APP, "[WHGP] %{public}s fd=%{public}d peer_pid=%{public}d", what, fd, pid);
-    else
-        OH_LOG_INFO(LOG_APP, "[WHGP] %{public}s fd=%{public}d (no peercred)", what, fd);
+    for (const auto& client : clients) {
+        std::lock_guard<std::mutex> sendLock(client->sendMutex);
+        if (client->active) {
+            client->active = false;
+            shutdown(client->fd, SHUT_RDWR);
+        }
+    }
+    for (const auto& client : clients) {
+        if (client->receiver.joinable()) client->receiver.join();
+    }
 }
 
 void GamepadBridge::AcceptLoop()
@@ -174,72 +196,59 @@ void GamepadBridge::AcceptLoop()
             continue;
         }
 
-        struct ucred peer{};
-        socklen_t peerLen = sizeof(peer);
-        const bool havePeer = getsockopt(client, SOL_SOCKET, SO_PEERCRED, &peer, &peerLen) == 0;
-        const pid_t peerPid = havePeer ? peer.pid : -1;
-
-        int oldClient = -1;
-        bool reject = false;
+        std::vector<std::shared_ptr<Client>> finished;
+        auto connection = std::make_shared<Client>(client);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!running_) {
                 close(client);
                 return;
             }
-            // 异 pid 来连且已有活跃连接 → 拒绝后者, 保护先到者: winedevice
-            // 旧实例未退场时新实例接入会与旧实例互踢, 实测演变成每秒数千次
-            // 的连接风暴; 只有同 pid 的重连才允许接管旧连接。
-            if (clientFd_ >= 0 && peerPid >= 0 && clientPid_ != peerPid) {
-                reject = true;
-            } else {
-                oldClient = clientFd_;
-                clientFd_ = -1;
-                clientPid_ = -1;
-                if (oldClient >= 0) shutdown(oldClient, SHUT_RDWR);
+            for (auto it = clients_.begin(); it != clients_.end();) {
+                if ((*it)->finished.load()) {
+                    finished.push_back(*it);
+                    it = clients_.erase(it);
+                } else {
+                    ++it;
+                }
             }
+            // Multiple winebus instances are legitimate. Replacing the old
+            // socket makes them reconnect and evict each other indefinitely.
+            clients_.push_back(connection);
         }
-        if (reject) {
-            // LogThrottled 内部拿 mutex_, 与上方锁域分离 (不可重入)
-            LogThrottled("client rejected", client, peerPid);
-            close(client);
-            continue;
-        }
-        if (rumbleThread_.joinable()) rumbleThread_.join();
-
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!running_) {
-                close(client);
-                return;
-            }
-            clientFd_ = client;
-            clientPid_ = peerPid;
-        }
-        // LogThrottled 内部也拿 mutex_, 不能在持锁状态调用 (std::mutex 不可
-        // 重入, 否则 accept 线程自死锁并永久占锁, 后续所有 Start/PublishState
-        // 等锁睡死 — 实测表现为 explorer 永不 spawn 的引擎死寂)。
-        LogThrottled("client connected", client, peerPid);
-        rumbleThread_ = std::thread([this, client] { RecvLoop(client); });
-        PublishState(0, ControllerHub::Instance().GetState(0));
+        for (const auto& ended : finished) ended->receiver.join();
+        int peerPid = -1;
+#ifdef SO_PEERCRED
+        struct ucred credentials{};
+        socklen_t length = sizeof(credentials);
+        if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0)
+            peerPid = credentials.pid;
+#endif
+        OH_LOG_INFO(LOG_APP, "[WHGP] client connected fd=%{public}d peer_pid=%{public}d", client, peerPid);
+        connection->receiver = std::thread([this, connection] { RecvLoop(connection); });
+        // Joining a peer does not resend snapshots to existing consumers.
+        for (uint32_t slot = 0; slot < kMaxControllerSlots; ++slot)
+            WriteState(connection, slot, ControllerHub::Instance().GetState(slot));
     }
 }
 
-void GamepadBridge::RecvLoop(int fd)
+void GamepadBridge::RecvLoop(const std::shared_ptr<Client>& client)
 {
+    const int fd = client->fd;
     while (true) {
         whgp_header hdr{};
         if (!ReadExact(fd, &hdr, sizeof(hdr))) break;
         if (hdr.magic != WHGP_MAGIC) {
-            OH_LOG_WARN(LOG_APP, "[WHGP] bad magic from winebus magic=%{public}u", hdr.magic);
+            OH_LOG_WARN(LOG_APP, "[WHGP] bad header from winebus magic=%{public}u ver=%{public}u",
+                        hdr.magic, hdr.version);
             break;
         }
         if (!whgp_version_matches(hdr.version)) {
-            OH_LOG_ERROR(LOG_APP, "WHGP protocol mismatch: peer=%{public}u expected=2",
-                         hdr.version);
+            OH_LOG_WARN(LOG_APP, "[WHGP] protocol mismatch: peer=%{public}u expected=%{public}u",
+                        hdr.version, WHGP_VERSION);
             break;
         }
-        if (hdr.payload_size > 4096) {
+        if (hdr.payload_size > 4096 || hdr.slot >= kMaxControllerSlots) {
             OH_LOG_WARN(LOG_APP, "[WHGP] payload too large %{public}u", hdr.payload_size);
             break;
         }
@@ -252,7 +261,7 @@ void GamepadBridge::RecvLoop(int fd)
                 std::lock_guard<std::mutex> lock(mutex_);
                 cb = rumbleListener_;
             }
-            if (cb) cb(body.low, body.high, body.duration_ms);
+            if (cb) cb(hdr.slot, body.low, body.high, body.duration_ms);
             continue;
         }
 
@@ -271,18 +280,19 @@ void GamepadBridge::RecvLoop(int fd)
     }
 
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (clientFd_ == fd) {
-            clientFd_ = -1;
-            clientPid_ = -1;
-        }
+        std::lock_guard<std::mutex> sendLock(client->sendMutex);
+        client->active = false;
+        shutdown(fd, SHUT_RDWR);
+        close(fd);
     }
-    close(fd);
-    LogThrottled("client recv loop exited", fd, -1);
+    OH_LOG_INFO(LOG_APP, "[WHGP] client recv loop exited fd=%{public}d", fd);
+    client->finished.store(true);
 }
 
-void GamepadBridge::WriteState(int fd, uint32_t slot, const LogicalGamepadState& state)
+void GamepadBridge::WriteState(const std::shared_ptr<Client>& client, uint32_t slot,
+                               const LogicalGamepadState& state)
 {
+    if (slot >= kMaxControllerSlots) return;
     whgp_header hdr{};
     hdr.magic = WHGP_MAGIC;
     hdr.version = WHGP_VERSION;
@@ -300,29 +310,43 @@ void GamepadBridge::WriteState(int fd, uint32_t slot, const LogicalGamepadState&
     body.rt = state.rt;
     body.hat_x = state.hatX;
     body.hat_y = state.hatY;
+    body.reserved[0] = WHGP_STATE_TOPOLOGY_VALID |
+                       (state.connected ? WHGP_STATE_CONNECTED : 0);
 
     const ssize_t total = static_cast<ssize_t>(sizeof(hdr) + sizeof(body));
     iovec iov[2] = {
         {&hdr, sizeof(hdr)},
         {&body, sizeof(body)},
     };
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (clientFd_ != fd) return;
-    if (writev(fd, iov, 2) != total) {
-        shutdown(fd, SHUT_RDWR);
-        if (clientFd_ == fd) clientFd_ = -1;
+    msghdr message{};
+    message.msg_iov = iov;
+    message.msg_iovlen = 2;
+    std::lock_guard<std::mutex> sendLock(client->sendMutex);
+    if (!client->active) return;
+    // A concurrent hotplug/input update can overtake the initial snapshot.
+    if (client->seen[slot] && state.sequence < client->sequence[slot]) return;
+    client->seen[slot] = true;
+    client->sequence[slot] = state.sequence;
+    ssize_t sent;
+    do {
+        sent = sendmsg(client->fd, &message, MSG_NOSIGNAL | MSG_DONTWAIT);
+    } while (sent < 0 && errno == EINTR);
+    if (sent != total) {
+        // Never block input delivery behind a stalled peer or leave a partial
+        // WHGP packet in the stream. winebus can reconnect for a fresh state.
+        client->active = false;
+        shutdown(client->fd, SHUT_RDWR);
     }
 }
 
 void GamepadBridge::PublishState(uint32_t slot, const LogicalGamepadState& state)
 {
-    int fd = -1;
+    std::vector<std::shared_ptr<Client>> clients;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        fd = clientFd_;
+        clients = clients_;
     }
-    if (fd < 0) return;
-    WriteState(fd, slot, state);
+    for (const auto& client : clients) WriteState(client, slot, state);
 }
 
 void GamepadBridge::AttachToHub()

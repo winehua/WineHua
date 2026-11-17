@@ -1,5 +1,5 @@
+#include "display/desktop_fit.h"
 #include "geometry.h"
-#include "display/desktop_fit.h" /* C 壳 (x11 臂呈现/输入消费本文件的唯一实现) */
 #include <algorithm>
 #include <cmath>
 
@@ -19,7 +19,7 @@ bool ComputeFitRect(int rootW, int rootH, int winW, int winH, FitRect& out)
 }
 
 /* ── C 壳 (display/desktop_fit.h) ────────────────────────────────────────
- * x11 臂 (C 编译的 display/*.c) 复用本文件唯一实现的入口。薄转发, 无公式
+ * x11 臂 (C 编译的 display C sources) 复用本文件唯一实现的入口。薄转发, 无公式
  * 复制; 字段一一对应。 */
 extern "C" int WineHua_ComputeDesktopFit(int canvasW, int canvasH,
                                          int contentW, int contentH,

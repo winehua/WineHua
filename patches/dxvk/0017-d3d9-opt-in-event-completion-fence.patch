@@ -1,0 +1,80 @@
+--- a/src/d3d9/d3d9_query.cpp
++++ b/src/d3d9/d3d9_query.cpp
+@@ -17,7 +17,13 @@
+         break;
+ 
+       case D3DQUERYTYPE_EVENT:
+-        m_event[0] = dxvkDevice->createGpuEvent();
++        // Remote Venus event feedback can remain stale after the real GPU
++        // submission has finished. Keep the fallback opt-in and use DXVK's
++        // submission completion notification, never a fabricated ready bit.
++        if (env::getEnvVar("WINEHUA_DXVK9_EVENT_FENCE") == "1")
++          m_eventCompletion = new sync::Fence(0);
++        else
++          m_event[0] = dxvkDevice->createGpuEvent();
+         break;
+ 
+       case D3DQUERYTYPE_OCCLUSION:
+@@ -114,6 +120,9 @@
+         if (m_state != D3D9_VK_QUERY_BEGUN && QueryBeginnable(m_queryType))
+           m_parent->Begin(this);
+ 
++        if (m_eventCompletion != nullptr)
++          m_eventIssuedGeneration.fetch_add(1, std::memory_order_relaxed);
++
+         m_resetCtr.fetch_add(1, std::memory_order_acquire);
+ 
+         m_parent->End(this);
+@@ -127,6 +136,12 @@
+ 
+ 
+   HRESULT STDMETHODCALLTYPE D3D9Query::GetData(void* pData, DWORD dwSize, DWORD dwGetDataFlags) {
++    // Submission cleanup also notifies signals after device loss. It must
++    // not turn an unsuccessful GPU submission into a successful query.
++    if (m_eventCompletion != nullptr
++     && m_parent->GetDXVKDevice()->getDeviceStatus() != VK_SUCCESS)
++      return D3DERR_DEVICELOST;
++
+     if (m_state == D3D9_VK_QUERY_CACHED) {
+       // Query data was already retrieved once.
+       // Use cached query data to prevent having to check the VK event
+@@ -174,7 +189,10 @@
+       return S_FALSE;
+ 
+     if (m_queryType == D3DQUERYTYPE_EVENT) {
+-      DxvkGpuEventStatus status = m_event[0]->test();
++      DxvkGpuEventStatus status = m_eventCompletion != nullptr
++        ? (m_eventCompletion->value() >= m_eventIssuedGeneration.load(std::memory_order_relaxed)
++            ? DxvkGpuEventStatus::Signaled : DxvkGpuEventStatus::Pending)
++        : m_event[0]->test();
+ 
+       if (status == DxvkGpuEventStatus::Invalid)
+         return D3DERR_INVALIDCALL;
+@@ -291,7 +309,10 @@
+         break;
+ 
+       case D3DQUERYTYPE_EVENT:
+-        ctx->signalGpuEvent(m_event[0]);
++        if (m_eventCompletion != nullptr)
++          ctx->signal(m_eventCompletion, ++m_eventSubmittedGeneration);
++        else
++          ctx->signalGpuEvent(m_event[0]);
+         break;
+ 
+       default: break;
+--- a/src/d3d9/d3d9_query.h
++++ b/src/d3d9/d3d9_query.h
+@@ -80,6 +80,13 @@
+     uint32_t m_stallMask = 0;
+     bool     m_stallFlag = false;
+ 
++    // The issued target advances on the API thread before queueing End.
++    // The submitted generation advances in FIFO order on the CS thread.
++    // An earlier completion must not satisfy a reissued event query.
++    Rc<sync::Fence> m_eventCompletion;
++    std::atomic<uint64_t> m_eventIssuedGeneration = { 0u };
++    uint64_t m_eventSubmittedGeneration = 0;
++
+     std::atomic<uint32_t> m_resetCtr = { 0u };
+ 
+     D3D9_QUERY_DATA m_dataCache;

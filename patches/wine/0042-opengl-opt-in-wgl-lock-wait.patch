@@ -1,0 +1,63 @@
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -214,6 +214,8 @@
+ 
+ static UINT64 call_gl_debug_message_callback;
+ pthread_mutex_t wgl_lock = PTHREAD_MUTEX_INITIALIZER;
++
++#include "winehua_wgl_lock_perf.h"
+ 
+ /* handle management */
+ 
+--- /dev/null
++++ b/dlls/opengl32/winehua_wgl_lock_perf.h
+@@ -0,0 +1,49 @@
++/* Included after wgl_lock and the existing opt-in Unix OpenGL helpers.
++ * Keep this separate from 0037 so both overlays remain independently replayable. */
++static __thread struct
++{
++    uint64_t window_start;
++    struct winehua_perf_counter counter;
++} winehua_wgl_lock_perf;
++
++static int winehua_perf_mutex_lock(pthread_mutex_t *mutex)
++{
++    struct winehua_perf_counter *counter;
++    uint64_t start, end, elapsed;
++    int ret;
++
++    if (mutex != &wgl_lock || !TRACE_ON(winehua_perf))
++        return pthread_mutex_lock(mutex);
++
++    start = winehua_perf_now();
++    ret = pthread_mutex_lock(mutex);
++    end = winehua_perf_now();
++    if (!start || !end || end < start) return ret;
++
++    if (!winehua_wgl_lock_perf.window_start) winehua_wgl_lock_perf.window_start = start;
++    elapsed = end - start;
++    counter = &winehua_wgl_lock_perf.counter;
++    counter->count = winehua_perf_add(counter->count, 1);
++    counter->total_us = winehua_perf_add(counter->total_us, elapsed);
++    if (elapsed > counter->max_us) counter->max_us = elapsed;
++    counter->results[ret ? 4 : 0] = winehua_perf_add(counter->results[ret ? 4 : 0], 1);
++
++    if (end >= winehua_wgl_lock_perf.window_start &&
++        end - winehua_wgl_lock_perf.window_start >= 1000000)
++    {
++        TRACE_(winehua_perf)("scope=opengl_unix pid=%lu tid=%lu window_us=%llu wgl_lock_wait=%llu/%llu/%llu/0/0/%llu/0/0/0/%llu\n",
++                HandleToULong(NtCurrentTeb()->ClientId.UniqueProcess),
++                HandleToULong(NtCurrentTeb()->ClientId.UniqueThread),
++                (unsigned long long)(end - winehua_wgl_lock_perf.window_start),
++                (unsigned long long)counter->count, (unsigned long long)counter->total_us,
++                (unsigned long long)counter->max_us, (unsigned long long)counter->results[0],
++                (unsigned long long)counter->results[4]);
++        memset(counter, 0, sizeof(*counter));
++        winehua_wgl_lock_perf.window_start = end;
++    }
++    return ret;
++}
++
++/* Calls above resolve to the original mutex function and preserve its return value.
++ * Other mutexes and disabled diagnostics perform no clock reads. */
++#define pthread_mutex_lock(mutex) winehua_perf_mutex_lock(mutex)

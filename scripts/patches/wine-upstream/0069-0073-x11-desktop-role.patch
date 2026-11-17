@@ -1,0 +1,27 @@
+From a6209572a35c38ecdd383ce81cada89906d57256 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0073-x11-desktop-role
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: 1776ac42494b92d3da578e653d9bed859e47fb2134e4faa019306b3365fb0795
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 591e36143fb951fa905cf984acfd30134dde937f..4b7bf548176f6c58067df5248669fb6f4496dd11 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3101,6 +3101,13 @@ static BOOL create_desktop_win_data( Window win, HWND hwnd )
+     window_set_managed( data, TRUE );
+     NtUserSetProp( data->hwnd, whole_window_prop, (HANDLE)win );
+     set_initial_wm_hints( display, win );
++#ifdef __OHOS__
++    {
++        const char role[] = "winehua-desktop";
++        XChangeProperty( display, win, XInternAtom( display, "WM_WINDOW_ROLE", False ),
++                         XA_STRING, 8, PropModeReplace, (const unsigned char *)role, sizeof(role) - 1 );
++    }
++#endif
+     if (is_desktop_fullscreen()) window_set_net_wm_state( data, (1 << NET_WM_STATE_FULLSCREEN) );
+     release_win_data( data );
+     if (thread_data->clip_window) XReparentWindow( display, thread_data->clip_window, win, 0, 0 );

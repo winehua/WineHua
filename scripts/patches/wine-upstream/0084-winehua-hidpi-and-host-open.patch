@@ -1,0 +1,644 @@
+From 8a65f6c15ca4426370a56226153ef6a0b5e7be1d Mon Sep 17 00:00:00 2001
+From: yifengling0 <liufengpmp@outlook.com>
+Date: Mon, 16 Nov 2026 13:18:04 +0800
+Subject: [PATCH] OHOS: port WineHua HiDPI and bounded host-open support to
+ current Proton
+
+---
+ configure                              |  3 +
+ configure.ac                           |  3 +
+ dlls/comctl32/toolbar.c                | 85 ++++++++++++++++++++++++++
+ dlls/ntdll/unix/ohos_broker.c          | 21 +++++++
+ dlls/ntdll/unix/ohos_broker.h          |  2 +
+ dlls/ntdll/unix/process.c              |  5 ++
+ dlls/user32/sysparams.c                | 16 +++++
+ dlls/win32u/font.c                     | 63 +++++++++++++++++++
+ dlls/win32u/freetype.c                 | 35 +++++++++++
+ dlls/win32u/sysparams.c                | 58 ++++++++++++++++++
+ dlls/win32u/win32u_private.h           |  1 +
+ dlls/winewayland.drv/opengl_readback.c |  6 +-
+ dlls/winewayland.drv/window.c          |  9 +++
+ programs/notepad/main.c                |  4 +-
+ programs/winebrowser/main.c            | 10 +++
+ 15 files changed, 319 insertions(+), 2 deletions(-)
+
+diff --git a/configure b/configure
+index 8cb2b33b..04d8d5b0 100755
+--- a/configure
++++ b/configure
+@@ -7780,6 +7780,9 @@ fi
+     eval CFLAGS=\$${wine_arch}_CFLAGS
+     eval LDFLAGS=\$${wine_arch}_LDFLAGS
+     eval "${wine_arch}_EXTRACFLAGS=\"-D__WINE_PE_BUILD -Wall\""
++    case "$host" in
++      *ohos*) as_fn_append ${wine_arch}_EXTRACFLAGS " -DWINEHUA_HIDPI" ;;
++    esac
+ 
+     target=""
+     set x $CC
+diff --git a/configure.ac b/configure.ac
+index 5f96053a..ba631c80 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -444,6 +444,9 @@ do
+     AS_VAR_COPY([CFLAGS],[${wine_arch}_CFLAGS])
+     AS_VAR_COPY([LDFLAGS],[${wine_arch}_LDFLAGS])
+     AS_VAR_SET([${wine_arch}_EXTRACFLAGS],["-D__WINE_PE_BUILD -Wall"])
++    case "$host" in
++      *ohos*) AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -DWINEHUA_HIDPI"]) ;;
++    esac
+ 
+     target=""
+     set x $CC
+diff --git a/dlls/comctl32/toolbar.c b/dlls/comctl32/toolbar.c
+index 3826b18d..1c6e7e8e 100644
+--- a/dlls/comctl32/toolbar.c
++++ b/dlls/comctl32/toolbar.c
+@@ -2782,6 +2782,62 @@ TOOLBAR_CustomizeDialogProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+     }
+ }
+ 
++#ifdef WINEHUA_HIDPI
++/* OHOS HiDPI: 系统/内部位图按屏幕密度缩放 (96 DPI 基准)。呈现层 1:1,
++ * 固定像素位图不再被呈现放大, 不缩放则图标只有一半观感尺寸。 */
++static inline int TOOLBAR_GetDpiScale(void)
++{
++    HDC hdc = GetDC (0);
++    int dpi = hdc ? GetDeviceCaps (hdc, LOGPIXELSX) : 0;
++    if (hdc) ReleaseDC (0, hdc);
++    dpi = (dpi > 0) ? dpi : USER_DEFAULT_SCREEN_DPI;
++    return dpi;
++}
++
++/* OHOS HiDPI: 条带最近邻缩放 (96 DPI 基准 → 屏幕 DPI)。内部工具栏位图是
++ * 32bpp 带 alpha 的资源, 透明由 alpha 通道承担 (imagelist add_with_alpha
++ * 检测到非零 alpha 后按 alpha 生成遮罩); 把位深降到 24bpp 或经 GDI 拉伸
++ * 丢掉 alpha 字节都会让整图不透明、黑色背景原样画出。因此这里不走 GDI
++ * 拉伸, 直接按 DIB section 位指针逐 DWORD 最近邻复制, alpha 字节原样保留。
++ * 非 32bpp 条带返回 NULL, 调用方保持原尺寸 (图标偏小但不破色)。 */
++static HBITMAP TOOLBAR_ScaleStrip(HBITMAP src, int dpi)
++{
++    BITMAP bm;
++    BITMAPINFOHEADER bi;
++    HBITMAP dst;
++    void *dst_bits;
++    const DWORD *s;
++    DWORD *d;
++    int cx, cy, x, y;
++
++    if (!GetObjectW (src, sizeof(bm), &bm)) return NULL;
++    if (bm.bmBitsPixel != 32 || !bm.bmBits) return NULL;
++
++    cx = MulDiv (bm.bmWidth, dpi, USER_DEFAULT_SCREEN_DPI);
++    cy = MulDiv (bm.bmHeight, dpi, USER_DEFAULT_SCREEN_DPI);
++    if (cx <= bm.bmWidth) return NULL;
++
++    memset (&bi, 0, sizeof(bi));
++    bi.biSize = sizeof(bi);
++    bi.biWidth = cx;
++    bi.biHeight = cy;
++    bi.biPlanes = 1;
++    bi.biBitCount = 32;
++    bi.biCompression = BI_RGB;
++    dst = CreateDIBSection (NULL, (BITMAPINFO *)&bi, DIB_RGB_COLORS, &dst_bits, NULL, 0);
++    if (!dst) return NULL;
++
++    for (y = 0; y < cy; y++)
++    {
++        s = (const DWORD *)((const BYTE *)bm.bmBits + (LONG_PTR)y * bm.bmHeight / cy * bm.bmWidthBytes);
++        d = (DWORD *)((BYTE *)dst_bits + (LONG_PTR)y * cx * 4);
++        for (x = 0; x < cx; x++)
++            d[x] = s[x * bm.bmWidth / cx];
++    }
++    return dst;
++}
++#endif /* WINEHUA_HIDPI */
++
+ static BOOL
+ TOOLBAR_AddBitmapToImageList(TOOLBAR_INFO *infoPtr, HIMAGELIST himlDef, const TBITMAP_INFO *bitmap)
+ {
+@@ -2797,8 +2853,28 @@ TOOLBAR_AddBitmapToImageList(TOOLBAR_INFO *infoPtr, HIMAGELIST himlDef, const TB
+     if (bitmap->hInst == NULL)         /* a handle was passed */
+         hbmLoad = CopyImage(ULongToHandle(bitmap->nID), IMAGE_BITMAP, 0, 0, 0);
+     else if (bitmap->hInst == COMCTL32_hModule)
++    {
++#ifdef WINEHUA_HIDPI
++        /* OHOS HiDPI: 内部位图原尺寸加载后按密度拉伸 (基准 24/16 px, 与
++         * TOOLBAR_AddBitmap 的 TB_SETBITMAPSIZE 同一系数), 图例格尺寸
++         * 随 SETBITMAPSIZE 已放大, 两者对齐后条带才能正确切分。 */
++        int dpi = TOOLBAR_GetDpiScale();
++        hbmLoad = LoadImageW( bitmap->hInst, MAKEINTRESOURCEW(bitmap->nID),
++                              IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION );
++        if (dpi != USER_DEFAULT_SCREEN_DPI && hbmLoad)
++        {
++            HBITMAP hbmScaled = TOOLBAR_ScaleStrip (hbmLoad, dpi);
++            if (hbmScaled)
++            {
++                DeleteObject (hbmLoad);
++                hbmLoad = hbmScaled;
++            }
++        }
++#else
+         hbmLoad = LoadImageW( bitmap->hInst, MAKEINTRESOURCEW(bitmap->nID),
+                               IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION );
++#endif
++    }
+     else
+         hbmLoad = CreateMappedBitmap(bitmap->hInst, bitmap->nID, 0, NULL, 0);
+ 
+@@ -2912,6 +2988,14 @@ TOOLBAR_AddBitmap (TOOLBAR_INFO *infoPtr, INT count, const TBADDBITMAP *lpAddBmp
+         TRACE ("adding %d internal bitmaps\n", info.nButtons);
+ 
+ 	/* Windows resize all the buttons to the size of a newly added standard image */
++#ifdef WINEHUA_HIDPI
++	{
++	    /* OHOS HiDPI: large 24x24 / small 16x16 基准, 按屏幕密度缩放 */
++	    int base = (lpAddBmp->nID & 1) ? 24 : 16;
++	    int size = MulDiv (base, TOOLBAR_GetDpiScale(), USER_DEFAULT_SCREEN_DPI);
++	    SendMessageW (infoPtr->hwndSelf, TB_SETBITMAPSIZE, 0, MAKELPARAM(size, size));
++	}
++#else
+ 	if (lpAddBmp->nID & 1)
+ 	{
+ 	    /* large icons: 24x24. Will make the button 31x30 */
+@@ -2922,6 +3006,7 @@ TOOLBAR_AddBitmap (TOOLBAR_INFO *infoPtr, INT count, const TBADDBITMAP *lpAddBmp
+ 	    /* small icons: 16x16. Will make the buttons 23x22 */
+ 	    SendMessageW (infoPtr->hwndSelf, TB_SETBITMAPSIZE, 0, MAKELPARAM(16, 16));
+ 	}
++#endif
+ 
+ 	TOOLBAR_CalcToolbar (infoPtr);
+     }
+diff --git a/dlls/ntdll/unix/ohos_broker.c b/dlls/ntdll/unix/ohos_broker.c
+index aa2d7c48..c7f2cded 100644
+--- a/dlls/ntdll/unix/ohos_broker.c
++++ b/dlls/ntdll/unix/ohos_broker.c
+@@ -46,6 +46,27 @@ static const char *broker_socket_path(void)
+     return path ? path : "/data/storage/el2/base/files/.wine_broker";
+ }
+ 
++/* OPEN is a separate bounded control request; SPAWN retains VPP2 framing. */
++int ohos_broker_open( const char *target )
++{
++    char request[4096];
++    int32_t response[2];
++    vp_received_fds rights = {0};
++    int64_t deadline = vp_now_ms() + 3000;
++    int fd, len, result;
++    if (!target || !*target || strchr(target, '\n') || strchr(target, '\r')) return -1;
++    len = snprintf(request, sizeof(request), "OPEN\n%s\n", target);
++    if (len <= 0 || (size_t)len >= sizeof(request)) return -1;
++    fd = vp_connect_path(broker_socket_path(), deadline);
++    if (fd < 0) return -1;
++    result = vp_send_bytes(fd, request, len, NULL, 0, deadline);
++    if (!result) result = vp_recv_bytes(fd, response, sizeof(response), &rights, deadline);
++    if (rights.count) result = -1;
++    vp_close_fds(&rights);
++    close(fd);
++    return !result && !response[0] && !response[1] ? 0 : -1;
++}
++
+ /* Every sender uses the same v2 framing and bounded I/O as the app. */
+ static int broker_spawn_spec(const vp_spawn_spec *spec, const int *fds, int *child_pid)
+ {
+diff --git a/dlls/ntdll/unix/ohos_broker.h b/dlls/ntdll/unix/ohos_broker.h
+index 7c722540..4066626a 100644
+--- a/dlls/ntdll/unix/ohos_broker.h
++++ b/dlls/ntdll/unix/ohos_broker.h
+@@ -58,6 +58,8 @@ int ohos_broker_spawn_child( char **argv, int socketfd, const char *winedebug, i
+  * Returns 1 if condition met, 0 otherwise. */
+ int ohos_broker_scan_wineserver( const char *prefix, int poll_sec, int vanish_mode );
+ 
++int ohos_broker_open( const char *target );
++
+ #endif /* __OHOS__ */
+ 
+ #endif /* __WINE_OHOS_BROKER_H */
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index 4bf1f3b0..cdc2e6c5 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -601,6 +601,11 @@ NTSTATUS WINAPI __wine_unix_spawnvp( char * const argv[], int wait )
+     pid_t pid, wret;
+     int fd[2], status, err;
+ 
++#ifdef __OHOS__
++    if (argv[0] && !strcmp(argv[0], "winehua-open") && argv[1])
++        return ohos_broker_open(argv[1]) == 0 ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++#endif
++
+ #ifdef HAVE_PIPE2
+     if (pipe2( fd, O_CLOEXEC ) == -1)
+ #endif
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index 40affce4..29221cbb 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -166,6 +166,9 @@ void SYSPARAMS_Init(void)
+     WCHAR buffer[256];
+     const char *sgi;
+     DWORD option;
++#ifdef WINEHUA_HIDPI
++    BOOL dpi_declared = FALSE;
++#endif
+ 
+     system_dpi = NtUserGetSystemDpiForProcess( NULL );
+ 
+@@ -183,6 +186,9 @@ void SYSPARAMS_Init(void)
+     if (QueryActCtxSettingsW( 0, NULL, L"http://schemas.microsoft.com/SMI/2016/WindowsSettings",
+                               L"dpiAwareness", buffer, ARRAY_SIZE(buffer), NULL ))
+     {
++#ifdef WINEHUA_HIDPI
++        dpi_declared = TRUE;
++#endif
+         static const WCHAR * const types[] = { L"unaware", L"system", L"permonitor", L"permonitorv2" };
+         WCHAR *p, *start, *end;
+         ULONG_PTR i;
+@@ -205,6 +211,9 @@ void SYSPARAMS_Init(void)
+     else if (QueryActCtxSettingsW( 0, NULL, L"http://schemas.microsoft.com/SMI/2005/WindowsSettings",
+                                    L"dpiAware", buffer, ARRAY_SIZE(buffer), NULL ))
+     {
++#ifdef WINEHUA_HIDPI
++        dpi_declared = TRUE;
++#endif
+         TRACE( "got dpiAware=%s\n", debugstr_w(buffer) );
+         if (!wcsicmp( buffer, L"true" ))
+             SetProcessDpiAwarenessContext( DPI_AWARENESS_CONTEXT_SYSTEM_AWARE );
+@@ -214,6 +223,13 @@ void SYSPARAMS_Init(void)
+             SetProcessDpiAwarenessContext( DPI_AWARENESS_CONTEXT_UNAWARE );
+     }
+ 
++#ifdef WINEHUA_HIDPI
++    /* Explicit manifests and IFEO keep their original semantics. */
++    if (!dpi_declared && !(getenv( "WINEHUA_DPI_AWARE" ) &&
++                          !strcmp( getenv( "WINEHUA_DPI_AWARE" ), "0" )))
++        SetProcessDpiAwarenessContext( DPI_AWARENESS_CONTEXT_SYSTEM_AWARE );
++#endif
++
+     /* The Elder Scrolls V: Skyrim Special Edition. Windows 10 tests show the dpi-aware setting is
+      * not normally inherited from the parent process. The launcher sets it late, after creating
+      * windows, but changing the scale factor in Windows 10 has no effect on the launcher window,
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index 8703fd31..115b892c 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -2372,6 +2372,30 @@ static struct gdi_font_face *find_locale_fallback_face( const LOGFONTW *lf, BOOL
+ }
+ #endif
+ 
++#ifdef __OHOS__
++/* 返回剥掉 " (LocaleName)" 注解后的基本名长度; 0 = 无注解, 原名可用。
++ * OHOS: 部分应用 (SAP 类 OCX 控件在 CJK Windows 上) 把显示用的 locale 注解
++ * 写进 lfFaceName (如 "Tahoma (中文)")。原样参与替换匹配会查不到
++ * "MS Shell Dlg" 替换链, 整段中文退到兜底字体。仅匹配语义收窄,
++ * 不改返回给应用的名字。 */
++static SIZE_T strip_font_locale_annotation( const WCHAR *name )
++{
++    SIZE_T len = lstrlenW( name );
++    SIZE_T i;
++    BOOL has_non_ascii = FALSE;
++
++    if (len < 4) return 0;
++    if (name[len - 1] != ')') return 0;
++    for (i = len - 2; i > 0; i--)
++    {
++        if (name[i] > 127) has_non_ascii = TRUE;
++        if (name[i] == '(' && name[i - 1] == ' ' && has_non_ascii)
++            return i - 1;
++    }
++    return 0;
++}
++#endif
++
+ static struct gdi_font_face *find_matching_face( const LOGFONTW *lf, CHARSETINFO *csi, BOOL can_use_bitmap,
+                                                  BOOL *substituted, const WCHAR **orig_name )
+ {
+@@ -2387,7 +2411,23 @@ static struct gdi_font_face *find_matching_face( const LOGFONTW *lf, CHARSETINFO
+     if (lf->lfFaceName[0])
+     {
+         int subst_charset;
++#ifdef __OHOS__
++        const WCHAR *face_name = lf->lfFaceName;
++        WCHAR stripped_buf[LF_FACESIZE];
++        SIZE_T stripped_len = strip_font_locale_annotation( lf->lfFaceName );
++
++        if (stripped_len && stripped_len < LF_FACESIZE)
++        {
++            memcpy( stripped_buf, lf->lfFaceName, stripped_len * sizeof(WCHAR) );
++            stripped_buf[stripped_len] = 0;
++            face_name = stripped_buf;
++            TRACE( "stripped locale annotation: %s -> %s\n",
++                   debugstr_w(lf->lfFaceName), debugstr_w(face_name) );
++        }
++        const WCHAR *subst = get_gdi_font_subst( face_name, lf->lfCharSet, &subst_charset );
++#else
+         const WCHAR *subst = get_gdi_font_subst( lf->lfFaceName, lf->lfCharSet, &subst_charset );
++#endif
+ 
+ 	if (subst)
+         {
+@@ -2868,7 +2908,15 @@ static void add_child_font( struct gdi_font *font, const WCHAR *family_name )
+     child->matrix = font->matrix;
+     child->can_use_bitmap = font->can_use_bitmap;
+     child->scale_y = font->scale_y;
++#ifdef __OHOS__
++    /* OHOS: 子字体不继承父字体的拉丁 aveWidth。父字体 (如 Tahoma) 的
++     * aveWidth 相对拉丁字宽, freetype 按它算 width_ratio 套到 CJK 子字体上
++     * (CJK 的 tmAveCharWidth 大得多) 会把中文压成细竖条。置 0 让 freetype
++     * 跳过按宽度比的缩放, 中文用自身度量渲染。其他平台保持上游行为。 */
++    child->aveWidth = 0;
++#else
+     child->aveWidth = font->aveWidth;
++#endif
+     child->charset = font->charset;
+     child->codepage = font->codepage;
+     child->base_font = font;
+@@ -4901,8 +4949,19 @@ static UINT init_font_options(void)
+     char value_buffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data[20 * sizeof(WCHAR)])];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (void *)value_buffer;
+     HKEY key;
++#ifdef __OHOS__
++    /* OHOS: 光栅化密度与窗口度量同口径 (WINEHUA_LOGPIXELS 覆盖, 换算单点
++     * get_logpixels_override)。缺此覆盖会出现"窗口度量 192 / 字形渲染 96"
++     * 的脱节 (2026-11-08 真机实证)。 */
++    extern UINT get_logpixels_override(void);
++    UINT override_dpi = get_logpixels_override();
++#endif
+     DWORD i, val, gamma = 1400;
+     UINT dpi = 0;
++#ifdef __OHOS__
++    /* 覆盖优先于注册表: 旧 prefix 里持久化的 96 值不得盖过宿主下发值 */
++    dpi = override_dpi;
++#endif
+ 
+     if (query_reg_ascii_value( wine_fonts_key, "AntialiasFakeBoldOrItalic",
+                                info, sizeof(value_buffer) ) && info->Type == REG_SZ)
+@@ -4937,7 +4996,11 @@ static UINT init_font_options(void)
+         {
+             gamma = min( max( val, 1000 ), 2200 );
+         }
++#ifdef __OHOS__
++        if (!dpi && get_key_value( key, "LogPixels", &val )) dpi = val;
++#else
+         if (get_key_value( key, "LogPixels", &val )) dpi = val;
++#endif
+         NtClose( key );
+     }
+ 
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 905af133..3623591b 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -2461,7 +2461,14 @@ static FT_Vector get_advance_metric( struct gdi_font *font, FT_Pos base_advance,
+     FT_Vector adv;
+     FT_Fixed em_scale = 0;
+     BOOL fixed_pitch_full = FALSE;
++#ifdef __OHOS__
++    /* OHOS: advance 用子字体自身的 ntmAvgWidth。上游取 base_font 的拉丁
++     * average, GetTextExtentExPoint 按它算列宽会低估实际 CJK 字宽, 列挤叠。
++     * width_ratio 只影响字形 bbox, 不影响 advance (排版宽度)。 */
++    struct gdi_font *incoming_font = font;
++#else
+     struct gdi_font *incoming_font = font->base_font ? font->base_font : font;
++#endif
+ 
+     adv.x = base_advance;
+     adv.y = 0;
+@@ -3171,7 +3178,9 @@ static UINT freetype_get_glyph_outline( struct gdi_font *font, UINT glyph, UINT
+                                         GLYPHMETRICS *lpgm, ABC *abc, UINT buflen, void *buf,
+                                         const MAT2 *lpmat, BOOL tategaki, UINT aa_flags )
+ {
++#ifndef __OHOS__
+     struct gdi_font *base_font = font->base_font ? font->base_font : font;
++#endif
+     FT_Face ft_face = get_ft_face( font );
+     FT_Glyph_Metrics metrics;
+     FT_Error err;
+@@ -3223,6 +3232,31 @@ static UINT freetype_get_glyph_outline( struct gdi_font *font, UINT glyph, UINT
+     /* Some poorly-created fonts contain glyphs that exceed the boundaries set
+      * by the text metrics. The proper behavior is to clip the glyph metrics to
+      * fit within the maximums specified in the text metrics. */
++#ifdef __OHOS__
++    /* OHOS: 字形按自身字体度量裁切。上游裁到 base_font (父字体) 的
++     * tmAscent/tmDescent, 对拉丁字形够用, 对 CJK 子字体即使等比缩放后
++     * horiBearingY 仍可能超出父字体 ascent, 顶部被切。非子字体两者相同,
++     * 行为不变。 */
++    if (freetype_set_outline_text_metrics(font) ||
++        freetype_set_bitmap_text_metrics(font)) {
++        TEXTMETRICW *ptm = &font->otm.otmTextMetrics;
++        INT top = min( metrics.horiBearingY, ptm->tmAscent << 6 );
++        INT bottom = max( metrics.horiBearingY - metrics.height, -(ptm->tmDescent << 6) );
++
++        if (top < bottom)
++        {
++            INT t = top;
++            top = bottom;
++            bottom = t;
++        }
++
++        metrics.horiBearingY = top;
++        metrics.height = top - bottom;
++
++        /* TODO: Are we supposed to clip the width as well...? */
++        /* metrics.width = min( metrics.width, ptm->tmMaxCharWidth << 6 ); */
++    }
++#else
+     if (freetype_set_outline_text_metrics(base_font) ||
+         freetype_set_bitmap_text_metrics(base_font)) {
+         TEXTMETRICW *ptm = &base_font->otm.otmTextMetrics;
+@@ -3234,6 +3268,7 @@ static UINT freetype_get_glyph_outline( struct gdi_font *font, UINT glyph, UINT
+         /* TODO: Are we supposed to clip the width as well...? */
+         /* metrics.width = min( metrics.width, ptm->tmMaxCharWidth << 6 ); */
+     }
++#endif /* __OHOS__ */
+ 
+     bbox = get_transformed_bbox( &metrics, matrices );
+     compute_metrics( font, bbox, &metrics, tategaki, vertical_metrics, matrices, lpgm, abc );
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 379736bf..cf47950a 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -728,6 +728,24 @@ static unsigned int query_reg_subkey_value( HKEY hkey, const char *name, KEY_VAL
+     return size;
+ }
+ 
++#ifdef __OHOS__
++UINT get_logpixels_override(void); /* 定义见 sysparams_init 段 */
++
++/* OHOS: 监视器 DPI 必须与本进程 system_dpi 同源。显示源 DPI 持久化在 prefix
++ * 注册表, 由第一个初始化显示设备的 GUI 进程写入 —— 启动链/模式不同会让它
++ * 写成 96, 之后带 192 的进程 (游戏/程序直启) 也读回 96, phys→win 坐标换算
++ * 因两端相等而短路, unaware 窗口收到物理坐标 (2026-11-14: war3 光标钳到
++ * 画面中线)。两条路线都以 WINEHUA_LOGPIXELS 为准自愈: 坐标域必须与
++ * system_dpi 一致, 否则 system-aware 窗口会被反向放大。x11 虚拟桌面的
++ * viewport 2× 是呈现层问题, 与这里的坐标域无关, 仍按 D 项单独收口。 */
++static UINT ohos_source_dpi( UINT dpi )
++{
++    UINT override_dpi = get_logpixels_override();
++    if (override_dpi) return override_dpi;
++    return dpi;
++}
++#endif
++
+ static BOOL read_source_from_registry( unsigned int index, struct source *source, char *gpu_path )
+ {
+     char buffer[4096];
+@@ -756,7 +774,11 @@ static BOOL read_source_from_registry( unsigned int index, struct source *source
+ 
+     /* Dpi */
+     if (query_reg_ascii_value( hkey, "Dpi", value, sizeof(buffer) ) && value->Type == REG_DWORD)
++#ifdef __OHOS__
++        source->dpi = ohos_source_dpi( *(DWORD *)value->Data );
++#else
+         source->dpi = *(DWORD *)value->Data;
++#endif
+ 
+     /* Depth */
+     if (query_reg_ascii_value( hkey, "Depth", value, sizeof(buffer) ) && value->Type == REG_DWORD)
+@@ -1997,7 +2019,11 @@ static void add_source( const char *name, UINT state_flags, UINT dpi, void *para
+         source->id = 0;
+         ctx->has_primary = TRUE;
+     }
++#ifdef __OHOS__
++    source->dpi = ohos_source_dpi( dpi );
++#else
+     source->dpi = dpi;
++#endif
+ 
+     /* Wine specific config key where source settings will be held, symlinked with the logically indexed config key */
+     snprintf( source->path, sizeof(source->path), "%s\\%s\\Video\\%s\\Sources\\%s", config_keyA,
+@@ -3468,6 +3494,30 @@ UINT get_system_dpi(void)
+     return system_dpi;
+ }
+ 
++#ifdef __OHOS__
++/* WINEHUA_LOGPIXELS 覆盖值 (0 = 未设置)。消费点: sysparams 的 system_dpi
++ * 初始化 (窗口度量) 与 font.c init_font_options (字体光栅化密度) —— 两个
++ * DPI 判据共用一个 env 读取单点, 缺一侧会出现"度量 192 / 字形 96"的脱节
++ * (2026-11-08 真机实证)。 */
++UINT get_logpixels_override(void)
++{
++    static UINT cached;
++    static BOOL cached_valid;
++    const char *env;
++
++    if (!cached_valid)
++    {
++        cached_valid = TRUE;
++        if ((env = getenv( "WINEHUA_LOGPIXELS" )) && *env)
++        {
++            UINT v = (UINT)atoi( env );
++            if (v >= 96 && v <= 480) cached = v;
++        }
++    }
++    return cached;
++}
++#endif
++
+ /* keep in sync with user32 */
+ UINT set_thread_dpi_awareness_context( UINT context )
+ {
+@@ -6216,6 +6266,14 @@ void sysparams_init(void)
+ 
+     config_key = reg_create_ascii_key( NULL, config_keyA, 0, NULL );
+ 
++#ifdef __OHOS__
++    /* OHOS: 宿主按内容缩放下发 DPI (WINEHUA_LOGPIXELS), 覆盖注册表
++     * LogPixels —— 呈现层 1:1 无上采样, wine 在物理分辨率上原生渲染。
++     * 字体光栅化密度 (font.c init_font_options) 同口径, 换算单点 =
++     * get_logpixels_override()。 */
++    system_dpi = get_logpixels_override();
++    if (!system_dpi)
++#endif
+     get_dword_entry( (union sysparam_all_entry *)&entry_LOGPIXELS, 0, &system_dpi, 0 );
+     if (!system_dpi)  /* check fallback key */
+     {
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 3c5d60f1..2f777186 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -175,6 +175,7 @@ extern COLORREF get_sys_color( int index );
+ extern HBRUSH get_sys_color_brush( unsigned int index );
+ extern HPEN get_sys_color_pen( unsigned int index );
+ extern UINT get_system_dpi(void);
++extern UINT get_logpixels_override(void);
+ extern int get_system_metrics( int index );
+ extern UINT get_thread_dpi(void);
+ extern UINT set_thread_dpi_awareness_context( UINT context );
+diff --git a/dlls/winewayland.drv/opengl_readback.c b/dlls/winewayland.drv/opengl_readback.c
+index 0959d36c..571b3cec 100644
+--- a/dlls/winewayland.drv/opengl_readback.c
++++ b/dlls/winewayland.drv/opengl_readback.c
+@@ -531,7 +531,11 @@ static BOOL winehua_readback_present(struct opengl_drawable *base)
+                                            gl->state->in_flight);
+     wl_surface_attach(client->wl_surface, buffer->wl_buffer, 0, 0);
+     wl_surface_damage_buffer(client->wl_surface, 0, 0, gl->width, gl->height);
+-    if (client->wp_viewport) wp_viewport_set_destination(client->wp_viewport, gl->width, gl->height);
++    /* 不写 viewport destination: 几何归 wayland_surface_reconfigure_client
++     * 单一所有 (物理客户区口径)。这里写 gl->width/height (应用可见尺寸,
++     * DPI-unaware 窗口为物理的一半) 会覆盖物理 destination, 帧缩到窗口
++     * 左上角; 合成器按 destination 把应用尺寸的帧拉伸到物理客户区,
++     * 即 DPI 虚拟化的呈现侧语义。 */
+     wl_surface_commit(client->wl_surface);
+     wl_display_flush(process_wayland.wl_display);
+     winehua_gl_stage_end(WINEHUA_GL_SHM_COMMIT, stage_started);
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 2d733d08..d07fe16f 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -180,7 +180,16 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
+     }
+ 
+     conf->state = window_state;
++#ifdef __OHOS__
++    /* OHOS: 宿主合成器按 1:1 呈现 (wine px == 物理 px, 无 output scale),
++     * surface-local 坐标必须保持物理口径。DPI (WINEHUA_LOGPIXELS) 只在
++     * win32u 内部驱动字体/UI 度量, 不参与驱动层坐标换算 —— 若跟随
++     * system_dpi 缩放 (上游默认 = dpi/96), viewport dst / window_geometry /
++     * subsurface position 会被除以 2, 合成器窗口尺寸与点击映射全部失配。 */
++    conf->scale = 1.0;
++#else
+     conf->scale = NtUserGetSystemDpiForProcess(0) / 96.0;
++#endif
+     conf->visible = (style & WS_VISIBLE) == WS_VISIBLE;
+     conf->managed = data->managed;
+ }
+diff --git a/programs/notepad/main.c b/programs/notepad/main.c
+index fef5dd3f..453d2d40 100644
+--- a/programs/notepad/main.c
++++ b/programs/notepad/main.c
+@@ -196,7 +196,9 @@ static VOID NOTEPAD_LoadSettingFromRegistry(void)
+     Globals.iMarginRight = 2000;
+     Globals.bStatusBar = TRUE;
+     
+-    Globals.lfFont.lfHeight         = -12;
++    /* 上游以固定 96-DPI 像素取默认编辑字体高度, 高 DPI 屏上文本框文字只有
++     * 一半观感尺寸; 与本函数 iPointSize 路径同款换算 (96 DPI 下数值不变)。 */
++    Globals.lfFont.lfHeight         = -MulDiv(12, GetDpiForWindow(GetDesktopWindow()), 96);
+     Globals.lfFont.lfWidth          = 0;
+     Globals.lfFont.lfEscapement     = 0;
+     Globals.lfFont.lfOrientation    = 0;
+diff --git a/programs/winebrowser/main.c b/programs/winebrowser/main.c
+index 4c76e6ce..24b82a46 100644
+--- a/programs/winebrowser/main.c
++++ b/programs/winebrowser/main.c
+@@ -83,6 +83,16 @@ static int launch_app( const WCHAR *candidates, const WCHAR *argv1 )
+ 
+     if (!(cmdline = strdup_unixcp( argv1 ))) return 1;
+ 
++#ifdef WINEHUA_HIDPI
++    if (getenv("WINEHUA_DESKTOP_MODE"))
++    {
++        char *open_argv[] = {(char *)"winehua-open", cmdline, NULL};
++        if (!__wine_unix_spawnvp(open_argv, FALSE)) ExitProcess(0);
++        /* Disabled/rejected requests retain Proton's normal browser fallback. */
++    }
++#endif
++
++
+     /* PROTON HACK: Restore ORIG_LD_LIBRARY_PATH to LD_LIBRARY_PATH.
+      * System programs may not work correctly with our libraries, in
+      * particular gio on Ubuntu 19.04 is broken by our libgio. */
+-- 
+2.34.1
+

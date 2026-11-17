@@ -9,7 +9,7 @@
 namespace winehua {
 
 int AttachVirglSurfaceTarget(uint64_t surfaceKey, uint64_t framePeriodNs,
-                             uint32_t flags, OHNativeWindow* window);
+                             uint32_t flags, OHNativeWindow* window, int retirementFd = -1);
 int DetachVirglSurfaceTarget(uint64_t surfaceKey);
 int SetVirglSurfaceFramePeriod(uint64_t surfaceKey, uint64_t framePeriodNs);
 int PresentVirglSurface(uint32_t clientPid, uint32_t surfaceId,

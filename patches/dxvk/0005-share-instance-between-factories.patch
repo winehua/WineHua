@@ -1,0 +1,78 @@
+Subject: [PATCH] dxgi: share Vulkan instances while factory leases overlap
+
+Preserve device references and release the weak cache after the last factory.
+
+diff --git a/src/dxgi/dxgi_factory.cpp b/src/dxgi/dxgi_factory.cpp
+index f159999d..a60ee270 100644
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -4,8 +4,11 @@
+ 
+ namespace dxvk {
+ 
++  static SharedInstance<DxvkInstance> g_dxvkInstance;
++
+   DxgiFactory::DxgiFactory(UINT Flags)
+-  : m_instance    (new DxvkInstance()),
++  : m_instanceOwner(g_dxvkInstance.acquire()),
++    m_instance    (*m_instanceOwner),
+     m_monitorInfo (this),
+     m_options     (m_instance->config()),
+     m_flags       (Flags) {
+diff --git a/src/dxgi/dxgi_factory.h b/src/dxgi/dxgi_factory.h
+index f398c78d..a8dd9e0c 100644
+--- a/src/dxgi/dxgi_factory.h
++++ b/src/dxgi/dxgi_factory.h
+@@ -7,6 +7,7 @@
+ #include "dxgi_options.h"
+ 
+ #include "../dxvk/dxvk_instance.h"
++#include "../util/util_shared_instance.h"
+ 
+ namespace dxvk {
+     
+@@ -145,6 +146,7 @@ namespace dxvk {
+     
+   private:
+     
++    std::shared_ptr<Rc<DxvkInstance>> m_instanceOwner;
+     Rc<DxvkInstance> m_instance;
+     DxgiMonitorInfo  m_monitorInfo;
+     DxgiOptions      m_options;
+diff --git a/src/util/util_shared_instance.h b/src/util/util_shared_instance.h
+new file mode 100644
+--- /dev/null
++++ b/src/util/util_shared_instance.h
+@@ -0,0 +1,32 @@
++#pragma once
++
++#include <memory>
++#include <mutex>
++#include "rc/util_rc_ptr.h"
++
++namespace dxvk {
++
++  // As in newer DXVK, overlapping factories share one Vulkan instance.
++  // The lease owns an intrusive reference, so devices may safely outlive it.
++  // A weak cache also releases the instance after the last factory disappears;
++  // constructor exceptions cannot leave a manual singleton use count behind.
++  template<typename T>
++  class SharedInstance {
++  public:
++    std::shared_ptr<Rc<T>> acquire() {
++      std::lock_guard<std::mutex> lock(m_mutex);
++      auto lease = m_instance.lock();
++      if (!lease) {
++        Rc<T> instance = new T();
++        lease = std::make_shared<Rc<T>>(std::move(instance));
++        m_instance = lease;
++      }
++      return lease;
++    }
++
++  private:
++    std::mutex m_mutex;
++    std::weak_ptr<Rc<T>> m_instance;
++  };
++
++}

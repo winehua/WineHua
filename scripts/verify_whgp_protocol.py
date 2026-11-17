@@ -2,13 +2,15 @@
 """Keep host and Wine WHGP v2 protocol headers in lockstep."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "entry/src/main/cpp/input/controller/gamepad_ipc_protocol.h"
-WINE = ROOT / "thirdparty/wine/dlls/winebus.sys/winehua_gamepad_protocol.h"
-BUS = ROOT / "thirdparty/wine/dlls/winebus.sys/bus_ohos.c"
+WINE_SOURCE = Path(os.environ.get('WINE_SRC', ROOT / 'build/runtime-sources/wine'))
+WINE = WINE_SOURCE / "dlls/winebus.sys/winehua_gamepad_protocol.h"
+BUS = WINE_SOURCE / "dlls/winebus.sys/bus_ohos.c"
 BRIDGE = ROOT / "entry/src/main/cpp/input/controller/gamepad_bridge.cpp"
 BEGIN = "/* >>> WHGP_PROTOCOL_BEGIN */"
 END = "/* <<< WHGP_PROTOCOL_END */"
@@ -63,7 +65,11 @@ def main() -> int:
     if "whgp_state_v2" not in bridge:
         print("gamepad_bridge.cpp must publish whgp_state_v2", file=sys.stderr)
         return 1
-    if "WHGP protocol mismatch: peer=" not in bridge:
+    # OH_LOG uses a bracketed component prefix; the Wine TRACE prefix differs.
+    # Require rejection as well as a diagnostic, not just a spelling match.
+    if ("[WHGP] protocol mismatch: peer=" not in bridge or
+            "if (!whgp_version_matches(hdr.version))" not in bridge or
+            "hdr.version, WHGP_VERSION);\n            break;" not in bridge):
         print("gamepad_bridge.cpp must log WHGP protocol mismatch", file=sys.stderr)
         return 1
     if "body.ly = -" in bridge or "body.ly = -state" in bridge:

@@ -1,0 +1,77 @@
+From 67e922fc97c4ffa980f286b24a53353289bb18d5 Mon Sep 17 00:00:00 2001
+From: VPP Runtime Maintainers <runtime@vintagepomelo.invalid>
+Date: Wed, 30 Sep 2026 23:34:17 +0800
+Subject: [PATCH] OHOS adaptation: 0042-opengl-opt-in-wgl-lock-wait
+
+Reconstructed from cd547f7a0ee9d3d59b3ec47317a7852dedf0443b.
+Valve baseline: dc26e61847081a1b5cb0733dc30feba6ee575482.
+Patch SHA-256: a864277b2f2f872903bb1e0e0219b984eaf578cafb885fc01413e87b2b052d1b
+
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+index bbc741efdf78e21e9a1ab3fb544fecd54ce31e57..22edcdcd4c78e2cb1d0c4c720e03feadd56f623a 100644
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -215,6 +215,8 @@ static void pop_default_fbo_buffers( TEB *teb );
+ static UINT64 call_gl_debug_message_callback;
+ pthread_mutex_t wgl_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
++#include "winehua_wgl_lock_perf.h"
++
+ /* handle management */
+ 
+ enum wgl_handle_type
+diff --git a/dlls/opengl32/winehua_wgl_lock_perf.h b/dlls/opengl32/winehua_wgl_lock_perf.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..80c13f29c7c4d850dd8efb3b386107f0f6ddb0a4
+--- /dev/null
++++ b/dlls/opengl32/winehua_wgl_lock_perf.h
+@@ -0,0 +1,49 @@
++/* Included after wgl_lock and the existing opt-in Unix OpenGL helpers.
++ * Keep this separate from 0037 so both overlays remain independently replayable. */
++static __thread struct
++{
++    uint64_t window_start;
++    struct winehua_perf_counter counter;
++} winehua_wgl_lock_perf;
++
++static int winehua_perf_mutex_lock(pthread_mutex_t *mutex)
++{
++    struct winehua_perf_counter *counter;
++    uint64_t start, end, elapsed;
++    int ret;
++
++    if (mutex != &wgl_lock || !TRACE_ON(winehua_perf))
++        return pthread_mutex_lock(mutex);
++
++    start = winehua_perf_now();
++    ret = pthread_mutex_lock(mutex);
++    end = winehua_perf_now();
++    if (!start || !end || end < start) return ret;
++
++    if (!winehua_wgl_lock_perf.window_start) winehua_wgl_lock_perf.window_start = start;
++    elapsed = end - start;
++    counter = &winehua_wgl_lock_perf.counter;
++    counter->count = winehua_perf_add(counter->count, 1);
++    counter->total_us = winehua_perf_add(counter->total_us, elapsed);
++    if (elapsed > counter->max_us) counter->max_us = elapsed;
++    counter->results[ret ? 4 : 0] = winehua_perf_add(counter->results[ret ? 4 : 0], 1);
++
++    if (end >= winehua_wgl_lock_perf.window_start &&
++        end - winehua_wgl_lock_perf.window_start >= 1000000)
++    {
++        TRACE_(winehua_perf)("scope=opengl_unix pid=%lu tid=%lu window_us=%llu wgl_lock_wait=%llu/%llu/%llu/0/0/%llu/0/0/0/%llu\n",
++                HandleToULong(NtCurrentTeb()->ClientId.UniqueProcess),
++                HandleToULong(NtCurrentTeb()->ClientId.UniqueThread),
++                (unsigned long long)(end - winehua_wgl_lock_perf.window_start),
++                (unsigned long long)counter->count, (unsigned long long)counter->total_us,
++                (unsigned long long)counter->max_us, (unsigned long long)counter->results[0],
++                (unsigned long long)counter->results[4]);
++        memset(counter, 0, sizeof(*counter));
++        winehua_wgl_lock_perf.window_start = end;
++    }
++    return ret;
++}
++
++/* Calls above resolve to the original mutex function and preserve its return value.
++ * Other mutexes and disabled diagnostics perform no clock reads. */
++#define pthread_mutex_lock(mutex) winehua_perf_mutex_lock(mutex)

@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 TMPDIR="$BUILD_DIR/tmp"
 
-log "=== 构建 xkbcommon 依赖 (x86_64) ==="
+log "=== 构建 xkbcommon 依赖 ($WINE_ARCH) ==="
 
 if [ "$HOST_OS" = "Darwin" ] || [ "$HOST_OS" = "HarmonyOS" ]; then
     export PKG_CONFIG_PATH_FOR_BUILD="$BUILD_DIR/host-tools/lib/pkgconfig${PKG_CONFIG_PATH_FOR_BUILD:+:$PKG_CONFIG_PATH_FOR_BUILD}"
@@ -35,7 +35,8 @@ mkdir -p "$SYSROOT_EXT_INC" "$SYSROOT_EXT_LIB" "$SYSROOT_EXT_PC"
 # ── 1. libffi ──
 build_libffi() {
     local src="$ROOT/thirdparty/libffi"
-    local build="$BUILD_DIR/libffi_build"
+    # build 目录按 WINE_ARCH 隔离: 跨架构复用会残留旧架构配置/产物 (meson/cmake 不总是重配)
+    local build="$BUILD_DIR/libffi_build_$WINE_ARCH"
     if [ -f "$SYSROOT_EXT_LIB/libffi.so.8" ] && [ -f "$SYSROOT_EXT_LIB/libffi.so" ] && [ -f "$SYSROOT_EXT_INC/ffi.h" ]; then return 0; fi
 
     log "--- libffi ---"
@@ -47,11 +48,11 @@ build_libffi() {
         NM="$OHOS_SDK/native/llvm/bin/llvm-nm" LD="$OHOS_SDK/native/llvm/bin/ld.lld" \
         CFLAGS="--target=$TARGET --sysroot=$SYSROOT -O2 -fPIC -D__MUSL__" \
         LDFLAGS="-fuse-ld=lld --sysroot=$SYSROOT --target=$TARGET" \
-        "$src/configure" --host=x86_64-linux-gnu --prefix="$build/install" --disable-docs
+        "$src/configure" --host=$GNU_HOST --prefix="$build/install" --disable-docs
     else
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" CFLAGS="-O2 -fPIC -D__MUSL__" \
         LDFLAGS="-fuse-ld=lld" \
-        "$src/configure" --host=x86_64-linux-gnu --prefix="$build/install" --disable-docs
+        "$src/configure" --host=$GNU_HOST --prefix="$build/install" --disable-docs
     fi
     make -j$JOBS && make install
     cp "$build/install/lib/libffi.so.8.1.4" "$SYSROOT_EXT_LIB/libffi.so.8"
@@ -60,7 +61,7 @@ build_libffi() {
     cat > "$SYSROOT_EXT_PC/libffi.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 Name: libffi
 Description: Library supporting Foreign Function Interfaces
 Version: 3.4.6
@@ -72,13 +73,14 @@ EOF
 # ── 2. libxml2 ──
 build_libxml2() {
     local src="$ROOT/thirdparty/libxml2"
-    local build="$BUILD_DIR/libxml2_build"
+    # build 目录按 WINE_ARCH 隔离 (跨架构复用残留旧配置)
+    local build="$BUILD_DIR/libxml2_build_$WINE_ARCH"
     if [ -f "$SYSROOT_EXT_LIB/libxml2.so.2" ] && [ -d "$SYSROOT_EXT_INC/libxml" ] && [ -f "$SYSROOT_EXT_PC/libxml-2.0.pc" ] && [ -f "$SYSROOT_EXT_LIB/libxml2.so" ]; then return 0; fi
 
     log "--- libxml2 ---"
     cmake -S "$src" -B "$build" -GNinja \
         -DCMAKE_TOOLCHAIN_FILE="$OHOS_SDK/native/build/cmake/ohos.toolchain.cmake" \
-        -DOHOS_ARCH=x86_64 -DOHOS_PLATFORM=OHOS \
+        -DOHOS_ARCH=$OHOS_ARCH -DOHOS_PLATFORM=OHOS \
         -DCMAKE_BUILD_TYPE=Release \
         -DLIBXML2_WITH_PYTHON=OFF -DLIBXML2_WITH_TESTS=OFF \
         -DLIBXML2_WITH_PROGRAMS=OFF -DLIBXML2_WITH_HTTP=OFF \
@@ -93,7 +95,7 @@ build_libxml2() {
     cat > "$SYSROOT_EXT_PC/libxml-2.0.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 Name: libXML
 Version: 2.12.0
 Description: libXML library version2.
@@ -105,11 +107,13 @@ EOF
 # ── 3. xkbcommon ──
 build_xkbcommon() {
     local src="$ROOT/thirdparty/libxkbcommon"
-    # 版本取自源码; 构建目录按版本隔离 (升级时旧 meson 缓存不可复用, 同 build_wayland.sh 教训)
+    # 版本取自源码; 构建目录按 WINE_ARCH+版本双键隔离: 跨架构复用会残留旧
+    # 架构配置 (meson 不切换 cross file, 实测产物保持 aarch64 → wine 链接报
+    # incompatible); 版本升级时旧 meson 缓存不可复用 (同 build_wayland.sh 教训)
     local ver
     ver=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$src/meson.build" | head -1)
     [ -n "$ver" ] || { err "无法从 $src/meson.build 解析 version"; return 1; }
-    local build="$BUILD_DIR/xkbcommon_build_$ver"
+    local build="$BUILD_DIR/xkbcommon_build_${WINE_ARCH}_$ver"
 
     log "--- xkbcommon + xkbregistry ($ver) ---"
     find "$src" -type f -exec touch -d '2 seconds ago' {} + 2>/dev/null || true
@@ -132,7 +136,7 @@ build_xkbcommon() {
     cat > "$SYSROOT_EXT_PC/xkbcommon.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 Name: xkbcommon
 Description: XKB API common to servers and clients
 Version: $ver
@@ -142,7 +146,7 @@ EOF
     cat > "$SYSROOT_EXT_PC/xkbregistry.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
-libdir=\${prefix}/lib/x86_64-linux-ohos
+libdir=\${prefix}/lib/$TARGET
 Name: xkbregistry
 Description: XKB API to query available rules, models, layouts, etc.
 Version: $ver

@@ -48,6 +48,9 @@ public:
     virtual int Detach(uint64_t surfaceKey) = 0;
     virtual int SetFramePeriod(uint64_t framePeriodNs) = 0;
 
+    // Borrowed fd, duplicated by Vulkan target; absent for legacy consumers.
+    virtual bool SetQueueRetirementFd(int fd) { return fd < 0; }
+
     // 目标类型: venus 走 Vulkan, virgl 走 GL blit。管理器的调度判定用
     // 它取代硬编码 flags if/else。
     virtual bool IsVulkan() const = 0;

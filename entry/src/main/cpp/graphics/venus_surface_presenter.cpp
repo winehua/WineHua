@@ -2,7 +2,9 @@
 
 #include "venus_surface_presenter.h"
 #include "native_window_lease.h"
+#include "native_window_vk_target.h"
 #include "presenter_common.h"
+#include "queue_retirement.h"
 
 #include <hilog/log.h>
 #include <native_buffer/native_buffer.h>
@@ -38,6 +40,25 @@ VkPresentModeKHR RequestedPresentMode()
     const char* mode = std::getenv("WINEHUA_VENUS_PRESENT_MODE");
     return mode && !std::strcmp(mode, "mailbox")
         ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+}
+
+bool NativePresentEnabled()
+{
+    const char* mode = std::getenv("WINEHUA_VENUS_PRESENT_MODE");
+    return mode && !std::strcmp(mode, "native-buffer");
+}
+
+bool ConfigureWsiRequestTimeout(OHNativeWindow* window, uint64_t displayPeriodNs)
+{
+    // OHOS WSI maps NativeWindow NO_BUFFER to SURFACE_LOST, rather than a
+    // retryable Vulkan timeout. A zero native timeout therefore tears down a
+    // healthy queue under normal consumer backpressure (and invalidates its
+    // retained frames). Wait at most two refreshes, capped at 50 ms. This is
+    // queue waiting only; it neither copies pixels nor waits for GPU idle.
+    const uint64_t boundedPeriod = std::min<uint64_t>(displayPeriodNs, 25000000ULL);
+    const int32_t timeoutMs = static_cast<int32_t>(
+        std::max<uint64_t>(1, (boundedPeriod * 2 + 999999) / 1000000));
+    return OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, timeoutMs) == 0;
 }
 
 bool AsyncReleaseEnabled()
@@ -155,6 +176,10 @@ struct VenusSurfaceQueueTarget::Impl {
     struct Frame {
         VkCommandBuffer command = VK_NULL_HANDLE;
         VkSemaphore acquired = VK_NULL_HANDLE;
+        VkSemaphore released = VK_NULL_HANDLE;
+        bool submitted = false;
+        bool acquisitionPending = false;
+        VkFence acquisitionComplete = VK_NULL_HANDLE;
         VkFence complete = VK_NULL_HANDLE;
         VkQueryPool gpuTiming = VK_NULL_HANDLE;
     };
@@ -173,6 +198,7 @@ struct VenusSurfaceQueueTarget::Impl {
         surfaceKey_ = surfaceKey;
         surfaceAttached_ = true;
         deviceReleasing_ = false;
+        nativeFailed_ = false;
         displayPeriodNs_ = NormalizeVenusFramePeriodNs(framePeriodNs);
         framePeriodNs_ = VenusPacingPeriodNs(displayPeriodNs_);
         lastPresentNs_ = 0;
@@ -180,6 +206,7 @@ struct VenusSurfaceQueueTarget::Impl {
         lastSerial_ = 0;
         serialRegressions_ = 0;
         failures_ = 0;
+        acquireRebuilds_ = 0;
         throttled_ = 0;
         firstPresentedNs_ = 0;
         totalPresentUs_ = 0;
@@ -235,6 +262,12 @@ struct VenusSurfaceQueueTarget::Impl {
         return 0;
     }
 
+    bool SetQueueRetirementFd(int fd)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return retirement_.SetFd(fd);
+    }
+
     bool HasVulkanDevice()
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -246,6 +279,7 @@ struct VenusSurfaceQueueTarget::Impl {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!MatchesDeviceLocked(contextId, device)) return false;
         deviceReleasing_ = true;
+        retirement_.Begin(); // producer stopped; consumer can now drain the queue
         OH_LOG_INFO(LOG_APP,
                     "[VENUS-PRESENT][NCP] device release prepare key=%{public}llu "
                     "ctx=%{public}u device=%{public}p attached=%{public}d",
@@ -257,14 +291,27 @@ struct VenusSurfaceQueueTarget::Impl {
     bool FinishDeviceRelease(uint32_t contextId, uintptr_t device,
                              int32_t waitResult)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (!MatchesDeviceLocked(contextId, device)) return false;
+        // No manager/target lock may be held while the compositor returns frames.
+        lock.unlock();
+        const bool consumerRetired = retirement_.Wait(400);
+        lock.lock();
+        if (!consumerRetired) OH_LOG_ERROR(LOG_APP, "[VENUS-PRESENT] consumer retirement timed out on device release");
         OH_LOG_INFO(LOG_APP,
                     "[VENUS-PRESENT][NCP] device release after-wait key=%{public}llu "
-                    "ctx=%{public}u device=%{public}p wait_result=%{public}d",
+                    "ctx=%{public}u device=%{public}p wait_result=%{public}d consumer_retired=%{public}d",
                     static_cast<unsigned long long>(surfaceKey_), contextId,
-                    device_, waitResult);
-        DestroyVulkanLocked();
+                    device_, waitResult, consumerRetired);
+        if (waitResult == VK_SUCCESS) {
+            DestroyVulkanLocked();
+        } else {
+            // The owner will destroy the device. Without successful retirement,
+            // do not destroy pending command buffers or return an acquired
+            // NativeBuffer to the consumer while the GPU may still write it.
+            vkDirect_.Abandon();
+            ClearVulkanStateLocked();
+        }
         deviceReleasing_ = false;
         if (!surfaceAttached_) {
             ReleaseWindowLocked();
@@ -316,8 +363,24 @@ struct VenusSurfaceQueueTarget::Impl {
         const VkFormat sourceFormat = static_cast<VkFormat>(format);
         const VkImageLayout sourceLayout = static_cast<VkImageLayout>(layout);
         int initError = 0;
-        if (device_ && (contextId_ != contextId || device_ != hostDevice))
+        if (device_ && (contextId_ != contextId || device_ != hostDevice)) {
+            // Do not use a borrowed old device for the incoming image. Keep a
+            // bounded diagnostic and a retry deadline while its owner retires it.
+            const uint64_t mismatchNs = NowNs();
+            if (!lastDeviceMismatchLogNs_ ||
+                mismatchNs - lastDeviceMismatchLogNs_ >= 2000000000ULL) {
+                OH_LOG_WARN(LOG_APP,
+                    "[VENUS-PRESENT][NCP] source device mismatch key=%{public}llu "
+                    "old_ctx=%{public}u new_ctx=%{public}u old_device=%{public}p "
+                    "new_device=%{public}p native=%{public}d serial=%{public}u",
+                    static_cast<unsigned long long>(surfaceKey_), contextId_, contextId,
+                    device_, hostDevice, nativeReady_, serial);
+                lastDeviceMismatchLogNs_ = mismatchNs;
+            }
+            if (nextPresentDeadlineNs)
+                *nextPresentDeadlineNs = mismatchNs + displayPeriodNs_;
             return -EAGAIN;
+        }
         if (!EnsureVulkanLocked(contextId, hostInstance, hostPhysical, hostDevice,
                                 hostQueue, queueFamily, width, height,
                                 sourceFormat, initError)) {
@@ -331,16 +394,32 @@ struct VenusSurfaceQueueTarget::Impl {
         const bool asyncRelease = AsyncReleaseEnabled();
         VkResult result = vkWaitForFences(
             device_, 1, &frame.complete, VK_TRUE,
-            asyncRelease ? kReleaseFenceWatchdogNs : displayPeriodNs_ * 4);
+            (asyncRelease || nativeReady_) ? kReleaseFenceWatchdogNs : displayPeriodNs_ * 4);
         const uint64_t waitFenceUs = (NowNs() - stageStartNs) / 1000;
         if (result == VK_TIMEOUT) return 1;
         if (result != VK_SUCCESS) return FailLocked("wait fence", result, serial);
+        frame.submitted = false;
         TracePresentStage("source-fence-ready", serial, image);
+        if (nativeReady_)
+        {
+            totalWaitFenceUs_ += waitFenceUs;
+            return NativePresentLocked(frame, sourceImage, sourceLayout, serial,
+                                       nextPresentDeadlineNs, releaseQueue, queueSyncData,
+                                       presentStartNs);
+        }
+
 
         uint32_t imageIndex = 0;
         stageStartNs = NowNs();
+        // An accepted WSI acquire may still be signaling its semaphore after
+        // the call returns. Retire that operation before destroying a failed
+        // recording's slot, even when no GPU command was submitted.
+        result = vkResetFences(device_, 1, &frame.acquisitionComplete);
+        if (result != VK_SUCCESS) return FailLocked("reset acquisition fence", result, serial);
+        frame.acquisitionPending = false;
         result = vkAcquireNextImageKHR(device_, swapchain_, displayPeriodNs_ * 2,
-                                       frame.acquired, VK_NULL_HANDLE, &imageIndex);
+                                       frame.acquired, frame.acquisitionComplete, &imageIndex);
+        frame.acquisitionPending = result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
         const uint64_t acquireUs = (NowNs() - stageStartNs) / 1000;
         if (result == VK_TIMEOUT || result == VK_NOT_READY) {
             ++throttled_;
@@ -358,6 +437,13 @@ struct VenusSurfaceQueueTarget::Impl {
         if (result == VK_ERROR_OUT_OF_DATE_KHR ||
             result == VK_ERROR_SURFACE_LOST_KHR ||
             result == VK_ERROR_UNKNOWN) {
+            ++acquireRebuilds_;
+            if (acquireRebuilds_ <= 5 || !(acquireRebuilds_ % 60))
+                OH_LOG_WARN(LOG_APP,
+                    "[VENUS-PRESENT][NCP] acquire target rebuild result=%{public}d "
+                    "serial=%{public}u count=%{public}llu",
+                    static_cast<int32_t>(result), serial,
+                    static_cast<unsigned long long>(acquireRebuilds_));
             swapchainDirty_ = true;
             return -EAGAIN;
         }
@@ -365,12 +451,17 @@ struct VenusSurfaceQueueTarget::Impl {
             return FailLocked("acquire", result, serial);
         TracePresentStage("target-acquired", serial, image);
 
-        vkResetFences(device_, 1, &frame.complete);
-        vkResetCommandBuffer(frame.command, 0);
+        const auto abortAcquired = [&](const char* operation, VkResult failure) {
+            swapchainDirty_ = true;
+            FailLocked(operation, failure, serial);
+            return failure == VK_ERROR_DEVICE_LOST ? -ENODEV : -EAGAIN;
+        };
+        result = vkResetCommandBuffer(frame.command, 0);
+        if (result != VK_SUCCESS) return abortAcquired("reset command", result);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         result = vkBeginCommandBuffer(frame.command, &begin);
-        if (result != VK_SUCCESS) return FailLocked("begin command", result, serial);
+        if (result != VK_SUCCESS) return abortAcquired("begin command", result);
 
         if (gpuTiming) {
             /* The query pool belongs to this completed frame slot.  It was
@@ -509,7 +600,7 @@ struct VenusSurfaceQueueTarget::Impl {
         }
 
         result = vkEndCommandBuffer(frame.command);
-        if (result != VK_SUCCESS) return FailLocked("end command", result, serial);
+        if (result != VK_SUCCESS) return abortAcquired("end command", result);
 
         const uint64_t timestamp = NowNs();
         OH_NativeWindow_NativeWindowHandleOpt(
@@ -524,9 +615,12 @@ struct VenusSurfaceQueueTarget::Impl {
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &renderFinished_[imageIndex];
         stageStartNs = NowNs();
+        result = vkResetFences(device_, 1, &frame.complete);
+        if (result != VK_SUCCESS) return abortAcquired("reset fence", result);
         result = vkQueueSubmit(queue_, 1, &submit, frame.complete);
         const uint64_t submitUs = (NowNs() - stageStartNs) / 1000;
-        if (result != VK_SUCCESS) return FailLocked("queue submit", result, serial);
+        if (result != VK_SUCCESS) return abortAcquired("queue submit", result);
+        frame.submitted = true;
         TracePresentStage("copy-submitted", serial, image);
 
         VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -625,7 +719,9 @@ struct VenusSurfaceQueueTarget::Impl {
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
             return FailLocked("queue present", result, serial);
 
-        lastPresentNs_ = timestamp;
+        // Pace start-to-start: presentation work is part of the frame budget,
+        // not an extra delay before the next refresh interval.
+        lastPresentNs_ = presentStartNs;
         ++framesPresented_;
         if (lastSerial_ && serial <= lastSerial_) ++serialRegressions_;
         lastSerial_ = serial;
@@ -732,6 +828,7 @@ struct VenusSurfaceQueueTarget::Impl {
                         "[VENUS-PRESENT][NCP] abandoning presenter objects without "
                         "device-owner callback key=%{public}llu ctx=%{public}u device=%{public}p",
                         static_cast<unsigned long long>(surfaceKey_), contextId_, device_);
+            vkDirect_.Abandon();
             ClearVulkanStateLocked();
         }
         ReleaseWindowLocked();
@@ -751,6 +848,327 @@ private:
         return result == VK_ERROR_DEVICE_LOST ? -ENODEV : -EIO;
     }
 
+
+    int NativePresentLocked(Frame& frame, VkImage sourceImage,
+                            VkImageLayout sourceLayout, uint32_t serial,
+                            uint64_t* nextPresentDeadlineNs,
+                            void (*releaseQueue)(void*), void* queueSyncData,
+                            uint64_t frameStartNs)
+    {
+        const uint64_t started = NowNs();
+        const auto fallback = [&](const char* reason, VkResult result = VK_SUCCESS) {
+            nativeFailed_ = true;
+            OH_LOG_WARN(LOG_APP,
+                "[VENUS-PRESENT][NCP] native fallback reason=%{public}s result=%{public}d",
+                reason, static_cast<int>(result));
+            return result == VK_ERROR_DEVICE_LOST ? -ENODEV : -EAGAIN;
+        };
+        if (!vkDirect_.SetRequestTimeoutMs(50)) return fallback("request-timeout");
+        const auto begin = vkDirect_.BeginFrame();
+        if (begin == NativeWindowVkBeginResult::Deferred) {
+            ++throttled_;
+            if (nextPresentDeadlineNs) *nextPresentDeadlineNs = NowNs() + displayPeriodNs_;
+            return 1;
+        }
+        if (begin != NativeWindowVkBeginResult::Ready)
+            return fallback(NativeWindowVkBeginResultName(begin));
+        VkResult result = vkDirect_.AcquireGpu(frame.acquired);
+        if (result != VK_SUCCESS) return fallback("acquire", result);
+        result = RecordPresentCopyLocked(frame, sourceImage, sourceLayout,
+            vkDirect_.ColorImage(), vkDirect_.ColorFormat(), sourceWidth_, sourceHeight_,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, false);
+        if (result != VK_SUCCESS) return fallback("record-copy", result);
+        // Reset only after recording succeeds; failures keep a reusable signaled fence.
+        result = vkResetFences(device_, 1, &frame.complete);
+        if (result != VK_SUCCESS) return fallback("reset-fence", result);
+        VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = &frame.acquired;
+        submit.pWaitDstStageMask = &stage;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &frame.command;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &frame.released;
+        const uint64_t submittedNs = NowNs();
+        result = vkQueueSubmit(queue_, 1, &submit, frame.complete);
+        if (result != VK_SUCCESS) return fallback("submit", result);
+        frame.submitted = true;
+        int releaseFd = -1;
+        result = vkDirect_.SignalRelease(queue_, 1, &frame.released, &releaseFd);
+        if (releaseQueue) releaseQueue(queueSyncData);
+        // On failure the acquired buffer remains owned until rebuild waits the queue.
+        if (result != VK_SUCCESS) return fallback("signal-release", result);
+        const uint64_t timestamp = NowNs();
+        if (vkDirect_.EndFrame(releaseFd, timestamp)) return fallback("flush-buffer");
+        // Keep the actual submission timestamp for the consumer, but include
+        // acquire/submit/flush work in this frame's pacing budget.
+        lastPresentNs_ = frameStartNs;
+        if (nextPresentDeadlineNs)
+            *nextPresentDeadlineNs = frameStartNs + framePeriodNs_;
+        ++framesPresented_;
+        if (lastSerial_ && serial <= lastSerial_) ++serialRegressions_;
+        lastSerial_ = serial;
+        const uint64_t ended = NowNs();
+        const uint64_t elapsedUs = (ended - started) / 1000;
+        totalAcquireUs_ += vkDirect_.LastRequestUs();
+        totalSubmitUs_ += (timestamp - submittedNs) / 1000;
+        totalQueuePresentUs_ += vkDirect_.LastFlushUs();
+        totalPresentUs_ += elapsedUs;
+        maxPresentUs_ = std::max(maxPresentUs_, elapsedUs);
+        if (!firstPresentedNs_) firstPresentedNs_ = ended;
+        if (framesPresented_ == 1 || !(framesPresented_ % 120)) {
+            const uint64_t elapsedNs = ended - firstPresentedNs_;
+            const uint64_t fps = elapsedNs && framesPresented_ > 1
+                ? (framesPresented_ - 1) * 100000000000ULL / elapsedNs : 0;
+            OH_LOG_INFO(LOG_APP,
+                "[VENUS-PRESENT][NCP] transport=direct-native-buffer frames=%{public}llu "
+                "size=%{public}ux%{public}u fps=%{public}llu.%{public}02llu "
+                "present_us_avg=%{public}llu post_present_cpu_wait=0 slots=%{public}zu "
+                "request_us_avg=%{public}llu submit_release_us_avg=%{public}llu "
+                "flush_us_avg=%{public}llu wait_slot_us_avg=%{public}llu",
+                static_cast<unsigned long long>(framesPresented_), sourceWidth_, sourceHeight_,
+                static_cast<unsigned long long>(fps / 100),
+                static_cast<unsigned long long>(fps % 100),
+                static_cast<unsigned long long>(totalPresentUs_ / framesPresented_),
+                vkDirect_.ImportedSlotCount(),
+                static_cast<unsigned long long>(totalAcquireUs_ / framesPresented_),
+                static_cast<unsigned long long>(totalSubmitUs_ / framesPresented_),
+                static_cast<unsigned long long>(totalQueuePresentUs_ / framesPresented_),
+                static_cast<unsigned long long>(totalWaitFenceUs_ / framesPresented_));
+        }
+        return 0;
+    }
+
+    VkResult RecordPresentCopyLocked(Frame& frame,
+                                     VkImage sourceImage,
+                                     VkImageLayout sourceLayout,
+                                     VkImage targetImage,
+                                     VkFormat targetFormat,
+                                     uint32_t targetWidth,
+                                     uint32_t targetHeight,
+                                     VkImageLayout targetOldLayout,
+                                     VkImageLayout targetFinalLayout,
+                                     bool gpuTiming)
+    {
+        if (!sourceImage || !targetImage || targetFormat == VK_FORMAT_UNDEFINED ||
+            !sourceWidth_ || !sourceHeight_ || !targetWidth || !targetHeight) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        const bool useBlit = sourceFormat_ != targetFormat ||
+            sourceWidth_ != targetWidth || sourceHeight_ != targetHeight;
+        if (useBlit) {
+            VkFormatProperties sourceProperties{};
+            VkFormatProperties targetProperties{};
+            vkGetPhysicalDeviceFormatProperties(
+                physicalDevice_, sourceFormat_, &sourceProperties);
+            vkGetPhysicalDeviceFormatProperties(
+                physicalDevice_, targetFormat, &targetProperties);
+            if (!(sourceProperties.optimalTilingFeatures &
+                  VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+                !(targetProperties.optimalTilingFeatures &
+                  VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+                return VK_ERROR_FORMAT_NOT_SUPPORTED;
+            }
+        }
+
+        VkResult result = vkResetCommandBuffer(frame.command, 0);
+        if (result != VK_SUCCESS) return result;
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        result = vkBeginCommandBuffer(frame.command, &begin);
+        if (result != VK_SUCCESS) return result;
+
+        if (gpuTiming) {
+            vkCmdResetQueryPool(frame.command, frame.gpuTiming, 0, 2);
+            vkCmdWriteTimestamp(frame.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                frame.gpuTiming, 0);
+        }
+
+        VkImageMemoryBarrier sourceToTransfer{
+            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        sourceToTransfer.srcAccessMask = SourceAccess(sourceLayout);
+        sourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        sourceToTransfer.oldLayout = sourceLayout;
+        sourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        sourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceToTransfer.image = sourceImage;
+        sourceToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        sourceToTransfer.subresourceRange.levelCount = 1;
+        sourceToTransfer.subresourceRange.layerCount = 1;
+
+        VkImageMemoryBarrier targetToTransfer{
+            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        targetToTransfer.srcAccessMask =
+            targetOldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_READ_BIT;
+        targetToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        targetToTransfer.oldLayout = targetOldLayout;
+        targetToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        targetToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        targetToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        targetToTransfer.image = targetImage;
+        targetToTransfer.subresourceRange = sourceToTransfer.subresourceRange;
+        const std::array<VkImageMemoryBarrier, 2> before = {
+            sourceToTransfer, targetToTransfer};
+        const VkPipelineStageFlags targetSourceStage =
+            targetOldLayout == VK_IMAGE_LAYOUT_UNDEFINED
+            ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+            : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        vkCmdPipelineBarrier(
+            frame.command, SourceStage(sourceLayout) | targetSourceStage,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+            static_cast<uint32_t>(before.size()), before.data());
+
+        if (useBlit) {
+            VkImageBlit blit{};
+            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.srcSubresource.layerCount = 1;
+            blit.srcOffsets[1] = {
+                static_cast<int32_t>(sourceWidth_),
+                static_cast<int32_t>(sourceHeight_), 1};
+            blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.dstSubresource.layerCount = 1;
+            blit.dstOffsets[1] = {
+                static_cast<int32_t>(targetWidth),
+                static_cast<int32_t>(targetHeight), 1};
+            vkCmdBlitImage(
+                frame.command, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                targetImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                VK_FILTER_NEAREST);
+        } else {
+            VkImageCopy copy{};
+            copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.srcSubresource.layerCount = 1;
+            copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.dstSubresource.layerCount = 1;
+            copy.extent = {sourceWidth_, sourceHeight_, 1};
+            vkCmdCopyImage(
+                frame.command, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                targetImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        }
+
+        VkImageMemoryBarrier sourceRestore{
+            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        sourceRestore.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        sourceRestore.dstAccessMask = SourceAccess(sourceLayout);
+        sourceRestore.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        sourceRestore.newLayout = sourceLayout;
+        sourceRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        sourceRestore.image = sourceImage;
+        sourceRestore.subresourceRange = sourceToTransfer.subresourceRange;
+
+        VkImageMemoryBarrier targetPublish{
+            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        targetPublish.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        targetPublish.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        targetPublish.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        targetPublish.newLayout = targetFinalLayout;
+        targetPublish.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        targetPublish.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        targetPublish.image = targetImage;
+        targetPublish.subresourceRange = targetToTransfer.subresourceRange;
+        const std::array<VkImageMemoryBarrier, 2> after = {
+            sourceRestore, targetPublish};
+        vkCmdPipelineBarrier(
+            frame.command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+            static_cast<uint32_t>(after.size()), after.data());
+
+        if (gpuTiming) {
+            vkCmdWriteTimestamp(frame.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                frame.gpuTiming, 1);
+        }
+        result = vkEndCommandBuffer(frame.command);
+        if (result != VK_SUCCESS) return result;
+        return VK_SUCCESS;
+    }
+
+    VkResult WaitForOutstandingFramesLocked()
+    {
+        std::vector<VkFence> pending;
+        pending.reserve(frames_.size() * 2);
+        for (const Frame& frame : frames_) {
+            if (frame.submitted && frame.complete)
+                pending.push_back(frame.complete);
+            if (frame.acquisitionPending && frame.acquisitionComplete)
+                pending.push_back(frame.acquisitionComplete);
+        }
+        if (pending.empty()) return VK_SUCCESS;
+
+        const VkResult result = vkWaitForFences(
+            device_, static_cast<uint32_t>(pending.size()), pending.data(),
+            VK_TRUE, kReleaseFenceWatchdogNs);
+        if (result == VK_SUCCESS) {
+            for (Frame& frame : frames_) {
+                frame.submitted = false;
+                frame.acquisitionPending = false;
+            }
+        }
+        return result;
+    }
+
+    bool CreateDirectResourcesLocked(int& error)
+    {
+        extent_ = {sourceWidth_, sourceHeight_};
+        targetFormat_ = sourceFormat_;
+        canBlit_ = true;
+        useBlit_ = false;
+
+        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        poolInfo.queueFamilyIndex = queueFamily_;
+        VkResult result = vkCreateCommandPool(device_, &poolInfo, nullptr, &commandPool_);
+        if (result != VK_SUCCESS) {
+            error = -EIO;
+            return false;
+        }
+
+        frames_.resize(3);
+        std::vector<VkCommandBuffer> commands(frames_.size());
+        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        allocate.commandPool = commandPool_;
+        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate.commandBufferCount = static_cast<uint32_t>(commands.size());
+        result = vkAllocateCommandBuffers(device_, &allocate, commands.data());
+        if (result != VK_SUCCESS) {
+            error = -ENOMEM;
+            return false;
+        }
+
+        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        for (size_t i = 0; i < frames_.size(); ++i) {
+            Frame& frame = frames_[i];
+            frame.command = commands[i];
+            if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+                                  &frame.acquired) != VK_SUCCESS ||
+                vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+                                  &frame.released) != VK_SUCCESS ||
+                vkCreateFence(device_, &fenceInfo, nullptr,
+                              &frame.complete) != VK_SUCCESS) {
+                error = -ENOMEM;
+                return false;
+            }
+        }
+
+        // DP1 measures CPU queue/request/flush cost. Timestamp queries remain
+        // on the WSI comparison path until delayed query collection is added;
+        // Direct must not reintroduce a post-present CPU fence wait for metrics.
+        gpuTimingRequested_ = GpuFrameProfileEnabled();
+        gpuTimingEnabled_ = false;
+        nativeReady_ = true;
+        OH_LOG_INFO(LOG_APP,
+                    "[VENUS-PRESENT][NCP] transport=direct-native-buffer "
+                    "key=%{public}llu size=%{public}ux%{public}u frames=%{public}zu "
+                    "post_present_cpu_wait=0",
+                    static_cast<unsigned long long>(surfaceKey_), sourceWidth_,
+                    sourceHeight_, frames_.size());
+        return true;
+    }
+
     bool EnsureVulkanLocked(uint32_t contextId,
                             VkInstance instance,
                             VkPhysicalDevice physicalDevice,
@@ -767,12 +1185,49 @@ private:
             device_ == device && queue_ == queue && queueFamily_ == queueFamily &&
             sourceWidth_ == width && sourceHeight_ == height &&
             sourceFormat_ == sourceFormat;
-        if (swapchain_ && sameSource && !swapchainDirty_) return true;
+        if (nativeReady_ && sameSource && !nativeFailed_ && !retirement_.Pending()) return true;
+        if (swapchain_ && sameSource && !swapchainDirty_ && !retirement_.Pending()) return true;
+        if (swapchain_ && (++sourceRebuilds_ <= 5 || !(sourceRebuilds_ % 60))) {
+            OH_LOG_WARN(LOG_APP,
+                "[VENUS-PRESENT][NCP] rebuild target key=%{public}llu "
+                "dirty=%{public}d same_source=%{public}d ctx=%{public}u/%{public}u "
+                "queue_changed=%{public}d family=%{public}u/%{public}u "
+                "size=%{public}ux%{public}u/%{public}ux%{public}u "
+                "format=%{public}u/%{public}u count=%{public}llu",
+                static_cast<unsigned long long>(surfaceKey_), swapchainDirty_, sameSource,
+                contextId_, contextId, queue_ != queue, queueFamily_, queueFamily,
+                sourceWidth_, sourceHeight_, width, height,
+                static_cast<uint32_t>(sourceFormat_), static_cast<uint32_t>(sourceFormat),
+                static_cast<unsigned long long>(sourceRebuilds_));
+        }
+        if (nativeReady_ && device_ && queue_) {
+            // Geometry/fallback only, never the per-frame successful path.
+            const VkResult idle = vkQueueWaitIdle(queue_);
+            if (idle != VK_SUCCESS) {
+                error = idle == VK_ERROR_DEVICE_LOST ? -ENODEV : -EIO;
+                return false;
+            }
+        }
+
+        if (!nativeReady_ && device_) {
+            const VkResult retired = WaitForOutstandingFramesLocked();
+            if (retired != VK_SUCCESS) {
+                error = retired == VK_TIMEOUT ? -EAGAIN : -EIO;
+                return false;
+            }
+        }
 
         /* A WSI error can leave the platform present queue waiting forever.
          * The dirty path has already waited for the per-frame fence and has
          * no newly acquired image, so it must not perform an unbounded
          * vkQueueWaitIdle during recovery. */
+        if (swapchain_ || nativeReady_) {
+            const auto retirement = retirement_.Begin();
+            if (retirement != QueueRetirementResult::Ready) {
+                error = retirement == QueueRetirementResult::Pending ? -EAGAIN : -ETIMEDOUT;
+                return false;
+            }
+        }
         DestroyVulkanLocked();
         contextId_ = contextId;
         instance_ = instance;
@@ -790,6 +1245,22 @@ private:
             return false;
         }
 
+        if (NativePresentEnabled() && !nativeFailed_) {
+            const auto configured = vkDirect_.Configure(surfaceKey_, windowLease_.Get(),
+                width, height, physicalDevice_, device_, sourceFormat_);
+            if (configured == NativeWindowVkConfigureResult::Ready) {
+                if (CreateDirectResourcesLocked(error)) return true;
+                nativeReady_ = true; // retire partially created objects before WSI rebuild
+                nativeFailed_ = true;
+                error = -EAGAIN;
+                return false;
+            }
+            nativeFailed_ = true;
+            OH_LOG_WARN(LOG_APP,
+                "[VENUS-PRESENT][NCP] native capability fallback reason=%{public}s",
+                NativeWindowVkConfigureResultName(configured));
+        }
+
         OH_NativeWindow_NativeWindowHandleOpt(
             windowLease_.Get(), SET_BUFFER_GEOMETRY,
             static_cast<int32_t>(width), static_cast<int32_t>(height));
@@ -797,7 +1268,10 @@ private:
             windowLease_.Get(), SET_USAGE,
             static_cast<uint64_t>(NATIVEBUFFER_USAGE_HW_RENDER |
                                   NATIVEBUFFER_USAGE_HW_TEXTURE));
-        OH_NativeWindow_NativeWindowHandleOpt(windowLease_.Get(), SET_TIMEOUT, 0);
+        if (!ConfigureWsiRequestTimeout(windowLease_.Get(), displayPeriodNs_)) {
+            error = -EIO;
+            return false;
+        }
 
         VkSurfaceCreateInfoOHOS surfaceInfo{VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_OHOS};
         surfaceInfo.window = windowLease_.Get();
@@ -1017,7 +1491,9 @@ private:
             if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
                                   &frames_[i].acquired) != VK_SUCCESS ||
                 vkCreateFence(device_, &fenceInfo, nullptr,
-                              &frames_[i].complete) != VK_SUCCESS) {
+                              &frames_[i].complete) != VK_SUCCESS ||
+                vkCreateFence(device_, &fenceInfo, nullptr,
+                              &frames_[i].acquisitionComplete) != VK_SUCCESS) {
                 error = -ENOMEM;
                 return false;
             }
@@ -1068,12 +1544,15 @@ private:
             for (auto& frame : frames_) {
                 if (frame.gpuTiming) vkDestroyQueryPool(device_, frame.gpuTiming, nullptr);
                 if (frame.complete) vkDestroyFence(device_, frame.complete, nullptr);
+                if (frame.acquisitionComplete) vkDestroyFence(device_, frame.acquisitionComplete, nullptr);
                 if (frame.acquired) vkDestroySemaphore(device_, frame.acquired, nullptr);
+                if (frame.released) vkDestroySemaphore(device_, frame.released, nullptr);
             }
             for (const VkSemaphore semaphore : renderFinished_) {
                 if (semaphore) vkDestroySemaphore(device_, semaphore, nullptr);
             }
             if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
+            vkDirect_.Reset();
             if (swapchain_) {
                 OH_LOG_INFO(LOG_APP, "[VENUS-PRESENT][NCP] destroy swapchain begin key=%{public}llu",
                             static_cast<unsigned long long>(surfaceKey_));
@@ -1090,10 +1569,13 @@ private:
                         static_cast<unsigned long long>(surfaceKey_));
         }
         ClearVulkanStateLocked();
+        if (!retirement_.Complete())
+            OH_LOG_ERROR(LOG_APP, "[VENUS-PRESENT] consumer retirement resume failed");
     }
 
     void ClearVulkanStateLocked()
     {
+        nativeReady_ = false;
         frames_.clear();
         renderFinished_.clear();
         targetInitialized_.clear();
@@ -1144,7 +1626,11 @@ private:
     }
 
     std::mutex mutex_;
+    QueueRetirementProducer retirement_;
     NativeWindowLease windowLease_;
+    NativeWindowVkTarget vkDirect_;
+    bool nativeReady_ = false;
+    bool nativeFailed_ = false;
     uint64_t surfaceKey_ = 0;
     uint32_t contextId_ = 0;
     bool surfaceAttached_ = false;
@@ -1171,9 +1657,12 @@ private:
     bool canBlit_ = false;
     bool useBlit_ = false;
     bool swapchainDirty_ = false;
+    uint64_t sourceRebuilds_ = 0;
     uint64_t displayPeriodNs_ = kDefaultFramePeriodNs;
     uint64_t framePeriodNs_ = kDefaultFramePeriodNs;
     uint64_t lastPresentNs_ = 0;
+    uint64_t lastDeviceMismatchLogNs_ = 0;
+    uint64_t acquireRebuilds_ = 0;
     uint64_t framesPresented_ = 0;
     uint32_t lastSerial_ = 0;
     uint64_t serialRegressions_ = 0;
@@ -1219,6 +1708,11 @@ int VenusSurfaceQueueTarget::Detach(uint64_t surfaceKey)
 int VenusSurfaceQueueTarget::SetFramePeriod(uint64_t framePeriodNs)
 {
     return impl_->SetFramePeriod(framePeriodNs);
+}
+
+bool VenusSurfaceQueueTarget::SetQueueRetirementFd(int fd)
+{
+    return impl_->SetQueueRetirementFd(fd);
 }
 
 bool VenusSurfaceQueueTarget::HasVulkanDevice()

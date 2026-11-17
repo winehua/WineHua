@@ -1,0 +1,34 @@
+diff --git a/dlls/winewayland.drv/opengl_readback.c b/dlls/winewayland.drv/opengl_readback.c
+--- a/dlls/winewayland.drv/opengl_readback.c
++++ b/dlls/winewayland.drv/opengl_readback.c
+@@ -439,6 +439,30 @@
+     }
+     funcs->p_glReadPixels(0, 0, gl->width, gl->height, GL_BGRA, GL_UNSIGNED_BYTE, rgba);
+     winehua_gl_stage_end(WINEHUA_GL_READBACK, stage_started);
++    /* Sample the readback before SHM/composition. A submitted black frame must
++     * be distinguishable from a lost window without a full pixel dump or any
++     * glGetError call that would consume the application's error state. */
++    if (readbacks == 1 || !(readbacks % 300))
++    {
++        SIZE_T pixels = (SIZE_T)gl->width * gl->height, i, samples = 0, rgb_nonzero = 0, alpha_nonzero = 0;
++        SIZE_T step = max(1, pixels / 1024);
++        GLint read_buffer = 0, draw_fbo = 0;
++        EGLSurface current_draw = funcs->p_eglGetCurrentSurface(EGL_DRAW);
++        EGLSurface current_read = funcs->p_eglGetCurrentSurface(EGL_READ);
++        funcs->p_glGetIntegerv(GL_READ_BUFFER, &read_buffer);
++        funcs->p_glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo);
++        for (i = 0; i < pixels; i += step)
++        {
++            samples++;
++            if (rgba[4*i] || rgba[4*i+1] || rgba[4*i+2]) rgb_nonzero++;
++            if (rgba[4*i+3]) alpha_nonzero++;
++        }
++        fprintf(stderr, "winehua_readback_pixels: pid=%u hwnd=%p surface=%u frame=%d rgb_nonzero=%zu alpha_nonzero=%zu samples=%zu read_buffer=%#x saved_read_fbo=%d draw_fbo=%d target=%p current_draw=%p current_read=%p renderer=%s\n",
++                (unsigned int)getpid(), base->client->hwnd, surface_id, (int)readbacks,
++                rgb_nonzero, alpha_nonzero, samples, read_buffer, read_fbo, draw_fbo,
++                base->surface, current_draw, current_read, (const char *)funcs->p_glGetString(GL_RENDERER));
++        fflush(stderr);
++    }
+ 
+     /* Keep the pbuffer's WSI present semantics active so the virpipe winsys
+      * receives the exact front resource while readback remains the fallback. */

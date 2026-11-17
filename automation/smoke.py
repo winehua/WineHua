@@ -56,7 +56,7 @@ def die(message: str) -> "None":
 # 构建环境（路径知识的唯一来源是 scripts/env.sh，不在此重复）
 # ---------------------------------------------------------------------------
 
-_ENV_KEYS = ("BUILD_DIR", "DXVK_SRC", "VKD3D_PROTON_BUILD_ROOT")
+_ENV_KEYS = ("BUILD_DIR", "WINE_BUILD_ROOT", "WINE_ARCH", "LLVM_MINGW", "DXVK_SRC", "VKD3D_PROTON_BUILD_ROOT")
 
 
 def load_build_env() -> dict:
@@ -262,8 +262,11 @@ def resolve_wine_program(env: dict, case: Case, arch: str) -> Path:
     """wine 构建系统的 programs/<name> 产物；i386 优先 wine-ohos（wine-i386-pe 已废弃）。"""
     program = case.from_wine
     build_dir = Path(env["BUILD_DIR"])
+    wine_build = Path(env["WINE_BUILD_ROOT"])
+    pe_dir = "aarch64-windows" if arch == "x64" and env["WINE_ARCH"] == "aarch64" else WINE_ARCH_DIR[arch]
     candidates = [
-        build_dir / f"wine-ohos/programs/{program}/{WINE_ARCH_DIR[arch]}/{program}.exe",
+        wine_build / f"wine-ohos-{env['WINE_ARCH']}/programs/{program}/{pe_dir}/{program}.exe",
+        build_dir / f"wine-ohos/programs/{program}/{pe_dir}/{program}.exe",
         build_dir / f"wine-i386-pe/programs/{program}/{WINE_ARCH_DIR[arch]}/{program}.exe",
     ]
     for path in candidates:
@@ -300,12 +303,15 @@ def build_case(env: dict, case: Case, arch: str, dest: Path) -> None:
     for src in sources:
         if not Path(src).is_file():
             die(f"case {case.id}: source missing: {src}")
-    command = [MINGW[arch], *spec.get("cflags", ["-O2", "-s"]), "-o", str(dest), *sources]
+    cc = (str(Path(env["LLVM_MINGW"]) / "bin/aarch64-w64-mingw32-clang")
+          if arch == "x64" and env["WINE_ARCH"] == "aarch64" else MINGW[arch])
+    command = [cc, *spec.get("cflags", ["-O2", "-s"]), "-o", str(dest), *sources]
     if spec.get("dxvk_include"):
         command.append(f"-I{env['DXVK_SRC']}/include")
     if spec.get("vulkan_import"):
-        import_lib = (Path(env["BUILD_DIR"]) /
-                      f"wine-ohos/dlls/vulkan-1/{WINE_ARCH_DIR[arch]}/libvulkan-1.a")
+        pe_dir = "aarch64-windows" if arch == "x64" and env["WINE_ARCH"] == "aarch64" else WINE_ARCH_DIR[arch]
+        import_lib = (Path(env["WINE_BUILD_ROOT"]) /
+                      f"wine-ohos-{env['WINE_ARCH']}/dlls/vulkan-1/{pe_dir}/libvulkan-1.a")
         if not import_lib.is_file():
             die(f"wine Vulkan import library missing: {import_lib}")
         command.append(str(import_lib))
@@ -319,7 +325,7 @@ def build_case(env: dict, case: Case, arch: str, dest: Path) -> None:
 
 def copy_assets(env: dict, out_dir: Path) -> None:
     """venus smoke shader：guest_vulkan 构建产物，随载荷版本化。"""
-    guest_arch = "x86_64"
+    guest_arch = env["WINE_ARCH"]
     root = Path(env["BUILD_DIR"]) / f"guest_vulkan/{guest_arch}/share/winehua"
     names = ("venus_storage_write", "venus_storage_read", "venus_image_fetch",
              "venus_combined_sample", "venus_separated_sample")

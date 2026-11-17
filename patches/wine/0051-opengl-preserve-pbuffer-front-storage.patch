@@ -1,0 +1,41 @@
+--- a/include/wine/opengl_driver.h
++++ b/include/wine/opengl_driver.h
+@@ -226,6 +226,7 @@
+     GLuint                              read_fbo;       /* default read FBO name when emulating framebuffer */
+     GLuint                              draw_fbo;       /* default draw FBO name when emulating framebuffer */
+     GLenum                              buffer_map[GL_AUX3 - GL_FRONT_LEFT + 1]; /* buffer constants mapping */
++    BOOL                                swap_preserves_buffers; /* present publishes storage without exchanging buffers */
+ };
+ 
+ static inline const char *debugstr_opengl_drawable( struct opengl_drawable *drawable )
+--- a/dlls/winewayland.drv/opengl_readback.c
++++ b/dlls/winewayland.drv/opengl_readback.c
+@@ -624,6 +624,9 @@
+         return FALSE;
+     }
+ 
++    /* EGL pbuffers preserve their storage. Our explicit GPU present exports
++     * it without swapping front/back; front rendering needs no copy back. */
++    gl->base.swap_preserves_buffers = TRUE;
+     opengl_drawable_map_buffer(&gl->base, GL_FRONT_LEFT, GL_BACK_LEFT);
+     opengl_drawable_map_buffer(&gl->base, GL_FRONT, GL_BACK);
+     opengl_drawable_map_buffer(&gl->base, GL_FRONT_AND_BACK, GL_BACK);
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -1995,6 +1995,7 @@
+     struct opengl_drawable *read, *draw;
+     struct context *ctx = get_current_context( teb, &read, &draw );
+     HWND draw_hwnd = ctx && draw && draw->client ? draw->client->hwnd : NULL;
++    BOOL swap_preserves_buffers = draw && draw->swap_preserves_buffers;
+     const struct opengl_funcs *funcs = teb->glTable;
+     UINT flags = 0;
+ 
+@@ -2011,7 +2012,7 @@
+     pop_default_fbo( teb );
+     pop_default_fbo_buffers( teb );
+ 
+-    if (flags & GL_FLUSH_FORCE_SWAP)
++    if ((flags & GL_FLUSH_FORCE_SWAP) && !swap_preserves_buffers)
+     {
+         GLenum mask = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
+         RECT rect;
