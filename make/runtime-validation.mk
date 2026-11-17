@@ -16,6 +16,8 @@ runtime-host-check: test
 	python3 $(ROOT)/host_tests/multiple_gamepads_test.py
 	python3 $(ROOT)/host_tests/source_build_contract_test.py
 	python3 $(ROOT)/host_tests/wine_build_identity_test.py
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp $(ROOT)/host_tests/display_route_metrics_test.cpp -o $(HOST_TEST_DIR)/display_route_metrics_test
+	$(HOST_TEST_DIR)/display_route_metrics_test
 	python3 $(ROOT)/scripts/verify_runtime_graphics.py
 	python3 $(ROOT)/host_tests/runtime_pipeline_test.py
 	python3 $(ROOT)/host_tests/signing_contract_test.py

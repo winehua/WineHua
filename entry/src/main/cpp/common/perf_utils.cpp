@@ -75,9 +75,8 @@ uint64_t RendererPerfWindow::Percentile(std::array<uint64_t, kSamples> values, s
 extern "C" int winehua_display_fps_publish(uint32_t id, uint64_t sequence, double fps,
                                            const char* route, uint64_t surfaceKey)
 {
-    (void)route; (void)surfaceKey;
-    return PublishDisplayedFpsSample(kDisplayedFpsBasePath, id, sequence, fps,
-                                     PerfNowUs(), true) ? 0 : -1;
+    return PublishDisplayRouteSample(kDisplayedFpsBasePath, id, sequence, fps,
+                                     route, surfaceKey) ? 0 : -1;
 }
 
 void RendererPerfWindow::PublishDisplayedFps(uint32_t toplevelId, uint64_t nowUs)
@@ -88,7 +87,11 @@ void RendererPerfWindow::PublishDisplayedFps(uint32_t toplevelId, uint64_t nowUs
                        static_cast<double>(std::max<uint64_t>(1, elapsedUs));
     if (PublishDisplayedFpsSample(kDisplayedFpsBasePath, toplevelId,
                                   publishSequence + 1, fps, nowUs))
+    {
         ++publishSequence;
+        PublishDisplayRouteSample(kDisplayedFpsBasePath, toplevelId,
+                                  publishSequence, fps, "wayland", surfaceKey);
+    }
 
     publishFrames = 0;
     publishStartedUs = nowUs;

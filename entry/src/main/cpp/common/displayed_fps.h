@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <string>
 #include <unistd.h>
@@ -48,6 +49,29 @@ inline bool PublishDisplayedFpsSample(const char* basePath, uint32_t toplevelId,
     // sample; individual windows must not overwrite each other's statistics.
     if (published && desktopCompatibility)
         PublishDisplayedFpsFile(basePath, toplevelId, sequence, fps, nowUs);
+    return published;
+}
+
+// The upstream guest probe reads the unsuffixed route/surface-key protocol.
+// Keep it separate from VPP's timestamped, per-window HUD samples.
+inline bool PublishDisplayRouteSample(const char* basePath, uint32_t surfaceId,
+                                     uint64_t sequence, double fps,
+                                     const char* route, uint64_t surfaceKey)
+{
+    if (!sequence || !std::isfinite(fps) || fps < 0 || fps > 1000 || !route ||
+        (std::strcmp(route, "x11") && std::strcmp(route, "wayland"))) return false;
+    std::string temporary = std::string(basePath) + ".tmp.XXXXXX";
+    const int fd = mkstemp(temporary.data());
+    if (fd < 0) return false;
+    char payload[160];
+    const int length = std::snprintf(payload, sizeof(payload), "%llu %.3f %u %s %llu\n",
+        static_cast<unsigned long long>(sequence), fps, surfaceId, route,
+        static_cast<unsigned long long>(surfaceKey));
+    const bool written = length > 0 && length < static_cast<int>(sizeof(payload)) &&
+        write(fd, payload, static_cast<size_t>(length)) == length;
+    close(fd);
+    const bool published = written && rename(temporary.c_str(), basePath) == 0;
+    if (!published) unlink(temporary.c_str());
     return published;
 }
 
