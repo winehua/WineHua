@@ -979,10 +979,10 @@ export struct FileBrowserView {
       // 否则大小/时间列相对可启动行整体右移错位。32 与顶栏图标按钮同款
       Row() {
         if (this.rowKindOf(entry) == 'app') {
-          // 启动 = 行内主动作: 实心 play 图标 accent 色, 无底色 — 热区 32×32
+          // 启动 = 行内主动作: play 图标 accent 色, 无底色 — 热区 32×32
           // ≈5mm 仍达标, 图标宽约 11vp (同顶栏审核口径)
           Button() {
-            SymbolGlyph($r('sys.symbol.play_fill'))
+            SymbolGlyph($r('sys.symbol.play'))
               .fontSize(22)
               .fontColor([$r('app.color.accent')])
           }
@@ -1131,7 +1131,7 @@ export struct FileBrowserView {
             .margin({ left: 8 })
             .bindMenu(this.importMenu(), { modalMode: ModalMode.TARGET_WINDOW })
             Button() {
-              SymbolGlyph($r('sys.symbol.more'))
+              SymbolGlyph($r('sys.symbol.dot_grid_1x2'))
                 .fontSize(22)
                 .fontColor([$r('app.color.text_primary')])
             }
