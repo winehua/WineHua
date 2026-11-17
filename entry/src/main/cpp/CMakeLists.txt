@@ -105,7 +105,6 @@ add_library(entry SHARED
     input/controller/physical_gamepad.cpp
     bridge/napi_init.cpp
     bridge/runtime_compat.cpp
-    smoke/smoke_napi.cpp
     bridge/system_open.cpp
     proc/wine_process.cpp
     wine/wine_env.cpp
@@ -355,6 +354,17 @@ add_library(display_route_napi SHARED
     display_route/display_route_napi.cpp
 )
 target_link_libraries(display_route_napi PRIVATE
+    entry
+    libace_napi.z.so
+    libhilog_ndk.z.so
+)
+
+# Keep one NAPI registration per shared library. Linking smoke into entry
+# replaces the product exports during module loading and crashes onCreate.
+add_library(smoke_napi SHARED
+    smoke/smoke_napi.cpp
+)
+target_link_libraries(smoke_napi PRIVATE
     entry
     libace_napi.z.so
     libhilog_ndk.z.so

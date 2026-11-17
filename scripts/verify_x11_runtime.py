@@ -5,6 +5,7 @@ GNU bundles are intentionally excluded: they use another loader and ABI.
 """
 import argparse
 import io
+import re
 from pathlib import Path
 from zipfile import ZipFile
 from check_runtime_components import elf_needed, ValidationError
@@ -14,7 +15,7 @@ from fex_simd_runtime import pe_kind
 
 ROOTS = ('libxwayland_ohos.so', 'winex11.so', 'libXrender.so.1', 'libXfixes.so.3',
     'libXi.so.6', 'libXrandr.so.2', 'libXinerama.so.1', 'libXcursor.so.1', 'libXcomposite.so.1', 'libXxf86vm.so.1')
-CMAKE_ROOTS = ('libentry.so', 'libxwayland_child.so', 'libxim_server_child.so', 'libdisplay_route_napi.so')
+CMAKE_ROOTS = ('libentry.so', 'libxwayland_child.so', 'libxim_server_child.so', 'libdisplay_route_napi.so', 'libsmoke_napi.so')
 # SDK platform APIs. All project-built dependencies must resolve from HAP libs.
 # libuv is the SDK NAPI event-loop API, resolved from platformsdk on devices.
 SYSTEM = frozenset(('libuv.so', 'libc.so', 'libm.so', 'libdl.so', 'libEGL.so', 'libGLESv2.so',
@@ -25,6 +26,28 @@ SYSTEM = frozenset(('libuv.so', 'libc.so', 'libm.so', 'libdl.so', 'libEGL.so', '
     'libdeviceinfo_ndk.z.so'))
 DATA = ('xkb/rules/evdev', 'xkb/symbols/us', 'xkb/types/complete', 'xkm/server-0.xkm',
     'share/X11/locale/C/XLC_LOCALE', 'share/X11/locale/zh_CN.UTF-8/XLC_LOCALE')
+
+
+
+def verify_napi_targets(cmake, root):
+    """ArkTS imports must load their own, unambiguous NAPI registration."""
+    cpp = root / 'entry/src/main/cpp'
+    targets = {}
+    for name, body in re.findall(r'add_library\((\w+)\s+SHARED\s+(.*?)\n\)', cmake, re.S):
+        owners = []
+        for source in re.findall(r'(?m)^\s*([\w/.-]+\.(?:cpp|c))\s*$', body):
+            if re.search(r'\bnapi_module_register\s*\(', (cpp/source).read_text()):
+                owners.append(source)
+        if len(owners) > 1:
+            raise ValidationError('multiple NAPI registrations in ' + name + ': ' + ', '.join(owners))
+        targets['lib' + name + '.so'] = owners
+    imports = set()
+    for path in (root/'entry/src/main/ets').rglob('*.ets'):
+        imports.update(re.findall(r"from\s+['\"](lib[^'\"]+\.so)['\"]", path.read_text()))
+    for name in sorted(imports):
+        if len(targets.get(name, [])) != 1:
+            raise ValidationError('ArkTS NAPI import has no unique native target: ' + name)
+    return imports
 
 
 def verify_libraries(read, names, arch, roots):
@@ -75,7 +98,9 @@ def main():
     parser.add_argument('--defer-cmake', action='store_true', help='assembly only: Hvigor has not built app modules yet')
     args = parser.parse_args()
     arch = 'aarch64' if args.native_arch == 'arm64-v8a' else 'x86_64'
-    roots = ROOTS + (() if args.defer_cmake else CMAKE_ROOTS)
+    root = Path(__file__).resolve().parents[1]
+    napi = verify_napi_targets((root/'entry/src/main/cpp/CMakeLists.txt').read_text(), root)
+    roots = ROOTS + (() if args.defer_cmake else tuple(set(CMAKE_ROOTS) | napi))
     if args.hap:
         if args.defer_cmake:
             parser.error('final HAP cannot defer native output checks')

@@ -28,7 +28,8 @@ POLICY = 'source-build-candidate'
 # into the final HAP. No other missing dependency may be deferred.
 CMAKE_MODULES = {'libs/arm64-v8a/' + name + '.so' for name in (
     'libvirgl_child', 'libentry', 'libwine_child',
-    'libxwayland_child', 'libxclient_child', 'libxim_server_child', 'libdisplay_route_napi')}
+    'libxwayland_child', 'libxclient_child', 'libxim_server_child', 'libdisplay_route_napi',
+    'libsmoke_napi')}
 
 
 def sha(data):
