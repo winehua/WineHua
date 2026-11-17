@@ -24,7 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../thirdparty/wine/programs/winehua_smoke_protocol.h"
+#include "winehua_smoke_protocol.h"
 
 #define HOST_REAL    "www.baidu.com"
 #define HOST_NX      "winehua-dns-probe.invalid"

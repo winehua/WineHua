@@ -35,7 +35,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../../../thirdparty/wine/programs/winehua_smoke_protocol.h"
+#include "winehua_smoke_protocol.h"
 
 #define WIN_W 640
 #define WIN_H 480

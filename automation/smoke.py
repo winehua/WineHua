@@ -309,7 +309,7 @@ def build_case(env: dict, case: Case, arch: str, dest: Path) -> None:
     cflags = [flag.replace("-Ithirdparty/wine/", f"-I{env['WINE_SRC']}/", 1)
               if flag.startswith("-Ithirdparty/wine/") else flag
               for flag in spec.get("cflags", ["-O2", "-s"])]
-    command = [cc, *cflags, "-o", str(dest), *sources]
+    command = [cc, *cflags, f"-I{env['WINE_SRC']}/programs", "-o", str(dest), *sources]
     if spec.get("dxvk_include"):
         command.append(f"-I{env['DXVK_SRC']}/include")
     if spec.get("vulkan_import"):

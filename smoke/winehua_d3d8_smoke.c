@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../thirdparty/wine/programs/winehua_smoke_protocol.h"
+#include "winehua_smoke_protocol.h"
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
