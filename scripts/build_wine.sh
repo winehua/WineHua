@@ -130,6 +130,15 @@ build_ohos_unix() {
 
     # 构建目录按 WINE_ARCH 隔离: 同工作树切换架构 (方案① x86_64 ↔ 方案③ arm64 原生)
     # 时不复用跨架构 configure 缓存。方案①/② (WINE_ARCH=x86_64) 共享 wine-ohos-x86_64。
+    # The locked Wine tree includes a historical generated inventory. Override
+    # its guard with a build-local header for the actual dependency bytes.
+    local gst_flags="$($PKG_CONFIG_BIN --cflags gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0)"
+    local gst_header="$WINE_BUILD_ROOT/generated/winehua_gst_inventory.h"
+    mkdir -p "$(dirname "$gst_header")"
+    python3 "$SCRIPT_DIR/gstreamer_inventory.py" --plugins-dir "$SYSROOT_EXT_LIB/gstreamer-1.0" \
+        --wine-arch "$WINE_ARCH" --native-arch "$NATIVE_ARCH" --header "$gst_header"
+    export GSTREAMER_CFLAGS="$gst_flags -include $gst_header"
+
     local wine_build_dir="$WINE_BUILD_ROOT/wine-ohos-$WINE_ARCH"
     mkdir -p "$wine_build_dir"
     cd "$wine_build_dir"
@@ -289,15 +298,7 @@ build_ohos_unix() {
     # A server-only build still configures and validates the same Wine source,
     # but must not turn an empty target list into a full default make.
     if [ -n "$WINE_UNIX_MODULES" ] && [ ${#targets[@]} -eq 0 ]; then return; fi
-    # The locked Wine tree includes a historical generated inventory. Override
-    # its guard with a build-local header for the actual dependency bytes.
-    local gst_flags="$($PKG_CONFIG_BIN --cflags gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0)"
-    local gst_header="$WINE_BUILD_ROOT/generated/winehua_gst_inventory.h"
-    mkdir -p "$(dirname "$gst_header")"
-    python3 "$SCRIPT_DIR/gstreamer_inventory.py" --plugins-dir "$SYSROOT_EXT_LIB/gstreamer-1.0" \
-        --wine-arch "$WINE_ARCH" --native-arch "$NATIVE_ARCH" --header "$gst_header"
     make -j$JOBS "${targets[@]}" \
-        GSTREAMER_CFLAGS="$gst_flags -include $gst_header" \
         CC="$CLANG --target=$TARGET --sysroot=$SYSROOT" \
         CXX="$OHOS_SDK/native/llvm/bin/clang++ --target=$TARGET --sysroot=$SYSROOT" \
         CFLAGS="$WINE_CFLAGS -I$SYSROOT_EXT_INC -I$SYSROOT_EXT_INC/freetype2" \
