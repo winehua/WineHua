@@ -1,0 +1,729 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-17",
+  "branch": "feature/vpp-runtime",
+  "runtimeSourceCommit": "47c1582",
+  "device": "Mini / MLR-AL10",
+  "bundleName": "app.hackeris.winehua",
+  "versionName": "1.0.13",
+  "versionCode": 1000013,
+  "acceptance": "bounded-functional-validation; not release or performance qualification",
+  "packages": {
+    "runtimeOnlyPackage": {
+      "path": "workspace_temp/runtime-check/winehua-mini-runtime-only-signed.hap",
+      "bytes": 587801244,
+      "sha256": "d54f9ceaec0125747f13808ba2321a934ef6b912d767599f7d075e0ab520c773",
+      "sourceCommit": "47c1582"
+    },
+    "previousRuntimeOnlyPackage": {
+      "path": "workspace_temp/runtime-check/winehua-mini-runtime-only-previous-signed.hap",
+      "bytes": 587802173,
+      "sha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "sourceCommit": "a451b83"
+    },
+    "sourceManifestRestored": true,
+    "omittedPermission": "ohos.permission.READ_PASTEBOARD",
+    "clipboardHostToGuest": "not testable without an updated lawful AGC profile"
+  },
+  "fixes": [
+    {
+      "commit": "a451b83",
+      "issue": "Two NAPI registrations in libentry replaced product exports and crashed onCreate",
+      "validation": "negative control rejected original CMake; source receipt 15 tests pass; real Mini startup and initialization pass"
+    },
+    {
+      "commit": "47c1582",
+      "issue": "VPP per-window FPS writer rejected upstream X11 output id=0 and lost route metadata",
+      "validation": "route/HUD isolation and legacy five-field reader host checks pass; both routes now report displayFps and pass the device GL result + image check"
+    }
+  ],
+  "runs": [
+    {
+      "run": "mini-wayland-core",
+      "status": "FAIL",
+      "passed": 2,
+      "total": 4,
+      "deviceStatus": "FAIL",
+      "sourceCommit": "a451b83",
+      "packageSha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "evidence": "mini/runs/job-mini-wayland-core",
+      "tests": [
+        {
+          "testId": "opengl-x64",
+          "hostStatus": "FAIL",
+          "deviceStatus": "FAIL",
+          "message": "no compositor display sequence observed",
+          "metrics": {
+            "frames": 798,
+            "producerFps": 115.132,
+            "displayFps": -1.0,
+            "width": 960,
+            "height": 540,
+            "cpuReadBytes": -1,
+            "cpuUploadBytes": -1,
+            "gpuCopyCount": -1,
+            "queueSubmitCount": -1,
+            "acquireWaitUs": -1,
+            "renderWaitUs": -1,
+            "presentWaitUs": -1,
+            "frameLatency": -1,
+            "p50FrameMs": -1,
+            "p95FrameMs": -1,
+            "p99FrameMs": -1,
+            "swapchainRecreateCount": 0,
+            "surfaceQueueBacklog": -1,
+            "fallbackDetected": false,
+            "fixedFrame": "rgba-quadrants-v1"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "FAIL"
+            },
+            {
+              "check": "presented-route",
+              "status": "FAIL"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "opengl-x86",
+          "hostStatus": "FAIL",
+          "deviceStatus": "FAIL",
+          "message": "no compositor display sequence observed",
+          "metrics": {
+            "frames": 782,
+            "producerFps": 108.758,
+            "displayFps": -1.0,
+            "width": 960,
+            "height": 540,
+            "cpuReadBytes": -1,
+            "cpuUploadBytes": -1,
+            "gpuCopyCount": -1,
+            "queueSubmitCount": -1,
+            "acquireWaitUs": -1,
+            "renderWaitUs": -1,
+            "presentWaitUs": -1,
+            "frameLatency": -1,
+            "p50FrameMs": -1,
+            "p95FrameMs": -1,
+            "p99FrameMs": -1,
+            "swapchainRecreateCount": 0,
+            "surfaceQueueBacklog": -1,
+            "fallbackDetected": false,
+            "fixedFrame": "rgba-quadrants-v1"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "FAIL"
+            },
+            {
+              "check": "presented-route",
+              "status": "FAIL"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dns-api-x64",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "ip": "110.242.70.57",
+            "err": 0,
+            "nx_err": 9003
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dns-api-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "ip": "110.242.70.57",
+            "err": 0,
+            "nx_err": 9003
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-wayland-graphics",
+      "status": "PASS",
+      "passed": 4,
+      "total": 4,
+      "deviceStatus": "PASS",
+      "sourceCommit": "a451b83",
+      "packageSha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "evidence": "mini/runs/job-mini-wayland-graphics",
+      "tests": [
+        {
+          "testId": "virgl9-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dxvk9-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "zink9-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dxvk11-amd64",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-wayland-metrics",
+      "status": "FAIL",
+      "passed": 0,
+      "total": 1,
+      "deviceStatus": "PASS",
+      "sourceCommit": "47c1582",
+      "packageSha256": "d54f9ceaec0125747f13808ba2321a934ef6b912d767599f7d075e0ab520c773",
+      "evidence": "mini/runs/job-mini-wayland-metrics",
+      "tests": [
+        {
+          "testId": "opengl-x86",
+          "hostStatus": "FAIL",
+          "deviceStatus": "PASS",
+          "message": "结果里缺 expectedRoute/presentedRoute（设备端构建过旧，或启动环境被丢 —— 后者正是本判据要抓的）",
+          "metrics": {
+            "frames": 781,
+            "producerFps": 107.11,
+            "displayFps": 103.975,
+            "width": 960,
+            "height": 540,
+            "cpuReadBytes": -1,
+            "cpuUploadBytes": -1,
+            "gpuCopyCount": -1,
+            "queueSubmitCount": -1,
+            "acquireWaitUs": -1,
+            "renderWaitUs": -1,
+            "presentWaitUs": -1,
+            "frameLatency": -1,
+            "p50FrameMs": -1,
+            "p95FrameMs": -1,
+            "p99FrameMs": -1,
+            "swapchainRecreateCount": 0,
+            "surfaceQueueBacklog": -1,
+            "fallbackDetected": false,
+            "fixedFrame": "rgba-quadrants-v1"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "presented-route",
+              "status": "FAIL"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-x11-basic",
+      "status": "FAIL",
+      "passed": 4,
+      "total": 5,
+      "deviceStatus": "FAIL",
+      "sourceCommit": "a451b83",
+      "packageSha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "evidence": "mini/runs/job-mini-x11-basic",
+      "tests": [
+        {
+          "testId": "win-basic-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "rect": "300,200,640,480"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "win-basic-arm64",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "rect": "300,200,640,480"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "win-basic-amd64-fex",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "rect": "300,200,640,480"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "clip-basic-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "payload_bytes": "54"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "input-keyboard-x86",
+          "hostStatus": "FAIL",
+          "deviceStatus": "FAIL",
+          "message": "5/8 checks failed: inject-done-seen; vk-a-count; vk-1-count; shift-snapshot; char-count;",
+          "metrics": {
+            "keydowns": "?",
+            "chars": "?"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "FAIL"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-x11-core",
+      "status": "FAIL",
+      "passed": 2,
+      "total": 4,
+      "deviceStatus": "FAIL",
+      "sourceCommit": "a451b83",
+      "packageSha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "evidence": "mini/runs/job-mini-x11-core",
+      "tests": [
+        {
+          "testId": "opengl-x64",
+          "hostStatus": "FAIL",
+          "deviceStatus": "FAIL",
+          "message": "no compositor display sequence observed",
+          "metrics": {
+            "frames": 763,
+            "producerFps": 115.516,
+            "displayFps": -1.0,
+            "width": 960,
+            "height": 540,
+            "cpuReadBytes": -1,
+            "cpuUploadBytes": -1,
+            "gpuCopyCount": -1,
+            "queueSubmitCount": -1,
+            "acquireWaitUs": -1,
+            "renderWaitUs": -1,
+            "presentWaitUs": -1,
+            "frameLatency": -1,
+            "p50FrameMs": -1,
+            "p95FrameMs": -1,
+            "p99FrameMs": -1,
+            "swapchainRecreateCount": 0,
+            "surfaceQueueBacklog": -1,
+            "fallbackDetected": false,
+            "fixedFrame": "rgba-quadrants-v1"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "FAIL"
+            },
+            {
+              "check": "presented-route",
+              "status": "FAIL"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "opengl-x86",
+          "hostStatus": "FAIL",
+          "deviceStatus": "FAIL",
+          "message": "no compositor display sequence observed",
+          "metrics": {
+            "frames": 813,
+            "producerFps": 116.312,
+            "displayFps": -1.0,
+            "width": 960,
+            "height": 540,
+            "cpuReadBytes": -1,
+            "cpuUploadBytes": -1,
+            "gpuCopyCount": -1,
+            "queueSubmitCount": -1,
+            "acquireWaitUs": -1,
+            "renderWaitUs": -1,
+            "presentWaitUs": -1,
+            "frameLatency": -1,
+            "p50FrameMs": -1,
+            "p95FrameMs": -1,
+            "p99FrameMs": -1,
+            "swapchainRecreateCount": 0,
+            "surfaceQueueBacklog": -1,
+            "fallbackDetected": false,
+            "fixedFrame": "rgba-quadrants-v1"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "FAIL"
+            },
+            {
+              "check": "presented-route",
+              "status": "FAIL"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dns-api-x64",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "ip": "110.242.70.57",
+            "err": 0,
+            "nx_err": 9003
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dns-api-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "ip": "110.242.69.21",
+            "err": 0,
+            "nx_err": 9003
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-x11-final",
+      "status": "blocked-screen-locked-before-run",
+      "evidence": "mini/runs/job-mini-x11-final"
+    },
+    {
+      "run": "mini-x11-graphics",
+      "status": "PASS",
+      "passed": 4,
+      "total": 4,
+      "deviceStatus": "PASS",
+      "sourceCommit": "a451b83",
+      "packageSha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "evidence": "mini/runs/job-mini-x11-graphics",
+      "tests": [
+        {
+          "testId": "virgl9-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dxvk9-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "zink9-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        },
+        {
+          "testId": "dxvk11-amd64",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": null,
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-x11-input",
+      "status": "PASS",
+      "passed": 1,
+      "total": 1,
+      "deviceStatus": "PASS",
+      "sourceCommit": "a451b83",
+      "packageSha256": "400e3ea2f139d5f1700c8024a98fe9ab4def1a8313a0f4d04e96e8a3a4a95037",
+      "evidence": "mini/runs/job-mini-x11-input",
+      "tests": [
+        {
+          "testId": "input-keyboard-x86",
+          "hostStatus": "PASS",
+          "deviceStatus": "PASS",
+          "message": "",
+          "metrics": {
+            "inject-done": "{\"status\":\"ok\",\"done\":3,\"message\":\"\"}",
+            "keydowns": "10+41+41 31 ",
+            "chars": "0041,0061,0031,4E2D"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "mini-x11-metrics",
+      "status": "FAIL",
+      "passed": 0,
+      "total": 1,
+      "deviceStatus": "PASS",
+      "sourceCommit": "47c1582",
+      "packageSha256": "d54f9ceaec0125747f13808ba2321a934ef6b912d767599f7d075e0ab520c773",
+      "evidence": "mini/runs/job-mini-x11-metrics",
+      "tests": [
+        {
+          "testId": "opengl-x86",
+          "hostStatus": "FAIL",
+          "deviceStatus": "PASS",
+          "message": "结果里缺 expectedRoute/presentedRoute（设备端构建过旧，或启动环境被丢 —— 后者正是本判据要抓的）",
+          "metrics": {
+            "frames": 830,
+            "producerFps": 111.157,
+            "displayFps": 110.873,
+            "width": 960,
+            "height": 540,
+            "cpuReadBytes": -1,
+            "cpuUploadBytes": -1,
+            "gpuCopyCount": -1,
+            "queueSubmitCount": -1,
+            "acquireWaitUs": -1,
+            "renderWaitUs": -1,
+            "presentWaitUs": -1,
+            "frameLatency": -1,
+            "p50FrameMs": -1,
+            "p95FrameMs": -1,
+            "p99FrameMs": -1,
+            "swapchainRecreateCount": 0,
+            "surfaceQueueBacklog": -1,
+            "fallbackDetected": false,
+            "fixedFrame": "rgba-quadrants-v1"
+          },
+          "checks": [
+            {
+              "check": "result-json",
+              "status": "PASS"
+            },
+            {
+              "check": "presented-route",
+              "status": "FAIL"
+            },
+            {
+              "check": "visual",
+              "status": "PASS"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Both lawful WineHua debug profiles lack restricted READ_PASTEBOARD ACL. Full-permission HAP was rejected with 9568289. Test variant omits only that declaration; tracked production manifest is restored. System-to-Wine clipboard remains untested.",
+    "The locked Proton graphics probe predates expectedRoute/presentedRoute fields required by current host checks. Original strict checks remain FAIL; no verdict was weakened. Final GL device result and visual checks PASS, and archived route sample exists.",
+    "Graphics mode tests verify launch, API success and fixed-frame pixels; independent GPU/backend fingerprinting, games, Heaven benchmarks, media, multiple physical controllers, system OPEN, M80 and PC are not qualified.",
+    "Rendering matrix, input and three-architecture Win32 tests used a451b83. The final 47c1582 changes only route metrics; both display routes were specifically retested on its exact installed HAP.",
+    "The first input-only failure came from a task job missing inject=true; corrected job passed. Original failure is retained."
+  ],
+  "deviceRestoration": {
+    "appStopped": true,
+    "screenTimeoutRestored": true,
+    "oldPomeloProDataRetained": true
+  },
+  "storage": {
+    "beforeFreeBytes": 457978826752,
+    "afterFreeBytes": 458190409728,
+    "removed": [
+      {
+        "path": "workspace_temp/runtime-check/winehua-full-permissions-signed.hap",
+        "bytes": 587782655,
+        "sha256": "3fb85108beee761ca5b23cdc6dc04471aaeaf7ea4ed8ccc54cfd1a35b4c0e750"
+      },
+      {
+        "path": "entry/build/default/outputs/default/entry-default-unsigned.hap",
+        "bytes": null,
+        "reason": "superseded unsigned HAP already removed during finalization"
+      },
+      {
+        "path": "workspace_temp/runtime-build/wine-gst",
+        "bytes": 173392477,
+        "reason": "failed GStreamer build; current successful build retained"
+      }
+    ]
+  },
+  "pushed": false,
+  "merged": false,
+  "tagged": false,
+  "ci": "not-triggered"
+}

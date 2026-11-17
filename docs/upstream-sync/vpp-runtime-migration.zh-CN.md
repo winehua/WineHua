@@ -4,7 +4,7 @@
 
 本分支 `feature/vpp-runtime` 从 WineHua `master@40b747714c109a7cb13e38b3af93ec77e1d38594` 建立，按功能迁入 VPP `release/2.0.4@043a1cc0cab8e52b011faf2c611d3c16562ecb0a` 的运行时源码、补丁和构建配方。2026-11-17 再次查询 GitHub，WineHua master 仍为该基线。
 
-这是代码迁移候选：已完成源码重放、主机回归及默认 ARM64 原生模块编译，尚未完成整套 Proton/FEX 编译、整包及真机验收。VPP 的历史设备结果只说明来源，不能作为本分支的性能或兼容性结论。本次不推送、不合入 master、不上架。
+这是运行时迁移候选：已完成源码重放、Wine 完整源码编译、8 个 ARM64 应用 native 模块、ArkTS/Hvigor 整包及有界 Mini 功能验证。FEX 与部分依赖按最终产物校验后复用，未宣称全依赖重新源码编译；完整设备门禁仍未通过。VPP 的历史设备结果只说明来源，不能作为本分支的性能或兼容性结论。本次不推送、不合入 master、不上架。
 
 保持 WineHua 的 ArkTS UI、AppScope、资源、模块权限、产品身份及签名示例配置不变；不迁入会员、云函数、Steam 分发/解压模块或 VPP 产品专属装包门槛。Wine 内的通用 Steam/CEF 进程兼容逻辑保留，和 Steam 产品分发无关。诊断子库默认关闭，不启用全量追踪或实验图形开关。
 
@@ -69,9 +69,9 @@ make runtime-zink-check
 make runtime-native-check
 ```
 
-`runtime-native-check` 只编译 7 个默认 OHOS native 模块；`runtime-protocol-check` 另需宿主 Wayland server 库或 `RUNTIME_HOST_WAYLAND`。完整装包继续使用既有 Make/Hvigor 入口，需要 WineHua 本地合法签名配置，本次不生成或提交签名材料。
+`runtime-native-check` 编译 8 个默认 OHOS native 模块；`runtime-protocol-check` 另需宿主 Wayland server 库或 `RUNTIME_HOST_WAYLAND`。完整装包继续使用既有 Make/Hvigor 入口，需要 WineHua 本地合法签名配置，本次仅在忽略目录复用既有合法 debug 签名材料，不生成或提交密钥。
 
-`build_wine.sh` 验证完整适配身份后复用增量构建；FEX stamp 包含锁、提交历史、顺序补丁和构建配方。`assemble` 在依赖 producer 完成后、装配前捕获 `local_source_receipt.py`，将有效 overlay 与实际产物绑定；Hvigor 生成的 native 模块在最终包阶段配对核验。`wine_runtime.version` 写入适配后的实际 Wine/FEX 身份。没有引入 VPP 基础 HAP 复用、Steam 产品门槛或全树删除对象文件的重编方式。
+`build_wine.sh` 验证完整适配身份后复用增量构建；FEX stamp 包含锁、提交历史、顺序补丁和构建配方。`assemble` 在依赖 producer 完成后、装配前捕获 `local_source_receipt.py`，将有效 overlay 与实际产物绑定；Hvigor 生成的 native 模块在最终包阶段配对核验。`wine_runtime.version` 写入适配后的实际 Wine/FEX 身份。提交的构建配方不依赖 VPP 基础 HAP，也未引入 Steam 产品门槛或全树删除对象文件。此次本地验证按最终 VPP 2.0.4 HAP 的 SHA 和成员字节复用部分依赖；没有导入其 UI 或 Wine 二进制，不能据此宣称全部依赖独立重编。首次 Hvigor 清理了根 build 下的运行时缓存，现已将运行时增量目录隔离至 workspace_temp/runtime-build，复用本轮已验证的 Wine 字节，并重编实际受影响模块。
 
 ## 本轮验证结果
 
@@ -81,7 +81,7 @@ make runtime-native-check
 | --- | --- |
 | Wine/FEX 完整源码重放 | 86/21 补丁全部通过；最终 commit/tree 精确匹配；不是编译验证 |
 | master UI/身份/API 边界 | 通过；受保护路径不变，76 个导出和原类型声明全部保留 |
-| 默认 ARM64 OHOS native | 7 模块编译链接通过；使用既有只读第三方依赖，未重编所有依赖 |
+| 默认 ARM64 OHOS native | 8 模块编译链接并纳入最终 HAP；使用已校验第三方依赖，未重编所有依赖 |
 | master 主机回归与 runtime-host-check | 通过；含输入、窗口、环境、控制器、WHGP、recipe 防篡改/复用、构建身份及源码产物校验 |
 | DXVK9 后备缓冲策略 | 32 策略用例及负对照通过；非本分支真机画面验收 |
 | 多手柄 | 实际桥接多客户端、四路独立输入、拔插、slot 复用及定向震动主机测试通过；未接四个真实手柄 |
@@ -91,4 +91,4 @@ make runtime-native-check
 | WineD3D 旧式雾 | 实际 shader generator 96 个组合通过；旧代码同一断言检出 2 个失败 |
 | ARM64/x86_64 构建图与脚本 | 两条 assemble 构建图可解析；shell/Python 语法通过；x86_64 native 尚未编译 |
 
-尚未执行：从本分支完整编译 Proton/FEX/全部第三方依赖、ArkTS/Hvigor 整包、HAP/APP 检查、安装和真机回归、Heaven/PAL4 性能测量。因此当前不能承诺帧率提升或沿用 VPP 的设备验收。下一步先做完整 ARM64 source build 和 WineHua UI 联调，再做 Mini 的 X11/Wayland、VirGL/DXVK9/Zink 画面、退出重入及同条件性能对照。
+本地构建与 Mini 记录见 [winehua-mini-runtime-validation.zh-CN.md](winehua-mini-runtime-validation.zh-CN.md)。已修复首启 NAPI 注册冲突、最终包 GStreamer 库身份和 X11 显示统计兼容问题。尚未完成：合法 READ_PASTEBOARD profile 下的系统剪贴板、当前严格路线归属门禁、全部第三方依赖重新源码编译、真实游戏与 Heaven/PAL4 性能测量、APP 上架包及其他设备验收。本轮不承诺帧率提升。

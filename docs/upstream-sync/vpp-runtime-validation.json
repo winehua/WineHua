@@ -70,13 +70,13 @@
     "runtime-fog-check": "passed-96-cases-old-control-rejected",
     "uiProductBoundary": "unchanged-from-upstream",
     "upstreamNapiExportsPreserved": 76,
-    "fullProtonFexBuild": "not-run",
-    "fullHvigorPackage": "not-run",
-    "deviceValidation": "not-run",
+    "fullProtonFexBuild": "partial: Wine fully compiled once; FEX checksum-verified reuse",
+    "fullHvigorPackage": "passed: ARM64 release-optimized debug-signed HAP; eight app native modules; 41 ELF X11 closure",
+    "deviceValidation": "bounded Mini validation; see winehua-mini-runtime-validation.json; full clipboard and strict route attribution not qualified",
     "x86NativeBuild": "not-run",
     "performanceMeasurement": "not-run"
   },
-  "nativeDependencyPolicy": "Existing read-only dependency outputs reused; only seven default native modules rebuilt.",
+  "nativeDependencyPolicy": "Wine compiled from locked source in this task; eight app native libraries built through Hvigor. FEX/Gecko/ICU and reviewed dependency bytes reused component-wise from final VPP 2.0.4 unsigned HAP (SHA-256 bdf08bb538d36387951e38072221bba9881ee4540c28a80534080a5a9c325116). No donor UI or Wine binaries imported.",
   "callbackCompatibility": "Master void callback confirms dispatch only; final asynchronous system-open outcome is not confirmed.",
   "logs": {
     "runtime-host-check.log": {
@@ -99,5 +99,14 @@
       "bytes": 91,
       "sha256": "d372e9d7dd56db6173485779b98374f5d21af16556452100b86e4e329c14b806"
     }
-  }
+  },
+  "buildCorrections": [
+    "Smoke protocol headers resolve from locked WINE_SRC",
+    "JSON5 signing config; passwords excluded from command logs",
+    "SDK libuv resolved from device platformsdk",
+    "GStreamer plugin inventory bound to actual bytes; build-local header supplied before configure; release keeps libgst plugin bytes",
+    "Independent NAPI module registration and eight-module receipt",
+    "Upstream route statistics preserved separately from per-window FPS"
+  ],
+  "miniReport": "winehua-mini-runtime-validation.json"
 }
