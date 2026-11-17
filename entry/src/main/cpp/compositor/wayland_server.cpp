@@ -12,6 +12,7 @@
 #include "compositor/frame/debug_assert.h"
 #include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
+#include <csignal>
 #include <cstring>
 #include <ctime>
 #include <cmath>
@@ -59,6 +60,10 @@ bool WaylandServer::Start(const std::string& socketPath) {
                 dir.c_str(), rc, errno);
 
     setenv("XDG_RUNTIME_DIR", dir.c_str(), 1);
+
+    // wayland 合成器标准纪律: client 传输中途断连会让 pipe write 触发
+    // SIGPIPE 直接杀宿主进程, 必须进程级忽略 (EPIPE 由 write 返回值处理)
+    signal(SIGPIPE, SIG_IGN);
 
     display_ = wl_display_create();
     if (!display_) {

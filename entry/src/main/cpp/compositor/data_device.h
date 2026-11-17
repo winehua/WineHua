@@ -33,8 +33,13 @@ public:
     void Unregister();
 
     // host 剪贴板 -> guest (NAPI 线程; Register 前调用则暂存, Register 后随
-    // queue 在 loop 线程消费并广播 selection)
+    // queue 在 loop 线程消费并按规范投递)
     void PostHostClipboard(const char* utf8);
+
+    // 键盘聚焦投递点 (InputInjector::InjectKeyboardEnter 调, loop 线程)。
+    // 协议规则 (wayland.xml wl_data_device.selection): selection 事件发给
+    // 持键盘焦点的客户端, 焦点切换时向新聚焦客户端补发当前 selection。
+    void OnKeyboardFocus(wl_client* client);
 
     ClipboardDevice() = default;
 
@@ -73,10 +78,12 @@ private:
         wl_event_source* ev;
         std::vector<char> buf;
         bool discard;
+        wl_resource* source;     // 本次读对应的 guest source (所有权裁决用)
     };
 
     // -- loop 线程内部 --
     void SendHostSelectionTo(DeviceData* dd);      // 向单个 device 发当前 selection
+    wl_resource* FindDeviceForClient(wl_client* client);
     static int OnPostPipeReadable(int fd, uint32_t mask, void* data);
     static int OnGuestReadReadable(int fd, uint32_t mask, void* data);
     void GuestReadDestroy(GuestRead* read, bool removeLink);
@@ -85,6 +92,7 @@ private:
     wl_global* global_ = nullptr;
     wl_event_source* pipeSource_ = nullptr;
     int postPipe_[2] = {-1, -1};
+    wl_client* focusClient_ = nullptr;            // 最近键盘聚焦的 wine 客户端
 
     std::vector<DeviceData*> devices_;
     wl_resource* guestSource_ = nullptr;          // wine 最近 set_selection 的 source
