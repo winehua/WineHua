@@ -35,6 +35,34 @@ def normalize(libs,rawfile,strip):
         for name,row in manifest.get('graphicsMigration',{}).get('virgl',{}).items()]
     changes=[];nested={}
     with tempfile.TemporaryDirectory(prefix='runtime-normalize-') as d:
+        # GStreamer metadata must describe the exact release-stripped plugins.
+        # Verify the recorded input and all loadable bytes before updating either.
+        payload = rawfile/'wine-data.zip'
+        with ZipFile(payload) as source:
+            component_bytes = source.read('runtime-components.json')
+        components = json.loads(component_bytes)
+        gst = components.get('gstreamer', {})
+        if gst.get('storage') == 'native-libs':
+            directory = PurePosixPath(gst['pluginDirectory'])
+            if len(directory.parts) != 2 or directory.parts[0] != 'libs' or '..' in directory.parts:
+                raise ValueError('invalid GStreamer plugin directory')
+            updated = False
+            for name, expected in gst['files'].items():
+                if PurePosixPath(name).name != name:
+                    raise ValueError('invalid GStreamer plugin name')
+                target = libs/directory.parts[1]/name
+                old = target.read_bytes()
+                if sha(old) != expected:
+                    raise ValueError('stale GStreamer plugin: '+name)
+                new = Path(d)/name; new.write_bytes(old)
+                subprocess.run([str(strip),'--strip-all','--remove-section=.comment',str(new)],check=True)
+                data = new.read_bytes()
+                if load_identity(old) != load_identity(data):
+                    raise ValueError('strip changed loadable GStreamer ELF: '+name)
+                if data != old:
+                    changes.append((target,data));gst['files'][name]=sha(data);updated=True
+            if updated:
+                nested['runtime-components.json']=(sha(component_bytes),(json.dumps(components,indent=2)+'\n').encode())
         for key,record in records:
             member=PurePosixPath(record['library'])
             if len(member.parts)!=3 or member.parts[0]!='libs' or '..' in member.parts:
