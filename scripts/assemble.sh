@@ -689,6 +689,50 @@ XKB_KEYMAP
     fi
     log "  xkm cache → wine-data/xkm/server-0.xkm ($(stat -c%s "$wine_data/xkm/server-0.xkm") B)"
 
+    # -- 2.5 strip 全部 ELF 调试段 (DWARF .debug_*): 只剥 debug, 保留 .symtab
+    # 函数名符号 (宿主侧 unixlib 崩溃的 FaultLogger 栈仍可对函数); guest 崩溃
+    # 定位走 box64 回溯 (x27=guest RIP), 不依赖这些段。实测 unix 侧 234M 中
+    # debug 占 115M (49%), guest_gfx Mesa 栈同样全量 -g。
+    # 覆盖 wine-data 全树 ELF: x86_64-unix/ (含 gstreamer-1.0/)、bin 顶层
+    # wine/wineserver/.so、guest_gfx/lib、guest_vulkan/lib; PE 侧 (.dll/.sys)
+    # 已由上方 mingw strip 处理, 此处排除其目录。
+    # 位置在树组装完成后、打包前 —— 中途 strip 会漏后拷的 guest 图形栈
+    # (2026-11-17 实测: 只 strip unix 段时 guest_gfx 26 个 .so 全部漏网)。
+    # 幂等与确定性: ELF 无时间戳字段, strip 输出确定; 已 strip 的文件无
+    # .debug 段直接跳过, 不重写 (payloadSha256 稳定)。
+    log "  stripping ELF debug symbols (unix + guest gfx/vulkan)..."
+    # 首选 SDK llvm-strip: 双侧 ELF 都要剥, wine unix 侧是 x86_64 而
+    # host_vulkan 侧是 arm64 —— 系统 strip 是单架构 binutils, 修
+    # libwinehua_host_heaven_replay.so 时报 "Unable to recognise the
+    # architecture" (2026-11-17 实测); llvm-strip 全架构通吃。
+    ELF_STRIP_BIN=""
+    for cand in "$OHOS_SDK/native/llvm/bin/llvm-strip" llvm-strip strip; do
+        if [ -x "$cand" ] || command -v "$cand" &>/dev/null; then ELF_STRIP_BIN="$cand"; break; fi
+    done
+    if [ -z "$ELF_STRIP_BIN" ]; then
+        warn "  no strip/llvm-strip in PATH, ELF debug symbols NOT stripped"
+    else
+        ELF_SAVED=0
+        while IFS= read -r -d '' f; do
+            readelf -SW "$f" 2>/dev/null | grep -q '\.debug' || continue
+            local before after
+            before=$(stat -c%s "$f")
+            "$ELF_STRIP_BIN" --strip-debug "$f" 2>/dev/null \
+                || { warn "  strip failed (kept original): $f"; continue; }
+            after=$(stat -c%s "$f")
+            ELF_SAVED=$((ELF_SAVED + before - after))
+        done < <(find "$wine_data/bin" -type f \
+                    \( -name '*.so' -o -name '*.so.*' -o -name wine -o -name wineserver \) \
+                    -not -path '*/x86_64-windows/*' -not -path '*/i386-windows/*' \
+                    -print0)
+        log "  ELF stripped: saved $((ELF_SAVED / 1024)) KB"
+        # 验收断言: 全树不允许残留 .debug 段, 残留即合成失败
+        ELF_REMAIN=$(find "$wine_data/bin" -type f -name '*.so*' \
+            -not -path '*/x86_64-windows/*' -not -path '*/i386-windows/*' \
+            -exec sh -c 'readelf -SW "$1" 2>/dev/null | grep -q "\.debug" && echo x' _ {} \; | wc -l)
+        [ "$ELF_REMAIN" -eq 0 ] || err "$ELF_REMAIN ELF files still have .debug sections"
+    fi
+
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
     # 确定性打包 (任务 #164): 固定全部条目 mtime + 文件名 LC_ALL=C 排序 +
     # -X 去 extra 字段, 内容不变则 zip 字节不变 → payloadSha256 稳定。
