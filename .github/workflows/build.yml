@@ -69,6 +69,9 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check committed build patch inputs
+        run: make runtime-patch-check
+
       # submodule 拉取自管 + 指数退避重试。为什么不用 checkout 的
       # submodules: recursive: 它无重试, 第三方上游宿主一次 5xx/拒连整个
       # job 即死 —— .gitmodules 里有 12 个非 GitHub URL, 其中
@@ -107,6 +110,9 @@ jobs:
           test -f thirdparty/vkd3d-proton/subprojects/dxil-spirv/meson.build
           git -C thirdparty/vkd3d-proton submodule status
           git -C thirdparty/vkd3d-proton status --porcelain --untracked-files=no --ignore-submodules=dirty || true
+
+      - name: Check Nettle ARM64 dispatch and C fallback
+        run: python3 host_tests/nettle_arm64_dispatch_test.py
 
       # ---- 绕过签名: 用 stub 替换 sign.py ----
       # scripts/package.sh 最后会调 `python3 sign.py <unsigned> <signed>`,

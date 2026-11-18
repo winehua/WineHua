@@ -3,7 +3,7 @@ RUNTIME_DXVK_REPOSITORY ?= $(ROOT)/thirdparty/dxvk
 RUNTIME_SDK ?= /apps/harmony/sdk/default/openharmony
 RUNTIME_CHECK_DIR := $(ROOT)/workspace_temp/runtime-check
 .PHONY: runtime-host-check runtime-native-check
-runtime-host-check: test
+runtime-host-check: test runtime-patch-check
 	python3 $(ROOT)/scripts/verify_runtime_boundary.py
 	python3 $(ROOT)/host_tests/runtime_recipe_test.py
 	python3 $(ROOT)/host_tests/dxvk9_backbuffer_preservation_test.py --repository "$(RUNTIME_DXVK_REPOSITORY)"
@@ -51,3 +51,15 @@ runtime-zink-check:
 .PHONY: runtime-ui-check
 runtime-ui-check:
 	bash -c 'source "$(ROOT)/scripts/env.sh"; node "$(ROOT)/host_tests/graphics_settings_test.cjs"'
+
+# Run before submodule/toolchain setup so cached libraries cannot hide a
+# missing or local-only patch in a newly cloned checkout.
+.PHONY: runtime-patch-check runtime-crypto-check
+runtime-patch-check:
+	python3 $(ROOT)/scripts/check_build_patch_inputs.py
+	python3 $(ROOT)/host_tests/build_patch_inputs_test.py
+
+runtime-crypto-check: runtime-patch-check
+	python3 $(ROOT)/host_tests/nettle_arm64_dispatch_test.py
+
+prepare-runtime-sources: runtime-patch-check

@@ -14,12 +14,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Validate before env.sh can perform any toolchain setup.
 VP_NETTLE_ASM="${VP_NETTLE_ASM:-auto}"
 case "$VP_NETTLE_ASM" in auto|off) ;; *) echo "invalid VP_NETTLE_ASM: use auto or off" >&2; exit 1 ;; esac
+NETTLE_VERSION=3.10.2
+NETTLE_PATCH="$SCRIPT_DIR/../patches/nettle/0001-ohos-arm64-fat-dispatch.patch"
+if [ ! -s "$NETTLE_PATCH" ]; then
+    echo "ERROR: missing Nettle build input: $NETTLE_PATCH (restore the tracked patch before building)" >&2
+    exit 1
+fi
+NETTLE_PATCH_SHA="$(sha256sum "$NETTLE_PATCH" | cut -d ' ' -f1)"
 if [ "${1:-}" = --check-identity ]; then export WINE_IDENTITY_CHECK_ONLY=1; fi
 source "$SCRIPT_DIR/env.sh"
 
-NETTLE_VERSION=3.10.2
-NETTLE_PATCH="$SCRIPT_DIR/../patches/nettle/0001-ohos-arm64-fat-dispatch.patch"
-NETTLE_PATCH_SHA="$(sha256sum "$NETTLE_PATCH" | cut -d ' ' -f1)"
 NETTLE_STAMP="$SYSROOT_EXT_LIB/.vp-nettle-build-identity"
 
 # Extracted by the host contract test, so selection and invalidation are tested
